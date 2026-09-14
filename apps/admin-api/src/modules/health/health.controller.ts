@@ -1,4 +1,5 @@
-import { Controller, Get } from "@nestjs/common";
+import { Controller, Get, Res } from "@nestjs/common";
+import type { Response } from "express";
 import { ApiTags, ApiOperation, ApiResponse } from "@nestjs/swagger";
 import { HealthService } from "./health.service";
 import { Public } from "../../common/decorators/public.decorator";
@@ -117,20 +118,50 @@ export class HealthController {
   })
   @ApiResponse({
     status: 200,
-    description: "Readiness check result",
+    description: "Ready to accept traffic",
     schema: {
       example: {
-        status: "ready",
-        timestamp: "2024-01-01T12:00:00Z",
-        checks: [
-          { name: "database", status: "pass" },
-          { name: "redis", status: "pass" },
-        ],
+        code: 200,
+        message: "success",
+        data: {
+          status: "ready",
+          timestamp: "2024-01-01T12:00:00Z",
+          checks: [
+            { name: "database", status: "pass" },
+            { name: "redis", status: "pass" },
+          ],
+        },
       },
     },
   })
-  async ready() {
-    return this.healthService.getReadiness();
+  @ApiResponse({
+    status: 503,
+    description:
+      "Not ready — a dependency (DB/Redis) failed. K8s readinessProbe reads the HTTP status, so this MUST be 503 for traffic to be drained.",
+    schema: {
+      example: {
+        code: 503,
+        message: "success",
+        data: {
+          status: "not_ready",
+          timestamp: "2024-01-01T12:00:00Z",
+          reason: "Unhealthy dependencies: database",
+          checks: [
+            { name: "database", status: "fail" },
+            { name: "redis", status: "pass" },
+          ],
+        },
+      },
+    },
+  })
+  // A3（DEEP_REVIEW §七 · executor-protocol）：此前本端点**恒返 200**——不就绪
+  // 只在 body 里写 `status:"not_ready"`。而 K8s readinessProbe / 主流 LB 只看
+  // HTTP 状态码，等于 DB 与 Redis 全挂了也不会被摘流量，就绪探针形同虚设。
+  // 现在按契约返回 503（payload 形状不变，仍经全局响应信封落在 `data` 下）。
+  async ready(@Res({ passthrough: true }) res: Response) {
+    const readiness = await this.healthService.getReadiness();
+    res.status(readiness.status === "ready" ? 200 : 503);
+    return readiness;
   }
 
   // R-25（DEEP_REVIEW 0ef3bbe）：services/metrics 端点移除 @Public——

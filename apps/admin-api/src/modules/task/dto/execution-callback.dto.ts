@@ -14,7 +14,11 @@ import {
 } from "class-validator";
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 import { Type } from "class-transformer";
-import { ExecutionFailureReason } from "../entities/task-execution.entity";
+import {
+  ExecutionFailureReason,
+  // A3: 执行器可上报子集（全集 − admin 内部专用），见 protocol.json。
+  EXECUTOR_REPORTABLE_FAILURE_REASONS,
+} from "../entities/task-execution.entity";
 
 /**
  * FEAT-05：执行器任务结束回调随附的单个产物清单条目。
@@ -92,10 +96,14 @@ export class CallbackItemDto {
 
   @ApiPropertyOptional({
     description: "Structured failure reason",
-    enum: ExecutionFailureReason,
+    // A3: OpenAPI 上只暴露执行器**可上报**的子集——`stale_recovered` 由 admin
+    // 内部写入，不该出现在回调契约的文档面上（此前用的是全集）。
+    enum: [...EXECUTOR_REPORTABLE_FAILURE_REASONS],
   })
   @IsOptional()
-  @IsIn(Object.values(ExecutionFailureReason))
+  // A3: 收窄为执行器可上报集合（此前用全集，等于允许执行器上报 admin 内部专用的
+  // `stale_recovered`）。取值清单由 packages/executor-protocol/protocol.json 钉死。
+  @IsIn([...EXECUTOR_REPORTABLE_FAILURE_REASONS])
   failureReason?: ExecutionFailureReason;
 
   @ApiPropertyOptional({

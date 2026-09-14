@@ -13,6 +13,13 @@ const mockConfig = {
 };
 
 jest.mock('../config', () => ({ config: mockConfig }));
+// A3: 就绪用例要把内存水位钉死（`os.freemem` 与 `os.cpus` 一样不可重定义，
+// jest.spyOn 会抛 "Cannot redefine property"），否则 ready/503 会随 CI 机器
+// 内存水位随机翻转。固定为「已用 10%」，远低于就绪阈值 90%。
+jest.mock('os', () => {
+  const actual = jest.requireActual('os');
+  return { ...actual, freemem: () => actual.totalmem() * 0.9 };
+});
 jest.mock('../scheduler', () => ({ runningCount: jest.fn(() => 0) }));
 jest.mock('../task-worker', () => ({
   taskWorkerManager: {
@@ -142,15 +149,22 @@ describe('health route admin API probing', () => {
 
 // E-20（DEEP_REVIEW 0ef3bbe）：探针端点与 Windows 指标口径。
 describe('health probes (E-20)', () => {
+  // A3: 就绪用例需要起本地 admin 存根来钉死「可达 / 不可达」两个方向。
+  let server: http.Server | undefined;
+
   function buildApp(): express.Express {
     const app = express();
     app.use('/', healthRouter);
     return app;
   }
 
-  afterEach(() => {
+  afterEach(async () => {
     jest.restoreAllMocks();
     resetCpuSampleForTest();
+    if (server) {
+      await close(server);
+      server = undefined;
+    }
   });
 
   it('serves the canonical liveness/readiness paths (/health/live, /health/ready)', async () => {
@@ -161,10 +175,48 @@ describe('health probes (E-20)', () => {
     expect(live.text).toBe('OK');
 
     const ready = await request(app).get('/health/ready');
-    // 200 ready / 503 unready 都合法（取决于跑测试的机器负载），但路径必须存在
+    // 200 ready / 503 not_ready 都合法（取决于跑测试的机器负载），但路径必须存在
     // 且载荷是二者之一——旧实现的漂移路径（python 用 /health/readiness）在这里 404。
+    // A3: status 值由契约统一为 ready/not_ready（旧值 'unready' 已废弃）。
     expect([200, 503]).toContain(ready.status);
-    expect(['ready', 'unready']).toContain(ready.body.status);
+    expect(['ready', 'not_ready']).toContain(ready.body.status);
+  });
+
+  // A3（executor-protocol）：就绪判定的三方 parity——node 原先只看资源、python
+  // 只看 admin 连通性，各缺一块。现在两侧都是「资源 + admin 连通性」，形状与
+  // 状态码统一（ready→200 / not_ready→503，reason 非空）。见 protocol.json。
+  it('reports 503 not_ready with a reason when admin-api is unreachable (A3)', async () => {
+    server = http.createServer((_req, res) => {
+      res.statusCode = 500;
+      res.end('down');
+    });
+    const port = await listen(server);
+    mockConfig.adminApiUrlInternal = `http://127.0.0.1:${port}/api/`;
+
+    const app = buildApp();
+    const res = await request(app).get('/health/ready');
+
+    expect(res.status).toBe(503);
+    expect(res.body.status).toBe('not_ready');
+    expect(typeof res.body.reason).toBe('string');
+    expect(res.body.reason).toContain('admin-api unreachable');
+    // 运维要能直接从探针响应看出探的是哪个地址
+    expect(res.body.reason).toContain('/api/health');
+  });
+
+  it('reports 200 ready when admin-api is reachable and resources are ample (A3)', async () => {
+    server = http.createServer((_req, res) => {
+      res.statusCode = 200;
+      res.end('ok');
+    });
+    const port = await listen(server);
+    mockConfig.adminApiUrlInternal = `http://127.0.0.1:${port}/api/`;
+
+    const app = buildApp();
+    const res = await request(app).get('/health/ready');
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('ready');
   });
 
   it('derives CPU% from os.cpus() time deltas — cross-platform, unlike loadavg (Windows≡0)', () => {

@@ -3082,7 +3082,7 @@ export interface components {
              * @description Structured failure reason
              * @enum {string}
              */
-            failureReason?: "package_fetch_failed" | "script_error" | "timeout" | "executor_offline" | "executor_restart" | "stale_recovered" | "dependency_install_failed" | "git_fetch_failed" | "runtime_missing" | "killed" | "unknown";
+            failureReason?: "package_fetch_failed" | "script_error" | "timeout" | "executor_offline" | "executor_restart" | "dependency_install_failed" | "git_fetch_failed" | "runtime_missing" | "killed" | "unknown";
             /** @description Wall-clock execution duration in milliseconds */
             durationMs?: number;
             /** @description FEAT-05: execution artifacts manifest (best-effort, max 20 entries). File bytes are uploaded separately via the artifact upload endpoint; the manifest is persisted to task_executions.artifacts on the terminal callback. */
@@ -6311,8 +6311,17 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Readiness check result */
+            /** @description Ready to accept traffic */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Not ready — a dependency (DB/Redis) failed. K8s readinessProbe reads the HTTP status, so this MUST be 503 for traffic to be drained. */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

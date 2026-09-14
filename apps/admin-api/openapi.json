@@ -4429,23 +4429,55 @@
         "parameters": [],
         "responses": {
           "200": {
-            "description": "Readiness check result",
+            "description": "Ready to accept traffic",
             "content": {
               "application/json": {
                 "schema": {
                   "example": {
-                    "status": "ready",
-                    "timestamp": "2024-01-01T12:00:00Z",
-                    "checks": [
-                      {
-                        "name": "database",
-                        "status": "pass"
-                      },
-                      {
-                        "name": "redis",
-                        "status": "pass"
-                      }
-                    ]
+                    "code": 200,
+                    "message": "success",
+                    "data": {
+                      "status": "ready",
+                      "timestamp": "2024-01-01T12:00:00Z",
+                      "checks": [
+                        {
+                          "name": "database",
+                          "status": "pass"
+                        },
+                        {
+                          "name": "redis",
+                          "status": "pass"
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Not ready — a dependency (DB/Redis) failed. K8s readinessProbe reads the HTTP status, so this MUST be 503 for traffic to be drained.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "example": {
+                    "code": 503,
+                    "message": "success",
+                    "data": {
+                      "status": "not_ready",
+                      "timestamp": "2024-01-01T12:00:00Z",
+                      "reason": "Unhealthy dependencies: database",
+                      "checks": [
+                        {
+                          "name": "database",
+                          "status": "fail"
+                        },
+                        {
+                          "name": "redis",
+                          "status": "pass"
+                        }
+                      ]
+                    }
                   }
                 }
               }
@@ -7510,7 +7542,6 @@
               "timeout",
               "executor_offline",
               "executor_restart",
-              "stale_recovered",
               "dependency_install_failed",
               "git_fetch_failed",
               "runtime_missing",

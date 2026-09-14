@@ -1,4 +1,5 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
+from fastapi.responses import JSONResponse
 from datetime import datetime, timezone
 import psutil
 import httpx
@@ -60,24 +61,49 @@ async def health():
     }
 
 
-async def _readiness() -> dict:
-    """OPS-02: Readiness probe - verifies all dependencies are reachable."""
+# A3（executor-protocol）：就绪判定维度与 executor-node 对齐为「资源 + admin 连通性」
+# ——此前 python 只看 admin 连通性、node 只看资源，各缺一块。阈值与 node 同为 90%。
+# 注意：这里**不**用 HTTPException——它会把载荷包进 {"detail": {...}}，与 node 的
+# 扁平载荷、以及契约「payload 外不得再包一层自定义键」冲突。
+READY_RESOURCE_LIMIT_PERCENT = 90
+
+
+def _resources_ok() -> tuple[bool, str | None]:
+    """资源维度判定（与 executor-node /health/ready 同阈值）。"""
+    cpu = psutil.cpu_percent()
+    mem = psutil.virtual_memory().percent
+    if cpu >= READY_RESOURCE_LIMIT_PERCENT or mem >= READY_RESOURCE_LIMIT_PERCENT:
+        return False, f'Resource usage too high (cpu={cpu:.1f}% mem={mem:.1f}%)'
+    return True, None
+
+
+async def _readiness() -> JSONResponse:
+    """Readiness probe — admin 连通性 + 本机资源（A3 三方契约同形）。"""
     admin_api_ok = await _check_admin_api()
     if not admin_api_ok:
-        raise HTTPException(
+        return JSONResponse(
             status_code=503,
-            detail={
-                'status': 'unready',
+            content={
+                'status': 'not_ready',
                 'reason': 'admin-api unreachable',
                 'adminApiUrl': get_admin_api_base_url(),
             },
         )
-    return {
-        'status': 'ready',
-        'appName': settings.app_name,
-        'address': settings.executor_address,
-        'adminApiReachable': admin_api_ok,
-    }
+    ok, reason = _resources_ok()
+    if not ok:
+        return JSONResponse(
+            status_code=503,
+            content={'status': 'not_ready', 'reason': reason},
+        )
+    return JSONResponse(
+        status_code=200,
+        content={
+            'status': 'ready',
+            'appName': settings.app_name,
+            'address': settings.executor_address,
+            'adminApiReachable': admin_api_ok,
+        },
+    )
 
 
 # E-20（DEEP_REVIEW 0ef3bbe）：就绪探针规范路径统一为 /health/ready——与 admin-api

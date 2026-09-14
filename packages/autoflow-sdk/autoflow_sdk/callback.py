@@ -45,15 +45,20 @@ ERROR_MESSAGE_MAX_LENGTH = 4096
 LOGS_MAX_LENGTH = 512_000
 
 # ExecutionFailureReason enum values accepted by the DTO validation.
+#
+# A3（executor-protocol）：白名单收窄为**执行器可上报子集**——`stale_recovered`
+# 是 admin 的 stale sweep 写入的溯源标记，语义上只有 admin 才该写，上报方无从
+# 得知自己的执行是被谁终态化的。admin 的回调 DTO（@IsIn）已同步收窄，故此处
+# 一并调整，否则 SDK 本地放行、admin 却 400（且一个非法取值会拒掉**整批**回调）。
+#
+# 单一事实源：packages/executor-protocol/protocol.json 的
+# failureReason.executorReportable——tests/test_executor_protocol.py 逐值断言。
 VALID_FAILURE_REASONS = frozenset({
     "package_fetch_failed",
     "script_error",
     "timeout",
     "executor_offline",
     "executor_restart",
-    # BUG-15 复审: P2 起 admin 枚举新增 stale_recovered（sweep 赢家标记），
-    # 白名单与 admin DTO（@IsIn(Object.values(ExecutionFailureReason))）保持同步
-    "stale_recovered",
     # BUG-10: 执行器侧细分分类（依赖安装 / Git 拉取 / 运行时缺失）
     "dependency_install_failed",
     "git_fetch_failed",
