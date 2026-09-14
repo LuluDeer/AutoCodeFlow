@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { Alert, Space, Spin, Tag, Typography } from 'antd';
+import { Alert, Space, Spin, Tag, Typography, theme } from 'antd';
 import { ClockCircleOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import '../../i18n';
@@ -48,6 +48,8 @@ export default function TriggerPreview({
   now,
 }: TriggerPreviewProps) {
   const { t } = useTranslation();
+  // F-15（DEEP_REVIEW 0ef3bbe）：虚线边框/主色图标走 antd token，暗色主题自适应。
+  const { token } = theme.useToken();
   // now 只在挂载/显式注入时求值：预览是「快照」语义，不随每次 render 漂移。
   const anchor = useMemo(() => now ?? new Date(), [now]);
 
@@ -90,13 +92,13 @@ export default function TriggerPreview({
       style={{
         margin: '12px 0 4px',
         padding: '10px 12px',
-        border: '1px dashed #d9d9d9',
+        border: `1px dashed ${token.colorBorder}`,
         borderRadius: 8,
         background: 'rgba(34, 197, 94, 0.04)',
       }}
     >
       <Space size={6} wrap style={{ marginBottom: preview.times.length ? 6 : 0 }}>
-        <ClockCircleOutlined style={{ color: '#1677ff' }} />
+        <ClockCircleOutlined style={{ color: token.colorPrimary }} />
         <Text strong style={{ fontSize: 13 }}>{t('triggerPreview.title')}</Text>
         <Text type="secondary" style={{ fontSize: 12 }}>
           {t('triggerPreview.nextCount', { count: TRIGGER_PREVIEW_COUNT })}

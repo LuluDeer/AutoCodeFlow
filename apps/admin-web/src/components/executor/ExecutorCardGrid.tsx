@@ -10,7 +10,7 @@
  * 既有入口同端点；轮换走批量操作条同一 confirm 流程由父级处理，这里仅
  * 回调）。选中复选框服务于批量操作条（表格 rowSelection 同语义）。
  */
-import { Card, Checkbox, Tag, Typography, Badge, Progress, Tooltip, Space, Button, Empty } from 'antd';
+import { Card, Checkbox, Tag, Typography, Badge, Progress, Tooltip, Space, Button, Empty, theme } from 'antd';
 import {
   DesktopOutlined, ClockCircleOutlined, SettingOutlined, KeyOutlined,
 } from '@ant-design/icons';
@@ -22,12 +22,14 @@ type TFunc = (k: string, opts?: Record<string, unknown>) => string;
 
 const { Text } = Typography;
 
-function heartbeatLabel(t: TFunc, lastHeartbeat: string): { text: string; color: string } {
+// F-15（DEEP_REVIEW 0ef3bbe）：语义色/用量色走 antd token（双主题自适应）。
+type AntdToken = ReturnType<typeof theme.useToken>['token'];
+function heartbeatLabel(t: TFunc, lastHeartbeat: string, token: AntdToken): { text: string; color: string } {
   const diffMs = Date.now() - new Date(lastHeartbeat).getTime();
   const diffMin = diffMs / 60000;
-  if (diffMin < 2) return { color: '#52c41a', text: t('execCard.hb.justNow') };
-  if (diffMin < 10) return { color: '#faad14', text: t('execCard.hb.minAgo', { min: Math.floor(diffMin) }) };
-  return { color: '#ff4d4f', text: new Date(lastHeartbeat).toLocaleString('zh-CN') };
+  if (diffMin < 2) return { color: token.colorSuccess, text: t('execCard.hb.justNow') };
+  if (diffMin < 10) return { color: token.colorWarning, text: t('execCard.hb.minAgo', { min: Math.floor(diffMin) }) };
+  return { color: token.colorError, text: new Date(lastHeartbeat).toLocaleString('zh-CN') };
 }
 
 function statusBadge(status: string): 'success' | 'warning' | 'default' {
@@ -38,8 +40,8 @@ function statusText(t: TFunc, status: string): string {
   return status === 'online' ? t('execCard.status.online') : status === 'busy' ? t('execCard.status.busy') : t('execCard.status.offline');
 }
 
-function usageStroke(v: number): string {
-  return v > 80 ? '#ff4d4f' : v > 60 ? '#fa8c16' : '#52c41a';
+function usageStroke(v: number, token: AntdToken): string {
+  return v > 80 ? token.colorError : v > 60 ? token.colorWarning : token.colorSuccess;
 }
 
 interface ResourceRowProps {
@@ -48,6 +50,7 @@ interface ResourceRowProps {
 }
 
 function ResourceRow({ label, value }: ResourceRowProps) {
+  const { token } = theme.useToken();
   const val = value ?? 0;
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -56,7 +59,7 @@ function ResourceRow({ label, value }: ResourceRowProps) {
         percent={val}
         size="small"
         showInfo={false}
-        strokeColor={usageStroke(val)}
+        strokeColor={usageStroke(val, token)}
         style={{ flex: 1, margin: 0 }}
       />
       <Text style={{ fontSize: 12, width: 36, textAlign: 'right' }}>{val.toFixed(0)}%</Text>
@@ -79,17 +82,19 @@ export function ExecutorCard({
   executor: r, selected, onToggleSelect, onOpenDetail, isAdmin, onReloadConfig, onRotateToken,
 }: ExecutorCardProps) {
   const { t } = useTranslation();
+  // F-15（DEEP_REVIEW 0ef3bbe）：语义色/边框走 antd token，暗色主题自适应。
+  const { token } = theme.useToken();
   const running = r.runningTaskCount ?? 0;
   const max = r.maxConcurrentTasks;
   const taskLabel = max != null ? `${running}/${max}` : `${running}`;
-  const hb = r.lastHeartbeat ? heartbeatLabel(t, r.lastHeartbeat) : null;
+  const hb = r.lastHeartbeat ? heartbeatLabel(t, r.lastHeartbeat, token) : null;
   const online = r.status === 'online';
 
   return (
     <Card
       data-testid={`executor-card-${r.id}`}
       size="small"
-      style={{ borderColor: selected ? '#1677ff' : undefined }}
+      style={{ borderColor: selected ? token.colorPrimary : undefined }}
       title={
         <Space size={8}>
           <Checkbox
@@ -97,7 +102,7 @@ export function ExecutorCard({
             onChange={(e) => onToggleSelect(r.id, e.target.checked)}
             aria-label={t('execCard.selectAria', { name: r.appName })}
           />
-          <DesktopOutlined style={{ color: online ? '#52c41a' : '#d9d9d9' }} />
+          <DesktopOutlined style={{ color: online ? token.colorSuccess : token.colorBorder }} />
           <span
             role="link"
             tabIndex={0}
@@ -129,7 +134,7 @@ export function ExecutorCard({
       </div>
 
       <Space size={4} wrap style={{ marginTop: 8 }}>
-        <Text strong style={{ color: running > 0 ? '#1677ff' : undefined }}>
+        <Text strong style={{ color: running > 0 ? token.colorPrimary : undefined }}>
           {t('execCard.tasks', { label: taskLabel })}
         </Text>
         {r.groupName && <Tag color="geekblue" style={{ marginInlineEnd: 0 }}>{r.groupName}</Tag>}

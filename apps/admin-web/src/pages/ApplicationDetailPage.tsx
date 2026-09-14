@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Descriptions, Badge, Card, Table, Button, Space, Tag, Typography, message, Modal, Spin, Empty,
-  Row, Col, Collapse, Tooltip, Tabs, Form, Input, Select, Statistic, Alert,
+  Row, Col, Collapse, Tooltip, Tabs, Form, Input, Select, Statistic, Alert, theme,
 } from 'antd';
 import {
   ArrowLeftOutlined, SyncOutlined, ReloadOutlined, GithubOutlined,
@@ -33,6 +33,8 @@ function useIsAdmin() {
 // ─── AI Analysis Tab ────────────────────────────────────────────────────────────
 function AiAnalysisTab({ appId }: { appId: string }) {
   const { t } = useTranslation();
+  // F-15（DEEP_REVIEW 0ef3bbe）：主色/成功率语义色走 antd token，暗色主题自适应。
+  const { token } = theme.useToken();
   const [loading, setLoading] = useState(false);
   const [report, setReport] = useState<AppHealthReport | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -63,7 +65,7 @@ function AiAnalysisTab({ appId }: { appId: string }) {
       {!report && !loading && !error && (
         <Empty
           description={t('appDetail.ai.empty')}
-          image={<RobotOutlined style={{ fontSize: 48, color: '#1677ff' }} />}
+          image={<RobotOutlined style={{ fontSize: 48, color: token.colorPrimary }} />}
         >
           <Tooltip title={isAdmin ? undefined : t('appDetail.ai.adminOnly')}>
             <Button type="primary" icon={<RobotOutlined />} onClick={runAnalysis} disabled={!isAdmin}>{t('appDetail.ai.start')}</Button>
@@ -86,7 +88,7 @@ function AiAnalysisTab({ appId }: { appId: string }) {
                   title={t('appDetail.ai.stat.successRate')}
                   value={report.stats.avgSuccessRate}
                   suffix="%"
-                  styles={{ content: { color: report.stats.avgSuccessRate >= 90 ? '#3f8600' : report.stats.avgSuccessRate >= 70 ? '#d48806' : '#cf1322' } }}
+                  styles={{ content: { color: report.stats.avgSuccessRate >= 90 ? token.colorSuccess : report.stats.avgSuccessRate >= 70 ? token.colorWarning : token.colorError } }}
                 />
               </Card>
             </Col>

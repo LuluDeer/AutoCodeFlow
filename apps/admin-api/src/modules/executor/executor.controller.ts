@@ -43,6 +43,10 @@ import axios from "axios";
 import { PaginationDto } from "../../common/dto/pagination.dto";
 // PK-19: pull 端点请求体 Swagger 文档 DTO（运行时 @Body() 仍为内联类型）。
 import { ExecutorPullDto } from "./dto/executor-pull.dto";
+// PK-03（DEEP_REVIEW 0ef3bbe）: register/heartbeat 请求体具名 DTO（文档型，
+// 运行时 @Body() 仍为内联类型——避免 forbidNonWhitelisted 误杀 executor 协议字段）。
+import { ExecutorRegisterDto } from "./dto/executor-register.dto";
+import { ExecutorHeartbeatDto } from "./dto/executor-heartbeat.dto";
 import { verifyExecutorToken } from "../../common/utils/verify-executor-token.util";
 import { assertSafeExecutorUrl } from "../../common/utils/safe-http.util";
 // EXE-VER-1: heartbeat 响应回显版本合规态（EXECUTOR_MIN_VERSION）
@@ -103,17 +107,10 @@ export class ExecutorController {
     description:
       "Called when executor starts to register with admin. Requires shared token for auth.",
   })
+  // PK-03（DEEP_REVIEW 0ef3bbe）: 从 example-only 改为具名 DTO $ref。
   @ApiBody({
     description: "Registration info",
-    schema: {
-      example: {
-        address: "192.168.1.100:3002",
-        appName: "executor-node",
-        groupName: "production",
-        tags: ["nodejs", "prod"],
-        description: "Production Node.js executor",
-      },
-    },
+    type: ExecutorRegisterDto,
   })
   @ApiResponse({
     status: 200,
@@ -210,16 +207,10 @@ export class ExecutorController {
     description:
       "Executor calls this periodically to report status including CPU, memory, and running task count.",
   })
+  // PK-03（DEEP_REVIEW 0ef3bbe）: 从 example-only 改为具名 DTO $ref。
   @ApiBody({
     description: "Heartbeat data",
-    schema: {
-      example: {
-        address: "192.168.1.100:3002",
-        cpuUsage: 45.5,
-        memUsage: 62.3,
-        runningTaskCount: 3,
-      },
-    },
+    type: ExecutorHeartbeatDto,
   })
   @ApiResponse({ status: 200, description: "Heartbeat updated" })
   @ApiResponse({ status: 401, description: "Invalid executor token" })

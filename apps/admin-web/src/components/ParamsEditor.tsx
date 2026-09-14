@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Button, Input, Space, Typography, Tooltip } from 'antd';
+import { Button, Input, Space, Typography, Tooltip, theme } from 'antd';
 import { PlusOutlined, DeleteOutlined, InfoCircleOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import '../i18n';
@@ -28,6 +28,8 @@ interface ParamsEditorProps {
  */
 export default function ParamsEditor({ value, onChange }: ParamsEditorProps) {
   const { t } = useTranslation();
+  // F-15（DEEP_REVIEW 0ef3bbe）：三级图标色走 antd token，暗色主题自适应。
+  const { token } = theme.useToken();
 
   const toRows = (v?: Record<string, string>): ParamRow[] =>
     v ? Object.entries(v).map(([key, val]) => ({ key, value: String(val) })) : [];
@@ -114,7 +116,7 @@ export default function ParamsEditor({ value, onChange }: ParamsEditorProps) {
         {t('paramsEditor.add')}
       </Button>
       <Tooltip title={t('paramsEditor.tooltip')}>
-        <InfoCircleOutlined style={{ marginLeft: 8, color: '#8c8c8c', fontSize: 12 }} />
+        <InfoCircleOutlined style={{ marginLeft: 8, color: token.colorTextTertiary, fontSize: 12 }} />
       </Tooltip>
     </div>
   );

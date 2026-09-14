@@ -16,25 +16,19 @@
  *   空转（invalidate 已即时刷新，轮询 refetch 在 staleTime 内被去重），
  *   断线时轮询自动成为唯一新鲜度来源。
  */
-import { useQueryClient } from '@tanstack/react-query';
-import { useEffect, useRef, useState } from 'react';
+import { QueryClientContext } from '@tanstack/react-query';
+import { useContext, useEffect, useState } from 'react';
 
 import { getApiBaseUrl } from '../api/client';
-import { buildSseUrl } from '../api/sse';
+import { createSseClient, sseReconnectBackoffMs } from '../api/sse-client';
 import { useAuthStore } from '../store/auth';
 import { invalidateExecutionData } from '../api/queries';
 
 export type ExecutionsStreamStatus = 'connecting' | 'live' | 'reconnecting';
 
-/** 重连退避节奏：3s 起步，每次翻倍，封顶 30s（纯函数导出可测） */
-export function executionsReconnectBackoffMs(
-  attempt: number,
-  base = 3_000,
-  cap = 30_000,
-): number {
-  const ms = base * 2 ** Math.max(0, attempt);
-  return Math.min(ms, cap);
-}
+// F-08（DEEP_REVIEW 0ef3bbe）：退避收敛到 api/sse-client.ts；此处 re-export
+// 仅保留既有测试锚定（原函数签名 executionsReconnectBackoffMs 不变）。
+export const executionsReconnectBackoffMs = sseReconnectBackoffMs;
 
 /** 执行终态事件名（与 admin-api DOMAIN_EVENTS 对齐，SSE event 名即事件名） */
 export const EXECUTION_TERMINAL_EVENTS = [
@@ -67,68 +61,37 @@ interface UseExecutionsStreamOptions {
 export function useExecutionsStream({
   enabled = true,
 }: UseExecutionsStreamOptions = {}): ExecutionsStreamStatus {
-  const queryClient = useQueryClient();
+  // F-09（DEEP_REVIEW 0ef3bbe）：useContext(QueryClientContext) 替代 useQueryClient()——
+  // 无 Provider 时返回 undefined 不 throw；下方 enabled/空值守卫保证不写缓存。
+  const queryClient = useContext(QueryClientContext);
   const token = useAuthStore((s) => s.token);
   const [status, setStatus] = useState<ExecutionsStreamStatus>('connecting');
-  const attemptRef = useRef(0);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     // jsdom/旧环境无 EventSource（测试裸渲染页面时）静默降级为纯轮询——
-    // 与 useExecutorLive 的 canStream 探测同语义，页面测试无需逐个 stub。
-    if (!enabled || typeof EventSource === 'undefined') {
+    // createSseClient 内部已做 EventSource 可用性检测。
+    if (!enabled || !queryClient) {
       setStatus('connecting');
       return;
     }
 
-    let closed = false;
-    let es: EventSource | null = null;
-
-    const connect = () => {
-      if (closed) return;
-      setStatus(attemptRef.current === 0 ? 'connecting' : 'reconnecting');
-      const base = getApiBaseUrl().replace(/\/$/, '');
-      // F-05（DEEP_REVIEW 0ef3bbe）：token 注入统一走 buildSseUrl（含安全取舍注释）
-      const url = buildSseUrl(base, '/executions/stream', token);
-      es = new EventSource(url);
-
-      es.onopen = () => {
-        attemptRef.current = 0;
-        setStatus('live');
-      };
-
-      // 具名事件帧：三个终态事件共用同一消费动作（invalidate 列表+汇总面）
-      const onTerminalEvent = () => {
-        void invalidateExecutionData(queryClient);
-      };
-      for (const name of EXECUTION_TERMINAL_EVENTS) {
-        es.addEventListener(name, onTerminalEvent);
-      }
-
-      const handleError = () => {
-        es?.close();
-        es = null;
-        if (closed) return;
-        // 退避重建：attempt 递增，成功 onopen 后归零
-        const delay = executionsReconnectBackoffMs(attemptRef.current);
-        attemptRef.current += 1;
-        setStatus('reconnecting');
-        timerRef.current = setTimeout(connect, delay);
-      };
-      es.onerror = handleError;
+    // 具名事件帧：三个终态事件共用同一消费动作（invalidate 列表+汇总面）
+    const onTerminalEvent = () => {
+      void invalidateExecutionData(queryClient);
     };
+    const events = Object.fromEntries(
+      EXECUTION_TERMINAL_EVENTS.map((name) => [name, onTerminalEvent]),
+    );
 
-    connect();
+    const client = createSseClient({
+      baseUrl: getApiBaseUrl(),
+      path: '/executions/stream',
+      token,
+      onStatus: setStatus,
+      events,
+    });
 
-    return () => {
-      closed = true;
-      if (timerRef.current) {
-        clearTimeout(timerRef.current);
-        timerRef.current = null;
-      }
-      es?.close();
-      es = null;
-    };
+    return () => client.close();
   }, [enabled, token, queryClient]);
 
   return status;

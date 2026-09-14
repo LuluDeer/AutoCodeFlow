@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Card, Table, Tag, Button, Space, Typography, Row, Col, Statistic, Modal, message } from 'antd';
+import { Card, Table, Tag, Button, Space, Typography, Row, Col, Statistic, Modal, message, theme } from 'antd';
 import { useTranslation } from 'react-i18next';
 import '../i18n';
 import { TaskExecution } from '../api/tasks';
@@ -47,6 +47,8 @@ interface ExecutionCompareModalProps {
  */
 export function ExecutionCompareModal({ open, onClose, executions, compareIds }: ExecutionCompareModalProps) {
   const { t } = useTranslation();
+  // F-15（DEEP_REVIEW 0ef3bbe）：状态语义色走 antd token，暗色主题自适应。
+  const { token } = theme.useToken();
   const selectedExecutions = executions.filter(e => compareIds.includes(e.id));
   if (selectedExecutions.length === 0) return null;
 
@@ -108,7 +110,7 @@ export function ExecutionCompareModal({ open, onClose, executions, compareIds }:
               <Statistic
                 title={t('execCompare.stat.status')}
                 value={exec.status}
-                styles={{ content: { color: exec.status === 'success' ? '#3f8600' : exec.status === 'failed' ? '#cf1322' : '#1890ff', fontSize: 16 } }}
+                styles={{ content: { color: exec.status === 'success' ? token.colorSuccess : exec.status === 'failed' ? token.colorError : token.colorPrimary, fontSize: 16 } }}
               />
               <Statistic title={t('execCompare.stat.duration')} value={exec.duration ?? 0} suffix="ms" />
             </Card>

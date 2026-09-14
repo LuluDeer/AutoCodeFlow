@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Table, Button, Input, Select, Space, Tag, Tooltip, Modal, Form,
-  Upload, Checkbox, Alert, Typography, message, Badge, Card,
+  Upload, Checkbox, Alert, Typography, message, Badge, Card, theme,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import {
@@ -47,6 +47,8 @@ function fmtBytes(b?: number) {
 
 export default function ExecutorPackagesPage() {
   const { t } = useTranslation();
+  // F-15（DEEP_REVIEW 0ef3bbe）：浅填充走 antd token，暗色主题自适应。
+  const { token } = theme.useToken();
   const statusTags = STATUS_TAG(t);
   const [rows, setRows] = useState<PkgRow[]>([]);
   const [total, setTotal] = useState(0);
@@ -371,7 +373,7 @@ export default function ExecutorPackagesPage() {
               {t('execPkg.push.pushAll', { count: onlineExecutors.length })}
             </Checkbox>
             {!pushAll && (
-              <Card size="small" style={{ background: '#fafafa' }}>
+              <Card size="small" style={{ background: token.colorFillQuaternary }}>
                 <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 8 }}>
                   {t('execPkg.push.selectTarget')}
                 </Text>

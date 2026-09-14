@@ -12,12 +12,16 @@ NC='\033[0m' # No Color
 
 # 配置变量
 REDIS_PORT=6380
-REDIS_CONF="/home/yongsheng/project/AutoCodeFlow/config/redis/autoflow-redis.conf"
-REDIS_DATA_DIR="/var/lib/redis/autoflow"
-REDIS_LOG_DIR="/var/log/redis"
-API_DIR="/home/yongsheng/project/AutoCodeFlow/apps/admin-api"
-WEB_DIR="/home/yongsheng/project/AutoCodeFlow/apps/admin-web"
-ENV_FILE="/home/yongsheng/project/AutoCodeFlow/.env.isolated"
+# E-16（DEEP_REVIEW 0ef3bbe）：移除硬编码开发者家目录绝对路径。
+# 项目内路径统一由本脚本所在目录反推（脚本位于 <root>/scripts/），
+# 保证在任意机器/任意 checkout 位置都能运行。
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+REDIS_CONF="${PROJECT_ROOT}/config/redis/autoflow-redis.conf"
+REDIS_DATA_DIR="${PROJECT_ROOT}/data/redis"
+API_DIR="${PROJECT_ROOT}/apps/admin-api"
+WEB_DIR="${PROJECT_ROOT}/apps/admin-web"
+ENV_FILE="${PROJECT_ROOT}/.env.isolated"
 
 print_banner() {
     echo -e "${GREEN}"
@@ -60,11 +64,9 @@ check_deps() {
 setup_redis() {
     echo -e "${YELLOW}==> 配置隔离 Redis...${NC}"
     
-    # 创建数据目录
-    sudo mkdir -p "$REDIS_DATA_DIR"
-    sudo mkdir -p "$REDIS_LOG_DIR"
-    sudo chown -R redis:redis "$REDIS_DATA_DIR"
-    sudo chown -R redis:redis "$REDIS_LOG_DIR"
+    # 创建数据目录（项目本地目录，无需 sudo / redis 系统用户）
+    # E-16（DEEP_REVIEW 0ef3bbe）：原系统级数据目录 + sudo chown 改为项目内 data/redis
+    mkdir -p "$REDIS_DATA_DIR"
     
     # 检查端口是否被占用
     if lsof -Pi :$REDIS_PORT -sTCP:LISTEN -t >/dev/null ; then
@@ -74,8 +76,10 @@ setup_redis() {
     fi
     
     # 启动隔离的 Redis 实例
+    # E-16（DEEP_REVIEW 0ef3bbe）：在子 shell 内 cd 到项目根，使 redis conf 中的相对
+    # dir/logfile/pidfile（./data/redis/...）按项目根解析，不再依赖硬编码绝对路径。
     echo -e "${GREEN}启动隔离 Redis 服务 (端口: $REDIS_PORT)...${NC}"
-    redis-server "$REDIS_CONF" &
+    ( cd "$PROJECT_ROOT" && exec redis-server "$REDIS_CONF" ) &
     REDIS_PID=$!
     echo $REDIS_PID > /tmp/autoflow-redis.pid
     
