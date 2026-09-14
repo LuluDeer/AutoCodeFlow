@@ -41,6 +41,11 @@ if (!window.matchMedia) {
   })) as unknown as typeof window.matchMedia;
 }
 
+// NotificationSettingsPage 是重量级页面（antd + 多 Tab + Query），首个用例需承担
+// 一次性初始化（本机实测 ~2s，紧贴 vitest 默认 5s 上限，并发/CI 2 核下必假红：
+// 表现为 Exceeded timeout 而非断言失败）。本文件统一给足预算。
+vi.setConfig({ testTimeout: 20_000 });
+
 const channelsFixture = [
   { key: 'email', name: '邮件', enabled: true, config: {}, description: 'SMTP 邮件通知' },
 ];
