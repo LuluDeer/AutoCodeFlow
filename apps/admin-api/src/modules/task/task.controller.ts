@@ -50,6 +50,7 @@ import { LOG_LEVEL_VALUES, type LogLevel } from "./log-level.util";
 // src/config/throttle-profiles.ts 头注）。
 import { SkipThrottle, Throttle } from "@nestjs/throttler";
 import { OPS_THROTTLE } from "../../config/throttle-profiles";
+import { WriteGuard } from "../../common/decorators/write-guard.decorator";
 
 /**
  * OBS-03: level 查询参数的运行态兜底归一化（HTTP 边界已由全局
@@ -76,6 +77,7 @@ export class TaskController {
     private readonly audit: AuditService,
   ) {}
 
+  @WriteGuard("task", { scope: "authenticated" })
   @Post()
   @ApiOperation({
     summary: "Create task",
@@ -175,6 +177,7 @@ export class TaskController {
   // 已标记 deprecated——两套实现调用同一 TaskService 方法、同 body/响应/审计，
   // 无逻辑漂移；待前端/SDK 全量切换后删除 deprecated 控制器。
   @Throttle({ default: OPS_THROTTLE })
+  @WriteGuard("task", { scope: "ownership" })
   @Post("batch/trigger")
   @ApiOperation({
     summary: "Batch trigger tasks",
@@ -217,6 +220,7 @@ export class TaskController {
   // pause/resume/delete 同为「触发/执行干预写面」，SEC-09 分域矩阵归中档 30/min，
   // 此前三端点漏挂导致批量写面脱离限流窗口。
   @Throttle({ default: OPS_THROTTLE })
+  @WriteGuard("task", { scope: "ownership" })
   @Post("batch/pause")
   @ApiOperation({
     summary: "Batch pause tasks",
@@ -257,6 +261,7 @@ export class TaskController {
 
   // R-17（DEEP_REVIEW 0ef3bbe）: 同 batch/pause——批量 resume 补 OPS_THROTTLE 分域限流。
   @Throttle({ default: OPS_THROTTLE })
+  @WriteGuard("task", { scope: "ownership" })
   @Post("batch/resume")
   @ApiOperation({
     summary: "Batch resume tasks",
@@ -297,6 +302,7 @@ export class TaskController {
 
   // R-17（DEEP_REVIEW 0ef3bbe）: 同 batch/pause——批量 delete 补 OPS_THROTTLE 分域限流。
   @Throttle({ default: OPS_THROTTLE })
+  @WriteGuard("task", { scope: "ownership" })
   @Post("batch/delete")
   @ApiOperation({
     summary: "Batch delete tasks",
@@ -416,6 +422,7 @@ export class TaskController {
     return this.taskService.getExecutionStats(id);
   }
 
+  @WriteGuard("task", { scope: "ownership" })
   @Post(":id/suggest-schedule")
   @ApiOperation({
     summary: "AI schedule suggestion",
@@ -439,6 +446,7 @@ export class TaskController {
     return this.taskService.findOne(id);
   }
 
+  @WriteGuard("task", { scope: "ownership" })
   @Patch(":id")
   @ApiOperation({
     summary: "Update task",
@@ -466,6 +474,7 @@ export class TaskController {
     return result;
   }
 
+  @WriteGuard("task", { scope: "ownership" })
   @Put(":id/glue")
   @ApiOperation({
     summary: "Update GLUE script",
@@ -505,6 +514,7 @@ export class TaskController {
     return result;
   }
 
+  @WriteGuard("task", { scope: "ownership" })
   @Delete(":id")
   @ApiOperation({
     summary: "Delete task",
@@ -533,6 +543,7 @@ export class TaskController {
 
   // SEC-09: 中档限流（触发/执行干预写面，OPS_THROTTLE 默认 30/min）
   @Throttle({ default: OPS_THROTTLE })
+  @WriteGuard("task", { scope: "ownership" })
   @Post(":id/trigger")
   @ApiOperation({
     summary: "Manual trigger",
@@ -756,6 +767,7 @@ export class TaskController {
   // 快照回滚）语义不同——本端点回滚到指定 gitCommit（**代码版本**），仅 Git 类任务。
   // 两端点语义对照表见 docs/rollback-semantics.md。
   @Throttle({ default: OPS_THROTTLE })
+  @WriteGuard("task", { scope: "ownership" })
   @Post(":id/rollback")
   @ApiOperation({
     summary: "Git rollback (by commit SHA)",
@@ -803,6 +815,7 @@ export class TaskController {
   // 语义不同——本端点回滚到指定任务配置**快照**（历史版本），不动仓库代码。
   // 两端点语义对照表见 docs/rollback-semantics.md。
   @Throttle({ default: OPS_THROTTLE })
+  @WriteGuard("task", { scope: "ownership" })
   @Post(":id/versions/:versionId/rollback")
   @ApiOperation({
     summary: "Version rollback (by task config snapshot)",
@@ -877,6 +890,7 @@ export class TaskController {
 
   // SEC-09: 中档限流（触发/执行干预写面，OPS_THROTTLE 默认 30/min）
   @Throttle({ default: OPS_THROTTLE })
+  @WriteGuard("task", { scope: "ownership" })
   @Post(":id/pause")
   @ApiOperation({
     summary: "Pause task",
@@ -906,6 +920,7 @@ export class TaskController {
 
   // SEC-09: 中档限流（触发/执行干预写面，OPS_THROTTLE 默认 30/min）
   @Throttle({ default: OPS_THROTTLE })
+  @WriteGuard("task", { scope: "ownership" })
   @Post(":id/resume")
   @ApiOperation({
     summary: "Resume task",
@@ -932,6 +947,7 @@ export class TaskController {
     return result;
   }
 
+  @WriteGuard("task", { scope: "ownership" })
   @Post(":id/executions/:execId/analyze")
   @ApiOperation({
     summary: "AI analyze execution",
@@ -962,6 +978,7 @@ export class TaskController {
 
   // SEC-09: 中档限流（触发/执行干预写面，OPS_THROTTLE 默认 30/min）
   @Throttle({ default: OPS_THROTTLE })
+  @WriteGuard("task", { scope: "ownership" })
   @Post(":id/executions/:execId/kill")
   @ApiOperation({
     summary: "Cancel execution",

@@ -20,6 +20,7 @@ import { CreateTaskTemplateDto } from "./dto/create-task-template.dto";
 // PK-19: instantiate 覆盖体 Swagger 文档 DTO（运行时 @Body() 仍为 Record<string, unknown>）。
 import { InstantiateTaskOverlayDto } from "./dto/instantiate-task-overlay.dto";
 import { TaskTemplate } from "./entities/task-template.entity";
+import { WriteGuard } from "../../common/decorators/write-guard.decorator";
 
 /**
  * CORE-03：任务模板端点（管理台，全部走全局 JwtAuthGuard）。
@@ -69,6 +70,7 @@ export class TaskTemplateController {
     return this.svc.findOne(id);
   }
 
+  @WriteGuard("task-template", { scope: "authenticated" })
   @Post()
   @ApiOperation({
     summary: "Create a custom task template",
@@ -87,6 +89,7 @@ export class TaskTemplateController {
     return this.svc.create(dto);
   }
 
+  @WriteGuard("task-template", { scope: "authenticated" })
   @Post(":id/instantiate")
   @ApiOperation({
     summary: "Create a runnable task from a template (one-click clone)",
@@ -116,6 +119,7 @@ export class TaskTemplateController {
     return this.svc.instantiate(id, body ?? {});
   }
 
+  @WriteGuard("task-template", { scope: "authenticated" })
   @Delete(":id")
   @ApiOperation({
     summary: "Delete a custom task template",
