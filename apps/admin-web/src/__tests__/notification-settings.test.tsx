@@ -16,6 +16,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, within, waitFor } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import NotificationSettingsPage from '../pages/NotificationSettingsPage';
 import { client } from '../api/client';
 
@@ -68,6 +69,16 @@ afterEach(() => {
   cleanup();
 });
 
+// F-16（DEEP_REVIEW 0ef3bbe）：ChannelConfigForm 迁 useMutation，页面需包 Provider。
+function renderPage() {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <NotificationSettingsPage />
+    </QueryClientProvider>,
+  );
+}
+
 const getDingInput = () =>
   screen.getByPlaceholderText(DING_PLACEHOLDER) as HTMLInputElement;
 const getWecomInput = () =>
@@ -81,7 +92,7 @@ const getSaveBtn = (pane: HTMLElement) => {
 
 describe('通知设置页多渠道表单隔离（W1）', () => {
   it('≥2 渠道启用时同名字段各自独立；A 渠道保存不携带 B 渠道字段（精确 payload）', async () => {
-    render(<NotificationSettingsPage />);
+    renderPage();
 
     // 依次访问两个启用渠道使面板挂载，分别填写同名字段 webhookUrl
     fireEvent.click(await screen.findByRole('tab', { name: /钉钉/ }));
@@ -115,7 +126,7 @@ describe('通知设置页多渠道表单隔离（W1）', () => {
   });
 
   it('切 Tab 不清空其它渠道已填值（旧实现 resetFields 会串清所有渠道）', async () => {
-    render(<NotificationSettingsPage />);
+    renderPage();
 
     // 填钉钉 → 切企微 → 填企微 → 来回切换，双方值均保留
     fireEvent.click(await screen.findByRole('tab', { name: /钉钉/ }));
@@ -137,7 +148,7 @@ describe('通知设置页多渠道表单隔离（W1）', () => {
   });
 
   it('禁用渠道不渲染配置表单（仅提示）', async () => {
-    render(<NotificationSettingsPage />);
+    renderPage();
 
     // 访问禁用的 email 渠道：只显示禁用提示，无配置输入（SMTP Host）与保存按钮
     fireEvent.click(await screen.findByRole('tab', { name: /邮件/ }));

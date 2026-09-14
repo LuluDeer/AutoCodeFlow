@@ -32,7 +32,7 @@ class ErrorBoundaryBase extends React.Component<Props, State> {
       if (this.props.fallback) return this.props.fallback;
       return (
         <Result
-          icon={<BugOutlined style={{ color: '#ff4d4f' }} />}
+          icon={<BugOutlined />}
           status="error"
           title={t('errorBoundary.title')}
           subTitle={

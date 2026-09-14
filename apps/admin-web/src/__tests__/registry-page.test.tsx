@@ -10,6 +10,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, act, waitFor } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import RegistryPage from '../pages/RegistryPage';
 import { registryApi } from '../api/registry';
 
@@ -63,7 +64,13 @@ afterEach(() => {
 });
 
 function renderPage() {
-  return render(<RegistryPage />);
+  // F-16（DEEP_REVIEW 0ef3bbe）：页面主栈迁 TanStack Query，测试需包 QueryClientProvider。
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <RegistryPage />
+    </QueryClientProvider>,
+  );
 }
 
 describe('RegistryPage PyPI Tab（QA-03 第二阶段）', () => {

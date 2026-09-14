@@ -165,6 +165,39 @@ describe("TaskProcessor", () => {
     expect(live.failureReason).toBe(ExecutionFailureReason.UNKNOWN);
   });
 
+  // R-13（DEEP_REVIEW 0ef3bbe）: finally 里 connect()/startTransaction() 此前在
+  // try 外——失败时 queryRunner 从不 release（连接泄漏），且抛出的新异常会替换
+  // 触发 finally 的原始 dispatch 错误。钉住：connect 失败仍 release 连接，且原始
+  // 错误（而非 connect 错误）向上抛出。
+  it("R-13: connect() failure releases the connection and preserves the original error", async () => {
+    executorService.dispatch.mockRejectedValue(new Error("dispatch failed"));
+    const qr = {
+      connect: jest.fn().mockRejectedValue(new Error("connect failed")),
+      startTransaction: jest.fn(),
+      commitTransaction: jest.fn(),
+      rollbackTransaction: jest.fn(),
+      release: jest.fn().mockResolvedValue(undefined),
+      manager: {
+        createQueryBuilder: jest.fn(() => ({
+          update: jest.fn().mockReturnThis(),
+          set: jest.fn().mockReturnThis(),
+          where: jest.fn().mockReturnThis(),
+          andWhere: jest.fn().mockReturnThis(),
+          execute: jest.fn().mockResolvedValue({ affected: 1 }),
+        })),
+      },
+    };
+    dataSource.createQueryRunner.mockReturnValue(qr as any);
+
+    // 原始 dispatch 错误必须仍是向上抛出的异常——不能被 "connect failed" 替换
+    await expect(
+      processor.handle({ data: { executionId: "exec-1" } } as any),
+    ).rejects.toThrow("dispatch failed");
+    // 连接被释放（无泄漏）；connect 在 startTransaction 之前就失败
+    expect(qr.release).toHaveBeenCalled();
+    expect(qr.startTransaction).not.toHaveBeenCalled();
+  });
+
   it("classifies dispatch failures before callback", async () => {
     executorService.dispatch.mockRejectedValue(
       new Error("npm install failed: dependency unavailable"),

@@ -53,15 +53,19 @@ echo -e "${YELLOW}等待基础设施启动...${NC}"
 sleep 15
 
 # 检查 PostgreSQL 是否就绪
+# E-17（DEEP_REVIEW 0ef3bbe）：勿硬编码容器名。compose 项目名默认取目录名（AutoCodeFlow
+# → autocodeflow-*），容器名随 project 推导；这里按 service 名动态解析容器，新环境不再卡死。
 echo -e "${YELLOW}检查 PostgreSQL...${NC}"
-if ! docker exec autoflow-postgres-1 pg_isready -U autoflow; then
+POSTGRES_CONTAINER="$(docker-compose -f docker-compose.yml ps -q postgres)"
+if ! docker exec "$POSTGRES_CONTAINER" pg_isready -U autoflow; then
     echo -e "${RED}PostgreSQL 未就绪，请检查日志${NC}"
     exit 1
 fi
 
 # 检查 Redis 是否就绪
 echo -e "${YELLOW}检查 Redis...${NC}"
-if ! docker exec autoflow-redis-1 redis-cli ping | grep -q PONG; then
+REDIS_CONTAINER="$(docker-compose -f docker-compose.yml ps -q redis)"
+if ! docker exec "$REDIS_CONTAINER" redis-cli ping | grep -q PONG; then
     echo -e "${RED}Redis 未就绪，请检查日志${NC}"
     exit 1
 fi

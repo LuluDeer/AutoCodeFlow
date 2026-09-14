@@ -7,7 +7,7 @@
  * 依赖扇出语义（上游全部 SUCCESS）兜底，无需前端排序保证。
  */
 import { useMemo, useState } from 'react';
-import { Button, Empty, Spin, Tag, Typography, Alert, message } from 'antd';
+import { Button, Empty, Spin, Tag, Typography, Alert, message, theme } from 'antd';
 import { useNavigate } from 'react-router-dom';
 import { ThunderboltOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
@@ -24,14 +24,19 @@ const GAP_X = 84;
 const GAP_Y = 18;
 const PAD = 16;
 
-const STATUS_COLOR: Record<string, string> = {
-  active: '#52c41a',
-  paused: '#faad14',
-  deleted: '#bfbfbf',
-};
+// F-15（DEEP_REVIEW 0ef3bbe）：状态点色改由 antd token 提供（双主题自适应）。
+type AntdToken = ReturnType<typeof theme.useToken>['token'];
+function statusColor(n: DagNode['status'], token: AntdToken): string {
+  if (n === 'active') return token.colorSuccess;
+  if (n === 'paused') return token.colorWarning;
+  if (n === 'deleted') return token.colorTextDisabled;
+  return token.colorTextTertiary;
+}
 
 export default function TaskDependencyGraph({ taskId }: { taskId: string }) {
   const { t } = useTranslation();
+  // F-15（DEEP_REVIEW 0ef3bbe）：连线/节点边框/背景走 antd token，暗色主题自适应。
+  const { token } = theme.useToken();
   const nav = useNavigate();
   const [chainTriggering, setChainTriggering] = useState(false);
   // 名称/状态解析需要全量任务表；useAllTasksForDag 会在后端 pageSize=100
@@ -163,7 +168,7 @@ export default function TaskDependencyGraph({ taskId }: { taskId: string }) {
           {t('depGraph.triggerChain', { count: chainTaskIds.length })}
         </Button>
       </div>
-      <div style={{ overflow: 'auto', border: '1px solid #f0f0f0', borderRadius: 8 }}>
+      <div style={{ overflow: 'auto', border: `1px solid ${token.colorBorderSecondary}`, borderRadius: 8 }}>
         <div style={{ position: 'relative', width, height, minWidth: '100%' }}>
           <svg width={width} height={height} style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}>
             {graph.edges.map((e) => {
@@ -180,7 +185,7 @@ export default function TaskDependencyGraph({ taskId }: { taskId: string }) {
                   key={`${e.from}->${e.to}`}
                   d={`M ${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}`}
                   fill="none"
-                  stroke="#8c8c8c"
+                  stroke={token.colorTextTertiary}
                   strokeWidth={1.5}
                   markerEnd="url(#dag-arrow)"
                 />
@@ -188,7 +193,7 @@ export default function TaskDependencyGraph({ taskId }: { taskId: string }) {
             })}
             <defs>
               <marker id="dag-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
-                <path d="M0,0 L8,4 L0,8 Z" fill="#8c8c8c" />
+                <path d="M0,0 L8,4 L0,8 Z" fill={token.colorTextTertiary} />
               </marker>
             </defs>
           </svg>
@@ -206,8 +211,8 @@ export default function TaskDependencyGraph({ taskId }: { taskId: string }) {
                   height: NODE_H,
                   padding: '6px 10px',
                   borderRadius: 8,
-                  border: n.isCurrent ? '2px solid #1677ff' : '1px solid #d9d9d9',
-                  background: n.isCurrent ? '#e6f4ff' : '#fff',
+                  border: n.isCurrent ? `2px solid ${token.colorPrimary}` : `1px solid ${token.colorBorder}`,
+                  background: n.isCurrent ? token.colorPrimaryBg : token.colorBgContainer,
                   cursor: n.isCurrent ? 'default' : 'pointer',
                   overflow: 'hidden',
                   boxShadow: n.isCurrent ? '0 2px 8px rgba(22,119,255,0.25)' : undefined,
@@ -232,7 +237,7 @@ export default function TaskDependencyGraph({ taskId }: { taskId: string }) {
                       height: 8,
                       borderRadius: '50%',
                       flexShrink: 0,
-                      background: STATUS_COLOR[n.status] ?? '#8c8c8c',
+                      background: statusColor(n.status, token),
                     }}
                   />
                   <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{n.name}</span>

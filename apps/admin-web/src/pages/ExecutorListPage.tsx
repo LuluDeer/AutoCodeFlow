@@ -1,7 +1,7 @@
 import { useState, useMemo, useRef, useEffect } from 'react';
 import {
   Table, Typography, Badge, Tag, Button, Input, Select, Space,
-  Empty, Modal, notification, Progress, Tooltip, Alert,
+  Empty, Modal, notification, Progress, Tooltip, Alert, theme,
 } from 'antd';
 import {
   SearchOutlined, FilterOutlined, ClockCircleOutlined, PlusCircleOutlined,
@@ -25,16 +25,20 @@ import { useExecutorLive } from '../hooks/useExecutorLive';
 import '../i18n';
 
 type TFunc = (k: string, opts?: Record<string, unknown>) => string;
-function heartbeatLabel(t: TFunc, lastHeartbeat: string): { text: string; color: string } {
+// F-15（DEEP_REVIEW 0ef3bbe）：心跳语义色走 antd token（双主题自适应）。
+type AntdToken = ReturnType<typeof theme.useToken>['token'];
+function heartbeatLabel(t: TFunc, lastHeartbeat: string, token: AntdToken): { text: string; color: string } {
   const diffMs = Date.now() - new Date(lastHeartbeat).getTime();
   const diffMin = diffMs / 60000;
-  if (diffMin < 2) return { color: '#52c41a', text: t('execList.hb.justNow') };
-  if (diffMin < 10) return { color: '#faad14', text: t('execList.hb.minAgo', { min: Math.floor(diffMin) }) };
-  return { color: '#ff4d4f', text: new Date(lastHeartbeat).toLocaleString('zh-CN') };
+  if (diffMin < 2) return { color: token.colorSuccess, text: t('execList.hb.justNow') };
+  if (diffMin < 10) return { color: token.colorWarning, text: t('execList.hb.minAgo', { min: Math.floor(diffMin) }) };
+  return { color: token.colorError, text: new Date(lastHeartbeat).toLocaleString('zh-CN') };
 }
 
 export default function ExecutorListPage() {
   const { t } = useTranslation();
+  // F-15（DEEP_REVIEW 0ef3bbe）：语义色/填充走 antd token，暗色主题自适应。
+  const { token } = theme.useToken();
   const prevStatusMap = useRef<Record<string, string>>({});
   const isFirstLoad = useRef(true);
   const [notifApi, notifContextHolder] = notification.useNotification();
@@ -147,7 +151,7 @@ export default function ExecutorListPage() {
       render: (_: unknown, r: Executor) => (
         <Space orientation="vertical" size={0}>
           <Space>
-            <DesktopOutlined style={{ color: r.status === 'online' ? '#52c41a' : '#d9d9d9' }} />
+            <DesktopOutlined style={{ color: r.status === 'online' ? token.colorSuccess : token.colorBorder }} />
             <Typography.Text strong>{r.appName}</Typography.Text>
           </Space>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>{r.address}</Typography.Text>
@@ -218,7 +222,7 @@ export default function ExecutorListPage() {
                 <Progress
                   percent={val}
                   size="small" showInfo={false}
-                  strokeColor={val > 80 ? '#ff4d4f' : val > 60 ? '#fa8c16' : '#52c41a'}
+                  strokeColor={val > 80 ? token.colorError : val > 60 ? token.colorWarning : token.colorSuccess}
                   style={{ width: 56, margin: 0 }}
                 />
                 <Typography.Text style={{ fontSize: 11 }}>{val.toFixed(0)}%</Typography.Text>
@@ -237,7 +241,7 @@ export default function ExecutorListPage() {
         const max = r.maxConcurrentTasks;
         const label = max != null ? t('execList.tasks.both', { running, max }) : t('execList.tasks.only', { running });
         return (
-          <Typography.Text strong style={{ color: running > 0 ? '#1677ff' : undefined }}>
+          <Typography.Text strong style={{ color: running > 0 ? token.colorPrimary : undefined }}>
             {label}
           </Typography.Text>
         );
@@ -250,7 +254,7 @@ export default function ExecutorListPage() {
       width: 120,
       render: (v: string) => {
         if (!v) return '-';
-        const hb = heartbeatLabel(t, v);
+        const hb = heartbeatLabel(t, v, token);
         return (
           <Tooltip title={new Date(v).toLocaleString('zh-CN')}>
             <Space size={4}>
@@ -422,7 +426,7 @@ export default function ExecutorListPage() {
               <Typography.Text strong>{t('execList.installRun')}</Typography.Text>
               <Typography.Paragraph
                 code copyable={{ text: installCmd.cmd }}
-                style={{ marginTop: 8, padding: '8px 12px', background: '#f5f5f5', borderRadius: 6 }}
+                style={{ marginTop: 8, padding: '8px 12px', background: token.colorFillQuaternary, borderRadius: 6 }}
               >
                 {installCmd.cmd}
               </Typography.Paragraph>

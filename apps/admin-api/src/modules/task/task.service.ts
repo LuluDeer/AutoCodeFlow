@@ -1981,6 +1981,22 @@ export class TaskService {
           continue;
         }
 
+        // R-06（DEEP_REVIEW 0ef3bbe）: 广播执行的槽位释放。广播 dispatch 对
+        // 每个目标执行器 runningTaskCount +1（executor.service.dispatchBroadcast），
+        // 但广播执行的 executorAddress 恒为 null（task.processor 仅非广播落库），
+        // 下方 winner 分支的 releaseExecutorSlot(winnerAddress) 对 null 早退 no-op。
+        // 这里按任务 executeMode 权威判定广播，随后无论本回调是 winner 还是重复回调
+        // （affected=0），都按 cb.executorAddress 释放该执行器自己的那一个坑——
+        // N 个被接受执行器各回调一次，恰好 -N。非广播执行不走此分支，单播释放
+        // 语义（winner-once）不变。
+        let isBroadcast = false;
+        if (!execution.executorAddress && execution.taskId) {
+          const taskRow = await this.taskRepo.findOne({
+            where: { id: execution.taskId },
+          });
+          isBroadcast = taskRow?.executeMode === "broadcast";
+        }
+
         // P1: atomic terminal transition — the update only lands while the
         // execution is still pending/running, making duplicate callbacks and
         // races with the worker's finally-save harmless. Slot release and log
@@ -2051,6 +2067,13 @@ export class TaskService {
             where: { id: cb.executionId },
           });
           if (fresh) await this.persistCallbackLogsIfMissing(fresh, cb);
+          // R-06（DEEP_REVIEW 0ef3bbe）: 广播场景下，其余 N-1 个被接受执行器的
+          // 回调会落到这里（首个回调已把执行行终态化）。它们各占一坑，必须按各自
+          // cb.executorAddress 释放——不能因「已终态」而漏掉。非广播执行此分支
+          // 保持零释放（winner 已释放一次）。
+          if (isBroadcast && cb.executorAddress) {
+            await this.releaseExecutorSlot(cb.executorAddress);
+          }
           // 可观测性补齐：重复回调（已终态）业务分类计数；终态结果不计数——
           // 执行结果 series 只在唯一 winner 的 UPDATE 命中处记录。
           recordRuntime("autoflow_callback_business_total", {
@@ -2081,6 +2104,12 @@ export class TaskService {
         // failure); exactly once thanks to the conditional update above.
         // 改动4: 优先用 RETURNING 的库中实际地址，快照兜底。
         await this.releaseExecutorSlot(winnerAddress);
+        // R-06（DEEP_REVIEW 0ef3bbe）: 广播执行的 winnerAddress 恒为 null（上方
+        // no-op），本执行器自己占的坑改按其上报地址释放；非广播执行 winnerAddress
+        // 已释放，这里跳过。
+        if (isBroadcast && cb.executorAddress) {
+          await this.releaseExecutorSlot(cb.executorAddress);
+        }
 
         // ARCH-21（原「改动1」解耦）：终态事件发布——旧的 FAILED/TIMEOUT
         // 直调告警改为 execution.failed（notification 模块监听器复刻等价

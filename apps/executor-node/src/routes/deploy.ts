@@ -194,6 +194,9 @@ function startApp(
 
   // Stream logs to file
   const logFile = path.join(deployDir, 'app.log');
+  // E-12: append-only app.log 此前无上限无限增长。启动新进程前，若旧 app.log
+  // 已超阈值则轮转（app.log → .1 → .2 → .3，最旧丢弃），本轮从干净的 app.log 起写。
+  rotateAppLogIfNeeded(logFile);
   const logStream = fs.createWriteStream(logFile, { flags: 'a' });
   logStream.on('error', (err) => {
     logger.warn(`[deploy] Failed to write app log for ${deploymentId}: ${err.message}`);
@@ -325,6 +328,106 @@ function readCurrentTarget(currentLink: string): string | null {
 function removePathIfExists(target: string): void {
   if (fs.existsSync(target)) {
     fs.rmSync(target, { recursive: true, force: true });
+  }
+}
+
+// E-12（DEEP_REVIEW 0ef3bbe）: 应用部署的 releases 历史与 app.log 永不回收。
+// 每次升级都新增 apps/<appId>/releases/<version>-<deploymentId>/（含完整
+// node_modules/venv），工作目录清理又把 'apps' 整体列入保护名单，旧 release 与
+// daemon 的 app.log 都无任何回收路径，磁盘无界增长。下面补 retention：
+//   · releases 目录保留「current 指向项 + 最近 keepCount-1 个（按 mtime）」，其余删；
+//   · app.log 超大小阈值时按 .1/.2/.3 轮转（保留 keep 份历史）。
+const KEEP_RELEASES = 5;
+const APP_LOG_MAX_BYTES = 50 * 1024 * 1024; // 50MB
+const APP_LOG_KEEP = 3;
+
+/**
+ * Prune a deployment's `releases/` history: keep the symlink target that
+ * `current` points at (the live release) plus the `keepCount-1` newest other
+ * releases by mtime; delete everything else. Returns the removed absolute dirs.
+ * Best-effort: any scan/delete failure is logged, never throws.
+ */
+export function pruneOldReleases(
+  releasesDir: string,
+  currentLink: string,
+  keepCount: number = KEEP_RELEASES,
+): string[] {
+  const removed: string[] = [];
+  try {
+    if (!fs.existsSync(releasesDir)) return removed;
+    // current 指向项的目录名（releaseKey）——无论如何不删。
+    const currentTarget = readCurrentTarget(currentLink);
+    const currentBase = currentTarget ? path.basename(currentTarget) : null;
+
+    const entries = fs.readdirSync(releasesDir, { withFileTypes: true });
+    const dirs = entries
+      .filter((e) => e.isDirectory())
+      .map((e) => {
+        const full = path.join(releasesDir, e.name);
+        let mtime = 0;
+        try {
+          mtime = fs.statSync(full).mtimeMs;
+        } catch {
+          mtime = 0;
+        }
+        return { name: e.name, full, mtime };
+      })
+      .sort((a, b) => b.mtime - a.mtime); // newest first
+
+    // 保留集合：current + 最新 (keepCount-1) 个，合计 keepCount 个。
+    const survivors = new Set<string>(currentBase ? [currentBase] : []);
+    for (const d of dirs) {
+      if (survivors.size >= keepCount) break;
+      survivors.add(d.name);
+    }
+
+    for (const d of dirs) {
+      if (survivors.has(d.name)) continue;
+      try {
+        fs.rmSync(d.full, { recursive: true, force: true });
+        removed.push(d.full);
+      } catch (err: any) {
+        logger.warn(`[deploy] retention: failed to remove old release ${d.full}: ${err.message}`);
+      }
+    }
+  } catch (err: any) {
+    logger.warn(`[deploy] retention scan failed for ${releasesDir}: ${err.message}`);
+  }
+  return removed;
+}
+
+/**
+ * Rotate an append-only app.log when it exceeds `maxBytes`: app.log → .1,
+ * .1 → .2, …, oldest kept backup dropped. Called at app start (before the
+ * new append stream opens), so a fresh cycle starts each deploy/restart.
+ * Returns true when a rotation happened. Best-effort, never throws.
+ */
+export function rotateAppLogIfNeeded(
+  logFile: string,
+  maxBytes: number = APP_LOG_MAX_BYTES,
+  keep: number = APP_LOG_KEEP,
+): boolean {
+  try {
+    if (!fs.existsSync(logFile)) return false;
+    const stat = fs.statSync(logFile);
+    if (stat.size < maxBytes) return false;
+    // i=keep..1：把 .(i-1) 推到 .i（i=1 时 src 即 app.log 本身）。
+    for (let i = keep; i >= 1; i--) {
+      const src = i === 1 ? logFile : `${logFile}.${i - 1}`;
+      const dst = `${logFile}.${i}`;
+      try {
+        if (fs.existsSync(src)) {
+          removePathIfExists(dst);
+          fs.renameSync(src, dst);
+        }
+      } catch (err: any) {
+        logger.warn(`[deploy] log rotate: failed ${src} -> ${dst}: ${err.message}`);
+      }
+    }
+    return true;
+  } catch (err: any) {
+    logger.warn(`[deploy] log rotate check failed for ${logFile}: ${err.message}`);
+    return false;
   }
 }
 
@@ -579,6 +682,13 @@ deployRouter.post('/deploy', async (req: Request, res: Response) => {
       switchCurrentRelease(paths.currentLink, paths.finalReleaseDir);
       switchedCurrent = true;
       logger.info(`[deploy] Current release for ${appName} now points to ${paths.releaseKey}`);
+
+      // E-12: 发布成功后回收旧 releases 历史（保留 current + 最近 N 个），
+      // 避免磁盘随每次升级无界增长。best-effort，失败不影响本次发布。
+      const pruned = pruneOldReleases(paths.releasesDir, paths.currentLink);
+      if (pruned.length > 0) {
+        logger.info(`[deploy] retention: pruned ${pruned.length} old release(s) for ${appName}`);
+      }
 
       // Start app if runMode is daemon or once
       // Pick a sensible default entrypoint based on runtime when none was specified

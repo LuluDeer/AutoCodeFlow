@@ -2855,7 +2855,19 @@ export interface components {
             role: "admin" | "user";
         };
         Object: Record<string, never>;
-        UpdateUserDto: Record<string, never>;
+        UpdateUserDto: {
+            /** @example admin */
+            username?: string;
+            /** @example admin@example.com */
+            email?: string;
+            /** @description At least 8 chars, must include uppercase, lowercase, number, and special character */
+            password?: string;
+            /**
+             * @default user
+             * @enum {string}
+             */
+            role: "admin" | "user";
+        };
         MaintenanceWindowDto: {
             /**
              * @description 窗口开启 Cron（5 字段：分 时 日 月 周）
@@ -2948,7 +2960,84 @@ export interface components {
             /** @description FEAT-11: markdown runbook — troubleshooting knowledge shown on the task detail page and attached to failure notifications/alerts. */
             runbook?: string;
         };
-        UpdateTaskDto: Record<string, never>;
+        UpdateTaskDto: {
+            id?: string;
+            name?: string;
+            description?: string;
+            status?: string;
+            triggerType?: string;
+            cronExpression?: string;
+            /** @description IANA timezone for cron schedules, e.g. Asia/Shanghai */
+            timezone?: string;
+            fixedRate?: number;
+            /** @description Task-level maintenance windows: scheduled triggers falling inside a window are skipped (manual/API triggers unaffected). Each entry {start, end, description?} with 5-field crons; the window opens at the latest start-cron touch and closes at the latest end-cron touch. Max 10 entries. */
+            maintenanceWindows?: components["schemas"]["MaintenanceWindowDto"][];
+            runtime?: string;
+            runtimeVersion?: string;
+            /** @description Dependency specs installed by the executor before the task runs — pip requirements (python runtime, per-task uv venv) or npm packages (node runtime). Ignored by glue-script tasks. Example: ["requests>=2.31", "rich==13.7.1"] */
+            requirements?: string[];
+            /**
+             * @description Upstream task dependency map: { taskId: taskName }
+             * @example {
+             *       "uuid-of-task-a": "task-a-name"
+             *     }
+             */
+            dependencies?: {
+                [key: string]: string;
+            };
+            entrypoint?: string;
+            gitRepo?: string;
+            gitBranch?: string;
+            gitCommit?: string;
+            currentVersion?: string;
+            /** @description Task execution timeout in seconds (legacy field; prefer timeoutSeconds). 0 = no limit; bounded to the executor's 1..86400 window (executor-node rejects larger values with 400 on every attempt). */
+            timeout?: number;
+            /** @description Task execution timeout in seconds. 0 = no limit; bounded to the executor's 1..86400 window (normalized to `timeout`, which executor-node rejects above 86400 with 400). */
+            timeoutSeconds?: number;
+            /**
+             * @description CORE-04: what happens when the task times out. kill (default) = executor tree-kills the process (existing behavior); kill_retry = also kill, but admin re-enqueues a fresh execution using the task's retry budget; notify_only = admin sends the timeout alert and issues no extra kill command (the executor's own hard timeout still applies). Omit on PATCH to keep the current value; explicit null resets to kill.
+             * @enum {string}
+             */
+            timeoutAction?: "kill" | "kill_retry" | "notify_only";
+            /** @description CORE-04: timeout warning threshold as a percentage of the timeout (integer 0-90). A single WARNING notification is sent once the running time reaches timeout × ratio/100 (at most once per execution). Omit/null = disabled. */
+            timeoutWarnRatio?: number;
+            maxRetry?: number;
+            retryDelay?: number;
+            /** @description CORE-05: estimated execution duration in seconds (0 or omitted = unknown). Used only by scheduler-side executor load scoring (longer estimates penalize busy executors more); never consumed by the execution chain (heartbeat/timeout/stats). Explicit null on PATCH resets to unknown. */
+            estimatedDurationSec?: number;
+            retryableErrors?: string[];
+            priority?: number;
+            executeMode?: string;
+            blockStrategy?: string;
+            misfireStrategy?: string;
+            alarmEmail?: string;
+            alarmChannels?: string[];
+            params?: Record<string, never>;
+            /**
+             * @description Task-level secrets (credential key/value pairs, stored encrypted at rest with AES-256-GCM when SEC_SECRETS_KEY is configured; plaintext fallback with a warning otherwise). Read paths are always masked. Dispatched to the executor env as AUTOFLOW_<KEY> merged over params.
+             * @example {
+             *       "API_TOKEN": "sk-live-...",
+             *       "DB_PASSWORD": "hunter2"
+             *     }
+             */
+            secrets?: {
+                [key: string]: string;
+            };
+            executorAppName?: string;
+            executorGroup?: string;
+            executorTags?: string[];
+            /** @description NF-04: executor affinity tags (OR semantics — an executor holding ANY of these tags is an eligible candidate; loadScore then picks within the matched set). In broadcast mode the fan-out narrows to executors matching the affinity tags. Orthogonal to executorTags (hard AND-subset capability requirement). PATCH: omit = keep; explicit null/[] = clear. */
+            executorAffinityTags?: string[];
+            /** @description NF-04: executor anti-affinity tags (exclusion semantics — an executor holding ANY of these tags is excluded). Applies to both single and broadcast dispatch; combined with affinity tags the matched set is filtered further. PATCH: omit = keep; explicit null/[] = clear. */
+            executorAntiAffinityTags?: string[];
+            /** @description Pin the task to a specific executor: dispatch targets ONLY this executor (bypasses group/tags filtering); fails fast if it is offline. Mutually exclusive with executeMode=broadcast. */
+            executorId?: string;
+            glueSource?: string;
+            glueLanguage?: string;
+            applicationId?: string;
+            /** @description FEAT-11: markdown runbook — troubleshooting knowledge shown on the task detail page and attached to failure notifications/alerts. */
+            runbook?: string;
+        };
         TriggerTaskDto: {
             params?: Record<string, never>;
         };
@@ -2998,6 +3087,163 @@ export interface components {
             durationMs?: number;
             /** @description FEAT-05: execution artifacts manifest (best-effort, max 20 entries). File bytes are uploaded separately via the artifact upload endpoint; the manifest is persisted to task_executions.artifacts on the terminal callback. */
             artifacts?: components["schemas"]["ArtifactManifestItemDto"][];
+        };
+        ExecutorRegisterDto: {
+            /**
+             * @description Executor application name
+             * @example executor-node
+             */
+            appName: string;
+            /**
+             * @description Executor registration address
+             * @example 192.168.1.100:3002
+             */
+            address: string;
+            /**
+             * @description Executor type
+             * @example node
+             */
+            type?: string;
+            /**
+             * @description Executor version
+             * @example 1.0.0
+             */
+            version?: string;
+            /**
+             * @description Declared capabilities
+             * @example [
+             *       "docker",
+             *       "shell"
+             *     ]
+             */
+            capabilities?: string[];
+            /**
+             * @description Declared runtime environments
+             * @example [
+             *       "nodejs",
+             *       "python3"
+             *     ]
+             */
+            runtime?: string[];
+            /**
+             * @description Max concurrent tasks
+             * @example 10
+             */
+            maxConcurrentTasks?: number;
+            /**
+             * @description Max concurrent (legacy alias)
+             * @example 10
+             */
+            maxConcurrent?: number;
+            /**
+             * @description Executor group name
+             * @example production
+             */
+            groupName?: string | null;
+            /**
+             * @description Executor tags
+             * @example [
+             *       "nodejs",
+             *       "prod"
+             *     ]
+             */
+            tags?: string[] | null;
+            /**
+             * @description Executor description
+             * @example Production Node.js executor
+             */
+            description?: string | null;
+            /**
+             * @description Restart timestamp (ISO 8601)
+             * @example 2026-09-14T08:00:00.000Z
+             */
+            restartedAt?: string | null;
+            /**
+             * @description Startup ID (process life identifier for idempotent re-registration)
+             * @example uuid-of-this-executor-process-life
+             */
+            startupId?: string | null;
+            /**
+             * @description Dispatch mode ('push' | 'pull'; defaults to push)
+             * @example pull
+             * @enum {string}
+             */
+            dispatchMode?: "push" | "pull";
+        };
+        ExecutorHeartbeatDto: {
+            /**
+             * @description Executor registration address
+             * @example 192.168.1.100:3002
+             */
+            address: string;
+            /**
+             * @description CPU usage percentage
+             * @example 45.5
+             */
+            cpuUsage?: number;
+            /**
+             * @description Memory usage percentage
+             * @example 62.3
+             */
+            memUsage?: number;
+            /**
+             * @description Disk usage percentage
+             * @example 70
+             */
+            diskUsage?: number;
+            /**
+             * @description Network latency in ms
+             * @example 2
+             */
+            networkLatency?: number;
+            /**
+             * @description Number of currently running tasks
+             * @example 3
+             */
+            runningTaskCount?: number;
+            /**
+             * @description Total tasks executed
+             * @example 150
+             */
+            totalTaskCount?: number;
+            /**
+             * @description Number of failed tasks
+             * @example 5
+             */
+            failedTaskCount?: number;
+            /**
+             * @description Restart timestamp (ISO 8601)
+             * @example 2026-09-14T08:00:00.000Z
+             */
+            restartedAt?: string | null;
+            /**
+             * @description Startup ID (process life identifier)
+             * @example uuid-of-this-executor-process-life
+             */
+            startupId?: string | null;
+            /**
+             * @description CONSISTENCY-02: Currently running execution IDs
+             * @example [
+             *       "exec-uuid-1",
+             *       "exec-uuid-2"
+             *     ]
+             */
+            runningExecutionIds?: string[];
+            /**
+             * @description Dead letter count
+             * @example 0
+             */
+            deadLetterCount?: number;
+            /**
+             * @description E9: Updated max concurrent tasks (hot-updated capacity)
+             * @example 10
+             */
+            maxConcurrentTasks?: number;
+            /**
+             * @description EXE-VER-1: Executor version (for min-version gate echo, not persisted)
+             * @example 1.0.0
+             */
+            version?: string;
         };
         ExecutorPullDto: {
             /**
@@ -3155,13 +3401,54 @@ export interface components {
              * @example node
              */
             runtime: string;
+            gitRepo?: string;
+            gitBranch?: string;
+            gitCommit?: string;
+            manifest?: Record<string, never>;
+            env?: Record<string, never>;
+            entrypoint?: string;
+            packageUrl?: string;
             /**
              * @description DEP-04: require second-person approval before new deployments dispatch
              * @default false
              */
             approvalRequired: boolean;
         };
-        UpdateApplicationDto: Record<string, never>;
+        UpdateApplicationDto: {
+            /** @description Unique application name */
+            name?: string;
+            /** @description Application description */
+            description?: string;
+            /**
+             * @description Application version number
+             * @example 1.0.0
+             */
+            version?: string;
+            /**
+             * @description Runtime type
+             * @example node
+             */
+            runtime?: string;
+            gitRepo?: string;
+            gitBranch?: string;
+            gitCommit?: string;
+            manifest?: Record<string, never>;
+            env?: Record<string, never>;
+            entrypoint?: string;
+            packageUrl?: string;
+            /**
+             * @description DEP-04: require second-person approval before new deployments dispatch
+             * @default false
+             */
+            approvalRequired: boolean;
+            /**
+             * @description Application status
+             * @enum {string}
+             */
+            status?: "active" | "deploying" | "failed";
+            /** @description HMAC-SHA256 secret for webhook signature verification. Set to empty string to disable. */
+            webhookSecret?: string;
+        };
         AppReleaseWebhookDto: {
             /** @description Application name */
             appName: string;
@@ -3210,7 +3497,32 @@ export interface components {
             pid?: number;
             message?: string;
         };
-        UpdateExecutorPackageDto: Record<string, never>;
+        UpdateExecutorPackageDto: {
+            /** @description Package name */
+            name?: string;
+            /** @description Package version */
+            version?: string;
+            /**
+             * @description Package type
+             * @enum {string}
+             */
+            type?: "node" | "python" | "universal";
+            /** @description Target platform */
+            platform?: string;
+            /** @description Checksum */
+            checksum?: string;
+            /** @description Package description */
+            description?: string;
+            /** @description File path */
+            filePath?: string;
+            /** @description File size in bytes */
+            fileSize?: number;
+            /**
+             * @description Package status
+             * @enum {string}
+             */
+            status?: "active" | "deprecated" | "uploading";
+        };
         TaskTemplate: Record<string, never>;
         CreateTaskTemplateDto: {
             /**
@@ -3282,10 +3594,36 @@ export interface components {
             secret?: string;
         };
         CreateApiKeyDto: Record<string, never>;
-        CreateProjectDto: Record<string, never>;
-        UpdateProjectDto: Record<string, never>;
-        UpsertProjectMemberDto: Record<string, never>;
-        UpdateProjectMemberDto: Record<string, never>;
+        CreateProjectDto: {
+            /** @description Project name */
+            name: string;
+            /** @description Project description */
+            description?: string;
+        };
+        UpdateProjectDto: {
+            /** @description Project name */
+            name?: string;
+            /** @description Project description */
+            description?: string;
+        };
+        UpsertProjectMemberDto: {
+            /** @description User ID */
+            userId: number;
+            /**
+             * @description Project role
+             * @enum {string}
+             */
+            role: "viewer" | "editor" | "admin";
+        };
+        UpdateProjectMemberDto: {
+            /** @description User ID */
+            userId?: number;
+            /**
+             * @description Project role
+             * @enum {string}
+             */
+            role?: "viewer" | "editor" | "admin";
+        };
     };
     responses: never;
     parameters: never;
@@ -4699,7 +5037,7 @@ export interface operations {
         /** @description Registration info */
         requestBody: {
             content: {
-                "application/json": unknown;
+                "application/json": components["schemas"]["ExecutorRegisterDto"];
             };
         };
         responses: {
@@ -4726,7 +5064,7 @@ export interface operations {
         /** @description Heartbeat data */
         requestBody: {
             content: {
-                "application/json": unknown;
+                "application/json": components["schemas"]["ExecutorHeartbeatDto"];
             };
         };
         responses: {

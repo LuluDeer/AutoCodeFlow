@@ -603,13 +603,14 @@ jobs:
       - run: python -m pytest tests/ --tb=short
         working-directory: apps/registry-pypi
 
-  # ── W-18 drift guard：desktop 跟踪的 ncc bundle 必须与 executor-node 源码同步 ──
-  # resources/executor-node/index.js 是入库产物（desktop extraResources 依赖其
-  # 存在），此前只靠人工"改完 executor-node 记得 build:executor 重打"——W-18
-  # 记的漂移债。本 job 离线重打一次并 git diff：Windows 侧已验证 ncc 产物字节
-  # 确定性（同源码+同参数含 --source-map，输出与已提交文件逐字节一致，禁网
-  # 可跑、输出目录不影响产物），diff 非空即红。npm ci --ignore-scripts 跳过
-  # electron 二进制下载，只取 @vercel/ncc。
+  # ── W-18 / F-19 drift guard：executor-node 源码 ↔ desktop 内嵌 bundle 一致性 ──
+  # F-19（DEEP_REVIEW 0ef3bbe）：resources/executor-node/index.js（约 2.1MB ncc 产物）
+  # 已出库不再入库（.gitignore），仓库只跟踪期望哈希清单
+  # apps/executor-desktop/executor-node-bundle.sha256。本 job 离线 ncc 重打一次，
+  # 把重打产物的 sha256 与清单比对：一致说明源码与内嵌产物同步；不一致即红，提示
+  # 在 apps/executor-desktop 跑 `npm run build:executor` 并回填清单（遵 ADR-005 同 commit）。
+  # ncc 0.44 字节确定性已验证（禁网可跑、输出目录/OS 不影响产物），故跨 OS 可比对。
+  # npm ci --ignore-scripts 跳过 electron 二进制下载，只取 @vercel/ncc。
   desktop-bundle-drift:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -633,14 +634,19 @@ jobs:
         run: |
           ../executor-desktop/node_modules/.bin/ncc build src/main.ts \
             -o ../executor-desktop/resources/executor-node --source-map --no-cache
-      - name: Drift guard — tracked bundle must match source
+      - name: Drift guard — rebuilt bundle sha256 must match committed manifest (F-19)
         run: |
           cd "$GITHUB_WORKSPACE"
-          if ! git diff --quiet -- apps/executor-desktop/resources/executor-node/index.js apps/executor-desktop/resources/executor-node/sourcemap-register.js; then
-            echo "::error::apps/executor-desktop/resources/executor-node is stale — run 'npm run build:executor' in apps/executor-desktop and commit the regenerated bundle (W-18)."
-            git diff --stat -- apps/executor-desktop/resources/
+          BUNDLE="apps/executor-desktop/resources/executor-node/index.js"
+          MANIFEST="apps/executor-desktop/executor-node-bundle.sha256"
+          ACTUAL="$(sha256sum "$BUNDLE" | awk '{print $1}')"
+          EXPECTED="$(grep -v '^#' "$MANIFEST" | awk '{print $1}')"
+          echo "actual=$ACTUAL expected=$EXPECTED"
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "::error::executor-node bundle drift — run 'npm run build:executor' in apps/executor-desktop and commit refreshed apps/executor-desktop/executor-node-bundle.sha256 (F-19 / ADR-005)."
             exit 1
           fi
+          echo "::notice::bundle sha256 matches manifest — executor-node source ↔ desktop embedded bundle in sync."
 
   # ── Windows 兼容基线（R15-3.5 / windows-findings）──────────────
   # R13 全轮在 Windows 复跑并逐条平台化断言后固化的绿灯集合：

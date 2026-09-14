@@ -13,6 +13,7 @@ import {
   Card,
   Row,
   Col,
+  theme,
 } from 'antd';
 import {
   PlusOutlined,
@@ -50,6 +51,8 @@ interface UserWithActive extends User {
 export default function UserManagementPage() {
   const queryClient = useQueryClient();
   const { t } = useTranslation();
+  // F-15（DEEP_REVIEW 0ef3bbe）：占位次要色走 antd token，暗色主题自适应。
+  const { token } = theme.useToken();
   const [searchText, setSearchText] = useState('');
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
@@ -213,7 +216,7 @@ export default function UserManagementPage() {
       key: 'email',
       ellipsis: true,
       render: (text: string) =>
-        text || <span style={{ color: '#bbb' }}>—</span>,
+        text || <span style={{ color: token.colorTextQuaternary }}>—</span>,
     },
     {
       title: t('users.col.role'),

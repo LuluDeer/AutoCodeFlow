@@ -1,4 +1,4 @@
-import { useState, useEffect, memo, type ReactNode } from 'react';
+import { useState, useEffect, useRef, memo, type ReactNode } from 'react';
 import { Layout, Menu, Avatar, Dropdown, Badge, Typography, Space, theme, Button, Breadcrumb, Tooltip } from 'antd';
 import {
   DashboardOutlined,
@@ -201,14 +201,23 @@ export default function MainLayout() {
 
   // R5: 登录响应只含 token，role 需从 GET /auth/profile 补齐。
   // 覆盖两种场景：刚登录（store 里 user 为空）+ 旧 localStorage 会话（user 无 role）。
+  // F-13（DEEP_REVIEW 0ef3bbe）：修复无限请求循环。旧 deps 含整个 `user` 对象，
+  // 而 effect 内 setUser(me) 会让 user 引用变化 → effect 重跑 → 再请求；若
+  // /auth/profile 不返回 role 即死循环。现 deps 只收 `user?.role`（布尔门槛，
+  // setUser 不改 role 就不再触发），并加 in-flight ref 防并发重复请求。
+  const profileInflight = useRef(false);
   useEffect(() => {
-    if (!user?.role) {
-      authApi
-        .me()
-        .then((me) => setUser(me))
-        .catch(() => undefined);
-    }
-  }, [user?.role, setUser, user]);
+    if (user?.role) return;
+    if (profileInflight.current) return;
+    profileInflight.current = true;
+    authApi
+      .me()
+      .then((me) => setUser(me))
+      .catch(() => undefined)
+      .finally(() => {
+        profileInflight.current = false;
+      });
+  }, [user?.role, setUser]);
 
   // F-12: 实时时钟已提取为 <Clock /> 独立 memoized 组件（自管 setInterval），
   // 不再在此处维护 currentTime state，避免每秒重渲整个 Layout。

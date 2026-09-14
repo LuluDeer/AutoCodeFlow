@@ -1,7 +1,7 @@
 import { useState } from 'react';
-import { Card, Form, Input, Switch, Button, Space, message, Tabs, Divider, Tag, Typography, Alert, Checkbox, Popconfirm, Table, Select, InputNumber, Tooltip } from 'antd';
+import { Card, Form, Input, Switch, Button, Space, message, Tabs, Divider, Tag, Typography, Alert, Checkbox, Popconfirm, Table, Select, InputNumber, Tooltip, theme } from 'antd';
 import { CheckCircleFilled, CloseCircleFilled, InfoCircleOutlined } from '@ant-design/icons';
-import { useRequest } from 'ahooks';
+import { useQuery, useMutation } from '@tanstack/react-query';
 import type { ColumnsType } from 'antd/es/table';
 import { client } from '../api/client';
 import { silencesApi, type NotificationSilence, type CreateSilencePayload, type SilenceScope } from '../api/notifications';
@@ -118,8 +118,9 @@ function ChannelTemplatePanel({
     !config.titleTemplate && !config.contentTemplate,
   );
 
-  const { run: saveTemplate, loading: saving } = useRequest(
-    async (values: { titleTemplate?: string; contentTemplate?: string }) => {
+  // F-16（DEEP_REVIEW 0ef3bbe）：ahooks useRequest → useMutation（主栈统一）。
+  const saveTemplateMut = useMutation({
+    mutationFn: async (values: { titleTemplate?: string; contentTemplate?: string }) => {
       // 折叠即视为不使用模板：显式提交空串（后端空串=未配置，走固定拼串）
       await notificationApi.updateChannel(channelKey, {
         config: {
@@ -128,13 +129,12 @@ function ChannelTemplatePanel({
         },
       });
     },
-    // UI-15：模板保存失败反馈（ahooks useRequest manual onError）
-    {
-      manual: true,
-      onSuccess: () => { message.success(t('notif.template.saved')); onSaved(); },
-      onError: (err: unknown) => { message.error(getErrMsg(err, t('notif.template.saveFail'))); },
-    },
-  );
+    onSuccess: () => { message.success(t('notif.template.saved')); onSaved(); },
+    onError: (err: unknown) => { message.error(getErrMsg(err, t('notif.template.saveFail'))); },
+  });
+  const saveTemplate = (values: { titleTemplate?: string; contentTemplate?: string }) =>
+    saveTemplateMut.mutate(values);
+  const saving = saveTemplateMut.isPending;
 
   if (collapsed) {
     return (
@@ -232,34 +232,32 @@ function ChannelConfigForm({
   const [form] = Form.useForm();
   const { t } = useTranslation();
   const [testResult, setTestResult] = useState<TestResult | null>(null);
+  // F-15（DEEP_REVIEW 0ef3bbe）：结果图标语义色走 antd token，暗色主题自适应。
+  const { token } = theme.useToken();
 
-  const { run: updateChannel, loading: updating } = useRequest(
-    async (values: Record<string, string>) => {
+  // F-16（DEEP_REVIEW 0ef3bbe）：useRequest → useMutation（主栈统一）。
+  const updateChannelMut = useMutation({
+    mutationFn: async (values: Record<string, string>) => {
       await notificationApi.updateChannel(channelKey, { config: values });
     },
-    // UI-15：渠道配置保存失败反馈
-    {
-      manual: true,
-      onSuccess: () => { message.success(t('notif.channel.saved')); onSaved(); },
-      onError: (err: unknown) => { message.error(getErrMsg(err, t('notif.channel.saveFail'))); },
-    },
-  );
+    onSuccess: () => { message.success(t('notif.channel.saved')); onSaved(); },
+    onError: (err: unknown) => { message.error(getErrMsg(err, t('notif.channel.saveFail'))); },
+  });
+  const updateChannel = (values: Record<string, string>) => updateChannelMut.mutate(values);
+  const updating = updateChannelMut.isPending;
 
-  const { run: testChannel, loading: testing } = useRequest(
-    async (values: Record<string, string>) => {
+  const testChannelMut = useMutation({
+    mutationFn: async (values: Record<string, string>) => {
       const result = await notificationApi.testChannel(channelKey, values);
       setTestResult({ success: result.success, message: result.message, channel: channelKey });
     },
-    // UI-15：测试请求本身失败（网络/5xx）也要有可见反馈——业务失败
-    // （success=false）走下方 testResult Alert 形态。
-    {
-      manual: true,
-      onError: (err: unknown) => {
-        message.error(getErrMsg(err, t('notif.channel.testFail')));
-        setTestResult({ success: false, message: getErrMsg(err, t('notif.channel.testFail')), channel: channelKey });
-      },
+    onError: (err: unknown) => {
+      message.error(getErrMsg(err, t('notif.channel.testFail')));
+      setTestResult({ success: false, message: getErrMsg(err, t('notif.channel.testFail')), channel: channelKey });
     },
-  );
+  });
+  const testChannel = (values: Record<string, string>) => testChannelMut.mutate(values);
+  const testing = testChannelMut.isPending;
 
   const fields = CHANNEL_CONFIG_FIELDS(t)[channelKey] || [];
 
@@ -311,8 +309,8 @@ function ChannelConfigForm({
               <Alert
                 type={testResult.success ? 'success' : 'error'}
                 icon={testResult.success
-                  ? <CheckCircleFilled style={{ color: '#52c41a' }} />
-                  : <CloseCircleFilled style={{ color: '#ff4d4f' }} />}
+                  ? <CheckCircleFilled style={{ color: token.colorSuccess }} />
+                  : <CloseCircleFilled style={{ color: token.colorError }} />}
                 showIcon
                 title={
                   testResult.success
@@ -368,32 +366,33 @@ function SilenceRulesPanel({ active }: { active: boolean }) {
     return t('notif.silence.remain.min', { m });
   };
 
-  // 仅在「静默规则」Tab 激活时拉取（useRequest ready），避免进入页面即发 ADMIN-only 请求
-  const { data: silences, loading, refresh, error } = useRequest(silencesApi.list, { ready: active });
+  // F-16（DEEP_REVIEW 0ef3bbe）：useRequest(ready) → useQuery({enabled})（主栈统一）。
+  // 仅在「静默规则」Tab 激活时拉取，避免进入页面即发 ADMIN-only 请求。
+  const { data: silences, isLoading: loading, refetch: refresh, error } = useQuery({
+    queryKey: ['notif', 'silences'],
+    queryFn: silencesApi.list,
+    enabled: active,
+  });
 
-  const { run: createRule, loading: creating } = useRequest(
-    async (payload: CreateSilencePayload) => {
+  // F-16：useRequest → useMutation。
+  const createRuleMut = useMutation({
+    mutationFn: async (payload: CreateSilencePayload) => {
       await silencesApi.create(payload);
     },
-    // UI-15：新建失败反馈
-    {
-      manual: true,
-      onSuccess: () => { message.success(t('notif.silence.created')); form.resetFields(); refresh(); },
-      onError: (err: unknown) => { message.error(getErrMsg(err, t('notif.silence.createFail'))); },
-    },
-  );
+    onSuccess: () => { message.success(t('notif.silence.created')); form.resetFields(); refresh(); },
+    onError: (err: unknown) => { message.error(getErrMsg(err, t('notif.silence.createFail'))); },
+  });
+  const createRule = (payload: CreateSilencePayload) => createRuleMut.mutate(payload);
+  const creating = createRuleMut.isPending;
 
-  const { run: removeRule } = useRequest(
-    async (id: string) => {
+  const removeRuleMut = useMutation({
+    mutationFn: async (id: string) => {
       await silencesApi.remove(id);
     },
-    // UI-15：删除失败反馈
-    {
-      manual: true,
-      onSuccess: () => { message.success(t('notif.silence.deleted')); refresh(); },
-      onError: (err: unknown) => { message.error(getErrMsg(err, t('notif.silence.deleteFail'))); },
-    },
-  );
+    onSuccess: () => { message.success(t('notif.silence.deleted')); refresh(); },
+    onError: (err: unknown) => { message.error(getErrMsg(err, t('notif.silence.deleteFail'))); },
+  });
+  const removeRule = (id: string) => removeRuleMut.mutate(id);
 
   const onFinish = (values: {
     scope: SilenceScope;
@@ -518,24 +517,28 @@ export default function NotificationSettingsPage() {
   // 对齐 settings 页 useIsAdmin 先例——不做无谓的 403 请求）
   const user = useAuthStore((s) => s.user);
   const isAdmin = isAdminUser(user);
+  // F-15（DEEP_REVIEW 0ef3bbe）：结果图标语义色走 antd token，暗色主题自适应。
+  const { token } = theme.useToken();
 
-  const { data: channels, loading, refresh, error: channelsError } = useRequest(notificationApi.getChannels);
+  // F-16（DEEP_REVIEW 0ef3bbe）：useRequest → useQuery / useMutation（主栈统一）。
+  const { data: channels, isLoading: loading, refetch: refresh, error: channelsError } = useQuery({
+    queryKey: ['notif', 'channels'],
+    queryFn: notificationApi.getChannels,
+  });
   const channel = channels?.find((c) => c.key === activeTab);
 
-  const { run: sendTest, loading: sending } = useRequest(
-    async (data: { channels: string[]; title: string; content: string }) => {
+  const sendTestMut = useMutation({
+    mutationFn: async (data: { channels: string[]; title: string; content: string }) => {
       const result = await notificationApi.sendTestNotification(data);
       setGlobalTestResult({ success: result.success, message: result.message });
     },
-    // UI-15：测试发送请求本身失败（网络/5xx）也要有可见反馈——业务失败
-    // （success=false）走下方 globalTestResult Alert 形态。
-    {
-      manual: true,
-      onError: (err: unknown) => {
-        setGlobalTestResult({ success: false, message: getErrMsg(err, t('notif.test.fail')) });
-      },
+    onError: (err: unknown) => {
+      setGlobalTestResult({ success: false, message: getErrMsg(err, t('notif.test.fail')) });
     },
-  );
+  });
+  const sendTest = (data: { channels: string[]; title: string; content: string }) =>
+    sendTestMut.mutate(data);
+  const sending = sendTestMut.isPending;
 
   const handleEnableChange = async (enabled: boolean) => {
     try {
@@ -660,8 +663,8 @@ export default function NotificationSettingsPage() {
                 <Alert
                   type={globalTestResult.success ? 'success' : 'error'}
                   icon={globalTestResult.success
-                    ? <CheckCircleFilled style={{ color: '#52c41a' }} />
-                    : <CloseCircleFilled style={{ color: '#ff4d4f' }} />}
+                    ? <CheckCircleFilled style={{ color: token.colorSuccess }} />
+                    : <CloseCircleFilled style={{ color: token.colorError }} />}
                   showIcon
                   title={
                     globalTestResult.success

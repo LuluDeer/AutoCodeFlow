@@ -12,7 +12,7 @@
  * 保留 isAdmin 入参防御（测试断言门控用）。
  */
 import { useState } from 'react';
-import { Alert, Button, Modal, Space, Typography, Tag, message } from 'antd';
+import { Alert, Button, Modal, Space, Typography, Tag, message, theme } from 'antd';
 import { ControlOutlined, KeyOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import type { Executor } from '../../api/executors';
@@ -74,6 +74,8 @@ interface BatchActionBarProps {
 
 export default function BatchActionBar({ selected, isAdmin, onDone }: BatchActionBarProps) {
   const { t } = useTranslation();
+  // F-15（DEEP_REVIEW 0ef3bbe）：浅填充/分隔线走 antd token，暗色主题自适应。
+  const { token } = theme.useToken();
   const [batchLoading, setBatchLoading] = useState(false);
   const [tokenResult, setTokenResult] = useState<BatchSummary | null>(null);
 
@@ -187,7 +189,7 @@ export default function BatchActionBar({ selected, isAdmin, onDone }: BatchActio
         data-testid="executor-batch-bar"
         size={8}
         wrap
-        style={{ marginBottom: 12, padding: '6px 12px', background: '#fafafa', borderRadius: 6 }}
+        style={{ marginBottom: 12, padding: '6px 12px', background: token.colorFillQuaternary, borderRadius: 6 }}
       >
         <Text type="secondary" style={{ fontSize: 12 }}>
           {t('batchAction.selected', { count: selected.length })}
@@ -228,7 +230,7 @@ export default function BatchActionBar({ selected, isAdmin, onDone }: BatchActio
         {tokenResult && (
           <div style={{ maxHeight: 360, overflowY: 'auto' }}>
             {tokenResult.outcomes.map((o) => (
-              <div key={o.executor.id} style={{ padding: '6px 0', borderBottom: '1px solid #f0f0f0' }}>
+              <div key={o.executor.id} style={{ padding: '6px 0', borderBottom: `1px solid ${token.colorBorderSecondary}` }}>
                 <Space>
                   <Text strong>{o.executor.appName}</Text>
                   {o.ok ? (

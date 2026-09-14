@@ -1,4 +1,6 @@
 import { client } from './client';
+// PK-02（DEEP_REVIEW 0ef3bbe）: 改用生成的 DTO 类型，删除 Partial<Task> hack。
+import type { components } from '../types/generated/api-types';
 
 /**
  * FEAT-06: 任务级维护窗口条目（tasks.maintenanceWindows jsonb）。
@@ -348,9 +350,9 @@ export const tasksApi = {
     signal
       ? client.get(`/tasks/${id}`, { signal }) as Promise<Task>
       : client.get(`/tasks/${id}`) as Promise<Task>,
-  create: (data: Partial<Task>) =>
+  create: (data: components["schemas"]["CreateTaskDto"]) =>
     client.post('/tasks', data) as Promise<Task>,
-  update: (id: string, data: Partial<Task>) =>
+  update: (id: string, data: components["schemas"]["UpdateTaskDto"]) =>
     client.patch(`/tasks/${id}`, data) as Promise<Task>,
   delete: (id: string) => client.delete(`/tasks/${id}`),
   trigger: (id: string, params?: Record<string, unknown>) =>

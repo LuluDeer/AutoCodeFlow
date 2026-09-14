@@ -146,6 +146,16 @@ export class AuthService {
       );
     }
 
+    // R-05（DEEP_REVIEW 0ef3bbe）: align with login() — an expired lock must be
+    // cleared BEFORE the password/TOTP check. Without this, a client that reaches
+    // /auth/totp/verify directly (bypassing /auth/login, which already clears
+    // expired locks) keeps loginFailCount stuck at MAX_FAIL, so ONE fresh failure
+    // immediately re-locks for another full window. clearExpiredLock is a
+    // conditional UPDATE that only resets a genuinely expired lock.
+    if (user && user.lockedUntil) {
+      await this.usersService.clearExpiredLock(user.id);
+    }
+
     const passwordOk = await bcrypt.compare(
       dto.password,
       user != null ? user.password : DUMMY_BCRYPT_HASH,

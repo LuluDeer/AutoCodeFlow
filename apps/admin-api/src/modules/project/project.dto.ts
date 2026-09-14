@@ -6,6 +6,7 @@ import {
   MaxLength,
   MinLength,
 } from "class-validator";
+import { ApiProperty, ApiPropertyOptional, PartialType } from "@nestjs/swagger";
 import { PROJECT_ROLES, ProjectRole } from "./entities/project-member.entity";
 
 /**
@@ -13,44 +14,35 @@ import { PROJECT_ROLES, ProjectRole } from "./entities/project-member.entity";
  * （Postgres unique-violation → 409 Conflict，见 ProjectsService.create）。
  */
 export class CreateProjectDto {
+  @ApiProperty({ description: "Project name", minLength: 1, maxLength: 100 })
   @IsString()
   @MinLength(1)
   @MaxLength(100)
   name: string;
 
+  @ApiPropertyOptional({ description: "Project description", maxLength: 500 })
   @IsOptional()
   @IsString()
   @MaxLength(500)
   description?: string;
 }
 
-export class UpdateProjectDto {
-  @IsOptional()
-  @IsString()
-  @MinLength(1)
-  @MaxLength(100)
-  name?: string;
-
-  @IsOptional()
-  @IsString()
-  @MaxLength(500)
-  description?: string;
-}
+// PK-02（DEEP_REVIEW 0ef3bbe）: 手写 Optional 字段改为 PartialType(CreateProjectDto)。
+export class UpdateProjectDto extends PartialType(CreateProjectDto) {}
 
 /** AUTH-02：新增/修改项目成员（role 三档，@IsIn 与实体常量同源防漂移）。 */
 export class UpsertProjectMemberDto {
+  @ApiProperty({ description: "User ID", type: "integer" })
   @IsInt()
   userId: number;
 
+  @ApiProperty({ description: "Project role", enum: PROJECT_ROLES })
   @IsIn(PROJECT_ROLES as unknown as string[])
   role: (typeof PROJECT_ROLES)[number];
 }
 
-/** AUTH-02：仅改角色（成员必须已存在）。 */
-export class UpdateProjectMemberDto {
-  @IsIn(PROJECT_ROLES as unknown as string[])
-  role: (typeof PROJECT_ROLES)[number];
-}
+/** AUTH-02：仅改角色（成员必须已存在）。PK-02: 改用 PartialType(UpsertProjectMemberDto)。 */
+export class UpdateProjectMemberDto extends PartialType(UpsertProjectMemberDto) {}
 
 /**
  * AUTH-02 后续：项目列表行视图（GET /projects 响应）。

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Table, Select, Input, Button, Space, Tag, Typography, Tooltip, Modal, DatePicker, Empty } from 'antd';
+import { Table, Select, Input, Button, Space, Tag, Typography, Tooltip, Modal, DatePicker, Empty, theme } from 'antd';
 import { SearchOutlined, ReloadOutlined, EyeOutlined } from '@ant-design/icons';
 import { useQuery } from '@tanstack/react-query';
 import { client } from '../../api/client';
@@ -35,6 +35,8 @@ const RESULT_LABELS = (t: (k: string) => string): Record<string, string> => ({
 
 export default function AuditLogPage() {
   const { t } = useTranslation();
+  // F-15（DEEP_REVIEW 0ef3bbe）：详情 pre 背景走 antd token，暗色主题自适应。
+  const { token } = theme.useToken();
   const resultLabels = RESULT_LABELS(t);
   const [page, setPage] = useState(1);
   // AUTH-05: 新增 resourceId 精确筛选（与 resource 组成组合筛选）
@@ -224,7 +226,7 @@ export default function AuditLogPage() {
         width={600}
         destroyOnHidden
       >
-        <pre style={{ background: '#f5f5f5', padding: 16, borderRadius: 4, fontSize: 13, overflowX: 'auto' }}>
+        <pre style={{ background: token.colorFillQuaternary, padding: 16, borderRadius: 4, fontSize: 13, overflowX: 'auto' }}>
           {detailModal.data ? JSON.stringify(detailModal.data, null, 2) : ''}
         </pre>
       </Modal>

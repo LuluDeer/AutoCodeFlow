@@ -15,6 +15,7 @@ import {
   Row,
   Col,
   Input,
+  theme,
 } from 'antd';
 import PageHeader from '../components/PageHeader';
 import StateError from '../components/StateError';
@@ -36,6 +37,7 @@ import { useNavigate } from 'react-router-dom';
 import { executorPackagesApi, ExecutorPackage } from '../api/executor-packages';
 import { executorsApi, Executor, InstallCmdResult } from '../api/executors';
 import { getErrMsg } from '../utils/error';
+import { copyText } from '../utils/clipboard';
 import { useTranslation, Trans } from 'react-i18next';
 // UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
 import '../i18n';
@@ -105,9 +107,11 @@ function CodeBlock({ code, label }: { code: string; label: string }) {
 }
 
 function ReqRow({ label, note }: { label: string; note?: string }) {
+  // F-15（DEEP_REVIEW 0ef3bbe）：主色图标走 antd token，暗色主题自适应。
+  const { token } = theme.useToken();
   return (
     <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginBottom: 8 }}>
-      <InfoCircleOutlined style={{ color: '#1677ff', marginTop: 3 }} />
+      <InfoCircleOutlined style={{ color: token.colorPrimary, marginTop: 3 }} />
       <div>
         <Text>{label}</Text>
         {note && <div><Text type="secondary" style={{ fontSize: 12 }}>{note}</Text></div>}
@@ -119,6 +123,8 @@ function ReqRow({ label, note }: { label: string; note?: string }) {
 export default function ExecutorInstallWizardPage() {
   const navigate = useNavigate();
   const { t } = useTranslation();
+  // F-15（DEEP_REVIEW 0ef3bbe）：浅填充/提示/成功色走 antd token，暗色主题自适应。
+  const { token } = theme.useToken();
   const platformLabels = PLATFORM_LABELS(t);
   const typeLabels = TYPE_LABELS(t);
   const [currentStep, setCurrentStep] = useState(0);
@@ -421,7 +427,7 @@ export default function ExecutorInstallWizardPage() {
             {matchedPackage && (
               <Card
                 size="small"
-                style={{ marginTop: 20, background: '#fafafa' }}
+                style={{ marginTop: 20, background: token.colorFillQuaternary }}
                 title={<Text strong>{t('install.matchedTitle', { name: matchedPackage.name })}</Text>}
               >
                 <Row gutter={[16, 8]}>
@@ -491,7 +497,7 @@ export default function ExecutorInstallWizardPage() {
             {t('install.getCmdDesc')}
           </Paragraph>
 
-          <Card size="small" style={{ background: '#fafafa', marginBottom: 20 }}>
+          <Card size="small" style={{ background: token.colorFillQuaternary, marginBottom: 20 }}>
             <Row gutter={16}>
               <Col span={8}>
                 <Text type="secondary">{t('install.package')}</Text>
@@ -518,7 +524,7 @@ export default function ExecutorInstallWizardPage() {
 
           <Card
             size="small"
-            style={{ background: '#fffbe6', border: '1px solid #ffe58f', marginBottom: 20 }}
+            style={{ background: token.colorWarningBg, border: `1px solid ${token.colorWarningBorder}`, marginBottom: 20 }}
             title={<Space><KeyOutlined /><Text strong>{t('install.tokenShared')}</Text></Space>}
           >
             <Paragraph type="secondary" style={{ marginBottom: 12 }}>
@@ -542,9 +548,11 @@ export default function ExecutorInstallWizardPage() {
                   <Button
                     size="small"
                     icon={<CopyOutlined />}
-                    onClick={() => {
-                      navigator.clipboard.writeText(sharedToken);
-                      message.success(t('install.copiedToken'));
+                    onClick={async () => {
+                      // F-18（DEEP_REVIEW 0ef3bbe）：补错误处理——失败不弹成功提示。
+                      const ok = await copyText(sharedToken);
+                      if (ok) message.success(t('install.copiedToken'));
+                      else message.error(t('common.copyFailed'));
                     }}
                   >
                     {t('install.copy')}
@@ -635,9 +643,9 @@ export default function ExecutorInstallWizardPage() {
 
           {polling && !foundExecutor && !pollTimedOut && (
             <div style={{ textAlign: 'center', padding: '40px 0' }}>
-              <Spin size="large" indicator={<SyncOutlined spin style={{ fontSize: 48, color: '#1677ff' }} />} />
-              <div style={{ marginTop: 20, color: '#666', fontSize: 15 }}>{t('install.awaiting')}</div>
-              <div style={{ marginTop: 8, color: '#aaa', fontSize: 13 }}>
+              <Spin size="large" indicator={<SyncOutlined spin style={{ fontSize: 48, color: token.colorPrimary }} />} />
+              <div style={{ marginTop: 20, color: token.colorTextSecondary, fontSize: 15 }}>{t('install.awaiting')}</div>
+              <div style={{ marginTop: 8, color: token.colorTextQuaternary, fontSize: 13 }}>
                 {t('install.elapsed', { seconds: elapsedSeconds })}
               </div>
             </div>
@@ -658,11 +666,11 @@ export default function ExecutorInstallWizardPage() {
                 style={{ marginBottom: 20 }}
               />
 <div style={{ textAlign: 'center', padding: '16px 0' }}>
-                <CheckCircleOutlined style={{ fontSize: 64, color: '#52c41a' }} />
-                <div style={{ marginTop: 12, fontSize: 18, fontWeight: 600, color: '#52c41a' }}>
+                <CheckCircleOutlined style={{ fontSize: 64, color: token.colorSuccess }} />
+                <div style={{ marginTop: 12, fontSize: 18, fontWeight: 600, color: token.colorSuccess }}>
                   {t('install.onlineTitle')}
                 </div>
-                <div style={{ marginTop: 4, color: '#888' }}>
+                <div style={{ marginTop: 4, color: token.colorTextTertiary }}>
                   {foundExecutor.appName} · {foundExecutor.address}
                 </div>
               </div>
@@ -679,7 +687,7 @@ export default function ExecutorInstallWizardPage() {
                 description={t('install.timeoutDesc')}
                 style={{ marginBottom: 20 }}
               />
-              <Card size="small" style={{ background: '#fffbe6', border: '1px solid #ffe58f' }}>
+              <Card size="small" style={{ background: token.colorWarningBg, border: `1px solid ${token.colorWarningBorder}` }}>
                 <Title level={5} style={{ marginTop: 0 }}>{t('install.troubleTitle')}</Title>
                 <ul style={{ paddingLeft: 20, lineHeight: 2, margin: 0 }}>
                   <li>{t('install.trouble1')}</li>

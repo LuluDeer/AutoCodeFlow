@@ -2269,16 +2269,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "example": {
-                  "address": "192.168.1.100:3002",
-                  "appName": "executor-node",
-                  "groupName": "production",
-                  "tags": [
-                    "nodejs",
-                    "prod"
-                  ],
-                  "description": "Production Node.js executor"
-                }
+                "$ref": "#/components/schemas/ExecutorRegisterDto"
               }
             }
           }
@@ -2330,12 +2321,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "example": {
-                  "address": "192.168.1.100:3002",
-                  "cpuUsage": 45.5,
-                  "memUsage": 62.3,
-                  "runningTaskCount": 3
-                }
+                "$ref": "#/components/schemas/ExecutorHeartbeatDto"
               }
             }
           }
@@ -6997,7 +6983,30 @@
       },
       "UpdateUserDto": {
         "type": "object",
-        "properties": {}
+        "properties": {
+          "username": {
+            "type": "string",
+            "example": "admin"
+          },
+          "email": {
+            "type": "string",
+            "example": "admin@example.com"
+          },
+          "password": {
+            "type": "string",
+            "description": "At least 8 chars, must include uppercase, lowercase, number, and special character",
+            "minLength": 8,
+            "maxLength": 128
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "admin",
+              "user"
+            ],
+            "default": "user"
+          }
+        }
       },
       "MaintenanceWindowDto": {
         "type": "object",
@@ -7219,7 +7228,194 @@
       },
       "UpdateTaskDto": {
         "type": "object",
-        "properties": {}
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "triggerType": {
+            "type": "string"
+          },
+          "cronExpression": {
+            "type": "string"
+          },
+          "timezone": {
+            "type": "string",
+            "description": "IANA timezone for cron schedules, e.g. Asia/Shanghai"
+          },
+          "fixedRate": {
+            "type": "number"
+          },
+          "maintenanceWindows": {
+            "description": "Task-level maintenance windows: scheduled triggers falling inside a window are skipped (manual/API triggers unaffected). Each entry {start, end, description?} with 5-field crons; the window opens at the latest start-cron touch and closes at the latest end-cron touch. Max 10 entries.",
+            "maxItems": 10,
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MaintenanceWindowDto"
+            }
+          },
+          "runtime": {
+            "type": "string"
+          },
+          "runtimeVersion": {
+            "type": "string"
+          },
+          "requirements": {
+            "description": "Dependency specs installed by the executor before the task runs — pip requirements (python runtime, per-task uv venv) or npm packages (node runtime). Ignored by glue-script tasks. Example: [\"requests>=2.31\", \"rich==13.7.1\"]",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "dependencies": {
+            "type": "object",
+            "description": "Upstream task dependency map: { taskId: taskName }",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "example": {
+              "uuid-of-task-a": "task-a-name"
+            }
+          },
+          "entrypoint": {
+            "type": "string"
+          },
+          "gitRepo": {
+            "type": "string"
+          },
+          "gitBranch": {
+            "type": "string"
+          },
+          "gitCommit": {
+            "type": "string"
+          },
+          "currentVersion": {
+            "type": "string"
+          },
+          "timeout": {
+            "type": "number",
+            "description": "Task execution timeout in seconds (legacy field; prefer timeoutSeconds). 0 = no limit; bounded to the executor's 1..86400 window (executor-node rejects larger values with 400 on every attempt)."
+          },
+          "timeoutSeconds": {
+            "type": "number",
+            "description": "Task execution timeout in seconds. 0 = no limit; bounded to the executor's 1..86400 window (normalized to `timeout`, which executor-node rejects above 86400 with 400)."
+          },
+          "timeoutAction": {
+            "type": "string",
+            "description": "CORE-04: what happens when the task times out. kill (default) = executor tree-kills the process (existing behavior); kill_retry = also kill, but admin re-enqueues a fresh execution using the task's retry budget; notify_only = admin sends the timeout alert and issues no extra kill command (the executor's own hard timeout still applies). Omit on PATCH to keep the current value; explicit null resets to kill.",
+            "enum": [
+              "kill",
+              "kill_retry",
+              "notify_only"
+            ]
+          },
+          "timeoutWarnRatio": {
+            "type": "number",
+            "description": "CORE-04: timeout warning threshold as a percentage of the timeout (integer 0-90). A single WARNING notification is sent once the running time reaches timeout × ratio/100 (at most once per execution). Omit/null = disabled."
+          },
+          "maxRetry": {
+            "type": "number"
+          },
+          "retryDelay": {
+            "type": "number"
+          },
+          "estimatedDurationSec": {
+            "type": "number",
+            "description": "CORE-05: estimated execution duration in seconds (0 or omitted = unknown). Used only by scheduler-side executor load scoring (longer estimates penalize busy executors more); never consumed by the execution chain (heartbeat/timeout/stats). Explicit null on PATCH resets to unknown."
+          },
+          "retryableErrors": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "priority": {
+            "type": "number"
+          },
+          "executeMode": {
+            "type": "string"
+          },
+          "blockStrategy": {
+            "type": "string"
+          },
+          "misfireStrategy": {
+            "type": "string"
+          },
+          "alarmEmail": {
+            "type": "string"
+          },
+          "alarmChannels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "params": {
+            "type": "object"
+          },
+          "secrets": {
+            "type": "object",
+            "description": "Task-level secrets (credential key/value pairs, stored encrypted at rest with AES-256-GCM when SEC_SECRETS_KEY is configured; plaintext fallback with a warning otherwise). Read paths are always masked. Dispatched to the executor env as AUTOFLOW_<KEY> merged over params.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "example": {
+              "API_TOKEN": "sk-live-...",
+              "DB_PASSWORD": "hunter2"
+            }
+          },
+          "executorAppName": {
+            "type": "string"
+          },
+          "executorGroup": {
+            "type": "string"
+          },
+          "executorTags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "executorAffinityTags": {
+            "description": "NF-04: executor affinity tags (OR semantics — an executor holding ANY of these tags is an eligible candidate; loadScore then picks within the matched set). In broadcast mode the fan-out narrows to executors matching the affinity tags. Orthogonal to executorTags (hard AND-subset capability requirement). PATCH: omit = keep; explicit null/[] = clear.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "executorAntiAffinityTags": {
+            "description": "NF-04: executor anti-affinity tags (exclusion semantics — an executor holding ANY of these tags is excluded). Applies to both single and broadcast dispatch; combined with affinity tags the matched set is filtered further. PATCH: omit = keep; explicit null/[] = clear.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "executorId": {
+            "type": "string",
+            "description": "Pin the task to a specific executor: dispatch targets ONLY this executor (bypasses group/tags filtering); fails fast if it is offline. Mutually exclusive with executeMode=broadcast."
+          },
+          "glueSource": {
+            "type": "string"
+          },
+          "glueLanguage": {
+            "type": "string"
+          },
+          "applicationId": {
+            "type": "string"
+          },
+          "runbook": {
+            "type": "string",
+            "description": "FEAT-11: markdown runbook — troubleshooting knowledge shown on the task detail page and attached to failure notifications/alerts."
+          }
+        }
       },
       "TriggerTaskDto": {
         "type": "object",
@@ -7336,6 +7532,198 @@
         "required": [
           "executionId",
           "status"
+        ]
+      },
+      "ExecutorRegisterDto": {
+        "type": "object",
+        "properties": {
+          "appName": {
+            "type": "string",
+            "description": "Executor application name",
+            "example": "executor-node"
+          },
+          "address": {
+            "type": "string",
+            "description": "Executor registration address",
+            "example": "192.168.1.100:3002"
+          },
+          "type": {
+            "type": "string",
+            "description": "Executor type",
+            "example": "node"
+          },
+          "version": {
+            "type": "string",
+            "description": "Executor version",
+            "example": "1.0.0"
+          },
+          "capabilities": {
+            "description": "Declared capabilities",
+            "example": [
+              "docker",
+              "shell"
+            ],
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "runtime": {
+            "description": "Declared runtime environments",
+            "example": [
+              "nodejs",
+              "python3"
+            ],
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "maxConcurrentTasks": {
+            "type": "number",
+            "description": "Max concurrent tasks",
+            "example": 10
+          },
+          "maxConcurrent": {
+            "type": "number",
+            "description": "Max concurrent (legacy alias)",
+            "example": 10
+          },
+          "groupName": {
+            "type": "string",
+            "description": "Executor group name",
+            "example": "production",
+            "nullable": true
+          },
+          "tags": {
+            "description": "Executor tags",
+            "example": [
+              "nodejs",
+              "prod"
+            ],
+            "nullable": true,
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "description": {
+            "type": "string",
+            "description": "Executor description",
+            "example": "Production Node.js executor",
+            "nullable": true
+          },
+          "restartedAt": {
+            "type": "string",
+            "description": "Restart timestamp (ISO 8601)",
+            "example": "2026-09-14T08:00:00.000Z",
+            "nullable": true
+          },
+          "startupId": {
+            "type": "string",
+            "description": "Startup ID (process life identifier for idempotent re-registration)",
+            "example": "uuid-of-this-executor-process-life",
+            "nullable": true
+          },
+          "dispatchMode": {
+            "type": "string",
+            "description": "Dispatch mode ('push' | 'pull'; defaults to push)",
+            "example": "pull",
+            "enum": [
+              "push",
+              "pull"
+            ]
+          }
+        },
+        "required": [
+          "appName",
+          "address"
+        ]
+      },
+      "ExecutorHeartbeatDto": {
+        "type": "object",
+        "properties": {
+          "address": {
+            "type": "string",
+            "description": "Executor registration address",
+            "example": "192.168.1.100:3002"
+          },
+          "cpuUsage": {
+            "type": "number",
+            "description": "CPU usage percentage",
+            "example": 45.5
+          },
+          "memUsage": {
+            "type": "number",
+            "description": "Memory usage percentage",
+            "example": 62.3
+          },
+          "diskUsage": {
+            "type": "number",
+            "description": "Disk usage percentage",
+            "example": 70
+          },
+          "networkLatency": {
+            "type": "number",
+            "description": "Network latency in ms",
+            "example": 2
+          },
+          "runningTaskCount": {
+            "type": "number",
+            "description": "Number of currently running tasks",
+            "example": 3
+          },
+          "totalTaskCount": {
+            "type": "number",
+            "description": "Total tasks executed",
+            "example": 150
+          },
+          "failedTaskCount": {
+            "type": "number",
+            "description": "Number of failed tasks",
+            "example": 5
+          },
+          "restartedAt": {
+            "type": "string",
+            "description": "Restart timestamp (ISO 8601)",
+            "example": "2026-09-14T08:00:00.000Z",
+            "nullable": true
+          },
+          "startupId": {
+            "type": "string",
+            "description": "Startup ID (process life identifier)",
+            "example": "uuid-of-this-executor-process-life",
+            "nullable": true
+          },
+          "runningExecutionIds": {
+            "description": "CONSISTENCY-02: Currently running execution IDs",
+            "example": [
+              "exec-uuid-1",
+              "exec-uuid-2"
+            ],
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "deadLetterCount": {
+            "type": "number",
+            "description": "Dead letter count",
+            "example": 0
+          },
+          "maxConcurrentTasks": {
+            "type": "number",
+            "description": "E9: Updated max concurrent tasks (hot-updated capacity)",
+            "example": 10
+          },
+          "version": {
+            "type": "string",
+            "description": "EXE-VER-1: Executor version (for min-version gate echo, not persisted)",
+            "example": "1.0.0"
+          }
+        },
+        "required": [
+          "address"
         ]
       },
       "ExecutorPullDto": {
@@ -7623,6 +8011,27 @@
             "description": "Runtime type",
             "example": "node"
           },
+          "gitRepo": {
+            "type": "string"
+          },
+          "gitBranch": {
+            "type": "string"
+          },
+          "gitCommit": {
+            "type": "string"
+          },
+          "manifest": {
+            "type": "object"
+          },
+          "env": {
+            "type": "object"
+          },
+          "entrypoint": {
+            "type": "string"
+          },
+          "packageUrl": {
+            "type": "string"
+          },
           "approvalRequired": {
             "type": "boolean",
             "description": "DEP-04: require second-person approval before new deployments dispatch",
@@ -7637,7 +8046,67 @@
       },
       "UpdateApplicationDto": {
         "type": "object",
-        "properties": {}
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Unique application name",
+            "maxLength": 100
+          },
+          "description": {
+            "type": "string",
+            "description": "Application description"
+          },
+          "version": {
+            "type": "string",
+            "description": "Application version number",
+            "example": "1.0.0"
+          },
+          "runtime": {
+            "type": "string",
+            "description": "Runtime type",
+            "example": "node"
+          },
+          "gitRepo": {
+            "type": "string"
+          },
+          "gitBranch": {
+            "type": "string"
+          },
+          "gitCommit": {
+            "type": "string"
+          },
+          "manifest": {
+            "type": "object"
+          },
+          "env": {
+            "type": "object"
+          },
+          "entrypoint": {
+            "type": "string"
+          },
+          "packageUrl": {
+            "type": "string"
+          },
+          "approvalRequired": {
+            "type": "boolean",
+            "description": "DEP-04: require second-person approval before new deployments dispatch",
+            "default": false
+          },
+          "status": {
+            "type": "string",
+            "description": "Application status",
+            "enum": [
+              "active",
+              "deploying",
+              "failed"
+            ]
+          },
+          "webhookSecret": {
+            "type": "string",
+            "description": "HMAC-SHA256 secret for webhook signature verification. Set to empty string to disable.",
+            "maxLength": 256
+          }
+        }
       },
       "AppReleaseWebhookDto": {
         "type": "object",
@@ -7748,7 +8217,60 @@
       },
       "UpdateExecutorPackageDto": {
         "type": "object",
-        "properties": {}
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Package name",
+            "maxLength": 255
+          },
+          "version": {
+            "type": "string",
+            "description": "Package version",
+            "maxLength": 64
+          },
+          "type": {
+            "type": "string",
+            "description": "Package type",
+            "enum": [
+              "node",
+              "python",
+              "universal"
+            ]
+          },
+          "platform": {
+            "type": "string",
+            "description": "Target platform",
+            "maxLength": 128
+          },
+          "checksum": {
+            "type": "string",
+            "description": "Checksum",
+            "maxLength": 64
+          },
+          "description": {
+            "type": "string",
+            "description": "Package description"
+          },
+          "filePath": {
+            "type": "string",
+            "description": "File path",
+            "maxLength": 1024
+          },
+          "fileSize": {
+            "type": "number",
+            "description": "File size in bytes",
+            "minimum": 0
+          },
+          "status": {
+            "type": "string",
+            "description": "Package status",
+            "enum": [
+              "active",
+              "deprecated",
+              "uploading"
+            ]
+          }
+        }
       },
       "TaskTemplate": {
         "type": "object",
@@ -7877,19 +8399,78 @@
       },
       "CreateProjectDto": {
         "type": "object",
-        "properties": {}
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Project name",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "description": {
+            "type": "string",
+            "description": "Project description",
+            "maxLength": 500
+          }
+        },
+        "required": [
+          "name"
+        ]
       },
       "UpdateProjectDto": {
         "type": "object",
-        "properties": {}
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Project name",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "description": {
+            "type": "string",
+            "description": "Project description",
+            "maxLength": 500
+          }
+        }
       },
       "UpsertProjectMemberDto": {
         "type": "object",
-        "properties": {}
+        "properties": {
+          "userId": {
+            "type": "integer",
+            "description": "User ID"
+          },
+          "role": {
+            "type": "string",
+            "description": "Project role",
+            "enum": [
+              "viewer",
+              "editor",
+              "admin"
+            ]
+          }
+        },
+        "required": [
+          "userId",
+          "role"
+        ]
       },
       "UpdateProjectMemberDto": {
         "type": "object",
-        "properties": {}
+        "properties": {
+          "userId": {
+            "type": "integer",
+            "description": "User ID"
+          },
+          "role": {
+            "type": "string",
+            "description": "Project role",
+            "enum": [
+              "viewer",
+              "editor",
+              "admin"
+            ]
+          }
+        }
       }
     }
   },

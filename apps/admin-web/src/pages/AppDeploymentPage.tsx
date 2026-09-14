@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Table, Button, Tag, Space, Typography, message, Modal, Select,
-  Badge, Tooltip, Alert, Empty, Popconfirm, Form, Progress, Radio, Input,
+  Badge, Tooltip, Alert, Empty, Popconfirm, Form, Progress, Radio, Input, theme,
 } from 'antd';
 import type { BadgeProps } from 'antd';
 import {
@@ -38,6 +38,8 @@ const APPROVAL_CONFIG = (t: (k: string) => string): Record<string, { color: stri
 
 function ExecutorCard({ executor }: { executor: Executor }) {
   const { t } = useTranslation();
+  // F-15（DEEP_REVIEW 0ef3bbe）：次要文字/用量色走 antd token，暗色主题自适应。
+  const { token } = theme.useToken();
   const load = executor.runningTaskCount ?? 0;
   const maxLoad = executor.maxConcurrentTasks ?? 10;
   const loadPercent = Math.min(100, Math.round((load / maxLoad) * 100));
@@ -46,15 +48,15 @@ function ExecutorCard({ executor }: { executor: Executor }) {
       <Badge status={executor.status === 'online' ? 'success' : 'default'} />
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontWeight: 500, fontSize: 13}}>{executor.appName}</div>
-        <div style={{ fontSize: 11, color: '#888' }}>{executor.address}</div>
+        <div style={{ fontSize: 11, color: token.colorTextTertiary }}>{executor.address}</div>
       </div>
       <div style={{ width: 80, textAlign: 'right' }}>
-        <div style={{ fontSize: 11, color: '#888' }}>{t('appDeploy.executor.taskCount', { load, maxLoad })}</div>
+        <div style={{ fontSize: 11, color: token.colorTextTertiary }}>{t('appDeploy.executor.taskCount', { load, maxLoad })}</div>
         <Progress
           percent={loadPercent}
           size="small"
           showInfo={false}
-          strokeColor={loadPercent > 80 ? '#ff4d4f' : loadPercent > 60 ? '#fa8c16' : '#52c41a'}
+          strokeColor={loadPercent > 80 ? token.colorError : loadPercent > 60 ? token.colorWarning : token.colorSuccess}
         />
       </div>
     </div>
@@ -63,6 +65,8 @@ function ExecutorCard({ executor }: { executor: Executor }) {
 
 export default function AppDeploymentPage({ applicationId }: { applicationId: string }) {
   const { t } = useTranslation();
+  // F-15（DEEP_REVIEW 0ef3bbe）：分隔线/浅填充走 antd token，暗色主题自适应。
+  const { token } = theme.useToken();
   const statusConfig = STATUS_CONFIG(t);
   const approvalConfig = APPROVAL_CONFIG(t);
   const [deployments, setDeployments] = useState<AppDeployment[]>([]);
@@ -565,7 +569,7 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
               dropdownRender={(menu) => (
                 <>
                   {availableExecutors.length > 0 && (
-                    <div style={{ padding: '8px 12px', borderBottom: '1px solid #f0f0f0' }}>
+                    <div style={{ padding: '8px 12px', borderBottom: `1px solid ${token.colorBorderSecondary}` }}>
                       <Text type="secondary" style={{ fontSize: 12 }}>{t('appDeploy.executor.availableHeader', { count: availableExecutors.length })}</Text>
                     </div>
                   )}
@@ -583,7 +587,7 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
         </Form>
 
         {availableExecutors.length > 0 && (
-          <div style={{ background: '#f9fafb', borderRadius: 8, padding: 12}}>
+          <div style={{ background: token.colorFillQuaternary, borderRadius: 8, padding: 12}}>
             <Text type="secondary" style={{ fontSize: 12}}>{t('appDeploy.executor.overview')}</Text>
             {availableExecutors.slice(0, 4).map(e => (
               <ExecutorCard key={e.id} executor={e} />

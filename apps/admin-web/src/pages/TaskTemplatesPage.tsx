@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import {
   Card, Row, Col, Typography, Tag, Space, Button, Empty, Popconfirm,
-  message,
+  message, theme,
 } from 'antd';
 import {
   CopyOutlined, DeleteOutlined, FileTextOutlined,
@@ -49,6 +49,8 @@ function configSummary(config: Record<string, unknown>, t: TFn): string {
 
 export default function TaskTemplatesPage() {
   const { t } = useTranslation();
+  // F-15（DEEP_REVIEW 0ef3bbe）：主色图标走 antd token，暗色主题自适应。
+  const { token } = theme.useToken();
   const nav = useNavigate();
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
@@ -114,7 +116,7 @@ export default function TaskTemplatesPage() {
             <Card
               title={
                 <Space>
-                  <FileTextOutlined style={{ color: '#1677ff' }} />
+                  <FileTextOutlined style={{ color: token.colorPrimary }} />
                   <span>{tpl.name}</span>
                 </Space>
               }

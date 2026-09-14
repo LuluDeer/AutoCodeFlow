@@ -2,6 +2,9 @@ import React from 'react';
 import { ConfigProvider, App, theme as antdTheme } from 'antd';
 import type { ThemeConfig } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
+import enUS from 'antd/locale/en_US';
+import { useTranslation } from 'react-i18next';
+import '../i18n';
 import { DESIGN_TOKENS, DARK_TOKENS, LIGHT_TOKENS, FONT_STACKS } from './tokens';
 import {
   useThemeStore,
@@ -78,8 +81,12 @@ export function wireThemeSync(): void {
 /** 主题 Provider 树（main.tsx 与测试共用） */
 export function ThemedProviders({ children }: { children: React.ReactNode }) {
   const resolved = useThemeStore(selectResolvedTheme);
+  // F-14（DEEP_REVIEW 0ef3bbe）：antd 内建文案（Pagination 空态 / DatePicker /
+  // Modal 默认 okText 等）跟随 i18n 语言切换——此前恒 zhCN，英文界面下中外混杂。
+  const { i18n } = useTranslation();
+  const antdLocale = (i18n.language || 'zh').startsWith('en') ? enUS : zhCN;
   return (
-    <ConfigProvider locale={zhCN} theme={buildAntdTheme(resolved)}>
+    <ConfigProvider locale={antdLocale} theme={buildAntdTheme(resolved)}>
       <App>{children}</App>
     </ConfigProvider>
   );

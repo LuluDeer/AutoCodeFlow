@@ -14,6 +14,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import NotificationSettingsPage from '../pages/NotificationSettingsPage';
 import { client } from '../api/client';
 import { silencesApi } from '../api/notifications';
@@ -79,9 +80,19 @@ afterEach(() => {
   cleanup();
 });
 
+// F-16（DEEP_REVIEW 0ef3bbe）：页面主栈迁 TanStack Query，测试需包 QueryClientProvider。
+function renderPage() {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <NotificationSettingsPage />
+    </QueryClientProvider>,
+  );
+}
+
 describe('渠道 Tab 渲染与启停（QA-03）', () => {
   it('渲染渠道 Tab 与启用状态 Tag，禁用渠道面板显示 Alert 提示', async () => {
-    render(<NotificationSettingsPage />);
+renderPage();
     // 邮件 Tab 默认激活（activeTab 初始 'email'）
     expect(await screen.findByText('启用此通知渠道：')).toBeTruthy();
     // Slack Tab 标签带「已禁用」Tag
@@ -94,7 +105,7 @@ describe('渠道 Tab 渲染与启停（QA-03）', () => {
 
   it('关闭邮件渠道开关 → PATCH /notification/channels/email {enabled:false} + 禁用 toast', async () => {
     mockedClient.patch.mockResolvedValue(channelsFixture[0]);
-    render(<NotificationSettingsPage />);
+renderPage();
     await screen.findByText('启用此通知渠道：');
 
     // 当前 enabled=true → 开关为开
@@ -115,7 +126,7 @@ describe('渠道启停与测试发送请求失败（UI-15）', () => {
     mockedClient.patch.mockRejectedValue(
       Object.assign(new Error('bad'), { response: { data: { message: '渠道配置锁定' } } }),
     );
-    render(<NotificationSettingsPage />);
+renderPage();
     await screen.findByText('启用此通知渠道：');
 
     const switches = document.querySelectorAll('button.ant-switch');
@@ -129,7 +140,7 @@ describe('渠道启停与测试发送请求失败（UI-15）', () => {
 
   it('全局测试发送 POST reject → 错误 Alert（UI-15 onError 补齐）', async () => {
     mockedClient.post.mockRejectedValue(new Error('gateway timeout'));
-    render(<NotificationSettingsPage />);
+renderPage();
     await screen.findByText('启用此通知渠道：');
 
     fireEvent.click(screen.getByLabelText('邮件'));
@@ -147,13 +158,13 @@ describe('渠道启停与测试发送请求失败（UI-15）', () => {
 describe('权限渲染（QA-03 / FEAT-01 回归）', () => {
   it('管理员：渲染「静默规则」Tab', async () => {
     mockedSilences.list.mockResolvedValue([]);
-    render(<NotificationSettingsPage />);
+renderPage();
     expect(await screen.findByRole('tab', { name: /静默规则/ })).toBeTruthy();
   });
 
   it('非管理员：不渲染「静默规则」Tab 且不发起 silences 请求', async () => {
     useAuthStore.setState({ user: { id: 2, username: 'dev', role: 'user' } });
-    render(<NotificationSettingsPage />);
+renderPage();
     await screen.findByText('启用此通知渠道：');
     expect(screen.queryByRole('tab', { name: /静默规则/ })).toBeNull();
     expect(mockedSilences.list).not.toHaveBeenCalled();
@@ -162,7 +173,7 @@ describe('权限渲染（QA-03 / FEAT-01 回归）', () => {
 
 describe('全局测试发送（QA-03）', () => {
   it('必填缺失 → 校验拦截，不发起 POST /notification/test', async () => {
-    render(<NotificationSettingsPage />);
+renderPage();
     await screen.findByText('启用此通知渠道：');
 
     fireEvent.click(findBtn(document.body, '发送测试通知')!);
@@ -173,7 +184,7 @@ describe('全局测试发送（QA-03）', () => {
 
   it('发送成功 → POST /notification/test 载荷正确 + 成功 Alert', async () => {
     mockedClient.post.mockResolvedValue({ success: true, message: 'ok' });
-    render(<NotificationSettingsPage />);
+renderPage();
     await screen.findByText('启用此通知渠道：');
 
     // 勾选邮件渠道
@@ -194,7 +205,7 @@ describe('全局测试发送（QA-03）', () => {
 
   it('发送失败 → 错误 Alert 拼接响应 message', async () => {
     mockedClient.post.mockResolvedValue({ success: false, message: 'SMTP 未配置' });
-    render(<NotificationSettingsPage />);
+renderPage();
     await screen.findByText('启用此通知渠道：');
 
     fireEvent.click(screen.getByLabelText('邮件'));
@@ -212,7 +223,7 @@ describe('全局测试发送（QA-03）', () => {
 // ─── FEAT-10: 渠道级消息模板编辑（可折叠 TextArea + 变量说明）────────────────
 describe('FEAT-10 渠道消息模板', () => {
   it('未配置模板时面板折叠态渲染，展开后出现标题/内容模板输入', async () => {
-    render(<NotificationSettingsPage />);
+renderPage();
     await screen.findByText('启用此通知渠道：');
 
     // 折叠态：inner Card 标题 + 提示
@@ -227,7 +238,7 @@ describe('FEAT-10 渠道消息模板', () => {
 
   it('填写模板并保存 → PATCH config 携带 titleTemplate/contentTemplate', async () => {
     mockedClient.patch.mockResolvedValue(channelsFixture[0]);
-    render(<NotificationSettingsPage />);
+renderPage();
     await screen.findByText('启用此通知渠道：');
     fireEvent.click(screen.getByRole('button', { name: '展开' }));
 
@@ -259,7 +270,7 @@ describe('FEAT-10 渠道消息模板', () => {
       }
       return Promise.resolve([]);
     });
-    render(<NotificationSettingsPage />);
+renderPage();
     // fixture 只含钉钉渠道，而页面 activeTab 默认 'email' —— 必须先点击
     // 钉钉 Tab 让面板挂载，否则找不到任何模板输入
     fireEvent.click(await screen.findByRole('tab', { name: /钉钉/ }));
@@ -287,7 +298,7 @@ describe('NF-05 飞书与 webhook 渠道配置面', () => {
 
   it('feishu Tab 渲染 Webhook URL 与加签密钥输入，加签密钥可留空保存', async () => {
     singleChannel({ key: 'feishu', name: 'Feishu', enabled: true, config: {}, description: '飞书自定义机器人' });
-    render(<NotificationSettingsPage />);
+renderPage();
     // fixture 只含飞书渠道，而 activeTab 默认 'email' —— 先点击 Tab 挂载面板
     fireEvent.click(await screen.findByRole('tab', { name: /Feishu/ }));
 
@@ -311,7 +322,7 @@ describe('NF-05 飞书与 webhook 渠道配置面', () => {
 
   it('webhook Tab 渲染 URL 输入（config 形状对齐后端 `{ url }`）', async () => {
     singleChannel({ key: 'webhook', name: 'Webhook', enabled: true, config: {}, description: '通用 HTTP webhook' });
-    render(<NotificationSettingsPage />);
+renderPage();
     fireEvent.click(await screen.findByRole('tab', { name: /Webhook/ }));
 
     const url = (await screen.findByLabelText('URL')) as HTMLInputElement;
@@ -319,7 +330,7 @@ describe('NF-05 飞书与 webhook 渠道配置面', () => {
   });
 
   it('全局测试发送面板出现飞书渠道选项（value=feishu）', async () => {
-    render(<NotificationSettingsPage />);
+renderPage();
     await screen.findByText('启用此通知渠道：');
 
     const feishu = screen.getByLabelText('飞书') as HTMLInputElement;

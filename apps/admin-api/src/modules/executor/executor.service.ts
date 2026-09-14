@@ -1531,6 +1531,27 @@ export class ExecutorService {
       }
     });
 
+    // R-06（DEEP_REVIEW 0ef3bbe）: 广播占坑——此前广播派发对每个目标执行器
+    // 的 runningTaskCount 从不 +1，广播负载对单播容量闸门/负载打分不可见（欠计）。
+    // 此处对每个成功接单（Promise.allSettled fulfilled）的目标执行器原子 +1，
+    // UPDATE 形态与单播 dispatch 占坑同构。广播按定义必须扇出到全部在线执行器，
+    // 因此不复用「runningTaskCount < max」容量闸（不主动拒绝目标），仅把负载计入。
+    // 释放侧：handleCallback 按回调上报地址逐执行器 -1（每个被接受执行器回调
+    // 恰好一次），并有执行器心跳 30s 覆写兜底。
+    const acceptedExecutors = results
+      .map((r, i) => ({ settled: r, executor: candidates[i] }))
+      .filter(({ settled }) => settled.status === "fulfilled");
+    await Promise.all(
+      acceptedExecutors.map(({ executor }) =>
+        this.repo
+          .createQueryBuilder()
+          .update(Executor)
+          .set({ runningTaskCount: () => '"runningTaskCount" + 1' })
+          .where("id = :id", { id: executor.id })
+          .execute(),
+      ),
+    );
+
     if (failures.length > 0) {
       this.logger.warn(
         `Broadcast partially failed for task "${task.name}": ${failures.join("; ")}`,

@@ -253,9 +253,25 @@ export class TaskProcessor extends WorkerHost {
       // BUG-02: Use transaction to ensure atomic state update
       // This prevents inconsistent state if database save fails
       const queryRunner = this.dataSource.createQueryRunner();
-      await queryRunner.connect();
-      await queryRunner.startTransaction();
+      // R-13（DEEP_REVIEW 0ef3bbe）: connect/startTransaction 此前在 try 之外。
+      // 失败时 ① queryRunner 从不 release → 连接泄漏；② 在 finally 内抛出的新
+      // 异常会替换（覆盖）触发本 finally 的原始 dispatch 错误，丢失上下文。现将
+      // 连接/开事务包入 try：失败即 best-effort 释放连接并记日志，不再向外抛新
+      // 异常——保留原始错误（与既有 ERR-01「原始错误不被掩盖」契约一致）。
+      let txReady = false;
+      try {
+        await queryRunner.connect();
+        await queryRunner.startTransaction();
+        txReady = true;
+      } catch (setupErr) {
+        this.logger.error(
+          `R-13: failed to connect/start transaction for execution ${exec.id}; connection released`,
+          setupErr,
+        );
+        await queryRunner.release().catch(() => undefined);
+      }
 
+      if (txReady) {
       // P0: persist only worker-owned fields via a conditional update — a
       // concurrent callback or kill may have already written a terminal
       // state, which the worker must never overwrite. Built once so the
@@ -305,9 +321,19 @@ export class TaskProcessor extends WorkerHost {
         // Attempt to repair state in a separate transaction
         try {
           const repairRunner = this.dataSource.createQueryRunner();
-          await repairRunner.connect();
-          await repairRunner.startTransaction();
+          // R-13: 与主 runner 同型——connect/startTransaction 包入 try，失败即释放
+          // 连接（否则泄漏），再抛给外层 repairAttemptErr 兜底。
+          let repairReady = false;
+          try {
+            await repairRunner.connect();
+            await repairRunner.startTransaction();
+            repairReady = true;
+          } catch (setupErr) {
+            await repairRunner.release().catch(() => undefined);
+            throw setupErr;
+          }
 
+          if (repairReady)
           try {
             // REPAIR-01: use the same conditional UPDATE as the primary write
             // instead of findOne→check→save — the check/save pair had a TOCTOU
@@ -351,6 +377,7 @@ export class TaskProcessor extends WorkerHost {
       } finally {
         await queryRunner.release();
       }
+      } // end if (txReady) — R-13: connect/startTransaction 失败时跳过持久化
 
       // R4-P0: dependency fan-out moved to TaskService.handleCallback — the
       // worker's in-memory exec.status is only ever RUNNING/FAILED/TIMEOUT

@@ -1,6 +1,8 @@
 // UI-10 中文文案（默认 + fallback）。扁平 key，逐页迁移时把该页文案搬进来；
 // 未迁移页仍为页面内硬编码中文，本文件只承载已迁移面 + 公共项。
 export default {
+  // ── 公共 ──
+  'common.copyFailed': '复制失败，请检查浏览器剪贴板权限',
   // ── 公共品牌 ──
   'brand.tagline': '企业级任务调度平台',
   'brand.edition': 'AutoCodeFlow v1.0 · 企业版',
@@ -1631,6 +1633,7 @@ export default {
   'execDetail.log.levelAll': '全部级别',
   'execDetail.log.copied': '已复制',
   'execDetail.log.copy': '复制',
+  'execDetail.log.copyFailed': '复制失败，请检查浏览器剪贴板权限',
   'execDetail.log.download': '下载',
   'execDetail.log.truncatedTitle': '日志已截断：回调载荷超过执行器上报上限，当前仅保留了截断片段',
   'execDetail.log.truncatedDesc': '可从执行器侧持久化的全量日志分页加载完整内容；若仍失败请检查执行器可达性与本地日志文件。',

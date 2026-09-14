@@ -5,6 +5,9 @@ import {
   affinityFormValues,
   applyRequirementsPayload,
 } from './executor-mode';
+// PK-02（DEEP_REVIEW 0ef3bbe）：create/update 改用生成的 DTO 类型，
+// payload 由 apply* 链组装后类型收窄为 Record<string, unknown>，调用点显式断言。
+import type { components } from '../types/generated/api-types';
 import {
   Card, Form, Input, Select, Button, Space, Typography,
   InputNumber, Radio, Alert, message, Divider, Tag, Tooltip, Anchor, theme, Modal,
@@ -379,7 +382,9 @@ export default function TaskFormPage() {
         message.success(t('taskForm.submit.updated'));
         nav(`/tasks/${editId}`);
       } else {
-        const created = await tasksApi.create(payload);
+        const created = await tasksApi.create(
+          payload as components["schemas"]["CreateTaskDto"],
+        );
         message.success(t('taskForm.submit.created'));
         setSavedRuntime(
           typeof payload.runtime === 'string' ? payload.runtime : 'python',
@@ -713,7 +718,7 @@ export default function TaskFormPage() {
                     <ToolOutlined />
                     <Typography.Text strong>{t('taskForm.window.title')}</Typography.Text>
                     <Tooltip title={t('taskForm.window.tooltip')}>
-                      <InfoCircleOutlined style={{ color: '#1677ff' }} />
+                      <InfoCircleOutlined style={{ color: token.colorPrimary }} />
                     </Tooltip>
                   </Space>
                 </div>

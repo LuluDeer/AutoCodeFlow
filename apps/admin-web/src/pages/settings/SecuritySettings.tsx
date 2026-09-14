@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import {
   Card, Button, Input, Space, Tag, Table, Alert, Typography, Popconfirm,
-  Descriptions, message, Tooltip,
+  Descriptions, message, Tooltip, theme,
 } from 'antd';
 import {
   SafetyOutlined, UserOutlined, DesktopOutlined, ReloadOutlined,
@@ -194,6 +194,8 @@ export function TotpCard() {
  */
 export function SessionsCard() {
   const { t } = useTranslation();
+  // F-15（DEEP_REVIEW 0ef3bbe）：设备图标次要色走 antd token，暗色主题自适应。
+  const { token } = theme.useToken();
   const qc = useQueryClient();
   const { data: sessions, isLoading, refetch, isFetching, error: sessionsError } = useQuery({
     queryKey: ['auth-sessions'],
@@ -229,7 +231,7 @@ export function SessionsCard() {
       title: t('security.session.col.device'), dataIndex: 'userAgent', width: 180,
       render: (v: string | null) => (
         <Space size={6}>
-          <DesktopOutlined style={{ color: '#999' }} />
+          <DesktopOutlined style={{ color: token.colorTextTertiary }} />
           <span>{summarizeUserAgent(v, t)}</span>
         </Space>
       ),

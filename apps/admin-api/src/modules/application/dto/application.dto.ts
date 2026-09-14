@@ -1,3 +1,4 @@
+import { PartialType, ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 import {
   IsString,
   IsOptional,
@@ -7,7 +8,6 @@ import {
   IsBoolean,
   MaxLength,
 } from "class-validator";
-import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 import { ApplicationStatus } from "../entities/application.entity";
 
 export class CreateApplicationDto {
@@ -32,13 +32,15 @@ export class CreateApplicationDto {
   @IsString()
   @IsNotEmpty()
   runtime: string;
-  @IsOptional() @IsString() gitRepo?: string;
-  @IsOptional() @IsString() gitBranch?: string;
-  @IsOptional() @IsString() gitCommit?: string;
-  @IsOptional() @IsObject() manifest?: Record<string, any>;
-  @IsOptional() @IsObject() env?: Record<string, string>;
-  @IsOptional() @IsString() entrypoint?: string;
-  @IsOptional() @IsString() packageUrl?: string;
+
+  // PK-02（DEEP_REVIEW 0ef3bbe）: 补 @ApiPropertyOptional 使 openapi schema 非空
+  @ApiPropertyOptional() @IsOptional() @IsString() gitRepo?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() gitBranch?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() gitCommit?: string;
+  @ApiPropertyOptional({ type: Object }) @IsOptional() @IsObject() manifest?: Record<string, any>;
+  @ApiPropertyOptional({ type: Object }) @IsOptional() @IsObject() env?: Record<string, string>;
+  @ApiPropertyOptional() @IsOptional() @IsString() entrypoint?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() packageUrl?: string;
 
   /** DEP-04: 部署审批流开关（开启后 deploy 冻结为待审批行，需第二人放行）。 */
   @ApiPropertyOptional({
@@ -51,25 +53,18 @@ export class CreateApplicationDto {
   approvalRequired?: boolean;
 }
 
-export class UpdateApplicationDto {
-  @IsOptional() @IsString() description?: string;
-  @IsOptional() @IsString() version?: string;
-  @IsOptional() @IsString() runtime?: string;
+// PK-02（DEEP_REVIEW 0ef3bbe）: 手写 Optional 字段改为 PartialType(CreateApplicationDto)。
+export class UpdateApplicationDto extends PartialType(CreateApplicationDto) {
+  @ApiPropertyOptional({ description: "Application status", enum: ApplicationStatus })
   @IsOptional() @IsEnum(ApplicationStatus) status?: ApplicationStatus;
-  @IsOptional() @IsString() gitRepo?: string;
-  @IsOptional() @IsString() gitBranch?: string;
-  @IsOptional() @IsString() gitCommit?: string;
-  @IsOptional() @IsObject() manifest?: Record<string, any>;
-  @IsOptional() @IsObject() env?: Record<string, string>;
-  @IsOptional() @IsString() entrypoint?: string;
-  @IsOptional() @IsString() packageUrl?: string;
-  /** HMAC-SHA256 secret for webhook signature verification. Set to empty string to disable. */
-  @IsOptional() @IsString() @MaxLength(256) webhookSecret?: string;
 
-  /** DEP-04: 部署审批流开关（语义同 CreateApplicationDto）。 */
-  @IsOptional()
-  @IsBoolean()
-  approvalRequired?: boolean;
+  /** HMAC-SHA256 secret for webhook signature verification. Set to empty string to disable. */
+  @ApiPropertyOptional({
+    description:
+      "HMAC-SHA256 secret for webhook signature verification. Set to empty string to disable.",
+    maxLength: 256,
+  })
+  @IsOptional() @IsString() @MaxLength(256) webhookSecret?: string;
 }
 
 /**

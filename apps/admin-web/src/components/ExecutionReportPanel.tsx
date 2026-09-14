@@ -10,7 +10,7 @@
  * 3. 报告（execution_reports 当日聚合）：仅 report 行存在时渲染；
  *    null 为正常态（该表按日聚合、懒生成），显示提示行而非错误。
  */
-import { Alert, Card, Descriptions, Steps, Typography } from 'antd';
+import { Alert, Card, Descriptions, Steps, Typography, theme } from 'antd';
 import {
   CheckCircleOutlined,
   ClockCircleOutlined,
@@ -35,19 +35,20 @@ const { Text } = Typography;
 const TERMINAL_OK = new Set(['success']);
 const TERMINAL_BAD = new Set(['failed', 'timeout', 'killed', 'cancelled']);
 
-/** 终态段图标/颜色：success 绿、failed 类红、运行中蓝、未知灰 */
-function terminalMark(status?: string | null): {
+/** 终态段图标/颜色：success 绿、failed 类红、运行中蓝、未知灰。
+ * F-15（DEEP_REVIEW 0ef3bbe）：硬编码色改为 antd theme token（双主题自适应）。 */
+function terminalMark(status: string | undefined | null, token: ReturnType<typeof theme.useToken>['token']): {
   icon: React.ReactNode;
   color?: string;
 } {
   if (TERMINAL_OK.has(status || '')) {
-    return { icon: <CheckCircleOutlined />, color: '#52c41a' };
+    return { icon: <CheckCircleOutlined />, color: token.colorSuccess };
   }
   if (TERMINAL_BAD.has(status || '')) {
-    return { icon: <CloseCircleOutlined />, color: '#ff4d4f' };
+    return { icon: <CloseCircleOutlined />, color: token.colorError };
   }
   if (status === 'running' || status === 'pending') {
-    return { icon: <ClockCircleOutlined />, color: '#1677ff' };
+    return { icon: <ClockCircleOutlined />, color: token.colorPrimary };
   }
   return { icon: <MinusCircleOutlined /> };
 }
@@ -73,6 +74,8 @@ export default function ExecutionReportPanel({
   loading,
 }: ExecutionReportPanelProps) {
   const { t } = useTranslation();
+  // F-15（DEEP_REVIEW 0ef3bbe）：语义色/背景走 antd token，暗色主题自适应。
+  const { token } = theme.useToken();
   const source: PanelSource = payload?.execution ?? {};
   const entries = buildExecutionTimeline(source);
   const step = currentStep(source);
@@ -101,7 +104,7 @@ export default function ExecutionReportPanel({
           current={step}
           items={entries.map((e) => {
             const isTerminal = e.phase === 'finished';
-            const mark = isTerminal ? terminalMark(source.status) : { icon: undefined as React.ReactNode, color: undefined as string | undefined };
+            const mark = isTerminal ? terminalMark(source.status, token) : { icon: undefined as React.ReactNode, color: undefined as string | undefined };
             return {
               title: TIMELINE_PHASE_LABELS(t)[e.phase],
               description: (
@@ -130,7 +133,7 @@ export default function ExecutionReportPanel({
         title={t('reportPanel.aiTitle')}
         size="small"
         style={{ marginBottom: 16 }}
-        styles={{ header: { background: 'linear-gradient(90deg, #e6f7ff, #f0f5ff)', color: '#1677ff' } }}
+        styles={{ header: { background: `linear-gradient(90deg, ${token.colorPrimaryBg}, ${token.colorPrimaryBgHover})`, color: token.colorPrimary } }}
       >
         {payload?.execution?.aiAnalysis ? (
           <pre

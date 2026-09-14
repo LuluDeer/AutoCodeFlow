@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import {
   Card, Descriptions, Tag, Typography, Button, Space, Table, Badge, Tabs,
-  Empty, message, Popconfirm, Tooltip, Modal, Statistic, Row, Col, Form, Alert, Result, Input,
+  Empty, message, Popconfirm, Tooltip, Modal, Statistic, Row, Col, Form, Alert, Result, Input, theme,
 } from 'antd';
 import {
   ApartmentOutlined,
@@ -63,6 +63,8 @@ const STATUS_LABEL = (t: (k: string) => string): Record<string, string> => ({
 
 export default function TaskDetailPage() {
   const { t } = useTranslation();
+  // F-15（DEEP_REVIEW 0ef3bbe）：成功率语义色走 antd token，暗色主题自适应。
+  const { token } = theme.useToken();
   const { id } = useParams<{ id: string }>();
   const nav = useNavigate();
   const [execPage, setExecPage] = useState(1);
@@ -366,7 +368,7 @@ export default function TaskDetailPage() {
                 title={t('taskDetail.stats.successRate')}
                 value={(taskStats.successRate ?? 0).toFixed(1)}
                 suffix="%"
-                styles={{ content: { color: (taskStats.successRate ?? 0) >= 95 ? '#52c41a' : (taskStats.successRate ?? 0) >= 80 ? '#fa8c16' : '#ff4d4f' } }}
+                styles={{ content: { color: (taskStats.successRate ?? 0) >= 95 ? token.colorSuccess : (taskStats.successRate ?? 0) >= 80 ? token.colorWarning : token.colorError } }}
                 prefix={<CheckCircleOutlined />}
               />
             </Card>
@@ -376,7 +378,7 @@ export default function TaskDetailPage() {
               <Statistic
                 title={t('taskDetail.stats.failed')}
                 value={taskStats.totalRuns > 0 ? Number((taskStats.totalRuns * (1 - (taskStats.successRate ?? 0) / 100)).toFixed(1)) : 0}
-                styles={taskStats.totalRuns > 0 && (taskStats.successRate ?? 0) < 100 ? { content: { color: '#ff4d4f' } } : undefined}
+                styles={taskStats.totalRuns > 0 && (taskStats.successRate ?? 0) < 100 ? { content: { color: token.colorError } } : undefined}
                 prefix={<CloseCircleOutlined />}
               />
             </Card>
@@ -626,7 +628,7 @@ export default function TaskDetailPage() {
               <Descriptions.Item label={t('taskDetail.ai.successRate')}>{(aiSuggestion.successRate * 100).toFixed(1)}%</Descriptions.Item>
               <Descriptions.Item label={t('taskDetail.ai.p95')}>{aiSuggestion.p95Duration ? `${(aiSuggestion.p95Duration / 1000).toFixed(1)}s` : '-'}</Descriptions.Item>
               <Descriptions.Item label={t('taskDetail.ai.currentCron')}>{aiSuggestion.currentCron || t('taskDetail.ai.none')}</Descriptions.Item>
-              <Descriptions.Item label={t('taskDetail.ai.suggestedCron')}><Text code style={{ color: '#52c41a' }}>{aiSuggestion.suggestedCron || t('taskDetail.ai.noSuggestion')}</Text></Descriptions.Item>
+              <Descriptions.Item label={t('taskDetail.ai.suggestedCron')}><Text code style={{ color: token.colorSuccess }}>{aiSuggestion.suggestedCron || t('taskDetail.ai.noSuggestion')}</Text></Descriptions.Item>
             </Descriptions>
             {aiSuggestion.reasoning && (
               <Card size="small" title={t('taskDetail.ai.analysisTitle')}>

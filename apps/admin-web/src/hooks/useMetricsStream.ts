@@ -11,11 +11,11 @@
  *   与 ARCH-26 的 useMetricsSummary 等 hooks 共享缓存——SSE 活跃时轮询空转
  *   （staleTime 内不重取），断线时 hooks 自动退化为其自身的请求节奏。
  */
-import { useQueryClient } from '@tanstack/react-query';
-import { useEffect, useRef, useState } from 'react';
+import { QueryClientContext } from '@tanstack/react-query';
+import { useContext, useEffect, useState } from 'react';
 
 import { getApiBaseUrl } from '../api/client';
-import { buildSseUrl } from '../api/sse';
+import { createSseClient, sseReconnectBackoffMs } from '../api/sse-client';
 import { useAuthStore } from '../store/auth';
 import { queryKeys } from '../api/queries';
 
@@ -29,11 +29,9 @@ export interface MetricsStreamSnapshot {
   errors: string[];
 }
 
-/** 重连退避节奏：3s 起步，每次翻倍，封顶 30s（纯函数导出可测） */
-export function reconnectBackoffMs(attempt: number, base = 3_000, cap = 30_000): number {
-  const ms = base * 2 ** Math.max(0, attempt);
-  return Math.min(ms, cap);
-}
+// F-08（DEEP_REVIEW 0ef3bbe）：退避逻辑已收敛到 api/sse-client.ts 的
+// sseReconnectBackoffMs；此处 re-export 仅保留既有测试锚定（原函数签名不变）。
+export const reconnectBackoffMs = sseReconnectBackoffMs;
 
 interface UseMetricsStreamOptions {
   /** SSE 挂载开关（如登录后才连接）；默认 true */
@@ -45,35 +43,25 @@ interface UseMetricsStreamOptions {
  * 返回连接状态（Dashboard 连接状态点消费）。
  */
 export function useMetricsStream({ enabled = true }: UseMetricsStreamOptions = {}): MetricsStreamStatus {
-  const queryClient = useQueryClient();
+  // F-09（DEEP_REVIEW 0ef3bbe）：用 useContext(QueryClientContext) 替代 useQueryClient()
+  // ——后者在无 Provider 时直接 throw，会让无 Provider 的测试裸渲染崩溃。useContext
+  // 缺席返回 undefined（无 throw），下方 enabled 门控保证不写缓存。
+  const queryClient = useContext(QueryClientContext);
   const token = useAuthStore((s) => s.token);
   const [status, setStatus] = useState<MetricsStreamStatus>('connecting');
-  const attemptRef = useRef(0);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    if (!enabled) {
+    if (!enabled || !queryClient) {
       setStatus('connecting');
       return;
     }
 
-    let closed = false;
-    let es: EventSource | null = null;
-
-    const connect = () => {
-      if (closed) return;
-      setStatus(attemptRef.current === 0 ? 'connecting' : 'reconnecting');
-      const base = getApiBaseUrl().replace(/\/$/, '');
-      // F-05（DEEP_REVIEW 0ef3bbe）：token 注入统一走 buildSseUrl（含安全取舍注释）
-      const url = buildSseUrl(base, '/metrics/stream', token);
-      es = new EventSource(url);
-
-      es.onopen = () => {
-        attemptRef.current = 0;
-        setStatus('live');
-      };
-
-      es.onmessage = (e) => {
+    const client = createSseClient({
+      baseUrl: getApiBaseUrl(),
+      path: '/metrics/stream',
+      token,
+      onStatus: setStatus,
+      onMessage: (e) => {
         try {
           const snap = JSON.parse(e.data) as MetricsStreamSnapshot;
           if (snap.summary !== undefined && snap.summary !== null) {
@@ -88,32 +76,10 @@ export function useMetricsStream({ enabled = true }: UseMetricsStreamOptions = {
         } catch {
           /* 忽略畸形帧（与日志流消费同策略） */
         }
-      };
+      },
+    });
 
-      const handleError = () => {
-        es?.close();
-        es = null;
-        if (closed) return;
-        // 退避重建：attempt 递增，成功 onopen 后归零
-        const delay = reconnectBackoffMs(attemptRef.current);
-        attemptRef.current += 1;
-        setStatus('reconnecting');
-        timerRef.current = setTimeout(connect, delay);
-      };
-      es.onerror = handleError;
-    };
-
-    connect();
-
-    return () => {
-      closed = true;
-      if (timerRef.current) {
-        clearTimeout(timerRef.current);
-        timerRef.current = null;
-      }
-      es?.close();
-      es = null;
-    };
+    return () => client.close();
   }, [enabled, token, queryClient]);
 
   return status;
