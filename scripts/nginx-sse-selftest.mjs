@@ -368,14 +368,28 @@ async function main() {
   // 网络用 --network host：bridge 下 docker0 → 宿主回环的转发在部分环境
   // 受防火墙/NAT 限制（实测 504），host 模式让"经 nginx 反代"这一被测语义
   // 不受容器网络干扰。
+  //
+  // DEP-HA-1 之后 conf 的上游不再是静态 `proxy_pass http://admin-api:3105`，
+  // 而是「server 级 set 变量 + 运行时再解析」：
+  //     set $admin_api_upstream admin-api:3105;
+  //     proxy_pass http://$admin_api_upstream;
+  // 被替换的 token 仍是同一个 `admin-api:3105`（现在是 set 的值）。变量形态下
+  // 换成 **IP 字面量** 是关键：nginx 对字面量不做 DNS 查询，因此不需要
+  // resolver——而原件里的 `resolver 127.0.0.11` 是 Docker 内嵌 DNS，host 网络
+  // 下不可达，若保留服务名会解析超时 → 502（本脚本首跑即撞到这一点）。
+  const upstreamAddr = `127.0.0.1:${API_PORT}`;
   const conf = readFileSync(NGINX_CONF_SRC, 'utf8')
-    .replace(/http:\/\/admin-api:3105/g, `http://127.0.0.1:${API_PORT}`)
+    .replace(/admin-api:3105/g, upstreamAddr)
     .replace(/listen 80;/, `listen ${PROXY_PORT};`);
   const confPath = path.join(tmpDir, 'default.conf');
   writeFileSync(confPath, conf);
   ok(
     'nginx 配置取自 infra/nginx/default.conf 原件（仅替换上游地址与监听端口）',
-    conf.includes(`127.0.0.1:${API_PORT}`) && conf.includes(`listen ${PROXY_PORT};`),
+    conf.includes(`set $admin_api_upstream ${upstreamAddr};`) &&
+      conf.includes(`listen ${PROXY_PORT};`) &&
+      // 反向证明替换是「最小」的：服务名无残留（旧静态形态也一并覆盖）
+      !conf.includes('admin-api:3105'),
+    `上游替换未生效（期望 set $admin_api_upstream ${upstreamAddr};）`,
   );
 
   const nginx = run('docker', [
