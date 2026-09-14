@@ -399,9 +399,15 @@ probing 探测通过前的已升级台，批次失败时 → rolled_back（自�
 - **写面（PATCH/DELETE 及应用 PUT/DELETE）三态守卫**：ADMIN 全量放行；
   属主本人放行；其余（含 `ownerUserId=NULL` 的存量无主行、悬垂 id）→ `403`。
 - **NULL 语义**：存量行不回填，`ownerUserId=null` = 无主，仅 ADMIN 可改。
-- **范围**：仅配置写面；trigger 等执行类写面与读面过滤不在预研范围
-  （读面可见性矩阵归 AUTH-02 全量隔离）。
+- **范围**：配置写面 + 执行记录写面（`kill` / `analyze`）+ AI 排期建议；
+  项目 editor/admin 亦可写本项目内的行（AUTH-02 叠加，只增放行）。
+  `trigger` / `pause` / `resume`（含批量）**不走属主守卫**——只拒绝项目
+  viewer（`assertCanOperate`），属主收紧待 ADR-013 产品拍板；读面过滤见
+  AUTH-02 全量隔离。
 - **机器面豁免**：发版 webhook（HMAC 鉴权）更新应用版本号不走属主守卫。
+- **A2-B 起为运行时强制**：声明了「属主校验」的写端点若实际未执行校验，
+  端点直接 `500`（缺省拒绝），而不是静默放行——详见
+  `apps/admin-api/src/common/guards/write-guard-enforcement.interceptor.ts`。
 | POST | `/tasks/:id/trigger` | 是 | 手动触发任务立即执行（可带自定义参数） |
 | POST | `/tasks/:id/pause` | 是 | 暂停任务（停止调度，不影响进行中的执行） |
 | POST | `/tasks/:id/resume` | 是 | 恢复任务调度 |
@@ -411,14 +417,14 @@ probing 探测通过前的已升级台，批次失败时 → rolled_back（自�
 | POST | `/tasks/batch/delete` | 是 | 批量删除（兼容别名 `POST /tasks-batch/delete`） |
 | PUT | `/tasks/:id/glue` | 是 | 在线更新 GLUE 脚本（`{ source, language? }`） |
 | GET | `/tasks/:id/stats` | 是 | 单任务执行统计（成功率、平均耗时、最近 20 次） |
-| POST | `/tasks/:id/suggest-schedule` | 是 | AI 调度建议（响应含 `fallback` 标记，见下） |
+| POST | `/tasks/:id/suggest-schedule` | 是 | AI 调度建议（响应含 `fallback` 标记，见下；**A2-B 起走属主守卫**：非属主非 ADMIN/项目 editor → `403`） |
 | GET | `/tasks/:id/executions` | 是 | 分页查询该任务的执行记录 |
 | GET | `/tasks/:id/executions/:execId` | 是 | 执行详情 |
 | GET | `/tasks/:id/executions/:execId/report` | 是 | 执行报告+时间线一次拉取（OBS-04，见下） |
 | GET | `/tasks/:id/executions/:execId/logs` | 是 | 按行分页获取执行日志（`fromLine` 默认 0，`limit` 默认 500、最大 2000；可选 `level` 过滤，见下） |
 | GET | `/tasks/:id/executions/:execId/logs/stream` | 是 | SSE 实时日志流（并发上限，见下） |
-| POST | `/tasks/:id/executions/:execId/kill` | 是 | 强制取消 running/pending 执行 |
-| POST | `/tasks/:id/executions/:execId/analyze` | 是 | 按需触发 AI 执行分析，结果落库并返回 |
+| POST | `/tasks/:id/executions/:execId/kill` | 是 | 强制取消 running/pending 执行（**A2-B 起走属主守卫**：校验 execution 所属 task 的属主，非属主非 ADMIN/项目 editor → `403`） |
+| POST | `/tasks/:id/executions/:execId/analyze` | 是 | 按需触发 AI 执行分析，结果落库并返回（**A2-B 起走属主守卫**，同上） |
 | GET | `/tasks/executions/all` | 是 | 全局执行记录分页（status/taskId/taskName/executorAddress/时间范围） |
 | GET | `/tasks/executions/:execId` | 是 | 按执行 ID 查详情（兼容别名，acf-cli / mcp-server 使用） |
 | GET | `/tasks/executions/:execId/logs` | 是 | 按执行 ID 取日志（兼容别名；参数同上，含 `level`） |

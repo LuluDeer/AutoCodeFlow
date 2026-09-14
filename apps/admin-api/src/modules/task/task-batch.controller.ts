@@ -45,7 +45,11 @@ export class TaskBatchController {
   ) {}
 
   @Throttle({ default: OPS_THROTTLE })
-  @WriteGuard("task", { scope: "ownership" })
+  @WriteGuard("task", {
+    scope: "project-role",
+    reason:
+      "只做项目角色校验（assertCanOperate 仅显式拒绝 viewer），属主收紧待 ADR-013 产品拍板",
+  })
   @Post("trigger")
   @ApiOperation({
     summary: "Batch trigger tasks (deprecated)",
@@ -84,7 +88,11 @@ export class TaskBatchController {
     return results;
   }
 
-  @WriteGuard("task", { scope: "ownership" })
+  @WriteGuard("task", {
+    scope: "project-role",
+    reason:
+      "只做项目角色校验（assertCanOperate 仅显式拒绝 viewer），属主收紧待 ADR-013 产品拍板",
+  })
   @Post("pause")
   @ApiOperation({
     summary: "Batch pause tasks (deprecated)",
@@ -118,7 +126,11 @@ export class TaskBatchController {
     return results;
   }
 
-  @WriteGuard("task", { scope: "ownership" })
+  @WriteGuard("task", {
+    scope: "project-role",
+    reason:
+      "只做项目角色校验（assertCanOperate 仅显式拒绝 viewer），属主收紧待 ADR-013 产品拍板",
+  })
   @Post("resume")
   @ApiOperation({
     summary: "Batch resume tasks (deprecated)",

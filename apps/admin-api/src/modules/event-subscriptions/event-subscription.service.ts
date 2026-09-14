@@ -10,6 +10,8 @@ import { ConfigService } from "@nestjs/config";
 import { Repository } from "typeorm";
 import { AuthUser } from "../../common/interfaces/auth-user.interface";
 import { assertSafeHttpUrl } from "../../common/utils/safe-http.util";
+// A2-B: 属主校验的运行时证据落点
+import { recordOwnershipAssertion } from "../../common/guards/ownership-assertion.store";
 import { EventSubscription } from "./entities/event-subscription.entity";
 import { EventSubscriptionDeadLetter } from "./entities/event-subscription-dead-letter.entity";
 import {
@@ -64,6 +66,8 @@ export class EventSubscriptionService {
 
   /** ADMIN/属主校验；不命中抛 403（防订阅 id 枚举语义与 404 混淆）。 */
   private assertCanManage(sub: EventSubscription, user: AuthUser): void {
+    // A2-B: 先落证再判定（同 task/application 的属主守卫）。
+    recordOwnershipAssertion("event-subscription", "write");
     if (this.isAdmin(user)) return;
     if (sub.userId !== null && sub.userId === user.id) return;
     throw new ForbiddenException("You do not own this subscription");

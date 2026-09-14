@@ -9,16 +9,26 @@ import { SetMetadata } from "@nestjs/common";
  * **归属守卫在 service 内手工调用**，没有任何「缺省拒绝」机制，这类漂移还会再
  * 发生。
  *
- * 本装饰器不改变运行时行为（纯元数据），配合
- * `src/common/guards/__tests__/write-guard-coverage.spec.ts` 的**穷举扫描**把
- * 「这个写端点的授权形态是什么」从「逐点人肉记忆」变成「必须显式声明，否则 CI 红」：
+ * 本装饰器本身不改变运行时行为（纯元数据），真正的强制分两层：
+ *   ① `src/common/guards/__tests__/write-guard-coverage.spec.ts` 的**穷举扫描**
+ *      把「这个写端点的授权形态是什么」从「逐点人肉记忆」变成「必须显式声明，
+ *      否则 CI 红」；
+ *   ② A2-B 的 `WriteGuardEnforcementInterceptor` 对 ownership / project-role
+ *      两种 scope 做**运行时强制**：拿不出对应断言证据就直接 500（缺省拒绝）。
  *
  *   每个写端点（POST/PUT/PATCH/DELETE）必须满足其一：
  *     ① 有非空 @Roles(...)（角色门控，最常见）；
  *     ② 有 @WriteGuard(resource, { scope })（声明非角色门控的授权形态）。
  *
  * scope 取值与约束：
- *   - 'ownership'     已登录 + 资源归属校验（service 内 assertOwner 等）。
+ *   - 'ownership'     已登录 + 资源归属校验（service 内 assertCanWrite /
+ *                     assertCanWriteProjectAware / assertCanManage 等）。
+ *                     不得是 @Public()。
+ *   - 'project-role'  已登录 + **项目角色**校验（service 内 assertCanOperate）。
+ *                     语义弱于 ownership：目前只显式拒绝项目 viewer，不校验
+ *                     属主（ADR-013 已知缺口：「任何登录用户可 trigger」的宽松
+ *                     语义待产品拍板后才收紧）。声明它必须如实——它是「这里没有
+ *                     属主校验」的显式登记，不是 ownership 的同义词。
  *                     不得是 @Public()。
  *   - 'authenticated' 已登录即可，无资源归属概念（如「创建属于我的任务」）。
  *                     不得是 @Public()。
@@ -27,10 +37,19 @@ import { SetMetadata } from "@nestjs/common";
  *   - 'public'        完全开放（webhook 接收端、健康探针等）。
  *                     必须同时 @Public() 且给出 reason。
  *
+ * A2-B：ownership / project-role 两种 scope 由
+ * `WriteGuardEnforcementInterceptor` **运行时强制**——端点成功返回前若拿不出
+ * 对应种类的断言证据（见 ownership-assertion.store.ts）直接 500，因此「声明了
+ * 属主校验但 service 里忘了调」不再可能静默通过。
+ *
  * 用法：
- *   @Post(":id/kill")
- *   @WriteGuard("execution", { scope: "ownership" })
- *   kill(@Param("id") id: string) { ... }
+ *   @Patch(":id")
+ *   @WriteGuard("task", { scope: "ownership" })
+ *   update(@Param("id") id: string, @Body() dto: UpdateTaskDto) { ... }
+ *
+ *   @Post(":id/trigger")
+ *   @WriteGuard("task", { scope: "project-role" })
+ *   trigger(@Param("id") id: string) { ... }
  *
  *   @Post("callback")
  *   @Public()
@@ -42,7 +61,8 @@ import { SetMetadata } from "@nestjs/common";
  */
 export const WRITE_GUARD_KEY = "writeGuard";
 
-export type WriteScope = "ownership" | "authenticated" | "token" | "public";
+export type WriteScope =
+  "ownership" | "project-role" | "authenticated" | "token" | "public";
 
 export interface WriteGuardMetadata {
   /** 受写的资源域（task / execution / application / deployment / user / ...）。 */

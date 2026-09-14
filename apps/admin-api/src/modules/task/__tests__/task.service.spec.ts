@@ -3396,6 +3396,16 @@ describe("TaskService (__tests__)", () => {
     });
   });
 
+  // A2-B: killExecution / analyzeExecution 现对 execution 所属 task 做属主校验
+  // （此前完全不校验）。这里统一提供「有属主」的装配，避免把属主校验噪音散进
+  // 每条既有用例——越权分支另有专项 spec。
+  const ADMIN_USER = { id: 1, role: UserRole.ADMIN };
+  const OWNED_TASK = { id: "t1", ownerUserId: 1, projectId: null };
+  const givenOwnedExecution = (exec: Record<string, unknown>) => {
+    exec.taskId = "t1";
+    execRepo.findOne.mockResolvedValue(exec);
+    taskRepo.findOne.mockResolvedValue(OWNED_TASK);
+  };
   describe("killExecution", () => {
     it("marks a RUNNING execution as KILLED and saves", async () => {
       const exec = {
@@ -3403,9 +3413,9 @@ describe("TaskService (__tests__)", () => {
         status: ExecutionStatus.RUNNING,
         startTime: new Date(Date.now() - 5000),
       };
-      execRepo.findOne.mockResolvedValue(exec);
+      givenOwnedExecution(exec);
       execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
-      const result = await service.killExecution("e1");
+      const result = await service.killExecution("e1", ADMIN_USER);
       expect(exec.status).toBe(ExecutionStatus.KILLED);
       expect((exec as any).failureReason).toBe(ExecutionFailureReason.KILLED);
       expect(exec).toHaveProperty("endTime");
@@ -3414,24 +3424,24 @@ describe("TaskService (__tests__)", () => {
 
     it("marks a PENDING execution as KILLED", async () => {
       const exec = { id: "e2", status: ExecutionStatus.PENDING };
-      execRepo.findOne.mockResolvedValue(exec);
+      givenOwnedExecution(exec);
       execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
-      const result = await service.killExecution("e2");
+      const result = await service.killExecution("e2", ADMIN_USER);
       expect(exec.status).toBe(ExecutionStatus.KILLED);
       expect(result.success).toBe(true);
     });
 
     it("throws NotFoundException when execution does not exist", async () => {
       execRepo.findOne.mockResolvedValue(null);
-      await expect(service.killExecution("ghost")).rejects.toThrow(
+      await expect(service.killExecution("ghost", ADMIN_USER)).rejects.toThrow(
         NotFoundException,
       );
     });
 
     it("throws BadRequestException when execution is already in terminal state", async () => {
       const exec = { id: "e3", status: ExecutionStatus.SUCCESS };
-      execRepo.findOne.mockResolvedValue(exec);
-      await expect(service.killExecution("e3")).rejects.toThrow(
+      givenOwnedExecution(exec);
+      await expect(service.killExecution("e3", ADMIN_USER)).rejects.toThrow(
         BadRequestException,
       );
     });
@@ -3447,9 +3457,9 @@ describe("TaskService (__tests__)", () => {
         executorAddress: "10.0.0.9:8002",
         startTime: new Date(Date.now() - 1000),
       };
-      execRepo.findOne.mockResolvedValue(exec);
+      givenOwnedExecution(exec);
 
-      const result = await service.killExecution("e1");
+      const result = await service.killExecution("e1", ADMIN_USER);
 
       expect(result.success).toBe(true);
       expect(executorServiceMock.notifyExecutorKill).toHaveBeenCalledWith(
@@ -3469,9 +3479,9 @@ describe("TaskService (__tests__)", () => {
         executorAddress: "10.0.0.9:8002",
         startTime: new Date(Date.now() - 1000),
       };
-      execRepo.findOne.mockResolvedValue(exec);
+      givenOwnedExecution(exec);
 
-      const result = await service.killExecution("e1");
+      const result = await service.killExecution("e1", ADMIN_USER);
 
       expect(result.success).toBe(true);
       // 地址已释放（DB 侧），通知失败不回滚。
@@ -3481,9 +3491,9 @@ describe("TaskService (__tests__)", () => {
 
     it("skips the kill notification when the executor address is unavailable (改动5)", async () => {
       const exec = { id: "e1", status: ExecutionStatus.RUNNING };
-      execRepo.findOne.mockResolvedValue(exec);
+      givenOwnedExecution(exec);
 
-      const result = await service.killExecution("e1");
+      const result = await service.killExecution("e1", ADMIN_USER);
 
       expect(result.success).toBe(true);
       expect(executorServiceMock.notifyExecutorKill).not.toHaveBeenCalled();
@@ -3501,9 +3511,9 @@ describe("TaskService (__tests__)", () => {
         startTime: new Date(Date.now() - 5000),
         aiAnalysis: null,
       };
-      execRepo.findOne.mockResolvedValue(exec);
+      givenOwnedExecution(exec);
 
-      await service.killExecution("e1");
+      await service.killExecution("e1", ADMIN_USER);
 
       expect(eventBus.emit).toHaveBeenCalledTimes(1);
       const [eventName, payload] = eventBus.emit.mock.calls[0];
@@ -3524,8 +3534,8 @@ describe("TaskService (__tests__)", () => {
 
     it("does NOT emit execution.killed when the kill hits no row (terminal state)", async () => {
       const exec = { id: "e3", status: ExecutionStatus.SUCCESS };
-      execRepo.findOne.mockResolvedValue(exec);
-      await expect(service.killExecution("e3")).rejects.toThrow(
+      givenOwnedExecution(exec);
+      await expect(service.killExecution("e3", ADMIN_USER)).rejects.toThrow(
         BadRequestException,
       );
       expect(eventBus.emit).not.toHaveBeenCalled();
@@ -3575,13 +3585,124 @@ describe("TaskService (__tests__)", () => {
         status: ExecutionStatus.RUNNING,
         startTime: new Date(Date.now() - 5000),
       };
-      execRepo.findOne.mockResolvedValue(exec);
+      givenOwnedExecution(exec);
 
-      const result = await buslessService.killExecution("e1");
+      const result = await buslessService.killExecution("e1", ADMIN_USER);
       expect(result.success).toBe(true);
     });
   });
 
+  // A2-B（DEEP_REVIEW 0ef3bbe §七）：这三个写面此前**完全不做属主校验**
+  // （任何登录用户可终止/分析他人任务的执行、可拉取他人任务历史做 AI 排期建议），
+  // 而它们的 @WriteGuard 声明是 ownership。以下是越权分支的专项断言——删掉
+  // service 里的 assertCanWrite* 调用会立刻转红。
+  describe("A2-B: 执行写面属主校验（killExecution / analyzeExecution / suggestSchedule）", () => {
+    const intruder = { id: 8, role: UserRole.USER };
+    const ownerUser = { id: 7, role: UserRole.USER };
+    const adminUser = { id: 1, role: UserRole.ADMIN };
+
+    const givenTask = (ownerUserId: number | null) =>
+      taskRepo.findOne.mockResolvedValue({
+        id: "t1",
+        ownerUserId,
+        projectId: null,
+      });
+
+    const givenExec = (extra: Record<string, unknown> = {}) =>
+      execRepo.findOne.mockResolvedValue({
+        id: "e1",
+        taskId: "t1",
+        status: ExecutionStatus.RUNNING,
+        ...extra,
+      });
+
+    it("killExecution：非属主 → 403（不再任意登录用户可终止）", async () => {
+      givenTask(7);
+      givenExec();
+      await expect(service.killExecution("e1", intruder)).rejects.toThrow(
+        ForbiddenException,
+      );
+    });
+
+    it("killExecution：属主本人 / ADMIN → 放行", async () => {
+      givenTask(7);
+      givenExec();
+      execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      await expect(
+        service.killExecution("e1", ownerUser),
+      ).resolves.toMatchObject({ success: true });
+
+      givenTask(7);
+      givenExec({ id: "e2" });
+      await expect(
+        service.killExecution("e2", adminUser),
+      ).resolves.toMatchObject({ success: true });
+    });
+
+    it("killExecution：execution 无 taskId → 403（拿不到归属不退化成放行）", async () => {
+      execRepo.findOne.mockResolvedValue({
+        id: "e1",
+        status: ExecutionStatus.RUNNING,
+      });
+      await expect(service.killExecution("e1", adminUser)).rejects.toThrow(
+        ForbiddenException,
+      );
+    });
+
+    it("analyzeExecution：非属主 → 403", async () => {
+      givenTask(7);
+      execRepo.findOne.mockResolvedValue({
+        id: "exec-1",
+        taskId: "t1",
+        taskName: "job",
+      });
+      await expect(
+        service.analyzeExecution("exec-1", intruder),
+      ).rejects.toThrow(ForbiddenException);
+      expect(execRepo.save).not.toHaveBeenCalled();
+    });
+
+    it("analyzeExecution：属主本人 → 放行并落 AI 分析", async () => {
+      givenTask(7);
+      execRepo.findOne.mockResolvedValue({
+        id: "exec-1",
+        taskId: "t1",
+        taskName: "job",
+        aiAnalysis: null as string | null,
+      });
+      execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      const r = await service.analyzeExecution("exec-1", ownerUser);
+      // 落库即已走完 AI 分析（桩默认返回空串，不断言具体文案）
+      expect(execRepo.save).toHaveBeenCalled();
+      expect(r.aiAnalysis).toBe("");
+    });
+
+    it("suggestSchedule：非属主 → 403", async () => {
+      givenTask(7);
+      await expect(service.suggestSchedule("t1", intruder)).rejects.toThrow(
+        ForbiddenException,
+      );
+    });
+
+    it("suggestSchedule：user 缺失（API-Key 主体）→ 403（保守默认）", async () => {
+      givenTask(7);
+      await expect(service.suggestSchedule("t1")).rejects.toThrow(
+        ForbiddenException,
+      );
+    });
+
+    it("suggestSchedule：ADMIN → 通过属主闸门（不因授权被拒）", async () => {
+      givenTask(7);
+      execRepo.find.mockResolvedValue([]);
+      // AI 桩未提供 suggestSchedule，故只断言「没被授权拦下」——属主闸门之后
+      // 的失败与本 spec 无关（AI 分支由 ai.service.spec 覆盖）。
+      const err = await service
+        .suggestSchedule("t1", adminUser)
+        .then(() => null)
+        .catch((e: unknown) => e);
+      expect(err).not.toBeInstanceOf(ForbiddenException);
+    });
+  });
   describe("getExecutionStats", () => {
     it("computes successRate and avgDuration from recent executions", async () => {
       const executions = [
@@ -4645,6 +4766,17 @@ describe("TaskService — QA-02 phase 2 branch gaps", () => {
   });
 
   describe("analyzeExecution / getExecution — lookup branches", () => {
+    // A2-B: analyzeExecution 现对 execution 所属 task 做属主校验（同 killExecution）
+    const ADMIN_USER = { id: 1, role: UserRole.ADMIN };
+    const givenOwnedExecution = (exec: Record<string, unknown>) => {
+      exec.taskId = "t1";
+      execRepo.findOne.mockResolvedValue(exec);
+      taskRepo.findOne.mockResolvedValue({
+        id: "t1",
+        ownerUserId: 1,
+        projectId: null,
+      });
+    };
     it("getExecution constrains by taskId when provided", async () => {
       execRepo.findOne.mockResolvedValue(null);
       await expect(service.getExecution("exec-1", "task-1")).rejects.toThrow(
@@ -4663,11 +4795,11 @@ describe("TaskService — QA-02 phase 2 branch gaps", () => {
         logs: "trace",
         aiAnalysis: null as string | null,
       };
-      execRepo.findOne.mockResolvedValue(exec);
+      givenOwnedExecution(exec);
       aiService.analyzeFailure.mockResolvedValue("AI: fix it");
       execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
 
-      const result = await service.analyzeExecution("exec-1");
+      const result = await service.analyzeExecution("exec-1", ADMIN_USER);
       expect(aiService.analyzeFailure).toHaveBeenCalledWith(
         { name: "job", runtime: "unknown" },
         "boom\ntrace",
@@ -4677,10 +4809,10 @@ describe("TaskService — QA-02 phase 2 branch gaps", () => {
 
     it("analyzeExecution falls back to a placeholder when no logs exist", async () => {
       const exec = { id: "exec-1", taskName: "job", aiAnalysis: null };
-      execRepo.findOne.mockResolvedValue(exec);
+      givenOwnedExecution(exec);
       execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
 
-      await service.analyzeExecution("exec-1");
+      await service.analyzeExecution("exec-1", ADMIN_USER);
       expect(aiService.analyzeFailure).toHaveBeenCalledWith(
         expect.anything(),
         "(no logs)",

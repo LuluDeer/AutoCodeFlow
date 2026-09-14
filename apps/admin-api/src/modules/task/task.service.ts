@@ -12,6 +12,8 @@ import {
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { assertSafeGitRepoUrl } from "../../common/utils/safe-http.util";
+// A2-B: 属主/项目角色校验的运行时证据落点
+import { recordOwnershipAssertion } from "../../common/guards/ownership-assertion.store";
 import {
   DataSource,
   ILike,
@@ -331,6 +333,9 @@ export class TaskService {
     row: { ownerUserId: number | null },
     user: { id: number; role: UserRole } | null | undefined,
   ): void {
+    // A2-B: 先落证再判定——「判定过」本身就是证据（ADMIN 放行同样是授权决策），
+    // 落证在放行分支之前，保证任何分支都留下痕迹。HTTP 请求外为 no-op。
+    recordOwnershipAssertion("task", "write");
     if (user?.role === UserRole.ADMIN) return;
     if (row.ownerUserId === null) {
       throw new ForbiddenException(
@@ -382,6 +387,9 @@ export class TaskService {
     row: { ownerUserId: number | null; projectId?: string | null },
     user: { id: number; role: UserRole } | null | undefined,
   ): Promise<void> {
+    // A2-B: 落 'operate' 证（区别于 'write'）——本方法只拒 viewer，不是属主
+    // 校验，落同一种证据会让 project-role 端点冒充 ownership。
+    recordOwnershipAssertion("task", "operate");
     if (!this.projectAccess || !user?.id) return;
     if (user.role === UserRole.ADMIN) return;
     const role = await this.projectAccess.resolveRole(
@@ -393,6 +401,35 @@ export class TaskService {
         "Your role in this project is viewer (read-only); triggering or changing schedule state requires the editor role",
       );
     }
+  }
+
+  /**
+   * A2-B：执行记录（`task_executions` 行）写面的属主校验。
+   *
+   * 供 killExecution / analyzeExecution 等「按 executionId 操作」的写面复用——
+   * 这两个端点此前完全不做属主校验（任意登录用户可终止他人任务的执行），
+   * 而它们声明的 scope 是 `ownership`；A2-B 的运行时强制把它们暴露出来了。
+   *
+   * 判定对象上提到 execution 所属的 **task** 行（属主语义只在 task 上）：
+   * - execution.taskId 缺失 → 403（拿不到归属，保守拒绝，不退化成放行）；
+   * - task 行不存在 → 404（悬垂 execution，与既有「Execution not found」同档）。
+   */
+  private async assertCanWriteExecution(
+    execution: { taskId?: string | null },
+    user: { id: number; role: UserRole } | null | undefined,
+  ): Promise<void> {
+    if (!execution.taskId) {
+      throw new ForbiddenException(
+        "This execution has no owning task; refusing the write",
+      );
+    }
+    const task = await this.taskRepo.findOne({
+      where: { id: execution.taskId },
+    });
+    if (!task) {
+      throw new NotFoundException(`Task ${execution.taskId} not found`);
+    }
+    await this.assertCanWriteProjectAware(task, user);
   }
 
   async create(dto: CreateTaskDto, user?: { id: number } | null) {
@@ -860,7 +897,10 @@ export class TaskService {
    * AI-powered schedule suggestion.
    * Reads the last 50 executions and asks the LLM to recommend an optimal cron expression.
    */
-  async suggestSchedule(taskId: string): Promise<{
+  async suggestSchedule(
+    taskId: string,
+    user?: { id: number; role: UserRole } | null,
+  ): Promise<{
     taskId: string;
     currentCron: string | null;
     suggestedCron: string;
@@ -869,6 +909,9 @@ export class TaskService {
   }> {
     const task = await this.taskRepo.findOne({ where: { id: taskId } });
     if (!task) throw new NotFoundException(`Task ${taskId} not found`);
+    // A2-B: 本端点声明 scope='ownership'，此前完全未校验（任意登录用户可拉取
+    // 他人任务的执行历史交给 AI 分析）；补上与 update 同档的属主守卫。
+    await this.assertCanWriteProjectAware(task, user);
 
     const executions = await this.execRepo.find({
       where: { taskId },
@@ -1022,9 +1065,14 @@ export class TaskService {
    * Fetches the task by name, runs analyzeFailure with the execution logs,
    * persists the result, and returns the updated execution.
    */
-  async analyzeExecution(execId: string): Promise<TaskExecution> {
+  async analyzeExecution(
+    execId: string,
+    user?: { id: number; role: UserRole } | null,
+  ): Promise<TaskExecution> {
     const exec = await this.execRepo.findOne({ where: { id: execId } });
     if (!exec) throw new NotFoundException("Execution not found");
+    // A2-B: 同上——声明 'ownership' 却无校验的缺口，补属主守卫。
+    await this.assertCanWriteExecution(exec, user);
     // Use errorMessage + logs as analysis input; fall back gracefully when logs are empty
     const logContent =
       [exec.errorMessage, exec.logs].filter(Boolean).join("\n") || "(no logs)";
@@ -2451,11 +2499,15 @@ export class TaskService {
   /** Force-terminate a running execution */
   async killExecution(
     execId: string,
+    user?: { id: number; role: UserRole } | null,
   ): Promise<{ success: boolean; message: string }> {
     const execution = await this.execRepo.findOne({ where: { id: execId } });
     if (!execution) {
       throw new NotFoundException(`Execution ${execId} not found`);
     }
+    // A2-B: 终止执行是写面且声明 'ownership'——此前任何登录用户都能终止他人
+    // 任务的执行。补上属主守卫（project editor/admin 同样放行，与 update 同档）。
+    await this.assertCanWriteExecution(execution, user);
 
     // R-P0-007: Use conditional update instead of save() to prevent race conditions
     // Only allow killing PENDING or RUNNING executions
