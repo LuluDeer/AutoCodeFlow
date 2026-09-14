@@ -115,5 +115,222 @@
       "killed",
       "unknown"
     ]
+  },
+  "schemas": {
+    "$comment": "A3 完整形态：执行器协议的 **schema 单一事实源**（JSON Schema 2020-12 受控子集）。由 scripts/generate-executor-protocol.mjs 生成 executor-node 的 zod 与 executor-python 的 pydantic。此前 ExecuteRequest 在 node 是手写 TS interface、在 python 是 autocodeflow_sdk 里的 pydantic model、在 admin 是拼接的字面量——三处各自演进，只靠注释互相引用（'见 node execute.ts:xxx parity'），即评审说的『注释里的 parity』。**受控子集**：type（数组形式即 nullable）/ properties / required / additionalProperties / items / enum / minimum / maximum / pattern / default / $ref（仅限 '#/$defs/<本段内的名字>'）。生成器遇到子集外的关键字必须**报错退出**——静默跳过会让契约悄悄失效（本项目第三次遇到此类陷阱）。",
+    "TaskConfig": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "id": { "type": ["string", "null"] },
+        "name": { "type": ["string", "null"] },
+        "runtime": { "type": ["string", "null"] },
+        "entrypoint": { "type": ["string", "null"] },
+        "timeout": {
+          "type": ["integer", "null"],
+          "description": "deprecated：legacy/fallback 字段，规范化后与 timeoutSeconds 同值"
+        },
+        "timeoutSeconds": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "maximum": 86400,
+          "description": "canonical 超时（秒）；0 = 显式不限时，语义见本文件 timeout 段"
+        },
+        "timeout_seconds": {
+          "type": ["integer", "null"],
+          "description": "deprecated：snake_case 别名"
+        },
+        "requirements": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": []
+        },
+        "gitRepo": { "type": ["string", "null"] },
+        "gitBranch": { "type": ["string", "null"] },
+        "gitCommit": { "type": ["string", "null"] }
+      }
+    },
+    "ExecuteRequest": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["executionId", "task"],
+      "properties": {
+        "executionId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+          "description": "同时被用作 workDir 下的目录名——字符集限定是路径穿越的第一道闸（与 node isSafeExecutionIdSegment 同款正则）"
+        },
+        "task": { "$ref": "#/$defs/TaskConfig" },
+        "params": { "type": ["object", "null"], "additionalProperties": true }
+      }
+    },
+    "ConfigReloadRequest": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "maxConcurrentTasks": { "type": "integer", "minimum": 1 },
+        "taskTimeoutSeconds": { "type": "integer", "minimum": 1 },
+        "heartbeatIntervalSeconds": { "type": "integer", "minimum": 5 },
+        "adminApiUrl": { "type": "string" },
+        "adminApiUrlInternal": { "type": "string" },
+        "adminApiUrlExternal": { "type": "string" },
+        "adminApiUrls": { "type": "array", "items": { "type": "string" } },
+        "workDir": { "type": "string" },
+        "WORK_DIR": { "type": "string" }
+      }
+    },
+    "ConfigReloadResponse": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["success", "message", "updated_fields", "ignored_fields"],
+      "properties": {
+        "success": { "type": "boolean" },
+        "message": { "type": "string" },
+        "updated_fields": { "type": "array", "items": { "type": "string" } },
+        "ignored_fields": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "HealthReadyResponse": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["status"],
+      "properties": {
+        "status": { "enum": ["ready", "not_ready"] },
+        "reason": { "type": "string" }
+      }
+    }
+  },
+  "schemaVectors": {
+    "$comment": "每个 schema 的合法/非法样本，三端加载**同一份**断言。invalid 除 payload 外必须给出 expectErrorPath——只断言『被拒绝』而不断言『为什么被拒绝』会退化成永真断言（任一字段拼错都会红，那就谁都能红）。path 为数组，zod 的 issue.path 与 pydantic 的 error.loc 同形。",
+    "TaskConfig": {
+      "valid": [{}, { "runtime": "python", "timeoutSeconds": 0 }],
+      "invalid": [
+        {
+          "name": "timeoutSeconds-below-min",
+          "payload": { "timeoutSeconds": -1 },
+          "expectErrorPath": ["timeoutSeconds"]
+        },
+        {
+          "name": "requirements-item-not-string",
+          "payload": { "requirements": [1] },
+          "expectErrorPath": ["requirements", 0]
+        }
+      ]
+    },
+    "ExecuteRequest": {
+      "valid": [
+        { "executionId": "exec-1", "task": { "runtime": "python" } },
+        {
+          "executionId": "exec-2",
+          "task": {
+            "id": "t1",
+            "name": "job",
+            "runtime": "python",
+            "entrypoint": "main.py",
+            "timeoutSeconds": 0,
+            "requirements": ["requests==2.31.0"],
+            "gitRepo": "https://example.com/a.git",
+            "gitCommit": "abc123",
+            "gitBranch": "main"
+          },
+          "params": { "foo": 1 }
+        },
+        {
+          "executionId": "exec-3",
+          "task": { "runtime": "node", "someFutureField": 42 },
+          "unknownTopLevel": { "a": 1 }
+        }
+      ],
+      "invalid": [
+        {
+          "name": "missing-executionId",
+          "payload": { "task": { "runtime": "python" } },
+          "expectErrorPath": ["executionId"]
+        },
+        {
+          "name": "missing-task",
+          "payload": { "executionId": "exec-1" },
+          "expectErrorPath": ["task"]
+        },
+        {
+          "name": "executionId-not-string",
+          "payload": { "executionId": 123, "task": {} },
+          "expectErrorPath": ["executionId"]
+        },
+        {
+          "name": "executionId-path-traversal",
+          "payload": { "executionId": "../etc/passwd", "task": {} },
+          "expectErrorPath": ["executionId"]
+        },
+        {
+          "name": "task-not-object",
+          "payload": { "executionId": "exec-1", "task": "nope" },
+          "expectErrorPath": ["task"]
+        },
+        {
+          "name": "task-timeoutSeconds-above-max",
+          "payload": { "executionId": "exec-1", "task": { "timeoutSeconds": 86401 } },
+          "expectErrorPath": ["task", "timeoutSeconds"]
+        }
+      ]
+    },
+    "ConfigReloadRequest": {
+      "valid": [
+        {},
+        { "maxConcurrentTasks": 4 },
+        { "workDir": "/tmp/x", "adminApiUrls": ["http://a"] }
+      ],
+      "invalid": [
+        {
+          "name": "maxConcurrentTasks-below-1",
+          "payload": { "maxConcurrentTasks": 0 },
+          "expectErrorPath": ["maxConcurrentTasks"]
+        },
+        {
+          "name": "heartbeatIntervalSeconds-below-5",
+          "payload": { "heartbeatIntervalSeconds": 1 },
+          "expectErrorPath": ["heartbeatIntervalSeconds"]
+        },
+        {
+          "name": "adminApiUrls-not-array",
+          "payload": { "adminApiUrls": "nope" },
+          "expectErrorPath": ["adminApiUrls"]
+        }
+      ]
+    },
+    "ConfigReloadResponse": {
+      "valid": [
+        {
+          "success": true,
+          "message": "ok",
+          "updated_fields": ["workDir"],
+          "ignored_fields": []
+        }
+      ],
+      "invalid": [
+        {
+          "name": "missing-ignored_fields",
+          "payload": {
+            "success": true,
+            "message": "ok",
+            "updated_fields": []
+          },
+          "expectErrorPath": ["ignored_fields"]
+        }
+      ]
+    },
+    "HealthReadyResponse": {
+      "valid": [
+        { "status": "ready" },
+        { "status": "not_ready", "reason": "admin-api unreachable" }
+      ],
+      "invalid": [
+        {
+          "name": "deprecated-status-unready",
+          "payload": { "status": "unready" },
+          "expectErrorPath": ["status"]
+        }
+      ]
+    }
   }
 }

@@ -193,7 +193,10 @@ export interface ExecuteRequest {
 
 /** executionId 会被用作 workDir 下的目录名——限定安全字符集，杜绝路径穿越
  *  （S6/Q11 的字符级前置，深度解析检查见 validateExecutionWorkDir）。 */
-function isSafeExecutionIdSegment(id: string): boolean {
+// A3（executor-protocol）：导出以便 spec 与 protocol.json 的
+// ExecuteRequest.executionId pattern 做**逐字符**一致性断言——两处正则各改一处
+// 就会让「协议说的」与「执行器实际拦的」分叉（正是本契约要消灭的漂移）。
+export function isSafeExecutionIdSegment(id: string): boolean {
   return /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(id);
 }
 
