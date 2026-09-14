@@ -346,6 +346,51 @@ describe("AppDeploymentService rollout（DEP-02/DEP-03）", () => {
       delete mockApp.manifest;
     }, 15000);
 
+    it("R-07: 探针 URL 过 SSRF 策略——地址解析到 link-local 云元数据即拒绝且不发出请求（fail-closed）", async () => {
+      const deployments = [row("d1"), row("d2")];
+      repo.find.mockImplementation(async ({ where }: any) => {
+        if (where && "rolloutState" in where) return [];
+        return deployments;
+      });
+      repo.findOne.mockImplementation(
+        async ({ where }: any) =>
+          deployments.find((d) => d.id === where.id) ?? null,
+      );
+      const upSpy = jest
+        .spyOn(service, "upgrade")
+        .mockResolvedValue(deployments[0]);
+      mockApp.manifest = { healthCheck: { path: "/health", port: 8080 } };
+      // 执行器地址由执行器自报（register/heartbeat 可注入）——解析到云元数据
+      mockedLookup.mockResolvedValue([{ address: "169.254.169.254", family: 4 }]);
+
+      await service.upgradeAllWithRollout("app-1", {
+        strategy: "canary",
+        percentage: 50,
+      });
+      await service.handleHeartbeat({
+        deploymentId: "d1",
+        status: "running",
+      } as any);
+      await new Promise((r) => setTimeout(r, 100));
+
+      // 盲探被拦：出站 GET 根本没发出（此前会真的打过去拿 2xx-4xx 当"端口活体"）
+      expect(mockAxiosGet).not.toHaveBeenCalled();
+      // fail-closed：canary 台判失败，不提升其余台
+      expect(upSpy).not.toHaveBeenCalledWith("d2");
+      const failedRows = repo.save.mock.calls
+        .map(([e]: any[]) => e)
+        .filter(
+          (e: any) =>
+            e.id === "d1" && e.rolloutState === RolloutState.FAILED,
+        );
+      // save 收到的是同一被就地改写的行对象，故按 ≥1 断言（存在即已落 FAILED）。
+      expect(failedRows.length).toBeGreaterThanOrEqual(1);
+      expect(failedRows[0].rolloutMeta?.failureReason).toContain(
+        "health probe URL refused",
+      );
+      delete mockApp.manifest;
+    }, 15000);
+
     it("failThreshold 窗口耗尽：批次失败 + 已升级台自动回滚（upgradeWithSnapshot 链）", async () => {
       // 部署行地址为 host:port 形态（validateExecutorAddress 只认该形态；
       // 与既有 app-deployment.service.spec 的 203.0.113.10:3001 夹具同约定）。

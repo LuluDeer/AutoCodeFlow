@@ -3,6 +3,7 @@ import { ConfigService } from "@nestjs/config";
 import { getRepositoryToken } from "@nestjs/typeorm";
 import { UsersService } from "../users.service";
 import { User, UserRole } from "../entities/user.entity";
+import { RefreshToken } from "../../auth/entities/refresh-token.entity";
 import * as bcrypt from "bcrypt";
 
 jest.mock("bcrypt");
@@ -19,6 +20,8 @@ const makeRepo = (overrides: Partial<Record<string, jest.Mock>> = {}) => ({
   update: jest.fn().mockResolvedValue({ affected: 1 }),
   increment: jest.fn().mockResolvedValue({ affected: 1, generatedMaps: [] }),
   createQueryBuilder: jest.fn(),
+  // R-14: remove() 经 manager.transaction 拿 User/RefreshToken 仓储。
+  manager: { transaction: jest.fn(), getRepository: jest.fn() },
   ...overrides,
 });
 
@@ -37,17 +40,27 @@ const makeQb = (executeResults: any[] = []) => {
 describe("UsersService", () => {
   let service: UsersService;
   let repo: ReturnType<typeof makeRepo>;
+  let refreshRepo: ReturnType<typeof makeRepo>;
   // ARCH-27: initialAdmin 配置经 ConfigService 读取 —— spec 注入桩实现。
   let configService: { get: jest.Mock };
 
   beforeEach(async () => {
     repo = makeRepo();
+    refreshRepo = makeRepo();
+    // R-14: 事务桩——把事务内 getRepository 映射到 User/RefreshToken 两个 mock。
+    repo.manager.transaction.mockImplementation(async (cb: any) =>
+      cb({
+        getRepository: (entity: unknown) =>
+          entity === RefreshToken ? refreshRepo : repo,
+      }),
+    );
     configService = { get: jest.fn().mockReturnValue(undefined) };
     (bcrypt.hash as jest.Mock).mockResolvedValue("hashed-password");
     const module = await Test.createTestingModule({
       providers: [
         UsersService,
         { provide: getRepositoryToken(User), useValue: repo },
+        { provide: getRepositoryToken(RefreshToken), useValue: refreshRepo },
         { provide: ConfigService, useValue: configService },
       ],
     }).compile();
@@ -331,6 +344,90 @@ describe("UsersService", () => {
       expect(qb2.andWhere).toHaveBeenCalledWith(
         "(lockedUntil IS NULL OR lockedUntil < :now)",
         { now: expect.any(Date) },
+      );
+    });
+  });
+
+  // R-14（DEEP_REVIEW 0ef3bbe）：删除用户三重守卫 + 凭据回收。
+  describe("remove (R-14)", () => {
+    const adminQb = (admins: Array<{ id: number }>) => ({
+      setLock: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      getMany: jest.fn().mockResolvedValue(admins),
+    });
+
+    it("refuses self-deletion before opening a transaction", async () => {
+      await expect(service.remove(1, 1)).rejects.toThrow(
+        "Cannot delete your own account",
+      );
+      expect(repo.manager.transaction).not.toHaveBeenCalled();
+      expect(repo.remove).not.toHaveBeenCalled();
+    });
+
+    it("deletes a non-admin user and reclaims their refresh tokens", async () => {
+      repo.findOne.mockResolvedValue({
+        id: 5,
+        username: "bob",
+        role: UserRole.USER,
+      });
+
+      await expect(service.remove(5, 1)).resolves.toEqual({ deleted: true });
+
+      // 非管理员不查管理员集合（省一次带锁查询）
+      expect(repo.createQueryBuilder).not.toHaveBeenCalled();
+      expect(refreshRepo.delete).toHaveBeenCalledWith({ userId: 5 });
+      expect(repo.remove).toHaveBeenCalled();
+    });
+
+    it("refuses to delete the last administrator (locked count)", async () => {
+      repo.findOne.mockResolvedValue({
+        id: 1,
+        username: "admin",
+        role: UserRole.ADMIN,
+      });
+      const qb = adminQb([{ id: 1 }]);
+      repo.createQueryBuilder.mockReturnValue(qb);
+
+      await expect(service.remove(1, 9)).rejects.toThrow(
+        "Cannot delete the last administrator",
+      );
+      expect(qb.setLock).toHaveBeenCalledWith("pessimistic_write");
+      expect(refreshRepo.delete).not.toHaveBeenCalled();
+      expect(repo.remove).not.toHaveBeenCalled();
+    });
+
+    it("allows deleting an admin when another admin remains, reclaiming tokens", async () => {
+      repo.findOne.mockResolvedValue({
+        id: 1,
+        username: "admin",
+        role: UserRole.ADMIN,
+      });
+      const qb = adminQb([{ id: 1 }, { id: 2 }]);
+      repo.createQueryBuilder.mockReturnValue(qb);
+
+      await expect(service.remove(1, 9)).resolves.toEqual({ deleted: true });
+      expect(refreshRepo.delete).toHaveBeenCalledWith({ userId: 1 });
+      expect(repo.remove).toHaveBeenCalled();
+    });
+
+    it("throws NotFound when the target row vanished", async () => {
+      repo.findOne.mockResolvedValue(null);
+      await expect(service.remove(42, 1)).rejects.toThrow(
+        "User #42 not found",
+      );
+      expect(repo.remove).not.toHaveBeenCalled();
+    });
+
+    it("still enforces the last-admin guard when no acting user is passed", async () => {
+      // 内部调用（actingUserId 缺省）跳过自删判定，但最后管理员守卫不放松。
+      repo.findOne.mockResolvedValue({
+        id: 1,
+        username: "admin",
+        role: UserRole.ADMIN,
+      });
+      repo.createQueryBuilder.mockReturnValue(adminQb([{ id: 1 }]));
+      await expect(service.remove(1)).rejects.toThrow(
+        "Cannot delete the last administrator",
       );
     });
   });

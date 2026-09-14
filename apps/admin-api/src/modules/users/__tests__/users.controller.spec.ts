@@ -192,7 +192,8 @@ describe("UsersController", () => {
     it("admin can delete user and log audit", async () => {
       usersSvc.remove.mockResolvedValue(undefined);
       await controller.remove(5, adminUser, mockReq);
-      expect(usersSvc.remove).toHaveBeenCalledWith(5);
+      // R-14: 发起者 id 必须透传（服务层据此拒绝自删并保护最后一名管理员）。
+      expect(usersSvc.remove).toHaveBeenCalledWith(5, adminUser.id);
       expect(auditSvc.log).toHaveBeenCalledWith(
         expect.objectContaining({ action: "user.delete", resourceId: "5" }),
       );
