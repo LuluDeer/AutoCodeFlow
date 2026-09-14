@@ -117,8 +117,13 @@ export async function pullOnce(): Promise<void> {
   }
 }
 
+// E-07: 保存 pull 循环句柄，供优雅停机（main.ts gracefulShutdown 首步）
+// clearInterval 停止——避免 drain/关机阶段继续领取新任务。
+let pullLoopInterval: NodeJS.Timeout | null = null;
+
 export function startPullLoop(): NodeJS.Timeout {
-  return setInterval(() => {
+  // E-07: 保存句柄（原实现直接 return 丢弃）；停机路径据此停止 pull 循环。
+  pullLoopInterval = setInterval(() => {
     // 廉价预检（预留本身在 pullOnce 内原子完成，双保险不改变正确性）：
     // E-01 后 getRunningCount() 诚实包含预留中的槽位，满载时连 pullOnce
     // 都不必进入。
@@ -126,4 +131,13 @@ export function startPullLoop(): NodeJS.Timeout {
       void pullOnce();
     }
   }, 1000);
+  return pullLoopInterval;
+}
+
+/** E-07: 停止 pull 取件循环（main.ts gracefulShutdown 首步调用）。 */
+export function stopPullLoop(): void {
+  if (pullLoopInterval) {
+    clearInterval(pullLoopInterval);
+    pullLoopInterval = null;
+  }
 }

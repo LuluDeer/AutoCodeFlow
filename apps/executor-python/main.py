@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
+import contextlib
 from functools import partial
 import asyncio
 import logging
@@ -28,6 +29,7 @@ logger = logging.getLogger(__name__)
 # Graceful shutdown state
 _shutting_down = False
 _heartbeat_task = None
+_pull_task = None  # E-07: pull 取件循环句柄（优雅停机第一步取消）
 
 # SEC-NEW-3: startup register outcome for the re-register chain (True after a
 # successful register — maybe_re_register short-circuits; False keeps the
@@ -74,7 +76,7 @@ async def wait_for_tasks(timeout_seconds: int = 30):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _heartbeat_task, _register_succeeded
+    global _heartbeat_task, _pull_task, _register_succeeded
     # Check Admin API connectivity first so startup logs show clear diagnostics.
     await check_admin_api_connectivity()
     # R4-C P2: warn loudly when the executor would run in dev-mode (no token).
@@ -110,6 +112,13 @@ async def lifespan(app: FastAPI):
     maintenance.start_disk_cleanup_task()
     logger.info(f'Executor started: {settings.app_name} @ {settings.executor_address}')
     yield
+    # E-07: 优雅停机第一步取消 pull 取件循环（node main.ts clearInterval 对等）
+    # ——否则 pull 循环在 drain/关机阶段仍领取新任务，与停机流程竞争。
+    if _pull_task is not None:
+        _pull_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await _pull_task
+        _pull_task = None
     # Graceful shutdown: wait for running tasks to complete
     _heartbeat_task.cancel()
     if get_running_count() > 0:
@@ -193,6 +202,10 @@ def _register_payload() -> dict:
 async def register_executor() -> bool:
     """POST /executors/register with the static bootstrap token. Returns True
     on a 2xx with the stored tokenHash adopted; False on any failure."""
+    global _register_succeeded
+    # E-15: 默认置 False；成功分支下方置位，确保补注册收敛（SEC-NEW-3 钩子
+    # 在首次补注册成功后不再重发 register，避免与 admin 幂等注册叠加成风暴）。
+    _register_succeeded = False
     try:
         # R9-fix (P1, VERIFY-round9-e2e §1.4): admin's POST /executors/register
         # authenticates with verifyExecutorToken, which only accepts the shared
@@ -234,6 +247,7 @@ async def register_executor() -> bool:
             except Exception:  # pragma: no cover - non-JSON admin bodies
                 pass
             logger.info('Registered to admin-api')
+            _register_succeeded = True  # E-15: 成功置位 → 补注册收敛
             return True
     except Exception as e:
         # SEC-NEW-3 (N41 parity): register failure is recoverable — the

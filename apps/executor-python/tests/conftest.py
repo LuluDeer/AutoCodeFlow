@@ -106,3 +106,16 @@ def _clear_live_executions():
     execute_module._live_executions.clear()
     execute_module._dead_letter_count_cache[0] = -1
     execute_module._callback_retry_stop.clear()
+
+
+@pytest.fixture(autouse=True)
+def _clear_token_fetch_backoff():
+    """E-11: the token refresh failure-backoff timestamp is module state. A
+    failed fetch in one test would otherwise make the next test's
+    _refresh_token_if_needed return early (skipping the fetch), surfacing as a
+    missing/unchanged token. Reset before and after every test, mirroring
+    _clear_live_executions."""
+    import auth as auth_module
+    auth_module._token_fetch_failed_at = 0.0
+    yield
+    auth_module._token_fetch_failed_at = 0.0

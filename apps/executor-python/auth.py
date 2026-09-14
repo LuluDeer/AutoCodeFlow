@@ -3,6 +3,7 @@ import asyncio
 import hmac
 import logging
 import os
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Optional
 
@@ -39,6 +40,14 @@ def get_static_token() -> str | None:
 _dynamic_token = None
 _token_expires_at = None
 _token_refresh_interval = 30 * 60  # 30 minutes
+
+# E-11 (parity with executor-node middleware/auth.ts TOKEN_FETCH_BACKOFF_MS):
+# monotonic timestamp of the last failed /token fetch — inbound /api requests
+# skip the refresh within _TOKEN_FETCH_BACKOFF_SECONDS so a down admin-api does
+# not make every request block on a ~10s fetch timeout. Clock is monotonic
+# (not wall-clock) to stay immune to system time changes.
+_token_fetch_failed_at = 0.0  # type: float
+_TOKEN_FETCH_BACKOFF_SECONDS = 30.0
 
 # R9 (round-9, W3 parity with executor-node admin-envelope.ts): the
 # executor's CURRENT stored tokenHash, as echoed by admin-api on register,
@@ -187,8 +196,15 @@ async def _fetch_token() -> Optional[str]:
 
 async def _refresh_token_if_needed() -> None:
     """Refresh token if expired or about to expire."""
-    global _dynamic_token, _token_expires_at
-    
+    global _dynamic_token, _token_expires_at, _token_fetch_failed_at
+    # E-11 (parity with executor-node middleware/auth.ts TOKEN_FETCH_BACKOFF_MS):
+    # after a failed /token fetch, back off for 30s so admin-api being
+    # unreachable does not make every inbound /api request block on a ~10s
+    # fetch timeout. Clock is monotonic (not wall-clock) — immune to system
+    # time changes.
+    now_mono = time.monotonic()
+    if _token_fetch_failed_at and (now_mono - _token_fetch_failed_at) < _TOKEN_FETCH_BACKOFF_SECONDS:
+        return
     now = datetime.now(timezone.utc)
     # Refresh if no token, expired, or within 5 minutes of expiration
     if _token_expires_at is None or now >= _token_expires_at - timedelta(minutes=5):
@@ -196,6 +212,11 @@ async def _refresh_token_if_needed() -> None:
         if new_token:
             _dynamic_token = new_token
             _token_expires_at = now + timedelta(seconds=_token_refresh_interval)
+            _token_fetch_failed_at = 0.0  # E-11: 成功重置退避计时
+        else:
+            # E-11: 失败计时——退避期内 inbound 请求跳过刷新，避免每请求一发
+            # 10s 超时炮灰（admin 不可达时 verify_token 每请求走 refresh 链）。
+            _token_fetch_failed_at = now_mono
 
 
 def require_token_enabled() -> bool:
@@ -272,12 +293,14 @@ async def force_token_refresh() -> Optional[str]:
     to adopt the matching tokenHash (R9/W3). So one call here heals BOTH the
     bearer credential and the N26 per-execution callback HMAC secret.
 
-    Unlike executor-node there is no fetch-failure backoff to preserve: this
-    module's ``_refresh_token_if_needed`` only sets ``_token_expires_at`` on a
-    *successful* fetch, so a failed fetch leaves the schedule untouched and the
-    next call retries — and ``request_with_self_heal`` only reaches here after
-    admin-api actually answered (a 401 verdict, not a connect failure), so the
-    re-fetch is against a reachable admin. Returns the current dynamic token
+    E-11 (parity with executor-node middleware/auth.ts TOKEN_FETCH_BACKOFF_MS):
+    this module's ``_refresh_token_if_needed`` now applies a 30s fetch-failure
+    backoff (the original had none) so a down admin-api does not make every
+    inbound request block on the ~10s fetch timeout. A failed fetch records
+    ``_token_fetch_failed_at`` (monotonic) and the next call within the window
+    returns early; ``request_with_self_heal`` still only reaches here after
+    admin-api actually answered (a 401 verdict, not a connect failure). Returns
+    the current dynamic token
     (``None`` when the fetch failed, in which case the caller must NOT retry).
     """
     global _token_expires_at

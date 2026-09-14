@@ -224,4 +224,45 @@ describe('callbacks', () => {
     expect(post).not.toHaveBeenCalled();
     expect(jest.getTimerCount()).toBe(0);
   });
+
+  it('E-05: dead-letters a persisted callback only after CALLBACK_FILE_MAX_RETRIES rounds (lifetime budget)', async () => {
+    // 轮数上限 150（毒丸文件防护）；真正的保护是时长型预算——指数退避门控
+    // （base 5s/cap 600s）让重发周期约 24h 量级覆盖 admin 滚动升级窗口，
+    // 而非无限每秒重发占满磁盘。
+    expect(cb.CALLBACK_FILE_MAX_RETRIES).toBe(150);
+    expect(cb.CALLBACK_REPLAY_BACKOFF_BASE_MS).toBe(5_000);
+    expect(cb.CALLBACK_REPLAY_BACKOFF_MAX_MS).toBe(600_000);
+    // 时长预算推导守卫：base/cap/轮数 ⇒ ≈24h（任一常量单改而注释未同步时先红）。
+    const budgetMs = Array.from({ length: cb.CALLBACK_FILE_MAX_RETRIES }, (_, k) =>
+      Math.min(cb.CALLBACK_REPLAY_BACKOFF_BASE_MS * 2 ** k, cb.CALLBACK_REPLAY_BACKOFF_MAX_MS),
+    ).reduce((a, b) => a + b, 0);
+    expect(budgetMs).toBeGreaterThanOrEqual(23 * 3_600_000);
+    expect(budgetMs).toBeLessThanOrEqual(25 * 3_600_000);
+    const callbackDir = path.join(dir, 'callbacks');
+    fs.mkdirSync(callbackDir, { recursive: true });
+    const fname = path.join(callbackDir, `callback-${Date.now()}-0.json`);
+    fs.writeFileSync(fname, JSON.stringify([{ executionId: 'poison', status: 'failed', errorMessage: 'x' }]));
+    // 轮数接近阈值（149），updatedAt 回退足够久使指数退避门控（cap 600s）必然
+    // 通过 → 重发一次后达到 150 即死信（验证不会无限重发）。
+    fs.writeFileSync(`${fname}.meta`, JSON.stringify({ retries: 149, updatedAt: Date.now() - 700_000 }));
+    post.mockRejectedValue(new Error('admin down'));
+    cb.startCallbackThread();
+    // 先停下（drain 边界尽快退出），再推进足够假时间：首轮回放即死信该文件。
+    const stopping = cb.stopCallbackThread();
+    await jest.advanceTimersByTimeAsync(3_000);
+    await stopping;
+    const deadDir = path.join(callbackDir, 'dead-letter');
+    const dead = fs.existsSync(deadDir) ? fs.readdirSync(deadDir).filter(f => f.endsWith('.json')) : [];
+    expect(dead.length).toBeGreaterThanOrEqual(1);
+    expect(fs.existsSync(fname)).toBe(false);
+  });
+
+  it('E-44: live callback backoff multiplies by (0.5 + rng) jitter coefficient', () => {
+    // rng=0 → 0.5×；rng=1 → 1.5×（范围对齐 python _callback_retry_sleep_seconds，
+    // 避免多 executor 在同一 admin 恢复窗口后同步重试惊群）。
+    expect(cb.computeRetryBackoffMs(0, () => 0)).toBeCloseTo(1_000 * 0.5);
+    expect(cb.computeRetryBackoffMs(0, () => 1)).toBeCloseTo(1_000 * 1.5);
+    expect(cb.computeRetryBackoffMs(2, () => 0)).toBeCloseTo(1_000 * 4 * 0.5);
+    expect(cb.computeRetryBackoffMs(2, () => 1)).toBeCloseTo(1_000 * 4 * 1.5);
+  });
 });

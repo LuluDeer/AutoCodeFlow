@@ -335,6 +335,73 @@ describe('cleanupWorkDir (disk reclamation)', () => {
     fl.stopWorkDirCleanup();
     fl.stopWorkDirCleanup();
   });
+
+  it('E-08: 活跃 execution 工作目录在 TTL 超期后仍被保留', () => {
+    const oldDate = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
+    const liveExec = path.join(dir, 'exec-live');
+    const deadExec = path.join(dir, 'exec-old');
+    fs.mkdirSync(liveExec, { recursive: true });
+    fs.mkdirSync(deadExec, { recursive: true });
+    fs.utimesSync(liveExec, oldDate, oldDate);
+    fs.utimesSync(deadExec, oldDate, oldDate);
+
+    // 模拟 routes/execute 注册的活跃快照：exec-live 正在运行
+    fl.registerActiveWorkdirProvider(() => ({
+      executionIds: new Set(['exec-live']),
+      taskIds: new Set(),
+    }));
+
+    const result = fl.cleanupWorkDir(7);
+    expect(result.workDirs).toBe(1); // 只删除 exec-old
+    expect(fs.existsSync(liveExec)).toBe(true); // 活跃目录保护
+    expect(fs.existsSync(deadExec)).toBe(false);
+  });
+
+  it('E-08: liveness 未知（provider 抛错）时 fail-safe 不删任何东西', () => {
+    const oldDate = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
+    const oldExec = path.join(dir, 'exec-old');
+    fs.mkdirSync(oldExec, { recursive: true });
+    fs.utimesSync(oldExec, oldDate, oldDate);
+    for (const name of ['.git_cache', '.node_modules']) {
+      const sub = path.join(dir, name, 'repo-old');
+      fs.mkdirSync(sub, { recursive: true });
+      fs.utimesSync(sub, oldDate, oldDate);
+    }
+
+    // provider 抛错 -> liveness 未知 -> 删 Nothing（对照 python fail-safe）
+    fl.registerActiveWorkdirProvider(() => { throw new Error('liveness probe down'); });
+
+    const result = fl.cleanupWorkDir(7);
+    expect(result.workDirs).toBe(0);
+    expect(result.caches).toBe(0);
+    expect(fs.existsSync(oldExec)).toBe(true);
+    expect(fs.existsSync(path.join(dir, '.git_cache', 'repo-old'))).toBe(true);
+    expect(fs.existsSync(path.join(dir, '.node_modules', 'repo-old'))).toBe(true);
+  });
+
+  it('E-08: 活跃 task 的 .git_cache/.node_modules 分片不被删除', () => {
+    const oldDate = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
+    const liveCache = path.join(dir, '.git_cache', 'repo-live');
+    const liveNm = path.join(dir, '.node_modules', 'task-live');
+    const deadCache = path.join(dir, '.git_cache', 'repo-old');
+    const deadNm = path.join(dir, '.node_modules', 'task-old');
+    for (const p of [liveCache, liveNm, deadCache, deadNm]) {
+      fs.mkdirSync(p, { recursive: true });
+      fs.utimesSync(p, oldDate, oldDate);
+    }
+
+    fl.registerActiveWorkdirProvider(() => ({
+      executionIds: new Set(),
+      taskIds: new Set(['repo-live', 'task-live']),
+    }));
+
+    const result = fl.cleanupWorkDir(7);
+    expect(result.caches).toBe(2); // 只删 repo-old + task-old
+    expect(fs.existsSync(liveCache)).toBe(true); // 活跃分片保护
+    expect(fs.existsSync(liveNm)).toBe(true);
+    expect(fs.existsSync(deadCache)).toBe(false);
+    expect(fs.existsSync(deadNm)).toBe(false);
+  });
 });
 
 describe('getDeadLetterCount (heartbeat backlog gauge)', () => {

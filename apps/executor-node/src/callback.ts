@@ -71,9 +71,30 @@ async function callbackDelay(ms: number): Promise<void> {
 const CALLBACK_BATCH_SIZE = 100;
 let persistenceSequence = 0;
 
-/** A persisted callback file gets this many retry rounds before it is moved
- *  to the dead-letter directory and stops being re-sent every second. */
-const CALLBACK_FILE_MAX_RETRIES = 5;
+// E-05 (P2): 持久化回调的死信重试轮数上限。轮数上限只防毒丸文件（永不可达的
+// 回调被无限重发占满磁盘），真正的保护是"时长型预算"——下方指数退避门控让整
+// 个重发周期约为 24h 量级，足以覆盖 admin 的滚动升级窗口（期间 admin 完全
+// 不可达、回调只能排队）。node 原固定 1s 间隔（5 轮≈1min）→ 改为 base 5s 指数
+// 退避 cap 600s、轮数上限 150，实算时长预算：
+//   Σ_{k=0..149} min(5s·2^k, 600s) = 635s + 143×600s = 86435s ≈ 24.0h
+// （python 侧 base 1s/cap 600s/150 轮 ≈ 1023s + 140×600s ≈ 23.6h，两侧同量级。）
+export const CALLBACK_FILE_MAX_RETRIES = 150;
+// E-05: 持久化回调重发的指数退避门控（base 5s，cap 600s）——见上方注释。
+export const CALLBACK_REPLAY_BACKOFF_BASE_MS = 5_000;
+export const CALLBACK_REPLAY_BACKOFF_MAX_MS = 600_000;
+// 门控 base 抽成可注入变量：固定计时器套件（callback.sharding.spec.ts）把 base
+// 注入为 0 以恢复"即时重发"语义；生产默认 5s。这样门控既能落在真实时间上实现
+// E-05 的时长预算，又不破坏基于冻结 Date.now() 的既有单测。
+let replayBackoffBaseMs = CALLBACK_REPLAY_BACKOFF_BASE_MS;
+export function setCallbackReplayBackoffBaseMs(ms: number): void {
+  replayBackoffBaseMs = ms;
+}
+// E-44: 实时回调指数退避乘 (0.5 + Math.random()) 抖动系数，避免多 executor 在
+// 同一 admin 恢复窗口后同步重试（惊群）。范围与 python _callback_retry_sleep_seconds 对齐。
+const CALLBACK_LIVE_BASE_DELAY_MS = 1_000;
+export function computeRetryBackoffMs(attempt: number, rng: () => number = Math.random): number {
+  return CALLBACK_LIVE_BASE_DELAY_MS * Math.pow(2, attempt) * (0.5 + rng());
+}
 
 // Lazily computed so that config.workDir is resolved at call time, not at module load
 function getCallbackDir(): string {
@@ -178,14 +199,24 @@ function deadLetterCallbackFile(filepath: string, reason: string): void {
   } catch (_) { /* meta may not exist */ }
 }
 
-function readRetryCount(filepath: string): number {
+/** E-05: 读取持久化回调的 .meta：重试轮数 + 上次尝试时间戳（updatedAt，缺省
+ *  回退 persistedAt）。上次尝试时间戳驱动下方指数退避门控，避免每秒重发。 */
+function readRetryMeta(filepath: string): { retries: number; updatedAt: number } {
   try {
     const raw = fs.readFileSync(`${filepath}.meta`, 'utf-8');
-    const meta = JSON.parse(raw) as { retries?: number };
-    return typeof meta.retries === 'number' && meta.retries >= 0 ? meta.retries : 0;
+    const meta = JSON.parse(raw) as { retries?: number; updatedAt?: number; persistedAt?: number };
+    const retries = typeof meta.retries === 'number' && meta.retries >= 0 ? meta.retries : 0;
+    const updatedAt =
+      typeof meta.updatedAt === 'number' ? meta.updatedAt
+        : (typeof meta.persistedAt === 'number' ? meta.persistedAt : 0);
+    return { retries, updatedAt };
   } catch {
-    return 0;
+    return { retries: 0, updatedAt: 0 };
   }
+}
+
+function readRetryCount(filepath: string): number {
+  return readRetryMeta(filepath).retries;
 }
 
 function writeRetryCount(filepath: string, retries: number): void {
@@ -210,7 +241,8 @@ async function retryFailedCallbacks(): Promise<void> {
 
       const filepath = path.join(callbackDir, file);
       try {
-        const retries = readRetryCount(filepath);
+        const meta = readRetryMeta(filepath);
+        const retries = meta.retries;
         if (retries >= CALLBACK_FILE_MAX_RETRIES) {
           deadLetterCallbackFile(filepath, `${retries} failed retry rounds`);
           continue;
@@ -219,6 +251,14 @@ async function retryFailedCallbacks(): Promise<void> {
           deadLetterCallbackFile(filepath, 'oversized payload');
           continue;
         }
+        // E-05: 指数退避门控（见上方常量注释）。轮数上限只防毒丸文件；时长预算
+        // 约 24h 量级覆盖 admin 滚动升级窗口。首轮 meta.updatedAt 缺省回退到较早的
+        // persistedAt，门控必然通过 → 即时重发；后续轮按 base*2**retries（cap 600s）。
+        const gateMs = Math.min(
+          replayBackoffBaseMs * Math.pow(2, retries),
+          CALLBACK_REPLAY_BACKOFF_MAX_MS,
+        );
+        if (meta.updatedAt && Date.now() - meta.updatedAt < gateMs) continue;
 
         const content = fs.readFileSync(filepath, 'utf-8');
         const requests = JSON.parse(content) as CallbackRequest[];
@@ -254,7 +294,6 @@ async function retryFailedCallbacks(): Promise<void> {
 
 async function processCallbacksWithBackoff(requests: CallbackRequest[]): Promise<void> {
   const MAX_RETRIES = 5;
-  const BASE_DELAY_MS = 1000;
   // admin-api rejects batches > 100 outright — a batch larger than that would
   // fail all 5 attempts and then poison the persisted file forever.
   const failed: CallbackRequest[] = [];
@@ -270,7 +309,7 @@ async function processCallbacksWithBackoff(requests: CallbackRequest[]): Promise
       if (delivered || drainExpired) break;
       logger.warn(`Callback attempt ${attempt + 1}/${MAX_RETRIES} failed for ${chunk.length} item(s)`);
       if (attempt < MAX_RETRIES - 1) {
-        const delay = BASE_DELAY_MS * Math.pow(2, attempt);
+        const delay = computeRetryBackoffMs(attempt);
         await callbackDelay(delay);
         if (drainExpired) break;
       }

@@ -60,7 +60,12 @@ jest.mock('../callback', () => ({
   truncateCallbackErrorMessage: jest.fn((m?: string) => m),
 }));
 
-jest.mock('../file-logger', () => ({ appendLog: jest.fn() }));
+jest.mock('../file-logger', () => ({
+  appendLog: jest.fn(),
+  getDeadLetterCount: jest.fn(() => 0),
+  // E-08: cleanupWorkDir 据此跳过活跃 execution 目录；测试默认返回空集（无活跃）。
+  registerActiveWorkdirProvider: jest.fn(),
+}));
 
 // Worker stub that mirrors the real TaskWorker contract:
 // - runPrepared (prepare + spawn) is invoked when the execution's turn comes;
@@ -288,6 +293,17 @@ describe('POST /api/execute', () => {
     });
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/Invalid npm package name/);
+  });
+
+  it('E-19: returns 400 when requirements is not an array', async () => {
+    // 上游 DTO 演进误传字符串会让 `for (const pkg of reqs)` 逐字符当包名迭代
+    // （python _validate_requirements 同源问题）——同步 400 拒绝。
+    const res = await request(appNoAuth).post('/api/execute').send({
+      executionId: 'exec-req-array',
+      task: { runtime: 'node', entrypoint: 'index.js', requirements: 'lodash' },
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/array/i);
   });
 
   it('returns 400 for duplicate execution (already active)', async () => {

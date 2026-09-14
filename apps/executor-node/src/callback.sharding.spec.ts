@@ -76,6 +76,9 @@ describe('callback persistence — batch sharding and dead-letter', () => {
     jest.useFakeTimers();
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'acf-cb-'));
     cb = loadCallbackModule(dir);
+    // E-05: 该套件基于冻结 Date.now() 的固定计时器，注入 base=0 恢复"即时重发"
+    // 语义（门控时长预算落在真实时间上，不破坏此处既有断言）。
+    cb.setCallbackReplayBackoffBaseMs(0);
     post = (jest.requireMock('./admin-client') as { post: jest.Mock }).post;
     post.mockReset();
   });
@@ -159,7 +162,9 @@ describe('callback persistence — batch sharding and dead-letter', () => {
     cb.pushCallback({ executionId: 'exec-poison', status: 'failed', errorMessage: 'x' });
 
     let deadLetterFile: string | undefined;
-    for (let i = 0; i < 80 && !deadLetterFile; i++) {
+    // 轮数上限由 CALLBACK_FILE_MAX_RETRIES 决定（E-05：150 轮 ≈ 24h 时长预算），
+    // 循环上界跟随常量，避免上限调整后此处静默失去覆盖。
+    for (let i = 0; i < cb.CALLBACK_FILE_MAX_RETRIES + 20 && !deadLetterFile; i++) {
       await sweep();
       deadLetterFile = deadLetterFiles().find(f => f.endsWith('.json'));
     }

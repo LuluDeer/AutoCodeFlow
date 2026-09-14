@@ -29,7 +29,7 @@ import {
 import { checkAdminApiConnectivity, initAdminClients, post, postWithStaticToken } from './admin-client';
 import { adoptExecutorTokenHash } from './admin-envelope';
 import { taskWorkerManager } from './task-worker';
-import { startPullLoop } from './pull';
+import { startPullLoop, stopPullLoop } from './pull';
 import { killRunningTaskProcesses } from './routes/execute';
 import { healthRouter } from './routes/health';
 import { executeRouter } from './routes/execute';
@@ -152,6 +152,11 @@ async function gracefulShutdown(signal: string, exitCode = 0): Promise<void> {
   isShuttingDown = true;
 
   logger.info(`Received ${signal}, initiating graceful shutdown...`);
+
+  // E-07: 优雅停机第一步停止 pull 取件循环——drain/关机阶段不再领取新任务
+  // （与 python main.py 取消 _pull_task 对等）。pull 循环每秒一次，若不停机会
+  // 与后续停机步骤竞争领取任务。
+  stopPullLoop();
 
   // Stop heartbeat
   if (heartbeatInterval) {

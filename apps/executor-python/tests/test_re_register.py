@@ -243,3 +243,23 @@ class TestRegisterExecutorReturns:
         await register_executor()
 
         assert client.post.call_args.kwargs['json'] == main_module._register_payload()
+
+
+class TestRegisterSuccessSetsFlagE15:
+    @pytest.mark.asyncio
+    async def test_register_success_sets_flag_then_re_register_converges(self, monkeypatch):
+        """E-15: register_executor 成功必须置位 _register_succeeded——否则首次
+        补注册成功后 maybe_re_register 仍会重发（与 admin 幂等注册叠加成风暴）。
+        验证成功置位后 maybe_re_register 短路、不再调用 register。"""
+        client = _mock_client()
+        _ok_register(client)
+        monkeypatch.setattr(main_module.httpx, 'AsyncClient', lambda *a, **k: client)
+
+        ok = await register_executor()
+        assert ok is True
+        assert main_module._register_succeeded is True  # E-15 关键修复点
+
+        rereg = AsyncMock()
+        monkeypatch.setattr(main_module, 'register_executor', rereg)
+        await maybe_re_register()
+        rereg.assert_not_awaited()  # 已注册 → 短路，不再重发

@@ -12,12 +12,13 @@ import sys
 import threading
 import time
 import uuid
+import random
 from pathlib import Path
 from urllib.parse import urlsplit
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 import scheduler as sched
 from auth import verify_token, get_current_token, request_with_self_heal
 from admin_api import build_admin_api_url, get_admin_api_base_url
@@ -810,6 +811,14 @@ def accept_execution(
             f'Execution {req.executionId} is already active on this executor',
         )
 
+    # E-19 (parity with executor-node execute.ts): requirements 类型守卫。上游
+    # DTO 演进误传字符串会让 `_validate_requirements` 的 `for spec in requirements`
+    # 逐字符当包名迭代（静默错装 7 个"包"）。后台化之前的同步 400 直接返回
+    # admin，绝不把 "lodash" 拆成字符；缺省（None/absent）仍当空数组。
+    req_requirements = req.task.get('requirements', [])
+    if req_requirements is not None and not isinstance(req_requirements, list):
+        raise ExecutionRejected(400, 'requirements must be an array of package names')
+
     # OBS-01: 记录派发载荷的 W3C traceparent（HTTP 路由取请求头、pull 路径取
     # 载荷字段；缺省=无追踪），注入任务 env AUTOFLOW_TRACE_ID 并随回调回传关联。
     if traceparent:
@@ -860,6 +869,12 @@ async def reject_pulled_execution(execution_id: str, reason: str,
     except Exception as exc:  # pragma: no cover - best-effort 收敛
         logger.warning('Failed to send rejection callback for %s: %s',
                        execution_id, exc)
+
+
+def _callback_retry_sleep_seconds(attempt: int, rng: Callable[[], float] = random.random) -> float:
+    """E-44: 退避乘 (0.5 + rng) 抖动系数，避免多 executor 在同一 admin 窗口后
+    同步重试（惊群）。范围对齐 node computeRetryBackoffMs 的 0.5~1.5。"""
+    return CALLBACK_RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1)) * (0.5 + rng())
 
 
 async def _send_callback_with_retry(url: str, payload: dict, token: Optional[str]) -> bool:
@@ -913,7 +928,9 @@ async def _send_callback_with_retry(url: str, payload: dict, token: Optional[str
             last_error = exc
             logger.warning('Callback attempt %d/%d failed: %s', attempt, CALLBACK_RETRY_ATTEMPTS, exc)
         if attempt < CALLBACK_RETRY_ATTEMPTS:
-            await asyncio.sleep(CALLBACK_RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1)))
+            # E-44: 指数退避乘 (0.5 + random) 抖动系数——多 executor 在同一 admin
+            # 恢复窗口后不会同步重试（惊群）。范围与 node computeRetryBackoffMs 对齐。
+            await asyncio.sleep(_callback_retry_sleep_seconds(attempt))
     logger.error('Failed to send execution callback after %d attempts: %s',
                  CALLBACK_RETRY_ATTEMPTS, last_error)
     # E2 (node persistFailedCallbacks parity): retries exhausted — park the
@@ -942,15 +959,23 @@ async def _send_callback_with_retry(url: str, payload: dict, token: Optional[str
 # fresh live callbacks are authenticated.
 # ---------------------------------------------------------------------------
 
-CALLBACK_FILE_MAX_RETRIES = 5            # replay rounds before dead-lettering
+# E-05 (P2): replay rounds before dead-lettering. 轮数上限只防毒丸文件（永不可达
+# 的回调被无限重发占满磁盘），真正的保护是"时长型预算"——下方指数退避（base 1s，
+# cap 600s）配 150 轮上限，实算时长预算：
+#   Σ_{k=0..149} min(1s·2^k, 600s) = 1023s + 140×600s = 85023s ≈ 23.6h
+# 足以覆盖 admin 的滚动升级窗口（期间 admin 完全不可达、回调只能排队）。
+# node 侧 base 5s/cap 600s/150 轮 ≈ 24.0h，两侧同量级。
+CALLBACK_FILE_MAX_RETRIES = 150           # replay rounds before dead-lettering
 CALLBACK_FILE_MAX_SIZE_BYTES = 64 * 1024 * 1024   # oversized payload guard
 CALLBACK_RETRY_SWEEP_INTERVAL_SECONDS = 1.0
 CALLBACK_DRAIN_TIMEOUT_SECONDS = 10.0    # node stopCallbackThread drain cap
-# E2: per-file exponential backoff between replay rounds (base * 2**retries,
-# capped). Base 1s matches node's 1s re-send cadence for a fresh failure;
-# later rounds back off instead of hammering a down admin-api every second.
+# E2/E-05: per-file exponential backoff between replay rounds (base * 2**retries,
+# capped at 600s). Base 1s matches node's fresh-failure cadence; later rounds
+# back off instead of hammering a down admin-api every second. cap 60→600 (node
+# parity) 覆盖 admin 滚动升级窗口；dead-letter 轮数上限只防毒丸文件，时长预算
+# 约 24h 量级。
 CALLBACK_REPLAY_BACKOFF_BASE_SECONDS = 1.0
-CALLBACK_REPLAY_BACKOFF_MAX_SECONDS = 60.0
+CALLBACK_REPLAY_BACKOFF_MAX_SECONDS = 600.0
 DEAD_LETTER_COUNT_CACHE_TTL_SECONDS = 60.0
 
 _callback_retry_task: Optional['asyncio.Task'] = None
