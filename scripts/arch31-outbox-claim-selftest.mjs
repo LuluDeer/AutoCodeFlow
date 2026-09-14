@@ -24,6 +24,8 @@ import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 
+import { ensureDatabase } from './pg-provision.lib.mjs';
+
 const REPO_ROOT = process.cwd();
 const API_DIR = path.join(REPO_ROOT, 'apps', 'admin-api');
 const requireFromApi = createRequire(path.join(API_DIR, 'noop.js'));
@@ -50,7 +52,6 @@ function ok(name, pass, detail = '') {
   results.push({ name, pass });
   console.log(`${pass ? '✔' : '✘'} ${name}${pass || !detail ? '' : `\n    ${String(detail).slice(0, 700)}`}`);
 }
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const run = (cmd, args, opts = {}) =>
   spawnSync(cmd, args, { encoding: 'utf8', timeout: 300_000, ...opts });
 
@@ -115,17 +116,17 @@ async function main() {
       '-e', 'POSTGRES_DB=autoflow_test', '-p', `${PG_PORT}:5432`, 'postgres:16-alpine',
     ]);
     if (pg.status !== 0) throw new Error(`PG 容器启动失败: ${pg.stderr}`);
-    for (let i = 0; i < 40; i += 1) {
-      if (run('docker', ['exec', PG_CONTAINER, 'pg_isready', '-U', DB_USER]).status === 0) break;
-      await sleep(1000);
-    }
-    run('docker', ['exec', PG_CONTAINER, 'psql', '-U', DB_USER, '-d', 'postgres', '-c', `CREATE DATABASE "${DB_NAME}";`]);
-  } else {
-    const create = run('psql', ['-h', DB_HOST, '-p', String(PG_PORT), '-U', DB_USER, '-d', 'postgres', '-c', `CREATE DATABASE "${DB_NAME}";`], {
-      env: { ...process.env, PGPASSWORD: DB_PASS },
-    });
-    if (create.status !== 0) throw new Error(`建库失败: ${create.stderr}`);
   }
+  // 就绪 + 建库统一走 host TCP（与迁移同一条连接路径）。原实现用容器内 socket 版
+  // pg_isready 判就绪、且不检查 CREATE DATABASE 返回码，会静默建库失败——详见
+  // scripts/pg-provision.lib.mjs 顶部注释。
+  await ensureDatabase({
+    host: DB_HOST,
+    port: PG_PORT,
+    user: DB_USER,
+    password: DB_PASS,
+    dbName: DB_NAME,
+  });
 
   // 迁移链真跑（建出 event_outbox 等表）
   const migrate = run('npm', ['run', 'migration:run'], {
