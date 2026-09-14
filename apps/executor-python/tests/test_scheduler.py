@@ -315,8 +315,11 @@ class TestVersionDriftWarning:
 
 
 class TestPullDispatch:
-    """ARCH-32（ADR-015）: pull 派发循环——空闲时长轮询取件，载荷走与 push
-    完全相同的 accept_execution；被拒不静默（补发 failed 回调）。"""
+    """ARCH-32（ADR-015）+ E-01（P1）预留槽位: pull 派发循环——先原子预留
+    一个执行槽位（与 push 派发同一 running 账本）再发长轮询，长轮询窗口内
+    push 派发抢不走最后一个空槽；载荷走与 push 完全相同的 accept_execution
+    （slot_pre_reserved=True，预留即正式占用）。400（真失败）仍补发 failed
+    回调；429（防御路径，账本异常/竞态残余）释放预留但绝不回调 failed。"""
 
     async def _run_loop_briefly(self, seconds=1.4):
         import scheduler as scheduler_module
@@ -328,10 +331,30 @@ class TestPullDispatch:
         except asyncio.CancelledError:
             pass
 
+    def _reset_running_count(self):
+        import scheduler as scheduler_module
+        scheduler_module.running_count = 0
+
+    async def _setup_common(self, monkeypatch, resp):
+        """Patch token/pull 通道：token 走内存 mock（真实 _fetch_token 会向
+        admin 发起网络请求——在 localhost 拒连缓慢的机器上会吃掉整个测试时
+        间窗，曾致本地绿 CI 红的假阴性），pull 请求返回给定响应。"""
+        import scheduler as scheduler_module
+        token_mock = AsyncMock(return_value='static-token')
+        monkeypatch.setattr(scheduler_module, 'get_current_token', token_mock)
+
+        async def fake_heal(client, method, url, **kwargs):
+            self.pull_request_kwargs = kwargs
+            self.count_during_pull = scheduler_module.get_running_count()
+            return resp
+
+        monkeypatch.setattr(scheduler_module, 'request_with_self_heal', fake_heal)
+
     @pytest.mark.asyncio
-    async def test_pull_loop_delivers_payload_to_accept_execution(self, monkeypatch):
+    async def test_pull_loop_reserves_slot_then_delivers_payload(self, monkeypatch):
         import routers.execute as execute_module
         import scheduler as scheduler_module
+        self._reset_running_count()
         resp = httpx.Response(
             200,
             json={'code': 0, 'message': 'ok',
@@ -339,57 +362,149 @@ class TestPullDispatch:
                                     'params': {}, 'traceparent': '00-trace-span-01'}}},
             request=httpx.Request('POST', 'http://test.com'),
         )
+        await self._setup_common(monkeypatch, resp)
+        accept_calls = {}
 
-        async def fake_heal(client, method, url, **kwargs):
-            assert kwargs.get('json', {}).get('waitMs') == 25000
-            return resp
-
-        monkeypatch.setattr(scheduler_module, 'request_with_self_heal', fake_heal)
-        calls = {}
-
-        def fake_accept(req, tp=None):
-            calls['req'] = req
-            calls['tp'] = tp
+        def fake_accept(req, tp=None, slot_pre_reserved=False):
+            accept_calls['req'] = req
+            accept_calls['tp'] = tp
+            accept_calls['slot_pre_reserved'] = slot_pre_reserved
             return {'status': 'accepted'}
 
         monkeypatch.setattr(execute_module, 'accept_execution', fake_accept)
 
         await self._run_loop_briefly()
 
-        assert calls['req'].executionId == 'exec-77'
-        assert calls['tp'] == '00-trace-span-01'
+        # 预留后发起 pull：长轮询进行中账本已 +1（心跳 runningTaskCount 同源）
+        assert self.count_during_pull == 1
+        assert self.pull_request_kwargs.get('json', {}).get('waitMs') == 25000
+        assert accept_calls['req'].executionId == 'exec-77'
+        assert accept_calls['tp'] == '00-trace-span-01'
+        # 预留即正式占用：accept 必须收到预留模式标记，且 pull 循环不再释放
+        # （账本保持 +1，由执行完成路径归还）
+        assert accept_calls['slot_pre_reserved'] is True
+        assert scheduler_module.get_running_count() == 1
+        self._reset_running_count()
 
     @pytest.mark.asyncio
-    async def test_pull_loop_rejection_sends_failed_callback(self, monkeypatch):
+    async def test_pull_loop_no_task_releases_reservation(self, monkeypatch):
         import routers.execute as execute_module
         import scheduler as scheduler_module
+        self._reset_running_count()
+        resp = httpx.Response(
+            200,
+            json={'code': 0, 'message': 'ok', 'data': {'task': None}},
+            request=httpx.Request('POST', 'http://test.com'),
+        )
+        await self._setup_common(monkeypatch, resp)
+        accept_mock = MagicMock()
+        monkeypatch.setattr(execute_module, 'accept_execution', accept_mock)
+
+        await self._run_loop_briefly()
+
+        assert accept_mock.call_count == 0
+        # 空窗口：预留立即归还，账本归零
+        assert scheduler_module.get_running_count() == 0
+
+    @pytest.mark.asyncio
+    async def test_pull_loop_rejection_400_sends_failed_callback_and_releases(self, monkeypatch):
+        """accept 因非容量原因（400 校验失败）被拒：释放预留 + 维持既有
+        failed 回调语义（真失败，admin 侧不留僵尸 RUNNING 行）。"""
+        import routers.execute as execute_module
+        import scheduler as scheduler_module
+        self._reset_running_count()
         resp = httpx.Response(
             200,
             json={'code': 0, 'message': 'ok',
                   'data': {'task': {'executionId': 'exec-78', 'task': {'id': 't1'}}}},
             request=httpx.Request('POST', 'http://test.com'),
         )
+        await self._setup_common(monkeypatch, resp)
 
-        async def fake_heal(client, method, url, **kwargs):
-            return resp
-
-        monkeypatch.setattr(scheduler_module, 'request_with_self_heal', fake_heal)
-
-        def fake_accept(req, tp=None):
+        def fake_accept(req, tp=None, slot_pre_reserved=False):
             raise execute_module.ExecutionRejected(400, 'already active')
 
         monkeypatch.setattr(execute_module, 'accept_execution', fake_accept)
         rejections = []
-        monkeypatch.setattr(execute_module, 'reject_pulled_execution',
-                            lambda eid, reason, tp=None: rejections.append((eid, reason)))
+
+        async def fake_reject(eid, reason, tp=None):
+            rejections.append((eid, reason))
+
+        monkeypatch.setattr(execute_module, 'reject_pulled_execution', fake_reject)
 
         await self._run_loop_briefly()
 
         assert rejections == [('exec-78', 'already active')]
+        # 预留已释放，账本归零
+        assert scheduler_module.get_running_count() == 0
+
+    @pytest.mark.asyncio
+    async def test_pull_loop_rejection_429_defense_releases_without_callback(self, monkeypatch):
+        """防御路径（账本异常/竞态残余，正常流程不可达）：释放预留 + warning，
+        绝不回调 failed——瞬态容量问题不得固化成 admin 侧永久失败，孤儿
+        RUNNING 行由 admin 侧 stale sweep 兜底收敛。"""
+        import routers.execute as execute_module
+        import scheduler as scheduler_module
+        self._reset_running_count()
+        resp = httpx.Response(
+            200,
+            json={'code': 0, 'message': 'ok',
+                  'data': {'task': {'executionId': 'exec-429', 'task': {'id': 't1'}}}},
+            request=httpx.Request('POST', 'http://test.com'),
+        )
+        await self._setup_common(monkeypatch, resp)
+
+        def fake_accept(req, tp=None, slot_pre_reserved=False):
+            raise execute_module.ExecutionRejected(429, 'Executor is at capacity')
+
+        monkeypatch.setattr(execute_module, 'accept_execution', fake_accept)
+        rejections = []
+
+        async def fake_reject(eid, reason, tp=None):
+            rejections.append((eid, reason))
+
+        monkeypatch.setattr(execute_module, 'reject_pulled_execution', fake_reject)
+        warns = []
+        monkeypatch.setattr(
+            scheduler_module.logger, 'warning',
+            lambda msg, *a, **k: warns.append(msg % a if a else msg),
+        )
+
+        await self._run_loop_briefly()
+
+        assert rejections == []  # 不补发 failed 回调
+        assert any('429 despite pre-reserved slot' in w for w in warns)
+        # 预留已释放，账本归零
+        assert scheduler_module.get_running_count() == 0
+
+    @pytest.mark.asyncio
+    async def test_pull_loop_pull_error_releases_reservation(self, monkeypatch):
+        import routers.execute as execute_module
+        import scheduler as scheduler_module
+        self._reset_running_count()
+        resp = httpx.Response(
+            200,
+            json={'code': 0, 'message': 'ok',
+                  'data': {'task': {'executionId': 'exec-77', 'task': {'id': 't1'}}}},
+            request=httpx.Request('POST', 'http://test.com'),
+        )
+        token_mock = AsyncMock(return_value='static-token')
+        monkeypatch.setattr(scheduler_module, 'get_current_token', token_mock)
+
+        async def failing_heal(client, method, url, **kwargs):
+            raise httpx.ConnectError('connection refused')
+
+        monkeypatch.setattr(scheduler_module, 'request_with_self_heal', failing_heal)
+        monkeypatch.setattr(execute_module, 'accept_execution', MagicMock())
+
+        await self._run_loop_briefly()
+
+        assert scheduler_module.get_running_count() == 0
 
     @pytest.mark.asyncio
     async def test_pull_loop_skips_polling_at_capacity(self, monkeypatch):
         import scheduler as scheduler_module
+        self._reset_running_count()
         monkeypatch.setattr(scheduler_module.settings, 'max_concurrent_tasks', 0)
 
         async def fail_heal(client, method, url, **kwargs):
