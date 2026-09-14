@@ -217,13 +217,20 @@ describe("configuration (ARCH-004/005/006) throttle, redis tls, db synchronize",
 describe("configuration (ARCH-001) CORS_ALLOWED_ORIGINS whitelist", () => {
   const ORIGINAL_ENV = process.env;
 
-  // production 模块加载即触发全部 fail-fast 校验，需要先满足其它强校验
+  // production 模块加载即触发全部 fail-fast 校验，需要先满足其它强校验。
+  //
+  // INITIAL_ADMIN_PASSWORD 必须在列：CI 的 admin-api-test job 级 env 为 e2e 种子
+  // 设了弱口令 admin123（.github/workflows/ci.yml），而下面各用例以
+  // `{ ...ORIGINAL_ENV, ...STRONG_PRODUCTION_ENV }` 重建环境——缺这一项时宿主弱
+  // 口令会经 ORIGINAL_ENV 漏进来，被 E-03 弱口令 fail-fast 误杀（表现为「合法
+  // 白名单」用例抛 INITIAL_ADMIN_PASSWORD 错）。本地 shell 无该变量，故不复现。
   const STRONG_PRODUCTION_ENV = {
     NODE_ENV: "production",
     DB_PASSWORD: "strong-database-password",
     JWT_SECRET: "strong-jwt-secret-at-least-32-characters",
     JWT_REFRESH_SECRET: "strong-refresh-secret-at-least-32-characters",
     EXECUTOR_SECRET: "strong-executor-secret",
+    INITIAL_ADMIN_PASSWORD: "Str0ng-PRODUCTION-Admin-Passphrase",
   };
 
   beforeEach(() => {
