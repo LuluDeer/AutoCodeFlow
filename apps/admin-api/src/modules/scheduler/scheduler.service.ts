@@ -28,6 +28,8 @@ import {
   ExecutionStatus,
   ExecutionFailureReason,
 } from "../task/entities/task-execution.entity";
+// A1: 终态跃迁（条件 UPDATE + RETURNING + 驱动兜底）与开放态常量的单一事实源。
+import { transitionToTerminal } from "../task/execution-terminal";
 import { Executor, ExecutorStatus } from "../executor/entities/executor.entity";
 import { ExecutorService } from "../executor/executor.service";
 import {
@@ -123,11 +125,11 @@ export function computeTriggerDedupTtlMs(task: Task): number {
 /**
  * 终态保护门（TASK-004 / R4-P1）：所有把执行推进到终态的写路径都只允许命中
  * 仍处于打开状态（pending/running）的行——并发回调已写入的终态绝不被覆盖。
+ *
+ * A1: 常量已收口到 `../task/execution-terminal` 的 `OPEN_EXECUTION_STATUSES`
+ * （此前 task.service 两处各写一份字面量，加状态必漏改）。如需在本文件内引用，
+ * 请从那里 import，勿在此重复定义。
  */
-const OPEN_EXECUTION_STATUSES = [
-  ExecutionStatus.PENDING,
-  ExecutionStatus.RUNNING,
-];
 
 @Injectable()
 export class SchedulerService implements OnModuleInit, OnModuleDestroy {
@@ -484,11 +486,11 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
 
     // 跳过本轮的行不计入 recovered，故 totalRecovered 自动不含它们。
 
-    const OPEN_STATUSES = OPEN_EXECUTION_STATUSES;
     const finishedAt = new Date();
-    // TASK-004: 通过 RETURNING 收集真正被本批 UPDATE 命中的行——竞态中
-    // 已被回调写成终态的行不会出现在受影响集合里，executor 槽位只对
-    // 确实被恢复的行释放（避免与回调路径重复释放）。
+    // A1: 终态跃迁统一走 transitionToTerminal——竞态中已被回调写成终态的行
+    // 不会出现在受影响集合里，executor 槽位只对确实被恢复的行释放。相比此前
+    // 的手写 UPDATE，额外获得「驱动未返回 RETURNING 行」的快照兜底（旧实现
+    // 直接读 result.raw，该场景会静默漏释放槽位）。
     const recoveredRows: Array<{
       id: string;
       executorAddress: string | null;
@@ -499,25 +501,19 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
       await this.dataSource.transaction(async (manager) => {
         const runUpdate = async (
           execs: TaskExecution[],
-          patch: Record<string, unknown>,
+          patch: Record<string, unknown> & { status: ExecutionStatus },
         ): Promise<void> => {
           if (execs.length === 0) return;
-          const result = await manager
-            .createQueryBuilder()
-            .update(TaskExecution)
-            .set(patch)
-            .where('"id" IN (:...ids) AND "status" IN (:...open)', {
-              ids: execs.map((e) => e.id),
-              open: OPEN_STATUSES,
-            })
-            .returning(["id", "executorAddress"])
-            .execute();
-          for (const row of (result.raw ?? []) as Array<{
-            id: string;
-            executorAddress: string | null;
-          }>) {
-            recoveredRows.push(row);
-          }
+          const { rows } = await transitionToTerminal(this.execRepo, {
+            ids: execs.map((e) => e.id),
+            patch,
+            // 槽位释放类调用：必须给快照，供「命中但驱动未返回行」时兜底。
+            addressSnapshot: new Map(
+              execs.map((e) => [e.id, e.executorAddress ?? null]),
+            ),
+            manager,
+          });
+          recoveredRows.push(...rows);
         };
 
         for (const [timeoutSec, execs] of timedOut) {
@@ -657,25 +653,22 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
       });
       const stalePendingIds = stalePending.map((exec) => exec.id);
       if (stalePendingIds.length === 0) break;
-      const result = await this.execRepo
-        .createQueryBuilder()
-        .update(TaskExecution)
-        .set({
+      // A1: 走统一入口。本桶只回收「从未被派发」的行，故门槛显式收窄为
+      // PENDING（而非默认开放态）——PENDING 行不可能持有执行器槽位，无需
+      // 传 addressSnapshot。
+      const result = await transitionToTerminal(this.execRepo, {
+        ids: stalePendingIds,
+        patch: {
           status: ExecutionStatus.FAILED,
           endTime: finishedAt,
           errorMessage:
             "Execution was never dispatched by the queue (recovered by stale sweep)",
           failureReason: ExecutionFailureReason.UNKNOWN,
-        })
-        .where('"id" IN (:...ids) AND "status" = :status', {
-          ids: stalePendingIds,
-          status: ExecutionStatus.PENDING,
-        })
-        .returning(["id"])
-        .execute();
-      const batchRecovered = ((result.raw ?? []) as unknown[]).length;
-      recoveredPending +=
-        batchRecovered > 0 ? batchRecovered : (result.affected ?? 0);
+        },
+        from: [ExecutionStatus.PENDING],
+      });
+      const batchRecovered = result.rows.length;
+      recoveredPending += batchRecovered > 0 ? batchRecovered : result.affected;
       // 这批捞满了但一条都没真正命中（竞态：并发回调已写终态）→ 再捞一次
       // 推进游标；否则若本批未捞满说明已无更多 stale PENDING，退出。
       if (stalePendingIds.length < PENDING_SWEEP_BATCH_SIZE) break;
@@ -962,37 +955,24 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
           );
           // R4-P1: the previous blind save() could overwrite a SUCCESS that
           // a concurrent callback had already committed (and double-release
-          // the executor slot, oversubscribing capacity). Use the same
-          // TASK-004 pattern as recoverStaleExecutions: a conditional UPDATE
-          // guarded by the open-status gate, with RETURNING rows deciding
-          // which slots to release.
-          const result = await this.execRepo
-            .createQueryBuilder()
-            .update(TaskExecution)
-            .set({
-              status: ExecutionStatus.CANCELLED,
-              errorMessage: "Task was covered by new trigger",
-              endTime: new Date(),
-            })
-            .where('"id" = :id AND "status" IN (:...open)', {
-              id: running.id,
-              open: OPEN_EXECUTION_STATUSES,
-            })
-            .returning(["id", "executorAddress"])
-            .execute();
-          const coveredRows = (result.raw ?? []) as Array<{
-            id: string;
-            executorAddress: string | null;
-          }>;
-          if (coveredRows.length === 0 && result.affected) {
-            // Driver reported the hit without RETURNING rows: fall back to
-            // the snapshot address. Safe — affected=1 means this UPDATE made
-            // the transition, so no concurrent callback released it already.
-            coveredRows.push({
-              id: running.id,
-              executorAddress: running.executorAddress,
-            });
-          }
+          // the executor slot, oversubscribing capacity).
+          // A1: 走统一入口——开放态门槛、RETURNING winner 判定、以及「驱动
+          // 命中但未返回行」的快照兜底，三件事现在都在 transitionToTerminal
+          // 里，本处不再手写（此前这三条里只有这里做对了兜底）。
+          const { rows: coveredRows } = await transitionToTerminal(
+            this.execRepo,
+            {
+              ids: [running.id],
+              patch: {
+                status: ExecutionStatus.CANCELLED,
+                errorMessage: "Task was covered by new trigger",
+                endTime: new Date(),
+              },
+              addressSnapshot: {
+                [running.id]: running.executorAddress ?? null,
+              },
+            },
+          );
           if (coveredRows.length === 0) {
             this.logger.warn(
               `COVER_EARLY: execution ${running.id} already reached a terminal state (concurrent callback/kill), not covered`,

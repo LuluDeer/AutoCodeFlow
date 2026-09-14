@@ -3,15 +3,13 @@ import { Cron } from "@nestjs/schedule";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
 import { ConfigService } from "@nestjs/config";
-import {
-  TaskExecution,
-  ExecutionStatus,
-} from "../entities/task-execution.entity";
+import { TaskExecution } from "../entities/task-execution.entity";
 import { S3LogStorage } from "../log-storage/s3-log-storage";
 import { DEFAULT_LOG_RETENTION_DAYS } from "./log-retention-cleanup.service";
 // ARCH-31 §5: cron 维护任务统一 Leader 门禁（@Optional——既有单测直接 new
 // 装配时 gate 缺席 → null → 门禁不生效，先例同 TracingService）。
 import { LeaderGateService } from "../../../common/leader-gate/leader-gate.service";
+import { TERMINAL_EXECUTION_STATUSES } from "../execution-terminal";
 
 /** 每日 03:35 对象回收（6 段 cron；与 DB 日志行清理 03:30 / 产物清理 03:45
  *  错峰——独立 cron 入口互不阻塞，单边慢/失败不影响另两边） */
@@ -25,14 +23,11 @@ export const S3_LOG_OBJECT_MAX_ROUNDS = 50;
  * 终态集合：仅终态执行的日志对象可回收。PENDING/RUNNING 的日志仍会被
  * 回调/回填链路续写（storeLogLines 以 executionId 确定性复用对象键），
  * 提前删对象会让在途执行丢日志。
+ *
+ * A1: 定义已收口到 `../execution-terminal`（与终态跃迁入口同为单一事实源），
+ * 此处 re-export 仅为保持既有 import 路径不变。
  */
-export const TERMINAL_EXECUTION_STATUSES: ExecutionStatus[] = [
-  ExecutionStatus.SUCCESS,
-  ExecutionStatus.FAILED,
-  ExecutionStatus.TIMEOUT,
-  ExecutionStatus.KILLED,
-  ExecutionStatus.CANCELLED,
-];
+export { TERMINAL_EXECUTION_STATUSES } from "../execution-terminal";
 
 /**
  * WIKI-LOG-S3GC（wiki page-47 风险 6，也是 log-retention-cleanup.service

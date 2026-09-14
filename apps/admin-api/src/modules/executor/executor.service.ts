@@ -27,6 +27,8 @@ import {
   ExecutionFailureReason,
   ExecutionStatus,
 } from "../task/entities/task-execution.entity";
+// A1: 终态跃迁的单一入口（纯函数，零 DI，不引入 task↔executor 模块耦合）。
+import { transitionToTerminal } from "../task/execution-terminal";
 import { Task } from "../task/entities/task.entity";
 import { PaginationDto } from "../../common/dto/pagination.dto";
 import { NotificationService } from "../notification/notification.service";
@@ -1645,10 +1647,15 @@ export class ExecutorService {
       }
       // DR-03: only the terminal-transition winner may release the slot;
       // a callback or another scanner may have finished this stale candidate.
-      const result = await this.execRepo
-        .createQueryBuilder()
-        .update(TaskExecution)
-        .set({
+      //
+      // A1: 走统一入口。顺带修掉一个此前存在的隐患——旧实现没有 RETURNING，
+      // 释放用的是请求前快照 exec.executorAddress；而该地址在 dispatch HTTP
+      // 返回后才落库，秒级完成的执行其快照仍为 null，用它释放会 no-op 使
+      // runningTaskCount 永久虚高（task.service 回调路径的注释早已自证这个坑，
+      // 但扫描路径一直在踩）。现在取 RETURNING 的库中实际值，快照仅作兜底。
+      const { rows } = await transitionToTerminal(this.execRepo, {
+        ids: [exec.id],
+        patch: {
           status: ExecutionStatus.FAILED,
           endTime: new Date(),
           errorMessage:
@@ -1656,16 +1663,15 @@ export class ExecutorService {
           logs:
             (exec.logs || "") +
             "\n[System] Execution timed out without callback, forcefully marked as FAILED",
-        })
-        .where("id = :id AND status = :status", {
-          id: exec.id,
-          status: ExecutionStatus.RUNNING,
-        })
-        .execute();
-      if (result.affected && result.affected > 0) {
-        await this.releaseExecutorSlot(exec.executorAddress);
+        },
+        // 扫描入口只处理 RUNNING 行（与旧实现的 `status = :status` 同门槛）。
+        from: [ExecutionStatus.RUNNING],
+        addressSnapshot: { [exec.id]: exec.executorAddress ?? null },
+      });
+      for (const row of rows) {
+        await this.releaseExecutorSlot(row.executorAddress);
         this.logger.warn(
-          `Lost execution marked FAILED: execId=${exec.id}, taskId=${exec.taskId}`,
+          `Lost execution marked FAILED: execId=${row.id}, taskId=${exec.taskId}`,
         );
       }
     }

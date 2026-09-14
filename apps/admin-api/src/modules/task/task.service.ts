@@ -39,6 +39,8 @@ import {
   ExecutionStatus,
   ExecutionFailureReason,
 } from "./entities/task-execution.entity";
+// A1: 终态跃迁（条件 UPDATE + RETURNING + 驱动兜底）的单一入口。
+import { transitionToTerminal } from "./execution-terminal";
 import { ExecutionLogLine } from "./entities/execution-log-line.entity";
 import { TaskVersion } from "./entities/task-version.entity";
 import { CreateTaskDto } from "./dto/create-task.dto";
@@ -2097,16 +2099,18 @@ export class TaskService {
         // 秒级完成的执行其请求前快照 execution.executorAddress 仍为 null，用它
         // 释放会 no-op 使 runningTaskCount 永久虚高；RETURNING 覆盖该落库窗口，
         // 快照仅作 fallback（参照 scheduler.service 的 UPDATE ... RETURNING 模式）。
-        const updated = await this.execRepo
-          .createQueryBuilder()
-          .update(TaskExecution)
-          .set(patch)
-          .where("id = :id", { id: cb.executionId })
-          .andWhere("status IN (:...open)", {
-            open: [ExecutionStatus.PENDING, ExecutionStatus.RUNNING],
-          })
-          .returning(["id", "executorAddress"])
-          .execute();
+        // A1: 走统一入口——开放态门槛不再在本文件抄一份字面量（旧实现硬编码
+        // [PENDING, RUNNING]，与 scheduler 的 OPEN_EXECUTION_STATUSES 是两份
+        // 事实源，加状态必漏改）。
+        // 上面 success/非 success 两个分支都已给 patch.status 赋值，此处显式
+        // 取出以满足终态入口的类型契约（status 必为终态，入口会再校验一次）。
+        const { status: terminalStatus, ...restPatch } =
+          patch as Partial<TaskExecution> & { status: ExecutionStatus };
+        const updated = await transitionToTerminal(this.execRepo, {
+          ids: [cb.executionId],
+          patch: { status: terminalStatus, ...restPatch },
+          // 重复回调分支按 cb.executorAddress 释放（广播语义），此处无需快照。
+        });
 
         if (!updated.affected) {
           // Already terminal (duplicate callback): report success without
@@ -2143,12 +2147,11 @@ export class TaskService {
         });
 
         // winner 行（RETURNING 结果）为权威：地址/日志持久化都以此为准。
-        const winnerRow = Array.isArray((updated as { raw?: unknown }).raw)
-          ? ((updated as { raw?: Array<{ executorAddress?: string | null }> })
-              .raw?.[0] ?? null)
-          : null;
+        // A1: 形状归一化（数组/单对象/空 + 驱动不返回行时的快照兜底）已由
+        // 统一入口完成，此处不再自己解析 `raw`（旧实现在此重复了一版解析，
+        // 且与 scheduler/executor 两处口径不同）。
         const winnerAddress =
-          winnerRow?.executorAddress ?? execution.executorAddress;
+          updated.rows[0]?.executorAddress ?? execution.executorAddress;
 
         // Decrement executor runningTaskCount on task completion (success or
         // failure); exactly once thanks to the conditional update above.
@@ -2461,25 +2464,21 @@ export class TaskService {
       ? Date.now() - new Date(execution.startTime).getTime()
       : null;
 
-    const result = await this.execRepo
-      .createQueryBuilder()
-      .update(TaskExecution)
-      .set({
+    // A1: 走统一入口。RETURNING 取库中实际 executorAddress——快照
+    // execution.executorAddress 可能因 dispatch 尚未落库而为 null，用它决定
+    // 释放/终止目标会 no-op（槽位虚高、执行器继续空跑）；快照仅作为「驱动命中
+    // 但未返回行」时的兜底（该兜底现由 transitionToTerminal 统一提供）。
+    const result = await transitionToTerminal(this.execRepo, {
+      ids: [execId],
+      patch: {
         status: ExecutionStatus.KILLED,
         endTime: now,
         duration: duration,
         errorMessage: "Manually terminated by administrator",
         failureReason: ExecutionFailureReason.KILLED,
-      })
-      .where("id = :id", { id: execId })
-      .andWhere("status IN (:...open)", {
-        open: [ExecutionStatus.PENDING, ExecutionStatus.RUNNING],
-      })
-      // 改动4: RETURNING 取库中实际 executorAddress——快照 execution.executorAddress
-      // 可能因 dispatch 尚未落库而为 null，用它决定释放/终止目标会 no-op（槽位虚高、
-      // 执行器继续空跑）。参照 scheduler.service 既有 UPDATE ... RETURNING 模式。
-      .returning(["id", "executorAddress"])
-      .execute();
+      },
+      addressSnapshot: { [execId]: execution.executorAddress ?? null },
+    });
 
     if (!result.affected || result.affected === 0) {
       throw new BadRequestException(
@@ -2493,12 +2492,10 @@ export class TaskService {
     this.emitKilledEvent(execution, duration, now);
 
     // 改动4: 优先用 RETURNING 的库中实际地址，快照作 fallback。
-    const killedRow = Array.isArray((result as { raw?: unknown }).raw)
-      ? ((result as { raw?: Array<{ executorAddress?: string | null }> })
-          .raw?.[0] ?? null)
-      : null;
+    // A1: raw 的形状归一化（数组/单对象/空）与「驱动命中但未返回行」的兜底
+    // 都由统一入口完成，此处不再自行解析（旧实现在本文件里重复了两版解析）。
     const executorAddress =
-      killedRow?.executorAddress ?? execution.executorAddress ?? null;
+      result.rows[0]?.executorAddress ?? execution.executorAddress ?? null;
 
     await this.releaseExecutorSlot(executorAddress);
     // 改动5: 通知执行器真正终止进程（best-effort；地址为空则跳过，
