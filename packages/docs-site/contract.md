@@ -77,7 +77,7 @@ ResponseInterceptor 的 `code = statusCode ?? 200` 恒数值语义），
 | `executorAddress` | 执行器注册地址（SDK 自动补齐，缺省不发送空串） |
 | `logs` | 阶段性摘要（截断 512 KB） |
 | `errorMessage` | 失败信息（截断 4 KB） |
-| `failureReason` | 失败分类枚举（py 客户端白名单校验；默认 `script_error`） |
+| `failureReason` | 失败分类枚举（py 客户端白名单校验；默认 `script_error`）。**执行器可上报子集**为 admin 全集减去 admin 内部专用的 `stale_recovered`——上报它会被 DTO 的 `@IsIn` 拒绝，且一个非法取值会拒掉**整批**回调。取值清单单一事实源：`packages/executor-protocol/protocol.json` |
 | `exitCode` | 进程退出码（可选，int） |
 | `durationMs` | 耗时毫秒 |
 | `artifacts` | 产物清单（FEAT-05，best-effort 至多 20 条，终态回调时落盘 manifest） |

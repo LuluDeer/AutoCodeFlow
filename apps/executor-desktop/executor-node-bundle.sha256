@@ -12,4 +12,4 @@
 #        sha256sum resources/executor-node/index.js
 #   3. 与源码改动同 commit 提交。
 # CI 的 desktop-bundle-drift job 离线 ncc 重打后比对 actual == expected，不一致即红。
-fd472155fe0c5c61c6606e35b7f5fcc9039a97b101de3769dd6b08d7f9d2d818  index.js
+d8385732a43fae6ee589d665804e763032f0f54219a3519d6ffd52c62e8ce4ab  index.js
