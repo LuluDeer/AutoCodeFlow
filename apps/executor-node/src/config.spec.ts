@@ -154,3 +154,40 @@ describe('executor-node EXECUTOR_VERSION single source (E-37)', () => {
     }
   });
 });
+
+// E-04：SSRF 逃生阀的取值兼容性。历史注释与 SSRF 报错文案都写 `=1`，而实现
+// 只认 'true'——照报错提示设置却不生效是个真陷阱（rollout selftest 首跑即因
+// 缺该开关、部署被判 failed 而暴露）。两种写法都必须放行。
+describe('executor-node config allowPrivateNetwork (E-04 escape hatch)', () => {
+  const originalEnv = process.env;
+
+  beforeEach(() => {
+    jest.resetModules();
+    process.env = { ...originalEnv };
+    delete process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK;
+  });
+
+  afterAll(() => {
+    process.env = originalEnv;
+  });
+
+  it('defaults to false (fail-closed) when unset', async () => {
+    const { config } = await import('./config');
+    expect(config.allowPrivateNetwork).toBe(false);
+  });
+
+  it.each(['true', '1'])('accepts %s as enabled', async (value) => {
+    process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK = value;
+    const { config } = await import('./config');
+    expect(config.allowPrivateNetwork).toBe(true);
+  });
+
+  it.each(['false', '0', 'yes', ''])(
+    'treats %s as disabled',
+    async (value) => {
+      process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK = value;
+      const { config } = await import('./config');
+      expect(config.allowPrivateNetwork).toBe(false);
+    },
+  );
+});

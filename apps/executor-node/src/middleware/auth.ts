@@ -122,10 +122,18 @@ async function fetchToken(): Promise<string | null> {
 // 放大 + 多余延迟）。模块级 in-flight promise 复用：第一个调用者执行实际刷新，其余
 // 并发调用者 await 同一 promise，只发一次 /token，全体等待同一结果。
 let refreshInFlight: Promise<void> | null = null;
-// E-27: 最近一次真实 fetch（POST /token）成功的时刻。forceTokenRefresh 的
-// 等待者据此判断"在途刷新是否真的 fetch 过"——forced 刷新必 fetch；scheduled
-// 刷新可能因 token 未过期/退避中决定不 fetch。
-let lastSuccessfulRefreshAt: number | null = null;
+// E-27: 每次真实 fetch（POST /token）成功时自增的单调序号。forceTokenRefresh
+// 的等待者在进入时记下当前序号，等待结束后若序号已推进，就说明等待期间确实发生过
+// 一次真实 fetch——其结果正是它需要的，直接复用（forced 刷新必 fetch；scheduled
+// 刷新可能因 token 未过期/退避中决定不 fetch，此时序号不动，等待者照常走强制刷新）。
+//
+// 为什么用序号而不是时间戳：旧实现存的是"刷新成功的时刻"，但那个时刻取自
+// performTokenRefresh() 开头捕获的 `now`，早于任何等待者的入场时间，于是判据
+// `lastSuccessfulRefreshAt >= waitedSince` 只在"刷新启动与等待者入场落在同一毫秒"
+// 时成立——跨毫秒边界就全体 fall-through，N 个并发 401 各自再发一次 /token，
+// 单飞去重形同虚设（CI 上稳定复现为 1/8 概率、POST 次数 2→4）。单调序号没有
+// 时钟粒度问题：只要在等待期间发生过 fetch，序号必然推进。
+let refreshFetchSeq = 0;
 
 async function performTokenRefresh(): Promise<void> {
   const now = new Date();
@@ -144,7 +152,7 @@ async function performTokenRefresh(): Promise<void> {
       dynamicToken = newToken;
       tokenExpiresAt = new Date(now.getTime() + TOKEN_REFRESH_INTERVAL);
       tokenFetchFailedAt = null;
-      lastSuccessfulRefreshAt = now.getTime();
+      refreshFetchSeq += 1;
     } else {
       tokenFetchFailedAt = now.getTime();
     }
@@ -242,13 +250,13 @@ export async function forceTokenRefresh(): Promise<string | null> {
   // path must cover the 401-heal path, otherwise N concurrent 401s still fan
   // out into N fetches.
   if (refreshInFlight) {
-    const waitedSince = Date.now();
+    const seqAtJoin = refreshFetchSeq;
     await refreshInFlight;
     // 等待期间若发生过一次真实 fetch（forced 刷新必 fetch；scheduled 刷新
     // 可能因 token 未过期/退避中决定不 fetch），其结果正是我们需要的——直接
     // 复用，避免并发 N 个 401 在等待结束后各自再发 N 次 /token（修复前
     // 等待者 fall-through 会各自再刷一次，N 并发放大为 N 次请求）。
-    if (lastSuccessfulRefreshAt !== null && lastSuccessfulRefreshAt >= waitedSince) {
+    if (refreshFetchSeq > seqAtJoin) {
       return dynamicToken;
     }
   }
