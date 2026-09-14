@@ -774,16 +774,174 @@ def test_task_git_branch_option_injection_rejected(tmp_path, monkeypatch):
 
 
 def test_timeout_clamped():
-    """P3: negative/0 timeouts must not insta-kill tasks; huge values must not
-    pin the slot forever."""
+    """P3: negative/huge timeouts must not insta-kill or pin the slot forever.
+
+    E-02: timeout=0 的语义已上移到 _resolve_task_timeout（0=显式不限时，
+    不再进入 clamp）——本用例只固化 clamp 辅助函数对「非 0 输入」的既有
+    行为（负值对齐属另一项，不在 E-02 范围）。"""
     from routers.execute import _clamp_timeout_seconds
     assert _clamp_timeout_seconds(-5, 300) == 1
-    assert _clamp_timeout_seconds(0, 300) == 1
     assert _clamp_timeout_seconds(10**9, 300) == 86400
     assert _clamp_timeout_seconds(0.5, 300) == 1
     assert _clamp_timeout_seconds(None, 300) == 300
     assert _clamp_timeout_seconds('abc', 300) == 300
     assert _clamp_timeout_seconds(60, 300) == 60
+
+
+def test_timeout_resolution_semantics():
+    """E-02（P1）timeout=0 三种语义收敛（node routes/execute.ts 改动4 对齐）：
+
+    * 0（任一键）= 显式不限时 → 0（执行等待不设 timeout、token TTL 取
+      TOKEN_TTL_UNBOUNDED_SECONDS 上限，见端到端用例）——admin 侧 task 实体
+      默认创建的 timeout 就是 0，派发载荷原样携带，默认创建路径即触发；
+      旧 or-链把 0 当 falsy 回落 300s 后杀正是被关闭的缺陷；
+    * 缺省（三个键都缺席）→ settings.task_timeout_seconds 默认；
+    * 其他值维持既有 clamp 行为（负值→1、越界→86400、非法→默认）。
+    """
+    import routers.execute as execute_module
+    resolve = execute_module._resolve_task_timeout
+    unbounded = execute_module.TOKEN_TTL_UNBOUNDED_SECONDS
+
+    # 与 node 常量 315_360_000s（86400 × 3650 = 10 年）逐字节对齐
+    assert unbounded == 315_360_000
+
+    # 0 能穿过三个键位——不再被 or-链吞掉
+    assert resolve({'timeoutSeconds': 0}) == 0
+    assert resolve({'timeout_seconds': 0}) == 0
+    assert resolve({'timeout': 0}) == 0
+    assert resolve({'timeoutSeconds': 0, 'timeout': 99}) == 0
+
+    # 键优先级：timeoutSeconds ?? timeout_seconds ?? timeout
+    assert resolve({'timeoutSeconds': 5, 'timeout_seconds': 6, 'timeout': 7}) == 5
+    assert resolve({'timeout_seconds': 6, 'timeout': 7}) == 6
+    assert resolve({'timeout': 7}) == 7
+
+    # 缺省 → settings 默认（monkeypatch 隔离全局 settings）
+    original = execute_module.settings.task_timeout_seconds
+    try:
+        execute_module.settings.task_timeout_seconds = 300
+        assert resolve({}) == 300
+        assert resolve({'timeoutSeconds': None}) == 300
+        # 非法值维持既有 clamp 回落
+        assert resolve({'timeoutSeconds': 'abc'}) == 300
+        assert resolve({'timeoutSeconds': None, 'timeout': 'abc'}) == 300
+    finally:
+        execute_module.settings.task_timeout_seconds = original
+
+    # 其他合法/非法值维持既有 clamp 行为（E-02 不改）
+    assert resolve({'timeoutSeconds': 120}) == 120
+    assert resolve({'timeout': 10**9}) == 86400
+    assert resolve({'timeoutSeconds': -5}) == 1
+
+
+def test_run_task_timeout_zero_unbounded_with_ten_year_token_ttl(tmp_path, monkeypatch):
+    """E-02 端到端：timeoutSeconds=0 → 执行等待不设 timeout（wait_for 收到
+    None，不挂杀树定时器），任务正常完成——admin 默认创建路径不再被 python
+    执行器在 300s 默认处误杀。回调 token TTL 断言见
+    test_run_task_timeout_zero_token_ttl_is_ten_year_cap。"""
+    import asyncio as real_asyncio
+    from routers import execute as execute_module
+    from routers.execute import ExecuteRequest, run_task
+
+    monkeypatch.setattr(execute_module.settings, 'work_dir', str(tmp_path))
+
+    captured = {}
+
+    async def fake_spawn(*args, **kwargs):
+        return _FakeTaskProc()
+
+    monkeypatch.setattr(execute_module.asyncio, 'create_subprocess_exec', fake_spawn)
+
+    real_wait_for = real_asyncio.wait_for
+
+    async def spy_wait_for(fut, timeout=None):
+        captured.setdefault('wait_for_timeouts', []).append(timeout)
+        return await real_wait_for(fut, timeout=timeout)
+
+    monkeypatch.setattr(execute_module.asyncio, 'wait_for', spy_wait_for)
+
+    req = ExecuteRequest(
+        executionId='exec-t0-unbounded',
+        task={'name': 'cb', 'runtime': 'python', 'entrypoint': 'main.py', 'timeoutSeconds': 0},
+    )
+    result = asyncio.run(run_task(req))
+
+    assert result['success'] is True
+    # 不限时：执行等待的 wait_for 收到 None（杀树 TimeoutError 分支不可达）
+    assert captured['wait_for_timeouts'] == [None]
+
+
+def test_run_task_timeout_zero_token_ttl_is_ten_year_cap(tmp_path, monkeypatch):
+    """E-02 端到端（token 视角）：timeout=0 → AUTOFLOW_CALLBACK_TOKEN 的
+    expiresAt ≈ now + 315_360_000 + 900s grace，而非 0/1s 或 300s 默认。"""
+    import time
+    from routers import execute as execute_module
+    from routers.execute import ExecuteRequest, run_task
+
+    monkeypatch.setattr(execute_module.settings, 'work_dir', str(tmp_path))
+
+    captured = {}
+
+    async def fake_spawn(*args, **kwargs):
+        captured['env'] = dict(kwargs.get('env') or {})
+        return _FakeTaskProc()
+
+    monkeypatch.setattr(execute_module.asyncio, 'create_subprocess_exec', fake_spawn)
+
+    req = ExecuteRequest(
+        executionId='exec-t0-ttl',
+        task={'name': 'cb', 'runtime': 'python', 'entrypoint': 'main.py', 'timeoutSeconds': 0},
+    )
+    result = asyncio.run(run_task(req))
+    assert result['success'] is True
+
+    parts = captured['env']['AUTOFLOW_CALLBACK_TOKEN'].split('.')
+    exp = int(parts[2])
+    now = int(time.time())
+    # node execute.spec.ts:1172-1173 同款 ±2h 容差断言
+    assert now + execute_module.TOKEN_TTL_UNBOUNDED_SECONDS + 900 - 7200 <= exp
+    assert exp <= now + execute_module.TOKEN_TTL_UNBOUNDED_SECONDS + 900 + 7200
+
+
+def test_run_task_timeout_missing_uses_default_and_bounded_wait(tmp_path, monkeypatch):
+    """E-02 端到端（对照）：timeout 缺省 → settings 默认 300s（wait_for 收到
+    300）；显式 timeoutSeconds=5 → wait_for 收到 5。"""
+    import asyncio as real_asyncio
+    from routers import execute as execute_module
+    from routers.execute import ExecuteRequest, run_task
+
+    monkeypatch.setattr(execute_module.settings, 'work_dir', str(tmp_path))
+    captured = {}
+
+    async def fake_spawn(*args, **kwargs):
+        return _FakeTaskProc()
+
+    monkeypatch.setattr(execute_module.asyncio, 'create_subprocess_exec', fake_spawn)
+
+    real_wait_for = real_asyncio.wait_for
+
+    async def spy_wait_for(fut, timeout=None):
+        captured.setdefault('timeouts', []).append(timeout)
+        return await real_wait_for(fut, timeout=timeout)
+
+    monkeypatch.setattr(execute_module.asyncio, 'wait_for', spy_wait_for)
+
+    req = ExecuteRequest(
+        executionId='exec-tdefault',
+        task={'name': 'cb', 'runtime': 'python', 'entrypoint': 'main.py'},
+    )
+    result = asyncio.run(run_task(req))
+    assert result['success'] is True
+    assert captured['timeouts'] == [300]
+
+    captured.clear()
+    req5 = ExecuteRequest(
+        executionId='exec-t5',
+        task={'name': 'cb', 'runtime': 'python', 'entrypoint': 'main.py', 'timeoutSeconds': 5},
+    )
+    result = asyncio.run(run_task(req5))
+    assert result['success'] is True
+    assert captured['timeouts'] == [5]
 
 
 # ---------------------------------------------------------------------------
