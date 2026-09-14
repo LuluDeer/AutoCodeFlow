@@ -19,7 +19,7 @@ class TaskConfig(BaseModel):
     name: str | None = Field(default=None)
     runtime: str | None = Field(default=None)
     entrypoint: str | None = Field(default=None)
-    timeout: int | None = Field(default=None)
+    timeout: int | None = Field(ge=0, le=86400, default=None)
     timeoutSeconds: int | None = Field(ge=0, le=86400, default=None)
     timeout_seconds: int | None = Field(default=None)
     requirements: list[str] = Field(default_factory=list)

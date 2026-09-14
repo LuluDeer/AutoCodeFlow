@@ -83,24 +83,40 @@ schema 再 `$ref`。
 
 ## 已知残差（如实）
 
-- **timeout 越界（>86400 / <0）的执行器侧策略两端不一致**：`executor-node` 拒绝
-  （400），`executor-python` 夹紧到边界。`admin-api` 的 `create-task.dto` 已用
-  `@Min(0) @Max(86400)` 前置拦截，正常派发路径执行器收不到越界值，因此这属于
-  **纵深防御层的漂移**而非活跃事故。契约向量把它标记为 `rejectedBy: "admin-api"`
-  而不是假装三端一致；真正收口需要把 python 的 `_clamp_timeout_seconds` 改为拒绝，
-  属行为变更，未含在本切片。
+- ~~**timeout 越界的执行器侧策略两端不一致**~~ —— **A3-C 已收口**。两侧
+  `/execute` 的协议闸门现在都按 `schemas.TaskConfig` 的边界拒绝（400），
+  `executor-python` 不再静默 clamp（`_clamp_timeout_seconds` 保留为解析期兜底，
+  仍是 clamp 语义，但越界值已不可能到达它）。契约向量的 `rejectedBy` 已改为
+  `"admin-api, executor-node, executor-python"`。
+  收口过程中顺带发现并修掉一个真问题：`executor-python` 的 `accept_execution`
+  把 E-19 的 `requirements` 手检放在 `register_live_execution` **之后**，畸形载荷
+  被拒时 live 条目不会注销——该 executionId 在本执行器上**永久**被当成「已在运行」
+  （admin 重试全撞 400，心跳还会上报一个不存在的执行）。闸门与手检现已统一前移
+  到登记之前，`tests/test_execute_protocol_gate.py::test_rejected_execution_leaves_no_live_entry`
+  钉住它（把闸门置空该用例即转红）。
 - **`Executor` 表（而非 `TaskExecution`）的条件 UPDATE + RETURNING** 不在本契约
   范围——那是执行器注册状态机，与执行终态无关（A1 亦然）。
-- `ExecuteRequest` / `ConfigReload` / 运维端点的 **schema 化已做**（见上节的
-  zod + pydantic 双生成）。但**生成物目前只被测试消费 + 两条运行时一致性断言，
-  尚未接进两侧 `/execute` 的运行时校验**：
-  - executor-node `/execute` 仍是手写的 `if (!executionId || !body.task)` +
-    `isSafeExecutionIdSegment`（语义与 schema 等价，故未替换）；
-  - executor-python `/execute` 在 `autocodeflow_sdk` 缺席时用本地 fallback 模型
-    （`task: Dict[str, Any]`），**嵌套字段不校验**——改成生成物需要先处理
-    `req.task.get(...)` 的多处字典式访问与 `merge_task_with_manifest` 的入参类型，
-    且会与「timeout 越界 python 侧 clamp」的既有漂移相互纠缠（见上一条残差）。
-  接进运行时属行为变更，留作下一步（先让契约面与向量站住，再动执行路径）。
+- ~~**生成物尚未接进两侧 `/execute` 运行时校验**~~ —— **A3-C 已接进**。
+  - executor-node：`acceptExecution` 在既有手检**之后**加一道
+    `ExecuteRequestSchema.safeParse` 闸门。放在手检之后是因为手检的 400 文案更
+    具体且已被既有用例钉住；闸门兜的是手检没覆盖的部分（params / executionId
+    的类型、task 各字段类型、timeoutSeconds 边界）。`protocol-schemas.spec.ts`
+    之外新增「向量驱动端点」用例：`schemaVectors.ExecuteRequest.invalid` 的每一
+    条都必须让 `POST /execute` 返回 400（少了这层，schema 只是被测试引用的产物）。
+    - 顺带修掉一个 500→400：`executionId` 传非字符串时，`isSafeExecutionIdSegment`
+      的 `RegExp.test` 会隐式转换放行，随后 `path.join` 抛 TypeError 被兜成
+      **500**。畸形输入该是 400，已加 `typeof` 守卫。
+  - executor-python：`accept_execution` 在最前面（登记表之前）加一道
+    `ProtocolExecuteRequest.model_validate`。这里**没有**替换 FastAPI 的
+    `ExecuteRequest`（`task` 保持 dict，全代码库按字典访问，替换要动 2000+ 行，
+    风险远大于收益）——两个模型分工不同：那个是反序列化，这个是协议校验。
+  - 代价：内嵌执行器的 ncc bundle 因此内联 zod（2111kB → 2275kB），是它首次
+    引入第三方运行时依赖（ADR-005 同 commit 回填了哈希）。
+  - 仍未接进运行时的：`ConfigReloadRequest` / `ConfigReloadResponse` /
+    `HealthReadyResponse` 三个生成物目前仍只被测试消费（`/config/reload` 与
+    `/health/ready` 各有自己的手检与类型），未动的原因是那两个端点的载荷语义
+    与协议段存在历史耦合，改动面大于收益。**契约面站住了，执行路径是逐段换的，
+    不是一次换完的**。
 - `kill` / `deploy` / `update-package` / `logs` 等端点的载荷**未** schema 化——
   先只收协议面最核心的三个（ExecuteRequest / ConfigReload / readiness），避免
   把只属于一端的实现细节拉进共享契约（见「修改纪律」）。
