@@ -77,6 +77,7 @@ const mockDataSource = () => ({
     update: jest.fn().mockReturnThis(),
     set: jest.fn().mockReturnThis(),
     where: jest.fn().mockReturnThis(),
+    returning: jest.fn().mockReturnThis(),
     execute: jest.fn().mockResolvedValue({ affected: 1 }),
   })),
   // CONSISTENCY-02: recoverStaleExecutions 活性探测经 getRepository(Executor).find
@@ -656,11 +657,14 @@ describe("SchedulerService", () => {
       expect(coverQb.set).toHaveBeenCalledWith(
         expect.objectContaining({ status: ExecutionStatus.CANCELLED }),
       );
+      // A1: 条件 UPDATE 的形状已收口到 task/execution-terminal 单一入口，
+      // 门槛常量不再由本调用方抄写（此前是字面量 `[...open]`）。
       expect(coverQb.where).toHaveBeenCalledWith(
-        expect.stringContaining('"status" IN (:...open)'),
-        expect.objectContaining({
-          open: [ExecutionStatus.PENDING, ExecutionStatus.RUNNING],
-        }),
+        '"id" IN (:...ids) AND "status" IN (:...gate)',
+        {
+          ids: ["running-1"],
+          gate: [ExecutionStatus.PENDING, ExecutionStatus.RUNNING],
+        },
       );
       expect(coverQb.returning).toHaveBeenCalledWith(["id", "executorAddress"]);
       // No blind entity save anymore; slot released exactly once via RETURNING.
@@ -943,12 +947,14 @@ describe("SchedulerService", () => {
 
       await service.recoverStaleExecutions();
 
-      // 条件 UPDATE 保留终态保护语义：仅 open 状态可被置 FAILED
+      // A1: 条件 UPDATE 保留终态保护语义：仅 open 状态可被置 FAILED；
+      // 形状统一由 task/execution-terminal 提供（门槛常量不再本处抄写）。
       expect(updateQb.where).toHaveBeenCalledWith(
-        expect.stringContaining('"status" IN (:...open)'),
-        expect.objectContaining({
-          open: [ExecutionStatus.PENDING, ExecutionStatus.RUNNING],
-        }),
+        '"id" IN (:...ids) AND "status" IN (:...gate)',
+        {
+          ids: expect.arrayContaining(["exec-timeout"]),
+          gate: [ExecutionStatus.PENDING, ExecutionStatus.RUNNING],
+        },
       );
       expect(updateQb.set).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -1004,9 +1010,13 @@ describe("SchedulerService", () => {
 
       await service.recoverStaleExecutions();
 
+      // A1: PENDING 超时回收复用同一入口，仅把门槛收窄为 [PENDING]。
       expect(pendingQb.where).toHaveBeenCalledWith(
-        expect.stringContaining('"status" = :status'),
-        expect.objectContaining({ status: ExecutionStatus.PENDING }),
+        '"id" IN (:...ids) AND "status" IN (:...gate)',
+        {
+          ids: ["exec-pending"],
+          gate: [ExecutionStatus.PENDING],
+        },
       );
       expect(pendingQb.set).toHaveBeenCalledWith(
         expect.objectContaining({ status: ExecutionStatus.FAILED }),

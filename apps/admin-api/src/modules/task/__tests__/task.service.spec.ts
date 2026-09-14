@@ -202,6 +202,7 @@ describe("TaskService (__tests__)", () => {
         update: jest.fn().mockReturnThis(),
         set: jest.fn().mockReturnThis(),
         where: jest.fn().mockReturnThis(),
+        returning: jest.fn().mockReturnThis(),
         execute: releaseSlotExecute,
       })),
     };
@@ -3873,6 +3874,7 @@ describe("OBS-03: execution log level（写入抽取）", () => {
         update: jest.fn().mockReturnThis(),
         set: jest.fn().mockReturnThis(),
         where: jest.fn().mockReturnThis(),
+        returning: jest.fn().mockReturnThis(),
         execute: releaseSlotExecute,
       })),
     };
@@ -4008,6 +4010,7 @@ describe("OBS-03: getExecutionLogs level 过滤与分页协调", () => {
               update: jest.fn().mockReturnThis(),
               set: jest.fn().mockReturnThis(),
               where: jest.fn().mockReturnThis(),
+              returning: jest.fn().mockReturnThis(),
               execute: jest.fn().mockResolvedValue({ affected: 1 }),
             })),
           },
@@ -4196,6 +4199,7 @@ describe("TaskService — QA-02 phase 2 branch gaps", () => {
         update: jest.fn().mockReturnThis(),
         set: jest.fn().mockReturnThis(),
         where: jest.fn().mockReturnThis(),
+        returning: jest.fn().mockReturnThis(),
         execute: releaseSlotExecute,
       })),
     };

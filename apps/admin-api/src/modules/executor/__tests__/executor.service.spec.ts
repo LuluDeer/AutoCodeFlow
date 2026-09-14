@@ -66,6 +66,8 @@ const makeRepo = (overrides: Partial<Record<string, jest.Mock>> = {}) => ({
     addSelect: jest.fn().mockReturnThis(),
     where: jest.fn().mockReturnThis(),
     andWhere: jest.fn().mockReturnThis(),
+    // A1: 终态跃迁统一入口会取 RETURNING（旧调用点未取，故 mock 此前没有）。
+    returning: jest.fn().mockReturnThis(),
     groupBy: jest.fn().mockReturnThis(),
     orderBy: jest.fn().mockReturnThis(),
     // FEAT-04: metrics-history aggregate query applies a LIMIT guard
@@ -1876,6 +1878,7 @@ describe("ExecutorService (__tests__)", () => {
           set: jest.fn().mockReturnThis(),
           where: jest.fn().mockReturnThis(),
           andWhere: jest.fn().mockReturnThis(),
+          returning: jest.fn().mockReturnThis(),
           execute: jest.fn().mockResolvedValue({ affected: 0 }),
         } as any);
         await expect(
@@ -2485,10 +2488,12 @@ describe("ExecutorService (__tests__)", () => {
     it("conditionally marks FAILED and releases exactly one slot with a warning", async () => {
       await service.detectLostExecutions();
       expect(qb.update).toHaveBeenCalledWith(TaskExecution);
-      expect(qb.where).toHaveBeenCalledWith("id = :id AND status = :status", {
-        id: "lost-1",
-        status: ExecutionStatus.RUNNING,
-      });
+      // A1: 条件 UPDATE 走统一入口；扫描路径的门槛是 [RUNNING]（旧实现口语
+      // 化为 `status = :status`，与 scheduler 的开放态集合是两份事实源）。
+      expect(qb.where).toHaveBeenCalledWith(
+        '"id" IN (:...ids) AND "status" IN (:...gate)',
+        { ids: ["lost-1"], gate: [ExecutionStatus.RUNNING] },
+      );
       expect(qb.set).toHaveBeenCalledWith({
         status: ExecutionStatus.FAILED,
         endTime: expect.any(Date),
@@ -2503,6 +2508,26 @@ describe("ExecutorService (__tests__)", () => {
         address: "host:3002",
       });
       expect(release.execute).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(
+        "Lost execution marked FAILED: execId=lost-1, taskId=task-1",
+      );
+    });
+
+    // A1: 反证「扫描路径用请求前快照地址」的老坑——executorAddress 在 dispatch
+    // HTTP 返回后才落库，秒级完成/掉线的执行其快照仍为 null，用它释放会 no-op
+    // 使 runningTaskCount 永久虚高。旧实现没有 RETURNING，此例必红（释放不发生）。
+    it("prefers the RETURNING executorAddress over a null pre-scan snapshot (A1)", async () => {
+      candidate.executorAddress = null;
+      qb.execute.mockResolvedValue({
+        affected: 1,
+        raw: [{ id: "lost-1", executorAddress: "host:3002" }],
+      });
+      await service.detectLostExecutions();
+      expect(executorRepo.createQueryBuilder).toHaveBeenCalledTimes(1);
+      const release = executorRepo.createQueryBuilder.mock.results[0].value;
+      expect(release.where).toHaveBeenCalledWith("address = :address", {
+        address: "host:3002",
+      });
       expect(warn).toHaveBeenCalledWith(
         "Lost execution marked FAILED: execId=lost-1, taskId=task-1",
       );
@@ -2566,6 +2591,7 @@ describe("ExecutorService (__tests__)", () => {
     const makeDeleteQb = (batchAffected: number) => ({
       delete: jest.fn().mockReturnThis(),
       where: jest.fn().mockReturnThis(),
+      returning: jest.fn().mockReturnThis(),
       execute: jest.fn().mockResolvedValue({ affected: batchAffected }),
     });
 
@@ -3098,6 +3124,7 @@ describe("ExecutorService (__tests__)", () => {
           set: jest.fn().mockReturnThis(),
           where: jest.fn().mockReturnThis(),
           andWhere: jest.fn().mockReturnThis(),
+          returning: jest.fn().mockReturnThis(),
           execute: jest.fn().mockResolvedValue({ affected: won ? 1 : 0 }),
         } as any;
       });
@@ -3134,6 +3161,7 @@ describe("ExecutorService (__tests__)", () => {
             set: jest.fn().mockReturnThis(),
             where: jest.fn().mockReturnThis(),
             andWhere: jest.fn().mockReturnThis(),
+            returning: jest.fn().mockReturnThis(),
             execute: jest.fn().mockResolvedValue({ affected: 0 }),
           }) as any,
       );
@@ -3321,6 +3349,7 @@ describe("ExecutorService (__tests__)", () => {
             set,
             where: jest.fn().mockReturnThis(),
             andWhere: jest.fn().mockReturnThis(),
+            returning: jest.fn().mockReturnThis(),
             execute: jest.fn().mockResolvedValue({ affected: 1 }),
           }) as any,
       );
@@ -3610,6 +3639,7 @@ describe("ExecutorService (__tests__)", () => {
             update: jest.fn().mockReturnThis(),
             set: jest.fn().mockReturnThis(),
             where: jest.fn().mockReturnThis(),
+            returning: jest.fn().mockReturnThis(),
             execute: jest.fn().mockResolvedValue({ affected: 1 }),
           }) as any,
       );

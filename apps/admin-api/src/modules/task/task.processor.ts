@@ -9,6 +9,11 @@ import {
   ExecutionStatus,
   ExecutionFailureReason,
 } from "./entities/task-execution.entity";
+// A1: 开放态/终态常量的单一事实源（此前本文件抄了三份字面量）。
+import {
+  isTerminalStatus,
+  OPEN_EXECUTION_STATUSES,
+} from "./execution-terminal";
 import { ExecutionLogLine } from "./entities/execution-log-line.entity";
 import { Task } from "./entities/task.entity";
 import { ExecutorService } from "../executor/executor.service";
@@ -236,14 +241,7 @@ export class TaskProcessor extends WorkerHost {
       }
       throw err;
     } finally {
-      const isTerminal = [
-        ExecutionStatus.SUCCESS,
-        ExecutionStatus.FAILED,
-        ExecutionStatus.TIMEOUT,
-        ExecutionStatus.KILLED,
-        ExecutionStatus.CANCELLED,
-      ].includes(exec.status);
-      if (isTerminal) {
+      if (isTerminalStatus(exec.status)) {
         exec.endTime = new Date();
         // ERR-02: null guard to prevent NaN when startTime is not set
         exec.duration = exec.startTime
@@ -304,7 +302,7 @@ export class TaskProcessor extends WorkerHost {
             .set(ownedPatch)
             .where("id = :id", { id: exec.id })
             .andWhere("status IN (:...writable)", {
-              writable: [ExecutionStatus.PENDING, ExecutionStatus.RUNNING],
+              writable: [...OPEN_EXECUTION_STATUSES],
             })
             .execute();
           if (persisted.affected) terminalPersisted = true;
@@ -350,10 +348,7 @@ export class TaskProcessor extends WorkerHost {
                   .set(ownedPatch)
                   .where("id = :id", { id: exec.id })
                   .andWhere("status IN (:...writable)", {
-                    writable: [
-                      ExecutionStatus.PENDING,
-                      ExecutionStatus.RUNNING,
-                    ],
+                    writable: [...OPEN_EXECUTION_STATUSES],
                   })
                   .execute();
                 if (repaired.affected) {
