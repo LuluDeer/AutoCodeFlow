@@ -26,6 +26,12 @@ from config import settings
 from execution_callback_token import CALLBACK_TOKEN_GRACE_SECONDS, create_execution_callback_token
 from manifest import load_manifest, merge_task_with_manifest
 from artifacts import gather_artifacts_for_callback, artifacts_dir_for
+from pydantic import ValidationError
+# A3-C：协议闸门（由 packages/executor-protocol/protocol.json 生成，勿手改产物）。
+# 与下面的 ExecuteRequest（autocodeflow_sdk / 本地 fallback）分工不同：那个是
+# FastAPI 的**反序列化**模型（task 保持 dict，全代码库按字典访问），这个是
+# **协议校验**模型——两者并存是因为改前者要动 2000+ 行的访问方式，风险远大于收益。
+from generated.protocol_schemas import ExecuteRequest as ProtocolExecuteRequest
 try:
     from autocodeflow_sdk.models import ExecuteRequest
 except ImportError:
@@ -799,6 +805,32 @@ def accept_execution(
     elif sched.get_running_count() >= settings.max_concurrent_tasks:
         raise ExecutionRejected(429, 'Executor is at capacity')
 
+    # A3-C：协议闸门——形状约束由 `packages/executor-protocol/protocol.json`
+    # 生成（pydantic 侧），与 executor-node 同源。
+    #
+    # **位置是语义的一部分，必须在登记之前**：登记后任何 raise 都会让该
+    # executionId 永久留在 live 表里——重复领取守卫从此永远拒绝它（admin 重试
+    # 全部 400），心跳还会上报一个并不存在的执行。E-19 的手检此前正好落在这个
+    # 位置上，一次畸形 requirements 就能毒死一个 executionId。
+    try:
+        ProtocolExecuteRequest.model_validate(req.model_dump())
+    except ValidationError as exc:
+        first = exc.errors()[0]
+        where = '.'.join(str(p) for p in first['loc']) or '(root)'
+        raise ExecutionRejected(
+            400, f'Invalid execute request: {where}: {first["msg"]}'
+        )
+
+    # E-19 (parity with executor-node execute.ts): requirements 类型守卫。上游
+    # DTO 演进误传字符串会让 `_validate_requirements` 的 `for spec in requirements`
+    # 逐字符当包名迭代（静默错装 7 个"包"）。同步 400 直接返回 admin，绝不把
+    # "lodash" 拆成字符；缺省（None/absent）仍当空数组。
+    # 协议闸门已覆盖「非 list」这一类，这里保留是为了给出比 schema 文案更具体
+    # 的错误——真正重要的是它现在位于登记之前（见上方注释）。
+    req_requirements = req.task.get('requirements', [])
+    if req_requirements is not None and not isinstance(req_requirements, list):
+        raise ExecutionRejected(400, 'requirements must be an array of package names')
+
     # E7: duplicate-accept guard (node execute.ts:339-342 parity) — a still
     # live (queued/prepare/running) executionId must never be accepted twice:
     # the second background task would double-count capacity and double-callback
@@ -810,14 +842,6 @@ def accept_execution(
             400,
             f'Execution {req.executionId} is already active on this executor',
         )
-
-    # E-19 (parity with executor-node execute.ts): requirements 类型守卫。上游
-    # DTO 演进误传字符串会让 `_validate_requirements` 的 `for spec in requirements`
-    # 逐字符当包名迭代（静默错装 7 个"包"）。后台化之前的同步 400 直接返回
-    # admin，绝不把 "lodash" 拆成字符；缺省（None/absent）仍当空数组。
-    req_requirements = req.task.get('requirements', [])
-    if req_requirements is not None and not isinstance(req_requirements, list):
-        raise ExecutionRejected(400, 'requirements must be an array of package names')
 
     # OBS-01: 记录派发载荷的 W3C traceparent（HTTP 路由取请求头、pull 路径取
     # 载荷字段；缺省=无追踪），注入任务 env AUTOFLOW_TRACE_ID 并随回调回传关联。

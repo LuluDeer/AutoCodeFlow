@@ -70,14 +70,14 @@
       {
         "name": "above-max-rejected-at-admin",
         "declared": 86401,
-        "rejectedBy": "admin-api",
-        "$comment": "admin 侧 create-task.dto 已用 @Min(0) @Max(86400) 前置拦截，正常派发路径执行器收不到越界值。**执行器侧的纵深防御策略当前两端不一致**（executor-node 拒绝 400 / executor-python clamp 到边界）——这是已知漂移，如实记录在此而非假装一致；收口需改 python 的 clamp → reject，属行为变更，未含在本切片。见 README「已知残差」。"
+        "rejectedBy": "admin-api, executor-node, executor-python",
+        "$comment": "admin 侧 create-task.dto 已用 @Min(0) @Max(86400) 前置拦截，正常派发路径执行器收不到越界值。执行器侧纵深防御：executor-node 一直拒绝 400；executor-python 此前 clamp 到边界（两端不一致，曾如实登记为已知漂移），A3-C 把协议 schemas.TaskConfig 接进两侧 accept 路径后改为同步拒绝 400——两端策略收敛。_clamp_timeout_seconds 仍保留为解析期兜底（越界值在到达执行等待前不可能出现，但多一层不依赖调用方）。"
       },
       {
         "name": "negative-rejected-at-admin",
         "declared": -1,
-        "rejectedBy": "admin-api",
-        "$comment": "同上：admin 侧 @Min(0) 拦截；执行器侧 node 拒绝、python clamp 到 1。"
+        "rejectedBy": "admin-api, executor-node, executor-python",
+        "$comment": "同上：admin 侧 @Min(0) 拦截；A3-C 起执行器侧两端一致拒绝（此前 python clamp 到 1）。"
       },
       {
         "name": "missing-falls-back-to-executor-default",
@@ -128,7 +128,9 @@
         "entrypoint": { "type": ["string", "null"] },
         "timeout": {
           "type": ["integer", "null"],
-          "description": "deprecated：legacy/fallback 字段，规范化后与 timeoutSeconds 同值"
+          "minimum": 0,
+          "maximum": 86400,
+          "description": "deprecated：legacy/fallback 字段，规范化后与 timeoutSeconds 同值。边界与 timeoutSeconds 同（0 = 显式不限时，其余 1..86400）——A3-C 之前本字段**无边界**，而 executor-node 实际一直按 0 或 1..86400 拒绝、executor-python 静默 clamp，协议与实现不符；补边界后协议才真正描述执行器行为（见本文件 timeout 段）。"
         },
         "timeoutSeconds": {
           "type": ["integer", "null"],
@@ -271,6 +273,23 @@
           "name": "task-timeoutSeconds-above-max",
           "payload": { "executionId": "exec-1", "task": { "timeoutSeconds": 86401 } },
           "expectErrorPath": ["task", "timeoutSeconds"]
+        },
+        {
+          "name": "task-timeout-above-max",
+          "payload": { "executionId": "exec-1", "task": { "timeout": 86401 } },
+          "expectErrorPath": ["task", "timeout"],
+          "$comment": "A3-C 补边界前本用例不会红——协议说 timeout 无界，而 executor-node 早就按 0 或 1..86400 拒绝、executor-python 静默 clamp。「协议没写」不等于「实现没做」，这正是把 schema 接进运行时才暴露出来的那类漂移。"
+        },
+        {
+          "name": "params-not-object",
+          "payload": { "executionId": "exec-1", "task": {}, "params": "nope" },
+          "expectErrorPath": ["params"]
+        },
+        {
+          "name": "task-requirements-not-array",
+          "payload": { "executionId": "exec-1", "task": { "requirements": "lodash" } },
+          "expectErrorPath": ["task", "requirements"],
+          "$comment": "E-19：两侧执行器各有一份手检（『requirements must be an array of package names』）。协议补上同一约束后，即使有人删掉手检，schema 闸门仍会拦住——契约不再依赖某个具体实现记得写 if。"
         }
       ]
     },

@@ -20,6 +20,8 @@ import { appendLog, getDeadLetterCount, registerActiveWorkdirProvider } from '..
 import { taskWorkerManager, ExecutionCancelledError } from '../task-worker';
 import { runCommand, killProcessTree } from '../run-command';
 import { buildChildEnv } from '../env-whitelist';
+// A3-C：协议闸门（由 packages/executor-protocol/protocol.json 生成，勿手改产物）
+import { ExecuteRequestSchema } from '../generated/protocol.schemas';
 import {
   createExecutionCallbackToken,
   CALLBACK_TOKEN_GRACE_SECONDS,
@@ -414,6 +416,14 @@ export function acceptExecution(
     if (!executionId || !body.task) {
       return reject(400, 'executionId and task are required');
     }
+    // A3-C：executionId 必须是字符串。非字符串（JSON number 等）此前能穿过上面
+    // 的真值判断与 isSafeExecutionIdSegment（RegExp.test 会做隐式类型转换），
+    // 然后在 `path.join(workDir, executionId)` 抛 TypeError → 被外层 catch 兜成
+    // **500**。畸形输入该是 400——协议里 executionId 本就是 string，这里与下面
+    // 的协议闸门同向，只是先给一条比 schema 文案更具体的错误。
+    if (typeof executionId !== 'string') {
+      return reject(400, 'executionId must be a string');
+    }
     if (!isSafeExecutionIdSegment(executionId)) {
       return reject(400, 'Invalid executionId: path traversal detected');
     }
@@ -483,6 +493,17 @@ export function acceptExecution(
     const glueSource = (body.task.glueSource as string | undefined) || (body.task.glue_source as string | undefined);
     if (glueSource !== undefined && typeof glueSource !== 'string') {
       return reject(400, 'glueSource must be a string');
+    }
+    // A3-C：协议闸门——形状约束由 `packages/executor-protocol/protocol.json`
+    // 生成（zod 侧），与 executor-python 共用同一份。放在上述手检**之后**：
+    // 手检的 400 文案更具体且已被既有用例钉住，闸门兜的是它们没覆盖的部分
+    // （params/executionId 的类型、task 各字段类型、timeoutSeconds 边界等），
+    // 以及「以后往协议里加约束即自动生效」——契约不再依赖某个人记得补手检。
+    const parsed = ExecuteRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      const first = parsed.error.issues[0];
+      const where = first.path.length ? first.path.join('.') : '(root)';
+      return reject(400, `Invalid execute request: ${where}: ${first.message}`);
     }
 
     // 登记 + 立即 accepted。prepare（clone/checkout、依赖安装）与 spawn
