@@ -8,8 +8,14 @@
 # 维护规则（遵 ADR-005：源码改动与产物同 commit）：
 #   1. 改完 apps/executor-node/src 后，在 apps/executor-desktop 跑：
 #        npm run build:executor   （= scripts/bundle-executor.sh，ncc 重打）
-#   2. 计算新产物哈希并回填本文件第二行：
+#   2. 计算新产物哈希并回填本文件**末行**（注释行以 # 开头，job 用 grep -v '^#' 取）：
 #        sha256sum resources/executor-node/index.js
 #   3. 与源码改动同 commit 提交。
 # CI 的 desktop-bundle-drift job 离线 ncc 重打后比对 actual == expected，不一致即红。
-c2110e7714423a0f9817e18affd74ec82f70500324a146397d866b9a8ba9a46d  index.js
+#
+# 变更记录：
+#   - c2110e77…：A2-B 前的基线。
+#   - 3dca07ba…：A3 完整形态——`routes/execute.ts` 的 `isSafeExecutionIdSegment`
+#     由模块私有改为 `export`（供 protocol-schemas.spec 与协议 pattern 做逐字符
+#     比对）。仅加导出也改变 ncc 的运行时导出图，故产物哈希随之变化（ADR-005）。
+3dca07baa3009cb72bada7b93e35ed9e6c73b2176f5a45147243510495de5eb2  index.js
