@@ -406,6 +406,107 @@ def test_replay_backoff_gate_defers_recent_failure(monkeypatch, tmp_path):
     assert meta['retries'] == 2
 
 
+def test_callback_retry_budget_threshold_and_cap(monkeypatch, tmp_path):
+    """E-05: 死信轮数上限=150（只防毒丸文件），指数退避 base=1s/cap=600s ——
+    两者共同给出约 24h 时长预算（覆盖 admin 滚动升级窗口，非无限每秒重发
+    占满磁盘）。"""
+    from routers import execute as execute_module
+    assert execute_module.CALLBACK_FILE_MAX_RETRIES == 150
+    assert execute_module.CALLBACK_REPLAY_BACKOFF_BASE_SECONDS == 1.0
+    assert execute_module.CALLBACK_REPLAY_BACKOFF_MAX_SECONDS == 600.0
+    # 把「base/cap/轮数 ⇒ 约 24h」的推导钉进测试：任一常量被单独改动而注释
+    # 未同步时这里先红（本轮复核发现 60 轮实为 ≈8.6h 而注释写 ≈24h 的漂移）。
+    budget_seconds = sum(
+        min(execute_module.CALLBACK_REPLAY_BACKOFF_BASE_SECONDS * (2 ** k),
+            execute_module.CALLBACK_REPLAY_BACKOFF_MAX_SECONDS)
+        for k in range(execute_module.CALLBACK_FILE_MAX_RETRIES)
+    )
+    assert 23.0 * 3600 <= budget_seconds <= 25.0 * 3600
+
+    monkeypatch.setattr(execute_module.settings, 'work_dir', str(tmp_path))
+    _patch_callback_env(monkeypatch)
+    # 零退避：让 150 轮重发背靠背跑完（门控被 0 穿透），验证轮数上限=150
+    monkeypatch.setattr(execute_module, 'CALLBACK_REPLAY_BACKOFF_BASE_SECONDS', 0.0)
+
+    class _DownClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def post(self, url, json, headers):
+            return _FakeResponse(503)
+
+    monkeypatch.setattr(execute_module.httpx, 'AsyncClient', _DownClient)
+
+    payload_file = execute_module._persist_failed_callback(
+        {'executionId': 'exec-budget'}, 'http://admin.local/api/executions/callback')
+    for _ in range(execute_module.CALLBACK_FILE_MAX_RETRIES):
+        asyncio.run(execute_module.retry_persisted_callbacks())
+    moved = list((tmp_path / 'callbacks' / 'dead-letter').glob('callback-*.json'))
+    assert len(moved) == 1
+    assert not payload_file.exists()
+    assert execute_module.get_dead_letter_count() == 1
+
+
+def test_callback_retry_backoff_gate_caps_recent_failure(monkeypatch, tmp_path):
+    """E-05: 指数退避门控 cap=600s——updatedAt 仅 60s 前（< cap）重发被挡下，
+    updatedAt 700s 前（> cap）放行。避免 admin 短暂不可达时每秒重发占满磁盘。"""
+    from routers import execute as execute_module
+    monkeypatch.setattr(execute_module.settings, 'work_dir', str(tmp_path))
+    _patch_callback_env(monkeypatch)
+    # base 设为 600s 让 retries=0 的门控即等于 cap，验证 cap 行为更直观
+    monkeypatch.setattr(execute_module, 'CALLBACK_REPLAY_BACKOFF_BASE_SECONDS', 600.0)
+    monkeypatch.setattr(execute_module, 'CALLBACK_REPLAY_BACKOFF_MAX_SECONDS', 600.0)
+
+    class _DownClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def post(self, url, json, headers):
+            return _FakeResponse(503)
+
+    monkeypatch.setattr(execute_module.httpx, 'AsyncClient', _DownClient)
+
+    payload_file = execute_module._persist_failed_callback(
+        {'executionId': 'exec-gate-cap'}, 'http://admin.local/api/executions/callback')
+
+    # updatedAt 仅 60s 前（< cap 600s）→ 门控挡下，不重发
+    meta = {'retries': 0, 'updatedAt': int((time.time() - 60) * 1000)}
+    payload_file.with_name(payload_file.name + '.meta').write_text(json.dumps(meta))
+    assert asyncio.run(execute_module.retry_persisted_callbacks()) == 0
+    assert payload_file.exists()
+
+    # updatedAt 700s 前（> cap 600s）→ 放行一次重发（失败，retries=1）
+    meta['updatedAt'] = int((time.time() - 700) * 1000)
+    payload_file.with_name(payload_file.name + '.meta').write_text(json.dumps(meta))
+    assert asyncio.run(execute_module.retry_persisted_callbacks()) == 0
+    assert payload_file.exists()
+    meta2 = json.loads(payload_file.with_name(payload_file.name + '.meta').read_text())
+    assert meta2['retries'] == 1
+
+
+def test_callback_retry_sleep_has_jitter(monkeypatch):
+    """E-44: 退避乘 (0.5 + rng) 抖动系数：rng=0 → 0.5×，rng=1 → 1.5×（范围对齐
+    node computeRetryBackoffMs；避免多 executor 在同一 admin 恢复窗口后同步重试）。"""
+    from routers import execute as execute_module
+    base = execute_module.CALLBACK_RETRY_BASE_DELAY_SECONDS
+    assert execute_module._callback_retry_sleep_seconds(1, lambda: 0.0) == base * 1 * 0.5
+    assert execute_module._callback_retry_sleep_seconds(1, lambda: 1.0) == base * 1 * 1.5
+    assert execute_module._callback_retry_sleep_seconds(3, lambda: 0.0) == base * 4 * 0.5
+    assert execute_module._callback_retry_sleep_seconds(3, lambda: 1.0) == base * 4 * 1.5
+
+
 def test_stop_mid_replay_leaves_file_durable(monkeypatch, tmp_path):
     """Shutting down while a replay POST is in flight must neither lose the
     payload nor count the interrupted round (node: 'Already durable; do not
@@ -791,3 +892,46 @@ def test_lifespan_flushes_workers_between_kill_and_drain(monkeypatch):
         assert order == ['kill', 'flush', 'drain']
 
     asyncio.run(scenario())
+
+
+# ── E-07: 优雅停机取消 pull 取件循环 ───────────────────────────────────────────
+# 否则 pull 循环在 drain/关机阶段仍领取新任务，与停机流程竞争（node main.ts
+# clearInterval 对等）。
+
+def test_lifespan_cancels_pull_task_on_shutdown(monkeypatch):
+    """E-07: 优雅停机第一步取消 _pull_task（node main.ts clearInterval 对等）。"""
+    import main as main_module
+    monkeypatch.setattr(main_module, 'check_admin_api_connectivity', AsyncMock())
+    monkeypatch.setattr(main_module, 'register_executor', AsyncMock(return_value=True))
+    monkeypatch.setattr(main_module, 'notify_offline', AsyncMock())
+    monkeypatch.setattr(main_module.settings, 'executor_pull_mode', True)
+
+    started = []
+    cancelled = []
+
+    async def fake_pull_loop():
+        started.append(True)
+        try:
+            await asyncio.sleep(10_000)  # 模拟长轮询取件：直到被取消
+        except asyncio.CancelledError:
+            cancelled.append(True)
+            raise
+
+    monkeypatch.setattr(main_module, 'pull_task', fake_pull_loop)
+
+    monkeypatch.setattr(main_module.execute, 'kill_running_task_processes', AsyncMock(return_value=0))
+    monkeypatch.setattr(main_module.execute, 'await_background_tasks_after_kill', AsyncMock(return_value=0))
+    monkeypatch.setattr(main_module.execute, 'stop_callback_retry_task', AsyncMock())
+    monkeypatch.setattr(main_module.execute, 'start_callback_retry_task', lambda: None)
+    monkeypatch.setattr(main_module.maintenance, 'start_disk_cleanup_task', lambda: None)
+    monkeypatch.setattr(main_module.maintenance, 'stop_disk_cleanup_task', lambda: None)
+
+    async def scenario():
+        async with main_module.lifespan(main_module.app):
+            await asyncio.sleep(0.02)  # 让 pull 任务真正开始运行（否则被取消时尚未启动）
+
+    asyncio.run(scenario())
+
+    assert started == [True]
+    assert cancelled == [True]
+    assert main_module._pull_task is None

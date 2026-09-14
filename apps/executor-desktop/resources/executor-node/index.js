@@ -46521,7 +46521,17 @@ async function uploadOne(adminBaseUrl, executionId, item, token) {
         const headers = {};
         if (token)
             headers['Authorization'] = `Bearer ${token}`;
-        const resp = await fetch(url, { method: 'PUT', headers, body: form });
+        // E-06: 产物上传加 60s 超时（对照 python artifacts.py:162 的 timeout=30）。
+        // node 选 60s 是给大产物更宽裕窗口——上传走 executor→admin 内网，30s 对
+        // 数百 MB 产物偏紧；python 侧 30s 因 uv 包缓存通常更小。用 AbortSignal.timeout
+        // 而非 setTimeout+AbortController（语义等价、更简洁）：60s 内无响应即抛
+        // AbortError，被下方 catch 吞掉并跳过该产物（best-effort，不阻塞主流程）。
+        const resp = await fetch(url, {
+            method: 'PUT',
+            headers,
+            body: form,
+            signal: AbortSignal.timeout(60000),
+        });
         if (resp.ok)
             return true;
         logger_1.logger.warn(`artifacts: 上传 ${item.name} 返回 HTTP ${resp.status}（跳过）`);
@@ -46598,6 +46608,9 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.CALLBACK_REPLAY_BACKOFF_MAX_MS = exports.CALLBACK_REPLAY_BACKOFF_BASE_MS = exports.CALLBACK_FILE_MAX_RETRIES = void 0;
+exports.setCallbackReplayBackoffBaseMs = setCallbackReplayBackoffBaseMs;
+exports.computeRetryBackoffMs = computeRetryBackoffMs;
 exports.pushCallback = pushCallback;
 exports.startCallbackThread = startCallbackThread;
 exports.stopCallbackThread = stopCallbackThread;
@@ -46641,9 +46654,30 @@ async function callbackDelay(ms) {
  *  every send and every persisted file must respect this chunk size. */
 const CALLBACK_BATCH_SIZE = 100;
 let persistenceSequence = 0;
-/** A persisted callback file gets this many retry rounds before it is moved
- *  to the dead-letter directory and stops being re-sent every second. */
-const CALLBACK_FILE_MAX_RETRIES = 5;
+// E-05 (P2): 持久化回调的死信重试轮数上限。轮数上限只防毒丸文件（永不可达的
+// 回调被无限重发占满磁盘），真正的保护是"时长型预算"——下方指数退避门控让整
+// 个重发周期约为 24h 量级，足以覆盖 admin 的滚动升级窗口（期间 admin 完全
+// 不可达、回调只能排队）。node 原固定 1s 间隔（5 轮≈1min）→ 改为 base 5s 指数
+// 退避 cap 600s、轮数上限 150，实算时长预算：
+//   Σ_{k=0..149} min(5s·2^k, 600s) = 635s + 143×600s = 86435s ≈ 24.0h
+// （python 侧 base 1s/cap 600s/150 轮 ≈ 1023s + 140×600s ≈ 23.6h，两侧同量级。）
+exports.CALLBACK_FILE_MAX_RETRIES = 150;
+// E-05: 持久化回调重发的指数退避门控（base 5s，cap 600s）——见上方注释。
+exports.CALLBACK_REPLAY_BACKOFF_BASE_MS = 5000;
+exports.CALLBACK_REPLAY_BACKOFF_MAX_MS = 600000;
+// 门控 base 抽成可注入变量：固定计时器套件（callback.sharding.spec.ts）把 base
+// 注入为 0 以恢复"即时重发"语义；生产默认 5s。这样门控既能落在真实时间上实现
+// E-05 的时长预算，又不破坏基于冻结 Date.now() 的既有单测。
+let replayBackoffBaseMs = exports.CALLBACK_REPLAY_BACKOFF_BASE_MS;
+function setCallbackReplayBackoffBaseMs(ms) {
+    replayBackoffBaseMs = ms;
+}
+// E-44: 实时回调指数退避乘 (0.5 + Math.random()) 抖动系数，避免多 executor 在
+// 同一 admin 恢复窗口后同步重试（惊群）。范围与 python _callback_retry_sleep_seconds 对齐。
+const CALLBACK_LIVE_BASE_DELAY_MS = 1000;
+function computeRetryBackoffMs(attempt, rng = Math.random) {
+    return CALLBACK_LIVE_BASE_DELAY_MS * Math.pow(2, attempt) * (0.5 + rng());
+}
 // Lazily computed so that config.workDir is resolved at call time, not at module load
 function getCallbackDir() {
     const dir = path.join(config_1.config.workDir, 'callbacks');
@@ -46741,15 +46775,23 @@ function deadLetterCallbackFile(filepath, reason) {
     }
     catch (_) { /* meta may not exist */ }
 }
-function readRetryCount(filepath) {
+/** E-05: 读取持久化回调的 .meta：重试轮数 + 上次尝试时间戳（updatedAt，缺省
+ *  回退 persistedAt）。上次尝试时间戳驱动下方指数退避门控，避免每秒重发。 */
+function readRetryMeta(filepath) {
     try {
         const raw = fs.readFileSync(`${filepath}.meta`, 'utf-8');
         const meta = JSON.parse(raw);
-        return typeof meta.retries === 'number' && meta.retries >= 0 ? meta.retries : 0;
+        const retries = typeof meta.retries === 'number' && meta.retries >= 0 ? meta.retries : 0;
+        const updatedAt = typeof meta.updatedAt === 'number' ? meta.updatedAt
+            : (typeof meta.persistedAt === 'number' ? meta.persistedAt : 0);
+        return { retries, updatedAt };
     }
     catch {
-        return 0;
+        return { retries: 0, updatedAt: 0 };
     }
+}
+function readRetryCount(filepath) {
+    return readRetryMeta(filepath).retries;
 }
 function writeRetryCount(filepath, retries) {
     try {
@@ -46773,8 +46815,9 @@ async function retryFailedCallbacks() {
                 continue;
             const filepath = path.join(callbackDir, file);
             try {
-                const retries = readRetryCount(filepath);
-                if (retries >= CALLBACK_FILE_MAX_RETRIES) {
+                const meta = readRetryMeta(filepath);
+                const retries = meta.retries;
+                if (retries >= exports.CALLBACK_FILE_MAX_RETRIES) {
                     deadLetterCallbackFile(filepath, `${retries} failed retry rounds`);
                     continue;
                 }
@@ -46782,6 +46825,12 @@ async function retryFailedCallbacks() {
                     deadLetterCallbackFile(filepath, 'oversized payload');
                     continue;
                 }
+                // E-05: 指数退避门控（见上方常量注释）。轮数上限只防毒丸文件；时长预算
+                // 约 24h 量级覆盖 admin 滚动升级窗口。首轮 meta.updatedAt 缺省回退到较早的
+                // persistedAt，门控必然通过 → 即时重发；后续轮按 base*2**retries（cap 600s）。
+                const gateMs = Math.min(replayBackoffBaseMs * Math.pow(2, retries), exports.CALLBACK_REPLAY_BACKOFF_MAX_MS);
+                if (meta.updatedAt && Date.now() - meta.updatedAt < gateMs)
+                    continue;
                 const content = fs.readFileSync(filepath, 'utf-8');
                 const requests = JSON.parse(content);
                 const success = await doCallback(requests);
@@ -46797,7 +46846,7 @@ async function retryFailedCallbacks() {
                 }
                 else {
                     const next = retries + 1;
-                    if (next >= CALLBACK_FILE_MAX_RETRIES) {
+                    if (next >= exports.CALLBACK_FILE_MAX_RETRIES) {
                         deadLetterCallbackFile(filepath, `${next} failed retry rounds`);
                     }
                     else {
@@ -46822,7 +46871,6 @@ async function retryFailedCallbacks() {
 }
 async function processCallbacksWithBackoff(requests) {
     const MAX_RETRIES = 5;
-    const BASE_DELAY_MS = 1000;
     // admin-api rejects batches > 100 outright — a batch larger than that would
     // fail all 5 attempts and then poison the persisted file forever.
     const failed = [];
@@ -46839,7 +46887,7 @@ async function processCallbacksWithBackoff(requests) {
                 break;
             logger_1.logger.warn(`Callback attempt ${attempt + 1}/${MAX_RETRIES} failed for ${chunk.length} item(s)`);
             if (attempt < MAX_RETRIES - 1) {
-                const delay = BASE_DELAY_MS * Math.pow(2, attempt);
+                const delay = computeRetryBackoffMs(attempt);
                 await callbackDelay(delay);
                 if (drainExpired)
                     break;
@@ -47251,6 +47299,7 @@ exports.clearLog = clearLog;
 exports.deleteOldLogs = deleteOldLogs;
 exports.startLogCleanup = startLogCleanup;
 exports.stopLogCleanup = stopLogCleanup;
+exports.registerActiveWorkdirProvider = registerActiveWorkdirProvider;
 exports.cleanupWorkDir = cleanupWorkDir;
 exports.getDeadLetterCount = getDeadLetterCount;
 exports.startWorkDirCleanup = startWorkDirCleanup;
@@ -47427,6 +47476,10 @@ const CLEANUP_SWEEP_INTERVAL_HOURS = 6;
 const PROTECTED_WORKDIR_NAMES = new Set([
     'logs', 'meta', 'callbacks', '.git_cache', '.node_modules', '.pkg-updates', 'apps',
 ]);
+let activeWorkdirProvider = () => ({ executionIds: new Set(), taskIds: new Set() });
+function registerActiveWorkdirProvider(fn) {
+    activeWorkdirProvider = fn;
+}
 function removePath(target) {
     try {
         fs.rmSync(target, { recursive: true, force: true });
@@ -47525,11 +47578,35 @@ function cleanupWorkDir(ttlDays = CLEANUP_TTL_DAYS) {
     let packages = 0;
     let deadLetters = 0;
     let orphanMetaFiles = 0;
+    // E-08: 活跃执行保护——liveness 未知（provider 抛错/返回空）时删 Nothing
+    // （fail-safe，对齐 python maintenance._live_workdir_names）；否则跳过活跃
+    // executionId 的工作目录及其关联的 .node_modules/.git_cache 分片（按 taskId）。
+    let active = null;
+    try {
+        const probe = activeWorkdirProvider();
+        if (probe && probe.executionIds instanceof Set && probe.taskIds instanceof Set) {
+            active = probe;
+        }
+    }
+    catch {
+        active = null;
+    }
+    if (active === null) {
+        logger_1.logger.warn('cleanupWorkDir: active execution probe unavailable (liveness unknown) — ' +
+            'skipping all deletions (fail-safe)');
+        return { workDirs: 0, caches: 0, packages: 0, deadLetters: 0, orphanMetaFiles: 0 };
+    }
+    const activeExecIds = active.executionIds;
+    const activeTaskIds = active.taskIds;
     try {
         // 1. Task workdirs: any top-level entry that is not infrastructure.
         const baseEntries = fs.readdirSync(config_1.config.workDir, { withFileTypes: true });
         for (const entry of baseEntries) {
             if (PROTECTED_WORKDIR_NAMES.has(entry.name))
+                continue;
+            // E-08: 跳过仍在运行（活跃）的 execution 工作目录——drain/关机期间其目录
+            // mtime 可能已超 TTL，误删会破坏正在跑的任务（对照 python fail-safe）。
+            if (activeExecIds.has(entry.name))
                 continue;
             const full = path.join(config_1.config.workDir, entry.name);
             try {
@@ -47541,9 +47618,32 @@ function cleanupWorkDir(ttlDays = CLEANUP_TTL_DAYS) {
             }
             catch { /* raced — skip */ }
         }
-        // 2. Shared caches (.git_cache, .node_modules): drop entries unused past TTL.
+        // 2. Shared caches (.git_cache, .node_modules): drop entries unused past TTL
+        //    —但永远不删活跃 task 的分片（活跃任务正在用，删了会让它在下次依赖安装
+        //    时全量重装或失败；liveness 未知已被上面的 fail-safe 拦下）。
         for (const cacheDirName of ['.git_cache', '.node_modules']) {
-            caches += removeOlderThan(path.join(config_1.config.workDir, cacheDirName), cutoff);
+            const cacheBase = path.join(config_1.config.workDir, cacheDirName);
+            let subEntries;
+            try {
+                subEntries = fs.readdirSync(cacheBase, { withFileTypes: true });
+            }
+            catch {
+                continue;
+            }
+            for (const sub of subEntries) {
+                const subTarget = path.join(cacheBase, sub.name);
+                // E-08: 活跃分片保护——taskId 命中的 .git_cache/.node_modules 子目录保留。
+                if (sub.isDirectory() && activeTaskIds.has(sub.name))
+                    continue;
+                try {
+                    const stat = fs.statSync(subTarget);
+                    if (stat.mtimeMs < cutoff) {
+                        if (removePath(subTarget))
+                            caches++;
+                    }
+                }
+                catch { /* raced — skip */ }
+            }
         }
         // 3. Downloaded packages: keep only the newest few regardless of age.
         packages = removeOlderThan(path.join(process.cwd(), '.pkg-updates'), cutoff, {
@@ -48083,6 +48183,10 @@ async function gracefulShutdown(signal, exitCode = 0) {
         return;
     isShuttingDown = true;
     logger_1.logger.info(`Received ${signal}, initiating graceful shutdown...`);
+    // E-07: 优雅停机第一步停止 pull 取件循环——drain/关机阶段不再领取新任务
+    // （与 python main.py 取消 _pull_task 对等）。pull 循环每秒一次，若不停机会
+    // 与后续停机步骤竞争领取任务。
+    (0, pull_1.stopPullLoop)();
     // Stop heartbeat
     if (heartbeatInterval) {
         clearInterval(heartbeatInterval);
@@ -48496,6 +48600,7 @@ async function forceTokenRefresh() {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.pullOnce = pullOnce;
 exports.startPullLoop = startPullLoop;
+exports.stopPullLoop = stopPullLoop;
 const config_1 = __nccwpck_require__(3650);
 const logger_1 = __nccwpck_require__(6888);
 const admin_client_1 = __nccwpck_require__(6609);
@@ -48506,21 +48611,49 @@ const callback_1 = __nccwpck_require__(4915);
 /**
  * ARCH-32（ADR-015）：pull 模式派发循环——NAT 内执行器的零入站取件通道。
  *
- * push 模式由 admin 主动 POST /api/execute；pull 模式下执行器在有空闲并发
- * 槽位时向 admin 发起长轮询（POST /executors/pull，服务端阻塞至多
- * EXECUTOR_PULL_WAIT_MS），从响应载荷中取任务，随后走与 push 完全相同的
- * acceptExecution 领取路径与回调通道。除「谁发起连接」外，两种模式在执行
- * 器侧的执行/回调语义逐字节一致。
+ * push 模式由 admin 主动 POST /api/execute；pull 模式下执行器向 admin 发起
+ * 长轮询（POST /executors/pull，服务端阻塞至多 EXECUTOR_PULL_WAIT_MS），从
+ * 响应载荷中取任务，随后走与 push 完全相同的 acceptExecution 领取路径与回
+ * 调通道。除「谁发起连接」外，两种模式在执行器侧的执行/回调语义逐字节一致。
  *
  * 节奏：1s 心跳节拍检查空闲槽位 + pullInFlight 单飞——空闲时即一轮长轮询
  * （服务端挂 25s），无任务则空转返回；有任务立即领取并继续下一轮。
+ *
+ * E-01（P1）pull 容量竞态——预留槽位方案：
+ * 旧实现「先检查空槽 → 再发长轮询 → 拿到任务后才 accept」，而 admin 端长
+ * 轮询阻塞最长 25s；期间一个 push 派发可能占走最后一个槽位，accept 返回
+ * 429，旧代码随即补发 failed 回调——把「暂时没槽位」的瞬态固化成 admin 侧
+ * 永久失败（评审 audit-r2 E-01 / audit-r3 E-01 复核）。现改为：
+ *
+ *   1. 发起 pull 之前先在本执行器的并发账本（与 acceptExecution 同一个
+ *      SharedArrayBuffer 计数）原子预留一个槽位（add-then-check，与
+ *      acceptExecution 同款原子模式）；
+ *   2. 预留成功才发 pull 请求。心跳 runningTaskCount 因此诚实包含「预留中
+ *      的槽位」——admin 的容量核算在长轮询窗口内看到的执行器就是满的，
+ *      不会再把 push 派发塞进这最后一个空槽（诚实语义，非故意虚报）；
+ *   3. admin 无任务返回 → finally 立即释放预留，进入下一轮；
+ *   4. admin 返回任务 → 以 slotPreReserved 领取，预留即正式占用，容量检
+ *      查必然通过（见 acceptExecution 注释）；执行完成路径的 entry.release()
+ *      归还的正是这一个预留槽位，账本零漂移。
  */
 let pullInFlight = false;
 async function pullOnce() {
     if (pullInFlight)
         return;
     pullInFlight = true;
+    // E-01: 预留标记——true 期间本函数持有且仅持有一个账本槽位；accept 返回
+    // 200（预留转正式占用）或本函数提前占位失败时置 false，finally 里对仍
+    // 持有的预留做唯一一次释放（唯一的释放点，杜绝双释放）。
+    let slotReserved = false;
     try {
+        // 原子预留：add 返回旧值，旧值已 ≥ 上限说明无空闲槽位——回退并跳过
+        // 本轮（与 acceptExecution 的 add-then-check 同款原子模式）。
+        const previous = Atomics.add((0, scheduler_1.getRunningCountArray)(), 0, 1);
+        if (previous >= config_1.config.maxConcurrentTasks) {
+            Atomics.sub((0, scheduler_1.getRunningCountArray)(), 0, 1);
+            return;
+        }
+        slotReserved = true;
         const resp = await (0, admin_client_1.postLong)('/api/executors/pull', {
             address: config_1.config.executorAddressPublic || config_1.config.executorAddress,
             waitMs: 25000,
@@ -48528,13 +48661,31 @@ async function pullOnce() {
         const payload = (0, admin_envelope_1.unwrapAdminResponseData)(resp?.data);
         const task = payload?.task;
         if (!task || !task.executionId)
-            return;
+            return; // 无任务：finally 释放预留
         logger_1.logger.info(`Pulled execution ${task.executionId} from admin pull queue`);
         const { traceparent, ...body } = task;
-        const accepted = (0, execute_1.acceptExecution)(body, traceparent);
-        if (accepted.status !== 200) {
-            // 领取被拒（容量竞态/校验失败）：补发 failed 回调，admin 侧不留僵尸
-            // RUNNING 行（stale sweep 之前先收敛）。
+        // 预留即正式占用：slotPreReserved 模式下 accept 不再重复计数，容量检
+        // 查必然通过；执行完成时 entry.release() 释放的就是这个预留槽位。
+        const accepted = (0, execute_1.acceptExecution)(body, traceparent, {
+            slotPreReserved: true,
+        });
+        if (accepted.status === 200) {
+            // 所有权移交完成：槽位由执行条目持有至终态，finally 不再释放。
+            slotReserved = false;
+        }
+        else if (accepted.status === 429) {
+            // 防御路径（正常流程不可达——预留模式下 accept 的容量检查必然通过；
+            // 仅当账本被异常推高/竞态残余时触发）：释放预留 + warn，但【不回调
+            // failed】。429 是「暂时没容量」的瞬态，把它补发成 failed 恰是本修
+            // 复要关闭的「固化永久失败」行为；admin 侧对无人认领的 RUNNING 行
+            // 有 stale sweep 兜底收敛，这里静默让位。
+            logger_1.logger.warn(`Pulled execution ${task.executionId} rejected with 429 despite pre-reserved slot ` +
+                '(capacity ledger drift) — releasing reservation, no failed callback ' +
+                '(admin stale sweep converges the orphan RUNNING row)');
+        }
+        else {
+            // 非 200 且非 429（400 校验失败等）：真失败——维持既有语义补发
+            // failed 回调，admin 侧不留僵尸 RUNNING 行。预留由 finally 释放。
             const error = typeof accepted.payload.error === 'string'
                 ? accepted.payload.error
                 : `HTTP ${accepted.status}`;
@@ -48551,14 +48702,33 @@ async function pullOnce() {
     }
     finally {
         pullInFlight = false;
+        if (slotReserved) {
+            // 释放预留（无任务 / accept 非 200 / pull 请求异常）：唯一释放点。
+            Atomics.sub((0, scheduler_1.getRunningCountArray)(), 0, 1);
+        }
     }
 }
+// E-07: 保存 pull 循环句柄，供优雅停机（main.ts gracefulShutdown 首步）
+// clearInterval 停止——避免 drain/关机阶段继续领取新任务。
+let pullLoopInterval = null;
 function startPullLoop() {
-    return setInterval(() => {
+    // E-07: 保存句柄（原实现直接 return 丢弃）；停机路径据此停止 pull 循环。
+    pullLoopInterval = setInterval(() => {
+        // 廉价预检（预留本身在 pullOnce 内原子完成，双保险不改变正确性）：
+        // E-01 后 getRunningCount() 诚实包含预留中的槽位，满载时连 pullOnce
+        // 都不必进入。
         if ((0, scheduler_1.getRunningCount)() < config_1.config.maxConcurrentTasks) {
             void pullOnce();
         }
     }, 1000);
+    return pullLoopInterval;
+}
+/** E-07: 停止 pull 取件循环（main.ts gracefulShutdown 首步调用）。 */
+function stopPullLoop() {
+    if (pullLoopInterval) {
+        clearInterval(pullLoopInterval);
+        pullLoopInterval = null;
+    }
 }
 
 
@@ -49397,6 +49567,7 @@ exports.gitCheckoutTo = gitCheckoutTo;
 exports.validateExecutionWorkDir = validateExecutionWorkDir;
 exports.executionExists = executionExists;
 exports.listActiveExecutionIds = listActiveExecutionIds;
+exports.listActiveTaskIds = listActiveTaskIds;
 exports.acceptExecution = acceptExecution;
 exports.prepareFailureReason = prepareFailureReason;
 exports.dispatchExecutionToWorker = dispatchExecutionToWorker;
@@ -49639,36 +49810,56 @@ function executionExists(executionId) {
 function listActiveExecutionIds() {
     return [...liveExecutions.keys()];
 }
+/** E-08: 当前运行表中所有 taskId（cleanupWorkDir 保护活跃 .node_modules/
+ *  .git_cache 分片用——对照 python maintenance._live_workdir_names）。 */
+function listActiveTaskIds() {
+    return [...new Set([...liveExecutions.values()].map((e) => e.taskId))];
+}
 // STALE-01: 心跳上报本机运行中的 executionId 与死信积压。scheduler 不能反向
 // import routes（会成环），故由数据属主在此注册 provider。
 (0, scheduler_1.registerRunningExecutionIdsProvider)(listActiveExecutionIds);
 (0, scheduler_1.registerDeadLetterCountProvider)(file_logger_1.getDeadLetterCount);
-// ---------------------------------------------------------------------------
-// POST /execute — 只做参数校验 + 并发预检 + 登记，prepare/spawn 全部进入
-// 后台（改动2）。同步 prepare 时 clone(120s)+fetch(60s)+install(300s) 会
-// 超过 admin 侧 dispatch HTTP 超时（(task.timeout+10)s），导致 admin 把
-// 超时误判为 TIMEOUT 终态而执行器随后成功回调被丢弃、容量计数失真。
-//
-// ARCH-32: 校验/领取核心抽为 acceptExecution —— HTTP 路由与 pull 循环
-// （pull.ts，NAT 内执行器经长轮询取件）共用同一条路径，杜绝双实现漂移。
-// 返回 { status, payload }；HTTP 路由是薄适配层（写响应），pull 循环对
-// 非 200 结果补发 failed 回调（admin 侧不留僵尸 RUNNING 行）。
-// ---------------------------------------------------------------------------
-function acceptExecution(body, traceparent) {
-    // BUG-03: Use atomic operations to prevent race conditions in capacity checking
-    // Atomically increment counter first, then check if over capacity
-    const current = Atomics.add((0, scheduler_1.getRunningCountArray)(), 0, 1);
-    if (current >= config_1.config.maxConcurrentTasks) {
-        Atomics.sub((0, scheduler_1.getRunningCountArray)(), 0, 1);
-        return { status: 429, payload: { error: 'Executor is at capacity' } };
+// E-08: 注册活跃工作目录快照，cleanupWorkDir 据此跳过活跃 execution 目录及其
+// .node_modules/.git_cache 分片（liveness 未知时 provider 抛错 → 删 Nothing）。
+(0, file_logger_1.registerActiveWorkdirProvider)(() => ({
+    executionIds: new Set(listActiveExecutionIds()),
+    taskIds: new Set(listActiveTaskIds()),
+}));
+function acceptExecution(body, traceparent, opts) {
+    const slotPreReserved = opts?.slotPreReserved === true;
+    if (slotPreReserved) {
+        // E-01 预留模式（见 AcceptExecutionOptions）：不再 add——调用方已占位。
+        if (Atomics.load((0, scheduler_1.getRunningCountArray)(), 0) > config_1.config.maxConcurrentTasks) {
+            return { status: 429, payload: { error: 'Executor is at capacity' } };
+        }
+    }
+    else {
+        // BUG-03: Use atomic operations to prevent race conditions in capacity checking
+        // Atomically increment counter first, then check if over capacity
+        const current = Atomics.add((0, scheduler_1.getRunningCountArray)(), 0, 1);
+        if (current >= config_1.config.maxConcurrentTasks) {
+            Atomics.sub((0, scheduler_1.getRunningCountArray)(), 0, 1);
+            return { status: 429, payload: { error: 'Executor is at capacity' } };
+        }
     }
     let entry = null;
     /** 同步拒绝路径：释放容量（幂等）。 */
     const reject = (status, error) => {
-        if (entry)
+        if (slotPreReserved) {
+            // E-01 预留模式：槽位所有权始终在调用方（pull 循环对任何非 200 统一
+            // 释放预留），这里绝不 decrement；只回收已登记的条目防僵尸 RUNNING
+            // 表——置 capacityReleased 后条目的 release() 变 no-op，绝无双减。
+            if (entry) {
+                entry.capacityReleased = true;
+                liveExecutions.delete(entry.executionId);
+            }
+        }
+        else if (entry) {
             entry.release();
-        else
+        }
+        else {
             Atomics.sub((0, scheduler_1.getRunningCountArray)(), 0, 1);
+        }
         return { status, payload: { error } };
     };
     try {
@@ -49715,7 +49906,17 @@ function acceptExecution(body, traceparent) {
         }
         // S16: validate each package name against npm naming rules before any
         // shell expansion (install itself now runs in the background).
-        const reqs = body.task.requirements || [];
+        // E-19: requirements 类型守卫——上游 DTO 演进误传字符串会让下方
+        // `for (const pkg of reqs)` 逐字符当包名迭代（python _validate_requirements
+        // 同源问题）。同步 400 拒绝，与 python accept_execution 入口并列；缺省（undefined/
+        // null）仍当空数组，向后兼容。
+        if (body.task.requirements !== undefined && body.task.requirements !== null
+            && !Array.isArray(body.task.requirements)) {
+            return reject(400, 'requirements must be an array of package names');
+        }
+        const reqs = Array.isArray(body.task.requirements)
+            ? body.task.requirements
+            : [];
         const npmNameRe = /^(@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*(@[\w.^~-]+)?$/i;
         for (const pkg of reqs) {
             if (!npmNameRe.test(pkg)) {

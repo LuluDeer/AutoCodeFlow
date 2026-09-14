@@ -367,3 +367,45 @@ class TestRequestWithSelfHeal:
 
         assert await auth_module._fetch_token() is None
         refresh.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# E-11: _refresh_token_if_needed 失败退避——admin 不可达时不要每请求一发 10s 超时
+# ---------------------------------------------------------------------------
+
+class TestTokenRefreshBackoffE11:
+    @pytest.mark.asyncio
+    async def test_no_refresh_within_backoff_after_failure(self, monkeypatch):
+        """E-11: _fetch_token 失败后 30s 退避窗内，_refresh_token_if_needed 不再
+        尝试刷新（避免 admin 不可达时每 inbound 请求都阻塞在 ~10s 取 token 超时）。"""
+        fetch = AsyncMock(return_value=None)  # 失败
+        monkeypatch.setattr(auth_module, '_fetch_token', fetch)
+        monkeypatch.setattr(auth_module, '_token_expires_at', None)
+        monkeypatch.setattr(auth_module, '_dynamic_token', None)
+        monkeypatch.setattr(auth_module, '_token_fetch_failed_at', 0.0)
+        # 冻结单调时钟，使窗内两次调用时间戳相同
+        fixed = 1000.0
+        monkeypatch.setattr(auth_module.time, 'monotonic', lambda: fixed)
+
+        await auth_module._refresh_token_if_needed()
+        assert fetch.await_count == 1  # 首次失败 → 记录退避时间戳
+        assert auth_module._token_fetch_failed_at > 0
+
+        # 退避窗内（时钟未变）→ 直接 return，不再调用 _fetch_token
+        await auth_module._refresh_token_if_needed()
+        assert fetch.await_count == 1, 'backoff window must skip the refresh'
+
+    @pytest.mark.asyncio
+    async def test_success_clears_backoff(self, monkeypatch):
+        """E-11: 刷新成功重置退避时间戳，后续窗口到期后才能重试。"""
+        fetch = AsyncMock(return_value='new-token')
+        monkeypatch.setattr(auth_module, '_fetch_token', fetch)
+        monkeypatch.setattr(auth_module, '_token_expires_at', None)
+        monkeypatch.setattr(auth_module, '_dynamic_token', None)
+        monkeypatch.setattr(auth_module, '_token_fetch_failed_at', 500.0)
+        fixed = 1000.0
+        monkeypatch.setattr(auth_module.time, 'monotonic', lambda: fixed)
+
+        await auth_module._refresh_token_if_needed()
+        assert fetch.await_count == 1
+        assert auth_module._token_fetch_failed_at == 0.0, 'success must reset backoff'

@@ -16,7 +16,7 @@ import { pushCallback, CallbackFailureReason } from '../callback';
 import { gatherArtifacts, artifactsDirFor, ArtifactManifestEntry } from '../artifacts';
 import { getCurrentToken } from '../middleware/auth';
 import { getCurrentAdminUrl } from '../admin-client';
-import { appendLog, getDeadLetterCount } from '../file-logger';
+import { appendLog, getDeadLetterCount, registerActiveWorkdirProvider } from '../file-logger';
 import { taskWorkerManager, ExecutionCancelledError } from '../task-worker';
 import { runCommand, killProcessTree } from '../run-command';
 import { buildChildEnv } from '../env-whitelist';
@@ -301,10 +301,22 @@ export function listActiveExecutionIds(): string[] {
   return [...liveExecutions.keys()];
 }
 
+/** E-08: 当前运行表中所有 taskId（cleanupWorkDir 保护活跃 .node_modules/
+ *  .git_cache 分片用——对照 python maintenance._live_workdir_names）。 */
+export function listActiveTaskIds(): string[] {
+  return [...new Set([...liveExecutions.values()].map((e) => e.taskId))];
+}
+
 // STALE-01: 心跳上报本机运行中的 executionId 与死信积压。scheduler 不能反向
 // import routes（会成环），故由数据属主在此注册 provider。
 registerRunningExecutionIdsProvider(listActiveExecutionIds);
 registerDeadLetterCountProvider(getDeadLetterCount);
+// E-08: 注册活跃工作目录快照，cleanupWorkDir 据此跳过活跃 execution 目录及其
+// .node_modules/.git_cache 分片（liveness 未知时 provider 抛错 → 删 Nothing）。
+registerActiveWorkdirProvider(() => ({
+  executionIds: new Set(listActiveExecutionIds()),
+  taskIds: new Set(listActiveTaskIds()),
+}));
 
 // ---------------------------------------------------------------------------
 // POST /execute — 只做参数校验 + 并发预检 + 登记，prepare/spawn 全部进入
@@ -419,7 +431,17 @@ export function acceptExecution(
     }
     // S16: validate each package name against npm naming rules before any
     // shell expansion (install itself now runs in the background).
-    const reqs: string[] = (body.task.requirements as string[]) || [];
+    // E-19: requirements 类型守卫——上游 DTO 演进误传字符串会让下方
+    // `for (const pkg of reqs)` 逐字符当包名迭代（python _validate_requirements
+    // 同源问题）。同步 400 拒绝，与 python accept_execution 入口并列；缺省（undefined/
+    // null）仍当空数组，向后兼容。
+    if (body.task.requirements !== undefined && body.task.requirements !== null
+        && !Array.isArray(body.task.requirements)) {
+      return reject(400, 'requirements must be an array of package names');
+    }
+    const reqs: string[] = Array.isArray(body.task.requirements)
+      ? (body.task.requirements as string[])
+      : [];
     const npmNameRe = /^(@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*(@[\w.^~-]+)?$/i;
     for (const pkg of reqs) {
       if (!npmNameRe.test(pkg)) {

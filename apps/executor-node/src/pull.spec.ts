@@ -175,3 +175,29 @@ describe('pull loop (ARCH-32 + E-01 预留槽位)', () => {
     expect(acceptExecution).not.toHaveBeenCalled();
   });
 });
+
+// E-07: 优雅停机必须停止 pull 取件循环——否则 drain/关机阶段仍会领取新任务。
+describe('pull loop start/stop (E-07)', () => {
+  let pull: { startPullLoop: () => NodeJS.Timeout; stopPullLoop: () => void };
+  beforeEach(() => {
+    jest.useFakeTimers();
+    jest.clearAllMocks();
+    Atomics.store(ledger, 0, 0);
+    pull = require('./pull');
+  });
+  afterEach(() => {
+    pull.stopPullLoop();
+    jest.useRealTimers();
+  });
+
+  it('stopPullLoop stops the interval so no further tasks are pulled during shutdown', async () => {
+    const interval = pull.startPullLoop();
+    expect(interval).toBeDefined();
+    await jest.advanceTimersByTimeAsync(1_100);
+    const callsAfterStart = postMock.mock.calls.length;
+    expect(callsAfterStart).toBeGreaterThanOrEqual(1); // 至少领取了一次
+    pull.stopPullLoop();
+    await jest.advanceTimersByTimeAsync(2_200);
+    expect(postMock.mock.calls.length).toBe(callsAfterStart); // 停机后不再领取
+  });
+});
