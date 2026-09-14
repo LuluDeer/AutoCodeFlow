@@ -18,4 +18,6 @@
 #   - 3dca07ba…：A3 完整形态——`routes/execute.ts` 的 `isSafeExecutionIdSegment`
 #     由模块私有改为 `export`（供 protocol-schemas.spec 与协议 pattern 做逐字符
 #     比对）。仅加导出也改变 ncc 的运行时导出图，故产物哈希随之变化（ADR-005）。
-3dca07baa3009cb72bada7b93e35ed9e6c73b2176f5a45147243510495de5eb2  index.js
+#   - 5f54799d…：A3-C 把生成的 zod schema 接进 /execute 运行时校验，产物因此
+#     内联了 zod（2111kB → 2275kB）。这是内嵌执行器首次引入第三方运行时依赖。
+5f54799dd1946ff57396b15e3402c660ed9b9a84d6b127f23c6baef675bb1eab  index.js

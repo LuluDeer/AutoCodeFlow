@@ -1395,3 +1395,51 @@ describe('E-26 npm --prefix quoting under shell:true', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// A3-C：协议向量驱动 POST /execute（node 侧）
+// ---------------------------------------------------------------------------
+/**
+ * 与 `src/protocol-schemas.spec.ts` 的区别：后者断言的是「生成的 zod schema 与
+ * 协议一致」，这里断言的是「**端点真的按协议拒绝**」。少了这一层，schema 只是
+ * 一份被测试引用的产物——删掉运行时的手检、端点照收不误，协议也不会红。
+ *
+ * 只跑 invalid 方向：valid 方向会真实登记 live execution 并占用容量槽位（本
+ * 文件前面的用例已占用多个），而「合法载荷能被接受」由 protocol-schemas.spec
+ * 与既有的 200 用例覆盖。invalid 载荷在登记之前就被拒，无副作用。
+ */
+describe('A3-C 协议闸门：schemaVectors.ExecuteRequest.invalid 必须被 /execute 拒绝', () => {
+  // fs 在本文件被 jest.mock('fs') 全量自动 mock——读协议必须绕开它。
+  const realFs = jest.requireActual('fs') as typeof import('fs');
+  const realPath = jest.requireActual('path') as typeof import('path');
+  const PROTOCOL_RELATIVE = realPath.join('packages', 'executor-protocol', 'protocol.json');
+
+  let root = __dirname;
+  for (let i = 0; i < 8 && !realFs.existsSync(realPath.join(root, PROTOCOL_RELATIVE)); i++) {
+    root = realPath.dirname(root);
+  }
+  const protocol = JSON.parse(
+    realFs.readFileSync(realPath.join(root, PROTOCOL_RELATIVE), 'utf-8'),
+  );
+
+  interface Vec {
+    name: string;
+    payload: Record<string, unknown>;
+    expectErrorPath: (string | number)[];
+  }
+  const invalid: Vec[] = protocol.schemaVectors.ExecuteRequest.invalid;
+
+  it('扫描面非空——向量被清空/键名写错时本组断言会变成永真', () => {
+    expect(Array.isArray(invalid)).toBe(true);
+    expect(invalid.length).toBeGreaterThanOrEqual(6);
+  });
+
+  for (const vec of invalid) {
+    it(`invalid「${vec.name}」→ 400（不是 200，也不是 500）`, async () => {
+      const res = await request(appNoAuth).post('/api/execute').send(vec.payload);
+      expect([vec.name, res.status]).toEqual([vec.name, 400]);
+      expect(typeof res.body.error).toBe('string');
+      expect(res.body.error.length).toBeGreaterThan(0);
+    });
+  }
+});
