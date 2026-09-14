@@ -27,6 +27,7 @@ import { CurrentUser } from "../../common/decorators/current-user.decorator";
 import { AuthUser } from "../../common/interfaces/auth-user.interface";
 import { AuditService } from "../audit/audit.service";
 import { UserRole } from "./entities/user.entity";
+import { WriteGuard } from "../../common/decorators/write-guard.decorator";
 
 @ApiTags("Users")
 @ApiBearerAuth("JWT")
@@ -91,6 +92,7 @@ export class UsersController {
 
   // S11+S12: admin can update any user; non-admin can only update their own profile
   // S12: when updating password, current password must be verified first
+  @WriteGuard("user", { scope: "authenticated" })
   @Patch(":id")
   @ApiOperation({ summary: "Update user" })
   async update(

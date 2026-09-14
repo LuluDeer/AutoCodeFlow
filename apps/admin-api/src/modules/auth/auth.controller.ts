@@ -32,6 +32,7 @@ import { getEnvVar } from "../../config/env";
 // SEC-09: 限流分域严格档（auth 敏写面）。同样是装饰器求值期读取，
 // 与 LOGIN_THROTTLE_LIMIT 同款 W-22 豁免（main.ts 预载 .env 兜底）。
 import { AUTH_THROTTLE } from "../../config/throttle-profiles";
+import { WriteGuard } from "../../common/decorators/write-guard.decorator";
 
 /** SEC-03: extract session id (sid) claim from the verified access token. */
 function sidOf(req: Request): string | null {
@@ -90,6 +91,10 @@ export class AuthController {
     },
   })
   @Public()
+  @WriteGuard("session", {
+    scope: "public",
+    reason: "凭据交换入口，此时尚无会话可依赖（限流 20/min 兜底）",
+  })
   @Post("login")
   @ApiOperation({
     summary: "User login",
@@ -127,6 +132,10 @@ export class AuthController {
 
   @Throttle({ default: AUTH_THROTTLE })
   @Public()
+  @WriteGuard("session", {
+    scope: "public",
+    reason: "凭 refresh token 换新会话，access token 此时已过期",
+  })
   @Post("refresh")
   @ApiOperation({
     summary: "Refresh token",
@@ -148,6 +157,7 @@ export class AuthController {
 
   // SEC-02: logout revokes all refresh tokens for the current user
   @UseGuards(JwtAuthGuard)
+  @WriteGuard("session", { scope: "authenticated" })
   @Post("logout")
   @ApiBearerAuth("JWT")
   @ApiOperation({
@@ -199,6 +209,7 @@ export class AuthController {
 
   /** SEC-03: stage a fresh TOTP secret; active only after a verified enable. */
   @UseGuards(JwtAuthGuard)
+  @WriteGuard("account", { scope: "authenticated" })
   @Post("totp/setup")
   @ApiBearerAuth("JWT")
   @Throttle({ default: AUTH_THROTTLE })
@@ -216,6 +227,7 @@ export class AuthController {
 
   /** SEC-03: verify a code against the staged secret and activate 2FA. */
   @UseGuards(JwtAuthGuard)
+  @WriteGuard("account", { scope: "authenticated" })
   @Post("totp/enable")
   @ApiBearerAuth("JWT")
   @Throttle({ default: AUTH_THROTTLE })
@@ -235,6 +247,7 @@ export class AuthController {
    * stolen access token alone cannot turn 2FA off.
    */
   @UseGuards(JwtAuthGuard)
+  @WriteGuard("account", { scope: "authenticated" })
   @Post("totp/disable")
   @ApiBearerAuth("JWT")
   @Throttle({ default: AUTH_THROTTLE })
@@ -262,6 +275,10 @@ export class AuthController {
    */
   @Throttle({ default: AUTH_THROTTLE })
   @Public()
+  @WriteGuard("session", {
+    scope: "public",
+    reason: "登录第二步，凭 login 阶段签发的一次性 TOTP ticket",
+  })
   @Post("totp/verify")
   @ApiOperation({
     summary: "Complete TOTP login (second factor)",
@@ -305,6 +322,7 @@ export class AuthController {
 
   /** SEC-03: revoke one of my sessions by refresh_tokens row id. */
   @UseGuards(JwtAuthGuard)
+  @WriteGuard("session", { scope: "authenticated" })
   @Delete("sessions/:id")
   @ApiBearerAuth("JWT")
   @ApiOperation({
@@ -342,6 +360,7 @@ export class AuthController {
 
   /** SEC-03: revoke every session of mine except the current one. */
   @UseGuards(JwtAuthGuard)
+  @WriteGuard("session", { scope: "authenticated" })
   @Post("sessions/revoke-others")
   @ApiBearerAuth("JWT")
   @ApiOperation({

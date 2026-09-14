@@ -25,6 +25,7 @@ import {
   mapAlertmanagerPayload,
 } from "./alert-webhook.mapping";
 import { AlertmanagerWebhookDto } from "./dto/alertmanager-webhook.dto";
+import { WriteGuard } from "../../common/decorators/write-guard.decorator";
 
 /**
  * OBS-02: Alertmanager webhook 入站路由——把 Grafana/Alertmanager 的告警
@@ -135,6 +136,10 @@ export class AlertsController {
   // @ApiTags/@ApiOperation/@ApiBody 出现在 openapi 中——@Public + HMAC 鉴权
   // 不影响文档化（签名纪律见类注释，仍由 ALERT_WEBHOOK_SECRET 保护）。
   @Public()
+  @WriteGuard("alert", {
+    scope: "public",
+    reason: "告警源回调，凭 per-channel secret 做 HMAC 校验",
+  })
   @Post("webhook")
   @ApiOperation({
     summary: "Alertmanager v2 webhook receiver",
