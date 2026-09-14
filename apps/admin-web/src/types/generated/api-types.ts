@@ -1039,6 +1039,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/executors/{address}/terminal-states": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Reconcile terminal execution states (read-only)
+         * @description A6 (DEEP_REVIEW): read-only reconciliation view for the executor's local callback dead-letter directory. Returns executions on this executor that have already reached a TERMINAL state (success/failed/timeout/killed/cancelled), ordered ascending by terminal time so the caller can consume it as a watermark stream. The executor uses it to tier dead-letter handling: a dead-lettered callback whose execution is terminal is moot (delete it); one whose execution is still open and whose dead-letter reason was retry-budget exhaustion is worth re-queuing; poison payloads (oversized/corrupt) stay for manual inspection. Strictly read-only — it mutates nothing, releases no slots and writes no audit; all state changes still flow through the existing callback/terminal paths.
+         */
+        get: operations["ExecutorController_getTerminalStates"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/executors": {
         parameters: {
             query?: never;
@@ -3283,6 +3303,38 @@ export interface components {
              */
             waitMs?: number;
         };
+        TerminalStateItemDto: {
+            /**
+             * @description 执行 id（与 dispatch 下发、回调上报的 executionId 同源）
+             * @example b3f1c0de-1f2a-4c77-9a10-2f6d2c1e9a01
+             */
+            executionId: string;
+            /**
+             * @description 该执行当前的状态；本端点只回终态取值
+             * @example success
+             * @enum {string}
+             */
+            status: "success" | "failed" | "timeout" | "killed" | "cancelled";
+            /**
+             * @description 终态时间（ISO 8601）。endTime 缺失时（如未启动即被取消）回 createdAt 兜底值
+             * @example 2026-09-14T08:12:33.120Z
+             */
+            endedAt: string;
+        };
+        TerminalStatesResponseDto: {
+            /** @description 已终态的执行清单，按终态时间**升序**（便于调用方按水印增量消费：处理到哪条就把下一条的时间当下次 since） */
+            items: components["schemas"]["TerminalStateItemDto"][];
+            /**
+             * @description true 表示还有更多未返回（已达 limit）。调用方应在下一轮对账继续取，不要误判为「其余都还没终态」
+             * @example false
+             */
+            hasMore?: boolean;
+            /**
+             * @description 服务端当前时间（ISO 8601）。执行器用它校正自己的时钟偏差后再算 since ——执行器与 admin 时钟不一致会让 since 窗口错位，直接漏掉刚终态的行
+             * @example 2026-09-14T08:20:00.000Z
+             */
+            serverTime: string;
+        };
         SendNotificationDto: {
             /**
              * @default info
@@ -5159,6 +5211,43 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Invalid executor token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    ExecutorController_getTerminalStates: {
+        parameters: {
+            query?: {
+                /** @description ISO-8601 watermark; only executions whose terminal time (COALESCE(endTime, createdAt)) is >= since are returned. Defaults to the last 24h; clamped to 30 days. */
+                since?: string;
+                /** @description Page size (1..2000, default 500). hasMore=true means more rows remain. */
+                limit?: string;
+            };
+            header: {
+                authorization: string;
+            };
+            path: {
+                /** @description Executor registration address (same value as heartbeat) */
+                address: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Terminal-state page */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TerminalStatesResponseDto"];
+                };
             };
             /** @description Invalid executor token */
             401: {
