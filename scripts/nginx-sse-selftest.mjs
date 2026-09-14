@@ -67,10 +67,36 @@ const SOAK_SECONDS = Number(process.env.NGINX_SOAK_SECONDS || 180);
 const MAX_PING_GAP_MS = 45_000;
 /** 首帧迟滞上限：缓冲开启时通常要等到 buffer 满/超时才下发。 */
 const FIRST_FRAME_BUDGET_MS = 25_000;
-/** 长流期间 admin-api RSS 涨幅上限（MB）。 */
-const RSS_GROWTH_LIMIT_MB = 200;
 /** 反代并发长流档：并发连接数（0 = 跳过该档）。 */
 const PROXY_SSE_CONNS = Number(process.env.NGINX_SSE_CONNS || 500);
+
+/**
+ * ⑧ 每连接的 RSS 预算（KB）——上限由此**随负载缩放**。
+ *
+ * 为什么不是「一个固定的 MB 上限」：连接数是可配的（默认 500），固定上限与
+ * 负载无关，于是这个断言测的其实是「连接数」而不是「泄漏」——
+ * NGINX_SSE_CONNS=1000 必红（同样的水位按两倍连接算），=100 则形同虚设
+ * （真有每连接 MB 级泄漏也撞不到上限）。
+ *
+ * 基线实测（CI，ubuntu runner）：500 条经反代长流保持 35s，
+ * ΔRSS = 206MB（≈412KB/连接；其中一部分是突发建连期未及回收的瞬时分配——
+ * Node RSS 不会主动归还 OS，所以读数是上界而非稳态占用）。
+ * 取 512KB（较实测约 +25% 余量）：足以拦住「每连接 MB 级」的泄漏回归，
+ * 又不至于卡在 GC 时机噪声上（旧 200MB 固定上限在 500 条下只有 3% 余量，
+ * 206/200 的偶发越界即属此类）。
+ */
+const RSS_BUDGET_PER_CONN_KB = 512;
+/** 与连接数无关的固定余量（建连突发 + 采样取整抖动）。 */
+const RSS_FIXED_HEADROOM_MB = 32;
+/**
+ * ⑧ 反代并发长流档的 RSS 涨幅上限（MB）——按当前连接数推导。
+ * 注意：⑦（3 条流 180s soak）用的是下面的 SOAK 档上限，两者不共用——soak
+ * 档的连接数固定为 3，随 PROXY_SSE_CONNS 缩放会把它无谓放宽。
+ */
+const RSS_GROWTH_LIMIT_MB =
+  Math.ceil((PROXY_SSE_CONNS * RSS_BUDGET_PER_CONN_KB) / 1024) + RSS_FIXED_HEADROOM_MB;
+/** ⑦ soak 档 RSS 涨幅上限（MB）：连接数固定（3 条），故用绝对值。 */
+const RSS_SOAK_GROWTH_LIMIT_MB = 200;
 /** 并发长流的保持时长（秒）。必须 > executions/stream 的 idle ping 间隔（默认
  *  30s，EXECUTIONS_STREAM_IDLE_PING_MS）——事件流是事件驱动、无初始快照，短于
  *  该间隔时那一半连接必然零帧（实测 20s 档正是 250/500 有帧）。 */
@@ -526,8 +552,8 @@ async function main() {
     `probes=${healthProbes} maxLatency=${healthMaxMs}ms`);
   const growthMb = Math.round(((rssAfter - rssBefore) / 1024) * 10) / 10;
   ok('⑦ 长流期间 admin-api RSS 涨幅在阈值内（无长连接泄漏）',
-    growthMb <= RSS_GROWTH_LIMIT_MB,
-    `RSS ${Math.round(rssBefore / 1024)}MB → ${Math.round(rssAfter / 1024)}MB（Δ${growthMb}MB，阈值 ${RSS_GROWTH_LIMIT_MB}MB）`);
+    growthMb <= RSS_SOAK_GROWTH_LIMIT_MB,
+    `RSS ${Math.round(rssBefore / 1024)}MB → ${Math.round(rssAfter / 1024)}MB（Δ${growthMb}MB，阈值 ${RSS_SOAK_GROWTH_LIMIT_MB}MB）`);
 
   // ── [8] ④ 事件穿透：回调上报 failed → 终态事件经 nginx 到达订阅方 ────
   // 走真实生产路径：executor 回调 → 唯一 winner 落终态 → 领域事件 →
