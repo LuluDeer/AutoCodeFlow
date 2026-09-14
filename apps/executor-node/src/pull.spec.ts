@@ -64,6 +64,9 @@ describe('pull loop (ARCH-32 + E-01 预留槽位)', () => {
     expect(postMock).toHaveBeenCalledWith(
       '/api/executors/pull',
       expect.objectContaining({ address: 'localhost:8002', waitMs: 25_000 }),
+      40_000,
+      // E-07: 每轮长轮询带自己的中止句柄（停机时 abort 在飞窗口）
+      expect.any(AbortSignal),
     );
     // 预留即占位：pull 请求在账本 +1 的状态下发出（心跳 runningTaskCount
     // 同源，长轮询窗口内 admin 不会再往最后一个空槽 push 派发）。
@@ -176,6 +179,57 @@ describe('pull loop (ARCH-32 + E-01 预留槽位)', () => {
     // 未凭空预留/释放——账本保持原值
     expect(Atomics.load(ledger, 0)).toBe(2);
     expect(acceptExecution).not.toHaveBeenCalled();
+  });
+
+  // E-07 残差收口：旧实现只 clearInterval，已发出的那轮长轮询（服务端阻塞至多
+  // 25s）仍在飞——窗口末端带回的任务照样会被领取执行，与「停机第一步停止取件」
+  // 相悖，进程也因 socket 未关多挂至多 25s。本用例固化「abort 立即结束窗口」。
+  it('E-07：停机 abort 在飞长轮询——窗口立即结束、释放预留、不记 warn', async () => {
+    let capturedSignal: AbortSignal | null = null;
+    postMock.mockImplementationOnce(
+      (_path: string, _data: unknown, _timeout: number, signal: AbortSignal) =>
+        new Promise((_resolve, reject) => {
+          capturedSignal = signal;
+          // 复刻 axios 的取消语义：signal abort → reject(ERR_CANCELED)
+          const cancel = () =>
+            reject(Object.assign(new Error('canceled'), { code: 'ERR_CANCELED' }));
+          // 兜底定时器：即便 abort 未生效也让 promise 落定——否则 pullInFlight
+          // 会永久为 true，把后续用例一并拖红（真实有牙断言在 signal.aborted 上）。
+          const fallback = setTimeout(cancel, 500);
+          signal.addEventListener('abort', () => {
+            clearTimeout(fallback);
+            cancel();
+          });
+        }),
+    );
+    const pullModule = require('./pull');
+
+    const pending = pullOnce();
+    // 让 pullOnce 推进到 await postLong（预留已完成、请求已发出）
+    await new Promise(resolve => setImmediate(resolve));
+
+    expect(capturedSignal).not.toBeNull();
+    expect((capturedSignal as unknown as AbortSignal).aborted).toBe(false);
+    // 预留已占位（长轮询窗口内心跳诚实计入）
+    expect(Atomics.load(ledger, 0)).toBe(1);
+
+    pullModule.stopPullLoop();
+
+    expect((capturedSignal as unknown as AbortSignal).aborted).toBe(true);
+    await expect(pending).resolves.toBeUndefined();
+    // 预留释放、账本归零、无任务被领取（admin 侧孤儿 RUNNING 由 stale sweep 收敛）
+    expect(Atomics.load(ledger, 0)).toBe(0);
+    expect(acceptExecution).not.toHaveBeenCalled();
+    expect(pushCallback).not.toHaveBeenCalled();
+    // 预期中止记 info，不得污染成 warn（运维告警需保持可行动信号）
+    expect(
+      logger.info.mock.calls.some((c: unknown[]) =>
+        String(c[0]).includes('aborted during shutdown'),
+      ),
+    ).toBe(true);
+    expect(
+      logger.warn.mock.calls.some((c: unknown[]) => String(c[0]).includes('Pull failed')),
+    ).toBe(false);
   });
 });
 

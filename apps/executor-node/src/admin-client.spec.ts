@@ -6,6 +6,7 @@ import {
   initAdminClients,
   checkAdminApiConnectivity,
   post,
+  postLong,
   postWithStaticToken,
   request,
 } from './admin-client';
@@ -257,6 +258,62 @@ describe('admin-client', () => {
 
       expect(result.data).toEqual({ ok: true });
       expect(mockedForceTokenRefresh).not.toHaveBeenCalled();
+    });
+  });
+
+  // E-07 残差收口：停机时 abort 在飞长轮询——取消是「调用方主动中止」，不是
+  // 连通性故障：不得 failover 到下一个 admin（同一个已 aborted 的 signal 会立刻
+  // 再拒一次，白烧 500ms 退避 ×N），error 原样上抛由调用方按预期中止处理。
+  describe('request cancellation (E-07)', () => {
+    it('passes the caller signal through to axios and short-circuits on abort', async () => {
+      const controller = new AbortController();
+      const requestMock = jest.fn().mockImplementation((cfg: { signal?: AbortSignal }) => {
+        expect(cfg.signal).toBe(controller.signal);
+        controller.abort();
+        return Promise.reject(Object.assign(new Error('canceled'), { code: 'ERR_CANCELED' }));
+      });
+      mockedAxios.create.mockReturnValue({ request: requestMock } as any);
+      initAdminClients(['http://admin-a:3105', 'http://admin-b:3105']);
+
+      await expect(
+        request('post', '/api/executors/pull', { waitMs: 25_000 }, 2, 'current', undefined, 40_000, controller.signal),
+      ).rejects.toThrow('canceled');
+
+      // 只在第一个 admin 上试过一次：未 failover、未重试
+      expect(requestMock).toHaveBeenCalledTimes(1);
+      expect(getCurrentAdminUrl()).toBe('http://admin-a:3105');
+      expect(mockedForceTokenRefresh).not.toHaveBeenCalled();
+    });
+
+    it('postLong forwards the signal with the 40s long-poll timeout', async () => {
+      const controller = new AbortController();
+      const requestMock = jest.fn().mockResolvedValue({ data: { ok: true } });
+      mockedAxios.create.mockReturnValue({ request: requestMock } as any);
+      initAdminClients(['http://admin-a:3105']);
+
+      await postLong('/api/executors/pull', { waitMs: 25_000 }, 40_000, controller.signal);
+
+      expect(mockedAxios.create).toHaveBeenCalledWith(
+        expect.objectContaining({ timeout: 40_000 }),
+      );
+      expect(requestMock).toHaveBeenCalledWith(
+        expect.objectContaining({ signal: controller.signal }),
+      );
+    });
+
+    it('omits the signal from the request config when the caller passes none', async () => {
+      const requestMock = jest.fn().mockResolvedValue({ data: { ok: true } });
+      mockedAxios.create.mockReturnValue({ request: requestMock } as any);
+      initAdminClients(['http://admin-a:3105']);
+
+      await post('/api/test');
+
+      // 其余调用的请求形状逐字节不变（无 signal 键）
+      expect(requestMock).toHaveBeenCalledWith({
+        method: 'post',
+        url: '/api/test',
+        data: undefined,
+      });
     });
   });
 });
