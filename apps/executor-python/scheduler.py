@@ -71,6 +71,30 @@ def decrement_running() -> None:
         running_count = max(0, running_count - 1)
 
 
+def try_reserve_running_slot() -> bool:
+    """E-01（P1）pull 容量竞态——预留槽位原语（node pull.ts 同款原子模式）。
+
+    在发起 pull 长轮询【之前】原子预留一个执行槽位：与 push 派发占用槽位
+    的入口（accept_execution → increment_running）使用同一 running 计数账
+    本，check-then-act 在同一把锁内完成。预留成功返回 True，槽位由调用方
+    持有——admin 无任务返回/领取被拒时经 release_running_slot() 归还；领取
+    成功（accept_execution 的 slot_pre_reserved 模式）时预留即正式占用，
+    完成路径 _run_and_callback 的 decrement_running 归还的正是这一个槽位。
+    """
+    global running_count
+    with _running_count_lock:
+        if running_count >= settings.max_concurrent_tasks:
+            return False
+        running_count += 1
+        return True
+
+
+def release_running_slot() -> None:
+    """E-01: 归还 try_reserve_running_slot() 预留的槽位（同一账本；
+    max(0, …) 钳制与既有 decrement_running 释放路径一致）。"""
+    decrement_running()
+
+
 def _get_admin_api_url() -> str:
     """Get the appropriate Admin API base URL for heartbeat."""
     return get_admin_api_base_url()
@@ -159,6 +183,10 @@ async def _send_heartbeat(client: httpx.AsyncClient, token: str, trace_id: str =
             'cpuUsage': cpu,
             'memUsage': mem,
             'runningTaskCount': get_running_count(),
+            # E-01: runningTaskCount 诚实包含 pull 循环「预留中」的槽位——
+            # 预留即占位（try_reserve_running_slot 与 push 派发同一账本），
+            # admin 容量核算在长轮询窗口内看到的就是满载，不会再把 push 派
+            # 发塞进最后一个空槽（这正是关闭竞态窗口的机制本身）。
             # E1: liveness report — capped at 200 ids (node parity,
             # scheduler.ts sendHeartbeat). Always present, never omitted.
             'runningExecutionIds': _running_execution_ids_provider()[:200],
@@ -191,10 +219,23 @@ async def _send_heartbeat(client: httpx.AsyncClient, token: str, trace_id: str =
 
 async def pull_task() -> None:
     """ARCH-32（ADR-015）: pull 派发循环——EXECUTOR_PULL_MODE=true 时由 main
-    启动。空闲槽位时向 admin 发长轮询（服务端阻塞至多 25s），取到载荷即走
-    与 push 完全相同的 accept_execution 领取路径与回调通道；被拒不静默（补
-    发 failed 回调收敛 admin 侧执行行）。延迟导入 routers.execute 避免
-    scheduler↔routers 模块环（execute 反向 import sched）。"""
+    启动。E-01（P1）预留槽位方案：先经 try_reserve_running_slot() 原子预留
+    一个执行槽位（与 push 派发同一账本），预留成功才向 admin 发长轮询（服
+    务端阻塞至多 25s）——长轮询窗口内该槽位已被本执行器诚实占用（心跳
+    runningTaskCount 同源可见），push 派发抢不走最后一个空槽，accept 阶段
+    的容量竞态窗口随之关闭。取到载荷即走与 push 完全相同的 accept_execution
+    领取路径与回调通道：
+
+      * 无任务返回 → finally 立即释放预留，进入下一轮；
+      * 领取成功（slot_pre_reserved=True）→ 预留即正式占用，完成路径
+        _run_and_callback 的 decrement_running 归还该槽位；
+      * 领取因非容量原因（400 校验失败等）被拒 → 释放预留 + 补发 failed
+        回调（真失败，admin 侧不留僵尸 RUNNING 行，既有语义不变）；
+      * 防御路径：领取仍返回 429（账本异常/竞态残余，正常流程不可达）→
+        释放预留 + warning，但【不回调 failed】——429 是「暂时没容量」的
+        瞬态，补发 failed 恰是把瞬态固化成 admin 侧永久失败的行为（评审
+        E-01 要关闭的正是它）；admin 侧 stale sweep 对无人认领的 RUNNING
+        行兜底收敛。"""
     # 函数内延迟导入：routers.execute 模块级 import sched，模块级反向引入
     # 会成环（import 顺序敏感）；ExecuteRequest 一并在延迟段导入。
     from routers.execute import (
@@ -207,9 +248,13 @@ async def pull_task() -> None:
 
     while True:
         await asyncio.sleep(1)
+        # E-01: 预留标记——True 期间本协程持有且仅持有一个账本槽位；
+        # finally 是唯一释放点，杜绝双释放。
+        reserved = False
         try:
-            if get_running_count() >= settings.max_concurrent_tasks:
-                continue
+            if not try_reserve_running_slot():
+                continue  # 满载：本轮不拉取（未预留任何槽位）
+            reserved = True
             token = await get_current_token()
             async with httpx.AsyncClient(trust_env=False) as client:
                 response = await request_with_self_heal(
@@ -227,10 +272,10 @@ async def pull_task() -> None:
             try:
                 data = _unwrap_envelope(response.json()) or {}
             except Exception:  # pragma: no cover - non-JSON / empty admin bodies
-                continue
+                continue  # finally 释放预留
             task = data.get('task')
             if not isinstance(task, dict) or not task.get('executionId'):
-                continue
+                continue  # 无任务：finally 释放预留
 
             execution_id = str(task['executionId'])
             traceparent = task.get('traceparent')
@@ -238,12 +283,31 @@ async def pull_task() -> None:
             body = {k: v for k, v in task.items() if k != 'traceparent'}
             req = ExecuteRequest(**body)
             try:
-                accept_execution(req, traceparent if isinstance(traceparent, str) else None)
+                # E-01: 预留即正式占用——slot_pre_reserved 模式下 accept 不
+                # 再重复计数（详见 accept_execution 注释）。
+                accept_execution(req, traceparent if isinstance(traceparent, str) else None,
+                                 slot_pre_reserved=True)
+                reserved = False  # 所有权移交：完成路径归还该槽位
             except ExecutionRejected as e:
-                await reject_pulled_execution(execution_id, e.detail,
-                                              traceparent if isinstance(traceparent, str) else None)
+                if e.status_code == 429:
+                    # 防御路径（正常流程不可达）：释放预留（finally）、warn、
+                    # 绝不回调 failed——让 admin 侧 stale sweep 兜底收敛。
+                    logger.warning(
+                        'Pulled execution %s rejected with 429 despite pre-reserved slot '
+                        '(capacity ledger drift) — releasing reservation, no failed callback '
+                        '(admin stale sweep converges the orphan RUNNING row)',
+                        execution_id,
+                    )
+                else:
+                    # 真失败（校验被拒）：维持既有语义，补发 failed 回调。
+                    await reject_pulled_execution(execution_id, e.detail,
+                                                  traceparent if isinstance(traceparent, str) else None)
         except Exception as e:
             logger.warning('Pull failed: %s', e)
+        finally:
+            if reserved:
+                release_running_slot()
+                reserved = False
 
 
 async def heartbeat_task() -> None:

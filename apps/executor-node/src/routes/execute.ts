@@ -316,24 +316,59 @@ registerDeadLetterCountProvider(getDeadLetterCount);
 // （pull.ts，NAT 内执行器经长轮询取件）共用同一条路径，杜绝双实现漂移。
 // 返回 { status, payload }；HTTP 路由是薄适配层（写响应），pull 循环对
 // 非 200 结果补发 failed 回调（admin 侧不留僵尸 RUNNING 行）。
+// E-01（P1）pull 容量竞态：opts.slotPreReserved=true 表示调用方（pull 循环）
+// 已在发起长轮询【之前】于同一并发账本原子预留了一个槽位——预留即正式
+// 占用，本函数在该模式下绝不触碰计数（成功路径的 entry.release() 在完成
+// 时归还的正是那一个预留槽位；同步拒绝路径由调用方统一释放预留）。
 // ---------------------------------------------------------------------------
+export interface AcceptExecutionOptions {
+  /**
+   * E-01: 槽位已由 pull 循环预先原子预留（同一 SharedArrayBuffer 账本）。
+   * true 时跳过「add + 容量检查」（重复 add 会凭空吞掉一个槽位），仅保留
+   * 防御性复查：账本被异常推高到超过上限（竞态残余/外部计数污染）时仍以
+   * 429 拒绝，让 pull 循环走「释放预留 + 不回调 failed」的防御分支。正常
+   * 路径预留后 count ≤ max，该检查必然通过。
+   */
+  slotPreReserved?: boolean;
+}
+
 export function acceptExecution(
   body: ExecuteRequest,
   traceparent?: string,
+  opts?: AcceptExecutionOptions,
 ): { status: number; payload: Record<string, unknown> } {
-  // BUG-03: Use atomic operations to prevent race conditions in capacity checking
-  // Atomically increment counter first, then check if over capacity
-  const current = Atomics.add(getRunningCountArray(), 0, 1);
-  if (current >= config.maxConcurrentTasks) {
-    Atomics.sub(getRunningCountArray(), 0, 1);
-    return { status: 429, payload: { error: 'Executor is at capacity' } };
+  const slotPreReserved = opts?.slotPreReserved === true;
+  if (slotPreReserved) {
+    // E-01 预留模式（见 AcceptExecutionOptions）：不再 add——调用方已占位。
+    if (Atomics.load(getRunningCountArray(), 0) > config.maxConcurrentTasks) {
+      return { status: 429, payload: { error: 'Executor is at capacity' } };
+    }
+  } else {
+    // BUG-03: Use atomic operations to prevent race conditions in capacity checking
+    // Atomically increment counter first, then check if over capacity
+    const current = Atomics.add(getRunningCountArray(), 0, 1);
+    if (current >= config.maxConcurrentTasks) {
+      Atomics.sub(getRunningCountArray(), 0, 1);
+      return { status: 429, payload: { error: 'Executor is at capacity' } };
+    }
   }
 
   let entry: ExecutionEntry | null = null;
   /** 同步拒绝路径：释放容量（幂等）。 */
   const reject = (status: number, error: string) => {
-    if (entry) entry.release();
-    else Atomics.sub(getRunningCountArray(), 0, 1);
+    if (slotPreReserved) {
+      // E-01 预留模式：槽位所有权始终在调用方（pull 循环对任何非 200 统一
+      // 释放预留），这里绝不 decrement；只回收已登记的条目防僵尸 RUNNING
+      // 表——置 capacityReleased 后条目的 release() 变 no-op，绝无双减。
+      if (entry) {
+        entry.capacityReleased = true;
+        liveExecutions.delete(entry.executionId);
+      }
+    } else if (entry) {
+      entry.release();
+    } else {
+      Atomics.sub(getRunningCountArray(), 0, 1);
+    }
     return { status, payload: { error } };
   };
 

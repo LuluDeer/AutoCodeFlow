@@ -424,6 +424,46 @@ def _clamp_timeout_seconds(value: Any, default: int) -> int:
     return max(1, min(seconds, MAX_TASK_TIMEOUT_SECONDS))
 
 
+# E-02（P1）timeout=0 三种语义收敛（node routes/execute.ts 改动4 对齐）：
+# 0 = 显式不限时——执行等待不设超时（asyncio.wait_for 的 timeout=None 即无限
+# 等待，不会触发 TimeoutError 杀树分支），回调 token TTL 取 10 年上限（admin
+# 侧僵尸回收对该类任务本就有 1h 兜底窗口，node 同名常量 315_360_000s 对齐：
+# 86400s/天 × 3650）。admin 侧 task 实体默认创建的 timeout 就是 0 且派发载荷
+# 原样携带——旧 or-链把 0 当 falsy 与「缺省」混为一谈回落 300s 后杀，admin
+# 默认创建路径即在 python 执行器上被错误超时杀掉（node 侧无此问题）。
+TOKEN_TTL_UNBOUNDED_SECONDS = 315_360_000
+
+
+def _resolve_task_timeout(task: dict) -> int:
+    """E-02: 显式解析任务 timeout——``timeoutSeconds ?? timeout_seconds ??
+    timeout``（逐键 is None 判空而非 or-链，0 能穿过）。
+
+    返回值语义（node execute.ts 同构）：
+      * 0             → 不限时（执行等待不设 timeout；回调 token TTL 取
+                        TOKEN_TTL_UNBOUNDED_SECONDS 上限，见调用点）；
+      * 其他可解析值  → 维持既有 clamp 行为（[1, 86400]；负值对齐属另一项，
+                        不在本修复范围）；
+      * 缺省/不可解析 → settings.task_timeout_seconds 默认。
+    """
+    raw = task.get('timeoutSeconds')
+    if raw is None:
+        raw = task.get('timeout_seconds')
+    if raw is None:
+        raw = task.get('timeout')
+    if raw is None:
+        return _clamp_timeout_seconds(
+            settings.task_timeout_seconds, settings.task_timeout_seconds
+        )
+    try:
+        seconds = int(raw)
+    except (TypeError, ValueError):
+        # 非法值维持既有 clamp 行为（回落默认值）
+        return _clamp_timeout_seconds(raw, settings.task_timeout_seconds)
+    if seconds == 0:
+        return 0  # 显式不限时
+    return _clamp_timeout_seconds(seconds, settings.task_timeout_seconds)
+
+
 def _ensure_entrypoint_in_workdir(entrypoint: str, work_dir: Path) -> None:
     """R4-C P3: reject entrypoints that escape the execution work directory
     (`../evil.sh`, or absolute paths pointing elsewhere). Glue scripts run via
@@ -734,10 +774,28 @@ class ExecutionRejected(Exception):
         self.detail = detail
 
 
-def accept_execution(req: ExecuteRequest, traceparent: Optional[str] = None) -> dict:
+def accept_execution(
+    req: ExecuteRequest,
+    traceparent: Optional[str] = None,
+    slot_pre_reserved: bool = False,
+) -> dict:
     """领取核心：容量预检 + 重复领取守卫 + 登记 + 后台执行（原 POST /execute
-    主体；ARCH-32 抽取供 pull 循环复用）。被拒抛 ExecutionRejected。"""
-    if sched.get_running_count() >= settings.max_concurrent_tasks:
+    主体；ARCH-32 抽取供 pull 循环复用）。被拒抛 ExecutionRejected。
+
+    E-01（P1）pull 容量竞态：slot_pre_reserved=True 表示调用方（pull 循环）
+    已在发起长轮询之前经 scheduler.try_reserve_running_slot() 于同一 running
+    计数账本原子预留了一个槽位——预留即正式占用：本函数在该模式下不再
+    increment_running（重复计数会凭空吞掉一个槽位），完成路径
+    _run_and_callback 的 decrement_running 归还的正是那一个预留槽位；同步拒
+    绝路径（全部发生在计数之前）由调用方统一释放预留，这里同样不触碰计数。
+    仅保留防御性复查：账本被异常推高到超过上限（竞态残余/外部计数污染）时
+    仍以 429 拒绝，让 pull 循环走「释放预留 + 不回调 failed」的防御分支；
+    正常路径预留后 running_count ≤ max，该检查必然通过。"""
+    if slot_pre_reserved:
+        # E-01 预留模式的防御性复查（不再是 add-then-check 的常规预检）。
+        if sched.get_running_count() > settings.max_concurrent_tasks:
+            raise ExecutionRejected(429, 'Executor is at capacity')
+    elif sched.get_running_count() >= settings.max_concurrent_tasks:
         raise ExecutionRejected(429, 'Executor is at capacity')
 
     # E7: duplicate-accept guard (node execute.ts:339-342 parity) — a still
@@ -759,7 +817,10 @@ def accept_execution(req: ExecuteRequest, traceparent: Optional[str] = None) -> 
         logger.info('Execution %s trace: %s', req.executionId,
                     traceparent.split('-')[1] if '-' in traceparent else 'malformed')
 
-    sched.increment_running()
+    if not slot_pre_reserved:
+        # E-01: 预留模式下跳过——调用方已占位（预留即正式占用），再计数即
+        # 双计；完成路径的 decrement_running 归还的就是那一个预留槽位。
+        sched.increment_running()
     bg_task = asyncio.create_task(_run_and_callback(req, entry))
     _background_tasks.add(bg_task)
     bg_task.add_done_callback(_background_tasks.discard)
@@ -1546,10 +1607,9 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
 
     runtime = task.get('runtime', 'python')
     entrypoint = task.get('entrypoint', 'main.py')
-    timeout = _clamp_timeout_seconds(
-        task.get('timeoutSeconds') or task.get('timeout_seconds') or task.get('timeout') or settings.task_timeout_seconds,
-        settings.task_timeout_seconds,
-    )
+    # E-02: timeout 三语义收敛——0=不限时 / 缺省=settings 默认 / 其他=clamp
+    # （_resolve_task_timeout，node routes/execute.ts 改动4 对齐）。
+    timeout = _resolve_task_timeout(task)
     requirements: list[str] = task.get('requirements', [])
     # QA4: same derivation as the E6 task lock and the E8 live-protection
     # snapshot (_run_and_callback sets entry.task_id from it) — the venv
@@ -1610,8 +1670,13 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
     # AUTOFLOW_ADMIN_API_URL / AUTOFLOW_EXECUTOR_ADDRESS are non-secret routing
     # info, the same values this executor itself uses for its own callbacks —
     # without them the autoflow-sdk ctx.callback stays disabled on python.
+    # E-02: timeout=0（不限时）任务的回调 token 必须有数字 TTL——取与 node
+    # TOKEN_TTL_UNBOUNDED_SECONDS 一致的 10 年上限（Infinity 不可序列化，
+    # 0 又会被 create_execution_callback_token 的 max(1, …) 当成 1s）。
     callback_token = create_execution_callback_token(
-        req.executionId, timeout + CALLBACK_TOKEN_GRACE_SECONDS
+        req.executionId,
+        (TOKEN_TTL_UNBOUNDED_SECONDS if timeout == 0 else timeout)
+        + CALLBACK_TOKEN_GRACE_SECONDS,
     )
     if callback_token:
         env['AUTOFLOW_CALLBACK_TOKEN'] = callback_token
@@ -1760,7 +1825,12 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
 
         stream_task = asyncio.ensure_future(_stream_to_file())
         try:
-            await asyncio.wait_for(asyncio.shield(stream_task), timeout=timeout)
+            # E-02: timeout=0（不限时）→ wait_for(None) 即无限等待——不设执
+            # 行等待超时，TimeoutError 杀树分支对不限时任务不可达。
+            await asyncio.wait_for(
+                asyncio.shield(stream_task),
+                timeout=None if timeout == 0 else timeout,
+            )
         except asyncio.TimeoutError:
             stream_task.cancel()
             try:
