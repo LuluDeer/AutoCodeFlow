@@ -1,0 +1,119 @@
+{
+  "$schemaVersion": 1,
+  "$comment": "A3（DEEP_REVIEW 0ef3bbe §七）executor-protocol —— admin-api / executor-node / executor-python 三方共享的执行器协议契约向量。单一事实源，语言无关，三端测试套件加载同一份文件断言。此前这些语义只靠两侧注释互相引用（\"见 node execute.ts:xxx parity\"）维持，属于\"注释里的 parity\"——本文件把它变成\"红在 CI\"。规则：向量只能追加、不能修改（已发布端按旧向量断言）；语义变更属破坏性契约变更，须三端同批发布并 bump $schemaVersion。",
+  "readiness": {
+    "$comment": "就绪探针。判定维度各端按职责不同（admin 看 DB/Redis；执行器看资源 + admin 连通性），但**HTTP 状态码与 payload 形状必须三方一致**——探针与运维脚本不该为三个组件写三套解析。",
+    "perComponent": {
+      "admin-api": {
+        "path": "/api/health/ready",
+        "bodyPath": "data",
+        "$comment": "admin-api 有全局 ResponseInterceptor（信封 {code,message,data}），readiness payload 落在 data 下；执行器无信封，payload 就是顶层。"
+      },
+      "executor-node": {
+        "path": "/health/ready",
+        "bodyPath": ""
+      },
+      "executor-python": {
+        "path": "/health/ready",
+        "bodyPath": ""
+      }
+    },
+    "statusValues": ["ready", "not_ready"],
+    "ready": {
+      "httpStatus": 200
+    },
+    "notReady": {
+      "httpStatus": 503,
+      "$comment": "不就绪**必须**返回 503——探针只看 HTTP 码，200 + status:'not_ready' 等于永不摘流量（本契约建立前 admin-api 正是这个形态，DB/Redis 全挂也报 200）。"
+    },
+    "payloadRules": [
+      "payload.status 必须是 statusValues 之一；旧值 'unready' 已废弃",
+      "not_ready 时 payload.reason 必须是非空字符串（运维要能直接看出为什么）",
+      "ready 时 payload 至少含 status",
+      "各端按自身信封约定嵌套 payload，嵌套位置见 perComponent[*].bodyPath；不得在 payload 外再包一层自定义键（如 python 旧实现经 HTTPException 包成的 'detail'）"
+    ],
+    "vectors": [
+      {
+        "name": "ready",
+        "httpStatus": 200,
+        "payload": { "status": "ready" }
+      },
+      {
+        "name": "notReady",
+        "httpStatus": 503,
+        "payload": { "status": "not_ready", "reason": "admin-api unreachable" }
+      }
+    ]
+  },
+  "timeout": {
+    "$comment": "任务超时（秒）的解析语义。E-02（python）/ 改动4（node）已各自实现，此处把它钉成三方共有的向量，防止后续任一侧回退成 '0 → 用默认值' 或 '0 → 立即超时' 的旧语义。",
+    "unbounded": 0,
+    "min": 1,
+    "max": 86400,
+    "vectors": [
+      {
+        "name": "zero-is-unbounded",
+        "declared": 0,
+        "unbounded": true,
+        "$comment": "0 = 显式不限时（admin task 实体默认就是 0）。绝不能当成 falsy 回退到执行器默认值，也不能当成 0ms 立即超时。"
+      },
+      {
+        "name": "min-bound",
+        "declared": 1,
+        "unbounded": false
+      },
+      {
+        "name": "max-bound",
+        "declared": 86400,
+        "unbounded": false
+      },
+      {
+        "name": "above-max-rejected-at-admin",
+        "declared": 86401,
+        "rejectedBy": "admin-api",
+        "$comment": "admin 侧 create-task.dto 已用 @Min(0) @Max(86400) 前置拦截，正常派发路径执行器收不到越界值。**执行器侧的纵深防御策略当前两端不一致**（executor-node 拒绝 400 / executor-python clamp 到边界）——这是已知漂移，如实记录在此而非假装一致；收口需改 python 的 clamp → reject，属行为变更，未含在本切片。见 README「已知残差」。"
+      },
+      {
+        "name": "negative-rejected-at-admin",
+        "declared": -1,
+        "rejectedBy": "admin-api",
+        "$comment": "同上：admin 侧 @Min(0) 拦截；执行器侧 node 拒绝、python clamp 到 1。"
+      },
+      {
+        "name": "missing-falls-back-to-executor-default",
+        "declared": null,
+        "unbounded": false,
+        "usesExecutorDefault": true
+      }
+    ]
+  },
+  "failureReason": {
+    "$comment": "失败原因枚举。全集以 admin 的 ExecutionFailureReason 为准；其中 adminInternalOnly 的取值由 admin 内部（stale sweep 等）写入，**执行器不得上报**——本契约建立前 admin 的 @IsIn 用的是全集，等于允许执行器上报一个语义上只有 admin 才该写的取值；python 侧则完全没有枚举约束，只靠字符串字面量。",
+    "all": [
+      "package_fetch_failed",
+      "script_error",
+      "timeout",
+      "executor_offline",
+      "executor_restart",
+      "stale_recovered",
+      "dependency_install_failed",
+      "git_fetch_failed",
+      "runtime_missing",
+      "killed",
+      "unknown"
+    ],
+    "adminInternalOnly": ["stale_recovered"],
+    "executorReportable": [
+      "package_fetch_failed",
+      "script_error",
+      "timeout",
+      "executor_offline",
+      "executor_restart",
+      "dependency_install_failed",
+      "git_fetch_failed",
+      "runtime_missing",
+      "killed",
+      "unknown"
+    ]
+  }
+}

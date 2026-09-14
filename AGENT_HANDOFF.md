@@ -3,11 +3,20 @@
 > 跨会话交接文档：新会话从这里恢复。
 > 状态以代码与 `docs/optimization-notes.md` 为准，文档可能滞后。
 
-更新时间：2026-09-14（**ARCH-A1 执行状态机收口 done**：6 处手写的条件 UPDATE+RETURNING 收口为唯一入口 `transitionToTerminal`，`OPEN_EXECUTION_STATUSES` 等常量成为单一事实源；修掉「批量恢复缺快照兜底→静默漏释放槽位」与「丢失执行扫描无 RETURNING→用可能为 null 的快照释放→runningTaskCount 永久虚高」两处真缺陷；兜底只在 `affected === ids.length` 时生效（防超量释放）；admin-api **2623/2623（+13）** + tsc 0 + eslint 0。此前同日：**ARCH-A2 done**
+更新时间：2026-09-14（**ARCH-A3 执行器协议契约化最小切片 done**：新建 `packages/executor-protocol/protocol.json`（四方共载一份 JSON 断言），把「注释里的 parity」变成「红在 CI」；修掉 admin `/api/health/ready` **恒返 200**（DB/Redis 全挂也不摘流量，K8s 探针形同虚设）、readiness 判定维度两端各缺一块、回调 failureReason 允许上报 admin 内部专用的 `stale_recovered` 三处真实不一致；admin-api 2632/2632（+9）、executor-node 341/341（+8）、executor-python 312 通过，四处反证逐一验证有牙。此前同日：**ARCH-A1 done**
 当前分支：`develop`
 
 ## 状态快照
 
+- **本轮（2026-09-14 用户授权「剩下的全部推进」→ ARCH-A3 执行器协议契约化最小切片，主控）**：A1 收口完成并推送（run `34868480667` = 48 job / 44 success + 4 skipped / 0 failure）。接着按优先级做 **A3**，只取评审建议的最小切片：**readiness + timeout + failureReason**。
+  - **形态选择**：照既有 `packages/contract-fixtures`（QA-07 信封契约，4 个客户端包共载一份 `contract.json`）的**同构模式**，新建 `packages/executor-protocol/protocol.json` 作为单一事实源，四方（admin-api / executor-node / executor-python / autoflow-sdk）加载同一份文件断言。评审原稿说的「zod + pydantic 双生成 schema」是完整形态，成本大得多且会引入构建期依赖；先用「共享测试向量」把已达成一致的语义钉死，边际收益最高、风险最低。
+  - **侦察出的三处真实不一致**（评审说的「注释里的 parity」在本地实证确实存在）：① **`admin-api /api/health/ready` 恒返 200**——不就绪只在 body 里写 `status:"not_ready"`。而 K8s readinessProbe 与主流 LB **只看 HTTP 状态码**，等于 DB 与 Redis 全挂也不会被摘流量，**就绪探针形同虚设**。这是本轮最有价值的发现。改为就绪 200 / 不就绪 503，并按契约补 `reason`（非空字符串）；② **readiness 判定维度各缺一块**——node 只看资源（admin 不可达照样报 ready）、python 只看 admin 连通性（CPU 打满照样报 ready）。两侧统一为「资源 + admin 连通性」，阈值同为 90%；③ **failureReason 语义越界**——admin 的 `@IsIn` 用的是**全集**，而 `stale_recovered` 是 admin 的 stale sweep 写入的溯源标记、语义上只有 admin 才该写；python 侧则**完全没有枚举约束**，只靠字符串字面量。收窄为「执行器可上报子集 = 全集 − admin 内部专用」，并同步 `packages/autoflow-sdk` 的 `VALID_FAILURE_REASONS`（其注释本就声明与 admin DTO 同步；否则 SDK 本地放行、admin 却 400，且**一个非法取值会拒掉整批回调**）。
+  - **统一 `status` 值域 `unready` → `not_ready`**；python 的 503 载荷去掉 `HTTPException` 的 `detail` 包裹（与 node 的扁平载荷、契约「payload 外不得再包自定义键」冲突）。**契约如实记录 admin-api 有全局响应信封、执行器没有**——readiness payload 分别落在 `data` 下与顶层，用 `perComponent[*].bodyPath` 显式钉死，避免后续有人按执行器的扁平形态去解析 admin 的探针响应。
+  - **timeout 越界策略不一致的处理（取舍）**：`executor-node` 拒绝（400）、`executor-python` 夹紧到边界。admin 侧 `@Min(0) @Max(86400)` 已前置拦截，正常派发路径执行器收不到越界值 → 属**纵深防御层漂移**而非活跃事故。**没有强行改 python**（clamp→reject 是行为变更），而是把契约向量标为 `rejectedBy:"admin-api"` ——**如实记录差异而非假装一致**；已在契约 README 与认领板登记为残差。
+  - **验收**：admin-api **166 套件 2632/2632**（+9 = 契约 7 + readiness 2）+ `tsc --noEmit` 0 + eslint 0；executor-node **24 套件 341/341**（+8）+ tsc 0 + eslint 0；executor-python **312 通过**；autoflow-sdk 新 spec 3/3；admin-web `tsc -b` 0（生成类型已同步）。**反证有牙（4 处逐一验证，非口头声明）**：DTO 还原为全集 → 契约用例红；controller 还原为恒 200 → readiness 两例红；node `status` 还原 `unready` → 2 例红；python 还原旧值域与旧判定维度 → 3 例红。
+  - **踩坑/新知**：① 生成物同步——本机无 PG/Redis 跑不了 `swagger:export`（需完整 AppModule 引导），按生成规则**手工同步**了 `openapi.json` 与 `api-types.ts` 两处（failureReason enum 去掉一项、/health/ready 增 503 响应），由 CI 的 `api-types-drift` 闸作最终校验；② 测试里向上找仓库根**不要硬编码 `../`×N**（层数随文件位置漂移，本轮第一次就写错成 7 层），改为按标记文件向上查找；③ `os.freemem` 与 `os.cpus` 一样**不可重定义**（`jest.spyOn` 抛 Cannot redefine property），要钉死内存水位只能整模块 mock。
+  - **残差（如实）**：① timeout 越界的执行器侧策略两端不一致（见上）；② 评审 A3 完整形态（ExecuteRequest / ConfigReload / 运维端点的 schema 化）未做；③ A2-B 仍未做。
+  - **下轮建议**：① A4 契约单一事实源收口；② A5 SSE 客户端统一；③ A6 回调可靠性分层；④ A3 完整形态（schema 化）；⑤ A2-B。生产真机项不变。
 - **本轮（2026-09-14 用户授权「剩下的全部推进」→ ARCH-A1 执行状态机收口，主控）**：上一轮盘点结论是「唯一成规模的剩余工作是 §七 20 个架构方向（A1~A6 优先）」，A2 已 done。本轮自主选 **A1**（优先级仅次于 A2）。
   - **侦察出的三类真实不一致**（评审 §七 A1 的判断在本地得到实证）：① **常量漂移**——`OPEN_EXECUTION_STATUSES` 早就存在，但 `task.service` 两处（回调落库 / kill）各抄一份 `[PENDING, RUNNING]` 字面量，`s3-log-object-retention.service` 另抄一份终态数组，将来加状态必漏改（PK-01 同型）；② **批量恢复路径缺兜底**——驱动差异下「`affected>0` 但 `raw` 为空」时，6 处里只有 COVER_EARLY 一处写了快照兜底，`recoverStaleExecutions` 直接读 `result.raw` → **静默漏释放执行器槽位**；③ **丢失执行扫描没有 RETURNING**——释放用的是请求前快照 `exec.executorAddress`，而该地址在 dispatch HTTP 返回后才落库，秒级完成的执行其快照仍为 null，用它释放会 no-op 使 `runningTaskCount` **永久虚高**（`task.service` 回调路径的注释早已自证此坑，扫描路径一直在踩）。
   - **形态**：新 `apps/admin-api/src/modules/task/execution-terminal.ts`——`transitionToTerminal(repo, {ids, patch, from?, addressSnapshot?, manager?})` / `transitionOneToTerminal` 作为**唯一入口**，一次给全三件事：统一终态保护门、`RETURNING` winner 判定、raw 形状归一化（数组/单对象/空）+ 快照兜底；`OPEN_EXECUTION_STATUSES` / `TERMINAL_EXECUTION_STATUSES` / `isTerminalStatus` 成为单一事实源。**选用纯函数而非 Nest service**（评审原稿写 `ExecutionTerminalService`）：无状态、只依赖传入的 Repository/EntityManager；做成 service 会让 executor 模块为一个工具函数 import task 模块，凭空引入循环依赖面（ARCH-24 已因 DI 环挂死过一次）。
@@ -553,7 +562,7 @@ cd packages/mcp-server && npx tsc --noEmit
 
 > **当前（2026-09-14）**：ARCH-A2 已 done。剩余项如下：
 >
-> 1. **架构演进（季度级，唯一成规模）**：§七 20 个架构方向——**A2 已 done（2026-09-14）**、**A1 已 done（2026-09-14）**，剩余 A3 执行器协议契约化 / A4 契约单一事实源 / A5 SSE 客户端统一 / A6 回调可靠性分层，各 1~2 轮。
+> 1. **架构演进（季度级，唯一成规模）**：§七 20 个架构方向——**A2 / A1 / A3（最小切片）已 done（均 2026-09-14）**，剩余 A4 契约单一事实源 / A5 SSE 客户端统一 / A6 回调可靠性分层，各 1~2 轮；A3 完整形态（ExecuteRequest/ConfigReload/运维端点的 schema 化）另计。
 > 2. **A2-B（A2 的加强件）**：把 service 内的 `assertCanWrite` 提升为守卫内强制，真正实现「缺省拒绝」（当前 `@WriteGuard` 只是契约式声明，拦不住 service 忘记写归属校验）。需先统一各资源域的 id 解析方式。
 > 3. **需产品拍板（不可代劳）**：ADR-013 非成员 trigger 收紧、release-please main 合并习惯、API JWT 60d 缩短评估、desktop Linux 更新链签名。
 > 4. **需真机/长稳环境**：QA-05 24h 长稳、多主机（跨机）拓扑、macOS/Windows/ARM64 部署、通知渠道实测、私有 npm/PyPI 仓库集成。

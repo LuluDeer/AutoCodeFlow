@@ -4,21 +4,31 @@ import { config } from './config';
 import { logger } from './logger';
 import { post } from './admin-client';
 
+/** Structured failure reason — the **runtime-available** list the type is derived
+ *  from, so the A3 contract spec can assert it against
+ *  `packages/executor-protocol/protocol.json` (此前只有类型，运行期无从校验)。
+ *
+ *  取值必须与 admin-api 的 ExecutionFailureReason **可上报子集**一致（全集减去
+ *  admin 内部专用的 `stale_recovered`）；CallbackItemDto 用 @IsIn 校验，一个非法
+ *  取值会让**整批**回调被拒。 */
+export const CALLBACK_FAILURE_REASONS = [
+  'package_fetch_failed',
+  'dependency_install_failed',
+  'git_fetch_failed',
+  'runtime_missing',
+  'script_error',
+  'timeout',
+  'executor_offline',
+  'executor_restart',
+  'killed',
+  'unknown',
+] as const;
+
 /** Structured failure reason — values must stay aligned with admin-api's
  *  ExecutionFailureReason enum (apps/admin-api/src/modules/task/entities/
  *  task-execution.entity.ts); CallbackItemDto validates with @IsIn and a
  *  rejected item fails the whole callback batch. */
-export type CallbackFailureReason =
-  | 'package_fetch_failed'
-  | 'dependency_install_failed'
-  | 'git_fetch_failed'
-  | 'runtime_missing'
-  | 'script_error'
-  | 'timeout'
-  | 'executor_offline'
-  | 'executor_restart'
-  | 'killed'
-  | 'unknown';
+export type CallbackFailureReason = (typeof CALLBACK_FAILURE_REASONS)[number];
 
 export interface CallbackRequest {
   executionId: string;
