@@ -40,6 +40,18 @@ import { pushCallback } from './callback';
  */
 let pullInFlight = false;
 
+/**
+ * E-07（残差收口）：在飞长轮询的中止句柄。
+ *
+ * 旧实现只 clearInterval——已发出的那一轮长轮询（服务端阻塞至多 25s）仍在
+ * 飞。停机 drain 阶段若它在窗口末端带回一个任务，acceptExecution 照样会领取
+ * 并执行，与「停机第一步停止取件」的意图相悖；进程也因该 socket 未关而多挂
+ * 至多 25s。现改为：每轮发起前建 AbortController，停机时 abort 之——服务端
+ * 连接立即断开，窗口内的任务不再被领取（admin 侧无人认领的 RUNNING 行由既有
+ * stale sweep 收敛，与 pull 请求失败路径同一语义）。
+ */
+let pullAbortController: AbortController | null = null;
+
 export async function pullOnce(): Promise<void> {
   if (pullInFlight) return;
   pullInFlight = true;
@@ -47,6 +59,8 @@ export async function pullOnce(): Promise<void> {
   // 200（预留转正式占用）或本函数提前占位失败时置 false，finally 里对仍
   // 持有的预留做唯一一次释放（唯一的释放点，杜绝双释放）。
   let slotReserved = false;
+  // E-07: 本轮的中止句柄（finally 负责摘除，避免停机后残留悬空引用）。
+  let controller: AbortController | null = null;
   try {
     // 原子预留：add 返回旧值，旧值已 ≥ 上限说明无空闲槽位——回退并跳过
     // 本轮（与 acceptExecution 的 add-then-check 同款原子模式）。
@@ -57,10 +71,18 @@ export async function pullOnce(): Promise<void> {
     }
     slotReserved = true;
 
-    const resp = await postLong('/api/executors/pull', {
-      address: config.executorAddressPublic || config.executorAddress,
-      waitMs: 25_000,
-    });
+    controller = new AbortController();
+    pullAbortController = controller;
+
+    const resp = await postLong(
+      '/api/executors/pull',
+      {
+        address: config.executorAddressPublic || config.executorAddress,
+        waitMs: 25_000,
+      },
+      40_000,
+      controller.signal,
+    );
     const payload = unwrapAdminResponseData(resp?.data);
     const task = payload?.task as (ExecuteRequest & { traceparent?: string }) | null;
     if (!task || !task.executionId) return; // 无任务：finally 释放预留
@@ -112,11 +134,20 @@ export async function pullOnce(): Promise<void> {
       });
     }
   } catch (err: unknown) {
-    logger.warn(
-      `Pull failed: ${err instanceof Error ? err.message : String(err)}`,
-    );
+    // E-07: 停机 abort 是预期中止，不是故障——记 info 而非 warn，避免把正常
+    // 关机路径污染成告警噪声（运维侧 warn 应保持可行动信号）。
+    if (controller?.signal.aborted) {
+      logger.info('Pull long-poll aborted during shutdown');
+    } else {
+      logger.warn(
+        `Pull failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   } finally {
     pullInFlight = false;
+    if (pullAbortController === controller) {
+      pullAbortController = null;
+    }
     if (slotReserved) {
       // 释放预留（无任务 / accept 非 200 / pull 请求异常）：唯一释放点。
       Atomics.sub(getRunningCountArray(), 0, 1);
@@ -141,10 +172,17 @@ export function startPullLoop(): NodeJS.Timeout {
   return pullLoopInterval;
 }
 
-/** E-07: 停止 pull 取件循环（main.ts gracefulShutdown 首步调用）。 */
+/** E-07: 停止 pull 取件循环（main.ts gracefulShutdown 首步调用）。
+ *
+ *  两步都要做：① clearInterval 停掉后续轮次；② abort 在飞的那一轮长轮询——
+ *  否则服务端 25s 阻塞窗口内仍可能带回任务被领取，且进程要多挂至多 25s。 */
 export function stopPullLoop(): void {
   if (pullLoopInterval) {
     clearInterval(pullLoopInterval);
     pullLoopInterval = null;
+  }
+  if (pullAbortController) {
+    pullAbortController.abort();
+    pullAbortController = null;
   }
 }
