@@ -12,6 +12,7 @@ import {
   ApiTags,
   ApiOperation,
   ApiBearerAuth,
+  ApiBody,
   ApiResponse,
 } from "@nestjs/swagger";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
@@ -28,6 +29,8 @@ import {
   SendNotificationDto,
   SendNotificationResultDto,
 } from "./dto/send-notification.dto";
+// PK-19: createSilence 请求体 Swagger 文档 DTO（运行时 @Body() 仍为内联对象类型）。
+import { CreateSilenceDto } from "./dto/create-silence.dto";
 import { NotificationPayload } from "./channels/base.channel";
 
 @ApiTags("Notification Config")
@@ -161,6 +164,10 @@ export class NotificationConfigController {
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Create a notification silence" })
   @ApiResponse({ status: 201, description: "Created silence" })
+  // PK-19（DEEP_REVIEW 0ef3bbe）: 此前 createSilence 用内联对象类型无 @ApiBody，
+  // openapi 缺 requestBody。补 @ApiBody({ type: CreateSilenceDto })（运行时
+  // @Body() 类型不变，校验仍由 silenceService.create 内部完成）。
+  @ApiBody({ type: CreateSilenceDto, description: "静默规则创建体" })
   async createSilence(
     @Body()
     body: {

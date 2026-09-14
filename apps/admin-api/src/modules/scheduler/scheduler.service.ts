@@ -556,64 +556,104 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
       // 预算未耗尽则重试。取舍：极端情况下可能与仍在运行的原进程并行一次，
       // 由 kill 通知兜底；相比"静默丢重试"，这是更安全的失败方向。
       const retryOnRecovery = this.staleRecoveryRetryEnabled();
+      // R-15（DEEP_REVIEW 0ef3bbe）: 此前对每个失联执行器串行 await kill HTTP
+      // （3s 超时/行），大规模宕机（如 100 执行器）一轮恢复最多 300s（5 分钟）
+      // 阻塞 cron tick。改为：先并发释放全部槽位，再按并发上限分批处理
+      // kill→retry（同一行 kill 必须先于 retry，但跨行互不依赖可并发）。
+      // notifyExecutorKill 内部已 catch 所有异常仅 warn，故 Promise.allSettled
+      // 不会因单执行器失败而中断整批。
+      const STALE_RECOVERY_KILL_CONCURRENCY = 10;
+
+      // 1) 并发释放全部槽位（DB 快操作，无 HTTP）
+      await Promise.allSettled(
+        recoveredRows.map((row) => this.releaseExecutorSlot(row.executorAddress)),
+      );
       for (const row of recoveredRows) {
-        await this.releaseExecutorSlot(row.executorAddress);
         this.logger.warn(`REC-01: execution ${row.id} recovered as FAILED`);
-        if (!retryOnRecovery) continue;
+      }
+
+      if (!retryOnRecovery) return;
+
+      // 2) 收集需要重试的行（预算检查在内存中完成，无 I/O）
+      const retryables: Array<{
+        id: string;
+        exec: TaskExecution;
+        task: Task;
+      }> = [];
+      for (const row of recoveredRows) {
         const exec = execById.get(row.id);
         const task = exec ? taskById.get(exec.taskId) : undefined;
-        if (!exec || !task) {
-          // 任务已删除/查不到：无预算可对照，维持旧行为（只 FAILED）。
-          continue;
-        }
+        if (!exec || !task) continue;
         // 预算语义与 executor-restart 路径同源（ExecutorService）。预算耗尽
         // 时连 kill 都不发——没有新执行就不会双跑。
         if (!this.executorService.hasRetryBudget(task, exec)) continue;
-        // kill 必须在 re-enqueue 之前：防"执行器谎报/进程僵死但仍存活"场景下
-        // 原进程与新执行双跑。best-effort——离线/404/超时不阻塞重试。
-        try {
-          await this.executorService.notifyExecutorKill(
-            exec.id,
-            exec.executorAddress,
-          );
-        } catch (err: unknown) {
-          this.logger.warn(
-            `REC-01: kill notification before retry failed for ${exec.id}: ${
-              err instanceof Error ? err.message : String(err)
-            }`,
-          );
-        }
-        try {
-          await this.executorService.scheduleRetryAfterRecovery(
-            task,
-            exec,
-            "stale_recovery",
-          );
-        } catch (err: unknown) {
-          this.logger.warn(
-            `REC-01: retry scheduling failed for recovered execution ${exec.id}: ${
-              err instanceof Error ? err.message : String(err)
-            }`,
-          );
-        }
+        retryables.push({ id: row.id, exec, task });
+      }
+
+      // 3) 分批并发 kill→retry：每批内并发，批间串行，限制同时在飞的 HTTP 数。
+      for (let i = 0; i < retryables.length; i += STALE_RECOVERY_KILL_CONCURRENCY) {
+        const batch = retryables.slice(
+          i,
+          i + STALE_RECOVERY_KILL_CONCURRENCY,
+        );
+        await Promise.allSettled(
+          batch.map(async ({ id, exec, task }) => {
+            // kill 必须在 re-enqueue 之前：防"执行器谎报/进程僵死但仍存活"场景下
+            // 原进程与新执行双跑。best-effort——离线/404/超时不阻塞重试。
+            try {
+              await this.executorService.notifyExecutorKill(
+                exec.id,
+                exec.executorAddress,
+              );
+            } catch (err: unknown) {
+              this.logger.warn(
+                `REC-01: kill notification before retry failed for ${exec.id}: ${
+                  err instanceof Error ? err.message : String(err)
+                }`,
+              );
+            }
+            try {
+              await this.executorService.scheduleRetryAfterRecovery(
+                task,
+                exec,
+                "stale_recovery",
+              );
+            } catch (err: unknown) {
+              this.logger.warn(
+                `REC-01: retry scheduling failed for recovered execution ${exec.id}: ${
+                  err instanceof Error ? err.message : String(err)
+                }`,
+              );
+            }
+          }),
+        );
       }
     }
 
     // P1: sweep PENDING executions never picked up by a worker (queue lost
     // the job / Redis flushed) — after a grace window mark them FAILED.
     // TASK-004: 同样改为单条条件批量 UPDATE（终态保护：仅 PENDING 可被清理）。
-    const stalePending = await this.execRepo.find({
-      where: { status: ExecutionStatus.PENDING },
-    });
+    //
+    // R-10（DEEP_REVIEW 0ef3bbe）: 此前 find({ status: PENDING }) 无 SQL 级
+    // cutoff（时间范围）和 take（行数限制）——系统恢复/大规模积压时数万行
+    // PENDING 全量进内存。现在把 grace cutoff 下推到 SQL（createdAt < cutoff），
+    // 并按 PENDING_SWEEP_BATCH_SIZE 分批循环：每批标记 FAILED 后状态即脱离
+    // PENDING，下一批 find 自然推进，单轮 cron 最多处理 N 行避免长事务/内存峰值。
     const PENDING_GRACE_MS = 10 * 60 * 1000;
-    const stalePendingIds = stalePending
-      .filter(
-        (exec) =>
-          exec.createdAt && now - exec.createdAt.getTime() > PENDING_GRACE_MS,
-      )
-      .map((exec) => exec.id);
+    const pendingCutoff = new Date(now - PENDING_GRACE_MS);
     let recoveredPending = 0;
-    if (stalePendingIds.length > 0) {
+    // R-10: 单批最多捞多少行 stale PENDING（循环直至某批不足批大小）。
+    const PENDING_SWEEP_BATCH_SIZE = 1000;
+    for (;;) {
+      const stalePending = await this.execRepo.find({
+        where: {
+          status: ExecutionStatus.PENDING,
+          createdAt: LessThan(pendingCutoff),
+        },
+        take: PENDING_SWEEP_BATCH_SIZE,
+      });
+      const stalePendingIds = stalePending.map((exec) => exec.id);
+      if (stalePendingIds.length === 0) break;
       const result = await this.execRepo
         .createQueryBuilder()
         .update(TaskExecution)
@@ -630,15 +670,16 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
         })
         .returning(["id"])
         .execute();
-      recoveredPending = ((result.raw ?? []) as unknown[]).length;
-      if (recoveredPending === 0 && result.affected) {
-        recoveredPending = result.affected;
-      }
-      if (recoveredPending > 0) {
-        this.logger.warn(
-          `REC-01: ${recoveredPending} pending execution(s) never dispatched, marked FAILED`,
-        );
-      }
+      const batchRecovered = ((result.raw ?? []) as unknown[]).length;
+      recoveredPending += batchRecovered > 0 ? batchRecovered : result.affected ?? 0;
+      // 这批捞满了但一条都没真正命中（竞态：并发回调已写终态）→ 再捞一次
+      // 推进游标；否则若本批未捞满说明已无更多 stale PENDING，退出。
+      if (stalePendingIds.length < PENDING_SWEEP_BATCH_SIZE) break;
+    }
+    if (recoveredPending > 0) {
+      this.logger.warn(
+        `REC-01: ${recoveredPending} pending execution(s) never dispatched, marked FAILED`,
+      );
     }
 
     const totalRecovered = recoveredRows.length + recoveredPending;

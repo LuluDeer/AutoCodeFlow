@@ -457,7 +457,7 @@ describe("ExecutorPackageService", () => {
     beforeEach(() => {
       repo.findOne.mockResolvedValue(mockPkg);
       config.get.mockImplementation((key: string) =>
-        key === "ADMIN_API_URL" ? "http://host:3002/" : "env-token",
+        key === "app.adminApiUrl" ? "http://host:3002/" : "env-token",
       );
       systemConfig.findOne.mockResolvedValue({ value: "db-token" });
       jest.mocked(axios.post).mockResolvedValue({ data: {} });
@@ -479,7 +479,7 @@ describe("ExecutorPackageService", () => {
       "http://host:3002/api/api/",
     ])("normalizes %s and sends the DB token", async (baseUrl) => {
       config.get.mockImplementation((key: string) =>
-        key === "ADMIN_API_URL" ? baseUrl : "env-token",
+        key === "app.adminApiUrl" ? baseUrl : "env-token",
       );
       await expect(controller.push(mockPkg.id)).resolves.toEqual([
         { executorId: "exec-001", address: targets[0].address, success: true },

@@ -73,6 +73,9 @@ class Settings(BaseSettings):
     # R4-C P2: when true, an executor without a configured token refuses
     # /api/* requests (503) instead of the dev-mode allow-all behavior.
     require_token: bool = False
+    # E-25（DEEP_REVIEW 0ef3bbe）：默认绑定 127.0.0.1——裸机部署不再暴露
+    # 0.0.0.0。容器场景由 docker-compose 显式设 BIND_ADDRESS=0.0.0.0。
+    bind_address: str = '127.0.0.1'
     # SEC-NEW-2: S7 gitRepo SSRF 守卫的私网放行开关（与 admin-api 侧
     # EXECUTOR_ALLOW_PRIVATE_NETWORK 同名镜像——同一变量在两侧语义对齐，
     # 拓扑描述见 routers/execute.py S7 段 ADR 注释）。默认 False = 现状

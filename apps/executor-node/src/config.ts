@@ -9,6 +9,9 @@ export const config = {
   appName: process.env.APP_NAME || 'executor-node-1',
   groupName: process.env.GROUP_NAME || process.env.EXECUTOR_GROUP || '',
   port: parseInt(process.env.PORT || '8002', 10),
+  // E-25（DEEP_REVIEW 0ef3bbe）：默认绑定 127.0.0.1——裸机部署不再暴露
+  // 0.0.0.0。容器场景由 docker-compose 显式设 BIND_ADDRESS=0.0.0.0。
+  bindAddress: process.env.BIND_ADDRESS || '127.0.0.1',
   executorAddress: process.env.EXECUTOR_ADDRESS || 'executor-node:8002',
   executorAddressPublic: process.env.EXECUTOR_ADDRESS_PUBLIC || process.env.EXECUTOR_ADDRESS || 'executor-node:8002',
   executorId: process.env.EXECUTOR_ID || '',
@@ -51,6 +54,10 @@ export const config = {
   // 部署），改经 POST /executors/pull 长轮询取件；register 自报 dispatchMode
   // 'pull'，admin 侧据此走队列传输分支。默认 false = push 行为逐字节不变。
   pullMode: process.env.EXECUTOR_PULL_MODE === 'true',
+  // E-04（DEEP_REVIEW 0ef3bbe）：SSRF 逃生阀——默认 false（fail-closed）。
+  // 设为 1 时 deploy/update-package/download 三条链允许访问 loopback/私网/
+  // link-local 地址。仅在容器内联调用 admin-api 本机等合法内网场景使用。
+  allowPrivateNetwork: process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK === 'true',
 };
 
 // EXE-VER-1: 执行器版本上报源（register 与心跳共用，单一定义处）。

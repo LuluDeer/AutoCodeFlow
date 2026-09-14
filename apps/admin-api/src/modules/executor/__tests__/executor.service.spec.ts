@@ -56,6 +56,7 @@ const makeRepo = (overrides: Partial<Record<string, jest.Mock>> = {}) => ({
   findAndCount: jest.fn().mockResolvedValue([[], 0]),
   createQueryBuilder: jest.fn(() => ({
     update: jest.fn().mockReturnThis(),
+    delete: jest.fn().mockReturnThis(),
     set: jest.fn().mockReturnThis(),
     leftJoin: jest.fn().mockReturnThis(),
     innerJoin: jest.fn().mockReturnThis(),
@@ -413,6 +414,50 @@ describe("ExecutorService (__tests__)", () => {
       expect(execRepo.delete).toHaveBeenCalledWith("retry-exec");
       expect(existing.executorStartupId).toBe("startup-new");
       expect(executorRepo.save).toHaveBeenCalledWith(existing);
+    });
+
+    // R-11（DEEP_REVIEW 0ef3bbe）：单行乐观锁冲突不得击穿整个重启恢复流程。
+    it("R-11: a single row save failure (optimistic lock) does not abort the rest", async () => {
+      const existing = {
+        appName: "e1",
+        address: "127.0.0.1:3105",
+        status: ExecutorStatus.ONLINE,
+        executorStartupId: "startup-old",
+      };
+      const okExecution: any = {
+        id: "exec-ok",
+        executorAddress: existing.address,
+        status: ExecutionStatus.RUNNING,
+        logs: "before",
+      };
+      const conflictExecution: any = {
+        id: "exec-conflict",
+        executorAddress: existing.address,
+        status: ExecutionStatus.RUNNING,
+        logs: "before",
+      };
+      executorRepo.findOne.mockResolvedValue(existing);
+      executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      execRepo.find.mockResolvedValue([okExecution, conflictExecution]);
+      taskRepo.findBy.mockResolvedValue([]);
+      // First save (conflict row) throws OptimisticLockVersionMismatchError;
+      // second save (ok row) succeeds.
+      execRepo.save
+        .mockRejectedValueOnce(new Error("OptimisticLockVersionMismatchError"))
+        .mockImplementation((e: any) => Promise.resolve(e));
+
+      await service.register({
+        appName: "e1",
+        address: existing.address,
+        startupId: "startup-new",
+      });
+
+      // The ok row must still be marked FAILED
+      expect(okExecution.status).toBe(ExecutionStatus.FAILED);
+      // The conflict row's save was attempted but failed; the loop continued
+      expect(execRepo.save).toHaveBeenCalledTimes(2);
+      // Registration must not have thrown (no 500)
+      expect(existing.executorStartupId).toBe("startup-new");
     });
 
     it("maps runtime and maxConcurrent aliases during registration", async () => {
@@ -2476,6 +2521,72 @@ describe("ExecutorService (__tests__)", () => {
     });
   });
 
+  // R-09（DEEP_REVIEW 0ef3bbe）: executor_metrics_history retention 清理。
+  // 验证分批 DELETE 循环：单批不足批大小即停；cutoff 基于保留期计算。
+  describe("cleanupExpiredMetricsHistory (R-09)", () => {
+    const makeDeleteQb = (batchAffected: number) => ({
+      delete: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      execute: jest.fn().mockResolvedValue({ affected: batchAffected }),
+    });
+
+    it("deletes expired rows in batches and stops when batch < size", async () => {
+      configService.get.mockReturnValue(30); // logRetention.days
+      // 第一批满批 5000 → 继续；第二批 100 → 停
+      const qb1 = makeDeleteQb(5000);
+      const qb2 = makeDeleteQb(100);
+      metricsHistoryRepo.createQueryBuilder
+        .mockReturnValueOnce(qb1 as any)
+        .mockReturnValueOnce(qb2 as any);
+      const now = new Date("2026-09-14T00:00:00.000Z");
+      const total = await service.cleanupExpiredMetricsHistory(now);
+      expect(total).toBe(5100);
+      // 两次 DELETE 调用
+      expect(metricsHistoryRepo.createQueryBuilder).toHaveBeenCalledTimes(2);
+      // 断言 where 子句带 cutoff 参数（createdAt < cutoff）
+      expect(qb1.where).toHaveBeenCalledWith(
+        expect.stringContaining('"createdAt" < :cutoff'),
+        expect.objectContaining({
+          cutoff: expect.any(Date),
+          batchSize: 5000,
+        }),
+      );
+    });
+
+    it("respects configured retention days via logRetention.days", async () => {
+      configService.get.mockReturnValue(7);
+      const qb = makeDeleteQb(0);
+      metricsHistoryRepo.createQueryBuilder.mockReturnValue(qb as any);
+      const now = new Date("2026-09-14T00:00:00.000Z");
+      await service.cleanupExpiredMetricsHistory(now);
+      const whereArg = qb.where.mock.calls[0][1];
+      // 7 天前 = 2026-09-07T00:00:00.000Z
+      expect(whereArg.cutoff.getTime()).toBe(
+        new Date("2026-09-07T00:00:00.000Z").getTime(),
+      );
+    });
+
+    it("falls back to 30 days when config missing/invalid", async () => {
+      configService.get.mockReturnValue(undefined);
+      const qb = makeDeleteQb(0);
+      metricsHistoryRepo.createQueryBuilder.mockReturnValue(qb as any);
+      const now = new Date("2026-09-14T00:00:00.000Z");
+      await service.cleanupExpiredMetricsHistory(now);
+      const whereArg = qb.where.mock.calls[0][1];
+      // 30 天前 = 2026-08-15T00:00:00.000Z
+      expect(whereArg.cutoff.getTime()).toBe(
+        new Date("2026-08-15T00:00:00.000Z").getTime(),
+      );
+    });
+
+    it("cron entry honors LeaderGate (non-leader skips)", async () => {
+      (service as unknown as { leaderGate: { isLeader: boolean } }).leaderGate =
+        { isLeader: false };
+      await service.cleanupMetricsHistory();
+      expect(metricsHistoryRepo.createQueryBuilder).not.toHaveBeenCalled();
+    });
+  });
+
   describe("markStaleOffline", () => {
     it("marks heartbeat-timeout executors as OFFLINE", async () => {
       configService.get
@@ -2597,7 +2708,7 @@ describe("ExecutorService (__tests__)", () => {
   describe("getInstallCmd", () => {
     it("uses the DB token instead of the env token", async () => {
       configService.get.mockImplementation((key) =>
-        key === "ADMIN_API_URL" ? "https://admin.example.com" : "old-env-token",
+        key === "app.adminApiUrl" ? "https://admin.example.com" : "old-env-token",
       );
       const lookup = jest
         .spyOn((service as any).systemConfigService, "findOne")

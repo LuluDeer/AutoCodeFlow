@@ -188,16 +188,25 @@ describe("configuration (ARCH-004/005/006) throttle, redis tls, db synchronize",
     delete process.env.NPM_REGISTRY_TOKEN;
     delete process.env.NPM_REGISTRY_USER;
     delete process.env.NPM_REGISTRY_PASS;
+    delete process.env.NPM_REGISTRY_URL;
     const cfg = loadConfig();
-    expect(cfg.registry.npm).toEqual({ token: "", user: "", pass: "" });
+    // R-12: registry.npm 现含 url 字段（默认 http://localhost:4873）。
+    expect(cfg.registry.npm).toEqual({
+      url: "http://localhost:4873",
+      token: "",
+      user: "",
+      pass: "",
+    });
   });
 
   it("S5: maps NPM_REGISTRY_TOKEN / NPM_REGISTRY_USER / NPM_REGISTRY_PASS into registry.npm", () => {
     process.env.NPM_REGISTRY_TOKEN = "t0k3n";
     process.env.NPM_REGISTRY_USER = "svc";
     process.env.NPM_REGISTRY_PASS = "svc-pass";
+    delete process.env.NPM_REGISTRY_URL;
     const cfg = loadConfig();
     expect(cfg.registry.npm).toEqual({
+      url: "http://localhost:4873",
       token: "t0k3n",
       user: "svc",
       pass: "svc-pass",
@@ -408,5 +417,50 @@ describe("configuration (ARCH-27) newly registered config sections", () => {
     expect(loadConfig().app.hostname).toBe("");
     process.env.HOSTNAME = "container-7f3a";
     expect(loadConfig().app.hostname).toBe("container-7f3a");
+  });
+
+  // R-12（DEEP_REVIEW 0ef3bbe）: 此前绕过配置中心裸读的 env 补映射——
+  // 消费方一律经 ConfigService 读这些配置节，不再裸读原始 env 键。
+  it("R-12: registers app.adminApiUrl from ADMIN_API_URL (default empty = runtime 503)", () => {
+    delete process.env.ADMIN_API_URL;
+    expect(loadConfig().app.adminApiUrl).toBe("");
+    process.env.ADMIN_API_URL = "https://admin.example.com";
+    expect(loadConfig().app.adminApiUrl).toBe("https://admin.example.com");
+  });
+
+  it("R-12: registers registry.npm.url from NPM_REGISTRY_URL (default http://localhost:4873)", () => {
+    delete process.env.NPM_REGISTRY_URL;
+    expect(loadConfig().registry.npm.url).toBe("http://localhost:4873");
+    process.env.NPM_REGISTRY_URL = "http://registry.internal:4873";
+    expect(loadConfig().registry.npm.url).toBe(
+      "http://registry.internal:4873",
+    );
+  });
+
+  it("R-12: registers metricsStream section with defaults (maxGlobal 32 / interval 3000 / idlePing 15000)", () => {
+    delete process.env.METRICS_STREAM_MAX_GLOBAL;
+    delete process.env.METRICS_STREAM_INTERVAL_MS;
+    delete process.env.METRICS_STREAM_IDLE_PING_MS;
+    const cfg = loadConfig();
+    expect(cfg.metricsStream.maxStreamsGlobal).toBe(32);
+    expect(cfg.metricsStream.intervalMs).toBe(3000);
+    expect(cfg.metricsStream.idlePingMs).toBe(15000);
+  });
+
+  it("R-12: metricsStream env overrides are honored", () => {
+    process.env.METRICS_STREAM_MAX_GLOBAL = "64";
+    process.env.METRICS_STREAM_INTERVAL_MS = "1500";
+    process.env.METRICS_STREAM_IDLE_PING_MS = "5000";
+    const cfg = loadConfig();
+    expect(cfg.metricsStream.maxStreamsGlobal).toBe(64);
+    expect(cfg.metricsStream.intervalMs).toBe(1500);
+    expect(cfg.metricsStream.idlePingMs).toBe(5000);
+  });
+
+  it("R-12: registers executionsStream.idlePingMs (default 30000, env overridable)", () => {
+    delete process.env.EXECUTIONS_STREAM_IDLE_PING_MS;
+    expect(loadConfig().executionsStream.idlePingMs).toBe(30000);
+    process.env.EXECUTIONS_STREAM_IDLE_PING_MS = "45000";
+    expect(loadConfig().executionsStream.idlePingMs).toBe(45000);
   });
 });

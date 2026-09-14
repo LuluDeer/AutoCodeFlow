@@ -451,8 +451,10 @@ export class ExecutorPackageService implements OnModuleInit {
       throw new Error("No target executors found for push");
     }
 
+    // R-12（DEEP_REVIEW 0ef3bbe）: 改读映射节 app.adminApiUrl（此前裸读
+    // configService.get("ADMIN_API_URL") 绕过配置中心）。
     const adminApiBaseUrl = this.configService
-      .get<string>("ADMIN_API_URL")
+      .get<string>("app.adminApiUrl")
       ?.trim();
     if (!adminApiBaseUrl) {
       throw new ServiceUnavailableException(

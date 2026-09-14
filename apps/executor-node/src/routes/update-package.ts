@@ -12,6 +12,7 @@ import { logger } from '../logger';
 import { post } from '../admin-client';
 import { config } from '../config';
 import { downloadFile } from '../lib/download';
+import { assertSafeHttpUrl } from '../lib/ssrf-guard';
 import { isSafePathSegment } from '../safe-path';
 
 export const updatePackageRouter = Router();
@@ -73,8 +74,12 @@ updatePackageRouter.post('/update-package', async (req: Request, res: Response) 
       res.status(400).json({ error: `downloadUrl scheme not allowed: ${parsedUrl.protocol}. Only http and https are permitted.` });
       return;
     }
-  } catch {
-    res.status(400).json({ error: 'downloadUrl is not a valid URL' });
+    // E-04（DEEP_REVIEW 0ef3bbe）：SSRF 闸——fail-closed 拒绝 loopback/私网/
+    // link-local（含云元数据）。与 deploy.ts/execute.ts 对齐。
+    assertSafeHttpUrl(body.downloadUrl);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : 'downloadUrl is not a valid URL';
+    res.status(400).json({ error: msg });
     return;
   }
 

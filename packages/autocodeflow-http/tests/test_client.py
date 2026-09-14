@@ -256,3 +256,150 @@ class TestRetryMethodSafety:
             await client.post("/items", data={"name": "x"})
         assert get_route.call_count == 2
         assert post_route.call_count == 1
+
+
+# PK-09（DEEP_REVIEW 0ef3bbe）: http client 四项修复回归测试。
+class TestPk09ConnectionReuse:
+    """PK-09(1): AsyncClient 实例级单例，不每请求新建。"""
+
+    @pytest.mark.asyncio
+    async def test_async_client_reused_across_requests(self, respx_mock):
+        respx_mock.get("http://api.example.com/a").mock(
+            return_value=httpx.Response(200, json={})
+        )
+        respx_mock.get("http://api.example.com/b").mock(
+            return_value=httpx.Response(200, json={})
+        )
+        client = AutoFlowHttpClient(
+            base_url="http://api.example.com",
+            retry_config=RetryConfig(max_retries=0),
+        )
+        await client.get("/a")
+        first_client = client._client
+        await client.get("/b")
+        # 第二次请求复用同一个 AsyncClient 实例（连接池）
+        assert client._client is first_client
+        assert not client._client.is_closed
+        await client.aclose()
+
+
+class TestPk09HalfOpenConcurrency:
+    """PK-09(2): half-open 探测同时只允许 1 个在飞。"""
+
+    def test_half_open_allows_one_probe_then_blocks(self):
+        breaker = CircuitBreaker(failure_threshold=1, reset_timeout_sec=1)
+        breaker.failure()  # trip → open
+        # 模拟时间流逝 → half_open
+        import time
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setattr(time, "monotonic", lambda: breaker._last_failure_time + 2)
+
+        # 第一次 is_open → 转入 half_open，允许探测
+        assert not breaker.is_open
+        # acquire_probe 成功
+        assert breaker.acquire_probe() is True
+        # 第二个请求 is_open → 探测在飞 → 拒绝
+        assert breaker.is_open is True
+        monkeypatch.undo()
+
+    def test_probe_success_closes_breaker(self):
+        breaker = CircuitBreaker(failure_threshold=1, reset_timeout_sec=1)
+        breaker.failure()
+        import time
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setattr(time, "monotonic", lambda: breaker._last_failure_time + 2)
+        # 先调 is_open 触发 open→half_open 状态迁移
+        assert not breaker.is_open
+        assert breaker.acquire_probe() is True
+        breaker.success()
+        assert breaker._state == "closed"
+        assert breaker._probe_in_flight is False
+        monkeypatch.undo()
+
+
+class TestPk09RetryAfter:
+    """PK-09(3): 重试时尊重 Retry-After header。"""
+
+    FAST = dict(max_retries=1, min_wait_sec=0.001, max_wait_sec=0.002)
+
+    @pytest.mark.asyncio
+    async def test_retry_after_header_influences_wait(self, respx_mock):
+        # 第一次返回 429 + Retry-After: 5（秒），第二次 200
+        route = respx_mock.get("http://api.example.com/data").mock(
+            side_effect=[
+                httpx.Response(429, headers={"Retry-After": "0.1"}),
+                httpx.Response(200, json={"ok": True}),
+            ]
+        )
+        client = AutoFlowHttpClient(
+            base_url="http://api.example.com",
+            retry_config=RetryConfig(**self.FAST),
+        )
+        # 应该成功（retry-after=0.1s 可接受，不超 max_wait 太多但 ≥ base）
+        import time
+        start = time.monotonic()
+        resp = await client.get("/data")
+        elapsed = time.monotonic() - start
+        assert resp.status_code == 200
+        assert route.call_count == 2
+        # Retry-After=0.1s 应被尊重（至少等了 ~0.1s）
+        assert elapsed >= 0.08
+
+    @pytest.mark.asyncio
+    async def test_retry_after_absent_falls_back_to_exponential(self, respx_mock):
+        route = respx_mock.get("http://api.example.com/data").mock(
+            side_effect=[
+                httpx.Response(503),
+                httpx.Response(200, json={"ok": True}),
+            ]
+        )
+        client = AutoFlowHttpClient(
+            base_url="http://api.example.com",
+            retry_config=RetryConfig(**self.FAST),
+        )
+        resp = await client.get("/data")
+        assert resp.status_code == 200
+        assert route.call_count == 2
+
+
+class TestPk09CircuitBreakerExceptionFilter:
+    """PK-09(4): 非网络异常不计入熔断失败计数。"""
+
+    @pytest.mark.asyncio
+    async def test_non_network_exception_does_not_open_breaker(self, respx_mock):
+        breaker = CircuitBreaker(failure_threshold=2, reset_timeout_sec=999)
+        client = AutoFlowHttpClient(
+            base_url="http://api.example.com",
+            circuit_breaker=breaker,
+            retry_config=RetryConfig(max_retries=0),
+        )
+        # _do 抛 ValueError（非网络异常）→ 不计熔断
+        respx_mock.get("http://api.example.com/data").mock(
+            side_effect=ValueError("business logic error")
+        )
+        with pytest.raises(ValueError):
+            await client.get("/data")
+        # failure_count 仍为 0（非网络异常不计入）
+        assert breaker._failure_count == 0
+        assert not breaker.is_open
+
+    @pytest.mark.asyncio
+    async def test_network_exception_counts_toward_breaker(self, respx_mock):
+        breaker = CircuitBreaker(failure_threshold=2, reset_timeout_sec=999)
+        client = AutoFlowHttpClient(
+            base_url="http://api.example.com",
+            circuit_breaker=breaker,
+            retry_config=RetryConfig(max_retries=0),
+        )
+        respx_mock.get("http://api.example.com/data").mock(
+            side_effect=httpx.ConnectError("boom")
+        )
+        with pytest.raises(httpx.ConnectError):
+            await client.get("/data")
+        # 网络异常计入 failure_count
+        assert breaker._failure_count == 1
+        # 再失败一次 → 熔断打开
+        with pytest.raises(httpx.ConnectError):
+            await client.get("/data")
+        assert breaker._failure_count == 2
+        assert breaker.is_open

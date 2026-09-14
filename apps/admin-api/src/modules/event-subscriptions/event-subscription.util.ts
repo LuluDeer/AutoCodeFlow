@@ -6,6 +6,7 @@
  * 保证 CRUD 校验与派发过滤用同一份目录。
  */
 import { randomBytes } from "node:crypto";
+import { EVENT_SCHEMA_VERSION } from "../../common/events/domain-events";
 
 /**
  * 可订阅事件目录（稳定契约，只增不改）。
@@ -94,6 +95,12 @@ export interface OutboundEventEnvelope {
   event: string;
   /** 事件发生时刻（ISO）。 */
   occurredAt: string;
+  /**
+   * PK-14: 载荷 schema 主版本（见 domain-events.ts EVENT_SCHEMA_VERSION）。
+   * 订阅方据此区分载荷形状演进；增量字段新增不升 major，breaking 变更必须 bump。
+   * 新增为可选字段——旧订阅方忽略即可，向后兼容。
+   */
+  schemaVersion?: number;
   /** 事件载荷（事件名到形状的映射见 buildEventPayload）。 */
   data: Record<string, unknown>;
 }
@@ -108,5 +115,11 @@ export function buildEventPayload(
   raw: Record<string, unknown>,
   occurredAt = new Date().toISOString(),
 ): OutboundEventEnvelope {
-  return { event: eventName, occurredAt, data: raw };
+  // PK-14: 信封顶层附 schemaVersion（向后兼容——旧订阅方忽略未知字段）。
+  return {
+    event: eventName,
+    occurredAt,
+    schemaVersion: EVENT_SCHEMA_VERSION,
+    data: raw,
+  };
 }

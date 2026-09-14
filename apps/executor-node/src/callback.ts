@@ -215,7 +215,7 @@ function readRetryMeta(filepath: string): { retries: number; updatedAt: number }
   }
 }
 
-function readRetryCount(filepath: string): number {
+function _readRetryCount(filepath: string): number {
   return readRetryMeta(filepath).retries;
 }
 

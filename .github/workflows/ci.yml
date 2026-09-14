@@ -469,6 +469,12 @@ jobs:
         run: |
           node scripts/check-migrations.mjs
           node scripts/check-migrations.selftest.mjs
+      # PK-26（A8）：TS 枚举 ⊆ PG 枚举 静态守卫——防 scheduler 写路径枚举漂移
+      # （N2 教训第三次重演兜底）。零依赖 node 脚本，秒级。
+      - name: Enum drift guard (PK-26/A8)
+        run: |
+          node scripts/check-enum-drift.mjs --selftest
+          node scripts/check-enum-drift.mjs
 
   # ── BUG-18：私服 npm/PyPI 契约闸（零依赖 node 脚本，无需 npm ci）──────
   # live 模式（临时 PyPI uvicorn + 一次性 Verdaccio 容器）需 docker 与镜像，

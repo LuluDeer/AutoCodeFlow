@@ -323,4 +323,7 @@ if __name__ == '__main__':
     if _sigbreak is not None:
         signal.signal(_sigbreak, partial(handle_signal, _sigbreak))
     
-    uvicorn.run('main:app', host='0.0.0.0', port=settings.port, reload=False)
+    # E-25（DEEP_REVIEW 0ef3bbe）：默认绑定 127.0.0.1（BIND_ADDRESS 可覆盖
+    # 为 0.0.0.0），避免裸机部署在 token 缺失时暴露公开 RCE 面。容器场景由
+    # compose 显式设 BIND_ADDRESS=0.0.0.0。
+    uvicorn.run('main:app', host=settings.bind_address, port=settings.port, reload=False)

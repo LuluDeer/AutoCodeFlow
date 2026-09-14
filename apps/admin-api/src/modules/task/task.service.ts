@@ -1181,6 +1181,14 @@ export class TaskService {
     let s3FetchFailed = false;
     const POLL_INTERVAL = 1000; // ms
     const MAX_RUNTIME = 30 * 60 * 1000; // 30 min safety cap
+    // R-24（DEEP_REVIEW 0ef3bbe）: 空转退避——连续 N 次轮询无新日志后，
+    // 指数增大查询间隔（上限 5s），有新数据立即恢复 1s 基线。64 并发流
+    // 空转期从 128 QPS 底噪降至 ~12.8 QPS（5s 间隔）。最大 5s 保证新日志
+    // 延迟可接受。
+    const IDLE_BACKOFF_THRESHOLD = 3; // 连续 3 次无新数据后开始退避
+    const IDLE_BACKOFF_MAX_INTERVAL = 5000; // ms 上限
+    let idlePolls = 0;
+    let pollWait = POLL_INTERVAL;
     // QA3: nginx proxy_read_timeout（默认 60s）会掐断空闲的 SSE 流——S3 存储
     // 的执行在到达终态前可能整分钟无任何新行。空闲超过 15s 时写一条注释帧
     // （": ping\n\n"）：SSE 规范要求客户端忽略注释行，因此 admin-web 的
@@ -1256,8 +1264,25 @@ export class TaskService {
     // Poll until done or aborted
     try {
       while (!signal.aborted && Date.now() - start < MAX_RUNTIME) {
+        const lineBefore = nextLine;
         const finished = await flush();
         if (finished) break;
+        // R-24: 空转退避——本轮 flush 是否产生新行？
+        const hadNewLines = nextLine > lineBefore;
+        if (hadNewLines) {
+          // 有新数据：立即恢复 1s 基线
+          idlePolls = 0;
+          pollWait = POLL_INTERVAL;
+        } else {
+          idlePolls++;
+          if (idlePolls > IDLE_BACKOFF_THRESHOLD) {
+            // 指数退避，上限 IDLE_BACKOFF_MAX_INTERVAL
+            pollWait = Math.min(
+              pollWait * 2,
+              IDLE_BACKOFF_MAX_INTERVAL,
+            );
+          }
+        }
         // QA3: idle heartbeat — checked inline in the polling loop instead of
         // via a separate timer, so when the connection closes (signal aborts)
         // the existing loop-exit path below tears the whole thing down with
@@ -1267,7 +1292,7 @@ export class TaskService {
           lastWriteAt = Date.now();
         }
         await new Promise<void>((resolve) => {
-          const t = setTimeout(resolve, POLL_INTERVAL);
+          const t = setTimeout(resolve, pollWait);
           signal.addEventListener(
             "abort",
             () => {
@@ -1904,6 +1929,31 @@ export class TaskService {
             executionId: cb.executionId,
             success: false,
             error: "Execution not found",
+          });
+          continue;
+        }
+
+        // R-16（DEEP_REVIEW 0ef3bbe）：派发落库前窗口守卫——execution 处于
+        // PENDING 且 executorAddress 为 null（尚未派发）时拒绝终态回调。
+        // 此前任何持有效执行器凭据者可对未派发 execution 回报任意终态
+        // （success/failed），导致状态被篡改。RUNNING 但快照 executorAddress
+        // 为 null 属 dispatch 落库窗口的合法场景（RETURNING 会取库中实际地址），
+        // 不在此拒绝。
+        if (
+          execution.status === ExecutionStatus.PENDING &&
+          !execution.executorAddress
+        ) {
+          recordRuntime("autoflow_callback_business_total", {
+            result: "not_dispatched",
+          });
+          this.logger.warn(
+            `R-16: Rejected terminal callback for execution ${cb.executionId} ` +
+            `which has not been dispatched yet (executorAddress is null).`,
+          );
+          results.push({
+            executionId: cb.executionId,
+            success: false,
+            error: "Execution has not been dispatched yet",
           });
           continue;
         }

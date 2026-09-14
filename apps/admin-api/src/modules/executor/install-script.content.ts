@@ -138,6 +138,15 @@ echo "      git: $(git --version)"
 echo "[2/6] 创建安装目录..."
 mkdir -p "$INSTALL_DIR" "$WORK_DIR"
 
+# E-09（DEEP_REVIEW 0ef3bbe）：创建专用非 root 用户并 chown 目录——
+# 容器部署已是 non-root，裸机 systemd 部署此前以 root 常驻。幂等：
+# useradd -r 已存在时静默返回非零 || true。
+EXECUTOR_USER="autocodeflow"
+if ! id "$EXECUTOR_USER" &>/dev/null; then
+  useradd -r -s /usr/sbin/nologin -m -d /var/lib/"$EXECUTOR_USER" "$EXECUTOR_USER" || true
+fi
+chown -R "$EXECUTOR_USER":"$EXECUTOR_USER" "$INSTALL_DIR" "$WORK_DIR"
+
 # ── 安装执行器代码 ────────────────────────────────────────────────────────────
 echo "[3/6] 安装执行器..."
 # R8（N24 根治）：真 artifact 通道。后端承载
@@ -198,6 +207,9 @@ EXECUTOR_SECRET=\${EXECUTOR_SECRET}
 WORK_DIR=\${WORK_DIR}
 MAX_CONCURRENT_TASKS=10
 LOG_RETENTION_DAYS=7
+# E-09/E-25（DEEP_REVIEW 0ef3bbe）：fail-closed——token 未配置时拒绝
+# 所有未认证请求（503），而非 dev-mode 静默放行。与容器部署基线对齐。
+REQUIRE_TOKEN=true
 EOF
 echo "      配置已写入 \${INSTALL_DIR}/.env"
 
@@ -214,6 +226,8 @@ else
 fi
 
 if check_cmd systemctl; then
+  # E-09（DEEP_REVIEW 0ef3bbe）：systemd 沙箱加固——非 root 运行 + 基础
+  # 隔离指令，对齐容器部署基线（non-root + no-new-privileges）。
   cat > "/etc/systemd/system/\${SERVICE_NAME}.service" <<EOF
 [Unit]
 Description=AutoCodeFlow Executor
@@ -222,11 +236,17 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+User=\${EXECUTOR_USER}
+Group=\${EXECUTOR_USER}
 WorkingDirectory=\${INSTALL_DIR}
 EnvironmentFile=\${INSTALL_DIR}/.env
 ExecStart=\${EXEC_CMD}
 Restart=always
 RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=\${WORK_DIR} \${INSTALL_DIR}
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=\${SERVICE_NAME}

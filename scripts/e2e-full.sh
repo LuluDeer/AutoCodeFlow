@@ -49,6 +49,10 @@ REDIS_PASS="${E2E_REDIS_PASS:-}"
 PORT_API=3105
 PORT_WEB=5176
 PORT_EXECUTOR=8002
+# E-18（DEEP_REVIEW 0ef3bbe）：executor-python 并列端口（node=8002 已占）。
+# python 执行器此前零 e2e 覆盖——本步骤与 executor-node 并列启动，spec
+# e2e-python-executor.spec.js 覆盖注册→派发→执行→回调基本链路。
+PORT_EXECUTOR_PYTHON=8003
 # Executor 任务工作目录：默认 POSIX /tmp；Windows runner 传 E2E_WORK_DIR=
 # C:/tmp/... （node 在 win32 把 "/tmp" 解析为当前盘根，故须给绝对盘符路径）。
 EXEC_WORK_DIR="${E2E_WORK_DIR:-/tmp/acf-e2e-tasks}"
@@ -317,6 +321,64 @@ for _ in $(seq 1 30); do
 done
 [[ $REG_OK == 1 ]] || fail_with_log "$LOG_DIR/executor-node.log" "执行器 30s 内未注册 online"
 echo "executor-node 已注册 online"
+
+# ── E-18：启动 executor-python（与 executor-node 并列；可选，python 不可用时跳过）──
+# 检测 .venv（Windows .venv/Scripts/python.exe / POSIX .venv/bin/python）；
+# CI e2e-full job 尚未装 python deps——此时跳过并打印提示，spec 侧 test.skip 兜底。
+# 完整链路覆盖路线：在 CI e2e-full job 中加 setup-python + pip install -r
+# requirements.txt，本步骤即自动生效（无需改 spec）。
+PYTHON_BIN=""
+if [[ -x "apps/executor-python/.venv/bin/python" ]]; then
+  PYTHON_BIN="apps/executor-python/.venv/bin/python"
+elif [[ -x "apps/executor-python/.venv/Scripts/python.exe" ]]; then
+  PYTHON_BIN="apps/executor-python/.venv/Scripts/python.exe"
+elif command -v python3 >/dev/null 2>&1 && python3 -c "import fastapi, uvicorn, httpx" >/dev/null 2>&1; then
+  PYTHON_BIN="python3"
+fi
+
+if [[ -n "$PYTHON_BIN" ]]; then
+  echo "── E-18：启动 executor-python(:$PORT_EXECUTOR_PYTHON) ──"
+  (
+    cd apps/executor-python
+    exec env "${E2E_ENV[@]}" \
+      APP_NAME=executor-python-e2e \
+      PORT=$PORT_EXECUTOR_PYTHON \
+      EXECUTOR_ADDRESS=localhost:$PORT_EXECUTOR_PYTHON \
+      ADMIN_API_URL=http://localhost:$PORT_API \
+      EXECUTOR_SECRET=test-executor-secret \
+      WORK_DIR=$EXEC_WORK_DIR \
+      ALLOW_PRIVATE_NETWORK=true \
+      "$PYTHON_BIN" -m uvicorn main:app --host 0.0.0.0 --port $PORT_EXECUTOR_PYTHON
+  ) >"$LOG_DIR/executor-python.log" 2>&1 &
+  PIDS+=($!)
+  wait_http "http://localhost:$PORT_EXECUTOR_PYTHON/health" 60 "executor-python" "$LOG_DIR/executor-python.log"
+  echo "executor-python /health OK"
+
+  # 注册 online 轮询（与 executor-node 同逻辑）
+  PY_REG_OK=0
+  for _ in $(seq 1 30); do
+    TOK=$(curl -sf -X POST "http://localhost:$PORT_API/api/auth/login" \
+      -H 'Content-Type: application/json' \
+      -d '{"username":"admin","password":"admin123"}' \
+      | grep -o '"accessToken":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
+    if [[ -n "${TOK:-}" ]] && curl -sf "http://localhost:$PORT_API/api/executors" \
+        -H "Authorization: Bearer $TOK" | grep -q '"type":"python".*"status":"online"'; then
+      PY_REG_OK=1
+      break
+    fi
+    sleep 1
+  done
+  if [[ $PY_REG_OK == 1 ]]; then
+    echo "executor-python 已注册 online（type=python）"
+    export E2E_PYTHON_EXECUTOR_AVAILABLE=1
+  else
+    echo "⚠ executor-python 进程在但 30s 内未注册 online（见 $LOG_DIR/executor-python.log）——python e2e 用例将 skip"
+    export E2E_PYTHON_EXECUTOR_AVAILABLE=0
+  fi
+else
+  echo "── E-18：未找到 python venv / fastapi deps，executor-python 跳过（spec 侧 skip 兜底）──"
+  export E2E_PYTHON_EXECUTOR_AVAILABLE=0
+fi
 
 echo "══ [5/6] 启动 admin-web vite(:$PORT_WEB) ══"
 (

@@ -1,7 +1,7 @@
 import request from 'supertest';
 import express from 'express';
 import * as fs from 'fs';
-import * as path from 'path';
+import * as _path from 'path';
 import { Readable } from 'stream';
 
 // Mock dependencies before importing the router

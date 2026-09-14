@@ -9,6 +9,7 @@ import {
 } from "@nestjs/common";
 import {
   ApiBearerAuth,
+  ApiBody,
   ApiOperation,
   ApiParam,
   ApiResponse,
@@ -16,6 +17,8 @@ import {
 } from "@nestjs/swagger";
 import { TaskTemplateService } from "./task-template.service";
 import { CreateTaskTemplateDto } from "./dto/create-task-template.dto";
+// PK-19: instantiate 覆盖体 Swagger 文档 DTO（运行时 @Body() 仍为 Record<string, unknown>）。
+import { InstantiateTaskOverlayDto } from "./dto/instantiate-task-overlay.dto";
 import { TaskTemplate } from "./entities/task-template.entity";
 
 /**
@@ -99,6 +102,10 @@ export class TaskTemplateController {
     description: "Missing name / invalid merged payload",
   })
   @ApiResponse({ status: 404, description: "Template not found" })
+  // PK-19（DEEP_REVIEW 0ef3bbe）: 此前 instantiate 用 Record<string, unknown> 无
+  // @ApiBody，openapi 缺 requestBody。补 @ApiBody({ type: InstantiateTaskOverlayDto })
+  //（运行时 @Body() 类型不变，自由 overlay 不被 whitelist 拦截）。
+  @ApiBody({ type: InstantiateTaskOverlayDto, description: "模板覆盖体（自由字段，合并后校验 CreateTaskDto）" })
   instantiate(
     @Param("id", ParseUUIDPipe) id: string,
     @Body() body: Record<string, unknown>,

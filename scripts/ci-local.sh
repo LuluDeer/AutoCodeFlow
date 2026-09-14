@@ -172,12 +172,15 @@ job_admin_api_e2e() {
     || { echo "second migration:run was not a no-op"; return 1; }
 }
 
-# ── CI job: npm-audit（四端 prod 依赖链 high+ 红灯）────────────────────────
+# ── CI job: npm-audit（五端 prod 依赖链 moderate+ 红灯；E-32 对齐 CI 阈值）──
+# E-32（DEEP_REVIEW 0ef3bbe）：阈值从 high 升到 moderate，与 .github/workflows/ci.yml
+# npm-audit job 的 --audit-level=moderate 逐字对齐——此前本地 high 全绿、CI moderate 才红，
+# 开发者本地无法提前发现 moderate 级漏洞。矩阵同步补 executor-desktop（CI 矩阵含，本地漏）。
 job_npm_audit() {
   local p
-  for p in apps/admin-api apps/executor-node packages/acf-cli packages/mcp-server; do
+  for p in apps/admin-api apps/executor-node apps/executor-desktop packages/acf-cli packages/mcp-server; do
     echo "── npm audit（CI matrix: $p）"
-    ( cd "$p" && npm audit --registry=https://registry.npmjs.org --omit=dev --audit-level=high )
+    ( cd "$p" && npm audit --registry=https://registry.npmjs.org --omit=dev --audit-level=moderate )
   done
 }
 

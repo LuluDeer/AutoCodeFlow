@@ -5,7 +5,7 @@ import * as path from 'path';
 import type { AddressInfo } from 'net';
 
 jest.mock('../config', () => ({
-  config: { token: 'test-shared-token' },
+  config: { token: 'test-shared-token', allowPrivateNetwork: true },
 }));
 
 import { downloadFile } from './download';

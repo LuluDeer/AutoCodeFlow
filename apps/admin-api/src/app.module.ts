@@ -181,6 +181,16 @@ import { RuntimeModule } from "./modules/runtime/runtime.module";
         SSE_MAX_STREAMS_PER_EXECUTION: Joi.number().integer().min(1).default(4),
         SSE_MAX_STREAMS_GLOBAL: Joi.number().integer().min(1).default(64),
 
+        // R-12（DEEP_REVIEW 0ef3bbe）: metricsStream / executionsStream 节此前在
+        // configuration.ts 读取但未在 Joi 注册（ARCH-27 审计缺口）——env 名 typo 时
+        // 静默回退默认值，无法从日志发现拼写错误。默认值与 configuration.ts 既有
+        // 回退逐字节一致（maxGlobal 32 / interval 3000ms / metrics idlePing 15000ms
+        // / executions idlePing 30000ms）。
+        METRICS_STREAM_MAX_GLOBAL: Joi.number().integer().min(1).default(32),
+        METRICS_STREAM_INTERVAL_MS: Joi.number().integer().min(1).default(3000),
+        METRICS_STREAM_IDLE_PING_MS: Joi.number().integer().min(1).default(15000),
+        EXECUTIONS_STREAM_IDLE_PING_MS: Joi.number().integer().min(1).default(30000),
+
         // AI (optional)
         AI_PROVIDER: Joi.string()
           .valid("disabled", "openai", "ollama")
@@ -276,6 +286,17 @@ import { RuntimeModule } from "./modules/runtime/runtime.module";
         NPM_REGISTRY_TOKEN: Joi.string().allow("").optional(),
         NPM_REGISTRY_USER: Joi.string().allow("").optional(),
         NPM_REGISTRY_PASS: Joi.string().allow("").optional(),
+        // R-12（DEEP_REVIEW 0ef3bbe）: Verdaccio registry 基址。此前
+        // registry.controller 经 config.get("NPM_REGISTRY_URL") 裸读（注释失实
+        // 声称已在 Joi 注册）。现注册并映射到 registry.npm.url；空由 configuration
+        // 回退 http://localhost:4873（旧 controller 回退行为不变）。
+        NPM_REGISTRY_URL: Joi.string().uri().allow("").optional(),
+        // R-12（DEEP_REVIEW 0ef3bbe）: 执行器可回连的 Admin API 对外基址
+        // （app.adminApiUrl 消费：getInstallCmd / package push）。此前两个消费点经
+        // configService.get("ADMIN_API_URL") 裸读绕过配置中心，typo 静默取空 →
+        // 运行时 503。空 = 未配置（运行时端点 fail-fast 503，行为不变）；一旦配置
+        // 须为合法 http(s) URL，否则启动即拒绝。
+        ADMIN_API_URL: Joi.string().uri().allow("").optional(),
 
         // ARCH-27（配置中心收口）: 此前存在读取点但未在 Joi 注册的 env，
         // 审计后补齐（默认值与 configuration.ts 既有回退保持一致）。

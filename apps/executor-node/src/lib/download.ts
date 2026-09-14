@@ -2,10 +2,17 @@
  *  paths. Carries the executor shared token to the first host, strips it on
  *  cross-host redirects (token must not leak to third-party domains), enforces
  *  an overall deadline (a slow-drip server cannot stall the caller forever)
- *  and a max size cap (a huge file cannot fill the disk). */
+ *  and a max size cap (a huge file cannot fill the disk).
+ *
+ *  E-04（DEEP_REVIEW 0ef3bbe）：首跳 Bearer token 是有意设计——packageUrl/
+ *  downloadUrl 由 admin-api 下发，首跳指向 admin-api 本机（内网拉包），
+ *  携带 EXECUTOR_SHARED_TOKEN 完成 admin-api 的 Bearer 校验。跨跳（redirect）
+ *  已在下方 strip。SSRF 闸在入口处 fail-closed（assertSafeHttpUrl），
+ *  EXECUTOR_ALLOW_PRIVATE_NETWORK=1 可显式逃生。 */
 
 import * as fs from 'fs';
 import { config } from '../config';
+import { assertSafeHttpUrl } from './ssrf-guard';
 
 export interface DownloadFileOptions {
   maxRedirects?: number;
@@ -71,6 +78,16 @@ export function downloadFile(url: string, dest: string, options: DownloadFileOpt
     maxBytes = DEFAULT_MAX_BYTES,
   } = options;
   return new Promise((resolve, reject) => {
+    // E-04（DEEP_REVIEW 0ef3bbe）：SSRF 闸——fail-closed，拒绝 loopback/私网/
+    // link-local（含云元数据）。redirect 递归也经过同一闸（nextUrl 传入时
+    // 同样被校验）。EXECUTOR_ALLOW_PRIVATE_NETWORK=1 可显式逃生。
+    try {
+      assertSafeHttpUrl(url);
+    } catch (e) {
+      reject(e instanceof Error ? e : new Error(String(e)));
+      return;
+    }
+
     // Overall deadline: req.setTimeout is a socket-idle timeout and a
     // slow-drip server resets it forever, so run an absolute timer too.
     const deadline = setTimeout(() => {
@@ -78,6 +95,7 @@ export function downloadFile(url: string, dest: string, options: DownloadFileOpt
     }, timeoutMs);
 
     let settled = false;
+    // eslint-disable-next-line @typescript-eslint/no-require-imports -- dynamic protocol selection, ESM import cannot be conditional
     const proto = url.startsWith('https') ? require('https') : require('http');
     const file = fs.createWriteStream(dest);
     const cleanup = () => {

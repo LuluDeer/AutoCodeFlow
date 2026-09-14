@@ -1552,6 +1552,7 @@ export default {
   'execDetail.fullLogsNoRows': 'The full-log endpoint returned no log lines',
   'execDetail.fullLogsLoaded': 'Full logs loaded',
   'execDetail.fullLogsLoadFail': 'Failed to load full logs',
+  'execDetail.fullLogsTooLarge': 'Logs exceed 100k lines; only the first 100k lines are loaded. Use the download button for the complete log.',
   'execDetail.levelFilterFail': 'Failed to filter logs by level',
   'execDetail.status.pending': 'Pending',
   'execDetail.status.running': 'Running',

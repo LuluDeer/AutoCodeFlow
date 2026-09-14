@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+﻿#!/usr/bin/env bash
 # ═══════════════════════════════════════════════════════════════════════════
 # QA-06 混沌/故障注入演练（docker compose 拓扑，覆盖计划四场景）
 #
@@ -164,6 +164,12 @@ http_get() { # <url> → body 输出；仅 2xx rc0
   curl -sf --max-time "$HTTP_TIMEOUT" "$1"
 }
 
+# R-25（DEEP_REVIEW 0ef3bbe）：/health/metrics 与 /health/services 已收进
+# JWT 鉴权——无 token 调用返回 401，队列深度等观测项失效。
+http_get_auth() { # <url> → body 输出；带 Bearer token；仅 2xx rc0
+  curl -sf --max-time "$HTTP_TIMEOUT" -H "Authorization: Bearer $TOKEN" "$1"
+}
+
 # 登录取 JWT（对齐 e2e-full.sh 的 grep 取 token 风格；调用方检查 rc）
 login() {
   TOKEN="$(curl -sf --max-time "$HTTP_TIMEOUT" -X POST "$API_URL/api/auth/login" \
@@ -240,7 +246,7 @@ scenario_a_body() {
   body="$(http_get "$API_URL/api/health" || true)"
   chaos_json_has "$body" '"status"' \
     || { fail_scenario a "注入前 /api/health 即不可用，基线不成立"; return; }
-  queue0="$(chaos_extract_json_int "$(http_get "$API_URL/api/health/metrics" || true)" queueSize)"
+  queue0="$(chaos_extract_json_int "$(http_get_auth "$API_URL/api/health/metrics" || true)" queueSize)"
   log "[A] 基线 /api/health 200，queueSize=${queue0:-n/a}"
 
   log "[A] 注入：docker stop $REDIS_C"
@@ -301,10 +307,10 @@ scenario_a_body() {
   # （BullMQ 重连成功、getWaitingCount 可用）。
   q_ok=0; healthy=0
   for ((i = 0; i < RECOVERY_SEC; i += 5)); do
-    body="$(http_get "$API_URL/api/health/metrics" || true)"
+    body="$(http_get_auth "$API_URL/api/health/metrics" || true)"
     q="$(chaos_extract_json_int "$body" queueSize)"
     [[ -n "$q" ]] && q_ok=1
-    svc="$(http_get "$API_URL/api/health/services" || true)"
+    svc="$(http_get_auth "$API_URL/api/health/services" || true)"
     chaos_json_has "$svc" '"queue":{"status":"healthy"' && healthy=1
     (( q_ok == 1 && healthy == 1 )) && break
     sleep 5
@@ -328,7 +334,7 @@ scenario_a_body() {
 scenario_b_body() {
   local body online0 total0 i q budget went_offline q2 back
   login || { fail_scenario b "登录失败（凭据或 THROTTLE 限流）"; return; }
-  body="$(http_get "$API_URL/api/health/metrics" || true)"
+  body="$(http_get_auth "$API_URL/api/health/metrics" || true)"
   online0="$(chaos_extract_json_int "$body" onlineExecutors)"
   total0="$(chaos_extract_json_int "$body" totalExecutors)"
   if [[ -z "$online0" || "$online0" -lt 1 ]]; then
@@ -349,7 +355,7 @@ scenario_b_body() {
     budget="$(chaos_offline_poll_budget "$PAUSE_SECONDS" "$OFFLINE_THRESHOLD_SEC" "$SCAN_INTERVAL_SEC" 30)"
     log "[B] 断言窗口 ${budget}s（阈值${OFFLINE_THRESHOLD_SEC}+扫描${SCAN_INTERVAL_SEC}+缓冲30）"
     for ((i = 0; i < budget; i += 10)); do
-      body="$(http_get "$API_URL/api/health/metrics" || true)"
+      body="$(http_get_auth "$API_URL/api/health/metrics" || true)"
       q="$(chaos_extract_json_int "$body" onlineExecutors)"
       if [[ -n "$q" && "$q" -lt "$online0" ]]; then went_offline=1; break; fi
       sleep 10
@@ -363,7 +369,7 @@ scenario_b_body() {
     # 短断网变体（--pause-seconds < 90）：阈值内不判离线 → 反向断言
     log "[B] 短断网变体：pause ${PAUSE_SECONDS}s < 阈值 ${OFFLINE_THRESHOLD_SEC}s，按实现不应判离线"
     sleep "$PAUSE_SECONDS"
-    body="$(http_get "$API_URL/api/health/metrics" || true)"
+    body="$(http_get_auth "$API_URL/api/health/metrics" || true)"
     q="$(chaos_extract_json_int "$body" onlineExecutors)"
     if [[ -n "$q" && "$q" -eq "$online0" ]]; then
       log "[B] 断言 B1' 通过：短断网未误判离线（onlineExecutors 保持 ${q}）"
@@ -380,7 +386,7 @@ scenario_b_body() {
   # 二次断言 B2：心跳恢复（executor-node 默认 30s 心跳）→ online 回归基线
   back=0
   for ((i = 0; i < RECOVERY_SEC; i += 10)); do
-    body="$(http_get "$API_URL/api/health/metrics" || true)"
+    body="$(http_get_auth "$API_URL/api/health/metrics" || true)"
     q2="$(chaos_extract_json_int "$body" onlineExecutors)"
     if [[ -n "$q2" && "$q2" -ge "$online0" ]]; then back=1; break; fi
     sleep 10
@@ -631,6 +637,10 @@ main() {
       exit 2
     fi
   }
+
+  # R-25（DEEP_REVIEW 0ef3bbe）：/health/metrics 与 /health/services 需 JWT——
+  # 提前登录取 token；失败时这些观测点降级为空（|| true），不阻断演练。
+  login || warn "登录失败——/health/metrics 与 /health/services 观测项将不可用"
 
   local s
   for s in "${scenario_list[@]}"; do

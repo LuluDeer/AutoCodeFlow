@@ -20,8 +20,18 @@ import { Throttle } from "@nestjs/throttler";
 import { OPS_THROTTLE } from "../../config/throttle-profiles";
 
 /**
- * Batch operations controller — separate controller to avoid :id param route conflicts
- * Routes: POST /api/tasks/batch/trigger|pause|resume|delete
+ * Batch operations controller — separate controller to avoid :id param route conflicts.
+ * Routes: POST /api/tasks-batch/trigger|pause|resume|delete
+ *
+ * PK-20（DEEP_REVIEW 0ef3bbe）: **DEPRECATED** 双事实源收敛。批量能力此前同时
+ * 存在两套路由——本控制器 `/tasks-batch/*` 与 TaskController 内 `/tasks/batch/*`
+ * （与 task 资源 RESTful 风格一致，已为 canonical 主路由）。两套实现已对齐调用
+ * 同一 TaskService 方法（trigger/pause/resume/remove，R-02 user 透传两处一致），
+ * 无逻辑漂移；本控制器不再删除（避免破坏既有前端/SDK 调用方），仅标记 deprecated。
+ *
+ * 迁移路线：调用方请改用 `/api/tasks/batch/trigger|pause|resume|delete`（同 body
+ * 形状 BatchTaskIdsDto、同响应、同审计 action）。待前端/SDK 全量切换后，本控制器
+ * 整文件删除。
  */
 @ApiTags("Task Management")
 @ApiBearerAuth("JWT")
@@ -36,8 +46,10 @@ export class TaskBatchController {
   @Throttle({ default: OPS_THROTTLE })
   @Post("trigger")
   @ApiOperation({
-    summary: "Batch trigger tasks",
+    summary: "Batch trigger tasks (deprecated)",
+    deprecated: true,
     description:
+      "PK-20 DEPRECATED: 改用 POST /api/tasks/batch/trigger（同 body/响应/审计）。" +
       "Trigger multiple tasks. Partial failures do not affect other tasks.",
   })
   @ApiResponse({ status: 200, description: "Batch trigger results" })
@@ -72,8 +84,10 @@ export class TaskBatchController {
 
   @Post("pause")
   @ApiOperation({
-    summary: "Batch pause tasks",
+    summary: "Batch pause tasks (deprecated)",
+    deprecated: true,
     description:
+      "PK-20 DEPRECATED: 改用 POST /api/tasks/batch/pause（同 body/响应/审计）。" +
       "Pause multiple tasks. Partial failures do not affect other tasks.",
   })
   @ApiResponse({ status: 200, description: "Batch pause results" })
@@ -103,8 +117,10 @@ export class TaskBatchController {
 
   @Post("resume")
   @ApiOperation({
-    summary: "Batch resume tasks",
+    summary: "Batch resume tasks (deprecated)",
+    deprecated: true,
     description:
+      "PK-20 DEPRECATED: 改用 POST /api/tasks/batch/resume（同 body/响应/审计）。" +
       "Resume multiple tasks. Partial failures do not affect other tasks.",
   })
   @ApiResponse({ status: 200, description: "Batch resume results" })
@@ -134,8 +150,10 @@ export class TaskBatchController {
 
   @Post("delete")
   @ApiOperation({
-    summary: "Batch delete tasks",
+    summary: "Batch delete tasks (deprecated)",
+    deprecated: true,
     description:
+      "PK-20 DEPRECATED: 改用 POST /api/tasks/batch/delete（同 body/响应/审计）。" +
       "Delete multiple tasks. Partial failures do not affect other tasks.",
   })
   @ApiResponse({ status: 200, description: "Batch delete results" })

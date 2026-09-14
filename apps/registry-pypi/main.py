@@ -40,16 +40,32 @@ PACKAGES_DIR = Path(os.getenv("PACKAGES_DIR", str(_default_packages_dir)))
 PACKAGES_DIR.mkdir(parents=True, exist_ok=True)
 
 REGISTRY_USER = os.getenv("REGISTRY_USER", "autoflow")
-REGISTRY_PASS = os.getenv("REGISTRY_PASS", "autoflow123")
+REGISTRY_PASS = os.getenv("REGISTRY_PASS", "")
 
-# Warn (don't exit) when using default credentials so dev environment still works
-if REGISTRY_USER == "autoflow" and REGISTRY_PASS == "autoflow123":
+# E-10（DEEP_REVIEW 0ef3bbe）：fail-closed——未配置 REGISTRY_PASS 或仍用
+# 内置默认弱口令时拒绝启动，而非 warn-and-continue。提供 ALLOW_DEFAULT_CREDS=1
+# 逃生阀（仅限本地开发）。容器部署由 docker-compose 强制注入 REGISTRY_PASS。
+_DEFAULT_USER = "autoflow"
+_DEFAULT_PASS = "autoflow123"
+_using_default = (
+    REGISTRY_USER == _DEFAULT_USER and REGISTRY_PASS == _DEFAULT_PASS
+)
+if not REGISTRY_PASS or _using_default:
     import sys
-    print(
-        "[AutoFlow] WARNING: Using default credentials. "
-        "Set REGISTRY_USER and REGISTRY_PASS env vars in production.",
-        file=sys.stderr,
-    )
+    if os.getenv("ALLOW_DEFAULT_CREDS", "") == "1":
+        print(
+            "[AutoFlow] WARNING: Using default/empty credentials. "
+            "Set REGISTRY_USER and REGISTRY_PASS env vars in production.",
+            file=sys.stderr,
+        )
+    else:
+        print(
+            "[AutoFlow] FATAL: REGISTRY_PASS is not configured or still uses the "
+            "built-in default. Set REGISTRY_PASS (and REGISTRY_USER) in the "
+            "environment. Set ALLOW_DEFAULT_CREDS=1 to override (development only).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
 
 def verify_auth(request: Request):

@@ -256,7 +256,7 @@ class TaskWorkerManager {
       clearTimeout(timer);
     }
     this.idleTimers.clear();
-    for (const [taskId, worker] of this.workers) {
+    for (const [_taskId, worker] of this.workers) {
       worker.stop();
     }
     this.workers.clear();

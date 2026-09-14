@@ -156,11 +156,12 @@ export type TaskListParams = {
 export const TASK_LIST_PAGE_SIZE = 100;
 
 /**
- * Keep listAll from creating one promise/request per reported page. Six
- * in-flight requests still make large lists reasonably fast without turning a
- * malformed total into a request burst.
+ * R-10/F-10（DEEP_REVIEW 0ef3bbe）: listAll 分页并发度。从 6 降到 3——
+ * 千级任务时 6 并发 = 请求风暴；3 并发在 DAG/依赖下拉场景下仍可接受，
+ * 且配合 React Query staleTime=60s 会话内只拉一次。后续如后端增加
+ * 轻量端点 ?fields=id,name 可进一步降本。
  */
-export const TASK_LIST_PAGE_CONCURRENCY = 6;
+export const TASK_LIST_PAGE_CONCURRENCY = 3;
 
 /**
  * A task list of ten million records is already beyond what this page is able

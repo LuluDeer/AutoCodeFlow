@@ -15,6 +15,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
 
 import { getApiBaseUrl } from '../api/client';
+import { buildSseUrl } from '../api/sse';
 import { useAuthStore } from '../store/auth';
 import { queryKeys } from '../api/queries';
 
@@ -63,7 +64,8 @@ export function useMetricsStream({ enabled = true }: UseMetricsStreamOptions = {
       if (closed) return;
       setStatus(attemptRef.current === 0 ? 'connecting' : 'reconnecting');
       const base = getApiBaseUrl().replace(/\/$/, '');
-      const url = `${base}/metrics/stream${token ? `?access_token=${encodeURIComponent(token)}` : ''}`;
+      // F-05（DEEP_REVIEW 0ef3bbe）：token 注入统一走 buildSseUrl（含安全取舍注释）
+      const url = buildSseUrl(base, '/metrics/stream', token);
       es = new EventSource(url);
 
       es.onopen = () => {

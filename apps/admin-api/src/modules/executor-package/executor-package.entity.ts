@@ -57,7 +57,19 @@ export class ExecutorPackage {
   @Column({ type: "varchar", length: 128, nullable: true })
   mimeType: string;
 
-  @Column({ type: "bigint", default: 0 })
+  // PK-10（DEEP_REVIEW 0ef3bbe）: PG bigint（int8）经 node-pg 读回恒为 string
+  // （`"12345"`），实体声明 fileSize: number 与 API JSON 实际形态漂移——消费方按
+  // number 做比较/Content-Length 运算时 string 静默出错。列级 transformer 在 read
+  // 边界 from 把 string→number 数值化（to 透传，写路径 number 原样绑定）。
+  @Column({
+    type: "bigint",
+    default: 0,
+    transformer: {
+      to: (v?: number): number | undefined => v,
+      from: (v?: string | number): number =>
+        typeof v === "string" ? Number(v) : (v ?? 0),
+    },
+  })
   fileSize: number;
 
   @Column({ type: "varchar", length: 64, nullable: true })

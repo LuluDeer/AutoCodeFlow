@@ -15,7 +15,7 @@ import * as fs from 'fs';
 import { executeRouter } from './execute';
 import { pushCallback } from '../callback';
 import { taskWorkerManager } from '../task-worker';
-import { config as testConfig } from '../config';
+import { config as _testConfig } from '../config';
 
 jest.mock('fs');
 jest.mock('child_process');

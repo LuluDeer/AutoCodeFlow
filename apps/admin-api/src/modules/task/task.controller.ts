@@ -170,6 +170,10 @@ export class TaskController {
   }
 
   // SEC-09: 中档限流（触发/执行干预写面，OPS_THROTTLE 默认 30/min）
+  // PK-20（DEEP_REVIEW 0ef3bbe）: /tasks/batch/* 为批量能力的 canonical 主路由
+  // （与 task 资源 RESTful 风格一致）。并存的 /tasks-batch/*（TaskBatchController）
+  // 已标记 deprecated——两套实现调用同一 TaskService 方法、同 body/响应/审计，
+  // 无逻辑漂移；待前端/SDK 全量切换后删除 deprecated 控制器。
   @Throttle({ default: OPS_THROTTLE })
   @Post("batch/trigger")
   @ApiOperation({
@@ -740,12 +744,17 @@ export class TaskController {
   }
 
   // SEC-09: 中档限流（触发/执行干预写面，OPS_THROTTLE 默认 30/min）
+  // PK-31（DEEP_REVIEW 0ef3bbe）: 与 rollbackToVersion（:id/versions/:versionId/rollback，
+  // 快照回滚）语义不同——本端点回滚到指定 gitCommit（**代码版本**），仅 Git 类任务。
+  // 两端点语义对照表见 docs/rollback-semantics.md。
   @Throttle({ default: OPS_THROTTLE })
   @Post(":id/rollback")
   @ApiOperation({
-    summary: "Git rollback",
+    summary: "Git rollback (by commit SHA)",
     description:
-      "Rollback task to a specific Git commit. Only applies to Git-type tasks.",
+      "把任务回滚到指定 gitCommit 指向的**代码版本**（仅 Git 类任务适用）。" +
+      "与 /tasks/:id/versions/:versionId/rollback（按任务配置快照回滚）本质不同：" +
+      "本端点动的是仓库代码 checkout 到该 commit，非任务配置。对照表见 docs/rollback-semantics.md。",
   })
   @ApiParam({ name: "id", description: "Task ID" })
   @ApiBody({
@@ -782,16 +791,27 @@ export class TaskController {
   }
 
   // SEC-09: 中档限流（触发/执行干预写面，OPS_THROTTLE 默认 30/min）
+  // PK-31（DEEP_REVIEW 0ef3bbe）: 与 rollback（:id/rollback，gitCommit 代码回滚）
+  // 语义不同——本端点回滚到指定任务配置**快照**（历史版本），不动仓库代码。
+  // 两端点语义对照表见 docs/rollback-semantics.md。
   @Throttle({ default: OPS_THROTTLE })
   @Post(":id/versions/:versionId/rollback")
   @ApiOperation({
-    summary: "Version rollback",
-    description: "Rollback task config to a specific historical version.",
+    summary: "Version rollback (by task config snapshot)",
+    description:
+      "把任务**配置**整体回滚到指定历史版本快照（:versionId 路径参数）。" +
+      "与 /tasks/:id/rollback（按 gitCommit 回滚代码）本质不同：本端点动的是任务配置快照，" +
+      "不 checkout 仓库代码。对照表见 docs/rollback-semantics.md。",
   })
   @ApiParam({ name: "id", description: "Task ID" })
   @ApiParam({ name: "versionId", description: "Version ID" })
   @ApiResponse({ status: 200, description: "Rollback successful" })
   @ApiResponse({ status: 404, description: "Task or version not found" })
+  // PK-19（DEEP_REVIEW 0ef3bbe）: 本端点无请求体（回滚目标即 :versionId 路径参
+  // 数）——显式 @ApiBody({ required: false }) 在 openapi 中钉住"无 body"语义，
+  // 避免被误判为遗漏 requestBody。与 /tasks/:id/rollback（gitCommit）的区别见
+  // docs/rollback-semantics.md（PK-31）。
+  @ApiBody({ required: false, description: "无请求体——回滚目标即 :versionId 路径参数" })
   async rollbackToVersion(
     @Param("id") id: string,
     @Param("versionId") versionId: string,

@@ -54,6 +54,8 @@ describe("ExecutorPullService（ARCH-32）", () => {
     const parsed = JSON.parse(body);
     expect(parsed.executionId).toBe("e1");
     expect(typeof parsed.pushedAt).toBe("number");
+    // PK-14: 派发载荷顶层附 schemaVersion（与 webhook 信封同源常量 EVENT_SCHEMA_VERSION）。
+    expect(parsed.schemaVersion).toBe(1);
   });
 
   it("pull：取到载荷即返回（FIFO 出队 + JSON 解析）", async () => {

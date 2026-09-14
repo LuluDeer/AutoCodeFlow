@@ -16,6 +16,7 @@ jest.mock('../config', () => ({
     npmRegistryUrl: '',
     pythonRegistryUrl: '',
     token: 'test-shared-token',
+    allowPrivateNetwork: true,
   },
 }));
 jest.mock('../logger', () => ({
@@ -34,7 +35,7 @@ import {
   suppressNextRestartExitReport,
 } from './deploy';
 import * as downloadLib from '../lib/download';
-import { buildChildEnv } from '../env-whitelist';
+import { buildChildEnv as _buildChildEnv } from '../env-whitelist';
 
 const app = express();
 app.use(express.json());

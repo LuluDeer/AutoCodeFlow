@@ -7,13 +7,12 @@ dotenv.config({ path: path.resolve(__dirname, '..', '.env') });
 // third-party dependencies may use the Web Crypto global; executor code
 // itself uses node:crypto randomUUID directly)
 if (!globalThis.crypto) {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  // eslint-disable-next-line @typescript-eslint/no-var-requires, @typescript-eslint/no-require-imports -- crypto polyfill, CJS require needed
   const nodeCrypto = require('crypto');
   (globalThis as any).crypto = nodeCrypto.webcrypto ?? nodeCrypto;
 }
 
 import express from 'express';
-import * as http from 'http';
 import { spawnSync } from 'child_process';
 import { config, EXECUTOR_VERSION } from './config';
 import { logger } from './logger';
@@ -250,7 +249,10 @@ process.on('uncaughtException', (err) => {
   fatalShutdown(`uncaughtException: ${err.stack ?? String(err)}`);
 });
 
-const server = app.listen(config.port, async () => {
+// E-25（DEEP_REVIEW 0ef3bbe）：默认绑定 127.0.0.1（BIND_ADDRESS 可覆盖为
+// 0.0.0.0），避免裸机部署在 token 缺失时暴露公开 RCE 面。容器场景由
+// compose 显式设 BIND_ADDRESS=0.0.0.0。
+const server = app.listen(config.port, config.bindAddress, async () => {
   try {
     logger.info(`Executor started: ${config.appName} @ ${config.executorAddress}`);
 
@@ -279,9 +281,14 @@ const server = app.listen(config.port, async () => {
 
     // Fail loudly on a misconfiguration that would silently open an
     // unauthenticated /api/execute endpoint (dev mode passthrough).
+    // E-25（DEEP_REVIEW 0ef3bbe）：默认绑定 127.0.0.1 降低暴露面；
+    // 若显式绑定 0.0.0.0 且无 token，警告升级。
     if (!config.token) {
+      const bindWarning = config.bindAddress === '0.0.0.0'
+        ? 'WARNING: binding on 0.0.0.0 with no token configured — /api/* is PUBLICLY accessible! '
+        : '';
       logger.warn(
-        'No EXECUTOR_SHARED_TOKEN / EXECUTOR_SECRET configured — /api/* accepts UNAUTHENTICATED requests. ' +
+        `${bindWarning}No EXECUTOR_SHARED_TOKEN / EXECUTOR_SECRET configured — /api/* accepts UNAUTHENTICATED requests. ` +
           'Set REQUIRE_TOKEN=true to refuse unauthenticated task submissions instead.',
       );
     }

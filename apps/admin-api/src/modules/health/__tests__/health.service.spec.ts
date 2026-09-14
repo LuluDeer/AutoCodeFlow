@@ -188,6 +188,50 @@ describe("HealthService", () => {
     });
   });
 
+  // R-25（DEEP_REVIEW 0ef3bbe）：公开健康端点不得暴露 executor 在线数、
+  // 队列深度、任务计数等内部运维指标——只返回 status + timestamp。
+  describe("getPublicHealth (R-25)", () => {
+    it("returns only status and timestamp, no sensitive fields", async () => {
+      taskRepo.count.mockImplementation((opts?: unknown) => (opts ? 2 : 3));
+      execRepo.count.mockResolvedValue(1);
+      executorRepo.count.mockImplementation((opts?: unknown) => (opts ? 3 : 3));
+      taskQueue.getFailedCount.mockResolvedValue(0);
+      taskQueue.getWaitingCount.mockResolvedValue(0);
+
+      const result = await service.getPublicHealth();
+
+      expect(result).toEqual({
+        status: expect.any(String),
+        timestamp: expect.any(String),
+      });
+      // 断言不包含任何敏感字段
+      expect(result).not.toHaveProperty("services");
+      expect(result).not.toHaveProperty("metrics");
+      expect(result).not.toHaveProperty("components");
+      expect(result).not.toHaveProperty("onlineExecutors");
+      expect(result).not.toHaveProperty("queueSize");
+      expect(result).not.toHaveProperty("totalExecutors");
+    });
+
+    it("returns degraded status when components are degraded", async () => {
+      executorRepo.count.mockImplementation((opts?: unknown) => (opts ? 1 : 3));
+
+      const result = await service.getPublicHealth();
+
+      expect(result.status).toBe("degraded");
+      expect(result).not.toHaveProperty("services");
+    });
+
+    it("propagates unhealthy status", async () => {
+      taskRepo.count.mockRejectedValue(new Error("db down"));
+
+      const result = await service.getPublicHealth();
+
+      expect(result.status).toBe("unhealthy");
+      expect(result).not.toHaveProperty("metrics");
+    });
+  });
+
   // WIKI-OPT-1: 单项检查异常不得击穿 getFullHealth（此前 checkTasks/
   // checkExecutors 无 try/catch，任一 reject 会让整体 Promise.all 拒绝）。
   describe("getFullHealth failure isolation", () => {

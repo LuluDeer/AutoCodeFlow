@@ -1,6 +1,7 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import Redis from "ioredis";
+import { EVENT_SCHEMA_VERSION } from "../../common/events/domain-events";
 
 /**
  * ARCH-32（ADR-015）：pull 模式派发队列。
@@ -68,7 +69,13 @@ export class ExecutorPullService {
   ): Promise<void> {
     const client = this.ensureClient();
     if (!client) throw new Error("Pull queue unavailable (Redis client error)");
-    const body = JSON.stringify({ ...payload, pushedAt: Date.now() });
+    // PK-14: 派发载荷顶层附 schemaVersion（与 webhook 信封同源常量）——执行器
+    // 未知字段忽略即可（天然向后兼容）；载荷形状演进时执行器可据此分支解析。
+    const body = JSON.stringify({
+      ...payload,
+      schemaVersion: EVENT_SCHEMA_VERSION,
+      pushedAt: Date.now(),
+    });
     await client.lpush(this.queueKey(executorId), body);
   }
 

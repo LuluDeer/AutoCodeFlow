@@ -1703,7 +1703,7 @@
     },
     "/tasks/{id}/rollback": {
       "post": {
-        "description": "Rollback task to a specific Git commit. Only applies to Git-type tasks.",
+        "description": "把任务回滚到指定 gitCommit 指向的**代码版本**（仅 Git 类任务适用）。与 /tasks/:id/versions/:versionId/rollback（按任务配置快照回滚）本质不同：本端点动的是仓库代码 checkout 到该 commit，非任务配置。对照表见 docs/rollback-semantics.md。",
         "operationId": "TaskController_rollback",
         "parameters": [
           {
@@ -1740,7 +1740,7 @@
             "JWT": []
           }
         ],
-        "summary": "Git rollback",
+        "summary": "Git rollback (by commit SHA)",
         "tags": [
           "Task Management"
         ]
@@ -1748,7 +1748,7 @@
     },
     "/tasks/{id}/versions/{versionId}/rollback": {
       "post": {
-        "description": "Rollback task config to a specific historical version.",
+        "description": "把任务**配置**整体回滚到指定历史版本快照（:versionId 路径参数）。与 /tasks/:id/rollback（按 gitCommit 回滚代码）本质不同：本端点动的是任务配置快照，不 checkout 仓库代码。对照表见 docs/rollback-semantics.md。",
         "operationId": "TaskController_rollbackToVersion",
         "parameters": [
           {
@@ -1770,6 +1770,17 @@
             }
           }
         ],
+        "requestBody": {
+          "required": false,
+          "description": "无请求体——回滚目标即 :versionId 路径参数",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "string"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "Rollback successful"
@@ -1783,7 +1794,7 @@
             "JWT": []
           }
         ],
-        "summary": "Version rollback",
+        "summary": "Version rollback (by task config snapshot)",
         "tags": [
           "Task Management"
         ]
@@ -2034,7 +2045,8 @@
     },
     "/tasks-batch/trigger": {
       "post": {
-        "description": "Trigger multiple tasks. Partial failures do not affect other tasks.",
+        "deprecated": true,
+        "description": "PK-20 DEPRECATED: 改用 POST /api/tasks/batch/trigger（同 body/响应/审计）。Trigger multiple tasks. Partial failures do not affect other tasks.",
         "operationId": "TaskBatchController_batchTrigger",
         "parameters": [],
         "requestBody": {
@@ -2063,7 +2075,7 @@
             "JWT": []
           }
         ],
-        "summary": "Batch trigger tasks",
+        "summary": "Batch trigger tasks (deprecated)",
         "tags": [
           "Task Management"
         ]
@@ -2071,7 +2083,8 @@
     },
     "/tasks-batch/pause": {
       "post": {
-        "description": "Pause multiple tasks. Partial failures do not affect other tasks.",
+        "deprecated": true,
+        "description": "PK-20 DEPRECATED: 改用 POST /api/tasks/batch/pause（同 body/响应/审计）。Pause multiple tasks. Partial failures do not affect other tasks.",
         "operationId": "TaskBatchController_batchPause",
         "parameters": [],
         "requestBody": {
@@ -2094,7 +2107,7 @@
             "JWT": []
           }
         ],
-        "summary": "Batch pause tasks",
+        "summary": "Batch pause tasks (deprecated)",
         "tags": [
           "Task Management"
         ]
@@ -2102,7 +2115,8 @@
     },
     "/tasks-batch/resume": {
       "post": {
-        "description": "Resume multiple tasks. Partial failures do not affect other tasks.",
+        "deprecated": true,
+        "description": "PK-20 DEPRECATED: 改用 POST /api/tasks/batch/resume（同 body/响应/审计）。Resume multiple tasks. Partial failures do not affect other tasks.",
         "operationId": "TaskBatchController_batchResume",
         "parameters": [],
         "requestBody": {
@@ -2125,7 +2139,7 @@
             "JWT": []
           }
         ],
-        "summary": "Batch resume tasks",
+        "summary": "Batch resume tasks (deprecated)",
         "tags": [
           "Task Management"
         ]
@@ -2133,7 +2147,8 @@
     },
     "/tasks-batch/delete": {
       "post": {
-        "description": "Delete multiple tasks. Partial failures do not affect other tasks.",
+        "deprecated": true,
+        "description": "PK-20 DEPRECATED: 改用 POST /api/tasks/batch/delete（同 body/响应/审计）。Delete multiple tasks. Partial failures do not affect other tasks.",
         "operationId": "TaskBatchController_batchDelete",
         "parameters": [],
         "requestBody": {
@@ -2156,7 +2171,7 @@
             "JWT": []
           }
         ],
-        "summary": "Batch delete tasks",
+        "summary": "Batch delete tasks (deprecated)",
         "tags": [
           "Task Management"
         ]
@@ -2353,6 +2368,17 @@
             }
           }
         ],
+        "requestBody": {
+          "required": true,
+          "description": "Pull 长轮询请求体",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExecutorPullDto"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "Dispatch payload or empty"
@@ -3268,6 +3294,17 @@
       "post": {
         "operationId": "NotificationConfigController_createSilence",
         "parameters": [],
+        "requestBody": {
+          "required": true,
+          "description": "静默规则创建体",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateSilenceDto"
+              }
+            }
+          }
+        },
         "responses": {
           "201": {
             "description": "Created silence"
@@ -3310,6 +3347,50 @@
         "summary": "Remove a notification silence",
         "tags": [
           "Notification Config"
+        ]
+      }
+    },
+    "/alerts/webhook": {
+      "post": {
+        "description": "入站 Alertmanager v2 告警回调。HMAC-SHA256 over `${timestamp}.${rawBody}`，需携带 X-AutoCodeFlow-Timestamp 与 X-Hub-Signature-256 头（secret = ALERT_WEBHOOK_SECRET，未配置时 503）。alerts[] 为空数组返回 400。",
+        "operationId": "AlertsController_webhook",
+        "parameters": [
+          {
+            "name": "x-hub-signature-256",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-autocodeflow-timestamp",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "Alertmanager v2 webhook body",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AlertmanagerWebhookDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "summary": "Alertmanager v2 webhook receiver",
+        "tags": [
+          "Alerts"
         ]
       }
     },
@@ -4220,12 +4301,38 @@
     },
     "/health": {
       "get": {
-        "description": "Check health of all core services including database, Redis, message queue, executors, and scheduler. Returns detailed health status and metrics.",
+        "description": "Public health check. Returns only the overall status (healthy/degraded/unhealthy) and timestamp. Detailed metrics (executor count, queue depth, task counts) are available at GET /health/detailed (requires JWT).",
         "operationId": "HealthController_health",
         "parameters": [],
         "responses": {
           "200": {
             "description": "Health check result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "example": {
+                    "status": "healthy",
+                    "timestamp": "2024-01-01T12:00:00Z"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "summary": "Basic health check",
+        "tags": [
+          "Health Check"
+        ]
+      }
+    },
+    "/health/detailed": {
+      "get": {
+        "description": "Full detailed health status and metrics including database, Redis, message queue, executors, and scheduler. Requires JWT authentication. Use GET /health for the public status-only endpoint.",
+        "operationId": "HealthController_detailed",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Detailed health check result",
             "content": {
               "application/json": {
                 "schema": {
@@ -4298,7 +4405,7 @@
             }
           }
         },
-        "summary": "Full health check",
+        "summary": "Detailed health check (authenticated)",
         "tags": [
           "Health Check"
         ]
@@ -4367,7 +4474,7 @@
     },
     "/health/services": {
       "get": {
-        "description": "Get health status details for each core service.",
+        "description": "Get health status details for each core service. Requires JWT authentication.",
         "operationId": "HealthController_services",
         "parameters": [],
         "responses": {
@@ -4401,7 +4508,7 @@
             }
           }
         },
-        "summary": "Service status",
+        "summary": "Service status (authenticated)",
         "tags": [
           "Health Check"
         ]
@@ -4409,7 +4516,7 @@
     },
     "/health/metrics": {
       "get": {
-        "description": "Get key system metrics including task count, executor count, queue size, etc.",
+        "description": "Get key system metrics including task count, executor count, queue size, etc. Requires JWT authentication.",
         "operationId": "HealthController_metrics",
         "parameters": [],
         "responses": {
@@ -4431,7 +4538,7 @@
             }
           }
         },
-        "summary": "System metrics",
+        "summary": "System metrics (authenticated)",
         "tags": [
           "Health Check"
         ]
@@ -6132,6 +6239,17 @@
             }
           }
         ],
+        "requestBody": {
+          "required": true,
+          "description": "模板覆盖体（自由字段，合并后校验 CreateTaskDto）",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InstantiateTaskOverlayDto"
+              }
+            }
+          }
+        },
         "responses": {
           "201": {
             "description": "Created task"
@@ -7220,6 +7338,24 @@
           "status"
         ]
       },
+      "ExecutorPullDto": {
+        "type": "object",
+        "properties": {
+          "address": {
+            "type": "string",
+            "description": "执行器注册地址（与心跳一致）",
+            "example": "http://10.0.0.5:9100"
+          },
+          "waitMs": {
+            "type": "number",
+            "description": "客户端期望的长轮询等待窗口（毫秒）；服务端按 EXECUTOR_PULL_WAIT_MS 钳位（上限 55s）",
+            "example": 25000
+          }
+        },
+        "required": [
+          "address"
+        ]
+      },
       "SendNotificationDto": {
         "type": "object",
         "properties": {
@@ -7299,6 +7435,142 @@
           "success",
           "results"
         ]
+      },
+      "CreateSilenceDto": {
+        "type": "object",
+        "properties": {
+          "scope": {
+            "type": "string",
+            "enum": [
+              "global",
+              "task",
+              "application"
+            ],
+            "description": "静默范围：global=全渠道；task=单任务；application=单应用",
+            "example": "task"
+          },
+          "channelType": {
+            "type": "string",
+            "description": "仅静默该渠道类型（wechat/dingtalk/slack/email）；空 = 全部渠道"
+          },
+          "taskId": {
+            "type": "string",
+            "description": "scope=task 时必填：任务 UUID"
+          },
+          "applicationId": {
+            "type": "string",
+            "description": "scope=application 时必填：应用 UUID"
+          },
+          "level": {
+            "type": "string",
+            "description": "仅静默该级别及以下（info/warning/error/critical）；空 = 全部级别"
+          },
+          "reason": {
+            "type": "string",
+            "description": "静默原因（审计记录用）"
+          },
+          "durationMinutes": {
+            "type": "number",
+            "description": "静默时长（分钟）；缺省走系统默认 TTL",
+            "example": 60
+          }
+        },
+        "required": [
+          "scope"
+        ]
+      },
+      "AlertmanagerAlertDto": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "告警状态 firing/resolved",
+            "example": "firing"
+          },
+          "labels": {
+            "type": "object",
+            "description": "告警标签（含 alertname/labels.taskId 等）",
+            "example": {
+              "alertname": "HighCPU",
+              "taskId": "uuid"
+            }
+          },
+          "annotations": {
+            "type": "object",
+            "description": "告警注解（含 runbook_url 惯例）",
+            "example": {
+              "summary": "CPU > 90%"
+            }
+          },
+          "startsAt": {
+            "type": "string",
+            "description": "开始时间（ISO 字符串原样透出）",
+            "example": "2026-09-14T06:00:00Z"
+          },
+          "endsAt": {
+            "type": "string",
+            "description": "结束时间（resolved 时）",
+            "example": "2026-09-14T06:05:00Z"
+          },
+          "generatorURL": {
+            "type": "string",
+            "description": "告警生成器 URL",
+            "example": "http://grafana/alert/1"
+          },
+          "fingerprint": {
+            "type": "string",
+            "description": "告警指纹（去重用）"
+          }
+        }
+      },
+      "AlertmanagerWebhookDto": {
+        "type": "object",
+        "properties": {
+          "version": {
+            "type": "string",
+            "description": "Alertmanager webhook 协议版本",
+            "example": "4"
+          },
+          "groupKey": {
+            "type": "string",
+            "description": "告警分组键"
+          },
+          "truncatedAlerts": {
+            "type": "number",
+            "description": "截断的告警条数"
+          },
+          "status": {
+            "type": "string",
+            "description": "组级状态 firing/resolved"
+          },
+          "receiver": {
+            "type": "string",
+            "description": "接收方名称"
+          },
+          "groupLabels": {
+            "type": "object",
+            "description": "组公共标签"
+          },
+          "commonLabels": {
+            "type": "object",
+            "description": "公共标签"
+          },
+          "commonAnnotations": {
+            "type": "object",
+            "description": "公共注解"
+          },
+          "externalURL": {
+            "type": "string",
+            "description": "Alertmanager 外部 URL"
+          },
+          "alerts": {
+            "description": "告警列表（空数组被控制器 400 拒绝）",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AlertmanagerAlertDto"
+            }
+          }
+        }
       },
       "SaveAiConfigDto": {
         "type": "object",
@@ -7523,6 +7795,19 @@
           "name",
           "config"
         ]
+      },
+      "InstantiateTaskOverlayDto": {
+        "type": "object",
+        "properties": {
+          "overlay": {
+            "type": "object",
+            "description": "覆盖字段（与 CreateTaskDto 同形状；显式字段胜出模板默认）。至少需 name。",
+            "example": {
+              "name": "prod-deploy",
+              "schedule": "0 2 * * *"
+            }
+          }
+        }
       },
       "EventSubscription": {
         "type": "object",
