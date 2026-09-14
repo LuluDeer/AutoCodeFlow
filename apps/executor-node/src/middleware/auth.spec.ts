@@ -487,27 +487,38 @@ describe('E-27 concurrent refresh single-flight', () => {
   });
 
   it('concurrent forceTokenRefresh callers do not stack extra /token requests', async () => {
-    const { post, getCurrentToken, forceTokenRefresh } = await freshAuth();
-    post.mockResolvedValue({
-      status: 201,
-      data: { code: 201, message: 'ok', data: { token: 'cached' } },
-    });
-    await getCurrentToken();
-    expect(post).toHaveBeenCalledTimes(1);
+    // 单轮跑会漏检：判据曾用「刷新成功的时间戳 >= 等待者入场时间」，而刷新启动与
+    // 等待者入场通常落在同一毫秒，只有恰好跨毫秒边界才暴露（旧实现 POST 2→4 次）。
+    // 实测单轮失败率约 1/8，于是 CI 上表现为「偶发 flaky」而长期无人追。这里把同一
+    // 场景重复 25 轮（每轮独立模块状态），把毫秒边界的偶发放大变成确定性回归。
+    for (let round = 0; round < 25; round += 1) {
+      const { post, getCurrentToken, forceTokenRefresh } = await freshAuth();
+      post.mockResolvedValue({
+        status: 201,
+        data: { code: 201, message: 'ok', data: { token: 'cached' } },
+      });
+      await getCurrentToken();
+      expect(post).toHaveBeenCalledTimes(1);
 
-    let release!: () => void;
-    const held = new Promise<void>((resolve) => { release = resolve; });
-    post.mockImplementation(async () => {
-      await held;
-      return { status: 201, data: { code: 201, message: 'ok', data: { token: 'healed' } } };
-    });
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => { release = resolve; });
+      post.mockImplementation(async () => {
+        await held;
+        return { status: 201, data: { code: 201, message: 'ok', data: { token: 'healed' } } };
+      });
 
-    const pending = Promise.all([forceTokenRefresh(), forceTokenRefresh(), forceTokenRefresh()]);
-    await new Promise((r) => setImmediate(r));
-    release();
-    await pending;
+      const pending = Promise.all([forceTokenRefresh(), forceTokenRefresh(), forceTokenRefresh()]);
+      await new Promise((r) => setImmediate(r));
+      release();
+      await pending;
 
-    // 并发自愈不放大：一次成功刷新 + 至多一次追赶刷新，绝不 3 次
-    expect((post as jest.Mock).mock.calls.length).toBeLessThanOrEqual(2);
+      // 并发自愈不放大：一次成功刷新 + 至多一次追赶刷新，绝不 3 次
+      const calls = (post as jest.Mock).mock.calls.length;
+      if (calls > 2) {
+        throw new Error(
+          `第 ${round + 1}/25 轮出现并发刷新放大：POST /token 共 ${calls} 次（应 ≤2）`,
+        );
+      }
+    }
   });
 });
