@@ -68,11 +68,17 @@ export class ExecutorService {
   // of pure CPU), which made unauthenticated executor endpoints (callback,
   // heartbeat) a CPU-DoS vector. Only positive results are cached (bounded by
   // the fleet size), keyed by sha256(address|token) so raw tokens never sit in
-  // memory. Trade-off: after a token rotation the previous token stays valid
-  // for at most TOKEN_CACHE_TTL_MS.
+  // memory. 值里额外存 address：键是单向哈希，无法按地址前缀删除，而
+  // rotateToken()/removeById() 必须让该地址的全部旧凭据正结果立刻失效——
+  // 否则「撤销」会有最长 TOKEN_CACHE_TTL_MS 的失效窗口（evictTokenValidationsFor
+  // 按值扫描）。正缓存只是省 bcrypt，驱逐不会削弱 DoS 防护（轮换/删除是低频
+  // 管理动作，旧凭据本就该重新走一次 bcrypt 并被拒）。
   private static readonly TOKEN_CACHE_TTL_MS = 60_000;
   private static readonly TOKEN_CACHE_MAX = 1000;
-  private readonly tokenValidationCache = new Map<string, number>();
+  private readonly tokenValidationCache = new Map<
+    string,
+    { address: string; cachedAt: number }
+  >();
 
   // N26 (round-8): short-lived positive cache of per-address tokenHash
   // lookups, used as the per-executor HMAC candidate when verifying
@@ -1844,6 +1850,9 @@ export class ExecutorService {
     // (401 → forceTokenRefresh → POST /token → adopt token+hash → retry),
     // so a manual rotation converges in ≤ one heartbeat interval.
     this.callbackSecretCache.delete(executor.address);
+    // F-5：正缓存里的旧凭据条目同样必须立刻失效，否则「撤销」在 60s 内不生效
+    // （旧 token 心跳/回调仍被接受）。见 evictTokenValidationsFor。
+    this.evictTokenValidationsFor(executor.address);
     // R10: seed the idempotent-issuance cache with the fresh plaintext under
     // the executor's CURRENT startupId. Without this, the self-healing
     // POST /token (same startupId) would find the cache still holding the
@@ -1956,6 +1965,10 @@ export class ExecutorService {
     // R9: drop the idempotent-issuance plaintext cache entry with the row —
     // a re-registered address must get a fresh token, never the removed one.
     this.issuedTokenCache.delete(executor.address);
+    // 同理清掉该地址的 callback 密钥候选与 F-5 正缓存：行都没了，旧 token
+    // 更不能继续被接受（否则删除执行器后旧凭据还有 60s 可用窗口）。
+    this.callbackSecretCache.delete(executor.address);
+    this.evictTokenValidationsFor(executor.address);
     this.logger.log(`Executor ${id} (${executor.address}) removed by admin`);
     // AUTH-05: executor deletion is destructive — audit it (with the
     // admin-supplied reason when present). Best-effort, after the mutation.
@@ -1998,11 +2011,11 @@ export class ExecutorService {
     const cacheKey = createHash("sha256")
       .update(`${address}|${presented}`)
       .digest("hex");
-    const cachedAt = this.tokenValidationCache.get(cacheKey);
+    const entry = this.tokenValidationCache.get(cacheKey);
     const now = Date.now();
     if (
-      cachedAt !== undefined &&
-      now - cachedAt < ExecutorService.TOKEN_CACHE_TTL_MS
+      entry !== undefined &&
+      now - entry.cachedAt < ExecutorService.TOKEN_CACHE_TTL_MS
     ) {
       return true;
     }
@@ -2017,7 +2030,7 @@ export class ExecutorService {
     if (executor && executor.tokenHash) {
       const isValid = await bcrypt.compare(presented, executor.tokenHash);
       if (isValid) {
-        this.rememberTokenValidation(cacheKey, now);
+        this.rememberTokenValidation(cacheKey, address, now);
         return true;
       }
     }
@@ -2030,7 +2043,7 @@ export class ExecutorService {
     if (sharedBuf.length !== presentedBuf.length) return false;
     const sharedOk = timingSafeEqual(sharedBuf, presentedBuf);
     if (sharedOk) {
-      this.rememberTokenValidation(cacheKey, now);
+      this.rememberTokenValidation(cacheKey, address, now);
     }
     return sharedOk;
   }
@@ -2070,10 +2083,14 @@ export class ExecutorService {
   }
 
   /** F-5: store a successful validation, evicting expired/oldest entries. */
-  private rememberTokenValidation(cacheKey: string, now: number): void {
+  private rememberTokenValidation(
+    cacheKey: string,
+    address: string,
+    now: number,
+  ): void {
     if (this.tokenValidationCache.size >= ExecutorService.TOKEN_CACHE_MAX) {
-      for (const [k, t] of this.tokenValidationCache) {
-        if (now - t >= ExecutorService.TOKEN_CACHE_TTL_MS) {
+      for (const [k, entry] of this.tokenValidationCache) {
+        if (now - entry.cachedAt >= ExecutorService.TOKEN_CACHE_TTL_MS) {
           this.tokenValidationCache.delete(k);
         }
       }
@@ -2085,7 +2102,25 @@ export class ExecutorService {
         this.tokenValidationCache.delete(oldest);
       }
     }
-    this.tokenValidationCache.set(cacheKey, now);
+    this.tokenValidationCache.set(cacheKey, { address, cachedAt: now });
+  }
+
+  /**
+   * 逐出某 address 在 F-5 正缓存里的全部条目。
+   *
+   * 为什么必须存在：正缓存的键是 sha256(address|token)，同一地址可能同时挂着
+   * 多条（历史 token 各自的成功结果），且键是单向哈希——无法按地址做前缀删除，
+   * 只能按值里的 address 扫描。上限 TOKEN_CACHE_MAX=1000，轮换/删除又都是低频
+   * 管理动作，O(n) 扫描没有成本。
+   *
+   * 不驱逐会怎样：rotateToken() 之后旧 token 仍命中正缓存，校验直接 return true，
+   * 「撤销凭据」出现最长 TOKEN_CACHE_TTL_MS（60s）的失效窗口——e2e 用例 46 断言
+   * 旧 token 必须立即 401，正是这条语义。
+   */
+  private evictTokenValidationsFor(address: string): void {
+    for (const [k, entry] of this.tokenValidationCache) {
+      if (entry.address === address) this.tokenValidationCache.delete(k);
+    }
   }
 
   /**

@@ -291,6 +291,10 @@ export class ExecutorController {
   // ~2.4/min/执行器（25s 窗口阻塞在服务端），全局默认档兜底即可
   // （分域矩阵见 src/config/throttle-profiles.ts 头注）。
   @Post("pull")
+  // ARCH-32：这是「取件」语义（长轮询读载荷），不是资源创建——Nest 的 @Post
+  // 默认回 201，会让客户端把它当新建处理，也与本端点的 @ApiResponse({status:200})
+  // 自相矛盾。显式 200（e2e 用例 45 按 200 判定取件成功）。
+  @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: "Pull dispatch payloads (long-poll)",
     description:

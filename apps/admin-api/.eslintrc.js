@@ -15,7 +15,14 @@ module.exports = {
     node: true,
     jest: true,
   },
-  ignorePatterns: ['.eslintrc.js'],
+  // E-38：install-script.content.ts 是 scripts/gen-install-script-content.mjs 的
+  // 构建期产物（内容 = 仓库根 scripts/install.sh 的逐字节副本，由 CI 的
+  // check-migrations job 用「重跑生成器 + git diff --exit-code」守卫）。生成器刻意
+  // 用 JSON.stringify 输出单行长字面量（对 prettier 版本零耦合），而本包的 lint
+  // 脚本带 --fix——prettier 会把它折成多行 + 换引号，于是**每次本地/CI lint 都会
+  // 改写这个产物**，与守卫所在 job 的期望值静默分叉（两个 job 各看一半）。产物
+  // 不该被 lint：加进 ignorePatterns 从根上消除这个陷阱。
+  ignorePatterns: ['.eslintrc.js', 'src/modules/executor/install-script.content.ts'],
   rules: {
     '@typescript-eslint/interface-name-prefix': 'off',
     '@typescript-eslint/explicit-function-return-type': 'off',
