@@ -25,6 +25,8 @@ import { mkdtempSync, rmSync, openSync, closeSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
+import { ensureDatabase } from './pg-provision.lib.mjs';
+
 const REPO_ROOT = process.cwd();
 const API_DIR = path.join(REPO_ROOT, 'apps', 'admin-api');
 
@@ -311,12 +313,16 @@ async function main() {
   if (pg.status !== 0) throw new Error(`PG 容器启动失败: ${pg.stderr}`);
   const rd = run('docker', ['run', '-d', '--name', REDIS_CONTAINER, '-p', `${REDIS_PORT}:6379`, 'redis:7-alpine']);
   if (rd.status !== 0) throw new Error(`Redis 容器启动失败: ${rd.stderr}`);
-  for (let i = 0; i < 40; i += 1) {
-    if (run('docker', ['exec', PG_CONTAINER, 'pg_isready', '-U', DB_USER]).status === 0) break;
-    await sleep(1000);
-  }
-  run('docker', ['exec', PG_CONTAINER, 'psql', '-U', DB_USER, '-d', 'postgres', '-c', `DROP DATABASE IF EXISTS "${DB_NAME}";`]);
-  run('docker', ['exec', PG_CONTAINER, 'psql', '-U', DB_USER, '-d', 'postgres', '-c', `CREATE DATABASE "${DB_NAME}";`]);
+  // 就绪 + 建库统一走 host TCP（与迁移同一条连接路径），替代原先容器内 socket 版
+  // pg_isready + 不检查返回码的建库——详见 scripts/pg-provision.lib.mjs 顶部注释。
+  await ensureDatabase({
+    host: DB_HOST,
+    port: PG_PORT,
+    user: DB_USER,
+    password: DB_PASS,
+    dbName: DB_NAME,
+    dropFirst: true,
+  });
 
   // ── [2] 构建 + 迁移 ─────────────────────────────────────────────────
   const build = run('npx', ['tsc', '-p', 'tsconfig.build.json'], { cwd: API_DIR });
