@@ -26,6 +26,12 @@ export default function LoginPage() {
   // toast——读屏用户看不到、低视力用户来不及读；页内常驻块可被重复阅读，
   // 并在出现时接管焦点，键盘用户不必自行搜索「到底哪错了」。
   const [formError, setFormError] = useState<string | null>(null);
+  // SESSION-EXPIRED：client.ts 在 401（刷新也失败）时跳 /login?reason=expired。
+  // 初始值即从 URL 读取，故首帧就能看到说明，不会闪一下才出现。
+  // 仅认站内受控值 'expired'，其他一律忽略（与 ?redirect= 同款白名单姿态）。
+  const [sessionExpired, setSessionExpired] = useState(
+    () => new URLSearchParams(window.location.search).get('reason') === 'expired',
+  );
   // AUTH-04：SSO 可用性（公开端点，失败静默——登录页不因它阻塞）
   const [ssoEnabled, setSsoEnabled] = useState(false);
   const errorRef = useRef<HTMLDivElement>(null);
@@ -135,6 +141,21 @@ export default function LoginPage() {
           >
             {totpStage ? t('login.twoFactor') : t('login.account')}
           </Title>
+          {/* SESSION-EXPIRED（本轮审计）：401 且刷新失败时 client.ts 会把用户
+              直接重定向到 /login 并带 ?reason=expired。此前该跳转零提示
+              （拦截器显式跳过 401 的 toast），用户正在填的表单凭空消失、
+              无从判断是会话过期还是系统故障。这里用常驻 info 块说明原因，
+              与下方 error 块同属「可重复阅读、不依赖一闪而过的 toast」形态。 */}
+          {sessionExpired && (
+            <Alert
+              type="info"
+              showIcon
+              title={t('login.sessionExpired')}
+              closable
+              onClose={() => setSessionExpired(false)}
+              style={{ marginBottom: 16 }}
+            />
+          )}
           {/* UI-12：登录失败常驻错误块（role=alert 由 antd Alert 提供）。
               外层 tabIndex=-1 使其可编程聚焦但不进 Tab 序列，失败时接管焦点。 */}
           <div ref={errorRef} tabIndex={-1} style={{ outline: 'none' }}>

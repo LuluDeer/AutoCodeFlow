@@ -6,6 +6,9 @@ export default {
   'brand.edition': 'AutoCodeFlow v1.0 · Enterprise',
 
   'login.account': 'Sign in',
+  // SESSION-EXPIRED: shown when a 401 survives the refresh attempt and the user
+  // is redirected to /login (previously silent — see zh.ts for the rationale).
+  'login.sessionExpired': 'Your session has expired. Please sign in again to continue.',
   'login.twoFactor': 'Two-factor verification',
   'login.username': 'Username',
   'login.password': 'Password',

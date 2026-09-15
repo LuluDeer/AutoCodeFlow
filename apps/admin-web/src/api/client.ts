@@ -103,10 +103,19 @@ client.interceptors.response.use(
   async (err) => {
     const originalRequest = err.config;
     // 401 跳登录时带上当前路由，登录成功后回跳（LoginPage 读 ?redirect=）
-    const redirectToLogin = () => {
+    //
+    // SESSION-EXPIRED（本轮审计）：401 且刷新令牌也失败时，用户会被直接丢到
+    // /login，而下方 toast 分支显式跳过了 401（`status !== 401`）——于是整个
+    // 过程**零提示**：正在填的表单凭空消失、页面变白，用户无法区分「会话过期」
+    // 「密码被改」「账号被禁用」还是「系统故障」。这里带一个 reason 参数，
+    // 由登录页说明原因（与 ?redirect= 同一条 URL，同属站内可控值）。
+    const redirectToLogin = (reason?: 'expired') => {
       const current = window.location.pathname + window.location.search;
-      const suffix = current && current !== '/login' ? `?redirect=${encodeURIComponent(current)}` : '';
-      window.location.href = `/login${suffix}`;
+      const params = new URLSearchParams();
+      if (current && current !== '/login') params.set('redirect', current);
+      if (reason) params.set('reason', reason);
+      const qs = params.toString();
+      window.location.href = `/login${qs ? `?${qs}` : ''}`;
     };
     // Avoid infinite retry loop on the refresh endpoint itself
     if (err.response?.status === 401 && !originalRequest._retried && !originalRequest.url?.includes('/auth/refresh')) {
@@ -118,11 +127,11 @@ client.interceptors.response.use(
         return client(originalRequest);
       } catch {
         useAuthStore.getState().logout();
-        redirectToLogin();
+        redirectToLogin('expired');
       }
     } else if (err.response?.status === 401) {
       useAuthStore.getState().logout();
-      redirectToLogin();
+      redirectToLogin('expired');
     }
     // F-32（DEEP_REVIEW 0ef3bbe）：本层是全站**唯一**的重试层（安全方法 1 次、1s 退避）。
     // TanStack Query 侧已显式 retry:false（见 api/queryClient.ts），避免"axios 1 次 ×
