@@ -2422,6 +2422,19 @@ export class TaskService {
       gitCommit: task.gitCommit,
       glueSource: task.glueSource,
       glueLanguage: task.glueLanguage,
+      // VER-DIFF-01（本轮审计）：快照此前漏了这两个**用户可编辑**的列
+      // （maintenanceWindows / runbook 经 create-task.dto 可写）。而
+      // compareVersions 的键集合是 `new Set([...Object.keys(v1.snapshot),
+      // ...Object.keys(v2.snapshot)])` —— 完全派生自快照本身，因此**任何不在
+      // 快照里的字段永远不可能出现在版本差异里**：用户改了维护窗口或 runbook，
+      // 对比两个版本却显示"无差异"，误导性极强（看起来像改动没生效）。
+      maintenanceWindows: task.maintenanceWindows,
+      runbook: task.runbook,
+      // 刻意**不**纳入 secrets：它虽是实体列，但 GET /tasks/:id/versions 与
+      // compare 端点会把 snapshot 原样回传，而 secrets 的脱敏
+      // （maskForResponse）只挂在 task 读路径上，不覆盖版本端点。放进来等于
+      // 把密文（甚至将来若改动脱敏链路则可能是明文）通过版本历史泄露出去。
+      // 回滚不受影响：rollbackToVersion 用 Object.assign，快照缺键即保留原值。
     };
 
     return this.versionRepo.save(
@@ -2505,10 +2518,17 @@ export class TaskService {
     return diff;
   }
 
-  async deleteVersion(taskId: string, versionId: string): Promise<void> {
-    const version = await this.getVersion(taskId, versionId);
-    await this.versionRepo.delete(version.id);
-  }
+  // VER-DIFF-02（本轮审计）：原先此处有一个 `deleteVersion(taskId, versionId)`
+  // 方法，但**全仓无任何调用方、controller 也没有对应路由**（版本面只暴露
+  // 列表 / 对比 / 回滚三条）——是纯死代码，且它是本服务唯一一个**不带归属守卫**
+  // 的变更方法，构成潜在陷阱：将来有人顺手接一条
+  // `DELETE /tasks/:id/versions/:versionId`，就会让任意已登录用户删掉别人任务的
+  // 版本历史（版本历史是回滚能力的依托，删掉不可恢复）。
+  //
+  // 选择**删除**而不是补守卫：补守卫需要给定「无 user 内部调用」的语义，而该
+  // 约定此前不存在、也无从验证（assertCanWrite 对 ownerUserId 非 null + user
+  // 缺省是拒绝的）。删除死代码同时消除陷阱，比发明一个没有消费方的契约更诚实。
+  // 若日后确需删除版本，请带 user 参数接线并复用 assertCanWriteProjectAware。
 
   /** Get scheduler running status statistics */
   getSchedulerStats() {
