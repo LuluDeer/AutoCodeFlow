@@ -94,6 +94,12 @@ export class S3LogStorage {
    * Download the gunzipped log text as a `Readable` of Buffer chunks so the
    * caller can page through lines without ever holding the whole thing in
    * memory. Throws if the decompressed payload exceeds MAX_LOG_BYTES.
+   *
+   * W-5（DEEP_REVIEW 0ef3bbe）：深翻页复杂度 O(n×页数)——S3 对象无行索引，
+   * getStream 每次从头解压整个 gzipped 对象，paginateLogStream 按 fromLine
+   * 跳过前 n 行。对 400k 行 level=ERROR 深翻页（如第 300k 行起），每页都重扫
+   * 300k 行。MAX_LOG_BYTES 100MB 硬帽防 OOM，但不解决深翻页延迟。已知限制：
+   * 建议前端限制 S3 日志最大翻页深度（如 ≤10 页），或未来改用行索引/分块存储。
    */
   async getStream(key: string): Promise<Readable> {
     const raw = await this.client.getObject(this.bucket, key);
