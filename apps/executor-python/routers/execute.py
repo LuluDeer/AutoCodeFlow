@@ -485,36 +485,47 @@ def _ensure_entrypoint_in_workdir(entrypoint: str, work_dir: Path) -> None:
     """R4-C P3: reject entrypoints that escape the execution work directory
     (`../evil.sh`, or absolute paths pointing elsewhere). Glue scripts run via
     absolute paths *inside* work_dir, so those remain allowed.
+
+    R4-C P4（本轮审计）：判定改为**与宿主平台无关**。此前用 Path(entrypoint) 的
+    is_absolute()/parts，含义随 OS 变化，于是同一份输入在两平台结论不同：
+      - Windows: `C:evil.bat` 是驱动器相对路径（drive='C:'、parts 无 '..'），
+        两道分支都不命中 → 放行，实测解析到 C:\\evil.bat（work_dir 之外）；
+      - Linux: `..\\evil.bat` 的 parts 是 ('..\\\\evil.bat',) —— 整串一个 part，
+        `'..' in parts` 不命中 → 放行。
+    安全判定不该取决于执行器恰好跑在哪个系统上，故改为：
+      1. 先按 '/' 与 '\\\\' **两种分隔符**切分，任一分段为 '..' 即拒；
+      2. 带盘符（`X:` 前缀）或首字符为分隔符 → 按绝对路径处理，交给
+         relative_to(work_dir) 裁决；
+      3. 绝对路径不在 work_dir 内即拒。
     """
-    p = Path(entrypoint)
-    # W-04 (windows-findings): on win32 `/etc/passwd` and `\Windows\...` are
-    # NOT is_absolute() — ntpath requires a drive/UNC prefix — so the old
-    # check let rooted escapes through unchallenged. Any leading separator is
-    # treated as absolute on every platform (POSIX semantics unchanged).
-    #
-    # R4-C P4（本轮审计）：上面这条 W-04 修复仍留了一个 Windows 类逃逸——
-    # **驱动器相对路径**（`drive:relative`，如 `C:evil.bat`）。在 ntpath 里它
-    # 既不是 is_absolute()（那要求 盘符+分隔符，即 `C:\...`），parts 里也没有
-    # '..'，于是两道分支都不命中而被放行；它相对**该驱动器上的当前目录**解析，
-    # 实测 `C:evil.bat` → `C:\evil.bat`、`C:../../Windows/System32/evil.bat`
-    # → `C:\Windows\System32\evil.bat`，都落在 work_dir 之外。
-    # 判据：任何带盘符的路径一律按绝对处理，交给 relative_to(work_dir) 裁决。
-    # 影响面有界（逃逸目标是执行器进程的启动 CWD，且任务本身已能执行任意代码），
-    # 但这是一个**声明已加固却仍可绕过**的守卫，必须补上。
-    has_drive = bool(getattr(p, 'drive', ''))
-    if p.is_absolute() or has_drive or entrypoint.startswith(('/', '\\')):
+    normalized = entrypoint.replace('\\', '/')
+    # 1) 任一 '..' 分段即拒（跨平台，两种分隔符都覆盖）
+    if '..' in normalized.split('/'):
+        raise HTTPException(
+            status_code=400,
+            detail=f'entrypoint escapes the execution work directory: {entrypoint}',
+        )
+
+    # 2) 带盘符（C:...）或根相对（/... 或 \\...）→ 一律按绝对路径判定
+    has_drive = len(entrypoint) >= 2 and entrypoint[1] == ':' and entrypoint[0].isalpha()
+    if has_drive or entrypoint.startswith(('/', '\\')):
+        # 绝对路径只有在**确实位于 work_dir 之内**时才允许（胶水脚本正是以
+        # work_dir 内的绝对路径调用的）。驱动器相对路径（`C:` 后直接跟名字，
+        # 无分隔符）无法用 relative_to 可靠判定——它在 Windows 上相对该盘的
+        # 当前目录解析，可能落在 work_dir 之外，故一律拒绝。
+        drive_relative = has_drive and not entrypoint[2:3] in ('/', '\\')
+        if drive_relative:
+            raise HTTPException(
+                status_code=400,
+                detail=f'entrypoint escapes the execution work directory: {entrypoint}',
+            )
         try:
-            p.relative_to(work_dir)
+            Path(normalized).relative_to(work_dir)
         except ValueError:
             raise HTTPException(
                 status_code=400,
                 detail=f'entrypoint escapes the execution work directory: {entrypoint}',
             )
-    elif '..' in p.parts:
-        raise HTTPException(
-            status_code=400,
-            detail=f'entrypoint escapes the execution work directory: {entrypoint}',
-        )
 
 
 def _truncate_error_message(message: Any, limit: int = MAX_ERROR_MESSAGE_CHARS) -> Any:
