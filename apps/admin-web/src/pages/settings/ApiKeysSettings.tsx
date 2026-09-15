@@ -9,6 +9,7 @@ import {
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiKeysApi, ApiKeyView, ApiKeyScope, ApiKeyCreateResult } from '../../api/api-keys';
 import { getErrMsg } from '../../utils/error';
+import { formatDateTime } from '../../utils/timeFormat';
 import { useTranslation } from 'react-i18next';
 // UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
 import '../../i18n';
@@ -48,11 +49,7 @@ export function apiKeyStatus(
   return { label: t('apiKeys.status.active'), color: 'green' };
 }
 
-function formatDateTime(v: string | null): string {
-  if (!v) return '—';
-  const d = new Date(v);
-  return Number.isNaN(d.getTime()) ? '—' : d.toLocaleString();
-}
+
 
 function CreateResultModal(props: {
   result: ApiKeyCreateResult | null;

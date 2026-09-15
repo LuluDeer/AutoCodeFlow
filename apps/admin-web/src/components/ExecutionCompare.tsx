@@ -5,7 +5,7 @@ import '../i18n';
 import { TaskExecution } from '../api/tasks';
 // F-35（DEEP_REVIEW 0ef3bbe）：时长格式统一走 utils/timeFormat（含小时档），
 // 删除本文件内与 ExecutorDetailPage 逐字节重复的内联实现。
-import { formatDurationShort } from '../utils/timeFormat';
+import { formatDurationShort, formatDateTime } from '../utils/timeFormat';
 
 const { Text } = Typography;
 
@@ -13,7 +13,7 @@ const HIGHLIGHT_KEYS = new Set(['params', 'exitCode', 'duration', 'failureReason
 
 function formatCompareValue(key: string, val: unknown): string {
   if (key === 'startTime' || key === 'endTime') {
-    return val ? new Date(String(val)).toLocaleString() : '-';
+    return val ? formatDateTime(String(val)) : '-';
   }
   if (key === 'duration' && typeof val === 'number') {
     return formatDurationShort(val);
@@ -60,7 +60,7 @@ export function ExecutionCompareModal({ open, onClose, executions, compareIds }:
     ...compareIds.map(id => {
       const exec = selectedExecutions.find(e => e.id === id);
       return {
-        title: <Text copyable={{ text: id }}>{exec?.startTime ? new Date(exec.startTime).toLocaleString() : id.slice(0, 8)}</Text>,
+        title: <Text copyable={{ text: id }}>{exec?.startTime ? formatDateTime(exec.startTime) : id.slice(0, 8)}</Text>,
         key: id,
         render: (_: unknown, record: { metric: string; key: string }) => {
           const val = exec?.[record.key as keyof TaskExecution];
@@ -138,7 +138,7 @@ export default function ExecutionCompare({ executions }: ExecutionCompareProps) 
       return <Tag color={color}>{v}</Tag>;
     }},
     { title: t('execCompare.table.triggerType'), dataIndex: 'triggerType', key: 'triggerType' },
-    { title: t('execCompare.table.startTime'), dataIndex: 'startTime', key: 'startTime', render: (v: string) => v ? new Date(v).toLocaleString() : '-' },
+    { title: t('execCompare.table.startTime'), dataIndex: 'startTime', key: 'startTime', render: (v: string) => v ? formatDateTime(v) : '-' },
     { title: t('execCompare.table.duration'), dataIndex: 'duration', key: 'duration', render: (v: number) => v ?? '-' },
   ];
 
