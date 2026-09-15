@@ -71,6 +71,13 @@ export interface Task {
    * 仅 entrypoint 任务有意义，glue 脚本任务在执行器侧被清零。
    */
   requirements?: string[] | null;
+  /**
+   * TASK-PROJ-01: 归属项目。后端 tasks.projectId 列一直存在（迁移
+   * 1790000000008）且详情读面原样回传，只是此前 DTO 未接、前端类型也未声明，
+   * 于是"项目隔离"对所有新任务都塌缩到默认项目视图。
+   * null = 显式未分配（读面归入默认项目视图）。
+   */
+  projectId?: string | null;
   status: string;
   triggerType: string;
   fixedRate?: number;

@@ -156,7 +156,10 @@ describe("EventSubscriptionController — 端点委托契约（QA-02）", () => 
    */
   it("create 声明 @Roles(ADMIN)——出站通道是管理面能力", () => {
     expect(
-      Reflect.getMetadata(ROLES_KEY, EventSubscriptionController.prototype.create),
+      Reflect.getMetadata(
+        ROLES_KEY,
+        EventSubscriptionController.prototype.create,
+      ),
     ).toEqual([UserRole.ADMIN]);
   });
 
@@ -190,10 +193,12 @@ describe("EventSubscriptionController — 端点委托契约（QA-02）", () => 
       ).toBeUndefined();
       // 属主语义由 service 的 scope:ownership 声明承载
       expect(
-        (Reflect.getMetadata(
-          WRITE_GUARD_KEY,
-          EventSubscriptionController.prototype[m],
-        ) as { scope?: string } | undefined)?.scope,
+        (
+          Reflect.getMetadata(
+            WRITE_GUARD_KEY,
+            EventSubscriptionController.prototype[m],
+          ) as { scope?: string } | undefined
+        )?.scope,
       ).toBe("ownership");
     }
   });

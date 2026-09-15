@@ -83,7 +83,7 @@ import { S3LogStorage } from "./log-storage/s3-log-storage";
 import { SecretsCryptoService } from "../../common/utils/secret-crypto.util.service";
 // AUTH-01: 默认项目 uuid（"default" 过滤映射目标，与迁移 1790000000008
 // 回填值共享同一常量出处 project.entity.ts）。
-import { DEFAULT_PROJECT_ID } from "../project/project.entity";
+import { DEFAULT_PROJECT_ID, Project } from "../project/project.entity";
 // AUTH-02: 项目级角色（写面/执行类写面归属判定）
 import { ProjectAccessService } from "../project/project-access.service";
 // CORE-04: 超时策略归一化（DTO 边界之外的运行态兜底——编程式/旧数据形态）
@@ -306,6 +306,12 @@ export class TaskService {
     @Optional()
     @InjectRepository(ExecutionReport)
     private reportRepo: Repository<ExecutionReport> | null,
+    // TASK-PROJ-01: 归属项目存在性校验。@Optional 同上述先例——既有单测装配
+    // 未提供该仓储时回退 null；此时 assertCanAssignProject 对非 ADMIN 一律拒绝
+    // （不 fail-open，宁严不松），而默认的"不传 projectId"路径完全不受影响。
+    @Optional()
+    @InjectRepository(Project)
+    private projectRepo: Repository<Project> | null,
     // AUTH-02: 项目级角色（ProjectAccessService）。@Optional 同上述先例——
     // provider 缺失（单测装配）时整体旁路，写面判定逐字节保持既有行为。
     @Optional()
@@ -431,8 +437,67 @@ export class TaskService {
     }
   }
 
-  /** TASK-SCOPE-01: 读配置判定执行类写面是否收紧到属主口径。 */
-  private isOperateScopeOwner(): boolean {
+  /**
+   * TASK-PROJ-01（本轮审计）：任务归属项目的写入校验。
+   *
+   * 背景：`tasks.projectId` 列由迁移 1790000000008 建立并回填了**存量**任务，但
+   * 该迁移注释写明「新建任务在 DTO 未接 projectId 前一律落 NULL」——收尾项一直
+   * 没做。于是新建任务永远 NULL，而 project-access.service 把 NULL 按
+   * DEFAULT_PROJECT_ID 判定，「项目隔离」对所有新任务都塌缩到默认项目、形同虚设。
+   *
+   * 本方法只做两件事，且**都是纯增量**（不填 projectId 的老调用方零影响）：
+   *  1. 传了具体 UUID → 校验项目**真实存在**（否则 FK 违例会变成裸 500）；
+   *  2. 校验调用方**有权把任务放进该项目** —— ADMIN，或该项目的 editor/admin。
+   *     否则任何人都能把自己的任务塞进别人的项目（或把任务从别人项目里"捞走"），
+   *     归属校验就形同虚设。
+   *
+   * 省略 / null 一律放行：语义是"未分配"，读面归入默认项目视图，与既有行为一致。
+   */
+  private async assertCanAssignProject(
+    projectId: string | null | undefined,
+    user: { id: number; role?: UserRole } | null | undefined,
+  ): Promise<void> {
+    if (projectId === null || projectId === undefined) return;
+
+    // 1) 存在性：早失败成 400，而不是让 FK 违例冒成 500
+    if (!this.projectRepo) {
+      // 仓储缺席（既有单测装配）——无法校验存在性，故拒绝而非放行（宁严不松）。
+      throw new BadRequestException(
+        "Project assignment is unavailable in this deployment",
+      );
+    }
+    const exists = await this.projectRepo.findOne({
+      where: { id: projectId },
+      select: { id: true },
+    });
+    if (!exists) {
+      throw new BadRequestException(`Project #${projectId} not found`);
+    }
+
+    // 2) 授权：ADMIN 无条件；其余须为该项目 editor/admin
+    if (user?.role === UserRole.ADMIN) return;
+    if (!user?.id) {
+      // 无用户主体（内部/机器调用且非 ADMIN）——不允许改归属，避免绕过授权。
+      throw new ForbiddenException(
+        "Only administrators may assign a task to a project",
+      );
+    }
+    if (!this.projectAccess) {
+      // 项目权限服务缺席：与 assertCanWriteProjectAware 同款姿态——不 fail-open，
+      // 退化为「仅 ADMIN 可设置」（上面已放行 ADMIN）。
+      throw new ForbiddenException(
+        "Only administrators may assign a task to a project",
+      );
+    }
+    const role = await this.projectAccess.resolveRole(user.id, projectId);
+    if (role !== "editor" && role !== "admin") {
+      throw new ForbiddenException(
+        "Assigning a task to a project requires ADMIN or editor/admin of that project",
+      );
+    }
+  }
+
+  /** TASK-SCOPE-01: 读配置判定执行类写面是否收紧到属主口径。 */ private isOperateScopeOwner(): boolean {
     try {
       return this.configService?.get<string>("taskScope.operate") === "owner";
     } catch {
@@ -495,6 +560,8 @@ export class TaskService {
       await this.checkCircularDependency(dto.id, dto.dependencies);
     }
     const normalized = this.normalizeTaskDto(dto);
+    // TASK-PROJ-01: 归属项目校验（存在性 + 授权），见 assertCanAssignProject
+    await this.assertCanAssignProject(normalized.projectId, user);
     // SEC-NEW-2 对齐（W-21 后续）：git 源在**任务写面**即校验。executor 派发时只放行
     // https?://|git@|ssh:// 且拒绝 loopback/私有网段（execute.ts:363-376，python 侧对等）
     // ——此前 admin 不做同类校验，导致「任务创建成功、派发才 400」的两端不一致。
@@ -732,6 +799,10 @@ export class TaskService {
     // 同 create：PATCH 显式带 gitRepo 时即校验（缺省 = 保留旧值，不重复校验既有列）
     if (normalized.gitRepo) {
       await assertSafeGitRepoUrl(normalized.gitRepo);
+    }
+    // TASK-PROJ-01: 改变归属项目同样需要授权（缺省 = 保留旧归属，不重复校验）
+    if (normalized.projectId !== undefined) {
+      await this.assertCanAssignProject(normalized.projectId, user);
     }
     // SEC-02: PATCH 语义——secrets 缺省 = 保留旧值（不触碰既有列；R-01:
     // 保留的是 RAW 原值而非掩码副本）；显式 null / {} = 清空/替换。

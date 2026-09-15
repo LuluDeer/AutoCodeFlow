@@ -3005,6 +3005,8 @@ export interface components {
             applicationId?: string;
             /** @description FEAT-11: markdown runbook — troubleshooting knowledge shown on the task detail page and attached to failure notifications/alerts. */
             runbook?: string;
+            /** @description Owning project. Omit/null = unassigned (counts toward the Default project view; existing behaviour). Setting it requires ADMIN or editor/admin of that project. */
+            projectId?: string;
         };
         UpdateTaskDto: {
             id?: string;
@@ -3083,6 +3085,8 @@ export interface components {
             applicationId?: string;
             /** @description FEAT-11: markdown runbook — troubleshooting knowledge shown on the task detail page and attached to failure notifications/alerts. */
             runbook?: string;
+            /** @description Owning project. Omit/null = unassigned (counts toward the Default project view; existing behaviour). Setting it requires ADMIN or editor/admin of that project. */
+            projectId?: string;
         };
         TriggerTaskDto: {
             params?: Record<string, never>;

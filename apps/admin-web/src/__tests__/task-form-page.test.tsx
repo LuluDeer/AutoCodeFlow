@@ -23,6 +23,7 @@ import {
 import { tasksApi } from '../api/tasks';
 import { executorsApi } from '../api/executors';
 import { applicationsApi } from '../api/applications';
+import { projectsApi } from '../api/projects';
 
 // 隔离 api 层：底层 client 会拉起 axios 拦截器，测试只关心调用契约。
 vi.mock('../api/tasks', () => ({ tasksApi: { get: vi.fn(), create: vi.fn(), update: vi.fn(), list: vi.fn(), listAll: vi.fn().mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 100 }) } }));
@@ -30,6 +31,9 @@ vi.mock('../api/executors', () => ({
   executorsApi: { list: vi.fn(), getGroups: vi.fn(), getTags: vi.fn() },
 }));
 vi.mock('../api/applications', () => ({ applicationsApi: { list: vi.fn() } }));
+// TASK-PROJ-01: 归属项目候选。显式 mock 保证用例确定性（不 mock 时真实 client
+// 会发请求并失败——虽然只 warn 不阻塞，但用例仍应显式控制该数据源）。
+vi.mock('../api/projects', () => ({ projectsApi: { list: vi.fn() } }));
 // F-01 配套：GlueEditor 重依赖（monaco）裁剪，策略同 task-form-ui06/task-save-as-template
 // 等文件——组件级测试不加载真实 monaco（jsdom 缺 queryCommandSupported 等浏览器 API）。
 vi.mock('../components/GlueEditor', () => ({ default: () => <div data-testid="glue-editor" /> }));
@@ -99,6 +103,10 @@ beforeEach(() => {
   vi.mocked(executorsApi.getGroups).mockReset().mockResolvedValue([] as never);
   vi.mocked(executorsApi.getTags).mockReset().mockResolvedValue([] as never);
   vi.mocked(applicationsApi.list).mockReset().mockResolvedValue([] as never);
+  vi.mocked(projectsApi.list).mockReset().mockResolvedValue([
+    { id: 'p-1', name: 'Alpha' },
+    { id: 'p-2', name: 'Beta' },
+  ] as never);
   vi.mocked(tasksApi.listAll).mockReset().mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 100 } as never);
 });
 
@@ -536,5 +544,82 @@ describe('TaskFormPage suggestCron（F-04 AI 建议 Cron 死链修复）', () =>
     expect(opts).toEqual({ replace: true });
     // 创建态不应发起任务详情请求
     expect(tasksApi.get).not.toHaveBeenCalled();
+  }, 15_000);
+});
+
+/**
+ * TASK-PROJ-01（本轮审计）：任务归属项目。
+ *
+ * 背景：`tasks.projectId` 由迁移 1790000000008 建立并回填了**存量**任务，但该迁移
+ * 注释写明「新建任务在 DTO 未接 projectId 前一律落 NULL」——收尾项一直没做。于是
+ * 新建任务永远 NULL，而 project-access.service 把 NULL 按 DEFAULT_PROJECT_ID 判定，
+ * 「项目隔离」对所有新任务都塌缩到默认项目、形同虚设。
+ */
+describe('TASK-PROJ-01 归属项目选择器', () => {
+  beforeEach(() => {
+    mockRouteParams = {}; // 创建态
+    mockSearch = '';
+    vi.mocked(tasksApi.get).mockReset();
+  });
+
+  it('渲染归属项目选择器（候选来自 projectsApi.list）', async () => {
+    render(<TaskFormPage />);
+    expect(await screen.findByTestId('task-project-select')).toBeTruthy();
+    expect(projectsApi.list).toHaveBeenCalled();
+  });
+
+  it('选中项目后提交 payload 携带 projectId', async () => {
+    vi.mocked(tasksApi.create).mockReset().mockResolvedValue({ id: 'new-task' } as never);
+    render(<TaskFormPage />);
+    await screen.findByTestId('task-project-select');
+
+    // 填必填项（与既有 P0 用例同款定位）
+    fireEvent.change(await screen.findByPlaceholderText('daily-report'), {
+      target: { value: 'proj-task' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('tasks/main.py'), {
+      target: { value: 'tasks/main.py' },
+    });
+
+    // 选择项目（antd Select 先例：mouseDown 打在 .ant-select 容器上）
+    fireEvent.mouseDown(
+      screen.getByTestId('task-project-select').closest('.ant-select') as HTMLElement,
+    );
+    const option = await screen.findByText('Alpha', {
+      selector: '.ant-select-item-option-content',
+    });
+    fireEvent.click(option);
+
+    fireEvent.click(screen.getByRole('button', { name: /创建任务/ }));
+    await vi.waitFor(() => expect(tasksApi.create).toHaveBeenCalledTimes(1));
+    const payload = vi.mocked(tasksApi.create).mock.calls[0][0] as unknown as Record<string, unknown>;
+    expect(payload.projectId).toBe('p-1');
+  }, 15_000);
+
+  it('不选项目时提交 projectId 为 undefined（= 未分配，既有行为不变）', async () => {
+    vi.mocked(tasksApi.create).mockReset().mockResolvedValue({ id: 'new-task' } as never);
+    render(<TaskFormPage />);
+    await screen.findByTestId('task-project-select');
+
+    fireEvent.change(await screen.findByPlaceholderText('daily-report'), {
+      target: { value: 'no-proj' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('tasks/main.py'), {
+      target: { value: 'tasks/main.py' },
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /创建任务/ }));
+    await vi.waitFor(() => expect(tasksApi.create).toHaveBeenCalledTimes(1));
+    const payload = vi.mocked(tasksApi.create).mock.calls[0][0] as unknown as Record<string, unknown>;
+    // 未分配：不得把项目塞进去（后端 @IsOptional 接受 undefined/null）
+    expect(payload.projectId).toBeUndefined();
+  }, 15_000);
+
+  it('项目列表拉取失败只 warn，不阻塞表单（未分配仍是合法取值）', async () => {
+    vi.mocked(projectsApi.list).mockRejectedValue(new Error('boom') as never);
+    render(<TaskFormPage />);
+    // 表单仍可用：选择器在场、必填项可填
+    expect(await screen.findByTestId('task-project-select')).toBeTruthy();
+    expect(document.querySelector('#name')).toBeTruthy();
   }, 15_000);
 });
