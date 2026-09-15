@@ -67,11 +67,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // 自动更新（DSK-03，主进程 → 渲染进程，单向推送；生产环境才启用）
   checkForUpdate: () => ipcRenderer.invoke('updater:check'),
+  // DSK-05：autoDownload=false 下的显式下载入口（用户点「下载」后调用）
+  downloadUpdate: () => ipcRenderer.invoke('updater:download'),
   installUpdate: () => ipcRenderer.invoke('updater:install'),
-  onUpdateAvailable: (cb: (payload: { version: string; current: string; progress?: number }) => void) => {
-    const handler = (_: Electron.IpcRendererEvent, payload: { version: string; current: string; progress?: number }) => cb(payload);
+  onUpdateAvailable: (cb: (payload: { version: string; current: string }) => void) => {
+    const handler = (_: Electron.IpcRendererEvent, payload: { version: string; current: string }) => cb(payload);
     ipcRenderer.on('updater:available', handler);
     return () => ipcRenderer.removeListener('updater:available', handler);
+  },
+  onUpdateProgress: (cb: (payload: { percent: number; transferred: number; total: number; bytesPerSecond: number }) => void) => {
+    const handler = (_: Electron.IpcRendererEvent, payload: { percent: number; transferred: number; total: number; bytesPerSecond: number }) => cb(payload);
+    ipcRenderer.on('updater:progress', handler);
+    return () => ipcRenderer.removeListener('updater:progress', handler);
   },
   onUpdateDownloaded: (cb: (payload: { version: string }) => void) => {
     const handler = (_: Electron.IpcRendererEvent, payload: { version: string }) => cb(payload);

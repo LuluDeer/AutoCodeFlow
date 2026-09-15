@@ -139,19 +139,27 @@ export default function HistoryPage() {
   const [loading, setLoading] = useState(true);
   const [expandedApp, setExpandedApp] = useState<string | null>(null);
   const [viewingLog, setViewingLog] = useState<ExecRecord | null>(null);
+  // D 修正：原实现 catch 静默返回空列表——IPC 失败会显示成「暂无执行记录」，
+  // 用户无法区分「真的没跑过任务」与「读取失败」。
+  const [error, setError] = useState<string | null>(null);
+  // D 修正：原用 window.confirm()。Electron 无边框窗口下原生 confirm 会阻塞
+  // 渲染进程且样式不可控（部分平台直接不显示），改用页内确认态。
+  const [confirmingClear, setConfirmingClear] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
       const api = (window as any).electronAPI;
       if (typeof api?.getHistory !== 'function') {
+        setError('当前版本不支持读取历史记录');
         setLoading(false);
         return;
       }
       const data = await api.getHistory();
       setRecords(Array.isArray(data) ? data : []);
-    } catch {
-      // IPC error — treat as empty
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
@@ -164,9 +172,15 @@ export default function HistoryPage() {
   }, [load]);
 
   async function handleClear() {
-    if (!confirm('确认清除全部历史记录？')) return;
-    await window.electronAPI.clearHistory();
-    setRecords([]);
+    try {
+      await window.electronAPI.clearHistory();
+      setRecords([]);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setConfirmingClear(false);
+    }
   }
 
   // 按 taskId 分组
@@ -188,14 +202,32 @@ export default function HistoryPage() {
         <span className="history-title">历史执行记录</span>
         <div className="history-toolbar-actions">
           <button className="btn btn-sm" onClick={load}>↻ 刷新</button>
-          <button className="btn btn-sm btn-danger-ghost" onClick={handleClear}>清除全部</button>
+          {confirmingClear ? (
+            <>
+              <span className="history-confirm-text">确认清除全部记录？</span>
+              <button className="btn btn-sm btn-danger" onClick={handleClear}>确认清除</button>
+              <button className="btn btn-sm" onClick={() => setConfirmingClear(false)}>取消</button>
+            </>
+          ) : (
+            <button
+              className="btn btn-sm btn-danger-ghost"
+              onClick={() => setConfirmingClear(true)}
+              disabled={records.length === 0}
+            >清除全部</button>
+          )}
         </div>
       </div>
+
+      {error && (
+        <div className="history-error" role="alert">⚠ {error}</div>
+      )}
 
       {loading && records.length === 0 ? (
         <div className="history-empty">加载中...</div>
       ) : groupEntries.length === 0 ? (
-        <div className="history-empty">暂无执行记录。执行任务后将在此显示。</div>
+        <div className="history-empty">
+          {error ? '读取失败，请稍后重试。' : '暂无执行记录。执行任务后将在此显示。'}
+        </div>
       ) : (
         <div className="history-groups">
           {groupEntries.map(([key, group]) => {

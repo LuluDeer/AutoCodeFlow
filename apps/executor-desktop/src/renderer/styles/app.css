@@ -1415,10 +1415,94 @@ input:focus-visible,
 .badge-error   { background: var(--red-bg); color: var(--color-destructive); }
 .btn-danger-ghost {
   background: transparent;
-  color: var(--color-danger);
+  /* UI-13 修正：原引 var(--color-danger) 未定义（语义色 token 名是
+     --color-destructive），导致颜色回落到浏览器默认黑，深色底上不可见。 */
+  color: var(--color-destructive);
   border: 1px solid var(--red-border);
 }
 .btn-danger-ghost:hover { background: var(--red-bg); }
+
+/* ── DSK-05：自动更新提示条（状态监控页顶部）─────────────────────── */
+.update-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  padding: var(--space-md);
+  margin-bottom: var(--space-md);
+  border: 1px solid var(--border2);
+  border-radius: var(--radius-lg);
+  background: var(--bg2);
+}
+.update-banner-icon {
+  flex: none;
+  font-size: 18px;
+  line-height: 1;
+  color: var(--accent);
+}
+.update-banner-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+.update-banner-text strong { font-size: 13px; color: var(--text); }
+.update-banner-text span { font-size: 12px; color: var(--text3); }
+.update-banner-actions { flex: none; display: flex; gap: var(--space-sm); }
+
+.update-banner-available { border-color: var(--green-border); background: var(--green-bg); }
+.update-banner-ready     { border-color: var(--green-border); background: var(--green-bg); }
+.update-banner-downloading { border-color: var(--border2); }
+
+.update-banner-progress { flex: none; width: 160px; }
+.update-progress {
+  width: 100%;
+  height: 6px;
+  appearance: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--bg4);
+  overflow: hidden;
+}
+.update-progress::-webkit-progress-bar { background: var(--bg4); border-radius: var(--radius-sm); }
+.update-progress::-webkit-progress-value { background: var(--accent); border-radius: var(--radius-sm); }
+.update-progress::-moz-progress-bar { background: var(--accent); border-radius: var(--radius-sm); }
+
+.update-banner-error {
+  border-color: var(--red-border);
+  background: var(--red-bg);
+}
+.update-banner-error .update-banner-icon { color: var(--color-destructive); }
+
+/* ── D：页内错误条 / 确认态（取代静默 catch 与原生 confirm）───────── */
+.log-error,
+.apps-error,
+.history-error {
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid var(--red-border);
+  border-radius: var(--radius);
+  background: var(--red-bg);
+  color: var(--text);
+  font-size: 12px;
+}
+.apps-error,
+.history-error { margin-bottom: var(--space-md); }
+
+.history-confirm-text {
+  font-size: 12px;
+  color: var(--text2);
+  align-self: center;
+}
+.history-toolbar-actions { align-items: center; }
+
+.cfg-save-error {
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid var(--red-border);
+  border-radius: var(--radius);
+  background: var(--red-bg);
+  color: var(--text);
+  font-size: 12px;
+}
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {

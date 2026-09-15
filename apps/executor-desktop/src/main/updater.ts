@@ -28,6 +28,8 @@ export const UPDATE_CHECK_DELAY_MS = 30_000;
 /** updater IPC 事件通道名（preload 侧同名暴露）。 */
 export const UPDATE_EVENTS = {
   available: 'updater:available',
+  /** 下载进度（0-100）——独立通道，避免与 available 的 version 字段互相污染 */
+  progress: 'updater:progress',
   downloaded: 'updater:downloaded',
   error: 'updater:error',
 } as const;
@@ -157,10 +159,13 @@ export function initUpdater(): void {
   });
 
   autoUpdater.on('download-progress', (p) => {
-    broadcast(UPDATE_EVENTS.available, {
-      version: '',
-      current: app.getVersion(),
-      progress: Math.round(p.percent),
+    // DSK-05：进度走独立通道。旧形态复用 available 通道并传 version:''，
+    // 会把渲染层已记下的「待升级版本号」覆盖成空字符串，提示文案随即丢版本号。
+    broadcast(UPDATE_EVENTS.progress, {
+      percent: Math.round(p.percent),
+      transferred: p.transferred,
+      total: p.total,
+      bytesPerSecond: p.bytesPerSecond,
     });
   });
 
@@ -187,6 +192,16 @@ export async function checkForUpdates(): Promise<void> {
     await autoUpdater.checkForUpdates();
   } catch (err: any) {
     log.warn(`updater: checkForUpdates failed (silently ignored): ${err?.message ?? err}`);
+  }
+}
+
+/** 用户确认后执行：下载新版本（autoDownload=false 时的显式下载入口）。 */
+export async function downloadUpdate(): Promise<void> {
+  try {
+    await autoUpdater.downloadUpdate();
+  } catch (err: any) {
+    // 下载失败同样静默落日志；渲染层由 update-error 事件感知（若已订阅）
+    log.warn(`updater: downloadUpdate failed: ${err?.message ?? err}`);
   }
 }
 

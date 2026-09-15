@@ -187,6 +187,16 @@ export class ExecutorProcess {
   }
 
   private healthPollTimer: ReturnType<typeof setInterval> | null = null;
+  /**
+   * 首次 3s 延迟检查的句柄。此前该 setTimeout 未保存句柄，stopHealthPoll()
+   * 只能清掉 interval——若在启动后 3s 内停止执行器（或进程立即崩溃），
+   * 这一次 check 仍会触发，对已停止/已被新实例占用的端口发出探测请求，
+   * 并把状态回写成 online/offline（覆盖正确的 stopped）。故与 interval
+   * 一并纳入 stopHealthPoll 统一取消。
+   */
+  private healthPollFirstTimer: ReturnType<typeof setTimeout> | null = null;
+  /** 代际计数：stop 后仍在飞的 check 回调凭此丢弃过期结果。 */
+  private healthPollGen = 0;
 
   /**
    * Start polling executor-node's /health/live endpoint. This is a
@@ -195,9 +205,13 @@ export class ExecutorProcess {
    */
   private startHealthPoll(port: number): void {
     this.stopHealthPoll();
+    const gen = ++this.healthPollGen;
     // Poll every 8 seconds; first check after 3s to allow executor to start
     let firstCheck = true;
     const check = async () => {
+      // 代际守卫：stop 之后（或已被新一次 start 取代）的在飞请求必须丢弃，
+      // 否则会在执行器已停止后把状态改回 online/offline。
+      if (gen !== this.healthPollGen) return;
       try {
         const http = require('http') as typeof import('http');
         await new Promise<void>((resolve, reject) => {
@@ -211,6 +225,7 @@ export class ExecutorProcess {
           req.on('error', reject);
           req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
         });
+        if (gen !== this.healthPollGen) return;
         if (this.adminRegistration === 'failed') {
           // Process alive but admin registration/heartbeat is failing: the
           // tray must show offline until a success log line clears the flag.
@@ -221,6 +236,7 @@ export class ExecutorProcess {
           this.notifyStatus('online');
         }
       } catch {
+        if (gen !== this.healthPollGen) return;
         // Only flip to offline if we were previously online/pending — ignore during initial startup grace
         if (!firstCheck && (this.currentStatus === 'online' || this.currentStatus === 'pending')) {
           this.notifyStatus('offline');
@@ -229,11 +245,17 @@ export class ExecutorProcess {
       firstCheck = false;
     };
     // First check after 3s to allow the executor to bind its port
-    setTimeout(check, 3000);
+    this.healthPollFirstTimer = setTimeout(check, 3000);
     this.healthPollTimer = setInterval(check, 8000);
   }
 
   private stopHealthPoll(): void {
+    // 递增代际，令所有在飞/待发的 check 回调立即失效
+    this.healthPollGen++;
+    if (this.healthPollFirstTimer) {
+      clearTimeout(this.healthPollFirstTimer);
+      this.healthPollFirstTimer = null;
+    }
     if (this.healthPollTimer) {
       clearInterval(this.healthPollTimer);
       this.healthPollTimer = null;

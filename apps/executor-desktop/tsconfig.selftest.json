@@ -12,7 +12,8 @@
     "src/main/token-crypto.selftest.ts",
     "src/main/updater.selftest.ts",
     "src/main/notifier-rules.ts",
-    "src/main/notifier-rules.selftest.ts"
+    "src/main/notifier-rules.selftest.ts",
+    "src/main/log-incremental.selftest.ts"
   ],
   "exclude": []
 }

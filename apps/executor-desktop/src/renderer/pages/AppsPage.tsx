@@ -32,6 +32,9 @@ function classifyLog(line: string): string {
 function AppLogViewer({ entry, onClose }: { entry: AppEntry; onClose: () => void }) {
   const [lines, setLines] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
+  // D 修正：原实现 `catch { /* ignore */ }` 把 IPC 失败静默吞掉——用户看到
+  // 「暂无日志文件」而真实原因是读取失败（权限/文件被删/通道异常），无法区分。
+  const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState('');
   const [autoRefresh, setAutoRefresh] = useState(true);
   const totalLinesRef = useRef(0);
@@ -50,7 +53,10 @@ function AppLogViewer({ entry, onClose }: { entry: AppEntry; onClose: () => void
         });
       }
       totalLinesRef.current = result.totalLines;
-    } catch { /* ignore */ }
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
   }, [entry]);
 
   // Initial load
@@ -128,10 +134,16 @@ function AppLogViewer({ entry, onClose }: { entry: AppEntry; onClose: () => void
           {loading && lines.length === 0 && (
             <span className="log-empty">加载中...</span>
           )}
-          {!loading && !entry.hasLog && (
+          {/* D 修正：读取失败必须显性化，不能与「无日志」混为一谈 */}
+          {error && !loading && (
+            <div className="log-error" role="alert">
+              ⚠ 读取日志失败：{error}
+            </div>
+          )}
+          {!loading && !error && !entry.hasLog && (
             <span className="log-empty">暂无日志文件（app.log 不存在）</span>
           )}
-          {filtered.length === 0 && !loading && entry.hasLog && (
+          {filtered.length === 0 && !loading && !error && entry.hasLog && (
             <span className="log-empty">{q ? '无匹配结果' : '日志为空'}</span>
           )}
           {filtered.map((line, i) => (
@@ -147,6 +159,9 @@ function AppLogViewer({ entry, onClose }: { entry: AppEntry; onClose: () => void
 export default function AppsPage() {
   const [apps, setApps] = useState<AppEntry[]>([]);
   const [loading, setLoading] = useState(false);
+  // D 修正：列表加载失败同样不能静默——失败会让页面显示「暂无已部署应用」，
+  // 用户会误以为需要去后台部署，而真实原因是本地 IPC/目录读取异常。
+  const [error, setError] = useState<string | null>(null);
   const [viewing, setViewing] = useState<AppEntry | null>(null);
 
   const refresh = useCallback(async () => {
@@ -154,7 +169,10 @@ export default function AppsPage() {
     try {
       const list = await window.electronAPI.listApps();
       setApps(list);
-    } catch { /* ignore */ } finally {
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
       setLoading(false);
     }
   }, []);
@@ -180,7 +198,13 @@ export default function AppsPage() {
         </button>
       </div>
 
-      {apps.length === 0 && !loading && (
+      {error && (
+        <div className="apps-error" role="alert">
+          ⚠ 加载应用列表失败：{error}
+        </div>
+      )}
+
+      {apps.length === 0 && !loading && !error && (
         <div className="apps-empty">
           暂未发现本地部署的应用<br />
           <span>需要先在管理后台创建并部署应用到本执行器</span>

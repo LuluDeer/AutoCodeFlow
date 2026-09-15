@@ -8,11 +8,16 @@
       "components": [
         "autocodeflow-sdk",
         "autocodeflow-mcp-server",
-        "autoflow-sdk"
+        "autoflow-sdk",
+        "autocodeflow-executor-desktop"
       ]
     }
   ],
   "packages": {
+    "apps/executor-desktop": {
+      "release-type": "node",
+      "component": "autocodeflow-executor-desktop"
+    },
     "packages/autocodeflow-node-sdk": {
       "release-type": "node",
       "component": "autocodeflow-sdk"
