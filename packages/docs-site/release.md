@@ -3,7 +3,7 @@
 > 重组自 [docs/sdk-guide.md「版本与发布流程」](https://github.com/LuluDeer/AutoCodeFlow/blob/develop/docs/sdk-guide.md)
 > 与双 SDK README「版本与发布」节。
 
-## 版本矩阵（当前 1.3.0）
+## 版本矩阵（当前 1.4.0）
 
 三包走 **lockstep 单版本线**（版本号一致、同批发布）：
 
