@@ -4210,6 +4210,8 @@ export interface operations {
                 status?: string;
                 /** @description Filter by runtime (python/node/shell) */
                 runtime?: string;
+                /** @description F-10: comma-separated projection whitelist (e.g. 'id,name'). Only whitelisted lightweight columns are selected — params/secrets/glueSource and other heavy columns are skipped. Illegal fields → 400. */
+                fields?: unknown;
             };
             header?: never;
             path?: never;
