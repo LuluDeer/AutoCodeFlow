@@ -70,7 +70,7 @@
 
 ## 6. 终止（admin → 执行器）：POST http://<addr>/api/executions/:executionId/kill
 
-admin 侧 `notifyExecutorKill`：共享 token、空请求体、3s 超时、best-effort（失败仅 warn）。执行器：200 `{ok:true}`（已终止/已结束/已取消）或 404 `{ok:false}`（不在运行表）。
+admin 侧 `notifyExecutorKill`：共享 token、空请求体、3s 超时、best-effort（失败仅 warn）。执行器：200 `{ok:true}`（已终止/已结束/已取消）或 404 `{ok:false}`（不在运行表）。响应形状由 executor-protocol 的 **`KillResponse`**（`{ok:boolean}`，`additionalProperties:false` → zod `.strict()` / pydantic `extra="forbid"`）钉死：node 五个返回点经 `killBody()`、python 三处经 `_kill_body()` 过**生成的** schema 后才发送，多/缺字段或非布尔即服务端 500（不发 admin 无法解析的载荷）。
 
 ## 7. 配置热更（admin → 执行器）：POST http://<addr>/api/config/reload
 
@@ -106,7 +106,7 @@ CallbackItemDto 字段（apps/admin-api/src/modules/task/dto/execution-callback.
 
 ## 10. 日志回捞（admin → 执行器）：GET http://<addr>/api/logs/:executionId?fromLine=&limit=
 
-admin LOG-01 触发：`limit=2000` 分页推进，依赖 `hasMore`。执行器响应 `{ lines: string[], totalLines: number, hasMore: boolean }`（node 流式逐行；python 全量读后切片）。executionId 均做路径穿越防护。
+admin LOG-01 触发：`limit=2000` 分页推进，依赖 `hasMore`。执行器响应 `{ lines: string[], totalLines: number, hasMore: boolean }`（`totalLines` 为整份日志总行数、非本页；两侧均逐行流式，只保留落在窗口内的行——E-21 起 python 不再全量读入内存）。该响应形状由 executor-protocol 的 **`LogsResponse`**（`lines:string[]`、`totalLines:integer≥0`、`hasMore:boolean`，`additionalProperties:false`）钉死：node 成功页过 `LogsResponseSchema`、python 返回前过生成的 `ProtocolLogsResponse`，缺字段/改字段名/多余键即服务端报错。executionId 均做路径穿越防护。查询参数两端有**已知行为差异**（不在响应契约内）：node 对 `fromLine/limit` 做 clamp（负值归 0、limit 夹到 1..2000），python 用 FastAPI `Query(ge/le)` 越界直接 422。
 
 ## 兼容性红线（改动前必读）
 

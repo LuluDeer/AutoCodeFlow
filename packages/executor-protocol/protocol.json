@@ -201,6 +201,38 @@
         "status": { "enum": ["ready", "not_ready"] },
         "reason": { "type": "string" }
       }
+    },
+    "KillResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ok"],
+      "properties": {
+        "ok": {
+          "type": "boolean",
+          "description": "POST /executions/{executionId}/kill 的响应：运行表命中并已终止/标记取消为 true（200）；不在运行表（从未领取/已终态/已清理）为 false（404，admin 同样按已结束处理）。两侧逐字段同形，故 forbid 额外键——任一端多发字段即契约漂移。"
+        }
+      }
+    },
+    "LogsResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["lines", "totalLines", "hasMore"],
+      "properties": {
+        "lines": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "GET /logs/{executionId} 当前页（[fromLine, fromLine+limit) 窗口）的日志行"
+        },
+        "totalLines": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "整份日志的总行数（整文件走一遍以维持 admin 回填分页正确，不是本页行数）"
+        },
+        "hasMore": {
+          "type": "boolean",
+          "description": "fromLine + 本页行数 < totalLines，admin/UI 据此翻页"
+        }
+      }
     }
   },
   "schemaVectors": {
@@ -356,6 +388,49 @@
           "name": "deprecated-status-unready",
           "payload": { "status": "unready" },
           "expectErrorPath": ["status"]
+        }
+      ]
+    },
+    "KillResponse": {
+      "valid": [
+        { "ok": true },
+        { "ok": false }
+      ],
+      "invalid": [
+        {
+          "name": "missing-ok",
+          "payload": {},
+          "expectErrorPath": ["ok"]
+        },
+        {
+          "name": "ok-not-boolean",
+          "payload": { "ok": "maybe" },
+          "expectErrorPath": ["ok"],
+          "$comment": "刻意不用 'yes'/'true'/0/1——pydantic lax 模式会把这些值强转成 bool（zod 不会），共享向量必须在两侧默认校验模式下都被拒，故选一个非布尔关键字的字符串。"
+        }
+      ],
+      "_extraKeyNote": "additionalProperties:false（zod .strict() / pydantic extra=forbid）对『多余键』的拒绝不放进共享向量：zod 把未知键报在根路径（键名在 issue.keys），pydantic 报在该键 loc，两侧错误定位不同形，无法用同一个 expectErrorPath 表达。多余键拒绝改由两侧各自的运行时/契约测试断言。"
+    },
+    "LogsResponse": {
+      "valid": [
+        { "lines": [], "totalLines": 0, "hasMore": false },
+        { "lines": ["a", "b"], "totalLines": 42, "hasMore": true }
+      ],
+      "invalid": [
+        {
+          "name": "missing-hasMore",
+          "payload": { "lines": [], "totalLines": 0 },
+          "expectErrorPath": ["hasMore"]
+        },
+        {
+          "name": "lines-item-not-string",
+          "payload": { "lines": [1], "totalLines": 1, "hasMore": false },
+          "expectErrorPath": ["lines", 0]
+        },
+        {
+          "name": "totalLines-negative",
+          "payload": { "lines": [], "totalLines": -1, "hasMore": false },
+          "expectErrorPath": ["totalLines"]
         }
       ]
     }

@@ -7,6 +7,8 @@ import {
   ConfigReloadRequestSchema,
   ConfigReloadResponseSchema,
   HealthReadyResponseSchema,
+  KillResponseSchema,
+  LogsResponseSchema,
 } from "./generated/protocol.schemas";
 
 const PROTOCOL_RELATIVE = path.join(
@@ -53,6 +55,8 @@ const SCHEMAS: Record<string, { safeParse: (v: unknown) => { success: boolean; e
   ConfigReloadRequest: ConfigReloadRequestSchema,
   ConfigReloadResponse: ConfigReloadResponseSchema,
   HealthReadyResponse: HealthReadyResponseSchema,
+  KillResponse: KillResponseSchema,
+  LogsResponse: LogsResponseSchema,
 };
 
 interface InvalidVector {
