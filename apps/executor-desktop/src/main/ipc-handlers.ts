@@ -9,7 +9,7 @@ import * as os from 'os';
 import * as net from 'net';
 import { configStore, executorProcess, heartbeat, syncNotifierWithConfig, trayManager, windowManager } from './index';
 import { setAutoLaunchEnabled, getAutoLaunchEnabled } from './autolaunch';
-import { checkForUpdates, quitAndInstall } from './updater';
+import { checkForUpdates, downloadUpdate, quitAndInstall } from './updater';
 import {
   checkPathWithinDomains,
   hasAllowedLogExtension,
@@ -32,6 +32,94 @@ function getAllowedLogDomains(): string[] {
   }
   domains.push(path.join(app.getPath('userData'), 'logs'));
   return domains;
+}
+
+/**
+ * PERF-DSK-01：日志增量读取。
+ *
+ * 原实现每次轮询都 readFileSync 整个文件 + split('\n') 全量重建行数组，
+ * 再 slice(fromLine) 丢掉已发过的前缀——渲染层在任务运行期每 1.5s 轮询一次，
+ * 于是一个持续输出的大日志会呈平方级 I/O 增长（主进程同时承载 UI，直接卡界面）。
+ *
+ * 改为按字节偏移增量读：缓存「文件 → 已读字节数 + 已发总行数」，只读新增
+ * 区间，未读完的半行留到下次（避免把被截断的一行当成完整行发出去）。
+ * 缓存以 path 为键并做容量上限，防止长跑进程无限增长。
+ */
+interface LogCursor {
+  /** 已消费到的字节偏移（永远停在一行结尾之后） */
+  offset: number;
+  /** 已产出的总行数（= 下次请求的 fromLine 基准） */
+  totalLines: number;
+}
+const logCursors = new Map<string, LogCursor>();
+const LOG_CURSOR_LIMIT = 64;
+
+function readLogIncremental(
+  filePath: string,
+  fromLine: number,
+): { lines: string[]; totalLines: number; error?: string } {
+  try {
+    const { size } = fs.statSync(filePath);
+    let cursor = logCursors.get(filePath);
+
+    // 文件被截断/轮转（大小回退），或调用方要求的起点落后于缓存 → 重建游标
+    if (!cursor || size < cursor.offset) {
+      cursor = { offset: 0, totalLines: 0 };
+      logCursors.set(filePath, cursor);
+    }
+
+    // 调用方要求从头读（刷新按钮），或游标超前于请求 → 从头重建
+    if (fromLine === 0 && cursor.totalLines !== 0) {
+      cursor = { offset: 0, totalLines: 0 };
+      logCursors.set(filePath, cursor);
+    }
+
+    // 请求起点超前于缓存已知行数（如 UI 状态被重置）→ 保守地从该行号重建：
+    // 此时无法用偏移定位，退回一次全量读（罕见路径，不常发生）。
+    if (fromLine > cursor.totalLines) {
+      const content = fs.readFileSync(filePath, 'utf-8');
+      const allLines = content.split('\n').filter((l) => l.length > 0);
+      return { lines: allLines.slice(fromLine), totalLines: allLines.length };
+    }
+
+    // 只需读 offset..size 区间
+    const length = size - cursor.offset;
+    if (length <= 0) {
+      return { lines: [], totalLines: cursor.totalLines };
+    }
+    const fd = fs.openSync(filePath, 'r');
+    let chunk: string;
+    try {
+      const buf = Buffer.allocUnsafe(length);
+      const read = fs.readSync(fd, buf, 0, length, cursor.offset);
+      chunk = buf.subarray(0, read).toString('utf-8');
+    } finally {
+      fs.closeSync(fd);
+    }
+
+    // 只消费到最后一个换行符：尾部半行留待下次（避免发半行 + 重复计数）
+    const lastNl = chunk.lastIndexOf('\n');
+    if (lastNl === -1) {
+      return { lines: [], totalLines: cursor.totalLines };
+    }
+    const consumable = chunk.slice(0, lastNl);
+    const newLines = consumable.split('\n').filter((l) => l.length > 0);
+
+    cursor.offset += Buffer.byteLength(chunk.slice(0, lastNl + 1), 'utf-8');
+    cursor.totalLines += newLines.length;
+
+    // 返回给调用方的行 = 本次新增中，调用方尚未见过的那部分
+    const skip = Math.max(0, fromLine - (cursor.totalLines - newLines.length));
+    return { lines: newLines.slice(skip), totalLines: cursor.totalLines };
+  } catch {
+    return { lines: [], totalLines: 0 };
+  } finally {
+    // 简单的 LRU 式裁剪：超限时清掉最旧的一批
+    if (logCursors.size > LOG_CURSOR_LIMIT) {
+      const keys = Array.from(logCursors.keys()).slice(0, logCursors.size - LOG_CURSOR_LIMIT);
+      for (const k of keys) logCursors.delete(k);
+    }
+  }
 }
 
 export function registerIpcHandlers(): void {
@@ -58,6 +146,11 @@ export function registerIpcHandlers(): void {
     // DSK-04：通知开关 / workDir 可能被改——热同步通知器（开关 + meta 轮询目录）
     syncNotifierWithConfig();
     // 如果执行器正在运行，热重载配置（停止后用新配置重启）
+    // 注意：配置本身已落盘成功，但"热重载"是用户可感知的副作用——若重启
+    // 失败（端口被占 / token 失效等），执行器会停留在停止态。原实现只写日志
+    // 却仍返回 ok:true，渲染层于是显示"已保存，配置已生效"，而执行器其实已经
+    // 死了且无任何提示。现改为把 reload 结果一并回传，让 UI 如实呈现。
+    let reloadError: string | null = null;
     if (executorProcess.isRunning()) {
       try {
         heartbeat.stop();
@@ -66,10 +159,13 @@ export function registerIpcHandlers(): void {
         heartbeat.start(configStore.get('executorPort'));
         log.info('Executor reloaded with new config');
       } catch (err: any) {
-        log.error('Failed to reload executor after config save:', err.message);
+        reloadError = err?.message ?? String(err);
+        log.error('Failed to reload executor after config save:', reloadError);
+        // 重启失败时心跳必须保持停止，避免对一个未运行的执行器报 online
+        heartbeat.stop();
       }
     }
-    return { ok: true };
+    return reloadError ? { ok: true, reloadError } : { ok: true };
   });
 
   ipcMain.handle('config:save-and-close-wizard', async (_event, cfg) => {
@@ -137,6 +233,13 @@ export function registerIpcHandlers(): void {
     return { ok: true };
   });
 
+  // 用户确认升级第一步：下载新版本。autoDownload=false 时 electron-updater
+  // 不会自行下载，必须由渲染层显式触发；进度经 updater:progress 通道回推。
+  ipcMain.handle('updater:download', async () => {
+    await downloadUpdate();
+    return { ok: true };
+  });
+
   // 用户确认升级：下载完成后退出并安装（AppImage/deb 均由 electron-updater
   // 按 resources/package-type 分派对应安装器）
   ipcMain.handle('updater:install', () => {
@@ -196,13 +299,7 @@ export function registerIpcHandlers(): void {
       }
       const target = check.resolvedPath!;
       if (fs.existsSync(target)) {
-        try {
-          const content = fs.readFileSync(target, 'utf-8');
-          const allLines = content.split('\n').filter((l: string) => l.length > 0);
-          const totalLines = allLines.length;
-          const lines = allLines.slice(fromLine);
-          return { lines, totalLines };
-        } catch { return { lines: [], totalLines: 0 }; }
+        return readLogIncremental(target, fromLine);
       }
     }
     return { lines: [], totalLines: 0 };
@@ -272,28 +369,44 @@ export function registerIpcHandlers(): void {
       logPath: string;
       deployDir: string;
     }> = [];
-    try {
-      const appIds = fs.readdirSync(appsDir).filter((d: string) =>
-        fs.statSync(path.join(appsDir, d)).isDirectory()
-      );
-      for (const appId of appIds) {
-        const appDir = path.join(appsDir, appId);
-        const deploymentIds = fs.readdirSync(appDir).filter((d: string) =>
-          fs.statSync(path.join(appDir, d)).isDirectory()
-        );
-        for (const deploymentId of deploymentIds) {
-          const deployDir = path.join(appDir, deploymentId);
-          const logPath = path.join(deployDir, 'app.log');
-          result.push({
-            appId,
-            deploymentId,
-            hasLog: fs.existsSync(logPath),
-            logPath,
-            deployDir,
-          });
-        }
+    // D 修正：原为 `catch { /* ignore */ }`——权限/IO 异常会让渲染层看到
+    // 空列表，与"确实没有部署"完全无法区分。改为向上抛出，由 apps:list 的
+    // IPC reject 传入渲染层（AppsPage 已展示错误条）。
+    // 单个条目 stat 失败（并发删除等）仍跳过——那是正常的目录竞争，
+    // 不代表整体列举失败。
+    const appIds = fs.readdirSync(appsDir).filter((d: string) => {
+      try {
+        return fs.statSync(path.join(appsDir, d)).isDirectory();
+      } catch {
+        return false;
       }
-    } catch { /* ignore */ }
+    });
+    for (const appId of appIds) {
+      const appDir = path.join(appsDir, appId);
+      let deploymentIds: string[];
+      try {
+        deploymentIds = fs.readdirSync(appDir).filter((d: string) => {
+          try {
+            return fs.statSync(path.join(appDir, d)).isDirectory();
+          } catch {
+            return false;
+          }
+        });
+      } catch {
+        continue; // 单应用目录读失败：跳过该应用，不影响其余
+      }
+      for (const deploymentId of deploymentIds) {
+        const deployDir = path.join(appDir, deploymentId);
+        const logPath = path.join(deployDir, 'app.log');
+        result.push({
+          appId,
+          deploymentId,
+          hasLog: fs.existsSync(logPath),
+          logPath,
+          deployDir,
+        });
+      }
+    }
     return result;
   });
 
@@ -308,11 +421,9 @@ export function registerIpcHandlers(): void {
     }
     const target = check.resolvedPath!;
     if (!fs.existsSync(target)) return { lines: [], totalLines: 0 };
-    try {
-      const content = fs.readFileSync(target, 'utf-8');
-      const allLines = content.split('\n').filter((l: string) => l.length > 0);
-      return { lines: allLines.slice(fromLine), totalLines: allLines.length };
-    } catch { return { lines: [], totalLines: 0 }; }
+    // PERF-DSK-01：与 log:read 同因——AppsPage 每 2s 轮询，全量重读同样是
+    // 平方级 I/O。复用同一套增量游标实现。
+    return readLogIncremental(target, fromLine);
   });
 
   // 网络工具 ──────────────────────────────────────────
