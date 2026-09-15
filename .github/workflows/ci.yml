@@ -960,7 +960,13 @@ jobs:
         with:
           node-version: '24'
           cache: 'npm'
-          cache-dependency-path: apps/executor-desktop/package-lock.json
+          # F4（本轮审计）：本 job 分别在 executor-desktop 与 executor-node 跑
+          # npm ci，而本仓库不 hoist（ARCH-20，每个 app 自带 lockfile）——只列一个
+          # lockfile 会让 executor-node 的安装永远无法命中缓存、且它单独变更时
+          # 不会使缓存失效。与本文件既有写法（807/880/1148）保持一致。
+          cache-dependency-path: |
+            apps/executor-desktop/package-lock.json
+            apps/executor-node/package-lock.json
       - run: npm ci
         working-directory: apps/executor-desktop
       # bundle-executor.sh 的 ncc 会对 executor-node 全项目（tsconfig include）
@@ -1006,7 +1012,13 @@ jobs:
         with:
           node-version: '24'
           cache: 'npm'
-          cache-dependency-path: apps/executor-desktop/package-lock.json
+          # F4（本轮审计）：本 job 分别在 executor-desktop 与 executor-node 跑
+          # npm ci，而本仓库不 hoist（ARCH-20，每个 app 自带 lockfile）——只列一个
+          # lockfile 会让 executor-node 的安装永远无法命中缓存、且它单独变更时
+          # 不会使缓存失效。与本文件既有写法（807/880/1148）保持一致。
+          cache-dependency-path: |
+            apps/executor-desktop/package-lock.json
+            apps/executor-node/package-lock.json
       - run: npm ci
         working-directory: apps/executor-desktop
       # 同 linux bundle：ncc 全项目类型检查需要 executor-node 依赖在位
@@ -1049,7 +1061,13 @@ jobs:
         with:
           node-version: '24'
           cache: 'npm'
-          cache-dependency-path: apps/executor-desktop/package-lock.json
+          # F4（本轮审计）：本 job 分别在 executor-desktop 与 executor-node 跑
+          # npm ci，而本仓库不 hoist（ARCH-20，每个 app 自带 lockfile）——只列一个
+          # lockfile 会让 executor-node 的安装永远无法命中缓存、且它单独变更时
+          # 不会使缓存失效。与本文件既有写法（807/880/1148）保持一致。
+          cache-dependency-path: |
+            apps/executor-desktop/package-lock.json
+            apps/executor-node/package-lock.json
       - run: npm ci
         working-directory: apps/executor-desktop
       # build:executor 的 ncc 全项目类型检查需要 executor-node 依赖在位

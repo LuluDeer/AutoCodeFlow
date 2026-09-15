@@ -134,17 +134,40 @@ describe("AUTH-03 ApiKeyAuth（guard acf_ 分支）", () => {
     ).rejects.toBeInstanceOf(ForbiddenException);
   });
 
-  it("manage key + PUT config → 放行；manage key 仍被 auth/ api-keys 面 401", async () => {
+  // SEC-KEY-CFG（本轮审计）：本用例此前断言 `manage` key 可以 PUT config ——
+  // 把越权固化成了「预期行为」，而且选的正是 config/executor-shared-token
+  // 这条生成共享凭据的路径。manage 的 scope 矩阵是 method×path 的、直接放行
+  // 所有写，RolesGuard 又补偿不了（ApiKeyUser 无 role 字段），所以 config
+  // 必须和 api-keys/auth/users 一样进 JWT_ONLY_API_KEY_PATHS。
+  it("manage key 不得改写 config（JWT-only）；manage key 仍被 auth/ api-keys 面 401", async () => {
     svc.authenticate.mockResolvedValue({ apiKey: keyRow({ scope: "manage" }) });
-    await expect(
-      auth.authenticate(
-        makeContext("PUT", "config/executor-shared-token"),
-        "acf_deadbeef",
-      ),
-    ).resolves.toBe(true);
+    // 配置存储是凭据同级敏感面：共享 token 生成、AI 出站地址改写、配置回滚
+    for (const p of [
+      "config/executor-shared-token",
+      "config/executor-shared-token/generate",
+      "config",
+      "config/ai.openaiBaseUrl",
+    ]) {
+      await expect(
+        auth.authenticate(makeContext("PUT", p), "acf_deadbeef"),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+    }
     await expect(
       auth.authenticate(makeContext("POST", "api-keys"), "acf_deadbeef"),
     ).rejects.toBeInstanceOf(UnauthorizedException);
+    await expect(
+      auth.authenticate(makeContext("POST", "auth/login"), "acf_deadbeef"),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+  });
+
+  it("manage key 仍可写普通业务面（收敛只针对 config/凭据，不误伤）", async () => {
+    svc.authenticate.mockResolvedValue({ apiKey: keyRow({ scope: "manage" }) });
+    await expect(
+      auth.authenticate(makeContext("POST", "tasks"), "acf_deadbeef"),
+    ).resolves.toBe(true);
+    await expect(
+      auth.authenticate(makeContext("DELETE", "tasks/abc"), "acf_deadbeef"),
+    ).resolves.toBe(true);
   });
 
   it("path 带全局 api 前缀与查询串时归一化判定", async () => {

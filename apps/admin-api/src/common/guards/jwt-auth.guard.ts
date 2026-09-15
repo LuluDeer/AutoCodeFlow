@@ -31,11 +31,22 @@ export const API_KEY_AUTH_FACADE = "API_KEY_AUTH_FACADE";
  * never be able to manage credentials (including its own) or touch the
  * account/session layer. Matched against the request path AFTER stripping
  * the global `api` prefix (and query string).
+ *
+ * SEC-KEY-CFG（本轮审计）：`config` 此前不在本表内，于是**任何 `manage`
+ * scope 的 API Key 都能改系统配置**——api-key-scope.util 的矩阵是
+ * method×path 的，`manage` 直接 `return { allowed: true }` 放行所有写；
+ * 而 RolesGuard 补偿不了：ApiKeyUser 没有 role 字段，requiredRoles.includes
+ * (undefined) 恒为 false。可写面包括 PUT /api/config（改 ai.openaiBaseUrl
+ * 即把出站 AI 调用重定向到攻击者主机）、POST /config/executor-shared-token/
+ * generate、配置回滚、DELETE /config/:key。
+ * 该文件自身的注释声称「这类面不可达」，但只对原先列出的三个前缀成立；
+ * 配置存储与凭据管理层同级敏感，一并纳入。
  */
 export const JWT_ONLY_API_KEY_PATHS: readonly string[] = [
   "api-keys",
   "auth",
   "users",
+  "config",
 ];
 
 /** Extract the raw bearer credential from the Authorization header. */
