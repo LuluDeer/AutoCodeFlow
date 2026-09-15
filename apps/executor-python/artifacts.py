@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +26,23 @@ MAX_ARTIFACT_SIZE = 100 * 1024 * 1024  # 100 MB
 
 _ART_DIR_NAME = "artifacts"
 _CHUNK = 1024 * 1024  # 1 MiB，流式哈希
+
+# ART-NAME-01（本轮审计）：与 admin 的权威守卫**逐字对齐**。
+# apps/admin-api/src/modules/artifacts/artifacts.constants.ts：
+#   SAFE_ARTIFACT_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$/
+# 此前这里只检查「首尾空白 + 路径分隔符」，于是 `.hidden.txt` / `a b.txt` /
+# `x#frag.txt` / `_under.csv` / 超长名等本地放行、admin 一律 400。
+# 其中 `#` 最阴险：它被 httpx 当作 URL fragment，`x#frag.txt` 实际只上传了
+# `x`（admin 存的是 `x`），而清单里仍记 `x#frag.txt` —— DB 里挂着一个下载
+# 必 404 的条目，真实文件则成了孤儿。这直接违反本模块开头「清单只收录实际上
+# 传成功的条目，保证 DB 清单与可下载文件一致」的铁律。
+# 现在按 admin 同一字符集**先过滤再构造 URL**，从源头消除该类不一致。
+SAFE_ARTIFACT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$")
+
+
+def is_safe_artifact_name(name: str) -> bool:
+    """裸文件名是否满足 admin 的 SAFE_ARTIFACT_NAME_RE（同一字符集与长度）。"""
+    return bool(SAFE_ARTIFACT_NAME_RE.match(name))
 
 
 def artifacts_dir_for(work_dir: Path) -> Path:
@@ -65,8 +83,10 @@ def collect_artifacts(work_dir: Path) -> list[dict[str, Any]]:
             break
         if not entry.is_file():
             continue
-        # 与 admin SAFE_ARTIFACT_NAME_RE 对齐：裸文件名、无路径分隔符、无非法字符。
-        if entry.name != entry.name.strip() or "/" in entry.name or "\\" in entry.name:
+        # 与 admin SAFE_ARTIFACT_NAME_RE 对齐：以字母/数字开头，仅含
+        # [A-Za-z0-9._-]，长度 ≤255。不满足者本地即跳过（admin 必 400），
+        # 从源头杜绝「清单记了但下载 404」的 DB/磁盘不一致。
+        if not is_safe_artifact_name(entry.name):
             logger.warning("artifacts: 跳过非法文件名 %r", entry.name)
             continue
         try:
@@ -110,7 +130,14 @@ async def _upload_one(
     token: str | None,
 ) -> bool:
     """PUT 上传单个产物；成功返回 True。任何异常吞掉并记日志。"""
-    url = f"{_api_base(admin_base_url)}/executions/{execution_id}/artifacts/{item['name']}"
+    # ART-NAME-01: 纵深防御——即便调用方绕过 is_safe_artifact_name 传入非法名，
+    # 也在此处断言，绝不把原始文件名拼进 URL（`#` 会被当作 fragment、`?` 会被
+    # 当作查询串，导致「上传成功但名字不对」的静默错位）。
+    name = item["name"]
+    if not is_safe_artifact_name(name):
+        logger.warning("artifacts: 拒绝上传非法产物名 %r", name)
+        return False
+    url = f"{_api_base(admin_base_url)}/executions/{execution_id}/artifacts/{name}"
     try:
         with open(item["path"], "rb") as fh:
             files = {"file": (item["name"], fh, "application/octet-stream")}
