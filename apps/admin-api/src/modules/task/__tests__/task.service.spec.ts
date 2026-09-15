@@ -3328,6 +3328,54 @@ describe("TaskService (__tests__)", () => {
         NotFoundException,
       );
     });
+
+    /**
+     * VER-DIFF-01（本轮审计）：快照此前漏了 maintenanceWindows / runbook
+     * （两者都经 create-task.dto 用户可写）。因 compareVersions 的键集合完全
+     * 派生自快照本身（`new Set([...Object.keys(v1.snapshot), ...])`），**不在
+     * 快照里的字段永远不可能出现在差异里** —— 用户改了维护窗口或 runbook，
+     * 对比两版却显示"无差异"。
+     */
+    it("快照含 maintenanceWindows / runbook（否则版本对比永远看不到这两项改动）", async () => {
+      const task = {
+        id: "t1",
+        name: "task",
+        maintenanceWindows: [
+          { start: "0 2 * * *", end: "0 4 * * *", timezone: "UTC" },
+        ],
+        runbook: "## 排障\n先看日志",
+      };
+      taskRepo.findOne.mockResolvedValue(task);
+      versionRepo.find.mockResolvedValue([]);
+      versionRepo.save.mockImplementation((v: any) =>
+        Promise.resolve({ id: "v1", ...v }),
+      );
+
+      await service.saveVersion("t1", "user", "with-windows");
+
+      const snapshot = versionRepo.create.mock.calls[0][0].snapshot;
+      expect(snapshot.maintenanceWindows).toEqual(task.maintenanceWindows);
+      expect(snapshot.runbook).toBe("## 排障\n先看日志");
+    });
+
+    it("快照刻意**不含** secrets（版本端点原样回传 snapshot，脱敏只挂在 task 读路径）", async () => {
+      const task = {
+        id: "t1",
+        name: "task",
+        secrets: { API_KEY: "enc:v1:deadbeef" },
+      };
+      taskRepo.findOne.mockResolvedValue(task);
+      versionRepo.find.mockResolvedValue([]);
+      versionRepo.save.mockImplementation((v: any) =>
+        Promise.resolve({ id: "v1", ...v }),
+      );
+
+      await service.saveVersion("t1", "user", "with-secrets");
+
+      const snapshot = versionRepo.create.mock.calls[0][0].snapshot;
+      expect(snapshot).not.toHaveProperty("secrets");
+      expect(JSON.stringify(snapshot)).not.toContain("deadbeef");
+    });
   });
 
   describe("rollbackToVersion", () => {
@@ -3769,22 +3817,13 @@ describe("TaskService (__tests__)", () => {
     });
   });
 
-  describe("deleteVersion", () => {
-    it("deletes a version by id", async () => {
-      const version = { id: "v1", taskId: "t1" };
-      versionRepo.findOne.mockResolvedValue(version);
-      versionRepo.delete.mockResolvedValue({ affected: 1 });
-      await service.deleteVersion("t1", "v1");
-      expect(versionRepo.delete).toHaveBeenCalledWith("v1");
-    });
-
-    it("throws NotFoundException when version does not exist", async () => {
-      versionRepo.findOne.mockResolvedValue(null);
-      await expect(service.deleteVersion("t1", "ghost")).rejects.toThrow(
-        NotFoundException,
-      );
-    });
-  });
+  // VER-DIFF-02（本轮审计）：此处的 describe("deleteVersion") 随该方法的**删除**
+  // 一并移除——它覆盖的是一个全仓无调用方、controller 也无路由的死方法，且该
+  // 方法还是本服务唯一不带归属守卫的变更方法（潜在陷阱：将来接一条
+  // DELETE /tasks/:id/versions/:versionId 就会让任意已登录用户删掉别人任务的版本
+  // 历史）。删死代码同时消除陷阱，比为一个没有消费方的方法发明「无 user 内部
+  // 调用」语义更诚实。若日后确需删除版本，请带 user 参数接线并复用
+  // assertCanWriteProjectAware，再补对应用例。
 });
 
 // ============================================================================
