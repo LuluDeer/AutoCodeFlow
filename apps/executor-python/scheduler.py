@@ -318,6 +318,12 @@ async def pull_task() -> None:
 
 
 async def heartbeat_task() -> None:
+    # HEALTH-01: 延迟导入——routers/__init__ 会 import execute.py，而 execute.py
+    # 在模块级回调 scheduler.register_running_execution_ids_provider（E1 那段
+    # 注释已说明过这条依赖），所以 scheduler 顶层 import routers.* 会形成循环导入
+    # （已实测 AttributeError）。改为在函数内导入，运行时 routers 早已加载完毕。
+    from routers.health import record_heartbeat
+
     while True:
         try:
             await asyncio.sleep(settings.heartbeat_interval_seconds)
@@ -328,6 +334,14 @@ async def heartbeat_task() -> None:
             logger.info(f'[{trace_id}] Sending heartbeat')
             async with httpx.AsyncClient(trust_env=False) as client:
                 await _send_heartbeat(client, token, trace_id)
+            # HEALTH-01（本轮审计）：此前**没有任何地方**调用
+            # routers/health.record_heartbeat —— 它是死代码。后果是
+            # /health 的 _admin_api_reachable 永远是 None，于是每次探针都退化成
+            # 一次 5s 超时的实时外呼（docstring 声称「用缓存值」是假的），
+            # lastHeartbeat 也永远是 null，运维无法据此判断心跳链路是否健康。
+            # 现在把真实心跳结果回灌给健康模块。
+            record_heartbeat(True)
         except Exception as e:
             # ERR-04: all retries exhausted — log as warning and keep the loop alive
             logger.warning(f'Heartbeat failed after all retries: {e}')
+            record_heartbeat(False)

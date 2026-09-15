@@ -556,3 +556,110 @@ def test_register_and_heartbeat_report_the_same_version():
     assert 'EXECUTOR_VERSION' in register_payload_src  # 注册载荷单源
     assert '_register_payload' in register_src  # register 经该 helper 上报
     assert 'EXECUTOR_VERSION' in heartbeat_src  # 心跳同源
+
+
+# --------------------------------------------------------------------------
+# HEALTH-01（本轮审计）：routers/health.record_heartbeat 此前是**死代码**
+# （全仓唯一命中就是它自己的定义），没有任何调用方。
+# 后果：
+#   - /health 的 _admin_api_reachable 恒为 None，于是每次探针都退化成一次
+#     5s 超时的实时外呼（docstring 声称「Use cached reachability」是假的）；
+#   - lastHeartbeat 恒为 null，运维无从据此判断心跳链路是否健康。
+# --------------------------------------------------------------------------
+
+
+def test_record_heartbeat_has_a_real_call_site():
+    """record_heartbeat 必须真的被心跳任务调用，而不是只被定义。"""
+    import inspect
+
+    import scheduler as scheduler_module
+
+    src = inspect.getsource(scheduler_module.heartbeat_task)
+    assert 'record_heartbeat(' in src, 'heartbeat_task 必须回灌心跳结果'
+    # 成功与失败两条路径都要上报（否则失败时健康面仍显示旧的成功态）
+    assert 'record_heartbeat(True)' in src
+    assert 'record_heartbeat(False)' in src
+
+
+def test_record_heartbeat_updates_health_state():
+    from routers import health as health_module
+
+    health_module._last_heartbeat_time = None
+    health_module._admin_api_reachable = None
+
+    health_module.record_heartbeat(True)
+    assert health_module._admin_api_reachable is True
+    assert health_module._last_heartbeat_time is not None
+
+    health_module.record_heartbeat(False)
+    assert health_module._admin_api_reachable is False
+    # 失败不清掉上次成功时间（用于判断「曾经通过、现在断了」）
+    assert health_module._last_heartbeat_time is not None
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_task_feeds_health_on_success(monkeypatch):
+    """/health 的缓存态必须由真实心跳结果填充（而不是永远 None）。"""
+    from routers import health as health_module
+    import scheduler as scheduler_module
+
+    health_module._admin_api_reachable = None
+    health_module._last_heartbeat_time = None
+
+    async def fake_send(client, token, trace_id=None):
+        return None  # 不抛错即代表一次成功的心跳
+
+    monkeypatch.setattr(scheduler_module, '_send_heartbeat', fake_send)
+    monkeypatch.setattr(
+        scheduler_module, 'get_current_token', AsyncMock(return_value='t')
+    )
+    # 只把心跳间隔压到 0 —— 不要 monkeypatch asyncio.sleep 本身：那是同一个
+    # 全局模块对象，会把测试自己的等待也变成空转，从而饿死事件循环并挂住。
+    monkeypatch.setattr(scheduler_module.settings, 'heartbeat_interval_seconds', 0)
+
+    task = asyncio.create_task(scheduler_module.heartbeat_task())
+    try:
+        for _ in range(100):
+            await asyncio.sleep(0.01)
+            if health_module._admin_api_reachable is not None:
+                break
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert health_module._admin_api_reachable is True, (
+        '心跳成功跑过之后 /health 的缓存态应为 True，而不是仍为 None'
+    )
+    assert health_module._last_heartbeat_time is not None
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_task_feeds_health_on_failure(monkeypatch):
+    """心跳失败必须把 /health 的缓存态置为 False（而不是停留在旧的成功态）。"""
+    from routers import health as health_module
+    import scheduler as scheduler_module
+
+    health_module._admin_api_reachable = True  # 旧的成功态
+
+    async def boom(client, token, trace_id=None):
+        raise RuntimeError('admin down')
+
+    monkeypatch.setattr(scheduler_module, '_send_heartbeat', boom)
+    monkeypatch.setattr(
+        scheduler_module, 'get_current_token', AsyncMock(return_value='t')
+    )
+    monkeypatch.setattr(scheduler_module.settings, 'heartbeat_interval_seconds', 0)
+
+    task = asyncio.create_task(scheduler_module.heartbeat_task())
+    try:
+        for _ in range(100):
+            await asyncio.sleep(0.01)
+            if health_module._admin_api_reachable is False:
+                break
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert health_module._admin_api_reachable is False
