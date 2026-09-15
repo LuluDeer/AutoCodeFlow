@@ -13,7 +13,7 @@
 // 自检：node packages/docs-site/scripts/sync-check.selftest.mjs
 import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 // 脚本位于 packages/docs-site/scripts/，仓库根 = 三级向上
@@ -350,4 +350,12 @@ function main() {
   console.log(`✔ 文档站同步校验通过（DOC-09）：${covered} 七面无 drift`);
 }
 
-if (process.argv[1] && import.meta.url.endsWith(process.argv[1].split("/").pop())) main();
+// DOC-09-GUARD（本轮审计）：入口判定此前是
+//   import.meta.url.endsWith(process.argv[1].split("/").pop())
+// Windows 上 Node 把脚本路径写成**反斜杠绝对路径**，`.split("/").pop()` 于是
+// 返回整条路径、endsWith 恒为 false —— main() 从不执行：脚本零输出、退出 0。
+// 即「文档站同步校验」在本地 Windows 上永远是绿的（CI 跑 ubuntu 故未暴露）。
+// 改为 URL 比较（与 scripts/check-migrations.mjs 的 basename 写法同精神）。
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main();
+}

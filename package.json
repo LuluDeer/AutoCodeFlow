@@ -62,6 +62,8 @@
   "check:protocol-sync": "npm run gen:protocol && git diff --exit-code -- apps/executor-node/src/generated apps/executor-python/generated",
     "gen:install-script": "node scripts/gen-install-script-content.mjs",
     "check:install-script-sync": "npm run gen:install-script && git diff --exit-code -- apps/admin-api/src/modules/executor/install-script.content.ts",
+    "check:docs-site-sync": "node packages/docs-site/scripts/sync-check.mjs",
+    "check:docs-site-sync:selftest": "node packages/docs-site/scripts/sync-check.selftest.mjs",
     "demo:seed": "node scripts/demo-seed.mjs",
     "demo:seed:selftest": "node scripts/demo-seed.selftest.mjs",
     "demo:failure:seed": "node scripts/demo-failure-seed.mjs",

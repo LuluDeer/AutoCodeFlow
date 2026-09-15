@@ -36,7 +36,9 @@ modules/api-keys/
 | `manage` | 其余全部非排除写面 |
 | 扩展域 `scopes`（NF-01） | 空格分隔词表，当前仅支持 `task:trigger`——只放行单任务触发 POST，不放宽读与其他写 |
 
-**JWT-only 排除面**（`JWT_ONLY_API_KEY_PATHS`，任何 scope 都不可达）：`api-keys`、`auth`、`users`——泄露的 key 不能铸造/替换凭证。
+**JWT-only 排除面**（`JWT_ONLY_API_KEY_PATHS`，任何 scope 都不可达）：`api-keys`、`auth`、`users`、`config`——泄露的 key 不能铸造/替换凭证，也不能改写系统配置。
+
+> `config` 于本轮审计补入（SEC-KEY-CFG）：`manage` 的 scope 矩阵是 method×path 的、直接放行所有写，且 RolesGuard 无法补偿（`ApiKeyUser` 没有 `role` 字段，`requiredRoles.includes(undefined)` 恒为 false）。因此在补入之前，一把泄露的 `manage` key 可以 `PUT /api/config` 改写 `ai.openaiBaseUrl`（把出站 AI 调用重定向到攻击者主机）、生成执行器共享凭据、回滚配置。配置存储与凭据管理层同级敏感，故并入。
 
 ## 关键机制：guard 分支鉴权链
 
@@ -44,7 +46,7 @@ modules/api-keys/
 请求 Authorization: Bearer acf_xxx
   └→ 全局 JwtAuthGuard（common/guards/jwt-auth.guard.ts）
        前缀 acf_ → ApiKeyAuth.authenticate()（api-key-auth.helper.ts）
-            1. JWT-only 面检查（api-keys/auth/users）→ 401（不进查表）
+            1. JWT-only 面检查（api-keys/auth/users/config）→ 401（不进查表）
             2. sha256 查表（unknown → 失败）
             3. revokedAt 非空 → 失败（吊销立即生效）
             4. expiresAt 已过 → 失败

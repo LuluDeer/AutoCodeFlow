@@ -6,6 +6,14 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRequire } from "node:module";
+// DOC-09-GUARD（本轮审计）：本自检在 Windows 上完全跑不起来，两处路径接缝用错：
+//   - `new URL(...).pathname` 得到 `/E:/...`，交给 readFileSync 会拼成
+//     `E:\E:\...` → ENOENT；
+//   - 动态 `import(<裸 Windows 路径>)` → ERR_UNSUPPORTED_ESM_URL_SCHEME
+//     （动态 import 只接受 URL 或 file:// 说明符）。
+// 沙箱内 16 条断言本身都是对的，坏的只是这两个接缝 —— 用 fileURLToPath /
+// pathToFileURL 走正规转换。
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const require = createRequire(import.meta.url);
 let failures = 0;
@@ -20,7 +28,7 @@ function assert(name, cond) {
 // ── 沙箱：把 sync-check.mjs 复制进 tmp 仓库骨架，注入受控文件后动态 import ──
 // sync-check 以 import.meta.url 定位仓库根（scripts/ 上三级），因此把脚本
 // 原文放进 <tmp>/packages/docs-site/scripts/ 即可让 REPO_ROOT 指向 <tmp>。
-const scriptSrc = new URL("./sync-check.mjs", import.meta.url).pathname;
+const scriptSrc = fileURLToPath(new URL("./sync-check.mjs", import.meta.url));
 const realSrc = readFileSync(scriptSrc, "utf8");
 
 async function loadSandbox(files) {
@@ -33,7 +41,10 @@ async function loadSandbox(files) {
     mkdirSync(join(p, ".."), { recursive: true });
     writeFileSync(p, content);
   }
-  const mod = await import(join(scriptDir, "sync-check.mjs") + `?t=${Date.now()}-${Math.random()}`);
+  const mod = await import(
+    pathToFileURL(join(scriptDir, "sync-check.mjs")).href +
+      `?t=${Date.now()}-${Math.random()}`
+  );
   return { mod, cleanup: () => rmSync(tmp, { recursive: true, force: true }) };
 }
 
@@ -383,7 +394,9 @@ VALID_FAILURE_REASONS = frozenset({
 // ── 用例 9：真实仓库冒烟——当前工作区状态应与主脚本实跑结论一致 ─────────
 // （不硬编码绿/红：只断言脚本能对真实文件完成七面校验且无异常。）
 {
-  const realMod = await import(scriptSrc + `?real=${Date.now()}`);
+  const realMod = await import(
+    pathToFileURL(scriptSrc).href + `?real=${Date.now()}`
+  );
   // 真实仓库的 REPO_ROOT 指向本仓库根（scripts/ 上三级），直接跑
   const results = realMod.runAllChecks();
   assert("真实仓库：七面校验全部可执行（无校验器异常）", results.length === 7 && results.every((r) => !r.errors.some((e) => e.includes("校验器异常"))));

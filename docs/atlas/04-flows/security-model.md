@@ -32,7 +32,7 @@
 
 - 三档：`readonly`（全 GET）/ `trigger`（readonly + 任务触发 POST）/ `manage`（非排除写全量）——`api-key.entity.ts:17` `ApiKeyScope`。
 - 判定纯函数：`api-key-scope.util.ts` `scopeAllows` + `isTaskTriggerPath`（`tasks/<id>/trigger` 正则；batch trigger 显式白名单）；`task:trigger` 扩展域（`API_KEY_EXTRA_SCOPES`）叠加在 legacy 三档之上，只开单任务触发，永不放宽读写。
-- JWT-only 硬排除：`jwt-auth.guard.ts:35` `JWT_ONLY_API_KEY_PATHS = ["api-keys","auth","users"]`——泄露的 Key 永远碰不到凭据管理面。
+- JWT-only 硬排除：`jwt-auth.guard.ts` `JWT_ONLY_API_KEY_PATHS = ["api-keys","auth","users","config"]`——泄露的 Key 永远碰不到凭据管理面与系统配置面（`config` 为本轮审计补入，SEC-KEY-CFG：`manage` 是全量写放行，而 `ApiKeyUser` 无 `role` 字段使 RolesGuard 无法兜底）。
 - Key 形态：`acf_` 前缀；`keyHash = sha256(明文)` 唯一索引；`keyPrefix` 前 8 字符仅展示；明文只在创建响应出现一次；吊销是软删（`revokedAt`），审计留痕。
 
 ## 机器间信任边界（执行器三段链）
