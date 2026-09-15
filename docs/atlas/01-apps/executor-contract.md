@@ -74,7 +74,7 @@ admin 侧 `notifyExecutorKill`：共享 token、空请求体、3s 超时、best-
 
 ## 7. 配置热更（admin → 执行器）：POST http://<addr>/api/config/reload
 
-admin 入口 `POST /api/executors/:id/reload-config`（ADMIN-only，R11：重用当前动态 token 而非轮换；401 最多重签重试一次）。推送体：`{ maxConcurrentTasks?, taskTimeoutSeconds?, heartbeatIntervalSeconds?, adminApiUrl?, adminApiUrlInternal?, adminApiUrlExternal? }`；node 额外接受 `adminApiUrls` 与 `workDir/WORK_DIR`（热切换带绝对路径/symlink/运行中执行守卫）；python 侧 `heartbeatIntervalSeconds` 校验 ≥5。响应：`{ success, message, updatedFields }`。
+admin 入口 `POST /api/executors/:id/reload-config`（ADMIN-only，R11：重用当前动态 token 而非轮换；401 最多重签重试一次）。推送体：`{ maxConcurrentTasks?, taskTimeoutSeconds?, heartbeatIntervalSeconds?, adminApiUrl?, adminApiUrlInternal?, adminApiUrlExternal? }`；node 额外接受 `adminApiUrls` 与 `workDir/WORK_DIR`（热切换带绝对路径/symlink/运行中执行守卫）；python 侧 `heartbeatIntervalSeconds` 校验 ≥5。两侧请求在数值下界手检之后、任何写入之前还过一道**生成的** `ConfigReloadRequest` 协议闸门（兜手检抓不到的类型/形状错误；python 用 `strict=True` 以与 zod 一致、不做字符串→数字强转）。响应（字段名以 executor-protocol 为准，snake_case，两侧一致）：`{ success, message, updated_fields, ignored_fields }`，出参均经生成的 `ConfigReloadResponse` 校验后才发送；`ignored_fields` 显式回报请求里本端不认识的键，不静默成功。
 
 ## 8. 终态回调（执行器 → admin）：POST /api/executions/callback
 

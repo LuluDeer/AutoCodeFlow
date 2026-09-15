@@ -13,6 +13,29 @@ import {
   recordHeartbeat,
   setAdminApiReachable,
 } from '../heartbeat-state';
+// A3-C：就绪探针出参必经生成的协议 schema（契约不再只是被测试引用的产物）。
+import { HealthReadyResponseSchema } from '../generated/protocol.schemas';
+
+/**
+ * A3-C：/health/ready 的载荷必须满足 executor-protocol 的 HealthReadyResponse
+ * （status ∈ ready/not_ready）。构造方就是本文件，校验失败 = 服务端把探针形状
+ * 改漂移了，直接 500 让 K8s/LB 与监控看见，而不是静默发出一个 LB 无法理解的状态。
+ */
+function sendReady(
+  res: Response,
+  code: 200 | 503,
+  payload: { status: 'ready' | 'not_ready'; reason?: string; [k: string]: unknown },
+): void {
+  const checked = HealthReadyResponseSchema.safeParse(payload);
+  if (!checked.success) {
+    const where = checked.error.issues[0]?.path.join('.') || '(root)';
+    throw new Error(
+      `readiness response violates executor-protocol at ${where}: ` +
+        checked.error.issues[0]?.message,
+    );
+  }
+  res.status(code).json(payload);
+}
 
 // Re-exported for existing importers; the state lives in heartbeat-state.
 export { recordHeartbeat };
@@ -157,13 +180,13 @@ healthRouter.get('/health/ready', async (_req: Request, res: Response) => {
 
   if (!reachable) {
     const adminUrl = new URL(config.adminApiUrlInternal || config.adminApiUrl || 'http://localhost:3000');
-    res.status(503).json({
+    sendReady(res, 503, {
       status: 'not_ready',
       reason: `admin-api unreachable (${buildAdminHealthPath(adminUrl)})`,
     });
   } else if (cpuUsage >= 90 || memUsage >= 90) {
-    res.status(503).json({ status: 'not_ready', reason: 'Resource usage too high' });
+    sendReady(res, 503, { status: 'not_ready', reason: 'Resource usage too high' });
   } else {
-    res.status(200).json({ status: 'ready' });
+    sendReady(res, 200, { status: 'ready' });
   }
 });

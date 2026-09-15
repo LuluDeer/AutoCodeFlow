@@ -1,12 +1,15 @@
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 from datetime import datetime, timezone
+from pydantic import ValidationError
 import psutil
 import httpx
 import os
 from admin_api import build_admin_api_url, get_admin_api_base_url
 from auth import has_dynamic_token
 from config import settings
+# A3-C：就绪出参必经生成的协议 schema（契约不再只是被测试引用的产物）
+from generated.protocol_schemas import HealthReadyResponse as ProtocolHealthReadyResponse
 
 router = APIRouter()
 
@@ -77,13 +80,30 @@ def _resources_ok() -> tuple[bool, str | None]:
     return True, None
 
 
+def _ready_json(status_code: int, content: dict) -> JSONResponse:
+    """A3-C：/health/ready 载荷必经**生成的** HealthReadyResponse 校验。
+
+    构造方就是本模块，校验失败 = 探针形状被改漂移（如退回旧值 'unready'），
+    直接抛错让上层看见，而不是静默发出 LB 无法理解的状态。
+    """
+    try:
+        ProtocolHealthReadyResponse.model_validate(content)
+    except ValidationError as exc:  # pragma: no cover - 仅在本模块改漂移时触发
+        first = exc.errors()[0]
+        where = '.'.join(str(p) for p in first['loc']) or '(root)'
+        raise RuntimeError(
+            f'readiness response violates executor-protocol at {where}: {first["msg"]}'
+        ) from exc
+    return JSONResponse(status_code=status_code, content=content)
+
+
 async def _readiness() -> JSONResponse:
     """Readiness probe — admin 连通性 + 本机资源（A3 三方契约同形）。"""
     admin_api_ok = await _check_admin_api()
     if not admin_api_ok:
-        return JSONResponse(
-            status_code=503,
-            content={
+        return _ready_json(
+            503,
+            {
                 'status': 'not_ready',
                 'reason': 'admin-api unreachable',
                 'adminApiUrl': get_admin_api_base_url(),
@@ -91,13 +111,13 @@ async def _readiness() -> JSONResponse:
         )
     ok, reason = _resources_ok()
     if not ok:
-        return JSONResponse(
-            status_code=503,
-            content={'status': 'not_ready', 'reason': reason},
+        return _ready_json(
+            503,
+            {'status': 'not_ready', 'reason': reason},
         )
-    return JSONResponse(
-        status_code=200,
-        content={
+    return _ready_json(
+        200,
+        {
             'status': 'ready',
             'appName': settings.app_name,
             'address': settings.executor_address,
