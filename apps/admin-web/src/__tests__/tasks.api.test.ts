@@ -57,8 +57,8 @@ describe('tasksApi.listAll — GET /tasks pageSize 上限与全量聚合', () =>
 
     const result = await tasksApi.listAll();
 
-    expect(mockGet).toHaveBeenNthCalledWith(1, '/tasks', { params: { page: 1, pageSize: 100 } });
-    expect(mockGet).toHaveBeenNthCalledWith(2, '/tasks', { params: { page: 2, pageSize: 100 } });
+    expect(mockGet).toHaveBeenNthCalledWith(1, '/tasks', { params: { fields: 'id,name', page: 1, pageSize: 100 } });
+    expect(mockGet).toHaveBeenNthCalledWith(2, '/tasks', { params: { fields: 'id,name', page: 2, pageSize: 100 } });
     expect(result.items).toHaveLength(102);
     expect(result.items.map((item) => item.id)).toEqual([
       ...firstItems.map((item) => item.id),
@@ -88,11 +88,11 @@ describe('tasksApi.listAll — GET /tasks pageSize 上限与全量聚合', () =>
     await tasksApi.listAll({ status: 'active' }, signal);
 
     expect(mockGet).toHaveBeenNthCalledWith(1, '/tasks', {
-      params: { status: 'active', page: 1, pageSize: 100 },
+      params: { status: 'active', fields: 'id,name', page: 1, pageSize: 100 },
       signal,
     });
     expect(mockGet).toHaveBeenNthCalledWith(2, '/tasks', {
-      params: { status: 'active', page: 2, pageSize: 100 },
+      params: { status: 'active', fields: 'id,name', page: 2, pageSize: 100 },
       signal,
     });
   });
