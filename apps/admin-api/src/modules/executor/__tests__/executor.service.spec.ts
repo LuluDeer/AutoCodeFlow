@@ -237,8 +237,7 @@ describe("ExecutorService (__tests__)", () => {
       expect(runningExecution.errorMessage).toContain("Executor restarted");
       // A1: 终态写走 transitionOneToTerminal（createQueryBuilder 链），不再经
       // execRepo.save。断言条件 UPDATE 的 patch 携带 FAILED。
-      const qbResults = (execRepo.createQueryBuilder as jest.Mock).mock
-        .results;
+      const qbResults = (execRepo.createQueryBuilder as jest.Mock).mock.results;
       const setPatches = qbResults.flatMap((r: any) =>
         r.value.set.mock.calls.map((c: any) => c[0]),
       );
@@ -1284,8 +1283,7 @@ describe("ExecutorService (__tests__)", () => {
       // A1: 终态写走 transitionOneToTerminal（createQueryBuilder 链）。oldExecution
       // 被推进终态（patch=FAILED）；newExecution 未过 shouldFailAfterRestart 门，
       // 不走终态写 → createQueryBuilder 恰被调用一次。
-      const qbResults = (execRepo.createQueryBuilder as jest.Mock).mock
-        .results;
+      const qbResults = (execRepo.createQueryBuilder as jest.Mock).mock.results;
       const setPatches = qbResults.flatMap((r: any) =>
         r.value.set.mock.calls.map((c: any) => c[0]),
       );
@@ -1632,9 +1630,8 @@ describe("ExecutorService (__tests__)", () => {
     it("SEC-SSRF-02: consults the SSRF guard with the kill URL before POSTing", async () => {
       mockedAxios.post.mockResolvedValue({ data: { ok: true } });
       await service.notifyExecutorKill("e1", "10.0.0.9:8002");
-      const guard = jest.requireMock(
-        "../../../common/utils/safe-http.util",
-      ).assertSafeExecutorUrl as jest.Mock;
+      const guard = jest.requireMock("../../../common/utils/safe-http.util")
+        .assertSafeExecutorUrl as jest.Mock;
       expect(guard).toHaveBeenCalledWith(
         "http://10.0.0.9:8002/api/executions/e1/kill",
       );
@@ -1642,9 +1639,8 @@ describe("ExecutorService (__tests__)", () => {
     });
 
     it("SEC-SSRF-02: a guard rejection stops the authenticated POST (never throws)", async () => {
-      const guard = jest.requireMock(
-        "../../../common/utils/safe-http.util",
-      ).assertSafeExecutorUrl as jest.Mock;
+      const guard = jest.requireMock("../../../common/utils/safe-http.util")
+        .assertSafeExecutorUrl as jest.Mock;
       guard.mockRejectedValueOnce(
         new Error("Executor address ... is link-local — refused"),
       );
@@ -1663,9 +1659,8 @@ describe("ExecutorService (__tests__)", () => {
   // SEC-SSRF-02 守卫语义：用真实实现，证明被守卫的地址确实会被拒绝、
   // 且正常的私网地址确实放行——即上一条「守卫被调用」不是空转。
   describe("SEC-SSRF-02 guard semantics (real assertSafeExecutorUrl)", () => {
-    const realGuard = jest.requireActual(
-      "../../../common/utils/safe-http.util",
-    ).assertSafeExecutorUrl as (u: string) => Promise<URL>;
+    const realGuard = jest.requireActual("../../../common/utils/safe-http.util")
+      .assertSafeExecutorUrl as (u: string) => Promise<URL>;
 
     it("rejects link-local cloud-metadata addresses", async () => {
       await expect(
