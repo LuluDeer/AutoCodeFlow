@@ -208,3 +208,42 @@ describe('UI-12 LoginPage — 失败播报与 TOTP 阶段', () => {
     expect(mockNav).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * SESSION-EXPIRED（本轮审计）：401 且刷新也失败时，client.ts 会把用户直接
+ * 重定向到 /login?reason=expired，而拦截器的 toast 分支显式跳过 401
+ * （`status !== 401`）——于是整个跳转**零提示**：用户正在填的表单凭空消失，
+ * 无从判断是会话过期、密码被改还是系统故障。登录页现在读 ?reason=expired
+ * 并给出常驻说明。
+ */
+describe('SESSION-EXPIRED — 会话过期跳转的可见说明', () => {
+  const origURL = window.location.href;
+
+  afterEach(() => {
+    window.history.replaceState({}, '', origURL);
+  });
+
+  it('带 ?reason=expired 时渲染会话过期说明', () => {
+    window.history.replaceState({}, '', '/login?reason=expired');
+    renderLogin();
+    expect(screen.getByText(/登录状态已过期/)).toBeTruthy();
+  });
+
+  it('保留 ?redirect= 时两者共存（回跳与说明互不影响）', () => {
+    window.history.replaceState({}, '', '/login?redirect=%2Ftasks&reason=expired');
+    renderLogin();
+    expect(screen.getByText(/登录状态已过期/)).toBeTruthy();
+  });
+
+  it('无 reason 参数时不渲染该说明（普通登录不误报）', () => {
+    window.history.replaceState({}, '', '/login');
+    renderLogin();
+    expect(screen.queryByText(/登录状态已过期/)).toBeNull();
+  });
+
+  it('reason 取值白名单：非 expired 的任意值都不渲染（防被塞任意文案）', () => {
+    window.history.replaceState({}, '', '/login?reason=whatever');
+    renderLogin();
+    expect(screen.queryByText(/登录状态已过期/)).toBeNull();
+  });
+});
