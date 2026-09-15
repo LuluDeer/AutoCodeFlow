@@ -163,6 +163,9 @@ export default {
   'taskList.batchPauseFail': '批量暂停失败',
   'taskList.batchResumeFail': '批量恢复失败',
   'taskList.batchDeleteFail': '批量删除失败',
+  // 后端 batch 端点回 200 + 逐项 {id,error}，部分失败必须如实呈现
+  'taskList.batchPartialFailed': '另有 {{count}} 项失败：{{reasons}}',
+  'taskList.batchAllFailed': '全部 {{count}} 项均失败',
   'taskList.triggered': '已触发: {{name}}',
   'taskList.triggerFail': '触发失败',
   'taskList.paused': '已暂停',

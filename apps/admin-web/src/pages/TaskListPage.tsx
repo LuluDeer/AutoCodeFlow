@@ -14,7 +14,7 @@ import type { components } from '../types/generated/api-types';
 import { Trans, useTranslation } from 'react-i18next';
 import { useQueryClient } from '@tanstack/react-query';
 import { useNavigate, Link } from 'react-router-dom';
-import { tasksApi, Task } from '../api/tasks';
+import { tasksApi, Task, summarizeBatch, type BatchItemResult } from '../api/tasks';
 import { useTasksList, invalidateTaskData } from '../api/queries';
 import { getErrMsg } from '../utils/error';
 import { useDebounce } from '../hooks/useDebounce';
@@ -85,31 +85,65 @@ export default function TaskListPage() {
     onChange: (keys: React.Key[]) => setSelectedRowKeys(keys as string[]),
   };
 
+  /**
+   * 批量操作的部分失败必须如实呈现。
+   *
+   * 后端四个 batch 端点都回 HTTP 200 + 逐项 `{id, error?}`
+   * （task.controller.ts 用 Promise.all(...catch(err => ({id, error})))），
+   * 所以「整体成功」不等于「每一项都成功」。此前 UI 无条件弹
+   * 「已处理 N 项」并清空选择，20 项里 7 项被拒时操作者完全无从知晓——
+   * 对触发/暂停/删除这类写面是不可接受的静默失败。
+   * 现在：全成功才报 success；有失败则报 warning 并列出前 3 条原因。
+   */
+  const reportBatch = (
+    results: BatchItemResult[] | undefined | null,
+    okKey: string,
+  ) => {
+    const { succeeded, failed, failures } = summarizeBatch(results);
+    // 全失败：沿用原有的错误提示语义
+    if (failed > 0 && succeeded === 0) {
+      message.error(t('taskList.batchAllFailed', { count: failed }));
+    } else if (failed > 0) {
+      message.warning(
+        `${t(okKey, { count: succeeded })} / ${t('taskList.batchPartialFailed', {
+          count: failed,
+          reasons: failures.map((f) => f.error).join('；'),
+        })}`,
+      );
+    } else {
+      message.success(t(okKey, { count: succeeded }));
+    }
+    // 仍有失败项时不清空选择，便于操作者重试或排查（成功项已生效，
+    // 重试对幂等端点无害；对 delete 而言失败项本就还在列表里）。
+    if (failed === 0) setSelectedRowKeys([]);
+    refresh();
+  };
+
   const handleBatchTrigger = async () => {
     if (batchLoading) return;
     setBatchLoading(true);
-    try { await tasksApi.batchTrigger(selectedRowKeys); message.success(t('taskList.batchTriggered', { count: selectedRowKeys.length })); setSelectedRowKeys([]); refresh(); }
+    try { reportBatch(await tasksApi.batchTrigger(selectedRowKeys), 'taskList.batchTriggered'); }
     catch (err: unknown) { message.error(getErrMsg(err, t('taskList.batchTriggerFail'))); }
     finally { setBatchLoading(false); }
   };
   const handleBatchPause = async () => {
     if (batchLoading) return;
     setBatchLoading(true);
-    try { await tasksApi.batchPause(selectedRowKeys); message.success(t('taskList.batchPaused', { count: selectedRowKeys.length })); setSelectedRowKeys([]); refresh(); }
+    try { reportBatch(await tasksApi.batchPause(selectedRowKeys), 'taskList.batchPaused'); }
     catch (err: unknown) { message.error(getErrMsg(err, t('taskList.batchPauseFail'))); }
     finally { setBatchLoading(false); }
   };
   const handleBatchResume = async () => {
     if (batchLoading) return;
     setBatchLoading(true);
-    try { await tasksApi.batchResume(selectedRowKeys); message.success(t('taskList.batchResumed', { count: selectedRowKeys.length })); setSelectedRowKeys([]); refresh(); }
+    try { reportBatch(await tasksApi.batchResume(selectedRowKeys), 'taskList.batchResumed'); }
     catch (err: unknown) { message.error(getErrMsg(err, t('taskList.batchResumeFail'))); }
     finally { setBatchLoading(false); }
   };
   const handleBatchDelete = async () => {
     if (batchLoading) return;
     setBatchLoading(true);
-    try { await tasksApi.batchDelete(selectedRowKeys); message.success(t('taskList.batchDeleted', { count: selectedRowKeys.length })); setSelectedRowKeys([]); refresh(); }
+    try { reportBatch(await tasksApi.batchDelete(selectedRowKeys), 'taskList.batchDeleted'); }
     catch (err: unknown) { message.error(getErrMsg(err, t('taskList.batchDeleteFail'))); }
     finally { setBatchLoading(false); }
   };

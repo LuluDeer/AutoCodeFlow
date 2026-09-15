@@ -25,6 +25,36 @@ export interface MaintenanceWindow {
  */
 export type TimeoutAction = 'kill' | 'kill_retry' | 'notify_only';
 
+/**
+ * 批量任务操作的单项结果。后端把每项失败吸收进 payload
+ * （`{ id, error }`），整体仍回 200——所以调用方**必须**检查 error，
+ * 不能只看 HTTP 状态。成功项只有 id。
+ */
+export interface BatchItemResult {
+  id: string;
+  error?: string;
+}
+
+/** 批量结果汇总，供 UI 如实呈现「N 成功 / M 失败」。 */
+export interface BatchOutcome {
+  succeeded: number;
+  failed: number;
+  /** 失败项的 id → 原因（最多保留前 3 条用于提示，避免 toast 过长）。 */
+  failures: Array<{ id: string; error: string }>;
+}
+
+export function summarizeBatch(results: BatchItemResult[] | undefined | null): BatchOutcome {
+  const list = Array.isArray(results) ? results : [];
+  const failures = list
+    .filter((r) => r && r.error)
+    .map((r) => ({ id: r.id, error: String(r.error) }));
+  return {
+    succeeded: list.length - failures.length,
+    failed: failures.length,
+    failures: failures.slice(0, 3),
+  };
+}
+
 // F-29（DEEP_REVIEW 0ef3bbe）：原此处的 TIMEOUT_ACTION_OPTIONS（中文 label 硬编码）已删除——
 // UI 实际消费的是 pages/timeout-policy.ts 的同名导出（TaskFormPage.tsx:46 引自该模块），
 // api 层这份 label 无任何消费方，属重复死代码。
@@ -389,10 +419,20 @@ export const tasksApi = {
     client.post(`/tasks/${id}/pause`) as Promise<Task>,
   resume: (id: string) =>
     client.post(`/tasks/${id}/resume`) as Promise<Task>,
-  batchTrigger: (taskIds: string[]) => client.post('/tasks/batch/trigger', { taskIds }),
-  batchPause: (taskIds: string[]) => client.post('/tasks/batch/pause', { taskIds }),
-  batchResume: (taskIds: string[]) => client.post('/tasks/batch/resume', { taskIds }),
-  batchDelete: (taskIds: string[]) => client.post('/tasks/batch/delete', { taskIds }),
+  // 批量端点**不是**全成功/全失败语义：后端 task.controller.ts 用
+  // Promise.all(...catch(err => ({ id, error: err.message }))) 把每项失败
+  // 吸收进 payload，整体仍返回 HTTP 200（见 batch/trigger、pause、resume、
+  // delete 四处）。因此返回类型必须暴露 per-item error，调用方才能区分
+  // 「20 项全成」与「20 项里 7 项被拒」。此前声明为隐式 void，UI 无条件弹
+  // 成功提示，属静默的部分失败。
+  batchTrigger: (taskIds: string[]) =>
+    client.post('/tasks/batch/trigger', { taskIds }) as Promise<BatchItemResult[]>,
+  batchPause: (taskIds: string[]) =>
+    client.post('/tasks/batch/pause', { taskIds }) as Promise<BatchItemResult[]>,
+  batchResume: (taskIds: string[]) =>
+    client.post('/tasks/batch/resume', { taskIds }) as Promise<BatchItemResult[]>,
+  batchDelete: (taskIds: string[]) =>
+    client.post('/tasks/batch/delete', { taskIds }) as Promise<BatchItemResult[]>,
   stats: (id: string, signal?: AbortSignal) =>
     signal
       ? client.get(`/tasks/${id}/stats`, { signal }) as Promise<{ recentExecutions: TaskExecution[]; successRate: number; avgDuration: number; totalRuns: number }>
