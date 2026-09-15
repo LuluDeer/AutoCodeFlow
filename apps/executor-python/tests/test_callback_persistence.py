@@ -210,6 +210,80 @@ def test_retry_persisted_callbacks_replays_and_removes(monkeypatch, tmp_path):
     assert execute_module.get_dead_letter_count() == 0
 
 
+def test_redirect_response_is_not_treated_as_delivered_on_replay(monkeypatch, tmp_path):
+    """CALLBACK-3XX（本轮审计）：httpx 默认 follow_redirects=False，3xx 会原样返回。
+
+    旧判据是 `status_code < 400`，于是 301/302 被当成「已投递」→ replay 随即
+    删掉持久化文件，而载荷其实从未到达 admin（重定向目标是网关中转页）。
+    正确判据是 200<=sc<300（同文件族 auth.py:195 / main.py:233 / artifacts.py 均如此）。
+    这里断言：3xx 必须算失败，文件必须保留下来等待下次重放。
+    """
+    from routers import execute as execute_module
+
+    monkeypatch.setattr(execute_module.settings, 'work_dir', str(tmp_path))
+    _patch_callback_env(monkeypatch)
+
+    class _RedirectClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def post(self, url, json, headers):
+            return _FakeResponse(302)
+
+    monkeypatch.setattr(execute_module.httpx, 'AsyncClient', _RedirectClient)
+
+    payload_file = execute_module._persist_failed_callback(
+        {'executionId': 'exec-302', 'status': 'success'},
+        'http://admin.local/api/executions/callback',
+    )
+    assert payload_file is not None
+
+    delivered = asyncio.run(execute_module.retry_persisted_callbacks())
+
+    assert delivered == 0, '3xx 不得计为已投递'
+    assert payload_file.exists(), '3xx 时持久化文件必须保留以便下次重放'
+
+
+def test_204_is_treated_as_delivered_on_replay(monkeypatch, tmp_path):
+    """2xx（含 204）才是投递成功——防止把判据写窄成「必须 200」。"""
+    from routers import execute as execute_module
+
+    monkeypatch.setattr(execute_module.settings, 'work_dir', str(tmp_path))
+    _patch_callback_env(monkeypatch)
+
+    class _NoContentClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def post(self, url, json, headers):
+            return _FakeResponse(204)
+
+    monkeypatch.setattr(execute_module.httpx, 'AsyncClient', _NoContentClient)
+
+    payload_file = execute_module._persist_failed_callback(
+        {'executionId': 'exec-204', 'status': 'success'},
+        'http://admin.local/api/executions/callback',
+    )
+    assert payload_file is not None
+
+    delivered = asyncio.run(execute_module.retry_persisted_callbacks())
+
+    assert delivered == 1
+    assert not payload_file.exists()
+
+
 def test_retry_replays_with_current_token_not_persisted_one(monkeypatch, tmp_path):
     """The file holds no credential; replay signs with the token valid at
     replay time (node posts through admin-client at send time)."""

@@ -956,7 +956,12 @@ async def _send_callback_with_retry(url: str, payload: dict, token: Optional[str
                     headers=traceparent_headers or None,
                     json=[payload],
                 )
-            if response.status_code < 400:
+            # CALLBACK-3XX（本轮审计）：判据必须是 2xx，而不是「< 400」。
+            # httpx 默认 follow_redirects=False，所以 3xx 会原样返回；旧写法把
+            # 301/302/303/307/308 一律当成「已投递」→ 不重试、也不落盘，
+            # 而载荷其实从未到达 admin（重定向目标是 proxy/gateway 的中转页）。
+            # 同一文件族里 auth.py:195 与 main.py:233 用的都是 200<=sc<300。
+            if 200 <= response.status_code < 300:
                 return True
             if (400 <= response.status_code < 500
                     and response.status_code not in (401, 408, 429)):
@@ -1289,7 +1294,10 @@ async def _replay_persisted_callback_file(filepath: Path, requests: list[dict], 
     token = await get_current_token() or _get_callback_token()
     async with httpx.AsyncClient(timeout=10) as client:
         response = await request_with_self_heal(client, 'post', url, token=token, json=requests)
-    if response.status_code < 400:
+    # CALLBACK-3XX：同 _send_callback_with_retry —— 只有 2xx 才算投递成功。
+    # 旧判据「< 400」会把 3xx 当成功，调用方随即 unlink 持久化文件，
+    # 载荷永久丢失（重定向目标并非 admin）。
+    if 200 <= response.status_code < 300:
         return True
     raise RuntimeError(f'callback replay failed with HTTP {response.status_code}')
 
