@@ -206,9 +206,7 @@ export class UsersService implements OnModuleInit {
           .where("u.role = :role", { role: UserRole.ADMIN })
           .getMany();
         if (admins.length <= 1) {
-          throw new BadRequestException(
-            "Cannot demote the last administrator",
-          );
+          throw new BadRequestException("Cannot demote the last administrator");
         }
         Object.assign(target, updateUserDto);
         const savedInTx = await users.save(target);
