@@ -552,7 +552,8 @@ export class ExecutorService {
           },
         });
         if (result.transitioned) {
-          const addr = result.rows[0]?.executorAddress ?? execution.executorAddress;
+          const addr =
+            result.rows[0]?.executorAddress ?? execution.executorAddress;
           await this.releaseExecutorSlot(addr);
           if (task) await this.scheduleRetryAfterRecovery(task, execution);
           failedCount++;
