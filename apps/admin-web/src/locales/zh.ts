@@ -852,6 +852,10 @@ export default {
 
   'eventSub.title': '事件订阅（Webhook 出站）',
   'eventSub.create': '新建订阅',
+  // SUB-SCOPE-01：后端把新建订阅收紧为 ADMIN-only（webhook 是「把数据送出平台」
+  // 的能力，且投递不做属主过滤——任何人建订阅即可收到别人任务的事件与日志）。
+  // 非管理员看到禁用按钮 + 该提示；读面与已有订阅的编辑/启停不受影响。
+  'eventSub.createAdminOnly': '仅管理员可新建事件订阅（出站通道属管理面）；你仍可查看自己的订阅与死信',
   'eventSub.createFail': '创建订阅失败，请检查 URL 与网络',
   'eventSub.updated': '订阅已更新',
   'eventSub.updateFail': '更新订阅失败',
