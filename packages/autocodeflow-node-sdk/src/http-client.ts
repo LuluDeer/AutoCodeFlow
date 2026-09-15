@@ -27,6 +27,25 @@ import { TaskEnv } from './types';
  * response work; rejected requests get the envelope's `message` appended to
  * the axios error message.
  */
+/**
+ * SDK-BASE-01: 剥掉 base URL 尾部的 `/api`（含尾斜杠与重复形式）。
+ *
+ * 请求路径本身是绝对的 `/api/executions/callback`，axios 对 baseURL 与绝对
+ * 路径做简单串接，所以 base 若已带 `/api` 会产生 `/api/api/...` → 404。
+ * 对齐 python SDK（autoflow_sdk/callback.py 的 `endswith("/api")` 分支）。
+ *
+ * 只剥离**整段** `/api`，不碰 `/apiary` 这类前缀相同的无关路径。
+ */
+export function stripTrailingApiSuffix(baseURL?: string): string | undefined {
+  if (!baseURL) return baseURL;
+  let out = baseURL.replace(/\/+$/, "");
+  // 允许 `.../api/api/` 这类重复写法一并收敛
+  while (/\/api$/i.test(out)) {
+    out = out.slice(0, -4).replace(/\/+$/, "");
+  }
+  return out;
+}
+
 export class HttpClient {
   private readonly client?: AxiosInstance;
 
@@ -62,7 +81,16 @@ export class HttpClient {
     // 10s default matches the python SDK (callback.py) so a hung admin-api
     // can't stall the task process until the executor's timeout kill; callers
     // can still override per-request via axios config.
-    this.client = axios.create({ baseURL, timeout: 10_000 });
+    //
+    // SDK-BASE-01（本轮审计）：请求路径是绝对的 `/api/executions/callback`
+    // （context.ts 的 reportSuccess/reportFailure），而 axios 对 baseURL 与
+    // 绝对路径的拼接就是简单串接。于是当操作者把 ADMIN_API_URL 配成带 `/api`
+    // 后缀的惯用形式时（`http://host:3105/api`），实际请求会变成
+    // `/api/api/executions/callback` → 404，回调通道整体失联且没有任何诊断。
+    // python SDK 早已显式容忍这种 base（callback.py: ``if
+    // self.admin_api_url.endswith("/api")``），本包此前漏了同样的处理——
+    // 这里统一剥掉尾部的 `/api`（可重复），与 python 行为对齐。
+    this.client = axios.create({ baseURL: stripTrailingApiSuffix(baseURL), timeout: 10_000 });
 
     // Attach auth + trace headers on every outgoing request.
     this.client.interceptors.request.use((config) => {
