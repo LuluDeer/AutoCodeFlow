@@ -9,6 +9,7 @@ import { projectsApi, type ProjectRole, type ProjectViewRow } from '../api/proje
 import { usersApi } from '../api/users';
 import { isAdminUser, useAuthStore } from '../store/auth';
 import { getErrMsg } from '../utils/error';
+import { formatDateTime } from '../utils/timeFormat';
 import PageHeader from '../components/PageHeader';
 import PageSkeleton from '../components/PageSkeleton';
 import StateError from '../components/StateError';
@@ -71,7 +72,7 @@ export default function ProjectsPage() {
         title: t('projects.col.createdAt'),
         dataIndex: 'createdAt',
         key: 'createdAt',
-        render: (v: string) => new Date(v).toLocaleString(),
+        render: (v: string) => formatDateTime(v),
       },
       {
         title: t('projects.col.actions'),
