@@ -92,7 +92,12 @@ export class ExecutorPullService {
     if (!client) return null;
     const ttlMs =
       this.configService.get<number>("executor.pullTtlMs") || 900_000;
-    const deadline = Date.now() + waitMs;
+    // SEC-PULL-01（纵深防御）：waitMs 为 NaN/Infinity 时 `deadline` 也会是 NaN，
+    // 而 `Date.now() >= NaN` 恒为 false，下方 while(true) 将永不 break、请求
+    // 永久挂起。控制器已做有限性收敛，这里再兜一层，保护任何未来调用方。
+    // 非有限值语义上等于「不等待」，取 0（立即取一次即返回）。
+    const effectiveWaitMs = Number.isFinite(waitMs) ? Math.max(0, waitMs) : 0;
+    const deadline = Date.now() + effectiveWaitMs;
     const key = this.queueKey(executorId);
 
     // 至少尝试取件一次，再判窗口耗尽（waitMs=0 = 立即取一次即返回）。
