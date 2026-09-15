@@ -34,4 +34,12 @@
 #     package.json 内联进 bundle，engines 字段随之进入产物，哈希变化（2280kB
 #     不变，字节内容变）。此值为 CI Ubuntu runner 重建结果（F-19 guard 以 CI
 #     环境为权威——ncc --source-map 嵌入绝对路径，跨平台哈希不同）。
-6d2249247b2e2e81b955aca523427d3c96ff92505e98a0dc1b2afb973ba9f041  index.js
+#   - cc54aa2f…：SEC-DEPLOY-01 修 deploy.ts 的 shell entrypoint 校验（含空格的
+#     字符类可被 `/usr/bin/env sh -c id` 绕过 → 任意命令执行），抽出
+#     validateShellEntrypoint 并补测试（2280kB → 2282kB）。**此提交曾漏打
+#     bundle**，CI 的 desktop-bundle-drift 因此报红——即"修了源码却仍发布带
+#     漏洞的内嵌执行器"，正是该 guard 存在的意义。已按 ADR-005 同 commit 重打。
+#     注：本次 CI(Ubuntu) 重打值与本地(Git Bash/Windows) 重打值**逐字节一致**
+#     （均 cc54aa2f…），说明 ncc 0.44 的 --source-map 绝对路径差异在 0.44 已
+#     不影响产物哈希；上面的"跨平台不同"是更早期版本的结论，保留以备参考。
+cc54aa2fd6f7fd5b812be796793a2e71e490a442bf35468e5ecf0b1c2dad0336  index.js
