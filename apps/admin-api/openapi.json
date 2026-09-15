@@ -750,6 +750,13 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "fields",
+            "required": false,
+            "in": "query",
+            "description": "F-10: comma-separated projection whitelist (e.g. 'id,name'). Only whitelisted lightweight columns are selected — params/secrets/glueSource and other heavy columns are skipped. Illegal fields → 400.",
+            "schema": {}
           }
         ],
         "responses": {
