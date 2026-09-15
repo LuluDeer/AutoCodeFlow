@@ -254,11 +254,14 @@ function EditModal({ record, onClose, onSaved }: EditModalProps) {
 
 // ─── Config History Drawer ────────────────────────────────────────────────────
 function HistoryModal({ configKey, onClose }: { configKey: string; onClose: () => void }) {
+  // SEC-CFG-01 收紧 GET /config/history 为 ADMIN-only 后，本查询同样不做 enabled
+  // 门控：非管理员本就不渲染「回滚」按钮（既有用例钉住），但仍可打开历史抽屉
+  // 看到只读记录；服务端 403 由下方 historyError 呈现。
+  const isAdmin = useIsAdmin();
   const { data, isLoading, error: historyError, refetch: refetchHistory } = useQuery({
     queryKey: ['config-history', configKey],
     queryFn: () => configApi.getHistory({ key: configKey, pageSize: 50 }),
   });
-  const isAdmin = useIsAdmin();
   const { t } = useTranslation();
 
   const qc = useQueryClient();
@@ -351,6 +354,11 @@ function SystemConfigTab() {
   const isAdmin = useIsAdmin();
   const { t } = useTranslation();
 
+  // SEC-CFG-01 收紧 GET /config 为 ADMIN-only 后，本查询**不做** enabled 门控：
+  // 本页对非管理员是「只读视图 + 禁用写入口」的既有设计（下方所有写按钮都按
+  // isAdmin 禁用，非管理员本就看不到回滚入口——既有用例
+  // settings.history-rollback「非管理员：不渲染回滚入口」钉住了该契约）。
+  // 服务端 403 由下方 configError → StateError 呈现，比空列表更诚实。
   const { data: configs, isLoading, refetch, error: configError } = useQuery({
     queryKey: ['system-configs'],
     queryFn: () => configApi.findAll(),
