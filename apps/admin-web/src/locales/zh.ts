@@ -9,6 +9,11 @@ export default {
 
   // ── 登录页 ──
   'login.account': '登录账号',
+  // SESSION-EXPIRED：401 且刷新也失败时会把用户直接重定向到 /login。
+  // 此前**没有任何提示**（拦截器显式跳过 401 的 toast），用户正在填的表单
+  // 突然消失、被丢到一个空白登录页，无从判断是会话过期、密码被改，
+  // 还是被管理员禁用。这里在跳转时带 ?reason=expired，登录页据此说明原因。
+  'login.sessionExpired': '登录状态已过期，请重新登录后继续。',
   'login.twoFactor': '两步验证',
   'login.username': '用户名',
   'login.password': '密码',
