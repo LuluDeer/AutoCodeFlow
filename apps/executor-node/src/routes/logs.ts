@@ -4,6 +4,8 @@ import * as path from 'path';
 import { createInterface } from 'readline';
 import { config } from '../config';
 import { logger } from '../logger';
+// A3（kill/logs 契约化）：出参契约（由 protocol.json 生成，勿手改产物）
+import { LogsResponseSchema } from '../generated/protocol.schemas';
 
 export const logsRouter = Router();
 
@@ -105,7 +107,15 @@ logsRouter.get('/logs/:executionId', async (req: Request, res: Response) => {
   const limit = Math.min(Math.max(requestedLimit, 1), MAX_LIMIT);
 
   try {
-    res.json(await pageLogLines(logFile, fromLine, limit));
+    // A3：出参必经生成的 LogsResponse（{lines,totalLines,hasMore}，forbid 额外键），
+    // 与 executor-python 同源——任一侧改字段名/形状这里立即 500，而不是静默漂移。
+    const page = await pageLogLines(logFile, fromLine, limit);
+    const checked = LogsResponseSchema.safeParse(page);
+    if (!checked.success) {
+      const where = checked.error.issues[0]?.path.join('.') || '(root)';
+      throw new Error(`logs response violates executor-protocol at ${where}`);
+    }
+    res.json(page);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error(`Failed to read log file ${logFile}: ${msg}`);

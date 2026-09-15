@@ -35,6 +35,28 @@ def test_kill_unknown_execution_returns_404(auth_client):
     assert response.json() == {'ok': False}
 
 
+def test_kill_404_body_conforms_to_generated_kill_response(auth_client):
+    """A3 (kill/logs contract): the real 404 body must pass the generated
+    KillResponse; extra=forbid must also reject an undeclared key (both sides
+    emit exactly {ok:bool})."""
+    from pydantic import ValidationError
+    from generated.protocol_schemas import KillResponse as ProtocolKillResponse
+
+    response = auth_client.post('/api/executions/exec-never-accepted/kill')
+    ProtocolKillResponse.model_validate(response.json())  # raises if drift
+    with pytest.raises(ValidationError):
+        ProtocolKillResponse.model_validate({'ok': False, 'stray': 1})
+
+
+def test_kill_body_helper_conforms_for_both_branches():
+    """routers.execute._kill_body backs both 200/404 and must pass the schema."""
+    from routers.execute import _kill_body
+    from generated.protocol_schemas import KillResponse as ProtocolKillResponse
+
+    assert ProtocolKillResponse.model_validate(_kill_body(True)).ok is True
+    assert ProtocolKillResponse.model_validate(_kill_body(False)).ok is False
+
+
 def test_kill_requires_auth(client):
     """Same verify_token middleware as the other python /api routes."""
     response = client.post('/api/executions/exec-x/kill')

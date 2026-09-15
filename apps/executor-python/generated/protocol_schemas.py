@@ -60,3 +60,15 @@ class HealthReadyResponse(BaseModel):
     model_config = ConfigDict(extra="allow")
     status: Literal["ready", "not_ready"]
     reason: str | None = Field(default=None)
+
+
+class KillResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    ok: bool
+
+
+class LogsResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    lines: list[str]
+    totalLines: int = Field(ge=0)
+    hasMore: bool

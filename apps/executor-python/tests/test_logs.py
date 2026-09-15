@@ -1,3 +1,6 @@
+import pytest
+
+
 def test_nonexistent_execution_id_returns_404(auth_client):
     """GET /api/logs/{execution_id} for an unknown id should return 404."""
     response = auth_client.get('/api/logs/nonexistent-id-12345')
@@ -59,6 +62,24 @@ def test_logs_rejects_limit_above_cap(auth_client, tmp_path, monkeypatch):
     response = auth_client.get(f'/api/logs/{execution_id}?limit=2001')
 
     assert response.status_code == 422
+
+
+def test_logs_page_conforms_to_generated_logs_response(auth_client, tmp_path, monkeypatch):
+    """A3 (kill/logs contract): the real page must pass the generated
+    LogsResponse ({lines,totalLines,hasMore}); extra=forbid rejects stray keys."""
+    from pydantic import ValidationError
+    from generated.protocol_schemas import LogsResponse as ProtocolLogsResponse
+
+    execution_id = 'exec-contract'
+    _write_log(tmp_path, monkeypatch, execution_id, ['a', 'b', 'c', 'd'])
+
+    resp = auth_client.get(f'/api/logs/{execution_id}?fromLine=1&limit=2')
+    assert resp.status_code == 200
+    body = resp.json()
+    ProtocolLogsResponse.model_validate(body)  # raises if drift
+    assert body['lines'] == ['b', 'c']
+    with pytest.raises(ValidationError):
+        ProtocolLogsResponse.model_validate({**body, 'stray': 1})
 
 
 # ---------------------------------------------------------------------------

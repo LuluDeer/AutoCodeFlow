@@ -115,6 +115,8 @@ jest.mock('../task-worker', () => {
 
 import { executeRouter, runTask, gitCheckoutTo, killRunningTaskProcesses, BoundedLogBuffer } from './execute';
 import { buildNpmRcContent, executionExists, quoteShellArgForPlatform } from './execute';
+// A3（kill/logs 契约化）：kill 真实出参用生成的 schema 现校验
+import { KillResponseSchema } from '../generated/protocol.schemas';
 import { pushCallback } from '../callback';
 import { taskWorkerManager } from '../task-worker';
 import { config as testConfig } from '../config';
@@ -482,6 +484,14 @@ describe('POST /api/executions/:executionId/kill', () => {
     expect(res.body.ok).toBe(false);
   });
 
+  // A3 反证有牙：404/200 的 kill 出参都必须被**生成的** KillResponse 接受
+  // （逐字段同形 {ok:bool}），strict 还必须拒绝未声明的额外键。
+  it('404 kill body conforms to the generated KillResponse schema (strict)', async () => {
+    const res = await request(appNoAuth).post('/api/executions/never-started/kill');
+    expect(KillResponseSchema.safeParse(res.body).success).toBe(true);
+    expect(KillResponseSchema.safeParse({ ok: false, stray: 1 }).success).toBe(false);
+  });
+
   it('kills a running execution, sends failure callback (failureReason=killed), releases capacity once (改动1 在跑)', async () => {
     testConfig.maxConcurrentTasks = 5;
     const proc = runningProc(7001);
@@ -515,6 +525,8 @@ describe('POST /api/executions/:executionId/kill', () => {
       const killRes: any = await request(appNoAuth).post('/api/executions/exec-kill-run/kill');
       expect(killRes.status).toBe(200);
       expect(killRes.body.ok).toBe(true);
+      // A3：200 kill 出参同样过生成的 KillResponse
+      expect(KillResponseSchema.safeParse(killRes.body).success).toBe(true);
       if (process.platform !== 'win32') {
         // killProcessTree 走进程组。断言必须在 mockRestore 之前——
         // mockRestore 会清空 mock.calls，restore 后断言恒为 0 次调用

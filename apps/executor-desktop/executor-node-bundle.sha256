@@ -27,4 +27,7 @@
 #     HealthReadyResponse 接进 /config/reload、/health/ready 运行时（请求闸门 +
 #     出参契约校验），并把 /config/reload 响应字段从 camelCase 对齐为契约的
 #     snake_case（2275kB → 2279kB）。
-5d009e01afd247a4598bc7b8e67bb6e5d7d1afe032fa46cb4ffed4bc53b2d089  index.js
+#   - 9c648763…：kill/logs 契约化——新增生成的 KillResponse/LogsResponse（strict/
+#     forbid），kill 五个返回点经 killBody()、logs 成功页经 LogsResponseSchema
+#     出参校验（2279kB → 2280kB）。
+9c6487635c37558f7cc850dc78d76afc5484734965e68977171e82e997fda483  index.js

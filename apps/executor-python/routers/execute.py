@@ -31,7 +31,17 @@ from pydantic import ValidationError
 # 与下面的 ExecuteRequest（autocodeflow_sdk / 本地 fallback）分工不同：那个是
 # FastAPI 的**反序列化**模型（task 保持 dict，全代码库按字典访问），这个是
 # **协议校验**模型——两者并存是因为改前者要动 2000+ 行的访问方式，风险远大于收益。
-from generated.protocol_schemas import ExecuteRequest as ProtocolExecuteRequest
+from generated.protocol_schemas import (
+    ExecuteRequest as ProtocolExecuteRequest,
+    KillResponse as ProtocolKillResponse,
+)
+
+
+def _kill_body(ok: bool) -> dict:
+    """A3（kill/logs 契约化）：kill 出参必经生成的 KillResponse——两侧逐字段
+    同形 `{ok:bool}` 且 forbid 额外键。校验失败 = 本端把响应形状改漂移了，
+    直接抛错走 500，而不是发一个 admin 无法解析的载荷。"""
+    return ProtocolKillResponse.model_validate({'ok': ok}).model_dump()
 try:
     from autocodeflow_sdk.models import ExecuteRequest
 except ImportError:
@@ -1652,7 +1662,7 @@ async def kill_execution(executionId: str):
     entry = get_live_execution(executionId)
     if entry is None:
         # 不在运行表中（从未领取 / 已结束 / 已清理）
-        return JSONResponse(status_code=404, content={'ok': False})
+        return JSONResponse(status_code=404, content=_kill_body(False))
 
     entry.killed_by_request = True
     entry.cancelled = True
@@ -1664,7 +1674,7 @@ async def kill_execution(executionId: str):
         # failureReason=killed 的终态回调并摘除注册表条目——与 node 的
         # "close 事件走 runTask 失败路径" 一致，这里不重复推送。
         await _kill_process_tree(proc)
-        return {'ok': True}
+        return _kill_body(True)
 
     # 排队/prepare（尚未 spawn）：立刻收尾——推送一次 killed 回调（后台任务，
     # 不阻塞 admin 的 3s 超时）并摘除注册表；run_task 的 cancelled 检查点会让
@@ -1674,7 +1684,7 @@ async def kill_execution(executionId: str):
         entry.killed_callback_pushed = True
         _spawn_background(_push_killed_callback(executionId))
     unregister_live_execution(executionId)
-    return {'ok': True}
+    return _kill_body(True)
 
 
 async def _run_and_callback(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None):

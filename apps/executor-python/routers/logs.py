@@ -5,6 +5,8 @@ from pydantic import BaseModel
 
 from auth import verify_token
 from config import settings
+# A3（kill/logs 契约化）：出参契约（由 protocol.json 生成，勿手改产物）
+from generated.protocol_schemas import LogsResponse as ProtocolLogsResponse
 
 router = APIRouter()
 
@@ -52,4 +54,8 @@ def get_execution_logs(
             if fromLine <= total < fromLine + limit:
                 window.append(line)
             total += 1
-    return LogsResponse(lines=window, totalLines=total, hasMore=fromLine + len(window) < total)
+    result = LogsResponse(lines=window, totalLines=total, hasMore=fromLine + len(window) < total)
+    # A3：再让**生成的** LogsResponse 过一遍（与 executor-node 同源、forbid 额外键）——
+    # 本地 response_model 管序列化，生成物管「两侧形状不漂移」，缺字段/改字段名在此抛错。
+    ProtocolLogsResponse.model_validate(result.model_dump())
+    return result

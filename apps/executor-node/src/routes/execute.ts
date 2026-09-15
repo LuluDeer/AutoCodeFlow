@@ -21,7 +21,10 @@ import { taskWorkerManager, ExecutionCancelledError } from '../task-worker';
 import { runCommand, killProcessTree } from '../run-command';
 import { buildChildEnv } from '../env-whitelist';
 // A3-C：协议闸门（由 packages/executor-protocol/protocol.json 生成，勿手改产物）
-import { ExecuteRequestSchema } from '../generated/protocol.schemas';
+import {
+  ExecuteRequestSchema,
+  KillResponseSchema,
+} from '../generated/protocol.schemas';
 import {
   createExecutionCallbackToken,
   CALLBACK_TOKEN_GRACE_SECONDS,
@@ -1128,12 +1131,27 @@ function removeTemporaryNpmConfig(npmConfig: TemporaryNpmConfig): void {
 // （或中止 prepare 阶段），幂等释放并发槽，回调照常走失败路径
 // （failureReason=killed）。
 // ---------------------------------------------------------------------------
+/**
+ * A3（kill/logs 契约化）：kill 出参必经生成的 KillResponse——两侧逐字段同形
+ * `{ok:boolean}` 且 forbid 额外键。构造方就是本路由，校验失败 = 服务端把响应
+ * 形状改漂移了，直接抛出走 500，而不是发一个 admin 无法解析的载荷。
+ */
+function killBody(ok: boolean): { ok: boolean } {
+  const payload = { ok };
+  const checked = KillResponseSchema.safeParse(payload);
+  if (!checked.success) {
+    const where = checked.error.issues[0]?.path.join('.') || '(root)';
+    throw new Error(`kill response violates executor-protocol at ${where}`);
+  }
+  return payload;
+}
+
 executeRouter.post('/executions/:executionId/kill', (req: Request, res: Response) => {
   const { executionId } = req.params;
   const entry = liveExecutions.get(executionId);
   if (!entry) {
     // 不在运行表中（从未领取 / 已结束 / 已清理）
-    res.status(404).json({ ok: false });
+    res.status(404).json(killBody(false));
     return;
   }
 
@@ -1150,19 +1168,19 @@ executeRouter.post('/executions/:executionId/kill', (req: Request, res: Response
     // prepare 尚未移交 worker（后台前置阶段）：立刻收尾，runPrepared 检查点
     // 会因 aborted 标志静默退出。
     finalizeKilled();
-    res.json({ ok: true });
+    res.json(killBody(true));
     return;
   }
   if (taskWorkerManager.cancelExecution(entry.taskId, executionId)) {
     // 已从 worker 队列摘除（尚未到点）：onComplete 不会再被触发，这里收尾。
     entry.cancelled = true;
     finalizeKilled();
-    res.json({ ok: true });
+    res.json(killBody(true));
     return;
   }
   if (entry.workerFinished) {
     // 恰在 kill 到达前自然结束：仍按 200 返回（admin 侧已是终态，回调被忽略）。
-    res.json({ ok: true });
+    res.json(killBody(true));
     return;
   }
 
@@ -1175,7 +1193,7 @@ executeRouter.post('/executions/:executionId/kill', (req: Request, res: Response
   } else {
     logger.warn(`[kill] ${executionId} enqueued but no live process registered — waiting for natural end`);
   }
-  res.json({ ok: true });
+  res.json(killBody(true));
 });
 
 /** Write execution metadata to workDir/meta/{executionId}.json so the desktop can build history */
