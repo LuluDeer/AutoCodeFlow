@@ -9,6 +9,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, waitFor, act } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
+import { useAuthStore } from '../store/auth';
 import EventSubscriptionsSettings, { subscriptionFailureStats } from '../pages/settings/EventSubscriptionsSettings';
 import { eventSubscriptionsApi, EventSubscription, EventSubscriptionDeadLetter } from '../api/event-subscriptions';
 
@@ -120,6 +121,9 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocked.list.mockResolvedValue([subRow()]);
   mocked.listDeadLetters.mockResolvedValue({ data: [deadLetterRow()], total: 1 });
+  // SUB-SCOPE-01：新建订阅已收紧为 ADMIN-only，前端据此渲染入口。既有用例默认
+  // 以 ADMIN 身份跑（它们验证的是创建/回显流程本身）；非管理员分支另有用例。
+  useAuthStore.setState({ user: { id: 1, username: 'root', role: 'admin' } });
 });
 
 afterEach(() => {
@@ -323,5 +327,54 @@ describe('FEAT-15 EventSubscriptionsSettings', () => {
     expect(bad.label).toBe('连续失败 2 次');
     expect(bad.color).toBe('red');
     expect(bad.detail).toBe('boom');
+  });
+});
+
+/**
+ * SUB-SCOPE-01（本轮审计，行为变更）：新建订阅收紧为 ADMIN-only。
+ *
+ * 投递端按 `where: { enabled: true }` 选取订阅、不做属主过滤，而可订阅事件是
+ * 平台级全局发布的 —— 此前任何人建一条订阅即可持续收到别人任务的终态 webhook
+ * （含 taskName/errorMessage/logs）。出站通道属管理面。
+ *
+ * 关键：收紧的只有「新增」，读面与已有订阅的编辑/启停/删除都保持原样。
+ */
+describe('SUB-SCOPE-01 非管理员：可读不可建', () => {
+  beforeEach(() => {
+    useAuthStore.setState({ user: { id: 2, username: 'dev', role: 'user' } });
+  });
+
+  it('非管理员不渲染可点击的「新建」入口，改为禁用 + 说明', async () => {
+    renderPage();
+    await waitFor(() => expect(screen.getByText('https://ci.example.com/hooks')).toBeTruthy());
+
+    // 可点击的入口不在了
+    expect(screen.queryByTestId('sub-create')).toBeNull();
+    // 取而代之的是禁用按钮
+    const disabled = screen.getByTestId('sub-create-disabled');
+    expect((disabled as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('非管理员点不到新建 Modal（入口已禁用）', async () => {
+    renderPage();
+    await waitFor(() => expect(screen.getByText('https://ci.example.com/hooks')).toBeTruthy());
+    fireEvent.click(screen.getByTestId('sub-create-disabled'));
+    // 表单未打开
+    expect(screen.queryByTestId('sub-url-input')).toBeNull();
+  });
+
+  it('读面不受影响：仍能看到订阅列表与死信入口', async () => {
+    renderPage();
+    await waitFor(() => expect(screen.getByText('https://ci.example.com/hooks')).toBeTruthy());
+    expect(screen.getAllByText('execution.failed').length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('已有订阅仍可编辑（PATCH 是 ADMIN 或属主，未收紧）', async () => {
+    renderPage();
+    const editBtn = await screen.findByTestId('sub-edit-e1111111-1111-4111-8111-111111111111');
+    expect(editBtn).toBeTruthy();
+    fireEvent.click(editBtn);
+    // 编辑 Modal 能打开
+    expect(await screen.findByTestId('sub-url-input')).toBeTruthy();
   });
 });

@@ -839,6 +839,10 @@ export default {
 
   'eventSub.title': 'Event Subscriptions (Webhook Outbound)',
   'eventSub.create': 'New Subscription',
+  // SUB-SCOPE-01: creating a subscription is ADMIN-only (an outbound webhook is a
+  // data-egress capability and delivery is not owner-filtered). Reads and edits
+  // of existing subscriptions are unaffected.
+  'eventSub.createAdminOnly': 'Only administrators can create event subscriptions (outbound channels are an admin surface); you can still view your own subscriptions and dead letters.',
   'eventSub.createFail': 'Failed to create subscription. Check the URL and network.',
   'eventSub.updated': 'Subscription updated',
   'eventSub.updateFail': 'Failed to update subscription',
