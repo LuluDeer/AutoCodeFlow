@@ -14,7 +14,7 @@ import {
 import { getErrMsg } from '../utils/error';
 // F-26（DEEP_REVIEW 0ef3bbe）：locale 单一来源 currentLocale() + 统一相对时间 formatRelativeTime()
 import { currentLocale } from '../utils/locale';
-import { formatRelativeTime, formatDurationShort } from '../utils/timeFormat';
+import { formatRelativeTime, formatDurationShort, formatDateTime } from '../utils/timeFormat';
 // F-36（DEEP_REVIEW 0ef3bbe）：编辑弹窗字段白名单（回填/提交都不再整体快照透传）。
 import { executorEditFormValues, pickExecutorEditPayload, type ExecutorEditValues } from './executor-edit';
 import { useAuthStore, isAdminUser } from '../store/auth';
@@ -202,7 +202,7 @@ export default function ExecutorDetailPage() {
 
   const heartbeatStale = executor.lastHeartbeat ? isHeartbeatStale(executor.lastHeartbeat) : false;
   const heartbeatText = executor.lastHeartbeat ? formatRelativeTime(executor.lastHeartbeat, t) : '-';
-  const heartbeatAbsolute = executor.lastHeartbeat ? new Date(executor.lastHeartbeat).toLocaleString() : '';
+  const heartbeatAbsolute = executor.lastHeartbeat ? formatDateTime(executor.lastHeartbeat) : '';
 
   type BadgeStatus = 'success' | 'processing' | 'error' | 'default' | 'warning';
   const STATUS_MAP = (t: (k: string) => string): Record<string, { badge: BadgeStatus; label: string }> => ({
