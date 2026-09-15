@@ -55,6 +55,15 @@ jest.mock("minio", () => ({
 // executor; mock it so no network is attempted.
 jest.mock("axios");
 
+// SEC-SSRF-01: backfill 现在先过 assertSafeExecutorUrl。用例用 fixture 地址，
+// 真实守卫会做 DNS 解析并失败，故 stub 掉守卫（同 executor.service.spec）。
+jest.mock("../../../common/utils/safe-http.util", () => ({
+  ...jest.requireActual("../../../common/utils/safe-http.util"),
+  assertSafeExecutorUrl: jest
+    .fn()
+    .mockResolvedValue(new URL("http://fixture:3001/")),
+}));
+
 const makeRepo = () => {
   const repo: Record<string, jest.Mock> = {
     create: jest.fn((d) => d),
