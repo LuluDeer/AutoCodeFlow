@@ -3,6 +3,9 @@
   "version": "1.0.1",
   "private": true,
   "description": "AutoCodeFlow monorepo root — unified command entry (per-app installs remain independent; no workspace hoisting by design, see ARCH-20)",
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "test:api": "cd apps/admin-api && npx jest",
     "test:node": "cd apps/executor-node && npx jest",

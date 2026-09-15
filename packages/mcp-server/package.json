@@ -14,7 +14,8 @@
     "dev": "ts-node src/index.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run clean && npm run build",
+    "clean": "rm -rf dist"
   },
   "bin": {
     "autocodeflow-mcp": "dist/index.js"

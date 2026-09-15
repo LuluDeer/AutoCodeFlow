@@ -808,6 +808,12 @@ jobs:
             apps/admin-api/package-lock.json
             apps/admin-web/package-lock.json
             apps/executor-node/package-lock.json
+      # E-18（DEEP_REVIEW 0ef3bbe）：executor-python 全链 e2e——CI 需 setup-python
+      # + fastapi/uvicorn/httpx 依赖，否则 e2e-full.sh 的 python 启动分支走 skip。
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r apps/executor-python/requirements.txt
       - run: npm ci
         working-directory: apps/admin-api
       - run: npm ci
