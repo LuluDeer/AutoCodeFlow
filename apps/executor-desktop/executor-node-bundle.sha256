@@ -42,4 +42,13 @@
 #     注：本次 CI(Ubuntu) 重打值与本地(Git Bash/Windows) 重打值**逐字节一致**
 #     （均 cc54aa2f…），说明 ncc 0.44 的 --source-map 绝对路径差异在 0.44 已
 #     不影响产物哈希；上面的"跨平台不同"是更早期版本的结论，保留以备参考。
-cc54aa2fd6f7fd5b812be796793a2e71e490a442bf35468e5ecf0b1c2dad0336  index.js
+#   - 485e69c9…：SEC-DEPLOY-01 回归修正——上一条把校验收紧成"只允许单个 token、
+#     拒绝一切空白"，这**误伤了平台实际支持的合法形态**：`sh app.sh`
+#     （scripts/arch31-rollout-cross-instance-selftest.mjs:329）、
+#     `node dist/main.js`（app-deployment 多个 spec）等一律被拒，导致真实部署
+#     起不来、CI 的 selftests 变红（部署先到 RUNNING 再翻 failed）。
+#     现按 token 逐个校验（每个 token 仍须匹配 ^[A-Za-z0-9._][A-Za-z0-9._/-]*$、
+#     不得以 '-' 开头、不得含 `..` 段，另拒控制字符），既能放行"解释器+脚本+
+#     固定参数"，又仍封堵串联/替换/引用（`;` `&` `|` `$()` 反引号 引号 等）。
+#     同时补一条正向用例钉住这些真实形态（2282kB → 2283kB）。遵 ADR-005 同 commit。
+485e69c9736158d07039e690fe727633d4dcbc6fccf24c98f093f33d767a5f06  index.js
