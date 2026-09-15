@@ -11,7 +11,10 @@ import {
   forwardRef,
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { assertSafeGitRepoUrl, assertSafeExecutorUrl } from "../../common/utils/safe-http.util";
+import {
+  assertSafeGitRepoUrl,
+  assertSafeExecutorUrl,
+} from "../../common/utils/safe-http.util";
 // A2-B: 属主/项目角色校验的运行时证据落点
 import { recordOwnershipAssertion } from "../../common/guards/ownership-assertion.store";
 import {
@@ -42,7 +45,10 @@ import {
   ExecutionFailureReason,
 } from "./entities/task-execution.entity";
 // A1: 终态跃迁（条件 UPDATE + RETURNING + 驱动兜底）的单一入口。
-import { transitionToTerminal, transitionOneToTerminal } from "./execution-terminal";
+import {
+  transitionToTerminal,
+  transitionOneToTerminal,
+} from "./execution-terminal";
 import { ExecutionLogLine } from "./entities/execution-log-line.entity";
 import { TaskVersion } from "./entities/task-version.entity";
 import { CreateTaskDto } from "./dto/create-task.dto";
