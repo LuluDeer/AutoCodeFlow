@@ -1,6 +1,25 @@
 import { LogEntry, LogLevel } from './types';
 
 /**
+ * SDK-LOG-01（本轮审计）：`JSON.stringify` 对循环引用与 BigInt 会**抛错**
+ * （TypeError: Converting circular structure to JSON / Do not know how to
+ * serialize a BigInt）。logger 此前在拼 console 前缀时直接调用它，任何
+ * `ctx.logger.info('x', circularObj)` 都会把 TypeError 抛回**用户任务代码**
+ * 的调用点，把一条日志变成崩溃；而记录该崩溃的那条 entry 已入 ring，却永远
+ * 打不出来。context.ts 的 stringifyError 早已用 try/catch 兜住同一风险
+ * （注释直指 "circular structures etc."），logger 这边漏了。
+ *
+ * 兜底策略：序列化失败时退化为 String(meta)，日志行为不变、绝不抛错。
+ */
+function safeStringify(value: unknown): string {
+  try {
+    return JSON.stringify(value) ?? String(value);
+  } catch {
+    return String(value);
+  }
+}
+
+/**
  * Lightweight structured logger for task execution.
  *
  * Writes every entry to the appropriate `console.*` method and
@@ -21,7 +40,6 @@ export class TaskLogger {
   private dropped = 0;
 
   // ------------------------------------------------------------------ helpers
-
   private log(
     level: LogLevel,
     message: string,
@@ -43,7 +61,7 @@ export class TaskLogger {
     }
 
     const prefix = `[${entry.timestamp}] [${level.toUpperCase()}]`;
-    const suffix = meta ? ` ${JSON.stringify(meta)}` : '';
+    const suffix = meta ? ` ${safeStringify(meta)}` : '';
     const formatted = `${prefix} ${message}${suffix}`;
 
     switch (level) {

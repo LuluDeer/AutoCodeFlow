@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { HttpClient } from '../http-client';
+import { HttpClient, stripTrailingApiSuffix } from '../http-client';
 
 jest.mock('axios');
 
@@ -50,6 +50,65 @@ describe('HttpClient', () => {
 
     it('accepts an optional traceId', () => {
       expect(() => new HttpClient(BASE_URL, TOKEN, TRACE_ID)).not.toThrow();
+    });
+  });
+
+  /**
+   * SDK-BASE-01（本轮审计）：请求路径是绝对的 `/api/executions/callback`，
+   * axios 对 baseURL 与绝对路径做简单串接——base 若已带 `/api` 就会变成
+   * `/api/api/...` → 404，回调通道整体失联且无任何诊断。python SDK 早已容忍
+   * 这种 base（callback.py 的 endswith("/api") 分支），本包此前漏了。
+   */
+  describe('base URL /api dedupe (SDK-BASE-01)', () => {
+    it('strips a trailing /api so the callback path is not doubled', () => {
+      expect(stripTrailingApiSuffix('http://host:3105/api')).toBe('http://host:3105');
+      expect(stripTrailingApiSuffix('http://host:3105/api/')).toBe('http://host:3105');
+    });
+
+    it('collapses repeated /api segments', () => {
+      expect(stripTrailingApiSuffix('http://host:3105/api/api/')).toBe('http://host:3105');
+    });
+
+    it('leaves a clean base untouched', () => {
+      expect(stripTrailingApiSuffix('http://host:3105')).toBe('http://host:3105');
+      expect(stripTrailingApiSuffix('http://host:3105/')).toBe('http://host:3105');
+      expect(stripTrailingApiSuffix('http://host:3105/base')).toBe('http://host:3105/base');
+    });
+
+    it('does not mangle a path that merely starts with "api"', () => {
+      // /apiary 不是 /api 段，必须原样保留
+      expect(stripTrailingApiSuffix('http://host:3105/apiary')).toBe('http://host:3105/apiary');
+      expect(stripTrailingApiSuffix('http://host:3105/apix')).toBe('http://host:3105/apix');
+    });
+
+    it('passes undefined/empty through unchanged', () => {
+      expect(stripTrailingApiSuffix(undefined)).toBeUndefined();
+      expect(stripTrailingApiSuffix('')).toBe('');
+    });
+
+    it('the constructed client uses the deduped base URL', () => {
+      new HttpClient('http://host:3105/api', TOKEN);
+      expect(mockedAxios.create).toHaveBeenCalledWith({
+        baseURL: 'http://host:3105',
+        timeout: 10_000,
+      });
+    });
+
+    it('a buggy (undeduped) base really would double the prefix — regression proof', () => {
+      // 本文件的 axios 是 mock，故用真实实现复现拼接语义：
+      // axios 对 baseURL + 绝对 url 做简单串接（不辨别 url 已带 /api）。
+      const realAxios = jest.requireActual<typeof import('axios')>('axios').default;
+      const buggy = realAxios.create({ baseURL: 'http://host:3105/api' });
+      expect(buggy.getUri({ url: '/api/executions/callback' })).toBe(
+        'http://host:3105/api/api/executions/callback',
+      );
+      // 经收敛后的 base 拼出来是正确的
+      const fixed = realAxios.create({
+        baseURL: stripTrailingApiSuffix('http://host:3105/api'),
+      });
+      expect(fixed.getUri({ url: '/api/executions/callback' })).toBe(
+        'http://host:3105/api/executions/callback',
+      );
     });
   });
 
