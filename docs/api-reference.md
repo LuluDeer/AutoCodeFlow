@@ -730,7 +730,7 @@ Alertmanager 侧 route/receiver 配置样例与加签提示见 `docs/observabili
 | 方法 | 路径 | 需要认证 | 说明 |
 |------|------|:--------:|------|
 | GET | `/event-subscriptions` | 是 | 列出订阅：ADMIN 看全部；普通用户看自己的 + 系统级（`userId=null`）。`secret` 恒脱敏为 `******` |
-| POST | `/event-subscriptions` | 是 | 新建订阅。body: `{ url（必填，公网 http(s)）, eventTypes（1-10 个，取值=上表事件名）, secret?（≥16 字符；省略则服务端生成 64 字符 hex 并在**本次响应** `generatedSecret` 字段一次性回显） }`。url 经 SSRF 深校验（DNS 解析逐地址拒绝内网/环回/链路本地/云元数据）→ 400。ARCH-31：`EVENT_WEBHOOK_ALLOW_PRIVATE_NETWORK=true` 时放行 loopback/restricted/private-LAN（云元数据恒拒），默认 false 姿态不变 |
+| POST | `/event-subscriptions` | 是（**仅 ADMIN**） | 新建订阅（SUB-SCOPE-01：出站 webhook 属管理面能力，已由「任何已登录」收紧为 `@Roles(ADMIN)`）。body: `{ url（必填，公网 http(s)）, eventTypes（1-10 个，取值=上表事件名）, secret?（≥16 字符；省略则服务端生成 64 字符 hex 并在**本次响应** `generatedSecret` 字段一次性回显） }`。url 经 SSRF 深校验（DNS 解析逐地址拒绝内网/环回/链路本地/云元数据）→ 400。ARCH-31：`EVENT_WEBHOOK_ALLOW_PRIVATE_NETWORK=true` 时放行 loopback/restricted/private-LAN（云元数据恒拒），默认 false 姿态不变 |
 | PATCH | `/event-subscriptions/:id` | 是 | 更新（属主/ADMIN）。body: `{ enabled?, url?, eventTypes?, secret? }`（url 变更时再次 SSRF 校验） |
 | DELETE | `/event-subscriptions/:id` | 是 | 删除订阅（属主/ADMIN），死信级联删除（FK ON DELETE CASCADE） |
 | GET | `/event-subscriptions/:id/dead-letters` | 是 | 死信分页列表（属主/ADMIN）。`page` 默认 1，`limit` 默认 20、最大 100。行含 `eventType` / `payload`（发送时完整载荷）/ `error`（末次失败摘要）/ `attempts` / `createdAt` |

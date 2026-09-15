@@ -2650,7 +2650,7 @@ export interface paths {
         get: operations["EventSubscriptionController_list"];
         put?: never;
         /**
-         * Create an outbound event subscription
+         * Create an outbound event subscription (ADMIN only)
          * @description URL is deep-validated against SSRF (private/loopback/link-local/metadata targets rejected). Omit `secret` to have one generated (returned once as `generatedSecret`).
          */
         post: operations["EventSubscriptionController_create"];
