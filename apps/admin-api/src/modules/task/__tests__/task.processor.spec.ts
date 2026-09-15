@@ -29,6 +29,8 @@ const makeRepo = (overrides: Partial<Record<string, jest.Mock>> = {}) => ({
     set: jest.fn().mockReturnThis(),
     where: jest.fn().mockReturnThis(),
     andWhere: jest.fn().mockReturnThis(),
+    // A1: transitionOneToTerminal 链携带 RETURNING；mock 需可链式。
+    returning: jest.fn().mockReturnThis(),
     execute: jest.fn().mockResolvedValue({ affected: 1 }),
   })),
   ...overrides,
@@ -51,6 +53,8 @@ const makeDataSource = () => ({
         set: jest.fn().mockReturnThis(),
         where: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
+        // A1: transitionOneToTerminal 链携带 RETURNING；mock 需可链式。
+        returning: jest.fn().mockReturnThis(),
         execute: jest.fn().mockResolvedValue({ affected: 1 }),
       })),
     },
@@ -296,10 +300,11 @@ describe("TaskProcessor", () => {
   it("marks FAILED if task not found", async () => {
     taskRepo.findOne.mockResolvedValue(null);
     await processor.handle({ data: { executionId: "exec-1" } } as any);
-    const saved = execRepo.save.mock.calls.map((c: any) => c[0]);
-    expect(saved.some((e: any) => e.status === ExecutionStatus.FAILED)).toBe(
-      true,
-    );
+    // A1: task-not-found 终态写走 transitionOneToTerminal（createQueryBuilder 链），
+    // 不再经 execRepo.save。断言条件 UPDATE 的 patch 携带 FAILED。
+    const qb = (execRepo.createQueryBuilder as jest.Mock).mock.results[0].value;
+    const patch = qb.set.mock.calls[0][0];
+    expect(patch.status).toBe(ExecutionStatus.FAILED);
   });
 
   it("ERR-01: original error is not masked when transaction save fails", async () => {
@@ -341,11 +346,12 @@ describe("TaskProcessor", () => {
     await processor.handle({ data: { executionId: "exec-2" } } as any);
 
     // Task-not-found returns early before the finally block, so we just
-    // verify no unhandled error was thrown and the execution was saved as FAILED.
-    const saved = execRepo.save.mock.calls.map((c: any) => c[0]);
-    expect(saved.some((e: any) => e.status === ExecutionStatus.FAILED)).toBe(
-      true,
-    );
+    // verify no unhandled error was thrown and the execution was written as
+    // FAILED via the terminal-transition gate (A1: createQueryBuilder 链).
+    const qb = (execRepo.createQueryBuilder as jest.Mock).mock.results[0].value;
+    const patch = qb.set.mock.calls[0][0];
+    expect(patch.status).toBe(ExecutionStatus.FAILED);
+    expect(patch.duration).toBe(0);
   });
 
   // RETRY-01: task.retryableErrors drives whether a dispatch failure reaches
@@ -466,6 +472,8 @@ describe("TaskProcessor", () => {
           set: jest.fn().mockReturnThis(),
           where: jest.fn().mockReturnThis(),
           andWhere: jest.fn().mockReturnThis(),
+          // A1: transitionOneToTerminal 链携带 RETURNING；mock 需可链式。
+          returning: jest.fn().mockReturnThis(),
           execute: jest.fn().mockResolvedValue({ affected: 0 }),
         })),
       },
@@ -479,6 +487,7 @@ describe("TaskProcessor", () => {
           set: jest.fn().mockReturnThis(),
           where: jest.fn().mockReturnThis(),
           andWhere: jest.fn().mockReturnThis(),
+          returning: jest.fn().mockReturnThis(),
           execute: jest.fn().mockRejectedValue(new Error("db down")),
         }));
       }
@@ -496,12 +505,12 @@ describe("TaskProcessor", () => {
     const repairQB = (repairRunner.manager.createQueryBuilder as jest.Mock).mock
       .results[0].value;
     expect(repairQB.update).toHaveBeenCalled();
-    const andWhereCalls = (repairQB.andWhere as jest.Mock).mock.calls.map(
-      (c: any) => String(c[0]),
+    // A1: transitionOneToTerminal 把状态门槛写在 .where()（而非 .andWhere()）。
+    // WHERE 子句形如 '"id" IN (...) AND "status" IN (...)'——"status" 带引号。
+    const whereCalls = (repairQB.where as jest.Mock).mock.calls.map((c: any) =>
+      String(c[0]),
     );
-    expect(andWhereCalls.some((s: string) => s.includes("status IN"))).toBe(
-      true,
-    );
+    expect(whereCalls.some((s: string) => s.includes('"status" IN') || s.includes('status IN'))).toBe(true);
     // affected=0 → nothing was clobbered, no "Repaired" log.
     expect(
       repairLog.mock.calls.some((c: any) => /Repaired/.test(String(c[0]))),
@@ -523,6 +532,7 @@ describe("TaskProcessor", () => {
       set: jest.fn().mockReturnThis(),
       where: jest.fn().mockReturnThis(),
       andWhere: jest.fn().mockReturnThis(),
+      returning: jest.fn().mockReturnThis(),
       execute: jest.fn().mockResolvedValue({ affected: 0 }),
     }));
     executorService.dispatch.mockResolvedValue({ status: "accepted" });

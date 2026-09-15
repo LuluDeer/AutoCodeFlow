@@ -235,7 +235,16 @@ describe("ExecutorService (__tests__)", () => {
         ExecutionFailureReason.EXECUTOR_RESTART,
       );
       expect(runningExecution.errorMessage).toContain("Executor restarted");
-      expect(execRepo.save).toHaveBeenCalledWith(runningExecution);
+      // A1: 终态写走 transitionOneToTerminal（createQueryBuilder 链），不再经
+      // execRepo.save。断言条件 UPDATE 的 patch 携带 FAILED。
+      const qbResults = (execRepo.createQueryBuilder as jest.Mock).mock
+        .results;
+      const setPatches = qbResults.flatMap((r: any) =>
+        r.value.set.mock.calls.map((c: any) => c[0]),
+      );
+      expect(
+        setPatches.some((p: any) => p.status === ExecutionStatus.FAILED),
+      ).toBe(true);
       expect(taskQueue.add).not.toHaveBeenCalled();
     });
 
@@ -442,11 +451,38 @@ describe("ExecutorService (__tests__)", () => {
       executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
       execRepo.find.mockResolvedValue([okExecution, conflictExecution]);
       taskRepo.findBy.mockResolvedValue([]);
-      // First save (conflict row) throws OptimisticLockVersionMismatchError;
-      // second save (ok row) succeeds.
-      execRepo.save
-        .mockRejectedValueOnce(new Error("OptimisticLockVersionMismatchError"))
-        .mockImplementation((e: any) => Promise.resolve(e));
+      // A1: 终态写走 transitionOneToTerminal（createQueryBuilder 链）。让第一次
+      // QB execute（ok 行）抛乐观锁错误，第二次（conflict 行）成功——验证单行
+      // 失败不击穿整体恢复流程。
+      let terminalWriteIdx = 0;
+      execRepo.createQueryBuilder.mockImplementation(() => {
+        const idx = terminalWriteIdx++;
+        return {
+          update: jest.fn().mockReturnThis(),
+          delete: jest.fn().mockReturnThis(),
+          set: jest.fn().mockReturnThis(),
+          leftJoin: jest.fn().mockReturnThis(),
+          innerJoin: jest.fn().mockReturnThis(),
+          getMany: jest.fn().mockResolvedValue([]),
+          getOne: jest.fn().mockResolvedValue(null),
+          select: jest.fn().mockReturnThis(),
+          addSelect: jest.fn().mockReturnThis(),
+          where: jest.fn().mockReturnThis(),
+          andWhere: jest.fn().mockReturnThis(),
+          returning: jest.fn().mockReturnThis(),
+          groupBy: jest.fn().mockReturnThis(),
+          orderBy: jest.fn().mockReturnThis(),
+          limit: jest.fn().mockReturnThis(),
+          getRawMany: jest.fn().mockResolvedValue([]),
+          getRawOne: jest.fn().mockResolvedValue(null),
+          getCount: jest.fn().mockResolvedValue(0),
+          execute: jest.fn().mockImplementation(async () => {
+            if (idx === 0)
+              throw new Error("OptimisticLockVersionMismatchError");
+            return { affected: 1 };
+          }),
+        };
+      });
 
       await service.register({
         appName: "e1",
@@ -456,8 +492,9 @@ describe("ExecutorService (__tests__)", () => {
 
       // The ok row must still be marked FAILED
       expect(okExecution.status).toBe(ExecutionStatus.FAILED);
-      // The conflict row's save was attempted but failed; the loop continued
-      expect(execRepo.save).toHaveBeenCalledTimes(2);
+      // Both rows attempted the terminal write via the QB path; the first
+      // threw but the loop continued to the second.
+      expect(execRepo.createQueryBuilder).toHaveBeenCalledTimes(2);
       // Registration must not have thrown (no 500)
       expect(existing.executorStartupId).toBe("startup-new");
     });
@@ -1244,8 +1281,18 @@ describe("ExecutorService (__tests__)", () => {
         ExecutionFailureReason.EXECUTOR_RESTART,
       );
       expect(newExecution.status).toBe(ExecutionStatus.RUNNING);
-      expect(execRepo.save).toHaveBeenCalledWith(oldExecution);
-      expect(execRepo.save).not.toHaveBeenCalledWith(newExecution);
+      // A1: 终态写走 transitionOneToTerminal（createQueryBuilder 链）。oldExecution
+      // 被推进终态（patch=FAILED）；newExecution 未过 shouldFailAfterRestart 门，
+      // 不走终态写 → createQueryBuilder 恰被调用一次。
+      const qbResults = (execRepo.createQueryBuilder as jest.Mock).mock
+        .results;
+      const setPatches = qbResults.flatMap((r: any) =>
+        r.value.set.mock.calls.map((c: any) => c[0]),
+      );
+      expect(
+        setPatches.some((p: any) => p.status === ExecutionStatus.FAILED),
+      ).toBe(true);
+      expect(execRepo.createQueryBuilder).toHaveBeenCalledTimes(1);
       expect(executor.executorStartupId).toBe("startup-new");
     });
 
@@ -1298,7 +1345,10 @@ describe("ExecutorService (__tests__)", () => {
 
       expect(firstExecution.status).toBe(ExecutionStatus.FAILED);
       expect(secondExecution.status).toBe(ExecutionStatus.FAILED);
-      expect(execRepo.delete).toHaveBeenCalledWith("retry-2");
+      // A1: 终态写走 transitionOneToTerminal（createQueryBuilder 链），故
+      // execRepo.save 仅被 scheduleRetryAfterRecovery 调用（创建 retry exec）。
+      // 第一个 retry（firstExecution）enqueue 失败 → 删除其刚创建的 retry 行。
+      expect(execRepo.delete).toHaveBeenCalledWith("retry-1");
       expect(taskQueue.add).toHaveBeenCalledTimes(2);
       expect(executor.executorStartupId).toBe("startup-new");
       expect(executorRepo.save).toHaveBeenCalledWith(executor);

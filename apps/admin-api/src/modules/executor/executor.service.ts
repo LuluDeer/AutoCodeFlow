@@ -32,6 +32,7 @@ import {
 // 认的终态」和「对账回的终态」会各自漂移。
 import {
   transitionToTerminal,
+  transitionOneToTerminal,
   TERMINAL_EXECUTION_STATUSES,
 } from "../task/execution-terminal";
 import { Task } from "../task/entities/task.entity";
@@ -523,10 +524,24 @@ export class ExecutorService {
         execution.errorMessage =
           "[System] Executor restarted before reporting completion";
         execution.logs = `${execution.logs || ""}\n[System] Executor restarted; execution marked as FAILED`;
-        await this.execRepo.save(execution);
-        await this.releaseExecutorSlot(execution.executorAddress);
-        if (task) await this.scheduleRetryAfterRecovery(task, execution);
-        failedCount++;
+        // A1: 走统一终态门（带 open-status 谓词 + RETURNING），替代裸 save。
+        // 已终态的行不会被覆盖，避免双重释放槽位/双重调度重试。
+        const result = await transitionOneToTerminal(this.execRepo, {
+          id: execution.id,
+          patch: {
+            status: ExecutionStatus.FAILED,
+            endTime: execution.endTime,
+            failureReason: ExecutionFailureReason.EXECUTOR_RESTART,
+            errorMessage: execution.errorMessage,
+            logs: execution.logs,
+          },
+        });
+        if (result.transitioned) {
+          const addr = result.rows[0]?.executorAddress ?? execution.executorAddress;
+          await this.releaseExecutorSlot(addr);
+          if (task) await this.scheduleRetryAfterRecovery(task, execution);
+          failedCount++;
+        }
       } catch (err: unknown) {
         errorCount++;
         this.logger.warn(

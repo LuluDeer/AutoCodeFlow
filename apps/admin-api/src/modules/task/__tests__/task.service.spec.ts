@@ -4757,11 +4757,13 @@ describe("TaskService — QA-02 phase 2 branch gaps", () => {
         service.rollback("t1", { gitCommit: "abc123" }),
       ).rejects.toThrow("Failed to enqueue execution: queue down");
 
-      // 补偿：PENDING 行被写为 FAILED（makeRepo 默认 update mock 返回 affected:1）
-      expect(execRepo.update).toHaveBeenCalledWith(
-        "rb-exec-1",
-        expect.objectContaining({ status: ExecutionStatus.FAILED }),
-      );
+      // 补偿：PENDING 行被写为 FAILED。A1: 补偿走 transitionOneToTerminal
+      // （createQueryBuilder 链），不再经 execRepo.update。断言条件 UPDATE 的
+      // patch 携带 FAILED。
+      const qb = (execRepo.createQueryBuilder as jest.Mock).mock.results[0]
+        .value;
+      const patch = qb.set.mock.calls[0][0];
+      expect(patch.status).toBe(ExecutionStatus.FAILED);
     });
   });
 
