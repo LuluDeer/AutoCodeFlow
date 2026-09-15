@@ -384,21 +384,40 @@ export class TaskService {
   }
 
   /**
-   * AUTH-02: 执行类写面（trigger/pause/resume）归属。
+   * AUTH-02 + TASK-SCOPE-01: 执行类写面（trigger/pause/resume）归属。
    *
-   * 只做**显式只读**一种拒绝——项目 viewer 不得触发/暂停/恢复（viewer 的
-   * 定义即只读，这是角色模型唯一的硬约束点）；其余主体（ADMIN / 属主 /
-   * 非成员 / 未配置成员关系的场景）**维持既有行为**，不引入任何新的拒绝面
-   * （既有「任何登录用户可 trigger」的宽松语义需产品拍板后才收紧，见
-   * ADR-013 已知缺口）。
+   * 两层语义：
+   *  1. **始终拒绝项目 viewer**（AUTH-02 硬约束，与开关无关）—— viewer 的定义
+   *     即只读，这是角色模型唯一的硬约束点；
+   *  2. **可选收紧到属主/项目 editor**（TASK-SCOPE-01，经 `TASK_OPERATE_SCOPE`
+   *     配置）：默认 `any` 保留既有「任何已登录用户可 trigger」的宽松语义（零
+   *     行为变化，ADR-013 登记的已知缺口）；置为 `owner` 后，只有 ADMIN、任务
+   *     属主、或该项目内 editor 及以上角色可以操作。
+   *
+   * 为什么做成开关：这是行为变更，硬改会让现有依赖"我能跑同事任务"的团队全体撞
+   * 403。给运维显式选择权比单方面替他们决定更稳妥。
    */
   async assertCanOperate(
     row: { ownerUserId: number | null; projectId?: string | null },
     user: { id: number; role: UserRole } | null | undefined,
   ): Promise<void> {
-    // A2-B: 落 'operate' 证（区别于 'write'）——本方法只拒 viewer，不是属主
+    // A2-B: 落 'operate' 证（区别于 'write'）——本方法只拒 viewer / 可选的属主
     // 校验，落同一种证据会让 project-role 端点冒充 ownership。
     recordOwnershipAssertion("task", "operate");
+
+    // TASK-SCOPE-01: `owner` 档在既有 viewer 拒绝之上叠加属主判定。
+    // 与 assertCanWriteProjectAware 同款姿态：先试属主/项目 editor，不通即拒。
+    if (this.isOperateScopeOwner() && user?.id) {
+      const allowed = await this.canOperateAsOwner(row, user);
+      if (!allowed) {
+        throw new ForbiddenException(
+          "TASK_OPERATE_SCOPE=owner: triggering or changing schedule state requires " +
+            "being the task owner, an editor of its project, or an administrator",
+        );
+      }
+      return;
+    }
+
     if (!this.projectAccess || !user?.id) return;
     if (user.role === UserRole.ADMIN) return;
     const role = await this.projectAccess.resolveRole(
@@ -410,6 +429,36 @@ export class TaskService {
         "Your role in this project is viewer (read-only); triggering or changing schedule state requires the editor role",
       );
     }
+  }
+
+  /** TASK-SCOPE-01: 读配置判定执行类写面是否收紧到属主口径。 */
+  private isOperateScopeOwner(): boolean {
+    try {
+      return this.configService?.get<string>("taskScope.operate") === "owner";
+    } catch {
+      // 配置读取异常按宽松处理（与 ADR-013 既有语义一致，绝不因配置抖动而
+      // 意外收紧、把正常用户挡在门外）。
+      return false;
+    }
+  }
+
+  /**
+   * TASK-SCOPE-01: `owner` 档的放行判定 —— ADMIN / 属主 / 项目 editor 及以上。
+   * projectAccess 缺席（单测或未接线）时退化为「ADMIN 或属主」，不 fail-open。
+   */
+  private async canOperateAsOwner(
+    row: { ownerUserId: number | null; projectId?: string | null },
+    user: { id: number; role: UserRole },
+  ): Promise<boolean> {
+    if (user.role === UserRole.ADMIN) return true;
+    if (row.ownerUserId !== null && row.ownerUserId === user.id) return true;
+    if (!this.projectAccess) return false;
+    const role = await this.projectAccess.resolveRole(
+      user.id,
+      row.projectId ?? null,
+    );
+    // editor / admin 放行；viewer 与「非成员」（resolveRole 返回 null）拒绝。
+    return role === "editor" || role === "admin";
   }
 
   /**

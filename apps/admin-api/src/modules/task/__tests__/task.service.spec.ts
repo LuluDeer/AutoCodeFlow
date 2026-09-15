@@ -4018,6 +4018,157 @@ function makeLogQb(rows: unknown[]) {
   } as any;
 }
 
+/**
+ * TASK-SCOPE-01（本轮审计）：执行类写面（trigger/pause/resume）的归属口径开关。
+ *
+ * 背景：这三个端点是**唯一不做归属校验的写面**（update/delete 早就要求属主或
+ * ADMIN），"执行你的任务"此前对任何已登录用户开放——能 list 到任务的人就能触发
+ * 别人的生产任务（备份/部署/清理），也能 pause/resume 掉别人的定时任务。
+ * ADR-013 明确登记为「既有宽松语义，需产品拍板后才收紧」。
+ *
+ * 本组钉住**两档语义**：
+ *   - 默认 `any`：零行为变化（既有宽松语义），只保留 viewer 拒绝；
+ *   - `owner`：仅 ADMIN / 属主 / 项目 editor 及以上。
+ * 做成开关而非硬改，是因为这是行为变更——硬改会让依赖"我能跑同事任务"的团队
+ * 全体撞 403。
+ */
+describe("TASK-SCOPE-01: assertCanOperate 归属口径开关", () => {
+  let service: TaskService;
+  let access: { hasProjectRole: jest.Mock; resolveRole: jest.Mock };
+  let configGet: jest.Mock;
+
+  const admin = { id: 1, role: UserRole.ADMIN };
+  const owner = { id: 7, role: UserRole.USER };
+  const other = { id: 8, role: UserRole.USER };
+  const ownedRow = { ownerUserId: 7, projectId: "p1" };
+
+  /** 以指定的 taskScope.operate 取值装配 service。 */
+  async function build(operateScope: string | undefined) {
+    access = {
+      hasProjectRole: jest.fn().mockResolvedValue(false),
+      resolveRole: jest.fn().mockResolvedValue(null),
+    };
+    configGet = jest.fn((key: string) =>
+      key === "taskScope.operate" ? operateScope : "",
+    );
+    const module = await Test.createTestingModule({
+      providers: [
+        TaskService,
+        { provide: getRepositoryToken(Task), useValue: makeRepo() },
+        { provide: getRepositoryToken(TaskExecution), useValue: makeRepo() },
+        { provide: getRepositoryToken(ExecutionLogLine), useValue: makeRepo() },
+        { provide: getRepositoryToken(TaskVersion), useValue: makeRepo() },
+        { provide: getQueueToken("task-queue"), useValue: { add: jest.fn() } },
+        { provide: DataSource, useValue: { transaction: jest.fn() } },
+        {
+          provide: SchedulerService,
+          useValue: { stop: jest.fn(), scheduleOne: jest.fn() },
+        },
+        {
+          provide: AiService,
+          useValue: { analyzeFailure: jest.fn(), chat: jest.fn() },
+        },
+        {
+          provide: AiAnalysisService,
+          useValue: { analyzeFailure: jest.fn(), chat: jest.fn() },
+        },
+        { provide: ConfigService, useValue: { get: configGet } },
+        { provide: ExecutorService, useValue: {} },
+        {
+          provide: DomainEventBus,
+          useValue: {
+            emit: jest.fn(),
+            on: jest.fn(),
+            off: jest.fn(),
+            listenerCount: jest.fn().mockReturnValue(0),
+          },
+        },
+        // SEC-02: 降级明文桩（与主 harness 口径一致）
+        {
+          provide: SecretsCryptoService,
+          useValue: new SecretsCryptoService({ get: () => "" } as any),
+        },
+        { provide: getRepositoryToken(ExecutionReport), useValue: {} },
+        { provide: ProjectAccessService, useValue: access },
+      ],
+    }).compile();
+    service = module.get(TaskService);
+  }
+
+  describe("默认档 `any`：零行为变化（保留既有宽松语义）", () => {
+    beforeEach(async () => await build(undefined));
+
+    it("非属主的普通用户仍可操作（既有语义不变）", async () => {
+      await expect(
+        service.assertCanOperate(ownedRow, other),
+      ).resolves.toBeUndefined();
+    });
+
+    it("缺省 user（内部/API-Key 机器面）仍放行", async () => {
+      await expect(
+        service.assertCanOperate(ownedRow, undefined),
+      ).resolves.toBeUndefined();
+    });
+
+    it("仍拒绝项目 viewer（AUTH-02 硬约束，与开关无关）", async () => {
+      access.resolveRole.mockResolvedValue("viewer");
+      await expect(service.assertCanOperate(ownedRow, other)).rejects.toThrow(
+        ForbiddenException,
+      );
+    });
+  });
+
+  describe("收紧档 `owner`：仅 ADMIN / 属主 / 项目 editor 及以上", () => {
+    beforeEach(async () => await build("owner"));
+
+    it("ADMIN 放行", async () => {
+      await expect(
+        service.assertCanOperate(ownedRow, admin),
+      ).resolves.toBeUndefined();
+    });
+
+    it("属主本人放行", async () => {
+      await expect(
+        service.assertCanOperate(ownedRow, owner),
+      ).resolves.toBeUndefined();
+    });
+
+    it("非属主普通用户被拒（这是与 `any` 档的关键差别）", async () => {
+      await expect(service.assertCanOperate(ownedRow, other)).rejects.toThrow(
+        /TASK_OPERATE_SCOPE=owner/,
+      );
+    });
+
+    it("项目 editor 放行（团队协作：同项目成员仍可跑彼此任务）", async () => {
+      access.resolveRole.mockResolvedValue("editor");
+      await expect(
+        service.assertCanOperate(ownedRow, other),
+      ).resolves.toBeUndefined();
+    });
+
+    it("项目 admin 放行", async () => {
+      access.resolveRole.mockResolvedValue("admin");
+      await expect(
+        service.assertCanOperate(ownedRow, other),
+      ).resolves.toBeUndefined();
+    });
+
+    it("项目 viewer 被拒", async () => {
+      access.resolveRole.mockResolvedValue("viewer");
+      await expect(service.assertCanOperate(ownedRow, other)).rejects.toThrow(
+        ForbiddenException,
+      );
+    });
+
+    it("非成员（resolveRole 返回 null）被拒", async () => {
+      access.resolveRole.mockResolvedValue(null);
+      await expect(service.assertCanOperate(ownedRow, other)).rejects.toThrow(
+        ForbiddenException,
+      );
+    });
+  });
+});
+
 describe("OBS-03: execution log level（写入抽取）", () => {
   let service: TaskService;
   let execRepo: ReturnType<typeof makeRepo>;

@@ -64,6 +64,11 @@ TaskService.handleCallback：地址比对 → winner 条件 UPDATE（open 状态
 - **S3 日志对象保留回收（WIKI-LOG-S3GC）**：`S3LogObjectRetentionService` 每日 03:35（与 03:30 DB 行清理、03:45 产物清理错峰）按 task_executions 的过期 s3 指针（`logStorage='s3'` + `logObjectKey` 非空 + 终态 + `COALESCE(endTime, createdAt)` 早于保留期截止）keyset 分页批量 `S3LogStorage.remove`，成功后**带守卫**清空 `logObjectKey`（`WHERE id AND logObjectKey`，防并发误清）；单行失败 fail-open 跳过等下轮 cron，非 s3 驱动整段 no-op。S3 成功路径不落 DB 行（对象回收的过期信号只能来自 task_executions），本服务兜住对象存储无限累积风险，bucket lifecycle 策略仍可作运维侧补充兜底。
 - **SSE 并发闸门**：`acquireSseSlot` 两级上限（`SSE_MAX_STREAMS_PER_EXECUTION` 默认 4、`SSE_MAX_STREAMS_GLOBAL` 默认 64），超限 503；SSE 路由 `@SkipThrottle()` + `@SkipTimeout()`。
 - **任务级 secrets**：`SEC_SECRETS_KEY` 配置后 AES-256-GCM 加密落库（`enc:v1:...`），API 脱敏回传，派发时解密注入执行器 env（`AUTOFLOW_<KEY>`），明文不二次入库（SEC-02）。
+- **执行类写面归属口径（TASK-SCOPE-01）**：`POST /tasks/:id/{trigger,pause,resume}` 由
+  `TASK_OPERATE_SCOPE` 控制 —— `any`（**默认**，既有宽松语义：任何已登录用户可操作任意
+  任务，老部署升级零变化）/ `owner`（仅 ADMIN、任务属主、或该项目内 editor 及以上）。
+  **项目 viewer 在任一档下始终被拒**（AUTH-02 硬约束）。注意这三个端点是历史上唯一不做
+  归属校验的写面（`update`/`delete` 早已要求属主或 ADMIN），此前登记为 ADR-013 已知缺口。
 
 ## 与其他模块的关系
 
