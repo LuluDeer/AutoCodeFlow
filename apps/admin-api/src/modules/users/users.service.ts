@@ -183,6 +183,42 @@ export class UsersService implements OnModuleInit {
       this.validatePasswordStrength(updateUserDto.password);
       updateUserDto.password = await bcrypt.hash(updateUserDto.password, 12);
     }
+
+    // R-14 对称缺口（本轮审计）：remove() 有「最后一名管理员」守卫，update()
+    // 此前没有——PATCH /users/:id {role:'user'} 可以把唯一管理员降级，平台随即
+    // 再无任何全量放行主体（ADR-013：ADMIN 是唯一全量角色），只能直连 DB 修复。
+    // 与 remove() 同款并发姿态：判定与写在同一事务内、并对管理员行集合
+    // SELECT ... FOR UPDATE —— 两个并发降级请求下，后到者在锁上等待并看到
+    // count=1 从而拒绝（READ COMMITTED 下纯 count 检查会双双通过）。
+    const demotingAdmin =
+      user.role === UserRole.ADMIN &&
+      updateUserDto.role !== undefined &&
+      updateUserDto.role !== UserRole.ADMIN;
+
+    if (demotingAdmin) {
+      return this.usersRepository.manager.transaction(async (manager) => {
+        const users = manager.getRepository(User);
+        const target = await users.findOne({ where: { id } });
+        if (!target) throw new NotFoundException(`User #${id} not found`);
+        const admins = await users
+          .createQueryBuilder("u")
+          .setLock("pessimistic_write")
+          .where("u.role = :role", { role: UserRole.ADMIN })
+          .getMany();
+        if (admins.length <= 1) {
+          throw new BadRequestException(
+            "Cannot demote the last administrator",
+          );
+        }
+        Object.assign(target, updateUserDto);
+        const savedInTx = await users.save(target);
+        if (updateUserDto.password) {
+          await this.bumpSessionVersion(id);
+        }
+        return savedInTx;
+      });
+    }
+
     Object.assign(user, updateUserDto);
     const saved = await this.usersRepository.save(user);
     // WIKI-AUTH-REVOC: 改密成功后原子 bump 会话版本——该用户所有在途
