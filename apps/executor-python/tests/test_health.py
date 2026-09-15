@@ -186,3 +186,31 @@ def test_health_reports_no_token_at_all(client, monkeypatch):
 
     assert body['tokenValid'] is False
     assert body['dynamicTokenActive'] is False
+
+
+# ---------------------------------------------------------------------------
+# A3-C（DEEP_REVIEW 0ef3bbe §七 残差收口）：/health/ready 出参必经生成的
+# HealthReadyResponse——status 值域/形状漂移（如退回旧值 'unready'）立即红。
+# ---------------------------------------------------------------------------
+
+
+def test_ready_body_conforms_to_generated_schema(client, monkeypatch):
+    from generated.protocol_schemas import HealthReadyResponse as ProtocolReady
+    monkeypatch.setattr(health_module, '_check_admin_api', AsyncMock(return_value=True))
+    monkeypatch.setattr(health_module, '_resources_ok', lambda: (True, None))
+
+    resp = client.get('/health/ready')
+    assert resp.status_code == 200
+    ProtocolReady.model_validate(resp.json())  # 不抛即契约一致
+
+
+def test_not_ready_body_conforms_to_generated_schema(client, monkeypatch):
+    from generated.protocol_schemas import HealthReadyResponse as ProtocolReady
+    monkeypatch.setattr(settings, 'admin_api_url', 'http://admin.local')
+    monkeypatch.setattr(settings, 'admin_api_url_internal', '')
+    monkeypatch.setattr(settings, 'admin_api_url_external', '')
+    monkeypatch.setattr(health_module, '_check_admin_api', AsyncMock(return_value=False))
+
+    resp = client.get('/health/ready')
+    assert resp.status_code == 503
+    ProtocolReady.model_validate(resp.json())  # 不抛即契约一致

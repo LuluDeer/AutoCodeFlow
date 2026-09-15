@@ -7,9 +7,14 @@ import re
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import AliasChoices, BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field, ValidationError
 from auth import verify_token
 from config import settings
+# A3-C：协议闸门/响应契约（由 packages/executor-protocol/protocol.json 生成，勿手改产物）
+from generated.protocol_schemas import (
+    ConfigReloadRequest as ProtocolConfigReloadRequest,
+    ConfigReloadResponse as ProtocolConfigReloadResponse,
+)
 # E-22：list_active_execution_ids 定义在 routers/execute.py（main.py 以
 # `from routers import execute` 装载），须用包路径导入；routers/__init__.py 先 import
 # execute 再 import config，故此处无循环加载。
@@ -83,6 +88,17 @@ _KNOWN_CONFIG_FIELDS = {
 }
 
 
+def _conform_response(resp: 'ConfigReloadResponse') -> 'ConfigReloadResponse':
+    """A3-C：出参必经**生成的**协议 schema——契约不再只是被测试引用的产物。
+
+    本地 ConfigReloadResponse 与生成物字段同名同义，这里再让生成物过一遍：
+    若以后有人把响应改回 camelCase / 漏掉 required 字段，会在运行时直接抛
+    ValidationError（走 500），而不是把一个 admin/UI 无法解析的载荷静默发回。
+    """
+    ProtocolConfigReloadResponse.model_validate(resp.model_dump())
+    return resp
+
+
 @router.post('/config/reload', response_model=ConfigReloadResponse, dependencies=[Depends(verify_token)])
 async def reload_config(req: ConfigReloadRequest, request: Request) -> ConfigReloadResponse:
     """
@@ -101,6 +117,30 @@ async def reload_config(req: ConfigReloadRequest, request: Request) -> ConfigRel
         raw_body = None
     if isinstance(raw_body, dict):
         ignored_fields = sorted(k for k in raw_body if k not in _KNOWN_CONFIG_FIELDS)
+
+    # A3-C：先做手检（数值下界，400 文案更具体且被既有用例钉住），再过协议
+    # 闸门——与 executor-node routes/config.ts 同一原则：手检兜具体文案，生成的
+    # schema 兜手检没覆盖的**类型/形状**错误（如 maxConcurrentTasks 传字符串、
+    # adminApiUrls 传非数组），且必须发生在任何 settings 写入**之前**。
+    if req.max_concurrent_tasks is not None and req.max_concurrent_tasks < 1:
+        raise HTTPException(status_code=400, detail='max_concurrent_tasks must be >= 1')
+    if req.task_timeout_seconds is not None and req.task_timeout_seconds < 1:
+        raise HTTPException(status_code=400, detail='task_timeout_seconds must be >= 1')
+    if req.heartbeat_interval_seconds is not None and req.heartbeat_interval_seconds < 5:
+        raise HTTPException(status_code=400, detail='heartbeat_interval_seconds must be >= 5')
+    if isinstance(raw_body, dict):
+        try:
+            # strict=True：pydantic 默认 lax 会把字符串 "4" 强转成 int，而 zod 与
+            # JSON Schema 的 type:integer 都不强转。协议闸门要与 executor-node 同
+            # 语义，必须用 strict，否则字符串型数值在 python 侧被静默洗白、node 侧 400。
+            ProtocolConfigReloadRequest.model_validate(raw_body, strict=True)
+        except ValidationError as exc:
+            first = exc.errors()[0]
+            where = '.'.join(str(p) for p in first['loc']) or '(root)'
+            raise HTTPException(
+                status_code=400,
+                detail=f'Invalid config reload request: {where}: {first["msg"]}',
+            ) from exc
 
     try:
         if req.max_concurrent_tasks is not None:
@@ -183,7 +223,7 @@ async def reload_config(req: ConfigReloadRequest, request: Request) -> ConfigRel
                            ', '.join(ignored_fields))
 
         if not updated_fields:
-            return ConfigReloadResponse(
+            return _conform_response(ConfigReloadResponse(
                 success=True,
                 message=(
                     'No fields to update (ignored unsupported field(s): '
@@ -192,14 +232,14 @@ async def reload_config(req: ConfigReloadRequest, request: Request) -> ConfigRel
                 ),
                 updated_fields=[],
                 ignored_fields=ignored_fields,
-            )
+            ))
 
-        return ConfigReloadResponse(
+        return _conform_response(ConfigReloadResponse(
             success=True,
             message=f'Updated {len(updated_fields)} field(s)',
             updated_fields=updated_fields,
             ignored_fields=ignored_fields,
-        )
+        ))
     except HTTPException:
         raise
     except Exception as e:
