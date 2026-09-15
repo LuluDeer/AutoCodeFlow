@@ -1515,6 +1515,75 @@ input:focus-visible,
   font-size: 12px;
 }
 
+/* ── 历史页：统计总览 / 搜索 / 状态过滤（新增能力）───────────────── */
+.history-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-sm);
+}
+.history-stat-chip {
+  padding: 2px var(--space-sm);
+  border: 1px solid var(--border2);
+  border-radius: var(--radius-sm);
+  background: var(--bg3);
+  color: var(--text2);
+  font-size: 11px;
+}
+.history-stat-chip.success { color: var(--color-accent); border-color: var(--green-border); background: var(--green-bg); }
+.history-stat-chip.failed  { color: var(--color-destructive); border-color: var(--red-border); background: var(--red-bg); }
+.history-stat-chip.running { color: var(--yellow); border-color: var(--yellow-border); background: var(--yellow-bg); }
+
+.history-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-md);
+}
+.history-search {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  flex: 1;
+  min-width: 180px;
+  padding: 0 var(--space-sm);
+  border: 1px solid var(--border2);
+  border-radius: var(--radius);
+  background: var(--bg3);
+}
+.history-search-icon { font-size: 12px; opacity: 0.7; }
+.history-search-input {
+  flex: 1;
+  min-width: 0;
+  padding: var(--space-sm) 0;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: 12px;
+  outline: none;
+}
+.history-filter-chips { display: flex; gap: var(--space-xs); }
+.history-chip {
+  padding: var(--space-xs) var(--space-sm);
+  border: 1px solid var(--border2);
+  border-radius: var(--radius-sm);
+  background: var(--bg3);
+  color: var(--text2);
+  font-size: 11px;
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+.history-chip:hover { background: var(--bg4); color: var(--text); }
+.history-chip.active {
+  background: var(--accent-muted);
+  border-color: var(--green-border);
+  color: var(--color-accent);
+}
+.history-chip:focus-visible { outline: 2px solid var(--color-ring); outline-offset: 1px; }
+.history-search:focus-within { border-color: var(--green-border); }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;

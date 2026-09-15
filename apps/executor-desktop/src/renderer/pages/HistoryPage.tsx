@@ -183,14 +183,38 @@ export default function HistoryPage() {
     }
   }
 
-  // 按 taskId 分组
+  // ── 过滤 / 搜索（新增能力）────────────────────────────────────────
+  // 原页面只能全量罗列：任务跑多之后无法定位「某次失败」「某个任务」。
+  // 过滤在渲染层做（meta 记录已全量在内存，无需新增 IPC）。
+  const [query, setQuery] = useState('');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'success' | 'failed' | 'running'>('all');
+
+  const q = query.trim().toLowerCase();
+  const filtered = records.filter((r) => {
+    if (statusFilter !== 'all' && (r.status || '') !== statusFilter) return false;
+    if (!q) return true;
+    // 同时匹配任务名与 executionId（用户常拿着后者去对日志）
+    return (
+      (r.taskName || '').toLowerCase().includes(q) ||
+      (r.executionId || '').toLowerCase().includes(q) ||
+      (r.taskId || '').toLowerCase().includes(q)
+    );
+  });
+
+  // 按 taskId 分组（基于过滤后的集合）
   const groups: Record<string, { label: string; runs: ExecRecord[] }> = {};
-  for (const rec of records) {
+  for (const rec of filtered) {
     const key = rec.taskId || rec.taskName || rec.executionId;
     if (!groups[key]) groups[key] = { label: rec.taskName || key, runs: [] };
     groups[key].runs.push(rec);
   }
   const groupEntries = Object.entries(groups);
+
+  // 汇总统计（基于全量，不随过滤变化——作为"总览"语义）
+  const totalRuns = records.length;
+  const totalSuccess = records.filter((r) => r.status === 'success').length;
+  const totalFailed = records.filter((r) => r.status === 'failed').length;
+  const totalRunning = records.filter((r) => r.status === 'running').length;
 
   if (viewingLog) {
     return <LogViewer record={viewingLog} onClose={() => setViewingLog(null)} />;
@@ -222,11 +246,58 @@ export default function HistoryPage() {
         <div className="history-error" role="alert">⚠ {error}</div>
       )}
 
+      {records.length > 0 && (
+        <>
+          {/* 总览统计：全量口径，不随过滤变化 */}
+          <div className="history-stats" role="group" aria-label="执行统计总览">
+            <span className="history-stat-chip">共 {totalRuns} 次</span>
+            <span className="history-stat-chip success">成功 {totalSuccess}</span>
+            <span className="history-stat-chip failed">失败 {totalFailed}</span>
+            {totalRunning > 0 && <span className="history-stat-chip running">运行中 {totalRunning}</span>}
+          </div>
+
+          <div className="history-filters">
+            <div className="history-search">
+              <span className="history-search-icon" aria-hidden="true">🔍</span>
+              <input
+                className="history-search-input"
+                type="search"
+                placeholder="搜索任务名 / 执行 ID…"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                aria-label="搜索执行记录"
+              />
+            </div>
+            <div className="history-filter-chips" role="group" aria-label="按状态过滤">
+              {([
+                ['all', '全部'],
+                ['success', '成功'],
+                ['failed', '失败'],
+                ['running', '运行中'],
+              ] as const).map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  className={`history-chip${statusFilter === value ? ' active' : ''}`}
+                  onClick={() => setStatusFilter(value)}
+                  aria-pressed={statusFilter === value}
+                >{label}</button>
+              ))}
+            </div>
+          </div>
+        </>
+      )}
+
       {loading && records.length === 0 ? (
         <div className="history-empty">加载中...</div>
       ) : groupEntries.length === 0 ? (
         <div className="history-empty">
-          {error ? '读取失败，请稍后重试。' : '暂无执行记录。执行任务后将在此显示。'}
+          {error
+            ? '读取失败，请稍后重试。'
+            : records.length > 0
+              // 有记录但过滤后为空——必须与"完全没记录"区分开
+              ? '没有符合当前筛选条件的记录。'
+              : '暂无执行记录。执行任务后将在此显示。'}
         </div>
       ) : (
         <div className="history-groups">
