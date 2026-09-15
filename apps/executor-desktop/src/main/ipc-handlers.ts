@@ -266,6 +266,76 @@ export function registerIpcHandlers(): void {
     } catch { return []; }
   });
 
+  // 读取主进程当天的历史日志（用于主窗口启动时加载历史）
+  ipcMain.handle('logs:getToday', () => {
+    const logDir = path.join(app.getPath('userData'), 'logs');
+    if (!fs.existsSync(logDir)) return { lines: [], date: '' };
+
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = String(now.getMonth() + 1).padStart(2, '0');
+    const d = String(now.getDate()).padStart(2, '0');
+    const fileName = `executor-${y}-${m}-${d}.log`;
+    const filePath = path.join(logDir, fileName);
+
+    if (!fs.existsSync(filePath)) return { lines: [], date: fileName };
+
+    try {
+      const content = fs.readFileSync(filePath, 'utf-8');
+      const lines = content.split('\n');
+      // 只取最后 500 行，避免一次性加载太多
+      const lastLines = lines.slice(-500);
+      return { lines: lastLines, date: fileName };
+    } catch {
+      return { lines: [], date: fileName };
+    }
+  });
+
+  // 列出所有历史日志文件
+  ipcMain.handle('logs:listAll', () => {
+    const logDir = path.join(app.getPath('userData'), 'logs');
+    if (!fs.existsSync(logDir)) return [];
+    try {
+      const files = fs.readdirSync(logDir)
+        .filter((f: string) => f.startsWith('executor-') && f.endsWith('.log'))
+        .map((f: string) => {
+          const fullPath = path.join(logDir, f);
+          const stat = fs.statSync(fullPath);
+          return {
+            name: f,
+            size: stat.size,
+            modifiedAt: stat.mtimeMs,
+          };
+        })
+        .sort((a, b) => b.modifiedAt - a.modifiedAt); // 最新的在前面
+      return files;
+    } catch {
+      return [];
+    }
+  });
+
+  // 读取指定日志文件的内容
+  ipcMain.handle('logs:readFile', (_event, fileName: string) => {
+    const logDir = path.join(app.getPath('userData'), 'logs');
+    // 安全检查：防止路径遍历
+    if (fileName.includes('..') || fileName.includes('/') || fileName.includes('\\')) {
+      return { ok: false, error: 'Invalid filename' };
+    }
+    const filePath = path.join(logDir, fileName);
+    if (!fs.existsSync(filePath)) {
+      return { ok: false, error: 'File not found' };
+    }
+    try {
+      const content = fs.readFileSync(filePath, 'utf-8');
+      const lines = content.split('\n');
+      // 只取最后 2000 行
+      const lastLines = lines.slice(-2000);
+      return { ok: true, lines: lastLines, fileName };
+    } catch {
+      return { ok: false, error: 'Read failed' };
+    }
+  });
+
   ipcMain.handle('history:clear', () => {
     const workDir = configStore.get('workDir') as string | undefined;
     if (!workDir) return { ok: false };
