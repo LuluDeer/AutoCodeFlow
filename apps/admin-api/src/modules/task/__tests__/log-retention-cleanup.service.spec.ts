@@ -365,6 +365,44 @@ describe("LogRetentionCleanupService", () => {
       ).toHaveLength(0);
     });
 
+    /**
+     * LOG-RETENTION-02（本轮审计）：分区名来自 pg_class.relname 并被**直接拼进**
+     * DETACH / DROP 的 SQL 标识符位置。分区名本由本进程以常量前缀 + 日期生成，
+     * 故不构成直接攻击路径；但破坏性 DDL 的输入值得先做形状校验——异常名会
+     * 拼出 `... DETACH PARTITION "evil"; DROP TABLE x; --"` 这类语句。
+     * 这里断言：形状不符者一律跳过（只 warn 不执行 DDL）。
+     */
+    it("分区名形状不符时跳过 DETACH/DROP 并告警（不把 catalog 字符串拼进 DDL）", async () => {
+      const warnSpy = jest
+        .spyOn(Logger.prototype, "warn")
+        .mockImplementation(() => undefined);
+      configService.get.mockImplementation((key: string) =>
+        key === "logRetention.days" ? 1 : undefined,
+      );
+      setPartitions([
+        {
+          // 恶意/异常名：若被拼接将提前终止 DETACH 语句并追加任意 SQL
+          name: 'evil"; DROP TABLE x; --',
+          bound:
+            "FOR VALUES FROM ('2026-08-01 00:00:00') TO ('2026-08-02 00:00:00')",
+          approxRows: "10",
+        },
+      ]);
+
+      const total = await service.cleanupExpiredLines(now);
+
+      const ddl = repo.query.mock.calls.filter(([sql]) =>
+        /DETACH PARTITION|DROP TABLE/.test(String(sql)),
+      );
+      expect(ddl).toHaveLength(0);
+      expect(total).toBe(0);
+      const warned = warnSpy.mock.calls.some((c) =>
+        String(c[0]).includes("不符合规范命名"),
+      );
+      expect(warned).toBe(true);
+      warnSpy.mockRestore();
+    });
+
     it("reltuples 估算缺失（null / 非数字）按 0 行计，DETACH 仍执行", async () => {
       setPartitions([
         {
