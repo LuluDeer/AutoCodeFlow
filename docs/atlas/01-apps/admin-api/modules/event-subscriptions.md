@@ -33,6 +33,23 @@ modules/event-subscriptions/
 | GET | `/:id/dead-letters` | 死信分页（limit 上限 100） |
 | POST | `/:id/dead-letters/:dlId/replay` | 重放一条死信 |
 
+## ⚠️ 投递面不做属主过滤（读面有、投递面没有）
+
+**上表的「列表按属主过滤」只约束读面，投递面是全局广播** —— 这是本模块最容易误读的地方，
+故单独说明（本轮审计补记：此前文档只写了列表过滤，读起来像存在租户隔离，实际并非如此）。
+
+- 派发条件是 `where: { enabled: true }`（`outbound-event-dispatcher.service.ts` 的
+  `dispatch`），**没有任何 owner/userId 过滤**；四条可订阅事件（`execution.completed` /
+  `execution.failed` / `executor.offline` / `deployment.completed`）在平台上是**全局发布**的。
+- 因此：**任何已登录用户**创建一条订阅（`POST /` 无 `@Roles`，属主校验只在 PATCH/DELETE），
+  就能持续收到**别人**任务的终态 webhook——载荷含 `taskName`、`errorMessage`、`logs`
+  （见 `ExecutionTerminalEventPayload`）。这既能造成跨租户信息泄露，也提供了一条
+  隐蔽的出站数据通道。
+- 这不是配置疏漏而是**当前既定形态**：service 文档注释写明「任何已登录用户可建」，
+  列表侧才做属主过滤。secret 在所有读路径均被脱敏（`mask()`），故泄露的是载荷而非凭据。
+- **若要收紧**（属主过滤投递目标，或给 `POST /` 加 `@Roles(ADMIN)`），属**行为变更**，
+  需产品裁定后实施——与 ADR-013「非成员仍可 trigger 任意任务」同类的已知宽松语义。
+
 ## 关键机制
 
 ### 可订阅事件目录（稳定契约，只增不改）
