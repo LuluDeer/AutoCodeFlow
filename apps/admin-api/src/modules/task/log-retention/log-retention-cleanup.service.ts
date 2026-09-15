@@ -24,6 +24,19 @@ export const LOG_RETENTION_CRON = "0 30 3 * * *";
 export const DEFAULT_LOG_PARTITION_ENABLED = true;
 
 /**
+ * LOG-RETENTION-01: 单次 pass 的硬上限（轮数 + 墙钟）。
+ *
+ * 上限存在的意义不是「够不够删完」，而是**保证一定终止**：分批 DELETE 的
+ * 循环条件依赖 DELETE 报告的 affected，而 affected 并不受本服务控制
+ * （并发写入、驱动差异、分区关闭）。5000 × 200 = 单晚至多 100 万行，余量
+ * 交给下一个 cron 周期——保留期清理幂等，晚一晚无副作用。与同模块
+ * S3_LOG_OBJECT_MAX_ROUNDS=50 同款姿态。
+ */
+export const LOG_RETENTION_MAX_DELETE_ROUNDS = 200;
+/** 单次 pass 墙钟上限（10 分钟）：防慢查询叠加把 cron 拖成常驻任务 */
+export const LOG_RETENTION_MAX_DURATION_MS = 10 * 60 * 1000;
+
+/**
  * DB-002 + ARCH-22: execution_log_lines 的保留期清理。
  *
  * 双路径（按运行库 schema 自动选择，见 cleanupExpiredLines）：
@@ -247,10 +260,25 @@ export class LogRetentionCleanupService {
    * legacy fallback：分批 DELETE（ARCH-22 前的既有行为，逐行保留）。
    * 分区表上同样可用（开关回退路径），PK (id, createdAt) 不影响
    * `id IN (...)` 子查询语义。
+   *
+   * LOG-RETENTION-01（本轮审计）：本循环此前**无轮数上限、无时间上限**——
+   * `do { ... } while (batchDeleted >= BATCH_SIZE)`。只要 DELETE 报告的
+   * affected 持续 >= 5000（并发写入持续补进早于 cutoff 的行、驱动 affected
+   * 语义不一致、或分区关闭时表一直有可删行），循环永不终止：每轮新建
+   * queryBuilder，CPU 与内存单调增长。已实测该形态会打出
+   * `FATAL ERROR: Ineffective mark-compacts near heap limit … out of memory`
+   * 并杀死进程，不是「慢」而是「挂死」。而这是**非分区库与
+   * LOG_PARTITION_ENABLED=false 时的默认路径**，也是 S3 驱动的回退路径，
+   * 跑在每日 03:30 的 cron 上——一旦触发，唯一持有 leader 锁的实例会持续
+   * 空烧 CPU/heap。
+   * 同模块的 S3LogObjectRetentionService 早已用 S3_LOG_OBJECT_MAX_ROUNDS=50
+   * 兜住同一风险，这里补齐同款上限（轮数 + 墙钟双闸）。
    */
   private async cleanupExpiredLinesByDelete(cutoff: Date): Promise<number> {
     let totalDeleted = 0;
     let batchDeleted = 0;
+    let rounds = 0;
+    const deadline = Date.now() + LOG_RETENTION_MAX_DURATION_MS;
     do {
       const result = await this.logLineRepo
         .createQueryBuilder()
@@ -267,14 +295,42 @@ export class LogRetentionCleanupService {
         .execute();
       batchDeleted = result.affected ?? 0;
       totalDeleted += batchDeleted;
+      rounds += 1;
       if (batchDeleted > 0) {
         this.logger.debug(
           `DB-002: 本批清理 ${batchDeleted} 行（截止 ${cutoff.toISOString()}）`,
         );
       }
-    } while (batchDeleted >= LOG_RETENTION_BATCH_SIZE);
+    } while (
+      batchDeleted >= LOG_RETENTION_BATCH_SIZE &&
+      this.shouldContinueDeleteLoop(rounds, deadline, totalDeleted)
+    );
 
     return totalDeleted;
+  }
+
+  /**
+   * 是否继续下一批 DELETE。达到轮数上限或墙钟上限即停，并留 warn——
+   * 剩余过期行交给下一个 cron 周期（保留期清理是幂等的，晚一晚无害）。
+   */
+  private shouldContinueDeleteLoop(
+    rounds: number,
+    deadline: number,
+    totalDeleted: number,
+  ): boolean {
+    if (rounds >= LOG_RETENTION_MAX_DELETE_ROUNDS) {
+      this.logger.warn(
+        `DB-002: 达单次清理轮数上限 ${LOG_RETENTION_MAX_DELETE_ROUNDS}，本轮已删 ${totalDeleted} 行；余量交下一 cron 周期`,
+      );
+      return false;
+    }
+    if (Date.now() >= deadline) {
+      this.logger.warn(
+        `DB-002: 达单次清理时间上限 ${LOG_RETENTION_MAX_DURATION_MS}ms（已 ${rounds} 轮 / ${totalDeleted} 行）；余量交下一 cron 周期`,
+      );
+      return false;
+    }
+    return true;
   }
 
   /**

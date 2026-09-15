@@ -1,8 +1,10 @@
+import { Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import {
   LogRetentionCleanupService,
   DEFAULT_LOG_RETENTION_DAYS,
   LOG_RETENTION_BATCH_SIZE,
+  LOG_RETENTION_MAX_DELETE_ROUNDS,
 } from "../log-retention/log-retention-cleanup.service";
 import { ExecutionLogLine } from "../entities/execution-log-line.entity";
 import {
@@ -111,6 +113,73 @@ describe("LogRetentionCleanupService", () => {
       const total = await service.cleanupExpiredLines();
       expect(total).toBe(0);
       expect(repo.createQueryBuilder).toHaveBeenCalledTimes(1);
+    });
+
+    /**
+     * LOG-RETENTION-01（本轮审计）：循环此前**无轮数/时间上限**，只要 DELETE
+     * 报告的 affected 持续 >= 批大小就永不终止。已实测该形态最终打出
+     * `FATAL ERROR: Ineffective mark-compacts near heap limit … out of memory`
+     * 并杀死进程。而这是非分区库与 LOG_PARTITION_ENABLED=false 的默认路径，
+     * 跑在每日 03:30 的 cron 上。
+     * 这里断言：即使 affected 永远 >= 批大小，也必须在上限内停止并返回累计值。
+     */
+    it("affected 持续 >= 批大小时仍会在轮数上限处终止（不会挂死）", async () => {
+      const execute = jest
+        .fn()
+        .mockResolvedValue({ affected: LOG_RETENTION_BATCH_SIZE });
+      repo.createQueryBuilder.mockImplementation(() => ({
+        delete: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        execute,
+      }));
+
+      const total = await service.cleanupExpiredLines();
+
+      // 必须恰好跑满上限轮数，而不是无限循环
+      expect(execute).toHaveBeenCalledTimes(LOG_RETENTION_MAX_DELETE_ROUNDS);
+      expect(total).toBe(
+        LOG_RETENTION_BATCH_SIZE * LOG_RETENTION_MAX_DELETE_ROUNDS,
+      );
+    });
+
+    it("达上限时留下 warn 便于运维发现（不是静默停止）", async () => {
+      const warnSpy = jest
+        .spyOn(Logger.prototype, "warn")
+        .mockImplementation(() => undefined);
+      repo.createQueryBuilder.mockImplementation(() => ({
+        delete: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        execute: jest
+          .fn()
+          .mockResolvedValue({ affected: LOG_RETENTION_BATCH_SIZE }),
+      }));
+
+      await service.cleanupExpiredLines();
+
+      const warned = warnSpy.mock.calls.some((c) =>
+        String(c[0]).includes("轮数上限"),
+      );
+      expect(warned).toBe(true);
+      warnSpy.mockRestore();
+    });
+
+    it("低于批大小时不受上限影响（正常路径语义不变）", async () => {
+      // 注意：用 mockResolvedValue 提供兜底值——只用 mockResolvedValueOnce
+      // 时队列耗尽会落到 jest 默认 undefined，affected 会被当成 0 之外的值，
+      // 与「跨批共享同一 execute」的既有先例保持一致。
+      const execute = jest
+        .fn()
+        .mockResolvedValueOnce({ affected: LOG_RETENTION_BATCH_SIZE })
+        .mockResolvedValue({ affected: 7 });
+      repo.createQueryBuilder.mockImplementation(() => ({
+        delete: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        execute,
+      }));
+
+      const total = await service.cleanupExpiredLines();
+      expect(execute).toHaveBeenCalledTimes(2);
+      expect(total).toBe(LOG_RETENTION_BATCH_SIZE + 7);
     });
   });
 
