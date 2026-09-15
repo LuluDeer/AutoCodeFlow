@@ -13,6 +13,7 @@ import {
 import {
   isTerminalStatus,
   OPEN_EXECUTION_STATUSES,
+  transitionOneToTerminal,
 } from "./execution-terminal";
 import { ExecutionLogLine } from "./entities/execution-log-line.entity";
 import { Task } from "./entities/task.entity";
@@ -74,12 +75,18 @@ export class TaskProcessor extends WorkerHost {
       this.logger.error(
         `Task ${exec.taskId} not found for execution ${executionId}`,
       );
-      exec.status = ExecutionStatus.FAILED;
-      exec.errorMessage = `Task ${exec.taskId} not found`;
-      exec.failureReason = ExecutionFailureReason.UNKNOWN;
-      exec.endTime = new Date();
-      exec.duration = 0;
-      await this.execRepo.save(exec);
+      // A1: 走统一终态门（execution 仍在 PENDING，未 claim）
+      await transitionOneToTerminal(this.execRepo, {
+        id: exec.id,
+        patch: {
+          status: ExecutionStatus.FAILED,
+          errorMessage: `Task ${exec.taskId} not found`,
+          failureReason: ExecutionFailureReason.UNKNOWN,
+          endTime: new Date(),
+          duration: 0,
+        },
+        from: [ExecutionStatus.PENDING],
+      });
       return;
     }
 
@@ -296,16 +303,28 @@ export class TaskProcessor extends WorkerHost {
         };
 
         try {
-          const persisted = await queryRunner.manager
-            .createQueryBuilder()
-            .update(TaskExecution)
-            .set(ownedPatch)
-            .where("id = :id", { id: exec.id })
-            .andWhere("status IN (:...writable)", {
-              writable: [...OPEN_EXECUTION_STATUSES],
-            })
-            .execute();
-          if (persisted.affected) terminalPersisted = true;
+          // A1: 终态写走统一入口（RETURNING + 兜底归一化）；非终态（RUNNING
+          // 持久化）保持原有条件 UPDATE——transitionOneToTerminal 要求终态 status。
+          let writeAffected = 0;
+          if (isTerminalStatus(exec.status)) {
+            const result = await transitionOneToTerminal(queryRunner.manager, {
+              id: exec.id,
+              patch: { ...ownedPatch, status: exec.status },
+            });
+            writeAffected = result.affected;
+          } else {
+            const persisted = await queryRunner.manager
+              .createQueryBuilder()
+              .update(TaskExecution)
+              .set(ownedPatch)
+              .where("id = :id", { id: exec.id })
+              .andWhere("status IN (:...writable)", {
+                writable: [...OPEN_EXECUTION_STATUSES],
+              })
+              .execute();
+            writeAffected = persisted.affected ?? 0;
+          }
+          if (writeAffected) terminalPersisted = true;
           await queryRunner.commitTransaction();
           this.logger.debug(
             `Successfully saved execution ${exec.id} final state in transaction`,
@@ -342,16 +361,27 @@ export class TaskProcessor extends WorkerHost {
                 // race. The `status IN (pending, running)` guard plus an affected
                 // check makes the repair atomic and can never clobber a terminal
                 // state written concurrently.
-                const repaired = await repairRunner.manager
-                  .createQueryBuilder()
-                  .update(TaskExecution)
-                  .set(ownedPatch)
-                  .where("id = :id", { id: exec.id })
-                  .andWhere("status IN (:...writable)", {
-                    writable: [...OPEN_EXECUTION_STATUSES],
-                  })
-                  .execute();
-                if (repaired.affected) {
+                // A1: 终态写走统一入口；非终态保持原有条件 UPDATE。
+                let repairAffected = 0;
+                if (isTerminalStatus(exec.status)) {
+                  const result = await transitionOneToTerminal(repairRunner.manager, {
+                    id: exec.id,
+                    patch: { ...ownedPatch, status: exec.status },
+                  });
+                  repairAffected = result.affected;
+                } else {
+                  const repaired = await repairRunner.manager
+                    .createQueryBuilder()
+                    .update(TaskExecution)
+                    .set(ownedPatch)
+                    .where("id = :id", { id: exec.id })
+                    .andWhere("status IN (:...writable)", {
+                      writable: [...OPEN_EXECUTION_STATUSES],
+                    })
+                    .execute();
+                  repairAffected = repaired.affected ?? 0;
+                }
+                if (repairAffected) {
                   terminalPersisted = true;
                   this.logger.log(
                     `Repaired execution ${exec.id} state after transaction failure`,
