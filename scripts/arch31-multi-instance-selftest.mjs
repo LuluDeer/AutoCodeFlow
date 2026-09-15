@@ -280,11 +280,26 @@ async function main() {
     aCh?.enabled === true && aCh?.config?.url === 'https://arch31-sink.invalid/hook',
     `A=${JSON.stringify(aCh)?.slice(0, 200)}`);
 
+  // ── FLAG-FIX-01（本轮审计）：原「刷新前 B 尚未读到该配置」断言是**时序竞态**，
+  // 会随机让 CI 变红（实例：1b92dbd 那次运行失败，而仅隔一个纯文档提交的
+  // b774ef4 同一步通过；B(前) 已含新 URL）。
+  //
+  // 根因：本步骤之前刚 sleep(REFRESH_MS*2+1000)=5s，而 B 的后台读穿周期
+  // REFRESH_MS=2s —— A PATCH 之后到读取 B「刷新前」快照之间，B 很可能已经
+  // 完成了一轮刷新，于是「尚未读到」不成立。该断言想表达的其实是「B 不是靠
+  // 写穿、而是靠读穿才拿到 A 的改动」，但这一点**无法靠时序快照可靠观测**。
+  //
+  // 改为断言真正的不变量：B 最终必须读到 A 保存的值（下一条已覆盖），且此处
+  // 额外记录 B 的「前」快照作为诊断信息（不再作为通过条件）——CORE 语义是
+  // 「跨实例写最终可见」，而非「某个瞬间必须还看不到」。
   const bChannelsBefore = await api(PORT_B, tokenB, 'GET', '/api/notification/channels');
   const before = (bChannelsBefore.body ?? []).find((c) => c.key === 'webhook');
-  ok('刷新前 B 尚未读到该配置（证明此前多实例下必然失效）',
-    !before?.enabled || before?.config?.url !== 'https://arch31-sink.invalid/hook',
-    `B(前)=${JSON.stringify(before)?.slice(0, 200)}`);
+  const beforeAlreadyFresh =
+    before?.enabled === true && before?.config?.url === 'https://arch31-sink.invalid/hook';
+  console.log(
+    `  [诊断] B 的「刷新前」快照（不作为通过条件）B(前)=${JSON.stringify(before)?.slice(0, 200)}` +
+      (beforeAlreadyFresh ? ' [B 已先完成一轮读穿，非失败]' : ''),
+  );
 
   await sleep(REFRESH_MS + 1500);
   const bChannelsAfter = await api(PORT_B, tokenB, 'GET', '/api/notification/channels');
