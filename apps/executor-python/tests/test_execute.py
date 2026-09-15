@@ -530,24 +530,39 @@ def test_entrypoint_absolute_outside_workdir_rejected(tmp_path, monkeypatch):
 # （那要求 盘符+分隔符），parts 中也没有 '..'，两道分支都不命中。实测
 # `C:evil.bat` → C:\evil.bat、`C:../../Windows/System32/evil.bat`
 # → C:\Windows\System32\evil.bat，均在 work_dir 之外。
+#
+# 注意（本轮 CI 抓到的教训）：判定与用例都**不得依赖宿主平台**。首版用
+# Path(...).is_absolute()/parts，Linux 上 `C:evil.bat` 只是个普通文件名、
+# `..\evil.bat` 的 parts 是整串一个元素，于是同一份输入在两平台结论不同，
+# 本地(Windows)绿、CI(Linux)红。现已改为按 '/' 与 '\\' 两种分隔符切分 +
+# 显式盘符识别，下面的用例在任意平台都应得到相同结果。
 @pytest.mark.parametrize(
     'entrypoint',
     [
+        # 驱动器相对（Windows 特有类别；Linux 上也是非法形态，故两侧都应拒）
         'C:evil.bat',
-        'C:../../Windows/System32/evil.bat',
         'E:evil.bat',
+        'C:../../Windows/System32/evil.bat',
+        # 反斜杠上跳（Linux 上 parts 不切分，必须靠显式分隔符归一化才拦得住）
+        '..\\evil.bat',
+        'a\\..\\..\\b',
+        # UNC / 根相对 / POSIX 绝对 / 越出 work_dir 的绝对路径
         '\\\\srv\\share\\evil.bat',
         '\\evil.bat',
-        '..\\evil.bat',
+        '/etc/passwd',
+        '../../etc/passwd',
+        'a/../../b',
     ],
 )
-def test_entrypoint_windows_escape_forms_rejected(entrypoint, tmp_path, monkeypatch):
+def test_entrypoint_escape_forms_rejected_cross_platform(
+    entrypoint, tmp_path, monkeypatch
+):
     from routers import execute as execute_module
     from routers.execute import ExecuteRequest, run_task
 
     monkeypatch.setattr(execute_module.settings, 'work_dir', str(tmp_path))
     req = ExecuteRequest(
-        executionId='exec-winescape',
+        executionId='exec-escape',
         task={'name': 'escape', 'runtime': 'shell', 'entrypoint': entrypoint},
     )
     with pytest.raises(HTTPException) as exc:
@@ -557,7 +572,7 @@ def test_entrypoint_windows_escape_forms_rejected(entrypoint, tmp_path, monkeypa
 
 @pytest.mark.parametrize(
     'entrypoint',
-    ['ok.sh', 'sub/ok.sh', './sub/ok.sh'],
+    ['ok.sh', 'sub/ok.sh', './sub/ok.sh', 'sub\\ok.sh'],
 )
 def test_entrypoint_relative_inside_workdir_allowed(entrypoint, tmp_path):
     """收敛只针对逃逸形态，work_dir 内的普通相对路径不得被误伤。"""
