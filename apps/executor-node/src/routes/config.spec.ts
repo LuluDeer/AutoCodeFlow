@@ -28,6 +28,11 @@ import * as fs from 'fs';
 import { configRouter } from './config';
 import { initAdminClients } from '../admin-client';
 import { listActiveExecutionIds, validateExecutionWorkDir } from './execute';
+// A3-C：出参契约用生成的 schema 现校验（不是另写一份形状当永真断言）
+import {
+  ConfigReloadRequestSchema,
+  ConfigReloadResponseSchema,
+} from '../generated/protocol.schemas';
 
 const mockFs = fs as jest.Mocked<typeof fs>;
 
@@ -66,13 +71,14 @@ describe('config reload route', () => {
     expect(res.body).toEqual({
       success: true,
       message: 'Updated 4 field(s)',
-      updatedFields: [
+      // A3-C：响应字段以 executor-protocol 为准（snake_case），与 python 对齐
+      updated_fields: [
         'maxConcurrentTasks',
         'taskTimeoutSeconds',
         'heartbeatIntervalSeconds',
         'adminApiUrl',
       ],
-      ignoredFields: [],
+      ignored_fields: [],
     });
     expect(mockConfig.maxConcurrentTasks).toBe(4);
     expect(mockConfig.taskTimeoutSeconds).toBe(120);
@@ -94,8 +100,8 @@ describe('config reload route', () => {
     expect(res.body).toEqual({
       success: true,
       message: 'Updated 3 field(s)',
-      updatedFields: ['adminApiUrl', 'adminApiUrlInternal', 'adminApiUrlExternal'],
-      ignoredFields: [],
+      updated_fields: ['adminApiUrl', 'adminApiUrlInternal', 'adminApiUrlExternal'],
+      ignored_fields: [],
     });
     expect(mockConfig.adminApiUrl).toBe('http://public-admin:3105/api');
     expect(mockConfig.adminApiUrlInternal).toBe('http://internal-admin:3105/api');
@@ -111,7 +117,7 @@ describe('config reload route', () => {
     });
 
     expect(res.status).toBe(200);
-    expect(res.body.updatedFields).toEqual(['adminApiUrlInternal', 'adminApiUrls']);
+    expect(res.body.updated_fields).toEqual(['adminApiUrlInternal', 'adminApiUrls']);
     expect(mockConfig.adminApiUrlInternal).toBe('http://internal-admin:3105/api');
     expect(mockConfig.adminApiUrls).toEqual(['http://first-admin:3105/api', 'http://second-admin:3105/api']);
     expect(initAdminClients).toHaveBeenCalledWith(['http://first-admin:3105/api', 'http://second-admin:3105/api']);
@@ -134,6 +140,45 @@ describe('config reload route', () => {
     expect(res.status).toBe(400);
     expect(res.body).toEqual({ error: 'maxConcurrentTasks must be >= 1' });
     expect(mockConfig.maxConcurrentTasks).toBe(10);
+  });
+
+  // A3-C：协议闸门兜底手检没覆盖的**类型/形状**错误，且发生在任何写入之前。
+  it('rejects a non-numeric maxConcurrentTasks (protocol gate) without mutating config', async () => {
+    const res = await authPost({ maxConcurrentTasks: '4' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/Invalid config reload request: maxConcurrentTasks/);
+    expect(mockConfig.maxConcurrentTasks).toBe(10);
+  });
+
+  it('rejects a non-array adminApiUrls (protocol gate)', async () => {
+    const before = mockConfig.adminApiUrls;
+    const res = await authPost({ adminApiUrls: 'http://only-one' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/Invalid config reload request: adminApiUrls/);
+    expect(mockConfig.adminApiUrls).toBe(before);
+  });
+
+  // A3-C 反证有牙：实际出参必须能被**生成的** ConfigReloadResponse 接受——
+  // 若有人把响应改回 camelCase 或缺字段，这条立即红（契约不再只是测试引用）。
+  it('every success response conforms to the generated ConfigReloadResponse schema', async () => {
+    const applied = await authPost({ maxConcurrentTasks: 4 });
+    expect(ConfigReloadResponseSchema.safeParse(applied.body).success).toBe(true);
+
+    const empty = await authPost({});
+    expect(empty.status).toBe(200);
+    expect(ConfigReloadResponseSchema.safeParse(empty.body).success).toBe(true);
+
+    const ignored = await authPost({ totallyUnknown: 1 });
+    expect(ignored.status).toBe(200);
+    expect(ConfigReloadResponseSchema.safeParse(ignored.body).success).toBe(true);
+  });
+
+  it('request schema accepts the documented valid vectors', () => {
+    for (const v of [{}, { maxConcurrentTasks: 4 }, { workDir: '/tmp/x', adminApiUrls: ['http://a'] }]) {
+      expect(ConfigReloadRequestSchema.safeParse(v).success).toBe(true);
+    }
   });
 
   it('requires authentication', async () => {
@@ -166,7 +211,7 @@ describe('config reload — workDir (WORK_DIR)', () => {
   it('accepts workDir field: absolute existing non-symlink base with no active executions', async () => {
     const res = await authPost({ workDir: newBase });
     expect(res.status).toBe(200);
-    expect(res.body.updatedFields).toContain('workDir');
+    expect(res.body.updated_fields).toContain('workDir');
     // config.workDir 是读 process.env.WORK_DIR 的 getter——热更新写 env 即生效
     expect(process.env.WORK_DIR).toBe(require('path').resolve(newBase));
   });
@@ -177,7 +222,7 @@ describe('config reload — workDir (WORK_DIR)', () => {
       .set('Authorization', 'Bearer test-token')
       .send({ WORK_DIR: newBase });
     expect(res.status).toBe(200);
-    expect(res.body.updatedFields).toContain('workDir');
+    expect(res.body.updated_fields).toContain('workDir');
   });
 
   it('rejects relative paths', async () => {

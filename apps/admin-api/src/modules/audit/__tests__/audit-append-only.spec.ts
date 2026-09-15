@@ -3,11 +3,27 @@ import { getRepositoryToken } from "@nestjs/typeorm";
 import { DataSource, ObjectLiteral } from "typeorm";
 import { AuditService } from "../audit.service";
 import { AuditLog } from "../entities/audit-log.entity";
-import { execSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 const SRC = (p: string) => readFileSync(p, "utf8");
+
+/**
+ * 跨平台递归收集 .ts 源文件（替代 `grep -rn --include`——后者依赖 POSIX shell，
+ * Windows 本机无 grep 会让该静态扫描假红；与 write-guard-coverage.spec.ts 同款遍历）。
+ */
+function collectTsFiles(dir: string, out: string[] = []): string[] {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (entry.name === "node_modules") continue;
+      collectTsFiles(full, out);
+    } else if (entry.name.endsWith(".ts") && !entry.name.endsWith(".d.ts")) {
+      out.push(full);
+    }
+  }
+  return out;
+}
 
 /**
  * SEC-10: append-only 旁路封堵断言。
@@ -72,12 +88,17 @@ describe("AuditService — SEC-10 append-only 旁路封堵", () => {
   });
 
   it("全仓库消费方静态扫描：除 audit 模块外，无人对 AuditLog/AuditService 调 update/delete/restore", () => {
-    const root = resolve(__dirname, "../../../..");
-    const out = execSync(
-      `grep -rn --include="*.ts" -l "AuditService" ${root}/src/modules | grep -v "modules/audit/" | grep -v spec || true`,
-      { encoding: "utf8" },
-    ).trim();
-    const consumers = out ? out.split("\n") : [];
+    const modulesRoot = resolve(__dirname, "../../..");
+    // 等价于 `grep -rn --include="*.ts" -l AuditService src/modules
+    //   | grep -v modules/audit/ | grep -v spec`，但用 Node 遍历，跨平台无 shell 依赖。
+    const consumers = collectTsFiles(modulesRoot)
+      .map((f) => ({ file: f, norm: f.replace(/\\/g, "/") }))
+      .filter(
+        ({ norm }) =>
+          !norm.includes("modules/audit/") && !norm.includes("spec"),
+      )
+      .filter(({ file }) => SRC(file).includes("AuditService"))
+      .map(({ file }) => file);
     expect(consumers.length).toBeGreaterThan(5); // auth/task/executor/api-keys/application/users 等确有消费
     const offenders = consumers.filter((f) => {
       const content = SRC(f);

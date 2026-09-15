@@ -10,6 +10,11 @@ import { config } from '../config';
 import { initAdminClients } from '../admin-client';
 import { logger } from '../logger';
 import { listActiveExecutionIds, validateExecutionWorkDir } from './execute';
+// A3-C：协议闸门/响应契约（由 packages/executor-protocol/protocol.json 生成，勿手改产物）
+import {
+  ConfigReloadRequestSchema,
+  ConfigReloadResponseSchema,
+} from '../generated/protocol.schemas';
 
 export const configRouter = Router();
 configRouter.use(verifyToken as any);
@@ -42,11 +47,42 @@ function rebuildAdminApiUrls(explicitUrls?: string[]): string[] {
 interface ConfigReloadResponse {
   success: boolean;
   message: string;
-  updatedFields: string[];
+  // A3-C：响应字段名以 executor-protocol 为单一事实源（snake_case），与
+  // executor-python / protocol.json 的 ConfigReloadResponse 对齐——node 旧实现
+  // 用 camelCase（updatedFields/ignoredFields）是三方里唯一的漂移点。
+  updated_fields: string[];
   /** E-22: request keys this endpoint does not understand. Reported instead of
    *  silently dropped — a typo'd/unsupported field used to come back as
    *  `success: true` with an empty update list, which reads as "applied". */
+  ignored_fields: string[];
+}
+
+/**
+ * A3-C：出参必经生成的协议 schema——契约不再只是被测试引用的产物。
+ * 这里构造的响应若不满足 ConfigReloadResponse（缺字段/类型错）即服务端 bug，
+ * 直接抛出走 500，而不是把一个畸形探针/响应发回 admin。
+ */
+function buildReloadResponse(input: {
+  success: boolean;
+  message: string;
+  updatedFields: string[];
   ignoredFields: string[];
+}): ConfigReloadResponse {
+  const payload: ConfigReloadResponse = {
+    success: input.success,
+    message: input.message,
+    updated_fields: input.updatedFields,
+    ignored_fields: input.ignoredFields,
+  };
+  const checked = ConfigReloadResponseSchema.safeParse(payload);
+  if (!checked.success) {
+    const where = checked.error.issues[0]?.path.join('.') || '(root)';
+    throw new Error(
+      `config reload response violates executor-protocol at ${where}: ` +
+        checked.error.issues[0]?.message,
+    );
+  }
+  return payload;
 }
 
 /** Every key /config/reload actually honours (both workDir spellings). */
@@ -76,6 +112,31 @@ configRouter.post('/config/reload', async (req: Request, res: Response) => {
   const ignoredFields = collectIgnoredFields(req.body);
 
   try {
+    // A3-C：先做手检（数值下界，400 文案更具体且被既有用例钉住），再过协议
+    // 闸门——与 routes/execute.ts 同一原则：手检兜具体文案，生成的 schema 兜
+    // 手检没覆盖的**类型/形状**错误（如 maxConcurrentTasks 传字符串、
+    // adminApiUrls 传非数组），且必须发生在任何 config 写入**之前**，畸形载荷
+    // 绝不允许改到一半状态。
+    if (body.maxConcurrentTasks !== undefined && body.maxConcurrentTasks < 1) {
+      res.status(400).json({ error: 'maxConcurrentTasks must be >= 1' });
+      return;
+    }
+    if (body.taskTimeoutSeconds !== undefined && body.taskTimeoutSeconds < 1) {
+      res.status(400).json({ error: 'taskTimeoutSeconds must be >= 1' });
+      return;
+    }
+    if (body.heartbeatIntervalSeconds !== undefined && body.heartbeatIntervalSeconds < 5) {
+      res.status(400).json({ error: 'heartbeatIntervalSeconds must be >= 5' });
+      return;
+    }
+    const parsedReq = ConfigReloadRequestSchema.safeParse(req.body);
+    if (!parsedReq.success) {
+      const first = parsedReq.error.issues[0];
+      const where = first.path.length ? first.path.join('.') : '(root)';
+      res.status(400).json({ error: `Invalid config reload request: ${where}: ${first.message}` });
+      return;
+    }
+
     if (body.maxConcurrentTasks !== undefined) {
       if (body.maxConcurrentTasks < 1) {
         res.status(400).json({ error: 'maxConcurrentTasks must be >= 1' });
@@ -196,23 +257,27 @@ configRouter.post('/config/reload', async (req: Request, res: Response) => {
     }
 
     if (updatedFields.length === 0) {
-      res.json({
-        success: true,
-        message: ignoredFields.length > 0
-          ? `No fields to update (ignored unsupported field(s): ${ignoredFields.join(', ')})`
-          : 'No fields to update',
-        updatedFields: [],
-        ignoredFields,
-      } as ConfigReloadResponse);
+      res.json(
+        buildReloadResponse({
+          success: true,
+          message: ignoredFields.length > 0
+            ? `No fields to update (ignored unsupported field(s): ${ignoredFields.join(', ')})`
+            : 'No fields to update',
+          updatedFields: [],
+          ignoredFields,
+        }),
+      );
       return;
     }
 
-    res.json({
-      success: true,
-      message: `Updated ${updatedFields.length} field(s)`,
-      updatedFields,
-      ignoredFields,
-    } as ConfigReloadResponse);
+    res.json(
+      buildReloadResponse({
+        success: true,
+        message: `Updated ${updatedFields.length} field(s)`,
+        updatedFields,
+        ignoredFields,
+      }),
+    );
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error(`Config reload failed: ${msg}`);

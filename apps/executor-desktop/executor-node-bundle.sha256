@@ -23,4 +23,8 @@
 #   - a41b3e7d…：A3-C 修 `TaskConfig.requirements` 必须接受 null（admin 的任务
 #     实体该列是 nullable jsonb，无依赖任务派发字面 null；首版写成纯 array 被
 #     CI selftests 的 pull 全链路真派发抓到）。
-a41b3e7dad9185ee4ded1c6f9f48852469e7e2897c68f4888d36945e314f2179  index.js
+#   - 5d009e01…：A3-C 残差收口——把生成的 ConfigReloadRequest/Response 与
+#     HealthReadyResponse 接进 /config/reload、/health/ready 运行时（请求闸门 +
+#     出参契约校验），并把 /config/reload 响应字段从 camelCase 对齐为契约的
+#     snake_case（2275kB → 2279kB）。
+5d009e01afd247a4598bc7b8e67bb6e5d7d1afe032fa46cb4ffed4bc53b2d089  index.js

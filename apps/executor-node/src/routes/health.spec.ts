@@ -35,6 +35,8 @@ import {
   resetCpuSampleForTest,
   sampleCpuPercent,
 } from './health';
+// A3-C：就绪出参契约用生成的 schema 现校验
+import { HealthReadyResponseSchema } from '../generated/protocol.schemas';
 
 function listen(server: http.Server): Promise<number> {
   return new Promise((resolve) => {
@@ -217,6 +219,34 @@ describe('health probes (E-20)', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.status).toBe('ready');
+  });
+
+  // A3-C 反证有牙：ready / not_ready 两个分支的真实出参都必须被**生成的**
+  // HealthReadyResponse 接受——status 值域或形状漂移（如退回旧值 'unready'）立即红。
+  it('ready (200) body conforms to the generated HealthReadyResponse schema', async () => {
+    server = http.createServer((_req, res) => {
+      res.statusCode = 200;
+      res.end('ok');
+    });
+    const port = await listen(server);
+    mockConfig.adminApiUrlInternal = `http://127.0.0.1:${port}/api/`;
+
+    const res = await request(buildApp()).get('/health/ready');
+    expect(res.status).toBe(200);
+    expect(HealthReadyResponseSchema.safeParse(res.body).success).toBe(true);
+  });
+
+  it('not_ready (503) body conforms to the generated HealthReadyResponse schema', async () => {
+    server = http.createServer((_req, res) => {
+      res.statusCode = 500;
+      res.end('down');
+    });
+    const port = await listen(server);
+    mockConfig.adminApiUrlInternal = `http://127.0.0.1:${port}/api/`;
+
+    const res = await request(buildApp()).get('/health/ready');
+    expect(res.status).toBe(503);
+    expect(HealthReadyResponseSchema.safeParse(res.body).success).toBe(true);
   });
 
   it('derives CPU% from os.cpus() time deltas — cross-platform, unlike loadavg (Windows≡0)', () => {

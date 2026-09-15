@@ -112,14 +112,26 @@ schema 再 `$ref`。
     风险远大于收益）——两个模型分工不同：那个是反序列化，这个是协议校验。
   - 代价：内嵌执行器的 ncc bundle 因此内联 zod（2111kB → 2275kB），是它首次
     引入第三方运行时依赖（ADR-005 同 commit 回填了哈希）。
-  - 仍未接进运行时的：`ConfigReloadRequest` / `ConfigReloadResponse` /
-    `HealthReadyResponse` 三个生成物目前仍只被测试消费（`/config/reload` 与
-    `/health/ready` 各有自己的手检与类型），未动的原因是那两个端点的载荷语义
-    与协议段存在历史耦合，改动面大于收益。**契约面站住了，执行路径是逐段换的，
-    不是一次换完的**。
+  - ~~仍未接进运行时的：`ConfigReloadRequest` / `ConfigReloadResponse` /
+    `HealthReadyResponse` 三个生成物只被测试消费~~ —— **已接进运行时**。
+    - executor-node：`routes/config.ts` 在数值下界手检**之后**、任何 `config`
+      写入**之前**加 `ConfigReloadRequestSchema.safeParse` 闸门（兜手检抓不到的
+      类型/形状错误）；出参经 `buildReloadResponse()` 过 `ConfigReloadResponseSchema`
+      后才发送。`routes/health.ts` 的 ready/not_ready 三个分支统一经 `sendReady()`
+      过 `HealthReadyResponseSchema`。
+    - executor-python：`routers/config.py` 同序（手检 → `ProtocolConfigReloadRequest
+      .model_validate` 闸门 → 写入），两处返回经 `_conform_response()` 过生成物；
+      `routers/health.py` 的 `_readiness()` 三个分支统一经 `_ready_json()` 过
+      `ProtocolHealthReadyResponse`。
+    - 接线时抓到并修掉一个**真实三方漂移**：node 的 `/config/reload` 响应一直用
+      camelCase（`updatedFields`/`ignoredFields`），而 protocol.json 与 python
+      都是 snake_case（`updated_fields`/`ignored_fields`）——node 是三方里唯一的
+      漂移点，前端不读这两个字段、无外部消费方，已对齐为 snake_case。
+    - 反证有牙：两侧 config/health 用例都用**生成的** schema 现校验真实出参
+      （`safeParse`/`model_validate`），再改回 camelCase / 退回旧状态值立即红。
 - `kill` / `deploy` / `update-package` / `logs` 等端点的载荷**未** schema 化——
-  先只收协议面最核心的三个（ExecuteRequest / ConfigReload / readiness），避免
-  把只属于一端的实现细节拉进共享契约（见「修改纪律」）。
+  先收协议面两端共有的核心载荷（ExecuteRequest / ConfigReload / readiness），
+  避免把只属于一端的实现细节拉进共享契约（见「修改纪律」）。
 
 ## 修改纪律
 

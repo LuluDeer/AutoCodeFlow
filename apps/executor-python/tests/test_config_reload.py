@@ -186,3 +186,67 @@ def test_reload_config_ignored_fields_empty_for_known_keys(auth_client, monkeypa
     assert resp.status_code == 200
     assert resp.json()['ignored_fields'] == []
     assert settings.heartbeat_interval_seconds == 20
+
+
+# ---------------------------------------------------------------------------
+# A3-C（DEEP_REVIEW 0ef3bbe §七 残差收口）：ConfigReload 的生成 schema 不再只被
+# 测试引用——请求过协议闸门、出参过生成 schema。下列用例让这条接线「有牙」。
+# ---------------------------------------------------------------------------
+
+
+def test_reload_config_rejects_non_numeric_max_concurrent_via_protocol_gate(auth_client, monkeypatch):
+    """字符串型 maxConcurrentTasks 手检（< 1 数值比较）抓不到，必须由协议闸门 400。"""
+    monkeypatch.setattr(settings, 'max_concurrent_tasks', 10)
+
+    resp = auth_client.post('/api/config/reload', json={'maxConcurrentTasks': '4'})
+
+    assert resp.status_code == 400
+    assert 'Invalid config reload request: maxConcurrentTasks' in resp.json()['detail']
+    # 畸形载荷在任何写入之前被拒
+    assert settings.max_concurrent_tasks == 10
+
+
+def test_reload_config_rejects_non_array_admin_api_urls_via_protocol_gate(auth_client):
+    """协议声明 adminApiUrls 为数组；python 虽不应用它，但畸形类型必须 400（合法数组仍 ignored）。"""
+    resp = auth_client.post('/api/config/reload', json={'adminApiUrls': 'http://only-one'})
+
+    assert resp.status_code == 400
+    assert 'adminApiUrls' in resp.json()['detail']
+
+
+def test_reload_config_well_formed_admin_api_urls_array_is_ignored_not_rejected(auth_client):
+    """对照：合法数组不被协议闸门拦（python 选择不应用，列入 ignored_fields）。"""
+    resp = auth_client.post('/api/config/reload', json={'adminApiUrls': ['http://a:3105']})
+
+    assert resp.status_code == 200
+    assert resp.json()['ignored_fields'] == ['adminApiUrls']
+
+
+@pytest.mark.parametrize('payload', [
+    {},
+    {'maxConcurrentTasks': 4},
+    {'workDir': '/tmp/x', 'adminApiUrls': ['http://a']},
+])
+def test_reload_config_request_vectors_pass_generated_schema(payload):
+    from generated.protocol_schemas import ConfigReloadRequest as ProtocolRequest
+
+    # 不抛即通过（与 executor-node 跑同一份 protocol.json 向量）
+    ProtocolRequest.model_validate(payload)
+
+
+def test_reload_config_response_body_conforms_to_generated_schema(auth_client, monkeypatch):
+    """反证有牙：真实出参必须能被**生成的** ConfigReloadResponse 接受。"""
+    from generated.protocol_schemas import ConfigReloadResponse as ProtocolResponse
+
+    monkeypatch.setattr(settings, 'max_concurrent_tasks', 10)
+    applied = auth_client.post('/api/config/reload', json={'maxConcurrentTasks': 3})
+    assert applied.status_code == 200
+    ProtocolResponse.model_validate(applied.json())  # 不抛即契约一致
+
+    empty = auth_client.post('/api/config/reload', json={})
+    assert empty.status_code == 200
+    ProtocolResponse.model_validate(empty.json())
+
+    ignored = auth_client.post('/api/config/reload', json={'totallyUnknown': 1})
+    assert ignored.status_code == 200
+    ProtocolResponse.model_validate(ignored.json())
