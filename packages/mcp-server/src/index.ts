@@ -13,6 +13,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { apiRequest, API_URL, API_TOKEN } from "./api";
+import pkg from "../package.json";
 import {
   registerTaskTools,
   registerApplicationTools,
@@ -28,7 +29,7 @@ import {
 // ---------------------------------------------------------------------------
 const server = new McpServer({
   name: "autocodeflow",
-  version: "1.4.2", // x-release-please-version
+  version: pkg.version,
 });
 
 registerTaskTools(server, apiRequest);
@@ -42,8 +43,8 @@ registerProjectTools(server, apiRequest);
 // ---------------------------------------------------------------------------
 // CLI — argument handling for the bin entry (autocodeflow-mcp)
 // ---------------------------------------------------------------------------
-/** Server version, kept in sync with package.json (asserted by cli.test.ts). */
-export const VERSION = "1.4.2"; // x-release-please-version
+/** Server version, read from package.json (auto-synced). */
+export const VERSION = pkg.version;
 
 export interface CliDecision {
   /** 'run' starts the stdio MCP server; 'exit' prints `output` and exits. */
