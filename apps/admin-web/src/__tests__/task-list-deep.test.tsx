@@ -19,21 +19,30 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import TaskListPage from '../pages/TaskListPage';
 import { tasksApi, type Task } from '../api/tasks';
 
-vi.mock('../api/tasks', () => ({
-  tasksApi: {
-    list: vi.fn(),
-    get: vi.fn(),
-    create: vi.fn(),
-    delete: vi.fn(),
-    trigger: vi.fn(),
-    pause: vi.fn(),
-    resume: vi.fn(),
-    batchTrigger: vi.fn(),
-    batchPause: vi.fn(),
-    batchResume: vi.fn(),
-    batchDelete: vi.fn(),
-  },
-}));
+vi.mock('../api/tasks', async () => {
+  // summarizeBatch 必须一并暴露：它是 api/tasks 的具名导出，TaskListPage
+  // 直接 import。mock 工厂若不提供，页面上会拿到 undefined 并在调用处抛错
+  // （被 catch 吞成错误提示，表现为「批量操作无效」）。
+  // 这里取真实实现——它正是要被断言的逻辑，不该被 stub。
+  // 写法沿用 a11y-login-page.test.tsx:41 的 async 工厂 + importActual 先例。
+  const actual = await vi.importActual<typeof import('../api/tasks')>('../api/tasks');
+  return {
+    summarizeBatch: actual.summarizeBatch,
+    tasksApi: {
+      list: vi.fn(),
+      get: vi.fn(),
+      create: vi.fn(),
+      delete: vi.fn(),
+      trigger: vi.fn(),
+      pause: vi.fn(),
+      resume: vi.fn(),
+      batchTrigger: vi.fn(),
+      batchPause: vi.fn(),
+      batchResume: vi.fn(),
+      batchDelete: vi.fn(),
+    },
+  };
+});
 const mockedTasks = vi.mocked(tasksApi, true);
 
 // jsdom 缺失 antd 依赖的浏览器 API（既有先例 shim）
@@ -163,8 +172,12 @@ describe('TaskListPage 筛选组合（QA-03 第二阶段）', () => {
 });
 
 describe('TaskListPage 批量操作（QA-03 第二阶段）', () => {
+  // 真实契约：后端 batch 端点回 HTTP 200 + 逐项 {id, error?}
+  // （task.controller.ts Promise.all(...catch(err => ({id, error}))）。
+  // 此前这里 mock 成 {ok:true} —— 一个后端从不返回的形状，因此用例
+  // 反向固化了「无条件弹成功」的缺陷，无法发现部分失败被吞。
   it('勾选两行 → 操作条显示已选数，批量触发 → batchTrigger 收到精确 id 数组并清空选择', async () => {
-    mockedTasks.batchTrigger.mockResolvedValue({ ok: true });
+    mockedTasks.batchTrigger.mockResolvedValue([{ id: 'task-1' }, { id: 'task-2' }]);
     renderPage();
     await screen.findAllByText(/备份\s*任务|巡检任务/);
     fireEvent.click(rowCheckbox(0));
@@ -175,12 +188,16 @@ describe('TaskListPage 批量操作（QA-03 第二阶段）', () => {
     await waitFor(() => {
       expect(mockedTasks.batchTrigger).toHaveBeenCalledWith(['task-1', 'task-2']);
     });
-    // 成功后选择清空（操作条消失）
-    await waitFor(() => expect(screen.queryByText(/已选/)).toBeNull());
+    // 全成功后选择清空（操作条消失）。
+    // 注意：antd 静态 message 的 holder 是 body 级单例，cleanup() 后其内部引用
+    // 沦为游离节点，跨用例残留的 toast 文案仍留在 document 中（同款说明见
+    // notification-silences.test.tsx:107-109）。故断言操作条自身的「取消选择」
+    // 按钮消失，而不复用可能被残留 toast 命中的 /已选/。
+    await waitFor(() => expect(screen.queryByText('取消选择')).toBeNull());
   });
 
   it('批量暂停成功 → batchPause 收到精确 id 数组并提示成功', async () => {
-    mockedTasks.batchPause.mockResolvedValue({ ok: true });
+    mockedTasks.batchPause.mockResolvedValue([{ id: 'task-1' }, { id: 'task-2' }]);
     renderPage();
     await screen.findAllByText(/备份\s*任务|巡检任务/);
     fireEvent.click(rowCheckbox(0));
@@ -189,6 +206,27 @@ describe('TaskListPage 批量操作（QA-03 第二阶段）', () => {
     await waitFor(() => {
       expect(mockedTasks.batchPause).toHaveBeenCalledWith(['task-1', 'task-2']);
     });
+  });
+
+  it('部分失败必须如实暴露，且不清空选择（回归：此前静默报成功）', async () => {
+    // 2 项里 1 项被后端拒绝——HTTP 200，失败藏在 payload 里
+    mockedTasks.batchPause.mockResolvedValue([
+      { id: 'task-1' },
+      { id: 'task-2', error: 'Task is not active' },
+    ]);
+    renderPage();
+    await screen.findAllByText(/备份\s*任务|巡检任务/);
+    fireEvent.click(rowCheckbox(0));
+    fireEvent.click(rowCheckbox(1));
+    fireEvent.click(findBtn(document.body, '批量暂停')!);
+
+    // 关键断言：仍有失败项 → 不能清空选择（旧实现无条件清空 + 只报成功）
+    await waitFor(() => {
+      expect(mockedTasks.batchPause).toHaveBeenCalledWith(['task-1', 'task-2']);
+    });
+    // 给 toast 一个渲染机会
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.getByText(/已选/)).toBeTruthy();
   });
 
   it('批量触发失败 → 错误 toast（getErrMsg 提取响应 message）', async () => {
