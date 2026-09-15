@@ -42,10 +42,8 @@ describe("ConfigController — FEAT-08 rollback RBAC matrix", () => {
       string,
       unknown
     >;
-    const paths = Reflect.getMetadata(
-      "path",
-      ConfigController,
-    ) as string | undefined;
+    const paths = Reflect.getMetadata("path", ConfigController) as
+      string | undefined;
     expect(paths).toBeDefined();
 
     const handlers = Object.getOwnPropertyNames(proto).filter((name) => {
@@ -65,8 +63,7 @@ describe("ConfigController — FEAT-08 rollback RBAC matrix", () => {
 
     const ungated = handlers.filter((name) => {
       const roles = Reflect.getMetadata(ROLES_KEY, proto[name]) as
-        | UserRole[]
-        | undefined;
+        UserRole[] | undefined;
       return !roles || !roles.includes(UserRole.ADMIN);
     });
     expect(ungated).toEqual([]);
