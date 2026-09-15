@@ -4,16 +4,24 @@
  * 路由契约：
  * - GET /tasks/executions/:execId（compat alias）解析 taskId 与状态；
  * - 终态执行直接走 GET /tasks/executions/:execId/logs 打全量日志后退出；
- * - 未终态走 GET /tasks/:taskId/executions/:execId/logs/stream?access_token=
+ * - 未终态：先 POST /auth/sse-ticket 换短效票据，再走
+ *   GET /tasks/:taskId/executions/:execId/logs/stream?ticket=
  *   （SSE 逐行 data: JSON.stringify(line)，event: done 收尾，: ping 保活帧）。
  *
- * SSE 解析器 createSseParser 是纯状态机（跨 chunk 半行安全），单测覆盖。
+ * SEC-CLI-01（本轮审计）：此处此前有两个各自独立、都会让 tail 完全不可用的缺陷：
+ *  1) 用 `?access_token=` 建流——该通道已被服务端**整体撤销**
+ *     （jwt.strategy.ts:SSE_TICKET_PARAM，只认 ?ticket=，且注释明说旧通道
+ *     "intentionally GONE"），于是任何非终态 tail 立刻 401；
+ *  2) 读取 `page.logs`——服务端返回的是 `{ lines, totalLines, hasMore }`
+ *     （task.service.ts 的 getExecutionLogs），`logs` 恒为 undefined → ''，
+ *     循环在第一轮就 break，打出**空输出**后静默退出。
+ * 两者叠加使 `acf exec tail` 在任何路径上都不工作。
  */
 import { Command } from 'commander';
 import axios from 'axios';
 import chalk from 'chalk';
-import { get } from '../client';
-import { getToken, getApiUrl } from '../config';
+import { get, post } from '../client';
+import { getApiUrl } from '../config';
 import { formatApiError } from '../client';
 
 const TERMINAL = new Set(['success', 'failed', 'timeout', 'killed', 'cancelled']);
@@ -71,9 +79,27 @@ interface ExecutionRef {
 }
 
 interface LogsPage {
-  logs?: string;
+  /**
+   * SEC-CLI-01: 服务端（task.service.ts getExecutionLogs）返回的行数组字段名是
+   * `lines`，不是 `logs`。旧实现读 `logs` 恒为 undefined → 永远打不出日志。
+   * 同时兼容旧的字符串形态，避免服务端若有历史版本而再次静默失败。
+   */
+  lines?: string[] | string;
   hasMore?: boolean;
   totalLines?: number;
+}
+
+/** 把服务端行数组（或旧字符串形态）规整为 string[]。 */
+function toLines(lines: LogsPage['lines']): string[] {
+  if (Array.isArray(lines)) return lines.filter((l) => typeof l === 'string');
+  if (typeof lines === 'string' && lines.length > 0) return lines.split('\n');
+  return [];
+}
+
+/** SSE 票据响应（POST /auth/sse-ticket）。 */
+interface SseTicketResponse {
+  ticket: string;
+  expiresAt?: string;
 }
 
 export function execCommand(): Command {
@@ -98,24 +124,27 @@ export function execCommand(): Command {
             const page = await get<LogsPage>(
               `/tasks/executions/${execId}/logs?fromLine=${fromLine}&limit=2000`,
             );
-            const logs = page?.logs ?? '';
-            if (logs.length > 0) {
-              for (const line of logs.split('\n')) {
+            const lines = toLines(page?.lines);
+            if (lines.length > 0) {
+              for (const line of lines) {
                 process.stdout.write((opts.json ? JSON.stringify({ line }) : line) + '\n');
                 printed++;
               }
             }
-            if (!page?.hasMore || logs.length === 0) break;
+            if (!page?.hasMore || lines.length === 0) break;
             fromLine = printed;
           }
           process.exitCode = exec.status === 'success' ? 0 : 1;
           return;
         }
 
-        // 未终态：SSE 跟随
+        // 未终态：SSE 跟随。
+        // SEC-CLI-01: 先换一枚 30s TTL 的专用 SSE 票据（走常规 Authorization
+        // 头的 POST），再以 ?ticket= 建流——`?access_token=` 通道已被服务端撤销，
+        // 旧写法会让每次非终态 tail 直接 401。与 admin-web/src/api/sse.ts 同流程。
+        const { ticket } = await post<SseTicketResponse>('/auth/sse-ticket');
         const base = getApiUrl().replace(/\/+$/, '');
-        const token = getToken();
-        const url = `${base}/tasks/${exec.taskId}/executions/${execId}/logs/stream?access_token=${encodeURIComponent(token)}`;
+        const url = `${base}/tasks/${exec.taskId}/executions/${execId}/logs/stream?ticket=${encodeURIComponent(ticket)}`;
         const res = await axios.get(url, { responseType: 'stream', timeout: 0 });
 
         process.stderr.write(
