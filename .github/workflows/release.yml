@@ -209,15 +209,26 @@ jobs:
         working-directory: apps/executor-desktop/dist-electron
         run: |
           set -euo pipefail
-          mapfile -t files < <(find . -maxdepth 1 -type f \
-            \( -name '*.exe' -o -name '*.dmg' -o -name '*.zip' \
-               -o -name '*.AppImage' -o -name '*.deb' \) -printf '%f\n' | sort)
-          if [ ${#files[@]} -eq 0 ]; then
+          # 跨平台兼容（macOS bash 3.2 / BSD find）：
+          #   - 不能用 mapfile（bash 4+）和 find -printf（GNU 专属）；
+          #   - sha256sum 在 mac 是 `shasum -a 256`。
+          # 用 find -print + while read 收集，再按平台选哈希命令。
+          files=$(find . -maxdepth 1 -type f \( \
+            -name '*.exe' -o -name '*.dmg' -o -name '*.zip' \
+            -o -name '*.AppImage' -o -name '*.deb' \) -print | sort)
+          if [ -z "$files" ]; then
             echo "::error::未找到任何安装包产物"; exit 1
           fi
-          printf '%s\n' "找到 ${#files[@]} 个安装包产物"
-          sha256sum "${files[@]}" > SHA256SUMS-${{ matrix.os }}.txt
-          cat SHA256SUMS-${{ matrix.os }}.txt
+          n=$(printf '%s\n' "$files" | grep -c '^\./')
+          printf '%s\n' "找到 $n 个安装包产物"
+          if command -v sha256sum >/dev/null 2>&1; then
+            # linux/windows(GitBash)：sha256sum
+            printf '%s\n' "$files" | xargs sha256sum > "SHA256SUMS-${{ matrix.os }}.txt"
+          else
+            # macOS：shasum -a 256
+            printf '%s\n' "$files" | xargs shasum -a 256 > "SHA256SUMS-${{ matrix.os }}.txt"
+          fi
+          cat "SHA256SUMS-${{ matrix.os }}.txt"
 
       # DESKTOP-PUBLISH-01（真发布启用）：把三平台安装包 + SHA256 上传到当前
       # tag 对应的 GitHub Release assets。tag 由 `on: push tags` 触发，job 内
