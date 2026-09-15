@@ -59,6 +59,26 @@ if (!wizard.includes('className={`ip-option') || !wizard.includes('aria-pressed=
 if (!history.includes('aria-expanded={isOpen}') || !history.includes('aria-controls={`history-runs-${key}`}')) {
   throw new Error('History group control is missing accessible state');
 }
+
+// ── 历史页过滤/搜索能力（本轮新增）────────────────────────────────
+// 记录本身早已全量可得，但页面只能罗列——任务跑多后无法定位某次失败。
+// 守卫保证：搜索框与状态过滤必须在位、必须基于过滤后集合分组、且
+// 「过滤后为空」与「完全没有记录」的空态文案必须可区分。
+if (!history.includes('history-search-input') || !history.includes('aria-label="搜索执行记录"')) {
+  throw new Error('History 搜索框缺失或未标注无障碍名');
+}
+if (!history.includes("aria-pressed={statusFilter === value}")) {
+  throw new Error('History 状态过滤必须用 aria-pressed 暴露选中态');
+}
+if (!history.includes('for (const rec of filtered)')) {
+  throw new Error('History 分组必须基于过滤后的集合（否则过滤不生效）');
+}
+if (!history.includes('没有符合当前筛选条件的记录。')) {
+  throw new Error('History 必须区分"过滤后为空"与"无任何记录"两种空态');
+}
+if (!css.includes('.history-search-input') || !css.includes('.history-chip')) {
+  throw new Error('History 过滤/搜索样式缺失');
+}
 if (!wizard.includes('has-picker') || !css.includes('margin-top: var(--space-xs)')) {
   throw new Error('Wizard picker spacing anchor changed');
 }
