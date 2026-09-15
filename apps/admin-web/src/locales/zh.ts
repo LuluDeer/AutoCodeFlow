@@ -404,6 +404,7 @@ export default {
   'registry.tab.pypi': 'PyPI (Python)',
   'registry.tab.npm': 'npm (Node.js)',
   'registry.upload': '上传包',
+  'registry.upload.adminOnly': '上传私有依赖包仅管理员可用（会影响所有任务的依赖解析）',
   'registry.refresh': '刷新',
   'registry.pypiHint': '配置 pip 使用私有源：',
   'registry.pypiErrorTitle': 'PyPI 包列表加载失败',

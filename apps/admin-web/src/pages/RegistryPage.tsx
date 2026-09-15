@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Card, Tabs, Table, Button, Upload, Form, Input, Modal, message, Space, Typography, Tag, Empty, theme } from 'antd';
+import { Card, Tabs, Table, Button, Upload, Form, Input, Modal, message, Space, Typography, Tag, Empty, theme, Tooltip } from 'antd';
 import {
   UploadOutlined, ReloadOutlined, CodeOutlined, InboxOutlined,
 } from '@ant-design/icons';
@@ -8,6 +8,9 @@ import { registryApi } from '../api/registry';
 import { getErrMsg } from '../utils/error';
 import { useTranslation } from 'react-i18next';
 import PageHeader from '../components/PageHeader';
+// A7：上传面已收敛为 ADMIN（后端 @Roles(ADMIN)）——前端同步隐藏入口，避免普通
+// 用户点一个必然 403 的按钮（与 AppDeploymentPage 的 admin-only 操作同款处理）。
+import { useAuthStore } from '../store/auth';
 // UI-16：toast-only 页补齐页内错误态标准块（错误块 + 重试，对齐 TaskTemplatesPage 形态）
 import StateError from '../components/StateError';
 // UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
@@ -22,6 +25,8 @@ function PypiTab() {
   const [uploadOpen, setUploadOpen] = useState(false);
   const [form] = Form.useForm();
   const [uploading, setUploading] = useState(false);
+  // A7：私有 PyPI 上传是全局写操作（影响所有任务的依赖解析），仅管理员可用。
+  const isAdmin = useAuthStore((s) => s.user?.role === 'admin');
 
   // F-16（DEEP_REVIEW 0ef3bbe）：ahooks useRequest → TanStack Query useQuery（主栈统一）。
   const { data: packages = [], isLoading: loading, error, refetch: refresh } = useQuery({
@@ -65,7 +70,13 @@ function PypiTab() {
   return (
     <div>
       <Space style={{ marginBottom: 16 }} wrap>
-        <Button type="primary" icon={<UploadOutlined />} onClick={() => setUploadOpen(true)}>{t('registry.upload')}</Button>
+        {isAdmin ? (
+          <Button type="primary" icon={<UploadOutlined />} onClick={() => setUploadOpen(true)}>{t('registry.upload')}</Button>
+        ) : (
+          <Tooltip title={t('registry.upload.adminOnly')}>
+            <Button icon={<UploadOutlined />} disabled>{t('registry.upload')}</Button>
+          </Tooltip>
+        )}
         <Button icon={<ReloadOutlined />} onClick={() => void refresh()}>{t('registry.refresh')}</Button>
       </Space>
 
