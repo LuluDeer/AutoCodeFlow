@@ -9,7 +9,7 @@ import { getAutoLaunchEnabled, setAutoLaunchEnabled } from './autolaunch';
 import { initUpdater } from './updater';
 import { Notifier } from './notifier';
 import * as path from 'path';
-import log from './logger';
+import log, { initLogCleanup } from './logger';
 
 // 单例导出，供 ipc-handlers 等模块使用
 // QA-12：e2e 隔离通道——冒烟用例经 env 覆盖 userData 指向临时目录，
@@ -56,6 +56,9 @@ app.whenReady().then(async () => {
   // 移除默认菜单栏（File/Edit/View 等），Linux/Windows 上会显示原生菜单
   Menu.setApplicationMenu(null);
   log.info(`App ready. userData: ${app.getPath('userData')}`);
+
+  // 初始化日志清理（自动删除旧日志）
+  initLogCleanup();
 
   // 注入托盘回调
   trayManager.onStart = async () => {

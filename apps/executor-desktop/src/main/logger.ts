@@ -53,11 +53,13 @@ function cleanOldLogs(): void {
   }
 }
 
-// 应用 ready 后执行清理
-app.whenReady().then(() => {
-  cleanOldLogs();
-  // 每天检查一次
-  setInterval(cleanOldLogs, 24 * 60 * 60 * 1000);
-});
+// 应用 ready 后执行清理（惰性调用，不在模块顶层执行，避免纯 Node.js 测试环境报错）
+export function initLogCleanup(): void {
+  app.whenReady().then(() => {
+    cleanOldLogs();
+    // 每天检查一次
+    setInterval(cleanOldLogs, 24 * 60 * 60 * 1000);
+  });
+}
 
 export default log;
