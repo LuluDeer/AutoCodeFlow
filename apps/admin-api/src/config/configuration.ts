@@ -261,6 +261,24 @@ export default () => ({
   eventOutbox: {
     enabled: process.env.EVENT_OUTBOX_ENABLED !== "false",
   },
+  // TASK-SCOPE-01（本轮审计）：执行类写面（trigger/pause/resume）的归属口径开关。
+  //
+  // 背景：这三个端点是**唯一不做归属校验的写面**——`update`/`delete` 早就要求
+  // 属主或 ADMIN，而「执行你的任务」此前对任何已登录用户开放（ADR-013 明确登记
+  // 为「既有宽松语义，需产品拍板后才收紧」）。后果：能 list 到任务的人就能触发
+  // 别人的生产任务（备份/部署/清理），也能 pause/resume 掉别人的定时任务。
+  //
+  // 取值（默认 `any`，**零行为变化**）：
+  //   - `any`（默认）：保留既有宽松语义——任何已登录用户可 trigger/pause/resume
+  //     任意任务（仍保留 AUTH-02 的 viewer 拒绝）。老部署升级后行为不变。
+  //   - `owner`：仅 ADMIN、任务属主、或该项目内具备 editor 及以上角色者。
+  //     新部署建议开启；团队协作场景下「同项目成员可跑彼此任务」仍被允许。
+  //
+  // 之所以做成开关而非直接收紧：这是**行为变更**，硬改会让现有依赖"我能跑同事
+  // 任务"的团队全体撞 403。给运维显式选择权，比单方面替他们决定更稳妥。
+  taskScope: {
+    operate: process.env.TASK_OPERATE_SCOPE === "owner" ? "owner" : "any",
+  },
   // N23: dedicated secret for per-execution callback tokens (HMAC key
   // material). Optional: falls back to the executor shared token when
   // unset — executor-node derives the same key from its own env, so both
