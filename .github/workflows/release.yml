@@ -127,29 +127,30 @@ jobs:
   #      CSC_IDENTITY_AUTO_DISCOVERY=false 跳过签名，产物不可直接分发）；
   #   ③ 把下方 `--publish never` 换成 electron-builder 真实 publish
   #      （或加独立的 upload-artifact→release 步骤），并配置 GH_TOKEN。
+  # DESKTOP-PUBLISH-01（2026-09-15 真发布启用）：本 job 需要把安装包上传到
+  # 当前 tag 的 GitHub Release assets —— 需 contents: write（顶层默认 contents: read）。
   desktop-installer:
     needs: version-guard
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: windows-latest
             script: dist:win
-            artifact: desktop-windows-installer
             paths: |
               apps/executor-desktop/dist-electron/*.exe
               apps/executor-desktop/dist-electron/*.blockmap
               apps/executor-desktop/dist-electron/latest.yml
           - os: macos-latest
             script: dist:mac
-            artifact: desktop-macos-installer
             paths: |
               apps/executor-desktop/dist-electron/*.dmg
               apps/executor-desktop/dist-electron/*.zip
               apps/executor-desktop/dist-electron/latest-mac.yml
           - os: ubuntu-latest
             script: dist:linux
-            artifact: desktop-linux-installer
             paths: |
               apps/executor-desktop/dist-electron/*.AppImage
               apps/executor-desktop/dist-electron/*.deb
@@ -201,9 +202,8 @@ jobs:
 
       # 产物哈希：供下载者核对完整性（deployment.md 的 ubuntu 信任注记要求
       # 「校验发布说明里的产物哈希」，此前无任何哈希产出）。
-      # 注意：不依赖 `shopt -s nullglob`（多 pattern 数组在缺匹配时会残留空
-      # 字符串元素，且该选项在部分 shell 环境下行为不一致）——改用 find 收集，
-      # 缺产物时显式报错而非静默产出空哈希文件。
+      # 三平台各生成一份 <平台>.sha256，避免三 job 并行都叫 SHA256SUMS.txt
+      # 互相覆盖。
       - name: Generate SHA256SUMS
         shell: bash
         working-directory: apps/executor-desktop/dist-electron
@@ -216,18 +216,21 @@ jobs:
             echo "::error::未找到任何安装包产物"; exit 1
           fi
           printf '%s\n' "找到 ${#files[@]} 个安装包产物"
-          sha256sum "${files[@]}" > SHA256SUMS.txt
-          cat SHA256SUMS.txt
+          sha256sum "${files[@]}" > SHA256SUMS-${{ matrix.os }}.txt
+          cat SHA256SUMS-${{ matrix.os }}.txt
 
-      - name: Upload ${{ matrix.artifact }}
-        uses: actions/upload-artifact@v4
+      # DESKTOP-PUBLISH-01（真发布启用）：把三平台安装包 + SHA256 上传到当前
+      # tag 对应的 GitHub Release assets。tag 由 `on: push tags` 触发，job 内
+      # 从 GITHUB_REF 取。软 props/action-gh-release 对已存在的 release 追加
+      # assets（update release assets），不会重建、不会覆盖其它平台已上的文件。
+      - name: Upload installer to GitHub Release
+        uses: softprops/action-gh-release@v2
         with:
-          name: ${{ matrix.artifact }}
-          path: |
+          tag_name: ${{ github.ref_name }}
+          files: |
             ${{ matrix.paths }}
-            apps/executor-desktop/dist-electron/SHA256SUMS.txt
-          if-no-files-found: error
-          retention-days: 30
+            apps/executor-desktop/dist-electron/SHA256SUMS-${{ matrix.os }}.txt
+          fail_on_unmatched_files: true
 
   # ── npm 发布 ─────────────────────────────────────────────────────────
   # secrets.NPM_TOKEN：npmjs.com 的 Automation/Access token
