@@ -75,6 +75,45 @@ case "$RUNTIME" in
   *) die "--runtime 只支持 node | python | universal（收到: $RUNTIME）" ;;
 esac
 
+# SEC-INSTALL-01：ADMIN_API_URL / EXECUTOR_SECRET 此前**未做任何校验**就写进
+# .env（见下方 heredoc）。二者都会原样落到 systemd EnvironmentFile，含换行的
+# 值可注入伪造键值对——例如 secret 里塞 "\nREQUIRE_TOKEN=false" 即可绕过
+# E-09/E-25 的 fail-closed 兜底（auth.ts 仅当 REQUIRE_TOKEN === 'true' 才拒
+# 绝未认证请求）。伪造成立的原因是 heredoc 会先写出攻击者的键、再写出脚本自己
+# 的键，而 EnvironmentFile 取先出现的赋值。
+#
+# 修法与 executor-node 的 deploy.ts 对齐（该处早有 formatDotenvValue 处理同类
+# 问题并有测试）：值一律用双引号包裹并转义 \ " CR LF，键名走白名单。
+# URL 额外做协议与字符白名单校验——它还会被写进 .env 与调用链。
+# 允许方括号以支撑 IPv6 字面量（http://[::1]:3105）——这是合法配置，
+# 漏掉会把真实用户挡在门外。
+# 注意写法：bash 的 =~ 里不能用 \[ \] 转义方括号（会被当成字面量反斜杠，
+# 导致整个字符类失配、连普通 IPv4 都被拒），必须用 POSIX 形态把 ] 放首位。
+if [[ ! "$ADMIN_API_URL" =~ ^https?://[]A-Za-z0-9._:/@%[-]+$ ]]; then
+  die "--api-url 必须是 http(s):// 开头的合法地址，且只含字母、数字、点、下划线、连字符、冒号、斜杠、@、%、方括号（IPv6）（收到: $ADMIN_API_URL）"
+fi
+# secret 不允许换行/回车/引号/反斜杠：既是本次注入的入口，也会让后续
+# 转义产生歧义。正常共享密钥不会包含这些字符。
+if [[ ! "$EXECUTOR_SECRET" =~ ^[A-Za-z0-9._~+/=-]+$ ]]; then
+  die "--secret 只允许字母、数字与 . _ ~ + / = -（不允许空白/换行/引号/反斜杠）"
+fi
+
+# dotenv/systemd EnvironmentFile 值的转义：反斜杠 → \\，双引号 → \"，
+# CR → \r，LF → \n，并用双引号包裹整体。
+dotenv_escape() {
+  local v="$1"
+  v="${v//\\/\\\\}"
+  v="${v//\"/\\\"}"
+  v="${v//$'\r'/\\r}"
+  v="${v//$'\n'/\\n}"
+  printf '"%s"' "$v"
+}
+
+ADMIN_API_URL_ESC="$(dotenv_escape "$ADMIN_API_URL")"
+EXECUTOR_SECRET_ESC="$(dotenv_escape "$EXECUTOR_SECRET")"
+APP_NAME_ESC="$(dotenv_escape "$APP_NAME")"
+WORK_DIR_ESC="$(dotenv_escape "$WORK_DIR")"
+
 echo "=== AutoCodeFlow 执行器安装 ==="
 echo "Admin API : $ADMIN_API_URL"
 echo "App Name  : $APP_NAME"
@@ -193,21 +232,29 @@ fi
 # ── 写入配置文件 ───────────────────────────────────────────────────────────────
 echo "[5/6] 写入配置..."
 DETECTED_IP="$(hostname -I 2>/dev/null | awk '{print $1}' || echo '127.0.0.1')"
+# SEC-INSTALL-01：所有来自命令行的值一律走 dotenv_escape（转义 + 双引号包裹），
+# 绝不再裸插值——裸插值正是本文件此前 .env 注入的根因。
 cat > "${INSTALL_DIR}/.env" <<EOF
-APP_NAME=${APP_NAME}
+APP_NAME=${APP_NAME_ESC}
 PORT=${PORT}
 EXECUTOR_ADDRESS=${DETECTED_IP}:${PORT}
 EXECUTOR_ADDRESS_PUBLIC=${DETECTED_IP}:${PORT}
-ADMIN_API_URL=${ADMIN_API_URL}
-EXECUTOR_SECRET=${EXECUTOR_SECRET}
-WORK_DIR=${WORK_DIR}
+ADMIN_API_URL=${ADMIN_API_URL_ESC}
+EXECUTOR_SECRET=${EXECUTOR_SECRET_ESC}
+WORK_DIR=${WORK_DIR_ESC}
 MAX_CONCURRENT_TASKS=10
 LOG_RETENTION_DAYS=7
 # E-09/E-25（DEEP_REVIEW 0ef3bbe）：fail-closed——token 未配置时拒绝
 # 所有未认证请求（503），而非 dev-mode 静默放行。与容器部署基线对齐。
 REQUIRE_TOKEN=true
 EOF
-echo "      配置已写入 ${INSTALL_DIR}/.env"
+# 权限收紧：.env 含共享密钥，不可被同机其他用户读取（systemd 以
+# EXECUTOR_USER 运行，root 安装时需要让该用户可读）。
+chmod 600 "${INSTALL_DIR}/.env" 2>/dev/null || true
+if [[ "$(id -u)" -eq 0 ]] && id "$EXECUTOR_USER" &>/dev/null; then
+  chown "$EXECUTOR_USER":"$EXECUTOR_USER" "${INSTALL_DIR}/.env" 2>/dev/null || true
+fi
+echo "      配置已写入 ${INSTALL_DIR}/.env（权限 600，含共享密钥）"
 
 # ── 注册 systemd 服务 ──────────────────────────────────────────────────────────
 echo "[6/6] 注册系统服务..."

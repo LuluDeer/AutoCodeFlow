@@ -149,6 +149,48 @@ async function installDeps(
   }
 }
 
+/**
+ * SEC-DEPLOY-01: validate a shell-runtime entrypoint.
+ *
+ * Returns null when safe, or a human-readable reason when the value must be
+ * rejected. Exported (pure, no I/O) so it is directly unit-testable — the
+ * original inline regex had ZERO test coverage, which is how the whitespace
+ * bypass survived.
+ *
+ * Threat: the shell runtime runs `sh -c <entrypoint>` / `cmd.exe /c <entrypoint>`.
+ * The string is a *command line*, so its first whitespace-separated token is the
+ * command that gets executed. The previous charset `[A-Za-z0-9._/ :\-]` allowed
+ * a literal space, so `/usr/bin/env sh -c id` passed validation and executed
+ * `id` (verified: returned the real uid/gid list including sudo/docker groups).
+ * It correctly blocked `;`, `&`, `|`, `$()`, backticks — i.e. it closed shell
+ * *metacharacters* but not *command selection*.
+ *
+ * Policy: exactly one path-like token. No whitespace, no quoting, no shell
+ * metacharacters, no leading dash (option injection), no `..` segment
+ * (traversal out of the deployment directory — the same read surface that
+ * execute.ts deliberately closes).
+ */
+export function validateShellEntrypoint(
+  entrypoint: unknown,
+): { ok: true } | { ok: false; reason: string } {
+  if (typeof entrypoint !== 'string' || entrypoint === '') {
+    return { ok: false, reason: 'entrypoint must be a non-empty string' };
+  }
+  // 单一路径样式的词：首字符不得为 '-'（否则会被 sh 当选项）
+  if (!/^[A-Za-z0-9._][A-Za-z0-9._/-]*$/.test(entrypoint)) {
+    return {
+      ok: false,
+      reason:
+        'must be a single path-like token matching ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ' +
+        '(no whitespace, no shell metacharacters, no leading dash, no quoting)',
+    };
+  }
+  if (entrypoint.split(/[\\/]/).includes('..')) {
+    return { ok: false, reason: 'must not contain a ".." path segment' };
+  }
+  return { ok: true };
+}
+
 /** Start the application process */
 function startApp(
   deploymentId: string,
@@ -178,21 +220,20 @@ function startApp(
     cmd = 'node';
     args = [entrypoint];
   } else if (runtime === 'shell' || runtime === 'bash' || runtime === 'sh') {
-    // Critical (executor-node audit 2026-09): shell runtime executes the
-    // user-supplied entrypoint verbatim through `sh -c` / `cmd.exe /c`,
-    // which is a direct arbitrary-command execution surface. Restrict to a
-    // safe character set so attackers cannot smuggle `;`, `&&`, backticks,
-    // `$()` expansions or path escapes into the shell.
-    const SAFE = /^[A-Za-z0-9._\/ :\\-]+$/;
-    if (!SAFE.test(entrypoint)) {
+    // Critical (executor-node audit 2026-09) + SEC-DEPLOY-01: shell runtime
+    // runs `sh -c <entrypoint>` / `cmd.exe /c <entrypoint>`, a direct
+    // arbitrary-command surface. Validation is extracted to
+    // validateShellEntrypoint() so it is unit-tested (the previous inline
+    // regex allowed a literal space, letting `/usr/bin/env sh -c id` execute).
+    // With whitespace rejected the string is a single token, so the shell
+    // selects exactly the intended script — no metacharacter expansion and no
+    // command selection. Arguments belong on the node/python argv path.
+    const verdict = validateShellEntrypoint(entrypoint);
+    if (!verdict.ok) {
       throw new Error(
-        `Refusing shell entrypoint with unsafe characters; allowed charset is [A-Za-z0-9._/ :\\-]`,
+        `Refusing shell entrypoint (${verdict.reason}). Received: ${JSON.stringify(entrypoint)}`,
       );
     }
-    // Belt-and-suspenders: the spawn() call below already uses array args
-    // (not `shell: true`), but we still pre-validate to fail fast and to
-    // leave an audit trail. cmd.exe /c <safe> and sh -c <safe> here run
-    // exactly one command line, with no metacharacter expansion possible.
     if (isWin) {
       cmd = 'cmd.exe';
       args = ['/c', entrypoint];

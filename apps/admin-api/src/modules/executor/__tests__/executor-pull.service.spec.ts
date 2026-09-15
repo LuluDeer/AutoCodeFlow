@@ -70,6 +70,29 @@ describe("ExecutorPullService（ARCH-32）", () => {
     expect(client.rpop).toHaveBeenCalledWith("acf:pull:exec-1");
   });
 
+  it("SEC-PULL-01：waitMs 为 NaN/Infinity 时必须立即返回，而非永久挂起", async () => {
+    // 回归背景：deadline = Date.now() + NaN 后，`Date.now() >= NaN` 恒为 false，
+    // 下方 while(true) 永不 break —— 请求被永久挂住（可远程触发的资源耗尽）。
+    // 修复后服务层把非有限值收敛为 0（立即取一次即返回）。
+    const svc = await makeService();
+    const client = clientOf(svc);
+    client.rpop.mockResolvedValue(null);
+
+    for (const bad of [NaN, Infinity, -Infinity]) {
+      const payload = await svc.pull("exec-1", bad as number);
+      expect(payload).toBeNull();
+    }
+    // 空队列 + 立即返回 = 恰好取件一次/轮
+    expect(client.rpop).toHaveBeenCalledTimes(3);
+  });
+
+  it("SEC-PULL-01：负数 waitMs 同样收敛为立即返回", async () => {
+    const svc = await makeService();
+    const client = clientOf(svc);
+    client.rpop.mockResolvedValue(null);
+    await expect(svc.pull("exec-1", -5000)).resolves.toBeNull();
+  });
+
   it("pull：过期载荷（pushedAt 超 TTL）丢弃不投递", async () => {
     const svc = await makeService("1000");
     const client = clientOf(svc);

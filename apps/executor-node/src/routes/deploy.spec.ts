@@ -37,6 +37,7 @@ import {
   rotateAppLogIfNeeded,
   shouldReportProcessExit,
   suppressNextRestartExitReport,
+  validateShellEntrypoint,
 } from './deploy';
 import * as downloadLib from '../lib/download';
 import { buildChildEnv as _buildChildEnv } from '../env-whitelist';
@@ -530,6 +531,74 @@ describe('POST /api/deploy — async pipeline', () => {
 });
 
 // E-12（DEEP_REVIEW 0ef3bbe）: releases 历史与 app.log 永不回收的 retention。
+describe('SEC-DEPLOY-01: shell entrypoint validation', () => {
+  // 回归背景：shell runtime 走 `sh -c <entrypoint>`，整串是命令行，首个
+  // 空白分隔的词即被执行的命令。原校验字符类含空格，导致
+  // `/usr/bin/env sh -c id` 通过并真实执行（实测返回 uid/gid）。
+  // 该门此前零测试覆盖，故在此补齐正反两向用例。
+  it('accepts ordinary single-token script paths', () => {
+    for (const ok of [
+      'app.js',
+      'start.sh',
+      'scripts/run.sh',
+      './bin/server',
+      'a-b_c.d/e',
+      'main.py',
+    ]) {
+      expect(validateShellEntrypoint(ok)).toEqual({ ok: true });
+    }
+  });
+
+  it('REJECTS whitespace — the command-selection bypass', () => {
+    // 这些是本次修复的核心：它们不是 shell 元字符，但能让首个词变成别的命令
+    for (const bad of [
+      '/usr/bin/env sh -c id',
+      'app.js --port 3000',
+      'cat /etc/passwd',
+      ' sh',
+      'sh ',
+      'a\tb',
+      'a\nb',
+    ]) {
+      const r = validateShellEntrypoint(bad);
+      expect(r.ok).toBe(false);
+    }
+  });
+
+  it('REJECTS shell metacharacters and quoting', () => {
+    for (const bad of [
+      'a;id', 'a&id', 'a|id', 'a>out', 'a<in', 'a$(id)', 'a`id`',
+      'a"b', "a'b", 'a\\b', 'a*b', 'a?b', 'a!b', 'a~b', 'a{b}',
+    ]) {
+      expect(validateShellEntrypoint(bad).ok).toBe(false);
+    }
+  });
+
+  it('REJECTS leading dash (option injection into sh/cmd)', () => {
+    for (const bad of ['-c', '--help', '-e']) {
+      expect(validateShellEntrypoint(bad).ok).toBe(false);
+    }
+  });
+
+  it('REJECTS path traversal out of the deployment directory', () => {
+    for (const bad of ['../evil.sh', 'a/../../b', '..\\evil.bat', '../../etc/passwd']) {
+      expect(validateShellEntrypoint(bad).ok).toBe(false);
+    }
+  });
+
+  it('REJECTS non-strings and empty values', () => {
+    for (const bad of ['', null, undefined, 42, {}, []]) {
+      expect(validateShellEntrypoint(bad as unknown).ok).toBe(false);
+    }
+  });
+
+  it('does not accept an entrypoint that merely contains ".." inside a name', () => {
+    // 与 findUnsafeZipEntries 的同款边界：a..b 不是穿越段
+    expect(validateShellEntrypoint('a..b.sh')).toEqual({ ok: true });
+    expect(validateShellEntrypoint('my..app/run.sh')).toEqual({ ok: true });
+  });
+});
+
 describe('E-12 retention: pruneOldReleases', () => {
   const releasesDir = '/tmp/work/apps/app-1/releases';
   const currentLink = '/tmp/work/apps/app-1/current';

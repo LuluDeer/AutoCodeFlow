@@ -1618,6 +1618,113 @@ describe("ExecutorService (__tests__)", () => {
       await service.notifyExecutorKill("e1", null);
       expect(mockedAxios.post).not.toHaveBeenCalled();
     });
+
+    // SEC-SSRF-02 回归：本方法此前是执行器出站调用里唯一漏掉 SSRF 守卫的点，
+    // 会把共享 token 作为 Bearer 发给 executorAddress 指定的任意主机
+    // （含 link-local 云元数据 169.254.169.254 与 loopback）。
+    // SEC-SSRF-02 回归：本方法此前是执行器出站调用里唯一漏掉 SSRF 守卫的点，
+    // 会把共享 token 作为 Bearer 发给 executorAddress 指定的任意主机。
+    //
+    // 注意：本 spec 在顶部把 assertSafeExecutorUrl 整体 stub 掉了（避免真实
+    // DNS 查询），所以此处断言的是「守卫针对正确 URL 被调用」这一行为；
+    // 守卫本身的判定语义（link-local/loopback 拒绝）由下方
+    // "SEC-SSRF-02 guard semantics" 用 jest.requireActual 的真实实现覆盖。
+    it("SEC-SSRF-02: consults the SSRF guard with the kill URL before POSTing", async () => {
+      mockedAxios.post.mockResolvedValue({ data: { ok: true } });
+      await service.notifyExecutorKill("e1", "10.0.0.9:8002");
+      const guard = jest.requireMock(
+        "../../../common/utils/safe-http.util",
+      ).assertSafeExecutorUrl as jest.Mock;
+      expect(guard).toHaveBeenCalledWith(
+        "http://10.0.0.9:8002/api/executions/e1/kill",
+      );
+      expect(mockedAxios.post).toHaveBeenCalled();
+    });
+
+    it("SEC-SSRF-02: a guard rejection stops the authenticated POST (never throws)", async () => {
+      const guard = jest.requireMock(
+        "../../../common/utils/safe-http.util",
+      ).assertSafeExecutorUrl as jest.Mock;
+      guard.mockRejectedValueOnce(
+        new Error("Executor address ... is link-local — refused"),
+      );
+      const warnSpy = jest
+        .spyOn(Logger.prototype, "warn")
+        .mockImplementation(() => {});
+      await expect(
+        service.notifyExecutorKill("e1", "169.254.169.254:80"),
+      ).resolves.toBeUndefined();
+      expect(mockedAxios.post).not.toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+  });
+
+  // SEC-SSRF-02 守卫语义：用真实实现，证明被守卫的地址确实会被拒绝、
+  // 且正常的私网地址确实放行——即上一条「守卫被调用」不是空转。
+  describe("SEC-SSRF-02 guard semantics (real assertSafeExecutorUrl)", () => {
+    const realGuard = jest.requireActual(
+      "../../../common/utils/safe-http.util",
+    ).assertSafeExecutorUrl as (u: string) => Promise<URL>;
+
+    it("rejects link-local cloud-metadata addresses", async () => {
+      await expect(
+        realGuard("http://169.254.169.254/api/executions/e1/kill"),
+      ).rejects.toThrow(/link-local|refused/i);
+    });
+
+    it("allows an ordinary private-LAN executor address", async () => {
+      await expect(
+        realGuard("http://10.0.0.9:8002/api/executions/e1/kill"),
+      ).resolves.toBeInstanceOf(URL);
+    });
+  });
+
+  // SEC-SSRF-03 回归：getExecutorUrl 在其它 spec 里一律被 mock，真实实现
+  // 零覆盖——这正是 '#' 片段截断能藏住的原因。此处直接测真实实现。
+  describe("getExecutorUrl (SEC-SSRF-03)", () => {
+    it("prefixes the configured scheme for a bare host:port", () => {
+      expect(service.getExecutorUrl("10.0.0.9:8002", "api/logs/e1")).toBe(
+        "http://10.0.0.9:8002/api/logs/e1",
+      );
+    });
+
+    it("keeps an explicit http(s):// scheme", () => {
+      expect(
+        service.getExecutorUrl("https://ex.example.com", "api/execute"),
+      ).toBe("https://ex.example.com/api/execute");
+    });
+
+    it("strips a '#' so the path is NOT swallowed into the URL fragment", () => {
+      // 修复前：'http://10.0.0.5#/api/executions/x/kill' 的 pathname 是 "/"
+      // —— 请求会打到主机根路径而非我们的端点。
+      const url = service.getExecutorUrl("10.0.0.5#", "api/executions/x/kill");
+      const parsed = new URL(url);
+      expect(parsed.hash).toBe("");
+      expect(parsed.pathname).toBe("/api/executions/x/kill");
+    });
+
+    it("strips a '?' so the path is not absorbed into the query string", () => {
+      const url = service.getExecutorUrl("10.0.0.5?", "api/executions/x/kill");
+      const parsed = new URL(url);
+      expect(parsed.search).toBe("");
+      expect(parsed.pathname).toBe("/api/executions/x/kill");
+    });
+
+    it("does not produce a doubled slash when the address ends with one", () => {
+      const url = service.getExecutorUrl(
+        "http://10.0.0.5:8002/",
+        "api/execute",
+      );
+      expect(url).toBe("http://10.0.0.5:8002/api/execute");
+      expect(new URL(url).pathname).toBe("/api/execute");
+    });
+
+    it("strips a leading slash on the path argument", () => {
+      expect(service.getExecutorUrl("10.0.0.9:8002", "/api/execute")).toBe(
+        "http://10.0.0.9:8002/api/execute",
+      );
+    });
   });
 
   describe("findAll", () => {

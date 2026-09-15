@@ -11,7 +11,7 @@ import {
   forwardRef,
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { assertSafeGitRepoUrl } from "../../common/utils/safe-http.util";
+import { assertSafeGitRepoUrl, assertSafeExecutorUrl } from "../../common/utils/safe-http.util";
 // A2-B: 属主/项目角色校验的运行时证据落点
 import { recordOwnershipAssertion } from "../../common/guards/ownership-assertion.store";
 import {
@@ -1829,6 +1829,15 @@ export class TaskService {
         executorAddress,
         `api/logs/${execution.id}`,
       );
+      // SEC-SSRF-01：本处此前是执行器调用面里**唯一**漏掉 SSRF 守卫的
+      // axios 出站（executor.service.ts dispatch/broadcast、controller
+      // reload-config、app-deployment 两处、executor-package 均已守卫）。
+      // executorAddress 来自执行器自报的 register/heartbeat 字段，未做归一；
+      // 且本方法由执行器自己的终态回调触发（handleCallback → winnerAddress），
+      // 因此远端执行器可令 admin-api 带着共享 token 去请求
+      // 169.254.169.254（云元数据）等内部地址，并把响应体当作日志行持久化后
+      // 展示给用户——是可读出的外泄原语，而非仅盲 SSRF。
+      await assertSafeExecutorUrl(url);
       // High-6.3: hard cap on what a single executor response may carry
       // (Node executor previously could return the entire log in one chunk —
       // we now refuse anything above 64 MB to protect admin-api memory).

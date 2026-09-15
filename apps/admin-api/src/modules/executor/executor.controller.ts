@@ -351,10 +351,17 @@ export class ExecutorController {
     }
     const maxWait =
       this.configService.get<number>("executor.pullWaitMs") ?? 25000;
-    const waitMs = Math.max(
-      0,
-      Math.min(Number(body.waitMs ?? maxWait), maxWait),
-    );
+    // SEC-PULL-01：原实现是 Math.max(0, Math.min(Number(body.waitMs ?? maxWait), maxWait))。
+    // body.waitMs 来自 @Public()+token 的机器面且 DTO 无校验装饰器（内联类型，
+    // ValidationPipe 不生效），因此 Number("abc") / Number({}) / Number("NaN")
+    // 都会得到 NaN；NaN 会穿透 Math.min/max。NaN 传进 pull() 后
+    // `deadline = Date.now() + NaN`，而 `Date.now() >= NaN` 恒为 false，
+    // while(true) 永不 break —— 请求被永久挂住（每次还占一个 Redis 往返），
+    // 属可远程触发的资源耗尽。此处显式做有限性校验，非法值回落到 maxWait。
+    const requestedWait = Number(body.waitMs ?? maxWait);
+    const waitMs = Number.isFinite(requestedWait)
+      ? Math.max(0, Math.min(requestedWait, maxWait))
+      : maxWait;
     const payload =
       executor.dispatchMode === "pull"
         ? await this.pullService.pull(executor.id, waitMs)

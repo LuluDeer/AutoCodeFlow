@@ -273,10 +273,19 @@ export class ExecutorService {
   }
 
   public getExecutorUrl(address: string, path: string): string {
+    // SEC-SSRF-03：地址来自执行器自报的 register/heartbeat 字段，未做归一。
+    // 若地址里含 '#'，URL 解析会把其后内容当作 fragment，导致我们拼出的
+    // 路径被整体丢进 fragment —— 实测 `http://10.0.0.5#` + 'api/executions/x'
+    // 解析出的 pathname 是 "/"（而非预期的 /api/executions/x），于是请求打到
+    // 目标主机的根路径。这既会让调用错端点，也会在未守卫的调用点把
+    // admin 的带 token 请求引到攻击者选定的路径上。
+    // '?' 同理会把路径变成查询串的一部分。两者都不是合法执行器地址的一部分，
+    // 一律先剥离，保证拼出的 URL 路径就是我们传入的 path。
+    const sanitized = address.split(/[?#]/, 1)[0];
     if (address.startsWith("http://") || address.startsWith("https://")) {
-      return `${address}/${path}`;
+      return `${sanitized.replace(/\/+$/, "")}/${path.replace(/^\/+/, "")}`;
     }
-    return `${this.protocol}://${address}/${path}`;
+    return `${this.protocol}://${sanitized.replace(/\/+$/, "")}/${path.replace(/^\/+/, "")}`;
   }
 
   /**
@@ -468,6 +477,12 @@ export class ExecutorService {
         executorAddress,
         `api/executions/${executionId}/kill`,
       );
+      // SEC-SSRF-02：与其他执行器出站调用保持一致——此前本处漏掉守卫，会把
+      // 共享 token 作为 Bearer 发给 executorAddress 指定的任意主机（含
+      // link-local 云元数据与 loopback）。守卫抛错由下方 catch 收敛为 warn，
+      // 符合本方法「绝不抛出」的既有契约（调用方为调度器清扫与手动 kill，
+      // 不应因一个可疑地址而中断）。
+      await assertSafeExecutorUrl(url);
       await axios.post(url, {}, { headers, timeout: 3_000 });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);

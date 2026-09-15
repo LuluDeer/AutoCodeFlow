@@ -54,6 +54,17 @@ import {
 } from "../../metrics/runtime-metrics-entry";
 
 jest.mock("axios");
+// SEC-SSRF-01: backfillFullLogsFromExecutor 现在会先过 assertSafeExecutorUrl。
+// 用例使用 fixture 地址（http://executor:3001）——真实守卫会对该主机做 DNS
+// 解析并失败，故按 executor.service.spec 的同款做法 stub 掉守卫，避免用例
+// 依赖真实 DNS。守卫本身的语义由 ssrf-deny-matrix.spec / safe-http.util.spec
+// 以及 executor.service.spec 的 “guard semantics” 组覆盖。
+jest.mock("../../../common/utils/safe-http.util", () => ({
+  ...jest.requireActual("../../../common/utils/safe-http.util"),
+  assertSafeExecutorUrl: jest
+    .fn()
+    .mockResolvedValue(new URL("http://fixture:3001/")),
+}));
 
 /** 读取运行时计数（模块级单调快照；afterEach 重置保证用例隔离） */
 const runtimeCount = (
