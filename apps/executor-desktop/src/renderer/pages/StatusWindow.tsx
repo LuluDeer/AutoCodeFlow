@@ -238,6 +238,16 @@ export default function StatusWindow() {
       setConfig(s.config);
       setStatusLoaded(true);
     });
+
+    // 启动时先加载当天的历史日志
+    window.electronAPI.invoke('logs:getToday').then((result: any) => {
+      if (result?.lines && result.lines.length > 0) {
+        // 过滤掉空行
+        const validLines = result.lines.filter((l: string) => l.trim().length > 0);
+        setLogs(validLines.slice(-500));
+      }
+    }).catch(() => {});
+
     const offLog = window.electronAPI.onLogLine((line) => {
       setLogs((prev) => {
         const next = [...prev, line];

@@ -6,6 +6,7 @@ declare const window: Window & {
     saveAndCloseWizard: (cfg: Record<string, unknown>) => Promise<{ ok: boolean; error?: string }>;
     checkPort: (port: number) => Promise<{ available: boolean; message: string }>;
     getLocalIPs: () => Promise<string[]>;
+    closeWindow: () => void;
   };
 };
 
@@ -91,17 +92,23 @@ export default function Wizard() {
 
   return (
     <div className="wizard-wrap">
-      {/* 自定义标题栏——无边框模式拖拽区域 */}
-      <div className="titlebar titlebar-wizard">
-        <span className="titlebar-title">AutoCodeFlow Executor</span>
-      </div>
       <div className="wizard">
-        {/* 品牌 + 进度 */}
+        {/* 品牌 + 进度——作为拖拽区域 */}
         <div className="wizard-header">
-          <div className="wizard-brand">
-            <div className="wizard-brand-icon">⚡</div>
-            <span className="wizard-brand-name">AutoCodeFlow Executor</span>
+          <div className="wizard-header-drag wizard-drag-region">
+            <div className="wizard-brand">
+              <div className="wizard-brand-icon">⚡</div>
+              <span className="wizard-brand-name">AutoCodeFlow Executor</span>
+            </div>
           </div>
+          <button
+            className="wizard-close-btn"
+            onClick={() => window.electronAPI.closeWindow()}
+            title="关闭向导"
+            aria-label="关闭向导"
+          >
+            ✕
+          </button>
           <div className="wizard-progress">
             {Array.from({ length: TOTAL_STEPS }, (_, i) => (
               <div
@@ -157,21 +164,21 @@ function StepWelcome({ onNext }: { onNext: () => void }) {
       <div className="wizard-body">
         <div className="wizard-features">
           <div className="wizard-feature">
-            <div className="wizard-feature-icon">🔗</div>
+            <div className="wizard-feature-icon icon-blue">🔗</div>
             <div className="wizard-feature-text">
               <strong>连接 Admin 平台</strong>
               <span>填入服务端 IP 和端口，测试连通性</span>
             </div>
           </div>
           <div className="wizard-feature">
-            <div className="wizard-feature-icon">🖥️</div>
+            <div className="wizard-feature-icon icon-purple">🖥️</div>
             <div className="wizard-feature-text">
               <strong>配置本机信息</strong>
               <span>自动检测本机 IP，一键填入，小白友好</span>
             </div>
           </div>
           <div className="wizard-feature">
-            <div className="wizard-feature-icon">✅</div>
+            <div className="wizard-feature-icon icon-green">✅</div>
             <div className="wizard-feature-text">
               <strong>自动注册上线</strong>
               <span>完成后常驻托盘，自动接收调度任务</span>
@@ -345,28 +352,30 @@ function StepExecutor({
         <div className="field">
           <label className="label">对外地址（Admin API 回调此地址下发任务）</label>
           {localIPs.length > 0 && (
-            <div className="ip-picker">
-              {localIPs.map((ip) => {
-                const full = `${ip}:${form.executorPort}`;
-                const sel = form.executorAddressPublic === full;
-                return (
-                  <button
-                    type="button"
-                    key={ip}
-                    className={`ip-option${sel ? ' selected' : ''}`}
-                    onClick={() => selectIP(ip)}
-                    aria-pressed={sel}
-                    aria-label={`${full}${sel ? '，已选择' : '，使用此地址'}`}
-                  >
-                    <span className="ip-option-addr">{full}</span>
-                    <span className="ip-option-use">{sel ? '✓ 已选择' : '点击选用'}</span>
-                  </button>
-                );
-              })}
+            <div className="ip-picker-wrap">
+              <div className="ip-picker-label">本机网卡 IP（点击快速填入）</div>
+              <div className="ip-picker">
+                {localIPs.map((ip) => {
+                  const full = `${ip}:${form.executorPort}`;
+                  const sel = form.executorAddressPublic === full;
+                  return (
+                    <button
+                      type="button"
+                      key={ip}
+                      className={`ip-chip${sel ? ' selected' : ''}`}
+                      onClick={() => selectIP(ip)}
+                      aria-pressed={sel}
+                      aria-label={`${full}${sel ? '，已选择' : '，使用此地址'}`}
+                    >
+                      {full}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           )}
           <input
-            className={localIPs.length > 0 ? 'input wizard-address-input has-picker' : 'input wizard-address-input'}
+            className="input wizard-address-input"
             placeholder={`192.168.x.x:${form.executorPort}`}
             value={form.executorAddressPublic}
             onChange={(e) => onChange('executorAddressPublic', e.target.value)}
