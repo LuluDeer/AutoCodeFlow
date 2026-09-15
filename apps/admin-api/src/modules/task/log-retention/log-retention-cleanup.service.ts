@@ -8,6 +8,7 @@ import {
   partitionNameFor,
   partitionRangeFor,
   parsePartitionUpperBound,
+  parseDayFromPartitionName,
 } from "./log-partition.util";
 // ARCH-31 §5: cron 维护任务统一 Leader 门禁（@Optional——既有单测直接 new
 // 装配时 gate 缺席 → null → 门禁不生效，先例同 TracingService）。
@@ -178,6 +179,21 @@ export class LogRetentionCleanupService {
       if (upper.getTime() > now.getTime()) continue;
 
       const rows = Number.isFinite(p.approxRows) ? p.approxRows : 0;
+      // LOG-RETENTION-02（本轮审计）：p.name 来自 pg_class.relname，被**直接拼进**
+      // DETACH / DROP 的 SQL 标识符位置。分区名由本进程的
+      // ensureUpcomingPartitions 以常量前缀 + 日期生成，因此不构成直接的攻击
+      // 路径；但 DETACH/DROP 是破坏性操作，其输入是字符串拼接——一旦有别的
+      // 写入者（手工建分区、未来新增的建分区逻辑）留下异常名，就会拼出
+      // `... DETACH PARTITION "evil"; DROP TABLE x; --"` 这类语句。
+      // 破坏性 DDL 的输入值得先做形状校验：复用既有的规范解析器
+      // （parseDayFromPartitionName 已同时校验前缀 + 8 位数字 + 合法日历日），
+      // 不符合者一律跳过并 warn（只 warn 不删，站在安全侧）。
+      if (!parseDayFromPartitionName(p.name)) {
+        this.logger.warn(
+          `ARCH-22: 分区名 ${JSON.stringify(p.name)} 不符合规范命名，跳过 DETACH/DROP（需人工确认）`,
+        );
+        continue;
+      }
       // DETACH：PG14+ 瞬时元数据操作；并发查询经分区路由不在结果集内
       await this.logLineRepo.query(
         `ALTER TABLE "execution_log_lines" DETACH PARTITION "${p.name}"`,
