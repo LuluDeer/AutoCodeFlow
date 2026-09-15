@@ -8,6 +8,14 @@
 
 ## 状态快照
 
+- **本轮（2026-09-15 → A7：registry 上传面收敛，主控）**：§七六个优先方向（A1~A6）与 A2-B / A3-C 全部收口后，回到评审存档方向里**唯一的真实安全面**——§七「registry 面收敛（pypi 加固 + token 鉴权）」，A2 审计曾把它如实登记为「任意已登录用户可传 PyPI 包」。
+  - **问题不是理论风险**：`POST /registry/pypi/upload` 此前声明 `scope: "authenticated"`，而任务的 `requirements` 正是从这个私有 PyPI `uv pip install`。任何账号都能抢注/覆盖一个内部包名，让下游**所有**引用它的任务装到攻击者的代码——任务依赖投毒。前端菜单对所有登录用户可见，无任何角色门禁。
+  - **形态（三层）**：① 角色门控 `@Roles(UserRole.ADMIN)`（按 A2 规则，有 `@Roles` 就不再需要 `@WriteGuard`，故原 `authenticated` 声明移除）；② `name` / `version` 加 PEP 508 / PEP 440 **字符级白名单**——这两个值会原样转发给上游 pypiserver（它用其拼存储路径），把输入卫生甩给下游是老毛病；③ 上传**成功与失败都落审计**（`registry.pypi.upload`，记 userId/username/resourceId=`<name>==<version>`/filename/size/ip），投毒面必须可追溯。前端同步按角色禁用上传入口（普通用户不看点必 403 的按钮）。
+  - **一个刻意的取舍**：审计写入失败**不**阻断上传（DB 抖动不该让运维传不了包），但必须 `logger.error` 留痕并明确写出「投毒面失去可追溯性」——静默吞掉等于审计形同虚设，这条取舍由独立用例钉住。
+  - **一个刻意的不做**：没有引入专用 upload token（评审原文提到「token 鉴权」）。那需要先确认是否存在 CI/流水线上传的真实场景，谁签发、谁轮换是运维决策；凭空加一种凭据类型只会扩大攻击面。已登记为残差。
+  - **反证有牙（两处实测）**：① 去掉 `@Roles(ADMIN)` → 元数据断言 + 「普通 user 403」2 例立即转红；② 去掉包名正则 → 「包名非法 400」1 例转红。
+  - **验收**：admin-api registry **17/17**（既有 9 + 新增 8）+ A2 守卫扫描 **65/65** + tsc 0 + eslint 0；admin-web registry 页面 **12/12**（既有 10 + 新增 2）+ `tsc -b` 0 + eslint 0。
+  - **残差（如实）**：① 未引入专用 upload token（见上）；② 仅约束了**上传**面，`GET /registry/{pypi,npm}/packages` 仍是任意登录用户可读（包名列表属低敏信息，暂不收紧）；③ 上游 pypiserver 自身未做鉴权加固（admin-api 用 Basic 转发，`REGISTRY_PASS` 未配时为空密码）——属部署基线，非本轮范围。
 - **本轮（2026-09-14 → ARCH-A3-C：把生成的 schema 接进两侧 `/execute` 运行时，主控）**：A3 完整形态（commit `c835815`）落地后登记的残差就是一句「生成物尚未接进运行时校验」——**契约只被测试消费，等于没生效**：删掉手检、端点照收不误，协议也不会红。本轮把它做掉，并顺带收口一个已登记的跨端漂移 + 修一个真 bug。
   - **形态**：`protocol.json` 的 `schemas` 补 `TaskConfig.timeout` 的 `0..86400` 边界（此前**协议没写、实现却在做**——node 一直按 0 或 1..86400 拒绝、python 静默 clamp，这正是「把 schema 接进运行时」才暴露出来的那类漂移）；两侧 `/execute` 各加一道闸门（node `ExecuteRequestSchema.safeParse` 放在既有手检**之后**，python `ProtocolExecuteRequest.model_validate` 放在**登记表之前**）。
   - **两个位置选择都是有理由的，改了就会出事**：① node 闸门放在手检**之后**，是因为手检的 400 文案更具体且已被既有用例钉住（如 `/Invalid task timeout/`），闸门兜的是手检没覆盖的部分；② python 闸门放在 `register_live_execution` **之前**，是因为——
@@ -644,7 +652,7 @@ cd packages/mcp-server && npx tsc --noEmit
 > 3. **需产品拍板（不可代劳）**：ADR-013 非成员 trigger 收紧、release-please main 合并习惯、API JWT 60d 缩短评估、desktop Linux 更新链签名。
 > 4. **需真机/长稳环境**：QA-05 24h 长稳、多主机（跨机）拓扑、macOS/Windows/ARM64 部署、通知渠道实测、私有 npm/PyPI 仓库集成。
 > 5. **QA-12 CI 形态专项**：`desktop-e2e-smoke` 在 windows runner 的「Process failed to launch」（v1.2.0 起文档化，PR-only 非门禁）。
-> 6. **已知面（A2 审计发现，未立项）**：`RegistryController.uploadPypiPackage` 为「任意已登录用户可传 PyPI 包」——属 §七「registry 面收敛（pypi 加固 + token 鉴权）」方向。
+> 6. ~~**已知面（A2 审计发现，未立项）**：`RegistryController.uploadPypiPackage` 为「任意已登录用户可传 PyPI 包」~~ ✅ **A7 已收口**（详见下方「状态快照」A7 条目）：上传面收敛为 `@Roles(ADMIN)` + 包名/版本字符白名单 + 成功/失败双向审计；前端同步按角色禁用入口。**未**引入专用 upload token（需先确认是否有 CI/流水线上传场景，谁签发谁轮换是运维决策），已登记为残差。
 >
 > 以下为历史轮次遗留清单（保留供追溯）：
 

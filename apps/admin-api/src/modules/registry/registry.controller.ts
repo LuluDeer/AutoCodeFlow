@@ -9,6 +9,7 @@ import {
   Logger,
   HttpException,
   HttpStatus,
+  Req,
 } from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
 import { ConfigService } from "@nestjs/config";
@@ -20,14 +21,22 @@ import * as http from "http";
 // undefined at runtime ("form_data_1.default is not a constructor"). Use the
 // namespace import (same pattern as `import * as Joi` in app.module.ts).
 import * as FormData from "form-data";
-import { WriteGuard } from "../../common/decorators/write-guard.decorator";
+import { Request } from "express";
+import { Roles } from "../../common/decorators/roles.decorator";
+import { UserRole } from "../users/entities/user.entity";
+import { CurrentUser } from "../../common/decorators/current-user.decorator";
+import { AuthUser } from "../../common/interfaces/auth-user.interface";
+import { AuditService } from "../audit/audit.service";
 
 @UseGuards(JwtAuthGuard)
 @Controller("registry")
 export class RegistryController {
   private readonly logger = new Logger(RegistryController.name);
 
-  constructor(private readonly config: ConfigService) {}
+  constructor(
+    private readonly config: ConfigService,
+    private readonly audit: AuditService,
+  ) {}
 
   private get pypiUrl(): string {
     return (
@@ -269,7 +278,32 @@ export class RegistryController {
   /** Allowed PyPI package extensions */
   private static readonly ALLOWED_PYPI_EXTS = [".whl", ".tar.gz", ".zip"];
 
-  @WriteGuard("registry-package", { scope: "authenticated" })
+  /** A7（DEEP_REVIEW §七「registry 面收敛」）：包名/版本的字符级白名单。
+   *  这两个值会原样转发给上游私有 PyPI（pypiserver 用它拼存储路径），上游的
+   *  健壮性不该是我们唯一的防线——名字里混进 `/` `..` 或 shell 元字符属于
+   *  「把自己的输入卫生甩给下游」的老问题。取 PEP 508 名称与 PEP 440 版本的
+   *  **保守子集**（够用且不含任何路径/元字符）。 */
+  private static readonly PYPI_NAME_RE =
+    /^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$/;
+  private static readonly PYPI_VERSION_RE = /^[A-Za-z0-9][A-Za-z0-9._+-]*$/;
+
+  /**
+   * A7：上传面收敛到 **ADMIN**。
+   *
+   * 此前本端点是 `scope: "authenticated"`——**任意已登录用户都能往私有 PyPI
+   * 传包**，而任务的 `requirements` 正是从这个私服 `uv pip install`。也就是说
+   * 任何账号都能抢注/覆盖一个内部包名，让下游所有引用它的任务装到攻击者的
+   * 代码——这是评审点名的「任务依赖投毒面」（A2 审计再次确认并如实登记）。
+   *
+   * 上传内部依赖包是**全局写操作**（影响所有任务），属管理员/运维职责，不是
+   * 普通用户的自助功能。按 A2 的规则，有 `@Roles` 就不再需要 `@WriteGuard`
+   * （两者不得共存），故原声明移除。
+   *
+   * **未**同时引入专用 upload token：那需要先确认是否存在 CI/流水线上传的
+   * 真实场景（谁签发、谁轮换是运维决策），凭空加一种凭据类型只会扩大攻击面。
+   * 已登记为残差。
+   */
+  @Roles(UserRole.ADMIN)
   @Post("pypi/upload")
   // Limit uploads to 50 MB; multer enforces this before the handler runs
   @UseInterceptors(
@@ -279,10 +313,28 @@ export class RegistryController {
     @UploadedFile() file: Express.Multer.File,
     @Body("name") name: string,
     @Body("version") version: string,
+    @CurrentUser() user: AuthUser,
+    @Req() req: Request,
   ): Promise<{ success: boolean }> {
     if (!file || !name || !version) {
       throw new HttpException(
         "name, version and file are required",
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    // A7: 字符级白名单（见 PYPI_NAME_RE / PYPI_VERSION_RE 注释）
+    if (name.length > 128 || !RegistryController.PYPI_NAME_RE.test(name)) {
+      throw new HttpException(
+        "Invalid package name: must match PEP 508 (letters, digits, . _ -)",
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    if (
+      version.length > 64 ||
+      !RegistryController.PYPI_VERSION_RE.test(version)
+    ) {
+      throw new HttpException(
+        "Invalid version: must match PEP 440 (letters, digits, . _ + -)",
         HttpStatus.BAD_REQUEST,
       );
     }
@@ -312,88 +364,158 @@ export class RegistryController {
     // fetchText style with a socket timeout plus an overall deadline, widened
     // to 60s for large uploads (fetchText's small-GET budget is 8s).
     const timeoutMs = this.uploadTimeoutMs;
-    return new Promise((resolve, reject) => {
-      let settled = false;
-      const done = (fn: () => void) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(deadline);
-        fn();
-      };
-      // Overall deadline covers the entire request lifecycle (connect +
-      // send + response) — the socket timeout alone can be starved by a
-      // trickle response that keeps resetting it.
-      const deadline = setTimeout(() => {
-        req.destroy();
-        done(() =>
-          reject(
-            new HttpException(
-              "Upstream registry upload timed out",
-              HttpStatus.GATEWAY_TIMEOUT,
+    const uploadPromise = new Promise<{ success: boolean }>(
+      (resolve, reject) => {
+        let settled = false;
+        const done = (fn: () => void) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(deadline);
+          fn();
+        };
+        // Overall deadline covers the entire request lifecycle (connect +
+        // send + response) — the socket timeout alone can be starved by a
+        // trickle response that keeps resetting it.
+        const deadline = setTimeout(() => {
+          req.destroy();
+          done(() =>
+            reject(
+              new HttpException(
+                "Upstream registry upload timed out",
+                HttpStatus.GATEWAY_TIMEOUT,
+              ),
             ),
-          ),
-        );
-      }, timeoutMs);
-      const parsedUrl = new URL(uploadUrl);
-      const lib = parsedUrl.protocol === "https:" ? https : http;
-      const req = lib.request(
-        {
-          hostname: parsedUrl.hostname,
-          port: parsedUrl.port,
-          path: parsedUrl.pathname,
-          method: "POST",
-          headers: { ...form.getHeaders(), Authorization: `Basic ${auth}` },
-        },
-        (res) => {
-          let body = "";
-          res.on("data", (c) => (body += c));
-          res.on("end", () => {
-            done(() => {
-              if ((res.statusCode ?? 500) < 400) {
-                resolve({ success: true });
-              } else {
-                reject(
-                  new HttpException(
-                    `Upload failed: ${body}`,
-                    HttpStatus.BAD_GATEWAY,
-                  ),
-                );
-              }
+          );
+        }, timeoutMs);
+        const parsedUrl = new URL(uploadUrl);
+        const lib = parsedUrl.protocol === "https:" ? https : http;
+        const req = lib.request(
+          {
+            hostname: parsedUrl.hostname,
+            port: parsedUrl.port,
+            path: parsedUrl.pathname,
+            method: "POST",
+            headers: { ...form.getHeaders(), Authorization: `Basic ${auth}` },
+          },
+          (res) => {
+            let body = "";
+            res.on("data", (c) => (body += c));
+            res.on("end", () => {
+              done(() => {
+                if ((res.statusCode ?? 500) < 400) {
+                  resolve({ success: true });
+                } else {
+                  reject(
+                    new HttpException(
+                      `Upload failed: ${body}`,
+                      HttpStatus.BAD_GATEWAY,
+                    ),
+                  );
+                }
+              });
             });
-          });
-        },
-      );
-      // Socket-level inactivity timeout — a stalled connection is destroyed
-      // and surfaces through the overall deadline handling above.
-      req.setTimeout(timeoutMs, () => {
-        req.destroy();
-        done(() =>
-          reject(
-            new HttpException(
-              "Upstream registry upload timed out",
-              HttpStatus.GATEWAY_TIMEOUT,
+          },
+        );
+        // Socket-level inactivity timeout — a stalled connection is destroyed
+        // and surfaces through the overall deadline handling above.
+        req.setTimeout(timeoutMs, () => {
+          req.destroy();
+          done(() =>
+            reject(
+              new HttpException(
+                "Upstream registry upload timed out",
+                HttpStatus.GATEWAY_TIMEOUT,
+              ),
+            ),
+          );
+        });
+        req.on("error", (e) =>
+          done(() =>
+            reject(new HttpException(e.message, HttpStatus.BAD_GATEWAY)),
+          ),
+        );
+        // Safety net: a connection that closes without a response (and without
+        // an 'error' event) must not leave the caller's promise pending forever.
+        req.on("close", () =>
+          done(() =>
+            reject(
+              new HttpException(
+                "Upstream registry closed the connection before responding",
+                HttpStatus.BAD_GATEWAY,
+              ),
             ),
           ),
         );
+        form.pipe(req);
+      },
+    );
+
+    // A7：投毒面必须可追溯——成功与失败都落一条审计（谁、传了哪个包的哪个版本）。
+    // 审计写入失败**不**阻断上传（DB 抖动不该让运维传不了包），但必须 error 级
+    // 留痕：静默吞掉等于审计形同虚设。
+    return uploadPromise
+      .then((ok) => {
+        void this.recordUploadAudit({
+          user,
+          name,
+          version,
+          filename,
+          size: file.size,
+          ip: req.ip,
+          result: "success",
+        });
+        return ok;
+      })
+      .catch((err: unknown) => {
+        void this.recordUploadAudit({
+          user,
+          name,
+          version,
+          filename,
+          size: file.size,
+          ip: req.ip,
+          result: "failure",
+          detail: {
+            error: err instanceof Error ? err.message : String(err),
+          },
+        });
+        throw err;
       });
-      req.on("error", (e) =>
-        done(() =>
-          reject(new HttpException(e.message, HttpStatus.BAD_GATEWAY)),
-        ),
+  }
+
+  /**
+   * A7：上传审计。写失败只记 error 日志，不向上抛（见调用点注释）。
+   */
+  private async recordUploadAudit(params: {
+    user?: AuthUser;
+    name: string;
+    version: string;
+    filename: string;
+    size: number;
+    ip?: string;
+    result: "success" | "failure";
+    detail?: Record<string, unknown>;
+  }): Promise<void> {
+    try {
+      await this.audit.log({
+        userId: params.user?.id,
+        username: params.user?.username,
+        action: "registry.pypi.upload",
+        resource: "registry-package",
+        resourceId: `${params.name}==${params.version}`,
+        ip: params.ip,
+        result: params.result,
+        detail: {
+          filename: params.filename,
+          size: params.size,
+          ...params.detail,
+        },
+      });
+    } catch (e: unknown) {
+      this.logger.error(
+        `Failed to write audit log for registry upload ${params.name}==${params.version} — 投毒面失去可追溯性，请立即检查 audit_logs 写入`,
+        e instanceof Error ? e.stack : String(e),
       );
-      // Safety net: a connection that closes without a response (and without
-      // an 'error' event) must not leave the caller's promise pending forever.
-      req.on("close", () =>
-        done(() =>
-          reject(
-            new HttpException(
-              "Upstream registry closed the connection before responding",
-              HttpStatus.BAD_GATEWAY,
-            ),
-          ),
-        ),
-      );
-      form.pipe(req);
-    });
+    }
   }
 }

@@ -394,6 +394,7 @@ export default {
   'registry.tab.pypi': 'PyPI (Python)',
   'registry.tab.npm': 'npm (Node.js)',
   'registry.upload': 'Upload package',
+  'registry.upload.adminOnly': 'Only admins can upload private packages (it affects dependency resolution for every task)',
   'registry.refresh': 'Refresh',
   'registry.pypiHint': 'Configure pip to use the private index:',
   'registry.pypiErrorTitle': 'Failed to load PyPI packages',
