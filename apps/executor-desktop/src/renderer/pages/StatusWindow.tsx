@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import UpdateBanner from '../components/UpdateBanner';
 
 declare const window: Window & {
   electronAPI: {
@@ -302,6 +303,9 @@ export default function StatusWindow() {
       {fullscreen && <LogViewer logs={logs} onClose={handleClose} />}
 
       <div className="status-page">
+        {/* DSK-05：自动更新出口。idle 态自身返回 null，不占版面 */}
+        <UpdateBanner />
+
         {/* 大状态卡 */}
         <div className="hero-card">
           <div className={`hero-orb ${status}`}>

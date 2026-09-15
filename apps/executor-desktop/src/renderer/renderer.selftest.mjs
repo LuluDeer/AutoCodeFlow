@@ -98,4 +98,115 @@ if (!/^import \* as fs from 'fs';$/m.test(ipcHandlers) || !/^import \* as path f
   throw new Error('F-37: fs/path must be imported at module top level');
 }
 
-console.log('renderer selftest: design tokens, accessibility, contrast, focus, layout, spacing, IPC anchors, F-21/F-22/F-37 guards passed');
+// ── DSK-05：自动更新 UI 必须真正接通（本轮修的核心缺陷）──────────────
+// 历史问题：updater.ts 与 preload 通道完整实现，但渲染层零订阅，导致
+// autoDownload=false 下用户永远收不到更新提示，客户端锁死在当前版本。
+// 以下守卫防止该断链回归——任何一条被删都会让更新链路重新失效。
+const banner = readFileSync(resolve(root, 'components', 'UpdateBanner.tsx'), 'utf8');
+if (!statusWindow.includes("from '../components/UpdateBanner'") || !statusWindow.includes('<UpdateBanner')) {
+  throw new Error('DSK-05: StatusWindow 必须渲染 UpdateBanner（否则更新提示无处呈现）');
+}
+for (const hook of ['onUpdateAvailable', 'onUpdateProgress', 'onUpdateDownloaded', 'onUpdateError']) {
+  if (!banner.includes(`a.${hook}`)) {
+    throw new Error(`DSK-05: UpdateBanner 未订阅 ${hook}——更新链路会静默失效`);
+  }
+}
+for (const call of ['downloadUpdate', 'installUpdate', 'checkForUpdate']) {
+  // 实际调用形态是 api().xxx?.()（运行期桥可能缺失，走可选链降级）
+  if (!banner.includes(`api().${call}?.()`)) {
+    throw new Error(`DSK-05: UpdateBanner 未调用 ${call}——更新流程无法推进`);
+  }
+}
+// 订阅必须可取消（否则窗口重建/HMR 会累积监听器，一次事件多次 setState）
+if (!/return \(\) => \{ for \(const off of offs\) off\(\); \}/.test(banner)) {
+  throw new Error('DSK-05: UpdateBanner 的订阅必须在 useEffect 清理函数中取消');
+}
+// 进度/状态类信息用 polite，错误用 alert（无障碍语义）
+if (!banner.includes('aria-live="polite"') || !banner.includes('role="alert"')) {
+  throw new Error('DSK-05: UpdateBanner 缺少 aria-live/alert 语义');
+}
+if (!css.includes('.update-banner') || !css.includes('.update-progress')) {
+  throw new Error('DSK-05: .update-banner/.update-progress 样式缺失');
+}
+// 主进程侧：显式下载入口与独立进度通道（原实现两者皆无）
+if (!ipcHandlers.includes("ipcMain.handle('updater:download'")) {
+  throw new Error('DSK-05: 缺少 updater:download 处理器（autoDownload=false 下无法下载）');
+}
+const updaterSrc = readFileSync(resolve(root, '..', 'main', 'updater.ts'), 'utf8');
+if (!updaterSrc.includes("progress: 'updater:progress'")) {
+  throw new Error('DSK-05: 进度事件必须走独立通道（复用 available 会污染版本号）');
+}
+const preloadSrc = readFileSync(resolve(root, '..', 'preload', 'index.ts'), 'utf8');
+for (const ch of ['updater:download', "ipcRenderer.on('updater:progress'"]) {
+  if (!preloadSrc.includes(ch)) {
+    throw new Error(`DSK-05: preload 未暴露 ${ch}`);
+  }
+}
+
+// ── PERF-DSK-01：日志读取必须是增量实现 ────────────────────────────
+// 原实现在每次轮询时全量 readFileSync+split，渲染层 1.5s/2s 轮询 → 平方级 I/O。
+if (!ipcHandlers.includes('function readLogIncremental(')) {
+  throw new Error('PERF-DSK-01: 日志增量读取实现缺失');
+}
+const fullRereadCalls = (ipcHandlers.match(/allLines\.slice\(fromLine\)/g) ?? []).length;
+if (fullRereadCalls > 1) {
+  throw new Error('PERF-DSK-01: 仍有多处全量重读日志（应统一走 readLogIncremental）');
+}
+
+// ── SEC-DSK-01：Electron 窗口硬化 ─────────────────────────────────
+const winMgr = readFileSync(resolve(root, '..', 'main', 'window-manager.ts'), 'utf8');
+if (!winMgr.includes('function hardenWindow(')) {
+  throw new Error('SEC-DSK-01: window-manager 缺少 hardenWindow()');
+}
+// 用精确的事件注册形态断言，避免"改个名但仍含子串"就能绕过
+const eventGuards = [
+  "win.webContents.on('will-navigate',",
+  'win.webContents.setWindowOpenHandler(',
+  "win.webContents.on('will-attach-webview',",
+];
+for (const guard of eventGuards) {
+  if (!winMgr.includes(guard)) {
+    throw new Error(`SEC-DSK-01: window-manager 缺少导航/弹窗守卫注册: ${guard}`);
+  }
+}
+// 守卫必须真的阻止导航（preventDefault）与拒绝弹窗（action: 'deny'）
+if (!/will-navigate[\s\S]{0,400}?event\.preventDefault\(\)/.test(winMgr)) {
+  throw new Error('SEC-DSK-01: will-navigate 守卫必须调用 event.preventDefault()');
+}
+if (!/setWindowOpenHandler[\s\S]{0,400}?action:\s*'deny'/.test(winMgr)) {
+  throw new Error("SEC-DSK-01: setWindowOpenHandler 必须返回 { action: 'deny' }");
+}
+// hardenWindow 必须在每个窗口创建处调用（status + wizard）
+const hardenCalls = (winMgr.match(/hardenWindow\(this\./g) ?? []).length;
+if (hardenCalls < 2) {
+  throw new Error(`SEC-DSK-01: hardenWindow 应挂在每个窗口上（当前 ${hardenCalls} 处）`);
+}
+if (!winMgr.includes('sandbox: true')) {
+  throw new Error('SEC-DSK-01: webPreferences 必须显式开启 sandbox');
+}
+const indexHtml = readFileSync(resolve(root, 'index.html'), 'utf8');
+if (!indexHtml.includes('Content-Security-Policy')) {
+  throw new Error('SEC-DSK-01: renderer index.html 缺少 CSP');
+}
+// 精确取出 content="..." 里的策略串，再逐指令检查——不能在整份 HTML 上
+// 用宽松正则（style-src 的 'unsafe-inline' 会被误判成 script-src 的）。
+const cspMatch = indexHtml.match(/content="(default-src[^"]*)"/);
+if (!cspMatch) {
+  throw new Error('SEC-DSK-01: 未能解析出 CSP 策略串');
+}
+const csp = cspMatch[1];
+const scriptSrc = (csp.match(/script-src[^;]*/) ?? [''])[0];
+if (!/script-src\s+'self'/.test(scriptSrc)) {
+  throw new Error("SEC-DSK-01: CSP script-src 必须为 'self'");
+}
+if (scriptSrc.includes('unsafe-inline') || scriptSrc.includes('unsafe-eval')) {
+  throw new Error('SEC-DSK-01: CSP script-src 不得含 unsafe-inline/unsafe-eval');
+}
+// object-src / base-uri 必须显式收紧
+for (const directive of ["object-src 'none'", "base-uri 'none'"]) {
+  if (!csp.includes(directive)) {
+    throw new Error(`SEC-DSK-01: CSP 缺少 ${directive}`);
+  }
+}
+
+console.log('renderer selftest: design tokens, accessibility, contrast, focus, layout, spacing, IPC anchors, F-21/F-22/F-37, DSK-05, PERF-DSK-01, SEC-DSK-01 guards passed');

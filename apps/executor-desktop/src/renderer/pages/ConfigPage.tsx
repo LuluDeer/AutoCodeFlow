@@ -3,11 +3,12 @@ import React, { useEffect, useState } from 'react';
 declare const window: Window & {
   electronAPI: {
     getConfig: () => Promise<Record<string, unknown>>;
-    saveConfig: (cfg: Record<string, unknown>) => Promise<{ ok: boolean }>;
+    saveConfig: (cfg: Record<string, unknown>) => Promise<{ ok: boolean; reloadError?: string }>;
     testConnection: (url: string) => Promise<{ ok: boolean; message: string }>;
     getLocalIPs: () => Promise<string[]>;
     getAutoLaunch: () => Promise<boolean>;
     setAutoLaunch: (enable: boolean) => Promise<{ ok: boolean }>;
+    checkForUpdate: () => Promise<{ ok: boolean }>;
   };
 };
 
@@ -38,6 +39,8 @@ export default function ConfigPage() {
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  // D 修正：保存失败必须可见（原实现 reject 后按钮永久 disabled）
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [localIPs, setLocalIPs] = useState<string[]>([]);
@@ -45,6 +48,10 @@ export default function ConfigPage() {
   // DSK-04：开机自启走独立 IPC（autolaunch:get/set，即时生效，不经保存按钮），
   // 与托盘菜单的「开机自启」复选框同源（setAutoLaunch 后主进程会 rebuildMenu）。
   const [autoLaunch, setAutoLaunch] = useState(false);
+  // DSK-05：手动检查更新。/update 检查结果通过「状态监控」页的 UpdateBanner
+  // 呈现（updater 事件是主进程广播，与触发点解耦）；这里只反馈"已发起"。
+  const [checking, setChecking] = useState(false);
+  const [checkMsg, setCheckMsg] = useState<string | null>(null);
 
   useEffect(() => {
     Promise.all([window.electronAPI.getConfig(), window.electronAPI.getLocalIPs()])
@@ -72,15 +79,51 @@ export default function ConfigPage() {
 
   async function save() {
     setSaving(true);
-    await window.electronAPI.saveConfig(form);
-    setSaving(false); setSaved(true);
-    setTimeout(() => setSaved(false), 3000);
+    setSaveError(null);
+    try {
+      const r = await window.electronAPI.saveConfig(form);
+      // 配置已落盘，但执行器热重载可能失败——此时不能报"已生效"，
+      // 否则用户以为执行器在跑，实际已停在停止态。
+      if (r?.reloadError) {
+        setSaveError(`配置已保存，但执行器重启失败：${r.reloadError}。请在「状态监控」页手动启动。`);
+      } else {
+        setSaved(true);
+        setTimeout(() => setSaved(false), 3000);
+      }
+    } catch (err) {
+      // D 修正：原实现未包 try——saveConfig reject 会让 saving 永久为 true，
+      // 「保存配置」按钮永久禁用且用户完全无感知，只能重启应用。
+      setSaveError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(false);
+    }
   }
 
   async function test() {
     setTesting(true); setTestResult(null);
-    const r = await window.electronAPI.testConnection(String(form.adminApiUrl || ''));
-    setTestResult(r); setTesting(false);
+    try {
+      const r = await window.electronAPI.testConnection(String(form.adminApiUrl || ''));
+      setTestResult(r);
+    } catch (err) {
+      setTestResult({ ok: false, message: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  // DSK-05：手动检查更新。开发模式（未打包）主进程 updater 未初始化，
+  // checkForUpdates 静默返回——因此提示文案刻意不承诺"有新版本"。
+  async function checkUpdate() {
+    setChecking(true); setCheckMsg(null);
+    try {
+      await window.electronAPI.checkForUpdate();
+      setCheckMsg('已发起检查。若有新版本，将在「状态监控」页顶部提示。');
+    } catch (err) {
+      setCheckMsg(err instanceof Error ? err.message : String(err));
+    } finally {
+      setChecking(false);
+      setTimeout(() => setCheckMsg(null), 6000);
+    }
   }
 
   if (!loaded) return (
@@ -255,6 +298,22 @@ export default function ConfigPage() {
                 <Toggle id="notifyEnabled" label="系统通知" checked={form.notifyEnabled !== false}
                   onChange={(v) => set('notifyEnabled', v)} />
               </div>
+
+              {/* DSK-05：手动检查更新（自动检查为启动后延迟 30s，仅生产包启用） */}
+              <div className="cfg-field">
+                <label className="cfg-label">版本更新</label>
+                <div className="cfg-row">
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={checkUpdate}
+                    disabled={checking || typeof window.electronAPI.checkForUpdate !== 'function'}
+                  >
+                    {checking ? '检查中…' : '检查更新'}
+                  </button>
+                </div>
+                {checkMsg && <span className="cfg-hint" role="status">{checkMsg}</span>}
+              </div>
             </>
           )}
 
@@ -262,6 +321,9 @@ export default function ConfigPage() {
 
         {/* 底部保存栏 */}
         <div className="cfg-footer">
+          {saveError && (
+            <div className="cfg-save-error" role="alert">⚠ 保存失败：{saveError}</div>
+          )}
           {saved && <div className="saved-toast">✓ 已保存，配置已生效</div>}
           <button className="btn btn-primary btn-lg" onClick={save} disabled={saving}>
             {saving ? '保存中...' : '保存配置'}

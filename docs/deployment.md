@@ -520,9 +520,10 @@ sudo apt -f install
 
 Ubuntu 无 Gatekeeper；对应关注点是 **apt/dpkg 签名与来源信任**：
 
-- 官方渠道为 GitHub Releases（tag 触发 release.yml 上传产物）；从 Releases
+- 官方渠道为 GitHub Releases；从 Releases
   下载的 deb 是未签名的自发布包，`dpkg -i` 直接装，不经过 apt 签名校验。
-  请只从本仓库 Releases 页面下载，校验发布说明里的产物哈希（若提供）。
+  请只从本仓库 Releases 页面下载，并核对随产物提供的 `SHA256SUMS.txt`
+  （DSK-06 起每个平台的 artifact 都会生成该清单）。
 - AppImage 首次运行如被文件管理器拦截（"untrusted application launcher"
   提示），右键 → Properties → Allow executing（或终端 `chmod +x`）即可；
   这是 GNOME 对可执行位 + 自定义 launcher 的常规提示，不是病毒告警。
@@ -543,12 +544,43 @@ Ubuntu 无 Gatekeeper；对应关注点是 **apt/dpkg 签名与来源信任**：
 **版本流**：
 
 ```
-git tag v<version> → push tag → release.yml（npm/PyPI 发布轨道）
-                     └→ electron-builder publish 配置使 desktop 构建在
-                        tag 轮把 AppImage/deb/latest-linux.yml 上传 Releases
-客户端：启动 30s 延迟检查 → 发现新版本 → 渲染层提示 → 用户确认下载
-      → 下载完成提示 → quitAndInstall（AppImage 原地替换 / deb 走 dpkg）
+git tag v<version> → push tag → release.yml
+  ├→ version-guard（tag == 三包 + desktop 的 version 一致性，违反即整轮拒绝）
+  ├→ publish-npm / publish-pypi（environment: release 人工审批闸）
+  └→ desktop-installer（win/mac/linux 三平台原生 runner 构建安装包）
+客户端：启动 30s 延迟检查 → 发现新版本 → 状态监控页顶部提示 → 用户点「下载更新」
+      → 进度条（updater:progress）→ 下载完成 →「重启并安装」
+      → quitAndInstall（AppImage 原地替换 / deb 走 dpkg）
 ```
+
+### 桌面端安装包发布（DSK-06）
+
+**当前姿态：CI 已就绪，但安装包不自动发布到 Releases。**
+
+`release.yml` 的 `desktop-installer` job 在每个 tag 上构建三平台安装包
+（`dist:win` / `dist:mac` / `dist:linux`，均带 `--publish never`），产物以
+workflow artifact 形式上传（保留 30 天）并附 `SHA256SUMS.txt`，**不上传
+GitHub Releases**。原因与启用步骤：
+
+- **为何不自动发布**：electron-builder 检测到 `package.json` 的 `repository`
+  字段会默认走 GitHub publisher（provider/repo 见 `electron-builder.yml` 的
+  `publish` 段）；无 `GH_TOKEN` 时该路径硬失败。改用 `--publish never` 后
+  构建可稳定出包，是否上架由人工决定——首次接入不宜直接放出 96MB 级产物。
+- **启用自动发布的前置条件**：
+  1. 从 workflow artifact 下载产物、核对 `SHA256SUMS.txt`，真机安装验证；
+  2. **macOS 需 Apple Developer ID 并完成公证**——当前 CI 以
+     `CSC_IDENTITY_AUTO_DISCOVERY=false` 跳过签名，产物在 Gatekeeper 下
+     不可直接分发；
+  3. 把 job 内的 `--publish never` 去掉（或在 tag 上追加一步把 artifact
+     附到既有 Release），并配置 `GH_TOKEN` secret；
+  4. 确认 desktop 的 `version` 与 tag 一致——`version-guard` 已把
+     `apps/executor-desktop/package.json` 纳入 lockstep 检查清单，
+     漂移会在发布前拦截（安装包版本号同时是 `latest.yml` 与客户端
+     electron-updater 的比较基准，漂移会让自动更新永久失效）。
+
+**注意**：客户端自动更新读取的 `latest.yml` / `latest-mac.yml` /
+`latest-linux.yml` 只有在安装包真正挂到 Releases 后才可达。当前姿态下
+自动更新链路是「代码就绪、无可用更新源」。
 
 **行为细节**：
 

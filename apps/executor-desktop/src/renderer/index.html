@@ -3,6 +3,24 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      SEC-DSK-01：内容安全策略。
+      本应用全部资源均为本地打包产物（file:// 或 dev server 同源），因此
+      可以收得很紧：default-src 'self' 禁掉一切外部加载面。
+      说明与取舍：
+        - style-src 需要 'unsafe-inline'：Vite 生产构建会把关键 CSS 内联，
+          且 React 组件的 className 拼装不产生内联 style，但打包产物里仍有
+          内联 <style> 注入；去掉会让界面无样式。
+        - script-src 不加 'unsafe-inline'/'unsafe-eval'：生产包是外部
+          module 脚本，无需内联执行；这是最关键的收紧项（阻止注入脚本执行）。
+        - connect-src 放开 http/https：渲染层不直接发起网络请求（一律走
+          IPC），但 dev 模式下 Vite HMR 需要 ws: 与 http://localhost。
+        - img-src 允许 data:：组件里的图标/占位可能用 data URI。
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' ws: http://localhost:* http://127.0.0.1:*; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+    />
     <title>AutoCodeFlow Executor</title>
   </head>
   <body>
