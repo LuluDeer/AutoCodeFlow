@@ -21,6 +21,10 @@ name: Release
 #   需重新 Approve）。仅当需要更换 tag 指向的内容时才删 tag 重打，且
 #   已发布成功的一侧必须 bump 版本换新 tag，否则该侧红是幂等保护、
 #   不是回归。恢复纪律同步见 docs/sdk-guide.md「版本与发布流程」。
+# N45/N46 (round-13, v1.4.1/v1.4.2 实证)：desktop-installer 的
+#   SHA256SUMS 步骤与 Release assets 上传步骤此前被「文件名含空格」与
+#   「mac 无 zip 产物」两处坑打红——修复详见 job 内注释（find -print
+#   逐行读 + mac 段去掉 *.zip）。
 on:
   push:
     tags:
@@ -147,7 +151,7 @@ jobs:
             script: dist:mac
             paths: |
               apps/executor-desktop/dist-electron/*.dmg
-              apps/executor-desktop/dist-electron/*.zip
+              apps/executor-desktop/dist-electron/*.blockmap
               apps/executor-desktop/dist-electron/latest-mac.yml
           - os: ubuntu-latest
             script: dist:linux
@@ -204,15 +208,18 @@ jobs:
       # 「校验发布说明里的产物哈希」，此前无任何哈希产出）。
       # 三平台各生成一份 <平台>.sha256，避免三 job 并行都叫 SHA256SUMS.txt
       # 互相覆盖。
+      # N46（round-13，v1.4.1 实证）：文件名含空格（productName "AutoCodeFlow
+      # Executor"），`xargs sha256sum` 会把名字按空白切碎报 "No such file or
+      # directory"（v1.4.1 三平台全红即此因）。
+      # 当前形态：`find -print`（换行分隔，我们的产物名含空格但不含换行）
+      # + `while IFS= read -r f` 逐行读——GNU/BSD find、bash 3.2/5.x 全兼容，
+      # 不依赖 NUL/`sort -z` 等 GNU 扩展（macOS runner 无）。
+      # sha256sum 缺省时回落 `shasum -a 256`（macOS）。
       - name: Generate SHA256SUMS
         shell: bash
         working-directory: apps/executor-desktop/dist-electron
         run: |
           set -euo pipefail
-          # 跨平台兼容（macOS bash 3.2 / BSD find）：
-          #   - 不能用 mapfile（bash 4+）和 find -printf（GNU 专属）；
-          #   - sha256sum 在 mac 是 `shasum -a 256`；
-          #   - 文件名带空格（productName 有空格），不能用 xargs，用 while IFS= read 逐行处理。
           outfile="SHA256SUMS-${{ matrix.os }}.txt"
           : > "$outfile"
           n=0
@@ -237,6 +244,13 @@ jobs:
       # tag 对应的 GitHub Release assets。tag 由 `on: push tags` 触发，job 内
       # 从 GITHUB_REF 取。软 props/action-gh-release 对已存在的 release 追加
       # assets（update release assets），不会重建、不会覆盖其它平台已上的文件。
+      # N45（round-13，v1.4.2 实证）：glob 形态对**含空格**文件名（productName
+      # "AutoCodeFlow Executor"）在软 props 下匹配正常（v1.4.2 日志确认
+      # `*.dmg` 成功匹配两个 dmg）；v1.4.2 的 mac job 红只因路径里写了
+      # `*.zip`——electron-builder mac 只产 dmg（+ blockmap），无 zip，
+      # fail_on_unmatched_files: true 直接整 job 失败。
+      # 修正：mac 段去掉 `*.zip`，与实际产物面一致；保留
+      # fail_on_unmatched_files: true 作为「构建产物与上传清单漂移」的硬闸。
       - name: Upload installer to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
