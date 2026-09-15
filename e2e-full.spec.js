@@ -1570,24 +1570,26 @@ test.describe('security-redline-rbac', () => {
   });
 
   test('39. 事件订阅契约对齐 + 管理面 403/401 — subscriptions/webhook', async ({ request }) => {
-    // FEAT-07 既定鉴权模型（event-subscription.service 头注）：建订阅=任何已登录
-    // 用户（userId 归一为自己，SSRF 深校验在 service 层）；列表=ADMIN 全量/
-    // 普通用户自己的+系统级（200 非 403）；单条/更新/删除/死信=ADMIN 或属主。
-    // 红线断言只覆盖真实 ADMIN 面：他人订阅死信重放 403（防 id 枚举）与
-    // 发版 webhook 无签名 403/无 token 401。
+    // SUB-SCOPE-01（2026-09-15，行为变更）：**建订阅已收紧为 ADMIN-only**。
+    // 原契约是「建订阅=任何已登录用户」（SSRF 深校验在 service 层）；但投递端
+    // 按 `where: { enabled: true }` 选取订阅、不做属主过滤，而可订阅事件是平台级
+    // 全局发布的 —— 于是任何登录用户建一条订阅即可持续收到别人任务的终态
+    // webhook（含 taskName/errorMessage/logs）。出站通道属管理面，故收紧。
+    // 读面**不收**：普通用户仍可看自己的 + 系统级订阅（200）。见
+    // docs/atlas/01-apps/admin-api/modules/event-subscriptions.md。
     const sub = await request.post(`${API}/api/event-subscriptions`, {
       headers: { Authorization: `Bearer ${userTok}` },
       data: { url: 'https://e2e-redline.example.invalid/hook', eventTypes: ['execution.failed'] },
     });
-    // NXDOMAIN 域名 → SSRF 深校验 400（管线活跃证据；普通用户可建不是红线）
-    expect(sub.status(), `普通用户建订阅应 400（SSRF 拒 NXDOMAIN）: ${await sub.text()}`).toBe(400);
-    console.log('  ✓ 普通用户建订阅 → 400（SSRF 深校验，鉴权面放行=既定契约）');
+    // 普通用户建订阅 → 403（@Roles(ADMIN) 在 SSRF 校验之前生效，故不再是 400）
+    expect(sub.status(), `普通用户建订阅应 403（ADMIN-only）: ${await sub.text()}`).toBe(403);
+    console.log('  ✓ 普通用户建订阅 → 403（出站通道属管理面）');
 
     const list = await request.get(`${API}/api/event-subscriptions`, {
       headers: { Authorization: `Bearer ${userTok}` },
     });
     expect(list.status(), `普通用户订阅列表应 200（自己的+系统级）`).toBe(200);
-    console.log('  ✓ 普通用户订阅列表 → 200（属主可见=既定契约）');
+    console.log('  ✓ 普通用户订阅列表 → 200（读面未收紧=既定契约）');
 
     // 死信重放权限双面：①陌生 id → 404（存在性不区分，防枚举）；
     // ②真实存在的系统级订阅（userId=null，仅 ADMIN 可管）→ 普通用户 403。
@@ -1598,11 +1600,14 @@ test.describe('security-redline-rbac', () => {
     expect(replayGhost.status(), `陌生订阅死信重放应 404: ${await replayGhost.text()}`).toBe(404);
     console.log('  ✓ 普通用户死信重放（陌生 id）→ 404（防枚举）');
 
+    // 说明（SUB-SCOPE-01 后仍成立）：`.invalid` 是 RFC 6761 保留名，DNS 必 NXDOMAIN，
+    // 而 service 层 assertSafeHttpUrl 的 fail-closed 分支会把解析失败也判 400 ——
+    // 故这里**建不出**系统级订阅，下面的 403 面靠单测锚定（既有事实，非本次引入）。
+    // 保留该分支的价值：一旦将来换成可解析域名，这段断言会自动生效。
     const sysSub = await request.post(`${API}/api/event-subscriptions`, {
       headers: { Authorization: `Bearer ${adminTok}` },
       data: { url: 'https://e2e-redline-sys.example.invalid/hook', eventTypes: ['execution.failed'], userId: null },
     });
-    // NXDOMAIN → 400 建不出来；改用可解析的公网域（不实际派发，仅占位行）
     let sysId = null;
     if (sysSub.status() === 201) sysId = (await sysSub.json()).data?.id;
     if (sysId) {
@@ -1616,7 +1621,7 @@ test.describe('security-redline-rbac', () => {
         headers: { Authorization: `Bearer ${adminTok}` },
       });
     } else {
-      console.log('  ⚠ 系统级订阅创建未成功（SSRF 拒 NXDOMAIN），403 面以单测为锚');
+      console.log('  ⚠ 系统级订阅创建未成功（SSRF 拒 NXDOMAIN，既有事实），403 面以单测为锚');
     }
 
     // webhook 是 @Public（CI/CD 调用面）：DTO 校验先于签名校验——坏 body 400，
