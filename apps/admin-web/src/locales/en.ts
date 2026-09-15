@@ -157,6 +157,9 @@ export default {
   'taskList.batchPauseFail': 'Batch pause failed',
   'taskList.batchResumeFail': 'Batch resume failed',
   'taskList.batchDeleteFail': 'Batch delete failed',
+  // Batch endpoints return HTTP 200 with per-item {id,error}; partial failure must surface.
+  'taskList.batchPartialFailed': '{{count}} more failed: {{reasons}}',
+  'taskList.batchAllFailed': 'All {{count}} items failed',
   'taskList.triggered': 'Triggered: {{name}}',
   'taskList.triggerFail': 'Trigger failed',
   'taskList.paused': 'Paused',
