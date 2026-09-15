@@ -42,14 +42,17 @@ import {
   ExecutionFailureReason,
 } from "./entities/task-execution.entity";
 // A1: 终态跃迁（条件 UPDATE + RETURNING + 驱动兜底）的单一入口。
-import { transitionToTerminal } from "./execution-terminal";
+import { transitionToTerminal, transitionOneToTerminal } from "./execution-terminal";
 import { ExecutionLogLine } from "./entities/execution-log-line.entity";
 import { TaskVersion } from "./entities/task-version.entity";
 import { CreateTaskDto } from "./dto/create-task.dto";
 import { UpdateTaskDto } from "./dto/update-task.dto";
 import { TriggerTaskDto } from "./dto/trigger-task.dto";
 import { PaginationDto, paginate } from "../../common/dto/pagination.dto";
-import { ListTasksQueryDto } from "./dto/list-tasks-query.dto";
+import {
+  ListTasksQueryDto,
+  TASK_PROJECTION_WHITELIST,
+} from "./dto/list-tasks-query.dto";
 import { SchedulerService } from "../scheduler/scheduler.service";
 import { AiService } from "../ai/ai.service";
 // ARCH-30: on-demand 分析同走服务化封装（重试 + autoflow_ai_analysis_total
@@ -578,17 +581,45 @@ export class TaskService {
         where.projectId = p.projectId;
       }
     }
+
+    // F-10（DEEP_REVIEW 0ef3bbe）: 轻量投影——?fields=id,name 时只 select
+    // 白名单列，跳过 params/secrets/glueSource 等重量列。非法字段 400。
+    let select: Record<string, true> | undefined;
+    if (p.fields) {
+      const requested = p.fields
+        .split(",")
+        .map((f) => f.trim())
+        .filter(Boolean);
+      const whitelist = new Set<string>(TASK_PROJECTION_WHITELIST);
+      const illegal = requested.filter((f) => !whitelist.has(f));
+      if (illegal.length) {
+        throw new BadRequestException(
+          `Illegal projection field(s): ${illegal.join(", ")}. ` +
+            `Allowed: ${TASK_PROJECTION_WHITELIST.join(", ")}`,
+        );
+      }
+      select = Object.fromEntries(requested.map((f) => [f, true])) as Record<
+        string,
+        true
+      >;
+    }
+
     const [list, total] = await this.taskRepo.findAndCount({
       where,
+      select,
       skip: (p.page - 1) * p.pageSize,
       take: p.pageSize,
       order: { createdAt: "DESC" },
     });
-    // SEC-02: 列表响应 secrets 永久脱敏（叶子值回 ******，密文不外泄）
-    list.forEach((t) => {
-      t.secrets = this.secretsCrypto.maskForResponse(t.secrets) as
-        Record<string, unknown> | null | undefined;
-    });
+    // SEC-02: 列表响应 secrets 永久脱敏（叶子值回 ******，密文不外泄）。
+    // F-10: 投影模式下 secrets 不在 select 内，maskForResponse 收到 undefined
+    // 仍是 no-op（不会把 undefined 写成掩码）。
+    if (!select) {
+      list.forEach((t) => {
+        t.secrets = this.secretsCrypto.maskForResponse(t.secrets) as
+          Record<string, unknown> | null | undefined;
+      });
+    }
     return paginate(list, total, p.page, p.pageSize);
   }
 
@@ -801,11 +832,16 @@ export class TaskService {
       // would hang forever when Redis/the queue is down.
       const message = err instanceof Error ? err.message : String(err);
       endSpan?.(message);
-      await this.execRepo.update(exec.id, {
-        status: ExecutionStatus.FAILED,
-        endTime: new Date(),
-        errorMessage: `Failed to enqueue execution: ${message}`,
-        failureReason: ExecutionFailureReason.UNKNOWN,
+      // A1: 入队失败补偿走统一终态门（W-7 窗口内无并发回调，但保持一致性）
+      await transitionOneToTerminal(this.execRepo, {
+        id: exec.id,
+        patch: {
+          status: ExecutionStatus.FAILED,
+          endTime: new Date(),
+          errorMessage: `Failed to enqueue execution: ${message}`,
+          failureReason: ExecutionFailureReason.UNKNOWN,
+        },
+        from: [ExecutionStatus.PENDING],
       });
       this.logger.error(`Failed to enqueue execution ${exec.id}: ${message}`);
       throw new Error(`Failed to enqueue execution: ${message}`);
@@ -1446,11 +1482,16 @@ export class TaskService {
     } catch (err: unknown) {
       // P1: compensate the committed PENDING row so it cannot hang forever
       const message = err instanceof Error ? err.message : String(err);
-      await this.execRepo.update(exec.id, {
-        status: ExecutionStatus.FAILED,
-        endTime: new Date(),
-        errorMessage: `Failed to enqueue execution: ${message}`,
-        failureReason: ExecutionFailureReason.UNKNOWN,
+      // A1: 入队失败补偿走统一终态门（W-7 窗口内无并发回调，但保持一致性）
+      await transitionOneToTerminal(this.execRepo, {
+        id: exec.id,
+        patch: {
+          status: ExecutionStatus.FAILED,
+          endTime: new Date(),
+          errorMessage: `Failed to enqueue execution: ${message}`,
+          failureReason: ExecutionFailureReason.UNKNOWN,
+        },
+        from: [ExecutionStatus.PENDING],
       });
       this.logger.error(`Failed to enqueue execution ${exec.id}: ${message}`);
       throw new Error(`Failed to enqueue execution: ${message}`);
