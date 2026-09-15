@@ -3,6 +3,8 @@ import asyncio
 import hashlib
 from pathlib import Path
 
+import httpx
+
 import artifacts
 from artifacts import (
     _api_base,
@@ -113,3 +115,84 @@ def test_gather_upload_exception_is_best_effort(tmp_path, monkeypatch):
         gather_artifacts_for_callback("e", tmp_path, "http://admin:3105", "t")
     )
     assert result == []
+
+
+# --------------------------------------------------------------------------
+# ART-NAME-01（本轮审计）：产物名过滤必须与 admin 的权威守卫逐字对齐。
+#
+# 此前只检查「首尾空白 + 路径分隔符」，于是 `.hidden.txt` / `a b.txt` /
+# `x#frag.txt` / `_under.csv` / 超长名等在本地放行、admin 一律 400。
+# 其中 `#` 最阴险：httpx 把它当 URL fragment，`x#frag.txt` 实际只上传了 `x`，
+# 而清单里仍记 `x#frag.txt` —— DB 挂着一个下载必 404 的条目、真实文件成孤儿，
+# 违反本模块「清单只收录实际上传成功的条目」的铁律。
+# --------------------------------------------------------------------------
+
+# 与 admin artifacts.constants.ts 的 SAFE_ARTIFACT_NAME_RE 同源的期望表
+_ADMIN_SAFE_CASES = [
+    ("ok.txt", True),
+    ("report.csv", True),
+    ("A1_-x.png", True),
+    ("a..b.sh", True),
+    ("a" * 255, True),
+    # 以下 admin 全部 400：
+    (".hidden.txt", False),
+    ("_under.csv", False),
+    ("a b.txt", False),
+    ("x#frag.txt", False),
+    ("q?x.txt", False),
+    ("pct%20.txt", False),
+    ("semi;colon.txt", False),
+    ("a/b.txt", False),
+    ("a\\b.txt", False),
+    ("-lead.txt", False),
+    ("", False),
+    ("a" * 256, False),
+]
+
+
+def test_is_safe_artifact_name_matches_admin_regex():
+    for name, expected in _ADMIN_SAFE_CASES:
+        assert artifacts.is_safe_artifact_name(name) is expected, name
+
+
+def test_collect_artifacts_skips_names_admin_would_reject(tmp_path):
+    """本地过滤必须与 admin 一致：不合法名不进清单（否则清单会挂 404 条目）。"""
+    _make_art(tmp_path, "good.txt", b"1")
+    for bad in (".hidden.txt", "x#frag.txt", "_under.csv", "a b.txt"):
+        _make_art(tmp_path, bad, b"2")
+
+    names = [i["name"] for i in collect_artifacts(tmp_path)]
+    assert names == ["good.txt"]
+
+
+def test_upload_one_refuses_unsafe_name_without_building_url(monkeypatch):
+    """纵深防御：即便绕过 collect 直接投喂非法名，也绝不把原始名拼进 URL。"""
+    seen_urls: list[str] = []
+
+    class _FakeResp:
+        status_code = 200
+
+    class _FakeClient:
+        async def put(self, url, **kwargs):  # pragma: no cover - 不应被调用
+            seen_urls.append(url)
+            return _FakeResp()
+
+    ok = asyncio.run(
+        artifacts._upload_one(
+            _FakeClient(),
+            "http://admin:3105",
+            "e1",
+            {"name": "x#frag.txt", "size": 1, "sha256": "x", "path": "p"},
+            "tok",
+        )
+    )
+    assert ok is False
+    assert seen_urls == []
+
+
+def test_upload_one_percent_encodes_is_moot_but_fragment_stays_out():
+    """确认 `#` 确实会被 httpx 当 fragment —— 这正是必须前置过滤的原因。"""
+    req = httpx.Request(
+        "PUT", "http://h/api/executions/E/artifacts/x#frag.txt"
+    )
+    assert req.url.raw_path == b"/api/executions/E/artifacts/x"
