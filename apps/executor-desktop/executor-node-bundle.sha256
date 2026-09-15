@@ -30,4 +30,8 @@
 #   - 9c648763…：kill/logs 契约化——新增生成的 KillResponse/LogsResponse（strict/
 #     forbid），kill 五个返回点经 killBody()、logs 成功页经 LogsResponseSchema
 #     出参校验（2279kB → 2280kB）。
-9c6487635c37558f7cc850dc78d76afc5484734965e68977171e82e997fda483  index.js
+#   - 6d224924…：E-31 给 executor-node/package.json 加 engines.node>=24；ncc 将
+#     package.json 内联进 bundle，engines 字段随之进入产物，哈希变化（2280kB
+#     不变，字节内容变）。此值为 CI Ubuntu runner 重建结果（F-19 guard 以 CI
+#     环境为权威——ncc --source-map 嵌入绝对路径，跨平台哈希不同）。
+6d2249247b2e2e81b955aca523427d3c96ff92505e98a0dc1b2afb973ba9f041  index.js
