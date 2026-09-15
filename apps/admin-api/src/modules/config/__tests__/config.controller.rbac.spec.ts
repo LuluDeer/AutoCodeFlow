@@ -27,6 +27,51 @@ describe("ConfigController — FEAT-08 rollback RBAC matrix", () => {
     ).toEqual([UserRole.ADMIN]);
   });
 
+  /**
+   * SEC-CFG-01（本轮审计）：配置控制器此前只有写路由带 @Roles(ADMIN)，
+   * 通用读路由（GET /config、/config/:key、/config/history、
+   * /config/history/:key）裸奔——任何已认证用户都能拉取整个配置存储，
+   * 唯一屏障是逐键 opt-in 的 isSecret 掩码，而 ai.openaiBaseUrl /
+   * ai.ollamaHost 这类记录内网拓扑的键并未标记 secret。
+   *
+   * 这里做**结构性**断言（遍历原型链上的所有路由处理器），而不是逐个点名：
+   * 将来任何人新增一条配置路由而忘了 @Roles，本用例会直接变红。
+   */
+  it("SEC-CFG-01: every route handler on the controller is ADMIN-gated", () => {
+    const proto = ConfigController.prototype as unknown as Record<
+      string,
+      unknown
+    >;
+    const paths = Reflect.getMetadata(
+      "path",
+      ConfigController,
+    ) as string | undefined;
+    expect(paths).toBeDefined();
+
+    const handlers = Object.getOwnPropertyNames(proto).filter((name) => {
+      if (name === "constructor") return false;
+      const fn = proto[name];
+      if (typeof fn !== "function") return false;
+      // 只取真正的路由处理器：@Get/@Post/@Put/@Patch/@Delete 会写入
+      // PATH_METADATA 与 METHOD_METADATA
+      return (
+        Reflect.getMetadata("path", fn) !== undefined &&
+        Reflect.getMetadata("method", fn) !== undefined
+      );
+    });
+
+    // 防御：确保真的扫到了路由（否则断言会因 0 个处理器而空过）
+    expect(handlers.length).toBeGreaterThanOrEqual(8);
+
+    const ungated = handlers.filter((name) => {
+      const roles = Reflect.getMetadata(ROLES_KEY, proto[name]) as
+        | UserRole[]
+        | undefined;
+      return !roles || !roles.includes(UserRole.ADMIN);
+    });
+    expect(ungated).toEqual([]);
+  });
+
   describe("HTTP authorization matrix", () => {
     let app: INestApplication;
     const rollback = jest.fn();

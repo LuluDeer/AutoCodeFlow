@@ -31,7 +31,16 @@ import { PaginationDto } from "../../common/dto/pagination.dto";
 export class ConfigController {
   constructor(private readonly configService: SystemConfigService) {}
 
+  // SEC-CFG-01（本轮审计）：本控制器所有写路由与 executor-shared-token 读路由
+  // 都带 @Roles(ADMIN)，但系统配置的**通用读路由**此前没有——任何已认证用户
+  // （含最低权限 USER）可直接 GET /config、/config/:key、/config/history 拉取
+  // 整个配置存储。唯一的屏障是逐键 opt-in 的 isSecret 掩码
+  // （create 时 isSecret ?? false），而 ai.openaiBaseUrl / ai.ollamaHost 这类
+  // 记录内部拓扑的键并非以 isSecret 写入，等于对普通用户明文暴露内网地址；
+  // 任何未来新增的敏感键在忘记标 secret 时也会一律泄露。
+  // 配置读面与写面同属管理面，一并收敛为 ADMIN。
   @Get()
+  @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "List all config entries" })
   async findAll(@Query("prefix") prefix?: string, @Query("tag") tag?: string) {
     let configs: import("./entities/system-config.entity").SystemConfig[];
@@ -50,6 +59,8 @@ export class ConfigController {
   // as the key parameter.
 
   @Get("history")
+  // SEC-CFG-01: 同 findAll——历史读面会暴露非 secret 键的 old/new 值。
+  @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Get config change history" })
   async getHistory(@Query() query?: ConfigHistoryQueryDto) {
     const page = query?.page ?? 1;
@@ -75,6 +86,8 @@ export class ConfigController {
   }
 
   @Get("history/:key")
+  // SEC-CFG-01: 同上。
+  @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Get history for a specific config key" })
   async getHistoryByKey(
     @Param("key") key: string,
@@ -163,6 +176,8 @@ export class ConfigController {
   }
 
   @Get(":key")
+  // SEC-CFG-01: 同上——单键读面是「按名取任意配置」的直接入口。
+  @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Get a single config entry" })
   async findOne(@Param("key") key: string) {
     const c = await this.configService.findOne(key);

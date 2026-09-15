@@ -214,6 +214,81 @@ describe("UsersService", () => {
   // R19: currentPassword is a verification-only field consumed by the
   // controller; Object.assign would graft it onto the entity and save()
   // echoes it back in the response.
+  // R-14 对称缺口（本轮审计）：remove() 一直有「最后一名管理员」守卫，
+  // update() 没有 —— PATCH /users/:id {role:'user'} 可直接降级唯一管理员，
+  // 平台再无全量放行主体（ADR-013），只能直连 DB 修复。
+  describe("update — last-admin demotion guard (R-14 symmetry)", () => {
+    const adminQb = (admins: Array<{ id: number }>) => ({
+      setLock: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      getMany: jest.fn().mockResolvedValue(admins),
+    });
+
+    it("refuses to demote the last administrator (locked count)", async () => {
+      // 事务内 findOne 返回唯一管理员
+      repo.findOne.mockResolvedValue({
+        id: 1,
+        username: "admin",
+        role: UserRole.ADMIN,
+      });
+      const qb = adminQb([{ id: 1 }]);
+      repo.createQueryBuilder.mockReturnValue(qb);
+
+      await expect(
+        service.update(1, { role: UserRole.USER } as any),
+      ).rejects.toThrow("Cannot demote the last administrator");
+      expect(qb.setLock).toHaveBeenCalledWith("pessimistic_write");
+      expect(repo.save).not.toHaveBeenCalled();
+    });
+
+    it("allows demoting an admin when another admin remains", async () => {
+      repo.findOne.mockResolvedValue({
+        id: 1,
+        username: "admin",
+        role: UserRole.ADMIN,
+      });
+      const qb = adminQb([{ id: 1 }, { id: 2 }]);
+      repo.createQueryBuilder.mockReturnValue(qb);
+
+      const result = await service.update(1, { role: UserRole.USER } as any);
+      expect((result as any).role).toBe(UserRole.USER);
+      expect(repo.save).toHaveBeenCalled();
+    });
+
+    it("does not take the lock path for non-role updates", async () => {
+      repo.findOne.mockResolvedValue({
+        id: 1,
+        username: "admin",
+        role: UserRole.ADMIN,
+      });
+      await service.update(1, { email: "a@b.c" } as any);
+      expect(repo.createQueryBuilder).not.toHaveBeenCalled();
+      expect(repo.save).toHaveBeenCalled();
+    });
+
+    it("does not take the lock path when re-setting role to ADMIN (no-op demotion)", async () => {
+      repo.findOne.mockResolvedValue({
+        id: 1,
+        username: "admin",
+        role: UserRole.ADMIN,
+      });
+      await service.update(1, { role: UserRole.ADMIN } as any);
+      expect(repo.createQueryBuilder).not.toHaveBeenCalled();
+      expect(repo.save).toHaveBeenCalled();
+    });
+
+    it("does not take the lock path when promoting a plain user", async () => {
+      repo.findOne.mockResolvedValue({
+        id: 5,
+        username: "bob",
+        role: UserRole.USER,
+      });
+      await service.update(5, { role: UserRole.ADMIN } as any);
+      expect(repo.createQueryBuilder).not.toHaveBeenCalled();
+      expect(repo.save).toHaveBeenCalled();
+    });
+  });
+
   describe("update (R19)", () => {
     it("strips currentPassword before persisting and echoing", async () => {
       repo.findOne.mockResolvedValue({
