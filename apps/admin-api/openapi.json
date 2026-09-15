@@ -6448,7 +6448,7 @@
             "JWT": []
           }
         ],
-        "summary": "Create an outbound event subscription",
+        "summary": "Create an outbound event subscription (ADMIN only)",
         "tags": [
           "Event Subscriptions"
         ]
