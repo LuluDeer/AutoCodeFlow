@@ -13,6 +13,8 @@ import { render, screen, cleanup, fireEvent, act, waitFor } from '@testing-libra
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import RegistryPage from '../pages/RegistryPage';
 import { registryApi } from '../api/registry';
+// A7：上传面已收敛为 ADMIN——测试主体默认是管理员，否则上传 Modal 打不开。
+import { useAuthStore } from '../store/auth';
 
 vi.mock('../api/registry', () => ({
   registryApi: {
@@ -53,6 +55,8 @@ const findBtn = (root: ParentNode, text: string): HTMLButtonElement | null =>
 beforeEach(() => {
   cleanup();
   vi.clearAllMocks();
+  // A7：默认以管理员身份渲染（上传入口仅管理员可见/可用）。
+  useAuthStore.setState({ user: { id: 1, username: 'admin', role: 'admin' } });
   mockedRegistry.listPypiPackages.mockResolvedValue(['acme-core', 'acme-utils']);
   mockedRegistry.listNpmPackages.mockResolvedValue([
     { name: '@acme/node-runner', versions: ['1.0.0', '1.1.0'], description: '任务运行器', latest: '1.1.0' },
@@ -219,5 +223,34 @@ describe('RegistryPage npm Tab（QA-03 第二阶段）', () => {
     // antd 静态 Modal holder 为 body 单例不随关闭卸载（既有先例注记）——
     // 关闭断言改为确认按钮存在即完成交互（点击无异常即链路 OK）。
     expect(findBtn(document.body, '知道了')).toBeTruthy();
+  });
+});
+
+describe('RegistryPage — A7 上传面收敛（管理员专属）', () => {
+  it('普通用户：上传按钮禁用，点击不打开上传 Modal', async () => {
+    useAuthStore.setState({ user: { id: 2, username: 'alice', role: 'user' } });
+    renderPage();
+    await screen.findByText('acme-core');
+
+    const btn = findBtn(document.body, '上传包');
+    expect(btn).toBeTruthy();
+    expect(btn!.disabled).toBe(true);
+
+    act(() => {
+      fireEvent.click(btn!);
+    });
+    // Modal 未打开：既没有表单，也没有发起上传
+    expect(screen.queryByText('registry.pypiUploadTitle')).toBeNull();
+    expect(mockedRegistry.uploadPypiPackage).not.toHaveBeenCalled();
+  });
+
+  it('管理员：上传按钮可用（回归守卫——别把入口一起禁掉）', async () => {
+    useAuthStore.setState({ user: { id: 1, username: 'admin', role: 'admin' } });
+    renderPage();
+    await screen.findByText('acme-core');
+
+    const btn = findBtn(document.body, '上传包');
+    expect(btn).toBeTruthy();
+    expect(btn!.disabled).toBe(false);
   });
 });

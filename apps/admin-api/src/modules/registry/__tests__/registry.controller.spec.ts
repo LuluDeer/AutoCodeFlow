@@ -4,6 +4,30 @@ import * as http from "http";
 import * as net from "net";
 import type { AddressInfo } from "net";
 import { RegistryController } from "../registry.controller";
+import { AuditService } from "../../audit/audit.service";
+import { AuthUser } from "../../../common/interfaces/auth-user.interface";
+import { UserRole } from "../../users/entities/user.entity";
+import type { Request } from "express";
+
+/** A7：控制器现在需要 AuditService（上传审计）与调用主体（审计要记「谁传的」）。 */
+const makeAudit = (): AuditService =>
+  ({ log: jest.fn().mockResolvedValue(undefined) }) as unknown as AuditService;
+
+const makeController = (
+  cfg: Record<string, unknown> = {},
+  audit: AuditService = makeAudit(),
+): RegistryController =>
+  new RegistryController(new ConfigService(cfg as never), audit);
+
+const adminUser: AuthUser = {
+  id: 1,
+  username: "admin",
+  email: "admin@example.com",
+  role: UserRole.ADMIN,
+  isActive: true,
+};
+
+const reqStub = { ip: "127.0.0.1" } as unknown as Request;
 
 /** Start a server on an ephemeral 127.0.0.1 port and return the port. */
 const listen = (server: http.Server): Promise<number> =>
@@ -46,16 +70,20 @@ describe("RegistryController upload proxy (S4 timeouts)", () => {
     });
     const destroyAll = trackSockets(server);
     const port = await listen(server);
-    const controller = new RegistryController(
-      new ConfigService({
-        PYPI_REGISTRY_URL: `http://127.0.0.1:${port}`,
-        REGISTRY_UPLOAD_TIMEOUT_MS: "300",
-      }),
-    );
+    const controller = makeController({
+      PYPI_REGISTRY_URL: `http://127.0.0.1:${port}`,
+      REGISTRY_UPLOAD_TIMEOUT_MS: "300",
+    });
 
     const startedAt = Date.now();
     await expect(
-      controller.uploadPypiPackage(makeMulterFile(), "pkg", "1.0.0"),
+      controller.uploadPypiPackage(
+        makeMulterFile(),
+        "pkg",
+        "1.0.0",
+        adminUser,
+        reqStub,
+      ),
     ).rejects.toMatchObject({
       status: HttpStatus.GATEWAY_TIMEOUT,
       message: "Upstream registry upload timed out",
@@ -76,15 +104,19 @@ describe("RegistryController upload proxy (S4 timeouts)", () => {
     });
     const destroyAll = trackSockets(server);
     const port = await listen(server);
-    const controller = new RegistryController(
-      new ConfigService({
-        PYPI_REGISTRY_URL: `http://127.0.0.1:${port}`,
-        REGISTRY_UPLOAD_TIMEOUT_MS: "3000",
-      }),
-    );
+    const controller = makeController({
+      PYPI_REGISTRY_URL: `http://127.0.0.1:${port}`,
+      REGISTRY_UPLOAD_TIMEOUT_MS: "3000",
+    });
 
     await expect(
-      controller.uploadPypiPackage(makeMulterFile(), "pkg", "1.0.0"),
+      controller.uploadPypiPackage(
+        makeMulterFile(),
+        "pkg",
+        "1.0.0",
+        adminUser,
+        reqStub,
+      ),
     ).resolves.toEqual({ success: true });
 
     destroyAll();
@@ -98,15 +130,19 @@ describe("RegistryController upload proxy (S4 timeouts)", () => {
     });
     const destroyAll = trackSockets(server);
     const port = await listen(server);
-    const controller = new RegistryController(
-      new ConfigService({
-        PYPI_REGISTRY_URL: `http://127.0.0.1:${port}`,
-        REGISTRY_UPLOAD_TIMEOUT_MS: "3000",
-      }),
-    );
+    const controller = makeController({
+      PYPI_REGISTRY_URL: `http://127.0.0.1:${port}`,
+      REGISTRY_UPLOAD_TIMEOUT_MS: "3000",
+    });
 
     await expect(
-      controller.uploadPypiPackage(makeMulterFile(), "pkg", "1.0.0"),
+      controller.uploadPypiPackage(
+        makeMulterFile(),
+        "pkg",
+        "1.0.0",
+        adminUser,
+        reqStub,
+      ),
     ).rejects.toMatchObject({ status: HttpStatus.BAD_GATEWAY });
 
     destroyAll();
@@ -114,23 +150,27 @@ describe("RegistryController upload proxy (S4 timeouts)", () => {
   });
 
   it("rejects a missing file with BAD_REQUEST before any proxying", async () => {
-    const controller = new RegistryController(new ConfigService({}));
+    const controller = makeController({});
     await expect(
       controller.uploadPypiPackage(
         undefined as unknown as Express.Multer.File,
         "pkg",
         "1.0.0",
+        adminUser,
+        reqStub,
       ),
     ).rejects.toMatchObject({ status: HttpStatus.BAD_REQUEST });
   });
 
   it("rejects a disallowed extension with BAD_REQUEST before any proxying", async () => {
-    const controller = new RegistryController(new ConfigService({}));
+    const controller = makeController({});
     await expect(
       controller.uploadPypiPackage(
         makeMulterFile("evil", "payload.exe"),
         "pkg",
         "1.0.0",
+        adminUser,
+        reqStub,
       ),
     ).rejects.toMatchObject({ status: HttpStatus.BAD_REQUEST });
   });
@@ -207,18 +247,16 @@ describe("RegistryController npm package listing (S5 authenticated registry)", (
   });
 
   it("S5: logs in with the configured service account and lists packages", async () => {
-    const controller = new RegistryController(
-      new ConfigService({
-        registry: {
-          npm: {
-            url: `http://127.0.0.1:${port}`,
-            user: "svc",
-            pass: "svc-pass",
-            token: "",
-          },
+    const controller = makeController({
+      registry: {
+        npm: {
+          url: `http://127.0.0.1:${port}`,
+          user: "svc",
+          pass: "svc-pass",
+          token: "",
         },
-      }),
-    );
+      },
+    });
 
     await expect(controller.listNpmPackages()).resolves.toEqual({
       packages: [{ name: "@autoflow/core", latest: "1.2.3" }],
@@ -235,18 +273,16 @@ describe("RegistryController npm package listing (S5 authenticated registry)", (
   });
 
   it("S5: keeps the previous anonymous behavior (empty list) when no credentials are configured", async () => {
-    const controller = new RegistryController(
-      new ConfigService({
-        registry: {
-          npm: {
-            url: `http://127.0.0.1:${port}`,
-            user: "",
-            pass: "",
-            token: "",
-          },
+    const controller = makeController({
+      registry: {
+        npm: {
+          url: `http://127.0.0.1:${port}`,
+          user: "",
+          pass: "",
+          token: "",
         },
-      }),
-    );
+      },
+    });
     (controller as unknown as { logger: Record<string, jest.Mock> }).logger = {
       debug: jest.fn(),
       warn: jest.fn(),
@@ -267,18 +303,16 @@ describe("RegistryController npm package listing (S5 authenticated registry)", (
   });
 
   it("S5: uses a pre-issued token directly without a login round-trip", async () => {
-    const controller = new RegistryController(
-      new ConfigService({
-        registry: {
-          npm: {
-            url: `http://127.0.0.1:${port}`,
-            user: "",
-            pass: "",
-            token: "svc-token",
-          },
+    const controller = makeController({
+      registry: {
+        npm: {
+          url: `http://127.0.0.1:${port}`,
+          user: "",
+          pass: "",
+          token: "svc-token",
         },
-      }),
-    );
+      },
+    });
 
     await expect(controller.listNpmPackages()).resolves.toEqual({
       packages: [{ name: "@autoflow/core", latest: "1.2.3" }],
@@ -293,18 +327,16 @@ describe("RegistryController npm package listing (S5 authenticated registry)", (
   });
 
   it("S5: falls back to the empty-list behavior when the configured credentials are rejected", async () => {
-    const controller = new RegistryController(
-      new ConfigService({
-        registry: {
-          npm: {
-            url: `http://127.0.0.1:${port}`,
-            user: "svc",
-            pass: "wrong",
-            token: "",
-          },
+    const controller = makeController({
+      registry: {
+        npm: {
+          url: `http://127.0.0.1:${port}`,
+          user: "svc",
+          pass: "wrong",
+          token: "",
         },
-      }),
-    );
+      },
+    });
 
     await expect(controller.listNpmPackages()).resolves.toEqual({
       packages: [],
