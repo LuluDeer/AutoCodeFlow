@@ -88,6 +88,41 @@ if (!css.includes('.hero-error')) {
   throw new Error('F-22: .hero-error style is missing');
 }
 
+// ── D：同类"未包 try 导致按钮永久 disabled"缺陷必须全仓清零 ──────────
+// F-22 只覆盖了 StatusWindow 的启动/停止；本轮发现 ConfigPage.save 与
+// Wizard.finish 是同一缺陷（reject → saving 永久 true → 只能重启应用）。
+// 这里对二者做同等约束，并检查失败时有可见错误条。
+if (!/try\s*\{[\s\S]*?saveConfig\([\s\S]*?\}\s*catch[\s\S]*?\}\s*finally\s*\{/.test(config)) {
+  throw new Error('D: ConfigPage.save 必须 try/catch/finally（否则失败后按钮永久禁用）');
+}
+if (!config.includes('cfg-save-error') || !config.includes('role="alert"')) {
+  throw new Error('D: ConfigPage 保存失败必须渲染可见错误条');
+}
+if (!css.includes('.cfg-save-error')) {
+  throw new Error('D: .cfg-save-error 样式缺失');
+}
+if (!/try\s*\{[\s\S]*?saveAndCloseWizard\([\s\S]*?\}\s*catch[\s\S]*?\}\s*finally\s*\{/.test(wizard)) {
+  throw new Error('D: Wizard.finish 必须 try/catch/finally（否则卡在"保存中"无提示）');
+}
+if (!wizard.includes('wizard-error') || !wizard.includes('role="alert"')) {
+  throw new Error('D: Wizard 保存失败必须渲染可见错误条');
+}
+if (!css.includes('.wizard-error')) {
+  throw new Error('D: .wizard-error 样式缺失');
+}
+// 端口必须做区间校验（HTML min/max 不阻止手输/粘贴越界值）
+if (!wizard.includes('form.executorPort <= 65535')) {
+  throw new Error('D: Wizard 端口必须校验上界（1-65535）');
+}
+// 地址改写不得用 split(\':\')[0]（IPv6 会被截断成非法值）。
+// 先去注释再判——否则本仓库解释该缺陷的中文注释会自我触发。
+const wizardNoComments = wizard
+  .replace(/\/\*[\s\S]*?\*\//g, '')
+  .replace(/^\s*\/\/.*$/gm, '');
+if (/split\(':'\)\[0\]/.test(wizardNoComments)) {
+  throw new Error("D: 地址端口改写不得用 split(':')[0]（IPv6 截断缺陷）");
+}
+
 // F-37（DEEP_REVIEW 0ef3bbe）：main 进程 IPC 处理器不得在函数体内 require()
 // （模块统一顶层 import；main 进程无打包懒加载收益，属历史噪音）。
 const ipcHandlers = readFileSync(resolve(root, '..', 'main', 'ipc-handlers.ts'), 'utf8');
