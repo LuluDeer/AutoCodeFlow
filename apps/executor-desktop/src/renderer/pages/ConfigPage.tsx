@@ -156,6 +156,7 @@ export default function ConfigPage() {
       {/* 内容区 */}
       <div className="cfg-body">
         <div className="cfg-scroll">
+          <div className="cfg-scroll-inner">
 
           {active === 'connection' && (
             <>
@@ -224,13 +225,12 @@ export default function ConfigPage() {
                         <button
                           type="button"
                           key={ip}
-                          className={`ip-option${sel ? ' selected' : ''}`}
+                          className={`ip-chip${sel ? ' selected' : ''}`}
                           onClick={() => set('executorAddressPublic', full)}
                           aria-pressed={sel}
                           aria-label={`${full}${sel ? '，已选择' : '，使用此地址'}`}
                         >
-                          <span className="ip-addr">{full}</span>
-                          <span className="ip-action">{sel ? '✓ 已选择' : '使用'}</span>
+                          {full}
                         </button>
                       );
                     })}
@@ -317,6 +317,7 @@ export default function ConfigPage() {
             </>
           )}
 
+          </div>
         </div>
 
         {/* 底部保存栏 */}

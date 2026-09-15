@@ -95,8 +95,8 @@ export class WindowManager {
     }
 
     this.wizardWindow = new BrowserWindow({
-      width: 560,
-      height: 600,
+      width: 520,
+      height: 640,
       resizable: false,
       center: true,
       show: false,
@@ -124,16 +124,18 @@ export class WindowManager {
 
   openStatus(): void {
     const { width: sw, height: sh } = screen.getPrimaryDisplay().workAreaSize;
-    const winW = Math.round(sw * 0.5);
-    const winH = Math.round(sh * 0.667);
+    // 固定窗口大小：约屏幕的 60% 宽 × 75% 高，保证内容空间充足且不会太占屏
+    const winW = Math.round(Math.min(sw * 0.6, 960));
+    const winH = Math.round(Math.min(sh * 0.75, 720));
     this.statusWindow = new BrowserWindow({
       width: winW,
       height: winH,
-      minWidth: 620,
-      minHeight: 520,
+      minWidth: 760,
+      minHeight: 560,
       show: false,
       frame: false,
       transparent: true,
+      resizable: true,
       // BUG-12: single hardened webPreferences source for every window.
       // sandbox defaults on (Electron ≥20), which also blocks the preload
       // from pulling full Node modules into the renderer bridge.
