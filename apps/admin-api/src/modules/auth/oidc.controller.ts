@@ -2,6 +2,7 @@ import { Controller, Get, Query, Res, Logger } from "@nestjs/common";
 import { Response } from "express";
 import { Public } from "../../common/decorators/public.decorator";
 import { OidcService, OIDC_STATE_COOKIE } from "./oidc.service";
+import { getEnvVar } from "../../config/env";
 
 /** callback 失败 → 前端落地页错误码（不泄露内部细节）。 */
 function mapCallbackError(message: string): string {
@@ -11,6 +12,11 @@ function mapCallbackError(message: string): string {
   if (message.includes("not linked")) return "account_not_linked";
   if (message.includes("disabled")) return "account_disabled";
   return "sso_failed";
+}
+
+/** W-6: 生产环境附 Secure，开发态 http://localhost 不设（浏览器会丢弃）。 */
+function stateCookieFlags(): string {
+  return getEnvVar("NODE_ENV") === "production" ? "HttpOnly; SameSite=Lax; Secure" : "HttpOnly; SameSite=Lax";
 }
 
 /**
@@ -56,7 +62,8 @@ export class OidcController {
         "set-cookie",
         // HttpOnly：JS 不可读；SameSite=Lax：IdP 顶层 GET 回调可携带；
         // Path 收窄到回调端点；10 分钟时效由 payload.exp + cookie MaxAge 双保险。
-        `${OIDC_STATE_COOKIE}=${value}; Path=/api/auth/oidc/callback; HttpOnly; SameSite=Lax; Max-Age=600`,
+        // W-6: 生产环境附 Secure（与 F-06 refresh cookie 同模式）。
+        `${OIDC_STATE_COOKIE}=${value}; Path=/api/auth/oidc/callback; ${stateCookieFlags()}; Max-Age=600`,
       );
       res.redirect(302, redirectUrl);
     } catch (err: unknown) {
@@ -84,7 +91,7 @@ export class OidcController {
       ?.slice(OIDC_STATE_COOKIE.length + 1);
     const clearStateCookie = () => {
       res.setHeader("set-cookie", [
-        `${OIDC_STATE_COOKIE}=; Path=/api/auth/oidc/callback; HttpOnly; SameSite=Lax; Max-Age=0`,
+        `${OIDC_STATE_COOKIE}=; Path=/api/auth/oidc/callback; ${stateCookieFlags()}; Max-Age=0`,
       ]);
     };
     const fail = (errorCode: string) => {
