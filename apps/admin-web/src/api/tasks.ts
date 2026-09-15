@@ -150,6 +150,8 @@ export type TaskListParams = {
   triggerType?: string;
   runtime?: string;
   applicationId?: string;
+  /** F-10: 逗号分隔的投影字段白名单（如 'id,name'）。 */
+  fields?: string;
 };
 
 /** GET /tasks 的后端 pageSize 上限（PaginationDto.@Max(100)）。 */
@@ -239,8 +241,12 @@ async function listAllTasks(
   signal?: AbortSignal,
 ): Promise<PageResult<Task>> {
   throwIfTaskListAborted(signal);
+  // F-10（DEEP_REVIEW 0ef3bbe）: 依赖下拉/DAG 等轻量消费方只需 id+name——
+  // 默认注入 ?fields=id,name 走后端投影白名单，跳过 params/secrets/glueSource
+  // 等重量列。调用方可显式传 params.fields 覆盖（如需更多列）。
+  const paramsWithProjection = { fields: 'id,name', ...params };
   const first = await tasksApi.list(
-    { ...params, page: 1, pageSize: TASK_LIST_PAGE_SIZE },
+    { ...paramsWithProjection, page: 1, pageSize: TASK_LIST_PAGE_SIZE },
     signal,
   );
   throwIfTaskListAborted(signal);
@@ -283,7 +289,7 @@ async function listAllTasks(
         throwIfTaskListAborted(signal);
         return tasksApi.list(
           {
-            ...params,
+            ...paramsWithProjection,
             page,
             pageSize: TASK_LIST_PAGE_SIZE,
           },

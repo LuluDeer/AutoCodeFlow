@@ -151,6 +151,14 @@ export class TaskController {
     required: false,
     description: "Filter by runtime (python/node/shell)",
   })
+  @ApiQuery({
+    name: "fields",
+    required: false,
+    description:
+      "F-10: comma-separated projection whitelist (e.g. 'id,name'). " +
+      "Only whitelisted lightweight columns are selected — params/secrets/" +
+      "glueSource and other heavy columns are skipped. Illegal fields → 400.",
+  })
   @ApiResponse({
     status: 200,
     description: "Task list",
