@@ -23,6 +23,9 @@ import { useTranslation } from 'react-i18next';
 // UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
 import '../../i18n';
 import StateError from '../../components/StateError';
+// SUB-SCOPE-01：新建订阅收紧为 ADMIN-only（后端 @Roles）。前端据此隐藏入口，
+// 避免非管理员点了才吃 403（与 ApiKeysSettings / 设置页其他 Tab 同款「不可见或禁用」先例）。
+import { useAuthStore, isAdminUser } from '../../store/auth';
 
 const { Text, Paragraph } = Typography;
 
@@ -394,6 +397,10 @@ export default function EventSubscriptionsSettings() {
   const { t } = useTranslation();
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<EventSubscription | null>(null);
+  // SUB-SCOPE-01：后端已把 POST /event-subscriptions 收紧为 ADMIN-only。
+  // 读面与 PATCH/DELETE（ADMIN 或属主）保持原样，故非管理员仍能看自己的订阅、
+  // 看死信、启停/编辑/删除已有订阅——只是不能再新增出站通道。
+  const isAdmin = isAdminUser(useAuthStore((s) => s.user));
 
   // UI-16：读请求失败要页内可见（此前失败只留空表，与「尚无订阅」不可区分）
   const { data: subscriptions = [], isLoading, error: subsError, refetch: refetchSubs } = useQuery({
@@ -489,14 +496,23 @@ export default function EventSubscriptionsSettings() {
     <Card
       title={<Space><BellOutlined /> {t('eventSub.title')}</Space>}
       extra={
-        <Button
-          type="primary"
-          icon={<PlusOutlined />}
-          onClick={() => { setEditing(null); setFormOpen(true); }}
-          data-testid="sub-create"
-        >
-          {t('eventSub.create')}
-        </Button>
+        // SUB-SCOPE-01：非管理员不渲染「新建」入口（后端 403），改为说明性提示。
+        isAdmin ? (
+          <Button
+            type="primary"
+            icon={<PlusOutlined />}
+            onClick={() => { setEditing(null); setFormOpen(true); }}
+            data-testid="sub-create"
+          >
+            {t('eventSub.create')}
+          </Button>
+        ) : (
+          <Tooltip title={t('eventSub.createAdminOnly')}>
+            <Button type="primary" icon={<PlusOutlined />} disabled data-testid="sub-create-disabled">
+              {t('eventSub.create')}
+            </Button>
+          </Tooltip>
+        )
       }
     >
       <Alert

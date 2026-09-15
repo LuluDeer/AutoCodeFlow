@@ -28,7 +28,8 @@ modules/event-subscriptions/
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET / POST | `/` | 列表（ADMIN 看全部；普通用户看自己的 + 系统级）/ 创建（上限 `MAX_EVENT_SUBSCRIPTIONS=200`） |
+| GET | `/` | 列表（ADMIN 看全部；普通用户看自己的 + 系统级） |
+| POST | `/` | 创建（**ADMIN-only**，见下方 SUB-SCOPE-01；上限 `MAX_EVENT_SUBSCRIPTIONS=200`） |
 | PATCH / DELETE | `/:id` | ADMIN 或属主；删除级联清理订阅死信 |
 | GET | `/:id/dead-letters` | 死信分页（limit 上限 100） |
 | POST | `/:id/dead-letters/:dlId/replay` | 重放一条死信 |
@@ -41,14 +42,28 @@ modules/event-subscriptions/
 - 派发条件是 `where: { enabled: true }`（`outbound-event-dispatcher.service.ts` 的
   `dispatch`），**没有任何 owner/userId 过滤**；四条可订阅事件（`execution.completed` /
   `execution.failed` / `executor.offline` / `deployment.completed`）在平台上是**全局发布**的。
-- 因此：**任何已登录用户**创建一条订阅（`POST /` 无 `@Roles`，属主校验只在 PATCH/DELETE），
-  就能持续收到**别人**任务的终态 webhook——载荷含 `taskName`、`errorMessage`、`logs`
-  （见 `ExecutionTerminalEventPayload`）。这既能造成跨租户信息泄露，也提供了一条
-  隐蔽的出站数据通道。
-- 这不是配置疏漏而是**当前既定形态**：service 文档注释写明「任何已登录用户可建」，
-  列表侧才做属主过滤。secret 在所有读路径均被脱敏（`mask()`），故泄露的是载荷而非凭据。
-- **若要收紧**（属主过滤投递目标，或给 `POST /` 加 `@Roles(ADMIN)`），属**行为变更**，
-  需产品裁定后实施——与 ADR-013「非成员仍可 trigger 任意任务」同类的已知宽松语义。
+- 因此关键在于**谁能创建订阅**：这正是下一条收紧的原因。
+
+## SUB-SCOPE-01：创建订阅已收紧为 ADMIN-only（本轮行为变更）
+
+**变更**：`POST /event-subscriptions` 由「任何已登录用户」收紧为 `@Roles(ADMIN)`。
+
+**为什么**：投递端不做属主过滤（见上），而可订阅事件全局发布，所以此前**任何已登录用户
+建一条订阅，就能持续收到别人任务的终态 webhook**——载荷含 `taskName`、`errorMessage`、
+`logs`（`ExecutionTerminalEventPayload`）。这既是跨租户信息泄露（日志里可能带内部地址、
+业务数据、误打的密钥），也是一条绕开审批的隐蔽出站通道；而审计面上它只显示为
+"某人创建了订阅"。webhook 是「把数据送出平台」的能力，与通知渠道配置、执行器共享
+token 同级，本就属管理面（对照：`/notification/channels` 已是 ADMIN-only）。
+
+**明确不收的部分**（避免误读为"功能被砍"）：
+- 读面不变：非管理员仍可 `GET /` 看自己的 + 系统级订阅、仍可看死信；
+- 已有订阅不变：`PATCH`/`DELETE` 维持「ADMIN 或属主」，故非管理员**此前创建的订阅
+  依然有效、可启停、可编辑、可删除**，不会因本次收紧而失效；
+- 前端相应处理：非管理员看到**禁用**的「新建订阅」按钮 + 说明性 Tooltip，
+  而不是点了才吃 403。
+
+**若要进一步做租户隔离**：需给投递加属主过滤（`where: { enabled, userId }`），但事件
+本身未必有明确"归属者"，需先改事件载荷的数据模型——那是独立议题，不在本次范围。
 
 ## 关键机制
 

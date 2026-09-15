@@ -3,6 +3,8 @@ import { AuthUser } from "../../../common/interfaces/auth-user.interface";
 import { UserRole } from "../../users/entities/user.entity";
 import { EventSubscription } from "../entities/event-subscription.entity";
 import { ParseUUIDPipe } from "@nestjs/common";
+import { ROLES_KEY } from "../../../common/decorators/roles.decorator";
+import { WRITE_GUARD_KEY } from "../../../common/decorators/write-guard.decorator";
 
 /**
  * QA-02（coverage 第一阶段）：FEAT-07 出站订阅 HTTP 面的控制器行为。
@@ -142,5 +144,57 @@ describe("EventSubscriptionController — 端点委托契约（QA-02）", () => 
     await expect(
       pipe.transform(SUB_ID, { type: "param" } as any),
     ).resolves.toBe(SUB_ID);
+  });
+
+  /**
+   * SUB-SCOPE-01（本轮审计，行为变更）：新建订阅收紧为 ADMIN-only。
+   *
+   * 背景：投递端按 `where: { enabled: true }` 选取订阅、**不做属主过滤**，而四条
+   * 可订阅事件是平台级全局发布的。此前 POST / 对任何已登录用户开放 ⇒ 任何人建一条
+   * 订阅即可持续收到别人任务的终态 webhook（载荷含 taskName/errorMessage/logs）。
+   * webhook 是"把数据送出平台"的能力，与 /notification/channels 同级，属管理面。
+   */
+  it("create 声明 @Roles(ADMIN)——出站通道是管理面能力", () => {
+    expect(
+      Reflect.getMetadata(ROLES_KEY, EventSubscriptionController.prototype.create),
+    ).toEqual([UserRole.ADMIN]);
+  });
+
+  it("create 不再并列 @WriteGuard（A2 规格：角色门控与 scope 声明不共存）", () => {
+    expect(
+      Reflect.getMetadata(
+        WRITE_GUARD_KEY,
+        EventSubscriptionController.prototype.create,
+      ),
+    ).toBeUndefined();
+  });
+
+  it("读面不收：list / deadLetters 仍无 @Roles（非管理员仍可看自己的订阅与死信）", () => {
+    for (const m of ["list", "deadLetters"] as const) {
+      expect(
+        Reflect.getMetadata(
+          ROLES_KEY,
+          EventSubscriptionController.prototype[m],
+        ),
+      ).toBeUndefined();
+    }
+  });
+
+  it("PATCH / DELETE 维持「ADMIN 或属主」——不因新建收紧而让存量订阅失效", () => {
+    for (const m of ["update", "remove"] as const) {
+      expect(
+        Reflect.getMetadata(
+          ROLES_KEY,
+          EventSubscriptionController.prototype[m],
+        ),
+      ).toBeUndefined();
+      // 属主语义由 service 的 scope:ownership 声明承载
+      expect(
+        (Reflect.getMetadata(
+          WRITE_GUARD_KEY,
+          EventSubscriptionController.prototype[m],
+        ) as { scope?: string } | undefined)?.scope,
+      ).toBe("ownership");
+    }
   });
 });
