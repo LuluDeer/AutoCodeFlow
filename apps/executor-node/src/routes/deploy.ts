@@ -152,41 +152,58 @@ async function installDeps(
 /**
  * SEC-DEPLOY-01: validate a shell-runtime entrypoint.
  *
- * Returns null when safe, or a human-readable reason when the value must be
- * rejected. Exported (pure, no I/O) so it is directly unit-testable — the
- * original inline regex had ZERO test coverage, which is how the whitespace
- * bypass survived.
- *
  * Threat: the shell runtime runs `sh -c <entrypoint>` / `cmd.exe /c <entrypoint>`.
- * The string is a *command line*, so its first whitespace-separated token is the
- * command that gets executed. The previous charset `[A-Za-z0-9._/ :\-]` allowed
- * a literal space, so `/usr/bin/env sh -c id` passed validation and executed
- * `id` (verified: returned the real uid/gid list including sudo/docker groups).
- * It correctly blocked `;`, `&`, `|`, `$()`, backticks — i.e. it closed shell
- * *metacharacters* but not *command selection*.
+ * The string is a *command line*. The original charset `[A-Za-z0-9._/ :\-]`
+ * allowed a literal space, so `/usr/bin/env sh -c id` passed validation and
+ * executed `id` (verified: returned the real uid/gid list including
+ * sudo/docker groups). It correctly blocked `;`, `&`, `|`, `$()`, backticks —
+ * i.e. it closed shell *metacharacters* but not *command selection*.
  *
- * Policy: exactly one path-like token. No whitespace, no quoting, no shell
- * metacharacters, no leading dash (option injection), no `..` segment
- * (traversal out of the deployment directory — the same read surface that
- * execute.ts deliberately closes).
+ * The first remediation rejected ALL whitespace. That closed the hole but broke
+ * legitimate, already-supported multi-word entrypoints — `sh app.sh`,
+ * `node dist/main.js`, `echo hello` all appear in this repo's own specs and
+ * selftests, and every such deployment then failed (CI `selftests` /
+ * arch31 rollout went red). So the rule must separate "interpreter + script +
+ * fixed args" (legitimate) from "shell metacharacter chaining" (attack).
+ *
+ * Policy: one or more whitespace-separated tokens, each a path-like word
+ * matching ^[A-Za-z0-9._][A-Za-z0-9._/-]*$. That excludes quoting and every
+ * expansion/separator character (`$`, backtick, `;`, `|`, `&`, `<`, `>`, `(`,
+ * `)`, `*`, `?`, `#`, `=`, `~`), and no token may start with `-` (option
+ * injection). Without those characters a second command cannot be introduced;
+ * the `..` segment check keeps the path inside the deployment directory.
+ * Control characters (incl. newline, which would start a second command) are
+ * rejected outright.
+ *
+ * Pure and exported so it is directly unit-testable — the original inline regex
+ * had ZERO coverage, which is how the whitespace bypass survived.
  */
 export function validateShellEntrypoint(
   entrypoint: unknown,
 ): { ok: true } | { ok: false; reason: string } {
-  if (typeof entrypoint !== 'string' || entrypoint === '') {
+  if (typeof entrypoint !== 'string' || entrypoint.trim() === '') {
     return { ok: false, reason: 'entrypoint must be a non-empty string' };
   }
-  // 单一路径样式的词：首字符不得为 '-'（否则会被 sh 当选项）
-  if (!/^[A-Za-z0-9._][A-Za-z0-9._/-]*$/.test(entrypoint)) {
-    return {
-      ok: false,
-      reason:
-        'must be a single path-like token matching ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ' +
-        '(no whitespace, no shell metacharacters, no leading dash, no quoting)',
-    };
+  if (/[\u0000-\u001f\u007f]/.test(entrypoint)) {
+    return { ok: false, reason: 'must not contain control characters' };
   }
-  if (entrypoint.split(/[\\/]/).includes('..')) {
-    return { ok: false, reason: 'must not contain a ".." path segment' };
+  const tokens = entrypoint.trim().split(/\s+/);
+  const TOKEN_RE = /^[A-Za-z0-9._][A-Za-z0-9._/-]*$/;
+  for (const token of tokens) {
+    if (!TOKEN_RE.test(token)) {
+      return {
+        ok: false,
+        reason:
+          `token ${JSON.stringify(token)} must match ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ` +
+          '(no shell metacharacters, no quoting, no leading dash, no expansion)',
+      };
+    }
+    if (token.split(/[\\/]/).includes('..')) {
+      return {
+        ok: false,
+        reason: `token ${JSON.stringify(token)} must not contain a ".." path segment`,
+      };
+    }
   }
   return { ok: true };
 }
