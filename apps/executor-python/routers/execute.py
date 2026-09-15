@@ -491,7 +491,18 @@ def _ensure_entrypoint_in_workdir(entrypoint: str, work_dir: Path) -> None:
     # NOT is_absolute() — ntpath requires a drive/UNC prefix — so the old
     # check let rooted escapes through unchallenged. Any leading separator is
     # treated as absolute on every platform (POSIX semantics unchanged).
-    if p.is_absolute() or entrypoint.startswith(('/', '\\')):
+    #
+    # R4-C P4（本轮审计）：上面这条 W-04 修复仍留了一个 Windows 类逃逸——
+    # **驱动器相对路径**（`drive:relative`，如 `C:evil.bat`）。在 ntpath 里它
+    # 既不是 is_absolute()（那要求 盘符+分隔符，即 `C:\...`），parts 里也没有
+    # '..'，于是两道分支都不命中而被放行；它相对**该驱动器上的当前目录**解析，
+    # 实测 `C:evil.bat` → `C:\evil.bat`、`C:../../Windows/System32/evil.bat`
+    # → `C:\Windows\System32\evil.bat`，都落在 work_dir 之外。
+    # 判据：任何带盘符的路径一律按绝对处理，交给 relative_to(work_dir) 裁决。
+    # 影响面有界（逃逸目标是执行器进程的启动 CWD，且任务本身已能执行任意代码），
+    # 但这是一个**声明已加固却仍可绕过**的守卫，必须补上。
+    has_drive = bool(getattr(p, 'drive', ''))
+    if p.is_absolute() or has_drive or entrypoint.startswith(('/', '\\')):
         try:
             p.relative_to(work_dir)
         except ValueError:
