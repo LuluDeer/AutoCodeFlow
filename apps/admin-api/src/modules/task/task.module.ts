@@ -14,6 +14,9 @@ import { TaskVersion } from "./entities/task-version.entity";
 // OBS-04: execution_reports 读侧（metrics 模块实体跨模块注册——TypeORM
 // forFeature 只取连接与元数据，无运行时依赖环；MetricsModule 同样只注册）
 import { ExecutionReport } from "../metrics/entities/execution-report.entity";
+// TASK-PROJ-01: 归属项目写面校验需读 projects 行（存在性判定）。与上方
+// ExecutionReport 同款跨模块 forFeature——只取连接与元数据，无运行时依赖环。
+import { Project } from "../project/project.entity";
 import { LogRetentionCleanupService } from "./log-retention/log-retention-cleanup.service"; // Stream D/DB-002
 import { S3LogObjectRetentionService } from "./log-retention/s3-log-object-retention.service"; // WIKI-LOG-S3GC
 import { ExecutorModule } from "../executor/executor.module";
@@ -34,6 +37,8 @@ import { SecretsCryptoService } from "../../common/utils/secret-crypto.util.serv
       TaskVersion,
       // OBS-04: 执行报告读侧（execution_reports 表；写方 MetricsService）
       ExecutionReport,
+      // TASK-PROJ-01: 归属项目存在性校验（projects 表；写方 ProjectsService）
+      Project,
     ]),
     BullModule.registerQueue({ name: "task-queue" }),
     // forwardRef：SEC-02 起 ExecutorModule 反向 import 本模块（取

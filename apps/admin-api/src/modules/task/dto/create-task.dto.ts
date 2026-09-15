@@ -273,4 +273,28 @@ export class CreateTaskDto {
   @IsString()
   @IsOptional()
   runbook?: string;
+  /**
+   * AUTH-01/TASK-PROJ-01: 任务所属项目。
+   *
+   * 背景：迁移 1790000000008 给 tasks 加了 projectId 列并把**存量**任务回填到
+   * 默认项目，但其注释写明「新建任务在 DTO 未接 projectId 前一律落 NULL」——
+   * 即本字段的缺失是当时有意遗留的收尾项。后果是新建任务永远 projectId=NULL，
+   * 而 project-access.service 把 NULL 按 DEFAULT_PROJECT_ID 判定，于是
+   * 「项目隔离」对所有新任务都塌缩到默认项目、形同虚设。
+   *
+   * 语义：
+   *   - 省略 / null = 未分配 → 读面归入默认项目视图（`IS NULL OR = 默认`），
+   *     与既有行为逐字节一致，故本字段是**纯增量**，不填不影响任何现有调用方；
+   *   - 传具体 UUID = 归入该项目，写面会校验该项目存在（TaskService.resolveProjectId）。
+   *
+   * 写面授权：设置 projectId 改变任务的归属与可见范围，故仅 ADMIN 或该项目的
+   * editor/admin 可设置（见 TaskService.assertCanAssignProject）。
+   */
+  @ApiPropertyOptional({
+    description:
+      "Owning project. Omit/null = unassigned (counts toward the Default project view; existing behaviour). Setting it requires ADMIN or editor/admin of that project.",
+  })
+  @IsUUID()
+  @IsOptional()
+  projectId?: string | null;
 }

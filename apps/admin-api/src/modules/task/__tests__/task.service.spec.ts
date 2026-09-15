@@ -14,6 +14,8 @@ import { TaskService } from "../task.service";
 import { MAX_DEPENDENCY_EXECUTION_SCAN } from "../task.service";
 // AUTH-02: R-03 接线矩阵需要 ProjectAccessService 在场（项目角色维度）
 import { ProjectAccessService } from "../../project/project-access.service";
+// TASK-PROJ-01: 归属项目校验需 projects 仓储在场
+import { Project } from "../../project/project.entity";
 // NF-03: R-03 矩阵的主体角色
 import { UserRole } from "../../users/entities/user.entity";
 import {
@@ -2987,6 +2989,8 @@ describe("TaskService (__tests__)", () => {
           null as never,
           null as never,
           null as never,
+          // TASK-PROJ-01: Project 仓储（@Optional）
+          null as never,
           // R-28: 新增 @Optional audit 构造参数
           null as never,
         );
@@ -4169,6 +4173,150 @@ describe("TASK-SCOPE-01: assertCanOperate 归属口径开关", () => {
   });
 });
 
+/**
+ * TASK-PROJ-01（本轮审计）：任务归属项目的写入校验。
+ *
+ * 背景：`tasks.projectId` 由迁移 1790000000008 建立并回填了**存量**任务，但该迁移
+ * 注释写明「新建任务在 DTO 未接 projectId 前一律落 NULL」——收尾项一直没做。于是
+ * 新建任务永远 NULL，而 project-access.service 把 NULL 按 DEFAULT_PROJECT_ID 判定，
+ * 「项目隔离」对所有新任务都塌缩到默认项目、形同虚设。
+ *
+ * 本组钉住「补上 projectId 之后」的三条边界：
+ *   - 不传 = 未分配，零影响（纯增量）；
+ *   - 传了但项目不存在 → 400（而不是让 FK 违例冒成 500）；
+ *   - 传了但无权 → 403（否则谁都能把任务塞进/捞出别人的项目）。
+ */
+describe("TASK-PROJ-01: 归属项目写入校验", () => {
+  let service: TaskService;
+  let projectRepo: { findOne: jest.Mock };
+  let access: { hasProjectRole: jest.Mock; resolveRole: jest.Mock };
+
+  const admin = { id: 1, role: UserRole.ADMIN };
+  const member = { id: 7, role: UserRole.USER };
+  const outsider = { id: 8, role: UserRole.USER };
+  const PROJECT_ID = "11111111-1111-4111-8111-111111111111";
+
+  /** 直接驱动私有校验（避免走完整 create 链路的大量无关桩）。 */
+  const call = (projectId: unknown, user: unknown) =>
+    (
+      service as unknown as {
+        assertCanAssignProject: (p: unknown, u: unknown) => Promise<void>;
+      }
+    ).assertCanAssignProject(projectId, user);
+
+  async function build(opts: { projectRepo?: unknown; access?: unknown } = {}) {
+    projectRepo = { findOne: jest.fn().mockResolvedValue({ id: PROJECT_ID }) };
+    access = {
+      hasProjectRole: jest.fn().mockResolvedValue(false),
+      resolveRole: jest.fn().mockResolvedValue(null),
+    };
+    const module = await Test.createTestingModule({
+      providers: [
+        TaskService,
+        { provide: getRepositoryToken(Task), useValue: makeRepo() },
+        { provide: getRepositoryToken(TaskExecution), useValue: makeRepo() },
+        { provide: getRepositoryToken(ExecutionLogLine), useValue: makeRepo() },
+        { provide: getRepositoryToken(TaskVersion), useValue: makeRepo() },
+        { provide: getQueueToken("task-queue"), useValue: { add: jest.fn() } },
+        { provide: DataSource, useValue: { transaction: jest.fn() } },
+        {
+          provide: SchedulerService,
+          useValue: { stop: jest.fn(), scheduleOne: jest.fn() },
+        },
+        {
+          provide: AiService,
+          useValue: { analyzeFailure: jest.fn(), chat: jest.fn() },
+        },
+        {
+          provide: AiAnalysisService,
+          useValue: { analyzeFailure: jest.fn(), chat: jest.fn() },
+        },
+        {
+          provide: ConfigService,
+          useValue: { get: jest.fn().mockReturnValue("") },
+        },
+        { provide: ExecutorService, useValue: {} },
+        {
+          provide: DomainEventBus,
+          useValue: {
+            emit: jest.fn(),
+            on: jest.fn(),
+            off: jest.fn(),
+            listenerCount: jest.fn().mockReturnValue(0),
+          },
+        },
+        {
+          provide: SecretsCryptoService,
+          useValue: new SecretsCryptoService({ get: () => "" } as any),
+        },
+        { provide: getRepositoryToken(ExecutionReport), useValue: {} },
+        {
+          provide: getRepositoryToken(Project),
+          useValue: opts.projectRepo ?? projectRepo,
+        },
+        { provide: ProjectAccessService, useValue: opts.access ?? access },
+      ],
+    }).compile();
+    service = module.get(TaskService);
+  }
+
+  it("省略 projectId → 放行（未分配语义，既有调用方零影响）", async () => {
+    await build();
+    await expect(call(undefined, outsider)).resolves.toBeUndefined();
+  });
+
+  it("显式 null → 放行（= 未分配，可把任务移出项目）", async () => {
+    await build();
+    await expect(call(null, member)).resolves.toBeUndefined();
+  });
+
+  it("项目不存在 → 400（早失败，不让 FK 违例冒成 500）", async () => {
+    projectRepo = { findOne: jest.fn().mockResolvedValue(null) };
+    await build({ projectRepo });
+    await expect(call(PROJECT_ID, admin)).rejects.toThrow(BadRequestException);
+  });
+
+  it("ADMIN 可任意指派", async () => {
+    await build();
+    await expect(call(PROJECT_ID, admin)).resolves.toBeUndefined();
+  });
+
+  it("项目 editor 可指派", async () => {
+    await build();
+    access.resolveRole.mockResolvedValue("editor");
+    await expect(call(PROJECT_ID, member)).resolves.toBeUndefined();
+  });
+
+  it("项目 admin 可指派", async () => {
+    await build();
+    access.resolveRole.mockResolvedValue("admin");
+    await expect(call(PROJECT_ID, member)).resolves.toBeUndefined();
+  });
+
+  it("非成员被拒（否则谁都能把任务塞进别人的项目）", async () => {
+    await build();
+    access.resolveRole.mockResolvedValue(null);
+    await expect(call(PROJECT_ID, outsider)).rejects.toThrow(
+      ForbiddenException,
+    );
+  });
+
+  it("viewer 被拒（只读席位不得改归属）", async () => {
+    await build();
+    access.resolveRole.mockResolvedValue("viewer");
+    await expect(call(PROJECT_ID, outsider)).rejects.toThrow(
+      ForbiddenException,
+    );
+  });
+
+  it("无用户主体且非 ADMIN → 拒（不 fail-open）", async () => {
+    await build();
+    await expect(call(PROJECT_ID, undefined)).rejects.toThrow(
+      ForbiddenException,
+    );
+  });
+});
+
 describe("OBS-03: execution log level（写入抽取）", () => {
   let service: TaskService;
   let execRepo: ReturnType<typeof makeRepo>;
@@ -5061,6 +5209,7 @@ describe("R-26: @Optional 关键依赖缺失可观测性（TaskService）", () =
       {} as never, // secretsCrypto
       null as never, // tracing（@Optional）
       null as never, // reportRepo（@Optional）
+      null as never, // projectRepo（@Optional，TASK-PROJ-01）
       null as never, // projectAccess（@Optional）
       opts.audit as never, // audit（@Optional）
     );

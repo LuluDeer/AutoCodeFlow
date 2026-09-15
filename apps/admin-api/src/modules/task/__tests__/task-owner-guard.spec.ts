@@ -44,6 +44,8 @@ describe("TaskService.assertCanWrite（NF-03 属主矩阵）", () => {
       null as never,
       null as never,
       null as never,
+      // TASK-PROJ-01: Project 仓储（@Optional，缺席 = 归属项目设置一律拒绝）
+      null as never,
       // AUTH-02: ProjectAccessService（@Optional，缺席 = 旁路）
       null as never,
       // R-28: AuditService（@Optional，缺席 = 依赖触发审计旁路）
@@ -124,6 +126,8 @@ describe("TaskService 项目角色面（AUTH-02）", () => {
       {} as never,
       null as never,
       null as never,
+      null as never,
+      // TASK-PROJ-01: Project 仓储
       null as never,
       access as never,
       // R-28: AuditService（@Optional，缺席 = 依赖触发审计旁路）
