@@ -3,7 +3,7 @@ import React, { useEffect, useState } from 'react';
 declare const window: Window & {
   electronAPI: {
     testConnection: (url: string) => Promise<{ ok: boolean; message: string }>;
-    saveAndCloseWizard: (cfg: Record<string, unknown>) => Promise<{ ok: boolean }>;
+    saveAndCloseWizard: (cfg: Record<string, unknown>) => Promise<{ ok: boolean; error?: string }>;
     checkPort: (port: number) => Promise<{ available: boolean; message: string }>;
     getLocalIPs: () => Promise<string[]>;
   };
@@ -48,6 +48,8 @@ export default function Wizard() {
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [saving, setSaving] = useState(false);
+  // 向导保存失败必须可见（原实现无 try，reject 后永久卡在"保存中"）
+  const [finishError, setFinishError] = useState<string | null>(null);
 
   function set(key: keyof WizardForm, value: unknown) {
     setForm((f) => ({ ...f, [key]: value }));
@@ -65,14 +67,26 @@ export default function Wizard() {
 
   async function finish() {
     setSaving(true);
-    await window.electronAPI.saveAndCloseWizard({
-      ...form,
-      executorHost: '0.0.0.0',
-      maxConcurrentTasks: 10,
-      workDir: '',
-      logLevel: 'info',
-    });
-    setSaving(false);
+    setFinishError(null);
+    try {
+      const r = await window.electronAPI.saveAndCloseWizard({
+        ...form,
+        executorHost: '0.0.0.0',
+        maxConcurrentTasks: 10,
+        workDir: '',
+        logLevel: 'info',
+      });
+      // 主进程已关闭向导窗口；只有失败时才需要回到 UI 反馈
+      if (r && r.ok === false) {
+        setFinishError(r.error || '保存失败');
+      }
+    } catch (err) {
+      // 原实现未包 try——reject 会让 saving 永久为 true，向导卡在"保存中"
+      // 且无任何错误提示，用户只能强杀进程。
+      setFinishError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
@@ -127,6 +141,7 @@ export default function Wizard() {
             onBack={() => setStep(3)}
             onFinish={finish}
             saving={saving}
+            error={finishError}
           />
         )}
       </div>
@@ -251,18 +266,38 @@ function StepExecutor({
   function handlePortChange(v: number) {
     onChange('executorPort', v);
     setPortResult(null);
-    // 同步更新对外地址里的端口
+    // 同步更新对外地址里的端口。
+    // 原实现用 split(':')[0] 取主机段——对 IPv6 字面量（::1 / [::1]）会截成
+    // 空串，对用户手填的域名也会误伤；改为只替换「最后一个冒号之后」的端口段，
+    // 无冒号时（纯 IP/域名）直接补端口。
     if (form.executorAddressPublic) {
-      const ip = form.executorAddressPublic.split(':')[0];
-      onChange('executorAddressPublic', `${ip}:${v}`);
+      onChange('executorAddressPublic', replaceAddressPort(form.executorAddressPublic, v));
     }
+  }
+
+  /**
+   * 把 addr 的端口部分替换为 port，保留主机段原样（含 IPv6 字面量）。
+   * 规则：`[v6]:old` 与 `host:old` 替换末尾端口；`[v6]` 补端口；
+   * 裸 IPv6（多个冒号且无方括号）视为无端口——追加会歧义，故原样返回。
+   */
+  function replaceAddressPort(addr: string, port: number): string {
+    const bracketed = addr.match(/^(\[[^\]]+\])(?::\d+)?$/);
+    if (bracketed) return `${bracketed[1]}:${port}`;
+    const colons = (addr.match(/:/g) ?? []).length;
+    if (colons === 0) return `${addr}:${port}`;
+    if (colons === 1) return `${addr.slice(0, addr.lastIndexOf(':'))}:${port}`;
+    // 多个冒号且无方括号 = 裸 IPv6，无法安全区分端口，保持原值
+    return addr;
   }
 
   function selectIP(ip: string) {
     onChange('executorAddressPublic', `${ip}:${form.executorPort}`);
   }
 
-  const canNext = !!form.executorName && form.executorPort > 0;
+  // 端口必须落在合法区间：原实现只判 > 0，用户可填 99999 并一路走到完成，
+  // 最终由子进程 bind 失败才暴露，错误信息也难懂。
+  const portValid = Number.isInteger(form.executorPort) && form.executorPort >= 1 && form.executorPort <= 65535;
+  const canNext = !!form.executorName && portValid;
 
   return (
     <>
@@ -296,6 +331,13 @@ function StepExecutor({
           {portResult && (
             <div className={`test-result ${portResult.available ? 'ok' : 'fail'}`}>
               {portResult.available ? '✓' : '✗'} {portResult.message}
+            </div>
+          )}
+          {/* HTML 的 min/max 不阻止手输/粘贴越界值——显式给出校验反馈，
+              否则用户可带着非法端口一路点到"完成" */}
+          {!portValid && (
+            <div className="test-result fail" role="alert">
+              ✗ 端口必须是 1 – 65535 之间的整数
             </div>
           )}
         </div>
@@ -352,13 +394,14 @@ function StepExecutor({
 }
 
 function StepFinish({
-  form, onChange, onBack, onFinish, saving,
+  form, onChange, onBack, onFinish, saving, error,
 }: {
   form: WizardForm;
   onChange: (k: keyof WizardForm, v: unknown) => void;
   onBack: () => void;
   onFinish: () => void;
   saving: boolean;
+  error: string | null;
 }) {
   return (
     <>
@@ -399,6 +442,9 @@ function StepFinish({
           </div>
         </div>
       </div>
+      {error && (
+        <div className="wizard-error" role="alert">⚠ 保存失败：{error}</div>
+      )}
       <div className="wizard-actions">
         <button className="btn" onClick={onBack} disabled={saving}>← 返回</button>
         <button className="btn btn-primary btn-lg" onClick={onFinish} disabled={saving}>

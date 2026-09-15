@@ -1504,6 +1504,17 @@ input:focus-visible,
   font-size: 12px;
 }
 
+/* 向导保存失败条（放在 actions 上方，与按钮同宽） */
+.wizard-error {
+  margin: 0 var(--space-lg) var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid var(--red-border);
+  border-radius: var(--radius);
+  background: var(--red-bg);
+  color: var(--text);
+  font-size: 12px;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;
