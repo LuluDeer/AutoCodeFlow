@@ -525,6 +525,50 @@ def test_entrypoint_absolute_outside_workdir_rejected(tmp_path, monkeypatch):
     assert 'escapes the execution work directory' in str(exc.value.detail)
 
 
+# R4-C P4（本轮审计）：W-04 声称已封堵 Windows 类逃逸（/etc/passwd、\Windows\...），
+# 但**驱动器相对路径**（`C:evil.bat`）仍绕过：ntpath 里它既非 is_absolute()
+# （那要求 盘符+分隔符），parts 中也没有 '..'，两道分支都不命中。实测
+# `C:evil.bat` → C:\evil.bat、`C:../../Windows/System32/evil.bat`
+# → C:\Windows\System32\evil.bat，均在 work_dir 之外。
+@pytest.mark.parametrize(
+    'entrypoint',
+    [
+        'C:evil.bat',
+        'C:../../Windows/System32/evil.bat',
+        'E:evil.bat',
+        '\\\\srv\\share\\evil.bat',
+        '\\evil.bat',
+        '..\\evil.bat',
+    ],
+)
+def test_entrypoint_windows_escape_forms_rejected(entrypoint, tmp_path, monkeypatch):
+    from routers import execute as execute_module
+    from routers.execute import ExecuteRequest, run_task
+
+    monkeypatch.setattr(execute_module.settings, 'work_dir', str(tmp_path))
+    req = ExecuteRequest(
+        executionId='exec-winescape',
+        task={'name': 'escape', 'runtime': 'shell', 'entrypoint': entrypoint},
+    )
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(run_task(req))
+    assert 'escapes the execution work directory' in str(exc.value.detail)
+
+
+@pytest.mark.parametrize(
+    'entrypoint',
+    ['ok.sh', 'sub/ok.sh', './sub/ok.sh'],
+)
+def test_entrypoint_relative_inside_workdir_allowed(entrypoint, tmp_path):
+    """收敛只针对逃逸形态，work_dir 内的普通相对路径不得被误伤。"""
+    from routers.execute import _ensure_entrypoint_in_workdir
+
+    work = tmp_path / 'exec-ok'
+    work.mkdir()
+    # 不抛异常即通过
+    _ensure_entrypoint_in_workdir(entrypoint, work.resolve())
+
+
 # ---------------------------------------------------------------------------
 # R4-C P1: bounded output accumulation + disk log cap
 # ---------------------------------------------------------------------------
