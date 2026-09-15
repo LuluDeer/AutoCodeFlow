@@ -129,9 +129,25 @@ schema 再 `$ref`。
       漂移点，前端不读这两个字段、无外部消费方，已对齐为 snake_case。
     - 反证有牙：两侧 config/health 用例都用**生成的** schema 现校验真实出参
       （`safeParse`/`model_validate`），再改回 camelCase / 退回旧状态值立即红。
-- `kill` / `deploy` / `update-package` / `logs` 等端点的载荷**未** schema 化——
-  先收协议面两端共有的核心载荷（ExecuteRequest / ConfigReload / readiness），
-  避免把只属于一端的实现细节拉进共享契约（见「修改纪律」）。
+- ~~`kill` / `logs` 两端共有响应未 schema 化~~ —— **已收口（KillResponse /
+  LogsResponse，均 `additionalProperties:false` → zod `.strict()` / pydantic
+  `extra="forbid"`）**。
+  - executor-node：`routes/execute.ts` 的 kill 五个返回点（404 一处 + 200 四处）
+    统一经 `killBody()` 过 `KillResponseSchema`；`routes/logs.ts` 成功页经
+    `LogsResponseSchema` 后才发送，校验不过抛错走 500（不发 admin 无法解析的载荷）。
+  - executor-python：`routers/execute.py` 的 `_kill_body()` 三处返回过
+    `ProtocolKillResponse`；`routers/logs.py` 返回前过 `ProtocolLogsResponse`
+    （本地 response_model 管序列化，生成物管两侧形状不漂移）。
+  - 跨语言坑（钉在向量注释里）：①pydantic lax 会把 `'yes'/'true'/0/1` 强转 bool，
+    故 `ok-not-boolean` 非法向量用两侧默认模式都拒绝的 `"maybe"`；②zod `.strict()`
+    把未知键报在根路径（键名在 `issue.keys`），pydantic forbid 报在该键 loc，
+    两侧错误定位不同形，故「多余键拒绝」不放进共享向量，改由两侧各自运行时测试断言。
+  - 反证有牙：node `execute.spec.ts`/`logs.spec.ts`、python `test_kill.py`/
+    `test_logs.py` 都用**生成的** schema 现校验真实 200/404/分页出参，并断言
+    strict/forbid 拒绝未声明键。
+- `deploy` / `update-package` 端点载荷**仍未** schema 化——它们是 executor-node
+  **独有**（executor-python 无对应 router），按「修改纪律」不拉进两端共享契约；
+  如未来 python 补齐对应端点，再把共有面提升进 protocol.json。
 
 ## 修改纪律
 

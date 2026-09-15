@@ -17,6 +17,8 @@ jest.mock('../config', () => ({
 jest.mock('../logger', () => ({ logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn() } }));
 
 import { logsRouter, getExecutorAuthToken } from './logs';
+// A3（kill/logs 契约化）：真实出参用生成的 schema 现校验
+import { LogsResponseSchema } from '../generated/protocol.schemas';
 
 const mockFs = fs as jest.Mocked<typeof fs>;
 
@@ -205,5 +207,22 @@ describe('GET /api/logs/:executionId', () => {
     const res = await request(appNoAuth).get('/api/logs/exec-error');
     expect(res.status).toBe(500);
     expect(res.body.error).toMatch(/Failed to read log file/);
+  });
+
+  // A3 反证有牙：真实出参必须被**生成的** LogsResponse 接受（字段改名/缺字段
+  // /类型漂移立即红）；strict 模式还必须拒绝未声明的额外键。
+  it('every success page conforms to the generated LogsResponse schema', async () => {
+    (mockFs.existsSync as jest.Mock).mockReturnValue(true);
+    mockLogFile('a\nb\nc\nd\n');
+
+    const res = await request(appNoAuth).get('/api/logs/exec-contract?fromLine=1&limit=2');
+    expect(res.status).toBe(200);
+    expect(LogsResponseSchema.safeParse(res.body).success).toBe(true);
+  });
+
+  it('generated LogsResponse is strict (rejects an undeclared extra key)', () => {
+    expect(
+      LogsResponseSchema.safeParse({ lines: [], totalLines: 0, hasMore: false, stray: 1 }).success,
+    ).toBe(false);
   });
 });

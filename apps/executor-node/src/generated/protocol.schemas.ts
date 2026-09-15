@@ -57,3 +57,15 @@ export const HealthReadyResponseSchema = z.object({
   "reason": z.string().optional(),
 }).passthrough();
 export type HealthReadyResponse = z.infer<typeof HealthReadyResponseSchema>;
+
+export const KillResponseSchema = z.object({
+  "ok": z.boolean(),
+}).strict();
+export type KillResponse = z.infer<typeof KillResponseSchema>;
+
+export const LogsResponseSchema = z.object({
+  "lines": z.array(z.string()),
+  "totalLines": z.number().int().min(0),
+  "hasMore": z.boolean(),
+}).strict();
+export type LogsResponse = z.infer<typeof LogsResponseSchema>;
