@@ -1720,6 +1720,7 @@ export default {
   'taskForm.load.tagsFail': '获取标签失败',
   'taskForm.load.executorsFail': '获取执行器列表失败',
   'taskForm.load.appsFail': '获取应用列表失败',
+  'taskForm.load.projectsFail': '获取项目列表失败（仍可保存为未分配）',
   'taskForm.load.tasksFail': '获取任务列表失败，上游依赖暂不可选',
   'taskForm.load.taskFailed': '加载任务失败',
   'taskForm.load.templateFailed': '加载任务模板失败，已使用空白表单',
@@ -1756,6 +1757,11 @@ export default {
   'taskForm.field.name.tooltip': '唯一标识，建议使用英文，如 daily-report',
   'taskForm.field.description.optional': '描述（可选）',
   'taskForm.field.description.placeholder': '简单说明这个任务做什么',
+  // TASK-PROJ-01：任务归属项目。此前无任何写入入口，导致「项目隔离」对所有新任务
+  // 都塌缩到默认项目视图。不选 = 未分配（归默认项目视图），与既有行为一致。
+  'taskForm.field.projectId': '归属项目',
+  'taskForm.field.projectId.placeholder': '未分配（归默认项目）',
+  'taskForm.field.projectId.tooltip': '把任务归入某个项目。不选表示未分配，按默认项目视图统计与过滤。仅管理员或该项目的 editor/admin 可修改。',
   'taskForm.field.runtime': '运行时',
   'taskForm.field.runtime.required': '请选择运行时',
   'taskForm.field.runtime.tooltip': '执行器节点需安装对应运行时',

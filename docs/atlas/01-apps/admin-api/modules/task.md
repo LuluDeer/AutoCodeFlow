@@ -70,6 +70,14 @@ TaskService.handleCallback：地址比对 → winner 条件 UPDATE（open 状态
   **项目 viewer 在任一档下始终被拒**（AUTH-02 硬约束）。注意这三个端点是历史上唯一不做
   归属校验的写面（`update`/`delete` 早已要求属主或 ADMIN），此前登记为 ADR-013 已知缺口。
 
+- **归属项目（TASK-PROJ-01）**：`CreateTaskDto.projectId`（`@IsUUID` 可选）。省略/null =
+  未分配 → 读面按 `IS NULL OR = DEFAULT_PROJECT_ID` 归入默认项目视图。写面经
+  `assertCanAssignProject` 校验：项目须真实存在（否则 400，不让 FK 违例冒成 500），
+  且调用方须为 ADMIN 或该项目 editor/admin（否则任何人都能把任务塞进/捞出别人的项目）。
+  `update` 同样校验（缺省 = 保留旧归属）。**背景**：该列由迁移 1790000000008 建立并
+  回填了存量任务，但 DTO 字段一直没做（迁移注释即写明此遗留），导致新任务永远 NULL、
+  「项目隔离」对所有新任务塌缩到默认项目。
+
 ## 与其他模块的关系
 
 - 依赖 [executor](executor.md)：派发/kill/日志回填/重试预算（`forwardRef` 双向环）。

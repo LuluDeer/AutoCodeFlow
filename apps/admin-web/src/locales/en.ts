@@ -1707,6 +1707,7 @@ export default {
   'taskForm.load.tagsFail': 'Failed to fetch tags',
   'taskForm.load.executorsFail': 'Failed to fetch executor list',
   'taskForm.load.appsFail': 'Failed to fetch application list',
+  'taskForm.load.projectsFail': 'Failed to fetch project list (you can still save as unassigned)',
   'taskForm.load.tasksFail': 'Failed to fetch task list; upstream dependencies unavailable',
   'taskForm.load.taskFailed': 'Failed to load task',
   'taskForm.load.templateFailed': 'Failed to load task template; using a blank form',
@@ -1743,6 +1744,10 @@ export default {
   'taskForm.field.name.tooltip': 'Unique identifier; English recommended, e.g., daily-report',
   'taskForm.field.description.optional': 'Description (optional)',
   'taskForm.field.description.placeholder': 'Briefly describe what this task does',
+  // TASK-PROJ-01: owning project (previously had no write path at all).
+  'taskForm.field.projectId': 'Owning project',
+  'taskForm.field.projectId.placeholder': 'Unassigned (Default project)',
+  'taskForm.field.projectId.tooltip': 'Assign the task to a project. Leaving it empty means unassigned and counts toward the Default project view. Only administrators or the project\u2019s editor/admin may change this.',
   'taskForm.field.runtime': 'Runtime',
   'taskForm.field.runtime.required': 'Please select a runtime',
   'taskForm.field.runtime.tooltip': 'Executor nodes must have the corresponding runtime installed',

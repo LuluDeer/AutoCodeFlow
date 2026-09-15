@@ -39,6 +39,8 @@ const newTaskService = (): TaskService =>
     null as never,
     null as never,
     null as never,
+    // TASK-PROJ-01: projectRepo（@Optional）
+    null as never,
   );
 
 const owner = { id: 7, role: UserRole.USER };

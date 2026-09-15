@@ -22,6 +22,8 @@ import { tasksApi } from '../api/tasks';
 import { executorsApi } from '../api/executors';
 import { applicationsApi } from '../api/applications';
 import { taskTemplatesApi } from '../api/task-templates';
+// TASK-PROJ-01: 归属项目候选（任务可归入某项目；不选 = 未分配）
+import { projectsApi } from '../api/projects';
 import { getErrMsg, isFormValidationError } from '../utils/error';
 import { templateConfigFromFormValues } from '../utils/task-template-config-from-form';
 import {
@@ -153,6 +155,13 @@ export default function TaskFormPage() {
   const [allTags, setAllTags] = useState<string[]>([]);
   const [executors, setExecutors] = useState<{ id: string; appName: string; address: string; status: string }[]>([]);
   const [apps, setApps] = useState<{ id: string; name: string }[]>([]);
+  // TASK-PROJ-01: 归属项目候选（不选 = 未分配，归默认项目视图）
+  const [projects, setProjects] = useState<{ id: string; name: string }[]>([]);
+  // TASK-PROJ-01: Select 选项（含显式"未分配"语义：allowClear 即可，不额外造选项）
+  const projectOptions = useMemo(
+    () => projects.map((p) => ({ value: p.id, label: p.name })),
+    [projects],
+  );
   // NF-02: 上游依赖选择——候选任务列表 + 名称快照（提交时重建 dependencies 映射）
   const [taskOptions, setTaskOptions] = useState<{ id: string; name: string }[]>([]);
   const depNameSnapshotRef = useRef<Record<string, string>>({});
@@ -200,6 +209,13 @@ export default function TaskFormPage() {
       (data) => setApps(data.map((a) => ({ id: a.id, name: a.name }))),
       t('taskForm.load.appsFail'),
     );
+    // TASK-PROJ-01: 归属项目候选。失败只 warn（不阻塞表单）——未分配仍是合法
+    // 取值，故取不到列表时退回"仅能选未分配"，而不是让整个表单不可用。
+    run(
+      projectsApi.list(),
+      (data) => setProjects(data.map((p) => ({ id: p.id, name: p.name }))),
+      t('taskForm.load.projectsFail'),
+    );
     // NF-02: 上游依赖候选（分页拉全，取 id+name；编辑态在任务加载后过滤自身）
     tasksApi
       .listAll({}, controller.signal)
@@ -241,6 +257,9 @@ export default function TaskFormPage() {
           entrypoint: task.entrypoint,
           requirements: task.requirements ?? [],
           applicationId: task.applicationId,
+          // TASK-PROJ-01: 编辑态回填归属项目（null = 未分配 → undefined 让
+          // Select 显示占位符，而不是把 "null" 当值）
+          projectId: task.projectId ?? undefined,
           triggerType: task.triggerType || 'manual',
           cronExpression: task.cronExpression,
           timezone: task.timezone,
@@ -577,6 +596,26 @@ export default function TaskFormPage() {
 
                 <Form.Item name="description" label={t('taskForm.field.description.optional')}>
                   <Input placeholder={t('taskForm.field.description.placeholder')} />
+                </Form.Item>
+
+                {/* TASK-PROJ-01：归属项目。
+                    此前 tasks.projectId 无任何写入入口（迁移 1790000000008 的注释
+                    即写明「新建任务在 DTO 未接 projectId 前一律落 NULL」），导致
+                    「项目隔离」对所有新任务都塌缩到默认项目视图、形同虚设。
+                    不选 = 未分配（归默认项目视图），与既有行为一致。
+                    后端仅 ADMIN 或该项目的 editor/admin 可设置，故非管理员看到
+                    的选项受限（后端仍会兜底校验）。 */}
+                <Form.Item
+                  name="projectId"
+                  label={t('taskForm.field.projectId')}
+                  tooltip={{ title: t('taskForm.field.projectId.tooltip'), icon: <InfoCircleOutlined /> }}
+                >
+                  <Select
+                    allowClear
+                    placeholder={t('taskForm.field.projectId.placeholder')}
+                    options={projectOptions}
+                    data-testid="task-project-select"
+                  />
                 </Form.Item>
 
                 <Form.Item
