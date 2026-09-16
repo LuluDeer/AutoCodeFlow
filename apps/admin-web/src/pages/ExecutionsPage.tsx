@@ -134,7 +134,14 @@ export default function ExecutionsPage() {
       dataIndex: 'taskName',
       render: (name: string, r: TaskExecution) => (
         // F-33（DEEP_REVIEW 0ef3bbe）：原 <a onClick> 无 href，改 <Link>（键盘可达 + 真实 href）
-        <Link to={`/tasks/${r.taskId}`} style={{ fontWeight: 500 }}>{name || r.taskId}</Link>
+        // UI 打磨：长任务名单行 ellipsis，不再整列换行撑高行
+        <Link
+          to={`/tasks/${r.taskId}`}
+          title={name || r.taskId}
+          style={{ fontWeight: 500, display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+        >
+          {name || r.taskId}
+        </Link>
       ),
     },
     {
@@ -189,7 +196,10 @@ export default function ExecutionsPage() {
     {
       title: t('execs.col.action'),
       key: 'action',
-      width: 100,
+      // UI 打磨：详情 + 终止两个带文字链接实测 ~125px，100 宽在 running 行折行；
+      // fixed right 让操作列在横向滚动时常驻
+      width: 135,
+      fixed: 'right' as const,
       render: (_: unknown, r: TaskExecution) => (
         <Space size={4}>
           <Button
@@ -307,7 +317,9 @@ export default function ExecutionsPage() {
         dataSource={executions}
         loading={loading}
         // UI-09：次要列窄屏收起（CSS 媒体查询 .ui09-hide-mobile）+ scroll.x 横向滚动兜底
-        scroll={{ x: 640 }}
+        // UI 打磨：scroll.x 与列宽合计对齐（固定列 685 + 勾选 32 + 任务/错误两个弹性列
+        // 最小各 ~160），原 640 < 合计，两个弹性列被压到勉强可读
+        scroll={{ x: 1040 }}
         rowSelection={{
           selectedRowKeys: selectedIds,
           onChange: (keys) => setSelectedIds(keys as string[]),

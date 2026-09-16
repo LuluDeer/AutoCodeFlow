@@ -3,7 +3,6 @@ import {
   Table, Button, Tag, Space, Typography, message, Modal, Select,
   Badge, Tooltip, Alert, Empty, Popconfirm, Form, Progress, Radio, Input, theme,
 } from 'antd';
-import type { BadgeProps } from 'antd';
 import {
   RocketOutlined, StopOutlined, ReloadOutlined, PlusOutlined,
   ThunderboltOutlined, UpCircleOutlined, CheckOutlined, CloseOutlined,
@@ -21,13 +20,13 @@ import { useAuthStore } from '../store/auth';
 
 const { Text } = Typography;
 
-const STATUS_CONFIG = (t: (k: string) => string): Record<string, { color: string; label: string; badge: BadgeProps['status'] }> => ({
-  running: { color: 'green', label: t('appDeploy.status.running'), badge: 'success' },
-  stopped: { color: 'default', label: t('appDeploy.status.stopped'), badge: 'default' },
-  deploying: { color: 'blue', label: t('appDeploy.status.deploying'), badge: 'processing' },
-  failed: { color: 'red', label: t('appDeploy.status.failed'), badge: 'error' },
-  pending: { color: 'orange', label: t('appDeploy.status.pending'), badge: 'warning' },
-  upgrading: { color: 'cyan', label: t('appDeploy.status.upgrading'), badge: 'processing' },
+const STATUS_CONFIG = (t: (k: string) => string): Record<string, { color: string; label: string }> => ({
+  running: { color: 'green', label: t('appDeploy.status.running') },
+  stopped: { color: 'default', label: t('appDeploy.status.stopped') },
+  deploying: { color: 'blue', label: t('appDeploy.status.deploying') },
+  failed: { color: 'red', label: t('appDeploy.status.failed') },
+  pending: { color: 'orange', label: t('appDeploy.status.pending') },
+  upgrading: { color: 'cyan', label: t('appDeploy.status.upgrading') },
 });
 
 /** DEP-04: 审批状态展示配置（null=非审批路径不渲染） */
@@ -289,24 +288,32 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
       title: t('appDeploy.col.executor'),
       key: 'executor',
       render: (_: unknown, r: AppDeployment) => (
-        <Space direction="vertical" size={0}>
-          <Text strong style={{ fontSize: 13}}>{r.executorAddress || r.executorId}</Text>
+        // UI 打磨：弹性列内 minWidth:0 + display:block，长地址/状态信息单行省略
+        <div style={{ minWidth: 0 }}>
+          <Text strong style={{ fontSize: 13, display: 'block' }} ellipsis={{ tooltip: r.executorAddress || r.executorId }}>
+            {r.executorAddress || r.executorId}
+          </Text>
           {r.deployedVersion && <Tag color="blue" style={{ fontSize: 11 }}>v{r.deployedVersion}</Tag>}
           {r.statusMessage && (
-            <Text type="secondary" style={{ fontSize: 11 }}>{r.statusMessage}</Text>
+            <Text type="secondary" style={{ fontSize: 11, display: 'block' }} ellipsis={{ tooltip: r.statusMessage }}>
+              {r.statusMessage}
+            </Text>
           )}
-        </Space>
+        </div>
       ),
     },
     {
       title: t('appDeploy.col.status'),
       dataIndex: 'status',
-      width: 100,
+      width: 120,
       render: (s: string, r: AppDeployment) => {
-        const cfg = statusConfig[s] || { color: 'default', label: s, badge: 'default' };
+        // UI 打磨：状态列收敛为单层 Tag（去掉 Badge+Tag 双重编码，宽 100→120 防审批徽标换行挤压）
+        const cfg = statusConfig[s] || { color: 'default', label: s };
         return (
           <Space direction="vertical" size={0}>
-            <Badge status={cfg.badge} text={<Tag color={cfg.color} style={{ border: 'none', background: `${cfg.color}15` }}>{cfg.label}</Tag>} />
+            <Tag color={cfg.color} style={{ border: 'none', background: `${cfg.color}15`, marginInlineEnd: 0 }}>
+              {cfg.label}
+            </Tag>
             {/* DEP-04: 审批状态徽标（待审批/已批准/已拒绝/已撤销） */}
             {r.approvalStatus && approvalConfig[r.approvalStatus] && (
               <Tag color={approvalConfig[r.approvalStatus].color} style={{ fontSize: 11 }}>
@@ -549,6 +556,7 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
           dataSource={deployments}
           loading={loading}
           size="small"
+          scroll={{ x: 720 }}
           pagination={{ current: page, pageSize: 20, total, onChange: (p) => setPage(p), showTotal: (n: number) => t('appDeploy.count', { count: n }) }}
         />
       )}
@@ -634,6 +642,7 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
         confirmLoading={rejecting}
         okText={t('appDeploy.reject.confirm')}
         okButtonProps={{ danger: true, icon: <CloseOutlined /> }}
+        width={540}
       >
         {rejectTarget && (
           <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>

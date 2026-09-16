@@ -78,14 +78,16 @@ function AiAnalysisTab({ appId }: { appId: string }) {
       {error && <Alert type="error" title={error} showIcon />}
       {report && !loading && (
         <div>
-          <Row gutter={16} style={{ marginBottom: 24 }}>
-            <Col span={8}>
-              <Card size="small">
+          {/* UI 打磨：三张统计卡加断点并等高——写死 span={8} 在窄容器
+              （Tab 内 Card）里三块各 1/3 宽互相截断 */}
+          <Row gutter={[16, 16]} align="stretch" style={{ marginBottom: 24 }}>
+            <Col xs={24} sm={8}>
+              <Card size="small" style={{ height: '100%' }}>
                 <Statistic title={t('appDetail.ai.stat.tasks')} value={report.stats.totalTasks} />
               </Card>
             </Col>
-            <Col span={8}>
-              <Card size="small">
+            <Col xs={24} sm={8}>
+              <Card size="small" style={{ height: '100%' }}>
                 <Statistic
                   title={t('appDetail.ai.stat.successRate')}
                   value={report.stats.avgSuccessRate}
@@ -94,8 +96,8 @@ function AiAnalysisTab({ appId }: { appId: string }) {
                 />
               </Card>
             </Col>
-            <Col span={8}>
-              <Card size="small">
+            <Col xs={24} sm={8}>
+              <Card size="small" style={{ height: '100%' }}>
                 <Statistic title={t('appDetail.ai.stat.avgDuration')} value={report.stats.avgDuration ? `${(report.stats.avgDuration / 1000).toFixed(1)}s` : '-'} />
               </Card>
             </Col>
@@ -114,7 +116,7 @@ function AiAnalysisTab({ appId }: { appId: string }) {
             <Alert
               type="info"
               message={t('appDetail.ai.conclusion')}
-              description={<pre style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{report.analysis}</pre>}
+              description={<pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0, maxHeight: 240, overflow: 'auto' }}>{report.analysis}</pre>}
               showIcon
               icon={<RobotOutlined />}
             />
@@ -159,10 +161,16 @@ function OverviewTab({ app }: { app: Application }) {
           )}
           {app.gitRepo && (
             <Descriptions.Item label={t('appDetail.field.gitRepo')} span={2}>
-              <Space>
-                <GithubOutlined />
-                <Text copyable={{ text: app.gitRepo }}>
-                  <a href={app.gitRepo.startsWith('http') ? app.gitRepo : '#'} target="_blank" rel="noopener noreferrer">
+              <Space style={{ maxWidth: '100%' }} size={4}>
+                <GithubOutlined style={{ flex: 'none' }} />
+                <Text copyable={{ text: app.gitRepo }} ellipsis style={{ maxWidth: '100%' }}>
+                  <a
+                    href={app.gitRepo.startsWith('http') ? app.gitRepo : '#'}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title={app.gitRepo}
+                    style={{ display: 'inline-block', maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', verticalAlign: 'bottom' }}
+                  >
                     {app.gitRepo}
                   </a>
                 </Text>
@@ -487,6 +495,8 @@ function VersionHistoryTab({ app, onAppReload }: { app: Application; onAppReload
         ]}
         dataSource={records}
         loading={loading} size="small"
+        // UI 打磨：固定列合计 590 + executor 弹性列最小宽，补 scroll.x 防窄屏挤压
+        scroll={{ x: 780 }}
         pagination={{ pageSize: 20, showTotal: (n) => t('appDetail.count', { count: n }) }}
         locale={{ emptyText: t('appDetail.history.empty') }}
       />
@@ -608,6 +618,8 @@ function ReleasesTab({ app }: { app: Application }) {
         dataSource={rows}
         loading={loading}
         size="small"
+        // UI 打磨：固定列合计 740 + executor 弹性列最小宽，补 scroll.x
+        scroll={{ x: 920 }}
         data-testid="releases-table"
         pagination={{
           current: page,

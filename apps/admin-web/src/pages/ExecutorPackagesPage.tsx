@@ -14,8 +14,8 @@ import {
 } from '../api/executor-packages';
 import { executorsApi } from '../api/executors';
 import { getErrMsg } from '../utils/error';
-// F-26（DEEP_REVIEW 0ef3bbe）：locale 单一来源，不再硬编码 zh-CN
-import { currentLocale } from '../utils/locale';
+// UI 打磨：时间列统一走 timeFormat 工具（对齐 ProjectsPage/ApplicationListPage 用法）
+import { formatDateTime } from '../utils/timeFormat';
 import { useTranslation } from 'react-i18next';
 import PageHeader from '../components/PageHeader';
 import PageSkeleton from '../components/PageSkeleton';
@@ -187,10 +187,15 @@ export default function ExecutorPackagesPage() {
     {
       title: t('execPkg.col.name'), dataIndex: 'name',
       render: (n: string, r: PkgRow) => (
-        <Space orientation="vertical" size={0}>
-          <Text strong>{n}</Text>
-          {r.originalFilename && <Text type="secondary" style={{ fontSize: 12 }}>{r.originalFilename}</Text>}
-        </Space>
+        // UI 打磨：名称/原始文件名单行 ellipsis——弹性列内 minWidth:0 + display:block 让省略号生效
+        <div style={{ minWidth: 0 }}>
+          <Text strong style={{ display: 'block' }} ellipsis={{ tooltip: n }}>{n}</Text>
+          {r.originalFilename && (
+            <Text type="secondary" style={{ fontSize: 12, display: 'block' }} ellipsis={{ tooltip: r.originalFilename }}>
+              {r.originalFilename}
+            </Text>
+          )}
+        </div>
       ),
     },
     { title: t('execPkg.col.version'), dataIndex: 'version', width: 100, render: (v: string) => <Tag color="blue">{v}</Tag> },
@@ -205,12 +210,12 @@ export default function ExecutorPackagesPage() {
       },
     },
     {
-      title: t('execPkg.col.createdAt'), dataIndex: 'createdAt', width: 160,
-      render: (v: string) => new Date(v).toLocaleString(currentLocale()),
+      title: t('execPkg.col.createdAt'), dataIndex: 'createdAt', width: 170,
+      render: (v: string) => formatDateTime(v),
     },
     { title: t('execPkg.col.uploadedBy'), dataIndex: 'uploadedBy', width: 100, render: (v?: string) => v ?? '-' },
     {
-      title: t('execPkg.col.actions'), key: 'actions', width: 160, align: 'center' as const,
+      title: t('execPkg.col.actions'), key: 'actions', width: 160, align: 'center' as const, fixed: 'right' as const,
       render: (_: unknown, row: PkgRow) => (
         <Space size="small">
           <Tooltip title={t('execPkg.action.download')}>
@@ -276,7 +281,11 @@ export default function ExecutorPackagesPage() {
       </Space>
 
       <Table<PkgRow>
-        rowKey="id" columns={columns} dataSource={rows} loading={false} size="small"
+        rowKey="id" columns={columns} dataSource={rows} size="small"
+        // UI 打磨：loading 直传——此前恒 false，翻页/刷新期间无任何反馈；
+        // 首屏 emptyText 骨架（UI-08）原样保留
+        loading={loading}
+        scroll={{ x: 1060 }}
         pagination={{
           current: page, pageSize: PAGE_SIZE, total, onChange: setPage,
           showTotal: (totalCount) => t('execPkg.countRows', { count: totalCount }),

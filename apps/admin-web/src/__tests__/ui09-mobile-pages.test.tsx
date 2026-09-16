@@ -274,24 +274,28 @@ describe('UI-09 ExecutionDetailPage 375px 产物', () => {
     expect(logCard?.querySelector('.ui09-log-toolbar')).not.toBeNull();
   });
 
-  it('执行信息跨列项随断点收敛：xs 单列 colSpan=1，md 三列 colSpan=3', async () => {
-    // xs（375px）：column={xs:1,...} → 旧写法 span={3} 会超出列数并撑破卡片
+  it('执行信息跨列项独占整行：失败分类/错误信息在独立单列 Descriptions，各断点恒整行', async () => {
+    // UI 打磨回归：antd Descriptions.Item.span 只接受 number，旧写法把响应式
+    // 对象传进 span 无效（md 下跨列项被挤在 1/3 列宽里）。现改为独立的
+    // column={1} Descriptions 渲染——xs 与 md 行为一致，错误信息始终占满整行。
     mediaMode = 'xs';
     const first = renderWithProviders(<ExecutionDetailPage />, '/tasks/t1/executions/e1');
     await screen.findByText('执行信息');
-    const descXs = document.querySelector('.ant-descriptions') as HTMLElement;
-    expect(descXs).toBeTruthy();
-    const errorTdXs = within(descXs).getByText('错误信息').closest('td');
-    expect(errorTdXs?.getAttribute('colspan')).toBe('1');
+    const descsXs = document.querySelectorAll('.ant-descriptions');
+    expect(descsXs.length).toBeGreaterThanOrEqual(2);
+    const errLabelXs = within(descsXs[descsXs.length - 1] as HTMLElement).getByText('错误信息');
+    expect(errLabelXs.closest('td')?.getAttribute('colspan') ?? '1').toBe('1');
     first.unmount();
 
-    // md（≥768px）：列数 3 → 跨列项占满整行
     mediaMode = 'md';
     renderWithProviders(<ExecutionDetailPage />, '/tasks/t1/executions/e1');
     await screen.findByText('执行信息');
-    const descMd = document.querySelector('.ant-descriptions') as HTMLElement;
-    const errorTdMd = within(descMd).getByText('错误信息').closest('td');
-    expect(errorTdMd?.getAttribute('colspan')).toBe('3');
+    const descsMd = document.querySelectorAll('.ant-descriptions');
+    expect(descsMd.length).toBeGreaterThanOrEqual(2);
+    // 主信息网格（第一个 Descriptions）不再包含错误信息行
+    expect(within(descsMd[0] as HTMLElement).queryByText('错误信息')).toBeNull();
+    const errLabelMd = within(descsMd[descsMd.length - 1] as HTMLElement).getByText('错误信息');
+    expect(errLabelMd.closest('td')).toBeTruthy();
   });
 
   it('参数与产物 Tab：参数 Tag 挂 ui09-param-tag（窄屏允许长 URL 折行）', async () => {

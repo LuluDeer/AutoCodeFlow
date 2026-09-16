@@ -1,5 +1,5 @@
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import { Card, Descriptions, Table, Badge, Button, Modal, Form, Input, InputNumber, Select, message, Statistic, Row, Col, Progress, Typography, Breadcrumb, Empty, Tooltip, Space, Alert, Result, Tag, theme } from 'antd';
+import { Card, Descriptions, Table, Badge, Button, Modal, Form, Input, InputNumber, Select, message, Statistic, Row, Col, Progress, Typography, Breadcrumb, Empty, Tooltip, Space, Alert, Result, Tag, theme, Divider } from 'antd';
 import { WarningOutlined, CopyOutlined, InfoCircleOutlined, ReloadOutlined, DeleteOutlined } from '@ant-design/icons';
 // FEAT-04: 24h 资源趋势折线图（Tooltip 别名避开 antd Tooltip，DashboardPage 同法）
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartTooltip, Legend, ResponsiveContainer } from 'recharts';
@@ -217,7 +217,7 @@ export default function ExecutorDetailPage() {
   const statusMap = STATUS_MAP(t);
   const execColumns = [
     // U10: 补任务名/退出码列，行点击直达执行详情页
-    { title: t('executorDetail.history.col.task'), dataIndex: 'taskName', key: 'taskName', ellipsis: true, render: (v: string | undefined, r: ExecutorExecution) => (
+    { title: t('executorDetail.history.col.task'), dataIndex: 'taskName', key: 'taskName', ellipsis: true, minWidth: 175, render: (v: string | undefined, r: ExecutorExecution) => (
       // F-33（DEEP_REVIEW 0ef3bbe）：原 <a onClick> 无 href——键盘不可达、读屏不识别；
       // 改 react-router <Link>（渲染真实 href、SPA 跳转，行为/视觉不变），保留行点击
       // 的 stopPropagation 避免双跳。
@@ -231,7 +231,7 @@ export default function ExecutorDetailPage() {
     // F-35（DEEP_REVIEW 0ef3bbe）：时长格式统一走 formatDurationShort（含小时档）
     { title: t('executorDetail.history.col.duration'), dataIndex: 'duration', key: 'duration', width: 90, render: (v: number) => formatDurationShort(v) },
     { title: t('executorDetail.history.col.exitCode'), dataIndex: 'exitCode', key: 'exitCode', width: 80, render: (v: number | null | undefined) => v != null ? <Text type={v !== 0 ? 'danger' : undefined} code>{v}</Text> : '-' },
-    { title: t('executorDetail.history.col.error'), dataIndex: 'errorMessage', key: 'errorMessage', ellipsis: true, render: (v: string) => v ? <Text type="danger" style={{ fontSize: 12 }}>{v}</Text> : '-' },
+    { title: t('executorDetail.history.col.error'), dataIndex: 'errorMessage', key: 'errorMessage', ellipsis: true, minWidth: 175, render: (v: string) => v ? <Text type="danger" style={{ fontSize: 12 }}>{v}</Text> : '-' },
   ];
 
   return (
@@ -248,7 +248,8 @@ export default function ExecutorDetailPage() {
         title={t('executorDetail.title')}
         extra={
           isAdmin ? (
-          <Space>
+          // UI 打磨：头部 5 个操作按钮窄屏收纳换行（wrap + 紧凑间距），不引入 Dropdown
+          <Space wrap size={4}>
             <Button.Group>
               <Button onClick={() => { editForm.setFieldsValue(executorEditFormValues(executor)); setEditOpen(true); }}>{t('executorDetail.edit')}</Button>
               {/* UI-18: pull 模式执行器（ARCH-32）不可入站推送——入口禁用 */}
@@ -272,6 +273,8 @@ export default function ExecutorDetailPage() {
                 {t('executorDetail.offline.setOffline')}
               </Button>
             </Button.Group>
+            {/* 常规操作与高危操作（轮换/删除）之间的视觉分组 */}
+            <Divider type="vertical" style={{ margin: 0 }} />
             <Tooltip title={t('executorDetail.rotate.oldTokenInvalidTip')}>
               <Button
                 danger
@@ -291,7 +294,8 @@ export default function ExecutorDetailPage() {
           ) : undefined
         }
       >
-        <Descriptions column={3}>
+        {/* UI 打磨：列数随断点收敛（全站 Descriptions 惯例），窄屏不再三列挤压 */}
+        <Descriptions column={{ xs: 1, sm: 2, md: 3 }}>
           <Descriptions.Item label={t('executorDetail.field.appName')}>{executor.appName}</Descriptions.Item>
           <Descriptions.Item label={t('executorDetail.field.address')}>{executor.address}</Descriptions.Item>
           <Descriptions.Item label={t('executorDetail.field.status')}>
@@ -369,11 +373,13 @@ export default function ExecutorDetailPage() {
         />
       )}
 
-      <Row gutter={16} style={{ marginTop: 16 }}>
-        <Col span={12}>
+      {/* UI 打磨：窄屏两卡纵向堆叠（xs=24）、md 起并排且等高 */}
+      <Row gutter={[16, 16]} align="stretch" style={{ marginTop: 16 }}>
+        <Col xs={24} md={12}>
           <Card
             title={t('executorDetail.live.title')}
             loading={loadingMetrics && !metrics}
+            style={{ height: '100%' }}
             extra={<Text type="secondary" style={{ fontSize: 12 }}>{t('executorDetail.live.pollInterval')}</Text>}
           >
             <Row gutter={16}>
@@ -391,8 +397,8 @@ export default function ExecutorDetailPage() {
             </Row>
           </Card>
         </Col>
-        <Col span={12}>
-          <Card title={t('executorDetail.stats.title')} loading={loadingMetrics && !metrics}>
+        <Col xs={24} md={12}>
+          <Card title={t('executorDetail.stats.title')} loading={loadingMetrics && !metrics} style={{ height: '100%' }}>
             {metrics ? (
               <Row gutter={16}>
                 <Col span={8}><Statistic title={t('executorDetail.stats.totalExecutions')} value={metrics.sevenDayStats.totalExecutions} /></Col>
@@ -445,9 +451,10 @@ export default function ExecutorDetailPage() {
         )}
       </Card>
 
-      <Row gutter={16} style={{ marginTop: 16 }}>
-        <Col span={8}>
-          <Card>
+      {/* UI 打磨：窄屏三卡纵向堆叠（xs=24）、sm 起三等分且等高 */}
+      <Row gutter={[16, 16]} align="stretch" style={{ marginTop: 16 }}>
+        <Col xs={24} sm={8}>
+          <Card style={{ height: '100%' }}>
             <Statistic title={t('executorDetail.currentRunning')} value={runningCount} suffix={`/ ${executor.maxConcurrentTasks ?? '∞'}`} />
             {maxConcurrent > 0 && (
               <Progress percent={runningPercent} showInfo={false} strokeColor={usageColor(token, runningPercent, 70, 90)} style={{ marginTop: 8 }} />
@@ -459,11 +466,11 @@ export default function ExecutorDetailPage() {
             )}
           </Card>
         </Col>
-        <Col span={8}>
-          <Card><Statistic title={t('executorDetail.totalTasks')} value={executor.totalTaskCount ?? 0} /></Card>
+        <Col xs={24} sm={8}>
+          <Card style={{ height: '100%' }}><Statistic title={t('executorDetail.totalTasks')} value={executor.totalTaskCount ?? 0} /></Card>
         </Col>
-        <Col span={8}>
-          <Card><Statistic title={t('executorDetail.failedTasks')} value={executor.failedTaskCount ?? 0} styles={{ content: { color: token.colorError } }} /></Card>
+        <Col xs={24} sm={8}>
+          <Card style={{ height: '100%' }}><Statistic title={t('executorDetail.failedTasks')} value={executor.failedTaskCount ?? 0} styles={{ content: { color: token.colorError } }} /></Card>
         </Col>
       </Row>
 
@@ -473,6 +480,8 @@ export default function ExecutorDetailPage() {
           columns={execColumns}
           dataSource={executions?.items ?? []}
           loading={loadingExecutions}
+          // UI 打磨：固定列合计 430 + 两个弹性列（任务名/错误摘要）最小 ≈175 → 窄屏横向滚动兜底
+          scroll={{ x: 780 }}
           onRow={(r: ExecutorExecution) => ({
             onClick: () => navigate(`/tasks/${r.taskId}/executions/${r.id}`),
             style: { cursor: 'pointer' },

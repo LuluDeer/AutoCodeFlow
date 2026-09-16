@@ -56,12 +56,15 @@ export function ExecutionCompareModal({ open, onClose, executions, compareIds }:
   if (selectedExecutions.length === 0) return null;
 
   const cols = [
-    { title: t('execCompare.col.metric'), dataIndex: 'metric', key: 'metric' },
+    { title: t('execCompare.col.metric'), dataIndex: 'metric', key: 'metric', width: 140 },
     ...compareIds.map(id => {
       const exec = selectedExecutions.find(e => e.id === id);
       return {
-        title: <Text copyable={{ text: id }}>{exec?.startTime ? formatDateTime(exec.startTime) : id.slice(0, 8)}</Text>,
+        title: <Text copyable={{ text: id }} ellipsis style={{ maxWidth: '100%' }}>{exec?.startTime ? formatDateTime(exec.startTime) : id.slice(0, 8)}</Text>,
         key: id,
+        // UI 打磨：定宽 + 外层 scroll.x——此前 5 列对比时每列仅 ~160px，
+        // 全量时间表头互相顶挤
+        width: 200,
         render: (_: unknown, record: { metric: string; key: string }) => {
           const val = exec?.[record.key as keyof TaskExecution];
           if (record.key === 'status') {
@@ -106,9 +109,11 @@ export function ExecutionCompareModal({ open, onClose, executions, compareIds }:
       footer={null}
       width={Math.min(240 + compareIds.length * 260, 1100)}
     >
-      <Row gutter={16} style={{ marginBottom: 16 }}>
+      <Row gutter={[12, 12]} style={{ marginBottom: 16 }} wrap>
         {selectedExecutions.map((exec, idx) => (
-          <Col span={24 / selectedExecutions.length} key={exec.id}>
+          // UI 打磨：24/5 等非整数 span 会生成非法 ant-col-4.8 类导致卡片宽度
+          // 失控，改用 flex 等分
+          <Col flex="1 1 0" style={{ minWidth: 150, maxWidth: 260 }} key={exec.id}>
             <Card size="small" title={t('execCompare.execTitle', { idx: idx + 1 })}>
               <Statistic
                 title={t('execCompare.stat.status')}
@@ -120,7 +125,15 @@ export function ExecutionCompareModal({ open, onClose, executions, compareIds }:
           </Col>
         ))}
       </Row>
-      <Table columns={cols} dataSource={rows} rowKey="metric" pagination={false} size="small" />
+      <Table
+        columns={cols}
+        dataSource={rows}
+        rowKey="metric"
+        pagination={false}
+        size="small"
+        // UI 打磨：列宽合计超过 Modal 可用宽时横向滚动，不再挤压表头
+        scroll={{ x: 140 + compareIds.length * 200 }}
+      />
     </Modal>
   );
 }

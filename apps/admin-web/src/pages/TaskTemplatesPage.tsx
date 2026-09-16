@@ -114,10 +114,13 @@ export default function TaskTemplatesPage() {
         {(templates ?? []).map((tpl) => (
           <Col xs={24} sm={12} lg={8} xl={6} key={tpl.id}>
             <Card
+              style={{ height: '100%' }}
               title={
-                <Space>
-                  <FileTextOutlined style={{ color: token.colorPrimary }} />
-                  <span>{tpl.name}</span>
+                // UI 打磨：模板名过长时（title 为 Space 节点，antd 默认省略号
+                // 不生效）用 Text ellipsis+tooltip 收口，卡片等高避免换行锯齿
+                <Space style={{ maxWidth: '100%' }} size={6}>
+                  <FileTextOutlined style={{ color: token.colorPrimary, flexShrink: 0 }} />
+                  <Text ellipsis={{ tooltip: tpl.name }} style={{ maxWidth: '100%' }}>{tpl.name}</Text>
                 </Space>
               }
               extra={

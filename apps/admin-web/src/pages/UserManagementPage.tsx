@@ -210,16 +210,19 @@ export default function UserManagementPage() {
       title: t('users.col.username'),
       dataIndex: 'username',
       key: 'username',
+      width: 160,
+      ellipsis: true,
       render: (text: string) => <strong>{text}</strong>,
     },
-    {
-      title: t('users.col.email'),
-      dataIndex: 'email',
-      key: 'email',
-      ellipsis: true,
-      render: (text: string) =>
-        text || <span style={{ color: token.colorTextQuaternary }}>—</span>,
-    },
+{
+        title: t('users.col.email'),
+        dataIndex: 'email',
+        key: 'email',
+        width: 250,
+        ellipsis: true,
+        render: (text: string) =>
+          text || <span style={{ color: token.colorTextQuaternary }}>—</span>,
+      },
     {
       title: t('users.col.role'),
       dataIndex: 'role',
@@ -256,6 +259,10 @@ export default function UserManagementPage() {
     {
       title: t('users.col.actions'),
       key: 'actions',
+      // UI 打磨：编辑/重置密码/删除三个带文字按钮合计 ~230px，原无宽度与
+      // email 列抢空间导致按钮组换行；fixed right + scroll.x 成对
+      width: 240,
+      fixed: 'right' as const,
       render: (_: unknown, record: UserWithActive) => (
         <Space size="small">
           <Button
@@ -297,11 +304,13 @@ export default function UserManagementPage() {
   ];
 
   return (
-    <div style={{ padding: '24px' }}>
+    // UI 打磨：去掉页级 padding 24——MainLayout Content 已有 20/24 内边距，
+    // 此前双重缩进使本页比其它列表页多一圈 48px，同类页面观感不一致
+    <div>
       {/* UI-03/UI-08：页头标准化（原 Title 区块迁入 PageHeader） */}
       <PageHeader title={t('users.title')} description={t('users.description')} />
       <Card>
-        <Row gutter={12} style={{ marginBottom: 16 }} align="middle">
+        <Row gutter={16} style={{ marginBottom: 16 }} align="middle">
           <Col flex="auto">
             <Input
               placeholder={t('users.searchPlaceholder')}
@@ -336,7 +345,10 @@ export default function UserManagementPage() {
             rowKey="id"
             columns={columns}
             dataSource={filteredUsers}
-            loading={false}
+            // UI 打磨：loading 直传——此前恒 false，refetch 期间无任何反馈；
+            // emptyText 首屏骨架保留（UI-08 语义不变）
+            loading={isLoading}
+            scroll={{ x: 1010 }}
             pagination={{
               current: page,
               pageSize,
