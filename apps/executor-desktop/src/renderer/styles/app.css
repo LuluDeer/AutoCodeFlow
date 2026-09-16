@@ -102,7 +102,10 @@ body {
   font-family: var(--font-body);
   font-size: 13px;
   color: var(--color-foreground);
-  background: transparent;
+  /* WIN-DISPLAY (1.4.3 Hotfix / N47): 窗口不再依赖 transparent 合成，
+      body 背景改不透明（与 BrowserWindow backgroundColor 的 #020617 对齐），
+      消除部分 Windows 机器上透明 frameless 窗口整窗不可见的问题。 */
+  background: var(--bg);
   -webkit-font-smoothing: antialiased;
   line-height: 1.5;
   overflow: hidden;

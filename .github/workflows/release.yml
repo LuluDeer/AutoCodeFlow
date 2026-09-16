@@ -1,9 +1,10 @@
 name: Release
 
 # ── 触发与保护 ──────────────────────────────────────────────────────────
-# 仅 push tag `vX.Y.Z[-pre]` 触发真发布（lockstep：node-sdk / mcp-server /
-# python-sdk 共用同一版本号）。发布流程：
-#   1) 同步 bump 三处版本（见下方守卫清单）并提交 develop/main；
+# 仅 push tag `vX.Y.Z[-pre]` 触发真发布（SDK lockstep：node-sdk / mcp-server /
+# python-sdk 共用同一版本号）。桌面端安装包已**解耦**为独立 workflow
+# `release-desktop.yml`（`desktop-vX.Y.Z` tag 触发），不在此处。发布流程：
+#   1) 同步 bump SDK 三处版本（见下方守卫清单）并提交 develop/main；
 #   2) git tag v<version> && git push origin v<version>。
 # 故意不配 workflow_dispatch：避免手动误触发真发布；本地演练请用
 #   `npm publish --dry-run` / `npm pack --dry-run` / `python -m build`，
@@ -21,10 +22,6 @@ name: Release
 #   需重新 Approve）。仅当需要更换 tag 指向的内容时才删 tag 重打，且
 #   已发布成功的一侧必须 bump 版本换新 tag，否则该侧红是幂等保护、
 #   不是回归。恢复纪律同步见 docs/sdk-guide.md「版本与发布流程」。
-# N45/N46 (round-13, v1.4.1/v1.4.2 实证)：desktop-installer 的
-#   SHA256SUMS 步骤与 Release assets 上传步骤此前被「文件名含空格」与
-#   「mac 无 zip 产物」两处坑打红——修复详见 job 内注释（find -print
-#   逐行读 + mac 段去掉 *.zip）。
 on:
   push:
     tags:
@@ -89,13 +86,6 @@ jobs:
               "autoflow_sdk.__version__ (packages/autoflow-sdk/autoflow_sdk/__init__.py)":
                   regex_version("packages/autoflow-sdk/autoflow_sdk/__init__.py",
                                 r'^__version__\s*=\s*"([^"]+)"'),
-              # DSK-05：desktop 安装包同版本线。desktop 的 version 直接决定
-              # electron-builder 产出的 latest.yml / 安装包文件名里的版本号，
-              # 也是客户端 electron-updater 的版本比较基准——若与 tag 漂移，
-              # 安装包会以错误版本号上线，自动更新随即永久失效（远端版本
-              # 永远"不新于"本地）。纳入 lockstep 检查清单是发版前置。
-              "executor-desktop (apps/executor-desktop/package.json)":
-                  pkg_json_version("apps/executor-desktop/package.json"),
           }
 
           bad = {k: v for k, v in checks.items() if v != want}
@@ -108,157 +98,6 @@ jobs:
 
           print(f"version guard passed: {want}")
           PY
-
-  # ── 桌面端安装包构建（DSK-06）─────────────────────────────────────────
-  # 背景：electron-builder.yml 的 publish 段（provider: github,
-  # LuluDeer/AutoCodeFlow）与 dist:win/mac/linux 脚本早已就绪，但 release.yml
-  # 从未调用它们——实测 tag v1.3.0 的 GitHub Release assets 为空数组，即
-  # 「安装包从未真正发布过」。本 job 补上这一环。
-  #
-  # **当前姿态：只构建、只上传 workflow artifact，不发布到 Releases**。
-  # 由 `--publish never` 强制（与 ci.yml 的 desktop-*-bundle 同款做法）：
-  # electron-builder 检测到 package.json 的 repository 字段会默认走 GitHub
-  # publisher，缺 GH_TOKEN 即硬失败；显式 never 既避开该副作用，也保证
-  # 「CI 就绪但不自动真发布」——验证通过后再由人工决定是否改为真发布。
-  #
-  # 三平台各自跑原生 runner：electron-builder 不支持交叉产出 mac 的 dmg，
-  # win 又要 wine 兜底，原生 runner 是唯一稳妥形态（与 ci.yml 同策略）。
-  # Linux 只出 x64（对齐 ci.yml 的 desktop-linux-bundle 覆盖面）。
-  #
-  # 启用真发布的前置条件（人工拍板，见 docs/deployment.md「桌面端安装包发布」）：
-  #   ① 产物哈希核对通过（每个 artifact 旁生成 SHA256SUMS.txt）；
-  #   ② mac 侧需要 Apple Developer ID 与公证（当前 CI 用
-  #      CSC_IDENTITY_AUTO_DISCOVERY=false 跳过签名，产物不可直接分发）；
-  #   ③ 把下方 `--publish never` 换成 electron-builder 真实 publish
-  #      （或加独立的 upload-artifact→release 步骤），并配置 GH_TOKEN。
-  # DESKTOP-PUBLISH-01（2026-09-15 真发布启用）：本 job 需要把安装包上传到
-  # 当前 tag 的 GitHub Release assets —— 需 contents: write（顶层默认 contents: read）。
-  desktop-installer:
-    needs: version-guard
-    permissions:
-      contents: write
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: windows-latest
-            script: dist:win
-            paths: |
-              apps/executor-desktop/dist-electron/*.exe
-              apps/executor-desktop/dist-electron/*.blockmap
-              apps/executor-desktop/dist-electron/latest.yml
-          - os: macos-latest
-            script: dist:mac
-            paths: |
-              apps/executor-desktop/dist-electron/*.dmg
-              apps/executor-desktop/dist-electron/*.blockmap
-              apps/executor-desktop/dist-electron/latest-mac.yml
-          - os: ubuntu-latest
-            script: dist:linux
-            paths: |
-              apps/executor-desktop/dist-electron/*.AppImage
-              apps/executor-desktop/dist-electron/*.deb
-              apps/executor-desktop/dist-electron/latest-linux.yml
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-node@v7
-        with:
-          node-version: '24'
-          cache: 'npm'
-          cache-dependency-path: apps/executor-desktop/package-lock.json
-
-      - name: Install desktop deps
-        working-directory: apps/executor-desktop
-        run: npm ci
-
-      # bundle-executor.sh 的 ncc 会对 executor-node 全项目做类型检查，
-      # 必须先装其依赖，否则整片报错（同 ci.yml desktop-linux-bundle 的教训）。
-      - name: Install executor-node deps (ncc 类型检查前置)
-        working-directory: apps/executor-node
-        run: npm ci
-
-      - name: Main-process selftests
-        working-directory: apps/executor-desktop
-        run: npm run test:main
-
-      # 安装包内必须内嵌与源码一致的 executor bundle：F-19 的清单校验
-      # （executor-node-bundle.sha256）在 CI 的 desktop-bundle-drift job 里
-      # 离线重打比对过；这里构建时会重新生成，出包前再自校验一次。
-      - name: Build installer
-        working-directory: apps/executor-desktop
-        env:
-          # 无 Apple Developer ID 的 CI 形态：显式跳过 codesign/notarize
-          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-          # electron 官方源缓慢/被墙时的镜像兜底（runner 上通常不生效）
-          ELECTRON_MIRROR: https://npmmirror.com/mirrors/electron/
-        run: npm run ${{ matrix.script }} -- --publish never
-
-      - name: Verify embedded executor bundle present
-        shell: bash
-        run: |
-          set -euo pipefail
-          test -f apps/executor-desktop/resources/executor-node/index.js \
-            || { echo "::error::executor-node bundle missing — installer 会缺少执行器内核"; exit 1; }
-          echo "executor bundle present: $(wc -c < apps/executor-desktop/resources/executor-node/index.js) bytes"
-
-      # 产物哈希：供下载者核对完整性（deployment.md 的 ubuntu 信任注记要求
-      # 「校验发布说明里的产物哈希」，此前无任何哈希产出）。
-      # 三平台各生成一份 <平台>.sha256，避免三 job 并行都叫 SHA256SUMS.txt
-      # 互相覆盖。
-      # N46（round-13，v1.4.1 实证）：文件名含空格（productName "AutoCodeFlow
-      # Executor"），`xargs sha256sum` 会把名字按空白切碎报 "No such file or
-      # directory"（v1.4.1 三平台全红即此因）。
-      # 当前形态：`find -print`（换行分隔，我们的产物名含空格但不含换行）
-      # + `while IFS= read -r f` 逐行读——GNU/BSD find、bash 3.2/5.x 全兼容，
-      # 不依赖 NUL/`sort -z` 等 GNU 扩展（macOS runner 无）。
-      # sha256sum 缺省时回落 `shasum -a 256`（macOS）。
-      - name: Generate SHA256SUMS
-        shell: bash
-        working-directory: apps/executor-desktop/dist-electron
-        run: |
-          set -euo pipefail
-          outfile="SHA256SUMS-${{ matrix.os }}.txt"
-          : > "$outfile"
-          n=0
-          while IFS= read -r f; do
-            [ -z "$f" ] && continue
-            if command -v sha256sum >/dev/null 2>&1; then
-              sha256sum "$f" >> "$outfile"
-            else
-              shasum -a 256 "$f" >> "$outfile"
-            fi
-            n=$((n+1))
-          done < <(find . -maxdepth 1 -type f \( \
-            -name '*.exe' -o -name '*.dmg' -o -name '*.zip' \
-            -o -name '*.AppImage' -o -name '*.deb' \) -print | sort)
-          if [ "$n" -eq 0 ]; then
-            echo "::error::未找到任何安装包产物"; exit 1
-          fi
-          echo "找到 $n 个安装包产物"
-          cat "$outfile"
-
-      # DESKTOP-PUBLISH-01（真发布启用）：把三平台安装包 + SHA256 上传到当前
-      # tag 对应的 GitHub Release assets。tag 由 `on: push tags` 触发，job 内
-      # 从 GITHUB_REF 取。软 props/action-gh-release 对已存在的 release 追加
-      # assets（update release assets），不会重建、不会覆盖其它平台已上的文件。
-      # N45（round-13，v1.4.2 实证）：glob 形态对**含空格**文件名（productName
-      # "AutoCodeFlow Executor"）在软 props 下匹配正常（v1.4.2 日志确认
-      # `*.dmg` 成功匹配两个 dmg）；v1.4.2 的 mac job 红只因路径里写了
-      # `*.zip`——electron-builder mac 只产 dmg（+ blockmap），无 zip，
-      # fail_on_unmatched_files: true 直接整 job 失败。
-      # 修正：mac 段去掉 `*.zip`，与实际产物面一致；保留
-      # fail_on_unmatched_files: true 作为「构建产物与上传清单漂移」的硬闸。
-      - name: Upload installer to GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.ref_name }}
-          files: |
-            ${{ matrix.paths }}
-            apps/executor-desktop/dist-electron/SHA256SUMS-${{ matrix.os }}.txt
-          fail_on_unmatched_files: true
 
   # ── npm 发布 ─────────────────────────────────────────────────────────
   # secrets.NPM_TOKEN：npmjs.com 的 Automation/Access token
