@@ -90,6 +90,37 @@ test.describe('executor-desktop 冒烟（Playwright _electron）', () => {
     }
   });
 
+  // N48（v1.4.6 黑屏根因回归）：曾出现「向导正常、进主窗口只有背景色」——
+  // StatusWindow 误调 preload 未暴露的 electronAPI.invoke 使 useEffect 同步抛
+  // 错，React 无错误边界卸载整棵树（.app 缺失）。本用例钉死：主窗口必须
+  // 渲染出 tabs/hero-card/日志区等真实内容，防止黑屏复发。
+  test('主窗口（状态页）渲染内容，非仅背景色', async () => {
+    const userData = tmpUserData();
+    const app = await launchApp({ ELECTRON_USER_DATA_DIR: userData });
+    try {
+      // 先等向导渲染完（隔离 userData 首启），再切到主窗口 #status。
+      // 主进程用 loadFile(hash) 载入，App 在 mount 时读 hash 决定 wizard/主窗口；
+      // reload 让 main.tsx 以 #status 重新执行 → 挂载 MainWindow（等同托盘打开状态页）。
+      const win = await app.firstWindow();
+      await win.waitForLoadState('domcontentloaded');
+      await expect(win.getByText('欢迎使用').first()).toBeVisible({ timeout: 15000 });
+      await win.evaluate(() => { window.location.hash = '#status'; window.location.reload(); });
+      await win.waitForLoadState('domcontentloaded');
+      await win.waitForTimeout(1500);
+
+      // 黑屏特征：.app 树缺失（原 bug 时 React 卸载）。现断言整棵主窗口 DOM 画出来。
+      expect(await win.locator('.app').count()).toBe(1);
+      expect(await win.locator('.hero-card').count()).toBe(1);
+      expect(await win.locator('.tabs .tab').count()).toBeGreaterThanOrEqual(3);
+      const bodyText = (await win.textContent('body')) || '';
+      expect(bodyText).toContain('状态监控');
+      expect(bodyText).toContain('运行日志');
+    } finally {
+      await app.close();
+      fs.rmSync(userData, { recursive: true, force: true });
+    }
+  });
+
   test('干净退出：close 后进程结束（before-quit 链路）', async () => {
     const userData = tmpUserData();
     const app = await launchApp({ ELECTRON_USER_DATA_DIR: userData });
