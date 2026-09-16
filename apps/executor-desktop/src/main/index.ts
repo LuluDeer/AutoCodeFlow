@@ -11,6 +11,14 @@ import { Notifier } from './notifier';
 import * as path from 'path';
 import log, { initLogCleanup } from './logger';
 
+// WIN-DISPLAY-HWACCEL (1.4.5 hotfix / N48)：部分 Windows 机器/显卡驱动上，
+// Chromium 硬件加速合成失败会表现为「窗口有背景色但内容黑屏」——与 v1.4.4
+// 修复透明后用户实测吻合。该故障不影响托盘/主进程，日志也往往无报错。
+// 对小体量托盘应用而言，强制关闭硬件加速（软件合成，SwiftShader/Windows
+// D2D/Skia 兜底）是彻底消除此类黑屏的标准、稳妥方案。
+// 必须在 app ready / 任何窗口创建前调用才生效。
+app.disableHardwareAcceleration();
+
 // 单例导出，供 ipc-handlers 等模块使用
 // QA-12：e2e 隔离通道——冒烟用例经 env 覆盖 userData 指向临时目录，
 // 绝不触碰开发者真实配置；未设置时行为与旧版逐字节一致。
