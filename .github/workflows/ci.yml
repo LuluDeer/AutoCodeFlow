@@ -1076,7 +1076,7 @@ jobs:
       - name: Build main + renderer + executor bundle
         working-directory: apps/executor-desktop
         run: npm run build
-      - name: Playwright _electron smoke (QA-12, 3 cases)
+      - name: Playwright _electron smoke (QA-12, 4 cases incl 黑屏回归)
         working-directory: apps/executor-desktop
         env:
           # Windows runner 无 X/显示抽象，electron 需要软件渲染兜底
