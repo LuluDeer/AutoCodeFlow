@@ -1,5 +1,4 @@
 {
-  "apps/executor-desktop": "1.4.3",
   "packages/autocodeflow-node-sdk": "1.4.3",
   "packages/mcp-server": "1.4.3",
   "packages/autoflow-sdk": "1.4.3"

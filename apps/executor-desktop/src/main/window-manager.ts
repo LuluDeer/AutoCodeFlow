@@ -37,6 +37,27 @@ function sharedWebPreferences(): Electron.WebPreferences {
   };
 }
 
+/**
+ * WIN-DISPLAY (1.4.3 Hotfix / N47)：可靠显示窗口。
+ * 原逻辑仅 `once('ready-to-show', show)`——若打包形态下渲染进程首绘推迟或
+ * `ready-to-show` 极慢，窗口会停留在 `show:false` 永久不可见（用户报告的
+ * 「托盘在但任何窗口都打不开、重装一样」）。这里双保险：
+ *   - ready-to-show 一到就 show；
+ *   - 兜底定时器（3s）强制 show，避免首绘分钟级延迟时窗口永不出现。
+ * 窗口已带不透明 backgroundColor，提前 show 也无白闪/透明空洞。
+ */
+function showWhenReady(win: BrowserWindow): void {
+  let shown = false;
+  const doShow = () => {
+    if (shown || win.isDestroyed()) return;
+    shown = true;
+    win.show();
+  };
+  win.once('ready-to-show', doShow);
+  const timer = setTimeout(doShow, 3000);
+  win.once('closed', () => clearTimeout(timer));
+}
+
 function loadPage(win: BrowserWindow, page: string): void {
   if (process.env.VITE_DEV_SERVER_URL) {
     // Dev mode: use Vite dev server with hash routing
@@ -101,11 +122,15 @@ export class WindowManager {
       center: true,
       show: false,
       frame: false,
-      transparent: true,
+      // WIN-DISPLAY (1.4.3 Hotfix / N47): transparent+frameless 窗口在部分
+      // Windows 机器上整窗复合失败（窗口 show() 了但屏幕上看不到——首个
+      // 发布的 Windows 安装包被真用户报告的致命问题）。改实心背景色渲染，
+      // backgroundColor 与 app.css 的 --bg (#020617) 对齐，UI 视觉不变。
+      backgroundColor: '#020617',
       webPreferences: sharedWebPreferences(),
     });
 
-    this.wizardWindow.once('ready-to-show', () => { this.wizardWindow?.show(); });
+    showWhenReady(this.wizardWindow);
     // SEC-DSK-01：导航/弹窗/webview 守卫（每个窗口都必须挂）
     hardenWindow(this.wizardWindow);
     loadPage(this.wizardWindow, 'wizard');
@@ -134,15 +159,17 @@ export class WindowManager {
       minHeight: 560,
       show: false,
       frame: false,
-      transparent: true,
       resizable: true,
+      // WIN-DISPLAY (1.4.3 Hotfix / N47): 同 wizard——去掉 transparent，
+      // 改实心 backgroundColor，避免 Windows 部分机器透明窗口整窗不可见。
+      backgroundColor: '#020617',
       // BUG-12: single hardened webPreferences source for every window.
       // sandbox defaults on (Electron ≥20), which also blocks the preload
       // from pulling full Node modules into the renderer bridge.
       webPreferences: sharedWebPreferences(),
     });
 
-    this.statusWindow.once('ready-to-show', () => { this.statusWindow?.show(); });
+    showWhenReady(this.statusWindow);
     // SEC-DSK-01：导航/弹窗/webview 守卫（每个窗口都必须挂）
     hardenWindow(this.statusWindow);
     loadPage(this.statusWindow, 'status');

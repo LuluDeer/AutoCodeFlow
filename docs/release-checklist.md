@@ -158,6 +158,11 @@ push main）→ 自动打 tag v* → 触发 release.yml（version-guard + enviro
 - [ ] 自动化若要重启：方向 = main 上 merge commit 标题规范化（或 squash 合并习惯）
   + release-please 状态机修复，涉及协作流程变更需拍板。
 
+> **桌面端独立发布（round-14 起）**：`apps/executor-desktop` 已从上述 lockstep
+> 解耦，走独立 `release-desktop.yml` + `desktop-vX.Y.Z` tag——纯桌面 hotfix
+> 只发安装包，不再连带 bump/重发 npm/PyPI。详见
+> docs/release-checklist.md 头部与 packages/docs-site/release.md「桌面端独立发布」。
+
 ### 4.3 更新 CHANGELOG（可选）
 
 在 `CHANGELOG.md`（如有）记录本次变更，格式：

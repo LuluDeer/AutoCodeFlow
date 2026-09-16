@@ -1,0 +1,183 @@
+name: Release Desktop
+
+# ── 桌面端安装包独立发布（N47 hotfix 解耦，用户拍板 round-14）────────────
+# 背景：v1.4.3 之前桌面安装包与 npm/PyPI SDK 共用 lockstep 单版本线 + 单一
+#   `v*` tag，导致任何纯桌面 hotfix（如窗口透明渲染 bug）都会连带 bump 并
+#   重发 npm/PyPI SDK（内容未变）。解耦后：
+#     - 桌面独立版本线（apps/executor-desktop/package.json 单独维护）
+#     - 用独立的 `desktop-vX.Y.Z` tag 触发本 workflow，只发桌面安装包
+#     - npm/PyPI 的发布（release.yml）完全不受影响
+# 触发形态：`git tag desktop-v1.4.4 && git push origin desktop-v1.4.4`。
+# 注意：release-please 的 SDK 版（release.yml）用普通 `v*` tag，两者前缀
+#   不同不会互相触发（workflow 的 on 条件各自收敛匹配）。
+#
+# 桌面版本守卫：tag 必须等于 apps/executor-desktop/package.json 的 version，
+#   否则 fail。desktop version 也会写进 electron-builder 出包的
+#   latest.yml / 安装包文件名，是 electron-updater 的版本比较基准；守卫保证
+#   打 tag 的版本与出包版本一致，客户端自动更新不会因版本漂移永久失效。
+#
+# 发布形态（DESKTOP-PUBLISH-01）：三平台各自原生 runner 出包，上传到以
+#   `desktop-vX.Y.Z` 命名的 GitHub Release（electron-updater 通过 latest*.yml
+#   的 version 决定可更新性，不依赖 Release/tag 名称形态）。softprops 在
+#   release 不存在时会自动用 tag 名创建，故无需前置 create 步骤。
+on:
+  push:
+    tags:
+      - 'desktop-v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-desktop-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # ── 桌面版本守卫：tag（去 desktop- 前缀）必须 == desktop package.json ──
+  desktop-version-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Desktop version guard (desktop-v<ver> == package.json version)
+        id: guard
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |-
+          python3 - "$RELEASE_TAG" <<'PY'
+          import json, re, sys
+
+          raw = sys.argv[1]
+          # 期望形态 desktop-vX.Y.Z[-pre]
+          m = re.fullmatch(r"desktop-v(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)", raw)
+          if not m:
+              print(f"::error::tag {raw!r} 不是合法桌面发布 tag（期望 desktop-vX.Y.Z[-pre]）")
+              sys.exit(1)
+          want = m.group(1)
+
+          with open("apps/executor-desktop/package.json", encoding="utf-8") as f:
+              pkg = json.load(f)
+          actual = pkg["version"]
+
+          print(f"{'OK ' if actual == want else 'BAD'}  executor-desktop: {actual}  (tag wants {want})")
+          if actual != want:
+              print(f"::error::desktop 版本守卫失败，拒绝发布：executor-desktop={actual} (tag wants {want})")
+              sys.exit(1)
+
+          print(f"desktop version guard passed: {want}")
+          PY
+
+  # ── 桌面端安装包构建 + 上传（DSK-06 / DESKTOP-PUBLISH-01）─────────────────
+  # 三平台各自原生 runner：electron-builder 不支持交叉产出 mac 的 dmg、
+  # win 又要 wine 兜底，原生 runner 是唯一稳妥形态。Linux 只出 x64。
+  # mac 侧无 Apple Developer ID，CI 用 CSC_IDENTITY_AUTO_DISCOVERY=false
+  # 跳过签名（产物不适合直接分发，验证链路优先）。
+  desktop-installer:
+    needs: desktop-version-guard
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            script: dist:win
+            paths: |
+              apps/executor-desktop/dist-electron/*.exe
+              apps/executor-desktop/dist-electron/*.blockmap
+              apps/executor-desktop/dist-electron/latest.yml
+          - os: macos-latest
+            script: dist:mac
+            paths: |
+              apps/executor-desktop/dist-electron/*.dmg
+              apps/executor-desktop/dist-electron/*.blockmap
+              apps/executor-desktop/dist-electron/latest-mac.yml
+          - os: ubuntu-latest
+            script: dist:linux
+            paths: |
+              apps/executor-desktop/dist-electron/*.AppImage
+              apps/executor-desktop/dist-electron/*.deb
+              apps/executor-desktop/dist-electron/latest-linux.yml
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: apps/executor-desktop/package-lock.json
+
+      - name: Install desktop deps
+        working-directory: apps/executor-desktop
+        run: npm ci
+
+      # bundle-executor.sh 的 ncc 会对 executor-node 全项目做类型检查，
+      # 必须先装其依赖，否则整片报错（同 ci.yml desktop-linux-bundle 的教训）。
+      - name: Install executor-node deps (ncc 类型检查前置)
+        working-directory: apps/executor-node
+        run: npm ci
+
+      - name: Main-process selftests
+        working-directory: apps/executor-desktop
+        run: npm run test:main
+
+      # 安装包内必须内嵌与源码一致的 executor bundle：F-19 的清单校验
+      # 在 CI 的 desktop-bundle-drift job 离线重打比对过；这里构建时会重新生成。
+      - name: Build installer
+        working-directory: apps/executor-desktop
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+          ELECTRON_MIRROR: https://npmmirror.com/mirrors/electron/
+        run: npm run ${{ matrix.script }} -- --publish never
+
+      - name: Verify embedded executor bundle present
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f apps/executor-desktop/resources/executor-node/index.js \
+            || { echo "::error::executor-node bundle missing — installer 会缺少执行器内核"; exit 1; }
+          echo "executor bundle present: $(wc -c < apps/executor-desktop/resources/executor-node/index.js) bytes"
+
+      # 产物哈希：供下载者核对完整性。三平台各一份，避免并行互相覆盖。
+      # N46（v1.4.1 实证）：文件名含空格，不能用 xargs sha256sum（会按空白
+      # 切碎报 No such file）；用 find -print + while IFS= read -r 逐行读
+      # （GNU/BSD find、bash 3.2/5.x 全兼容），sha256sum 缺省回落 shasum。
+      - name: Generate SHA256SUMS
+        shell: bash
+        working-directory: apps/executor-desktop/dist-electron
+        run: |
+          set -euo pipefail
+          outfile="SHA256SUMS-${{ matrix.os }}.txt"
+          : > "$outfile"
+          n=0
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            if command -v sha256sum >/dev/null 2>&1; then
+              sha256sum "$f" >> "$outfile"
+            else
+              shasum -a 256 "$f" >> "$outfile"
+            fi
+            n=$((n+1))
+          done < <(find . -maxdepth 1 -type f \( \
+            -name '*.exe' -o -name '*.dmg' -o -name '*.zip' \
+            -o -name '*.AppImage' -o -name '*.deb' \) -print | sort)
+          if [ "$n" -eq 0 ]; then
+            echo "::error::未找到任何安装包产物"; exit 1
+          fi
+          echo "找到 $n 个安装包产物"
+          cat "$outfile"
+
+      # DESKTOP-PUBLISH-01（真发布启用）：把三平台安装包 + SHA256 上传到当前
+      # `desktop-v<ver>` tag 对应的 GitHub Release。softprops 在 release 不存在
+      # 时自动用 tag 名创建，并对已存在的 release 追加 assets（不重建/覆盖
+      # 其它平台已上的文件）。N45（v1.4.2 实证）：mac 段去掉 `*.zip`
+      # （electron-builder mac 不产 zip），保留 fail_on_unmatched_files 作硬闸，
+      # 防止上传清单与实际产物面漂移。
+      - name: Upload installer to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: |
+            ${{ matrix.paths }}
+            apps/executor-desktop/dist-electron/SHA256SUMS-${{ matrix.os }}.txt
+          fail_on_unmatched_files: true
