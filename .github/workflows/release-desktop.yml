@@ -18,8 +18,9 @@ name: Release Desktop
 #
 # 发布形态（DESKTOP-PUBLISH-01）：三平台各自原生 runner 出包，上传到以
 #   `desktop-vX.Y.Z` 命名的 GitHub Release（electron-updater 通过 latest*.yml
-#   的 version 决定可更新性，不依赖 Release/tag 名称形态）。softprops 在
-#   release 不存在时会自动用 tag 名创建，故无需前置 create 步骤。
+#   的 version 决定可更新性，不依赖 Release/tag 名称形态）。用官方 gh CLI
+#   env release create + upload（runner 预装、GITHUB_TOKEN 认证），先确保
+#   Release 存在再逐平台追加资产（见 job 内注释）。
 on:
   push:
     tags:
@@ -168,16 +169,49 @@ jobs:
           cat "$outfile"
 
       # DESKTOP-PUBLISH-01（真发布启用）：把三平台安装包 + SHA256 上传到当前
-      # `desktop-v<ver>` tag 对应的 GitHub Release。softprops 在 release 不存在
-      # 时自动用 tag 名创建，并对已存在的 release 追加 assets（不重建/覆盖
-      # 其它平台已上的文件）。N45（v1.4.2 实证）：mac 段去掉 `*.zip`
-      # （electron-builder mac 不产 zip），保留 fail_on_unmatched_files 作硬闸，
-      # 防止上传清单与实际产物面漂移。
+      # `desktop-v<ver>` tag 对应的 GitHub Release。用官方 gh CLI（runner 预装、
+      # 自动以 GITHUB_TOKEN 认证，`permissions: contents: write`）替代第三方
+      # softprops/action-gh-release——消除了该 action 的 Node.js 20 弃用告警
+      # （它声明 Node 20 运行时，被告警 forced to run on Node 24）。
+      #   - release create：三平台并行，首个创建 Release、其余 `|| true` 幂等跳过；
+      #   - release upload：--clobber 覆盖旧资产，逐平台追加，不互相覆盖。
+      # N45（v1.4.2 实证）：文件名含空格（productName "AutoCodeFlow Executor"，
+      # *.exe/*.dmg/*.AppImage/*.deb），用 find -print + while 逐行读构造参数
+      # 数组（GNU/BSD find、bash 3.2/5.x 兼容），不能用 xargs 切空白。
+      # 只上传实际产物面（*.exe/*.dmg/*.AppImage/*.deb + *.blockmap +
+      # latest*.yml + 本平台 SHA256SUMS），找不到任何产物即硬失败（等价
+      # fail_on_unmatched_files）。
+      - name: Ensure Release exists
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${{ github.ref_name }}"
+          gh release create "$tag" --repo "${{ github.repository }}" \
+            --title "$tag" --generate-notes || \
+            { echo "::notice::Release $tag 已存在（或已被创建），跳过 create"; }
+
       - name: Upload installer to GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.ref_name }}
-          files: |
-            ${{ matrix.paths }}
-            apps/executor-desktop/dist-electron/SHA256SUMS-${{ matrix.os }}.txt
-          fail_on_unmatched_files: true
+        shell: bash
+        working-directory: apps/executor-desktop/dist-electron
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${{ github.ref_name }}"
+          files=()
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            files+=("$f")
+          done < <(find . -maxdepth 1 -type f \( \
+            -name '*.exe' -o -name '*.dmg' -o -name '*.AppImage' -o -name '*.deb' \
+            -o -name '*.blockmap' \
+            -o -name 'latest*.yml' \
+            -o -name 'SHA256SUMS-${{ matrix.os }}.txt' \) -print | sort)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::未找到任何发布产物"; exit 1
+          fi
+          echo "上传 ${#files[@]} 个产物："
+          printf '  - %s\n' "${files[@]}"
+          gh release upload "$tag" --repo "${{ github.repository }}" --clobber "${files[@]}"
