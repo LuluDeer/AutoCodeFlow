@@ -9,9 +9,9 @@
 
 | 包 | 注册表 | 当前版本 | 版本元数据单一来源 |
 |----|--------|---------|-------------------|
-| `@autocodeflow/sdk` | npm（scoped 公开包） | **1.4.3** | `packages/autocodeflow-node-sdk/package.json` |
-| `autoflow-sdk` | PyPI | **1.4.3** | `packages/autoflow-sdk/pyproject.toml`（+ `autoflow_sdk.__version__`） |
-| `autocodeflow-mcp-server` | npm | **1.4.3** | `packages/mcp-server/package.json` |
+| `@autocodeflow/sdk` | npm（scoped 公开包） | **1.4.4** | `packages/autocodeflow-node-sdk/package.json` |
+| `autoflow-sdk` | PyPI | **1.4.4** | `packages/autoflow-sdk/pyproject.toml`（+ `autoflow_sdk.__version__`） |
+| `autocodeflow-mcp-server` | npm | **1.4.4** | `packages/mcp-server/package.json` |
 
 > `acf-cli` 暂不发布：npm 上 `acf-cli` 名称已被第三方占用，需先改名
 > （如 `@autocodeflow/cli`——勿用 `@autoflow/*`，该 org 已被抢注）再加入
@@ -36,7 +36,7 @@
 ```bash
 # 1) 三包 version 同批 bump（package.json ×2 + pyproject.toml + __init__.py）
 # 2) 提交后打 tag
-git tag v1.4.3 && git push origin v1.4.3
+git tag v1.4.4 && git push origin v1.4.4
 # 3) GitHub Actions → release.yml → version-guard → 人工 Approve → publish
 ```
 
@@ -58,6 +58,30 @@ release-please 打 tag 使用 `secrets.RELEASE_PLEASE_TOKEN || github.token`。G
   job 与 version-guard 不重跑（审批门需重新 Approve）。
 - 仅当需要更换 tag 指向的内容时才删 tag 重打，且**已发布成功的一侧必须
   bump 版本换新 tag**（详见 release.yml 头注释）。
+
+## 桌面端独立发布（N47 解耦，round-14 起）
+
+桌面端安装包（`apps/executor-desktop`）**不参与上面 SDK 的 lockstep**，独立发布：
+
+- **独立 workflow**：`.github/workflows/release-desktop.yml`
+- **独立 trigger**：push tag `desktop-vX.Y.Z`（区别于 SDK 的 `vX.Y.Z`）
+- **守卫**：`desktop-version-guard` 校验 `desktop-v<ver>` 里的 `<ver>` 与
+  `apps/executor-desktop/package.json` 的 `version` 一致
+- 三平台出包并上传到 `desktop-v<ver>` 命名的 GitHub Release（electron-updater
+  通过 `latest*.yml` 的 version 决定可更新性，不依赖 tag 名形态）
+
+```bash
+# 桌面版 hotfix / 小版本发布（不会连带 bump / 重发 npm/PyPI SDK）
+cd apps/executor-desktop
+# 1) bump apps/executor-desktop/package.json 到新版本
+# 2) 提交后打独立 tag
+git tag desktop-v1.4.4 && git push origin desktop-v1.4.4
+# 3) GitHub Actions → release-desktop.yml → 守卫 + 三平台出包 + 上传
+```
+
+> 解耦动机（round-14）：此前桌面与 SDK 共用 lockstep + 单一 `v*` tag，任何
+> **纯桌面 hotfix**（如 v1.4.3 的窗口不可见）都会连带 bump 并重发未变动的
+> npm/PyPI SDK。解耦后桌面独立 tag 只发安装包，SDK 版本线不受影响。
 
 ## 本地演练（不真发布）
 
