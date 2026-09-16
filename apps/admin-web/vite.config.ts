@@ -2,6 +2,7 @@
 import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import dotenv from 'dotenv';
+import { fileURLToPath } from 'node:url';
 // F-30（DEEP_REVIEW 0ef3bbe）：首帧主题脚本的单一来源。
 import { THEME_INIT_SCRIPT } from './src/theme/tokens.ts';
 
@@ -29,6 +30,17 @@ export default defineConfig({
     // 显式补上 module 解析条件——vitest 会把 resolve.mainFields 重置为 []，
     // 不补齐则测试侧 "Failed to resolve import monaco-editor"。
     mainFields: ['module'],
+    // 部署修复（BT/宝塔生产构建）：axios 1.20 的 browser 条件指向源码入口
+    // index.js，依赖顶层 browser 字段的逐文件映射剥离 Node 适配器；Vite 8
+    // (rolldown) 未应用该映射，form-data→combined-stream 进了浏览器包并在
+    // 模块初始化期调 util.inherits → "r.inherits is not a function" 白屏。
+    // 别名用绝对路径强制指向官方纯浏览器 ESM 预打包产物（无任何 Node 依赖，
+    // 命名导出齐全）；不能用包子路径写法——axios exports 白名单不含该子路径。
+    alias: {
+      axios: fileURLToPath(
+        new URL('./node_modules/axios/dist/esm/axios.js', import.meta.url),
+      ),
+    },
   },
   server: {
     host: '0.0.0.0',
