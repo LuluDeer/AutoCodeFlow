@@ -77,7 +77,7 @@ test.describe('executor-desktop 冒烟（Playwright _electron）', () => {
         [
           'checkForUpdate', 'checkPort', 'clearHistory', 'closeWindow', 'downloadUpdate',
           'getAutoLaunch', 'getConfig', 'getHistory', 'getLocalIPs', 'getStatus',
-          'installUpdate', 'listApps', 'listLogFiles', 'minimizeWindow', 'onLogLine',
+          'getTodayLogs', 'installUpdate', 'listApps', 'listLogFiles', 'minimizeWindow', 'onLogLine',
           'onStatusChange', 'onSwitchTab', 'onUpdateAvailable', 'onUpdateDownloaded',
           'onUpdateError', 'onUpdateProgress', 'openLogFile', 'readAppLog', 'readLog',
           'saveAndCloseWizard', 'saveConfig', 'setAutoLaunch', 'startExecutor',

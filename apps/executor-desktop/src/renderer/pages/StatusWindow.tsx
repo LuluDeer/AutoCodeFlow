@@ -4,6 +4,7 @@ import UpdateBanner from '../components/UpdateBanner';
 declare const window: Window & {
   electronAPI: {
     getStatus: () => Promise<{ running: boolean; status: string; config: Record<string, unknown> }>;
+    getTodayLogs: () => Promise<{ lines: string[]; date: string }>;
     startExecutor: () => Promise<{ ok: boolean }>;
     stopExecutor: () => Promise<{ ok: boolean }>;
     onLogLine: (cb: (line: string) => void) => () => void;
@@ -239,8 +240,10 @@ export default function StatusWindow() {
       setStatusLoaded(true);
     });
 
-    // 启动时先加载当天的历史日志
-    window.electronAPI.invoke('logs:getToday').then((result: any) => {
+    // 启动时先加载当天的历史日志（经 preload 暴露的方法；禁止用
+    // window.electronAPI.invoke —— preload 不暴露 invoke，会同步抛异常
+    // → React 卸载整棵树 → 主窗口只有背景色黑屏，见 preload/index.ts 注释）
+    window.electronAPI.getTodayLogs().then((result: any) => {
       if (result?.lines && result.lines.length > 0) {
         // 过滤掉空行
         const validLines = result.lines.filter((l: string) => l.trim().length > 0);

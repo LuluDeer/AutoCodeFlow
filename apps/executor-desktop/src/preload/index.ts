@@ -34,6 +34,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   readLog: (executionId: string, fromLine?: number) =>
     ipcRenderer.invoke('log:read', executionId, fromLine ?? 0),
 
+  // 当天日志（主进程日志，用于主窗口启动时加载历史）——此前 StatusWindow
+  // 误用 window.electronAPI.invoke('logs:getToday')，而 preload 从未暴露 invoke，
+  // 导致主窗口 useEffect 同步抛异常 → React 卸载整棵树 → 窗口只有背景色黑屏。
+  getTodayLogs: () => ipcRenderer.invoke('logs:getToday'),
+
   // 日志文件列表 & 打开
   listLogFiles: () => ipcRenderer.invoke('log:list-files'),
   openLogFile: (filePath: string) => ipcRenderer.invoke('log:open-file', filePath),
