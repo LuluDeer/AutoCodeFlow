@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import {
   Row, Col, Card, Statistic, Badge, Typography,
   Segmented, Progress, Tag, Space, Tooltip, Button, Alert,
@@ -29,7 +29,7 @@ import { CHART_COLORS } from '../theme/tokens';
 import PageHeader from '../components/PageHeader';
 import PageSkeleton from '../components/PageSkeleton';
 import StateError from '../components/StateError';
-import KpiSparkline, { buildSparklineData } from '../components/dashboard/KpiSparkline';
+import KpiSparkline, { buildSparklineData, SPARKLINE_HEIGHT } from '../components/dashboard/KpiSparkline';
 import FailureTopList from '../components/dashboard/FailureTopList';
 import ExecutorHeatBars from '../components/dashboard/ExecutorHeatBars';
 import SchedulerLatencyCard from '../components/dashboard/SchedulerLatencyCard';
@@ -39,6 +39,25 @@ import { useMetricsStream, type MetricsStreamStatus } from '../hooks/useMetricsS
 import '../i18n';
 
 const { Text } = Typography;
+
+/** UI 打磨：KPI 卡底部 36px 辅佐信息行——与卡 2/3 的 sparkline 等高，保证四张
+ *  KPI 卡同排等高（此前 1/4 卡无底部行，同行底部差 ~36px 高低不齐）。 */
+function KpiFootnote({ children }: { children?: ReactNode }) {
+  return (
+    <div
+      style={{
+        height: SPARKLINE_HEIGHT,
+        display: 'flex',
+        alignItems: 'center',
+        fontSize: 11,
+        color: 'var(--color-secondary)',
+        opacity: 0.7,
+      }}
+    >
+      {children}
+    </div>
+  );
+}
 
 /** UI-14: SSE 连接状态点——Badge 颜色/文案随连接态切换（导出供测试锚定；
  *  UI-10：label 从 i18n key 取，由调用侧 t() 渲染） */
@@ -174,11 +193,13 @@ export default function DashboardPage() {
           28px 字号会溢出卡片（实测 1,234,567,890 顶出右边界），窄屏由
           .ui09-kpi-stat 媒体查询降字号兜底（见 index.css） */}
       {summaryLoading && !s ? (
-        <PageSkeleton variant="table" rows={3} />
+        // UI 打磨：KPI 行首屏骨架用 cards 变体（4 张卡），与真实 4 卡布局同形，
+        // 此前 table 行骨架在加载完成瞬间明显跳动
+        <PageSkeleton variant="cards" rows={4} />
       ) : (
-        <Row gutter={[16, 16]}>
+        <Row gutter={[16, 16]} align="stretch">
           <Col xs={12} sm={6}>
-            <Card size="small" variant="borderless" style={{ background: 'var(--color-muted)', borderRadius: 10 }}>
+            <Card size="small" variant="borderless" style={{ background: 'var(--color-muted)', borderRadius: 10, height: '100%' }}>
               <Statistic
                 className="ui09-kpi-stat"
                 title={<Text style={{ fontSize: 13 }}>{t('dashboard.kpi.tasks')}</Text>}
@@ -186,11 +207,14 @@ export default function DashboardPage() {
                 prefix={<RocketOutlined style={{ color: CHART_COLORS.cpu }} />}
                 styles={{ content: { color: CHART_COLORS.cpu, fontSize: 28 } }}
               />
+              <KpiFootnote>
+                {schedulerStats ? t('dashboard.kpi.scheduled', { count: schedulerStats.totalScheduledTasks }) : ' '}
+              </KpiFootnote>
             </Card>
           </Col>
           {/* UI-04 ①：24h 执行量 + sparkline */}
           <Col xs={12} sm={6}>
-            <Card size="small" variant="borderless" style={{ background: 'var(--color-muted)', borderRadius: 10 }}>
+            <Card size="small" variant="borderless" style={{ background: 'var(--color-muted)', borderRadius: 10, height: '100%' }}>
               <Statistic
                 className="ui09-kpi-stat"
                 title={<Text style={{ fontSize: 13 }}>{t('dashboard.kpi.todayRuns')}</Text>}
@@ -203,7 +227,7 @@ export default function DashboardPage() {
           </Col>
           {/* UI-04 ①：运行中 + sparkline */}
           <Col xs={12} sm={6}>
-            <Card size="small" variant="borderless" style={{ background: 'var(--color-muted)', borderRadius: 10 }}>
+            <Card size="small" variant="borderless" style={{ background: 'var(--color-muted)', borderRadius: 10, height: '100%' }}>
               <Statistic
                 className="ui09-kpi-stat"
                 title={<Text style={{ fontSize: 13 }}>{t('dashboard.kpi.running')}</Text>}
@@ -220,7 +244,7 @@ export default function DashboardPage() {
             </Card>
           </Col>
           <Col xs={12} sm={6}>
-            <Card size="small" variant="borderless" style={{ background: 'var(--color-muted)', borderRadius: 10 }}>
+            <Card size="small" variant="borderless" style={{ background: 'var(--color-muted)', borderRadius: 10, height: '100%' }}>
               <Statistic
                 className="ui09-kpi-stat"
                 title={<Text style={{ fontSize: 13 }}>{t('dashboard.kpi.onlineExecutors')}</Text>}
@@ -228,18 +252,23 @@ export default function DashboardPage() {
                 prefix={<ApiOutlined style={{ color: CHART_COLORS.memory }} />}
                 styles={{ content: { color: CHART_COLORS.memory, fontSize: 28 } }}
               />
+              <KpiFootnote>
+                {s?.onlineExecutors != null && s?.totalExecutors != null
+                  ? t('dashboard.kpi.offline', { count: s.totalExecutors - s.onlineExecutors })
+                  : ' '}
+              </KpiFootnote>
             </Card>
           </Col>
         </Row>
       )}
 
-      {/* 成功率 + 平均耗时 */}
-      <Row gutter={[16, 16]}>
-        <Col xs={24} sm={12}>
+      {/* 成功率 + 平均耗时（UI 打磨：两卡等高，右卡内容垂直居中消化空白） */}
+      <Row gutter={[16, 16]} align="stretch">
+        <Col xs={24} md={12}>
           <Card
             size="small" variant="borderless"
             title={<Text strong style={{ fontSize: 14 }}>{t('dashboard.successRate')}</Text>}
-            style={{ borderRadius: 10 }}
+            style={{ borderRadius: 10, height: '100%' }}
           >
             <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
               <Progress
@@ -264,13 +293,14 @@ export default function DashboardPage() {
             <KpiSparkline color={CHART_COLORS.cpu} hasData={sparkHasData} data={runSpark} />
           </Card>
         </Col>
-        <Col xs={24} sm={12}>
+        <Col xs={24} md={12}>
           <Card
             size="small" variant="borderless"
             title={<Text strong style={{ fontSize: 14 }}>{t('dashboard.avgDuration')}</Text>}
-            style={{ borderRadius: 10 }}
+            style={{ borderRadius: 10, height: '100%', display: 'flex', flexDirection: 'column' }}
+            styles={{ body: { flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center' } }}
           >
-            <div style={{ textAlign: 'center', paddingTop: 8 }}>
+            <div style={{ textAlign: 'center' }}>
               <Text style={{ fontSize: 32, fontWeight: 700, color: CHART_COLORS.cpu }}>
                 {formatDuration(s?.avgDurationMs, t)}
               </Text>
@@ -302,7 +332,8 @@ export default function DashboardPage() {
       >
         {/* UI-08：首屏（无数据加载中）骨架形态替代 Spin 包裹；趋势图刷新态原样 */}
         {trendLoading && !trend ? (
-          <PageSkeleton variant="table" rows={2} />
+          // UI 打磨：骨架高度与图表区（200px）对齐，避免加载完成时卡片高度跳动
+          <PageSkeleton variant="table" rows={2} style={{ height: 200 }} />
         ) : (
         <ResponsiveContainer width="100%" height={200}>
             <AreaChart data={trendData} margin={{ top: 5, right: 16, left: 0, bottom: 0 }}>
@@ -330,13 +361,14 @@ export default function DashboardPage() {
         )}
       </Card>
 
-      {/* 执行器资源热力条（UI-04 ③） + 调度延迟（UI-04 ④） */}
-      <Row gutter={[16, 16]}>
-        <Col xs={24} lg={12}>
+      {/* 执行器资源热力条（UI-04 ③） + 调度延迟（UI-04 ④）——UI 打磨：md 起两列
+          （与成功率行同断点，消除 md 区间半页两列半页单列的错乱节奏）+ 两卡等高 */}
+      <Row gutter={[16, 16]} align="stretch">
+        <Col xs={24} md={12}>
           <Card
             size="small" variant="borderless"
             title={<Text strong style={{ fontSize: 14 }}>{t('dashboard.executors')}</Text>}
-            style={{ borderRadius: 10 }}
+            style={{ borderRadius: 10, height: '100%' }}
             extra={<Link to="/executors" style={{ fontSize: 12 }}>{t('dashboard.executors.all')}</Link>}
           >
             {/* UI-08：首屏（无数据加载中）骨架形态替代 Spin 包裹 */}
@@ -347,24 +379,24 @@ export default function DashboardPage() {
             )}
           </Card>
         </Col>
-        <Col xs={24} lg={12}>
+        <Col xs={24} md={12}>
           <Card
             size="small" variant="borderless"
             title={<Text strong style={{ fontSize: 14 }}>{t('dashboard.schedulerLatency')}</Text>}
-            style={{ borderRadius: 10 }}
+            style={{ borderRadius: 10, height: '100%' }}
           >
             <SchedulerLatencyCard metrics={schedMetrics} />
           </Card>
         </Col>
       </Row>
 
-      {/* 失败 Top 任务榜（UI-04 ②） + 最近失败明细 */}
-      <Row gutter={[16, 16]}>
-        <Col xs={24} lg={12}>
+      {/* 失败 Top 任务榜（UI-04 ②） + 最近失败明细——UI 打磨：同上 md 两列 + 等高 */}
+      <Row gutter={[16, 16]} align="stretch">
+        <Col xs={24} md={12}>
           <Card
             size="small" variant="borderless"
             title={<Text strong style={{ fontSize: 14 }}>{t('dashboard.failureTop')}</Text>}
-            style={{ borderRadius: 10 }}
+            style={{ borderRadius: 10, height: '100%' }}
             extra={<Link to="/executions?status=failed" style={{ fontSize: 12 }}>{t('dashboard.failureTop.all')}</Link>}
           >
             {/* UI-08：首屏（无数据加载中）骨架形态替代 Spin 包裹 */}
@@ -375,11 +407,11 @@ export default function DashboardPage() {
             )}
           </Card>
         </Col>
-        <Col xs={24} lg={12}>
+        <Col xs={24} md={12}>
           <Card
             size="small" variant="borderless"
             title={<Text strong style={{ fontSize: 14 }}>{t('dashboard.recentFailures')}</Text>}
-            style={{ borderRadius: 10 }}
+            style={{ borderRadius: 10, height: '100%' }}
             extra={<Link to="/executions" style={{ fontSize: 12 }}>{t('dashboard.recentFailures.all')}</Link>}
           >
             {/* UI-08：首屏（无数据加载中）骨架形态替代 Spin 包裹 */}
@@ -416,7 +448,7 @@ export default function DashboardPage() {
                             <Tooltip title={f.errorMessage}>
                               <Text
                                 type="secondary"
-                                style={{ fontSize: 11, display: 'block', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 200 }}
+                                style={{ fontSize: 11, display: 'block', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
                               >
                                 {f.errorMessage || t('dashboard.unknownError')}
                               </Text>

@@ -271,11 +271,23 @@ export default function TaskListPage() {
       key: 'name',
       sorter: (a: Task, b: Task) => a.name.localeCompare(b.name),
       render: (_: unknown, r: Task) => (
-        <Space orientation="vertical" size={0}>
+        // UI 打磨：名称/描述单行 ellipsis——此前双行均不断行，长描述把行高
+        // 撑得忽高忽低；div minWidth:0 让弹性列内的省略号真正生效
+        <div style={{ minWidth: 0 }}>
           {/* F-33（DEEP_REVIEW 0ef3bbe）：原 <a onClick> 无 href，改 <Link>（键盘可达 + 真实 href） */}
-          <Link to={`/tasks/${r.id}`} style={{ fontWeight: 500 }}>{r.name}</Link>
-          {r.description && <Text type="secondary" style={{ fontSize: 12 }}>{r.description}</Text>}
-        </Space>
+          <Link
+            to={`/tasks/${r.id}`}
+            title={r.name}
+            style={{ fontWeight: 500, display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+          >
+            {r.name}
+          </Link>
+          {r.description && (
+            <Text type="secondary" style={{ fontSize: 12, display: 'block' }} ellipsis={{ tooltip: r.description }}>
+              {r.description}
+            </Text>
+          )}
+        </div>
       ),
     },
     {
@@ -370,7 +382,10 @@ export default function TaskListPage() {
     {
       title: t('taskList.col.actions'),
       key: 'actions',
-      width: 160,
+      // UI 打磨：5 个图标按钮实测 ~200px（移动端 .ant-btn-icon-only 还有
+      // 40px 触控兜底），160 会裁按钮；fixed right 保证横向滚动时操作常驻
+      width: 210,
+      fixed: 'right' as const,
       render: (_: unknown, r: Task) => (
         <Space size={2}>
           <Tooltip title={t('taskList.action.detail')}>
@@ -532,7 +547,9 @@ export default function TaskListPage() {
         dataSource={tasks}
         loading={loading}
         // UI-09：次要列窄屏收起（CSS 媒体查询 .ui09-hide-mobile）+ scroll.x 横向滚动兜底
-        scroll={{ x: 760 }}
+        // UI 打磨：scroll.x 与列宽合计对齐（固定列 940 + 勾选 32 + 名称弹性最小 ~168），
+        // 原 760 < 合计 890 形同虚设，窄容器挤压的是唯一无宽度的名称列
+        scroll={{ x: 1140 }}
         pagination={{
           total,
           current: page,

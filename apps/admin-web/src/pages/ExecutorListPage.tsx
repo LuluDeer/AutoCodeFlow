@@ -151,20 +151,26 @@ export default function ExecutorListPage() {
       key: 'nameAddress',
       sorter: (a: Executor, b: Executor) => a.appName.localeCompare(b.appName),
       render: (_: unknown, r: Executor) => (
-        <Space orientation="vertical" size={0}>
-          <Space>
-            <DesktopOutlined style={{ color: r.status === 'online' ? token.colorSuccess : token.colorBorder }} />
-            <Typography.Text strong>{r.appName}</Typography.Text>
-          </Space>
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>{r.address}</Typography.Text>
-        </Space>
+        // UI 打磨：名称/地址单行 ellipsis——此前长地址整列换行，行高忽高忽低
+        <div style={{ minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+            <DesktopOutlined style={{ color: r.status === 'online' ? token.colorSuccess : token.colorBorder, flex: '0 0 auto' }} />
+            <Typography.Text strong ellipsis={{ tooltip: r.appName }} style={{ minWidth: 0 }}>
+              {r.appName}
+            </Typography.Text>
+          </div>
+          <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block' }} ellipsis={{ tooltip: r.address }}>
+            {r.address}
+          </Typography.Text>
+        </div>
       ),
     },
     {
       title: t('execList.col.status'),
       dataIndex: 'status',
       key: 'status',
-      width: 90,
+      // UI 打磨：90 内「版本漂移」等 4 字 Tag 逼近换行，行高抖动 → 110
+      width: 110,
       render: (v: string, r: Executor) => (
         <Space orientation="vertical" size={0}>
           <Badge
@@ -271,6 +277,7 @@ export default function ExecutorListPage() {
       title: t('execList.col.action'),
       key: 'action',
       width: 70,
+      fixed: 'right' as const,
       render: (_: unknown, r: Executor) => (
         <Button type="link" size="small" onClick={() => navigate(`/executors/${r.id}`)}>{t('execList.action.detail')}</Button>
       ),
@@ -321,11 +328,11 @@ export default function ExecutorListPage() {
           prefix={<SearchOutlined />}
           value={searchText}
           onChange={(e) => setSearchText(e.target.value)}
-          allowClear style={{ width: 220 }}
+          allowClear style={{ width: 220, maxWidth: '100%' }}
         />
         <Select
           placeholder={t('execList.statusAll')}
-          allowClear style={{ width: 120 }}
+          allowClear style={{ width: 120, maxWidth: '100%' }}
           value={statusFilter}
           onChange={(v) => setStatusFilter(v)}
           suffixIcon={<FilterOutlined />}
@@ -338,7 +345,7 @@ export default function ExecutorListPage() {
         {(groups ?? []).length > 0 && (
           <Select
             placeholder={t('execList.groupAll')}
-            allowClear style={{ width: 130 }}
+            allowClear style={{ width: 130, maxWidth: '100%' }}
             value={groupFilter}
             onChange={(v) => setGroupFilter(v)}
             suffixIcon={<FilterOutlined />}
@@ -393,6 +400,9 @@ export default function ExecutorListPage() {
           columns={columns}
           dataSource={filtered}
           loading={loading}
+          // UI 打磨：补齐 scroll.x（固定列合计 940 含弹性列最小宽；此前窄容器下
+          // 名称列被挤碎、分组标签列抢宽）
+          scroll={{ x: 940 }}
           // UI-07 ③：表格多选（ADMIN 门控在操作条——非 admin 无操作条，
           // 选中集合为空集，多选列对普通用户仅是筛选辅助，不暴露写入口）
           rowSelection={{ selectedRowKeys, onChange: (keys) => setSelectedRowKeys(keys as string[]) }}

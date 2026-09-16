@@ -187,19 +187,19 @@ function DeadLetterSection({ subscriptions }: { subscriptions: EventSubscription
   const cols: ColumnsType<EventSubscriptionDeadLetter> = [
     { title: t('eventSub.deadLetter.col.event'), dataIndex: 'eventType', width: 180, render: (v: string) => <Tag>{eventTypeLabel(v)}</Tag> },
     {
-      title: t('eventSub.deadLetter.col.payload'), dataIndex: 'payload', ellipsis: true,
+      title: t('eventSub.deadLetter.col.payload'), dataIndex: 'payload', ellipsis: true, minWidth: 180,
       render: (v: Record<string, unknown>) => (
         <Text code style={{ fontSize: 12 }}>{JSON.stringify(v).slice(0, 80)}</Text>
       ),
     },
-    { title: t('eventSub.deadLetter.col.error'), dataIndex: 'error', ellipsis: true },
+    { title: t('eventSub.deadLetter.col.error'), dataIndex: 'error', ellipsis: true, minWidth: 160 },
     { title: t('eventSub.deadLetter.col.attempts'), dataIndex: 'attempts', width: 90 },
     {
       title: t('eventSub.deadLetter.col.time'), dataIndex: 'createdAt', width: 160,
       render: (v: string) => (v ? new Date(v).toLocaleString(currentLocale()) : '-'),
     },
     {
-      title: t('eventSub.deadLetter.col.action'), key: 'action', width: 90,
+      title: t('eventSub.deadLetter.col.action'), key: 'action', width: 90, fixed: 'right' as const,
       render: (_: unknown, record: EventSubscriptionDeadLetter) => (
         <Button
           size="small"
@@ -255,6 +255,9 @@ function DeadLetterSection({ subscriptions }: { subscriptions: EventSubscription
           columns={cols}
           dataSource={deadLetters?.data ?? []}
           loading={isLoading}
+          // UI 打磨：定宽列 180+90+160+90=520 + payload/error 弹性列最小宽
+          // 180/160 → 860（操作列 fixed right 必须与 scroll.x 成对出现）
+          scroll={{ x: 860 }}
           pagination={false}
           data-testid="dead-letter-table"
           locale={{ emptyText: t('eventSub.deadLetter.empty') }}
@@ -436,11 +439,23 @@ export default function EventSubscriptionsSettings() {
   const columns: ColumnsType<EventSubscription> = [
     {
       title: t('eventSub.col.eventTypes'), dataIndex: 'eventTypes', key: 'eventTypes',
-      render: (v: string[]) => (
-        <Space size={4} wrap>
-          {(v ?? []).map((et) => <Tag key={et} data-testid="sub-event-type">{eventTypeLabel(et)}</Tag>)}
-        </Space>
-      ),
+      // UI 打磨：事件类型 Tag 群整排渲染在窄列会挤爆一行——折叠为前 3 个 + `+N`，
+      // 其余项收进 Tooltip（值域目前 ≤4 个事件，N 一般 ≤1；后端契约可增，故不写死）。
+      render: (v: string[]) => {
+        const list = v ?? [];
+        const shown = list.slice(0, 3);
+        const rest = list.slice(3);
+        return (
+          <Space size={4} wrap>
+            {shown.map((et) => <Tag key={et} data-testid="sub-event-type">{eventTypeLabel(et)}</Tag>)}
+            {rest.length > 0 && (
+              <Tooltip title={rest.map((et) => eventTypeLabel(et)).join('、')}>
+                <Tag data-testid="sub-event-type-more">+{rest.length}</Tag>
+              </Tooltip>
+            )}
+          </Space>
+        );
+      },
     },
     { title: 'URL', dataIndex: 'url', key: 'url', ellipsis: true, render: (v: string) => <Text code>{v}</Text> },
     {

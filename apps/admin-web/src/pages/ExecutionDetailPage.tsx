@@ -105,9 +105,11 @@ function normalizeTabKey(raw: string | null): TabKey {
 }
 
 /** UI-09：执行信息 Descriptions 响应式列数（xs 单列 / sm 2 列 / md 3 列）。
- *  跨列项（失败分类/错误信息）用 antd 的 span="filled" 占满整行——它按当前
- *  列数动态取 span，避免窄屏 xs 单列时旧写法 span={3} 超出列数
- *  （antd「Sum of column span not match column」警告 + 内容按 3 列宽撑破卡片）。 */
+ *  注意：antd 的 `Descriptions.Item.span` 只接受 number（见 antd/es/descriptions
+ *  index.d.ts），传响应式对象无效。跨列项（失败分类/错误信息）改为放在下方
+ *  独立的单列 Descriptions 中渲染——既保证整行宽度，又避免窄屏 xs 单列时
+ *  旧写法 span={3} 超出列数（antd「Sum of column span not match column」警告
+ *  + 内容按 3 列宽撑破卡片）。 */
 export const UI09_DESCRIPTIONS_COLUMN = { xs: 1, sm: 2, md: 3 } as const;
 
 export default function ExecutionDetailPage() {
@@ -629,20 +631,26 @@ export default function ExecutionDetailPage() {
               </Space>
             </Descriptions.Item>
           )}
-          {failureReason && (
-            <Descriptions.Item label={t('execDetail.field.failureCategory')} span={UI09_DESCRIPTIONS_COLUMN}>
-              <Space>
-                <Tag color={failureReason.color}>{failureReason.label}</Tag>
-                <Text type="secondary">{failureReason.hint}</Text>
-              </Space>
-            </Descriptions.Item>
-          )}
-          {data?.errorMessage && (
-            <Descriptions.Item label={t('execDetail.field.errorMessage')} span={UI09_DESCRIPTIONS_COLUMN}>
-              <Text type="danger">{data.errorMessage}</Text>
-            </Descriptions.Item>
-          )}
         </Descriptions>
+        {/* UI 打磨：失败分类/错误信息独占整行——Item.span 不支持响应式对象，
+            单独用一个单列 Descriptions 渲染，长错误信息不再被挤在 1/3 列宽里 */}
+        {(failureReason || data?.errorMessage) && (
+          <Descriptions column={1} size="small" style={{ marginTop: 4 }}>
+            {failureReason && (
+              <Descriptions.Item label={t('execDetail.field.failureCategory')}>
+                <Space wrap>
+                  <Tag color={failureReason.color}>{failureReason.label}</Tag>
+                  <Text type="secondary">{failureReason.hint}</Text>
+                </Space>
+              </Descriptions.Item>
+            )}
+            {data?.errorMessage && (
+              <Descriptions.Item label={t('execDetail.field.errorMessage')}>
+                <Text type="danger" style={{ wordBreak: 'break-word' }}>{data.errorMessage}</Text>
+              </Descriptions.Item>
+            )}
+          </Descriptions>
+        )}
       </Card>
 
       {/* UI-05: Tab 化信息架构——日志（默认）/时间线·报告/重试链/参数与产物 */}
@@ -693,6 +701,8 @@ export default function ExecutionDetailPage() {
                                 background: 'var(--log-bg)',
                                 color: 'var(--log-text)',
                                 fontFamily: 'var(--font-mono)',
+                                maxHeight: 240,
+                                overflow: 'auto',
                               }}
                             >
                               {runbookText}
@@ -939,7 +949,9 @@ export default function ExecutionDetailPage() {
                           <Tag>{failureReasonMap[link.failureReason]?.label ?? link.failureReason}</Tag>
                         )}
                         {link.errorMessage && (
-                          <Text type="danger" style={{ fontSize: 12 }} ellipsis>
+                          // flex 子项内 ellipsis 生效需 minWidth:0 + flex 收缩，
+                          // 否则长错误按内容撑破重试链卡片
+                          <Text type="danger" style={{ fontSize: 12, flex: '1 1 auto', minWidth: 0 }} ellipsis>
                             {link.errorMessage}
                           </Text>
                         )}
@@ -1006,6 +1018,8 @@ export default function ExecutionDetailPage() {
                           background: 'var(--log-bg)',
                           color: 'var(--log-text)',
                           fontFamily: 'var(--font-mono)',
+                          maxHeight: 320,
+                          overflow: 'auto',
                         }}
                       >
                         {taskData.runbook}

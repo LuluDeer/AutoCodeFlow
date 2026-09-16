@@ -533,11 +533,11 @@ export default function ExecutorInstallWizardPage() {
 {loadingSharedToken ? (
               <Spin size="small" />
             ) : sharedToken ? (
-              <Space>
+              <Space wrap>
                 <Input
                   readOnly
                   value={sharedTokenVisible ? sharedToken : '•'.repeat(Math.min(sharedToken.length, 64))}
-                  style={{ width: 420, fontFamily: 'monospace' }}
+                  style={{ width: 420, maxWidth: '100%', fontFamily: 'monospace' }}
                 />
                 <Button
                   size="small"

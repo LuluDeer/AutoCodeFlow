@@ -237,20 +237,23 @@ export default function ApplicationListPage() {
       key: 'name',
       sorter: (a: AppWithStats, b: AppWithStats) => a.name.localeCompare(b.name),
       render: (name: string, record: AppWithStats) => (
-        <Space orientation="vertical" size={0}>
-          <Space>
-            {record.gitRepo && <GithubOutlined />}
+        // UI 打磨：名称单行 ellipsis——弹性列内 minWidth:0 + display:block 让省略号生效
+        <div style={{ minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+            {record.gitRepo && <GithubOutlined style={{ flex: 'none' }} />}
             {/* F-33（DEEP_REVIEW 0ef3bbe）：原 <a onClick> 无 href，改 <Link>（键盘可达 + 真实 href） */}
-            <Link to={`/applications/${record.id}`}>
-              <Text strong>{name}</Text>
+            <Link to={`/applications/${record.id}`} style={{ minWidth: 0 }}>
+              <Text strong style={{ display: 'block' }} ellipsis={{ tooltip: name }}>
+                {name}
+              </Text>
             </Link>
-          </Space>
+          </div>
           {record.gitBranch && (
             <Text type="secondary" style={{ fontSize: 12 }}>
               {t('appList.branch', { branch: record.gitBranch })}
             </Text>
           )}
-        </Space>
+        </div>
       ),
     },
     {
@@ -304,6 +307,7 @@ export default function ApplicationListPage() {
       title: t('appList.col.actions'),
       key: 'actions',
       width: 210,
+      fixed: 'right' as const,
       render: (_: unknown, record: AppWithStats) => (
         <Space>
           <Button
@@ -424,7 +428,8 @@ export default function ApplicationListPage() {
         columns={columns}
         dataSource={filtered}
         rowKey="id"
-        loading={false}
+        loading={loading}
+        scroll={{ x: 1000 }}
         locale={{
           emptyText: shouldShowSkeleton(loading, loadError, apps.length)
             ? <PageSkeleton variant="table" />

@@ -241,7 +241,8 @@ describe('UI-09 三页表格移动端产物', () => {
     await screen.findAllByText(/备份\s*任务/);
     const style = tableScrollStyle();
     expect(style).toBeTruthy();
-    expect(Number.parseFloat(style!.width)).toBe(760);
+    // UI 打磨：scroll.x 与列宽合计校准（固定列 940 + 勾选 + 弹性名称列最小宽）
+    expect(Number.parseFloat(style!.width)).toBe(1140);
     const classes = cellClassSet();
     expect(classes.has('ui09-hide-mobile')).toBe(true);
   });
@@ -253,7 +254,8 @@ describe('UI-09 三页表格移动端产物', () => {
     await screen.findByText('exit code 1');
     const style = tableScrollStyle();
     expect(style).toBeTruthy();
-    expect(Number.parseFloat(style!.width)).toBe(620);
+    // UI 打磨：scroll.x 与列宽合计校准（原 620 < 固定列合计 630，形同虚设）
+    expect(Number.parseFloat(style!.width)).toBe(960);
     const classes = cellClassSet();
     expect(classes.has('ui09-hide-mobile')).toBe(true);
   });
@@ -263,7 +265,8 @@ describe('UI-09 三页表格移动端产物', () => {
     await screen.findAllByText(/备份\s*任务/);
     const style = tableScrollStyle();
     expect(style).toBeTruthy();
-    expect(Number.parseFloat(style!.width)).toBe(640);
+    // UI 打磨：scroll.x 与列宽合计校准（固定列 + 两个弹性列最小宽）
+    expect(Number.parseFloat(style!.width)).toBe(1040);
     const classes = cellClassSet();
     expect(classes.has('ui09-hide-mobile')).toBe(true);
   });

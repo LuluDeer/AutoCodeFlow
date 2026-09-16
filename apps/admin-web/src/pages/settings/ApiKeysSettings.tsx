@@ -146,32 +146,34 @@ export default function ApiKeysSettings() {
   });
 
   const columns: ColumnsType<ApiKeyView> = [
-    { title: t('apiKeys.col.name'), dataIndex: 'name', key: 'name' },
+    { title: t('apiKeys.col.name'), dataIndex: 'name', key: 'name', ellipsis: true, minWidth: 160 },
     {
-      title: t('apiKeys.col.keyPrefix'), dataIndex: 'keyPrefix', key: 'keyPrefix',
+      title: t('apiKeys.col.keyPrefix'), dataIndex: 'keyPrefix', key: 'keyPrefix', width: 120, ellipsis: true,
       render: (v: string) => <Text code>{v}…</Text>,
     },
     {
-      title: 'Scope', dataIndex: 'scope', key: 'scope',
+      title: 'Scope', dataIndex: 'scope', key: 'scope', width: 100,
       render: (v: ApiKeyScope) => <Tag color={SCOPE_COLOR[v]}>{SCOPE_LABELS(t)[v]}</Tag>,
     },
     {
-      title: t('apiKeys.col.expiresAt'), dataIndex: 'expiresAt', key: 'expiresAt',
+      title: t('apiKeys.col.expiresAt'), dataIndex: 'expiresAt', key: 'expiresAt', width: 170, ellipsis: true,
       render: (v: string | null) => (v ? formatDateTime(v) : t('apiKeys.neverExpires')),
     },
     {
-      title: t('apiKeys.col.lastUsed'), dataIndex: 'lastUsedAt', key: 'lastUsedAt',
+      title: t('apiKeys.col.lastUsed'), dataIndex: 'lastUsedAt', key: 'lastUsedAt', width: 170, ellipsis: true,
       render: (v: string | null) => formatDateTime(v),
     },
     {
-      title: t('apiKeys.col.status'), key: 'status',
+      title: t('apiKeys.col.status'), key: 'status', width: 90,
       render: (_: unknown, record: ApiKeyView) => {
         const s = apiKeyStatus(record, t);
         return <Tag color={s.color}>{s.label}</Tag>;
       },
     },
     {
-      title: t('apiKeys.col.actions'), key: 'action',
+      // UI 打磨：定宽列合计 730（120+100+170+170+90+90）+ 名称弹性列最小宽 160 → 890；
+      // 操作列 fixed right 与 scroll.x 成对出现，窄屏横向滚动时吊销入口常驻可见
+      title: t('apiKeys.col.actions'), key: 'action', width: 90, fixed: 'right',
       render: (_: unknown, record: ApiKeyView) =>
         record.revokedAt ? (
           <Text type="secondary">—</Text>
@@ -224,6 +226,8 @@ export default function ApiKeysSettings() {
           columns={columns}
           dataSource={keys}
           loading={isLoading}
+          // UI 打磨：与列宽合计一致（定宽 730 + 名称弹性列最小宽 160）
+          scroll={{ x: 890 }}
           pagination={false}
           data-testid="apikey-table"
         />

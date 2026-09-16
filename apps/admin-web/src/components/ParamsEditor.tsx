@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Button, Input, Space, Typography, Tooltip, theme } from 'antd';
+import { Button, Input, Typography, Tooltip, theme } from 'antd';
 import { PlusOutlined, DeleteOutlined, InfoCircleOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import '../i18n';
@@ -83,19 +83,25 @@ export default function ParamsEditor({ value, onChange }: ParamsEditorProps) {
         </Text>
       )}
       {rows.map((row, idx) => (
-        <Space key={idx} style={{ display: 'flex', marginBottom: 6 }} align="baseline">
+        // UI 打磨：原 Space 不换行且两输入框定宽合计 380+，在 520px Modal 里
+        // 刚好塞满、窄屏（≤768 Modal 收窄）整行溢出弹窗——改 wrap flex 布局，
+        // 值输入框弹性收缩
+        <div
+          key={idx}
+          style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 6, flexWrap: 'wrap' }}
+        >
           <Input
             placeholder={t('paramsEditor.keyPlaceholder')}
             value={row.key}
             onChange={e => update(idx, 'key', e.target.value)}
-            style={{ width: 160, fontFamily: 'monospace' }}
+            style={{ width: 160, maxWidth: '100%', fontFamily: 'monospace' }}
           />
           <Text type="secondary">=</Text>
           <Input
             placeholder={t('paramsEditor.valuePlaceholder')}
             value={row.value}
             onChange={e => update(idx, 'value', e.target.value)}
-            style={{ width: 220 }}
+            style={{ flex: '1 1 180px', minWidth: 0 }}
           />
           <Button
             type="text"
@@ -104,7 +110,7 @@ export default function ParamsEditor({ value, onChange }: ParamsEditorProps) {
             icon={<DeleteOutlined />}
             onClick={() => remove(idx)}
           />
-        </Space>
+        </div>
       ))}
       <Button
         type="dashed"

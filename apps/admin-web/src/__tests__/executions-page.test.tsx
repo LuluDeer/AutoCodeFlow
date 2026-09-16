@@ -310,7 +310,9 @@ describe('ExecutionsPage 多选对比（QA-03 / FEAT-03 回归）', () => {
     fireEvent.click(findBtn(document.body, '对比(2)')!);
     // 对比 modal 渲染：指标表头 + 耗时格式化（duration 1000 → "1.0s"，
     // ExecutionCompare 的 duration 渲染：≥1000 显示秒）+ params/exitCode/failureReason 差异高亮
-    expect(await screen.findByText('指标')).toBeTruthy();
+    // UI 打磨：指标列设了 width + 表格有 scroll.x 后，rc-table 在表头单元格里
+    // 额外渲染隐藏测宽 div，getByText('指标') 会命中 2 个节点——改按列头 role 查询
+    expect(await screen.findByRole('columnheader', { name: '指标' })).toBeTruthy();
     expect(screen.getAllByText('1.0s').length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText('参数')).toBeTruthy();
     expect(screen.getByText(/"env": "prod"/)).toBeTruthy();

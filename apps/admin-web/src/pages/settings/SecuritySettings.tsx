@@ -230,7 +230,7 @@ export function SessionsCard() {
 
   const cols: ColumnsType<AuthSession> = [
     {
-      title: t('security.session.col.device'), dataIndex: 'userAgent', width: 180,
+      title: t('security.session.col.device'), dataIndex: 'userAgent', minWidth: 240,
       render: (v: string | null) => (
         <Space size={6}>
           <DesktopOutlined style={{ color: token.colorTextTertiary }} />
@@ -319,6 +319,8 @@ export function SessionsCard() {
           rowKey="id"
           columns={cols}
           size="small"
+          // UI 打磨：设备列改为弹性（最小 240），其余定宽合计 480 → 720，窄屏防溢出
+          scroll={{ x: 720 }}
           pagination={false}
           locale={{ emptyText: t('security.session.empty') }}
         />

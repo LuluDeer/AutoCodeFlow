@@ -123,11 +123,13 @@ function TokenSection() {
 
       {hasToken ? (
         <Space orientation="vertical" style={{ width: '100%' }}>
-          <Space>
+          {/* UI 打磨：原 Input 定宽 360 + 两按钮在窄屏（≤480）撑破卡片 →
+              flex 容器 + Input 弹性伸缩（minWidth 180）+ 换行兜底 */}
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
             <Input
               readOnly
               value={tokenVisible ? (token || '') : '•'.repeat(40)}
-              style={{ width: 360, fontFamily: 'monospace', fontSize: 13 }}
+              style={{ flex: 1, minWidth: 180, width: 'auto', fontFamily: 'monospace', fontSize: 13 }}
             />
             <Button
               icon={tokenVisible ? <EyeInvisibleOutlined /> : <EyeOutlined />}
@@ -146,7 +148,7 @@ function TokenSection() {
                 {t('sysSettings.token.copy')}
               </Button>
             )}
-          </Space>
+          </div>
           <Button danger loading={generating} onClick={handleGenerate} disabled={!isAdmin}>
             {t('sysSettings.token.regenerate')}
           </Button>
@@ -299,8 +301,8 @@ function HistoryModal({ configKey, onClose }: { configKey: string; onClose: () =
     { title: t('sysSettings.history.col.action'), dataIndex: 'action', width: 70,
       render: (v: ConfigHistory['action']) => v === 'create' ? t('sysSettings.history.action.create')
         : v === 'delete' ? t('sysSettings.history.action.delete') : v === 'rollback' ? t('sysSettings.history.action.rollback') : t('sysSettings.history.action.update') },
-    { title: t('sysSettings.history.col.old'), dataIndex: 'oldValue', ellipsis: true, render: (v: string) => v ?? <Text type="secondary">-</Text> },
-    { title: t('sysSettings.history.col.new'), dataIndex: 'newValue', ellipsis: true, render: (v: string) => v ?? <Text type="secondary">-</Text> },
+    { title: t('sysSettings.history.col.old'), dataIndex: 'oldValue', ellipsis: true, minWidth: 110, render: (v: string) => v ?? <Text type="secondary">-</Text> },
+    { title: t('sysSettings.history.col.new'), dataIndex: 'newValue', ellipsis: true, minWidth: 110, render: (v: string) => v ?? <Text type="secondary">-</Text> },
     { title: '', width: 80,
       render: (_: unknown, row: ConfigHistory) => {
         if (!isAdmin) return null;
@@ -339,7 +341,9 @@ function HistoryModal({ configKey, onClose }: { configKey: string; onClose: () =
           columns={cols}
           size="small"
           pagination={false}
-          scroll={{ y: 400 }}
+          // UI 打磨：定宽列合计 420（170+100+70+80）+ 新旧值两弹性列最小宽 ≈110×2
+          // → 640，窄 Modal 下横向滚动兜底（纵向 y 保留）
+          scroll={{ x: 640, y: 400 }}
         />
       )}
     </Modal>
@@ -693,7 +697,9 @@ export default function SettingsPage() {
   ];
 
   return (
-    <div style={{ maxWidth: 900 }}>
+    // UI 打磨（用户反馈）：去掉 maxWidth 900——本页多数 Tab（系统配置/API Keys/
+    // 安全/事件订阅）是宽表格，900 上限在宽屏右侧留大片空白，与其它整宽页不一致
+    <div>
       {/* UI-03/UI-08：页头标准化（原 Title+描述迁入 PageHeader；非管理员提示保留页头下方） */}
       <PageHeader
         title={t('sysSettings.title')}

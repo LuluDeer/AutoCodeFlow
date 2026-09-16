@@ -88,8 +88,8 @@ export default function AuditLogPage() {
         </Space>
       ),
     },
-    { title: t('audit.col.action'), dataIndex: 'action', width: 180 },
-    { title: t('audit.col.resource'), dataIndex: 'resource', width: 120 },
+    { title: t('audit.col.action'), dataIndex: 'action', width: 180, ellipsis: true },
+    { title: t('audit.col.resource'), dataIndex: 'resource', width: 120, ellipsis: true },
     {
       title: t('audit.col.resourceId'),
       dataIndex: 'resourceId',
@@ -202,8 +202,14 @@ export default function AuditLogPage() {
       )}
       <Table
         rowKey="id"
-        loading={isLoading ? false : undefined}
+        // UI 打磨（原 loading={isLoading ? false : undefined}）：首屏骨架由
+        // locale.emptyText 的 PageSkeleton 承担（UI-08 契约不变），Table loading
+        // 改回真实 isLoading——翻页/筛选重查时可见加载反馈，不再静默显示旧数据。
+        loading={isLoading}
         columns={columns}
+        // UI 打磨：定宽列合计 930（70+120+180+120+100+80+80+180）→ scroll.x 同值，
+        // 窄屏横向滚动兜底（审查建议 1040，按「列宽合计与 scroll.x 必须一致」取 930）
+        scroll={{ x: 930 }}
         dataSource={data?.data ?? []}
         locale={{
           emptyText: isLoading
@@ -228,7 +234,8 @@ export default function AuditLogPage() {
         width={600}
         destroyOnHidden
       >
-        <pre style={{ background: token.colorFillQuaternary, padding: 16, borderRadius: 4, fontSize: 13, overflowX: 'auto' }}>
+        {/* UI 打磨：长 detail JSON 限高内滚，避免弹窗被撑出视口 */}
+        <pre style={{ background: token.colorFillQuaternary, padding: 16, borderRadius: 4, fontSize: 13, overflowX: 'auto', maxHeight: 480, overflowY: 'auto' }}>
           {detailModal.data ? JSON.stringify(detailModal.data, null, 2) : ''}
         </pre>
       </Modal>
