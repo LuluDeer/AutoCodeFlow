@@ -93,6 +93,7 @@ export class HealthService {
     this.redisClient = createClient({
       url: `redis://${host}:${port}`,
       password: password || undefined,
+      database: this.configService.get<number>("redis.db", 0),
     });
 
     this.queueFailedMax = this.configService.get<number>(

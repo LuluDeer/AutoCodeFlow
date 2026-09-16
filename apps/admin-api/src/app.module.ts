@@ -469,6 +469,7 @@ import { RuntimeModule } from "./modules/runtime/runtime.module";
           host: cfg.get("redis.host"),
           port: cfg.get<number>("redis.port"),
           password: cfg.get("redis.password"),
+          db: cfg.get<number>("redis.db", 0),
           // ARCH-005: REDIS_TLS=true → all ioredis/BullMQ connections use TLS.
           // Certificate verification follows REDIS_TLS_REJECT_UNAUTHORIZED
           // (default true; set false only for self-signed-cert environments).

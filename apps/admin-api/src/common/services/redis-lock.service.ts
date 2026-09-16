@@ -37,6 +37,7 @@ export class RedisLockService implements OnModuleInit, OnModuleDestroy {
         host: this.configService.get("redis.host"),
         port: this.configService.get<number>("redis.port"),
         password: this.configService.get("redis.password"),
+        db: this.configService.get<number>("redis.db", 0),
         // P2: bound every Redis call to fail fast instead of hanging on a
         // partitioned network. Without this, the lock watchdog can wedge.
         commandTimeout: 3000,

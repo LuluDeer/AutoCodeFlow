@@ -37,6 +37,7 @@ export class ExecutorPullService {
         host: this.configService.get("redis.host"),
         port: this.configService.get<number>("redis.port"),
         password: this.configService.get("redis.password") || undefined,
+        db: this.configService.get<number>("redis.db", 0),
         commandTimeout: 3000,
         retryStrategy: (times) => Math.min(times * 100, 3000),
         // 惰性连接：pull 端点在被调用前无需 Redis 连接
