@@ -269,7 +269,7 @@ export default function TaskDetailPage() {
       render: (v: number) => v != null ? <Text style={{ fontSize: 12 }}>{formatDuration(v, t)}</Text> : '-',
     },
     {
-      title: t('taskDetail.col.error'), dataIndex: 'errorMessage', ellipsis: true,
+      title: t('taskDetail.col.error'), dataIndex: 'errorMessage', ellipsis: true, minWidth: 330,
       render: (v: string) => v ? <Text type="danger" style={{ fontSize: 12 }}>{v}</Text> : '-',
     },
     {
@@ -447,8 +447,16 @@ export default function TaskDetailPage() {
                   {/* FEAT-11: 运行手册（markdown 排障知识） */}
                   {task.runbook && (
                     <Descriptions.Item label={t('taskDetail.field.runbook')} span={2}>
+                      {/* UI 打磨：代码样式长手册限高内滚，避免描述区被单条目撑爆 */}
                       <Typography.Paragraph
-                        style={{ marginBottom: 0, whiteSpace: 'pre-wrap', fontFamily: 'monospace', fontSize: 12 }}
+                        style={{
+                          marginBottom: 0,
+                          whiteSpace: 'pre-wrap',
+                          fontFamily: 'monospace',
+                          fontSize: 12,
+                          maxHeight: 320,
+                          overflowY: 'auto',
+                        }}
                       >
                         {task.runbook}
                       </Typography.Paragraph>
@@ -565,7 +573,9 @@ export default function TaskDetailPage() {
                   loading={execLoading}
                   size="small"
                   // UI-09：次要列窄屏收起（CSS 媒体查询 .ui09-hide-mobile）+ 横向滚动兜底（值班手机看失败原因）
-                  scroll={{ x: 620 }}
+                  // UI 打磨：scroll.x 与列宽合计校准——定宽列 90+80+140+140+80+100=630，
+                  // 加错误摘要弹性列最小宽 330 → 960（原 620 小于定宽合计，窄屏挤压折行）
+                  scroll={{ x: 960 }}
                   pagination={{
                     total: execTotal,
                     pageSize: 20,

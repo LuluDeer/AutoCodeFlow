@@ -298,11 +298,13 @@ describe('UI-07 ③ runBatch 逐台结果聚合', () => {
 });
 
 describe('UI-07 ③ 批量操作条（页面内）', () => {
-  // 表格多选复选框 DOM 序：[0]=表头全选，[1..n]=数据行（antd rowSelection）。
-  // 点击用行 checkbox 本体（fireEvent.click 直发 input），勾选经 antd
-  // Checkbox 受控链路触发 rowSelection.onChange。
+  // 表格行多选框：限定 tbody 的 selection 列，按行序取。
+  // UI 打磨：本页表格加了 scroll.x 后，rc-table 会在 tbody 内插入一个无
+  // .ant-table-selection-column 类的测量行 checkbox，旧「全局 input[type=checkbox]
+  // 下标 +1」定序假设失效（rowCheckbox(1) 命中的是表头全选）；作用域到选择列后
+  // 与是否 fixed/scroll.x 无关，稳定命中数据行（[0]=第一行，[1]=第二行）。
   const rowCheckbox = (index: number) =>
-    document.querySelectorAll('input[type="checkbox"]')[index + 1];
+    document.querySelectorAll('.ant-table-tbody .ant-table-selection-column input[type="checkbox"]')[index];
 
   it('ADMIN：勾选两台后操作条出现并显示已选数', async () => {
     mockedExecutors.list.mockResolvedValue([

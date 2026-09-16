@@ -58,10 +58,11 @@ function PypiTab() {
   const columns = [
     { title: t('registry.col.name'), dataIndex: 'name', key: 'name', render: (n: string) => <Text code>{n}</Text> },
     {
-      title: t('registry.col.install'), key: 'install',
+      title: t('registry.col.install'), key: 'install', width: 300,
       render: (_: unknown, record: { name: string }) => (
         <Text copyable={{ text: `pip install ${record.name} --index-url ${window.location.origin}/pypi/simple/` }}>
-          <code>pip install {record.name}</code>
+          {/* UI 打磨：安装命令不可收缩的 code 文本——窄列内断行防溢出 */}
+          <code style={{ wordBreak: 'break-all' }}>pip install {record.name}</code>
         </Text>
       ),
     },
@@ -108,6 +109,7 @@ function PypiTab() {
           columns={columns}
           rowKey="name"
           size="small"
+          scroll={{ x: 460 }}
           pagination={{ pageSize: 20 }}
         />
       )}
@@ -166,15 +168,23 @@ function NpmTab() {
   const columns = [
     { title: t('registry.col.name'), dataIndex: 'name', key: 'name', render: (n: string) => <Text code>{n}</Text> },
     {
-      title: t('registry.col.latest'), dataIndex: 'latest', key: 'latest',
+      title: t('registry.col.latest'), dataIndex: 'latest', key: 'latest', width: 100,
       render: (v: string) => v ? <Tag color="blue">{v}</Tag> : <Text type="secondary">-</Text>,
     },
-    { title: t('registry.col.desc'), dataIndex: 'description', key: 'description', render: (d: string) => d || '-' },
     {
-      title: t('registry.col.install'), key: 'install',
+      title: t('registry.col.desc'), dataIndex: 'description', key: 'description',
+      // UI 打磨：npm 包描述常为长句——单行 ellipsis，tooltip 看全文
+      ellipsis: { showTitle: false },
+      render: (d: string) => d
+        ? <Text style={{ display: 'block' }} ellipsis={{ tooltip: d }}>{d}</Text>
+        : '-',
+    },
+    {
+      title: t('registry.col.install'), key: 'install', width: 300,
       render: (_: unknown, row: { name: string }) => (
         <Text copyable={{ text: `npm install ${row.name}` }}>
-          <code>npm install {row.name}</code>
+          {/* UI 打磨：安装命令不可收缩的 code 文本——窄列内断行防溢出 */}
+          <code style={{ wordBreak: 'break-all' }}>npm install {row.name}</code>
         </Text>
       ),
     },
@@ -214,6 +224,7 @@ function NpmTab() {
           columns={columns}
           rowKey="name"
           size="small"
+          scroll={{ x: 720 }}
           pagination={{ pageSize: 20 }}
         />
       )}

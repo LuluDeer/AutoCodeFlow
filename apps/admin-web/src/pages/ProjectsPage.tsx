@@ -55,28 +55,42 @@ export default function ProjectsPage() {
 
   const columns = useMemo(
     () => [
+      // UI 打磨：name 弹性列不设宽；描述单行 ellipsis（tooltip 看全文）；
+      // 时间/角色固定宽防折行；操作列 fixed right + scroll.x 窄屏横向滚动
       { title: t('projects.col.name'), dataIndex: 'name', key: 'name' },
       {
         title: t('projects.col.description'),
         dataIndex: 'description',
         key: 'description',
-        render: (v: string | null) => v || <Text type="secondary">—</Text>,
+        ellipsis: { showTitle: false },
+        render: (v: string | null) =>
+          v ? (
+            <Text style={{ display: 'block' }} ellipsis={{ tooltip: v }}>
+              {v}
+            </Text>
+          ) : (
+            <Text type="secondary">—</Text>
+          ),
       },
       {
         title: t('projects.col.myRole'),
         dataIndex: 'myRole',
         key: 'myRole',
+        width: 100,
         render: (v: ProjectRole | null) => <RoleTag role={v} t={t} />,
       },
       {
         title: t('projects.col.createdAt'),
         dataIndex: 'createdAt',
         key: 'createdAt',
+        width: 170,
         render: (v: string) => formatDateTime(v),
       },
       {
         title: t('projects.col.actions'),
         key: 'actions',
+        width: 90,
+        fixed: 'right' as const,
         render: (_: unknown, row: ProjectViewRow) => (
           <Button
             size="small"
@@ -116,6 +130,7 @@ export default function ProjectsPage() {
         size="middle"
         columns={columns}
         dataSource={projectsQuery.data ?? []}
+        scroll={{ x: 880 }}
         pagination={false}
       />
       <MembersDrawer

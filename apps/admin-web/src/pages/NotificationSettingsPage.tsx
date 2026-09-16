@@ -415,14 +415,27 @@ function SilenceRulesPanel({ active }: { active: boolean }) {
 
   const cols: ColumnsType<NotificationSilence> = [
     { title: t('notif.silence.col.dimension'), dataIndex: 'scope', width: 220,
-      render: (_: unknown, r: NotificationSilence) =>
-        r.scope === 'global' ? (
+      // UI 打磨：36 位 UUID 在 220px 列内必折行 → 定宽不换行 + 省略号，
+      // Tooltip 悬浮看全文（对齐 audit 页 resourceId 列的处理思路）。
+      // 注：全文仍保留在文本节点内（notification-silences 用例锚定整串 UUID），
+      // 故用 CSS 截断而非字符切片。
+      render: (_: unknown, r: NotificationSilence) => {
+        const clip = {
+          display: 'inline-block' as const,
+          maxWidth: 148,
+          overflow: 'hidden' as const,
+          textOverflow: 'ellipsis' as const,
+          whiteSpace: 'nowrap' as const,
+          verticalAlign: 'bottom' as const,
+        };
+        return r.scope === 'global' ? (
           <Tag color="purple">{t('notif.silence.scope.global')}</Tag>
         ) : r.scope === 'task' ? (
-          <span>{t('notif.silence.scope.task')} <Typography.Text code style={{ fontSize: 12 }}>{r.taskId ?? '-'}</Typography.Text></span>
+          <span>{t('notif.silence.scope.task')} <Tooltip title={r.taskId ?? undefined}><Typography.Text code style={{ ...clip, fontSize: 12 }}>{r.taskId ?? '-'}</Typography.Text></Tooltip></span>
         ) : (
-          <span>{t('notif.silence.scope.application')} <Typography.Text code style={{ fontSize: 12 }}>{r.applicationId ?? '-'}</Typography.Text></span>
-        ) },
+          <span>{t('notif.silence.scope.application')} <Tooltip title={r.applicationId ?? undefined}><Typography.Text code style={{ ...clip, fontSize: 12 }}>{r.applicationId ?? '-'}</Typography.Text></Tooltip></span>
+        );
+      } },
     { title: t('notif.silence.col.channel'), dataIndex: 'channelType', width: 100,
       render: (v: string | null) => (v ? CHANNEL_LABELS(t)[v] ?? v : t('notif.silence.channel.all')) },
     { title: t('notif.silence.col.endTime'), dataIndex: 'endTime', width: 170, render: fmtEndTime },
@@ -434,7 +447,7 @@ function SilenceRulesPanel({ active }: { active: boolean }) {
       } },
     { title: t('notif.silence.col.createdBy'), dataIndex: 'createdBy', width: 100,
       render: (v: string | null) => v ?? '-' },
-    { title: t('notif.silence.col.reason'), dataIndex: 'reason', ellipsis: true,
+    { title: t('notif.silence.col.reason'), dataIndex: 'reason', ellipsis: true, minWidth: 100,
       render: (v: string | null) => v ?? '-' },
     { title: '', width: 80,
       render: (_: unknown, r: NotificationSilence) => (
@@ -502,6 +515,9 @@ function SilenceRulesPanel({ active }: { active: boolean }) {
             rowKey="id"
             columns={cols}
             size="small"
+            // UI 打磨：定宽列合计 800（220+100+170+130+100+80）+ 说明弹性列
+            // 最小 ≈100 → 900，窄屏横向滚动兜底
+            scroll={{ x: 900 }}
             pagination={{ pageSize: 10, showTotal: (n) => t('notif.silence.count', { count: n }) }}
             locale={{ emptyText: t('notif.silence.empty') }}
           />
