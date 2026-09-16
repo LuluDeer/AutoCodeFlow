@@ -178,6 +178,8 @@ export default () => ({
     host: process.env.REDIS_HOST || "localhost",
     port: parseInt(process.env.REDIS_PORT, 10) || 6379,
     password: process.env.REDIS_PASSWORD || undefined,
+    // REDIS_DB: 逻辑库编号 0~15，默认 0；多应用共享同一 Redis 实例时隔离 keyspace
+    db: parseInt(process.env.REDIS_DB || "0", 10) || 0,
     // ARCH-005: REDIS_TLS=true 时 ioredis/BullMQ 走 TLS 传输加密；
     // REDIS_TLS_REJECT_UNAUTHORIZED=false 仅建议在自签证书调试时使用（默认校验证书）。
     tls: process.env.REDIS_TLS === "true",
