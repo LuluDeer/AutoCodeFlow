@@ -29,6 +29,16 @@ import {
   createExecutionCallbackToken,
   CALLBACK_TOKEN_GRACE_SECONDS,
 } from '../execution-callback-token';
+// WS5（python_task_upload_and_multiversion）：解释器池 + zip 整包渠道。
+import {
+  InterpreterUnavailableError,
+  ensureVersion,
+  normalizeRuntimeVersion,
+  poolSummary,
+  resolveUvBin,
+} from '../interpreters';
+import { ZipSafetyError, safeExtractZip } from '../zip-safety';
+import { downloadFile } from '../lib/download';
 
 /** Convert git URL to a safe cache directory name */
 function repoDirName(repoUrl: string): string {
@@ -269,6 +279,13 @@ interface ExecutionEntry {
   capacityReleased: boolean;
   /** OBS-01: dispatch 请求的 W3C traceparent 头（admin OTEL_ENABLED=false 时缺省） */
   traceparent?: string;
+  /**
+   * WS5：本执行实际使用的 `.venvs` 目录名（`<taskId>` / `<taskId>-<X.Y>`），
+   * 由 `venvDirName` 在 prepare 时写入。cleanupWorkDir 的活跃保护集直接读它，
+   * 从而与目录名同源——清扫侧绝不自行反推版本签名（见 file-logger
+   * `ActiveWorkdirSet.venvDirNames` 注释）。
+   */
+  venvDirName?: string;
   release(): void;
 }
 
@@ -335,6 +352,18 @@ export function listActiveTaskIds(): string[] {
   return [...new Set([...liveExecutions.values()].map((e) => e.taskId))];
 }
 
+/** WS5: 当前运行表中活跃的 `.venvs` 目录名（含版本签名），供 cleanupWorkDir
+ *  保护活跃任务的 venv 不被 TTL 清扫（对照 python maintenance 的 live 保护）。 */
+export function listActiveVenvDirNames(): string[] {
+  return [
+    ...new Set(
+      [...liveExecutions.values()]
+        .map((e) => e.venvDirName)
+        .filter((n): n is string => typeof n === 'string' && n.length > 0),
+    ),
+  ];
+}
+
 // STALE-01: 心跳上报本机运行中的 executionId 与死信积压。scheduler 不能反向
 // import routes（会成环），故由数据属主在此注册 provider。
 registerRunningExecutionIdsProvider(listActiveExecutionIds);
@@ -344,6 +373,7 @@ registerDeadLetterCountProvider(getDeadLetterCount);
 registerActiveWorkdirProvider(() => ({
   executionIds: new Set(listActiveExecutionIds()),
   taskIds: new Set(listActiveTaskIds()),
+  venvDirNames: new Set(listActiveVenvDirNames()),
 }));
 
 // ---------------------------------------------------------------------------
@@ -596,8 +626,28 @@ async function startExecutionInBackground(
 /** prepare 失败信息的 failureReason 归类（对齐 admin ExecutionFailureReason）：
  *  BUG-10 细化——git 拉取 / 依赖安装 / 运行时缺失拆分为独立分类，便于
  *  统计与告警；未命中细分的获取类错误保持 package_fetch_failed 兜底。
- *  导出供测试固化该映射。 */
+ *  导出供测试固化该映射。
+ *
+ *  WS5（python_task_upload_and_multiversion, CONTRACT.md §3.3-5）：解释器规则
+ *  **必须排在 dependency 规则之前**，理由是三条既有规则的正则都很宽：
+ *    - uv 对缺失解释器的原文是 `No interpreter found for Python 3.7 in managed
+ *      installations, search path, or registry`，对不可下载版本是
+ *      `No download found for request: cpython-3.7-<platform>`；我们把
+ *      `uv venv` 的失败包装成 `uv venv failed: ...`，一旦先跑 dependency 规则
+ *      就会被 `uv pip install failed|...` 家族误吞；
+ *    - `No such file or directory`（runtime_missing 规则）也是 `uv venv --python
+ *      <失效路径>` 的真实报错形态，会把它错判成 runtime_missing。
+ *  两者都是"环境缺东西"，但处置完全不同（装运行时二进制 vs 预填/下载解释器
+ *  缓存池），绝不能混为一类。 */
 export function prepareFailureReason(message: string): CallbackFailureReason {
+  // WS5：解释器无法获取——必须最先判定（见上方注释）。
+  if (
+    /interpreter \d+\.\d+ unavailable|No interpreter found|No download found|Python downloads are set to ['"]?manual|解释器.*无法获取/i.test(
+      message,
+    )
+  ) {
+    return 'interpreter_unavailable';
+  }
   // git clone/fetch/checkout 或 CalledProcessError 形态（node 侧 git 也是子进程）
   if (/git (clone|fetch|checkout) failed|\bgit\b.*returned non-zero|\bgit\b.*\b(clone|fetch|checkout)\b.*fail/i.test(message)) {
     return 'git_fetch_failed';
@@ -611,7 +661,395 @@ export function prepareFailureReason(message: string): CallbackFailureReason {
   if (/Invalid npm package name/i.test(message)) {
     return 'package_fetch_failed';
   }
+  // WS5：zip 整包渠道的获取类失败（缺 packageUrl / 下载失败 / 归档被安全闸
+  // 拒绝）归入既有的 package_fetch_failed 兜底桶——它们都是"包没拿到"，
+  // 复用既有分类，不为它们新增枚举值。
+  if (/packageUrl|Package download failed|Unsafe or invalid package archive/i.test(message)) {
+    return 'package_fetch_failed';
+  }
   return 'unknown';
+}
+
+// ---------------------------------------------------------------------------
+// WS5（python_task_upload_and_multiversion）—— python 多版本 / 整包渠道辅助
+// ---------------------------------------------------------------------------
+
+/** 包内 requirements.txt 的解析上限（D4/AC-04c）。超限即**忽略**而不是截断：
+ *  一个 1MB 的 requirements.txt 只可能是恶意/损坏输入，截断会静默改变依赖集。 */
+const PACKAGE_REQUIREMENTS_MAX_BYTES = 1024 * 1024;
+
+/** zip 整包下载预算（与 python 侧 ZIP_DOWNLOAD_TIMEOUT_SECONDS 对齐）。 */
+const ZIP_DOWNLOAD_TIMEOUT_MS = 120_000;
+
+/** `uv venv` / `uv pip install` 的独立预算。 */
+const UV_VENV_TIMEOUT_MS = 120_000;
+const UV_PIP_TIMEOUT_MS = 300_000;
+
+/**
+ * 需求条目的归一化键（D4"同名覆盖"判定用）。
+ *
+ * 取包名（去掉 extras/环境标记/版本约束）并按 **PEP 503** 归一：小写 + 把
+ * `-`/`_`/`.` 的连续串折叠成单个 `-`。于是 `Requests>=2`、
+ * `requests[socks]==2.31`、`requests ; python_version<'3.8'`、`zope.interface`
+ * 与 `zope-interface` 都被视为同一个包——任务级条目据此覆盖包内条目。
+ * 解析不出来时返回整串，保证不同条目永远不会因为解析失败而被误判成同名。
+ *
+ * 与 python 侧 `_requirement_key` 逐字对齐（两个执行器必须同判）。
+ */
+function requirementKey(spec: string): string {
+  const trimmed = spec.trim();
+  const head = trimmed.split(/[<>=!~;[\s@]/, 1)[0].trim();
+  if (!head) return trimmed;
+  return head.replace(/[-_.]+/g, '-').toLowerCase();
+}
+
+/**
+ * D4：包内 requirements.txt ∪ 任务级 requirements，**任务级同名覆盖**。
+ *
+ * 规则（AC-04a/b/c）：
+ *   - 同名条目任务级胜出——uv 不会同时看到两个版本的约束；
+ *   - 其余条目取并集，顺序稳定：先包内（保持文件顺序），再任务级的新增项；
+ *   - 输入顺序即输出顺序，同一输入永远产出同一结果（可重复执行）。
+ *
+ * 实现用 `Map` 保序去重（对应 python 侧 `dict` 保序）：后写入的同名键覆盖值
+ * 但**不改动首次插入的位置**，于是"包内顺序优先、任务级新增项追加"自然成立。
+ * 这与 `manifest.mergeTaskWithManifest` 的 `dict.fromkeys` 先例同源。
+ *
+ * 导出为纯函数以便单测直接固化 D4 规则（不经过整条 prepare 链路）。
+ */
+export function mergeRequirements(
+  packageReqs: readonly string[] | undefined,
+  taskReqs: readonly string[] | undefined,
+): string[] {
+  const merged = new Map<string, string>();
+  for (const spec of packageReqs ?? []) {
+    if (typeof spec === 'string' && spec.trim()) merged.set(requirementKey(spec), spec.trim());
+  }
+  for (const spec of taskReqs ?? []) {
+    if (typeof spec === 'string' && spec.trim()) merged.set(requirementKey(spec), spec.trim());
+  }
+  return [...merged.values()];
+}
+
+/**
+ * 把包内 requirements.txt 文本解析为需求规格列表（去噪，不做语义解析）。
+ *
+ * 只做三件事：去注释（`#`，含行内）、去空白、丢弃 pip **选项行**与其它不可
+ * 解析的结构（`[extras]` 段头、裸 URL/路径）。
+ *
+ * 刻意**不**实现 `-r other.txt` 的递归展开：那会让包内文本决定执行器去读哪个
+ * 文件，是不必要的攻击面。`-` 开头的行会被 uv 当**选项**解析（索引劫持向量），
+ * 因此绝不透传——这与任务级 requirements 的既有校验同一条纪律，只是包内文件
+ * 是数据而非任务参数，静默跳过 + 日志比让整次执行失败更合适。
+ */
+export function parsePackageRequirements(text: string): string[] {
+  const specs: string[] = [];
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.split('#', 1)[0].trim();
+    if (!line) continue;
+    if (line.startsWith('-')) {
+      logger.info(`Skipping option line in package requirements.txt: ${line}`);
+      continue;
+    }
+    if (line.startsWith('[') && line.endsWith(']')) continue; // pip 配置段头
+    if (/^(https?:\/\/|file:\/\/|\/|\.|~)/.test(line)) {
+      logger.info(`Skipping non-spec line in package requirements.txt: ${line}`);
+      continue;
+    }
+    specs.push(line);
+  }
+  return specs;
+}
+
+/**
+ * 读取包内 requirements.txt（不存在/超限/不可读 → 空列表 + 日志）。
+ *
+ * 大小写不敏感地扫描**工作目录顶层**（Windows 上 `Requirements.txt` 是合法
+ * 文件名而 Linux 上不是；两侧都接受才能让同一个 zip 在任何宿主上行为一致）。
+ */
+export function readPackageRequirements(workDir: string): string[] {
+  let candidate: string | null = null;
+  try {
+    for (const name of fs.readdirSync(workDir)) {
+      if (name.toLowerCase() === 'requirements.txt') {
+        const full = path.join(workDir, name);
+        if (fs.statSync(full).isFile()) {
+          candidate = full;
+          break;
+        }
+      }
+    }
+  } catch (err) {
+    logger.warn(
+      `Cannot scan ${workDir} for requirements.txt: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return [];
+  }
+  if (!candidate) return [];
+  try {
+    if (fs.statSync(candidate).size > PACKAGE_REQUIREMENTS_MAX_BYTES) {
+      logger.warn(
+        `Package requirements.txt ${candidate} exceeds ${PACKAGE_REQUIREMENTS_MAX_BYTES} bytes — ` +
+          'ignored (install the dependencies via the task-level requirements instead)',
+      );
+      return [];
+    }
+    return parsePackageRequirements(fs.readFileSync(candidate, 'utf-8'));
+  } catch (err) {
+    logger.warn(
+      `Failed to read package requirements.txt ${candidate}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return [];
+  }
+}
+
+/** venv 内解释器/可执行文件路径（win32 是 Scripts\python.exe，POSIX 是 bin/python3）。 */
+export function venvPythonBin(venvDir: string): string {
+  return process.platform === 'win32'
+    ? path.join(venvDir, 'Scripts', 'python.exe')
+    : path.join(venvDir, 'bin', 'python3');
+}
+
+/**
+ * venv 目录键（D6/FR-16）。
+ *
+ * 无声明版本 → `<taskId>`，**逐字节不变**（AC-10a：存量任务的 venv 目录名零
+ * 变化，既有缓存的 venv 照旧命中）。有声明版本 → `<taskId>-<X.Y>`，于是声明
+ * 版本一变就不可能复用旧 venv（AC-16a）。
+ *
+ * **只有这一处**做版本派生：目录名与 TTL 清扫的 live 保护集必须同源，否则版本
+ * 切换会退化成"保护 A、写 B、清扫 C"的漂移（DESIGN §1.2.2 的纪律）。
+ */
+export function venvDirName(taskId: string, runtimeVersion: string | null | undefined): string {
+  return runtimeVersion ? `${taskId}-${runtimeVersion}` : taskId;
+}
+
+/** `pyvenv.cfg` 的 `home` / `version_info` 解析（纯文件系统，不 spawn 进程）。 */
+function readPyvenvCfg(venvDir: string): Record<string, string> | null {
+  try {
+    const text = fs.readFileSync(path.join(venvDir, 'pyvenv.cfg'), 'utf-8');
+    const cfg: Record<string, string> = {};
+    for (const line of text.split(/\r?\n/)) {
+      const idx = line.indexOf('=');
+      if (idx <= 0) continue;
+      cfg[line.slice(0, idx).trim().toLowerCase()] = line.slice(idx + 1).trim();
+    }
+    return cfg;
+  } catch {
+    return null;
+  }
+}
+
+/** `recorded` 是否为 `requested` 的补丁版本（3.12.11 属于 3.12）。 */
+function versionMatchesRequested(recorded: string, requested: string): boolean {
+  const m = /(\d+\.\d+(?:\.\d+)?)/.exec(recorded);
+  if (!m) return false; // 解析不出来 → 保守判定为不匹配
+  return m[1] === requested || m[1].startsWith(`${requested}.`);
+}
+
+/**
+ * venv 目录存在但**不可用**时返回原因；健康则返回 null（可复用）。
+ *
+ * 为什么需要这一步（python 侧实测确认的生产事故类缺陷）：`uv venv` 建出的
+ * 环境里，`Scripts/python.exe` 只是约 600KB 的 shim，真正的解释器仍在缓存池
+ * 里，依赖记在 `pyvenv.cfg` 的 `home = <UV_PYTHON_INSTALL_DIR>/cpython-…`。
+ * 池里那个目录一旦被回收/换卷/清空，venv 当场报废（`No Python at '...'`），
+ * 而 `venvDir.exists()` 依旧为真——旧逻辑会"复用"一个死 venv，任务在 exec
+ * 阶段以一个令人费解的退出码失败：既不是干净的 interpreter_unavailable，
+ * 也把 D14（不回退宿主解释器）的语义搅浑。
+ *
+ * 纯文件系统判定，**不 spawn 任何进程**（准备阶段的每一毫秒都在任务超时预算
+ * 里）。任何读取/解析异常都按"不可用"处理——宁可多重建一次 venv，也不复用
+ * 一个可能已死的环境。
+ */
+function venvReuseProblem(
+  venvDir: string,
+  pythonBin: string,
+  runtimeVersion: string | null,
+): string | null {
+  if (!fs.existsSync(pythonBin)) {
+    return `the venv python executable is missing (${pythonBin})`;
+  }
+  const cfg = readPyvenvCfg(venvDir);
+  if (cfg === null) return 'pyvenv.cfg is missing or unreadable';
+  const home = cfg['home'];
+  if (!home) return 'pyvenv.cfg has no "home" entry (cannot tell which interpreter backs it)';
+  if (!fs.existsSync(home)) {
+    return `the interpreter it was built from no longer exists (${home})`;
+  }
+  if (runtimeVersion) {
+    // 版本不匹配 = 目录键撞车或 venv 是别的版本建的：必须重建，否则 AC-15b
+    // （不受 PATH 影响、必须用声明版本）被静默违反。
+    const recorded = cfg['version_info'] || path.basename(home);
+    if (!versionMatchesRequested(recorded, runtimeVersion)) {
+      return `it was built for Python ${recorded} but the task declares ${runtimeVersion}`;
+    }
+  }
+  return null;
+}
+
+/**
+ * 解析声明版本的池内解释器绝对路径，失败时抛出带留痕消息的普通 Error
+ * （调用方负责分类与回调）。
+ */
+async function ensureInterpreter(
+  version: string,
+  logPrepare: (m: string) => void,
+): Promise<string> {
+  logPrepare(`Resolving Python ${version} from the interpreter pool`);
+  try {
+    return await ensureVersion(version);
+  } catch (err) {
+    if (err instanceof InterpreterUnavailableError) {
+      const message = interpreterFailureMessage(err.version, err);
+      logPrepare(message);
+      throw new Error(message);
+    }
+    throw err;
+  }
+}
+
+interface EnsureVenvOptions {
+  venvDir: string;
+  venvPython: string;
+  requirements: string[];
+  declaredVersion: string | null;
+  logPrepare: (m: string) => void;
+  signal: AbortSignal;
+  isAborted: () => boolean;
+}
+
+/**
+ * 建/复用 venv 并安装依赖，返回 venv 内解释器绝对路径。
+ *
+ * 与 python 侧 `ensure_venv` 逐条对齐：
+ *   - 复用前校验 venv 是否**仍然可用**（`venvReuseProblem`）：健康的照旧直接
+ *     复用（AC-16b：不产生任何 uv 调用），损坏的**删除后重建**而不是带着它
+ *     往下跑。重建是安全的——venv 里只有依赖安装结果，requirements 会重装。
+ *   - 无版本 → `uv venv --no-project <dir>`（**argv 逐字节不变**，AC-10a）。
+ *   - 有版本 → 先 `ensureVersion` 拿池内绝对路径，再
+ *     `uv venv --python <abs> --no-project <dir>`。
+ *   - 失败/超时一律清掉半成品 venv：否则 `exists()` 会让下次静默复用一个坏环境。
+ *   - 依赖安装 `uv pip install --python <venvPython> [--index-url <url>] <reqs>`。
+ */
+async function ensurePythonVenv(opts: EnsureVenvOptions): Promise<string> {
+  const { venvDir, venvPython, requirements, declaredVersion, logPrepare, signal, isAborted } = opts;
+
+  // 私有 PyPI 源：config 层已过凭据自由校验（无 userinfo/query/fragment）。
+  // 校验失败在 config getter 里降级为 ''（官方源）并 warn，绝不把畸形 URL
+  // 送进 uv argv。
+  const registryUrl = config.pypiRegistryUrl;
+
+  if (fs.existsSync(venvDir)) {
+    const problem = venvReuseProblem(venvDir, venvPython, declaredVersion);
+    if (problem) {
+      logPrepare(`Discarding the cached venv ${venvDir} and rebuilding it: ${problem}`);
+      try {
+        fs.rmSync(venvDir, { recursive: true, force: true });
+      } catch (err) {
+        logger.warn(
+          `Failed to remove the broken venv ${venvDir}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+  }
+
+  if (!fs.existsSync(venvDir)) {
+    const uv = await resolveUvForExecute();
+    const venvArgs = ['venv'];
+    if (declaredVersion) {
+      // D8：只传池内绝对路径，绝不传裸版本号（裸版本号 = uv 的自动下载语义）。
+      const poolPython = await ensureInterpreter(declaredVersion, logPrepare);
+      venvArgs.push('--python', poolPython);
+    }
+    // 兼容红线 §4.1/AC-10a：无版本分支的剩余 argv 与改造前逐字节相同。
+    venvArgs.push('--no-project', venvDir);
+    logPrepare(`Creating venv with uv: ${venvDir}`);
+    const venvResult = await runCommand(uv, venvArgs, {
+      timeout: UV_VENV_TIMEOUT_MS,
+      env: buildChildEnv({
+        UV_PYTHON_INSTALL_DIR: config.uvPythonInstallDir,
+        UV_CACHE_DIR: path.join(config.uvPythonInstallDir, '.cache'),
+        // 关键：即便上面某处意外传了裸版本号，uv 也只会拒绝而不是偷偷下载。
+        UV_PYTHON_DOWNLOADS: 'manual',
+        UV_NO_PROGRESS: '1',
+      }),
+      signal,
+    });
+    if (isAborted()) throw new ExecutionCancelledError('');
+    if (venvResult.status !== 0) {
+      removeVenvQuietly(venvDir);
+      const detail = (venvResult.stderr || venvResult.stdout || '').trim();
+      // 解释器相关的失败要保留 uv 原文（`No interpreter found ...`），
+      // `prepareFailureReason` 据此归类为 interpreter_unavailable。
+      throw new Error(`uv venv failed: ${detail || 'unknown error'}`);
+    }
+  }
+
+  if (requirements.length > 0) {
+    const uv = await resolveUvForExecute();
+    logPrepare(`Installing ${requirements.length} packages into ${venvDir}`);
+    const installArgs = ['pip', 'install', '--python', venvPython];
+    if (registryUrl) installArgs.push('--index-url', registryUrl);
+    installArgs.push(...requirements);
+    const installResult = await runCommand(uv, installArgs, {
+      timeout: UV_PIP_TIMEOUT_MS,
+      env: buildChildEnv({
+        UV_PYTHON_INSTALL_DIR: config.uvPythonInstallDir,
+        UV_CACHE_DIR: path.join(config.uvPythonInstallDir, '.cache'),
+        UV_PYTHON_DOWNLOADS: 'manual',
+        UV_NO_PROGRESS: '1',
+      }),
+      signal,
+    });
+    if (isAborted()) throw new ExecutionCancelledError('');
+    if (installResult.status !== 0) {
+      const detail = (installResult.stderr || installResult.stdout || '').trim();
+      throw new Error(`uv pip install failed: ${detail || 'unknown error'}`);
+    }
+  }
+
+  return venvPython;
+}
+
+function removeVenvQuietly(venvDir: string): void {
+  try {
+    fs.rmSync(venvDir, { recursive: true, force: true });
+  } catch {
+    /* best effort — 清理失败不掩盖原始失败 */
+  }
+}
+
+/** uv 二进制路径；不可用时给出可操作的指引（而非一个 spawn ENOENT）。 */
+async function resolveUvForExecute(): Promise<string> {
+  const uv = await resolveUvBin();
+  if (!uv.path) {
+    throw new Error(
+      'uv is not available on this executor (no UV_BIN, not on PATH, no bundled binary); ' +
+        'install uv or use a client build that bundles it',
+    );
+  }
+  return uv.path;
+}
+
+/**
+ * 构造解释器获取失败时的 callback 错误消息（FR-12 留痕 / AC-12a）。
+ *
+ * 形态刻意与 python 侧 `_interpreter_failure_result` 对齐，并且**必须**保留
+ * `interpreter <X.Y> unavailable` 这个骨架——`prepareFailureReason` 靠它把这类
+ * 失败归到 `interpreter_unavailable`。消息里带齐 requested / reason / 池快照，
+ * 让运维不必翻执行器日志就能判断"是池里没有、还是下载失败、还是 uv 没装"。
+ */
+function interpreterFailureMessage(
+  requested: string,
+  err: InterpreterUnavailableError,
+): string {
+  const pool = poolSummary();
+  const cached = pool.versions.length > 0 ? pool.versions.join(', ') : '无';
+  return (
+    `解释器 ${requested} 无法获取（${err.reason}：${err.detail}）；` +
+    `已缓存: ${cached}`
+  );
 }
 
 /**
@@ -736,6 +1174,96 @@ async function prepareExecution(
   }
   checkAbort();
 
+  // ---------------------------------------------------------------------
+  // WS5（python_task_upload_and_multiversion, CONTRACT.md §3.3-1 / D3）：
+  // zip 整包渠道。
+  //
+  // 触发条件必须尊重文档化优先级 **git > glue > application_zip**，否则会
+  // 踩中存量数据的兼容红线 §4.4：历史行可以同时带 `gitRepo` 与
+  // `applicationId`（后者当年只是一个弱引用，**不**表示"代码来自上传的
+  // 包"）。若简单地按 `applicationId` 触发，就会先 git clone 再用 zip 内容
+  // 覆盖同一个目录，还叠加包内 requirements —— 既静默改变了存量任务的结果，
+  // 也是"包内容覆盖已克隆源码"的安全意外。
+  //
+  //   1. `codeSource === 'application_zip'` —— 写面校验过的**显式信号**；
+  //   2. 无 `codeSource` 但 `applicationId` + **`packageUrl` 同时存在** ——
+  //      历史行/迁移置 NULL 的歧义场景。这里刻意改看 `packageUrl` 这个
+  //      **admin 生产出来的正向信号**（admin 只为它认定的 zip 任务附
+  //      packageUrl），而不是继续依赖 applicationId 这个歧义列：admin 不当作
+  //      zip 任务的行自然没有 packageUrl，于是原样落回既有行为。
+  //
+  // 位置纪律：必须在 `loadManifest` **之前**——manifest 从 workDir 读取，而
+  // workDir 此刻除了刚解压的包内容之外应当为空。若先读 manifest，包内自带的
+  // manifest.yaml 就能劫持 entrypoint/requirements（把"包内数据"提权成"任务
+  // 配置"），那是 zip 渠道独有的攻击面。
+  // ---------------------------------------------------------------------
+  const taskRec = body.task as Record<string, unknown>;
+  const codeSource = (taskRec.codeSource as string | undefined) || (taskRec.code_source as string | undefined);
+  const applicationId = (taskRec.applicationId as string | undefined) || (taskRec.application_id as string | undefined);
+  const packageUrl = (taskRec.packageUrl as string | undefined) || (taskRec.package_url as string | undefined);
+  const glueSourceField = (taskRec.glueSource as string | undefined) || (taskRec.glue_source as string | undefined);
+
+  let isZipChannel = codeSource === 'application_zip' || (!codeSource && !!applicationId && !!packageUrl);
+  if (isZipChannel && (gitRepo || glueSourceField)) {
+    // 写面互斥（CONTRACT.md §2.1）保证不可达；真出现了就按文档优先级让位，
+    // 并留下 ERROR 级日志——静默按其中一个跑才是真正危险的。
+    logger.error(
+      `Task ${taskName} declares codeSource=${String(codeSource)}/applicationId=${String(applicationId)} ` +
+        `together with ${gitRepo ? 'gitRepo' : 'glueSource'} — applying the documented precedence ` +
+        'git > glue > application_zip and ignoring the zip channel',
+    );
+    isZipChannel = false;
+  }
+
+  let packageRequirements: string[] = [];
+  if (isZipChannel) {
+    if (!packageUrl) {
+      // 绝不静默跑一个空工作目录（那会把"配置缺失"伪装成"脚本报错"）。
+      // 只有**确实是** zip 任务（codeSource 显式声明）才会走到这里：歧义分支
+      // 本就要求 packageUrl 存在，所以存量 git+applicationId 行不受影响。
+      throw new Error(
+        'application_zip task has no packageUrl in the dispatch payload ' +
+          '(admin must attach the resolved applications.packageUrl); ' +
+          `applicationId=${String(applicationId)}`,
+      );
+    }
+    const zipPath = path.join(workDir, 'package.zip');
+    logPrepare(`Downloading package from ${redactUrl(packageUrl)}`);
+    try {
+      // 复用既有下载链：SSRF 闸（fail-closed）+ Bearer 首跳 + 跨跳剥离 +
+      // 绝对超时 + 体积上限。size cap 与 python 侧 200MB 对齐。
+      await downloadFile(packageUrl, zipPath, {
+        timeoutMs: ZIP_DOWNLOAD_TIMEOUT_MS,
+        maxBytes: config.packageDownloadMaxBytes,
+      });
+    } catch (err) {
+      if (err instanceof ExecutionCancelledError || entry.aborted) throw err;
+      throw new Error(
+        `Package download failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    checkAbort();
+
+    // zip-guard 炸弹审查 + zip-slip/绝对路径/符号链接拒绝，逐条目断言落盘
+    // 目标仍在 workDir 之内。失败会自行清理本次写出的内容。
+    logPrepare('Extracting package (zip-safety vetting enabled)');
+    try {
+      safeExtractZip(zipPath, workDir, { removeArchive: true });
+    } catch (err) {
+      if (err instanceof ZipSafetyError) {
+        throw new Error(`Unsafe or invalid package archive: ${err.message}`);
+      }
+      throw err;
+    }
+    checkAbort();
+
+    // D4/AC-04a/b：包内 requirements.txt ∪ 任务级 requirements（任务级同名覆盖）。
+    packageRequirements = readPackageRequirements(workDir);
+    if (packageRequirements.length > 0) {
+      logPrepare(`Package declares ${packageRequirements.length} requirement(s)`);
+    }
+  }
+
   // Load manifest.yaml and merge with task (task fields take priority)
   const manifest = loadManifest(workDir);
   const task = mergeTaskWithManifest(body.task as Record<string, unknown>, manifest);
@@ -752,6 +1280,19 @@ async function prepareExecution(
   }
   const requirements: string[] = (task.requirements as string[]) || [];
   const taskId = entry.taskId;
+
+  // WS5（FR-06b/FR-15）：任务声明的 Python 版本。
+  //
+  // 只在 runtime=python 时消费（NG-02：node/shell 的多版本不在本期范围，
+  // 声明了也不影响其既有 argv）。非法格式在此显式拒绝——**绝不静默忽略**：
+  // 一个畸形版本若被当成"没声明"，任务会以宿主默认解释器跑出一个看似成功的
+  // 结果，那比直接失败危险得多。
+  const rawRuntimeVersion =
+    (task.runtimeVersion as string | undefined) ?? (task.runtime_version as string | undefined);
+  let declaredVersion: string | null = null;
+  if (rawRuntimeVersion !== undefined && rawRuntimeVersion !== null && rawRuntimeVersion !== '') {
+    declaredVersion = normalizeRuntimeVersion(rawRuntimeVersion);
+  }
 
   // Glue script support: write inline source to a temp file and use it as entrypoint
   let actualRuntime = runtime;
@@ -788,6 +1329,16 @@ async function prepareExecution(
     logPrepare(`Glue script written to ${glueFile} (${glueSource.length} bytes)`);
     actualEntrypoint = actualRuntime === 'shell' ? glueFile : path.basename(glueFile);
     actualRequirements = [];  // Glue scripts use system runtime, no per-task deps
+  }
+
+  // D4（AC-04a/b）：zip 渠道下把包内 requirements.txt 并入任务级 requirements
+  // （任务级同名覆盖）。glue 分支已把 actualRequirements 清空且不建 venv，
+  // 因此这里跳过——glue 的语义是"用系统运行时跑一段内联脚本"。
+  if (!glueSource && actualRuntime === 'python' && packageRequirements.length > 0) {
+    actualRequirements = mergeRequirements(packageRequirements, actualRequirements);
+    logPrepare(
+      `Merged package + task requirements for ${taskId}: ${actualRequirements.join(', ')}`,
+    );
   }
 
   // node runtime: install dependencies on demand to task-isolated directory
@@ -892,6 +1443,69 @@ async function prepareExecution(
   }
   checkAbort();
 
+  // ---------------------------------------------------------------------
+  // WS5（python_task_upload_and_multiversion, CONTRACT.md §3.3-3/4）：
+  // python 的 venv + 依赖安装 + 解释器解析。
+  //
+  // 兼容红线 §4.6（硬要求）：**无版本且无依赖**的 python 任务必须逐字节保持
+  // 现状 `python3 <entrypoint>`——不建 venv、不探测解释器池、不 spawn uv。
+  // 下面的分支顺序就是这条红线的实现：先判"要不要建 venv"，不要就直接落到
+  // 既有的 cmd 构造；"要不要用池内解释器"只在声明了版本时才成立。
+  //
+  // 有依赖或声明版本 → 建 venv：
+  //   - 目录键带版本签名（D6/FR-16）：`<taskId>` / `<taskId>-<X.Y>`，声明版本
+  //     一变就不可能复用旧 venv（AC-16a）；
+  //   - 声明版本 → `uv venv --python <池内绝对路径> --no-project <dir>`，
+  //     **绝不**传裸版本号（那会触发 uv 的"缺则自动下载"语义，绕过 D13 的全局
+  //     单下载队列）。D8 硬约束：venv 阶段绝不触发下载。
+  // ---------------------------------------------------------------------
+  let pythonBinFromVenv: string | null = null;
+  let resolvedInterpreter: string | null = null;
+
+  if (actualRuntime === 'python') {
+    const needsVenv = !glueSource && (actualRequirements.length > 0 || declaredVersion !== null);
+    if (needsVenv) {
+      // 唯一派生点：目录名同时写入 entry（供 TTL 清扫的活跃保护集读取），
+      // 于是"写哪个目录"与"保护哪个目录"永不漂移（DESIGN §1.2.2）。
+      const venvName = venvDirName(taskId, declaredVersion);
+      entry.venvDirName = venvName;
+      const venvDir = path.join(config.workDir, '.venvs', venvName);
+      const venvPython = venvPythonBin(venvDir);
+      try {
+        pythonBinFromVenv = await ensurePythonVenv({
+          venvDir,
+          venvPython,
+          requirements: actualRequirements,
+          declaredVersion,
+          logPrepare,
+          signal,
+          isAborted: () => entry.aborted,
+        });
+      } catch (err) {
+        if (err instanceof ExecutionCancelledError || entry.aborted) throw err;
+        if (err instanceof InterpreterUnavailableError) {
+          // 解释器取不到：必须归类为 interpreter_unavailable，且消息要能被人
+          // 读懂（FR-12 留痕）。池快照一并带上——"池里有什么"是判断"该下载还是
+          // 该离线预填"的第一手信息。
+          const message = interpreterFailureMessage(
+            err.version,
+            err,
+          );
+          logPrepare(message);
+          throw new Error(message);
+        }
+        throw err;
+      }
+      resolvedInterpreter = pythonBinFromVenv;
+      logPrepare(`Using venv interpreter: ${pythonBinFromVenv}`);
+    } else if (declaredVersion) {
+      // glue 渠道 + 声明版本（AC-11a）：不建 venv、不装依赖，但要用声明的
+      // 解释器执行——否则"声明了版本"在 glue 任务上会被静默忽略。
+      resolvedInterpreter = await ensureInterpreter(declaredVersion, logPrepare);
+    }
+  }
+  checkAbort();
+
   // SEC-01: only pass a whitelist of env vars to child process — never expose executor secrets
   const env: NodeJS.ProcessEnv = buildChildEnv();
   // Requirements were installed to .node_modules/<taskId>/node_modules via npm
@@ -969,7 +1583,26 @@ async function prepareExecution(
     cmd = process.platform === 'win32' ? 'node.exe' : 'node';
     args = [actualEntrypoint];
   } else if (actualRuntime === 'python') {
-    cmd = process.platform === 'win32' ? 'python.exe' : 'python3';
+    // WS5（CONTRACT.md §3.3-4）：
+    //   有 venv        → venv 内解释器绝对路径；
+    //   仅声明版本     → 池内解释器绝对路径（ensureVersion 的返回值）；
+    //   无版本无依赖   → **现状 `python3 <entrypoint>` 逐字节不变**
+    //                    （兼容红线 §4.6 / AC-10a）。
+    // 用绝对路径而非裸版本号：裸版本号会重新进入 uv 的解析/下载语义，而此刻
+    // 我们已经在受控入口里解析过了。
+    //
+    // D14 兜底断言：**声明了版本就绝不允许落到 `python3` 兜底**。上面的分支保证
+    // 了"declaredVersion !== null ⇒ 走 needsVenv ⇒ 取解释器失败即抛错"，所以这条
+    // `||` 链在声明版本时理论上不可达；但那种"理论不可达"正是后续重构最容易破坏
+    // 的东西（例如有人把 needsVenv 的条件改窄）。这里显式失败而不是静默降级：
+    // 静默跑在宿主解释器上会让"声明了版本"变成一句空话，且完全无声。
+    if (declaredVersion !== null && !pythonBinFromVenv && !resolvedInterpreter) {
+      throw new Error(
+        `interpreter ${declaredVersion} unavailable (internal): no interpreter was resolved ` +
+          `for a version-declaring task — refusing to fall back to the host interpreter`,
+      );
+    }
+    cmd = pythonBinFromVenv || resolvedInterpreter || (process.platform === 'win32' ? 'python.exe' : 'python3');
     args = [actualEntrypoint];
   } else if (actualRuntime === 'shell') {
     if (process.platform === 'win32') {
