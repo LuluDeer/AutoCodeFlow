@@ -2854,6 +2854,16 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        ExecutorInterpreterDto: {
+            /** @description Full patch version discovered in the interpreter pool */
+            version: string;
+            /** @description Absolute interpreter path inside the pool */
+            path?: string;
+            /** @description Probe result (executable and --version succeeded) */
+            available?: boolean;
+            /** @description Probe timestamp (ISO 8601) */
+            discoveredAt?: string;
+        };
         LoginDto: {
             /** @example admin */
             username: string;
@@ -3233,15 +3243,8 @@ export interface components {
              * @enum {string}
              */
             dispatchMode?: "push" | "pull";
-            /** @description Interpreters present in this executor’s uv-managed pool. Omit the field to mean "not reported" (admin falls back to 3.12 for legacy executors); send an empty array to mean "reported and genuinely empty" (no fallback). */
-            interpreters?: {
-                /** @description Full patch version, e.g. 3.12.11 */
-                version: string;
-                /** @description Absolute interpreter path inside the uv-managed pool */
-                path: string;
-                available: boolean;
-                discoveredAt: string;
-            }[];
+            /** @description python_task_multiversion: interpreter cache-pool inventory. Omitted → keep the stored value; [] → reported and the pool is empty; invalid structure → the whole field is rejected. */
+            interpreters?: components["schemas"]["ExecutorInterpreterDto"][];
         };
         ExecutorHeartbeatDto: {
             /**
@@ -3317,15 +3320,8 @@ export interface components {
              * @example 1.0.0
              */
             version?: string;
-            /** @description Interpreters present in this executor’s uv-managed pool. Omit the field to mean "not reported" (admin falls back to 3.12 for legacy executors); send an empty array to mean "reported and genuinely empty" (no fallback). */
-            interpreters?: {
-                /** @description Full patch version, e.g. 3.12.11 */
-                version: string;
-                /** @description Absolute interpreter path inside the uv-managed pool */
-                path: string;
-                available: boolean;
-                discoveredAt: string;
-            }[];
+            /** @description python_task_multiversion: interpreter cache-pool inventory. Omitted → keep the stored value; [] → reported and the pool is empty; invalid structure → the whole field is rejected. */
+            interpreters?: components["schemas"]["ExecutorInterpreterDto"][];
         };
         ExecutorPullDto: {
             /**

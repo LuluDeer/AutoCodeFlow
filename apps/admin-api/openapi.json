@@ -7015,6 +7015,30 @@
       }
     },
     "schemas": {
+      "ExecutorInterpreterDto": {
+        "type": "object",
+        "properties": {
+          "version": {
+            "type": "string",
+            "description": "Full patch version discovered in the interpreter pool"
+          },
+          "path": {
+            "type": "string",
+            "description": "Absolute interpreter path inside the pool"
+          },
+          "available": {
+            "type": "boolean",
+            "description": "Probe result (executable and --version succeeded)"
+          },
+          "discoveredAt": {
+            "type": "string",
+            "description": "Probe timestamp (ISO 8601)"
+          }
+        },
+        "required": [
+          "version"
+        ]
+      },
       "LoginDto": {
         "type": "object",
         "properties": {
@@ -7821,31 +7845,9 @@
           "interpreters": {
             "type": "array",
             "items": {
-              "type": "object",
-              "properties": {
-                "version": {
-                  "type": "string",
-                  "description": "Full patch version, e.g. 3.12.11"
-                },
-                "path": {
-                  "type": "string",
-                  "description": "Absolute interpreter path inside the uv-managed pool"
-                },
-                "available": {
-                  "type": "boolean"
-                },
-                "discoveredAt": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "version",
-                "path",
-                "available",
-                "discoveredAt"
-              ]
+              "$ref": "#/components/schemas/ExecutorInterpreterDto"
             },
-            "description": "Interpreters present in this executor’s uv-managed pool. Omit the field to mean \"not reported\" (admin falls back to 3.12 for legacy executors); send an empty array to mean \"reported and genuinely empty\" (no fallback)."
+            "description": "python_task_multiversion: interpreter cache-pool inventory. Omitted → keep the stored value; [] → reported and the pool is empty; invalid structure → the whole field is rejected."
           }
         },
         "required": [
@@ -7937,31 +7939,9 @@
           "interpreters": {
             "type": "array",
             "items": {
-              "type": "object",
-              "properties": {
-                "version": {
-                  "type": "string",
-                  "description": "Full patch version, e.g. 3.12.11"
-                },
-                "path": {
-                  "type": "string",
-                  "description": "Absolute interpreter path inside the uv-managed pool"
-                },
-                "available": {
-                  "type": "boolean"
-                },
-                "discoveredAt": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "version",
-                "path",
-                "available",
-                "discoveredAt"
-              ]
+              "$ref": "#/components/schemas/ExecutorInterpreterDto"
             },
-            "description": "Interpreters present in this executor’s uv-managed pool. Omit the field to mean \"not reported\" (admin falls back to 3.12 for legacy executors); send an empty array to mean \"reported and genuinely empty\" (no fallback)."
+            "description": "python_task_multiversion: interpreter cache-pool inventory. Omitted → keep the stored value; [] → reported and the pool is empty; invalid structure → the whole field is rejected."
           }
         },
         "required": [
