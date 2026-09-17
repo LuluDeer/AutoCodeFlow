@@ -117,6 +117,23 @@ export interface Task {
   gitCommit?: string | null;
   glueSource?: string | null;
   glueLanguage?: string | null;
+  /**
+   * python_task_multiversion（FR-06）：任务声明的 Python **主.次**版本
+   * （如 "3.7" / "3.12"；null = 不声明，走执行器宿主默认解释器）。
+   *
+   * 为什么手写而非取自 generated：admin-api 的 **响应** 里没有 `Task` schema
+   * （实测 openapi.json 602 个 schema 中只有 CreateTaskDto/UpdateTaskDto/
+   * TriggerTaskDto 等请求体，没有读模型 Task），因此本接口是**读模型的唯一
+   * 事实源**，必须自己声明。请勿因"api-types 里已经有了"而删除——那指的是
+   * **请求 DTO**（components["schemas"]["CreateTaskDto"]），与本读模型无关。
+   */
+  runtimeVersion?: string | null;
+  /**
+   * python_task_multiversion（FR-18）：代码来源渠道三选一。
+   * null = 未声明（存量语义：按 gitRepo/glueSource/applicationId 谁非空隐式推断）。
+   * 同上：读模型手写字段，不可删。
+   */
+  codeSource?: 'git' | 'glue' | 'application_zip' | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -153,6 +170,18 @@ export interface TaskExecution {
   taskVersion?: string | null;
   /** OBS-01: W3C trace-id（admin OTEL_ENABLED=true 时落库；null=未追踪） */
   traceId?: string | null;
+  /**
+   * 执行结果 jsonb 自由列（后端 task_executions.result）。python_task_multiversion
+   * 起，失败执行会写入结构化解释器留痕 `{ interpreter: {requested, resolved,
+   * reason, detail, pool} }`（CONTRACT §3.3）。
+   *
+   * 类型刻意保持 `unknown` 而非结构化接口：该列**无 schema 约束**，且历史执行
+   * 记录里可能是 null/{}/旧结构/被人工订正过的脏值。结构化读取与逐层判类型由
+   * pages/interpreter-context.ts 的 extractInterpreterContext 独占负责（防御式），
+   * 页面只消费它的归一结果——这样"多一层形状认知"不会散落到调用点。
+   * 后端 DTO 可能尚未回传该列：整个字段可缺省，消费方必须容忍 undefined。
+   */
+  result?: unknown;
   createdAt: string;
 }
 

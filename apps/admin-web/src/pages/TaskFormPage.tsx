@@ -4,6 +4,13 @@ import {
   buildExecutorPayload,
   affinityFormValues,
   applyRequirementsPayload,
+  // python_task_multiversion（FR-06/FR-18）：runtimeVersion 声明 + codeSource 互斥
+  applyRuntimeVersionPayload,
+  applyCodeSourcePayload,
+  deriveCodeSourceFromTask,
+  deriveRuntimeMismatch,
+  normalizeRuntimeVersion,
+  type CodeSource,
 } from './executor-mode';
 // PK-02（DEEP_REVIEW 0ef3bbe）：create/update 改用生成的 DTO 类型，
 // payload 由 apply* 链组装后类型收窄为 Record<string, unknown>，调用点显式断言。
@@ -37,6 +44,10 @@ import GlueEditor from '../components/GlueEditor';
 import AlarmConfig from '../components/AlarmConfig';
 import PageSkeleton from '../components/PageSkeleton';
 import TriggerPreview from '../components/task-form/TriggerPreview';
+// python_task_multiversion（FR-06/AC-06a/AC-06b）：Python 版本组合框。
+// 独立成组件的原因见其头注释（useWatch 必须在无条件渲染的组件内，否则
+// TaskFormPage 的 loadingTask 早退会让 hook 数随分支变化）。
+import RuntimeVersionField from '../components/task-form/RuntimeVersionField';
 import {
   applyMaintenanceWindowsPayload,
   MAINTENANCE_WINDOWS_MAX,
@@ -130,6 +141,29 @@ const PRIORITY_LABELS = (t: (k: string) => string): Record<string, string> => ({
   4: t('taskForm.priority.critical'),
 });
 
+// python_task_multiversion（FR-18/AC-17b）：代码来源三选一 → 表单控件。
+// 与 executor-mode.CodeSource 一一对应；desc 说明「该来源下代码从哪来」，
+// 因为这三个选项对用户而言差别只在"执行器去哪拿代码"。
+const CODE_SOURCE_OPTIONS = (
+  t: (k: string) => string,
+): { value: CodeSource; label: string; desc: string }[] => [
+  {
+    value: 'git',
+    label: t('taskForm.field.codeSource.git'),
+    desc: t('taskForm.field.codeSource.gitDesc'),
+  },
+  {
+    value: 'application_zip',
+    label: t('taskForm.field.codeSource.applicationZip'),
+    desc: t('taskForm.field.codeSource.applicationZipDesc'),
+  },
+  {
+    value: 'glue',
+    label: t('taskForm.field.codeSource.glue'),
+    desc: t('taskForm.field.codeSource.glueDesc'),
+  },
+];
+
 // UI-06: 单页分区锚点。全部 Form.Item 同时挂载，锚点条只负责滚动定位。
 const SECTION_IDS = ['sec-basic', 'sec-trigger', 'sec-executor', 'sec-params', 'sec-glue'] as const;
 
@@ -154,7 +188,13 @@ export default function TaskFormPage() {
   const [groups, setGroups] = useState<string[]>([]);
   const [allTags, setAllTags] = useState<string[]>([]);
   const [executors, setExecutors] = useState<{ id: string; appName: string; address: string; status: string }[]>([]);
-  const [apps, setApps] = useState<{ id: string; name: string }[]>([]);
+  /**
+   * python_task_multiversion（AC-19a）：候选应用带 **runtime**——zip 来源要求
+   * 应用 runtime 与任务 runtime 一致，表单需就地提示（服务端仍权威校验）。
+   * runtime 可缺省：列表读面未回传时归 ''，deriveRuntimeMismatch 对空串不判定
+   * （宁可不提示，也不拿未就绪的数据误报）。
+   */
+  const [apps, setApps] = useState<{ id: string; name: string; runtime: string }[]>([]);
   // TASK-PROJ-01: 归属项目候选（不选 = 未分配，归默认项目视图）
   const [projects, setProjects] = useState<{ id: string; name: string }[]>([]);
   // TASK-PROJ-01: Select 选项（含显式"未分配"语义：allowClear 即可，不额外造选项）
@@ -172,6 +212,22 @@ export default function TaskFormPage() {
   const [createdTaskId, setCreatedTaskId] = useState<string | null>(null);
   const [savedRuntime, setSavedRuntime] = useState('python');
 
+  // python_task_multiversion（FR-06）：声明的 Python 主.次版本。null = 不声明
+  // （宿主默认解释器）。**刻意不入 antd 字段树**——RuntimeVersionField 是
+  // "可选可手输"的受控组合框，中间态（正在输入尚未确认的文本）不应污染表单值；
+  // 提交时由 applyRuntimeVersionPayload 显式合成 payload.runtimeVersion。
+  // 仍持有 useState 而非 ref：值参与渲染（3.7 警示、宿主默认提示）。
+  const [runtimeVersion, setRuntimeVersion] = useState<string | null>(null);
+
+  // python_task_multiversion（FR-18/AC-17b）：代码来源三选一（受控 state，同
+  // 理由）。编辑态初值由 deriveCodeSourceFromTask 推导——优先后端已回填的
+  // codeSource，否则按 gitRepo > glueSource > applicationId 的迁移回填序推断。
+  // previousCodeSource 是 applyCodeSourcePayload 的"离开 zip 才清 applicationId"
+  // 判据：必须记住**任务原本的**来源，而不是上一次渲染的 state（后者在
+  // 重渲染/回填竞态下不可靠），故用 ref 固化加载期推导结果。
+  const [codeSource, setCodeSource] = useState<CodeSource>('git');
+  const previousCodeSourceRef = useRef<CodeSource>('git');
+
   // FEAT-13：「保存为模板」弹窗（表单校验通过后把当前值固化为自定义模板）
   const [tplModalOpen, setTplModalOpen] = useState(false);
   const [tplSaving, setTplSaving] = useState(false);
@@ -182,6 +238,11 @@ export default function TaskFormPage() {
   const cronExpression = Form.useWatch('cronExpression', form);
   const fixedRateWatch = Form.useWatch('fixedRate', form);
   const timezoneWatch = Form.useWatch('timezone', form);
+  // python_task_multiversion：zip 来源的运行时一致性提示需要实时读取两处值——
+  // runtime 来自字段树（useWatch），applicationId 也走 useWatch 以便在**选中的
+  // 应用**里查 runtime。二者都是无条件 hook 调用。
+  const runtimeWatch = Form.useWatch('runtime', form);
+  const applicationIdWatch = Form.useWatch('applicationId', form);
   const { token } = theme.useToken();
 
   useEffect(() => {
@@ -206,7 +267,7 @@ export default function TaskFormPage() {
     );
     run(
       applicationsApi.list(controller.signal),
-      (data) => setApps(data.map((a) => ({ id: a.id, name: a.name }))),
+      (data) => setApps(data.map((a) => ({ id: a.id, name: a.name, runtime: a.runtime ?? '' }))),
       t('taskForm.load.appsFail'),
     );
     // TASK-PROJ-01: 归属项目候选。失败只 warn（不阻塞表单）——未分配仍是合法
@@ -229,13 +290,23 @@ export default function TaskFormPage() {
           message.warning(t('taskForm.load.tasksFail'));
         }
       });
-    if (appId) form.setFieldValue('applicationId', appId);
+    // python_task_multiversion：`?applicationId=` 是应用详情页的「用此应用建任务」
+    // 入口，语义就是"以该应用整包为代码来源"，故同时把来源切到 application_zip
+    // （否则用户看到的是 git 来源，提交时 applicationId 会被普通绑定语义悄悄留下）。
+    // 仅创建态显式覆盖：编辑态的 `?applicationId=` 不改变任务原有来源声明。
+    if (appId) {
+      form.setFieldValue('applicationId', appId);
+      if (!editId) {
+        setCodeSource('application_zip');
+        previousCodeSourceRef.current = 'application_zip';
+      }
+    }
 
     return () => {
       active = false;
       controller.abort();
     };
-  }, [appId, form, t]);
+  }, [appId, editId, form, t]);
 
   // Load existing task data when in edit mode
   useEffect(() => {
@@ -250,6 +321,14 @@ export default function TaskFormPage() {
         setExecutorMode(mode);
         setTriggerType(task.triggerType || 'manual');
         setSavedRuntime(task.runtime || 'python');
+        // python_task_multiversion（FR-06/AC-06b/AC-17b）：编辑态回填自持 state。
+        // runtimeVersion 存的是归一后的值（库内脏值/超区间值一律显示为"未声明"，
+        // 不把非法值塞进组合框）；非法值不会因此丢失——它本就不该存在于库里，
+        // 且提交侧 normalizeRuntimeVersion 会把它归 null。
+        setRuntimeVersion(normalizeRuntimeVersion(task.runtimeVersion));
+        const derivedSource = deriveCodeSourceFromTask(task);
+        setCodeSource(derivedSource);
+        previousCodeSourceRef.current = derivedSource;
         form.setFieldsValue({
           name: task.name,
           description: task.description,
@@ -257,6 +336,15 @@ export default function TaskFormPage() {
           entrypoint: task.entrypoint,
           requirements: task.requirements ?? [],
           applicationId: task.applicationId,
+          // python_task_multiversion（FR-18）：git 来源两字段与 glueSource 必须
+          // 挂载并回填——applyCodeSourcePayload 的"自证"判定读的就是载荷里的这两
+          // 个键（glue 分支靠 glueSource 非空才敢声明 codeSource='glue'）。不回填
+          // 会让编辑态保存把这些值判成"未提供"从而清掉代码来源声明。
+          // glueSource 的唯一写方是 GlueEditor（tasksApi.updateGlue），此处写回
+          // 原值是幂等 no-op；空值归一 undefined 以免提交空串。
+          gitRepo: task.gitRepo ?? undefined,
+          gitBranch: task.gitBranch ?? undefined,
+          glueSource: task.glueSource ?? undefined,
           // TASK-PROJ-01: 编辑态回填归属项目（null = 未分配 → undefined 让
           // Select 显示占位符，而不是把 "null" 当值）
           projectId: task.projectId ?? undefined,
@@ -373,6 +461,12 @@ export default function TaskFormPage() {
     if (executorMode === 'pinned' && !values.executorId) {
       missing.push({ label: t('taskForm.field.executorId'), anchor: SECTION_IDS[2] });
     }
+    // python_task_multiversion（FR-18）：zip 来源必须关联应用。缺了它后端
+    // assertCodeSourceConsistent 会 400，但那时用户只看到一条接口错误；
+    // 在这里拦下并滚到字段旁，与其它必填项一致的体验。
+    if (zipApplicationMissing) {
+      missing.push({ label: t('taskForm.field.applicationId.zipRequired'), anchor: SECTION_IDS[0] });
+    }
     if (missing.length > 0) {
       const missingList = missing.map((m) => m.label).join('、');
       message.error(t('taskForm.missing', { list: missingList }));
@@ -388,11 +482,34 @@ export default function TaskFormPage() {
       // upstreamDependencies（DTO 未声明，forbidNonWhitelisted 会判 400）转成
       // DTO 声明的 dependencies 映射并删除载体键，须保证没有任何后续步骤再把
       // 载体键带回请求体（内层 buildExecutorPayload 会整体展开 values）。
+      //
+      // python_task_multiversion：applyRuntimeVersionPayload / applyCodeSourcePayload
+      // 紧贴 buildExecutorPayload（即仍是"最靠近表单原始值"的两层），原因：
+      //  - 两者都按**表单原始值**判定——gitRepo/glueSource/applicationId 需原样
+      //    读（缺失即视为"本表单未提供"），runtimeVersion 则不在字段树里（组合框
+      //    自持 state），必须经第二参显式传入。往后放会让上游各步写入的显式 null
+      //    被误读成用户输入，改变自证判定。
+      // 顺序（内 → 外）：
+      //   buildExecutorPayload（执行器策略基座，不动上述任一字段）
+      //   → applyRuntimeVersionPayload（runtime!=='python' 时显式 null）
+      //   → applyCodeSourcePayload（互斥三通道，不适用字段显式 null）
+      //   → applyRequirementsPayload（依赖渠道，**必须**在来源归一之后——
+      //     AC-18b 红线：切换代码来源不得清掉 requirements）
+      //   → 维护窗口/超时/重试 → applyDependenciesPayload（载体键删除）
       const payload = applyDependenciesPayload(
         applyRetryableErrorsPayload(
           applyTimeoutPolicyPayload(
             applyMaintenanceWindowsPayload(
-              applyRequirementsPayload(buildExecutorPayload(values, executorMode)),
+              applyRequirementsPayload(
+                applyCodeSourcePayload(
+                  applyRuntimeVersionPayload(
+                    buildExecutorPayload(values, executorMode),
+                    runtimeVersion,
+                  ),
+                  codeSource,
+                  previousCodeSourceRef.current,
+                ),
+              ),
             ),
           ),
         ),
@@ -476,6 +593,24 @@ export default function TaskFormPage() {
   };
 
   const glueTaskId = createdTaskId || (isEdit ? editId : null);
+
+  /**
+   * python_task_multiversion（AC-19a/FR-19）：zip 来源的 runtime 一致性。
+   * 只在 application_zip 来源下判定——其余来源下 applicationId 可能只是**部署
+   * 绑定**（部署清单自动注册的任务就是 applicationId + glueSource 并存，后端
+   * NFR-05 明确放行），对绑定关系报"运行时不一致"是纯粹的误报噪声。
+   * 应用无 runtime / 尚未选应用 / 列表未加载 → deriveRuntimeMismatch 返回
+   * null（不判定），交给服务端权威校验。
+   */
+  const zipRuntimeMismatch = useMemo(() => {
+    if (codeSource !== 'application_zip') return null;
+    const app = apps.find((a) => a.id === applicationIdWatch);
+    if (!app) return null;
+    return deriveRuntimeMismatch(runtimeWatch, app.runtime);
+  }, [codeSource, apps, applicationIdWatch, runtimeWatch]);
+
+  /** zip 来源未选应用（后端会 400，此处前置到提交前拦截并给出可读文案） */
+  const zipApplicationMissing = codeSource === 'application_zip' && !applicationIdWatch;
 
   const anchorItems = useMemo(
     () => [
@@ -640,6 +775,16 @@ export default function TaskFormPage() {
                   <Input placeholder="tasks/main.py" />
                 </Form.Item>
 
+                {/* python_task_multiversion（FR-06/AC-06a/AC-06b）：Python 版本声明。
+                    RuntimeVersionField 内部以 Form.useWatch('runtime') 自我门控，
+                    非 python 时返回 null——确保 node/shell 任务不会声明版本
+                    （后端 NG-02 会拒绝），同时 hook 调用保持无条件。 */}
+                <RuntimeVersionField
+                  form={form}
+                  value={runtimeVersion}
+                  onChange={setRuntimeVersion}
+                />
+
                 {/* W-21: 依赖声明。python 任务由 executor-python 装进 per-task uv
                     venv，node 任务由 executor-node 安装；glue 脚本任务不生效。 */}
                 <Form.Item
@@ -660,21 +805,133 @@ export default function TaskFormPage() {
                   />
                 </Form.Item>
 
+                {/* python_task_multiversion（FR-18/AC-17b）：代码来源三选一。
+                    选谁决定下面显示哪些输入；提交侧由 applyCodeSourcePayload 把
+                    不适用字段统一发**显式 null**（PATCH 是 Object.assign 语义，
+                    省略字段会保留旧值 → 任务静默带两个冲突来源）。 */}
                 <Form.Item
-                  name="applicationId"
-                  label={t('taskForm.field.applicationId')}
-                  tooltip={{ title: t('taskForm.field.applicationId.tooltip'), icon: <InfoCircleOutlined /> }}
+                  label={t('taskForm.field.codeSource')}
+                  required
+                  tooltip={{ title: t('taskForm.field.codeSource.tooltip'), icon: <InfoCircleOutlined /> }}
                 >
-                  <Select
-                    placeholder={t('taskForm.field.applicationId.placeholder')}
-                    allowClear
-                    showSearch
-                    options={apps.map(a => ({ value: a.id, label: a.name }))}
-                    filterOption={(input, opt) =>
-                      (opt?.label as string)?.toLowerCase().includes(input.toLowerCase())
-                    }
-                  />
+                  <Radio.Group
+                    value={codeSource}
+                    onChange={(e) => setCodeSource(e.target.value as CodeSource)}
+                    data-testid="code-source-select"
+                  >
+                    <Space orientation="vertical" style={{ width: '100%' }}>
+                      {CODE_SOURCE_OPTIONS(t).map((o) => (
+                        <Radio key={o.value} value={o.value} data-testid={`code-source-${o.value}`}>
+                          <Space>
+                            <span style={{ fontWeight: 500 }}>{o.label}</span>
+                            <Text type="secondary" style={{ fontSize: 12 }}>{o.desc}</Text>
+                          </Space>
+                        </Radio>
+                      ))}
+                    </Space>
+                  </Radio.Group>
                 </Form.Item>
+
+                {/* git 来源：仓库地址 + 分支。两者都可留空——存量任务与部署清单
+                    自动注册的任务都没有 gitRepo，NFR-05 要求零破坏（后端只在
+                    codeSource='git' 显式声明时才强制其非空，而声明与否由
+                    applyCodeSourcePayload 的"自证"规则决定）。 */}
+                {codeSource === 'git' && (
+                  <>
+                    <Form.Item
+                      name="gitRepo"
+                      label={t('taskForm.field.gitRepo')}
+                      tooltip={{ title: t('taskForm.field.gitRepo.tooltip'), icon: <InfoCircleOutlined /> }}
+                    >
+                      <Input placeholder={t('taskForm.field.gitRepo.placeholder')} />
+                    </Form.Item>
+                    <Form.Item name="gitBranch" label={t('taskForm.field.gitBranch')}>
+                      <Input placeholder={t('taskForm.field.gitBranch.placeholder')} />
+                    </Form.Item>
+                  </>
+                )}
+
+                {/* application_zip 来源：applicationId 在此是**代码来源载体**（必填）。
+                    与下面 glue 分支的同一控件共用 name="applicationId"——两条分支
+                    互斥渲染，不会出现两个同名控件并存。 */}
+                {codeSource === 'application_zip' && (
+                  <>
+                    <Form.Item
+                      name="applicationId"
+                      label={t('taskForm.field.applicationId.zipRequired')}
+                      required
+                      rules={[{ required: true, message: t('taskForm.field.codeSource.applicationRequired') }]}
+                      tooltip={{ title: t('taskForm.field.applicationId.zipTooltip'), icon: <InfoCircleOutlined /> }}
+                    >
+                      <Select
+                        placeholder={t('taskForm.field.applicationId.zipPlaceholder')}
+                        showSearch
+                        options={apps.map(a => ({ value: a.id, label: a.name }))}
+                        filterOption={(input, opt) =>
+                          (opt?.label as string)?.toLowerCase().includes(input.toLowerCase())
+                        }
+                      />
+                    </Form.Item>
+                    {/* AC-19a：应用 runtime 必须与任务 runtime 一致。只在两侧都有
+                        值时才判定（deriveRuntimeMismatch 对缺失返回 null），避免
+                        应用列表未就绪/应用无 runtime 时误报。 */}
+                    {zipRuntimeMismatch && (
+                      <Alert
+                        type="error"
+                        showIcon
+                        data-testid="code-source-runtime-mismatch"
+                        title={t('taskForm.field.codeSource.runtimeMismatch', {
+                          task: runtimeWatch ?? '-',
+                          app: apps.find(a => a.id === applicationIdWatch)?.runtime ?? '-',
+                        })}
+                        style={{ marginBottom: 16 }}
+                      />
+                    )}
+                  </>
+                )}
+
+                {/* glue 来源：本表单没有脚本输入框（GlueEditor 在独立区块写
+                    glueSource 并同时声明 codeSource='glue'）。此处只说明去哪编辑，
+                    避免用户以为"选了 glue 却没地方写脚本"。 */}
+                {codeSource === 'glue' && (
+                  <Alert
+                    type="info"
+                    showIcon
+                    data-testid="code-source-glue-hint"
+                    title={t('taskForm.field.codeSource.glueHint')}
+                    style={{ marginBottom: 16 }}
+                  />
+                )}
+
+                {/* 部署绑定（非 zip 来源）：applicationId 在 git/glue 来源下仍有
+                    意义——它是「任务 ↔ 应用」的部署绑定关系，与代码来源正交
+                    （部署清单自动注册的任务即 applicationId + glueSource 并存，
+                    后端 NFR-05 明确放行）。故此处必须保留一个入口，否则用户在
+                    git 来源下根本无法查看/修改该绑定。 */}
+                {codeSource !== 'application_zip' && (
+                  <Form.Item
+                    name="applicationId"
+                    label={t('taskForm.field.applicationId')}
+                    tooltip={{ title: t('taskForm.field.applicationId.tooltip'), icon: <InfoCircleOutlined /> }}
+                    extra={
+                      applicationIdWatch ? (
+                        <Text type="secondary" style={{ fontSize: 12 }}>
+                          {t('taskForm.field.applicationId.boundHint')}
+                        </Text>
+                      ) : undefined
+                    }
+                  >
+                    <Select
+                      placeholder={t('taskForm.field.applicationId.placeholder')}
+                      allowClear
+                      showSearch
+                      options={apps.map(a => ({ value: a.id, label: a.name }))}
+                      filterOption={(input, opt) =>
+                        (opt?.label as string)?.toLowerCase().includes(input.toLowerCase())
+                      }
+                    />
+                  </Form.Item>
+                )}
               </Card>
             </div>
 

@@ -150,3 +150,246 @@ export function applyRequirementsPayload(
   }
   return payload;
 }
+
+/* ------------------------------------------------------------------ *
+ * python_task_multiversion：runtimeVersion 声明 + codeSource 互斥
+ * （CONTRACT.md §1.1/§2.1，FR-06/FR-18/FR-19，AC-06a/AC-06b/AC-17b/AC-19a）
+ *
+ * 本段与上面的 applyRequirementsPayload 同层：纯函数、无 React 依赖，
+ * 供 TaskFormPage 组装提交 payload，并可被单测直接覆盖。
+ * ------------------------------------------------------------------ */
+
+/** 版本号格式（D1）：主.次。与 admin-api runtime-version.util.ts 的
+ *  RUNTIME_VERSION_PATTERN 逐字节一致（前端只做便利校验，服务端权威）。 */
+export const RUNTIME_VERSION_PATTERN = /^\d+\.\d+$/;
+
+/** 可声明区间（D10 实测后冻结，CONTRACT §1.1）：3.7 ~ 3.14。 */
+export const RUNTIME_VERSION_MIN = '3.7';
+export const RUNTIME_VERSION_MAX = '3.14';
+/** 可在线下载的下界：uv 0.8.17 与 0.11.14 均以 3.8 为地板，**3.7 无法在线下载**。 */
+export const RUNTIME_VERSION_ONLINE_MIN = '3.8';
+
+/**
+ * 分层候选（CONTRACT §0 支持矩阵）。仅用于 UI 分组与 3.7 警示，
+ * **不参与任何提交逻辑**（服务端才是权威，NG-08）。
+ */
+/** Tier 1「完全支持」：uv 官方支持且可在线下载。 */
+export const RUNTIME_VERSION_TIER1: readonly string[] = ['3.14', '3.13', '3.12', '3.11', '3.10'];
+/** Tier 2「在线可用」：uv 可在线下载，但已过活跃支持期。 */
+export const RUNTIME_VERSION_TIER2: readonly string[] = ['3.9', '3.8'];
+/** Tier 3「需离线预填」：uv 无法在线下载，只有预填缓存卷才可用。 */
+export const RUNTIME_VERSION_TIER3: readonly string[] = ['3.7'];
+
+/** 单个候选版本（tier 供 UI 分组渲染；offlineOnly 供 3.7 警示标签）。 */
+export interface RuntimeVersionOption {
+  value: string;
+  tier: 1 | 2 | 3;
+  /** true = 需部署方离线预填解释器缓存卷，在线下载必然失败。 */
+  offlineOnly: boolean;
+}
+
+/** 选择器候选全集（Tier1 → Tier2 → Tier3，组内为推荐优先的降序）。 */
+export function runtimeVersionOptions(): RuntimeVersionOption[] {
+  const build = (versions: readonly string[], tier: 1 | 2 | 3): RuntimeVersionOption[] =>
+    versions.map((value) => ({ value, tier, offlineOnly: tier === 3 }));
+  return [
+    ...build(RUNTIME_VERSION_TIER1, 1),
+    ...build(RUNTIME_VERSION_TIER2, 2),
+    ...build(RUNTIME_VERSION_TIER3, 3),
+  ];
+}
+
+/**
+ * FR-06/AC-06b：版本值归一。
+ *  - 空串/空白/undefined/null → null（= 不声明，走宿主默认解释器 FR-10）；
+ *  - 格式非 `主.次`（如 `3.12.1`、`abc`、`3`）→ null；
+ *  - 超出可声明区间 3.7~3.14（如 `3.6`、`3.15`、`4.0`）→ null。
+ *
+ * 归 null 而非抛错/原样透传，是「非法值宁可不发也不发垃圾」的落点：
+ * 提交侧把 null 当「使用宿主默认解释器」，服务端 @Matches 对 null 放行
+ * （@IsOptional），故非法输入不会变成 400 也不会静默存下脏值。
+ *
+ * 入参 unknown 并容忍数组（取末位）：antd Select 在 tags/combobox 形态下
+ * 可能回传数组，防御性取最后一个输入值（与 requirements 的 tags 语义一致）。
+ */
+export function normalizeRuntimeVersion(raw: unknown): string | null {
+  const value = Array.isArray(raw) ? raw[raw.length - 1] : raw;
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!RUNTIME_VERSION_PATTERN.test(trimmed)) return null;
+  // 元组比较而非字符串比较：字符串序会把 "3.9" > "3.14" 判反（D1 的前缀
+  // 匹配陷阱同源）。可声明区间的主版本恒为 3，故直接判 (major, minor)。
+  const [major, minor] = trimmed.split('.').map((n) => Number(n));
+  if (major !== 3) return null;
+  if (minor < 7 || minor > 14) return null;
+  return trimmed;
+}
+
+/**
+ * 3.7 属「需离线预填」层：uv 无法在线下载 3.7（CONTRACT §0 事实行），
+ * 只有部署方预填了解释器缓存卷才可运行。UI 据此渲染警示标签。
+ */
+export function runtimeVersionIsOfflineTier(raw: unknown): boolean {
+  const version = normalizeRuntimeVersion(raw);
+  if (version === null) return false;
+  const minor = Number(version.split('.')[1]);
+  return minor < Number(RUNTIME_VERSION_ONLINE_MIN.split('.')[1]);
+}
+
+/**
+ * FR-06/NG-02：runtimeVersion 提交归一。
+ *  - runtime !== 'python' → **显式 null**（后端拒绝 node/shell 声明版本，
+ *    且 PATCH 缺省 = 保留旧值 N28——从 python 改到 node 后不发 null 会把
+ *    旧版本声明留在库里，切回 python 时「凭空」生效）；
+ *  - runtime === 'python' → normalizeRuntimeVersion 归一（非法/清空 → null，
+ *    = 使用宿主默认解释器 FR-10）。
+ *
+ * `runtimeVersion` 显式传参优先，缺省回落到 values 上的同名键：表单侧该值
+ * 存在组件 state（版本选择器是受控复合控件，不入 antd 字段树），提交时显式
+ * 传入；纯函数单测两条通路都能覆盖。
+ */
+export function applyRuntimeVersionPayload(
+  values: Record<string, unknown>,
+  runtimeVersion?: unknown,
+): Record<string, unknown> {
+  const payload = { ...values };
+  const raw = runtimeVersion !== undefined ? runtimeVersion : payload.runtimeVersion;
+  payload.runtimeVersion = payload.runtime === 'python' ? normalizeRuntimeVersion(raw) : null;
+  return payload;
+}
+
+/** FR-18：代码来源三选一（CONTRACT §2.1 枚举）。 */
+export type CodeSource = 'git' | 'glue' | 'application_zip';
+
+const CODE_SOURCES: readonly string[] = ['git', 'glue', 'application_zip'];
+
+/** 空白/非字符串 → null；否则 trim 后的字符串（PATCH 显式清除语义）。 */
+function trimmedOrNull(v: unknown): string | null {
+  if (typeof v !== 'string') return null;
+  const trimmed = v.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+/**
+ * FR-18/AC-17b：编辑态代码来源推导。
+ *  - 后端已回填 `codeSource` 且取值合法 → 原样采用；
+ *  - 否则按 CONTRACT §2.1 的存量回填优先级推断（迁移脚本同序）：
+ *    gitRepo > glueSource > applicationId > 默认 git。
+ *
+ * 默认 git 而非 application_zip：新建任务既有默认行为就是「填 gitRepo」，
+ * 保持零迁移手感；`?applicationId=` 创建入口由调用方显式覆盖为 application_zip。
+ */
+export function deriveCodeSourceFromTask(task: {
+  codeSource?: string | null;
+  gitRepo?: string | null;
+  glueSource?: string | null;
+  applicationId?: string | null;
+}): CodeSource {
+  if (typeof task.codeSource === 'string' && CODE_SOURCES.includes(task.codeSource)) {
+    return task.codeSource as CodeSource;
+  }
+  if (trimmedOrNull(task.gitRepo)) return 'git';
+  if (trimmedOrNull(task.glueSource)) return 'glue';
+  if (trimmedOrNull(task.applicationId)) return 'application_zip';
+  return 'git';
+}
+
+/**
+ * FR-18/AC-17b/AC-18b：按代码来源归一提交 payload —— **恰好一种**来源通道。
+ *
+ * N28 纪律：不适用的字段一律**显式 null**（不是 delete、不是省略）——
+ * PATCH 是 Object.assign 语义，省略字段 = 后端保留旧值，会出现「界面选了
+ * glue、后端仍按 gitRepo 拉代码」的静默错位（与 buildExecutorPayload 的
+ * legacy 三字段清理同源教训）。
+ *
+ * ## `codeSource` 的自证规则（对齐 admin-api `assertCodeSourceConsistent`）
+ *
+ * 后端拒绝「声明与字段漂移」：`codeSource='git'` 却无 gitRepo、`codeSource='glue'`
+ * 却无 glueSource、`codeSource='application_zip'` 却无 applicationId，一律 400。
+ * 而本表单的 gitRepo / glueSource **都不是必填**（存量任务与部署清单自动注册
+ * 的任务都没有它们，NFR-05 零破坏；且本表单从不编辑 glueSource，它归
+ * GlueEditor 所有）。因此只在**载荷自身能自证**时才声明 codeSource，否则发
+ * 显式 `null`（= 未声明 → 后端回到"按哪个字段非空隐式推断"的存量语义，该路径
+ * 后端明确放行）。这样既不产生 400，也不会把歧义态写进库。
+ *
+ * ## 各字段的所有权与清除规则
+ *
+ * | 字段 | git | application_zip | glue |
+ * |---|---|---|---|
+ * | `gitRepo`/`gitBranch` | 归一（空→null） | 清 null | 清 null |
+ * | `glueSource` | 清 null | 清 null | 有值才归一，缺省不写 |
+ * | `applicationId` | 见下 | 归一（空→null） | 见下 |
+ *
+ * **`glueSource` 在 glue 分支"有值才写"**：本表单没有 glue 代码输入框
+ * （GlueEditor 在独立区块用 `tasksApi.updateGlue` 写入，后端同时声明
+ * codeSource='glue'）。编辑态把任务的 glueSource 回填进表单，写回是幂等的
+ * no-op；而创建态该键缺省（尚无脚本）。若在此处无条件 `glueSource = null`，
+ * 新建 glue 任务会被自己的表单判成"声明漂移"400，编辑已有任务则会**静默删除
+ * 用户的脚本**——两者都不可接受。
+ *
+ * **`applicationId` 的清除是"离开 zip 才清"**：`applicationId` 在
+ * `codeSource='application_zip'` 时是**代码来源载体**，其余时候只是
+ * **部署绑定**（部署清单自动注册的任务正是 `applicationId + glueSource` 并存，
+ * 后端 NFR-05 明确放行且刻意不查库判定）。故：
+ *  - 选中 zip → 归一 applicationId（空 → null，后端另有"必填"校验）；
+ *  - 从 zip 切走（`previousCodeSource === 'application_zip'`）→ 清 null
+ *    （该绑定本就是 zip 载体，用户已显式放弃）；
+ *  - 双方都不是 zip → **保留**（可能是部署绑定，静默清掉 = 悄悄解绑任务与
+ *    应用，属数据丢失）。
+ *
+ * `gitCommit` 是部署时点快照，不属来源声明，此处不触碰（保持既有值）。
+ *
+ * **requirements 一律不触碰**：依赖型渠道（PyPI/requirements）与任一代码来源
+ * 可自然并存（AC-18b/FR-18 红线），本函数不得让切换来源清掉依赖声明。
+ */
+export function applyCodeSourcePayload(
+  values: Record<string, unknown>,
+  codeSource: CodeSource,
+  previousCodeSource?: CodeSource,
+): Record<string, unknown> {
+  const payload = { ...values };
+  const leavingZip = previousCodeSource === 'application_zip' && codeSource !== 'application_zip';
+  if (codeSource === 'application_zip') {
+    const applicationId = trimmedOrNull(payload.applicationId);
+    payload.applicationId = applicationId;
+    payload.gitRepo = null;
+    payload.gitBranch = null;
+    payload.glueSource = null;
+    payload.codeSource = applicationId ? 'application_zip' : null;
+  } else if (codeSource === 'glue') {
+    const glueSource = trimmedOrNull(payload.glueSource);
+    payload.gitRepo = null;
+    payload.gitBranch = null;
+    if (leavingZip) payload.applicationId = null;
+    // glueSource 所有权在 GlueEditor：载荷未携带该键时不得写 null（会删脚本）
+    if (glueSource !== null) payload.glueSource = glueSource;
+    payload.codeSource = glueSource !== null ? 'glue' : null;
+  } else {
+    const gitRepo = trimmedOrNull(payload.gitRepo);
+    payload.gitRepo = gitRepo;
+    payload.gitBranch = trimmedOrNull(payload.gitBranch);
+    payload.glueSource = null;
+    if (leavingZip) payload.applicationId = null;
+    payload.codeSource = gitRepo ? 'git' : null;
+  }
+  return payload;
+}
+
+/**
+ * AC-19a/FR-19：zip 应用的 runtime 与任务 runtime 一致性。
+ *  - 任一侧缺失（未选应用 / 应用列表未加载 / 应用无 runtime）→ null
+ *    （不判定，交给服务端权威校验，避免列表未就绪时误报）；
+ *  - 一致 → false；不一致 → true。
+ *
+ * 只对 `codeSource='application_zip'` 有意义（调用方保证）；对裸 applicationId
+ * 的存量行后端刻意不判定（NFR-05），前端同样只在 zip 分支据此提示。
+ */
+export function deriveRuntimeMismatch(
+  taskRuntime: unknown,
+  appRuntime: unknown,
+): boolean | null {
+  const a = trimmedOrNull(taskRuntime);
+  const b = trimmedOrNull(appRuntime);
+  if (a === null || b === null) return null;
+  return a !== b;
+}

@@ -50,6 +50,9 @@ const RETRYABLE_T_KEY: Record<string, string> = {
   timeout: 'taskForm.retryable.timeout',
   executor_offline: 'taskForm.retryable.executorOffline',
   executor_restart: 'taskForm.retryable.executorRestart',
+  // python_task_multiversion：解释器不可用。详情页展示用户显式勾选的重试白名单时
+  // 必须能译出该键，否则会原样露出 interpreter_unavailable 枚举 token。
+  interpreter_unavailable: 'taskForm.retryable.interpreterUnavailable',
   unknown: 'taskForm.retryable.unknown',
 };
 

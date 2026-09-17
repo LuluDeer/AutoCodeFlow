@@ -24,6 +24,11 @@ export const RETRYABLE_ERROR_OPTIONS: { value: string; label: string }[] = [
   { value: 'timeout', label: '执行超时' },
   { value: 'executor_offline', label: '执行器离线' },
   { value: 'executor_restart', label: '执行器重启' },
+  // python_task_multiversion：解释器不可用（环境/配置类）。列在候选中让运维
+  // **可以**显式勾选，但刻意不进任何默认值——重试不会让 3.7 变得可下载、也不会
+  // 补上缺失的 uv，默认重试只会白烧预算并把真实故障延后暴露（修复动作在环境侧，
+  // 见 failure-runbook）。
+  { value: 'interpreter_unavailable', label: '解释器不可用' },
   { value: 'unknown', label: '未知原因' },
 ];
 

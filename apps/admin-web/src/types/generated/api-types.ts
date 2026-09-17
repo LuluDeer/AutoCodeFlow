@@ -3007,6 +3007,11 @@ export interface components {
             runbook?: string;
             /** @description Owning project. Omit/null = unassigned (counts toward the Default project view; existing behaviour). Setting it requires ADMIN or editor/admin of that project. */
             projectId?: string;
+            /**
+             * @description Code source channel. Exactly one of gitRepo / glueSource / codeSource=application_zip (with applicationId) may be set. Omit on PATCH to keep the current value; explicit null clears the declaration. requirements/PyPI is a dependency channel and may coexist with any code source.
+             * @enum {string|null}
+             */
+            codeSource?: "git" | "glue" | "application_zip" | null;
         };
         UpdateTaskDto: {
             id?: string;
@@ -3087,6 +3092,11 @@ export interface components {
             runbook?: string;
             /** @description Owning project. Omit/null = unassigned (counts toward the Default project view; existing behaviour). Setting it requires ADMIN or editor/admin of that project. */
             projectId?: string;
+            /**
+             * @description Code source channel. Exactly one of gitRepo / glueSource / codeSource=application_zip (with applicationId) may be set. Omit on PATCH to keep the current value; explicit null clears the declaration. requirements/PyPI is a dependency channel and may coexist with any code source.
+             * @enum {string|null}
+             */
+            codeSource?: "git" | "glue" | "application_zip" | null;
         };
         TriggerTaskDto: {
             params?: Record<string, never>;
@@ -3137,6 +3147,10 @@ export interface components {
             durationMs?: number;
             /** @description FEAT-05: execution artifacts manifest (best-effort, max 20 entries). File bytes are uploaded separately via the artifact upload endpoint; the manifest is persisted to task_executions.artifacts on the terminal callback. */
             artifacts?: components["schemas"]["ArtifactManifestItemDto"][];
+            /** @description python_task_multiversion (FR-12/AC-12a): structured execution detail. Currently carries the interpreter snapshot { requested, resolved, reason, detail, pool } so an interpreter_unavailable failure can be triaged without re-running the task. Persisted verbatim to task_executions.result. Constrained to an object with a bounded serialized size (4 KB). */
+            result?: {
+                [key: string]: unknown;
+            };
         };
         ExecutorRegisterDto: {
             /**
@@ -3219,6 +3233,15 @@ export interface components {
              * @enum {string}
              */
             dispatchMode?: "push" | "pull";
+            /** @description Interpreters present in this executor’s uv-managed pool. Omit the field to mean "not reported" (admin falls back to 3.12 for legacy executors); send an empty array to mean "reported and genuinely empty" (no fallback). */
+            interpreters?: {
+                /** @description Full patch version, e.g. 3.12.11 */
+                version: string;
+                /** @description Absolute interpreter path inside the uv-managed pool */
+                path: string;
+                available: boolean;
+                discoveredAt: string;
+            }[];
         };
         ExecutorHeartbeatDto: {
             /**
@@ -3294,6 +3317,15 @@ export interface components {
              * @example 1.0.0
              */
             version?: string;
+            /** @description Interpreters present in this executor’s uv-managed pool. Omit the field to mean "not reported" (admin falls back to 3.12 for legacy executors); send an empty array to mean "reported and genuinely empty" (no fallback). */
+            interpreters?: {
+                /** @description Full patch version, e.g. 3.12.11 */
+                version: string;
+                /** @description Absolute interpreter path inside the uv-managed pool */
+                path: string;
+                available: boolean;
+                discoveredAt: string;
+            }[];
         };
         ExecutorPullDto: {
             /**
