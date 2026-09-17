@@ -80,9 +80,15 @@ function entry(version: string, p: string, key?: string) {
 
 /** 池内某版本解释器的规范路径。 */
 function poolBin(version: string): string {
-  const platform = process.platform === 'win32' ? 'windows-x86_64' : 'linux-x86_64';
+  // 平台三元组：Windows 的 libc 槽位是 `none`，Linux 是 `gnu`（不带 `-none` 后缀）。
+  const platform = process.platform === 'win32' ? 'windows-x86_64-none' : 'linux-x86_64-gnu';
   const exe = process.platform === 'win32' ? 'python.exe' : 'bin/python3';
-  return path.join(POOL, `cpython-${version}-${platform}-none`, ...exe.split('/'));
+  return path.join(POOL, `cpython-${version}-${platform}`, ...exe.split('/'));
+}
+
+/** 从 poolBin 路径提取池目录名（平台无关）。 */
+function poolDirName(version: string): string {
+  return path.relative(POOL, poolBin(version)).split(path.sep)[0];
 }
 
 /**
@@ -387,9 +393,10 @@ describe('interpreters: discoverInstalled', () => {
     // 报"空池"会让执行器对 admin 宣称零解释器 → 所有声明版本的任务被拒，
     // 而池里的健康版本其实仍可用。一个局部损坏不该放大成整个特性不可用。
     const healthy = poolBin('3.12.11');
+    const dirName = poolDirName('3.12.11');
     mockExecutableFiles([healthy]);
-    mockPoolDirs(['cpython-3.12.11-windows-x86_64-none'], {
-      'cpython-3.12.11-windows-x86_64-none': [healthy],
+    mockPoolDirs([dirName], {
+      [dirName]: [healthy],
     });
     mockUv([], { listStatus: 2 }); // uv 整体失败（模拟池里有坏条目）
 
