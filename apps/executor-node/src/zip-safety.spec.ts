@@ -250,6 +250,31 @@ describe('zip-safety: absolute / drive-letter paths', () => {
       expect((err as ZipSafetyError).violation).toBe('bad_archive');
     }
   });
+
+  it('rejects a NUL name that would TRUNCATE into a different file (never truncates)', () => {
+    // 与 python 对齐的安全语义（`zip_safety._reject_nul_in_name`）：包内名字是
+    // `evil.py\0.txt`，按扩展名做的检查看到的是 `.txt`，而"在第一个 NUL 处截断"
+    // 的实现会把它落成 `evil.py` —— 名字与扩展名错配，检查被绕过。
+    // node 侧一直是拒绝；本用例把"绝不截断落盘"钉死，防止有人为了与（改动前的）
+    // python 对齐而把 node 改成截断（那是把安全行为改成不安全行为）。
+    const { zipPath, destDir } = stage([
+      { name: 'evil.py\u0000.txt', data: Buffer.from('print("pwned")') },
+    ]);
+
+    try {
+      safeExtractZip(zipPath, destDir, { limits: LIMITS });
+      throw new Error('expected a throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(ZipSafetyError);
+      expect((err as ZipSafetyError).violation).toBe('bad_archive');
+    }
+
+    // 目录本身会被预先建出来（safeExtractZip 在条目循环前 mkdir destDir），
+    // 关键是**没有任何文件**按截断名或原名落盘。
+    expect(fs.existsSync(path.join(destDir, 'evil.py'))).toBe(false);
+    expect(fs.existsSync(path.join(destDir, 'evil.py\u0000.txt'))).toBe(false);
+    expect(fs.readdirSync(destDir)).toEqual([]);
+  });
 });
 
 describe('zip-safety: symlink entries', () => {
@@ -415,5 +440,130 @@ describe('zip-safety: vetZip', () => {
     const { zipPath, destDir } = stage([{ name: 'bomb.bin', data: Buffer.alloc(4 * 1024 * 1024) }]);
     expect(() => vetZip(zipPath, { ...LIMITS, maxRatio: 2 })).toThrow(ZipSafetyError);
     expect(fs.existsSync(destDir)).toBe(false);
+  });
+});
+
+describe('zip-safety: compression ratio is whole-archive and order-independent', () => {
+  // 高压缩比的小条目：1000 个 0 字节 deflate 后 11 字节 → 单条目比 ≈90.9。
+  const hot = Buffer.alloc(1000, 0);
+  // 几乎不可压缩的大条目：xorshift 伪随机字节（周期远大于 100KB），deflate 后
+  // 100035 字节 > 原文 → 比值 ≈1。**不能用周期性数据**（如 `(i*7919)%251`）：
+  // 那种"看着随机"的序列能被 deflate 压到几百字节，整个用例的前提就不成立了。
+  const cold = (() => {
+    const b = Buffer.alloc(100_000);
+    let s = 0x2545f491;
+    for (let i = 0; i < b.length; i++) {
+      s ^= s << 13;
+      s >>>= 0;
+      s ^= s >>> 17;
+      s ^= s << 5;
+      s >>>= 0;
+      b[i] = s & 0xff;
+    }
+    return b;
+  })();
+
+  it('accepts the same entry set in BOTH orders when the whole-archive ratio is fine', () => {
+    // 失败模式（改动前）：压缩比是按**已遍历前缀**即时比较的，于是
+    // [hot, cold] 在第二个条目上算的是 hot 单条目的比值（≈90.9 > 5）而被判成
+    // 炸弹，[cold, hot] 却因为前缀已被 cold 摊薄（整包比 ≈1.01）而通过——
+    // 同一个包换个条目顺序结论相反。整包比值 = 101000/100046 ≈ 1.01，两个顺序
+    // 都必须通过。
+    const limits = { ...LIMITS, maxRatio: 5 };
+
+    const hotFirst = stage(
+      [{ name: 'a.bin', data: hot }, { name: 'b.bin', data: cold }],
+      'hot-first.zip',
+    );
+    expect(() => safeExtractZip(hotFirst.zipPath, hotFirst.destDir, { limits })).not.toThrow();
+    // 用 Buffer.equals 而不是 toEqual：Jest 的深比较对 100KB Buffer 是逐元素
+    // 走一遍，单次断言就要秒级；equals 是原生字节比较。
+    expect(fs.readFileSync(path.join(hotFirst.destDir, 'a.bin')).equals(hot)).toBe(true);
+    expect(fs.readFileSync(path.join(hotFirst.destDir, 'b.bin')).equals(cold)).toBe(true);
+
+    const coldFirst = stage(
+      [{ name: 'b.bin', data: cold }, { name: 'a.bin', data: hot }],
+      'cold-first.zip',
+    );
+    expect(() => safeExtractZip(coldFirst.zipPath, coldFirst.destDir, { limits })).not.toThrow();
+    expect(fs.readFileSync(path.join(coldFirst.destDir, 'b.bin')).equals(cold)).toBe(true);
+    expect(fs.readFileSync(path.join(coldFirst.destDir, 'a.bin')).equals(hot)).toBe(true);
+  });
+
+  it('still rejects a genuine bomb (whole-archive ratio over the limit)', () => {
+    // 收紧检查不能变成"删掉检查"：整包比值真的超限时两个顺序都必须拒绝。
+    // 1MiB 全零 + cold：整包比 ≈11.4 > 5。
+    const limits = { ...LIMITS, maxRatio: 5 };
+    const bomb = Buffer.alloc(1024 * 1024, 0);
+
+    const cases: Array<[string, ZipEntryInput[]]> = [
+      ['bomb-first', [{ name: 'bomb.bin', data: bomb }, { name: 'b.bin', data: cold }]],
+      ['bomb-last', [{ name: 'b.bin', data: cold }, { name: 'bomb.bin', data: bomb }]],
+    ];
+    for (const [label, entries] of cases) {
+      const { zipPath, destDir } = stage(entries, `${label}.zip`);
+      try {
+        safeExtractZip(zipPath, destDir, { limits });
+        throw new Error('expected a throw');
+      } catch (err) {
+        expect(err).toBeInstanceOf(ZipSafetyError);
+        // guard 用同一套整包比值且先跑，命中时透传 ratio_exceeded —— 两者都表示
+        // "按整包比值拒绝"，这正是要与 python 对齐的语义。
+        expect(['ratio_too_high', 'ratio_exceeded']).toContain(
+          (err as ZipSafetyError).violation,
+        );
+      }
+      expect(fs.existsSync(path.join(destDir, 'bomb.bin'))).toBe(false);
+    }
+  });
+
+  it('vetZip and safeExtractZip agree on the ratio verdict for one archive', () => {
+    // 同一份"整包比值正常"的包：两道闸门必须给出同一个结论（改动前 vetZip 走
+    // zip-guard 的整包汇总而通过，safeExtractZip 的前缀比较却拒绝）。
+    const { zipPath, destDir } = stage(
+      [{ name: 'a.bin', data: hot }, { name: 'b.bin', data: cold }],
+      'agree.zip',
+    );
+    const limits = { ...LIMITS, maxRatio: 5 };
+    expect(() => vetZip(zipPath, limits)).not.toThrow();
+    expect(() => safeExtractZip(zipPath, destDir, { limits })).not.toThrow();
+  });
+});
+
+describe('zip-safety: unsupported compression methods fail closed with an explicit message', () => {
+  // 12=bzip2、14=lzma：node 只用 zlib（仅 stored(0)/deflate(8)），解不开它们，
+  // 因此解压时必须**明确**拒绝（点名方法 + 说明只支持 0/8），而不是含糊的
+  // bad_archive。python 的 zipfile 原生支持 12/14，已同步改为拒绝以对齐强度
+  // （见 zip_safety.py `_reject_unsupported_method`）。
+  it.each([12, 14])('rejects method %i with an explicit unsupported_method message', (method) => {
+    // 字节原样存放即可：拒绝发生在解压前，不会真的去解码。
+    const { zipPath, destDir } = stage(
+      [{ name: 'a.txt', data: Buffer.from('hello'), method }],
+      `method-${method}.zip`,
+    );
+
+    try {
+      safeExtractZip(zipPath, destDir, { limits: LIMITS });
+      throw new Error('expected a throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(ZipSafetyError);
+      const safety = err as ZipSafetyError;
+      expect(safety.violation).toBe('unsupported_method');
+      // 错误信息必须可操作：点名方法号与"只支持 0/8"，否则上传者不知道该怎么重打包。
+      expect(safety.message).toContain(`method ${method}`);
+      expect(safety.message).toContain('stored(0)');
+      expect(safety.message).toContain('deflate(8)');
+    }
+    expect(fs.existsSync(path.join(destDir, 'a.txt'))).toBe(false);
+  });
+
+  it('still accepts stored(0) and deflate(8)', () => {
+    const { zipPath, destDir } = stage([
+      { name: 'stored.txt', data: Buffer.from('s'), method: 0 },
+      { name: 'deflated.txt', data: Buffer.from('d'), method: 8 },
+    ]);
+    safeExtractZip(zipPath, destDir, { limits: LIMITS });
+    expect(fs.readFileSync(path.join(destDir, 'stored.txt'), 'utf8')).toBe('s');
+    expect(fs.readFileSync(path.join(destDir, 'deflated.txt'), 'utf8')).toBe('d');
   });
 });

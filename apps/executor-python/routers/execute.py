@@ -452,6 +452,31 @@ def _build_install_env(cache_dir: Path) -> dict[str, str]:
 UV_VENV_TIMEOUT_SECONDS = 60
 UV_PIP_TIMEOUT_SECONDS = 300
 
+
+def _interpreter_download_timeout() -> float:
+    """解释器**下载**的独立时间预算（D11/NFR-13）。
+
+    为什么不能复用 `UV_VENV_TIMEOUT_SECONDS`：那个 60s 是"在**本地**建一个
+    venv"的预算，而解释器下载要走网络（默认从 GitHub 拉 ~30MB 的
+    python-build-standalone，内网镜像还可能更慢）。用 60s 卡下载，等于让
+    "首次声明某个版本"的任务在网络稍慢时**必然**超时成
+    `interpreter_unavailable`——而这恰恰是 D14 要求"明确失败、绝不回退"的那条
+    路径，用户看到的是一个看起来像"这个版本不存在"的失败。
+
+    executor-node 侧读的是 `config.interpreterDownloadTimeoutMs`（默认 300s，
+    见 interpreters.ts:645），两侧必须对等，故这里也读 settings 的同名配置
+    （默认 300s，config.py:148）。缺省/非法一律回落 300，绝不回落 0
+    （0 会让每次下载立即超时）。
+    """
+    raw = getattr(settings, 'interpreter_download_timeout_seconds', 300)
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return 300.0
+    if not value > 0:
+        return 300.0
+    return value
+
 # R4-C P1: bounds for task output handling.
 # - In-memory accumulation of stdout/stderr is capped: a `while true; echo` task
 #   previously grew `log_chunks` without limit and could OOM the whole executor.
@@ -1406,7 +1431,15 @@ def accept_execution(
     # 全部 400），心跳还会上报一个并不存在的执行。E-19 的手检此前正好落在这个
     # 位置上，一次畸形 requirements 就能毒死一个 executionId。
     try:
-        ProtocolExecuteRequest.model_validate(req.model_dump())
+        # strict=True：pydantic 默认 lax 会把字符串 "300" 强转成 int，而 zod 与
+        # JSON Schema 的 type:integer 都不强转。与 `routers/config.py` 的同名闸门
+        # 同款理由（那里早已是 strict，本处此前漏了）——不加 strict 的话，同一份
+        # 畸形载荷在 python 侧被静默洗白、在 node 侧 400，两端对**同一份契约**给出
+        # 相反结论，而契约闸门的存在意义正是消除这种分歧。
+        #
+        # 注意 `task` 在外层 FastAPI 模型里是 `Dict[str, Any]`，值原样透传，故
+        # 这里的 strict 是唯一能拦住 `task.timeoutSeconds: "300"` 的一层。
+        ProtocolExecuteRequest.model_validate(req.model_dump(), strict=True)
     except ValidationError as exc:
         first = exc.errors()[0]
         where = '.'.join(str(p) for p in first['loc']) or '(root)'
@@ -2554,7 +2587,7 @@ async def ensure_venv(
             # 已缓存的 venv 直接复用，不需要解释器池参与（AC-16b：同版本复用，
             # 不重复探测/下载）；只有真要新建 venv 时才解析解释器。
             pool_python = await _ensure_interpreter(
-                str(python_version), timeout=UV_VENV_TIMEOUT_SECONDS
+                str(python_version), timeout=_interpreter_download_timeout()
             )
             venv_args.extend(['--python', str(pool_python)])
         # 兼容红线 §4.1：无版本分支的剩余 argv 与改造前逐字节相同。
@@ -2911,7 +2944,7 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
         # shell glue 走 _build_shell_cmd，版本声明不适用）。
         try:
             resolved_interpreter = str(
-                await _ensure_interpreter(runtime_version, timeout=UV_VENV_TIMEOUT_SECONDS)
+                await _ensure_interpreter(runtime_version, timeout=_interpreter_download_timeout())
             )
         except Exception as exc:  # noqa: BLE001 - 全部归类为解释器不可获取
             if not _is_interpreter_unavailable(exc):
@@ -2932,7 +2965,7 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
         # 就明确失败，绝不回退。
         try:
             resolved_interpreter = str(
-                await _ensure_interpreter(runtime_version, timeout=UV_VENV_TIMEOUT_SECONDS)
+                await _ensure_interpreter(runtime_version, timeout=_interpreter_download_timeout())
             )
         except Exception as exc:  # noqa: BLE001 - 全部归类为解释器不可获取
             if not _is_interpreter_unavailable(exc):

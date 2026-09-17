@@ -11,25 +11,33 @@
  *  - 字段未挂载（undefined）→ 同样归 null，与"未配置"一致。
  */
 
-/** ExecutionFailureReason 枚举值的中文文案映射（与 ExecutionDetailPage
- *  的 FAILURE_REASON_MAP 标签口径一致；不含 killed/stale_recovered——
- *  killed 是手动终止动作、stale_recovered 是中台回收标记，均非"错误
- *  类型"，作为可重试错误选项没有意义）。 */
-export const RETRYABLE_ERROR_OPTIONS: { value: string; label: string }[] = [
-  { value: 'package_fetch_failed', label: '包拉取失败' },
-  { value: 'dependency_install_failed', label: '依赖安装失败' },
-  { value: 'git_fetch_failed', label: 'Git 拉取失败' },
-  { value: 'runtime_missing', label: '运行时缺失' },
-  { value: 'script_error', label: '脚本错误' },
-  { value: 'timeout', label: '执行超时' },
-  { value: 'executor_offline', label: '执行器离线' },
-  { value: 'executor_restart', label: '执行器重启' },
+/**
+ * ExecutionFailureReason 枚举值的可重试候选（与 ExecutionDetailPage 的
+ * FAILURE_REASON_MAP 标签口径一致；不含 killed/stale_recovered——killed 是
+ * 手动终止动作、stale_recovered 是中台回收标记，均非"错误类型"，作为可重试
+ * 错误选项没有意义）。
+ *
+ * P3-2：标签**只存 i18n 键**（labelKey），不再硬编码中文 label。历史上消费处
+ * 写作 `LABELS(t)[value] ?? o.label`，而 o.label 是中文字面量——任何漏收录的
+ * 枚举值都会在英文界面静默漏出中文且不报错（interpreter_unavailable 即此漏网）。
+ * 根因修复后没有中文兜底可漏；retry-policy.test.ts 逐值钉死 labelKey 在
+ * zh/en 两套词条里都存在。
+ */
+export const RETRYABLE_ERROR_OPTIONS: { value: string; labelKey: string }[] = [
+  { value: 'package_fetch_failed', labelKey: 'taskForm.retryable.packageFetch' },
+  { value: 'dependency_install_failed', labelKey: 'taskForm.retryable.dependencyInstall' },
+  { value: 'git_fetch_failed', labelKey: 'taskForm.retryable.gitFetch' },
+  { value: 'runtime_missing', labelKey: 'taskForm.retryable.runtimeMissing' },
+  { value: 'script_error', labelKey: 'taskForm.retryable.scriptError' },
+  { value: 'timeout', labelKey: 'taskForm.retryable.timeout' },
+  { value: 'executor_offline', labelKey: 'taskForm.retryable.executorOffline' },
+  { value: 'executor_restart', labelKey: 'taskForm.retryable.executorRestart' },
   // python_task_multiversion：解释器不可用（环境/配置类）。列在候选中让运维
   // **可以**显式勾选，但刻意不进任何默认值——重试不会让 3.7 变得可下载、也不会
   // 补上缺失的 uv，默认重试只会白烧预算并把真实故障延后暴露（修复动作在环境侧，
   // 见 failure-runbook）。
-  { value: 'interpreter_unavailable', label: '解释器不可用' },
-  { value: 'unknown', label: '未知原因' },
+  { value: 'interpreter_unavailable', labelKey: 'taskForm.retryable.interpreterUnavailable' },
+  { value: 'unknown', labelKey: 'taskForm.retryable.unknown' },
 ];
 
 /**

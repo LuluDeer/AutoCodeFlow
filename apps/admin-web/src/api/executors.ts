@@ -50,6 +50,30 @@ export interface Executor {
    */
 
   versionCompliant?: boolean;
+
+  /**
+   * python_task_multiversion（CONTRACT §2.2）：执行器上报的解释器池清单。
+   *
+   * 三态语义**必须**精确区分，任一态混淆都会造成调度错判
+   * （admin `interpreter-match.util` 的判定完全依赖它）：
+   *   - `null` = 旧版执行器**未上报**该字段 → 按"未知"处理，不参与过滤；
+   *   - `[]`   = 已上报且池内**确实没有**可用解释器 → 声明了 runtimeVersion
+   *              的任务不应派到这台；
+   *   - 非空   = 已上报的可用版本清单。
+   *
+   * 此前本接口没声明该字段，于是 UI 侧拿不到"这台执行器到底有没有 3.11"，
+   * 而 admin 的 `findAll()` 是直接展开实体（executor.service.ts:1143），
+   * 该字段**一直在响应体里**——属于类型漏声明，不是后端不返回。
+   */
+  interpreters?: Array<{
+    /** 完整补丁版本，如 "3.11.13"（不是任务声明的 X.Y）。 */
+    version: string;
+    /** 池内绝对路径；旧版/探测失败时可能缺省。 */
+    path?: string;
+    /** 探测时是否可用（文件存在且可执行）。 */
+    available?: boolean;
+    discoveredAt?: string;
+  }> | null;
 }
 
 export interface ExecutorMetrics {
@@ -115,6 +139,24 @@ export interface InstallCmdResult {
   adminApiUrl: string;
 }
 
+/**
+ * GET /executors/runtime-config 返回的执行器面有效运行时参数
+ * （executor lifecycle audit P2-5 / P3-9）。
+ * 前端的心跳判死着色与列表截断提示必须以这里的值为准，不得再硬编码。
+ */
+export interface ExecutorRuntimeConfig {
+  /** 心跳间隔（毫秒，默认 30000）。 */
+  heartbeatIntervalMs: number;
+  /** 判死倍数（默认 3）。 */
+  heartbeatTimeoutMultiplier: number;
+  /** 有效判死阈值 = interval × multiplier（默认 90000）。 */
+  heartbeatTimeoutMs: number;
+  /** GET /executors 列表的硬上限。 */
+  listLimit: number;
+  /** 执行器全量行数；executorTotal > listLimit 即列表被静默截断。 */
+  executorTotal: number;
+}
+
 export const executorsApi = {
   getSharedToken: () =>
     client.get('/config/executor-shared-token') as Promise<SharedTokenResult>,
@@ -135,6 +177,14 @@ export const executorsApi = {
     signal
       ? client.get('/executors/tags', { signal }) as Promise<string[]>
       : client.get('/executors/tags') as Promise<string[]>,
+  /**
+   * GET /executors/runtime-config：后端有效判死阈值 + 列表截断上限/全量数。
+   * 固定段路由（服务端声明在 :id 参数路由之前）。
+   */
+  getRuntimeConfig: (signal?: AbortSignal) =>
+    signal
+      ? client.get('/executors/runtime-config', { signal }) as Promise<ExecutorRuntimeConfig>
+      : client.get('/executors/runtime-config') as Promise<ExecutorRuntimeConfig>,
   rotateToken: (id: string, reason?: string) =>
     client.post(`/executors/${id}/rotate-token`, reason ? { reason } : undefined) as Promise<{ token: string; expiresAt: string }>,
   /**

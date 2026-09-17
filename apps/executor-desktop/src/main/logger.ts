@@ -26,6 +26,20 @@ log.transports.file.resolvePathFn = () => {
 };
 log.transports.file.level = 'info';
 log.transports.console.level = 'debug';
+
+/**
+ * P3-1：把设置页的 logLevel（'info' | 'debug' | 'error'）应用到桌面端**文件**
+ * 日志。console transport 保持 debug（仅开发台可见，不影响落盘量）。
+ * 此前 config-store 里的 logLevel 既无生产者也无消费者，是个"加了下拉框也
+ * 不会生效"的陷阱字段；子进程侧由 buildExecutorChildEnv 透传 LOG_LEVEL 给
+ * executor-node 的 winston logger，本函数负责桌面端自身这一侧。
+ * 非法/空值统一回落 info，绝不抛错（它在配置保存热路径上）。
+ */
+export function applyLogLevel(level: string | undefined): void {
+  const allowed = ['error', 'warn', 'info', 'verbose', 'debug', 'silly'];
+  const next = level && allowed.includes(level) ? level : 'info';
+  log.transports.file.level = next as typeof log.transports.file.level;
+}
 // 单文件最大 10MB（按日期切割为主，大小切割为辅）
 log.transports.file.maxSize = 10 * 1024 * 1024;
 

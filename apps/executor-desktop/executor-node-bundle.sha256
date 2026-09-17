@@ -60,4 +60,44 @@
 #     `shell,node`）；改为实跑 `--version` 探测，并让"自带 uv 可用"也算作 Python
 #     能力。注册 `type` 由同源推导（有 python → universal，否则 node）。
 #     遵 ADR-005 同 commit 重打（2377kB → 2385kB）。
-e274f93f2104dff58549256d0e4f8c9dce5499eca9fa4c2305944473694a97b9  index.js
+#   - ec5080c8…：深度排查批次（P0/P1 修复，均带反证测试）——
+#     · **门禁按 runtime 分流**：`/execute` 的 requirements 校验此前一律套 npm
+#       命名正则，于是 python 任务的 pip 形态依赖（`requests>=2.31`，正是 admin
+#       DTO 里的示例）**全部被 400**；反向则放行了 `-r`/`--index-url` 这类
+#       option 形态 token 直达 `uv pip install` argv（索引劫持）。现按
+#       runtime 分流 + 安装前二次闸门。
+#     · **manifest 读取提前到解压之前**：此前在上传包解压**之后**读 manifest，
+#       包内自带的 manifest.yaml 因此能劫持 entrypoint/requirements（把"包内
+#       数据"提权成"任务配置"）。现与 executor-python 同序（git 后、解压前）。
+#       该缺陷此前被一条**名字与断言背离**的假绿测试锁住（用例名写着
+#       "cannot hijack"，断言却把有漏洞的次序钉成期望值）。
+#     · 解释器下载预算支持 `_MS` 键（桌面端设置页下发的键此前完全不生效）。
+#     · 解释器失败附带结构化 `result.interpreter` 快照（与 python 对等；pool 用
+#       线上契约的 snake_case `install_dir`，否则详情页池目录恒为 `-`）。
+#     · zip-safety：压缩比改为**整包**判定（原按已遍历前缀，同一包换条目顺序
+#       结论相反）；bzip2(12)/lzma(14) 明确拒绝并给出可操作文案。
+#     遵 ADR-005 同 commit 重打（2385kB → 2394kB）。
+#     注：本值由**本机**（Windows，仓库工作区）ncc 0.44 产出，与 CI Ubuntu runner
+#     的产出**必然不同**（module id 由真实绝对路径派生，见
+#     docs/design/python-task-upload-and-multiversion/BUNDLE-DRIFT-FINDING.md）。
+#     故 CI 的 desktop-bundle-drift 需要以 CI 侧 actual 回填后方能转绿——这是该闸
+#     的已知遗留动作，不是本次改动引入的（详见该文档 §4）。
+#   - db90aafc…：桌面接线审计（desktop → executor-node/admin-api）P2/P3 收尾——
+#     · executor-node 的 winston logger 此前把 level 硬编码 'info'，不读任何环境
+#       变量；现读取 LOG_LEVEL（白名单校验，非法/空值静默回落 info）。桌面端
+#       设置页的 logLevel 经 buildExecutorChildEnv 透传给子进程，桌面自身的
+#       electron-log 文件级别也在启动与「保存配置」时应用——logLevel 从"无生产者
+#       无消费者的死字段"变成全链生效（设置页同步新增日志级别下拉）。
+#     · 桌面侧 P0-1（BIND_ADDRESS）、P1-1（EXECUTOR_ALLOW_PRIVATE_NETWORK）、
+#       P1-2（INTERPRETER_DOWNLOAD_TIMEOUT_MS）的执行器侧源码已在上一批次
+#       （ec5080c8）中；本 bundle 仅随 logger 变更重打。P2-1 对外地址网卡兜底、
+#       P2-2 监听地址控件、P3-2 死 IPC 清理、P3-3 NSIS 校验诊断均为桌面端/CI
+#       文件，不进本 bundle。
+#     本机（Windows）ncc 0.44 产出（2394kB → 2396kB）。
+#     ⚠ 末行哈希以**本机重打实测**为准：`dced4db5…` 在同一目录下重复构建两次
+#     逐字节一致（ncc 0.44 的同路径确定性），且构建时间晚于全部 src 改动，故它
+#     确实对应本批源码。协作期间曾有一版 `db90aafc…` 写入本文件，那是**在源码
+#     仍在变动时**取的快照，与当前 src 不符——已按"以实测为准"校正，避免把
+#     一个对不上的期望值提交进库（那会让闸红得毫无线索）。
+#     CI Ubuntu 侧哈希仍需按上条注记的同一回填流程处理。
+dced4db53ce28c7eb6d211961068109dbf3c683c8a6a59ea6d9b3c4ca8c58e97  index.js

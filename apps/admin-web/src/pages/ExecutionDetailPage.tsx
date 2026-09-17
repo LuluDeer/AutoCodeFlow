@@ -737,10 +737,16 @@ export default function ExecutionDetailPage() {
                       {interpreterCtx.pool.installDir || '-'}
                     </Text>
                     {interpreterCtx.pool.versions.length > 0 ? (
-                      <Space size={4} wrap>
-                        {interpreterCtx.pool.versions.map((v) => (
-                          <Tag key={v} style={{ fontFamily: 'var(--font-mono)' }}>{v}</Tag>
-                        ))}
+                      <Space orientation="vertical" size={2} style={{ width: '100%' }}>
+                        {/* poolVersions：缓存版本清单的小标题（此前是零渲染点的死键） */}
+                        <Text type="secondary" style={{ fontSize: 12 }}>
+                          {t('execDetail.interpreter.poolVersions')}：
+                        </Text>
+                        <Space size={4} wrap>
+                          {interpreterCtx.pool.versions.map((v) => (
+                            <Tag key={v} style={{ fontFamily: 'var(--font-mono)' }}>{v}</Tag>
+                          ))}
+                        </Space>
                       </Space>
                     ) : (
                       <Text type="secondary">{t('execDetail.interpreter.poolEmpty')}</Text>
@@ -763,6 +769,20 @@ export default function ExecutionDetailPage() {
               )}
             </Descriptions>
           </div>
+        )}
+        {/* python_task_multiversion（P2-1）：failureReason 已归类为
+            interpreter_unavailable、却没有结构化快照（旧执行器 / 尚未实现
+            result 通道的执行器版本）时，给一条明确说明而不是整块消失——否则
+            运维在解释器类失败下既看不到快照卡也看不到任何解释。正常路径
+            （非解释器类失败 / 有快照）不渲染，保持"不留空壳"的原决策。 */}
+        {!interpreterCtx && data?.failureReason === 'interpreter_unavailable' && (
+          <Alert
+            type="warning"
+            showIcon
+            data-testid="execution-interpreter-no-snapshot"
+            style={{ marginTop: 8 }}
+            title={t('execDetail.interpreter.noSnapshot')}
+          />
         )}
       </Card>
 

@@ -308,6 +308,66 @@ describe('POST /api/execute', () => {
     expect(res.body.error).toMatch(/array/i);
   });
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // S16 对等修复：requirements 校验必须按 runtime 分流
+  // ─────────────────────────────────────────────────────────────────────────
+
+  it('P0 回归：python 任务的 pip 形态依赖不再被 npm 正则误拒', async () => {
+    // 反证：把入口的 `runtime === 'python' ? ... : !npmNameRe.test(pkg)` 改回
+    // 无条件 `!npmNameRe.test(pkg)`，本例立刻转红（这些全是 admin DTO 里写明
+    // 的 pip 形态）。此前同一个 python 任务在 executor-python 上正常、在
+    // executor-node 上必然 400 —— CONTRACT §3.3 要求的「全对等」被破坏。
+    const pipSpecs = [
+      ['requests>=2.31', 'lower-bound'],
+      ['rich==13.7.1', 'pinned'],
+      ['requests[socks]==2.31', 'extras'],
+      ['flask~=3.0', 'compatible-release'],
+      ['zope.interface>=5', 'dotted-name'],
+      ['requests ; python_version<"3.8"', 'marker'],
+    ];
+    for (const [spec, label] of pipSpecs) {
+      const res = await request(appNoAuth).post('/api/execute').send({
+        // executionId 必须匹配协议的 `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`
+        // （它就是 workDir 下的目录名）——故这里只能用 ASCII 标签。
+        executionId: `exec-pip-${label}`,
+        task: { runtime: 'python', entrypoint: 'main.py', requirements: [spec] },
+      });
+      // 接受即 200（`acceptExecution` 返回 `{ status: 200, payload: { status: 'accepted' } }`）。
+      expect([spec, res.status]).toEqual([spec, 200]);
+      expect(res.body.status).toBe('accepted');
+    }
+  });
+
+  it('P0 回归：python 任务的选项形态依赖被拒（argv 注入闸门）', async () => {
+    // npm 正则**接受** `-r` / `--index-url` 这类单 token（每个元素各自都能匹配），
+    // 而它们会被原样 push 进 `uv pip install` argv —— `--index-url pypi.evil.com`
+    // 即包索引劫持。python 侧 `_validate_requirements` 把 leading-'-' 当作唯一注入
+    // 向量，node 必须同判。
+    for (const spec of ['-r', '--index-url', '-e', '--extra-index-url']) {
+      const res = await request(appNoAuth).post('/api/execute').send({
+        executionId: `exec-inject-${spec}`,
+        task: { runtime: 'python', entrypoint: 'main.py', requirements: [spec] },
+      });
+      expect([spec, res.status]).toEqual([spec, 400]);
+      expect(res.body.error).toMatch(/options are not allowed/i);
+    }
+  });
+
+  it('node 任务的 npm 命名规则保持不变（不因分流而放松）', async () => {
+    // 反向护栏：分流只应让 python 走 python 的规则，node 侧必须仍然拒绝
+    // 非 npm 形态（否则这次修复会变成"把闸门整个拆掉"）。
+    const res = await request(appNoAuth).post('/api/execute').send({
+      executionId: 'exec-node-still-strict',
+      task: {
+        runtime: 'node',
+        entrypoint: 'index.js',
+        requirements: ['requests>=2.31'],
+      },
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/Invalid npm package name/);
+  });
+
   it('returns 400 for duplicate execution (already active)', async () => {
     testConfig.maxConcurrentTasks = 2;
     (mockCp.spawn as jest.Mock).mockReturnValue(okSpawn());

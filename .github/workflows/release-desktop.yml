@@ -174,8 +174,19 @@ jobs:
               # `resources\executor-node\index.js`，与下面的正则一致。
               nsis="$(ls dist-electron/*.exe | head -n 1)"
               7z e "$nsis" "-o$work" '$PLUGINSDIR/app-64.7z' -y >/dev/null 2>&1 || true
-              if [ -f "$work/app-64.7z" ]; then
-                7z l "$work/app-64.7z" > "$work/nsis-list.txt" 2>/dev/null || true
+              # P3-3：区分两类失败。取不到嵌套 app-64.7z 是**解包环境/包结构**
+              # 问题（如 7z 缺少 Nsis 解码器——本机 bundled 7za 就没有该 codec，
+              # 会直接解析内嵌 7z 流、0 文件取出），与"uv 漏打包"无关。若继续
+              # 走下去，nsis-list.txt 不存在、grep 不匹配，最终只会抛"extraResources
+              # 可能漏带"，把人引向错误的排查方向。这里显式给出独立错误（仍 fail-
+              # closed：宁可假红，绝不假绿）。
+              if [ ! -f "$work/app-64.7z" ]; then
+                echo "::error::NSIS 解包失败：未从安装包取出嵌套的 \$PLUGINSDIR/app-64.7z（7z 缺少 Nsis 解码器或安装包结构变化）——这不是 uv 漏打包，请先检查校验环境"
+                exit 1
+              fi
+              if ! 7z l "$work/app-64.7z" > "$work/nsis-list.txt" 2>/dev/null; then
+                echo "::error::已取出 app-64.7z 但 7z 无法列出其内容——无法据此确认 uv 是否在包内（校验环境问题，非打包结论）"
+                exit 1
               fi
               if grep -qiE 'resources[\\/]uv[\\/]uv\.exe' "$work/nsis-list.txt"; then found=1; fi
               ;;

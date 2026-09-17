@@ -316,7 +316,10 @@ describe('ExecutionsPage 多选对比（QA-03 / FEAT-03 回归）', () => {
     expect(screen.getAllByText('1.0s').length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText('参数')).toBeTruthy();
     expect(screen.getByText(/"env": "prod"/)).toBeTruthy();
-    expect(screen.getByText('script_error')).toBeTruthy();
+    // P2-3：failureReason 行显示本地化标签（脚本错误），不再露裸枚举 script_error；
+    // 另一列为 null → '-'，差异高亮仍按原始值集合计算（下方 mark 断言）。
+    expect(screen.getByText('脚本错误')).toBeTruthy();
+    expect(screen.queryByText('script_error')).toBeNull();
     expect(document.querySelectorAll('mark').length).toBeGreaterThanOrEqual(4);
   });
 

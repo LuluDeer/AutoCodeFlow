@@ -117,6 +117,35 @@ def test_discovery_bounds_its_time_budget(monkeypatch):
     assert seen['timeout'] <= 5.0
 
 
+def test_interpreter_download_budget_is_not_the_local_venv_budget():
+    """解释器**下载**的预算必须独立于本地建 venv 的 60s（D11/NFR-13）。
+
+    回归：三个调用点曾一律传 `UV_VENV_TIMEOUT_SECONDS`（60s）。那个预算是"在
+    **本地**建 venv"的量级，而解释器下载要走网络（默认从 GitHub 拉 ~30MB 的
+    python-build-standalone，内网镜像还可能更慢）。用 60s 卡下载，等于让
+    "首次声明某个版本"的任务在网络稍慢时必然超时成 interpreter_unavailable
+    —— 而 D14 要求这条路径"明确失败、绝不回退"，用户看到的是一个看起来像
+    "这个版本不存在"的失败。executor-node 读的是 300s
+    （interpreters.ts:645），两侧必须对等。
+    """
+    from routers import execute as execute_module
+
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        monkeypatch.setattr(settings, 'interpreter_download_timeout_seconds', 300)
+        budget = execute_module._interpreter_download_timeout()
+        assert budget == 300.0
+        assert budget != execute_module.UV_VENV_TIMEOUT_SECONDS, (
+            '下载预算不得等于本地 venv 预算（60s）——那会让首次下载必然超时'
+        )
+        # 非法/缺省一律回落 300，绝不回落 0（0 会让每次下载立即超时）。
+        for bad in (0, -1, None, 'abc'):
+            monkeypatch.setattr(settings, 'interpreter_download_timeout_seconds', bad)
+            assert execute_module._interpreter_download_timeout() == 300.0, bad
+    finally:
+        monkeypatch.undo()
+
+
 def test_discovery_entries_without_a_version_are_dropped(monkeypatch):
     monkeypatch.setattr(main_module, '_discovered_interpreters', None)
     monkeypatch.setattr(

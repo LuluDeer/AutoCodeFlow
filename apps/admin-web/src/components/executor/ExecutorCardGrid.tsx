@@ -18,6 +18,8 @@ import { useTranslation } from 'react-i18next';
 import type { Executor } from '../../api/executors';
 // F-26（DEEP_REVIEW 0ef3bbe）：locale 单一来源，不再硬编码 zh-CN
 import { currentLocale } from '../../utils/locale';
+// P2-5（executor lifecycle audit）：心跳着色阈值与后端判死阈值同源
+import { heartbeatFreshness } from '../../utils/executorLiveness';
 import '../../i18n';
 
 type TFunc = (k: string, opts?: Record<string, unknown>) => string;
@@ -26,11 +28,18 @@ const { Text } = Typography;
 
 // F-15（DEEP_REVIEW 0ef3bbe）：语义色/用量色走 antd token（双主题自适应）。
 type AntdToken = ReturnType<typeof theme.useToken>['token'];
-function heartbeatLabel(t: TFunc, lastHeartbeat: string, token: AntdToken): { text: string; color: string } {
+function heartbeatLabel(
+  t: TFunc,
+  lastHeartbeat: string,
+  token: AntdToken,
+  staleTimeoutMs: number,
+): { text: string; color: string } {
   const diffMs = Date.now() - new Date(lastHeartbeat).getTime();
-  const diffMin = diffMs / 60000;
-  if (diffMin < 2) return { color: token.colorSuccess, text: t('execCard.hb.justNow') };
-  if (diffMin < 10) return { color: token.colorWarning, text: t('execCard.hb.minAgo', { min: Math.floor(diffMin) }) };
+  const freshness = heartbeatFreshness(diffMs, staleTimeoutMs);
+  if (freshness === 'fresh') return { color: token.colorSuccess, text: t('execCard.hb.justNow') };
+  if (freshness === 'recent') {
+    return { color: token.colorWarning, text: t('execCard.hb.minAgo', { min: Math.floor(diffMs / 60000) }) };
+  }
   return { color: token.colorError, text: new Date(lastHeartbeat).toLocaleString(currentLocale()) };
 }
 
@@ -78,10 +87,12 @@ export interface ExecutorCardProps {
   isAdmin?: boolean;
   onReloadConfig?: (executor: Executor) => void;
   onRotateToken?: (executor: Executor) => void;
+  /** P2-5：心跳「新鲜」边界 = 后端有效判死阈值（runtime-config，默认 90s）。 */
+  staleTimeoutMs: number;
 }
 
 export function ExecutorCard({
-  executor: r, selected, onToggleSelect, onOpenDetail, isAdmin, onReloadConfig, onRotateToken,
+  executor: r, selected, onToggleSelect, onOpenDetail, isAdmin, onReloadConfig, onRotateToken, staleTimeoutMs,
 }: ExecutorCardProps) {
   const { t } = useTranslation();
   // F-15（DEEP_REVIEW 0ef3bbe）：语义色/边框走 antd token，暗色主题自适应。
@@ -89,7 +100,7 @@ export function ExecutorCard({
   const running = r.runningTaskCount ?? 0;
   const max = r.maxConcurrentTasks;
   const taskLabel = max != null ? `${running}/${max}` : `${running}`;
-  const hb = r.lastHeartbeat ? heartbeatLabel(t, r.lastHeartbeat, token) : null;
+  const hb = r.lastHeartbeat ? heartbeatLabel(t, r.lastHeartbeat, token, staleTimeoutMs) : null;
   const online = r.status === 'online';
 
   return (
@@ -193,11 +204,13 @@ interface ExecutorCardGridProps {
   isAdmin?: boolean;
   onReloadConfig?: (executor: Executor) => void;
   onRotateToken?: (executor: Executor) => void;
+  /** P2-5：透传给卡片的心跳判死阈值（与后端 runtime-config 同源）。 */
+  staleTimeoutMs: number;
 }
 
 /** 网格容器：响应式三列（minmax 280px 自适应） */
 export function ExecutorCardGrid({
-  executors, selectedIds, onToggleSelect, onOpenDetail, isAdmin, onReloadConfig, onRotateToken,
+  executors, selectedIds, onToggleSelect, onOpenDetail, isAdmin, onReloadConfig, onRotateToken, staleTimeoutMs,
 }: ExecutorCardGridProps) {
   const { t } = useTranslation();
   if (executors.length === 0) {
@@ -222,6 +235,7 @@ export function ExecutorCardGrid({
           isAdmin={isAdmin}
           onReloadConfig={onReloadConfig}
           onRotateToken={onRotateToken}
+          staleTimeoutMs={staleTimeoutMs}
         />
       ))}
     </div>

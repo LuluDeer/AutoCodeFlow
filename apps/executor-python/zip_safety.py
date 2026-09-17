@@ -20,9 +20,13 @@
 `entry_too_large`→`single_file_too_large`、
 `total_too_large`→`total_uncompressed_exceeded`、
 `ratio_too_high`→`ratio_exceeded`、`bad_archive`→`unparseable`、
-`nested_zip_too_deep`→`nested_zip_too_deep`；此外 python 侧新增 zip-slip 三类
-（`zip_slip` / `absolute_path` / `symlink_entry`），因为本模块**自己解压**
-（node 侧的解压由 Expand-Archive/unzip 承担，zip-guard 只做结构审查）。
+`nested_zip_too_deep`→`nested_zip_too_deep`；此外 python 侧新增路径类四类
+（`zip_slip` / `absolute_path` / `drive_letter_path` / `symlink_entry`），
+因为本模块**自己解压**（node 侧的解压由 Expand-Archive/unzip 承担，zip-guard
+只做结构审查）；`drive_letter_path` 与 node `resolveEntryTarget` 同名同义。
+`unsupported_method` 两侧同名（node `zip-safety.ts` 的 `inflateEntry`）：node
+只用 zlib，解不开 bzip2(12)/lzma(14)，本模块**同样拒绝**以保持强度对齐（见
+`_reject_unsupported_method`）。
 
 嵌套包：与 node 的 `maxNestingDepth`（默认 1）**逐字对齐**——急切复审
 `max_nesting_depth` 层嵌套 zip（每层按同一套上限复审），更深的层级不急切复审
@@ -78,9 +82,10 @@ class ZipSafetyError(ValueError):
     """zip 包未通过安全审查 / 解压越界。
 
     ``violation`` 取值（CONTRACT.md §3.2）：
-    ``zip_slip`` | ``absolute_path`` | ``symlink_entry`` | ``too_many_entries`` |
-    ``entry_too_large`` | ``total_too_large`` | ``ratio_too_high`` |
-    ``nested_zip_too_deep`` | ``bad_archive``。
+    ``zip_slip`` | ``absolute_path`` | ``drive_letter_path`` | ``symlink_entry`` |
+    ``too_many_entries`` | ``entry_too_large`` | ``total_too_large`` |
+    ``ratio_too_high`` | ``nested_zip_too_deep`` | ``unsupported_method`` |
+    ``bad_archive``。
     """
 
     def __init__(self, violation: str, detail: str):
@@ -159,6 +164,54 @@ def _normalize_entry_name(name: str) -> str:
     return name.replace('\\', '/')
 
 
+def _reject_nul_in_name(info: zipfile.ZipInfo) -> None:
+    """拒绝中央目录名里含 NUL 的条目（与 node `resolveEntryTarget` 同语义）。
+
+    失败模式（改动前）：`zipfile.ZipInfo.__init__` 用 ``_sanitize_filename`` 在
+    第一个 NUL 处**截断**名字——``evil.py\\x00.txt`` 于是变成 ``evil.py``，而
+    原始名字只留在 ``orig_filename`` 里。本模块此前只检查截断后的
+    ``info.filename``，于是这种条目被**静默接受**并按截断名落盘：一个"名字是
+    ``evil.py``、扩展名却是 ``.txt``"的错配会绕过按扩展名做的检查，落盘结果与
+    包内声明的名字不一致（解压器与调用方看到两个不同的文件名）。截断永远不是
+    安全行为——审不了的名字就拒绝。
+
+    必须查 ``orig_filename``：``filename`` 已被截断，NUL 在那里**不可见**。
+    """
+    if '\x00' in info.orig_filename:
+        raise ZipSafetyError(
+            'bad_archive',
+            f'archive entry name contains a NUL byte: {info.orig_filename!r}',
+        )
+
+
+def _reject_unsupported_method(info: zipfile.ZipInfo) -> None:
+    """拒绝本模块无法校验的压缩方法（与 node `inflateEntry` 同语义）。
+
+    失败模式（改动前）：python 的 ``zipfile`` 原生支持 bzip2(12)/lzma(14)，
+    因此本模块接受并解压它们；而 node 侧只用 zlib（仅 stored(0)/deflate(8)），
+    对同样的包抛 ``unsupported_method``。同一个包"在 python 执行器上成功、在
+    node 执行器上失败"是两侧强度不对齐（NFR-04/AC-03b 要求全对等），且这种
+    差异取决于任务被调度到哪个执行器——不可接受。
+
+    对齐方向取**更严**的一侧（fail-closed）：node 无法解开 12/14，若为了对齐而
+    让 node"接受"，就只能把未校验的字节落盘（声明尺寸无从验证），那是放宽安全
+    边界而不是修 bug。因此 python 侧同样拒绝，并给出与 node 同义的 violation
+    （``unsupported_method``）与可操作的提示。
+
+    只在**解压**路径调用：`vet_zip` 与 node 的 `zip-guard` 一样只看中央目录
+    声明值，不看压缩方法（node 的 `vetZip` 对 12/14 也是通过的）。
+    """
+    method = info.compress_type
+    if method in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):
+        return
+    raise ZipSafetyError(
+        'unsupported_method',
+        f'entry {info.filename!r} uses compression method {method}, which this executor cannot '
+        'decompress (only stored(0) and deflate(8) are supported; '
+        're-pack the archive with deflate)',
+    )
+
+
 def _reject_absolute_or_escaping(name: str) -> None:
     """名称闸门（AC-03a 第一层）。
 
@@ -170,7 +223,11 @@ def _reject_absolute_or_escaping(name: str) -> None:
     if raw.startswith('/') or raw.startswith('\\'):
         raise ZipSafetyError('absolute_path', f'archive entry uses an absolute path: {raw!r}')
     if _WINDOWS_DRIVE_RE.match(raw):
-        raise ZipSafetyError('absolute_path', f'archive entry uses a drive path: {raw!r}')
+        # 盘符路径（含 `C:\`、`C:/` 与驱动器相对 `C:evil`）必须用**独立标签**
+        # `drive_letter_path`，与 node `resolveEntryTarget`（zip-safety.ts:188）
+        # 逐字对齐——此前这里归到 absolute_path，同一个包两侧给出不同 violation，
+        # 任何按 violation 分流/统计的消费方都会被劈成两份。
+        raise ZipSafetyError('drive_letter_path', f'archive entry uses a drive-letter path: {raw!r}')
     if normalized.startswith('//'):
         raise ZipSafetyError('absolute_path', f'archive entry uses a UNC path: {raw!r}')
     parts = [part for part in normalized.split('/') if part not in ('', '.')]
@@ -218,6 +275,7 @@ def _vet_open_archive(archive: zipfile.ZipFile, limits: ZipLimits, depth: int = 
             raise ZipSafetyError(
                 'symlink_entry', f'archive entry is a symbolic link: {info.filename!r}',
             )
+        _reject_nul_in_name(info)
         _reject_absolute_or_escaping(info.filename)
         total_uncompressed += info.file_size
         total_compressed += info.compress_size
@@ -357,7 +415,9 @@ def safe_extract(path: Path, dest: Path, *, limits: ZipLimits | None = None) -> 
                         'symlink_entry',
                         f'archive entry is a symbolic link: {info.filename!r}',
                     )
+                _reject_nul_in_name(info)
                 _reject_absolute_or_escaping(info.filename)
+                _reject_unsupported_method(info)
                 if info.file_size > limits.max_file_bytes:
                     raise ZipSafetyError(
                         'entry_too_large',

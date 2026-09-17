@@ -17,6 +17,8 @@ import {
   nextPendingRetryAt,
 } from '../pages/retry-chain';
 import type { TaskExecution } from '../api/tasks';
+import zh from '../locales/zh';
+import en from '../locales/en';
 
 describe('applyRetryableErrorsPayload（CORE-02 白名单提交序列化）', () => {
   it('逐条 trim 并丢弃空项', () => {
@@ -60,6 +62,23 @@ describe('applyRetryableErrorsPayload（CORE-02 白名单提交序列化）', ()
     expect(values).toContain('unknown');
     expect(values).not.toContain('killed');
     expect(values).not.toContain('stale_recovered');
+  });
+
+  // P3-2 根因守卫：选项只携带 i18n 键。任何新增选项若漏配 labelKey 或漏加
+  // zh/en 词条，英文界面就会露出 key 本身 / 中文——逐值钉死，杜绝下一个
+  // interpreter_unavailable（当时键已存在却没人接上，靠硬编码中文静默兜底）。
+  it('每个选项都有 labelKey，且 zh/en 两套词条均存在且非裸 key', () => {
+    const zhDict = zh as Record<string, string>;
+    const enDict = en as Record<string, string>;
+    expect(RETRYABLE_ERROR_OPTIONS.length).toBeGreaterThan(0);
+    for (const option of RETRYABLE_ERROR_OPTIONS) {
+      expect(option.labelKey, `${option.value} 缺少 labelKey`).toBeTruthy();
+      // 结构上不再允许硬编码中文 label 字段回归。
+      expect(option).not.toHaveProperty('label');
+      expect(zhDict[option.labelKey], `${option.labelKey} 在 zh 词条缺失`).toBeTruthy();
+      expect(enDict[option.labelKey], `${option.labelKey} 在 en 词条缺失`).toBeTruthy();
+      expect(enDict[option.labelKey]).not.toBe(option.labelKey);
+    }
   });
 });
 

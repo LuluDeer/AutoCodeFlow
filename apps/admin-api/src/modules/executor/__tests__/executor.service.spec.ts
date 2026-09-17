@@ -7,7 +7,7 @@ import {
   ForbiddenException,
   Logger,
 } from "@nestjs/common";
-import { ExecutorService } from "../executor.service";
+import { ExecutorService, EXECUTOR_LIST_LIMIT } from "../executor.service";
 import { Executor, ExecutorStatus } from "../entities/executor.entity";
 import { ExecutorMetricsHistory } from "../entities/executor-metrics-history.entity";
 import { Task } from "../../task/entities/task.entity";
@@ -2801,6 +2801,35 @@ describe("ExecutorService (__tests__)", () => {
         { isLeader: false };
       await service.cleanupMetricsHistory();
       expect(metricsHistoryRepo.createQueryBuilder).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("getRuntimeConfig", () => {
+    // P2-5/P3-9（executor lifecycle audit）：前端心跳判死阈值与列表截断提示
+    // 必须以后端有效配置为唯一事实源。
+    it("derives heartbeatTimeoutMs = interval × multiplier and reports total/cap", async () => {
+      configService.get
+        .mockReturnValueOnce(15000) // executor.heartbeatInterval
+        .mockReturnValueOnce(4); // executor.heartbeatTimeoutMultiplier
+      executorRepo.count.mockResolvedValueOnce(7);
+      await expect(service.getRuntimeConfig()).resolves.toEqual({
+        heartbeatIntervalMs: 15000,
+        heartbeatTimeoutMultiplier: 4,
+        heartbeatTimeoutMs: 60000,
+        listLimit: EXECUTOR_LIST_LIMIT,
+        executorTotal: 7,
+      });
+      expect(executorRepo.count).toHaveBeenCalled();
+    });
+
+    it("falls back to 30s × 3 = 90s when config is unset (same defaults as markStaleOffline)", async () => {
+      configService.get.mockReturnValue(undefined);
+      executorRepo.count.mockResolvedValueOnce(0);
+      const cfg = await service.getRuntimeConfig();
+      expect(cfg.heartbeatIntervalMs).toBe(30000);
+      expect(cfg.heartbeatTimeoutMultiplier).toBe(3);
+      expect(cfg.heartbeatTimeoutMs).toBe(90000);
+      expect(cfg.listLimit).toBe(500);
     });
   });
 

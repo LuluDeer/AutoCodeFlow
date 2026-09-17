@@ -53,7 +53,7 @@ const packageRow: ExecutorPackage = {
   fileSize: 1024,
   sha256: 'sha256',
   changelog: '',
-  isLatest: true,
+  status: 'active',
   downloadCount: 0,
   createdAt: '2026-01-01T00:00:00.000Z',
   updatedAt: '2026-01-01T00:00:00.000Z',
@@ -155,5 +155,50 @@ describe('ExecutorPackagesPage 首屏包列表错误态（UI-16）', () => {
 
     expect(await screen.findByText(/暂无包/)).toBeTruthy();
     expect(screen.queryByTestId('state-error')).toBeNull();
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // 状态列必须来自后端响应（本轮审计修复的回归守卫）
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * 行内操作按钮是**纯图标**按钮（文案在 Tooltip 上），故没有可访问名——
+   * 按 send 图标定位推送按钮（该按钮同时是行内唯一的 `type="primary"`）。
+   */
+  const pushButton = (): HTMLButtonElement => {
+    const icon = document.querySelector('.anticon-send');
+    expect(icon).toBeTruthy();
+    return icon!.closest('button') as HTMLButtonElement;
+  };
+
+  it('active 包显示「活跃」且推送按钮可用（不得由不存在的 isLatest 推导）', async () => {
+    // 反证：把 `setRows(res.items)` 改回
+    // `res.items.map(p => ({ ...p, status: p.isLatest ? 'active' : 'deprecated' }))`
+    // （isLatest 后端从不返回 → 恒 undefined），本例立刻转红：
+    // 状态变成「已弃用」，推送按钮转为 disabled，而推送功能对**全部**包不可达。
+    vi.mocked(listPackages).mockResolvedValue({ items: [packageRow], total: 1 });
+
+    render(<ExecutorPackagesPage />);
+
+    expect(await screen.findByText('python-runner')).toBeTruthy();
+    expect(screen.getByText('活跃')).toBeTruthy();
+    expect(screen.queryByText('已弃用')).toBeNull();
+    expect(pushButton().disabled).toBe(false);
+  });
+
+  it('deprecated 包显示「已弃用」且推送按钮禁用', async () => {
+    // 反向护栏：只断言"推送可用"会退化成"状态永远当 active"——必须同时钉住
+    // 后端真的返回 deprecated 时 UI 如实反映并禁用推送。
+    vi.mocked(listPackages).mockResolvedValue({
+      items: [{ ...packageRow, status: 'deprecated' }],
+      total: 1,
+    });
+
+    render(<ExecutorPackagesPage />);
+
+    expect(await screen.findByText('python-runner')).toBeTruthy();
+    expect(screen.getByText('已弃用')).toBeTruthy();
+    expect(screen.queryByText('活跃')).toBeNull();
+    expect(pushButton().disabled).toBe(true);
   });
 });

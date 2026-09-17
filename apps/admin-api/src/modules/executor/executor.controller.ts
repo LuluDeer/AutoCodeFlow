@@ -544,6 +544,42 @@ export class ExecutorController {
 
   @ApiBearerAuth("JWT")
   @UseGuards(JwtAuthGuard)
+  // 路由声明顺序：固定段必须位于 @Get(":id")（line ~670）之前，否则被参数
+  // 路由吞掉（与 groups/tags/install-cmd 同理）。
+  @Get("runtime-config")
+  @ApiOperation({
+    summary: "Get effective executor runtime config",
+    description:
+      "Effective liveness thresholds used by the backend " +
+      "(heartbeatTimeoutMs = heartbeatIntervalMs × timeoutMultiplier; the " +
+      "stale sweep marks executors OFFLINE after that much silence) plus the " +
+      "findAll() list cap and the total executor count, so the admin UI can " +
+      "align its stale coloring with the backend and warn when the list is " +
+      "truncated (listLimit < executorTotal).",
+  })
+  @ApiResponse({
+    status: 200,
+    description: "Effective executor runtime config",
+    schema: {
+      example: {
+        code: 200,
+        message: "success",
+        data: {
+          heartbeatIntervalMs: 30000,
+          heartbeatTimeoutMultiplier: 3,
+          heartbeatTimeoutMs: 90000,
+          listLimit: 500,
+          executorTotal: 12,
+        },
+      },
+    },
+  })
+  getRuntimeConfig() {
+    return this.svc.getRuntimeConfig();
+  }
+
+  @ApiBearerAuth("JWT")
+  @UseGuards(JwtAuthGuard)
   @Get("install-cmd")
   // DR-01: the command contains the shared machine credential, not just a URL.
   @Roles(UserRole.ADMIN)

@@ -9,12 +9,15 @@ import {
   useExecutorDetail,
   useExecutorMetrics,
   useExecutorExecutions,
+  useExecutorRuntimeConfig,
   invalidateExecutorData,
 } from '../api/queries';
 import { getErrMsg } from '../utils/error';
 // F-26（DEEP_REVIEW 0ef3bbe）：locale 单一来源 currentLocale() + 统一相对时间 formatRelativeTime()
 import { currentLocale } from '../utils/locale';
 import { formatRelativeTime, formatDurationShort, formatDateTime } from '../utils/timeFormat';
+// P2-5（executor lifecycle audit）：心跳陈旧判定与后端判死阈值同源
+import { HEARTBEAT_TIMEOUT_FALLBACK_MS, isHeartbeatStale } from '../utils/executorLiveness';
 // F-36（DEEP_REVIEW 0ef3bbe）：编辑弹窗字段白名单（回填/提交都不再整体快照透传）。
 import { executorEditFormValues, pickExecutorEditPayload, type ExecutorEditValues } from './executor-edit';
 import { useAuthStore, isAdminUser } from '../store/auth';
@@ -34,10 +37,12 @@ const MAX_REASON_LENGTH = 200;
 // F-26（DEEP_REVIEW 0ef3bbe）：原此处自写的 relativeTime() 已删除——与
 // utils/timeFormat.ts 的 formatRelativeTime() 语义重复，且无 key 回退时输出中文硬编码；
 // 统一改用 formatRelativeTime（见 line 206 heartbeatText）。
-
-function isHeartbeatStale(isoString: string): boolean {
-  return Date.now() - new Date(isoString).getTime() > 5 * 60 * 1000;
-}
+//
+// P2-5（executor lifecycle audit）：原本文件内还有一个硬编码 5 分钟的
+// isHeartbeatStale()，而后端判死阈值是 heartbeatInterval × multiplier
+// （默认 30s×3=90s）——后端判死后最长约 3.5 分钟里详情页同时显示离线
+// Alert 与绿色「刚刚」。已删除本地实现，改用 utils/executorLiveness 的
+// 同源判定，阈值取 GET /executors/runtime-config。
 
 /** Returns Ant Design token color based on usage percent and thresholds.
  * F-15（DEEP_REVIEW 0ef3bbe）：语义色改由 antd token 提供（双主题自适应）。 */
@@ -97,6 +102,10 @@ export default function ExecutorDetailPage() {
     page: execPage,
     pageSize: 20,
   });
+
+  // P2-5：判死阈值以后端有效配置为准（默认 90s）；端点失败回退默认值。
+  const { data: runtimeConfig } = useExecutorRuntimeConfig();
+  const heartbeatTimeoutMs = runtimeConfig?.heartbeatTimeoutMs ?? HEARTBEAT_TIMEOUT_FALLBACK_MS;
 
   // 写后失效：原 useRequest refresh → invalidateExecutorData（执行器面 +
   // 任务面联动；executor pinning/分组影响任务派发读面）。
@@ -200,7 +209,9 @@ export default function ExecutorDetailPage() {
   const reportedIds = executor.runningExecutionIds;
   const reportedCount = reportedIds?.length;
 
-  const heartbeatStale = executor.lastHeartbeat ? isHeartbeatStale(executor.lastHeartbeat) : false;
+  const heartbeatStale = executor.lastHeartbeat
+    ? isHeartbeatStale(new Date(executor.lastHeartbeat).getTime(), Date.now(), heartbeatTimeoutMs)
+    : false;
   const heartbeatText = executor.lastHeartbeat ? formatRelativeTime(executor.lastHeartbeat, t) : '-';
   const heartbeatAbsolute = executor.lastHeartbeat ? formatDateTime(executor.lastHeartbeat) : '';
 
@@ -359,6 +370,63 @@ export default function ExecutorDetailPage() {
                   {t('executorDetail.deadLetter.count', { count: executor.deadLetterCount })} <InfoCircleOutlined />
                 </Text>
               </Tooltip>
+            )}
+          </Descriptions.Item>
+          {/* P2-6（executor lifecycle audit）：Python 解释器池清单。
+              后端随心跳三态上报（CONTRACT §2.2 D5）：null/缺字段 = 旧版执行器
+              未上报（调度按未知处理，回退 ["3.12"]）；[] = 已上报但池内确实
+              没有可用解释器（声明 runtimeVersion 的任务不应派到这台，会以
+              interpreter_unavailable 失败）；非空 = 可用版本清单。此前该字段
+              一直在响应体里却无任何 UI 渲染，只能在任务失败后从执行详情的
+              快照里看到——派发前无核对入口。 */}
+          <Descriptions.Item
+            label={
+              <Tooltip title={t('executorDetail.interpreters.labelTip')}>
+                <span>{t('executorDetail.field.interpreters')} <InfoCircleOutlined /></span>
+              </Tooltip>
+            }
+          >
+            {executor.interpreters === undefined || executor.interpreters === null ? (
+              <Tooltip title={t('executorDetail.interpreters.notReportedTip')}>
+                <Text type="secondary">{t('executorDetail.notReported')} <InfoCircleOutlined /></Text>
+              </Tooltip>
+            ) : executor.interpreters.length === 0 ? (
+              <Tooltip title={t('executorDetail.interpreters.emptyTip')}>
+                <Text type="warning">
+                  <WarningOutlined style={{ marginRight: 4 }} />
+                  {t('executorDetail.interpreters.empty')}
+                </Text>
+              </Tooltip>
+            ) : (
+              <Space size={4} wrap>
+                {executor.interpreters.map((it) => {
+                  const ok = it.available !== false;
+                  const tipLines = [
+                    it.path ? it.path : t('executorDetail.interpreters.pathUnknown'),
+                    it.discoveredAt
+                      ? `${t('executorDetail.interpreters.discoveredAt')} ${formatDateTime(it.discoveredAt)}`
+                      : '',
+                    ok ? '' : t('executorDetail.interpreters.unavailableTip'),
+                  ].filter(Boolean);
+                  return (
+                    <Tooltip
+                      key={`${it.version}-${it.path ?? ''}`}
+                      title={(
+                        <div>
+                          {tipLines.map((line) => <div key={line} style={{ fontSize: 12 }}>{line}</div>)}
+                        </div>
+                      )}
+                    >
+                      <Tag
+                        color={ok ? 'green' : 'orange'}
+                        style={{ marginInlineEnd: 0, textDecoration: ok ? undefined : 'line-through' }}
+                      >
+                        Python {it.version}
+                      </Tag>
+                    </Tooltip>
+                  );
+                })}
+              </Space>
             )}
           </Descriptions.Item>
         </Descriptions>

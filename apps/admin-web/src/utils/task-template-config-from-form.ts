@@ -40,6 +40,18 @@ export function templateConfigFromFormValues(
   put('fixedRate', values.fixedRate);
   put('runtime', values.runtime);
   put('entrypoint', values.entrypoint);
+  // python_task_multiversion（FR-06 / FR-18）：`runtimeVersion` 与 `codeSource`
+  // 都是 CreateTaskDto 的合法字段，因此也**必须**随模板固化。此前两者都漏了，
+  // 于是"存模板 → 从模板建任务"会静默丢掉用户选的 Python 版本与代码来源：
+  // 前者表现为任务落回宿主默认解释器（用户以为钉住的 3.7 没了），后者更糟——
+  // codeSource 丢了但 gitRepo/applicationId 还在，后端只能按迁移期的隐式推断
+  // 还原来源，用户显式选过的通道被悄悄改写。
+  //
+  // 注意 `codeSource` 的取值必须与**载荷自证**规则一致（见 executor-mode.ts 的
+  // applyCodeSourcePayload）：只有载荷自身能自证时才声明，否则发 null 交给后端
+  // 隐式推断。模板里同样照此办理——由调用方传入已归一的值。
+  put('runtimeVersion', values.runtimeVersion);
+  put('codeSource', values.codeSource);
   put('requirements', values.requirements);
   put('dependencies', values.dependencies);
   put('params', values.params);

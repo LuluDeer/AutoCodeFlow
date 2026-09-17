@@ -20,6 +20,12 @@ export function templateConfigToFormValues(
   pick('fixedRate');
   pick('runtime');
   pick('entrypoint');
+  // python_task_multiversion（FR-06 / FR-18）：模板固化过的 Python 版本与代码
+  // 来源必须回填，否则"存模板 → 预填"这条通路会把它们丢掉（正方向的漏项见
+  // utils/task-template-config-from-form.ts）。旧模板没有这两个键时
+  // `pick` 天然不写入，保持表单默认空态，向后兼容。
+  pick('runtimeVersion');
+  pick('codeSource');
   pick('maxRetry');
   pick('retryDelay');
   pick('priority');

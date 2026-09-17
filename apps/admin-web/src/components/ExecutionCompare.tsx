@@ -6,6 +6,9 @@ import { TaskExecution } from '../api/tasks';
 // F-35（DEEP_REVIEW 0ef3bbe）：时长格式统一走 utils/timeFormat（含小时档），
 // 删除本文件内与 ExecutorDetailPage 逐字节重复的内联实现。
 import { formatDurationShort, formatDateTime } from '../utils/timeFormat';
+// python_task_multiversion（P2-3）：failureReason 行与 Dashboard 共用标签映射，
+// 不再走通用格式化器露出 interpreter_unavailable 这类裸枚举。
+import { failureReasonLabel } from '../utils/failure-reason-label';
 
 const { Text } = Typography;
 
@@ -71,7 +74,14 @@ export function ExecutionCompareModal({ open, onClose, executions, compareIds }:
             const color = val === 'success' ? 'green' : val === 'failed' ? 'red' : 'default';
             return <Tag color={color}>{String(val ?? '-')}</Tag>;
           }
-          const display = formatCompareValue(record.key, val);
+          // P2-3：失败分类显示本地化标签（未知值在 failureReasonLabel 内回退原 token），
+          // 差异高亮仍由下方统一逻辑按原始值集合计算。
+          let display: string;
+          if (record.key === 'failureReason') {
+            display = failureReasonLabel(typeof val === 'string' ? val : null, t) || '-';
+          } else {
+            display = formatCompareValue(record.key, val);
+          }
           const shouldHighlight =
             HIGHLIGHT_KEYS.has(record.key) &&
             new Set(

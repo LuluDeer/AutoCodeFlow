@@ -34,6 +34,22 @@ interface PkgRow {
 interface Executor { id: string; name: string; address: string; status: string; }
 interface PushResult { executorId: string; address: string; success: boolean; error?: string; }
 
+/**
+ * 安装包类型选项——必须与后端 `ExecutorPackageType`
+ * （`apps/admin-api/src/modules/executor-package/executor-package.entity.ts`：
+ * `node` / `python` / `universal`）一致。
+ *
+ * 此前筛选器与上传表单各自内联了一份 `node|python|java|shell`：`java` 与 `shell`
+ * 后端**根本不存在**，而 DTO 上是 `@IsEnum(ExecutorPackageType)` + 全局
+ * `forbidNonWhitelisted`，于是选中这两项必然 400——筛选时整页变成加载失败块，
+ * 上传时只得到一个泛化的「上传失败」。两处内联副本正是漂移的根源，故提到这里共用。
+ */
+const PACKAGE_TYPES = [
+  { value: 'node', label: 'Node.js' },
+  { value: 'python', label: 'Python' },
+  { value: 'universal', label: 'Universal' },
+] as const;
+
 const STATUS_TAG = (t: (k: string) => string): Record<string, { color: string; label: string }> => ({
   active: { color: 'green', label: t('execPkg.status.active') },
   deprecated: { color: 'orange', label: t('execPkg.status.deprecated') },
@@ -71,11 +87,18 @@ export default function ExecutorPackagesPage() {
 
   const [pushTarget, setPushTarget] = useState<PkgRow | null>(null);
   const [executors, setExecutors] = useState<Executor[]>([]);
+  // P3-12（executor lifecycle audit）：执行器列表拉取失败必须与「机群为空」
+  // 区分——旧实现 catch 里直接 setExecutors([])，弹窗断言「暂无在线调度机」，
+  // 把一次网络失败渲染成了从未观测过的机群状态。
+  const [executorsLoadError, setExecutorsLoadError] = useState(false);
   const [pushAll, setPushAll] = useState(true);
   const [selectedExecutors, setSelectedExecutors] = useState<string[]>([]);
   const [pushing, setPushing] = useState(false);
   const [pushResults, setPushResults] = useState<PushResult[] | null>(null);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
+
+  // P2-8：「推送全部」的唯一目标集合——推送范围/按钮禁用/计数文案三处共用。
+  const onlineExecutors = executors.filter(e => e.status === 'online');
 
   const load = useCallback(async () => {
     const seq = ++loadSeq.current;
@@ -89,7 +112,12 @@ export default function ExecutorPackagesPage() {
         status: statusFilter || undefined,
       });
       if (seq !== loadSeq.current) return;
-      setRows(res.items.map(pkg => ({ ...pkg, status: pkg.isLatest ? 'active' : 'deprecated' })));
+      // 后端响应里本就带 `status`（executor_packages.status 列）。此前这里用
+      // `pkg.isLatest ? 'active' : 'deprecated'` 覆盖它，而 `isLatest` 在后端
+      // **不存在**（恒 undefined）——后果不是"少显示一个字段"：每个包都被渲染成
+      // 已弃用，且推送按钮的 `disabled={row.status !== 'active'}` 使**推送功能
+      // 对全部包不可达**。如实使用响应里的值即可。
+      setRows(res.items);
       setTotal(res.total);
       setLoadError(null);
     } catch (err: unknown) {
@@ -128,22 +156,36 @@ export default function ExecutorPackagesPage() {
     } catch (err: unknown) { message.error(getErrMsg(err, t('execPkg.upload.fail'))); } finally { setUploading(false); }
   };
 
+  const loadPushExecutors = async () => {
+    setExecutorsLoadError(false);
+    try {
+      const list = await executorsApi.list();
+      setExecutors(list.map(e => ({ id: e.id, name: e.appName, address: e.address, status: e.status })));
+    } catch {
+      // P3-12：失败不再伪装成「空机群」——保留旧列表（若有）并显式报错，
+      // 由弹窗给出重试入口。
+      setExecutorsLoadError(true);
+    }
+  };
+
   const handleOpenPush = async (pkg: PkgRow) => {
     setPushTarget(pkg);
     setPushResults(null);
     setPushAll(true);
     setSelectedExecutors([]);
-    try {
-      const list = await executorsApi.list();
-      setExecutors(list.map(e => ({ id: e.id, name: e.appName, address: e.address, status: e.status })));
-    } catch { setExecutors([]); } // executor list failure is non-critical, silently fall back to empty
+    setExecutors([]);
+    await loadPushExecutors();
   };
 
   const handlePush = async () => {
     if (!pushTarget) return;
     setPushing(true);
     try {
-      const ids = pushAll ? undefined : selectedExecutors;
+      // P2-8（executor lifecycle audit）：按钮文案是「推送到全部在线调度机」，
+      // 后端空名单语义也已对齐为「仅在线行」——但为了让请求本身就兑现承诺
+      // （并兼容旧版后端：空名单曾推给全部行含离线机），勾选「全部」时显式
+      // 发送当前在线 id 列表；0 台在线时按钮禁用，不会对离线机群发起推送。
+      const ids = pushAll ? onlineExecutors.map(e => e.id) : selectedExecutors;
       const results = await pushPackage(pushTarget.id, ids);
       setPushResults(results);
     } catch (e: unknown) {
@@ -180,8 +222,6 @@ export default function ExecutorPackagesPage() {
       setDownloadingId(null);
     }
   };
-
-  const onlineExecutors = executors.filter(e => e.status === 'online');
 
   const columns: ColumnsType<PkgRow> = [
     {
@@ -266,10 +306,7 @@ export default function ExecutorPackagesPage() {
         <Select
           placeholder={t('execPkg.filter.type')} value={typeFilter || undefined} allowClear style={{ width: 120 }}
           onChange={v => { setTypeFilter(v ?? ''); setPage(1); }}
-          options={[
-            { value: 'node', label: 'Node.js' }, { value: 'python', label: 'Python' },
-            { value: 'java', label: 'Java' }, { value: 'shell', label: 'Shell' },
-          ]}
+          options={[...PACKAGE_TYPES]}
         />
         <Select
           placeholder={t('execPkg.filter.status')} value={statusFilter || undefined} allowClear style={{ width: 120 }}
@@ -321,10 +358,7 @@ export default function ExecutorPackagesPage() {
           </Space>
           <Space style={{ display: 'flex' }} size="middle">
             <Form.Item name="type" label={t('execPkg.upload.field.type')} initialValue="node" rules={[{ required: true }]} style={{ flex: 1 }}>
-              <Select options={[
-                { value: 'node', label: 'Node.js' }, { value: 'python', label: 'Python' },
-                { value: 'java', label: 'Java' }, { value: 'shell', label: 'Shell' },
-              ]} />
+              <Select options={[...PACKAGE_TYPES]} />
             </Form.Item>
             <Form.Item name="platform" label={t('execPkg.upload.field.platform')} initialValue="linux" rules={[{ required: true }]} style={{ flex: 1 }}>
               <Select options={[
@@ -365,7 +399,10 @@ export default function ExecutorPackagesPage() {
               <Button onClick={() => setPushTarget(null)}>{t('execPkg.cancel')}</Button>
               <Button
                 type="primary" icon={<SendOutlined />} loading={pushing} onClick={handlePush}
-                disabled={!pushAll && selectedExecutors.length === 0}
+                // P2-8：0 台在线时「全部在线」无目标，禁用——旧实现此时仍会
+                // 对整个离线机群发起推送；P3-12：执行器列表加载失败同样禁用，
+                // 不能在未知机群状态下推送。
+                disabled={executorsLoadError || (pushAll ? onlineExecutors.length === 0 : selectedExecutors.length === 0)}
               >
                 {t('execPkg.push.start')}
               </Button>
@@ -380,36 +417,58 @@ export default function ExecutorPackagesPage() {
               title={t('execPkg.push.alert')}
               type="info" showIcon
             />
-            <Checkbox checked={pushAll} onChange={e => setPushAll(e.target.checked)}>
-              {t('execPkg.push.pushAll', { count: onlineExecutors.length })}
-            </Checkbox>
-            {!pushAll && (
-              <Card size="small" style={{ background: token.colorFillQuaternary }}>
-                <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 8 }}>
-                  {t('execPkg.push.selectTarget')}
-                </Text>
-                {onlineExecutors.length === 0 ? (
-                  <Text type="secondary">{t('execPkg.push.noOnline')}</Text>
-                ) : (
-                  <Space orientation="vertical" size={4}>
-                    {onlineExecutors.map(ex => (
-                      <Checkbox
-                        key={ex.id}
-                        checked={selectedExecutors.includes(ex.id)}
-                        onChange={e => setSelectedExecutors(sel =>
-                          e.target.checked ? [...sel, ex.id] : sel.filter(id => id !== ex.id)
-                        )}
-                      >
-                        <Space size="small">
-                          <Text strong>{ex.name}</Text>
-                          <Badge status="success" />
-                          <Text type="secondary" style={{ fontSize: 12 }}>{ex.address}</Text>
-                        </Space>
-                      </Checkbox>
-                    ))}
-                  </Space>
+            {/* P3-12：执行器列表拉取失败 ≠ 机群为空——原位报错并给重试，
+                绝不在未知机群状态下渲染「暂无在线调度机」。 */}
+            {executorsLoadError ? (
+              <Alert
+                type="error"
+                showIcon
+                title={t('execPkg.push.executorsLoadError')}
+                action={
+                  <Button size="small" onClick={() => void loadPushExecutors()}>
+                    {t('execPkg.push.retryLoad')}
+                  </Button>
+                }
+              />
+            ) : (
+              <>
+                <Checkbox checked={pushAll} onChange={e => setPushAll(e.target.checked)}>
+                  {t('execPkg.push.pushAll', { count: onlineExecutors.length })}
+                </Checkbox>
+                {/* P2-8：0 台在线时明确提示并禁用推送（旧实现默认勾选且仍可
+                    点击，把请求发给整个离线机群）。 */}
+                {pushAll && onlineExecutors.length === 0 && (
+                  <Alert type="warning" showIcon title={t('execPkg.push.noOnline')} />
                 )}
-              </Card>
+                {!pushAll && (
+                  <Card size="small" style={{ background: token.colorFillQuaternary }}>
+                    <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 8 }}>
+                      {t('execPkg.push.selectTarget')}
+                    </Text>
+                    {onlineExecutors.length === 0 ? (
+                      <Text type="secondary">{t('execPkg.push.noOnline')}</Text>
+                    ) : (
+                      <Space orientation="vertical" size={4}>
+                        {onlineExecutors.map(ex => (
+                          <Checkbox
+                            key={ex.id}
+                            checked={selectedExecutors.includes(ex.id)}
+                            onChange={e => setSelectedExecutors(sel =>
+                              e.target.checked ? [...sel, ex.id] : sel.filter(id => id !== ex.id)
+                            )}
+                          >
+                            <Space size="small">
+                              <Text strong>{ex.name}</Text>
+                              <Badge status="success" />
+                              <Text type="secondary" style={{ fontSize: 12 }}>{ex.address}</Text>
+                            </Space>
+                          </Checkbox>
+                        ))}
+                      </Space>
+                    )}
+                  </Card>
+                )}
+              </>
             )}
           </Space>
         ) : (

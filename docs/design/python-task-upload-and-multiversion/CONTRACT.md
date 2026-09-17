@@ -194,6 +194,7 @@ uv 非零退出 / JSON 不可解析）**全部 `return []`**，没有本地扫�
 - **在线可下载区间 = `3.8 ~ 3.14`**；**3.7 为"离线预填扩展"**——在线下载必然失败，必须由部署方预填缓存卷。
 - 声明 3.7 但缓存池无 3.7 且未预填 → 任务失败分因 `interpreter_unavailable`，错误消息**必须明确指引**："3.7 不支持在线下载，需部署方离线预填解释器缓存卷"。
 - **NG-09 修正**：不支持区间外版本；3.6 及以下拒绝。
+- **执行器侧对等强制（P2-1）**：区间闸门不只在 admin 写面——两个执行器在**发起 `uv python install` 之前**都必须再判一次：越界（如 `3.99`/`3.6`）直接归类 `not_downloadable`（不得真的跑一次下载再以含糊的 `download_failed` 收场）；node 用常量 3.7~3.14（`isSupportedVersion`），executor-python 读 `settings.python_runtime_version_min/max`（默认 3.7/3.14，`is_supported_version`，这两个配置必须被下载路径消费，不得是死配置）。缓存命中先于区间闸门短路，离线预填进池的版本不受影响。
 
 > 需求文档 §9.2 矩阵中的 `3.6` 应删除、`3.7` 应标注"离线预填扩展"。此为 T01 实测对需求假设的**必要修正**，已获负责人确认。
 
@@ -412,13 +413,14 @@ interpreter_total_gb: int = 4
 #### `apps/executor-python/zip_safety.py`（新增）
 ```python
 class ZipSafetyError(ValueError):
-    violation: str   # 'zip_slip' | 'too_many_entries' | 'entry_too_large' | 'total_too_large' | 'ratio_too_high' | 'absolute_path' | 'symlink_entry' | 'bad_archive'
+    violation: str   # 'zip_slip' | 'too_many_entries' | 'entry_too_large' | 'total_too_large' | 'ratio_too_high' | 'absolute_path' | 'drive_letter_path' | 'symlink_entry' | 'nested_zip_too_deep' | 'unsupported_method' | 'bad_archive'
 
 def vet_zip(path: Path, *, limits: ZipLimits | None = None) -> None: ...
 def safe_extract(path: Path, dest: Path, *, limits: ZipLimits | None = None) -> None: ...
 ```
-- `safe_extract` 必须：拒绝 `..` 逃逸、绝对路径、盘符路径、符号链接条目；逐条目校验目标路径 `resolve()` 后仍在 `dest` 之内；超限即中止。
-- 上限对齐 executor-node `zip-guard.ts`（条数/单文件/总解压/压缩比/嵌套）。
+- `safe_extract` 必须：拒绝 `..` 逃逸、绝对路径（`absolute_path`）、盘符路径（**`drive_letter_path`，与 node `resolveEntryTarget` 同名，不得归并到 absolute_path**）、符号链接条目（`symlink_entry`）、条目名含 NUL（`bad_archive`）；逐条目校验目标路径 `resolve()` 后仍在 `dest` 之内；超限即中止。
+- 压缩方法两侧同为 fail-closed：只接受 stored(0)/deflate(8)，bzip2(12)/lzma(14) 等无法校验声明尺寸的方法一律 `unsupported_method`（node 仅 zlib 可解；python 侧 `zipfile` 虽支持 12/14 也同样拒绝以对齐强度；`vet_zip` 只看中央目录声明值，不卡压缩方法）。
+- 压缩比与总解压量按**整包中央目录**在写出任何字节前判定（不得用"已遍历前缀"的运行比值——同一批条目换序必须得到同一结论）；上限对齐 executor-node `zip-guard.ts`（条数/单文件/总解压/压缩比/嵌套）。
 
 #### `apps/executor-python/routers/execute.py`（改造）
 1. `_derive_task_key` → 版本签名（§1.3，**只改这一处**）。
