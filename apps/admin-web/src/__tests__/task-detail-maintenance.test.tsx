@@ -135,3 +135,61 @@ describe('TaskDetailPage 维护窗口展示（FEAT-06）', () => {
     expect(screen.queryByText('维护窗口')).toBeNull();
   });
 });
+
+// P2-3：python_task_multiversion 新增的写面字段（runtimeVersion / codeSource）
+// 在任务详情读面也要可见——此前只能打开编辑表单才能确认版本声明。
+describe('TaskDetailPage Python 版本 / 代码来源读面（P2-3）', () => {
+  it('显式声明 3.7 + application_zip：渲染版本 Tag 与本地化代码来源', async () => {
+    vi.mocked(tasksApi.get).mockResolvedValue({
+      ...BASE_TASK,
+      runtimeVersion: '3.7',
+      codeSource: 'application_zip',
+      applicationId: 'app-1',
+    } as never);
+
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <TaskDetailPage />
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(screen.getAllByText('windowed-job').length).toBeGreaterThan(0));
+    expect(screen.getByText('Python 版本')).toBeTruthy();
+    expect(screen.getByText('3.7')).toBeTruthy();
+    expect(screen.getByText('代码来源')).toBeTruthy();
+    expect(screen.getByText('上传的 zip 应用')).toBeTruthy();
+  });
+
+  it('未声明版本：显示宿主默认解释器提示；旧任务按 gitRepo 推导代码来源', async () => {
+    vi.mocked(tasksApi.get).mockResolvedValue({
+      ...BASE_TASK,
+      runtimeVersion: null,
+      // 旧任务无 codeSource 字段，但带 gitRepo——按迁移同序推导为 Git 仓库
+      gitRepo: 'https://example.com/repo.git',
+    } as never);
+
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <TaskDetailPage />
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(screen.getAllByText('windowed-job').length).toBeGreaterThan(0));
+    expect(screen.getByText('未声明版本——使用执行器宿主默认解释器。')).toBeTruthy();
+    expect(screen.getByText('Git 仓库')).toBeTruthy();
+  });
+
+  it('非 python 任务：不渲染 Python 版本行', async () => {
+    vi.mocked(tasksApi.get).mockResolvedValue({
+      ...BASE_TASK,
+      runtime: 'node',
+      runtimeVersion: null,
+    } as never);
+
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <TaskDetailPage />
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(screen.getAllByText('windowed-job').length).toBeGreaterThan(0));
+    expect(screen.queryByText('Python 版本')).toBeNull();
+  });
+});
