@@ -123,7 +123,15 @@ export const INTERPRETER_REASON_T_KEY: Record<string, string> = {
   uv_missing: 'execDetail.interpreter.reason.uvMissing',
   not_downloadable: 'execDetail.interpreter.reason.notDownloadable',
   download_failed: 'execDetail.interpreter.reason.downloadFailed',
-  cache_miss: 'execDetail.interpreter.reason.cacheMiss',
+  // AC-08a「下载源不可达」：执行器仅在**显式配置了内网镜像**且 uv 报连接/DNS
+  // 类错误时才细分为此分因（interpreters._classify_install_failure）。漏收录的
+  // 后果不是"少一行文案"——它正是私有化部署下运维最需要立刻分辨的一类失败，
+  // 却会退化成详情页上一条裸 token `mirror_unreachable`。
+  mirror_unreachable: 'execDetail.interpreter.reason.mirrorUnreachable',
+  // D11/NFR-13：单次下载独立超时预算（INTERPRETER_DOWNLOAD_TIMEOUT_SECONDS）。
+  // 与 download_failed 分开收录：前者是"网络通但慢到超预算"，处置动作是调预算/
+  // 换源，后者是"下载本身失败"，混成一条会让运维查错方向。
+  download_timeout: 'execDetail.interpreter.reason.downloadTimeout',
   corrupt: 'execDetail.interpreter.reason.corrupt',
   unavailable: 'execDetail.interpreter.reason.unavailable',
 };

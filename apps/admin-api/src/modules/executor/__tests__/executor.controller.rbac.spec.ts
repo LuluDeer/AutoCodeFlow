@@ -83,6 +83,13 @@ describe("ExecutorController — W2 RBAC matrix for management write endpoints",
         .fn()
         .mockResolvedValue({ id: "e1", status: "offline" }),
       removeById: jest.fn().mockResolvedValue(undefined),
+      getRuntimeConfig: jest.fn().mockResolvedValue({
+        heartbeatIntervalMs: 30000,
+        heartbeatTimeoutMultiplier: 3,
+        heartbeatTimeoutMs: 90000,
+        listLimit: 500,
+        executorTotal: 1,
+      }),
     });
 
     // Mock only authentication; exercise the real global role guard and Nest
@@ -232,6 +239,28 @@ describe("ExecutorController — W2 RBAC matrix for management write endpoints",
           // POST without @HttpCode defaults to 201 in Nest.
           .expect(201);
         expect(svcOf().setOfflineById).toHaveBeenCalledWith("e1");
+      });
+    });
+
+    describe("GET /executors/runtime-config (fixed segment before :id)", () => {
+      // P2-5/P3-9：前端判死阈值/截断提示的事实源；同时守路由声明顺序——
+      // 若该固定段被放到 @Get(":id") 之后，请求会落入 findOne("runtime-config")。
+      it("401 without authentication", async () => {
+        await request(app.getHttpServer())
+          .get("/executors/runtime-config")
+          .expect(401);
+        expect(svcOf().getRuntimeConfig).not.toHaveBeenCalled();
+      });
+
+      it("200 to any logged-in user (same posture as the list endpoint)", async () => {
+        const res = await request(app.getHttpServer())
+          .get("/executors/runtime-config")
+          .set("x-test-role", UserRole.USER)
+          .expect(200);
+        expect(res.body).toMatchObject({ heartbeatTimeoutMs: 90000 });
+        expect(svcOf().getRuntimeConfig).toHaveBeenCalledTimes(1);
+        // Route-ordering guard: the :id param route must not swallow it.
+        expect(svcOf().findOne).not.toHaveBeenCalled();
       });
     });
 

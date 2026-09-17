@@ -508,10 +508,35 @@ export function acceptExecution(
     const reqs: string[] = Array.isArray(body.task.requirements)
       ? (body.task.requirements as string[])
       : [];
+    // S16 + 对等修复：校验规则**必须按 runtime 分流**。
+    //
+    // 此前无论 runtime 一律套 npm 命名正则，于是 python 任务的全部 pip 形态
+    // 依赖都被 400 —— 包括 admin 自己 DTO 里写明的示例 `requests>=2.31`：
+    //   `requests>=2.31` / `rich==13.7.1` / `requests[socks]==2.31` / `flask~=3.0`
+    //   / `zope.interface>=5` / 带 marker 的 `requests ; python_version<"3.8"`
+    // 全部 REJECT。后果是同一个 python 任务在 executor-python 上正常、在
+    // executor-node 上必然失败——正是 CONTRACT §3.3 要求「全对等」的那条路径。
+    //
+    // 反向同样危险：npm 正则**接受** `-r` / `--index-url` 这类单 token 选项
+    // （每个元素各自都能匹配），而它们会被原样 push 进 `uv pip install` argv
+    // （见下方 installArgs），等于允许用 `--index-url pypi.evil.com` 劫持包索引
+    // ——python 侧 `_validate_requirements` 明确把 leading-'-' 当作唯一注入向量。
+    //
+    // 故按 runtime 分别套用两侧既有的判据：python 用 python 的规则，node 用 npm 的。
+    const runtime = (body.task.runtime as string | undefined) || 'node';
     const npmNameRe = /^(@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*(@[\w.^~-]+)?$/i;
     for (const pkg of reqs) {
-      if (!npmNameRe.test(pkg)) {
-        return reject(400, `Invalid npm package name: ${pkg}`);
+      const invalid =
+        runtime === 'python'
+          ? typeof pkg !== 'string' || !pkg.trim() || pkg.trim().startsWith('-')
+          : !npmNameRe.test(pkg);
+      if (invalid) {
+        return reject(
+          400,
+          runtime === 'python'
+            ? `Invalid requirement (options are not allowed): ${pkg}`
+            : `Invalid npm package name: ${pkg}`,
+        );
       }
     }
     // timeout=0 表示不限时（admin 侧 task.entity/scheduler 语义，改动4）——
@@ -889,6 +914,58 @@ function venvReuseProblem(
 }
 
 /**
+ * 解释器获取失败时抛出的错误，**额外携带结构化快照**。
+ *
+ * 为什么需要单独一个类型：失败消息是给人读的一句话，而"池里已缓存哪些版本 /
+ * 失败原因 / 请求的版本"是**机器输入**（调度侧据此决定把任务派到哪台执行器）。
+ * python 侧在 `_interpreter_failure_result`（execute.py:1036）里把这些放进
+ * `result.interpreter` 随回调上报，admin 落进 `task_executions.result`；node
+ * 此前只发文本，于是同一类失败在两个执行器上留痕能力不对等（CONTRACT §3.3
+ * 要求"全对等"）。
+ *
+ * 保留 `interpreter <X.Y> unavailable` 消息骨架：`prepareFailureReason` 靠它
+ * 把这类失败归到 `interpreter_unavailable`，绝不能因为加了结构化字段而改文案。
+ */
+export class InterpreterUnavailablePrepareError extends Error {
+  readonly snapshot: Record<string, unknown>;
+
+  constructor(message: string, snapshot: Record<string, unknown>) {
+    super(message);
+    this.name = 'InterpreterUnavailablePrepareError';
+    this.snapshot = snapshot;
+  }
+}
+
+/**
+ * 构造解释器失败的结构化快照，形状与 python 侧 `_interpreter_failure_result`
+ * 的 `result.interpreter` **逐字段对齐**（requested / resolved / reason /
+ * detail / pool），否则 admin 侧按同一形状解析时会拿到 undefined。
+ *
+ * 注意 `pool` 用 **snake_case `install_dir`**：这是跨进程的线上契约形状
+ * （python 的 `_pool_summary` 就返回 `install_dir`，admin-web 的
+ * `normalizePool`（interpreter-context.ts:76）也只读 `pool.install_dir`）。
+ * 而 `poolSummary()` 返回的是本地 camelCase `installDir`，**不能直接当载荷发**
+ * ——那样池目录一栏会永远渲染成 `-`。
+ */
+function interpreterFailureSnapshot(
+  requested: string,
+  err: InterpreterUnavailableError,
+): Record<string, unknown> {
+  const pool = poolSummary();
+  return {
+    interpreter: {
+      requested,
+      // 失败路径上必然没有解析结果——显式 null 而不是省略键，让 admin 侧
+      // 的 `snapshot.resolved === null` 判断在两侧行为一致。
+      resolved: null,
+      reason: err.reason,
+      detail: err.detail,
+      pool: { install_dir: pool.installDir, versions: pool.versions },
+    },
+  };
+}
+
+/**
  * 解析声明版本的池内解释器绝对路径，失败时抛出带留痕消息的普通 Error
  * （调用方负责分类与回调）。
  */
@@ -903,7 +980,10 @@ async function ensureInterpreter(
     if (err instanceof InterpreterUnavailableError) {
       const message = interpreterFailureMessage(err.version, err);
       logPrepare(message);
-      throw new Error(message);
+      throw new InterpreterUnavailablePrepareError(
+        message,
+        interpreterFailureSnapshot(err.version, err),
+      );
     }
     throw err;
   }
@@ -988,6 +1068,20 @@ async function ensurePythonVenv(opts: EnsureVenvOptions): Promise<string> {
 
   if (requirements.length > 0) {
     const uv = await resolveUvForExecute();
+    // 注入闸门（python 侧唯一一处）：这里的 `requirements` 是**任务依赖 ∪ 包内
+    // requirements.txt ∪ manifest.yaml** 的合并结果，后两者都可能来自上传的 zip
+    // 包——即不可信数据。`/execute` 入口的校验只覆盖任务声明的依赖，故必须在
+    // 拼 argv **之前**再判一次，否则 `["--index-url", "pypi.evil.com"]` 会直达
+    // `uv pip install`（索引劫持）——与 python 侧 `_validate_requirements` 同款
+    // 判据（uv 收到的 requirement 是 argv，不是 shell，唯一注入向量就是 leading-'-'
+    // 被当成 uv 选项）。
+    for (const spec of requirements) {
+      if (typeof spec !== 'string' || !spec.trim() || spec.trim().startsWith('-')) {
+        throw new Error(
+          `Invalid requirement (options are not allowed): ${String(spec)}`,
+        );
+      }
+    }
     logPrepare(`Installing ${requirements.length} packages into ${venvDir}`);
     const installArgs = ['pip', 'install', '--python', venvPython];
     if (registryUrl) installArgs.push('--index-url', registryUrl);
@@ -1035,10 +1129,16 @@ async function resolveUvForExecute(): Promise<string> {
 /**
  * 构造解释器获取失败时的 callback 错误消息（FR-12 留痕 / AC-12a）。
  *
- * 形态刻意与 python 侧 `_interpreter_failure_result` 对齐，并且**必须**保留
- * `interpreter <X.Y> unavailable` 这个骨架——`prepareFailureReason` 靠它把这类
- * 失败归到 `interpreter_unavailable`。消息里带齐 requested / reason / 池快照，
- * 让运维不必翻执行器日志就能判断"是池里没有、还是下载失败、还是 uv 没装"。
+ * 模板与 python 侧 `_interpreter_failure_result`、CONTRACT.md:315 **逐段对齐**：
+ * `解释器 <X.Y> 无法获取（缓存缺失 + 下载失败：<reason>：<detail>）；` +
+ * `候选执行器: <appName>[已缓存: <v1, v2>]`。
+ *
+ * 两个要点：① 必须保留 `解释器 <X.Y> 无法获取` 骨架——`prepareFailureReason`
+ * 靠它把这类失败归到 `interpreter_unavailable`；② 「候选执行器」段不可省，
+ * 调度侧据此判断该把任务改派到哪台执行器（AC-09b/AC-12a 的消费方读的就是
+ * appName + 已缓存版本清单），此前 node 只发 `；已缓存: …`、缺候选执行器段，
+ * 同一失败在两侧消息里形状不一致。appName 取 `config.appName`（APP_NAME，
+ * 默认 executor-node-1），与 python 的 `settings.app_name` 同位。
  */
 function interpreterFailureMessage(
   requested: string,
@@ -1047,8 +1147,8 @@ function interpreterFailureMessage(
   const pool = poolSummary();
   const cached = pool.versions.length > 0 ? pool.versions.join(', ') : '无';
   return (
-    `解释器 ${requested} 无法获取（${err.reason}：${err.detail}）；` +
-    `已缓存: ${cached}`
+    `解释器 ${requested} 无法获取（缓存缺失 + 下载失败：${err.reason}：${err.detail}）；` +
+    `候选执行器: ${config.appName}[已缓存: ${cached}]`
   );
 }
 
@@ -1101,6 +1201,12 @@ export async function dispatchExecutionToWorker(
         status: 'failed',
         errorMessage: truncateCallbackErrorMessage(message),
         failureReason: prepareFailureReason(message),
+        // FR-12/AC-12a：解释器类失败附带结构化快照（与 python 侧对等）。
+        // admin 把它原样落进 task_executions.result，运维据此判断"池里缺还是
+        // 下载失败还是 uv 没装"，不必翻执行器日志。
+        ...(err instanceof InterpreterUnavailablePrepareError
+          ? { result: err.snapshot }
+          : {}),
         ...(entry.traceparent ? { traceparent: entry.traceparent } : {}),
       });
       throw err;
@@ -1174,6 +1280,25 @@ async function prepareExecution(
   }
   checkAbort();
 
+  // Load manifest.yaml and merge with task (task fields take priority).
+  //
+  // 位置纪律（与 executor-python 的 load_manifest 逐字对齐）：**git clone 之后、
+  // zip 解压之前**。
+  //
+  //   * 放在 git 之后 —— manifest 是仓库自己声明的入口，git 渠道必须读得到；
+  //   * 放在 zip 解压**之前** —— 此刻 workDir 还是空的，于是 zip 渠道读不到
+  //     任何 manifest，包内自带的 manifest.yaml 无法把"包内数据"提权成
+  //     "任务配置"（劫持 entrypoint / runtime / requirements / timeout）。
+  //
+  // 这正是 python 侧 `execute.py` 的次序：git checkout(2686) → load_manifest(2691)
+  // → zip 解压(2810)。此前 node 把 loadManifest 放在解压**之后**（原 1307 行），
+  // 于是上传者只要在包里塞一份 manifest.yaml 就能改掉任务的 entrypoint——
+  // 而 admin 在 upload 时就已按 manifest 注册过任务并把 entrypoint 写进了派发
+  // 载荷，执行器再读一次包内的纯属冗余，且是 zip 渠道独有的攻击面。
+  // CONTRACT §3.3 要求两侧"全对等"，此处即对等修复。
+  const manifest = loadManifest(workDir);
+  const task = mergeTaskWithManifest(body.task as Record<string, unknown>, manifest);
+
   // ---------------------------------------------------------------------
   // WS5（python_task_upload_and_multiversion, CONTRACT.md §3.3-1 / D3）：
   // zip 整包渠道。
@@ -1192,10 +1317,12 @@ async function prepareExecution(
   //      packageUrl），而不是继续依赖 applicationId 这个歧义列：admin 不当作
   //      zip 任务的行自然没有 packageUrl，于是原样落回既有行为。
   //
-  // 位置纪律：必须在 `loadManifest` **之前**——manifest 从 workDir 读取，而
-  // workDir 此刻除了刚解压的包内容之外应当为空。若先读 manifest，包内自带的
-  // manifest.yaml 就能劫持 entrypoint/requirements（把"包内数据"提权成"任务
-  // 配置"），那是 zip 渠道独有的攻击面。
+  // 位置纪律：本区块必须保持在上方 `loadManifest` **之后**（即 manifest 读取
+  // 发生在 zip 下载/解压**之前**）。manifest 从 workDir 读取，而走到这里时
+  // zip 渠道的 workDir 仍为空，包内自带的 manifest.yaml 因此永远不会被合并——
+  // 否则它就能劫持 entrypoint/runtime/requirements（把"包内数据"提权成"任务
+  // 配置"），那是 zip 渠道独有的攻击面（P0-3，与 executor-python 同序）。
+  // 调整本区块位置时，切勿把它挪回 loadManifest 之前。
   // ---------------------------------------------------------------------
   const taskRec = body.task as Record<string, unknown>;
   const codeSource = (taskRec.codeSource as string | undefined) || (taskRec.code_source as string | undefined);
@@ -1263,10 +1390,6 @@ async function prepareExecution(
       logPrepare(`Package declares ${packageRequirements.length} requirement(s)`);
     }
   }
-
-  // Load manifest.yaml and merge with task (task fields take priority)
-  const manifest = loadManifest(workDir);
-  const task = mergeTaskWithManifest(body.task as Record<string, unknown>, manifest);
 
   const runtime = (task.runtime as string) || 'node';
   const entrypoint = (task.entrypoint as string) || 'index.js';
@@ -1492,7 +1615,11 @@ async function prepareExecution(
             err,
           );
           logPrepare(message);
-          throw new Error(message);
+          // 与 ensureInterpreter 同款：带上结构化快照（FR-12/AC-12a 对等）。
+          throw new InterpreterUnavailablePrepareError(
+            message,
+            interpreterFailureSnapshot(err.version, err),
+          );
         }
         throw err;
       }

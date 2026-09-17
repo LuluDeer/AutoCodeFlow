@@ -10,7 +10,7 @@ import {
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { type Executor } from '../api/executors';
-import { useExecutorsList, useExecutorGroups } from '../api/queries';
+import { useExecutorsList, useExecutorGroups, useExecutorRuntimeConfig } from '../api/queries';
 import { client } from '../api/client';
 // F-26（DEEP_REVIEW 0ef3bbe）：locale 单一来源，不再硬编码 zh-CN
 import { currentLocale } from '../utils/locale';
@@ -23,17 +23,32 @@ import GroupFilterBar from '../components/executor/GroupFilterBar';
 import ExecutorCardGrid from '../components/executor/ExecutorCardGrid';
 import BatchActionBar from '../components/executor/BatchActionBar';
 import { useExecutorLive } from '../hooks/useExecutorLive';
+// P2-5：心跳三档着色与"长期离线"横幅阈值的共享口径（与后端判死同源）
+import {
+  HEARTBEAT_TIMEOUT_FALLBACK_MS,
+  LONG_OFFLINE_BANNER_MS,
+  heartbeatFreshness,
+} from '../utils/executorLiveness';
 // UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
 import '../i18n';
 
 type TFunc = (k: string, opts?: Record<string, unknown>) => string;
 // F-15（DEEP_REVIEW 0ef3bbe）：心跳语义色走 antd token（双主题自适应）。
 type AntdToken = ReturnType<typeof theme.useToken>['token'];
-function heartbeatLabel(t: TFunc, lastHeartbeat: string, token: AntdToken): { text: string; color: string } {
+function heartbeatLabel(
+  t: TFunc,
+  lastHeartbeat: string,
+  token: AntdToken,
+  staleTimeoutMs: number,
+): { text: string; color: string } {
   const diffMs = Date.now() - new Date(lastHeartbeat).getTime();
-  const diffMin = diffMs / 60000;
-  if (diffMin < 2) return { color: token.colorSuccess, text: t('execList.hb.justNow') };
-  if (diffMin < 10) return { color: token.colorWarning, text: t('execList.hb.minAgo', { min: Math.floor(diffMin) }) };
+  // P2-5：三档边界与卡片视图（ExecutorCardGrid）共用同一判据，避免同一份数据
+  // 在列表视图与卡片视图里给出不同颜色。
+  const freshness = heartbeatFreshness(diffMs, staleTimeoutMs);
+  if (freshness === 'fresh') return { color: token.colorSuccess, text: t('execList.hb.justNow') };
+  if (freshness === 'recent') {
+    return { color: token.colorWarning, text: t('execList.hb.minAgo', { min: Math.floor(diffMs / 60000) }) };
+  }
   return { color: token.colorError, text: new Date(lastHeartbeat).toLocaleString(currentLocale()) };
 }
 
@@ -92,7 +107,10 @@ export default function ExecutorListPage() {
   // UI-07 ③：批量选择（两视图共享选中集合）
   const [selectedRowKeys, setSelectedRowKeys] = useState<string[]>([]);
 
-  const { data: groups } = useExecutorGroups();
+  // P3-11（executor lifecycle audit）：分组拉取失败不再让筛选器「静默消失」
+  // ——旧实现只解构 data，错误时整个 Select 被移除且无任何提示。错误态原位
+  // 给出重试入口。
+  const { data: groups, error: groupsError, refetch: refetchGroups, isFetching: groupsFetching } = useExecutorGroups();
   const [installCmd, setInstallCmd] = useState<{ cmd: string } | null>(null);
 
   const fetchInstallCmd = async () => {
@@ -112,10 +130,24 @@ export default function ExecutorListPage() {
   // 断线时覆盖层回退轮询快照——list 接口仍是数据源，SSE 只做覆盖加速）
   const { executors, isLive } = useExecutorLive(polledExecutors);
 
+  // P2-5：心跳着色与"长期离线"横幅都改用**后端有效判死阈值**（runtime-config）。
+  // 后端 markStaleOffline() 用 heartbeatInterval × multiplier（默认 90s）判死，
+  // 而本页此前硬编码 2 分钟/5 分钟，于是后端判死后最长约 3.5 分钟里 UI 仍把
+  // 心跳画成绿色「刚刚」。取不到该端点时回退后端默认值（保守方向：只会提前
+  // 标黄，绝不把真正离线的节点涂绿）。
+  const { data: runtimeConfig } = useExecutorRuntimeConfig();
+  const heartbeatTimeoutMs =
+    runtimeConfig?.heartbeatTimeoutMs ?? HEARTBEAT_TIMEOUT_FALLBACK_MS;
+  // P3-9：GET /executors 硬上限 listLimit 行；全量超过它时，计数/搜索/
+  // SSE 覆盖层都只描述子集——必须显式告知，不能把子集说成全量。
+  const listTruncated = !!runtimeConfig && runtimeConfig.executorTotal > runtimeConfig.listLimit;
+
   const hasLongOffline = useMemo(() => executors.some((e) => {
     if (e.status !== 'offline') return false;
     if (!e.lastHeartbeat) return true;
-    return Date.now() - new Date(e.lastHeartbeat).getTime() > 5 * 60 * 1000;
+    // 横幅阈值刻意独立于判死阈值（LONG_OFFLINE_BANNER_MS）：它表达的是
+    // "值得提醒运维"的产品语义，不是"后端何时判死"。
+    return Date.now() - new Date(e.lastHeartbeat).getTime() > LONG_OFFLINE_BANNER_MS;
   }), [executors]);
 
   const filtered = useMemo(() => executors.filter((ex) => {
@@ -173,9 +205,14 @@ export default function ExecutorListPage() {
       width: 110,
       render: (v: string, r: Executor) => (
         <Space orientation="vertical" size={0}>
+          {/* 状态只有 online / offline 两态（executor.entity.ts:15-16）——原实现
+              还判了一个 `busy` 分支，那是**永不可达**的死代码（admin 与
+              executor-node/python 全仓无该取值），删掉以免下一位读者以为存在
+              第三态。未知取值按 offline 渲染是刻意的保守选择：宁可把新状态
+              显示成离线（有人来报），也不要显示成在线（把不可用藏起来）。 */}
           <Badge
-            status={v === 'online' ? 'success' : v === 'busy' ? 'warning' : 'default'}
-            text={v === 'online' ? t('execList.status.online') : v === 'busy' ? t('execList.status.busy') : t('execList.status.offline')}
+            status={v === 'online' ? 'success' : 'default'}
+            text={v === 'online' ? t('execList.status.online') : t('execList.status.offline')}
           />
           {/* U16: 死信积压仅 >0 时高亮（null=旧版未上报、0=无积压均不打扰，
               三态细分见详情页活性上报区） */}
@@ -262,7 +299,7 @@ export default function ExecutorListPage() {
       width: 120,
       render: (v: string) => {
         if (!v) return '-';
-        const hb = heartbeatLabel(t, v, token);
+        const hb = heartbeatLabel(t, v, token, heartbeatTimeoutMs);
         return (
           <Tooltip title={new Date(v).toLocaleString(currentLocale())}>
             <Space size={4}>
@@ -292,6 +329,20 @@ export default function ExecutorListPage() {
           type="warning"
           showIcon
           title={t('execList.online.alert')}
+          style={{ marginBottom: 16 }}
+          closable
+        />
+      )}
+      {/* P3-9（executor lifecycle audit）：列表硬上限截断提示——total/limit
+          来自 GET /executors/runtime-config，避免把前 500 行的子集说成全量。 */}
+      {listTruncated && (
+        <Alert
+          type="info"
+          showIcon
+          title={t('execList.truncated', {
+            limit: runtimeConfig?.listLimit,
+            total: runtimeConfig?.executorTotal,
+          })}
           style={{ marginBottom: 16 }}
           closable
         />
@@ -339,10 +390,27 @@ export default function ExecutorListPage() {
           options={[
             { value: 'online', label: t('execList.status.online') },
             { value: 'offline', label: t('execList.status.offline') },
-            { value: 'busy', label: t('execList.status.busy') },
+            // 此前这里还有一个 `busy` 选项，但它是**死选项**：admin 的
+            // ExecutorStatus 枚举只有 ONLINE/OFFLINE 两个值
+            // （executor.entity.ts:15-16），"忙碌"是用 runningTaskCount /
+            // maxConcurrentTasks 表达的，从来不是一个状态值。选中它永远筛出
+            // 空列表，用户会以为"没有执行器在忙"而不是"这个筛选没有意义"。
           ]}
         />
-        {(groups ?? []).length > 0 && (
+        {/* P3-11（executor lifecycle audit）：分组拉取失败时筛选器不再静默
+            消失——原位给出可重试的错误入口，避免用户误以为执行器都没有分组。 */}
+        {groupsError ? (
+          <Tooltip title={t('execList.groupLoadErrorTip')}>
+            <Button
+              danger
+              icon={<FilterOutlined />}
+              loading={groupsFetching}
+              onClick={() => void refetchGroups()}
+            >
+              {t('execList.groupLoadError')}
+            </Button>
+          </Tooltip>
+        ) : (groups ?? []).length > 0 && (
           <Select
             placeholder={t('execList.groupAll')}
             allowClear style={{ width: 130, maxWidth: '100%' }}
@@ -393,6 +461,7 @@ export default function ExecutorListPage() {
           isAdmin={isAdmin}
           onReloadConfig={(ex) => setSelectedRowKeys([ex.id])}
           onRotateToken={(ex) => setSelectedRowKeys([ex.id])}
+          staleTimeoutMs={heartbeatTimeoutMs}
         />
       ) : (
         <Table

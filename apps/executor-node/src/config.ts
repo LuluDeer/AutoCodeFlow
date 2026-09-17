@@ -139,7 +139,21 @@ export const config = {
   // 单次解释器下载的独立时间预算（D11/NFR-13），默认 300s。与任务剩余超时
   // 取较小者由调用方（interpreters.ensureVersion）负责。越界不抛：钳到
   // [1, 86400]，避免一个手滑的 0 让每次下载立即超时。
+  //
+  // 两个键名都接受（**毫秒优先**）：`_MS` 是桌面端设置页下发的键
+  // （executor-desktop/src/main/uv-paths.ts 的 buildUvChildEnv），`_SECONDS`
+  // 是 compose / .env.example 的既有键。此前只读 `_SECONDS`，于是桌面端用户在
+  // 「解释器下载超时（毫秒）」里填的值**完全不生效**——设置页承诺了、执行器不读，
+  // 而且若真按秒解析 300000 会被钳到 86400 秒（24 小时）。这里让两者都生效。
   get interpreterDownloadTimeoutMs(): number {
+    const rawMs = parseInt(
+      process.env.INTERPRETER_DOWNLOAD_TIMEOUT_MS || '',
+      10,
+    );
+    if (Number.isFinite(rawMs)) {
+      // 毫秒键的边界与秒键同量级语义：下限 1s，上限 24h。
+      return Math.min(Math.max(rawMs, 1_000), 86_400_000);
+    }
     const raw = parseInt(process.env.INTERPRETER_DOWNLOAD_TIMEOUT_SECONDS || '300', 10);
     if (!Number.isFinite(raw)) return 300_000;
     const clamped = Math.min(Math.max(raw, 1), 86_400);

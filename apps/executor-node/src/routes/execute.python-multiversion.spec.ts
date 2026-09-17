@@ -691,18 +691,24 @@ describe('COMPAT RED LINE §4.4 — code-source precedence', () => {
   });
 
   it('a package-supplied manifest.yaml cannot hijack the entrypoint', async () => {
-    // zip 渠道必须在 loadManifest **之前**跑完，否则包里的 manifest.yaml 能改
-    // entrypoint/requirements —— 上传者就能借此越过任务配置。
+    // 位置纪律：loadManifest 必须在 zip 解压**之前**跑完，否则包里的
+    // manifest.yaml 能改 entrypoint/runtime/requirements —— 上传者就能借此
+    // 越过任务配置（admin 派发载荷里的 entrypoint 才是权威值）。
+    //
+    // 注意断言方向：这里钉的是「解压发生时 manifest **已经**读完」。
+    // 原先的断言方向恰好相反（钉住"manifest 在解压后才读"），名字写着
+    // "cannot hijack" 却把有漏洞的次序锁成了期望值——属于"名字与断言背离"
+    // 的假绿。修 product 的同时必须把断言翻正，否则修复会被这条测试判红。
     const { loadManifest } = require('../manifest');
-    let manifestLoadedAfterExtract = false;
-    mockSafeExtractZip.mockImplementationOnce(() => {
-      manifestLoadedAfterExtract = true;
-      return { entries: 1, bytes: 1 };
-    });
+    let manifestLoadedBeforeExtract = false;
     (loadManifest as jest.Mock).mockImplementationOnce(() => {
-      // 解压已经发生 → 顺序正确；若这里先被调用则 manifest 会抢在解压前生效。
-      expect(manifestLoadedAfterExtract).toBe(true);
+      manifestLoadedBeforeExtract = true;
       return {};
+    });
+    mockSafeExtractZip.mockImplementationOnce(() => {
+      // 解压时 manifest 必须已经读完（workDir 此刻应当是空的）。
+      expect(manifestLoadedBeforeExtract).toBe(true);
+      return { entries: 1, bytes: 1 };
     });
 
     await capturePrepared(
@@ -716,6 +722,7 @@ describe('COMPAT RED LINE §4.4 — code-source precedence', () => {
       'exec-prec-order',
     );
     expect(mockSafeExtractZip).toHaveBeenCalled();
+    expect(manifestLoadedBeforeExtract).toBe(true);
   });
 });
 
@@ -767,6 +774,11 @@ describe('declared runtimeVersion', () => {
     expect(fail.errorMessage).toMatch(/解释器 3\.7 无法获取/);
     expect(fail.errorMessage).toMatch(/not_downloadable/);
     expect(fail.errorMessage).toMatch(/已缓存/);
+    // P2-2 回归：必须含 CONTRACT.md:315 的「候选执行器: <appName>[已缓存: …]」
+    // 段，与 python `_interpreter_failure_result` 逐段对齐——缺这一段时调度侧
+    // 无法从消息里读出"该改派到哪台执行器"。反证：把模板尾部改回
+    // `；已缓存: …`（无候选执行器段），本断言立即转红。
+    expect(fail.errorMessage).toMatch(/；候选执行器: [^[\]]+\[已缓存: [^]]*\]/);
     // 关键：明知不可下载就不该白跑一次 install（省一次网络往返与 300s 预算）。
     expect(calls.some((c) => isUvCall(c) && c.args[1] === 'install')).toBe(false);
   });
@@ -812,6 +824,29 @@ describe('declared runtimeVersion', () => {
     const fail = failedCallback();
     expect(fail.failureReason).toBe('interpreter_unavailable');
     expect(fail.errorMessage).toMatch(/解释器 3\.11 无法获取/);
+
+    // FR-12/AC-12a 对等：解释器类失败必须**同时**上报结构化快照，形状与
+    // python 侧 `_interpreter_failure_result` 的 `result.interpreter` 一致。
+    // 只发文本时 admin 侧无法机器判定"该派到哪台执行器"。
+    // 反证：删掉 execute.ts 里 pushCallback 的 `result: err.snapshot` 分支，
+    // 本例立即转红（fail.result 为 undefined）。
+    expect(fail.result).toBeTruthy();
+    const snap = (fail.result as any).interpreter;
+    expect(snap).toBeTruthy();
+    expect(snap.requested).toBe('3.11');
+    expect(snap.resolved).toBeNull();
+    expect(typeof snap.reason).toBe('string');
+    expect(snap.reason.length).toBeGreaterThan(0);
+    expect(typeof snap.detail).toBe('string');
+    // pool 快照是"该下载还是该离线预填"的第一手信息，必须带上。
+    expect(snap.pool).toBeTruthy();
+    expect(Array.isArray(snap.pool.versions)).toBe(true);
+    // 线上契约是 **snake_case `install_dir`**（python `_pool_summary` 同形，
+    // admin-web `normalizePool` 只读这个键）。若这里发成本地的 camelCase
+    // `installDir`，池目录一栏会永远渲染成 `-` —— 属于"看着有数据其实读不到"
+    // 的静默失配，故用键集合钉死。
+    expect(Object.keys(snap.pool).sort()).toEqual(['install_dir', 'versions']);
+    expect(typeof snap.pool.install_dir).toBe('string');
   });
 
   it('passes an ABSOLUTE pool path to `uv venv --python` (D8: never a bare version)', async () => {

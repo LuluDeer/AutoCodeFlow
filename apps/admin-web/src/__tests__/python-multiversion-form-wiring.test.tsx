@@ -321,3 +321,77 @@ describe('TaskFormPage：编辑态来源回填与 runtimeVersion（FR-06/AC-17b�
     expect(payload.applicationId).toBe(APP_ZIP_ID);
   }, 20_000);
 });
+
+// ===========================================================================
+// P2-4：解释器能力**读面咨询**（非阻断；AC-06c「解释器先下载后有」）
+// 版本 state 经编辑态回填进入（rc-select combobox 的自由输入在 jsdom 下不提交
+// state，故用编辑态夹具——与既有 runtimeVersion 回填用例同款通路）。
+// ===========================================================================
+
+describe('TaskFormPage：解释器能力咨询（P2-4，非阻断）', () => {
+  /** 在线舰队只缓存了 3.12.13：3.7 无一台满足，3.12 满足；离线机不算数。 */
+  function mockFleetWith312Only() {
+    vi.mocked(executorsApi.list).mockReset().mockResolvedValue([
+      {
+        id: 'ex-1',
+        appName: 'ex-1',
+        address: 'http://127.0.0.1:9100',
+        status: 'online',
+        interpreters: [{ version: '3.12.13', available: true }],
+      },
+      {
+        id: 'ex-off',
+        appName: 'ex-off',
+        address: 'http://127.0.0.1:9101',
+        status: 'offline',
+        interpreters: [{ version: '3.7.9', available: true }],
+      },
+    ] as never);
+  }
+
+  function renderEditTask(runtimeVersion: string | null) {
+    mockRouteParams = { id: 'task-1' };
+    vi.mocked(tasksApi.get).mockReset().mockResolvedValue({
+      id: 'task-1',
+      name: 'py-task',
+      runtime: 'python',
+      entrypoint: 'main.py',
+      triggerType: 'manual',
+      runtimeVersion,
+    } as never);
+    render(<TaskFormPage />);
+    return screen.findByDisplayValue('py-task');
+  }
+
+  it('声明 3.7 而在线舰队无一台满足：出现咨询（文案带版本号），但不阻止保存', async () => {
+    mockFleetWith312Only();
+    await renderEditTask('3.7');
+
+    const advisory = await screen.findByTestId('runtime-version-capability-advisory');
+    expect(advisory.textContent).toContain('3.7');
+
+    // 非阻断红线：咨询存在时保存仍可提交，runtimeVersion 原样带上（不被预检拦截）。
+    fireEvent.click(screen.getByRole('button', { name: /保存/ }));
+    await vi.waitFor(() => expect(tasksApi.update).toHaveBeenCalledTimes(1));
+    const payload = vi.mocked(tasksApi.update).mock.calls[0][1] as Record<string, unknown>;
+    expect(payload.runtimeVersion).toBe('3.7');
+  }, 20_000);
+
+  it('在线舰队已有满足版本（3.12）：不出现咨询', async () => {
+    mockFleetWith312Only();
+    await renderEditTask('3.12');
+    await vi.waitFor(() => {
+      expect(document.querySelector('[data-testid="runtime-version-select"]')).toBeTruthy();
+    });
+    expect(screen.queryByTestId('runtime-version-capability-advisory')).toBeNull();
+  }, 20_000);
+
+  it('没有在线执行器（舰队离线/列表未加载）：不提示，避免误报', async () => {
+    // beforeEach 默认 list → []：unknown 态，即便任务声明 3.7 也不提示。
+    await renderEditTask('3.7');
+    await vi.waitFor(() => {
+      expect(document.querySelector('[data-testid="runtime-version-select"]')).toBeTruthy();
+    });
+    expect(screen.queryByTestId('runtime-version-capability-advisory')).toBeNull();
+  }, 20_000);
+});

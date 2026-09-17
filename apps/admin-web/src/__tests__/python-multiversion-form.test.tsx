@@ -471,7 +471,10 @@ describe('interpreter_unavailable 三端对齐（runbook / retryable / 失败分
     // 候选表是纯展示清单，不存在"默认勾选"概念——此处锚定它不落在默认重试集
     // 的任何隐式来源上（默认集 = 任务 retryableErrors，空 = 全部可重试）。
     const option = RETRYABLE_ERROR_OPTIONS.find((o) => o.value === 'interpreter_unavailable');
-    expect(option?.label).toBe('解释器不可用');
+    // P3-2：选项只携带 i18n 键，不再有硬编码中文 label（英文界面漏中文的根因）。
+    expect(option?.labelKey).toBe('taskForm.retryable.interpreterUnavailable');
+    expect((zh as Record<string, string>)[option!.labelKey]).toBeTruthy();
+    expect((en as Record<string, string>)[option!.labelKey]).toBeTruthy();
   });
 
   it('i18n：中英字典均有该分类与 runbook 文案（不裸 key）', () => {
@@ -587,8 +590,21 @@ describe('ExecutionDetailPage：解释器快照渲染（AC-12a）', () => {
     renderDetail();
     await screen.findByTestId('failure-triage-card');
     expect(screen.queryByTestId('execution-interpreter')).toBeNull();
+    // 非解释器类失败（script_error）下，无快照说明 Alert 也不得出现（不留空壳）。
+    expect(screen.queryByTestId('execution-interpreter-no-snapshot')).toBeNull();
     // 排障入口仍在（缺快照不得影响失败定位卡片等既有信息）
     expect(screen.getByTestId('failure-triage-card').textContent).toContain('阅读日志末尾');
+  });
+
+  it('failureReason=interpreter_unavailable 但无快照：渲染无快照说明而非整块消失（P2-1）', async () => {
+    // 旧执行器 / 尚未实现 result 通道的执行器版本：分类已正确，但结构化快照缺失。
+    // 此前这种情况下解释器卡片整块消失、且 bundled 的 noSnapshot 文案永远不可达。
+    mockExecution({ failureReason: 'interpreter_unavailable' });
+    renderDetail();
+    await screen.findByTestId('failure-triage-card');
+    expect(screen.queryByTestId('execution-interpreter')).toBeNull();
+    const alert = await screen.findByTestId('execution-interpreter-no-snapshot');
+    expect(alert.textContent).toContain('解释器快照');
   });
 
   it('result 为脏值（字符串/空对象）：不崩且不渲染空壳', async () => {
@@ -626,13 +642,15 @@ describe('ExecutionDetailPage：解释器快照渲染（AC-12a）', () => {
     expect(block.textContent).toContain('未留痕');
   });
 
-  it('3.12 的 cache_miss 快照：渲染但**不**出现 3.7 专项指引', async () => {
+  it('3.12 的未知 reason token：原样渲染但**不**出现 3.7 专项指引', async () => {
+    // P3-1：cache_miss 是幽灵分因（无执行器产出），已从映射移除。这里改用一个
+    // 未来版本可能新增的未知 token，钉住"未知值原样露出、不崩不臆造翻译"的回退策略。
     mockExecution({
       failureReason: 'interpreter_unavailable',
       result: {
         interpreter: {
           requested: '3.12',
-          reason: 'cache_miss',
+          reason: 'some_future_reason',
           pool: { install_dir: '/opt/uv/python', versions: [] },
         },
       },
@@ -640,6 +658,7 @@ describe('ExecutionDetailPage：解释器快照渲染（AC-12a）', () => {
     renderDetail();
     const block = await screen.findByTestId('execution-interpreter');
     expect(block.textContent).toContain('3.12');
+    expect(block.textContent).toContain('some_future_reason');
     expect(screen.queryByTestId('interpreter-offline-prefill')).toBeNull();
   });
 

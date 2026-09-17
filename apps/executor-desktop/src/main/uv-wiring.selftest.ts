@@ -12,7 +12,9 @@
  */
 import * as assert from 'node:assert';
 import {
+  buildExecutorChildEnv,
   buildUvChildEnv,
+  pickPublicAddress,
   resolveBundledUvPath,
   resolveInterpretersDir,
   uvExecutableName,
@@ -147,7 +149,146 @@ function main(): void {
   assert.strictEqual(full.PYPI_REGISTRY_URL, 'https://pypi.internal/simple');
   assert.strictEqual(full.INTERPRETER_DOWNLOAD_TIMEOUT_MS, '300000');
 
+  // ---- 6. 子进程环境契约：两个"漏了不报错、只是永远不工作"的键 ----
+  //
+  // 反证：从 buildExecutorChildEnv 里删掉 BIND_ADDRESS 或
+  // EXECUTOR_ALLOW_PRIVATE_NETWORK，本组断言立即失败。
+  const childEnv = buildExecutorChildEnv({
+    appName: 'my-executor',
+    port: 8002,
+    bindAddress: '0.0.0.0',
+    executorHost: '0.0.0.0',
+    adminApiUrl: 'http://192.168.1.10:3001',
+    workDir: '/work',
+    maxConcurrentTasks: 4,
+    sharedToken: 'tok',
+    logLevel: 'debug',
+  });
+
+  // E-25 回归：executor-node 默认绑 127.0.0.1，桌面端必须显式覆盖成对外地址，
+  // 否则注册的是 LAN 地址而进程只监听 loopback —— 永远收不到任务（ECONNREFUSED）。
+  assert.strictEqual(
+    childEnv.BIND_ADDRESS,
+    '0.0.0.0',
+    'BIND_ADDRESS 必须下发：缺了它桌面执行器只监听 127.0.0.1，admin 派发全部 ECONNREFUSED',
+  );
+  // 用 `string` 宽化比较（字面量与字面量比较会被 TS 判为无意义）——这里要钉的是
+  // "下发的值不得是 loopback"，而不是某个具体字面量。
+  const loopback: string = '127.0.0.1';
+  assert.ok(
+    childEnv.BIND_ADDRESS !== loopback,
+    'BIND_ADDRESS 不得是 loopback —— 桌面执行器的意义就是被 admin 从局域网推到',
+  );
+
+  // E-04 逃生开关：桌面执行器要下载的 packageUrl 按构造就是私网的。
+  assert.strictEqual(
+    childEnv.EXECUTOR_ALLOW_PRIVATE_NETWORK,
+    'true',
+    'EXECUTOR_ALLOW_PRIVATE_NETWORK 必须下发：缺了它 zip 渠道任务的下载被自身 SSRF 闸门拒掉',
+  );
+
+  // P3-1：logLevel 必须透传给子进程（此前 config.logLevel 是没有消费者的死字段）。
+  assert.strictEqual(
+    childEnv.LOG_LEVEL,
+    'debug',
+    'LOG_LEVEL 必须随子进程 env 下发，executor-node 的 winston logger 读它',
+  );
+  const noLogLevel = buildExecutorChildEnv({
+    appName: 'x', port: 1, bindAddress: '0.0.0.0', executorHost: '0.0.0.0',
+    adminApiUrl: 'http://a', workDir: '/w', maxConcurrentTasks: 1, sharedToken: 't',
+  });
+  assert.ok(
+    !('LOG_LEVEL' in noLogLevel),
+    'logLevel 为空时不得下发 LOG_LEVEL（保留 executor-node 的 info 默认）',
+  );
+
+  // 对外地址：显式配置优先（真实网卡地址照常下发）。
+  const pinned = buildExecutorChildEnv({
+    appName: 'x',
+    port: 9001,
+    bindAddress: '0.0.0.0',
+    executorHost: '0.0.0.0',
+    executorAddressPublic: '192.168.1.20:9001',
+    adminApiUrl: 'http://a',
+    workDir: '/w',
+    maxConcurrentTasks: 1,
+    sharedToken: 't',
+  });
+  assert.strictEqual(pinned.EXECUTOR_ADDRESS_PUBLIC, '192.168.1.20:9001');
+  assert.strictEqual(childEnv.PORT, '8002');
+  assert.strictEqual(childEnv.APP_NAME, 'my-executor');
+
+  // 通配监听地址（0.0.0.0 / ::）**不得**被当成对外地址下发：admin-api 把
+  // 0.0.0.0/8 归为 reserved 且无条件拒绝（连私网开关也不放行），下发它 =
+  // 一个"注册成功、显示在线、永远派发不到"的执行器。此时应留空，让
+  // executor-node 回落到 EXECUTOR_ADDRESS。
+  assert.strictEqual(
+    childEnv.EXECUTOR_ADDRESS_PUBLIC,
+    '',
+    '0.0.0.0 不是可路由的对外地址，不得下发（会让执行器永远收不到任务）',
+  );
+  assert.strictEqual(
+    pickPublicAddress(undefined, '0.0.0.0', 8002),
+    '',
+    '留空 + 通配 host 时必须留空',
+  );
+  assert.strictEqual(
+    pickPublicAddress('0.0.0.0:8002', '0.0.0.0', 8002),
+    '',
+    '显式填了 0.0.0.0 也要挡住',
+  );
+  assert.strictEqual(
+    pickPublicAddress('   ', '0.0.0.0', 8002),
+    '',
+    '空白串视为未填',
+  );
+  assert.strictEqual(
+    pickPublicAddress(undefined, '192.168.1.20', 8002),
+    '192.168.1.20:8002',
+    '真实网卡地址照常回落',
+  );
+  // 主进程探到真实网卡时：留空 / 显式通配 / 空白串都必须兜底成该网卡地址，
+  // 而不是返回空串让 executor-node 再回落到同样是 0.0.0.0 的 EXECUTOR_ADDRESS
+  // （那会让"兜底"形同虚设，注册仍被 admin 以 reserved 拒绝）。
+  assert.strictEqual(
+    pickPublicAddress(undefined, '0.0.0.0', 8002, '192.168.1.30'),
+    '192.168.1.30:8002',
+    '留空 + 通配 host + 探到网卡 → 用网卡兜底',
+  );
+  assert.strictEqual(
+    pickPublicAddress('0.0.0.0:8002', '0.0.0.0', 8002, '192.168.1.30'),
+    '192.168.1.30:8002',
+    '显式填 0.0.0.0 + 探到网卡 → 同样兜底',
+  );
+  assert.strictEqual(
+    pickPublicAddress('   ', '0.0.0.0', 8002, '192.168.1.30'),
+    '192.168.1.30:8002',
+    '空白串 + 网卡 → 兜底',
+  );
+  assert.strictEqual(
+    pickPublicAddress('192.168.1.20:9001', '0.0.0.0', 9001, '192.168.1.30'),
+    '192.168.1.20:9001',
+    '显式真实地址优先于网卡兜底',
+  );
+  assert.strictEqual(
+    pickPublicAddress('127.0.0.1:8002', '0.0.0.0', 8002, '192.168.1.30'),
+    '127.0.0.1:8002',
+    '显式 loopback 是用户刻意的同机部署选择，不替用户改写',
+  );
+  // builder 层面：传入 fallbackLanIp 后 EXECUTOR_ADDRESS_PUBLIC 直接是可用地址。
+  const withLan = buildExecutorChildEnv({
+    appName: 'x', port: 8002, bindAddress: '0.0.0.0', executorHost: '0.0.0.0',
+    fallbackLanIp: '192.168.1.30', adminApiUrl: 'http://a', workDir: '/w',
+    maxConcurrentTasks: 1, sharedToken: 't',
+  });
+  assert.strictEqual(
+    withLan.EXECUTOR_ADDRESS_PUBLIC,
+    '192.168.1.30:8002',
+    'builder 必须把网卡兜底真正落进 EXECUTOR_ADDRESS_PUBLIC',
+  );
+
   console.log('[selftest] desktop uv wiring: OK');
+  console.log('[selftest] desktop child env contract: OK (BIND_ADDRESS + private-network escape hatch)');
   console.log(`[selftest]   default interpreters dir: ${resolveInterpretersDir('', '/home/u/.config/ACF')}`);
 }
 

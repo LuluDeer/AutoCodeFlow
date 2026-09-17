@@ -52,6 +52,19 @@ export interface CallbackRequest {
   durationMs?: number;
   /** FEAT-05: 执行产物清单（best-effort，随终态回调上报，与 admin CallbackItemDto 对齐）。 */
   artifacts?: Array<{ name: string; size: number; sha256: string }>;
+  /**
+   * FR-12/AC-12a：结构化执行明细，admin 原样落进 `task_executions.result`。
+   *
+   * 目前承载解释器快照 `{ interpreter: { requested, resolved, reason, detail, pool } }`
+   * ——与 python 侧 `_interpreter_failure_result`（execute.py:1036）同形。为什么
+   * 必须带上：`errorMessage` 是给人看的一句话，而"该把这个任务派到哪台执行器"
+   * 是调度侧的**机器输入**（pool 里已缓存哪些版本）。只发文本时，admin 侧要
+   * 判断"是池里没有、还是下载失败、还是 uv 没装"就得去翻执行器日志。
+   *
+   * 注意 admin 的 CallbackItemDto 有白名单：未知**顶层**键会被静默剥离，而
+   * `result` 是唯一被接受的结构化通道（IsBoundedJsonObject，4KB 上限）。
+   */
+  result?: Record<string, unknown>;
   /** OBS-01: dispatch 请求携带的 W3C traceparent（admin 追踪开启时存在）。 */
   traceparent?: string;
 }

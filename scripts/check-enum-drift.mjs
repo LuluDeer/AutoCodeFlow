@@ -137,6 +137,127 @@ export function check({ pgEnums, tsEnums, mapping = TS_TO_PG }) {
 }
 
 // ── selftest：用 fixture 验证判据本身 ────────────────────────────────────────
+// ── Frontend literal scan (P2-4 guard extension) ─────────────────────────
+// The TS-enum ⊆ PG-enum check above only covers admin-api. admin-web hand-
+// writes its API interfaces and asserts them via `client.get(...) as
+// Promise<T>`, so a status literal the backend can never produce (the dead
+// 'busy' executor filter option, P2-4) is invisible to tsc AND to this guard.
+// Each entry below anchors ONE user-facing options block in the web client
+// and asserts its `value: '...'` literals are a subset of the corresponding
+// PG enum. Add an entry when the web client gains another status filter.
+const FRONTEND_STATUS_SCANS = [
+  {
+    pgEnum: "executor_status_enum",
+    file: "apps/admin-web/src/pages/ExecutorListPage.tsx",
+    // The status-filter Select: from value={statusFilter} through its
+    // options={[ ... ]} array. Anchored (not a whole-file scan) so that
+    // unrelated literals such as i18n keys can never trip the guard.
+    blockRe: /value=\{statusFilter\}[\s\S]*?options=\{\[([\s\S]*?)\]\}/,
+  },
+];
+
+/** Extract `value: 'x'` (or double-quoted) literals from an options block. */
+export function scanFrontendStatusOptions(fileText, blockRe) {
+  const m = blockRe.exec(fileText);
+  if (!m) return null; // anchor missing → caller treats this as a failure
+  const vals = new Set();
+  const re = /value:\s*['"]([^'"]+)['"]/g;
+  let vm;
+  while ((vm = re.exec(m[1])) !== null) vals.add(vm[1]);
+  return vals;
+}
+
+/** Assert every anchored frontend options block ⊆ its PG enum. */
+export function checkFrontend({
+  pgEnums,
+  scans = FRONTEND_STATUS_SCANS,
+  read = (f) => readFileSync(f, "utf8"),
+}) {
+  const errors = [];
+  for (const scan of scans) {
+    if (!existsSync(scan.file)) {
+      errors.push(`frontend guard target missing: ${scan.file}`);
+      continue;
+    }
+    const pgVals = pgEnums[scan.pgEnum];
+    if (!pgVals) {
+      errors.push(
+        `PG enum "${scan.pgEnum}" not found (migration scan empty) — frontend guard for ${scan.file} cannot run`,
+      );
+      continue;
+    }
+    const vals = scanFrontendStatusOptions(read(scan.file), scan.blockRe);
+    if (vals === null) {
+      errors.push(
+        `${scan.file}: status-filter anchor not found (value={statusFilter} ... options={[ ... ]}) — guard is blind, update check-enum-drift.mjs`,
+      );
+      continue;
+    }
+    const extra = [...vals].filter((v) => !pgVals.has(v));
+    if (extra.length > 0) {
+      errors.push(
+        `frontend drift: ${scan.file} filter offers value(s) ${extra.join(", ")} that do not exist in PG enum "${scan.pgEnum}" (PG only has: ${[...pgVals].join(", ")})`,
+      );
+    }
+  }
+  return errors;
+}
+
+export function selftestFrontend() {
+  const pg = { executor_status_enum: new Set(["online", "offline"]) };
+  const blockRe = FRONTEND_STATUS_SCANS[0].blockRe;
+
+  const good = `
+    <Select
+      value={statusFilter}
+      onChange={(v) => setStatusFilter(v)}
+      options={[
+        { value: 'online', label: 'Online' },
+        { value: 'offline', label: 'Offline' },
+      ]}
+    />`;
+  const goodVals = scanFrontendStatusOptions(good, blockRe);
+  if (!(goodVals && goodVals.has("online") && goodVals.has("offline"))) {
+    console.error("selftest FAIL: frontend scanner did not extract online/offline options");
+    process.exit(1);
+  }
+
+  // Point the scan at this very script (which exists) while the reader
+  // returns the in-memory fixture — exercises the drift branch end to end.
+  const drifted = good.replace("'offline'", "'busy'");
+  const inlineScan = {
+    pgEnum: "executor_status_enum",
+    file: "scripts/check-enum-drift.mjs",
+    blockRe,
+  };
+  const inlineErrors = checkFrontend({
+    pgEnums: pg,
+    read: () => drifted,
+    scans: [inlineScan],
+  });
+  if (inlineErrors.length !== 1 || !inlineErrors[0].includes("busy")) {
+    console.error(`selftest FAIL: expected one busy-drift error, got: ${inlineErrors.join("; ")}`);
+    process.exit(1);
+  }
+
+  const anchorErrors = checkFrontend({
+    pgEnums: pg,
+    read: () => "<Select />",
+    scans: [
+      {
+        pgEnum: "executor_status_enum",
+        file: "scripts/check-enum-drift.mjs",
+        blockRe: /value=\{statusFilter\}[\s\S]*?options=\{\[([\s\S]*?)\]\}/,
+      },
+    ],
+  });
+  if (anchorErrors.length !== 1 || !anchorErrors[0].includes("anchor not found")) {
+    console.error(`selftest FAIL: expected anchor-missing error, got: ${anchorErrors.join("; ")}`);
+    process.exit(1);
+  }
+  console.log("selftest OK: frontend literal drift detector works (busy rejected, anchor loss detected)");
+}
+
 export function selftest() {
   const fixturePg = {
     test_enum: new Set(["a", "b", "c"]),
@@ -164,10 +285,13 @@ export function selftest() {
 // ── main ────────────────────────────────────────────────────────────────────
 if (process.argv.includes("--selftest")) {
   selftest();
+  selftestFrontend();
 } else {
   const pgEnums = scanPgEnums(MIGRATIONS_DIR);
   const tsEnums = scanTsEnums(SRC_DIR);
   const errors = check({ pgEnums, tsEnums });
+  // P2-4 guard extension: also assert web-client status literals ⊆ PG enums.
+  errors.push(...checkFrontend({ pgEnums }));
   if (errors.length > 0) {
     console.error("PK-26 enum drift guard FAIL:");
     for (const e of errors) console.error("  ✗ " + e);

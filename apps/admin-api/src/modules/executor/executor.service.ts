@@ -105,6 +105,15 @@ export const TERMINAL_STATES_MAX_LIMIT = 2000;
  */
 export const TERMINAL_STATES_DEFAULT_LOOKBACK_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * Executor lifecycle audit（P3-9）：findAll() 的硬上限。管理台列表的筛选/
+ * 搜索/计数全部在客户端对返回数组做，超过该上限的行会被**静默截断**——
+ * 因此该值同时经 GET /executors/runtime-config 暴露给前端，让 UI 能给出
+ * "仅显示前 N / 共 M 台"的提示，而不是把子集说成全量。需要更多行时应做
+ * 服务端分页（见 findAll 注释）。
+ */
+export const EXECUTOR_LIST_LIMIT = 500;
+
 @Injectable()
 export class ExecutorService {
   private readonly logger = new Logger(ExecutorService.name);
@@ -1130,6 +1139,8 @@ export class ExecutorService {
   findAll() {
     // Cap the result set: an admin UI listing does not need every historical executor.
     // Use pagination if the UI needs more — the ExecutorListPage supports filters/search.
+    // 上限值经 EXECUTOR_LIST_LIMIT 导出并由 getRuntimeConfig() 回传前端，
+    // 超限时 UI 显示 "仅显示前 N / 共 M 台"（P3-9，不再静默截断）。
     //
     // UI-17: 逐行计算 versionCompliant（EXE-VER-1 门禁 EXECUTOR_MIN_VERSION 的
     // 读面投影）——执行器版本存于 register/心跳，下限在中心端配置，合规态是
@@ -1138,13 +1149,46 @@ export class ExecutorService {
     const minVersion =
       this.configService.get<string>("executor.minVersion") || "";
     return this.repo
-      .find({ order: { createdAt: "DESC" }, take: 500 })
+      .find({ order: { createdAt: "DESC" }, take: EXECUTOR_LIST_LIMIT })
       .then((rows) =>
         rows.map((e) => ({
           ...e,
           versionCompliant: isVersionCompliant(e.executorVersion, minVersion),
         })),
       );
+  }
+
+  /**
+   * Executor lifecycle audit（P2-5 / P3-9）：回传执行器面的**有效运行时参数**，
+   * 供管理台与后端判定保持同源，消灭前端硬编码常量与后端配置漂移：
+   *
+   * - `heartbeatTimeoutMs` = heartbeatInterval（默认 30000ms）×
+   *   heartbeatTimeoutMultiplier（默认 3）= 默认 90s。这正是
+   *   markStaleOffline() 把 ONLINE 判成 OFFLINE 的截止阈值；前端此前硬编码
+   *   5 分钟，于是后端判死后的约 3.5 分钟里 UI 仍把心跳画成"刚刚（绿）"。
+   * - `listLimit` / `executorTotal`：findAll() 的截断上限与全量行数，
+   *   total > limit 时 UI 必须提示只展示了子集（P3-9）。
+   */
+  async getRuntimeConfig(): Promise<{
+    heartbeatIntervalMs: number;
+    heartbeatTimeoutMultiplier: number;
+    heartbeatTimeoutMs: number;
+    listLimit: number;
+    executorTotal: number;
+  }> {
+    const heartbeatIntervalMs =
+      this.configService.get<number>("executor.heartbeatInterval") || 30000;
+    const heartbeatTimeoutMultiplier =
+      this.configService.get<number>("executor.heartbeatTimeoutMultiplier") ||
+      3;
+    const executorTotal = await this.repo.count();
+    return {
+      heartbeatIntervalMs,
+      heartbeatTimeoutMultiplier,
+      heartbeatTimeoutMs: heartbeatIntervalMs * heartbeatTimeoutMultiplier,
+      listLimit: EXECUTOR_LIST_LIMIT,
+      executorTotal,
+    };
   }
 
   async findOne(id: string): Promise<Executor> {

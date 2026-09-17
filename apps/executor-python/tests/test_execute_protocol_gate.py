@@ -40,6 +40,24 @@ def _invalid_vectors() -> list[dict]:
     return vectors
 
 
+def _neutralize_side_effects(monkeypatch) -> None:
+    """掐掉闸门**之后**才会发生的副作用（容量占坑 + 后台任务）。
+
+    只为让「闸门失效」在反证时表现为干净的 `DID NOT RAISE` 断言失败，而不是
+    `no running event loop` 这类与被测行为无关的噪声——失败信息应当指向真正的
+    缺陷，否则下一个人会去查事件循环而不是查闸门。
+    """
+    monkeypatch.setattr(execute_module.sched, 'get_running_count', lambda: 0)
+    monkeypatch.setattr(execute_module.sched, 'increment_running', lambda: None)
+    monkeypatch.setattr(execute_module.settings, 'max_concurrent_tasks', 10)
+
+    def fake_create_task(coro):
+        coro.close()  # 避免 "coroutine was never awaited" 告警
+        return MagicMock()
+
+    monkeypatch.setattr(execute_module.asyncio, 'create_task', fake_create_task)
+
+
 # ---------------------------------------------------------------------------
 # 闸门：协议说非法的载荷，端点必须拒绝
 # ---------------------------------------------------------------------------
@@ -162,3 +180,65 @@ def test_valid_vector_is_accepted(idle_executor, monkeypatch):
         execute_module.unregister_live_execution(eid)
 
     assert execute_module.execution_exists(eid) is False
+
+
+# ---------------------------------------------------------------------------
+# strict=True：两端对同一份契约必须给出相同结论
+# ---------------------------------------------------------------------------
+
+
+def test_gate_is_strict_against_numeric_strings(idle_executor, monkeypatch):
+    """反证用例：把闸门退回 `model_validate(req.model_dump())`（去掉 strict=True），
+    本例立刻转红。
+
+    背景（本轮审计）：`routers/config.py` 的同名闸门早已用 `strict=True`，并在注释里
+    写明理由——「pydantic 默认 lax 会把字符串 "4" 强转成 int，而 zod 与 JSON Schema
+    的 type:integer 都不强转；协议闸门要与 executor-node 同语义」。但 `/execute` 的
+    闸门**漏了这一条**，于是同一份畸形载荷两端结论相反：
+
+      - executor-node（zod）：`task.timeoutSeconds: "300"` → **400**
+      - executor-python（lax） ：同一载荷 → **被接受**，随后 `_resolve_task_timeout`
+        的 `int(raw)` 把 `"300"` 解析成 300，任务照常跑
+
+    契约闸门的全部意义就是消除这种分歧，故这里把它钉死。`task` 在外层 FastAPI 模型里
+    是 `Dict[str, Any]`（值原样透传），所以这一层是唯一能拦住它的地方。
+    """
+    # 闸门若失效，载荷会被接受并继续往后走（登记 + create_task）。这里把后台任务
+    # 与容量副作用都掐掉，好让「闸门失效」表现为**干净的断言失败**（DID NOT RAISE），
+    # 而不是一个难读的事件循环异常。
+    _neutralize_side_effects(monkeypatch)
+
+    eid = 'exec-strict-probe'
+    req = execute_module.ExecuteRequest(
+        executionId=eid,
+        task={'runtime': 'python', 'entrypoint': 'main.py', 'timeoutSeconds': '300'},
+    )
+    with pytest.raises(ExecutionRejected) as excinfo:
+        execute_module.accept_execution(req)
+    assert excinfo.value.status_code == 400
+
+    # 与其它被拒路径同款：不得留下 live 条目（否则该 executionId 永久被当成在跑）
+    assert execute_module.execution_exists(eid) is False
+
+
+def test_gate_strictness_matches_node_on_a_shared_probe_set(idle_executor, monkeypatch):
+    """把「两端同结论」本身变成断言，而不是靠人记得同步两处 strict。
+
+    探针集合刻意只放**类型不符**的载荷：这类载荷在两侧都只可能被协议闸门拦下
+    （node 的手检只判数值越界、python 的手检同理），故「两端都拒」正是闸门语义
+    一致的直接证据。数值越界类不在本集合——那由两侧手检负责，且已有协议向量覆盖。
+    """
+    _neutralize_side_effects(monkeypatch)
+
+    probes = [
+        {'runtime': 'python', 'entrypoint': 'main.py', 'timeoutSeconds': '300'},
+        {'runtime': 'python', 'entrypoint': 'main.py', 'timeout': '300'},
+        {'runtime': 'python', 'entrypoint': 'main.py', 'requirements': 'lodash'},
+    ]
+    for index, task in enumerate(probes):
+        eid = f'exec-strict-parity-{index}'
+        req = execute_module.ExecuteRequest(executionId=eid, task=task)
+        with pytest.raises(ExecutionRejected) as excinfo:
+            execute_module.accept_execution(req)
+        assert excinfo.value.status_code == 400, task
+        assert execute_module.execution_exists(eid) is False

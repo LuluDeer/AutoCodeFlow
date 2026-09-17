@@ -240,16 +240,50 @@ export default function ConfigPage() {
 
               <div className="cfg-two-col">
                 <div className="cfg-field">
+                  <label className="cfg-label">监听地址</label>
+                  {/* P2-2：bind host 此前只在向导里硬编码 0.0.0.0、设置页无入口，
+                      用户事后无法修改。它直接决定子进程的 BIND_ADDRESS。 */}
+                  <input className="input" placeholder="0.0.0.0"
+                    value={String(form.executorHost || '0.0.0.0')}
+                    onChange={(e) => set('executorHost', e.target.value)}
+                    onBlur={(e) => {
+                      // 留空会让子进程拿到空 BIND_ADDRESS 并回落 127.0.0.1
+                      // （只听本机、永远收不到推送）——强制回到安全默认 0.0.0.0。
+                      if (!e.target.value.trim()) set('executorHost', '0.0.0.0');
+                    }} />
+                  <span className="cfg-hint">
+                    0.0.0.0 = 监听所有网卡（推荐，局域网可推送）；127.0.0.1 = 仅本机可连
+                  </span>
+                </div>
+                <div className="cfg-field">
                   <label className="cfg-label">监听端口</label>
                   <input className="input" type="number" value={port}
                     onChange={(e) => set('executorPort', parseInt(e.target.value, 10))} />
                 </div>
-                <div className="cfg-field">
-                  <label className="cfg-label">对外地址</label>
-                  <input className="input" placeholder="留空自动检测"
-                    value={String(form.executorAddressPublic || '')}
-                    onChange={(e) => set('executorAddressPublic', e.target.value)} />
-                </div>
+              </div>
+
+              <div className="cfg-field">
+                <label className="cfg-label">对外地址</label>
+                {/* 此前 placeholder 写「留空自动检测」，但主进程**没有任何自动
+                    检测**：留空会把 executorHost 的默认值 `0.0.0.0` 注册出去，而
+                    admin-api 把 0.0.0.0 归为 reserved 并**无条件拒绝**
+                    （safe-http.util 的 assertSafeExecutorUrl，即便开了私网开关也
+                    不放行）。用户照 placeholder 做，得到的是一个注册成功、
+                    显示在线、却永远派发不到的执行器。文案改为如实说明，
+                    并在留空时自动填入第一块网卡（下方已有 IP 快速填入）；
+                    主进程构造子进程 env 时还会再兜底一次（buildExecutorChildEnv）。 */}
+                <input className="input" placeholder="必填，如 192.168.1.20:8002"
+                  value={String(form.executorAddressPublic || '')}
+                  onChange={(e) => set('executorAddressPublic', e.target.value)}
+                  onBlur={(e) => {
+                    // 留空时用第一块网卡兜底（而不是让 0.0.0.0 流到注册请求）。
+                    if (!e.target.value.trim() && localIPs.length > 0) {
+                      set('executorAddressPublic', `${localIPs[0]}:${port}`);
+                    }
+                  }} />
+                <span className="cfg-hint">
+                  Admin 平台实际推送任务的地址，必须是其他机器能访问到的 IP，不能填 0.0.0.0
+                </span>
               </div>
 
               {localIPs.length > 0 && (
@@ -436,6 +470,22 @@ export default function ConfigPage() {
                   value={Number(form.maxConcurrentTasks || 10)}
                   onChange={(e) => set('maxConcurrentTasks', parseInt(e.target.value, 10))} />
                 <span className="cfg-hint">同时运行的最大任务数量（1 – 100）</span>
+              </div>
+
+              <div className="cfg-field cfg-field-narrow">
+                <label className="cfg-label">日志级别</label>
+                {/* P3-1：logLevel 此前是没有任何消费者的死字段（向导硬编码 info、
+                    设置页无入口、executor-node logger 也不读 LOG_LEVEL）。现已
+                    两端打通：桌面文件日志 + 子进程 winston 均按此级别输出。 */}
+                <select className="input"
+                  value={['debug', 'info', 'error'].includes(String(form.logLevel))
+                    ? String(form.logLevel) : 'info'}
+                  onChange={(e) => set('logLevel', e.target.value)}>
+                  <option value="debug">调试（debug，最详细，排查问题用）</option>
+                  <option value="info">常规（info）</option>
+                  <option value="error">仅错误（error）</option>
+                </select>
+                <span className="cfg-hint">同时作用于桌面端日志与内置执行器日志；保存后重启执行器生效</span>
               </div>
 
               <div className="cfg-toggle-card">

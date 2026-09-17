@@ -24,6 +24,9 @@ import {
   useSchedulerStats,
 } from '../api/queries';
 import { formatDuration } from '../utils/timeFormat';
+// python_task_multiversion（P2-3）：失败分类标签读面唯一事实源，
+// ExecutionCompare 共用，避免再出现"详情页有标签、Dashboard 露裸枚举"的漂移。
+import { failureReasonLabel } from '../utils/failure-reason-label';
 import { useThemeStore, selectResolvedTheme } from '../theme/store';
 import { CHART_COLORS } from '../theme/tokens';
 import PageHeader from '../components/PageHeader';
@@ -459,7 +462,14 @@ export default function DashboardPage() {
                                 {f.failureReason && (
                                   <Tooltip title={f.failureReason}>
                                     <Tag color="volcano" style={{ fontSize: 10, lineHeight: '16px', marginInlineEnd: 0 }}>
-                                      {f.failureReason.length > 12 ? `${f.failureReason.slice(0, 12)}…` : f.failureReason}
+                                      {/* 此前直接渲染**原始枚举**并按 12 字符截断，于是
+                                          `interpreter_unavailable` 显示成 `interpreter_…`
+                                          ——既不是中文也不是英文，用户看不出是什么失败。
+                                          改为查 i18n 标签（键与 ExecutionDetailPage 的
+                                          FAILURE_REASON_MAP 同一族）；未知值仍回退原始
+                                          token（宁可露出 `some_new_reason` 也不显示
+                                          "未知原因"把可诊断信息抹掉），此时才截断。 */}
+                                      {failureReasonLabel(f.failureReason, t)}
                                     </Tag>
                                   </Tooltip>
                                 )}

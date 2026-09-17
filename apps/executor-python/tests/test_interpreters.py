@@ -313,6 +313,50 @@ def test_parse_python_list_keeps_only_pool_entries(pool):
     assert Path(entries[0].path).resolve().is_relative_to(pool.resolve())
 
 
+def test_parse_python_list_handles_paths_containing_spaces(pool, monkeypatch):
+    """池路径含空格时必须照常解析（回归：曾被 `parts[-1]` 静默丢弃）。
+
+    旧实现用 `line.split()` 取 `parts[-1]` 当路径。`<key>` 不含空白，但路径可以
+    ——池落在 `C:\\Program Files\\interpreters`、`/opt/my pool/...` 这类目录时，
+    `parts[-1]` 只拿到最后一段（如 `python.exe`），既不是绝对路径也不在池内，
+    于是整行被丢弃 → **池里有解释器却报空池** → 该执行器上所有声明了
+    runtimeVersion 的任务必然 `interpreter_unavailable`。
+
+    executor-node 不受影响（它用 `uv python list --output-format json`），
+    故这是 python 侧独有的缺陷，两侧行为必须一致。
+    """
+    spaced_pool = pool.parent / 'my pool'
+    spaced_pool.mkdir(parents=True, exist_ok=True)
+    # 平台段必须用**本机** token：`_PLATFORM` 是固定字面量（linux），在 Windows
+    # 上会被"外来平台"过滤剔除，那样测的就不是空格解析了（假阴性）。
+    host = interpreters._current_platform_token()
+    if host is None:  # pragma: no cover - 本机平台必定可判定
+        pytest.skip('host platform token unavailable')
+    entry_dir = spaced_pool / f'cpython-3.11.13-{host}'
+    entry_bin = _fake_bin(entry_dir)
+
+    monkeypatch.setattr(interpreters, 'pool_root', lambda: spaced_pool)
+    output = f'cpython-3.11.13-{host}    {entry_bin}\n'
+
+    entries = interpreters._parse_python_list(output, discovered_at='t')
+
+    versions = [e.version for e in entries]
+    assert versions == ['3.11.13'], (
+        f'含空格的池路径必须被正确解析，实际 {versions}（空 = 被 parts[-1] 丢弃）'
+    )
+    assert Path(entries[0].path) == entry_bin
+
+
+def test_parse_python_list_key_takes_only_first_whitespace_run(pool):
+    """uv 用**多个空格**做列对齐；键必须是首段，路径是其余全部（含空格）。"""
+    pool_bin = make_entry(pool, '3.12.3')
+    # 列对齐：键与路径之间是多个空格（真实 uv 输出形态）。
+    output = f'cpython-3.12.3-{_PLATFORM}-none       {pool_bin}\n'
+    entries = interpreters._parse_python_list(output, discovered_at='t')
+    assert [e.version for e in entries] == ['3.12.3']
+    assert Path(entries[0].path) == pool_bin
+
+
 def test_advertised_versions_equal_resolvable_versions(fake_uv, pool):
     """核心不变量（CONTRACT.md §0.4）：**宣称可用 ⟺ 真的解析得到**。
 
@@ -581,6 +625,38 @@ def test_online_download_min_constant_matches_contract():
 
 
 # ---------------------------------------------------------------------------
+# is_supported_version（P2-1：激活 python_runtime_version_min/max 死配置，
+# 与 node isSupportedVersion 对等）
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize('version', ['3.7', '3.8', '3.12', '3.14'])
+def test_is_supported_version_inside_default_range(version):
+    assert interpreters.is_supported_version(version) is True
+
+
+@pytest.mark.parametrize('version', ['3.6', '3.15', '3.99'])
+def test_is_supported_version_outside_default_range(version):
+    assert interpreters.is_supported_version(version) is False
+
+
+def test_is_supported_version_honours_configured_bounds(monkeypatch):
+    """部署方可收紧区间（node 侧是常量；python 侧必须真正读 settings）。"""
+    monkeypatch.setattr(settings, 'python_runtime_version_min', '3.10')
+    monkeypatch.setattr(settings, 'python_runtime_version_max', '3.12')
+
+    assert interpreters.is_supported_version('3.9') is False
+    assert interpreters.is_supported_version('3.10') is True
+    assert interpreters.is_supported_version('3.12') is True
+    assert interpreters.is_supported_version('3.13') is False
+
+
+@pytest.mark.parametrize('bad', ['3', '3.11.9', 'python3.11', 'garbage'])
+def test_is_supported_version_rejects_bad_format(bad):
+    with pytest.raises(ValueError):
+        interpreters.is_supported_version(bad)
+
+
+# ---------------------------------------------------------------------------
 # ensure_version（FR-07/13/15、D11/D14）
 # ---------------------------------------------------------------------------
 
@@ -784,6 +860,45 @@ def test_ensure_version_36_is_rejected_without_uv(fake_uv, pool):
         interpreters.ensure_version('3.6', timeout=300)
 
     assert exc.value.reason == 'not_downloadable'
+    assert fake_uv.installs == []
+
+
+def test_ensure_version_above_supported_range_is_not_downloadable(fake_uv, pool):
+    """P2-1 回归：3.99 越界必须在下载前归类 not_downloadable（与 node 对等）。
+
+    改动前没有区间闸门，`uv python install 3.99` 真的被执行，再以含糊的
+    download_failed 收场——同一个任务只看调度到哪个执行器就得到不同分因。
+    """
+    with pytest.raises(interpreters.InterpreterUnavailable) as exc:
+        interpreters.ensure_version('3.99', timeout=300)
+
+    assert exc.value.version == '3.99'
+    assert exc.value.reason == 'not_downloadable'
+    assert '3.7' in exc.value.detail and '3.14' in exc.value.detail
+    assert fake_uv.installs == [], '越界版本不得尝试在线下载'
+
+
+def test_ensure_version_async_above_supported_range_is_not_downloadable(fake_uv, pool):
+    """async 入口（WS4 run_task 走这个）同样要在信号槽外明确失败。"""
+    async def scenario():
+        with pytest.raises(interpreters.InterpreterUnavailable) as exc:
+            await interpreters.ensure_version_async('3.99', timeout=300)
+        return exc.value
+
+    exc = asyncio.run(scenario())
+    assert exc.reason == 'not_downloadable'
+    assert fake_uv.installs == []
+
+
+def test_ensure_version_respects_tightened_max_bound(fake_uv, pool, monkeypatch):
+    """部署方把上界收紧到 3.12 后，3.13 即便 uv 能下也必须明确拒绝。"""
+    monkeypatch.setattr(settings, 'python_runtime_version_max', '3.12')
+
+    with pytest.raises(interpreters.InterpreterUnavailable) as exc:
+        interpreters.ensure_version('3.13', timeout=300)
+
+    assert exc.value.reason == 'not_downloadable'
+    assert '3.12' in exc.value.detail
     assert fake_uv.installs == []
 
 
