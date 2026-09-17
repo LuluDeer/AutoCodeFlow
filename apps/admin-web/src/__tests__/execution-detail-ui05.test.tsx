@@ -5,8 +5,8 @@
  * 1. Tab 化：默认 Tab=执行日志；四个 Tab（日志/时间线·报告/重试链/参数与产物）
  *    可切换；?tab= searchParams 记忆（初始渲染读参、切换写参 replace）。
  * 2. 失败定位卡片：failed/timeout 时日志 Tab 顶部渲染——failureReason 映射
- *    建议动作（BUG-10 十二类）、任务 runbook 有值时展示、「AI 分析」跳时间线
- *    Tab；success 时不渲染。
+ *    建议动作（BUG-10 分类 + 解释器不可用）、任务 runbook 有值时展示、「AI 分析」
+ *    跳时间线 Tab；success 时不渲染。
  * 3. 搜索高亮：输入关键词（防抖 300ms）后命中片段 mark.log-search-hit，
  *    pre 文本拼接保真；未命中显示提示。
  * 4. 参数与产物 Tab：params Tag 展示 + ArtifactsList 渲染（mock api 层）。
@@ -244,12 +244,14 @@ describe('UI-05: 日志搜索高亮', () => {
 });
 
 describe('UI-05: 纯函数（failure-runbook / log-search）', () => {
-  it('failure-runbook 十二类键完整且 unknown 兜底', () => {
-    // 与 mcp-server FAILURE_RUNBOOK 键集对齐（12 键）
+  it('failure-runbook 全量键完整（含解释器不可用）且 unknown 兜底', () => {
+    // 与 mcp-server FAILURE_RUNBOOK 键集对齐（BUG-10 分类 + python_task_multiversion
+    // 新增 interpreter_unavailable）
     const KEYS = [
       'package_fetch_failed', 'dependency_install_failed', 'git_fetch_failed',
       'runtime_missing', 'script_error', 'timeout', 'executor_offline',
-      'executor_restart', 'stale_recovered', 'killed', 'unknown',
+      'executor_restart', 'stale_recovered', 'killed', 'interpreter_unavailable',
+      'unknown',
     ];
     for (const k of KEYS) {
       expect(FAILURE_RUNBOOK_ACTIONS[k]?.action.length).toBeGreaterThan(0);

@@ -3,10 +3,18 @@
  * 同层次——独立成文件以满足 react-refresh 只导出组件的限制并便于单测）。
  *
  * 语义镜像自 packages/mcp-server/src/tools.ts 的 FAILURE_RUNBOOK
- * （BUG-10 十二类失败分类 → 建议首动作，ECO-03 三端对齐先例）：
+ * （python_task_multiversion 新增 interpreter_unavailable → 12 类失败分类 →
+ * 建议首动作，ECO-03 三端对齐先例）：
  * 跨包 import 违反 workspace 边界（admin-web 不依赖 mcp-server），
  * 按纪律复制语义到 admin-web 侧并保持 12 键逐一对应；mcp 侧后续
  * 扩键时本表需人工同步（双端无共享包，属有意取舍）。
+ *
+ * 计数口径（改键集时勿照抄任务书，以代码为准）：本文件原名「BUG-10 十二类」，
+ * 但实测 git HEAD 的两张映射表与 admin ExecutionFailureReason 枚举、
+ * executor-protocol/protocol.json 的 failureReason.all **四处同为 11 项**
+ * （含 unknown 兜底）——"十二类"是长期存在的注释笔误。加 interpreter_unavailable
+ * 后现为 12 项。"13" 只出现在配套任务书里（其前提"12 键"与仓库实况不符），
+ * 故本注释统一按 12 写，避免下一位读者再被错误基数误导。
  *
  * 与页面既有 FAILURE_REASON_MAP（label/hint）职责区分：
  *  - FAILURE_REASON_MAP：分类的展示（Tag 颜色/中文名/一句话提示）；
@@ -20,7 +28,8 @@ export interface FailureRunbookEntry {
 }
 
 /**
- * BUG-10 十二类失败分类 → 中文建议动作。
+ * 失败分类 → 中文建议动作（BUG-10 分类 + python_task_multiversion 新增
+ * interpreter_unavailable，共 12 项）。
  * 键集与 mcp-server FAILURE_RUNBOOK 完全一致（12 键，含 unknown 兜底）。
  */
 export const FAILURE_RUNBOOK_ACTIONS: Record<string, FailureRunbookEntry> = {
@@ -54,6 +63,11 @@ export const FAILURE_RUNBOOK_ACTIONS: Record<string, FailureRunbookEntry> = {
   killed: {
     action: '执行被手动终止（或阻断策略 kill）。与操作者/审计日志核实操作来源。',
   },
+  // python_task_multiversion：解释器不可用 = 环境/配置类失败，
+  // 重试无益（故不在默认重试集内）——动作必须是"让运维改环境"而非"再跑一次"。
+  interpreter_unavailable: {
+    action: '确认执行器已安装 uv 且能访问 Python 下载源；声明 3.7 的任务无法在线获取，需部署方预填解释器缓存卷（或改声明 3.8+ 后重新触发）。系统刻意不回退宿主解释器。',
+  },
   unknown: {
     action: '无失败原因上报——阅读完整日志，并可用「AI 分析」生成根因报告。',
   },
@@ -86,6 +100,7 @@ const RUNBOOK_ACTION_T_KEY: Record<string, string> = {
   executor_restart: 'runbook.executorRestart',
   stale_recovered: 'runbook.staleRecovered',
   killed: 'runbook.killed',
+  interpreter_unavailable: 'runbook.interpreterUnavailable',
   unknown: 'runbook.unknown',
 };
 
