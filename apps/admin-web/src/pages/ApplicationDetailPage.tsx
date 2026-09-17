@@ -350,7 +350,8 @@ function SettingsTab({ app, onUpdated }: { app: Application; onUpdated: (a: Appl
   };
 
   return (
-    <Card title={t('appDetail.settings.edit')} style={{ maxWidth: 620 }}>
+    // UI 打磨（用户反馈）：去掉 maxWidth 620——设置 Tab 只有这一张卡片，宽屏右侧留白过大
+    <Card title={t('appDetail.settings.edit')}>
       <Form form={form} layout="vertical">
         {/* name 为不可变标识（UpdateApplicationDto 不接受 name），只读展示 */}
         <Form.Item label={t('appDetail.field.name')} tooltip={t('appDetail.settings.nameTooltip')}>

@@ -12,9 +12,9 @@
 |---|---|---|---|
 | `appName` | string | ✅ | node `config.appName` / python `settings.app_name` |
 | `address` | string | ✅ | `EXECUTOR_ADDRESS_PUBLIC || EXECUTOR_ADDRESS` |
-| `type` | `"node"` / `"python"` | — | 硬编码 |
+| `type` | `"node"` / `"python"` / `"universal"` | — | node 侧**由探测结果推导**：有 python 能力 → `universal`，否则 `node`（`reportedExecutorType()`）。python 侧恒 `"python"`。**仅展示用，派发不读此字段** |
 | `version` | string（`1.0.0`） | — | 硬编码 |
-| `capabilities` | string[] | — | node：探测 `[shell,node,python?]`；python：`['python','shell']` |
+| `capabilities` | string[] | — | node：探测 `[shell,node,python?]`（python = 系统解释器实跑可用 **或** 自带 uv 可用）；python：`['python','shell']` |
 | `runtime` | string[] | — | 仅 node 发送（同 capabilities 探测值） |
 | `maxConcurrentTasks` / `maxConcurrent` | number | — | node 发 `maxConcurrent`；python 发 `maxConcurrentTasks` |
 | `groupName` / `tags` / `description` | string / string[] | — | node 发 groupName；tags/description 仅 admin Swagger 示例可见，两个执行器均未发送 |

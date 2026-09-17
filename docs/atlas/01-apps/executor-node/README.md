@@ -41,7 +41,20 @@ main.ts
         （停心跳 → 关 HTTP → 停 worker → 等 30s → 树杀残留任务 → drain 回调 → POST /api/executors/offline）
 ```
 
-注册时上报的运行时能力由 `detectAvailableRuntimes()` 探测：恒有 `shell`、`node`，PATH 里能 `which python3|python` 则追加 `python`。
+注册时上报的运行时能力由 `runtime-detection.ts` 的 `detectRuntimesOnHost()` 探测：
+恒有 `shell`、`node`；python 走**双通道**——系统 `python3`/`python` 实跑
+`--version` 成功，**或**自带 uv 可用（uv 能按 `runtimeVersion` 获取解释器）。
+
+> 历史坑（已修）：原实现用 `which python3|python` 判定。**Windows 上没有
+> `which`**（`spawnSync` 返回 ENOENT、`status === null`），而代码只判
+> `status === 0`，于是 Windows 客户端**恒定**上报 `shell,node` —— 哪怕机器上
+> 装了 Python。由于 admin 侧派发只按 `capabilities` 过滤、且任务 runtime 缺省
+> 是 `python`，后果是新设备"注册成功但任务永远派不过来"。现改为实跑探测，
+> 并对不存在命令正确回落。
+
+上报的 `type` 由同一份 runtimes 同源推导（`reportedExecutorType()`）：
+具备 python 能力 → `universal`，否则 `node`。`type` **只用于后台展示，不参与
+派发**；派发只看 `capabilities`。
 
 ## 目录结构与关键文件
 

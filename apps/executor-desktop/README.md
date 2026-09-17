@@ -44,14 +44,69 @@ uv 的解析顺序（由 executor-node 实现）：
 3. 环境变量 `UV_BIN`；
 4. 系统 `PATH` 上的 `uv`。
 
-**默认不打进安装包**（避免构建期联网、也不改变既有产物哈希）。需要自带时：
+#### 装了客户端后，后台显示「Node.js」而不是「通用」？
+
+`type` 字段**由探测结果推导**：具备 Python 能力 → `universal`（后台显示「通用」），
+否则 `node`。Python 能力走**双通道**，任一成立即可：
+
+1. 系统 `python3` / `python` 可用（实跑 `--version` 探测）；
+2. **自带 uv 可用** —— 能按 `runtimeVersion` 获取解释器，这正是客户端「通用执行器」的核心能力。
+
+所以装**正式发布包**（自带 uv）后应当显示「通用」。若仍显示「Node.js」，按顺序排查：
+
+1. 确认该包确实自带 uv：安装目录下 `resources/uv/uv.exe` 是否存在；
+2. 检查**是否旧版本客户端** —— v1.5.1 及更早的发布包不含 uv，且注册时把
+   `type` 硬编码成 `'node'`，**必然**显示 Node.js；
+3. 看启动日志：`Registered to admin-api (runtimes: ...)`。含 `python` 即正常。
+
+> **重要**：`type` 只影响后台**展示**，不参与任务派发。派发依据是
+> `capabilities`（`runtimes` 上报值）——admin 侧按 `capabilities.includes(task.runtime)`
+> 过滤，而任务 runtime 的实体缺省值是 `python`。所以"显示 Node.js"通常伴随
+> **Python 任务派不到这台设备**，两者是同一病根。
+
+> 历史坑（v1.5.1 及更早，已修）：能力探测用 `which python3|python`，而
+> **Windows 上没有 `which`**（`spawnSync` 返回 ENOENT）。代码只判 `status === 0`，
+> 于是 Windows 客户端**恒定**上报 `shell,node` —— 哪怕机器上装了 Python。
+> 现改为实跑探测，并让"自带 uv"也算作 Python 能力。
+
+**正式发布包必须自带 uv**（发布流水线已强制，见下）。本机构建默认不打进安装包
+（避免构建期联网、也不改变既有产物哈希）。需要自带时：
 
 ```bash
 # Linux / macOS（以及 CI）——直接前置于 npm 命令即可
 ACF_BUNDLE_UV=1 npm run build:executor                             # 尝试联网下载 uv
 ACF_BUNDLE_UV=1 ACF_UV_SOURCE=/path/to/uv npm run build:executor   # 用本地已下载的 uv
 ACF_BUNDLE_UV=1 ACF_UV_VERSION=0.8.17 npm run build:executor       # 指定版本（默认 0.8.17）
+
+# 发布用：缺 uv 直接让构建失败，绝不产出残包
+ACF_BUNDLE_UV=1 ACF_UV_REQUIRED=1 npm run build:executor
 ```
+
+#### 为什么要 `ACF_UV_REQUIRED`（desktop-v1.5.1 实爆）
+
+v1.5.1 的正式安装包**不含 uv**：`ACF_BUNDLE_UV` 默认 `0`，而
+`release-desktop.yml` 也没设它，加上"下载失败只告警、退出码仍为 0"的
+best-effort 契约，于是一个能力残缺的包被正常发布了。全新设备装完的表现是：
+
+```
+[WARN] uv is not available (no UV_BIN, not on PATH, no bundled binary) \
+       — python tasks that declare runtimeVersion cannot run on this executor
+[INFO] Registered to admin-api (runtimes: shell, node, ...)
+```
+
+即**只上报 `shell, node`，声明 `runtimeVersion` 的 Python 任务全部不可用**，
+而客户端与平台两侧都没有"这个包是残的"的提示。现在：
+
+- 发布流水线（`release-desktop.yml`）固定带
+  `ACF_BUNDLE_UV=1 ACF_UV_REQUIRED=1 ACF_UV_VERSION=0.8.17`；
+- `ACF_UV_REQUIRED=1` 时，缺 uv（含"忘开 `ACF_BUNDLE_UV`"）→ **`exit 1`**，
+  发布被拦下；
+- 出包后还会**解包安装产物**断言 uv 确实在包里（`extraResources` 漏带也能发现）；
+- CI 的 `desktop-uv-bundle-gate` 在三平台真跑一遍严格打包，并断言落点与
+  `uv-paths.ts` / `interpreters.ts` 的解析约定一致。
+
+> 本地开发**不要**设 `ACF_UV_REQUIRED=1`：不声明版本的存量任务根本不碰 uv，
+> 没打进 uv 只是能力降级，不该让本地构建失败——这正是 best-effort 契约的初衷。
 
 > ⚠ **Windows 用户请注意**：`npm run build:executor` 内部走 `bash scripts/bundle-executor.sh`，
 > 而 Windows 上 `bash` 常被解析成 `%LOCALAPPDATA%\Microsoft\WindowsApps\bash.exe`
@@ -83,7 +138,7 @@ ACF_BUNDLE_UV=1 ACF_UV_VERSION=0.8.17 npm run build:executor       # 指定版�
 uv 会直接下载失败；而且卸载/升级不该连带删掉已下载的解释器（每版本几十 MB）。
 可在设置里用 `uvPythonInstallDir` 改到别处（例如大容量磁盘）。
 
-相关可选设置：
+相关可选设置（**设置 → Python 运行环境**，均有 UI 入口，无需手工改配置文件）：
 
 | 设置 | 默认 | 说明 |
 |---|---|---|
@@ -92,6 +147,14 @@ uv 会直接下载失败；而且卸载/升级不该连带删掉已下载的解�
 | `uvPythonInstallMirror` | 空 | 内网镜像源；空 = uv 默认源 |
 | `interpreterDownloadTimeoutMs` | 0 | 单个解释器下载超时；0 = 执行器默认 |
 | `pypiRegistryUrl` | 空 | 私有 PyPI 源（依赖安装用）；空 = 默认源 |
+
+该页顶部会显示**实际生效**的 uv 路径、解释器池目录与池内已就绪版本 —— 排查
+「配置了却没生效」（uvPath 指错、自带 uv 缺失、池目录被配到工作目录）时先看这里。
+
+> **自带 uv ≠ 自带 Python。** 安装包只带 uv（包管理器），不含 Python 本体。
+> 首跑某个版本时由 uv 获取：**能上外网**自动下载；**纯内网**必须配上面镜像源，
+> 或按 `docs/design/python-task-upload-and-multiversion/OFFLINE-PROVISIONING.md`
+> 离线预填解释器池。**3.7 无法在线获取**，必须离线预填。
 
 #### 3.7 需要离线预填
 
