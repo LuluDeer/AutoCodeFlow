@@ -306,6 +306,8 @@
 | 1790000000021 | AddTaskVersionsUniqueIndex | DR-FIX-ALL（PK-11） | 本声明占用（task_versions 补 (taskId,version) 唯一索引 ux_task_versions_taskId_version；存量重复行先按 (createdAt,id) 确定性去重——ROW_NUMBER 先例 1789000000000，无重复时为 no-op；顺带回收被唯一索引覆盖的旧非唯一索引 idx_task_versions_taskId_version；幂等 IF [NOT] EXISTS；结构 spec 同批） |
 | 1790000000022 | AddAuditAndRefreshTokenQueryIndexes | DR-FIX-ALL（PK-16） | 本声明占用（audit_logs(action,createdAt) 复合索引 + refresh_tokens(userId)、refresh_tokens(expiresAt) 两个普通索引，CREATE/DROP INDEX IF [NOT] EXISTS 幂等，命名对齐 1717473142683 风格；结构 spec 同批） |
 | 1790000000023 | AlterConfigHistoryUserIdToInteger | DR-FIX-ALL（PK-21） | 本声明占用（config_history."userId" 由 VARCHAR ALTER 为 INTEGER，USING "userId"::integer——写面自始即 String(user.id) 数字串/NULL，可安全转换；实体 userId:number|null 同步；非零迁移情形：DB 事实原为 VARCHAR，非 PK-10 零迁移先例；down 回退 VARCHAR ::text） |
+| 1790000000024 | AddTaskCodeSource | python_task_multiversion（整包上传 + uv 多版本） | 本声明占用（tasks 增 codeSource 可空 enum：git/glue/application_zip；一次性回填优先级 gitRepo>glueSource>applicationId>NULL；幂等 IF NOT EXISTS；down 删列） |
+| 1790000000025 | AddExecutorInterpreters | python_task_multiversion（整包上传 + uv 多版本） | 本声明占用（executors 增 interpreters 可空 jsonb：执行器上报的解释器缓存池清单；**不加 NOT NULL**——null=未上报（旧执行器，调度按 ["3.12"] 兜底）与 [] =已上报且池空 语义必须区分；幂等 IF NOT EXISTS；down 删列） |
 
 ## 变更日志
 

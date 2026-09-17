@@ -16,7 +16,9 @@ function mapCallbackError(message: string): string {
 
 /** W-6: 生产环境附 Secure，开发态 http://localhost 不设（浏览器会丢弃）。 */
 function stateCookieFlags(): string {
-  return getEnvVar("NODE_ENV") === "production" ? "HttpOnly; SameSite=Lax; Secure" : "HttpOnly; SameSite=Lax";
+  return getEnvVar("NODE_ENV") === "production"
+    ? "HttpOnly; SameSite=Lax; Secure"
+    : "HttpOnly; SameSite=Lax";
 }
 
 /**
