@@ -105,6 +105,19 @@ best-effort 契约，于是一个能力残缺的包被正常发布了。全新�
 - CI 的 `desktop-uv-bundle-gate` 在三平台真跑一遍严格打包，并断言落点与
   `uv-paths.ts` / `interpreters.ts` 的解析约定一致。
 
+> ⚠ **校验 NSIS 安装包时不要直接 `7z l` 那个 .exe**（desktop-v1.5.2 实爆）：
+> electron-builder 产出的 Windows 安装包只是 NSIS **外壳**，`7z l` 仅能列出
+> `$PLUGINSDIR\*`、`$R0\Uninstall*.exe` 等外壳条目，真正的应用负载在**嵌套的**
+> `$PLUGINSDIR\app-64.7z` 内。因此形如
+> `grep -q 'resources[\\/]uv[\\/]uv\.exe'` 的断言对 .exe **恒定不命中**，
+> 与 uv 在不在包里无关（即"恒定假阴性"）。
+>
+> 实测（对真实安装包）：含 uv 的包直接列外层 → 未命中；先
+> `7z e "<setup>.exe" -o<dir> '$PLUGINSDIR/app-64.7z'` 再 `7z l` 该 7z → 命中。
+> `release-desktop.yml` 已按后者实现。macOS（挂载 dmg 查 `.app/Contents/Resources`）
+> 与 Linux（AppImage `--appimage-extract` 查 `squashfs-root/resources`）不受此坑影响，
+> 这也解释了为何同一轮里只有 Windows 单独变红。
+
 > 本地开发**不要**设 `ACF_UV_REQUIRED=1`：不声明版本的存量任务根本不碰 uv，
 > 没打进 uv 只是能力降级，不该让本地构建失败——这正是 best-effort 契约的初衷。
 
