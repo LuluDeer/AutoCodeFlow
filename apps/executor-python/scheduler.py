@@ -143,6 +143,48 @@ def register_dead_letter_count_provider(fn) -> None:
     _dead_letter_count_provider = fn
 
 
+# FR-13/FR-14（python_task_multiversion, CONTRACT.md §2.3）：解释器缓存池清单
+# 随心跳上报，完全复刻上面两个 provider 的模式（数据归 main.py 所有，本模块
+# 只持有一个 getter——main 反向 import scheduler 会成环）。
+#
+# 字段缺省语义（§2.3 admin 采纳规则）：缺省 = 保留 DB 旧值；`[]` = 已上报且
+# 池为空。默认 provider 返回 **[]（不是 None）**：本执行器版本必然会上报该
+# 字段（main 在 lifespan 里接上真实 provider），未接线只可能是测试/独立导入，
+# 此时"已上报且为空"比"未上报"更诚实，也不会让 admin 用 ["3.12"] 兜底把任务
+# 派到池里没有该版本的执行器上。
+#
+# 刷新语义：provider 由 main 提供，内部复用 WS3 探测模块的缓存（池变化后由
+# 模块侧 invalidate_cache 收敛），因此心跳路径**不会**每次 spawn 一个 uv 进程
+# （NFR-10）。
+def _default_interpreters() -> list:
+    return []
+
+
+_interpreters_provider = _default_interpreters
+
+
+def register_interpreters_provider(fn) -> None:
+    """Install the getter returning the interpreter pool inventory."""
+    global _interpreters_provider
+    _interpreters_provider = fn
+
+
+def _collect_interpreters() -> list:
+    """Provider 输出归一为契约形状的 list（CONTRACT.md §2.2）。
+
+    上报的是"能力快照"，任何异常都不能让心跳失败——那会让 admin 判执行器
+    OFFLINE，代价远大于少报一次清单。异常/非 list 一律收敛为空列表。"""
+    try:
+        value = _interpreters_provider()
+    except Exception as exc:  # noqa: BLE001 - 心跳绝不因上报失败而中断
+        logger.warning('interpreters provider failed; reporting an empty inventory: %s', exc)
+        return []
+    if not isinstance(value, list):
+        logger.warning('interpreters provider returned %s, expected list', type(value).__name__)
+        return []
+    return value
+
+
 def _heartbeat_retry_exhausted(retry_state):
     """Called when all retries are exhausted — return None to suppress RetryError."""
     logger.warning(f'Heartbeat failed after all retries: {retry_state.outcome.exception()}')
@@ -201,6 +243,11 @@ async def _send_heartbeat(client: httpx.AsyncClient, token: str, trace_id: str =
             # deadLetterCountProvider()). Always present, never omitted; the
             # provider serves a cached count so this never rescans the disk.
             'deadLetterCount': max(0, int(_dead_letter_count_provider())),
+            # FR-13/FR-14（python_task_multiversion, CONTRACT.md §2.3）：解释器
+            # 缓存池清单——与 runningExecutionIds/deadLetterCount 同一 provider
+            # 模式。池变化时由 WS3 模块的 invalidate_cache 收敛，provider 本身
+            # 走缓存，心跳不会每次探测（NFR-10）。
+            'interpreters': _collect_interpreters(),
             'restartedAt': executor_started_at,
             'startupId': executor_startup_id,
             # EXE-VER-1: 版本随心跳上报（node scheduler.ts 对齐，可选字段）；

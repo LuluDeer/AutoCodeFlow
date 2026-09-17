@@ -198,7 +198,7 @@ def test_empty_task_id_lock_and_venv_share_execution_id_key(monkeypatch, tmp_pat
 
     venv_dirs = []
 
-    async def fake_ensure_venv(venv_dir, requirements):
+    async def fake_ensure_venv(venv_dir, requirements, *, python_version=None):
         venv_dirs.append(venv_dir)
         raise RuntimeError('stop here: venv dir resolution verified')
 
@@ -232,7 +232,7 @@ def test_venv_dir_ignores_manifest_only_task_id(monkeypatch, tmp_path):
 
     venv_dirs = []
 
-    async def fake_ensure_venv(venv_dir, requirements):
+    async def fake_ensure_venv(venv_dir, requirements, *, python_version=None):
         venv_dirs.append(venv_dir)
         raise RuntimeError('stop here')
 
