@@ -2941,6 +2941,7 @@ export interface components {
             /** @description Task-level maintenance windows: scheduled triggers falling inside a window are skipped (manual/API triggers unaffected). Each entry {start, end, description?} with 5-field crons; the window opens at the latest start-cron touch and closes at the latest end-cron touch. Max 10 entries. */
             maintenanceWindows?: components["schemas"]["MaintenanceWindowDto"][];
             runtime?: string;
+            /** @description Python interpreter version the task requires, as "major.minor" (e.g. "3.7", "3.12"). Supported range defaults to 3.7–3.14; 3.7 is offline-provisioning only (uv cannot download it online). Only meaningful for runtime=python. */
             runtimeVersion?: string;
             /** @description Dependency specs installed by the executor before the task runs — pip requirements (python runtime, per-task uv venv) or npm packages (node runtime). Ignored by glue-script tasks. Example: ["requests>=2.31", "rich==13.7.1"] */
             requirements?: string[];
@@ -3003,15 +3004,15 @@ export interface components {
             glueSource?: string;
             glueLanguage?: string;
             applicationId?: string;
-            /** @description FEAT-11: markdown runbook — troubleshooting knowledge shown on the task detail page and attached to failure notifications/alerts. */
-            runbook?: string;
-            /** @description Owning project. Omit/null = unassigned (counts toward the Default project view; existing behaviour). Setting it requires ADMIN or editor/admin of that project. */
-            projectId?: string;
             /**
              * @description Code source channel. Exactly one of gitRepo / glueSource / codeSource=application_zip (with applicationId) may be set. Omit on PATCH to keep the current value; explicit null clears the declaration. requirements/PyPI is a dependency channel and may coexist with any code source.
              * @enum {string|null}
              */
             codeSource?: "git" | "glue" | "application_zip" | null;
+            /** @description FEAT-11: markdown runbook — troubleshooting knowledge shown on the task detail page and attached to failure notifications/alerts. */
+            runbook?: string;
+            /** @description Owning project. Omit/null = unassigned (counts toward the Default project view; existing behaviour). Setting it requires ADMIN or editor/admin of that project. */
+            projectId?: string;
         };
         UpdateTaskDto: {
             id?: string;
@@ -3026,6 +3027,7 @@ export interface components {
             /** @description Task-level maintenance windows: scheduled triggers falling inside a window are skipped (manual/API triggers unaffected). Each entry {start, end, description?} with 5-field crons; the window opens at the latest start-cron touch and closes at the latest end-cron touch. Max 10 entries. */
             maintenanceWindows?: components["schemas"]["MaintenanceWindowDto"][];
             runtime?: string;
+            /** @description Python interpreter version the task requires, as "major.minor" (e.g. "3.7", "3.12"). Supported range defaults to 3.7–3.14; 3.7 is offline-provisioning only (uv cannot download it online). Only meaningful for runtime=python. */
             runtimeVersion?: string;
             /** @description Dependency specs installed by the executor before the task runs — pip requirements (python runtime, per-task uv venv) or npm packages (node runtime). Ignored by glue-script tasks. Example: ["requests>=2.31", "rich==13.7.1"] */
             requirements?: string[];
@@ -3088,15 +3090,15 @@ export interface components {
             glueSource?: string;
             glueLanguage?: string;
             applicationId?: string;
-            /** @description FEAT-11: markdown runbook — troubleshooting knowledge shown on the task detail page and attached to failure notifications/alerts. */
-            runbook?: string;
-            /** @description Owning project. Omit/null = unassigned (counts toward the Default project view; existing behaviour). Setting it requires ADMIN or editor/admin of that project. */
-            projectId?: string;
             /**
              * @description Code source channel. Exactly one of gitRepo / glueSource / codeSource=application_zip (with applicationId) may be set. Omit on PATCH to keep the current value; explicit null clears the declaration. requirements/PyPI is a dependency channel and may coexist with any code source.
              * @enum {string|null}
              */
             codeSource?: "git" | "glue" | "application_zip" | null;
+            /** @description FEAT-11: markdown runbook — troubleshooting knowledge shown on the task detail page and attached to failure notifications/alerts. */
+            runbook?: string;
+            /** @description Owning project. Omit/null = unassigned (counts toward the Default project view; existing behaviour). Setting it requires ADMIN or editor/admin of that project. */
+            projectId?: string;
         };
         TriggerTaskDto: {
             params?: Record<string, never>;
