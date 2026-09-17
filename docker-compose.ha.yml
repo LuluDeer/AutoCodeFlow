@@ -27,6 +27,13 @@
 #     若依赖精确限流阈值，建议入口层（云 LB/网关）做统一限流；
 #   - 多副本只解决 admin-api 无状态层的水平扩展；nginx/admin-web 仍为单点，
 #     高可用入口请用云 LB 或 K8s Ingress 前置。
+#
+# 关于解释器缓存池（python_task_multiversion）：本 override **无需改动**。
+#   interpreter_cache 卷定义在基线 docker-compose.yml 的 executor-python /
+#   executor-node 服务上，admin-api 多副本与执行器解释器缓存无耦合——执行器
+#   本身不随 --scale 扩展，池仍是每台执行器一份（符合 NFR-15 的"同宿主复用
+#   同一解释器层"语义）。执行器横向扩容时，每台执行器各有独立池，各自按需
+#   下载或各自离线预填，见 docs/deployment.md「解释器缓存与私有化模式」。
 services:
   admin-api:
     ports: !reset []

@@ -81,6 +81,7 @@ ResponseInterceptor 的 `code = statusCode ?? 200` 恒数值语义），
 | `exitCode` | 进程退出码（可选，int） |
 | `durationMs` | 耗时毫秒 |
 | `artifacts` | 产物清单（FEAT-05，best-effort 至多 20 条，终态回调时落盘 manifest） |
+| `result` | 结构化执行留痕（可选，JSON 对象，序列化后 ≤4 KB、嵌套 ≤6 层，原样落库 `task_executions.result`）。`python_task_multiversion` 起承载解释器快照 `{interpreter: {requested, resolved, reason, detail, pool}}`——解释器不可用时运维据此判断"请求了哪个版本 / 池里有什么"，无需重跑任务。**只在非空对象时写入**：缺省不会把已有值覆盖成 null（旧执行器不发送该字段） |
 
 per-execution token（`AUTOFLOW_CALLBACK_TOKEN`）仅授权本 `executionId`
 的回调，越权或过期一律 401（fail-closed）；执行器共享 token 绝不进入

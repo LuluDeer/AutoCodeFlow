@@ -26,8 +26,15 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { fileURLToPath } from 'node:url';
 
-const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+// 必须用 fileURLToPath 而非 `new URL(import.meta.url).pathname`：
+// 后者在 Windows 上给出 `/E:/…`（带前导斜杠的盘符路径），再交给 path.resolve
+// 会拼成 `E:\E:\…` → 所有 read() 全部 ENOENT，脚本在本机**必然失败**
+// （实测：BUG-18 selftest failed: ENOENT … 'E:\E:\…\apps\registry-pypi\main.py'）。
+// CI 跑在 Linux 上碰不到（`/home/runner/…` 恰好是合法绝对路径），
+// 所以这个坑只在本地暴露——正是"CI 绿、本机红"的典型。fileURLToPath 跨平台正确。
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PYPI_APP = path.join(ROOT, 'apps/registry-pypi');
 const PYPI_WHEEL = path.join(PYPI_APP, 'packages/autoflow-sdk/autoflow_sdk-0.1.0-py3-none-any.whl');
 const DRY_RUN = process.argv.includes('--dry-run') || process.env.BUG18_DRY_RUN === '1';

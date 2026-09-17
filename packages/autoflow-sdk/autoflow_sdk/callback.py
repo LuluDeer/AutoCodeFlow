@@ -63,6 +63,10 @@ VALID_FAILURE_REASONS = frozenset({
     "dependency_install_failed",
     "git_fetch_failed",
     "runtime_missing",
+    # python_task_multiversion: 任务声明的 Python 版本无法获取
+    # （缓存池缺失且按需下载失败/下载源不可达）。明确失败语义——不回退宿主
+    # 解释器（回退会静默掩盖版本不匹配）。
+    "interpreter_unavailable",
     "killed",
     "unknown",
 })

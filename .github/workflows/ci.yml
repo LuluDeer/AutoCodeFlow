@@ -475,6 +475,14 @@ jobs:
         run: |
           node scripts/check-enum-drift.mjs --selftest
           node scripts/check-enum-drift.mjs
+      # python_task_multiversion（FR-08/D15）：failureReason 的**四方**清单对齐守卫。
+      # 同一枚举同时存在于 protocol.json（事实源）、admin TS 枚举、autoflow-sdk
+      # 的 Python 校验集、executor-node 可上报集。任何一处漏改都是**静默**故障：
+      # 最严重的是 admin 回调 DTO 的 @IsIn——执行器上报未登记值会让整批回调 400
+      # 被拒（不是单条失败），任务永远停在运行中。零依赖，秒级。
+      - name: Failure-reason enum alignment guard (FR-08/D15)
+        run: |
+          node scripts/check-failure-reasons.mjs
       # E-38（DEEP_REVIEW 0ef3bbe）：install.sh 单一事实源守卫——content.ts 由
       # scripts/install.sh 构建期生成。这里重跑生成器后用 git diff --exit-code 校验
       # 已提交产物与源同步：只改了 install.sh 忘了重生 content.ts（或反之）即红。

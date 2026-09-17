@@ -355,6 +355,102 @@ series 名已与唯一注册处
   20/min），是 API 侧最先到达的容量墙；压测前按 `scripts/load-test.README.md` 建议临时
   调高（如 600）并重启 admin-api，避免 429 退避主导吞吐数字。
 
+### 解释器缓存池运维（python_task_multiversion）
+
+> 部署侧配置与容量公式见 [`docs/deployment.md`](./deployment.md)「解释器缓存与私有化模式」；
+> 离线预填完整 runbook 见 [`docs/design/python-task-upload-and-multiversion/OFFLINE-PROVISIONING.md`](./design/python-task-upload-and-multiversion/OFFLINE-PROVISIONING.md)。
+
+#### 它是什么
+
+Python 任务声明 `runtimeVersion`（如 `3.7`/`3.13`）时，执行器按需把对应 CPython 解释器下载进**解释器缓存池**（`UV_PYTHON_INSTALL_DIR`，compose 为 `/data/interpreters`，命名卷 `interpreter_cache`），多任务 venv 复用同一解释器层。
+
+**与任务工作目录的区别（运维必须分清）**：
+
+| | 任务工作目录 | 解释器缓存池 |
+|---|---|---|
+| 路径 | `/data/tasks`（`WORK_DIR`） | `/data/interpreters`（`UV_PYTHON_INSTALL_DIR`） |
+| 卷 | `executor_python_data` / `executor_node_data` | `interpreter_cache` |
+| 回收策略 | **TTL 清扫**（`DISK_CLEANUP_TTL_DAYS`，默认 7 天） | **豁免 TTL**，由**体积红线**治理 |
+| 内容 | 任务代码解压目录、`.venvs`、`.git_cache` | uv 管理的解释器（`cpython-<版本>-<平台>-none/`） |
+| 删了会怎样 | 下次运行重建 | **要重新下载**（离线环境永久不可恢复） |
+
+#### 日常巡检
+
+```bash
+# 池占用（宿主侧，卷名按实际项目名前缀替换）
+docker run --rm -v autocodeflow_interpreter_cache:/pool alpine du -sh /pool
+
+# 池内已装解释器清单
+docker compose exec executor-python uv python list --only-installed
+
+# 单版本占用明细
+docker run --rm -v autocodeflow_interpreter_cache:/pool alpine \
+  sh -c 'du -sh /pool/*/ 2>/dev/null | sort -h'
+
+# 执行器上报的解释器清单（管理台「执行器」列表的 interpreters 列同源）
+docker compose exec executor-python uv python list --only-installed | wc -l
+```
+
+#### 容量水位与红线（NFR-12 / NFR-15）
+
+| 信号 | 阈值 | 动作 |
+|---|---|---|
+| 单版本占用 | > `INTERPRETER_SINGLE_VERSION_MB`（默认 **250MB**） | 告警 + 回收最久未使用版本 |
+| 池总占用 | > `INTERPRETER_TOTAL_GB`（默认 **4GB**） | 告警 + 回收最久未使用版本（按目录 mtime） |
+
+**测算公式**：`版本数 × 单版本体积(≤250MB) ≤ INTERPRETER_TOTAL_GB`。
+
+实测基准：单版本解压后 **≈ 57MB**（3.7.9 Windows 产物含 `.pdb` 时 122MB）；四版本（3.7+3.9+3.12+3.13）≈ **230MB**（占 4GB 的 5.6%）；全区间七版本 ≈ 400MB。
+
+> **⚠️ 回收是「引用感知」的（重要，排障必读）**：回收**只删没有被任何任务 venv 依赖的版本**。任务 venv 里的 `bin/python` 只是指向池内目录的 shim——池目录被删，该 venv 当场报废。因此实现会跳过仍被引用的版本：
+>
+> - 若**所有**超限候选都被任务 venv 引用，**一个都不删**，只打一条醒目告警：
+>   `Interpreter pool is still over the total limit ... every candidate version is still referenced by a task venv, so nothing was reclaimed. Remove the dependent task venvs under <WORK_DIR>/.venvs (or raise INTERPRETER_TOTAL_GB) to allow reclamation.`
+> - 这意味着**池可能长期停在红线之上**——这是有意的取舍：宁可池暂时超红线，也不能悄悄弄废用户的 venv。
+> - 运维处置：等任务 venv 到期被 TTL 清扫（`.venvs` 走常规 TTL，默认 7 天），或调大 `INTERPRETER_TOTAL_GB`，或手工清理确认无用的 `.venvs/<task_id>-<版本>` 目录后等下一轮回收。
+> - 回收**只碰解释器池**，任务 venv 与工作目录一概不动（那是 TTL 清扫的职责）。
+
+> **巡检建议**：把池占用纳入 `autoflow_executor_disk_usage_percent` 告警（阈值 >90% 持续 10m，见上文容量水位表）之外的**独立观察项**——该指标是执行器整体磁盘水位，无法区分是解释器池还是任务目录导致的增长。
+
+#### 手工回收某版本（磁盘紧张时）
+
+```bash
+# ⚠ 只在确认没有任务在跑该版本时执行；回收后需重启执行器或等心跳刷新清单
+docker run --rm -v autocodeflow_interpreter_cache:/pool alpine \
+  sh -c 'rm -rf /pool/cpython-3.9.23-linux-x86_64-gnu && ls /pool'
+
+docker compose restart executor-python   # 刷新解释器清单
+```
+
+> 自动回收已由执行器维护模块按体积红线执行（LRU，按目录 mtime），手工回收仅用于紧急处置。**不要手工删 `.lock` 与 `.temp/`**（uv 的池级锁与下载临时目录）。
+
+#### 常见故障
+
+| 现象 | 原因 | 处置 |
+|---|---|---|
+| 任务失败分因 `interpreter_unavailable`，reason=`download_failed` / `mirror_unreachable` | 外网/镜像不可达 | 检查网络；配 `UV_PYTHON_INSTALL_MIRROR` 或离线预填 |
+| 同上，reason=`download_timeout` | 超过 `INTERPRETER_DOWNLOAD_TIMEOUT_SECONDS`（默认 300s） | 查带宽；或调大该值 |
+| 同上，reason=`not_downloadable` | 声明版本 < 3.8（**uv 无法在线下载，3.7 属此类**） | 必须离线预填缓存卷（runbook §3） |
+| 同上，reason=`corrupt` | 池内产物损坏/不可执行 | 删除该版本目录后重新预填或让它重新下载 |
+| 同上，reason=`uv_missing` | 找不到 uv 可执行文件（node 侧） | 安装 uv 或确认 `UV_BIN`；桌面端确认内置 uv 存在 |
+| 某版本"昨天还能跑今天不行" | 池被放在 `WORK_DIR` 内，被 TTL 清扫删掉 | 把 `UV_PYTHON_INSTALL_DIR` 移出 `WORK_DIR` 并重新预填 |
+| 预填后 uv 看不见该版本 | 目录名用了 pbs 三元组而非 **uv 三元组**（uv 静默忽略，不报错） | 按 runbook §1.2 对照表重命名 |
+| 预填后报 `Python interpreter not found at .../python.exe` | 摆放层级错（放了压缩包根或 `python/` 目录） | 放 `python/install/` 的**内容**（runbook §1.3） |
+| 预填后报 `Permission denied (os error 13)` | Linux 可执行位丢失，或卷内文件对 `appuser` 不可读 | `chmod +x bin/python3`；`chmod -R a+rX` |
+
+> **D14 提醒**：以上失败都是**明确失败**，平台**不会**回退宿主解释器。这是有意的设计——静默的版本不匹配（任务"跑成功"但用了错版本）比明确失败更危险。排障时不要期待"自动降级"兜底。
+
+#### 一键自检
+
+```bash
+docker compose exec executor-python sh -c '
+  echo "--- uv ---";        uv --version
+  echo "--- pool dir ---";  echo "$UV_PYTHON_INSTALL_DIR"; ls -1 "$UV_PYTHON_INSTALL_DIR"
+  echo "--- installed ---"; uv python list --only-installed
+  echo "--- 3.7 probe ---"; uv venv --python 3.7 /tmp/p && /tmp/p/bin/python --version && rm -rf /tmp/p
+'
+```
+
 ### 压测与容量基线（占位）
 
 压测工具与用法见 `scripts/load-test.mjs` 与 `scripts/load-test.README.md`（并发创建/触发
