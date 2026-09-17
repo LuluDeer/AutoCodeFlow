@@ -64,11 +64,11 @@ linux:
         - x64
   icon: assets/icon.png
   category: Utility
-  # 同 win：AppImage 用连字符字面量名与 latest-linux.yml 的 url 对齐。
-  # deb 不在此处设置——保持缺省 {name}_{version}_{arch}.deb（deb 走手动
-  # 升级不参与自动更新，且其命名已是下划线风格）。
-  AppImage:
-    artifactName: AutoCodeFlow-Executor-${version}.${ext}
+  # 同 win：连字符字面量名，与 latest-linux.yml 的 url 对齐。v26.15.3 本地
+  # scheme.json 核实：LinuxConfiguration 顶层 artifactName 合法，非法的是
+  # 嵌套 `AppImage:` 键（desktop-v1.5.1 首次 tag 实爆，三平台同校验全挂）。
+  # deb 若需下划线名，用 deb.artifactName 单独覆写（DebOptions.artifactName）。
+  artifactName: AutoCodeFlow-Executor-${version}.${ext}
   # DSK-02: maintainer/vendor 必填面——deb 的 control 字段缺省会回落 author，
   # 显式写死避免依赖 package.json author 形态。
   maintainer: AutoCodeFlow <dev@autocodeflow.io>
@@ -95,6 +95,9 @@ deb:
     - libatspi2.0-0
     - libsecret-1-0
     - libgbm1
+  # 上面 linux.artifactName 会作用于全部 linux 目标；deb 不参与自动更新
+  # （DSK-03），保持历史下划线命名，显式覆写回来（DebOptions.artifactName）。
+  artifactName: ${name}_${version}_${arch}.${ext}
 
 # DSK-03: GitHub Releases 更新源。repo 与 git remote (LuluDeer/AutoCodeFlow)
 # 对齐，electron-updater 检测 latest-linux.yml → AppImage 增量更新；deb 走
