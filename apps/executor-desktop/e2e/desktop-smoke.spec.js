@@ -15,7 +15,14 @@ const path = require('path');
 const APP_ENTRY = path.join(__dirname, '..', 'dist', 'main', 'index.js');
 
 // 显式指到本包安装的 electron 可执行（playwright 从调用方 cwd 解析不到跨包 electron）
-const ELECTRON_BIN = path.join(__dirname, '..', 'node_modules', 'electron', 'dist', 'electron');
+//
+// W-25（修复 desktop-e2e-smoke 在 CI 上长期全红）：原实现写死无扩展名的
+// `dist/electron`，这是 **POSIX 布局**；Windows 上该路径不存在（实际是
+// `electron.exe`，无扩展名文件为 False），于是 Playwright 拿不到可执行文件，
+// 四个用例在 100~170ms 内全部以 `Error: Process failed to launch!` 失败——
+// 并非断言问题，而是 Electron 根本没起来。该 job 跑在 windows-latest 上，
+// 故此 spec 实际从未在 CI 成功过（PR #4~#7 均同一形态失败）。
+const ELECTRON_BIN = require('electron');
 
 function launchApp(extraEnv = {}) {
   return electron.launch({
