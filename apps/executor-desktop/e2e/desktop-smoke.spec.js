@@ -72,11 +72,14 @@ test.describe('executor-desktop 冒烟（Playwright _electron）', () => {
       // 通道白名单：preload 暴露的通道与 src/preload/index.ts 对齐（防悄悄新增透传）
       // DSK-05：补 downloadUpdate / onUpdateProgress（autoDownload=false 下的
       // 显式下载入口与独立进度通道）。
+      // python_task_multiversion：补 getPythonEnvStatus（设置页「Python 运行环境」
+      // 的诊断面——只读回报实际生效的 uv / 解释器池路径，不写配置、不下发凭据）。
       const channels = await win.evaluate(() => Object.keys(window.electronAPI).sort());
       expect(channels).toEqual(
         [
           'checkForUpdate', 'checkPort', 'clearHistory', 'closeWindow', 'downloadUpdate',
-          'getAutoLaunch', 'getConfig', 'getHistory', 'getLocalIPs', 'getStatus',
+          'getAutoLaunch', 'getConfig', 'getHistory', 'getLocalIPs', 'getPythonEnvStatus',
+          'getStatus',
           'getTodayLogs', 'installUpdate', 'listApps', 'listLogFiles', 'minimizeWindow', 'onLogLine',
           'onStatusChange', 'onSwitchTab', 'onUpdateAvailable', 'onUpdateDownloaded',
           'onUpdateError', 'onUpdateProgress', 'openLogFile', 'readAppLog', 'readLog',
