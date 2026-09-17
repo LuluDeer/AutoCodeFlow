@@ -35,6 +35,8 @@ import type { Readable } from "node:stream";
 import {
   Task,
   TaskStatus,
+  TaskRuntime,
+  TaskCodeSource,
   ExecuteMode,
   normalizeTaskPriority,
 } from "./entities/task.entity";
@@ -51,6 +53,14 @@ import {
 } from "./execution-terminal";
 import { ExecutionLogLine } from "./entities/execution-log-line.entity";
 import { TaskVersion } from "./entities/task-version.entity";
+// python_task_multiversion（FR-19 / AC-19a）：zip 来源的 runtime 一致性校验
+// 需读 applications 行。**刻意经 dataSource.getRepository(Application)** 而非
+// @InjectRepository：ApplicationModule imports forwardRef(() => TaskModule)，
+// 在 TaskModule 里 import ApplicationModule 会构成模块环；dataSource 已注入
+// （见构造器），且先例同 scheduler.service.ts:726 的 getRepository(Executor)。
+// 只 import 实体类（TypeORM 元数据，无运行时依赖环）——与 task.module.ts 的
+// ExecutionReport / Project 跨模块 forFeature 同款纪律。
+import { Application } from "../application/entities/application.entity";
 import { CreateTaskDto } from "./dto/create-task.dto";
 import { UpdateTaskDto } from "./dto/update-task.dto";
 import { TriggerTaskDto } from "./dto/trigger-task.dto";
@@ -59,6 +69,11 @@ import {
   ListTasksQueryDto,
   TASK_PROJECTION_WHITELIST,
 } from "./dto/list-tasks-query.dto";
+import {
+  isValidRuntimeVersionFormat,
+  isRuntimeVersionSupported,
+  buildUnsupportedVersionMessage,
+} from "./runtime-version.util";
 import { SchedulerService } from "../scheduler/scheduler.service";
 import { AiService } from "../ai/ai.service";
 // ARCH-30: on-demand 分析同走服务化封装（重试 + autoflow_ai_analysis_total
@@ -152,6 +167,58 @@ function isUniqueViolation(err: unknown): boolean {
   );
 }
 
+/**
+ * python_task_multiversion（WS1 · CONTRACT §2.5 / D14）：解释器不可获取的
+ * 兜底分类判据（`inferFailureReason` 的**第一条**规则）。
+ *
+ * 为什么必须是第一条（实测驱动，非风格偏好）：
+ * - **必须先于 timeout 规则**：解释器**下载**失败的真实文案天然含
+ *   "timeout"/"timed out"（如 `interpreter download timeout after 300s`），
+ *   若让既有 timeout 规则先跑，这类失败会被吞成 TIMEOUT——而下载超时是
+ *   **环境/解释器**问题（运维处置：预填缓存卷或修镜像），与任务执行超时
+ *   （处置：调 timeout / 查任务本身）是完全不同的两件事，分因错了等于把
+ *   运维引向错误的排查方向。
+ * - **必须先于 dependency 规则**：`uv venv failed: No interpreter found for
+ *   Python 3.7` 含 "uv venv"（与依赖安装同一包装层），但根因是解释器缺失，
+ *   不是依赖装不上。
+ *
+ * 语义边界（只认"解释器不可用"的**明确**措辞，绝不因包装层文案误判）：
+ * - 任务自身代码仅仅打印了 "interpreter" 一词 → 不匹配（每条判据都要求
+ *   解释器词与失败词**相邻**，孤立词不构成判据）。
+ * - `uv venv failed: <其它原因>` → 不匹配（不因包装文案归类）。
+ * - `uv pip install failed: ...` → 不匹配，仍归依赖/包类。
+ * - 真实任务超时 `execution timed out after 300s` → 不匹配，仍归 TIMEOUT。
+ *
+ * 覆盖的实测文案（T01 / uv 0.8.17）：
+ *   `No interpreter found for Python 3.7 in managed installations, search
+ *    path, or registry`（`uv venv --python 3.7`，exit 2）
+ *   `No download found for request: cpython-3.7-<platform>`（`uv python
+ *    install 3.7`，exit 2）
+ *   `python downloads are set to 'manual'`（`UV_PYTHON_DOWNLOADS=manual`
+ *    阻断隐式下载时的提示——本特性刻意设置该 env，故必然出现）
+ *
+ * 调用方传入的 text 已 `.toLowerCase()`；`[^\n]` 容差刻意不跨行，避免把
+ * 日志里相隔很远的两个词误判为同一条失败。
+ */
+const INTERPRETER_UNAVAILABLE_PATTERN = new RegExp(
+  [
+    // ① uv 的两条原始文案（措辞固定，最可靠）
+    "no interpreter found",
+    "no download found",
+    "python downloads are set to",
+    // ② 解释器词与"不可用/缺失"词相邻（英文；≤40 字符容差覆盖
+    //    "interpreter 3.7 unavailable (cache miss + download failed)"）
+    "interpreter[^\\n]{0,40}?(?:unavailable|not found|missing|unable)",
+    "(?:unavailable|not found|missing|unable)[^\\n]{0,40}?interpreter",
+    // ③ 解释器下载/安装失败（含 timeout 措辞）
+    "interpreter[^\\n]{0,40}?(?:download|install)[^\\n]{0,40}?(?:fail|timeout|timed out)",
+    "(?:download|install)[^\\n]{0,40}?(?:fail|timeout|timed out)[^\\n]{0,40}?interpreter",
+    // ④ 中文：解释器 + 无法获取/不可用/缺失/找不到，或 解释器+下载+失败/超时
+    "解释器[^\\n]{0,20}?(?:无法获取|不可用|不可获得|缺失|找不到)",
+    "解释器[^\\n]{0,20}?下载[^\\n]{0,20}?(?:失败|超时)",
+  ].join("|"),
+);
+
 @Injectable()
 export class TaskService {
   private readonly logger = new Logger(TaskService.name);
@@ -171,6 +238,182 @@ export class TaskService {
     if (executorId && executeMode === ExecuteMode.BROADCAST) {
       throw new BadRequestException(
         "executorId (pinned executor) is mutually exclusive with executeMode=broadcast",
+      );
+    }
+  }
+
+  /**
+   * python_task_multiversion（FR-06 / AC-06b / NFR-05）：`runtimeVersion`
+   * 写面校验——**格式 + 区间 + runtime 一致性**。
+   *
+   * 只做静态校验，**刻意不做**执行器缓存预检（AC-06c）：解释器"先下载后有"，
+   * 首跑获取失败在运行时体现（分因 `interpreter_unavailable`，D14 明确失败）。
+   * 写面若预检就等于把"先下载后有"变成同步依赖，且多执行器缓存不一致时判定
+   * 必然失真。
+   *
+   * 校验对象是**合并后终态**（create = 请求体；PATCH = 旧行 + 增量），故
+   * "非 python runtime 不得声明版本"能被正确判定——增量 DTO 看不到旧行的
+   * runtime（先例：assertPinBroadcastExclusive 的 R7/N17 合并态兜底）。
+   *
+   * NFR-05 边界：空值（undefined/null/空串）一律放行——存量任务与不声明版本
+   * 的路径零行为变化。`""` 视为"未声明"而非非法格式（历史数据/表单清空）。
+   */
+  private assertRuntimeVersionValid(
+    runtimeVersion: string | null | undefined,
+    runtime: TaskRuntime | string | null | undefined,
+  ): void {
+    if (runtimeVersion === null || runtimeVersion === undefined) return;
+    // 空串 = 未声明（表单清空/存量脏值），不是"非法格式"——放行并交由
+    // 既有语义处理（执行器侧按 falsy 走缺省解释器，AC-10a 逐字节不变）。
+    if (typeof runtimeVersion === "string" && runtimeVersion.trim() === "") {
+      return;
+    }
+    if (!isValidRuntimeVersionFormat(runtimeVersion)) {
+      // 与 DTO 的 @Matches 同源判据（RUNTIME_VERSION_PATTERN）；service 层
+      // 兜底覆盖内部调用方（application.service 自动注册 / 模板 / 回滚），
+      // 它们绕过全局 ValidationPipe。
+      throw new BadRequestException(
+        buildUnsupportedVersionMessage(runtimeVersion),
+      );
+    }
+    // runtime 缺省 = 实体列默认值 python（`@Column({ enum: TaskRuntime,
+    // default: TaskRuntime.PYTHON })`）——create 不传 runtime 时不得误判为
+    // "非 python"。显式 null 同款处理（实体列为 NOT NULL，落库仍按既有行为
+    // 报错，本校验不改变该失败面）。
+    const effectiveRuntime = runtime ?? TaskRuntime.PYTHON;
+    if (effectiveRuntime !== TaskRuntime.PYTHON) {
+      throw new BadRequestException(
+        `runtimeVersion is only supported for runtime=python (got runtime=${String(
+          effectiveRuntime,
+        )})`,
+      );
+    }
+    if (!isRuntimeVersionSupported(runtimeVersion)) {
+      throw new BadRequestException(
+        buildUnsupportedVersionMessage(runtimeVersion),
+      );
+    }
+  }
+
+  /**
+   * python_task_multiversion（FR-18 / FR-19 / AC-17b / AC-19a）：代码来源与
+   * runtime 一致性的**合并终态**校验。
+   *
+   * ① 代码来源三选一互斥（FR-18 / AC-17b）：
+   *    `gitRepo` / `glueSource` / `codeSource='application_zip'`（配 applicationId）
+   *    恰好一种。`requirements`（PyPI）属**依赖型**渠道，可与任一来源并存
+   *    （AC-18b）——故不参与互斥。
+   *
+   * ② `codeSource='application_zip'` 时 `applicationId` 必填（CONTRACT §2.1）。
+   *
+   * ③ FR-19 / AC-19a：整包上传（zip）来源要求被引用 Application 的 `runtime`
+   *    与任务 `runtime` **一致**，不一致给明确配置错误（而非运行期莫名失败）。
+   *    只对 `codeSource='application_zip'` 生效——存量"裸 applicationId"
+   *    （应用部署清单自动注册，application.service 两条路径）不查库、不判定，
+   *    否则会给既有部署链引入新的失败面（NFR-05/FR-06 零破坏）。
+   *
+   * **作用域门（NFR-05 关键）**：CONTRACT §2.1 的定语是"只约束新建/编辑"——
+   * 规则只在**本次请求确实在编辑相关字段**时生效，否则既有任务会被新规则追溯
+   * 而突然不可 PATCH。具体两个门：
+   * - `touchesCodeSource`（请求体含 gitRepo/glueSource/applicationId/codeSource
+   *   任一键）→ 才做互斥与声明自洽判定。存量行 gitRepo+glueSource 并存（历史
+   *   `updateGlue` 不清 gitRepo 所致；迁移按 §2.1 优先级回填 codeSource='git'，
+   *   glueSource 成死数据）只改 timeout 时必须仍可 PATCH。
+   * - FR-19 另加 `touchesRuntime`：只改 runtime 也会把 (zip, runtime) 变成不
+   *   一致态，故两侧任一变动都要校验。
+   *
+   * 注意这与"PATCH 看合并终态"并不矛盾：合并态是**判定对象**，作用域门决定
+   * **是否判定**——两者正交，R7/N17 的漏判（旧行 broadcast + 增量 executorId）
+   * 恰好因为增量确实编辑了互斥字段，仍然会被拦住。
+   */
+  private async assertCodeSourceConsistent(
+    state: {
+      gitRepo?: string | null;
+      glueSource?: string | null;
+      applicationId?: string | null;
+      codeSource?: TaskCodeSource | null;
+      runtime?: TaskRuntime | string | null;
+    },
+    opts: {
+      /** 本次请求是否编辑了任一代码来源字段（create 恒 true）。 */
+      touchesCodeSource: boolean;
+      /** 本次请求是否编辑了 runtime（create 恒 true）。 */
+      touchesRuntime: boolean;
+      /** 报错上下文（"create" / "task <id>"）。 */
+      context: string;
+    },
+  ): Promise<void> {
+    const codeSource = state.codeSource ?? null;
+    const hasGit = Boolean(state.gitRepo);
+    const hasGlue = Boolean(state.glueSource);
+    const isZip = codeSource === TaskCodeSource.APPLICATION_ZIP;
+
+    // ② 显式声明 zip 来源却无 applicationId —— 自相矛盾，任何路径都拒
+    // （不受作用域门约束：该组合只可能由本次声明产生，且必然导致派发拿不到
+    // packageUrl）。
+    if (isZip && !state.applicationId) {
+      throw new BadRequestException(
+        `codeSource=application_zip requires applicationId (${opts.context})`,
+      );
+    }
+
+    if (opts.touchesCodeSource) {
+      const declaredChannels: string[] = [];
+      if (hasGit) declaredChannels.push("gitRepo");
+      if (hasGlue) declaredChannels.push("glueSource");
+      if (isZip) declaredChannels.push("codeSource=application_zip");
+      if (declaredChannels.length > 1) {
+        throw new BadRequestException(
+          `Task code source must be exactly one of gitRepo / glueSource / codeSource=application_zip (got: ${declaredChannels.join(
+            ", ",
+          )})`,
+        );
+      }
+      // 显式声明了 codeSource 时，终态必须与该声明自洽（不允许"声明 git 却
+      // 只有 glueSource"这类漂移——否则读面按 codeSource 判定会与执行器实际
+      // 选用的来源不一致）。
+      if (codeSource !== null) {
+        const consistent =
+          (codeSource === TaskCodeSource.GIT && hasGit) ||
+          (codeSource === TaskCodeSource.GLUE && hasGlue) ||
+          (codeSource === TaskCodeSource.APPLICATION_ZIP &&
+            Boolean(state.applicationId));
+        if (!consistent) {
+          throw new BadRequestException(
+            `codeSource=${codeSource} is inconsistent with the task's code source fields ` +
+              `(gitRepo=${hasGit ? "set" : "empty"}, glueSource=${
+                hasGlue ? "set" : "empty"
+              }, applicationId=${state.applicationId ? "set" : "empty"})`,
+          );
+        }
+      }
+    }
+
+    // ③ FR-19 / AC-19a：仅对显式 zip 来源、且本次确实在编辑来源或 runtime 时
+    // 做 runtime 一致性校验。
+    if (!isZip || !state.applicationId) return;
+    if (!opts.touchesCodeSource && !opts.touchesRuntime) return;
+    // runtime 缺省 = 实体列默认值 python（与 assertRuntimeVersionValid 同款
+    // 兜底）：create 不传 runtime 时 state.runtime 为 undefined，若直接与
+    // app.runtime（'python'）比较会误报不一致——把正常路径判成配置错误。
+    const effectiveRuntime = state.runtime ?? TaskRuntime.PYTHON;
+    const appRepo = this.dataSource.getRepository(Application);
+    const app = await appRepo.findOne({
+      where: { id: state.applicationId },
+      select: { id: true, runtime: true, name: true },
+    });
+    if (!app) {
+      // 弱引用（无 FK 强约束）指向不存在的应用——执行器侧必然拿不到
+      // packageUrl。早失败成 400，而不是派发期才炸。
+      throw new BadRequestException(
+        `Application #${state.applicationId} referenced by codeSource=application_zip not found`,
+      );
+    }
+    if (app.runtime !== effectiveRuntime) {
+      throw new BadRequestException(
+        `Application "${app.name}" runtime=${app.runtime} is inconsistent with task runtime=${String(
+          effectiveRuntime,
+        )} (AC-19a: the uploaded package's runtime must match the task's runtime)`,
       );
     }
   }
@@ -235,6 +478,17 @@ export class TaskService {
     exitCode?: number,
   ): ExecutionFailureReason {
     const text = [errorMessage, logs].filter(Boolean).join("\n").toLowerCase();
+
+    // python_task_multiversion（WS1 · CONTRACT §2.5 / D14）：解释器不可获取的
+    // **兜底分类**——必须是**第一条**规则（判据与理由见模块级
+    // INTERPRETER_UNAVAILABLE_PATTERN 注释）。
+    //
+    // 注意本方法只是**兜底**：回调自带 failureReason 时优先采信执行器分类
+    // （下方调用点 `cb.failureReason ?? this.inferFailureReason(...)`），
+    // 本规则服务于旧执行器与执行器未分类的失败。
+    if (INTERPRETER_UNAVAILABLE_PATTERN.test(text)) {
+      return ExecutionFailureReason.INTERPRETER_UNAVAILABLE;
+    }
 
     if (/timeout|timed out|etimedout|execution timed/.test(text)) {
       return ExecutionFailureReason.TIMEOUT;
@@ -560,6 +814,19 @@ export class TaskService {
       await this.checkCircularDependency(dto.id, dto.dependencies);
     }
     const normalized = this.normalizeTaskDto(dto);
+    // python_task_multiversion（FR-06/FR-18/FR-19）：create 路径的终态就是
+    // 请求体本身，直接校验。顺序刻意在归属/SSRF 守卫之后、落库之前——保证
+    // 既有守卫的报错优先级与消息零变化（既有用例断言 file:// 被拒且不落库）。
+    this.assertRuntimeVersionValid(
+      normalized.runtimeVersion,
+      normalized.runtime,
+    );
+    // create 的终态就是请求体，作用域门恒 true（全量字段即本次编辑面）。
+    await this.assertCodeSourceConsistent(normalized, {
+      touchesCodeSource: true,
+      touchesRuntime: true,
+      context: "create",
+    });
     // TASK-PROJ-01: 归属项目校验（存在性 + 授权），见 assertCanAssignProject
     await this.assertCanAssignProject(normalized.projectId, user);
     // SEC-NEW-2 对齐（W-21 后续）：git 源在**任务写面**即校验。executor 派发时只放行
@@ -823,6 +1090,23 @@ export class TaskService {
     // "broadcast+已 pin" 非法状态（dispatchBroadcast 不读 executorId，pinning
     // 被静默丢弃）。save 前兜底，消息与 create 路径一致。
     this.assertPinBroadcastExclusive(updated.executorId, updated.executeMode);
+    // python_task_multiversion（FR-06/FR-18/FR-19 + CONTRACT §2.1「PATCH 必须按
+    // 合并后终态校验」）：同 R7/N17 先例——增量 DTO 看不到旧行的 runtime /
+    // applicationId / codeSource，必须看 `updated`（合并态）才能正确判定
+    // "非 python runtime 不得声明版本"与三选一互斥。
+    this.assertRuntimeVersionValid(updated.runtimeVersion, updated.runtime);
+    // NFR-05 作用域门：只有本次请求**确实编辑**了代码来源/runtime 字段时才
+    // 判定（CONTRACT §2.1"只约束新建/编辑"）——否则存量 gitRepo+glueSource
+    // 并存的历史行连改 timeout 都会被拒。判定对象仍是合并后的终态。
+    await this.assertCodeSourceConsistent(updated, {
+      touchesCodeSource:
+        "gitRepo" in dto ||
+        "glueSource" in dto ||
+        "applicationId" in dto ||
+        "codeSource" in dto,
+      touchesRuntime: "runtime" in dto,
+      context: `task ${id}`,
+    });
     const saved = await this.taskRepo.save(updated);
     await this.saveVersion(saved.id, undefined, undefined, saved);
     // Stop old schedule, then re-register based on new status without waiting for reload
@@ -847,6 +1131,14 @@ export class TaskService {
     await this.assertCanWriteProjectAware(t, user);
     t.glueSource = source;
     if (language) t.glueLanguage = language;
+    // python_task_multiversion（FR-18 / AC-17b）：glue 写入必须同时**声明**
+    // codeSource 并**清空** gitRepo，否则终态变成"gitRepo + glueSource 并存"
+    // ——正是三选一互斥要禁止的歧义态（读面按 codeSource 判定会与实际来源
+    // 漂移；执行器侧 git clone 分支先跑，glue 代码根本不会生效）。
+    // 这里就地收敛而非调用 assertCodeSourceConsistent：本方法的**语义**就是
+    // "把代码来源切到 glue"，收敛是确定的，无需把合法请求判成 400。
+    t.codeSource = TaskCodeSource.GLUE;
+    t.gitRepo = null;
     const saved = await this.taskRepo.save(t);
     await this.saveVersion(saved.id, undefined, undefined, saved);
     return this.maskSecretsForResponse(saved);
@@ -2188,6 +2480,12 @@ export class TaskService {
       executorAddress?: string;
       /** FEAT-05: 执行产物清单（可选，best-effort，随终态回调上报）。 */
       artifacts?: Array<{ name: string; size: number; sha256: string }>;
+      /**
+       * python_task_multiversion: 执行器上报的结构化留痕（可选）。
+       * 当前承载解释器快照 `{requested, resolved, reason, detail, pool}`，
+       * 落库到 `task_executions.result`。旧执行器不发送该字段。
+       */
+      result?: Record<string, unknown>;
     }>,
   ) {
     const results = [];
@@ -2315,6 +2613,26 @@ export class TaskService {
         // 绝不在缺省时覆盖成 null——重复/兜底回调不会擦除先前已保存的清单。
         if (Array.isArray(cb.artifacts) && cb.artifacts.length > 0) {
           patch.artifacts = cb.artifacts;
+        }
+        // python_task_multiversion（FR-12/AC-12a）：执行器上报的结构化留痕
+        // （当前是解释器快照 `{requested, resolved, reason, detail, pool}`）。
+        //
+        // 为什么必须显式透传：回调体走 `ParseArrayPipe({items, whitelist: true})`，
+        // 而该 pipe **只带 whitelist、不带 forbidNonWhitelisted**——未被 DTO 声明
+        // 的字段会被**静默丢弃**（不报错）。此前 DTO 没有 `result` 字段，于是
+        // 执行器辛辛苦苦产出的解释器快照在 admin 边界被无声吃掉，UI 永远拿不到
+        // `interpreter_unavailable` 的"请求了哪个版本/池里有什么"，
+        // 运维只能看到一个分因、无法定位。DTO 侧已加 `result`（含 4KB/深度约束）。
+        //
+        // 写入口径与 artifacts 一致：仅上报非空对象时写，**绝不用缺省覆盖成 null**
+        // ——重复回调/旧执行器（不带该字段）不得擦除已保存的留痕。
+        if (
+          cb.result &&
+          typeof cb.result === "object" &&
+          !Array.isArray(cb.result) &&
+          Object.keys(cb.result).length > 0
+        ) {
+          patch.result = cb.result as Record<string, any>;
         }
 
         // R-P0-007: Exclude KILLED status to prevent callback from overwriting user-initiated kill
@@ -2542,6 +2860,26 @@ export class TaskService {
       gitCommit: task.gitCommit,
       glueSource: task.glueSource,
       glueLanguage: task.glueLanguage,
+      // python_task_multiversion（WS1 · VER-DIFF-01 同型缺口）：快照此前漏了
+      // runtimeVersion / codeSource / applicationId 三个**用户可编辑**列
+      // （前两者经 create-task.dto 可写，applicationId 经 update 可写）。
+      //
+      // 后果与 VER-DIFF-01 完全同型，且更严重——rollbackToVersion 用
+      // Object.assign 应用快照，**快照缺键即保留当前值**：任务 3.7 → 改成
+      // 3.12 → 回滚到"3.7 那一版"后 runtimeVersion 仍是 3.12，版本回滚静默
+      // 失效（解释器语义是硬约束，这会让回滚后的任务跑在错误的 Python 上）。
+      //
+      // 三者必须**一起**入快照，缺一不可：applicationId 单独缺失时，回滚到
+      // zip 版本会得到 codeSource='application_zip' 而无 applicationId 的
+      // **自相矛盾态**——正是 assertCodeSourceConsistent 要拒的终态，且派发
+      // 时拿不到 packageUrl（静默跑错代码，比报错更糟）。
+      //
+      // 一致性说明：codeSource 入快照后，compareVersions 会把"代码来源变更"
+      // 如实显示为差异（键集合派生自快照）——这是期望行为，此前改了来源却
+      // 显示"无差异"。
+      runtimeVersion: task.runtimeVersion,
+      codeSource: task.codeSource,
+      applicationId: task.applicationId,
       // VER-DIFF-01（本轮审计）：快照此前漏了这两个**用户可编辑**的列
       // （maintenanceWindows / runbook 经 create-task.dto 可写）。而
       // compareVersions 的键集合是 `new Set([...Object.keys(v1.snapshot),

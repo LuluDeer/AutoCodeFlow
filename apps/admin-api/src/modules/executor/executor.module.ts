@@ -10,6 +10,11 @@ import { Executor } from "./entities/executor.entity";
 import { ExecutorMetricsHistory } from "./entities/executor-metrics-history.entity";
 import { Task } from "../task/entities/task.entity";
 import { TaskExecution } from "../task/entities/task-execution.entity";
+// python_task_multiversion（WS2 · CONTRACT §2.4/§3.1）：派发时解析 zip 渠道
+// 任务的 `applications.packageUrl`（只加 Repository，**不** import
+// ApplicationModule——后者反向 import 了 TaskModule + ExecutorModule，引入
+// 模块环；实体注册走 TypeOrmModule.forFeature 即可）。
+import { Application } from "../application/entities/application.entity";
 import { NotificationModule } from "../notification/notification.module";
 import { SystemConfigModule } from "../config/config.module";
 // SEC-02: dispatch 时解密 task.secrets 与 params 合并注入执行器 env
@@ -26,6 +31,8 @@ import { AuditModule } from "../audit/audit.module";
       Task,
       TaskExecution,
       ExecutorMetricsHistory,
+      // python_task_multiversion（WS2）：packageUrl 解析（只读）。
+      Application,
     ]),
     BullModule.registerQueue({ name: "task-queue" }),
     NotificationModule,

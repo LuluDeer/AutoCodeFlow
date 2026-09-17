@@ -87,6 +87,29 @@ export enum TaskRuntime {
   SHELL = "shell",
 }
 
+/**
+ * python_task_multiversion（WS1 · FR-18 / CONTRACT §2.1）：任务**代码来源**
+ * 渠道判别列（可空 PG enum）。
+ *
+ * 背景（FR-17/FR-18/AC-17b）：既有三条代码接入渠道（`gitRepo` / `glueSource`
+ * / PyPI wheel）此前只能靠"哪个字段非空"隐式推断来源，新增整包上传（zip）
+ * 渠道后 `applicationId` 与 git 语义重叠，产生歧义。本列把"恰好一种来源"
+ * 显式化：**新建/编辑**面三选一互斥（写面校验在 task.service）。
+ *
+ * 可空且**不回填语义依赖**：NULL = 存量行/未声明来源——读路径（执行器派发
+ * 选择 zip 分支等）继续按 `applicationId` 非空的**并集**语义兜底，故存量行
+ * 零行为变化（NFR-05）。迁移 1790000000024 已按
+ * `gitRepo > glueSource > applicationId > NULL` 优先级做一次性回填。
+ *
+ * 注意：`requirements`/PyPI 属**依赖型**渠道，可与任一代码来源并存
+ * （AC-18b），不在本枚举语义内。
+ */
+export enum TaskCodeSource {
+  GIT = "git",
+  GLUE = "glue",
+  APPLICATION_ZIP = "application_zip",
+}
+
 @Entity("tasks")
 @Index(["status"])
 @Index(["applicationId"])
@@ -176,6 +199,20 @@ export class Task {
   @Column({ type: "jsonb", nullable: true }) params: Record<string, any>;
   @Column({ nullable: true }) executorAppName: string;
   @Column({ nullable: true }) applicationId: string;
+
+  /**
+   * python_task_multiversion（WS1 · FR-18 / CONTRACT §2.1）：代码来源渠道。
+   *
+   * 迁移 1790000000024 建列（可空 enum）+ 一次性回填（优先级
+   * `gitRepo NOT NULL > glueSource NOT NULL > applicationId NOT NULL > NULL`）。
+   *
+   * 读面兼容：NULL 保留"未声明"语义——执行器侧 zip 分支判定为
+   * `codeSource === 'application_zip' || applicationId 非空` 的**并集**
+   * （apps/executor-python/routers/execute.py），故未回填/新写入 NULL 的行
+   * 仍走既有路径。写面互斥校验见 task.service 的 assertCodeSourceExclusive。
+   */
+  @Column({ type: "enum", enum: TaskCodeSource, nullable: true })
+  codeSource: TaskCodeSource | null;
 
   /**
    * AUTH-01（多租户 Project，第一批）：任务归属项目（可空）。迁移
