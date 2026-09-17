@@ -7015,7 +7015,6 @@
       }
     },
     "schemas": {
-
       "LoginDto": {
         "type": "object",
         "properties": {
@@ -7223,7 +7222,8 @@
             "type": "string"
           },
           "runtimeVersion": {
-            "type": "string"
+            "type": "string",
+            "description": "Python interpreter version the task requires, as \"major.minor\" (e.g. \"3.7\", \"3.12\"). Supported range defaults to 3.7–3.14; 3.7 is offline-provisioning only (uv cannot download it online). Only meaningful for runtime=python."
           },
           "requirements": {
             "description": "Dependency specs installed by the executor before the task runs — pip requirements (python runtime, per-task uv venv) or npm packages (node runtime). Ignored by glue-script tasks. Example: [\"requests>=2.31\", \"rich==13.7.1\"]",
@@ -7368,6 +7368,16 @@
           "applicationId": {
             "type": "string"
           },
+          "codeSource": {
+            "type": "string",
+            "description": "Code source channel. Exactly one of gitRepo / glueSource / codeSource=application_zip (with applicationId) may be set. Omit on PATCH to keep the current value; explicit null clears the declaration. requirements/PyPI is a dependency channel and may coexist with any code source.",
+            "enum": [
+              "git",
+              "glue",
+              "application_zip"
+            ],
+            "nullable": true
+          },
           "runbook": {
             "type": "string",
             "description": "FEAT-11: markdown runbook — troubleshooting knowledge shown on the task detail page and attached to failure notifications/alerts."
@@ -7375,16 +7385,6 @@
           "projectId": {
             "type": "string",
             "description": "Owning project. Omit/null = unassigned (counts toward the Default project view; existing behaviour). Setting it requires ADMIN or editor/admin of that project."
-          },
-          "codeSource": {
-            "type": "string",
-            "enum": [
-              "git",
-              "glue",
-              "application_zip"
-            ],
-            "nullable": true,
-            "description": "Code source channel. Exactly one of gitRepo / glueSource / codeSource=application_zip (with applicationId) may be set. Omit on PATCH to keep the current value; explicit null clears the declaration. requirements/PyPI is a dependency channel and may coexist with any code source."
           }
         },
         "required": [
@@ -7432,7 +7432,8 @@
             "type": "string"
           },
           "runtimeVersion": {
-            "type": "string"
+            "type": "string",
+            "description": "Python interpreter version the task requires, as \"major.minor\" (e.g. \"3.7\", \"3.12\"). Supported range defaults to 3.7–3.14; 3.7 is offline-provisioning only (uv cannot download it online). Only meaningful for runtime=python."
           },
           "requirements": {
             "description": "Dependency specs installed by the executor before the task runs — pip requirements (python runtime, per-task uv venv) or npm packages (node runtime). Ignored by glue-script tasks. Example: [\"requests>=2.31\", \"rich==13.7.1\"]",
@@ -7577,6 +7578,16 @@
           "applicationId": {
             "type": "string"
           },
+          "codeSource": {
+            "type": "string",
+            "description": "Code source channel. Exactly one of gitRepo / glueSource / codeSource=application_zip (with applicationId) may be set. Omit on PATCH to keep the current value; explicit null clears the declaration. requirements/PyPI is a dependency channel and may coexist with any code source.",
+            "enum": [
+              "git",
+              "glue",
+              "application_zip"
+            ],
+            "nullable": true
+          },
           "runbook": {
             "type": "string",
             "description": "FEAT-11: markdown runbook — troubleshooting knowledge shown on the task detail page and attached to failure notifications/alerts."
@@ -7584,16 +7595,6 @@
           "projectId": {
             "type": "string",
             "description": "Owning project. Omit/null = unassigned (counts toward the Default project view; existing behaviour). Setting it requires ADMIN or editor/admin of that project."
-          },
-          "codeSource": {
-            "type": "string",
-            "enum": [
-              "git",
-              "glue",
-              "application_zip"
-            ],
-            "nullable": true,
-            "description": "Code source channel. Exactly one of gitRepo / glueSource / codeSource=application_zip (with applicationId) may be set. Omit on PATCH to keep the current value; explicit null clears the declaration. requirements/PyPI is a dependency channel and may coexist with any code source."
           }
         }
       },
