@@ -1436,13 +1436,41 @@ def test_ensure_venv_creation_failure_removes_venv_dir(tmp_path, monkeypatch):
     assert not venv_dir.exists()
 
 
+def _make_reusable_venv(venv_dir, version_info='3.12.13'):
+    """Create a venv dir that passes ensure_venv's reuse validation.
+
+    FR-16 follow-up (WS4): ensure_venv now validates a cached venv before
+    reusing it (a venv whose backing pool interpreter was reclaimed is a dead
+    shim — reusing it fails at exec time with a confusing exit code). An empty
+    directory is therefore no longer a stand-in for "venv exists": it is
+    correctly detected as stale and rebuilt. Tests that want the REUSE path
+    (skip `uv venv`, go straight to `uv pip install`) must create a venv that
+    looks alive — pyvenv.cfg with a `home` that still exists, plus the python
+    binary.
+    """
+    if sys.platform == 'win32':
+        python_bin = venv_dir / 'Scripts' / 'python.exe'
+    else:
+        python_bin = venv_dir / 'bin' / 'python'
+    python_bin.parent.mkdir(parents=True, exist_ok=True)
+    python_bin.write_bytes(b'')
+    venv_dir.mkdir(parents=True, exist_ok=True)
+    (venv_dir / 'pyvenv.cfg').write_text(
+        f'home = {venv_dir}\nimplementation = CPython\n'
+        f'uv = 0.8.17\nversion_info = {version_info}\n'
+        'include-system-site-packages = false\n',
+        encoding='utf-8',
+    )
+    return venv_dir
+
+
 def test_ensure_venv_install_failure_message_truncated(tmp_path, monkeypatch):
     """P2: full uv output must not flow untruncated into errorMessage
     (admin DTO MaxLength 4096)."""
     from routers import execute as execute_module
 
-    venv_dir = tmp_path / '.venvs' / 'taskB'
-    venv_dir.mkdir(parents=True)  # venv exists -> goes straight to pip install
+    # A REUSABLE venv -> straight to pip install (the path under test).
+    venv_dir = _make_reusable_venv(tmp_path / '.venvs' / 'taskB')
     proc = _FakeUvProc(venv_dir, returncode=1, output=b'x' * 20000)
 
     async def fake_exec(*args, **kwargs):

@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 import contextlib
 from functools import partial
 import asyncio
+import inspect
 import logging
 import os
 import signal
@@ -14,7 +15,14 @@ from routers import execute, health, logs, config as config_router
 import maintenance
 from admin_api import build_admin_api_url, check_admin_api_connectivity, get_admin_api_base_url
 from config import settings, EXECUTOR_VERSION
-from scheduler import heartbeat_task, get_running_count, executor_started_at, executor_startup_id, pull_task
+from scheduler import (
+    heartbeat_task,
+    get_running_count,
+    executor_started_at,
+    executor_startup_id,
+    pull_task,
+    register_interpreters_provider,
+)
 from auth import (
     get_current_token,
     get_static_token,
@@ -94,6 +102,11 @@ async def lifespan(app: FastAPI):
     # a later successful _fetch_token auto re-registers with rich metadata
     # (maybe_re_register dedupes + backs off internally).
     set_on_token_acquired(lambda: asyncio.get_running_loop().create_task(maybe_re_register()))
+    # FR-13/FR-14（python_task_multiversion）：解释器池清单的心跳 provider 在
+    # 注册之前接好——这样首个 register 与首个 heartbeat 上报的是同一份快照，
+    # 不会出现"注册说池为空、心跳说有 3.9"的自相矛盾窗口。
+    # 探测本身有界（≤5s，NFR-10）且容错（AC-14b：失败退化为 []，绝不阻断启动）。
+    register_interpreters_provider(get_interpreters_snapshot)
     # Register to admin-api on startup
     _register_succeeded = await register_executor()
     # Start heartbeat background task
@@ -180,6 +193,71 @@ _re_register_backoff_until = 0.0
 _RE_REGISTER_BACKOFF_SECONDS = 30.0
 
 
+def _discover_interpreters() -> list[dict]:
+    """启动期一次性探测解释器缓存池（FR-14/AC-13b，NFR-10 ≤5s）。
+
+    三条纪律（缺一条就会把"探测"变成"启动故障"）：
+      1. **容错**：探测失败绝不阻断注册/启动（AC-14b）——本函数只返回列表，
+         异常在内部收敛为 [] + warning。
+      2. **有界**：uv 探测有独立超时预算；再叠一层墙钟兜底，冷启动预算
+         （NFR-10）不被一个卡死的 uv 子进程吃光。
+      3. **契约形状**：CONTRACT.md §2.2 的 `{version, path, available,
+         discoveredAt}`，字段名与 admin 采纳逻辑逐字对应。
+
+    字段缺省语义（§2.2 强制区分）：`[]` = **已上报且池为空**，字段缺席 =
+    **未上报**（旧执行器）→ 调度按 ["3.12"] 兜底。本执行器是能上报的新版本，
+    所以选择**始终发送该字段**（哪怕为空列表）——池为空是真实事实，不该让
+    admin 用兜底值去猜，否则一个声明 3.12 的任务会被派到池里根本没有 3.12 的
+    执行器上。探测模块整体缺席（并行开发期）时才退化为空列表，语义同上。
+    """
+    if execute._interpreters is None:  # pragma: no cover - 仅并行开发期可达
+        logger.warning('interpreters module unavailable — reporting an empty interpreter pool')
+        return []
+    deadline_seconds = min(
+        float(getattr(settings, 'interpreter_download_timeout_seconds', 300) or 300), 5.0
+    )
+    try:
+        # CONTRACT.md §3.2 冻结签名是同步的；集成实测 WS3 的 `discover_installed`
+        # 也是同步（带 60s TTL 缓存，NFR-10）。这里按调用返回值的形态兼容：
+        # 万一实现改成 async，也不会让注册路径拿到一个未 await 的 coroutine。
+        infos = execute._interpreters.discover_installed(timeout=deadline_seconds)
+        if inspect.isawaitable(infos):  # pragma: no cover - 同步实现不会走到
+            logger.warning('discover_installed returned an awaitable; skipping interpreter reporting')
+            return []
+    except Exception as exc:  # noqa: BLE001 - 探测失败绝不阻断启动（AC-14b）
+        logger.warning('Interpreter discovery failed (registration continues): %s', exc)
+        return []
+    discovered: list[dict] = []
+    for info in infos or []:
+        version = getattr(info, 'version', None)
+        if not version:
+            continue
+        discovered.append({
+            'version': str(version),
+            'path': str(getattr(info, 'path', '') or ''),
+            'available': bool(getattr(info, 'available', False)),
+            'discoveredAt': str(getattr(info, 'discovered_at', '') or ''),
+        })
+    return discovered
+
+
+# 启动期探测结果缓存：注册与心跳共用同一份快照（心跳刷新见 scheduler 的
+# interpreters provider）。None = 尚未探测；[] = 探测过且池为空（语义不同）。
+_discovered_interpreters: list[dict] | None = None
+
+
+def get_interpreters_snapshot() -> list[dict]:
+    """当前解释器清单快照（scheduler 心跳 provider 的数据源）。
+
+    首次调用即启动探测（懒加载，见 `_discover_interpreters` 的三条纪律）；
+    之后复用 WS3 模块自带的探测缓存，绝不每次心跳都 spawn 一个 uv 进程
+    （NFR-10：心跳路径零进程开销）。"""
+    global _discovered_interpreters
+    if _discovered_interpreters is None:
+        _discovered_interpreters = _discover_interpreters()
+    return _discovered_interpreters
+
+
 def _register_payload() -> dict:
     """富元数据单一来源：首次注册与补注册共用，/token fallback 重建行丢的
     type/capabilities/maxConcurrentTasks/version 从这里原样恢复。"""
@@ -193,6 +271,11 @@ def _register_payload() -> dict:
         # ARCH-32: 派发模式自报（pull = NAT 内零入站，经长轮询取件）
         'dispatchMode': 'pull' if settings.executor_pull_mode else 'push',
         'capabilities': ['python', 'shell'],
+        # FR-13/AC-13a（python_task_multiversion）：解释器缓存池清单，随注册
+        # 上报（CONTRACT.md §2.3）。启动期已探测一次（`get_interpreters_snapshot`
+        # 的懒加载 + 有界超时，满足 NFR-10 的 ≤5s 冷启动预算）；探测失败退化为
+        # [] 而非缺字段——见 `_discover_interpreters` 的字段缺省语义说明。
+        'interpreters': get_interpreters_snapshot(),
         'maxConcurrentTasks': settings.max_concurrent_tasks,
         'restartedAt': executor_started_at,
         'startupId': executor_startup_id,

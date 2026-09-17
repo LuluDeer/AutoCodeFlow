@@ -1,9 +1,12 @@
 import asyncio
 import hashlib
+import inspect
+import ipaddress
 import json
 import logging
 import os
 import signal
+import socket
 import stat
 import re
 import shutil
@@ -52,6 +55,128 @@ except ImportError:
         executionId: str
         task: Dict[str, Any]
         params: Optional[Dict[str, Any]] = None
+
+
+# ---------------------------------------------------------------------------
+# python_task_multiversion (WS4) — 解释器池 / zip 安全两个模块（CONTRACT.md §3.2，
+# 由 WS3 提供）。二者是执行器侧的**唯一事实源**，本文件只消费其接口、绝不自己
+# 拼 `uv python install` 之类的命令。
+#
+# 这里包一层 import 守卫的原因：WS3 与本文件并行开发，模块在集成前可能尚不存在。
+# 缺失时退化为"空池 + 明确失败"，而不是 ImportError 让**整个执行器**（含存量
+# 三渠道）起不来——探测/上报失败不得阻断启动（FR-14/AC-14b 的同一条纪律）。
+# 集成时两个模块必然存在，走的是上面的真实分支。
+# ---------------------------------------------------------------------------
+try:
+    import interpreters as _interpreters
+except ImportError:  # pragma: no cover - 仅并行开发期可达
+    _interpreters = None  # type: ignore[assignment]
+
+try:
+    import zip_safety as _zip_safety
+except ImportError:  # pragma: no cover - 仅并行开发期可达
+    _zip_safety = None  # type: ignore[assignment]
+
+
+def _interpreter_unavailable_exc() -> type:
+    """解释器不可获取的异常类型（WS3 `InterpreterUnavailable`）。
+
+    模块缺席时返回本文件内的等价类，保证 except 子句在任何时候都合法。"""
+    if _interpreters is not None:
+        return getattr(_interpreters, 'InterpreterUnavailable', RuntimeError)
+    return RuntimeError
+
+
+def _pool_summary() -> dict:
+    """解释器池快照（CONTRACT.md §3.2 `pool_summary`），失败返回空快照。
+
+    `result.interpreter.pool` 与失败消息的候选清单都用它；探测失败绝不能让
+    任务失败路径再抛一次异常（留痕是 best-effort）。"""
+    if _interpreters is None:
+        return {'install_dir': '', 'versions': []}
+    try:
+        summary = _interpreters.pool_summary()
+    except Exception as exc:  # noqa: BLE001 - 留痕失败不升级为任务失败
+        logger.warning('interpreter pool_summary failed: %s', exc)
+        return {'install_dir': '', 'versions': []}
+    if not isinstance(summary, dict):
+        return {'install_dir': '', 'versions': []}
+    versions = summary.get('versions')
+    return {
+        'install_dir': str(summary.get('install_dir') or ''),
+        'versions': [str(v) for v in versions] if isinstance(versions, (list, tuple)) else [],
+    }
+
+
+def _build_uv_env(cache_dir: Path) -> dict[str, str]:
+    """uv 子进程环境（venv / pip install 两个阶段共用）。
+
+    D8 硬化（lead 实测确认，uv 0.8.17）：`UV_PYTHON_DOWNLOADS=manual` 让
+    `uv venv --python <x>` 在池内缺版本时**硬拒绝**（exit 2，
+    "No interpreter found … Python downloads are set to 'manual'"），
+    `uv python install` 仍可正常下载。于是"venv 阶段绝不触发下载"这条契约
+    由 uv 自己兜底：即便本文件的路径解析出了 bug，也不会绕过 D13 的全局单
+    下载队列偷偷下载。
+
+    优先复用 WS3 `interpreters.py` 的公开 builder（两处环境不可能漂移）；
+    尚未提供时退化为本文件的 `_build_install_env` + 显式同名开关。
+    """
+    builder = getattr(_interpreters, 'build_uv_env', None) if _interpreters is not None else None
+    if callable(builder):
+        try:
+            # 集成实测：WS3 的签名是 `build_uv_env(*, cache_dir=None)`——**仅关键字**。
+            # 位置传参会 TypeError，进而静默退化成下面的本地兜底（两个 builder
+            # 从此漂移）。这里显式按关键字调用。
+            env = builder(cache_dir=cache_dir)
+            if isinstance(env, dict):
+                return {str(k): str(v) for k, v in env.items()}
+        except Exception as exc:  # noqa: BLE001 - builder 不可用时退回本地白名单
+            logger.warning('interpreters.build_uv_env failed (%s); falling back to local whitelist', exc)
+    env = _build_install_env(cache_dir)
+    env['UV_PYTHON_DOWNLOADS'] = 'manual'
+    return env
+
+
+async def _call_ws3(fn, *args, **kwargs):
+    """调用 WS3 的解释器接口，同步/异步两种形态都支持。
+
+    CONTRACT.md §3.2 冻结的是**同步**签名，但同一条并行开发纪律下模块可能以
+    coroutine 形式落地。这里按返回值判定并 await——同步实现走
+    `asyncio.to_thread`，绝不阻塞事件循环（uv 子进程可能跑满 300s 下载预算）。
+    """
+    if inspect.iscoroutinefunction(fn):
+        return await fn(*args, **kwargs)
+    result = await asyncio.to_thread(fn, *args, **kwargs)
+    if inspect.isawaitable(result):
+        return await result
+    return result
+
+
+async def _ensure_interpreter(version: str, timeout: float):
+    """获取（必要时下载）指定版本解释器，返回池内绝对路径。
+
+    薄封装：模块缺席 / 接口缺失时抛 RuntimeError，由调用方归类为
+    interpreter_unavailable —— 绝不让 AttributeError 之类的实现细节漏给用户。
+
+    集成实测：WS3 同时提供了同步 `ensure_version()` 与 async
+    `ensure_version_async()`。**必须优先走 async 入口**——D13/NFR-16 的"全局
+    单下载队列"（`asyncio.Semaphore(1)`）只在 `ensure_version_async` 里获取；
+    直接 to_thread 调同步版会绕过该队列，并发多版本下载同时开跑，带宽与
+    "同一时刻全局至多一个 in-flight 下载"的契约同时失守。
+    """
+    if _interpreters is None:
+        raise RuntimeError(
+            f'解释器 {version} 无法获取（解释器池模块不可用：interpreters 缺失）'
+        )
+    async_fn = getattr(_interpreters, 'ensure_version_async', None)
+    if callable(async_fn):
+        return await async_fn(version, timeout=timeout)
+    fn = getattr(_interpreters, 'ensure_version', None)
+    if not callable(fn):
+        raise RuntimeError(
+            f'解释器 {version} 无法获取（解释器池模块不可用：interpreters.ensure_version 缺失）'
+        )
+    return await _call_ws3(fn, version, timeout=timeout)
 
 
 def _repo_dir_name(repo_url: str) -> str:
@@ -176,10 +301,41 @@ def _refine_failure_reason(message: str) -> Optional[str]:
     细化规则：git 拉取 / 依赖安装（uv venv + uv pip install）/ 运行时缺失
     （uv/git/python 可执行文件不存在）。返回 None 表示不设 reason，交给
     admin 端 inferFailureReason 兜底（旧语义不变）。
+
+    FR-08（python_task_multiversion）：新增 `interpreter_unavailable` 规则，
+    **必须排在依赖安装规则之前**。理由：解释器池缺版本时 uv 的原文是
+    ``uv venv failed: ... No interpreter found for Python 3.9 ...``——先撞上
+    dependency_install_failed 的正则就被误吞，用户看到"依赖装不上"而不是
+    "解释器取不到"，排查方向直接跑偏（AC-12a）。
     """
     if not message:
         return None
     lowered = message.lower()
+    if re.search(
+        r"no interpreter found"
+        r"|no download found"
+        r"|interpreter .{0,80}(unavailable|not found)"
+        r"|interpreterunavailable"
+        # WS3 `InterpreterUnavailable.__str__` 的原文形状：
+        #   "Python 3.7 unavailable (not_downloadable): …"
+        # 以及 reason 取值表（CONTRACT.md §3.2 + uv_missing 扩展）。这两条让
+        # 原始异常文本即使没经过执行器的中文包装也能被正确归类。
+        r"|python \d+(\.\d+)*( unavailable| not found)"
+        r"|\((not_downloadable|download_failed|download_timeout|mirror_unreachable|corrupt|uv_missing)\)"
+        r"|解释器.{0,40}(无法获取|不可用|未找到)",
+        lowered,
+    ):
+        return "interpreter_unavailable"
+    # FR-08（zip 渠道）：包下载/体积/安全审查失败。`package_fetch_failed` 本就
+    # 在协议枚举里（executorReportable），此前执行器没有任何路径会产出它。
+    if re.search(
+        r"package download failed"
+        r"|package exceeds the"
+        r"|zip package rejected"
+        r"|packageurl",
+        lowered,
+    ):
+        return "package_fetch_failed"
     if "git" in lowered and (
         re.search(r"git.{0,40}(clone|fetch|checkout)", lowered)
         or re.search(r"'git'.{0,80}returned non-zero", lowered)
@@ -685,6 +841,398 @@ _task_locks_loop = None
 _task_locks_guard = threading.Lock()
 
 
+# ---------------------------------------------------------------------------
+# python_task_multiversion（WS4）：版本 / zip 渠道的模块级常量与纯函数。
+#
+# 全部放在模块级（而非 run_task 内联）有两个理由：一是可被 pytest 直接断言，
+# 二是 `runtimeVersion` 是**任务提供的字符串**，它要进 uv argv 与目录名，必须
+# 有且只有一处过白（NFR-03 防注入）。
+# ---------------------------------------------------------------------------
+
+# CONTRACT.md §1.1：主.次版本，无补丁号（D1）。补丁号（"3.7.9"）在本平台不是
+# 合法声明值——匹配语义是前缀匹配，声明粒度就是主.次。
+RUNTIME_VERSION_PATTERN = re.compile(r'^\d+\.\d+$')
+
+# AC-03a / NFR-04：zip 下载体积上限（与 admin 上传侧 200MB 限制同值，CON-03）。
+ZIP_DOWNLOAD_MAX_BYTES = 200 * 1024 * 1024
+# NFR-09：下载/解压属任务准备阶段。整体超时预算独立于任务超时（任务超时在
+# 运行阶段才生效，准备阶段不能不受控挂起）。
+ZIP_DOWNLOAD_TIMEOUT_SECONDS = 120.0
+
+# D4/AC-04c：包内 requirements.txt 的解析上限。超限即拒（而不是截断）——
+# 一个 8MB 的 requirements.txt 只可能是恶意/损坏输入，截断会静默改变依赖集。
+ZIP_REQUIREMENTS_MAX_BYTES = 1024 * 1024
+
+# requirements.txt 里"不是包名"的行前缀：pip 选项（-r/-e/--index-url/--hash…）。
+# 与 `_validate_requirements` 同一条纪律——`-` 开头的行会被 uv 当**选项**解析，
+# 是索引劫持向量，因此绝不透传给 uv。
+_REQUIREMENTS_OPTION_PREFIXES = ('-', '--')
+
+
+def _is_interpreter_unavailable(exc: BaseException) -> bool:
+    """异常是否表示"解释器取不到"。
+
+    WS3 的 `InterpreterUnavailable` 是唯一权威判据；同时按消息兜底匹配 uv 的
+    原文——模块形态在集成期可能有出入，但"拿不到解释器"这件事必须归类正确，
+    不能因为异常类型漂移就退化成 unknown。"""
+    if _interpreters is not None:
+        exc_type = getattr(_interpreters, 'InterpreterUnavailable', None)
+        if isinstance(exc_type, type) and isinstance(exc, exc_type):
+            return True
+    return _refine_failure_reason(str(exc)) == 'interpreter_unavailable'
+
+
+def _package_requirements_path(work_dir: Path) -> Path | None:
+    """定位解压后的包内 requirements.txt（大小写不敏感，取首个匹配）。
+
+    Windows 上 `Requirements.txt` 是合法文件名而 Linux 上不是；两侧都接受可以
+    让同一个 zip 在任何执行器宿主上行为一致。"""
+    try:
+        for entry in work_dir.iterdir():
+            if entry.is_file() and entry.name.lower() == 'requirements.txt':
+                return entry
+    except OSError as exc:
+        logger.warning('Cannot scan %s for requirements.txt: %s', work_dir, exc)
+    return None
+
+
+def _parse_requirements_file(text: str) -> list[str]:
+    """把 requirements.txt 文本解析为需求规格列表（去噪，不做语义解析）。
+
+    只做三件事：去注释（`#`，含行内）、去空白、丢弃 pip **选项行**与其它
+    不可解析的结构（`[extras]` 段头、裸 URL/路径）。刻意**不**实现
+    `-r other.txt` 的递归展开：那会让包内文本决定执行器去读哪个文件，是
+    不必要的攻击面；跳过并记日志即可（与 `_validate_requirements` 拒绝选项
+    行同一条纪律，只是包内文件是数据而非任务参数，静默跳过更合适）。
+    """
+    specs: list[str] = []
+    for raw_line in text.splitlines():
+        line = raw_line.split('#', 1)[0].strip()
+        if not line:
+            continue
+        if line.startswith(_REQUIREMENTS_OPTION_PREFIXES):
+            logger.info('Skipping option line in package requirements.txt: %r', line)
+            continue
+        if line.startswith('[') and line.endswith(']'):
+            continue  # pip 的 [global]/[install] 配置段头
+        if line.startswith(('http://', 'https://', 'file://', '/', '.', '~')):
+            logger.info('Skipping non-spec line in package requirements.txt: %r', line)
+            continue
+        specs.append(line)
+    return specs
+
+
+def _read_package_requirements(work_dir: Path) -> list[str]:
+    """读取包内 requirements.txt（不存在/超限/不可读 → 空列表 + 日志）。
+
+    超限**不**解析：宁可按"无包内依赖"处理并留下明确日志，也不截断后安装一个
+    被悄悄改过的依赖集。"""
+    path = _package_requirements_path(work_dir)
+    if path is None:
+        return []
+    try:
+        if path.stat().st_size > ZIP_REQUIREMENTS_MAX_BYTES:
+            logger.warning(
+                'Package requirements.txt %s exceeds %d bytes — ignored '
+                '(install the dependencies via the task-level requirements instead)',
+                path, ZIP_REQUIREMENTS_MAX_BYTES,
+            )
+            return []
+        return _parse_requirements_file(path.read_text(encoding='utf-8', errors='replace'))
+    except OSError as exc:
+        logger.warning('Failed to read package requirements.txt %s: %s', path, exc)
+        return []
+
+
+def _requirement_key(spec: str) -> str:
+    """同一包名的归一化键（D4 的"同名覆盖"判定用）。
+
+    取包名（去掉 extras/环境标记/版本约束）并按 **PEP 503** 归一：小写 + 把
+    `-`/`_`/`.` 的连续串折叠成单个 `-`。于是 `Requests>=2`、
+    `requests[socks]==2.31`、`requests ; python_version<'3.8'`、`zope.interface`
+    与 `zope-interface` 都被视为同一个包——任务级条目据此覆盖包内条目。
+    解析不出来时返回整串，保证不同条目永远不会因为解析失败而被误判成同名。"""
+    head = re.split(r'[<>=!~;\[\s@]', spec.strip(), maxsplit=1)[0].strip()
+    if not head:
+        return spec.strip()
+    return re.sub(r'[-_.]+', '-', head).lower()
+
+
+def merge_requirements(package_reqs: list[str], task_reqs: list[str]) -> list[str]:
+    """D4：包内 requirements.txt ∪ 任务级 requirements，**任务级同名覆盖**。
+
+    规则（AC-04a/b/c）：
+      * 同名条目任务级胜出——uv 不会同时看到两个版本的约束；
+      * 其余条目取并集，顺序稳定：先包内（保持文件顺序），再任务级的新增项；
+      * 输入顺序即输出顺序，同一输入永远产出同一结果（可重复执行）。
+
+    与 `manifest.merge_task_with_manifest` 的 `dict.fromkeys` 先例同源：字典
+    保序去重，只是这里多了一层"按包名覆盖"的语义。
+    """
+    merged: dict[str, str] = {}
+    for spec in package_reqs or []:
+        if isinstance(spec, str) and spec.strip():
+            merged[_requirement_key(spec)] = spec.strip()
+    # 任务级后写入 = 同名覆盖（dict 保序：覆盖不改动首次插入的位置，
+    # 于是"包内顺序优先、任务级新增项追加"的稳定性自然成立）。
+    for spec in task_reqs or []:
+        if isinstance(spec, str) and spec.strip():
+            merged[_requirement_key(spec)] = spec.strip()
+    return list(merged.values())
+
+
+def _interpreter_failure_result(
+    runtime_version: str,
+    exc: BaseException,
+    pool: dict,
+    started_at: float,
+    execution_id: str,
+) -> dict:
+    """解释器获取失败的统一失败结果（AC-12a 的消息模板 + 结构化留痕）。
+
+    消息模板包含三件事，缺一件运维就得来回猜：请求的版本、失败原因、
+    以及**候选执行器/已缓存版本**（"该派到哪台机器上"是调度侧的直接输入）。
+
+    `result.interpreter` **不**放在回调载荷顶层：admin 的 CallbackItemDto 有
+    白名单，未知顶层键会被静默剥离（不是 400，是"结果悄悄丢了"）；`result`
+    是载荷里唯一被 admin 接受的结构化通道（task.service 把它并入执行记录）。
+    """
+    logger.error('Interpreter %s unavailable for %s: %s', runtime_version, execution_id, exc)
+    return {
+        'success': False,
+        'logs': '',
+        'exitCode': None,
+        'errorMessage': _truncate_error_message(
+            f'解释器 {runtime_version} 无法获取（缓存缺失 + 下载失败：'
+            f'{_decode_interpreter_failure(exc)}）；候选执行器: '
+            f'{settings.app_name}[已缓存: {", ".join(pool["versions"]) or "无"}]'
+        ),
+        'durationMs': int((time.monotonic() - started_at) * 1000),
+        'result': {
+            'interpreter': {
+                'requested': runtime_version,
+                'resolved': None,
+                'reason': str(getattr(exc, 'reason', '') or 'unavailable'),
+                'detail': str(getattr(exc, 'detail', '') or str(exc)),
+                'pool': pool,
+            }
+        },
+    }
+
+
+def _host_is_restricted(host: str) -> bool:
+    """主机名是否指向 loopback / 私网 / link-local / 未指定地址。
+
+    镜像 executor-node `lib/ssrf-guard.ts` 的强度，并补上 python 侧更严格的
+    一点：**真实 DNS 解析**。node 侧只做字符串判定（其注释已声明 DNS-rebinding
+    不在范围内）；执行器侧的 packageUrl 来自 admin，解析一次成本可忽略，而
+    字符串判定拦不住 `http://internal.corp/` 这种解析到 10.x 的名字。
+    """
+    name = (host or '').strip().strip('[]').lower()
+    if not name:
+        return True
+    if name == 'localhost' or name.endswith('.localhost') or name == 'localhost.localdomain':
+        return True
+
+    def _restricted_ip(ip: ipaddress._BaseAddress) -> bool:  # type: ignore[attr-defined]
+        if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+            ip = ip.ipv4_mapped
+        # `not ip.is_global` 是**兜底**：CGNAT（100.64.0.0/10）在 Python 3.12 的
+        # ipaddress 里既不是 private 也不是 reserved（实测），但显然不该允许
+        # 执行器去打。node 侧 ssrf-guard 显式列了 100.64/10，这里用"非全球可路由"
+        # 一并覆盖，语义等价且不会随 stdlib 分类表漂移。
+        # multicast 单列：224.0.0.1 的 is_global 为 True，不兜底拦不住。
+        return bool(
+            ip.is_loopback or ip.is_private or ip.is_link_local
+            or ip.is_unspecified or ip.is_multicast or ip.is_reserved
+            or not ip.is_global
+        )
+
+    try:
+        return _restricted_ip(ipaddress.ip_address(name))
+    except ValueError:
+        pass  # 不是 IP 字面量 → 按主机名解析
+
+    try:
+        infos = socket.getaddrinfo(name, None)
+    except (socket.gaierror, OSError, UnicodeError) as exc:
+        logger.warning('SSRF guard: cannot resolve packageUrl host %r: %s', name, exc)
+        return True  # fail-closed：解析不出来一律拒绝
+    if not infos:
+        return True
+    for info in infos:
+        sockaddr = info[4] if len(info) > 4 else None
+        if not sockaddr:
+            return True
+        try:
+            if _restricted_ip(ipaddress.ip_address(sockaddr[0])):
+                return True
+        except ValueError:
+            return True
+    return False
+
+
+def _assert_safe_package_url(url: str) -> str:
+    """packageUrl 的 SSRF 闸（fail-closed），返回规范化后的 URL。
+
+    `allow_private_network` 语义与同文件 gitRepo 守卫**逐条对齐**（SEC-NEW-2
+    ADR）：
+      * 默认 False —— 私网/loopback/link-local 一律拒绝；
+      * True —— 放行 RFC1918 私网（内网自建文件服务是文档化拓扑）；
+      * loopback **不随开关放行**（git-face 同款裁定：执行器打自己的回环没有
+        合法拓扑，只保留绕过成本）。
+    """
+    if not isinstance(url, str) or not url.strip():
+        raise HTTPException(status_code=400, detail='packageUrl is required for application_zip tasks')
+    candidate = url.strip()
+    try:
+        parsed = urlsplit(candidate)
+        hostname = parsed.hostname
+        # 访问 .port 顺带拒绝畸形端口（与 config.validate_pypi_registry_url 同法）。
+        parsed.port
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f'Invalid packageUrl: {url}') from exc
+    if parsed.scheme not in ('http', 'https') or not parsed.netloc or not hostname:
+        raise HTTPException(
+            status_code=400,
+            detail=f'packageUrl scheme not allowed (http/https only): {url}',
+        )
+    if parsed.username is not None or parsed.password is not None:
+        # 凭据不进 argv/日志/URL 记录，且 admin 侧生成的 packageUrl 从不带凭据。
+        raise HTTPException(
+            status_code=400,
+            detail='packageUrl must not contain userinfo credentials',
+        )
+
+    allow_private = bool(getattr(settings, 'allow_private_network', False))
+    if _host_is_restricted(hostname):
+        loopback_only = _host_is_loopback(hostname)
+        if not (allow_private and not loopback_only):
+            raise HTTPException(
+                status_code=400,
+                detail=f'packageUrl targets a restricted network address: {hostname}',
+            )
+    return candidate
+
+
+def _host_is_loopback(host: str) -> bool:
+    """loopback 单独判定——`allow_private_network` 开关不覆盖它（见上）。"""
+    name = (host or '').strip().strip('[]').lower()
+    if name == 'localhost' or name.endswith('.localhost') or name == 'localhost.localdomain':
+        return True
+    try:
+        ip = ipaddress.ip_address(name)
+    except ValueError:
+        try:
+            infos = socket.getaddrinfo(name, None)
+        except (socket.gaierror, OSError, UnicodeError):
+            return False  # 已由 _host_is_restricted 的 fail-closed 分支拒绝
+        return any(
+            ipaddress.ip_address(info[4][0]).is_loopback
+            for info in infos if len(info) > 4 and info[4]
+        )
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return bool(ip.is_loopback)
+
+
+def _package_download_headers(url: str) -> dict[str, str]:
+    """下载 packageUrl 的请求头：**仅**在目标为 admin-api 时带 Bearer。
+
+    镜像 executor-node `lib/download.ts`：首跳带执行器共享令牌（packageUrl 由
+    admin 下发，指向 admin 本机的 /uploads/packages/），跨主机/第三方 CDN 一律
+    不带——令牌绝不泄漏给非 admin 目标。
+    """
+    from admin_api import get_admin_api_base_url
+
+    admin_base = (get_admin_api_base_url() or '').strip()
+    token = _get_callback_token()
+    if not admin_base or not token:
+        return {}
+    try:
+        if urlsplit(url).netloc != urlsplit(admin_base).netloc:
+            return {}
+    except ValueError:
+        return {}
+    return {'Authorization': f'Bearer {token}'}
+
+
+async def _download_package(url: str, dest: Path) -> int:
+    """流式下载 packageUrl 到 `dest`（工作目录内的临时文件）。
+
+    NFR-04/NFR-09：SSRF 闸已在调用前过；这里负责 200MB 硬上限（边下边计数，
+    超限立即中止并删除半成品）、整体超时预算，以及错误消息里**只出现状态码**、
+    绝不回显 URL 上的任何凭据。
+    """
+    headers = _package_download_headers(url)
+    received = 0
+    try:
+        async with httpx.AsyncClient(
+            timeout=ZIP_DOWNLOAD_TIMEOUT_SECONDS,
+            follow_redirects=False,
+            trust_env=False,
+        ) as client:
+            async with client.stream('GET', url, headers=headers or None) as response:
+                if response.status_code != 200:
+                    raise RuntimeError(
+                        f'package download failed with HTTP {response.status_code}'
+                    )
+                with open(dest, 'wb') as handle:
+                    async for chunk in response.aiter_bytes():
+                        received += len(chunk)
+                        if received > ZIP_DOWNLOAD_MAX_BYTES:
+                            raise RuntimeError(
+                                f'package exceeds the {ZIP_DOWNLOAD_MAX_BYTES} byte limit'
+                            )
+                        handle.write(chunk)
+    except (httpx.HTTPError, OSError, asyncio.TimeoutError) as exc:
+        _remove_quietly(dest)
+        raise RuntimeError(f'package download failed: {type(exc).__name__}') from exc
+    except Exception:
+        _remove_quietly(dest)
+        raise
+    return received
+
+
+def _remove_quietly(path: Path) -> None:
+    try:
+        path.unlink()
+    except OSError:
+        pass
+
+
+def _extract_package(zip_path: Path, work_dir: Path) -> None:
+    """`vet_zip` + `safe_extract`（AC-03a）。WS3 模块缺席时**明确失败**。
+
+    绝不退化成 `zipfile.extractall` 之类的兜底——那正是 zip-slip 的入口。
+    """
+    if _zip_safety is None:  # pragma: no cover - 仅并行开发期可达
+        raise RuntimeError(
+            'zip package channel unavailable: zip_safety module is not installed on this executor'
+        )
+    try:
+        _zip_safety.vet_zip(zip_path)
+        _zip_safety.safe_extract(zip_path, work_dir)
+    except Exception as exc:
+        violation = getattr(exc, 'violation', None)
+        if violation:
+            raise RuntimeError(
+                f'zip package rejected by safety check ({violation}): {exc}'
+            ) from exc
+        raise
+
+
+def _decode_interpreter_failure(exc: BaseException) -> str:
+    """把解释器获取失败翻译成 AC-12a 模板的中文消息。
+
+    `InterpreterUnavailable` 携带 .reason/.detail；其它异常退回异常文本。"""
+    reason = getattr(exc, 'reason', None)
+    detail = getattr(exc, 'detail', None)
+    if reason or detail:
+        return '：'.join(str(p) for p in (reason, detail) if p)
+    return str(exc)
+
+
 def _derive_task_key(req: ExecuteRequest) -> str:
     """QA4: the ONE derivation of the per-task key. Every consumer — the E6
     per-task lock, the E8 live-protection snapshot (``entry.task_id``, i.e.
@@ -698,9 +1246,22 @@ def _derive_task_key(req: ExecuteRequest) -> str:
     ids while the venv path used the merged ``task.get('id', executionId)``
     verbatim: an empty task.id collapsed the venv onto the ``.venvs`` root
     itself while the lock and the E8 protection set keyed off a different
-    name (and a manifest-only id desynchronised the two entirely)."""
+    name (and a manifest-only id desynchronised the two entirely).
+
+    FR-16/D6（python_task_multiversion）：键追加版本签名，`<id>` → `<id>-3.7`。
+    **只有这一处**做版本派生——目录名、锁键、TTL live 快照三方同源，否则
+    版本切换会退化成"锁住 A、写 B、清扫 C"的漂移（DESIGN §1.2.2 的纪律）。
+
+    兼容红线 §4.1/AC-10a：无声明版本（缺省/None/空串）时**逐字节返回旧值**；
+    非法格式（非 `^\\d+\\.\\d+$`，如 "3"、"3.7.9"、"../x"）也一律不加后缀——
+    校验在 run_task 里显式拒绝，绝不让任务提供的字符串以任何形式进入路径。
+    """
     task = req.task if isinstance(req.task, dict) else {}
-    return str(task.get('id') or req.executionId)
+    key = str(task.get('id') or req.executionId)
+    version = task.get('runtimeVersion')
+    if isinstance(version, str) and RUNTIME_VERSION_PATTERN.fullmatch(version.strip()):
+        return f'{key}-{version.strip()}'
+    return key
 
 
 # E1: heartbeat enrichment — scheduler cannot import this module (cycle), so
@@ -1752,6 +2313,11 @@ async def _run_and_callback(req: ExecuteRequest, entry: Optional['_LiveExecution
                     reason = _refine_failure_reason(str(result.get('errorMessage') or ''))
                     if reason:
                         payload['failureReason'] = reason
+                # FR-12/AC-12a（python_task_multiversion）：解释器失败的结构化
+                # 留痕。只有任务侧真的产出了 result（解释器获取失败）才挂上——
+                # 既有路径没有 result 键，payload 形状对存量任务零变化。
+                if isinstance(result.get('result'), dict):
+                    payload['result'] = result['result']
             except Exception as exc:
                 payload = {
                     'executionId': req.executionId,
@@ -1854,24 +2420,148 @@ async def _run_uv(args: list[str], timeout_seconds: float, *, env: dict[str, str
     return proc.returncode, (out.decode('utf-8', errors='replace') if out else '')
 
 
-async def ensure_venv(venv_dir: Path, requirements: list[str]) -> Path:
-    """Create/reuse a virtual environment with uv and install dependencies. Returns python executable path."""
+def _venv_python_bin(venv_dir: Path) -> Path:
+    """venv 内解释器路径（平台相关布局，W-02 follow-up 的单一来源）。"""
+    if sys.platform == 'win32':
+        return venv_dir / 'Scripts' / 'python.exe'
+    return venv_dir / 'bin' / 'python'
+
+
+def _read_pyvenv_cfg(venv_dir: Path) -> dict[str, str] | None:
+    """读 `<venv>/pyvenv.cfg` 为 key→value 字典；缺失/损坏返回 None。
+
+    `maintenance._read_pyvenv_cfg` 是同一实现的副本（那边用它做"这个解释器
+    还有没有 venv 依赖"的引用扫描）。刻意不共享：maintenance 明确避免 import
+    routers.execute（模块级注释说明了那个依赖方向会成环）。格式是 CPython
+    冻结的 `key = value` 文本，两份实现都不该有演化空间。
+    """
+    try:
+        raw = (venv_dir / 'pyvenv.cfg').read_text(encoding='utf-8', errors='replace')
+    except (OSError, ValueError):
+        return None
+    parsed: dict[str, str] = {}
+    for line in raw.splitlines():
+        if '=' not in line:
+            continue
+        key, _, value = line.partition('=')
+        parsed[key.strip().lower()] = value.strip()
+    return parsed or None
+
+
+def _venv_reuse_problem(venv_dir: Path, python_bin: Path,
+                        python_version: str | None) -> str | None:
+    """venv 目录存在但**不可用**时返回原因；健康则返回 None（可复用）。
+
+    为什么需要这一步（lead 实测确认的生产事故类缺陷）：`uv venv` 建出的环境里，
+    `bin/python` / `Scripts/python.exe` 只是约 600KB 的 shim，真正的解释器仍在
+    缓存池里，依赖记在 `pyvenv.cfg` 的 `home = <UV_PYTHON_INSTALL_DIR>/cpython-…`。
+    池里那个目录一旦被回收/换卷/清空，venv 当场报废（实测重跑：
+    `No Python at '...'`，exit 103）。而 `venv_dir.exists()` 依旧为真，于是旧逻辑
+    会"复用"一个死 venv，任务在 exec 阶段以一个令人费解的退出码失败——既不是
+    干净的 interpreter_unavailable，也把 D14（不回退宿主）的语义搅浑。
+
+    纯文件系统判定，**不 spawn 任何进程**（准备阶段的每一毫秒都在任务超时预算
+    里）。任何读取/解析异常都按"不可用"处理——宁可多重建一次 venv，也不复用
+    一个可能已死的环境。
+    """
+    if not python_bin.exists():
+        return f'the venv python executable is missing ({python_bin})'
+    cfg = _read_pyvenv_cfg(venv_dir)
+    if cfg is None:
+        return 'pyvenv.cfg is missing or unreadable'
+    home = cfg.get('home')
+    if not home:
+        return 'pyvenv.cfg has no "home" entry (cannot tell which interpreter backs it)'
+    if not Path(home).exists():
+        return f'the interpreter it was built from no longer exists ({home})'
+    if python_version is not None:
+        # 版本不匹配 = 目录键撞车或 venv 是别的版本建的：必须重建，否则
+        # AC-15b（不受 PATH 影响、必须用声明版本）被静默违反。
+        recorded = cfg.get('version_info') or Path(home).name
+        if not _version_matches(recorded, python_version):
+            return (
+                f'it was built for Python {recorded!r} but the task declares {python_version!r}'
+            )
+    return None
+
+
+def _version_matches(recorded: str, requested: str) -> bool:
+    """`recorded` 是否为 `requested` 的补丁版本（3.12.11 属于 3.12）。
+
+    取首个 `X.Y[.Z]` 形状的 token 比对主.次；解析不出来时保守判定为**不匹配**
+    （触发一次重建，代价只是重装依赖，远小于用错版本跑任务）。"""
+    match = re.search(r'(\d+)\.(\d+)', recorded or '')
+    if not match:
+        return False
+    return f'{match.group(1)}.{match.group(2)}' == requested
+
+
+async def ensure_venv(
+    venv_dir: Path,
+    requirements: list[str],
+    *,
+    python_version: str | None = None,
+) -> Path:
+    """Create/reuse a virtual environment with uv and install dependencies. Returns python executable path.
+
+    FR-15/AC-15a/b（python_task_multiversion）：新增 **keyword-only**
+    `python_version`。
+
+      * `None` → argv 与改造前**逐字节一致**：`uv venv --no-project <dir>`
+        （兼容红线 §4.1 / AC-10a：存量任务的 venv 创建行为零变化）。
+      * 非空 → 先经 `interpreters.ensure_version()` 拿到**池内绝对路径**，再
+        `uv venv --python <abs_path> --no-project <dir>`。
+
+    D8 硬约束：**venv 阶段绝不触发下载**。两道保障——
+      1. 传给 uv 的是解析后的绝对路径，不是裸版本号（裸版本号会触发 uv 的
+         "缺则自动下载"语义）；
+      2. uv 环境带 `UV_PYTHON_DOWNLOADS=manual`（`_build_uv_env`），缺版本时
+         uv 直接拒绝而不是偷偷下载，绕过 D13 全局单下载队列成为不可能。
+    下载只发生在 `ensure_version()` 这个受控入口里（独立超时预算 + per-version
+    锁 + 全局单下载队列）。
+
+    复用前会校验 venv 是否**仍然可用**（`_venv_reuse_problem`）：健康的 venv
+    照旧直接复用（AC-16b 的性能语义不变，不产生任何 uv 调用），损坏的（解释器
+    被回收、pyvenv.cfg 损坏、版本不符）**删除后重建**而不是带着它往下跑。
+    """
     # Validate before spawning even the venv phase. This keeps malformed or
     # credential-bearing registry configuration out of every uv subprocess.
     registry_url = _validate_registry_url(settings.pypi_registry_url)
-    install_env = _build_install_env(venv_dir.parent / '.uv-cache')
+    install_env = _build_uv_env(venv_dir.parent / '.uv-cache')
     # W-02 follow-up (windows-findings): venv layout is platform-specific —
     # win32 uses Scripts\python.exe, POSIX uses bin/python. The old hardcoded
     # bin/python made every requirements-bearing task fail on Windows.
-    if sys.platform == 'win32':
-        python_bin = venv_dir / 'Scripts' / 'python.exe'
-    else:
-        python_bin = venv_dir / 'bin' / 'python'
+    python_bin = _venv_python_bin(venv_dir)
+
+    # NFR-03 纵深防御：版本号要进 uv argv 与 `.venvs/<key>` 路径，先过白名单正则。
+    # 正常链路里 admin DTO 已校验（FR-06b），这里是执行器侧的最后一道——
+    # 一个畸形值（"3.7.9"、"../x"、"--index-url"）在这里就终止，绝不进 argv。
+    if python_version is not None and not RUNTIME_VERSION_PATTERN.fullmatch(str(python_version)):
+        raise RuntimeError(f'Invalid runtimeVersion (expected X.Y): {python_version!r}')
+
+    if venv_dir.exists():
+        problem = _venv_reuse_problem(venv_dir, python_bin, python_version)
+        if problem:
+            # 重建是安全的：venv 里只有依赖安装结果，requirements 会重新装回来。
+            logger.warning(
+                'Discarding the cached venv %s and rebuilding it: %s', venv_dir, problem,
+            )
+            shutil.rmtree(venv_dir, ignore_errors=True)
 
     if not venv_dir.exists():
+        venv_args = [UV_BIN, 'venv']
+        if python_version is not None:
+            # 已缓存的 venv 直接复用，不需要解释器池参与（AC-16b：同版本复用，
+            # 不重复探测/下载）；只有真要新建 venv 时才解析解释器。
+            pool_python = await _ensure_interpreter(
+                str(python_version), timeout=UV_VENV_TIMEOUT_SECONDS
+            )
+            venv_args.extend(['--python', str(pool_python)])
+        # 兼容红线 §4.1：无版本分支的剩余 argv 与改造前逐字节相同。
+        venv_args.extend(['--no-project', str(venv_dir)])
         logger.info(f'Creating venv with uv: {venv_dir}')
         try:
-            code, out = await _run_uv([UV_BIN, 'venv', '--no-project', str(venv_dir)], UV_VENV_TIMEOUT_SECONDS, env=install_env)
+            code, out = await _run_uv(venv_args, UV_VENV_TIMEOUT_SECONDS, env=install_env)
         except asyncio.TimeoutError:
             # R4-C P2: a timed-out `uv venv` leaves a half-built directory behind;
             # the `if not venv_dir.exists()` check would then silently reuse the
@@ -2006,9 +2696,125 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
     # too, instead of collapsing onto the .venvs root).
     task_id = _derive_task_key(req)
 
-    # Glue script support: write inline source to a temp file and use it as entrypoint
+    # ---------------------------------------------------------------------
+    # FR-06b/FR-15（python_task_multiversion）：任务声明的 Python 版本。
+    #
+    # 只在 runtime=python 时消费（NG-02：node/shell 的多版本不在本期范围，
+    # 声明了也不影响其既有 argv）。非法格式在此显式拒绝——绝不静默忽略，
+    # 否则用户以为跑在 3.7 上、实际跑在宿主 3.12 上（最危险的一类静默降级）。
+    # ---------------------------------------------------------------------
+    runtime_version: str | None = None
+    _raw_runtime_version = task.get('runtimeVersion')
+    if _raw_runtime_version is not None and str(_raw_runtime_version).strip():
+        declared_version = str(_raw_runtime_version).strip()
+        if runtime != 'python':
+            logger.warning(
+                'Task %s declares runtimeVersion=%s but runtime=%s — the version '
+                'declaration only applies to the python runtime and is ignored',
+                task.get('name'), declared_version, runtime,
+            )
+        elif not RUNTIME_VERSION_PATTERN.fullmatch(declared_version):
+            return {
+                'success': False,
+                'logs': '',
+                'exitCode': None,
+                'errorMessage': (
+                    f'Invalid runtimeVersion (expected X.Y, e.g. 3.7): {declared_version!r}'
+                ),
+                'durationMs': int((time.monotonic() - started_at) * 1000),
+            }
+        else:
+            runtime_version = declared_version
+
+    # ---------------------------------------------------------------------
+    # FR-01/02/03/04（python_task_multiversion）：zip 整包渠道。
+    #
+    # **优先级显式化：git > glue > application_zip**（DESIGN.md §2.6 的存量推导
+    # 优先级）。存量库里存在 `gitRepo` 与 `applicationId` 并存的历史行——
+    # applicationId 历史上只是一个"关联到应用记录"的弱引用，**不表示"代码来自
+    # 这个 zip"**；迁移正是靠 `git > glue > application_zip > NULL` 的优先级把
+    # 这种行判成 git。若这里只看 `bool(applicationId)`，同一份工作目录会先被
+    # git clone、再被 zip 解压覆盖（还叠加包内 requirements），既违反兼容红线
+    # §4.4（三渠道既有行为与结果不变），也是"包内容覆盖已克隆源码"的安全意外。
+    #
+    # 触发条件（二选一，且必须没有更高优先级的代码来源）：
+    #   1. `codeSource == 'application_zip'` —— 写面校验过的**显式信号**
+    #      （CONTRACT.md §2.1：该取值要求 applicationId 必填）；
+    #   2. 无 `codeSource` 但 `applicationId` + **`packageUrl` 同时存在**——
+    #      历史行/迁移置 NULL 的歧义场景。这里刻意改看 `packageUrl` 这个
+    #      **admin 生产出来的正向信号**（admin 只为 zip 任务附 packageUrl），
+    #      而不是继续依赖 applicationId 这个歧义列：admin 不当作 zip 任务的行
+    #      自然就没有 packageUrl，于是原样落回既有行为。
+    #
+    # 位置纪律：必须在 `load_manifest` **之前**——manifest 从 work_dir 读取，
+    # 而 work_dir 此刻除了刚解压的包内容之外应当为空。若先读 manifest，包内
+    # 自带的 manifest.yaml 就能劫持 entrypoint/requirements（把"包内数据"
+    # 提权成"任务配置"），那是 zip 渠道独有的攻击面。
+    # ---------------------------------------------------------------------
+    code_source = task.get('codeSource') or task.get('code_source')
+    application_id = task.get('applicationId') or task.get('application_id')
+    package_url = task.get('packageUrl') or task.get('package_url')
     glue_source = task.get('glueSource') or task.get('glue_source')
     glue_language = task.get('glueLanguage') or task.get('glue_language')
+
+    if code_source == 'application_zip':
+        is_zip_channel = True
+    elif application_id and package_url:
+        is_zip_channel = True
+    else:
+        is_zip_channel = False
+    if is_zip_channel and (git_repo or glue_source):
+        # 写面互斥（CONTRACT.md §2.1）保证不可达；真出现了就按文档优先级让位，
+        # 并留下 ERROR 级日志——静默按其中一个跑才是真正危险的。
+        logger.error(
+            'Task %s declares codeSource=%r/applicationId=%r together with %s — '
+            'applying the documented precedence git > glue > application_zip and '
+            'ignoring the zip channel',
+            task.get('name'), code_source, application_id,
+            'gitRepo' if git_repo else 'glueSource',
+        )
+        is_zip_channel = False
+
+    if is_zip_channel:
+        if not package_url:
+            # 绝不静默跑一个空工作目录（那会把"配置缺失"伪装成"脚本报错"）。
+            # 只有**确实是** zip 任务（codeSource 显式声明）才会走到这里：歧义
+            # 分支本就要求 packageUrl 存在，所以存量 git+applicationId 行不受影响。
+            return {
+                'success': False,
+                'logs': '',
+                'exitCode': None,
+                'errorMessage': (
+                    'application_zip task has no packageUrl in the dispatch payload '
+                    '(admin must attach the resolved applications.packageUrl); '
+                    f'applicationId={application_id!r}'
+                ),
+                'durationMs': int((time.monotonic() - started_at) * 1000),
+            }
+        safe_url = _assert_safe_package_url(str(package_url))
+        # 下载到工作目录内的临时文件（不落内存：200MB 上限下内存驻留不可接受）。
+        zip_path = work_dir / '.package.zip'
+        try:
+            size = await _download_package(safe_url, zip_path)
+            logger.info(
+                'Downloaded package for execution %s (%d bytes)', req.executionId, size
+            )
+            await asyncio.to_thread(_extract_package, zip_path, work_dir)
+        finally:
+            # 包本身是中间产物：解压完即删，既省磁盘也让 TTL 清扫不必认识它。
+            _remove_quietly(zip_path)
+        logger.info('Package extracted into %s', work_dir)
+
+        # D4/AC-04a/b：包内 requirements.txt ∪ 任务级 requirements（任务级同名覆盖）。
+        package_requirements = _read_package_requirements(work_dir)
+        if package_requirements:
+            requirements = merge_requirements(package_requirements, requirements)
+            logger.info(
+                'Merged package + task requirements for %s: %s',
+                req.executionId, requirements,
+            )
+
+    # Glue script support: write inline source to a temp file and use it as entrypoint
     if glue_source:
         if glue_language == 'python' or (not glue_language and runtime == 'python'):
             glue_file = work_dir / 'glue_script.py'
@@ -2087,17 +2893,83 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
     if entry is not None and entry.traceparent:
         env['AUTOFLOW_TRACE_ID'] = entry.traceparent
 
+    # ---------------------------------------------------------------------
+    # FR-07/11/12（python_task_multiversion）：解释器获取与解释器失败留痕。
+    #
+    # 位置在 cmd 构造**之前**、runtime 分派**之外**：glue（AC-11a）与
+    # 无依赖 python（AC-04c）两条路径都要以"所选解释器"运行入口，它们都不建
+    # venv，所以解释器解析不能藏在 ensure_venv 里。
+    #
+    # D14 明确失败：声明版本取不到就失败，**绝不回退宿主解释器**——回退会把
+    # "版本不匹配"掩盖成"任务跑成功了"，是最坏的一种降级。
+    # ---------------------------------------------------------------------
+    interpreter_failure: dict | None = None
+    resolved_interpreter: str | None = None
+    if runtime_version is not None and runtime == 'python' and glue_source:
+        # AC-11a：glue 不建 venv（FR-11/AC-11b 既有语义逐字保留），但声明了
+        # 版本就必须用该版本的解释器执行脚本（仅 python glue 需要解释器；
+        # shell glue 走 _build_shell_cmd，版本声明不适用）。
+        try:
+            resolved_interpreter = str(
+                await _ensure_interpreter(runtime_version, timeout=UV_VENV_TIMEOUT_SECONDS)
+            )
+        except Exception as exc:  # noqa: BLE001 - 全部归类为解释器不可获取
+            if not _is_interpreter_unavailable(exc):
+                raise
+            pool = _pool_summary()
+            logger.error(
+                'Interpreter %s unavailable for glue execution %s: %s',
+                runtime_version, req.executionId, exc,
+            )
+            return _interpreter_failure_result(
+                runtime_version, exc, pool, started_at, req.executionId,
+            )
+
+    if runtime == 'python' and not requirements and runtime_version is not None:
+        # AC-04c + D14：无依赖的 python 任务**同样**要按声明版本运行——它不建
+        # venv，但解释器必须换。这条分支此前只在 glue 里处理，于是无依赖 +
+        # 声明版本的任务会静默落回宿主解释器（D14 明令禁止的降级）。取不到
+        # 就明确失败，绝不回退。
+        try:
+            resolved_interpreter = str(
+                await _ensure_interpreter(runtime_version, timeout=UV_VENV_TIMEOUT_SECONDS)
+            )
+        except Exception as exc:  # noqa: BLE001 - 全部归类为解释器不可获取
+            if not _is_interpreter_unavailable(exc):
+                raise
+            pool = _pool_summary()
+            logger.error(
+                'Interpreter %s unavailable for dependency-free execution %s: %s',
+                runtime_version, req.executionId, exc,
+            )
+            return _interpreter_failure_result(
+                runtime_version, exc, pool, started_at, req.executionId,
+            )
+
     if runtime == 'python':
         if requirements:
             # Each task ID maps to a persistent venv; same task reuses the same env
             _validate_requirements(requirements)
+            # FR-16/D6: task_id already carries the version signature
+            # (_derive_task_key) — `.venvs/<id>` vs `.venvs/<id>-3.7` — so a
+            # declared-version change can never reuse the old venv (AC-16a).
             venv_dir = Path(settings.work_dir) / '.venvs' / task_id
             # E6: ensure_venv mutates .venvs/<task_id> — its only production
             # call site is here inside run_task, which only runs under the
             # per-task lock from _run_and_callback, so venv creation/install
             # never runs concurrently for the same task (E8 additionally
             # protects a live task's venv dir from the disk TTL sweep).
-            python_bin = await ensure_venv(venv_dir, requirements)
+            try:
+                python_bin = await ensure_venv(
+                    venv_dir, requirements, python_version=runtime_version
+                )
+            except Exception as exc:  # noqa: BLE001 - 仅解释器类失败改写留痕
+                if not _is_interpreter_unavailable(exc):
+                    raise
+                return _interpreter_failure_result(
+                    str(runtime_version), exc, _pool_summary(), started_at, req.executionId,
+                )
+            resolved_interpreter = str(python_bin)
             cmd = [str(python_bin), entrypoint]
         else:
             # W-02 follow-up (windows-findings): hardcoded `python3` is absent on
@@ -2105,7 +2977,11 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
             # and python glue task failed to launch there. sys.executable is the
             # interpreter running this executor and exists on every platform; the
             # task inherits the same stdlib the executor was validated against.
-            cmd = [sys.executable, entrypoint]
+            #
+            # AC-10a/AC-04c 兼容红线：无声明版本 → `sys.executable` 逐字节不变。
+            # 声明版本 → 用池内该版本解释器（解析已在上面完成，取不到即已返回
+            # 失败，绝不落到这里）。
+            cmd = [resolved_interpreter or sys.executable, entrypoint]
     elif runtime == 'node':
         node_exe = 'node.exe' if sys.platform == 'win32' else 'node'
         cmd = [node_exe, entrypoint]

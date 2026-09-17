@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, patch
 
 import auth as auth_module
 from config import settings
+import main as main_module
 from main import register_executor, executor_started_at, executor_startup_id
 
 
@@ -30,6 +31,10 @@ async def test_register_executor_posts_capacity_metadata(monkeypatch):
     """Python executor registration should report scheduler capacity to admin-api."""
     _patch_settings(monkeypatch)
     monkeypatch.setattr(settings, 'max_concurrent_tasks', 7)
+    # FR-13/AC-13a（python_task_multiversion）：注册载荷新增 interpreters 字段。
+    # 这里钉死探测结果，断言与"真实池内容"解耦（否则本机会因为装了 uv/解释器
+    # 而产出不确定的清单）。
+    monkeypatch.setattr(main_module, '_discovered_interpreters', [])
 
     mock_client = AsyncMock()
     mock_client.__aenter__.return_value = mock_client
@@ -46,10 +51,13 @@ async def test_register_executor_posts_capacity_metadata(monkeypatch):
         'appName': 'py-executor',
         'address': 'localhost:8001',
         'type': 'python',
-        'version': '1.0.0',
+        # R5: EXECUTOR_VERSION 1.0.0 → 2.0.0（新增 interpreters 上报能力）
+        'version': '2.0.0',
         'capabilities': ['python', 'shell'],
         # ARCH-32: 派发模式自报（默认 push）
         'dispatchMode': 'push',
+        # CONTRACT.md §2.3：解释器清单（可缺省；本执行器始终上报）
+        'interpreters': [],
         'maxConcurrentTasks': 7,
         'restartedAt': executor_started_at,
         'startupId': executor_startup_id,
