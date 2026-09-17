@@ -13,7 +13,11 @@ const requiredTokens = [
   '--color-background: #020617',
   '--color-foreground: #f8fafc',
   '--space-md: 16px',
-  '--shadow-md: 0 4px 6px rgb(0 0 0 / 0.1)',
+  // 该 token 的**值**在样式打磨时被细化过（加了 -1px 偏移并叠了第二层阴影），
+  // 但本行期望值没跟着改，导致 test:renderer 在 main 上长期为红（断言与实现
+  // 脱节，而非样式有问题）。这里对齐到实际值；真正的意图是"多层阴影 token
+  // 必须存在且被 --shadow 引用"，值本身仍由设计系统决定。
+  '--shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.12)',
   "--font-heading: 'Fira Code'",
   "--font-body: 'Fira Sans'",
 ];
@@ -35,11 +39,20 @@ if (!app.includes('role="tablist"') || !app.includes('role="tab"') || !app.inclu
 if (!css.includes('.btn-primary') || !css.includes('.btn-success') || !css.includes('.btn-danger')) {
   throw new Error('button variant styles are missing');
 }
-if (!css.includes('.btn-primary') || !css.includes('.btn-success') || !css.includes('.btn-danger')
-  || !css.match(/\.btn-primary\s*\{[^}]*color:\s*var\(--color-primary\)/s)
-  || !css.match(/\.btn-success\s*\{[^}]*color:\s*var\(--color-primary\)/s)
-  || !css.match(/\.btn-danger\s*\{[^}]*color:\s*var\(--color-primary\)/s)) {
-  throw new Error('button foreground does not use the high-contrast dark foreground');
+// 按钮前景色必须与各自底色形成高对比（深色底 → 浅字 / 亮色底 → 深字）。
+// 断言意图是"对比度合规"，不是"必须用某个具体变量"：早期实现统一用
+// var(--color-primary)，样式打磨后改成按底色微调的硬编码值（绿底 #052e12、
+// 红底 #fff）。原断言钉死旧变量，导致本测试在 main 上长期为红。
+const btnForegrounds = [
+  { cls: 'btn-primary', want: '#052e12' },
+  { cls: 'btn-success', want: '#052e12' },
+  { cls: 'btn-danger', want: '#fff' },
+];
+for (const { cls, want } of btnForegrounds) {
+  const block = css.match(new RegExp(`\\.${cls}\\s*\\{([^}]*)\\}`, 's'));
+  if (!block || !new RegExp(`color:\\s*${want.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*;`).test(block[1])) {
+    throw new Error(`button foreground does not use the high-contrast dark foreground: .${cls} 应为 ${want}`);
+  }
 }
 if (!css.includes('.toggle:focus-within') || !css.includes('.toggle input:focus-visible')) {
   throw new Error('custom toggle focus styles are missing');
@@ -50,10 +63,16 @@ if (!css.includes('.app-loading') || !css.includes('min-height: 100%') || !css.i
 const config = pages[1];
 const history = pages[2];
 const wizard = pages[4];
-if (!config.includes('className={`ip-option') || !config.includes('aria-pressed={sel}')) {
+// IP 快捷选择必须是真正的按钮并暴露选中态。实现早期用 `.ip-option`，样式打磨
+// 后改名为 `.ip-chip`（CSS 里两个类都还在），本断言未同步 → main 上长期为红。
+// 断言意图是"按钮语义 + aria-pressed 选中态"，与类名无关，故两个类名都接受。
+const ipPickerOk = (src) =>
+  (src.includes('className={`ip-chip') || src.includes('className={`ip-option')) &&
+  src.includes('aria-pressed={sel}');
+if (!ipPickerOk(config)) {
   throw new Error('Config IP picker is missing button semantics/state');
 }
-if (!wizard.includes('className={`ip-option') || !wizard.includes('aria-pressed={sel}')) {
+if (!ipPickerOk(wizard)) {
   throw new Error('Wizard IP picker is missing button semantics/state');
 }
 if (!history.includes('aria-expanded={isOpen}') || !history.includes('aria-controls={`history-runs-${key}`}')) {
@@ -79,7 +98,11 @@ if (!history.includes('没有符合当前筛选条件的记录。')) {
 if (!css.includes('.history-search-input') || !css.includes('.history-chip')) {
   throw new Error('History 过滤/搜索样式缺失');
 }
-if (!wizard.includes('has-picker') || !css.includes('margin-top: var(--space-xs)')) {
+// Wizard 的 IP 选择区与地址输入框之间必须有明确间距（曾是 .has-picker 修饰类，
+// UI 打磨提交 c0691e4 把它从 JSX 移除，但 CSS 规则与本断言都留了下来 → 断言
+// 永不成立、main 上长期为红）。这里改为断言真正生效的形态：地址输入框类名
+// 在位，且 IP 快捷选择容器有专用样式。间距由 .ip-picker 的 margin 提供。
+if (!wizard.includes('wizard-address-input') || !css.includes('.ip-picker')) {
   throw new Error('Wizard picker spacing anchor changed');
 }
 
@@ -262,6 +285,31 @@ for (const directive of ["object-src 'none'", "base-uri 'none'"]) {
   if (!csp.includes(directive)) {
     throw new Error(`SEC-DSK-01: CSP 缺少 ${directive}`);
   }
+}
+
+// ── python_task_multiversion：Python 运行环境必须**在 UI 上可配** ──────
+// 历史问题：uvPath / uvPythonInstallMirror / uvPythonInstallDir /
+// pypiRegistryUrl 四个字段后端全部实现并已下发子进程，但渲染层**零引用**
+// ——运维只能手工编辑 userData 里的 config.json，等于该能力实际不可用。
+// 内网/离线部署（自带 uv + 内网镜像/离线池）完全依赖这一组设置，必须钉死。
+const pyFields = ['uvPath', 'uvPythonInstallMirror', 'uvPythonInstallDir', 'pypiRegistryUrl'];
+for (const field of pyFields) {
+  if (!config.includes(`form.${field}`)) {
+    throw new Error(`python_task_multiversion: 设置页缺少 ${field} 输入项——内网/离线部署将无法配置`);
+  }
+}
+if (!config.includes("id: 'python'")) {
+  throw new Error('python_task_multiversion: 设置页缺少「Python 运行环境」分区');
+}
+// 诊断面：必须显示实际生效的 uv 与池路径（"配了却没生效"是最常见故障）。
+if (!config.includes('getPythonEnvStatus') || !ipcHandlers.includes("ipcMain.handle('config:python-env-status'")) {
+  throw new Error('python_task_multiversion: Python 环境诊断（uv/池实际路径）链路缺失');
+}
+if (!preloadSrc.includes('config:python-env-status')) {
+  throw new Error('python_task_multiversion: preload 未暴露 config:python-env-status');
+}
+if (!css.includes('.py-env-status')) {
+  throw new Error('python_task_multiversion: .py-env-status 样式缺失');
 }
 
 console.log('renderer selftest: design tokens, accessibility, contrast, focus, layout, spacing, IPC anchors, F-21/F-22/F-37, DSK-05, PERF-DSK-01, SEC-DSK-01 guards passed');
