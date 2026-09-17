@@ -1003,6 +1003,96 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  # ── uv 打包闸：发布包必须自带 uv（desktop-v1.5.1 实爆）────────────────────
+  # 背景：客户端执行器的 Python 多版本能力依赖 uv，而安装包**默认不打 uv**
+  # （ACF_BUNDLE_UV 默认 0）。release-desktop.yml 此前也没设该开关，导致正式
+  # 安装包全部不含 uv：全新设备装完只上报 `runtimes: shell, node`，声明
+  # runtimeVersion 的任务全部失败，用户侧仅一条 WARN。
+  # 本 job 在每次 PR / 手动触发时实际跑一次"带 uv 的打包"，把三类回归一次性
+  # 钉死：① 开关路径本身可用；② 各平台归档格式正确（Windows 官方包是 .zip，
+  # 旧脚本一律按 .tar.gz 下载，**必然 404**）；③ 产物落点与
+  # src/main/uv-paths.ts、executor-node/interpreters.ts 的解析约定一致。
+  # 只跑 PR / 手动：需要联网下载 uv（约 20MB），不适合每次 push。
+  desktop-uv-bundle-gate:
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: |
+            apps/executor-desktop/package-lock.json
+            apps/executor-node/package-lock.json
+
+      - run: npm ci --ignore-scripts
+        working-directory: apps/executor-desktop
+      # bundle-executor.sh 的 ncc 会对 executor-node 全项目类型检查，需先装依赖
+      - run: npm ci --ignore-scripts
+        working-directory: apps/executor-node
+
+      # 真实下载 uv 并强制要求成功（ACF_UV_REQUIRED=1 → 缺 uv 即失败）。
+      # 这一步同时验证了 release-desktop.yml 所用的同一组环境变量。
+      - name: Bundle uv (strict)
+        shell: bash
+        working-directory: apps/executor-desktop
+        env:
+          ACF_BUNDLE_UV: '1'
+          ACF_UV_REQUIRED: '1'
+          ACF_UV_VERSION: '0.8.17'
+        run: bash scripts/bundle-executor.sh
+
+      # 落点断言：必须正好是 <resources>/uv/<bin>，因为 uv-paths.resolveBundledUvPath
+      # 与 interpreters.bundledUvCandidates 都按这个路径查（两处硬约定，写错
+      # 就是"文件在但找不到"的静默降级）。
+      - name: Assert uv landed at the exact path the runtime resolves
+        shell: bash
+        working-directory: apps/executor-desktop
+        run: |
+          set -euo pipefail
+          case "${{ matrix.os }}" in
+            windows-*) exe=uv.exe ;;
+            *)         exe=uv ;;
+          esac
+          test -f "resources/uv/${exe}" \
+            || { echo "::error::expected apps/executor-desktop/resources/uv/${exe} — 与 uv-paths.ts 的解析落点不一致"; exit 1; }
+          echo "uv present at resources/uv/${exe}: $(wc -c < "resources/uv/${exe}") bytes"
+
+      # 真正跑一次自带 uv，确认它在本平台**可执行**（不只是文件存在）。
+      # Windows 上 chmod 无效，权限/损坏只有实跑才知道。
+      - name: Smoke-run the bundled uv
+        shell: bash
+        working-directory: apps/executor-desktop
+        run: |
+          set -euo pipefail
+          case "${{ matrix.os }}" in
+            windows-*) exe=uv.exe ;;
+            *)         exe=uv ;;
+          esac
+          "resources/uv/${exe}" --version
+
+      # 反向断言：发布闸必须真的能拦住残包。删掉已打好的 uv 后，仅设
+      # ACF_UV_REQUIRED=1（不设 ACF_BUNDLE_UV，模拟"发布流水线忘开开关"）
+      # 必须失败——这正是 v1.5.1 出事的形状。防止未来有人把闸改成永远为真。
+      - name: Strict gate must fail when uv is absent
+        shell: bash
+        working-directory: apps/executor-desktop
+        run: |
+          set -euo pipefail
+          rm -rf resources/uv
+          if ACF_UV_REQUIRED=1 bash scripts/bundle-executor.sh >/dev/null 2>&1; then
+            echo "::error::ACF_UV_REQUIRED=1 且无 uv 时脚本竟然成功——发布闸失效，残包可被发布"
+            exit 1
+          fi
+          echo "::notice::发布闸有效：无 uv + ACF_UV_REQUIRED=1 → 构建失败（残包拦得住）"
+
   # ── DSK-01：desktop macOS 打包（GitHub 托管 macos runner 即真机环境）──
   # electron-builder.yml mac 段（dmg x64+arm64 + icns）与 dist:mac script 已
   # 就绪，本 job 补「真实 macOS 打包执行 + 产物落 artifact」——此前缺的只是

@@ -92,6 +92,9 @@ playwright-report/
 
 # 上传目录
 apps/admin-api/uploads/
+ 
+# 宝塔部署配置（仅服务器本地维护，不入库）
+apps/admin-api/.htaccess
 report.*.json
 
 # 混沌演练临时 env（含口令，勿入库）
@@ -102,6 +105,12 @@ report.*.json
 # `npm run build:executor`（本地）或 CI desktop-* bundle job 打包前重打。
 # 期望哈希跟踪在 apps/executor-desktop/executor-node-bundle.sha256（drift guard 把守）。
 apps/executor-desktop/resources/executor-node/
+
+# 随包分发的 uv 二进制（ACF_BUNDLE_UV=1 / ACF_UV_REQUIRED=1 时由
+# scripts/bundle-executor.sh 拉取，单个约 59MB）。同 F-19 的理由：构建产物
+# 不入库，随安装包一起出。注意此前只忽略了 executor-node/，uv 目录是**裸的**
+# ——一旦有人跑过打包，59MB 二进制会被 git add 吞进仓库。
+apps/executor-desktop/resources/uv/
 
 dump.rdb
 
