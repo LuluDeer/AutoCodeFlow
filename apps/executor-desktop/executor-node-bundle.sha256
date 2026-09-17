@@ -51,4 +51,7 @@
 #     不得以 '-' 开头、不得含 `..` 段，另拒控制字符），既能放行"解释器+脚本+
 #     固定参数"，又仍封堵串联/替换/引用（`;` `&` `|` `$()` 反引号 引号 等）。
 #     同时补一条正向用例钉住这些真实形态（2282kB → 2283kB）。遵 ADR-005 同 commit。
-485e69c9736158d07039e690fe727633d4dcbc6fccf24c98f093f33d767a5f06  index.js
+#   - 28b7e725…：python_task_multiversion——executor-node 新增 interpreters.ts /
+#     zip-safety.ts + execute.ts 多版本执行 + config/callback/scheduler 对齐
+#     （2383kB → 2377kB）。遵 ADR-005 同 commit。
+28b7e725348847c33ec9544d8fcdc5752ff48ca7eb4e5f4eefdf8d79c3355540  index.js
