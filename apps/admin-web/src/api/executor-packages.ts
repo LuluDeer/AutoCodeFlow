@@ -9,7 +9,18 @@ export interface ExecutorPackage {
   fileSize: number;
   sha256: string;
   changelog: string;
-  isLatest: boolean;
+  /**
+   * 后端 `executor_packages.status` 列（`ExecutorPackageStatus`：
+   * `active` / `deprecated` / `uploading`）。
+   *
+   * 此前这里声明的是 `isLatest: boolean`——**后端从无此字段**（全仓 grep 只命中
+   * 前端三处）。`ExecutorPackagesPage` 曾用它推导状态：`pkg.isLatest` 恒为
+   * `undefined`，于是每个包都被显示成「已弃用」，而推送按钮的
+   * `disabled={row.status !== 'active'}` 让**推送功能对全部安装包不可达**。
+   * 真实取值本来就在同一个响应里（`findAll()` 原样返回 `status`），
+   * 故此处改为如实声明该列。
+   */
+  status: 'active' | 'deprecated' | 'uploading';
   downloadCount: number;
   createdAt: string;
   updatedAt: string;

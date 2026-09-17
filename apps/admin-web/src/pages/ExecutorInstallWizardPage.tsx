@@ -64,6 +64,40 @@ const TYPE_COLORS: Record<string, string> = {
   universal: 'purple',
 };
 
+/**
+ * 环境变量参考块里展示的**键名**（供 `__tests__/install-wizard-env-vars.test.ts`
+ * 与执行器源码交叉校验）。
+ *
+ * 为什么单独导出：这个块是「照抄即可用」的参考，键名写错**不会报错**——用户抄了
+ * 一个没人读的变量，执行器静默落回默认值，注册还照常成功（唯一键是 address，
+ * appName 不唯一），于是每台手工部署的执行器都以同名出现在列表里。本轮审计正是
+ * 在这里抓到 `EXECUTOR_NAME`（全仓仅此一处，两侧执行器读的都是 `APP_NAME`）。
+ * 把键名提出来，测试就能断言「块里出现的每个键都真的被执行器读取」。
+ */
+export const INSTALL_ENV_KEYS = [
+  'ADMIN_API_URL',
+  'EXECUTOR_SHARED_TOKEN',
+  'EXECUTOR_ADDRESS_PUBLIC',
+  'APP_NAME',
+] as const;
+
+/**
+ * 第 5 步「执行器已上线」的判据：**本次新出现的**在线执行器。
+ *
+ * 单独抽成纯函数是为了可被单测直接钉住——这段逻辑此前写在轮询回调里，唯一的
+ * 测试从未离开第 1 步，所以「把已有执行器误判成新装的」这个缺陷没有任何守卫。
+ *
+ * @param executors 当前执行器列表
+ * @param knownIds  进入第 5 步**之前**已存在的执行器 id 集合（基线快照）
+ * @returns 第一个「在线且不在基线里」的执行器；没有则 null
+ */
+export function findNewlyOnlineExecutor<T extends { id: string; status: string }>(
+  executors: readonly T[],
+  knownIds: ReadonlySet<string>,
+): T | null {
+  return executors.find((e) => e.status === 'online' && !knownIds.has(e.id)) ?? null;
+}
+
 function formatBytes(bytes: number): string {
   if (!bytes) return '-';
   if (bytes < 1024) return `${bytes} B`;
@@ -233,7 +267,7 @@ export default function ExecutorInstallWizardPage() {
   }, []);
 
   const startPolling = useCallback(
-    (startTime: number) => {
+    (startTime: number, knownIds: ReadonlySet<string>) => {
       stopPolling();
       setPolling(true);
       setPollTimedOut(false);
@@ -253,11 +287,16 @@ export default function ExecutorInstallWizardPage() {
         }
         try {
           const executors = await executorsApi.list();
-          const recent = executors.find(
-            (e) =>
-              e.status === 'online' &&
-              new Date(e.lastHeartbeat).getTime() > startTime - 5000,
-          );
+          // **必须是本次新出现的执行器**（id 不在进入本步骤前的基线集合里）。
+          //
+          // 此前判据只有「status === 'online' 且 lastHeartbeat 比开始时间早不超过
+          // 5s」——它没有把这个执行器和用户正在装的那台关联起来。任何一台**已经**
+          // 在心跳的执行器都会满足它（心跳 30s 一次、轮询每 5s 一次，而 startTime
+          // 是固定值，匹配窗口只增不减），于是在已有健康执行器的环境里，第 5 步会
+          // 在几秒内翻成「执行器已上线」并**报出另一台执行器的名字**——而用户真正
+          // 要装的那台可能根本没起来。这一步的全部意义就是验证，误报成功比 60s
+          // 超时更糟：超时至少给出排查指引。
+          const recent = findNewlyOnlineExecutor(executors, knownIds);
           if (recent) {
             stopPolling();
             setFoundExecutor(recent);
@@ -276,10 +315,19 @@ export default function ExecutorInstallWizardPage() {
 
   useEffect(() => () => stopPolling(), [stopPolling]);
 
-  const handleGoToStep4 = () => {
+  const handleGoToStep4 = async () => {
     const now = Date.now();
+    // 基线快照：进入本步骤**之前**已存在的执行器 id。取不到（接口失败）时退化为
+    // 空集合——即"任何在线执行器都算新"，与修复前行为一致，不会把用户卡在这一步。
+    let knownIds: ReadonlySet<string> = new Set<string>();
+    try {
+      const executors = await executorsApi.list();
+      knownIds = new Set(executors.map((e) => e.id));
+    } catch {
+      // 保持空集合（宽松兜底），下一步的轮询自身还会再试。
+    }
     setCurrentStep(4);
-    startPolling(now);
+    startPolling(now, knownIds);
   };
 
   const handleReset = () => {
@@ -295,12 +343,21 @@ export default function ExecutorInstallWizardPage() {
   };
 
   const adminApiUrl = window.location.origin;
-  const envVarBlock = [
-    `ADMIN_API_URL=${adminApiUrl}`,
-    `EXECUTOR_SHARED_TOKEN=${sharedToken ?? '<your-executor-shared-token>'}`,
-    `EXECUTOR_ADDRESS_PUBLIC=<host-or-ip>:<port>`,
-    `EXECUTOR_NAME=my-executor-1`,
-  ].join('\n');
+  // 环境变量参考块：键名必须与执行器**真正读取**的变量一致，否则用户照抄后
+  // 静默落回默认值。此前末行是 `EXECUTOR_NAME`——该键在**全仓只有这一处**
+  // 出现，两侧执行器读的都是 `APP_NAME`（executor-node/src/config.ts:68、
+  // executor-python/config.py:96），`scripts/install.sh:24` 写的也是 `APP_NAME`。
+  // 后果不是报错而是静默：注册照常成功（唯一键是 address，appName 不唯一），
+  // 但每一台手工部署的执行器都以默认名 `executor-node-1` 出现在列表里、无法区分。
+  //
+  // 键名集中在 INSTALL_ENV_KEYS（与执行器源码交叉校验，见 install-wizard-env-vars.test.ts）。
+  const envVarValues: Record<(typeof INSTALL_ENV_KEYS)[number], string> = {
+    ADMIN_API_URL: adminApiUrl,
+    EXECUTOR_SHARED_TOKEN: sharedToken ?? '<your-executor-shared-token>',
+    EXECUTOR_ADDRESS_PUBLIC: '<host-or-ip>:<port>',
+    APP_NAME: 'my-executor-1',
+  };
+  const envVarBlock = INSTALL_ENV_KEYS.map((k) => `${k}=${envVarValues[k]}`).join('\n');
 
   return (
     <div>
@@ -711,8 +768,9 @@ export default function ExecutorInstallWizardPage() {
             {pollTimedOut && (
               <Button
                 onClick={() => {
-                  const now = Date.now();
-                  startPolling(now);
+                  // 「重新检测」必须**重取基线**，否则用户在超时后又装好了执行器，
+                  // 也会因为基线是旧的而被当成"已存在"、永远检测不到。
+                  void handleGoToStep4();
                 }}
               >
                 {t('install.redetect')}

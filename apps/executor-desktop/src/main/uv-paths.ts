@@ -119,3 +119,101 @@ function joinPath(...parts: string[]): string {
     .map((p, i) => (i === 0 ? p.replace(/[\\/]+$/, '') : p.replace(/^[\\/]+|[\\/]+$/g, '')));
   return cleaned.join(sep);
 }
+
+/**
+ * 桌面执行器**必须**下发给 executor-node 子进程的环境变量（纯函数，可自检）。
+ *
+ * 为什么抽出来：`executor-process.ts` 依赖 Electron、无法在自检里加载，于是这个
+ * env 块**长期没有任何回归闸**——而它恰好承载两类"漏一个键就整机不可用"的配置：
+ *
+ *   1. `BIND_ADDRESS` —— executor-node 默认绑 127.0.0.1（为裸机安全）。容器由
+ *      compose 显式设 0.0.0.0，桌面端当时**漏了**：注册的是对外 LAN 地址，进程却
+ *      只监听 loopback，admin 每次派发都 ECONNREFUSED。表现是"注册成功、托盘绿灯、
+ *      永远收不到任务"，且 push 模式下没有兜底通道。
+ *   2. `EXECUTOR_ALLOW_PRIVATE_NETWORK` —— ssrf-guard 默认 fail-closed，而桌面
+ *      执行器要下载的 packageUrl 按构造就是私网的（admin 用 API_BASE_URL 拼）。
+ *      不打开则 zip 渠道任务被**自己的**闸门拒掉，而 git/纯依赖任务正常。
+ *
+ * 两者都是"漏了也不报错、只是永远不工作"的形态，正是必须有闸的那类。
+ */
+export function buildExecutorChildEnv(input: {
+  appName: string;
+  port: number;
+  /** 监听地址：桌面端必须是对外可被 admin 推到的地址（0.0.0.0）。 */
+  bindAddress: string;
+  executorHost: string;
+  executorAddressPublic?: string;
+  /**
+   * 主进程探到的第一块非内部网卡 IPv4，用于「对外地址」留空 + 通配监听时的
+   * 兜底。由调用方（executor-process）经 os.networkInterfaces() 解析后注入，
+   * 保持本函数纯 Node 可自检。
+   */
+  fallbackLanIp?: string;
+  /** 桌面设置页的日志级别，透传给 executor-node 的 winston logger。 */
+  logLevel?: string;
+  adminApiUrl: string;
+  workDir: string;
+  maxConcurrentTasks: number;
+  sharedToken: string;
+}): Record<string, string> {
+  const env: Record<string, string> = {
+    APP_NAME: input.appName,
+    PORT: String(input.port),
+    // 见函数头注 1：缺这个键 = 永远收不到任务。
+    BIND_ADDRESS: input.bindAddress,
+    EXECUTOR_ADDRESS: `${input.executorHost}:${input.port}`,
+    // 对外地址：显式配置优先；留空且监听在通配地址（桌面默认 0.0.0.0）时，
+    // 用主进程探到的真实网卡兜底——**不能**把 0.0.0.0 发出去：
+    // `0.0.0.0` 是**监听**地址，不是可路由的对外地址，而 admin-api 把
+    // 0.0.0.0/8 归为 reserved 并**无条件拒绝**注册/派发（safe-http.util 的
+    // assertSafeExecutorUrl，连私网开关也不放行）。此前留空时只返回空串，
+    // executor-node 又回落到同样是 0.0.0.0 的 EXECUTOR_ADDRESS——兜底形同虚设。
+    EXECUTOR_ADDRESS_PUBLIC: pickPublicAddress(
+      input.executorAddressPublic,
+      input.executorHost,
+      input.port,
+      input.fallbackLanIp,
+    ),
+    ADMIN_API_URL: input.adminApiUrl,
+    WORK_DIR: input.workDir,
+    MAX_CONCURRENT_TASKS: String(input.maxConcurrentTasks),
+    // 见函数头注 2：缺这个键 = zip 渠道任务的下载被自己拒掉。
+    EXECUTOR_ALLOW_PRIVATE_NETWORK: 'true',
+    EXECUTOR_SHARED_TOKEN: input.sharedToken,
+  };
+  // 日志级别仅在显式配置时下发；空值保持 executor-node 自身的 info 默认。
+  if (input.logLevel) env.LOG_LEVEL = input.logLevel;
+  return env;
+}
+
+/**
+ * 选出一个**可路由**的对外地址。
+ *
+ * 选择顺序：
+ *   1. 显式配置且不是通配监听地址 → 原样下发（显式填 loopback 在 admin 开启
+ *      私网开关的同机部署里是合法的，不替用户改写）；
+ *   2. 监听 host 本身就是真实网卡地址 → `${host}:${port}`；
+ *   3. 监听在通配地址（桌面默认 0.0.0.0）且调用方探到了局域网 IP →
+ *      用该 IP 兜底；
+ *   4. 一块对外网卡都没有（离线）→ 返回空串，调用方不下发该键
+ *      （此时本就不存在可路由地址，注册失败比谎报一个必然被拒的地址诚实）。
+ * 绝不把一个必然被 admin 判为 reserved 的通配地址当成"对外地址"发出去。
+ */
+export function pickPublicAddress(
+  configured: string | undefined,
+  host: string,
+  port: number,
+  fallbackLanIp?: string,
+): string {
+  const explicit = (configured ?? '').trim();
+  if (explicit && !isWildcardHost(explicit)) return explicit;
+  if (!isWildcardHost(host)) return `${host}:${port}`;
+  const lan = (fallbackLanIp ?? '').trim();
+  return lan ? `${lan}:${port}` : '';
+}
+
+/** `0.0.0.0:8002` / `[::]:8002` / `0.0.0.0` / `::` 都是通配监听地址，不是对外地址。 */
+function isWildcardHost(address: string): boolean {
+  const host = address.replace(/^\[/, '').split(/[\]:]/)[0].trim();
+  return host === '0.0.0.0' || host === '::' || host === '';
+}

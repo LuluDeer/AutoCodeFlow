@@ -9,7 +9,8 @@
     resolve_python_bin(version) -> Path | None
     ensure_version(version, *, timeout) -> Path
     ensure_version_async(version, *, timeout) -> Path      # WS4 的 async 入口
-    is_online_downloadable(version) -> bool
+    is_supported_version(version) -> bool                  # 可声明区间（settings）
+    is_online_downloadable(version) -> bool                # 在线下载下界 3.8
     invalidate_cache() -> None
     pool_summary() -> dict                                 # FR-12 留痕
     build_uv_env() -> dict[str, str]                       # WS4 复用（见下）
@@ -243,6 +244,55 @@ def is_online_downloadable(version: str) -> bool:
     return _version_tuple(version) >= _version_tuple(ONLINE_DOWNLOAD_MIN)
 
 
+def is_supported_version(version: str) -> bool:
+    """该版本是否落在部署方配置的**可声明区间**内（CONTRACT.md §1.1）。
+
+    与 executor-node 的 `isSupportedVersion`（常量 3.7~3.14）对等；区别是这里
+    读 `settings.python_runtime_version_min/max`（默认同为 3.7/3.14，部署方可
+    收紧）。这两个配置此前在**任何下载路径都没人读**（死配置）：`3.99` 这类
+    越界版本会真的去跑 `uv python install`，再以一个含糊的 `download_failed`
+    收场，而 node 侧在发起下载前就明确归类为 `not_downloadable`——同一个任务
+    只看被调度到哪个执行器就得到不同的失败分因。每次调用都现读 settings，
+    支持测试 monkeypatch 与配置热更。
+
+    非法版本抛 ``ValueError``（同 `validate_version`）。
+    """
+    validate_version(version)
+    key = _version_tuple(version)
+    return (
+        _version_tuple(settings.python_runtime_version_min)
+        <= key
+        <= _version_tuple(settings.python_runtime_version_max)
+    )
+
+
+def _raise_if_not_downloadable(version: str) -> None:
+    """下载前的两道**明确失败**闸门，次序与 node `installVersion` 逐字对齐：
+
+    1. 先查受支持区间（`is_supported_version`）——越界（如 `3.99`）直接
+       `not_downloadable`，不浪费一次 uv 调用；
+    2. 再查在线可下载下界（`< 3.8`）——3.7 只能离线预填，给出预填指引。
+
+    两道都不触发才允许进入下载/加锁路径。缓存命中在调用本闸门之前短路，
+    故离线预填进来的 3.7 不受下界影响。
+    """
+    if not is_supported_version(version):
+        raise InterpreterUnavailable(
+            version,
+            'not_downloadable',
+            f'version {version} is outside the supported range '
+            f'{settings.python_runtime_version_min}~'
+            f'{settings.python_runtime_version_max} '
+            '(uv has no such Python release to download); check the task\'s '
+            'runtimeVersion, or ask the operator to adjust '
+            'PYTHON_RUNTIME_VERSION_MIN/MAX',
+        )
+    if not is_online_downloadable(version):
+        raise InterpreterUnavailable(
+            version, 'not_downloadable', _not_downloadable_detail(version),
+        )
+
+
 def _pool_dir_name(version: str) -> str:
     """返回池内该版本目录名前缀（`cpython-3.9`），用于命中检查与损坏清理。"""
     return f'cpython-{version}'
@@ -430,10 +480,23 @@ def _parse_python_list(output: str, *, discovered_at: str) -> list[InterpreterIn
         line = raw_line.strip()
         if not line or line.startswith('#'):
             continue
-        parts = line.split()
+        # 按**首个空白串**切分为「键 / 路径」两段，而不是 `line.split()` 后取
+        # `parts[-1]`。理由：`<key>` 永远不含空白（形如
+        # `cpython-3.13.13-windows-x86_64-none`），但**路径可以含空格**——
+        # 例如池落在 `C:\Program Files\interpreters` 或
+        # `/opt/my pool/cpython-.../python.exe`。
+        #
+        # 旧写法 `parts[-1]` 在含空格路径上只会拿到最后一段（如 `python.exe`），
+        # 它既不是绝对路径、也不在池内，于是该行被**静默丢弃** → 池明明有解释器
+        # 却报空池 → 所有声明了 runtimeVersion 的任务在这台执行器上必然
+        # `interpreter_unavailable`。executor-node 侧不受影响（它用
+        # `uv python list --output-format json`，见 interpreters.ts:329 的同款
+        # 理由），故这是 python 侧独有的"谎报空池"缺陷。
+        parts = line.split(None, 1)
         if len(parts) < 2:
             continue
         key = parts[0]
+        path_token = parts[1].strip()
         version = None
         dir_match = _POOL_DIR_RE.match(key)
         if dir_match:
@@ -444,7 +507,6 @@ def _parse_python_list(output: str, *, discovered_at: str) -> list[InterpreterIn
                 version = token_match.group(1)
         if not version:
             continue
-        path_token = parts[-1]
         if not (path_token.startswith('/') or re.match(r'^[A-Za-z]:[\\/]', path_token)
                 or path_token.startswith('\\\\')):
             # 非绝对路径的行（例如 uv 的说明/警告文本）不进入清单。
@@ -1063,10 +1125,7 @@ def ensure_version(version: str, *, timeout: float) -> Path:
     cached = resolve_python_bin(version)
     if cached is not None:
         return cached
-    if not is_online_downloadable(version):
-        raise InterpreterUnavailable(
-            version, 'not_downloadable', _not_downloadable_detail(version),
-        )
+    _raise_if_not_downloadable(version)
     lock = _get_version_lock(version)
     with lock:
         return _ensure_version_locked(version, timeout)
@@ -1085,16 +1144,13 @@ async def ensure_version_async(version: str, *, timeout: float) -> Path:
       缓存命中复用（`_ensure_version_locked` 的 double-check），`uv python
       install` 恰好执行一次（EG-06）。
 
-    缓存命中/明确失败（不可在线下载）**不占用**全局下载槽。
+    缓存命中/明确失败（不可在线下载、越界）**不占用**全局下载槽。
     """
     validate_version(version)
     cached = resolve_python_bin(version)
     if cached is not None:
         return cached
-    if not is_online_downloadable(version):
-        raise InterpreterUnavailable(
-            version, 'not_downloadable', _not_downloadable_detail(version),
-        )
+    _raise_if_not_downloadable(version)
     semaphore = _get_download_semaphore()
     async with semaphore:
         return await asyncio.to_thread(ensure_version, version, timeout=timeout)

@@ -5,7 +5,6 @@ import * as http from 'http';
 import * as https from 'https';
 import * as path from 'path';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as net from 'net';
 import { configStore, executorProcess, heartbeat, syncNotifierWithConfig, trayManager, windowManager } from './index';
 import { setAutoLaunchEnabled, getAutoLaunchEnabled } from './autolaunch';
@@ -20,7 +19,8 @@ import {
 // 下发给子进程的值不一致，比没有诊断更误导）。这里刻意复用 executor-process
 // 已注入 Electron 上下文的包装函数，而不是直接调 uv-paths 的纯函数。
 import { resolveBundledUvPath, resolveInterpretersDir } from './executor-process';
-import log from './logger';
+import { listLocalIPv4s } from './network-util';
+import log, { applyLogLevel } from './logger';
 
 /**
  * R13: the only directories renderer-supplied log paths may live under.
@@ -146,6 +146,8 @@ export function registerIpcHandlers(): void {
       return { ok: false, error: 'invalid config payload' };
     }
     configStore.save(cfg);
+    // P3-1：logLevel 不再是死字段——保存后立即作用于桌面端自身的文件日志。
+    applyLogLevel(configStore.get('logLevel'));
     log.info('Config saved via IPC');
     trayManager.rebuildMenu();
     // DSK-04：通知开关 / workDir 可能被改——热同步通知器（开关 + meta 轮询目录）
@@ -178,6 +180,7 @@ export function registerIpcHandlers(): void {
       return { ok: false, error: 'invalid config payload' };
     }
     configStore.save({ ...cfg, configured: true });
+    applyLogLevel(configStore.get('logLevel'));
     log.info('Wizard complete, config saved');
     windowManager.closeWizard();
     windowManager.openStatus();
@@ -344,50 +347,10 @@ export function registerIpcHandlers(): void {
     }
   });
 
-  // 列出所有历史日志文件
-  ipcMain.handle('logs:listAll', () => {
-    const logDir = path.join(app.getPath('userData'), 'logs');
-    if (!fs.existsSync(logDir)) return [];
-    try {
-      const files = fs.readdirSync(logDir)
-        .filter((f: string) => f.startsWith('executor-') && f.endsWith('.log'))
-        .map((f: string) => {
-          const fullPath = path.join(logDir, f);
-          const stat = fs.statSync(fullPath);
-          return {
-            name: f,
-            size: stat.size,
-            modifiedAt: stat.mtimeMs,
-          };
-        })
-        .sort((a, b) => b.modifiedAt - a.modifiedAt); // 最新的在前面
-      return files;
-    } catch {
-      return [];
-    }
-  });
-
-  // 读取指定日志文件的内容
-  ipcMain.handle('logs:readFile', (_event, fileName: string) => {
-    const logDir = path.join(app.getPath('userData'), 'logs');
-    // 安全检查：防止路径遍历
-    if (fileName.includes('..') || fileName.includes('/') || fileName.includes('\\')) {
-      return { ok: false, error: 'Invalid filename' };
-    }
-    const filePath = path.join(logDir, fileName);
-    if (!fs.existsSync(filePath)) {
-      return { ok: false, error: 'File not found' };
-    }
-    try {
-      const content = fs.readFileSync(filePath, 'utf-8');
-      const lines = content.split('\n');
-      // 只取最后 2000 行
-      const lastLines = lines.slice(-2000);
-      return { ok: true, lines: lastLines, fileName };
-    } catch {
-      return { ok: false, error: 'Read failed' };
-    }
-  });
+  // P3-2：此处曾注册 logs:listAll / logs:readFile 两个 handler，但 preload
+  // 从未暴露、渲染层零调用，是不可达的死端点（历史日志查看 UI 从未落地）。
+  // 已删除；需要该功能时连同 preload 通道与 UI 一起加回（git 历史可找回实现，
+  // readFile 的路径遍历守卫需一并恢复）。
 
   ipcMain.handle('history:clear', () => {
     const workDir = configStore.get('workDir') as string | undefined;
@@ -560,18 +523,9 @@ export function registerIpcHandlers(): void {
     win?.close();
   });
 
-  ipcMain.handle('network:local-ips', () => {
-    const interfaces = os.networkInterfaces();
-    const ips: string[] = [];
-    for (const iface of Object.values(interfaces) as any[]) {
-      for (const addr of iface) {
-        if (addr.family === 'IPv4' && !addr.internal) {
-          ips.push(addr.address);
-        }
-      }
-    }
-    return ips;
-  });
+  // 与 executor-process 构造子进程 env 时的对外地址兜底同源（network-util），
+  // 避免一处改了网卡筛选规则、另一处漂移。
+  ipcMain.handle('network:local-ips', () => listLocalIPv4s());
 }
 
 function checkPortAvailable(port: number): Promise<{ available: boolean; message: string }> {

@@ -9,7 +9,7 @@ import { getAutoLaunchEnabled, setAutoLaunchEnabled } from './autolaunch';
 import { initUpdater } from './updater';
 import { Notifier } from './notifier';
 import * as path from 'path';
-import log, { initLogCleanup } from './logger';
+import log, { applyLogLevel, initLogCleanup } from './logger';
 
 // WIN-DISPLAY-HWACCEL (1.4.5 hotfix / N48)：部分 Windows 机器/显卡驱动上，
 // Chromium 硬件加速合成失败会表现为「窗口有背景色但内容黑屏」——与 v1.4.4
@@ -26,6 +26,8 @@ if (process.env.ELECTRON_USER_DATA_DIR) {
   app.setPath('userData', process.env.ELECTRON_USER_DATA_DIR);
 }
 export const configStore = new ConfigStore();
+// P3-1：logLevel 不再是死字段——启动即按已保存配置设置桌面端文件日志级别。
+applyLogLevel(configStore.get('logLevel'));
 export const executorProcess = new ExecutorProcess();
 export const heartbeat = new HeartbeatMonitor();
 export const trayManager = new TrayManager();

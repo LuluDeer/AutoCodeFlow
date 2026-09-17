@@ -255,10 +255,24 @@ function inflateEntry(payload: Buffer, entry: ParsedEntry): Buffer {
       );
     }
   }
-  // bzip2/lzma/加密等：我们无法在解压时校验，拒绝而不是盲解。
+  // bzip2(12)/lzma(14)/deflate64(9)/加密等：本模块的解压只用 zlib，**没有**
+  // 能解开它们的解码器，因此无法在解压时校验声明尺寸（zip-guard 的
+  // `extractNestedZipBytes` 同样只认 0/8）——拒绝而不是盲解。
+  //
+  // 为什么不改成"接受"：node 标准库只有 zlib（raw deflate），没有 bzip2/lzma
+  // 解码器；接受就等于要么把未校验的字节落盘，要么落一个空的/损坏的文件——
+  // 前者破坏"声明与实际必须一致"的整条防线，后者让任务在解释器里以另一种
+  // 面目失败。python 侧 `zipfile` 原生支持 12/14，所以它接受；两侧的**强度**
+  // 差异（谁能解压）无法用"改 node 代码"消除，只能靠 python 侧同样拒绝来对齐
+  // ——见 zip_safety.py `_reject_unsupported_method`（两侧现均为 fail-closed）。
+  //
+  // 错误信息必须点名方法与"不支持"这一事实：调用方（execute.ts）会把它拼进
+  // "Unsafe or invalid package archive: ..." 回给用户，只说 "bad_archive" 会让
+  // 上传者无从知道该把包改成 deflate/stored 重传。
   throw new ZipSafetyError(
     'unsupported_method',
-    `entry ${entry.name} uses unsupported compression method ${entry.method}`,
+    `entry ${entry.name} uses compression method ${entry.method}, which this executor cannot ` +
+      'decompress (only stored(0) and deflate(8) are supported; re-pack the archive with deflate)',
   );
 }
 
@@ -315,9 +329,40 @@ export function safeExtractZip(
   const destRoot = path.resolve(destDir);
   fs.mkdirSync(destRoot, { recursive: true });
 
+  // 总量与压缩比按**整包**汇总，且在写出任何字节之前判定——与 python
+  // `_vet_open_archive` 的 `total_uncompressed` / `total_compressed` 同语义。
+  //
+  // 失败模式（改动前）：这两个量是在下面的写入循环里逐条目累加并**即时**比较的，
+  // 于是压缩比实际算的是"已遍历前缀"的比值而不是整包的比值。一个高压缩比的小
+  // 条目排在前面就会单独把前缀比值顶过红线而被判成炸弹，哪怕后面跟着一个几乎
+  // 不可压缩的大文件、整包比值其实完全正常；同一批条目换个顺序又能通过。
+  // 这既误杀正常包，又让判定可被条目顺序操纵（把高压缩比条目排到后面即可绕过
+  // 前缀判定），而 zip-guard 的 `checkSummaryAgainstLimits` 用的是整包总量——
+  // 两者对同一个包给出相反结论，正是"两侧全对等"要求下必须消除的分歧。
+  let declaredUncompressed = 0;
+  let declaredCompressed = 0;
+  for (const entry of entries) {
+    declaredUncompressed += entry.uncompressedSize;
+    declaredCompressed += entry.compressedSize;
+  }
+  if (declaredUncompressed > limits.maxTotalUncompressedBytes) {
+    throw new ZipSafetyError(
+      'total_too_large',
+      `archive declares ${declaredUncompressed} uncompressed bytes (limit ${limits.maxTotalUncompressedBytes})`,
+    );
+  }
+  if (
+    declaredCompressed > 0 &&
+    declaredUncompressed / declaredCompressed > limits.maxRatio
+  ) {
+    throw new ZipSafetyError(
+      'ratio_too_high',
+      `compression ratio ${(declaredUncompressed / declaredCompressed).toFixed(1)} exceeds limit ${limits.maxRatio}`,
+    );
+  }
+
   const written: string[] = [];
   let totalBytes = 0;
-  let totalCompressed = 0;
 
   const cleanup = () => {
     for (const file of written.reverse()) {
@@ -352,20 +397,11 @@ export function safeExtractZip(
           `entry ${entry.name} declares ${entry.uncompressedSize} bytes (limit ${limits.maxFileBytes})`,
         );
       }
-      totalCompressed += entry.compressedSize;
+      // 总量/压缩比已在循环前按**声明值**整包判定（见上，与 zip-guard 的
+      // checkSummaryAgainstLimits 同源）；单文件的**实际**解压字节在 inflate
+      // 之后立即按 maxFileBytes 再卡一次（声明可以撒谎）。这里累计声明字节数
+      // 仅供返回值与日志使用，不承担闸门职责。
       totalBytes += entry.uncompressedSize;
-      if (totalBytes > limits.maxTotalUncompressedBytes) {
-        throw new ZipSafetyError(
-          'total_too_large',
-          `archive exceeds the total uncompressed limit (${limits.maxTotalUncompressedBytes})`,
-        );
-      }
-      if (totalCompressed > 0 && totalBytes / totalCompressed > limits.maxRatio) {
-        throw new ZipSafetyError(
-          'ratio_too_high',
-          `compression ratio exceeds limit ${limits.maxRatio}`,
-        );
-      }
 
       const content = inflateEntry(entryPayload(buf, entry), entry);
       if (content.length > limits.maxFileBytes) {

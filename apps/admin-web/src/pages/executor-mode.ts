@@ -237,6 +237,81 @@ export function runtimeVersionIsOfflineTier(raw: unknown): boolean {
 }
 
 /**
+ * python_task_multiversion（P2-4）：**读面**解释器能力咨询（纯函数，非阻断）。
+ *
+ * 判据与 admin-api `interpreter-match.util` 逐条对齐（前端无法 import 后端，
+ * 同判据复制一份并由单测钉死漂移）：
+ *  - requested 空/非法 → 不判定（无版本声明，宿主默认解释器即可）；
+ *  - 执行器 interpreters 未上报（null/undefined，旧执行器）→ 按 LEGACY_DEFAULT
+ *    3.12 兜底，只有声明 3.12 时满足；
+ *  - []（已上报且池空）→ 不满足，**不**走兜底（与"未上报"是相反的两态）；
+ *  - 逐项**点安全**前缀匹配（"3.13.0" 不满足 "3.1"），available===false 的项跳过。
+ *
+ * 红线（AC-06c「解释器先下载后有」）：本族函数**只用于读面咨询提示**，绝不能
+ * 变成提交阻断——在线版本（3.8+）执行时可按需下载，写路径预检会把它退化成
+ * 同步依赖，违背设计。
+ */
+export interface ExecutorInterpreterCapability {
+  version: string;
+  available?: boolean | null;
+}
+export interface ExecutorCapability {
+  status?: string | null;
+  interpreters?: ExecutorInterpreterCapability[] | null;
+}
+
+/** 旧执行器未上报 interpreters 时的兜底默认版本（与后端
+ *  LEGACY_DEFAULT_INTERPRETERS 同值，改动需两侧同步）。 */
+export const LEGACY_DEFAULT_INTERPRETER = '3.12';
+
+/** 点安全前缀匹配：`3.7.9` 满足 `3.7`（相等或 `3.7.` 前缀）；`3.13.0` 不满足 `3.1`。 */
+export function matchesInterpreterVersion(availableVersion: unknown, requested: string): boolean {
+  if (typeof availableVersion !== 'string') return false;
+  return availableVersion === requested || availableVersion.startsWith(`${requested}.`);
+}
+
+/** 单台执行器的缓存池是否满足声明版本（未声明版本恒满足）。 */
+export function interpreterCapabilitySatisfies(
+  interpreters: ExecutorInterpreterCapability[] | null | undefined,
+  requested: string | null | undefined,
+): boolean {
+  const version = normalizeRuntimeVersion(requested);
+  if (version === null) return true;
+  if (!Array.isArray(interpreters)) {
+    // 未上报（旧执行器/非数组脏数据）→ 仅兜底默认版本视为满足。
+    return version === LEGACY_DEFAULT_INTERPRETER;
+  }
+  return interpreters.some(
+    (item) =>
+      !!item &&
+      item.available !== false &&
+      matchesInterpreterVersion(item.version, version),
+  );
+}
+
+export type InterpreterFleetAdvisory = 'satisfied' | 'unsatisfied' | 'unknown';
+
+/**
+ * 舰队级读面咨询：
+ *  - 'satisfied'：未声明版本，或至少一台**在线**执行器的缓存池满足该版本；
+ *  - 'unsatisfied'：有在线执行器，但按它们上报的缓存池没有一台满足——在线层
+ *    （3.8+）仍可能在执行时按需下载，故只是提示；离线层（3.7）则必须先预填；
+ *  - 'unknown'：没有在线执行器（舰队离线 / 列表未加载）——不提示，避免误报。
+ */
+export function interpreterFleetAdvisory(
+  executors: ExecutorCapability[] | null | undefined,
+  requested: string | null | undefined,
+): InterpreterFleetAdvisory {
+  const version = normalizeRuntimeVersion(requested);
+  if (version === null) return 'satisfied';
+  const online = (executors ?? []).filter((e) => e?.status === 'online');
+  if (online.length === 0) return 'unknown';
+  return online.some((e) => interpreterCapabilitySatisfies(e.interpreters, version))
+    ? 'satisfied'
+    : 'unsatisfied';
+}
+
+/**
  * FR-06/NG-02：runtimeVersion 提交归一。
  *  - runtime !== 'python' → **显式 null**（后端拒绝 node/shell 声明版本，
  *    且 PATCH 缺省 = 保留旧值 N28——从 python 改到 node 后不发 null 会把

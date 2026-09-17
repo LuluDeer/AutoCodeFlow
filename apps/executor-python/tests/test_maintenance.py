@@ -32,6 +32,35 @@ def work_root(tmp_path, monkeypatch):
     return tmp_path
 
 
+@pytest.fixture(autouse=True)
+def _wire_live_entries_provider():
+    """把 execute 的运行表快照注册给 maintenance——与生产接线逐字一致。
+
+    生产环境只在 `main.py` 的 lifespan 里调用
+    `maintenance.register_live_entries_provider(execute.list_live_execution_entries)`
+    （main.py:124）；裸 `pytest` 不跑 lifespan，于是套件里的 provider 仍是
+    返回空列表的默认 lambda。后果：`test_cleanup_skips_active_*` 用
+    `register_live_execution` 登记的活跃执行对清扫**不可见**，活跃 workdir /
+    venv 被 TTL 清扫误删（这两个用例在隔离运行与全量运行下都红，但产品代码
+    本身正确——是测试隔离缺陷，不是产品 bug）。
+
+    autouse 让每个用例都处在生产同款接线下；用例内部若要模拟 provider 故障
+    （见 test_cleanup_provider_failure_removes_nothing）可自行覆盖，fixture
+    teardown 统一还原到用例前的 provider，不污染其它模块。
+    """
+    import maintenance
+    from routers import execute as execute_module
+
+    previous = maintenance._live_entries_provider
+    maintenance.register_live_entries_provider(
+        execute_module.list_live_execution_entries
+    )
+    try:
+        yield
+    finally:
+        maintenance.register_live_entries_provider(previous)
+
+
 # ---------------------------------------------------------------------------
 # TTL cleanup
 # ---------------------------------------------------------------------------

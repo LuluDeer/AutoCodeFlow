@@ -447,8 +447,10 @@ describe("ExecutorPackageService", () => {
   });
 
   describe("pushToExecutors", () => {
+    // P2-8（executor lifecycle audit）：空名单只推 ONLINE 行，夹具必须显式
+    // 带 status——真实 findAll() 返回的实体必有该列。
     const targets = [
-      { id: "exec-001", address: "http://executor:8002" },
+      { id: "exec-001", address: "http://executor:8002", status: "online" },
     ] as any;
     const config = { get: jest.fn() };
     const systemConfig = { findOne: jest.fn() };
@@ -572,6 +574,54 @@ describe("ExecutorPackageService", () => {
           error: "Unsafe executor URL",
         }),
       ]);
+      expect(axios.post).not.toHaveBeenCalled();
+    });
+
+    // P2-8（executor lifecycle audit）：按钮文案与 @ApiBody 都承诺"空名单 =
+    // 推送给全部**在线**执行器"，旧实现却把离线行也纳入（产生一整片连接
+    // 失败，0 台在线时仍对整个离线机群推送）。
+    it("empty id list targets ONLINE executors only — offline rows are skipped", async () => {
+      const mixed = [
+        { id: "on-1", address: "http://on-1:8002", status: "online" },
+        { id: "off-1", address: "http://off-1:8002", status: "offline" },
+        { id: "on-2", address: "http://on-2:8002", status: "online" },
+      ] as any;
+      const results = await service.pushToExecutors(
+        mockPkg.id,
+        undefined,
+        mixed,
+        "db-token",
+      );
+      expect(results).toHaveLength(2);
+      expect(results.map((r) => r.executorId).sort()).toEqual(["on-1", "on-2"]);
+      expect(axios.post).toHaveBeenCalledTimes(2);
+      for (const call of jest.mocked(axios.post).mock.calls) {
+        expect(call[0]).not.toBe("http://off-1:8002/api/update-package");
+      }
+    });
+
+    it("explicit executorIds are honored regardless of online/offline status", async () => {
+      const mixed = [
+        { id: "on-1", address: "http://on-1:8002", status: "online" },
+        { id: "off-1", address: "http://off-1:8002", status: "offline" },
+      ] as any;
+      const results = await service.pushToExecutors(
+        mockPkg.id,
+        ["off-1"],
+        mixed,
+        "db-token",
+      );
+      expect(results).toHaveLength(1);
+      expect(results[0].executorId).toBe("off-1");
+    });
+
+    it("throws when the fleet has no online executors and no ids are given", async () => {
+      const offlineOnly = [
+        { id: "off-1", address: "http://off-1:8002", status: "offline" },
+      ] as any;
+      await expect(
+        service.pushToExecutors(mockPkg.id, undefined, offlineOnly, "db-token"),
+      ).rejects.toThrow("No target executors found for push");
       expect(axios.post).not.toHaveBeenCalled();
     });
   });

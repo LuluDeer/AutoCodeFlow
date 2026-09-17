@@ -191,3 +191,62 @@ describe('executor-node config allowPrivateNetwork (E-04 escape hatch)', () => {
     },
   );
 });
+
+// 解释器下载超时：桌面端设置页下发的是 `_MS`，compose/.env.example 用的是
+// `_SECONDS`。此前只读 `_SECONDS`，于是桌面端用户填的值**完全不生效**
+// （设置页承诺了、执行器不读）——而若真按秒解析，300000 会被钳成 86400 秒。
+describe('executor-node config interpreterDownloadTimeoutMs', () => {
+  const originalEnv = process.env;
+
+  beforeEach(() => {
+    jest.resetModules();
+    process.env = { ...originalEnv };
+    delete process.env.INTERPRETER_DOWNLOAD_TIMEOUT_MS;
+    delete process.env.INTERPRETER_DOWNLOAD_TIMEOUT_SECONDS;
+  });
+
+  afterAll(() => {
+    process.env = originalEnv;
+  });
+
+  it('缺省 300s', async () => {
+    const { config } = await import('./config');
+    expect(config.interpreterDownloadTimeoutMs).toBe(300_000);
+  });
+
+  it('_SECONDS 键按秒解析（compose 既有语义不变）', async () => {
+    process.env.INTERPRETER_DOWNLOAD_TIMEOUT_SECONDS = '120';
+    const { config } = await import('./config');
+    expect(config.interpreterDownloadTimeoutMs).toBe(120_000);
+  });
+
+  it('_MS 键按毫秒解析（桌面端设置页下发的键）', async () => {
+    // 反证：删掉 config.ts 里读 `_MS` 的那一段，本例立即转红（会回落到 300s）。
+    process.env.INTERPRETER_DOWNLOAD_TIMEOUT_MS = '300000';
+    const { config } = await import('./config');
+    expect(config.interpreterDownloadTimeoutMs).toBe(300_000);
+  });
+
+  it('_MS 优先于 _SECONDS（更具体的键赢）', async () => {
+    process.env.INTERPRETER_DOWNLOAD_TIMEOUT_MS = '5000';
+    process.env.INTERPRETER_DOWNLOAD_TIMEOUT_SECONDS = '120';
+    const { config } = await import('./config');
+    expect(config.interpreterDownloadTimeoutMs).toBe(5_000);
+  });
+
+  it('_MS 越界钳到 [1s, 24h]，不会变成 24 小时', async () => {
+    // 用户把"毫秒"当"秒"填（300000 想表达 5 分钟）在 _SECONDS 下会变成
+    // 24 小时——_MS 键下必须得到 5 分钟。
+    process.env.INTERPRETER_DOWNLOAD_TIMEOUT_MS = '300000';
+    const { config } = await import('./config');
+    expect(config.interpreterDownloadTimeoutMs).toBe(5 * 60 * 1000);
+
+    process.env.INTERPRETER_DOWNLOAD_TIMEOUT_MS = '1';
+    const { config: c2 } = await import('./config');
+    expect(c2.interpreterDownloadTimeoutMs).toBe(1_000);
+
+    process.env.INTERPRETER_DOWNLOAD_TIMEOUT_MS = '999999999';
+    const { config: c3 } = await import('./config');
+    expect(c3.interpreterDownloadTimeoutMs).toBe(86_400_000);
+  });
+});

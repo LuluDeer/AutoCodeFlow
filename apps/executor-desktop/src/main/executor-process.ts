@@ -6,10 +6,12 @@ import { AppConfig } from './config-store';
 import { decryptToken } from './token-crypto';
 import log from './logger';
 import {
+  buildExecutorChildEnv,
   buildUvChildEnv,
   resolveBundledUvPath as resolveBundledUvPathPure,
   resolveInterpretersDir as resolveInterpretersDirPure,
 } from './uv-paths';
+import { listLocalIPv4s } from './network-util';
 
 export type ExecutorStatus = 'stopped' | 'pending' | 'online' | 'offline';
 
@@ -106,17 +108,28 @@ export class ExecutorProcess {
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       ELECTRON_RUN_AS_NODE: '1',
-      APP_NAME: config.executorName,
-      PORT: String(config.executorPort),
-      EXECUTOR_ADDRESS: `${config.executorHost}:${config.executorPort}`,
-      EXECUTOR_ADDRESS_PUBLIC:
-        config.executorAddressPublic || `${config.executorHost}:${config.executorPort}`,
-      ADMIN_API_URL: config.adminApiUrl,
-      WORK_DIR: config.workDir,
-      MAX_CONCURRENT_TASKS: String(config.maxConcurrentTasks),
-      // SEC-NEW-1: config may hold the enc:ss: envelope — resolve to the real
-      // secret for the child env (the only consumer that needs plaintext).
-      EXECUTOR_SHARED_TOKEN: resolveToken(config),
+      // 与子进程的全部环境契约集中在 buildExecutorChildEnv（纯函数、有自检）：
+      // 那里记录了 BIND_ADDRESS / EXECUTOR_ALLOW_PRIVATE_NETWORK 两个
+      // "漏了不报错、只是永远不工作"的键为什么必须存在。
+      ...buildExecutorChildEnv({
+        appName: config.executorName,
+        port: config.executorPort,
+        bindAddress: config.executorHost,
+        executorHost: config.executorHost,
+        executorAddressPublic: config.executorAddressPublic,
+        // 「对外地址」留空 + 默认通配监听（0.0.0.0）时，用第一块真实网卡兜底，
+        // 绝不能把 0.0.0.0 注册给 admin（reserved，无条件被拒，见 uv-paths 注释）。
+        fallbackLanIp: listLocalIPv4s()[0] ?? '',
+        // P3-1：设置页日志级别透传给 executor-node（此前 config.logLevel 是
+        // 没有任何消费者的死字段）。
+        logLevel: config.logLevel,
+        adminApiUrl: config.adminApiUrl,
+        workDir: config.workDir,
+        maxConcurrentTasks: config.maxConcurrentTasks,
+        // SEC-NEW-1: config may hold the enc:ss: envelope — resolve to the real
+        // secret for the child env (the only consumer that needs plaintext).
+        sharedToken: resolveToken(config),
+      }),
     };
 
     // ---- python_task_multiversion：uv 与解释器池 ----

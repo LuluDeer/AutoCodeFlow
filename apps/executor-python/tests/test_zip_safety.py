@@ -6,7 +6,9 @@
 """
 import os
 import stat
+import struct
 import zipfile
+import zlib
 from pathlib import Path
 
 import pytest
@@ -161,8 +163,8 @@ def test_safe_extract_rejects_deep_parent_traversal(tmp_path):
     assert not (tmp_path / 'evil.txt').exists()
 
 
-@pytest.mark.parametrize('name', ['/abs/evil.txt', 'C:\\Windows\\evil.txt', 'C:/evil.txt', 'C:evil.txt'])
-def test_safe_extract_rejects_absolute_and_drive_paths(tmp_path, name):
+@pytest.mark.parametrize('name', ['/abs/evil.txt', '\\abs\\evil.txt'])
+def test_safe_extract_rejects_absolute_paths(tmp_path, name):
     archive = make_zip(tmp_path / 'evil.zip', {name: 'pwned'})
     dest = tmp_path / 'work'
 
@@ -171,6 +173,29 @@ def test_safe_extract_rejects_absolute_and_drive_paths(tmp_path, name):
 
     assert exc.value.violation == 'absolute_path'
     assert not (tmp_path / 'abs').exists()
+
+
+@pytest.mark.parametrize('name', ['C:\\Windows\\evil.txt', 'C:/evil.txt', 'C:evil.txt'])
+def test_safe_extract_rejects_drive_letter_paths_with_node_label(tmp_path, name):
+    """盘符路径必须用 node 同款标签 `drive_letter_path`（P2-4 对等）。"""
+    archive = make_zip(tmp_path / 'evil.zip', {name: 'pwned'})
+    dest = tmp_path / 'work'
+
+    with pytest.raises(ZipSafetyError) as exc:
+        safe_extract(archive, dest)
+
+    assert exc.value.violation == 'drive_letter_path'
+    assert not dest.exists() or not any(dest.iterdir())
+
+
+@pytest.mark.parametrize('name', ['C:\\Windows\\evil.txt', 'C:/evil.txt', 'C:evil.txt'])
+def test_vet_zip_rejects_drive_letter_paths_with_node_label(tmp_path, name):
+    archive = make_zip(tmp_path / 'evil.zip', {name: 'pwned'})
+
+    with pytest.raises(ZipSafetyError) as exc:
+        vet_zip(archive)
+
+    assert exc.value.violation == 'drive_letter_path'
 
 
 def test_safe_extract_rejects_unc_path(tmp_path):
@@ -352,6 +377,114 @@ def test_safe_extract_preserves_preexisting_dest_content(tmp_path):
 
     assert (dest / 'artifacts' / 'keep.txt').read_text() == 'keep me'
     assert not (dest / 'a.txt').exists()
+
+
+# ---------------------------------------------------------------------------
+# 与 node 侧对齐：NUL 截断、不支持的压缩方法（NFR-04/AC-03b 全对等）
+# ---------------------------------------------------------------------------
+
+def write_raw_nul_name_zip(path: Path, name_bytes: bytes, data: bytes) -> Path:
+    """手写字节造一个中央目录名**真的含 NUL** 的 zip（stored）。
+
+    不能用 `zipfile.writestr`：`ZipInfo.__init__` 走 `_sanitize_filename`，在第一个
+    NUL 处就把名字截断了，写出来的包根本没有 NUL。只有手写字节才能复现"包内名字
+    含 NUL"这一攻击形态。
+    """
+    crc = zlib.crc32(data) & 0xFFFFFFFF
+    local = struct.pack(
+        '<IHHHHHIIIHH', 0x04034B50, 20, 0, 0, 0, 0,
+        crc, len(data), len(data), len(name_bytes), 0,
+    )
+    body = local + name_bytes + data
+    central = struct.pack(
+        '<IHHHHHHIIIHHHHHII', 0x02014B50, 20, 20, 0, 0, 0, 0,
+        crc, len(data), len(data), len(name_bytes), 0, 0, 0, 0,
+        (0o100644 << 16) & 0xFFFFFFFF, 0,
+    )
+    cd_offset = len(body)
+    cd = central + name_bytes
+    eocd = struct.pack('<IHHHHIIH', 0x06054B50, 0, 0, 1, 1, len(cd), cd_offset, 0)
+    path.write_bytes(body + cd + eocd)
+    return path
+
+
+def test_vet_zip_rejects_entry_name_containing_nul(tmp_path):
+    """NUL 截断（与 node `resolveEntryTarget` 同语义）。
+
+    失败模式（改动前）：`zipfile` 在第一个 NUL 处截断名字，`evil.py\\x00.txt`
+    于是以 `evil.py` 的身份被静默接受并落盘——"名字是 .py、声明的是 .txt"的错配
+    绕过按扩展名做的检查。原始名只留在 `orig_filename` 里，必须查它。
+    """
+    archive = write_raw_nul_name_zip(
+        tmp_path / 'nul.zip', b'evil.py\x00.txt', b'print("pwned")',
+    )
+
+    with pytest.raises(ZipSafetyError) as exc:
+        vet_zip(archive)
+
+    assert exc.value.violation == 'bad_archive'
+    assert 'NUL' in exc.value.detail
+
+
+def test_safe_extract_rejects_entry_name_containing_nul_and_writes_nothing(tmp_path):
+    """绝不按截断名落盘：`evil.py` 不能出现在解压结果里。"""
+    archive = write_raw_nul_name_zip(
+        tmp_path / 'nul.zip', b'evil.py\x00.txt', b'print("pwned")',
+    )
+    dest = tmp_path / 'work'
+
+    with pytest.raises(ZipSafetyError) as exc:
+        safe_extract(archive, dest)
+
+    assert exc.value.violation == 'bad_archive'
+    assert not (dest / 'evil.py').exists(), '不得按 NUL 截断后的名字落盘'
+    assert not (dest / 'evil.py\x00.txt').exists()
+
+
+@pytest.mark.parametrize('method', [zipfile.ZIP_BZIP2, zipfile.ZIP_LZMA])
+def test_safe_extract_rejects_methods_node_cannot_decompress(tmp_path, method):
+    """bzip2(12)/lzma(14)：python 的 `zipfile` 能解，node 只用 zlib 解不开。
+
+    失败模式（改动前）：同一个包在 python 执行器上成功、在 node 执行器上抛
+    `unsupported_method`——结论取决于任务被调度到哪个执行器（NFR-04/AC-03b
+    要求两侧全对等）。对齐方向取**更严**的一侧（node 无法校验就拒绝），因此
+    python 侧同样拒绝，并给出同名的 violation 与可操作的提示。
+    """
+    archive = make_zip(tmp_path / f'm{method}.zip', {'a.txt': 'hello' * 50}, compress=method)
+    dest = tmp_path / 'work'
+
+    with pytest.raises(ZipSafetyError) as exc:
+        safe_extract(archive, dest)
+
+    assert exc.value.violation == 'unsupported_method'
+    assert f'method {method}' in exc.value.detail
+    assert not (dest / 'a.txt').exists(), '拒绝必须发生在写出任何字节之前'
+
+
+@pytest.mark.parametrize('method', [zipfile.ZIP_BZIP2, zipfile.ZIP_LZMA])
+def test_vet_zip_still_accepts_methods_it_only_sees_declared_sizes_for(tmp_path, method):
+    """`vet_zip` 与 node 的 `zip-guard` 一样只看中央目录声明值，不看压缩方法。
+
+    因此 12/14 在**审查**阶段通过（node 的 `vetZip` 亦然），只在解压阶段被拒——
+    两侧在"哪一道闸门拒绝"上也要一致。
+    """
+    archive = make_zip(tmp_path / f'm{method}.zip', {'a.txt': 'hello' * 50}, compress=method)
+
+    vet_zip(archive)  # 不抛即通过
+
+
+def test_safe_extract_still_accepts_stored_and_deflate(tmp_path):
+    """收紧检查不能误伤两种受支持的方法。"""
+    archive = tmp_path / 'ok.zip'
+    with zipfile.ZipFile(archive, 'w') as z:
+        z.writestr('stored.txt', 's', compress_type=zipfile.ZIP_STORED)
+        z.writestr('deflated.txt', 'd', compress_type=zipfile.ZIP_DEFLATED)
+    dest = tmp_path / 'work'
+
+    safe_extract(archive, dest)
+
+    assert (dest / 'stored.txt').read_text() == 's'
+    assert (dest / 'deflated.txt').read_text() == 'd'
 
 
 # ---------------------------------------------------------------------------

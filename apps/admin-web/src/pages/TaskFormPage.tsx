@@ -10,7 +10,9 @@ import {
   deriveCodeSourceFromTask,
   deriveRuntimeMismatch,
   normalizeRuntimeVersion,
+  interpreterFleetAdvisory,
   type CodeSource,
+  type ExecutorInterpreterCapability,
 } from './executor-mode';
 // PK-02（DEEP_REVIEW 0ef3bbe）：create/update 改用生成的 DTO 类型，
 // payload 由 apply* 链组装后类型收窄为 Record<string, unknown>，调用点显式断言。
@@ -122,18 +124,6 @@ const TIMEOUT_ACTION_LABELS = (t: (k: string) => string): Record<string, string>
   notify_only: t('taskForm.timeoutAction.notifyOnly'),
 });
 
-const RETRYABLE_ERROR_LABELS = (t: (k: string) => string): Record<string, string> => ({
-  package_fetch_failed: t('taskForm.retryable.packageFetch'),
-  dependency_install_failed: t('taskForm.retryable.dependencyInstall'),
-  git_fetch_failed: t('taskForm.retryable.gitFetch'),
-  runtime_missing: t('taskForm.retryable.runtimeMissing'),
-  script_error: t('taskForm.retryable.scriptError'),
-  timeout: t('taskForm.retryable.timeout'),
-  executor_offline: t('taskForm.retryable.executorOffline'),
-  executor_restart: t('taskForm.retryable.executorRestart'),
-  unknown: t('taskForm.retryable.unknown'),
-});
-
 const PRIORITY_LABELS = (t: (k: string) => string): Record<string, string> => ({
   1: t('taskForm.priority.low'),
   2: t('taskForm.priority.normal'),
@@ -187,7 +177,15 @@ export default function TaskFormPage() {
   const [executorMode, setExecutorMode] = useState<'auto' | 'group' | 'pinned' | 'broadcast'>('auto');
   const [groups, setGroups] = useState<string[]>([]);
   const [allTags, setAllTags] = useState<string[]>([]);
-  const [executors, setExecutors] = useState<{ id: string; appName: string; address: string; status: string }[]>([]);
+  const [executors, setExecutors] = useState<{
+    id: string;
+    appName: string;
+    address: string;
+    status: string;
+    // python_task_multiversion（P2-4）：缓存池清单供版本能力咨询使用。
+    // null = 旧执行器未上报（与 [] 池空是相反两态，判据在 executor-mode）。
+    interpreters?: ExecutorInterpreterCapability[] | null;
+  }[]>([]);
   /**
    * python_task_multiversion（AC-19a）：候选应用带 **runtime**——zip 来源要求
    * 应用 runtime 与任务 runtime 一致，表单需就地提示（服务端仍权威校验）。
@@ -262,7 +260,17 @@ export default function TaskFormPage() {
     run(executorsApi.getTags(controller.signal), setAllTags, t('taskForm.load.tagsFail'));
     run(
       executorsApi.list(controller.signal),
-      (data) => setExecutors(data.map((e) => ({ id: e.id as string, appName: e.appName as string, address: e.address as string, status: e.status as string }))),
+      (data) =>
+        setExecutors(
+          data.map((e) => ({
+            id: e.id as string,
+            appName: e.appName as string,
+            address: e.address as string,
+            status: e.status as string,
+            // P2-4：透传缓存池清单（后端 findAll 一直返回，此前读模型没接）。
+            interpreters: e.interpreters ?? null,
+          })),
+        ),
       t('taskForm.load.executorsFail'),
     );
     run(
@@ -403,6 +411,18 @@ export default function TaskFormPage() {
         form.setFieldsValue(templateConfigToFormValues(tpl.config));
         if (tpl.description) form.setFieldValue('description', tpl.description);
         setTriggerType(templateTriggerAndRuntime(tpl).triggerType);
+        // python_task_multiversion（FR-06/FR-18）：`runtimeVersion` 与 `codeSource`
+        // **不在表单字段树里**（前者由 RuntimeVersionField 自持 state，后者由来源
+        // 选择器自持 state），因此 `setFieldsValue` 对它们无效——必须像编辑态回填
+        // （见下方 tasksApi.get 分支）那样显式同步到 state，否则"从模板建任务"会
+        // 显示成默认来源/git 且版本为空，用户看不出模板里其实钉了 3.7。
+        //
+        // runtimeVersion 走 normalizeRuntimeVersion：模板可能来自旧版本或手工编辑，
+        // 脏值/超区间值一律显示为"未声明"而不是塞进组合框（与编辑态同一判据）。
+        setRuntimeVersion(normalizeRuntimeVersion(tpl.config.runtimeVersion));
+        const tplSource = deriveCodeSourceFromTask(tpl.config);
+        setCodeSource(tplSource);
+        previousCodeSourceRef.current = tplSource;
       })
       .catch(() => message.warning(t('taskForm.load.templateFailed')));
     return () => {
@@ -431,8 +451,17 @@ export default function TaskFormPage() {
       await form.validateFields();
     } catch (err: unknown) {
       if (err && typeof err === 'object' && 'errorFields' in err) {
-        // UI-12：antd 只在字段旁标红（读屏不主动播报），此处补一条可播报摘要
-        const fields = (err as { errorFields?: { errors?: string[] }[] }).errorFields ?? [];
+        // UI-12：antd 只在字段旁标红（读屏不主动播报），此处补一条可播报摘要。
+        //
+        // 但**只有**这条 aria-live 区域是不够的：它是 1×1px 的
+        // screen-reader-only 元素（见下方 style），视力正常的用户提交失败后
+        // 屏幕**毫无变化**——尤其当出错的字段在滚动视口之外时（本表单是单页
+        // 多区块的长表单），用户会以为"按钮没反应"而反复点击。
+        //
+        // 故补两条可见反馈：一条浮层提示（与其它校验路径一致），以及滚到第一个
+        // 出错字段。两者都不改判定逻辑，只是把已经发生的失败**显式呈现**出来。
+        const fields = (err as { errorFields?: { errors?: string[]; name?: (string | number)[] }[] })
+          .errorFields ?? [];
         const firstError = fields[0]?.errors?.[0];
         if (firstError) {
           setValidationAnnouncement(
@@ -441,6 +470,20 @@ export default function TaskFormPage() {
               more: fields.length > 1 ? t('taskForm.validate.more', { count: fields.length }) : '',
             }),
           );
+          message.error(
+            t('taskForm.validate.failed', {
+              firstError,
+              more: fields.length > 1 ? t('taskForm.validate.more', { count: fields.length }) : '',
+            }),
+          );
+          // 滚到第一个出错字段（antd 的 name 路径 → 该字段的 DOM 节点）。
+          const namePath = fields[0]?.name;
+          if (namePath && namePath.length > 0) {
+            form.scrollToField(namePath, { behavior: 'smooth', block: 'center' });
+          }
+        } else {
+          // 没有可读的字段级错误时也要给一条反馈，绝不静默 return。
+          message.error(t('taskForm.validate.fail'));
         }
         return;
       }
@@ -532,8 +575,17 @@ export default function TaskFormPage() {
         setTimeout(() => scrollToSection(SECTION_IDS[4]), 50);
       }
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : (isEdit ? t('taskForm.submit.updateFail') : t('taskForm.submit.createFail'));
-      message.error(msg);
+      // client.ts 的错误拦截器 reject 的是**普通对象**（err.response?.data || err），
+      // 不是 Error 实例——`err instanceof Error` 对后端 400 恒 false，于是
+      // assertCodeSourceConsistent / assertRuntimeVersionValid 返回的可操作
+      // 文案被泛化的「创建失败」吞掉。getErrMsg 同时覆盖两种形状（与本文件
+      // 模板保存等兄弟 catch 同策）。
+      message.error(
+        getErrMsg(
+          err,
+          isEdit ? t('taskForm.submit.updateFail') : t('taskForm.submit.createFail'),
+        ),
+      );
     } finally {
       setSaving(false);
     }
@@ -573,12 +625,27 @@ export default function TaskFormPage() {
     }
     const values = form.getFieldsValue(true);
     setTplSaving(true);
+    // python_task_multiversion（FR-06 / FR-18）：`runtimeVersion` 与 `codeSource`
+    // **不在表单字段树里**（前者由 RuntimeVersionField 自持 state，后者由
+    // CodeSource 选择器自持 state），因此 `values` 上读不到它们——必须像提交路径
+    // 那样经 applyRuntimeVersionPayload / applyCodeSourcePayload 归一后显式注入，
+    // 否则模板会静默丢掉"Python 版本钉定"与"代码来源"这两个用户显式做过的选择。
+    //
+    // 复用提交路径的同一组纯函数（而不是在这里另写一遍判定），是为了让模板里
+    // 存下的 codeSource 与真实提交时的取值**逐字一致**：两者都遵循同一条
+    // "载荷自证才声明"规则（见 executor-mode.ts），否则从模板建出的任务会因
+    // 声明漂移被后端 400。
+    const tplValues = applyCodeSourcePayload(
+      applyRuntimeVersionPayload(values, runtimeVersion),
+      codeSource,
+      previousCodeSourceRef.current,
+    );
     try {
       await taskTemplatesApi.create({
         name: meta.name.trim(),
         description: meta.description?.trim() || undefined,
         category: meta.category?.trim() || undefined,
-        config: templateConfigFromFormValues(values, buildExecutorPayload(values, executorMode)),
+        config: templateConfigFromFormValues(tplValues, buildExecutorPayload(values, executorMode)),
       });
       message.success(t('taskForm.tpl.saved', { name: meta.name.trim() }));
       setTplModalOpen(false);
@@ -611,6 +678,20 @@ export default function TaskFormPage() {
 
   /** zip 来源未选应用（后端会 400，此处前置到提交前拦截并给出可读文案） */
   const zipApplicationMissing = codeSource === 'application_zip' && !applicationIdWatch;
+
+  /**
+   * python_task_multiversion（P2-4）：版本能力的**读面咨询**（非阻断）。
+   *
+   * 声明了 runtimeVersion 时，若当前在线舰队没有一台的缓存池满足它，给一条
+   * warning——但**绝不阻止提交**：AC-06c「解释器先下载后有」，在线层（3.8+）
+   * 执行时仍可按需下载；只有离线层（3.7）必须由部署方预填缓存卷。后端刻意
+   * 不做舰队级写前预检（会把"先下载后有"退化成同步依赖），故这里只补读面信号。
+   * 无在线执行器 / 列表未加载 → 'unknown'，不提示，避免误报。
+   */
+  const interpreterFleet = useMemo(
+    () => interpreterFleetAdvisory(executors, runtimeVersion),
+    [executors, runtimeVersion],
+  );
 
   const anchorItems = useMemo(
     () => [
@@ -786,6 +867,21 @@ export default function TaskFormPage() {
                   value={runtimeVersion}
                   onChange={setRuntimeVersion}
                 />
+
+                {/* P2-4：舰队能力咨询（非阻断，见 interpreterFleetAdvisory 头注）。
+                    只在 python + 已声明版本 + 在线舰队无一台满足时出现。 */}
+                {runtimeWatch === 'python' && interpreterFleet === 'unsatisfied' && (
+                  <Alert
+                    type="warning"
+                    showIcon
+                    data-testid="runtime-version-capability-advisory"
+                    style={{ marginBottom: 16 }}
+                    title={t('taskForm.field.runtimeVersion.capabilityAdvisoryTitle', {
+                      version: runtimeVersion ?? '-',
+                    })}
+                    description={t('taskForm.field.runtimeVersion.capabilityAdvisoryDesc')}
+                  />
+                )}
 
                 {/* W-21: 依赖声明。python 任务由 executor-python 装进 per-task uv
                     venv，node 任务由 executor-node 安装；glue 脚本任务不生效。 */}
@@ -1297,7 +1393,9 @@ export default function TaskFormPage() {
                     mode="multiple"
                     allowClear
                     placeholder={t('taskForm.field.retryableErrors.placeholder')}
-                    options={RETRYABLE_ERROR_OPTIONS.map((o) => ({ value: o.value, label: RETRYABLE_ERROR_LABELS(t)[o.value] ?? o.label }))}
+                    // P3-2：选项只携带 i18n 键，标签在此统一 t() 解析——
+                    // 不再有硬编码中文兜底，英文界面不可能再漏出中文选项。
+                    options={RETRYABLE_ERROR_OPTIONS.map((o) => ({ value: o.value, label: t(o.labelKey) }))}
                   />
                 </Form.Item>
 

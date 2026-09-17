@@ -28,6 +28,8 @@ import { formatDateTime, formatDuration, formatRelativeTime } from '../utils/tim
 import { failedRunCount } from './task-stats';
 // CORE-03 收尾：保存为自定义模板的 config 白名单抽取
 import { extractTemplateConfigFromTask } from '../utils/task-template-extract';
+// python_task_multiversion（P2-3）：旧任务没有 codeSource 列时按迁移同序推导展示
+import { deriveCodeSourceFromTask } from './executor-mode';
 import { useTranslation } from 'react-i18next';
 import '../i18n';
 import GlueEditor from '../components/GlueEditor';
@@ -54,6 +56,14 @@ const RETRYABLE_T_KEY: Record<string, string> = {
   // 必须能译出该键，否则会原样露出 interpreter_unavailable 枚举 token。
   interpreter_unavailable: 'taskForm.retryable.interpreterUnavailable',
   unknown: 'taskForm.retryable.unknown',
+};
+
+/** python_task_multiversion（P2-3）：代码来源展示文案（复用表单侧 i18n 键，
+ *  未知值原样露出 token，与其它枚举映射同策）。 */
+const CODE_SOURCE_T_KEY: Record<string, string> = {
+  git: 'taskForm.field.codeSource.git',
+  glue: 'taskForm.field.codeSource.glue',
+  application_zip: 'taskForm.field.codeSource.applicationZip',
 };
 
 type BadgeStatus = 'success' | 'processing' | 'error' | 'default' | 'warning';
@@ -414,6 +424,28 @@ export default function TaskDetailPage() {
               <Card>
                 <Descriptions size="small" column={{ xs: 1, sm: 2, md: 3 }}>
                   <Descriptions.Item label={t('taskDetail.field.runtime')}><Tag>{task.runtime}</Tag></Descriptions.Item>
+                  {/* python_task_multiversion（P2-3）：版本声明的读面——此前只能开
+                      编辑表单才能确认任务钉了哪个解释器。非 python 任务后端强制
+                      runtimeVersion=null，不展示该行。 */}
+                  {task.runtime === 'python' && (
+                    <Descriptions.Item label={t('taskDetail.field.runtimeVersion')}>
+                      {task.runtimeVersion ? (
+                        <Tag color="blue">{task.runtimeVersion}</Tag>
+                      ) : (
+                        <Text type="secondary">{t('taskForm.field.runtimeVersion.hostDefault')}</Text>
+                      )}
+                    </Descriptions.Item>
+                  )}
+                  {/* 代码来源读面：优先后端回填的 codeSource，旧任务按迁移同序推导
+                      （deriveCodeSourceFromTask），保证存量任务也能看出通道。 */}
+                  <Descriptions.Item label={t('taskDetail.field.codeSource')}>
+                    <Tag>
+                      {(() => {
+                        const source = task.codeSource ?? deriveCodeSourceFromTask(task);
+                        return CODE_SOURCE_T_KEY[source] ? t(CODE_SOURCE_T_KEY[source]) : source;
+                      })()}
+                    </Tag>
+                  </Descriptions.Item>
                   <Descriptions.Item label={t('taskDetail.field.triggerType')}><Tag>{task.triggerType}</Tag></Descriptions.Item>
                   {task.cronExpression && (
                     <Descriptions.Item label={t('taskDetail.field.cron')}><Text code>{task.cronExpression}</Text></Descriptions.Item>

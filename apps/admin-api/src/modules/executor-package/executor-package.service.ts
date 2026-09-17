@@ -33,6 +33,7 @@ import {
   UpdateExecutorPackageDto,
   QueryExecutorPackageDto,
 } from "./dto/executor-package.dto";
+import { ExecutorStatus } from "../executor/entities/executor.entity";
 
 /** Upload directory for executor package files (relative to process working directory) */
 const UPLOAD_DIR = path.join(process.cwd(), "uploads", "executor-packages");
@@ -431,6 +432,13 @@ export class ExecutorPackageService implements OnModuleInit {
    * Push executor package to online executor nodes.
    * Notify each executor node to pull the latest package from admin-api and update itself.
    * When executorIds is empty, push to all online executors.
+   *
+   * Executor lifecycle audit（P2-8）：控制器 @ApiBody 承诺 "empty = push to all
+   * **online** executors"，管理台按钮文案也是"推送到全部在线调度机"，但旧实现
+   * 空名单时取的是**全部行（含离线）**，于是对离线机器产生一整片连接失败，
+   * 且 0 台在线时仍会对整个离线机群发起推送。现在空名单严格只取 ONLINE 行；
+   * 显式传入 executorIds 时不做状态过滤（操作者明确点名，连接失败会在结果里
+   * 逐台呈现）。
    */
   async pushToExecutors(
     id: string,
@@ -442,10 +450,11 @@ export class ExecutorPackageService implements OnModuleInit {
   > {
     const pkg = await this.findOne(id);
 
+    const all = executorRepo ?? [];
     const targets =
       executorIds && executorIds.length > 0
-        ? (executorRepo ?? []).filter((e) => executorIds.includes(e.id))
-        : (executorRepo ?? []);
+        ? all.filter((e) => executorIds.includes(e.id))
+        : all.filter((e) => e.status === ExecutorStatus.ONLINE);
 
     if (targets.length === 0) {
       throw new Error("No target executors found for push");

@@ -133,6 +133,27 @@ describe('templateConfigToFormValues（config → 表单初值纯映射）', () 
   it('空 config → 空对象（不产生 undefined 键污染表单）', () => {
     expect(templateConfigToFormValues({})).toEqual({});
   });
+
+  // python_task_multiversion（FR-06/FR-18）：模板固化过的 Python 版本与代码来源
+  // 必须能被预填读回。注意**只断言纯映射层**——真正写进组件 state 的那一步
+  // （TaskFormPage 的 effect 里显式 setRuntimeVersion/setCodeSource）不属于本文件
+  // 的职责，因为这两个值不在表单字段树里，setFieldsValue 对它们无效。
+  it('runtimeVersion 与 codeSource 随模板回填（不再被静默丢弃）', () => {
+    const out = templateConfigToFormValues({
+      runtime: 'python',
+      entrypoint: 'main.py',
+      runtimeVersion: '3.7',
+      codeSource: 'application_zip',
+    });
+    expect(out.runtimeVersion).toBe('3.7');
+    expect(out.codeSource).toBe('application_zip');
+  });
+
+  it('旧模板缺这两个键时不写入（表单保持默认空态）', () => {
+    const out = templateConfigToFormValues({ runtime: 'python' });
+    expect('runtimeVersion' in out).toBe(false);
+    expect('codeSource' in out).toBe(false);
+  });
 });
 
 describe('templateTriggerAndRuntime（内部 state 同步映射）', () => {

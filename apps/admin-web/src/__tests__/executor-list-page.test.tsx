@@ -107,10 +107,15 @@ afterEach(() => {
 });
 
 describe('ExecutorListPage 列表渲染（QA-03）', () => {
-  it('渲染状态三态 Badge、地址、分组标签、任务数与分页 total', async () => {
+  it('渲染状态 Badge、地址、分组标签、任务数与分页 total', async () => {
+    // 状态只有 online / offline 两态：admin 的 ExecutorStatus 枚举就是这两个值
+    // （executor.entity.ts:15-16），"忙碌"由 runningTaskCount/maxConcurrentTasks
+    // 表达而不是一个状态值。本用例此前用了一个后端**永不会发**的 `'busy'`，
+    // 于是它钉住的是 UI 里那段不可达的死分支（并把"三态"写进了用例名）——
+    // 属于"测试在替 bug 作证"。现按真实两态构造。
     mockedExecutors.list.mockResolvedValue([
       makeExecutor({ id: 'ex-1', status: 'online', groupName: '生产组', tags: ['gpu'], maxConcurrentTasks: 4, runningTaskCount: 2 }),
-      makeExecutor({ id: 'ex-2', appName: 'beta', address: '10.0.0.2:3002', status: 'busy', groupName: null, tags: null, maxConcurrentTasks: null, runningTaskCount: 3 }),
+      makeExecutor({ id: 'ex-2', appName: 'beta', address: '10.0.0.2:3002', status: 'online', groupName: null, tags: null, maxConcurrentTasks: null, runningTaskCount: 3 }),
       makeExecutor({ id: 'ex-3', appName: 'gamma', address: '10.0.0.3:3002', status: 'offline', groupName: null, tags: null, runningTaskCount: 0 }),
     ]);
     mockedExecutors.getGroups.mockResolvedValue(['生产组']);
@@ -118,8 +123,7 @@ describe('ExecutorListPage 列表渲染（QA-03）', () => {
 
     expect(await screen.findByText('alpha')).toBeTruthy();
     expect(screen.getByText('10.0.0.1:3002')).toBeTruthy();
-    expect(screen.getAllByText('在线').length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText('忙碌').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText('在线').length).toBeGreaterThanOrEqual(2);
     expect(screen.getAllByText('离线').length).toBeGreaterThanOrEqual(1);
     // 注：分组/标签列 responsive: ['md'] 在 jsdom 无布局宽度下不渲染（antd
     // responsiveObserver 判定），分组 Tag 断言移至筛选用例（搜索命中分组名走
@@ -128,7 +132,29 @@ describe('ExecutorListPage 列表渲染（QA-03）', () => {
     expect(screen.getByText('3任务')).toBeTruthy();
     expect(screen.getByText('共 3 条')).toBeTruthy();
     // 页头在线计数
-    expect(screen.getByText(/1\s*\/\s*3\s*台在线/)).toBeTruthy();
+    expect(screen.getByText(/2\s*\/\s*3\s*台在线/)).toBeTruthy();
+  });
+
+  it('`busy` 不是真实状态：不得渲染成「忙碌」，且筛选里没有该选项', async () => {
+    // 反证：把 ExecutorListPage 里 `v === 'busy' ? 'warning'` 那个分支加回去，
+    // 本用例第一段立即转红（会渲染出「忙碌」）；把筛选的 busy 选项加回去，
+    // 第二段转红。admin 的 ExecutorStatus 枚举只有 online/offline
+    // （executor.entity.ts:15-16），全仓 grep `busy` 在执行器与后端均为 0 命中。
+    mockedExecutors.list.mockResolvedValue([
+      makeExecutor({ id: 'ex-x', status: 'busy' }),
+    ]);
+    mockedExecutors.getGroups.mockResolvedValue([]);
+    renderPage();
+
+    await screen.findByText('alpha');
+    // ① 展示层：busy 落到 offline 分支（保守），绝不显示「忙碌」。
+    expect(screen.queryByText('忙碌')).toBeNull();
+    expect(screen.getAllByText('离线').length).toBeGreaterThanOrEqual(1);
+
+    // ② 筛选层：状态下拉里不得有「忙碌」这个永远筛不出东西的死选项。
+    fireEvent.mouseDown(screen.getByText('全部状态'));
+    const busyOption = await screen.findAllByText('忙碌').catch(() => []);
+    expect(busyOption.length).toBe(0);
   });
 
   it('U16 回归：deadLetterCount > 0 渲染死信 Tag，null/0 不渲染', async () => {

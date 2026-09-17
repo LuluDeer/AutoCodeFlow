@@ -19,6 +19,10 @@ import { toPriorityValue } from './priority';
  *    （前端 Task 接口有、但 CreateTaskDto 子集语义外或任务体量大——
  *    maintenanceWindows 是调度侧窗口非任务形态、git* 属部署时点快照、
  *    glue 模板化留后续轮）；
+ *  - 注意 `runtimeVersion` 与 `codeSource` **不**在排除之列：两者都是
+ *    CreateTaskDto 的合法字段且是用户显式做过的选择（python_task_multiversion
+ *    FR-06/FR-18），漏带会让从模板实例化的任务静默落回宿主默认解释器、
+ *    代码来源被迁移期隐式推断改写（与 task-template-config-from-form.ts 同源修复）；
  *  - currentVersion / gitCommit（部署时点快照，模板应允许部署新版本）；
  *  - timeout（legacy 别名，统一收敛为 DTO 优先字段 timeoutSeconds）。
  *
@@ -36,6 +40,11 @@ export function extractTemplateConfigFromTask(task: Task): Record<string, unknow
   put('timezone', task.timezone);
   put('fixedRate', task.fixedRate);
   put('runtime', task.runtime);
+  // python_task_multiversion（FR-06 / FR-18）：版本声明与代码来源必须随模板
+  // 固化——TaskDetailPage「存为模板」走的正是本映射，漏掉它们与表单侧漏项
+  // 是同一条用户可见缺陷（见 task-template-config-from-form.ts 的同段注释）。
+  put('runtimeVersion', task.runtimeVersion);
+  put('codeSource', task.codeSource);
   put('entrypoint', task.entrypoint);
   put('requirements', task.requirements);
   put('dependencies', task.dependencies);

@@ -18,7 +18,7 @@
 import { useQuery, type UseQueryResult, type QueryClient } from '@tanstack/react-query';
 import { metricsApi, type MetricsSummary, type DailyTrend } from './metrics';
 import { tasksApi, type Task, type TaskExecution, type PageResult } from './tasks';
-import { executorsApi, type Executor, type ExecutorExecution, type ExecutorMetrics } from './executors';
+import { executorsApi, type Executor, type ExecutorExecution, type ExecutorMetrics, type ExecutorRuntimeConfig } from './executors';
 import { artifactsApi, type ExecutionArtifact } from './artifacts';
 import { type ExecutionReportPayload, executionReportsApi } from './execution-reports';
 import { taskTemplatesApi, type TaskTemplate } from './task-templates';
@@ -85,6 +85,7 @@ export const queryKeys = {
     detail: (id: string) => ['executors', 'detail', id] as const,
     metrics: (id: string) => ['executors', 'metrics', id] as const,
     groups: ['executors', 'groups'] as const,
+    runtimeConfig: ['executors', 'runtime-config'] as const,
   },
   taskTemplates: {
     all: ['task-templates'] as const,
@@ -272,6 +273,26 @@ export function useExecutorGroups(): UseQueryResult<string[]> {
     queryKey: queryKeys.executors.groups,
     queryFn: () => executorsApi.getGroups(),
     staleTime: 5 * 60_000, // 分组变化低频，5 分钟内切页零重复拉取
+  });
+}
+
+/**
+ * GET /executors/runtime-config —— 后端**有效**判活阈值（P2-5）。
+ *
+ * 为什么需要：后端 markStaleOffline() 用 heartbeatInterval × multiplier
+ * （默认 30s × 3 = 90s）把 ONLINE 判成 OFFLINE，而前端此前各自硬编码 2/5 分钟，
+ * 于是后端判死后最长约 3.5 分钟里 UI 仍把心跳画成绿色「刚刚」。取后端值后两侧
+ * 同源；配置被调大时也自动跟随，不再需要改前端。
+ *
+ * 失败**不抛**、不阻塞页面：回退 `HEARTBEAT_TIMEOUT_FALLBACK_MS`（= 后端默认
+ * 90s）。该回退是**保守**方向——若实际阈值被调大，UI 只是提前标黄，绝不会把
+ * 真正离线的节点涂成绿色。`staleTime` 取 5 分钟：这是运维配置项，不是实时指标。
+ */
+export function useExecutorRuntimeConfig(): UseQueryResult<ExecutorRuntimeConfig> {
+  return useQuery({
+    queryKey: queryKeys.executors.runtimeConfig,
+    queryFn: () => executorsApi.getRuntimeConfig(),
+    staleTime: 5 * 60_000,
   });
 }
 

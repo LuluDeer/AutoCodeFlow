@@ -11,6 +11,7 @@ import { ExecutorPackageController } from "../executor-package.controller";
 import { ExecutorPackageService } from "../executor-package.service";
 import { buildContentDisposition } from "../executor-package.controller";
 import { ExecutorService } from "../../executor/executor.service";
+import { ExecutorStatus } from "../../executor/entities/executor.entity";
 import { SystemConfigService } from "../../config/config.service";
 import { assertSafeExecutorUrl } from "../../../common/utils/safe-http.util";
 
@@ -72,7 +73,15 @@ describe("ExecutorPackageController download HTTP contract", () => {
             findAll: jest
               .fn()
               .mockResolvedValue([
-                { id: "exec-1", address: "http://executor:8002" },
+                // P2-8（executor lifecycle audit）：空名单推送只取 ONLINE 行，
+                // 夹具必须带 status——真实 findAll() 返回的实体必有该列（非
+                // nullable）。此前夹具省了它，于是这条契约测试在"按状态过滤"
+                // 落地后会因"没有在线执行器"而失败。
+                {
+                  id: "exec-1",
+                  address: "http://executor:8002",
+                  status: ExecutorStatus.ONLINE,
+                },
               ]),
           },
         },

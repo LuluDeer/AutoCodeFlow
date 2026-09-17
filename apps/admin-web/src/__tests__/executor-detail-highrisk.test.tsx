@@ -205,7 +205,11 @@ describe('AUTH-05 交接：单台删除执行器二次确认（reason 链路）'
 
     expect(await screen.findByText('确认删除执行器')).toBeTruthy();
     expect(screen.getByText('高危操作 · 不可恢复')).toBeTruthy();
-    expect(screen.getAllByText('执行器记录删除，需重新注册').length).toBeGreaterThanOrEqual(1);
+    // P3-10（executor lifecycle audit）：影响文案必须包含 pin 任务警告——
+    // 删除是硬删除且不检查 pin，任务之后会以 Pinned executor not found
+    // （归类 Unknown）在派发阶段失败。旧文案只说"需重新注册"，属于欠警告。
+    expect(screen.getAllByText('执行器记录删除，需重新注册；被指定的任务将派发失败').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText(/Pinned executor not found/).length).toBeGreaterThanOrEqual(1);
     expect(mockedApi.remove).not.toHaveBeenCalled();
   });
 
