@@ -302,8 +302,8 @@ def test_parse_python_list_keeps_only_pool_entries(pool):
     pool_bin = make_entry(pool, '3.11.13')
     outside = pool.parent / 'somewhere-else' / 'cpython-3.14.6-windows-x86_64-none' / 'python.exe'
     output = (
-        f'cpython-3.11.13-windows-x86_64-none    {pool_bin}\n'
-        f'cpython-3.14.6-windows-x86_64-none    {outside}\n'
+        f'cpython-3.11.13-{_PLATFORM}-none    {pool_bin}\n'
+        f'cpython-3.14.6-{_FOREIGN_PLATFORM}    {outside}\n'
         'cpython-3.13.13-windows-x86_64-none    C:\\Python313\\python.exe\n'
     )
     entries = interpreters._parse_python_list(output, discovered_at='2026-09-16T00:00:00Z')

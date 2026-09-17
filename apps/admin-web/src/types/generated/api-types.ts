@@ -2854,16 +2854,6 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
-        ExecutorInterpreterDto: {
-            /** @description Full patch version discovered in the interpreter pool */
-            version: string;
-            /** @description Absolute interpreter path inside the pool */
-            path?: string;
-            /** @description Probe result (executable and --version succeeded) */
-            available?: boolean;
-            /** @description Probe timestamp (ISO 8601) */
-            discoveredAt?: string;
-        };
         LoginDto: {
             /** @example admin */
             username: string;
@@ -3152,7 +3142,7 @@ export interface components {
              * @description Structured failure reason
              * @enum {string}
              */
-            failureReason?: "package_fetch_failed" | "script_error" | "timeout" | "executor_offline" | "executor_restart" | "dependency_install_failed" | "git_fetch_failed" | "runtime_missing" | "killed" | "unknown";
+            failureReason?: "package_fetch_failed" | "script_error" | "timeout" | "executor_offline" | "executor_restart" | "dependency_install_failed" | "git_fetch_failed" | "runtime_missing" | "interpreter_unavailable" | "killed" | "unknown";
             /** @description Wall-clock execution duration in milliseconds */
             durationMs?: number;
             /** @description FEAT-05: execution artifacts manifest (best-effort, max 20 entries). File bytes are uploaded separately via the artifact upload endpoint; the manifest is persisted to task_executions.artifacts on the terminal callback. */
@@ -3161,6 +3151,28 @@ export interface components {
             result?: {
                 [key: string]: unknown;
             };
+        };
+        ExecutorInterpreterDto: {
+            /**
+             * @description Full patch version discovered in the interpreter pool
+             * @example 3.7.9
+             */
+            version: string;
+            /**
+             * @description Absolute interpreter path inside the pool
+             * @example /data/interpreters/cpython-3.7.9-linux-x86_64-gnu-none/bin/python3
+             */
+            path?: string;
+            /**
+             * @description Probe result (executable and --version succeeded)
+             * @example true
+             */
+            available?: boolean;
+            /**
+             * @description Probe timestamp (ISO 8601)
+             * @example 2026-09-16T10:00:00.000Z
+             */
+            discoveredAt?: string;
         };
         ExecutorRegisterDto: {
             /**
