@@ -13,7 +13,6 @@ if (!globalThis.crypto) {
 }
 
 import express from 'express';
-import { spawnSync } from 'child_process';
 import { config, EXECUTOR_VERSION } from './config';
 import { logger } from './logger';
 import {
@@ -24,7 +23,12 @@ import {
   registerInterpretersProvider,
   ReportedInterpreter,
 } from './scheduler';
-import { interpretersForReport } from './interpreters';
+import { interpretersForReport, resolveUvBin } from './interpreters';
+import {
+  detectRuntimesOnHost,
+  reportedExecutorType,
+  type ReportedRuntime,
+} from './runtime-detection';
 import { startCallbackThread, stopCallbackThread } from './callback';
 import {
   startLogCleanup,
@@ -57,22 +61,38 @@ app.use('/api', verifyToken, updatePackageRouter);
 app.use('/api', configRouter);
 
 /**
- * Detect which runtimes are actually available on this system.
- * Always includes 'shell' (bash). Node is always available since we run in Node.js.
- * Checks for python3/python in PATH.
+ * 探测并上报本机运行能力（shell/node/python）。
+ *
+ * 原实现内联在这里用 `spawnSync('which', ...)` 判定 python，但 **Windows 上
+ * 没有 `which`**（实测 ENOENT，`status === null`），于是 Windows 客户端恒定
+ * 上报 `['shell','node']`——哪怕机器上装了 Python。而 admin 侧派发**只按
+ * capabilities 过滤**，任务 runtime 缺省又是 `python`，结果新设备会被所有
+ * 默认任务过滤掉。现改为实跑探测，并把"自带 uv 可用"也算作 Python 能力，
+ * 判定逻辑见 `runtime-detection.ts`（纯函数，已有单测覆盖）。
+ *
+ * 探测失败一律降级（绝不让注册失败）：能力少报只会让任务不派过来，
+ * 而抛异常会让整台执行器注册不上，后者严重得多。
  */
-function detectAvailableRuntimes(): string[] {
-  const runtimes: string[] = ['shell', 'node'];
-
-  for (const bin of ['python3', 'python']) {
-    const r = spawnSync('which', [bin], { stdio: 'ignore' });
-    if (r.status === 0) {
-      runtimes.push('python');
-      break;
+async function detectAvailableRuntimes(): Promise<ReportedRuntime[]> {
+  let hasUv = false;
+  try {
+    const uv = await resolveUvBin();
+    hasUv = uv.path !== null;
+    if (uv.source === 'missing') {
+      logger.warn(
+        'no uv available (UV_BIN / PATH / bundled all absent) — python tasks ' +
+          'declaring runtimeVersion will not be runnable on this executor',
+      );
     }
+  } catch (err: any) {
+    logger.warn(`uv resolution failed during runtime detection: ${err?.message ?? err}`);
   }
-
-  return runtimes;
+  try {
+    return await detectRuntimesOnHost({ hasUv });
+  } catch (err: any) {
+    logger.warn(`runtime detection failed, degrading to shell+node: ${err?.message ?? err}`);
+    return ['shell', 'node'];
+  }
 }
 
 // N41: register 失败不再永久依赖进程重启恢复。token 链恢复（fetchToken 成功，
@@ -95,13 +115,16 @@ function getInterpretersSnapshot(): Promise<ReportedInterpreter[]> {
 }
 
 async function registerExecutor(): Promise<boolean> {
-  const runtimes = detectAvailableRuntimes();
+  const runtimes = await detectAvailableRuntimes();
   try {
     const resp = await postWithStaticToken('/api/executors/register', {
       appName: config.appName,
       groupName: config.groupName || undefined,
       address: config.executorAddressPublic || config.executorAddress,
-      type: 'node',
+      // 桌面客户端兼具 shell/node/python 执行面 → 自报 universal（此前硬编码
+      // 'node'，后台把通用执行器显示成 node-only）。注意：type 只影响展示，
+      // **派发只看 capabilities**，故两者由同一份 runtimes 同源推导。
+      type: reportedExecutorType(runtimes),
       // EXE-VER-1: 版本上报单源 EXECUTOR_VERSION（心跳同源）；
       // 中心端 EXECUTOR_MIN_VERSION 门禁按此判定，低于下限 403。
       version: EXECUTOR_VERSION,
