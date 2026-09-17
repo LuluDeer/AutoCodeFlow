@@ -1066,6 +1066,8 @@ export const FAILURE_RUNBOOK: Record<string, string> = {
     "Worker crash or lost worker — the sweep terminated and re-enqueued. Inspect the executor host logs.",
   killed:
     "Manually killed (or block-strategy kill). Verify with the operator / audit log.",
+  interpreter_unavailable:
+    "The executor could not obtain the Python version the task declares. Verify uv is installed and the Python download source is reachable; 3.7 cannot be downloaded online and needs the operator to pre-provision the interpreter cache volume (or declare 3.8+ and re-trigger). The host interpreter is deliberately NOT used as a fallback — retrying without fixing the environment will not help.",
   unknown: "No reason reported — read the full logs and run analyze_execution.",
 };
 

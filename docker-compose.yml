@@ -137,6 +137,13 @@ services:
       # 种子（users.service 既有行为）
       INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:?set INITIAL_ADMIN_PASSWORD in .env}
       INITIAL_ADMIN_EMAIL: ${INITIAL_ADMIN_EMAIL:-admin@autoflow.local}
+      # python_task_multiversion：可声明的 Python 版本区间（写面校验）。
+      # 与 executor-python 侧同名变量**同源注入**——两侧必须一致，否则会出现
+      # "能保存但跑不了"（admin 放宽而执行器收紧）或"能跑但存不了"（反向）。
+      # 读取点：src/modules/task/runtime-version.util.ts（getEnvVar，调用时读）。
+      # 非法值静默回退契约缺省（3.7/3.14），不会让写面 500。
+      PYTHON_RUNTIME_VERSION_MIN: ${PYTHON_RUNTIME_VERSION_MIN:-3.7}
+      PYTHON_RUNTIME_VERSION_MAX: ${PYTHON_RUNTIME_VERSION_MAX:-3.14}
     depends_on:
       postgres:
         condition: service_healthy
@@ -256,6 +263,26 @@ services:
       WORK_DIR: /data/tasks
       LOG_LEVEL: ${LOG_LEVEL:-info}
       PYPI_REGISTRY_URL: ${PYPI_REGISTRY_URL:-http://registry-pypi:8003/simple/}
+      # ── python_task_multiversion：解释器缓存池与多版本 ──────────────
+      # 任务可声明 runtimeVersion（Python 主.次版本）按需获取解释器；不声明
+      # 则沿用宿主解释器（存量语义逐字节不变）。
+      # 池根目录：独立命名卷，**刻意与 WORK_DIR(/data/tasks) 分离**——WORK_DIR
+      # 受磁盘 TTL 清扫（DISK_CLEANUP_TTL_DAYS）管理，解释器是可复用资产，
+      # 被 TTL 误删就要重新下载（离线环境下永久不可恢复）。
+      UV_PYTHON_INSTALL_DIR: /data/interpreters
+      # 可选内网镜像（私有化模式 A）；留空 = 走 uv 默认源（Astral CDN /
+      # GitHub Releases，在线主路径）。仅 http(s)，无 userinfo/query/fragment。
+      UV_PYTHON_INSTALL_MIRROR: ${UV_PYTHON_INSTALL_MIRROR:-}
+      # 单次下载独立超时预算（秒，D11）；实测单版本约 13~17s，300s 余量充裕。
+      INTERPRETER_DOWNLOAD_TIMEOUT_SECONDS: ${INTERPRETER_DOWNLOAD_TIMEOUT_SECONDS:-300}
+      # 体积红线（D12）：解释器层豁免 TTL，改由红线治理（超限告警 + LRU 回收）。
+      INTERPRETER_SINGLE_VERSION_MB: ${INTERPRETER_SINGLE_VERSION_MB:-250}
+      INTERPRETER_TOTAL_GB: ${INTERPRETER_TOTAL_GB:-4}
+      # 可声明版本区间（主.次）；与 admin-api 侧同名变量须保持一致。
+      # 注意：3.7 在线不可下载（uv 清单只到 3.8~3.14），需离线预填缓存卷，
+      # 见 docs/design/python-task-upload-and-multiversion/OFFLINE-PROVISIONING.md
+      PYTHON_RUNTIME_VERSION_MIN: ${PYTHON_RUNTIME_VERSION_MIN:-3.7}
+      PYTHON_RUNTIME_VERSION_MAX: ${PYTHON_RUNTIME_VERSION_MAX:-3.14}
     # SEC-07: 最小权限双闸（镜像层已 non-root，见 apps/executor-python/Dockerfile
     # Q-08 —— adduser appuser + USER）。cap_drop 移除全部 Linux capabilities
     # （代码执行面不需要任何特权操作）；no-new-privileges 阻断 setuid 提权路径。
@@ -265,6 +292,10 @@ services:
       - no-new-privileges:true
     volumes:
       - executor_python_data:/data/tasks
+      # python_task_multiversion：解释器缓存池独立命名卷（与 /data/tasks 分离，
+      # 豁免 TTL 清扫）。离线预填 3.7 即预置到此卷，步骤见
+      # docs/design/python-task-upload-and-multiversion/OFFLINE-PROVISIONING.md
+      - interpreter_cache:/data/interpreters
     depends_on:
       admin-api:
         condition: service_healthy
@@ -313,6 +344,21 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-info}
       NPM_REGISTRY_URL: ${NPM_REGISTRY_URL:-http://registry-npm:4873}
       PYTHON_REGISTRY_URL: ${PYTHON_REGISTRY_URL:-http://registry-pypi:8003/simple/}
+      # ── python_task_multiversion：解释器缓存池（node 侧同构） ────────
+      # executor-node 的 python 分支与 executor-python 对等（声明版本按需
+      # 获取解释器）。uv 定位顺序：UV_BIN → PATH → desktop 内置（Electron
+      # 注入 UV_BIN）→ 都无则声明版本的任务明确失败（reason=uv_missing）。
+      # 注意：本 compose 服务基于 node:22-alpine，**当前镜像未内置 uv 也未装
+      # python**（故 detectAvailableRuntimes 不会上报 python 能力）——以下
+      # 变量在此服务上暂为惰性配置，供镜像补齐 uv 后直接生效；桌面端
+      # （executor-desktop 内置 uv + 宿主 python）为主要消费形态。
+      UV_BIN: ${UV_BIN:-}
+      UV_PYTHON_INSTALL_DIR: /data/interpreters
+      UV_PYTHON_INSTALL_MIRROR: ${UV_PYTHON_INSTALL_MIRROR:-}
+      INTERPRETER_DOWNLOAD_TIMEOUT_SECONDS: ${INTERPRETER_DOWNLOAD_TIMEOUT_SECONDS:-300}
+      # 注：INTERPRETER_SINGLE_VERSION_MB / INTERPRETER_TOTAL_GB /
+      # PYTHON_RUNTIME_VERSION_MIN / _MAX **不在此注入**——executor-node 不读取
+      # 这四个变量（无体积红线实现，版本区间由 admin-api 侧校验）。
     # SEC-07: 最小权限双闸（镜像层已 non-root，见 apps/executor-node/Dockerfile
     # Q-09 —— adduser appuser + USER）。cap_drop/no-new-privileges 语义同
     # executor-python 上方注释。
@@ -321,6 +367,15 @@ services:
       - no-new-privileges:true
     volumes:
       - executor_node_data:/data/tasks
+      # python_task_multiversion：与 executor-python 共用同一解释器缓存**卷**。
+      # ⚠ 两执行器基底 libc 不同（本服务 node:22-alpine = **musl**；
+      #   executor-python 的 python:3.12-slim = **glibc**），因此**不能共用同一份
+      #   解释器产物**——各自需要对应 libc 的构建。共卷本身是安全的：池目录名
+      #   带 libc 分量（`linux-x86_64-musl` vs `linux-x86_64-gnu`），uv 按平台
+      #   分量过滤，**非本平台的条目被安全跳过**（实测：池内混放 linux 命名条目
+      #   时 `uv python list --only-installed` 仍 exit 0，本平台条目正常列出）。
+      #   离线预填时须**两个 libc 各放一份**，见 OFFLINE-PROVISIONING.md §5.4。
+      - interpreter_cache:/data/interpreters
     depends_on:
       admin-api:
         condition: service_healthy
@@ -443,3 +498,9 @@ volumes:
   executor_python_data:
   executor_node_data:
   jaeger_data:
+  # python_task_multiversion：解释器缓存池（executor-python 与 executor-node
+  # 共享）。豁免 TTL 清扫，由 INTERPRETER_SINGLE_VERSION_MB /
+  # INTERPRETER_TOTAL_GB 体积红线 + 最久未使用回收治理。
+  # ⚠ 该卷以非 root 的 appuser 身份写入；离线预填时须保证 appuser 可读可执行，
+  #   见 docs/design/python-task-upload-and-multiversion/OFFLINE-PROVISIONING.md §5
+  interpreter_cache:
