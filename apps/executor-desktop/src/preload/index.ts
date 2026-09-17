@@ -8,6 +8,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('config:save-and-close-wizard', cfg),
   testConnection: (url: string) => ipcRenderer.invoke('config:test-connection', url),
   checkPort: (port: number) => ipcRenderer.invoke('config:check-port', port),
+  // python_task_multiversion：设置页诊断——回报**实际生效**的 uv 与解释器池
+  // （纯读、不 spawn 进程），让"配置没生效"这类问题当场可见。
+  getPythonEnvStatus: () => ipcRenderer.invoke('config:python-env-status'),
 
   // 执行器控制
   startExecutor: () => ipcRenderer.invoke('executor:start'),

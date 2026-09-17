@@ -124,11 +124,19 @@ jobs:
 
       # 安装包内必须内嵌与源码一致的 executor bundle：F-19 的清单校验
       # 在 CI 的 desktop-bundle-drift job 离线重打比对过；这里构建时会重新生成。
+      # 发布包必须自带 uv（desktop-v1.5.1 实爆）：全新设备上没装 uv 时，执行器
+      # 只上报 `runtimes: shell, node`，所有声明 runtimeVersion 的 Python 任务
+      # 全部不可用，而用户侧只有一条 WARN。因此发布构建显式打开 uv 打包，
+      # 并用 ACF_UV_REQUIRED=1 把"没打进 uv"从 WARN 升级为硬失败——绝不允许
+      # 再产出一个能力残缺的安装包。ACF_UV_VERSION 固定版本，保证可复现。
       - name: Build installer
         working-directory: apps/executor-desktop
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
           ELECTRON_MIRROR: https://npmmirror.com/mirrors/electron/
+          ACF_BUNDLE_UV: '1'
+          ACF_UV_REQUIRED: '1'
+          ACF_UV_VERSION: '0.8.17'
         run: npm run ${{ matrix.script }} -- --publish never
 
       - name: Verify embedded executor bundle present
@@ -138,6 +146,56 @@ jobs:
           test -f apps/executor-desktop/resources/executor-node/index.js \
             || { echo "::error::executor-node bundle missing — installer 会缺少执行器内核"; exit 1; }
           echo "executor bundle present: $(wc -c < apps/executor-desktop/resources/executor-node/index.js) bytes"
+
+      # 打包前校验"资源目录里有 uv"还不够——真正决定用户体验的是**安装包内**
+      # 有没有 uv。electron-builder 的 extraResources 过滤规则写错时，源目录
+      # 有文件也会被漏掉，所以这里直接解包已生成的安装产物来断言。
+      - name: Verify uv embedded in packaged artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd apps/executor-desktop
+          exe_name="uv"; case "${{ matrix.os }}" in windows-*) exe_name="uv.exe" ;; esac
+
+          test -f "resources/uv/${exe_name}" \
+            || { echo "::error::resources/uv/${exe_name} 缺失 — uv 打包失败（发布闸应已拦住，此处兜底）"; exit 1; }
+          echo "staged uv: $(wc -c < "resources/uv/${exe_name}") bytes"
+
+          found=0
+          work="$(mktemp -d)"
+          case "${{ matrix.os }}" in
+            windows-*)
+              # NSIS 安装包用 7z 列表断言 resources\uv\uv.exe 在包内。
+              7z l dist-electron/*.exe > "$work/nsis-list.txt" 2>/dev/null || true
+              if grep -qiE 'resources[\\/]uv[\\/]uv\.exe' "$work/nsis-list.txt"; then found=1; fi
+              ;;
+            macos-*)
+              # dmg → 挂载后进 .app/Contents/Resources/uv/uv 查看。
+              # 多 arch（x64+arm64）会产出多个 dmg：逐个挂载，命中即止。
+              for dmg in dist-electron/*.dmg; do
+                [ -f "$dmg" ] || continue
+                mnt="$work/mnt"; mkdir -p "$mnt"
+                hdiutil attach "$dmg" -mountpoint "$mnt" -nobrowse -quiet || continue
+                if compgen -G "$mnt/*.app/Contents/Resources/uv/uv" >/dev/null; then found=1; fi
+                hdiutil detach "$mnt" -quiet || true
+                [ "$found" = "1" ] && break
+              done
+              ;;
+            ubuntu-*)
+              # AppImage 是 squashfs：--appimage-extract 在**当前目录**展开成
+              # squashfs-root，必须 cd 进 work 目录再跑，展开结果才可预期。
+              appimg="$(ls dist-electron/*.AppImage | head -n 1)"
+              ( cd "$work" && "$GITHUB_WORKSPACE/apps/executor-desktop/$appimg" --appimage-extract >/dev/null 2>&1 ) || true
+              if [ -f "$work/squashfs-root/resources/uv/uv" ]; then found=1; fi
+              ;;
+          esac
+          rm -rf "$work" 2>/dev/null || true
+
+          if [ "$found" != "1" ]; then
+            echo "::error::安装包内未找到 uv（${exe_name}）— electron-builder extraResources 可能漏带；全新设备将无法执行声明 runtimeVersion 的 Python 任务"
+            exit 1
+          fi
+          echo "::notice::安装包内已确认自带 uv（${exe_name}）— Python 多版本任务可用"
 
       # 产物哈希：供下载者核对完整性。三平台各一份，避免并行互相覆盖。
       # N46（v1.4.1 实证）：文件名含空格，不能用 xargs sha256sum（会按空白

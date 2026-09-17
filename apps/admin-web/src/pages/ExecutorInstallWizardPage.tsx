@@ -327,13 +327,14 @@ export default function ExecutorInstallWizardPage() {
           error={packagesError}
           title={t('install.packagesLoadFail')}
           onRetry={() => { void loadPackages(); }}
-          style={{ marginBottom: 24, maxWidth: 900 }}
+          style={{ marginBottom: 24 }}
         />
       ) : null}
 
+      {/* UI 打磨（用户反馈）：去掉 maxWidth 900——宽屏右侧留大片空白，改随内容区全宽 */}
       <Steps
         current={currentStep}
-        style={{ marginBottom: 32, maxWidth: 900 }}
+        style={{ marginBottom: 32 }}
         items={[
           { title: t('install.step1'), icon: <DesktopOutlined /> },
           { title: t('install.step2'), icon: <DownloadOutlined /> },
@@ -345,7 +346,7 @@ export default function ExecutorInstallWizardPage() {
 
       {/* Step 0: 系统要求 */}
       {currentStep === 0 && (
-        <Card style={{ maxWidth: 720 }}>
+        <Card>
           <Title level={5} style={{ marginTop: 0 }}>{t('install.reqTitle')}</Title>
           <Paragraph type="secondary">
             {t('install.reqIntro')}
@@ -379,7 +380,7 @@ export default function ExecutorInstallWizardPage() {
 
       {/* Step 1: 选择安装包 */}
       {currentStep === 1 && (
-        <Card style={{ maxWidth: 720 }}>
+        <Card>
           <Title level={5} style={{ marginTop: 0 }}>{t('install.selectTitle')}</Title>
           <Paragraph type="secondary">
             {t('install.selectDesc')}
@@ -491,7 +492,7 @@ export default function ExecutorInstallWizardPage() {
 
       {/* Step 2: 获取安装命令 */}
       {currentStep === 2 && selectedPackage && (
-        <Card style={{ maxWidth: 720 }}>
+        <Card>
           <Title level={5} style={{ marginTop: 0 }}>{t('install.step3')}</Title>
           <Paragraph type="secondary">
             {t('install.getCmdDesc')}
@@ -585,7 +586,7 @@ export default function ExecutorInstallWizardPage() {
 
       {/* Step 3: 执行安装 */}
       {currentStep === 3 && installCmd && (
-        <Card style={{ maxWidth: 720 }}>
+        <Card>
           <Title level={5} style={{ marginTop: 0 }}>{t('install.step4Title')}</Title>
           <Paragraph type="secondary">
             {t('install.step4Desc')}
@@ -635,7 +636,7 @@ export default function ExecutorInstallWizardPage() {
 
       {/* Step 4: 验证执行器上线 */}
       {currentStep === 4 && (
-        <Card style={{ maxWidth: 720 }}>
+        <Card>
           <Title level={5} style={{ marginTop: 0 }}>{t('install.step5Title')}</Title>
           <Paragraph type="secondary">
             {t('install.step5Desc')}

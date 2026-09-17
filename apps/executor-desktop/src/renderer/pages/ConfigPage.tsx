@@ -9,7 +9,20 @@ declare const window: Window & {
     getAutoLaunch: () => Promise<boolean>;
     setAutoLaunch: (enable: boolean) => Promise<{ ok: boolean }>;
     checkForUpdate: () => Promise<{ ok: boolean }>;
+    getPythonEnvStatus?: () => Promise<PythonEnvStatus>;
   };
+};
+
+/** python_task_multiversion：设置页诊断面（实际生效的 uv / 池，见主进程 IPC）。 */
+type PythonEnvStatus = {
+  uvPath: string | null;
+  uvSource: 'config' | 'bundled' | 'path';
+  uvFromSystemEnv: boolean;
+  interpretersDir: string;
+  poolEntries: string[];
+  poolReadable: boolean;
+  mirrorConfigured: boolean;
+  pypiConfigured: boolean;
 };
 
 function Toggle({ id, label, checked, onChange }: {
@@ -26,11 +39,15 @@ function Toggle({ id, label, checked, onChange }: {
   );
 }
 
-type SectionId = 'connection' | 'network' | 'general';
+type SectionId = 'connection' | 'network' | 'python' | 'general';
 
 const SECTIONS: { id: SectionId; icon: string; label: string; desc: string }[] = [
   { id: 'connection', icon: '🔗', label: '连接设置', desc: '平台地址与密钥' },
   { id: 'network',    icon: '🌐', label: '网络地址', desc: '端口与对外 IP' },
+  // python_task_multiversion：内网/离线部署的关键配置面。此前这些字段
+  // （uvPath / 镜像 / 池目录 / PyPI 源）虽然后端全部实现，却**没有任何 UI
+  // 入口**——运维只能去手工编辑 userData 里的 config.json，实际等于不可用。
+  { id: 'python',     icon: '🐍', label: 'Python 运行环境', desc: 'uv、镜像与解释器池' },
   { id: 'general',   icon: '⚙️', label: '基本设置', desc: '名称与并发数' },
 ];
 
@@ -52,6 +69,11 @@ export default function ConfigPage() {
   // 呈现（updater 事件是主进程广播，与触发点解耦）；这里只反馈"已发起"。
   const [checking, setChecking] = useState(false);
   const [checkMsg, setCheckMsg] = useState<string | null>(null);
+  // python_task_multiversion：进入「Python 运行环境」时拉一次诊断，显示实际
+  // 生效的 uv / 池路径。刻意在切到该页时刷新而不是随表单实时联动——诊断反映
+  // 的是**已保存**的配置，跟着未保存的输入框变化会误导用户。
+  const [pyEnv, setPyEnv] = useState<PythonEnvStatus | null>(null);
+  const [pyEnvError, setPyEnvError] = useState<string | null>(null);
 
   useEffect(() => {
     Promise.all([window.electronAPI.getConfig(), window.electronAPI.getLocalIPs()])
@@ -61,6 +83,22 @@ export default function ConfigPage() {
       window.electronAPI.getAutoLaunch().then(setAutoLaunch).catch(() => undefined);
     }
   }, []);
+
+  // 切到「Python 运行环境」页时刷新诊断（旧版 preload 无此通道时静默降级为
+  // 不显示诊断块，不影响其余设置项的编辑与保存）。
+  useEffect(() => {
+    if (active !== 'python') return;
+    if (typeof window.electronAPI.getPythonEnvStatus !== 'function') return;
+    let cancelled = false;
+    setPyEnvError(null);
+    window.electronAPI
+      .getPythonEnvStatus()
+      .then((s) => { if (!cancelled) setPyEnv(s); })
+      .catch((err) => {
+        if (!cancelled) setPyEnvError(err instanceof Error ? err.message : String(err));
+      });
+    return () => { cancelled = true; };
+  }, [active]);
 
   function set(key: string, value: unknown) {
     setForm((f) => ({ ...f, [key]: value }));
@@ -241,6 +279,138 @@ export default function ConfigPage() {
               <div className="info-banner">
                 <span className="info-banner-icon">💡</span>
                 <span>Admin 平台通过<strong>对外地址</strong>向本机推送任务。同局域网选上面的 IP 即可；跨网络或 NAT 环境需填外网 IP / 域名。</span>
+              </div>
+            </>
+          )}
+
+          {active === 'python' && (
+            <>
+              <div className="cfg-header">
+                <h2 className="cfg-title">Python 运行环境</h2>
+                <p className="cfg-subtitle">
+                  执行器自带的 uv 负责按任务声明的版本准备 Python。默认走在线下载；
+                  内网或离线环境请在此配置镜像源或预先填充解释器池。
+                </p>
+              </div>
+
+              {/* 诊断块：显示**已保存配置**下实际生效的 uv / 池。这是排查
+                  "配置了却没生效"最快的一手信息（uvPath 指错、自带 uv 缺失、
+                  池被配到工作目录等），因此放在最上方。 */}
+              {pyEnv && (
+                <div className={`py-env-status ${pyEnv.uvPath || pyEnv.uvFromSystemEnv ? 'ok' : 'warn'}`}>
+                  <div className="py-env-row">
+                    <span className="py-env-key">uv</span>
+                    <span className="py-env-val">
+                      {pyEnv.uvPath
+                        ? <><code>{pyEnv.uvPath}</code>
+                            <em>
+                              {pyEnv.uvSource === 'config' ? '（来自上方 uvPath 配置）'
+                                : pyEnv.uvSource === 'bundled' ? '（安装包自带）' : ''}
+                            </em>
+                          </>
+                        : pyEnv.uvFromSystemEnv
+                          ? <><code>系统环境变量 UV_BIN</code><em>（来自系统环境）</em></>
+                          : <strong className="py-env-missing">
+                              未找到 uv —— 声明了 Python 版本的任务将无法执行
+                            </strong>}
+                    </span>
+                  </div>
+                  <div className="py-env-row">
+                    <span className="py-env-key">解释器池</span>
+                    <span className="py-env-val">
+                      <code>{pyEnv.interpretersDir}</code>
+                      {!pyEnv.poolReadable
+                        ? <em className="py-env-missing">（目录不可读）</em>
+                        : pyEnv.poolEntries.length > 0
+                          ? <em>已就绪 {pyEnv.poolEntries.length} 个：{pyEnv.poolEntries.join('、')}</em>
+                          : <em>（空——首次使用某版本时将按上方镜像源下载）</em>}
+                    </span>
+                  </div>
+                  <div className="py-env-row">
+                    <span className="py-env-key">镜像 / 私有源</span>
+                    <span className="py-env-val">
+                      {pyEnv.mirrorConfigured
+                        ? <em>已配置解释器镜像源</em>
+                        : <em>未配置解释器镜像源（需能访问外网）</em>}
+                      {' · '}
+                      {pyEnv.pypiConfigured
+                        ? <em>已配置私有 PyPI 源</em>
+                        : <em>用官方 PyPI</em>}
+                    </span>
+                  </div>
+                </div>
+              )}
+              {pyEnvError && (
+                <div className="cfg-save-error" role="alert">⚠ 无法读取 Python 环境状态：{pyEnvError}</div>
+              )}
+
+              <div className="info-banner">
+                <span className="info-banner-icon">💡</span>
+                <span>
+                  安装包只自带 <strong>uv</strong>（包管理器），<strong>不含 Python 本体</strong>。
+                  任务首次用到某个 Python 版本时由 uv 获取：<strong>能上外网</strong>则自动下载；
+                  <strong>纯内网</strong>必须配置下方「解释器镜像源」，或由运维预先填充解释器池目录。
+                </span>
+              </div>
+
+              <div className="cfg-field">
+                <label className="cfg-label">uv 可执行文件路径（uvPath）</label>
+                <input className="input" placeholder="留空 = 用自带 uv，其次回退系统 PATH"
+                  value={String(form.uvPath || '')}
+                  onChange={(e) => set('uvPath', e.target.value)} />
+                <span className="cfg-hint">
+                  仅在需要指定自建分发的 uv 时填写。留空时使用安装包自带的 uv。
+                </span>
+              </div>
+
+              <div className="cfg-field">
+                <label className="cfg-label">解释器镜像源（uvPythonInstallMirror）</label>
+                <input className="input" placeholder="留空 = 用 uv 官方源（需要外网）"
+                  value={String(form.uvPythonInstallMirror || '')}
+                  onChange={(e) => set('uvPythonInstallMirror', e.target.value)} />
+                <span className="cfg-hint">
+                  纯内网部署时填内网镜像地址（如 python-build-standalone 镜像）。
+                  留空则访问官方源，内网会下载失败。
+                </span>
+              </div>
+
+              <div className="cfg-field">
+                <label className="cfg-label">解释器池目录（uvPythonInstallDir）</label>
+                <input className="input" placeholder="留空 = 用户数据目录下的 interpreters"
+                  value={String(form.uvPythonInstallDir || '')}
+                  onChange={(e) => set('uvPythonInstallDir', e.target.value)} />
+                <span className="cfg-hint">
+                  下载/预填的 Python 存放位置。离线预填时，把解释器按约定命名放进这里即可被识别。
+                  不要指向任务工作目录（会被 TTL 清扫删除）。
+                </span>
+              </div>
+
+              <div className="cfg-field">
+                <label className="cfg-label">私有 PyPI 源（pypiRegistryUrl）</label>
+                <input className="input" placeholder="留空 = 用官方 PyPI"
+                  value={String(form.pypiRegistryUrl || '')}
+                  onChange={(e) => set('pypiRegistryUrl', e.target.value)} />
+                <span className="cfg-hint">
+                  任务依赖安装使用的源（如内网 Nexus/Artifactory）。仅影响 pip 装包，不影响解释器下载。
+                </span>
+              </div>
+
+              <div className="cfg-field cfg-field-narrow">
+                <label className="cfg-label">解释器下载超时（毫秒）</label>
+                <input className="input" type="number" min={0}
+                  value={Number(form.interpreterDownloadTimeoutMs || 0)}
+                  onChange={(e) => set('interpreterDownloadTimeoutMs', parseInt(e.target.value, 10) || 0)} />
+                <span className="cfg-hint">单个解释器下载的最长等待时间。0 = 使用执行器默认值。</span>
+              </div>
+
+              <div className="info-banner">
+                <span className="info-banner-icon">📌</span>
+                <span>
+                  <strong>Python 3.7 无法在线获取</strong>，必须由运维离线预填解释器池
+                  （池目录下按 <code>cpython-3.7.9-&lt;平台三元组&gt;</code> 命名）。
+                  未预填时声明 3.7 的任务会明确失败并归类为
+                  <code>interpreter_unavailable</code>，不会悄悄回退到系统解释器。
+                </span>
               </div>
             </>
           )}

@@ -15,6 +15,11 @@ import {
   hasAllowedLogExtension,
   isValidExecutionId,
 } from './path-domain';
+// python_task_multiversion：设置页的「Python 运行环境」诊断面需要与
+// executor-process 完全同源地解析 uv / 解释器池路径（否则诊断结果会与实际
+// 下发给子进程的值不一致，比没有诊断更误导）。这里刻意复用 executor-process
+// 已注入 Electron 上下文的包装函数，而不是直接调 uv-paths 的纯函数。
+import { resolveBundledUvPath, resolveInterpretersDir } from './executor-process';
 import log from './logger';
 
 /**
@@ -188,6 +193,54 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle('config:test-connection', async (_event, url: string) => {
     return testAdminApiConnection(url);
+  });
+
+  /**
+   * python_task_multiversion：回报**实际生效**的 uv 与解释器池路径。
+   *
+   * 为什么需要：Python 环境的失败模式几乎全是"配置看起来对、实际没生效"
+   * （uvPath 写了但指到不存在的文件、自带 uv 没打进包、池目录被配到
+   * WORK_DIR 里被 TTL 清掉）。让运维在设置页直接看到"当前用的是哪个 uv、
+   * 池在哪、池里有哪些版本"，比让他去翻日志或猜要快得多。
+   *
+   * 纯读操作、不 spawn 进程（否则每次打开设置页都会拉长响应）。
+   */
+  ipcMain.handle('config:python-env-status', () => {
+    const cfg = configStore.getAll();
+    const bundled = resolveBundledUvPath();
+    const configured = (cfg.uvPath || '').trim();
+    const interpretersDir = resolveInterpretersDir(cfg);
+
+    // 与 executor-process 的下发逻辑保持同源：显式配置 > 自带 > PATH 兜底。
+    const source = configured
+      ? ('config' as const)
+      : bundled
+        ? ('bundled' as const)
+        : ('path' as const);
+    const uvPath = configured || bundled || null;
+
+    // 池内已就绪的版本目录名（仅目录名，不解析内容——保持纯读且低成本）。
+    let poolEntries: string[] = [];
+    let poolReadable = true;
+    try {
+      poolEntries = fs.existsSync(interpretersDir)
+        ? fs.readdirSync(interpretersDir).filter((n) => n.startsWith('cpython-'))
+        : [];
+    } catch {
+      poolReadable = false;
+    }
+
+    return {
+      uvPath,
+      uvSource: source,
+      /** UV_BIN 是否来自用户系统环境（此时我们不下发，交由子进程继承）。 */
+      uvFromSystemEnv: !uvPath && Boolean((process.env.UV_BIN || '').trim()),
+      interpretersDir,
+      poolEntries,
+      poolReadable,
+      mirrorConfigured: Boolean((cfg.uvPythonInstallMirror || '').trim()),
+      pypiConfigured: Boolean((cfg.pypiRegistryUrl || '').trim()),
+    };
   });
 
   ipcMain.handle('config:check-port', async (_event, port: number) => {
