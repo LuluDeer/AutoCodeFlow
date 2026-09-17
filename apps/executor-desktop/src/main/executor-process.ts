@@ -1,9 +1,15 @@
 import { ChildProcess, spawn } from 'child_process';
+import * as fs from 'fs';
 import * as path from 'path';
 import { app, BrowserWindow } from 'electron';
 import { AppConfig } from './config-store';
 import { decryptToken } from './token-crypto';
 import log from './logger';
+import {
+  buildUvChildEnv,
+  resolveBundledUvPath as resolveBundledUvPathPure,
+  resolveInterpretersDir as resolveInterpretersDirPure,
+} from './uv-paths';
 
 export type ExecutorStatus = 'stopped' | 'pending' | 'online' | 'offline';
 
@@ -17,6 +23,32 @@ function resolveToken(config: AppConfig): string {
     log.error(`Failed to resolve executor token: ${err?.message ?? err}`);
     return '';
   }
+}
+
+/**
+ * 定位随客户端分发的 uv（python_task_multiversion）。
+ * 决策逻辑在 `uv-paths.ts`（纯函数、可自检）；这里只注入 Electron 的运行时值。
+ */
+export function resolveBundledUvPath(): string | null {
+  return resolveBundledUvPathPure({
+    isPackaged: app.isPackaged,
+    resourcesPath: process.resourcesPath,
+    appPath: app.getAppPath(),
+    userDataDir: app.getPath('userData'),
+    platform: process.platform,
+    existsFile: (candidate) => fs.existsSync(candidate) && fs.statSync(candidate).isFile(),
+  });
+}
+
+/**
+ * 解释器缓存池目录（`UV_PYTHON_INSTALL_DIR`）。
+ *
+ * 默认落在 `userData` 而不是安装目录：Windows 上安装目录通常是
+ * `Program Files`，标准用户无写权限，uv 下载解释器会直接失败；且卸载/升级
+ * 不该连带删掉已下载的解释器（每版本几十 MB）。用户可用 config.uvPythonInstallDir 覆盖。
+ */
+export function resolveInterpretersDir(config: AppConfig): string {
+  return resolveInterpretersDirPure(config.uvPythonInstallDir, app.getPath('userData'));
 }
 
 export class ExecutorProcess {
@@ -86,6 +118,40 @@ export class ExecutorProcess {
       // secret for the child env (the only consumer that needs plaintext).
       EXECUTOR_SHARED_TOKEN: resolveToken(config),
     };
+
+    // ---- python_task_multiversion：uv 与解释器池 ----
+    // 客户端执行器与 python 执行器**功能对等**：声明了 runtimeVersion 的任务
+    // 同样要走 uv 的多版本解释器。这里只负责把"用哪个 uv、池放哪"告诉子进程，
+    // 具体解析链与回退由 executor-node 自己决定（UV_BIN → PATH → bundled）。
+    const bundledUv = resolveBundledUvPath();
+    const configuredUv = (config.uvPath || '').trim();
+    const uvBin = configuredUv || bundledUv || null;
+    if (configuredUv) {
+      // 用户显式指定优先于自带（例如内网自建 uv 分发）。
+      log.info(`Using configured uv (uvPath): ${configuredUv}`);
+    } else if (bundledUv) {
+      log.info(`Using bundled uv: ${bundledUv}`);
+    } else if (!env.UV_BIN) {
+      // 不覆盖用户可能已在系统环境里设的 UV_BIN。
+      log.info(
+        'No bundled uv found; executor-node will fall back to PATH lookup. ' +
+          'Tasks declaring a Python runtimeVersion need uv available.',
+      );
+    }
+    const interpretersDir = resolveInterpretersDir(config);
+    Object.assign(
+      env,
+      buildUvChildEnv({
+        uvBin,
+        interpretersDir,
+        mirror: config.uvPythonInstallMirror,
+        pypiRegistryUrl: config.pypiRegistryUrl,
+        downloadTimeoutMs: config.interpreterDownloadTimeoutMs,
+      }),
+    );
+    // 环境里已有 UV_BIN（用户系统级配置）且我们没自带/没显式指定时，
+    // buildUvChildEnv 不会写 UV_BIN，此处保持原值即可（已被 ...process.env 带入）。
+    log.info(`Interpreter pool dir: ${interpretersDir}`);
 
     this.proc = spawn(process.execPath, [entryPath], {
       env,

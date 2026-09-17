@@ -23,6 +23,10 @@ export const CALLBACK_FAILURE_REASONS = [
   'dependency_install_failed',
   'git_fetch_failed',
   'runtime_missing',
+  // WS5（python_task_upload_and_multiversion, CONTRACT.md §2.5）：解释器无法获取。
+  // 紧跟 runtime_missing —— 两者都是"环境缺东西"，但处置完全不同：前者要装
+  // 运行时二进制，后者要预填/下载解释器缓存池，绝不能混为一类。
+  'interpreter_unavailable',
   'script_error',
   'timeout',
   'executor_offline',

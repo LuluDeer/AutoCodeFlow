@@ -19,6 +19,26 @@ export interface AppConfig {
   /** DSK-04：系统通知开关（任务终态/执行器离线时弹系统通知）。 */
   notifyEnabled: boolean;
   logLevel: 'info' | 'debug' | 'error';
+
+  /**
+   * python_task_multiversion：uv 多版本解释器支持（全部可选）。
+   *
+   * 这些字段**全部可缺省**——旧版本配置文件里没有它们，electron-store 的
+   * schema default 会补上，因此老用户升级后不需要迁移、也不会因为缺字段而
+   * 读配置失败（兼容红线）。
+   *
+   * 缺省语义：
+   *   - `uvPath`：空 = 用自带的 uv，没有则回退 PATH 查找；
+   *   - `uvPythonInstallDir`：空 = 用 `<userData>/interpreters`；
+   *   - `uvPythonInstallMirror`：空 = 用 uv 默认源（内网部署才需要）。
+   */
+  uvPath?: string;
+  uvPythonInstallDir?: string;
+  uvPythonInstallMirror?: string;
+  /** 单个解释器下载超时（毫秒）。空 = executor-node 默认值。 */
+  interpreterDownloadTimeoutMs?: number;
+  /** 私有 PyPI 源（依赖安装用）。空 = 用默认源。 */
+  pypiRegistryUrl?: string;
 }
 
 const schema = {
@@ -36,6 +56,14 @@ const schema = {
   // DSK-04：系统通知默认开启（用户可在设置页关闭）
   notifyEnabled: { type: 'boolean', default: true },
   logLevel: { type: 'string', default: 'info' },
+  // python_task_multiversion：可选，缺省即"用内置默认值"。
+  // 显式给 default '' 而不是 required——旧配置文件缺这些键时 electron-store
+  // 会补默认值，保证升级后读配置不炸。
+  uvPath: { type: 'string', default: '' },
+  uvPythonInstallDir: { type: 'string', default: '' },
+  uvPythonInstallMirror: { type: 'string', default: '' },
+  interpreterDownloadTimeoutMs: { type: 'number', default: 0 },
+  pypiRegistryUrl: { type: 'string', default: '' },
 } as const;
 
 /**

@@ -1,4 +1,61 @@
+import path from 'path';
 import pkg from '../package.json';
+import { logger } from './logger';
+
+/**
+ * WS5（python_task_upload_and_multiversion）：凭据自由 URL 校验。
+ *
+ * 与 `apps/executor-python/config.py::_validate_credential_free_http_url`
+ * 逐条对齐（CONTRACT.md §3.2 / §3.3）：这两类 URL 会被拼进 uv argv
+ * （`--index-url` / `--mirror`）并写进子进程环境，因此**不得**内嵌凭据——
+ * argv 会出现在进程列表与日志里，没有安全的凭据传输通道。将来若要支持带
+ * 认证的私服，应另加受控的凭据机制，而不是放宽这里的规则。
+ *
+ * 返回 `''` 表示未配置（合法）。抛 `Error` 表示配置非法——调用方决定是
+ * 启动期硬失败还是降级（node 侧选择降级 + warn，见 config 的 getter）。
+ */
+export function validateCredentialFreeHttpUrl(value: string, settingName: string): string {
+  const url = (value ?? '').trim();
+  if (!url) return '';
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error(`${settingName} must be a valid http(s) URL`);
+  }
+  if ((parsed.protocol !== 'http:' && parsed.protocol !== 'https:') || !parsed.hostname) {
+    throw new Error(`${settingName} must be a valid http(s) URL`);
+  }
+  if (parsed.username || parsed.password) {
+    throw new Error(
+      `${settingName} must not contain userinfo; provide registry credentials through a controlled credentials mechanism`,
+    );
+  }
+  if (parsed.search || parsed.hash) {
+    throw new Error(`${settingName} must not contain a query or fragment`);
+  }
+  return url;
+}
+
+/**
+ * 配置项级的校验包装：非法值**不抛出**，warn 一次后按「未配置」返回 `''`。
+ *
+ * 为什么不学 python 侧直接启动失败：executor-node 也内嵌在 executor-desktop
+ * 里，一次环境变量手滑（例如镜像地址多打了个 query）不应该让桌面客户端的
+ * 执行器起不来——任务本身还有「无版本无依赖走 python3」的兼容路径可走。
+ * 非法值绝不透传给 uv：降级为官方源比把畸形 URL 拼进 argv 安全。
+ */
+function validateOptionalUrlSetting(value: string, settingName: string): string {
+  try {
+    return validateCredentialFreeHttpUrl(value, settingName);
+  } catch (err) {
+    logger.warn(
+      `${settingName} is invalid (${err instanceof Error ? err.message : String(err)}); ` +
+        'falling back to the default index',
+    );
+    return '';
+  }
+}
 
 const adminApiUrl = process.env.ADMIN_API_URL || 'http://admin-api:3105';
 const adminApiUrlInternal = process.env.ADMIN_API_URL_INTERNAL || adminApiUrl;
@@ -41,6 +98,56 @@ export const config = {
   // children. Never logged.
   npmRegistryToken: process.env.NPM_REGISTRY_TOKEN || '',
   pythonRegistryUrl: process.env.PYTHON_REGISTRY_URL || '',  // Private PyPI registry for task dependencies
+  // ---------------------------------------------------------------------
+  // WS5（python_task_upload_and_multiversion）新增配置。
+  // ---------------------------------------------------------------------
+  // 解释器缓存池根目录（uv 的 UV_PYTHON_INSTALL_DIR）。**必须独立于
+  // WORK_DIR**（CONTRACT.md §3.2 硬约束 / NFR-15）：workDir 下的任何顶层目录
+  // 都会被执行器的 TTL 清扫（file-logger.cleanupWorkDir）按 mtime 删除，
+  // 把解释器池放进去等于让一次清理把 250MB/版本的运行时全删掉——下次任务
+  // 又要重新下载。默认取 workDir 的**兄弟目录** `interpreters`，物理隔离。
+  //
+  // getter 而非常量：与 workDir 一样惰性读 process.env（热重载一致），且
+  // workDir 本身是 getter，派生值必须跟着它动。
+  get uvPythonInstallDir(): string {
+    const explicit = process.env.UV_PYTHON_INSTALL_DIR;
+    if (explicit && explicit.trim()) return path.resolve(explicit.trim());
+    // path.resolve 而非 join：后续 interpreters.ts 用「resolve 后仍在池根之下」
+    // 做白名单断言，未规范化的 `..` 会让断言形同虚设。
+    return path.resolve(config.workDir, '..', 'interpreters');
+  },
+  // uv 二进制路径显式覆盖（CONTRACT.md §3.3 定位顺序第 1 位）。留空则由
+  // interpreters.ts 依次尝试 PATH 查找与 desktop 内置路径。
+  uvBin: process.env.UV_BIN || '',
+  // 解释器下载镜像（可选，D9/NFR-14）。校验规则与 PYTHON_REGISTRY_URL 一致
+  // （http(s)、无凭据、无 query/fragment）。非法值不静默透传给 uv：warn 一次
+  // 后按「未配置」处理（走官方源），既不启动失败也不把畸形 URL 送进 argv。
+  get uvPythonInstallMirror(): string {
+    return validateOptionalUrlSetting(
+      process.env.UV_PYTHON_INSTALL_MIRROR ?? '',
+      'UV_PYTHON_INSTALL_MIRROR',
+    );
+  },
+  // 私有 PyPI 源（对齐 python 侧 PYPI_REGISTRY_URL）：非空时作为
+  // `uv pip install --index-url` 传给 uv。同样过凭据自由校验。
+  get pypiRegistryUrl(): string {
+    return validateOptionalUrlSetting(
+      process.env.PYPI_REGISTRY_URL || process.env.PYTHON_REGISTRY_URL || '',
+      'PYPI_REGISTRY_URL',
+    );
+  },
+  // 单次解释器下载的独立时间预算（D11/NFR-13），默认 300s。与任务剩余超时
+  // 取较小者由调用方（interpreters.ensureVersion）负责。越界不抛：钳到
+  // [1, 86400]，避免一个手滑的 0 让每次下载立即超时。
+  get interpreterDownloadTimeoutMs(): number {
+    const raw = parseInt(process.env.INTERPRETER_DOWNLOAD_TIMEOUT_SECONDS || '300', 10);
+    if (!Number.isFinite(raw)) return 300_000;
+    const clamped = Math.min(Math.max(raw, 1), 86_400);
+    return clamped * 1000;
+  },
+  // zip 整包下载体积上限（字节）。与 SSRF/下载链既有 200MB 语义对齐
+  // （CONTRACT.md §3.2 zip 渠道 size cap 200MB）。
+  packageDownloadMaxBytes: parseInt(process.env.PACKAGE_DOWNLOAD_MAX_BYTES || String(200 * 1024 * 1024), 10),
   token: process.env.EXECUTOR_SHARED_TOKEN || process.env.EXECUTOR_SECRET || (() => { const i = process.argv.indexOf('--token'); return i !== -1 ? process.argv[i + 1] || '' : ''; })(),
   // N23: dedicated HMAC secret for per-execution callback tokens; when unset
   // the shared token above is used as the HMAC source secret (admin-api

@@ -198,6 +198,13 @@ const CLEANUP_TTL_DAYS = Math.max(1, config.logRetentionDays || 7);
 const CLEANUP_SWEEP_INTERVAL_HOURS = 6;
 const PROTECTED_WORKDIR_NAMES = new Set([
   'logs', 'meta', 'callbacks', '.git_cache', '.node_modules', '.pkg-updates', 'apps',
+  // WS5（python_task_multiversion）：`.venvs` 是**按任务复用的共享缓存**，不是
+  // 某个 execution 的工作目录。不加这个保护名，下面的 workdir 清扫会把整个
+  // `.venvs` 目录当成一个过期任务目录整棵删掉——所有任务的 venv 一次性消失，
+  // 下次每个任务都要重建 venv + 重装依赖（python 侧 `_PROTECTED_WORKDIR_NAMES`
+  // 从一开始就含 `.venvs`，node 侧是本特性才引入这个目录，必须同步）。
+  // 它的过期回收走下方与 .git_cache/.node_modules 同构的按分片 TTL 清扫。
+  '.venvs',
 ]);
 
 // E-08: active-execution guard for the workdir sweep. The set of live
@@ -210,6 +217,18 @@ const PROTECTED_WORKDIR_NAMES = new Set([
 export interface ActiveWorkdirSet {
   executionIds: Set<string>;
   taskIds: Set<string>;
+  /**
+   * WS5：活跃任务对应的 `.venvs` **目录名**（`<taskId>` 或 `<taskId>-<X.Y>`）。
+   *
+   * 为什么不在这里按 `taskIds` 现推：venv 目录名的版本签名派生是
+   * `execute.ts::venvDirName` 的**唯一职责**（DESIGN §1.2.2 的"三处同源"纪律：
+   * 目录名、锁键、清扫保护集必须同源）。在这里再写一遍反向解析就是第二个事实
+   * 源，两边一旦漂移，清扫会删掉活跃任务的 venv——正是那条纪律要防的事故。
+   *
+   * 可选：缺席（旧注册方）时 `.venvs` 分片**一律不删**（fail-safe，宁可留垃圾
+   * 也不删活 venv）。
+   */
+  venvDirNames?: Set<string>;
 }
 let activeWorkdirProvider: () => ActiveWorkdirSet = () => ({ executionIds: new Set(), taskIds: new Set() });
 export function registerActiveWorkdirProvider(fn: () => ActiveWorkdirSet): void {
@@ -386,6 +405,38 @@ export function cleanupWorkDir(
         const subTarget = path.join(cacheBase, sub.name);
         // E-08: 活跃分片保护——taskId 命中的 .git_cache/.node_modules 子目录保留。
         if (sub.isDirectory() && activeTaskIds.has(sub.name)) continue;
+        try {
+          const stat = fs.statSync(subTarget);
+          if (stat.mtimeMs < cutoff) {
+            if (removePath(subTarget)) caches++;
+          }
+        } catch { /* raced — skip */ }
+      }
+    }
+
+    // 2b. WS5：`.venvs/<venvDirName>` 分片 TTL 清扫（与 .git_cache/.node_modules
+    //     同构，对齐 python maintenance 的 `('.git_cache','caches'), ('.venvs','venvs')`
+    //     循环）。venv 是**可复用资产**：健康的复用是 AC-16b 的性能语义，但
+    //     永不过期会让每个用过的 taskId 都长期占着几百 MB。
+    //
+    //     活跃保护用的是 venv **目录名**（含版本签名），不是裸 taskId——
+    //     `taskIds` 里是 `t1`，而带版本任务的 venv 目录叫 `t1-3.7`，用 taskId
+    //     直接比对会漏保护。派生只在 execute.ts 做一处（见 ActiveWorkdirSet
+    //     注释）；provider 没提供该集合时**一律不删**（fail-safe）。
+    {
+      const venvBase = path.join(config.workDir, '.venvs');
+      let venvEntries: fs.Dirent[];
+      try {
+        venvEntries = fs.readdirSync(venvBase, { withFileTypes: true });
+      } catch {
+        venvEntries = [];
+      }
+      const liveVenvNames = active.venvDirNames;
+      for (const sub of venvEntries) {
+        if (!sub.isDirectory()) continue;
+        if (!liveVenvNames) break; // liveness 未知 → 一个都不删
+        if (liveVenvNames.has(sub.name)) continue;
+        const subTarget = path.join(venvBase, sub.name);
         try {
           const stat = fs.statSync(subTarget);
           if (stat.mtimeMs < cutoff) {

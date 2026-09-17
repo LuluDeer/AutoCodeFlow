@@ -16,7 +16,15 @@ import express from 'express';
 import { spawnSync } from 'child_process';
 import { config, EXECUTOR_VERSION } from './config';
 import { logger } from './logger';
-import { executorStartedAt, executorStartupId, getRunningCount, startHeartbeat } from './scheduler';
+import {
+  executorStartedAt,
+  executorStartupId,
+  getRunningCount,
+  startHeartbeat,
+  registerInterpretersProvider,
+  ReportedInterpreter,
+} from './scheduler';
+import { interpretersForReport } from './interpreters';
 import { startCallbackThread, stopCallbackThread } from './callback';
 import {
   startLogCleanup,
@@ -75,6 +83,17 @@ function detectAvailableRuntimes(): string[] {
 let registerSucceeded = false;
 let reRegisterInFlight = false;
 
+/**
+ * FR-13/FR-14：解释器缓存池清单快照（注册与心跳共用的数据源）。
+ *
+ * 与 python 侧 `get_interpreters_snapshot()` 同语义：懒探测 + 复用探测缓存，
+ * 绝不每次调用都 spawn uv（NFR-10）。`interpretersForReport` 内部已把探测
+ * 失败收敛为 `[]` 并 warn（AC-14b：上报失败绝不阻断注册/启动）。
+ */
+function getInterpretersSnapshot(): Promise<ReportedInterpreter[]> {
+  return interpretersForReport();
+}
+
 async function registerExecutor(): Promise<boolean> {
   const runtimes = detectAvailableRuntimes();
   try {
@@ -95,6 +114,11 @@ async function registerExecutor(): Promise<boolean> {
       maxConcurrent: config.maxConcurrentTasks,
       restartedAt: executorStartedAt,
       startupId: executorStartupId,
+      // FR-13/AC-13a（python_task_upload_and_multiversion, CONTRACT.md §2.3）：
+      // 解释器缓存池清单随注册上报。**始终发送该字段**（哪怕为 []）——见
+      // scheduler.ts 的字段缺省语义说明。探测有界（≤5s）+ 容错（失败退化 []，
+      // AC-14b：绝不阻断注册/启动），且走 TTL 缓存，重注册不会重复 spawn uv。
+      interpreters: await getInterpretersSnapshot(),
     });
     // N26 (round-8): adopt the per-executor tokenHash returned at register
     // time. It becomes the HMAC source secret for per-execution callback
@@ -265,6 +289,10 @@ const server = app.listen(config.port, config.bindAddress, async () => {
     // N41: token 恢复钩子先于首次注册挂载——启动期 admin 不可达时，register
     // 失败后由后续成功的 fetchToken 自动补注册（maybeReRegister 自带去重）。
     setOnTokenAcquired(maybeReRegister);
+    // FR-13/FR-14：解释器清单的心跳 provider 在**首次注册之前**接好——这样首个
+    // register 与首个 heartbeat 上报的是同一份快照，不会出现"注册说池为空、
+    // 心跳说有 3.9"的自相矛盾窗口（对照 python main.py 的同序接线）。
+    registerInterpretersProvider(getInterpretersSnapshot);
     await registerExecutor();
     heartbeatInterval = startHeartbeat();
     // ARCH-32: pull 模式取件循环（与 push 模式互斥不冲突——push 由 admin

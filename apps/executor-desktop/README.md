@@ -31,6 +31,79 @@ npm run dist:linux  # Linux .AppImage
 
 产物在 `dist-electron/` 目录。
 
+### Python 多版本支持（uv）
+
+客户端执行器与 python 执行器**功能对等**：任务可以声明 `runtimeVersion`（如 `3.11`），
+执行器会用 [uv](https://docs.astral.sh/uv/) 获取该版本的 Python 并建独立虚拟环境。
+声明版本的任务**必须**有 uv 可用；**不声明版本的任务完全不碰 uv**，所以没装 uv 不影响存量功能。
+
+uv 的解析顺序（由 executor-node 实现）：
+
+1. 桌面设置里的 `uvPath`（最高优先级，适合内网自建分发）；
+2. 随安装包自带的 uv（`resources/uv/uv` 或 `uv.exe`）；
+3. 环境变量 `UV_BIN`；
+4. 系统 `PATH` 上的 `uv`。
+
+**默认不打进安装包**（避免构建期联网、也不改变既有产物哈希）。需要自带时：
+
+```bash
+# Linux / macOS（以及 CI）——直接前置于 npm 命令即可
+ACF_BUNDLE_UV=1 npm run build:executor                             # 尝试联网下载 uv
+ACF_BUNDLE_UV=1 ACF_UV_SOURCE=/path/to/uv npm run build:executor   # 用本地已下载的 uv
+ACF_BUNDLE_UV=1 ACF_UV_VERSION=0.8.17 npm run build:executor       # 指定版本（默认 0.8.17）
+```
+
+> ⚠ **Windows 用户请注意**：`npm run build:executor` 内部走 `bash scripts/bundle-executor.sh`，
+> 而 Windows 上 `bash` 常被解析成 `%LOCALAPPDATA%\Microsoft\WindowsApps\bash.exe`
+> （WSL 启动器 shim）。该 shim **不会继承 PowerShell 的环境变量**，于是
+> `ACF_BUNDLE_UV=1 npm run build:executor` 会**静默走"跳过"分支**（无报错、也没打进 uv）。
+> 实测：PowerShell 设 `$env:ACF_BUNDLE_UV='1'` 后 `bash -c 'echo $ACF_BUNDLE_UV'` 输出为空，
+> 而 Git Bash 则正常。
+>
+> Windows 上请改用下列任一方式（二者均已实测可用）：
+>
+> ```powershell
+> # 方式一：直接用 Git Bash 执行脚本（变量在 bash 内生效）
+> & "C:\Program Files\Git\bin\bash.exe" -c "ACF_BUNDLE_UV=1 bash scripts/bundle-executor.sh"
+>
+> # 方式二：先设 PowerShell 环境变量，再用 Git Bash 跑（Git Bash 会继承）
+> $env:ACF_BUNDLE_UV='1'; & "C:\Program Files\Git\bin\bash.exe" scripts/bundle-executor.sh
+> ```
+>
+> 打包发布的流水线在 Linux/macOS 上，不受此影响；这条只影响**本机 Windows 打包**。
+
+自带失败**只会告警、不会让构建失败**——因为不声明版本的存量任务根本不需要 uv。
+（实测：`ACF_UV_SOURCE` 指向不存在的文件时，脚本打印
+`WARN: could not download uv … — skipping (build continues)` 并**退出码 0**。）
+
+#### 解释器缓存目录
+
+下载好的解释器默认放在**用户数据目录**下（`<userData>/interpreters`），
+而不是安装目录：Windows 的安装目录通常是 `Program Files`，标准用户无写权限，
+uv 会直接下载失败；而且卸载/升级不该连带删掉已下载的解释器（每版本几十 MB）。
+可在设置里用 `uvPythonInstallDir` 改到别处（例如大容量磁盘）。
+
+相关可选设置：
+
+| 设置 | 默认 | 说明 |
+|---|---|---|
+| `uvPath` | 空 | 指定 uv 可执行文件；空 = 自带 → `UV_BIN` → `PATH` |
+| `uvPythonInstallDir` | 空 | 解释器缓存目录；空 = `<userData>/interpreters` |
+| `uvPythonInstallMirror` | 空 | 内网镜像源；空 = uv 默认源 |
+| `interpreterDownloadTimeoutMs` | 0 | 单个解释器下载超时；0 = 执行器默认 |
+| `pypiRegistryUrl` | 空 | 私有 PyPI 源（依赖安装用）；空 = 默认源 |
+
+#### 3.7 需要离线预填
+
+uv **无法在线下载 Python 3.7**（可下载区间是 3.8~3.14）。要跑 3.7 的任务，
+必须由运维把 python-build-standalone 的 3.7.9 产物预填进解释器缓存目录。
+目录名有严格约定：`cpython-3.7.9-<uv平台三元组>`，**三元组之后不要再补 `-none`**
+（Windows 是 `windows-x86_64-none`，Linux 是 `linux-x86_64-gnu` / `-musl`）。
+完整步骤见 `docs/design/python-task-upload-and-multiversion/OFFLINE-PROVISIONING.md`。
+
+> 未预填时，声明 3.7 的任务会**明确失败**并归类为 `interpreter_unavailable`
+> （执行器**不会**悄悄回退到宿主解释器运行——那会让"声明了版本"变成一句空话）。
+
 ## 使用流程
 
 1. 安装后首次启动，弹出配置向导

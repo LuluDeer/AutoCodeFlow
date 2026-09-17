@@ -52,6 +52,63 @@ export function registerDeadLetterCountProvider(fn: () => number): void {
   deadLetterCountProvider = fn;
 }
 
+// FR-13/FR-14（python_task_upload_and_multiversion, CONTRACT.md §2.3）：解释器
+// 缓存池清单与 `runningExecutionIds`/`deadLetterCount` 同一 provider 模式。
+//
+// 为什么是 provider 而不是直接 import interpreters.ts：main.ts 需要在
+// **首次 register 之前**接好数据源（python 侧 `register_interpreters_provider`
+// 同理），这样首个 register 与首个 heartbeat 上报的是同一份快照，不会出现
+// "注册说池为空、心跳说有 3.9"的自相矛盾窗口。
+//
+// 返回 Promise：探测需要 spawn uv（有界、带 TTL 缓存）。心跳是 async 的，
+// await 它不会阻塞事件循环。
+export interface ReportedInterpreter {
+  version: string;
+  path: string;
+  available: boolean;
+  discoveredAt: string;
+}
+
+let interpretersProvider: () => Promise<ReportedInterpreter[]> = async () => [];
+
+export function registerInterpretersProvider(fn: () => Promise<ReportedInterpreter[]>): void {
+  interpretersProvider = fn;
+}
+
+/**
+ * provider 输出归一为契约形状的数组（CONTRACT.md §2.2）。
+ *
+ * 上报的是"能力快照"，**任何异常都不能让心跳失败**——那会让 admin 判执行器
+ * OFFLINE，代价远大于少报一次清单。异常/非数组一律收敛为空数组，与 python 侧
+ * `_collect_interpreters` 逐条对齐。
+ */
+async function collectInterpreters(): Promise<ReportedInterpreter[]> {
+  let value: unknown;
+  try {
+    value = await interpretersProvider();
+  } catch (err: unknown) {
+    logger.warn(
+      `interpreters provider failed; reporting an empty inventory: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+    return [];
+  }
+  if (!Array.isArray(value)) {
+    logger.warn(`interpreters provider returned ${typeof value}, expected array`);
+    return [];
+  }
+  // §2.2 结构校验：项缺 version / version 非 X.Y[.Z] → 整字段拒绝采纳（admin
+  // 侧也会拒，但在这里先过滤掉脏项可以避免一个坏项废掉整份清单）。
+  return value.filter(
+    (item): item is ReportedInterpreter =>
+      !!item &&
+      typeof item === 'object' &&
+      typeof (item as ReportedInterpreter).version === 'string' &&
+      /^\d+\.\d+(\.\d+)?$/.test((item as ReportedInterpreter).version),
+  );
+}
+
 /**
  * Measure actual CPU usage by sampling cpu times over 500ms.
  * os.loadavg() always returns [0,0,0] on Windows, so we use this instead.
@@ -121,6 +178,13 @@ async function sendHeartbeat() {
       // deadLetterCount 暴露落盘回调积压，供运维感知长期断连。
       runningExecutionIds: runningExecutionIdsProvider().slice(0, 200),
       deadLetterCount: deadLetterCountProvider(),
+      // FR-13/FR-14（CONTRACT.md §2.3）：解释器缓存池清单。**始终发送该字段**
+      // （哪怕为空数组）——`[]` 表示"已上报且池为空"，而字段缺席表示"旧执行器
+      // 未上报"（admin 按 ["3.12"] 兜底）。本执行器是能上报的新版本，池为空是
+      // 真实事实，不该让 admin 用兜底值去猜，否则一个声明 3.12 的任务会被派到
+      // 池里根本没有 3.12 的执行器上。provider 走 WS3 的 TTL 探测缓存，
+      // 心跳路径零 uv 进程开销（NFR-10）。
+      interpreters: await collectInterpreters(),
       // E9: 上报当前并发上限，admin 容量核算不再依赖注册期快照；读 config
       // 对象属性，/config/reload 热更 maxConcurrentTasks 后下个心跳即回传新值。
       maxConcurrentTasks: config.maxConcurrentTasks,
