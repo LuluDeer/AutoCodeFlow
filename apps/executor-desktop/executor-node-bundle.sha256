@@ -54,4 +54,10 @@
 #   - 28b7e725…：python_task_multiversion——executor-node 新增 interpreters.ts /
 #     zip-safety.ts + execute.ts 多版本执行 + config/callback/scheduler 对齐
 #     （2383kB → 2377kB）。遵 ADR-005 同 commit。
-28b7e725348847c33ec9544d8fcdc5752ff48ca7eb4e5f4eefdf8d79c3355540  index.js
+#   - e274f93f…：运行能力探测修复——新增 runtime-detection.ts，废弃 main.ts 里
+#     用 `which python3|python` 的旧探测（**Windows 没有 which**，spawnSync 返回
+#     ENOENT/status=null，而旧代码只判 status===0，导致 Windows 客户端恒定上报
+#     `shell,node`）；改为实跑 `--version` 探测，并让"自带 uv 可用"也算作 Python
+#     能力。注册 `type` 由同源推导（有 python → universal，否则 node）。
+#     遵 ADR-005 同 commit 重打（2377kB → 2385kB）。
+e274f93f2104dff58549256d0e4f8c9dce5499eca9fa4c2305944473694a97b9  index.js

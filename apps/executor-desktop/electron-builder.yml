@@ -18,9 +18,12 @@ extraResources:
     to: executor-node/
     filter:
       - "**/*"
-  # python_task_multiversion：可选的 uv（仅当 `ACF_BUNDLE_UV=1 npm run build:executor`
-  # 产出时才有内容）。落点必须与 src/main/uv-paths.ts 的解析约定一致：
-  # **打包态查 `<process.resourcesPath>/uv/<bin>`**。
+  # Python 多版本支持所需的 uv。**发布包必须非空**（release-desktop.yml 用
+  # ACF_BUNDLE_UV=1 + ACF_UV_REQUIRED=1 产出；desktop-v1.5.1 曾因漏打 uv，
+  # 导致全新设备只注册 runtimes: shell,node）。
+  # 落点必须与 src/main/uv-paths.ts 及 executor-node/interpreters.ts 的解析
+  # 约定一致：**打包态查 `<process.resourcesPath>/uv/<bin>`**。
+  # 本地不开启 uv 打包时此目录为空，filter 匹配不到文件即静默跳过，不影响出包。
   - from: resources/uv/
     to: uv/
     filter:

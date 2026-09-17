@@ -7,8 +7,8 @@
 |---|---|---|---|
 | 技术栈 | Express 4 + axios + ts-node 生态 | FastAPI + uvicorn + httpx + uv | Electron 43 + React 18（托管 node 内核） |
 | 默认端口 | 8002（`PORT`） | 8001（`PORT`） | 8002（内核端口，`config.executorPort`） |
-| 注册 `type` | `node` | `python` | `node`（随内核注册） |
-| 注册 capabilities | 探测：`shell`/`node`/`python`（PATH 探测） | 恒 `['python','shell']` | 同 node 内核 |
+| 注册 `type` | 推导：有 python 能力 → `universal`，否则 `node`（仅展示，派发不读） | `python` | 同 node 内核 |
+| 注册 capabilities | 探测：`shell`/`node`/`python?`（系统解释器实跑 **或** 自带 uv 可用） | 恒 `['python','shell']` | 同 node 内核 |
 | 可执行运行时 | node / python / shell | python（主）/ node / shell | 同 node 内核 |
 | 依赖安装 | npm `--prefix` 到 `.node_modules/<taskId>`（支持私服 .npmrc + token） | uv venv `.venvs/<taskId>` + `uv pip install --index-url`（node 依赖不支持） | 同 node 内核 |
 | 任务日志落点 | `workDir/logs/<日期>/<executionId>.log`（缓冲写） | `workDir/<executionId>/<executionId>.log`（流式限 64MB） | 同 node 内核（桌面 UI 读同一路径） |
