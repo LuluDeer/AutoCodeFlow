@@ -627,7 +627,7 @@ export default function TaskFormPage() {
 
   if (loadingTask) {
     // UI-08：首屏骨架屏替代裸 Spin（仅此加载区块；表单结构不动）
-    return <PageSkeleton variant="table" rows={6} style={{ maxWidth: 720, padding: 24 }} />;
+    return <PageSkeleton variant="table" rows={6} style={{ padding: 24 }} />;
   }
 
   // UI-06 ③：互斥禁用态。broadcast 下 pinned 选择器禁用；pinned 下广播项禁用。
@@ -639,7 +639,9 @@ export default function TaskFormPage() {
   const sectionTitleStyle = { margin: '0 0 4px' };
 
   return (
-    <div style={{ maxWidth: 1080 }}>
+    // UI 打磨（用户反馈）：去掉 maxWidth 1080——上限在宽屏右侧留大片空白，
+    // 与 settings 等整宽页不一致；表单改随内容区全宽伸缩
+    <div>
       {/* UI-03：页头标准化（原 Typography.Title 区块迁入 PageHeader，面包屑语义=任务→新建/编辑；
           原返回按钮保留于 extra 首位，行为不变） */}
       <PageHeader
@@ -704,7 +706,7 @@ export default function TaskFormPage() {
           {validationAnnouncement}
         </div>
 
-        <div style={{ flex: 1, minWidth: 0, maxWidth: 880 }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
           <Form
             form={form}
             layout="vertical"
