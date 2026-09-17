@@ -37,6 +37,11 @@ win:
         - x64
         - arm64
   icon: assets/icon.ico
+  # 显式 artifactName（desktop-v1.5.0 实爆教训）：productName 含空格时，
+  # electron-builder 对「磁盘产物名」与「latest.yml 更新清单里的 url」走两套
+  # 净化规则（空格→点号 vs 空格→连字符），导致自动更新按清单拼出的下载 URL
+  # 404。字面量连字符名让两侧天然一致；${version} 由 builder 填充。
+  artifactName: AutoCodeFlow-Executor-Setup-${version}.${ext}
 
 mac:
   target:
@@ -46,6 +51,8 @@ mac:
         - arm64
   icon: assets/icon.icns
   category: public.app-category.utilities
+  # 同 win：连字符字面量名，与 latest-mac.yml 的 url 对齐（见上方注释）。
+  artifactName: AutoCodeFlow-Executor-${version}-${arch}.${ext}
 
 linux:
   target:
@@ -57,6 +64,11 @@ linux:
         - x64
   icon: assets/icon.png
   category: Utility
+  # 同 win：AppImage 用连字符字面量名与 latest-linux.yml 的 url 对齐。
+  # deb 不在此处设置——保持缺省 {name}_{version}_{arch}.deb（deb 走手动
+  # 升级不参与自动更新，且其命名已是下划线风格）。
+  AppImage:
+    artifactName: AutoCodeFlow-Executor-${version}.${ext}
   # DSK-02: maintainer/vendor 必填面——deb 的 control 字段缺省会回落 author，
   # 显式写死避免依赖 package.json author 形态。
   maintainer: AutoCodeFlow <dev@autocodeflow.io>
