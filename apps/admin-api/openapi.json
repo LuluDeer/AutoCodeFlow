@@ -7015,30 +7015,7 @@
       }
     },
     "schemas": {
-      "ExecutorInterpreterDto": {
-        "type": "object",
-        "properties": {
-          "version": {
-            "type": "string",
-            "description": "Full patch version discovered in the interpreter pool"
-          },
-          "path": {
-            "type": "string",
-            "description": "Absolute interpreter path inside the pool"
-          },
-          "available": {
-            "type": "boolean",
-            "description": "Probe result (executable and --version succeeded)"
-          },
-          "discoveredAt": {
-            "type": "string",
-            "description": "Probe timestamp (ISO 8601)"
-          }
-        },
-        "required": [
-          "version"
-        ]
-      },
+
       "LoginDto": {
         "type": "object",
         "properties": {
@@ -7716,6 +7693,7 @@
               "dependency_install_failed",
               "git_fetch_failed",
               "runtime_missing",
+              "interpreter_unavailable",
               "killed",
               "unknown"
             ]
@@ -7733,13 +7711,41 @@
           },
           "result": {
             "type": "object",
-            "additionalProperties": true,
-            "description": "python_task_multiversion (FR-12/AC-12a): structured execution detail. Currently carries the interpreter snapshot { requested, resolved, reason, detail, pool } so an interpreter_unavailable failure can be triaged without re-running the task. Persisted verbatim to task_executions.result. Constrained to an object with a bounded serialized size (4 KB)."
+            "description": "python_task_multiversion (FR-12/AC-12a): structured execution detail. Currently carries the interpreter snapshot { requested, resolved, reason, detail, pool } so an interpreter_unavailable failure can be triaged without re-running the task. Persisted verbatim to task_executions.result. Constrained to an object with a bounded serialized size (4 KB).",
+            "additionalProperties": true
           }
         },
         "required": [
           "executionId",
           "status"
+        ]
+      },
+      "ExecutorInterpreterDto": {
+        "type": "object",
+        "properties": {
+          "version": {
+            "type": "string",
+            "description": "Full patch version discovered in the interpreter pool",
+            "example": "3.7.9"
+          },
+          "path": {
+            "type": "string",
+            "description": "Absolute interpreter path inside the pool",
+            "example": "/data/interpreters/cpython-3.7.9-linux-x86_64-gnu-none/bin/python3"
+          },
+          "available": {
+            "type": "boolean",
+            "description": "Probe result (executable and --version succeeded)",
+            "example": true
+          },
+          "discoveredAt": {
+            "type": "string",
+            "description": "Probe timestamp (ISO 8601)",
+            "example": "2026-09-16T10:00:00.000Z"
+          }
+        },
+        "required": [
+          "version"
         ]
       },
       "ExecutorRegisterDto": {
@@ -7843,11 +7849,11 @@
             ]
           },
           "interpreters": {
+            "description": "python_task_multiversion: interpreter cache-pool inventory. Omitted → keep the stored value; [] → reported and the pool is empty; invalid structure → the whole field is rejected.",
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/ExecutorInterpreterDto"
-            },
-            "description": "python_task_multiversion: interpreter cache-pool inventory. Omitted → keep the stored value; [] → reported and the pool is empty; invalid structure → the whole field is rejected."
+            }
           }
         },
         "required": [
@@ -7937,11 +7943,11 @@
             "example": "1.0.0"
           },
           "interpreters": {
+            "description": "python_task_multiversion: interpreter cache-pool inventory. Omitted → keep the stored value; [] → reported and the pool is empty; invalid structure → the whole field is rejected.",
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/ExecutorInterpreterDto"
-            },
-            "description": "python_task_multiversion: interpreter cache-pool inventory. Omitted → keep the stored value; [] → reported and the pool is empty; invalid structure → the whole field is rejected."
+            }
           }
         },
         "required": [
