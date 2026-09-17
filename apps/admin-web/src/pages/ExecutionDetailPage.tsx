@@ -19,8 +19,17 @@ import { formatDateTime, formatDuration } from '../utils/timeFormat';
 import { LOG_LEVEL_VALUES, logLineHighlightClass } from '../utils/logLevel';
 // UI-05: 搜索高亮分段（纯函数）+ 防抖常量
 import { buildLogSearchSegments, LOG_SEARCH_DEBOUNCE_MS } from '../utils/log-search';
-// UI-05: 失败定位映射（语义镜像 mcp FAILURE_RUNBOOK，BUG-10 十二类）
+// UI-05: 失败定位映射（语义镜像 mcp FAILURE_RUNBOOK，BUG-10 分类 + 解释器不可用）
 import { failureRunbookAction, FAILURE_CARD_STATUSES } from './failure-runbook';
+// python_task_multiversion（FR-12 / AC-12a）：执行记录里 `result.interpreter` 的
+// 防御式读取层。**必须**走它而不是直接 `data.result.interpreter`——result 是 jsonb
+// 自由列且该留痕只有新执行器才写，历史记录可能是 null/{}/脏值，直接取属性会把
+// 排障入口页打成白屏（详见 interpreter-context.ts 头注释）。
+import {
+  extractInterpreterContext,
+  interpreterNeedsOfflinePrefill,
+  INTERPRETER_REASON_T_KEY,
+} from './interpreter-context';
 // OBS-04: 分析报告/时间线面板（核心展示逻辑独立成组件文件，便于单独测试）
 import ExecutionReportPanel from '../components/ExecutionReportPanel';
 import PageHeader from '../components/PageHeader';
@@ -53,6 +62,10 @@ const FAILURE_REASON_MAP = (t: (k: string) => string): Record<string, { color: s
   git_fetch_failed: { color: 'gold', label: t('execDetail.failure.gitFetchFailed'), hint: t('execDetail.failure.gitFetchFailedHint') },
   dependency_install_failed: { color: 'gold', label: t('execDetail.failure.dependencyInstallFailed'), hint: t('execDetail.failure.dependencyInstallFailedHint') },
   runtime_missing: { color: 'gold', label: t('execDetail.failure.runtimeMissing'), hint: t('execDetail.failure.runtimeMissingHint') },
+  // python_task_multiversion：解释器不可用。与 runtime_missing 同属
+  // 「环境/配置」族，故同为 gold；刻意不在默认重试集内——重跑不会让 3.7 变得
+  // 可下载，必须由运维修环境（前端只是如实展示分类，重试白名单由任务配置决定）。
+  interpreter_unavailable: { color: 'gold', label: t('execDetail.failure.interpreterUnavailable'), hint: t('execDetail.failure.interpreterUnavailableHint') },
   script_error: { color: 'red', label: t('execDetail.failure.scriptError'), hint: t('execDetail.failure.scriptErrorHint') },
   timeout: { color: 'orange', label: t('execDetail.failure.timeout'), hint: t('execDetail.failure.timeoutHint') },
   executor_offline: { color: 'volcano', label: t('execDetail.failure.executorOffline'), hint: t('execDetail.failure.executorOfflineHint') },
@@ -167,6 +180,14 @@ export default function ExecutionDetailPage() {
     [siblings, data],
   );
   const pendingRetry = useMemo(() => nextPendingRetryAt(retryChain), [retryChain]);
+
+  // python_task_multiversion：解释器留痕归一（防御式，见 interpreter-context.ts）。
+  // 必须在下方 loading/error 早退**之前**调用（hook 数不随渲染分支变化）。
+  // 任何异常形状都退化为 null，本页只是少展示一块信息，绝不因此抛错。
+  const interpreterCtx = useMemo(
+    () => extractInterpreterContext(data?.result),
+    [data?.result],
+  );
   const taskMaxRetry = taskData?.maxRetry ?? 0;
 
   // ===== OBS-04: 分析报告 / 时间线 =====
@@ -462,6 +483,8 @@ export default function ExecutionDetailPage() {
   // UI-05: 建议动作（未知键回退 unknown 兜底）
   const runbookAction = failureRunbookAction(data?.failureReason, t);
   const runbookText = taskData?.runbook || null;
+  // 「3.7 需离线预填」指引的可见性（判据见 interpreterNeedsOfflinePrefill）
+  const interpreterOfflinePrefill = interpreterNeedsOfflinePrefill(interpreterCtx);
 
   /** UI-05: Tab 切换写回 ?tab=（非法值 normalize 已兜底） */
   const handleTabChange = (key: string) => {
@@ -650,6 +673,96 @@ export default function ExecutionDetailPage() {
               </Descriptions.Item>
             )}
           </Descriptions>
+        )}
+        {/* python_task_multiversion（AC-12a）：结构化解释器留痕。
+            后端 DTO 可能尚未回传 `result`——整块以 interpreterCtx !== null 为唯一
+            门控，历史执行/非解释器类失败下此块**根本不渲染**（不留空壳），页面
+            其余部分完全不受影响。 */}
+        {interpreterCtx && (
+          // 「3.7 需离线预填」专项指引：requested < 3.8 或 reason=not_downloadable
+          // 时置顶（判据独立于 reason 文案，见 interpreterNeedsOfflinePrefill）。
+          <div data-testid="execution-interpreter" style={{ marginTop: 8 }}>
+            {interpreterOfflinePrefill && (
+              <Alert
+                type="warning"
+                showIcon
+                data-testid="interpreter-offline-prefill"
+                title={t('execDetail.interpreter.offlinePrefillTitle')}
+                description={t('execDetail.interpreter.offlinePrefillDesc')}
+                style={{ marginBottom: 12 }}
+              />
+            )}
+            <Descriptions
+              column={UI09_DESCRIPTIONS_COLUMN}
+              size="small"
+              title={t('execDetail.interpreter.title')}
+            >
+              <Descriptions.Item label={t('execDetail.interpreter.requested')}>
+                {/* 逐项独立兜底：某个字段没留痕只影响它自己那一格，
+                    不让一个 null 把整块快照变成空白。 */}
+                {interpreterCtx.requested ?? (
+                  <Text type="secondary">{t('execDetail.interpreter.missing')}</Text>
+                )}
+              </Descriptions.Item>
+              <Descriptions.Item label={t('execDetail.interpreter.resolved')}>
+                {interpreterCtx.resolved ? (
+                  <Text code style={{ fontSize: 12, wordBreak: 'break-all' }}>
+                    {interpreterCtx.resolved}
+                  </Text>
+                ) : (
+                  <Text type="secondary">{t('execDetail.interpreter.missing')}</Text>
+                )}
+              </Descriptions.Item>
+              <Descriptions.Item label={t('execDetail.interpreter.reason')}>
+                {/* 未收录的 reason 原样展示 token——宁可露出 `some_new_reason`
+                    也不要显示"未知原因"把可诊断信息抹掉（与 failureReason 同策）。 */}
+                {interpreterCtx.reason ? (
+                  <Space size={4}>
+                    <Tag color="gold">{interpreterCtx.reason}</Tag>
+                    <Text type="secondary">
+                      {INTERPRETER_REASON_T_KEY[interpreterCtx.reason]
+                        ? t(INTERPRETER_REASON_T_KEY[interpreterCtx.reason])
+                        : interpreterCtx.reason}
+                    </Text>
+                  </Space>
+                ) : (
+                  <Text type="secondary">{t('execDetail.interpreter.missing')}</Text>
+                )}
+              </Descriptions.Item>
+              <Descriptions.Item label={t('execDetail.interpreter.pool')} span={UI09_DESCRIPTIONS_COLUMN.md}>
+                {interpreterCtx.pool ? (
+                  <Space orientation="vertical" size={2} style={{ width: '100%' }}>
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      {t('execDetail.interpreter.poolDir')}：
+                      {interpreterCtx.pool.installDir || '-'}
+                    </Text>
+                    {interpreterCtx.pool.versions.length > 0 ? (
+                      <Space size={4} wrap>
+                        {interpreterCtx.pool.versions.map((v) => (
+                          <Tag key={v} style={{ fontFamily: 'var(--font-mono)' }}>{v}</Tag>
+                        ))}
+                      </Space>
+                    ) : (
+                      <Text type="secondary">{t('execDetail.interpreter.poolEmpty')}</Text>
+                    )}
+                  </Space>
+                ) : (
+                  <Text type="secondary">{t('execDetail.interpreter.missing')}</Text>
+                )}
+              </Descriptions.Item>
+              {/* detail 常是部署指引原文（可能较长），独占整行并保留换行 */}
+              {interpreterCtx.detail && (
+                <Descriptions.Item
+                  label={t('execDetail.interpreter.detail')}
+                  span={UI09_DESCRIPTIONS_COLUMN.md}
+                >
+                  <Text style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                    {interpreterCtx.detail}
+                  </Text>
+                </Descriptions.Item>
+              )}
+            </Descriptions>
+          </div>
         )}
       </Card>
 
