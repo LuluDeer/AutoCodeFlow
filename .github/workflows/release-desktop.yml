@@ -165,8 +165,18 @@ jobs:
           work="$(mktemp -d)"
           case "${{ matrix.os }}" in
             windows-*)
-              # NSIS 安装包用 7z 列表断言 resources\uv\uv.exe 在包内。
-              7z l dist-electron/*.exe > "$work/nsis-list.txt" 2>/dev/null || true
+              # NSIS 安装包**不能直接**用 7z 列：electron-builder 产出的 .exe
+              # 只是 NSIS 外壳，`7z l` 仅列出 $PLUGINSDIR\$R0 等外壳条目，真正
+              # 的应用负载在**嵌套的** $PLUGINSDIR\app-64.7z 内。desktop-v1.5.2
+              # 首发时此处误判为"未找到 uv"——而同一步上方已打印
+              # `staged uv: 59046912 bytes`（真 uv.exe 确已在包内），说明问题在
+              # 校验方法而非打包。正确做法：先取出嵌套 7z 再列它，其条目形如
+              # `resources\executor-node\index.js`，与下面的正则一致。
+              nsis="$(ls dist-electron/*.exe | head -n 1)"
+              7z e "$nsis" "-o$work" '$PLUGINSDIR/app-64.7z' -y >/dev/null 2>&1 || true
+              if [ -f "$work/app-64.7z" ]; then
+                7z l "$work/app-64.7z" > "$work/nsis-list.txt" 2>/dev/null || true
+              fi
               if grep -qiE 'resources[\\/]uv[\\/]uv\.exe' "$work/nsis-list.txt"; then found=1; fi
               ;;
             macos-*)
