@@ -408,20 +408,18 @@ describe('interpreters: discoverInstalled', () => {
   it('the local-scan fallback skips foreign-platform entries (D-14/D-15)', async () => {
     // 共享卷里 coexists 着 glibc/musl/Windows 产物；外来平台的 python3 在 POSIX 上
     // 带 +x 位、isExecutable 会放行，但它在这台机器上**跑不起来**。
-    const foreign = path.join(POOL, 'cpython-3.12.11-linux-x86_64-gnu', 'bin', 'python3');
+    // 用与本机**不同**的平台三元组作为外来平台（平台无关断言）。
+    const foreignPlatform = process.platform === 'win32' ? 'linux-x86_64-gnu' : 'windows-x86_64-none';
+    const foreign = path.join(POOL, `cpython-3.12.11-${foreignPlatform}`, 'bin', 'python3');
     mockExecutableFiles([foreign]);
-    mockPoolDirs(['cpython-3.12.11-linux-x86_64-gnu'], {
-      'cpython-3.12.11-linux-x86_64-gnu': [foreign],
+    mockPoolDirs([`cpython-3.12.11-${foreignPlatform}`], {
+      [`cpython-3.12.11-${foreignPlatform}`]: [foreign],
     });
     mockUv([], { listStatus: 2 });
 
     const found = await discoverInstalled({ force: true });
-    // 本机平台 token 与 linux-x86_64-gnu 不同 → 必须被剔除（本机是 win32 时）。
-    if (process.platform === 'win32') {
-      expect(found).toEqual([]);
-    } else {
-      expect(found.map((e) => e.version)).not.toContain('3.12.11');
-    }
+    // 外来平台 token 与本机不同 → 必须被剔除。
+    expect(found).toEqual([]);
   });
 
   it('returns [] (no throw) when uv python list emits unparseable JSON and the pool is empty', async () => {
