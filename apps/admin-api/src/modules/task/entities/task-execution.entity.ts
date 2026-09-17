@@ -38,6 +38,23 @@ export enum ExecutionFailureReason {
   GIT_FETCH_FAILED = "git_fetch_failed",
   /** BUG-10 细化：运行时/可执行文件不可用（spawn ENOENT、uv 缺失） */
   RUNTIME_MISSING = "runtime_missing",
+  /**
+   * python_task_multiversion（WS1 · CONTRACT §2.5 / D14）：声明的解释器版本
+   * **无法获取**——解释器缓存缺失且下载失败/不可达/超时，或缓存损坏不可修复。
+   *
+   * 语义要点：
+   * - **明确失败**（D14）：不无限等待、**不回退宿主解释器**——版本语义是硬
+   *   约束，回退会掩盖版本不匹配问题。典型触发：声明 `3.7`（uv 在线下载
+   *   必然失败，`No download found for request: cpython-3.7-<platform>`）
+   *   而部署方未离线预填缓存卷。
+   * - **执行器可上报**（不进 ADMIN_INTERNAL_FAILURE_REASONS）——触发条件
+   *   只有执行器侧可见（缓存池 + 下载结果）。
+   * - **不进默认重试集**：由执行器显式上报该 token，配合 task.retryableErrors
+   *   白名单语义（RETRY-01 不变：白名单含该 token 时尊重用户选择）。
+   * - 与 `RUNTIME_MISSING` 的区别：后者是 uv/解释器**本体**缺失（环境装错），
+   *   本值特指**声明版本**不可获得（环境正确但拿不到该版本）。
+   */
+  INTERPRETER_UNAVAILABLE = "interpreter_unavailable",
   KILLED = "killed",
   UNKNOWN = "unknown",
 }

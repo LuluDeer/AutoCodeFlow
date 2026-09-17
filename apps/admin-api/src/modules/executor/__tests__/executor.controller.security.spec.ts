@@ -76,6 +76,11 @@ describe("ExecutorController — F-2 heartbeat / F-7 register mass-assignment gu
           // 原样转发，1..10000 范围校验在 service 侧（越界值不改 DB，见
           // executor.service.spec "maxConcurrentTasks adoption (E9)"）。
           maxConcurrentTasks: 100000,
+          // python_task_multiversion（WS2）：interpreters 是心跳白名单字段——
+          // controller 原样转发，结构校验/采纳规则在 service 侧（非法即整字段
+          // 拒绝采纳，见 executor.interpreters.spec）。此处置入断言是为了让
+          // "漏转发"（字段被白名单静默丢弃、上报永远不生效）在这里变红。
+          interpreters: [{ version: "3.7.9", available: true }],
           // injection attempts below must be dropped by the controller
           tokenHash: "$2b$12$attackerhash",
           version: 99,
@@ -95,6 +100,7 @@ describe("ExecutorController — F-2 heartbeat / F-7 register mass-assignment gu
         restartedAt: "2026-01-01T00:00:00.000Z",
         startupId: "startup-1",
         maxConcurrentTasks: 100000,
+        interpreters: [{ version: "3.7.9", available: true }],
       });
     });
 
@@ -162,6 +168,9 @@ describe("ExecutorController — F-2 heartbeat / F-7 register mass-assignment gu
           // ARCH-32: 派发模式自报随白名单透传（service 侧枚举外值落回 push）
           "dispatchMode",
           "groupName",
+          // python_task_multiversion（WS2）：解释器清单随白名单透传（service
+          // 侧做结构校验与采纳决策——非法即整字段拒绝采纳）。
+          "interpreters",
           "maxConcurrent",
           "maxConcurrentTasks",
           "restartedAt",

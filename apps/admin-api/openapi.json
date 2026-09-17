@@ -7374,6 +7374,16 @@
           "projectId": {
             "type": "string",
             "description": "Owning project. Omit/null = unassigned (counts toward the Default project view; existing behaviour). Setting it requires ADMIN or editor/admin of that project."
+          },
+          "codeSource": {
+            "type": "string",
+            "enum": [
+              "git",
+              "glue",
+              "application_zip"
+            ],
+            "nullable": true,
+            "description": "Code source channel. Exactly one of gitRepo / glueSource / codeSource=application_zip (with applicationId) may be set. Omit on PATCH to keep the current value; explicit null clears the declaration. requirements/PyPI is a dependency channel and may coexist with any code source."
           }
         },
         "required": [
@@ -7573,6 +7583,16 @@
           "projectId": {
             "type": "string",
             "description": "Owning project. Omit/null = unassigned (counts toward the Default project view; existing behaviour). Setting it requires ADMIN or editor/admin of that project."
+          },
+          "codeSource": {
+            "type": "string",
+            "enum": [
+              "git",
+              "glue",
+              "application_zip"
+            ],
+            "nullable": true,
+            "description": "Code source channel. Exactly one of gitRepo / glueSource / codeSource=application_zip (with applicationId) may be set. Omit on PATCH to keep the current value; explicit null clears the declaration. requirements/PyPI is a dependency channel and may coexist with any code source."
           }
         }
       },
@@ -7686,6 +7706,11 @@
             "items": {
               "$ref": "#/components/schemas/ArtifactManifestItemDto"
             }
+          },
+          "result": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "python_task_multiversion (FR-12/AC-12a): structured execution detail. Currently carries the interpreter snapshot { requested, resolved, reason, detail, pool } so an interpreter_unavailable failure can be triaged without re-running the task. Persisted verbatim to task_executions.result. Constrained to an object with a bounded serialized size (4 KB)."
           }
         },
         "required": [
@@ -7792,6 +7817,35 @@
               "push",
               "pull"
             ]
+          },
+          "interpreters": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "version": {
+                  "type": "string",
+                  "description": "Full patch version, e.g. 3.12.11"
+                },
+                "path": {
+                  "type": "string",
+                  "description": "Absolute interpreter path inside the uv-managed pool"
+                },
+                "available": {
+                  "type": "boolean"
+                },
+                "discoveredAt": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "version",
+                "path",
+                "available",
+                "discoveredAt"
+              ]
+            },
+            "description": "Interpreters present in this executor’s uv-managed pool. Omit the field to mean \"not reported\" (admin falls back to 3.12 for legacy executors); send an empty array to mean \"reported and genuinely empty\" (no fallback)."
           }
         },
         "required": [
@@ -7879,6 +7933,35 @@
             "type": "string",
             "description": "EXE-VER-1: Executor version (for min-version gate echo, not persisted)",
             "example": "1.0.0"
+          },
+          "interpreters": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "version": {
+                  "type": "string",
+                  "description": "Full patch version, e.g. 3.12.11"
+                },
+                "path": {
+                  "type": "string",
+                  "description": "Absolute interpreter path inside the uv-managed pool"
+                },
+                "available": {
+                  "type": "boolean"
+                },
+                "discoveredAt": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "version",
+                "path",
+                "available",
+                "discoveredAt"
+              ]
+            },
+            "description": "Interpreters present in this executor’s uv-managed pool. Omit the field to mean \"not reported\" (admin falls back to 3.12 for legacy executors); send an empty array to mean \"reported and genuinely empty\" (no fallback)."
           }
         },
         "required": [

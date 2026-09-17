@@ -35,7 +35,23 @@ import {
   transitionOneToTerminal,
   TERMINAL_EXECUTION_STATUSES,
 } from "../task/execution-terminal";
-import { Task } from "../task/entities/task.entity";
+import { Task, TaskCodeSource } from "../task/entities/task.entity";
+// python_task_multiversion（WS2 · CONTRACT §2.4/§3.1）：zip 渠道任务的
+// `packageUrl` 由 admin 在派发时解析后附加到下发 task 上（任务实体只有
+// `applicationId` 弱引用，执行器无法自行查库）。只加列/只读，不建关系，
+// 避免 executor↔application 的实体关系耦合（ApplicationModule 反向 import
+// TaskModule+ExecutorModule，加关系会引入模块环）。
+import { Application } from "../application/entities/application.entity";
+// python_task_multiversion（WS2 · CONTRACT §1.2/§2.2/§3.1）：解释器缓存池
+// 匹配的唯一事实源（纯函数）。三处调度站点 + pinning 守卫 + 上报采纳共用，
+// 杜绝三份漂移（对齐 executor-score.util.ts 的抽取先例）。
+import {
+  buildInterpreterMismatchMessage,
+  hasRequestedVersion,
+  interpreterSatisfies,
+  normalizeInterpreters,
+} from "./interpreter-match.util";
+import type { ExecutorInterpreter } from "./interpreter-match.util";
 import { PaginationDto } from "../../common/dto/pagination.dto";
 import { NotificationService } from "../notification/notification.service";
 import { SystemConfigService } from "../config/config.service";
@@ -201,6 +217,15 @@ export class ExecutorService {
     // 装配未提供时为 null；pull 分支显式守卫抛错（不静默丢任务）。
     @Optional()
     private readonly pullService: ExecutorPullService | null = null,
+    // python_task_multiversion（WS2 · CONTRACT §2.4/§3.1）：派发时解析
+    // `applications.packageUrl`。@Optional 同先例——存量单测装配未提供时为
+    // null；仅当任务确为 zip 渠道时才需要它，缺失即明确失败（不静默降级成
+    // "下发无 packageUrl 的任务"，那会让执行器在运行时才炸）。**必须是最后
+    // 一个位置参数**：既有 spec 以 14 个位置参数 `new ExecutorService(...)`
+    // 直接装配，追加带默认值的尾参不破坏它们。
+    @Optional()
+    @InjectRepository(Application)
+    private readonly applicationRepo: Repository<Application> | null = null,
   ) {
     this.protocol = this.configService.get<string>("app.protocol") || "http";
     // R-26（DEEP_REVIEW 0ef3bbe）: 关键 @Optional（事件总线 / 高危审计）缺失时
@@ -603,6 +628,9 @@ export class ExecutorService {
     restartedAt?: string | Date | null;
     startupId?: string | null;
     dispatchMode?: string;
+    // python_task_multiversion（WS2 · CONTRACT §2.3）：解释器缓存池清单。
+    // 缺省 → 不动 DB；结构非法 → 拒绝采纳 + warn；合法（含 []）→ 覆盖。
+    interpreters?: ExecutorInterpreter[] | null;
   }) {
     let e: Executor | null = await this.repo.findOne({
       where: { address: data.address },
@@ -621,6 +649,21 @@ export class ExecutorService {
     const shouldRecoverMissingBaseline = Boolean(
       e && !didRestart && !hasStartupBaseline && incomingStartedAt,
     );
+    // python_task_multiversion（WS2 · CONTRACT §2.2/§2.3）：注册面采纳
+    // `interpreters`，规则与 heartbeat 的 deadLetterCount 完全一致——
+    // 字段缺省（未发送）→ 不动 DB 值（**关键**：旧执行器的重注册不得把已
+    // 上报的清单擦掉）；存在但结构非法 → 整字段拒绝采纳 + warn，DB 保留旧值；
+    // 合法（**含 []**，"已上报且池空"）→ 覆盖。
+    const interpretersReported = data.interpreters !== undefined;
+    const normalizedInterpreters = interpretersReported
+      ? normalizeInterpreters(data.interpreters)
+      : null;
+    if (interpretersReported && normalizedInterpreters === null) {
+      this.logger.warn(
+        `Executor ${data.address} reported an invalid interpreters payload ` +
+          `(expected an array of { version: "X.Y" | "X.Y.Z" }); keeping stored value`,
+      );
+    }
     if (!e) {
       // F-7: create the entity from an explicit field whitelist — never pass
       // caller-controlled data through repo.create(). A raw spread would let
@@ -644,6 +687,9 @@ export class ExecutorService {
         // ARCH-32: 派发模式（ADR-015）——仅接受 'pull'；缺省/非法 → undefined
         // → 列默认 'push'。执行器自报面不可信，枚举外值一律落回 push。
         dispatchMode: data.dispatchMode === "pull" ? "pull" : undefined,
+        // python_task_multiversion：首注册即上报则落列；缺省/非法 → undefined
+        // → 列保持 NULL（= 未上报，调度按 ["3.12"] 兜底）。
+        interpreters: normalizedInterpreters ?? undefined,
         status: ExecutorStatus.ONLINE,
         lastHeartbeat: new Date(),
       } as Partial<Executor>);
@@ -674,6 +720,11 @@ export class ExecutorService {
     // 重启即触发 didRestart 路径）。
     if (data.dispatchMode === "push" || data.dispatchMode === "pull") {
       e.dispatchMode = data.dispatchMode;
+    }
+    // python_task_multiversion：重注册采纳（仅在合法上报时覆盖；非法/缺省
+    // 均不动 DB —— 非法情形上方已 warn）。
+    if (normalizedInterpreters !== null) {
+      e.interpreters = normalizedInterpreters;
     }
     if (didRestart) {
       await this.failRunningExecutionsAfterRestart(data.address);
@@ -724,6 +775,7 @@ export class ExecutorService {
     restartedAt?: string | Date | null;
     startupId?: string | null;
     dispatchMode?: string;
+    interpreters?: ExecutorInterpreter[] | null;
   }): Promise<{ executor: Executor; perExecutorToken: string | null }> {
     // EXE-VER-1: 最低版本门禁。EXECUTOR_MIN_VERSION 非空时，执行器上报的
     // version 低于下限 → 403（报文含下限与升级指引），且发生在任何落库/
@@ -833,6 +885,59 @@ export class ExecutorService {
     return safe;
   }
 
+  /**
+   * python_task_multiversion（WS2 · CONTRACT §3.1）：解释器缓存池过滤——三处
+   * 调度站点（`selectLeastLoaded` / `dispatch` / `dispatchBroadcast`）共享同一
+   * 实现，杜绝三份漂移（对齐 `executor-score.util` 的抽取先例）。
+   *
+   * 语义全部由 `interpreter-match.util` 承载（NFR-08：纯内存、O(清单长度)、
+   * **零** DB/网络往返）；本方法只做「过滤 + 失败时构造含快照的消息」。
+   *
+   * 返回 `{ kept, message }`：`message` 非 null 表示过滤后无候选，调用方按各自
+   * 既有异常类型抛出（`ServiceUnavailableException` vs `Error` 的语义不变）。
+   * `message` 里含**过滤前**每个候选执行器的已缓存解释器快照（AC-09b）。
+   *
+   * 未声明 `runtimeVersion` 时零过滤（`hasRequestedVersion` 判定）——存量任务
+   * 的调度路径逐字节不变（兼容性红线 1）。
+   */
+  private applyInterpreterFilter(
+    executors: Executor[],
+    requested: string | null | undefined,
+  ): { kept: Executor[]; message: string | null } {
+    if (!hasRequestedVersion(requested)) {
+      return { kept: executors, message: null };
+    }
+    const requestedVersion = (requested as string).trim();
+    const kept = executors.filter((e) =>
+      interpreterSatisfies(e.interpreters, requestedVersion),
+    );
+    if (kept.length > 0) return { kept, message: null };
+    return {
+      kept,
+      message: buildInterpreterMismatchMessage(
+        requestedVersion,
+        executors.map((e) => ({
+          appName: e.appName,
+          interpreters: e.interpreters,
+        })),
+      ),
+    };
+  }
+
+  /**
+   * 调度期解释器不可获取的统一落日志 + 抛出。
+   *
+   * 分因经 `ExecutionFailureReason.INTERPRETER_UNAVAILABLE` 落日志（与消息里的
+   * token 同源，CONTRACT §2.5 的"三处同步"之一）：调度阶段只抛错不落库，终态由
+   * `task.processor` 的失败路径写，故日志是派发期唯一可检索的留痕。
+   */
+  private failInterpreterUnavailable(message: string): never {
+    this.logger.warn(
+      `Dispatch blocked: failureReason=${ExecutionFailureReason.INTERPRETER_UNAVAILABLE} ${message}`,
+    );
+    throw new Error(message);
+  }
+
   async heartbeat(
     address: string,
     metrics: {
@@ -849,6 +954,9 @@ export class ExecutorService {
       deadLetterCount?: number;
       // E9: 执行器热更新容量上报（可选，正整数 1..10000，非法/缺失不改 DB）
       maxConcurrentTasks?: number;
+      // python_task_multiversion（WS2 · CONTRACT §2.3）：解释器缓存池清单。
+      // 缺省 → 保留 DB 旧值；结构非法 → 拒绝采纳 + warn；合法（含 []）→ 覆盖。
+      interpreters?: ExecutorInterpreter[] | null;
     },
   ) {
     const e = await this.repo.findOne({ where: { address } });
@@ -870,6 +978,9 @@ export class ExecutorService {
       restartedAt: _r,
       startupId: _s,
       runningExecutionIds,
+      // python_task_multiversion：interpreters 不是数值指标列，从 metricValues
+      // 中摘出单独走结构校验（不进 metricsWhitelist 的数值写入环）。
+      interpreters,
       ...metricValues
     } = metrics;
     if (didRestart) {
@@ -963,6 +1074,25 @@ export class ExecutorService {
     if (runningExecutionIds !== undefined) {
       e.runningExecutionIds =
         this.sanitizeRunningExecutionIds(runningExecutionIds);
+    }
+    // python_task_multiversion（WS2 · CONTRACT §2.2/§2.3 · 兼容性红线 3）：
+    // 心跳采纳 `interpreters`——三态必须精确区分，任一态混淆都会造成调度错判：
+    // - 字段 `undefined`（旧执行器心跳 / 新版未变化时不上报）→ **保留 DB 旧值**。
+    //   这是红线 3 的字面要求：旧心跳绝不能把已上报的清单清空（清空后该执行器
+    //   会被当成"池空"而彻底接不到带版本声明的任务）。
+    // - 存在但结构非法（非数组 / 项缺 version / version 非 X.Y|X.Y.Z）→ 整字段
+    //   拒绝采纳 + warn，DB 保留旧值（脏上报不得污染调度判据）。
+    // - 合法（**含 `[]`**，"已上报且缓存池为空"）→ 覆盖。
+    if (interpreters !== undefined) {
+      const normalizedInterpreters = normalizeInterpreters(interpreters);
+      if (normalizedInterpreters === null) {
+        this.logger.warn(
+          `Executor ${address} reported an invalid interpreters payload ` +
+            `(expected an array of { version: "X.Y" | "X.Y.Z" }); keeping stored value`,
+        );
+      } else {
+        e.interpreters = normalizedInterpreters;
+      }
     }
     if (
       typeof metricValues.deadLetterCount === "number" &&
@@ -1087,6 +1217,10 @@ export class ExecutorService {
     group?: string | null;
     tags?: string[] | null;
     runtime?: string | null;
+    // python_task_multiversion（WS2 · CONTRACT §3.1）：可选版本声明——传入时
+    // 追加解释器缓存池过滤。**可选尾参**：既有唯一生产调用方
+    // （app-deployment.service 的 `selectLeastLoaded()`）零参数调用，行为不变。
+    runtimeVersion?: string | null;
   }): Promise<Executor> {
     const all = await this.repo.find({
       where: { status: ExecutorStatus.ONLINE },
@@ -1117,6 +1251,23 @@ export class ExecutorService {
           : e.capabilities.includes(opts.runtime!),
       );
     }
+
+    // python_task_multiversion（WS2 · CONTRACT §3.1）：解释器缓存池过滤——
+    // 与 dispatch / dispatchBroadcast 同一位置（runtime 之后）与同一共享实现。
+    // NFR-08：纯内存过滤，**不**引入候选级 DB/网络往返。
+    const interpreterFiltered = this.applyInterpreterFilter(
+      candidates,
+      opts?.runtimeVersion,
+    );
+    if (interpreterFiltered.message) {
+      // 既有错误类型保持不变（ServiceUnavailableException = 调度面"无可用
+      // 执行器"，与下方两条 no-eligible-executor 分支同类）。
+      this.logger.warn(
+        `selectLeastLoaded blocked: failureReason=${ExecutionFailureReason.INTERPRETER_UNAVAILABLE} ${interpreterFiltered.message}`,
+      );
+      throw new ServiceUnavailableException(interpreterFiltered.message);
+    }
+    candidates = interpreterFiltered.kept;
 
     if (candidates.length === 0) {
       throw new ServiceUnavailableException(
@@ -1219,6 +1370,25 @@ export class ExecutorService {
         );
       }
       candidates = [pinned];
+      // python_task_multiversion（WS2 · CONTRACT §3.1 pinning 分支 / AC-08b /
+      // D2③）：pinning **绕过** group/tags/runtime 过滤（pinning 的语义就是
+      // "我指定这一台"），因此必须在此**单独补一道**解释器检查，且必须发生在
+      // 下方原子占坑（runningTaskCount + 1）**之前**——占坑后才失败会把坑位
+      // 白白占用到 TTL/回调超时，而 pinned 执行器永远不会回调。
+      //
+      // 消息含**声明版本**与 **pinned 执行器已缓存清单**（AC-08b 要求的
+      // "至少一处明确报错"，此处即运行前报错）。
+      if (
+        hasRequestedVersion(task.runtimeVersion) &&
+        !interpreterSatisfies(pinned.interpreters, task.runtimeVersion)
+      ) {
+        this.failInterpreterUnavailable(
+          `[pinned] ${buildInterpreterMismatchMessage(
+            (task.runtimeVersion as string).trim(),
+            [{ appName: pinned.appName, interpreters: pinned.interpreters }],
+          )}`,
+        );
+      }
     } else {
       const all = await this.repo.find({
         where: { status: ExecutorStatus.ONLINE },
@@ -1238,6 +1408,19 @@ export class ExecutorService {
             `No available executor with appName "${task.executorAppName}"`,
           );
         }
+        // python_task_multiversion（WS2 · CONTRACT §3.1）：appName 精确匹配是
+        // **用户显式点名**（语义接近 pinning，与 executorId 的差别只是按名字
+        // 而非 id 定位），故不静默换机器——不满足即失败，且**保留上方
+        // appName 未命中时的既有消息形态**（该分支语义是"这台不存在"，
+        // 与本分支的"这台存在但跑不了该版本"必须可区分）。
+        const byName = this.applyInterpreterFilter(
+          candidates,
+          task.runtimeVersion,
+        );
+        if (byName.message) {
+          this.failInterpreterUnavailable(byName.message);
+        }
+        candidates = byName.kept;
       } else {
         // 2. Filter by group/tag/runtime
         let filtered = all;
@@ -1295,6 +1478,19 @@ export class ExecutorService {
               : e.capabilities.includes(task.runtime),
           );
         }
+
+        // 2.4 python_task_multiversion（WS2 · CONTRACT §3.1）：解释器缓存池
+        // 过滤——追加在既有 runtime/capabilities 过滤**之后**（过滤顺序：
+        // group → tags → affinity/anti-affinity → runtime → interpreter →
+        // loadScore）。失败消息含每个候选的已缓存解释器快照（AC-09b）。
+        const interpreterFiltered = this.applyInterpreterFilter(
+          filtered,
+          task.runtimeVersion,
+        );
+        if (interpreterFiltered.message) {
+          this.failInterpreterUnavailable(interpreterFiltered.message);
+        }
+        filtered = interpreterFiltered.kept;
 
         if (filtered.length === 0) {
           throw new Error(
@@ -1375,6 +1571,11 @@ export class ExecutorService {
     try {
       // SEC-02: params + decrypted secrets（secrets 覆盖同名 params，仅进派发载荷不落库）
       const dispatchParams = this.buildDispatchParams(task, execution);
+      // python_task_multiversion（WS2 · CONTRACT §2.4/§3.1）：zip 渠道任务的
+      // `packageUrl` 由 admin 解析后附加到**下发 task 对象**上（push/pull 两条
+      // 传输分支共用同一份；解析失败在此抛出 → 走下方同一 catch 回滚占坑）。
+      // 注意 `task` 本体是托管实体，故附加发生在**副本**上，绝不改持久化实体。
+      const dispatchTask = await this.resolveDispatchTask(task);
       // OBS-01: W3C traceparent（disabled 时零注入，语义为无 trace）。
       const traceHeaders: Record<string, string> = {};
       this.tracing?.injectContext(
@@ -1398,7 +1599,7 @@ export class ExecutorService {
         );
         await this.pullService.enqueue(matched.id, {
           executionId: execution.id,
-          task,
+          task: dispatchTask,
           params: dispatchParams,
           // push 经 HTTP 头携带 traceparent；pull 只能并入载荷本体，
           // 执行器侧 pull 循环以同语义注入 AUTOFLOW_TRACE_ID。
@@ -1433,7 +1634,11 @@ export class ExecutorService {
       );
       const resp = await axios.post(
         url,
-        { executionId: execution.id, task, params: dispatchParams },
+        {
+          executionId: execution.id,
+          task: dispatchTask,
+          params: dispatchParams,
+        },
         { timeout: ((task.timeout || 300) + 10) * 1000, headers },
       );
       endSpan?.();
@@ -1467,6 +1672,70 @@ export class ExecutorService {
   }
 
   /**
+   * python_task_multiversion（WS2 · CONTRACT §2.4/§3.1）：解析 zip 渠道任务的
+   * `packageUrl` 并**附加到下发 task 对象**上。
+   *
+   * 为什么必须由 admin 解析：任务实体只持 `applicationId` **弱引用**（无关系
+   * 属性），执行器拿到 `task` 后无法自行查库；`packageUrl` 又只在
+   * `applications` 表上。
+   *
+   * 触发条件（契约字面）：`task.codeSource === 'application_zip'` **或**
+   * `applicationId` 非空（**并集**——存量 zip 任务在 WS1 回填 codeSource 之前
+   * 就已存在，只认 codeSource 会让它们静默下发无 packageUrl 的任务）。
+   *
+   * 返回值语义：
+   * - 非 zip 渠道 → 原对象**同一引用**返回（零拷贝、零行为变化）；
+   * - zip 渠道 → 返回 `{...task, packageUrl}` **新对象**（绝不改持久化实体：
+   *   `task` 是 TypeORM 托管行，写入非列字段会污染实体并可能被 save() 误判）；
+   * - 解析不到（repo 未装配 / 应用不存在 / `packageUrl` 为空）→ 抛错，派发失败，
+   *   消息明确。**不静默降级**：下发无 packageUrl 的 zip 任务会让执行器在运行时
+   *   才炸，且分因落在执行器侧（PACKAGE_FETCH_FAILED），与真实原因不符。
+   */
+  private async resolveDispatchTask<T extends Task>(task: T): Promise<T> {
+    // 并集语义（NFR-05）：codeSource 明确为 application_zip → zip 渠道；
+    // codeSource 为 NULL（存量未回填）且 applicationId 非空 → zip 渠道兜底；
+    // codeSource 明确为 git/glue → 非 zip 渠道，**即使 applicationId 残留也不进 zip**
+    // （存量 git/glue 行的 applicationId 弱引用可能未清，若 application 已删除，
+    //  误进 zip 路径会让 git 任务派发失败且消息指向 application，误导排查）。
+    const isZipChannel =
+      task.codeSource === TaskCodeSource.APPLICATION_ZIP ||
+      (task.codeSource === null && Boolean(task.applicationId));
+    if (!isZipChannel) return task;
+    if (!task.applicationId) {
+      // codeSource=application_zip 但无 applicationId：WS1 写面已互斥校验
+      // （CONTRACT §2.1「codeSource=application_zip 时 applicationId 必填」），
+      // 走到这里说明是迁移前的存量脏行或外部直写——派发失败，消息明确。
+      throw new Error(
+        `Task "${task.name}" (${task.id}) is codeSource=application_zip but has no applicationId; ` +
+          `cannot resolve packageUrl for dispatch`,
+      );
+    }
+    if (!this.applicationRepo) {
+      throw new Error(
+        `Cannot resolve packageUrl for task "${task.name}" (${task.id}): ` +
+          `Application repository is not wired into ExecutorService`,
+      );
+    }
+    const app = await this.applicationRepo.findOne({
+      where: { id: task.applicationId },
+      select: ["id", "name", "packageUrl"],
+    });
+    if (!app) {
+      throw new Error(
+        `Cannot resolve packageUrl for task "${task.name}" (${task.id}): ` +
+          `application ${task.applicationId} not found`,
+      );
+    }
+    if (typeof app.packageUrl !== "string" || app.packageUrl.length === 0) {
+      throw new Error(
+        `Cannot resolve packageUrl for task "${task.name}" (${task.id}): ` +
+          `application "${app.name}" (${app.id}) has no packageUrl configured`,
+      );
+    }
+    return { ...task, packageUrl: app.packageUrl };
+  }
+
+  /**
    * Broadcast dispatch: send the task to ALL online executors simultaneously.
    * Used when task.executeMode === ExecuteMode.BROADCAST.
    * Returns a list of results for each executor.
@@ -1487,6 +1756,17 @@ export class ExecutorService {
     // Apply same filters as dispatch
     if (task.executorAppName) {
       candidates = all.filter((e) => e.appName === task.executorAppName);
+      // python_task_multiversion（WS2 · CONTRACT §3.1）：广播的 appName 分支
+      // 同样按"用户显式点名"处理——不满足声明版本即失败（与单播 dispatch
+      // 的 appName 分支同语义），不静默缩小扇出面。
+      const byName = this.applyInterpreterFilter(
+        candidates,
+        task.runtimeVersion,
+      );
+      if (byName.message) {
+        this.failInterpreterUnavailable(byName.message);
+      }
+      candidates = byName.kept;
     } else {
       let filtered = all;
       if (task.executorGroup) {
@@ -1533,6 +1813,16 @@ export class ExecutorService {
             : e.capabilities.includes(task.runtime),
         );
       }
+      // python_task_multiversion（WS2 · CONTRACT §3.1）：解释器缓存池过滤——
+      // 与单播 dispatch 同一位置（runtime 之后）与同一共享实现。
+      const interpreterFiltered = this.applyInterpreterFilter(
+        filtered,
+        task.runtimeVersion,
+      );
+      if (interpreterFiltered.message) {
+        this.failInterpreterUnavailable(interpreterFiltered.message);
+      }
+      filtered = interpreterFiltered.kept;
       if (filtered.length === 0) {
         throw new Error(
           "No online executors match the requested group/tags/runtime",
@@ -1561,6 +1851,11 @@ export class ExecutorService {
     );
     // SEC-02: params + decrypted secrets（secrets 覆盖同名 params，仅进派发载荷不落库）
     const dispatchParams = this.buildDispatchParams(task, execution);
+    // python_task_multiversion（WS2 · CONTRACT §2.4/§3.1）：广播路径同样解析
+    // `packageUrl`。**在扇出之前**解析（一次查询服务全部目标，且解析失败时
+    // 整个广播直接失败——`packageUrl` 是任务级属性，解析不到就没有任何一个
+    // 目标能跑，部分成功只会留下"半数执行器白跑"的脏结果）。
+    const dispatchTask = await this.resolveDispatchTask(task);
 
     const results = await Promise.allSettled(
       candidates.map(async (executor) => {
@@ -1573,7 +1868,7 @@ export class ExecutorService {
           }
           await this.pullService.enqueue(executor.id, {
             executionId: execution.id,
-            task,
+            task: dispatchTask,
             params: dispatchParams,
             traceparent: broadcastHeaders["traceparent"],
           });
@@ -1591,7 +1886,11 @@ export class ExecutorService {
         await assertSafeExecutorUrl(dispatchUrl);
         const resp = await axios.post(
           dispatchUrl,
-          { executionId: execution.id, task, params: dispatchParams },
+          {
+            executionId: execution.id,
+            task: dispatchTask,
+            params: dispatchParams,
+          },
           {
             timeout: ((task.timeout || 300) + 10) * 1000,
             headers: broadcastHeaders,

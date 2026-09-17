@@ -364,10 +364,13 @@ export class TaskProcessor extends WorkerHost {
                 // A1: 终态写走统一入口；非终态保持原有条件 UPDATE。
                 let repairAffected = 0;
                 if (isTerminalStatus(exec.status)) {
-                  const result = await transitionOneToTerminal(repairRunner.manager, {
-                    id: exec.id,
-                    patch: { ...ownedPatch, status: exec.status },
-                  });
+                  const result = await transitionOneToTerminal(
+                    repairRunner.manager,
+                    {
+                      id: exec.id,
+                      patch: { ...ownedPatch, status: exec.status },
+                    },
+                  );
                   repairAffected = result.affected;
                 } else {
                   const repaired = await repairRunner.manager

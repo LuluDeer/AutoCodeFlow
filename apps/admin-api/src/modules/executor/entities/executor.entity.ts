@@ -7,6 +7,9 @@ import {
   Index,
   VersionColumn,
 } from "typeorm";
+// python_task_multiversion（WS2）：解释器缓存池清单条目形状（纯接口，非 TS enum
+// ——刻意不引 enum，避免污染 check-enum-drift 的枚举面）。
+import type { ExecutorInterpreter } from "../interpreter-match.util";
 
 export enum ExecutorStatus {
   ONLINE = "online",
@@ -78,6 +81,22 @@ export class Executor {
    * migrations/1788900000000-AddExecutorDeadLetterCount.ts。
    */
   @Column({ type: "int", nullable: true }) deadLetterCount: number | null;
+
+  /**
+   * python_task_multiversion（WS2）：执行器上报的**解释器缓存池清单**
+   * （CONTRACT.md §2.2；迁移 1790000000025-AddExecutorInterpreters）。
+   *
+   * 三态语义必须可区分（这是调度侧的唯一判据来源）：
+   * - `null` = **未上报**（存量旧执行器）→ 调度按 `["3.12"]` 兜底；
+   * - `[]`   = 已上报且**缓存池为空** → 无任何版本可满足（**不兜底**）；
+   * - `[{version,path,available,discoveredAt}]` = 具体清单（补丁版本，探测所得）。
+   *
+   * 采纳规则完全对照 `deadLetterCount`：字段 `undefined`（未发送）→ 保留 DB 旧值；
+   * 存在但结构非法 → 整字段拒绝采纳 + warn，DB 不动；合法（含 `[]`）→ 覆盖。
+   * 结构校验/匹配判据均在 `interpreter-match.util.ts`（纯函数单一事实源）。
+   */
+  @Column({ type: "jsonb", nullable: true })
+  interpreters: ExecutorInterpreter[] | null;
 
   /**
    * SEC-03: per-executor token stored as bcrypt hash.
