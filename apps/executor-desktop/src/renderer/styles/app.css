@@ -1109,6 +1109,45 @@ input:focus-visible,
   line-height: 1.6;
 }
 
+/* python_task_multiversion：「Python 运行环境」页的诊断块——显示实际生效的
+   uv 与解释器池。左侧色条区分"可用/缺失"，让"配置没生效"一眼可见。 */
+.py-env-status {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--ok, #3fb950);
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-bottom: 20px;
+  background: var(--bg2);
+  font-size: 12px;
+  line-height: 1.7;
+}
+.py-env-status.warn { border-left-color: var(--warn, #d29922); }
+
+.py-env-row { display: flex; gap: 10px; align-items: baseline; }
+.py-env-row + .py-env-row { margin-top: 6px; }
+
+.py-env-key {
+  flex: 0 0 92px;
+  color: var(--text3);
+  font-size: 11px;
+}
+
+.py-env-val { flex: 1; min-width: 0; word-break: break-all; }
+.py-env-val code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  background: var(--bg3, rgba(127, 127, 127, 0.12));
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+.py-env-val em {
+  font-style: normal;
+  color: var(--text3);
+  font-size: 11px;
+  margin-left: 6px;
+}
+.py-env-missing { color: var(--danger, #f85149); font-weight: 600; }
+
 .cfg-row {
   display: flex;
   gap: 8px;
