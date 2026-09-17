@@ -65,6 +65,9 @@ import {
   TERMINAL_STATES_MAX_LOOKBACK_MS,
   TERMINAL_STATES_DEFAULT_LOOKBACK_MS,
 } from "./executor.service";
+// python_task_multiversion（WS2 · CONTRACT §2.2）：上报面解释器清单条目的
+// 结构类型（与 service / 实体同一份定义，避免内联字面量漂移）。
+import type { ExecutorInterpreter } from "./interpreter-match.util";
 
 /**
  * R11: true when the executor answered a reload-config push with an HTTP 401
@@ -158,6 +161,9 @@ export class ExecutorController {
       // ARCH-32: 派发模式自报（'push' | 'pull'，缺省 push；白名单校验在
       // service 侧——枚举外值一律落回 push）。
       dispatchMode?: string;
+      // python_task_multiversion（WS2 · CONTRACT §2.3）：解释器缓存池清单
+      // （可选；结构校验与采纳规则在 service 侧——非法即整字段拒绝采纳）。
+      interpreters?: ExecutorInterpreter[];
     },
     @Headers("authorization") auth: string,
   ) {
@@ -185,6 +191,10 @@ export class ExecutorController {
       restartedAt: body.restartedAt,
       startupId: body.startupId,
       dispatchMode: body.dispatchMode,
+      // python_task_multiversion（WS2）：转发解释器清单——F-7 显式白名单是
+      // 唯一入站通道（内联 @Body() 类型是编译期的，运行时不裁剪），漏了这行
+      // 会让上报被静默丢弃且无任何报错。
+      interpreters: body.interpreters,
     };
     // N4: register + token issuance is idempotent per (address, startupId) —
     // a duplicate register from the SAME process life (same startupId, no
@@ -251,6 +261,9 @@ export class ExecutorController {
       // EXE-VER-1: 执行器版本随心跳上报（可选；不落库，仅用于
       // EXECUTOR_MIN_VERSION 门禁开启时在响应中回显合规态）。
       version?: string;
+      // python_task_multiversion（WS2 · CONTRACT §2.3）：解释器缓存池清单
+      // （可选；缺省即保留 DB 旧值，结构校验在 service 侧）。
+      interpreters?: ExecutorInterpreter[];
     },
     @Headers("authorization") auth: string,
   ) {
@@ -279,6 +292,9 @@ export class ExecutorController {
       deadLetterCount: body.deadLetterCount,
       // E9: 转发容量热更新值，正整数 1..10000 校验在 service 侧完成。
       maxConcurrentTasks: body.maxConcurrentTasks,
+      // python_task_multiversion（WS2）：转发解释器清单（F-2 显式白名单，
+      // 漏转发 = 上报被静默丢弃）。
+      interpreters: body.interpreters,
     };
     const saved = await this.svc.heartbeat(body.address, metrics);
     // R9 (round-8 P1 closure, W3): echo the CURRENT stored tokenHash with

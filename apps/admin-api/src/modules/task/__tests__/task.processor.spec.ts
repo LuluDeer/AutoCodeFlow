@@ -510,7 +510,11 @@ describe("TaskProcessor", () => {
     const whereCalls = (repairQB.where as jest.Mock).mock.calls.map((c: any) =>
       String(c[0]),
     );
-    expect(whereCalls.some((s: string) => s.includes('"status" IN') || s.includes('status IN'))).toBe(true);
+    expect(
+      whereCalls.some(
+        (s: string) => s.includes('"status" IN') || s.includes("status IN"),
+      ),
+    ).toBe(true);
     // affected=0 → nothing was clobbered, no "Repaired" log.
     expect(
       repairLog.mock.calls.some((c: any) => /Repaired/.test(String(c[0]))),

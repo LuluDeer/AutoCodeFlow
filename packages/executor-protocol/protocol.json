@@ -99,6 +99,7 @@
       "dependency_install_failed",
       "git_fetch_failed",
       "runtime_missing",
+      "interpreter_unavailable",
       "killed",
       "unknown"
     ],
@@ -112,6 +113,7 @@
       "dependency_install_failed",
       "git_fetch_failed",
       "runtime_missing",
+      "interpreter_unavailable",
       "killed",
       "unknown"
     ]

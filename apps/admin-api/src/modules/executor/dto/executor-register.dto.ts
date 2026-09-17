@@ -1,4 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
+// python_task_multiversion（WS2）：解释器清单条目 DTO 与心跳共用一份定义
+// （两处上报同一形状，分开定义必然漂移）。
+import { ExecutorInterpreterDto } from "./executor-heartbeat.dto";
 
 /**
  * PK-03（DEEP_REVIEW 0ef3bbe）: POST /executors/register 的请求体 Swagger 文档 DTO。
@@ -93,4 +96,11 @@ export class ExecutorRegisterDto {
     enum: ["push", "pull"],
   })
   dispatchMode?: string;
+
+  @ApiPropertyOptional({
+    description:
+      "python_task_multiversion: interpreter cache-pool inventory. Omitted → keep the stored value; [] → reported and the pool is empty; invalid structure → the whole field is rejected.",
+    type: () => [ExecutorInterpreterDto],
+  })
+  interpreters?: ExecutorInterpreterDto[];
 }

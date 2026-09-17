@@ -1,6 +1,40 @@
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 
 /**
+ * python_task_multiversion（WS2）：执行器上报的解释器缓存池清单条目。
+ *
+ * 只作 Swagger 文档用（内联 @Body() 仍是 Object，见类头注）。用 `type: () => [X]`
+ * 让 swagger 生成**内联的 array-of-object**（不额外注册具名 schema），与
+ * CONTRACT §2.2 的 jsonc 形状一一对应，且不动 openapi 的 schema 名集合。
+ */
+export class ExecutorInterpreterDto {
+  @ApiProperty({
+    description: "Full patch version discovered in the interpreter pool",
+    example: "3.7.9",
+  })
+  version: string;
+
+  @ApiPropertyOptional({
+    description: "Absolute interpreter path inside the pool",
+    example:
+      "/data/interpreters/cpython-3.7.9-linux-x86_64-gnu-none/bin/python3",
+  })
+  path?: string;
+
+  @ApiPropertyOptional({
+    description: "Probe result (executable and --version succeeded)",
+    example: true,
+  })
+  available?: boolean;
+
+  @ApiPropertyOptional({
+    description: "Probe timestamp (ISO 8601)",
+    example: "2026-09-16T10:00:00.000Z",
+  })
+  discoveredAt?: string;
+}
+
+/**
  * PK-03（DEEP_REVIEW 0ef3bbe）: POST /executors/heartbeat 的请求体 Swagger 文档 DTO。
  *
  * 注意：本类**仅用于 openapi schema 生成**——控制器 @Body() 仍用内联类型
@@ -78,4 +112,11 @@ export class ExecutorHeartbeatDto {
     example: "1.0.0",
   })
   version?: string;
+
+  @ApiPropertyOptional({
+    description:
+      "python_task_multiversion: interpreter cache-pool inventory. Omitted → keep the stored value; [] → reported and the pool is empty; invalid structure → the whole field is rejected.",
+    type: () => [ExecutorInterpreterDto],
+  })
+  interpreters?: ExecutorInterpreterDto[];
 }

@@ -26,8 +26,10 @@ import {
   MisfireStrategy,
   TaskPriority,
   ExecuteMode,
+  TaskCodeSource,
 } from "../entities/task.entity";
 import { TIMEOUT_ACTIONS, TimeoutAction } from "../timeout-policy.util";
+import { RUNTIME_VERSION_PATTERN } from "../runtime-version.util";
 
 export class CreateTaskDto {
   // R6: id 是 UUID 主键——客户端自带任意字符串会在插入时触发 PG 22P02/23505
@@ -78,7 +80,29 @@ export class CreateTaskDto {
   @IsEnum(TaskRuntime)
   @IsOptional()
   runtime?: TaskRuntime;
-  @ApiPropertyOptional() @IsString() @IsOptional() runtimeVersion?: string;
+  /**
+   * python_task_multiversion（FR-06 / AC-06b）：任务声明的 Python 解释器
+   * **主.次版本**（如 `3.7` / `3.12`，无补丁号，D1）。
+   *
+   * 边界分工：DTO 只做**格式**校验（`^\d+\.\d+$`，与
+   * task/runtime-version.util 的 RUNTIME_VERSION_PATTERN 同源）；**区间**
+   * 校验与"非 python runtime 不得声明版本"在 task.service 写面完成——因为
+   * PATCH 的 runtime 可能来自旧行（增量 DTO 看不到合并终态）。
+   *
+   * 刻意**不预检**执行器是否已缓存该版本（AC-06c）：解释器"先下载后有"，
+   * 首跑获取失败在运行时体现（分因 interpreter_unavailable）。
+   */
+  @ApiPropertyOptional({
+    description:
+      'Python interpreter version the task requires, as "major.minor" (e.g. "3.7", "3.12"). Supported range defaults to 3.7–3.14; 3.7 is offline-provisioning only (uv cannot download it online). Only meaningful for runtime=python.',
+  })
+  @Matches(RUNTIME_VERSION_PATTERN, {
+    message:
+      'runtimeVersion must be a "major.minor" version string (e.g. 3.12)',
+  })
+  @IsString()
+  @IsOptional()
+  runtimeVersion?: string;
   /**
    * W-21: executor-side dependency specs. Structure validated at the DTO
    * boundary (array of non-empty bounded strings, ≤50); semantic enforcement
@@ -266,6 +290,27 @@ export class CreateTaskDto {
   @ApiPropertyOptional() @IsString() @IsOptional() glueSource?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() glueLanguage?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() applicationId?: string;
+  /**
+   * python_task_multiversion（FR-18 / AC-17b）：代码来源渠道显式声明。
+   *
+   * 可空——缺省（undefined）在 create 面表示"未声明"（存量语义：按
+   * gitRepo/glueSource/applicationId 哪个非空隐式推断，NFR-05 零破坏）；
+   * 在 PATCH 面 undefined = 保留旧值（N28 同款），**显式 null = 清除声明**
+   * （回到隐式推断语义；`@IsOptional()` 对 null 短路，故 null 合法）。
+   *
+   * 互斥规则（三选一，**合并终态**判定，落在 task.service）：
+   * `gitRepo` / `glueSource` / `codeSource='application_zip'`（配 applicationId）。
+   * `requirements`（PyPI）属依赖型渠道，可与任一来源并存（AC-18b）。
+   */
+  @ApiPropertyOptional({
+    description:
+      "Code source channel. Exactly one of gitRepo / glueSource / codeSource=application_zip (with applicationId) may be set. Omit on PATCH to keep the current value; explicit null clears the declaration. requirements/PyPI is a dependency channel and may coexist with any code source.",
+    enum: TaskCodeSource,
+    nullable: true,
+  })
+  @IsIn(Object.values(TaskCodeSource))
+  @IsOptional()
+  codeSource?: TaskCodeSource | null;
   @ApiPropertyOptional({
     description:
       "FEAT-11: markdown runbook — troubleshooting knowledge shown on the task detail page and attached to failure notifications/alerts.",
