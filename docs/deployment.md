@@ -99,8 +99,11 @@ security_opt:
 | `CLAMD_HOST` / `CLAMD_PORT` | `127.0.0.1` / `3310` | SEC-05——clamd TCP 地址（`CLAMD_ENABLED=true` 时必达，否则上传全拒） |
 | `CLAMD_TIMEOUT_MS` | `10000` | SEC-05——单次扫描超时（毫秒），超时按 fail-closed 拒绝 |
 | `OTEL_ENABLED` | `false` | OBS-01 OpenTelemetry 分布式追踪开关。**默认 false = 零开销零行为变化**（不生成 traceId、不带头、不落库）；`true` 时 traceId 贯穿落库（`task_executions.traceId`）+ W3C traceparent 头 dispatch 透传/回调回传，执行详情页展示追踪标识（详见下方「OTEL / Jaeger」段） |
+| `PYTHON_RUNTIME_VERSION_MIN` / `PYTHON_RUNTIME_VERSION_MAX` | `3.7` / `3.14` | Python 任务可声明的运行时版本区间（主.次，`^\d+\.\d+$`）。**admin-api（写面校验）与 executor-python（运行时）必须同源一致**，compose 已对两侧注入同一变量；非法值静默回退契约缺省，不会让写面 500。区间外声明 → 400。3.7 需离线预填（见「解释器缓存与私有化模式」段） |
 
 > 注：以上变量均已收入 `.env.example`；其中 `THROTTLE_*`、`STALE_RECOVERY_RETRY_ENABLED`、`EXECUTOR_ALLOW_PRIVATE_NETWORK`、`EXECUTION_CALLBACK_SECRET`、`NPM_REGISTRY_*`、`REGISTRY_UPLOAD_TIMEOUT_MS`、`DISK_CLEANUP_*` 由服务进程直接读取，根 compose 默认未注入——独立部署时通过进程环境传入，或在 compose 的 `environment:` 中显式添加。
+>
+> **解释器缓存相关变量**（`UV_PYTHON_INSTALL_DIR` / `UV_PYTHON_INSTALL_MIRROR` / `INTERPRETER_DOWNLOAD_TIMEOUT_SECONDS` / `INTERPRETER_SINGLE_VERSION_MB` / `INTERPRETER_TOTAL_GB` / `PYTHON_RUNTIME_VERSION_MIN` / `PYTHON_RUNTIME_VERSION_MAX` / `UV_BIN`）根 compose **已注入并带缺省值**（见 `docker-compose.yml` 两个执行器服务与 `admin-api` 服务），无需配置即可用；需要覆盖时在根 `.env` 设同名变量。执行器侧逐项说明见 `apps/executor-python/.env.example` 与 `apps/executor-node/.env.example`，完整说明见下方「解释器缓存与私有化模式」段。
 
 ## 快速部署（5 步）
 
@@ -673,6 +676,144 @@ node dist\main.js
 - 多实例部署无需共享会话存储：state/nonce 为 HMAC 签名 cookie（密钥复用 `JWT_REFRESH_SECRET`），任一实例均可独立完成回调校验；
 - SSO 与 TOTP 正交：IdP 侧 MFA 责任面由 IdP 承担，平台侧 TOTP 仍只作用于密码登录。
 
+
+### 解释器缓存与私有化模式（python_task_multiversion）
+
+Python 任务可声明 `runtimeVersion`（主.次版本，如 `3.7` / `3.12` / `3.13`），执行器按声明**按需获取对应 CPython 解释器**并以其创建 venv 运行；不声明版本的任务沿用宿主解释器（存量语义逐字节不变）。解释器由执行器内置的 uv 下载（`uv python install <version>`）到**本地解释器缓存池**，同宿主多个任务 venv 复用同一解释器层，避免重复下载。
+
+#### 主路径与两种可选模式（D9）
+
+| 模式 | 启用方式 | 适用 |
+|---|---|---|
+| **在线主路径**（默认，所有部署必有） | 无需配置 | 执行器可达 Astral CDN / GitHub Releases。声明的版本首跑触发 `uv python install`，约 13~17s |
+| **可选模式 A：内网镜像** | `UV_PYTHON_INSTALL_MIRROR=https://mirror.internal/...` | 无外网、仅内网镜像可达 |
+| **可选模式 B：离线预填缓存卷** | 部署期预置解释器到 `interpreter_cache` 卷 | 无外网无镜像，或需要 **3.7**（见下） |
+
+镜像地址格式约束（复用 `validate_pypi_registry_url` 规则）：**仅 http(s)，且不得含 userinfo（凭据）/ query / fragment**——该值会进入 uv 的 argv，不得携带密钥。
+
+**镜像必须复刻 uv 的路径布局**（实测：设 `UV_PYTHON_INSTALL_MIRROR=https://mirror.internal/pbs` 后，uv 0.8.17 请求的是）：
+
+```
+<mirror>/<pbs发布tag>/cpython-<完整版本>%2B<tag>-<pbs平台三元组>-install_only_stripped.tar.gz
+# 实例（uv 0.8.17 实测请求 URL）：
+#   https://mirror.internal/pbs/20250902/cpython-3.9.23%2B20250902-x86_64-pc-windows-msvc-install_only_stripped.tar.gz
+```
+
+即：镜像根 → `/<tag>/` → 文件名（`+` 被 URL 编码为 `%2B`）。**注意此处用的是 python-build-standalone 的三元组**（与池目录名的 uv 三元组不同，见 runbook §1.2）。内网镜像可直接反向代理 `github.com/astral-sh/python-build-standalone/releases/download/` 实现。
+
+> 镜像**只替换下载源，不改变 uv 的可下载版本清单**：3.7 不在清单内，镜像放什么都不会被查询到——这是 3.7 必须走离线预填而非镜像的原因。
+
+#### ⚠ 关于 Python 3.7（必读）
+
+**uv 的可下载清单只覆盖 `3.8 ~ 3.14`，不含 3.7**——`uv python install 3.7` 必然失败（`error: No download found for request: cpython-3.7-<platform>`，exit 2），**升级 uv 也无法解决**（已交叉实测 0.11.14，下界同样是 3.8）。
+
+3.7 因此**只能由部署方离线预填缓存卷**（可选模式 B 的强制场景）。完整操作步骤、平台三元组对照表、故障诊断见 **[`docs/design/python-task-upload-and-multiversion/OFFLINE-PROVISIONING.md`](./design/python-task-upload-and-multiversion/OFFLINE-PROVISIONING.md)**；支持矩阵定稿（含 3.7 仅 x86_64 可用等限制）见同目录 [`SUPPORT-MATRIX.md`](./design/python-task-upload-and-multiversion/SUPPORT-MATRIX.md)。
+
+可声明区间 `3.7 ~ 3.14`；在线可下载区间 `3.8 ~ 3.14`。区间外版本声明被拒绝保存。
+
+#### 降级语义（D14：明确失败，不回退）
+
+未启用 A/B 且网络不可达时，声明缺失版本的任务**明确失败**：
+
+- 失败分因 `interpreter_unavailable`；
+- 错误消息含声明版本、失败原因、候选执行器及其已缓存解释器快照；
+- 声明 3.7 而缓存缺失时，消息**明确指引**"3.7 不支持在线下载，需部署方离线预填解释器缓存卷"。
+
+**为什么不回退到宿主解释器**：回退会让"版本不匹配"被静默掩盖——任务看起来跑成功了，实际用的是错误版本，问题推迟到生产环境才暴露（例如 3.7 项目在 3.12 下依赖解析失败或行为漂移）。**明确的失败比静默的错误结果更有价值**。若未来需要"降级到最接近可用版本"，属新需求，须显式评估语义风险后另行决策。
+
+#### 容量规划（NFR-12 / NFR-15）
+
+```
+缓存池总占用 = 已缓存版本数 × 单版本解压后体积
+约束：版本数 × 单版本体积(≤ INTERPRETER_SINGLE_VERSION_MB = 250MB) ≤ INTERPRETER_TOTAL_GB = 4GB
+```
+
+实测输入（作容量测算基准）：
+
+| 项 | 实测值 |
+|---|---|
+| 单版本压缩包 | 21 ~ 30 MiB |
+| 单版本解压后 | **≈ 57 MB** |
+| 首次下载耗时 | **≈ 13~17 s**（D11 默认超时 300s，余量 18~23 倍） |
+| 3.7.9 Windows 产物（含 `.pdb`） | 121.9 MB（剔除 `.pdb` 后 70.6 MB） |
+
+**工作示例**：验收矩阵四版本（3.7 + 3.9 + 3.12 + 3.13）≈ **230 MB**，仅占 4 GB 上限的 **5.6%**；全区间七版本（3.8~3.14）≈ 400 MB（10%）。
+
+**治理方式（与常规 TTL 的区别，重要）**：解释器层**豁免常规 TTL 清扫**——`DISK_CLEANUP_TTL_DAYS`（默认 7 天）的清扫只作用于 `WORK_DIR`（任务工作目录与 venv），**不删解释器**。解释器是可复用资产，被 TTL 删掉就要重新下载（离线环境下永久不可恢复）。因此：
+
+- 物理隔离：`UV_PYTHON_INSTALL_DIR`（compose 为 `/data/interpreters`）**独立于** `WORK_DIR`（`/data/tasks`），两者挂不同命名卷；
+- 显式豁免：`maintenance.py` 跳过解释器层（物理隔离是主防线，豁免是第二道——即便部署方把池配进了 `WORK_DIR`，清扫也会放过它）；
+- 改由**体积红线**治理：单版本 > `INTERPRETER_SINGLE_VERSION_MB`（250MB）或总池 > `INTERPRETER_TOTAL_GB`（4GB）→ **告警 + 回收最久未使用版本**（按目录 mtime）。
+
+> **回收是「引用感知」的**：仍被任务 venv 依赖的版本一律跳过（venv 的 `bin/python` 只是指向池内目录的 shim，删了 venv 当场报废）。若所有超限候选都被引用，则**一个都不删**、只告警——宁可池暂时超红线，也不静默弄废用户 venv。此时需等 `.venvs` 到期被 TTL 清扫，或调大 `INTERPRETER_TOTAL_GB`。详见 [`docs/operations.md`](./operations.md)「解释器缓存池运维」。
+
+> ⚠️ **不要**把 `UV_PYTHON_INSTALL_DIR` 设成 `WORK_DIR` 的子目录（如 `/data/tasks/interpreters`），否则会被 TTL 清扫误删。
+
+#### 并发模型（NFR-16 / D13）
+
+多任务并发首次请求同一版本时，执行器保证**该版本只下载一次**：
+
+- **per-version 锁**：同版本请求串行化，先到者下载，后到者等待；
+- **全局单下载队列**：任意时刻全局至多一个 in-flight 下载（避免多版本并发下载打满带宽）；
+- 等待者阻塞至下载完成后走"缓存命中"分支复用，**不重复下载、不产生目录写竞争**。
+
+#### compose 配置（已内置，默认即可用）
+
+根 `docker-compose.yml` 已为两个执行器声明池目录与命名卷，**默认无需改动**：
+
+```yaml
+services:
+  executor-python:
+    environment:
+      UV_PYTHON_INSTALL_DIR: /data/interpreters   # 独立于 WORK_DIR
+      UV_PYTHON_INSTALL_MIRROR: ${UV_PYTHON_INSTALL_MIRROR:-}   # 留空 = 在线主路径
+      INTERPRETER_DOWNLOAD_TIMEOUT_SECONDS: ${INTERPRETER_DOWNLOAD_TIMEOUT_SECONDS:-300}
+      INTERPRETER_SINGLE_VERSION_MB: ${INTERPRETER_SINGLE_VERSION_MB:-250}
+      INTERPRETER_TOTAL_GB: ${INTERPRETER_TOTAL_GB:-4}
+      PYTHON_RUNTIME_VERSION_MIN: ${PYTHON_RUNTIME_VERSION_MIN:-3.7}
+      PYTHON_RUNTIME_VERSION_MAX: ${PYTHON_RUNTIME_VERSION_MAX:-3.14}
+    volumes:
+      - executor_python_data:/data/tasks          # 任务工作目录（受 TTL 清扫）
+      - interpreter_cache:/data/interpreters      # 解释器缓存池（豁免 TTL）
+  executor-node:
+    environment:
+      UV_BIN: ${UV_BIN:-}                          # 留空 = 自动解析（desktop 注入内置 uv）
+      UV_PYTHON_INSTALL_DIR: /data/interpreters
+      # …同名变量同义
+    volumes:
+      - executor_node_data:/data/tasks
+      - interpreter_cache:/data/interpreters       # 与 python 执行器共享同一卷
+
+volumes:
+  interpreter_cache:
+```
+
+> **⚠️ 两个执行器基底 libc 不同，解释器产物不可互换**：`executor-python` 基于 `python:3.12-slim`（Debian/**glibc**，池目录用 `linux-x86_64-**gnu**`），`executor-node` 基于 `node:22-alpine`（Alpine/**musl**，用 `linux-x86_64-**musl**`）。**共卷是安全的**（uv 按平台分量过滤，非本平台条目被安全跳过——实测池内混放时 `uv python list --only-installed` 仍 exit 0），但**离线预填时须两个 libc 各放一份**，否则其中一个执行器探测不到该版本。详见 [`OFFLINE-PROVISIONING.md`](./design/python-task-upload-and-multiversion/OFFLINE-PROVISIONING.md) §5.4。
+
+> **⚠️ 池内同平台损坏条目会拖垮整份清单**：一个"目录名看着对、但 uv 查询其版本失败"的条目，会让 `uv python list --only-installed` **整条 exit 2**；执行器随即 fail-safe 上报**空清单**（正常版本其实仍可用，只是上报被拖垮，管理台该执行器 `interpreters` 列变空）。预填后务必按 runbook §3.5 三关验证，**只把验证通过的解释器放进生产池**。详见 runbook §5.5 / §7.5。
+
+**启用内网镜像（可选模式 A）**：在 `.env` 设 `UV_PYTHON_INSTALL_MIRROR=https://mirror.internal/...` 后 `docker compose up -d`。
+
+**启用离线预填（可选模式 B）**：
+
+```bash
+# 1) 在能联网的机器上按 runbook 备好池目录（含 3.7 时必做）
+#    步骤见 docs/design/python-task-upload-and-multiversion/OFFLINE-PROVISIONING.md
+# 2) 确认卷名（compose 会加项目名前缀）
+docker volume ls | grep interpreter_cache
+# 3) 拷入卷
+docker run --rm -v autocodeflow_interpreter_cache:/pool \
+  -v "$PWD/seed/interpreters:/seed:ro" alpine sh -c 'cp -a /seed/. /pool/ && chmod -R a+rX /pool'
+# 4) 重启执行器并验证
+docker compose restart executor-python
+docker compose exec executor-python uv python list --only-installed
+```
+
+> 池内文件须对非 root 的 `appuser` **可读可执行**（执行器容器以 `appuser` 运行）。若预填后报 `Permission denied`，补 `chmod -R a+rX`。
+
+**多副本（HA）**：`docker-compose.ha.yml` 无需改动——`interpreter_cache` 定义在基线文件，admin-api 多副本与执行器解释器缓存无耦合；执行器不随 `--scale` 扩展，池仍是每台执行器一份（符合"同宿主复用同一解释器层"语义）。执行器横向扩容时每台各有独立池，各自按需下载或各自预填。
+
+**观测点**：执行器启动/心跳上报 `interpreters` 清单（缓存池已装版本），管理台「执行器」列表可见；任务执行详情页展示 `interpreter_unavailable` 分因与 `result.interpreter` 快照。
 
 ## 多副本（HA）部署（DEP-HA-1）
 
