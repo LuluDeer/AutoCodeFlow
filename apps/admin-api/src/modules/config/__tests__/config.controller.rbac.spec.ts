@@ -61,7 +61,24 @@ describe("ConfigController — FEAT-08 rollback RBAC matrix", () => {
     // 防御：确保真的扫到了路由（否则断言会因 0 个处理器而空过）
     expect(handlers.length).toBeGreaterThanOrEqual(8);
 
+    /**
+     * G-1 具名豁免：`getRuntimeVersion`（GET /config/runtime-version）。
+     *
+     * 该端点返回的是**契约常量**（runtime-version.util 的 getSupportedRange() 与
+     * interpreter-match.util 的 LEGACY_DEFAULT_INTERPRETERS），不读系统配置存储，
+     * 没有 secret 可泄——SEC-CFG-01 要防的是"任何已认证用户拉取整个配置存储"，
+     * 与此端点无关。反过来，任何能建任务的用户都需要在表单里读到正确的版本
+     * 区间，加 ADMIN 会让非管理员的区间提示退回前端硬编码（正是 G-1 要消灭的
+     * 漂移）。故刻意不加 @Roles。
+     *
+     * 守门效力不变：**除本名外**的任何新增路由仍须 ADMIN-gated，否则本用例红。
+     * 下面一行断言豁免名真实存在，防止方法重命名后留下一个空豁免。
+     */
+    const RUNTIME_VERSION_UNGATED = "getRuntimeVersion";
+    expect(handlers).toContain(RUNTIME_VERSION_UNGATED);
+
     const ungated = handlers.filter((name) => {
+      if (name === RUNTIME_VERSION_UNGATED) return false;
       const roles = Reflect.getMetadata(ROLES_KEY, proto[name]) as
         UserRole[] | undefined;
       return !roles || !roles.includes(UserRole.ADMIN);
