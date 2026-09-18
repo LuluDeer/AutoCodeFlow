@@ -95,8 +95,14 @@ export async function assertAndPinHttpUrl(
   const allowedRisk = isExecutor ? allowedExecutor : allowedWebhook;
 
   const pick = (addrs: string[]): string => {
-    // All answers passed the deny table; pin to the first (stable) one.
-    const addr = addrs[0];
+    // All answers passed the deny table; pin to a stable one. Prefer an IPv4
+    // answer when one exists: dual-stack hosts (e.g. `localhost` → ::1 +
+    // 127.0.0.1) routinely run their service on IPv4 loopback only, and
+    // pinning the first (IPv6) answer makes the socket connect fail with
+    // ECONNREFUSED. IPv6-only deployments still work — they simply have no
+    // IPv4 answer to prefer.
+    const v4 = addrs.find((a) => isIP(a) === 4);
+    const addr = v4 ?? addrs[0];
     if (!addr) {
       throw new BadRequestException(`URL host ${host} did not resolve`);
     }
@@ -169,13 +175,25 @@ export function pinnedAxiosConfig(target?: PinnedHttpTarget | null): {
   const pinnedIp = target.pinnedIp;
   const family = isIP(pinnedIp) === 6 ? 6 : 4;
   // Node's http(s).Agent calls lookup(hostname, options, cb) per new socket;
-  // always answer with the validated address. `options` may carry `all:true`
-  // in some consumers — the agent passes it through; we honor both shapes.
+  // always answer with the validated address. Node ≥ 22 passes `{all:true}`
+  // (hints:0) to the custom lookup, and its lookupAndConnect expects the
+  // ARRAY shape `(null, [{address, family}])` in that case — a bare
+  // `(null, ip, family)` makes Node take `result[0].address` of the string,
+  // i.e. `undefined`, and socket creation fails with
+  // "Invalid IP address: undefined". Older consumers may pass `all:false`/
+  // omit `all`, where the scalar shape `(null, ip, family)` is expected, so
+  // honor both shapes based on `options.all` (checked defensively: `all`
+  // falsy or undefined → scalar; explicit `all:true` → array).
   const pinnedLookup: http.AgentOptions["lookup"] = (
     _hostname,
-    _options,
+    options,
     cb,
   ) => {
+    const opts = (options ?? {}) as { all?: boolean };
+    if (opts.all === true) {
+      cb(null, [{ address: pinnedIp, family }]);
+      return;
+    }
     cb(null, pinnedIp, family);
   };
   return target.url.protocol === "https:"
