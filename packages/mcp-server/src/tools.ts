@@ -1054,6 +1054,8 @@ export const FAILURE_RUNBOOK: Record<string, string> = {
     "Check gitRepo URL, branch and credentials; private-network git needs EXECUTOR_ALLOW_PRIVATE_NETWORK on the executor.",
   runtime_missing:
     "The executor lacks the runtime binary (node/python/shell). Install it or dispatch to another executor.",
+  sandbox_unavailable:
+    "The executor has TASK_SANDBOX=bwrap enabled but the sandbox is unusable (bwrap not installed / user namespaces disabled / enabled on Windows). Install bubblewrap and restart the executor, or unset TASK_SANDBOX. The executor deliberately refuses to run tasks unsandboxed — retrying will not help.",
   script_error:
     "Read the log tail around the first stack frame; run analyze_execution for an AI root cause.",
   timeout:

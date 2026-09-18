@@ -1631,6 +1631,11 @@ export default {
   'execDetail.failure.dependencyInstallFailedHint': '检查 requirements 是否可解析、私服可达性与版本冲突。',
   'execDetail.failure.runtimeMissing': '运行时缺失',
   'execDetail.failure.runtimeMissingHint': '执行器缺少任务运行时（node/python/uv）——安装运行时或改派到支持该 runtime 的执行器。',
+  // EXP-01（本轮体验审查）：沙箱已配置但不可用。此前 python 执行器产出该值时
+  // 三端枚举都没有它 → 回调被 admin 400 拒绝且整批放弃（终态丢失）；补齐枚举后
+  // 读面必须有对应文案，否则会露出裸 token。
+  'execDetail.failure.sandboxUnavailable': '沙箱不可用',
+  'execDetail.failure.sandboxUnavailableHint': '执行器启用了 TASK_SANDBOX=bwrap 但沙箱不可用：bwrap 未安装、用户命名空间被内核/容器禁用，或该配置被用在了 Windows 上。执行器刻意拒绝在无沙箱下运行任务（fail-closed），故这不是任务代码的问题——安装 bubblewrap 后重启执行器，或取消 TASK_SANDBOX 配置。重试无效。',
   'execDetail.failure.scriptError': '脚本错误',
   'execDetail.failure.scriptErrorHint': '检查任务脚本异常、退出码和运行时日志。',
   'execDetail.failure.timeout': '执行超时',
@@ -1767,6 +1772,8 @@ export default {
   'taskForm.retryable.dependencyInstall': '依赖安装失败',
   'taskForm.retryable.gitFetch': 'Git 拉取失败',
   'taskForm.retryable.runtimeMissing': '运行时缺失',
+  // EXP-01: 沙箱配置不可用（bwrap 缺失等）——与 runtime_missing 区分处置动作。
+  'taskForm.retryable.sandboxUnavailable': '沙箱不可用',
   'taskForm.retryable.scriptError': '脚本错误',
   'taskForm.retryable.timeout': '执行超时',
   'taskForm.retryable.executorOffline': '执行器离线',
@@ -2228,6 +2235,8 @@ export default {
   'runbook.dependencyInstall': '查看安装日志（pip/uv/npm）定位失败依赖，固定版本后重跑；离线执行器需可达的索引源。',
   'runbook.gitFetch': '检查 gitRepo 地址、分支与凭据；私网 Git 需在执行器侧开启 EXECUTOR_ALLOW_PRIVATE_NETWORK。',
   'runbook.runtimeMissing': '执行器缺少运行时（node/python/shell）——安装运行时或改派到支持该 runtime 的执行器。',
+  // EXP-01: 沙箱已配置但不可用——动作是让沙箱可用或取消配置，不是重试。
+  'runbook.sandboxUnavailable': '执行器启用了 TASK_SANDBOX=bwrap 但沙箱不可用（bwrap 未安装 / 用户命名空间被禁 / 在 Windows 上启用）。安装 bubblewrap（apt install bubblewrap）后重启执行器，或取消 TASK_SANDBOX。执行器刻意拒绝在无沙箱下运行任务，重试无效。',
   'runbook.scriptError': '阅读日志末尾首个堆栈帧附近的输出；可点击「AI 分析」生成根因报告。',
   'runbook.timeout': '调大 timeoutSeconds、拆分工作负载或排查阻塞 I/O；反复超时提示依赖挂起。',
   'runbook.executorOffline': '检查执行器连接与注册状态；离线期间的回调积压可查看死信队列（dead letters）。',

@@ -1618,6 +1618,11 @@ export default {
   'execDetail.failure.dependencyInstallFailedHint': 'Check whether requirements resolve, the private registry is reachable, and there are no version conflicts.',
   'execDetail.failure.runtimeMissing': 'Runtime missing',
   'execDetail.failure.runtimeMissingHint': 'The executor lacks the task runtime (node/python/uv) — install the runtime or reassign to an executor that supports it.',
+  // EXP-01: the sandbox is configured but unusable. The python executor has emitted
+  // this value since F-1 while no enum carried it, so admin rejected the callback
+  // with 400 and the executor abandoned the whole batch (terminal state lost).
+  'execDetail.failure.sandboxUnavailable': 'Sandbox unavailable',
+  'execDetail.failure.sandboxUnavailableHint': 'The executor has TASK_SANDBOX=bwrap enabled but the sandbox is unusable: bwrap is not installed, user namespaces are disabled by the kernel/container, or the setting was applied on Windows. The executor deliberately refuses to run tasks unsandboxed (fail-closed), so this is not a problem with the task code — install bubblewrap and restart the executor, or unset TASK_SANDBOX. Retrying will not help.',
   'execDetail.failure.scriptError': 'Script error',
   'execDetail.failure.scriptErrorHint': 'Check the task script exception, exit code, and runtime logs.',
   'execDetail.failure.timeout': 'Execution timeout',
@@ -1761,6 +1766,8 @@ export default {
   'taskForm.retryable.executorOffline': 'Executor offline',
   'taskForm.retryable.executorRestart': 'Executor restart',
   'taskForm.retryable.interpreterUnavailable': 'Interpreter unavailable',
+  // EXP-01: sandbox configured but unusable (bwrap missing, etc.).
+  'taskForm.retryable.sandboxUnavailable': 'Sandbox unavailable',
   'taskForm.retryable.unknown': 'Unknown reason',
   'taskForm.priority.low': 'Low',
   'taskForm.priority.normal': 'Normal',
@@ -2218,6 +2225,8 @@ export default {
   'runbook.dependencyInstall': 'Inspect the install log (pip/uv/npm) to locate the failing dependency, pin the version and rerun; offline executors need a reachable index source.',
   'runbook.gitFetch': 'Check the gitRepo URL, branch and credentials; for private-network Git, enable EXECUTOR_ALLOW_PRIVATE_NETWORK on the executor side.',
   'runbook.runtimeMissing': 'The executor lacks the runtime (node/python/shell) — install the runtime or reassign to an executor that supports it.',
+  // EXP-01: sandbox configured but unusable — the action is to fix the sandbox, not retry.
+  'runbook.sandboxUnavailable': 'The executor has TASK_SANDBOX=bwrap enabled but the sandbox is unusable (bwrap not installed / user namespaces disabled / enabled on Windows). Install bubblewrap (apt install bubblewrap) and restart the executor, or unset TASK_SANDBOX. The executor deliberately refuses to run tasks unsandboxed — retrying will not help.',
   'runbook.scriptError': 'Read the output near the first stack frame at the end of the log; click "AI Analysis" to generate a root-cause report.',
   'runbook.timeout': 'Increase timeoutSeconds, split the workload, or investigate blocking I/O; repeated timeouts may indicate a hung dependency.',
   'runbook.executorOffline': 'Check the executor connection and registration state; queued callbacks during offline time can be reviewed in the dead-letter queue.',

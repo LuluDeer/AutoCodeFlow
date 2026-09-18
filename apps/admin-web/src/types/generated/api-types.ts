@@ -5680,15 +5680,22 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Executor offline */
-            400: {
+            /** @description Executor not found */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description Executor not found */
-            404: {
+            /** @description Executor rejected the config push (its held token is out of sync with the issued one) */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Executor offline or unreachable (config push could not be delivered) */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
