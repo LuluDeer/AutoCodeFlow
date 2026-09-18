@@ -56,7 +56,11 @@ if (!g.ResizeObserver) {
     disconnect() {}
   };
 }
-if (!window.matchMedia) {
+
+// matchMedia 桩在 beforeEach 中建立：避免模块顶层引用 window——forks 池 +
+// coverage 仪器化下模块加载可能先于 jsdom 环境就绪（第十轮 admin-web-build
+// 的 Unhandled ReferenceError: window is not defined 即此窗口期命中）。
+function stubMatchMedia() {
   window.matchMedia = ((q: string) => ({
     matches: false,
     media: q,
@@ -175,6 +179,7 @@ const waitForResults = async (title: string) => {
 beforeEach(() => {
   cleanup();
   vi.clearAllMocks();
+  stubMatchMedia();
   useAuthStore.setState({ user: { id: 1, username: 'root', role: 'admin' } as never });
   mockedTasks.list.mockResolvedValue({ items: [taskFixture], total: 1, page: 1, pageSize: 50 });
   mockedTasks.allExecutions.mockResolvedValue({
