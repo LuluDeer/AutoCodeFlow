@@ -57,9 +57,12 @@ if (typeof window !== 'undefined' && !window.matchMedia) {
 //    结束后显式排空宏任务队列 + flush React 更新，使 teardown 时无残留
 //    scheduler 工作。──
 afterEach(async () => {
-  // 排空至少一轮宏任务（React scheduler 依赖 MessageChannel/setImmediate
-  // 派发 workLoop；单个 setTimeout(0) 一轮即够，pending 渲染随之执行完）。
-  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  // 排空宏任务队列：React 的 concurrent commit 是多轮 MessageChannel 派发，
+  // 单轮 setTimeout(0) 可能只执行完一轮 workLoop。这里连排多轮，确保
+  // pending 的 commit/effect 链完全落地后才让 vitest 进入 jsdom teardown。
+  for (let i = 0; i < 5; i += 1) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  }
   // 再 flush 一轮 React 更新（act 包裹的同步+微任务部分）。
   await act(async () => {});
 });

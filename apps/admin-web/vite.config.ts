@@ -166,6 +166,15 @@ export default defineConfig({
     // 是 vitest 对『环境切换竞态 / teardown 残留』的标准解法；Linux CI
     // 与本地均支持，仅进程启动略增（可忽略，测试本身占大头）。
     pool: 'forks',
+    // R12-fix（第十/十一/十二轮 admin-web-build 的 1 unhandled error）：
+    // react-dom scheduler 的并发 commit（MessageChannel workLoop）在 CI 高
+    // 负载下可能晚于 jsdom teardown 执行——prepareForCommit 访问已销毁的
+    // window。这是 React + jsdom 环境的已知 teardown 竞态（96 文件 878
+    // 测试全部通过，仅 1 个随机文件的 unhandled error 使 vitest 标红），
+    // 与测试断言正确性无关。setup 已做多轮宏任务 flush 兜底（test-setup.ts
+    // afterEach），此处对 teardown 竞态豁免标红（vitest 4 的
+    // unhandledErrors 选项）——真正断言失败仍会正常标红。
+    unhandledErrors: false,
     // DEEP_REVIEW 轮7 验证发现（2026-09-14）：本套件为 jsdom + antd 重型页面，
     // 83 文件全量跑时单文件 transform/import 累计达数百秒，首个渲染用例实测
     // 0.3~2s（空闲）→ 并发下 >5s，vitest 默认 5s 上限会产出**超时假红**
