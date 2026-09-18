@@ -174,10 +174,24 @@ describe('ApplicationDetailPage 详情加载（QA-03 第二阶段）', () => {
     expect(mockedApps.get).toHaveBeenCalledWith('app-1');
   });
 
-  it('加载失败 → toast 并导航回应用列表', async () => {
-    mockedApps.get.mockRejectedValue(new Error('network down'));
+  // UX-05（本轮体验审查）：本条原先断言「任何错误都跳回列表」——那正是被修的
+  // 缺陷：用户正在看的页面突然消失、滚动位置丢失，原因只是一条几秒后消失的
+  // toast。现在只有 404（资源确实不存在）才导航；500/网络错误留在原位重试。
+  it('404 → 导航回应用列表（资源确实不存在）', async () => {
+    mockedApps.get.mockRejectedValue({ response: { status: 404 } });
     renderPage();
     await waitFor(() => expect(screen.getByText('app-list-mock')).toBeTruthy());
+  });
+
+  it('UX-05：网络错误（非 404）→ 留在页内渲染可重试错误态，不跳走', async () => {
+    mockedApps.get.mockRejectedValue(new Error('network down'));
+    renderPage();
+    // 页内错误态（UI-08 标准块）
+    await waitFor(() => expect(screen.getByTestId('state-error')).toBeTruthy());
+    // 关键反证：不得导航离开
+    expect(screen.queryByText('app-list-mock')).toBeNull();
+    // 且必须给重试入口
+    expect(screen.getByText('重试')).toBeTruthy();
   });
 
   it('Tab 切换到部署实例 → 渲染部署页子组件', async () => {
