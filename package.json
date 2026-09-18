@@ -48,6 +48,7 @@
     "lint:web": "cd apps/admin-web && npm run lint",
     "lint:node": "cd apps/executor-node && npx eslint src --ext .ts",
     "lint:all": "npm run lint:api && npm run lint:web && npm run lint:node",
+    "check:lint-gates": "node scripts/check-lint-gates.mjs",
     "build:web": "cd apps/admin-web && npm run build",
     "build:node": "cd apps/executor-node && npm run build",
     "build:node-sdk": "cd packages/autocodeflow-node-sdk && npm run build",
