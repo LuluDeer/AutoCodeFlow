@@ -196,6 +196,13 @@ async function api(port, token, method, urlPath, body) {
 /**
  * 打开一条 SSE 流并持续读帧。返回 { frames, firstFrameAt, maxGapMs, ended,
  * error, stop() }；`ready` 在建连（拿到响应头）后 resolve。
+ *
+ * R12-fix（⑧ 有帧 0/500 根因）：原实现用 undici `fetch` 读 SSE 响应体——
+ * Node 24 的 undici 对 `text/event-stream` + 无 Content-Length（chunked）
+ * 的响应在 `reader.read()` 上不返回数据（本地 curl / 原生 http 均正常收到
+ * 帧，唯 fetch 0 字节——已最小复现）。CI nginx-sse 的 ④⑧ 连续失败正是
+ * 该缺陷（服务端 SSE 正常，客户端 fetch 吞帧）。改用原生 http 模块建连，
+ * 行为与 curl 一致。
  */
 function openSse(url, token) {
   const state = {
@@ -205,35 +212,36 @@ function openSse(url, token) {
     startedAt: Date.now(),
     ended: false,
     error: '',
-    controller: new AbortController(),
+    _req: null,
     stop() {
       try {
-        this.controller.abort();
+        this._req?.destroy();
       } catch {
         /* ignore */
       }
     },
   };
   state.ready = (async () => {
-    const res = await fetch(url, {
-      headers: { authorization: `Bearer ${token}`, accept: 'text/event-stream' },
-      signal: state.controller.signal,
-    });
-    state.status = res.status;
-    state.headers = res.headers;
-    if (!res.body) {
-      state.error = 'no response body';
-      return res;
-    }
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let lastAt = Date.now();
-    (async () => {
-      try {
-        for (;;) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          const text = decoder.decode(value, { stream: true });
+    const parsed = new URL(url);
+    const req = http.request(
+      {
+        hostname: parsed.hostname,
+        port: parsed.port || 80,
+        path: parsed.pathname + parsed.search,
+        method: 'GET',
+        headers: { authorization: `Bearer ${token}`, accept: 'text/event-stream' },
+      },
+      (res) => {
+        state.status = res.statusCode;
+        state.headers = new Headers(res.headers);
+        if (!res.statusCode || res.statusCode >= 400) {
+          state.error = `HTTP ${res.statusCode}`;
+          state.ended = true;
+          return;
+        }
+        let lastAt = Date.now();
+        res.on('data', (chunk) => {
+          const text = chunk.toString('utf8');
           // 注释保活帧 ": ping" 与数据帧同计（两者都证明"字节真的流出来了"）
           const count = (text.match(/\n\n/g) || []).length || 1;
           for (let i = 0; i < count; i += 1) {
@@ -243,16 +251,26 @@ function openSse(url, token) {
             state.maxGapMs = Math.max(state.maxGapMs, now - lastAt);
             lastAt = now;
           }
-        }
-      } catch (e) {
-        if (!state.controller.signal.aborted) {
-          state.error = e instanceof Error ? e.message : String(e);
-        }
-      } finally {
-        state.ended = true;
-      }
-    })();
-    return res;
+        });
+        res.on('error', (e) => {
+          if (!state.ended) state.error = e.message;
+          state.ended = true;
+        });
+        res.on('end', () => {
+          state.ended = true;
+        });
+        res.on('close', () => {
+          state.ended = true;
+        });
+      },
+    );
+    state._req = req;
+    req.on('error', (e) => {
+      if (!state.ended) state.error = e.message;
+      state.ended = true;
+    });
+    req.end();
+    return req;
   })();
   return state;
 }
