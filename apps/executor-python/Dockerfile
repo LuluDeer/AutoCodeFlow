@@ -37,4 +37,8 @@ RUN uv --version | grep -Fx 'uv 0.8.17' \
 
 EXPOSE 8001
 
+# O-1: 内置健康探针（独立 docker run / K8s 形态可用；compose 定义优先）
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"
+
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8001"]

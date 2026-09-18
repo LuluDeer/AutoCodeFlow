@@ -14,21 +14,34 @@ networks:
 
 services:
   # ── Infrastructure ──────────────────────────────────────
+  # X-1（可扩展性审查）：postgres 为单实例，本 compose 不含流复制——主库故障
+  # 即整个系统不可用。生产建议：云 RDS（主从 + 自动故障切换）或自建 PG 流复制
+  # + Patroni；本文件保持单实例形态，不伪造不可运行的复制配置。
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-autoflow}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      # F-2: :? 语法强制显式注入——未设置/为空时 compose 解析即报错（fail-fast），
+      # 不再带空口令启动到容器层才暴露（postgres-replica 为 profile 服务且与
+      # 本服务同源变量，此处守卫即覆盖）。
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: ${DB_DATABASE:-autoflow}
     # 512M was tight for the scheduled workload (audit log aggregation,
     # index builds during migrations)
     mem_limit: 1g
+    # O-8: 资源限制统一用 compose 原生顶层字段（deploy.resources 是 swarm 字段，
+    # 纯 compose up 下不生效且与 mem_limit 混用造成语义混乱，已删除）
+    cpus: '0.5'
     volumes:
       - postgres_data:/var/lib/postgresql/data
     # Postgres uses /dev/shm for parallel sorts/hashes; the 64MB default
     # causes spilling to disk under load
     shm_size: 256mb
+    # M-5: 1G 容器下的稳妥调优（PG 建议 shared_buffers ≈ 25% 内存；
+    # max_connections 兼顾多副本 admin-api 连接池（每实例 DB_POOL_SIZE=20）与
+    # 迁移/后台聚合任务；work_mem/effective_cache_size 按 1G 内存折算）
+    command: ["postgres", "-c", "shared_buffers=256MB", "-c", "max_connections=150", "-c", "work_mem=8MB", "-c", "effective_cache_size=768MB"]
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-autoflow}']
       interval: 10s
@@ -37,11 +50,6 @@ services:
       start_period: 30s
     networks:
       - autoflow-internal
-    deploy:
-      resources:
-        limits:
-          memory: 1G
-          cpus: '0.5'
 
   # ── 只读副本 (可选，profile: replica) — ARCH-24 ──────────────
   # 启用: docker compose --profile replica up -d postgres-replica
@@ -61,6 +69,8 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${DB_DATABASE:-autoflow}
     mem_limit: 512m
+    # M-6: 与主库对称，避免副本在排序/哈希时 spill to disk
+    shm_size: 256mb
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-autoflow}']
       interval: 10s
@@ -70,24 +80,33 @@ services:
     networks:
       - autoflow-internal
 
+  # X-2（可扩展性审查）：Leader 选举 / 分布式锁 / BullMQ / pull 派发队列均依赖
+  # Redis，单实例为单点（应用侧已有 fail-open 降级：Redis 不可用退化为 DB
+  # 条件 UPDATE claim 兜底）。生产建议 Redis Sentinel 或 Cluster。
+  # 本文件的可运行改进：开启 AOF 持久化（appendonly yes），重启不丢队列/锁
+  # 语义外的必要状态；数据落 redis_data 卷。
+  # F-1/O-8: 资源限制用 compose 原生顶层字段（与 postgres 对齐；deploy.resources
+  # 是 swarm 字段，纯 docker compose up 下不生效）。M-2: 启用密码认证（admin-api
+  # 侧已支持 REDIS_PASSWORD，见 configuration.ts）。F-6: maxmemory 内联等效
+  # config/redis/autoflow-redis.conf 的同名参数——该 conf 为隔离本地开发专用
+  # （scripts/start-isolated.sh 消费，端口 6380），不挂载到此容器。
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    mem_limit: 256m
+    cpus: '0.5'
+    command: redis-server --requirepass ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env} --maxmemory 256mb --maxmemory-policy allkeys-lru --appendonly yes
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ['CMD', 'redis-cli', 'ping']
+      # exec 形态（无 shell 层），密码作为独立 argv 传入，避免引号/元字符问题
+      test: ['CMD', 'redis-cli', '-a', '${REDIS_PASSWORD}', 'ping']
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 10s
     networks:
       - autoflow-internal
-    deploy:
-      resources:
-        limits:
-          memory: 256M
-          cpus: '0.5'
 
   # ── Core Services ──────────────────────────────────────
   admin-api:
@@ -112,17 +131,28 @@ services:
       DB_HOST: postgres
       DB_PORT: ${DB_PORT:-5432}
       DB_USERNAME: ${DB_USERNAME:-autoflow}
-      DB_PASSWORD: ${DB_PASSWORD}
+      # F-2: 敏感变量统一 :? 强制注入（未设置/为空时 compose 解析即报错，
+      # fail-fast，不再带空口令/空密钥静默启动）
+      DB_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env}
       DB_DATABASE: ${DB_DATABASE:-autoflow}
       REDIS_HOST: redis
       REDIS_PORT: ${REDIS_PORT:-6379}
-      JWT_SECRET: ${JWT_SECRET}
-      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
-      EXECUTOR_SECRET: ${EXECUTOR_SECRET}
+      # M-2: redis 服务已强制 --requirepass，admin-api 侧必须携带同源密码
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      # OBS-02: Alertmanager webhook 入站 HMAC secret（可选；未配置时
+      # POST /api/alerts/webhook 503 安全缺省拒绝，见 alerts.controller.ts）
+      ALERT_WEBHOOK_SECRET: ${ALERT_WEBHOOK_SECRET:-}
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?set JWT_REFRESH_SECRET in .env}
+      EXECUTOR_SECRET: ${EXECUTOR_SECRET:?set EXECUTOR_SECRET in .env}
       ADMIN_WEB_ORIGIN: ${ADMIN_WEB_ORIGIN:-http://localhost}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost,http://localhost:5176}
       AI_PROVIDER: ${AI_PROVIDER:-disabled}
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      # 显式堆上限（比依赖容器 mem_limit 兜底更早、更可控地 OOM）：500 并发
+      # 实测峰值 RSS 394MB，512MB 堆 + 容器 768m 余量充裕；堆到 mem_limit 才
+      # 被 cgroup 杀掉会连带同一容器的其它进程一起阵亡。
+      NODE_OPTIONS: '--max-old-space-size=512'
       APP_PROTOCOL: ${APP_PROTOCOL:-http}
       # LOG-02: execution log storage (db | s3); s3 needs the minio profile
       LOG_STORAGE_DRIVER: ${LOG_STORAGE_DRIVER:-db}
@@ -197,6 +227,8 @@ services:
   # 启用: docker compose --profile minio up -d
   # 再将 admin-api 的 LOG_STORAGE_DRIVER 设为 s3，执行日志将以 gzip
   # 对象存放在此，主库 execution_log_lines 不再增长（优化笔记 2.6）
+  # X-3（可扩展性审查）：本单实例 minio 为文件存储单点；生产建议云 S3/OSS，
+  # 或 minio 分布式多节点模式。
   # 注意：admin 侧 log-retention 清理不覆盖外置对象——需配置 bucket lifecycle
   # 使 execution-logs/ 前缀对象与 LOG_RETENTION_DAYS 同步过期，否则 minio_data
   # 卷无限增长，操作步骤见 docs/operations.md「S3/MinIO 日志对象生命周期」。
@@ -259,7 +291,8 @@ services:
       ADMIN_API_URL: http://admin-api:3105
       ADMIN_API_URL_INTERNAL: ${ADMIN_API_URL_INTERNAL:-http://admin-api:3105}
       ADMIN_API_URL_EXTERNAL: ${ADMIN_API_URL_EXTERNAL:-}
-      EXECUTOR_SECRET: ${EXECUTOR_SECRET}
+      # F-2: 与 admin-api 侧同源强制注入（未设置即 compose 解析报错）
+      EXECUTOR_SECRET: ${EXECUTOR_SECRET:?set EXECUTOR_SECRET in .env}
       WORK_DIR: /data/tasks
       LOG_LEVEL: ${LOG_LEVEL:-info}
       PYPI_REGISTRY_URL: ${PYPI_REGISTRY_URL:-http://registry-pypi:8003/simple/}
@@ -275,6 +308,9 @@ services:
       UV_PYTHON_INSTALL_MIRROR: ${UV_PYTHON_INSTALL_MIRROR:-}
       # 单次下载独立超时预算（秒，D11）；实测单版本约 13~17s，300s 余量充裕。
       INTERPRETER_DOWNLOAD_TIMEOUT_SECONDS: ${INTERPRETER_DOWNLOAD_TIMEOUT_SECONDS:-300}
+      # 下载全局有界并发（D13，默认 2；1 = 全局单队列）。不同版本并行下载、
+      # 同版本共享一次；弱网/低磁盘部署可收紧。
+      INTERPRETER_DOWNLOAD_CONCURRENCY: ${INTERPRETER_DOWNLOAD_CONCURRENCY:-2}
       # 体积红线（D12）：解释器层豁免 TTL，改由红线治理（超限告警 + LRU 回收）。
       INTERPRETER_SINGLE_VERSION_MB: ${INTERPRETER_SINGLE_VERSION_MB:-250}
       INTERPRETER_TOTAL_GB: ${INTERPRETER_TOTAL_GB:-4}
@@ -290,6 +326,15 @@ services:
     cap_drop: ['ALL']
     security_opt:
       - no-new-privileges:true
+    # 资源硬限制：任务子进程继承容器限制——nofile 上限防 fd 泄漏，
+    # pids_limit 防 fork 炸弹（代码执行面是 fork 大户）；CPU 时间上限由
+    # cpus='1.0' + 任务超时 kill 兜底（代码层另设 RLIMIT_CPU，见 execute.py
+    # _spawn_kwargs_for_platform）。
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    pids_limit: 512
     volumes:
       - executor_python_data:/data/tasks
       # python_task_multiversion：解释器缓存池独立命名卷（与 /data/tasks 分离，
@@ -338,37 +383,54 @@ services:
       ADMIN_API_URL: http://admin-api:3105
       ADMIN_API_URL_INTERNAL: ${ADMIN_API_URL_INTERNAL:-http://admin-api:3105}
       ADMIN_API_URL_EXTERNAL: ${ADMIN_API_URL_EXTERNAL:-}
-      EXECUTOR_SECRET: ${EXECUTOR_SECRET}
+      # F-2: 与 admin-api 侧同源强制注入（未设置即 compose 解析报错）
+      EXECUTOR_SECRET: ${EXECUTOR_SECRET:?set EXECUTOR_SECRET in .env}
       WORK_DIR: /data/tasks
       MAX_CONCURRENT_TASKS: 10
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      # 显式堆上限：执行器承载任务子进程，BoundedLogBuffer 已防日志 OOM，但
+      # 解释器池清单/心跳/回调聚合等仍有内存峰值；1024MB 堆给任务子进程与
+      # 解释器池留足余量，比堆膨胀到 mem_limit 被 cgroup 杀掉更早、更可控。
+      NODE_OPTIONS: '--max-old-space-size=1024'
       NPM_REGISTRY_URL: ${NPM_REGISTRY_URL:-http://registry-npm:4873}
       PYTHON_REGISTRY_URL: ${PYTHON_REGISTRY_URL:-http://registry-pypi:8003/simple/}
       # ── python_task_multiversion：解释器缓存池（node 侧同构） ────────
       # executor-node 的 python 分支与 executor-python 对等（声明版本按需
       # 获取解释器）。uv 定位顺序：UV_BIN → PATH → desktop 内置（Electron
       # 注入 UV_BIN）→ 都无则声明版本的任务明确失败（reason=uv_missing）。
-      # 注意：本 compose 服务基于 node:22-alpine，**当前镜像未内置 uv 也未装
-      # python**（故 detectAvailableRuntimes 不会上报 python 能力）——以下
-      # 变量在此服务上暂为惰性配置，供镜像补齐 uv 后直接生效；桌面端
-      # （executor-desktop 内置 uv + 宿主 python）为主要消费形态。
+      # 注意：本 compose 服务基于 node:24-alpine（U-2，与 CI 的 node 24 对齐），
+      # **当前镜像未内置 uv 也未装 python**（故 detectAvailableRuntimes 不会上报
+      # python 能力）——以下变量在此服务上暂为惰性配置，供镜像补齐 uv 后直接
+      # 生效；桌面端（executor-desktop 内置 uv + 宿主 python）为主要消费形态。
       UV_BIN: ${UV_BIN:-}
       UV_PYTHON_INSTALL_DIR: /data/interpreters
       UV_PYTHON_INSTALL_MIRROR: ${UV_PYTHON_INSTALL_MIRROR:-}
       INTERPRETER_DOWNLOAD_TIMEOUT_SECONDS: ${INTERPRETER_DOWNLOAD_TIMEOUT_SECONDS:-300}
-      # 注：INTERPRETER_SINGLE_VERSION_MB / INTERPRETER_TOTAL_GB /
-      # PYTHON_RUNTIME_VERSION_MIN / _MAX **不在此注入**——executor-node 不读取
-      # 这四个变量（无体积红线实现，版本区间由 admin-api 侧校验）。
+      INTERPRETER_DOWNLOAD_CONCURRENCY: ${INTERPRETER_DOWNLOAD_CONCURRENCY:-2}
+      # 注：INTERPRETER_SINGLE_VERSION_MB / INTERPRETER_TOTAL_GB 与
+      # executor-python 同源注入——executor-node 自 NFR-15 起同样实现解释器池
+      # 体积红线（interpreters.enforceInterpreterPoolLimits，与 python 侧
+      # maintenance.enforce_interpreter_pool_limits 对等），两侧必须一致。
+      INTERPRETER_SINGLE_VERSION_MB: ${INTERPRETER_SINGLE_VERSION_MB:-250}
+      INTERPRETER_TOTAL_GB: ${INTERPRETER_TOTAL_GB:-4}
     # SEC-07: 最小权限双闸（镜像层已 non-root，见 apps/executor-node/Dockerfile
     # Q-09 —— adduser appuser + USER）。cap_drop/no-new-privileges 语义同
     # executor-python 上方注释。
     cap_drop: ['ALL']
     security_opt:
       - no-new-privileges:true
+    # 资源硬限制（DEEP_REVIEW 补全）：任务子进程继承容器限制——nofile 上限防
+    # fd 泄漏（chatty 任务开大量连接耗尽执行器 fd），pids_limit 防 fork 炸弹；
+    # CPU 时间上限由 cpus='1.0' + 任务超时 kill 兜底（python 侧另有 RLIMIT_CPU）。
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    pids_limit: 512
     volumes:
       - executor_node_data:/data/tasks
       # python_task_multiversion：与 executor-python 共用同一解释器缓存**卷**。
-      # ⚠ 两执行器基底 libc 不同（本服务 node:22-alpine = **musl**；
+      # ⚠ 两执行器基底 libc 不同（本服务 node:24-alpine = **musl**；
       #   executor-python 的 python:3.12-slim = **glibc**），因此**不能共用同一份
       #   解释器产物**——各自需要对应 libc 的构建。共卷本身是安全的：池目录名
       #   带 libc 分量（`linux-x86_64-musl` vs `linux-x86_64-gnu`），uv 按平台
@@ -406,7 +468,8 @@ services:
       - '127.0.0.1:8003:8003'
     environment:
       REGISTRY_USER: ${REGISTRY_USER:-admin}
-      REGISTRY_PASS: ${REGISTRY_PASS}
+      # F-2: Basic Auth 密码强制注入（未设置即 compose 解析报错）
+      REGISTRY_PASS: ${REGISTRY_PASS:?set REGISTRY_PASS in .env}
       # E-34（DEEP_REVIEW 0ef3bbe）：旧 PYPI_API_KEY 是死配置——registry-pypi main.py
       # 从未读取它（grep 实证 0 处），鉴权只有 Basic（REGISTRY_USER/PASS）。保留会让运维
       # 误以为存在 token 鉴权通道。删除；将来若补 token 鉴权再连同 main.py 实现一并加回。
@@ -437,7 +500,9 @@ services:
         max-file: '5'
 
   registry-npm:
-    image: verdaccio/verdaccio:5
+    # O-3: major 浮动 tag（verdaccio:5）→ pin 到具体版本，升级不可复现问题与
+    # minio 同源（E-34 先例），5.x 内 minor 行为变化不再静默进入
+    image: verdaccio/verdaccio:5.31.1
     restart: unless-stopped
     # Host access is local-only by default; executors use the internal network.
     # For deliberate external package publishing, override this mapping explicitly.
@@ -489,6 +554,150 @@ services:
     networks:
       - autoflow-internal
 
+  # ── PostgreSQL 定时备份 (可选，profile: backup) — M-1 ────────────
+  # 启用: docker compose --profile backup up -d pg-backup
+  # 备份产物落在 backup_data 卷（建议另挂宿主目录/对象存储做异地副本）；
+  # 默认每日 02:00 全量 pg_dump（busybox crond 格式，BACKUP_SCHEDULE 可覆盖），
+  # 按 BACKUP_RETENTION_DAYS 清理。脚本见 scripts/pg-backup.sh。
+  pg-backup:
+    image: postgres:16-alpine
+    profiles: ['backup']
+    restart: unless-stopped
+    environment:
+      PGHOST: postgres
+      PGUSER: ${POSTGRES_USER:-autoflow}
+      # 与 postgres 服务同源变量（其 :? 守卫已保证非空）
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: ${DB_DATABASE:-autoflow}
+      BACKUP_DIR: /backup
+      BACKUP_SCHEDULE: ${BACKUP_SCHEDULE:-0 2 * * *}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-30}
+    volumes:
+      - backup_data:/backup
+      - ./scripts/pg-backup.sh:/usr/local/bin/pg-backup.sh:ro
+      - ./scripts/pg-backup-entrypoint.sh:/usr/local/bin/pg-backup-entrypoint.sh:ro
+    entrypoint: ['/bin/sh', '/usr/local/bin/pg-backup-entrypoint.sh']
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - autoflow-internal
+
+  # ── 监控与告警 (可选，profile: monitoring) — M-3/M-4 ─────────────
+  # 启用: docker compose --profile monitoring up -d
+  # 组件：Prometheus(指标采集) + Grafana(看板) + Alertmanager(告警路由) +
+  #       postgres_exporter / redis_exporter(基础设施指标) +
+  #       Loki + Promtail(经 docker.sock 聚合全部容器日志)
+  # 端口（loopback-only）：Grafana http://localhost:3000（默认 admin/admin，
+  # 首次登录务必修改，或设置 GRAFANA_ADMIN_PASSWORD）；Prometheus
+  # http://localhost:9090；Alertmanager http://localhost:9093；Loki
+  # http://localhost:3100。
+  # admin-api 已内置 /api/metrics（prom-client，R7 默认开启）——Prometheus 直接
+  # 抓取应用指标。OBS-02 告警入站需 HMAC 签名（Alertmanager 原生 webhook 无法
+  # 直接产生 HMAC），接线需 HMAC 转发侧车，见 docs/deployment.md「监控」段。
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    profiles: ['monitoring']
+    restart: unless-stopped
+    volumes:
+      - ./config/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./config/monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=15d'
+    ports:
+      - '127.0.0.1:9090:9090'
+    networks:
+      - autoflow-internal
+      - autoflow-public
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    profiles: ['monitoring']
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: 'false'
+    volumes:
+      - ./config/monitoring/grafana/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - '127.0.0.1:3000:3000'
+    networks:
+      - autoflow-internal
+      - autoflow-public
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    profiles: ['monitoring']
+    restart: unless-stopped
+    volumes:
+      - ./config/monitoring/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+    ports:
+      - '127.0.0.1:9093:9093'
+    networks:
+      - autoflow-internal
+      - autoflow-public
+
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.15.0
+    profiles: ['monitoring']
+    restart: unless-stopped
+    environment:
+      # 注意：密码含 URL 保留字符（@ : /）时需 URL 编码，否则 DSN 解析失败
+      DATA_SOURCE_NAME: postgresql://${POSTGRES_USER:-autoflow}:${POSTGRES_PASSWORD}@postgres:5432/${DB_DATABASE:-autoflow}?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - autoflow-internal
+
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.61.0
+    profiles: ['monitoring']
+    restart: unless-stopped
+    environment:
+      REDIS_ADDR: redis:6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - autoflow-internal
+
+  loki:
+    image: grafana/loki:3.0.0
+    profiles: ['monitoring']
+    restart: unless-stopped
+    volumes:
+      - ./config/monitoring/loki.yml:/etc/loki/local-config.yaml:ro
+      - loki_data:/loki
+    command:
+      - '-config.file=/etc/loki/local-config.yaml'
+    ports:
+      - '127.0.0.1:3100:3100'
+    networks:
+      - autoflow-internal
+      - autoflow-public
+
+  promtail:
+    image: grafana/promtail:3.0.0
+    profiles: ['monitoring']
+    restart: unless-stopped
+    volumes:
+      - ./config/monitoring/promtail.yml:/etc/promtail/config.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    command:
+      - '-config.file=/etc/promtail/config.yml'
+    depends_on:
+      - loki
+    networks:
+      - autoflow-internal
+
 volumes:
   postgres_data:
   redis_data:
@@ -498,6 +707,12 @@ volumes:
   executor_python_data:
   executor_node_data:
   jaeger_data:
+  # M-1: pg-backup profile 的备份产物卷
+  backup_data:
+  # M-3/M-4: monitoring profile 数据卷
+  prometheus_data:
+  grafana_data:
+  loki_data:
   # python_task_multiversion：解释器缓存池（executor-python 与 executor-node
   # 共享）。豁免 TTL 清扫，由 INTERPRETER_SINGLE_VERSION_MB /
   # INTERPRETER_TOTAL_GB 体积红线 + 最久未使用回收治理。

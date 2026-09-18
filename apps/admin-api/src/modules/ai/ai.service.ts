@@ -3,7 +3,10 @@ import { ConfigService } from "@nestjs/config";
 import axios from "axios";
 import * as nodeCron from "node-cron";
 import { SystemConfigService } from "../config/config.service";
-import { assertSafeHttpUrl } from "../../common/utils/safe-http.util";
+import {
+  assertAndPinHttpUrl,
+  pinnedAxiosConfig,
+} from "../../common/utils/safe-http.util";
 
 @Injectable()
 export class AiService {
@@ -222,10 +225,15 @@ export class AiService {
     // channel — both stem from config-driven outbound HTTP.
     // ARCH-31（2026-09-13）: AI_ALLOW_PRIVATE_NETWORK=true 时放开内网目标
     // （同姿态：link-local 云元数据恒拒），默认 false 零行为变化。
-    await assertSafeHttpUrl(baseUrl, {
+    // F-3（SEC-NEW）: 校验同时把目标 pin 到通过的 IP（Host/SNI 保留），
+    // 关闭 DNS rebinding 窗口——AI 配置可含自定义域名，逐查询 rebind 可把
+    // 请求打到云元数据/内网。
+    const pinned = await assertAndPinHttpUrl(baseUrl, {
       allowPrivateNetwork:
         this.config.get<boolean>("ai.allowPrivateNetwork") === true,
     });
+    const pinCfg = pinnedAxiosConfig(pinned);
+    // 原始 baseUrl 原样拼路径（new URL 归一化会改字节形态）；pin 由 agent.lookup 完成。
     const r = await axios.post(
       `${baseUrl}/chat/completions`,
       {
@@ -238,9 +246,9 @@ export class AiService {
         timeout: 30_000,
         // R3: assertSafeHttpUrl only validates the first-hop URL; refuse
         // 3xx so a redirect cannot bypass the SSRF guard into a private
-        // target. (See common/utils/safe-http.util.ts for the rebinding
-        // residual risk note — DNS pinning is left as a follow-up.)
+        // target.
         maxRedirects: 0,
+        ...pinCfg,
       },
     );
     return r.data.choices[0].message.content;
@@ -254,10 +262,12 @@ export class AiService {
     // AI_ALLOW_PRIVATE_NETWORK=true 显式放开 loopback/restricted/private-lan
     // （同机自建部署），link-local 云元数据仍恒拒。开关为 env 级部署配置，
     // 不进 DB 系统配置（与 EXECUTOR_ALLOW_PRIVATE_NETWORK 同形态）。
-    await assertSafeHttpUrl(host, {
+    // F-3（SEC-NEW）: 同 callOpenAI，pin 到校验通过的 IP。
+    const pinned = await assertAndPinHttpUrl(host, {
       allowPrivateNetwork:
         this.config.get<boolean>("ai.allowPrivateNetwork") === true,
     });
+    const pinCfg = pinnedAxiosConfig(pinned);
     const model = await this.getAiConfig("ollamaModel", "llama3");
     const r = await axios.post(
       `${host}/api/generate`,
@@ -265,7 +275,11 @@ export class AiService {
       // R3: maxRedirects=0 — see callOpenAI comment. Ollama is
       // self-hosted; a redirect to a private host would still slip past
       // the first-hop check, so we refuse 3xx outright.
-      { timeout: 60_000, maxRedirects: 0 },
+      {
+        timeout: 60_000,
+        maxRedirects: 0,
+        ...pinCfg,
+      },
     );
     return r.data.response;
   }

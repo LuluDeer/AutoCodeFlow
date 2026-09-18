@@ -303,10 +303,12 @@ describe("FEAT-19 OutboxDispatcher", () => {
       expect(params[1]).toBe(OUTBOX_BATCH_SIZE);
     });
 
-    it("串行逐行处理时，单行 claim 窗口覆盖最坏正常派发时间", () => {
+    it("批量 + 并行处理时，单行 claim 窗口覆盖最坏正常派发时间", () => {
       // 3 x 10s HTTP timeout + 1s + 2s backoff = 33s; the 60s lease leaves
       // enough margin for DB reads and finalization while the row is active.
-      expect(OUTBOX_BATCH_SIZE).toBe(1);
+      // 批量（BATCH_SIZE=5）行共享同一租约窗口且并行派发，因此最坏窗口仍由
+      // 单行上界决定，不随行数相乘。
+      expect(OUTBOX_BATCH_SIZE).toBe(5);
       expect(OUTBOX_MAX_ROW_PROCESSING_MS).toBe(33_000);
       expect(OUTBOX_LEASE_MS).toBeGreaterThan(OUTBOX_MAX_ROW_PROCESSING_MS);
     });

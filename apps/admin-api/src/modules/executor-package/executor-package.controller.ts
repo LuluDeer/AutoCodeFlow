@@ -93,6 +93,21 @@ export function buildContentDisposition(
   return `attachment; filename="${asciiFallback}"; filename*=UTF-8''${encoded}`;
 }
 
+/**
+ * L-7（缺 If-None-Match/ETag）：弱比较客户端 `If-None-Match` 中的引用标签
+ * 是否命中本端 ETag（写法对齐 registry-pypi O-26）。两边都剥掉可选的
+ * `W/` 弱校验器前缀后逐字节比较引号内标签；命中由调用方回 304，省去整包重传。
+ */
+function etagMatchesIfNoneMatch(headerValue: string, ourEtag: string): boolean {
+  const ours = ourEtag.startsWith("W/") ? ourEtag.slice(2) : ourEtag;
+  const re = /(W\/)?"([^"]*)"/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(headerValue)) !== null) {
+    if (m[2] && `"${m[2]}"` === ours) return true;
+  }
+  return false;
+}
+
 @ApiTags("Executor Package Management")
 @ApiBearerAuth("JWT")
 // R4 F-1: package management (upload/push/delete/activate) is admin-only.
@@ -236,6 +251,7 @@ export class ExecutorPackageController {
     @Param("id", ParseUUIDPipe) id: string,
     @Res() res: Response,
     @Headers("authorization") authHeader?: string,
+    @Headers("if-none-match") ifNoneMatch?: string,
   ): Promise<void> {
     let authorized = false;
     try {
@@ -273,6 +289,19 @@ export class ExecutorPackageController {
     // one Buffer. Headers/auth/404 semantics unchanged (Content-Length comes
     // from the on-disk stat, filename/type from the stored row).
     const { stream, fileSize, pkg } = await this.svc.openPackageFile(id);
+    // L-7: 内容寻址强校验器——存储的 SHA-256 即文件内容指纹。客户端带
+    // If-None-Match 复用上回 ETag 仍命中时回 304 Not Modified，不再拉流
+    // （对齐 registry-pypi O-26 的条件请求语义）。存量行若缺 checksum 则
+    // 不发 ETag，自然走全量下载。命中 304 前必须销毁已打开的读流，避免 fd 泄漏。
+    const etag = pkg.checksum ? `"sha256-${pkg.checksum}"` : undefined;
+    if (etag) {
+      res.setHeader("ETag", etag);
+      if (ifNoneMatch && etagMatchesIfNoneMatch(ifNoneMatch, etag)) {
+        stream.destroy();
+        res.status(304).end();
+        return;
+      }
+    }
     // QA10: the stored originalFilename is user-controlled — sanitize the
     // header value (CR/LF/quote stripping, RFC 5987 for non-ASCII names).
     res.setHeader(

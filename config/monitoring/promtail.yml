@@ -1,0 +1,25 @@
+# Promtail 配置（M-4，compose monitoring profile）
+# 经宿主 docker.sock 采集全部容器日志并推送 Loki；container/stream 标签便于
+# Grafana 按容器过滤。注意：本机（Windows/macOS Docker Desktop）的 Linux 容器
+# 内挂载 /var/run/docker.sock 均可用。
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: docker
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 5s
+    relabel_configs:
+      - source_labels: ['__meta_docker_container_name']
+        regex: '/(.*)'
+        target_label: 'container'
+      - source_labels: ['__meta_docker_container_log_stream']
+        target_label: 'stream'

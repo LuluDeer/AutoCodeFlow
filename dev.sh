@@ -5,6 +5,9 @@
 set -euo pipefail
 
 # ── AutoFlow 开发环境快速启动脚本 ─────────────────────────────
+# ⚠ O-5（维护提示）：本脚本与 start-dev.sh 功能重叠，Makefile 为唯一规范入口
+#   （make dev / make infra-up / ...）。本脚本保留为便捷封装，行为如有漂移
+#   以 Makefile 为准。
 # Usage: ./dev.sh [command]
 # Commands:
 #   start    - 启动完整开发环境（默认）
@@ -82,7 +85,9 @@ case "$CMD" in
     echo -e "${GREEN}==> 2/4 安装依赖...${NC}"
     cd apps/admin-api && npm install --silent 2>/dev/null &
     cd apps/admin-web && npm install --silent 2>/dev/null &
-    cd apps/executor-python && pip install -q -r requirements.txt 2>/dev/null &
+    # O-6: 项目偏好 uv 管理 Python 依赖——uv 存在时优先（--system 保持与旧
+    # 行为一致地装入当前解释器，裸 uvicorn 无需改动）；缺失则回落 pip。
+    cd apps/executor-python && { command -v uv >/dev/null 2>&1 && uv pip install --system -q -r requirements.txt; } || pip install -q -r requirements.txt 2>/dev/null &
     cd apps/executor-node && npm install --silent 2>/dev/null &
     wait
 
@@ -137,7 +142,9 @@ case "$CMD" in
     docker-compose -f infra/docker-compose.yml ps 2>/dev/null || true
     echo ""
     echo -e "${BLUE}===== 健康检查 =====${NC}"
-    curl -s http://localhost:3105/health 2>/dev/null && echo "" || echo -e "${RED}admin-api 未运行${NC}"
+    # F-3: admin-api 全局前缀 api——liveness 端点为 /api/health/live
+    # （旧 /health 恒 404，status 恒误报「未运行」，与 Makefile/deploy.sh 对齐）
+    curl -s http://localhost:3105/api/health/live 2>/dev/null && echo "" || echo -e "${RED}admin-api 未运行${NC}"
     curl -s http://localhost:8001/health 2>/dev/null && echo "" || echo -e "${RED}executor-python 未运行${NC}"
     curl -s http://localhost:8002/health 2>/dev/null && echo "" || echo -e "${RED}executor-node 未运行${NC}"
     ;;

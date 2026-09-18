@@ -9,12 +9,11 @@ import logging
 import os
 import signal
 import time
-import httpx
 
 from routers import execute, health, logs, config as config_router
 import maintenance
 from admin_api import build_admin_api_url, check_admin_api_connectivity, get_admin_api_base_url
-from config import settings, EXECUTOR_VERSION
+from config import settings, EXECUTOR_VERSION, PROTOCOL_VERSION
 from scheduler import (
     heartbeat_task,
     get_running_count,
@@ -22,6 +21,7 @@ from scheduler import (
     executor_startup_id,
     pull_task,
     register_interpreters_provider,
+    get_http_client,
 )
 from auth import (
     get_current_token,
@@ -31,7 +31,38 @@ from auth import (
     set_on_token_acquired,
 )
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s %(name)s %(levelname)s %(message)s')
+def _setup_logging() -> None:
+    """8-3（audit-r4）：结构化日志。
+
+    LOG_FORMAT=json 时输出单行 JSON（timestamp/level/logger/message，异常时附
+    exc_info），ELK/Loki 等聚合平台可直接解析；默认保持既有文本格式逐字节不变。
+    LOG_LEVEL 环境变量覆盖默认 INFO（白名单校验，非法值回落 INFO）。"""
+    level = os.environ.get('LOG_LEVEL', '').strip().upper() or 'INFO'
+    if level not in ('DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'):
+        level = 'INFO'
+    if os.environ.get('LOG_FORMAT', '').strip().lower() == 'json':
+        import json as _json
+
+        class JsonFormatter(logging.Formatter):  # noqa: N801 - 内联小类
+            def format(self, record: logging.LogRecord) -> str:
+                entry = {
+                    'timestamp': self.formatTime(record, '%Y-%m-%dT%H:%M:%S%z'),
+                    'level': record.levelname,
+                    'logger': record.name,
+                    'message': record.getMessage(),
+                }
+                if record.exc_info:
+                    entry['exc_info'] = self.formatException(record.exc_info)
+                return _json.dumps(entry, ensure_ascii=False)
+
+        handler = logging.StreamHandler()
+        handler.setFormatter(JsonFormatter())
+        logging.basicConfig(level=level, handlers=[handler])
+    else:
+        logging.basicConfig(level=level, format='%(asctime)s %(name)s %(levelname)s %(message)s')
+
+
+_setup_logging()
 logger = logging.getLogger(__name__)
 
 # Graceful shutdown state
@@ -59,14 +90,16 @@ async def notify_offline():
     try:
         token = await get_current_token()
         headers = {'Authorization': f'Bearer {token}'} if token else {}
-        async with httpx.AsyncClient() as client:
-            await client.post(
-                build_admin_api_url('/executors/offline'),
-                json={'address': settings.executor_address_public or settings.executor_address},
-                headers=headers,
-                timeout=5,
-            )
-            logger.info('Sent offline notification to admin-api')
+        # 网络性能审计（2026-09-18）：复用 O-24 共享连接池（停机通知不再
+        # 为单次请求新建连接池）。
+        client = get_http_client()
+        await client.post(
+            build_admin_api_url('/executors/offline'),
+            json={'address': settings.executor_address_public or settings.executor_address},
+            headers=headers,
+            timeout=5,
+        )
+        logger.info('Sent offline notification to admin-api')
     except Exception as e:
         logger.warning(f'Failed to send offline notification: {e}')
 
@@ -87,21 +120,31 @@ async def lifespan(app: FastAPI):
     global _heartbeat_task, _pull_task, _register_succeeded
     # Check Admin API connectivity first so startup logs show clear diagnostics.
     await check_admin_api_connectivity()
-    # R4-C P2: warn loudly when the executor would run in dev-mode (no token).
-    # With REQUIRE_TOKEN=true the auth dependency instead refuses /api/*.
+    # R4-C P2 / S-3 (audit-r4): warn loudly when the executor runs without a
+    # token. fail-closed is the DEFAULT posture now — /api/* is refused unless
+    # EXECUTOR_ALLOW_NO_TOKEN=true explicitly opts into dev-mode allow-all;
+    # REQUIRE_TOKEN=true additionally forces refusal.
     if not get_static_token():
         if require_token_enabled():
             logger.warning('REQUIRE_TOKEN=true but no executor token is configured — /api/* requests will be refused')
         else:
             logger.warning(
-                'No executor token configured — /api/* is open to unauthenticated callers (dev mode). '
-                'Set EXECUTOR_SHARED_TOKEN or set REQUIRE_TOKEN=true to refuse.'
+                'No executor token configured — /api/* requests will be REFUSED (fail-closed default, S-3). '
+                'Set EXECUTOR_SHARED_TOKEN to authenticate, or set '
+                'EXECUTOR_ALLOW_NO_TOKEN=true ONLY for local development to allow unauthenticated callers.'
             )
     # SEC-NEW-3 (N41 parity): the token-acquired hook is mounted BEFORE the
     # first register — when the startup register fails (admin unreachable),
     # a later successful _fetch_token auto re-registers with rich metadata
     # (maybe_re_register dedupes + backs off internally).
     set_on_token_acquired(lambda: asyncio.get_running_loop().create_task(maybe_re_register()))
+    # B-4 (SEC-NEW): 解释器缓存池权限加固（0o755 + owner 校验）——启动期显式
+    # 执行一次，早于任何心跳/注册上报；discover_installed 内部亦会调用（幂等）。
+    if execute._interpreters is not None:  # pragma: no branch
+        try:
+            execute._interpreters.harden_pool_permissions()
+        except Exception as exc:  # noqa: BLE001 - 加固失败不阻断启动（函数内已兜底）
+            logger.warning('interpreter pool permission hardening failed: %s', exc)
     # FR-13/FR-14（python_task_multiversion）：解释器池清单的心跳 provider 在
     # 注册之前接好——这样首个 register 与首个 heartbeat 上报的是同一份快照，
     # 不会出现"注册说池为空、心跳说有 3.9"的自相矛盾窗口。
@@ -149,6 +192,19 @@ async def lifespan(app: FastAPI):
             )
     except Exception as e:
         logger.warning(f'Shutdown task tree-kill failed: {e}')
+    # 1-2 (audit-r4 parity with node TaskWorker.stop): prepare/排队阶段（从未
+    # spawn）的执行在停机时补发一次终态 failed 回调，而不是丢给 admin stale
+    # sweep——与 Node 侧逐字段同构（status=failed，无 failureReason）。必须在
+    # worker-flush 取消之前执行：取消后条目已被 unregister，这里就抓不到了。
+    try:
+        prepare_failed = await execute.fail_prepare_stage_executions_on_shutdown()
+        if prepare_failed:
+            logger.info(
+                f'Shutdown: sent {prepare_failed} terminal callback(s) for '
+                'prepare-stage executions'
+            )
+    except Exception as e:
+        logger.warning(f'Shutdown prepare-stage callback sweep failed: {e}')
     # QA8: 树杀后、drain 前，给 worker 协程一个有限窗口把终态回调投出去或
     # 落盘——被杀任务的 _run_and_callback 要先观察到子进程退出才会产出回调，
     # 若不等它们，进程退出会把未送达的回调一起带走（执行只能等 stale sweep
@@ -268,6 +324,9 @@ def _register_payload() -> dict:
         # EXE-VER-1: 版本上报单源 EXECUTOR_VERSION（心跳同源）；中心端
         # EXECUTOR_MIN_VERSION 门禁按此判定，低于下限 403。
         'version': EXECUTOR_VERSION,
+        # PROTOCOL-VER（B-3/U-2）：协议版本上报——中台据此做兼容性分支，
+        # 与实现版本门禁解耦（见 config.py PROTOCOL_VERSION 注释）。
+        'protocolVersion': PROTOCOL_VERSION,
         # ARCH-32: 派发模式自报（pull = NAT 内零入站，经长轮询取件）
         'dispatchMode': 'pull' if settings.executor_pull_mode else 'push',
         'capabilities': ['python', 'shell'],
@@ -301,37 +360,39 @@ async def register_executor() -> bool:
         # postWithStaticToken); heartbeats keep using the dynamic token.
         token = get_static_token()
         headers = {'Authorization': f'Bearer {token}'} if token else {}
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                build_admin_api_url('/executors/register'),
-                json=_register_payload(),
-                headers=headers,
-                timeout=10,
+        # 网络性能审计（2026-09-18）：复用 O-24 共享连接池（注册 + 补注册
+        # 不再每次新建连接池）。
+        client = get_http_client()
+        response = await client.post(
+            build_admin_api_url('/executors/register'),
+            json=_register_payload(),
+            headers=headers,
+            timeout=10,
+        )
+        # R9-fix: the old code logged "Registered" even on 4xx — check the
+        # status and surface rejections (with a body summary) as errors.
+        # SEC-NEW-3: a rejection no longer strands the rich metadata until
+        # process restart — maybe_re_register() re-fires this call once
+        # the token chain heals (hook below).
+        if not 200 <= response.status_code < 300:
+            body_summary = (response.text or '')[:200]
+            logger.error(
+                'Register rejected by admin-api: HTTP %s %s '
+                '(will re-register via the token-acquired hook once the token chain heals)',
+                response.status_code,
+                body_summary,
             )
-            # R9-fix: the old code logged "Registered" even on 4xx — check the
-            # status and surface rejections (with a body summary) as errors.
-            # SEC-NEW-3: a rejection no longer strands the rich metadata until
-            # process restart — maybe_re_register() re-fires this call once
-            # the token chain heals (hook below).
-            if not 200 <= response.status_code < 300:
-                body_summary = (response.text or '')[:200]
-                logger.error(
-                    'Register rejected by admin-api: HTTP %s %s '
-                    '(will re-register via the token-acquired hook once the token chain heals)',
-                    response.status_code,
-                    body_summary,
-                )
-                return False
-            # R9 (round-9, W3 parity with executor-node main.ts): the
-            # register response carries the stored tokenHash (N26) — adopt
-            # it as the per-execution callback-token HMAC source secret.
-            try:
-                adopt_executor_token_hash(response.json())
-            except Exception:  # pragma: no cover - non-JSON admin bodies
-                pass
-            logger.info('Registered to admin-api')
-            _register_succeeded = True  # E-15: 成功置位 → 补注册收敛
-            return True
+            return False
+        # R9 (round-9, W3 parity with executor-node main.ts): the
+        # register response carries the stored tokenHash (N26) — adopt
+        # it as the per-execution callback-token HMAC source secret.
+        try:
+            adopt_executor_token_hash(response.json())
+        except Exception:  # pragma: no cover - non-JSON admin bodies
+            pass
+        logger.info('Registered to admin-api')
+        _register_succeeded = True  # E-15: 成功置位 → 补注册收敛
+        return True
     except Exception as e:
         # SEC-NEW-3 (N41 parity): register failure is recoverable — the
         # on_token_acquired hook re-registers once _fetch_token succeeds.

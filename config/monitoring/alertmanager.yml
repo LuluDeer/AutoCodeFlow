@@ -1,0 +1,18 @@
+# Alertmanager 配置（M-3，compose monitoring profile）
+# 默认路由把所有告警静默到 noop 接收器（告警只进 Alertmanager UI，不打扰）。
+# 要打通平台通知渠道（企业微信/钉钉/Slack/邮件）：
+#   1. admin-api 侧设 ALERT_WEBHOOK_SECRET（OBS-02，未配置时 /api/alerts/webhook 503）；
+#   2. 由于该端点要求 HMAC-SHA256 签名（X-AutoCodeFlow-Timestamp +
+#      X-Hub-Signature-256，见 apps/admin-api/src/modules/notification/alerts.controller.ts），
+#      Alertmanager 原生 webhook 无法直接签名——需一个 HMAC 转发侧车（如 nginx
+#      subrequest 或小脚本），把 webhook 请求加签后转发到
+#      http://admin-api:3105/api/alerts/webhook。
+route:
+  group_by: ['alertname']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  receiver: 'noop'
+
+receivers:
+  - name: 'noop'

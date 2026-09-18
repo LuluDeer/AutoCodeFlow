@@ -30,6 +30,10 @@
       "extra-files": [
         "autoflow_sdk/__init__.py"
       ]
+    },
+    "packages/acf-cli": {
+      "release-type": "node",
+      "component": "acf-cli"
     }
   }
 }

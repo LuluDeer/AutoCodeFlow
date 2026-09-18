@@ -139,3 +139,8 @@ else
 fi
 
 echo -e "${GREEN}========== AutoFlow 部署完成 ==========${NC}"
+echo ""
+# M-1: 备份提醒——compose 提供 pg-backup profile（每日自动 pg_dump），
+# 生产部署强烈建议启用并另挂异地副本
+echo -e "${YELLOW}提醒: 启用定时备份 → docker compose --profile backup up -d pg-backup${NC}"
+echo -e "${YELLOW}      （默认每日 02:00 pg_dump，保留 30 天，详见 docs/operations.md「数据备份与恢复」）${NC}"

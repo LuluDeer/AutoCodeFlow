@@ -18,6 +18,9 @@ import { Readable } from "stream";
 import axios from "axios";
 import { ExecutorPackageController } from "../executor-package.controller";
 import { assertSafeExecutorUrl } from "../../../common/utils/safe-http.util";
+// F-3（SEC-NEW）: 服务现走 assertAndPinExecutorUrl（校验+pin 一体）——保留
+// requireActual 其余导出，仅替换两个守卫为可控 mock。
+import { assertAndPinExecutorUrl } from "../../../common/utils/safe-http.util";
 // SEC-05: structurally-valid minimal zip for upload fixtures.
 import { buildBenignZip } from "../../../common/utils/__tests__/zip-samples";
 
@@ -26,7 +29,18 @@ jest.mock("../../executor/executor.service", () => ({
   ExecutorService: jest.fn(),
 }));
 jest.mock("axios");
-jest.mock("../../../common/utils/safe-http.util");
+jest.mock("../../../common/utils/safe-http.util", () => ({
+  ...jest.requireActual("../../../common/utils/safe-http.util"),
+  assertSafeExecutorUrl: jest.fn().mockResolvedValue(undefined),
+  // F-3: 默认按入参原样返回 pinned:false 目标（URL 归一化断言不受影响）。
+  assertAndPinExecutorUrl: jest
+    .fn()
+    .mockImplementation(async (raw: string) => ({
+      url: new URL(raw),
+      pinnedIp: "93.184.216.34",
+      pinned: false,
+    })),
+}));
 
 // SEC-05: zip-guard/clamd consume the temp file via fs — but this spec
 // jest.mocks fs wholesale. Keep the REAL guard logic and feed it the fixture
@@ -457,6 +471,18 @@ describe("ExecutorPackageService", () => {
     let controller: ExecutorPackageController;
 
     beforeEach(() => {
+      // 顺序无关：清空跨用例累计的 axios 调用（"empty id list" 用
+      // toHaveBeenCalledTimes(2) 计数，前序 normalize 用例会污染计数）。
+      jest.mocked(axios.post).mockClear();
+      // F-3: 守卫 mock 完整重置（mockReset 清掉上一用例遗留的 queued
+      // mockRejectedValueOnce），再装回默认按入参派生的实现。
+      const pinMock = jest.mocked(assertAndPinExecutorUrl);
+      pinMock.mockReset();
+      pinMock.mockImplementation(async (raw: string) => ({
+        url: new URL(raw),
+        pinnedIp: "93.184.216.34",
+        pinned: false,
+      }));
       repo.findOne.mockResolvedValue(mockPkg);
       config.get.mockImplementation((key: string) =>
         key === "app.adminApiUrl" ? "http://host:3002/" : "env-token",
@@ -487,7 +513,8 @@ describe("ExecutorPackageService", () => {
         { executorId: "exec-001", address: targets[0].address, success: true },
       ]);
       expect(systemConfig.findOne).toHaveBeenCalledWith("executor.sharedToken");
-      expect(assertSafeExecutorUrl).toHaveBeenCalledWith(targets[0].address);
+      // F-3: 守卫换为 assertAndPinExecutorUrl（校验 + pin 一体）。
+      expect(assertAndPinExecutorUrl).toHaveBeenCalledWith(targets[0].address);
       expect(axios.post).toHaveBeenCalledWith(
         "http://executor:8002/api/update-package",
         expect.objectContaining({
@@ -566,7 +593,7 @@ describe("ExecutorPackageService", () => {
 
     it("keeps SSRF rejection before the outbound request", async () => {
       jest
-        .mocked(assertSafeExecutorUrl)
+        .mocked(assertAndPinExecutorUrl)
         .mockRejectedValue(new Error("Unsafe executor URL"));
       await expect(controller.push(mockPkg.id)).resolves.toEqual([
         expect.objectContaining({

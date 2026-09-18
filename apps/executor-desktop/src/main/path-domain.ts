@@ -101,7 +101,13 @@ export function checkPathWithinDomains(
   return { ok: false, error: 'path is outside the allowed log/app domains' };
 }
 
-/** R13: log:open-file must never hand executables/shortcuts to shell.openPath. */
+/**
+ * R13: log:open-file must never hand executables/shortcuts to shell.openPath.
+ * 白名单（而非黑名单）设计：只有纯文本日志扩展名可开。
+ * 6-3（audit-r4）：白名单同时天然覆盖 macOS 的 `.app` bundle——`.app` 是
+ * 一个**目录**（Foo.app/），其扩展名不在白名单、且目录无扩展名也不在白名单，
+ * 因此 `shell.openPath` 永远不会被交给可执行 bundle / 任意目录。
+ */
 const OPENABLE_LOG_EXTENSIONS = ['.log', '.txt'];
 
 export function hasAllowedLogExtension(filePath: string): boolean {

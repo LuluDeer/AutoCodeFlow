@@ -7,7 +7,11 @@ import {
   ChannelDeliveryStatus,
   NotificationPayload,
 } from "./base.channel";
-import { assertSafeHttpUrl } from "../../../common/utils/safe-http.util";
+import {
+  assertAndPinHttpUrl,
+  PinnedHttpTarget,
+  pinnedAxiosConfig,
+} from "../../../common/utils/safe-http.util";
 import { ChannelConfigStore } from "../channel-config.store";
 
 @Injectable()
@@ -57,11 +61,16 @@ export class WebhookChannel extends BaseChannel {
     const webhookUrl = explicitUrl || overrideUrl || savedUrl;
     if (!webhookUrl) return "skipped";
 
-    // NOTIF-001: reject SSRF (private / loopback / link-local / cloud-metadata)
+    // NOTIF-001 + F-3 (SEC-NEW): reject SSRF AND pin the connection to the
+    // validated IP. The plain guard could be bypassed by DNS rebinding — a
+    // host answering the validation query with a public IP and a later query
+    // with an internal one. assertAndPinHttpUrl rewrites the target to the
+    // IP literal (Host header + TLS SNI preserved), so the contacted address
+    // is exactly the one that was validated.
     const url_ = webhookUrl;
-    // V2: report the block instead of swallowing it silently.
+    let pinned: PinnedHttpTarget;
     try {
-      await assertSafeHttpUrl(url_, {
+      pinned = await assertAndPinHttpUrl(url_, {
         allowPrivateNetwork:
           this.config?.get<boolean>("notification.allowPrivateNetwork") ===
           true,
@@ -82,6 +91,9 @@ export class WebhookChannel extends BaseChannel {
 
     try {
       await this.withRetry(async () => {
+        const pinCfg = pinnedAxiosConfig(pinned);
+        // 原始 URL 字符串原样传给 axios（new URL 归一化会加尾部斜杠，
+        // 破坏字节级契约）；pin 由 pinCfg 的 agent.lookup 完成。
         await axios.post(url_, body, {
           timeout: 10_000,
           // R3: assertSafeHttpUrl only validates the first-hop URL; axios
@@ -91,6 +103,7 @@ export class WebhookChannel extends BaseChannel {
           // outright so the validated first hop is the only hop.
           maxRedirects: 0,
           headers: { "Content-Type": "application/json" },
+          ...pinCfg,
         });
       });
       this.logger.log(`[Webhook] sent: ${p.title} → ${url_}`);

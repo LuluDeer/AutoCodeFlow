@@ -127,13 +127,15 @@ describe('auth token fetch', () => {
 
   it('treats an envelope without a token as a failed fetch and falls back to the static token', async () => {
     jest.resetModules();
+    delete process.env.EXECUTOR_SHARED_TOKEN;
+    delete process.env.EXECUTOR_SECRET;
     const axiosDefault = ((await import('axios')) as any).default;
     axiosDefault.post.mockResolvedValue({
       status: 201,
       data: { code: 201, message: 'success', data: null },
     });
     const { config } = await import('../config');
-    // STATIC_TOKEN is captured at auth module load — set it before importing.
+    // static token is read at call time (5-2) — set config before importing.
     config.token = 'static-token';
     const { getCurrentToken } = await import('./auth');
 
@@ -222,14 +224,34 @@ describe('verifyToken — REQUIRE_TOKEN fail-closed mode', () => {
     jest.clearAllMocks();
     jest.resetModules();
     delete process.env.REQUIRE_TOKEN;
+    delete process.env.EXECUTOR_ALLOW_NO_TOKEN;
+    delete process.env.EXECUTOR_SHARED_TOKEN;
+    delete process.env.EXECUTOR_SECRET;
     mockedAxios.post.mockRejectedValue(new Error('admin unreachable'));
   });
 
   afterEach(() => {
     delete process.env.REQUIRE_TOKEN;
+    delete process.env.EXECUTOR_ALLOW_NO_TOKEN;
+    delete process.env.EXECUTOR_SHARED_TOKEN;
+    delete process.env.EXECUTOR_SECRET;
   });
 
-  it('keeps dev-mode passthrough when no token is configured and REQUIRE_TOKEN is unset', async () => {
+  it('refuses by default (fail-closed, S-3) when no token is configured', async () => {
+    const { verifyToken } = await import('./auth');
+    const res = makeRes();
+    const next = jest.fn();
+    await verifyToken({ headers: {} } as any, res, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(503);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({ error: expect.stringMatching(/No executor token is configured/) }),
+    );
+  });
+
+  it('keeps dev-mode passthrough only with the explicit EXECUTOR_ALLOW_NO_TOKEN=true opt-in', async () => {
+    process.env.EXECUTOR_ALLOW_NO_TOKEN = 'true';
     const { verifyToken } = await import('./auth');
     const next = jest.fn();
     await verifyToken({ headers: {} } as any, makeRes(), next);
@@ -246,7 +268,7 @@ describe('verifyToken — REQUIRE_TOKEN fail-closed mode', () => {
     expect(next).not.toHaveBeenCalled();
     expect(res.status).toHaveBeenCalledWith(503);
     expect(res.json).toHaveBeenCalledWith(
-      expect.objectContaining({ error: expect.stringMatching(/REQUIRE_TOKEN/) }),
+      expect.objectContaining({ error: expect.stringMatching(/No executor token is configured/) }),
     );
   });
 });
@@ -270,6 +292,12 @@ describe('verifyToken — Bearer authentication (migrated)', () => {
     adminResponse?: unknown;
   } = {}) {
     jest.resetModules();
+    // 5-2（audit-r4）：static token 每次调用读 env 优先——测试必须清掉宿主
+    // 环境泄漏的 EXECUTOR_SHARED_TOKEN，否则 config.token 桩值不生效。
+    delete process.env.EXECUTOR_SHARED_TOKEN;
+    delete process.env.EXECUTOR_SECRET;
+    delete process.env.EXECUTOR_ALLOW_NO_TOKEN;
+    delete process.env.REQUIRE_TOKEN;
     const { config } = await import('../config');
     (config as Record<string, any>).token = opts.staticToken ?? '';
     const axiosDefault = ((await import('axios')) as any).default;

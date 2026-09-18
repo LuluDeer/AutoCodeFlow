@@ -12,7 +12,7 @@
 
 import * as fs from 'fs';
 import { config } from '../config';
-import { assertSafeHttpUrl } from './ssrf-guard';
+import { assertSafeHttpUrl, assertSafeDnsResolution } from './ssrf-guard';
 
 export interface DownloadFileOptions {
   maxRedirects?: number;
@@ -88,6 +88,21 @@ export function downloadFile(url: string, dest: string, options: DownloadFileOpt
       return;
     }
 
+    // S-1（audit-r4）：DNS re-resolution 二次闸——语法级检查不解析域名，攻击者
+    // 可注册域名做 DNS rebinding（首次解析公网 IP 过闸、连接时二次解析到内网）。
+    // 这里在**发起连接前**解析主机名并对全部 A/AAAA 逐一复核受限判定，任一受限
+    // 即 fail-closed；解析失败同样拒绝（无法证明目标安全就不连）。残余 TOCTOU
+    // 窗口（resolve-then-connect 之间）已在 ssrf-guard 注释中文档化，生产建议
+    // 叠加容器/网络层 egress 策略。
+    assertSafeDnsResolution(url)
+      .then(() => {
+        startDownload();
+      })
+      .catch((err: unknown) => {
+        reject(err instanceof Error ? err : new Error(String(err)));
+      });
+
+    function startDownload(): void {
     // Overall deadline: req.setTimeout is a socket-idle timeout and a
     // slow-drip server resets it forever, so run an absolute timer too.
     const deadline = setTimeout(() => {
@@ -197,5 +212,6 @@ export function downloadFile(url: string, dest: string, options: DownloadFileOpt
       req.destroy();
       fail(new Error('Download timed out'));
     });
+    } // end startDownload()
   });
 }

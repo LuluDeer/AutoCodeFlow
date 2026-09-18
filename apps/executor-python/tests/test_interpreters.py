@@ -5,6 +5,7 @@
 命名约定一致：`cpython-<完整版本>-<platform>-none/`）。
 """
 import asyncio
+import hashlib
 import os
 import subprocess
 import sys
@@ -60,14 +61,16 @@ def _fake_bin(entry_dir: Path) -> Path:
 
 @pytest.fixture(autouse=True)
 def clean_module_state():
-    """模块级状态（探测缓存/锁表/信号量表）不得跨用例泄漏。"""
+    """模块级状态（探测缓存/锁表/信号量表/完整性留痕）不得跨用例泄漏。"""
     interpreters.invalidate_cache()
     interpreters._version_locks.clear()
     interpreters._reset_semaphores()
+    interpreters._reset_integrity_tracking()
     yield
     interpreters.invalidate_cache()
     interpreters._version_locks.clear()
     interpreters._reset_semaphores()
+    interpreters._reset_integrity_tracking()
 
 
 @pytest.fixture()
@@ -365,16 +368,45 @@ def test_advertised_versions_equal_resolvable_versions(fake_uv, pool):
     admin 据此把 3.14 任务路由到这台根本没有 3.14 的机器 —— 运行期必然
     失败为 interpreter_unavailable，同时还挤掉了真正预置 3.14 的执行器。
 
-    本用例同时覆盖"池内 + 池外混排"的真实形态，把该不变量钉死。
+    F-1（审计修复）：输出 key 的平台段曾硬编码 `windows-x86_64-none`，而池内
+    条目目录用 `_PLATFORM`（linux-x86_64-gnu）——Linux CI 上平台过滤把池内
+    条目全部剔除，`advertised` 为空列表，两个断言在空列表上**空转通过**（假绿），
+    核心不变量从未被真正验证。且旧用例 output 里的路径还指向一个从未创建的
+    目录（`cpython-3.11.13-{_PLATFORM}` 缺 `-none`），任何平台上 `_path_is_usable`
+    都判 False → advertised 恒空。现改为以本机平台 token 动态构造（与
+    test_parse_python_list_drops_foreign_platform_entries 行 264-285 同款写法）。
+
+    L-4（审计扩展）：本用例同时覆盖"3+ 池内版本（含离线预填 3.7.9）+ 2 池外
+    版本"的多版本混排，断言**每个** advertised 版本都能 resolve 且落在池内。
     """
-    make_entry(pool, '3.11.13')
-    out_of_pool = pool.parent / 'stray-pool' / 'cpython-3.14.6-windows-x86_64-none'
+    host = interpreters._current_platform_token()
+    if host is None:  # pragma: no cover - 本机平台必定可判定
+        pytest.skip('host platform token unavailable')
+    # 构一个与宿主**确实不同**的平台串（不写死，避免"宿主恰好等于它"而空转）。
+    foreign = 'windows-x86_64-none' if not host.startswith('windows') else 'linux-x86_64-gnu'
+
+    # 池内 3 个版本：3.7.9（离线预填，低于在线下载下限）+ 3.11.13 + 3.12.3。
+    in_pool = ['3.7.9', '3.11.13', '3.12.3']
+    pool_bins = {}
+    for version in in_pool:
+        entry_dir = pool / f'cpython-{version}-{host}'
+        pool_bins[version] = _fake_bin(entry_dir)
+
+    # 池外/外来平台 2 个版本（不得被宣称）：
+    #   1. 同池根内但平台段是外来 token → 平台过滤剔除（D-14 同款）；
+    #   2. 别的池目录（stray-pool）+ 外来平台 → 池归属过滤剔除。
+    foreign_in_pool = pool / f'cpython-3.14.6-{foreign}'
+    _fake_bin(foreign_in_pool)
+    out_of_pool = pool.parent / 'stray-pool' / f'cpython-3.13.13-{foreign}'
     _fake_bin(out_of_pool)
 
-    output = (
-        f'cpython-3.11.13-windows-x86_64-none   {pool / "cpython-3.11.13-" f"{_PLATFORM}" / "bin" / "python3"}\n'
-        f'cpython-3.14.6-windows-x86_64-none    {out_of_pool / "bin" / "python3"}\n'
-    )
+    lines = []
+    for version in in_pool:
+        lines.append(f'cpython-{version}-{host}    {pool_bins[version]}')
+    lines.append(f'cpython-3.14.6-{foreign}    {foreign_in_pool / "bin" / "python3"}')
+    lines.append(f'cpython-3.13.13-{foreign}    {out_of_pool / "bin" / "python3"}')
+    output = '\n'.join(lines) + '\n'
+
     monkeypatch = pytest.MonkeyPatch()
     try:
         monkeypatch.setattr(
@@ -382,21 +414,31 @@ def test_advertised_versions_equal_resolvable_versions(fake_uv, pool):
         )
         # 走"uv 成功"分支，确保不是靠兜底扫描掩盖问题
         infos = interpreters.discover_installed()
+
+        advertised = sorted({i.version for i in infos if i.available})
+        # 不变量①：池外/外来平台的 3.13.13 / 3.14.6 **不得**被宣称
+        assert not any(v.startswith(('3.13', '3.14')) for v in advertised), (
+            f'池外的版本被谎报为可用：{advertised}'
+        )
+        # 不变量②（L-4）：池内 3 个版本必须**全部**可见，且只有它们（多版本混排）。
+        assert advertised == sorted(in_pool), (
+            f'池内版本必须全部被宣称且只有池内版本，实际 {advertised}'
+        )
+        # 不变量③：每个宣称可用的版本都必须真的能解析出来，且落在池内。
+        # 注意 resolve_python_bin 的入参是**可声明的 X.Y 前缀**（CONTRACT.md §1.1，
+        # 补丁号不是合法声明值）——全版本 3.11.13 由前缀 3.11 命中。
+        for version in advertised:
+            declared = version.rsplit('.', 1)[0]
+            interpreters.invalidate_cache()  # 缓存失效后重探（仍走本用例的 uv 替身）
+            resolved = interpreters.resolve_python_bin(declared)
+            assert resolved is not None, f'宣称 {version} 可用，但 resolve_python_bin({declared!r}) 返回 None'
+            assert Path(resolved).resolve() == Path(pool_bins[version]).resolve(), (
+                f'前缀 {declared} 必须解析到所宣称的 {version} 条目'
+            )
+            assert Path(resolved).resolve().is_relative_to(pool.resolve())
     finally:
         monkeypatch.undo()
         interpreters.invalidate_cache()
-
-    advertised = sorted({i.version for i in infos if i.available})
-    # 不变量①：池外的 3.14.6 **不得**被宣称
-    assert not any(v.startswith('3.14') for v in advertised), (
-        f'池外的 3.14 被谎报为可用：{advertised}'
-    )
-    # 不变量②：每个宣称可用的版本都必须真的能解析出来
-    for version in advertised:
-        assert interpreters.discover_installed() is not None  # 缓存已失效后重探
-        resolved = interpreters.resolve_python_bin(version)
-        assert resolved is not None, f'宣称 {version} 可用，但 resolve_python_bin 返回 None'
-        assert Path(resolved).resolve().is_relative_to(pool.resolve())
 
 
 def test_discover_installed_filters_out_unavailable_paths(pool, monkeypatch):
@@ -943,8 +985,16 @@ def test_concurrent_ensure_version_same_version_downloads_exactly_once(fake_uv, 
     assert len(set(results)) == 1, '所有等待者必须复用同一个路径'
 
 
-def test_concurrent_ensure_version_different_versions_are_serialized_by_global_slot(fake_uv, pool):
-    """D13：全局单下载队列——两个不同版本的在飞下载不得重叠。"""
+def test_concurrent_ensure_version_different_versions_are_serialized_by_global_slot(fake_uv, pool, monkeypatch):
+    """D13：全局下载队列——把并发显式钳到 1（旧版"全局单队列"语义），
+    两个不同版本的在飞下载不得重叠。
+
+    D13/NFR-16（config 默认 `interpreter_download_concurrency=2`）：本用例钉的
+    是**最严档**（N=1）下的串行不变量；有界并发（N=2）的整体行为由
+    test_concurrent_ensure_version_backlog_queues_globally_and_all_resolve 覆盖。
+    """
+    monkeypatch.setattr(settings, 'interpreter_download_concurrency', 1)
+
     def _hook(version, timeout):
         time.sleep(0.15)
         make_entry(pool, f'{version}.20')
@@ -963,6 +1013,46 @@ def test_concurrent_ensure_version_different_versions_are_serialized_by_global_s
     assert len(resolved) == 2
     assert len(fake_uv.installs) == 2
     assert fake_uv.max_in_flight == 1, '同一时刻全局至多一个 in-flight 下载'
+
+
+def test_concurrent_ensure_version_backlog_queues_globally_and_all_resolve(fake_uv, pool):
+    """E-4（审计补漏）：全局下载队列的**积压**场景——N 个不同版本并发请求。
+
+    既有用例只覆盖 2 个不同版本（test_concurrent_ensure_version_different_
+    versions_are_serialized_by_global_slot）。积压（>2）下"排队逐次放行、
+    等待者不饿死、每个都最终解析成功"无守卫：若队列实现退化成互斥死锁或
+    前 N-1 个完成后最后一个永远等不到槽位，只有本场景能抓到。
+
+    并发上限按 D13/NFR-16 的配置读取（默认 2）：断言**有界**（`max_in_flight
+    <= 配置值`），而非旧版的 ==1——有界并发本身就是契约，全开才是 bug。
+    """
+    concurrency = interpreters._download_concurrency()
+    assert concurrency >= 1
+
+    def _hook(version, timeout):
+        time.sleep(0.05)
+        make_entry(pool, f'{version}.20')
+        return 0, 'installed'
+
+    fake_uv.install_hook = _hook
+    versions = ['3.8', '3.9', '3.10', '3.11', '3.12']
+
+    async def scenario():
+        return await asyncio.gather(
+            *[interpreters.ensure_version_async(v, timeout=30) for v in versions]
+        )
+
+    resolved = asyncio.run(scenario())
+
+    assert len(fake_uv.installs) == len(versions), (
+        f'每个积压版本都必须各下载一次，实际 {len(fake_uv.installs)}'
+    )
+    assert 1 <= fake_uv.max_in_flight <= concurrency, (
+        f'全局下载并发必须有界（配置 {concurrency}），实际峰值 {fake_uv.max_in_flight}'
+    )
+    assert len(set(resolved)) == len(versions), '每个版本都必须解析到自己的池内路径'
+    for path in resolved:
+        assert Path(path).resolve().is_relative_to(pool.resolve())
 
 
 def test_concurrent_async_ensure_version_same_version_downloads_exactly_once(fake_uv, pool):
@@ -1124,7 +1214,12 @@ def test_pool_summary_reports_install_dir_and_versions(pool):
 
 
 def test_pool_summary_empty_pool(pool):
-    assert interpreters.pool_summary() == {'install_dir': str(pool), 'versions': []}
+    # F-2（SEC-NEW）：schema 确定性——integrity_unverified 键恒存在（空列表）。
+    assert interpreters.pool_summary() == {
+        'install_dir': str(pool),
+        'versions': [],
+        'integrity_unverified': [],
+    }
 
 
 def test_pool_summary_missing_dir_is_safe(tmp_path, monkeypatch):
@@ -1135,6 +1230,68 @@ def test_pool_summary_missing_dir_is_safe(tmp_path, monkeypatch):
 def test_pool_summary_does_not_spawn_uv(fake_uv, pool):
     interpreters.pool_summary()
     assert fake_uv.calls == []
+
+
+# ---------------------------------------------------------------------------
+# F-2（SEC-NEW）：SHA-256 pin 完整性校验
+# ---------------------------------------------------------------------------
+
+def _hash_of_fake_bin():
+    """`_fake_bin` 写出的内容确定（'#!/bin/sh\\necho "Python 3"\\n'），直接算期望哈希。"""
+    return hashlib.sha256(b'#!/bin/sh\necho "Python 3"\n').hexdigest()
+
+
+def test_pin_mismatch_marks_corrupt_and_removes(fake_uv, pool, monkeypatch):
+    """F-2：pin 与下载产物哈希不匹配 → corrupt，**绝不运行**，且损坏目录被清出池。"""
+    monkeypatch.setattr(settings, 'uv_python_sha256_pins', {'3.12': 'f' * 64})
+    with pytest.raises(interpreters.InterpreterUnavailable) as ei:
+        interpreters.ensure_version('3.12', timeout=30)
+    assert ei.value.reason == 'corrupt'
+    assert 'does not match' in (ei.value.detail or '')
+    assert not any(p.name.startswith('cpython-3.12') for p in pool.iterdir()), \
+        'pin 不匹配的产物必须被清出池子，不能留待下一次 resolve 命中'
+
+
+def _bin_write_hook(pool: Path):
+    """安装钩子：以**二进制**写入确定性内容（避开 write_text 在 Windows 的
+    \n→\r\n 翻译），使期望哈希跨平台恒定。"""
+
+    def _hook(version: str, _timeout):
+        entry = pool / f'cpython-{version}.20-linux-x86_64-gnu-none'
+        python_bin = entry / 'bin' / 'python3'
+        python_bin.parent.mkdir(parents=True, exist_ok=True)
+        python_bin.write_bytes(b'#!/bin/sh\necho "Python 3"\n')
+        return 0, 'installed'
+
+    return _hook
+
+
+def test_pin_match_passes(fake_uv, pool, monkeypatch):
+    """F-2：pin 匹配 → 正常安装并解析。"""
+    expected = hashlib.sha256(b'#!/bin/sh\necho "Python 3"\n').hexdigest()
+    monkeypatch.setattr(settings, 'uv_python_sha256_pins', {'3.12': expected})
+    fake_uv.install_hook = _bin_write_hook(pool)
+    resolved = interpreters.ensure_version('3.12', timeout=30)
+    assert resolved.exists()
+
+
+def test_pin_match_verifies_actual_binary_not_just_report(fake_uv, pool, monkeypatch):
+    """F-2：校验对象是**池内二进制文件**本身（对已装条目做哈希比对）。"""
+    make_entry(pool, '3.12.20')
+    resolved = interpreters._resolve_python_bin_uncached('3.12')
+    expected = interpreters._sha256_of(resolved)
+    monkeypatch.setattr(settings, 'uv_python_sha256_pins', {'3.12': expected})
+    # 直接走 _verify_installed：pin 匹配则返回路径
+    assert interpreters._verify_installed('3.12') == resolved
+
+
+def test_unpinned_install_recorded_as_unverified(fake_uv, pool, monkeypatch):
+    """F-2：无 pin 在线下载 → pool_summary.integrity_unverified 留痕（每个版本一次）。"""
+    interpreters._reset_integrity_tracking()
+    interpreters.ensure_version('3.12', timeout=30)
+    assert '3.12' in interpreters.pool_summary()['integrity_unverified']
+    # 幂等：重复调用不重复 warn（集合去重）
+    assert interpreters.integrity_unverified_versions() == ['3.12']
 
 
 # ---------------------------------------------------------------------------

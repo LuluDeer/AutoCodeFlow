@@ -192,7 +192,72 @@ describe('executor-node config allowPrivateNetwork (E-04 escape hatch)', () => {
   );
 });
 
-// 解释器下载超时：桌面端设置页下发的是 `_MS`，compose/.env.example 用的是
+// AUTOFLOW-API-URL-01：任务 env 注入的 admin 基址优先级必须与 executor-python
+// 的 `admin_api.get_admin_api_base_url()` 逐条对齐（external > internal > default），
+// 也与本仓 `middleware/auth.ts::getAdminApiUrl` 同序——同一进程对"admin 在哪"
+// 不能给出两个答案。
+describe('resolveAdminApiBaseUrl priority (AUTOFLOW-API-URL-01)', () => {
+  const originalEnv = process.env;
+
+  beforeEach(() => {
+    jest.resetModules();
+    process.env = { ...originalEnv };
+    delete process.env.ADMIN_API_URL;
+    delete process.env.ADMIN_API_URL_INTERNAL;
+    delete process.env.ADMIN_API_URL_EXTERNAL;
+  });
+
+  afterAll(() => {
+    process.env = originalEnv;
+  });
+
+  async function resolve(): Promise<{ fromConfig: string; fromHelper: string }> {
+    const { config } = await import('./config');
+    const { resolveAdminApiBaseUrl } = await import('./admin-api-url');
+    return {
+      fromConfig: resolveAdminApiBaseUrl(config),
+      fromHelper: resolveAdminApiBaseUrl(config),
+    };
+  }
+
+  it('external 优先于 internal 与 default（python 同序）', async () => {
+    // 反证：把 resolveAdminApiBaseUrl 改回 `internal || default`，
+    // 本例立即转红（会得到 internal）。
+    process.env.ADMIN_API_URL = 'http://admin-default:3105';
+    process.env.ADMIN_API_URL_INTERNAL = 'http://admin-internal:3105';
+    process.env.ADMIN_API_URL_EXTERNAL = 'https://admin.example.com/api';
+    const { fromConfig } = await resolve();
+    expect(fromConfig).toBe('https://admin.example.com/api');
+  });
+
+  it('无 external 时用 internal', async () => {
+    process.env.ADMIN_API_URL = 'http://admin-default:3105';
+    process.env.ADMIN_API_URL_INTERNAL = 'http://admin-internal:3105';
+    const { fromConfig } = await resolve();
+    expect(fromConfig).toBe('http://admin-internal:3105');
+  });
+
+  it('两者都缺时回落到 default（既有行为不变）', async () => {
+    process.env.ADMIN_API_URL = 'http://admin-default:3105';
+    const { fromConfig } = await resolve();
+    expect(fromConfig).toBe('http://admin-default:3105');
+  });
+
+  it('纯函数判定与 config 解耦（可直接喂形状相同的最小对象）', async () => {
+    const { resolveAdminApiBaseUrl } = await import('./admin-api-url');
+    expect(resolveAdminApiBaseUrl({})).toBe('');
+    expect(
+      resolveAdminApiBaseUrl({ adminApiUrlInternal: 'http://internal:3105' }),
+    ).toBe('http://internal:3105');
+    expect(
+      resolveAdminApiBaseUrl({
+        adminApiUrl: 'http://default:3105',
+        adminApiUrlInternal: 'http://internal:3105',
+        adminApiUrlExternal: 'https://public.example.com/api',
+      }),
+    ).toBe('https://public.example.com/api');
+  });
+});
 // `_SECONDS`。此前只读 `_SECONDS`，于是桌面端用户填的值**完全不生效**
 // （设置页承诺了、执行器不读）——而若真按秒解析，300000 会被钳成 86400 秒。
 describe('executor-node config interpreterDownloadTimeoutMs', () => {

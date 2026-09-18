@@ -55,9 +55,17 @@ import type { ExecutorInterpreter } from "./interpreter-match.util";
 import { PaginationDto } from "../../common/dto/pagination.dto";
 import { NotificationService } from "../notification/notification.service";
 import { SystemConfigService } from "../config/config.service";
-import { assertSafeExecutorUrl } from "../../common/utils/safe-http.util";
+import {
+  assertAndPinExecutorUrl,
+  pinnedAxiosConfig,
+} from "../../common/utils/safe-http.util";
 // EXE-VER-1: 最低版本门禁（register 403）——比较与合规语义见 util 头注
 import { isVersionCompliant } from "./version-compare.util";
+// PROTOCOL-VER（B-3/U-2）：协议版本兼容矩阵（与实现版本门禁解耦）。
+import {
+  PROTOCOL_SUPPORTED_MIN,
+  isProtocolCompliant,
+} from "./protocol-compat.util";
 // ARCH-32: pull 模式派发队列（ADR-015）——NAT 内执行器零入站回连
 import { ExecutorPullService } from "./executor-pull.service";
 // SEC-02: 任务级 secrets 派发解密（落库加密在 TaskService 写路径）
@@ -185,6 +193,31 @@ export class ExecutorService {
     string,
     { token: string; startupId: string | null; issuedAt: number }
   >();
+
+  // F-08（本轮审计）: applications.packageUrl 的短 TTL **正缓存**（30s）。
+  // 背景：每次 dispatch/dispatchBroadcast 的 zip 分支都 applicationRepo.findOne
+  // 查一次 packageUrl，对高频 zip 任务（如 cron 每分钟）每次派发多一次 DB 往返。
+  // packageUrl 只在应用版本上传/回滚时变化（低频），30s 内短暂陈旧可接受。
+  //
+  // 只缓存**成功**结果（positive-only，对齐 tokenValidationCache 的既有先例）：
+  // 应用不存在 / 未配置 packageUrl 的失败恒重新查库——失败态缓存会掩盖"管理员
+  // 刚补上 packageUrl 就能恢复"的场景。条目数上界 = applications 行数（每应用
+  // 一条），TTL 到期的条目在下次命中时惰性淘汰，不引入定时器。
+  private static readonly PACKAGE_URL_CACHE_TTL_MS = 30_000;
+  private readonly packageUrlCache = new Map<
+    string,
+    { packageUrl: string; cachedAt: number }
+  >();
+
+  // F-07（本轮审计）: 调度候选执行器池上限（EXECUTOR_CANDIDATE_POOL_SIZE，
+  // 默认 500，与既有硬编码逐字节一致）。容错解析：非法/非数字（如测试装配里
+  // configService.get 的兜底返回值）一律回退 500——**绝不**把 0/NaN 传给
+  // take（take:0 会查空集，take:NaN 会抛错）。
+  private get candidatePoolSize(): number {
+    const raw = this.configService.get("executor.candidatePoolSize");
+    const n = typeof raw === "number" ? raw : Number(raw);
+    return Number.isInteger(n) && n > 0 ? n : 500;
+  }
 
   constructor(
     @InjectRepository(Executor) private repo: Repository<Executor>,
@@ -516,8 +549,19 @@ export class ExecutorService {
       // link-local 云元数据与 loopback）。守卫抛错由下方 catch 收敛为 warn，
       // 符合本方法「绝不抛出」的既有契约（调用方为调度器清扫与手动 kill，
       // 不应因一个可疑地址而中断）。
-      await assertSafeExecutorUrl(url);
-      await axios.post(url, {}, { headers, timeout: 3_000 });
+      // F-3（SEC-NEW）: 同时 pin 到校验通过的 IP（Host/SNI 保留）。
+      const pinned = await assertAndPinExecutorUrl(url);
+      const pinCfg = pinnedAxiosConfig(pinned);
+      await axios.post(
+        url,
+        {},
+        {
+          headers,
+          timeout: 3_000,
+          maxRedirects: 0,
+          ...pinCfg,
+        },
+      );
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       this.logger.warn(
@@ -637,6 +681,8 @@ export class ExecutorService {
     restartedAt?: string | Date | null;
     startupId?: string | null;
     dispatchMode?: string;
+    // PROTOCOL-VER（B-3/U-2）：协议版本（可选整数；缺省 → 不动 DB）。
+    protocolVersion?: number | null;
     // python_task_multiversion（WS2 · CONTRACT §2.3）：解释器缓存池清单。
     // 缺省 → 不动 DB；结构非法 → 拒绝采纳 + warn；合法（含 []）→ 覆盖。
     interpreters?: ExecutorInterpreter[] | null;
@@ -696,6 +742,13 @@ export class ExecutorService {
         // ARCH-32: 派发模式（ADR-015）——仅接受 'pull'；缺省/非法 → undefined
         // → 列默认 'push'。执行器自报面不可信，枚举外值一律落回 push。
         dispatchMode: data.dispatchMode === "pull" ? "pull" : undefined,
+        // PROTOCOL-VER（B-3/U-2）：首注册即上报则落列；缺省/非法 → undefined
+        // → 列保持 NULL（= 未上报，按 protocolVersion=1 兜底）。
+        protocolVersion:
+          typeof data.protocolVersion === "number" &&
+          Number.isInteger(data.protocolVersion)
+            ? data.protocolVersion
+            : undefined,
         // python_task_multiversion：首注册即上报则落列；缺省/非法 → undefined
         // → 列保持 NULL（= 未上报，调度按 ["3.12"] 兜底）。
         interpreters: normalizedInterpreters ?? undefined,
@@ -734,6 +787,14 @@ export class ExecutorService {
     // 均不动 DB —— 非法情形上方已 warn）。
     if (normalizedInterpreters !== null) {
       e.interpreters = normalizedInterpreters;
+    }
+    // PROTOCOL-VER（B-3/U-2）：重注册采纳协议版本（仅整数合法值覆盖；
+    // 缺省/非法不动 DB，保持未上报/NULL 语义）。
+    if (
+      typeof data.protocolVersion === "number" &&
+      Number.isInteger(data.protocolVersion)
+    ) {
+      e.protocolVersion = data.protocolVersion;
     }
     if (didRestart) {
       await this.failRunningExecutionsAfterRestart(data.address);
@@ -774,6 +835,8 @@ export class ExecutorService {
     address: string;
     type?: string;
     version?: string;
+    // PROTOCOL-VER（B-3/U-2）：协议版本（可选整数；低于下限 warn + 兜底）。
+    protocolVersion?: number | null;
     capabilities?: string[];
     runtime?: string[];
     maxConcurrentTasks?: number;
@@ -806,6 +869,19 @@ export class ExecutorService {
     if (minVersion && !data.version) {
       this.logger.warn(
         `Register from ${data.address} did not report a version; EXECUTOR_MIN_VERSION=${minVersion} cannot be enforced for it (legacy executor allowed)`,
+      );
+    }
+    // PROTOCOL-VER（B-3/U-2）：协议版本兼容矩阵分支——低于下限**不拒绝注册**，
+    // 只 warn + 按旧协议兜底（与 EXECUTOR_MIN_VERSION 实现版本门禁是两套闸；
+    // 兼容性红线见 protocol.json `versioning` 段）。未上报（null/undefined）
+    // 的存量旧执行器按基线协议 1 兜底，同样放行。
+    if (
+      typeof data.protocolVersion === "number" &&
+      !isProtocolCompliant(data.protocolVersion, PROTOCOL_SUPPORTED_MIN)
+    ) {
+      this.logger.warn(
+        `Register from ${data.address} reports protocolVersion=${data.protocolVersion}, below the supported minimum ${PROTOCOL_SUPPORTED_MIN}; ` +
+          `treating it as the legacy baseline protocol (fields added after it will be omitted/ignored, not rejected)`,
       );
     }
     // Capture the pre-register row: register() overwrites executorStartupId
@@ -1268,10 +1344,15 @@ export class ExecutorService {
   }): Promise<Executor> {
     const all = await this.repo.find({
       where: { status: ExecutorStatus.ONLINE },
-      // Cap the candidate pool: scoring + capacity checks operate on full rows,
-      // and we only need the least-loaded one. A generous cap (500) still avoids
-      // unbounded scans for installations with thousands of edge executors.
-      take: 500,
+      // O-1（中台↔执行器深度审查）：候选池由「随机取 N 行再内存排序」改为
+      // **SQL 级 Top-K**（ORDER BY runningTaskCount ASC LIMIT K）。旧实现
+      // take 截断是**静默的**：超过 K 台在线时，排名 K+1 的负载最小执行器
+      // 永远不被考虑——"generous cap" 在万级机队下是容量盲区。按 runningTaskCount
+      // 升序取前 K 保证**最空闲的一批**必入池，内存评分公式在其上择优（评分是
+      // 复合指标，SQL 只做负载维度的下界保证，二者不冲突）。
+      order: { runningTaskCount: "ASC" },
+      // F-07（本轮审计）: 上限提为可配（EXECUTOR_CANDIDATE_POOL_SIZE，默认 500）。
+      take: this.candidatePoolSize,
     });
     if (all.length === 0) {
       throw new ServiceUnavailableException("No online executors available");
@@ -1344,6 +1425,29 @@ export class ExecutorService {
         "No available executor — all online executors are at maximum capacity",
       );
     }
+    // E-2（中台↔执行器深度审查）：与 dispatch 同款结构化决策日志——「为什么选
+    // 这台、过滤掉多少、评分面多大、落选者差多少」可回溯。opts 恒为可选尾参，
+    // 零参数调用（app-deployment）也正常输出。
+    this.logger.log(
+      JSON.stringify({
+        event: "selectLeastLoaded.decision",
+        poolSize: all.length,
+        afterFilters: candidates.length,
+        scoredCount: scored.length,
+        selected: {
+          address: scored[0].executor.address,
+          score: Number(scored[0].score.toFixed(3)),
+          runningTaskCount: scored[0].executor.runningTaskCount,
+          maxConcurrentTasks: scored[0].executor.maxConcurrentTasks,
+        },
+        topRunners: scored.slice(1, 4).map((s) => ({
+          address: s.executor.address,
+          score: Number(s.score.toFixed(3)),
+          runningTaskCount: s.executor.runningTaskCount,
+          maxConcurrentTasks: s.executor.maxConcurrentTasks,
+        })),
+      }),
+    );
     return scored[0].executor;
   }
 
@@ -1387,8 +1491,58 @@ export class ExecutorService {
     }
   }
 
+  /**
+   * E-2（中台↔执行器深度审查）：调度决策的结构化日志出口。
+   *
+   * 输出 JSON 面（单行，便于 grep/日志系统索引）：
+   * - poolSize：SQL Top-K 后的候选池基数（pinned=1）；
+   * - afterFilters：group/tags/runtime/interpreters 过滤后的剩余候选；
+   * - scoredCount：参与计分的候选数（== afterFilters）；
+   * - selected：选中执行器地址 + 评分 + 负载；
+   * - topRunners：占坑前评分前三名（地址+评分+负载）——「为什么没派到某台」
+   *   凭此可回溯（评分差距 / 落选者的负载）。过滤的逐项原因仍由
+   *   applyInterpreterFilter 的失败快照日志兜底。
+   */
+  private logExecutionDispatchDecision(input: {
+    taskName: string;
+    executionId: string;
+    poolSize: number;
+    afterFilters: number;
+    scoredCount: number;
+    selected: Executor;
+    scoredSnapshot: Array<{
+      address: string;
+      score: number;
+      runningTaskCount: number;
+      maxConcurrentTasks: number | null;
+    }>;
+  }): void {
+    const selectedScore =
+      input.scoredSnapshot.find((s) => s.address === input.selected.address)
+        ?.score ?? null;
+    this.logger.log(
+      JSON.stringify({
+        event: "dispatch.decision",
+        task: input.taskName,
+        executionId: input.executionId,
+        poolSize: input.poolSize,
+        afterFilters: input.afterFilters,
+        scoredCount: input.scoredCount,
+        selected: {
+          address: input.selected.address,
+          score: selectedScore,
+          runningTaskCount: input.selected.runningTaskCount,
+          maxConcurrentTasks: input.selected.maxConcurrentTasks,
+        },
+        topRunners: input.scoredSnapshot,
+      }),
+    );
+  }
+
   async dispatch(task: Task, execution: TaskExecution) {
     let candidates: Executor[];
+    // E-2: 决策日志的候选池基数（pinned=1；fleet 查询=SQL Top-K 后的行数）。
+    let dispatchPoolSize = 0;
 
     if (task.executorId) {
       // R6: executor pinning — dispatch targets ONLY the pinned executor,
@@ -1414,6 +1568,7 @@ export class ExecutorService {
         );
       }
       candidates = [pinned];
+      dispatchPoolSize = 1;
       // python_task_multiversion（WS2 · CONTRACT §3.1 pinning 分支 / AC-08b /
       // D2③）：pinning **绕过** group/tags/runtime 过滤（pinning 的语义就是
       // "我指定这一台"），因此必须在此**单独补一道**解释器检查，且必须发生在
@@ -1436,11 +1591,17 @@ export class ExecutorService {
     } else {
       const all = await this.repo.find({
         where: { status: ExecutorStatus.ONLINE },
+        // O-1（中台↔执行器深度审查）：SQL 级 Top-K——按 runningTaskCount 升序
+        // 取前 K，保证最空闲的一批必入候选池（旧 take 截断会静默漏掉排名 K+1
+        // 的负载最小执行器，万级机队下是容量盲区）。选优仍走下方复合评分。
+        order: { runningTaskCount: "ASC" },
         // Bound the candidate pool for the weighted-score selection below.
         // Score-and-pick-first needs only the top candidates, so a generous cap
         // is enough. See selectLeastLoaded() for the matching rationale.
-        take: 500,
+        // F-07（本轮审计）: 上限提为可配（EXECUTOR_CANDIDATE_POOL_SIZE，默认 500）。
+        take: this.candidatePoolSize,
       });
+      dispatchPoolSize = all.length;
 
       candidates = all;
 
@@ -1556,6 +1717,18 @@ export class ExecutorService {
         estimatedDurations: estimatedDurations.get(c.address) ?? [],
       }),
     }));
+    // E-2（中台↔执行器深度审查）：占坑前的**评分快照**（occupation 会原地
+    // 改 runningTaskCount/version，必须在 mutate 之前截取，供决策日志回溯）。
+    const scoredSnapshot = withScores
+      .slice()
+      .sort((a, b) => a.score - b.score)
+      .slice(0, 3)
+      .map((s) => ({
+        address: s.executor.address,
+        score: Number(s.score.toFixed(3)),
+        runningTaskCount: s.executor.runningTaskCount,
+        maxConcurrentTasks: s.executor.maxConcurrentTasks,
+      }));
     const sorted = withScores
       .sort((a, b) => a.score - b.score)
       .map((s) => s.executor);
@@ -1606,6 +1779,22 @@ export class ExecutorService {
       throw new Error(
         "No available executor (all candidates are offline or at capacity)",
       );
+
+    // E-2（中台↔执行器深度审查）：调度决策**结构化日志**——之前只有一行
+    // `Dispatching task ... to executor ...`，运维无法回溯「为什么选这台、过滤
+    // 掉多少、评分多少、落选者差在哪」。现输出 JSON 面：候选池数（SQL Top-K 后）、
+    // 过滤后数、评分/容量后的计分面、选中者评分、前三名落选者（地址+评分+负载）
+    // ——「为何没派到某台」凭此可查（group/tags/interpreters 过滤的逐项原因仍由
+    // applyInterpreterFilter 的失败快照日志兜底）。
+    this.logExecutionDispatchDecision({
+      taskName: task.name,
+      executionId: execution.id,
+      poolSize: dispatchPoolSize,
+      afterFilters: candidates.length,
+      scoredCount: withScores.length,
+      selected: matched,
+      scoredSnapshot,
+    });
 
     this.logger.log(
       `Dispatching task "${task.name}" to executor ${matched.address} (runningTasks=${matched.runningTaskCount})`,
@@ -1663,9 +1852,11 @@ export class ExecutorService {
       // F-3: SSRF guard — the address is executor-controlled (register/heartbeat),
       // so block metadata/loopback/link-local targets before sending the
       // authenticated request. A blocked address rolls back the slot below.
+      // F-3 (SEC-NEW): pin the connection to the validated IP (Host/SNI kept).
       const url = this.getExecutorUrl(matched.address, "api/execute");
-      await assertSafeExecutorUrl(url);
+      const pinned = await assertAndPinExecutorUrl(url);
       const sharedToken = await this.getSharedToken();
+      const pinCfg = pinnedAxiosConfig(pinned);
       const headers: Record<string, string> = {};
       if (sharedToken) headers["Authorization"] = `Bearer ${sharedToken}`;
       if (traceHeaders["traceparent"]) {
@@ -1683,7 +1874,12 @@ export class ExecutorService {
           task: dispatchTask,
           params: dispatchParams,
         },
-        { timeout: ((task.timeout || 300) + 10) * 1000, headers },
+        {
+          timeout: ((task.timeout || 300) + 10) * 1000,
+          headers,
+          maxRedirects: 0, // R3 parity: 首跳是唯一经 SSRF 校验的地址
+          ...pinCfg,
+        },
       );
       endSpan?.();
       return resp.data;
@@ -1741,9 +1937,13 @@ export class ExecutorService {
     // codeSource 明确为 git/glue → 非 zip 渠道，**即使 applicationId 残留也不进 zip**
     // （存量 git/glue 行的 applicationId 弱引用可能未清，若 application 已删除，
     //  误进 zip 路径会让 git 任务派发失败且消息指向 application，误导排查）。
+    // F-02（本轮审计）: 并集判定用 `== null` 同时覆盖 null 与 undefined——任务
+    // 对象经 BullMQ 队列载荷序列化/反序列化或部分 select 投影后 codeSource 可能
+    // 为 undefined，`undefined === null` 为 false 会让存量 zip 任务误出 zip 渠道，
+    // packageUrl 不被解析，执行器运行时才炸。
     const isZipChannel =
       task.codeSource === TaskCodeSource.APPLICATION_ZIP ||
-      (task.codeSource === null && Boolean(task.applicationId));
+      (task.codeSource == null && Boolean(task.applicationId));
     if (!isZipChannel) return task;
     if (!task.applicationId) {
       // codeSource=application_zip 但无 applicationId：WS1 写面已互斥校验
@@ -1759,6 +1959,18 @@ export class ExecutorService {
         `Cannot resolve packageUrl for task "${task.name}" (${task.id}): ` +
           `Application repository is not wired into ExecutorService`,
       );
+    }
+    // F-08（本轮审计）: 命中未过期的正缓存 → 直接附加，跳过 DB 往返。
+    const cached = this.packageUrlCache.get(task.applicationId);
+    if (cached) {
+      if (
+        Date.now() - cached.cachedAt <
+        ExecutorService.PACKAGE_URL_CACHE_TTL_MS
+      ) {
+        return { ...task, packageUrl: cached.packageUrl };
+      }
+      // 惰性淘汰过期条目（positive-only：失败态从不入缓存，无需清理）。
+      this.packageUrlCache.delete(task.applicationId);
     }
     const app = await this.applicationRepo.findOne({
       where: { id: task.applicationId },
@@ -1776,6 +1988,10 @@ export class ExecutorService {
           `application "${app.name}" (${app.id}) has no packageUrl configured`,
       );
     }
+    this.packageUrlCache.set(task.applicationId, {
+      packageUrl: app.packageUrl,
+      cachedAt: Date.now(),
+    });
     return { ...task, packageUrl: app.packageUrl };
   }
 
@@ -1784,9 +2000,10 @@ export class ExecutorService {
    * Used when task.executeMode === ExecuteMode.BROADCAST.
    * Returns a list of results for each executor.
    *
-   * NOTE: Broadcast is intentionally unbounded — by definition we must dispatch
-   * to every eligible online executor. The `{status: ONLINE}` where clause keeps
-   * this scoped to the active fleet; offline/stale rows are excluded.
+   * NOTE: Broadcast must reach every eligible online executor. The
+   * `{status: ONLINE}` where clause keeps this scoped to the active fleet;
+   * offline/stale rows are excluded. A take:5000 safety cap (O-3) bounds a
+   * pathological/fleet-blowup row count without affecting normal deployments.
    */
   async dispatchBroadcast(
     task: Task,
@@ -1794,6 +2011,13 @@ export class ExecutorService {
   ): Promise<any[]> {
     const all = await this.repo.find({
       where: { status: ExecutorStatus.ONLINE },
+      // O-1（中台↔执行器深度审查）：广播同样按 runningTaskCount 升序取 Top-K。
+      // 正常机队（< 5000）下排序不影响扇出面（全部在线都入池）；只有病态
+      // 机队（> 5000）触发截断时，**保留最空闲的一批**是最不坏的取舍——
+      // 旧实现随机截断可能把最空闲的执行器漏在池外。
+      order: { runningTaskCount: "ASC" },
+      // O-3: safety cap (compare dispatch's take:500).
+      take: 5000,
     });
     let candidates = all;
 
@@ -1927,7 +2151,9 @@ export class ExecutorService {
         );
         // F-3: SSRF guard per target — a poisoned address (metadata/loopback)
         // fails its own dispatch without affecting the rest of the broadcast.
-        await assertSafeExecutorUrl(dispatchUrl);
+        // F-3 (SEC-NEW): pin the connection to the validated IP.
+        const pinned = await assertAndPinExecutorUrl(dispatchUrl);
+        const pinCfg = pinnedAxiosConfig(pinned);
         const resp = await axios.post(
           dispatchUrl,
           {
@@ -1938,6 +2164,8 @@ export class ExecutorService {
           {
             timeout: ((task.timeout || 300) + 10) * 1000,
             headers: broadcastHeaders,
+            maxRedirects: 0,
+            ...pinCfg,
           },
         );
         return { executor: executor.address, result: resp.data };
@@ -1963,18 +2191,41 @@ export class ExecutorService {
     // 因此不复用「runningTaskCount < max」容量闸（不主动拒绝目标），仅把负载计入。
     // 释放侧：handleCallback 按回调上报地址逐执行器 -1（每个被接受执行器回调
     // 恰好一次），并有执行器心跳 30s 覆写兜底。
+    //
+    // O-2（中台↔执行器深度审查）：占坑改走**容量闸门的原子 UPDATE**——
+    // `WHERE runningTaskCount < maxConcurrentTasks`，超限目标**跳过占坑并 warn**
+    // （按审查报告给出的方案落地）。旧实现无条件 +1 会让广播把单执行器
+    // runningTaskCount 顶过 maxConcurrentTasks：与单播混跑时，单播按
+    // count >= max 拒派 → 广播挤占单播的容量保证。跳过占坑的副作用（计数少计）
+    // 由 releaseExecutorSlot 的 GREATEST(...,0) 下限保护 + 执行器心跳 30s 覆写
+    // 兜底，不产生负计数；广播扇出面不受影响（仍全部收到任务）。
     const acceptedExecutors = results
       .map((r, i) => ({ settled: r, executor: candidates[i] }))
       .filter(({ settled }) => settled.status === "fulfilled");
     await Promise.all(
-      acceptedExecutors.map(({ executor }) =>
-        this.repo
+      acceptedExecutors.map(async ({ executor }) => {
+        const qb = this.repo
           .createQueryBuilder()
           .update(Executor)
           .set({ runningTaskCount: () => '"runningTaskCount" + 1' })
-          .where("id = :id", { id: executor.id })
-          .execute(),
-      ),
+          .where("id = :id", { id: executor.id });
+        // maxConcurrentTasks 为 NULL（未配置/无上限）→ 不加容量条件；
+        // 数值（含 0）视为真实上限（与单播 dispatch 的 `?? Infinity` 语义一致）。
+        if (executor.maxConcurrentTasks != null) {
+          qb.andWhere('"runningTaskCount" < :max', {
+            max: executor.maxConcurrentTasks,
+          });
+        }
+        const res = await qb.execute();
+        if (res.affected === 0) {
+          this.logger.warn(
+            `Broadcast occupy skipped for ${executor.address} ` +
+              `(runningTaskCount >= ${executor.maxConcurrentTasks ?? "unbounded"}): ` +
+              `task "${task.name}" was dispatched but its load is not counted against capacity`,
+          );
+        }
+        return res.affected === 1;
+      }),
     );
 
     if (failures.length > 0) {

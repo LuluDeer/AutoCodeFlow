@@ -1,6 +1,9 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+// P2：磁盘水位（真实 statfs，走真实 config.workDir；config 是纯 getter 模块，
+// 顶层无副作用，与下方 loadModule 的动态 mock 互不干扰）。
+import { diskUsagePercent } from './file-logger';
 
 type FileLoggerModule = typeof import('./file-logger');
 
@@ -478,5 +481,14 @@ describe('getDeadLetterCount (heartbeat backlog gauge)', () => {
     fs.writeFileSync(path.join(deadDir, 'b.json.deadletter.json'), '{}');
 
     expect(fl.getDeadLetterCount()).toBe(2);
+  });
+});
+
+describe('diskUsagePercent (P2 disk watermark)', () => {
+  it('returns a value in [0, 100] for the real workdir filesystem', () => {
+    // 真实 statfs 路径：任何平台都必须给出合法百分比（计量失败返回 0）。
+    const usage = diskUsagePercent();
+    expect(usage).toBeGreaterThanOrEqual(0);
+    expect(usage).toBeLessThanOrEqual(100);
   });
 });

@@ -42,6 +42,16 @@ jest.mock("../../../common/utils/safe-http.util", () => ({
   assertSafeHttpUrl: jest
     .fn()
     .mockResolvedValue(new URL("https://x.example.com")),
+  // F-3（SEC-NEW）：出站派发现走 assertAndPinHttpUrl——mock 一个
+  // pinned:false 的直连目标（原 hostname 不变、无自定义 agent），
+  // 使 URL 断言与签名断言与既有行为逐字节一致。
+  assertAndPinHttpUrl: jest.fn().mockResolvedValue({
+    url: new URL("https://ci.example.com/hooks"),
+    pinnedIp: "93.184.216.34",
+    pinned: false,
+  }),
+  pinnedAxiosConfig: jest.requireActual("../../../common/utils/safe-http.util")
+    .pinnedAxiosConfig,
 }));
 
 // 工厂 mock 带 __esModule+default（ts-jest 无 esModuleInterop 的既有先例，
@@ -50,6 +60,16 @@ import axios from "axios";
 const axiosPost = axios.post as unknown as jest.Mock;
 const assertSafe = jest.requireMock("../../../common/utils/safe-http.util")
   .assertSafeHttpUrl as unknown as jest.Mock;
+const assertAndPin = jest.requireMock("../../../common/utils/safe-http.util")
+  .assertAndPinHttpUrl as unknown as jest.Mock;
+/** F-3: 每次测试新对象，防跨用例引用被改写。 */
+function pinTarget(): { url: URL; pinnedIp: string; pinned: false } {
+  return {
+    url: new URL("https://ci.example.com/hooks"),
+    pinnedIp: "93.184.216.34",
+    pinned: false,
+  };
+}
 
 const adminUser: AuthUser = {
   id: 1,
@@ -154,6 +174,7 @@ describe("FEAT-07 OutboundEventDispatcher", () => {
     jest.clearAllMocks();
     axiosPost.mockResolvedValue({ status: 200 });
     assertSafe.mockResolvedValue(new URL("https://ci.example.com/hooks"));
+    assertAndPin.mockResolvedValue(pinTarget());
     const moduleRef = await Test.createTestingModule({
       providers: [
         OutboundEventDispatcher,
@@ -460,7 +481,8 @@ describe("FEAT-07 OutboundEventDispatcher", () => {
   it("出站前 SSRF 复核拒绝（确定性失败→终败死信，不再重试）", async () => {
     jest.useFakeTimers();
     try {
-      assertSafe.mockRejectedValue(
+      // F-3: 出站复核现走 assertAndPinHttpUrl（校验 + pin 一体）。
+      assertAndPin.mockRejectedValue(
         new BadRequestException("URL host 127.0.0.1 is on the deny list"),
       );
       subRepoMock.find.mockResolvedValue([

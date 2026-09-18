@@ -15,7 +15,16 @@ jest.mock("axios", () => {
   };
 });
 jest.mock("../../../common/utils/safe-http.util", () => ({
+  ...jest.requireActual("../../../common/utils/safe-http.util"),
   assertSafeExecutorUrl: jest.fn().mockResolvedValue(new URL("http://ok")),
+  // F-3（SEC-NEW）: reload-config 现走 assertAndPinExecutorUrl。
+  assertAndPinExecutorUrl: jest
+    .fn()
+    .mockImplementation(async (raw: string) => ({
+      url: new URL(raw),
+      pinnedIp: "93.184.216.34",
+      pinned: false,
+    })),
 }));
 // register/getToken call the real shared-token verifier; stub it — these specs
 // exercise payload whitelisting, not token verification.
@@ -173,6 +182,8 @@ describe("ExecutorController — F-2 heartbeat / F-7 register mass-assignment gu
           "interpreters",
           "maxConcurrent",
           "maxConcurrentTasks",
+          // PROTOCOL-VER（用户 WIP）: 协议版本随白名单透传。
+          "protocolVersion",
           "restartedAt",
           "runtime",
           "startupId",
@@ -254,12 +265,12 @@ describe("ExecutorController — F-2 heartbeat / F-7 register mass-assignment gu
 
   describe("reload-config SSRF + error hardening (F-3 / F-8)", () => {
     it("rejects reload-config targeting a metadata address before sending the token", async () => {
-      const { assertSafeExecutorUrl } =
+      const { assertAndPinExecutorUrl } =
         // eslint-disable-next-line @typescript-eslint/no-require-imports
         require("../../../common/utils/safe-http.util") as {
-          assertSafeExecutorUrl: jest.Mock;
+          assertAndPinExecutorUrl: jest.Mock;
         };
-      assertSafeExecutorUrl.mockRejectedValueOnce(
+      assertAndPinExecutorUrl.mockRejectedValueOnce(
         new UnauthorizedException("blocked"),
       );
       const svc = makeSvc({

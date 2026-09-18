@@ -3,7 +3,7 @@
  *
  * 这里的断言全部围绕 CONTRACT.md §3.2/§3.3 的**硬约束**展开，而不是围绕实现
  * 细节：版本闸门（NFR-03）、池白名单（NFR-02）、前缀匹配的点号陷阱、
- * 单条损坏不致命（AC-14b）、探测缓存（NFR-10）、并发去重与全局单下载队列
+ * 单条损坏不致命（AC-14b）、探测缓存（NFR-10）、并发去重与全局有界下载队列
  * （D13/NFR-16）、以及 uv 定位的四级顺序。
  *
  * 真实 uv 的端到端行为另见 `interpreters.integration.spec.ts`（默认跳过）。
@@ -22,6 +22,7 @@ jest.mock('./config', () => ({
     uvBin: '',
     uvPythonInstallMirror: '',
     interpreterDownloadTimeoutMs: 300_000,
+    interpreterDownloadConcurrency: 2,
   },
 }));
 
@@ -38,6 +39,7 @@ const { config } = require('./config') as {
     uvBin: string;
     uvPythonInstallMirror: string;
     interpreterDownloadTimeoutMs: number;
+    interpreterDownloadConcurrency: number;
   };
 };
 
@@ -779,7 +781,7 @@ describe('interpreters: concurrency (D13/NFR-16)', () => {
     expect(installCalls).toBe(1);
   });
 
-  it('global single-download queue: at most ONE download in flight across versions', async () => {
+  it('bounded download queue: at most DOWNLOAD_CONCURRENCY (default 2) in flight across versions', async () => {
     const bins = [poolBin('3.11.13'), poolBin('3.12.11')];
     let listed: unknown[] = [];
     let concurrent = 0;
@@ -802,7 +804,10 @@ describe('interpreters: concurrency (D13/NFR-16)', () => {
     await expect(Promise.all([ensureVersion('3.11'), ensureVersion('3.12')])).resolves.toEqual(
       bins,
     );
-    expect(maxConcurrent).toBe(1);
+    // 有界并发（默认 2）：不同版本允许并行（>1），但不超过配置上限（≤2）——
+    // 这是 D13 从"全局单队列"放宽后的新契约。
+    expect(maxConcurrent).toBeGreaterThan(1);
+    expect(maxConcurrent).toBeLessThanOrEqual(2);
   });
 
   it('a failed download does not poison the queue for later versions', async () => {

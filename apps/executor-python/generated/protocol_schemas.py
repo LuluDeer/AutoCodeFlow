@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class TaskConfig(BaseModel):
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="allow", strict=True)
     id: str | None = Field(default=None)
     name: str | None = Field(default=None)
     runtime: str | None = Field(default=None)
@@ -26,17 +26,29 @@ class TaskConfig(BaseModel):
     gitRepo: str | None = Field(default=None)
     gitBranch: str | None = Field(default=None)
     gitCommit: str | None = Field(default=None)
+    runtimeVersion: str | None = Field(default=None)
+    runtime_version: str | None = Field(default=None)
+    codeSource: Literal["git", "glue", "application_zip"] | None = Field(default=None)
+    code_source: Literal["git", "glue", "application_zip"] | None = Field(default=None)
+    applicationId: str | None = Field(default=None)
+    application_id: str | None = Field(default=None)
+    packageUrl: str | None = Field(default=None)
+    package_url: str | None = Field(default=None)
+    glueSource: str | None = Field(default=None)
+    glue_source: str | None = Field(default=None)
+    glueLanguage: Literal["python", "javascript", "shell", "glue_python", "glue_node", "glue_shell"] | None = Field(default=None)
+    glue_language: Literal["python", "javascript", "shell", "glue_python", "glue_node", "glue_shell"] | None = Field(default=None)
 
 
 class ExecuteRequest(BaseModel):
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="allow", strict=True)
     executionId: str = Field(pattern="^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
     task: TaskConfig
     params: dict[str, Any] | None = Field(default=None)
 
 
 class ConfigReloadRequest(BaseModel):
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="allow", strict=True)
     maxConcurrentTasks: int | None = Field(ge=1, default=None)
     taskTimeoutSeconds: int | None = Field(ge=1, default=None)
     heartbeatIntervalSeconds: int | None = Field(ge=5, default=None)
@@ -49,7 +61,7 @@ class ConfigReloadRequest(BaseModel):
 
 
 class ConfigReloadResponse(BaseModel):
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="allow", strict=True)
     success: bool
     message: str
     updated_fields: list[str]
@@ -57,18 +69,18 @@ class ConfigReloadResponse(BaseModel):
 
 
 class HealthReadyResponse(BaseModel):
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="allow", strict=True)
     status: Literal["ready", "not_ready"]
     reason: str | None = Field(default=None)
 
 
 class KillResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
     ok: bool
 
 
 class LogsResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
     lines: list[str]
     totalLines: int = Field(ge=0)
     hasMore: bool

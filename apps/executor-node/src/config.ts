@@ -90,6 +90,22 @@ export const config = {
   taskTimeoutSeconds: parseInt(process.env.TASK_TIMEOUT_SECONDS || '300', 10),
   heartbeatIntervalSeconds: parseInt(process.env.HEARTBEAT_INTERVAL_SECONDS || '30', 10),
   logRetentionDays: parseInt(process.env.LOG_RETENTION_DAYS || '7', 10),
+  // ---------------------------------------------------------------------
+  // P2/L-2：磁盘水位红线（对齐 executor-python config.disk_warn_percent /
+  // disk_critical_percent）。TTL 清扫基于 mtime，磁盘在 TTL 窗口内被撑满时无
+  // 主动应对：告警水位触发减半 TTL 的紧急清理；临界水位由 accept 阶段拒新任务。
+  // getter 惰性读 env（热重载一致）；非法值钳到 [1,100]，warn 必须 < critical
+  // （否则两条防线语义重叠）。
+  get diskWarnPercent(): number {
+    const raw = parseInt(process.env.DISK_WARN_PERCENT || '90', 10);
+    if (!Number.isFinite(raw) || raw < 1) return 90;
+    return Math.min(raw, 100);
+  },
+  get diskCriticalPercent(): number {
+    const raw = parseInt(process.env.DISK_CRITICAL_PERCENT || '95', 10);
+    if (!Number.isFinite(raw) || raw < 1) return 95;
+    return Math.min(raw, 100);
+  },
   npmRegistryUrl: process.env.NPM_REGISTRY_URL || '',  // Private npm registry for task dependencies
   // Auth token for the private npm registry (registry-npm/verdaccio grants
   // '**' access only to $authenticated, so anonymous task installs 401).
@@ -135,6 +151,36 @@ export const config = {
       process.env.PYPI_REGISTRY_URL || process.env.PYTHON_REGISTRY_URL || '',
       'PYPI_REGISTRY_URL',
     );
+  },
+  // ---------------------------------------------------------------------
+  // NFR-15/D12：解释器池体积红线（对齐 executor-python maintenance.
+  // enforce_interpreter_pool_limits）。
+  //
+  // 此前池只增不删：每次任务下载一个新补丁版本就永久占 ~250MB，长跑执行器
+  // 最终把磁盘填满，所有 git/uv 操作随之失败。python 侧已有完整治理（单版本
+  // 250MB / 总池 4GB、按目录 mtime 升序 LRU、引用感知跳过被 venv 依赖的版本、
+  // 全部候选被 pin 住只告警不删）。这里给出同默认值的可配置入口，实际回收
+  // 逻辑在 interpreters.enforceInterpreterPoolLimits。
+  //
+  // getter 而非常量：与 workDir / uvPythonInstallDir 一样惰性读 process.env
+  // （热重载一致）。非法值钳到下限，避免一个手滑的 0 让红线彻底失效。
+  get interpreterSingleVersionMb(): number {
+    const raw = parseInt(process.env.INTERPRETER_SINGLE_VERSION_MB || '', 10);
+    if (!Number.isFinite(raw)) return 250;
+    return Math.max(1, raw);
+  },
+  get interpreterTotalGb(): number {
+    const raw = parseInt(process.env.INTERPRETER_TOTAL_GB || '', 10);
+    if (!Number.isFinite(raw)) return 4;
+    return Math.max(1, raw);
+  },
+  // 解释器下载全局有界并发（D13/NFR-16）：默认 2——不同版本并行下载、同一
+  // 版本共享一次（per-version in-flight 去重）；1 = 旧版全局单队列。部署方
+  // 可按网络/磁盘调 [1, 8]，越界钳制（0/负数按 1，>8 按 8）。
+  get interpreterDownloadConcurrency(): number {
+    const raw = parseInt(process.env.INTERPRETER_DOWNLOAD_CONCURRENCY || '', 10);
+    if (!Number.isFinite(raw)) return 2;
+    return Math.min(Math.max(raw, 1), 8);
   },
   // 单次解释器下载的独立时间预算（D11/NFR-13），默认 300s。与任务剩余超时
   // 取较小者由调用方（interpreters.ensureVersion）负责。越界不抛：钳到
@@ -185,6 +231,54 @@ export const config = {
   allowPrivateNetwork: ['true', '1'].includes(
     process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK ?? '',
   ),
+  // ---------------------------------------------------------------------
+  // 4-2/4-3（audit-r4）：任务进程资源治理——node 侧缺 python 的 RLIMIT_AS/
+  // bwrap 等价物，P1「失控任务 OOM 宿主」在 node 端是真实缺口。
+  // ---------------------------------------------------------------------
+  // 任务进程内存上限（MB）。默认 2048 与 executor-python 的 RLIMIT_AS=2048MB
+  // 同量级；0 = 不限（兼容旧部署）。度量口径差异：python 侧是虚拟地址空间
+  // （RLIMIT_AS），node 侧是**常驻内存 RSS 采样**（Linux /proc 进程树求和、
+  // Windows tasklist 直系子进程）——RSS 才是真正压宿主内存的指标，且不会误伤
+  // V8 等预留大块虚拟地址空间的运行时。非法值钳到 [0, 1048576]（0 仅来自
+  // 显式 TASK_MEMORY_LIMIT_MB=0）。
+  get taskMemoryLimitMb(): number {
+    const raw = parseInt(process.env.TASK_MEMORY_LIMIT_MB ?? '', 10);
+    if (!Number.isFinite(raw)) return 2048;
+    if (raw <= 0) return 0;
+    return Math.min(raw, 1_048_576);
+  },
+  // 任务沙箱模式，与 executor-python sandbox.py 的 TASK_SANDBOX 对齐（F-1
+  // parity）。'' = 不沙箱（默认，任务直跑）；'bwrap' = Linux 下用 bubblewrap
+  // 套只读 rootfs + user ns + tmpfs 隔离，`--share-net` 保持外网可用——任务
+  // 本质是自动化脚本，断网即废，网络隔离语义与 python 侧逐字一致。配置了
+  // bwrap 但 bwrap 不可用 / 非 Linux 平台时任务 **fail-closed**
+  // （SandboxUnavailable），绝不静默降级为直跑。
+  taskSandbox: (process.env.TASK_SANDBOX || '').trim().toLowerCase(),
+  // 内存看门狗采样间隔（毫秒，默认 2000）。测试/调试可调小。
+  taskMemoryWatchdogIntervalMs: parseInt(
+    process.env.TASK_MEMORY_WATCHDOG_INTERVAL_MS || '2000',
+    10,
+  ),
+  // ---------------------------------------------------------------------
+  // L-3：任务子进程 POSIX 硬资源上限（对齐 executor-python sandbox.py 的
+  // RLIMIT_NOFILE / RLIMIT_CPU；node 无 preexec_fn，生产路径用
+  // process-rlimits.applyTaskRlimits 包一层 `/bin/sh -c 'ulimit …; exec "$0" "$@"'`
+  // 在 fork 后、exec 前施加）。Windows 无等价原语，跳过并记一行日志。
+  //
+  // 打开文件描述符软/硬上限（ulimit -n，默认 1024，与 python task_nofile_limit
+  // 同值）。0 = 不设。防 fd 泄漏（chatty 任务开大量连接耗尽执行器 fd）。
+  get taskNofileLimit(): number {
+    const raw = parseInt(process.env.TASK_NOFILE_LIMIT || '1024', 10);
+    if (!Number.isFinite(raw) || raw < 0) return 1024;
+    return raw;
+  },
+  // CPU 秒数上限（ulimit -t，RLIMIT_CPU）。0 = 回落为「任务超时 + 60s 宽限」
+  // （任务超时本身会 kill，这里是防 timeout 未生效的第二道保险）。
+  get taskCpuLimitSeconds(): number {
+    const raw = parseInt(process.env.TASK_CPU_LIMIT_SECONDS || '0', 10);
+    if (!Number.isFinite(raw) || raw < 0) return 0;
+    return raw;
+  },
 };
 
 // EXE-VER-1: 执行器版本上报源（register 与心跳共用，单一定义处）。
@@ -200,6 +294,14 @@ export const config = {
 //     resources/executor-node/index.js，目录内没有 package.json 伴生文件）：
 //     构建期由 ncc 把该 JSON 内联进 bundle，运行时不依赖文件系统。
 // 因此两种交付形态同源，升级只需改 package.json 一处。
+//
+// R5（python_task_multiversion）：1.0.0 → 2.0.0 —— 与 executor-python 对齐：
+// node 侧同批实现 interpreters 上报、版本化 venv（--python）与 zip 整包渠道
+// （interpreters.ts / pull.ts / routes/deploy.ts），属执行器能力变更，必须版本
+// 可见。此前 node 停留在 1.0.0，admin 配置 EXECUTOR_MIN_VERSION=2.0.0 时
+// node/desktop 全机队会被 register 门禁 403 锁死（executor.service.ts register
+// gate）。desktop 内嵌 bundle 的期望哈希（executor-node-bundle.sha256）须在
+// 重打 ncc bundle 后同步回填（ADR-005）。
 function readPackageVersion(): string {
   // 静态 import 在编译/ncc 打包期即把 package.json 内联进来（resolveJsonModule 已开），
   // 不运行时 fs 读盘；保留对值形态的防御性校验。
@@ -211,3 +313,21 @@ function readPackageVersion(): string {
 }
 
 export const EXECUTOR_VERSION = readPackageVersion();
+
+/**
+ * PROTOCOL-VER（B-3/U-2）：协议版本与实现版本（EXECUTOR_VERSION）**解耦**。
+ *
+ * - `protocolVersion` 标识执行器与中台之间的**线缆协议**（register/heartbeat/
+ *   callback/pull 载荷形状与语义），随 register 载荷上报；
+ * - 中台侧按此值做兼容性分支（admin-api executor.service.ts 的
+ *   PROTOCOL_SUPPORTED_MIN）：旧协议执行器不发送某新字段时中台兜底，而不是
+ *   硬拒——与 EXECUTOR_MIN_VERSION 门禁（实现版本，低于下限 403）是两套闸。
+ * - 演进规则：新增**可选**字段且旧端可忽略时仍需 bump 此值（让中台知道该
+ *   执行器不认识新字段）；任何**不向后兼容**的改动必须同时 bump
+ *   `$schemaVersion`（protocol.json）与 PROTOCOL_VERSION。
+ *
+ * 两侧（executor-node / executor-python main._register_payload）与 admin 的
+ * PROTOCOL_SUPPORTED_MIN 必须保持同值；protocol.json 的 `versioning` 段是
+ * 该矩阵的单一事实源（B-3 审查项）。
+ */
+export const PROTOCOL_VERSION = 1;

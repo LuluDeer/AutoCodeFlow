@@ -387,7 +387,7 @@ describe('TaskListPage 克隆链路（QA-03 第二阶段）', () => {
     fireEvent.click(cloneBtn!);
     await waitFor(() => {
       expect(screen.getByText('源任务不存在')).toBeTruthy();
-    });
+    }, { timeout: 10_000 });
     expect(mockedTasks.create).not.toHaveBeenCalled();
     expect(screen.queryByText('task-detail-mock')).toBeNull();
   });

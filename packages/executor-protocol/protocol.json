@@ -1,6 +1,90 @@
 {
   "$schemaVersion": 1,
   "$comment": "A3（DEEP_REVIEW 0ef3bbe §七）executor-protocol —— admin-api / executor-node / executor-python 三方共享的执行器协议契约向量。单一事实源，语言无关，三端测试套件加载同一份文件断言。此前这些语义只靠两侧注释互相引用（\"见 node execute.ts:xxx parity\"）维持，属于\"注释里的 parity\"——本文件把它变成\"红在 CI\"。规则：向量只能追加、不能修改（已发布端按旧向量断言）；语义变更属破坏性契约变更，须三端同批发布并 bump $schemaVersion。",
+  "versioning": {
+    "$comment": "B-3/U-2（中台↔执行器深度审查）：协议版本协商机制。$schemaVersion 标识**线缆协议**（register/heartbeat/callback/pull 的载荷形状与语义），与执行器实现版本（EXECUTOR_VERSION，如 2.0.0）**解耦**——协议可在不 bump 实现版本的情况下演进（如新增可选字段）。执行器在 register 载荷上报 `protocolVersion`；中台按兼容矩阵分支（旧协议执行器不发送某新字段时中台兜底，**不**硬拒——与 EXECUTOR_MIN_VERSION 实现版本门禁是两套闸）。",
+    "currentProtocolVersion": 1,
+    "supportedMinProtocolVersion": 1,
+    "compatibilityMatrix": [
+      {
+        "protocolVersion": 1,
+        "adminSupported": true,
+        "executorImplementedBy": ["executor-node", "executor-python"],
+        "$comment": "基线协议：register/heartbeat/callback/pull 的既有字段全集。"
+      }
+    ],
+    "evolutionRules": [
+      "新增**可选**字段且旧端可忽略时：仍需 bump protocolVersion（让中台知道该执行器不认识新字段，避免向它发送新语义字段）",
+      "任何**不向后兼容**的改动（删字段/改语义/改枚举）：必须同时 bump $schemaVersion 与 protocolVersion，并三端同批发布",
+      "admin 对 protocolVersion < supportedMinProtocolVersion 的执行器：warn + 按旧协议兜底，不拒绝注册（兼容性红线：旧执行器不得因缺新字段被剔除）",
+      "实现版本（EXECUTOR_VERSION）门禁与协议版本互不替代：实现版本低于下限可 403（能力缺失），协议版本低于下限只降级（字段语义兜底）"
+    ]
+  },
+  "executorNodeOnly": {
+    "$comment": "B-1（中台↔执行器深度审查）：executor-node **独有**端点的预期形状登记。executor-python 无对应 router，故不纳入 schemas 段（生成器只处理 schemas）；此处登记供未来 python 补齐时对齐，以及 executor-node 侧手检的参考。端点载荷仍由 executor-node 单侧手检维持（deploy.ts / update-package.ts），**若 python 未来补齐对应端点，必须提升进 schemas 段并删除本段对应条目**。",
+    "endpoints": {
+      "POST /api/deploy": {
+        "$comment": "应用部署（once/daemon/scheduled）。唯一的事实源是 apps/executor-node/src/routes/deploy.ts 的 DeployPayload interface。",
+        "request": {
+          "type": "object",
+          "required": ["deploymentId", "applicationId", "appName", "gitBranch", "runtime", "runMode"],
+          "properties": {
+            "deploymentId": { "type": "string", "description": "部署实例 id（daemon 进程表键）" },
+            "applicationId": { "type": "string" },
+            "appId": { "type": ["string", "null"], "description": "applicationId 的向后兼容别名" },
+            "appName": { "type": "string" },
+            "gitRepo": { "type": ["string", "null"] },
+            "gitBranch": { "type": "string" },
+            "gitCommit": { "type": ["string", "null"] },
+            "packageUrl": { "type": ["string", "null"], "description": "zip 整包渠道（python_task_multiversion）；SSRF 可达性由执行器侧闸门另行判定" },
+            "version": { "type": ["string", "null"] },
+            "runtime": { "type": "string" },
+            "entrypoint": { "type": ["string", "null"] },
+            "runMode": { "enum": ["once", "daemon", "scheduled"] },
+            "env": { "type": ["object", "null"], "description": "自由键值；经 env-whitelist 过滤后注入子进程" },
+            "upgrade": { "type": ["boolean", "null"] }
+          }
+        },
+        "response": {
+          "type": "object",
+          "description": "形状不定（200 或 4xx/5xx 错误信封），成功响应至少含 accepted 语义；daemon 停止/重启另有端点。对齐时以 deploy.ts 的 res.json 字面量核对。"
+        }
+      },
+      "POST /api/update-package": {
+        "$comment": "整包更新推送（download-only，见 update-package.ts 头注 E-43）。",
+        "request": {
+          "type": "object",
+          "required": ["packageId", "name", "version", "type", "downloadUrl", "checksum"],
+          "properties": {
+            "packageId": { "type": "string", "description": "必须过 isSafePathSegment（'/' 与 '..' 拒绝）" },
+            "name": { "type": "string" },
+            "version": { "type": "string" },
+            "type": { "type": "string" },
+            "downloadUrl": { "type": "string", "description": "仅 http(s)；SSRF 闸 fail-closed 拒绝 loopback/私网/link-local" },
+            "checksum": { "type": "string", "description": "SHA-256 hex；缺失则 400" }
+          }
+        },
+        "response": {
+          "type": "object",
+          "required": ["accepted", "mode"],
+          "properties": {
+            "accepted": { "type": "boolean" },
+            "mode": { "enum": ["download-only"] },
+            "message": { "type": "string" }
+          },
+          "$comment": "mode 恒为 download-only（E-43：不做自更新，只落盘到 .pkg-updates 后上报 push-result）。"
+        }
+      },
+      "GET /api/update-package/status": {
+        "request": null,
+        "response": {
+          "type": "object",
+          "required": ["inProgress"],
+          "properties": { "inProgress": { "type": "boolean" } }
+        }
+      }
+    }
+  },
   "readiness": {
     "$comment": "就绪探针。判定维度各端按职责不同（admin 看 DB/Redis；执行器看资源 + admin 连通性），但**HTTP 状态码与 payload 形状必须三方一致**——探针与运维脚本不该为三个组件写三套解析。",
     "perComponent": {
@@ -152,8 +236,61 @@
         },
         "gitRepo": { "type": ["string", "null"] },
         "gitBranch": { "type": ["string", "null"] },
-        "gitCommit": { "type": ["string", "null"] }
-      }
+        "gitCommit": { "type": ["string", "null"] },
+        "runtimeVersion": {
+          "type": ["string", "null"],
+          "description": "python_task_multiversion（FR-06）：声明的 Python「主.次」版本（`3.7`/`3.12`）。只对 runtime=python 有意义；admin 对非 python 任务**显式发 null**（不是省略），故必须接受 null。**必须是 string**：JSON 数字形态会被 IEEE754 吃掉尾零（`3.10` → 3.1），语义不再等于用户声明，故两侧一律拒绝数字。"
+        },
+        "runtime_version": {
+          "type": ["string", "null"],
+          "description": "deprecated：`runtimeVersion` 的 snake_case 别名（与 `timeout_seconds` 同策）。"
+        },
+        "codeSource": {
+          "type": ["string", "null"],
+          "enum": ["git", "glue", "application_zip"],
+          "description": "python_task_multiversion（FR-18）：代码来源通道，三值互斥。admin 在不适用时**显式发 null**（回到迁移期的 git>glue>application_zip 隐式推导），故 type 含 null 必须合法——但 `null` 只写在 type 里，**绝不能写进 enum**：zod 的 `z.enum()` 不接受 null（要单独 `.nullable()`），pydantic 的 `Literal[..., null]` 里 `null` 不是 Python 名字（模型永远建不起来）。两者都会让生成物在运行时炸，故本 schema 只允许「单值类型 + 独立 nullable」这一种写法。"
+        },
+        "code_source": {
+          "type": ["string", "null"],
+          "enum": ["git", "glue", "application_zip"],
+          "description": "deprecated：`codeSource` 的 snake_case 别名。**enum 必须与 codeSource 逐值同集**——两侧运行时都是 `get('codeSource') or get('code_source')` 且只与 `'application_zip'` 比较，故运行时行为本就一致，但别名此前是裸 `z.string()`：非法取值（如 code_source=ftp）能绕过闸门，而驼峰同名取值被拒。别名不是透传字段，它是同一语义的第二入口，校验必须与正名同严（同 `timeout_seconds` 与 `timeout` 的绑定关系）。"
+        },
+        "applicationId": {
+          "type": ["string", "null"],
+          "description": "zip 渠道关联的应用 id（弱引用）。**packageUrl 由 admin 在派发时解析后附加**，执行器拿到 task 后无法自行查库（CONTRACT §2.4）。"
+        },
+        "application_id": {
+          "type": ["string", "null"],
+          "description": "deprecated：`applicationId` 的 snake_case 别名。"
+        },
+        "packageUrl": {
+          "type": ["string", "null"],
+          "description": "zip 整包的可下载地址（由 admin 派发时附加，见 applicationId）。此处只约束类型；SSRF 可达性由执行器侧闸门另行判定。"
+        },
+        "package_url": {
+          "type": ["string", "null"],
+          "description": "deprecated：`packageUrl` 的 snake_case 别名。"
+        },
+        "glueSource": {
+          "type": ["string", "null"],
+          "description": "glue 渠道的内联脚本源码（随任务保存、不拉取代码）。"
+        },
+        "glue_source": {
+          "type": ["string", "null"],
+          "description": "deprecated：`glueSource` 的 snake_case 别名。"
+        },
+        "glueLanguage": {
+          "type": ["string", "null"],
+          "enum": ["python", "javascript", "shell", "glue_python", "glue_node", "glue_shell"],
+          "description": "glue 脚本语言。两侧既有实现同时接受裸语言名（`python`/`javascript`/`shell`）与历史 `glue_*` 形态；缺省时按 task.runtime 回退。null 只写在 type 里（同 codeSource 的理由：enum 里不能有 null）。"
+        },
+        "glue_language": {
+          "type": ["string", "null"],
+          "enum": ["python", "javascript", "shell", "glue_python", "glue_node", "glue_shell"],
+          "description": "deprecated：`glueLanguage` 的 snake_case 别名。**enum 与 glueLanguage 逐值同集**（同 code_source 的理由：别名是同一语义的第二入口，不是透传字段）——否则 `{\"glue_language\": \"ruby\"}` 能绕过闸门。两侧运行时都读两个键且按同一套取值判定（GLUE-LANG-01）。"
+        }
+      },
+      "$comment": "A3 补齐（本轮）：本 schema 此前只声明 11 个字段，而两侧执行器实际**消费**更多 task 字段（runtimeVersion / codeSource / applicationId / packageUrl / glueSource / glueLanguage 及其 snake_case 别名）。因 additionalProperties:true 会生成 zod `.passthrough()` / pydantic `extra=\"allow\"`，这些字段**完全绕过协议闸门**——admin 的派发载荷是 task 实体原样透传（executor.service.ts 的 resolveDispatchTask 只额外附加 packageUrl），所以协议此前并未真正描述实际流量。现按两侧真实读取面补齐；**全部允许 null**，因为 admin 对不适用字段显式发 null（非省略），写成非 null 会让合法流量被拒。"
     },
     "ExecuteRequest": {
       "type": "object",
@@ -246,6 +383,42 @@
         {
           "requirements": null,
           "$comment": "A3-C 回归：admin 的任务实体 requirements 是 nullable jsonb，无依赖时派发字面 null。首版协议写成纯 array，CI selftests 的 pull 全链路真派发当场红——这条向量就是那次事故钉在这里的。"
+        },
+        {
+          "runtime": "python",
+          "runtimeVersion": "3.11",
+          "codeSource": "git",
+          "gitRepo": "https://example.com/x.git"
+        },
+        {
+          "runtime": "python",
+          "runtimeVersion": null,
+          "codeSource": null,
+          "applicationId": null,
+          "packageUrl": null,
+          "glueSource": null,
+          "glueLanguage": null,
+          "$comment": "**admin 的真实形态**：不适用字段发字面 null（不是省略）——前端 applyRuntimeVersionPayload / applyCodeSourcePayload 对非 python 与不适用通道显式写 null。故这三个新增可空字段必须收 null。此向量钉的正是一次实测到的两侧分歧：enum 分支曾漏解析 nullable，zod 生成 `z.enum([...])`（拒 null）而 pydantic 生成 `X | None`（收 null），同一 schema 两侧判定相反。"
+        },
+        {
+          "codeSource": "application_zip",
+          "applicationId": "app-1",
+          "packageUrl": "http://admin:3105/api/uploads/packages/p.zip",
+          "$comment": "zip 渠道：packageUrl 由 admin 派发时解析后附加（CONTRACT §2.4）。"
+        },
+        {
+          "glueSource": "print(1)",
+          "glueLanguage": "glue_python",
+          "$comment": "glue 渠道的历史 `glue_*` 语言形态（两侧既有实现都接受）。"
+        },
+        {
+          "runtime_version": "3.12",
+          "$comment": "snake_case 别名（与 timeout_seconds 同策）——两侧执行器都读得到。"
+        },
+        {
+          "code_source": "application_zip",
+          "glue_language": "glue_python",
+          "$comment": "别名在**合法**取值上必须与正名同样被接受——上一条 invalid 只钉住「非法值要拒」，这条钉住「合法值不能误伤」：`glue_python` 是历史真实形态（存量库迁移期），`application_zip` 是 zip 通道载体；收紧别名 enum 时若写错取值，这条会红。"
         }
       ],
       "invalid": [
@@ -255,9 +428,60 @@
           "expectErrorPath": ["timeoutSeconds"]
         },
         {
+          "name": "timeout-above-max",
+          "payload": { "timeout": 86401 },
+          "expectErrorPath": ["timeout"],
+          "$comment": "A3 补齐（本轮审计发现）：本文件的 timeout 段自称三端共同拒绝越界值，但**没有任何向量覆盖 timeout**——删掉 schema 上的 minimum/maximum，node/python/admin 三个套件全绿（覆盖度守卫是按'向量'而非'协议声明的字段'推导的，见 protocol-schemas.spec.ts 的 schemaNames）。而两侧运行时都是**手写**边界（node execute.ts 的 rawTimeout 分支、python _resolve_task_timeout），协议边界此前完全没有闸。"
+        },
+        {
+          "name": "timeout-below-min",
+          "payload": { "timeout": -1 },
+          "expectErrorPath": ["timeout"]
+        },
+        {
+          "name": "timeout_seconds-above-max-is-also-a-number",
+          "payload": { "timeout_seconds": "3600" },
+          "expectErrorPath": ["timeout_seconds"],
+          "$comment": "snake_case 别名是**数值**字段，字符串形态必须拒绝：它是 timeout 的别名，若容忍字符串就会被下游当秒数静默解析，而驼峰同名字段不收字符串——两侧形态不一致。"
+        },
+        {
           "name": "requirements-item-not-string",
           "payload": { "requirements": [1] },
           "expectErrorPath": ["requirements", 0]
+        },
+        {
+          "name": "codeSource-not-a-known-channel",
+          "payload": { "codeSource": "ftp" },
+          "expectErrorPath": ["codeSource"],
+          "$comment": "通道枚举必须收口：未知取值会让执行器两侧的优先级判定同时失效（各自按'不是已知通道'落到不同分支）。"
+        },
+        {
+          "name": "code_source-alias-must-not-bypass-the-channel-enum",
+          "payload": { "code_source": "ftp" },
+          "expectErrorPath": ["code_source"],
+          "$comment": "**别名不是后门**：`code_source` 此前是裸 string，于是同一句非法声明走驼峰被拒、走 snake_case 却通过——同一语义的两个入口校验强度不同，闸门形同虚设。两侧运行时都读两个键且只与 `'application_zip'` 比较（运行时行为一致），但协议必须如实描述校验面。本轮审计把它与 codeSource 对齐为同集 enum 后加此向量钉住。"
+        },
+        {
+          "name": "glue_language-alias-must-not-bypass-the-language-enum",
+          "payload": { "glue_language": "ruby" },
+          "expectErrorPath": ["glue_language"],
+          "$comment": "同 code_source：`glue_language` 是 `glueLanguage` 的别名，必须与正名同集 enum（GLUE-LANG-01：两侧同时接受裸名与 `glue_*` 形态，故 ruby/glue_ruby 都必须拒）。"
+        },
+        {
+          "name": "glueLanguage-not-supported",
+          "payload": { "glueLanguage": "ruby" },
+          "expectErrorPath": ["glueLanguage"]
+        },
+        {
+          "name": "runtimeVersion-not-a-string",
+          "payload": { "runtimeVersion": 3.11 },
+          "expectErrorPath": ["runtimeVersion"],
+          "$comment": "**数字形态必须拒绝**：JSON 数字会被 IEEE754 吃掉尾零（客户端写 3.10、服务端收到 3.1），语义不再等于用户声明。本轮实测到 python 侧用 `str()` 兜住了数字（3.11 → '3.11' 通过、node 拒绝）——两侧对同一载荷一收一拒，属 CONTRACT §3.3 的 parity 破坏，已一并修掉；这条向量把'数字不收'钉成两侧共同行为。"
+        },
+        {
+          "name": "applicationId-not-a-string",
+          "payload": { "applicationId": 42 },
+          "expectErrorPath": ["applicationId"]
         }
       ]
     },

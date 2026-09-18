@@ -1,9 +1,207 @@
 import { BadRequestException } from "@nestjs/common";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
+// tsconfig 未开 esModuleInterop（仅 allowSyntheticDefaultImports）——默认导入在
+// CJS 下会取 `.default`（undefined）。必须用命名空间导入才能拿到真实模块。
+import * as http from "node:http";
+import * as https from "node:https";
 // ARCH-27: 本文件是无 DI 的纯工具函数，无法注入 ConfigService —— env 读取
 // 统一经 src/config/env.ts 收口（全仓唯一直读通道）。
 import { getEnvVar } from "../../config/env";
+
+/**
+ * F-3 (SEC-NEW): the result of validating + DNS-pinning an outbound URL.
+ *
+ * `url` is the ORIGINAL URL — it is never rewritten, so Host header, TLS SNI
+ * and virtual-host routing stay correct by construction. The pinning happens
+ * at the socket layer: `pinnedAxiosConfig` returns an http(s).Agent whose
+ * `lookup` always answers the validated `pinnedIp`, so TCP/TLS connects to
+ * exactly the address that passed the deny table, even if the hostname's DNS
+ * rebinds afterwards (closing the DNS-rebinding window the plain guards
+ * document as a follow-up). `pinned` is false when the host was already an
+ * IP literal (nothing to pin, no custom agent needed).
+ */
+export interface PinnedHttpTarget {
+  url: URL;
+  pinnedIp: string;
+  pinned: boolean;
+}
+
+/**
+ * F-3 (SEC-NEW): DNS-rebinding-safe outbound target for axios call sites.
+ *
+ * One call replaces the `assertSafeHttpUrl/assertSafeExecutorUrl` +
+ * `axios.*(url, ...)` pair: it parses → classifies every DNS answer against
+ * the unified deny table → returns a target pinned to the first validated
+ * IP. The call site keeps using the ORIGINAL url string and spreads
+ * `pinnedAxiosConfig(target)` into its axios options — the returned agent
+ * answers DNS with the validated IP, so re-resolution can never happen.
+ *
+ * Policy mirrors the existing guards exactly:
+ *  - `policy: "executor"` → assertSafeExecutorUrl posture (private-lan
+ *    allowed by default; loopback/restricted gated by EXECUTOR_ALLOW_PRIVATE_NETWORK);
+ *  - `policy: "webhook"` (default) → assertSafeHttpUrl posture (only public
+ *    by default; private-lan/loopback/restricted gated by `allowPrivateNetwork`).
+ *
+ * Redirects stay refused by the call sites (`maxRedirects: 0` — R3); the
+ * pinned first hop is the only hop.
+ */
+export async function assertAndPinHttpUrl(
+  rawUrl: string,
+  opts: {
+    allowPrivateNetwork?: boolean;
+    policy?: "webhook" | "executor";
+  } = {},
+): Promise<PinnedHttpTarget> {
+  let url: URL;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    throw new BadRequestException(`Invalid URL: ${rawUrl}`);
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new BadRequestException(
+      `URL must use http(s); got '${url.protocol}'`,
+    );
+  }
+  const host = url.hostname.replace(/^\[|\]$/g, "");
+  if (!host) throw new BadRequestException("URL missing hostname");
+  if (url.username || url.password) {
+    // B-2: credentials in the URL would leak through logs/error reports.
+    throw new BadRequestException(
+      `URL must not embed credentials: ${stripUserinfo(rawUrl)}`,
+    );
+  }
+
+  const isExecutor = opts.policy === "executor";
+  const allowPrivateNetwork =
+    opts.allowPrivateNetwork ??
+    (isExecutor
+      ? getEnvVar("EXECUTOR_ALLOW_PRIVATE_NETWORK") === "true"
+      : false);
+
+  // assertSafeHttpUrl posture: only public by default; private-lan/loopback/
+  // restricted unlocked by the flag; link-local + reserved always refused.
+  const allowedWebhook = (risk: AddressRisk | null): boolean =>
+    risk === "public" ||
+    (allowPrivateNetwork &&
+      (risk === "private-lan" || risk === "loopback" || risk === "restricted"));
+  // assertSafeExecutorUrl posture: private-lan always; loopback/restricted
+  // under the flag; link-local + reserved always refused.
+  const allowedExecutor = (risk: AddressRisk | null): boolean =>
+    risk === "public" ||
+    risk === "private-lan" ||
+    (allowPrivateNetwork && (risk === "loopback" || risk === "restricted"));
+  const allowedRisk = isExecutor ? allowedExecutor : allowedWebhook;
+
+  const pick = (addrs: string[]): string => {
+    // All answers passed the deny table; pin to the first (stable) one.
+    const addr = addrs[0];
+    if (!addr) {
+      throw new BadRequestException(`URL host ${host} did not resolve`);
+    }
+    return addr;
+  };
+
+  if (isIP(host)) {
+    if (!allowedRisk(classifyAddressRisk(host))) {
+      throw new BadRequestException(
+        `URL host ${host} is on the deny list (private/loopback/link-local/benchmark/CGNAT) — outbound request refused`,
+      );
+    }
+    return { url, pinnedIp: host, pinned: false };
+  }
+
+  let addrs: { address: string }[];
+  try {
+    addrs = await lookup(host, { all: true });
+  } catch (err) {
+    throw new BadRequestException(
+      `Failed to resolve URL host ${host}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  if (addrs.length === 0) {
+    throw new BadRequestException(`URL host ${host} did not resolve`);
+  }
+  const allowed: string[] = [];
+  for (const a of addrs) {
+    const risk = classifyAddressRisk(a.address);
+    if (!allowedRisk(risk)) {
+      throw new BadRequestException(
+        `URL host ${host} resolves to a blocked address (${a.address}) — outbound request refused`,
+      );
+    }
+    allowed.push(a.address);
+  }
+
+  return {
+    url,
+    pinnedIp: pick(allowed),
+    pinned: true,
+  };
+}
+
+/**
+ * F-3 (SEC-NEW): executor-posture shortcut for
+ * `assertAndPinHttpUrl(url, { policy: "executor" })` — replaces the
+ * `assertSafeExecutorUrl` + axios pairs at executor dispatch/kill/package
+ * call sites with one pinned request path.
+ */
+export async function assertAndPinExecutorUrl(
+  rawUrl: string,
+): Promise<PinnedHttpTarget> {
+  return assertAndPinHttpUrl(rawUrl, { policy: "executor" });
+}
+
+/**
+ * F-3 (SEC-NEW): axios config fragment for a pinned target — an http(s)
+ * agent whose `lookup` always answers the validated IP, so the TCP/TLS
+ * connection can never re-resolve (DNS rebinding closed). The original URL
+ * (Host header / TLS SNI / virtual host) is untouched by construction.
+ * Defensive on `target === undefined`/`null` and `pinned === false`: returns
+ * `{}` so a stubbed guard in a spec (automock) degrades to the plain URL.
+ */
+export function pinnedAxiosConfig(target?: PinnedHttpTarget | null): {
+  httpAgent?: http.Agent;
+  httpsAgent?: https.Agent;
+} {
+  if (!target || !target.pinned) return {};
+  const pinnedIp = target.pinnedIp;
+  const family = isIP(pinnedIp) === 6 ? 6 : 4;
+  // Node's http(s).Agent calls lookup(hostname, options, cb) per new socket;
+  // always answer with the validated address. `options` may carry `all:true`
+  // in some consumers — the agent passes it through; we honor both shapes.
+  const pinnedLookup: http.AgentOptions["lookup"] = (
+    _hostname,
+    _options,
+    cb,
+  ) => {
+    cb(null, pinnedIp, family);
+  };
+  return target.url.protocol === "https:"
+    ? { httpsAgent: new https.Agent({ lookup: pinnedLookup }) }
+    : { httpAgent: new http.Agent({ lookup: pinnedLookup }) };
+}
+
+/**
+ * B-2: mask userinfo in a URL before it ever reaches a log line / error
+ * message. A rejected URL must not echo the very credential it carried
+ * (the rejection itself would leak it). `https://user:pass@host/x` →
+ * `https://[redacted]@host/x`; anything without userinfo is returned
+ * unchanged.
+ */
+export function stripUserinfo(raw: string): string {
+  try {
+    const url = new URL(raw);
+    if (!url.username && !url.password) return raw;
+    const hostPart = url.host; // includes port
+    url.username = "";
+    url.password = "";
+    return `${url.protocol}//[redacted]@${hostPart}${url.pathname}${url.search}${url.hash}`;
+  } catch {
+    return "[redacted]";
+  }
+}
 
 /**
  * Parse an IPv6 literal into its eight 16-bit groups. Handles `::`
@@ -472,6 +670,17 @@ export async function assertSafeGitRepoUrl(rawRepo: string): Promise<void> {
     } catch {
       throw new BadRequestException(`Invalid git repository URL: ${rawRepo}`);
     }
+    // B-2 (SEC-NEW): http(s) repo URLs must never embed credentials. On a
+    // failed clone git echoes the full remote URL to stderr, which lands in
+    // errMsg → logs/callback/audit. Credentials go through GIT_ASKPASS / a
+    // credential helper / ~/.netrc, never in the URL (mirror of the
+    // executor-side gitRepo guard in executor-python execute.py).
+    if (url.username || url.password) {
+      throw new BadRequestException(
+        `Git repository URL must not contain embedded credentials — ` +
+          `use GIT_ASKPASS / a credential helper instead: ${stripUserinfo(rawRepo)}`,
+      );
+    }
     host = url.hostname;
   } else if (/^ssh:\/\//i.test(rawRepo)) {
     let url: URL;
@@ -479,6 +688,15 @@ export async function assertSafeGitRepoUrl(rawRepo: string): Promise<void> {
       url = new URL(rawRepo);
     } catch {
       throw new BadRequestException(`Invalid git repository URL: ${rawRepo}`);
+    }
+    // B-2: a bare user (`ssh://git@host/...`) is the documented SSH shape;
+    // a password (`ssh://user:pass@host/...`) is always a leaked credential.
+    // The scp-like `git@host:path` form cannot carry a password by construction.
+    if (url.password) {
+      throw new BadRequestException(
+        `Git repository URL must not contain an embedded password — ` +
+          `use an SSH key / GIT_ASKPASS instead: ${stripUserinfo(rawRepo)}`,
+      );
     }
     host = url.hostname;
   } else if (scpMatch) {

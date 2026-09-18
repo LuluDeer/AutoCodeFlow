@@ -31,6 +31,15 @@ jest.mock("../../../common/utils/safe-http.util", () => ({
   assertSafeExecutorUrl: jest
     .fn()
     .mockResolvedValue(new URL("http://fixture:3002/")),
+  // F-3（SEC-NEW）: dispatch 现走 assertAndPinExecutorUrl——按入参原样返回
+  // pinned:false 目标。
+  assertAndPinExecutorUrl: jest
+    .fn()
+    .mockImplementation(async (raw: string) => ({
+      url: new URL(raw),
+      pinnedIp: "93.184.216.34",
+      pinned: false,
+    })),
 }));
 const mockedAxios = axios as jest.Mocked<typeof axios>;
 

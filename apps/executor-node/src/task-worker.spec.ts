@@ -263,3 +263,71 @@ describe('TaskWorker kill/cancel semantics', () => {
     void assertFn;
   });
 });
+
+// ---------------------------------------------------------------------------
+// 1-1/9-2（audit-r4）回归：单飞调度——并发槽位释放后的重入只驱动一轮 drain。
+// 旧实现每个 finally 都 setImmediate(() => this.process())，N 个并发槽位同时
+// 释放会排队 N 次空转 process；现在 process 只在「队列非空且有空槽」时自唤醒，
+// 且 drain 循环在同一轮内消化全部可运行项。
+// ---------------------------------------------------------------------------
+
+describe('TaskWorker single-flight scheduling (1-1/9-2)', () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+    mockedRunTask.mockReset();
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('maxConcurrent=2 下 3 个排队项全部执行，onIdle 恰好触发一次', async () => {
+    const onIdle = jest.fn();
+    const worker = new TaskWorker('task-sf', 2, onIdle);
+    const d1 = deferred();
+    const d2 = deferred();
+    const d3 = deferred();
+    mockedRunTask
+      .mockReturnValueOnce(d1.promise as never)
+      .mockReturnValueOnce(d2.promise as never)
+      .mockReturnValueOnce(d3.promise as never);
+
+    worker.enqueue('e1', {}, {});
+    worker.enqueue('e2', {}, {});
+    worker.enqueue('e3', {}, {});
+    await flush();
+    expect(mockedRunTask).toHaveBeenCalledTimes(2); // 槽位满，e3 排队
+
+    d1.resolve();
+    await flush();
+    expect(mockedRunTask).toHaveBeenCalledTimes(3); // 槽位释放 → e3 立即启动
+    expect(onIdle).not.toHaveBeenCalled(); // 队列非空，不算空闲
+
+    d2.resolve();
+    d3.resolve();
+    await flush();
+    expect(mockedRunTask).toHaveBeenCalledTimes(3);
+    expect(onIdle).toHaveBeenCalledTimes(1); // 全部完成 → 恰好一次空闲通知
+  });
+
+  it('大量并发 enqueue 不会产生重复 drain 空转（onIdle 仍只触发一次）', async () => {
+    const onIdle = jest.fn();
+    const worker = new TaskWorker('task-flood', 1, onIdle);
+    const pending = new Array(5).fill(0).map(() => deferred());
+    pending.forEach((d) =>
+      mockedRunTask.mockReturnValueOnce(d.promise as never),
+    );
+    for (let i = 0; i < 5; i++) worker.enqueue(`f${i}`, {}, {});
+    await flush();
+    expect(mockedRunTask).toHaveBeenCalledTimes(1);
+
+    for (let i = 0; i < 4; i++) {
+      pending[i].resolve();
+      await flush();
+      expect(mockedRunTask).toHaveBeenCalledTimes(i + 2);
+      expect(onIdle).not.toHaveBeenCalled();
+    }
+    pending[4].resolve();
+    await flush();
+    expect(onIdle).toHaveBeenCalledTimes(1);
+  });
+});

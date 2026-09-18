@@ -95,3 +95,53 @@ def test_invalid_vectors(name, vec):
     assert expected in paths, (
         f"{name}/{vec['name']} 被拒绝了，但原因不落在 {expected}：实际 {sorted(paths)}"
     )
+
+
+def test_generated_models_are_strict_no_lax_coercion():
+    """生成物必须 `strict=True`——lax 模式会让协议两侧判定相反。
+
+    pydantic 默认 **lax**：把数字字符串强转成数字（`'3600'` → `3600`）、把
+    `0/1/'yes'/'true'` 强转成 bool。zod 侧从不做这些强转（`z.number().int()`
+    拒 `'3600'`），于是同一个 schema 两侧对同一载荷一收一拒——闸门在 python
+    侧形同虚设：**它声称拒绝的东西被悄悄改写后接受了**。
+
+    实爆（本轮）：`{"timeout_seconds": "3600"}` 在 zod 侧被拒、在 pydantic 侧
+    通过（强转成 3600）。语义后果比向量本身更脏：`{"timeout": "0"}`（显式
+    不限时）也会被 python 静默接受并改写，而 node 直接 400 —— 同一条任务派到
+    两台执行器上一台跑一台拒。
+
+    反证有牙：把生成器的 `strict=True` 去掉，本用例立即红。
+    """
+    for name, model in _SCHEMAS.items():
+        assert model.model_config.get("strict") is True, (
+            f"{name} 未启用 strict —— lax 强转会让 pydantic 侧接受 zod 侧拒绝的载荷"
+        )
+
+
+def test_no_type_coercion_across_scalar_kinds():
+    """端到端坐实「不强制转」：数值字段拒字符串、字符串字段拒数字、bool 拒 0/1。
+
+    上一条只断言配置位在（改配置位即可让它红）；这条断言**实际行为**，
+    防止"配了 strict 却被某处 model_validate(strict=False) 覆盖"。
+    样本按各 schema 真实字段选取，故与协议形状同步演进。
+    """
+    # 数值字段：字符串形态必须拒（zod 侧同样拒）
+    for payload in (
+        {"timeout": "3600"},
+        {"timeoutSeconds": "0"},
+        {"timeout_seconds": "3600"},
+    ):
+        with pytest.raises(ValidationError):
+            ps.TaskConfig.model_validate(payload)
+    # 字符串字段：数字形态必须拒（runtimeVersion 的 IEEE754 尾零陷阱同源）
+    for payload in ({"runtimeVersion": 3.11}, {"applicationId": 42}):
+        with pytest.raises(ValidationError):
+            ps.TaskConfig.model_validate(payload)
+    # bool 字段：pydantic lax 会把 0/1/'yes'/'true' 强转成 bool
+    with pytest.raises(ValidationError):
+        ps.KillResponse.model_validate({"ok": "true"})
+    with pytest.raises(ValidationError):
+        ps.KillResponse.model_validate({"ok": 1})
+    # 顺带确认真正合法的形态没被 strict 误伤（避免"收紧收过头"）
+    assert ps.TaskConfig.model_validate({"timeout": 3600}).timeout == 3600
+    assert ps.KillResponse.model_validate({"ok": True}).ok is True

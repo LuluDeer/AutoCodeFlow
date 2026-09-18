@@ -213,6 +213,64 @@ class TestUpload:
             # File should be stored as evil-1.0.whl inside the package dir, not above
             assert "../" not in resp.json().get("message", "")
 
+    # ------------------------------------------------------------------
+    # PKG-DIR-01（本轮审计）：上传表单的 `name` 只过 normalize()（PEP 503：
+    # 折叠 [-_.]+、转小写），**不剥离前导 `/` 或盘符**。而 pathlib 的
+    # `PACKAGES_DIR / seg` 在 seg 为绝对路径时会**整体丢弃**左操作数——
+    # 于是 name="/tmp/x"（Linux）或 "C:/tmp/x"（Windows）让制品直接落在
+    # PACKAGES_DIR 之外，且 pkg_dir 会 mkdir(parents=True) 主动创建它。
+    # 文件名侧的目录分量早已被剥掉，包目录侧此前完全没有对应防护。
+    # ------------------------------------------------------------------
+    @pytest.mark.parametrize("evil_name", [
+        "/tmp/acf-traversal-abs",
+        "C:/tmp/acf-traversal-drive",
+        "\\\\?\\C:/tmp/acf-traversal-unc",
+    ])
+    def test_absolute_package_name_rejected(self, client, tmp_packages_dir, evil_name):
+        """绝对/带盘符的包名必须被拒，绝不能在 PACKAGES_DIR 之外建目录。"""
+        resp = client.post("/", auth=AUTH,
+                           data={"name": evil_name, "version": "1.0"},
+                           files={"content": ("probe-1.0.whl", b"pwned",
+                                              "application/octet-stream")})
+        assert resp.status_code == 400
+        assert "Invalid package name" in resp.json()["detail"]
+
+    def test_absolute_package_name_creates_nothing_outside(self, client, tmp_packages_dir):
+        """反证核心：被拒之后，包根之外不得出现任何新目录/文件。"""
+        outside = tmp_packages_dir.parent / "outside-sentinel"
+        outside.mkdir()
+        before = set(p.name for p in outside.iterdir())
+
+        for evil in ("/tmp/acf-t2", "C:/tmp/acf-t2"):
+            client.post("/", auth=AUTH,
+                        data={"name": evil, "version": "1.0"},
+                        files={"content": ("probe-1.0.whl", b"pwned",
+                                           "application/octet-stream")})
+
+        assert set(p.name for p in outside.iterdir()) == before
+        # 包根内也不该留下任何痕迹
+        assert list(tmp_packages_dir.iterdir()) == []
+
+    @pytest.mark.parametrize("path", ["/", "/upload"])
+    def test_alias_shares_the_name_guard(self, client, path):
+        """/upload 是 POST / 的薄 alias，必须共享同一道包目录防护。"""
+        resp = client.post(path, auth=AUTH,
+                           data={"name": "/tmp/acf-t3", "version": "1.0"},
+                           files={"content": ("probe-1.0.whl", b"x",
+                                              "application/octet-stream")})
+        assert resp.status_code == 400
+
+    @pytest.mark.parametrize("good_name", [
+        "mypkg", "My_Package", "my.pkg", "my---pkg", "a&b", "1.0",
+    ])
+    def test_legitimate_names_still_accepted(self, client, good_name):
+        """回归护栏：合法 PEP 503 包名（含大小写/分隔符/&）不受影响。"""
+        resp = client.post("/", auth=AUTH,
+                           data={"name": good_name, "version": "1.0"},
+                           files={"content": ("probe-1.0.whl", b"x",
+                                              "application/octet-stream")})
+        assert resp.status_code == 200
+
 
 class TestDownload:
     def test_download_uploaded_file(self, client):

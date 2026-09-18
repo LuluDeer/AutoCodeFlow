@@ -159,24 +159,28 @@ jobs:
         run: npm publish --access public
 
   # ── PyPI 发布 ────────────────────────────────────────────────────────
-  # secrets.PYPI_API_TOKEN：pypi.org 的 API token（Account → API tokens，
-  # 或 per-project token，scope 到 autoflow-sdk）。
-  # 更优路径是 PyPI Trusted Publishing（OIDC，免长期 token）：删除下方
-  # password 行、给本 job 加 `permissions: id-token: write`，并在 pypi.org
-  # 上把本仓库 owner/repo/workflow 文件名登记为发布配置——token 不再存在，
-  # 也就无泄露面。当前仍用 PYPI_API_TOKEN 的原因：Trusted Publishing 要求
-  # 包已在 PyPI 存在同名项目且尚未被任何 release 占用（首次发布即锁定
-  # 名称），且需在 PyPI 网页侧完成一次性登记；本仓库 CI 凭证尚未启用
-  # （round9 遗留），先用 API token 打通链路，正式首发时迁移 TP。
+  # U-1（2026-09）：已迁移到 PyPI Trusted Publishing（OIDC，免长期 token）——
+  # 本 job 声明 `permissions: id-token: write` 且不再使用 secrets.PYPI_API_TOKEN，
+  # 发布凭证由 pypi.org 侧 OIDC 动态签发，无长期 token 泄露面。
+  # ⚠ 发布前唯一待办的**外部手动步骤**：在 pypi.org 项目（autoflow-sdk）的
+  #   "Publishing" 设置页登记本仓库
+  #   owner/repo + workflow 文件名（release.yml）+ environment（release），
+  #   未登记时下一次 tag 推送的发布会以明确报错失败（而非静默跳过）。
+  # 登记完成后，本 job 不再需要任何 PyPI secret。
   # 内网发布：加 `repository-url: https://<registry-pypi-host>/...` 并把
   # token 换成私有 registry 凭证（apps/registry-pypi）。
   publish-pypi:
     needs: version-guard
     runs-on: ubuntu-latest
+    # U-1: OIDC 取 token 需要 id-token 权限；contents: read 保留给 checkout。
+    # 注意：job 级 permissions 会覆盖 workflow 级默认（此处显式补回 contents: read）。
+    permissions:
+      contents: read
+      id-token: write
     # N42 (round-10): 与 publish-npm 同一道人工审批闸门（配置路径见该 job
     # 注释：Settings → Environments → `release` → Required reviewers）。
-    # 注意：若迁移 Trusted Publishing，environment 同时是 PyPI 侧 OIDC
-    # 配置的锚点（pypi.org 登记时可指定 environment 名称），届时保留。
+    # Trusted Publishing 的 OIDC 配置同样以 environment 为锚点（pypi.org 登记
+    # 时指定 environment 名称），此闸门保留。
     environment: release
     steps:
       - uses: actions/checkout@v7
@@ -196,4 +200,3 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: packages/autoflow-sdk/dist/
-          password: ${{ secrets.PYPI_API_TOKEN }}

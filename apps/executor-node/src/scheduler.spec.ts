@@ -127,4 +127,45 @@ describe('scheduler', () => {
 
     clearInterval(timer);
   }, 30_000);
+
+  // FR-13/FR-14（CONTRACT.md §2.3）：心跳体**始终**携带 interpreters 字段，
+  // `[]` = 已上报且池为空，字段缺席 = 旧执行器（admin 按 ["3.12"] 兜底）。
+  // 这个区分是调度的正确性前提：一个声明 3.12 的任务不得被派到池里没有 3.12
+  // 的执行器上——若上报方"池空时干脆不报"，admin 的兜底值会把它伪装成有 3.12。
+  it('always sends interpreters (empty array, never absent) — admin fallback semantics', async () => {
+    jest.useFakeTimers();
+    const { startHeartbeat } = require('./scheduler');
+
+    // 无 provider 注册（池未探测/探测失败）→ 仍必须是空数组，而非 undefined。
+    const timer = startHeartbeat();
+    await jest.advanceTimersByTimeAsync(12_000);
+    const body = post.mock.calls.at(-1)![1];
+    expect(body).toHaveProperty('interpreters');
+    expect(body.interpreters).toEqual([]);
+    clearInterval(timer);
+  });
+
+  it('drops malformed interpreter entries instead of poisoning the whole inventory', async () => {
+    jest.useFakeTimers();
+    const { startHeartbeat, registerInterpretersProvider } = require('./scheduler');
+    registerInterpretersProvider(async () => [
+      {
+        version: '3.12.1',
+        path: '/pool/cpython-3.12.1/bin/python',
+        available: true,
+        discoveredAt: 't',
+      },
+      // 脏项：缺 version —— 若不过滤，admin 侧会因一项坏数据废掉整份清单
+      { path: '/pool/whatever', available: true, discoveredAt: 't' },
+      // 脏项：version 不是 X.Y[.Z]
+      { version: 'v3.11', path: '/pool/x', available: true, discoveredAt: 't' },
+    ]);
+    const timer = startHeartbeat();
+    await jest.advanceTimersByTimeAsync(12_000);
+    const body = post.mock.calls.at(-1)![1];
+    expect(body.interpreters).toHaveLength(1);
+    expect(body.interpreters[0].version).toBe('3.12.1');
+    clearInterval(timer);
+    registerInterpretersProvider(async () => []);
+  });
 });

@@ -27,6 +27,9 @@ export default () => ({
     port: parseInt(process.env.PORT, 10) || 3105,
     nodeEnv: process.env.NODE_ENV || "development",
     protocol: process.env.APP_PROTOCOL || "http",
+    // F-13（本轮审计）: 日志级别映射（Joi 已注册 LOG_LEVEL，此处补 ARCH-27
+    // 收口）——main.ts 的 JSON logger 按此节构造 logLevels；缺省 info。
+    logLevel: process.env.LOG_LEVEL || "info",
     // ARCH-27: 全局请求超时（REQUEST_TIMEOUT_MS）—— 此前由
     // timeout.interceptor 在模块求值期直读 process.env（W-22 风险模式），
     // 现注册后由拦截器经 ConfigService 读取，默认 30s。
@@ -225,6 +228,13 @@ export default () => ({
     // 长期不拉取时由既有 stale sweep 收敛执行行，队列只负责卫生丢弃）。
     pullWaitMs: parseInt(process.env.EXECUTOR_PULL_WAIT_MS || "25000", 10),
     pullTtlMs: parseInt(process.env.EXECUTOR_PULL_TTL_MS || "900000", 10),
+    // F-07（本轮审计）: 调度候选执行器池上限（selectLeastLoaded / dispatch 的
+    // take 截断）。默认 500 与既有硬编码一致——超过上限的第 501+ 台执行器
+    // 永远不进候选集；边缘计算数千台舰队可调大。service 层对非法值回退 500。
+    candidatePoolSize: parseInt(
+      process.env.EXECUTOR_CANDIDATE_POOL_SIZE || "500",
+      10,
+    ),
     // ARCH-27: SSRF 豁免开关在此统一注册 —— 运行时消费方
     // （safe-http.util.assertSafeExecutorUrl）经 ConfigService 读取，
     // 不再直读 process.env。
@@ -498,8 +508,17 @@ export const buildTypeOrmDataSourceOptions = (config: {
     logging: config.app.nodeEnv === "development",
     extra: {
       max: config.database.poolSize,
+      // F-10（本轮审计）: 保底空闲连接（poolSize/4，至少 1）。此前只配 max，
+      // 低负载时全部连接 idle 超时（30s）关闭，突发流量首批发请求需重新建连
+      // （PG ~50-100ms）造成延迟抖动；min 让池内常驻保底连接，冷启动毛刺消失。
+      // 读写分离形态下 master/slaves 池共享同一 extra（PostgresDriver.createPool
+      // 把 options.extra 合入每个连接池），两端同时受益。
+      min: Math.max(1, Math.floor(config.database.poolSize / 4)),
       idleTimeoutMillis: 30000,
       connectionTimeoutMillis: 5000,
+      // L-4: per-statement hard timeout (30s) via pg connection option — fails
+      // slow/blocked queries instead of pinning a pooled connection forever.
+      statement_timeout: 30000,
     },
   };
 
@@ -538,6 +557,39 @@ export const buildTypeOrmDataSourceOptions = (config: {
 
 // M3: fail-fast in production for critical secrets that have known weak defaults
 if (process.env.NODE_ENV === "production") {
+  // B-3（SEC-NEW）: registry 出站强制 https —— NPM_REGISTRY_URL /
+  // PYPI_REGISTRY_URL 若配 http，其 Basic Auth/token 会明文上网。仅 loopback
+  // （localhost / 127.0.0.1 / ::1）允许 http（本地 Verdaccio 默认 4873、
+  // registry-pypi 默认 8003 即 http 回环）。URL 内嵌凭据同样拒绝——凭据应
+  // 走 NPM_REGISTRY_TOKEN / NPM_REGISTRY_USER / NPM_REGISTRY_PASS / REGISTRY_PASS
+  // 独立键，避免经日志/错误回显泄漏。
+  const registryUrls: ReadonlyArray<readonly [string, string]> = [
+    ["NPM_REGISTRY_URL", process.env.NPM_REGISTRY_URL ?? ""],
+    ["PYPI_REGISTRY_URL", process.env.PYPI_REGISTRY_URL ?? ""],
+  ];
+  for (const [name, raw] of registryUrls) {
+    if (!raw) continue;
+    let u: URL;
+    try {
+      u = new URL(raw);
+    } catch {
+      throw new Error(`[AutoFlow] ${name} is not a valid URL: ${raw}`);
+    }
+    const host = u.hostname.replace(/^\[|\]$/g, "");
+    const isLoopback =
+      host === "localhost" || host === "127.0.0.1" || host === "::1";
+    if (u.protocol !== "https:" && !(u.protocol === "http:" && isLoopback)) {
+      throw new Error(
+        `[AutoFlow] ${name} must use https:// in production (http allowed only for localhost/127.0.0.1); got '${u.protocol}//${host}'`,
+      );
+    }
+    if (u.username || u.password) {
+      throw new Error(
+        `[AutoFlow] ${name} must not embed credentials in the URL — use NPM_REGISTRY_USER/NPM_REGISTRY_PASS or REGISTRY_PASS instead`,
+      );
+    }
+  }
+
   const weakValues = new Set([
     "autocodeflow123",
     "change-this-secret-in-production",

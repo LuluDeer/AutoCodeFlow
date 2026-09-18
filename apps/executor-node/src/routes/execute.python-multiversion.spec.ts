@@ -106,6 +106,9 @@ jest.mock('../file-logger', () => ({
   appendLog: jest.fn(),
   getDeadLetterCount: jest.fn(() => 0),
   registerActiveWorkdirProvider: jest.fn((fn: any) => mockActiveWorkdirSets.push(fn)),
+  // P2 磁盘水位：mock 默认"无压力"，各用例行为与引入前一致。
+  diskUsagePercent: jest.fn(() => 0),
+  DISK_CRITICAL_PERCENT: 95,
 }));
 
 jest.mock('../task-worker', () => {

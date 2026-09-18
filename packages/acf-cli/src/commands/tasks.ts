@@ -581,6 +581,15 @@ async function pollExecution(execId: string): Promise<void> {
           spinner.succeed(`Execution ${exec.status} in ${exec.duration ?? '?'}ms`);
         } else {
           spinner.fail(`Execution ${exec.status}`);
+          // CLI-EXIT-01（本轮审计）：--wait 的契约是「等完并给出结果」，
+          // 但此前失败终态只打印原因就 return，退出码依旧是 0——CI 里
+          // `acf task trigger <id> --wait && echo ok` 在任务失败时照样打印
+          // ok，整条 --wait 通道对自动化不可用。与 `acf exec tail` 同场景
+          // 的语义对齐（那里已是 status==='success' ? 0 : 1）：失败终态
+          // 置 exitCode=1，成功保持 0。
+          // 用 exitCode 赋值而非 process.exit(1)：让调用方（trigger 的
+          // action、以及将来任何组合命令）仍能走完自己的收尾路径。
+          process.exitCode = 1;
           // U11: surface the structured failure cause the executor reported
           // (exitCode / failureReason) — previously only aiAnalysis printed,
           // so a non-zero exit or timeout reason was invisible without

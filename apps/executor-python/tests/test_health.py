@@ -42,22 +42,22 @@ async def test_check_admin_api_uses_public_health_endpoint(monkeypatch):
         def __init__(self, *args, **kwargs):
             self.timeout = kwargs.get('timeout')
 
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return None
-
         async def get(self, url, **kwargs):
             calls.append((url, kwargs))
+
             class Response:
                 status_code = 200
+
             return Response()
 
-    monkeypatch.setattr(health_module.httpx, 'AsyncClient', FakeClient)
+    # 网络性能审计（2026-09-18）：_check_admin_api 改用 scheduler 共享连接池
+    # （O-24），不再直接用 httpx.AsyncClient——mock 目标同步迁移。
+    import scheduler
+
+    monkeypatch.setattr(scheduler, 'get_http_client', lambda: FakeClient())
 
     assert await health_module._check_admin_api() is True
-    assert calls == [('http://admin.local/api/health', {})]
+    assert calls == [('http://admin.local/api/health', {'timeout': 5})]
 
 
 @pytest.mark.asyncio
@@ -89,6 +89,9 @@ async def test_readiness_failure_reports_normalized_admin_url(monkeypatch):
 
 def test_readiness_canonical_path_ready(client, monkeypatch):
     monkeypatch.setattr(health_module, '_check_admin_api', AsyncMock(return_value=True))
+    # 资源维度与宿主负载解耦（高负载 CI 机上 psutil 可能 ≥90% 造成假 503）；
+    # 资源判定本身的契约由下方 A3-C schema 用例独立覆盖。
+    monkeypatch.setattr(health_module, '_resources_ok', lambda: (True, None))
 
     resp = client.get('/health/ready')
 
@@ -123,6 +126,8 @@ def test_readiness_canonical_path_not_ready_when_admin_unreachable(client, monke
 def test_readiness_alias_paths_agree(client, monkeypatch, path):
     """两个路径必须给出同一结论（alias 只是兼容入口，语义不得漂移）。"""
     monkeypatch.setattr(health_module, '_check_admin_api', AsyncMock(return_value=True))
+    # 资源维度与宿主负载解耦（高负载 CI 机假 503），资源契约见 A3-C schema 用例。
+    monkeypatch.setattr(health_module, '_resources_ok', lambda: (True, None))
 
     resp = client.get(path)
 
@@ -133,6 +138,8 @@ def test_readiness_alias_paths_agree(client, monkeypatch, path):
 def test_readiness_alias_still_404_free(client, monkeypatch):
     """存量运维探针打 /health/readiness 时不得 404（一个版本内兼容）。"""
     monkeypatch.setattr(health_module, '_check_admin_api', AsyncMock(return_value=True))
+    # 资源维度与宿主负载解耦（高负载 CI 机假 503），资源契约见 A3-C schema 用例。
+    monkeypatch.setattr(health_module, '_resources_ok', lambda: (True, None))
 
     assert client.get('/health/readiness').status_code == 200
 

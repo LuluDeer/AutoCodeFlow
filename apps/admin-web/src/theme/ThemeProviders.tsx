@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { ConfigProvider, App, theme as antdTheme } from 'antd';
 import type { ThemeConfig } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
@@ -85,8 +85,12 @@ export function ThemedProviders({ children }: { children: React.ReactNode }) {
   // Modal 默认 okText 等）跟随 i18n 语言切换——此前恒 zhCN，英文界面下中外混杂。
   const { i18n } = useTranslation();
   const antdLocale = (i18n.language || 'zh').startsWith('en') ? enUS : zhCN;
+  // O-18：buildAntdTheme 每次渲染都新建一个全新 ThemeConfig 对象（含 algorithm
+  // 函数引用 + 全部 token），ConfigProvider 收到新引用即触发 antd 全量 token 重算。
+  // 仅在 resolved 变化时重建主题对象，其余渲染周期复用同一引用，避免无谓重算。
+  const antdTheme = useMemo(() => buildAntdTheme(resolved), [resolved]);
   return (
-    <ConfigProvider locale={antdLocale} theme={buildAntdTheme(resolved)}>
+    <ConfigProvider locale={antdLocale} theme={antdTheme}>
       <App>{children}</App>
     </ConfigProvider>
   );

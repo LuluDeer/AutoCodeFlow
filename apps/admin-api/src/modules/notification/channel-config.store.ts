@@ -153,6 +153,7 @@ export class ChannelConfigStore {
   async refreshFromStore(): Promise<number> {
     if (!this.repo) return 0;
     try {
+      // P3-1：通知渠道配置 ≤ 6 行（每渠道一行），全表 find 无需分页——刻意保持现状。
       const rows = await this.repo.find();
       for (const row of rows) {
         this.configs.set(row.key, { ...(row.config ?? {}) });
@@ -173,6 +174,7 @@ export class ChannelConfigStore {
   > {
     if (!this.repo) return [];
     try {
+      // P3-1：通知渠道配置 ≤ 6 行，全表 find 无需分页——刻意保持现状。
       const rows = await this.repo.find();
       return rows.map((r) => ({
         key: r.key,

@@ -358,6 +358,52 @@ describe('acf task trigger --wait (N10)', () => {
       log.mockRestore();
     }
   }, 30_000);
+
+  // CLI-EXIT-01（本轮审计）：--wait 的语义是「等它跑完并给出结果」，但此前
+  // pollExecution 命中失败终态（failed/timeout/killed/cancelled）时只调
+  // spinner.fail() 打印原因，函数即 return——退出码仍是 0。CI 里
+  // `acf task trigger <id> --wait && echo ok` 于是在**任务失败**时照旧打印
+  // ok：整个 --wait 通道对自动化完全不可信（而 `acf exec tail` 同场景已有
+  // `process.exitCode = status === 'success' ? 0 : 1` 的正确语义——两侧不一致）。
+  describe('失败终态必须置非零退出码（CLI-EXIT-01）', () => {
+    // 注：这些用例不使用 beforeEach 里的 process.exit 抛错桩的返回值——
+    // 修复后走的是 process.exitCode 赋值（不抛），故直接断言 exitCode。
+    async function waitFor(status: string, exitOverride = true) {
+      const { Command } = await import('commander');
+      const program = new Command();
+      program.addCommand(tasksCommand() as never);
+      if (exitOverride) program.exitOverride();
+      try {
+        await program.parseAsync(['node', 'acf', 'task', 'trigger', 't1', '--wait'], { from: 'node' });
+      } catch {
+        /* beforeEach 的 process.exit 桩会抛；此处只关心 exitCode */
+      }
+      return process.exitCode;
+    }
+
+    beforeEach(() => {
+      process.exitCode = undefined;
+      vi.spyOn(console, 'log').mockImplementation(() => {});
+    });
+
+    it.each([
+      ['failed', 1],
+      ['timeout', 1],
+      ['killed', 1],
+      ['cancelled', 1],
+    ])('%s 终态 → 退出码 %i', async (status, expected) => {
+      mockedPost.mockResolvedValueOnce({ id: 'w1', status: 'running', createdAt: '2026-01-01T00:00:00Z' });
+      mockedGet.mockResolvedValue({ id: 'w1', status, createdAt: '2026-01-01T00:00:00Z' });
+      expect(await waitFor(status)).toBe(expected);
+    }, 30_000);
+
+    it('success 终态仍为 0（回归护栏：不得把成功也判失败）', async () => {
+      mockedPost.mockResolvedValueOnce({ id: 'w2', status: 'running', createdAt: '2026-01-01T00:00:00Z' });
+      mockedGet.mockResolvedValue({ id: 'w2', status: 'success', duration: 50, createdAt: '2026-01-01T00:00:00Z' });
+      const code = await waitFor('success');
+      expect(code === undefined || code === 0).toBe(true);
+    }, 30_000);
+  });
 });
 
 // ---------------------------------------------------------------------------

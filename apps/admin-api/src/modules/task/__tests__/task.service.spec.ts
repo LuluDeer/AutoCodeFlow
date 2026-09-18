@@ -66,6 +66,15 @@ jest.mock("../../../common/utils/safe-http.util", () => ({
   assertSafeExecutorUrl: jest
     .fn()
     .mockResolvedValue(new URL("http://fixture:3001/")),
+  // F-3（SEC-NEW）: 日志回填出站现走 assertAndPinExecutorUrl——按入参原样
+  // 返回 pinned:false 目标，避免真实 DNS（fixture 主机名在 CI/本机不可解析）。
+  assertAndPinExecutorUrl: jest
+    .fn()
+    .mockImplementation(async (raw: string) => ({
+      url: new URL(raw),
+      pinnedIp: "93.184.216.34",
+      pinned: false,
+    })),
 }));
 
 /** 读取运行时计数（模块级单调快照；afterEach 重置保证用例隔离） */
@@ -1680,6 +1689,19 @@ describe("TaskService (__tests__)", () => {
   });
 
   describe("handleCallback", () => {
+    // F-11（并行改动）：execution 查询从逐条 findOne 改为批量
+    // find({ where: { id: In(ids) } })。各用例仍按旧习惯用
+    // findOne.mockResolvedValue(exec) 装配单条 execution——这里把 find 桥接
+    // 到 findOne 的当前装配值（调用时读取），使所有用例意图原样保留；个别
+    // 直接 mock find 的用例（如依赖扇出组）在用例内自行覆盖。
+    beforeEach(() => {
+      execRepo.find.mockImplementation(async (opts?: any) => {
+        const impl = (execRepo.findOne as jest.Mock).getMockImplementation();
+        const one = impl ? await impl(opts ?? {}) : null;
+        return one == null ? [] : [one];
+      });
+    });
+
     it("marks execution as SUCCESS and saves", async () => {
       const exec = { id: "e1", status: ExecutionStatus.RUNNING, logs: "" };
       execRepo.findOne.mockResolvedValue(exec);
@@ -1689,6 +1711,45 @@ describe("TaskService (__tests__)", () => {
       ]);
       expect(exec.status).toBe(ExecutionStatus.SUCCESS);
       expect(result[0].success).toBe(true);
+    });
+
+    // F-11（本轮审计）: 批量回调走一次 find({ id: In(ids) }) + Map——单条回调
+    // 保持 findOne（零行为变化，见上方用例），≥2 条才升级批量；每条独立处理
+    // 语义不变（Map 命中 → 处理；Map 缺失 → not_found）。
+    it("F-11: batch callbacks resolve via a single find(In) lookup and process every row", async () => {
+      const execA = {
+        id: "e-a",
+        status: ExecutionStatus.RUNNING,
+        taskId: "t-a",
+        logs: "",
+      };
+      const execB = {
+        id: "e-b",
+        status: ExecutionStatus.RUNNING,
+        taskId: "t-b",
+        logs: "",
+      };
+      execRepo.find.mockResolvedValue([execA, execB]);
+      execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      const result = await service.handleCallback([
+        { executionId: "e-a", status: "success", durationMs: 10 },
+        { executionId: "e-b", status: "success", durationMs: 20 },
+        // 第三条第缺失 id：批量 Map 必须把它判为 not_found（证明逐条解析
+        // 确实由批量查询结果驱动，而非对每条回调重新查库）。
+        { executionId: "e-missing", status: "success", durationMs: 30 },
+      ]);
+      // 恰一次批量查询（而非 3 次 findOne），条件为 In(全部 id)。
+      expect(execRepo.find).toHaveBeenCalledWith({
+        where: { id: In(["e-a", "e-b", "e-missing"]) },
+      });
+      expect(result).toHaveLength(3);
+      expect(result[0].success).toBe(true);
+      expect(result[1].success).toBe(true);
+      expect(result[2]).toEqual({
+        executionId: "e-missing",
+        success: false,
+        error: "Execution not found",
+      });
     });
 
     // R-06（DEEP_REVIEW 0ef3bbe）: 广播执行的占坑释放。广播 dispatch 对每个目标
@@ -2347,7 +2408,15 @@ describe("TaskService (__tests__)", () => {
           }),
         };
         taskRepo.createQueryBuilder.mockImplementation(() => depQb as any);
-        execRepo.find.mockResolvedValue(depExecutions as any);
+        // F-11：find 同时服务 handleCallback（where.id 批量查，桥接 findOne 装配
+        // 的回调 execution）与 checkDependencies（where.taskId 历史扫描 →
+        // depExecutions）。按 where 形状分发，避免两条路径互相污染。
+        execRepo.find.mockImplementation(async (opts?: any) => {
+          if (opts?.where?.taskId) return depExecutions as any;
+          const impl = (execRepo.findOne as jest.Mock).getMockImplementation();
+          const one = impl ? await impl(opts ?? {}) : null;
+          return one == null ? [] : [one];
+        });
         if (downstreamTask) {
           taskRepo.findOne.mockResolvedValue(downstreamTask as any);
           dataSource.transaction.mockImplementation((fn: any) =>
@@ -3802,6 +3871,8 @@ describe("TaskService (__tests__)", () => {
       expect(versionRepo.find).toHaveBeenCalledWith({
         where: { taskId: "t1" },
         order: { createdAt: "DESC" },
+        // O-7: 版本历史有界拉取（最近 100 条）
+        take: 100,
       });
     });
   });
@@ -4414,6 +4485,9 @@ describe("OBS-03: execution log level（写入抽取）", () => {
   it("storeLogLines 按行推断 level 落库（括号/无括号/时间戳/未知形态）", async () => {
     const exec = { id: "e1", status: ExecutionStatus.RUNNING, logs: "" };
     execRepo.findOne.mockResolvedValue(exec);
+    // F-11：handleCallback 已改批量 find（该用例位于 handleCallback describe 之外，
+    // 没有 beforeEach 桥接，这里显式补上）
+    execRepo.find.mockImplementation(async () => [exec]);
     execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
     await service.handleCallback([
       {

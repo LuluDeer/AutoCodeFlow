@@ -302,3 +302,72 @@ def test_unknown_interpreter_env_does_not_break_startup(monkeypatch):
     """`extra='ignore'`：未识别的环境变量不得让执行器起不来。"""
     monkeypatch.setenv('INTERPRETER_TOTALLY_UNKNOWN', 'x')
     assert make_settings().interpreter_total_gb == 4
+
+
+# ---------------------------------------------------------------------------
+# SEC-NEW：任务沙箱/资源限制/下载校验 pin 配置（F-1/B-1/F-2）
+# ---------------------------------------------------------------------------
+
+def test_task_sandbox_default_is_disabled():
+    """F-1：默认 ''（本地开发/测试零变化）；生产容器由 docker-compose 显式开启。"""
+    assert Settings.model_fields['task_sandbox'].default == ''
+
+
+@pytest.mark.parametrize('value', ['', 'bwrap'])
+def test_task_sandbox_accepts_valid_values(value):
+    assert make_settings(task_sandbox=value).task_sandbox == value
+
+
+@pytest.mark.parametrize('value', ['firejail', 'docker', 'cgroup'])
+def test_task_sandbox_rejects_unknown_values(value):
+    with pytest.raises(ValueError):
+        make_settings(task_sandbox=value)
+
+
+def test_task_resource_limit_defaults():
+    """B-1：内存 2048MB 默认开启；CPU 回落超时宽限；fsize/nofile 有界；nproc 默认 0。"""
+    settings = make_settings()
+    assert settings.task_memory_limit_mb == 2048
+    assert settings.task_cpu_limit_seconds == 0
+    assert settings.task_fsize_limit_mb == 4096
+    assert settings.task_nofile_limit == 1024
+    assert settings.task_nproc_limit == 0
+
+
+def test_task_resource_limit_rejects_negative():
+    with pytest.raises(ValueError):
+        make_settings(task_memory_limit_mb=-1)
+
+
+def test_sha256_pins_valid_json_roundtrip():
+    digest = 'a' * 64
+    settings = make_settings(uv_python_sha256_pins={'3.12': digest})
+    assert settings.uv_python_sha256_pins == {'3.12': digest}
+
+
+@pytest.mark.parametrize(
+    'pins',
+    [
+        {'3.12': 'abc'},          # 非 64 位 hex
+        {'3.12': 'z' * 64},       # 非法 hex 字符
+        {'3.12.9': 'a' * 64},     # 键必须 X.Y
+        {'3': 'a' * 64},          # 键必须 X.Y
+    ],
+)
+def test_sha256_pins_reject_malformed(pins):
+    with pytest.raises(ValueError):
+        make_settings(uv_python_sha256_pins=pins)
+
+
+def test_sha256_pins_merge_per_version_env(monkeypatch):
+    """F-2：UV_PYTHON_SHA256_<MAJ>_<MIN> 逐版本注入 + 大小写归一。"""
+    digest = 'B' * 64
+    monkeypatch.setenv('UV_PYTHON_SHA256_3_12', digest)
+    settings = make_settings()
+    assert settings.uv_python_sha256_pins == {'3.12': digest.lower()}
+
+
+def test_sha256_pins_env_rejects_bad_digest(monkeypatch):
+    monkeypatch.setenv('UV_PYTHON_SHA256_3_12', 'not-a-hash')
+    with pytest.raises(ValueError):
+        make_settings()

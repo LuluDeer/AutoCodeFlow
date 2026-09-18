@@ -103,6 +103,12 @@ export interface ExecutionArtifact {
 @Index("idx_task_executions_running", ["executorAddress", "startTime"], {
   where: "\"status\" = 'running'",
 })
+// O-2: the stale sweep filters only on status='running' AND startTime < cutoff
+// (no executorAddress predicate), so the (executorAddress, startTime) index
+// above cannot be used. A leading-column (startTime) partial index serves it.
+@Index("idx_task_executions_start_time_running", ["startTime"], {
+  where: "\"status\" = 'running'",
+})
 export class TaskExecution {
   @PrimaryGeneratedColumn("uuid") id: string;
   @Column() taskId: string;

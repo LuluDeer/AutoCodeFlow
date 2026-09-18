@@ -1,11 +1,11 @@
 import { Router, Request, Response } from 'express';
-import { spawn, ChildProcess } from 'child_process';
+import { spawn, spawnSync, ChildProcess } from 'child_process';
 import * as crypto from 'crypto';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
 import { config } from '../config';
-import { logger } from '../logger';
+import { logger, runWithTrace } from '../logger';
 import {
   getRunningCountArray,
   registerRunningExecutionIdsProvider,
@@ -16,10 +16,20 @@ import { pushCallback, CallbackFailureReason } from '../callback';
 import { gatherArtifacts, artifactsDirFor, ArtifactManifestEntry } from '../artifacts';
 import { getCurrentToken } from '../middleware/auth';
 import { getCurrentAdminUrl } from '../admin-client';
-import { appendLog, getDeadLetterCount, registerActiveWorkdirProvider } from '../file-logger';
+import { resolveAdminApiBaseUrl } from '../admin-api-url';
+import { appendLog, getDeadLetterCount, registerActiveWorkdirProvider, diskUsagePercent, DISK_CRITICAL_PERCENT } from '../file-logger';
 import { taskWorkerManager, ExecutionCancelledError } from '../task-worker';
 import { runCommand, killProcessTree } from '../run-command';
 import { buildChildEnv } from '../env-whitelist';
+// L-3：任务子进程 POSIX ulimit（NOFILE/CPU）——node 无 preexec_fn，生产路径
+// 包一层 sh+ulimit；win32 原样返回。
+import { applyTaskRlimits } from '../process-rlimits';
+// 4-2（audit-r4）：任务进程内存看门狗（RSS 采样，node 侧无 RLIMIT 等价物）。
+import {
+  startMemoryWatchdog,
+  winTasklistSampler,
+  linuxProcTreeSampler,
+} from '../memory-watchdog';
 // A3-C：协议闸门（由 packages/executor-protocol/protocol.json 生成，勿手改产物）
 import {
   ExecuteRequestSchema,
@@ -137,14 +147,14 @@ export async function gitCheckoutTo(
     }
     if (!fs.existsSync(path.join(cacheDir, 'HEAD'))) {
       fs.mkdirSync(cacheDir, { recursive: true });
-      const r = await runCommand('git', ['clone', '--bare', repoUrl, cacheDir], { timeout: 120_000, signal });
+      const r = await runCommand('git', ['clone', '--bare', '--depth', '1', repoUrl, cacheDir], { timeout: 120_000, signal });
       if (signal?.aborted) throw new ExecutionCancelledError(dest);
       if (r.status !== 0) {
         fs.rmSync(cacheDir, { recursive: true, force: true });
         throw new Error(`git clone failed: ${r.stderr.trim()}`);
       }
     } else {
-      const r = await runCommand('git', ['-C', cacheDir, 'fetch', '--all'], { timeout: 60_000, signal });
+      const r = await runCommand('git', ['-C', cacheDir, 'fetch', '--all', '--unshallow'], { timeout: 60_000, signal });
       if (signal?.aborted) throw new ExecutionCancelledError(dest);
       if (r.status !== 0) {
         // Continuing with a stale cache made tasks silently run old code.
@@ -443,6 +453,13 @@ export function acceptExecution(
   };
 
   try {
+    // P2：磁盘临界水位——磁盘满时任何任务都会在写 workdir/log 阶段失败，
+    // 提前拒绝新任务比让任务在准备阶段失败更诚实。statfs 是同步的，accept
+    // 本来就是同步快路径；计量失败（返回 0）按无压力放行。
+    if (diskUsagePercent() >= DISK_CRITICAL_PERCENT) {
+      return reject(503, 'Executor disk is critically full; new tasks are refused');
+    }
+
     const executionId = body?.executionId;
     const params = body?.params;
 
@@ -1671,7 +1688,18 @@ async function prepareExecution(
   if (callbackToken) {
     env['AUTOFLOW_CALLBACK_TOKEN'] = callbackToken;
   }
-  const adminApiUrl = config.adminApiUrlInternal || config.adminApiUrl;
+  // AUTOFLOW-API-URL-01（本轮审计）：优先级必须与 executor-python 一致
+  // （external > internal > default，见 `admin-api-url.resolveAdminApiBaseUrl`
+  // 的注释）。
+  //
+  // 失败模式（改动前）：这里只读 `adminApiUrlInternal || adminApiUrl`，而
+  // 执行器**自己**的出站走 `middleware/auth.ts::getAdminApiUrl`（external 优先）
+  // ——同一进程对"admin 在哪"给出两个答案：任务侧拿到的 internal 地址在跨网/
+  // 公网部署下不可达，SDK 的 `ctx.http` 于是回调不出去，而失败是静默的
+  // （只是"没有回调"，终态由执行器补，用户看到的是进度丢失）。
+  // python 侧注入的是 `admin_api.get_admin_api_base_url()`（external 优先），
+  // 故这是 node 单侧的漂移。
+  const adminApiUrl = resolveAdminApiBaseUrl(config);
   if (adminApiUrl) {
     env['AUTOFLOW_ADMIN_API_URL'] = adminApiUrl;
   }
@@ -2080,6 +2108,18 @@ async function collectTerminalArtifacts(
 }
 
 export async function runTask(task: any, params: Record<string, any>, executionId: string): Promise<void> {
+  // 8-1（audit-r4）：执行链 trace context 注入。traceparent 的 trace-id 段
+  // （W3C 格式 traceparent: <trace-id>-<parent-id>-<flags>）写入 AsyncLocalStorage，
+  // 链内所有 logger.* 自动带 `[trace=...]`——执行器内部日志可按 trace 与回调
+  // 回传的 traceparent 头、admin 侧关联（OBS-01 同源）。
+  const traceId = liveExecutions.get(executionId)?.traceparent?.split('-')[1];
+  if (!traceId) {
+    return runTaskInner(task, params, executionId);
+  }
+  return runWithTrace({ traceId }, () => runTaskInner(task, params, executionId));
+}
+
+async function runTaskInner(task: any, params: Record<string, any>, executionId: string): Promise<void> {
   const { cmd, args, workDir, env, timeout } = task;
   const startTime = Date.now();
 
@@ -2145,6 +2185,65 @@ export async function runTask(task: any, params: Record<string, any>, executionI
   }
 }
 
+/**
+ * 4-3（audit-r4 F-1 parity）：TASK_SANDBOX=bwrap 时把任务 argv 包进
+ * bubblewrap——`--die-with-parent --unshare-all --share-net --ro-bind / /
+ * --bind <cwd> <cwd> --tmpfs /tmp --proc /proc --dev /dev --chdir <cwd>`，
+ * 与 executor-python sandbox.py::build_sandbox_cmd 逐字同构：宿主根文件系统
+ * 只读（任务无法篡改解释器池/执行器文件）、user ns 隔离、仅工作目录可写、
+ * `--share-net` 保持外网（任务本质是自动化脚本，断网即废——网络隔离语义与
+ * python 侧一致）。**fail-closed 纪律**：配置了 bwrap 但 bwrap 二进制缺失或
+ * 平台非 Linux → 抛错拒绝任务，绝不静默降级为直跑（python 侧 SandboxUnavailable
+ * 同语义）。仅检查二进制存在性（同 python）；user namespace 被内核禁用属
+ * 运行时失败，由 bwrap 非零退出 → 任务失败（fail-closed 自然达成）。
+ */
+function buildTaskSandboxArgv(
+  cmd: string,
+  args: string[],
+  cwd: string,
+): { cmd: string; args: string[] } {
+  if (config.taskSandbox !== 'bwrap') {
+    return { cmd, args };
+  }
+  if (process.platform === 'win32') {
+    throw new Error(
+      'TASK_SANDBOX=bwrap is not supported on Windows; unset TASK_SANDBOX to run tasks unsandboxed',
+    );
+  }
+  let bwrapPath = '';
+  try {
+    const which = spawnSync('which', ['bwrap'], { encoding: 'utf8', timeout: 3000 });
+    if (which.status === 0 && which.stdout) {
+      bwrapPath = which.stdout.trim().split(/\r?\n/)[0] || '';
+    }
+  } catch {
+    bwrapPath = '';
+  }
+  if (!bwrapPath) {
+    throw new Error(
+      'TASK_SANDBOX=bwrap is configured but the bwrap binary is not on PATH; ' +
+        'install bubblewrap or unset TASK_SANDBOX (fail-closed, no sandbox downgrade)',
+    );
+  }
+  return {
+    cmd: bwrapPath,
+    args: [
+      '--die-with-parent',
+      '--unshare-all',
+      '--share-net',
+      '--ro-bind', '/', '/',
+      '--bind', cwd, cwd,
+      '--tmpfs', '/tmp',
+      '--proc', '/proc',
+      '--dev', '/dev',
+      '--chdir', cwd,
+      '--',
+      cmd,
+      ...args,
+    ],
+  };
+}
+
 function runProcess(
   cmd: string,
   args: string[],
@@ -2154,6 +2253,15 @@ function runProcess(
   executionId?: string,
 ): Promise<{ success: boolean; logs: string; exitCode: number }> {
   return new Promise((resolve, reject) => {
+    // 4-3（audit-r4 F-1 parity）：沙箱 argv 解析在 spawn 之前完成，fail-closed
+    // ——bwrap 缺失/平台不支持时拒绝任务，不进入 spawn。
+    let argvSpec: { cmd: string; args: string[] };
+    try {
+      argvSpec = buildTaskSandboxArgv(cmd, args, cwd);
+    } catch (sandboxErr) {
+      reject(sandboxErr instanceof Error ? sandboxErr : new Error(String(sandboxErr)));
+      return;
+    }
     // W-14 (windows-findings R-08/2.9): on win32 the child must NOT share the
     // executor's console — a console Ctrl+C/CTRL_BREAK event is delivered to
     // every attached process, hard-killing running tasks instantly (0xC000013A)
@@ -2161,7 +2269,10 @@ function runProcess(
     // kill entirely, which orphaned the tasks' own detached grandchildren.
     // windowsHide gives the child its own hidden console (CREATE_NO_WINDOW);
     // reaping stays with the executor (timeout taskkill /T /F, P-7).
-    const proc = spawn(cmd, args, {
+    // L-3：POSIX 下把最终 argv 包一层 sh+ulimit（NOFILE/CPU）；win32 原样返回。
+    // 必须在 bwrap 包装之后再包——ulimit 沿 sh → bwrap → 任务树继承。
+    const rlimitArgv = applyTaskRlimits(argvSpec.cmd, argvSpec.args, timeoutSec);
+    const proc = spawn(rlimitArgv.cmd, rlimitArgv.args, {
       cwd,
       env,
       detached: process.platform !== 'win32',
@@ -2210,6 +2321,10 @@ function runProcess(
       ? setTimeout(() => {
           if (settled) return;
           settled = true;
+          if (stopMemoryWatchdog) {
+            stopMemoryWatchdog();
+            stopMemoryWatchdog = null;
+          }
           // B-06: kill the entire process group so child processes spawned by the task are also terminated
           killProcessTree(proc, 'SIGKILL');
           // Attach collected logs like the close path does — otherwise the
@@ -2221,8 +2336,44 @@ function runProcess(
         }, timeoutSec * 1000)
       : null;
 
+    // 4-2（audit-r4）：任务内存看门狗（默认 2048MB；TASK_MEMORY_LIMIT_MB=0
+    // 关闭）。node 侧无 RLIMIT 等价物，用 RSS 周期采样 + 超限树杀达成
+    // 「失控任务不能 OOM 宿主」的防护（python 侧 RLIMIT_AS 同量级）。采样
+    // 器按平台选：Linux /proc 进程树求和（含孙进程），Windows tasklist 直系
+    // 子进程（best-effort，模块注释已文档化）。超限回调与 close/timeout 共用
+    // settled 守卫：先 settle + 停看门狗 + 树杀 + 附日志 reject，绝不双发。
+    let stopMemoryWatchdog: (() => void) | null = null;
+    if (proc.pid !== undefined && config.taskMemoryLimitMb > 0) {
+      stopMemoryWatchdog = startMemoryWatchdog({
+        pid: proc.pid,
+        limitMb: config.taskMemoryLimitMb,
+        sampler: process.platform === 'win32' ? winTasklistSampler : linuxProcTreeSampler,
+        intervalMs: config.taskMemoryWatchdogIntervalMs,
+        onExceed: () => {
+          if (settled) return;
+          settled = true;
+          if (timer) clearTimeout(timer);
+          if (stopMemoryWatchdog) {
+            stopMemoryWatchdog();
+            stopMemoryWatchdog = null;
+          }
+          killProcessTree(proc, 'SIGKILL');
+          unregister();
+          const memErr = new Error(
+            `Task exceeded memory limit of ${config.taskMemoryLimitMb}MB`,
+          ) as Error & { logs: string };
+          memErr.logs = logBuffer.toString();
+          reject(memErr);
+        },
+      });
+    }
+
     proc.on('close', (code: number | null) => {
       if (timer) clearTimeout(timer);
+      if (stopMemoryWatchdog) {
+        stopMemoryWatchdog();
+        stopMemoryWatchdog = null;
+      }
       unregister();
       if (settled) return;
       settled = true;
@@ -2240,6 +2391,10 @@ function runProcess(
 
     proc.on('error', (err: Error) => {
       if (timer) clearTimeout(timer);
+      if (stopMemoryWatchdog) {
+        stopMemoryWatchdog();
+        stopMemoryWatchdog = null;
+      }
       unregister();
       if (settled) return;
       settled = true;

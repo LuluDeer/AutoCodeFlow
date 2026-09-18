@@ -4,6 +4,21 @@
 # 管道中途失败不再被吞。
 set -euo pipefail
 
+# ⚠ O-5（维护提示）：本脚本与 dev.sh 功能重叠，Makefile 为唯一规范入口
+#   （make dev / make infra-up / ...）。本脚本保留为便捷封装，行为如有漂移
+#   以 Makefile 为准。
+
+# F-4: docker-compose v1 独立二进制 2023 年 EOL，现代 Docker 只带 `docker compose`
+# v2 插件——v2 优先探测，回退 v1（与 Makefile:9 / deploy.sh compose() 同一策略）。
+if docker compose version >/dev/null 2>&1; then
+  DC="docker compose"
+elif command -v docker-compose >/dev/null 2>&1; then
+  DC="docker-compose"
+else
+  echo "错误: 需要 docker compose v2 插件或 docker-compose v1" >&2
+  exit 1
+fi
+
 # AutoFlow 开发环境启动脚本
 # Usage: ./start-dev.sh [options]
 # Options:
@@ -48,7 +63,7 @@ mkdir -p apps/admin-web/dist
 
 # 启动基础设施服务（PostgreSQL, Redis）
 echo -e "${YELLOW}启动基础设施服务...${NC}"
-docker-compose -f docker-compose.yml up -d postgres redis
+$DC -f docker-compose.yml up -d postgres redis
 
 # 等待基础设施启动
 echo -e "${YELLOW}等待基础设施启动...${NC}"
@@ -58,7 +73,7 @@ sleep 15
 # E-17（DEEP_REVIEW 0ef3bbe）：勿硬编码容器名。compose 项目名默认取目录名（AutoCodeFlow
 # → autocodeflow-*），容器名随 project 推导；这里按 service 名动态解析容器，新环境不再卡死。
 echo -e "${YELLOW}检查 PostgreSQL...${NC}"
-POSTGRES_CONTAINER="$(docker-compose -f docker-compose.yml ps -q postgres)"
+POSTGRES_CONTAINER="$($DC -f docker-compose.yml ps -q postgres)"
 if ! docker exec "$POSTGRES_CONTAINER" pg_isready -U autoflow; then
     echo -e "${RED}PostgreSQL 未就绪，请检查日志${NC}"
     exit 1
@@ -66,8 +81,10 @@ fi
 
 # 检查 Redis 是否就绪
 echo -e "${YELLOW}检查 Redis...${NC}"
-REDIS_CONTAINER="$(docker-compose -f docker-compose.yml ps -q redis)"
-if ! docker exec "$REDIS_CONTAINER" redis-cli ping | grep -q PONG; then
+REDIS_CONTAINER="$($DC -f docker-compose.yml ps -q redis)"
+# M-2: redis 已强制 requirepass——从 .env 取密码再 ping，避免 NOAUTH 误报
+REDIS_PASSWORD="$(grep -E '^REDIS_PASSWORD=' .env | head -1 | cut -d= -f2- || true)"
+if ! docker exec "$REDIS_CONTAINER" redis-cli -a "${REDIS_PASSWORD}" ping 2>/dev/null | grep -q PONG; then
     echo -e "${RED}Redis 未就绪，请检查日志${NC}"
     exit 1
 fi

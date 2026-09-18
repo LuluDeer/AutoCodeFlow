@@ -15,7 +15,10 @@ import {
 import axios from "axios";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
-import { assertSafeHttpUrl } from "../../common/utils/safe-http.util";
+import {
+  assertAndPinHttpUrl,
+  pinnedAxiosConfig,
+} from "../../common/utils/safe-http.util";
 import { User, UserRole } from "../users/entities/user.entity";
 import { AuthService } from "./auth.service";
 
@@ -144,12 +147,20 @@ export class OidcService {
     }
     const cfg = this.assertConfigured();
     const issuer = cfg.issuer.replace(/\/+$/, "");
-    await assertSafeHttpUrl(issuer, {
+    // F-3（SEC-NEW）: discovery 首跳同样 pin 到校验通过的 IP（Host/SNI
+    // 保留）——OIDC issuer 是部署级域名，逐请求 rebind 同样成立。
+    const pinned = await assertAndPinHttpUrl(issuer, {
       allowPrivateNetwork: cfg.allowPrivateNetwork,
     });
+    const pinCfg = pinnedAxiosConfig(pinned);
+    // 原始 issuer 拼路径（new URL 归一化会改字节形态）；pin 由 agent.lookup 完成。
     const url = `${issuer}/.well-known/openid-configuration`;
     try {
-      const { data } = await axios.get<OidcDiscovery>(url, { timeout: 10_000 });
+      const { data } = await axios.get<OidcDiscovery>(url, {
+        timeout: 10_000,
+        maxRedirects: 0, // R3 parity: 首跳是唯一经 SSRF 校验的地址
+        ...pinCfg,
+      });
       for (const key of [
         "authorization_endpoint",
         "token_endpoint",

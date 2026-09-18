@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# 注意：本脚本与 apps/admin-api/src/modules/executor/install-script.content.ts 互为拷贝（后端经 GET /api/executors/install.sh 下发该副本），修改时请同步两处。
+# 本脚本是安装脚本唯一事实源（E-38）：apps/admin-api/src/modules/executor/install-script.content.ts
+# 由 scripts/gen-install-script-content.mjs 在构建期自动生成，后端经 GET /api/executors/install.sh 下发该副本。
+# 修改安装脚本请只改本文件，然后跑 npm run gen:install-script（或 prebuild 自动跑）；CI 以 check:install-script-sync 守卫同步。
 # AutoCodeFlow Executor 一键安装脚本
 # 用法: curl -fsSL https://<admin>/install.sh | bash -s -- --api-url http://admin:3105 --secret mysecret
 # 或本地运行: bash install.sh --api-url http://... --secret ...

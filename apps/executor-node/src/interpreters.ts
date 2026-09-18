@@ -302,6 +302,35 @@ function poolRoot(): string {
 }
 
 /**
+ * 2-2（audit-r4）：把 realpathSync 的结果归一化为「可跨表示去重」的规范键。
+ *
+ * Windows 上 `fs.realpathSync` 对长路径返回 `\\?\` 扩展前缀、对 UNC 返回
+ * `\\?\UNC\...`，而路径字符串去重/`isInsidePool` 比较用的是普通 `C:\...` /
+ * `\\server\...` 形式——同一物理目录的不同表示会绕过 junction 去重，也让
+ * 池归属判断失真。这里把扩展前缀剥回普通形式（`\\?\UNC\` → `\\`，
+ * `\\?\C:\` → `C:\`），保证别名与其目标、长路径与短路径都收敛到同一键。
+ * 仅影响 Windows；POSIX 路径原样返回。
+ */
+export function canonicalizeRealpathForPlatform(real: string): string {
+  if (process.platform !== 'win32') {
+    return real;
+  }
+  let out = real;
+  // path.normalize 不处理 \\?\ 前缀，先按已知形态剥壳。
+  if (out.startsWith('\\\\?\\UNC\\')) {
+    out = '\\\\' + out.slice(8);
+  } else if (out.startsWith('\\\\?\\')) {
+    out = out.slice(4);
+  }
+  try {
+    out = path.normalize(out);
+  } catch {
+    // 极端畸形路径：保持剥壳后的原样，交给后续存在性检查决定去留。
+  }
+  return out;
+}
+
+/**
  * 把探测到的路径规范化到"真实文件路径"，用于去重与上报。
  *
  * 为什么必须做（实测发现）：uv 安装 `3.12` 时会同时留下
@@ -315,7 +344,7 @@ function poolRoot(): string {
  */
 function canonicalize(candidate: string): string {
   try {
-    return fs.realpathSync(candidate);
+    return canonicalizeRealpathForPlatform(fs.realpathSync(candidate));
   } catch {
     // 断链/竞态：退回原路径，由后续的存在性检查决定去留。
     return candidate;
@@ -550,6 +579,305 @@ export function invalidateCache(): void {
 }
 
 // ---------------------------------------------------------------------------
+// 池体积红线 + 引用感知 LRU 回收（NFR-15/D12）
+// ---------------------------------------------------------------------------
+//
+// 语义镜像 `apps/executor-python/maintenance.enforce_interpreter_pool_limits`：
+// 池只增不删会让长跑执行器被 ~250MB/版本 填满磁盘。两条可配置红线（默认值与
+// python 侧一致：单版本 250MB / 总池 4GB），触发后按目录 mtime 升序回收最久
+// 未使用的版本，直到落回红线。三条硬约束：
+//   1. 引用感知：仍被任务 venv 依赖的版本一律跳过（venv 的 python.exe 只是
+//      shim，真身就是池里那个目录——删了 venv 当场报废，依赖记在
+//      `pyvenv.cfg` 的 `home = <UV_PYTHON_INSTALL_DIR>/cpython-…`）；
+//   2. 全部候选被 pin 住时不删任何东西，只留响亮告警；
+//   3. 只碰解释器池（`cpython-*` 目录），绝不碰 venv/workdir（那是
+//      file-logger.cleanupWorkDir 的 TTL 清扫职责）。
+
+/** 递归目录字节数（不可读项按 0 计——计量失败不该中断清扫）。 */
+function dirSizeBytes(dir: string): number {
+  let total = 0;
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return 0;
+  }
+  for (const entry of entries) {
+    const full = path.join(dir, entry.name);
+    try {
+      if (entry.isDirectory()) total += dirSizeBytes(full);
+      else if (entry.isFile()) total += fs.statSync(full).size;
+    } catch {
+      /* raced / unreadable — count as 0 */
+    }
+  }
+  return total;
+}
+
+/**
+ * 跨平台路径规范化键（python `os.path.normcase(os.path.normpath(...))` 对等）。
+ * Windows 文件系统大小写不敏感，把两个只差大小写的 home/池目录视为同一引用。
+ */
+function normalizePathKey(p: string): string {
+  const resolved = path.resolve(p);
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
+interface PoolVersionEntry {
+  name: string;
+  path: string;
+  size: number;
+  mtime: number;
+}
+
+/**
+ * 池内 `cpython-*` 版本目录 → (name, path, size, mtime)。
+ *
+ * 只收 `cpython-` 前缀目录（与 `removeCorruptEntries` / `poolSummary` 的过滤
+ * 一致）：池根下还可能有 uv 的 `.cache`（下载缓存），那不是"版本"，不在本治理
+ * 范围（避免误删下载缓存）。
+ */
+function poolVersionEntries(root: string): PoolVersionEntry[] {
+  let names: string[];
+  try {
+    names = fs.readdirSync(root);
+  } catch {
+    return [];
+  }
+  const out: PoolVersionEntry[] = [];
+  for (const name of names) {
+    if (!/^cpython-/.test(name)) continue;
+    const full = path.join(root, name);
+    let st: fs.Stats;
+    try {
+      st = fs.statSync(full);
+    } catch {
+      continue;
+    }
+    if (!st.isDirectory()) continue;
+    out.push({ name, path: full, size: dirSizeBytes(full), mtime: st.mtimeMs });
+  }
+  return out;
+}
+
+/** 读 `<venv>/pyvenv.cfg` 的 `home =` 值；缺失/损坏返回 null。 */
+function readPyvenvCfgHome(venvDir: string): string | null {
+  try {
+    const text = fs.readFileSync(path.join(venvDir, 'pyvenv.cfg'), 'utf-8');
+    for (const line of text.split(/\r?\n/)) {
+      const idx = line.indexOf('=');
+      if (idx <= 0) continue;
+      if (line.slice(0, idx).trim().toLowerCase() === 'home') {
+        return line.slice(idx + 1).trim();
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * `<WORK_DIR>/.venvs/*` 的依赖解释器 home → 依赖它的 venv 目录名列表。
+ *
+ * 为什么必须有这一步（python 侧实测确认的生产事故类缺陷）：`uv venv` 建出的
+ * venv 里 `Scripts/python.exe` 只是约 600KB 的 shim，真正的解释器仍在缓存池里，
+ * 依赖记在 `pyvenv.cfg` 的 `home = <UV_PYTHON_INSTALL_DIR>/cpython-…`。池里那个
+ * 目录一旦被删，该 venv 当场报废（`No Python at '...'`），且是静默报废。
+ */
+function venvDependencyHomes(): Map<string, string[]> {
+  const homes = new Map<string, string[]>();
+  const venvRoot = path.join(config.workDir, '.venvs');
+  let children: fs.Dirent[];
+  try {
+    children = fs.readdirSync(venvRoot, { withFileTypes: true });
+  } catch {
+    return homes; // 从未建过 venv（或不可读）→ 无依赖
+  }
+  for (const child of children) {
+    if (!child.isDirectory()) continue;
+    const home = readPyvenvCfgHome(path.join(venvRoot, child.name));
+    if (!home) continue;
+    const key = normalizePathKey(home);
+    const list = homes.get(key);
+    if (list) list.push(child.name);
+    else homes.set(key, [child.name]);
+  }
+  return homes;
+}
+
+export interface InterpreterPoolReclaimResult {
+  reclaimedVersions: number;
+  reclaimedBytes: number;
+  poolBytes: number;
+  overLimit: number;
+  pinnedVersions: number;
+}
+
+/**
+ * 回收池内一个版本目录。**先做硬安全断言，再删。**
+ *
+ * 断言（任一不满足即拒绝删除）：目标必须严格位于池根之内、不得是池根本身。
+ * 删除用 `fs.rmSync`（与 `removeCorruptEntries` 同一路径；python 侧优先
+ * `uv python uninstall`，node 侧无对应簿记子命令，直接 rmtree）。
+ */
+function reclaimInterpreterVersion(poolRootDir: string, target: string): boolean {
+  if (!isInsidePool(target)) {
+    logger.error(
+      `Refusing to reclaim ${target}: it is not inside the interpreter pool ${poolRootDir}`,
+    );
+    return false;
+  }
+  try {
+    fs.rmSync(target, { recursive: true, force: true });
+  } catch (err) {
+    // best-effort：一次 EACCES 不该让红线失效（其余候选仍会被尝试）。
+    logger.warn(
+      `Interpreter reclaim failed for ${target}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  return true;
+}
+
+/**
+ * 尝试回收一个候选版本。返回 [是否已回收, 释放字节数]。
+ *
+ * 依赖检查是**否决权**：只要还有 venv 的 home 指向该目录（或其子目录），就绝不
+ * 回收——宁可让池暂时超红线（响亮告警）也不能把用户的 venv 弄废。
+ */
+function attemptReclaim(
+  entry: PoolVersionEntry,
+  dependencyHomes: Map<string, string[]>,
+  reason: string,
+): [boolean, number] {
+  const key = normalizePathKey(entry.path);
+  const dependents: string[] = [...(dependencyHomes.get(key) ?? [])];
+  for (const [homeKey, names] of dependencyHomes) {
+    // home 可能精确指向版本目录，也可能指向它的子目录（同样以该版本为真身）。
+    if (homeKey === key || homeKey.startsWith(key + path.sep)) dependents.push(...names);
+  }
+  if (dependents.length > 0) {
+    logger.warn(
+      `Skipping reclamation of interpreter ${entry.name} (${reason}): ` +
+        `${dependents.length} task venv(s) still depend on it ` +
+        `(${dependents.slice(0, 5).join(', ')}). Deleting it would brick those venvs ` +
+        '(they are shims over this directory).',
+    );
+    return [false, 0];
+  }
+  logger.warn(
+    `Reclaiming interpreter ${entry.name} (${entry.size} bytes, last used ` +
+      `${new Date(entry.mtime).toISOString()}, ${reason}) — no task venv depends on it`,
+  );
+  reclaimInterpreterVersion(poolRoot(), entry.path);
+  return [true, entry.size];
+}
+
+/**
+ * NFR-15/D12：解释器池体积红线 + **引用感知的**最久未使用（LRU）回收。
+ *
+ * 两条可配置红线（默认 250MB / 4GB，与 python 侧一致）。触发即先告警，再按
+ * 目录 mtime 升序尝试回收，直到落回红线。回收后调用 `invalidateCache()` 让上报
+ * 清单收敛。安全地从定时清扫（file-logger.cleanupWorkDir）调用；本函数自身
+ * 不抛（内部已收敛），调用方仍可再包一层 try/catch。
+ */
+export function enforceInterpreterPoolLimits(): InterpreterPoolReclaimResult {
+  const counts: InterpreterPoolReclaimResult = {
+    reclaimedVersions: 0,
+    reclaimedBytes: 0,
+    poolBytes: 0,
+    overLimit: 0,
+    pinnedVersions: 0,
+  };
+  const root = poolRoot();
+  let st: fs.Stats;
+  try {
+    st = fs.statSync(root);
+  } catch {
+    return counts; // 池不存在（从未下载）→ 无操作
+  }
+  if (!st.isDirectory()) return counts;
+
+  const singleLimit = Math.max(1, config.interpreterSingleVersionMb) * 1024 * 1024;
+  const totalLimit = Math.max(1, config.interpreterTotalGb) * 1024 * 1024 * 1024;
+
+  let entries = poolVersionEntries(root);
+  if (entries.length === 0) return counts;
+  let totalBytes = entries.reduce((sum, e) => sum + e.size, 0);
+  counts.poolBytes = totalBytes;
+  // 依赖快照只取一次：回收过程中 venv 集合不会变（本函数不碰 venv）。
+  const dependencyHomes = venvDependencyHomes();
+
+  // 1) 单版本超限：每个超限版本单独尝试回收。
+  const oversized = entries.filter((e) => e.size > singleLimit);
+  if (oversized.length > 0) {
+    counts.overLimit += oversized.length;
+    for (const entry of oversized) {
+      logger.warn(
+        `Interpreter version ${entry.name} exceeds the per-version limit ` +
+          `(${entry.size} bytes > ${singleLimit} bytes) (D12/NFR-15)`,
+      );
+      const [reclaimed, freed] = attemptReclaim(entry, dependencyHomes, 'over per-version limit');
+      if (reclaimed) {
+        counts.reclaimedVersions++;
+        counts.reclaimedBytes += freed;
+        totalBytes -= freed;
+      } else {
+        counts.pinnedVersions++;
+      }
+    }
+    entries = entries.filter((e) => {
+      try {
+        return fs.existsSync(e.path);
+      } catch {
+        return false;
+      }
+    });
+  }
+
+  // 2) 总池超限：按 mtime 升序（最久未使用优先）逐个回收，直到落回红线。
+  if (totalBytes > totalLimit) {
+    counts.overLimit++;
+    logger.warn(
+      `Interpreter pool ${root} is over the total limit (${totalBytes} bytes > ${totalLimit} bytes); ` +
+        'reclaiming least-recently-used versions (D12/NFR-15)',
+    );
+    for (const entry of [...entries].sort((a, b) => a.mtime - b.mtime)) {
+      if (totalBytes <= totalLimit) break;
+      const [reclaimed, freed] = attemptReclaim(entry, dependencyHomes, 'pool over total limit');
+      if (reclaimed) {
+        counts.reclaimedVersions++;
+        counts.reclaimedBytes += freed;
+        totalBytes -= freed;
+      } else {
+        counts.pinnedVersions++;
+      }
+    }
+    if (totalBytes > totalLimit) {
+      // 全部候选都被依赖 pin 住：不删任何东西，但必须让人看见。
+      logger.warn(
+        `Interpreter pool is still over the total limit (${totalBytes} bytes > ${totalLimit} bytes) — ` +
+          'every candidate version is still referenced by a task venv, so nothing was reclaimed. ' +
+          `Remove the dependent task venvs under ${path.join(config.workDir, '.venvs')} ` +
+          '(or raise INTERPRETER_TOTAL_GB) to allow reclamation.',
+      );
+    }
+  }
+
+  if (counts.reclaimedVersions > 0) {
+    counts.poolBytes = Math.max(0, totalBytes);
+    try {
+      invalidateCache();
+    } catch (err) {
+      logger.warn(
+        `interpreters.invalidateCache failed after reclaim: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+  return counts;
+}
+
+// ---------------------------------------------------------------------------
 // 子进程环境
 // ---------------------------------------------------------------------------
 
@@ -593,22 +921,48 @@ function uvChildEnv(): NodeJS.ProcessEnv {
 // ---------------------------------------------------------------------------
 
 /**
- * 全局单下载队列：同一时刻全局至多一个 in-flight 下载。
+ * 全局**有界并发**下载（D13/NFR-16 并发互斥）。
  *
- * 用 Promise 链而非信号量：`ensureVersion` 的等待者在链上排队，前一个无论
- * 成功还是失败都必须放行后一个（`then(fn, fn)`），否则一次下载失败会永久
- * 毒化队列——这是 Promise 链实现里最容易漏的一处。
+ * 原实现是全局单下载队列（同一时刻至多一个 in-flight 下载）：批量任务同时
+ * 首次声明不同版本时，N 个版本要 N × 下载时间串行排队（每版本实测约
+ * 13~17s，弱网更久，见深度评审 P1"批量首次启动"）。这里放宽为有界并发：
+ *
+ * - **不同版本写池内不同目录**（`cpython-<ver>-…`）——uv 对"同一安装目录
+ *   并发写不安全"的约束不跨版本；per-version in-flight 去重保证同一版本
+ *   至多一次下载。这是"按版本并行"安全性的根基。
+ * - 并发上限（默认 2，`INTERPRETER_DOWNLOAD_CONCURRENCY` 可调，范围 [1,8]）
+ *   保留 O-10 的顾虑：弱网/低磁盘执行器上防止争抢带宽与 inode。1 = 旧版
+ *   全局单队列行为。
+ * - 保持"前一个无论成功失败都放行后一个"的语义：显式 waiters 队列 + 计数
+ *   实现，一次下载失败不会毒化队列（Promise 链实现里最容易漏的一处）。
  */
-let downloadChain: Promise<unknown> = Promise.resolve();
+let activeDownloads = 0;
+const downloadWaiters: Array<() => void> = [];
 
 function withDownloadSlot<T>(fn: () => Promise<T>): Promise<T> {
-  const run = downloadChain.then(fn, fn);
-  // 链本身吞掉错误：错误语义属于各自的调用者（`run`），链只负责"前一个结束"。
-  downloadChain = run.then(
-    () => undefined,
-    () => undefined,
-  );
-  return run;
+  const run = async (): Promise<T> => {
+    // 动态读并发（热重载 config 生效）；对 undefined/NaN 回落默认 2，
+    // 再钳到 [1, 8]——NaN 会让 `activeDownloads >= NaN` 恒为 false，
+    // 静默退化成无界并发，这是本函数唯一必须防住的形态。
+    const configured = Number(config.interpreterDownloadConcurrency);
+    const concurrency = Math.min(
+      Math.max(Number.isFinite(configured) ? configured : 2, 1),
+      8,
+    );
+    if (activeDownloads >= concurrency) {
+      await new Promise<void>((resolve) => downloadWaiters.push(resolve));
+    }
+    activeDownloads++;
+    try {
+      return await fn();
+    } finally {
+      activeDownloads--;
+      // 单释放单放行：无论成功还是失败，恰好唤醒下一个等待者。
+      const next = downloadWaiters.shift();
+      if (next) next();
+    }
+  };
+  return run();
 }
 
 /** per-version in-flight 去重：同一版本的并发请求共享同一次下载。 */
@@ -917,5 +1271,6 @@ export function __resetForTests(): void {
   poolCache = null;
   uvResolution = null;
   inFlight.clear();
-  downloadChain = Promise.resolve();
+  activeDownloads = 0;
+  downloadWaiters.length = 0;
 }

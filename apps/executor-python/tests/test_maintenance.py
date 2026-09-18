@@ -32,7 +32,7 @@ def work_root(tmp_path, monkeypatch):
     return tmp_path
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture()
 def _wire_live_entries_provider():
     """把 execute 的运行表快照注册给 maintenance——与生产接线逐字一致。
 
@@ -44,9 +44,16 @@ def _wire_live_entries_provider():
     venv 被 TTL 清扫误删（这两个用例在隔离运行与全量运行下都红，但产品代码
     本身正确——是测试隔离缺陷，不是产品 bug）。
 
-    autouse 让每个用例都处在生产同款接线下；用例内部若要模拟 provider 故障
-    （见 test_cleanup_provider_failure_removes_nothing）可自行覆盖，fixture
-    teardown 统一还原到用例前的 provider，不污染其它模块。
+    O-3（审计优化）：原为 autouse 对文件内**所有**用例生效，包括不关心 live
+    entries 的 TTL/dead-letter 清扫用例——虽然功能上无害（provider 只在 cleanup
+    查询时调用），但模糊了"哪些用例需要生产接线"的意图。现改为**显式参数注入**，
+    只有真正依赖活跃执行保护的用例才声明它：
+      * test_cleanup_skips_active_execution_workdir / test_cleanup_skips_active_task_venv
+        —— 需要 execute 的运行表在生产接线形态下对清扫可见；
+      * test_cleanup_provider_failure_removes_nothing / test_lifespan_* 刻意**不**声明：
+        前者自己注册故障 provider，后者由 lifespan 亲自注册（main.py:124）。
+    用例内部若要模拟 provider 故障可自行覆盖，fixture teardown 统一还原到
+    用例前的 provider，不污染其它模块。
     """
     import maintenance
     from routers import execute as execute_module
@@ -112,7 +119,7 @@ def test_cleanup_protects_infrastructure_names(work_root):
         assert (work_root / name).exists(), f'{name} must never be swept'
 
 
-def test_cleanup_skips_active_execution_workdir(work_root):
+def test_cleanup_skips_active_execution_workdir(work_root, _wire_live_entries_provider):
     """E8 hard requirement: the directory of a live execution is never
     deleted, no matter how old its mtime is."""
     import maintenance
@@ -133,7 +140,7 @@ def test_cleanup_skips_active_execution_workdir(work_root):
     assert not live_dir.exists(), 'once terminal, the TTL sweep reclaims it'
 
 
-def test_cleanup_skips_active_task_venv(work_root):
+def test_cleanup_skips_active_task_venv(work_root, _wire_live_entries_provider):
     """A long-running task's .venvs/<task_id> is protected via the live
     entry's task_id (the venv dir is not named by executionId)."""
     import maintenance
@@ -301,14 +308,29 @@ def test_cleanup_dead_letter_missing_dir_is_noop(work_root):
 # ---------------------------------------------------------------------------
 # Background sweep task + lifespan wiring
 # ---------------------------------------------------------------------------
+#
+# U-4（审计优化）——时序纪律：这三个用例直接驱动 `disk_cleanup_task` 的真实
+# `asyncio.sleep` 循环（事件循环时钟），与 test_scheduler.py 用
+# `monkeypatch.setattr(scheduler_module.time, 'monotonic', …)` 注入虚拟时钟的
+# 模式**不同源**：scheduler 的节流判定走 `time.monotonic()` 可以注入，而
+# `asyncio.sleep` 走事件循环时钟，无法用 time.monotonic 注入；且 F-4 的清扫
+# 真实跑在 worker 线程（真实 time.sleep），虚拟时钟会让 ticker 快进越过真实
+# 线程，模型本身就不成立。因此这里采用**放大墙钟窗口**策略（F-2/F-3/F-4）：
+# 断言点相对设置值留 4~10 倍余量——CI 高负载下 `asyncio.sleep` 只会**延后**
+# 不会提前，窗口足够宽时假绿/假红概率趋零（曾用 0.05s 级窗口在 CI 上间歇红）。
 
 def test_disk_cleanup_task_defers_first_run(work_root, monkeypatch):
     """E8 boot-storm guard: the first sweep runs only after the configured
-    delay, then repeats on the interval."""
+    delay, then repeats on the interval.
+
+    F-2（审计修复）：原用 initial_delay=interval=0.05、0.02s/0.15s 断言点，
+    CI 调度抖动（GC 暂停、线程调度）下 0.05s 的 delay 可能在 0.02s 检查前
+    到期而假红；0.15s 内完成 ≥2 次扫描也可能不够。窗口放大 10 倍后余量充足。
+    """
     import maintenance
 
-    monkeypatch.setattr(settings, 'disk_cleanup_initial_delay_seconds', 0.05)
-    monkeypatch.setattr(settings, 'disk_cleanup_interval_seconds', 0.05)
+    monkeypatch.setattr(settings, 'disk_cleanup_initial_delay_seconds', 0.5)
+    monkeypatch.setattr(settings, 'disk_cleanup_interval_seconds', 0.5)
 
     sweeps = []
 
@@ -320,9 +342,9 @@ def test_disk_cleanup_task_defers_first_run(work_root, monkeypatch):
 
     async def scenario():
         task = asyncio.create_task(maintenance.disk_cleanup_task())
-        await asyncio.sleep(0.02)
+        await asyncio.sleep(0.2)
         assert sweeps == [], 'first sweep must wait for the initial delay'
-        await asyncio.sleep(0.15)
+        await asyncio.sleep(1.5)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
@@ -332,10 +354,13 @@ def test_disk_cleanup_task_defers_first_run(work_root, monkeypatch):
 
 
 def test_disk_cleanup_task_survives_sweep_errors(work_root, monkeypatch):
+    """F-3（审计修复）：原 interval=0.05、0.15s 内断言 ≥2 次调用，高负载下
+    可能只完成 1 次即被取消而假红。窗口放大后首扫（t≈0）与第二扫（t=0.5）
+    都在断言点前完成，余量 3 倍以上。"""
     import maintenance
 
     monkeypatch.setattr(settings, 'disk_cleanup_initial_delay_seconds', 0)
-    monkeypatch.setattr(settings, 'disk_cleanup_interval_seconds', 0.05)
+    monkeypatch.setattr(settings, 'disk_cleanup_interval_seconds', 0.5)
 
     calls = {'n': 0}
 
@@ -349,7 +374,7 @@ def test_disk_cleanup_task_survives_sweep_errors(work_root, monkeypatch):
 
     async def scenario():
         task = asyncio.create_task(maintenance.disk_cleanup_task())
-        await asyncio.sleep(0.15)
+        await asyncio.sleep(1.5)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
@@ -362,13 +387,18 @@ def test_disk_cleanup_task_runs_sweep_off_the_event_loop(work_root, monkeypatch)
     """QA2: cleanup_work_dir is blocking filesystem I/O (a large rmtree can
     take seconds) — the sweep task must run it in a worker thread, not on
     the event loop, or heartbeats stall and the executor can be judged
-    offline mid-delete."""
+    offline mid-delete.
+
+    F-4（审计修复）：原 ticker 0.02s / 窗口 0.3s / 阈值 ≥5，清扫线程池调度
+    延迟下 ticker 实际可用时间可能不足 0.1s。现 ticker 放宽到 0.05s、窗口
+    0.7s，期望 ~14 tick，阈值 5 留近 3 倍余量。
+    """
     import threading
 
     import maintenance
 
     monkeypatch.setattr(settings, 'disk_cleanup_initial_delay_seconds', 0)
-    monkeypatch.setattr(settings, 'disk_cleanup_interval_seconds', 0.05)
+    monkeypatch.setattr(settings, 'disk_cleanup_interval_seconds', 0.15)
 
     main_thread = threading.current_thread()
     seen = {}
@@ -386,11 +416,11 @@ def test_disk_cleanup_task_runs_sweep_off_the_event_loop(work_root, monkeypatch)
 
         async def ticker():
             while True:
-                await asyncio.sleep(0.02)
+                await asyncio.sleep(0.05)
                 ticks['n'] += 1
 
         t = asyncio.create_task(ticker())
-        await asyncio.sleep(0.3)
+        await asyncio.sleep(0.7)
         t.cancel()
         sweep.cancel()
         with pytest.raises(asyncio.CancelledError):

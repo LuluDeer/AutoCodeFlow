@@ -4,11 +4,12 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as http from 'http';
 import * as https from 'https';
-import { config } from '../config';
+import { config, EXECUTOR_VERSION, PROTOCOL_VERSION } from '../config';
 import { runningCount } from '../scheduler';
 import { taskWorkerManager } from '../task-worker';
 import { getExecutorAuthToken } from './logs';
 import {
+  getAdminStatus,
   getHeartbeatState,
   recordHeartbeat,
   setAdminApiReachable,
@@ -159,6 +160,37 @@ healthRouter.get('/health', async (_req: Request, res: Response) => {
 
 healthRouter.get('/health/live', (_req: Request, res: Response) => {
   res.status(200).send('OK');
+});
+
+/**
+ * F-2（中台↔执行器深度审查）：结构化 admin 连通性视图，供桌面客户端
+ * （executor-desktop）语义解析，替代对 executor-node stdout/stderr 日志文案的
+ * 正则匹配（'Registered to admin-api' / 'Heartbeat succeeded' 等——日志一经
+ * i18n/重构即让桌面状态推断静默失效，托盘显示「在线」但执行器实际已离线）。
+ *
+ * 判定契约（desktop 侧按此消费）：
+ * - `registration === 'failed'` 或 `heartbeatStatus === 'failed'` → 离线
+ *   （admin 面不可达/注册被拒，即便本地 /health/live 存活）；
+ * - `heartbeatStatus === 'ok'` → 在线（admin 面心跳已确认）；
+ * - `unknown`（启动早期或从未成功）→ 维持现状，不得据「未知」降级为离线。
+ *
+ * 本端点**不**做网络探测（/health 与 /health/ready 的 checkAdminApi 才探）；
+ * 它只回读主循环已写入的心跳/注册状态，是纯读端点（廉价、可高频轮询）。
+ */
+healthRouter.get('/health/admin-status', (_req: Request, res: Response) => {
+  const { registration, heartbeatStatus, lastHeartbeatTime, adminApiReachable } =
+    getAdminStatus();
+  res.json({
+    registered: registration === 'registered',
+    registration,
+    heartbeatStatus,
+    lastHeartbeatTime,
+    adminApiReachable,
+    executorVersion: EXECUTOR_VERSION,
+    protocolVersion: PROTOCOL_VERSION,
+    uptimeSec: Math.round(process.uptime()),
+    timestamp: new Date().toISOString(),
+  });
 });
 
 // E-20（DEEP_REVIEW 0ef3bbe）：就绪探针规范路径统一为 /health/ready（与 admin-api

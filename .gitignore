@@ -117,3 +117,7 @@ dump.rdb
 # AI 助手工作区记忆（会话上下文/长期约定，本地留存，不入库）
 .workbuddy-ai/
 
+
+# pytest 本地 basetemp（测试临时目录，不入库）
+.pytmp/
+

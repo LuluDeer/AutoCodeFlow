@@ -184,6 +184,37 @@ function main(): void {
     assert.equal(out, 'another-plain', '5e degraded save keeps plaintext');
   }
 
+  // ── 6. S-2（audit-r4）：严格模式——无 keyring 时拒绝明文落盘 ──
+  // 6a. 可用时严格模式照常加密
+  setSafeStorageLoader(okAdapter);
+  {
+    const out = encryptToken('strict-plain', { requireEncryption: true });
+    assert.ok(out !== null && out.startsWith(ENC_PREFIX), '6a strict mode still encrypts when available');
+  }
+  // 6b. 不可用时严格模式返回 null（调用方不得落明文——config-store.save 据此跳过写入）
+  setSafeStorageLoader(unavailableAdapter);
+  {
+    assert.equal(
+      encryptToken('strict-plain', { requireEncryption: true }),
+      null,
+      '6b strict mode + unavailable keyring → null, never plaintext',
+    );
+  }
+  // 6c. 无 electron 模块（loader null）同样严格拒绝
+  setSafeStorageLoader(() => null);
+  {
+    assert.equal(
+      encryptToken('strict-plain', { requireEncryption: true }),
+      null,
+      '6c strict mode + no module → null',
+    );
+  }
+  // 6d. 兼容姿态不受影响：非严格模式仍返回 null 由调用方决定降级
+  setSafeStorageLoader(unavailableAdapter);
+  {
+    assert.equal(encryptToken('strict-plain'), null, '6d non-strict keeps legacy null semantics');
+  }
+
   setSafeStorageLoader(null);
   console.log('token-crypto selftest: all assertions passed');
 }

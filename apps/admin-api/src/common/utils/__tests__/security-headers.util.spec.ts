@@ -63,9 +63,24 @@ describe("security-headers.util (SEC-08)", () => {
       expect(opts.referrerPolicy).toEqual({ policy: "same-origin" });
     });
 
-    it("非生产：CSP 关闭（Swagger UI 内联脚本可用）、HSTS 关闭，保持开发宽松", () => {
+    it("非生产：CSP 宽松单页（仅放行内联/同源，Swagger UI 可用）、HSTS 关闭", () => {
       const opts = buildHelmetOptions(false);
-      expect(opts.contentSecurityPolicy).toBe(false);
+      // O-5/SEC-NEW：非生产 CSP 由「完全关闭」收紧为「宽松单页」——仍拒绝
+      // 跨源脚本注入与框架注入，仅放行内联脚本/样式与 data:/同源资源。
+      expect(opts.contentSecurityPolicy).not.toBe(false);
+      const csp = opts.contentSecurityPolicy as {
+        useDefaults: boolean;
+        directives: Record<string, readonly string[]>;
+      };
+      expect(csp.useDefaults).toBe(false);
+      // 非生产分支的 directives 使用 camelCase 键（源码字面量），与生产
+      // PRODUCTION_CSP_DIRECTIVES 的 kebab-case 不同——按实现断言。
+      expect(csp.directives["scriptSrc"]).toEqual([
+        "'self'",
+        "'unsafe-inline'",
+      ]);
+      expect(csp.directives["objectSrc"]).toEqual(["'none'"]);
+      expect(csp.directives["frameAncestors"]).toEqual(["'none'"]);
       expect(opts.hsts).toBe(false);
       expect(opts.referrerPolicy).toEqual({ policy: "same-origin" });
     });
@@ -118,10 +133,16 @@ describe("security-headers.util (SEC-08)", () => {
       );
     });
 
-    it("开发实例：无 CSP 头（宽松，Swagger 可用），其余默认头保持", async () => {
+    it("开发实例：CSP 宽松单页头存在（仅放行内联/同源），其余默认头保持", async () => {
       const res = await request(devApp.getHttpServer()).get("/api/sec08-probe");
       expect(res.status).toBe(200);
-      expect(res.headers["content-security-policy"]).toBeUndefined();
+      // O-5/SEC-NEW：开发实例同样输出 CSP，但 script-src 带 'unsafe-inline'
+      // （Swagger UI 可用），object-src/frame-ancestors 仍为 'none'。
+      const csp = String(res.headers["content-security-policy"]);
+      expect(csp).toContain("default-src 'self'");
+      expect(csp).toContain("script-src 'self' 'unsafe-inline'");
+      expect(csp).toContain("object-src 'none'");
+      expect(csp).toContain("frame-ancestors 'none'");
       expect(res.headers["x-content-type-options"]).toBe("nosniff");
     });
   });

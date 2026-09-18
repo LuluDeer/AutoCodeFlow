@@ -176,6 +176,10 @@ describe('templateTriggerAndRuntime（内部 state 同步映射）', () => {
 });
 
 describe('TaskFormPage 创建态 ?templateId= 预填（组件级，UI-06 单页语义）', () => {
+  // O-2（测试体系审计，2026-09-18）：本 describe 的用例都走**全页挂载 +
+  // findByDisplayValue 轮询**，在 coverage 仪器化（v8）与并发 transform 下
+  // 15s 硬编码预算实测超时（vite.config.ts 的 O-2 注释记录原始数据）；
+  // 按审计建议「对确实慢的用例逐个放宽」提至 30s（与全局 testTimeout 对齐）。
   it('拉取模板后表单预填 config 值（入口文件/运行时/cron 同屏可见）', async () => {
     mockSearch = 'templateId=a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d';
     vi.mocked(taskTemplatesApi.get).mockClear().mockResolvedValue(makeTemplate() as never);
@@ -188,7 +192,7 @@ describe('TaskFormPage 创建态 ?templateId= 预填（组件级，UI-06 单页�
     expect(screen.getByDisplayValue('shell')).toBeTruthy();
     expect(screen.getByDisplayValue('0 2 * * *')).toBeTruthy();
     expect(taskTemplatesApi.get).toHaveBeenCalledWith('a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d');
-  }, 15_000);
+  }, 30_000);
 
   it('模板 description 预填描述（config 无 description 键，独立取）', async () => {
     mockSearch = 'templateId=a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d';
@@ -197,7 +201,7 @@ describe('TaskFormPage 创建态 ?templateId= 预填（组件级，UI-06 单页�
     render(<TaskFormPage />);
 
     expect(await screen.findByDisplayValue(/周期性备份任务/)).toBeTruthy();
-  }, 15_000);
+  }, 30_000);
 
   it('预填后显式修改仍可提交（用户字段可覆盖：改 name 后提交，payload 用新值）', async () => {
     mockSearch = 'templateId=a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d';
@@ -222,7 +226,7 @@ describe('TaskFormPage 创建态 ?templateId= 预填（组件级，UI-06 单页�
     expect(payload.runtime).toBe('shell');
     // timeoutSeconds 桥接后的 timeout 入 payload。
     expect(payload.timeout).toBe(3600);
-  }, 15_000);
+  }, 30_000);
 
   it('模板加载失败降级：空白表单仍可用（不阻塞手动创建）', async () => {
     mockSearch = 'templateId=a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d';
@@ -233,5 +237,5 @@ describe('TaskFormPage 创建态 ?templateId= 预填（组件级，UI-06 单页�
     // 失败后表单仍以空白/默认值渲染，可正常走手动创建。
     expect(await screen.findByPlaceholderText('daily-report')).toBeTruthy();
     expect(screen.queryByDisplayValue('backup.sh')).toBeNull();
-  }, 15_000);
+  }, 30_000);
 });

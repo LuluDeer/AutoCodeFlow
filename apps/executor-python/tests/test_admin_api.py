@@ -71,20 +71,13 @@ async def test_check_admin_api_connectivity_returns_true_on_success(monkeypatch)
             return None
 
     class FakeClient:
-        def __init__(self, timeout):
-            self.timeout = timeout
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return None
-
-        async def get(self, url):
-            calls.append((url, self.timeout))
+        async def get(self, url, timeout):
+            calls.append((url, timeout))
             return FakeResponse()
 
-    monkeypatch.setattr('admin_api.httpx.AsyncClient', FakeClient)
+    # 网络性能审计（2026-09-18）：check_admin_api_connectivity 改用 O-24 共享
+    # 连接池（scheduler.get_http_client），测试桩随之改为桩住该入口。
+    monkeypatch.setattr('scheduler.get_http_client', lambda: FakeClient())
 
     ok = await check_admin_api_connectivity(attempts=1, timeout_seconds=3.0)
 
@@ -102,23 +95,14 @@ async def test_check_admin_api_connectivity_returns_false_after_retries(monkeypa
     sleeps = []
 
     class FakeClient:
-        def __init__(self, timeout):
-            self.timeout = timeout
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return None
-
-        async def get(self, url):
-            calls.append((url, self.timeout))
+        async def get(self, url, timeout):
+            calls.append((url, timeout))
             raise RuntimeError('down')
 
     async def fake_sleep(delay):
         sleeps.append(delay)
 
-    monkeypatch.setattr('admin_api.httpx.AsyncClient', FakeClient)
+    monkeypatch.setattr('scheduler.get_http_client', lambda: FakeClient())
     monkeypatch.setattr('admin_api.asyncio.sleep', fake_sleep)
 
     ok = await check_admin_api_connectivity(

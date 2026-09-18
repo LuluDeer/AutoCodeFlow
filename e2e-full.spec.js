@@ -2041,3 +2041,133 @@ test.describe('token-rotation (AUTH-05)', () => {
   });
 });
 
+// ══ E-3（测试体系审计）：interpreter-match 跨模块全链集成 ══
+//
+// 背景：interpreter-match.util.spec.ts（admin-api）只覆盖匹配算法单元，
+// executor-python 的 test_interpreters_reporting.py 只覆盖上报格式，两端之间
+// 的**调度接线**（执行器上报 interpreters → 存储 → 任务声明 runtimeVersion →
+// 调度器按解释器过滤候选 → 派发到匹配执行器）此前无任何集成守卫——上报字段名
+// 漂移或匹配算法与上报格式不一致都会被两端各自的绿测试放行。
+//
+// 设计：注册两台 pull 模式一次性执行器（随机回环地址，finally 删除），
+// py39 上报 interpreters=[{version:"3.9.20"}]、py312 上报 [{version:"3.12.3"}]；
+// 创建 runtimeVersion:"3.9" 的 AUTO 任务触发，断言：
+//   ① py39 长轮询**取到**本次派发载荷（executionId 与最新执行行一致）；
+//   ② py312 轮询**取不到**（被解释器过滤剔除，而非靠运气没被选中）；
+//   ③ 最新执行行的 executorAddress == py39 地址（任务真的落在匹配执行器上）。
+// 与 test 45 同理：不真跑执行器（无回调），执行行停在 queued，由 stale sweep
+// 收敛；共享 token 不可用时 `test.skip` 显式跳过。
+//
+// 兼容性说明：真实 executor-node 未上报 interpreters → 按 LEGACY_DEFAULT
+// ["3.12"] 兜底，对 runtimeVersion:"3.9" 不满足，会被同一过滤器剔除（这正是
+// 本例要验证的过滤器行为，而非靠 runtime/capabilities 排除）。
+
+test.describe('interpreter-match cross-module (E-3)', () => {
+  test.describe.configure({ mode: 'serial' });
+
+  test('E-3. runtimeVersion 声明 → 调度按解释器过滤 → 派发落在匹配执行器', async ({ request }) => {
+    const py39 = await apiRegisterThrowawayExecutor(request, { dispatchMode: 'pull', runtime: 'python' });
+    const py312 = await apiRegisterThrowawayExecutor(request, { dispatchMode: 'pull', runtime: 'python' });
+    const py39Id = py39.data?.id;
+    const py312Id = py312.data?.id;
+    // 共享 token 不可用（E2E_EXECUTOR_SECRET 缺失/错误）时显式 skip，不误报
+    // 失败；skip 抛错前的注册结果统一由 finally 清理（含未走 try 的注册）。
+    try {
+      test.skip(
+        py39.status !== 200 && py39.status !== 201,
+        `无法注册 py39 执行器（共享 token 不可用？status=${py39.status}）：${JSON.stringify(py39.raw).slice(0, 200)}`,
+      );
+      test.skip(
+        py312.status !== 200 && py312.status !== 201,
+        `无法注册 py312 执行器（共享 token 不可用？status=${py312.status}）：${JSON.stringify(py312.raw).slice(0, 200)}`,
+      );
+      const py39Token = py39.data?.perExecutorToken;
+      const py312Token = py312.data?.perExecutorToken;
+      expect(py39Id, 'py39 register 未返回 id').toBeTruthy();
+      expect(py312Id, 'py312 register 未返回 id').toBeTruthy();
+      expect(py39Token, 'py39 register 未返回 perExecutorToken').toBeTruthy();
+      expect(py312Token, 'py312 register 未返回 perExecutorToken').toBeTruthy();
+
+      // 上报解释器缓存池清单（register 即采纳；重注册携带 interpreters 覆盖）
+      const rep39 = await request.post(`${API}/api/executors/register`, {
+        headers: { Authorization: `Bearer ${E2E_SHARED_TOKEN}` },
+        data: {
+          appName: py39.appName,
+          address: py39.address,
+          runtime: ['python'],
+          dispatchMode: 'pull',
+          maxConcurrentTasks: 2,
+          startupId: py39.startupId,
+          interpreters: [{ version: '3.9.20', available: true }],
+        },
+      });
+      const rep312 = await request.post(`${API}/api/executors/register`, {
+        headers: { Authorization: `Bearer ${E2E_SHARED_TOKEN}` },
+        data: {
+          appName: py312.appName,
+          address: py312.address,
+          runtime: ['python'],
+          dispatchMode: 'pull',
+          maxConcurrentTasks: 2,
+          startupId: py312.startupId,
+          interpreters: [{ version: '3.12.3', available: true }],
+        },
+      });
+      expect([200, 201], `py39 重注册失败：${rep39.status()}`).toContain(rep39.status());
+      expect([200, 201], `py312 重注册失败：${rep312.status()}`).toContain(rep312.status());
+
+      // AUTO 调度 + runtimeVersion 声明（不 pin executorId——匹配完全交给调度器）
+      const task = await apiCreateTask(request, {
+        name: `e2e-interp-match-${Date.now().toString().slice(-6)}`,
+        triggerType: 'manual',
+        runtime: 'python',
+        entrypoint: 'main.py',
+        runtimeVersion: '3.9',
+        maxRetry: 0,
+      });
+      expect(task.runtimeVersion, '任务 runtimeVersion 未持久化').toBe('3.9');
+      await apiTriggerTask(request, task.id);
+
+      // ① py39 长轮询应取到本次派发（解释器 3.9.20 满足 3.9 声明）
+      let payload = null;
+      for (let i = 0; i < 30 && !payload; i++) {
+        const r = await request.post(`${API}/api/executors/pull`, {
+          headers: { Authorization: `Bearer ${py39Token}` },
+          data: { address: py39.address, waitMs: 1000 },
+        });
+        if (r.status() === 200) payload = (await r.json()).data?.task ?? null;
+        if (!payload) await new Promise((res) => setTimeout(res, 300));
+      }
+      expect(payload, 'py39 未取到派发载荷（解释器过滤未放行匹配执行器？）').not.toBeNull();
+      expect(payload.executionId, 'py39 pull 载荷缺 executionId').toBeTruthy();
+      expect(payload.schemaVersion, 'py39 pull 载荷缺 schemaVersion').toBeTruthy();
+
+      // ② py312 轮询必须取不到（3.12.3 不满足 3.9 声明，被同一过滤器剔除）
+      let other = null;
+      for (let i = 0; i < 10 && !other; i++) {
+        const r = await request.post(`${API}/api/executors/pull`, {
+          headers: { Authorization: `Bearer ${py312Token}` },
+          data: { address: py312.address, waitMs: 300 },
+        });
+        if (r.status() === 200) other = (await r.json()).data?.task ?? null;
+        if (!other) await new Promise((res) => setTimeout(res, 200));
+      }
+      expect(other, 'py312 取到了本应被解释器过滤剔除的任务').toBeNull();
+
+      // ③ 执行行归属：executorAddress 必须落在 py39（匹配执行器）
+      const tok = await apiLogin(request);
+      const listResp = await request.get(`${API}/api/tasks/${task.id}/executions?page=1&pageSize=5`, {
+        headers: { Authorization: `Bearer ${tok}` },
+      });
+      const items = (await listResp.json()).data?.items || [];
+      expect(items.length, '任务无执行行').toBeGreaterThan(0);
+      expect(items[0].id, 'py39 载荷 executionId 与最新执行行不一致').toBe(payload.executionId);
+      expect(items[0].executorAddress, '执行行 executorAddress 未落在匹配执行器上').toBe(py39.address);
+      console.log(`  ✓ interpreter-match：runtimeVersion=3.9 → 派发到 ${py39.address}（py312 被过滤，executionId=${payload.executionId}）`);
+    } finally {
+      await apiDeleteExecutor(request, py39Id);
+      await apiDeleteExecutor(request, py312Id);
+    }
+  });
+});
+

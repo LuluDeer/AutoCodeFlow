@@ -40,6 +40,15 @@ jest.mock("../../../common/utils/safe-http.util", () => ({
   assertSafeExecutorUrl: jest
     .fn()
     .mockResolvedValue(new URL("http://fixture:8001/")),
+  // F-3（SEC-NEW）: reload-config 现走 assertAndPinExecutorUrl——按入参原样
+  // 返回 pinned:false 目标（URL 断言不受影响）。
+  assertAndPinExecutorUrl: jest
+    .fn()
+    .mockImplementation(async (raw: string) => ({
+      url: new URL(raw),
+      pinnedIp: "93.184.216.34",
+      pinned: false,
+    })),
 }));
 
 describe("ExecutorController", () => {
@@ -106,6 +115,8 @@ describe("ExecutorController", () => {
       {
         headers: { Authorization: "Bearer issued-token" },
         timeout: 10_000,
+        // F-3（SEC-NEW）: R3 parity——首跳是唯一经 SSRF 校验的地址。
+        maxRedirects: 0,
       },
     );
   });
@@ -1028,7 +1039,13 @@ describe("ExecutorController", () => {
           "Bearer token",
         );
 
-        expect(result).toEqual({ task: payload, dispatchMode: "pull" });
+        // E-1（中台↔执行器深度审查）：pull 响应附带 configVersion 配置指纹
+        // （确定性 sha256 截短；执行器据此做 pull 配置热更新）。
+        expect(result).toEqual({
+          task: payload,
+          dispatchMode: "pull",
+          configVersion: expect.any(String),
+        });
         expect(pullService.pull).toHaveBeenCalledWith("e-pull", 25000);
       });
 
@@ -1065,7 +1082,13 @@ describe("ExecutorController", () => {
           "Bearer token",
         );
 
-        expect(result).toEqual({ task: null, dispatchMode: "push" });
+        // E-1: 配置指纹对 push 执行器同样附带（同一响应信封，执行器侧仅在
+        // pull 模式下消费）。
+        expect(result).toEqual({
+          task: null,
+          dispatchMode: "push",
+          configVersion: expect.any(String),
+        });
         expect(pullService.pull).not.toHaveBeenCalled();
       });
 

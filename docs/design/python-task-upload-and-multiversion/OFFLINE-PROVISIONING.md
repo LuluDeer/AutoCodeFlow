@@ -485,7 +485,7 @@ compose 基线把 `interpreter_cache` 卷同时挂给 `executor-python` 与 `exe
 | 服务 | 基底镜像 | libc | 需要的池目录平台分量 |
 |---|---|---|---|
 | `executor-python` | `python:3.12-slim`（Debian） | **glibc** | `linux-x86_64-**gnu**` |
-| `executor-node` | `node:22-alpine` | **musl** | `linux-x86_64-**musl**` |
+| `executor-node` | `node:24-alpine` | **musl** | `linux-x86_64-**musl**` |
 
 **共卷是安全的**（实测：池内混放非本平台命名的条目时，`uv python list --only-installed` 仍 **exit 0**，本平台条目正常列出——uv 按平台分量过滤并**安全跳过**外来条目）。但**产物不能互相顶替**：glibc 构建在 musl 上无法运行，反之亦然（症状见 §7.4）。
 

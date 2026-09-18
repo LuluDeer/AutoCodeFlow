@@ -22,7 +22,7 @@
 5. 在管理台里：登录 → 建一个任务 → 手动触发 → 看执行详情与日志。对照 [../04-flows/execution-callback.md](../04-flows/execution-callback.md) 理解日志/产物怎么回来的。
 6. 读 [../07-testing/README.md](../07-testing/README.md)——知道各端测试怎么跑（根目录 `npm run test:api` / `test:web` / `test:python` 等脚本）。
 
-产出自检：本地栈健康（`curl http://localhost:3105/health`），能完整跑通一次任务执行。
+产出自检：本地栈健康（`curl http://localhost:3105/api/health/live`），能完整跑通一次任务执行。
 
 ## 第 1 周：选定方向 + 领第一个任务
 

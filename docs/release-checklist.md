@@ -106,7 +106,7 @@ docker compose ps
 ### 3.2 检查 API 健康
 
 ```bash
-curl http://localhost:3105/health
+curl http://localhost:3105/api/health/live
 # 期望响应：{"status":"healthy"} 或类似
 ```
 

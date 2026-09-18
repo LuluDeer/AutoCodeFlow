@@ -58,6 +58,24 @@ npm run check:protocol-sync     # 生成 + git diff --exit-code（CI 同款）
 | zod | `apps/executor-node/src/generated/protocol.schemas.ts` | `src/protocol-schemas.spec.ts`（26 例） |
 | pydantic | `apps/executor-python/generated/protocol_schemas.py` | `tests/test_protocol_schemas.py`（26 例） |
 
+> **生成物恒带 `strict=True`**（pydantic 侧）。pydantic 默认 **lax** 会把数字
+> 字符串强转成数字（`'3600'` → `3600`）、把 `0/1/'yes'/'true'` 强转成 bool，而
+> zod 侧**从不**强转（`z.number().int()` 拒 `'3600'`）。于是同一 schema 两侧
+> 对同一载荷判定相反——lax 下 python 侧闸门形同虚设：它声称拒绝的东西被悄悄
+> 改写后接受了。实爆：`{"timeout_seconds": "3600"}` 在 zod 侧被拒、在 pydantic
+> 侧通过。语义后果：`{"timeout": "0"}`（显式不限时）也会被 python 静默接受，
+> 而 node 直接 400——同一条任务派到两台执行器上一台跑一台拒。生产流量不受影响
+> （admin 的派发载荷由 Prisma 实体序列化，数值恒为 JSON 数字）。由
+> `tests/test_protocol_schemas.py` 的两条用例钉住（配置位 + 实际行为）。
+
+> **别名必须与正名同严**（新增纪律）。本文件的 `*_source` / `*_language` /
+> `*_version` 等 snake_case 别名是**同一语义的第二入口**，不是"透传字段"——
+> 校验强度必须与驼峰正名一致。曾有别名写成裸 `z.string()` 而正名是 enum 的情
+> 况（`code_source` / `glue_language`），于是 `{"code_source":"ftp"}` 能绕过闸
+> 门、而 `{"codeSource":"ftp"}` 被拒。两侧运行时都读两个键、行为虽一致，但协议
+> 这样就**没有如实描述校验面**——而协议的意义正是描述它。新增别名时：正名有
+> enum 则别名必须有同集 enum，正名是数值则别名必须同样拒字符串。
+
 **受控子集**：`type`（数组形式即 nullable）/ `properties` / `required` /
 `additionalProperties` / `items` / `enum` / `minimum` / `maximum` / `pattern` /
 `default` / `$ref`（仅 `#/$defs/<本段内的名字>`）。生成器遇到子集外的关键字
@@ -146,8 +164,19 @@ schema 再 `$ref`。
     `test_logs.py` 都用**生成的** schema 现校验真实 200/404/分页出参，并断言
     strict/forbid 拒绝未声明键。
 - `deploy` / `update-package` 端点载荷**仍未** schema 化——它们是 executor-node
-  **独有**（executor-python 无对应 router），按「修改纪律」不拉进两端共享契约；
-  如未来 python 补齐对应端点，再把共有面提升进 protocol.json。
+  **独有**（executor-python 无对应 router），按「修改纪律」不拉进两端共享契约。
+  **B-1（中台↔执行器深度审查）已登记**：protocol.json 新增顶层 `executorNodeOnly`
+  段，把 `POST /api/deploy` / `POST /api/update-package` /
+  `GET /api/update-package/status` 的预期形状（取自 deploy.ts 的 `DeployPayload`
+  与 update-package.ts 的字面量）落成文档型契约，供未来 python 补齐时对齐；一旦
+  python 补齐对应端点，**必须**把共有面提升进 `schemas` 段并删除 `executorNodeOnly`
+  对应条目。生成器只消费 `schemas` 段，故 `executorNodeOnly` / `versioning` 不参与
+  双生成，也不会被受控子集检查误伤。
+- **B-3/U-2（协议版本协商）已落地**：protocol.json 新增顶层 `versioning` 段
+  （`currentProtocolVersion` / `supportedMinProtocolVersion` / `compatibilityMatrix`
+  / `evolutionRules`）。执行器在 register（及心跳）上报 `protocolVersion`；中台按
+  兼容矩阵分支（低于下限只 warn + 兜底，不拒绝注册）。详见本文件下方「修改纪律」
+  与 `versioning` 段注释。
 
 ## 修改纪律
 

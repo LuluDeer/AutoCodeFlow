@@ -61,11 +61,24 @@ export function isValueEncrypted(value: unknown): boolean {
  * Encrypt a plaintext token into the `enc:ss:` envelope. Returns null when
  * safeStorage is unavailable or fails (caller decides the degraded posture —
  * per ADR-012: keep plaintext + warn once, never drop a usable credential).
+ *
+ * S-2（audit-r4）：`requireEncryption` 严格模式。设了
+ * EXECUTOR_REQUIRE_ENCRYPTED_TOKEN 的环境后，无 keyring（典型 Linux 无桌面/
+ * gnome-keyring 未运行）时**拒绝**返回明文落盘——调用方据此不写 token，
+ * 而不是按 ADR-012 的默认降级姿态静默存明文。默认仍为兼容姿态（warn-once），
+ * 由部署方在敏感环境显式开启。
  */
-export function encryptToken(plain: string): string | null {
+export function encryptToken(
+  plain: string,
+  opts?: { requireEncryption?: boolean },
+): string | null {
   if (plain === '') return null;
   const ss = getSafeStorage();
   if (!ss) {
+    if (opts?.requireEncryption) {
+      failStrict('no safeStorage module');
+      return null;
+    }
     warnUnavailable('no safeStorage module');
     return null;
   }
@@ -76,12 +89,20 @@ export function encryptToken(plain: string): string | null {
     available = false;
   }
   if (!available) {
+    if (opts?.requireEncryption) {
+      failStrict('OS-level credential encryption is not available');
+      return null;
+    }
     warnUnavailable('OS-level credential encryption is not available');
     return null;
   }
   try {
     return ENC_PREFIX + ss.encryptString(plain).toString('base64');
   } catch (err: any) {
+    if (opts?.requireEncryption) {
+      failStrict(`encryptString failed: ${err?.message ?? err}`);
+      return null;
+    }
     warnUnavailable(`encryptString failed: ${err?.message ?? err}`);
     return null;
   }
@@ -142,5 +163,20 @@ function warnDecryptFailed(reason: string): void {
     `[SEC-NEW-1] stored executorToken could not be decrypted (${reason}). ` +
       'The OS keyring key may have changed (reinstall / machine move). ' +
       'Re-enter the executor token in the config page. This warning is shown once per launch.',
+  );
+}
+
+/**
+ * S-2（audit-r4）：严格模式的失败信号——每次落盘前都 error 级记录（不像
+ * warnUnavailable 那样 once-per-process 抑制；严格模式是安全事件，必须可见）。
+ * 提示修复 keyring 或取消 EXECUTOR_REQUIRE_ENCRYPTED_TOKEN 恢复兼容姿态。
+ */
+function failStrict(reason: string): void {
+  log.error(
+    `[SEC-NEW-1] Refusing to store executorToken in PLAINTEXT (${reason}). ` +
+      'EXECUTOR_REQUIRE_ENCRYPTED_TOKEN is set: the OS keyring (on Linux: ' +
+      'gnome-keyring / kwallet) must be available and unlocked to save the token. ' +
+      'Fix the keyring, or unset EXECUTOR_REQUIRE_ENCRYPTED_TOKEN to restore the ' +
+      'compatible degraded posture (plaintext + warn).',
   );
 }

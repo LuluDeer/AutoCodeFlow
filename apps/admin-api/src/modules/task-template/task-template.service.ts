@@ -32,6 +32,8 @@ export class TaskTemplateService {
   ) {}
 
   /** 列表：官方 + 自定义，官方在前、其余按创建时间倒序。 */
+  // P3-1：任务模板为小表（官方模板 + 每用户少量自定义），全表 find 无需分页——
+  // 刻意保持现状。
   async findAll(): Promise<TaskTemplate[]> {
     return this.repo.find({
       order: { isOfficial: "DESC", createdAt: "DESC" },

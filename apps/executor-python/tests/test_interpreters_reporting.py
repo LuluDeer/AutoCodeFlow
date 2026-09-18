@@ -188,11 +188,9 @@ async def test_register_executor_sends_the_interpreters_field(monkeypatch):
         request=httpx.Request('POST', 'http://admin.local/api/executors/register'),
     )
     mock_client = AsyncMock()
-    mock_client.__aenter__.return_value = mock_client
-    mock_client.__aexit__.return_value = None
     mock_client.post = AsyncMock(return_value=response)
 
-    with patch('main.httpx.AsyncClient', return_value=mock_client):
+    with patch('main.get_http_client', return_value=mock_client):
         await main_module.register_executor()
 
     body = mock_client.post.call_args.kwargs['json']

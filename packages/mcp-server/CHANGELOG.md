@@ -1,5 +1,30 @@
 # Changelog
 
+## [1.4.0](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.3.0...v1.4.0) (2026-09-16)
+
+
+### Bug Fixes
+
+* **mcp:** unwrap 判据收紧为数值 code——消除实体误解包截断 ([9d0278d](https://github.com/LuluDeer/AutoCodeFlow/commit/9d0278d))
+* **pkg/ci:** DEEP_REVIEW 批次2 PK-06/07/08/11/12/13/16/17/18/22/23/24/28 + E-13/PK-15——信封判据统一/DATABASE_URL/唯一约束/渠道枚举/查询索引/AI 脱敏/日志环形/自检进 CI/空 schema 守卫 ([342bb75](https://github.com/LuluDeer/AutoCodeFlow/commit/342bb75))
+* **infra/pkg/web:** DEEP_REVIEW 批次0 跨域热修——E-03/PK-01/PK-04+E-14/PK-05/F-02 ([b71cb2e](https://github.com/LuluDeer/AutoCodeFlow/commit/b71cb2e))
+* **infra:** E-31 engines>=24 + E-18 CI python e2e + PK-21 注释修正 + PK-28 prepublishOnly clean（DEEP_REVIEW §六） ([f5f6a4a](https://github.com/LuluDeer/AutoCodeFlow/commit/f5f6a4a))
+
+## [1.4.1](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.4.0...v1.4.1) (2026-09-16)
+
+*No user-facing changes (lockstep version alignment)*
+
+## [1.4.2](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.4.1...v1.4.2) (2026-09-16)
+
+
+### Bug Fixes
+
+* **mcp-server:** 同步代码内硬编码版本号 1.3.0 → 1.4.1（--version 冒烟防再犯） ([dac8852](https://github.com/LuluDeer/AutoCodeFlow/commit/dac8852))
+
+## [1.4.3](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.4.2...v1.4.3) (2026-09-16)
+
+*No user-facing changes (lockstep version alignment)*
+
 ## [1.3.0](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.2.0...v1.3.0) (2026-09-13)
 
 

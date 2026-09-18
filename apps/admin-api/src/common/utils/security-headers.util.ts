@@ -11,7 +11,7 @@
  *
  * 部署形态侦察（CSP 收紧的依据，2026-09-08）：
  * 1. admin-web 是独立 Vite 构建产物，由 admin-web 容器内置 nginx 托管
- *   （apps/admin-web/Dockerfile → nginx:alpine），**与 admin-api 不同源**
+ *   （apps/admin-web/Dockerfile → nginx:1.27-alpine），**与 admin-api 不同源**
  *   （compose 中 admin-web:80 / admin-api:3105 两个独立端口）；
  *   nginx.conf 已带基线 CSP 与 Referrer-Policy。admin-api 的响应头只
  *   覆盖 API 响应，浏览器页面 CSP 由 nginx 层负责——两层策略按各自
@@ -89,10 +89,26 @@ export function buildHelmetOptions(isProduction: boolean): HelmetOptions {
       crossOriginEmbedderPolicy: false,
     };
   }
-  // 非生产（开发/测试）：CSP 关闭（Swagger UI 内联脚本/CDN 资产可用），
-  // 其余头保持 helmet 默认（HSTS 在 helmet 默认下仅 https 时有意义）。
+  // 非生产（开发/测试）：CSP 由「完全关闭」改为「宽松单页」——仅放行
+  // 内联脚本/样式与 data:/同源资源（Swagger UI 内联脚本/CDN 资产可用），
+  // 仍拒绝跨源脚本注入与框架注入（O-5，SEC-NEW）。其余头保持 helmet 默认
+  // （HSTS 在 helmet 默认下仅 https 时有意义）。
   return {
-    contentSecurityPolicy: false,
+    contentSecurityPolicy: {
+      useDefaults: false,
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'", "'unsafe-inline'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        imgSrc: ["'self'", "data:"],
+        connectSrc: ["'self'"],
+        fontSrc: ["'self'", "data:"],
+        objectSrc: ["'none'"],
+        baseUri: ["'self'"],
+        formAction: ["'self'"],
+        frameAncestors: ["'none'"],
+      },
+    },
     hsts: false,
     referrerPolicy: { policy: "same-origin" },
     crossOriginEmbedderPolicy: false,

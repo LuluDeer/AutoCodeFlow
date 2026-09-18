@@ -1,3 +1,4 @@
+import os
 import re
 from urllib.parse import urlsplit
 
@@ -16,6 +17,13 @@ def _validate_credential_free_http_url(value: str, setting_name: str) -> str:
     credential transport and must never put a secret in argv, logs, or
     ``/proc``. A future controlled credentials mechanism can be added
     separately without changing these URLs' semantics.
+
+    NOTE（B-3 边界）：执行器侧这两个 URL 是**强制无凭据**的（userinfo/query/
+    fragment 一律拒绝），不存在 token 明文上网的问题，因此这里**不**强制
+    https——内网镜像（D9 私有化模式的 ``http://mirror.internal:…``）是文档化
+    拓扑（test_config_interpreters.py 的契约）。带凭据的 registry URL 的
+    https 强制在 admin 侧实施（NPM_REGISTRY_URL / REGISTRY_PASS 等）。
+    解释器下载内容完整性由 F-2 的 SHA-256 pin 兜底，不依赖镜像协议。
     """
     if not isinstance(value, str):
         raise ValueError(f'{setting_name} must be a valid http(s) URL')
@@ -134,6 +142,39 @@ class Settings(BaseSettings):
     disk_cleanup_ttl_days: int = 7
     disk_cleanup_interval_seconds: int = 6 * 60 * 60
     disk_cleanup_initial_delay_seconds: int = 600
+    # P2/L-2: 磁盘水位红线（对齐 node config.diskWarnPercent /
+    # diskCriticalPercent）。TTL 清扫基于 mtime，磁盘在 TTL 窗口内被撑满时无
+    # 主动应对：告警水位触发减半 TTL 的紧急清理；临界水位由 accept_execution
+    # 拒新任务（429/503）。计量失败按"无压力"处理，不误拒任务。
+    disk_warn_percent: int = 90
+    disk_critical_percent: int = 95
+
+    @field_validator('disk_warn_percent', 'disk_critical_percent')
+    @classmethod
+    def _validate_disk_percent(cls, value: int) -> int:
+        # 钳到 [1, 100]：0/负值会让水位门永远不触发（形同拆除防线），
+        # >100 无意义。
+        if value < 1 or value > 100:
+            raise ValueError('disk watermark percent must be in [1, 100]')
+        return value
+
+    @model_validator(mode='after')
+    def _validate_disk_threshold_order(self) -> 'Settings':
+        # 告警水位必须低于临界水位，否则两条防线语义重叠（紧急清理永不触发
+        # 而拒新任务提前生效）。
+        if self.disk_warn_percent >= self.disk_critical_percent:
+            raise ValueError(
+                'DISK_WARN_PERCENT must be < DISK_CRITICAL_PERCENT'
+            )
+        return self
+
+    # P3 (lightweight configuration): the executor-side `git clone --bare`
+    # timeout and the callback-payload log truncation were previously hardcoded
+    # (120s and 10000 chars). Expose them as settings with defaults equal to the
+    # previous hardcoded values so default behavior is byte-identical; only
+    # deployments that need different bounds opt in via env vars.
+    git_clone_timeout_seconds: int = 120
+    callback_logs_max_chars: int = 10000
 
     # ---- 解释器缓存池（FR-07/13/14/15、NFR-02/10/12/13/15、D8/D9/D11/D12）----
     # 解释器缓存池根目录：uv 把 `uv python install` 下载的解释器放在
@@ -150,6 +191,10 @@ class Settings(BaseSettings):
     # 最久未使用版本（maintenance 消费）。
     interpreter_single_version_mb: int = 250
     interpreter_total_gb: int = 4
+    # D13/NFR-16：解释器下载全局有界并发（默认 2；1 = 旧版全局单队列）。
+    # 不同版本写池内不同目录，uv 的"同目录并发写不安全"不跨版本；同版本由
+    # per-version 锁去重。部署方可按网络/磁盘调 [1, 8]（越界在读取处钳制）。
+    interpreter_download_concurrency: int = 2
     # CONTRACT.md §1.1：可声明的 Python 版本区间（默认 3.7~3.14，部署方可收紧）。
     # 在线可下载下界固定为 3.8（见 ONLINE_DOWNLOAD_MIN），3.7 只能由部署方
     # 离线预填缓存卷获得。
@@ -191,6 +236,106 @@ class Settings(BaseSettings):
             raise ValueError('INTERPRETER_TOTAL_GB must be >= 1')
         return value
 
+    @field_validator('git_clone_timeout_seconds', 'callback_logs_max_chars')
+    @classmethod
+    def _validate_positive_bound(cls, value: int) -> int:
+        # Lower bound 1: 0/negative would make the clone time out instantly or
+        # truncate every log payload to nothing. Mirrors the download-timeout
+        # guard; execute.py additionally clamps defensively at read time.
+        if value < 1:
+            raise ValueError('this setting must be >= 1')
+        return value
+
+    # ---- 任务沙箱与资源限制（SEC-NEW: F-1/B-1）----
+    # F-1: 任务代码沙箱。'' = 不启用（本地开发/测试保持既有行为）；
+    # 'bwrap' = 用 bubblewrap 用户命名空间 + 只读根文件系统 + PrivateTmp 隔离
+    # 任务进程（生产容器由 docker-compose 显式开启）。配置了 bwrap 但二进制
+    # 缺失时任务**直接失败**（fail-closed），绝不静默降级为无沙箱运行。
+    # bwrap 用户命名空间同时阻断任务读取执行器宿主进程的 /proc/<pid>/environ
+    # （跨命名空间 uid 映射后 ptrace 访问被拒），这是 F-1 对
+    # EXECUTOR_SECRET / EXECUTION_CALLBACK_SECRET 外泄的核心缓解。
+    task_sandbox: str = ''
+    # B-1: 单任务资源上限（POSIX RLIMIT_*，经 preexec_fn 施加于任务进程树；
+    # Windows 无等价原语，该项在 win32 上跳过并记录 warning）。
+    # memory 用 RLIMIT_AS（地址空间字节数）：`a=[0]*10**10` 类任务在**子进程**
+    # 内 OOM，而不是拖垮执行器上所有并发任务。0 = 不设该限。
+    task_memory_limit_mb: int = 2048
+    # CPU 秒数上限；0 = 回落为「任务超时 + 60s 宽限」（任务超时本身会 kill，
+    # 这里是防 timeout 未生效的第二道保险）。
+    task_cpu_limit_seconds: int = 0
+    # 单文件写上限（MB）；0 = 不设。防止任务把磁盘写爆（日志另有独立上限）。
+    task_fsize_limit_mb: int = 4096
+    # 打开文件描述符上限；0 = 不设。防止 fd 耗尽拖累同机其他进程。
+    task_nofile_limit: int = 1024
+    # 进程数上限（RLIMIT_NPROC，按真实 UID 计——任务与执行器同 UID 时同样
+    # 约束执行器，故默认 0 = 不设，仅显式开启）；0 = 不设。
+    task_nproc_limit: int = 0
+
+    @field_validator('task_sandbox')
+    @classmethod
+    def _validate_task_sandbox(cls, value: str) -> str:
+        if value not in ('', 'bwrap'):
+            raise ValueError("TASK_SANDBOX must be '' or 'bwrap'")
+        return value
+
+    @field_validator('task_memory_limit_mb', 'task_cpu_limit_seconds',
+                     'task_fsize_limit_mb', 'task_nofile_limit', 'task_nproc_limit')
+    @classmethod
+    def _validate_task_limit_non_negative(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError('task resource limits must be >= 0 (0 disables the limit)')
+        return value
+
+    # ---- 解释器下载完整性（F-2）----
+    # uv_python_sha256_pins: { '<major>.<minor>': '<sha256-hex>' }。部署方在
+    # 首次从可信源安装解释器后记录（见 interpreters.py 的 pin 记录辅助函数），
+    # 此后每次在线下载都会把池内 python 二进制的 SHA-256 与 pin 比对
+    # （constant-time），不匹配 → 判定 corrupt（绝不运行）。未配置 pin 的版本
+    # 只做「可执行 + --version 版本匹配」抽查，并在 pool_summary 中标记
+    # integrity='unverified'。
+    # 支持两种注入方式：JSON 环境变量 UV_PYTHON_SHA256_PINS='{"3.12":"<hex>"}'，
+    # 或逐版本变量 UV_PYTHON_SHA256_3_12=<hex>（后者优先级更高，二者可混用）。
+    uv_python_sha256_pins: dict[str, str] = {}
+
+    @field_validator('uv_python_sha256_pins')
+    @classmethod
+    def _validate_sha256_pins(cls, value: dict[str, str]) -> dict[str, str]:
+        hex_re = re.compile(r'^[0-9a-fA-F]{64}$')
+        for version, digest in value.items():
+            if not RUNTIME_VERSION_PATTERN.fullmatch(version):
+                raise ValueError(
+                    f'UV_PYTHON_SHA256_PINS key {version!r} must be "X.Y"'
+                )
+            if not isinstance(digest, str) or not hex_re.fullmatch(digest.strip()):
+                raise ValueError(
+                    f'UV_PYTHON_SHA256_PINS[{version!r}] must be a 64-char SHA-256 hex digest'
+                )
+        return {v: d.strip() for v, d in value.items()}
+
+    @model_validator(mode='after')
+    def _merge_sha256_pin_env(self) -> 'Settings':
+        """把逐版本环境变量 UV_PYTHON_SHA256_<MAJ>_<MIN> 并入 pins（覆盖 JSON）。"""
+        merged = dict(self.uv_python_sha256_pins)
+        for key, value in os.environ.items():
+            prefix = 'UV_PYTHON_SHA256_'
+            if not key.upper().startswith(prefix):
+                continue
+            rest = key.upper()[len(prefix):]
+            if '_' not in rest:
+                continue
+            major, minor = rest.split('_', 1)
+            if not major.isdigit() or not minor.isdigit():
+                continue
+            version = f'{int(major)}.{int(minor)}'
+            digest = value.strip()
+            if not re.fullmatch(r'[0-9a-fA-F]{64}', digest):
+                raise ValueError(
+                    f'{key} must be a 64-char SHA-256 hex digest'
+                )
+            merged[version] = digest.lower()
+        self.uv_python_sha256_pins = merged
+        return self
+
     @model_validator(mode='after')
     def _validate_interpreter_settings(self) -> 'Settings':
         """跨字段校验：区间下界 ≤ 上界；单版本红线不得大于总池红线。"""
@@ -228,3 +373,12 @@ ONLINE_DOWNLOAD_MIN = '3.8'
 # R5（python_task_multiversion）：1.0.0 → 2.0.0 —— 新增 interpreters 上报、
 # 版本化 venv（--python）与 zip 整包渠道，属执行器能力变更，必须版本可见。
 EXECUTOR_VERSION = '2.0.0'
+
+# PROTOCOL-VER（B-3/U-2）：协议版本与实现版本（EXECUTOR_VERSION）**解耦**。
+# 随 register 载荷上报，中台按兼容矩阵分支（低于 supportedMin 只 warn + 兜底，
+# 不拒绝注册——与 EXECUTOR_MIN_VERSION 实现版本门禁是两套闸）。演进规则见
+# packages/executor-protocol/protocol.json 的 `versioning` 段：新增可选字段时
+# bump 此值；不向后兼容改动必须同时 bump $schemaVersion 与 PROTOCOL_VERSION。
+# 两侧（executor-python / executor-node config.ts）必须同值。
+PROTOCOL_VERSION = 1
+

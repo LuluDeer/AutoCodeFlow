@@ -29,7 +29,17 @@ jest.mock("axios", () => {
   };
 });
 jest.mock("../../../common/utils/safe-http.util", () => ({
+  ...jest.requireActual("../../../common/utils/safe-http.util"),
   assertSafeExecutorUrl: jest.fn().mockResolvedValue(new URL("http://ok")),
+  // F-3（SEC-NEW）: dispatch 现走 assertAndPinExecutorUrl——按入参原样返回
+  // pinned:false 目标。
+  assertAndPinExecutorUrl: jest
+    .fn()
+    .mockImplementation(async (raw: string) => ({
+      url: new URL(raw),
+      pinnedIp: "93.184.216.34",
+      pinned: false,
+    })),
 }));
 
 const makeRepo = (overrides: Partial<Record<string, jest.Mock>> = {}) => ({
@@ -240,12 +250,12 @@ describe("ExecutorService — security regressions (F-2/F-7/F-3/F-5)", () => {
     } as unknown as Task;
 
     it("refuses to POST to a metadata address and rolls back the slot", async () => {
-      const { assertSafeExecutorUrl } =
+      const { assertAndPinExecutorUrl } =
         // eslint-disable-next-line @typescript-eslint/no-require-imports
         require("../../../common/utils/safe-http.util") as {
-          assertSafeExecutorUrl: jest.Mock;
+          assertAndPinExecutorUrl: jest.Mock;
         };
-      assertSafeExecutorUrl.mockRejectedValueOnce(
+      assertAndPinExecutorUrl.mockRejectedValueOnce(
         new Error(
           "Executor address 169.254.169.254 resolves to 169.254.169.254 (link-local) — outbound request refused",
         ),
@@ -273,14 +283,16 @@ describe("ExecutorService — security regressions (F-2/F-7/F-3/F-5)", () => {
     });
 
     it("POSTs to a private LAN address by default (internal-network topology)", async () => {
-      const { assertSafeExecutorUrl } =
+      const { assertAndPinExecutorUrl } =
         // eslint-disable-next-line @typescript-eslint/no-require-imports
         require("../../../common/utils/safe-http.util") as {
-          assertSafeExecutorUrl: jest.Mock;
+          assertAndPinExecutorUrl: jest.Mock;
         };
-      assertSafeExecutorUrl.mockResolvedValue(
-        new URL("http://10.0.0.9:3002/api/execute"),
-      );
+      assertAndPinExecutorUrl.mockResolvedValue({
+        url: new URL("http://10.0.0.9:3002/api/execute"),
+        pinnedIp: "10.0.0.9",
+        pinned: false,
+      });
       const executor = {
         id: "e1",
         address: "10.0.0.9:3002",

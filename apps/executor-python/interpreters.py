@@ -37,10 +37,12 @@
    原子 fetch-or-create，对照 `routers/execute.py` 的 `_get_git_cache_lock`）。
    同一版本的并发请求在这里排队，第一个持锁者下载，其余在**拿到锁之后重查
    缓存**（double-checked locking）直接命中，不再下载。
-2. **全局单下载 `asyncio.Semaphore(1)`**（`_download_semaphore`）——D13 的
-   "同一时刻全局至多一个 in-flight 解释器下载"。**只在事件循环域获取**：
-   信号量槽在 `ensure_version_async` 里 `async with` 拿到后才把阻塞工作丢进
-   `asyncio.to_thread`，因此等待者让出事件循环，心跳不会被阻塞。
+2. **全局有界下载 `asyncio.Semaphore(N)`**（`_download_semaphore`，N =
+   `settings.interpreter_download_concurrency`，默认 2）——D13 的"全局至多 N 个
+   in-flight 解释器下载"（1 = 旧版全局单队列）。不同版本写池内不同目录，
+   uv 的"同目录并发写不安全"不跨版本；同版本由第 1 层去重。**只在事件循环域
+   获取**：信号量槽在 `ensure_version_async` 里 `async with` 拿到后才把阻塞工作
+   丢进 `asyncio.to_thread`，因此等待者让出事件循环，心跳不会被阻塞。
 3. **同步核心 `ensure_version`** 供非 async 调用方（脚本/维护任务/WS4 的同步
    路径）使用：它只做线程级排队（第 1 层），**不**碰事件循环信号量。
 
@@ -66,6 +68,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 import platform
@@ -99,6 +102,49 @@ DISCOVERY_TIMEOUT_SECONDS = 5.0
 
 # 下载产物校验（`--version` 抽查）的短预算——只读本地可执行文件，不联网。
 _VERIFY_TIMEOUT_SECONDS = 10.0
+
+# F-2（SEC-NEW）：已记录「无 SHA-256 pin、完整性未验证」的版本集合——
+# 每个版本只 warn 一次（首次在线下载时），并在 pool_summary() 里持续留痕，
+# 便于运维发现哪些版本只做了「可执行 + 版本号」抽查、未做哈希比对。
+_integrity_unverified: set[str] = set()
+_integrity_guard = threading.Lock()
+
+
+def _mark_integrity_unverified(version: str) -> None:
+    with _integrity_guard:
+        if version not in _integrity_unverified:
+            _integrity_unverified.add(version)
+            logger.warning(
+                'interpreters: Python %s was installed WITHOUT a SHA-256 pin '
+                '(uv_python_sha256_pins) — download integrity is unverified; '
+                'pin the version after a trusted install (see interpreters.py '
+                'F-2 notes) to enforce checksums on every future install',
+                version,
+            )
+
+
+def integrity_unverified_versions() -> list[str]:
+    """供 pool_summary / 心跳上报：当前未做哈希校验的版本列表。"""
+    with _integrity_guard:
+        return sorted(_integrity_unverified)
+
+
+def _reset_integrity_tracking() -> None:
+    """测试辅助：清空完整性留痕集合（生产不需要调用，与 _reset_semaphores 同类）。"""
+    with _integrity_guard:
+        _integrity_unverified.clear()
+
+
+def _sha256_of(path: Path) -> str:
+    """Compute the SHA-256 of a file in streaming fashion (64 KiB chunks)."""
+    digest = hashlib.sha256()
+    with open(path, 'rb') as fh:
+        while True:
+            chunk = fh.read(65536)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
 
 # uv 下载的退出码约定（实测 0.8.17）：无可用下载 / 找不到解释器 → 2。
 # 仅用于把失败文案润色成"不可在线获取"，不改变失败分因。
@@ -203,6 +249,40 @@ def build_uv_env(*, cache_dir: Path | str | None = None) -> dict[str, str]:
 def pool_root() -> Path:
     """缓存池根目录（每次读 settings，支持热更/测试 monkeypatch）。"""
     return Path(settings.uv_python_install_dir)
+
+
+# B-4（SEC-NEW）：池目录权限纪律——只允许执行器用户可写（0o755），同机其他
+# 进程/容器不得向池内注入伪造的 `cpython-<ver>-…` 目录（那会让所有使用该版本
+# 的任务跑在攻击者提供的解释器上）。Windows 的 os.chmod 只映射只读位、st_uid
+# 无意义，故 owner 校验仅在 POSIX 生效；chmod 失败不阻断启动（记录 warning）。
+def harden_pool_permissions() -> None:
+    """收紧解释器缓存池目录权限 + 校验 owner（B-4）。
+
+    * mkdir（存在则跳过）；
+    * POSIX：chmod 0o755；若目录 owner 不是当前 euid，记录 warning（共享只读
+      volume 场景可能由其他用户挂载，不据此 fail，但可写性必须收敛）；
+      若目录当前 group/world 可写且 chmod 成功，即被收紧为 755。
+    """
+    root = pool_root()
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:  # pragma: no cover - 只读卷/权限问题
+        logger.warning('interpreters: cannot create pool dir %s: %s', root, exc)
+        return
+    if sys.platform == 'win32':
+        return
+    try:
+        os.chmod(root, 0o755)
+        st = root.stat()
+        if hasattr(os, 'geteuid') and st.st_uid != os.geteuid():
+            logger.warning(
+                'interpreters: pool dir %s is owned by uid %s (executor runs as %s); '
+                'ensure the owner is trusted and the dir is NOT writable by others '
+                '(B-4)',
+                root, st.st_uid, os.geteuid(),
+            )
+    except OSError as exc:  # pragma: no cover - chmod/stat 失败不阻断
+        logger.warning('interpreters: cannot harden pool dir %s permissions: %s', root, exc)
 
 
 def validate_version(version: str) -> str:
@@ -776,6 +856,9 @@ def discover_installed(*, timeout: float = DISCOVERY_TIMEOUT_SECONDS) -> list[In
     * 整体失败返回 `[]` + 日志，**绝不抛出**（执行器必须仍能启动）。
     """
     global _discovery_cache
+    # B-4（SEC-NEW）：池权限加固（0o755 + owner 校验），发现路径与下载路径
+    # 共用同一入口，确保任何一次池访问前目录可写面已收敛。
+    harden_pool_permissions()
     now = time.monotonic()
     cached = _discovery_cache
     if cached is not None and (now - cached[0]) < DISCOVERY_CACHE_TTL_SECONDS:
@@ -798,11 +881,17 @@ def invalidate_cache() -> None:
 
 
 def pool_summary() -> dict:
-    """`{'install_dir': str, 'versions': [str, ...]}` —— FR-12 留痕用。
+    """`{'install_dir': str, 'versions': [str, ...], 'integrity_unverified': [str, ...]}`
+    —— FR-12 留痕用。
 
     只读缓存池**目录**（不 spawn uv）：留痕发生在失败路径上，不能因为留痕再
     引入一次可能同样失败/耗时的 uv 调用。版本来自目录名 `cpython-<ver>-…`，
     与 uv 自己的命名约定一致（CONTRACT.md §0）。
+
+    F-2（SEC-NEW）：``integrity_unverified`` 列出未配置 SHA-256 pin 的版本——
+    运维可据此发现「只做了可执行+版本号抽查、未做哈希比对」的版本并补 pin。
+    该键**始终存在**（无未验证版本时为空列表）——schema 确定性便于消费方
+    （心跳上报/测试）做精确断言，不随运行历史漂移。
     """
     root = pool_root()
     versions: list[str] = []
@@ -816,7 +905,11 @@ def pool_summary() -> dict:
                     versions.append(match.group(1))
     except OSError as exc:  # pragma: no cover - 池目录不可读时如实留痕
         logger.warning('interpreters: cannot enumerate pool %s: %s', root, exc)
-    return {'install_dir': str(root), 'versions': versions}
+    return {
+        'install_dir': str(root),
+        'versions': versions,
+        'integrity_unverified': integrity_unverified_versions(),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -898,19 +991,35 @@ def _get_version_lock(version: str) -> threading.Lock:
         return lock
 
 
-# 全局单下载槽（D13）：asyncio.Semaphore(1)。按事件循环分桶——asyncio 原语
-# 绑定第一次 await 它的循环，测试套件每个用例一个新循环（对照 _get_task_lock）。
+# 全局有界下载槽（D13/NFR-16）：asyncio.Semaphore(settings.interpreter_download_
+# concurrency，默认 2)。按事件循环分桶——asyncio 原语绑定第一次 await 它的
+# 循环，测试套件每个用例一个新循环（对照 _get_task_lock）。不同版本写池内
+# 不同目录，uv 的"同目录并发写不安全"不跨版本；同版本由 per-version 锁去重。
 _semaphores: dict[int, asyncio.Semaphore] = {}
 _semaphores_guard = threading.Lock()
 
 
+def _download_concurrency() -> int:
+    """读取下载并发（settings 可热更）；钳到 [1, 8]，非法回落默认 2。"""
+    try:
+        raw = int(getattr(settings, 'interpreter_download_concurrency', 2) or 2)
+    except (TypeError, ValueError):
+        return 2
+    return max(1, min(raw, 8))
+
+
 def _get_download_semaphore() -> asyncio.Semaphore:
-    """当前事件循环的全局单下载信号量（必须在事件循环线程调用）。"""
+    """当前事件循环的全局下载信号量（必须在事件循环线程调用）。
+
+    并发值在**创建时**快照（Semaphore 值创建后不可变）；配置热更后新事件
+    循环才生效——与 node 侧 `withDownloadSlot` 的动态读取略有差异，但生产
+    中执行器只跑一个事件循环、配置在启动时确定，行为等价。
+    """
     loop = asyncio.get_running_loop()
     with _semaphores_guard:
         semaphore = _semaphores.get(id(loop))
         if semaphore is None:
-            semaphore = asyncio.Semaphore(1)
+            semaphore = asyncio.Semaphore(_download_concurrency())
             _semaphores[id(loop)] = semaphore
         return semaphore
 
@@ -981,10 +1090,16 @@ def _build_install_args(version: str) -> list[str]:
 
 
 def _verify_installed(version: str) -> Path:
-    """下载后产物校验：池内存在 + 可执行 + `--version` 输出主.次匹配。
+    """下载后产物校验：池内存在 + 可执行 + `--version` 输出主.次匹配 + SHA-256。
 
     任一环节失败 → 抛 ``InterpreterUnavailable('corrupt')``；调用方负责删除
     损坏目录并 `invalidate_cache()`（DESIGN.md §2.1.3-① 的 verify 分支）。
+
+    F-2（SEC-NEW）：当 ``settings.uv_python_sha256_pins`` 为该版本配置了 pin 时，
+    对池内 python 二进制计算 SHA-256 并 **constant-time** 比对——不匹配即判定
+    corrupt，**绝不运行**（防"报告正确版本但含后门"的镜像/中间人注入）。未配置
+    pin 的版本保留原有「可执行 + 版本号」抽查，并记录到 integrity_unverified
+    （pool_summary 留痕 + 一次性 warn），由部署方在可信安装后补 pin。
     """
     resolved = _resolve_python_bin_uncached(version)
     if resolved is None:
@@ -1020,7 +1135,54 @@ def _verify_installed(version: str) -> Path:
             f'interpreter {resolved} reports Python {reported or "?"} '
             f'(expected {version}.x): {_tail(out)}',
         )
+    # F-2: SHA-256 pin 校验（constant-time 比对，不匹配 → corrupt，绝不运行）。
+    pin = (settings.uv_python_sha256_pins or {}).get(version)
+    if pin:
+        actual = _sha256_of(resolved)
+        expected = pin.lower()
+        if not _constant_time_eq(actual, expected):
+            raise InterpreterUnavailable(
+                version, 'corrupt',
+                f'interpreter {resolved} SHA-256 {actual} does not match the '
+                f'configured pin for Python {version} — refusing to run a '
+                f'possibly tampered interpreter (uv_python_sha256_pins)',
+            )
+    else:
+        _mark_integrity_unverified(version)
     return resolved
+
+
+def _constant_time_eq(left: str, right: str) -> bool:
+    """长度恒定的字符串比较（防时序侧信道推断 pin 前缀）。"""
+    if len(left) != len(right):
+        return False
+    result = 0
+    for a, b in zip(left, right):
+        result |= ord(a) ^ ord(b)
+    return result == 0
+
+
+def record_sha256_pin(version: str) -> str:
+    """运维辅助：为池内已安装版本生成 SHA-256 pin（F-2）。
+
+    首次从**可信源**完成安装后调用，把返回的 hex 写入配置
+    （`UV_PYTHON_SHA256_PINS='{"<ver>":"<hex>"}'` 或
+    `UV_PYTHON_SHA256_<MAJ>_<MIN>=<hex>`），此后每次在线下载都会做哈希比对。
+    池内无该版本 / 不可执行 → 抛 InterpreterUnavailable。
+    """
+    resolved = _resolve_python_bin_uncached(version)
+    if resolved is None:
+        raise InterpreterUnavailable(
+            version, 'corrupt',
+            f'cannot pin Python {version}: no executable interpreter in pool {pool_root()}',
+        )
+    digest = _sha256_of(resolved)
+    logger.info(
+        'interpreters: SHA-256 pin for Python %s (%s): %s — add '
+        'UV_PYTHON_SHA256_%s_%s=%s to the executor environment to enforce checksums',
+        version, resolved, digest, version.split('.')[0], version.split('.')[1], digest,
+    )
+    return digest
 
 
 def _classify_install_failure(version: str, code: int, output: str) -> InterpreterUnavailable:
@@ -1063,6 +1225,9 @@ def _classify_install_failure(version: str, code: int, output: str) -> Interpret
 
 def _ensure_version_locked(version: str, timeout: float) -> Path:
     """per-version 锁内的下载核心（调用方不持有全局信号量）。"""
+    # B-4（SEC-NEW）：下载前确保池目录权限已收敛（防同机其他进程在下载
+    # 窗口内向池内注入伪造解释器目录）。
+    harden_pool_permissions()
     # double-checked：等待者拿到锁时下载方可能已经完成（AC-16b/EG-06）。
     cached = resolve_python_bin(version)
     if cached is not None:
@@ -1136,8 +1301,8 @@ async def ensure_version_async(version: str, *, timeout: float) -> Path:
 
     并发语义（D13/NFR-16）：
 
-    * 全局单下载 `asyncio.Semaphore(1)` 在**事件循环**上获取——等待者让出循环，
-      心跳/其他任务不被阻塞；
+    * 全局有界下载 `asyncio.Semaphore(N)`（N = interpreter_download_concurrency，
+      默认 2）在**事件循环**上获取——等待者让出循环，心跳/其他任务不被阻塞；
     * 拿到槽位后，per-version 锁与子进程工作整体 `asyncio.to_thread` 到工作
       线程执行——事件循环上**不**出现 `threading.Lock` 阻塞；
     * 同一版本的 N 个并发调用：第一个下载，其余在线程锁上排队，拿到锁后走
