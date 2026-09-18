@@ -195,7 +195,7 @@ jobs:
   # 迁移链 + e2e 保持单一串行 job（并行时 admin seed 存在 users_email_key 竞态）。
   admin-api-e2e:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     if: github.event_name != 'schedule'
     services:
       postgres:

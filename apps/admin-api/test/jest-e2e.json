@@ -14,5 +14,7 @@
     "ts-jest": {
       "tsconfig": "<rootDir>/../tsconfig.json"
     }
-  }
+  },
+  "_comment-forceExit": "R12-fix（admin-api-e2e 连续 4 轮 cancelled）：e2e 测试本体 38/38 全绿（第三轮日志 11:33:21 即完成），但 jest 进程因 AppModule 的 open handle（BullMQ worker / ioredis / TypeORM 连接池的残余句柄）不退出，空挂到 CI job timeout-minutes=20 被强杀 → conclusion=cancelled。forceExit 是 jest 对『测试完成但进程不退出』的标准 CI 处理：全部 suite 结束后强制退出，不再等待句柄释放。句柄泄漏本身由 onModuleDestroy 钩子体系治理（channel-config.store 等已有先例）；e2e 语境下 forceExit 不影响断言正确性。",
+  "forceExit": true
 }
