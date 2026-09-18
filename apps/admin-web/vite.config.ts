@@ -130,10 +130,30 @@ export default defineConfig({
             // Keep route-heavy UI libraries out of forced vendor chunks so lazy pages
             // can share only the pieces they actually import.
             ['vendor-charts', ['recharts']],
-            // F-01：GlueEditor 通过 monaco-setup.ts 本地引入 monaco-editor 后，
-            // 该 chunk 才真正生效。GlueEditor 仅被路由级 lazy 页面
-            // （TaskFormPage/TaskDetailPage）引用，monaco 主包不进首屏 chunk。
-            ['vendor-monaco', ['@monaco-editor/react', 'monaco-editor']],
+            // PERF-01（本轮体验审查）：**刻意不给 monaco 建强制 chunk**。
+            //
+            // 这里原有一行 `['vendor-monaco', ['@monaco-editor/react',
+            // 'monaco-editor']]`，注释写着「monaco 主包不进首屏 chunk」。实测
+            // 恰恰相反——它把 monaco 变成了**首屏必下**的资源：
+            //
+            //   构建产物 dist/index.html 里同时出现
+            //     <link rel="modulepreload" href="/assets/vendor-monaco-*.js">
+            //     <link rel="stylesheet"    href="/assets/vendor-monaco-*.css">
+            //   而 vendor-monaco 是 2.53 MB raw / **651 KB gzip**，外加 74 KB
+            //   的 render-blocking CSS，是首屏最大的一笔开销。
+            //
+            // 机理：manualChunks 把 monaco 提成**共享 chunk** 后，只要有静态
+            // 可达模块与该 chunk 产生静态边（实测 entry 经 i18n/antd 那一片共享
+            // 依赖即命中），Vite 就会把整个 chunk 当作 entry 的静态依赖预加载
+            // ——GlueEditor 自己是不是 lazy 已经不重要了。
+            //
+            // 移除后走 Vite 默认分包：monaco 全部收进 GlueEditor chunk
+            // （2.53 MB / 650 KB gzip），**只有真正打开 Glue 编辑器的用户才下载**
+            // （GlueEditor 仅被路由级 lazy 的 TaskFormPage/TaskDetailPage 引用）。
+            // 实测 index.html 里 monaco 的 modulepreload 与 stylesheet 双双消失。
+            //
+            // 回归守卫见 src/__tests__/monaco-first-paint.perf01.test.ts
+            // （读构建产物的 index.html，钉住「首屏不得出现 monaco」）。
             ['vendor-query', ['@tanstack/react-query', 'ahooks']],
             ['vendor-utils', ['axios', 'dayjs']],
           ];

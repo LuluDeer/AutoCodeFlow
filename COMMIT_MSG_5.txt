@@ -1,0 +1,35 @@
+perf(web): monaco 编辑器不再进首屏——首屏少下 651KB gzip（PERF-01）
+
+症状：构建产物 dist/index.html（= 浏览器首屏要拉的全部资源清单）里同时有
+  <link rel="modulepreload" href="/assets/vendor-monaco-*.js">
+  <link rel="stylesheet"    href="/assets/vendor-monaco-*.css">
+vendor-monaco 实测 2.53 MB raw / **651 KB gzip**，外加 74 KB 的
+render-blocking CSS——首屏最大的一笔，而登录页用户完全用不到它。
+
+根因：vite.config.ts 的 manualChunks 里那一行
+  ['vendor-monaco', ['@monaco-editor/react', 'monaco-editor']]
+注释写着「monaco 主包不进首屏 chunk」，实测**恰恰相反**。机理：manualChunks
+把 monaco 提成**共享 chunk** 后，只要有静态可达模块与该 chunk 产生静态边
+（实测 entry 经 i18n/antd 那一片共享依赖即命中），Vite 就会把整个 chunk 当作
+entry 的静态依赖预加载——GlueEditor 自己是不是 lazy 已经不重要了。
+
+这是本轮唯一一处「注释断言与实测行为完全相反」的缺陷：注释读起来是对的、
+代码看起来是照注释写的、构建也一直"成功"，只有量产物才发现错了。
+
+修法：删掉该 manualChunks 条目，走 Vite 默认分包。monaco 全部收进 GlueEditor
+chunk（2.53 MB / 650 KB gzip），只有真正打开 Glue 编辑器的用户才下载
+（GlueEditor 仅被路由级 lazy 的 TaskFormPage/TaskDetailPage 引用）。
+实测 index.html 里 monaco 的 modulepreload 与 stylesheet 双双消失。
+
+连带（CI 步骤顺序，否则守卫是空转）：PERF-01 的回归守卫读的是 dist/index.html
+——只有真跑过 build 才有得读。而 admin-web-build job 原先把 `npm test` 排在
+`npm run build` **之前**，守卫会永远 skip、永远绿。已把 build 提到 test 之前
+（lint 仍在最前，最快失败），并让守卫在 CI 里读到产物缺失时**显式报错**而不是
+安静跳过——宁可红一次提醒排序，也不要一个看着在、其实不在的闸。
+
+验证：admin-web 928 passed / 104 files；lint 0 error；构建成功。
+反证 5 条（monaco-first-paint.perf01.test.ts，直接读构建产物而非读配置——配置
+怎么写、Vite 怎么解释、产物最终什么样，三者可以不一致，本缺陷就是活证）。
+已实测两向：
+  · 把 manualChunks 那行加回并重建 → 4 条变红（monaco 回到首屏、首屏总量破界）；
+  · 删掉 dist 并置 CI=true → 守卫显式报错（不静默 skip）。
