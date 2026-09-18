@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import {
   Card, Input, Button, Space, message, Typography, Tag, Alert,
   Switch, Modal, Tabs, Table, Form, Select, Tooltip, Popconfirm,
-  Spin, Divider, Badge, theme,
+  Divider, Badge, theme,
 } from 'antd';
 import {
   KeyOutlined, CopyOutlined, EyeOutlined, EyeInvisibleOutlined,
@@ -20,6 +20,8 @@ import { copyText } from '../../utils/clipboard';
 import { useAuthStore, isAdminUser } from '../../store/auth';
 import type { ColumnsType } from 'antd/es/table';
 import PageHeader from '../../components/PageHeader';
+// UX-08：整页加载改用骨架屏（UI-08 契约「骨架屏替代 Spin」）。
+import PageSkeleton from '../../components/PageSkeleton';
 import StateError from '../../components/StateError';
 // SEC-03: 安全设置 Tab（TOTP 两步验证 + 登录会话管理），独立文件避免与其他 Tab 耦合
 import SecuritySettings from './SecuritySettings';
@@ -97,7 +99,10 @@ function TokenSection() {
     );
   }
 
-  if (isLoading) return <Spin />;
+  // UX-08（本轮体验审查）：整页加载此前是裸 <Spin />（无文案、无骨架、无
+  // 占位尺寸）——页面内容区从 0 高度突然撑开，且与全站其它页的骨架屏不一致。
+  // UI-08 契约明确要求「骨架屏替代 Spin」。
+  if (isLoading) return <PageSkeleton variant="table" rows={6} />;
 
   // UI-16：Token 读请求失败 → 页内错误块（重试=refetch）；此前失败只会停在一个空 Spin
   if (tokenError) {
@@ -550,7 +555,12 @@ function AiConfigTab() {
         {providerBadge()}
       </div>
 
-      {isLoading ? <Spin /> : cfgError ? (
+      {isLoading ? (
+        // UX-08（本轮体验审查）：UI-08 契约是「骨架屏替代 Spin」——本页是
+        // 整块表单，裸 Spin 会让内容区从 0 高度突然撑开（布局跳动），
+        // 用户也看不出"将要出现什么"。改用与最终形态同构的表单骨架。
+        <PageSkeleton variant="table" rows={5} />
+      ) : cfgError ? (
         // UI-16：AI 配置读请求失败 → 页内错误块（重试=refetch），不落在永久 Spin 上
         <StateError
           error={cfgError}

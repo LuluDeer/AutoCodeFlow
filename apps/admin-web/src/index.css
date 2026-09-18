@@ -36,6 +36,14 @@
      与 theme/tokens.ts 的 SEMANTIC_COLORS.warning 同源；亮面取深一档以保证
      浅底对比度（#F59E0B on #F1F5F9 仅 2.2:1）。 */
   --color-warning: #d97706;
+  /* UX-09（本轮体验审查）：**焦点环**专用色，与 --color-accent 分开是有原因的。
+     --color-accent #22C55E 在亮面（#FFFFFF / #F1F5F9）上只有 2.28:1 / 2.08:1，
+     低于 WCAG 2.2 SC 1.4.11 对焦点指示器要求的 3:1——键盘用户看不清焦点在哪。
+     亮面取深一档的 green-600（3.30:1 / 3.01:1，实测通过）；
+     暗面品牌绿本身就够（7.25:1 / 8.85:1），见下方 dark 块。
+     注意不能沿用 --color-ring：MASTER.md 里 Ring 语义是 #0F172A 深色结构色，
+     用作焦点环在暗面上只有 1.08:1（完全不可见）。 */
+  --color-focus-ring: #16a34a;
 
   /* ---- 间距令牌（MASTER §Spacing Variables）---- */
   --space-xs: 4px;
@@ -87,6 +95,9 @@ html[data-theme='dark'] {
   /* UX-03：暗面用亮一档的 #F59E0B（与 tokens.ts 的 warning 同源）——
      深底上 #D97706 对比度不足。 */
   --color-warning: #f59e0b;
+  /* UX-09：暗面品牌绿对比度充足（卡面 7.25:1 / 底色 8.85:1），直接用 #22C55E
+     ——与全站强调色同源，焦点环在暗色下更醒目。 */
+  --color-focus-ring: #22c55e;
 
   --log-bg: #020617;
   --log-text: #f8fafc;

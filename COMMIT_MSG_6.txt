@@ -1,0 +1,36 @@
+fix(experience): 焦点环用色板外硬编码蓝 + settings 整页仍用裸 Spin（UX-09 / UX-08）
+
+UX-09 [P2] 键盘焦点环是 antd 旧默认蓝 #1677FF，不在色板内且不随主题切换
+- 症状：`styles/a11y-focus.css` 两处写死 #1677ff——`.a11y-skip-link` 的背景
+  与 `.autoflow-layout :focus-visible` 的 outline。全站强调色是品牌绿
+  #22C55E，唯独键盘焦点是另一个蓝，视觉上像"没改完的默认值"；且硬编码值在
+  暗色主题下不会调整。
+- 修法：新增专用令牌 `--color-focus-ring`（index.css 双主题各一档）。
+  **刻意不复用 --color-accent**：品牌绿 #22C55E 在亮面 #FFFFFF / #F1F5F9 上
+  只有 2.28:1 / 2.08:1，低于 WCAG 2.2 SC 1.4.11 对焦点指示器要求的 3:1
+  ——为颜色一致性牺牲"键盘用户看得见焦点"是把 a11y 换成了好看。实测选色：
+    亮面 #16A34A → 白底 3.30:1 / muted 3.01:1  ✓
+    暗面 #22C55E → 卡面 7.25:1 / 底色 8.85:1  ✓
+  （也不能用 --color-ring：MASTER.md 里 Ring 语义是 #0F172A 深色结构色，
+  作焦点环在暗面上仅 1.08:1，等于没有。）
+- skip-link 前景同步从白字改深色：品牌绿上白字仅 2.28:1，深色文字 7.83:1
+  （与桌面端 .btn-success 的既有做法一致）。
+
+UX-08 [P3] UI-08 契约要求「骨架屏替代 Spin」，settings 整页仍是裸 <Spin />
+- 契约原文（DEVELOPMENT-PLAN-2026-09 §6.2 UI-08）：「空态/加载态/错误态标准化
+  … 骨架屏替代 Spin」。全站其它页都已接入 PageSkeleton，只有 settings 两处
+  漏改：整页 `if (isLoading) return <Spin />` 与 AI 配置块
+  `{isLoading ? <Spin /> : ...}`。
+- 危害不是审美：裸 Spin 高约 24px，加载完成后内容区突然撑开——**布局跳动**
+  （CLS），用户刚要点的地方可能已移位；骨架屏与最终形态同构，用户能预判
+  将要出现什么。同一产品里两种加载形态并存本身就是体验不一致。
+- 修法：两处改用 PageSkeleton；连带删掉因此失效的 `Spin` 导入。
+
+验证：admin-web 941 passed / 106 files；tsc --noEmit 0 error；lint 0 error。
+反证 13 条，均已实测「改回旧写法即变红」：
+  · focus-ring-token.ux09.test.ts（8 条）——**自己算 WCAG 对比度**，不把选色
+    依据留成注释里的口头承诺；两个方向都验过（改回 #1677ff → 2 条红；
+    改成 --color-accent 这个"看着更合理"的错解 → 1 条红）；
+  · skeleton-contract.ux08.test.ts（5 条）——并把范围**界定为整页级**加载态，
+    另有一条用例反向钉住"页内局部 Spin 仍合法"，防止后续把守卫扩成无差别
+    禁令而最终被绕过。

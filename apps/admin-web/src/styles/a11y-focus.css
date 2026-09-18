@@ -7,6 +7,19 @@
    · 跳转链接：默认移出视口，聚焦时滑入——键盘用户可跳过整条侧边栏导航，
      鼠标/触屏用户零感知。
    · 作用域收敛在 .autoflow-layout：避免污染登录页等壳层之外的界面。
+
+   UX-09（本轮体验审查）：两处写死了 antd 旧版默认蓝 #1677FF。该值不在
+   MASTER.md 的色板里，也不随主题切换——全站强调色是品牌绿 #22C55E，却唯独
+   键盘焦点环是另一个蓝，视觉上像是"没改完的默认值"。
+
+   改用专用令牌 --color-focus-ring（定义见 index.css，双主题各一档）。
+   为什么不是直接取 --color-accent：品牌绿 #22C55E 在亮面（#FFFFFF / #F1F5F9）
+   上只有 2.28:1 / 2.08:1，低于 WCAG 2.2 SC 1.4.11 对焦点指示器要求的 3:1
+   ——修颜色一致性不能以牺牲"键盘用户看得见焦点"为代价。实测：
+     亮面 #16A34A → 白底 3.30:1 / muted 3.01:1  ✓
+     暗面 #22C55E → 卡面 7.25:1 / 底色 8.85:1  ✓
+   （也不能用 --color-ring：MASTER 里 Ring 语义是 #0F172A，作焦点环在暗面上
+   仅 1.08:1，等于没有。）
    ============================================================ */
 
 .autoflow-layout .a11y-skip-link {
@@ -16,8 +29,11 @@
   z-index: 1100;
   padding: 8px 16px;
   border-radius: 8px;
-  background: #1677ff;
-  color: #fff;
+  /* UX-09：跳转链接背景原为 antd 默认蓝 #1677ff，改用品牌强调色令牌。 */
+  background: var(--color-accent, #22c55e);
+  /* 品牌绿是亮色底，深色文字对比度远高于白字（#22C55E 上的白字仅 2.28:1，
+     深色文字 7.83:1）——与桌面端 .btn-success 的既有做法一致。 */
+  color: var(--color-primary, #0f172a);
   font-size: 14px;
   line-height: 20px;
   text-decoration: none;
@@ -30,7 +46,9 @@
 }
 
 .autoflow-layout :focus-visible {
-  outline: 2px solid #1677ff;
+  /* UX-09：原为 2px solid #1677ff（antd 旧默认蓝，不在设计色板内且不随主题
+     切换）。改用双主题各自达标的 --color-focus-ring。 */
+  outline: 2px solid var(--color-focus-ring, #16a34a);
   outline-offset: 2px;
 }
 
