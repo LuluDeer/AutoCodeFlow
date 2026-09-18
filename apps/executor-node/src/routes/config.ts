@@ -218,13 +218,24 @@ configRouter.post('/config/reload', async (req: Request, res: Response) => {
     let explicitAdminApiUrls: string[] | undefined;
 
     if (body.adminApiUrl !== undefined) {
-      config.adminApiUrl = body.adminApiUrl;
-      if (body.adminApiUrlInternal === undefined && body.adminApiUrls === undefined) {
-        config.adminApiUrlInternal = body.adminApiUrl;
+      // Pull-mode config reload root-cause (R12-fix): admin-api omits
+      // `adminApiUrl` when it has none configured, but OLDER admin versions /
+      // other producers may still send "" — applying an empty string rebuilds
+      // admin client URLs to [] and permanently kills long-poll/heartbeat.
+      // An empty value carries no usable information; ignore it (keep the
+      // current connection topology) instead of clobbering it.
+      if (typeof body.adminApiUrl === "string" && body.adminApiUrl.trim().length > 0) {
+        config.adminApiUrl = body.adminApiUrl;
+        if (body.adminApiUrlInternal === undefined && body.adminApiUrls === undefined) {
+          config.adminApiUrlInternal = body.adminApiUrl;
+        }
+        updatedFields.push("adminApiUrl");
+        adminApiUrlsChanged = true;
+        logger.info(`Hot-reloaded adminApiUrl=${body.adminApiUrl}`);
+      } else {
+        ignoredFields.push("adminApiUrl(empty)");
+        logger.warn("Config reload ignored empty adminApiUrl (kept existing admin URLs)");
       }
-      updatedFields.push('adminApiUrl');
-      adminApiUrlsChanged = true;
-      logger.info(`Hot-reloaded adminApiUrl=${body.adminApiUrl}`);
     }
 
     if (body.adminApiUrlInternal !== undefined) {

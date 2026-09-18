@@ -25,14 +25,23 @@ export function buildExecutorConfigPayload(
 ): Record<string, unknown> {
   const heartbeatIntervalMs =
     cfg.get<number>("executor.heartbeatInterval") ?? 30_000;
-  return {
+  const payload: Record<string, unknown> = {
     maxConcurrentTasks: executor?.maxConcurrentTasks ?? null,
     heartbeatIntervalSeconds: Math.max(
       1,
       Math.round(heartbeatIntervalMs / 1000),
     ),
-    adminApiUrl: cfg.get<string>("app.adminApiUrl") || "",
   };
+  // R12-fix（pull-mode 自检根因）：`app.adminApiUrl` 未配置时**省略**该字段，
+  // 而不是回退为 ""。空字符串下发到执行器后，/config/reload 会把 adminApiUrl
+  // 置空并重建 admin client 列表为 []——pull 执行器的长轮询/心跳从此全部
+  // `Request failed after all retries`（retryCount=0 的兜底错误），执行器被
+  // 误判 OFFLINE。未配置本就是「没这个信息」，不应下发一个破坏性空值。
+  const adminApiUrl = cfg.get<string>("app.adminApiUrl");
+  if (adminApiUrl && adminApiUrl.trim()) {
+    payload.adminApiUrl = adminApiUrl;
+  }
+  return payload;
 }
 
 export function computeExecutorConfigFingerprint(
