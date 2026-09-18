@@ -21,10 +21,19 @@ const { Text } = Typography;
 /** P99 色阶阈值（导出供测试锚定）：≥1000ms 红 / ≥250ms 黄 / 其余绿 */
 export const LATENCY_THRESHOLDS = { warning: 250, critical: 1000 } as const;
 
+/**
+ * UX-03（本轮体验审查）：中间档此前取 `var(--color-ring)`——双主题都是
+ * #22C55E（品牌绿），于是 P99 300ms 渲染成绿色，值班者读成「正常」。
+ * 改取 `--color-warning`（亮 #D97706 / 暗 #F59E0B）。
+ *
+ * UX-01：无样本档此前取 `var(--color-secondary)`（#1E293B，MASTER.md 里的
+ * **表面色**而非正文色），暗色下落在 #1A1E2F 卡面上对比度仅 1.13:1，等于
+ * 看不见。改取主题感知的 `--chart-axis-text`（亮 #475569 / 暗 #94A3B8）。
+ */
 export function latencyColor(ms: number | null | undefined): string {
-  if (ms == null) return 'var(--color-secondary)';
+  if (ms == null) return 'var(--chart-axis-text)';
   if (ms >= LATENCY_THRESHOLDS.critical) return 'var(--color-destructive)';
-  if (ms >= LATENCY_THRESHOLDS.warning) return 'var(--color-ring)';
+  if (ms >= LATENCY_THRESHOLDS.warning) return 'var(--color-warning)';
   return 'var(--color-accent)';
 }
 

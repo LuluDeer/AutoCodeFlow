@@ -3,8 +3,8 @@
  *
  * 数据面：复用既有 GET /metrics/executors（cpuUsage/memUsage 0-100），
  * 每执行器一行双条形（CPU + 内存），自绘 div 消费 theme tokens——
- * 色阶按阈值：≥85 红（--color-destructive）/ ≥65 黄（--color-ring，warning
- * 语义取 accent 环色）/ 其余绿（--color-accent）。阈值与 DashboardPage
+ * 色阶按阈值：≥85 红（--color-destructive）/ ≥65 黄（--color-warning）/
+ * 其余绿（--color-accent）。阈值与 DashboardPage
  * 既有 CPU 文字色阶（80/60）刻意分层：条形热力观感要求高水位更早预警。
  * 交互：点击行跳执行器详情 /executors/:id。
  */
@@ -19,11 +19,15 @@ const { Text } = Typography;
 /** 色阶阈值（导出供测试锚定） */
 export const HEAT_THRESHOLDS = { warning: 65, critical: 85 } as const;
 
-/** 阈值色阶：≥85 红 / ≥65 黄 / 其余绿（双主题同值，均为图形色非正文色） */
+/** 阈值色阶：≥85 红 / ≥65 黄 / 其余绿（双主题同值，均为图形色非正文色）。
+ *
+ *  UX-03（本轮体验审查）：中间档此前取 `var(--color-ring)`，而 `--color-ring`
+ *  双主题都是 #22C55E（品牌绿）——于是 CPU 70% 与 20% 同为绿色，高水位预警
+ *  完全失效。改取 `--color-warning`（亮 #D97706 / 暗 #F59E0B）。 */
 export function heatColor(usage: number | null | undefined): string {
   if (usage == null) return 'var(--color-border)';
   if (usage >= HEAT_THRESHOLDS.critical) return 'var(--color-destructive)';
-  if (usage >= HEAT_THRESHOLDS.warning) return 'var(--color-ring)';
+  if (usage >= HEAT_THRESHOLDS.warning) return 'var(--color-warning)';
   return 'var(--color-accent)';
 }
 
@@ -78,7 +82,7 @@ function BarTrack({ label, usage }: { label: string; usage: number | null }) {
           }}
         />
       </div>
-      <Text style={{ fontSize: 10, width: 34, textAlign: 'right', flexShrink: 0, color: 'var(--color-secondary)' }}>
+      <Text style={{ fontSize: 10, width: 34, textAlign: 'right', flexShrink: 0, color: 'var(--chart-axis-text)' }}>
         {usage == null ? '—' : `${Math.round(usage)}%`}
       </Text>
     </div>
@@ -92,7 +96,7 @@ export default function ExecutorHeatBars({ executors, onOpenExecutor }: Executor
     return (
       <div
         data-testid="executor-heat-empty"
-        style={{ textAlign: 'center', padding: '24px 0', color: 'var(--color-secondary)', fontSize: 12 }}
+        style={{ textAlign: 'center', padding: '24px 0', color: 'var(--chart-axis-text)', fontSize: 12 }}
       >
         {t('heatBars.empty')}
       </div>

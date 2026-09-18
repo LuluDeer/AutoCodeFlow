@@ -7801,6 +7801,7 @@
               "git_fetch_failed",
               "runtime_missing",
               "interpreter_unavailable",
+              "sandbox_unavailable",
               "killed",
               "unknown"
             ]
