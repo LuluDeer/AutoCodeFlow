@@ -157,7 +157,7 @@ describe('UI-07 ① ViewToggle 记忆', () => {
 // ── ② 分组聚合 ──────────────────────────────────────────────────────────
 
 describe('UI-07 ② 分组聚合', () => {
-  it('groupBuckets：计数正确、未分组兜底恒末位、其余按名称序', () => {
+  it('groupBuckets：计数正确、未分组兜底恒末位、其余按名称序（code point，跨平台确定）', () => {
     const buckets = groupBuckets([
       { id: '1', groupName: '华东' },
       { id: '2', groupName: '华东' },
@@ -167,8 +167,8 @@ describe('UI-07 ② 分组聚合', () => {
       { id: '6', groupName: '' },
     ]);
     expect(buckets).toEqual([
-      { key: '华北', label: '华北', count: 1 },
       { key: '华东', label: '华东', count: 2 },
+      { key: '华北', label: '华北', count: 1 },
       { key: '', label: '未分组', count: 3 },
     ]);
   });

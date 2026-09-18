@@ -15,9 +15,10 @@ COPY package*.json ./
 RUN npm ci --omit=dev
 COPY --from=builder /app/dist ./dist
 
-# Q-10: run as non-root user
+# Q-10: run as non-root user（adduser -S -G appgroup → 主组为 appgroup，
+# chown 必须用 appuser:appgroup；appuser:appuser 会 chown: unknown group）
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup \
-    && chown -R appuser:appuser /app
+    && chown -R appuser:appgroup /app
 USER appuser
 
 EXPOSE 3105
