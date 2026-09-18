@@ -35,7 +35,11 @@ vi.mock('monaco-editor', () => ({
   default: { editor: {}, languages: {} },
 }));
 
-vi.mock('../components/monaco-setup', () => ({}));
+// 网络性能审计（2026-09-18）：monaco-setup 现在导出 { monaco }（tree-shaken
+// editor.api 实例），mock 提供同名形状，loader.config 断言见用例 ①。
+vi.mock('../components/monaco-setup', () => ({
+  monaco: { editor: {}, languages: {} },
+}));
 
 vi.mock('../api/tasks', () => ({
   tasksApi: {
