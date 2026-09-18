@@ -67,4 +67,25 @@ export const configApi = {
 
   getExecutorToken: () =>
     client.get<{ token: string | null; hasToken: boolean }>('/config/executor-shared-token'),
+
+  // G-1：后端 runtime-version 权威配置（可声明区间 min/max、在线下界 onlineMin、
+  // legacy 兜底 legacyDefaultInterpreter、Tier 版本表 tier1/2/3）。
+  // 端点上线后在应用启动时拉取，把结果传给
+  // pages/executor-mode 的 configureRuntimeVersionConfig()，前端读面
+  // （候选列表/区间提示/舰队咨询）即跟随后端，无需人工同步硬编码常量。
+  // G-1 已闭环：端点 admin-api GET /config/runtime-version 已上线，调用方为
+  // TaskFormPage（打开表单时拉一次并注入 configureRuntimeVersionConfig）。
+  // 返回类型为**手写**而非 generated：该端点标了 @ApiExcludeEndpoint（本机无
+  // PG/Redis，swagger:export 不可重跑，纳入扫描会让 CI openapi-drift 双闸红），
+  // 故不存在于 openapi.json / api-types.ts。
+  getRuntimeVersion: () =>
+    client.get<{
+      min: string;
+      max: string;
+      onlineMin: string;
+      legacyDefaultInterpreter: string;
+      tier1: string[];
+      tier2: string[];
+      tier3: string[];
+    }>('/config/runtime-version'),
 };
