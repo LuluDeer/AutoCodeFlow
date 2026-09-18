@@ -1,8 +1,10 @@
 import {
+  assertAndPinHttpUrl,
   assertSafeHttpUrl,
   assertSafeExecutorUrl,
   assertSafeGitRepoUrl,
   normalizeIpForClassification,
+  pinnedAxiosConfig,
 } from "../safe-http.util";
 
 // N25: the DNS-answer path of isBlockedAddress is exercised by mocking
@@ -411,6 +413,79 @@ describe("safe-http.util — N25 IPv4-mapped IPv6 normalization", () => {
           assertSafeHttpUrl("http://evil.example.com/webhook"),
         ).rejects.toThrow(/blocked address/);
       }
+    });
+  });
+
+  describe("assertAndPinHttpUrl — pinned IP selection (F-3 pinning)", () => {
+    afterEach(() => mockedLookup.mockReset());
+
+    it("prefers an IPv4 answer over IPv6 when both resolve (localhost case)", async () => {
+      mockedLookup.mockResolvedValue([
+        { address: "::1", family: 6 },
+        { address: "127.0.0.1", family: 4 },
+      ]);
+      process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK = "true";
+      const target = await assertAndPinHttpUrl(
+        "http://localhost:8002/api/execute",
+        { policy: "executor" },
+      );
+      expect(target.pinned).toBe(true);
+      // ::1 (IPv6) comes first from DNS, but the pin must pick the IPv4
+      // answer — dual-stack loopback services usually listen on IPv4 only.
+      expect(target.pinnedIp).toBe("127.0.0.1");
+      delete process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK;
+    });
+
+    it("keeps the only (IPv6) answer when no IPv4 resolves", async () => {
+      mockedLookup.mockResolvedValue([
+        { address: "fd00::1", family: 6 },
+      ]);
+      const target = await assertAndPinHttpUrl("http://ipv6-only.example.com/x", {
+        policy: "executor",
+      });
+      expect(target.pinned).toBe(true);
+      expect(target.pinnedIp).toBe("fd00::1");
+    });
+
+    it("pinnedAxiosConfig lookup honors Node>=22 all:true (array shape)", async () => {
+      const target = await assertAndPinHttpUrl("http://10.0.0.5:3002/api/execute", {
+        policy: "executor",
+      });
+      // Host was an IP literal → pinned:false, no custom agent.
+      expect(target.pinned).toBe(false);
+
+      // Build a synthetic pinned target to exercise the agent's lookup.
+      const url = new URL("http://10.0.0.5:3002/api/execute");
+      const cfg = pinnedAxiosConfig({ url, pinnedIp: "10.0.0.5", pinned: true });
+      expect(cfg.httpAgent).toBeDefined();
+      const lookup = (
+        cfg.httpAgent as unknown as {
+          options: {
+            lookup: (
+              h: string,
+              o: { all?: boolean },
+              cb: (err: Error | null, res?: unknown, family?: number) => void,
+            ) => void;
+          };
+        }
+      ).options.lookup;
+      expect(lookup).toBeDefined();
+
+      let allShape: unknown = null;
+      let scalarShape: unknown = null;
+      let scalarFamily: unknown = null;
+      lookup("10.0.0.5", { all: true }, (err, res) => {
+        allShape = res;
+      });
+      lookup("10.0.0.5", { all: false }, (err, res, family) => {
+        scalarShape = res;
+        scalarFamily = family;
+      });
+      // all:true → array of {address, family} (Node>=22 lookupAndConnect)
+      expect(allShape).toEqual([{ address: "10.0.0.5", family: 4 }]);
+      // all:false/omitted → scalar (addr, family) legacy shape
+      expect(scalarShape).toBe("10.0.0.5");
+      expect(scalarFamily).toBe(4);
     });
   });
 });
