@@ -29,6 +29,37 @@ function shouldShowSkeleton(loading: boolean, error: unknown, count: number): bo
 }
 
 /**
+ * O-6：对 items 按 batchSize 并发执行 fn，返回与入参等长的 settled 结果。
+ *
+ * 此前 `Promise.allSettled(data.map(app => deploymentsApi.list(app.id)))` 对 N 个应用
+ * 瞬间发出 N 个请求——应用数 50+ 时既打满浏览器同域并发（约 6，其余排队），又可能触发
+ * 后端 429。这里用固定大小 worker 池把在途请求压到 batchSize（取 6），同时保留
+ * allSettled 的「单应用失败不拖垮整列」语义（结果按 settled 形态返回）。
+ */
+async function mapWithSettledConcurrency<T, R>(
+  items: T[],
+  batchSize: number,
+  fn: (item: T) => Promise<R>,
+): Promise<PromiseSettledResult<R>[]> {
+  const results: PromiseSettledResult<R>[] = new Array(items.length);
+  let cursor = 0;
+  const workerCount = Math.max(1, Math.min(batchSize, items.length));
+  const workers = Array.from({ length: workerCount }, async () => {
+    for (;;) {
+      const i = cursor++;
+      if (i >= items.length) return;
+      try {
+        results[i] = { status: 'fulfilled', value: await fn(items[i]) };
+      } catch (reason) {
+        results[i] = { status: 'rejected', reason };
+      }
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+/**
  * W3 RBAC（对齐 settings 页先例）：应用写面（创建/上传/编辑/删除/快速部署）
  * 后端已全链 @Roles(ADMIN)，读面（列表/详情）登录即可。
  * 普通用户：写按钮禁用并给出提示（读面保持可见），不发起会 403 的请求。
@@ -39,6 +70,10 @@ function useIsAdmin() {
 }
 
 const GIT_URL_RE = /^(https?:\/\/[\w.@:/~_-]+\.git|git@[\w.-]+:[\w./_-]+\.git)$/;
+
+// F-2：整包 zip 上传体积上限。大包直传容易超时且无进度条，先在前端拦截并提示。
+const MAX_ZIP_UPLOAD_BYTES = 50 * 1024 * 1024; // 50 MiB
+const MAX_ZIP_UPLOAD_LABEL = '50MB';
 
 const runtimeOptions = [
   { label: 'Node.js', value: 'node' },
@@ -84,6 +119,9 @@ export default function ApplicationListPage() {
   const [quickDeployExecutors, setQuickDeployExecutors] = useState<{id: string; name: string; address: string; status: string}[]>([]);
   const [quickDeployForm] = Form.useForm();
   const [quickDeploying, setQuickDeploying] = useState(false);
+  // F-2：整包 zip 上传期间禁用确定按钮并给 loading，避免重复点击触发多次上传
+  //（与 ExecutorPackagesPage 的 uploading 模式对齐）。
+  const [uploading, setUploading] = useState(false);
 
   const fetchApps = useCallback(async () => {
     setLoading(true);
@@ -91,9 +129,12 @@ export default function ApplicationListPage() {
     try {
       const data = await applicationsApi.list();
 
-      // Fetch all deployments in parallel per app to compute stats
-      const deploymentResults = await Promise.allSettled(
-        data.map((app) => deploymentsApi.list(app.id))
+      // Fetch all deployments in parallel per app to compute stats.
+      // O-6：用并发池（batchSize=6）替换全量 allSettled，避免应用多时瞬间打爆并发/限流。
+      const deploymentResults = await mapWithSettledConcurrency(
+        data,
+        6,
+        (app) => deploymentsApi.list(app.id),
       );
 
       const enriched: AppWithStats[] = data.map((app, i) => {
@@ -186,14 +227,28 @@ export default function ApplicationListPage() {
       if (values.file?.fileList?.[0]?.originFileObj) {
         formData.append('file', values.file.fileList[0].originFileObj);
       }
+      setUploading(true);
       await applicationsApi.upload(formData);
       message.success(t('appList.uploaded'));
       setUploadModalOpen(false);
+      uploadForm.resetFields();
       fetchApps();
     } catch (err: unknown) {
       if (isFormValidationError(err)) return;
       message.error(getErrMsg(err, t('appList.uploadFail')));
+    } finally {
+      setUploading(false);
     }
+  };
+
+  // F-2：beforeUpload 仍返回 false（手动经 FormData 提交），但先做体积拦截；
+  // 超限文件直接从选择列表剔除并提示，不进入表单 fileList。
+  const beforeZipUpload = (file: File) => {
+    if (file.size > MAX_ZIP_UPLOAD_BYTES) {
+      message.error(t('appList.upload.tooLarge', { size: MAX_ZIP_UPLOAD_LABEL }));
+      return Upload.LIST_IGNORE;
+    }
+    return false;
   };
 
   const openQuickDeploy = async (appId: string) => {
@@ -583,6 +638,7 @@ export default function ApplicationListPage() {
         open={uploadModalOpen}
         onOk={handleUpload}
         onCancel={() => setUploadModalOpen(false)}
+        confirmLoading={uploading}
         afterOpenChange={(open) => { if (open) uploadForm.resetFields(); }}
         destroyOnHidden
       >
@@ -619,7 +675,7 @@ export default function ApplicationListPage() {
               icon: <InfoCircleOutlined />,
             }}
           >
-            <Upload maxCount={1} beforeUpload={() => false} accept=".zip">
+            <Upload maxCount={1} beforeUpload={beforeZipUpload} accept=".zip">
               <Button icon={<UploadOutlined />}>{t('appList.upload.choose')}</Button>
             </Upload>
           </Form.Item>

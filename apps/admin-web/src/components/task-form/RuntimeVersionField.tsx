@@ -26,9 +26,7 @@ import { InfoCircleOutlined, WarningOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import type { FormInstance, SelectProps } from 'antd';
 import {
-  RUNTIME_VERSION_MAX,
-  RUNTIME_VERSION_MIN,
-  RUNTIME_VERSION_ONLINE_MIN,
+  getRuntimeVersionConfig,
   normalizeRuntimeVersion,
   runtimeVersionIsOfflineTier,
   runtimeVersionOptions,
@@ -42,6 +40,8 @@ export const RUNTIME_VERSION_OFFLINE_TESTID = 'runtime-version-37-warning';
 export const RUNTIME_VERSION_ERROR_TESTID = 'runtime-version-error';
 /** 选择器本体 testid */
 export const RUNTIME_VERSION_SELECT_TESTID = 'runtime-version-select';
+/** 非法红字的 DOM id（供 Select 的 aria-describedby 关联，读屏可得知字段错误态） */
+const RUNTIME_VERSION_ERROR_MSG_ID = 'runtime-version-error-msg';
 
 /** Tier → i18n 组名键 */
 const TIER_GROUP_T_KEY: Record<1 | 2 | 3, string> = {
@@ -87,6 +87,8 @@ export default function RuntimeVersionField({
 
   if (runtime !== 'python') return null;
 
+  // G-1：区间/在线下界取自可注入配置（默认即 3.7/3.14/3.8），后端下发后 UI 自动跟随。
+  const { min: cfgMin, max: cfgMax, onlineMin: cfgOnlineMin } = getRuntimeVersionConfig();
   const options = runtimeVersionOptions();
   // 分组下拉：antd 的 grouped options 形态（label + options 子数组）
   const grouped = ([1, 2, 3] as const).map((tier) => ({
@@ -117,8 +119,8 @@ export default function RuntimeVersionField({
       label={t('taskForm.field.runtimeVersion')}
       tooltip={{
         title: t('taskForm.field.runtimeVersion.tooltip', {
-          min: RUNTIME_VERSION_MIN,
-          max: RUNTIME_VERSION_MAX,
+          min: cfgMin,
+          max: cfgMax,
         }),
         icon: <InfoCircleOutlined />,
       }}
@@ -129,10 +131,15 @@ export default function RuntimeVersionField({
       <Space orientation="vertical" style={{ width: '100%' }} size={4}>
         <Select
           data-testid={RUNTIME_VERSION_SELECT_TESTID}
+          // O-3：本字段不挂 Form.Item 的 name（值由本组件自持），故 Form.Item 的
+          // validateStatus 只渲染红框，不带 aria。这里显式把错误态与红字文案关联，
+          // 读屏用户聚焦字段时能感知「当前为错误态 + 错误原因」。
+          aria-invalid={showError || undefined}
+          aria-describedby={showError ? RUNTIME_VERSION_ERROR_MSG_ID : undefined}
           value={value ?? undefined}
           placeholder={t('taskForm.field.runtimeVersion.placeholder', {
-            min: RUNTIME_VERSION_MIN,
-            max: RUNTIME_VERSION_MAX,
+            min: cfgMin,
+            max: cfgMax,
           })}
           allowClear
           disabled={disabled}
@@ -161,6 +168,12 @@ export default function RuntimeVersionField({
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={() => commitTyped(searchValue)}
                 data-testid="runtime-version-use-typed"
+                // O-3：可见文案已含版本号，aria-label 再补语义（确认操作），读屏更明确。
+                aria-label={
+                  searchValue.trim()
+                    ? t('taskForm.field.runtimeVersion.useTypedAria', { value: searchValue.trim() })
+                    : t('taskForm.field.runtimeVersion.typedHint')
+                }
               >
                 {searchValue.trim()
                   ? t('taskForm.field.runtimeVersion.useTyped', { value: searchValue.trim() })
@@ -191,17 +204,17 @@ export default function RuntimeVersionField({
               data-testid={RUNTIME_VERSION_OFFLINE_TESTID}
             >
               {t('taskForm.field.runtimeVersion.offlineWarning', {
-                online: RUNTIME_VERSION_ONLINE_MIN,
+                online: cfgOnlineMin,
               })}
             </Tag>
           </Tooltip>
         )}
         {showError && (
-          <Text type="danger" data-testid={RUNTIME_VERSION_ERROR_TESTID}>
+          <Text type="danger" id={RUNTIME_VERSION_ERROR_MSG_ID} data-testid={RUNTIME_VERSION_ERROR_TESTID}>
             {t('taskForm.field.runtimeVersion.invalid', {
               value: typed,
-              min: RUNTIME_VERSION_MIN,
-              max: RUNTIME_VERSION_MAX,
+              min: cfgMin,
+              max: cfgMax,
             })}
           </Text>
         )}
