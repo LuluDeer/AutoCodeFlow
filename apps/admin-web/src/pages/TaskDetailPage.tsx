@@ -59,6 +59,9 @@ const RETRYABLE_T_KEY: Record<string, string> = {
   dependency_install_failed: 'taskForm.retryable.dependencyInstall',
   git_fetch_failed: 'taskForm.retryable.gitFetch',
   runtime_missing: 'taskForm.retryable.runtimeMissing',
+  // EXP-01（本轮体验审查）：沙箱配置不可用。详情页展示用户显式勾选的重试白名单
+  // 时必须能译出该键，否则会原样露出 sandbox_unavailable 枚举 token。
+  sandbox_unavailable: 'taskForm.retryable.sandboxUnavailable',
   script_error: 'taskForm.retryable.scriptError',
   timeout: 'taskForm.retryable.timeout',
   executor_offline: 'taskForm.retryable.executorOffline',

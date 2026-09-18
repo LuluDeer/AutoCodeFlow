@@ -11,9 +11,20 @@ import {
  * `?fields=id,name` 时 service 层只 select 这些列，跳过 params/secrets/
  * glueSource/requirements/runbook/maintenanceWindows 等重量 jsonb/text 列——
  * 依赖下拉/DAG 等只需 id 与 name 的消费方不再拉全列，消除千级任务
- * 6 并发请求风暴。白名单严格收口：secrets 永不投影（SEC-02），重量列
- * （params/glueSource/dependencies/requirements/runbook/maintenanceWindows）
- * 不在白名单内，请求即 400。
+ * 6 并发请求风暴。白名单严格收口：secrets 永不投影（SEC-02）。
+ *
+ * PERF-02（本轮体验审查）：`dependencies` 曾被显式排除在白名单外，理由是
+ * 「重量列」——但它是 TaskDependencyGraph 的**唯一**边集来源
+ * （admin-web/src/components/dag-layout.ts:58 直接读 t.dependencies，undefined
+ * 即 `continue`）。而 useAllTasksForDag 走的是 listAll 的默认投影
+ * `?fields=id,name`，于是边集恒空：任何配了上下游依赖的任务打开「依赖」页签
+ * 都显示「该任务没有依赖其他任务」，且「触发整条链」退化为只触发单任务。
+ * 这是 F-10 性能修复引入的静默功能损坏（单元测试 mock 掉了 API 层所以全绿）。
+ *
+ * 故将其纳入白名单：它是 `Record<string, string>` 的轻量映射（任务 id →
+ * 任务名），量级与 id/name 同级，不属于 params/glueSource 那类大文本；真正
+ * 的重量列（secrets/params/glueSource/requirements/runbook/maintenanceWindows）
+ * 仍严格排除。
  */
 export const TASK_PROJECTION_WHITELIST = [
   "id",
@@ -39,6 +50,8 @@ export const TASK_PROJECTION_WHITELIST = [
   "nextRunTime",
   "createdAt",
   "updatedAt",
+  // PERF-02: DAG 边集来源，见文件头注释。
+  "dependencies",
 ] as const;
 
 export class ListTasksQueryDto extends PaginationDto {

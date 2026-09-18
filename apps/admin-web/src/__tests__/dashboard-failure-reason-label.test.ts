@@ -33,6 +33,10 @@ const ADMIN_FAILURE_REASONS = [
   'dependency_install_failed',
   'git_fetch_failed',
   'runtime_missing',
+  // EXP-01（本轮体验审查）：沙箱已配置但不可用。python 执行器早已产出该值，
+  // 但三端枚举都没有它 → 回调被 admin 400 拒绝且整批放弃（终态丢失）。补齐后
+  // 读面必须能展示，否则用户看到的又是裸 token。
+  'sandbox_unavailable',
   'interpreter_unavailable',
   'script_error',
   'timeout',
