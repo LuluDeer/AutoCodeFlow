@@ -89,22 +89,29 @@ if (!Element.prototype.scrollIntoView) {
 
 // UI-09 行为断言的关键桩：按测试需要伪造断点命中，驱动 antd useBreakpoint
 // 走 xs / md 两条 分支（真实浏览器里由媒体查询决定，jsdom 只能打桩）。
+// R12-fix（admin-web-build 间歇性 Uncaught ReferenceError: window is not
+// defined）：matchMedia 桩从**模块顶层**移入 beforeEach——coverage 仪器化 +
+// 并发 worker 下，模块 import 时机可能落在 jsdom 环境尚未就绪的窗口期，
+// 顶层访问 window 即成 uncaught exception（第二轮/第四轮 CI 同模式失败、
+// 第三轮偶然通过 = 时序 flaky）。测试体内访问 window 才是安全位置。
 let mediaMode: 'xs' | 'md' = 'xs';
-window.matchMedia = ((q: string) => {
-  const matches = mediaMode === 'xs'
-    ? q.includes('max-width: 575px')
-    : /min-width: (576|768)px/.test(q);
-  return {
-    matches,
-    media: q,
-    onchange: null,
-    addListener: () => {},
-    removeListener: () => {},
-    addEventListener: () => {},
-    removeEventListener: () => {},
-    dispatchEvent: () => false,
-  } as unknown as MediaQueryList;
-}) as unknown as typeof window.matchMedia;
+function stubMatchMedia(mode: 'xs' | 'md') {
+  window.matchMedia = ((q: string) => {
+    const matches = mode === 'xs'
+      ? q.includes('max-width: 575px')
+      : /min-width: (576|768)px/.test(q);
+    return {
+      matches,
+      media: q,
+      onchange: null,
+      addListener: () => {},
+      removeListener: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => false,
+    } as unknown as MediaQueryList;
+  }) as unknown as typeof window.matchMedia;
+}
 
 // UI-14: DashboardPage 挂 useMetricsStream（SSE）——jsdom 无 EventSource
 class NoopEventSource {
@@ -181,6 +188,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.stubGlobal('EventSource', NoopEventSource);
   mediaMode = 'xs';
+  stubMatchMedia(mediaMode);
   mockedMetrics.getSummary.mockResolvedValue(summaryFixture as never);
   mockedMetrics.getDailyTrend.mockResolvedValue([
     { date: '2026-09-10', success: 5, failed: 1 },
@@ -288,6 +296,7 @@ describe('UI-09 ExecutionDetailPage 375px 产物', () => {
     first.unmount();
 
     mediaMode = 'md';
+    stubMatchMedia(mediaMode);
     renderWithProviders(<ExecutionDetailPage />, '/tasks/t1/executions/e1');
     await screen.findByText('执行信息');
     const descsMd = document.querySelectorAll('.ant-descriptions');

@@ -107,4 +107,7 @@
 #   - 本轮（fix(ci) pull-mode + pinned）：pull-mode config reload 根因修复——
 #     routes/config.ts 对空 adminApiUrl 改为忽略（不重建 admin client 列表为 []），
 #     本机(Windows) ncc 0.44 重打（2396kB → 2469kB），产物与 CI Ubuntu 逐字节一致。
-80872b2cbcbc585af362565ffbeec57dd0dfb125b9d26bab9aee4549a9665df3  index.js
+#   - 本轮（fix(ci) rlimit wrapper 127）：process-rlimits.ts 的 `exec "$0" "$@"`
+#     把占位名当命令 exec → Linux 任务全灭（exit 127）；改为 `cmd=$1; shift;
+#     exec "$cmd" "$@"`。本机(Windows) ncc 0.44 重打，产物与 CI Ubuntu 逐字节一致。
+c38b43c81fa889c758d93cc55e2474d7b5fcc36d01911388b918c886639197cf  index.js
