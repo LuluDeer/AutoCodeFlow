@@ -28,3 +28,21 @@ vi.waitFor = ((callback: () => unknown, options?: WaitForOptionsArg) => {
 }) as typeof vi.waitFor;
 
 configure({ asyncUtilTimeout: 10_000 });
+
+// ── matchMedia 统一桩（R12：149 处测试文件顶层 `if (!window.matchMedia)`
+//    在 forks 池 + coverage 仪器化下存在「模块加载先于 jsdom 就绪」的窗口期，
+//    第十轮 admin-web-build 的 Unhandled ReferenceError: window is not defined
+//    即此模式命中。setup 在 jsdom 环境就绪后执行，window 恒存在，故统一在此
+//    建立桩，测试文件无需再在模块顶层碰 window。──
+if (typeof window !== 'undefined' && !window.matchMedia) {
+  window.matchMedia = ((q: string) => ({
+    matches: false,
+    media: q,
+    onchange: null,
+    addListener: () => {},
+    removeListener: () => {},
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    dispatchEvent: () => false,
+  })) as unknown as typeof window.matchMedia;
+}
