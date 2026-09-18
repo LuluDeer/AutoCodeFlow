@@ -4021,6 +4021,27 @@
         ]
       }
     },
+    "/config/runtime-version": {
+      "get": {
+        "description": "Returns the currently effective declareable range (min/max, overridable via PYTHON_RUNTIME_VERSION_MIN/MAX), the online-download floor (onlineMin) and the legacy fallback interpreter for executors that do not report interpreters. The frontend injects these into its version helpers instead of hardcoding them. Returns contract constants only — no config-store values, no secrets.",
+        "operationId": "ConfigController_getRuntimeVersion",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Get the authoritative Python runtime version contract",
+        "tags": [
+          "System Config"
+        ]
+      }
+    },
     "/config/{key}": {
       "get": {
         "operationId": "ConfigController_findOne",
@@ -7771,6 +7792,11 @@
             "type": "string",
             "description": "Executor version",
             "example": "1.0.0"
+          },
+          "protocolVersion": {
+            "type": "number",
+            "description": "PROTOCOL-VER (B-3/U-2): 执行器线缆协议版本（与实现版本 version 解耦）。中台按兼容矩阵分支：低于 supportedMin 只 warn + 兜底，不拒绝注册。",
+            "example": 1
           },
           "capabilities": {
             "description": "Declared capabilities",
