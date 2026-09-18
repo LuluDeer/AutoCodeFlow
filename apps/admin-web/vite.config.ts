@@ -158,6 +158,14 @@ export default defineConfig({
     setupFiles: ['src/test-setup.ts'],
     include: ['src/**/*.{test,spec}.{ts,tsx}'],
     exclude: ['e2e/**', '**/e2e/**', '**/*.e2e.{ts,tsx,js,cjs}'],
+    // R12-fix（admin-web-build 间歇性 Unhandled ReferenceError: window is
+    // not defined）：coverage 仪器化 + 默认 threads 池下，worker 内多文件
+    // 共享 jsdom 环境，环境 teardown 的异步残留会在下一文件 import 期访问
+    // 已销毁的 window（第二轮/四轮/七轮同模式偶发，ui09 顶层桩修复后仍
+    // 有其他文件命中）。forks 池每个测试文件独立子进程、环境彻底隔离，
+    // 是 vitest 对『环境切换竞态 / teardown 残留』的标准解法；Linux CI
+    // 与本地均支持，仅进程启动略增（可忽略，测试本身占大头）。
+    pool: 'forks',
     // DEEP_REVIEW 轮7 验证发现（2026-09-14）：本套件为 jsdom + antd 重型页面，
     // 83 文件全量跑时单文件 transform/import 累计达数百秒，首个渲染用例实测
     // 0.3~2s（空闲）→ 并发下 >5s，vitest 默认 5s 上限会产出**超时假红**
