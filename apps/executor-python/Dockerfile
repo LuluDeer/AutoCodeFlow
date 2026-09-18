@@ -19,7 +19,7 @@ RUN addgroup --system appgroup && adduser --system --ingroup appgroup --no-creat
     && mkdir -p /data/tasks /tmp/appuser-home \
     && chown -R appuser:appgroup /data/tasks /app /tmp/appuser-home \
     && command -v uv \
-    && uv --version | grep -Fx 'uv 0.11.15'
+    && test "$(uv --version | grep -oE 'uv [0-9]+\.[0-9]+\.[0-9]+' | head -n1)" = 'uv 0.11.15'
 USER appuser
 
 # Keep the runtime lookup explicit and independent of root's home directory.
@@ -30,7 +30,7 @@ ENV PATH="/usr/local/bin:${PATH}" \
 
 # Build-time regression: execute the pinned binary as the actual runtime user
 # and exercise the exact flag used by routers/execute.py.
-RUN uv --version | grep -Fx 'uv 0.11.15' \
+RUN test "$(uv --version | grep -oE 'uv [0-9]+\.[0-9]+\.[0-9]+' | head -n1)" = 'uv 0.11.15' \
     && uv venv --no-project /tmp/uv-build-check \
     && test -x /tmp/uv-build-check/bin/python \
     && rm -rf /tmp/uv-build-check

@@ -104,4 +104,7 @@
 #     rlimit、批量回调收敛、httpx/axios 单例等）——本机(Windows) ncc 0.44 重打
 #     产物与 CI Ubuntu 侧**逐字节一致**（ncc 0.44 已跨平台确定，同 cc54aa2f 注记），
 #     故以实测值回填即 CI 转绿。
-6715d9e4d100c795181e7054cd46a0f12505f16558f359aec77337c4c0cb600f  index.js
+#   - 本轮（fix(ci) pull-mode + pinned）：pull-mode config reload 根因修复——
+#     routes/config.ts 对空 adminApiUrl 改为忽略（不重建 admin client 列表为 []），
+#     本机(Windows) ncc 0.44 重打（2396kB → 2469kB），产物与 CI Ubuntu 逐字节一致。
+80872b2cbcbc585af362565ffbeec57dd0dfb125b9d26bab9aee4549a9665df3  index.js
