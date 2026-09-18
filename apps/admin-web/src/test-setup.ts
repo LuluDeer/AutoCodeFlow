@@ -1,5 +1,6 @@
-import { vi } from 'vitest';
+import { vi, afterEach } from 'vitest';
 import { configure } from '@testing-library/dom';
+import { act } from '@testing-library/react';
 
 // ── waitFor 默认预算统一（O-2，测试体系审计 2026-09-18）──────────────
 // 全量跑（95 文件 jsdom + antd 重型页面 + coverage 仪器化）时，transform/
@@ -46,3 +47,19 @@ if (typeof window !== 'undefined' && !window.matchMedia) {
     dispatchEvent: () => false,
   })) as unknown as typeof window.matchMedia;
 }
+
+// ── React 并发渲染残留 flush（R12：第十/十一轮 admin-web-build 的
+//    Unhandled ReferenceError: window is not defined 源于 react-dom
+//    scheduler 的宏任务（MessageChannel）在测试文件结束、jsdom teardown
+//    后才执行——prepareForCommit → getActiveElementDeep 访问已销毁的
+//    window。CI 高负载（transform/import 数百秒、coverage 仪器化）下
+//    React 并发根节点的未完成渲染更容易拖到 teardown 后。这里在每个测试
+//    结束后显式排空宏任务队列 + flush React 更新，使 teardown 时无残留
+//    scheduler 工作。──
+afterEach(async () => {
+  // 排空至少一轮宏任务（React scheduler 依赖 MessageChannel/setImmediate
+  // 派发 workLoop；单个 setTimeout(0) 一轮即够，pending 渲染随之执行完）。
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  // 再 flush 一轮 React 更新（act 包裹的同步+微任务部分）。
+  await act(async () => {});
+});
