@@ -1,0 +1,38 @@
+perf(api): 执行列表端点不再回传 512KB 级的 logs/aiAnalysis 文本列（PERF-03）
+
+缺陷：`task_executions.logs` 是 text 列，回调 DTO 允许单条 512_000 字符
+（execution-callback.dto.ts 的 @MaxLength(512_000)）。而两个执行列表端点此前
+**取整行**：
+  · getExecutions      —— findAndCount({ where, skip, take, order })
+  · getAllExecutions   —— createQueryBuilder("e") 无 select
+
+一页 20 行满载时仅 logs 就接近 10 MB，全部经 SQL 读取、JSON 序列化、网络传输，
+再被前端**原样丢弃**：
+  · TaskDetailPage 执行历史表只渲染 status / executorAddress / startTime /
+    duration / errorMessage（task.service 与页面双向核对过），从不读 logs；
+  · ExecutionsPage 列同上一组；
+  · CommandPalette 只取 id / taskName / status；
+  · 执行详情页的日志走**独立端点** GET .../logs（按行分页）与 SSE 流；
+  · aiAnalysis（同为 text）只在详情页与 /report 端点展示。
+
+危害不止"慢"：列表首屏与翻页要等这几 MB 传完，弱网下表现为长时间空表；同时
+admin-api 的堆与出网带宽被无谓占用。
+
+修法：新增 `execution-list-projection.ts`，由 **TypeORM 元数据**派生投影列
+（全集 − 重型文本排除表），实体新增列时自动入选。
+
+方向性说明（关键设计选择）：刻意用「排除表」而非「包含表」。包含表（白名单）
+在实体新增列时会把新列**静默丢掉**——读面少一个字段不报错、只显示空白，正是
+本轮反复在修的那类静默损坏。排除表方向相反：新列默认被选中，只有明确列入的
+重型列才会被排除，且排除项有测试钉住。
+
+连带（测试替身保真）：task.service.spec.ts 的 makeRepo 替身此前缺 `metadata`，
+一旦生产代码读元数据就 `Cannot read properties of undefined`。真实 Repository
+恒有 metadata，故按 task_executions 的真实列补齐替身，并给 5 处内联 qbMock 补
+`select` 链式方法（它们模拟的是真实 QueryBuilder，本就有该方法）。
+
+验证：admin-api 3014 passed / 183 suites；tsc --noEmit 0 error；eslint 0 error。
+反证 13 条（execution-list-projection.spec.ts），已实测：
+  · 清空排除表 → 6 条变红；
+  · 删掉 QueryBuilder 的 select → 源码层用例变红。
+其中源码层断言做了空白归一（prettier 折行不该让守卫变红——那是判据失效）。

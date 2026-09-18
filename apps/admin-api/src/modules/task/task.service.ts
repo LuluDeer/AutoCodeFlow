@@ -70,6 +70,11 @@ import {
   ListTasksQueryDto,
   TASK_PROJECTION_WHITELIST,
 } from "./dto/list-tasks-query.dto";
+// PERF-03：执行列表端点的读投影（排除 logs/aiAnalysis 两个重型 text 列）。
+import {
+  executionListSelectColumns,
+  executionListSelectColumnsAliased,
+} from "./execution-list-projection";
 import {
   isValidRuntimeVersionFormat,
   isRuntimeVersionSupported,
@@ -1322,6 +1327,22 @@ export class TaskService {
 
     const [list, total] = await this.execRepo.findAndCount({
       where,
+      // PERF-03（本轮体验审查）：必须显式排除重型文本列。
+      // task_executions.logs 是 text 列，回调 DTO 允许单条 512_000 字符
+      // （execution-callback.dto.ts 的 @MaxLength(512_000)）——一页 20 行满载
+      // 时仅 logs 就接近 10 MB，全部经 JSON 序列化、网络传输、再被前端丢弃：
+      //   · TaskDetailPage 执行历史表只渲染 status/executorAddress/startTime/
+      //     duration/errorMessage（第 268-320 行），**从不读 logs**；
+      //   · 执行详情页的日志走独立端点 GET .../logs（按行分页）与 SSE 流，
+      //     不依赖列表响应里的 logs；
+      //   · aiAnalysis（同样 text）只在详情页 / 报告端点展示。
+      // 故排除它们对功能零影响，却把该端点的响应体缩小一到两个数量级。
+      // 注：`select` 的字符串数组形态在 TypeORM 里属于 FindOptionsSelectByString，
+      // 其类型签名只接受字面量元组，运行时行为与 `string[]` 完全一致——此处按
+      // 运行时正确的形态断言（元数据派生必然得到普通 string[]）。
+      select: executionListSelectColumns(
+        this.execRepo,
+      ) as (keyof TaskExecution)[],
       skip: (p.page - 1) * p.pageSize,
       take: p.pageSize,
       order: { createdAt: "DESC" },
@@ -1344,8 +1365,13 @@ export class TaskService {
     // 1) getManyAndCount：页查询 + count 共 2 条（仅 executions 扫描）；
     // 2) 任务名回填只对缺 taskName 的行做一次 PK IN 批量查询（join 仅在
     //    taskName 过滤时保留用于匹配 t.name）。
+    // PERF-03（本轮体验审查）：同 getExecutions——排除 logs/aiAnalysis 两个
+    // 重型 text 列（单条上限 512_000 字符）。列表页（ExecutionsPage）只渲染
+    // taskName/status/triggerType/executorAddress/startTime/duration/
+    // errorMessage，CommandPalette 只取 id/taskName/status，都不读 logs。
     const qb = this.execRepo
       .createQueryBuilder("e")
+      .select(executionListSelectColumnsAliased(this.execRepo))
       .orderBy("e.createdAt", "DESC")
       .skip((p.page - 1) * p.pageSize)
       .take(p.pageSize);
