@@ -3204,7 +3204,7 @@ export interface components {
              * @description Structured failure reason
              * @enum {string}
              */
-            failureReason?: "package_fetch_failed" | "script_error" | "timeout" | "executor_offline" | "executor_restart" | "dependency_install_failed" | "git_fetch_failed" | "runtime_missing" | "interpreter_unavailable" | "killed" | "unknown";
+            failureReason?: "package_fetch_failed" | "script_error" | "timeout" | "executor_offline" | "executor_restart" | "dependency_install_failed" | "git_fetch_failed" | "runtime_missing" | "interpreter_unavailable" | "sandbox_unavailable" | "killed" | "unknown";
             /** @description Wall-clock execution duration in milliseconds */
             durationMs?: number;
             /** @description FEAT-05: execution artifacts manifest (best-effort, max 20 entries). File bytes are uploaded separately via the artifact upload endpoint; the manifest is persisted to task_executions.artifacts on the terminal callback. */

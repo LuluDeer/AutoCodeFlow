@@ -9,6 +9,8 @@ import {
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiKeysApi, ApiKeyView, ApiKeyScope, ApiKeyCreateResult } from '../../api/api-keys';
 import { getErrMsg } from '../../utils/error';
+// UX-04：统一剪贴板封装（返回是否**真正**复制成功，失败时降级 execCommand）。
+import { copyText } from '../../utils/clipboard';
 import { formatDateTime } from '../../utils/timeFormat';
 import { useTranslation } from 'react-i18next';
 // UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
@@ -67,9 +69,19 @@ function CreateResultModal(props: {
       onOk={props.onClose}
       onCancel={props.onClose}
       footer={[
-        <Button key="copy" icon={<CopyOutlined />} onClick={() => {
-          navigator.clipboard?.writeText(props.result!.plaintext);
-          setCopied(true);
+        <Button key="copy" icon={<CopyOutlined />} onClick={async () => {
+          // UX-04（本轮体验审查）：此前是
+          //   navigator.clipboard?.writeText(...); setCopied(true);
+          // ——无 await、无 catch，**无条件**置「已复制」。非 HTTPS / iframe
+          // 受限 / 浏览器拒绝剪贴板权限时，用户看到按钮变成「已复制」便关掉
+          // 弹窗，而密钥明文此后**无法再查看**，粘贴时才发现剪贴板是空的。
+          // 这是全站风险最高的一处「假成功」，必须按真实结果反馈。
+          const ok = await copyText(props.result!.plaintext);
+          if (ok) {
+            setCopied(true);
+          } else {
+            message.error(t('apiKeys.result.copyFail'));
+          }
         }}>
           {copied ? t('apiKeys.result.copied') : t('apiKeys.result.copyKey')}
         </Button>,

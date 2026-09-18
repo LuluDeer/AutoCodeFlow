@@ -834,6 +834,9 @@ export default {
   'apiKeys.result.close': 'Close',
   'apiKeys.result.copied': 'Copied',
   'apiKeys.result.copyKey': 'Copy key',
+  // UX-04: never claim "copied" when the clipboard write was rejected — the
+  // plaintext key is shown exactly once.
+  'apiKeys.result.copyFail': 'Copy failed: the browser denied clipboard access (non-HTTPS or restricted permissions). Select the key text and copy it manually — it cannot be viewed again after you close this window.',
   'apiKeys.result.warnTitle': 'This is shown only once',
   'apiKeys.result.warnDesc': 'For security, the server stores only the SHA-256 hash of the key; this plaintext cannot be viewed again after you close this window. Please copy and store it securely now.',
   'apiKeys.result.name': 'Name: ',
@@ -885,6 +888,8 @@ export default {
   'eventSub.createResult.alertDesc': 'A custom secret was not provided, so the server generated one. This key is shown in this window only once and cannot be viewed again after closing (reads always show ******). Copy and store it securely now — subscribers must use it to verify the X-Hub-Signature-256 signature.',
   'eventSub.createResult.urlLabel': 'URL:',
   'eventSub.apiKey.copy': 'Copy Secret',
+  // UX-04: same as apiKeys — the secret is shown exactly once.
+  'eventSub.createResult.copyFail': 'Copy failed: the browser denied clipboard access (non-HTTPS or restricted permissions). Select the secret text and copy it manually — it cannot be viewed again after you close this window.',
   'eventSub.modal.edit': 'Edit Subscription',
   'eventSub.modal.createTitle': 'New Subscription',
   'eventSub.modal.save': 'Save',
@@ -1348,6 +1353,8 @@ export default {
   'install.gotoList': 'Go to executor list',
   'install.copiedLabel': '{{label}} copied',
   'install.copyLabel': 'Copy {{label}}',
+  // UX-04: previously the rejection was unhandled — clicking did nothing silently.
+  'install.copyFail': 'Copy failed: the browser denied clipboard access (non-HTTPS or restricted permissions). Select the text and copy it manually.',
 
   'appDetail.info': 'Application Info',
   'appDetail.description': 'Application configuration, versions and deployment',

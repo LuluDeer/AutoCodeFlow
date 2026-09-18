@@ -30,6 +30,12 @@
   --color-border: #e2e8f0;
   --color-destructive: #ef4444;
   --color-ring: #22c55e;
+  /* UX-03（本轮体验审查）：warning 语义色。此前三处「中间档」色阶写成
+     var(--color-ring)，而 --color-ring 双主题都是 #22C55E（品牌绿）——于是
+     「失败 2 次 / P99 300ms / CPU 70%」全部渲染成健康绿，告警语义丢失。
+     与 theme/tokens.ts 的 SEMANTIC_COLORS.warning 同源；亮面取深一档以保证
+     浅底对比度（#F59E0B on #F1F5F9 仅 2.2:1）。 */
+  --color-warning: #d97706;
 
   /* ---- 间距令牌（MASTER §Spacing Variables）---- */
   --space-xs: 4px;
@@ -78,6 +84,9 @@ html[data-theme='dark'] {
   --color-muted: #1a1e2f;
   --color-border: #334155;
   --color-ring: #22c55e;
+  /* UX-03：暗面用亮一档的 #F59E0B（与 tokens.ts 的 warning 同源）——
+     深底上 #D97706 对比度不足。 */
+  --color-warning: #f59e0b;
 
   --log-bg: #020617;
   --log-text: #f8fafc;

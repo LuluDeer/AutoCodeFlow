@@ -63,6 +63,11 @@ VALID_FAILURE_REASONS = frozenset({
     "dependency_install_failed",
     "git_fetch_failed",
     "runtime_missing",
+    # EXP-01（本轮体验审查）：沙箱已配置但不可用（bwrap 缺失 / 用户命名空间
+    # 被禁 / 在 Windows 上启用）。python 执行器自 F-1 起就会产出该值，但四端
+    # 枚举都没有它——admin 的 @IsIn 命中即 400，而执行器把 4xx 当不可重试、
+    # **整批放弃**，导致该机所有任务的终态回调永久丢失。现补齐四端。
+    "sandbox_unavailable",
     # python_task_multiversion: 任务声明的 Python 版本无法获取
     # （缓存池缺失且按需下载失败/下载源不可达）。明确失败语义——不回退宿主
     # 解释器（回退会静默掩盖版本不匹配）。

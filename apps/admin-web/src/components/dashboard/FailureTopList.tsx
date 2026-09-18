@@ -60,10 +60,14 @@ export function aggregateFailureTop(
     .slice(0, topN);
 }
 
-/** 阈值色阶：≥3 次红 / 2 次黄 / 1 次绿（语义色与图表共源） */
+/** 阈值色阶：≥3 次红 / 2 次黄 / 1 次灰（语义色与图表共源）。
+ *
+ *  UX-03（本轮体验审查）：2 次档此前取 `var(--color-ring)`——双主题都是
+ *  #22C55E（品牌绿），于是「失败 2 次」比「失败 1 次」（灰）看起来更健康，
+ *  告警语义完全颠倒。改取 `--color-warning`（亮 #D97706 / 暗 #F59E0B）。 */
 export function failureCountColor(count: number): string {
   if (count >= 3) return 'var(--color-destructive)';
-  if (count === 2) return 'var(--color-ring)';
+  if (count === 2) return 'var(--color-warning)';
   return 'var(--chart-axis-text)';
 }
 
@@ -83,7 +87,7 @@ export default function FailureTopList({ failures, topN = 5, onOpenTask }: Failu
     return (
       <div
         data-testid="failure-top-empty"
-        style={{ textAlign: 'center', padding: '24px 0', color: 'var(--color-secondary)', fontSize: 12 }}
+        style={{ textAlign: 'center', padding: '24px 0', color: 'var(--chart-axis-text)', fontSize: 12 }}
       >
         {t('failureTop.empty')}
       </div>

@@ -847,6 +847,8 @@ export default {
   'apiKeys.result.close': '关闭',
   'apiKeys.result.copied': '已复制',
   'apiKeys.result.copyKey': '复制密钥',
+  // UX-04：剪贴板被拒时不得谎报「已复制」——密钥明文只显示这一次。
+  'apiKeys.result.copyFail': '复制失败：浏览器拒绝了剪贴板访问（非 HTTPS 或权限受限）。请手动选中密钥文本复制——关闭本窗口后将无法再次查看。',
   'apiKeys.result.warnTitle': '这是唯一一次显示机会',
   'apiKeys.result.warnDesc': '出于安全考虑，服务端只保存密钥的 SHA-256 哈希，此明文密钥在关闭本窗口后无法再次查看。请立即复制并妥善保存。',
   'apiKeys.result.name': '名称：',
@@ -898,6 +900,8 @@ export default {
   'eventSub.createResult.alertDesc': '服务端未收到自定义 secret，已代为生成。此密钥仅在本窗口显示一次，关闭后无法再次查看（读面恒为 ******），请立即复制并妥善保存——订阅方需用它校验 X-Hub-Signature-256 签名。',
   'eventSub.createResult.urlLabel': 'URL：',
   'eventSub.apiKey.copy': '复制密钥',
+  // UX-04：同 apiKeys——secret 只显示一次，失败必须如实告知。
+  'eventSub.createResult.copyFail': '复制失败：浏览器拒绝了剪贴板访问（非 HTTPS 或权限受限）。请手动选中密钥文本复制——关闭本窗口后将无法再次查看。',
   'eventSub.modal.edit': '编辑订阅',
   'eventSub.modal.createTitle': '新建订阅',
   'eventSub.modal.save': '保存',
@@ -1361,6 +1365,8 @@ export default {
   'install.gotoList': '前往执行器列表',
   'install.copiedLabel': '已复制 {{label}}',
   'install.copyLabel': '复制 {{label}}',
+  // UX-04：剪贴板被拒时此前是「点了没反应也无报错」。
+  'install.copyFail': '复制失败：浏览器拒绝了剪贴板访问（非 HTTPS 或权限受限）。请手动选中文本复制。',
 
   'appDetail.info': '应用信息',
   'appDetail.description': '应用配置、版本与部署管理',

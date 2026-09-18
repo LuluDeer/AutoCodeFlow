@@ -110,4 +110,10 @@
 #   - 本轮（fix(ci) rlimit wrapper 127）：process-rlimits.ts 的 `exec "$0" "$@"`
 #     把占位名当命令 exec → Linux 任务全灭（exit 127）；改为 `cmd=$1; shift;
 #     exec "$cmd" "$@"`。本机(Windows) ncc 0.44 重打，产物与 CI Ubuntu 逐字节一致。
-c38b43c81fa889c758d93cc55e2474d7b5fcc36d01911388b918c886639197cf  index.js
+#   - 本轮（fix(experience) EXP-01）：callback.ts 的 CALLBACK_FAILURE_REASONS
+#     补入 `sandbox_unavailable`——python 执行器自 F-1 起就会产出该值，而四端
+#     枚举都没有它，导致回调被 admin @IsIn 400 拒绝、执行器对 4xx 不可重试而
+#     **整批放弃**（该机所有任务的终态永久丢失，含同批无关的成功任务）。
+#     本机(Windows) ncc 0.44 重打（2469kB → 2474kB）；CI Ubuntu 侧独立重打
+#     得到**同一个** cee23087…，再次印证 ncc 0.44 的跨平台字节确定性。
+cee230872422e85c7f182e384b92612e55a4dfb2d84b05b970a83c7b179db9df  index.js

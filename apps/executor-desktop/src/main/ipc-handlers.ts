@@ -30,7 +30,7 @@ import log, { applyLogLevel } from './logger';
  * Roots mirror where files are actually written:
  *  - workDir/logs  — executor-node task logs (file-logger.ts)
  *  - workDir/apps  — deployed app logs (routes/deploy.ts → <deployDir>/app.log)
- *  - userData/logs — electron-log main.log (logger.ts)
+ *  - userData/logs — electron-log daily files executor-YYYY-MM-DD.log (logger.ts)
  */
 function getAllowedLogDomains(): string[] {
   const domains: string[] = [];
@@ -461,14 +461,33 @@ export function registerIpcHandlers(): void {
   });
 
   // ── 日志文件管理 ───────────────────────────────────────
-  // 列出过往日志文件（按天分组，含 main.log）
+  // 列出过往日志文件（桌面端自身日志 + 任务日志）
   ipcMain.handle('log:list-files', () => {
     const result: Array<{ label: string; path: string; date: string }> = [];
 
-    // main.log
-    const mainLog = path.join(app.getPath('userData'), 'logs', 'main.log');
-    if (fs.existsSync(mainLog)) {
-      result.push({ label: '主进程日志 (main.log)', path: mainLog, date: '' });
+    // EXP-05（本轮体验审查）：此前这里读的是 `logs/main.log`，而 logger.ts:15
+    // 实际落盘名是 `executor-YYYY-MM-DD.log`——因 existsSync 守卫，该条目
+    // **永不出现**，且整个 userData/logs 域在面板里再无其他条目。后果是
+    // `logs:getToday` 只读**今天**、只喂主日志区，于是**昨天的桌面端日志从 UI
+    // 完全不可达**：排查「昨天执行器为什么没起来」时用户拿不到任何材料。
+    // 改为按 logger.ts 的命名遍历（与 logger.ts:57 的 startsWith('executor-')
+    // 判据同源），日期倒序。
+    const desktopLogDir = path.join(app.getPath('userData'), 'logs');
+    if (fs.existsSync(desktopLogDir)) {
+      const desktopLogs = fs
+        .readdirSync(desktopLogDir)
+        .filter((f: string) => /^executor-\d{4}-\d{2}-\d{2}\.log$/.test(f))
+        .sort()
+        .reverse()
+        .slice(0, 30); // 最近 30 天（与任务日志同口径）
+      for (const f of desktopLogs) {
+        const date = f.replace(/^executor-/, '').replace(/\.log$/, '');
+        result.push({
+          label: `桌面端日志 (${date})`,
+          path: path.join(desktopLogDir, f),
+          date,
+        });
+      }
     }
 
     // 任务日志：workDir/logs/YYYY-MM-DD/
