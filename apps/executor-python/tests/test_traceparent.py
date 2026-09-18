@@ -176,7 +176,10 @@ def test_send_callback_with_retry_sends_traceparent_header(monkeypatch):
     ))
 
     assert ok is True
-    assert captured['headers'] == {'traceparent': VALID_TRACEPARENT}
+    # B-2 parity：回传头在 traceparent 之外恒带 x-executor-address（admin 按
+    # 执行器维度限流）；traceparent 的传播是本题断言对象，地址值不固定。
+    assert captured['headers']['traceparent'] == VALID_TRACEPARENT
+    assert 'x-executor-address' in captured['headers']
 
 
 def test_send_callback_with_retry_no_header_when_no_traceparent(monkeypatch):
@@ -201,4 +204,7 @@ def test_send_callback_with_retry_no_header_when_no_traceparent(monkeypatch):
     ))
 
     assert ok is True
-    assert captured['headers'] in (None, {})
+    # B-2 parity：无 traceparent 时零追踪头（零行为变化），但 x-executor-address
+    # 仍存在（它不属于追踪语义）。
+    assert captured['headers'].get('traceparent') is None
+    assert 'x-executor-address' in captured['headers']

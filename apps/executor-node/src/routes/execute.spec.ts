@@ -65,6 +65,10 @@ jest.mock('../file-logger', () => ({
   getDeadLetterCount: jest.fn(() => 0),
   // E-08: cleanupWorkDir 据此跳过活跃 execution 目录；测试默认返回空集（无活跃）。
   registerActiveWorkdirProvider: jest.fn(),
+  // P2 磁盘水位：mock 默认"无压力"，各用例行为与引入前一致；水位用例
+  // 单独覆盖 diskUsagePercent 返回值。
+  diskUsagePercent: jest.fn(() => 0),
+  DISK_CRITICAL_PERCENT: 95,
 }));
 
 // Worker stub that mirrors the real TaskWorker contract:
@@ -277,6 +281,24 @@ describe('POST /api/execute', () => {
       .send({ executionId: 'exec-429', task: { runtime: 'node' } });
     expect(res.status).toBe(429);
     expect(Atomics.load(_runningCountArr, 0)).toBe(1);
+  });
+
+  it('returns 503 when disk usage is critically full (P2 watermark)', async () => {
+    // 磁盘水位闸门（file-logger.diskUsagePercent，默认 mock 返回 0=无压力）：
+    // 临界水位（≥95%）下任何新任务都被拒绝，且不触碰容量计数。
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const fileLoggerMock = require('../file-logger') as {
+      diskUsagePercent: jest.Mock;
+      DISK_CRITICAL_PERCENT: number;
+    };
+    fileLoggerMock.diskUsagePercent.mockReturnValueOnce(
+      fileLoggerMock.DISK_CRITICAL_PERCENT + 1,
+    );
+    const res = await request(appNoAuth).post('/api/execute')
+      .send({ executionId: 'exec-503-disk', task: { runtime: 'node' } });
+    expect(res.status).toBe(503);
+    expect(res.body.error).toMatch(/disk is critically full/);
+    expect(Atomics.load(_runningCountArr, 0)).toBe(0);
   });
 
   it('returns 400 for invalid gitRepo scheme', async () => {
@@ -903,6 +925,38 @@ describe('POST /api/execute — per-execution callback token (N23)', () => {
   it('user params cannot override AUTOFLOW_EXECUTOR_ADDRESS', async () => {
     const env = await postExecute('exec-addr-3', { executor_address: 'evil:1234' });
     expect(env.AUTOFLOW_EXECUTOR_ADDRESS).toBe('localhost:8002');
+  });
+
+  it('AUTOFLOW_ADMIN_API_URL prefers the external URL (python parity)', async () => {
+    // AUTOFLOW-API-URL-01：executor-python 注入的是
+    // `admin_api.get_admin_api_base_url()`，优先级 external > internal > default；
+    // 本侧此前只读 `adminApiUrlInternal || adminApiUrl`，于是配了公网地址时
+    // 执行器**自己**出站走公网、注入给任务代码的却是容器内网址——同一进程
+    // 两个答案，且任务侧回调失败是静默的（只是没有中间回调）。
+    //
+    // 反证：把 execute.ts 的注入改回 `config.adminApiUrlInternal || config.adminApiUrl`，
+    // 本例立即转红（会得到 http://admin-internal:3105）。
+    (testConfig as any).adminApiUrlExternal = 'https://admin.example.com/api';
+    (testConfig as any).adminApiUrlInternal = 'http://admin-internal:3105';
+    try {
+      const env = await postExecute('exec-apiurl-1');
+      expect(env.AUTOFLOW_ADMIN_API_URL).toBe('https://admin.example.com/api');
+    } finally {
+      delete (testConfig as any).adminApiUrlExternal;
+      (testConfig as any).adminApiUrlInternal = 'http://admin-api:3105';
+    }
+  });
+
+  it('AUTOFLOW_ADMIN_API_URL falls back to internal then default', async () => {
+    (testConfig as any).adminApiUrlInternal = 'http://admin-internal:3105';
+    try {
+      const env = await postExecute('exec-apiurl-2');
+      expect(env.AUTOFLOW_ADMIN_API_URL).toBe('http://admin-internal:3105');
+    } finally {
+      (testConfig as any).adminApiUrlInternal = 'http://admin-api:3105';
+    }
+    const envDefault = await postExecute('exec-apiurl-3');
+    expect(envDefault.AUTOFLOW_ADMIN_API_URL).toBe('http://admin-api:3105');
   });
 });
 

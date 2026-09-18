@@ -27,7 +27,16 @@ jest.mock("axios", () => {
   };
 });
 jest.mock("../../../common/utils/safe-http.util", () => ({
+  ...jest.requireActual("../../../common/utils/safe-http.util"),
   assertSafeExecutorUrl: jest.fn().mockResolvedValue(new URL("http://ok")),
+  // F-3（SEC-NEW）: reloadConfig happy path 现走 assertAndPinExecutorUrl。
+  assertAndPinExecutorUrl: jest
+    .fn()
+    .mockImplementation(async (raw: string) => ({
+      url: new URL(raw),
+      pinnedIp: "93.184.216.34",
+      pinned: false,
+    })),
 }));
 
 /**

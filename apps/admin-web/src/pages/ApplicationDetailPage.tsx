@@ -231,22 +231,28 @@ function TasksTab({ appId, syncing, onSync }: { appId: string; syncing: boolean;
   const { t } = useTranslation();
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(false);
+  // 网络性能审计（2026-09-18）：任务列表从「pageSize:100 全量拉取 + 客户端翻页」
+  // 改为服务端分页（pageSize:20）——100 行无虚拟化渲染开销大，且应用内任务
+  // 超过 100 时旧逻辑直接丢失第 100 条之后的条目。
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
   const isAdmin = useIsAdmin();
   const requestControllerRef = useRef<AbortController | null>(null);
   const mountedRef = useRef(true);
 
-  const fetchTasks = useCallback(async () => {
+  const fetchTasks = useCallback(async (pageNum: number) => {
     requestControllerRef.current?.abort();
     const controller = new AbortController();
     requestControllerRef.current = controller;
     setLoading(true);
     try {
       const res = await tasksApi.list(
-        { page: 1, pageSize: 100, applicationId: appId },
+        { page: pageNum, pageSize: 20, applicationId: appId },
         controller.signal,
       );
       if (!controller.signal.aborted && mountedRef.current) {
         setTasks(res.items ?? []);
+        setTotal(res.total ?? 0);
       }
     } catch (err: unknown) {
       if (!controller.signal.aborted && mountedRef.current) {
@@ -262,7 +268,9 @@ function TasksTab({ appId, syncing, onSync }: { appId: string; syncing: boolean;
 
   useEffect(() => {
     mountedRef.current = true;
-    fetchTasks();
+    // appId 变化（或首次挂载）回到第一页重新拉取
+    setPage(1);
+    fetchTasks(1);
     return () => {
       mountedRef.current = false;
       requestControllerRef.current?.abort();
@@ -279,7 +287,7 @@ function TasksTab({ appId, syncing, onSync }: { appId: string; syncing: boolean;
             <Button loading={syncing} icon={<SyncOutlined />} onClick={onSync} size="small" disabled={!isAdmin}>{t('appDetail.tasks.sync')}</Button>
           </Tooltip>
           <Button type="primary" size="small" onClick={() => nav(`/tasks/new?applicationId=${appId}`)}>{t('appDetail.tasks.create')}</Button>
-          <Button icon={<ReloadOutlined />} size="small" onClick={fetchTasks}>{t('appDetail.refresh')}</Button>
+          <Button icon={<ReloadOutlined />} size="small" onClick={() => fetchTasks(page)}>{t('appDetail.refresh')}</Button>
         </Space>
       }
     >
@@ -293,6 +301,10 @@ function TasksTab({ appId, syncing, onSync }: { appId: string; syncing: boolean;
             {
               title: t('appDetail.tasks.col.name'),
               dataIndex: 'name',
+              // O-19：virtual 滚动要求行高恒定——长任务名换行可变高会导致虚拟列表
+              // 行错位，故 name 列单行省略（antd ellipsis 自带 title tooltip，长名
+              // 悬停可见全文）。
+              ellipsis: true,
               // F-33（DEEP_REVIEW 0ef3bbe）：原 <a onClick> 无 href（键盘不可达/读屏不识别），
               // 改 react-router <Link>——渲染真实 href + SPA 跳转，视觉/行为不变。
               render: (n: string, r: Task) => <Link to={`/tasks/${r.id}`}>{n}</Link>,
@@ -311,7 +323,20 @@ function TasksTab({ appId, syncing, onSync }: { appId: string; syncing: boolean;
             { title: t('appDetail.tasks.col.runtime'), dataIndex: 'runtime', width: 80, render: (v: string) => v ? <Tag color="blue">{v}</Tag> : '-' },
           ]}
           dataSource={tasks}
-          rowKey="id" loading={loading} size="small" pagination={{ pageSize: 10 }}
+          rowKey="id" loading={loading} size="small"
+          pagination={{
+            current: page,
+            pageSize: 20,
+            total,
+            showSizeChanger: false,
+            onChange: (p) => { setPage(p); fetchTasks(p); },
+          }}
+          // O-19：高频任务表启用 antd 内置 virtual 滚动——固定视口高度 + 固定
+          // 行高（small≈39px × 10 行 ≈ 400），仅渲染可视区行。网络性能审计
+          // （2026-09-18）：API 已从 pageSize=100 全量改为服务端分页
+          // pageSize=20（见 fetchTasks），virtual 继续兜底单页渲染。
+          virtual
+          scroll={{ y: 400 }}
         />
       )}
     </Card>

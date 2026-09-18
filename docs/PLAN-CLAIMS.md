@@ -308,6 +308,9 @@
 | 1790000000023 | AlterConfigHistoryUserIdToInteger | DR-FIX-ALL（PK-21） | 本声明占用（config_history."userId" 由 VARCHAR ALTER 为 INTEGER，USING "userId"::integer——写面自始即 String(user.id) 数字串/NULL，可安全转换；实体 userId:number|null 同步；非零迁移情形：DB 事实原为 VARCHAR，非 PK-10 零迁移先例；down 回退 VARCHAR ::text） |
 | 1790000000024 | AddTaskCodeSource | python_task_multiversion（整包上传 + uv 多版本） | 本声明占用（tasks 增 codeSource 可空 enum：git/glue/application_zip；一次性回填优先级 gitRepo>glueSource>applicationId>NULL；幂等 IF NOT EXISTS；down 删列） |
 | 1790000000025 | AddExecutorInterpreters | python_task_multiversion（整包上传 + uv 多版本） | 本声明占用（executors 增 interpreters 可空 jsonb：执行器上报的解释器缓存池清单；**不加 NOT NULL**——null=未上报（旧执行器，调度按 ["3.12"] 兜底）与 [] =已上报且池空 语义必须区分；幂等 IF NOT EXISTS；down 删列） |
+| 1790000000026 | AddRolloutAndRunningStartPartialIndexes | PERF O-1/O-2（性能/可扩展深度审查） | 已落盘（app_deployments 部分索引 idx_app_deployments_rollout_state_active 支撑 markInterruptedRolloutsFailed 只保留 in-flight 行；task_executions 部分索引 idx_task_executions_start_time_running 支撑 recoverStaleExecutions 的 status='running' AND startTime<cutoff 扫描（旧索引以 executorAddress 打头无法服务该扫描）；均 CREATE INDEX IF NOT EXISTS 幂等；与实体 @Index 声明对齐） |
+| 1790000000027 | AddExecutorInterpretersGinIndex | F-12（中台↔执行器深度审查） | 已落盘（executors.interpreters jsonb 列的 GIN 索引 idx_executors_interpreters，为按解释器版本/缓存状态查询执行器铺路；调度侧现为内存过滤不依赖该索引；IF NOT EXISTS 幂等；与实体 @Index(...,{using:"gin"}) 对齐） |
+| 1790000000028 | AddExecutorProtocolVersion | B-3/U-2（中台↔执行器深度审查） | 已落盘（executors 增 protocolVersion 可空 int：NULL=未上报（存量旧执行器按 1 兜底），整数=上报协议版本，与 executorVersion 实现版本解耦；不加默认值以区分两态；ADD COLUMN IF NOT EXISTS 幂等） |
 
 ## 变更日志
 

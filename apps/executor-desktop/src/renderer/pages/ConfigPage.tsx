@@ -1,4 +1,11 @@
 import React, { useEffect, useState } from 'react';
+import {
+  DOWNLOAD_TIMEOUT_MS,
+  EXECUTOR_PORT,
+  MAX_CONCURRENT_TASKS,
+  displayNumber,
+  parseBoundedInt,
+} from '../number-input';
 
 declare const window: Window & {
   electronAPI: {
@@ -16,8 +23,12 @@ declare const window: Window & {
 /** python_task_multiversion：设置页诊断面（实际生效的 uv / 池，见主进程 IPC）。 */
 type PythonEnvStatus = {
   uvPath: string | null;
-  uvSource: 'config' | 'bundled' | 'path';
+  uvSource: 'config' | 'bundled' | 'env' | 'path';
   uvFromSystemEnv: boolean;
+  /** UX-DSK-UV：显式配了 uvPath 但文件用不了——"配了却没生效"。 */
+  uvConfiguredButMissing?: boolean;
+  /** false = 只能由 executor-node 运行时从 PATH 兜底，**不是**缺失。 */
+  uvStaticallyConfirmed?: boolean;
   interpretersDir: string;
   poolEntries: string[];
   poolReadable: boolean;
@@ -120,9 +131,13 @@ export default function ConfigPage() {
     setSaveError(null);
     try {
       const r = await window.electronAPI.saveConfig(form);
-      // 配置已落盘，但执行器热重载可能失败——此时不能报"已生效"，
-      // 否则用户以为执行器在跑，实际已停在停止态。
-      if (r?.reloadError) {
+      // 主进程可能返回 ok:false（载荷形状被拒——防御路径）。不能把它当成功，
+      // 否则会显示"✓ 已保存，配置已生效"而其实什么都没写。
+      if (r && r.ok === false) {
+        setSaveError('保存失败：配置未被写入（载荷被主进程拒绝）。');
+      } else if (r?.reloadError) {
+        // 配置已落盘，但执行器热重载可能失败——此时不能报"已生效"，
+        // 否则用户以为执行器在跑，实际已停在停止态。
         setSaveError(`配置已保存，但执行器重启失败：${r.reloadError}。请在「状态监控」页手动启动。`);
       } else {
         setSaved(true);
@@ -168,7 +183,9 @@ export default function ConfigPage() {
     <div className="page-loading">加载中...</div>
   );
 
-  const port = Number(form.executorPort || 8002);
+  // UX-DSK-NUM：端口/并发数等数值一律走 displayNumber —— 状态里若残留 NaN/null
+  // （旧配置或 IPC 脏值），显示与保存必须指向同一个值。
+  const port = displayNumber(form.executorPort, EXECUTOR_PORT.fallback);
 
   return (
     <div className="cfg-layout">
@@ -257,8 +274,16 @@ export default function ConfigPage() {
                 </div>
                 <div className="cfg-field">
                   <label className="cfg-label">监听端口</label>
-                  <input className="input" type="number" value={port}
-                    onChange={(e) => set('executorPort', parseInt(e.target.value, 10))} />
+                  {/* 与「最大并发任务数」同源缺陷：清空输入框 → NaN → 显示 8002
+                      却保存 null。留空回落默认端口；失焦时把越界的 1–65535
+                      之外的值钳回（HTML min/max 不阻止手输/粘贴）。 */}
+                  <input className="input" type="number" min={1} max={65535} value={port}
+                    onChange={(e) => set('executorPort',
+                      parseBoundedInt(e.target.value, EXECUTOR_PORT.fallback,
+                        EXECUTOR_PORT.min, EXECUTOR_PORT.max))}
+                    onBlur={(e) => set('executorPort',
+                      parseBoundedInt(e.target.value, EXECUTOR_PORT.fallback,
+                        EXECUTOR_PORT.min, EXECUTOR_PORT.max))} />
                 </div>
               </div>
 
@@ -331,22 +356,35 @@ export default function ConfigPage() {
                   "配置了却没生效"最快的一手信息（uvPath 指错、自带 uv 缺失、
                   池被配到工作目录等），因此放在最上方。 */}
               {pyEnv && (
-                <div className={`py-env-status ${pyEnv.uvPath || pyEnv.uvFromSystemEnv ? 'ok' : 'warn'}`}>
+                <div className={`py-env-status ${
+                  pyEnv.uvConfiguredButMissing
+                    ? 'warn'
+                    : pyEnv.uvPath || pyEnv.uvFromSystemEnv ? 'ok' : 'warn'
+                }`}>
                   <div className="py-env-row">
                     <span className="py-env-key">uv</span>
                     <span className="py-env-val">
                       {pyEnv.uvPath
                         ? <><code>{pyEnv.uvPath}</code>
                             <em>
-                              {pyEnv.uvSource === 'config' ? '（来自上方 uvPath 配置）'
+                              {pyEnv.uvSource === 'config'
+                                ? (pyEnv.uvConfiguredButMissing
+                                    ? '（来自上方 uvPath 配置，但该文件不可用——请检查路径）'
+                                    : '（来自上方 uvPath 配置）')
                                 : pyEnv.uvSource === 'bundled' ? '（安装包自带）' : ''}
                             </em>
                           </>
                         : pyEnv.uvFromSystemEnv
                           ? <><code>系统环境变量 UV_BIN</code><em>（来自系统环境）</em></>
-                          : <strong className="py-env-missing">
-                              未找到 uv —— 声明了 Python 版本的任务将无法执行
-                            </strong>}
+                          // UX-DSK-UV：既没显式配置也没自带 uv 时，**不等于缺失**——
+                          // executor-node 启动后还会实跑 `uv --version` 做 PATH
+                          // 探测。原实现一律显示"未找到 uv"，在 uv 装在 PATH 上的
+                          // 机器上给出假的致命告警（诊断比没有诊断更误导）。
+                          : <em className={pyEnv.uvStaticallyConfirmed === false ? '' : 'py-env-missing'}>
+                              {pyEnv.uvStaticallyConfirmed === false
+                                ? '未静态指定——将由执行器在运行时从系统 PATH 查找 uv'
+                                : '未找到 uv —— 声明了 Python 版本的任务将无法执行'}
+                            </em>}
                     </span>
                   </div>
                   <div className="py-env-row">
@@ -432,8 +470,13 @@ export default function ConfigPage() {
               <div className="cfg-field cfg-field-narrow">
                 <label className="cfg-label">解释器下载超时（毫秒）</label>
                 <input className="input" type="number" min={0}
-                  value={Number(form.interpreterDownloadTimeoutMs || 0)}
-                  onChange={(e) => set('interpreterDownloadTimeoutMs', parseInt(e.target.value, 10) || 0)} />
+                  value={displayNumber(form.interpreterDownloadTimeoutMs, DOWNLOAD_TIMEOUT_MS.fallback)}
+                  onChange={(e) => set('interpreterDownloadTimeoutMs',
+                    parseBoundedInt(e.target.value, DOWNLOAD_TIMEOUT_MS.fallback,
+                      DOWNLOAD_TIMEOUT_MS.min, DOWNLOAD_TIMEOUT_MS.max))}
+                  onBlur={(e) => set('interpreterDownloadTimeoutMs',
+                    parseBoundedInt(e.target.value, DOWNLOAD_TIMEOUT_MS.fallback,
+                      DOWNLOAD_TIMEOUT_MS.min, DOWNLOAD_TIMEOUT_MS.max))} />
                 <span className="cfg-hint">单个解释器下载的最长等待时间。0 = 使用执行器默认值。</span>
               </div>
 
@@ -466,9 +509,19 @@ export default function ConfigPage() {
 
               <div className="cfg-field cfg-field-narrow">
                 <label className="cfg-label">最大并发任务数</label>
+                {/* UX-DSK-NUM：原实现 `parseInt(e.target.value, 10)` 无兜底——
+                    清空输入框得到 NaN，显示层 `Number(form.x || 10)` 仍渲染 10，
+                    于是"界面显示 10、实际保存 NaN"。NaN 经 IPC 序列化为 null，
+                    主进程写入时撞 electron-store 的 schema 校验整次抛错。
+                    这里与保存路径同源：留空 = 回落默认 10，越界钳到 1–100。 */}
                 <input className="input" type="number" min={1} max={100}
-                  value={Number(form.maxConcurrentTasks || 10)}
-                  onChange={(e) => set('maxConcurrentTasks', parseInt(e.target.value, 10))} />
+                  value={displayNumber(form.maxConcurrentTasks, MAX_CONCURRENT_TASKS.fallback)}
+                  onChange={(e) => set('maxConcurrentTasks',
+                    parseBoundedInt(e.target.value, MAX_CONCURRENT_TASKS.fallback,
+                      MAX_CONCURRENT_TASKS.min, MAX_CONCURRENT_TASKS.max))}
+                  onBlur={(e) => set('maxConcurrentTasks',
+                    parseBoundedInt(e.target.value, MAX_CONCURRENT_TASKS.fallback,
+                      MAX_CONCURRENT_TASKS.min, MAX_CONCURRENT_TASKS.max))} />
                 <span className="cfg-hint">同时运行的最大任务数量（1 – 100）</span>
               </div>
 

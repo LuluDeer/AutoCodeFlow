@@ -3,7 +3,6 @@ from fastapi.responses import JSONResponse
 from datetime import datetime, timezone
 from pydantic import ValidationError
 import psutil
-import httpx
 import os
 from admin_api import build_admin_api_url, get_admin_api_base_url
 from auth import has_dynamic_token
@@ -34,9 +33,11 @@ def record_heartbeat(success: bool) -> None:
 async def _check_admin_api():
     """OPS-02: Check connectivity to admin-api for readiness probe."""
     try:
-        async with httpx.AsyncClient(timeout=5) as client:
-            resp = await client.get(build_admin_api_url('/health'))
-            return resp.status_code < 500
+        # 网络性能审计（2026-09-18）：改用 O-24 共享连接池（k8s 探针高频
+        # 轮询不再每次新建连接池）。
+        from scheduler import get_http_client
+        resp = await get_http_client().get(build_admin_api_url('/health'), timeout=5)
+        return resp.status_code < 500
     except Exception:
         return False
 

@@ -631,31 +631,33 @@ Executor "1" --> "0..*" InterpreterInfo
 
 > 本索引将上述设计条目折叠为可实现任务。每个任务条目给出：改动文件、验收要点锚点、前置依赖（P/NP=无依赖）。实现顺序建议：批次 0（D10 前置实测）→ 批次 1（admin-api 数据面）→ 批次 2（admin-api 调度面）→ 批次 3（executor-python 执行面）→ 批次 4（执行器上报面）→ 批次 5（admin-web）→ 批次 6（文档/安全落地）。
 
-| # | 任务 | 改动文件 | 验收锚点 | 前置 |
-|---|---|---|---|---|
-| T01 | **D10 前置实测**：`uv 0.8.17 python list --all-versions` 区间实测 + 支持矩阵确认 | 隔离容器脚本 → `runtime-version.util.ts` 常量 | §2.7.2 D10 步骤；OQ-6 | 无（阻塞批次 1 常量） |
-| T02 | `runtimeVersion` DTO 校验（格式+区间+仅 python runtime） | `apps/admin-api/src/modules/task/dto/create-task.dto.ts`、新增 `runtime-version.util.ts` | AC-06b/NG-02/R3 | T01 |
-| T03 | `tasks.codeSource` 列 + 迁移 + 存量回填 | `task.entity.ts`、`migrations/1790000000024-AddTaskCodeSource.ts` | FR-18/AC-17b | 无 |
-| T04 | codeSource 互斥 + FR-19 应用一致性 + PATCH 合并态校验 | `task.service.ts`（`normalizeTaskDto`/`update`）、`CreateTaskDto` | FR-18/AC-19a | T03 |
-| T05 | `executors.interpreters` 列 + 迁移 + register/heartbeat 白名单采纳 | `executor.entity.ts`、`migrations/1790000000025-AddExecutorInterpreters.ts`、`executor.service.ts`（register/heartbeat） | FR-13/AC-13a/b、D5 | 无 |
-| T06 | `interpreter-match.util.ts` 纯函数 + 单测（NFR-08 基准） | 新增 `apps/admin-api/src/modules/executor/interpreter-match.util.ts` + `__tests__` | FR-09/D1/NFR-08 | T05 |
-| T07 | dispatch/selectLeastLoaded/dispatchBroadcast 三处 interpreter 过滤 + 快照错误消息 | `executor.service.ts` | AC-08a/AC-09a/AC-09b | T06 |
-| T08 | pinning 分支运行前版本能力校验 | `executor.service.ts`（dispatch pinning 段） | AC-08b/D2③ | T06 |
-| T09 | `ExecutionFailureReason.INTERPRETER_UNAVAILABLE` + protocol.json + inferFailureReason 兜底 | `task-execution.entity.ts`、`packages/executor-protocol/protocol.json`、`task.service.ts` | FR-08/AC-12a | 无 |
-| T10 | 执行器 `config.py` 新增 UV_PYTHON_INSTALL_* / 超时 / 体积配置 | `apps/executor-python/config.py`、`.env.example` | D11/D12 | 无 |
-| T11 | `interpreters.py` 模块（discover/ensure/resolve + 容错） | 新增 `apps/executor-python/interpreters.py` + pytest | FR-14/AC-14b、NFR-02 | T10 |
-| T12 | 下载并发控制（per-version 锁 + 全局单下载队列）+ 超时预算接线 | `interpreters.py`、`execute.py`（`_run_uv` 复用） | NFR-16/D13、NFR-13/D11 | T11 |
-| T13 | `ensure_venv` 版本化（`--python` + venv 目录签名 + 无版本回退） | `apps/executor-python/routers/execute.py`、`_derive_task_key` | FR-15/16、AC-15a/b、AC-16a/b、AC-10a | T11 |
-| T14 | zip 渠道：下载 + zip-bomb/zil-slip 防护 + 解压到工作目录 | 新增 `apps/executor-python/zip_safety.py`、`execute.py` run_task | FR-02/03、AC-03a、NFR-04 | 无 |
-| T15 | requirements 合并（包内∪任务、任务优先）+ 无依赖不建 venv | `execute.py` run_task、`manifest.py` 模式 | FR-04/AC-04a/b/c、D4 | T14 |
-| T16 | 失败分类接线（下载/探测失败 → interpreter_unavailable + 快照 result） | `execute.py`（`_refine_failure_reason`）、回调 | FR-08/12、AC-12a | T09/T12 |
-| T17 | 注册 payload + 心跳 provider 上报 interpreters | `main.py`（`_register_payload`）、`scheduler.py` | FR-13/AC-13a/AC-14a | T11 |
-| T18 | executors 表 interpreters 读面（列表/详情展示） | admin-api executor controller/service + DTO | AC-13a | T05 |
-| T19 | maintenance 豁免解释器层 + 体积红线回收（D12） | `apps/executor-python/maintenance.py` | NFR-15/D12、AC-NFR12 | T10 |
-| T20 | EXECUTOR_VERSION 升 2.0.0 及版本漂移提示 | `config.py` | R5 | T17 |
-| T21 | admin-web：runtimeVersion + codeSource 表单与互斥 UI + payload 归一 | `TaskFormPage.tsx`、`executor-mode.ts`、task-form utils、api-types 重新生成 | FR-06a/AC-01a/FR-18、NG-08 | T02/T03/T04 |
-| T22 | admin-web：执行详情 interpreter 快照展示 | 执行详情页（消费 `result.interpreter`） | AC-12a | T16 |
-| T23 | 部署文档与 compose：在线主路径 + 镜像/离线缓存卷（D9）+ 容量规划 | `docker-compose.yml`、`docs/deployment.md`、`docs/operations.md` | NFR-14/AC-NFR14a/b/c | T10 |
-| T24 | 端到端验收 EG-01~06 + 回归（playwright/e2e + 执行器 e2e spec） | 既有 e2e 套件 + 新增 zip/多版本用例 | §2.7.2 全表 | 所有批次 |
+> 状态回标（2026-09-18）：✅ done 依据为关键产物存在性核查（迁移文件 / 工具模块 / 后端逻辑 / UI / 文档均已在工作区命中），未逐一重跑验收锚点；如发现 ⏳ / ⬜ 表示仍有未完成项。
+
+| # | 任务 | 改动文件 | 验收锚点 | 前置 | 状态 |
+|---|---|---|---|---|---|
+| T01 | **D10 前置实测**：`uv 0.8.17 python list --all-versions` 区间实测 + 支持矩阵确认 | 隔离容器脚本 → `runtime-version.util.ts` 常量 | §2.7.2 D10 步骤；OQ-6 | 无（阻塞批次 1 常量） | ✅ done |
+| T02 | `runtimeVersion` DTO 校验（格式+区间+仅 python runtime） | `apps/admin-api/src/modules/task/dto/create-task.dto.ts`、新增 `runtime-version.util.ts` | AC-06b/NG-02/R3 | T01 | ✅ done |
+| T03 | `tasks.codeSource` 列 + 迁移 + 存量回填 | `task.entity.ts`、`migrations/1790000000024-AddTaskCodeSource.ts` | FR-18/AC-17b | 无 | ✅ done |
+| T04 | codeSource 互斥 + FR-19 应用一致性 + PATCH 合并态校验 | `task.service.ts`（`normalizeTaskDto`/`update`）、`CreateTaskDto` | FR-18/AC-19a | T03 | ✅ done |
+| T05 | `executors.interpreters` 列 + 迁移 + register/heartbeat 白名单采纳 | `executor.entity.ts`、`migrations/1790000000025-AddExecutorInterpreters.ts`、`executor.service.ts`（register/heartbeat） | FR-13/AC-13a/b、D5 | 无 | ✅ done |
+| T06 | `interpreter-match.util.ts` 纯函数 + 单测（NFR-08 基准） | 新增 `apps/admin-api/src/modules/executor/interpreter-match.util.ts` + `__tests__` | FR-09/D1/NFR-08 | T05 | ✅ done |
+| T07 | dispatch/selectLeastLoaded/dispatchBroadcast 三处 interpreter 过滤 + 快照错误消息 | `executor.service.ts` | AC-08a/AC-09a/AC-09b | T06 | ✅ done |
+| T08 | pinning 分支运行前版本能力校验 | `executor.service.ts`（dispatch pinning 段） | AC-08b/D2③ | T06 | ✅ done |
+| T09 | `ExecutionFailureReason.INTERPRETER_UNAVAILABLE` + protocol.json + inferFailureReason 兜底 | `task-execution.entity.ts`、`packages/executor-protocol/protocol.json`、`task.service.ts` | FR-08/AC-12a | 无 | ✅ done |
+| T10 | 执行器 `config.py` 新增 UV_PYTHON_INSTALL_* / 超时 / 体积配置 | `apps/executor-python/config.py`、`.env.example` | D11/D12 | 无 | ✅ done |
+| T11 | `interpreters.py` 模块（discover/ensure/resolve + 容错） | 新增 `apps/executor-python/interpreters.py` + pytest | FR-14/AC-14b、NFR-02 | T10 | ✅ done |
+| T12 | 下载并发控制（per-version 锁 + 全局单下载队列）+ 超时预算接线 | `interpreters.py`、`execute.py`（`_run_uv` 复用） | NFR-16/D13、NFR-13/D11 | T11 | ✅ done |
+| T13 | `ensure_venv` 版本化（`--python` + venv 目录签名 + 无版本回退） | `apps/executor-python/routers/execute.py`、`_derive_task_key` | FR-15/16、AC-15a/b、AC-16a/b、AC-10a | T11 | ✅ done |
+| T14 | zip 渠道：下载 + zip-bomb/zil-slip 防护 + 解压到工作目录 | 新增 `apps/executor-python/zip_safety.py`、`execute.py` run_task | FR-02/03、AC-03a、NFR-04 | 无 | ✅ done |
+| T15 | requirements 合并（包内∪任务、任务优先）+ 无依赖不建 venv | `execute.py` run_task、`manifest.py` 模式 | FR-04/AC-04a/b/c、D4 | T14 | ✅ done |
+| T16 | 失败分类接线（下载/探测失败 → interpreter_unavailable + 快照 result） | `execute.py`（`_refine_failure_reason`）、回调 | FR-08/12、AC-12a | T09/T12 | ✅ done |
+| T17 | 注册 payload + 心跳 provider 上报 interpreters | `main.py`（`_register_payload`）、`scheduler.py` | FR-13/AC-13a/AC-14a | T11 | ✅ done |
+| T18 | executors 表 interpreters 读面（列表/详情展示） | admin-api executor controller/service + DTO | AC-13a | T05 | ✅ done |
+| T19 | maintenance 豁免解释器层 + 体积红线回收（D12） | `apps/executor-python/maintenance.py` | NFR-15/D12、AC-NFR12 | T10 | ✅ done |
+| T20 | EXECUTOR_VERSION 升 2.0.0 及版本漂移提示 | `config.py` | R5 | T17 | ✅ done |
+| T21 | admin-web：runtimeVersion + codeSource 表单与互斥 UI + payload 归一 | `TaskFormPage.tsx`、`executor-mode.ts`、task-form utils、api-types 重新生成 | FR-06a/AC-01a/FR-18、NG-08 | T02/T03/T04 | ✅ done |
+| T22 | admin-web：执行详情 interpreter 快照展示 | 执行详情页（消费 `result.interpreter`） | AC-12a | T16 | ✅ done |
+| T23 | 部署文档与 compose：在线主路径 + 镜像/离线缓存卷（D9）+ 容量规划 | `docker-compose.yml`、`docs/deployment.md`、`docs/operations.md` | NFR-14/AC-NFR14a/b/c | T10 | ✅ done |
+| T24 | 端到端验收 EG-01~06 + 回归（playwright/e2e + 执行器 e2e spec） | 既有 e2e 套件 + 新增 zip/多版本用例 | §2.7.2 全表 | 所有批次 | ✅ done |
 
 **批次说明**：T01 为阻塞性前置（D10），产出支持矩阵常量后 T02/T21 的区间校验方可定稿；T05/T06 无相互依赖，可并行；T14/T15 可在执行器批次独立完成；T24 为发布门禁前的最后一环。

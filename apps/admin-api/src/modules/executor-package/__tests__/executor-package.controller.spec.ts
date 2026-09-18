@@ -19,7 +19,19 @@ jest.mock("../../executor/executor.service", () => ({
   ExecutorService: jest.fn(),
 }));
 jest.mock("axios");
-jest.mock("../../../common/utils/safe-http.util");
+jest.mock("../../../common/utils/safe-http.util", () => ({
+  ...jest.requireActual("../../../common/utils/safe-http.util"),
+  assertSafeExecutorUrl: jest.fn().mockResolvedValue(undefined),
+  // F-3（SEC-NEW）: push 出站现走 assertAndPinExecutorUrl——按入参原样返回
+  // pinned:false 目标（URL 断言不受影响）。
+  assertAndPinExecutorUrl: jest
+    .fn()
+    .mockImplementation(async (raw: string) => ({
+      url: new URL(raw),
+      pinnedIp: "93.184.216.34",
+      pinned: false,
+    })),
+}));
 
 describe("ExecutorPackageController download HTTP contract", () => {
   let app: INestApplication;
@@ -70,19 +82,17 @@ describe("ExecutorPackageController download HTTP contract", () => {
         {
           provide: ExecutorService,
           useValue: {
-            findAll: jest
-              .fn()
-              .mockResolvedValue([
-                // P2-8（executor lifecycle audit）：空名单推送只取 ONLINE 行，
-                // 夹具必须带 status——真实 findAll() 返回的实体必有该列（非
-                // nullable）。此前夹具省了它，于是这条契约测试在"按状态过滤"
-                // 落地后会因"没有在线执行器"而失败。
-                {
-                  id: "exec-1",
-                  address: "http://executor:8002",
-                  status: ExecutorStatus.ONLINE,
-                },
-              ]),
+            findAll: jest.fn().mockResolvedValue([
+              // P2-8（executor lifecycle audit）：空名单推送只取 ONLINE 行，
+              // 夹具必须带 status——真实 findAll() 返回的实体必有该列（非
+              // nullable）。此前夹具省了它，于是这条契约测试在"按状态过滤"
+              // 落地后会因"没有在线执行器"而失败。
+              {
+                id: "exec-1",
+                address: "http://executor:8002",
+                status: ExecutorStatus.ONLINE,
+              },
+            ]),
           },
         },
       ],

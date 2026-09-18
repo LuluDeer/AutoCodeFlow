@@ -1,0 +1,15 @@
+# Grafana 数据源预置（M-3/M-4，compose monitoring profile）
+# 启动即自动注册 Prometheus 与 Loki，无需手工添加。
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+
+  - name: Loki
+    type: loki
+    access: proxy
+    url: http://loki:3100

@@ -34,6 +34,14 @@ const makeRepo = (overrides: Partial<Record<string, jest.Mock>> = {}) => ({
   findAndCount: jest.fn(),
   create: jest.fn((d: any) => ({ ...d, id: d.id ?? "deploy-1" })),
   save: jest.fn((e: any) => Promise.resolve(e)),
+  // O-1/O-5: 批量 UPDATE 走 createQueryBuilder().update().set().where().execute()
+  // 链（scheduler spec 同款链式 mock）。默认 execute 返回 affected=1。
+  createQueryBuilder: jest.fn(() => ({
+    update: jest.fn().mockReturnThis(),
+    set: jest.fn().mockReturnThis(),
+    where: jest.fn().mockReturnThis(),
+    execute: jest.fn().mockResolvedValue({ affected: 1 }),
+  })),
   ...overrides,
 });
 
@@ -523,10 +531,17 @@ describe("AppDeploymentService rollout（DEP-02/DEP-03）", () => {
       ]);
       const count = await service.markInterruptedRolloutsFailed();
       expect(count).toBe(2);
-      const saved = repo.save.mock.calls.map(([e]: any[]) => e);
-      expect(saved.every((e: any) => e.rolloutState === RolloutState.FAILED));
-      expect(saved[0].rolloutMeta.failureReason).toContain("restarted");
-      expect(saved[1].rolloutMeta.failureReason).toContain("restarted");
+      // O-1: 单条批量 UPDATE 覆盖全部 orphaned 行（不再逐行 repo.save）
+      expect(repo.save).not.toHaveBeenCalled();
+      const qb = repo.createQueryBuilder.mock.results[0].value;
+      expect(qb.execute).toHaveBeenCalledTimes(1);
+      const setArg = qb.set.mock.calls[0][0] as Record<string, unknown>;
+      expect(setArg.rolloutState).toBe(RolloutState.FAILED);
+      // rolloutMeta 用 jsonb || 在 SQL 内合并 failureReason（保留各行原 meta）
+      expect(String(setArg.rolloutMeta)).toContain('"failureReason"');
+      expect(String(setArg.rolloutMeta)).toContain("restarted");
+      const whereArg = qb.where.mock.calls[0][1] as { ids: string[] };
+      expect(new Set(whereArg.ids)).toEqual(new Set(["d1", "d2"]));
     });
 
     it("markInterruptedRolloutsFailed：无遗留行返回 0", async () => {

@@ -1,5 +1,10 @@
-import { IsOptional, IsUUID, IsString } from "class-validator";
+import { IsOptional, IsUUID, IsString, IsIn, IsEnum } from "class-validator";
 import { PaginationDto } from "../../../common/dto/pagination.dto";
+import {
+  TaskStatus,
+  TaskRuntime,
+  TaskTriggerType,
+} from "../entities/task.entity";
 
 /**
  * F-10（DEEP_REVIEW 0ef3bbe）: 任务列表轻量投影白名单。
@@ -53,17 +58,35 @@ export class ListTasksQueryDto extends PaginationDto {
   @IsString()
   name?: string;
 
+  // F-06（本轮审计）: 枚举字段收紧——此前 @IsString 让 status=xyz 之类非法值
+  // 静默查空结果而不是 400（与 CreateTaskDto 的 @IsEnum 严格度不一致）。子类
+  // 重声明会覆盖基类 PaginationDto 的同名 @IsString（基类被 audit/executions/
+  // config 等 6 个 DTO 共享，不能把 TaskStatus 语义强加给它们，故只在此收紧）。
   @IsOptional()
-  @IsString()
+  @IsEnum(TaskStatus)
   status?: string;
 
   @IsOptional()
-  @IsString()
+  @IsEnum(TaskRuntime)
   runtime?: string;
 
   @IsOptional()
-  @IsString()
+  @IsEnum(TaskTriggerType)
   triggerType?: string;
+
+  /**
+   * F-03（本轮审计）: 列表排序字段。语义白名单在 service 层校验（对齐 fields
+   * 的既有模式——DTO 只做形状校验，白名单需访问 service 的常量集）。缺省 =
+   * createdAt DESC（旧行为不变）。
+   */
+  @IsOptional()
+  @IsString()
+  sortBy?: string;
+
+  /** F-03: 排序方向（asc|desc），缺省 desc。非法值（非 asc/desc）直接 400。 */
+  @IsOptional()
+  @IsIn(["asc", "desc"])
+  sortOrder?: "asc" | "desc";
 
   /**
    * F-10: 逗号分隔的投影字段白名单（如 "id,name"）。非法字段（不在

@@ -1,4 +1,10 @@
-import axios, { AxiosInstance, AxiosRequestConfig, AxiosResponse } from 'axios';
+import axios, {
+  AxiosInstance,
+  AxiosRequestConfig,
+  AxiosResponse,
+  AxiosError,
+  Method,
+} from 'axios';
 import { TaskEnv } from './types';
 
 /**
@@ -26,7 +32,22 @@ import { TaskEnv } from './types';
  * resolve with the inner `data`, so `results`-style lookups on a callback
  * response work; rejected requests get the envelope's `message` appended to
  * the axios error message.
+ *
+ * B-4（中台↔执行器深度审查）：与 python SDK（autocodeflow-http client.py）的
+ * 可靠性契约**对齐**——旧实现是纯 axios 薄包装（无重试、无熔断），而 python
+ * SDK 有完整「重试 + 熔断 + Retry-After 头解析」契约；两侧行为不对齐会让跨
+ * SDK 消费方对可靠性产生错误预期。本包现补齐同款语义：
+ * - 重试：仅幂等方法（GET/HEAD/OPTIONS，`safeMethodsOnly`）在可重试错误上重试
+ *   （429/500/502/503/504 或网络层错误：超时/连接拒绝/断网），指数退避
+ *   （minWaitMs×2^n，封顶 maxWaitMs），尊重 `Retry-After` 头（delta-seconds
+ *   或 HTTP-date，取 max(退避, Retry-After)）；
+ * - 熔断：failureThreshold 次连续可熔断错误 → open（快速失败，
+ *   `CircuitBreakerOpenError`）；resetTimeoutMs 后 half-open 放行单个探测请求，
+ *   成功即 closed，失败重新 open——与 python 的 `_CircuitBreaker` 同构；
+ * - 非幂等方法（POST/PUT/DELETE）**不自动重试**，但同样计入熔断失败
+ *   （与 python `_should_retry` 语义一致）。
  */
+
 /**
  * SDK-BASE-01: 剥掉 base URL 尾部的 `/api`（含尾斜杠与重复形式）。
  *
@@ -46,8 +67,195 @@ export function stripTrailingApiSuffix(baseURL?: string): string | undefined {
   return out;
 }
 
+// ---------------------------------------------------------------------------
+// B-4：重试 + 熔断配置（默认值与 python autocodeflow-http/client.py 对齐）
+// ---------------------------------------------------------------------------
+
+export const SAFE_METHODS: ReadonlySet<string> = new Set([
+  'GET',
+  'HEAD',
+  'OPTIONS',
+]);
+
+/** 与 python `_RETRYABLE_HTTP_STATUSES = {429, 500, 502, 503, 504}` 对齐。 */
+export const RETRYABLE_HTTP_STATUSES: readonly number[] = [429, 500, 502, 503, 504];
+
+export interface HttpRetryConfig {
+  /** 最大重试次数（不含首次请求；默认 3 → 至多 4 次尝试，对齐 python max_retries）。 */
+  maxRetries: number;
+  /** 首次退避基数（ms；默认 1000，对齐 python min_wait=1.0s）。 */
+  minWaitMs: number;
+  /** 退避上限（ms；默认 30000，对齐 python max_wait=30.0s）。 */
+  maxWaitMs: number;
+  /** 可重试的 HTTP 状态码（默认 429/500/502/503/504）。 */
+  retryableStatuses: readonly number[];
+  /** 仅幂等方法（GET/HEAD/OPTIONS）自动重试；非幂等只计入熔断（对齐 python）。 */
+  safeMethodsOnly: boolean;
+}
+
+export const DEFAULT_HTTP_RETRY: HttpRetryConfig = {
+  maxRetries: 3,
+  minWaitMs: 1_000,
+  maxWaitMs: 30_000,
+  retryableStatuses: RETRYABLE_HTTP_STATUSES,
+  safeMethodsOnly: true,
+};
+
+/** B-4：熔断 open 时快速失败抛出的错误（对齐 python CircuitOpenError）。 */
+export class CircuitBreakerOpenError extends Error {
+  constructor() {
+    super(
+      'Circuit breaker is open — the Admin API is failing fast; ' +
+        'requests are blocked until the reset timeout elapses',
+    );
+    this.name = 'CircuitBreakerOpenError';
+  }
+}
+
+/**
+ * B-4：进程内熔断器（对齐 python `_CircuitBreaker`：failure_threshold=5，
+ * reset_timeout=60s，half-open 单探测并发）。
+ *
+ * 三态：
+ * - closed：请求放行；可熔断失败累计到 threshold → open；
+ * - open：请求快速失败（tryAcquire 返回 false）；reset_timeout 后转 half-open；
+ * - half-open：仅放行一个探测请求；成功 → closed（清零），失败 → open 重计时。
+ */
+export class CircuitBreaker {
+  private state: 'closed' | 'open' | 'half_open' = 'closed';
+  private failures = 0;
+  private openedAt = 0;
+  private probeInFlight = false;
+
+  constructor(
+    private readonly failureThreshold: number = 5,
+    private readonly resetTimeoutMs: number = 60_000,
+  ) {}
+
+  /** 请求前调用：open 且未到复位时间 → false（调用方直接抛 CircuitBreakerOpenError）。 */
+  tryAcquire(): boolean {
+    if (this.state === 'open') {
+      if (Date.now() - this.openedAt >= this.resetTimeoutMs) {
+        this.state = 'half_open';
+        this.probeInFlight = true;
+        return true; // 恰放行一个探测请求
+      }
+      return false;
+    }
+    if (this.state === 'half_open') {
+      if (this.probeInFlight) return false;
+      this.probeInFlight = true;
+      return true;
+    }
+    return true;
+  }
+
+  /** 请求成功（含探测成功）：closed 归零；half_open → closed。 */
+  onSuccess(): void {
+    this.failures = 0;
+    if (this.state === 'half_open') {
+      this.state = 'closed';
+      this.probeInFlight = false;
+    }
+  }
+
+  /** 可熔断失败：half_open 探测失败 → 回 open 重计时；closed 累计超阈值 → open。 */
+  onFailure(): void {
+    if (this.state === 'half_open') {
+      this.state = 'open';
+      this.openedAt = Date.now();
+      this.probeInFlight = false;
+      this.failures = 0;
+      return;
+    }
+    this.failures++;
+    if (this.failures >= this.failureThreshold) {
+      this.state = 'open';
+      this.openedAt = Date.now();
+      this.failures = 0;
+    }
+  }
+
+  /** 测试/观测钩子。 */
+  getState(): 'closed' | 'open' | 'half_open' {
+    return this.state;
+  }
+
+  /** 测试钩子：强制 open（供熔断测试快速进入开断态）。 */
+  forceOpenForTest(): void {
+    this.state = 'open';
+    this.openedAt = Date.now();
+  }
+
+  /** 测试钩子：复位（供熔断测试清理实例间状态）。 */
+  resetForTest(): void {
+    this.state = 'closed';
+    this.failures = 0;
+    this.openedAt = 0;
+    this.probeInFlight = false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// B-4 工具函数（独立导出便于单测）
+// ---------------------------------------------------------------------------
+
+/** 网络层错误（无 HTTP 响应）——axios code 判定，对齐 python Timeout/Connect/NetworkError。 */
+export function isNetworkLevelError(error: unknown): boolean {
+  const code = (error as AxiosError)?.code;
+  if (!code) return false;
+  return [
+    'ECONNABORTED', // 超时（axios timeout）
+    'ECONNREFUSED',
+    'ECONNRESET',
+    'ENETUNREACH',
+    'ETIMEDOUT',
+    'EAI_AGAIN',
+    'ENOTFOUND',
+    'EHOSTUNREACH',
+    'ERR_NETWORK',
+  ].includes(code);
+}
+
+/** 是否可重试错误（状态码在可重试集，或网络层错误）——与 python 可重试异常集对齐。 */
+export function isRetryableError(
+  error: unknown,
+  retryableStatuses: readonly number[] = RETRYABLE_HTTP_STATUSES,
+): boolean {
+  const status = (error as AxiosError)?.response?.status;
+  if (typeof status === 'number' && retryableStatuses.includes(status)) {
+    return true;
+  }
+  return isNetworkLevelError(error);
+}
+
+/**
+ * 解析 `Retry-After` 头（delta-seconds 或 HTTP-date），失败返回 null。
+ * 与 python `_parse_retry_after` 语义对齐（只读头部，不做网络时间同步）。
+ */
+export function parseRetryAfterHeader(error: unknown): number | null {
+  const value = (error as AxiosError)?.response?.headers?.['retry-after'];
+  if (value === undefined || value === null) return null;
+  const raw = String(value).trim();
+  if (!raw) return null;
+  if (/^\d+$/.test(raw)) {
+    const secs = parseInt(raw, 10);
+    return Number.isFinite(secs) ? secs * 1000 : null;
+  }
+  // HTTP-date（如 Wed, 21 Oct 2015 07:28:00 GMT）
+  const parsed = Date.parse(raw);
+  return Number.isFinite(parsed) ? Math.max(0, parsed - Date.now()) : null;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export class HttpClient {
   private readonly client?: AxiosInstance;
+  // B-4: 声明处给默认值（禁用态 early-return 时也满足 strictPropertyInitialization）
+  private readonly retry: HttpRetryConfig = { ...DEFAULT_HTTP_RETRY };
+  private readonly breaker: CircuitBreaker = new CircuitBreaker();
 
   /** Whether this client has the credentials needed to reach the Admin API. */
   readonly enabled: boolean;
@@ -66,6 +274,11 @@ export class HttpClient {
      * item, and task code has no other reliable source for it.
      */
     private readonly executorAddress?: string,
+    /**
+     * B-4: 可靠性配置（重试 + 熔断，默认与 python SDK 对齐）。调用方可按需
+     * 覆盖；`retry: null` 显式关闭重试/熔断（保持旧薄包装行为）。
+     */
+    options?: { retry?: Partial<HttpRetryConfig> | null },
   ) {
     this.enabled = Boolean(baseURL && token);
     if (!this.enabled) {
@@ -78,6 +291,11 @@ export class HttpClient {
         'are required.';
       return;
     }
+    // B-4: 收敛配置（retry: null → 关断重试/熔断，即旧薄包装行为）
+    this.retry = options?.retry
+      ? { ...DEFAULT_HTTP_RETRY, ...options.retry }
+      : { ...DEFAULT_HTTP_RETRY };
+    this.breaker.resetForTest();
     // 10s default matches the python SDK (callback.py) so a hung admin-api
     // can't stall the task process until the executor's timeout kill; callers
     // can still override per-request via axios config.
@@ -207,12 +425,80 @@ export class HttpClient {
     return payload as T;
   }
 
+  /**
+   * B-4：统一请求入口——熔断 + 有界重试（对齐 python SDK）。
+   *
+   * - 每次尝试前先过熔断器（open 且未到复位时间 → 快速失败，不计失败数）；
+   * - 可熔断失败（5xx 重试集 / 网络层错误）一律计入熔断（含非幂等方法）；
+   * - 仅幂等方法且 `safeMethodsOnly` 时自动重试（指数退避 × Retry-After），
+   *   非幂等方法不重试、原样抛出。
+   *
+   * 注意：保持按方法名直调 axios 实例（`client.get(url, config)` /
+   * `client.post(url, data, config)`），而不是统一走 `client.request({...})`
+   * ——既有单测按方法名 mock 并断言调用形状，改走 request 会让 mock 静默失配。
+   */
+  private async send<T>(
+    method: Method,
+    url: string,
+    data?: unknown,
+    config?: AxiosRequestConfig,
+  ): Promise<T> {
+    const client = this.requireEnabled();
+    const isSafe =
+      !this.retry.safeMethodsOnly || SAFE_METHODS.has(method.toUpperCase());
+    const maxAttempts = this.retry.maxRetries + 1;
+
+    for (let attempt = 0; ; attempt++) {
+      if (!this.breaker.tryAcquire()) {
+        throw new CircuitBreakerOpenError();
+      }
+      let response: AxiosResponse<T>;
+      try {
+        response = await this.dispatch<T>(client, method, url, data, config);
+      } catch (error) {
+        const breakable = isRetryableError(error, this.retry.retryableStatuses);
+        if (breakable) this.breaker.onFailure();
+        const canRetry =
+          breakable && isSafe && attempt < maxAttempts - 1;
+        if (!canRetry) throw error;
+        // 指数退避（封顶 maxWaitMs），并与 Retry-After 头取大（同样封顶）
+        const backoff = Math.min(
+          this.retry.maxWaitMs,
+          this.retry.minWaitMs * 2 ** attempt,
+        );
+        const retryAfter = parseRetryAfterHeader(error);
+        const waitMs = Math.min(
+          this.retry.maxWaitMs,
+          retryAfter === null ? backoff : Math.max(backoff, retryAfter),
+        );
+        await sleep(waitMs);
+        continue;
+      }
+      this.breaker.onSuccess();
+      return HttpClient.unwrapEnvelope<T>(response.data);
+    }
+  }
+
+  /** B-4：按方法名直调 axios 实例（带请求体的走 (url, data, config)）。 */
+  private async dispatch<T>(
+    client: AxiosInstance,
+    method: Method,
+    url: string,
+    data?: unknown,
+    config?: AxiosRequestConfig,
+  ): Promise<AxiosResponse<T>> {
+    const m = method.toLowerCase();
+    if (m === 'post' || m === 'put' || m === 'patch') {
+      return client[m]<T>(url, data, config);
+    }
+    return client[m as 'get' | 'delete' | 'head' | 'options']<T>(url, config);
+  }
+
   async get<T = unknown>(
     url: string,
     config?: AxiosRequestConfig,
   ): Promise<T> {
-    const response: AxiosResponse<T> = await this.requireEnabled().get<T>(url, config);
-    return HttpClient.unwrapEnvelope<T>(response.data);
+    return this.send<T>('GET', url, undefined, config);
   }
 
   async post<T = unknown>(
@@ -220,12 +506,7 @@ export class HttpClient {
     data?: unknown,
     config?: AxiosRequestConfig,
   ): Promise<T> {
-    const response: AxiosResponse<T> = await this.requireEnabled().post<T>(
-      url,
-      this.withExecutorAddress(url, data),
-      config,
-    );
-    return HttpClient.unwrapEnvelope<T>(response.data);
+    return this.send<T>('POST', url, this.withExecutorAddress(url, data), config);
   }
 
   async put<T = unknown>(
@@ -233,22 +514,13 @@ export class HttpClient {
     data?: unknown,
     config?: AxiosRequestConfig,
   ): Promise<T> {
-    const response: AxiosResponse<T> = await this.requireEnabled().put<T>(
-      url,
-      data,
-      config,
-    );
-    return HttpClient.unwrapEnvelope<T>(response.data);
+    return this.send<T>('PUT', url, data, config);
   }
 
   async delete<T = unknown>(
     url: string,
     config?: AxiosRequestConfig,
   ): Promise<T> {
-    const response: AxiosResponse<T> = await this.requireEnabled().delete<T>(
-      url,
-      config,
-    );
-    return HttpClient.unwrapEnvelope<T>(response.data);
+    return this.send<T>('DELETE', url, undefined, config);
   }
 }

@@ -10,7 +10,9 @@ import { Reflector } from "@nestjs/core";
 import { createHmac } from "crypto";
 import * as express from "express";
 import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
+import { Readable } from "node:stream";
 import * as request from "supertest";
 import { IS_PUBLIC_KEY } from "../../../common/decorators/public.decorator";
 import { ROLES_KEY } from "../../../common/decorators/roles.decorator";
@@ -365,23 +367,23 @@ describe("ApplicationController webhook HTTP raw body", () => {
 });
 
 describe("ApplicationController upload — APP-002", () => {
-  // SEC-05: real minimal zip — the guard parses the central directory, so a
-  // bare PK\x03\x04 stub would be rejected as unparseable.
-  const ZIP_MAGIC = buildBenignZip();
+  // O-11: the upload now uses multer diskStorage — the package arrives as an
+  // on-disk temp file (file.path), not an in-memory file.buffer. These tests
+  // stage a REAL structurally-valid zip (the guard parses the central
+  // directory) in a temp dir, then assert the controller consumes that path:
+  // head magic + assertZipFileSafe + the ClamAV stream read it, the file is
+  // renamed into uploads/packages, and the staged temp file is always cleaned
+  // up in finally.
   let svc: {
     findByName: jest.Mock;
     create: jest.Mock;
     update: jest.Mock;
   };
   let controller: ApplicationController;
-  let writeFile: jest.SpyInstance;
+  let rename: jest.SpyInstance;
   let unlink: jest.SpyInstance;
-
-  const uploadArgs = () =>
-    [
-      { originalname: "app.zip", buffer: ZIP_MAGIC } as Express.Multer.File,
-      { name: "my-app", runtime: "python" },
-    ] as const;
+  let stagingDir: string;
+  let stagedPath: string;
 
   beforeEach(() => {
     svc = {
@@ -393,6 +395,27 @@ describe("ApplicationController upload — APP-002", () => {
         ),
       update: jest.fn(),
     };
+    // Stub persist/landing fs calls so the repo's uploads/ dir is never
+    // touched. Spied BEFORE the controller is constructed (its constructor
+    // mkdirSync's the staging dir). Reads of the staged file below hit the
+    // REAL file: readHeadBytes (head magic), assertZipFileSafe (CD parse) and
+    // the ClamAV stream all open file.path directly.
+    jest.spyOn(fs, "existsSync").mockReturnValue(true);
+    jest.spyOn(fs, "mkdirSync").mockImplementation((() => undefined) as any);
+    rename = jest
+      .spyOn(fs.promises, "rename")
+      .mockResolvedValue(undefined as never);
+    unlink = jest.spyOn(fs.promises, "unlink").mockResolvedValue(undefined);
+    // ClamAV is disabled in these tests (CLAMD_ENABLED unset), so
+    // scanStreamWithClamd returns immediately and never consumes the stream.
+    // Stub the factory to a touch-less dummy stream so no real file handle is
+    // opened/leaked on the staged path.
+    jest
+      .spyOn(fs, "createReadStream")
+      .mockReturnValue(
+        new Readable() as unknown as ReturnType<typeof fs.createReadStream>,
+      );
+
     // ARCH-27: 桩在调用时读取 process.env.API_BASE_URL，保持原用例的
     // 逐用例 env 操纵方式；生产路径由 Joi 注册 + configuration.ts 提供。
     controller = new ApplicationController(
@@ -400,19 +423,30 @@ describe("ApplicationController upload — APP-002", () => {
       {} as any,
       { get: () => process.env.API_BASE_URL } as any,
     );
-    // 不真实写盘（R9b: 写盘走 fs.promises.writeFile）
-    jest.spyOn(fs, "existsSync").mockReturnValue(true);
-    jest.spyOn(fs, "mkdirSync").mockImplementation((() => undefined) as any);
-    writeFile = jest
-      .spyOn(fs.promises, "writeFile")
-      .mockResolvedValue(undefined);
-    unlink = jest.spyOn(fs.promises, "unlink").mockResolvedValue(undefined);
+
+    // Stage a real temp zip on disk (mirrors multer diskStorage).
+    stagingDir = fs.mkdtempSync(path.join(os.tmpdir(), "acf-upload-"));
+    stagedPath = path.join(stagingDir, "app.zip");
+    fs.writeFileSync(stagedPath, buildBenignZip());
   });
 
   afterEach(() => {
     delete process.env.API_BASE_URL;
     jest.restoreAllMocks();
+    // The controller's unlink is mocked, so it never deletes our real staged
+    // file — clean it up best-effort here.
+    try {
+      fs.rmSync(stagingDir, { recursive: true, force: true });
+    } catch {
+      // best-effort
+    }
   });
+
+  const uploadArgs = () =>
+    [
+      { originalname: "app.zip", path: stagedPath } as Express.Multer.File,
+      { name: "my-app", runtime: "python" },
+    ] as const;
 
   it("fails fast with an explicit error when API_BASE_URL is not configured", async () => {
     delete process.env.API_BASE_URL;
@@ -429,8 +463,10 @@ describe("ApplicationController upload — APP-002", () => {
     expect(errorSpy).toHaveBeenCalledWith(
       expect.stringContaining("API_BASE_URL"),
     );
-    // R9b: API_BASE_URL 校验失败必须先于落盘——不产生孤儿 zip 文件
-    expect(writeFile).not.toHaveBeenCalled();
+    // Fail-fast runs BEFORE landing: the staged temp file must not be renamed,
+    // but the finally block must still clean the staged temp path.
+    expect(rename).not.toHaveBeenCalled();
+    expect(unlink).toHaveBeenCalledWith(stagedPath);
   });
 
   it("builds packageUrl from API_BASE_URL and never from localhost", async () => {
@@ -447,29 +483,37 @@ describe("ApplicationController upload — APP-002", () => {
         packageUrl: expect.stringContaining("https://api.example.com/"),
       }),
     );
-    expect(writeFile).toHaveBeenCalledTimes(1);
+    // O-11: the staged temp file is consumed and renamed into uploads/packages.
+    expect(rename).toHaveBeenCalledTimes(1);
   });
 
-  // R9b: the file write is async (fs.promises.writeFile) — no 200 MB
-  // synchronous disk stall on the event loop.
-  it("R9b: writes the package asynchronously via fs.promises.writeFile", async () => {
+  // O-11: the staged disk file is moved (rename) into the persistent uploads
+  // dir; after a successful landing the finally still best-effort-unlinks the
+  // staged path.
+  it("O-11: renames the staged temp file into uploads/packages", async () => {
     process.env.API_BASE_URL = "https://api.example.com";
     await controller.upload(...uploadArgs());
-    expect(writeFile).toHaveBeenCalledWith(
+    expect(rename).toHaveBeenCalledWith(
+      stagedPath,
       expect.stringContaining(path.join(process.cwd(), "uploads", "packages")),
-      ZIP_MAGIC,
     );
+    expect(unlink).toHaveBeenCalledWith(stagedPath);
   });
 
-  // R9b: a DB failure after the file landed must not leave an orphan zip.
-  it("R9b: unlinks the freshly written file when the DB upsert fails", async () => {
+  // R9b: a DB failure after the file landed must unlink the landed package
+  // (upsert catch) AND the staged temp path (finally) — no orphan on either
+  // side.
+  it("R9b: unlinks the landed package when the DB upsert fails", async () => {
     process.env.API_BASE_URL = "https://api.example.com";
     svc.findByName.mockResolvedValue({ id: "app-1", name: "my-app" });
     svc.update.mockRejectedValue(new Error("db down"));
 
     await expect(controller.upload(...uploadArgs())).rejects.toThrow("db down");
-    expect(writeFile).toHaveBeenCalledTimes(1);
-    expect(unlink).toHaveBeenCalledWith(writeFile.mock.calls[0][0]);
+    expect(rename).toHaveBeenCalledTimes(1);
+    // Landed target path cleaned by the upsert catch.
+    expect(unlink).toHaveBeenCalledWith(rename.mock.calls[0][1]);
+    // Staged temp path cleaned by finally.
+    expect(unlink).toHaveBeenCalledWith(stagedPath);
   });
 });
 

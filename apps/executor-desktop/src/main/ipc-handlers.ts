@@ -6,6 +6,7 @@ import * as https from 'https';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as net from 'net';
+import * as childProcess from 'child_process';
 import { configStore, executorProcess, heartbeat, syncNotifierWithConfig, trayManager, windowManager } from './index';
 import { setAutoLaunchEnabled, getAutoLaunchEnabled } from './autolaunch';
 import { checkForUpdates, downloadUpdate, quitAndInstall } from './updater';
@@ -19,7 +20,9 @@ import {
 // 下发给子进程的值不一致，比没有诊断更误导）。这里刻意复用 executor-process
 // 已注入 Electron 上下文的包装函数，而不是直接调 uv-paths 的纯函数。
 import { resolveBundledUvPath, resolveInterpretersDir } from './executor-process';
+import { classifyUvResolution } from './uv-paths';
 import { listLocalIPv4s } from './network-util';
+import { sanitizeConfigInput } from './config-sanitize';
 import log, { applyLogLevel } from './logger';
 
 /**
@@ -119,10 +122,14 @@ function readLogIncremental(
   } catch {
     return { lines: [], totalLines: 0 };
   } finally {
-    // 简单的 LRU 式裁剪：超限时清掉最旧的一批
-    if (logCursors.size > LOG_CURSOR_LIMIT) {
-      const keys = Array.from(logCursors.keys()).slice(0, logCursors.size - LOG_CURSOR_LIMIT);
-      for (const k of keys) logCursors.delete(k);
+    // 8-2（audit-r4）：LRU 裁剪由 O(n) 的 Array.from+slice 改为 Map 插入序
+    // O(1) 淘汰。Map 按插入顺序迭代：超限时从最旧（队首）删到只剩最近
+    // LOG_CURSOR_LIMIT 条；被删条目下次访问会重建游标（见 readLogIncremental
+    // 顶部），语义不变。
+    while (logCursors.size > LOG_CURSOR_LIMIT) {
+      const oldest = logCursors.keys().next();
+      if (oldest.done) break;
+      logCursors.delete(oldest.value);
     }
   }
 }
@@ -145,7 +152,12 @@ export function registerIpcHandlers(): void {
     if (!isPlainConfig(cfg)) {
       return { ok: false, error: 'invalid config payload' };
     }
-    configStore.save(cfg);
+    // UX-DSK-NUM：写入前消毒。渲染层的 number input 清空后会送来 NaN（IPC
+    // 序列化成 null），直接进 electron-store 会撞 ajv 的 `must be number`
+    // 校验并**整次抛出**——此时同批次的其它修改已部分写入，UI 却只显示一句
+    // "保存失败"，用户无从判断哪些存了。消毒后再写：非法值回落默认，
+    // 越界值钳制，保存必定完整成功。
+    configStore.save(sanitizeConfigInput(cfg));
     // P3-1：logLevel 不再是死字段——保存后立即作用于桌面端自身的文件日志。
     applyLogLevel(configStore.get('logLevel'));
     log.info('Config saved via IPC');
@@ -179,14 +191,26 @@ export function registerIpcHandlers(): void {
     if (!isPlainConfig(cfg)) {
       return { ok: false, error: 'invalid config payload' };
     }
-    configStore.save({ ...cfg, configured: true });
+    // 与 config:save 同一个消毒通道（向导的端口输入框同样可能被清空）。
+    const safeCfg = sanitizeConfigInput(cfg);
+    configStore.save({ ...safeCfg, configured: true });
     applyLogLevel(configStore.get('logLevel'));
     log.info('Wizard complete, config saved');
+    // UX-DSK-AUTOLAUNCH：向导的「开机自动启动」此前只**落盘**了
+    // `autoStart`，却从未真正写系统自启动项。而托盘菜单的勾选态读的正是
+    // config.autoStart（tray.getAutoLaunch）——于是用户看到"已勾选"、
+    // 重启后却没起来，且设置页的自启动开关走的是另一条 IPC（即时生效），
+    // 两处行为不一致。首设走向导的用户 100% 踩到。
+    if (safeCfg.autoStart === true) {
+      await setAutoLaunchEnabled(true);
+    }
     windowManager.closeWizard();
     windowManager.openStatus();
-    if (cfg.autoStartExecutor) {
+    if (safeCfg.autoStartExecutor === true) {
       await executorProcess.start(configStore.getAll());
-      heartbeat.start(cfg.executorPort);
+      // 用**已消毒落盘**的端口，而不是渲染层原始值（NaN 端口会让心跳抛
+      // ERR_INVALID_URL，见 heartbeat.normalizeHeartbeatPort 注释）。
+      heartbeat.start(configStore.get('executorPort'));
     }
     trayManager.rebuildMenu();
     // DSK-04：向导可能首设 workDir / notifyEnabled——同步通知器
@@ -214,13 +238,56 @@ export function registerIpcHandlers(): void {
     const configured = (cfg.uvPath || '').trim();
     const interpretersDir = resolveInterpretersDir(cfg);
 
-    // 与 executor-process 的下发逻辑保持同源：显式配置 > 自带 > PATH 兜底。
-    const source = configured
-      ? ('config' as const)
-      : bundled
-        ? ('bundled' as const)
-        : ('path' as const);
-    const uvPath = configured || bundled || null;
+    // UX-DSK-UV：诊断必须与 executor-node 的 uv 解析链**同真值**。
+    // 旧实现把"没显式配置 + 没自带"直接判成"未找到 uv"，而 executor-node
+    // 在这之后还有 UV_BIN 与 PATH 两级兜底（interpreters.ts resolveUvBin），
+    // 于是"uv 装在 PATH 上、任务完全能跑"的机器也会显示假的致命告警。
+    // 反方向同理：uvPath 指到不存在的文件时旧实现仍显示"（来自 uvPath 配置）"，
+    // 把"配错路径"粉饰成"已生效"。
+    // 存在性判定用 stat 而非 spawn（诊断须保持纯读、低成本）。
+    const configuredUsable = configured
+      ? (() => {
+          try {
+            return fs.existsSync(configured) && fs.statSync(configured).isFile();
+          } catch {
+            return false;
+          }
+        })()
+      : false;
+    // 6-2（audit-r4）：系统 UV_BIN 是否真的可执行——此前一律视为"已确认可用"，
+    // 与运行时 resolveUvBin 的 isExecutable 判定脱节（指向坏路径时诊断误报可用）。
+    const systemEnvUvBin = (process.env.UV_BIN || '').trim();
+    const systemEnvUvBinUsable = systemEnvUvBin
+      ? (() => {
+          try {
+            return fs.existsSync(systemEnvUvBin) && fs.statSync(systemEnvUvBin).isFile();
+          } catch {
+            return false;
+          }
+        })()
+      : false;
+    // 6-2：PATH 兜底探测仅在**静态无法确认**的分支注入（`uv --version` 实跑，
+    // 与 resolveUvBin 同款判据）——这是唯一可能误报"未找到 uv"的分支，spawn
+    // 成本（数十 ms）只发生在此处。
+    let pathProbe: (() => boolean) | undefined;
+    if (!configuredUsable && !bundled && !systemEnvUvBinUsable) {
+      pathProbe = () => {
+        try {
+          const r = childProcess.spawnSync('uv', ['--version'], { timeout: 5000, stdio: 'ignore' });
+          return r.status === 0;
+        } catch {
+          return false;
+        }
+      };
+    }
+    const uv = classifyUvResolution({
+      configured,
+      bundled,
+      systemEnvUvBin,
+      configuredUsable,
+      systemEnvUvBinUsable,
+      pathProbe,
+    });
 
     // 池内已就绪的版本目录名（仅目录名，不解析内容——保持纯读且低成本）。
     let poolEntries: string[] = [];
@@ -234,10 +301,12 @@ export function registerIpcHandlers(): void {
     }
 
     return {
-      uvPath,
-      uvSource: source,
-      /** UV_BIN 是否来自用户系统环境（此时我们不下发，交由子进程继承）。 */
-      uvFromSystemEnv: !uvPath && Boolean((process.env.UV_BIN || '').trim()),
+      uvPath: uv.uvPath,
+      uvSource: uv.uvSource,
+      uvFromSystemEnv: uv.uvFromSystemEnv,
+      // 新增：让渲染层能如实区分「已确认可用 / 配错路径 / 只能运行时兜底」。
+      uvConfiguredButMissing: uv.uvConfiguredButMissing,
+      uvStaticallyConfirmed: uv.uvStaticallyConfirmed,
       interpretersDir,
       poolEntries,
       poolReadable,

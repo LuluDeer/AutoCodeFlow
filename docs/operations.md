@@ -12,7 +12,7 @@ docker compose ps
 docker stats
 
 # 健康检查端点
-curl http://localhost:3105/health
+curl http://localhost:3105/api/health/live
 ```
 
 ### 查看日志
@@ -61,6 +61,26 @@ docker compose exec admin-api npm run migration:run
 ---
 
 ## 数据备份与恢复
+
+### 方式一（推荐）：compose 内置 pg-backup profile（M-1）
+
+compose 已内置每日自动备份容器，无需在宿主机另配 cron：
+
+```bash
+# 启用（默认每日 02:00 全量 pg_dump + gzip，保留 30 天）
+docker compose --profile backup up -d pg-backup
+
+# 立即手动备份一次
+docker compose --profile backup exec pg-backup /usr/local/bin/pg-backup.sh
+
+# 查看备份与日志
+docker compose --profile backup exec pg-backup ls -lh /backup
+docker compose logs pg-backup
+```
+
+调度与保留天数可覆盖：`BACKUP_SCHEDULE`（busybox crond 格式，默认 `0 2 * * *`）、
+`BACKUP_RETENTION_DAYS`（默认 30）。**生产必须把 `backup_data` 卷挂到宿主目录
+或对象存储做异地副本**（同机同卷 = 单点失效，防勒索/误删场景必须异地）。
 
 ### 备份 PostgreSQL 数据库
 
@@ -162,7 +182,7 @@ docker compose exec admin-api npm run migration:show
 docker compose exec admin-api npm run migration:run
 
 # 5. 健康检查
-curl http://localhost:3105/health
+curl http://localhost:3105/api/health/live
 ```
 
 **迁移链幂等性说明**：全部迁移以 `IF NOT EXISTS` / `IF EXISTS` 编写，重复执行与
@@ -198,7 +218,7 @@ pg1-user=autoflow
 
 建议每季度演练一次，逐项验证：
 
-- [ ] 恢复后健康检查端点通过：`curl http://localhost:3105/health`、
+- [ ] 恢复后健康检查端点通过：`curl http://localhost:3105/api/health/live`、
       `/api/health/services`（各组件 healthy）、`/api/health/metrics`（`queueSize` 可读）
 - [ ] 任务列表抽查：`GET /api/tasks` 返回记录数量与备份点一致，抽样任务可查看
       执行记录与日志明细
@@ -586,7 +606,7 @@ docker compose up -d --build executor-node executor-python
 ### 升级后验证
 
 - [ ] `docker compose ps` 全部关键服务 healthy。
-- [ ] `curl http://localhost:3105/health` 返回 healthy，`/api/health/services` 中 DB/Redis/queue 正常。
+- [ ] `curl http://localhost:3105/api/health/live` 返回 healthy，`/api/health/services` 中 DB/Redis/queue 正常。
 - [ ] `docker compose exec admin-api npm run migration:show` 无待执行迁移。
 - [ ] 管理后台可登录，任务列表、执行器列表、执行详情可打开。
 - [ ] 手动触发一个低风险测试任务，执行记录进入终态且日志可读。

@@ -14,6 +14,7 @@ import * as assert from 'node:assert';
 import {
   buildExecutorChildEnv,
   buildUvChildEnv,
+  classifyUvResolution,
   pickPublicAddress,
   resolveBundledUvPath,
   resolveInterpretersDir,
@@ -290,6 +291,100 @@ function main(): void {
   console.log('[selftest] desktop uv wiring: OK');
   console.log('[selftest] desktop child env contract: OK (BIND_ADDRESS + private-network escape hatch)');
   console.log(`[selftest]   default interpreters dir: ${resolveInterpretersDir('', '/home/u/.config/ACF')}`);
+
+  // ---- 7. UX-DSK-UV：诊断面的 uv 解析必须与 executor-node 同真值 ----
+  //
+  // 反证：旧实现 `configured ? 'config' : bundled ? 'bundled' : 'path'` 且把
+  // `uvPath` 为空一律渲染成「未找到 uv」。于是两种真实机器状态被报错：
+  //   a) uv 就装在 PATH 上（最常见）→ 显示假的致命告警；
+  //   b) uvPath 配到不存在的路径 → 显示"（来自 uvPath 配置）"，把配错粉饰成生效。
+  {
+    const base = { configured: '', bundled: null as string | null, systemEnvUvBin: '', configuredUsable: false };
+
+    // a) 显式配置且可用
+    const ok = classifyUvResolution({ ...base, configured: '/opt/uv', configuredUsable: true });
+    assert.strictEqual(ok.uvSource, 'config', '显式配置优先（与 executor-node UV_BIN 第 1 位一致）');
+    assert.strictEqual(ok.uvPath, '/opt/uv', '下发的就是配置值');
+    assert.strictEqual(ok.uvConfiguredButMissing, false, '可用 → 不得报"配了但缺失"');
+    assert.strictEqual(ok.uvStaticallyConfirmed, true, '可用 → 静态确认');
+
+    // b) 显式配置但文件不可用（配错路径）——旧实现会把这个粉饰成已生效
+    const bad = classifyUvResolution({ ...base, configured: '/nope/uv', configuredUsable: false });
+    assert.strictEqual(bad.uvSource, 'config', '仍是 config 来源（值确实要下发给子进程）');
+    assert.strictEqual(bad.uvConfiguredButMissing, true, '配错路径必须暴露（旧实现隐瞒该事实）');
+    assert.strictEqual(bad.uvStaticallyConfirmed, false, '配错路径不得声称已确认可用');
+
+    // c) 自带 uv
+    const bund = classifyUvResolution({ ...base, bundled: '/app/resources/uv/uv' });
+    assert.strictEqual(bund.uvSource, 'bundled');
+    assert.strictEqual(bund.uvStaticallyConfirmed, true, '自带 uv 必须静态确认（已过存在性判定）');
+
+    // d) 系统 UV_BIN：我们不下发，但子进程继承得到 = 可用
+    const env = classifyUvResolution({ ...base, systemEnvUvBin: '/usr/local/bin/uv' });
+    assert.strictEqual(env.uvSource, 'env');
+    assert.strictEqual(env.uvPath, null, '不下发 UV_BIN（交给子进程继承）');
+    assert.strictEqual(env.uvFromSystemEnv, true);
+    assert.strictEqual(env.uvStaticallyConfirmed, true, '系统 UV_BIN 视为已确认可用');
+
+    // e) 三者皆无 → **不是缺失**，只是"未静态确认"，运行时还有 PATH 兜底
+    const none = classifyUvResolution({ ...base });
+    assert.strictEqual(none.uvSource, 'path');
+    assert.strictEqual(none.uvPath, null);
+    assert.strictEqual(
+      none.uvStaticallyConfirmed,
+      false,
+      '未静态确认 —— 但绝不等于缺失：executor-node 会实跑 uv --version 做 PATH 探测',
+    );
+    assert.notStrictEqual(none.uvConfiguredButMissing, true, '未配置不得报"配了但缺失"');
+
+    // f) 优先级：显式配置 > 自带 > 系统 UV_BIN > PATH（与 resolveUvBin 一致）
+    const all = classifyUvResolution({
+      configured: '/opt/uv', bundled: '/app/uv', systemEnvUvBin: '/sys/uv', configuredUsable: true,
+    });
+    assert.strictEqual(all.uvPath, '/opt/uv', '显式配置必须压过自带与系统 UV_BIN');
+    const noCfg = classifyUvResolution({ ...base, bundled: '/app/uv', systemEnvUvBin: '/sys/uv' });
+    assert.strictEqual(noCfg.uvPath, '/app/uv', '自带必须压过系统 UV_BIN（我们显式下发）');
+    assert.strictEqual(noCfg.uvFromSystemEnv, false, '有自带时不标"来自系统环境"');
+  }
+
+  // ---- 8. 6-2（audit-r4）：诊断与运行时解析链同真值 ----
+  // 反方向漂移的两个具体形态：
+  //   a) 系统 UV_BIN 指向坏路径 → 运行时会 warn 后继续找 PATH，诊断不得再报"已确认可用"；
+  //   b) 静态无解但 PATH 上实跑 uv --version 成功 → 诊断应如实升级为"已确认"，
+  //      否则"uv 装在 PATH 上、任务完全能跑"的机器仍会看到"未找到 uv"的假告警。
+  {
+    const base = { configured: '', bundled: null as string | null, systemEnvUvBin: '', configuredUsable: false };
+
+    // a) 系统 UV_BIN 指向不可执行文件 → 不得宣称已确认可用
+    const envBroken = classifyUvResolution({
+      ...base,
+      systemEnvUvBin: '/nope/uv',
+      systemEnvUvBinUsable: false,
+    });
+    assert.strictEqual(envBroken.uvSource, 'env', '仍是 env 来源（子进程确实继承它）');
+    assert.strictEqual(envBroken.uvStaticallyConfirmed, false, '坏 UV_BIN 不得宣称已确认可用');
+
+    // a2) 缺省 systemEnvUvBinUsable（旧调用方）→ 保持兼容：视为可用
+    const envLegacy = classifyUvResolution({ ...base, systemEnvUvBin: '/usr/local/bin/uv' });
+    assert.strictEqual(envLegacy.uvStaticallyConfirmed, true, '缺省参数兼容旧行为');
+
+    // b) PATH 探测为真 → 'path' 分支升级为已确认（运行时确实能跑）
+    const pathFound = classifyUvResolution({ ...base, pathProbe: () => true });
+    assert.strictEqual(pathFound.uvSource, 'path');
+    assert.strictEqual(pathFound.uvStaticallyConfirmed, true, 'PATH 实跑命中 → 已确认');
+
+    // b2) PATH 探测为假 → 如实降级为"未静态确认"（运行时大概率缺失）
+    const pathMiss = classifyUvResolution({ ...base, pathProbe: () => false });
+    assert.strictEqual(pathMiss.uvSource, 'path');
+    assert.strictEqual(pathMiss.uvStaticallyConfirmed, false, 'PATH 实跑未命中 → 未确认');
+
+    // b3) 静态已确认时不注入/不调用探测（调用方控制 spawn 成本）
+    const confirmed = classifyUvResolution({ ...base, configured: '/opt/uv', configuredUsable: true, pathProbe: () => true });
+    assert.strictEqual(confirmed.uvStaticallyConfirmed, true);
+  }
+
+  console.log('[selftest] desktop uv diagnostic: OK (no false "uv missing")');
+  console.log('[selftest] desktop uv diagnostic: OK (6-2 runtime-truth alignment)');
 }
 
 main();

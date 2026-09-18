@@ -1,5 +1,6 @@
 import * as net from "net";
 import { Logger } from "@nestjs/common";
+import type { Readable } from "node:stream";
 
 /**
  * SEC-05: optional ClamAV (clamd) virus-scanning hook for the upload path.
@@ -142,6 +143,95 @@ export async function scanBufferWithClamd(
       if (isFailedVerdict(verdict) && verdict.reason !== "infected") {
         // Scanner-side ERROR / empty reply — surfaced as unavailability so
         // the fail-closed caller can distinguish 503 from 400.
+        logger?.warn?.(`clamd scan error: ${verdict.detail}`);
+      }
+      finish(verdict);
+    });
+  });
+}
+
+/**
+ * Stream a file (or any Readable) to clamd via INSTREAM WITHOUT loading the
+ * whole payload into a Buffer — the on-disk analogue of scanBufferWithClamd
+ * for the multer diskStorage upload path. Each chunk is framed with its 4-byte
+ * big-endian length prefix as it arrives; TCP backpressure pauses the source
+ * until the socket drains. Same fail-closed verdict contract (never throws).
+ */
+export async function scanStreamWithClamd(
+  input: Readable,
+  cfg: ClamdConfig,
+  logger?: Pick<Logger, "warn" | "error">,
+): Promise<ClamdVerdict> {
+  if (!cfg.enabled) {
+    return { ok: true };
+  }
+  return new Promise<ClamdVerdict>((resolve) => {
+    const socket = new net.Socket();
+    let settled = false;
+    const replyChunks: Buffer[] = [];
+
+    const finish = (verdict: ClamdVerdict) => {
+      if (settled) return;
+      settled = true;
+      input.destroy();
+      socket.destroy();
+      resolve(verdict);
+    };
+
+    const timer = setTimeout(() => {
+      logger?.warn?.(
+        `clamd scan timed out after ${cfg.timeoutMs}ms (${cfg.host}:${cfg.port})`,
+      );
+      finish({ ok: false, reason: "timeout", detail: "clamd scan timed out" });
+    }, cfg.timeoutMs);
+
+    socket.once("error", (err: Error) => {
+      clearTimeout(timer);
+      logger?.warn?.(
+        `clamd unreachable at ${cfg.host}:${cfg.port}: ${err.message}`,
+      );
+      finish({
+        ok: false,
+        reason: "unreachable",
+        detail: `clamd unreachable: ${err.message}`,
+      });
+    });
+
+    input.once("error", (err: Error) => {
+      logger?.warn?.(`clamd source stream error: ${err.message}`);
+      finish({ ok: false, reason: "error", detail: err.message });
+    });
+
+    socket.connect(cfg.port, cfg.host, () => {
+      socket.write("zINSTREAM\0");
+      // Frame each incoming chunk: <len:u32be><bytes>. Respect socket
+      // backpressure so a slow clamd cannot force us to buffer the whole
+      // 200 MB upload in memory.
+      input.on("data", (chunk: Buffer) => {
+        const prefix = Buffer.alloc(4);
+        prefix.writeUInt32BE(chunk.length, 0);
+        socket.write(prefix);
+        if (!socket.write(chunk)) {
+          input.pause();
+        }
+      });
+      socket.on("drain", () => {
+        input.resume();
+      });
+      input.on("end", () => {
+        const terminator = Buffer.alloc(4);
+        terminator.writeUInt32BE(0, 0);
+        socket.write(terminator);
+        socket.end();
+      });
+    });
+
+    socket.on("data", (chunk: Buffer) => replyChunks.push(chunk));
+    socket.on("close", () => {
+      clearTimeout(timer);
+      const reply = Buffer.concat(replyChunks).toString("utf8");
+      const verdict = parseClamdReply(reply);
+      if (isFailedVerdict(verdict) && verdict.reason !== "infected") {
         logger?.warn?.(`clamd scan error: ${verdict.detail}`);
       }
       finish(verdict);

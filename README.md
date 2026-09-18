@@ -33,6 +33,8 @@ AutoCodeFlow 是一个分布式任务调度与执行平台，支持动态脚本�
 | mcp-server | TypeScript · MCP SDK |
 | autoflow-sdk | Python (httpx) |
 | @autocodeflow/sdk | Node.js (axios)，独立 npm 包（已发布） |
+| executor-protocol | JSON Schema · 双生成器（三方执行器协议契约单一事实源） |
+| contract-fixtures | JSON · 四端信封契约向量（拆包判据） |
 | 部署 | Docker Compose |
 
 ## 快速启动
@@ -69,7 +71,7 @@ docker compose logs -f admin-api
 |---|---|
 | 管理后台 | http://localhost |
 | API 文档 (Swagger) | http://localhost:3105/api/docs |
-| API 健康检查 | http://localhost:3105/health |
+| API 健康检查 | http://localhost:3105/api/health/live |
 | Prometheus 指标 | http://localhost:3105/metrics |
 | executor-node | http://localhost:8002/health |
 | executor-python | http://localhost:8001/health |
@@ -125,7 +127,10 @@ AutoCodeFlow/
 │   ├── autocodeflow-ai/       # AI 分析引擎
 │   ├── autocodeflow-db/       # 数据库连接工具
 │   ├── autocodeflow-http/     # HTTP 客户端工具
-│   └── autocodeflow-notify/   # 通知发送工具
+│   ├── autocodeflow-notify/   # 通知发送工具
+│   ├── executor-protocol/     # 三方执行器协议契约（JSON Schema 单一事实源）
+│   ├── contract-fixtures/     # 四端信封契约向量（拆包判据）
+│   └── docs-site/             # SDK 文档站（VitePress）
 ├── examples/
 │   └── desktop-automation/    # 桌面自动化（RPA）示例任务
 ├── design-system/             # 设计系统规范（UI/UX）
@@ -192,7 +197,7 @@ acf app list
 
 ### MCP Server
 
-让 Claude Desktop、Cursor 等 AI Agent 直接管理 AutoCodeFlow 任务与执行。暴露 12 个工具，支持任务 CRUD、手动触发、执行分析、调度建议等。
+让 Claude Desktop、Cursor 等 AI Agent 直接管理 AutoCodeFlow 任务与执行。暴露 **43 个工具**，覆盖任务 CRUD 与版本管理、手动触发、执行分析与日志、终止/重试、应用与部署审批、执行器监控、审计日志、项目角色等（完整清单见下方 mcp-server README）。
 
 详见 [packages/mcp-server/README.md](packages/mcp-server/README.md)
 
@@ -208,6 +213,15 @@ acf app list
 | `autocodeflow-notify` | Python | 多通道通知发送 |
 
 详见 [SDK 使用指南](docs/sdk-guide.md)
+
+### 契约治理
+
+| 包 | 分工边界 |
+|---|---|
+| [executor-protocol](packages/executor-protocol/README.md) | 三方执行器协议契约（协议信封/执行/日志/终止等），JSON Schema **单一事实源**，双端生成 + CI 漂移兜底 |
+| [contract-fixtures](packages/contract-fixtures/README.md) | 四端信封契约向量：admin-api / executor / SDK / CLI 对信封的**拆包判据**（unwrap 数值 code、截断识别等） |
+
+两者协作关系：`executor-protocol` 定义协议报文结构与校验规则；`contract-fixtures` 固化各客户端如何拆包/解析这些报文的实测判据。协议变更必须同步回归两端契约向量。
 
 ### 示例任务
 
@@ -256,6 +270,7 @@ http://localhost:3105/api/docs
 | [SDK 使用指南](docs/sdk-guide.md) | manifest 格式、注入变量、Python/Node SDK 示例 |
 | [API 参考](docs/api-reference.md) | 所有接口端点、认证说明、响应格式、错误码 |
 | [优化建议](docs/optimization-notes.md) | E2E 测试发现的 Bug、各组件优化建议、跨平台路线图 |
+| [知识图谱 atlas](docs/atlas/README.md) | 项目知识图谱：01-apps~08-workflows 八大分类、数十个主题子文档 |
 
 ## 常用 Make 命令
 
@@ -270,7 +285,7 @@ make logs          # 查看服务日志
 
 ## 数据库迁移
 
-迁移文件位于 `apps/admin-api/src/migrations/`，共 7 个迁移，覆盖完整 schema。
+迁移文件位于 `apps/admin-api/src/migrations/`，截至 2026-09 共 **70 个迁移**（目录内 71 个 `.ts` 文件，含 1 个 `migrations.spec.ts` 测试），覆盖完整 schema。
 
 **自动行为：**
 - `NODE_ENV=development`：`synchronize: true`，schema 随实体自动同步，无需手动迁移

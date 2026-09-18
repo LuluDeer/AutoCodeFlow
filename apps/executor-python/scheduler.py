@@ -2,9 +2,11 @@ import asyncio
 import logging
 import time
 import uuid
+import weakref
 import httpx
 import threading
 from typing import Any
+from urllib.parse import quote
 from tenacity import (
     retry,
     stop_after_attempt,
@@ -15,7 +17,7 @@ from tenacity import (
     before_sleep_log,
 )
 from admin_api import build_admin_api_url, get_admin_api_base_url
-from config import settings, EXECUTOR_VERSION
+from config import settings, EXECUTOR_VERSION, PROTOCOL_VERSION
 import psutil
 from auth import get_current_token, adopt_executor_token_hash, request_with_self_heal
 
@@ -56,6 +58,55 @@ def _warn_version_drift_if_noncompliant(payload: Any) -> None:
 # Global count of currently-running tasks with thread-safe operations
 running_count = 0
 _running_count_lock = threading.Lock()
+
+
+# O-24: process-wide httpx.AsyncClient singleton for the high-frequency admin
+# paths (pull long-poll, heartbeat, and the executor-python callback report /
+# replay). The previous code opened and closed a fresh pool per pull/heartbeat/
+# callback (`async with httpx.AsyncClient()`), so every long-poll tick and every
+# terminal result paid a new-connection-pool setup cost. One shared client keeps a
+# warm connection pool.
+#
+# The client is keyed by the *running event loop*, not a single global: asyncio
+# primitives bind to the loop that first awaits them, and the pytest suite runs
+# one fresh loop per test (often monkeypatching httpx.AsyncClient). Keying by
+# loop gives production a single long-lived client while each test loop builds
+# (and the patch intercepts) its own, so there is no cross-loop reuse.
+#
+# The key is the loop OBJECT itself in a WeakKeyDictionary (not id(loop)):
+# object ids are reused once a loop is garbage-collected, which would otherwise
+# return a previous test's cached (patched/closed) client for a new loop.
+# Weak-keying also drops the entry as soon as a loop is gone.
+_http_client_by_loop: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, httpx.AsyncClient]" = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def get_http_client() -> "httpx.AsyncClient":
+    """Return the shared AsyncClient for the current event loop (O-24).
+
+    Constructed lazily on first use on the running loop. ``trust_env=False``
+    and a 10s default timeout preserve the previous pull/heartbeat
+    (trust_env=False) and callback/replay (timeout=10) behavior; per-request
+    ``timeout=`` overrides (pull 35s, heartbeat 5s) still win inside
+    request_with_self_heal."""
+    loop = asyncio.get_running_loop()
+    client = _http_client_by_loop.get(loop)
+    if client is None or getattr(client, "is_closed", False):
+        client = httpx.AsyncClient(trust_env=False, timeout=10.0)
+        _http_client_by_loop[loop] = client
+    return client
+
+
+async def aclose_http_clients() -> None:
+    """Close every per-loop client (called from the executor shutdown hook)."""
+    global _http_client_by_loop
+    for client in list(_http_client_by_loop.values()):
+        try:
+            await client.aclose()
+        except Exception:  # noqa: BLE001 - best-effort shutdown
+            pass
+    _http_client_by_loop.clear()
 
 def get_running_count() -> int:
     global running_count
@@ -253,6 +304,9 @@ async def _send_heartbeat(client: httpx.AsyncClient, token: str, trace_id: str =
             # EXE-VER-1: 版本随心跳上报（node scheduler.ts 对齐，可选字段）；
             # 中心端 EXECUTOR_MIN_VERSION 门禁开启时在响应回显合规态（下方消费）。
             'version': EXECUTOR_VERSION,
+            # PROTOCOL-VER（B-3/U-2）：协议版本随心跳回传（与 register 同源），
+            # 中台可据此在心跳路径做兼容性分支（见 config.py PROTOCOL_VERSION）。
+            'protocolVersion': PROTOCOL_VERSION,
         },
         timeout=5,
     )
@@ -269,6 +323,61 @@ async def _send_heartbeat(client: httpx.AsyncClient, token: str, trace_id: str =
         _warn_version_drift_if_noncompliant(payload)
     except Exception:  # pragma: no cover - non-JSON / empty admin bodies
         pass
+
+
+# E-1（中台↔执行器深度审查）：pull 模式配置热更新——记录已应用的 configVersion
+# 指纹；admin pull 响应里的 configVersion 与之不一致时主动拉取配置并复用本地
+# /api/config/reload 的校验与应用路径（与 node pull.ts 的 maybePullConfig 同构）。
+_applied_config_version: str | None = None
+
+
+async def _maybe_pull_config(admin_config_version: Any) -> None:
+    """admin pull 响应附带 configVersion 指纹；变化时主动 GET /api/executors/config
+    拉取全量配置，再回环本地 /api/config/reload 应用（apply 逻辑单一事实源）。
+
+    失败不阻塞任务取件：保留旧版本号，下一轮 pull 重试；旧版 admin 无指纹字段
+    （非字符串）时不拉取，行为零变化。"""
+    global _applied_config_version
+    if not isinstance(admin_config_version, str) or not admin_config_version:
+        return
+    if _applied_config_version == admin_config_version:
+        return
+    try:
+        token = await get_current_token()
+        client = get_http_client()  # O-24: shared per-loop pool
+        address = settings.executor_address_public or settings.executor_address
+        response = await request_with_self_heal(
+            client,
+            'get',
+            build_admin_api_url(f'/executors/config?address={quote(address)}'),
+            token=token,
+            timeout=10,
+        )
+        response.raise_for_status()
+        body = response.json()
+        if not isinstance(body, dict):
+            logger.warning('Pull-mode config fetch returned a non-object payload; '
+                           'keeping applied config version')
+            return
+        # 复用本地 /api/config/reload 的校验 + 应用路径（协议闸门 + workDir
+        # 四闸 + ignored_fields 上报），与 admin 主动推送逐字节一致。
+        local_url = f'http://127.0.0.1:{settings.port}/api/config/reload'
+        local = await client.post(
+            local_url,
+            json=body,
+            headers={'Authorization': f'Bearer {token}'},
+            timeout=10,
+        )
+        if 200 <= local.status_code < 300:
+            _applied_config_version = admin_config_version
+            updated = local.json().get('updated_fields', [])
+            logger.info('Pull-mode config hot-reloaded (version %s): %s',
+                        admin_config_version, ', '.join(updated) or 'no changes')
+        else:
+            logger.warning('Pull-mode config reload rejected by local /config/reload (HTTP %s)',
+                           local.status_code)
+    except Exception as exc:  # pragma: no cover - best-effort, next pull retries
+        logger.warning('Pull-mode config reload failed: %s', exc)
 
 
 async def pull_task() -> None:
@@ -310,23 +419,25 @@ async def pull_task() -> None:
                 continue  # 满载：本轮不拉取（未预留任何槽位）
             reserved = True
             token = await get_current_token()
-            async with httpx.AsyncClient(trust_env=False) as client:
-                response = await request_with_self_heal(
-                    client,
-                    'post',
-                    build_admin_api_url('/executors/pull'),
-                    token=token,
-                    json={
-                        'address': settings.executor_address_public or settings.executor_address,
-                        'waitMs': 25000,
-                    },
-                    timeout=35,
-                )
+            client = get_http_client()  # O-24: shared per-loop pool
+            response = await request_with_self_heal(
+                client,
+                'post',
+                build_admin_api_url('/executors/pull'),
+                token=token,
+                json={
+                    'address': settings.executor_address_public or settings.executor_address,
+                    'waitMs': 25000,
+                },
+                timeout=35,
+            )
             response.raise_for_status()
             try:
                 data = _unwrap_envelope(response.json()) or {}
             except Exception:  # pragma: no cover - non-JSON / empty admin bodies
                 continue  # finally 释放预留
+            # E-1: 配置指纹比对 + 主动拉取（失败不阻塞取件，下一轮重试）。
+            await _maybe_pull_config(data.get('configVersion'))
             task = data.get('task')
             if not isinstance(task, dict) or not task.get('executionId'):
                 continue  # 无任务：finally 释放预留
@@ -379,8 +490,7 @@ async def heartbeat_task() -> None:
             # OPS-03: generate trace ID for heartbeat
             trace_id = str(uuid.uuid4())
             logger.info(f'[{trace_id}] Sending heartbeat')
-            async with httpx.AsyncClient(trust_env=False) as client:
-                await _send_heartbeat(client, token, trace_id)
+            await _send_heartbeat(get_http_client(), token, trace_id)  # O-24: shared pool
             # HEALTH-01（本轮审计）：此前**没有任何地方**调用
             # routers/health.record_heartbeat —— 它是死代码。后果是
             # /health 的 _admin_api_reachable 永远是 None，于是每次探针都退化成

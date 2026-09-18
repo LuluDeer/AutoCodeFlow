@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, patch
 import auth as auth_module
 from config import settings
 import main as main_module
-from main import register_executor, executor_started_at, executor_startup_id
+from main import register_executor, executor_started_at, executor_startup_id, PROTOCOL_VERSION
 
 
 def _register_response(status_code=201, json_body=None, text=None):
@@ -37,11 +37,9 @@ async def test_register_executor_posts_capacity_metadata(monkeypatch):
     monkeypatch.setattr(main_module, '_discovered_interpreters', [])
 
     mock_client = AsyncMock()
-    mock_client.__aenter__.return_value = mock_client
-    mock_client.__aexit__.return_value = None
     mock_client.post = AsyncMock(return_value=_register_response())
 
-    with patch('main.httpx.AsyncClient', return_value=mock_client):
+    with patch('main.get_http_client', return_value=mock_client):
         await register_executor()
 
     mock_client.post.assert_awaited_once()
@@ -53,6 +51,8 @@ async def test_register_executor_posts_capacity_metadata(monkeypatch):
         'type': 'python',
         # R5: EXECUTOR_VERSION 1.0.0 → 2.0.0（新增 interpreters 上报能力）
         'version': '2.0.0',
+        # PROTOCOL-VER（B-3/U-2）：协议版本随注册上报（与实现版本门禁解耦）
+        'protocolVersion': PROTOCOL_VERSION,
         'capabilities': ['python', 'shell'],
         # ARCH-32: 派发模式自报（默认 push）
         'dispatchMode': 'push',
@@ -76,11 +76,9 @@ async def test_register_executor_uses_static_bootstrap_token(monkeypatch):
     monkeypatch.setattr(auth_module, '_dynamic_token', 'dynamic-token')
 
     mock_client = AsyncMock()
-    mock_client.__aenter__.return_value = mock_client
-    mock_client.__aexit__.return_value = None
     mock_client.post = AsyncMock(return_value=_register_response())
 
-    with patch('main.httpx.AsyncClient', return_value=mock_client):
+    with patch('main.get_http_client', return_value=mock_client):
         await register_executor()
 
     args, kwargs = mock_client.post.call_args
@@ -96,11 +94,9 @@ async def test_register_executor_adopts_token_hash_from_response(monkeypatch):
 
     response = _register_response(201, {'code': 0, 'message': 'ok', 'data': {'tokenHash': 'reg-hash'}})
     mock_client = AsyncMock()
-    mock_client.__aenter__.return_value = mock_client
-    mock_client.__aexit__.return_value = None
     mock_client.post = AsyncMock(return_value=response)
 
-    with patch('main.httpx.AsyncClient', return_value=mock_client):
+    with patch('main.get_http_client', return_value=mock_client):
         await register_executor()
 
     assert auth_module.get_executor_token_hash() == 'reg-hash'
@@ -115,11 +111,9 @@ async def test_register_executor_logs_error_on_non_2xx(monkeypatch, caplog):
 
     response = _register_response(401, text='{"code":401,"message":"Invalid executor token"}')
     mock_client = AsyncMock()
-    mock_client.__aenter__.return_value = mock_client
-    mock_client.__aexit__.return_value = None
     mock_client.post = AsyncMock(return_value=response)
 
-    with caplog.at_level('ERROR'), patch('main.httpx.AsyncClient', return_value=mock_client):
+    with caplog.at_level('ERROR'), patch('main.get_http_client', return_value=mock_client):
         await register_executor()
 
     errors = [r for r in caplog.records if r.levelname == 'ERROR']

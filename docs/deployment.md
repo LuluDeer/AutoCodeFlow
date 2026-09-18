@@ -264,7 +264,7 @@ CI 的 `docker-multiarch-build` job 只构建不推送，覆盖 `admin-api`、`e
 > 建 `docker-container` builder（`--platform linux/amd64,linux/arm64`）后，三镜像
 > `docker buildx build --platform linux/amd64,linux/arm64` 全部构建通过（CI
 > `docker-multiarch-build` 同款形态：不 push 不 load，结果留 buildkit 缓存）。
-> 细节：Dockerfile 全 alpine/slim 无 native 编译依赖（node:22-alpine ×2 +
+> 细节：Dockerfile 全 alpine/slim 无 native 编译依赖（node:24-alpine ×2 +
 > python:3.12-slim + uv 0.8.17），arm64 构建无交叉编译载荷；非 root
 > `adduser/APP_USER` 与 `uv venv --no-project` 探针两条 arm64 路径均已实际执行。
 
@@ -361,13 +361,61 @@ docker compose --profile jaeger up -d jaeger
 
 ### Redis 操作
 
+> **M-2（2026-09 修复）**：compose 的 redis 服务现已强制 `--requirepass`（密码来自
+> `.env` 的 `REDIS_PASSWORD`，未设置时 compose 解析即报错）。admin-api 侧已同步
+> 注入同源 `REDIS_PASSWORD`，无需额外配置；下方示例密码请换成 `.env` 实际值。
+
 ```bash
-# 连接 Redis CLI
-docker compose exec redis redis-cli -a your_redis_password
+# 连接 Redis CLI（密码从 .env 取）
+REDIS_PASSWORD=$(grep -E '^REDIS_PASSWORD=' .env | cut -d= -f2-)
+docker compose exec redis redis-cli -a "$REDIS_PASSWORD"
 
 # 查看队列状态
-docker compose exec redis redis-cli -a your_redis_password INFO keyspace
+docker compose exec redis redis-cli -a "$REDIS_PASSWORD" INFO keyspace
 ```
+
+### 定时备份（profile: backup，M-1）
+
+compose 内置每日自动备份服务（**默认未启用**，需显式开 profile）：
+
+```bash
+# 启用（默认每日 02:00 pg_dump 全量 + gzip，保留 30 天）
+docker compose --profile backup up -d pg-backup
+
+# 立即手动备份一次（验证连通性与产物）
+docker compose --profile backup exec pg-backup /usr/local/bin/pg-backup.sh
+
+# 查看备份产物（backup_data 卷）与执行日志
+docker compose --profile backup exec pg-backup ls -lh /backup
+docker compose logs pg-backup
+```
+
+- 调度用 `BACKUP_SCHEDULE`（busybox crond 格式，默认 `0 2 * * *`）、保留天数用
+  `BACKUP_RETENTION_DAYS`（默认 30）覆盖。
+- **生产建议**：`backup_data` 卷另挂宿主目录或对象存储做异地副本（备份与库同
+  机同卷 = 单点失效，防勒索/误删场景必须异地）。
+- 文档级方案（宿主机 cron + pg_dump）仍有效，见 operations.md「数据备份与恢复」；
+  容器方案更开箱即用。
+
+### 监控与告警（profile: monitoring，M-3/M-4）
+
+compose 内置可观测性栈（**默认未启用**，`--profile monitoring` 一键拉起）：
+
+```bash
+docker compose --profile monitoring up -d
+# Grafana  http://localhost:3000   默认 admin/admin（生产务必设 GRAFANA_ADMIN_PASSWORD）
+# Prometheus http://localhost:9090  Alertmanager http://localhost:9093
+# Loki      http://localhost:3100
+```
+
+- **指标**：Prometheus 自动抓取 postgres / redis / admin-api（`/api/metrics`，
+  prom-client 内置，R7 默认开启）；Grafana 已预置 Prometheus+Loki 数据源。
+- **告警**：最小告警集（InstanceDown）已内置；平台侧 Alertmanager webhook
+  （OBS-02）需要 HMAC 签名，Alertmanager 原生 webhook 无法直接调用——需一个
+  HMAC 转发侧车，接线说明见 `config/monitoring/alertmanager.yml` 注释。
+- **日志聚合**：Promtail 经宿主 `docker.sock` 采集全部容器日志推 Loki（Grafana
+  Explore 可按 `container` 标签过滤）；日志保留 7 天（`config/monitoring/loki.yml`
+  的 `limits_config.retention_period`）。
 
 ## 升级指南
 
@@ -406,7 +454,7 @@ docker compose exec admin-api npm run migration:run
 
 ```bash
 docker compose ps
-curl http://localhost:3105/health
+curl http://localhost:3105/api/health/live
 ```
 
 ## 常见问题排查
@@ -432,7 +480,7 @@ curl http://localhost:3105/health
 ### 执行器无法注册
 
 - 确认 `EXECUTOR_SECRET` 与 admin-api 配置一致
-- 检查执行器容器网络能否访问 admin-api：`docker compose exec executor-python curl http://admin-api:3105/health`
+- 检查执行器容器网络能否访问 admin-api：`docker compose exec executor-python curl http://admin-api:3105/api/health/live`
 - 查看执行器日志：`docker compose logs executor-python`
 - **关键**：`ADMIN_API_URL` 必须使用 Docker 服务名（`http://admin-api:3105`），不能用 `localhost`
 
@@ -466,6 +514,20 @@ docker compose restart admin-api
 - 检查各容器内存用量：`docker stats`
 - 适当调整 `docker-compose.yml` 中各服务的 `mem_limit` 配置
 - 建议生产环境至少配备 8 GB 内存
+
+---
+
+## 执行器部署形态对比（E-4）
+
+「执行器」有三种互不排斥的部署形态，新运维请按表选择，**不要误以为桌面端也走
+compose**：
+
+| 形态 | 载体 | 分发渠道 | 适用场景 |
+|---|---|---|---|
+| `executor-python`（compose 服务） | Docker 容器（python:3.12-slim） | `docker compose up -d executor-python` | 与 admin-api 同栈的标准容器部署；多版本 Python 解释器按需下载 |
+| `executor-node`（compose 服务） | Docker 容器（node:24-alpine） | `docker compose up -d executor-node` | 同上；当前镜像未内置 uv/python，解释器池能力主要在桌面端消费 |
+| `executor-desktop`（桌面应用） | Electron 安装包（.exe/.dmg/.AppImage/deb） | **GitHub Releases**（electron-builder 打包，见 ci.yml `desktop-*` jobs） | 目标机不在 compose 栈内/无 Docker/需直连宿主 Python 与解释器池；内含 uv + 宿主 Python 多版本 |
+| `executor-node`（裸机 artifact 通道） | 裸机脚本安装 | admin-api 下发 `artifacts/executor-node.tar.gz`（见上文「裸机执行器安装」） | 无 Docker 的目标虚机，走内网回连 |
 
 ---
 
@@ -810,7 +872,7 @@ volumes:
   interpreter_cache:
 ```
 
-> **⚠️ 两个执行器基底 libc 不同，解释器产物不可互换**：`executor-python` 基于 `python:3.12-slim`（Debian/**glibc**，池目录用 `linux-x86_64-**gnu**`），`executor-node` 基于 `node:22-alpine`（Alpine/**musl**，用 `linux-x86_64-**musl**`）。**共卷是安全的**（uv 按平台分量过滤，非本平台条目被安全跳过——实测池内混放时 `uv python list --only-installed` 仍 exit 0），但**离线预填时须两个 libc 各放一份**，否则其中一个执行器探测不到该版本。详见 [`OFFLINE-PROVISIONING.md`](./design/python-task-upload-and-multiversion/OFFLINE-PROVISIONING.md) §5.4。
+> **⚠️ 两个执行器基底 libc 不同，解释器产物不可互换**：`executor-python` 基于 `python:3.12-slim`（Debian/**glibc**，池目录用 `linux-x86_64-**gnu**`），`executor-node` 基于 `node:24-alpine`（Alpine/**musl**，用 `linux-x86_64-**musl**`）。**共卷是安全的**（uv 按平台分量过滤，非本平台条目被安全跳过——实测池内混放时 `uv python list --only-installed` 仍 exit 0），但**离线预填时须两个 libc 各放一份**，否则其中一个执行器探测不到该版本。详见 [`OFFLINE-PROVISIONING.md`](./design/python-task-upload-and-multiversion/OFFLINE-PROVISIONING.md) §5.4。
 
 > **⚠️ 池内同平台损坏条目会拖垮整份清单**：一个"目录名看着对、但 uv 查询其版本失败"的条目，会让 `uv python list --only-installed` **整条 exit 2**；执行器随即 fail-safe 上报**空清单**（正常版本其实仍可用，只是上报被拖垮，管理台该执行器 `interpreters` 列变空）。预填后务必按 runbook §3.5 三关验证，**只把验证通过的解释器放进生产池**。详见 runbook §5.5 / §7.5。
 
@@ -841,6 +903,15 @@ docker compose exec executor-python uv python list --only-installed
 
 admin-api 无状态层支持水平扩展：多实例行为一致性（渠道配置落库读穿、调度 Leader 恰一、灰度租约、outbox 恰一次派发）已由 ARCH-31 闭环并真机验证（`npm run test:arch31-multi-instance` 15/15、`npm run test:arch31-outbox-dup` 13/13）。本段给出部署菜谱与约束。
 
+> **适用边界（E-1）**：`docker-compose.ha.yml` 只解决**应用层**（admin-api）多副本
+> ——postgres 与 redis 在本 compose 中仍是**单实例单点**（数据库/缓存故障时所有
+> 副本同时不可用）。本 override 不是数据层 HA。生产级数据层方案：
+> - PostgreSQL：云 RDS 主从 + 自动故障切换，或自建 PG 流复制 + Patroni（compose
+>   中的 `postgres-replica` 仅为演示只读路由联调用，**不做真流复制**）；
+> - Redis：Sentinel 或 Cluster（应用侧已有 fail-open 降级：Redis 不可用退化为
+>   DB 条件 UPDATE claim 兜底，但队列/锁语义会降级）；
+> - admin-web/nginx 同为单点（入口可用云 LB 或多副本 nginx 解决）。
+
 ### 何时需要
 
 - 单实例 CPU/内存水位长期偏高（任务派发、回调写入、SSE 推送为的主要负载）；
@@ -864,7 +935,7 @@ docker compose -f docker-compose.yml -f docker-compose.ha.yml up -d --scale admi
 
 ### nginx 侧行为（infra/nginx/default.conf，DEP-HA-1 已改）
 
-- 上游为「变量 + 运行时再解析」形态：`resolver 127.0.0.11 valid=10s`（Docker 内嵌 DNS）+ `set $admin_api_upstream admin-api:3105`，三个 proxy_pass 位置（通用 `/api/`、SSE 专用位置、`/socket.io/`）全部走变量；
+- 上游为「变量 + 运行时再解析」形态：`resolver 127.0.0.11 valid=10s`（Docker 内嵌 DNS）+ `set $admin_api_upstream admin-api:3105`，两个 proxy_pass 位置（通用 `/api/`、SSE 专用位置）全部走变量（F-4：`/socket.io/` 块已删除，全仓无 WebSocket 实际使用）；
 - `--scale` 出的多副本容器 = 服务名多条 A 记录，nginx 每请求轮询命中（自检实测 20 请求命中 2 副本，12:8）；容器重建 IP 漂移后 10s 内收敛，**滚动重启无需重启代理**；
 - 响应带 `X-Upstream: <ip>:3105` 取证头（`always`，内网信息），排障可定位实例、自检据此断言轮询；
 - 单副本部署行为不变（一条 A 记录 = 原直连语义）。

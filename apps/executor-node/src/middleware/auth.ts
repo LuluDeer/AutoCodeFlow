@@ -10,11 +10,32 @@ import { buildAdminApiUrl } from '../admin-api-url';
 import { executorStartupId } from '../startup-identity';
 import { unwrapAdminResponseData, adoptExecutorTokenHash } from '../admin-envelope';
 
-// Static token: env vars take priority, then CLI --token arg (via config)
-const STATIC_TOKEN = config.token;
+// 5-2（audit-r4）：static token 改为**每次调用读取**——与 python 侧
+// _get_static_token() 每次读 env 的行为对齐。旧实现 `const STATIC_TOKEN =
+// config.token` 在模块加载期固化：routes/config.ts 热重载（直接改
+// process.env / config）后已加载常量不更新，形成「配置页说已改、认证还在用
+// 旧值」的静默漂移。env 优先、回退 config（含 CLI --token 注入路径）。
+export function readStaticToken(): string | null {
+  const envVal =
+    process.env.EXECUTOR_SHARED_TOKEN || process.env.EXECUTOR_SECRET || '';
+  if (envVal.trim()) return envVal;
+  const cfgVal = config.token;
+  return cfgVal && cfgVal.trim() ? cfgVal : null;
+}
 
 export function getStaticToken(): string | null {
-  return STATIC_TOKEN || null;
+  return readStaticToken();
+}
+
+/**
+ * S-3（audit-r4）：dev-mode allow-all 的显式开关。无 token 时默认 fail-closed；
+ * 仅 EXECUTOR_ALLOW_NO_TOKEN=true（兼容 1/yes/on）显式放行未认证请求
+ * （与 executor-python auth.py::_allow_no_token_dev_mode 同款语义）。
+ */
+export function allowNoTokenDevMode(): boolean {
+  const raw = (process.env.EXECUTOR_ALLOW_NO_TOKEN || '').trim().toLowerCase();
+  if (raw) return ['1', 'true', 'yes', 'on'].includes(raw);
+  return false;
 }
 
 // Dynamic token storage (refreshed periodically)
@@ -64,8 +85,9 @@ async function fetchToken(): Promise<string | null> {
   try {
     const headers: Record<string, string> = {};
     // Issue1 fix: only add Authorization header when token is non-empty
-    if (STATIC_TOKEN) {
-      headers['Authorization'] = `Bearer ${STATIC_TOKEN}`;
+    const staticToken = readStaticToken();
+    if (staticToken) {
+      headers['Authorization'] = `Bearer ${staticToken}`;
     }
 
     const response = await axios.post(
@@ -183,16 +205,23 @@ export async function verifyToken(req: Request, res: Response, next: NextFunctio
   if (dynamicToken) {
     validTokens.push(dynamicToken);
   }
-  if (STATIC_TOKEN) {
-    validTokens.push(STATIC_TOKEN);
+  const staticToken = readStaticToken();
+  if (staticToken) {
+    validTokens.push(staticToken);
   }
 
-  // If no tokens configured at all, allow all requests (dev mode) — unless
-  // REQUIRE_TOKEN=true, where fail-closed wins over dev convenience: an
-  // unauthenticated /api/execute is arbitrary code execution on this host.
+  // If no tokens configured at all, refuse by default (fail-closed) — unless
+  // EXECUTOR_ALLOW_NO_TOKEN=true explicitly opts into dev-mode allow-all.
+  // An unauthenticated /api/execute is arbitrary code execution on this host.
+  // S-3（audit-r4）：fail-closed 是默认姿态；REQUIRE_TOKEN=true 是更早的
+  // 强制 fail-closed 开关，保持兼容（任一触发即 503）。
   if (validTokens.length === 0) {
-    if (process.env.REQUIRE_TOKEN === 'true') {
-      res.status(503).json({ error: 'Executor has no token configured (REQUIRE_TOKEN=true)' });
+    if (process.env.REQUIRE_TOKEN === 'true' || !allowNoTokenDevMode()) {
+      res.status(503).json({
+        error:
+          'No executor token is configured; refusing unauthenticated execution ' +
+          '(set EXECUTOR_ALLOW_NO_TOKEN=true only for local dev)',
+      });
       return;
     }
     next();
@@ -223,7 +252,7 @@ export async function verifyToken(req: Request, res: Response, next: NextFunctio
 
 export async function getCurrentToken(): Promise<string | null> {
   await refreshTokenIfNeeded();
-  return dynamicToken || STATIC_TOKEN;
+  return dynamicToken || readStaticToken();
 }
 
 /**

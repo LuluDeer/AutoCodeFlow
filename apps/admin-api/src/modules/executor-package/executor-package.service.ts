@@ -14,7 +14,10 @@ import * as path from "path";
 import * as crypto from "crypto";
 import axios from "axios";
 import { ConfigService } from "@nestjs/config";
-import { assertSafeExecutorUrl } from "../../common/utils/safe-http.util";
+import {
+  assertAndPinExecutorUrl,
+  pinnedAxiosConfig,
+} from "../../common/utils/safe-http.util";
 import {
   ZipGuardError,
   assertZipFileSafe,
@@ -498,11 +501,14 @@ export class ExecutorPackageService implements OnModuleInit {
           : `http://${executor.address}`;
         // F-3: push 出站与 dispatch 同策略过 SSRF 校验——被投毒的 address
         // （元数据/回环段）单独失败，不影响其余目标。
-        await assertSafeExecutorUrl(url);
+        // F-3 (SEC-NEW): pin to the validated IP (Host/SNI kept).
+        const pinned = await assertAndPinExecutorUrl(url);
+        const pinCfg = pinnedAxiosConfig(pinned);
         const headers: Record<string, string> = {
           "Content-Type": "application/json",
         };
         if (sharedToken) headers["Authorization"] = `Bearer ${sharedToken}`;
+        // 原始 URL 原样拼路径（new URL 归一化会改字节形态）；pin 由 agent.lookup 完成。
         await axios.post(
           `${url}/api/update-package`,
           {
@@ -513,7 +519,12 @@ export class ExecutorPackageService implements OnModuleInit {
             downloadUrl,
             checksum: pkg.checksum,
           },
-          { timeout: 30_000, headers },
+          {
+            timeout: 30_000,
+            headers,
+            maxRedirects: 0, // R3 parity
+            ...pinCfg,
+          },
         );
         this.logger.log(
           `Pushed package ${pkg.name}@${pkg.version} to executor ${executor.address}`,

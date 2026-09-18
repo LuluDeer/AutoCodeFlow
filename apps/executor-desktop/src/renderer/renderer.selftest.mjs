@@ -312,4 +312,128 @@ if (!css.includes('.py-env-status')) {
   throw new Error('python_task_multiversion: .py-env-status 样式缺失');
 }
 
+// ── 保存反馈：ok:false 不得被当成功 ────────────────────────────────────
+// config:save 在载荷形状被拒时返回 {ok:false}（resolve 而非 reject）。原实现
+// 只看 reloadError，于是该路径被当成成功 → 显示"✓ 已保存，配置已生效"，
+// 而实际什么都没写入。保存反馈是用户判断"改没改成功"的唯一依据，必须全真。
+if (!/r\.ok\s*===\s*false/.test(config)) {
+  throw new Error('保存反馈必须处理 ok:false（否则会谎报"已保存"）');
+}
+
+// ── UX-DSK-NUM：number input 的"所见即所存" ────────────────────────────
+// 真实故障（已反证）：设置页「最大并发任务数」用
+// `parseInt(e.target.value, 10)` 无兜底 —— 清空输入框 → NaN；显示层
+// `Number(form.x || 10)` 仍渲染 10，于是"界面显示 10、保存 NaN"。NaN 经 IPC
+// 序列化为 null，主进程写 electron-store 时撞 ajv `must be number` 校验并整次
+// 抛出：同批次其它修改已部分写入，UI 却只说"保存失败"。
+// 三道闸：(1) 纯函数行为；(2) 设置页必须真的用它；(3) 主进程必须接住。
+{
+  const { parseBoundedInt, displayNumber, MAX_CONCURRENT_TASKS, EXECUTOR_PORT } =
+    await import('./number-input.ts');
+
+  const eq = (got, want, msg) => {
+    if (got !== want) throw new Error(`UX-DSK-NUM: ${msg}（得到 ${got}，期望 ${want}）`);
+  };
+  const { fallback: F, min: LO, max: HI } = MAX_CONCURRENT_TASKS;
+
+  // 清空输入框：必须回落默认 10，**不是** NaN，也**不是**被钳成的 1
+  eq(parseBoundedInt('', F, LO, HI), 10, "清空输入框必须回落 10（原实现给 NaN）");
+  eq(parseBoundedInt('   ', F, LO, HI), 10, '空白串必须回落 10');
+  eq(parseBoundedInt('abc', F, LO, HI), 10, '非数字必须回落 10');
+  // 越界钳制（HTML min/max 拦不住手输/粘贴）
+  eq(parseBoundedInt('0', F, LO, HI), 1, '低于下界 → 钳到 1');
+  eq(parseBoundedInt('-5', F, LO, HI), 1, '负数 → 钳到 1');
+  eq(parseBoundedInt('9999', F, LO, HI), 100, '高于上界 → 钳到 100');
+  // 合法值原样
+  eq(parseBoundedInt('4', F, LO, HI), 4, '合法值保留');
+  eq(parseBoundedInt('4.6', F, LO, HI), 4, '小数按 parseInt 语义取整');
+  // 端口：区间与默认值都不同，必须各走各的规则
+  eq(parseBoundedInt('', EXECUTOR_PORT.fallback, EXECUTOR_PORT.min, EXECUTOR_PORT.max), 8002,
+    '端口清空 → 8002');
+  eq(parseBoundedInt('99999', EXECUTOR_PORT.fallback, EXECUTOR_PORT.min, EXECUTOR_PORT.max), 65535,
+    '端口越界 → 65535');
+  // 显示层：状态里残留脏值时也要显示默认值（"所见即所存"的另一半）
+  eq(displayNumber(NaN, 10), 10, 'NaN 状态必须显示默认 10');
+  eq(displayNumber(null, 10), 10, 'null 状态必须显示默认 10');
+  eq(displayNumber(4, 10), 4, '正常值原样显示');
+
+  // 设置页必须真的调用该解析通道（改成裸 parseInt 立即红）
+  for (const field of ['maxConcurrentTasks', 'executorPort', 'interpreterDownloadTimeoutMs']) {
+    const re = new RegExp(`set\\('${field}',\\s*\\n?\\s*parseBoundedInt\\(`);
+    if (!re.test(config)) {
+      throw new Error(`UX-DSK-NUM: ConfigPage 的 ${field} 未走 parseBoundedInt（会重新引入 NaN）`);
+    }
+  }
+  // 不得再出现无兜底的 parseInt（允许注释里出现该形态，故先去注释）
+  const configNoComments = config
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '');
+  if (/parseInt\(e\.target\.value,\s*10\)\)/.test(configNoComments)) {
+    throw new Error('UX-DSK-NUM: 仍存在无兜底的 parseInt(e.target.value, 10)');
+  }
+  // 主进程侧必须接住（渲染层修了、主进程没修也仍然会整次保存失败）
+  if (!ipcHandlers.includes('sanitizeConfigInput(')) {
+    throw new Error('UX-DSK-NUM: ipc-handlers 未调用 sanitizeConfigInput（保存仍会整次失败）');
+  }
+}
+
+// ── UX-DSK-UV：uv 诊断不得谎报"未找到 uv" ──────────────────────────────
+// 真实故障（已反证）：诊断把"没显式配置 + 没自带 uv"渲染成
+// 「未找到 uv —— 声明了 Python 版本的任务将无法执行」，但 executor-node 的
+// resolveUvBin 在其后还有系统 UV_BIN 与 **PATH 实跑探测**两级兜底。于是 uv
+// 装在 PATH 上、任务完全能跑的机器也会收到假的致命告警。
+// 反方向同样被隐瞒：uvPath 指到不存在的文件时旧实现仍显示"（来自 uvPath 配置）"。
+{
+  // 1) 渲染层必须区分三种真值，且不得在"未静态确认"时喊"未找到 uv"
+  if (!config.includes('uvStaticallyConfirmed')) {
+    throw new Error('UX-DSK-UV: 设置页未区分"未静态确认"与"未找到 uv"（PATH 兜底会被误报为缺失）');
+  }
+  if (!config.includes('uvConfiguredButMissing')) {
+    throw new Error('UX-DSK-UV: 设置页未暴露 uvPath 配错路径（配错会被粉饰成已生效）');
+  }
+  // "未找到 uv"这句致命文案必须挂在一个条件之后，绝不能是无条件 fallback。
+  // 先去注释再判——否则本仓库解释该缺陷的中文注释会自我触发（与上方
+  // split(':')[0] 的反证同一教训）。
+  const configNoCommentsUv = config
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '');
+  const missingMsg = '未找到 uv';
+  const idx = configNoCommentsUv.indexOf(missingMsg);
+  if (idx === -1) throw new Error('UX-DSK-UV: 缺失告警文案消失（应保留给真正的缺失场景）');
+  const before = configNoCommentsUv.slice(Math.max(0, idx - 400), idx);
+  if (!/uvStaticallyConfirmed/.test(before)) {
+    throw new Error('UX-DSK-UV: "未找到 uv" 必须是 uvStaticallyConfirmed 之后的条件分支');
+  }
+  // 2) 主进程必须提供这两个真值字段
+  for (const field of ['uvConfiguredButMissing', 'uvStaticallyConfirmed']) {
+    if (!ipcHandlers.includes(field)) {
+      throw new Error(`UX-DSK-UV: config:python-env-status 未返回 ${field}`);
+    }
+  }
+  if (!ipcHandlers.includes('classifyUvResolution(')) {
+    throw new Error('UX-DSK-UV: 主进程未使用 classifyUvResolution（判定逻辑会再次漂移）');
+  }
+}
+
+// ── UX-DSK-AUTOLAUNCH：向导的「开机自动启动」必须真的写系统自启动项 ─────
+// 真实故障（已核对全仓引用）：config:save-and-close-wizard 只把 autoStart
+// **落盘**，从未调用 setAutoLaunchEnabled()。而托盘菜单的勾选态读的正是
+// config.autoStart（tray.ts 的 getAutoLaunch），设置页开关走的又是另一条
+// 即时生效的 IPC——于是首设走向导的用户看到"已勾选"、重启后却没起来，
+// 且同一开关在两处行为不一致。
+{
+  const start = ipcHandlers.indexOf("ipcMain.handle('config:save-and-close-wizard'");
+  if (start === -1) throw new Error('UX-DSK-AUTOLAUNCH: 找不到 config:save-and-close-wizard');
+  const rest = ipcHandlers.slice(start);
+  const next = rest.indexOf('ipcMain.handle(', 1);
+  const block = next >= 0 ? rest.slice(0, next) : rest;
+  if (!block.includes('setAutoLaunchEnabled(')) {
+    throw new Error('UX-DSK-AUTOLAUNCH: 向导未调用 setAutoLaunchEnabled——开关只落盘不生效');
+  }
+  // 且必须挂在 autoStart 为真之后（无条件 enable 会把"不开机自启"也强制打开）
+  if (!/autoStart\s*===\s*true/.test(block)) {
+    throw new Error('UX-DSK-AUTOLAUNCH: setAutoLaunchEnabled 必须受 autoStart 条件保护');
+  }
+}
+
 console.log('renderer selftest: design tokens, accessibility, contrast, focus, layout, spacing, IPC anchors, F-21/F-22/F-37, DSK-05, PERF-DSK-01, SEC-DSK-01 guards passed');

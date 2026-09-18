@@ -12,8 +12,9 @@ import {
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import {
+  assertAndPinExecutorUrl,
   assertSafeGitRepoUrl,
-  assertSafeExecutorUrl,
+  pinnedAxiosConfig,
 } from "../../common/utils/safe-http.util";
 // A2-B: 属主/项目角色校验的运行时证据落点
 import { recordOwnershipAssertion } from "../../common/guards/ownership-assertion.store";
@@ -148,6 +149,32 @@ export const MAX_DEPENDENCY_DEPTH = 64;
 export const MAX_DEPENDENCY_EXECUTION_SCAN = 500;
 
 /**
+ * F-03（本轮审计）: findAll 的排序字段白名单。
+ *
+ * 只放行 **Task 实体真实存在的可排序列**（逐一核对 task.entity.ts 列清单）——
+ * TypeORM 的 order 键非法会直接抛错，白名单让"请求即 400"且语义清晰，同时
+ * 防止未来给 order 键传入任意表达式（order 键注入面收口）。priority 为 PG enum
+ * label（'low'/'normal'/'high'/'critical'），按 label 排序是稳定可用的。
+ */
+const TASK_SORT_WHITELIST = [
+  "id",
+  "name",
+  "status",
+  "runtime",
+  "runtimeVersion",
+  "triggerType",
+  "timeout",
+  "maxRetry",
+  "priority",
+  "lastTriggerTime",
+  "estimatedDurationSec",
+  "createdAt",
+  "updatedAt",
+] as const;
+
+type TaskSortKey = (typeof TASK_SORT_WHITELIST)[number];
+
+/**
  * R4-P3: 依赖扇出短窗 DB claim 的窗口（毫秒）。只需覆盖"两个上游回调
  * 并发完成、双方 checkDependencies 都判满足"的竞态窗口；10s 足够，
  * 同时把对 tasks.lastTriggerTime 共享语义的影响压到最小（见
@@ -200,7 +227,10 @@ function isUniqueViolation(err: unknown): boolean {
  * 调用方传入的 text 已 `.toLowerCase()`；`[^\n]` 容差刻意不跨行，避免把
  * 日志里相隔很远的两个词误判为同一条失败。
  */
-const INTERPRETER_UNAVAILABLE_PATTERN = new RegExp(
+// F-01（本轮审计）: 由模块私有导出为公共常量——task.processor.ts 的派发失败
+// 分类链（原先是自行抄写正则链）必须与这里的第一条规则**同一份判据**，否则两处
+// 漂移会让 interpreter_unavailable 被误判成 EXECUTOR_OFFLINE（见 processor 注释）。
+export const INTERPRETER_UNAVAILABLE_PATTERN = new RegExp(
   [
     // ① uv 的两条原始文案（措辞固定，最可靠）
     "no interpreter found",
@@ -993,12 +1023,30 @@ export class TaskService {
       >;
     }
 
+    // F-03（本轮审计）: 排序——缺省 createdAt DESC（旧行为逐字节不变）；显式
+    // sortBy 走白名单校验（非法字段 400，对齐 fields 投影的既有错误风格）。
+    // sortOrder 由 DTO @IsIn(["asc","desc"]) 把关，此处兜底归一为 ASC/DESC。
+    let order: Record<string, "ASC" | "DESC"> = { createdAt: "DESC" };
+    if (p.sortBy) {
+      const sortKey = p.sortBy.trim() as TaskSortKey;
+      if (!TASK_SORT_WHITELIST.includes(sortKey as never)) {
+        throw new BadRequestException(
+          `Illegal sortBy: ${p.sortBy}. ` +
+            `Allowed: ${TASK_SORT_WHITELIST.join(", ")}`,
+        );
+      }
+      order = {
+        [sortKey]:
+          (p.sortOrder ?? "desc").toUpperCase() === "ASC" ? "ASC" : "DESC",
+      };
+    }
+
     const [list, total] = await this.taskRepo.findAndCount({
       where,
       select,
       skip: (p.page - 1) * p.pageSize,
       take: p.pageSize,
-      order: { createdAt: "DESC" },
+      order,
     });
     // SEC-02: 列表响应 secrets 永久脱敏（叶子值回 ******，密文不外泄）。
     // F-10: 投影模式下 secrets 不在 select 内，maskForResponse 收到 undefined
@@ -1755,11 +1803,21 @@ export class TaskService {
           try {
             const s3 = this.resolveS3Storage();
             if (s3) {
-              const all = (await s3.get(exec.logObjectKey)).split("\n");
-              for (const line of all.slice(nextLine)) {
-                write(line);
+              // O-14/F-3：改用 getStream() 流式逐行回传，不再把整个日志对象
+              // gunzip 成全量 Buffer/字符串驻留内存。按物理行索引跳过已推送行
+              // （nextLine），流结束后把 nextLine 推进到总行数，与原全量
+              // split("\n") + slice 的 SSE 协议/行分割语义一致。
+              const stream = await s3.getStream(exec.logObjectKey);
+              const rl = createInterface({
+                input: stream,
+                crlfDelay: Infinity,
+              });
+              let idx = 0;
+              for await (const line of rl) {
+                if (idx >= nextLine) write(line);
+                idx++;
               }
-              nextLine = all.length;
+              nextLine = idx;
             }
           } catch (err: unknown) {
             s3FetchFailed = true;
@@ -2255,7 +2313,9 @@ export class TaskService {
       // 因此远端执行器可令 admin-api 带着共享 token 去请求
       // 169.254.169.254（云元数据）等内部地址，并把响应体当作日志行持久化后
       // 展示给用户——是可读出的外泄原语，而非仅盲 SSRF。
-      await assertSafeExecutorUrl(url);
+      // F-3 (SEC-NEW): validate + pin to the validated IP (Host/SNI kept).
+      const pinned = await assertAndPinExecutorUrl(url);
+      const pinCfg = pinnedAxiosConfig(pinned);
       // High-6.3: hard cap on what a single executor response may carry
       // (Node executor previously could return the entire log in one chunk —
       // we now refuse anything above 64 MB to protect admin-api memory).
@@ -2271,6 +2331,7 @@ export class TaskService {
           maxContentLength: MAX_DOWNLOAD_BYTES,
           maxBodyLength: MAX_DOWNLOAD_BYTES,
           params: { fromLine, limit: PAGE_LIMIT },
+          ...pinCfg,
         });
         const chunk: string[] = Array.isArray(resp.data?.lines)
           ? resp.data.lines.filter((l: unknown) => typeof l === "string")
@@ -2489,11 +2550,28 @@ export class TaskService {
     }>,
   ) {
     const results = [];
+    // F-11（本轮审计）: 批量回调 N+1 消除。关键判据：N+1 问题只存在于
+    // `callbacks.length >= 2`——单条回调时 findOne 本身就是最优单查询（1 次
+    // 往返），保持原路径（行为逐字节不变）；多条回调才升级为一次
+    // `find({ where: { id: In(ids) } })` 批量查出后建 Map（100 条 → 1 条查询，
+    // 且 Map 天然去重——同一 executionId 重复回调只查一次）。
+    // 单条回调的处理语义不变：查不到 execution 仍走各自的结果分类计数
+    //（not_found），不影响其他条目。
+    let executionById: Map<string, TaskExecution> | null = null;
+    if (callbacks.length > 1) {
+      executionById = new Map(
+        (
+          await this.execRepo.find({
+            where: { id: In(callbacks.map((cb) => cb.executionId)) },
+          })
+        ).map((execution) => [execution.id, execution]),
+      );
+    }
     for (const cb of callbacks) {
       try {
-        const execution = await this.execRepo.findOne({
-          where: { id: cb.executionId },
-        });
+        const execution = executionById
+          ? executionById.get(cb.executionId)
+          : await this.execRepo.findOne({ where: { id: cb.executionId } });
         if (!execution) {
           // 可观测性补齐：callback 业务结果分类计数（not_found）
           recordRuntime("autoflow_callback_business_total", {
@@ -2908,9 +2986,12 @@ export class TaskService {
   }
 
   async getVersions(taskId: string): Promise<TaskVersion[]> {
+    // O-7：版本表无上限拉取会随历史版本数线性膨胀；固定取最近 100 条
+    // （已按 createdAt DESC），避免长尾任务一次性把全部版本读入内存。
     return this.versionRepo.find({
       where: { taskId },
       order: { createdAt: "DESC" },
+      take: 100,
     });
   }
 

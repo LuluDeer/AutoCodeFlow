@@ -62,7 +62,7 @@ release.yml 故意不配 `workflow_dispatch`（防误触发真发布）；本地
 - [ ] tag 为裸 `vX.Y.Z`（`include-component-in-tag: false` 保证；version-guard 用 `re.fullmatch(r"v(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)")` 校验，其他形态直接拒）
 - [ ] `release` environment 已配置 Required reviewers，且审批通过
 - [ ] npmjs / PyPI 上能查到新版本；`packages/*/CHANGELOG.md` 已更新
-- [ ] 部署侧按 `docs/release-checklist.md` Phase 3 验证通过（`curl http://localhost:3105/health`）
+- [ ] 部署侧按 `docs/release-checklist.md` Phase 3 验证通过（`curl http://localhost:3105/api/health/live`）
 
 ## 常见坑
 

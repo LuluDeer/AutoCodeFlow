@@ -246,6 +246,68 @@ def test_code_source_application_zip_with_git_repo_defers_to_git(monkeypatch, tm
     assert downloads == []
 
 
+def test_explicit_non_zip_code_source_never_enters_the_zip_channel(monkeypatch, tmp_path):
+    """ZIP-PRED-01：显式 codeSource='git' 时，applicationId+packageUrl 不得触发 zip。
+
+    executor-node 的判定是 `codeSource === 'application_zip' || (!codeSource &&
+    applicationId && packageUrl)`——**显式声明了非 zip 渠道就不猜**。这里此前是
+    裸 `elif application_id and package_url`：只要 applicationId 与 packageUrl
+    同在就进 zip，全然不顾 codeSource 已经显式声明了别的渠道。
+
+    注意输入形态：本例刻意**不带** gitRepo/glueSource。带它们时下游还有一道
+    `is_zip_channel and (git_repo or glue_source)` 让位逻辑会把结果掩盖成一致，
+    测不出这个判定的差异——只有"渠道已声明、但对应来源字段缺失"的自相矛盾
+    载荷才能真正打到判定本身（admin 写面互斥下不可达，属于执行器直连派发的
+    纵深防御；与 node 同形是这里的目标）。
+
+    反证：把 `elif not code_source and ...` 改回 `elif application_id and ...`，
+    本例立即转红（downloads 非空）。
+    """
+    _patch_callback_env(monkeypatch, tmp_path)
+    downloads = []
+    monkeypatch.setattr(
+        execute_module, '_download_package',
+        _boom_download(downloads))
+    spawns = []
+    _patch_spawn(monkeypatch, spawns)
+
+    req = ExecuteRequest(executionId='exec-explicit-git', task={
+        'id': 'task-explicit-git', 'runtime': 'python',
+        'codeSource': 'git',
+        'applicationId': 'app-1',
+        'packageUrl': 'https://cdn.example.com/app.zip',
+        'entrypoint': 'main.py',
+    })
+    asyncio.run(execute_module.run_task(req))
+
+    assert downloads == [], '显式 codeSource=git 不得因残留 applicationId 进 zip 渠道'
+    # 走的是普通 python 路径（真的起了进程），不是 zip 失败
+    assert any(call[0] == 'spawn' for call in spawns)
+
+
+def test_explicit_glue_code_source_never_enters_the_zip_channel(monkeypatch, tmp_path):
+    """同上，渠道声明为 glue 时亦然（同上，不带 glueSource 以打到判定本身）。"""
+    _patch_callback_env(monkeypatch, tmp_path)
+    downloads = []
+    monkeypatch.setattr(
+        execute_module, '_download_package',
+        _boom_download(downloads))
+    spawns = []
+    _patch_spawn(monkeypatch, spawns)
+
+    req = ExecuteRequest(executionId='exec-explicit-glue', task={
+        'id': 'task-explicit-glue', 'runtime': 'python',
+        'codeSource': 'glue',
+        'applicationId': 'app-1',
+        'packageUrl': 'https://cdn.example.com/app.zip',
+        'entrypoint': 'main.py',
+    })
+    asyncio.run(execute_module.run_task(req))
+
+    assert downloads == []
+    assert any(call[0] == 'spawn' for call in spawns)
+
+
 # ---------------------------------------------------------------------------
 # happy path / 缺 packageUrl / zip 安全
 # ---------------------------------------------------------------------------
@@ -391,6 +453,100 @@ def test_zip_safety_violation_reaches_the_callback_with_a_named_reason(monkeypat
     assert items[0]['status'] == 'failed'
     assert items[0]['failureReason'] == 'package_fetch_failed'
     assert 'zip_slip' in items[0]['errorMessage']
+
+
+def test_real_zip_slip_package_is_rejected_end_to_end(monkeypatch, tmp_path):
+    """E-2（审计补漏）：**真实** zip-slip 包经完整 run_task 链路被拒。
+
+    既有用例（test_zip_safety_violation_maps_to_a_clear_failure 等）用替身
+    `_zip_safety` 抛错，验证的是 execute 侧的错误包装/回调归类；本用例构造真实
+    的越界 zip 包（`../evil.py`），只替身下载环节，让真实的
+    `zip_safety.vet_zip` 在 run_task 里拒绝它——补上"接收 → 真实审查 → 拒绝 →
+    工作目录零产物"这一段集成守卫（替身用例测不到真实模块的行为）。
+    """
+    _patch_callback_env(monkeypatch, tmp_path)
+    payload = _zip_bytes({'../evil.py': b'print("pwned")'})
+    _patch_download(monkeypatch, payload)
+    spawns = []
+    _patch_spawn(monkeypatch, spawns)
+
+    req = ExecuteRequest(executionId='exec-real-slip', task={
+        'id': 'task-real-slip', 'runtime': 'python',
+        'codeSource': 'application_zip', 'applicationId': 'app-1',
+        'packageUrl': 'https://cdn.example.com/evil.zip',
+        'entrypoint': 'main.py',
+    })
+    with pytest.raises(RuntimeError) as exc:
+        asyncio.run(execute_module.run_task(req))
+
+    assert 'zip_slip' in str(exc.value), f'违规名必须点名 zip_slip，实际 {exc.value}'
+    assert 'zip package rejected by safety check' in str(exc.value)
+    # vet_zip 在任何字节写出之前拒绝：不得解压出任何脚本，临时包文件必须被清理。
+    # （run_task 预备阶段会创建空的 artifacts/ 目录——那是任务台面，不是解压产物，
+    # 不参与"零残留"判定。）
+    work_dir = tmp_path / 'exec-real-slip'
+    assert not (work_dir / 'main.py').exists(), 'zip-slip 包不得解压出任何脚本'
+    assert not (work_dir / '.package.zip').exists(), '临时包文件必须被清理'
+    extracted = [str(p.relative_to(work_dir)) for p in work_dir.rglob('*')
+                 if p.name not in ('artifacts',) and p.is_file()]
+    assert not extracted, f'zip-slip 包不得在目标目录留下任何文件产物：{extracted}'
+    # 真实模块的违规也走同一条归类链（与替身用例逐字一致）
+    assert execute_module._refine_failure_reason(str(exc.value)) == 'package_fetch_failed'
+    assert spawns == [], '包审查失败后不得执行任何任务代码'
+
+
+def test_real_zip_safe_package_extracts_without_spawning_uv_before_entrypoint(monkeypatch, tmp_path):
+    """E-2 正例对照：真实安全包在 run_task 里解压落盘，且只在解压完成后
+    才 spawn 入口进程（顺序纪律：先 vet_zip 再 safe_extract 再执行）。"""
+    class _LineStream:
+        def __init__(self, lines):
+            self._lines = lines
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if not self._lines:
+                raise StopAsyncIteration
+            return self._lines.pop(0)
+
+    class _Proc:
+        returncode = 0
+        stdout = _LineStream([b'print 1\n'])
+
+        async def communicate(self):
+            return b'', b''
+
+        def kill(self):
+            pass
+
+        async def wait(self):
+            return 0
+
+    _patch_callback_env(monkeypatch, tmp_path)
+    payload = _zip_bytes({'main.py': b'print(1)'})
+    _patch_download(monkeypatch, payload)
+    spawns = []
+
+    async def fake_exec(*args, **kwargs):
+        spawns.append(('spawn', list(args)))
+        return _Proc()
+
+    monkeypatch.setattr(execute_module.asyncio, 'create_subprocess_exec', fake_exec)
+
+    req = ExecuteRequest(executionId='exec-real-safe', task={
+        'id': 'task-real-safe', 'runtime': 'python',
+        'codeSource': 'application_zip', 'applicationId': 'app-1',
+        'packageUrl': 'https://cdn.example.com/app.zip',
+        'entrypoint': 'main.py',
+    })
+    result = asyncio.run(execute_module.run_task(req))
+
+    work_dir = tmp_path / 'exec-real-safe'
+    assert (work_dir / 'main.py').read_bytes() == b'print(1)', '安全包必须真实解压落盘'
+    assert result['success'] is True, f'安全包任务应成功，实际 {result}'
+    assert result['exitCode'] == 0
+    assert any(call[0] == 'spawn' for call in spawns), '入口脚本必须被 spawn 执行'
 
 
 def test_legacy_git_task_does_not_enter_the_zip_channel(monkeypatch, tmp_path):

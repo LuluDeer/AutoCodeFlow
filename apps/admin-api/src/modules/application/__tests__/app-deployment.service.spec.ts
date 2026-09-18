@@ -52,6 +52,13 @@ const makeRepo = (overrides: Partial<Record<string, jest.Mock>> = {}) => ({
   findAndCount: jest.fn(),
   create: jest.fn((d: any) => ({ ...d, id: "deploy-1" })),
   save: jest.fn((e: any) => Promise.resolve({ ...e, id: e.id ?? "deploy-1" })),
+  // O-5: 批量 UPDATE 走 createQueryBuilder 链（scheduler spec 同款链式 mock）。
+  createQueryBuilder: jest.fn(() => ({
+    update: jest.fn().mockReturnThis(),
+    set: jest.fn().mockReturnThis(),
+    where: jest.fn().mockReturnThis(),
+    execute: jest.fn().mockResolvedValue({ affected: 1 }),
+  })),
   ...overrides,
 });
 
@@ -963,16 +970,22 @@ describe("AppDeploymentService", () => {
         status: "deploying",
       };
       repo.find.mockResolvedValue([stuckDeployment]);
-      repo.save.mockImplementation((e: any) => Promise.resolve(e));
       versionRepo.findOne.mockResolvedValue(versionSnapshot);
       versionRepo.save.mockImplementation((e: any) => Promise.resolve(e));
 
       await service.detectStuckDeployments();
 
-      expect(stuckDeployment.status).toBe(DeploymentStatus.FAILED);
-      expect(stuckDeployment.statusMessage).toBe(
+      // O-5: DEPLOYING 行走「非 PENDING」批量 UPDATE（单条 SQL，不再逐行
+      // repo.save）；行对象仅保留内存态 status 供日志/快照标记使用
+      expect(repo.save).not.toHaveBeenCalled();
+      const qb = repo.createQueryBuilder.mock.results[0].value;
+      expect(qb.execute).toHaveBeenCalledTimes(1);
+      const setArg = qb.set.mock.calls[0][0] as Record<string, unknown>;
+      expect(setArg.status).toBe(DeploymentStatus.FAILED);
+      expect(String(setArg.statusMessage)).toBe(
         "[System] Deployment timed out after 10 minutes",
       );
+      // 版本快照标记仍逐行（composite key 各异，无法并入批量 UPDATE）
       expect(versionSnapshot.status).toBe("failed");
       expect(versionRepo.save).toHaveBeenCalledWith(versionSnapshot);
     });
@@ -1034,18 +1047,18 @@ describe("AppDeploymentService", () => {
         deployedCommit: null,
       };
       repo.find.mockResolvedValue([pendingRow]);
-      repo.save.mockImplementation((e: any) => Promise.resolve(e));
       versionRepo.findOne.mockResolvedValue(null);
 
       await service.detectStuckDeployments();
 
-      expect(pendingRow.status).toBe(DeploymentStatus.FAILED);
-      expect(pendingRow.statusMessage).toMatch(/PENDING/);
-      expect(pendingRow.statusMessage).toMatch(/5 minutes/);
+      // QA5: PENDING 行走 pendingIds 批量 UPDATE（5 分钟文案）
+      const qb = repo.createQueryBuilder.mock.results[0].value;
+      const setArg = qb.set.mock.calls[0][0] as Record<string, unknown>;
+      expect(setArg.status).toBe(DeploymentStatus.FAILED);
+      expect(String(setArg.statusMessage)).toMatch(/PENDING/);
+      expect(String(setArg.statusMessage)).toMatch(/5 minutes/);
       // PENDING rows have no version snapshot yet — nothing to mark failed.
       expect(versionRepo.save).not.toHaveBeenCalled();
-      // FAILED releases the partial unique index for the application.
-      expect(pendingRow.status).not.toBe(DeploymentStatus.PENDING);
     });
 
     it("R6: an upgraded legacy deployment (old createdAt, fresh updatedAt) is not in the stuck set", async () => {

@@ -9,6 +9,7 @@
   - 基本认证（REGISTRY_USER / REGISTRY_PASS）
 """
 from datetime import datetime, timezone
+from email.utils import format_datetime, parsedate_to_datetime
 from html import escape
 from pathlib import Path
 import base64
@@ -20,7 +21,7 @@ import tempfile
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import HTMLResponse, FileResponse, Response
 import secrets
 
 app = FastAPI(title="AutoFlow PyPI Registry", version="1.0.0")
@@ -110,8 +111,39 @@ def normalize(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).lower()
 
 
+def is_safe_package_name(normalized: str) -> bool:
+    """PKG-DIR-01: 归一化后的包目录名必须是**单个相对路径分量**。
+
+    normalize() 只折叠 `[-_.]+` 并转小写，不处理路径结构：
+    - 前导 `/`（POSIX）与盘符（`C:`）/ UNC 前缀（`\\\\?\\`）会原样存活；
+    - 而 ``PACKAGES_DIR / seg`` 在 seg 为绝对路径时**整体丢弃**左操作数
+      （pathlib 语义），于是 `PACKAGES_DIR / "/tmp/x"` 就是 `/tmp/x`——
+      上传制品会落到包根之外，且 pkg_dir 的 mkdir(parents=True) 还会主动
+      把那个目录创建出来。文件名侧的目录分量早已被剥掉，这里补上包目录侧
+      的同一道闸：只要是绝对路径、带盘符/UNC，或仍含分隔符，一律拒绝。
+
+    合法 PEP 503 名（含 `..`——已被 normalize 折叠为 `-`）与含 `&` 等字符
+    的名称都继续放行：它们归一化后都是单个分量。
+    """
+    if not normalized or normalized in (".", ".."):
+        return False
+    # 绝对路径（POSIX 的 `/`、Windows 的 `C:`/`\\`），以及归一化后仍存在的
+    # 任意分隔符（防御 normalize 未来被改动后重新引入 `a/b` 形态）。
+    if normalized.startswith(("/", "\\")) or re.match(r"^[A-Za-z]:", normalized):
+        return False
+    if "/" in normalized or "\\" in normalized:
+        return False
+    # 归一化后 `..` 已被折叠成 `-`，此处再兜一层，宁可拒也不放行。
+    return os.path.basename(normalized) == normalized
+
+
 def pkg_dir(name: str) -> Path:
-    d = PACKAGES_DIR / normalize(name)
+    normalized = normalize(name)
+    if not is_safe_package_name(normalized):
+        # 上传侧的调用点会先校验并转成 400；这里是纵深防御——任何绕过
+        # （含未来新增调用方）都不得在包根之外建目录。
+        raise ValueError(f"Invalid package name: {name!r}")
+    d = PACKAGES_DIR / normalized
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -201,8 +233,99 @@ def _version_from_filename(name: str) -> str:
 # 约束：零外部资源——私服可能离线部署，样式全部内联，不引用任何 CDN/字体/JS。
 # 缓存取舍：选 no-cache 而非短 max-age——索引必须在 CI 上传后立即可见，陈旧
 # 索引会让 pip 解析不到刚推送的版本；私服页面体量为 KB 级，每次回源代价可
-# 忽略。未配置 ETag/Last-Modified 校验器，no-cache 实际表现为每次全量重取。
+# 忽略。O-26：在 no-cache 之上补 ETag/Last-Modified 弱校验器——no-cache 语义不变
+# （每次使用都必须 revalidate），但索引未变时 revalidate 直接命中 304，省去整页
+# 重渲染；上传/删包导致 mtime 或条目数变化时校验器变化，立即全量返回。
 _CACHE_HEADERS = {"Cache-Control": "no-cache"}
+
+
+def _http_date(ts: float) -> str:
+    """POSIX 时间戳 → HTTP-date（IMF-fixdate，GMT），供 Last-Modified 使用。"""
+    return format_datetime(datetime.fromtimestamp(ts, tz=timezone.utc), usegmt=True)
+
+
+def _all_package_dirs() -> list[Path]:
+    try:
+        return sorted((d for d in PACKAGES_DIR.iterdir() if d.is_dir()),
+                      key=lambda p: p.name)
+    except OSError:
+        return []
+
+
+def _artifact_files(pkg_dir: Path) -> list[Path]:
+    try:
+        return [f for f in sorted(pkg_dir.glob("*"))
+                if f.is_file() and not is_meta_file(f.name)]
+    except OSError:
+        return []
+
+
+def _root_listing_state() -> tuple[str, float]:
+    """全量索引（/ 与 /simple/）的 (weak ETag, Last-Modified 秒)。
+
+    索引只在「包/制品 增删或替换」时变化；取相关条目的最大 mtime 与计数组合。
+    上传走 N30 os.link 不可覆盖（同 sha 幂等重传字节不变），故 mtime+计数足以
+    区分任何会让索引内容变化的操作。"""
+    dirs = _all_package_dirs()
+    latest = 0.0
+    file_count = 0
+    for d in dirs:
+        try:
+            latest = max(latest, d.stat().st_mtime)
+        except OSError:
+            pass
+        for f in _artifact_files(d):
+            file_count += 1
+            try:
+                latest = max(latest, f.stat().st_mtime)
+            except OSError:
+                pass
+    return f'W/"root-{int(latest)}-{len(dirs)}-{file_count}"', latest
+
+
+def _package_listing_state(pkg_dir: Path) -> tuple[str, float]:
+    """单包索引（/simple/<name>/）的 (weak ETag, Last-Modified 秒)。"""
+    files = _artifact_files(pkg_dir)
+    latest = 0.0
+    for f in files:
+        try:
+            latest = max(latest, f.stat().st_mtime)
+        except OSError:
+            pass
+    return f'W/"pkg-{int(latest)}-{len(files)}"', latest
+
+
+def _etag_matches(header_value: str, etag: str) -> bool:
+    """弱比较 If-None-Match 中的引用标签是否命中本端 ETag。"""
+    our_tag = etag[2:] if etag.startswith("W/") else etag  # 去 weak 前缀
+    for _weak, quoted in re.findall(r'(W/)?"([^"]*)"', header_value):
+        if quoted and f'"{quoted}"' == our_tag:
+            return True
+    return False
+
+
+def _conditional_html_response(request: Request, etag: str,
+                               last_modified_ts: float, body: str) -> Response:
+    """返回渲染后的 HTML；若请求的 If-None-Match / If-Modified-Since 仍命中则
+    返回 304 Not Modified（O-26）。保持 ``Cache-Control: no-cache`` 语义——
+    客户端每次都 revalidate，未变的索引走廉价 304。"""
+    headers = {
+        "ETag": etag,
+        "Last-Modified": _http_date(last_modified_ts),
+        **_CACHE_HEADERS,
+    }
+    inm = request.headers.get("if-none-match")
+    if inm and _etag_matches(inm, etag):
+        return Response(status_code=304, headers=headers)
+    ims = request.headers.get("if-modified-since")
+    if ims:
+        try:
+            ims_dt = parsedate_to_datetime(ims)
+            if ims_dt is not None and int(last_modified_ts) <= int(ims_dt.timestamp()):
+                return Response(status_code=304, headers=headers)
+        except (TypeError, ValueError):
+            pass  # 畸形日期 → 不命中 304，正常返回内容
+    return HTMLResponse(body, headers=headers)
 
 _PAGE_STYLE = """<style>
 :root{color-scheme:dark}
@@ -316,7 +439,7 @@ def _version_sort_key(v: str):
 
 
 @app.get("/", response_class=HTMLResponse)
-def root_index(_user: str = Depends(verify_auth)):
+def root_index(request: Request, _user: str = Depends(verify_auth)):
     """FEAT-12: 人类可读服务首页（HTML，需认证——与 S9 索引保护策略一致）。"""
     pkgs = sorted(d.name for d in PACKAGES_DIR.iterdir() if d.is_dir())
     total_files = sum(
@@ -325,23 +448,26 @@ def root_index(_user: str = Depends(verify_auth)):
         for f in (PACKAGES_DIR / p).glob("*")
         if f.is_file() and not is_meta_file(f.name)
     )
-    return HTMLResponse(_render_root_index(pkgs, total_files), headers=_CACHE_HEADERS)
+    etag, last_modified = _root_listing_state()
+    return _conditional_html_response(
+        request, etag, last_modified, _render_root_index(pkgs, total_files))
 
 
 @app.get("/simple/", response_class=HTMLResponse)
-def simple_index(_user: str = Depends(verify_auth)):
+def simple_index(request: Request, _user: str = Depends(verify_auth)):
     """PEP 503 root index (pip 消费入口)."""
     pkgs = sorted(d.name for d in PACKAGES_DIR.iterdir() if d.is_dir())
     counts = [
         sum(1 for f in (PACKAGES_DIR / p).glob("*") if f.is_file() and not is_meta_file(f.name))
         for p in pkgs
     ]
-    return HTMLResponse(
-        _render_simple_index(pkgs, counts, sum(counts)), headers=_CACHE_HEADERS)
+    etag, last_modified = _root_listing_state()
+    return _conditional_html_response(
+        request, etag, last_modified, _render_simple_index(pkgs, counts, sum(counts)))
 
 
 @app.get("/simple/{package_name}/", response_class=HTMLResponse)
-def package_index(package_name: str, _user: str = Depends(verify_auth)):
+def package_index(package_name: str, request: Request, _user: str = Depends(verify_auth)):
     """PEP 503 per-package index (pip 消费入口)."""
     d = PACKAGES_DIR / normalize(package_name)
     if not d.exists():
@@ -363,9 +489,10 @@ def package_index(package_name: str, _user: str = Depends(verify_auth)):
                 datetime.fromtimestamp(
                     f.stat().st_mtime, timezone.utc).strftime("%Y-%m-%d %H:%M"),
             ))
-    return HTMLResponse(
-        _render_package_index(package_name, rows, len(files), len(by_version)),
-        headers=_CACHE_HEADERS)
+    etag, last_modified = _package_listing_state(d)
+    return _conditional_html_response(
+        request, etag, last_modified,
+        _render_package_index(package_name, rows, len(files), len(by_version)))
 
 
 @app.get("/packages/{package_name}/{filename}")
@@ -400,6 +527,14 @@ async def upload_package(
         raise HTTPException(status_code=400, detail="No filename")
     if not re.search(r'\.(whl|tar\.gz|zip)$', filename, re.IGNORECASE):
         raise HTTPException(status_code=400, detail="Invalid package format. Only .whl, .tar.gz, .zip are allowed")
+    # PKG-DIR-01: 文件名侧的目录分量上面已剥掉；包目录名同样必须先判安全再
+    # 交给 pkg_dir——否则绝对路径/盘符名会让 ``PACKAGES_DIR / name`` 丢弃
+    # 包根（pathlib 语义），制品落到包根之外。
+    if not is_safe_package_name(normalize(name)):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid package name: must be a single relative name "
+                   "(no leading '/', drive letter or path separator)")
     d = pkg_dir(name)
     dest = d / filename
 

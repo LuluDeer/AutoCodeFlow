@@ -21,7 +21,14 @@ dev: ## 启动完整开发环境（基础设施 + 所有服务）
 	@echo "==> 安装依赖..."
 	cd apps/admin-api && npm install
 	cd apps/admin-web && npm install
-	cd apps/executor-python && ([ -d .venv ] || python3 -m venv .venv) && .venv/bin/pip install -r requirements.txt
+	# O-6: 项目偏好 uv 管理 Python 依赖（与 executor-python 镜像内 uv 0.8.17 对齐）——
+	# uv 存在时 uv venv + uv pip install；缺失则回退 venv+pip
+	cd apps/executor-python && \
+	  if command -v uv >/dev/null 2>&1; then \
+	    ([ -d .venv ] || uv venv .venv) && uv pip install -r requirements.txt; \
+	  else \
+	    ([ -d .venv ] || python3 -m venv .venv) && .venv/bin/pip install -r requirements.txt; \
+	  fi
 	cd apps/executor-node && npm install
 	@echo "==> 运行数据库迁移..."
 	cd apps/admin-api && npm run migration:run
@@ -40,7 +47,13 @@ dev: ## 启动完整开发环境（基础设施 + 所有服务）
 install: ## 安装所有项目依赖
 	cd apps/admin-api && npm install
 	cd apps/admin-web && npm install
-	cd apps/executor-python && ([ -d .venv ] || python3 -m venv .venv) && .venv/bin/pip install -r requirements.txt
+	# O-6: 同 dev target——uv 优先，回退 venv+pip
+	cd apps/executor-python && \
+	  if command -v uv >/dev/null 2>&1; then \
+	    ([ -d .venv ] || uv venv .venv) && uv pip install -r requirements.txt; \
+	  else \
+	    ([ -d .venv ] || python3 -m venv .venv) && .venv/bin/pip install -r requirements.txt; \
+	  fi
 	cd apps/executor-node && npm install
 	@echo "==> 所有依赖安装完成"
 

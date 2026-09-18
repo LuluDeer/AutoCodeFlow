@@ -73,6 +73,32 @@ def test_derive_task_key_empty_id_with_version_falls_back_to_execution_id():
         _req({'id': '', 'runtimeVersion': '3.9'})) == 'exec-42-3.9'
 
 
+def test_derive_task_key_honours_the_snake_case_version_alias():
+    """两个别名必须同读（executor-node 的 venvDirName 同款）。
+
+    判据来源：run_task 读 `runtimeVersion ?? runtime_version`（两侧一致），
+    于是 `{"runtime_version":"3.11"}` **确实**按 3.11 建 venv。若键派生只读
+    驼峰，venv 会落在 `.venvs/<id>` —— 一个随后**不声明版本**的同任务会命中
+    并复用它（`_venv_reuse_problem` 只在声明版本时校验版本），于是静默跑在
+    3.11 上（D14 明令禁止），且同一载荷两侧目录名不同。
+
+    反证：把 `_derive_task_key` 改回只读 `runtimeVersion`，本例立即转红。
+    """
+    assert execute_module._derive_task_key(
+        _req({'id': 'task-a', 'runtime_version': '3.11'})) == 'task-a-3.11'
+    # 驼峰优先于 snake_case（与 run_task 的读取次序一致）。
+    assert execute_module._derive_task_key(
+        _req({'id': 'task-a', 'runtimeVersion': '3.10',
+              'runtime_version': '3.11'})) == 'task-a-3.10'
+    # 别名是**畸形**值时同样不加后缀（NFR-03，与驼峰同判）。
+    assert execute_module._derive_task_key(
+        _req({'id': 'task-a', 'runtime_version': '3.7.9'})) == 'task-a'
+    # 驼峰显式 None 时回落到别名（run_task 同款 `is None` 判空）。
+    assert execute_module._derive_task_key(
+        _req({'id': 'task-a', 'runtimeVersion': None,
+              'runtime_version': '3.9'})) == 'task-a-3.9'
+
+
 def test_task_key_is_the_single_source_for_lock_venv_and_protection(monkeypatch, tmp_path):
     """三方同源（DESIGN §1.2.2）：锁键 == live 快照 task_id == .venvs 目录名。"""
     from unittest.mock import AsyncMock

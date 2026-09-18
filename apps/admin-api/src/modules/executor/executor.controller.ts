@@ -48,11 +48,24 @@ import { ExecutorPullDto } from "./dto/executor-pull.dto";
 import { ExecutorRegisterDto } from "./dto/executor-register.dto";
 import { ExecutorHeartbeatDto } from "./dto/executor-heartbeat.dto";
 import { verifyExecutorToken } from "../../common/utils/verify-executor-token.util";
-import { assertSafeExecutorUrl } from "../../common/utils/safe-http.util";
+import {
+  assertAndPinExecutorUrl,
+  pinnedAxiosConfig,
+} from "../../common/utils/safe-http.util";
 // EXE-VER-1: heartbeat 响应回显版本合规态（EXECUTOR_MIN_VERSION）
 import { isVersionCompliant } from "./version-compare.util";
+// PROTOCOL-VER（B-3/U-2）：协议版本兼容矩阵（register 回显 protocolCompliant）。
+import {
+  PROTOCOL_SUPPORTED_MIN,
+  isProtocolCompliant,
+} from "./protocol-compat.util";
 // ARCH-32: pull 派发长轮询端点（ADR-015）
 import { ExecutorPullService } from "./executor-pull.service";
+// E-1（中台↔执行器深度审查）：pull 配置热更新——configVersion 指纹 + 配置拉取端点。
+import {
+  buildExecutorConfigPayload,
+  computeExecutorConfigFingerprint,
+} from "./executor-config-fingerprint.util";
 // BUG-01：401 重签重试可观测计数——走 runtime-metrics 模块级入口（与
 // TaskService / NotificationService 的埋点方式一致，无模块环、零 DI 接线），
 // 由 PrometheusMetricsService 的 render 快照模式渲染为
@@ -149,6 +162,9 @@ export class ExecutorController {
       address: string;
       type?: string;
       version?: string;
+      // PROTOCOL-VER（B-3/U-2）：执行器上报的协议版本（可选，整数）；
+      // 白名单转发 + service 侧兼容性分支（低于下限 warn + 兜底，不拒绝）。
+      protocolVersion?: number;
       capabilities?: string[];
       runtime?: string[];
       maxConcurrentTasks?: number;
@@ -181,6 +197,9 @@ export class ExecutorController {
       address: body.address,
       type: body.type,
       version: body.version,
+      // PROTOCOL-VER（B-3/U-2）：协议版本经 F-7 白名单转发（漏了这行 =
+      // 上报被静默丢弃，兼容矩阵无从分支）。
+      protocolVersion: body.protocolVersion,
       capabilities: body.capabilities,
       runtime: body.runtime,
       maxConcurrentTasks: body.maxConcurrentTasks,
@@ -214,7 +233,18 @@ export class ExecutorController {
     const tokenHash = await this.svc.getCallbackSecretByAddress(
       executor.address,
     );
-    return { ...executor, perExecutorToken, tokenHash };
+    // PROTOCOL-VER（B-3/U-2）：回显协议合规态（与 heartbeat 的
+    // versionCompliant 同款加法字段，旧消费方无感）。compat 判定在 service 侧
+    // 完成（PROTOCOL_SUPPORTED_MIN），此处只回显结论供执行器/运维观测。
+    return {
+      ...executor,
+      perExecutorToken,
+      tokenHash,
+      protocolCompliant: isProtocolCompliant(
+        executor.protocolVersion,
+        PROTOCOL_SUPPORTED_MIN,
+      ),
+    };
   }
 
   @Public()
@@ -382,7 +412,50 @@ export class ExecutorController {
       executor.dispatchMode === "pull"
         ? await this.pullService.pull(executor.id, waitMs)
         : null;
-    return { task: payload ?? null, dispatchMode: executor.dispatchMode };
+    return {
+      task: payload ?? null,
+      dispatchMode: executor.dispatchMode,
+      // E-1（中台↔执行器深度审查）：附带配置指纹——pull 执行器检测到与本地
+      // 已应用版本不一致时，主动 GET /api/executors/config 拉取全量配置热更新
+      // （push 执行器仍走 admin 主动 POST /api/config/reload）。
+      configVersion: computeExecutorConfigFingerprint(
+        this.configService,
+        executor,
+      ),
+    };
+  }
+
+  @Public()
+  // E-1: 执行器机器面配置拉取端点（pull 模式热更新用；token 校验与 pull 同款）。
+  @WriteGuard("executor", {
+    scope: "token",
+    reason: "执行器持 per-executor 令牌拉取生效配置（E-1 pull 配置热更新）",
+  })
+  @Get("config")
+  @ApiOperation({
+    summary: "Get the executor-facing config (pull-mode hot-reload)",
+    description:
+      "E-1: pull 执行器在长轮询响应中发现 configVersion 与本地不一致时调用，" +
+      "拉取与 admin 主动推送 /api/config/reload 同形的配置载荷（执行器侧走" +
+      "与 /api/config/reload 完全相同的校验与应用路径）。per-executor 令牌认证，" +
+      "address 走查询参数（与 register/heartbeat 同源）。",
+  })
+  @ApiResponse({ status: 200, description: "Executor-facing config payload" })
+  @ApiResponse({ status: 401, description: "Invalid executor token" })
+  async pullExecutorConfig(
+    @Query("address") address: string,
+    @Headers("authorization") auth: string,
+  ) {
+    const token = auth?.startsWith("Bearer ") ? auth.slice(7) : auth;
+    const isValid = await this.svc.validateTokenByAddress(address, token);
+    if (!isValid) {
+      throw new UnauthorizedException("Invalid executor token");
+    }
+    const executor = await this.svc.findByAddress(address);
+    if (!executor) {
+      throw new NotFoundException("Executor not found");
+    }
+    return buildExecutorConfigPayload(this.configService, executor);
   }
 
   @Public()
@@ -859,11 +932,15 @@ export class ExecutorController {
     // metadata/loopback/link-local target. With idempotent reuse a blocked
     // address normally costs the executor nothing (no rotation happened);
     // only the legacy/cold-cache path above may have rotated once.
-    await assertSafeExecutorUrl(url);
+    // F-3 (SEC-NEW): pin the connection to the validated IP (Host/SNI kept).
+    const pinned = await assertAndPinExecutorUrl(url);
+    const pinCfg = pinnedAxiosConfig(pinned);
     try {
       const resp = await axios.post(url, body, {
         headers: { Authorization: `Bearer ${issued.token}` },
         timeout: 10_000,
+        maxRedirects: 0, // R3 parity
+        ...pinCfg,
       });
       return resp.data;
     } catch (firstErr) {

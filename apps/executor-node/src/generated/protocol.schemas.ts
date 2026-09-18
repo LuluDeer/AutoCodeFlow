@@ -21,6 +21,18 @@ export const TaskConfigSchema = z.object({
   "gitRepo": z.string().nullable().optional(),
   "gitBranch": z.string().nullable().optional(),
   "gitCommit": z.string().nullable().optional(),
+  "runtimeVersion": z.string().nullable().optional(),
+  "runtime_version": z.string().nullable().optional(),
+  "codeSource": z.enum(["git", "glue", "application_zip"]).nullable().optional(),
+  "code_source": z.enum(["git", "glue", "application_zip"]).nullable().optional(),
+  "applicationId": z.string().nullable().optional(),
+  "application_id": z.string().nullable().optional(),
+  "packageUrl": z.string().nullable().optional(),
+  "package_url": z.string().nullable().optional(),
+  "glueSource": z.string().nullable().optional(),
+  "glue_source": z.string().nullable().optional(),
+  "glueLanguage": z.enum(["python", "javascript", "shell", "glue_python", "glue_node", "glue_shell"]).nullable().optional(),
+  "glue_language": z.enum(["python", "javascript", "shell", "glue_python", "glue_node", "glue_shell"]).nullable().optional(),
 }).passthrough();
 export type TaskConfig = z.infer<typeof TaskConfigSchema>;
 

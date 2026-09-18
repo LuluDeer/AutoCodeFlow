@@ -96,6 +96,37 @@ describe('F-28 fixed_rate 换算不依赖 i18n 文案', () => {
     expect(fixedRateToMinutesLabel(300)).toBe(5);
     expect(fixedRateToMinutesLabel(359)).toBe(5);
   });
+
+  // 本轮审计修复：表单值单位是秒、输入框以分钟呈现（formatter 向下取整）。
+  // 秒不是 60 整数倍时（90s/45s/100s），仅按展示文本回读会把 90s 悄悄改成
+  // 60s——用户只是聚焦后失焦（未改一个字符）就丢掉真实间隔。传当前表单值后
+  // parser 能判定"是否跨分钟"：未跨分钟=用户没改，原样保留精确秒值。
+  it('同一展示分钟内未改动：不把 90s 静默改写成 60s', () => {
+    // 90s 展示为「1 分钟」；回读文本「1 分钟」时当前值仍是 90 → 保留 90
+    expect(parseFixedRateSeconds('1 分钟', 90)).toBe(90);
+    expect(parseFixedRateSeconds('1 minutes', 119)).toBe(119);
+    expect(parseFixedRateSeconds('1', 100)).toBe(100);
+    // 60 整数倍的值：解析结果与当前值一致，保留同样成立
+    expect(parseFixedRateSeconds('5 分钟', 300)).toBe(300);
+  });
+
+  it('跨分钟（用户真改了）才采纳解析结果', () => {
+    // 当前 90s（显示 1 分钟）→ 用户改为 3 分钟：跨分钟，采纳 180
+    expect(parseFixedRateSeconds('3 分钟', 90)).toBe(180);
+    // 当前 300s（5 分钟）→ 改为 7 分钟
+    expect(parseFixedRateSeconds('7', 300)).toBe(420);
+    // 小数（5.5 分钟）与当前 300s 跨分钟 → 采纳 330
+    expect(parseFixedRateSeconds('5.5 分钟', 300)).toBe(330);
+  });
+
+  it('第二参缺省/非法时行为与修复前逐字节一致（纯文本 → 秒）', () => {
+    expect(parseFixedRateSeconds('5 分钟')).toBe(300);
+    expect(parseFixedRateSeconds('5 分钟', null)).toBe(300);
+    expect(parseFixedRateSeconds('5 分钟', undefined)).toBe(300);
+    expect(parseFixedRateSeconds('5 分钟', Number.NaN)).toBe(300);
+    expect(parseFixedRateSeconds('')).toBe(60);
+    expect(parseFixedRateSeconds('abc', 90)).toBe(60);
+  });
 });
 
 // ── F-29 ────────────────────────────────────────────────

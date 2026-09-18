@@ -1,8 +1,6 @@
 import asyncio
 import logging
 
-import httpx
-
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -52,9 +50,12 @@ async def check_admin_api_connectivity(
 
     for attempt in range(1, attempts + 1):
         try:
-            async with httpx.AsyncClient(timeout=timeout_seconds) as client:
-                response = await client.get(health_url)
-                response.raise_for_status()
+            # 网络性能审计（2026-09-18）：改用 O-24 共享连接池（延迟导入避免
+            # admin_api↔scheduler 模块级环）。启动探测 3 次尝试复用同一池。
+            from scheduler import get_http_client
+            client = get_http_client()
+            response = await client.get(health_url, timeout=timeout_seconds)
+            response.raise_for_status()
             logger.info('Admin API connectivity check succeeded: %s', get_admin_api_base_url())
             return True
         except Exception as exc:

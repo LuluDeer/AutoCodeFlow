@@ -1,0 +1,31 @@
+# docker-compose.staging.yml — staging 环境 override（E-3）
+#
+# 用法（staging 部署）：
+#   cp .env.example .env   # 按 staging 覆盖（如 LOG_LEVEL=debug、弱密钥换强密钥）
+#   docker compose -f docker-compose.yml -f docker-compose.staging.yml up -d
+#
+# 与生产共用同一基线 compose（靠 .env 区分）是配置漂移隐患；本 override 显式
+# 收紧资源（减半）并默认 debug 日志，避免 staging 误用生产级资源/日志水位。
+services:
+  postgres:
+    mem_limit: 768m
+    cpus: '0.5'
+
+  admin-api:
+    mem_limit: 512m
+    cpus: '0.5'
+    environment:
+      # staging 默认 debug 日志（可被 .env 的 LOG_LEVEL 覆盖前，此处强制 debug）
+      LOG_LEVEL: debug
+
+  executor-python:
+    mem_limit: 768m
+    cpus: '0.5'
+    environment:
+      LOG_LEVEL: debug
+
+  executor-node:
+    mem_limit: 768m
+    cpus: '0.5'
+    environment:
+      LOG_LEVEL: debug

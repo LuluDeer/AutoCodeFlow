@@ -13,7 +13,7 @@ if (!globalThis.crypto) {
 }
 
 import express from 'express';
-import { config, EXECUTOR_VERSION } from './config';
+import { config, EXECUTOR_VERSION, PROTOCOL_VERSION } from './config';
 import { logger } from './logger';
 import {
   executorStartedAt,
@@ -39,6 +39,7 @@ import {
 } from './file-logger';
 import { checkAdminApiConnectivity, initAdminClients, post, postWithStaticToken } from './admin-client';
 import { adoptExecutorTokenHash } from './admin-envelope';
+import { recordRegistration } from './heartbeat-state';
 import { taskWorkerManager } from './task-worker';
 import { startPullLoop, stopPullLoop } from './pull';
 import { killRunningTaskProcesses } from './routes/execute';
@@ -128,6 +129,9 @@ async function registerExecutor(): Promise<boolean> {
       // EXE-VER-1: 版本上报单源 EXECUTOR_VERSION（心跳同源）；
       // 中心端 EXECUTOR_MIN_VERSION 门禁按此判定，低于下限 403。
       version: EXECUTOR_VERSION,
+      // PROTOCOL-VER（B-3/U-2）：协议版本上报——中台据此做兼容性分支，
+      // 与实现版本门禁解耦（见 config.ts PROTOCOL_VERSION 注释）。
+      protocolVersion: PROTOCOL_VERSION,
       // ARCH-32: 派发模式自报（pull = NAT 内零入站，经长轮询取件）
       dispatchMode: config.pullMode ? 'pull' : 'push',
       // Legacy field kept for backwards compatibility
@@ -152,10 +156,14 @@ async function registerExecutor(): Promise<boolean> {
     // reads both shapes (R9: shared with middleware/auth.ts fetchToken).
     adoptExecutorTokenHash(resp?.data);
     registerSucceeded = true;
+    // F-2: 结构化注册判定（desktop /health/admin-status 据此显示「在线」，
+    // 不再依赖 'Registered to admin-api' 日志文案匹配）。
+    recordRegistration(true);
     logger.info(`Registered to admin-api (runtimes: ${runtimes.join(', ')}, maxConcurrent: ${config.maxConcurrentTasks})`);
     return true;
   } catch (err: any) {
     registerSucceeded = false;
+    recordRegistration(false);
     // EXE-VER-1: 门禁 403 时把服务端报文（含 minVersion 与升级指引）透传到
     // 执行器日志——只看 axios 的 "status code 403" 无法定位版本问题。
     const serverMessage =

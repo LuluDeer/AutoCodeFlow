@@ -94,7 +94,37 @@ function normalize(node, where) {
   assertSupported(node, where);
   if (node.$ref) return { kind: "ref", ref: resolveRef(node.$ref, where) };
   if (node.enum) {
-    return { kind: "enum", values: node.enum, description: node.description };
+    // `enum` 里**不得**出现 null：可空性只能由 `type: [..., "null"]` 表达。
+    //
+    // 为什么必须在这里硬拒（而不是靠 emitter 兜住）：两种目标语言的 enum 形态
+    // 都装不下 null，且**报错时机天差地别**——
+    //   · zod：`z.enum(["a", null])` 是 TS 类型错误，`tsc` 会红（还算幸运）；
+    //   · pydantic：`Literal["a", null]` 里 `null` **不是 Python 名字**，模块
+    //     import 不报错（pydantic 延迟求值），只在第一次 model_validate 时抛
+    //     `PydanticUserError: ... is not fully defined; you should define 'null'`。
+    // 后者是"生成器静默产出坏文件、错误只在运行时炸"，与本文件开头声明的
+    // 「碰子集外关键字必须报错退出、不得静默」直接相悖。故在归一化阶段就拦住。
+    if (node.enum.includes(null)) {
+      throw new Error(
+        `A3 生成器：${where} 的 enum 含 null —— 可空性请写进 type（["string","null"]），` +
+          `enum 只列非 null 取值。原因：zod 的 z.enum 不接受 null，pydantic 的 ` +
+          `Literal[..., null] 里 null 不是 Python 名字（会在运行时才炸）。`,
+      );
+    }
+    // 可空性必须照常解析：enum 分支此前**提前 return 且不带 nullable**，于是
+    // `type: ["string","null"] + enum: [...]` 会生成不含 `.nullable()` 的
+    // `z.enum([...])` —— zod 侧拒绝 null，而 pydantic 侧（`X | None`）接受，
+    // 同一个 schema 两侧判定相反。admin 恰恰对不适用字段**显式发 null**，
+    // 所以 zod 侧会把合法流量判成 400（本轮实测：`{"codeSource": null}` 在 node
+    // 被拒、在 python 通过）。enum 的 type 也允许写成非数组（"string"）或省略，
+    // 故与下方同法归一。
+    const enumTypes = Array.isArray(node.type) ? node.type : [node.type];
+    return {
+      kind: "enum",
+      values: node.enum,
+      nullable: enumTypes.includes("null"),
+      description: node.description,
+    };
   }
   const rawType = node.type;
   const types = Array.isArray(rawType) ? rawType : [rawType];
@@ -200,6 +230,22 @@ const orderedNames = topoOrder();
 
 const lit = (v) => JSON.stringify(v);
 
+/**
+ * 把 JSON 值渲染成 **Python** 字面量。
+ *
+ * 与 `lit`（JSON.stringify）的区别只有一个，但那个区别会让生成物**根本无法加载**：
+ * JSON 的 `null` 在 Python 里没有同名对象（Python 是 `None`）。`lit` 直接产出
+ * `null`，于是 `enum: [..., null]` 会生成
+ * `Literal["git", ..., null]` —— 模块 import 时不报错（pydantic 延迟求值），
+ * 但任何一次 `model_validate` 都会以
+ * `PydanticUserError: TaskConfig is not fully defined; you should define 'null'`
+ * 崩掉。即"生成器静默产出坏文件、错误只在运行时炸"，正是本文件开头声明要杜绝的
+ * 那类问题（碰子集外关键字要报错退出，不能静默）。
+ *
+ * zod 侧不受影响：TS 的 `null` 与 JSON 同名，故 zod 继续用 `lit`。
+ */
+const pyLit = (v) => (v === null ? "None" : JSON.stringify(v));
+
 function zodExpr(node) {
   let expr;
   switch (node.kind) {
@@ -294,7 +340,8 @@ function pyType(node, required) {
       break;
     case "enum": {
       needsLiteral = true;
-      t = `Literal[${node.values.map(lit).join(", ")}]`;
+      // pyLit 而非 lit：JSON 的 null 在 Python 里必须写成 None（见 pyLit 注释）。
+      t = `Literal[${node.values.map(pyLit).join(", ")}]`;
       break;
     }
     case "string":
@@ -350,8 +397,28 @@ for (const name of orderedNames) {
   const block = [];
   block.push(`class ${name}(BaseModel):`);
   if (node.description) block.push(`    """${node.description}"""`);
+  // `strict=True`：pydantic 默认 **lax** 模式会把数字字符串强转成数字
+  // （`'3600'` → `3600`）、把 `0/1/'yes'/'true'` 强转成 bool、把 int 强转成
+  // float/str。zod 侧**从不**做这些强转（`z.number().int()` 拒 `'3600'`），
+  // 于是同一个 schema 两侧对同一载荷判定相反——lax 模式下协议闸门形同虚设：
+  // 它声称"拒绝"的东西在 python 侧全被悄悄改写后接受。
+  //
+  // 实爆（本轮）：向量 `timeout_seconds-above-max-is-also-a-number`
+  // （`{"timeout_seconds": "3600"}`）在 zod 侧被拒、在 pydantic 侧**通过**
+  // （强转成 3600），python 套件当场红。这不是向量写错，是闸门本身漏。
+  //
+  // 语义后果不止于向量：timeout 是**数值**字段，容忍字符串形态就意味着
+  // `{"timeout": "0"}`（显式不限时）与 `{"timeout": "3600"}` 都会被 python
+  // 静默改写后执行，而 node 直接 400 —— 同一条任务派到两台执行器上一台跑、
+  // 一台拒（CONTRACT §3.3 全对等被破坏）。故强转必须关掉。
+  //
+  // 生产流量不受影响：admin 的派发载荷由 Prisma 实体序列化而来，数值字段恒为
+  // JSON 数字、bool 恒为 true/false（strict 只拒绝"类型不对"的输入）。已逐个
+  // 验证 protocol.json 全部 valid 向量在 strict 下仍通过。
   block.push(
-    `    model_config = ConfigDict(extra=${node.additionalProperties ? '"allow"' : '"forbid"'})`,
+    `    model_config = ConfigDict(extra=${
+      node.additionalProperties ? '"allow"' : '"forbid"'
+    }, strict=True)`,
   );
   for (const [field, child] of Object.entries(node.properties ?? {})) {
     // 有 default 的字段恒有值，不加 `| None`（与 zod 的 .default() 语义对齐）

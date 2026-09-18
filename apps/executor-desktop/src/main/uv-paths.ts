@@ -111,6 +111,105 @@ export function buildUvChildEnv(input: {
   return env;
 }
 
+/**
+ * 诊断面用的 uv 解析视图（纯函数、可自检）。
+ *
+ * 为什么需要：`config:python-env-status` 此前自己拼了一个三分支判断，并把
+ * "既没显式配置、也没自带 uv" 直接渲染成「未找到 uv —— 声明了 Python 版本的
+ * 任务将无法执行」。但 executor-node 的解析链（`interpreters.ts` 的
+ * resolveUvBin）在这之后还有两步：系统 `UV_BIN`、以及 **PATH 上实跑
+ * `uv --version` 探测**。也就是说该诊断在"uv 其实装在 PATH 上、任务完全能跑"
+ * 的机器上会显示一条**假的致命告警**——诊断比没有诊断更误导。
+ *
+ * 同时反方向也漏了：`uvPath` 配到一个不存在的路径时，旧代码照样显示
+ * "（来自上方 uvPath 配置）"，把"配错路径"粉饰成"已生效"。
+ *
+ * 本函数把两个方向都如实化：
+ *   - `uvConfiguredButMissing`：显式配置但文件不可用（可静态判定，不 spawn）；
+ *   - `uvStaticallyConfirmed`：静态就能确认一定有 uv 可用；false 意味着只能
+ *     在运行时由 executor-node 从 PATH 兜底，**不得**渲染成"未找到 uv"。
+ */
+export interface UvResolutionInput {
+  /** 已 trim 的显式配置（`config.uvPath`）。 */
+  configured: string;
+  /** 随包自带 uv 的解析结果（不存在为 null）。 */
+  bundled: string | null;
+  /** 已 trim 的系统环境 `UV_BIN`（子进程会继承它）。 */
+  systemEnvUvBin: string;
+  /** 显式配置的路径是否真的可执行（stat 判定，不 spawn 进程）。 */
+  configuredUsable: boolean;
+  /**
+   * 6-2（audit-r4）：系统环境 `UV_BIN` 是否真的是可执行文件。缺省视为可用
+   * （兼容旧调用方）；与 executor-node `resolveUvBin` 对齐——UV_BIN 指向
+   * 不可执行文件时运行时会 warn 后继续找 PATH，诊断不得再宣称"已确认可用"。
+   */
+  systemEnvUvBinUsable?: boolean;
+  /**
+   * 6-2（audit-r4）：PATH 兜底探测（注入 `uv --version` 实跑结果，与
+   * interpreters.ts resolveUvBin 同款判据）。仅在**静态无法确认**的分支注入，
+   * 由调用方控制 spawn 成本；缺省保持"未静态确认"。
+   */
+  pathProbe?: () => boolean;
+}
+
+export interface UvResolutionView {
+  /** 桌面端会**实际下发**给子进程的 uv 路径（UV_BIN）；null = 不下发。 */
+  uvPath: string | null;
+  uvSource: 'config' | 'bundled' | 'env' | 'path';
+  /** uv 来自用户系统环境（我们不下发，由子进程继承）。 */
+  uvFromSystemEnv: boolean;
+  /** 显式配置了 uvPath，但该文件不可用——"配了却没生效"的一手信号。 */
+  uvConfiguredButMissing: boolean;
+  /** 静态即可确认 uv 一定可用。false = 只能运行时从 PATH 兜底。 */
+  uvStaticallyConfirmed: boolean;
+}
+
+export function classifyUvResolution(input: UvResolutionInput): UvResolutionView {
+  // 1) 显式配置优先（executor-node 的 UV_BIN 第 1 位）。
+  if (input.configured) {
+    return {
+      uvPath: input.configured,
+      uvSource: 'config',
+      uvFromSystemEnv: false,
+      uvConfiguredButMissing: !input.configuredUsable,
+      // 配了但不可用 → executor-node 会 warn 后继续走 PATH，不能算"已确认"。
+      uvStaticallyConfirmed: input.configuredUsable,
+    };
+  }
+  // 2) 随包自带（resolveBundledUvPath 已做过存在性判定）。
+  if (input.bundled) {
+    return {
+      uvPath: input.bundled,
+      uvSource: 'bundled',
+      uvFromSystemEnv: false,
+      uvConfiguredButMissing: false,
+      uvStaticallyConfirmed: true,
+    };
+  }
+  // 3) 系统环境的 UV_BIN：我们不下发，但子进程继承得到，等同于可用。
+  if (input.systemEnvUvBin) {
+    return {
+      uvPath: null,
+      uvSource: 'env',
+      uvFromSystemEnv: true,
+      uvConfiguredButMissing: false,
+      // 6-2：与 resolveUvBin 对齐——UV_BIN 指向不可执行文件时 node 会 warn
+      // 后继续找 PATH，不能宣称"已确认可用"。
+      uvStaticallyConfirmed: input.systemEnvUvBinUsable !== false,
+    };
+  }
+  // 4) 都没有 —— **不等于缺失**：executor-node 还会在运行时实跑
+  //    `uv --version` 做 PATH 探测。注入 pathProbe 时如实升级/降级；缺省
+  //    只能如实标注"未静态确认"。
+  return {
+    uvPath: null,
+    uvSource: 'path',
+    uvFromSystemEnv: false,
+    uvConfiguredButMissing: false,
+    uvStaticallyConfirmed: input.pathProbe ? input.pathProbe() : false,
+  };
+}
+
 /** 极小的路径拼接（避免在纯模块里 import path，保持零依赖）。 */
 function joinPath(...parts: string[]): string {
   const sep = parts[0] && /^[A-Za-z]:[\\/]/.test(parts[0]) ? '\\' : '/';

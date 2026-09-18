@@ -48,8 +48,15 @@ import { TracingService } from "../../common/tracing/tracing.service";
 export const SCHEDULER_LEADER_LOCK_KEY = "scheduler:leader";
 /** Leader 锁 TTL；RedisLockService 内置 watchdog 以 TTL/3 周期续期 */
 export const SCHEDULER_LEADER_TTL_MS = 30_000;
-/** 非 Leader 重试竞选 / 降级重试间隔 */
+/** 非 Leader（跟随者）重试竞选间隔 */
 export const SCHEDULER_LEADER_RETRY_MS = 15_000;
+/**
+ * fail-open 降级期间（isLeader 但 leaderLock === null，Redis 不可用）的重试
+ * 间隔：Redis 恢复后 5s 内补拿真实锁并收敛为单 Leader，把"多实例同时降级
+ * 运行"的窗口压到最短。正确性本身由 DB 条件 claim 兜底（claimTaskTrigger /
+ * transitionToTerminal），此项只压缩重复扫描开销的持续时长。
+ */
+export const SCHEDULER_LEADER_FAILOPEN_RETRY_MS = 5_000;
 
 /**
  * N5: 单个任务的 stale 回收阈值：max(2 × taskTimeout, 60s)。executor /
@@ -89,8 +96,14 @@ export const STALE_SCAN_FALLBACK_MS = 60 * 60 * 1000;
  * 恢复，防止执行器 bug（谎报 running）导致行永久悬挂。timeout=0（无显式超时）
  * 或算得的绝对兜底短于该行 stale 阈值时，回退到 stale 阈值（保持既有回收行为，
  * 不因探测而放宽无限时任务的回收）。
+ *
+ * O-3（中台↔执行器深度审查）：绝对兜底 30min → 5min。旧值对短超时任务过宽：
+ * 10s 超时的任务 6×timeout=60s，但绝对兜底仍压到 30min——一个谎报 running 的
+ * 执行器 bug 会让该执行悬挂 30 分钟才被强制恢复。5min 仍远大于正常心跳/回调
+ * 节奏（健康任务通常在 timeout 内回调），只收紧"谎报者"的收敛上界，不误伤
+ * 真实长时任务（长任务由 6×timeout 主导）。
  */
-export const STALE_LIVENESS_ABSOLUTE_FLOOR_MS = 30 * 60 * 1000; // 30 min
+export const STALE_LIVENESS_ABSOLUTE_FLOOR_MS = 5 * 60 * 1000; // 5 min（O-3）
 export const STALE_LIVENESS_ABSOLUTE_TIMEOUT_MULTIPLIER = 6;
 
 /**
@@ -278,11 +291,18 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
 
   private scheduleLeaderRetry(): void {
     if (this.leaderRetryTimer) return;
+    // fail-open 降级期间（isLeader 但无真实锁）用短间隔快速重试竞选：Redis
+    // 恢复后尽快收敛为单 Leader，缩短多实例同时降级运行的窗口（正确性由
+    // DB 条件 claim 兜底，此项只压缩重复扫描开销的持续时长）。
+    const delayMs =
+      this.isLeader && !this.leaderLock
+        ? SCHEDULER_LEADER_FAILOPEN_RETRY_MS
+        : SCHEDULER_LEADER_RETRY_MS;
     this.leaderRetryTimer = setTimeout(() => {
       this.leaderRetryTimer = null;
       // 降级 Leader 也周期性重试：Redis 恢复后补拿真实锁，或让位于新 Leader
       void this.tryAcquireLeadership();
-    }, SCHEDULER_LEADER_RETRY_MS);
+    }, delayMs);
     this.leaderRetryTimer.unref();
   }
 
@@ -348,8 +368,14 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     }
     const tasks = await this.taskRepo.find({
       where: { status: TaskStatus.ACTIVE },
+      // O-4: bound the active-task scan.
+      take: 10000,
     });
     const now = Date.now();
+    // P2-8：先收集命中 FIRE_ONCE 补偿的任务，再 Promise.allSettled 并发入队。
+    // 每任务使用独立 Redis 锁 key / DB claim（互不依赖），并发安全；单个任务
+    // 入队失败不再中断其余任务的补偿（原串行循环中 enqueue 抛错会中断整轮）。
+    const misfired: Task[] = [];
     for (const task of tasks) {
       if (!task.lastTriggerTime) continue;
       const gap = now - task.lastTriggerTime.getTime();
@@ -360,7 +386,7 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
       if (gap > threshold) {
         if (task.misfireStrategy === MisfireStrategy.FIRE_ONCE) {
           this.logger.warn(`Misfire detected for "${task.name}", firing once`);
-          await this.enqueue(task, "misfire");
+          misfired.push(task);
         } else {
           this.logger.warn(
             `Misfire detected for "${task.name}", strategy=IGNORE`,
@@ -368,12 +394,22 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
         }
       }
     }
+    if (misfired.length > 0) {
+      await Promise.allSettled(
+        misfired.map((task) => this.enqueue(task, "misfire")),
+      );
+    }
   }
 
   /**
    * REC-01: Periodically find executions stuck in RUNNING (e.g. from a crash)
    * and mark them FAILED so the UI never shows permanently-running tasks.
-   * Runs on startup and every 10 minutes thereafter.
+   * Runs on startup and every 2 minutes thereafter.
+   *
+   * 频率说明（原 10 分钟）：staleScanWindowMs() 已按活跃任务中最短超时动态
+   * 计算扫描窗口（短超时任务如 10s 的僵尸行在窗口内即被捞出），find() 带
+   * startTime 过滤，扫描本身是轻量索引查询；2 分钟粒度把"短超时任务的僵尸
+   * 行最多等 10 分钟"压缩到最多 2 分钟，DB 压力增加可忽略。
    *
    * P2: sweep 赢得 RUNNING→FAILED 后还兑现重试预算——预算未耗尽的执行经
    * ExecutorService.scheduleRetryAfterRecovery 创建新 PENDING execution 并
@@ -384,7 +420,7 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
    * - If the associated task has a timeout > 0, use that as the stale threshold.
    * - Otherwise fall back to a 1-hour global grace window.
    */
-  @Cron("0 */10 * * * *")
+  @Cron("0 */2 * * * *")
   async recoverStaleExecutions() {
     // TASK-006: 扫描型 tick 仅 Leader 执行
     if (!this.isLeader) {
@@ -416,6 +452,9 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
         status: ExecutionStatus.RUNNING,
         startTime: LessThan(initialCutoff),
       },
+      // O-2: bound the initial materialization; recovered rows leave the
+      // RUNNING predicate so the next 10-min tick self-converges a backlog.
+      take: 1000,
     });
 
     // Get all unique taskIds and fetch their timeouts
@@ -746,7 +785,7 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
       if (!Array.isArray(ex.runningExecutionIds)) continue;
       if (!ex.runningExecutionIds.includes(c.exec.id)) continue;
 
-      // 活性命中，但设绝对兜底：超过 max(6×timeout, 30min) 仍强制恢复。
+      // 活性命中，但设绝对兜底：超过 max(6×timeout, 5min) 仍强制恢复（O-3）。
       // ageMs 以 anchor（startTime ?? createdAt）为基准，与 stale 判定同锚。
       const absoluteFloorMs = Math.max(
         c.taskTimeoutSec && c.taskTimeoutSec > 0
@@ -795,6 +834,9 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
    * 轻量查询仅取 id/timeout 两列。
    */
   private async staleScanWindowMs(): Promise<number> {
+    // 注意：此查询**不设 take**——窗口 = 所有 active 任务中最短阈值，截断会
+    // 漏掉最关键的短 timeout 任务，使 cutoff 偏大、僵尸行等待更久。select 已
+    // 只取 id/timeout 两列（status 索引上的轻量扫描），每 2 分钟一次可接受。
     const tasks = await this.taskRepo.find({
       where: { status: TaskStatus.ACTIVE },
       select: ["id", "timeout"],
@@ -829,27 +871,41 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
 
   /** reload 的实际扫描体（抽出以便 tick 计时只包住扫描工作本身） */
   private async reloadActiveTasks(): Promise<void> {
-    const tasks = await this.taskRepo.find({
-      where: { status: TaskStatus.ACTIVE },
-    });
-    const activeIds = new Set(tasks.map((t) => t.id));
+    // O-4 修正：活跃集合的 id-only 扫描**不做 take 截断**——一旦截断，超过
+    // 上限的已注册任务会因不在 activeIds 里被下方的清理循环误 stop，调度静默
+    // 丢失。取列收窄（仅 id）已把每分钟载荷从全行降到 id 列表；完整行只对
+    // 「尚未注册的新任务」按 id 定向补拉（新任务通常为 0，多数 tick 只做一次
+    // 轻量 id 扫描 + 空补拉短路）。
+    const activeIds = (
+      await this.taskRepo.find({
+        where: { status: TaskStatus.ACTIVE },
+        select: ["id"],
+      })
+    ).map((t) => t.id);
+    const activeSet = new Set(activeIds);
 
     // BUG-01: Stop and clean up timers for tasks that are no longer active
     // This prevents memory leaks from accumulating inactive task references
     for (const id of this.timers.keys()) {
-      if (!activeIds.has(id)) this.stop(id);
+      if (!activeSet.has(id)) this.stop(id);
     }
     for (const id of this.cronTasks.keys()) {
-      if (!activeIds.has(id)) this.stop(id);
+      if (!activeSet.has(id)) this.stop(id);
     }
 
     // BUG-01: Clean up running tasks map for tasks that are no longer active
     for (const id of this.runningTasks.keys()) {
-      if (!activeIds.has(id)) this.runningTasks.delete(id);
+      if (!activeSet.has(id)) this.runningTasks.delete(id);
     }
 
+    const missingIds = activeIds.filter(
+      (id) => !this.timers.has(id) && !this.cronTasks.has(id),
+    );
+    if (missingIds.length === 0) return;
+    const tasks = await this.taskRepo.find({
+      where: { id: In(missingIds) },
+    });
     for (const task of tasks) {
-      if (this.timers.has(task.id) || this.cronTasks.has(task.id)) continue;
       await this.scheduleOne(task);
     }
   }

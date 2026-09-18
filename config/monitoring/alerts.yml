@@ -1,0 +1,13 @@
+# Prometheus 告警规则（M-3，compose monitoring profile）
+# 最小集：目标实例不可达。可按需扩展（连接数/内存/队列积压等业务级告警）。
+groups:
+  - name: autoflow
+    rules:
+      - alert: InstanceDown
+        expr: up == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: '{{ $labels.job }} / {{ $labels.instance }} is down'
+          description: 'Prometheus 已连续 5 分钟无法抓取 {{ $labels.instance }}（job={{ $labels.job }}）。'

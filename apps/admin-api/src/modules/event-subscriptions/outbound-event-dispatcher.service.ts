@@ -38,7 +38,11 @@ import {
   DomainEventName,
   EVENT_SCHEMA_VERSION,
 } from "../../common/events/domain-events";
-import { assertSafeHttpUrl } from "../../common/utils/safe-http.util";
+import {
+  assertAndPinHttpUrl,
+  PinnedHttpTarget,
+  pinnedAxiosConfig,
+} from "../../common/utils/safe-http.util";
 import { EventSubscription } from "./entities/event-subscription.entity";
 import { EventSubscriptionDeadLetter } from "./entities/event-subscription-dead-letter.entity";
 import { EventSubscriptionService } from "./event-subscription.service";
@@ -280,11 +284,14 @@ export class OutboundEventDispatcher implements OnModuleInit, OnModuleDestroy {
     eventName: string,
     payload: ReturnType<typeof buildEventPayload>,
   ): Promise<void> {
+    let pinned: PinnedHttpTarget;
     try {
       // ARCH-31（2026-09-13）: 出站前 SSRF 复核带私网豁免开关（与订阅创建/
       // 更新校验同源 eventWebhook.allowPrivateNetwork——开关关闭时内网 url
       // 在创建面就会被拒，此处兜底并发 PATCH 进来的内网地址）。
-      await assertSafeHttpUrl(sub.url, {
+      // F-3（SEC-NEW）: 复核同时把目标 pin 到校验通过的 IP（Host/SNI 保留），
+      // 关闭 DNS rebinding 窗口。
+      pinned = await assertAndPinHttpUrl(sub.url, {
         allowPrivateNetwork:
           this.config.get<boolean>("eventWebhook.allowPrivateNetwork") === true,
       });
@@ -306,6 +313,9 @@ export class OutboundEventDispatcher implements OnModuleInit, OnModuleDestroy {
           ]),
         )
         .digest("hex");
+    const pinCfg = pinnedAxiosConfig(pinned);
+    // 原始 URL 原样传给 axios（new URL 归一化会加尾部斜杠，破坏订阅方 URL 的
+    // 字节级契约）；pin 由 pinCfg 的 agent.lookup 完成。
     await axios.post(sub.url, body, {
       timeout: OUTBOUND_TIMEOUT_MS,
       // 与 notification WebhookChannel 同纪律：禁 3xx 跟随——首跳是唯一经
@@ -322,6 +332,7 @@ export class OutboundEventDispatcher implements OnModuleInit, OnModuleDestroy {
         "X-AutoCodeFlow-Timestamp": timestamp,
         "X-Hub-Signature-256": signature,
       },
+      ...pinCfg,
       // axios 接收 string body 时按原样发送，避免二次序列化差异破坏签名。
       transformRequest: [(data) => data],
     });
