@@ -1450,6 +1450,14 @@ export default {
   'appDetail.releases.trigger.upgrade': 'Rolling Upgrade',
   'appDetail.releases.trigger.manual': 'Manual Deploy',
   'appDetail.releases.trigger.unknown': 'Unknown',
+  // UX-06: the release-history Status column used to render raw enums.
+  'appDetail.history.status.released': 'Released',
+  'appDetail.history.status.running': 'Running',
+  'appDetail.history.status.deploying': 'Deploying',
+  'appDetail.history.status.stopped': 'Stopped',
+  'appDetail.history.status.failed': 'Failed',
+  'appDetail.history.status.pending': 'Pending',
+  'appDetail.history.status.rolledBack': 'Rolled back',
   'appDetail.ai.title': 'AI Health Analysis',
   'appDetail.ai.analyzeFail': 'AI analysis failed, please check the AI configuration',
   'appDetail.ai.adminOnly': 'Only admins can run AI analysis',
@@ -2108,6 +2116,10 @@ export default {
 
   'requireAdmin.subTitle': 'Sorry, you do not have permission to access this page. It is visible to administrators only.',
   'requireAdmin.back': 'Back to Console',
+  // UX-07: a failed profile fetch no longer spins forever — show a retryable error.
+  'requireAdmin.profileFailTitle': 'Could not verify your account permissions',
+  'requireAdmin.profileFail': 'Failed to load your account information, so we cannot tell whether you may access this page. Please retry; if it keeps failing, sign in again.',
+  'requireAdmin.retry': 'Retry',
   'errorBoundary.title': 'An error occurred on the page',
   'errorBoundary.unknownError': 'Unknown error',
   'errorBoundary.reload': 'Refresh page',

@@ -27,3 +27,19 @@ export function isFormValidationError(err: unknown): boolean {
     Array.isArray((err as Record<string, unknown>)['errorFields'])
   );
 }
+
+/**
+ * UX-05（本轮体验审查）：判断错误是否为「资源不存在」（HTTP 404）。
+ *
+ * 用于区分两种失败归宿：404 说明该 id 确实不存在，跳回列表是合理行为；
+ * 其余错误（500 / 网络抖动 / 超时）只是**这次没读到**，应留在原位给重试——
+ * 把用户正在看的页面直接跳走、只留一条几秒后消失的 toast，是很差的体验。
+ *
+ * 注意：axios 拦截器在 401 且刷新失败时会 logout + 跳登录，那条链路不经过
+ * 这里；此处只处理「已经拿到响应且状态码是 404」的情形。
+ */
+export function isNotFoundError(err: unknown): boolean {
+  if (err === null || typeof err !== 'object') return false;
+  const status = (err as { response?: { status?: unknown } })?.response?.status;
+  return status === 404;
+}

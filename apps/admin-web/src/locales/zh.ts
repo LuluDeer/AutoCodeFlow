@@ -1462,6 +1462,15 @@ export default {
   'appDetail.releases.trigger.upgrade': '滚动升级',
   'appDetail.releases.trigger.manual': '手动部署',
   'appDetail.releases.trigger.unknown': '未知',
+  // UX-06：版本历史「状态」列此前渲染裸枚举（released/deploying/failed…），
+  // 而同一张表相邻列已翻译——中英混排且对非英语用户不可读。
+  'appDetail.history.status.released': '已发布',
+  'appDetail.history.status.running': '运行中',
+  'appDetail.history.status.deploying': '部署中',
+  'appDetail.history.status.stopped': '已停止',
+  'appDetail.history.status.failed': '失败',
+  'appDetail.history.status.pending': '待部署',
+  'appDetail.history.status.rolledBack': '已回滚',
   'appDetail.ai.title': 'AI 健康分析',
   'appDetail.ai.analyzeFail': 'AI 分析失败，请检查 AI 配置是否正确',
   'appDetail.ai.adminOnly': '仅管理员可执行 AI 分析',
@@ -2117,6 +2126,10 @@ export default {
 
   'requireAdmin.subTitle': '抱歉，您没有权限访问该页面，此页面仅管理员可见。',
   'requireAdmin.back': '返回控制台',
+  // UX-07：profile 拉取失败时不再永久转圈，给出可重试的错误态。
+  'requireAdmin.profileFailTitle': '无法确认您的账号权限',
+  'requireAdmin.profileFail': '读取账号信息失败，无法判断是否有权访问该页面。请重试；若持续失败，请重新登录。',
+  'requireAdmin.retry': '重试',
   'errorBoundary.title': '页面出现异常',
   'errorBoundary.unknownError': '未知错误',
   'errorBoundary.reload': '刷新页面',

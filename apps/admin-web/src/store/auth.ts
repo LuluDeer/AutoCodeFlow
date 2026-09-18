@@ -21,10 +21,24 @@ interface AuthState {
   refreshToken: string | null;
   user: AuthUser | null;
   _hasHydrated: boolean;
+  /**
+   * UX-07（本轮体验审查）：profile 拉取的**失败**信号。
+   *
+   * 此前 MainLayout 的 profile 同步是 `.catch(() => undefined)`——失败被完全
+   * 吞掉，而 `user.role` 保持 undefined。RequireAdmin 只有「role 未知 → 转圈」
+   * 一种呈现，于是管理员刷新 /users、/audit 等页时若 profile 请求失败
+   * （token 边缘态 / 网络抖动），页面**永久转圈**：既无 403、也无错误提示和
+   * 重试按钮，只能手动改地址栏离开。
+   *
+   * 现在把失败如实记录下来，让 RequireAdmin 能区分「加载中」与「加载失败」。
+   * 存 message 而非 boolean，便于把真实原因显示给用户。
+   */
+  profileError: string | null;
   setToken: (token: string) => void;
   setRefreshToken: (refreshToken: string) => void;
   setAuth: (token: string, refreshToken: string, user: AuthUser) => void;
   setUser: (user: AuthUser) => void;
+  setProfileError: (message: string | null) => void;
   logout: () => void;
   setHasHydrated: (state: boolean) => void;
 }
@@ -36,11 +50,15 @@ export const useAuthStore = create<AuthState>()(
       refreshToken: null,
       user: null,
       _hasHydrated: false,
+      profileError: null,
       setToken: (token) => set({ token }),
       setRefreshToken: (refreshToken) => set({ refreshToken }),
-      setAuth: (token, refreshToken, user) => set({ token, refreshToken, user }),
-      setUser: (user) => set({ user }),
-      logout: () => { set({ token: null, refreshToken: null, user: null }); },
+      setAuth: (token, refreshToken, user) =>
+        set({ token, refreshToken, user, profileError: null }),
+      // 拉取成功即清掉上一次的失败标记（重试成功后不该还显示错误）。
+      setUser: (user) => set({ user, profileError: null }),
+      setProfileError: (message) => set({ profileError: message }),
+      logout: () => { set({ token: null, refreshToken: null, user: null, profileError: null }); },
       setHasHydrated: (state) => set({ _hasHydrated: state }),
     }),
     {

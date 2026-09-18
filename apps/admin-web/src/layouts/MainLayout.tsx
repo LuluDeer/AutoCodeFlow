@@ -25,6 +25,7 @@ import {
 import { Outlet, useNavigate, useLocation, Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../store/auth';
+import { getErrMsg } from '../utils/error';
 import { authApi } from '../api/auth';
 import { logoutRemote } from '../api/logout';
 import CommandPalette from '../components/CommandPalette';
@@ -187,7 +188,7 @@ export default function MainLayout() {
   const nav = useNavigate();
   const location = useLocation();
   const { t } = useTranslation();
-  const { user, setUser } = useAuthStore();
+  const { user, setUser, setProfileError } = useAuthStore();
   const isAdmin = user?.role === 'admin';
   // UI-03：折叠态持久化到 localStorage（跨会话记忆用户偏好）
   const [collapsed, setCollapsedState] = useState<boolean>(() => readCollapsedPreference());
@@ -223,11 +224,18 @@ export default function MainLayout() {
     authApi
       .me()
       .then((me) => setUser(me))
-      .catch(() => undefined)
+      .catch((err: unknown) => {
+        // UX-07（本轮体验审查）：此前是 `.catch(() => undefined)`——失败被完全
+        // 吞掉，role 保持 undefined，而 RequireAdmin 只有「转圈」一种呈现，
+        // 于是管理员刷新 /users、/audit 时若 profile 失败就**永久转圈**（无提示
+        // 无重试，只能改地址栏离开）。现把失败如实记录，交由 RequireAdmin
+        // 渲染错误态 + 重试。
+        setProfileError(getErrMsg(err, t('requireAdmin.profileFail')));
+      })
       .finally(() => {
         profileInflight.current = false;
       });
-  }, [user?.role, setUser]);
+  }, [user?.role, setUser, setProfileError, t]);
 
   // F-12: 实时时钟已提取为 <Clock /> 独立 memoized 组件（自管 setInterval），
   // 不再在此处维护 currentTime state，避免每秒重渲整个 Layout。
