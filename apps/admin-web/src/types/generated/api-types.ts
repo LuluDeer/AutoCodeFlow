@@ -1039,6 +1039,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/executors/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get the executor-facing config (pull-mode hot-reload)
+         * @description E-1: pull 执行器在长轮询响应中发现 configVersion 与本地不一致时调用，拉取与 admin 主动推送 /api/config/reload 同形的配置载荷（执行器侧走与 /api/config/reload 完全相同的校验与应用路径）。per-executor 令牌认证，address 走查询参数（与 register/heartbeat 同源）。
+         */
+        get: operations["ExecutorController_pullExecutorConfig"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/executors/{address}/terminal-states": {
         parameters: {
             query?: never;
@@ -3238,6 +3258,11 @@ export interface components {
              */
             version?: string;
             /**
+             * @description PROTOCOL-VER (B-3/U-2): 执行器线缆协议版本（与实现版本 version 解耦）。中台按兼容矩阵分支：低于 supportedMin 只 warn + 兜底，不拒绝注册。
+             * @example 1
+             */
+            protocolVersion?: number;
+            /**
              * @description Declared capabilities
              * @example [
              *       "docker",
@@ -5309,6 +5334,35 @@ export interface operations {
             };
         };
     };
+    ExecutorController_pullExecutorConfig: {
+        parameters: {
+            query: {
+                address: string;
+            };
+            header: {
+                authorization: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Executor-facing config payload */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid executor token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     ExecutorController_getTerminalStates: {
         parameters: {
             query?: {
@@ -7306,6 +7360,7 @@ export interface operations {
             query?: never;
             header: {
                 authorization: string;
+                "if-none-match": string;
             };
             path: {
                 /** @description Package ID */

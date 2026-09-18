@@ -28,7 +28,10 @@ export interface GroupBucket {
   count: number;
 }
 
-/** 聚合分组桶：未分组兜底 + 计数；未分组恒末位、其余按名称 localeCompare */
+/** 聚合分组桶：未分组兜底 + 计数；未分组恒末位、其余按名称序。
+ * 注意：排序用 code point 比较而非 localeCompare——中文 localeCompare 的 ICU
+ * 排序在 Windows 本机与 Ubuntu CI 结果不同（拼音序 vs 其他），导致同一断言
+ * 跨平台不稳定；code point 序确定且零依赖。 */
 export function groupBuckets<T extends ExecutorGroupLike>(executors: T[], ungroupedLabel = '未分组'): GroupBucket[] {
   const counts = new Map<string, number>();
   for (const ex of executors) {
@@ -43,7 +46,7 @@ export function groupBuckets<T extends ExecutorGroupLike>(executors: T[], ungrou
   buckets.sort((a, b) => {
     if (a.key === '' && b.key !== '') return 1;
     if (b.key === '' && a.key !== '') return -1;
-    return a.label.localeCompare(b.label);
+    return a.label < b.label ? -1 : a.label > b.label ? 1 : 0;
   });
   return buckets;
 }

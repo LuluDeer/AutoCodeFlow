@@ -1261,6 +1261,7 @@ def _bin_write_hook(pool: Path):
         python_bin = entry / 'bin' / 'python3'
         python_bin.parent.mkdir(parents=True, exist_ok=True)
         python_bin.write_bytes(b'#!/bin/sh\necho "Python 3"\n')
+        python_bin.chmod(0o755)  # POSIX 可执行位：CI(Linux) 校验 os.access(X_OK)
         return 0, 'installed'
 
     return _hook
