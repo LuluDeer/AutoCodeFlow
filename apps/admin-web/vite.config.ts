@@ -3,6 +3,9 @@ import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import dotenv from 'dotenv';
 import { fileURLToPath } from 'node:url';
+import { gzipSync, brotliCompressSync, constants as zlibConstants } from 'node:zlib';
+import { readdir, readFile, writeFile, stat } from 'node:fs/promises';
+import { join, isAbsolute } from 'node:path';
 // F-30（DEEP_REVIEW 0ef3bbe）：首帧主题脚本的单一来源。
 import { THEME_INIT_SCRIPT } from './src/theme/tokens.ts';
 
@@ -23,8 +26,65 @@ export function themeInitPlugin(): Plugin {
   };
 }
 
+// 网络性能审计（2026-09-18）：构建产物预压缩 .gz/.br，nginx gzip_static 直接
+// 发送预压缩文件，免去实时压缩 CPU 并支持 brotli。
+// 实现选型：不引 vite-plugin-compression——0.5.1 用模块级共享 mtimeCache，同一
+// 构建里注册 gzip+brotli 两个实例时第二个实例会跳过全部文件（实测 0 个 .br）；
+// 且 O-21 本就不赞成为此引入新依赖。这里用零依赖内联插件，一次遍历产出两
+// 种格式，行为确定（best 压缩级别、>=1024B 才压缩，与 nginx gzip_min_length
+// 对齐；worker 产物 .wasm 一并覆盖）。
+const ASSET_COMPRESS_EXT_RE = /\.(js|css|html|json|svg|xml|ico|txt|wasm|mjs)$/;
+const ASSET_COMPRESS_MIN_BYTES = 1024;
+
+function precompressAssetsPlugin(): Plugin {
+  let outDir = 'dist';
+  return {
+    name: 'precompress-assets',
+    apply: 'build',
+    enforce: 'post',
+    configResolved(config) {
+      outDir = isAbsolute(config.build.outDir)
+        ? config.build.outDir
+        : join(config.root, config.build.outDir);
+    },
+    async closeBundle() {
+      const files: string[] = [];
+      const walk = async (dir: string): Promise<void> => {
+        for (const entry of await readdir(dir, { withFileTypes: true })) {
+          const p = join(dir, entry.name);
+          if (entry.isDirectory()) await walk(p);
+          else if (ASSET_COMPRESS_EXT_RE.test(entry.name)) files.push(p);
+        }
+      };
+      await walk(outDir);
+      for (const file of files) {
+        try {
+          const { size } = await stat(file);
+          if (size < ASSET_COMPRESS_MIN_BYTES) continue;
+          const content = await readFile(file);
+          const gz = gzipSync(content, { level: zlibConstants.Z_BEST_COMPRESSION });
+          await writeFile(`${file}.gz`, gz);
+          const br = brotliCompressSync(content, {
+            params: {
+              [zlibConstants.BROTLI_PARAM_QUALITY]: zlibConstants.BROTLI_MAX_QUALITY,
+              [zlibConstants.BROTLI_PARAM_MODE]: zlibConstants.BROTLI_MODE_TEXT,
+            },
+          });
+          await writeFile(`${file}.br`, br);
+        } catch (err) {
+          console.error(`[precompress-assets] failed on ${file}:`, err);
+        }
+      }
+    },
+  };
+}
+
 export default defineConfig({
-  plugins: [react(), themeInitPlugin()],
+  plugins: [
+    react(),
+    themeInitPlugin(),
+    precompressAssetsPlugin(),
+  ],
   resolve: {
     // F-01：monaco-editor 0.53 的 package.json 无 main/exports（仅 module），
     // 显式补上 module 解析条件——vitest 会把 resolve.mainFields 重置为 []，
@@ -54,6 +114,13 @@ export default defineConfig({
   },
   build: {
     outDir: 'dist',
+    // O-17（生产排障回溯）：产出 sourcemap 但不注入到 bundle（'hidden'）——
+    // 浏览器不自动加载，Sentry/排障侧按 URL 拉取对应 .map；比 'sourcemap'
+    // 更省首屏（不内嵌 sourceMappingURL）。
+    // 网络性能审计（2026-09-18）：预压缩在构建期生成 .gz/.br（上方
+    // viteCompression 插件），nginx gzip_static 直接发送预压缩文件，相对
+    // O-21 的"仅运行时 gzip"省去实时压缩 CPU 并支持 brotli。
+    sourcemap: 'hidden',
     rollupOptions: {
       output: {
         manualChunks(id: string) {
@@ -86,7 +153,9 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     globals: true,
-    setupFiles: [],
+    // O-2：waitFor 默认预算统一（vi.waitFor 包装 10s + testing-library
+    // asyncUtilTimeout 10s），详见 src/test-setup.ts 头注。
+    setupFiles: ['src/test-setup.ts'],
     include: ['src/**/*.{test,spec}.{ts,tsx}'],
     exclude: ['e2e/**', '**/e2e/**', '**/*.e2e.{ts,tsx,js,cjs}'],
     // DEEP_REVIEW 轮7 验证发现（2026-09-14）：本套件为 jsdom + antd 重型页面，
@@ -94,8 +163,33 @@ export default defineConfig({
     // 0.3~2s（空闲）→ 并发下 >5s，vitest 默认 5s 上限会产出**超时假红**
     // （同一 HEAD 实测：空闲 2 红 / 中等负载 14 红 / 高负载 31 红，全部为
     // Exceeded timeout 而非断言失败；抬至 30s 后 83/83、725/725 全绿）。
-    // 故显式给足预算；真正挂死的用例仍会在 30s 处失败，不会静默。
+    // O-2（测试体系审计，2026-09-18）复核：带 coverage 仪器化重跑 95 文件时，
+    // 6 个重型页面文件的 9 个用例在**各自 15s 硬编码预算**下仍超时
+    // （task-list-deep/task-template-prefill，见 task-template-prefill.test.tsx
+    // 的 `}, 15_000)`），transform 累计 1531s——全局预算降到 10s 只会把更多
+    // 用例推入假红。根因是 transform/import 慢而非用例本身慢；预算机制已按
+    // 审计建议走「全局给足 + 重型用例 vitest.test(name, fn, N) 显式放宽」，
+    // 全局 30s 保留（唯一有实测证据的全绿值），后续应从 poolOptions/transform
+    // 侧治本（如 worker 数调优），而非继续压低全局预算。
     testTimeout: 30_000,
+    // L-1（测试体系审计）：此前 870+ 用例在 CI 只跑不测覆盖率，无水位门控。
+    // 加 v8 覆盖率收集（provider 包 @vitest/coverage-v8 已入 devDependencies）。
+    // 阈值为 2026-09-18 实测水位地板：全量 871 例全绿下 stmts 75.9 / branches
+    // 72.32 / funcs 66.81 / lines 77.58（排除 0% 的生成类型桩），留 ~3-4pt
+    // 余量防首跑即红；覆盖率抬升后应同步上调。
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'json'],
+      reportsDirectory: 'coverage',
+      include: ['src/**/*.{ts,tsx}'],
+      exclude: ['src/**/*.{test,spec}.{ts,tsx}', 'src/e2e/**', 'src/main.tsx', 'src/types/generated/**'],
+      thresholds: {
+        statements: 72,
+        branches: 68,
+        functions: 62,
+        lines: 74,
+      },
+    },
     server: {
       deps: {
         // F-01：monaco-editor 0.53 的 package.json 无 main/exports（仅 module），

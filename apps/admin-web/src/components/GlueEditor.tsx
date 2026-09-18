@@ -1,14 +1,16 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Select, Button, Space, message, Typography } from 'antd';
 import { Editor, loader } from '@monaco-editor/react';
-import * as monaco from 'monaco-editor';
 import { useTranslation } from 'react-i18next';
 import '../i18n';
 // F-01（DEEP_REVIEW @0ef3bbe）：Monaco 本地化——此前未配置本地 monaco，
 // @monaco-editor/react 默认从 jsdelivr CDN 动态加载，内网/离线部署下编辑器
 // 永远 loading。这里注入本地 monaco 实例（worker 装配见 ./monaco-setup.ts，
 // 必须先于首次 Editor 挂载执行，故以模块副作用导入）。
-import './monaco-setup';
+// 网络性能审计（2026-09-18）：monaco 实例从 ./monaco-setup 导出——它走
+// tree-shaken 的 editor.api + 按需语言贡献（见该文件头注释），不再整车引入
+// monaco-editor 全量包（含全部语言贡献与 ts.worker）。
+import { monaco } from './monaco-setup';
 import { tasksApi } from '../api/tasks';
 import { getErrMsg } from '../utils/error';
 
