@@ -100,6 +100,19 @@ async function callbackDelay(ms: number): Promise<void> {
   }
 }
 
+// 9-1（audit-r4）：回调线程空闲等待的**事件唤醒**。旧实现固定
+// `callbackDelay(1000)` 轮询——高回调吞吐下每批都白等至多 1s，且停机/唤醒
+// 路径只能等下一个 tick。pushCallback 入队时调用 wakeCallbackThread() 立即
+// 解除等待（竞速式：事件先到走事件，否则 1s 定时器兜底，循环必然推进）。
+// 停机（stopped）期间不建等待，drain 语义不变。
+let wakeCallbackLoop: (() => void) | null = null;
+
+function wakeCallbackThread(): void {
+  const wake = wakeCallbackLoop;
+  wakeCallbackLoop = null;
+  wake?.();
+}
+
 /** admin-api hard-rejects batches over 100 items (BadRequestException), so
  *  every send and every persisted file must respect this chunk size. */
 const CALLBACK_BATCH_SIZE = 100;
@@ -157,6 +170,20 @@ function traceparentHeaderFor(requests: CallbackRequest[]): Record<string, strin
   return traceparent ? { traceparent } : {};
 }
 
+/**
+ * B-2（中台↔执行器深度审查）：回调请求附 `x-executor-address` 头——admin 侧
+ * 回调限流按此头做**执行器维度**计数，替代按出口 IP 计数（多执行器共享同一
+ * NAT/机房出口 IP 时，按 IP 叠加的 60/min 档位会误杀整片回调，触发后与
+ * stale sweep 的失败判定赛跑导致误判 FAILED）。admin 的
+ * ExecutorAwareThrottlerGuard 优先读此头；旧执行器不带头时回退 IP 计数。
+ * 值取自与请求体同源的 executorAddress（withExecutorAddress 同一表达式），
+ * 不透传用户可控值。
+ */
+function executorAddressHeaderFor(): Record<string, string> {
+  const address = config.executorAddressPublic || config.executorAddress;
+  return address ? { 'x-executor-address': address } : {};
+}
+
 export function pushCallback(request: CallbackRequest): void {
   const callbackRequest = withExecutorAddress(request);
   const existingIndex = callbackQueue.findIndex(r => r.executionId === request.executionId);
@@ -167,13 +194,20 @@ export function pushCallback(request: CallbackRequest): void {
     callbackQueue.push(callbackRequest);
     logger.debug(`Pushed callback for execution ${request.executionId}`);
   }
+  // 9-1（audit-r4）：入队即唤醒回调线程——空闲等待立即解除，回调延迟从
+  // 最高 1s 降到微任务级（1s 定时器仅作兜底）。
+  wakeCallbackThread();
 }
 
 async function doCallback(requests: CallbackRequest[]): Promise<boolean> {
   try {
     // OBS-01: 回传 traceparent 头（admin 侧 execution-callback.controller 解析关联）
+    // B-2: 附带 x-executor-address 头（admin 回调限流按执行器维度计数）。
     const response = await untilDeadline(
-      post('/api/executions/callback', requests, traceparentHeaderFor(requests)),
+      post('/api/executions/callback', requests, {
+        ...traceparentHeaderFor(requests),
+        ...executorAddressHeaderFor(),
+      }),
       null,
     );
     if (!response) return false;
@@ -700,6 +734,13 @@ export async function reconcileDeadLetters(): Promise<DeadLetterReconcileResult>
 }
 
 async function processCallbacksWithBackoff(requests: CallbackRequest[]): Promise<void> {
+  // 7-1（audit-r4）：两套重试预算，语义不同、互不替代——
+  //   1. 这里的 MAX_RETRIES=5 是**实时发送**预算：内存队列里当前这一批对
+  //      admin 的即时重试（base 1s 指数退避 + 抖动，见 computeRetryBackoffMs），
+  //      5 次内未送达 → 落盘转持久化通道；
+  //   2. 落盘后的重发走 retryFailedCallbacks 的 CALLBACK_FILE_MAX_RETRIES=150
+  //      轮预算（base 5s 指数退避 cap 600s ≈ 24h 时长预算，见 115 行注释）。
+  //  前者管「瞬态失败尽快送达」，后者管「长时间停机/毒丸文件有界收敛」。
   const MAX_RETRIES = 5;
   // admin-api rejects batches > 100 outright — a batch larger than that would
   // fail all 5 attempts and then poison the persisted file forever.
@@ -774,7 +815,18 @@ async function processCallbacks(): Promise<void> {
     }
 
     if (stopped && callbackQueue.length === 0) break;
-    if (!stopped) await callbackDelay(1000);
+    if (!stopped) {
+      // 9-1（audit-r4）：事件唤醒 + 定时器兜底的竞速等待（pushCallback 入队
+      // 即唤醒，见 wakeCallbackThread）。兜底定时器沿用 1s，保证停机/竞态下
+      // 循环必然推进；wakeCallbackLoop 在竞速结束置空，避免悬挂引用。
+      await Promise.race([
+        new Promise<void>((resolve) => {
+          wakeCallbackLoop = resolve;
+        }),
+        callbackDelay(1000),
+      ]);
+      wakeCallbackLoop = null;
+    }
   }
 }
 

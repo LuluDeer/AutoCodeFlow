@@ -1,13 +1,17 @@
 import { NestFactory, Reflector } from "@nestjs/core";
 import {
   ClassSerializerInterceptor,
+  ConsoleLogger,
   INestApplication,
+  LogLevel,
   Logger,
   ValidationPipe,
+  VersioningType,
 } from "@nestjs/common";
 import { SwaggerModule, DocumentBuilder } from "@nestjs/swagger";
 import { ConfigService } from "@nestjs/config";
 import helmet from "helmet";
+import compression from "compression";
 import * as express from "express";
 import * as path from "path";
 // W-22 (windows-findings): some values are read at DECORATOR-EVAL time —
@@ -105,7 +109,10 @@ async function bootstrap() {
       },
     }),
   );
-  app.use(express.urlencoded({ limit: "1mb", extended: true }));
+  // O-3（SEC-NEW）: extended:false —— 表单体用 querystring 解析（非 qs 嵌套
+  // 对象）。本项目无任何端点依赖嵌套表单；API 均为 JSON（rawBody 校验在上）。
+  // qs 原型污染虽已由 override qs@^6.16.0 修复，仍按纵深防御收窄解析面。
+  app.use(express.urlencoded({ limit: "1mb", extended: false }));
 
   // SEC-08: security headers via helmet — production CSP explicitly tightened
   // (per-directive rationale in security-headers.util.ts), dev keeps CSP off
@@ -117,6 +124,21 @@ async function bootstrap() {
   const isProductionEnv =
     configService.get<string>("app.nodeEnv") === "production";
   app.use(helmet(buildHelmetOptions(isProductionEnv)));
+
+  // O-22: gzip HTTP responses for JSON/HTML payloads. SSE log streaming
+  // (GET /api/tasks/:id/executions/:execId/logs/stream) MUST be excluded — a
+  // never-ending text/event-stream cannot be buffered into a gzip block, and
+  // compressing it would break per-line flushing. Path-based filter keeps the
+  // SSE route on the default (uncompressed) behavior while every other route
+  // transparently benefits.
+  app.use(
+    compression({
+      filter: (req, res) => {
+        if (req.path.endsWith("/logs/stream")) return false;
+        return compression.filter(req, res);
+      },
+    }),
+  );
 
   // F-6: trust proxy is OPT-IN. Unconditional `trust proxy = 1` made req.ip
   // (throttler tracker, audit IP) follow the client-supplied X-Forwarded-For
@@ -186,6 +208,42 @@ async function bootstrap() {
   // Global prefix
   app.setGlobalPrefix("api");
 
+  // F-04（本轮审计）: 版本化机制就绪——URI 型版本化，**刻意不设 defaultVersion**。
+  // 若设 defaultVersion='1'，全部既有路由会被重写为 /api/v1/*，一次性破坏
+  // admin-web / acf-cli / mcp-server / executor-node（/executors/pull、
+  // /executions/callback、/uploads 等机器对机器路径）等所有存量消费方。
+  // 不带 defaultVersion 时，无 @Version 的路由保持原路径（VERSION_NEUTRAL，
+  // 行为逐字节不变，已核对 @nestjs/core route-path-factory：version 为空时
+  // 跳过版本前缀拼接）；未来破坏性变更从 @Version('2') 的新路由平滑引入，
+  // 老消费方继续打 /api/v1 语义（旧路径）直到收敛。
+  app.enableVersioning({ type: VersioningType.URI });
+
+  // F-13（本轮审计）: 全局结构化 JSON 日志——NestJS 11 ConsoleLogger 原生
+  // `json: true`（零新依赖、零调用点改动）：单行 JSON
+  // `{level, pid, timestamp, message, context?, stack?}`，ELK/Loki 可直接索引，
+  // 取代默认人类可读文本（[Nest] 12345 - ...）。级别按 LOG_LEVEL 映射
+  //（error/warn/info/debug/verbose，Joi 已注册、configuration.ts app.logLevel
+  // 已映射，见 F-13 配置段）。注意：main.ts 里的 console.error("[FATAL]") 等
+  // 原生 console 调用不经过本 logger，保持原样（进程级兜底，本就该落裸文本）。
+  const logLevel = configService.get<string>("app.logLevel") || "info";
+  const logLevels: LogLevel[] =
+    logLevel === "verbose"
+      ? ["verbose", "debug", "log", "warn", "error", "fatal"]
+      : logLevel === "debug"
+        ? ["debug", "log", "warn", "error", "fatal"]
+        : logLevel === "warn"
+          ? ["warn", "error", "fatal"]
+          : logLevel === "error"
+            ? ["error", "fatal"]
+            : ["log", "warn", "error", "fatal"];
+  app.useLogger(
+    new ConsoleLogger("Bootstrap", {
+      json: true,
+      colors: false,
+      logLevels,
+    }),
+  );
+
   // Global pipes
   app.useGlobalPipes(
     new ValidationPipe({
@@ -247,13 +305,21 @@ AutoFlow is a modern workflow automation platform providing task orchestration, 
 
 \`\`\`json
 {
-  "statusCode": 400,
+  "code": 400,
   "message": "Error description",
-  "error": "Bad Request",
+  "data": null,
   "timestamp": "2024-01-01T12:00:00Z",
   "path": "/api/tasks"
 }
 \`\`\`
+
+> 字段说明（与 \`common/filters/http-exception.filter.ts\` 的实际输出逐字段一致，
+> F-05 本轮已对齐）：
+> - \`code\`：HTTP 状态码（与成功响应包的 \`code\` 同语义）；
+> - \`data\`：校验失败时为错误详情数组（如 DTO 校验错误），其余为 \`null\`；
+> - \`timestamp\` / \`path\`：发生时间 / 请求路径，便于追踪。
+> 注意：响应包**没有** \`statusCode\` / \`error\` 字段（旧版 Swagger 文档曾描述
+> NestJS 默认错误形状，与全局过滤器的实际输出不符，消费方按 \`code\` 取状态码）。
 
 ### Success Response Format
 

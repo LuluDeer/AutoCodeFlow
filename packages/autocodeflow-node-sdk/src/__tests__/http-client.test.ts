@@ -1,5 +1,12 @@
 import axios from 'axios';
-import { HttpClient, stripTrailingApiSuffix } from '../http-client';
+import {
+  CircuitBreaker,
+  CircuitBreakerOpenError,
+  HttpClient,
+  isRetryableError,
+  parseRetryAfterHeader,
+  stripTrailingApiSuffix,
+} from '../http-client';
 
 jest.mock('axios');
 
@@ -329,13 +336,93 @@ describe('HttpClient', () => {
       );
     });
 
-    it('does not retry SDK requests; axios errors propagate from the first attempt', async () => {
-      const timeout = new Error('timeout of 10000ms exceeded');
-      mockInstance.get.mockRejectedValueOnce(timeout);
-      const client = new HttpClient(BASE_URL, TOKEN);
+    // B-4（中台↔执行器深度审查）：SDK 已补齐与 python SDK 对齐的
+    // 「重试 + 熔断 + Retry-After」契约——旧的"薄包装不重试"断言失效，
+    // 替换为：幂等 GET 在可重试错误上有界重试（maxRetries+1 次尝试）。
+    it('retries a safe GET on a network-level error, up to maxRetries+1 attempts', async () => {
+      const timeout = Object.assign(
+        new Error('timeout of 10000ms exceeded'),
+        // 真实 axios 超时错误带 code: 'ECONNABORTED'（isRetryableError 据此判定）
+        { code: 'ECONNABORTED' },
+      );
+      mockInstance.get.mockRejectedValue(timeout);
+      const client = new HttpClient(BASE_URL, TOKEN, undefined, undefined, {
+        retry: { maxRetries: 1, minWaitMs: 1 }, // 2 次尝试，退避缩短便于快速收敛
+      });
 
       await expect(client.get('/items')).rejects.toBe(timeout);
-      expect(mockInstance.get).toHaveBeenCalledTimes(1);
+      expect(mockInstance.get).toHaveBeenCalledTimes(2);
+    });
+
+    it('retries a safe GET on a retryable status (503) then succeeds', async () => {
+      const serverError = Object.assign(
+        new Error('Request failed with status code 503'),
+        { response: { status: 503, headers: {}, data: {} } },
+      );
+      mockInstance.get
+        .mockRejectedValueOnce(serverError)
+        .mockResolvedValueOnce({ data: { items: [1] } });
+      const client = new HttpClient(BASE_URL, TOKEN, undefined, undefined, {
+        retry: { maxRetries: 1, minWaitMs: 1 },
+      });
+
+      await expect(client.get('/items')).resolves.toEqual({ items: [1] });
+      expect(mockInstance.get).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not retry non-safe methods (POST) — failure propagates from the first attempt', async () => {
+      const serverError = Object.assign(
+        new Error('Request failed with status code 503'),
+        { response: { status: 503, headers: {}, data: {} } },
+      );
+      mockInstance.post.mockRejectedValue(serverError);
+      const client = new HttpClient(BASE_URL, TOKEN, undefined, undefined, {
+        retry: { maxRetries: 3 },
+      });
+
+      await expect(client.post('/items', {})).rejects.toBe(serverError);
+      expect(mockInstance.post).toHaveBeenCalledTimes(1);
+    });
+
+    it('respects the Retry-After header (delta-seconds) over the exponential backoff', async () => {
+      const serverError = Object.assign(
+        new Error('Request failed with status code 429'),
+        {
+          response: { status: 429, headers: { 'retry-after': '5' }, data: {} },
+        },
+      );
+      mockInstance.get
+        .mockRejectedValueOnce(serverError)
+        .mockResolvedValueOnce({ data: { ok: true } });
+      const client = new HttpClient(BASE_URL, TOKEN, undefined, undefined, {
+        retry: { maxRetries: 1 },
+      });
+
+      jest.useFakeTimers();
+      try {
+        const pending = client.get('/items');
+        // attempt 0 的指数退避 = minWait=1000ms；Retry-After=5000ms → 等 5000
+        await jest.advanceTimersByTimeAsync(5000);
+        await expect(pending).resolves.toEqual({ ok: true });
+        expect(mockInstance.get).toHaveBeenCalledTimes(2);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('429 with no Retry-After still retries with the plain backoff', async () => {
+      const serverError = Object.assign(
+        new Error('Request failed with status code 429'),
+        { response: { status: 429, headers: {}, data: {} } },
+      );
+      mockInstance.get
+        .mockRejectedValueOnce(serverError)
+        .mockResolvedValueOnce({ data: { ok: true } });
+      const client = new HttpClient(BASE_URL, TOKEN, undefined, undefined, {
+        retry: { maxRetries: 1, minWaitMs: 1 },
+      });
+      await expect(client.get('/items')).resolves.toEqual({ ok: true });
+      expect(mockInstance.get).toHaveBeenCalledTimes(2);
     });
 
     it('error interceptor leaves non-envelope errors untouched', async () => {
@@ -384,6 +471,129 @@ describe('HttpClient', () => {
       });
       expect(client.enabled).toBe(true);
       expect(mockedAxios.create).toHaveBeenCalledWith({ baseURL: BASE_URL, timeout: 10_000 });
+    });
+  });
+
+  // B-4（中台↔执行器深度审查）：熔断器 + 重试判据 + Retry-After 解析，
+  // 语义与 python SDK（autocodeflow-http client.py 的 _CircuitBreaker）同构。
+  describe('circuit breaker (B-4)', () => {
+    const err503 = () =>
+      Object.assign(new Error('Request failed with status code 503'), {
+        response: { status: 503, headers: {}, data: {} },
+      });
+
+    it('fails fast with CircuitBreakerOpenError once the threshold is hit, without touching the instance', async () => {
+      mockInstance.get.mockRejectedValue(err503());
+      // maxRetries: 0 → 每次请求只尝试一次；连续 5 次可熔断失败 → open
+      const client = new HttpClient(BASE_URL, TOKEN, undefined, undefined, {
+        retry: { maxRetries: 0 },
+      });
+
+      for (let i = 0; i < 5; i++) {
+        await expect(client.get('/items')).rejects.toBeInstanceOf(Error);
+      }
+      const callsBeforeOpen = mockInstance.get.mock.calls.length;
+      expect(callsBeforeOpen).toBe(5);
+
+      // open → 快速失败（不再触碰 axios 实例）
+      await expect(client.get('/items')).rejects.toThrow(CircuitBreakerOpenError);
+      expect(mockInstance.get.mock.calls.length).toBe(5);
+    });
+
+    it('a non-breakable 4xx error neither retries nor counts toward the breaker', async () => {
+      const badRequest = Object.assign(
+        new Error('Request failed with status code 400'),
+        { response: { status: 400, headers: {}, data: {} } },
+      );
+      mockInstance.get.mockRejectedValue(badRequest);
+      const client = new HttpClient(BASE_URL, TOKEN, undefined, undefined, {
+        retry: { maxRetries: 3 },
+      });
+
+      for (let i = 0; i < 7; i++) {
+        await expect(client.get('/items')).rejects.toBe(badRequest);
+      }
+      // 7 次 400 都不算可熔断失败 → 熔断器始终 closed → 每次都触达实例
+      expect(mockInstance.get).toHaveBeenCalledTimes(7);
+      await expect(client.get('/items')).rejects.toBe(badRequest);
+      expect(mockInstance.get).toHaveBeenCalledTimes(8);
+    });
+  });
+
+  describe('circuit breaker unit semantics (B-4)', () => {
+    it('closed → open after threshold, blocks while open, half-open probe recovers on success', () => {
+      // 必须先开 fake timers 再建实例：Date.now() 随假时钟从 0 起跑，
+      // 否则 openedAt 落在真实时间，advanceTimersByTime 后差值仍为负 → 永不转态。
+      jest.useFakeTimers();
+      try {
+        const cb = new CircuitBreaker(2, 50);
+        expect(cb.tryAcquire()).toBe(true);
+        cb.onFailure();
+        expect(cb.tryAcquire()).toBe(true);
+        cb.onFailure();
+        expect(cb.getState()).toBe('open');
+        expect(cb.tryAcquire()).toBe(false); // open 且未到复位时间 → 阻塞
+
+        // 复位时间过后，第一次 tryAcquire 惰性转入 half-open：恰放行一个探测，
+        // 其余阻塞（状态转换发生在 tryAcquire 内，不是计时器驱动——见实现）
+        jest.advanceTimersByTime(51);
+        expect(cb.tryAcquire()).toBe(true); // 探测请求（此刻转 half_open）
+        expect(cb.getState()).toBe('half_open');
+        expect(cb.tryAcquire()).toBe(false); // 探测在飞 → 其余阻塞
+        cb.onSuccess(); // 探测成功 → closed
+        expect(cb.getState()).toBe('closed');
+        expect(cb.tryAcquire()).toBe(true);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('half-open probe failure re-opens the circuit and restarts the timer', () => {
+      jest.useFakeTimers();
+      try {
+        const cb = new CircuitBreaker(1, 50);
+        cb.onFailure(); // → open
+        expect(cb.getState()).toBe('open');
+
+        jest.advanceTimersByTime(51); // 复位时间过后，首次 tryAcquire 惰性转 half-open
+        expect(cb.tryAcquire()).toBe(true);
+        expect(cb.getState()).toBe('half_open');
+        cb.onFailure(); // 探测失败 → 重新 open
+        expect(cb.getState()).toBe('open');
+        expect(cb.tryAcquire()).toBe(false);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+  });
+
+  describe('retry decision helpers (B-4)', () => {
+    it('classifies retryable statuses and network-level errors', () => {
+      expect(isRetryableError(Object.assign(new Error('e'), { response: { status: 429 } }))).toBe(true);
+      expect(isRetryableError(Object.assign(new Error('e'), { response: { status: 500 } }))).toBe(true);
+      expect(isRetryableError(Object.assign(new Error('e'), { response: { status: 503 } }))).toBe(true);
+      expect(isRetryableError(Object.assign(new Error('e'), { response: { status: 504 } }))).toBe(true);
+      expect(isRetryableError(Object.assign(new Error('e'), { response: { status: 400 } }))).toBe(false);
+      expect(isRetryableError(Object.assign(new Error('e'), { response: { status: 401 } }))).toBe(false);
+      expect(isRetryableError(Object.assign(new Error('e'), { code: 'ECONNABORTED' }))).toBe(true);
+      expect(isRetryableError(Object.assign(new Error('e'), { code: 'ECONNREFUSED' }))).toBe(true);
+      expect(isRetryableError(new Error('plain error'))).toBe(false);
+    });
+
+    it('parses Retry-After as delta-seconds or HTTP-date, tolerates garbage', () => {
+      expect(
+        parseRetryAfterHeader(Object.assign(new Error('e'), { response: { headers: { 'retry-after': '5' } } })),
+      ).toBe(5000);
+      expect(
+        parseRetryAfterHeader(Object.assign(new Error('e'), { response: { headers: { 'retry-after': 'Wed, 21 Oct 2015 07:28:00 GMT' } } })),
+      ).toBeGreaterThanOrEqual(0);
+      expect(
+        parseRetryAfterHeader(Object.assign(new Error('e'), { response: { headers: {} } })),
+      ).toBeNull();
+      expect(parseRetryAfterHeader(new Error('no response'))).toBeNull();
+      expect(
+        parseRetryAfterHeader(Object.assign(new Error('e'), { response: { headers: { 'retry-after': 'garbage' } } })),
+      ).toBeNull();
     });
   });
 });

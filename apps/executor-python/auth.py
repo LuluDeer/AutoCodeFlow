@@ -63,12 +63,25 @@ _TOKEN_FETCH_BACKOFF_SECONDS = 30.0
 # 已在未来 30min 窗口内，直接 return，不再发请求。锁惰性创建（绑定到首次运行它的
 # 事件循环，兼容 uvicorn 单 loop）。
 _refresh_lock: Optional[asyncio.Lock] = None
+# 5-1（audit-r4）：锁绑定的事件循环身份（id()）。生产 uvicorn 单 loop 无感；测试/
+# 多 loop 场景（每用例新建 loop）下跨 loop 复用旧锁会抛 RuntimeError——loop 变化
+# 即换新锁（锁只在 _refresh_token_if_needed 的 async with 内短暂持有，无泄漏）。
+_refresh_lock_loop_id: Optional[int] = None
 
 
 def _get_refresh_lock() -> asyncio.Lock:
-    global _refresh_lock
-    if _refresh_lock is None:
+    global _refresh_lock, _refresh_lock_loop_id
+    try:
+        loop = asyncio.get_running_loop()
+        loop_id = id(loop)
+    except RuntimeError:
+        # 无运行 loop（罕见同步调用路径）：不绑定，复用/新建均可。
+        if _refresh_lock is None:
+            _refresh_lock = asyncio.Lock()
+        return _refresh_lock
+    if _refresh_lock is None or _refresh_lock_loop_id != loop_id:
         _refresh_lock = asyncio.Lock()
+        _refresh_lock_loop_id = loop_id
     return _refresh_lock
 
 # R9 (round-9, W3 parity with executor-node admin-envelope.ts): the
@@ -168,48 +181,52 @@ def _get_admin_api_url() -> str:
 async def _fetch_token() -> Optional[str]:
     """Fetch a fresh token from admin-api."""
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            # Issue1 fix: only add Authorization header when token is non-empty
-            headers = {}
-            static_token = _get_static_token()
-            if static_token:
-                headers['Authorization'] = f'Bearer {static_token}'
+        # 网络性能审计（2026-09-18）：改用 O-24 共享连接池（延迟导入避免
+        # auth↔scheduler 模块级环）。token 刷新路径（启动、30min 轮换、
+        # 401 self-heal）此前每次新建 AsyncClient，连接池随上下文退出即销毁。
+        from scheduler import get_http_client
+        client = get_http_client()
+        # Issue1 fix: only add Authorization header when token is non-empty
+        headers = {}
+        static_token = _get_static_token()
+        if static_token:
+            headers['Authorization'] = f'Bearer {static_token}'
 
-            response = await client.post(
-                build_admin_api_url('/executors/token'),
-                json={
-                    'address': settings.executor_address_public or settings.executor_address,
-                    'appName': settings.app_name,
-                    # R9 (round-9, W2 parity with executor-node): the
-                    # process-life identity lets admin-api make this endpoint
-                    # idempotent — a same-startupId re-fetch returns the
-                    # CURRENT token instead of rotating (N4 register
-                    # semantics). Without it the admin falls back to the
-                    # legacy 60s rotation window.
-                    'startupId': executor_startup_id,
-                },
-                headers=headers,
-            )
-            # R9: the token endpoint is a Nest POST — it answers 201, not 200.
-            # The old `== 200` check silently dropped every success.
-            if 200 <= response.status_code < 300:
-                # R9 (root fix): admin-api's global ResponseInterceptor wraps
-                # the payload in {code,message,data}; reading `token` off the
-                # raw body yielded None forever, so the dynamic token never
-                # worked and every caller fell back to the static token.
-                payload = _unwrap_envelope(response.json())
-                token = payload.get('token') if isinstance(payload, dict) else None
-                if not (isinstance(token, str) and token):
-                    logger.warning('_fetch_token: admin response carried no token')
-                    return None
-                # R9 (W3): adopt the tokenHash that matches this token so the
-                # callback-token HMAC key stays in sync with admin-api.
-                adopt_executor_token_hash(response.json())
-                # SEC-NEW-3 (N41 parity): a successful token fetch may have
-                # healed the token chain after a failed startup register —
-                # give main.py's re-register hook a fire-and-forget poke.
-                notify_token_acquired()
-                return token
+        response = await client.post(
+            build_admin_api_url('/executors/token'),
+            json={
+                'address': settings.executor_address_public or settings.executor_address,
+                'appName': settings.app_name,
+                # R9 (round-9, W2 parity with executor-node): the
+                # process-life identity lets admin-api make this endpoint
+                # idempotent — a same-startupId re-fetch returns the
+                # CURRENT token instead of rotating (N4 register
+                # semantics). Without it the admin falls back to the
+                # legacy 60s rotation window.
+                'startupId': executor_startup_id,
+            },
+            headers=headers,
+        )
+        # R9: the token endpoint is a Nest POST — it answers 201, not 200.
+        # The old `== 200` check silently dropped every success.
+        if 200 <= response.status_code < 300:
+            # R9 (root fix): admin-api's global ResponseInterceptor wraps
+            # the payload in {code,message,data}; reading `token` off the
+            # raw body yielded None forever, so the dynamic token never
+            # worked and every caller fell back to the static token.
+            payload = _unwrap_envelope(response.json())
+            token = payload.get('token') if isinstance(payload, dict) else None
+            if not (isinstance(token, str) and token):
+                logger.warning('_fetch_token: admin response carried no token')
+                return None
+            # R9 (W3): adopt the tokenHash that matches this token so the
+            # callback-token HMAC key stays in sync with admin-api.
+            adopt_executor_token_hash(response.json())
+            # SEC-NEW-3 (N41 parity): a successful token fetch may have
+            # healed the token chain after a failed startup register —
+            # give main.py's re-register hook a fire-and-forget poke.
+            notify_token_acquired()
+            return token
     except Exception as e:
         # Fall back to static token if dynamic token fetch fails
         logger.warning("Dynamic token fetch failed (will use static): %s", e)
@@ -255,6 +272,18 @@ def require_token_enabled() -> bool:
     return bool(getattr(settings, 'require_token', False))
 
 
+def _allow_no_token_dev_mode() -> bool:
+    """S-3（audit-r4）：无 token 时 dev-mode allow-all 的**显式开关**。
+
+    fail-closed 现在是默认姿态；仅当 EXECUTOR_ALLOW_NO_TOKEN=true（或
+    config.allow_no_token=true，覆盖 .env 部署）才放行未认证请求。读取时机与
+    REQUIRE_TOKEN 同款（每次调用读 env，测试可 monkeypatch）。"""
+    value = os.environ.get('EXECUTOR_ALLOW_NO_TOKEN', '').strip().lower()
+    if value:
+        return value in ('1', 'true', 'yes', 'on')
+    return bool(getattr(settings, 'allow_no_token', False))
+
+
 async def verify_token(authorization: str = Header(default='')) -> None:
     """Dependency: validate Bearer token from dynamic token or fallback to static."""
     # Try to refresh token if needed (failure is non-fatal — fall back to static token)
@@ -273,17 +302,22 @@ async def verify_token(authorization: str = Header(default='')) -> None:
     
     # If no tokens configured at all, allow all requests (dev mode)
     if not valid_tokens:
-        # R4-C P2: dev-mode allow-all means the executor accepts arbitrary
-        # code execution from anyone who can reach the port. When
-        # REQUIRE_TOKEN=true is set, fail closed instead.
-        if require_token_enabled():
+        # S-3（audit-r4）：fail-closed 是默认姿态——裸部署的执行器接受任意
+        # 代码执行的风险高于本地开发便利。dev-mode allow-all 必须显式
+        # EXECUTOR_ALLOW_NO_TOKEN=true 开启；REQUIRE_TOKEN=true 是更早的
+        # 强制 fail-closed 开关，两者任一触发即 503。
+        if require_token_enabled() or not _allow_no_token_dev_mode():
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail='No executor token is configured and REQUIRE_TOKEN=true; refusing unauthenticated execution',
+                detail=(
+                    'No executor token is configured; refusing unauthenticated '
+                    'execution (set EXECUTOR_ALLOW_NO_TOKEN=true only for local dev)'
+                ),
             )
         import logging as _logging
         _logging.getLogger(__name__).warning(
-            'No executor token configured — dev mode is allowing unauthenticated requests'
+            'No executor token configured — EXECUTOR_ALLOW_NO_TOKEN=true: '
+            'dev mode is allowing unauthenticated requests'
         )
         return
     

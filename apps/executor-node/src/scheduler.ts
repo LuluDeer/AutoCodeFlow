@@ -1,6 +1,6 @@
 import * as os from 'os';
 import { randomUUID } from 'crypto';
-import { config, EXECUTOR_VERSION } from './config';
+import { config, EXECUTOR_VERSION, PROTOCOL_VERSION } from './config';
 import { logger } from './logger';
 import { post } from './admin-client';
 import { recordHeartbeat } from './heartbeat-state';
@@ -193,6 +193,9 @@ async function sendHeartbeat() {
       // EXE-VER-1: 版本随心跳上报（可选字段），中心端 EXECUTOR_MIN_VERSION
       // 门禁开启时在响应中回显 versionCompliant（见下方消费）。
       version: EXECUTOR_VERSION,
+      // PROTOCOL-VER（B-3/U-2）：协议版本随心跳回传（与 register 同源），
+      // 中台可据此在心跳路径同样做兼容性分支。
+      protocolVersion: PROTOCOL_VERSION,
     });
     // R9 (round-8 P1 W3): the heartbeat response echoes admin's current
     // stored tokenHash (same adoption as register/POST /token), so the

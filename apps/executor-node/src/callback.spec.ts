@@ -95,7 +95,10 @@ describe('callbacks', () => {
     cb.pushCallback(latest);
     cb.startCallbackThread();
     await cb.stopCallbackThread();
-    expect(post).toHaveBeenCalledWith('/api/executions/callback', [addressed(latest)], {});
+    // B-2：回调请求携带 x-executor-address 头（admin 按执行器维度限流）。
+    expect(post).toHaveBeenCalledWith('/api/executions/callback', [addressed(latest)], {
+      'x-executor-address': 'public-executor:8002',
+    });
   });
 
   it('includes executorAddress when posting callbacks', async () => {
@@ -103,7 +106,10 @@ describe('callbacks', () => {
     cb.pushCallback(request);
     cb.startCallbackThread();
     await cb.stopCallbackThread();
-    expect(post).toHaveBeenCalledWith('/api/executions/callback', [addressed(request)], {});
+    // B-2：回调请求携带 x-executor-address 头（admin 按执行器维度限流）。
+    expect(post).toHaveBeenCalledWith('/api/executions/callback', [addressed(request)], {
+      'x-executor-address': 'public-executor:8002',
+    });
   });
 
   it('returns 0 for an empty queue', () => {
@@ -125,7 +131,10 @@ describe('callbacks', () => {
     await jest.advanceTimersByTimeAsync(1_000);
     await stopping;
     expect(post).toHaveBeenCalledTimes(1);
-    expect(post).toHaveBeenCalledWith('/api/executions/callback', [addressed(request)], {});
+    // B-2：回调请求携带 x-executor-address 头（admin 按执行器维度限流）。
+    expect(post).toHaveBeenCalledWith('/api/executions/callback', [addressed(request)], {
+      'x-executor-address': 'public-executor:8002',
+    });
     expect(cb.getPendingCallbackCount()).toBe(0);
     expect(files()).toEqual([]);
     expect(jest.getTimerCount()).toBe(0);
@@ -185,7 +194,10 @@ describe('callbacks', () => {
     flight.resolve({ status: 200 });
     await stopping;
     expect(post).toHaveBeenCalledTimes(1);
-    expect(post).toHaveBeenCalledWith('/api/executions/callback', [addressed(request)], {});
+    // B-2：回调请求携带 x-executor-address 头（admin 按执行器维度限流）。
+    expect(post).toHaveBeenCalledWith('/api/executions/callback', [addressed(request)], {
+      'x-executor-address': 'public-executor:8002',
+    });
     expect(cb.getPendingCallbackCount()).toBe(0);
     expect(files()).toEqual([]);
     expect(jest.getTimerCount()).toBe(0);

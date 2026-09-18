@@ -59,10 +59,21 @@ describe("AppModule — BullMQ root config (OPS-P1)", () => {
       "redis.host": "127.0.0.1",
       "redis.port": 6379,
     });
-    expect(options.connection).toMatchObject({
+    // PERF-03：connection 现为自建 ioredis 实例（附加只读离线队列监控），
+    // 连接参数位于实例的 options 属性；同时验证离线监控不改变连接语义。
+    const conn = options.connection as {
+      options: Record<string, unknown>;
+      status?: string;
+      statusChangeListeners?: unknown[];
+    };
+    expect(conn).toBeDefined();
+    expect(conn.options).toMatchObject({
       host: "127.0.0.1",
       port: 6379,
       maxRetriesPerRequest: null,
     });
+    // 离线队列监控是只读探测：不把 enableOfflineQueue 关掉（BullMQ 必需），
+    // 不改变重连语义——实例连接参数仍保持 BullMQ 要求的关键默认。
+    expect(conn.options.enableOfflineQueue).toBe(true);
   });
 });

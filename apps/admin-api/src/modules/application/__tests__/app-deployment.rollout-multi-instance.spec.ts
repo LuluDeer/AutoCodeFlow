@@ -40,6 +40,8 @@ const makeRepo = (overrides: Partial<Record<string, jest.Mock>> = {}) => ({
   findAndCount: jest.fn(),
   create: jest.fn((d: any) => ({ ...d, id: d.id ?? "deploy-1" })),
   save: jest.fn((e: any) => Promise.resolve(e)),
+  // O-1: 批量 UPDATE 走 createQueryBuilder 链；默认链可独立断言（qbMock 见下）。
+  createQueryBuilder: jest.fn(() => qbMock(1)),
   ...overrides,
 });
 
@@ -284,10 +286,15 @@ describe("AppDeploymentService rollout — ARCH-31 多实例一致性", () => {
     const n = await service.markInterruptedRolloutsFailed();
 
     expect(n).toBe(1);
-    const saved = repo.save.mock.calls.map(([e]: any[]) => e);
-    expect(saved).toHaveLength(1);
-    expect(saved[0].id).toBe("d2");
-    expect(saved[0].rolloutState).toBe(RolloutState.FAILED);
+    // O-1: 单条批量 UPDATE 只覆盖 orphan（d2）；租约新鲜的行（d1）被跳过
+    expect(repo.save).not.toHaveBeenCalled();
+    const qb = repo.createQueryBuilder.mock.results[0].value;
+    expect(qb.execute).toHaveBeenCalledTimes(1);
+    const whereArg = qb.where.mock.calls[0][1] as { ids: string[] };
+    expect(whereArg.ids).toEqual(["d2"]);
+    const setArg = qb.set.mock.calls[0][0] as Record<string, unknown>;
+    expect(setArg.rolloutState).toBe(RolloutState.FAILED);
+    expect(String(setArg.rolloutMeta)).toContain("restarted");
   });
 
   /**

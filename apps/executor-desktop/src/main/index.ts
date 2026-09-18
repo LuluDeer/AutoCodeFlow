@@ -73,7 +73,13 @@ app.whenReady().then(async () => {
   // 注入托盘回调
   trayManager.onStart = async () => {
     await executorProcess.start(configStore.getAll());
-    heartbeat.start(configStore.get('executorPort'));
+    // F-3: 传入 adminApiUrl——HeartbeatMonitor 增加直达中台的 /api/health 探针，
+    // 与本地 /health/live 做 AND 逻辑（executor-node 子进程活着但中台链路断开时
+    // 桌面也能感知离线）。
+    heartbeat.start(
+      configStore.get('executorPort'),
+      configStore.get('adminApiUrl') || undefined,
+    );
   };
   trayManager.onStop = async () => {
     heartbeat.stop();

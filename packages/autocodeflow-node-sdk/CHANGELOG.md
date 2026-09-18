@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.4.0](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.3.0...v1.4.0) (2026-09-16)
+
+
+### Bug Fixes
+
+* **sdk-node:** base URL 双写 /api 致回调全 404 + logger 遇不可序列化 meta 抛错打崩任务 ([7c2e1c0](https://github.com/LuluDeer/AutoCodeFlow/commit/7c2e1c0))
+* **pkg/ci:** DEEP_REVIEW 批次2 PK-06/07/08/11/12/13/16/17/18/22/23/24/28 + E-13/PK-15——信封判据统一/DATABASE_URL/唯一约束/渠道枚举/查询索引/AI 脱敏/日志环形/自检进 CI/空 schema 守卫 ([342bb75](https://github.com/LuluDeer/AutoCodeFlow/commit/342bb75))
+
+## [1.4.1](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.4.0...v1.4.1) (2026-09-16)
+
+*No user-facing changes (lockstep version alignment)*
+
+## [1.4.2](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.4.1...v1.4.2) (2026-09-16)
+
+*No user-facing changes (lockstep version alignment)*
+
+## [1.4.3](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.4.2...v1.4.3) (2026-09-16)
+
+*No user-facing changes (lockstep version alignment)*
+
 ## [1.3.0](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.2.0...v1.3.0) (2026-09-13)
 
 

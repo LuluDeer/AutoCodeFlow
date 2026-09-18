@@ -7,6 +7,10 @@ import {
   deadLetterPayloadName,
   DEAD_LETTER_SIDECAR_EXCLUDE_RE,
 } from './dead-letter-sidecar';
+// NFR-15/D12：解释器池体积红线治理。挂在同一轮磁盘清扫里（一次定时任务同时管
+// "过期"与"过大"，与 python maintenance.cleanup_work_dir 同构）。方向单向：
+// interpreters.ts 不 import 本模块，无循环依赖。
+import { enforceInterpreterPoolLimits } from './interpreters';
 
 // E10: logsDir 惰性解析（与 callback.ts 的 getCallbackDir 同构）——每次访问
 // 经 config.workDir（读 process.env 的 getter）重算，/config/reload 热更
@@ -196,6 +200,32 @@ export function stopLogCleanup(): void {
 //     than ORPHAN_META_TTL_MS are reclaimed (E13)
 const CLEANUP_TTL_DAYS = Math.max(1, config.logRetentionDays || 7);
 const CLEANUP_SWEEP_INTERVAL_HOURS = 6;
+
+// --- Disk watermark governance (P2) -----------------------------------------
+// TTL 清扫基于 mtime 而非磁盘水位：磁盘在 TTL 窗口内被撑满时没有主动应对
+// （python 侧同缺口，见 maintenance.disk_usage_percent 对等实现）。这里补两道
+// 防线：告警水位触发减半 TTL 的紧急清理；临界水位由 accept 阶段拒新任务
+// （execute.ts）兜底——磁盘满时任何任务都会在写 workdir/log 阶段失败，拒绝
+// 新任务比让任务在准备阶段失败更诚实。
+// 阈值来自 config（DISK_WARN_PERCENT / DISK_CRITICAL_PERCENT，默认 90/95）：
+// getter 在模块加载时求值一次，与 process.env 启动期读取一致；测试经
+// jest.mock 替换本模块导出，行为不受影响。
+export const DISK_WARN_PERCENT = config.diskWarnPercent;
+export const DISK_CRITICAL_PERCENT = config.diskCriticalPercent;
+
+/** workDir 所在文件系统的已用百分比（0-100）。fs.statfs 取 `bavail`（非 root
+ *  可用块）——水位应反映"还能写多少"，而不是 root 的保留空间。计量失败返回 0：
+ *  调用方按"无压力"处理，不因一次 statfs 失败误拒任务。 */
+export function diskUsagePercent(): number {
+  try {
+    const st = fs.statfsSync(config.workDir);
+    if (!st.blocks || st.bsize <= 0) return 0;
+    const used = st.blocks - st.bavail;
+    return Math.round((used / st.blocks) * 100);
+  } catch {
+    return 0;
+  }
+}
 const PROTECTED_WORKDIR_NAMES = new Set([
   'logs', 'meta', 'callbacks', '.git_cache', '.node_modules', '.pkg-updates', 'apps',
   // WS5（python_task_multiversion）：`.venvs` 是**按任务复用的共享缓存**，不是
@@ -474,6 +504,21 @@ export function cleanupWorkDir(
     );
   }
 
+  // L-1（NFR-15/D12）：解释器池不参与 TTL 清扫，改由体积红线治理。
+  // 与 python maintenance.cleanup_work_dir 末尾调用 enforce_interpreter_pool_limits
+  // 同构：放在同一轮里执行，一次定时任务同时管"过期"与"过大"。
+  // 返回值不并入上面的计数对象（既有 test 逐键断言），回收结果走日志。
+  try {
+    const poolResult = enforceInterpreterPoolLimits();
+    if (poolResult.reclaimedVersions > 0 || poolResult.overLimit > 0) {
+      logger.warn(`Interpreter pool enforcement: ${JSON.stringify(poolResult)}`);
+    }
+  } catch (error: unknown) {
+    logger.error(
+      `Interpreter pool enforcement failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+
   return { workDirs, caches, packages, deadLetters, orphanMetaFiles };
 }
 
@@ -519,6 +564,26 @@ export function startWorkDirCleanup(ttlDays: number = CLEANUP_TTL_DAYS): void {
     if (total > 0) {
       logger.info(
         `Workdir cleanup removed ${total} item(s): ${r.workDirs} workdir(s), ${r.caches} cache entr(ies), ${r.packages} package(s), ${r.deadLetters} dead-letter file(s), ${r.orphanMetaFiles} orphan meta file(s)`,
+      );
+    }
+    // P2：磁盘水位（TTL 基于 mtime，磁盘在 TTL 窗口内被撑满时无主动应对）。
+    // 告警水位 → 减半 TTL 立即再跑一轮紧急清理（回收刚生成的过期垃圾）；
+    // 临界水位 → 除紧急清理外，accept 阶段会拒新任务（execute.ts 同源读取）。
+    const usage = diskUsagePercent();
+    if (usage >= DISK_CRITICAL_PERCENT) {
+      logger.error(
+        `Disk usage critical (${usage}% >= ${DISK_CRITICAL_PERCENT}%) — new task accept will be refused; running emergency cleanup with reduced TTL`,
+      );
+      const emergency = cleanupWorkDir(Math.max(1, Math.floor(ttlDays / 2)));
+      const eTotal =
+        emergency.workDirs + emergency.caches + emergency.packages +
+        emergency.deadLetters + emergency.orphanMetaFiles;
+      if (eTotal > 0) {
+        logger.warn(`Emergency cleanup removed ${eTotal} item(s)`);
+      }
+    } else if (usage >= DISK_WARN_PERCENT) {
+      logger.warn(
+        `Disk usage high (${usage}% >= ${DISK_WARN_PERCENT}%) — consider raising log retention budget or adding storage`,
       );
     }
   };

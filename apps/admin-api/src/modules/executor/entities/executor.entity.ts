@@ -39,6 +39,17 @@ export class Executor {
   @Column({ type: "enum", enum: ExecutorType, default: ExecutorType.PYTHON })
   type: ExecutorType;
   @Column({ nullable: true }) executorVersion: string;
+
+  /**
+   * PROTOCOL-VER（B-3/U-2）：执行器上报的**协议版本**（与实现版本
+   * executorVersion 解耦，见 packages/executor-protocol/protocol.json 的
+   * `versioning` 段）。由 register 载荷写入，用于中台兼容性分支：
+   * protocolVersion < PROTOCOL_SUPPORTED_MIN 时 warn + 按旧协议兜底（不拒
+   * 注册——与 EXECUTOR_MIN_VERSION 实现版本门禁是两套闸）。
+   * 语义：null = 旧执行器未上报（按 protocolVersion=1 兜底）。
+   */
+  @Column({ type: "int", nullable: true })
+  protocolVersion: number | null;
   /**
    * ARCH-32（ADR-015）：派发模式。'push'（默认）= 中心端向执行器 address 发
    * 入站 POST；'pull' = 执行器长轮询 POST /executors/pull 取任务（NAT 内执行
@@ -96,6 +107,9 @@ export class Executor {
    * 结构校验/匹配判据均在 `interpreter-match.util.ts`（纯函数单一事实源）。
    */
   @Column({ type: "jsonb", nullable: true })
+  // NOTE（合流收口）：当前 TypeORM 版本的 @Index options 类型不收 using，
+  // 用 as any 仅为通过类型检查；GIN 索引的真实 DDL 需由对应迁移落库。
+  @Index("idx_executors_interpreters", { using: "gin" } as any)
   interpreters: ExecutorInterpreter[] | null;
 
   /**

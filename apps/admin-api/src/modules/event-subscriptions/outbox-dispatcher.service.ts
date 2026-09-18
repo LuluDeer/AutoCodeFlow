@@ -51,11 +51,19 @@ import {
 /** 扫描间隔（毫秒）。 */
 export const OUTBOX_SCAN_INTERVAL_MS = 5_000;
 /**
- * 单轮只 claim 一行：processRow 串行执行，而单行派发最坏是 3×10s HTTP
- * timeout + 1s + 2s retry backoff = 33s。批量 claim 会让后续未开始的行共享
- * 同一租约并在 60s 内过期，因此宁可让积压跨多个扫描周期，也不扩大重复投递窗。
+ * 单轮 claim 行数。单行派发最坏 3×10s HTTP timeout + 1s + 2s retry backoff
+ * = 33s；**批量 + 并行处理**后，同一轮 claim 的所有行同时开始派发、共享同一
+ * 租约窗口，单行最坏 33s 仍远小于 OUTBOX_LEASE_MS（60s），不会出现"后续行
+ * 未开始就租约过期"的窗口（那正是旧版串行 + 批量会放大的重复投递窗）。
+ * 行数调大让积压不再按"每 5s 一行"的速率消耗；下游突发由 PROCESS_CONCURRENCY
+ * 限制（默认 3，见 scanOnce）。
  */
-export const OUTBOX_BATCH_SIZE = 1;
+export const OUTBOX_BATCH_SIZE = 5;
+/**
+ * 单轮并行派发上限：批量行同时发起 HTTP 到订阅方，3 路并发把积压吞吐从
+ * "每 5s 一行"提升约 3 倍，同时避免 5 行同时打向同一下游的突发。
+ */
+export const OUTBOX_PROCESS_CONCURRENCY = 3;
 /**
  * 单行在正常派发窗口内的最长时间：每个订阅的重试是串行的，但同一 outbox
  * 行的多个订阅由 deliverToSubscribers 并行执行，因此时间上界不随订阅数相乘。
@@ -224,19 +232,44 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
         `,
         [now, OUTBOX_BATCH_SIZE, leaseUntil],
       )) as EventOutbox[];
-      for (const row of rows) {
-        try {
-          await this.processRow(row);
-        } catch (err: unknown) {
-          // 单行失败隔离：记日志继续下一行（processRow 内部已兜底，这里是
-          // 最外层保险丝）。
-          this.logger.warn(
-            `Outbox row ${row.id} (${row.eventType}) processing failed (skip): ${
-              err instanceof Error ? err.message : String(err)
-            }`,
-          );
-        }
-      }
+
+      // 无行可投：提前返回，跳过空轮的订阅表查询（该查询只服务于有行时的派发）。
+      if (rows.length === 0) return 0;
+
+      // O-8（N+1）：processRow 过去对每一行都重发一次
+      // subRepo.find({ enabled: true })。一轮批量（BATCH_SIZE 行 × 并发）下会
+      // 重复查询同一张订阅表。这里在 claim 之后查一次启用订阅集，整轮复用——
+      // 一轮扫描对同一订阅快照做派发，语义反而更一致。查询失败由外层 catch
+      // 兜底（整轮中止、行保持未派发，下轮重投），绝不因快照缺失而误判"无订阅
+      // 可投"把事件提前结清。
+      const subs = await this.subRepo.find({
+        where: { enabled: true },
+        select: ["id", "eventTypes"],
+      });
+
+      // 有界并发处理：批量行并行派发（所有行同时开始 → 共享同一租约窗口，
+      // 单行最坏 33s < 60s 租约），并发上限避免突发打到下游；单行失败互相
+      // 隔离（processRow 内部已兜底，这里是逐行最外层保险丝）。
+      let cursor = 0;
+      const workers = Array.from(
+        { length: Math.min(OUTBOX_PROCESS_CONCURRENCY, rows.length) },
+        async () => {
+          while (cursor < rows.length) {
+            const idx = cursor++;
+            const row = rows[idx];
+            try {
+              await this.processRow(row, subs);
+            } catch (err: unknown) {
+              this.logger.warn(
+                `Outbox row ${row.id} (${row.eventType}) processing failed (skip): ${
+                  err instanceof Error ? err.message : String(err)
+                }`,
+              );
+            }
+          }
+        },
+      );
+      await Promise.all(workers);
       return rows.length;
     } catch (err: unknown) {
       this.logger.error(
@@ -251,11 +284,10 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
   }
 
   /** 单行补投：无订阅即完成；失败退避/死信；成功终态。 */
-  private async processRow(row: EventOutbox): Promise<void> {
-    const subs = await this.subRepo.find({
-      where: { enabled: true },
-      select: ["id", "eventTypes"],
-    });
+  private async processRow(
+    row: EventOutbox,
+    subs: EventSubscription[],
+  ): Promise<void> {
     const targets = subs.filter(
       (s) =>
         Array.isArray(s.eventTypes) && s.eventTypes.includes(row.eventType),

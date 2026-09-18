@@ -59,10 +59,10 @@ export class ExecutorProcess {
   private onStatusChange: StatusChangeCallback | null = null;
   private currentStatus: ExecutorStatus = 'stopped';
   /**
-   * R23: admin registration/heartbeat verdict inferred from executor-node
-   * log lines. The health poll is only a liveness signal — while this is
-   * 'failed' (Register failed / Heartbeat failed seen, no success log yet),
-   * a live /health/live must NOT flip the tray back to 'online'.
+   * R23: admin registration/heartbeat verdict. F-2 后主判据为
+   * /health/admin-status 结构化状态（applyAdminStatus）；inferStatusFromLog
+   * 仅作旧内嵌 bundle（无该端点）的降级回退。为 'failed'（Register/Heartbeat
+   * 失败且无成功信号）时，/health/live 存活**不得**把托盘翻回 'online'。
    */
   private adminRegistration: 'unknown' | 'registered' | 'failed' = 'unknown';
 
@@ -171,23 +171,39 @@ export class ExecutorProcess {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 
+    // 4-4（audit-r4）：桌面端任务进程不让抢占 UI——Windows 下调低子进程
+    // 优先级为 BelowNormal（无 Linux niceness 等价物；POSIX 保持默认，避免
+    // 在生产 Linux 上误伤任务吞吐）。best-effort：失败不阻断启动。
+    if (process.platform === 'win32' && this.proc.pid !== undefined) {
+      try {
+        spawn(
+          'powershell',
+          [
+            '-NoProfile',
+            '-NonInteractive',
+            '-Command',
+            `(Get-Process -Id ${this.proc.pid} -ErrorAction SilentlyContinue).PriorityClass = 'BelowNormal'`,
+          ],
+          { stdio: 'ignore', windowsHide: true },
+        );
+      } catch {
+        /* best-effort */
+      }
+    }
+
     // Start health-polling as primary online/offline signal
     this.startHealthPoll(config.executorPort);
 
     this.proc.stdout?.on('data', (chunk: Buffer) => {
       const line = chunk.toString();
       log.info(`[executor] ${line.trim()}`);
-      this.broadcastLog(line);
-      // 从日志文本推断 admin 注册/心跳状态
-      this.inferStatusFromLog(line);
+      this.handleChildOutput(line, false);
     });
 
     this.proc.stderr?.on('data', (chunk: Buffer) => {
       const line = chunk.toString();
       log.warn(`[executor:err] ${line.trim()}`);
-      this.broadcastLog(line);
-      // stderr 里也可能有心跳/注册日志
-      this.inferStatusFromLog(line);
+      this.handleChildOutput(line, true);
     });
 
     this.proc.on('exit', (code, signal) => {
@@ -278,9 +294,100 @@ export class ExecutorProcess {
   private healthPollGen = 0;
 
   /**
+   * F-2（中台↔执行器深度审查）：/health/admin-status 的结构化状态（语义解析）。
+   *
+   * 判据契约（与 executor-node routes/health.ts 的端点注释一一对应）：
+   * - `heartbeatStatus === 'ok'`（或等价地 registration==='registered'）→ 在线；
+   * - `heartbeatStatus === 'failed'` 或 `registration === 'failed'` → 离线；
+   * - `unknown` / 端点不可用 / 字段缺失（旧 bundle）→ **维持现状，不降级**
+   *   （启动早期从未成功过心跳是正常态，不得据此把托盘打回 offline）。
+   *
+   * 旧实现只靠日志文本匹配（inferStatusFromLog），executor-node 侧日志文案
+   * 一经 i18n/重构即静默失效——托盘显示「在线」但执行器实际已离线。结构化
+   * 端点优先；日志推断保留为旧内嵌 bundle 的降级回退（双通道互为保险）。
+   */
+  private applyAdminStatus(
+    data:
+      | {
+          registration?: string;
+          heartbeatStatus?: string;
+          lastHeartbeatTime?: string | null;
+          adminApiReachable?: boolean | null;
+        }
+      | undefined
+      | null,
+  ): void {
+    if (!data || typeof data !== 'object') return;
+    if (data.heartbeatStatus === 'ok') {
+      this.adminRegistration = 'registered';
+    } else if (
+      data.heartbeatStatus === 'failed' ||
+      data.registration === 'failed'
+    ) {
+      this.adminRegistration = 'failed';
+    }
+    // 'unknown' / 字段缺失 → 维持现状（不降级、不越权断言在线）。
+  }
+
+  /**
+   * 探测本地执行器的 /health/admin-status（结构化 admin 连通性视图）。
+   * 成功解析出有效形状时返回数据；端点 404（旧 bundle）或任何失败返回 null，
+   * 由调用方回退到日志推断通道。
+   */
+  private fetchAdminStatus(
+    port: number,
+  ): Promise<{
+    registration?: string;
+    heartbeatStatus?: string;
+    lastHeartbeatTime?: string | null;
+    adminApiReachable?: boolean | null;
+  } | null> {
+    return new Promise((resolve) => {
+      const httpMod = require('http') as typeof import('http');
+      const req = httpMod.get(
+        { hostname: '127.0.0.1', port, path: '/health/admin-status', timeout: 3000 },
+        (res) => {
+          res.resume();
+          if (!res.statusCode || res.statusCode >= 400) {
+            resolve(null);
+            return;
+          }
+          let raw = '';
+          res.on('data', (c: Buffer) => {
+            raw += c.toString();
+          });
+          res.on('end', () => {
+            try {
+              const parsed = JSON.parse(raw) as Record<string, unknown>;
+              resolve(
+                typeof parsed === 'object' && parsed !== null
+                  ? (parsed as {
+                      registration?: string;
+                      heartbeatStatus?: string;
+                      lastHeartbeatTime?: string | null;
+                      adminApiReachable?: boolean | null;
+                    })
+                  : null,
+              );
+            } catch {
+              resolve(null);
+            }
+          });
+        },
+      );
+      req.on('error', () => resolve(null));
+      req.on('timeout', () => {
+        req.destroy();
+        resolve(null);
+      });
+    });
+  }
+
+  /**
    * Start polling executor-node's /health/live endpoint. This is a
    * liveness signal only: R23 — a passing poll must not override a known
-   * admin-registration failure (see adminRegistration / inferStatusFromLog).
+   * admin-registration failure (see adminRegistration / applyAdminStatus).
+   * F-2: 每轮同时拉取 /health/admin-status 结构化状态并优先采用。
    */
   private startHealthPoll(port: number): void {
     this.stopHealthPoll();
@@ -292,6 +399,11 @@ export class ExecutorProcess {
       // 否则会在执行器已停止后把状态改回 online/offline。
       if (gen !== this.healthPollGen) return;
       try {
+        // F-2: 结构化 admin 状态优先（端点 404/超时 → null → 回退日志推断）
+        const adminStatus = await this.fetchAdminStatus(port);
+        if (gen !== this.healthPollGen) return;
+        this.applyAdminStatus(adminStatus);
+
         const http = require('http') as typeof import('http');
         await new Promise<void>((resolve, reject) => {
           const req = http.get(
@@ -307,7 +419,7 @@ export class ExecutorProcess {
         if (gen !== this.healthPollGen) return;
         if (this.adminRegistration === 'failed') {
           // Process alive but admin registration/heartbeat is failing: the
-          // tray must show offline until a success log line clears the flag.
+          // tray must show offline until a success signal clears the flag.
           if (this.currentStatus !== 'offline') {
             this.notifyStatus('offline');
           }
@@ -343,11 +455,10 @@ export class ExecutorProcess {
 
   /**
    * Infer admin connectivity from executor-node log lines and record it in
-   * `adminRegistration`. The health poll only proves liveness; per R23 the
-   * 'online' verdict additionally requires that a known registration/
-   * heartbeat failure has been cleared by a success log line (matching the
-   * semantics heartbeat.ts documents: online is decided by admin-facing
-   * heartbeat results, not by local liveness alone).
+   * `adminRegistration`. F-2: 结构化 /health/admin-status 端点已是主判据；
+   * 本方法降级为旧 bundle 的**回退通道**（端点 404/不可用时的兜底），日志
+   * 文案演进不再承担状态判定的唯一职责。语义保持：'online' 由 admin 面
+   * 心跳结果决定，而非本地 liveness 单独决定。
    */
   private inferStatusFromLog(line: string): void {
     // Registration/heartbeat success confirms admin connectivity beyond just liveness
@@ -373,5 +484,42 @@ export class ExecutorProcess {
         win.webContents.send('executor:log-line', line);
       }
     });
+  }
+
+  /**
+   * 6-1（audit-r4）：结构化解析子进程输出。
+   *
+   * executor-node 在 LOG_FORMAT=json 下输出单行 JSON 日志（logger.ts 的
+   * json 格式：timestamp/level/message + 元字段 + traceId）。旧实现只把
+   * 输出原样 pipe 进日志文件，错误分类完全依赖人工读文本。这里对 JSON 行
+   * 做无副作用解析：
+   *   - 解析成功 → 额外广播 `executor:log-structured` 结构化事件（渲染层可
+   *     按级别/字段渲染，设置页日志面无需再 regex 猜级别）；
+   *   - 解析失败（文本行/截断）→ 走既有文本通道，行为与旧版逐字节一致。
+   * 文本推断（inferStatusFromLog）不受影响——结构化通道只是加量，不改判据。
+   */
+  private handleChildOutput(line: string, isErr: boolean): void {
+    const trimmed = line.trim();
+    if (trimmed) {
+      this.broadcastLog(line);
+      this.inferStatusFromLog(line);
+      if (trimmed.startsWith('{')) {
+        try {
+          const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+          if (parsed && typeof parsed === 'object') {
+            BrowserWindow.getAllWindows().forEach((win) => {
+              if (!win.isDestroyed()) {
+                win.webContents.send('executor:log-structured', {
+                  ...parsed,
+                  channel: isErr ? 'stderr' : 'stdout',
+                });
+              }
+            });
+          }
+        } catch {
+          // 非 JSON（文本行/部分块）：走既有文本通道，行为不变。
+        }
+      }
+    }
   }
 }

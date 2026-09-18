@@ -10,7 +10,7 @@ AutoCodeFlow 的部署面 = 两份 compose（根目录完整部署 / `infra/` �
 ```
                         host
  ────────────────────────────────────────────────────────────────────
-   :80  admin-web(nginx) ── /api/、socket.io、SSE ──┐   [public 网络]
+   :80  admin-web(nginx) ── /api/、SSE ───────────────┐   [public 网络]
     │  SPA 静态文件                                  │
     ▼                                               ▼
    :3105 admin-api ─────────────────────────────────────┐

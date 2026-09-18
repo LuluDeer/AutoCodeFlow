@@ -1,14 +1,16 @@
 import { config } from './config';
 import { logger } from './logger';
-import { postLong } from './admin-client';
+import { postLong, request } from './admin-client';
 import { unwrapAdminResponseData } from './admin-envelope';
 import { getRunningCount, getRunningCountArray } from './scheduler';
+import { getExecutorAuthToken } from './routes/logs';
 import {
   acceptExecution,
   truncateCallbackErrorMessage,
   ExecuteRequest,
 } from './routes/execute';
 import { pushCallback } from './callback';
+import axios from 'axios';
 
 /**
  * ARCH-32（ADR-015）：pull 模式派发循环——NAT 内执行器的零入站取件通道。
@@ -52,6 +54,77 @@ let pullInFlight = false;
  */
 let pullAbortController: AbortController | null = null;
 
+/**
+ * 1-3（audit-r4）：预留槽位停滞看门狗硬期限（毫秒）。postLong 自带 40s 请求
+ * 超时，但网络栈病态（半开连接、TCP 停滞）时 axios 内部超时不保证触发——
+ * 那本轮 pullOnce 永不 settle，预留的槽位随进程存活期泄漏一个（pullInFlight
+ * 单飞封住了并发泄漏面，但这一个仍会长期占位、拖低可用容量）。硬期限取
+ * 45s > 请求窗口 40s：到点 abort 在飞请求 → postLong 必然 reject → 走
+ * catch/finally 释放预留（与停机 abort 同一语义路径）。定时器在 finally
+ * 摘除，不残留句柄。
+ */
+const PULL_STALL_TIMEOUT_MS = 45_000;
+
+/**
+ * E-1（中台↔执行器深度审查）：pull 模式配置热更新。
+ *
+ * 背景：执行器配置热更新只有 admin 主动 POST /api/config/reload 一条通道；
+ * pull 执行器（NAT 内、零入站）无法被推送，配置变更只能等重启生效。方案：
+ * admin 的 pull 响应附带 `configVersion` 指纹；本执行器记录**已应用版本**，
+ * 检测到指纹变化即主动 GET /api/executors/config 拉取全量配置，并复用本地
+ * /api/config/reload 的**同一套校验与应用路径**（自回环 HTTP——apply 逻辑
+ * 单一事实源，零漂移；失败不影响本轮任务取件，下一轮 pull 再试）。
+ *
+ * 节流：指纹未变不拉取；拉取/应用失败保留旧版本号，下一轮重试（不背压任务
+ * 通道）。启动早期 admin 尚未就绪时的拉取失败只记 warn，静默恢复。
+ */
+let appliedConfigVersion: string | null = null;
+
+async function maybePullConfig(adminConfigVersion: unknown): Promise<void> {
+  if (typeof adminConfigVersion !== 'string' || adminConfigVersion.length === 0) {
+    return; // 旧版 admin 无指纹字段 → 不拉取（行为不变）
+  }
+  if (appliedConfigVersion === adminConfigVersion) return;
+  try {
+    const address = config.executorAddressPublic || config.executorAddress;
+    // GET /api/executors/config 走 request()（自动鉴权 + failover + 401 自愈），
+    // 与心跳同一认证通道。
+    const resp = await request(
+      'get',
+      `/api/executors/config?address=${encodeURIComponent(address)}`,
+    );
+    const body = unwrapAdminResponseData(resp?.data);
+    if (!body || typeof body !== 'object') {
+      logger.warn(
+        'Pull-mode config fetch returned a non-object payload; keeping applied config version',
+      );
+      return;
+    }
+    // 复用本地 /api/config/reload 的校验 + 应用路径（schema 闸门 + workDir
+    // 校验 + ignored_fields 上报），与 admin 主动推送行为逐字节一致。
+    const localUrl = `http://127.0.0.1:${config.port}/api/config/reload`;
+    const local = await axios.post(localUrl, body, {
+      headers: { Authorization: `Bearer ${getExecutorAuthToken()}` },
+      timeout: 10_000,
+    });
+    if (local.status >= 200 && local.status < 300) {
+      appliedConfigVersion = adminConfigVersion;
+      logger.info(
+        `Pull-mode config hot-reloaded (version ${adminConfigVersion}): ` +
+          `${(local.data as { updated_fields?: string[] })?.updated_fields?.join(', ') || 'no changes'}`,
+      );
+    } else {
+      logger.warn(
+        `Pull-mode config reload rejected by local /config/reload (HTTP ${local.status})`,
+      );
+    }
+  } catch (err: unknown) {
+    logger.warn(
+      `Pull-mode config reload failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
 export async function pullOnce(): Promise<void> {
   if (pullInFlight) return;
   pullInFlight = true;
@@ -61,6 +134,8 @@ export async function pullOnce(): Promise<void> {
   let slotReserved = false;
   // E-07: 本轮的中止句柄（finally 负责摘除，避免停机后残留悬空引用）。
   let controller: AbortController | null = null;
+  // 1-3: 停滞看门狗句柄（finally 摘除）。
+  let stallTimer: NodeJS.Timeout | null = null;
   try {
     // 原子预留：add 返回旧值，旧值已 ≥ 上限说明无空闲槽位——回退并跳过
     // 本轮（与 acceptExecution 的 add-then-check 同款原子模式）。
@@ -73,6 +148,10 @@ export async function pullOnce(): Promise<void> {
 
     controller = new AbortController();
     pullAbortController = controller;
+    // 1-3: 预留成立后才挂看门狗——只保护持有预留的本轮。
+    stallTimer = setTimeout(() => {
+      controller?.abort();
+    }, PULL_STALL_TIMEOUT_MS);
 
     const resp = await postLong(
       '/api/executors/pull',
@@ -84,6 +163,8 @@ export async function pullOnce(): Promise<void> {
       controller.signal,
     );
     const payload = unwrapAdminResponseData(resp?.data);
+    // E-1: 配置指纹比对 + 主动拉取（失败不阻塞取件，下一轮重试）。
+    await maybePullConfig(payload?.configVersion);
     const task = payload?.task as (ExecuteRequest & { traceparent?: string }) | null;
     if (!task || !task.executionId) return; // 无任务：finally 释放预留
 
@@ -145,6 +226,10 @@ export async function pullOnce(): Promise<void> {
     }
   } finally {
     pullInFlight = false;
+    if (stallTimer) {
+      clearTimeout(stallTimer);
+      stallTimer = null;
+    }
     if (pullAbortController === controller) {
       pullAbortController = null;
     }

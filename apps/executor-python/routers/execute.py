@@ -23,12 +23,19 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from typing import Any, Callable, Optional
 import scheduler as sched
+from maintenance import DISK_CRITICAL_PERCENT, disk_usage_percent
 from auth import verify_token, get_current_token, request_with_self_heal
 from admin_api import build_admin_api_url, get_admin_api_base_url
 from config import settings
 from execution_callback_token import CALLBACK_TOKEN_GRACE_SECONDS, create_execution_callback_token
 from manifest import load_manifest, merge_task_with_manifest
 from artifacts import gather_artifacts_for_callback, artifacts_dir_for
+from sandbox import (
+    SandboxUnavailable,
+    build_rlimit_pre_exec,
+    build_sandbox_cmd,
+    with_task_tmpdir,
+)
 from pydantic import ValidationError
 # A3-C：协议闸门（由 packages/executor-protocol/protocol.json 生成，勿手改产物）。
 # 与下面的 ExecuteRequest（autocodeflow_sdk / 本地 fallback）分工不同：那个是
@@ -225,6 +232,41 @@ def _quarantine_broken_cache(cache_dir: Path) -> None:
         shutil.rmtree(cache_dir, ignore_errors=True)
 
 
+def _is_shallow_bare_repo(cache_dir: Path) -> bool:
+    """A `git clone --bare --depth 1` leaves a `shallow` sentinel in the bare
+    git-dir (O-13 shallow-clone compatibility probe)."""
+    try:
+        return (cache_dir / 'shallow').is_file()
+    except OSError:
+        return False
+
+
+def _unshallow_bare_repo(cache_dir: Path) -> None:
+    """Fetch full history into a shallow bare cache (O-13 best-effort).
+
+    A `--depth 1` clone is fast but only contains the tip of the default
+    branch; the checkout step exports an *arbitrary* ref (branch/tag/commit)
+    that may sit deeper than the shallow boundary. Plain `fetch --all` keeps
+    the cache shallow, so the first refresh (and a checkout miss) deepens it
+    once back to the original full-clone behavior — arbitrary refs then resolve
+    exactly as before, with no regression for existing tasks. Best-effort: an
+    already-complete cache (single-commit repo) or an uncooperative remote logs
+    a warning and falls through to the normal fetch/checkout."""
+    if not _is_shallow_bare_repo(cache_dir):
+        return
+    try:
+        subprocess.run(['git', '-C', str(cache_dir), 'fetch', '--unshallow'],
+                       check=True, timeout=_git_clone_timeout())
+        logger.info('Unshallowed git cache %s (restored full history)', cache_dir.name)
+    except subprocess.CalledProcessError as exc:
+        # Already complete / concurrent unshallow / remote does not support it —
+        # fall through; the checkout-miss retry handles the remaining case.
+        logger.warning('git fetch --unshallow on %s failed (best-effort): %s',
+                       cache_dir.name, exc)
+    except Exception as exc:  # pragma: no cover - network/timeout guard
+        logger.warning('git unshallow on %s raised (best-effort): %s', cache_dir.name, exc)
+
+
 # ---------------------------------------------------------------------------
 # E6 (node routes/execute.ts gitCacheQueues parity): per-repo locks around the
 # shared .git_cache/<repo> directory. Concurrent executions of the same repo
@@ -272,23 +314,43 @@ def _git_checkout_to_locked(repo_url: str, cache_dir: Path, ref: str, dest: Path
     if not cache_dir.exists():
         cache_dir.mkdir(parents=True, exist_ok=True)
         try:
-            subprocess.run(['git', 'clone', '--bare', repo_url, str(cache_dir)],
-                           check=True, timeout=120)
+            # O-13: shallow first population (--depth 1) — much faster for the
+            # common "check out the tip" case. The cache is deepened on the
+            # first refresh (and on a checkout miss) so arbitrary refs keep
+            # resolving like the old full clone.
+            subprocess.run(['git', 'clone', '--bare', '--depth', '1', repo_url, str(cache_dir)],
+                           check=True, timeout=_git_clone_timeout())
         except Exception:
             # A failed clone leaves a partial bare repo behind; the existence
             # check above would then skip re-cloning forever.
             shutil.rmtree(cache_dir, ignore_errors=True)
             raise
     else:
+        # O-13: a depth-1 cache stays shallow under plain `fetch --all`; deepen
+        # it once so arbitrary-ref checkouts don't regress.
+        _unshallow_bare_repo(cache_dir)
         subprocess.run(['git', '-C', str(cache_dir), 'fetch', '--all'],
                        check=True, timeout=60)
     dest.mkdir(parents=True, exist_ok=True)
-    # --work-tree + checkout exports files at the given ref to dest
-    subprocess.run(
-        ['git', f'--git-dir={cache_dir}', f'--work-tree={dest}',
-         'checkout', ref, '--', '.'],
-        check=True, timeout=30,
-    )
+    # --work-tree + checkout exports files at the given ref to dest.
+    try:
+        subprocess.run(
+            ['git', f'--git-dir={cache_dir}', f'--work-tree={dest}',
+             'checkout', ref, '--', '.'],
+            check=True, timeout=30,
+        )
+    except subprocess.CalledProcessError:
+        # O-13: the shallow clone may not contain the requested ref (a tag or
+        # non-default branch). Deepen once and retry so behavior matches the old
+        # full clone for arbitrary refs.
+        if not _is_shallow_bare_repo(cache_dir):
+            raise
+        _unshallow_bare_repo(cache_dir)
+        subprocess.run(
+            ['git', f'--git-dir={cache_dir}', f'--work-tree={dest}',
+             'checkout', ref, '--', '.'],
+            check=True, timeout=60,
+        )
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -353,6 +415,10 @@ def _refine_failure_reason(message: str) -> Optional[str]:
         lowered,
     ):
         return "runtime_missing"
+    # SEC-NEW (F-1): 沙箱配置启用但不可用（bwrap 缺失 / 用户命名空间被禁）。
+    # 独立归类便于 admin 端区分「任务代码问题」与「执行器沙箱配置问题」。
+    if re.search(r"task_sandbox|sandbox|bwrap", lowered):
+        return "sandbox_unavailable"
     return None
 
 
@@ -449,14 +515,17 @@ def _build_install_env(cache_dir: Path) -> dict[str, str]:
 
 
 # Timeouts for the two uv phases (module-level so tests can shrink them)
-UV_VENV_TIMEOUT_SECONDS = 60
+# UV_VENV_TIMEOUT_SECONDS 与 executor-node 的 UV_VENV_TIMEOUT_MS（120s，
+# execute.ts:711）对齐——复杂环境（大 requirements / 慢磁盘 / 首次建 venv
+# 触发 uv 引导自身）下 60s 更易超时，两侧必须对等。
+UV_VENV_TIMEOUT_SECONDS = 120
 UV_PIP_TIMEOUT_SECONDS = 300
 
 
 def _interpreter_download_timeout() -> float:
     """解释器**下载**的独立时间预算（D11/NFR-13）。
 
-    为什么不能复用 `UV_VENV_TIMEOUT_SECONDS`：那个 60s 是"在**本地**建一个
+    为什么不能复用 `UV_VENV_TIMEOUT_SECONDS`：那个 120s 是"在**本地**建一个
     venv"的预算，而解释器下载要走网络（默认从 GitHub 拉 ~30MB 的
     python-build-standalone，内网镜像还可能更慢）。用 60s 卡下载，等于让
     "首次声明某个版本"的任务在网络稍慢时**必然**超时成
@@ -476,6 +545,34 @@ def _interpreter_download_timeout() -> float:
     if not value > 0:
         return 300.0
     return value
+
+
+def _git_clone_timeout() -> float:
+    """执行器侧 `git clone --bare` 超时预算（P3 配置化）。
+
+    默认 120s = 原硬编码值（`_git_checkout_to_locked` 里的 `timeout=120`），
+    仅部署方需要调大仓库首克隆预算时经 `GIT_CLONE_TIMEOUT_SECONDS` 覆盖。
+    缺省/非法一律回落 120，绝不回落 0（0 会让每次克隆立即超时）。"""
+    raw = getattr(settings, 'git_clone_timeout_seconds', 120)
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return 120.0
+    return value if value > 0 else 120.0
+
+
+def _callback_logs_max_chars() -> int:
+    """回调载荷日志截断长度（P3 配置化）。
+
+    默认 10000 = 原硬编码值（`_truncate_logs` 里的 `max_length = 10000`），
+    仅在需要放大回调日志窗口时经 `CALLBACK_LOGS_MAX_CHARS` 覆盖。
+    缺省/非法一律回落 10000，绝不回落 0（0 会把每条日志截成空串）。"""
+    raw = getattr(settings, 'callback_logs_max_chars', 10000)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return 10000
+    return value if value > 0 else 10000
 
 # R4-C P1: bounds for task output handling.
 # - In-memory accumulation of stdout/stderr is capped: a `while true; echo` task
@@ -545,13 +642,18 @@ def _validate_shell_entrypoint(entrypoint: str) -> str:
     return entrypoint
 
 
-def _spawn_kwargs_for_platform() -> dict:
+def _spawn_kwargs_for_platform(rlimit_fn: Optional[Callable[[], None]] = None) -> dict:
     """W-02 (windows-findings): POSIX detaches each task into its own process
     group via preexec_fn=os.setsid so the timeout kill can take the whole
     tree down. Windows has no setsid/process groups and asyncio rejects
     preexec_fn there outright — accessing os.setsid on win32 raised
     AttributeError and every real task failed. The equivalent isolation is
     CREATE_NEW_PROCESS_GROUP; tree kill on timeout uses taskkill /T /F.
+
+    SEC-NEW (B-1): ``rlimit_fn`` (from sandbox.build_rlimit_pre_exec) is run
+    in the same preexec stage on POSIX — after fork, before exec — so task
+    resource caps (RLIMIT_AS/CPU/FSIZE/NOFILE/NPROC) apply to the task process
+    tree from its very first instruction.
     """
     if sys.platform == 'win32':
         return {
@@ -559,7 +661,15 @@ def _spawn_kwargs_for_platform() -> dict:
                 subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
             ),
         }
-    return {'preexec_fn': os.setsid}
+    if rlimit_fn is None:
+        return {'preexec_fn': os.setsid}
+    preexec_fn = os.setsid
+
+    def _combined() -> None:
+        preexec_fn()
+        rlimit_fn()
+
+    return {'preexec_fn': _combined}
 
 
 def _build_shell_cmd(work_dir: Path, entrypoint: str) -> list[str]:
@@ -720,7 +830,7 @@ def _truncate_error_message(message: Any, limit: int = MAX_ERROR_MESSAGE_CHARS) 
 
 def _truncate_logs(text: str) -> str:
     """Truncate logs to the callback payload size, keeping head and tail."""
-    max_length = 10000
+    max_length = _callback_logs_max_chars()
     if len(text) <= max_length:
         return text
     half = max_length // 2
@@ -1283,7 +1393,19 @@ def _derive_task_key(req: ExecuteRequest) -> str:
     """
     task = req.task if isinstance(req.task, dict) else {}
     key = str(task.get('id') or req.executionId)
+    # VENY-KEY-ALIAS（本轮审计）：snake_case 别名必须与 run_task 的
+    # `runtimeVersion ?? runtime_version` 同读（executor-node 的
+    # `venvDirName(taskId, declaredVersion)` 同样吃两个别名）。
+    #
+    # 失败模式（改动前）：只读驼峰。同一条 `{"runtime_version":"3.11"}` 在
+    # node 上把 venv 写到 `.venvs/<id>-3.11`、在这里写到 `.venvs/<id>`——
+    # 而 run_task 仍会按 3.11 解析解释器并建 venv。于是「声明了 3.11 的 venv」
+    # 落在**无版本后缀**的目录里，后续一个**不声明版本**的同任务会命中并复用
+    # 它（`_venv_reuse_problem` 只在声明版本时才校验版本），静默跑在 3.11 上
+    # ——AC-15b/D14 明令禁止的那类静默降级，且两侧目录名对同一载荷不同。
     version = task.get('runtimeVersion')
+    if version is None:
+        version = task.get('runtime_version')
     if isinstance(version, str) and RUNTIME_VERSION_PATTERN.fullmatch(version.strip()):
         return f'{key}-{version.strip()}'
     return key
@@ -1350,6 +1472,71 @@ async def kill_running_task_processes() -> int:
         except Exception:  # pragma: no cover - already-dead children
             pass
     return killed
+
+
+async def fail_prepare_stage_executions_on_shutdown() -> int:
+    """1-2（audit-r4 parity, executor-node task-worker.ts TaskWorker.stop）：
+    停机时对「已领取但从未 spawn 进程」的 prepare/排队阶段执行补发终态 failed
+    回调，而不是丢给 admin 的 stale sweep 收敛（stale 修复会丢失真实的
+    killed/分类语义，且让 admin 侧多挂一段 RUNNING 行）。
+
+    与 Node 侧逐字段对齐：status=failed、errorMessage='Executor is shutting
+    down before this execution started'、**不设** failureReason（admin 按
+    errorMessage 推断，与 node 行为一致）。语义要点：
+
+      * 只处理 proc is None 且未 push 过 killed 回调的条目——已 spawn 的由
+        kill_running_task_processes + worker 正常收尾负责；
+      * 标记 killed_callback_pushed=True：_run_and_callback 的 E4 守卫
+        （2413 行附近）看到后直接 return，绝不双发回调；
+      * 标记 cancelled=True：run_task 的 cancelled 检查点让后台流程静默退出，
+        不会在停机期间继续 spawn；
+      * 不触碰 running 计数：槽位归还仍归 _run_and_callback 的 finally
+        （decrement_running 幂等语义不变）。
+
+    返回成功推送的回调数。best-effort：网络失败只记日志（停机窗口有界）。"""
+    with _live_lock:
+        entries = [
+            e for e in list(_live_executions.values())
+            if e.proc is None and not e.killed_callback_pushed
+        ]
+        for e in entries:
+            e.killed_callback_pushed = True
+            e.cancelled = True
+    if not entries:
+        return 0
+    try:
+        token = await get_current_token() or _get_callback_token()
+    except Exception as exc:  # pragma: no cover - token 链异常不阻断停机
+        logger.warning('Shutdown prepare-stage callback: token resolution failed: %s', exc)
+        token = None
+    pushed = 0
+    for entry in entries:
+        payload = {
+            'executionId': entry.execution_id,
+            'status': 'failed',
+            'errorMessage': 'Executor is shutting down before this execution started',
+            'executorAddress': _executor_callback_address(),
+        }
+        if entry.traceparent:
+            payload['traceparent'] = entry.traceparent
+        try:
+            ok = await _send_callback_with_retry(
+                build_admin_api_url('/executions/callback'),
+                payload,
+                token,
+            )
+            if ok:
+                pushed += 1
+        except asyncio.CancelledError:
+            # 停机窗口被取消：至少落盘，交给下个进程重放（与 QA8 同款守卫）。
+            _persist_giving_up(payload, build_admin_api_url('/executions/callback'))
+            raise
+        except Exception as exc:  # noqa: BLE001 - best-effort
+            logger.warning(
+                'Shutdown prepare-stage callback failed for %s: %s',
+                entry.execution_id, exc,
+            )
+    return pushed
 
 
 async def await_background_tasks_after_kill(timeout_seconds: float | None = None) -> int:
@@ -1422,6 +1609,14 @@ def accept_execution(
             raise ExecutionRejected(429, 'Executor is at capacity')
     elif sched.get_running_count() >= settings.max_concurrent_tasks:
         raise ExecutionRejected(429, 'Executor is at capacity')
+
+    # P2：磁盘临界水位（对齐 node acceptExecution 的 diskUsagePercent 检查）。
+    # 磁盘满时任何任务都会在写 workdir/log 阶段失败，提前拒绝新任务比让任务
+    # 在准备阶段失败更诚实。计量失败返回 0（无压力），不误拒任务。
+    if disk_usage_percent() >= DISK_CRITICAL_PERCENT:
+        raise ExecutionRejected(
+            503, 'Executor disk is critically full; new tasks are refused'
+        )
 
     # A3-C：协议闸门——形状约束由 `packages/executor-protocol/protocol.json`
     # 生成（pydantic 侧），与 executor-node 同源。
@@ -1534,75 +1729,141 @@ def _callback_retry_sleep_seconds(attempt: int, rng: Callable[[], float] = rando
 
 
 async def _send_callback_with_retry(url: str, payload: dict, token: Optional[str]) -> bool:
-    # E-23（DEEP_REVIEW 0ef3bbe）：docstring 必须是函数体第一条语句才是真正的
-    # __doc__——旧实现把它写在 traceparent 两条语句之后，沦为无意义字符串表达式，
-    # __doc__ 为 None、IDE/help 不显示。现将 docstring 上移到 def 下一行，traceparent
-    # 逻辑后移。
-    """POST the execution callback with bounded retries.
+    """Enqueue the terminal callback and flush the batch queue inline (O-20).
 
-    R4-C P2: the original fired exactly one request and only logged transport
-    failures — a transient admin-api blip silently lost the execution result
-    (only the admin-side zombie sweeper could repair state). 4xx responses
-    (except 401/408/429) are terminal: the payload itself is being rejected,
-    so retrying would just hammer admin-api forever.
-
-    E3 (parity with executor-node admin-client.request R10 gap #3): the send
-    goes through ``request_with_self_heal`` — a 401 (admin rotated our
-    per-executor token out from under us) triggers ONE immediate re-fetch +
-    retry instead of being dropped. 401 is therefore no longer in the
-    non-retryable branch: if the heal did not turn it into a success (admin
-    unreachable / token unchanged), the persistent 401 falls through to the
-    bounded retry loop like any other transient failure. The 3-attempt +
-    exponential-backoff shape is unchanged.
+    Previously this POSTed ``json=[payload]`` per execution (one round-trip and
+    one connection-pool open each). It now enqueues the payload and drains the
+    queue in admin-acceptable batches (≤100/POST); the bounded retry + backoff
+    and on-exhaustion persistence live in ``_send_callback_batch_with_retry`` /
+    ``_flush_live_callbacks``. The synchronous "deliver-or-persist within this
+    call" guarantee is preserved, so a transient admin outage still parks the
+    payload on disk for the replay loop. The ``token`` arg is kept for signature
+    compatibility; the flush re-signs with the token valid at send time (node
+    admin-client parity).
     """
-    traceparent_headers: dict = {}
-    if payload.get('traceparent'):
-        # OBS-01: 回传 traceparent 头（admin execution-callback.controller
-        # 解析关联）；头与载荷字段同值，载荷字段 admin DTO whitelist 剥离。
-        traceparent_headers = {'traceparent': payload['traceparent']}
+    enqueue_callback(payload)
+    delivered = await _flush_live_callbacks()
+    return bool(delivered)
+
+
+# ---------------------------------------------------------------------------
+# O-20 (parity with executor-node callback.ts pushCallback / processCallbacks):
+# an in-memory terminal-callback batch queue.
+#
+# Previously every terminal result POSTed ``json=[payload]`` on its own — one
+# HTTP round-trip (and one connection-pool open) per execution, so a burst of N
+# finishing executions issued N callbacks. Node accumulates callbacks and the
+# background thread flushes them in batches of up to 100 (admin hard-rejects
+# batches larger than that). We mirror that shape:
+#
+#   - producers call ``enqueue_callback(payload)``; a later terminal result for
+#     the same executionId supersedes an earlier queued one (the final state
+#     wins — node pushCallback does the same map-lookup by executionId);
+#   - ``_flush_live_callbacks()`` drains the queue in 100-item batches and posts
+#     ``json=<items>`` with the SAME bounded retry + backoff as the single-item
+#     path; a batch that exhausts its budget is persisted verbatim (the on-disk
+#     replay already sends a ``payloads`` list as one batch), so terminal state
+#     survives;
+#   - the flush runs inline at the terminal-delivery point (the synchronous
+#     "deliver-or-persist" guarantee the tests and the never-lose-a-terminal-
+#     result semantics rely on), in the 1s retry loop, and once more at shutdown.
+# ---------------------------------------------------------------------------
+CALLBACK_LIVE_BATCH_SIZE = 100  # admin hard-rejects callback batches > 100
+_live_callback_queue: list[dict] = []
+_live_callback_lock = threading.Lock()
+
+
+def enqueue_callback(payload: dict) -> None:
+    """Enqueue a terminal callback for batched delivery (node pushCallback
+    parity). De-dupes by executionId: a later terminal result for the same
+    execution supersedes an earlier queued one."""
+    execution_id = payload.get('executionId')
+    with _live_callback_lock:
+        if execution_id:
+            for i, existing in enumerate(_live_callback_queue):
+                if existing.get('executionId') == execution_id:
+                    _live_callback_queue[i] = payload
+                    return
+        _live_callback_queue.append(payload)
+
+
+def _drain_live_callback_queue(
+        max_items: int = CALLBACK_LIVE_BATCH_SIZE) -> list[dict]:
+    """Atomically pop up to ``max_items`` queued terminal callbacks."""
+    with _live_callback_lock:
+        if not _live_callback_queue:
+            return []
+        batch = _live_callback_queue[:max_items]
+        del _live_callback_queue[:max_items]
+        return batch
+
+
+async def _send_callback_batch_with_retry(url: str, items: list[dict]) -> bool:
+    """POST one batch (≤100) of terminal callbacks with the same bounded retry +
+    backoff as the single-item path. Returns True only on 2xx. Terminal 4xx
+    (not 401/408/429) is not retried — the whole batch is rejected by admin."""
+    token = await get_current_token() or _get_callback_token()
+    # node traceparentHeaderFor(requests): pick the first queued traceparent.
+    traceparent = next(
+        (it['traceparent'] for it in items if it.get('traceparent')), None)
+    # B-2 parity: x-executor-address drives admin's per-executor rate limiting
+    # (not per-egress-IP), so multi-executor NAT sharing never gets throttled.
+    headers: dict = {}
+    if traceparent:
+        headers['traceparent'] = traceparent
+    executor_address = _executor_callback_address()
+    if executor_address:
+        headers['x-executor-address'] = executor_address
+    client = sched.get_http_client()  # O-24: shared per-loop pool
     last_error: Exception | None = None
     for attempt in range(1, CALLBACK_RETRY_ATTEMPTS + 1):
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                response = await request_with_self_heal(
-                    client,
-                    'post',
-                    url,
-                    token=token,
-                    headers=traceparent_headers or None,
-                    json=[payload],
-                )
-            # CALLBACK-3XX（本轮审计）：判据必须是 2xx，而不是「< 400」。
-            # httpx 默认 follow_redirects=False，所以 3xx 会原样返回；旧写法把
-            # 301/302/303/307/308 一律当成「已投递」→ 不重试、也不落盘，
-            # 而载荷其实从未到达 admin（重定向目标是 proxy/gateway 的中转页）。
-            # 同一文件族里 auth.py:195 与 main.py:233 用的都是 200<=sc<300。
+            response = await request_with_self_heal(
+                client, 'post', url, token=token,
+                headers=headers or None, json=items)
             if 200 <= response.status_code < 300:
                 return True
             if (400 <= response.status_code < 500
                     and response.status_code not in (401, 408, 429)):
-                logger.error('Callback rejected with HTTP %s (non-retryable); giving up', response.status_code)
-                # E2: terminal rejection still loses the result unless it is
-                # persisted — replay will re-confirm or dead-letter it.
-                _persist_giving_up(payload, url)
+                logger.error('Callback batch rejected with HTTP %s (non-retryable); '
+                             'giving up %d callback(s)', response.status_code, len(items))
                 return False
-            last_error = RuntimeError(f'callback failed with HTTP {response.status_code}')
-            logger.warning('Callback attempt %d/%d failed: HTTP %s',
+            last_error = RuntimeError(
+                f'callback batch failed with HTTP {response.status_code}')
+            logger.warning('Callback batch attempt %d/%d failed: HTTP %s',
                            attempt, CALLBACK_RETRY_ATTEMPTS, response.status_code)
         except Exception as exc:
             last_error = exc
-            logger.warning('Callback attempt %d/%d failed: %s', attempt, CALLBACK_RETRY_ATTEMPTS, exc)
+            logger.warning('Callback batch attempt %d/%d failed: %s',
+                           attempt, CALLBACK_RETRY_ATTEMPTS, exc)
         if attempt < CALLBACK_RETRY_ATTEMPTS:
-            # E-44: 指数退避乘 (0.5 + random) 抖动系数——多 executor 在同一 admin
-            # 恢复窗口后不会同步重试（惊群）。范围与 node computeRetryBackoffMs 对齐。
             await asyncio.sleep(_callback_retry_sleep_seconds(attempt))
-    logger.error('Failed to send execution callback after %d attempts: %s',
-                 CALLBACK_RETRY_ATTEMPTS, last_error)
-    # E2 (node persistFailedCallbacks parity): retries exhausted — park the
-    # payload on disk for the background re-send loop instead of losing the
-    # execution result to a transient admin-api outage.
-    _persist_giving_up(payload, url)
+    logger.error('Failed to send callback batch (%d item(s)) after %d attempts: %s',
+                 len(items), CALLBACK_RETRY_ATTEMPTS, last_error)
     return False
+
+
+async def _flush_live_callbacks() -> int:
+    """Drain the in-memory queue into admin-acceptable batches (≤100/POST).
+    Delivered batches are dropped; exhausted batches are persisted verbatim so
+    the on-disk replay loop re-sends them. Returns the number of items
+    delivered."""
+    delivered = 0
+    while True:
+        batch = _drain_live_callback_queue()
+        if not batch:
+            break
+        url = build_admin_api_url('/executions/callback')
+        if await _send_callback_batch_with_retry(url, batch):
+            delivered += len(batch)
+        else:
+            # E2 parity: park the whole batch on disk (replay sends it as one
+            # `payloads` batch). Persistence must never crash the caller.
+            try:
+                _persist_failed_callback(batch, url)
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.error('Failed to persist callback batch: %s', exc)
+    return delivered
 
 
 # ---------------------------------------------------------------------------
@@ -1772,13 +2033,16 @@ def _persist_giving_up(payload: dict, url: str) -> None:
         logger.error('Callback persistence failed: %s', exc)
 
 
-def _persist_failed_callback(payload: dict, url: str) -> Optional[Path]:
+def _persist_failed_callback(payload, url: str) -> Optional[Path]:
     """Write an undeliverable callback payload to <workDir>/callbacks/.
 
     Node parity: the file holds ONLY the admin-acceptable payload batch (no
     Authorization header, no dynamic token) — replay re-signs at send time.
-    Returns the payload file path, or None when persistence itself failed
-    (nothing more can be done; the result was already logged)."""
+    ``payload`` is either a single callback dict or a list of them (O-20 batch:
+    a whole 100-item batch that exhausted its retry budget is parked verbatim and
+    replayed as one ``payloads`` list). Returns the payload file path, or None
+    when persistence itself failed (nothing more can be done; the result was
+    already logged)."""
     global _callback_persistence_sequence
     try:
         callback_dir = _callback_dir()
@@ -1787,7 +2051,8 @@ def _persist_failed_callback(payload: dict, url: str) -> Optional[Path]:
             _callback_persistence_sequence += 1
         filename = callback_dir / f'callback-{int(time.time() * 1000)}-{sequence}.json'
         tmp = filename.with_name(filename.name + '.tmp')
-        tmp.write_text(json.dumps({'url': url, 'payloads': [payload]}, ensure_ascii=False), encoding='utf-8')
+        payloads = payload if isinstance(payload, list) else [payload]
+        tmp.write_text(json.dumps({'url': url, 'payloads': payloads}, ensure_ascii=False), encoding='utf-8')
         # Windows rename-over-existing is not atomic-safe; unlink first
         if filename.exists():
             filename.unlink()
@@ -1908,8 +2173,9 @@ async def _replay_persisted_callback_file(filepath: Path, requests: list[dict], 
     token that is valid NOW (node replays through admin-client.post, which
     attaches the current credential)."""
     token = await get_current_token() or _get_callback_token()
-    async with httpx.AsyncClient(timeout=10) as client:
-        response = await request_with_self_heal(client, 'post', url, token=token, json=requests)
+    # O-24: shared per-loop pool (replay sends the whole persisted batch).
+    response = await request_with_self_heal(
+        sched.get_http_client(), 'post', url, token=token, json=requests)
     # CALLBACK-3XX：同 _send_callback_with_retry —— 只有 2xx 才算投递成功。
     # 旧判据「< 400」会把 3xx 当成功，调用方随即 unlink 持久化文件，
     # 载荷永久丢失（重定向目标并非 admin）。
@@ -2010,9 +2276,9 @@ async def _fetch_terminal_states(address: str, since_ms: float) -> Optional[set]
     path = (f'/executors/{quote(address, safe="")}/terminal-states?'
             + urlencode({'since': since_iso, 'limit': DEAD_LETTER_RECONCILE_LIMIT}))
     token = await get_current_token() or _get_callback_token()
-    async with httpx.AsyncClient(timeout=10) as client:
-        response = await request_with_self_heal(
-            client, 'get', build_admin_api_url(path), token=token)
+    # O-24: shared per-loop pool.
+    response = await request_with_self_heal(
+        sched.get_http_client(), 'get', build_admin_api_url(path), token=token)
     if response.status_code >= 400:
         logger.warning('Terminal-states reconciled failed: HTTP %s', response.status_code)
         return None
@@ -2189,6 +2455,9 @@ async def callback_retry_task() -> None:
     try:
         while not _callback_retry_stop.is_set():
             try:
+                # O-20: drain the in-memory batch queue (kill-path + any
+                # fire-and-forget producer) before replaying on-disk files.
+                await _flush_live_callbacks()
                 await retry_persisted_callbacks()
                 # A6: 死信对账（默认 10min 一次；零死信时零请求）
                 await _maybe_reconcile_dead_letters()
@@ -2239,6 +2508,19 @@ async def stop_callback_retry_task() -> None:
     except Exception:
         pass
     _callback_retry_task = None
+    # O-20: one last best-effort flush of the in-memory batch queue before exit
+    # (node stopCallbackThread drain parity). Anything still undelivered is
+    # persisted to disk by _flush_live_callbacks so the next process replays it.
+    try:
+        await asyncio.wait_for(_flush_live_callbacks(),
+                               timeout=CALLBACK_DRAIN_TIMEOUT_SECONDS)
+    except (asyncio.TimeoutError, Exception):
+        pass
+    # O-24: close the shared per-loop HTTP clients.
+    try:
+        await sched.aclose_http_clients()
+    except Exception:
+        pass
 
 
 async def _push_killed_callback(executionId: str) -> None:
@@ -2257,12 +2539,10 @@ async def _push_killed_callback(executionId: str) -> None:
         'failureReason': 'killed',
         'executorAddress': _executor_callback_address(),
     }
-    token = await get_current_token() or _get_callback_token()
-    await _send_callback_with_retry(
-        build_admin_api_url('/executions/callback'),
-        payload,
-        token,
-    )
+    # O-20: enqueue into the batch queue and flush inline — the kill endpoint
+    # (and its tests) expect the terminal result delivered-or-persisted here.
+    enqueue_callback(payload)
+    await _flush_live_callbacks()
 
 
 def _spawn_background(coro) -> None:
@@ -2407,6 +2687,11 @@ async def _run_and_callback(req: ExecuteRequest, entry: Optional['_LiveExecution
                     req.executionId, art_err,
                 )
             try:
+                # O-20: the terminal payload goes through the batch queue
+                # (enqueue + inline flush, delivered-or-persisted within this
+                # call). _send_callback_with_retry is still the call site —
+                # it now enqueues into the queue and flushes the batch inline,
+                # preserving the synchronous terminal-delivery guarantee.
                 await _send_callback_with_retry(
                     build_admin_api_url('/executions/callback'),
                     payload,
@@ -2673,6 +2958,34 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
         if not _re.match(r'^(https?://|git@|ssh://)', git_repo, _re.IGNORECASE):
             raise HTTPException(status_code=400, detail=f'gitRepo URL scheme not allowed: {git_repo}')
 
+        # B-2（SEC-NEW）：gitRepo 拒绝 URL 内嵌凭据（与 admin 侧
+        # assertSafeGitRepoUrl 同款规则，双侧对齐）。泄漏面：git clone 失败时
+        # stderr 回显完整 URL → errMsg → 日志/回调/审计。
+        #   * http(s):// 一律拒绝 userinfo（https://user:pass@host）——http(s)
+        #     克隆的凭据只能走 GIT_ASKPASS / credential helper；
+        #   * ssh:// 拒绝 password（ssh://user:pass@host）；裸用户名
+        #     （ssh://git@host/...）是文档化 SSH 形态，放行；
+        #   * scp-like（git@host:path）结构上不可能携带密码，放行。
+        try:
+            _git_url = urlsplit(git_repo)
+            _git_url.port  # 畸形端口一并拒绝（与 packageUrl 守卫同法）
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f'Invalid gitRepo URL: {git_repo}') from exc
+        if _git_url.scheme in ('http', 'https') and (
+            _git_url.username is not None or _git_url.password is not None
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail='gitRepo must not contain embedded credentials (userinfo); '
+                       'use GIT_ASKPASS / a credential helper instead',
+            )
+        if _git_url.scheme == 'ssh' and _git_url.password is not None:
+            raise HTTPException(
+                status_code=400,
+                detail='gitRepo must not contain an embedded password; '
+                       'use an SSH key / GIT_ASKPASS instead',
+            )
+
         # S7 (SEC-NEW-2): SSRF guard — block private IP addresses and localhost.
         #
         # ADR — EXECUTOR_ALLOW_PRIVATE_NETWORK 开关（镜像 admin-api 侧
@@ -2737,9 +3050,35 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
     # 否则用户以为跑在 3.7 上、实际跑在宿主 3.12 上（最危险的一类静默降级）。
     # ---------------------------------------------------------------------
     runtime_version: str | None = None
+    # 两个别名都要读：`runtime_version` 是历史/手写载荷形态，executor-node
+    # 两种都收（execute.ts 的 `?? task.runtime_version`），只读驼峰会与 node
+    # 分叉——同一条 `{"runtime_version":"3.11"}` 在 node 上按 3.11 跑、在这里
+    # 却静默落回宿主默认解释器（D14 明令禁止的静默降级）。
     _raw_runtime_version = task.get('runtimeVersion')
+    if _raw_runtime_version is None:
+        _raw_runtime_version = task.get('runtime_version')
     if _raw_runtime_version is not None and str(_raw_runtime_version).strip():
-        declared_version = str(_raw_runtime_version).strip()
+        # **只接受真正的字符串**，绝不 `str()` 强转。
+        #
+        # 为什么不能宽容：JSON 数字会被 IEEE754 吃掉尾零——客户端写
+        # `"runtimeVersion": 3.10`，服务端拿到的浮点就是 3.1，`str()` 出来是
+        # `'3.1'`，于是用户声明 3.10、任务实际跑 3.1，且**校验通过**（3.1 形状
+        # 合法）。这是"静默按错的版本跑"，比直接失败危险得多。
+        # 且 node 侧 normalizeRuntimeVersion 要求 typeof === 'string'（数字一律
+        # 抛 Invalid runtimeVersion），故强转还会造成两侧对同一载荷一收一拒。
+        if not isinstance(_raw_runtime_version, str):
+            return {
+                'success': False,
+                'logs': '',
+                'exitCode': None,
+                'errorMessage': (
+                    f'Invalid runtimeVersion (expected a string like "3.11", '
+                    f'got {type(_raw_runtime_version).__name__}): '
+                    f'{_raw_runtime_version!r}'
+                ),
+                'durationMs': int((time.monotonic() - started_at) * 1000),
+            }
+        declared_version = _raw_runtime_version.strip()
         if runtime != 'python':
             logger.warning(
                 'Task %s declares runtimeVersion=%s but runtime=%s — the version '
@@ -2792,7 +3131,18 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
 
     if code_source == 'application_zip':
         is_zip_channel = True
-    elif application_id and package_url:
+    # ZIP-PRED-01（本轮审计）：兜底分支必须带 `not code_source`，与
+    # executor-node（`execute.ts` 的 `!codeSource && !!applicationId &&
+    # !!packageUrl`）**逐字同形**。
+    #
+    # 改动前这里写的是裸 `elif application_id and package_url`，于是
+    # `codeSource='git'`（或 'glue'）**且** applicationId 残留**且**载荷里带了
+    # packageUrl 的任务：node 判非 zip、这里判 zip —— 同一份载荷两个执行器走
+    # 不同代码渠道（git clone 出来的源码会被 zip 解压覆盖，即兼容红线 §4.4 要
+    # 防的那类事故）。admin 的写面互斥目前使该输入不可达，故这是**潜伏**分叉；
+    # 但执行器也接受 admin 之外的直连派发，且显式 codeSource 的语义本就是
+    # "渠道已定，不要用其它字段猜"，故按 node 口径补齐。
+    elif not code_source and application_id and package_url:
         is_zip_channel = True
     else:
         is_zip_channel = False
@@ -2849,13 +3199,29 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
 
     # Glue script support: write inline source to a temp file and use it as entrypoint
     if glue_source:
-        if glue_language == 'python' or (not glue_language and runtime == 'python'):
+        # GLUE-LANG-01（本轮审计）：语言判定必须与 executor-node **逐字同形**。
+        # node（routes/execute.ts）是 `glueLanguage.toLowerCase()` 后同时接受裸
+        # 语言名（`python`/`javascript`/`shell`）与历史 `glue_*` 形态
+        # （`glue_python`/`glue_node`/`glue_shell`）；协议 enum
+        # （protocol.json schemas.TaskConfig.glueLanguage）也是这 6 个取值。
+        #
+        # 失败模式（改动前）：这里只做**精确字符串**比较，于是同一份
+        # `{"glueSource":…, "glueLanguage": "glue_python"}` 在 node 上按 python
+        # 跑、在这里被 400 拒掉（存量库里 `glue_*` 是迁移期的真实形态，
+        # admin-api 的 `GlueLanguage` 类型与 builtin-runtimes 都还在用）。
+        # 「同一载荷两个执行器一收一拒」正是 CONTRACT §3.3 明令禁止的分叉，
+        # 且协议已把 `glue_python` 列为**合法**取值——故这里必须补齐。
+        #
+        # 归一化与 node 一致：lower + strip（node 是 `glueLanguage.toLowerCase()`，
+        # python 侧额外 strip 以容忍手写载荷的空白——只放宽不收紧）。
+        _glue_lang = glue_language.strip().lower() if isinstance(glue_language, str) else ''
+        if _glue_lang in ('python', 'glue_python') or (not _glue_lang and runtime == 'python'):
             glue_file = work_dir / 'glue_script.py'
             glue_runtime = 'python'
-        elif glue_language == 'javascript' or (not glue_language and runtime == 'node'):
+        elif _glue_lang in ('javascript', 'glue_node') or (not _glue_lang and runtime == 'node'):
             glue_file = work_dir / 'glue_script.js'
             glue_runtime = 'node'
-        elif glue_language == 'shell' or (not glue_language and runtime == 'shell'):
+        elif _glue_lang in ('shell', 'glue_shell') or (not _glue_lang and runtime == 'shell'):
             # W-11 (windows-findings): parity with executor-node — accept a
             # missing glueLanguage (fall back to task.runtime) so shell glue
             # doesn't 400, and on win32 write `.cmd` so `cmd.exe /c` actually
@@ -2925,6 +3291,12 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
     # 覆盖，与 AUTOFLOW_CALLBACK_TOKEN 同一纪律）。缺省不注入。
     if entry is not None and entry.traceparent:
         env['AUTOFLOW_TRACE_ID'] = entry.traceparent
+
+    # SEC-NEW (F-1/B-1): 任务私有临时目录（<work_dir>/.tmp，0o700）并把
+    # TMPDIR/TEMP/TMP 指过去——即便未启用 bwrap 沙箱，任务临时文件也只落在
+    # 自己的工作目录内（可被 TTL 清扫回收），不写宿主 /tmp（PrivateTmp 的
+    # 轻量等价物；bwrap profile 另有 --tmpfs /tmp 兜底）。
+    with_task_tmpdir(env, work_dir)
 
     # ---------------------------------------------------------------------
     # FR-07/11/12（python_task_multiversion）：解释器获取与解释器失败留痕。
@@ -3053,13 +3425,23 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
 
     log_file = work_dir / f'{req.executionId}.log'
     try:
+        # SEC-NEW (F-1): 沙箱包装——bwrap 用户命名空间 + 只读根文件系统 +
+        # PrivateTmp（TASK_SANDBOX=bwrap 时生效）。fail-closed：配置启用但
+        # 不可用（bwrap 缺失 / 宿主禁用户命名空间）→ 任务直接失败，绝不静默
+        # 降级为无沙箱运行（SandboxUnavailable 在下方 except 转失败结果）。
+        cmd = build_sandbox_cmd(cmd, work_dir)
+        # SEC-NEW (B-1): 任务资源上限（RLIMIT_AS/CPU/FSIZE/NOFILE/NPROC）。
+        # POSIX 经 preexec_fn 在 exec 前施加；win32 无等价原语（返回 None）。
+        rlimit_fn = build_rlimit_pre_exec(settings, timeout)
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             cwd=str(work_dir),
             env=env,
-            **_spawn_kwargs_for_platform(),  # W-02: setsid on POSIX, process-group flag on win32
+            # W-02: setsid on POSIX, process-group flag on win32;
+            # SEC-NEW (B-1): 同一 preexec 阶段叠加 RLIMIT_*。
+            **_spawn_kwargs_for_platform(rlimit_fn),
         )
         if entry is not None:
             # E4/E5: publish the child so the kill endpoint and shutdown can

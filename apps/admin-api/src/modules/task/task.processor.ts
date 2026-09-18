@@ -26,7 +26,7 @@ import { AiAnalysisService } from "../ai/ai-analysis.service";
 // 的引用归零（grep notificationService\. / auditService\. 0 命中），属死依赖与
 // 遗留模块耦合。终态事件改由 taskService.publishTerminalEventForDispatch 经
 // 事件总线统一发布。
-import { TaskService } from "./task.service";
+import { TaskService, INTERPRETER_UNAVAILABLE_PATTERN } from "./task.service";
 
 // PERF-P3a: worker 并发 1→5，消除队头阻塞（一个慢 dispatch HTTP 不再卡住
 // 整条队列）。安全性依据：执行器容量闸门在 dispatch 内由 DB 原子操作保证
@@ -168,23 +168,39 @@ export class TaskProcessor extends WorkerHost {
         err instanceof Error ? err.stack || err.message : String(err);
       exec.errorMessage = errMsg;
       const failureText = `${errMsg}\n${errStack}`;
-      exec.failureReason = /timeout|timed out|etimedout|execution timed/i.test(
-        failureText,
+      // python_task_multiversion（WS2 · CONTRACT §2.5 / D14）：解释器不可获取
+      // 必须排在分类链**最前面**（与 task.service.ts 的 inferFailureReason 第一条
+      // 规则同源、同一份 INTERPRETER_UNAVAILABLE_PATTERN，F-01 消除两处漂移）。
+      //
+      // 为什么必须先于下方 EXECUTOR_OFFLINE 规则：failInterpreterUnavailable
+      // （executor.service.ts）抛出的消息以 `[interpreter_unavailable]` token 开头，
+      // 而堆栈含 `ExecutorService.failInterpreterUnavailable`——`/executor.*
+      // (offline|unavailable)/i` 会从 `ExecutorService...Unavailable` 命中并把本类
+      // 失败误判成 EXECUTOR_OFFLINE，后果是：① D14 明确 interpreter_unavailable
+      // 不进默认重试集，误判后却触发重试（解释器不会凭空出现，白白烧重试预算）；
+      // ② failureReason 记成 executor_offline，误导运维排查方向（以为是执行器
+      // 离线，实际是解释器缺失）。同时必须先于 timeout 规则：解释器下载失败
+      // 的真实文案天然含 "timeout"（`interpreter download timeout ...`），
+      // 先跑 timeout 规则会吞成 TIMEOUT（处置方向完全不同）。
+      exec.failureReason = INTERPRETER_UNAVAILABLE_PATTERN.test(
+        failureText.toLowerCase(),
       )
-        ? ExecutionFailureReason.TIMEOUT
-        : /no available executor|executor.*(offline|unavailable)|econnrefused|enotfound|network error|socket hang up/i.test(
-              failureText,
-            )
-          ? ExecutionFailureReason.EXECUTOR_OFFLINE
-          : /git clone|package fetch|pull package|download package|npm install|pip install|requirements|dependency/i.test(
+        ? ExecutionFailureReason.INTERPRETER_UNAVAILABLE
+        : /timeout|timed out|etimedout|execution timed/i.test(failureText)
+          ? ExecutionFailureReason.TIMEOUT
+          : /no available executor|executor.*(offline|unavailable)|econnrefused|enotfound|network error|socket hang up/i.test(
                 failureText,
               )
-            ? ExecutionFailureReason.PACKAGE_FETCH_FAILED
-            : /traceback|syntaxerror|referenceerror|typeerror|uncaught|exception|command failed|exit code/i.test(
+            ? ExecutionFailureReason.EXECUTOR_OFFLINE
+            : /git clone|package fetch|pull package|download package|npm install|pip install|requirements|dependency/i.test(
                   failureText,
                 )
-              ? ExecutionFailureReason.SCRIPT_ERROR
-              : ExecutionFailureReason.UNKNOWN;
+              ? ExecutionFailureReason.PACKAGE_FETCH_FAILED
+              : /traceback|syntaxerror|referenceerror|typeerror|uncaught|exception|command failed|exit code/i.test(
+                    failureText,
+                  )
+                ? ExecutionFailureReason.SCRIPT_ERROR
+                : ExecutionFailureReason.UNKNOWN;
       // P2: align with the callback path — a TIMEOUT reason must produce
       // TIMEOUT status, not FAILED.
       exec.status =
@@ -220,6 +236,16 @@ export class TaskProcessor extends WorkerHost {
       // executor may still be running the task, so a retry would dispatch the
       // same executionId to a second executor (double dispatch).
       if (exec.failureReason === ExecutionFailureReason.TIMEOUT) {
+        throw new UnrecoverableError(errMsg);
+      }
+      // python_task_multiversion（WS2 · CONTRACT §2.5 / D14）：interpreter_unavailable
+      // 与 TIMEOUT 同为**不可重试**——解释器缓存缺失是环境/声明问题（处置：预填
+      // 缓存卷、修镜像、改声明版本或等执行器补装），重试只会再次派发再次失败，
+      // 白白烧掉 maxRetry 预算。与上方分类链修复（F-01）配套：此前误判成
+      // EXECUTOR_OFFLINE 会漏过本门禁走进默认重试一切路径。
+      if (
+        exec.failureReason === ExecutionFailureReason.INTERPRETER_UNAVAILABLE
+      ) {
         throw new UnrecoverableError(errMsg);
       }
       // RETRY-01: honor `task.retryableErrors` — when the user configured a

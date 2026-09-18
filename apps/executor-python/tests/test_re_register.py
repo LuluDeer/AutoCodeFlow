@@ -16,6 +16,7 @@ import pytest
 
 import auth as auth_module
 import main as main_module
+import scheduler as sched
 from main import maybe_re_register, register_executor
 
 
@@ -77,7 +78,7 @@ class TestTokenAcquiredHook:
         client.post = AsyncMock(return_value=_token_response(201, {
             'code': 0, 'message': 'ok', 'data': {'token': 'fresh-token'},
         }))
-        monkeypatch.setattr(auth_module.httpx, 'AsyncClient', lambda *a, **k: client)
+        monkeypatch.setattr(sched, 'get_http_client', lambda: client)
         monkeypatch.setattr(auth_module, '_token_expires_at', None)
         monkeypatch.setattr(auth_module, '_dynamic_token', None)
 
@@ -95,7 +96,7 @@ class TestTokenAcquiredHook:
         client.__aenter__.return_value = client
         client.__aexit__.return_value = None
         client.post = AsyncMock(return_value=_token_response(503, {'message': 'unavailable'}))
-        monkeypatch.setattr(auth_module.httpx, 'AsyncClient', lambda *a, **k: client)
+        monkeypatch.setattr(sched, 'get_http_client', lambda: client)
         monkeypatch.setattr(auth_module, '_token_expires_at', None)
         monkeypatch.setattr(auth_module, '_dynamic_token', None)
 
@@ -127,7 +128,7 @@ class TestMaybeReRegister:
         maybe_re_register 重新 POST register 且载荷与首次注册同源（富元数据）。"""
         client = _mock_client()
         client.post = AsyncMock(return_value=httpx_response(201, {'code': 0, 'data': {}}))
-        monkeypatch.setattr(main_module.httpx, 'AsyncClient', lambda *a, **k: client)
+        monkeypatch.setattr(main_module, 'get_http_client', lambda: client)
 
         ok = await maybe_re_register()
 
@@ -212,7 +213,7 @@ class TestRegisterExecutorReturns:
     async def test_returns_true_on_2xx(self, monkeypatch):
         client = _mock_client()
         _ok_register(client)
-        monkeypatch.setattr(main_module.httpx, 'AsyncClient', lambda *a, **k: client)
+        monkeypatch.setattr(main_module, 'get_http_client', lambda: client)
         assert await register_executor() is True
 
     @pytest.mark.asyncio
@@ -220,7 +221,7 @@ class TestRegisterExecutorReturns:
         """401 触发源：被拒的 register 返回 False（供补注册链武装）。"""
         client = _mock_client()
         client.post = AsyncMock(return_value=httpx_response(401, text='{"code":401,"message":"Invalid executor token"}'))
-        monkeypatch.setattr(main_module.httpx, 'AsyncClient', lambda *a, **k: client)
+        monkeypatch.setattr(main_module, 'get_http_client', lambda: client)
         with caplog.at_level(logging.ERROR, logger='main'):
             assert await register_executor() is False
         assert any('401' in r.getMessage() for r in caplog.records)
@@ -229,7 +230,7 @@ class TestRegisterExecutorReturns:
     async def test_returns_false_on_transport_error(self, monkeypatch):
         client = _mock_client()
         client.post = AsyncMock(side_effect=ConnectionError('admin unreachable'))
-        monkeypatch.setattr(main_module.httpx, 'AsyncClient', lambda *a, **k: client)
+        monkeypatch.setattr(main_module, 'get_http_client', lambda: client)
         assert await register_executor() is False
 
     @pytest.mark.asyncio
@@ -238,7 +239,7 @@ class TestRegisterExecutorReturns:
         _register_payload()——富元数据一致性由单一来源保证。"""
         client = _mock_client()
         _ok_register(client)
-        monkeypatch.setattr(main_module.httpx, 'AsyncClient', lambda *a, **k: client)
+        monkeypatch.setattr(main_module, 'get_http_client', lambda: client)
 
         await register_executor()
 
@@ -253,7 +254,7 @@ class TestRegisterSuccessSetsFlagE15:
         验证成功置位后 maybe_re_register 短路、不再调用 register。"""
         client = _mock_client()
         _ok_register(client)
-        monkeypatch.setattr(main_module.httpx, 'AsyncClient', lambda *a, **k: client)
+        monkeypatch.setattr(main_module, 'get_http_client', lambda: client)
 
         ok = await register_executor()
         assert ok is True

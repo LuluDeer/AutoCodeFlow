@@ -32,6 +32,7 @@ export class ProjectsService {
     return this.repo.save(row);
   }
 
+  // P3-1：项目表为小表（组织级通常 < 百行），全表 find 无需分页——刻意保持现状。
   async findAll(): Promise<Project[]> {
     return this.repo.find({ order: { createdAt: "ASC" } });
   }

@@ -39,6 +39,15 @@ jest.mock("../../../common/utils/safe-http.util", () => ({
   assertSafeExecutorUrl: jest
     .fn()
     .mockResolvedValue(new URL("http://fixture:3002/")),
+  // F-3（SEC-NEW）: dispatch/kill/broadcast 现走 assertAndPinExecutorUrl——
+  // 按入参原样返回 pinned:false 目标，避免真实 DNS。
+  assertAndPinExecutorUrl: jest
+    .fn()
+    .mockImplementation(async (raw: string) => ({
+      url: new URL(raw),
+      pinnedIp: "93.184.216.34",
+      pinned: false,
+    })),
 }));
 const mockedAxios = axios as jest.Mocked<typeof axios>;
 
@@ -1627,11 +1636,12 @@ describe("ExecutorService (__tests__)", () => {
     // DNS 查询），所以此处断言的是「守卫针对正确 URL 被调用」这一行为；
     // 守卫本身的判定语义（link-local/loopback 拒绝）由下方
     // "SEC-SSRF-02 guard semantics" 用 jest.requireActual 的真实实现覆盖。
+    // F-3（SEC-NEW）: kill 出站现走 assertAndPinExecutorUrl（校验+pin 一体）。
     it("SEC-SSRF-02: consults the SSRF guard with the kill URL before POSTing", async () => {
       mockedAxios.post.mockResolvedValue({ data: { ok: true } });
       await service.notifyExecutorKill("e1", "10.0.0.9:8002");
       const guard = jest.requireMock("../../../common/utils/safe-http.util")
-        .assertSafeExecutorUrl as jest.Mock;
+        .assertAndPinExecutorUrl as jest.Mock;
       expect(guard).toHaveBeenCalledWith(
         "http://10.0.0.9:8002/api/executions/e1/kill",
       );
@@ -1640,7 +1650,7 @@ describe("ExecutorService (__tests__)", () => {
 
     it("SEC-SSRF-02: a guard rejection stops the authenticated POST (never throws)", async () => {
       const guard = jest.requireMock("../../../common/utils/safe-http.util")
-        .assertSafeExecutorUrl as jest.Mock;
+        .assertAndPinExecutorUrl as jest.Mock;
       guard.mockRejectedValueOnce(
         new Error("Executor address ... is link-local — refused"),
       );

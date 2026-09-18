@@ -10,6 +10,9 @@ log-retention policy):
     TTL are removed
   - .git_cache entries not touched within TTL are removed
   - .venvs entries not touched within TTL are removed
+  - the shared .venvs/.uv-cache package cache (UV_CACHE_DIR in ensure_venv)
+    past the TTL is removed, but skipped while a live venv task may be
+    installing into it
   - callbacks/dead-letter/ payload files (and their companion .meta) past the
     TTL are removed — dead-lettered callbacks are terminal garbage; without
     this the directory grows unbounded across a long admin-api outage (node
@@ -245,6 +248,45 @@ def _remove_quietly(target: Path) -> None:
         logger.warning('Interpreter reclaim failed for %s: %s', target, exc)
 
 
+# 9-3（audit-r4）：venv 依赖映射缓存 + 指纹失效。enforce_interpreter_pool_limits
+# 每 6h 一轮，每轮调用 _venv_dependency_homes 全量读 + 解析全部 pyvenv.cfg；
+# 池越大该扫描越贵，而两个清理周期之间 venv 集合几乎不变。改为指纹缓存：
+# 指纹由 .venvs 根 mtime + 各 venv 目录的 (name, pyvenv.cfg mtime_ns) 构成
+# （stat 级，远轻于 read+parse），指纹未变则直接复用上次映射。任何 venv
+# 创建/删除/pyvenv.cfg 变更都会改变指纹，无漏失效风险。
+_venv_deps_cache: dict[str, list[str]] | None = None
+_venv_deps_fingerprint: tuple | None = None
+
+
+def _invalidate_venv_deps_cache() -> None:
+    """显式清空缓存（TTL 清扫删除 venv 后调用；指纹机制下通常不必要，双保险）。"""
+    global _venv_deps_cache, _venv_deps_fingerprint
+    _venv_deps_cache = None
+    _venv_deps_fingerprint = None
+
+
+def _venv_deps_fingerprint_now() -> tuple:
+    """计算 venv 集合指纹（仅 stat，不读文件内容）。根目录缺失/不可读时返回
+    哨兵值——与「扫描结果空」区分开，避免误复用过期缓存。"""
+    venv_root = _work_dir_root() / '.venvs'
+    try:
+        root_mtime = venv_root.stat().st_mtime_ns
+    except OSError:
+        return ('missing',)
+    try:
+        children = sorted((d.name for d in venv_root.iterdir() if d.is_dir()))
+    except OSError:
+        return ('unreadable',)
+    parts = [('root', root_mtime)]
+    for name in children:
+        try:
+            cfg_mtime = (venv_root / name / 'pyvenv.cfg').stat().st_mtime_ns
+        except OSError:
+            cfg_mtime = -1
+        parts.append((name, cfg_mtime))
+    return tuple(parts)
+
+
 def _venv_dependency_homes() -> dict[str, list[str]]:
     """`<WORK_DIR>/.venvs/*` 的依赖解释器 home 目录 → 依赖它的 venv 目录名列表。
 
@@ -260,6 +302,10 @@ def _venv_dependency_homes() -> dict[str, list[str]]:
     于是"按 mtime 删最久未使用的解释器"这个直觉做法会连带炸掉一批 venv。回收
     必须先回答："还有谁靠这个版本活着？"
     """
+    global _venv_deps_cache, _venv_deps_fingerprint
+    fp = _venv_deps_fingerprint_now()
+    if _venv_deps_cache is not None and fp == _venv_deps_fingerprint:
+        return _venv_deps_cache
     homes: dict[str, list[str]] = {}
     venv_root = _work_dir_root() / '.venvs'
     try:
@@ -274,6 +320,8 @@ def _venv_dependency_homes() -> dict[str, list[str]]:
         if not home:
             continue
         homes.setdefault(os.path.normcase(os.path.normpath(home)), []).append(venv_dir.name)
+    _venv_deps_cache = homes
+    _venv_deps_fingerprint = fp
     return homes
 
 
@@ -528,6 +576,11 @@ def cleanup_work_dir(ttl_days: int = None) -> dict:
         if _remove_path(entry):
             counts['workDirs'] += 1
 
+    # A live venv-backed python task (`.venvs/<task_id>` whose task_id is in the
+    # live snapshot) may be running `uv pip install` into the SHARED uv cache
+    # right now. We record those task ids so the dedicated .uv-cache sweep below
+    # can refuse to reap the cache out from under an in-flight install.
+    live_venv_tasks: set[str] = set()
     for cache_dir_name, count_key in (('.git_cache', 'caches'), ('.venvs', 'venvs')):
         cache_root = base / cache_dir_name
         try:
@@ -536,6 +589,12 @@ def cleanup_work_dir(ttl_days: int = None) -> dict:
             continue
         for child in children:
             if child.name in live_names:
+                if cache_dir_name == '.venvs':
+                    live_venv_tasks.add(child.name)
+                continue
+            if cache_dir_name == '.venvs' and child.name == '.uv-cache':
+                # The shared uv package cache is swept separately (TTL + live
+                # guard) below — never reap it here as if it were a stale venv.
                 continue
             try:
                 if child.stat().st_mtime >= cutoff:
@@ -544,6 +603,27 @@ def cleanup_work_dir(ttl_days: int = None) -> dict:
                 continue  # raced with a concurrent delete — skip
             if _remove_path(child):
                 counts[count_key] += 1
+
+    # 9-3（audit-r4）：本轮回可能删除了 venv——显式失效依赖映射缓存
+    # （指纹机制下删除会自然改变指纹，这里是双保险）。
+    if count_key == 'venvs' and counts['venvs'] > 0:
+        _invalidate_venv_deps_cache()
+
+    # P2: the shared uv package cache. ensure_venv points UV_CACHE_DIR at
+    # `<work_dir>/.venvs/.uv-cache` (venv_dir.parent / '.uv-cache'); it is shared
+    # by every requirements-bearing python task and previously accumulated with
+    # no explicit TTL governance. Reclaim it on the SAME TTL as .git_cache, but
+    # never while a live venv task may be installing into it. Folded into the
+    # 'caches' bucket so the cleanup_work_dir return shape stays byte-stable
+    # (existing tests assert the exact key set).
+    uv_cache_dir = base / '.venvs' / '.uv-cache'
+    if not live_venv_tasks:
+        try:
+            if uv_cache_dir.is_dir() and uv_cache_dir.stat().st_mtime < cutoff:
+                if _remove_path(uv_cache_dir):
+                    counts['caches'] += 1
+        except OSError:
+            pass  # raced / unreadable — best-effort reclaim, never fatal
 
     # QA3 (node cleanupWorkDir step 4 parity): dead-lettered callbacks are
     # terminal — TTL-reclaim them (filesOnly). The callbacks/ top level
@@ -572,6 +652,40 @@ def cleanup_work_dir(ttl_days: int = None) -> dict:
 _cleanup_task: asyncio.Task | None = None
 
 
+# --- 磁盘水位（P2/L-2，对齐 node file-logger.diskUsagePercent）----------------
+# TTL 清扫基于 mtime 而非磁盘水位：磁盘在 TTL 窗口内被撑满时没有主动应对。
+# 这里补两道防线：告警水位触发减半 TTL 的紧急清理；临界水位由
+# execute.accept_execution 拒新任务（同源读取本常量）。
+# 阈值来自 settings（DISK_WARN_PERCENT / DISK_CRITICAL_PERCENT，默认 90/95），
+# 模块加载时求值——与 pydantic settings 的启动期 env 读取一致。
+def _disk_warn_threshold() -> int:
+    return max(1, int(getattr(settings, 'disk_warn_percent', 90) or 90))
+
+
+def _disk_critical_threshold() -> int:
+    return max(1, int(getattr(settings, 'disk_critical_percent', 95) or 95))
+
+
+DISK_WARN_PERCENT = _disk_warn_threshold()
+DISK_CRITICAL_PERCENT = _disk_critical_threshold()
+
+
+def disk_usage_percent(path: str = '') -> float:
+    """``path``（缺省 work_dir）所在文件系统的已用百分比（0-100）。
+
+    用 ``shutil.disk_usage`` 的 ``free`` 字段（对非特权用户真实可写空间，
+    与 node 侧 ``fs.statfs.f_bavail`` 同口径：used = total - free）。计量失败
+    返回 0——调用方按"无压力"处理，不因一次计量失败误拒任务。
+    """
+    try:
+        usage = shutil.disk_usage(path or str(_work_dir_root()))
+        if usage.total <= 0:
+            return 0.0
+        return round((usage.total - usage.free) / usage.total * 100, 1)
+    except OSError:
+        return 0.0
+
+
 async def disk_cleanup_task() -> None:
     """Periodic sweep: first run deferred (disk_cleanup_initial_delay_seconds,
     default 10min) so a fresh boot doesn't scan+delete while executions from
@@ -594,6 +708,31 @@ async def disk_cleanup_task() -> None:
                 total = sum(counts.values())
                 if total:
                     logger.info('Disk cleanup removed %d item(s): %s', total, counts)
+                # P2：磁盘水位（TTL 基于 mtime，磁盘在 TTL 窗口内被撑满时无
+                # 主动应对）。告警水位 → 减半 TTL 立即再跑一轮紧急清理（回收刚
+                # 生成的过期垃圾）；临界水位 → 除紧急清理外，accept_execution
+                # 会拒新任务（同源读取 DISK_CRITICAL_PERCENT）。
+                usage = await asyncio.to_thread(disk_usage_percent)
+                if usage >= DISK_CRITICAL_PERCENT:
+                    logger.error(
+                        'Disk usage critical (%.1f%% >= %d%%) — new task accept '
+                        'will be refused; running emergency cleanup with reduced TTL',
+                        usage, DISK_CRITICAL_PERCENT,
+                    )
+                    ecounts = await asyncio.to_thread(
+                        cleanup_work_dir,
+                        max(1, settings.disk_cleanup_ttl_days // 2),
+                    )
+                    etotal = sum(ecounts.values())
+                    if etotal:
+                        logger.warning(
+                            'Emergency cleanup removed %d item(s): %s', etotal, ecounts)
+                elif usage >= DISK_WARN_PERCENT:
+                    logger.warning(
+                        'Disk usage high (%.1f%% >= %d%%) — consider raising disk '
+                        'cleanup budget or adding storage',
+                        usage, DISK_WARN_PERCENT,
+                    )
             except Exception as exc:  # never let the sweep die
                 logger.error('Disk cleanup error: %s', exc)
             await asyncio.sleep(settings.disk_cleanup_interval_seconds)

@@ -110,7 +110,12 @@ def test_different_task_executions_run_concurrently(monkeypatch, tmp_path):
         active['peak'] = max(active['peak'], active['count'])
         if active['count'] == 2:
             both_running.set()
-        await asyncio.wait_for(both_running.wait(), timeout=5)
+        # O-4（审计优化）：原 timeout=5——并发不成立（两个任务串行）时第二个任务
+        # 永远等不到 both_running.set()，5s 后 wait_for 抛 TimeoutError，以超时
+        # 而非断言失败收场，失败信号不清晰；且高负载 CI 上 5s 也可能不够。
+        # 降至 2s：两个协程在同一事件循环里交错（互不 await 阻塞），2s 对任何
+        # 正常调度都绰绰有余；真串行时 2s 即红，错误类型仍可读。
+        await asyncio.wait_for(both_running.wait(), timeout=2)
         active['count'] -= 1
         return {'success': True, 'logs': '', 'exitCode': 0, 'durationMs': 1}
 
@@ -147,6 +152,35 @@ def test_task_lock_map_is_event_loop_local():
     # a fresh loop (new asyncio.run) must not blow up on stale bound locks
     d, e, _ = asyncio.run(grab())
     assert d is not a
+
+
+def test_task_lock_map_bounded_by_distinct_task_ids_and_reset_per_loop():
+    """E-4（审计补漏）：锁表规模随不同 task_id 增长、换循环整体重置。
+
+    现状：`_task_locks` 按 task_id 无上限增长（无逐条淘汰），唯一边界是
+    **事件循环切换时整体重建**（asyncio.Lock 绑定首个 await 它的循环）。
+    本用例把这两个行为钉死：1000 个不同 task_id → 恰好 1000 把锁（互不共享，
+    正确性不变量）；换一个新循环 → 表整体清空（当前唯一的内存回收边界）。
+    若未来为长生命周期循环引入逐条淘汰，此用例的规模断言需同步更新——
+    这正是把它钉在这里的目的。
+    """
+    from routers import execute as execute_module
+
+    async def touch_many():
+        locks = [execute_module._get_task_lock(f'task-{i}') for i in range(1000)]
+        return locks
+
+    locks = asyncio.run(touch_many())
+    assert len(set(locks)) == 1000, '不同 task_id 必须各有一把独立锁（互不共享）'
+
+    # 同一循环内重复取同一 task_id → 同一把锁（test_task_lock_map_is_event_loop_local
+    # 已覆盖身份稳定性）；此处补"换循环即重置"的规模边界：
+    fresh = asyncio.run(touch_many())
+    assert execute_module._task_locks_loop is not None
+    # 新循环里首次 _get_task_lock 会把表重置为空再填充——因此两个循环的表互不相干
+    assert len(execute_module._task_locks) == 1000
+    assert any(lock is not fresh[0] for lock in locks), \
+        '换循环后必须拿到全新锁对象（旧循环的锁不可复用）'
 
 
 # ---------------------------------------------------------------------------

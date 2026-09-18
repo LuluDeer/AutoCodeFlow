@@ -175,6 +175,38 @@ def test_per_version_red_line_reclaims_an_unreferenced_oversized_version(layout,
     assert not big.exists()
 
 
+def test_disk_full_during_reclaim_never_crashes_enforcement(layout, caplog):
+    """E-4（审计补漏）：磁盘满/EACCES 场景——回收删除抛 OSError 时，治理
+    循环必须存活（`_remove_quietly` 的 best-effort 契约），版本目录保持原样，
+    失败经日志可见，绝不让整个治理任务崩掉（它在 TTL 清扫任务里跑，崩了会
+    连带磁盘红线整体失守）。"""
+    import logging
+
+    work_root, pool_root = layout
+    settings.interpreter_single_version_mb = 1
+    settings.interpreter_total_gb = 4
+    big = _make_version(pool_root, 'cpython-3.9.20-x', 2 * MB)
+
+    def disk_full(target):
+        raise OSError(28, 'No space left on device', str(target))
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(maintenance.shutil, 'rmtree', disk_full)
+    try:
+        with caplog.at_level(logging.WARNING):
+            result = maintenance.enforce_interpreter_pool_limits()
+    finally:
+        monkeypatch.undo()
+
+    assert big.exists(), 'rmtree 失败时版本目录必须保持原样（绝不能误报已回收）'
+    assert 'No space left' in caplog.text, '删除失败必须经日志可见（best-effort 契约）'
+    # 回收计数：`_remove_quietly` 吞掉 OSError 后调用方无法感知删除失败，按
+    # best-effort 语义照常计数——若未来把 `_remove_quietly` 改为可感知失败并
+    # 据此计数，此断言需同步更新（这正是把它钉在这里的目的）。
+    assert result['reclaimedVersions'] == 1
+    assert result['reclaimedBytes'] == 2 * MB
+
+
 def test_per_version_red_line_skips_a_referenced_oversized_version(layout):
     """**引用感知**：被 venv 依赖的版本绝不回收（删了 venv 当场报废）。"""
     work_root, pool_root = layout

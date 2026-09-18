@@ -30,7 +30,11 @@ import { ExecutorService } from "../executor/executor.service";
 // ARCH-31 §5: cron 维护任务统一 Leader 门禁（@Optional 同 eventBus/audit 先例——
 // 既有单测直接 new 装配时 gate 缺席 → null → 门禁不生效）。
 import { LeaderGateService } from "../../common/leader-gate/leader-gate.service";
-import { assertSafeExecutorUrl } from "../../common/utils/safe-http.util";
+import {
+  assertAndPinExecutorUrl,
+  PinnedHttpTarget,
+  pinnedAxiosConfig,
+} from "../../common/utils/safe-http.util";
 import {
   CreateDeploymentDto,
   DeploymentHeartbeatDto,
@@ -212,6 +216,9 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       where: { applicationId },
       order: { createdAt: "DESC" },
       relations: ["application"],
+      // O-6: safety cap — a single app should never legitimately have thousands
+      // of deployment rows; bounds memory on internal list consumers.
+      take: 5000,
     });
   }
 
@@ -1092,11 +1099,18 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       // dispatch — run the executor SSRF policy (metadata/link-local refused)
       // before contacting the address. A refusal is logged and treated like
       // any other stop-signal failure: the row still transitions to STOPPED.
-      await assertSafeExecutorUrl(url);
+      // F-3 (SEC-NEW): pin the connection to the validated IP.
+      const pinned = await assertAndPinExecutorUrl(url);
+      const pinCfg = pinnedAxiosConfig(pinned);
       await axios.post(
         url,
         { deploymentId: deployment.id },
-        { timeout: 10_000, headers: await this.getExecutorHeaders() },
+        {
+          timeout: 10_000,
+          headers: await this.getExecutorHeaders(),
+          maxRedirects: 0,
+          ...pinCfg,
+        },
       );
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -1277,9 +1291,11 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       deployment.executorAddress,
       "api/deploy",
     );
+    let pinned: PinnedHttpTarget;
     try {
       this.validateExecutorAddress(deployment.executorAddress);
-      await assertSafeExecutorUrl(url);
+      // F-3 (SEC-NEW): validate + pin to the validated IP in one step.
+      pinned = await assertAndPinExecutorUrl(url);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       deployment.status = DeploymentStatus.FAILED;
@@ -1306,12 +1322,15 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
 
     // Retry up to 3 times with exponential back-off (1s, 2s, 4s)
     const MAX_ATTEMPTS = 3;
+    const pinCfg = pinnedAxiosConfig(pinned);
     let lastError: string | null = null;
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
       try {
         await axios.post(url, payload, {
           timeout: 30_000,
           headers: await this.getExecutorHeaders(),
+          maxRedirects: 0, // R3 parity: 首跳是唯一经 SSRF 校验的地址
+          ...pinCfg,
         });
         // Success
         deployment.status = upgrade
@@ -1567,16 +1586,44 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
           updatedAt: LessThan(tenMinutesAgo),
         },
       ],
+      // O-5: bound the cron sweep; rows flipped to FAILED leave the predicate,
+      // so the next tick self-converges any backlog.
+      take: 1000,
     });
     if (stuck.length === 0) return;
+
+    const PENDING_MSG =
+      "[System] Deployment stuck in PENDING (deploy push never started, " +
+      "likely a restart between insert and push) — timed out after 5 minutes";
+    const TIMEOUT_MSG = "[System] Deployment timed out after 10 minutes";
+
+    // O-5: two batched UPDATEs (message differs for PENDING vs DEPLOYING/
+    // UPGRADING) instead of N per-row save() round-trips.
+    const pendingIds = stuck
+      .filter((d) => d.status === DeploymentStatus.PENDING)
+      .map((d) => d.id);
+    const otherIds = stuck
+      .filter((d) => d.status !== DeploymentStatus.PENDING)
+      .map((d) => d.id);
+    if (pendingIds.length > 0) {
+      await this.repo
+        .createQueryBuilder()
+        .update(AppDeployment)
+        .set({ status: DeploymentStatus.FAILED, statusMessage: PENDING_MSG })
+        .where("id IN (:...ids)", { ids: pendingIds })
+        .execute();
+    }
+    if (otherIds.length > 0) {
+      await this.repo
+        .createQueryBuilder()
+        .update(AppDeployment)
+        .set({ status: DeploymentStatus.FAILED, statusMessage: TIMEOUT_MSG })
+        .where("id IN (:...ids)", { ids: otherIds })
+        .execute();
+    }
+
     for (const d of stuck) {
-      const pendingTimedOut = d.status === DeploymentStatus.PENDING;
       d.status = DeploymentStatus.FAILED;
-      d.statusMessage = pendingTimedOut
-        ? "[System] Deployment stuck in PENDING (deploy push never started, " +
-          "likely a restart between insert and push) — timed out after 5 minutes"
-        : "[System] Deployment timed out after 10 minutes";
-      await this.repo.save(d);
       await this.markVersionSnapshotStatus(d, "failed");
       this.logger.warn(
         `Stuck deployment marked FAILED: id=${d.id}, app=${d.applicationId}, status=${d.status}`,
@@ -2113,6 +2160,11 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     const versions = await this.versionRepo.find({
       where: { applicationId: deployment.applicationId, status: "released" },
       order: { createdAt: "DESC" },
+      // P2-6：只需「除当前版本外最近的一个 released 快照」。版本按时间倒序，
+      // uq(applicationId, version) 保证同一版本至多一行——take 2 即覆盖最坏
+      // 情形（versions[0]=当前版本，versions[1]=上一版本）；全量拉取会随版本
+      // 历史线性膨胀。
+      take: 2,
     });
     const previous = versions.find((v) => {
       if (!v.version) return false;
@@ -2206,8 +2258,11 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     // 走同一套 assertSafeExecutorUrl（loopback/云元数据/restricted 恒拒，
     // private-LAN 放行、EXECUTOR_ALLOW_PRIVATE_NETWORK 可豁免 loopback），
     // 与同文件 deploy 面姿态对齐。拒绝时 fail-closed 直接判批次失败，不盲探。
+    // F-3（SEC-NEW）: 同时 pin 到校验通过的 IP——探针若经域名逐次 rebind，
+    // 同样可把请求打到内网其他主机。
+    let pinned: PinnedHttpTarget;
     try {
-      await assertSafeExecutorUrl(url);
+      pinned = await assertAndPinExecutorUrl(url);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       await this.failBatch(
@@ -2217,9 +2272,10 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       );
       return;
     }
+    const pinCfg = pinnedAxiosConfig(pinned);
     const attempts = hc.failThreshold;
     for (let attempt = 1; attempt <= attempts; attempt++) {
-      const ok = await this.probeOnce(url, hc.timeoutMs);
+      const ok = await this.probeOnce(url, pinCfg, hc.timeoutMs);
       if (ok) {
         this.logger.log(
           `Health probe passed for ${deploymentId} (attempt ${attempt}/${attempts}): ${url}`,
@@ -2284,12 +2340,17 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
 
   /** 单次探测：任何 2xx-4xx 状态=探活成功（端口有活体即认为应用可路由）；
    *  5xx/超时/网络错=失败。 */
-  private async probeOnce(url: string, timeoutMs: number): Promise<boolean> {
+  private async probeOnce(
+    url: string,
+    pinCfg: ReturnType<typeof pinnedAxiosConfig>,
+    timeoutMs: number,
+  ): Promise<boolean> {
     try {
       const res = await axios.get(url, {
         timeout: timeoutMs,
         maxRedirects: 0,
         validateStatus: (s) => s >= 200 && s < 500,
+        ...pinCfg,
       });
       return res.status < 500;
     } catch {
@@ -2505,15 +2566,21 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
         `Rollout restart sweep: skipped ${skipped} row(s) with a fresh lease (another instance is driving them)`,
       );
     }
-    for (const d of orphaned) {
-      d.rolloutState = RolloutState.FAILED;
-      d.rolloutMeta = {
-        ...((d.rolloutMeta as Record<string, any>) ?? {}),
-        failureReason: "admin-api restarted — rollout batch not resumed",
-      };
-      await this.repo.save(d);
-    }
+    // O-1: one batched UPDATE instead of N per-row save() round-trips. The
+    // rolloutMeta merge is done in SQL (jsonb ||) so each row keeps its own
+    // batch metadata while failureReason is appended; COALESCE covers NULL rows.
     if (orphaned.length > 0) {
+      const orphanedIds = orphaned.map((d) => d.id);
+      await this.repo
+        .createQueryBuilder()
+        .update(AppDeployment)
+        .set({
+          rolloutState: RolloutState.FAILED,
+          rolloutMeta: () =>
+            `COALESCE("rolloutMeta", '{}'::jsonb) || '{"failureReason":"admin-api restarted — rollout batch not resumed"}'::jsonb`,
+        })
+        .where("id IN (:...ids)", { ids: orphanedIds })
+        .execute();
       this.logger.warn(
         `Marked ${orphaned.length} interrupted rollout deployment(s) as failed after restart`,
       );

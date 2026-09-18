@@ -31,6 +31,13 @@ export class ExecutorRegisterDto {
   version?: string;
 
   @ApiPropertyOptional({
+    description:
+      "PROTOCOL-VER (B-3/U-2): 执行器线缆协议版本（与实现版本 version 解耦）。中台按兼容矩阵分支：低于 supportedMin 只 warn + 兜底，不拒绝注册。",
+    example: 1,
+  })
+  protocolVersion?: number;
+
+  @ApiPropertyOptional({
     description: "Declared capabilities",
     type: [String],
     example: ["docker", "shell"],

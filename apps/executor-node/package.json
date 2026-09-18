@@ -1,6 +1,6 @@
 {
   "name": "executor-node",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "AutoCodeFlow Node.js Executor",
   "main": "dist/main.js",
   "engines": {
@@ -48,6 +48,23 @@
       "js",
       "json",
       "ts"
-    ]
+    ],
+    "collectCoverageFrom": [
+      "src/**/*.ts",
+      "!src/main.ts",
+      "!src/generated/**",
+      "!**/*.spec.ts",
+      "!**/__tests__/**"
+    ],
+    "coverageDirectory": "coverage",
+    "coverageThreshold": {
+      "global": {
+        "statements": 78,
+        "branches": 62,
+        "functions": 80,
+        "lines": 80
+      }
+    },
+    "_comment-coverage": "L-3（测试体系审计）：此前 31 spec / ~676 用例无任何覆盖率收集或门控。阈值为 2026-09-18 实测水位地板（stmts 80.26 / branch 65.99 / funcs 82.92 / lines 82.03，留 ~2-4pt 余量），防新增代码完全未测而 CI 仍绿；覆盖率抬升后应同步上调。"
   }
 }

@@ -25,6 +25,7 @@ export class SystemConfigService {
     private readonly historyRepo: Repository<ConfigHistory>,
   ) {}
 
+  // P3-1：SystemConfig 是极小配置表（个位数行），全表 find 无需分页——刻意保持现状。
   findAll(): Promise<SystemConfig[]> {
     return this.repo.find({ order: { key: "ASC" } });
   }

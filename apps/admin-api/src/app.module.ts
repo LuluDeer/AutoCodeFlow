@@ -1,9 +1,11 @@
-import { Module, NestModule, MiddlewareConsumer } from "@nestjs/common";
+import { Module, NestModule, MiddlewareConsumer, Logger } from "@nestjs/common";
 import { TraceIdMiddleware } from "./common/middleware/trace-id.middleware";
 import { ConfigModule, ConfigService } from "@nestjs/config";
 import { TypeOrmModule } from "@nestjs/typeorm";
 import { BullModule } from "@nestjs/bullmq";
-import { ThrottlerModule, ThrottlerGuard } from "@nestjs/throttler";
+import Redis from "ioredis";
+import { ThrottlerModule } from "@nestjs/throttler";
+import { ExecutorAwareThrottlerGuard } from "./common/guards/executor-aware-throttler.guard";
 import { APP_GUARD, APP_INTERCEPTOR } from "@nestjs/core";
 import { JwtAuthGuard } from "./common/guards/jwt-auth.guard";
 import { RolesGuard } from "./common/guards/roles.guard";
@@ -99,6 +101,13 @@ import { RuntimeModule } from "./modules/runtime/runtime.module";
           .max(55000)
           .default(25000),
         EXECUTOR_PULL_TTL_MS: Joi.number().integer().min(1000).default(900000),
+        // F-07（本轮审计）: 调度候选执行器池上限（configuration.ts
+        // executor.candidatePoolSize 消费，selectLeastLoaded / dispatch 的
+        // take 截断）。默认 500 与既有硬编码一致。
+        EXECUTOR_CANDIDATE_POOL_SIZE: Joi.number()
+          .integer()
+          .min(1)
+          .default(500),
 
         // Database
         DB_HOST: Joi.string().hostname().default("localhost"),
@@ -464,8 +473,17 @@ import { RuntimeModule } from "./modules/runtime/runtime.module";
 
     BullModule.forRootAsync({
       imports: [ConfigModule],
-      useFactory: (cfg: ConfigService) => ({
-        connection: {
+      useFactory: (cfg: ConfigService) => {
+        // PERF-03 / BullMQ: maxRetriesPerRequest:null + enableOfflineQueue:true
+        // are required by BullMQ and intentionally kept. We construct the ioredis
+        // client ourselves (rather than handing BullMQ a plain options object)
+        // ONLY to attach read-only offline-queue monitoring: while Redis is
+        // unreachable, commands are buffered in ioredis' offline queue; a long
+        // outage under high enqueue volume can grow that queue without bound and
+        // OOM the process. This neither disables the offline queue nor changes
+        // reconnect semantics — it only makes the buffering observable.
+        const redisLogger = new Logger("BullMQ-Redis");
+        const redis = new Redis({
           host: cfg.get("redis.host"),
           port: cfg.get<number>("redis.port"),
           password: cfg.get("redis.password"),
@@ -487,8 +505,8 @@ import { RuntimeModule } from "./modules/runtime/runtime.module";
           lazyConnect: false, // Connect immediately on startup
           keepAlive: 10000, // Keep-alive interval (10 seconds)
           family: 4, // IPv4
-          // Connection pool settings for better performance
-          maxRedirections: 3, // Maximum redirections for cluster mode
+          // (maxRedirections only applies to Redis Cluster; this deployment
+          // uses a standalone instance, so it is intentionally omitted.)
           maxRetriesPerRequest: null,
           retryStrategy: (times: number) => {
             if (times > 10) {
@@ -498,20 +516,57 @@ import { RuntimeModule } from "./modules/runtime/runtime.module";
             // Exponential backoff: 100ms, 200ms, 400ms, etc.
             return Math.min(times * 100, 3000);
           },
-        },
-        // OPS-P1: 终态 job 保留策略——cron/fixed_rate 任务每 tick 入队一个
-        // job，无保留策略时 completed/failed 集合在 Redis 无界增长。
-        // completed 保留 1h（滚动窗口 1000 条上限）供排障；failed 保留 24h
-        //（5000 条上限）便于回溯失败。BullMQ 合并语义为
-        // {...defaultJobOptions, ...perJobOpts}（per-job 覆盖 default）：
-        // 本仓库全部 4 处 add()（task.service trigger/rollback、
-        // scheduler.enqueue、executor restart retry）只设 attempts/backoff/
-        // priority，不携带 removeOn*，不存在反向覆盖。
-        defaultJobOptions: {
-          removeOnComplete: { age: 3600, count: 1000 },
-          removeOnFail: { age: 86400, count: 5000 },
-        },
-      }),
+        });
+
+        // Observable offline windows: warn when we drop offline, log recovery.
+        redis.on("status", (status: string) => {
+          if (
+            status === "reconnecting" ||
+            status === "close" ||
+            status === "end"
+          ) {
+            redisLogger.warn(
+              `Redis connection state="${status}"; BullMQ commands are buffered in the offline queue (enableOfflineQueue=true).`,
+            );
+          } else if (status === "ready") {
+            redisLogger.log(
+              "Redis connection restored (ready); buffered offline-queue commands have been flushed.",
+            );
+          }
+        });
+        // Lightweight depth sample while offline (every 30s). Read-only; the
+        // internal queue property is best-effort across ioredis versions and
+        // must never throw.
+        const offlineMonitor = setInterval(() => {
+          if (redis.status !== "ready") {
+            const depth = (redis as unknown as { offlineQueue?: unknown[] })
+              .offlineQueue?.length;
+            if (depth && depth > 0) {
+              redisLogger.warn(
+                `Redis offline queue depth=${depth} (commands buffered while unreachable — risk of OOM on a long outage).`,
+              );
+            }
+          }
+        }, 30_000);
+        // Don't let this monitor keep the process alive on its own.
+        offlineMonitor.unref?.();
+
+        return {
+          connection: redis,
+          // OPS-P1: 终态 job 保留策略——cron/fixed_rate 任务每 tick 入队一个
+          // job，无保留策略时 completed/failed 集合在 Redis 无界增长。
+          // completed 保留 1h（滚动窗口 1000 条上限）供排障；failed 保留 24h
+          //（5000 条上限）便于回溯失败。BullMQ 合并语义为
+          // {...defaultJobOptions, ...perJobOpts}（per-job 覆盖 default）：
+          // 本仓库全部 4 处 add()（task.service trigger/rollback、
+          // scheduler.enqueue、executor restart retry）只设 attempts/backoff/
+          // priority，不携带 removeOn*，不存在反向覆盖。
+          defaultJobOptions: {
+            removeOnComplete: { age: 3600, count: 1000 },
+            removeOnFail: { age: 86400, count: 5000 },
+          },
+        };
+      },
       inject: [ConfigService],
     }),
 
@@ -541,7 +596,10 @@ import { RuntimeModule } from "./modules/runtime/runtime.module";
   ],
   providers: [
     // A-02: apply ThrottlerGuard globally
-    { provide: APP_GUARD, useClass: ThrottlerGuard },
+    // B-2: 全局节流换成 ExecutorAwareThrottlerGuard——回调限流按
+    // x-executor-address 头做执行器维度计数（多执行器共享出口 IP 时不再按 IP
+    // 叠加误杀），其余请求回退 IP 键（行为不变）。
+    { provide: APP_GUARD, useClass: ExecutorAwareThrottlerGuard },
     // A-03: apply JwtAuthGuard globally — use @Public() decorator to opt-out
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     // R4 F-1: apply RolesGuard globally (after JwtAuthGuard so req.user is

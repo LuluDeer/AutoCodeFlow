@@ -39,6 +39,18 @@ _CHUNK = 1024 * 1024  # 1 MiB，流式哈希
 # 现在按 admin 同一字符集**先过滤再构造 URL**，从源头消除该类不一致。
 SAFE_ARTIFACT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$")
 
+# ART-EXEC-ID-01（audit-r4 7-2）：executionId 会被拼进上传 URL 的路径段
+# （``/api/executions/<executionId>/artifacts/...``）。executionId 由 admin 生成，
+# 但纵深防御要求在拼接前做白名单校验——`#`（fragment）/ `?`（query）/ `/`
+# （路径逃逸）等字符会让 URL 静默错位或打到别的资源上。字符集与 admin 侧
+# executionId 的生成口径（URL-safe、字母数字开头）保持一致，并做长度上限约束。
+SAFE_EXECUTION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+
+
+def is_safe_execution_id(execution_id: str) -> bool:
+    """executionId 是否满足上传 URL 的路径段白名单（见 ART-EXEC-ID-01）。"""
+    return isinstance(execution_id, str) and bool(SAFE_EXECUTION_ID_RE.match(execution_id))
+
 
 def is_safe_artifact_name(name: str) -> bool:
     """裸文件名是否满足 admin 的 SAFE_ARTIFACT_NAME_RE（同一字符集与长度）。"""
@@ -137,6 +149,11 @@ async def _upload_one(
     if not is_safe_artifact_name(name):
         logger.warning("artifacts: 拒绝上传非法产物名 %r", name)
         return False
+    # ART-EXEC-ID-01（audit-r4 7-2）：executionId 拼进 URL 路径段前的白名单
+    # 断言——异常字符可能构造出错误 URL 或路径逃逸，纵深防御不许带病上传。
+    if not is_safe_execution_id(execution_id):
+        logger.warning("artifacts: 拒绝上传非法 executionId %r", execution_id)
+        return False
     url = f"{_api_base(admin_base_url)}/executions/{execution_id}/artifacts/{name}"
     try:
         with open(item["path"], "rb") as fh:
@@ -174,6 +191,11 @@ async def gather_artifacts_for_callback(
     任何失败均 best-effort 吞掉并返回**尽量**的清单（可能为空）。绝不抛异常。
     """
     if not admin_base_url:
+        return []
+    # ART-EXEC-ID-01（audit-r4 7-2）：入口处对 executionId 做白名单断言——
+    # 非法 id 直接返回空清单（best-effort 铁律），绝不把异常字符拼进上传 URL。
+    if not is_safe_execution_id(execution_id):
+        logger.warning("artifacts: 拒绝为非法 executionId %r 收集/上传", execution_id)
         return []
     try:
         items = collect_artifacts(Path(work_dir))

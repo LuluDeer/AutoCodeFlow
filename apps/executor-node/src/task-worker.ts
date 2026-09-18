@@ -53,6 +53,8 @@ class TaskWorker {
   private maxConcurrent: number;
   private runningCount: number;
   private onIdle?: () => void;
+  /** 1-1/9-2（audit-r4）：调度单飞标志——drain 微任务已在途时不再重复调度。 */
+  private processing: boolean;
 
   constructor(taskId: string, maxConcurrent: number = 1, onIdle?: () => void) {
     this.taskId = taskId;
@@ -64,6 +66,7 @@ class TaskWorker {
     };
     this.stopped = false;
     this.runningCount = 0;
+    this.processing = false;
     this.onIdle = onIdle;
   }
 
@@ -81,7 +84,30 @@ class TaskWorker {
 
   private async process(): Promise<void> {
     if (this.stopped) return;
-    
+    // 1-1/9-2（audit-r4）：调度入口单飞（single-flight）+ queueMicrotask。
+    // 旧实现每个 executeItem 完成都 setImmediate(() => this.process())——高并发
+    // 下同一轮会有 N 个 process 排队重复空转，且 setImmediate 排在 timers 阶段
+    // 之后，任务启动有微小延迟。这里用一个 processing 标志把「调度」压成至多
+    // 一个待执行 drain：executeItem 完成 → process() 重入检查（runningCount
+    // 已递减）→ 有槽位就继续，无槽位直接返回。queueMicrotask 安全的原因：
+    // drain 每轮都 await 真实异步工作（runTask），不会饿死 I/O 轮询。
+    if (this.processing) return;
+    if (this.state.queue.length === 0 || this.runningCount >= this.maxConcurrent) return;
+    this.processing = true;
+    queueMicrotask(() => {
+      try {
+        this.drain();
+      } finally {
+        this.processing = false;
+        if (!this.stopped && this.state.queue.length > 0 && this.runningCount < this.maxConcurrent) {
+          this.process();
+        }
+      }
+    });
+  }
+
+  /** 单轮取件：把队列里能跑的项全部拉起来（串行执行体由 runningCount 上限约束）。 */
+  private drain(): void {
     while (this.state.queue.length > 0 && this.runningCount < this.maxConcurrent) {
       const item = this.state.queue.shift();
       if (!item) break;
@@ -89,13 +115,13 @@ class TaskWorker {
       this.runningCount++;
       this.executeItem(item).finally(() => {
         this.runningCount--;
-        // runningCount 在 process 的 finally 中递减（executeItem 的 finally
+        // runningCount 在 executeItem 的 finally 之后递减（executeItem 的 finally
         // 早于该递减执行），空闲判定必须挂在这里：无运行中且无排队时通知
         // Manager 安排延迟回收，防止 workers Map 按 taskId 只增不减（N9）。
         if (this.runningCount === 0 && this.state.queue.length === 0) {
           this.onIdle?.();
         }
-        setImmediate(() => this.process());
+        this.process();
       });
     }
   }

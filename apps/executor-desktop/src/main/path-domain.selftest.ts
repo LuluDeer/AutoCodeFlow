@@ -119,6 +119,10 @@ function main(): void {
     assert.equal(hasAllowedLogExtension('tool.exe'), false, 'exe');
     assert.equal(hasAllowedLogExtension('script.ps1'), false, 'powershell');
     assert.equal(hasAllowedLogExtension('noext'), false, 'no extension');
+    // 6-3：macOS .app bundle 是目录（Foo.app/），扩展名不在白名单 → 必须拒绝
+    assert.equal(hasAllowedLogExtension('Executor.app'), false, 'macOS app bundle');
+    assert.equal(hasAllowedLogExtension('logs'), false, 'bare directory');
+    assert.equal(hasAllowedLogExtension('logs/'), false, 'directory with separator');
     // 双重后缀伪装：.log 结尾但实际是别的？extname 取最后一段，'a.bat.log' 可打开（内容即 .log），
     // 'a.log.bat' 必须拒绝
     assert.equal(hasAllowedLogExtension('a.bat.log'), true);

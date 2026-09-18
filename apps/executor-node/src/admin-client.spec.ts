@@ -12,7 +12,28 @@ import {
 } from './admin-client';
 import { getCurrentToken, getStaticToken, forceTokenRefresh } from './middleware/auth';
 
-jest.mock('axios');
+// O-23（共享 axios 实例）：admin-client 在模块加载时创建一次共享 client
+// （keepAlive agent），请求参数（url/timeout/headers）在每次 request 调用时
+// 传入。因此 mock 面从「每次 axios.create 返回新 client」改为「create 恒定
+// 返回同一个 mock client」，测试直接驱动 mockClient.request / mockClient.get，
+// 并断言 request 的入参形状（url 已拼 baseURL、timeout、headers）。
+//
+// 时序约束：jest.mock 工厂被提升到文件顶部、先于本文件任何 const 执行，而
+// admin-client 在 import 时就调用 axios.create()——所以 mock client 必须在
+// 工厂内部创建，再通过 __client 通道暴露给测试（工厂闭包引用外层 const 会
+// 撞 TDZ / 未初始化）。
+jest.mock('axios', () => {
+  const client = { request: jest.fn(), get: jest.fn() };
+  return {
+    __client: client,
+    create: jest.fn(() => client),
+    get: jest.fn(),
+  };
+});
+// 工厂内实例 = 模块加载时 admin-client 拿到的那个（跨测试稳定）。
+type MockAxiosClient = { request: jest.Mock; get: jest.Mock };
+const mockedAxios = axios as unknown as { __client: MockAxiosClient };
+const clientUnderTest = mockedAxios.__client;
 jest.mock('./middleware/auth', () => ({
   getCurrentToken: jest.fn(),
   getStaticToken: jest.fn(),
@@ -28,7 +49,6 @@ jest.mock('./logger', () => ({
   },
 }));
 
-const mockedAxios = axios as jest.Mocked<typeof axios>;
 const mockedGetCurrentToken = getCurrentToken as jest.MockedFunction<typeof getCurrentToken>;
 const mockedGetStaticToken = getStaticToken as jest.MockedFunction<typeof getStaticToken>;
 const mockedForceTokenRefresh = forceTokenRefresh as jest.MockedFunction<typeof forceTokenRefresh>;
@@ -43,6 +63,9 @@ const unauthorized401 = () => ({
 describe('admin-client', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    // 共享 client 的实现队列跨测试必须清空（clearAllMocks 只清调用记录）。
+    clientUnderTest.request.mockReset();
+    clientUnderTest.get.mockReset();
     mockedGetCurrentToken.mockResolvedValue(null);
     mockedGetStaticToken.mockReturnValue(null);
     mockedForceTokenRefresh.mockResolvedValue(null);
@@ -87,15 +110,17 @@ describe('admin-client', () => {
   });
 
   it('sends auth headers when a token is available', async () => {
-    const requestMock = jest.fn().mockResolvedValue({ data: { ok: true } });
-    mockedAxios.create.mockReturnValue({ request: requestMock } as any);
+    clientUnderTest.request.mockResolvedValue({ data: { ok: true } });
     mockedGetCurrentToken.mockResolvedValue('secret-token');
     initAdminClients(['http://admin-a:3105/api']);
 
     await post('/api/test', { hello: 'world' });
 
-    expect(mockedAxios.create).toHaveBeenCalledWith({
-      baseURL: 'http://admin-a:3105',
+    // O-23：共享实例——baseURL 拼进 url，timeout/headers 作为请求参数传入
+    expect(clientUnderTest.request).toHaveBeenCalledWith({
+      method: 'post',
+      url: 'http://admin-a:3105/api/test',
+      data: { hello: 'world' },
       timeout: 10_000,
       headers: {
         'Content-Type': 'application/json',
@@ -103,37 +128,28 @@ describe('admin-client', () => {
         Authorization: 'Bearer secret-token',
       },
     });
-    expect(requestMock).toHaveBeenCalledWith({
-      method: 'post',
-      url: '/api/test',
-      data: { hello: 'world' },
-    });
   });
 
   it('fails over and retries the next admin URL', async () => {
-    const requestMockA = jest.fn().mockRejectedValue(new Error('down'));
-    const requestMockB = jest.fn().mockResolvedValue({ data: { ok: true } });
-    mockedAxios.create
-      .mockReturnValueOnce({ request: requestMockA } as any)
-      .mockReturnValueOnce({ request: requestMockB } as any);
+    clientUnderTest.request
+      .mockRejectedValueOnce(new Error('down'))
+      .mockResolvedValueOnce({ data: { ok: true } });
     initAdminClients(['http://admin-a:3105', 'http://admin-b:3105']);
 
     const result = await request('get', '/api/health');
 
     expect(result.data).toEqual({ ok: true });
-    expect(mockedAxios.create).toHaveBeenNthCalledWith(1, expect.objectContaining({
-      baseURL: 'http://admin-a:3105',
-    }));
-    expect(mockedAxios.create).toHaveBeenNthCalledWith(2, expect.objectContaining({
-      baseURL: 'http://admin-b:3105',
-    }));
+    expect(clientUnderTest.request.mock.calls[0][0]).toEqual(
+      expect.objectContaining({ url: 'http://admin-a:3105/api/health' }),
+    );
+    expect(clientUnderTest.request.mock.calls[1][0]).toEqual(
+      expect.objectContaining({ url: 'http://admin-b:3105/api/health' }),
+    );
     expect(getCurrentAdminUrl()).toBe('http://admin-b:3105');
   });
 
   it('throws after all configured admins fail', async () => {
-    mockedAxios.create.mockReturnValue({
-      request: jest.fn().mockRejectedValue(new Error('down')),
-    } as any);
+    clientUnderTest.request.mockRejectedValue(new Error('down'));
     initAdminClients(['http://admin-a:3105', 'http://admin-b:3105']);
 
     await expect(request('get', '/api/health')).rejects.toThrow(
@@ -142,7 +158,7 @@ describe('admin-client', () => {
   });
 
   it('returns true and selects the reachable admin during startup self-check', async () => {
-    mockedAxios.get
+    clientUnderTest.get
       .mockRejectedValueOnce(new Error('down'))
       .mockResolvedValueOnce({ data: { status: 'ok' } });
     initAdminClients(['http://admin-a:3105', 'http://admin-b:3105']);
@@ -150,13 +166,13 @@ describe('admin-client', () => {
     const ok = await checkAdminApiConnectivity({ attempts: 1 });
 
     expect(ok).toBe(true);
-    expect(mockedAxios.get).toHaveBeenNthCalledWith(1, 'http://admin-a:3105/api/health', { timeout: 5_000 });
-    expect(mockedAxios.get).toHaveBeenNthCalledWith(2, 'http://admin-b:3105/api/health', { timeout: 5_000 });
+    expect(clientUnderTest.get).toHaveBeenNthCalledWith(1, 'http://admin-a:3105/api/health', { timeout: 5_000 });
+    expect(clientUnderTest.get).toHaveBeenNthCalledWith(2, 'http://admin-b:3105/api/health', { timeout: 5_000 });
     expect(getCurrentAdminUrl()).toBe('http://admin-b:3105');
   });
 
   it('returns false after startup self-check retries are exhausted', async () => {
-    mockedAxios.get.mockRejectedValue(new Error('down'));
+    clientUnderTest.get.mockRejectedValue(new Error('down'));
     initAdminClients(['http://admin-a:3105']);
 
     const ok = await checkAdminApiConnectivity({ attempts: 1 });
@@ -171,11 +187,9 @@ describe('admin-client', () => {
   // heartbeats/callbacks.
   describe('401 stale-credential self-heal (R10)', () => {
     it('re-authenticates and retries once when admin rejects the dynamic token with 401', async () => {
-      const requestMock = jest
-        .fn()
+      clientUnderTest.request
         .mockRejectedValueOnce(unauthorized401())
         .mockResolvedValueOnce({ data: { ok: true } });
-      mockedAxios.create.mockImplementation((() => ({ request: requestMock })) as any);
       mockedGetCurrentToken.mockResolvedValueOnce('old-token');
       // fetchToken adopts BOTH the new bearer and the new tokenHash; here we
       // only assert the bearer reaches the retry (hash adoption is covered
@@ -186,14 +200,12 @@ describe('admin-client', () => {
 
       expect(result.data).toEqual({ ok: true });
       expect(mockedForceTokenRefresh).toHaveBeenCalledTimes(1);
-      expect(mockedAxios.create).toHaveBeenNthCalledWith(
-        1,
+      expect(clientUnderTest.request.mock.calls[0][0]).toEqual(
         expect.objectContaining({
           headers: expect.objectContaining({ Authorization: 'Bearer old-token' }),
         }),
       );
-      expect(mockedAxios.create).toHaveBeenNthCalledWith(
-        2,
+      expect(clientUnderTest.request.mock.calls[1][0]).toEqual(
         expect.objectContaining({
           headers: expect.objectContaining({
             'X-Executor-Token': 'new-token',
@@ -204,8 +216,7 @@ describe('admin-client', () => {
     });
 
     it('does not fail over to another admin on 401 and gives up when the refresh yields no new token', async () => {
-      const requestMock = jest.fn().mockRejectedValue(unauthorized401());
-      mockedAxios.create.mockImplementation((() => ({ request: requestMock })) as any);
+      clientUnderTest.request.mockRejectedValue(unauthorized401());
       mockedGetCurrentToken.mockResolvedValue('stale-token');
       // Shared token also rejected (or backoff active) → refresh returns the
       // same token → retrying would just 401 again, so the original error
@@ -216,26 +227,24 @@ describe('admin-client', () => {
       await expect(post('/api/executors/heartbeat', {})).rejects.toMatchObject({
         response: { status: 401 },
       });
-      expect(mockedAxios.create).toHaveBeenCalledTimes(1);
+      expect(clientUnderTest.request).toHaveBeenCalledTimes(1);
       expect(getCurrentAdminUrl()).toBe('http://admin-a:3105');
     });
 
     it('retries at most once on auth failure — a second 401 propagates (no retry storm)', async () => {
-      const requestMock = jest.fn().mockRejectedValue(unauthorized401());
-      mockedAxios.create.mockImplementation((() => ({ request: requestMock })) as any);
+      clientUnderTest.request.mockRejectedValue(unauthorized401());
       mockedGetCurrentToken.mockResolvedValue('old-token');
       mockedForceTokenRefresh.mockResolvedValue('new-token');
 
       await expect(post('/api/executions/callback', [])).rejects.toMatchObject({
         response: { status: 401 },
       });
-      expect(mockedAxios.create).toHaveBeenCalledTimes(2);
+      expect(clientUnderTest.request).toHaveBeenCalledTimes(2);
       expect(mockedForceTokenRefresh).toHaveBeenCalledTimes(1);
     });
 
     it('never triggers the dynamic re-auth path for static-token requests (register)', async () => {
-      const requestMock = jest.fn().mockRejectedValue(unauthorized401());
-      mockedAxios.create.mockImplementation((() => ({ request: requestMock })) as any);
+      clientUnderTest.request.mockRejectedValue(unauthorized401());
       mockedGetStaticToken.mockReturnValue('shared-token');
 
       await expect(
@@ -243,15 +252,13 @@ describe('admin-client', () => {
       ).rejects.toMatchObject({ response: { status: 401 } });
       expect(mockedForceTokenRefresh).not.toHaveBeenCalled();
       expect(mockedGetCurrentToken).not.toHaveBeenCalled();
-      expect(requestMock).toHaveBeenCalledTimes(1);
+      expect(clientUnderTest.request).toHaveBeenCalledTimes(1);
     });
 
     it('keeps the failover loop for non-401 transport errors', async () => {
-      const requestMockA = jest.fn().mockRejectedValue(new Error('down'));
-      const requestMockB = jest.fn().mockResolvedValue({ data: { ok: true } });
-      mockedAxios.create
-        .mockReturnValueOnce({ request: requestMockA } as any)
-        .mockReturnValueOnce({ request: requestMockB } as any);
+      clientUnderTest.request
+        .mockRejectedValueOnce(new Error('down'))
+        .mockResolvedValueOnce({ data: { ok: true } });
       initAdminClients(['http://admin-a:3105', 'http://admin-b:3105']);
 
       const result = await request('get', '/api/health');
@@ -267,12 +274,11 @@ describe('admin-client', () => {
   describe('request cancellation (E-07)', () => {
     it('passes the caller signal through to axios and short-circuits on abort', async () => {
       const controller = new AbortController();
-      const requestMock = jest.fn().mockImplementation((cfg: { signal?: AbortSignal }) => {
+      clientUnderTest.request.mockImplementation((cfg: { signal?: AbortSignal }) => {
         expect(cfg.signal).toBe(controller.signal);
         controller.abort();
         return Promise.reject(Object.assign(new Error('canceled'), { code: 'ERR_CANCELED' }));
       });
-      mockedAxios.create.mockReturnValue({ request: requestMock } as any);
       initAdminClients(['http://admin-a:3105', 'http://admin-b:3105']);
 
       await expect(
@@ -280,39 +286,39 @@ describe('admin-client', () => {
       ).rejects.toThrow('canceled');
 
       // 只在第一个 admin 上试过一次：未 failover、未重试
-      expect(requestMock).toHaveBeenCalledTimes(1);
+      expect(clientUnderTest.request).toHaveBeenCalledTimes(1);
       expect(getCurrentAdminUrl()).toBe('http://admin-a:3105');
       expect(mockedForceTokenRefresh).not.toHaveBeenCalled();
     });
 
     it('postLong forwards the signal with the 40s long-poll timeout', async () => {
       const controller = new AbortController();
-      const requestMock = jest.fn().mockResolvedValue({ data: { ok: true } });
-      mockedAxios.create.mockReturnValue({ request: requestMock } as any);
+      clientUnderTest.request.mockResolvedValue({ data: { ok: true } });
       initAdminClients(['http://admin-a:3105']);
 
       await postLong('/api/executors/pull', { waitMs: 25_000 }, 40_000, controller.signal);
 
-      expect(mockedAxios.create).toHaveBeenCalledWith(
+      expect(clientUnderTest.request).toHaveBeenCalledWith(
         expect.objectContaining({ timeout: 40_000 }),
       );
-      expect(requestMock).toHaveBeenCalledWith(
+      expect(clientUnderTest.request).toHaveBeenCalledWith(
         expect.objectContaining({ signal: controller.signal }),
       );
     });
 
     it('omits the signal from the request config when the caller passes none', async () => {
-      const requestMock = jest.fn().mockResolvedValue({ data: { ok: true } });
-      mockedAxios.create.mockReturnValue({ request: requestMock } as any);
+      clientUnderTest.request.mockResolvedValue({ data: { ok: true } });
       initAdminClients(['http://admin-a:3105']);
 
       await post('/api/test');
 
       // 其余调用的请求形状逐字节不变（无 signal 键）
-      expect(requestMock).toHaveBeenCalledWith({
+      expect(clientUnderTest.request).toHaveBeenCalledWith({
         method: 'post',
-        url: '/api/test',
+        url: 'http://admin-a:3105/api/test',
         data: undefined,
+        timeout: 10_000,
+        headers: expect.any(Object),
       });
     });
   });

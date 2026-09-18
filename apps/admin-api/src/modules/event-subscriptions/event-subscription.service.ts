@@ -73,10 +73,28 @@ export class EventSubscriptionService {
     throw new ForbiddenException("You do not own this subscription");
   }
 
+  /**
+   * O-2（SEC-NEW）: EVENT_WEBHOOK_ALLOW_PRIVATE_NETWORK=true 时，任何登录用户
+   * 都能让平台向内网 endpoint 发签名 webhook（内网盲探/信息泄露面）。开启该
+   * 开关即选择「webhook 可达内网」，故创建/更新订阅收窄为仅 ADMIN 可写——
+   * 普通用户仍可读（列表/详情），私网开关的信任半径收回到管理员。
+   */
+  private assertPrivateNetworkWriteAllowed(user: AuthUser): void {
+    if (
+      this.config.get<boolean>("eventWebhook.allowPrivateNetwork") === true &&
+      !this.isAdmin(user)
+    ) {
+      throw new ForbiddenException(
+        "Creating/updating event subscriptions requires ADMIN while EVENT_WEBHOOK_ALLOW_PRIVATE_NETWORK=true",
+      );
+    }
+  }
+
   async create(
     dto: CreateEventSubscriptionDto,
     user: AuthUser,
   ): Promise<{ subscription: EventSubscription; generatedSecret?: string }> {
+    this.assertPrivateNetworkWriteAllowed(user);
     // SSRF 深校验（DNS 解析逐地址拒内网）——形状校验已在 DTO 层完成。
     await assertSafeHttpUrl(dto.url, this.ssrfOpts());
 
@@ -147,8 +165,9 @@ export class EventSubscriptionService {
     const sub = await this.subRepo.findOne({ where: { id } });
     if (!sub) throw new NotFoundException(`Subscription ${id} not found`);
     this.assertCanManage(sub, user);
-
+    // O-2: 私网开关开启时更新（含改 URL）同样收窄为 ADMIN。
     if (dto.url !== undefined && dto.url !== sub.url) {
+      this.assertPrivateNetworkWriteAllowed(user);
       await assertSafeHttpUrl(dto.url, this.ssrfOpts());
       sub.url = dto.url;
     }

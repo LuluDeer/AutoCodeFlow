@@ -423,14 +423,274 @@ function extractNestedZipBytes(buf: Buffer, name: string): Buffer | null {
 }
 
 /**
- * Convenience wrapper for the upload path: read a file from disk and vet it.
- * Used where the upload has been streamed to a temp file (executor-package
- * diskStorage) before validation runs.
+ * Read exactly `length` bytes from an open file at `start` using synchronous,
+ * bounded reads — the on-disk analogue of `buf.subarray(start, start+length)`.
+ * Used so assertZipFileSafe never has to read the whole archive into one
+ * Buffer: only the EOCD tail, the central-directory region, and the bounded
+ * compressed slice of a nested member are touched. Returns fewer bytes only
+ * when the file ends early (callers treat that as unparseable).
+ */
+function readFileSyncRange(
+  filePath: string,
+  start: number,
+  length: number,
+): Buffer {
+  if (start < 0 || length < 0) {
+    throw new ZipGuardError("unparseable", "invalid file range requested");
+  }
+  const fd = fs.openSync(filePath, "r");
+  try {
+    const buf = Buffer.alloc(length);
+    let filled = 0;
+    while (filled < length) {
+      const bytesRead = fs.readSync(
+        fd,
+        buf,
+        filled,
+        length - filled,
+        start + filled,
+      );
+      if (bytesRead === 0) break;
+      filled += bytesRead;
+    }
+    return filled === length ? buf : buf.subarray(0, filled);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/**
+ * Locate a nested zip member's raw (stored/deflated) compressed slice on disk
+ * and inflate it (bounded by the declared uncompressed size) so it can be
+ * vetted recursively. Mirrors extractNestedZipBytes but reads targeted file
+ * ranges instead of slicing an in-memory buffer. Returns null when the entry
+ * cannot be located/validated (caller fails closed).
+ */
+function readNestedZipSliceFromFile(
+  filePath: string,
+  fileSize: number,
+  cd: Buffer,
+  cdEntries: number,
+  name: string,
+): Buffer | null {
+  let off = 0;
+  for (let seen = 0; seen < cdEntries; seen++) {
+    if (off + CD_HEADER_SIZE > cd.length || U32(cd, off) !== SIG_CD)
+      return null;
+    const method = U16(cd, off + 10);
+    const compressedSize = U32(cd, off + 20);
+    const uncompressedSize = U32(cd, off + 24);
+    const localOffset = U32(cd, off + 42);
+    const nameLen = U16(cd, off + 28);
+    const extraLen = U16(cd, off + 30);
+    const commentLen = U16(cd, off + 32);
+    const entryName = cd.toString(
+      "utf8",
+      off + CD_HEADER_SIZE,
+      off + CD_HEADER_SIZE + nameLen,
+    );
+    off += CD_HEADER_SIZE + nameLen + extraLen + commentLen;
+    if (entryName !== name) continue;
+
+    // Local file header: 30 fixed bytes, then name/extra lengths at +26/+28.
+    if (localOffset + LOCAL_HEADER_FILENAME_LEN_OFFSET + 4 > fileSize) {
+      return null;
+    }
+    const localHeader = readFileSyncRange(
+      filePath,
+      localOffset,
+      LOCAL_HEADER_FILENAME_LEN_OFFSET + 4,
+    );
+    if (localHeader.length < LOCAL_HEADER_FILENAME_LEN_OFFSET + 4) return null;
+    if (U32(localHeader, 0) !== SIG_LOCAL) return null;
+    const localNameLen = U16(localHeader, LOCAL_HEADER_FILENAME_LEN_OFFSET);
+    const localExtraLen = U16(
+      localHeader,
+      LOCAL_HEADER_FILENAME_LEN_OFFSET + 2,
+    );
+    const dataStart = localOffset + 30 + localNameLen + localExtraLen;
+    const dataEnd = dataStart + compressedSize;
+    if (dataEnd > fileSize || dataStart < localOffset) return null;
+    const payload = readFileSyncRange(filePath, dataStart, compressedSize);
+    if (payload.length !== compressedSize) return null;
+
+    if (method === 0) {
+      return Buffer.from(payload);
+    }
+    if (method === 8) {
+      try {
+        return inflateRawSync(payload, { maxOutputLength: uncompressedSize });
+      } catch {
+        return null;
+      }
+    }
+    // bzip2/lzma/encryption methods — cannot vet cheaply, fail closed.
+    return null;
+  }
+  return null;
+}
+
+/**
+ * Convenience wrapper for the upload path: vet a zip file ON DISK by parsing
+ * only the EOCD + central directory (plus the bounded compressed slice of any
+ * nested zip member). This NEVER reads / decompresses the whole archive —
+ * the upload arrives via multer diskStorage, so reading it fully into a Buffer
+ * would defeat the streaming change.
+ *
+ * Signature and fail-closed throw semantics are identical to the previous
+ * readFileSync implementation: same violation codes, same message prefixes,
+ * same aggregate limits (entries / ratio / per-file / total) and the same
+ * one-level nested-zip recursion. Pure structural metadata — no extraction.
  */
 export function assertZipFileSafe(
   filePath: string,
   limits: ZipGuardLimits = ZIP_GUARD_DEFAULT_LIMITS,
 ): ZipCentralDirectorySummary {
-  const buf = fs.readFileSync(filePath);
-  return assertZipSafe(buf, limits);
+  const fileSize = fs.statSync(filePath).size;
+
+  // --- 1. Locate the EOCD in the file tail (comment may shift its offset). ---
+  // The EOCD record is at most 22 bytes; the zip comment is <= 64 KiB.
+  const maxComment = 65_536 + EOCD_FIXED_SIZE;
+  const tailLen = Math.min(fileSize, maxComment);
+  if (tailLen < EOCD_FIXED_SIZE) {
+    throw new ZipGuardError("unparseable", "file smaller than an EOCD record");
+  }
+  const tailStart = fileSize - tailLen;
+  const tail = readFileSyncRange(filePath, tailStart, tailLen);
+
+  let relEocd = -1;
+  for (let off = tailLen - EOCD_FIXED_SIZE; off >= 0; off--) {
+    if (U32(tail, off) === SIG_EOCD) {
+      relEocd = off;
+      break;
+    }
+  }
+  if (relEocd < 0) {
+    throw new ZipGuardError("unparseable", "EOCD signature not found");
+  }
+
+  const cdEntries = U16(tail, relEocd + 10);
+  const cdSize = U32(tail, relEocd + 12);
+  const cdOffset = U32(tail, relEocd + 16);
+
+  // zip64 (0xffffffff sentinels) is not resolved here — fail closed, same as
+  // the in-memory parser (upload caps are 200 MB / 500 MB).
+  if (
+    cdOffset === 0xffffffff ||
+    cdEntries === 0xffff ||
+    cdSize === 0xffffffff
+  ) {
+    throw new ZipGuardError(
+      "unparseable",
+      "zip64 EOCD sentinels present — unsupported for upload vetting",
+    );
+  }
+  if (cdOffset < 0 || cdSize < 0 || cdOffset + cdSize > fileSize) {
+    throw new ZipGuardError(
+      "unparseable",
+      "central directory overruns the file",
+    );
+  }
+
+  // --- 2. Read ONLY the central-directory region. ---
+  const cd = readFileSyncRange(filePath, cdOffset, cdSize);
+  if (cd.length !== cdSize) {
+    throw new ZipGuardError("unparseable", "central directory truncated");
+  }
+
+  // --- 3. Walk the CD entries (declared sizes / names only). ---
+  let totalCompressed = 0;
+  let totalUncompressed = 0;
+  const perFileSizes: number[] = [];
+  const nestedZipNames: string[] = [];
+  let off = 0;
+  for (let seen = 0; seen < cdEntries; seen++) {
+    if (off + CD_HEADER_SIZE > cd.length || U32(cd, off) !== SIG_CD) {
+      throw new ZipGuardError(
+        "unparseable",
+        `central directory record ${seen} missing or corrupted`,
+      );
+    }
+    const compressedSize = U32(cd, off + 20);
+    const uncompressedSize = U32(cd, off + 24);
+    const nameLen = U16(cd, off + 28);
+    const extraLen = U16(cd, off + 30);
+    const commentLen = U16(cd, off + 32);
+    const nameStart = off + CD_HEADER_SIZE;
+    const nameEnd = nameStart + nameLen;
+    if (nameEnd > cd.length) {
+      throw new ZipGuardError(
+        "unparseable",
+        "central directory name overruns buffer",
+      );
+    }
+    const name = cd.toString("utf8", nameStart, nameEnd);
+    totalCompressed += compressedSize;
+    totalUncompressed += uncompressedSize;
+    perFileSizes.push(uncompressedSize);
+    if (name.toLowerCase().endsWith(".zip")) {
+      nestedZipNames.push(name);
+    }
+    off = nameEnd + extraLen + commentLen;
+  }
+  // The directory must end exactly where the EOCD says it does.
+  if (off !== cdSize) {
+    throw new ZipGuardError(
+      "unparseable",
+      "central directory size mismatch with EOCD record",
+    );
+  }
+
+  const summary: ZipCentralDirectorySummary = {
+    entries: cdEntries,
+    totalCompressed,
+    totalUncompressed,
+    nestedZipNames,
+  };
+
+  // --- 4. Aggregate limits (pure checks, identical to assertZipSafe). ---
+  checkSummaryAgainstLimits(summary, limits);
+
+  for (const size of perFileSizes) {
+    if (size > limits.maxFileBytes) {
+      throw new ZipGuardError(
+        "single_file_too_large",
+        `zip declares an entry of ${size} uncompressed bytes (limit ${limits.maxFileBytes})`,
+      );
+    }
+  }
+
+  // --- 5. Bounded nested-zip recursion (reads only the nested member bytes). ---
+  if (limits.maxNestingDepth > 0) {
+    for (const name of nestedZipNames) {
+      const inner = readNestedZipSliceFromFile(
+        filePath,
+        fileSize,
+        cd,
+        cdEntries,
+        name,
+      );
+      if (inner) {
+        try {
+          // depth=1: same one-level eager probe as assertZipSafe(buf) does.
+          assertZipSafe(inner, limits, 1);
+        } catch (err: unknown) {
+          if (err instanceof ZipGuardError && err.violation === "unparseable") {
+            throw new ZipGuardError(
+              "unparseable",
+              `nested zip "${name}" is corrupt or unreadable`,
+            );
+          }
+          throw err;
+        }
+      } else {
+        throw new ZipGuardError(
+          "unparseable",
+          `nested zip "${name}" could not be located for vetting`,
+        );
+      }
+    }
+  }
+
+  return summary;
 }

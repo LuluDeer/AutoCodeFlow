@@ -216,6 +216,40 @@ describe("TaskProcessor", () => {
     );
   });
 
+  // F-01（本轮审计）：interpreter_unavailable 必须排在分类链最前面——堆栈含
+  // `ExecutorService.failInterpreterUnavailable`，旧的 /executor.*(offline|unavailable)/
+  // 会从 `ExecutorService...Unavailable` 命中并误判成 EXECUTOR_OFFLINE。修复后：
+  // ① failureReason=interpreter_unavailable；② D14 不可重试 → UnrecoverableError。
+  it("classifies interpreter_unavailable before the executor-offline rule (F-01, D14)", async () => {
+    executorService.dispatch.mockRejectedValue(
+      new Error(
+        "[interpreter_unavailable] 解释器 3.7 无法获取（缓存缺失 + 下载失败：无在线执行器缓存该版本）",
+      ),
+    );
+    await expect(
+      processor.handle({ data: { executionId: "exec-1" } } as any),
+    ).rejects.toThrow(UnrecoverableError);
+    const live = await execRepo.findOne.mock.results[0].value;
+    expect(live.status).toBe(ExecutionStatus.FAILED);
+    expect(live.failureReason).toBe(
+      ExecutionFailureReason.INTERPRETER_UNAVAILABLE,
+    );
+  });
+
+  it("TIMEOUT stays classified as TIMEOUT even when the stack mentions interpreter (F-01 order)", async () => {
+    // 反例保护：解释器下载超时文案含 timeout，但解释器词+失败词相邻才命中
+    // INTERPRETER_UNAVAILABLE_PATTERN；纯超时不得被新规则吞掉。
+    executorService.dispatch.mockRejectedValue(
+      new Error("execution timed out after 300s"),
+    );
+    await expect(
+      processor.handle({ data: { executionId: "exec-1" } } as any),
+    ).rejects.toThrow(UnrecoverableError);
+    const live = await execRepo.findOne.mock.results[0].value;
+    expect(live.failureReason).toBe(ExecutionFailureReason.TIMEOUT);
+    expect(live.status).toBe(ExecutionStatus.TIMEOUT);
+  });
+
   // BUG-21（nginx SSE 真机验证暴露）：派发阶段失败此前**不发领域事件**，
   // Dashboard 终态流 / FEAT-07 出站 webhook / notification 订阅者三方全漏。
   describe("BUG-21 派发失败终态的领域事件", () => {

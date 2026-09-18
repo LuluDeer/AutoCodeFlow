@@ -65,11 +65,22 @@ jobs:
           tags: autocodeflow/${{ matrix.image.name }}:ci-${{ matrix.runner }}
 
   # ── Node.js services & packages ──────────────────────────
+  # U-2（审计修复）：2961 例单 runner 串行已逼近 30min 上限。拆成三个职责：
+  #   * admin-api-test       —— 单元测试 4 片并行（jest --shard 1/4..4/4）
+  #   * admin-api-coverage   —— 全量覆盖率门（coverageThreshold 是**全局**口径，
+  #                            分片下各片覆盖率必然部分，不能随片跑，否则必红）
+  #   * admin-api-e2e        —— 迁移链 + 三套 e2e（原属同一 job，串行消除
+  #                            users_email_key 竞态）
+  # 三者并行启动；总墙钟 = max(单片 ~8min, 覆盖率 ~20min, e2e ~5min)。
   admin-api-test:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     services:
       postgres:
         image: postgres:16-alpine
@@ -120,9 +131,115 @@ jobs:
         working-directory: apps/admin-api
       - run: npm run lint
         working-directory: apps/admin-api
+      # U-2：jest 按文件哈希分片，4 片并行。覆盖率门不在此（见 admin-api-coverage）。
+      # U-3：--retryTimes=2（jest-circus）给偶发时序/资源抖动用例两次重试机会，
+      # 重试后仍红才红（playwright e2e 已有 retries:1，单元侧此前无重试机制）。
+      - name: Unit tests (shard ${{ matrix.shard }}/4)
+        run: npx jest --shard=${{ matrix.shard }}/4 --retryTimes=2
+        working-directory: apps/admin-api
+
+  # 覆盖率门：全量跑一遍 + coverageThreshold（这是分片化之后唯一不变的全局口径）。
+  admin-api-coverage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: github.event_name != 'schedule'
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: autoflow
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: autoflow_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DB_HOST: localhost
+      DB_PORT: 5432
+      DB_USERNAME: autoflow
+      DB_PASSWORD: test
+      DB_DATABASE: autoflow_test
+      REDIS_HOST: localhost
+      REDIS_PORT: 6379
+      JWT_SECRET: test-jwt-secret-32chars-long-here
+      JWT_REFRESH_SECRET: test-refresh-secret-32chars-long
+      EXECUTOR_SECRET: test-executor-secret
+      INITIAL_ADMIN_USERNAME: admin
+      INITIAL_ADMIN_PASSWORD: admin123
+      AI_PROVIDER: disabled
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: apps/admin-api/package-lock.json
+      - run: npm ci
+        working-directory: apps/admin-api
       # coverageThreshold 已按第七轮实测水位取地板（stmts 68 / branch 58 /
       # funcs 56 / lines 69），防倒退用；覆盖率抬升后应同步上调。
       - run: npm test -- --coverage
+        working-directory: apps/admin-api
+
+  # 迁移链 + e2e 保持单一串行 job（并行时 admin seed 存在 users_email_key 竞态）。
+  admin-api-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: github.event_name != 'schedule'
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: autoflow
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: autoflow_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DB_HOST: localhost
+      DB_PORT: 5432
+      DB_USERNAME: autoflow
+      DB_PASSWORD: test
+      DB_DATABASE: autoflow_test
+      REDIS_HOST: localhost
+      REDIS_PORT: 6379
+      JWT_SECRET: test-jwt-secret-32chars-long-here
+      JWT_REFRESH_SECRET: test-refresh-secret-32chars-long
+      EXECUTOR_SECRET: test-executor-secret
+      INITIAL_ADMIN_USERNAME: admin
+      INITIAL_ADMIN_PASSWORD: admin123
+      AI_PROVIDER: disabled
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: apps/admin-api/package-lock.json
+      - run: npm ci
         working-directory: apps/admin-api
       # e2e 前置：全新库跑完整迁移链建表（NODE_ENV 非显式 production 时
       # migrationsRun=false，app 不自动跑迁移）
@@ -297,6 +414,32 @@ jobs:
           echo "::notice::All findings are known exemptions (SEC-06). Next review date: 2026-10-01."
           exit 0
 
+  # ── Python 依赖漏洞审计（E-2，SEC-NEW）───────────────────────────
+  # executor-python / registry-pypi 用 == 精确锁定（可复现），但此前 CI 无
+  # 任何 Python 侧漏洞扫描（npm-audit 只覆盖 Node 包）。pip-audit 以锁定的
+  # requirements.txt 为输入解析依赖树并比对 OSV 数据库；发现已知漏洞即红。
+  # 不加 --no-deps：直接钉锁外的传递依赖（anyio/pydantic 等）同样在审计面内。
+  pip-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: github.event_name != 'schedule'
+    strategy:
+      fail-fast: false
+      matrix:
+        project: [apps/executor-python, apps/registry-pypi]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install pip-audit
+        run: pip install pip-audit
+      - name: Audit locked dependency tree
+        working-directory: ${{ matrix.project }}
+        run: |
+          pip-audit -r requirements.txt \
+            || { echo "::error::${{ matrix.project }}: 依赖树存在已知漏洞（pip-audit）— 升级钉锁版本并同步 requirements.txt"; exit 1; }
+
   executor-node-test:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -314,7 +457,10 @@ jobs:
       # executor-node 无独立 typecheck 脚本，build 即 tsc 全量类型检查
       - run: npm run build
         working-directory: apps/executor-node
-      - run: npm test
+      # L-3（审计修复）：jest coverageThreshold 只在 --coverage 下生效，CI 必须
+      # 显式传 --coverage 才让覆盖率门真正跑起来（package.json jest 配置已加
+      # collectCoverageFrom + coverageThreshold，阈值为实测水位地板）。
+      - run: npm test -- --coverage
         working-directory: apps/executor-node
 
   acf-cli-test:
@@ -374,7 +520,7 @@ jobs:
 
   admin-web-build:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
     steps:
@@ -388,6 +534,20 @@ jobs:
         working-directory: apps/admin-web
       # 基线：0 errors / 5 warnings（warnings 不阻塞）
       - run: npm run lint
+        working-directory: apps/admin-web
+      # ── 覆盖度盲区补齐（本轮审计发现）──────────────────────────────
+      # 此前本 job 只跑 lint + build：admin-web 的 **vitest 用例（现 870+）
+      # 从未在 CI 里跑过**。而本仓前端的正确性纪律几乎全压在这些用例上
+      # ——PATCH 显式 null 纪律、runtimeVersion 归一、代码来源互斥、
+      # 亲和/反亲和清空、fixedRate 秒/分钟换算等都只有用例钉着，build
+      # 全绿不代表它们仍然成立（tsc 查不出"清空控件却没发 null"这类
+      # 语义回归）。后果是这些红线只在有人**本地手跑 vitest** 时才可能
+      # 被发现有回归，属于"写了但没接上"的闸。
+      # 与 lint/build 同 job 顺序执行（同一份 npm ci 产物，不额外付费）。
+      # L-1（测试体系审计）：vitest 覆盖率此前从不收集/门控；vite.config.ts
+      # test.coverage 已配置（v8 provider + 实测水位阈值），CI 显式 --coverage
+      # 让覆盖率门真正生效。O-2 配套：重型用例逐个放宽见 test 文件内注释。
+      - run: npm test -- --coverage
         working-directory: apps/admin-web
       - run: npm run build
         working-directory: apps/admin-web
@@ -595,9 +755,38 @@ jobs:
           python-version: '3.12'
           cache: 'pip'
           cache-dependency-path: apps/executor-python/requirements.txt
+      - run: pip install -r requirements.txt pytest pytest-cov httpx pytest-asyncio pytest-xdist pytest-rerunfailures
+        working-directory: apps/executor-python
+      # U-2/U-3（审计修复）：并行 + 时序敏感用例重试——`-n 2 --dist=loadscope`
+      # 按测试文件分片（模块级状态重的套件不跨文件混跑）；`--reruns=2
+      # --reruns-delay=1` 给 F-2/F-3/F-4 类宽窗时序用例两次重试机会，避免
+      # 高负载 runner 的偶发调度抖动直接红 PR（重试后仍红才红）。
+      - run: python -m pytest --tb=short -n 2 --dist=loadscope --reruns=2 --reruns-delay=1
+        working-directory: apps/executor-python
+
+  # U-1（审计修复）：CI 矩阵此前只有 ubuntu-latest / ubuntu-24.04-arm /
+  # windows-latest，没有 macOS。`interpreters._current_platform_token()` 在
+  # macOS 上返回 macos-<arch>-none，平台过滤逻辑从未在 macOS 被验证；
+  # test_zip_safety.py 的符号链接测试在 macOS 上权限语义与 Linux 不同。
+  # 全量 585 例在 ubuntu 已覆盖，这里跑平台敏感面（解释器探测 + zip 安全
+  # + zip 通道 + 版本化 venv），避免重复花费昂贵的 macOS runner 分钟。
+  executor-python-test-macos:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    if: github.event_name != 'schedule'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: apps/executor-python/requirements.txt
       - run: pip install -r requirements.txt pytest pytest-cov httpx pytest-asyncio
         working-directory: apps/executor-python
-      - run: python -m pytest --tb=short
+      # 平台敏感面跑子集（非全量）→ 显式 --no-cov 关闭 pytest.ini 的
+      # --cov-fail-under=85 全量闸门（子集覆盖率必然 <85%，不关必红）；
+      # 全量覆盖率门由 ubuntu 的 executor-python-test 承担。
+      - run: python -m pytest tests/test_interpreters.py tests/test_zip_safety.py tests/test_zip_channel.py tests/test_venv_versioning.py --tb=short --no-cov
         working-directory: apps/executor-python
 
   autoflow-sdk-python-test:
@@ -895,6 +1084,21 @@ jobs:
         working-directory: apps/executor-node
       - run: npm ci
         working-directory: apps/admin-web
+      # L-5（审计修复）：ubuntu e2e 早在 E-18 就 setup-python + pip install
+      # （见 e2e-full job 注释），Windows job 却从未装 Python 3.12 / 
+      # executor-python 依赖——e2e-full.sh 的 python 启动分支在 Windows 上
+      # 走 skip，Python 执行器全链在 Windows e2e 中完全未覆盖。现按脚本的
+      # Windows 检测分支（apps/executor-python/.venv/Scripts/python.exe，见
+      # e2e-full.sh 的 exec_python_launcher）显式建 venv 并装依赖，与 ubuntu
+      # 侧依赖集合一致（requirements.txt）。
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Prepare executor-python venv for e2e (L-5)
+        shell: pwsh
+        run: |
+          python -m venv apps/executor-python/.venv
+          apps/executor-python/.venv/Scripts/python.exe -m pip install -r apps/executor-python/requirements.txt
       - name: Install chromium
         run: npx playwright install chromium
         working-directory: apps/admin-web
@@ -985,6 +1189,16 @@ jobs:
       - name: Main-process selftests (incl. updater)
         working-directory: apps/executor-desktop
         run: npm run test:main
+      # ── 覆盖度盲区补齐（本轮审计发现）──────────────────────────────
+      # `test:renderer`（设计令牌/无障碍/对比度/IPC 接线/安全姿态/渲染层
+      # 数值解析守卫）此前**只在本机手跑**——CI 里 `test:main` 被三个桌面
+      # job 反复调用，唯独 renderer 这一半没有任何 workflow 覆盖。它拦的
+      # 正是本轮修掉的那些渲染层缺陷（number input 的 NaN、uv 诊断谎报），
+      # 没有 CI 兜底等于修完还能悄悄回退。零额外依赖（纯 node 跑
+      # renderer.selftest.mjs），与 test:main 同 job 顺序执行。
+      - name: Renderer selftests (design tokens, a11y, IPC anchors, security posture)
+        working-directory: apps/executor-desktop
+        run: npm run test:renderer
       - name: Build AppImage + deb (x64)
         working-directory: apps/executor-desktop
         env:

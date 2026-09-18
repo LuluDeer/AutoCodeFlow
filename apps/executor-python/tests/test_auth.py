@@ -127,20 +127,25 @@ def _clear_all_tokens(monkeypatch):
     monkeypatch.setattr(_settings, 'executor_secret', '')
 
 
-def test_verify_token_dev_mode_allows_when_require_token_unset(monkeypatch):
-    """Default: an executor without any token keeps the dev-mode allow-all."""
+def test_verify_token_dev_mode_allows_only_with_explicit_opt_in(monkeypatch):
+    """S-3 (audit-r4): dev-mode allow-all 现在是**显式开关**——无 token 且未设
+    EXECUTOR_ALLOW_NO_TOKEN 时默认 503；显式 opt-in 才放行未认证请求。"""
     _clear_all_tokens(monkeypatch)
     monkeypatch.delenv('REQUIRE_TOKEN', raising=False)
-    # round-16：require_token_enabled 回退 settings——本机 .env 的
-    # REQUIRE_TOKEN=true 不能泄漏进这条 dev-mode 用例
     from config import settings as _settings
     monkeypatch.setattr(_settings, 'require_token', False)
+    # 默认（无 EXECUTOR_ALLOW_NO_TOKEN）：fail-closed
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(auth_module.verify_token(''))
+    assert exc.value.status_code == 503
+    # 显式 opt-in：dev-mode 放行
+    monkeypatch.setenv('EXECUTOR_ALLOW_NO_TOKEN', 'true')
     asyncio.run(auth_module.verify_token(''))  # must not raise
 
 
 def test_verify_token_require_token_fails_closed(monkeypatch):
     """P2: REQUIRE_TOKEN=true turns an unconfigured token into 503 instead of
-    silently accepting arbitrary executions."""
+    silently accepting arbitrary executions (legacy switch, still honored)."""
     _clear_all_tokens(monkeypatch)
     monkeypatch.setenv('REQUIRE_TOKEN', 'true')
     with pytest.raises(HTTPException) as exc:
@@ -157,7 +162,7 @@ def test_verify_token_require_token_passes_with_valid_token(monkeypatch):
 
 
 def test_execute_endpoint_fails_closed_when_require_token(monkeypatch, client):
-    """End to end: REQUIRE_TOKEN=true + no configured token -> 503 on /api/execute."""
+    """End to end: no token (with or without REQUIRE_TOKEN) -> 503 on /api/execute."""
     from routers import execute as execute_module  # noqa: F401  (app import side effects)
     _clear_all_tokens(monkeypatch)
     monkeypatch.setenv('REQUIRE_TOKEN', 'true')
@@ -166,7 +171,7 @@ def test_execute_endpoint_fails_closed_when_require_token(monkeypatch, client):
         'task': {'name': 't'},
     })
     assert response.status_code == 503
-    assert 'REQUIRE_TOKEN' in response.json()['detail']
+    assert 'refusing unauthenticated execution' in response.json()['detail']
 
 
 # ---------------------------------------------------------------------------
@@ -181,12 +186,11 @@ def _make_response(status_code: int, payload) -> httpx.Response:
 
 
 def _patch_async_client(monkeypatch, response):
-    """Replace auth.httpx.AsyncClient with a mock returning `response`."""
+    """Replace the O-24 shared client (scheduler.get_http_client) with a mock
+    returning `response` — _fetch_token 现经延迟导入取共享客户端。"""
     mock_client = AsyncMock()
-    mock_client.__aenter__.return_value = mock_client
-    mock_client.__aexit__.return_value = None
     mock_client.post = AsyncMock(return_value=response)
-    monkeypatch.setattr(auth_module.httpx, 'AsyncClient', lambda *a, **k: mock_client)
+    monkeypatch.setattr('scheduler.get_http_client', lambda: mock_client)
     return mock_client
 
 
@@ -264,10 +268,8 @@ class TestFetchToken:
 
     def test_transport_error_returns_none(self, monkeypatch):
         mock_client = AsyncMock()
-        mock_client.__aenter__.return_value = mock_client
-        mock_client.__aexit__.return_value = None
         mock_client.post = AsyncMock(side_effect=httpx.ConnectError('refused'))
-        monkeypatch.setattr(auth_module.httpx, 'AsyncClient', lambda *a, **k: mock_client)
+        monkeypatch.setattr('scheduler.get_http_client', lambda: mock_client)
         assert asyncio.run(auth_module._fetch_token()) is None
 
 

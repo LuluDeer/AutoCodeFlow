@@ -62,6 +62,11 @@ export enum DeploymentTriggerType {
   "executorAddress",
   "status",
 ])
+// O-1: rollout restart sweep only touches in-flight (pending/probing) rows;
+// partial index keeps it small. Mirrors the task_executions running partial index.
+@Index("idx_app_deployments_rollout_state_active", ["rolloutState"], {
+  where: "\"rolloutState\" IN ('pending','probing')",
+})
 export class AppDeployment {
   @PrimaryGeneratedColumn("uuid") id: string;
 

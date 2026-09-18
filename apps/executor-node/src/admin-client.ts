@@ -1,7 +1,22 @@
 import axios, { AxiosInstance, AxiosResponse, AxiosError } from 'axios';
+import http from 'http';
 import { logger } from './logger';
 import { getCurrentToken, getStaticToken, forceTokenRefresh } from './middleware/auth';
 import { normalizeAdminApiBaseUrl } from './admin-api-url';
+
+// O-23: previously performRequest called axios.create() on every invocation
+// (and again on every failover retry). Each factory call produced a brand-new
+// client with a fresh connection pool — the keep-alive socket was discarded
+// when the response returned, so every heartbeat / long-poll round-trip paid a
+// fresh TCP handshake (and on TLS endpoints a full TLS re-handshake). A single
+// long-lived instance with a keepAlive agent reuses sockets across all requests
+// and replicas. Per-request baseURL (failover), timeout (10s vs 40s long-poll),
+// headers (static vs current token) are still supplied in client.request() so
+// the existing retry/failover/auth semantics stay byte-for-byte identical.
+const sharedHttpAgent = new http.Agent({ keepAlive: true, maxSockets: 32 });
+const sharedAxios: AxiosInstance = axios.create({
+  httpAgent: sharedHttpAgent,
+});
 
 let adminUrls: string[] = [];
 let currentIndex = 0;
@@ -53,7 +68,7 @@ export async function checkAdminApiConnectivity(
     for (let i = 0; i < adminUrls.length; i++) {
       const url = adminUrls[i];
       try {
-        await axios.get(`${url}/api/health`, { timeout: timeoutMs });
+        await sharedAxios.get(`${url}/api/health`, { timeout: timeoutMs });
         currentIndex = i;
         logger.info(`Admin API connectivity check succeeded: ${url}`);
         return true;
@@ -120,17 +135,12 @@ async function performRequest<T = any>(
 
   for (let i = 0; i < retryCount; i++) {
     try {
-      const client: AxiosInstance = axios.create({
-        baseURL: adminUrls[currentIndex],
-        // ARCH-32: 可选长超时（pull 长轮询服务端阻塞 25s；其余调用维持 10s）
+      const response = await sharedAxios.request({
+        method,
+        url: `${adminUrls[currentIndex]}${path}`,
+        data,
         timeout: timeoutMs,
         headers,
-      });
-
-      const response = await client.request({
-        method,
-        url: path,
-        data,
         // E-07: 仅在调用方显式传入 signal 时才挂上（保持其余调用的请求形状
         // 逐字节不变，避免无谓的契约面扩大）。
         ...(signal ? { signal } : {}),

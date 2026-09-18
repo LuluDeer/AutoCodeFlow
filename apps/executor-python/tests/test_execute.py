@@ -192,7 +192,11 @@ def test_run_and_callback_posts_result_with_executor_address(monkeypatch):
     asyncio.run(execute_module._run_and_callback(req))
 
     assert posted['url'] == 'http://admin.local/api/executions/callback'
-    assert posted['headers'] == {'Authorization': 'Bearer dynamic-token'}
+    # B-2 parity：回传头在鉴权之外恒带 x-executor-address（admin 按执行器限流）。
+    assert posted['headers'] == {
+        'Authorization': 'Bearer dynamic-token',
+        'x-executor-address': 'public-executor:9000',
+    }
     assert posted['json'] == [{
         'executionId': 'exec-callback',
         'status': 'success',
@@ -250,6 +254,21 @@ def test_execute_at_capacity_returns_429(auth_client):
 
     assert response.status_code == 429
     assert 'capacity' in response.json()['detail'].lower()
+
+
+def test_execute_disk_critical_returns_503(auth_client, monkeypatch):
+    """P2：磁盘临界水位（≥95%）下 accept 阶段拒绝新任务——磁盘满时任何任务
+    都会在写 workdir/log 阶段失败，提前拒绝比让任务在准备阶段失败更诚实。
+    （对齐 node acceptExecution 的 diskUsagePercent 检查。）"""
+    from routers import execute as execute_module
+
+    monkeypatch.setattr(execute_module, 'disk_usage_percent', lambda *a, **k: 96.0)
+    response = auth_client.post('/api/execute', json={
+        'executionId': 'exec-disk-full',
+        'task': {'name': 'test', 'runtime': 'python', 'script': 'pass'},
+    })
+    assert response.status_code == 503
+    assert 'disk' in response.json()['detail'].lower()
 
 
 # ---------------------------------------------------------------------------
@@ -491,6 +510,109 @@ def test_shell_glue_script_executes(tmp_path, monkeypatch):
     result = asyncio.run(run_task(req))
     assert result['success'] is True
     assert 'glue-ok' in result['logs']
+
+
+@pytest.mark.parametrize('language,expected_file', [
+    ('python', 'glue_script.py'),
+    ('glue_python', 'glue_script.py'),
+    ('PYTHON', 'glue_script.py'),
+    ('Glue_Python', 'glue_script.py'),
+    (' glue_python ', 'glue_script.py'),
+    ('javascript', 'glue_script.js'),
+    ('glue_node', 'glue_script.js'),
+    ('JavaScript', 'glue_script.js'),
+])
+def test_legacy_glue_language_forms_are_accepted(language, expected_file, tmp_path, monkeypatch):
+    """GLUE-LANG-01：`glue_*` 历史形态与大小写必须与 executor-node 同判。
+
+    两侧判据对照（node `routes/execute.ts` 的 glue 分支）：
+      * `glueLanguage.toLowerCase()` 后同时接受裸语言名（`python`/
+        `javascript`/`shell`）与历史 `glue_*` 形态（`glue_python`/
+        `glue_node`/`glue_shell`）；
+      * 协议 enum（protocol.json schemas.TaskConfig.glueLanguage）同样是这 6
+        个取值——本执行器拒掉它们等于与**自己签字的契约**不符。
+
+    失败模式（改动前）：本侧只做精确字符串比较，`glue_python` / `PYTHON`
+    一律 400 `Unsupported glue language`。存量库里 `glue_*` 是迁移期的真实
+    形态，于是同一份载荷在 node 上按 python 跑、在这里被拒——两侧对同一
+    载荷一收一拒（CONTRACT §3.3 明令禁止），且是"任务在 node 能跑、换到
+    python 执行器就 400"的静默不可移植。
+
+    反证：把 run_task 的 glue 分支改回 `glue_language == 'python'` 精确比较，
+    本例（除裸 `python` 外）立即转红。
+    """
+    from routers import execute as execute_module
+    from routers.execute import ExecuteRequest, run_task
+
+    monkeypatch.setattr(execute_module.settings, 'work_dir', str(tmp_path))
+    spawns = []
+
+    class _Proc:
+        """运行阶段按行读 `proc.stdout`，故 stdout 必须是异步迭代器。"""
+
+        returncode = 0
+
+        def __init__(self):
+            self.stdout = self._lines()
+
+        async def _lines(self):
+            if False:  # pragma: no cover - 空异步生成器
+                yield b''
+            return
+
+        async def communicate(self):
+            return b'', b''
+
+        def kill(self):
+            pass
+
+        async def wait(self):
+            return 0
+
+    async def fake_exec(*args, **kwargs):
+        spawns.append(list(args))
+        return _Proc()
+
+    monkeypatch.setattr(execute_module.asyncio, 'create_subprocess_exec', fake_exec)
+
+    result = asyncio.run(run_task(ExecuteRequest(
+        executionId='exec-glue-lang', task={
+            'name': 'glue-lang', 'runtime': 'shell',
+            'glueSource': '@echo off' if sys.platform == 'win32' else 'echo hi',
+            'glueLanguage': language,
+        })))
+
+    assert result.get('errorMessage') is None, (
+        f'glueLanguage={language!r} 必须被接受（node 侧同判），实际：'
+        f'{result.get("errorMessage")}'
+    )
+    written = tmp_path / 'exec-glue-lang' / expected_file
+    assert written.exists(), f'{language!r} 应落盘 {expected_file}'
+    assert spawns, '脚本必须真的被执行'
+
+
+@pytest.mark.parametrize('language', ['ruby', 'glue_ruby', 'perl', ''])
+def test_unsupported_glue_language_is_still_rejected(language, tmp_path, monkeypatch):
+    """反向断言：放宽不得变成"什么都收"——未知语言仍须 400。
+
+    `''` 不在本例的失败路径上（空串按 task.runtime 回退，node 侧同款），
+    故此处只断言非空的未知取值。
+    """
+    from routers import execute as execute_module
+    from routers.execute import ExecuteRequest, run_task
+
+    monkeypatch.setattr(execute_module.settings, 'work_dir', str(tmp_path))
+
+    req = ExecuteRequest(executionId='exec-glue-bad', task={
+        'name': 'glue-bad', 'runtime': 'python',
+        'glueSource': 'print(1)', 'glueLanguage': language,
+    })
+    if language == '':
+        return
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(run_task(req))
+    assert exc.value.status_code == 400
+    assert 'Unsupported glue language' in str(exc.value.detail)
 
 
 # ---------------------------------------------------------------------------
@@ -1606,6 +1728,107 @@ def test_run_task_callback_env_not_overridable_by_params(tmp_path, monkeypatch):
     assert env['AUTOFLOW_CALLBACK_TOKEN'].startswith('v1.exec-cbenv.')
     assert env['AUTOFLOW_ADMIN_API_URL'] == 'http://admin.local'
     assert env['AUTOFLOW_EXECUTOR_ADDRESS'] == 'pub:9000'
+
+
+def test_run_task_runtime_version_resolves_interpreter_and_runs_with_it(monkeypatch, tmp_path):
+    """E-1（审计补漏）：声明 runtimeVersion 的任务全链集成守卫——"版本声明 →
+    解释器解析（ensure_version 接线）→ 用解析出的解释器执行"。
+
+    背景：test_interpreters.py 覆盖了 ensure_version/resolve_python_bin 的单元
+    行为，test_execute.py 覆盖了 execute 路由，但此前没有任何用例验证"带
+    runtimeVersion: '3.9' 的请求到达后，run_task 会以该版本调用解释器解析，
+    并把返回的池内解释器用于执行"（executor-node 有
+    execute.python-multiversion.spec.ts 对等，python 侧无）。D14 的核心承诺
+    ——"声明版本取不到就失败，绝不静默回退宿主解释器"——的接线回归没有守卫。
+
+    本用例走 **AC-04c 无依赖分支**：无 requirements、无 glue，声明版本后
+    run_task 必须调 `_ensure_interpreter('3.9')` 并把返回路径放进命令 argv。
+    """
+    from routers import execute as execute_module
+    from routers.execute import ExecuteRequest, run_task
+
+    monkeypatch.setattr(execute_module.settings, 'work_dir', str(tmp_path))
+    monkeypatch.setattr(execute_module.settings, 'admin_api_url', 'http://admin.local')
+    monkeypatch.setattr(execute_module.settings, 'admin_api_url_internal', '')
+    monkeypatch.setattr(execute_module.settings, 'admin_api_url_external', '')
+    monkeypatch.setattr(execute_module.settings, 'executor_shared_token', 'tok')
+    monkeypatch.setattr(execute_module.settings, 'executor_secret', '')
+
+    pool_python = tmp_path / 'pool' / 'cpython-3.9.25-windows-x86_64-none' / 'python.exe'
+    pool_python.parent.mkdir(parents=True)
+    pool_python.write_bytes(b'')
+
+    resolved = []
+
+    async def fake_ensure_interpreter(version, timeout):
+        resolved.append((version, timeout))
+        return pool_python
+
+    monkeypatch.setattr(execute_module, '_ensure_interpreter', fake_ensure_interpreter)
+
+    spawns = []
+
+    async def fake_spawn(*args, **kwargs):
+        spawns.append(list(args))
+        return _FakeTaskProc()
+
+    monkeypatch.setattr(execute_module.asyncio, 'create_subprocess_exec', fake_spawn)
+
+    req = ExecuteRequest(executionId='exec-rtv', task={
+        'id': 'task-rtv', 'runtime': 'python', 'script': 'print(1)',
+        'runtimeVersion': '3.9',
+    })
+    result = asyncio.run(run_task(req))
+
+    assert result['success'] is True
+    # ① 声明版本必须交给解释器解析（以正确版本 + 受控超时预算）
+    assert resolved == [('3.9', execute_module._interpreter_download_timeout())], (
+        f'run_task 必须按声明版本调 _ensure_interpreter，实际 {resolved}'
+    )
+    # ② 解析出的池内解释器必须真正用于执行（argv[0] 是被解析路径，不是宿主 python）
+    assert spawns, '任务必须真正 spawn 子进程'
+    assert spawns[0][0] == str(pool_python), (
+        f'无依赖分支必须用解析出的解释器执行，实际 argv[0]={spawns[0][0]!r}'
+    )
+
+
+def test_run_task_runtime_version_unavailable_fails_loudly(monkeypatch, tmp_path):
+    """E-1 反证：声明版本取不到 → 明确失败为 interpreter_unavailable，
+    绝不静默回退宿主解释器（D14）。"""
+    import interpreters
+    from routers import execute as execute_module
+    from routers.execute import ExecuteRequest, run_task
+
+    monkeypatch.setattr(execute_module.settings, 'work_dir', str(tmp_path))
+    monkeypatch.setattr(execute_module.settings, 'admin_api_url', 'http://admin.local')
+    monkeypatch.setattr(execute_module.settings, 'admin_api_url_internal', '')
+    monkeypatch.setattr(execute_module.settings, 'admin_api_url_external', '')
+    monkeypatch.setattr(execute_module.settings, 'executor_shared_token', 'tok')
+    monkeypatch.setattr(execute_module.settings, 'executor_secret', '')
+
+    spawns = []
+
+    async def fake_spawn(*args, **kwargs):
+        spawns.append(list(args))
+        return _FakeTaskProc()
+
+    monkeypatch.setattr(execute_module.asyncio, 'create_subprocess_exec', fake_spawn)
+
+    async def boom(version, timeout):
+        raise interpreters.InterpreterUnavailable('3.9', 'download_failed', 'simulated')
+
+    monkeypatch.setattr(execute_module, '_ensure_interpreter', boom)
+
+    req = ExecuteRequest(executionId='exec-rtv-fail', task={
+        'id': 'task-rtv-fail', 'runtime': 'python', 'script': 'print(1)',
+        'runtimeVersion': '3.9',
+    })
+    result = asyncio.run(run_task(req))
+
+    assert result['success'] is False
+    assert spawns == [], '取不到声明版本时绝不能 spawn 任何进程（不静默回退）'
+    assert 'interpreter' in (result.get('errorMessage') or '').lower() or \
+        '3.9' in (result.get('errorMessage') or '')
 
 
 def test_run_task_omits_callback_token_without_secret(tmp_path, monkeypatch):

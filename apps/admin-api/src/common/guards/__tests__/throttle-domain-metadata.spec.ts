@@ -1,5 +1,6 @@
 import { APP_GUARD } from "@nestjs/core";
 import { ThrottlerGuard } from "@nestjs/throttler";
+import { ExecutorAwareThrottlerGuard } from "../executor-aware-throttler.guard";
 import { ConfigService } from "@nestjs/config";
 import { AUTH_THROTTLE, OPS_THROTTLE } from "../../../config/throttle-profiles";
 import { AppModule } from "../../../app.module";
@@ -132,16 +133,24 @@ describe("SEC-09 分域档位元数据绑定", () => {
     expect(skip).toBeUndefined();
   });
 
-  it("全局挂载形态不变：AppModule 仍以 APP_GUARD 注册 ThrottlerGuard，且 ThrottlerModule 工厂带 skipIf 旁路开关", () => {
+  it("全局挂载形态：AppModule 以 APP_GUARD 注册 ExecutorAwareThrottlerGuard（ThrottlerGuard 子类，B-2 按执行器维度限流），且 ThrottlerModule 工厂带 skipIf 旁路开关", () => {
     const providers = Reflect.getMetadata("providers", AppModule) as Array<{
       provide?: unknown;
       useClass?: unknown;
     }>;
-    expect(
-      providers.some(
-        (p) => p?.provide === APP_GUARD && p?.useClass === ThrottlerGuard,
-      ),
-    ).toBe(true);
+    // B-2（中台↔执行器深度审查）：全局限流守卫由 ThrottlerGuard 换为
+    // ExecutorAwareThrottlerGuard——回调限流键从「按 IP」升级为「按执行器
+    // 地址」（x-executor-address 头优先，无头回退 IP 键）。守卫是 ThrottlerGuard
+    // 的子类，本断言收紧为具体类，防止未来误换回非执行器感知的实现。
+    const throttlingGuard = providers.find(
+      (p) => p?.provide === APP_GUARD && p?.useClass === ThrottlerGuard,
+    );
+    expect(throttlingGuard).toBeUndefined();
+    const executorAwareGuard = providers.find(
+      (p) =>
+        p?.provide === APP_GUARD && p?.useClass === ExecutorAwareThrottlerGuard,
+    );
+    expect(executorAwareGuard).toBeDefined();
 
     // forRootAsync 工厂形状（复刻 app.module.spec 的 Bull 根配置检查法）
     const imports = Reflect.getMetadata("imports", AppModule) as Array<{

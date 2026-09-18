@@ -334,6 +334,63 @@ def test_invalid_runtime_version_is_rejected_before_anything_runs(monkeypatch, t
     assert spawns == []
 
 
+def test_numeric_runtime_version_is_rejected_never_coerced(monkeypatch, tmp_path):
+    """数字形态的 runtimeVersion 必须**拒绝**，绝不 str() 强转。
+
+    失败模式（改动前）：`str(_raw_runtime_version)` 把数字兜住了——JSON 数字会被
+    IEEE754 吃掉尾零，客户端写 `"runtimeVersion": 3.10`，服务端拿到的浮点就是
+    3.1，`str()` 出来 `'3.1'`，形状合法、校验通过，于是**用户声明 3.10、任务实际
+    跑 3.1**。这是"静默按错版本跑"，比直接失败危险得多。
+
+    另一重理由：executor-node 的 normalizeRuntimeVersion 要求
+    `typeof === 'string'`（数字一律抛 Invalid runtimeVersion），故强转还会造成
+    两侧对同一载荷**一收一拒**（CONTRACT §3.3 全对等）。数字形态已在协议向量
+    `runtimeVersion-not-a-string` 里钉成两侧共同拒绝。
+    """
+    _patch_env(monkeypatch, tmp_path)
+    spawns = _capture_spawns(monkeypatch)
+
+    for bad in (3.11, 3, True, ['3.11'], {'v': '3.11'}):
+        result = asyncio.run(execute_module.run_task(ExecuteRequest(
+            executionId='exec-num-ver', task={
+                'id': 'task-num-ver', 'runtime': 'python',
+                'runtimeVersion': bad, 'entrypoint': 'main.py',
+            })))
+        assert result['success'] is False, f'{bad!r} 必须被拒绝，不得强转'
+        assert 'runtimeVersion' in result['errorMessage']
+    assert spawns == [], '拒绝必须发生在任何子进程之前'
+
+
+def test_snake_case_runtime_version_alias_is_honoured(monkeypatch, tmp_path):
+    """snake_case 别名必须与 executor-node 同样生效。
+
+    executor-node 读 `task.runtimeVersion ?? task.runtime_version`
+    （execute.ts:1413），python 此前只读驼峰——于是同一条
+    `{"runtime_version": "3.11"}` 在 node 上按 3.11 跑、在 python 上**静默落回
+    宿主默认解释器**（D14 明令禁止的静默降级）。
+
+    判据复用既有夹具：让解释器解析失败，若别名被消费则应看到 requested=3.11
+    的失败留痕；若别名被忽略，任务会走"未声明版本"分支**成功**跑下去。
+    """
+    _patch_env(monkeypatch, tmp_path)
+    _capture_spawns(monkeypatch)
+    _failing_interpreter(monkeypatch, reason='not_downloadable',
+                         detail='3.11 needs prefill')
+    monkeypatch.setattr(execute_module, '_pool_summary',
+                        lambda: {'install_dir': '/pool', 'versions': []})
+
+    result = asyncio.run(execute_module.run_task(ExecuteRequest(
+        executionId='exec-alias', task={
+            'id': 'task-alias', 'runtime': 'python',
+            'runtime_version': '3.11', 'entrypoint': 'main.py',
+        })))
+
+    assert result['success'] is False, (
+        'snake_case 别名未被消费——会与 executor-node 分叉（node 按 3.11 跑）'
+    )
+    assert result['result']['interpreter']['requested'] == '3.11'
+
+
 def test_declared_version_on_a_node_task_does_not_change_its_argv(monkeypatch, tmp_path):
     """NG-02：node 多版本不在本期范围——声明了也不影响既有 argv（不失败）。"""
     _patch_env(monkeypatch, tmp_path)
