@@ -77,7 +77,13 @@ export function applyTaskRlimits(
     return { cmd, args };
   }
 
-  // "$0" = 'task'（占位名），任务本体经位置参数透传，绝不插值任务字符串。
-  const script = `${statements.join(' && ')}; exec "$0" "$@"`;
+  // R12-fix（CI selftests pull-dispatch ④ exit 127 根因）：`exec "$0" "$@"`
+  // 是错的——`sh -c <script> task node glue.js` 里 $0='task'（占位名）、
+  // $1=真实命令、$2..=参数，`exec "$0"` 会把占位名当命令找 → command not
+  // found → 127。POSIX 兼容写法：取命令到变量 → shift → `exec "$cmd" "$@"`
+  // （$@ 此时从原 $2 开始）。任务参数仍经位置参数透传，无字符串拼接注入面。
+  // ulimit 失败（如容器硬限制低于设定值）不阻断任务：`;` 分隔保证 exec
+  // 始终执行，ulimit 只是 best-effort 防护（失败时静默放弃该档）。
+  const script = `${statements.join('; ')}; cmd=$1; shift; exec "$cmd" "$@"`;
   return { cmd: '/bin/sh', args: ['-c', script, 'task', cmd, ...args] };
 }
