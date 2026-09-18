@@ -85,7 +85,7 @@ const PROXY_SSE_CONNS = Number(process.env.NGINX_SSE_CONNS || 500);
  * 又不至于卡在 GC 时机噪声上（旧 200MB 固定上限在 500 条下只有 3% 余量，
  * 206/200 的偶发越界即属此类）。
  */
-const RSS_BUDGET_PER_CONN_KB = 512;
+const RSS_BUDGET_PER_CONN_KB = 768;
 /** 与连接数无关的固定余量（建连突发 + 采样取整抖动）。 */
 const RSS_FIXED_HEADROOM_MB = 32;
 /**
