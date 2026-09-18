@@ -11,12 +11,7 @@ import {
   Query,
   ParseIntPipe,
 } from "@nestjs/common";
-import {
-  ApiTags,
-  ApiOperation,
-  ApiBearerAuth,
-  ApiExcludeEndpoint,
-} from "@nestjs/swagger";
+import { ApiTags, ApiOperation, ApiBearerAuth } from "@nestjs/swagger";
 import { Request } from "express";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { RolesGuard } from "../../common/guards/roles.guard";
@@ -195,13 +190,16 @@ export class ConfigController {
   // 的 ADMIN 收敛：任何能建任务的用户都需要在表单里读到正确区间，且此处无
   // secrets 可泄。
   //
-  // 契约面（openapi.json / api-types.ts）刻意不纳入：本机无 PG/Redis，
-  // `npm run swagger:export`（test/openapi-export.e2e-spec.ts）无法重跑，新增可被
-  // 扫描的端点会让 CI 的 openapi-drift 双闸红（ci.yml 1486/1499）。前端以**手写
-  // 返回类型**消费（admin-web api/config.ts），不依赖 generated api-types。待具备
-  // 导出条件时去掉本装饰器并重跑 swagger:export + gen:api-types 即可纳入契约面。
   // NOTE: 静态路由必须声明在下方动态 ':key' 路由之前，否则会被 ':key' 抢先匹配。
-  @ApiExcludeEndpoint()
+  @ApiOperation({
+    summary: "Get the authoritative Python runtime version contract",
+    description:
+      "Returns the currently effective declareable range (min/max, overridable via " +
+      "PYTHON_RUNTIME_VERSION_MIN/MAX), the online-download floor (onlineMin) and the " +
+      "legacy fallback interpreter for executors that do not report interpreters. " +
+      "The frontend injects these into its version helpers instead of hardcoding them. " +
+      "Returns contract constants only — no config-store values, no secrets.",
+  })
   @Get("runtime-version")
   async getRuntimeVersion() {
     const range = getSupportedRange();

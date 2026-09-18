@@ -1765,6 +1765,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/config/runtime-version": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get the authoritative Python runtime version contract
+         * @description Returns the currently effective declareable range (min/max, overridable via PYTHON_RUNTIME_VERSION_MIN/MAX), the online-download floor (onlineMin) and the legacy fallback interpreter for executors that do not report interpreters. The frontend injects these into its version helpers instead of hardcoding them. Returns contract constants only — no config-store values, no secrets.
+         */
+        get: operations["ConfigController_getRuntimeVersion"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/config/{key}": {
         parameters: {
             query?: never;
@@ -3197,6 +3217,11 @@ export interface components {
              * @example 1.0.0
              */
             version?: string;
+            /**
+             * @description PROTOCOL-VER (B-3/U-2): 执行器线缆协议版本（与实现版本 version 解耦）。中台按兼容矩阵分支：低于 supportedMin 只 warn + 兜底，不拒绝注册。
+             * @example 1
+             */
+            protocolVersion?: number;
             /**
              * @description Declared capabilities
              * @example [
@@ -6277,6 +6302,23 @@ export interface operations {
         };
     };
     ConfigController_getExecutorSharedToken: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    ConfigController_getRuntimeVersion: {
         parameters: {
             query?: never;
             header?: never;
