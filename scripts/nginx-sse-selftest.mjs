@@ -221,7 +221,7 @@ function openSse(url, token) {
       }
     },
   };
-  state.ready = (async () => {
+  state.ready = new Promise((resolveReady, rejectReady) => {
     const parsed = new URL(url);
     const req = http.request(
       {
@@ -232,11 +232,14 @@ function openSse(url, token) {
         headers: { authorization: `Bearer ${token}`, accept: 'text/event-stream' },
       },
       (res) => {
+        // 响应头到达即视为建连完成（与 fetch 语义一致：await 后 status/headers 已就绪）
         state.status = res.statusCode;
         state.headers = new Headers(res.headers);
+        resolveReady(req);
         if (!res.statusCode || res.statusCode >= 400) {
           state.error = `HTTP ${res.statusCode}`;
           state.ended = true;
+          res.resume();
           return;
         }
         let lastAt = Date.now();
@@ -268,10 +271,10 @@ function openSse(url, token) {
     req.on('error', (e) => {
       if (!state.ended) state.error = e.message;
       state.ended = true;
+      rejectReady(e);
     });
     req.end();
-    return req;
-  })();
+  });
   return state;
 }
 
