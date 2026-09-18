@@ -2597,6 +2597,44 @@
         ]
       }
     },
+    "/executors/runtime-config": {
+      "get": {
+        "description": "Effective liveness thresholds used by the backend (heartbeatTimeoutMs = heartbeatIntervalMs × timeoutMultiplier; the stale sweep marks executors OFFLINE after that much silence) plus the findAll() list cap and the total executor count, so the admin UI can align its stale coloring with the backend and warn when the list is truncated (listLimit < executorTotal).",
+        "operationId": "ExecutorController_getRuntimeConfig",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Effective executor runtime config",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "example": {
+                    "code": 200,
+                    "message": "success",
+                    "data": {
+                      "heartbeatIntervalMs": 30000,
+                      "heartbeatTimeoutMultiplier": 3,
+                      "heartbeatTimeoutMs": 90000,
+                      "listLimit": 500,
+                      "executorTotal": 12
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Get effective executor runtime config",
+        "tags": [
+          "Executors"
+        ]
+      }
+    },
     "/executors/install-cmd": {
       "get": {
         "description": "Returns the shell command to install and start the executor on the target machine.",
@@ -7792,11 +7830,6 @@
             "type": "string",
             "description": "Executor version",
             "example": "1.0.0"
-          },
-          "protocolVersion": {
-            "type": "number",
-            "description": "PROTOCOL-VER (B-3/U-2): 执行器线缆协议版本（与实现版本 version 解耦）。中台按兼容矩阵分支：低于 supportedMin 只 warn + 兜底，不拒绝注册。",
-            "example": 1
           },
           "capabilities": {
             "description": "Declared capabilities",
