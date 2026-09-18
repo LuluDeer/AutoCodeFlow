@@ -136,6 +136,15 @@ export class MetricsStreamController {
 
       try {
         while (!ac.signal.aborted) {
+          // R12-fix（nginx-sse ⑤ 间歇性 terminated）：ping 检查必须在
+          // snapshot 之前——原顺序（snapshot → send → wait → ping）在快照
+          // 查询慢（DB 连接池排队/查询卡顿）时，循环卡在 snapshot 上，
+          // 保活帧永远没机会发出；上游 60s（现 300s）无字节 → 反代断流。
+          // 先保活、再取数，DB 慢只影响数据帧新鲜度，不影响连接存活。
+          if (Date.now() - lastWriteAt >= idlePing) {
+            ping();
+            lastWriteAt = Date.now();
+          }
           const snap = await snapshot();
           if (ac.signal.aborted) break;
           if (snap.errors.length > 0) {
@@ -149,11 +158,6 @@ export class MetricsStreamController {
           // 分片等待：abort 立即唤醒（close 先例：signal abort → resolve）。
           const wake = await this.waitCancellable(ac.signal, interval);
           if (wake) break;
-          // idle 保活：整段无任何写出时补注释帧
-          if (Date.now() - lastWriteAt >= idlePing) {
-            ping();
-            lastWriteAt = Date.now();
-          }
         }
         if (!res.writableEnded) {
           send({ reason: "stream closed" }, "done");
