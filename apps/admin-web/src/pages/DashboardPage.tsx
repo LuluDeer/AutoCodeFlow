@@ -53,7 +53,7 @@ function KpiFootnote({ children }: { children?: ReactNode }) {
         display: 'flex',
         alignItems: 'center',
         fontSize: 11,
-        color: 'var(--color-secondary)',
+        color: 'var(--chart-axis-text)',
         opacity: 0.7,
       }}
     >

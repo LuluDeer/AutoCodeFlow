@@ -99,7 +99,11 @@ export default function LoginPage() {
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        background: 'linear-gradient(135deg, #f0f4ff 0%, #f5f0ff 100%)',
+        // UX-02（本轮体验审查）：此前硬编码亮色渐变 #f0f4ff→#f5f0ff，暗色模式
+        // 下退出登录/会话过期跳回登录页时，整页是刺眼浅蓝紫，与全站暗色壳层
+        // 割裂（登录页在 ThemedProviders 内，Card 容器已取暗面 #1A1E2F）。
+        // 改用主题感知变量，两套主题各得其所。
+        background: 'var(--color-background)',
         padding: '24px 16px',
       }}
     >
@@ -110,12 +114,15 @@ export default function LoginPage() {
               width: 56,
               height: 56,
               borderRadius: 16,
-              background: 'linear-gradient(135deg, #1677ff 0%, #7c3aed 100%)',
+              // UX-02：此前是旧 antd 蓝紫渐变 #1677ff→#7c3aed，与全站
+              // #22C55E 强调色（theme/ThemeProviders.tsx colorPrimary）不一致。
+              // 与 MainLayout 的品牌渐变同源（MASTER §Accent/CTA）。
+              background: 'linear-gradient(135deg, #22c55e 0%, #16a34a 100%)',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
               margin: '0 auto 16px',
-              boxShadow: '0 8px 24px rgba(22,119,255,0.3)',
+              boxShadow: '0 8px 24px rgba(34,197,94,0.3)',
             }}
           >
             <ThunderboltOutlined style={{ fontSize: 24, color: '#fff' }} />
@@ -137,7 +144,10 @@ export default function LoginPage() {
           <Title
             level={5}
             id={totpStage ? 'login-form-title-totp' : 'login-form-title'}
-            style={{ margin: '0 0 24px', color: '#333' }}
+            // UX-02：此前硬编码 color: '#333'——暗色卡面 #1A1E2F 上对比度仅
+            // 1.31:1，标题「登录账号」几乎看不见。去掉该属性让 antd 的
+            // colorText token 生效（随主题翻转）。
+            style={{ margin: '0 0 24px' }}
           >
             {totpStage ? t('login.twoFactor') : t('login.account')}
           </Title>
@@ -196,7 +206,8 @@ export default function LoginPage() {
                   style={{
                     height: 44,
                     borderRadius: 10,
-                    background: 'linear-gradient(135deg, #1677ff, #7c3aed)',
+                    // UX-02：收敛到全站品牌绿（原为旧 antd 蓝紫）。
+                    background: 'linear-gradient(135deg, #22c55e, #16a34a)',
                     border: 'none',
                     fontSize: 15,
                   }}
@@ -248,7 +259,8 @@ export default function LoginPage() {
                 style={{
                   height: 44,
                   borderRadius: 10,
-                  background: 'linear-gradient(135deg, #1677ff, #7c3aed)',
+                  // UX-02：收敛到全站品牌绿（原为旧 antd 蓝紫）。
+                  background: 'linear-gradient(135deg, #22c55e, #16a34a)',
                   border: 'none',
                   fontSize: 15,
                 }}

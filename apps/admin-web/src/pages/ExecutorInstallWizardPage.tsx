@@ -128,11 +128,17 @@ function CodeBlock({ code, label }: { code: string; label: string }) {
           size="small"
           icon={<CopyOutlined />}
           style={{ position: 'absolute', top: 6, right: 6, color: '#aaa' }}
-          onClick={() =>
-            navigator.clipboard
-              .writeText(code)
-              .then(() => message.success(t('install.copiedLabel', { label })))
-          }
+          // UX-04（本轮体验审查）：此前 `.then(() => message.success(...))`
+          // **没有 rejection handler**——剪贴板被拒时点了没反应也无报错，
+          // 用户以为命令已复制。改用统一封装按真实结果反馈。
+          onClick={async () => {
+            const ok = await copyText(code);
+            if (ok) {
+              message.success(t('install.copiedLabel', { label }));
+            } else {
+              message.error(t('install.copyFail'));
+            }
+          }}
           aria-label={t('install.copyLabel', { label })}
         />
       </Tooltip>

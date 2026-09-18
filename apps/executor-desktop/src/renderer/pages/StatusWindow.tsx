@@ -92,9 +92,26 @@ function LogViewer({
 
   // 加载日志文件列表
   useEffect(() => {
-    if (showFiles) {
-      window.electronAPI.listLogFiles().then(setLogFiles);
-    }
+    if (!showFiles) return;
+    // EXP-09（本轮体验审查）：此前是 `listLogFiles().then(setLogFiles)`——
+    // 既无 .catch 也无 `typeof === 'function'` 守卫。旧版 preload 未暴露该方法
+    // 时这里会**同步抛 TypeError** → React 卸载整棵树 → 窗口只剩背景色（正是
+    // preload/index.ts:40-42 记录过的那次事故形态）。同仓 ConfigPage.tsx:93 已
+    // 为同类情形写了 typeof 守卫，此处对齐。
+    if (typeof window.electronAPI.listLogFiles !== 'function') return;
+    let cancelled = false;
+    window.electronAPI
+      .listLogFiles()
+      .then((files) => {
+        if (!cancelled) setLogFiles(files);
+      })
+      .catch(() => {
+        // 读取失败时保持空列表（面板显示「暂无日志文件」），不炸整棵渲染树。
+        if (!cancelled) setLogFiles([]);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [showFiles]);
 
   // Esc 关闭
@@ -234,11 +251,30 @@ export default function StatusWindow() {
   const autoScroll = useRef(true);
 
   useEffect(() => {
-    window.electronAPI.getStatus().then((s) => {
-      setStatus(s.status as Status);
-      setConfig(s.config);
-      setStatusLoaded(true);
-    });
+    // EXP-04（本轮体验审查）：此前无 .catch —— `executor:status` handler 要读
+    // configStore.getAllMasked()，配置文件损坏/schema 校验抛错/token 解密异常时
+    // 该 IPC reject，于是 statusLoaded 永远为 false：状态徽章永久停在「加载中...」
+    // 大按钮永久灰色不可点，且页内没有任何错误提示（actionError 只由
+    // handleStart/handleStop 设置）。用户既无法从界面启动执行器也不知道原因，
+    // 只能重启应用且大概率复现——「按钮永久 disabled + 错误被吞」。
+    //
+    // 同文件 getTodayLogs() 本就有 .catch，属遗漏而非设计。修法与它对齐：
+    // 失败时也置 statusLoaded=true（status 保持 stopped，让按钮可点），并把
+    // 原因写进既有的 actionError 错误条。
+    window.electronAPI
+      .getStatus()
+      .then((s) => {
+        setStatus(s.status as Status);
+        setConfig(s.config);
+      })
+      .catch((err: unknown) => {
+        setActionError(
+          `无法读取执行器状态：${err instanceof Error ? err.message : String(err)}。可尝试重启应用；若持续出现请检查配置文件是否损坏。`,
+        );
+      })
+      .finally(() => {
+        setStatusLoaded(true);
+      });
 
     // 启动时先加载当天的历史日志（经 preload 暴露的方法；禁止用
     // window.electronAPI.invoke —— preload 不暴露 invoke，会同步抛异常

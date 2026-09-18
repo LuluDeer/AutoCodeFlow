@@ -436,4 +436,72 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
   }
 }
 
-console.log('renderer selftest: design tokens, accessibility, contrast, focus, layout, spacing, IPC anchors, F-21/F-22/F-37, DSK-05, PERF-DSK-01, SEC-DSK-01 guards passed');
+// ── EXP-04（本轮体验审查）：状态页 getStatus() 必须兜住 IPC reject ──────
+//
+// 原实现 `getStatus().then(...)` 无 .catch：`executor:status` handler 要读
+// configStore.getAllMasked()，配置文件损坏/schema 校验抛错/token 解密异常时
+// 该 IPC reject，于是 statusLoaded 永远为 false —— 状态徽章永久停在
+// 「加载中...」、大按钮永久灰色不可点、页内无任何错误提示（actionError 只由
+// handleStart/handleStop 设置）。用户既无法从界面启动执行器也不知道原因。
+{
+  const statusPage = pages[3]; // StatusWindow.tsx
+  const start = statusPage.indexOf('.getStatus()');
+  if (start === -1) throw new Error('EXP-04: 找不到 getStatus() 调用');
+  const rest = statusPage.slice(start);
+  const next = rest.indexOf('window.electronAPI', 1);
+  const block = next >= 0 ? rest.slice(0, next) : rest;
+  if (!block.includes('.catch(')) {
+    throw new Error('EXP-04: getStatus() 缺少 .catch —— reject 会让启动按钮永久 disabled 且无提示');
+  }
+  // 且必须在 finally 里置 statusLoaded（否则按钮依然永久不可点）
+  if (!/\.finally\(/.test(block) || !block.includes('setStatusLoaded(true)')) {
+    throw new Error('EXP-04: getStatus() 失败分支未置 statusLoaded —— 按钮仍会永久 disabled');
+  }
+  // 失败原因必须落到页内错误条（桌面端无 toast 体系）
+  if (!block.includes('setActionError(')) {
+    throw new Error('EXP-04: getStatus() 失败未写 actionError —— 用户看不到原因');
+  }
+}
+
+// ── EXP-09（本轮体验审查）：listLogFiles() 必须有 typeof 守卫 + .catch ──
+//
+// 原实现 `listLogFiles().then(setLogFiles)`：旧版 preload 未暴露该方法时
+// **同步抛 TypeError** → React 卸载整棵树 → 窗口只剩背景色（正是
+// preload/index.ts:40-42 记录过的那次事故形态）。同仓 ConfigPage.tsx:93 已为
+// 同类情形写了 typeof 守卫。
+{
+  const statusPage = pages[3];
+  const start = statusPage.indexOf('.listLogFiles()');
+  if (start === -1) throw new Error('EXP-09: 找不到 listLogFiles() 调用');
+  const before = statusPage.slice(Math.max(0, start - 400), start);
+  if (!before.includes("typeof window.electronAPI.listLogFiles !== 'function'")) {
+    throw new Error('EXP-09: listLogFiles 缺少 typeof 守卫 —— 旧 preload 下会同步抛异常导致白屏');
+  }
+  const rest = statusPage.slice(start);
+  const next = rest.indexOf('window.electronAPI', 1);
+  const block = next >= 0 ? rest.slice(0, next) : rest;
+  if (!block.includes('.catch(')) {
+    throw new Error('EXP-09: listLogFiles() 缺少 .catch');
+  }
+}
+
+// ── EXP-05（本轮体验审查）：日志文件列表不得再列幽灵条目 main.log ──────
+//
+// logger.ts:15 落盘名是 `executor-YYYY-MM-DD.log`，而 log:list-files 读的是
+// `logs/main.log` —— 因 existsSync 守卫该条目**永不出现**，且 userData/logs
+// 域在面板里再无其他条目，导致**昨天的桌面端日志从 UI 完全不可达**。
+{
+  const start = ipcHandlers.indexOf("ipcMain.handle('log:list-files'");
+  if (start === -1) throw new Error('EXP-05: 找不到 log:list-files handler');
+  const rest = ipcHandlers.slice(start);
+  const next = rest.indexOf('ipcMain.handle(', 1);
+  const block = next >= 0 ? rest.slice(0, next) : rest;
+  if (block.includes("'main.log'")) {
+    throw new Error('EXP-05: log:list-files 仍在读 main.log（幽灵条目，永不出现）');
+  }
+  if (!/executor-\\d\{4\}-\\d\{2\}-\\d\{2\}/.test(block)) {
+    throw new Error('EXP-05: log:list-files 未按 executor-YYYY-MM-DD.log 命名遍历');
+  }
+}
+
+console.log('renderer selftest: design tokens, accessibility, contrast, focus, layout, spacing, IPC anchors, F-21/F-22/F-37, DSK-05, PERF-DSK-01, SEC-DSK-01, EXP-04/05/09 guards passed');

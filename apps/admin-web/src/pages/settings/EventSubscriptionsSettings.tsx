@@ -17,6 +17,8 @@ import {
 } from '../../api/event-subscriptions';
 import type { ColumnsType } from 'antd/es/table';
 import { getErrMsg } from '../../utils/error';
+// UX-04：统一剪贴板封装（返回是否**真正**复制成功）。
+import { copyText } from '../../utils/clipboard';
 // F-26（DEEP_REVIEW 0ef3bbe）：locale 单一来源，不再硬编码 zh-CN
 import { currentLocale } from '../../utils/locale';
 import { useTranslation } from 'react-i18next';
@@ -91,10 +93,17 @@ function CreateResultModal(props: {
       title={t('eventSub.createResult.title')}
       onCancel={props.onClose}
       footer={[
-        <Button key="copy" icon={undefined} onClick={() => {
+        <Button key="copy" icon={undefined} onClick={async () => {
           if (secret) {
-            navigator.clipboard?.writeText(secret);
-            setCopied(true);
+            // UX-04（本轮体验审查）：此前无 await/无 catch，**无条件**置
+            // 「已复制」——webhook secret 同样只在此弹窗展示一次，假成功会
+            // 让用户带着空剪贴板离开。
+            const ok = await copyText(secret);
+            if (ok) {
+              setCopied(true);
+            } else {
+              message.error(t('eventSub.createResult.copyFail'));
+            }
           }
         }}>
           {copied ? t('eventSub.createResult.copied') : t('eventSub.apiKey.copy')}

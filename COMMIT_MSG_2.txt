@@ -1,0 +1,75 @@
+fix(experience): 修 7 个体验级缺陷（暗色不可读 / 告警色阶失效 / 复制假成功 / 桌面端按钮永久禁用）
+
+延续上一条的 4 路只读体验审计，本轮修 UI 语义色、剪贴板诚实性、桌面端「点了没反应」，
+并补上 CI 抓出的 EXP-01 四端枚举遗漏（autoflow-sdk + 内嵌 bundle 哈希）。
+
+UX-01 [P1] 暗色面 5 处「次级文本」用表面色令牌，对比度 1.13:1 不可读
+- 根因：--color-secondary 在 MASTER.md 里是 Secondary 表面色 #1E293B，而
+  index.css 双主题都写成同一个值（不随主题翻转）。把它当正文色用在
+  var(--color-muted) 卡面上（暗面 #1A1E2F）时对比度只有 1.13:1——Dashboard
+  是登录后落地页，KPI 卡脚注 / 热力条 CPU 内存百分比 / 空态文案全部糊成与卡片
+  同色，等于看不见。同页 Text type="secondary"（暗面 #94A3B8）却清晰。
+- 修法：5 处改用主题感知的 --chart-axis-text（亮 #475569 / 暗 #94A3B8）。
+
+UX-02 [P1] 登录页暗色面仍是亮底，卡片标题 #333 对比度 1.31:1
+- 根因：登录页在 ThemedProviders 内（暗色下 Card 取 #1A1E2F），但页面自身三处
+  硬编码亮色：整页浅蓝紫渐变、标题 color:'#333'（1.31:1 几乎不可见）、主按钮
+  旧 antd 蓝紫渐变（与全站 #22C55E 强调色不一致）。
+- 修法：整页改 var(--color-background)；标题去掉硬编码 color 让 antd colorText
+  token 生效；渐变收敛到品牌绿（与 MainLayout 同源）。
+
+UX-03 [P1] 「警告档」色阶取到 --color-ring = #22C55E，黄档渲染成品牌绿
+- 根因：三处阈值色阶的中间档写成 var(--color-ring)，而该变量双主题都是品牌绿。
+  于是 ① 失败榜「失败 2 次」比「失败 1 次」（灰）看起来更健康；② 调度 P99
+  300ms 显示绿色，值班者读成正常；③ 执行器 CPU 70% 与 20% 同为绿色，高水位
+  预警失效。
+- 修法：新增 --color-warning（亮 #D97706 / 暗 #F59E0B，与 tokens.ts 的
+  SEMANTIC_COLORS.warning 同源），三处改取它。
+
+UX-04 [P2] 剪贴板「假成功」：2 处密钥复制无条件提示「已复制」
+- 根因：全站已有 utils/clipboard.ts 的 copyText()（writeText 失败降级
+  execCommand，返回是否真正成功），但三处调用点没迁移：ApiKeysSettings 与
+  EventSubscriptionsSettings 是 navigator.clipboard?.writeText(x);
+  setCopied(true)（无 await/无 catch），ExecutorInstallWizardPage 是
+  .then(success) 无 rejection handler。
+- 危害最大的是 API Key：明文只在创建弹窗显示一次（服务端只存 SHA-256），
+  用户在非 HTTPS / 权限受限时看到「已复制」便关掉弹窗，粘贴时才发现剪贴板是空
+  的——密钥再也拿不回来。
+- 修法：三处统一走 copyText 并按返回值分支，失败时 message.error 提示手动复制。
+
+EXP-04 [P2] 桌面端状态页 getStatus() 无 .catch → 启动按钮永久禁用
+- 根因：executor:status handler 要读 configStore.getAllMasked()，配置文件损坏/
+  schema 校验抛错/token 解密异常时该 IPC reject，于是 statusLoaded 永远为 false：
+  状态徽章永久停在「加载中...」、大按钮永久灰色不可点、页内无任何错误提示
+  （actionError 只由 handleStart/handleStop 设置）。同文件 getTodayLogs() 本就有
+  .catch，属遗漏。用户既无法从界面启动执行器也不知道原因。
+- 修法：补 .catch + .finally（失败也置 statusLoaded，让按钮可点）并把原因写进
+  既有的页内错误条。
+
+EXP-05 [P2] 「主进程日志 (main.log)」是幽灵条目 —— 昨天的桌面端日志从 UI 不可达
+- 根因：logger.ts:15 落盘名是 executor-YYYY-MM-DD.log，而 log:list-files 读的是
+  logs/main.log；因 existsSync 守卫该条目永不出现，且 userData/logs 域在面板
+  里再无其他条目。logs:getToday 只读今天且只喂主日志区，于是排查「昨天执行器
+  为什么没起来」时用户拿不到任何材料。
+- 修法：按 logger.ts 的命名遍历（复用同款 startsWith 判据），日期倒序，
+  label 改「桌面端日志 (YYYY-MM-DD)」；同步修正域注释。
+
+EXP-09 [P3] listLogFiles() 无 typeof 守卫也无 .catch —— 会重演「窗口只剩背景色」
+- 根因：旧版 preload 未暴露该方法时 listLogFiles().then(...) 同步抛
+  TypeError → React 卸载整棵树 → 窗口只剩背景色（正是 preload/index.ts:40-42
+  记录过的那次事故形态）。同仓 ConfigPage.tsx:93 已为同类情形写了 typeof 守卫。
+- 修法：补 typeof 守卫 + .catch + 取消标记。
+
+EXP-01 补齐（CI 抓出的遗漏）：四端枚举而非三端
+- 上一条修了 protocol.json / admin / node 三端，但仓库既有守卫
+  scripts/check-failure-reasons.mjs 覆盖四端——autoflow-sdk 的
+  VALID_FAILURE_REASONS 也需同步，否则 SDK 本地放行而 admin 400。已补。
+- 连带：callback.ts 变更改变 ncc 内嵌产物字节，按 ADR-005 同 commit 重打
+  executor-node-bundle.sha256（2469kB → 2474kB）。本机(Windows)与 CI Ubuntu
+  独立重打得到同一个 cee23087…，再次印证 ncc 0.44 跨平台字节确定性。
+- 重新生成 openapi.json + api-types.ts（枚举进入 OpenAPI enum）。
+
+验证：admin-api 3001 passed / 182 suites；admin-web 899 passed / 100 files；
+executor-node 670 passed / 7 skipped；executor-python 868 passed / 3 skipped；
+desktop renderer selftest OK；lint（api/web/node）0 error；
+check-failure-reasons / docs-site sync-check / lint-gates 三个仓库守卫全绿。

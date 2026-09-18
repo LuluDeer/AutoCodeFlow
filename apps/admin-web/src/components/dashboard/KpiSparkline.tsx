@@ -73,7 +73,7 @@ export default function KpiSparkline({ color, hasData, data, emptyText }: KpiSpa
           alignItems: 'center',
           justifyContent: 'center',
           fontSize: 11,
-          color: 'var(--color-secondary)',
+          color: 'var(--chart-axis-text)',
           opacity: 0.7,
         }}
       >
