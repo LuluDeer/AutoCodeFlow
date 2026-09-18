@@ -97,6 +97,40 @@ const makeRepo = (overrides: Record<string, jest.Mock> = {}) => {
     delete: jest.fn().mockResolvedValue({ affected: 1 }),
     softDelete: jest.fn().mockResolvedValue({ affected: 1 }),
   };
+  // PERF-03（本轮体验审查）：执行列表端点改为由 TypeORM 元数据派生读投影
+  // （`executionListSelectColumns*` 读 `repo.metadata.columns`），故仓储替身
+  // 必须像真实 Repository 一样带 metadata——此前替身缺这一项，一旦生产代码
+  // 开始读元数据就 `Cannot read properties of undefined`。
+  // 列名取 task_executions 的真实列（含被排除的两个重型 text 列），使替身上的
+  // 投影结果与生产一致。
+  (repo as unknown as { metadata: unknown }).metadata = {
+    columns: [
+      "id",
+      "taskId",
+      "taskName",
+      "status",
+      "executorAddress",
+      "logs",
+      "logStorage",
+      "logObjectKey",
+      "result",
+      "params",
+      "startTime",
+      "endTime",
+      "duration",
+      "retryCount",
+      "errorMessage",
+      "failureReason",
+      "exitCode",
+      "aiAnalysis",
+      "artifacts",
+      "triggerType",
+      "taskVersion",
+      "traceId",
+      "createdAt",
+      "version",
+    ].map((propertyName) => ({ propertyName })),
+  };
   repo.createQueryBuilder = jest.fn(() => {
     let patch: Record<string, unknown> | null = null;
     // Snapshot the most recent findOne result at QB creation time so the
@@ -1116,6 +1150,8 @@ describe("TaskService (__tests__)", () => {
       const qbMock = {
         leftJoin: jest.fn().mockReturnThis(),
         addSelect: jest.fn().mockReturnThis(),
+        // PERF-03：getAllExecutions 现调用 .select(投影列)。
+        select: jest.fn().mockReturnThis(),
         orderBy: jest.fn().mockReturnThis(),
         skip: jest.fn().mockReturnThis(),
         take: jest.fn().mockReturnThis(),
@@ -1145,6 +1181,8 @@ describe("TaskService (__tests__)", () => {
         { id: "e3", taskId: "t2", taskName: "inline-name" },
       ];
       const qbMock = {
+        // PERF-03：getAllExecutions 现调用 .select(投影列)，替身需支持链式。
+        select: jest.fn().mockReturnThis(),
         orderBy: jest.fn().mockReturnThis(),
         skip: jest.fn().mockReturnThis(),
         take: jest.fn().mockReturnThis(),
@@ -1171,6 +1209,7 @@ describe("TaskService (__tests__)", () => {
       const qbMock = {
         leftJoin: jest.fn().mockReturnThis(),
         addSelect: jest.fn().mockReturnThis(),
+        select: jest.fn().mockReturnThis(),
         orderBy: jest.fn().mockReturnThis(),
         skip: jest.fn().mockReturnThis(),
         take: jest.fn().mockReturnThis(),
@@ -1200,6 +1239,7 @@ describe("TaskService (__tests__)", () => {
       const qbMock = {
         leftJoin: jest.fn().mockReturnThis(),
         addSelect: jest.fn().mockReturnThis(),
+        select: jest.fn().mockReturnThis(),
         orderBy: jest.fn().mockReturnThis(),
         skip: jest.fn().mockReturnThis(),
         take: jest.fn().mockReturnThis(),
@@ -4875,6 +4915,8 @@ describe("TaskService — QA-02 phase 2 branch gaps", () => {
   describe("getAllExecutions — time-range filters and taskName coalescing", () => {
     const makeQb = (rows: unknown[]) => ({
       leftJoin: jest.fn().mockReturnThis(),
+      // PERF-03：getAllExecutions 现调用 .select(投影列)。
+      select: jest.fn().mockReturnThis(),
       orderBy: jest.fn().mockReturnThis(),
       skip: jest.fn().mockReturnThis(),
       take: jest.fn().mockReturnThis(),
