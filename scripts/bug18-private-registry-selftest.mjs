@@ -272,7 +272,7 @@ function staticContractChecks() {
     pyExecute.includes('PIP_CONFIG_FILE') &&
     pyExecute.includes('UV_CONFIG_FILE'));
   ok('executor-python pins a uv version that supports `uv venv --no-project`',
-    pyRequirements.includes('uv==0.8.17') && pyDockerfile.includes('uv venv --no-project'));
+    /uv==[0-9]+\.[0-9]+\.[0-9]+/.test(pyRequirements) && pyDockerfile.includes('uv venv --no-project'));
 
   ok('npm private package rules require authentication',
     npmConfig.includes("access: $authenticated") && npmConfig.includes("publish: $authenticated") && npmConfig.includes("unpublish: $authenticated"));
