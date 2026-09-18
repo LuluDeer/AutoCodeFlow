@@ -2417,6 +2417,42 @@
         ]
       }
     },
+    "/executors/config": {
+      "get": {
+        "description": "E-1: pull 执行器在长轮询响应中发现 configVersion 与本地不一致时调用，拉取与 admin 主动推送 /api/config/reload 同形的配置载荷（执行器侧走与 /api/config/reload 完全相同的校验与应用路径）。per-executor 令牌认证，address 走查询参数（与 register/heartbeat 同源）。",
+        "operationId": "ExecutorController_pullExecutorConfig",
+        "parameters": [
+          {
+            "name": "address",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "authorization",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Executor-facing config payload"
+          },
+          "401": {
+            "description": "Invalid executor token"
+          }
+        },
+        "summary": "Get the executor-facing config (pull-mode hot-reload)",
+        "tags": [
+          "Executors"
+        ]
+      }
+    },
     "/executors/{address}/terminal-states": {
       "get": {
         "description": "A6 (DEEP_REVIEW): read-only reconciliation view for the executor's local callback dead-letter directory. Returns executions on this executor that have already reached a TERMINAL state (success/failed/timeout/killed/cancelled), ordered ascending by terminal time so the caller can consume it as a watermark stream. The executor uses it to tier dead-letter handling: a dead-lettered callback whose execution is terminal is moot (delete it); one whose execution is still open and whose dead-letter reason was retry-budget exhaustion is worth re-queuing; poison payloads (oversized/corrupt) stay for manual inspection. Strictly read-only — it mutates nothing, releases no slots and writes no audit; all state changes still flow through the existing callback/terminal paths.",
@@ -5884,6 +5920,14 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "if-none-match",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -7830,6 +7874,11 @@
             "type": "string",
             "description": "Executor version",
             "example": "1.0.0"
+          },
+          "protocolVersion": {
+            "type": "number",
+            "description": "PROTOCOL-VER (B-3/U-2): 执行器线缆协议版本（与实现版本 version 解耦）。中台按兼容矩阵分支：低于 supportedMin 只 warn + 兜底，不拒绝注册。",
+            "example": 1
           },
           "capabilities": {
             "description": "Declared capabilities",

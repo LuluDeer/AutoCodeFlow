@@ -117,8 +117,8 @@ def test_sandbox_bwrap_wraps_command(monkeypatch):
     assert '--share-net' in wrapped
     assert '--ro-bind' in wrapped and '/' in wrapped
     assert '--tmpfs' in wrapped and '/tmp' in wrapped
-    assert wrapped[-2] == '--'
-    assert wrapped[-2:] == ['--', 'python', 'main.py']
+    assert wrapped[-3] == '--'
+    assert wrapped[-3:] == ['--', 'python', 'main.py']
 
 
 def test_with_task_tmpdir_sets_env_and_creates_dir(tmp_path):
