@@ -544,8 +544,20 @@ jobs:
       # 基线：0 errors / 5 warnings（warnings 不阻塞）
       - run: npm run lint
         working-directory: apps/admin-web
+      # ── 构建必须先于测试（PERF-01 的产物守卫依赖它）────────────────
+      # PERF-01 的回归守卫（src/__tests__/monaco-first-paint.perf01.test.ts）
+      # 读的是 **dist/index.html**——只有真跑过 build 才有得读。该守卫在产物
+      # 缺失时 skip 而非 fail（本地未构建不该阻塞单测），所以若 build 排在
+      # test 之后，这个闸在 CI 里会**静默变成空转**：永远 skip、永远绿，
+      # 而它要防的正是「monaco 被重新拉进首屏」这种只在产物里才看得见的回归
+      # ——那类缺陷连 build 成功都拦不住（构建一直"成功"，只是产物错了）。
+      # 故把 build 提到 test 之前；lint 仍在最前（最快失败）。
+      - run: npm run build
+        working-directory: apps/admin-web
+        env:
+          VITE_API_URL: http://localhost:3105
       # ── 覆盖度盲区补齐（本轮审计发现）──────────────────────────────
-      # 此前本 job 只跑 lint + build：admin-web 的 **vitest 用例（现 870+）
+      # 此前本 job 只跑 lint + build：admin-web 的 **vitest 用例（现 900+）
       # 从未在 CI 里跑过**。而本仓前端的正确性纪律几乎全压在这些用例上
       # ——PATCH 显式 null 纪律、runtimeVersion 归一、代码来源互斥、
       # 亲和/反亲和清空、fixedRate 秒/分钟换算等都只有用例钉着，build
@@ -558,10 +570,6 @@ jobs:
       # 让覆盖率门真正生效。O-2 配套：重型用例逐个放宽见 test 文件内注释。
       - run: npm test -- --coverage
         working-directory: apps/admin-web
-      - run: npm run build
-        working-directory: apps/admin-web
-        env:
-          VITE_API_URL: http://localhost:3105
 
   # ── lockfile 完整性校验（SEC-06 ②）────────────────────────────
   # 各包独立 lockfile 的多包仓（无 workspace 统一锁）最易出的漂移是：
