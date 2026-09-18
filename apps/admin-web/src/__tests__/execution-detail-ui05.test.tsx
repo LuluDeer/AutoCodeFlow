@@ -244,14 +244,14 @@ describe('UI-05: 日志搜索高亮', () => {
 });
 
 describe('UI-05: 纯函数（failure-runbook / log-search）', () => {
-  it('failure-runbook 全量键完整（含解释器不可用）且 unknown 兜底', () => {
+  it('failure-runbook 全量键完整（含解释器/沙箱不可用）且 unknown 兜底', () => {
     // 与 mcp-server FAILURE_RUNBOOK 键集对齐（BUG-10 分类 + python_task_multiversion
-    // 新增 interpreter_unavailable）
+    // 新增 interpreter_unavailable + EXP-01 新增 sandbox_unavailable）
     const KEYS = [
       'package_fetch_failed', 'dependency_install_failed', 'git_fetch_failed',
-      'runtime_missing', 'script_error', 'timeout', 'executor_offline',
-      'executor_restart', 'stale_recovered', 'killed', 'interpreter_unavailable',
-      'unknown',
+      'runtime_missing', 'sandbox_unavailable', 'script_error', 'timeout',
+      'executor_offline', 'executor_restart', 'stale_recovered', 'killed',
+      'interpreter_unavailable', 'unknown',
     ];
     for (const k of KEYS) {
       expect(FAILURE_RUNBOOK_ACTIONS[k]?.action.length).toBeGreaterThan(0);

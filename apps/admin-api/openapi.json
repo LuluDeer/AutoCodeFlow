@@ -2931,11 +2931,14 @@
           "200": {
             "description": "Config pushed successfully"
           },
-          "400": {
-            "description": "Executor offline"
-          },
           "404": {
             "description": "Executor not found"
+          },
+          "502": {
+            "description": "Executor rejected the config push (its held token is out of sync with the issued one)"
+          },
+          "503": {
+            "description": "Executor offline or unreachable (config push could not be delivered)"
           }
         },
         "security": [

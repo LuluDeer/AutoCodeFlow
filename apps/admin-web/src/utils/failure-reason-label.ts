@@ -24,6 +24,10 @@ export const FAILURE_REASON_T_KEYS: Record<string, string> = {
   git_fetch_failed: 'execDetail.failure.gitFetchFailed',
   dependency_install_failed: 'execDetail.failure.dependencyInstallFailed',
   runtime_missing: 'execDetail.failure.runtimeMissing',
+  // EXP-01（本轮体验审查）：沙箱配置不可用（bwrap 缺失 / 用户命名空间被禁）。
+  // 与 runtime_missing 同属「环境/配置」族，但处置动作不同（装 bubblewrap
+  // 或取消 TASK_SANDBOX），故独立标签而非并入前者。
+  sandbox_unavailable: 'execDetail.failure.sandboxUnavailable',
   interpreter_unavailable: 'execDetail.failure.interpreterUnavailable',
   script_error: 'execDetail.failure.scriptError',
   timeout: 'execDetail.failure.timeout',

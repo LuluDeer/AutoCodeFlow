@@ -45,6 +45,11 @@ export const FAILURE_RUNBOOK_ACTIONS: Record<string, FailureRunbookEntry> = {
   runtime_missing: {
     action: '执行器缺少运行时（node/python/shell）——安装运行时或改派到支持该 runtime 的执行器。',
   },
+  // EXP-01（本轮体验审查）：沙箱已配置但不可用。执行器 fail-closed 拒绝在无
+  // 沙箱下运行任务，故动作是「让沙箱可用或取消沙箱配置」——不是重试。
+  sandbox_unavailable: {
+    action: '执行器启用了 TASK_SANDBOX=bwrap 但沙箱不可用（bwrap 未安装 / 用户命名空间被禁 / 在 Windows 上启用）。安装 bubblewrap（apt install bubblewrap）后重启执行器，或取消 TASK_SANDBOX。执行器刻意拒绝在无沙箱下运行任务，重试无效。',
+  },
   script_error: {
     action: '阅读日志末尾首个堆栈帧附近的输出；可点击「AI 分析」生成根因报告。',
   },
@@ -94,6 +99,7 @@ const RUNBOOK_ACTION_T_KEY: Record<string, string> = {
   dependency_install_failed: 'runbook.dependencyInstall',
   git_fetch_failed: 'runbook.gitFetch',
   runtime_missing: 'runbook.runtimeMissing',
+  sandbox_unavailable: 'runbook.sandboxUnavailable',
   script_error: 'runbook.scriptError',
   timeout: 'runbook.timeout',
   executor_offline: 'runbook.executorOffline',

@@ -55,6 +55,22 @@ export enum ExecutionFailureReason {
    *   本值特指**声明版本**不可获得（环境正确但拿不到该版本）。
    */
   INTERPRETER_UNAVAILABLE = "interpreter_unavailable",
+  /**
+   * SEC-NEW (F-1)：沙箱已配置但不可用（bwrap 缺失 / 用户命名空间被禁 / 在
+   * Windows 上配了 TASK_SANDBOX=bwrap）。执行器 fail-closed 拒绝在无沙箱下
+   * 运行任务，故这是**执行器侧配置问题**，与任务代码本身无关。
+   *
+   * 与 `RUNTIME_MISSING` 的区别：后者是 uv/git/python 本体缺失；本值特指
+   * 沙箱后端不可用，处置动作是装 bubblewrap 或取消 TASK_SANDBOX。
+   *
+   * EXP-01（本轮体验审查）：python 执行器自 F-1 起就会产出该值
+   * （`routers/execute.py:_refine_failure_reason`），但**三端枚举都没有它**
+   * ——回调 DTO 的 @IsIn 命中即 400，而 python 侧把 4xx 当不可重试、
+   * **整批放弃**（`_send_callback_batch_with_retry`）。于是一台配错沙箱的
+   * 执行器会让该机**所有**任务的终态回调永远送不出去，连同批最多 99 个无关
+   * 的成功任务一起丢失，用户看到它们永远停在「运行中」。现补齐枚举。
+   */
+  SANDBOX_UNAVAILABLE = "sandbox_unavailable",
   KILLED = "killed",
   UNKNOWN = "unknown",
 }

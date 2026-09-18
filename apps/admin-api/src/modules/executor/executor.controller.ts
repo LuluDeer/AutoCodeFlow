@@ -6,6 +6,7 @@ import {
   UseGuards,
   UnauthorizedException,
   ServiceUnavailableException,
+  BadGatewayException,
   Headers,
   Param,
   Patch,
@@ -858,7 +859,19 @@ export class ExecutorController {
     },
   })
   @ApiResponse({ status: 200, description: "Config pushed successfully" })
-  @ApiResponse({ status: 400, description: "Executor offline" })
+  // 503/502 而非 401：这些是「执行器不可达 / 拒收推送」的**投递**失败，不是
+  // 调用方的会话失效。回 401 会让 admin-web 的拦截器登出管理员（见下方
+  // reloadConfig 内的注释）。
+  @ApiResponse({
+    status: 503,
+    description:
+      "Executor offline or unreachable (config push could not be delivered)",
+  })
+  @ApiResponse({
+    status: 502,
+    description:
+      "Executor rejected the config push (its held token is out of sync with the issued one)",
+  })
   @ApiResponse({ status: 404, description: "Executor not found" })
   /**
    * R11 (round-11 P1): idempotent token REUSE, not rotation.
@@ -920,7 +933,14 @@ export class ExecutorController {
   ) {
     const executor = await this.svc.findOne(id);
     if (executor.status !== "online") {
-      throw new UnauthorizedException("Executor is offline");
+      // 不能用 401 表达「执行器离线」——admin-web 的 axios 拦截器把任何 401
+      // 当成**会话失效**：先试刷新令牌，失败即 logout() + 跳登录页（见
+      // api/client.ts:124-138）。于是一次普通的配置推送失败会把管理员的整个
+      // 会话清空并踢到登录页，提示「登录状态已过期」——与真实原因完全无关。
+      // 503 语义正确（依赖不可用）且前端只会 toast 一条可读提示。
+      throw new ServiceUnavailableException(
+        "Executor is offline: it must be online to receive a config push. Wait for the next heartbeat to bring it back, or check why the executor stopped reporting.",
+      );
     }
     const issued = await this.svc.issueToken({
       address: executor.address,
@@ -947,7 +967,13 @@ export class ExecutorController {
       if (!isUnauthorizedPushError(firstErr)) {
         // F-8: fixed message — do not echo axios err.message (leaks internal
         // topology / provides a blind SSRF oracle via connect-error text).
-        throw new UnauthorizedException("Failed to reach executor");
+        //
+        // 503 而非 401：这是**投递失败**（执行器不可达/超时），不是鉴权裁定。
+        // 用 401 会被 admin-web 的拦截器当成会话失效 → logout + 跳登录页，
+        // 管理员在 NAT/防火墙/执行器刚重启时点一次推送就被踢出系统。
+        throw new ServiceUnavailableException(
+          "Failed to reach executor: the config push could not be delivered (executor unreachable, timed out, or rejected the request). Verify the executor is running and reachable from admin-api, then retry.",
+        );
       }
       // 401 fallback (legacy rows / cold issuance cache): re-issue once and
       // retry the push once. The second issueToken() may return the same
@@ -990,7 +1016,12 @@ export class ExecutorController {
           // identifies the executor address, states this is AFTER the one
           // re-issue retry (vs the first-attempt class below), and names the
           // operator action. Address is pre-validated by the SSRF guard.
-          throw new UnauthorizedException(
+          //
+          // 502 而非 401：这里的 401 是**执行器拒收我们的推送**（它持有的
+          // token 与 admin 签发的不一致），不是管理员会话失效。回 401 会被
+          // admin-web 拦截器当成会话过期 → 清空登录态并跳登录页，把一个
+          // 「等一个心跳自愈」的可自愈问题升级成「管理员被踢出系统」。
+          throw new BadGatewayException(
             `Executor ${executor.address} rejected the config push with 401 even after a token re-issue retry: its held token is persistently out of sync with the issued one. Wait one heartbeat for executor-side outbound self-heal to converge, or use POST /executors/${id}/rotate-token and reconfigure the executor.`,
           );
         }
@@ -999,7 +1030,8 @@ export class ExecutorController {
         // 裁定（非 401 失败）。文案如实指向首发拒收 + 等待一个心跳自愈。该
         // 分支不写入 push_auth_retry 计数（无认证结果，标签集保持任务定义的
         // 两值闭合）；F-8：不回显 axios 错误文本。
-        throw new UnauthorizedException(
+        // 502 而非 401：同上一分支——这是执行器侧的拒收，不是管理员会话失效。
+        throw new BadGatewayException(
           `Executor ${executor.address} rejected the config push with 401 on the first attempt (executor-held token is out of sync with the issued one, e.g. a cold issuance cache after an admin-api restart); the re-issue retry failed with a non-auth error. Wait one heartbeat for the executor's outbound self-heal to re-align, then retry the push; if it persists, use POST /executors/${id}/rotate-token.`,
         );
       }

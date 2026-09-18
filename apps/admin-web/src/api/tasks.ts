@@ -323,6 +323,16 @@ async function listAllTasks(
   // F-10（DEEP_REVIEW 0ef3bbe）: 依赖下拉/DAG 等轻量消费方只需 id+name——
   // 默认注入 ?fields=id,name 走后端投影白名单，跳过 params/secrets/glueSource
   // 等重量列。调用方可显式传 params.fields 覆盖（如需更多列）。
+  //
+  // PERF-02（本轮体验审查）: 这里的 `{ fields: 'id,name', ...params }` 本意是
+  // 「调用方可覆盖」，但 TaskDependencyGraph 的消费方**没有**传 fields，于是
+  // 投影把 `dependencies` 一并裁掉——而 dag-layout.ts:58 的边集完全依赖该
+  // 字段，undefined 直接 `continue`，导致图边恒为空、永远渲染「该任务没有
+  // 依赖其他任务」。这是 F-10 性能修复引入的**静默功能损坏**：单元测试 mock
+  // 掉了 tasksApi.listAll 并自行造 dependencies 字段，绕过了 API 层，所以全绿。
+  //
+  // 修法：默认投影保持 'id,name'（F-10 的收益不变），DAG 消费方显式传
+  // `fields: 'id,name,dependencies'`——见 useAllTasksForDag。
   const paramsWithProjection = { fields: 'id,name', ...params };
   const first = await tasksApi.list(
     { ...paramsWithProjection, page: 1, pageSize: TASK_LIST_PAGE_SIZE },

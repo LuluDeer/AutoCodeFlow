@@ -2,6 +2,7 @@ import axios from "axios";
 import {
   UnauthorizedException,
   ServiceUnavailableException,
+  BadGatewayException,
   NotFoundException,
   Logger,
 } from "@nestjs/common";
@@ -200,8 +201,13 @@ describe("ExecutorController", () => {
 
     // BUG-01 (b): 重签重试后仍 401 → 精确文案：执行器地址 + "重签重试后仍 401"
     // 语义 + 建议动作（等待一个心跳自愈 / rotate-token）。
+    //
+    // 体验审查（本轮）：类型由 UnauthorizedException 改为 BadGatewayException
+    // ——这里的 401 来自**执行器拒收我们的推送**，不是管理员会话失效。回 401
+    // 会让 admin-web 拦截器 logout() + 跳登录页（见下方专项 describe）。
     const err = await controller.reloadConfig("executor-1", {}).catch((e) => e);
-    expect(err).toBeInstanceOf(UnauthorizedException);
+    expect(err).toBeInstanceOf(BadGatewayException);
+    expect(err.getStatus()).toBe(502);
     expect(err.message).toContain(
       "Executor executor.local:8001 rejected the config push with 401 even after a token re-issue retry",
     );
@@ -242,6 +248,100 @@ describe("ExecutorController", () => {
     );
     expect(mockedAxios.post).toHaveBeenCalledTimes(1);
     expect(svc.issueToken).toHaveBeenCalledTimes(1);
+  });
+
+  // 体验审查（本轮）：reload-config 的三条失败路径**都不得用 401**。
+  //
+  // 401 在 admin-web 的 axios 拦截器里等于「会话失效」——先试刷新令牌，失败
+  // 即 logout() + 跳登录页（api/client.ts:124-138）。而这三种失败的真实语义
+  // 分别是「执行器离线」「投递不到执行器」「执行器拒收推送」，没有一种是
+  // 管理员会话的问题。用 401 的后果是：管理员在离线执行器上点一次「推送
+  // 配置」，整个会话被清空并踢到登录页，提示「登录状态已过期」。
+  describe("reload-config 失败不得回 401（防前端登出）", () => {
+    const onlineSvc = () => ({
+      findOne: jest.fn().mockResolvedValue({
+        id: "executor-1",
+        address: "executor.local:8001",
+        appName: "executor-node",
+        executorStartupId: "startup-1",
+        status: ExecutorStatus.ONLINE,
+      }),
+      issueToken: jest.fn().mockResolvedValue({ token: "t", tokenHash: "h" }),
+      getExecutorUrl: jest
+        .fn()
+        .mockReturnValue("http://executor.local:8001/api/config/reload"),
+    });
+
+    it("执行器离线 → 503（不是 401）", async () => {
+      const svc = {
+        findOne: jest.fn().mockResolvedValue({
+          id: "executor-1",
+          address: "executor.local:8001",
+          appName: "executor-node",
+          executorStartupId: null,
+          status: ExecutorStatus.OFFLINE,
+        }),
+      };
+      const controller = new ExecutorController(
+        svc as any,
+        {} as ConfigService,
+        {} as any,
+      );
+
+      const err = await controller
+        .reloadConfig("executor-1", {})
+        .catch((e) => e);
+      expect(err).toBeInstanceOf(ServiceUnavailableException);
+      expect(err.getStatus()).toBe(503);
+      // 守卫：绝不能是 401（那会让前端登出）
+      expect(err.getStatus()).not.toBe(401);
+      // 未离线的分支不应签发 token 或发起推送
+      expect(svc.findOne).toHaveBeenCalledTimes(1);
+      expect(mockedAxios.post).not.toHaveBeenCalled();
+    });
+
+    it("投递失败（非 401）→ 503（不是 401）", async () => {
+      const svc = onlineSvc();
+      const controller = new ExecutorController(
+        svc as any,
+        {} as ConfigService,
+        {} as any,
+      );
+      mockedAxios.post.mockRejectedValue(
+        new Error("connect ECONNREFUSED 10.0.0.9:8001"),
+      );
+
+      const err = await controller
+        .reloadConfig("executor-1", {})
+        .catch((e) => e);
+      expect(err).toBeInstanceOf(ServiceUnavailableException);
+      expect(err.getStatus()).toBe(503);
+      expect(err.getStatus()).not.toBe(401);
+    });
+
+    it("重签重试后仍被拒 → 502（不是 401）", async () => {
+      const svc = onlineSvc();
+      const controller = new ExecutorController(
+        svc as any,
+        {} as ConfigService,
+        {} as any,
+      );
+      mockedAxios.post.mockRejectedValue(
+        Object.assign(new Error("Request failed"), {
+          response: {
+            status: 401,
+            data: { error: "Invalid or missing executor token" },
+          },
+        }),
+      );
+
+      const err = await controller
+        .reloadConfig("executor-1", {})
+        .catch((e) => e);
+      expect(err).toBeInstanceOf(BadGatewayException);
+      expect(err.getStatus()).toBe(502);
+      expect(err.getStatus()).not.toBe(401);
+    });
   });
 
   // BUG-01（N51 收口）：401 重签重试的可观测性与双 401 文案区分。
@@ -340,7 +440,9 @@ describe("ExecutorController", () => {
       const err = await controller
         .reloadConfig("executor-1", {})
         .catch((e) => e);
-      expect(err).toBeInstanceOf(UnauthorizedException);
+      // 体验审查：502（BadGateway），不是 401——避免前端把它当会话失效登出。
+      expect(err).toBeInstanceOf(BadGatewayException);
+      expect(err.getStatus()).toBe(502);
       expect(err.message).toContain("executor.local:8001");
       expect(err.message).toContain("even after a token re-issue retry");
       expect(err.message).toContain("one heartbeat");
@@ -418,7 +520,7 @@ describe("ExecutorController", () => {
 
       await expect(
         controller.reloadConfig("executor-1", {}),
-      ).rejects.toBeInstanceOf(UnauthorizedException);
+      ).rejects.toBeInstanceOf(BadGatewayException);
       expect(mockedAxios.post).toHaveBeenCalledTimes(2);
       expect(svc.issueToken).toHaveBeenCalledTimes(2);
     });
@@ -463,7 +565,7 @@ describe("ExecutorController", () => {
       mockedAxios.post.mockRejectedValue(unauthorized());
       await expect(
         controllerB.reloadConfig("executor-1", {}),
-      ).rejects.toBeInstanceOf(UnauthorizedException);
+      ).rejects.toBeInstanceOf(BadGatewayException);
       expect(retryCount("reissued_success")).toBe(1);
       expect(retryCount("still_unauthorized")).toBe(1);
 
@@ -496,7 +598,7 @@ describe("ExecutorController", () => {
 
     await expect(
       controller.reloadConfig("executor-1", {}),
-    ).rejects.toBeInstanceOf(UnauthorizedException);
+    ).rejects.toBeInstanceOf(ServiceUnavailableException);
     expect(svc.issueToken).not.toHaveBeenCalled();
     expect(svc.rotateToken).not.toHaveBeenCalled();
     expect(mockedAxios.post).not.toHaveBeenCalled();

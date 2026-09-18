@@ -62,6 +62,11 @@ const FAILURE_REASON_MAP = (t: (k: string) => string): Record<string, { color: s
   git_fetch_failed: { color: 'gold', label: t('execDetail.failure.gitFetchFailed'), hint: t('execDetail.failure.gitFetchFailedHint') },
   dependency_install_failed: { color: 'gold', label: t('execDetail.failure.dependencyInstallFailed'), hint: t('execDetail.failure.dependencyInstallFailedHint') },
   runtime_missing: { color: 'gold', label: t('execDetail.failure.runtimeMissing'), hint: t('execDetail.failure.runtimeMissingHint') },
+  // EXP-01（本轮体验审查）：沙箱已配置但不可用（bwrap 缺失 / Windows 上配了
+  // TASK_SANDBOX=bwrap / 用户命名空间被禁）。执行器 fail-closed 拒绝无沙箱运行，
+  // 属「环境/配置」族故同为 gold；处置动作是装 bubblewrap 或取消 TASK_SANDBOX，
+  // 与 runtime_missing（装运行时本体）不同，故独立分类而非并入。
+  sandbox_unavailable: { color: 'gold', label: t('execDetail.failure.sandboxUnavailable'), hint: t('execDetail.failure.sandboxUnavailableHint') },
   // python_task_multiversion：解释器不可用。与 runtime_missing 同属
   // 「环境/配置」族，故同为 gold；刻意不在默认重试集内——重跑不会让 3.7 变得
   // 可下载，必须由运维修环境（前端只是如实展示分类，重试白名单由任务配置决定）。

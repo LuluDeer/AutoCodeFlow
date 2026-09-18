@@ -27,6 +27,12 @@ export const CALLBACK_FAILURE_REASONS = [
   // 紧跟 runtime_missing —— 两者都是"环境缺东西"，但处置完全不同：前者要装
   // 运行时二进制，后者要预填/下载解释器缓存池，绝不能混为一类。
   'interpreter_unavailable',
+  // EXP-01（本轮体验审查）：沙箱已配置但不可用（bwrap 缺失等）。此前三端枚举
+  // 都缺这个值，而 python 执行器早已产出它——回调 DTO 的 @IsIn 命中即 400，
+  // 且 python 把 4xx 当不可重试、整批放弃，导致该机所有任务的终态回调永久
+  // 丢失。node 侧目前不产出该值，但契约必须三端一致（本数组与 protocol.json
+  // 的 executorReportable 逐值比对，见 executor-protocol-contract.spec.ts）。
+  'sandbox_unavailable',
   'script_error',
   'timeout',
   'executor_offline',

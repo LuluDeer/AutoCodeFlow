@@ -239,11 +239,19 @@ export function useTaskExecutions(
 
 /** 分页拉取全量任务表（TaskDependencyGraph 布局解析）。
  * 与分页列表共用 ['tasks','list'] 前缀——任务写操作 invalidate tasks.all
- * 时 DAG 缓存一并失效；每页不超过后端 PaginationDto 的 100 上限。 */
+ * 时 DAG 缓存一并失效；每页不超过后端 PaginationDto 的 100 上限。
+ *
+ * PERF-02（本轮体验审查）：必须显式带上 `dependencies`。listAll 的默认投影
+ * 是 `?fields=id,name`，而 DAG 的边集**只**来自 `t.dependencies`
+ * （dag-layout.ts:58，undefined 即 continue）——用默认投影会让边集恒空，
+ * 页面永远显示「该任务没有依赖其他任务」，「触发整条链」退化为单任务。
+ * 这是 F-10 性能修复引入的静默功能损坏，故在此显式声明所需列。
+ */
 export function useAllTasksForDag(): UseQueryResult<PageResult<Task>> {
   return useQuery({
     queryKey: queryKeys.tasks.allForDag,
-    queryFn: ({ signal }) => tasksApi.listAll({}, signal),
+    queryFn: ({ signal }) =>
+      tasksApi.listAll({ fields: 'id,name,dependencies' }, signal),
     staleTime: 60_000,
   });
 }

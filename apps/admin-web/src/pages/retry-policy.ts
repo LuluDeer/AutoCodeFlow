@@ -28,6 +28,10 @@ export const RETRYABLE_ERROR_OPTIONS: { value: string; labelKey: string }[] = [
   { value: 'dependency_install_failed', labelKey: 'taskForm.retryable.dependencyInstall' },
   { value: 'git_fetch_failed', labelKey: 'taskForm.retryable.gitFetch' },
   { value: 'runtime_missing', labelKey: 'taskForm.retryable.runtimeMissing' },
+  // EXP-01（本轮体验审查）：沙箱配置不可用。与 interpreter_unavailable 同策——
+  // 列在候选中让运维**可以**显式勾选，但刻意不进任何默认值：重试不会让 bwrap
+  // 被装上，修复动作在环境侧（见 failure-runbook）。
+  { value: 'sandbox_unavailable', labelKey: 'taskForm.retryable.sandboxUnavailable' },
   { value: 'script_error', labelKey: 'taskForm.retryable.scriptError' },
   { value: 'timeout', labelKey: 'taskForm.retryable.timeout' },
   { value: 'executor_offline', labelKey: 'taskForm.retryable.executorOffline' },
