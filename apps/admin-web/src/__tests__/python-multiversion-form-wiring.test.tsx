@@ -313,6 +313,10 @@ describe('TaskFormPage：编辑态来源回填与 runtimeVersion（FR-06/AC-17b�
     // 显式 codeSource 优先：即便 applicationId 命中推导也是同一结果
     expect(screen.getByText('关联应用（必填）')).toBeTruthy();
     expect(screen.queryByPlaceholderText('https://github.com/org/repo.git')).toBeNull();
+    // 保存前等应用选择器加载完成：zip 来源提交依赖 applicationId 校验通过，
+    // 应用列表是异步 fetch——CI 高负载下点击保存时选择器可能未就绪导致
+    // 校验拦截（第十四轮 python-multiversion-form-wiring 保存后 update 0 次）。
+    await screen.findByText('zip-app');
 
     fireEvent.click(screen.getByRole('button', { name: /保存/ }));
     await vi.waitFor(() => expect(tasksApi.update).toHaveBeenCalledTimes(1));
