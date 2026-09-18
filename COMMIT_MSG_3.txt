@@ -1,0 +1,42 @@
+fix(experience): 修 3 个「失败被伪装成正常」的体验缺陷（永久转圈 / 裸枚举 / 失败谎报无数据）
+
+UX-07 [P2] ADMIN 门控在 profile 失败时**永久转圈**
+- 缺陷链：① MainLayout 的 profile 同步是 `authApi.me().catch(() => undefined)`
+  ——失败被完全吞掉，`user.role` 保持 undefined；② RequireAdmin 对「role 未知」
+  只有一种呈现 `<Spin />`。
+- 后果：管理员刷新 /users、/audit、/executor-packages 等 ADMIN-only 页面时，若
+  profile 请求失败（token 边缘态 / 网络抖动），页面**永久转圈**——既没有 403、
+  也没有错误提示和重试按钮，只能手动改地址栏离开。
+- 修法：store 新增 `profileError` 如实记录失败（setUser/setAuth/logout 均清除），
+  RequireAdmin 据此区分「加载中」与「加载失败」，失败时渲染可重试错误态 +
+  回控制台兜底出口。
+
+UX-06 [P2] 四处直接渲染后端裸枚举
+- 漏点（同一张表里状态列已走 t() 显示中文，旁边列却是裸 token）：
+  ApplicationDetailPage 任务列表「触发方式」列与版本历史「状态」列；
+  TaskDetailPage 任务列表「触发方式」列与基本信息「触发方式」项。
+- 后果：非英语用户看到 `cron` / `fixed_rate` / `released` 这类后端 token，中英
+  混排；且各页各写一份内联映射（TaskListPage 的 TRIGGER_LABEL、ExecutionsPage 的
+  triggerLabels…），新增取值必然漏改几处。
+- 修法：新建 utils/trigger-label.ts 作为读面唯一事实源（沿用
+  failure-reason-label.ts 既有形态），四处分派到它；未知取值回退原始 token
+  而非显示「未知」，保留可诊断信息。
+
+UX-05 [P2] 读取失败被谎报成「暂无数据」
+- 三处形态（均在 ApplicationDetailPage）：
+  ① TasksTab——catch 只弹 message，tasks 保持 []，于是
+     `tasks.length === 0 && !loading` 命中，渲染「暂无任务」+「创建第一个任务」
+     引导按钮，**把读取失败谎报成"这个应用确实没有任务"**，用户很可能据此重复创建；
+  ② VersionHistoryTab——同形，表格 emptyText 显示「暂无版本历史」；
+  ③ 页面级 fetchApp——**任何**错误（含 500 / 网络抖动 / 超时）都
+     `message.error` + `nav('/applications')` 强制跳走，用户正在看的页面突然消失、
+     滚动位置丢失，原因只是一条几秒后消失的 toast。
+- 修法：三处都记录失败态并在原位渲染 StateError（带重试）；页面级新增
+  `isNotFoundError()`（utils/error.ts）区分 404 与其它错误——只有资源确实不存在
+  才离开。
+- 连带：application-detail.test.tsx 原有一条断言「任何错误都跳回列表」，那正是
+  被修的缺陷本身，已拆成「404 → 跳回」+「网络错误 → 留页内重试」两条。
+
+验证：admin-web 全量套件通过（含 3 个新反证文件）；tsc --noEmit 0 error；
+lint 0 error（警告由 31 降至 29，清掉两个因本次改动而失效的 import）。
+每个修复都带反证测试并已实测「改回旧写法即变红」。

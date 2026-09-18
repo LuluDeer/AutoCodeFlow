@@ -23,6 +23,8 @@ import {
 import { taskTemplatesApi } from '../api/task-templates';
 import { aiApi, ScheduleSuggestion } from '../api/ai';
 import { getErrMsg } from '../utils/error';
+// UX-06：触发方式展示标签唯一事实源（此前直接渲染裸枚举）。
+import { triggerLabel, TRIGGER_COLOR } from '../utils/trigger-label';
 import { formatDateTime, formatDuration, formatRelativeTime } from '../utils/timeFormat';
 // F-27（DEEP_REVIEW 0ef3bbe）：失败次数派生（纯函数，保证整数）
 import { failedRunCount } from './task-stats';
@@ -271,7 +273,8 @@ export default function TaskDetailPage() {
     {
       title: t('taskDetail.col.trigger'), dataIndex: 'triggerType', width: 80,
       ...hideOnMobile,
-      render: (v: string) => <Text type="secondary" style={{ fontSize: 12 }}>{v || '-'}</Text>,
+      // UX-06：此前渲染裸枚举（cron / fixed_rate / manual）。
+      render: (v: string) => <Text type="secondary" style={{ fontSize: 12 }}>{triggerLabel(v, t) || '-'}</Text>,
     },
     {
       title: t('taskDetail.col.executor'), dataIndex: 'executorAddress', width: 140, ellipsis: true,
@@ -460,7 +463,12 @@ export default function TaskDetailPage() {
                       })()}
                     </Tag>
                   </Descriptions.Item>
-                  <Descriptions.Item label={t('taskDetail.field.triggerType')}><Tag>{task.triggerType}</Tag></Descriptions.Item>
+                  {/* UX-06：此前 <Tag>{task.triggerType}</Tag> 渲染裸枚举。 */}
+                  <Descriptions.Item label={t('taskDetail.field.triggerType')}>
+                    <Tag color={TRIGGER_COLOR[task.triggerType] || 'default'}>
+                      {triggerLabel(task.triggerType, t) || '-'}
+                    </Tag>
+                  </Descriptions.Item>
                   {task.cronExpression && (
                     <Descriptions.Item label={t('taskDetail.field.cron')}><Text code>{task.cronExpression}</Text></Descriptions.Item>
                   )}

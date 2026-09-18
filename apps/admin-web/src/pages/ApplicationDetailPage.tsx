@@ -15,7 +15,9 @@ import { tasksApi, Task } from '../api/tasks';
 import AppDeploymentPage from './AppDeploymentPage';
 import { useTranslation } from 'react-i18next';
 import '../i18n';
-import { getErrMsg, isFormValidationError } from '../utils/error';
+import { getErrMsg, isFormValidationError, isNotFoundError } from '../utils/error';
+// UX-06：触发方式 / 版本状态的展示标签唯一事实源（此前直接渲染裸枚举）。
+import { triggerLabel, releaseStatusLabel, TRIGGER_COLOR } from '../utils/trigger-label';
 // F-26（DEEP_REVIEW 0ef3bbe）：locale 单一来源，不再硬编码 zh-CN
 import { currentLocale } from '../utils/locale';
 import { useAuthStore, isAdminUser } from '../store/auth';
@@ -236,6 +238,11 @@ function TasksTab({ appId, syncing, onSync }: { appId: string; syncing: boolean;
   // 超过 100 时旧逻辑直接丢失第 100 条之后的条目。
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
+  // UX-05（本轮体验审查）：此前失败只弹一条 message，tasks 保持 []，于是下面
+  // `tasks.length === 0 && !loading` 分支渲染「暂无任务」+「创建第一个任务」
+  // 引导按钮——**把读取失败谎报成"没有数据"**。message 几秒后消失，用户据此
+  // 以为真没任务，很可能重复创建。现记录失败态并在原位渲染 StateError（带重试）。
+  const [loadError, setLoadError] = useState<unknown>(null);
   const isAdmin = useIsAdmin();
   const requestControllerRef = useRef<AbortController | null>(null);
   const mountedRef = useRef(true);
@@ -245,6 +252,7 @@ function TasksTab({ appId, syncing, onSync }: { appId: string; syncing: boolean;
     const controller = new AbortController();
     requestControllerRef.current = controller;
     setLoading(true);
+    setLoadError(null);
     try {
       const res = await tasksApi.list(
         { page: pageNum, pageSize: 20, applicationId: appId },
@@ -256,7 +264,9 @@ function TasksTab({ appId, syncing, onSync }: { appId: string; syncing: boolean;
       }
     } catch (err: unknown) {
       if (!controller.signal.aborted && mountedRef.current) {
-        message.error(getErrMsg(err, t('appDetail.tasks.loadFail')));
+        // UX-05：不再只弹 message——失败态要能落到页内，否则空列表会被读成
+        // 「这个应用确实没有任务」。
+        setLoadError(err);
       }
     } finally {
       if (mountedRef.current && requestControllerRef.current === controller) {
@@ -291,7 +301,15 @@ function TasksTab({ appId, syncing, onSync }: { appId: string; syncing: boolean;
         </Space>
       }
     >
-      {tasks.length === 0 && !loading ? (
+      {loadError ? (
+        // UX-05：读取失败必须与原位「暂无任务」区分——否则用户会把失败读成
+        // 「确实没有任务」并重复创建。
+        <StateError
+          error={loadError}
+          onRetry={() => fetchTasks(page)}
+          title={t('appDetail.tasks.loadFail')}
+        />
+      ) : tasks.length === 0 && !loading ? (
         <Empty description={t('appDetail.tasks.empty')}>
           <Button type="primary" size="small" onClick={() => nav(`/tasks/new?applicationId=${appId}`)}>{t('appDetail.tasks.createFirst')}</Button>
         </Empty>
@@ -318,7 +336,14 @@ function TasksTab({ appId, syncing, onSync }: { appId: string; syncing: boolean;
             },
             {
               title: t('appDetail.tasks.col.trigger'), key: 'trigger', width: 90,
-              render: (_: unknown, r: Task) => <Tag>{r.triggerType}</Tag>,
+              render: (_: unknown, r: Task) => (
+                // UX-06：此前直接渲染裸枚举（cron / fixed_rate / manual），
+                // 而同一张表的「状态」列已走 t()——中英混排且对非英语用户
+                // 不可读。收敛到 utils/trigger-label.ts 的唯一事实源。
+                <Tag color={TRIGGER_COLOR[r.triggerType] || 'default'}>
+                  {triggerLabel(r.triggerType, t) || '-'}
+                </Tag>
+              ),
             },
             { title: t('appDetail.tasks.col.runtime'), dataIndex: 'runtime', width: 80, render: (v: string) => v ? <Tag color="blue">{v}</Tag> : '-' },
           ]}
@@ -425,6 +450,9 @@ function VersionHistoryTab({ app, onAppReload }: { app: Application; onAppReload
   const [records, setRecords] = useState<VersionRecord[]>([]);
   const [loading, setLoading] = useState(false);
   const [rollingBack, setRollingBack] = useState<string | null>(null);
+  // UX-05：同 TasksTab——失败只弹 message，records 保持 []，表格 emptyText 显示
+  // 「暂无版本历史」，把读取失败谎报成"没有数据"。
+  const [loadError, setLoadError] = useState<unknown>(null);
   const isAdmin = useIsAdmin();
   const { t } = useTranslation();
 
@@ -432,8 +460,9 @@ function VersionHistoryTab({ app, onAppReload }: { app: Application; onAppReload
 
   const fetchVersions = useCallback(async () => {
     setLoading(true);
+    setLoadError(null);
     try { setRecords(await applicationsApi.getVersionHistory(app.id)); }
-    catch (err: unknown) { message.error(getErrMsg(err, t('appDetail.history.loadFail'))); } finally { setLoading(false); }
+    catch (err: unknown) { setLoadError(err); } finally { setLoading(false); }
   }, [app.id]);
 
   useEffect(() => { fetchVersions(); }, [fetchVersions]);
@@ -462,6 +491,14 @@ function VersionHistoryTab({ app, onAppReload }: { app: Application; onAppReload
 
   return (
     <Card variant="borderless" extra={<Button icon={<ReloadOutlined />} size="small" onClick={fetchVersions}>{t('appDetail.refresh')}</Button>}>
+      {loadError ? (
+        // UX-05：读取失败不再退化成「暂无版本历史」。
+        <StateError
+          error={loadError}
+          onRetry={fetchVersions}
+          title={t('appDetail.history.loadFail')}
+        />
+      ) : (
       <Table<VersionRecord>
         rowKey={(record) => getVersionKey(record)}
         columns={[
@@ -482,7 +519,10 @@ function VersionHistoryTab({ app, onAppReload }: { app: Application; onAppReload
           {
             title: t('appDetail.history.col.status'), dataIndex: 'status', width: 90,
             render: (v: string) => (
-              <Tag color={{ released: 'green', running: 'green', stopped: 'default', failed: 'red', deploying: 'blue' }[v] || 'default'}>{v}</Tag>
+              // UX-06：状态列此前渲染裸枚举（released / deploying / failed…）。
+              <Tag color={{ released: 'green', running: 'green', stopped: 'default', failed: 'red', deploying: 'blue' }[v] || 'default'}>
+                {releaseStatusLabel(v, t) || '-'}
+              </Tag>
             ),
           },
           { title: t('appDetail.col.executor'), dataIndex: 'executorAddress', ellipsis: true },
@@ -526,6 +566,7 @@ function VersionHistoryTab({ app, onAppReload }: { app: Application; onAppReload
         pagination={{ pageSize: 20, showTotal: (n) => t('appDetail.count', { count: n }) }}
         locale={{ emptyText: t('appDetail.history.empty') }}
       />
+      )}
     </Card>
   );
 }
@@ -670,6 +711,12 @@ export default function ApplicationDetailPage() {
   const [app, setApp] = useState<Application | null>(null);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
+  // UX-05（本轮体验审查）：此前任何错误（含 500 / 网络抖动 / 超时）都
+  // `message.error` + `nav('/applications')` **强制跳走**——用户正在看的页面
+  // 突然消失、回到列表且滚动位置丢失，而真正的原因只是一条几秒后消失的 toast。
+  // 只有「确实不存在」（404）才该离开；其余错误应在原位给出重试。
+  const [loadError, setLoadError] = useState<unknown>(null);
+  const [notFound, setNotFound] = useState(false);
 
   const activeTab = searchParams.get('tab') || 'overview';
 
@@ -677,12 +724,19 @@ export default function ApplicationDetailPage() {
     if (!id) return;
     try {
       setLoading(true);
+      setLoadError(null);
+      setNotFound(false);
       setApp(await applicationsApi.get(id));
-    } catch {
-      message.error(t('appDetail.loadFail'));
-      nav('/applications');
+    } catch (err: unknown) {
+      // 404 = 资源确实不存在，跳回列表是合理归宿；其余错误留在页内重试。
+      if (isNotFoundError(err)) {
+        setNotFound(true);
+        nav('/applications');
+      } else {
+        setLoadError(err);
+      }
     } finally { setLoading(false); }
-  }, [id, nav, t]);
+  }, [id, nav]);
 
   useEffect(() => { fetchApp(); }, [fetchApp]);
 
@@ -698,7 +752,20 @@ export default function ApplicationDetailPage() {
 
   // UI-08：首屏加载以骨架屏替代裸 Spin
   if (loading) return <PageSkeleton variant="table" rows={6} style={{ padding: 24 }} />;
-  if (!app) return <Empty description={t('appDetail.notFound')} />;
+  // UX-05：读取失败（非 404）留在原位给重试，不再强制跳回列表。
+  if (loadError) {
+    return (
+      <div style={{ padding: 24 }}>
+        <StateError
+          error={loadError}
+          onRetry={fetchApp}
+          title={t('appDetail.loadFail')}
+          centered
+        />
+      </div>
+    );
+  }
+  if (notFound || !app) return <Empty description={t('appDetail.notFound')} />;
 
   return (
     <div>
