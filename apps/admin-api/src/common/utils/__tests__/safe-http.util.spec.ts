@@ -437,26 +437,34 @@ describe("safe-http.util — N25 IPv4-mapped IPv6 normalization", () => {
     });
 
     it("keeps the only (IPv6) answer when no IPv4 resolves", async () => {
-      mockedLookup.mockResolvedValue([
-        { address: "fd00::1", family: 6 },
-      ]);
-      const target = await assertAndPinHttpUrl("http://ipv6-only.example.com/x", {
-        policy: "executor",
-      });
+      mockedLookup.mockResolvedValue([{ address: "fd00::1", family: 6 }]);
+      const target = await assertAndPinHttpUrl(
+        "http://ipv6-only.example.com/x",
+        {
+          policy: "executor",
+        },
+      );
       expect(target.pinned).toBe(true);
       expect(target.pinnedIp).toBe("fd00::1");
     });
 
     it("pinnedAxiosConfig lookup honors Node>=22 all:true (array shape)", async () => {
-      const target = await assertAndPinHttpUrl("http://10.0.0.5:3002/api/execute", {
-        policy: "executor",
-      });
+      const target = await assertAndPinHttpUrl(
+        "http://10.0.0.5:3002/api/execute",
+        {
+          policy: "executor",
+        },
+      );
       // Host was an IP literal → pinned:false, no custom agent.
       expect(target.pinned).toBe(false);
 
       // Build a synthetic pinned target to exercise the agent's lookup.
       const url = new URL("http://10.0.0.5:3002/api/execute");
-      const cfg = pinnedAxiosConfig({ url, pinnedIp: "10.0.0.5", pinned: true });
+      const cfg = pinnedAxiosConfig({
+        url,
+        pinnedIp: "10.0.0.5",
+        pinned: true,
+      });
       expect(cfg.httpAgent).toBeDefined();
       const lookup = (
         cfg.httpAgent as unknown as {

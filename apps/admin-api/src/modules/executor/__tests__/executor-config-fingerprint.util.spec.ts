@@ -10,7 +10,9 @@ import {
  * "Request failed after all retries"），执行器被误判 OFFLINE。
  */
 
-function makeConfig(adminApiUrl?: string): { get: <T>(k: string) => T | undefined } {
+function makeConfig(adminApiUrl?: string): {
+  get: <T>(k: string) => T | undefined;
+} {
   return {
     get: <T>(key: string): T | undefined => {
       if (key === "executor.heartbeatInterval") return 30_000 as T;
@@ -22,20 +24,18 @@ function makeConfig(adminApiUrl?: string): { get: <T>(k: string) => T | undefine
 
 describe("buildExecutorConfigPayload — adminApiUrl omission (R12-fix)", () => {
   it("omits adminApiUrl when app.adminApiUrl is not configured", () => {
-    const payload = buildExecutorConfigPayload(
-      makeConfig(undefined) as never,
-      { maxConcurrentTasks: 4 },
-    );
+    const payload = buildExecutorConfigPayload(makeConfig(undefined) as never, {
+      maxConcurrentTasks: 4,
+    });
     expect(payload.adminApiUrl).toBeUndefined();
     expect(payload.maxConcurrentTasks).toBe(4);
     expect(payload.heartbeatIntervalSeconds).toBe(30);
   });
 
   it("omits adminApiUrl when app.adminApiUrl is an empty string", () => {
-    const payload = buildExecutorConfigPayload(
-      makeConfig("") as never,
-      { maxConcurrentTasks: 4 },
-    );
+    const payload = buildExecutorConfigPayload(makeConfig("") as never, {
+      maxConcurrentTasks: 4,
+    });
     expect(payload.adminApiUrl).toBeUndefined();
   });
 

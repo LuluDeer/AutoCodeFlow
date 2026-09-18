@@ -16,11 +16,25 @@ import { applyTaskRlimits, RlimitWrappedArgv } from "./process-rlimits";
 // 但测试要跨平台断言脚本形态，故直接校验非 win32 的包装逻辑。
 const platform = process.platform;
 
+/**
+ * 类型锚：显式标注返回类型为导出的 `RlimitWrappedArgv`，把「applyTaskRlimits
+ * 的返回形状」变成编译期契约。若实现改成返回别的形状（如把 args 收进嵌套
+ * 对象），这里先红——否则该形状只被实现自己引用，签名漂移要等到调用方
+ * 运行期才炸。
+ */
+function wrap(
+  cmd: string,
+  args: string[],
+  timeoutSec: number,
+): RlimitWrappedArgv {
+  return applyTaskRlimits(cmd, args, timeoutSec);
+}
+
 function describeIfPosix(name: string, fn: () => void) {
   if (platform === "win32") {
     // win32 分支原样返回，用最小断言钉住「不包装」行为
     it(name, () => {
-      const r = applyTaskRlimits("node", ["glue_script.js"], 60);
+      const r = wrap("node", ["glue_script.js"], 60);
       expect(r.cmd).toBe("node");
       expect(r.args).toEqual(["glue_script.js"]);
     });
@@ -31,7 +45,7 @@ function describeIfPosix(name: string, fn: () => void) {
 
 describeIfPosix("applyTaskRlimits POSIX wrapper", () => {
   it("wraps with /bin/sh -c and passes command via positional params", () => {
-    const r = applyTaskRlimits("node", ["glue_script.js"], 60);
+    const r = wrap("node", ["glue_script.js"], 60);
     expect(r.cmd).toBe("/bin/sh");
     expect(r.args[0]).toBe("-c");
     const script = r.args[1] as string;
@@ -46,7 +60,7 @@ describeIfPosix("applyTaskRlimits POSIX wrapper", () => {
   });
 
   it("keeps the placeholder name as $0 only", () => {
-    const r = applyTaskRlimits("bash", ["-c", "echo hi"], 30);
+    const r = wrap("bash", ["-c", "echo hi"], 30);
     expect(r.args[2]).toBe("task"); // $0 = 占位名
     expect(r.args.slice(3)).toEqual(["bash", "-c", "echo hi"]);
   });
@@ -57,7 +71,7 @@ describeIfPosix("applyTaskRlimits POSIX wrapper", () => {
     process.env.TASK_NOFILE_LIMIT = "0";
     process.env.TASK_CPU_LIMIT_SECONDS = "5";
     try {
-      const r = applyTaskRlimits("node", ["glue.js"], 60);
+      const r = wrap("node", ["glue.js"], 60);
       expect(r.cmd).toBe("/bin/sh");
       expect(r.args[1]).toContain("ulimit -t 5");
       expect(r.args[1]).not.toContain("ulimit -n");
