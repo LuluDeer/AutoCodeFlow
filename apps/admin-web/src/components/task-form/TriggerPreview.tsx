@@ -94,7 +94,9 @@ export default function TriggerPreview({
         padding: '10px 12px',
         border: `1px dashed ${token.colorBorder}`,
         borderRadius: 8,
-        background: 'rgba(34, 197, 94, 0.04)',
+        // O-2：原硬编码 rgba(34,197,94,0.04) 在暗色主题下与暗底不协调。
+        // 改走 antd 成功底色 token，亮/暗主题均自适应（与文件头 F-15 声明一致）。
+        background: token.colorSuccessBg,
       }}
     >
       <Space size={6} wrap style={{ marginBottom: preview.times.length ? 6 : 0 }}>
