@@ -454,6 +454,15 @@ jobs:
           cache-dependency-path: apps/executor-node/package-lock.json
       - run: npm ci
         working-directory: apps/executor-node
+      # E-41 残差（本轮实测发现）：executor-node 补了 .eslintrc.js 与根
+      # `lint:node`，交接文档记为已收口——但**没有任何 CI job 调用它**，
+      # 它的 lint 只在「有人记得本地跑 lint:all」时存在。后果已经真实发生：
+      # `src/process-rlimits.spec.ts` 有一个 no-unused-vars 错误让
+      # `npm run lint:node` 直接红，而 CI 全绿（同类漏网还有 admin-api 两个
+      # spec 的 14 处 prettier 错误）。这里补上本 job 自己的 lint；「是否每个
+      # 子项目都被某个 job 覆盖」由 scripts/check-lint-gates.mjs 常设守卫。
+      - run: npm run lint
+        working-directory: apps/executor-node
       # executor-node 无独立 typecheck 脚本，build 即 tsc 全量类型检查
       - run: npm run build
         working-directory: apps/executor-node
@@ -650,6 +659,14 @@ jobs:
         run: |
           node scripts/gen-install-script-content.mjs
           git diff --exit-code -- apps/admin-api/src/modules/executor/install-script.content.ts
+      # E-41 残差：lint 入口「存在」不等于「在门禁里跑」。判据 = 每个定义了
+      # lint script 的 TS 子项目都必须被某个 CI job 覆盖（目录级 lint step，
+      # 或根级 npm run lint:all），且根 lint:all 必须串联到它们。零依赖脚本，
+      # 秒级；新增子项目忘记接门禁即红。
+      - name: Lint gate coverage guard (E-41)
+        run: |
+          node scripts/check-lint-gates.mjs --selftest
+          node scripts/check-lint-gates.mjs
 
   # ── A4（DEEP_REVIEW §七）：消费方路由面快照守卫（零依赖 node 脚本）──────
   # mcp-server 与 acf-cli 各自硬编码 70+ 条 admin-api 路由字符串，与 openapi
