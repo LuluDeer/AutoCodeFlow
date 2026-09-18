@@ -91,6 +91,19 @@ export interface Task {
   retryableErrors?: string[];
   timeout: number;
   timeoutSeconds?: number;
+  /**
+   * 任务级失败告警配置。两列是任务失败通知的**唯一**来源——
+   * `notification.service.notifyFailureWithConfig(..., task.alarmEmail,
+   * task.alarmChannels, ...)` 直接读 task 实体的这两列（后端
+   * execution-events.listener.ts 回查 task 后透传）。
+   *
+   * 此前本读模型**没有声明这两个字段**，于是 TaskFormPage 编辑态无法回填
+   * （`task.alarmEmail` 在类型层面就是 undefined），打开已有任务的编辑页时
+   * 告警区恒为空态；用户改个无关字段再保存就会把已配好的告警清掉。声明它们
+   * 是回填修复的前提（类型层不声明 = 该字段在读面不存在）。
+   */
+  alarmEmail?: string | null;
+  alarmChannels?: string[] | null;
   /** CORE-04: 超时动作（null/缺省 = kill）；表单提交 undefined = 保留旧值 */
   timeoutAction?: TimeoutAction | null;
   /** CORE-04: 超时预警阈值（timeout 的百分数 0-90；null = 未启用） */

@@ -371,7 +371,10 @@ describe('TaskFormPage：解释器能力咨询（P2-4，非阻断）', () => {
     expect(advisory.textContent).toContain('3.7');
 
     // 非阻断红线：咨询存在时保存仍可提交，runtimeVersion 原样带上（不被预检拦截）。
+    // G-2：3.7 离线层 + 在线舰队无缓存会先弹二次确认（Modal.confirm）；确认后仍提交。
     fireEvent.click(screen.getByRole('button', { name: /保存/ }));
+    const confirmBtn = await screen.findByRole('button', { name: /仍然提交/ });
+    fireEvent.click(confirmBtn);
     await vi.waitFor(() => expect(tasksApi.update).toHaveBeenCalledTimes(1));
     const payload = vi.mocked(tasksApi.update).mock.calls[0][1] as Record<string, unknown>;
     expect(payload.runtimeVersion).toBe('3.7');
