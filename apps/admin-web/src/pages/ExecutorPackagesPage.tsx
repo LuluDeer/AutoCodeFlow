@@ -50,6 +50,21 @@ const PACKAGE_TYPES = [
   { value: 'universal', label: 'Universal' },
 ] as const;
 
+// F-3：包类型 ↔ 可上传扩展名联动。后端 ExecutorPackageType 只有 node/python/universal，
+// 不存在 java/.jar；.whl 是 Python 专属（uv/pip wheel），不应在 node/universal 下可选。
+// 此前 accept 写死 `.zip,.tar.gz,.whl,.jar`，与类型枚举漂移——选 python 传 .jar 也能选，
+// 直到后端 400 才暴露。这里按当前选中类型收窄 accept，并在 beforeUpload 二次校验。
+const PACKAGE_ACCEPT: Record<string, string> = {
+  python: '.whl,.zip,.tar.gz,.tgz',
+  node: '.zip,.tar.gz,.tgz',
+  universal: '.zip,.tar.gz,.tgz',
+};
+const PACKAGE_ACCEPT_FALLBACK = '.zip,.tar.gz,.tgz,.whl';
+
+function extensionsFor(type: string | undefined): string {
+  return (type && PACKAGE_ACCEPT[type]) || PACKAGE_ACCEPT_FALLBACK;
+}
+
 const STATUS_TAG = (t: (k: string) => string): Record<string, { color: string; label: string }> => ({
   active: { color: 'green', label: t('execPkg.status.active') },
   deprecated: { color: 'orange', label: t('execPkg.status.deprecated') },
@@ -84,6 +99,8 @@ export default function ExecutorPackagesPage() {
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploadForm] = Form.useForm();
   const [uploading, setUploading] = useState(false);
+  // F-3：监听上传表单当前类型，据此收窄 Upload 的 accept 并做扩展名二次校验。
+  const uploadType = Form.useWatch('type', uploadForm);
 
   const [pushTarget, setPushTarget] = useState<PkgRow | null>(null);
   const [executors, setExecutors] = useState<Executor[]>([]);
@@ -154,6 +171,18 @@ export default function ExecutorPackagesPage() {
       uploadForm.resetFields();
       load();
     } catch (err: unknown) { message.error(getErrMsg(err, t('execPkg.upload.fail'))); } finally { setUploading(false); }
+  };
+
+  // F-3：accept 只收窄系统选择器；拖拽/手动选「所有文件」仍可绕过，
+  // beforeUpload 据当前类型做扩展名二次校验，不符则剔除并提示。
+  const beforePkgUpload = (file: File) => {
+    const lower = file.name.toLowerCase();
+    const allowed = extensionsFor(uploadType).split(',').map((s) => s.trim());
+    if (!allowed.some((ext) => lower.endsWith(ext))) {
+      message.error(t('execPkg.upload.extensionMismatch'));
+      return Upload.LIST_IGNORE;
+    }
+    return false;
   };
 
   const loadPushExecutors = async () => {
@@ -344,7 +373,7 @@ export default function ExecutorPackagesPage() {
       >
         <Form form={uploadForm} layout="vertical" onFinish={handleUpload} style={{ marginTop: 8 }}>
           <Form.Item name="file" label={t('execPkg.upload.field.file')} valuePropName="fileList" rules={[{ required: true, message: t('execPkg.upload.chooseFile') }]}>
-            <Upload beforeUpload={() => false} maxCount={1} accept=".zip,.tar.gz,.whl,.jar">
+            <Upload beforeUpload={beforePkgUpload} maxCount={1} accept={extensionsFor(uploadType)}>
               <Button icon={<UploadOutlined />}>{t('execPkg.upload.chooseFileBtn')}</Button>
             </Upload>
           </Form.Item>

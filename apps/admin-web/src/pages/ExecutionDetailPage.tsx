@@ -100,12 +100,26 @@ const LOG_PAGE_LIMIT = 2000;
 // 兜底页数上限，与后端 backfill MAX_PAGES 对齐，防 hasMore 异常导致死循环
 const LOG_MAX_PAGES = 200;
 // F-11（DEEP_REVIEW 0ef3bbe）: "加载完整日志"行数上限。此前最多 200 页 × 2000
-// 行 = 40 万行，全量 join('\n') 产生巨型字符串导致内存/CPU 峰值。10 万行上限
-// 将峰值内存降到原来 1/4；超过时提示用户用下载按钮查看完整日志。
-const FULL_LOGS_MAX_LINES = 100_000;
+// 行 = 40 万行，全量 join('\n') 产生巨型字符串导致内存/CPU 峰值。
+// G-3：上限由 10 万行进一步下调到 2 万行——即便单行日志，10 万行在真机
+// <pre> 内仍会造成明显布局掉帧；超过 2 万行直接停拉并强引导「下载」查看
+// （下载走 blob，不受渲染层约束）。虚拟滚动（react-window）为后续演进方向。
+const FULL_LOGS_MAX_LINES = 20_000;
+// O-5：SSE 断流后轮询兜底的指数退避参数。起步 8s，每次成功轮询后翻倍，
+// 封顶 60s——避免长时间断流时固定每 8s 打一次请求。新断流（重新连上又断开）
+// 会把延迟重置回起步值。
+const SSE_POLL_BASE_MS = 8000;
+const SSE_POLL_MAX_MS = 60_000;
 // OBS-03: 级别过滤下拉——'ALL' 表示不过滤（不带 level，行为与之前完全一致）
 const LOG_LEVEL_FILTER_ALL = 'ALL';
 type LogLevelFilter = typeof LOG_LEVEL_FILTER_ALL | 'ERROR' | 'WARN' | 'INFO' | 'DEBUG';
+
+// O-25：SSE 断线短退避自动重连预算——初次断线后先重连至多 MAX_SSE_AUTO_RETRIES
+// 次（退避 SSE_RETRY_BASE_MS × 2^(n-1)：1.5s → 3s），重连成功（onStatus 'live'）
+// 即重置计数；重连耗尽或收到服务端终态 event: error（带 data）后，再降级为
+// 下方 streamDisconnected 驱动的 8s 轮询。替代旧 reconnect:false「一次毛刺即丢流」。
+const SSE_RETRY_BASE_MS = 1500;
+const MAX_SSE_AUTO_RETRIES = 2;
 
 // UI-05: Tab key 与 URL ?tab= 双向记忆（ApplicationDetailPage 先例）——
 // 刷新/分享链接回到原 Tab；非法值回退默认 Tab（日志）。
@@ -145,6 +159,8 @@ export default function ExecutionDetailPage() {
   // OBS-03: 级别过滤拉取的时序守卫——快速连续切换级别时只让最新一次
   // 请求的响应落地，过期响应（晚到的旧 seq）直接丢弃。
   const levelFetchSeq = useRef(0);
+  // O-5：SSE 断流轮询的当前退避延迟（起步 SSE_POLL_BASE_MS，每次成功轮询翻倍，封顶）。
+  const ssePollDelayRef = useRef(SSE_POLL_BASE_MS);
   // U2: 截断日志兜底——"加载完整日志"成功后覆盖显示（null=未加载）
   const [fullLogs, setFullLogs] = useState<string | null>(null);
   const [loadingFullLogs, setLoadingFullLogs] = useState(false);
@@ -220,52 +236,132 @@ export default function ExecutionDetailPage() {
 
   // SSE log streaming when running
   // F-08（DEEP_REVIEW 0ef3bbe）：自建 EventSource 收敛到统一 createSseClient 工厂
-  // （与 useMetricsStream / useExecutionsStream 同源）。日志流断线不自动重连——
-  // 标记断流后交由下方轮询兜底，避免与轮询重复打。
+  // （与 useMetricsStream / useExecutionsStream 同源）。
+  // O-25：旧实现 reconnect:false——任何断线（含瞬时网络抖动）立刻标记断流并降级
+  // 8s 轮询，一次毛刺就丢掉实时流。现改为：断线先短退避自动重连至多
+  // MAX_SSE_AUTO_RETRIES 次（1.5s → 3s），onStatus('live') 即重置计数；重连耗尽或
+  // 收到服务端终态 event: error（带 data，流已被 end）后再降级 8s 轮询兜底。
+  // 工厂内置的无限退避重连在此显式关闭（reconnect:false），改由本 effect 控制预算。
   useEffect(() => {
     if (data?.status !== 'running' && data?.status !== 'pending') return;
     setStreaming(true);
     setStreamDisconnected(false);
     setStreamLines([]);
+
     let client: { close: () => void } | null = null;
-    client = createSseClient({
-      baseUrl: getSseBase(),
-      path: `/tasks/${taskId}/executions/${execId}/logs/stream`,
-      reconnect: false,
-      onMessage: (e) => {
-        try {
-          const line = JSON.parse(e.data) as string;
-          setStreamLines((prev) => (prev ? [...prev, line] : [line]));
-        } catch { /* ignore malformed */ }
-      },
-      events: {
-        done: () => {
-          client?.close();
-          setStreaming(false);
-          setStreamDisconnected(false);
-          refresh(); // final status refresh
+    let retryCount = 0;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let gaveUp = false;
+    let cleanedUp = false;
+
+    const clearRetryTimer = () => {
+      if (retryTimer !== null) {
+        clearTimeout(retryTimer);
+        retryTimer = null;
+      }
+    };
+
+    const startClient = () => {
+      // 关掉上一轮 client（重连时旧 es 已被工厂 onerror 关闭，这里幂等收尾）
+      client?.close();
+      client = null;
+      client = createSseClient({
+        baseUrl: getSseBase(),
+        path: `/tasks/${taskId}/executions/${execId}/logs/stream`,
+        reconnect: false,
+        onMessage: (e) => {
+          try {
+            const line = JSON.parse(e.data) as string;
+            setStreamLines((prev) => (prev ? [...prev, line] : [line]));
+          } catch { /* ignore malformed */ }
         },
-        error: () => {
-          client?.close();
-          setStreaming(false);
-          // 执行仍未终态：标记断流，交由轮询兜底并提示用户
-          if (data?.status === 'running' || data?.status === 'pending') setStreamDisconnected(true);
+        onStatus: (status) => {
+          if (status === 'live') {
+            // 连接真正建立：重置重连预算（长连接中途再断可重新重试）
+            retryCount = 0;
+            return;
+          }
+          if (status !== 'reconnecting' || gaveUp || cleanedUp) return;
+          // 建连/换票失败或传输层断连 → 短退避自动重连（reconnect:false 下工厂只
+          // 回调 onStatus('reconnecting') 而不重建）。
+          if (retryCount < MAX_SSE_AUTO_RETRIES) {
+            retryCount += 1;
+            const delay = SSE_RETRY_BASE_MS * 2 ** (retryCount - 1);
+            clearRetryTimer();
+            retryTimer = setTimeout(() => {
+              retryTimer = null;
+              if (!cleanedUp) startClient();
+            }, delay);
+          } else {
+            gaveUp = true;
+            clearRetryTimer();
+            client?.close();
+            client = null;
+            setStreaming(false);
+            // 执行仍未终态：标记断流，交由轮询兜底并提示用户
+            if (data?.status === 'running' || data?.status === 'pending') {
+              setStreamDisconnected(true);
+            }
+          }
         },
-      },
-    });
-    return () => { client?.close(); setStreaming(false); };
+        events: {
+          done: () => {
+            client?.close();
+            client = null;
+            setStreaming(false);
+            setStreamDisconnected(false);
+            refresh(); // final status refresh
+          },
+          error: (e: MessageEvent) => {
+            // 服务端显式 event: error（带 data，流已被服务端 end）= 终态错误，
+            // 不做自动重连，直接降级轮询。纯传输层断连的 error 事件无 data，
+            // 已由 onStatus('reconnecting') 走上面的短退避重连路径，这里忽略。
+            if (!e.data) return;
+            gaveUp = true;
+            clearRetryTimer();
+            client?.close();
+            client = null;
+            setStreaming(false);
+            if (data?.status === 'running' || data?.status === 'pending') {
+              setStreamDisconnected(true);
+            }
+          },
+        },
+      });
+    };
+
+    startClient();
+
+    return () => {
+      cleanedUp = true;
+      clearRetryTimer();
+      client?.close();
+      client = null;
+      setStreaming(false);
+    };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data?.status, execId, taskId, reconnectKey]);
 
   // SSE 断流后的轮询兜底：仅对未终态执行刷新，到达终态后自动停止。
-  // U3: 标签页不可见时跳过请求（与 useRequest pollingWhenHidden:false 语义一致），
-  // 定时器保留，回到前台后下一拍即恢复刷新。
+  // U3: 标签页不可见时跳过请求（回到前台后下一拍即恢复刷新）。
+  // O-5：指数退避——起步 8s，每次轮询后翻倍至封顶 60s；新一次断流重新起步，
+  // 避免长时间断流时固定每 8s 打一次请求。
   useEffect(() => {
     if (!streamDisconnected || !isLive) return;
-    const timer = setInterval(() => {
-      if (document.visibilityState === 'visible') refresh();
-    }, 8000);
-    return () => clearInterval(timer);
+    ssePollDelayRef.current = SSE_POLL_BASE_MS;
+    let timer: ReturnType<typeof setTimeout>;
+    const tick = () => {
+      if (document.visibilityState === 'visible') {
+        refresh();
+        ssePollDelayRef.current = Math.min(
+          ssePollDelayRef.current * 2,
+          SSE_POLL_MAX_MS,
+        );
+      }
+      timer = setTimeout(tick, ssePollDelayRef.current);
+    };
+    timer = setTimeout(tick, ssePollDelayRef.current);
+    return () => clearTimeout(timer);
   }, [streamDisconnected, isLive, refresh]);
 
   // U2: 切换执行记录时丢弃上一条已加载的完整日志与过滤结果
@@ -688,7 +784,13 @@ export default function ExecutionDetailPage() {
                 showIcon
                 data-testid="interpreter-offline-prefill"
                 title={t('execDetail.interpreter.offlinePrefillTitle')}
-                description={t('execDetail.interpreter.offlinePrefillDesc')}
+                description={
+                  <span>
+                    {t('execDetail.interpreter.offlinePrefillDesc')}{' '}
+                    {/* E-2：补「前往执行器配置」跳转，运维无需自行翻文档找入口 */}
+                    <Link to="/executors">{t('execDetail.interpreter.offlinePrefillGoExecutors')}</Link>
+                  </span>
+                }
                 style={{ marginBottom: 12 }}
               />
             )}

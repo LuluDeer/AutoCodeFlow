@@ -42,6 +42,17 @@ import PageSkeleton from '../components/PageSkeleton';
 
 const { Text } = Typography;
 
+/**
+ * O-4：触发执行后延迟多久刷新执行列表。
+ *
+ * 触发接口返回只代表「已入队」，执行记录由调度器异步落库——立即 invalidate
+ * 大概率拿到「还没有新记录」的旧列表。此处给一个缓冲期再 invalidate，使新执行
+ * 有机会出现在列表里。抽常量并注释依据，避免魔法数字散落（AppDeploymentPage
+ * 同处亦用相近量级）。后续若后端触发接口改为同步返回 executionId，可直接
+ * invalidate 并按 id 聚焦，无需再等待。
+ */
+const TRIGGER_REFRESH_DELAY_MS = 1500;
+
 /** CORE-02: retryableErrors 展示文案走 i18n（复用 taskForm.retryable.* 键，未知值原样兜底） */
 const RETRYABLE_T_KEY: Record<string, string> = {
   package_fetch_failed: 'taskForm.retryable.packageFetch',
@@ -179,7 +190,7 @@ export default function TaskDetailPage() {
       await tasksApi.trigger(id!, Object.keys(params).length > 0 ? params : undefined);
       message.success(t('taskDetail.triggerSuccess'));
       setTriggerModalOpen(false);
-      setTimeout(refreshExecs, 1500);
+      setTimeout(refreshExecs, TRIGGER_REFRESH_DELAY_MS);
     } catch (err: unknown) {
       message.error(getErrMsg(err, t('taskDetail.triggerFail')));
     } finally {

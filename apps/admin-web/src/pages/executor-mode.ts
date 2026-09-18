@@ -163,22 +163,82 @@ export function applyRequirementsPayload(
  *  RUNTIME_VERSION_PATTERN 逐字节一致（前端只做便利校验，服务端权威）。 */
 export const RUNTIME_VERSION_PATTERN = /^\d+\.\d+$/;
 
+/* ------------------------------------------------------------------ *
+ * G-1：可注入的运行时版本配置。
+ *
+ * 此前区间（3.7~3.14）、在线下界（3.8）、legacy 兜底（3.12）、各 Tier 版本表
+ * 都是前端硬编码，与后端常量靠人工同步——Python 3.15 发布或后端调整 legacy
+ * 默认时，前端读面咨询会漂移误报。现把这些值收敛到一个可注入配置：
+ *  - 默认值与历史硬编码逐字一致（既有单测零回归）；
+ *  - 后端 GET /config/runtime-version 上线后，启动时拉取并调用
+ *    configureRuntimeVersionConfig() 注入，纯函数无需改签名即可消费新值；
+ *  - 纯函数仍保持「无 React 依赖、可单测」——测试在 afterEach 调
+ *    resetRuntimeVersionConfig() 复位即可。
+ * ------------------------------------------------------------------ */
+export interface RuntimeVersionConfig {
+  /** 可声明区间下界，如 '3.7' */
+  min: string;
+  /** 可声明区间上界，如 '3.14' */
+  max: string;
+  /** 可在线下载的下界（低于此版本 uv 无法在线下载），如 '3.8' */
+  onlineMin: string;
+  /** 旧执行器未上报 interpreters 时的兜底默认版本，如 '3.12' */
+  legacyDefaultInterpreter: string;
+  /** Tier 1「完全支持」（uv 官方支持且可在线下载） */
+  tier1: readonly string[];
+  /** Tier 2「在线可用」（uv 可在线下载，已过活跃支持期） */
+  tier2: readonly string[];
+  /** Tier 3「需离线预填」（uv 无法在线下载） */
+  tier3: readonly string[];
+}
+
 /** 可声明区间（D10 实测后冻结，CONTRACT §1.1）：3.7 ~ 3.14。 */
 export const RUNTIME_VERSION_MIN = '3.7';
 export const RUNTIME_VERSION_MAX = '3.14';
 /** 可在线下载的下界：uv 0.8.17 与 0.11.14 均以 3.8 为地板，**3.7 无法在线下载**。 */
 export const RUNTIME_VERSION_ONLINE_MIN = '3.8';
-
 /**
- * 分层候选（CONTRACT §0 支持矩阵）。仅用于 UI 分组与 3.7 警示，
- * **不参与任何提交逻辑**（服务端才是权威，NG-08）。
- */
+ * 旧执行器未上报 interpreters 时的兜底默认版本（与后端
+ *  LEGACY_DEFAULT_INTERPRETERS 同值，改动需两侧同步）。 */
+export const LEGACY_DEFAULT_INTERPRETER = '3.12';
+
 /** Tier 1「完全支持」：uv 官方支持且可在线下载。 */
 export const RUNTIME_VERSION_TIER1: readonly string[] = ['3.14', '3.13', '3.12', '3.11', '3.10'];
 /** Tier 2「在线可用」：uv 可在线下载，但已过活跃支持期。 */
 export const RUNTIME_VERSION_TIER2: readonly string[] = ['3.9', '3.8'];
 /** Tier 3「需离线预填」：uv 无法在线下载，只有预填缓存卷才可用。 */
 export const RUNTIME_VERSION_TIER3: readonly string[] = ['3.7'];
+
+/** 默认配置——与历史硬编码逐字一致（直接 import 上述常量的旧调用方零影响）。 */
+const DEFAULT_RUNTIME_VERSION_CONFIG: RuntimeVersionConfig = {
+  min: RUNTIME_VERSION_MIN,
+  max: RUNTIME_VERSION_MAX,
+  onlineMin: RUNTIME_VERSION_ONLINE_MIN,
+  legacyDefaultInterpreter: LEGACY_DEFAULT_INTERPRETER,
+  tier1: RUNTIME_VERSION_TIER1,
+  tier2: RUNTIME_VERSION_TIER2,
+  tier3: RUNTIME_VERSION_TIER3,
+};
+
+let runtimeVersionConfig: RuntimeVersionConfig = DEFAULT_RUNTIME_VERSION_CONFIG;
+
+/** 运行时读取当前版本配置（纯函数内部统一入口）。 */
+export function getRuntimeVersionConfig(): RuntimeVersionConfig {
+  return runtimeVersionConfig;
+}
+
+/**
+ * 注入后端下发的版本配置（启动拉取 /config/runtime-version 后调用）。
+ * 传 partial 与当前值浅合并；用于前端读面（候选列表/区间提示/舰队咨询）跟随后端权威值。
+ */
+export function configureRuntimeVersionConfig(partial: Partial<RuntimeVersionConfig>): void {
+  runtimeVersionConfig = { ...runtimeVersionConfig, ...partial };
+}
+
+/** 复位为默认配置（测试用）。 */
+export function resetRuntimeVersionConfig(): void {
+  runtimeVersionConfig = DEFAULT_RUNTIME_VERSION_CONFIG;
+}
 
 /** 单个候选版本（tier 供 UI 分组渲染；offlineOnly 供 3.7 警示标签）。 */
 export interface RuntimeVersionOption {
@@ -188,14 +248,16 @@ export interface RuntimeVersionOption {
   offlineOnly: boolean;
 }
 
-/** 选择器候选全集（Tier1 → Tier2 → Tier3，组内为推荐优先的降序）。 */
+/** 选择器候选全集（Tier1 → Tier2 → Tier3，组内为推荐优先的降序）。
+ *  G-1：候选表来自可注入配置，后端调整支持矩阵后无需改前端代码。 */
 export function runtimeVersionOptions(): RuntimeVersionOption[] {
+  const cfg = getRuntimeVersionConfig();
   const build = (versions: readonly string[], tier: 1 | 2 | 3): RuntimeVersionOption[] =>
     versions.map((value) => ({ value, tier, offlineOnly: tier === 3 }));
   return [
-    ...build(RUNTIME_VERSION_TIER1, 1),
-    ...build(RUNTIME_VERSION_TIER2, 2),
-    ...build(RUNTIME_VERSION_TIER3, 3),
+    ...build(cfg.tier1, 1),
+    ...build(cfg.tier2, 2),
+    ...build(cfg.tier3, 3),
   ];
 }
 
@@ -218,10 +280,13 @@ export function normalizeRuntimeVersion(raw: unknown): string | null {
   const trimmed = value.trim();
   if (!RUNTIME_VERSION_PATTERN.test(trimmed)) return null;
   // 元组比较而非字符串比较：字符串序会把 "3.9" > "3.14" 判反（D1 的前缀
-  // 匹配陷阱同源）。可声明区间的主版本恒为 3，故直接判 (major, minor)。
+  // 匹配陷阱同源）。G-1：上下界从可注入配置解析，默认即 3.7~3.14（主版本恒为 3）。
+  const cfg = getRuntimeVersionConfig();
   const [major, minor] = trimmed.split('.').map((n) => Number(n));
-  if (major !== 3) return null;
-  if (minor < 7 || minor > 14) return null;
+  const [minMajor, minMinor] = cfg.min.split('.').map((n) => Number(n));
+  const [, maxMinor] = cfg.max.split('.').map((n) => Number(n));
+  if (major !== minMajor) return null;
+  if (minor < minMinor || minor > maxMinor) return null;
   return trimmed;
 }
 
@@ -233,7 +298,8 @@ export function runtimeVersionIsOfflineTier(raw: unknown): boolean {
   const version = normalizeRuntimeVersion(raw);
   if (version === null) return false;
   const minor = Number(version.split('.')[1]);
-  return minor < Number(RUNTIME_VERSION_ONLINE_MIN.split('.')[1]);
+  // G-1：在线下界来自可注入配置（默认 3.8）。
+  return minor < Number(getRuntimeVersionConfig().onlineMin.split('.')[1]);
 }
 
 /**
@@ -260,10 +326,6 @@ export interface ExecutorCapability {
   interpreters?: ExecutorInterpreterCapability[] | null;
 }
 
-/** 旧执行器未上报 interpreters 时的兜底默认版本（与后端
- *  LEGACY_DEFAULT_INTERPRETERS 同值，改动需两侧同步）。 */
-export const LEGACY_DEFAULT_INTERPRETER = '3.12';
-
 /** 点安全前缀匹配：`3.7.9` 满足 `3.7`（相等或 `3.7.` 前缀）；`3.13.0` 不满足 `3.1`。 */
 export function matchesInterpreterVersion(availableVersion: unknown, requested: string): boolean {
   if (typeof availableVersion !== 'string') return false;
@@ -279,7 +341,8 @@ export function interpreterCapabilitySatisfies(
   if (version === null) return true;
   if (!Array.isArray(interpreters)) {
     // 未上报（旧执行器/非数组脏数据）→ 仅兜底默认版本视为满足。
-    return version === LEGACY_DEFAULT_INTERPRETER;
+    // G-1：兜底版本来自可注入配置（默认 3.12），与后端 LEGACY_DEFAULT_INTERPRETERS 同步。
+    return version === getRuntimeVersionConfig().legacyDefaultInterpreter;
   }
   return interpreters.some(
     (item) =>

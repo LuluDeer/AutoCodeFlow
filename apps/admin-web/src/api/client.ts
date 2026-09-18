@@ -1,6 +1,9 @@
 import axios from 'axios';
 import { message as antMessage } from 'antd';
 import { useAuthStore } from '../store/auth';
+// F-1：拦截器非 React 组件，直接引用 i18n 单例（与 utils/locale.ts 同模式），
+// 使 403/404/409/429/5xx/网络错误提示随当前语言切换，而非全站硬编码中文。
+import i18n from '../i18n';
 
 const API_URL_INTERNAL = import.meta.env.VITE_API_URL_INTERNAL || '/api';
 const API_URL_EXTERNAL = import.meta.env.VITE_API_URL_EXTERNAL || '';
@@ -147,20 +150,23 @@ client.interceptors.response.use(
     }
     // Show a user-friendly toast for common HTTP errors (skip 401 which is handled above)
     if (status && status !== 401) {
+      // F-1：HTTP 状态文案走 i18n（key: http.error.<code>），业务 message/error 仍优先。
+      const httpKey =
+        status === 403 ? 'http.error.403' :
+        status === 404 ? 'http.error.404' :
+        status === 409 ? 'http.error.409' :
+        status === 429 ? 'http.error.429' :
+        status === 500 ? 'http.error.500' :
+        status === 503 ? 'http.error.503' :
+        'http.error.unknown';
       const msg =
         err.response?.data?.message ||
         err.response?.data?.error ||
-        (status === 403 ? '没有操作权限' :
-         status === 404 ? '请求的资源不存在' :
-         status === 409 ? '操作冲突，请刷新后重试' :
-         status === 429 ? '操作过于频繁，请稍后再试' :
-         status === 500 ? '服务器内部错误，请稍后重试' :
-         status === 503 ? '服务暂时不可用，请稍后重试' :
-         `请求失败（${status}）`);
+        i18n.t(httpKey, { status });
       antMessage.error(msg, 4);
     } else if (!err.response) {
       // Network error
-      antMessage.error('网络连接失败，请检查网络或稍后重试', 4);
+      antMessage.error(i18n.t('http.error.network'), 4);
     }
     return Promise.reject(err.response?.data || err);
   },

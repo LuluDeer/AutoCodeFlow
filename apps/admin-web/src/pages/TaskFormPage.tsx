@@ -11,6 +11,8 @@ import {
   deriveRuntimeMismatch,
   normalizeRuntimeVersion,
   interpreterFleetAdvisory,
+  runtimeVersionIsOfflineTier,
+  configureRuntimeVersionConfig,
   type CodeSource,
   type ExecutorInterpreterCapability,
 } from './executor-mode';
@@ -19,7 +21,7 @@ import {
 import type { components } from '../types/generated/api-types';
 import {
   Card, Form, Input, Select, Button, Space, Typography,
-  InputNumber, Radio, Alert, message, Divider, Tag, Tooltip, Anchor, theme, Modal,
+  InputNumber, Radio, Alert, message, Divider, Tag, Tooltip, Anchor, theme, Modal, Grid,
 } from 'antd';
 import {
   ThunderboltOutlined, ArrowLeftOutlined,
@@ -27,6 +29,7 @@ import {
   PlusOutlined, DeleteOutlined, ToolOutlined, LockOutlined, SaveOutlined,
 } from '@ant-design/icons';
 import { useNavigate, useSearchParams, useParams } from 'react-router-dom';
+import { configApi } from '../api/config';
 import { tasksApi } from '../api/tasks';
 import { executorsApi } from '../api/executors';
 import { applicationsApi } from '../api/applications';
@@ -242,6 +245,9 @@ export default function TaskFormPage() {
   const runtimeWatch = Form.useWatch('runtime', form);
   const applicationIdWatch = Form.useWatch('applicationId', form);
   const { token } = theme.useToken();
+  // G-4：锚点条显隐改由 antd Grid 断点决定（lg 及以上才显示），
+  // 不再用内联 display:none 硬编码（会覆盖外部 CSS 媒体查询）。
+  const screens = Grid.useBreakpoint();
 
   useEffect(() => {
     let active = true;
@@ -290,7 +296,19 @@ export default function TaskFormPage() {
       .listAll({}, controller.signal)
       .then((data) => {
         if (active && !controller.signal.aborted) {
-          setTaskOptions(data.items.map((t) => ({ id: t.id, name: t.name })));
+          const opts = data.items.map((t) => ({ id: t.id, name: t.name }));
+          setTaskOptions(opts);
+          // NF-02：名称快照顺带按候选列表播种。此前 depNameSnapshot 只在**编辑
+          // 态**由 task.dependencies 填充，创建态恒为 {}——于是创建态提交的
+          // dependencies 映射退化为 `{ id: id }`（buildDependenciesPayload 的
+          // 兜底分支）。依赖名虽只用于展示，但"存为模板/克隆"等通路依赖它还原
+          // 编排关系的可读形态；播种后创建态也能带上真实任务名。
+          // 不覆盖已有键（编辑态回填的任务自带映射是权威值）。
+          for (const o of opts) {
+            if (!depNameSnapshotRef.current[o.id]) {
+              depNameSnapshotRef.current[o.id] = o.name;
+            }
+          }
         }
       })
       .catch(() => {
@@ -376,6 +394,16 @@ export default function TaskFormPage() {
           // silently clear constraints that were never shown to the user.
           ...affinityFormValues(task),
           params: task.params ?? {},
+          // 告警配置（alarmEmail / alarmChannels）：两列是任务级失败通知的唯一
+          // 来源（notification.service.notifyFailureWithConfig 直接读 task 实体
+          // 的这两列）。此前编辑态**完全没有回填**——前端 Task 接口连字段都没
+          // 声明，于是打开已有任务的编辑页时两项恒显示空态；用户只是改个超时
+          // 就保存，也会把已配好的接收人与渠道清掉（"界面看着是空的、保存即
+          // 删库"）。空态刻意回 undefined 而非 []：undefined 不进请求体，PATCH
+          // 缺省=保留旧值，与"用户没碰过这个控件"同义；真正的清空由 Select 的
+          // allowClear 产出 []，提交侧原样发送即清除。
+          alarmEmail: task.alarmEmail ?? undefined,
+          alarmChannels: Array.isArray(task.alarmChannels) ? task.alarmChannels : undefined,
           // FEAT-06: 维护窗口（null/缺省 → 空数组占位，添加行即编辑）
           maintenanceWindows: (task.maintenanceWindows ?? []).map((w) => ({ ...w })),
           // FEAT-11: markdown 运行手册
@@ -519,6 +547,23 @@ export default function TaskFormPage() {
       return;
     }
     setValidationAnnouncement('');
+    // G-2：离线层（3.7）+ 在线舰队无一台缓存 = 提交后必然 interpreter_unavailable。
+    // 不阻断（服务端仍是权威，在线层本就"先下载后有"），但用 Modal.confirm 把
+    // "提交即失败"显式化——避免用户忽略 warning 直接提交，到执行时才排障。
+    if (fleetOfflineWillFail) {
+      const go = await new Promise<boolean>((resolve) => {
+        Modal.confirm({
+          title: t('taskForm.submit.offlineFleetConfirm.title'),
+          content: t('taskForm.submit.offlineFleetConfirm.content'),
+          okText: t('taskForm.submit.offlineFleetConfirm.ok'),
+          cancelText: t('taskForm.submit.offlineFleetConfirm.cancel'),
+          okButtonProps: { danger: true },
+          onOk: () => resolve(true),
+          onCancel: () => resolve(false),
+        });
+      });
+      if (!go) return;
+    }
     setSaving(true);
     try {
       // QA-01：applyDependenciesPayload 必须包在最外层——它把表单载体字段
@@ -640,12 +685,22 @@ export default function TaskFormPage() {
       codeSource,
       previousCodeSourceRef.current,
     );
+    // NF-02：上游依赖必须与提交路径同样归一后再固化。`dependencies` 不在表单
+    // 字段树里（表单载体是 `upstreamDependencies`，DTO 未声明该键），直接拿
+    // values 会让"存模板"静默丢掉用户选好的依赖链——从模板建出的任务没有上游
+    // 编排关系，而用户在模板里看到的参数却都在，属最易被误判为"模板功能正常"
+    // 的丢字段。applyDependenciesPayload 同时完成映射重建与载体键删除，与提交
+    // 路径逐字一致（载体键不删会让后端 forbidNonWhitelisted 判 400）。
+    const tplPayload = applyDependenciesPayload(tplValues, depNameSnapshotRef.current);
     try {
       await taskTemplatesApi.create({
         name: meta.name.trim(),
         description: meta.description?.trim() || undefined,
         category: meta.category?.trim() || undefined,
-        config: templateConfigFromFormValues(tplValues, buildExecutorPayload(values, executorMode)),
+        config: templateConfigFromFormValues(
+          tplPayload,
+          buildExecutorPayload(tplPayload, executorMode),
+        ),
       });
       message.success(t('taskForm.tpl.saved', { name: meta.name.trim() }));
       setTplModalOpen(false);
@@ -680,6 +735,41 @@ export default function TaskFormPage() {
   const zipApplicationMissing = codeSource === 'application_zip' && !applicationIdWatch;
 
   /**
+   * G-1：把后端版本契约注入 executor-mode 的可注入配置。
+   *
+   * 此前 min/max/onlineMin/legacyDefault 在前端硬编码，注释明言"改动需两侧同步"；
+   * 而后端 min/max 支持 PYTHON_RUNTIME_VERSION_MIN/MAX env 覆盖，运维一改，前端
+   * 的区间提示（RuntimeVersionField）与舰队能力咨询就静默漂移。这里在打开表单时
+   * 拉一次权威值注入纯函数层——纯函数仍保持无 React 依赖、可单测（测试用
+   * resetRuntimeVersionConfig() 复位）。
+   *
+   * 失败一律**静默**（旧后端无此端点 / 网络错误）：沿用前端默认常量，且异常在
+   * 此消化、不冒泡到 axios 拦截器，旧后端上不会凭空弹「资源不存在」toast。
+   * 注入后 bump revision：下列消费配置的 useMemo 与 RuntimeVersionField 的
+   * render 期读取都是**读取时才取值**，需一次重渲染才能让新契约生效。
+   */
+  const [runtimeVersionRevision, setRuntimeVersionRevision] = useState(0);
+  useEffect(() => {
+    let active = true;
+    configApi
+      .getRuntimeVersion()
+      .then((cfg) => {
+        if (!active || !cfg) return;
+        configureRuntimeVersionConfig({
+          min: cfg.min,
+          max: cfg.max,
+          onlineMin: cfg.onlineMin,
+          legacyDefaultInterpreter: cfg.legacyDefaultInterpreter,
+        });
+        setRuntimeVersionRevision((r) => r + 1);
+      })
+      .catch(() => {
+        // 端点不可达 → 静默沿用前端默认常量（见上方注释）
+      });
+    return () => { active = false; };
+  }, []);
+
+  /**
    * python_task_multiversion（P2-4）：版本能力的**读面咨询**（非阻断）。
    *
    * 声明了 runtimeVersion 时，若当前在线舰队没有一台的缓存池满足它，给一条
@@ -690,7 +780,23 @@ export default function TaskFormPage() {
    */
   const interpreterFleet = useMemo(
     () => interpreterFleetAdvisory(executors, runtimeVersion),
-    [executors, runtimeVersion],
+    // G-1：契约注入后需重算（内部 legacyDefault 兜底读的是可注入配置）
+    [executors, runtimeVersion, runtimeVersionRevision],
+  );
+
+  /**
+   * G-2：必失败情形——离线层（3.7，uv 无法在线下载）且在线舰队无一台缓存它。
+   * 与单纯 `unsatisfied` 不同：在线层（3.8+）执行时可按需下载，warning 足够；
+   * 但 3.7 离线层舰队无缓存时，提交后必然以 interpreter_unavailable 失败。
+   * 这里不阻断（服务端仍是权威），但提交时弹二次确认，把"提交即失败"显式化。
+   */
+  const fleetOfflineWillFail = useMemo(
+    () =>
+      runtimeWatch === 'python' &&
+      interpreterFleet === 'unsatisfied' &&
+      runtimeVersionIsOfflineTier(runtimeVersion),
+    // G-1：同上——离线层判定读的是可注入配置的 onlineMin
+    [runtimeWatch, interpreterFleet, runtimeVersion, runtimeVersionRevision],
   );
 
   const anchorItems = useMemo(
@@ -758,7 +864,9 @@ export default function TaskFormPage() {
             flexShrink: 0,
             position: 'sticky',
             top: 88,
-            display: 'none',
+            // G-4：宽屏（≥lg）显示锚点条，窄屏隐藏。断点逻辑内联自洽，
+            // 不再与外部 CSS 争夺 display 优先级（此前硬编码 none 会覆盖任何媒体查询）。
+            display: screens.lg ? 'block' : 'none',
           }}
           className="task-form-anchor-rail"
         >
@@ -1092,7 +1200,13 @@ export default function TaskFormPage() {
                       // 的**翻译文本**做 String.replace 反解数字——文案一变（如英文 "minutes"）或
                       // 语序变化即解析成 NaN，属"解析依赖 i18n 文案"的坏味道。现改走
                       // pages/fixed-rate.ts 的与语言无关数字抽取（纯函数，已单测）。
-                      parser={(v) => parseFixedRateSeconds(v)}
+                      //
+                      // 本轮审计修复：额外把**当前表单值**传给 parser。输入框以分钟呈现
+                      // 而表单值单位是秒，非 60 整数倍的值（90s/45s）向下取整后展示为
+                      // 「1 分钟」；仅 parser(text) 会把展示文本回读成 60s，用户聚焦后
+                      // 失焦（未改一个字符）就把 90s 静默改成 60s。传当前值后 parser 能
+                      // 判定"是否跨分钟"——未改则原样保留精确秒值。
+                      parser={(v) => parseFixedRateSeconds(v, form.getFieldValue('fixedRate'))}
                       placeholder={t('taskForm.field.fixedRate.placeholder')}
                     />
                   </Form.Item>
