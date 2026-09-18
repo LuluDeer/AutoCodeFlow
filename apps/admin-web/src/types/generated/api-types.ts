@@ -1119,6 +1119,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/executors/runtime-config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get effective executor runtime config
+         * @description Effective liveness thresholds used by the backend (heartbeatTimeoutMs = heartbeatIntervalMs × timeoutMultiplier; the stale sweep marks executors OFFLINE after that much silence) plus the findAll() list cap and the total executor count, so the admin UI can align its stale coloring with the backend and warn when the list is truncated (listLimit < executorTotal).
+         */
+        get: operations["ExecutorController_getRuntimeConfig"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/executors/install-cmd": {
         parameters: {
             query?: never;
@@ -3217,11 +3237,6 @@ export interface components {
              * @example 1.0.0
              */
             version?: string;
-            /**
-             * @description PROTOCOL-VER (B-3/U-2): 执行器线缆协议版本（与实现版本 version 解耦）。中台按兼容矩阵分支：低于 supportedMin 只 warn + 兜底，不拒绝注册。
-             * @example 1
-             */
-            protocolVersion?: number;
             /**
              * @description Declared capabilities
              * @example [
@@ -5381,6 +5396,26 @@ export interface operations {
         requestBody?: never;
         responses: {
             /** @description Tag list */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    ExecutorController_getRuntimeConfig: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Effective executor runtime config */
             200: {
                 headers: {
                     [name: string]: unknown;
