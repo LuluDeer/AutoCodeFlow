@@ -507,6 +507,30 @@ describe('parsePackageRequirements', () => {
     expect(parsePackageRequirements('a\r\nb\r\n')).toEqual(['a', 'b']);
     expect(parsePackageRequirements('')).toEqual([]);
   });
+
+  // NETOPT-6⑤：与 executor-python _parse_requirements_file 逐字同形的对齐
+  // 用例——同一个包在两个执行器上必须解析出同一依赖集。
+  it('strips a UTF-8 BOM on the first line (NETOPT-6⑤)', () => {
+    expect(parsePackageRequirements('\ufeffrequests>=2\nflask\n')).toEqual([
+      'requests>=2',
+      'flask',
+    ]);
+  });
+
+  it.each(['\u2028', '\u2029', '\x0b', '\x0c'])(
+    'does not split lines on %s (parity with the python executor)',
+    (separator) => {
+      // python 侧旧实现（str.splitlines）会在这里切出两条 spec；统一后
+      // U+2028/U+2029/VT/FF 原样留在行内，两侧一致。
+      expect(parsePackageRequirements(`requests>=2${separator}flask\n`)).toEqual([
+        `requests>=2${separator}flask`,
+      ]);
+    },
+  );
+
+  it('does not treat a bare CR as a line separator', () => {
+    expect(parsePackageRequirements('a\rb\n')).toEqual(['a\rb']);
+  });
 });
 
 describe('venvDirName (D6/FR-16)', () => {

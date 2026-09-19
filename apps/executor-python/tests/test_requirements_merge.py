@@ -135,6 +135,32 @@ def test_parse_keeps_environment_markers_and_extras():
     assert parsed == ['requests[socks]>=2 ; python_version < "3.8"']
 
 
+# NETOPT-6⑤：与 executor-node parsePackageRequirements 逐字同形的对齐用例
+# ——同一个包在两个执行器上必须解析出同一依赖集。
+def test_utf8_bom_on_the_first_line_is_stripped():
+    """读取侧是 utf-8（非 utf-8-sig）：带 BOM 的文件首行曾是
+    '\\ufeffrequests'，被当垃圾行静默丢掉（首行依赖无声消失）。"""
+    parsed = execute_module._parse_requirements_file(
+        '\ufeffrequests>=2\nflask\n')
+    assert parsed == ['requests>=2', 'flask']
+
+
+@pytest.mark.parametrize('separator', ['\u2028', '\u2029', '\x0b', '\x0c'])
+def test_unicode_and_control_separators_do_not_split_lines(separator):
+    """切行只认 \\r?\\n：str.splitlines() 还会切 U+2028/U+2029/VT/FF，node 侧
+    不会——同一个包在两个执行器上会解析出不同的依赖集。这些字符必须原样
+    留在行内（两侧一致），交由 uv 对整行做同样的判定。"""
+    parsed = execute_module._parse_requirements_file(
+        f'requests>=2{separator}flask\n')
+    assert parsed == [f'requests>=2{separator}flask']
+
+
+def test_bare_cr_is_not_a_line_separator():
+    """裸 \\r（老 Mac 行尾）不切行——与 node 的 /\\r?\\n/ 语义逐字一致。"""
+    parsed = execute_module._parse_requirements_file('a\rb\n')
+    assert parsed == ['a\rb']
+
+
 def test_read_package_requirements_returns_empty_when_absent(tmp_path):
     assert execute_module._read_package_requirements(tmp_path) == []
 

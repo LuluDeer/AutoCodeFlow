@@ -786,6 +786,11 @@ export function mergeRequirements(
  */
 export function parsePackageRequirements(text: string): string[] {
   const specs: string[] = [];
+  // NETOPT-6⑤：剥 UTF-8 BOM——读取侧是 utf-8（非 utf-8-sig），带 BOM 的
+  // 文件首行会变成 '\ufeffrequests' 而静默丢失该依赖。切行用 /\r?\n/，与
+  // executor-python `_parse_requirements_file` 逐字同形（同一包在两个执行器
+  // 上必须解析出同一依赖集）。
+  if (text.startsWith('\ufeff')) text = text.slice(1);
   for (const rawLine of text.split(/\r?\n/)) {
     const line = rawLine.split('#', 1)[0].trim();
     if (!line) continue;
