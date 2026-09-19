@@ -223,6 +223,18 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
           this.logger.log(
             "Scheduler leadership acquired — this node is now the leader",
           );
+          // NETOPT-3③: checkMisfires 此前只在 onModuleInit 跑一次——多实例
+          // 部署下 Leader failover 后，新 Leader 永远不会再做 misfire 补偿，
+          // FIRE_ONCE 策略的错失触发就此静默丢失。晋升瞬间补跑一轮（此时
+          // isLeader 已置位，门禁通过）；fire-and-forget，不阻塞竞选路径，
+          // 失败仅记日志——下一轮 cron tick 会再覆盖。
+          void this.checkMisfires().catch((err: unknown) => {
+            this.logger.warn(
+              `Post-promotion misfire check failed: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+          });
         }
         return;
       }
