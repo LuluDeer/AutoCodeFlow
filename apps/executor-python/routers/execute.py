@@ -1077,9 +1077,17 @@ def _parse_requirements_file(text: str) -> list[str]:
     `-r other.txt` 的递归展开：那会让包内文本决定执行器去读哪个文件，是
     不必要的攻击面；跳过并记日志即可（与 `_validate_requirements` 拒绝选项
     行同一条纪律，只是包内文件是数据而非任务参数，静默跳过更合适）。
+
+    NETOPT-6⑤：切行方式与 executor-node `parsePackageRequirements` 逐字同形——
+    统一按 `\\r?\\n` 切 + 剥 UTF-8 BOM。此前 `str.splitlines()` 还会切
+    U+2028/U+2029/\\x0b/\\x0c 等，node 侧不会，同一个包在两个执行器上会
+    解析出不同的依赖集；读取侧用 utf-8（非 utf-8-sig），带 BOM 的文件首行
+    会变成 '\\ufeffrequests' 而静默丢失该依赖。
     """
     specs: list[str] = []
-    for raw_line in text.splitlines():
+    if text.startswith('\ufeff'):
+        text = text[1:]
+    for raw_line in re.split(r'\r?\n', text):
         line = raw_line.split('#', 1)[0].strip()
         if not line:
             continue
