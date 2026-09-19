@@ -82,7 +82,36 @@ await page.waitForTimeout(2000);
 });
 
 // ── 3. 任务管理：新建任务（带Cron + JS 脚本）───────────────────────────────
-test('3. 任务管理 — 新建定时任务', async ({ page }) => {
+const E2E_CRON_TASK_NAME = 'E2E-测试任务-每分钟';
+// NETOPT-6⑦：本用例历史上会真的建成 `* * * * *` 每分钟定时任务且从不清理——
+// 整轮 e2e 结束后它继续每分钟真实派发，挤占唯一执行器槽位，污染后续所有
+// 轮次（最典型的症状：后续用例的触发长时间 pending/超时）。cleanupE2ECronTasks
+// 按任务名模糊匹配删除本用例产生的（以及历史轮次残留的）全部同名任务。
+async function cleanupE2ECronTasks(request) {
+  const tok = await apiLogin(request);
+  const listResp = await request.get(
+    `${API}/api/tasks?page=1&pageSize=100&name=${encodeURIComponent(E2E_CRON_TASK_NAME)}`,
+    { headers: { Authorization: `Bearer ${tok}` } },
+  );
+  expect(listResp.ok(), '任务列表 API 应可用').toBe(true);
+  const items = (await listResp.json()).data?.items || [];
+  for (const t of items) {
+    const del = await request.delete(`${API}/api/tasks/${t.id}`, {
+      headers: { Authorization: `Bearer ${tok}` },
+    });
+    expect(del.ok(), `删除定时任务 ${t.id}（${t.name}）应成功——残留的 * * * * * 任务会每分钟真实派发`).toBe(true);
+  }
+  // 终态复核：清理后列表里不再有任何同名任务
+  const after = await request.get(
+    `${API}/api/tasks?page=1&pageSize=100&name=${encodeURIComponent(E2E_CRON_TASK_NAME)}`,
+    { headers: { Authorization: `Bearer ${tok}` } },
+  );
+  const leftovers = (await after.json()).data?.items || [];
+  expect(leftovers, 'cron 测试任务必须清理干净').toHaveLength(0);
+  return items.length;
+}
+
+test('3. 任务管理 — 新建定时任务', async ({ page, request }) => {
   await login(page);
   await page.goto(`${BASE}/tasks`);
   await page.waitForLoadState('networkidle');
@@ -95,6 +124,7 @@ test('3. 任务管理 — 新建定时任务', async ({ page }) => {
   // 点击新建任务
   const newBtn = page.getByRole('button', { name: /新建|创建|\+|New/i }).first();
   const visible = await newBtn.isVisible().catch(() => false);
+  let formSubmitted = false;
   if (visible) {
     await newBtn.click();
     await page.waitForLoadState('networkidle');
@@ -104,7 +134,7 @@ test('3. 任务管理 — 新建定时任务', async ({ page }) => {
     const nameField = page.locator('input[id*="name"], input[placeholder*="任务名"], input[placeholder*="name"]').first();
     const hasName = await nameField.isVisible().catch(() => false);
     if (hasName) {
-      await nameField.fill('E2E-测试任务-每分钟');
+      await nameField.fill(E2E_CRON_TASK_NAME);
     }
 
     // 填写 Cron 表达式
@@ -134,10 +164,20 @@ test('3. 任务管理 — 新建定时任务', async ({ page }) => {
     if (hasSubmit) {
       await submitBtn.click();
       await page.waitForTimeout(2000);
+      formSubmitted = true;
       console.log('  ✓ 任务表单提交');
     }
   }
   await page.screenshot({ path: '/tmp/e2e-03-task-list.png', fullPage: false });
+
+  // NETOPT-6⑦：状态断言 + 清理（表单路径不可达时历史行为是静默跳过，
+  // 存在性断言只针对表单确实提交过的路径；清理则无条件执行——顺带回收
+  // 历史轮次残留的同名任务）。
+  const deleted = await cleanupE2ECronTasks(request);
+  if (formSubmitted) {
+    expect(deleted, '新建的每分钟定时任务应出现在任务列表（且已被清理）').toBeGreaterThan(0);
+  }
+  console.log(`  ✓ cron 测试任务清理完成（本轮删除 ${deleted} 个，含历史残留）`);
 });
 
 // ── 4. 手动触发任务执行 ──────────────────────────────────────────────────────
@@ -163,40 +203,45 @@ test('4. 手动触发任务 & 查看执行', async ({ page }) => {
   }, token);
   console.log('  API 任务列表:', JSON.stringify(tasks).slice(0, 300));
 
-  // 前往任务列表页，手动触发第一个任务
+  // NETOPT-6⑦：状态断言 1 —— 任务列表必须是合法信封形状。
+  expect(Array.isArray(tasks?.data?.items), '任务列表 API 应返回 data.items 数组').toBe(true);
+
+  if (tasks.data.items.length > 0) {
+    const taskId = tasks.data.items[0].id;
+    // NETOPT-6⑦：触发改走确定性 API 路径并断言。此前本用例**零断言**，且
+    // UI 路径盲点页面里第一个匹配 /立即执行|手动|触发|Run|Execute/i 的按钮
+    // （可能命中与任务无关的全局动作）；UI 触发链路的带断言覆盖由用例 26
+    // 承担，这里以 API 触发为权威路径。
+    const trigResp = await page.evaluate(async ({ id, tok }) => {
+      const r = await fetch(`${window.__E2E_API__}/api/tasks/${id}/trigger`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' },
+      });
+      return r.json();
+    }, { id: taskId, tok: token });
+    console.log('  API 触发结果:', JSON.stringify(trigResp).slice(0, 200));
+    // 状态断言 2 —— 触发必须返回 executionId。
+    expect(trigResp?.data?.executionId, 'API 手动触发应返回 executionId').toBeTruthy();
+
+    // 状态断言 3 —— 触发返回的执行必须立即可查（trigger 同步建执行行）。
+    const execs = await page.evaluate(async ({ id, tok }) => {
+      const r = await fetch(`${window.__E2E_API__}/api/tasks/${id}/executions?page=1&pageSize=5`, {
+        headers: { Authorization: `Bearer ${tok}` },
+      });
+      return r.json();
+    }, { id: taskId, tok: token });
+    const execItems = execs?.data?.items || [];
+    expect(
+      execItems.some((x) => x.id === trigResp.data.executionId),
+      `触发返回的 executionId=${trigResp.data.executionId} 应出现在该任务的执行记录里`,
+    ).toBe(true);
+    console.log('  ✓ 执行记录已可查:', trigResp.data.executionId);
+  } else {
+    console.log('  ⚠ 环境无任务，跳过触发断言');
+  }
+
   await page.goto(`${BASE}/tasks`);
   await page.waitForLoadState('networkidle');
-
-  // 找「立即执行」/「手动触发」按钮
-  const triggerBtn = page.getByRole('button', { name: /立即执行|手动|触发|Run|Execute/i }).first();
-  const hasRun = await triggerBtn.isVisible().catch(() => false);
-  if (hasRun) {
-    await triggerBtn.click();
-    await page.waitForTimeout(2000);
-    console.log('  ✓ 手动触发任务');
-  } else {
-    // 通过表格行操作
-    const actionBtn = page.locator('table tbody tr:first-child').getByRole('button').first();
-    const hasAction = await actionBtn.isVisible().catch(() => false);
-    if (hasAction) {
-      await actionBtn.click();
-      await page.waitForTimeout(1000);
-      console.log('  ✓ 点击第一个任务操作按钮');
-    } else {
-      console.log('  ⚠ 未找到触发按钮，直接通过 API 触发');
-      if (tasks?.data?.items?.length > 0) {
-        const taskId = tasks.data.items[0].id;
-        const trigResp = await page.evaluate(async ({ id, tok }) => {
-          const r = await fetch(`${window.__E2E_API__}/api/tasks/${id}/trigger`, {
-            method: 'POST',
-            headers: { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' },
-          });
-          return r.json();
-        }, { id: taskId, tok: token });
-        console.log('  API 触发结果:', JSON.stringify(trigResp).slice(0, 200));
-      }
-    }
-  }
   await page.screenshot({ path: '/tmp/e2e-04-trigger.png', fullPage: false });
 });
 
@@ -1506,7 +1551,7 @@ test.describe('security-redline-rbac', () => {
     expect(probe.status(), '探针 GET /users 应 403（token 有效且被 RBAC 拦截）').toBe(403);
   });
 
-  test('36. 执行器写面全 403 — patch/reload-config/rotate-token/set-offline/delete', async ({ request }) => {
+  test('37. 执行器写面全 403 — patch/reload-config/rotate-token/set-offline/delete', async ({ request }) => {
     const executor = await getFirstOnlineExecutor(request);
     const ghostId = randomUUID();
     const cases = [
@@ -1526,7 +1571,7 @@ test.describe('security-redline-rbac', () => {
     }
   });
 
-  test('37. 应用与部署写面全 403 — create/update/delete/deploy/upgrade-all/rollback', async ({ request }) => {
+  test('38. 应用与部署写面全 403 — create/update/delete/deploy/upgrade-all/rollback', async ({ request }) => {
     const ghost = randomUUID();
     const cases = [
       ['POST 建应用', 'post', `${API}/api/applications`, { name: `e2e-redline-${randomUUID().slice(0, 8)}`, version: '1.0.0', runtime: 'node' }],
@@ -1547,7 +1592,7 @@ test.describe('security-redline-rbac', () => {
     }
   });
 
-  test('38. 审计/配置/AI/用户管理面全 403 — export/rollback/shared-token/config/users', async ({ request }) => {
+  test('39. 审计/配置/AI/用户管理面全 403 — export/rollback/shared-token/config/users', async ({ request }) => {
     const cases = [
       ['GET 审计列表', 'get', `${API}/api/audit`, null],
       ['GET 审计导出', 'get', `${API}/api/audit/export`, null],
@@ -1569,7 +1614,7 @@ test.describe('security-redline-rbac', () => {
     }
   });
 
-  test('39. 事件订阅契约对齐 + 管理面 403/401 — subscriptions/webhook', async ({ request }) => {
+  test('40. 事件订阅契约对齐 + 管理面 403/401 — subscriptions/webhook', async ({ request }) => {
     // SUB-SCOPE-01（2026-09-15，行为变更）：**建订阅已收紧为 ADMIN-only**。
     // 原契约是「建订阅=任何已登录用户」（SSRF 深校验在 service 层）；但投递端
     // 按 `where: { enabled: true }` 选取订阅、不做属主过滤，而可订阅事件是平台级
@@ -1645,7 +1690,7 @@ test.describe('security-redline-rbac', () => {
     console.log('  ✓ 未携带 token → 401');
   });
 
-  test('40. 任务配置写面 403 — 普通用户改/删他人任务被拦（NF-03 属主守卫；对照：读面开放）', async ({ request }) => {
+  test('41. 任务配置写面 403 — 普通用户改/删他人任务被拦（NF-03 属主守卫；对照：读面开放）', async ({ request }) => {
     // 红线本体 = NF-03/fc9146f 三态属主守卫：admin 建的任务 ownerUserId=1（admin），
     // 普通用户对该任务走配置写面 PATCH/DELETE 必须 403（属主矩阵的 e2e 锚）。
     //
@@ -1721,7 +1766,7 @@ test.describe('security-redline-ssrf', () => {
     tok = await apiLogin(request);
   });
 
-  test('41. SSRF — webhook 订阅六出站点恶意 URL 全 400', async ({ request }) => {
+  test('42. SSRF — webhook 订阅六出站点恶意 URL 全 400', async ({ request }) => {
     const maliciousUrls = [
       'http://localhost:3105/api/health',                          // ① 回环域名形态（loopback）
       'http://127.0.0.1:3105/api/health',                          // ② 回环字面量（loopback）
@@ -1752,7 +1797,7 @@ test.describe('security-redline-ssrf', () => {
     }
   });
 
-  test('42. SSRF — DNS 重绑定域名形态与非 http scheme 全 400', async ({ request }) => {
+  test('43. SSRF — DNS 重绑定域名形态与非 http scheme 全 400', async ({ request }) => {
     // DNS 重绑定形态：本用例不依赖真实 rebind 域名的公网解析（CI 出网策略不可
     // 靠、且缓存会翻车），改用两条确定性等价面钉死拒绝语义：
     //  a) .example 保留 TLD → NXDOMAIN → assertSafeHttpUrl fail-closed 400（解析失败即拒，
@@ -1775,7 +1820,7 @@ test.describe('security-redline-ssrf', () => {
     }
   });
 
-  test('43. SSRF — 形状校验对照 + 未携带 token 401 面', async ({ request }) => {
+  test('44. SSRF — 形状校验对照 + 未携带 token 401 面', async ({ request }) => {
     // 对照组：公网 URL（.example 保留名，走 NXDOMAIN 也 400 → 因此对照组用
     // require_tld:false 语义下可解析的形态不可得——对照面改为「非法形状但
     // 不是 SSRF 类」的事件名错误，证明 400 响应区分度：SSRF 400 的语义由
@@ -1810,7 +1855,7 @@ test.describe('security-redline-ssrf', () => {
 // 见 execute.ts:363-376，属安全防线）→ 改用「非 glue 且无 git」载体，只验证安装段。
 // 场景默认关闭（E2E_PRIVATE_REGISTRY=1 才跑），CI/本地默认行为不受影响。
 test.describe('private-registry (BUG-18)', () => {
-  test('44. 私服依赖由 executor 装到任务依赖目录，凭据不落任务树', async ({ request }) => {
+  test('45. 私服依赖由 executor 装到任务依赖目录，凭据不落任务树', async ({ request }) => {
     test.skip(
       !process.env.E2E_NPM_REGISTRY_URL,
       '未启用私服场景（默认关闭；E2E_PRIVATE_REGISTRY=1 才跑）',
@@ -1911,7 +1956,7 @@ async function apiHeartbeat(request, address, token) {
 test.describe('pull-dispatch (ARCH-32)', () => {
   test.describe.configure({ mode: 'serial' });
 
-  test('45. pull 模式 — register(pull) → 空轮询 → 触发派发 → 长轮询取件（载荷对上真实执行行）', async ({ request }) => {
+  test('46. pull 模式 — register(pull) → 空轮询 → 触发派发 → 长轮询取件（载荷对上真实执行行）', async ({ request }) => {
     const reg = await apiRegisterThrowawayExecutor(request, { dispatchMode: 'pull' });
     test.skip(
       reg.status !== 200 && reg.status !== 201,
@@ -1987,7 +2032,7 @@ test.describe('pull-dispatch (ARCH-32)', () => {
 test.describe('token-rotation (AUTH-05)', () => {
   test.describe.configure({ mode: 'serial' });
 
-  test('46. token 轮换自愈 — 旧 token 立即 401 / 新 token 可用 / /executors/token 取回可用凭据', async ({ request }) => {
+  test('47. token 轮换自愈 — 旧 token 立即 401 / 新 token 可用 / /executors/token 取回可用凭据', async ({ request }) => {
     const reg = await apiRegisterThrowawayExecutor(request, { dispatchMode: 'push' });
     test.skip(
       reg.status !== 200 && reg.status !== 201,

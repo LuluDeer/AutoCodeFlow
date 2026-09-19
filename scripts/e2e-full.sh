@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 # ═══════════════════════════════════════════════════════════════════════════
-# 根级 47 例 Playwright e2e 全链编排（CI 与本地同一入口）
+# 根级 53 例 Playwright e2e 全链编排（CI 与本地同一入口）
+# （NETOPT-6⑦ 核对基线：48 例 test() 声明（编号 1-47 唯一 + E-3）+ 5 例
+#   条件 test.skip() 声明；用例数以 spec 内实际声明为准，增删用例须同步本行。）
 #
 # 链路：PG + Redis → admin-api(:3105) → executor-node(:8002 注册在线)
-#       → admin-web vite(:5176) → 根级 e2e-full.spec.js（47 例，chromium）
+#       → admin-web vite(:5176) → 根级 e2e-full.spec.js（53 例声明，chromium）
 #
-# E-45（DEEP_REVIEW 0ef3bbe）：新增 45/46 两例——pull 模式协议面（register(pull)
+# E-45（DEEP_REVIEW 0ef3bbe）：新增 pull/token 轮换两例（NETOPT-6⑦ 重编号后
+# 为 46/47）——pull 模式协议面（register(pull)
 # → 空轮询 → 触发 → 长轮询取件，ARCH-32）与 token 轮换自愈（旧 token 401 /
 # 新 token 可用 / POST /executors/token 取回可用凭据，AUTH-05）。两例均注册
 # 一次性执行器（随机回环地址，finally 删除），不干扰本脚本注册的在跑执行器；
@@ -384,7 +387,9 @@ if [[ -n "$PYTHON_BIN" ]]; then
   wait_http "http://localhost:$PORT_EXECUTOR_PYTHON/health" 60 "executor-python" "$LOG_DIR/executor-python.log"
   echo "executor-python /health OK"
 
-  # 注册 online 轮询（与 executor-node 同逻辑）
+  # 注册 online 轮询（与 executor-node 同逻辑）。NETOPT-6⑦：在线判定改
+  # node 真实 JSON 解析——旧 grep '"type":"python".*"status":"online"' 依赖
+  # 两个键挤在同一行且 type 先于 status 出现，键序/换行一变即静默判负。
   PY_REG_OK=0
   for _ in $(seq 1 30); do
     TOK=$(curl -sf -X POST "http://localhost:$PORT_API/api/auth/login" \
@@ -392,7 +397,8 @@ if [[ -n "$PYTHON_BIN" ]]; then
       -d '{"username":"admin","password":"admin123"}' \
       | grep -o '"accessToken":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
     if [[ -n "${TOK:-}" ]] && curl -sf "http://localhost:$PORT_API/api/executors" \
-        -H "Authorization: Bearer $TOK" | grep -q '"type":"python".*"status":"online"'; then
+        -H "Authorization: Bearer $TOK" \
+        | node -e "let s='';process.stdin.on('data',(d)=>{s+=d});process.stdin.on('end',()=>{try{const list=JSON.parse(s).data||[];process.exitCode=list.some((e)=>e.type==='python'&&e.status==='online')?0:1}catch{process.exitCode=1}})"; then
       PY_REG_OK=1
       break
     fi
@@ -420,11 +426,11 @@ PIDS+=($!)
 wait_http "http://localhost:$PORT_WEB/" 60 "admin-web" "$LOG_DIR/admin-web.log"
 echo "vite OK"
 
-echo "══ [6/6] Playwright 47 例（根级 spec + 根级 config）══"
+echo "══ [6/6] Playwright 53 例声明（根级 spec + 根级 config）══"
 cd apps/admin-web
 npx playwright install chromium >/dev/null 2>&1 || true
 set +e
-# E-45：把执行器共享 token 传给 spec（45/46 两例注册一次性执行器要用）；
+# E-45：把执行器共享 token 传给 spec（46/47 两例注册一次性执行器要用）；
 # 与上面启动 executor-node 时的 EXECUTOR_SECRET 同值，避免两处漂移。
 E2E_EXECUTOR_SECRET="${E2E_EXECUTOR_SECRET:-test-executor-secret}" \
 NODE_PATH="$(pwd)/node_modules" npx playwright test \
