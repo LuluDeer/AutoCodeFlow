@@ -110,9 +110,7 @@ describe("NotificationSilenceService (FEAT-01)", () => {
       await expect(
         service.create({ scope: "global", durationMinutes: null }),
       ).resolves.toBeDefined();
-      await expect(
-        service.create({ scope: "global" }),
-      ).resolves.toBeDefined();
+      await expect(service.create({ scope: "global" })).resolves.toBeDefined();
     });
   });
 

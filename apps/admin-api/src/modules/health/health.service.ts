@@ -88,7 +88,10 @@ export class HealthService {
   private readonly publicCacheTtlMs: number;
   private publicHealthCache: {
     expiresAt: number;
-    payload: { status: "healthy" | "degraded" | "unhealthy"; timestamp: string };
+    payload: {
+      status: "healthy" | "degraded" | "unhealthy";
+      timestamp: string;
+    };
   } | null = null;
 
   constructor(
@@ -108,8 +111,7 @@ export class HealthService {
     // 误报），明文兼容实例上则白白多开一条未加密连接。配置源与语义对齐
     // app.module BullMQ 侧：socket.tls = redis.tls，证书校验跟随
     // redis.tlsRejectUnauthorized（默认 true，自签环境显式置 false）。
-    const tlsEnabled =
-      this.configService.get<boolean>("redis.tls") === true;
+    const tlsEnabled = this.configService.get<boolean>("redis.tls") === true;
     this.redisClient = createClient({
       url: `redis://${host}:${port}`,
       password: password || undefined,
@@ -320,8 +322,7 @@ export class HealthService {
       // （scheduler.service.ts getQueueDepth 的既有注释同因）。wait/active
       // 缺键时 BullMQ 返回 0，防 null 相加。
       const counts = await this.taskQueue.getJobCounts("wait", "active");
-      const total =
-        Number(counts?.wait ?? 0) + Number(counts?.active ?? 0);
+      const total = Number(counts?.wait ?? 0) + Number(counts?.active ?? 0);
       return {
         status: "healthy",
         details: `Scheduler is running, ${total} jobs in queue`,

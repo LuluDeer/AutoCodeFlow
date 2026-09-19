@@ -395,10 +395,9 @@ export class UsersService implements OnModuleInit {
       .update()
       .set({ lastTotpCounter: matchedCounter })
       .where("id = :id", { id: userId })
-      .andWhere(
-        "(lastTotpCounter IS NULL OR lastTotpCounter < :matched)",
-        { matched: matchedCounter },
-      )
+      .andWhere("(lastTotpCounter IS NULL OR lastTotpCounter < :matched)", {
+        matched: matchedCounter,
+      })
       .execute();
     return (result.affected ?? 0) > 0;
   }
