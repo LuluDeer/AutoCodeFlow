@@ -1,4 +1,4 @@
-import { Command } from 'commander';
+import { Command, InvalidArgumentError } from 'commander';
 import Table from 'cli-table3';
 import chalk from 'chalk';
 import ora from 'ora';
@@ -117,18 +117,33 @@ export function tasksCommand(): Command {
   cmd.command('trigger <id>')
     .description('Manually trigger a task and wait for completion')
     .option('--wait', 'Poll until execution finishes', false)
+    // NETOPT-2①: --wait 的轮询上限可调（秒）。默认 600 保持既有行为；
+    // 非正值直接报参数错误而不是静默回落默认值——CI 里写错单位（毫秒当秒）
+    // 若被静默吞掉，长任务又会掉回「假超时假绿」的老坑。
+    .option(
+      '--wait-timeout <seconds>',
+      'Max seconds to keep polling with --wait before giving up (default 600)',
+      (v: string) => {
+        const n = Number.parseInt(v, 10);
+        if (!Number.isFinite(n) || n <= 0) {
+          throw new InvalidArgumentError('must be a positive integer (seconds)');
+        }
+        return n;
+      },
+      600,
+    )
     // NOTE: no --executor option here — TriggerTaskDto only accepts `params`
     // and the backend ValidationPipe runs with forbidNonWhitelisted, so a
     // per-trigger pin would be rejected with 400. Executor pinning IS
     // supported by the backend as a task-level field (tasks.executorId) — set
     // it via `acf task create/update --executor <id>`, not per run.
-    .action(async (id, opts) => {
+    .action(async (id: string, opts: { wait?: boolean; waitTimeout?: number }) => {
       const spinner = ora('Triggering task…').start();
       try {
         const exec = await post<Execution>(`/tasks/${id}/trigger`);
         spinner.succeed(`Execution started: ${exec.id}`);
         if (opts.wait) {
-          await pollExecution(exec.id);
+          await pollExecution(exec.id, opts.waitTimeout);
         }
       } catch (e: unknown) {
         spinner.fail('Failed to trigger');
@@ -565,9 +580,9 @@ export function tasksCommand(): Command {
   return cmd;
 }
 
-async function pollExecution(execId: string): Promise<void> {
+async function pollExecution(execId: string, waitTimeoutSeconds = 600): Promise<void> {
   const INTERVAL = 2000;
-  const MAX_WAIT = 10 * 60 * 1000; // 10 min
+  const MAX_WAIT = waitTimeoutSeconds * 1000;
   const spinner = ora('Waiting for execution…').start();
   const start = Date.now();
   while (Date.now() - start < MAX_WAIT) {
@@ -622,7 +637,19 @@ async function pollExecution(execId: string): Promise<void> {
       // transient (network / 429 / 5xx), keep polling
     }
   }
-  spinner.fail('Timed out waiting for execution');
+  // NETOPT-2①：--wait 的承诺是「等完并给出结果」，但轮询窗口耗尽时此前只
+  // spinner.fail 就返回，退出码依旧是 0——执行明明还在跑，CI 里
+  // `acf task trigger <id> --wait && …` 对任何超过等待上限的真实长任务假绿。
+  // 与上方失败终态的 CLI-EXIT-01 语义对齐：置 exitCode=1，并明示执行仍在
+  // 运行、如何继续观察（exec tail）或放宽等待上限（--wait-timeout）。
+  spinner.fail(`Timed out waiting for execution after ${waitTimeoutSeconds}s`);
+  console.error(
+    chalk.red(
+      `The execution is still running — no terminal status within ${waitTimeoutSeconds}s. ` +
+        `Follow it later with 'acf exec tail ${execId}' or raise --wait-timeout.`,
+    ),
+  );
+  process.exitCode = 1;
 }
 
 function sleep(ms: number): Promise<void> {

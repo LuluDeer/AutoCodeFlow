@@ -3,7 +3,7 @@
  * 解析器必须跨 chunk 半行/半消息安全，并对 admin-api 的三种帧
  * （data: JSON line / event: done + data: [DONE] / : ping 保活）分类正确。
  */
-import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest';
 
 const { axiosInstance, tokenState } = vi.hoisted(() => ({
   axiosInstance: {
@@ -224,5 +224,118 @@ describe('SEC-CLI-01: exec tail 契约', () => {
     expect(sseCall).toBeTruthy();
     expect(String(sseCall![0])).toContain('ticket=TK-123');
     expect(String(sseCall![0])).not.toContain('access_token');
+  });
+});
+
+/**
+ * NETOPT-2②：SSE 断流（未收到 done 帧）不得静默按成功处理。此前 stream
+ * 'end' 一律 process.exit(0)——反代超时/服务重启导致流在 done 帧前断开时，
+ * `acf exec tail … && …` 在 CI 里假绿。修复后：end 时 sawDone 才 exit(0)，
+ * 否则 stderr 明示中断并置 exitCode=1。
+ */
+describe('NETOPT-2②: SSE 断流（无 done 帧）不得静默 exit 0', () => {
+  async function startTail() {
+    const { execCommand } = await import('../commands/exec');
+    const axiosDefault = (await import('axios')).default as unknown as {
+      get: ReturnType<typeof vi.fn>;
+    };
+    (axiosInstance.get as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      data: { code: 0, message: 'success', data: { taskId: 't-1', status: 'running' } },
+    });
+    (axiosInstance.post as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      data: { code: 0, message: 'success', data: { ticket: 'TK-1' } },
+    });
+    // 不会自动 end 的最小流桩：事件由用例手动推进。
+    const listeners: Record<string, Array<(arg?: unknown) => void>> = {};
+    const fakeStream = {
+      on(evt: string, cb: (arg?: unknown) => void) {
+        (listeners[evt] ??= []).push(cb);
+        return fakeStream;
+      },
+    };
+    axiosDefault.get.mockResolvedValueOnce({ data: fakeStream });
+
+    const stdoutChunks: string[] = [];
+    const stderrChunks: string[] = [];
+    const outSpy = vi.spyOn(process.stdout, 'write').mockImplementation((c: string | Uint8Array) => {
+      stdoutChunks.push(String(c));
+      return true;
+    });
+    const errSpy = vi.spyOn(process.stderr, 'write').mockImplementation((c: string | Uint8Array) => {
+      stderrChunks.push(String(c));
+      return true;
+    });
+
+    const tail = execCommand().parseAsync(['node', 'acf', 'tail', 'e-1']);
+    // 等 action 完成 compat 解析 + 换票 + 建流（handlers 注册完毕）。
+    await vi.waitFor(() => expect(listeners['end']).toBeTruthy());
+
+    return {
+      listeners,
+      stdoutChunks,
+      stderrChunks,
+      joinTail: async () => {
+        try {
+          await tail;
+        } catch {
+          /* 建流/解析异常不影响事件断言 */
+        }
+      },
+      restore: () => {
+        outSpy.mockRestore();
+        errSpy.mockRestore();
+      },
+    };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // 文件头注释：clearAllMocks 会清掉 spy 的 mockImplementation——本组用例
+    // 会真的触发 process.exit(0)（done 帧），必须在 clear 之后重新装回桩。
+    exitSpy.mockImplementation((() => undefined) as never);
+    process.exitCode = undefined;
+  });
+  afterEach(() => {
+    process.exitCode = undefined;
+  });
+
+  it('断流未见过 done 帧 → stderr 提示中断且 exitCode=1', async () => {
+    const t = await startTail();
+    try {
+      // 一条普通日志帧（非 done），然后流直接 end
+      t.listeners['data']![0]!('data: "log-line"\n\n');
+      t.listeners['end']![0]!();
+      await t.joinTail();
+
+      expect(t.stderrChunks.join('')).toContain('interrupted before a done frame');
+      expect(process.exitCode).toBe(1);
+    } finally {
+      t.restore();
+    }
+  });
+
+  it('断流前输出过的日志帧不丢失', async () => {
+    const t = await startTail();
+    try {
+      t.listeners['data']![0]!('data: "kept-line"\n\n');
+      t.listeners['end']![0]!();
+      await t.joinTail();
+      expect(t.stdoutChunks.join('')).toContain('kept-line');
+    } finally {
+      t.restore();
+    }
+  });
+
+  it('收到 done 帧后 end → 仍 exit(0)（回归护栏）', async () => {
+    const t = await startTail();
+    try {
+      t.listeners['data']![0]!('event: done\ndata: [DONE]\n\n');
+      t.listeners['end']![0]!();
+      await t.joinTail();
+      expect(exitSpy).toHaveBeenCalledWith(0);
+      expect(process.exitCode).not.toBe(1);
+    } finally {
+      t.restore();
+    }
   });
 });

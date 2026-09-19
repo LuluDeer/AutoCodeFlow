@@ -3,7 +3,7 @@
  * against a mocked client and assert method / path / params / body for every
  * new P1 command, plus response parsing (field names, envelope handling).
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 vi.mock('ora', () => ({
   default: () => {
@@ -403,6 +403,92 @@ describe('acf task trigger --wait (N10)', () => {
       const code = await waitFor('success');
       expect(code === undefined || code === 0).toBe(true);
     }, 30_000);
+  });
+
+  // NETOPT-2①（本轮审计）：轮询窗口耗尽（超时）分支此前只 spinner.fail 就
+  // return，退出码仍是 0——执行明明还在跑，CI 里 `acf task trigger <id>
+  // --wait && …` 对超过等待上限的真实长任务假绿。修复后超时必须置
+  // exitCode=1，且提供 --wait-timeout 让长任务可调（默认 600 保持现行为）。
+  describe('等待超时必须置非零退出码（NETOPT-2①）', () => {
+    beforeEach(() => {
+      process.exitCode = undefined;
+      vi.spyOn(console, 'log').mockImplementation(() => {});
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+    });
+    afterEach(() => {
+      process.exitCode = undefined;
+    });
+
+    function triggerWith(args: string): Promise<void> {
+      return (async () => {
+        const { Command } = await import('commander');
+        const program = new Command();
+        program.addCommand(tasksCommand() as never);
+        program.exitOverride();
+        await program.parseAsync(
+          ['node', 'acf', 'task', 'trigger', 't1', '--wait', ...args.split(' ').filter(Boolean)],
+          { from: 'node' },
+        );
+      })();
+    }
+
+    it('窗口耗尽 → exitCode=1，且只轮询到窗口关闭为止', async () => {
+      mockedPost.mockResolvedValueOnce({ id: 'w3', status: 'running', createdAt: '2026-01-01T00:00:00Z' });
+      // 始终 running：只能靠超时退出循环
+      mockedGet.mockResolvedValue({ id: 'w3', status: 'running', createdAt: '2026-01-01T00:00:00Z' });
+      await triggerWith('--wait-timeout 1');
+      expect(process.exitCode).toBe(1);
+      // 1s 窗口：首轮 sleep(2000) 后就超过窗口，最多轮询 1 次
+      expect(mockedGet.mock.calls.length).toBeLessThanOrEqual(2);
+      expect(mockedGet).toHaveBeenCalledWith('/tasks/executions/w3');
+    }, 30_000);
+
+    it('超时提示必须说明执行仍在运行（不能只报 Timed out）', async () => {
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        mockedPost.mockResolvedValueOnce({ id: 'w4', status: 'running', createdAt: '2026-01-01T00:00:00Z' });
+        mockedGet.mockResolvedValue({ id: 'w4', status: 'running', createdAt: '2026-01-01T00:00:00Z' });
+        await triggerWith('--wait-timeout 1');
+        const out = errSpy.mock.calls.map((c) => c.join(' ')).join('\n');
+        expect(out).toContain('still running');
+        expect(out).toContain('acf exec tail w4');
+      } finally {
+        errSpy.mockRestore();
+      }
+    }, 30_000);
+
+    it('--wait-timeout 缺省为 600（保持既有行为）', () => {
+      const cmd = tasksCommand();
+      const trigger = cmd.commands.find((c) => c.name() === 'trigger');
+      expect(trigger).toBeTruthy();
+      const opt = trigger!.options.find((o) => o.long === '--wait-timeout');
+      expect(opt?.defaultValue).toBe(600);
+    });
+
+    it.each(['0', '-5', 'abc'])('非正值/非法 --wait-timeout（%s）直接报参数错误', async (bad) => {
+      const { Command } = await import('commander');
+      const program = new Command();
+      program.addCommand(tasksCommand() as never);
+      // InvalidArgumentError → commander error() 先把错误文案写到 stderr，
+      // 再 process.exit(1)（文件级 beforeEach 的桩会让 parseAsync 拒绝）。
+      // 因此断言「stderr 有可读的校验错误 + 命令以非零路径终止 + 绝不触发」，
+      // 与真实 CLI 的可观察行为一致。
+      const errSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      try {
+        await expect(
+          program.parseAsync(['node', 'acf', 'task', 'trigger', 't1', '--wait', '--wait-timeout', bad], {
+            from: 'node',
+          }),
+        ).rejects.toThrow();
+        const out = errSpy.mock.calls.map((c) => String(c[0])).join('');
+        expect(out).toContain('wait-timeout');
+        expect(out).toContain('positive integer');
+      } finally {
+        errSpy.mockRestore();
+      }
+      // 参数校验失败时绝不能真的触发任务
+      expect(mockedPost).not.toHaveBeenCalled();
+    });
   });
 });
 
