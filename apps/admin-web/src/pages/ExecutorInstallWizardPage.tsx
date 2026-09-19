@@ -291,6 +291,19 @@ export default function ExecutorInstallWizardPage() {
           setPollTimedOut(true);
           return;
         }
+        // PERF-10（本轮体验审查）：标签页不可见时**跳过本次请求**，只续期下一次
+        // 定时器。安装向导第 5 步在等执行器上线，用户的标准动作正是**切到另一台
+        // 机器去装执行器**——即这台浏览器标签长时间处于隐藏态。原实现不管可见性
+        // 一直每 5s 打一次 `executorsApi.list()`（全量执行器列表），白白消耗后端
+        // 与网络；回前台后下一拍照常继续，**不丢任何一次检测机会**。
+        //   · 计时**不暂停**（startTime 是绝对时间戳，超时判定照旧按真实时间走）
+        //     ——否则用户装到一半切回来会发现"60s 还没到"，与倒计时显示矛盾；
+        //   · 与 ExecutionsPage:105 / ExecutionDetailPage:393 /
+        //     AppDeploymentPage:155 三处既有可见性守卫同款。
+        if (document.visibilityState !== 'visible') {
+          pollTimerRef.current = setTimeout(tick, POLL_INTERVAL_MS);
+          return;
+        }
         try {
           const executors = await executorsApi.list();
           // **必须是本次新出现的执行器**（id 不在进入本步骤前的基线集合里）。
