@@ -35,9 +35,7 @@ describe("AddTaskExecutionDeclaredIndexes1790000000029（NETOPT-3①）", () => 
   });
 
   it("可被 TypeORM 解析（name/up/down 契约）", () => {
-    expect(migration.name).toBe(
-      "AddTaskExecutionDeclaredIndexes1790000000029",
-    );
+    expect(migration.name).toBe("AddTaskExecutionDeclaredIndexes1790000000029");
     expect(typeof migration.up).toBe("function");
     expect(typeof migration.down).toBe("function");
   });
@@ -47,9 +45,7 @@ describe("AddTaskExecutionDeclaredIndexes1790000000029（NETOPT-3①）", () => 
     expect(upPart).toContain(
       'CREATE INDEX IF NOT EXISTS "idx_task_executions_task_id_status"',
     );
-    expect(upPart).toContain(
-      'ON "task_executions" ("taskId", "status")',
-    );
+    expect(upPart).toContain('ON "task_executions" ("taskId", "status")');
   });
 
   it("up：补 task_executions(status,createdAt) 复合索引（PENDING 清扫等值+范围 / FAILED 排序）", () => {
@@ -57,9 +53,7 @@ describe("AddTaskExecutionDeclaredIndexes1790000000029（NETOPT-3①）", () => 
     expect(upPart).toContain(
       'CREATE INDEX IF NOT EXISTS "idx_task_executions_status_created_at"',
     );
-    expect(upPart).toContain(
-      'ON "task_executions" ("status", "createdAt")',
-    );
+    expect(upPart).toContain('ON "task_executions" ("status", "createdAt")');
   });
 
   it("up：补 config_history(createdAt)（getHistory 无 key 全量历史排序缺索引）", () => {
@@ -82,9 +76,9 @@ describe("AddTaskExecutionDeclaredIndexes1790000000029（NETOPT-3①）", () => 
     expect(downPart.indexOf('"idx_config_history_created_at"')).toBeLessThan(
       downPart.indexOf('"idx_task_executions_status_created_at"'),
     );
-    expect(downPart.indexOf('"idx_task_executions_status_created_at"')).toBeLessThan(
-      downPart.indexOf('"idx_task_executions_task_id_status"'),
-    );
+    expect(
+      downPart.indexOf('"idx_task_executions_status_created_at"'),
+    ).toBeLessThan(downPart.indexOf('"idx_task_executions_task_id_status"'));
   });
 
   it("实体侧：@Index 命名声明与迁移 DDL 对齐（原未命名 ['status'] 声明已移除）", () => {

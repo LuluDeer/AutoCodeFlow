@@ -1,5 +1,7 @@
 import { Test } from "@nestjs/testing";
 import { getRepositoryToken } from "@nestjs/typeorm";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { DataSource, QueryFailedError, IsNull, Or, In } from "typeorm";
 import { getQueueToken } from "@nestjs/bullmq";
 import {
@@ -1310,7 +1312,11 @@ describe("TaskService (__tests__)", () => {
         expect.objectContaining({ executorAddress: "%10.0.0.\\%host\\_1%" }),
       );
       // 正常搜索词不被误伤（无元字符时原样透传）
-      await service.getAllExecutions({ page: 1, pageSize: 10, taskName: "nightly" });
+      await service.getAllExecutions({
+        page: 1,
+        pageSize: 10,
+        taskName: "nightly",
+      });
       expect(andWhere).toHaveBeenCalledWith(
         expect.anything(),
         expect.objectContaining({ taskName: "%nightly%" }),
@@ -1318,8 +1324,6 @@ describe("TaskService (__tests__)", () => {
     });
 
     it("NETOPT-3⑤: source guard — no bare `%${...}%` interpolation on the two ILIKE filters", () => {
-      const { readFileSync } = require("node:fs");
-      const { join } = require("node:path");
       const raw = readFileSync(
         join(__dirname, "..", "task.service.ts"),
         "utf-8",
@@ -1335,7 +1339,9 @@ describe("TaskService (__tests__)", () => {
       expect(bare).toEqual([]);
       // 有齿校验：该正则确实能匹配被修的旧写法
       const old = "`%${p.taskName}%`";
-      expect([...old.matchAll(/`%\$\{p\.(taskName|executorAddress)\}%`/g)].length).toBe(1);
+      expect(
+        [...old.matchAll(/`%\$\{p\.(taskName|executorAddress)\}%`/g)].length,
+      ).toBe(1);
     });
   });
 
@@ -2700,8 +2706,14 @@ describe("TaskService (__tests__)", () => {
         };
         execRepo.findOne.mockResolvedValue(exec);
         // 两个下游都满足依赖且都赢得 claim；第一个 trigger 入队失败、第二个成功
-        const downstreamA = { id: "t-down-a", dependencies: { up: "t-upstream" } };
-        const downstreamB = { id: "t-down-b", dependencies: { up: "t-upstream" } };
+        const downstreamA = {
+          id: "t-down-a",
+          dependencies: { up: "t-upstream" },
+        };
+        const downstreamB = {
+          id: "t-down-b",
+          dependencies: { up: "t-upstream" },
+        };
         const depQb = {
           select: jest.fn().mockReturnThis(),
           where: jest.fn().mockReturnThis(),
