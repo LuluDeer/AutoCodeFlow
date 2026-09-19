@@ -290,7 +290,7 @@ def test_reclamation_refuses_paths_outside_the_pool_root(layout):
     outside.mkdir()
     (outside / 'important.txt').write_text('do not delete')
 
-    assert maintenance._reclaim_interpreter_version(pool_root, outside, '3.9.20') is False
+    assert maintenance._reclaim_interpreter_version(pool_root, outside) is False
     assert outside.exists()
     assert (outside / 'important.txt').exists()
 
@@ -298,7 +298,7 @@ def test_reclamation_refuses_paths_outside_the_pool_root(layout):
 def test_reclamation_refuses_the_pool_root_itself(layout):
     """池根本身也不许删（删掉等于清空整个缓存层）。"""
     _work_root, pool_root = layout
-    assert maintenance._reclaim_interpreter_version(pool_root, pool_root, '') is False
+    assert maintenance._reclaim_interpreter_version(pool_root, pool_root) is False
     assert pool_root.exists()
 
 
