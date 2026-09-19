@@ -16,7 +16,7 @@
     "dist:win": "npm run build && electron-builder --win",
     "dist:mac": "npm run build && electron-builder --mac",
     "dist:linux": "npm run build && electron-builder --linux",
-    "test:main": "tsc -p tsconfig.selftest.json && node dist-selftest/path-domain.selftest.js && node dist-selftest/token-crypto.selftest.js && node dist-selftest/updater.selftest.js && node dist-selftest/notifier-rules.selftest.js && node dist-selftest/log-incremental.selftest.js && node dist-selftest/log-tail.selftest.js && node dist-selftest/uv-wiring.selftest.js && node dist-selftest/config-sanitize.selftest.js && node dist-selftest/heartbeat.selftest.js",
+    "test:main": "tsc -p tsconfig.selftest.json && node dist-selftest/path-domain.selftest.js && node dist-selftest/token-crypto.selftest.js && node dist-selftest/updater.selftest.js && node dist-selftest/notifier-rules.selftest.js && node dist-selftest/log-incremental.selftest.js && node dist-selftest/log-tail.selftest.js && node dist-selftest/child-line-splitter.selftest.js && node dist-selftest/uv-wiring.selftest.js && node dist-selftest/config-sanitize.selftest.js && node dist-selftest/heartbeat.selftest.js",
     "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {
