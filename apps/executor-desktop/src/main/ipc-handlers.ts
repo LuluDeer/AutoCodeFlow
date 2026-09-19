@@ -165,6 +165,60 @@ function readLogIncremental(
   }
 }
 
+/**
+ * NETOPT-2⑥：logs:getToday 的尾部窗口读。
+ *
+ * 原实现 readFileSync 整读当天日志后再 split + slice(-500)——本 handler 跑在
+ * Electron 主进程，executor-node 子进程一天可写数 MB～数十 MB 日志，状态窗口
+ * 每次打开都整读一遍，主进程直接被卡住。PERF-DSK-01 的增量游标只修了
+ * log:read 的任务日志路径，本路径漏了。
+ *
+ * 改为只读文件尾部 256KB 窗口再取尾 500 行：
+ * - 文件小于窗口 → start=0 全读，split/slice 语义与旧实现完全一致（含尾部
+ *   空 list 元素——旧实现 content.split('\n') 的尾随 '' 也会进结果，保持不变）；
+ * - 窗口起点可能落在一行中间（半行）：读 start-1 处一个字节判定首行完整性，
+ *   非换行符则丢弃首元素。选择「丢弃半行」而非「向前扩读一次」：UI 只展示
+ *   最近活动概览，少一行半行无害，且实现单遍、行为确定可测；
+ * - 单行超长导致窗口内行数不足 500 → 接受近似（同样只影响展示完整性）。
+ * 独立实现而不复用 readLogIncremental：那是带跨调用游标缓存的增量读（键为
+ * path），本 handler 是无状态的一次性取尾——复用会污染游标缓存语义。
+ */
+const LOG_TAIL_WINDOW_BYTES = 256 * 1024;
+
+export function readLastLines(
+  filePath: string,
+  maxLines: number = 500,
+  windowBytes: number = LOG_TAIL_WINDOW_BYTES,
+): string[] {
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(filePath, 'r');
+    const size = fs.fstatSync(fd).size;
+    if (size === 0) return [];
+    const start = Math.max(0, size - windowBytes);
+    const length = size - start;
+    const buf = Buffer.allocUnsafe(length);
+    const read = fs.readSync(fd, buf, 0, length, start);
+    const text = buf.subarray(0, read).toString('utf-8');
+    const lines = text.split('\n');
+    // 窗口起点不在行首时，首元素是被截断的半行——丢弃。
+    if (start > 0) {
+      const boundary = Buffer.allocUnsafe(1);
+      fs.readSync(fd, boundary, 0, 1, start - 1);
+      if (boundary[0] !== 0x0a) {
+        lines.shift();
+      }
+    }
+    return lines.slice(-maxLines);
+  } catch {
+    return [];
+  } finally {
+    if (fd !== undefined) {
+      fs.closeSync(fd);
+    }
+  }
+}
+
 export function registerIpcHandlers(): void {
   // ── 配置 ──────────────────────────────────────────────
   // SEC-NEW-1: the token is never returned over IPC — the renderer gets a
@@ -440,15 +494,10 @@ export function registerIpcHandlers(): void {
 
     if (!fs.existsSync(filePath)) return { lines: [], date: fileName };
 
-    try {
-      const content = fs.readFileSync(filePath, 'utf-8');
-      const lines = content.split('\n');
-      // 只取最后 500 行，避免一次性加载太多
-      const lastLines = lines.slice(-500);
-      return { lines: lastLines, date: fileName };
-    } catch {
-      return { lines: [], date: fileName };
-    }
+    // NETOPT-2⑥: 尾部窗口读替代整读（readLastLines 头注有完整分析）——
+    // 大日志（一天数 MB～数十 MB）下不再整读卡主进程。
+    const lines = readLastLines(filePath, 500);
+    return { lines, date: fileName };
   });
 
   // P3-2：此处曾注册 logs:listAll / logs:readFile 两个 handler，但 preload
