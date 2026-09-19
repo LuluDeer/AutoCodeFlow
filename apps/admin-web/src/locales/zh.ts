@@ -2147,6 +2147,11 @@ export default {
   'errorFallback.reload': '重新加载',
   'errorFallback.copied': '已复制',
   'errorFallback.copy': '复制错误信息',
+  // NETOPT-4：路由级错误兜底（RouteErrorBoundary）——懒加载 chunk 失效分支
+  'routerError.chunkTitle': '版本已更新，请刷新',
+  'routerError.chunkDesc':
+    '应用已发布新版本，当前页面的资源已失效。点击下方按钮刷新即可加载最新版本。',
+  'routerError.refresh': '刷新页面',
   'stateError.loadingFailed': '加载失败',
   'stateError.requestFailed': '请求失败，请稍后重试',
   'stateError.copySuccess': '错误信息已复制到剪贴板',
