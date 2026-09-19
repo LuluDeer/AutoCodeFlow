@@ -535,6 +535,42 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
   }
 }
 
+// ── NETOPT-7⑤：ConfigPage 首屏 Promise.all 必须兜住 IPC reject ──────────
+//
+// getConfig() 走主进程 configStore.getAllMasked()——配置文件损坏/schema 校验
+// 抛错/token 解密异常时该 IPC reject。原实现 `Promise.all([...]).then(...)` 无
+// .catch：loaded 恒 false → 整页永久「加载中...」+ unhandled rejection。与
+// EXP-04（StatusWindow 的 getStatus()）同源场景，修法对齐：脱离加载态 + 页内
+// 错误行（桌面端无 toast 体系）。
+{
+  const configPage = pages[1];
+  const start = configPage.indexOf('Promise.all([window.electronAPI.getConfig()');
+  if (start === -1) throw new Error('NETOPT-7⑤: 找不到首屏 Promise.all(getConfig/getLocalIPs)');
+  // 块边界：catch 紧跟 then，不可能跨到下一个 useEffect 之后
+  const rest = configPage.slice(start);
+  const next = rest.indexOf('useEffect', 1);
+  const block = next >= 0 ? rest.slice(0, next) : rest;
+  const catchIdx = block.indexOf('.catch(');
+  if (catchIdx === -1) {
+    throw new Error('NETOPT-7⑤: 首屏 Promise.all 缺少 .catch —— 配置读取失败会永久「加载中...」');
+  }
+  // catch 必须挂在 Promise.all 链上：同 effect 里的 getAutoLaunch().catch 与本守卫
+  // 无关——首个 .catch 若出现在 autolaunch 行之后，说明读取链本身仍无兜底。
+  if (block.slice(0, catchIdx).includes('getAutoLaunch')) {
+    throw new Error('NETOPT-7⑤: .catch 未挂在首屏 Promise.all 链上（只有 autolaunch 通道有 catch）');
+  }
+  if (!block.includes('setLoaded(true)')) {
+    throw new Error('NETOPT-7⑤: 失败分支未置 loaded —— 页面仍会永久「加载中...」');
+  }
+  // 失败原因必须落到页内可见错误行，且错误行必须真的渲染出来
+  if (!block.includes('setLoadError(')) {
+    throw new Error('NETOPT-7⑤: 读取失败未写 loadError —— 用户看不到原因');
+  }
+  if (!configPage.includes('{loadError && (')) {
+    throw new Error('NETOPT-7⑤: loadError 未渲染为页内错误行');
+  }
+}
+
 // ── NETOPT-6⑥：渲染树必须有全局 ErrorBoundary 兜底 ─────────────────
 // 背景：main.tsx 此前直接 render(<App />)，全 renderer 零边界——任一组件
 // 渲染期抛错（EXP-09 记录过该事故形态：preload 缺方法同步抛 → 整树卸载
@@ -572,4 +608,4 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
   }
 }
 
-console.log('renderer selftest: design tokens, accessibility, contrast, focus, layout, spacing, IPC anchors, F-21/F-22/F-37, DSK-05, PERF-DSK-01, SEC-DSK-01, EXP-04/05/06/09, ErrorBoundary guards passed');
+console.log('renderer selftest: design tokens, accessibility, contrast, focus, layout, spacing, IPC anchors, F-21/F-22/F-37, DSK-05, PERF-DSK-01, SEC-DSK-01, EXP-04/05/06/09, ErrorBoundary, NETOPT-7⑤⑥ guards passed');
