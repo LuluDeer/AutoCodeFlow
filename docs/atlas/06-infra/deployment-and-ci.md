@@ -1,5 +1,5 @@
 # 部署与 CI
-> 所属: docs/atlas/06-infra · 最后核对: 2026-09-13 · 对应代码: deploy.sh、.github/workflows/（ci.yml / release.yml / docs-site-deploy.yml / release-please.yml）
+> 所属: docs/atlas/06-infra · 最后核对: 2026-09-19 · 对应代码: deploy.sh、.github/workflows/（ci.yml / release.yml / release-desktop.yml / release-please.yml / docs-site-deploy.yml）
 
 ## 怎么部署（deploy.sh，129 行）
 
@@ -10,19 +10,20 @@
 
 流程：参数解析 → **无 `.env` 则复制 `.env.example` 并 exit 1**（防裸配置上线）→ 校验 docker 与 docker-compose 存在 → `export NODE_ENV=<env>` → `docker-compose down` → （`-b` 时 `build --no-cache`）→ `up [-d]` → sleep 30 → `docker-compose ps` → `curl http://localhost:3105/api/health` 断言响应含 `healthy`（S2：全局前缀 api，非 `/health`）→ 失败时打印 admin-api 日志并退出 1。
 
-## Workflow 文件总览（.github/workflows/，4 个）
+## Workflow 文件总览（.github/workflows/，5 个）
 
 | Workflow | 触发 | 作用 |
 |---|---|---|
-| `ci.yml` | push/PR（main、develop）、手动、月度 cron | 26 个 job 的全量质量门禁（下表） |
+| `ci.yml` | push/PR（main、develop）、手动、月度 cron | 37 个 job 的全量质量门禁（下表） |
 | `release.yml` | `push tags v*` | version-guard → npm（@autocodeflow/sdk、autocodeflow-mcp-server）+ PyPI（autoflow-sdk）发布 |
+| `release-desktop.yml` | `push tags desktop-v*` | 桌面端安装包（NSIS/AppImage/deb 等）构建与 GitHub Release 发布，与包发布解耦 |
 | `release-please.yml` | push main | 汇总 conventional commits → Release PR（bump 三包 + CHANGELOG） |
 | `docs-site-deploy.yml` | push main、手动 | VitePress 文档站发布 GitHub Pages（base `/AutoCodeFlow/`） |
 
 ## CI 面板（.github/workflows/ci.yml）
 
 - 触发：push/PR 到 `main`、`develop`；`workflow_dispatch`；**月度** `cron: 20 3 1 * *`（QA-08 跨版本迁移演练——schedule 触发时主套件全部 `if: github.event_name != 'schedule'` 旁路，只跑迁移演练相关步骤）。
-- 并发组：`ci-${{ github.ref }}`，同分支旧跑自动取消。共 **26 个 job**：
+- 并发组：`ci-${{ github.ref }}`，同分支旧跑自动取消。共 **37 个 job**：
 
 | 分组 | Job（要点） |
 |---|---|
@@ -33,7 +34,7 @@
 | Python | `executor-python-test`、`autoflow-sdk-python-test`、`python-packages-test`（autocodeflow-http/notify/db/ai matrix）、`registry-pypi-test`（均 py3.12） |
 | 桌面端 | `desktop-bundle-drift`（ncc 重打 bundle 与入库产物 diff，W-18）；`desktop-linux-bundle`（AppImage+deb，PR/手动）；`desktop-e2e-smoke`（Playwright _electron 3 例，windows，PR/手动） |
 | Windows 基线 | `windows-node-tests`（executor-node/acf-cli/mcp-server matrix）、`windows-admin-web` |
-| E2E 全链 | `e2e-full`（ubuntu，43 例 Playwright，PG 15432/Redis 16379，`SKIP_DOCKER=1` 走 `scripts/e2e-full.sh`）；`e2e-full-windows`（windows，PR/手动/schedule，预装 PG 服务 + portable Redis） |
+| E2E 全链 | `e2e-full`（ubuntu，48 例 Playwright，PG 15432/Redis 16379，`SKIP_DOCKER=1` 走 `scripts/e2e-full.sh`）；`e2e-full-windows`（windows，PR/手动/schedule，预装 PG 服务 + portable Redis） |
 | 契约/杂项 | `check-migrations`（时间戳分配表校验 ARCH-29）；`private-registry-contract`（bug18 selftest `--dry-run`）；`docs-site-build`（DOC-09 sync-check + VitePress build 死链 fail）；`api-types-drift`（重导 openapi.json / api-types.ts 并 git diff，见 [README 生成链](../05-interfaces/README.md)） |
 
 ## 发版链（release.yml + release-please.yml）
