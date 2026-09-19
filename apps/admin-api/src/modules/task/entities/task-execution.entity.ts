@@ -189,6 +189,16 @@ export class TaskExecution {
   @Column({ type: "varchar", nullable: true }) traceId: string | null;
   @CreateDateColumn() createdAt: Date;
 
+  /**
+   * NETOPT-3②（迁移 1790000000030）：依赖扇出完成标记（旁路标记，非终态、
+   * 不参与 A1 状态机）。NULL = SUCCESS 终态已落定但扇出未确认完成——重复
+   * 回调必须重放 triggerDependentTasks；非 NULL = 扇出全部成功，重放不再
+   * 进行。仅 TaskService 在扇出全部成功后条件写入（depsFiredAt IS NULL →
+   * now），失败/部分失败刻意不落，留 NULL 供重放与观测。
+   */
+  @Column({ type: "timestamptz", nullable: true })
+  depsFiredAt: Date | null;
+
   /** R-P0-007: Optimistic lock version for preventing concurrent updates */
   @VersionColumn() version: number;
 }

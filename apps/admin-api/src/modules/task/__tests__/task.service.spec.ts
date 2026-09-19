@@ -96,6 +96,9 @@ const makeRepo = (overrides: Record<string, jest.Mock> = {}) => {
     count: jest.fn().mockResolvedValue(0),
     delete: jest.fn().mockResolvedValue({ affected: 1 }),
     softDelete: jest.fn().mockResolvedValue({ affected: 1 }),
+    // NETOPT-3②: depsFiredAt 完成标记走条件 UPDATE（update(criteria, patch)）。
+    // 默认 affected=1（标记已落）；需模拟「标记缺失/失败」的用例自行 override。
+    update: jest.fn().mockResolvedValue({ affected: 1 }),
   };
   // PERF-03（本轮体验审查）：执行列表端点改为由 TypeORM 元数据派生读投影
   // （`executionListSelectColumns*` 读 `repo.metadata.columns`），故仓储替身
@@ -2540,6 +2543,151 @@ describe("TaskService (__tests__)", () => {
         expect(depQb.select).toHaveBeenCalledWith(["t.id", "t.dependencies"]);
       });
 
+      // NETOPT-3②: 扇出全部成功 → 在上游执行行落 depsFiredAt 完成标记
+      //（条件 UPDATE：depsFiredAt IS NULL → now，幂等）。重复回调据此
+      // 判定"扇出已确认完成"，不再重放。
+      it("NETOPT-3②: marks depsFiredAt on the upstream execution after a fully successful fan-out", async () => {
+        const exec = {
+          id: "e-dep",
+          status: ExecutionStatus.RUNNING,
+          taskId: "t-upstream",
+          logs: "",
+        };
+        execRepo.findOne.mockResolvedValue(exec);
+        setupDownstream(
+          { id: "t-downstream", dependencies: { up: "t-upstream" } },
+          [{ taskId: "t-upstream", status: ExecutionStatus.SUCCESS }],
+        );
+        taskQueue.add.mockResolvedValue({});
+
+        await service.handleCallback([
+          { executionId: "e-dep", status: "success" },
+        ]);
+
+        expect(execRepo.update).toHaveBeenCalledWith(
+          expect.objectContaining({ id: "e-dep", depsFiredAt: IsNull() }),
+          expect.objectContaining({ depsFiredAt: expect.any(Date) }),
+        );
+      });
+
+      it("NETOPT-3②: marks depsFiredAt even when no dependent task exists (vacuous fan-out success)", async () => {
+        const exec = {
+          id: "e-dep",
+          status: ExecutionStatus.RUNNING,
+          taskId: "t-upstream",
+          logs: "",
+        };
+        execRepo.findOne.mockResolvedValue(exec);
+        setupDownstream(null, []);
+        taskQueue.add.mockResolvedValue({});
+
+        await service.handleCallback([
+          { executionId: "e-dep", status: "success" },
+        ]);
+
+        expect(execRepo.update).toHaveBeenCalledWith(
+          expect.objectContaining({ id: "e-dep", depsFiredAt: IsNull() }),
+          expect.objectContaining({ depsFiredAt: expect.any(Date) }),
+        );
+        expect(taskQueue.add).not.toHaveBeenCalled();
+      });
+
+      // NETOPT-3②: 扇出 trigger 失败（入队失败）→ ① 不落 depsFiredAt
+      //（重复回调可重放）；② claim 回滚——lastTriggerTime 恢复原值
+      //（CAS 钉住 claimedAt），缩小"窗口内重放被吸收"的不可重试窗口。
+      it("NETOPT-3②: on trigger failure, depsFiredAt is NOT marked and the claim is rolled back (CAS on claimedAt)", async () => {
+        const exec = {
+          id: "e-dep",
+          status: ExecutionStatus.RUNNING,
+          taskId: "t-upstream",
+          logs: "",
+        };
+        execRepo.findOne.mockResolvedValue(exec);
+        const depQb = setupDownstream(
+          { id: "t-downstream", dependencies: { up: "t-upstream" } },
+          [{ taskId: "t-upstream", status: ExecutionStatus.SUCCESS }],
+        );
+        // trigger() 内部 taskQueue.add 抛错 → trigger 补偿终态后 rethrow
+        taskQueue.add.mockRejectedValue(new Error("redis down"));
+        execRepo.update = jest.fn().mockResolvedValue({ affected: 1 });
+
+        const result = await service.handleCallback([
+          { executionId: "e-dep", status: "success" },
+        ]);
+
+        // 现语义不变：扇出是 best-effort，回调 item 保持 success
+        expect(result[0].success).toBe(true);
+        // ① 不落完成标记（重复回调遇 NULL 重放）
+        expect(execRepo.update).not.toHaveBeenCalled();
+        // ② claim 回滚：CAS WHERE 钉住本次 claimedAt + set 回原值
+        //（fixture 下游任务无 lastTriggerTime → 恢复 NULL）
+        expect(depQb.where).toHaveBeenCalledWith(
+          expect.stringContaining('"lastTriggerTime" = :claimedAt'),
+          expect.objectContaining({ claimedAt: expect.any(Date) }),
+        );
+        expect(depQb.set).toHaveBeenCalledWith({ lastTriggerTime: null });
+      });
+
+      it("NETOPT-3②: one failing downstream does not starve the remaining dependents (per-task failure isolation)", async () => {
+        const exec = {
+          id: "e-dep",
+          status: ExecutionStatus.RUNNING,
+          taskId: "t-upstream",
+          logs: "",
+        };
+        execRepo.findOne.mockResolvedValue(exec);
+        // 两个下游都满足依赖且都赢得 claim；第一个 trigger 入队失败、第二个成功
+        const downstreamA = { id: "t-down-a", dependencies: { up: "t-upstream" } };
+        const downstreamB = { id: "t-down-b", dependencies: { up: "t-upstream" } };
+        const depQb = {
+          select: jest.fn().mockReturnThis(),
+          where: jest.fn().mockReturnThis(),
+          getMany: jest.fn().mockResolvedValue([downstreamA, downstreamB]),
+          update: jest.fn().mockReturnThis(),
+          set: jest.fn().mockReturnThis(),
+          execute: jest.fn().mockResolvedValue({ affected: 1 }),
+        };
+        taskRepo.createQueryBuilder.mockImplementation(() => depQb as any);
+        // F-11 同款 find 分发：where.taskId → checkDependencies 历史扫描；
+        // 其余回落 findOne 装配（handleCallback 的 where.id 批量查）。
+        execRepo.find.mockImplementation(async (opts?: any) => {
+          if (opts?.where?.taskId) {
+            return [{ taskId: "t-upstream", status: ExecutionStatus.SUCCESS }];
+          }
+          const impl = (execRepo.findOne as jest.Mock).getMockImplementation();
+          const one = impl ? await impl(opts ?? {}) : null;
+          return one == null ? [] : [one];
+        });
+        taskRepo.findOne.mockResolvedValue(downstreamA as any);
+        // trigger() 经 dataSource.transaction 落 PENDING 行——默认事务 manager
+        // 只服务 logLineRepo（无 create），需按 setupDownstream 同款覆盖。
+        dataSource.transaction.mockImplementation((fn: any) =>
+          fn({
+            create: jest
+              .fn()
+              .mockReturnValue({ id: "down-exec-1", status: "pending" }),
+            save: jest
+              .fn()
+              .mockResolvedValue({ id: "down-exec-1", status: "pending" }),
+          }),
+        );
+        taskQueue.add
+          .mockRejectedValueOnce(new Error("redis down"))
+          .mockResolvedValueOnce({});
+        execRepo.update = jest.fn().mockResolvedValue({ affected: 1 });
+
+        const result = await service.handleCallback([
+          { executionId: "e-dep", status: "success" },
+        ]);
+
+        expect(result[0].success).toBe(true);
+        // 旧实现外层 catch 一断全断：第一个下游 trigger 失败后第二个永远
+        // 等不到触发。新实现逐任务隔离——第二个下游仍被触发。
+        expect(taskQueue.add).toHaveBeenCalledTimes(2);
+        // 部分失败 → 不落完成标记（重放判据保留）
+        expect(execRepo.update).not.toHaveBeenCalled();
+      });
+
       // R-28（DEEP_REVIEW 0ef3bbe）: 依赖触发的两条系统性缺口回归——
       // ① execution.triggerType 旧实现经 this.trigger(task.id, {}) 误记为
       //    "manual"，应为 "dependency"（下游据此区分手动/依赖来源）；
@@ -2798,12 +2946,16 @@ describe("TaskService (__tests__)", () => {
         expect(taskQueue.add).not.toHaveBeenCalled();
       });
 
-      it("is idempotent: a duplicate (already terminal) success callback must not re-trigger dependents", async () => {
+      // NETOPT-3②: 幂等语义收敛到 depsFiredAt 标记——重复回调只在
+      // 「SUCCESS 终态 + 标记为空」时重放扇出；已标记（扇出已确认完成）
+      // 的行不再重放。
+      it("is idempotent: a duplicate (already terminal, depsFiredAt marked) success callback must not re-trigger dependents", async () => {
         const exec = {
           id: "e-dep",
           status: ExecutionStatus.SUCCESS,
           taskId: "t-upstream",
           logs: "",
+          depsFiredAt: new Date(),
         };
         execRepo.findOne.mockResolvedValue(exec);
         setupDownstream(
@@ -2820,6 +2972,62 @@ describe("TaskService (__tests__)", () => {
         expect(result[0].success).toBe(true);
         expect(releaseSlotExecute).not.toHaveBeenCalled();
         expect(taskQueue.add).not.toHaveBeenCalled();
+      });
+
+      // NETOPT-3②: 丢失补偿重放——winner 扇出前崩溃（执行器整批重发落
+      // affected=0）或扇出 trigger 失败后，depsFiredAt 留 NULL；重复回调
+      // 读到 SUCCESS + NULL 标记必须重放扇出。
+      it("replays the dependency fan-out on a duplicate success callback when depsFiredAt is still NULL", async () => {
+        const exec = {
+          id: "e-dep",
+          status: ExecutionStatus.SUCCESS,
+          taskId: "t-upstream",
+          logs: "",
+          depsFiredAt: null,
+        };
+        execRepo.findOne.mockResolvedValue(exec);
+        setupDownstream(
+          { id: "t-downstream", dependencies: { up: "t-upstream" } },
+          [{ taskId: "t-upstream", status: ExecutionStatus.SUCCESS }],
+        );
+        taskQueue.add.mockResolvedValue({});
+
+        const result = await service.handleCallback([
+          { executionId: "e-dep", status: "success" },
+        ]);
+
+        expect(result[0].success).toBe(true);
+        // 扇出重放确实发生了（claim + 下游入队 + 完成标记回填）
+        expect(taskQueue.add).toHaveBeenCalledTimes(1);
+        expect(taskQueue.add).toHaveBeenCalledWith(
+          "execute",
+          { executionId: "down-exec-1" },
+          expect.objectContaining({ attempts: expect.any(Number) }),
+        );
+        expect(execRepo.update).toHaveBeenCalledWith(
+          expect.objectContaining({ id: "e-dep", depsFiredAt: IsNull() }),
+          expect.objectContaining({ depsFiredAt: expect.any(Date) }),
+        );
+      });
+
+      it("NETOPT-3②: a duplicate callback whose execution has no taskId must not attempt a replay", async () => {
+        const exec = {
+          id: "e-dep",
+          status: ExecutionStatus.SUCCESS,
+          taskId: null,
+          logs: "",
+          depsFiredAt: null,
+        };
+        execRepo.findOne.mockResolvedValue(exec);
+        // 无下游可重放：扇出扫描不发生（taskId 缺失直接短路）
+        const scanQb = setupDownstream(
+          { id: "t-downstream", dependencies: {} },
+          [],
+        );
+        await service.handleCallback([
+          { executionId: "e-dep", status: "success" },
+        ]);
+        expect(scanQb.getMany).not.toHaveBeenCalled();
       });
 
       it("fan-out errors do not fail the callback result (best-effort)", async () => {
