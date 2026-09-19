@@ -342,9 +342,28 @@ function removeOlderThan(
  *  skips it. Remove top-level `.meta` files whose companion payload json is
  *  gone and that are older than ORPHAN_META_TTL_MS. A live retry round
  *  rewrites the meta every pass (well within the window), so an aged orphan
- *  is genuinely stranded. */
+ *  is genuinely stranded.
+ *
+ *  NETOPT-4: 同一清扫把回调区残留的 `*.tmp` 纳入回收——`.tmp` 是回调落盘
+ *  （tmp→rename 原子写，见 callback.atomicWriteFileSync）的**中间态**，
+ *  rename 完成即消失，因此一个过龄 .tmp 必然是写盘中途崩溃/失败留下的孤儿
+ *  （callbacks/ 顶层与 dead-letter/ 里的侧车 tmp 都算）。ORPHAN_META_TTL_MS
+ *  的年龄门保护仍在写入中的活跃 tmp。 */
 function removeOrphanCallbackMetaFiles(callbackDir: string, nowMs: number): number {
   let deleted = 0;
+  const deadDir = path.join(callbackDir, 'dead-letter');
+  /** 过龄 .tmp 回收（调用方已保证 entry.isFile() 且以 .tmp 结尾）。 */
+  const removeIfStaleTmp = (dir: string, name: string): void => {
+    const tmpPath = path.join(dir, name);
+    try {
+      const stat = fs.statSync(tmpPath);
+      if (nowMs - stat.mtimeMs < ORPHAN_META_TTL_MS) return;
+    } catch {
+      /* raced — skip */
+      return;
+    }
+    if (removePath(tmpPath)) deleted++;
+  };
   let entries: fs.Dirent[];
   try {
     entries = fs.readdirSync(callbackDir, { withFileTypes: true });
@@ -352,7 +371,13 @@ function removeOrphanCallbackMetaFiles(callbackDir: string, nowMs: number): numb
     return 0;
   }
   for (const entry of entries) {
-    if (!entry.isFile() || !entry.name.endsWith('.meta')) continue;
+    if (!entry.isFile()) continue;
+    // NETOPT-4: 残留 .tmp（写盘中途崩溃/失败）——超过孤儿 TTL 即回收
+    if (entry.name.endsWith('.tmp')) {
+      removeIfStaleTmp(callbackDir, entry.name);
+      continue;
+    }
+    if (!entry.name.endsWith('.meta')) continue;
     const metaPath = path.join(callbackDir, entry.name);
     // Companion payload: strip the trailing ".meta" -> "<...>.json".
     const jsonPath = metaPath.slice(0, -'.meta'.length);
@@ -365,6 +390,18 @@ function removeOrphanCallbackMetaFiles(callbackDir: string, nowMs: number): numb
       continue;
     }
     if (removePath(metaPath)) deleted++;
+  }
+  // NETOPT-4: dead-letter/ 里的残留 .tmp（侧车原子写的中间态；payload 本体
+  // 经 rename 进死信目录，不会在目录内产生 payload tmp）。
+  let deadEntries: fs.Dirent[];
+  try {
+    deadEntries = fs.readdirSync(deadDir, { withFileTypes: true });
+  } catch {
+    deadEntries = []; /* dead-letter dir absent — nothing to sweep */
+  }
+  for (const entry of deadEntries) {
+    if (!entry.isFile() || !entry.name.endsWith('.tmp')) continue;
+    removeIfStaleTmp(deadDir, entry.name);
   }
   return deleted;
 }
@@ -487,10 +524,12 @@ export function cleanupWorkDir(
     //    recursively deleted here.
     //    exclude (A6): 侧车不占 keepNewest 名额，否则保留额度会被侧车吃掉
     //    一半（每份死信 payload 旁恰好一个侧车）。
+    //    NETOPT-4: exclude 追加 `*.tmp`——残留 tmp 不占保留名额，也不被
+    //    getDeadLetterCount 计入积压；其按孤儿 TTL 的回收在步骤 5。
     deadLetters = removeOlderThan(path.join(config.workDir, 'callbacks', 'dead-letter'), cutoff, {
       keepNewest: MAX_DEAD_LETTER_FILES,
       filesOnly: true,
-      exclude: DEAD_LETTER_SIDECAR_EXCLUDE_RE,
+      exclude: new RegExp(`${DEAD_LETTER_SIDECAR_EXCLUDE_RE.source}|\\.tmp$`),
     });
 
     // 5. E13: reclaim orphan `.meta` files stranded in the callbacks/ top level.
@@ -537,6 +576,10 @@ const ORPHAN_META_TTL_MS = 24 * 60 * 60 * 1000;
  *  死信原因/时间/救回次数的侧车文件，二者一一对应。上报的是「积压了多少条没
  *  送出去的回调」，侧车不是回调——不排除的话这个运维指标会凭空翻倍，而翻倍
  *  恰恰会掩盖对账的真实效果（对账删 payload 时会连带删侧车，指标该降一半）。
+ *
+ *  NETOPT-4: **排除 `*.tmp`**。tmp 是原子写（tmp→rename）的中间态，rename
+ *  完成即消失；未完成的 tmp 是崩溃残留，不进「积压回调」运维指标（其回收见
+ *  removeOrphanCallbackMetaFiles 的孤儿清扫）。
  */
 export function getDeadLetterCount(): number {
   try {
@@ -544,7 +587,12 @@ export function getDeadLetterCount(): number {
       .readdirSync(path.join(config.workDir, 'callbacks', 'dead-letter'), {
         withFileTypes: true,
       })
-      .filter((d) => d.isFile() && deadLetterPayloadName(d.name) === null)
+      .filter(
+        (d) =>
+          d.isFile() &&
+          deadLetterPayloadName(d.name) === null &&
+          !d.name.endsWith('.tmp'),
+      )
       .length;
   } catch {
     return 0;
