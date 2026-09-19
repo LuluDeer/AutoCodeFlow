@@ -326,6 +326,50 @@ describe('cleanupWorkDir (disk reclamation)', () => {
     expect(fs.existsSync(liveJson)).toBe(true);
   });
 
+  it('reclaims stale *.tmp files in callbacks/ and dead-letter/ past the orphan TTL (NETOPT-4)', () => {
+    const callbackDir = path.join(dir, 'callbacks');
+    const deadDir = path.join(callbackDir, 'dead-letter');
+    fs.mkdirSync(deadDir, { recursive: true });
+    const oldDate = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000); // > 24h
+    const recentDate = new Date(Date.now() - 60 * 60 * 1000);        // < 24h
+
+    // callbacks/ 顶层：过龄 payload tmp（写盘中途崩溃残留）→ 回收；
+    // 新鲜 meta tmp（活跃写入的中间态）→ 保留
+    const stalePayloadTmp = path.join(callbackDir, 'callback-111-0.json.tmp');
+    const freshMetaTmp = path.join(callbackDir, 'callback-222-0.json.meta.tmp');
+    fs.writeFileSync(stalePayloadTmp, '{"partial":');
+    fs.writeFileSync(freshMetaTmp, '{"retries":0');
+    fs.utimesSync(stalePayloadTmp, oldDate, oldDate);
+    fs.utimesSync(freshMetaTmp, recentDate, recentDate);
+
+    // dead-letter/ 里：过龄侧车 tmp → 回收；正常死信 payload → 保留
+    const staleSidecarTmp = path.join(deadDir, 'callback-333-0.json.deadletter.json.tmp');
+    const deadPayload = path.join(deadDir, 'callback-333-0.json');
+    fs.writeFileSync(staleSidecarTmp, '{"reason":"x"');
+    fs.writeFileSync(deadPayload, '[]');
+    fs.utimesSync(staleSidecarTmp, oldDate, oldDate);
+
+    const result = fl.cleanupWorkDir(7);
+    // 两个过龄 tmp 都被回收：顶层 payload tmp 走孤儿清扫（orphanMetaFiles），
+    // 死信侧车 tmp 被 exclude 出 keepNewest 后由第 4 步 TTL 扫描回收（deadLetters）
+    expect(result.orphanMetaFiles).toBe(1);
+    expect(result.deadLetters).toBe(1);
+    expect(fs.existsSync(stalePayloadTmp)).toBe(false);
+    expect(fs.existsSync(staleSidecarTmp)).toBe(false);
+    expect(fs.existsSync(freshMetaTmp)).toBe(true);  // 24h grace window
+    expect(fs.existsSync(deadPayload)).toBe(true);
+  });
+
+  it('getDeadLetterCount excludes *.tmp crash artifacts from the backlog metric (NETOPT-4)', () => {
+    const deadDir = path.join(dir, 'callbacks', 'dead-letter');
+    fs.mkdirSync(deadDir, { recursive: true });
+    fs.writeFileSync(path.join(deadDir, 'callback-1-0.json'), '[]');
+    fs.writeFileSync(path.join(deadDir, 'callback-1-0.json.deadletter.json'), '{}');
+    fs.writeFileSync(path.join(deadDir, 'callback-2-0.json.tmp'), '{"partial":');
+
+    expect(fl.getDeadLetterCount()).toBe(1); // payload 计 1，侧车与 tmp 均不计
+  });
+
   it('startWorkDirCleanup performs an initial sweep', () => {
     const oldDate = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
     const oldExec = path.join(dir, 'exec-sweep');

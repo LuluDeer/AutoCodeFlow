@@ -121,4 +121,11 @@
 #     ——此前顺序相反，导致「uv 缺失」错误遮蔽了解释器归因，node 报 unknown
 #     而 python 报 interpreter_unavailable（同一失败两端分类不同）。
 #     本机(Windows) ncc 0.44 重打（2474kB → 2475kB）。
-dc8abcdaa553916410e6cf4d5e5b7726a9890997d22ddd3448d2736a3dfb8c93  index.js
+#   - 本轮（NETOPT-4）：callback.ts 回调落盘原子化——persistFailedCallbacks /
+#     writeRetryCount / writeDeadLetterMeta 改为先写 `<目标>.tmp` 再
+#     renameSync（对齐 python 侧 routers/execute.py），杜绝半写主文件被判
+#     corrupt payload 毒丸死信后整批终态永久丢；file-logger.ts 孤儿清扫纳入
+#     回调区残留 `*.tmp`，getDeadLetterCount 与死信保留扫描排除 `.tmp`。
+#     本机(Windows) ncc 0.44 重打（2475kB → 2479kB），同目录重复构建两次
+#     逐字节一致（05993801…）。
+0599380101ca4b26e108939c26286c39a20b962c64aae10bb8468ceebecfef1a  index.js

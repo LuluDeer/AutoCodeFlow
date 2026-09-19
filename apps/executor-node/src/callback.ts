@@ -11,6 +11,30 @@ import {
   deadLetterPayloadName,
 } from './dead-letter-sidecar';
 
+/**
+ * NETOPT-4：回调落盘原子化——先写 `<目标>.tmp` 再 renameSync 到位。
+ *
+ * 此前直接 writeFileSync 目标文件：kill -9 / ENOSPC / 断电会留下**半写的主
+ * 文件**，重发循环 JSON.parse 抛 SyntaxError → dead letter（poison=true），
+ * 而对账救回有 `!item.poison` 门——半写即整批（≤100 条）真实终态永久丢。
+ * python 侧（routers/execute.py）早已是 .tmp + rename，此处对齐。
+ *
+ * 同目录 rename 的原子性由 POSIX 保证；Windows 上 Node 的 renameSync 以
+ * MoveFileEx(REPLACE_EXISTING) 实现，同样覆盖语义。失败时清理 .tmp 不留孤儿
+ * （真正残留的 .tmp 由 file-logger 的孤儿清扫按 ORPHAN_META_TTL_MS 回收，
+ * 见 removeOrphanCallbackMetaFiles）。
+ */
+function atomicWriteFileSync(filepath: string, data: string): void {
+  const tmp = `${filepath}.tmp`;
+  try {
+    fs.writeFileSync(tmp, data);
+    fs.renameSync(tmp, filepath);
+  } catch (error: unknown) {
+    try { fs.unlinkSync(tmp); } catch { /* already gone */ }
+    throw error;
+  }
+}
+
 /** Structured failure reason — the **runtime-available** list the type is derived
  *  from, so the A3 contract spec can assert it against
  *  `packages/executor-protocol/protocol.json` (此前只有类型，运行期无从校验)。
@@ -242,8 +266,10 @@ function persistFailedCallbacks(requests: CallbackRequest[]): void {
     chunks.forEach((chunk, index) => {
       const suffix = chunks.length > 1 ? `-${index}` : '';
       const filename = path.join(getCallbackDir(), `callback-${timestamp}-${sequence}${suffix}.json`);
-      fs.writeFileSync(filename, JSON.stringify(chunk, null, 2));
-      fs.writeFileSync(`${filename}.meta`, JSON.stringify({ retries: 0, persistedAt: timestamp }), 'utf-8');
+      // NETOPT-4：payload 与 .meta 都走 tmp→rename 原子写——半写主文件会被
+      // 重发循环判成 corrupt payload 毒丸死信（见 atomicWriteFileSync 注释）。
+      atomicWriteFileSync(filename, JSON.stringify(chunk, null, 2));
+      atomicWriteFileSync(`${filename}.meta`, JSON.stringify({ retries: 0, persistedAt: timestamp }));
       logger.info(`Persisted ${chunk.length} failed callbacks to ${filename}`);
     });
   } catch (error: unknown) {
@@ -291,10 +317,11 @@ function readDeadLetterMeta(payloadPath: string): DeadLetterMeta | null {
 
 function writeDeadLetterMeta(payloadPath: string, meta: DeadLetterMeta): void {
   try {
-    fs.writeFileSync(
+    // NETOPT-4：原子写——半写侧车会静默退化为「无侧车」（readDeadLetterMeta
+    // 解析失败返回 null），对账水印/毒丸标记随之丢失。
+    atomicWriteFileSync(
       payloadPath + DEAD_LETTER_SIDECAR_SUFFIX,
       JSON.stringify(meta),
-      'utf-8',
     );
   } catch {
     /* 侧车写不进去只影响对账精度，不影响 payload 本身 */
@@ -389,14 +416,15 @@ function writeRetryCount(
     // A6: 未显式给出时保留原值——重新入队路径只改 retries，不能顺手把
     // 「已经被救过几次」抹掉（那会让毒丸文件无限往返）。
     const prev = readRetryMeta(filepath).deadLetterRequeues;
-    fs.writeFileSync(
+    // NETOPT-4：原子写——半写 .meta 会被 readRetryMeta 解析失败吞掉并回落
+    // retries=0，重发轮数清零等于重置整个重发预算。
+    atomicWriteFileSync(
       `${filepath}.meta`,
       JSON.stringify({
         retries,
         updatedAt: Date.now(),
         deadLetterRequeues: deadLetterRequeues ?? prev,
       }),
-      'utf-8',
     );
   } catch (error: unknown) {
     logger.warn(`Failed to update retry counter for ${filepath}: ${error instanceof Error ? error.message : String(error)}`);
