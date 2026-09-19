@@ -47,6 +47,7 @@ describe("AuthService — SEC-03 TOTP + sessions", () => {
       | "clearExpiredLock"
       | "saveUser"
       | "bumpSessionVersion"
+      | "consumeTotpCounter"
     >
   >;
   let jwtService: jest.Mocked<Pick<JwtService, "sign" | "verify">>;
@@ -74,6 +75,8 @@ describe("AuthService — SEC-03 TOTP + sessions", () => {
       // WIKI-AUTH-REVOC: revoke-others without sid degenerates to
       // revokeAllForUser which now bumps the session version.
       bumpSessionVersion: jest.fn().mockResolvedValue(undefined),
+      // NETOPT-5⑤: 默认占位成功（不改变存量用例语义），重放用例单独覆写
+      consumeTotpCounter: jest.fn().mockResolvedValue(true),
     };
     jwtService = {
       sign: jest.fn().mockReturnValue("signed-token"),
@@ -276,6 +279,82 @@ describe("AuthService — SEC-03 TOTP + sessions", () => {
         code: goodCode(),
       });
       expect(usersService.clearExpiredLock).not.toHaveBeenCalled();
+    });
+
+    // ── NETOPT-5⑤: TOTP 重放防护 ──────────────────────────────────────
+    it("replay: the SAME counter can only be consumed once (second attempt 401)", async () => {
+      usersService.findByUsername.mockResolvedValue(totpUser() as any);
+      // 第一次占位成功，第二次（同 counter，即重放/并发占位失败）affected=0
+      usersService.consumeTotpCounter
+        .mockResolvedValueOnce(true)
+        .mockResolvedValueOnce(false);
+
+      const first = await service.totpVerifyLogin({
+        username: "alice",
+        password: "p",
+        code: goodCode(),
+      });
+      expect(first).toHaveProperty("accessToken");
+
+      await expect(
+        service.totpVerifyLogin({
+          username: "alice",
+          password: "p",
+          code: goodCode(),
+        }),
+      ).rejects.toThrow("Invalid TOTP code");
+      // 第二次按无效码同形态记账：不能靠重放绕过锁定
+      expect(usersService.recordLoginFailure).toHaveBeenCalledTimes(1);
+      expect(usersService.resetLoginFailure).toHaveBeenCalledTimes(1);
+    });
+
+    it("advances: a HIGHER counter (next window) still passes after consumption", async () => {
+      usersService.findByUsername.mockResolvedValue(totpUser() as any);
+      // 占位始终成功——单调递增的更高 counter 放行
+      usersService.consumeTotpCounter.mockResolvedValue(true);
+
+      await service.totpVerifyLogin({
+        username: "alice",
+        password: "p",
+        code: goodCode(),
+      });
+      const second = await service.totpVerifyLogin({
+        username: "alice",
+        password: "p",
+        code: nextWindowCode(),
+      });
+      expect(second).toHaveProperty("accessToken");
+      // 消费的是 totpVerify 命中的窗口 counter（当前窗口与 +1 窗口）
+      expect(usersService.consumeTotpCounter).toHaveBeenNthCalledWith(
+        1,
+        1,
+        CURRENT_COUNTER,
+      );
+      expect(usersService.consumeTotpCounter).toHaveBeenNthCalledWith(
+        2,
+        1,
+        CURRENT_COUNTER + 1,
+      );
+    });
+
+    it("users WITHOUT TOTP never touch the counter consumption (column stays NULL)", async () => {
+      usersService.findByUsername.mockResolvedValue(makeUser() as any);
+      await service.login({ username: "alice", password: "p" });
+      expect(usersService.consumeTotpCounter).not.toHaveBeenCalled();
+    });
+
+    it("concurrent placeholder race: loser is rejected like an invalid code", async () => {
+      usersService.findByUsername.mockResolvedValue(totpUser() as any);
+      // 并发语义由 SQL 条件保证：两个同 counter 请求只有一个 affected=1
+      usersService.consumeTotpCounter.mockResolvedValue(false);
+      await expect(
+        service.totpVerifyLogin({
+          username: "alice",
+          password: "p",
+          code: goodCode(),
+        }),
+      ).rejects.toThrow("Invalid TOTP code");
+      expect(jwtService.sign).not.toHaveBeenCalled();
     });
   });
 
