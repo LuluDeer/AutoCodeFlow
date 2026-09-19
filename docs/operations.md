@@ -138,7 +138,11 @@ tar -czf /backup/autoflow/logs_$(date +%Y%m%d).tar.gz ./data/executor-logs/
 
 ### S3/MinIO 日志对象生命周期
 
-`LOG_STORAGE_DRIVER=s3` 时执行日志以对象形式写入 MinIO 的 `execution-logs/` 前缀（桶名默认 `autoflow-logs`）。admin 侧的日志保留期清理只覆盖数据库行，不覆盖外置对象——MinIO 数据卷没有内置过期，必须配置 bucket lifecycle 使对象与 DB 保留期同步到期，否则 `minio_data` 卷会随日志对象无限增长直至磁盘写满：
+`LOG_STORAGE_DRIVER=s3` 时执行日志以对象形式写入 MinIO 的 `execution-logs/` 前缀（桶名默认 `autoflow-logs`）。
+
+**admin 侧已内置对象回收（WIKI-LOG-S3GC）**：`S3LogObjectRetentionService`（每日 **03:35** cron，LeaderGate 门禁）按 `task_executions` 的过期 s3 指针（终态 + 终态时间早于保留期截止 + `logStorage='s3' AND logObjectKey IS NOT NULL`）批量 remove 对象并清空指针；保留期与日志同源（`LOG_RETENTION_DAYS`，默认 30）。单轮有候选/轮数上限——超额候选**留给下一轮 cron 续收**，而非一次性扫完。另：`task_executions` 90 天 retention（NETOPT-8①）在删行前会先回收行上仍存活指针的日志对象，行删除不会让对象变成无主孤儿。因此 `minio_data` 卷在 admin 正常运行时不会随日志对象无限增长。
+
+**bucket lifecycle 是可选的补充兜底**（不再是必须配置）——用于 admin 长期停机、cron 持续失败等 S3GC 无法运转的场景。如需配置：
 
 ```bash
 # 一次性配置（mc 客户端指向部署的 MinIO）
@@ -149,7 +153,7 @@ mc ilm rule add --expiry-days 30 --prefix "execution-logs/" autoflow-minio/autof
 mc ilm rule ls autoflow-minio/autoflow-logs
 ```
 
-`--expiry-days` 应与 `LOG_RETENTION_DAYS`（默认 30）保持一致，使对象先于或同步于 DB 行过期。执行器本地 `workDir/logs`（7 天）与死信回调（50 个文件上限）由执行器自身清理，不在本节范围内。
+`--expiry-days` 若配置应与 `LOG_RETENTION_DAYS`（默认 30）保持一致。执行器本地 `workDir/logs`（7 天）与死信回调（50 个文件上限）由执行器自身清理，不在本节范围内。
 
 ### 备份对象清单
 
@@ -852,7 +856,7 @@ WHERE execution_id NOT IN (SELECT id FROM task_executions);
 
 - **分区库主路径**：超期分区（上界 ≤ 保留期截止时刻）整体 `DETACH PARTITION` 后立即 `DROP`——元数据级操作，替代逐行 DELETE，大表清理不再产生 VACUUM 压力（这是 10× 时长改善的来源）；同一 cron 内预建未来 7 天分区（`CREATE TABLE IF NOT EXISTS ... PARTITION OF`，幂等）。
 - **fallback 路径**：`LOG_PARTITION_ENABLED=false` 或库仍为普通表（未跑迁移）时，回退为分批 DELETE（每批 5000 行）。开关只影响运行期清理路径，**不改 schema**——重新开启无需再跑迁移。
-- **S3 驱动**：`LOG_STORAGE_DRIVER=s3` 上传成功时 DB 不写日志行，分区表常空；完整日志的到期清理仍由上文「S3/MinIO 日志对象生命周期」的 bucket lifecycle 负责。
+- **S3 驱动**：`LOG_STORAGE_DRIVER=s3` 上传成功时 DB 不写日志行，分区表常空；完整日志（S3 对象）的到期回收由上文「S3/MinIO 日志对象生命周期」的 admin 侧 WIKI-LOG-S3GC（每日 03:35，单轮上限、余量次轮续收）承担，bucket lifecycle 仅为可选兜底。
 
 #### 确认分区状态
 
