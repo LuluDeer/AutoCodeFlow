@@ -128,4 +128,7 @@
 #     回调区残留 `*.tmp`，getDeadLetterCount 与死信保留扫描排除 `.tmp`。
 #     本机(Windows) ncc 0.44 重打（2475kB → 2479kB），同目录重复构建两次
 #     逐字节一致（05993801…）。
-0599380101ca4b26e108939c26286c39a20b962c64aae10bb8468ceebecfef1a  index.js
+#   - 本轮（NETOPT-6⑤）：routes/execute.ts parsePackageRequirements 剥 UTF-8
+#     BOM——包内 requirements.txt 带 BOM 时首行依赖不再静默丢失（与 python
+#     执行器同形对齐）。本机(Windows) ncc 0.44 重打，2479kB（fba4a0cd…）。
+fba4a0cd4c9d6e6822ffb972faac68eb69ba370da40d5058e206c70b3feff70f  index.js
