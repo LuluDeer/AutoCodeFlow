@@ -26,6 +26,17 @@
  *  ④ lockstep 组内所有包的当前版本必须**已经一致**
  *     ——不一致时 version-guard 会在 tag 那一刻才失败（发布被拦），
  *       但那已经是"准备发版"的时刻了；本守卫让问题在 PR 阶段就可见。
+ *  ⑤ release-please-config.json 的 `packages` 与 release-please-manifest.json
+ *     的键必须**一一对应**——manifest 是 release-please 的"上次发到哪了"
+ *     基线，缺条目即基线丢失，该包会被当成全新包从 1.0.0 重新起算。
+ *     **真实缺陷（PR #9 实证）**：acf-cli 进了 config 却漏进 manifest，
+ *     release-please 在 Release PR 里把 `packages/acf-cli/package.json`
+ *     从 1.4.3 **倒退**到 1.0.0，而同批另外三包正常走到 1.5.0——
+ *     这正是 ① 那条缺陷（卡在 1.0.0）换了形态复发：一个包版本倒退，
+ *     lockstep 立刻破功，version-guard 会在 tag 那一刻才拦下。
+ *
+ * 五层合起来保证：**config 写了谁、manifest 记了谁、lockstep 带上了谁、
+ * version-guard 校验谁、publish 矩阵发谁**，五份事实必须指向同一个包集合。
  *
  * ── 用法 ──────────────────────────────────────────────────────────────
  *   node scripts/check-release-config.mjs            # 校验
@@ -103,7 +114,7 @@ export function parseReleaseWorkflow(text) {
 }
 
 /** 纯函数：给定事实，返回问题清单（便于 selftest 直接喂构造数据）。 */
-export function checkReleaseConfig({ rpConfig, matrix, guardedDirs, versions }) {
+export function checkReleaseConfig({ rpConfig, matrix, guardedDirs, versions, manifest }) {
   const problems = [];
 
   const linked = new Set(rpConfig.plugins?.[0]?.components ?? []);
@@ -112,6 +123,28 @@ export function checkReleaseConfig({ rpConfig, matrix, guardedDirs, versions }) 
     dir,
     component: v.component,
   }));
+
+  // ⑤ manifest（"上次发到哪了"的基线）与 config 的 packages 必须一一对应。
+  //    只在显式传入 manifest 时校验——未传则跳过（保持纯函数的旧调用兼容）。
+  if (manifest) {
+    const manifestDirs = new Set(Object.keys(manifest));
+    for (const dir of Object.keys(packages)) {
+      if (!manifestDirs.has(dir)) {
+        problems.push(
+          `⑤ ${dir} 在 release-please-config.json 里受管，却不在 release-please-manifest.json`
+            + `——基线丢失，release-please 会把它当全新包从 1.0.0 起算（版本倒退）`,
+        );
+      }
+    }
+    for (const dir of manifestDirs) {
+      if (!(dir in packages)) {
+        problems.push(
+          `⑤ release-please-manifest.json 里的 ${dir} 不在 release-please-config.json`
+            + `——manifest 残留条目，会让人误以为该包仍受管`,
+        );
+      }
+    }
+  }
 
   // ① packages 里的 component 必须都进 linked-versions
   for (const { dir, component } of components) {
@@ -166,6 +199,9 @@ export function checkRepo(root = findRepoRoot()) {
   const rpConfig = JSON.parse(
     readFileSync(join(root, "release-please-config.json"), "utf-8"),
   );
+  const manifest = JSON.parse(
+    readFileSync(join(root, "release-please-manifest.json"), "utf-8"),
+  );
   const wf = readFileSync(join(root, ".github", "workflows", "release.yml"), "utf-8");
   const { matrix, guardedDirs } = parseReleaseWorkflow(wf);
   const versions = {};
@@ -176,7 +212,12 @@ export function checkRepo(root = findRepoRoot()) {
       /* 读不到就跳过 ④ 对该包的比对 */
     }
   }
-  return { problems: checkReleaseConfig({ rpConfig, matrix, guardedDirs, versions }), matrix, versions };
+  return {
+    problems: checkReleaseConfig({ rpConfig, matrix, guardedDirs, versions, manifest }),
+    matrix,
+    versions,
+    manifest,
+  };
 }
 
 /** 自测：每个断言都带**反例**，证明守卫真的能发现问题（有牙）。 */
@@ -191,12 +232,14 @@ export function selftest() {
   ];
   const baseGuarded = new Set(["packages/one", "packages/two"]);
   const baseVersions = { "packages/one": "1.0.0", "packages/two": "1.0.0" };
+  const baseManifest = { "packages/one": "1.0.0", "packages/two": "1.0.0" };
   const run = (over = {}) =>
     checkReleaseConfig({
       rpConfig: over.rpConfig ?? baseRp,
       matrix: over.matrix ?? baseMatrix,
       guardedDirs: over.guardedDirs ?? baseGuarded,
       versions: over.versions ?? baseVersions,
+      manifest: over.manifest ?? baseManifest,
     });
 
   const cases = [
@@ -224,6 +267,23 @@ export function selftest() {
       run({ versions: { "packages/one": "1.0.0", "packages/two": "1.0.1" } }),
       1,
     ],
+    [
+      // 真实缺陷（PR #9 实证）：acf-cli 进 config 漏进 manifest，
+      // Release PR 里把它从 1.4.3 倒退到 1.0.0，而同批其他包正常走 1.5.0。
+      "⑤ 受管包漏进 manifest 被抓（版本会倒退回 1.0.0）",
+      run({ manifest: { "packages/one": "1.0.0" } }),
+      1,
+    ],
+    [
+      "⑤ manifest 残留未受管条目被抓",
+      run({ manifest: { ...baseManifest, "packages/gone": "1.0.0" } }),
+      1,
+    ],
+    [
+      "⑤ 不传 manifest 时跳过该层（向后兼容旧调用）",
+      run({ manifest: undefined }),
+      0,
+    ],
   ];
 
   let failed = 0;
@@ -234,7 +294,13 @@ export function selftest() {
     for (const p of problems) console.log(`       ${p}`);
   }
   if (failed) throw new Error(`selftest 失败：${failed} 个用例不符合预期`);
-  console.log("release-config guard selftest: all assertions passed（含 4 个反例）");
+  // 反例 = 期望检出问题的用例（want > 0）；基线全绿与"不传 manifest 跳过"
+  // 期望 0 条，是正向用例，不算反例——计数必须反映真实构成，不能写死。
+  const negative = cases.filter(([, , want]) => want > 0).length;
+  console.log(
+    `release-config guard selftest: all assertions passed`
+      + `（${cases.length} 例：${cases.length - negative} 正向 + ${negative} 反例）`,
+  );
 }
 
 const invokedDirectly =
@@ -255,6 +321,6 @@ if (invokedDirectly) {
       for (const p of problems) console.error(`  - ${p}`);
       process.exit(1);
     }
-    console.log("release-config guard OK：四层一致性（lockstep 覆盖 / 矩阵受管 / 版本受校验 / 版本已对齐）全部通过");
+    console.log("release-config guard OK：五层一致性（lockstep 覆盖 / 矩阵受管 / 版本受校验 / 版本已对齐 / manifest 基线对齐）全部通过");
   }
 }
