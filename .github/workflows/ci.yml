@@ -961,13 +961,21 @@ jobs:
           cache-dependency-path: ${{ matrix.project }}/package-lock.json
       - run: npm ci
         working-directory: ${{ matrix.project }}
-      # executor-node 无独立 typecheck，build 即 tsc；acf-cli/mcp-server 有 typecheck
+      # executor-node 无独立 typecheck，build 即 tsc；acf-cli/mcp-server 有 typecheck。
+      #
+      # acf-cli 除 typecheck 外**还要 build**：release-metadata.test.ts 的版本号
+      # 守卫会**执行构建产物**（`node dist/index.js --version`）比对 package.json
+      # ——源码里写了什么不代表打出来的包是什么，而"包自称的版本号"恰恰是发布物
+      # 最不该骗人的一个输出。该守卫在产物缺失时显式失败而非静默跳过，故这里必须
+      # 先 build（同 job `acf-cli-test` 的约定；两处都要，漏一处就是本 job 红）。
       - name: Build / typecheck
         working-directory: ${{ matrix.project }}
         shell: bash
         run: |
           if [ "${{ matrix.project }}" = "apps/executor-node" ]; then
             npm run build
+          elif [ "${{ matrix.project }}" = "packages/acf-cli" ]; then
+            npm run typecheck && npm run build
           else
             npm run typecheck
           fi
