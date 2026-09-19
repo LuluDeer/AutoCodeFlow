@@ -6,6 +6,8 @@ import {
 } from "../dto/execution-query.dto";
 import { ListTasksQueryDto } from "../dto/list-tasks-query.dto";
 import { TaskController } from "../task.controller";
+// NETOPT-3④: 分页基类 page 上限的校验面
+import { PageQueryDto } from "../../../common/dto/pagination.dto";
 
 /**
  * N7 regression: both execution-query endpoints used TS intersection types
@@ -104,6 +106,34 @@ describe("AllExecutionsQueryDto (GET /tasks/executions/all)", () => {
 
   it("rejects a malformed startTime (not ISO 8601)", async () => {
     await expect(validate({ startTime: "not-a-date" })).rejects.toThrow(
+      BadRequestException,
+    );
+  });
+});
+
+// NETOPT-3④: page 深分页防御——page 只进 OFFSET，无上限的 `?page=99999999`
+// 会生成深 OFFSET + getManyAndCount 全量 COUNT，可钉满连接池。UI 翻页远
+// 用不到 1 万页（pageSize≤100 → 已覆盖 100 万行），防御性封顶。
+describe("PageQueryDto (NETOPT-3④: page upper bound)", () => {
+  const validate = (value: object) =>
+    pipe.transform(value, {
+      type: "query",
+      metatype: PageQueryDto,
+    }) as Promise<PageQueryDto>;
+
+  it("accepts page at the upper bound (10000)", async () => {
+    const result = await validate({ page: "10000", pageSize: "20" });
+    expect(result.page).toBe(10000);
+  });
+
+  it("rejects page above the upper bound (400, deep OFFSET defense)", async () => {
+    await expect(validate({ page: "99999999" })).rejects.toThrow(
+      BadRequestException,
+    );
+  });
+
+  it("keeps the existing pageSize upper bound (100)", async () => {
+    await expect(validate({ page: "1", pageSize: "101" })).rejects.toThrow(
       BadRequestException,
     );
   });
