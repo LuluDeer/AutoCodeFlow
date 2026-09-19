@@ -3,19 +3,20 @@
 > 重组自 [docs/sdk-guide.md「版本与发布流程」](https://github.com/LuluDeer/AutoCodeFlow/blob/develop/docs/sdk-guide.md)
 > 与双 SDK README「版本与发布」节。
 
-## 版本矩阵（当前 1.4.3）
+## 版本矩阵
 
-三包走 **lockstep 单版本线**（版本号一致、同批发布）：
+<!-- x-release-please-version -->
+当前 lockstep 版本 **1.4.3**，三包版本号一致、同批发布：<!-- x-release-please-version -->
 
 | 包 | 注册表 | 当前版本 | 版本元数据单一来源 |
 |----|--------|---------|-------------------|
-| `@autocodeflow/sdk` | npm（scoped 公开包） | **1.4.4** | `packages/autocodeflow-node-sdk/package.json` |
-| `autoflow-sdk` | PyPI | **1.4.4** | `packages/autoflow-sdk/pyproject.toml`（+ `autoflow_sdk.__version__`） |
-| `autocodeflow-mcp-server` | npm | **1.4.4** | `packages/mcp-server/package.json` |
+| `@autocodeflow/sdk` | npm（scoped 公开包） | **1.4.3**<!-- x-release-please-version --> | `packages/autocodeflow-node-sdk/package.json` |
+| `autoflow-sdk` | PyPI | **1.4.3**<!-- x-release-please-version --> | `packages/autoflow-sdk/pyproject.toml`（+ `autoflow_sdk.__version__`） |
+| `autocodeflow-mcp-server` | npm | **1.4.3**<!-- x-release-please-version --> | `packages/mcp-server/package.json` |
 
-> `acf-cli` 暂不发布：npm 上 `acf-cli` 名称已被第三方占用，需先改名
-> （如 `@autocodeflow/cli`——勿用 `@autoflow/*`，该 org 已被抢注）再加入
-> 发布矩阵（当前包内 version `1.0.0`，不参与 lockstep 校验）。
+> `@autocodeflow/cli` 已改名并接入发布链路（原 `acf-cli` 包名被 npm 第三方
+> 占用；勿用 `@autoflow/*`，该 org 已被抢注）。它与另三包同处 lockstep 组，
+> 当前包内 version `1.4.3`。
 
 ## 发布管道
 
