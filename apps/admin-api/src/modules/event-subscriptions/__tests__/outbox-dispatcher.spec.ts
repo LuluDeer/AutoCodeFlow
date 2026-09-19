@@ -73,11 +73,14 @@ describe("FEAT-19 OutboxDispatcher", () => {
     save: jest.fn().mockImplementation((x) => Promise.resolve(x)),
     create: jest.fn((x) => x),
     update: jest.fn().mockResolvedValue({ affected: 1 }),
+    delete: jest.fn().mockResolvedValue({ affected: 1 }),
     // markFastPathDelivered 走 QueryBuilder（条件 UPDATE）；默认 affected=0
     // （= 不该收口），用例按需 mockImplementationOnce 改判定。
+    // NETOPT-8②: retention 分批 DELETE 同走 QueryBuilder —— 补 delete 面。
     createQueryBuilder: jest.fn(() => ({
       update: jest.fn().mockReturnThis(),
       set: jest.fn().mockReturnThis(),
+      delete: jest.fn().mockReturnThis(),
       where: jest.fn().mockReturnThis(),
       andWhere: jest.fn().mockReturnThis(),
       execute: jest.fn().mockResolvedValue({ affected: 0 }),
@@ -89,6 +92,9 @@ describe("FEAT-19 OutboxDispatcher", () => {
   const dlRepoMock = {
     save: jest.fn().mockImplementation((x) => Promise.resolve(x)),
     create: jest.fn((x) => x),
+    // NETOPT-8②: 死信 retention 的候选选取（find）与删除（delete）
+    find: jest.fn().mockResolvedValue([]),
+    delete: jest.fn().mockResolvedValue({ affected: 1 }),
   };
   // deliverToSubscribers 的桩：默认成功；失败用例改 reject。
   const dispatcherMock = {
@@ -590,6 +596,135 @@ describe("FEAT-19 OutboxDispatcher", () => {
       } finally {
         jest.useRealTimers();
       }
+    });
+  });
+
+  // NETOPT-8②: event_outbox（含 jsonb payload）此前只增不删——markDispatched
+  // 只回写终态、全仓对该 repo 零 delete。新增每日 retention：dispatched 行
+  // 30d、死信（含源行）90d，分批 + LOG-RETENTION-01 双闸 + LeaderGate 门禁。
+  describe("NETOPT-8② 每日 retention（dispatched 行 + 过期死信）", () => {
+    const DAY = 86_400_000;
+    const makeDeleteQb = (affected: number) => ({
+      delete: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      execute: jest.fn().mockResolvedValue({ affected }),
+    });
+
+    it("cleanupDispatchedRows 只删「已派发且早于 30 天」的旧行（谓词 + cutoff）", async () => {
+      const now = new Date("2026-09-20T03:55:00.000Z");
+      (outboxRepoMock.createQueryBuilder as jest.Mock).mockImplementationOnce(
+        () => makeDeleteQb(3),
+      );
+      const deleted = await outbox.cleanupDispatchedRows(now);
+      expect(deleted).toBe(3);
+      const qb = outboxRepoMock.createQueryBuilder.mock.results[0].value as {
+        where: jest.Mock;
+      };
+      const [sql, params] = qb.where.mock.calls[0] as [
+        string,
+        { cutoff: Date; batchSize: number },
+      ];
+      // 混合新旧 dispatched 行：条件必须同时含「已派发」与「早于 30d」——
+      // 未派发行（dispatchedAt IS NULL）与近期行都不在删除集内
+      expect(sql).toContain('"dispatchedAt" IS NOT NULL');
+      expect(sql).toContain('"dispatchedAt" < :cutoff');
+      expect(sql).toContain('FROM "event_outbox"');
+      expect(params.cutoff.getTime()).toBe(now.getTime() - 30 * DAY);
+      expect(params.batchSize).toBe(5000);
+    });
+
+    it("affected 恒返满批也在轮数上限处终止并 warn（复用 LOG-RETENTION-01 双闸）", async () => {
+      const { LOG_RETENTION_MAX_DELETE_ROUNDS } =
+        await import("../../../common/utils/capped-batched-delete.util");
+      const { Logger } = await import("@nestjs/common");
+      (outboxRepoMock.createQueryBuilder as jest.Mock).mockImplementation(() =>
+        makeDeleteQb(5000),
+      );
+      const warnSpy = jest.spyOn(Logger.prototype, "warn");
+      try {
+        const deleted = await outbox.cleanupDispatchedRows(new Date());
+        expect(outboxRepoMock.createQueryBuilder).toHaveBeenCalledTimes(
+          LOG_RETENTION_MAX_DELETE_ROUNDS,
+        );
+        expect(deleted).toBe(5000 * LOG_RETENTION_MAX_DELETE_ROUNDS);
+        expect(
+          warnSpy.mock.calls.some((c) => String(c[0]).includes("轮数上限")),
+        ).toBe(true);
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it("过期死信连同源行一起清（先删死信后删源行，同一事务）", async () => {
+      const now = new Date("2026-09-20T03:55:00.000Z");
+      dlRepoMock.find.mockResolvedValue([{ id: "dl-1", outboxId: "src-1" }]);
+      const order: string[] = [];
+      dlRepoMock.delete.mockImplementation(async () => {
+        order.push("dl");
+        return { affected: 1 };
+      });
+      outboxRepoMock.delete.mockImplementation(async () => {
+        order.push("src");
+        return { affected: 1 };
+      });
+      const deleted = await outbox.cleanupExpiredDeadLetters(now);
+      expect(deleted).toBe(1);
+      const findArg = dlRepoMock.find.mock.calls[0][0] as {
+        select: string[];
+        take: number;
+        where: { deadLetteredAt: { value: Date } };
+      };
+      expect(findArg.select).toEqual(
+        expect.arrayContaining(["id", "outboxId"]),
+      );
+      expect(findArg.take).toBe(5000);
+      // 90 天期限（长于 dispatched 行的 30d——死信 payload 供运维排查）
+      expect(findArg.where.deadLetteredAt.value.getTime()).toBe(
+        now.getTime() - 90 * DAY,
+      );
+      // FK（dead_letters.outboxId → event_outbox.id）要求先删死信后删源行
+      expect(dataSourceMock.transaction).toHaveBeenCalledTimes(1);
+      expect(order).toEqual(["dl", "src"]);
+      const dlArg = dlRepoMock.delete.mock.calls[0][0] as {
+        id: { value: string[] };
+      };
+      expect(dlArg.id.value).toEqual(["dl-1"]);
+      const srcArg = outboxRepoMock.delete.mock.calls[0][0] as {
+        id: { value: string[] };
+      };
+      expect(srcArg.id.value).toEqual(["src-1"]);
+    });
+
+    it("无过期死信时不删任何行、不开事务", async () => {
+      dlRepoMock.find.mockResolvedValue([]);
+      expect(await outbox.cleanupExpiredDeadLetters(new Date())).toBe(0);
+      expect(dlRepoMock.delete).not.toHaveBeenCalled();
+      expect(outboxRepoMock.delete).not.toHaveBeenCalled();
+      expect(dataSourceMock.transaction).not.toHaveBeenCalled();
+    });
+
+    it("cron 入口：非 Leader 不执行任何清理", async () => {
+      (
+        outbox as unknown as { leaderGate: { isLeader: boolean } | null }
+      ).leaderGate = { isLeader: false };
+      await outbox.handleDailyRetention();
+      expect(outboxRepoMock.createQueryBuilder).not.toHaveBeenCalled();
+      expect(dlRepoMock.find).not.toHaveBeenCalled();
+    });
+
+    it("cron 入口：Leader 执行两段清理，单段失败不外抛（下轮重试）", async () => {
+      (
+        outbox as unknown as { leaderGate: { isLeader: boolean } | null }
+      ).leaderGate = { isLeader: true };
+      (outboxRepoMock.createQueryBuilder as jest.Mock).mockImplementation(
+        () => ({
+          delete: jest.fn().mockReturnThis(),
+          where: jest.fn().mockReturnThis(),
+          execute: jest.fn().mockRejectedValue(new Error("db down")),
+        }),
+      );
+      dlRepoMock.find.mockRejectedValue(new Error("db down"));
+      await expect(outbox.handleDailyRetention()).resolves.toBeUndefined();
     });
   });
 });
