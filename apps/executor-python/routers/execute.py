@@ -2999,7 +2999,13 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
     if not str(resolved).startswith(str(base) + os.sep) and resolved != base:
         raise HTTPException(status_code=400, detail='Invalid executionId: path traversal detected')
     work_dir.mkdir(parents=True, exist_ok=True)
-    # S6/Q11: restrict permissions so sibling tasks cannot read this directory
+    # S6/Q11: 0o700 权限收紧。NETOPT-6⑩ 注释如实化：同 UID 下 chmod **挡不住
+    # 兄弟任务读本目录**（执行器进程与所有任务进程同一属主，DAC 对同 UID
+    # 无隔离意义）；bwrap profile 的 `--ro-bind / /` 更是把其余任务目录只读
+    # 挂入沙箱。跨任务的实际隔离来自**可写面收敛**——0o700 + 私有 .tmp +
+    # bwrap 下除本 work_dir 外全盘只读，任务无法**篡改**兄弟目录；但不承诺
+    # "读不到"。真正的跨任务读隔离需要 per-task uid 映射（user namespace
+    # 内逐任务映射独立 uid），属行为变更，列残差待拍板。
     try:
         os.chmod(work_dir, stat.S_IRWXU)  # 0o700
     except Exception as chmod_err:
