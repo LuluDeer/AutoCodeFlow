@@ -250,18 +250,29 @@ export class EventSubscriptionService {
     sub: EventSubscription,
     error: string,
   ): Promise<void> {
-    sub.consecutiveFailures += 1;
-    sub.lastFailureAt = new Date();
-    sub.lastFailureError = error.slice(0, 512);
-    await this.subRepo.save(sub);
+    // NETOPT-1⑨: 原「快照 += 1 后 save」是读-改-写——并发事件同时失败时各自
+    // 基于同一快照写回相同值，consecutiveFailures 丢更新（实体无
+    // @VersionColumn，save 无乐观锁保护）。改 DB 内原子自增的条件 UPDATE；
+    // 列名为 camelCase（实体属性即列名），raw 表达式需带引号防小写折叠。
+    await this.subRepo.update(
+      { id: sub.id },
+      {
+        consecutiveFailures: () => '"consecutiveFailures" + 1',
+        lastFailureAt: new Date(),
+        lastFailureError: error.slice(0, 512),
+      },
+    );
   }
 
   async recordDeliverySuccess(sub: EventSubscription): Promise<void> {
     if (sub.consecutiveFailures === 0) return;
-    sub.consecutiveFailures = 0;
-    sub.lastFailureAt = null;
-    sub.lastFailureError = null;
-    await this.subRepo.save(sub);
+    // NETOPT-1⑨: 快照 save 同样有丢更新窗口（快照 2 与 DB 3 并发时写回 2，
+    // 把别人的失败计数抹掉）——改显式 UPDATE 0。热路径守卫保持快照判断：
+    // 快照为 0 时大概率 DB 也是 0，免一次写库。
+    await this.subRepo.update(
+      { id: sub.id },
+      { consecutiveFailures: 0, lastFailureAt: null, lastFailureError: null },
+    );
   }
 
   /** 读面脱敏：secret 永不出 API。 */
