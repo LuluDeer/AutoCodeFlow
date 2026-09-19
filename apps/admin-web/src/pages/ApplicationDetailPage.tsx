@@ -720,14 +720,24 @@ export default function ApplicationDetailPage() {
 
   const activeTab = searchParams.get('tab') || 'overview';
 
+  // NETOPT-7④（2026-09-20）：两个应用详情间导航（同路由 :id 组件不重挂）时新旧
+  // fetchApp 并发——旧 id 的响应晚到会 setApp(旧应用)；旧 id 的 404 晚到会
+  // setNotFound(true)+nav('/applications') 把用户从正在看的新页面踢走。序号守卫：
+  // await 落地后（成功/404/其他错误/finally 四条路径）先比对再 setState，过期即弃。
+  const fetchAppSeq = useRef(0);
+
   const fetchApp = useCallback(async () => {
     if (!id) return;
+    const seq = ++fetchAppSeq.current;
     try {
       setLoading(true);
       setLoadError(null);
       setNotFound(false);
-      setApp(await applicationsApi.get(id));
+      const fetched = await applicationsApi.get(id);
+      if (fetchAppSeq.current !== seq) return;
+      setApp(fetched);
     } catch (err: unknown) {
+      if (fetchAppSeq.current !== seq) return;
       // 404 = 资源确实不存在，跳回列表是合理归宿；其余错误留在页内重试。
       if (isNotFoundError(err)) {
         setNotFound(true);
@@ -735,7 +745,9 @@ export default function ApplicationDetailPage() {
       } else {
         setLoadError(err);
       }
-    } finally { setLoading(false); }
+    } finally {
+      if (fetchAppSeq.current === seq) setLoading(false);
+    }
   }, [id, nav]);
 
   useEffect(() => { fetchApp(); }, [fetchApp]);
