@@ -2618,9 +2618,9 @@ export class TaskService {
       ];
       taskById = new Map(
         taskIds.length > 0
-          ? (
-              await this.taskRepo.find({ where: { id: In(taskIds) } })
-            ).map((t) => [t.id, t])
+          ? (await this.taskRepo.find({ where: { id: In(taskIds) } })).map(
+              (t) => [t.id, t],
+            )
           : [],
       );
     }
