@@ -245,9 +245,28 @@ export class OidcService {
 
   // ── code 换 token + ID Token 验签 ────────────────────────────────────
 
+  /**
+   * NETOPT-5③: 二跳 SSRF 闸。token_endpoint / jwks_uri 都来自 discovery
+   * 响应体——那是 IdP 控制的数据，不是部署级配置；若 discovery 文档被
+   * 篡改（或恶意 IdP），内网 token_endpoint 会带着 client_secret + 授权码
+   * 直奔内网/云元数据。闸的语义是「逐跳校验」：URL 无论来自配置还是
+   * 上游响应体，每一跳都要过闸（与 discovery 首跳同一套 assertAndPinHttpUrl
+   * + pinnedAxiosConfig + maxRedirects:0，F-3 的 DNS pin 同样适用）。
+   */
+  private async gateSecondHop(url: string) {
+    const pinned = await assertAndPinHttpUrl(url, {
+      allowPrivateNetwork:
+        this.config.get<boolean>("oidc.allowPrivateNetwork") === true,
+    });
+    return pinnedAxiosConfig(pinned);
+  }
+
   async exchangeCode(code: string): Promise<{ idToken: string }> {
     const cfg = this.assertConfigured();
     const discovery = await this.getDiscovery();
+    // NETOPT-5③: 闸在 try 之外——被拒的 URL 抛 BadRequest（与 discovery
+    // 首跳闸的异常语义一致），不被下面的 catch 折叠成 401。
+    const pinCfg = await this.gateSecondHop(discovery.token_endpoint);
     try {
       const { data } = await axios.post(
         discovery.token_endpoint,
@@ -261,6 +280,9 @@ export class OidcService {
         {
           headers: { "content-type": "application/x-www-form-urlencoded" },
           timeout: 10_000,
+          // 二跳不跟随重定向（R3 parity）：重定向目标未经闸校验
+          maxRedirects: 0,
+          ...pinCfg,
         },
       );
       if (!data?.id_token) {
@@ -282,8 +304,12 @@ export class OidcService {
     if (this.jwksCache && Date.now() - this.jwksCache.at < JWKS_TTL_MS) {
       return this.jwksCache.keys;
     }
+    // NETOPT-5③: jwks_uri 同为 discovery 响应体提供的二跳 URL，过同一套闸
+    const pinCfg = await this.gateSecondHop(discovery.jwks_uri);
     const { data } = await axios.get<{ keys: Jwk[] }>(discovery.jwks_uri, {
       timeout: 10_000,
+      maxRedirects: 0,
+      ...pinCfg,
     });
     if (!Array.isArray(data?.keys) || data.keys.length === 0) {
       throw new UnauthorizedException("OIDC JWKS endpoint returned no keys");

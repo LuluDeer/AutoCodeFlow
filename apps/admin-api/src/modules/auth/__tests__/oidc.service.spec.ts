@@ -218,6 +218,98 @@ describe("OidcService — discovery 与 authorize URL", () => {
   });
 });
 
+// ============================================================================
+// NETOPT-5③: 二跳（token_endpoint / jwks_uri）SSRF 闸 + 禁止重定向。
+// 此前只有 discovery 首跳过闸，二跳裸 axios——discovery 响应体是 IdP 控制
+// 的数据，内网 token_endpoint 会带着 client_secret + 授权码直奔内网。
+// ============================================================================
+describe("OidcService — 二跳 SSRF 闸（NETOPT-5③）", () => {
+  /** 用自定义 discovery 文档回灌 mock（token_endpoint/jwks_uri 指向任意 URL）。 */
+  async function primeDiscoveryWith(
+    service: OidcService,
+    over: Partial<{ token_endpoint: string; jwks_uri: string }> = {},
+  ) {
+    mockedAxios.get.mockImplementation(async (url: string) => {
+      if (url.endsWith("/.well-known/openid-configuration")) {
+        return { data: { ...discoveryBody(), ...over } };
+      }
+      if (url.endsWith("/jwks.json")) {
+        return { data: { keys: [jwkPublic] } };
+      }
+      throw new Error(`unexpected GET ${url}`);
+    });
+    await service.getDiscovery();
+  }
+
+  it("token_endpoint 指向 link-local（云元数据）→ 闸拒绝，请求不发出", async () => {
+    const { service } = makeService();
+    await primeDiscoveryWith(service, {
+      token_endpoint: "http://169.254.169.254/latest/meta-data/token",
+    });
+    await expect(service.exchangeCode("the-code")).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    // POST 从未发生（凭据没有流向被拒地址）
+    expect(mockedAxios.post).not.toHaveBeenCalled();
+  });
+
+  it("token_endpoint 指向私网段（allowPrivateNetwork=false 时）→ 闸拒绝", async () => {
+    // issuer 换公网 IP 字面量：本用例要让首跳过闸、只拒二跳
+    const { service } = makeService({
+      "oidc.allowPrivateNetwork": false,
+      "oidc.issuer": "http://93.184.216.34:18440",
+    });
+    await primeDiscoveryWith(service, {
+      token_endpoint: "http://10.0.0.9/token",
+    });
+    await expect(service.exchangeCode("the-code")).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    expect(mockedAxios.post).not.toHaveBeenCalled();
+  });
+
+  it("jwks_uri 指向 link-local → 闸拒绝，JWKS 请求不发出", async () => {
+    const { service } = makeService();
+    await primeDiscoveryWith(service, {
+      jwks_uri: "http://169.254.169.254/latest/meta-data/jwks",
+    });
+    await expect(
+      service.validateIdToken(signIdToken(validClaims()), "nonce-xyz"),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    // JWKS 的 GET 从未发生（只有 discovery 首跳）
+    const jwksCalls = mockedAxios.get.mock.calls.filter((c: unknown[]) =>
+      String(c[0]).includes("169.254"),
+    );
+    expect(jwksCalls).toHaveLength(0);
+  });
+
+  it("二跳 axios 调用带 maxRedirects:0（重定向不再被默认跟随 5 跳）", async () => {
+    const { service } = makeService();
+    await primeDiscoveryWith(service);
+    mockedAxios.post.mockResolvedValue({
+      data: { id_token: signIdToken(validClaims()) },
+    });
+    await service.exchangeCode("the-code");
+    const postOpts = mockedAxios.post.mock.calls[0][2];
+    expect(postOpts.maxRedirects).toBe(0);
+
+    // jwks 二跳同参
+    jest.spyOn(service, "getJwks");
+    mockedAxios.get.mockImplementation(async (url: string) => {
+      if (url.endsWith("/jwks.json")) return { data: { keys: [jwkPublic] } };
+      throw new Error(`unexpected GET ${url}`);
+    });
+    const discovery = await service.getDiscovery();
+    (service as unknown as { jwksCache: null }).jwksCache = null;
+    await service.getJwks(discovery);
+    // axios.get(url, config) 二参形态（post 是三参）
+    const jwksOpts = mockedAxios.get.mock.calls.find((c: unknown[]) =>
+      String(c[0]).endsWith("/jwks.json"),
+    )?.[1] as { maxRedirects?: number } | undefined;
+    expect(jwksOpts?.maxRedirects).toBe(0);
+  });
+});
+
 describe("OidcService — ID Token 验签矩阵（真 RS256）", () => {
   it("正确签名 + 全声明匹配 → 通过并提取身份", async () => {
     const { service } = makeService();
