@@ -51,7 +51,7 @@ docker compose --profile minio up -d     # 追加可选服务（replica/minio/ja
 
 ### minio（profile: `minio`）
 - 镜像 `minio/minio:RELEASE.2024-10-13T13-34-11Z`（E-34：pin 具体 RELEASE tag，不再浮动 `latest`；该 tag 仍带 Web 控制台），`command: server /data --console-address ':9001'`；端口 `127.0.0.1:9000`、`127.0.0.1:9001`；卷 `minio_data`。
-- `MINIO_ROOT_PASSWORD` **无默认值**（缺失即启动失败）。启用后把 admin-api 的 `LOG_STORAGE_DRIVER=s3`；注意 bucket 生命周期需自行配置（admin 侧清理不覆盖外置对象）。
+- `MINIO_ROOT_PASSWORD` **无默认值**（缺失即启动失败）。启用后把 admin-api 的 `LOG_STORAGE_DRIVER=s3`；日志对象回收由 admin 侧 WIKI-LOG-S3GC 每日 03:35 承担（随 `LOG_RETENTION_DAYS` 同源到期、单轮上限余量次轮续收），bucket 生命周期降级为可选兜底（NETOPT-8⑤，与 docs/operations.md「S3/MinIO 日志对象生命周期」同口径）。
 
 ### jaeger（profile: `jaeger`，OBS-01）
 - 镜像 `jaegertracing/all-in-one:1.57`；`COLLECTOR_OTLP_ENABLED=true`；端口 `127.0.0.1:4317/4318/16686`；卷 `jaeger_data:/badger`。
