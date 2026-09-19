@@ -5,11 +5,14 @@ import {
   ConflictException,
   ForbiddenException,
   OnModuleInit,
+  Optional,
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { ModuleRef } from "@nestjs/core";
 import { Repository, IsNull, Or, In } from "typeorm";
 import { Application, ApplicationStatus } from "./entities/application.entity";
+// NETOPT-8③: 删除应用时 best-effort 通知执行器清理 apps/<appId>
+import { AppDeployment } from "./entities/app-deployment.entity";
 import { UserRole } from "../users/entities/user.entity";
 import {
   CreateApplicationDto,
@@ -20,6 +23,17 @@ import {
 import { DEFAULT_PROJECT_ID } from "../project/project.entity";
 import { spawn } from "child_process";
 import { assertSafeGitRepoUrl } from "../../common/utils/safe-http.util";
+// NETOPT-8③: 执行器通知走 assertAndPinExecutorUrl 同一安全通道（先例
+// app-deployment.service.stop()——SSRF 复核 + 连接 pin 到已校验 IP）。
+import {
+  assertAndPinExecutorUrl,
+  pinnedAxiosConfig,
+} from "../../common/utils/safe-http.util";
+import axios from "axios";
+// NETOPT-8③: 扇出需要执行器地址拼 URL 与共享凭据（DB-first）。@Optional
+// 注入（既有单测装配未提供时为 null → 扇出整体跳过），类型上仅为消除
+// executor.service → application.entity 与本文件的无环引用。
+import { ExecutorService } from "../executor/executor.service";
 // A2-B: 属主校验的运行时证据落点
 import { recordOwnershipAssertion } from "../../common/guards/ownership-assertion.store";
 import * as fs from "fs";
@@ -125,6 +139,15 @@ export class ApplicationService implements OnModuleInit {
     private readonly repo: Repository<Application>,
     private readonly moduleRef: ModuleRef,
     private readonly aiService: AiService,
+    // NETOPT-8③: 删除应用时 best-effort 通知执行器清理 apps/<appId>。
+    // @Optional 同 executor.service applicationRepo 先例——既有单测装配未
+    // 提供时为 null，扇出整体跳过（删除主链不受影响）。**必须是参数表最后
+    // 两个**，不破坏既有位置装配。
+    @Optional()
+    @InjectRepository(AppDeployment)
+    private readonly deploymentRepo: Repository<AppDeployment> | null = null,
+    @Optional()
+    private readonly executorService: ExecutorService | null = null,
   ) {}
 
   private _taskService: import("../task/task.service").TaskService | null =
@@ -405,6 +428,10 @@ export class ApplicationService implements OnModuleInit {
     const app = await this.findById(id);
     // NF-03: 写面属主守卫（同 update）+ AUTH-02 项目角色放行
     await this.assertCanWriteProjectAware(app, user);
+    // NETOPT-8③: repo.remove 之前先取部署行——AppDeployment 对应用是
+    // @ManyToOne(onDelete: CASCADE)，应用行一删部署行静默级联消失，此后
+    // 既查不到执行器集合，/app-stop 通路也不可达。
+    const deployments = await this.findDeploymentsForRemovalFanout(id);
     await this.repo.remove(app);
     // R18/R9c: the application row may point at a locally served package
     // (uploads/packages/<file>.zip). The old remove() left that file behind,
@@ -427,6 +454,137 @@ export class ApplicationService implements OnModuleInit {
       }
     }
     this.logger.log(`Application removed: ${app.name}`);
+    // NETOPT-8③: DB 删除完成后 best-effort 并行扇出（先 stop 后 uninstall）。
+    // 任何失败只 warn，绝不外抛——删除应用不得因执行器不可达而失败。
+    await this.fanOutAppRemovalToExecutors(app.id, deployments);
+  }
+
+  /**
+   * NETOPT-8③: 单次执行器清理通知的超时（5s，处在任务要求的 5-10s 区间下
+   * 沿——扇出最多 stop×N + 1 次 uninstall，收紧超时让删除接口不被慢执行器
+   * 拖太久）。
+   */
+  private static readonly EXECUTOR_REMOVAL_NOTIFY_TIMEOUT_MS = 5_000;
+
+  /**
+   * NETOPT-8③: 取该应用的部署行（id + executorAddress 两列）。deploymentRepo
+   * 缺席（既有单测装配）或查询失败时返回空集——扇出跳过但删除主链照常。
+   */
+  private async findDeploymentsForRemovalFanout(
+    appId: string,
+  ): Promise<{ id: string; executorAddress: string | null }[]> {
+    if (!this.deploymentRepo) return [];
+    try {
+      return await this.deploymentRepo.find({
+        where: { applicationId: appId },
+        select: ["id", "executorAddress"],
+      });
+    } catch (err: unknown) {
+      this.logger.warn(
+        `NETOPT-8③: 查询应用 ${appId} 的部署行失败，跳过执行器清理通知: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return [];
+    }
+  }
+
+  /**
+   * NETOPT-8③: 对每台有部署的执行器（按地址去重）并行扇出清理通知。
+   * Promise.allSettled + 单台内部全兜底 ⇒ 整体绝不外抛。
+   */
+  private async fanOutAppRemovalToExecutors(
+    appId: string,
+    deployments: { id: string; executorAddress: string | null }[],
+  ): Promise<void> {
+    const byAddress = new Map<string, string[]>();
+    for (const d of deployments) {
+      if (!d.executorAddress) continue;
+      const ids = byAddress.get(d.executorAddress) ?? [];
+      ids.push(d.id);
+      byAddress.set(d.executorAddress, ids);
+    }
+    if (byAddress.size === 0) return;
+    if (!this.executorService) {
+      this.logger.warn(
+        `NETOPT-8③: ExecutorService 缺席，跳过应用 ${appId} 的执行器清理通知`,
+      );
+      return;
+    }
+    await Promise.allSettled(
+      [...byAddress.entries()].map(([address, deploymentIds]) =>
+        this.uninstallAppOnExecutor(appId, address, deploymentIds),
+      ),
+    );
+  }
+
+  /**
+   * NETOPT-8③: 单台执行器的清理通知：先逐 deploymentId POST /app-stop
+   * （既有端点，旧执行器也支持），再 POST /app-uninstall（新端点——旧版
+   * 执行器 404 属预期，按 best-effort 失败处理只 warn 继续）。任何失败
+   * 绝不外抛。
+   */
+  private async uninstallAppOnExecutor(
+    appId: string,
+    address: string,
+    deploymentIds: string[],
+  ): Promise<void> {
+    const executorService = this.executorService;
+    if (!executorService) return;
+    for (const deploymentId of deploymentIds) {
+      try {
+        const url = executorService.getExecutorUrl(address, "api/app-stop");
+        const pinned = await assertAndPinExecutorUrl(url);
+        await axios.post(
+          url,
+          { deploymentId },
+          {
+            timeout: ApplicationService.EXECUTOR_REMOVAL_NOTIFY_TIMEOUT_MS,
+            headers: await this.getExecutorAuthHeaders(executorService),
+            maxRedirects: 0,
+            ...pinnedAxiosConfig(pinned),
+          },
+        );
+      } catch (err: unknown) {
+        this.logger.warn(
+          `NETOPT-8③: app-stop 通知失败（best-effort 继续），executor=${address} deployment=${deploymentId}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
+    try {
+      const url = executorService.getExecutorUrl(address, "api/app-uninstall");
+      const pinned = await assertAndPinExecutorUrl(url);
+      await axios.post(
+        url,
+        { appId },
+        {
+          timeout: ApplicationService.EXECUTOR_REMOVAL_NOTIFY_TIMEOUT_MS,
+          headers: await this.getExecutorAuthHeaders(executorService),
+          maxRedirects: 0,
+          ...pinnedAxiosConfig(pinned),
+        },
+      );
+    } catch (err: unknown) {
+      this.logger.warn(
+        `NETOPT-8③: app-uninstall 通知失败（旧版执行器可能不支持该端点，best-effort 忽略），executor=${address}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+
+  /** NETOPT-8③: executor 请求头（Bearer 共享令牌，DB-first 解析失败降级无头） */
+  private async getExecutorAuthHeaders(
+    executorService: ExecutorService,
+  ): Promise<Record<string, string>> {
+    try {
+      const token = await executorService.getSharedToken();
+      return token ? { Authorization: `Bearer ${token}` } : {};
+    } catch {
+      return {};
+    }
   }
 
   /**

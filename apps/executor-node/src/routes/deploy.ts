@@ -34,6 +34,14 @@ interface DeployPayload {
 /** Map of deploymentId -> running child process (daemon mode) */
 const runningApps = new Map<string, ChildProcess>();
 
+/**
+ * NETOPT-8③: deploymentId -> appRoot（apps/<appId> 绝对路径）登记表，在
+ * startApp 时登记、进程退出/停止时摘除。runningApps 以 deploymentId 为键，
+ * 从 appId 反查「该应用还有哪些 daemon 活着」没有现成路径——/app-uninstall
+ * 借本表定位并停掉目标应用的全部 daemon 后再删目录。
+ */
+const runningAppRoots = new Map<string, string>();
+
 /** Deployments whose next process exit is part of an intentional in-place restart. */
 const restartExitReportsToSuppress = new Set<string>();
 
@@ -211,6 +219,7 @@ export function validateShellEntrypoint(
 /** Start the application process */
 function startApp(
   deploymentId: string,
+  appRoot: string,
   deployDir: string,
   runtime: string,
   entrypoint: string,
@@ -282,6 +291,8 @@ function startApp(
   child.stderr?.on('error', () => { /* surfaced via child 'error' handler */ });
 
   runningApps.set(deploymentId, child);
+  // NETOPT-8③: 登记 daemon 的 appRoot，供 /app-uninstall 按 appId 定位停机
+  runningAppRoots.set(deploymentId, appRoot);
 
   // Stream logs to file
   const logFile = path.join(deployDir, 'app.log');
@@ -309,6 +320,7 @@ function startApp(
 
   child.on('exit', (code) => {
     runningApps.delete(deploymentId);
+    runningAppRoots.delete(deploymentId);
     if (!shouldReportProcessExit(deploymentId)) {
       logger.info(`[deploy] Suppressed exit report for restarted app ${deploymentId}`);
       return;
@@ -324,6 +336,7 @@ function startApp(
 
   child.on('error', (err) => {
     runningApps.delete(deploymentId);
+    runningAppRoots.delete(deploymentId);
     logger.error(`[deploy] App ${deploymentId} error: ${err.message}`);
     reportStatus(deploymentId, 'failed', undefined, err.message);
   });
@@ -789,7 +802,7 @@ deployRouter.post('/deploy', async (req: Request, res: Response) => {
         : 'main.sh';
       const entry = entrypoint || defaultEntry;
       if (runMode === 'daemon' || runMode === 'once') {
-        startApp(deploymentId, paths.finalReleaseDir, runtime, entry, runMode, envVars);
+        startApp(deploymentId, paths.appRoot, paths.finalReleaseDir, runtime, entry, runMode, envVars);
       } else {
         // scheduled mode: just deploy, tasks are triggered via normal task dispatch
         await reportStatus(deploymentId, 'running', undefined, 'Deployed in scheduled mode');
@@ -805,24 +818,86 @@ deployRouter.post('/deploy', async (req: Request, res: Response) => {
   });
 });
 
+/**
+ * NETOPT-8③: /app-stop 的核心逻辑抽出（/app-uninstall 复用同一停机语义）。
+ * 杀整个进程树（daemon 是 detached 组长，杀父进程会孤儿化其子进程），SIGTERM
+ * 不退 10s 后升级 SIGKILL。返回是否确有 daemon 被停。
+ */
+function stopRunningApp(deploymentId: string): boolean {
+  const child = runningApps.get(deploymentId);
+  if (!child) return false;
+  killProcessTree(child, 'SIGTERM');
+  // Escalate to SIGKILL when the process ignores SIGTERM (mirroring the
+  // upgrade path) — otherwise daemons keep running unmanaged.
+  const killTimer = setTimeout(() => {
+    killProcessTree(child, 'SIGKILL');
+  }, 10_000);
+  child.once('exit', () => clearTimeout(killTimer));
+  runningApps.delete(deploymentId);
+  runningAppRoots.delete(deploymentId);
+  logger.info(`[deploy] Stopped app ${deploymentId}`);
+  return true;
+}
+
 /** Stop a running app */
 deployRouter.post('/app-stop', (req: Request, res: Response) => {
   const { deploymentId } = req.body;
-  const child = runningApps.get(deploymentId);
-  if (child) {
-    // Apps are spawned detached (process-group leaders) — kill the whole
-    // tree so daemons that spawned their own children don't escape.
-    killProcessTree(child, 'SIGTERM');
-    // Escalate to SIGKILL when the process ignores SIGTERM (mirroring the
-    // upgrade path) — otherwise daemons keep running unmanaged.
-    const killTimer = setTimeout(() => {
-      killProcessTree(child, 'SIGKILL');
-    }, 10_000);
-    child.once('exit', () => clearTimeout(killTimer));
-    runningApps.delete(deploymentId);
-    logger.info(`[deploy] Stopped app ${deploymentId}`);
-  }
+  stopRunningApp(deploymentId);
   res.json({ ok: true });
+});
+
+/**
+ * NETOPT-8③: Uninstall an application — stop every daemon recorded under
+ * apps/<appId> (reusing the /app-stop kill semantics) and then remove the
+ * app directory. Idempotent: a missing directory is still success (the admin
+ * side is best-effort; old executors 404 on this route and are ignored).
+ *
+ * Path safety mirrors the deploy route's appId guard: a strict segment
+ * whitelist (isSafePathSegment — no separators, no traversal, no absolute
+ * forms) PLUS a resolved-containment check inside the apps root as defense
+ * in depth: the rm -rf target must stay inside <workDir>/apps even if the
+ * whitelist ever loosens.
+ */
+deployRouter.post('/app-uninstall', (req: Request, res: Response) => {
+  const appId = req.body?.appId ?? req.body?.applicationId;
+  if (!appId) {
+    return res.status(400).json({ error: 'appId is required' });
+  }
+  if (typeof appId !== 'string' || !isSafePathSegment(appId)) {
+    return res.status(400).json({ error: 'appId contains unsupported characters' });
+  }
+  const appsRoot = path.resolve(config.workDir, 'apps');
+  const appRoot = path.resolve(appsRoot, appId);
+  if (appRoot !== appsRoot && !appRoot.startsWith(appsRoot + path.sep)) {
+    return res.status(400).json({ error: 'appId resolves outside the apps root' });
+  }
+
+  // 先停 daemon：本应用名下（appRoot 在目标 apps/<appId> 内）的全部进程，
+  // rm -rf 不会杀死已启动进程（POSIX unlink 后 inode 存活），必须显式停。
+  const stopped: string[] = [];
+  for (const [deploymentId, root] of runningAppRoots) {
+    const resolvedRoot = path.resolve(root);
+    if (resolvedRoot === appRoot || resolvedRoot.startsWith(appRoot + path.sep)) {
+      stopRunningApp(deploymentId);
+      stopped.push(deploymentId);
+    }
+  }
+
+  let removed = false;
+  let error: string | undefined;
+  try {
+    if (fs.existsSync(appRoot)) {
+      fs.rmSync(appRoot, { recursive: true, force: true });
+      removed = true;
+    }
+  } catch (err: any) {
+    error = err?.message ?? String(err);
+    logger.warn(`[deploy] Failed to remove app dir ${appRoot}: ${error}`);
+  }
+  logger.info(
+    `[deploy] Uninstalled app ${appId} (stopped ${stopped.length} daemon(s), removed=${removed})`,
+  );
+  return res.json({ ok: true, appId, stopped, removed, ...(error ? { error } : {}) });
 });
 
 /** List running apps */
@@ -834,4 +909,4 @@ deployRouter.get('/app-status', (_req: Request, res: Response) => {
   res.json(status);
 });
 
-export { runningApps };
+export { runningApps, runningAppRoots };
