@@ -90,7 +90,13 @@ import { ExecutorService } from "../executor/executor.service";
 // AuditService（notifyCallbackFailure 审计已迁 listener）；此处仅为「依赖触发
 // 无 user 主体、绕过控制器审计」的系统动作补 best-effort 审计。@Optional 与
 // eventBus/projectAccess 同先例——存量单测未提供时降级 null，主链不变。
-import { AuditService } from "../audit/audit.service";
+import {
+  AuditService,
+  // NETOPT-3⑤: API-09 的 LIKE 元字符转义 util 第三处落点（同模块函数导入，
+  // 不新增依赖）——getAllExecutions 的 taskName/executorAddress 两个 ILIKE
+  // 此前直接 `%${input}%` 裸插值，`_`/`%` 被当通配符，搜索结果静默变宽。
+  escapeLikePattern,
+} from "../audit/audit.service";
 // ARCH-21: 领域事件总线——终态事件（execution.completed/failed）发布入口。
 // 主链由此与 NotificationService 彻底解耦（验收红线：本文件不再 import 它）。
 import { DomainEventBus } from "../../common/services/domain-event-bus.service";
@@ -1381,14 +1387,18 @@ export class TaskService {
     if (p.taskName) {
       // taskName 过滤：命中执行行自身的 taskName，或命中 tasks 表名称
       //（保留 join 仅用于此过滤场景）
+      // NETOPT-3⑤: API-09 同款转义——`_`/`%` 必须按字面量匹配（搜
+      // `zhang_san` 不应命中 `zhangXsan`），否则搜索结果静默变宽、运维
+      // 会据错误结果集得出错误结论。
       qb.leftJoin("tasks", "t", "t.id = e.taskId");
       qb.andWhere("(e.taskName ILIKE :taskName OR t.name ILIKE :taskName)", {
-        taskName: `%${p.taskName}%`,
+        taskName: `%${escapeLikePattern(p.taskName)}%`,
       });
     }
     if (p.executorAddress)
+      // NETOPT-3⑤: 同上——执行器地址常含下划线/通配符字符，转义后按字面量匹配。
       qb.andWhere("e.executorAddress ILIKE :executorAddress", {
-        executorAddress: `%${p.executorAddress}%`,
+        executorAddress: `%${escapeLikePattern(p.executorAddress)}%`,
       });
     if (p.startTime)
       qb.andWhere("e.createdAt >= :startTime", { startTime: p.startTime });

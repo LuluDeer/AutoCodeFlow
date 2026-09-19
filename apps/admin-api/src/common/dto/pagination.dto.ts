@@ -22,11 +22,16 @@ import { IsInt, IsOptional, IsString, Max, Min } from "class-validator";
  * 这是**纯契约收窄**：被移除的字段本来就被忽略，删掉不改变任何运行时行为。
  */
 export class PageQueryDto {
-  @ApiPropertyOptional({ default: 1 })
+  // NETOPT-3④: page 加上限——page 只进 `OFFSET (page-1)*pageSize`，无上限时
+  // `?page=99999999` 会生成深 OFFSET + getManyAndCount 全量 COUNT，两个都是
+  // 全表游走，可钉满连接池。UI 翻页远用不到 1 万页（pageSize≤100 → 覆盖
+  // 100 万行），防御性封顶即可。pageSize 上限既有（@Max(100)）。
+  @ApiPropertyOptional({ default: 1, maximum: 10000 })
   @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(1)
+  @Max(10000)
   page = 1;
 
   @ApiPropertyOptional({ default: 20, maximum: 100 })

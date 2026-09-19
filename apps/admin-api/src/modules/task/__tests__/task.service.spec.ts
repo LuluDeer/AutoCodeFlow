@@ -1274,6 +1274,69 @@ describe("TaskService (__tests__)", () => {
         "t.id = e.taskId",
       );
     });
+
+    // NETOPT-3⑤（API-09 第三落点）：getAllExecutions 的 taskName /
+    // executorAddress 两个 ILIKE 此前直接 `%${input}%` 裸插值——ILIKE 里
+    // `_` = 任意单字符、`%` = 任意字符：搜 `zhang_san` 会命中 `zhangXsan`、
+    // 搜 `%` 命中全部行。搜索结果静默变宽，运维会据错误结果集得出错误
+    // 结论。修法与审计面同款：escapeLikePattern 转义后按字面量匹配。
+    it("NETOPT-3⑤: escapes LIKE metacharacters in taskName/executorAddress filters (no wildcard semantics)", async () => {
+      const andWhere = jest.fn().mockReturnThis();
+      const qbMock = {
+        leftJoin: jest.fn().mockReturnThis(),
+        addSelect: jest.fn().mockReturnThis(),
+        select: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        andWhere,
+        getManyAndCount: jest.fn().mockResolvedValue([[], 0]),
+      };
+      execRepo.createQueryBuilder.mockReturnValue(qbMock as any);
+
+      await service.getAllExecutions({
+        page: 1,
+        pageSize: 10,
+        taskName: "zhang_san",
+        executorAddress: "10.0.0.%host_1",
+      });
+
+      expect(andWhere).toHaveBeenCalledWith(
+        expect.stringContaining("taskName ILIKE"),
+        expect.objectContaining({ taskName: "%zhang\\_san%" }),
+      );
+      expect(andWhere).toHaveBeenCalledWith(
+        expect.stringContaining("executorAddress ILIKE"),
+        expect.objectContaining({ executorAddress: "%10.0.0.\\%host\\_1%" }),
+      );
+      // 正常搜索词不被误伤（无元字符时原样透传）
+      await service.getAllExecutions({ page: 1, pageSize: 10, taskName: "nightly" });
+      expect(andWhere).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ taskName: "%nightly%" }),
+      );
+    });
+
+    it("NETOPT-3⑤: source guard — no bare `%${...}%` interpolation on the two ILIKE filters", () => {
+      const { readFileSync } = require("node:fs");
+      const { join } = require("node:path");
+      const raw = readFileSync(
+        join(__dirname, "..", "task.service.ts"),
+        "utf-8",
+      );
+      // 剥注释：源码注释里引用旧写法作为缺陷说明，不剥会把「解释缺陷的
+      // 注释」当成缺陷本身（API-09 同款陷阱，本轮已踩过两次）。
+      const src = raw
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .replace(/^\s*\/\/.*$/gm, "");
+      const bare = [...src.matchAll(/`%\$\{p\.(taskName|executorAddress)\}%`/g)]
+        .map((m) => m[0])
+        .filter((s) => !s.includes("escapeLikePattern("));
+      expect(bare).toEqual([]);
+      // 有齿校验：该正则确实能匹配被修的旧写法
+      const old = "`%${p.taskName}%`";
+      expect([...old.matchAll(/`%\$\{p\.(taskName|executorAddress)\}%`/g)].length).toBe(1);
+    });
   });
 
   describe("checkCircularDependency depth limit (TASK-007)", () => {
