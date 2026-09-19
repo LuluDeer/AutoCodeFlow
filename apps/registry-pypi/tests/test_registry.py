@@ -287,6 +287,108 @@ class TestDownload:
         assert resp.status_code == 404
 
 
+# ------------------------------------------------------------------------------
+# NETOPT-5⑥: 读取路径（package_index / download_package）此前直接
+# ``PACKAGES_DIR / normalize(name)``，包名安全闸 is_safe_package_name 只有
+# 上传侧在调用。Windows 主机上 ``Path("C:/base") / "C:foo"`` 会丢弃左操作数
+# （pathlib 语义），读取路径可落包根之外。两个读取端点现在对非法包名按
+# 404 处理（与既有 404 形态一致，对 pip 不可区分）。
+#
+# 断言分两层：
+# - HTTP 层：盘符/绝对名请求 404 的对外契约。注：`C:foo` 这类盘符名在
+#   NTFS 上不可能作为目录存在，无闸时 exists() 也是 False → 404，故 HTTP
+#   层无法单独区分「闸拒绝」与「路径不存在」；
+# - 函数级：直接以非法名调用端点函数（绕过路由器对路径段的约束），
+#   无闸时 ``PACKAGES_DIR / ".."`` 与 ``PACKAGES_DIR / "a/b"`` 可被预置为
+#   真实存在的目录 → 无闸版本会把父目录/越权目录内容当包索引返回、把
+#   包根之外的文件当制品下载 —— 有牙的反证差异。
+# ------------------------------------------------------------------------------
+class TestReadPathNameGate:
+    @pytest.mark.parametrize("evil_name", [
+        "C:foo",        # Windows 盘符相对形态：pathlib 丢根的经典形态
+        "C:/tmp/x",     # 盘符绝对路径
+        r"\\?\C:/tmp/x",  # UNC/长路径前缀
+        "/tmp/x",       # POSIX 绝对路径
+    ])
+    def test_package_index_rejects_unsafe_names(self, client, evil_name):
+        assert client.get(f"/simple/{evil_name}/", auth=AUTH).status_code == 404
+
+    @pytest.mark.parametrize("evil_name", ["C:foo", "C:/tmp/x", "/tmp/x"])
+    def test_download_rejects_unsafe_names(self, client, evil_name):
+        assert client.get(
+            f"/packages/{evil_name}/probe-1.0.whl", auth=AUTH
+        ).status_code == 404
+
+    def _bare_request(self):
+        from starlette.requests import Request
+        return Request({"type": "http", "method": "GET",
+                        "headers": [], "query_string": b""})
+
+    # 注：`..` 不构成读取路径威胁——normalize() 先把 `..` 折叠为 `-`
+    # （PEP 503 语义），is_safe_package_name 的 `.`/`..` 分支只对「绕过
+    # normalize 直接调用」的形态兜底，故有牙用例使用归一化后仍含分隔符
+    # 的 `a/b` 形态（纵深防御分支）：无闸时 PACKAGES_DIR/a/b 可被预置为
+    # 真实存在的目录/文件 → 索引照渲染、文件照下载；有闸时 404。
+
+    def test_package_index_separator_name_cannot_read_nested_dir(
+        self, tmp_packages_dir, monkeypatch
+    ):
+        import main as app_module
+        from fastapi import HTTPException
+        # 端点读的是模块属性：与 client fixture 同法 patch 到隔离目录
+        monkeypatch.setattr(app_module, "PACKAGES_DIR", tmp_packages_dir)
+        nested = tmp_packages_dir / "a" / "b"
+        nested.mkdir(parents=True)
+        (nested / "evil-1.0-py3-none-any.whl").write_bytes(b"x")
+        with pytest.raises(HTTPException) as ei:
+            app_module.package_index("a/b", self._bare_request(), _user="t")
+        assert ei.value.status_code == 404
+
+    def test_download_separator_name_cannot_fetch_nested_file(
+        self, tmp_packages_dir, monkeypatch
+    ):
+        import main as app_module
+        from fastapi import HTTPException
+        monkeypatch.setattr(app_module, "PACKAGES_DIR", tmp_packages_dir)
+        nested = tmp_packages_dir / "a" / "b"
+        nested.mkdir(parents=True)
+        (nested / "evil-1.0.whl").write_bytes(b"leak")
+        with pytest.raises(HTTPException) as ei:
+            app_module.download_package("a/b", "evil-1.0.whl", _user="t")
+        assert ei.value.status_code == 404
+
+    def test_gate_function_rejects_dot_and_dotdot(self):
+        """is_safe_package_name 对 `.` / `..` 的兜底（防御 normalize 被
+        改动后重新放行相对分量的纵深）。"""
+        from main import is_safe_package_name
+        assert not is_safe_package_name(".")
+        assert not is_safe_package_name("..")
+        assert is_safe_package_name("-")  # normalize("..") 的无害折叠产物
+
+    def test_read_path_creates_nothing_outside(self, client, tmp_packages_dir):
+        """读取路径的非法包名不得在包根之外创建/触碰任何目录。"""
+        outside = tmp_packages_dir.parent / "outside-read-sentinel"
+        outside.mkdir()
+        before = set(p.name for p in outside.iterdir())
+
+        client.get("/simple/C:foo/", auth=AUTH)
+        client.get("/packages/C:foo/probe-1.0.whl", auth=AUTH)
+
+        assert set(p.name for p in outside.iterdir()) == before
+        assert list(tmp_packages_dir.iterdir()) == []
+
+    def test_legitimate_read_paths_still_work(self, client):
+        """合法回归：上传后 /simple/{name}/ 与 /packages/... 照常工作。"""
+        client.post("/", auth=AUTH,
+                    data={"name": "gate-ok", "version": "1.0"},
+                    files={"content": ("gate_ok-1.0-py3-none-any.whl", b"ok",
+                                       "application/octet-stream")})
+        assert client.get("/simple/gate-ok/", auth=AUTH).status_code == 200
+        resp = client.get("/packages/gate-ok/gate_ok-1.0-py3-none-any.whl", auth=AUTH)
+        assert resp.status_code == 200
+        assert resp.content == b"ok"
+
+
 class TestNormalize:
     """Unit tests for the normalize() helper."""
 
