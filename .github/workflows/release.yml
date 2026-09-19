@@ -207,3 +207,51 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: packages/autoflow-sdk/dist/
+
+  # ── 保护桌面自动更新：把本 tag 的 Release 移出 GitHub「latest」竞争 ──────
+  # 根因（v1.5.0 实证，客户端报错）：
+  #   Cannot find latest.yml in the latest release artifacts
+  #   (.../releases/download/v1.5.0/latest.yml): HttpError: 404
+  # electron-updater 的 github provider **硬编码**查仓库的 latest release
+  #   （GitHubProvider.js:162 → /releases/latest；channel 只改文件名
+  #   latest.yml→xxx.yml，不改 latest 的选择），**无法**指定 tag。
+  # 而 round-14 把桌面解耦成独立 `desktop-v*` tag 线后，两条 tag 线仍共用
+  #   同一个 GitHub Releases 池：本 workflow 的 `v*` Release 是 SDK 发版产物、
+  #   **不含任何安装包**，一旦它比 desktop-v* 新就抢占 latest，客户端随即 404
+  #   ——**每次 SDK 发版都会复发**（v1.5.0 打完，全量装机用户更新检查即坏）。
+  #
+  # 修法：GitHub 的 latest 判定**排除 prerelease**，故把本 Release 标为
+  #   prerelease 即永久退出竞争，latest 恒为 desktop-v*（含 latest*.yml）。
+  #   - 不影响 npm/PyPI 发布（产物不在 GitHub Releases）；
+  #   - 不影响 release-please 状态机（它以 tag 与 Release 存在性为事实源，
+  #     prerelease 仍是 Release——已实测：标完后 release-please 仍 success、
+  #     无 untagged/aborting）；
+  #   - 幂等，重跑安全。
+  # 为什么 needs 只依赖 version-guard 而非 publish：保护桌面更新的窗口越短
+  #   越好；且即使某个 publish 失败，latest 也必须已经被保护（否则存量用户
+  #   立刻受影响）。故与 publish 并行，不等其结果。
+  demote-sdk-release:
+    needs: version-guard
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Mark this SDK release as prerelease (protect desktop auto-update)
+        run: |
+          set -euo pipefail
+          tag="${{ github.ref_name }}"
+          # Release 可能尚未被 release-please 创建（时序竞争），轮询等待。
+          for _ in $(seq 1 30); do
+            if gh release view "$tag" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+              break
+            fi
+            sleep 2
+          done
+          if ! gh release view "$tag" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "::warning::Release $tag 尚不存在，跳过标记（若它随后被创建，桌面 latest 会被抢占，需人工复核）"
+            exit 0
+          fi
+          gh release edit "$tag" --repo "${{ github.repository }}" --prerelease
+          echo "::notice::Release $tag 已标记为 prerelease——退出 GitHub latest 竞争，桌面自动更新源保持为 desktop-v*"
