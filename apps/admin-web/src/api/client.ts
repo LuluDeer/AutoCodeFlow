@@ -104,6 +104,12 @@ client.interceptors.response.use(
     return body;
   },
   async (err) => {
+    // NETOPT-7①（2026-09-20）：主动取消（TasksTab 翻页/卸载 abort、TaskFormPage effect abort、
+    // TanStack refetch 压制）产生的 CanceledError 不是网络故障：既不能走安全方法重试
+    // （重试用同一已 aborted 的 signal 会立即再抛、白睡 1s），也不能落下方 !err.response
+    // 分支弹假「网络连接失败」。该检查必须在访问 err.config 之前——派发前已 abort 的
+    // CanceledError 可能没有 config，下方 _retryCount 访问会抛 TypeError。
+    if (axios.isCancel(err) || err?.code === 'ERR_CANCELED') return Promise.reject(err);
     const originalRequest = err.config;
     // 401 跳登录时带上当前路由，登录成功后回跳（LoginPage 读 ?redirect=）
     //
