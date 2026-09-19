@@ -42,7 +42,11 @@ export function isProjectRole(value: unknown): value is ProjectRole {
 }
 
 @Entity("project_members")
-@Index("UQ_project_members_project_user", ["projectId", "userId"], {
+// NETOPT-3⑥: 索引名与迁移 DDL 对齐——迁移 1790000000015 实际落库的是
+// CREATE TABLE 内的 CONSTRAINT "uq_project_members_project_user"
+// UNIQUE ("projectId","userId")；实体此前声明大写 UQ_ 前缀名，与库中
+// 真名不符（synchronize=false 下声明名不物化，属纯声明漂移）。
+@Index("uq_project_members_project_user", ["projectId", "userId"], {
   unique: true,
 })
 @Index("IDX_project_members_userId", ["userId"])
