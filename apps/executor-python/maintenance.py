@@ -31,7 +31,6 @@ offline mid-delete).
 import asyncio
 import logging
 import os
-import re
 import shutil
 import threading
 import time
@@ -418,15 +417,25 @@ def _path_within(path: Path, root: Path) -> bool:
     return resolved.is_relative_to(resolved_root)
 
 
-def _reclaim_interpreter_version(pool_root: Path, path: Path, version_hint: str) -> bool:
+def _reclaim_interpreter_version(pool_root: Path, path: Path) -> bool:
     """回收池内一个版本目录。**先做硬安全断言，再删。**
 
     断言（任一不满足即拒绝删除并返回 False）：
       1. 目标必须严格位于配置的池根之内——绝不因为路径拼接出错删到池外；
       2. 目标不得是池根本身——删掉池根等于把整个缓存层清空。
 
-    删除方式优先 `uv python uninstall <version>`（uv 自己的簿记一并收敛），
-    不可用/失败时退回 `rmtree`；两条路径之后都由调用方 `invalidate_cache()`。
+    删除方式：`shutil.rmtree`（`_remove_quietly` 吞 OSError，best-effort），
+    之后由调用方 `invalidate_cache()`。
+
+    NETOPT-6⑨：曾有一条 `getattr(_interpreters, 'uninstall_version', None)`
+    的「优先 `uv python uninstall`」分支——全仓从未定义过该函数，恒走 rmtree，
+    是纯死代码，故删除。**rmtree 是刻意选择**而非偷懒：`uv python uninstall`
+    的簿记（uv 自管的安装清单/已安装标记）与本池的目录管理语义冲突——
+    1) 本池支持部署方离线预填目录（`uv python install` 之外的生产方式），
+    uv 的簿记里根本没有这些条目；2) 回收按「目录 mtime + 体积」决策，目标
+    是池目录本身，`uv python uninstall <version>` 只接受版本号且可能拒绝
+    删除「uv 不知道的」目录；3) 池根由本模块全权治理（harden_pool_permissions、
+    pool_summary 上报），绕开本模块语义的外部簿记只会引入第二种真相。
     """
     if not _path_within(path, pool_root):
         logger.error(
@@ -434,14 +443,6 @@ def _reclaim_interpreter_version(pool_root: Path, path: Path, version_hint: str)
             path, pool_root,
         )
         return False
-    uninstall = getattr(_interpreters, 'uninstall_version', None) if _interpreters is not None else None
-    if callable(uninstall) and version_hint:
-        try:
-            uninstall(version_hint)
-            if not path.exists():
-                return True
-        except Exception as exc:  # noqa: BLE001 - 退回 rmtree
-            logger.warning('uv python uninstall %s failed (%s); falling back to rmtree', version_hint, exc)
     _remove_quietly(path)
     return True
 
@@ -459,12 +460,6 @@ def _invalidate_interpreter_cache() -> None:
             'interpreters module unavailable — the reported inventory may still '
             'list reclaimed versions until the next restart'
         )
-
-
-def _pool_dir_version(path: Path) -> str:
-    """池目录名 `cpython-3.8.20-<platform>-none` → `3.8.20`；取不到返回 ''。"""
-    match = re.match(r'^cpython-(\d+\.\d+(?:\.\d+)?)-', path.name)
-    return match.group(1) if match else ''
 
 
 def _attempt_reclaim(
@@ -518,7 +513,7 @@ def _attempt_reclaim(
         'Reclaiming interpreter %s (%d bytes, last used %s, %s) — no task venv depends on it',
         name, size, time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime(mtime)), reason,
     )
-    if not _reclaim_interpreter_version(pool_root, path, _pool_dir_version(path)):
+    if not _reclaim_interpreter_version(pool_root, path):
         return False, 0
     return True, size
 
