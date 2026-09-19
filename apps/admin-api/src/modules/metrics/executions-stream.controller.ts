@@ -34,8 +34,9 @@ import { MetricsStreamSlotService } from "./metrics-stream-slot.service";
  *   反代 proxy_read_timeout（QA3 先例：": ping" 注释帧，SSE 规范要求客户端忽略）。
  * - @Res() library mode 直写（@Sse()/Observable 会破全局 envelope 拦截器，
  *   logs/stream N8、metrics/stream 同款论述）+ @SkipTimeout()（流挂起时长 =
- *   客户端停留时长）+ ?access_token= 查询串回退（jwt.strategy 白名单已含
- *   /executions/stream）。
+ *   客户端停留时长）。鉴权回退走 ?ticket= 短时 SSE 票据（POST /auth/sse-ticket，
+ *   30s TTL，jwt.strategy 白名单已含 /executions/stream）——A5 已移除
+ *   ?access_token= 查询串通道（15 分钟全权 token 进访问日志，不可接受）。
  * - 容量：复用 MetricsStreamSlotService 独立槽位（默认 32）——终态流与汇总流
  *   消费画像相同（每浏览器 Tab 一条），不另建槽位注册表（避过度建设）。
  * - 退避帧：事件长期静默时按 idlePingMs 周期发注释帧；EventSource 断线由

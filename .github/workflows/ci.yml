@@ -68,7 +68,9 @@ jobs:
   # U-2（审计修复）：2961 例单 runner 串行已逼近 30min 上限。拆成三个职责：
   #   * admin-api-test       —— 单元测试 4 片并行（jest --shard 1/4..4/4）
   #   * admin-api-coverage   —— 全量覆盖率门（coverageThreshold 是**全局**口径，
-  #                            分片下各片覆盖率必然部分，不能随片跑，否则必红）
+  #                            分片下各片覆盖率必然部分，不能随片跑，否则必红；
+  #                            NETOPT-1⑪: 仅 develop push 与 schedule 触发，
+  #                            PR 只跑分片门，避免全量套件每 push 实跑 5 遍）
   #   * admin-api-e2e        —— 迁移链 + 三套 e2e（原属同一 job，串行消除
   #                            users_email_key 竞态）
   # 三者并行启动；总墙钟 = max(单片 ~8min, 覆盖率 ~20min, e2e ~5min)。
@@ -139,10 +141,13 @@ jobs:
         working-directory: apps/admin-api
 
   # 覆盖率门：全量跑一遍 + coverageThreshold（这是分片化之后唯一不变的全局口径）。
+  # NETOPT-1⑪: 该 job 无分片无重试，是 CI 最长尾且唯一 flake 暴露点——每次 push
+  # 全量套件已在 admin-api-test 实跑 4 遍（分片），coverage 再跑第 5 遍纯属重复。
+  # 收窄触发：PR 只跑分片门；develop push 与 schedule（月度迁移演练）跑 coverage。
   admin-api-coverage:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    if: github.event_name != 'schedule'
+    if: github.event_name == 'schedule' || github.ref == 'refs/heads/develop'
     services:
       postgres:
         image: postgres:16-alpine
