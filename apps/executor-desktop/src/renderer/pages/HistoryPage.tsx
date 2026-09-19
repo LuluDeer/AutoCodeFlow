@@ -52,21 +52,38 @@ function statusBadge(status?: string) {
 function LogViewer({ record, onClose }: { record: ExecRecord; onClose: () => void }) {
   const [lines, setLines] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
+  // NETOPT-7⑥（2026-09-20）：读取失败的页内呈现 + 终止无限轮询。原实现 fetchLog
+  // 无 catch：任一次 readLog reject（日志文件被 TTL 清理/IPC 异常）→ setLoading(false)
+  // 不执行 → 永久「加载日志...」，且 1.5s/5s 轮询持续重抛 unhandled rejection。
+  // 同仓 AppsPage.tsx 的 AppLogViewer 对同一 IPC 形态有 try/catch + error 态，照此对齐。
+  const [error, setError] = useState<string | null>(null);
   const linesRef = useRef(0);
   const containerRef = useRef<HTMLDivElement>(null);
   const autoScroll = useRef(true);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchLog = useCallback(async () => {
-    const res = await window.electronAPI.readLog(record.executionId, linesRef.current);
-    if (res.lines.length > 0) {
-      linesRef.current = res.totalLines;
-      setLines(prev => {
-        const next = [...prev, ...res.lines];
-        return next.length > 2000 ? next.slice(-1500) : next;
-      });
+    try {
+      const res = await window.electronAPI.readLog(record.executionId, linesRef.current);
+      setError(null);
+      if (res.lines.length > 0) {
+        linesRef.current = res.totalLines;
+        setLines(prev => {
+          const next = [...prev, ...res.lines];
+          return next.length > 2000 ? next.slice(-1500) : next;
+        });
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      // 终止轮询：文件已被 TTL 清理/通道异常时，1.5s/5s 重试只会反复失败。
+      // 用户关闭日志视图重开即重新拉取（effect 重建 interval）。
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   }, [record.executionId]);
 
   useEffect(() => {
@@ -118,7 +135,18 @@ function LogViewer({ record, onClose }: { record: ExecRecord; onClose: () => voi
         </div>
       </div>
       <div className="log-viewer log-overlay-content" ref={containerRef} onScroll={handleScroll}>
-        {loading && lines.length === 0
+        {error ? (
+          <>
+            {/* NETOPT-7⑥：失败必须可见（复用 log-empty 呈现通道 + alert 语义），
+                已加载的行保留在下方——读取失败不应把已有内容一并抹掉。 */}
+            <span className="log-empty" role="alert">
+              ⚠ 日志读取失败：{error}（轮询已停止；关闭后重新打开可重试）
+            </span>
+            {lines.map((line, i) => (
+              <div key={i} className={`log-line ${classifyLog(line)}`}>{line}</div>
+            ))}
+          </>
+        ) : loading && lines.length === 0
           ? <span className="log-empty">加载日志...</span>
           : lines.length === 0
             ? <span className="log-empty">暂无日志（日志文件可能尚未生成）</span>
