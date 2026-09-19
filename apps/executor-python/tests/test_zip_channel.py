@@ -11,6 +11,7 @@
 """
 import asyncio
 import io
+import time
 import zipfile
 from types import SimpleNamespace
 
@@ -711,6 +712,59 @@ def test_non_200_download_fails_without_echoing_the_url(monkeypatch, tmp_path):
     with pytest.raises(RuntimeError, match='HTTP 404'):
         asyncio.run(execute_module._download_package('https://cdn.example.com/app.zip', dest))
     assert not dest.exists()
+
+
+def test_slow_drip_download_hits_the_overall_budget_not_just_per_op(monkeypatch, tmp_path):
+    """NETOPT-6③：慢滴服务器必须被**整体**预算拦截。
+
+    `AsyncClient(timeout=...)` 的 read 超时只限制相邻 chunk 间隔——每个 chunk
+    都在预算内送达、整体却拖到任意久的慢滴流，旧实现可以无限拖。修复后
+    `asyncio.timeout` 给整个下载流一个总预算：这里把预算缩到 0.3s，慢滴每
+    0.05s 滴一滴（单次间隔远小于预算，逐操作超时永不触发），滴到总预算耗尽
+    必须以 TimeoutError → RuntimeError 收场，且半成品被清理。"""
+    _patch_public_dns(monkeypatch)
+
+    class _SlowDripResponse:
+        status_code = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def aiter_bytes(self):
+            # 永不枯竭的慢滴：单次间隔 0.05s << 预算 0.3s（read 逐操作超时
+            # 永不触发），只有整体预算能拦住它。
+            while True:
+                await asyncio.sleep(0.05)
+                yield b'\0' * 8
+
+    class _SlowDripClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        def stream(self, method, url, headers=None):
+            return _SlowDripResponse()
+
+    monkeypatch.setattr(execute_module.httpx, 'AsyncClient', _SlowDripClient)
+    monkeypatch.setattr(execute_module, 'ZIP_DOWNLOAD_TIMEOUT_SECONDS', 0.3)
+
+    dest = tmp_path / 'pkg.zip'
+    started = time.monotonic()
+    with pytest.raises(RuntimeError, match='TimeoutError'):
+        asyncio.run(execute_module._download_package('https://cdn.example.com/app.zip', dest))
+    elapsed = time.monotonic() - started
+
+    # 总预算 0.3s 生效（而非按 chunk 数无限拖）；留 1s 容差给调度抖动。
+    assert elapsed < 1.3, f'overall budget must fire, took {elapsed:.2f}s'
+    assert not dest.exists(), 'a timed-out download must not leave a partial file'
 
 
 def test_download_carries_bearer_token_only_for_the_admin_host(monkeypatch, tmp_path):

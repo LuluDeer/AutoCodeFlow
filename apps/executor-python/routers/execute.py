@@ -1026,6 +1026,10 @@ RUNTIME_VERSION_PATTERN = re.compile(r'^\d+\.\d+$')
 ZIP_DOWNLOAD_MAX_BYTES = 200 * 1024 * 1024
 # NFR-09：下载/解压属任务准备阶段。整体超时预算独立于任务超时（任务超时在
 # 运行阶段才生效，准备阶段不能不受控挂起）。
+# NETOPT-6③：这个数字的**真实语义是整个下载流的总预算**（asyncio.timeout 包住
+# 建连 + 响应头 + 全部 chunk）。它同时以同值透传给 httpx 作单次操作超时
+# （连接/相邻 chunk 间隔）——httpx 的 read 超时只管"两滴之间的间隔"，慢滴
+# 服务器可以每滴都踩线送达而整体拖到任意久，总预算兜底的就是这种流。
 ZIP_DOWNLOAD_TIMEOUT_SECONDS = 120.0
 
 # D4/AC-04c：包内 requirements.txt 的解析上限。超限即拒（而不是截断）——
@@ -1330,30 +1334,36 @@ async def _download_package(url: str, dest: Path) -> int:
     """流式下载 packageUrl 到 `dest`（工作目录内的临时文件）。
 
     NFR-04/NFR-09：SSRF 闸已在调用前过；这里负责 200MB 硬上限（边下边计数，
-    超限立即中止并删除半成品）、整体超时预算，以及错误消息里**只出现状态码**、
-    绝不回显 URL 上的任何凭据。
+    超限立即中止并删除半成品）、双层超时预算（NETOPT-6③）——内层 httpx
+    `timeout=` 只约束单次操作（连接、相邻 chunk 间隔），外层 `asyncio.timeout`
+    才是真正的**总预算**，包住建连 + 响应头 + 全部 chunk；以及错误消息里
+    **只出现状态码**、绝不回显 URL 上的任何凭据。
     """
     headers = _package_download_headers(url)
     received = 0
     try:
-        async with httpx.AsyncClient(
-            timeout=ZIP_DOWNLOAD_TIMEOUT_SECONDS,
-            follow_redirects=False,
-            trust_env=False,
-        ) as client:
-            async with client.stream('GET', url, headers=headers or None) as response:
-                if response.status_code != 200:
-                    raise RuntimeError(
-                        f'package download failed with HTTP {response.status_code}'
-                    )
-                with open(dest, 'wb') as handle:
-                    async for chunk in response.aiter_bytes():
-                        received += len(chunk)
-                        if received > ZIP_DOWNLOAD_MAX_BYTES:
-                            raise RuntimeError(
-                                f'package exceeds the {ZIP_DOWNLOAD_MAX_BYTES} byte limit'
-                            )
-                        handle.write(chunk)
+        # 总预算（执行器镜像为 python:3.12-slim，asyncio.timeout 3.11+ 可用）。
+        # 超时以 TimeoutError 冒出（下方 except 归一为 RuntimeError 带类型名），
+        # 半成品由 except 分支统一清理。
+        async with asyncio.timeout(ZIP_DOWNLOAD_TIMEOUT_SECONDS):
+            async with httpx.AsyncClient(
+                timeout=ZIP_DOWNLOAD_TIMEOUT_SECONDS,
+                follow_redirects=False,
+                trust_env=False,
+            ) as client:
+                async with client.stream('GET', url, headers=headers or None) as response:
+                    if response.status_code != 200:
+                        raise RuntimeError(
+                            f'package download failed with HTTP {response.status_code}'
+                        )
+                    with open(dest, 'wb') as handle:
+                        async for chunk in response.aiter_bytes():
+                            received += len(chunk)
+                            if received > ZIP_DOWNLOAD_MAX_BYTES:
+                                raise RuntimeError(
+                                    f'package exceeds the {ZIP_DOWNLOAD_MAX_BYTES} byte limit'
+                                )
+                            handle.write(chunk)
     except (httpx.HTTPError, OSError, asyncio.TimeoutError) as exc:
         _remove_quietly(dest)
         raise RuntimeError(f'package download failed: {type(exc).__name__}') from exc
