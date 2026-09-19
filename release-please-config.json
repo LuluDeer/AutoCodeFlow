@@ -8,6 +8,7 @@
       "components": [
         "autocodeflow-sdk",
         "autocodeflow-mcp-server",
+        "autocodeflow-cli",
         "autoflow-sdk"
       ]
     }
@@ -33,7 +34,7 @@
     },
     "packages/acf-cli": {
       "release-type": "node",
-      "component": "acf-cli"
+      "component": "autocodeflow-cli"
     }
   }
 }

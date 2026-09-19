@@ -29,7 +29,7 @@ AutoCodeFlow 是一个分布式任务调度与执行平台，支持动态脚本�
 | executor-desktop | Electron · React · Node.js |
 | registry-npm | Verdaccio |
 | registry-pypi | 自建 FastAPI PyPI 服务 |
-| acf-cli | TypeScript · Commander.js |
+| acf-cli | TypeScript · Commander.js，发布为 `@autocodeflow/cli`（命令名 `acf`） |
 | mcp-server | TypeScript · MCP SDK |
 | autoflow-sdk | Python (httpx) |
 | @autocodeflow/sdk | Node.js (axios)，独立 npm 包（已发布） |
@@ -180,7 +180,10 @@ openssl rand -hex 16   # EXECUTOR_SECRET
 ### CLI 工具 (acf)
 
 ```bash
-# 安装
+# 从 npm 安装（包名 @autocodeflow/cli，命令名仍是 acf）
+npm install -g @autocodeflow/cli
+
+# 或从源码本地开发
 cd packages/acf-cli && npm install && npm run build && npm link
 
 # 使用
@@ -190,6 +193,11 @@ acf task trigger <taskId>
 acf executor list
 acf app list
 ```
+
+> 包名是 `@autocodeflow/cli` 而命令名是 `acf`——两者不必一致。npm 上 `acf-cli`
+> 这个**包名**已被第三方占用（一个与本项目无关的包），故改用本仓持有的
+> `@autocodeflow` scope（与 `@autocodeflow/sdk` 同 scope）；而 `acf` 作为**命令名**
+> 保持不变，避免破坏已有脚本与操作习惯。
 
 推荐使用 `acf login` 保存 access token 与 refresh token，CLI 会在普通 API 请求遇到 401 时自动刷新并重放一次。`--token` / `ACF_TOKEN` / `acf config set-token` 只适合短期 CI 调用；未配置 refresh token 时，access token 过期会快速失败并提示重新登录。
 
