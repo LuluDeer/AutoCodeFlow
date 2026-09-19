@@ -109,8 +109,14 @@ export interface ExecutionArtifact {
 
 @Entity("task_executions")
 @Index(["taskId"])
-@Index(["status"])
-@Index(["taskId", "status"])
+// NETOPT-3①: 下面两条必须与迁移 DDL 一一对应（名称/列序对齐
+// migrations/1790000000029-AddTaskExecutionDeclaredIndexes.ts）。生产
+// synchronize=false，迁移是 schema 唯一来源——实体 @Index 只在显式命名且与
+// 迁移对齐时才有意义；未命名声明会被 TypeORM 生成哈希名、永不落库，纯属误导
+// （原 @Index(["status"]) 独立单列声明即因此从未存在，PENDING 兜底清扫被迫
+// O(全表) 游走）。复合索引左前缀已覆盖原单列消费面，故不再声明 ["status"]。
+@Index("idx_task_executions_task_id_status", ["taskId", "status"])
+@Index("idx_task_executions_status_created_at", ["status", "createdAt"])
 @Index(["createdAt"])
 @Index("idx_task_executions_executor_address_status", [
   "executorAddress",
