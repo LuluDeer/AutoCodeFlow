@@ -611,9 +611,7 @@ describe("AppDeploymentService rollout（DEP-02/DEP-03）", () => {
 
     it("rolloutTick：批次已被 failBatch 收尾删除后出错 → 不续排僵尸 tick", async () => {
       seedBatch();
-      jest
-        .spyOn((service as any).logger, "error")
-        .mockImplementation(() => {});
+      jest.spyOn((service as any).logger, "error").mockImplementation(() => {});
       repo.find.mockRejectedValue(new Error("db down"));
       // 模拟错误发生前批次已被收尾删除（failBatch 会 delete rolloutBatches）
       const inner = (service as any).rolloutTickInner.bind(service);
