@@ -185,7 +185,13 @@ class Settings(BaseSettings):
     # 可选内网镜像（D9/NFR-14）：非空时以 `uv python install --mirror <url>`
     # 走内网源。校验规则与 PYPI_REGISTRY_URL 同源（http(s)、无凭据）。
     uv_python_install_mirror: str = ''
-    # D11/NFR-13：单次解释器下载的独立超时预算（与任务剩余超时取较小者生效）。
+    # D11/NFR-13：单次解释器下载的**独立**超时预算。
+    # NETOPT-6⑧ 声明收敛：本预算**不与任务剩余超时联动**——三个调用点
+    # （execute.py 的 venv/glue/无依赖 python 三条 _ensure_interpreter 路径）
+    # 恒传 _interpreter_download_timeout()（缺省 300s，独立计时）。此前注释
+    # 声称"与任务剩余超时取较小者生效"与实现不符，已按真实语义改写。
+    # 若要实现 min 联动属行为变更（长任务与短任务的下载预算将不同），需先
+    # 拍板再动代码。
     interpreter_download_timeout_seconds: int = 300
     # D12/NFR-12/15：缓存池体积红线——单版本上限与总池上限，超限告警 + 回收
     # 最久未使用版本（maintenance 消费）。

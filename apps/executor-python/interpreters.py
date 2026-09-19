@@ -60,7 +60,10 @@
 超时与失败分因（D11/D14）
 ------------------------
 单次下载独立预算由调用方传入（`settings.interpreter_download_timeout_seconds`
-默认 300，与任务剩余超时取较小者）；超时 → `InterpreterUnavailable('download_timeout')`，
+默认 300）。NETOPT-6⑧ 声明收敛：该预算**独立计时，不与任务剩余超时取
+min**——此前本注释声称"与任务剩余超时取较小者"，与三处调用点的真实实现
+（恒传独立 300s 预算）不符，已按真实语义改写；实现 min 联动属行为变更，
+待拍板（见 config.py 同名字段注释）。超时 → `InterpreterUnavailable('download_timeout')`，
 非零退出 → `'download_failed'`，产物校验失败 → `'corrupt'`，`< 3.8` 且池内无
 → `'not_downloadable'`，uv 不可执行 → `'uv_missing'`。**明确失败，不回退宿主
 解释器**（D14）。
