@@ -1905,16 +1905,20 @@ export class TaskService {
           ping();
           lastWriteAt = Date.now();
         }
+        // NETOPT-1⑦: 自然到期分支必须显式 removeEventListener——此前监听器
+        // 只在 abort 时被消费（once），每轮轮询自然超时都会在 signal 上残留
+        // 一个 abort 监听器（长流 × 秒级轮询 → 监听器线性泄漏）。成对移除，
+        // 对齐 executions-stream.controller 的 waitCancellable 先例。
         await new Promise<void>((resolve) => {
-          const t = setTimeout(resolve, pollWait);
-          signal.addEventListener(
-            "abort",
-            () => {
-              clearTimeout(t);
-              resolve();
-            },
-            { once: true },
-          );
+          const t = setTimeout(() => {
+            signal.removeEventListener("abort", onAbort);
+            resolve();
+          }, pollWait);
+          const onAbort = () => {
+            clearTimeout(t);
+            resolve();
+          };
+          signal.addEventListener("abort", onAbort, { once: true });
         });
       }
 

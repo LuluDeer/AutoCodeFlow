@@ -2253,10 +2253,16 @@ export class ExecutorService {
     // A 24-hour threshold was too large — tasks with short timeouts were left as zombie
     // for up to 24h even when their executor went offline.
     const broadThreshold = new Date(Date.now() - 5 * 60 * 1000);
+    // NETOPT-1⑧: 补 take 上限（对齐 scheduler O-2 的 1000）——无界 getMany
+    // 在执行器长时间离线/回调通道故障时会一次物化全部僵尸行，随后逐行终态
+    // 写放大为长事务风暴；截断后下一轮 5 分钟 tick 自收敛（余量行仍满足
+    // RUNNING + 阈值谓词）。逐行写保留：终态必须走 transitionToTerminal
+    //（A1 收口）并按 RETURNING 地址逐台释放槽位，不能改批量 UPDATE。
     const lostExecs = await this.execRepo
       .createQueryBuilder("exec")
       .where("exec.status = :status", { status: ExecutionStatus.RUNNING })
       .andWhere("exec.startTime < :threshold", { threshold: broadThreshold })
+      .take(1000)
       .getMany();
     if (lostExecs.length === 0) return;
 
