@@ -554,6 +554,39 @@ input:focus-visible,
   word-break: break-word;
 }
 
+/* NETOPT-6⑥：全局 ErrorBoundary 兜底 UI（渲染树崩溃时替代整窗白屏） */
+.error-boundary {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: flex-start;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 24px;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.error-boundary-title {
+  font-size: 16px;
+  color: #fca5a5;
+}
+
+.error-boundary-summary {
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  background: var(--red-bg);
+  border: 1px solid var(--red-border);
+  font-family: var(--font-body);
+  font-size: 12px;
+  word-break: break-word;
+}
+
+.error-boundary-hint {
+  font-size: 12px;
+  color: var(--text3);
+}
+
 /* 信息网格 */
 .info-grid {
   display: grid;

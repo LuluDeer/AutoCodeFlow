@@ -535,4 +535,41 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
   }
 }
 
-console.log('renderer selftest: design tokens, accessibility, contrast, focus, layout, spacing, IPC anchors, F-21/F-22/F-37, DSK-05, PERF-DSK-01, SEC-DSK-01, EXP-04/05/06/09 guards passed');
+// ── NETOPT-6⑥：渲染树必须有全局 ErrorBoundary 兜底 ─────────────────
+// 背景：main.tsx 此前直接 render(<App />)，全 renderer 零边界——任一组件
+// 渲染期抛错（EXP-09 记录过该事故形态：preload 缺方法同步抛 → 整树卸载
+// 白屏）用户只能盲杀进程。test:renderer 是静态源码自检（本文件既有形态，
+// 渲染层无 DOM 测试设施），故以下按同一形态做结构性守卫。
+{
+  const boundary = readFileSync(resolve(root, 'components', 'ErrorBoundary.tsx'), 'utf8');
+  // React 错误边界的两个必要生命周期缺一不可：
+  //   getDerivedStateFromError —— 把异常转为兜底 UI 的 state（class 边界）；
+  //   componentDidCatch —— 副作用/日志钩子，没有它边界仍工作但不可观测。
+  if (!boundary.includes('getDerivedStateFromError') || !boundary.includes('componentDidCatch')) {
+    throw new Error('NETOPT-6⑥: ErrorBoundary 缺少 getDerivedStateFromError/componentDidCatch');
+  }
+  if (!/class ErrorBoundary extends React\.Component/.test(boundary)) {
+    throw new Error('NETOPT-6⑥: ErrorBoundary 必须是 class 组件（函数组件无边界能力）');
+  }
+  // 兜底 UI 必须可感知：role="alert" 的错误摘要 + 可用的重载动作。
+  if (!boundary.includes('role="alert"') || !boundary.includes('error-boundary-summary')) {
+    throw new Error('NETOPT-6⑥: ErrorBoundary 兜底 UI 缺少 role="alert" 错误摘要');
+  }
+  if (!boundary.includes('window.location.reload()')) {
+    throw new Error('NETOPT-6⑥: 「重载渲染层」按钮必须真正调用 window.location.reload()');
+  }
+  if (!boundary.includes('重载渲染层')) {
+    throw new Error('NETOPT-6⑥: 重载动作缺中文可读标签');
+  }
+  // 入口接线：createRoot(...).render 的最外层必须是 <ErrorBoundary> 包 <App />。
+  // 精确断言形态——只 import 不使用、或包在 App 内部都算断链。
+  const mainEntry = readFileSync(resolve(root, 'main.tsx'), 'utf8');
+  if (!/createRoot\(container\)\.render\(\s*<ErrorBoundary>\s*<App \/>\s*<\/ErrorBoundary>,?\s*\)/s.test(mainEntry)) {
+    throw new Error('NETOPT-6⑥: main.tsx 的 render 根节点必须是 <ErrorBoundary><App /></ErrorBoundary>');
+  }
+  if (!css.includes('.error-boundary') || !css.includes('.error-boundary-summary')) {
+    throw new Error('NETOPT-6⑥: .error-boundary 兜底 UI 样式缺失');
+  }
+}
+
+console.log('renderer selftest: design tokens, accessibility, contrast, focus, layout, spacing, IPC anchors, F-21/F-22/F-37, DSK-05, PERF-DSK-01, SEC-DSK-01, EXP-04/05/06/09, ErrorBoundary guards passed');
