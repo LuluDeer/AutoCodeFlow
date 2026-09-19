@@ -19,6 +19,12 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# NETOPT-4：最小权限缺省——顶层只读兜底（其余 4 个 workflow 均已声明，此前
+# ci.yml 漏配，默认拿到 write-all token）。个别 job 需要更多权限时在 job 级
+# 单独声明（目前仅 secret-scan 需 security-events: write 上报 code scanning）。
+permissions:
+  contents: read
+
 jobs:
   # ── BUG-20：ARM64 / multi-arch 镜像构建闸（只 build，不 push，不跑 e2e）────
   docker-multiarch-build:
@@ -635,6 +641,11 @@ jobs:
   secret-scan:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # NETOPT-4：job 级提权——gitleaks-action 需上报 code scanning alerts，
+    # 顶层只读兜底下本 job 单独声明（全文件唯一非 contents:read 的 job）。
+    permissions:
+      contents: read
+      security-events: write
     # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
     steps:
@@ -651,7 +662,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
       - name: Migration allocation check
@@ -712,7 +723,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
       - name: Consumer route snapshot guard (A4)
@@ -729,7 +740,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
       - name: Regenerate zod + pydantic from protocol.json
@@ -746,7 +757,7 @@ jobs:
     if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
       - name: Private registry contract checks
@@ -1064,7 +1075,7 @@ jobs:
             apps/executor-node/package-lock.json
       # E-18（DEEP_REVIEW 0ef3bbe）：executor-python 全链 e2e——CI 需 setup-python
       # + fastapi/uvicorn/httpx 依赖，否则 e2e-full.sh 的 python 启动分支走 skip。
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - run: pip install -r apps/executor-python/requirements.txt
@@ -1085,7 +1096,7 @@ jobs:
                      /etc/apt/sources.list.d/google-chrome.sources
           npx playwright install --with-deps chromium
         working-directory: apps/admin-web
-      - name: Run 43-case full-chain e2e
+      - name: Run 48-case full-chain e2e
         run: bash scripts/e2e-full.sh
       - name: Upload e2e logs & failure screenshots
         if: failure()
@@ -1148,7 +1159,7 @@ jobs:
       # Windows 检测分支（apps/executor-python/.venv/Scripts/python.exe，见
       # e2e-full.sh 的 exec_python_launcher）显式建 venv 并装依赖，与 ubuntu
       # 侧依赖集合一致（requirements.txt）。
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - name: Prepare executor-python venv for e2e (L-5)
@@ -1181,9 +1192,17 @@ jobs:
           $rd = Join-Path $env:RUNNER_TEMP 'redis'
           New-Item -ItemType Directory -Force -Path $rd | Out-Null
           $zip = Join-Path $env:RUNNER_TEMP 'redis.zip'
+          # NETOPT-4：portable redis zip 此前零校验——被投毒/半写 zip 会直接进
+          # e2e。下载后比对 SHA256（维护者 2026-09-19 对 8.10.1 官方 release
+          # 资产实测；升级 redis 版本时必须同步更新此值），不一致即 fail。
+          $zipSha256 = '5532f2cc38a0185556b648d25a0c2ff1cc58029f37fd76eceb38736976dcb056'
           Invoke-WebRequest `
             -Uri 'https://github.com/redis-windows/redis-windows/releases/download/8.10.1/Redis-8.10.1-Windows-x64-cygwin.zip' `
             -OutFile $zip
+          $actualSha256 = (Get-FileHash -Algorithm SHA256 -Path $zip).Hash.ToLower()
+          if ($actualSha256 -ne $zipSha256) {
+            throw "redis zip checksum mismatch: expected $zipSha256, got $actualSha256"
+          }
           Expand-Archive -Path $zip -DestinationPath $rd -Force
           $redisServer = (Get-ChildItem -Path $rd -Recurse -Filter 'redis-server.exe' | Select-Object -First 1).FullName
           Start-Process -FilePath $redisServer -ArgumentList '--port','16379','--save','' -WindowStyle Hidden
@@ -1196,7 +1215,7 @@ jobs:
             Start-Sleep -Seconds 2
           }
           if (-not ($pgOk -and $rdOk)) { throw "PG/Redis 60s 内未就绪" }
-      - name: Run 43-case full-chain e2e (Windows)
+      - name: Run 48-case full-chain e2e (Windows)
         shell: bash
         run: bash scripts/e2e-full.sh
       - name: Upload e2e logs & failure screenshots
