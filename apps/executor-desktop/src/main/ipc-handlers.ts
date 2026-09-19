@@ -43,6 +43,37 @@ function getAllowedLogDomains(): string[] {
 }
 
 /**
+ * EXP-03（本轮体验审查）：**唯一的**心跳启动入口。
+ *
+ * 缺陷：F-3 给 `HeartbeatMonitor.start()` 加了第二个参数 `adminApiUrl`，用于
+ * 「本地 /health/live + 中台 /api/health 直达探针」的 **AND** 逻辑——后者的
+ * 存在意义正是"executor-node 子进程活着、但它与中台的链路断了"这种情形
+ * （VPN 断裂等）。而全仓 5 处调用点里**只有 1 处**（index.ts 的托盘启动路径）
+ * 传了这个参数，另外 4 处都写成 `heartbeat.start(configStore.get('executorPort'))`：
+ *   · ipc-handlers 的配置保存后 reload
+ *   · ipc-handlers 的向导保存并关闭
+ *   · ipc-handlers 的 executor:start IPC
+ *   · index.ts 的开机自启（autoStartExecutor）路径
+ *
+ * 后果：**用户实际最常走的路径恰好是漏传的那些**——开机自启、点「启动执行器」、
+ * 改完配置保存。于是中台直达探针形同虚设，断连时托盘仍显示"在线"，用户对
+ * 中台断连无感知（这正是 F-3 要修的问题，只在托盘路径上被修好了）。
+ * 这类"加了参数但大部分调用点没跟上"的缺陷不会报错、不会让测试变红，
+ * 只会让功能静默退化成它修复前的样子。
+ *
+ * 修法：收敛为单一入口，端口与 adminApiUrl 一律从**同一份已消毒落盘配置**读，
+ * 从根上消除"某个调用点少传一个参数"的可能。
+ */
+export function startHeartbeat(): void {
+  heartbeat.start(
+    configStore.get('executorPort'),
+    // 与 index.ts 托盘路径同源：adminApiUrl 可能为空（尚未配置中台），
+    // HeartbeatMonitor 内部 normalizeAdminProbeUrl 会收敛为 null 并跳过该探针。
+    configStore.get('adminApiUrl') || undefined,
+  );
+}
+
+/**
  * PERF-DSK-01：日志增量读取。
  *
  * 原实现每次轮询都 readFileSync 整个文件 + split('\n') 全量重建行数组，
@@ -175,7 +206,8 @@ export function registerIpcHandlers(): void {
         heartbeat.stop();
         await executorProcess.stop();
         await executorProcess.start(configStore.getAll());
-        heartbeat.start(configStore.get('executorPort'));
+        // EXP-03（本轮体验审查）：改走 startHeartbeat()，把 adminApiUrl 一并传入。
+        startHeartbeat();
         log.info('Executor reloaded with new config');
       } catch (err: any) {
         reloadError = err?.message ?? String(err);
@@ -210,7 +242,9 @@ export function registerIpcHandlers(): void {
       await executorProcess.start(configStore.getAll());
       // 用**已消毒落盘**的端口，而不是渲染层原始值（NaN 端口会让心跳抛
       // ERR_INVALID_URL，见 heartbeat.normalizeHeartbeatPort 注释）。
-      heartbeat.start(configStore.get('executorPort'));
+      // EXP-03：改走 startHeartbeat()——它读的是同一处已消毒配置，并额外带上
+      // adminApiUrl 以启用中台直达探针。
+      startHeartbeat();
     }
     trayManager.rebuildMenu();
     // DSK-04：向导可能首设 workDir / notifyEnabled——同步通知器
@@ -322,7 +356,8 @@ export function registerIpcHandlers(): void {
   // ── 执行器控制 ────────────────────────────────────────
   ipcMain.handle('executor:start', async () => {
     await executorProcess.start(configStore.getAll());
-    heartbeat.start(configStore.get('executorPort'));
+    // EXP-03：改走 startHeartbeat()（带上 adminApiUrl 启用中台直达探针）。
+    startHeartbeat();
     return { ok: true };
   });
 
