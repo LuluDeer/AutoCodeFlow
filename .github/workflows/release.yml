@@ -204,6 +204,10 @@ jobs:
         run: python -m build
 
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+        # NETOPT-4：SHA 钉死（release/v1 分支头 = dc37677）。本 action 以
+        # PyPI Trusted Publishing 的 OIDC（id-token: write）发布，tag 漂移
+        # 即发布凭据面漂移；升级走 dependabot（github-actions 生态，weekly，
+        # 会跟随 `# release/v1` 注释更新钉死 SHA）受控 PR。
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
         with:
           packages-dir: packages/autoflow-sdk/dist/

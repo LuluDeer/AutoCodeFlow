@@ -1,0 +1,19 @@
+# NETOPT-4：第三方 GitHub Actions 升级受控化。
+# 仓库内第三方 action（docker/build-push-action、gitleaks/gitleaks-action、
+# googleapis/release-please-action、pypa/gh-action-pypi-publish——后两者已
+# SHA 钉死）此前仅靠裸 tag 引用、无任何升级通知：tag 被上游移动/投毒时
+# 无告警面。本文件让 dependabot 周期扫描 `uses:` 引用并以受控 PR 形式
+# 提出升级（钉死 SHA 的引用会跟随 `# <tag>` 注释重钉），升级即显式评审。
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: '/'
+    schedule:
+      interval: weekly
+    # 分组合并：同生态补丁级升级合一个 PR，避免每周多 PR 噪音；
+    # major 升级仍单独出 PR（需要人工核 breaking change）。
+    groups:
+      actions-minor-and-patch:
+        update-types:
+          - minor
+          - patch

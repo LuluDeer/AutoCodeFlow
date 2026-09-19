@@ -72,7 +72,10 @@ jobs:
           fi
           echo "RELEASE_PLEASE_TOKEN 已配置，继续。"
       # ── Step 1：release-pr（开/更新 Release PR）─────────────────────
-      - uses: googleapis/release-please-action@v4
+      # NETOPT-4：SHA 钉死（v4 = 5c625bf）。本 action 持 RELEASE_PLEASE_TOKEN
+      # （PAT contents:write + pull-requests:write），tag 漂移即权限面漂移；
+      # 升级走 dependabot（github-actions 生态，weekly）受控 PR。
+      - uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4
         id: release-pr
         with:
           # token：**必须用 PAT**（仓库 secret `RELEASE_PLEASE_TOKEN`），否则
