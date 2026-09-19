@@ -179,6 +179,13 @@ export default function ExecutionDetailPage() {
   // OBS-03: 级别过滤拉取的时序守卫——快速连续切换级别时只让最新一次
   // 请求的响应落地，过期响应（晚到的旧 seq）直接丢弃。
   const levelFetchSeq = useRef(0);
+  // NETOPT-7②（2026-09-20）：完整日志拉取的时序守卫，与 levelFetchSeq 同型。
+  // "加载完整日志"是最多 LOG_MAX_PAGES 页×顺序请求的长链路（可达数秒）；重试链
+  // 的兄弟执行 Link（同路由 :execId 组件不重挂）切执行时 U2 effect 重置
+  // fullLogs=null，旧执行的晚到响应若无守卫会 setFullLogs(旧日志) 把新执行的
+  // 日志区（含复制/下载）打回旧内容。序号在切执行的重置 effect 里自增，
+  // 使旧执行在途请求整体失效。
+  const fullLogsFetchSeq = useRef(0);
   // O-5：SSE 断流轮询的当前退避延迟（起步 SSE_POLL_BASE_MS，每次成功轮询翻倍，封顶）。
   const ssePollDelayRef = useRef(SSE_POLL_BASE_MS);
   // U2: 截断日志兜底——"加载完整日志"成功后覆盖显示（null=未加载）
@@ -405,7 +412,11 @@ export default function ExecutionDetailPage() {
 
   // U2: 切换执行记录时丢弃上一条已加载的完整日志与过滤结果
   useEffect(() => {
+    // NETOPT-7②：自增序号使旧执行在途的完整日志请求整体失效（晚到不回写）；
+    // loadingFullLogs 一并复位，避免旧请求的 finally 被 seq 拦截后转圈卡死。
+    fullLogsFetchSeq.current += 1;
     setFullLogs(null);
+    setLoadingFullLogs(false);
     setLevelFilter(LOG_LEVEL_FILTER_ALL);
     setFilteredLogs(null);
     setInputKeyword('');
@@ -508,14 +519,18 @@ export default function ExecutionDetailPage() {
   // U2: 回调日志被执行器截断时，从全量日志端点按行分页拉全（后端 limit 上限
   // 2000/页，hasMore 驱动翻页）。成功替换显示与复制/下载内容；失败 toast 保留现状。
   // F-11: 行数超过 FULL_LOGS_MAX_LINES 时停拉并提示"日志过大，建议下载查看"。
+  // NETOPT-7②：所有 setState 落地前先比对 seq——切执行后旧请求的晚到响应
+  // （成功/catch/finally 三条路径）一律静默丢弃，不打回新执行的状态。
   const handleLoadFullLogs = async () => {
     if (!taskId || !execId) return;
+    const seq = ++fullLogsFetchSeq.current;
     setLoadingFullLogs(true);
     try {
       const { lines: all, truncated } = await fetchAllLogLines(
         undefined,
         FULL_LOGS_MAX_LINES,
       );
+      if (fullLogsFetchSeq.current !== seq) return;
       if (all.length === 0) {
         throw new Error(t('execDetail.fullLogsNoRows'));
       }
@@ -526,9 +541,10 @@ export default function ExecutionDetailPage() {
         message.success(t('execDetail.fullLogsLoaded'));
       }
     } catch (err: unknown) {
+      if (fullLogsFetchSeq.current !== seq) return;
       message.error(getErrMsg(err, t('execDetail.fullLogsLoadFail')));
     } finally {
-      setLoadingFullLogs(false);
+      if (fullLogsFetchSeq.current === seq) setLoadingFullLogs(false);
     }
   };
 
