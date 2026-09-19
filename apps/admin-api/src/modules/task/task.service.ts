@@ -2128,7 +2128,9 @@ export class TaskService {
           );
           this.logger.error(
             `NETOPT-3②: dependency trigger failed for task ${task.id}; claim rolled back, depsFiredAt left NULL for replay: ${
-              triggerErr instanceof Error ? triggerErr.message : String(triggerErr)
+              triggerErr instanceof Error
+                ? triggerErr.message
+                : String(triggerErr)
             }`,
           );
           continue;
@@ -2172,7 +2174,9 @@ export class TaskService {
    * 时落 now）。best-effort：标记写失败只记日志——重复回调的重放判据读
    * 不到标记时宁可多重放一次（扇出自身有 claim 去重，重放是安全的）。
    */
-  private async markDependencyFanoutComplete(executionId: string): Promise<void> {
+  private async markDependencyFanoutComplete(
+    executionId: string,
+  ): Promise<void> {
     try {
       await this.execRepo.update(
         { id: executionId, depsFiredAt: IsNull() },
