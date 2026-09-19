@@ -31,15 +31,29 @@ import {
   Logger,
   OnModuleDestroy,
   OnModuleInit,
+  Optional,
 } from "@nestjs/common";
 import { ModuleRef } from "@nestjs/core";
 import { InjectRepository } from "@nestjs/typeorm";
 import { ConfigService } from "@nestjs/config";
-import { DataSource, IsNull, MoreThan, Repository } from "typeorm";
+import { Cron } from "@nestjs/schedule";
+import {
+  DataSource,
+  In,
+  IsNull,
+  LessThan,
+  MoreThan,
+  Repository,
+} from "typeorm";
 import { randomUUID } from "node:crypto";
 import { EventSubscription } from "./entities/event-subscription.entity";
 import { EventOutbox } from "./entities/event-outbox.entity";
 import { EventOutboxDeadLetter } from "./entities/event-outbox-dead-letter.entity";
+// ARCH-31 §5: cron 维护任务统一 Leader 门禁（@Optional——既有单测装配 gate
+// 缺席 → null → 门禁不生效，先例同 log-retention-cleanup）。
+import { LeaderGateService } from "../../common/leader-gate/leader-gate.service";
+// NETOPT-8②: retention 分批删除的轮数/墙钟双闸（LOG-RETENTION-01 公共 helper）
+import { cappedBatchedDelete } from "../../common/utils/capped-batched-delete.util";
 import {
   MAX_DELIVERY_ATTEMPTS,
   MAX_OUTBOX_ATTEMPTS,
@@ -74,6 +88,22 @@ export const OUTBOX_MAX_ROW_PROCESSING_MS =
   retryDelayMs(2);
 /** 单行租约的有效期；过期后其它实例可安全回收。 */
 export const OUTBOX_LEASE_MS = 60_000;
+
+// ─── NETOPT-8②: 每日 retention ────────────────────────────────────────────
+/**
+ * event_outbox（含 jsonb payload）此前只增不删：enqueue 每出站事件插一行、
+ * markDispatched 只回写终态、全仓对该 repo 零 delete——行永久堆积。新增每日
+ * retention（@Cron 必须 LeaderGate 门禁，ARCH-31 §5 铁律）。
+ */
+/** 每日 03:55 清理（6 段 cron；错开 03:30/03:35/03:45 的既有维护窗） */
+export const OUTBOX_RETENTION_CRON = "0 55 3 * * *";
+/** 已派发终态行保留期（天）：payload 仅剩审计追溯价值 */
+export const OUTBOX_DISPATCHED_RETENTION_DAYS = 30;
+/** 死信保留期（天）：取更长期限 90d 保留 payload 供运维排查（无 replay 通路，
+ *  与 event_subscription_dead_letters 的用户可重放语义不同，详见方法头注）。 */
+export const OUTBOX_DEAD_LETTER_RETENTION_DAYS = 90;
+/** retention 分批大小（对齐 LOG_RETENTION_BATCH_SIZE） */
+export const OUTBOX_RETENTION_BATCH_SIZE = 5000;
 
 if (OUTBOX_LEASE_MS <= OUTBOX_MAX_ROW_PROCESSING_MS) {
   throw new Error(
@@ -140,6 +170,10 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
     private readonly subRepo: Repository<EventSubscription>,
     @InjectRepository(EventOutboxDeadLetter)
     private readonly outboxDeadLetterRepo: Repository<EventOutboxDeadLetter>,
+    // ARCH-31 §5: 多实例下 @Cron 仅 cron Leader 执行（@Global 恒提供；
+    // @Optional 仅为既有单测装配兼容，先例同 log-retention-cleanup）。
+    @Optional()
+    private readonly leaderGate: LeaderGateService | null = null,
   ) {
     // ConfigService 缺席（极简单测装配）时按默认开启兜底。
     this.enabled =
@@ -537,5 +571,121 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
   /** 测试/诊断辅助：当前重入锁状态。 */
   isScanning(): boolean {
     return this.scanning;
+  }
+
+  // ─── NETOPT-8②: 每日 retention（@Cron Leader 门禁） ─────────────────────
+
+  /**
+   * 每日 03:55 retention 清理；失败只记日志，等下一轮 cron 重试（与扫描
+   * 互补：扫描管「未派发行的投递」，本任务管「终态行的堆积」）。
+   */
+  @Cron(OUTBOX_RETENTION_CRON)
+  async handleDailyRetention(): Promise<void> {
+    // ARCH-31 §5: 多实例下仅 cron Leader 执行
+    if (this.leaderGate && !this.leaderGate.isLeader) return;
+    try {
+      const deleted = await this.cleanupDispatchedRows();
+      if (deleted > 0) {
+        this.logger.log(
+          `NETOPT-8②: 清理 ${deleted} 行已派发超过 ${OUTBOX_DISPATCHED_RETENTION_DAYS} 天的 outbox 行`,
+        );
+      }
+    } catch (err) {
+      this.logger.error(
+        `NETOPT-8②: dispatched 行 retention 清理失败: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+    try {
+      const deadDeleted = await this.cleanupExpiredDeadLetters();
+      if (deadDeleted > 0) {
+        this.logger.log(
+          `NETOPT-8②: 清理 ${deadDeleted} 行超过 ${OUTBOX_DEAD_LETTER_RETENTION_DAYS} 天的 outbox 死信（含源行）`,
+        );
+      }
+    } catch (err) {
+      this.logger.error(
+        `NETOPT-8②: outbox 死信 retention 清理失败: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+
+  /**
+   * 清理 dispatchedAt 非空且早于保留期截止的 outbox 行，返回清理总行数。
+   * 未派发行（dispatchedAt IS NULL，含 deadLettered 源行——它们由死信清理
+   * 路径连带源行一起删）与近期行绝不在删除集内。分批 DELETE + 轮数/墙钟
+   * 双闸（LOG-RETENTION-01），now 可注入便于测试。
+   */
+  async cleanupDispatchedRows(now: Date = new Date()): Promise<number> {
+    const cutoff = new Date(
+      now.getTime() - OUTBOX_DISPATCHED_RETENTION_DAYS * 86_400_000,
+    );
+    return cappedBatchedDelete({
+      batchSize: OUTBOX_RETENTION_BATCH_SIZE,
+      logLabel: "NETOPT-8②",
+      logger: this.logger,
+      executeBatch: async () => {
+        const result = await this.outboxRepo
+          .createQueryBuilder()
+          .delete()
+          .where(
+            `"id" IN (
+              SELECT "victim"."id" FROM "event_outbox" "victim"
+              WHERE "victim"."dispatchedAt" IS NOT NULL
+                AND "victim"."dispatchedAt" < :cutoff
+              ORDER BY "victim"."id"
+              LIMIT :batchSize
+            )`,
+            { cutoff, batchSize: OUTBOX_RETENTION_BATCH_SIZE },
+          )
+          .execute();
+        return result.affected ?? 0;
+      },
+    });
+  }
+
+  /**
+   * 清理超过死信保留期的 event_outbox_dead_letters 行及其源 outbox 行，
+   * 返回清理的死信行数。
+   *
+   * 期限取 90d（长于 dispatched 行的 30d）：死信 payload 是投递终败的唯一
+   * 完整存档，供运维排查。与 event_subscription_dead_letters「用户可重放
+   * 资产」（replay 端点存在、行删除即资产灭失）不同，outbox 死信没有 replay
+   * 通路，仅作检查窗——90d 后随源行一起清。
+   *
+   * FK（dead_letters.outboxId → event_outbox.id，迁移 1790000000013）要求
+   * 同一事务内先删死信行再删源行（先删源行会被 FK 拒绝），两删原子——
+   * 半途失败整体回滚，下轮 cron 重试。now 可注入便于测试。
+   */
+  async cleanupExpiredDeadLetters(now: Date = new Date()): Promise<number> {
+    const cutoff = new Date(
+      now.getTime() - OUTBOX_DEAD_LETTER_RETENTION_DAYS * 86_400_000,
+    );
+    return cappedBatchedDelete({
+      batchSize: OUTBOX_RETENTION_BATCH_SIZE,
+      logLabel: "NETOPT-8② dead-letter",
+      logger: this.logger,
+      executeBatch: async () => {
+        const victims = await this.outboxDeadLetterRepo.find({
+          select: ["id", "outboxId"],
+          where: { deadLetteredAt: LessThan(cutoff) },
+          order: { id: "ASC" },
+          take: OUTBOX_RETENTION_BATCH_SIZE,
+        });
+        if (victims.length === 0) return 0;
+        await this.dataSource.transaction(async (manager) => {
+          await manager
+            .getRepository(EventOutboxDeadLetter)
+            .delete({ id: In(victims.map((v) => v.id)) });
+          await manager
+            .getRepository(EventOutbox)
+            .delete({ id: In(victims.map((v) => v.outboxId)) });
+        });
+        return victims.length;
+      },
+    });
   }
 }
