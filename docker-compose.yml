@@ -618,7 +618,11 @@ services:
     restart: unless-stopped
     environment:
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      # NETOPT-4：对齐 F-2/E-03 纪律——弱缺省 admin 是常见被扫面（loopback
+      # 端口也防不了误暴露/容器逃逸后的横向）。改 :? 强制 .env 显式注入
+      # （未设置/为空时 compose 解析即报错）；非 monitoring profile 下该
+      # 服务不实例化，不影响主栈启动。
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in .env (monitoring profile)}
       GF_USERS_ALLOW_SIGN_UP: 'false'
     volumes:
       - ./config/monitoring/grafana/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
@@ -688,6 +692,14 @@ services:
     image: grafana/promtail:3.0.0
     profiles: ['monitoring']
     restart: unless-stopped
+    # NETOPT-4：promtail 持宿主 docker.sock（等同 root 权限面），做最小加固：
+    # 收掉全部 Linux capabilities + 根文件系统只读。positions 文件在容器层
+    # /tmp（promtail.yml:10），read_only 下改由 tmpfs 承载（可写、随容器
+    # 重建清零——positions 丢失仅导致日志重读，无数据损失）。
+    cap_drop: ['ALL']
+    read_only: true
+    tmpfs:
+      - /tmp
     volumes:
       - ./config/monitoring/promtail.yml:/etc/promtail/config.yml:ro
       - /var/run/docker.sock:/var/run/docker.sock
