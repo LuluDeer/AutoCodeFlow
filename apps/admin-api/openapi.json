@@ -504,33 +504,6 @@
                 }
               ]
             }
-          },
-          {
-            "name": "name",
-            "required": false,
-            "in": "query",
-            "description": "Fuzzy search by task name",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "status",
-            "required": false,
-            "in": "query",
-            "description": "Filter by task status",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "runtime",
-            "required": false,
-            "in": "query",
-            "description": "Filter by runtime (python/node/shell)",
-            "schema": {
-              "type": "string"
-            }
           }
         ],
         "responses": {
@@ -3891,33 +3864,6 @@
                   "$ref": "#/components/schemas/Object"
                 }
               ]
-            }
-          },
-          {
-            "name": "name",
-            "required": false,
-            "in": "query",
-            "description": "Fuzzy search by task name",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "status",
-            "required": false,
-            "in": "query",
-            "description": "Filter by task status",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "runtime",
-            "required": false,
-            "in": "query",
-            "description": "Filter by runtime (python/node/shell)",
-            "schema": {
-              "type": "string"
             }
           },
           {

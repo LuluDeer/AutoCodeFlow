@@ -4205,12 +4205,6 @@ export interface operations {
             query?: {
                 page?: components["schemas"]["Object"];
                 pageSize?: components["schemas"]["Object"];
-                /** @description Fuzzy search by task name */
-                name?: string;
-                /** @description Filter by task status */
-                status?: string;
-                /** @description Filter by runtime (python/node/shell) */
-                runtime?: string;
             };
             header?: never;
             path?: never;
@@ -6310,12 +6304,6 @@ export interface operations {
             query?: {
                 page?: components["schemas"]["Object"];
                 pageSize?: components["schemas"]["Object"];
-                /** @description Fuzzy search by task name */
-                name?: string;
-                /** @description Filter by task status */
-                status?: string;
-                /** @description Filter by runtime (python/node/shell) */
-                runtime?: string;
                 /** @description Filter history by config key */
                 key?: string;
             };

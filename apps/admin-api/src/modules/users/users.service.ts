@@ -14,7 +14,7 @@ import { User, UserRole } from "./entities/user.entity";
 import { RefreshToken } from "../auth/entities/refresh-token.entity";
 import { CreateUserDto } from "./dto/create-user.dto";
 import { UpdateUserDto } from "./dto/update-user.dto";
-import { PaginationDto, paginate } from "../../common/dto/pagination.dto";
+import { PageQueryDto, paginate } from "../../common/dto/pagination.dto";
 
 /**
  * ARCH-31: PG 唯一约束冲突（23505）判定——种子竞态里「输家」据此降级为跳过。
@@ -131,7 +131,11 @@ export class UsersService implements OnModuleInit {
     return this.usersRepository.save(user);
   }
 
-  async findAll(pagination: PaginationDto) {
+  // API-07（本轮体验审查）：签名收窄为 PageQueryDto。本方法**只**消费
+  // page/pageSize，而原签名 PaginationDto 还带着任务的 name/status/runtime
+  // ——那三个字段既没被读，又被 OpenAPI 当作本端点的可用过滤参数公示给调用方
+  // （传了静默无效）。签名如实后，类型层面也不再暗示这里支持那些过滤。
+  async findAll(pagination: PageQueryDto) {
     const { page, pageSize } = pagination;
     const [list, total] = await this.usersRepository.findAndCount({
       skip: (page - 1) * pageSize,
