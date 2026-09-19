@@ -14,6 +14,7 @@
     "src/main/notifier-rules.ts",
     "src/main/notifier-rules.selftest.ts",
     "src/main/log-incremental.selftest.ts",
+    "src/main/log-tail.selftest.ts",
     "src/main/uv-paths.ts",
     "src/main/uv-wiring.selftest.ts",
     "src/main/config-sanitize.ts",
