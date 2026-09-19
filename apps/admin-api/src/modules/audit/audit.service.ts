@@ -6,6 +6,8 @@ import { AuditLog } from "./entities/audit-log.entity";
 // ARCH-31 §5: cron 维护任务统一 Leader 门禁（@Optional——既有单测直接 new
 // 装配时 gate 缺席 → null → 门禁不生效，先例同 TracingService）。
 import { LeaderGateService } from "../../common/leader-gate/leader-gate.service";
+// NETOPT-8④: 分批 DELETE 循环的轮数/墙钟双闸（LOG-RETENTION-01 回移植）
+import { cappedBatchedDelete } from "../../common/utils/capped-batched-delete.util";
 
 /**
  * SEC-10: append-only 语义开关——迁移 1790000000006 给 audit_logs 加了
@@ -82,29 +84,31 @@ export class AuditService {
    * 是长事务（锁表 + WAL 风暴）。改分批：每批先取一批 victim id，再在
    * **各自的** bypass 事务内按 id 删除（放行语义不变，仍只有本路径能删）；
    * 单批不足批大小即停。批大小对齐 executor.service R-09 metrics 模式。
+   * NETOPT-8④: 循环收口改走公共 cappedBatchedDelete——LOG-RETENTION-01
+   * 轮数/墙钟双闸（affected 恒返满批时旧 `do..while` 永不终止，已实测 OOM）。
    */
   private async retentionDelete(cutoff: Date): Promise<number> {
-    let totalDeleted = 0;
-    let batchDeleted = 0;
-    do {
-      batchDeleted = await this.dataSource.transaction(async (em) => {
-        await em.query(AUDIT_GUARD_BYPASS_SQL);
-        const auditRepo = em.getRepository(AuditLog);
-        const victims = await auditRepo.find({
-          select: ["id"],
-          where: { createdAt: LessThan(cutoff) },
-          order: { id: "ASC" },
-          take: AUDIT_RETENTION_BATCH_SIZE,
-        });
-        if (victims.length === 0) return 0;
-        const result = await auditRepo.delete({
-          id: In(victims.map((v) => v.id)),
-        });
-        return result.affected ?? 0;
-      });
-      totalDeleted += batchDeleted;
-    } while (batchDeleted >= AUDIT_RETENTION_BATCH_SIZE);
-    return totalDeleted;
+    return cappedBatchedDelete({
+      batchSize: AUDIT_RETENTION_BATCH_SIZE,
+      logLabel: "Q7 audit",
+      logger: this.logger,
+      executeBatch: () =>
+        this.dataSource.transaction(async (em) => {
+          await em.query(AUDIT_GUARD_BYPASS_SQL);
+          const auditRepo = em.getRepository(AuditLog);
+          const victims = await auditRepo.find({
+            select: ["id"],
+            where: { createdAt: LessThan(cutoff) },
+            order: { id: "ASC" },
+            take: AUDIT_RETENTION_BATCH_SIZE,
+          });
+          if (victims.length === 0) return 0;
+          const result = await auditRepo.delete({
+            id: In(victims.map((v) => v.id)),
+          });
+          return result.affected ?? 0;
+        }),
+    });
   }
 
   async log(payload: AuditLogPayload): Promise<void> {

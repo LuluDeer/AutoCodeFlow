@@ -23,16 +23,20 @@ const makeRepo = () => ({
 describe("AuditService", () => {
   let service: AuditService;
   let repo: ReturnType<typeof makeRepo>;
+  // NETOPT-8④: retention 清理走 DataSource.transaction（bypass 事务）——
+  // 提出引用以便 capped 双闸用例直接操纵每批返回值。
+  let dataSource: { transaction: jest.Mock };
 
   beforeEach(async () => {
     repo = makeRepo();
+    dataSource = { transaction: jest.fn() };
     const module = await Test.createTestingModule({
       providers: [
         AuditService,
         { provide: getRepositoryToken(AuditLog), useValue: repo },
         // SEC-10: AuditService 新增 DataSource 依赖（retention 清理的
         // append-only bypass 事务）——本套件不触发清理路径，给桩即可。
-        { provide: DataSource, useValue: { transaction: jest.fn() } },
+        { provide: DataSource, useValue: dataSource },
       ],
     }).compile();
     service = module.get(AuditService);
@@ -486,6 +490,50 @@ describe("AuditService", () => {
       expect(repo.create).toHaveBeenCalledWith(
         expect.objectContaining({ result: "failure" }),
       );
+    });
+  });
+
+  // NETOPT-8④: LOG-RETENTION-01 双闸回移植——retentionDelete 的
+  // `do..while(batchDeleted>=5000)` 在 affected 恒返满批时永不终止
+  // （log-retention-cleanup 已实测 OOM 挂死）。未修复时本用例在无界循环上
+  // 超时转红。
+  describe("cleanupOldAuditLogs (NETOPT-8④ capped)", () => {
+    it("affected 恒返满批也在轮数上限处终止并 warn（不挂死）", async () => {
+      const { LOG_RETENTION_MAX_DELETE_ROUNDS } =
+        await import("../../../common/utils/capped-batched-delete.util");
+      const { Logger } = await import("@nestjs/common");
+      // 每批 bypass 事务恒返满批 5000
+      dataSource.transaction.mockResolvedValue(5000);
+      const warnSpy = jest.spyOn(Logger.prototype, "warn");
+      const logSpy = jest.spyOn(Logger.prototype, "log");
+      try {
+        await service.cleanupOldAuditLogs();
+        expect(dataSource.transaction).toHaveBeenCalledTimes(
+          LOG_RETENTION_MAX_DELETE_ROUNDS,
+        );
+        const warned = warnSpy.mock.calls.some((c) =>
+          String(c[0]).includes("轮数上限"),
+        );
+        expect(warned).toBe(true);
+        // 完成日志如实报告达上限后的已删总数（5000 × 200）
+        expect(
+          logSpy.mock.calls.some((c) =>
+            String(c[0]).includes(
+              `removed ${5000 * LOG_RETENTION_MAX_DELETE_ROUNDS}`,
+            ),
+          ),
+        ).toBe(true);
+      } finally {
+        warnSpy.mockRestore();
+        logSpy.mockRestore();
+      }
+    });
+
+    it("non-leader skips the retention sweep", async () => {
+      (service as unknown as { leaderGate: { isLeader: boolean } }).leaderGate =
+        { isLeader: false };
+      await service.cleanupOldAuditLogs();
+      expect(dataSource.transaction).not.toHaveBeenCalled();
     });
   });
 });
