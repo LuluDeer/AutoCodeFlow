@@ -1,6 +1,8 @@
 import { Test } from "@nestjs/testing";
 import { getRepositoryToken } from "@nestjs/typeorm";
 import { ConfigService } from "@nestjs/config";
+// NETOPT-5②: 断言 createClient 收到的 TLS 入参
+import { createClient } from "redis";
 import { HealthService } from "../health.service";
 import { Task } from "../../task/entities/task.entity";
 import { Executor } from "../../executor/entities/executor.entity";
@@ -29,6 +31,8 @@ const makeQueueMock = () => ({
   getDelayedCount: jest.fn().mockResolvedValue(0),
   getFailedCount: jest.fn().mockResolvedValue(0),
   getJobs: jest.fn().mockResolvedValue([]),
+  // NETOPT-5④: checkScheduler 改用 Redis 侧聚合的 getJobCounts（不再全量物化）
+  getJobCounts: jest.fn().mockResolvedValue({ wait: 0, active: 1 }),
 });
 
 describe("HealthService", () => {
@@ -174,17 +178,27 @@ describe("HealthService", () => {
   });
 
   describe("checkScheduler", () => {
-    it("returns healthy when getJobs succeeds", async () => {
-      taskQueue.getJobs.mockResolvedValue([{}, {}]);
+    // NETOPT-5④: 改用 getJobCounts 聚合统计，不再 getJobs 全量物化
+    it("uses getJobCounts and reports the wait+active total", async () => {
+      taskQueue.getJobCounts.mockResolvedValue({ wait: 2, active: 0 });
       const result = await service.checkScheduler();
+      expect(taskQueue.getJobCounts).toHaveBeenCalledWith("wait", "active");
       expect(result.status).toBe("healthy");
       expect(result.details).toContain("2 jobs");
     });
 
-    it("returns unhealthy when getJobs throws", async () => {
-      taskQueue.getJobs.mockRejectedValue(new Error("queue error"));
+    it("tolerates null count fields from BullMQ (redis-side aggregation)", async () => {
+      taskQueue.getJobCounts.mockResolvedValue({ wait: null, active: null });
+      const result = await service.checkScheduler();
+      expect(result.status).toBe("healthy");
+      expect(result.details).toContain("0 jobs");
+    });
+
+    it("returns unhealthy when getJobCounts throws", async () => {
+      taskQueue.getJobCounts.mockRejectedValue(new Error("queue error"));
       const result = await service.checkScheduler();
       expect(result.status).toBe("unhealthy");
+      expect(result.details).toContain("queue error");
     });
   });
 
@@ -358,6 +372,71 @@ describe("HealthService", () => {
       await service.getReadiness();
       await service.getReadiness();
 
+      expect(taskRepo.query).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  // ============================================================================
+  // NETOPT-5②/④: redis TLS 透传 + 公开拨测缓存。
+  // ============================================================================
+  describe("redis client TLS passthrough (NETOPT-5②)", () => {
+    it("passes socket.tls + rejectUnauthorized when redis.tls=true", async () => {
+      await buildService({
+        "redis.tls": true,
+        "redis.tlsRejectUnauthorized": false,
+      });
+      const mocked = jest.mocked(createClient);
+      const lastCall = mocked.mock.calls[mocked.mock.calls.length - 1][0] as {
+        socket?: { tls?: boolean; rejectUnauthorized?: boolean };
+      };
+      expect(lastCall.socket).toEqual({
+        tls: true,
+        rejectUnauthorized: false,
+      });
+    });
+
+    it("rejectUnauthorized defaults to true (self-signed must opt out explicitly)", async () => {
+      await buildService({ "redis.tls": true });
+      const mocked = jest.mocked(createClient);
+      const lastCall = mocked.mock.calls[mocked.mock.calls.length - 1][0] as {
+        socket?: { tls?: boolean; rejectUnauthorized?: boolean };
+      };
+      expect(lastCall.socket).toEqual({ tls: true, rejectUnauthorized: true });
+    });
+
+    it("builds a plain (no socket override) client when redis.tls is off", async () => {
+      await buildService({});
+      const mocked = jest.mocked(createClient);
+      const lastCall = mocked.mock.calls[mocked.mock.calls.length - 1][0] as {
+        socket?: unknown;
+      };
+      expect(lastCall.socket).toBeUndefined();
+    });
+  });
+
+  describe("public health cache (NETOPT-5④, HEALTH_PUBLIC_CACHE_TTL_MS)", () => {
+    it("caches the status/timestamp projection by default (5s window)", async () => {
+      const first = await service.getPublicHealth();
+      const second = await service.getPublicHealth();
+      // 第二次命中缓存：DB SELECT 1 只跑一次
+      expect(taskRepo.query).toHaveBeenCalledTimes(1);
+      expect(second).toEqual(first);
+      // R-25 语义不变：仍只有 status + timestamp
+      expect(Object.keys(second).sort()).toEqual(["status", "timestamp"]);
+    });
+
+    it("recomputes after the public TTL window elapses", async () => {
+      service = await buildService({ "health.publicCacheTtlMs": 1 });
+      await service.getPublicHealth();
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      await service.getPublicHealth();
+      expect(taskRepo.query).toHaveBeenCalledTimes(2);
+    });
+
+    it("can be disabled with publicCacheTtlMs=0 (recomputes every call)", async () => {
+      service = await buildService({ "health.publicCacheTtlMs": 0 });
+      await service.getPublicHealth();
+      await service.getPublicHealth();
       expect(taskRepo.query).toHaveBeenCalledTimes(2);
     });
   });
