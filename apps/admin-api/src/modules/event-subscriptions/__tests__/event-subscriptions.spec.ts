@@ -693,3 +693,62 @@ describe("OutboundEventDispatcher 生命周期幂等（双 wrapper 回归锁）"
     }
   });
 });
+
+// NETOPT-1⑨: recordDeliveryFailure/Success 从「快照读-改-写 save」改为
+// DB 内条件 UPDATE——并发事件下快照写回会丢更新/抹掉他人计数。
+describe('NETOPT-1⑨ recordDelivery* 原子化（真实 EventSubscriptionService）', () => {
+  const subRepo = {
+    update: jest.fn().mockResolvedValue({ affected: 1 }),
+    save: jest.fn(),
+  };
+  const dlRepo = { findAndCount: jest.fn().mockResolvedValue([[], 0]) };
+  let svc: EventSubscriptionService;
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        EventSubscriptionService,
+        { provide: getRepositoryToken(EventSubscription), useValue: subRepo },
+        {
+          provide: getRepositoryToken(EventSubscriptionDeadLetter),
+          useValue: dlRepo,
+        },
+        { provide: ConfigService, useValue: { get: jest.fn() } },
+      ],
+    }).compile();
+    svc = moduleRef.get(EventSubscriptionService);
+  });
+
+  it('失败统计走 DB 内原子自增（表达式 UPDATE），不再 save 快照', async () => {
+    const sub = makeSub({ consecutiveFailures: 3 });
+    await svc.recordDeliveryFailure(sub, 'boom '.repeat(200));
+    expect(subRepo.save).not.toHaveBeenCalled();
+    expect(subRepo.update).toHaveBeenCalledTimes(1);
+    const [criteria, patch] = subRepo.update.mock.calls[0] as [
+      unknown,
+      Record<string, unknown>,
+    ];
+    expect(criteria).toEqual({ id: sub.id });
+    // consecutiveFailures 是 TypeORM 表达式形态（函数），非具体数值——
+    // 自增在 DB 侧完成，并发不丢更新
+    expect(typeof patch.consecutiveFailures).toBe('function');
+    // lastFailureError 仍截 512
+    expect(String(patch.lastFailureError)).toHaveLength(512);
+    expect(patch.lastFailureAt).toBeInstanceOf(Date);
+  });
+
+  it('成功重置走显式 UPDATE 0（快照 >0 时），且快照为 0 时不写库', async () => {
+    const sub = makeSub({ consecutiveFailures: 2 });
+    await svc.recordDeliverySuccess(sub);
+    expect(subRepo.update).toHaveBeenCalledWith(
+      { id: sub.id },
+      { consecutiveFailures: 0, lastFailureAt: null, lastFailureError: null },
+    );
+    expect(subRepo.save).not.toHaveBeenCalled();
+
+    subRepo.update.mockClear();
+    await svc.recordDeliverySuccess(makeSub({ consecutiveFailures: 0 }));
+    expect(subRepo.update).not.toHaveBeenCalled();
+  });
+});
