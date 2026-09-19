@@ -20,7 +20,8 @@ server { listen 80;
   ① location /api/                        → 通用 API 代理
   ② location ~ ^/api/tasks/[^/]+/executions/[^/]+/logs/stream$  → SSE 专用（正则优先于①）
   ③ location /                            → SPA fallback（try_files … /index.html）
-  ④ location ~* \.(js|css|png|…)$         → 静态资源缓存 expires 1y immutable
+  ④ location = /index.html                → 禁缓存（Cache-Control no-cache；NETOPT-2⑤）
+  ⑤ location ~* \.(js|css|png|…)$         → 静态资源缓存 expires 1y immutable
 }
 ```
 
@@ -45,6 +46,7 @@ server { listen 80;
 - `metrics/stream`、`executions/stream` 两条 SSE **没有**专用 location，走通用 `/api/`：靠应用侧 `X-Accel-Buffering: no` 关缓冲（nginx 默认尊重该头），30s 级 ping 撑活 60s 读超时；若把通用位置 `proxy_read_timeout` 调小于 ping 间隔，这两条流会断。
 - ~~`/socket.io/`：WS 透传~~ —— F-4 已删除：全仓无 socket.io/WebSocket 实际使用（前端长连接仅 SSE，ADR-015 已否决 WebSocket 反向隧道）。
 - 压缩：server 级 `gzip on`（default.conf 顶部），`gzip_types` 覆盖 text/css、application/json 等，`gzip_min_length 1024`——SSE 响应不在压缩之列（`text/event-stream` 未列入 gzip_types，且 `proxy_buffering off` 下无攒批面）。
+- 偏差注记（NETOPT-2④⑤，2026-09-19）：default.conf 的 gzip 静态链已与 admin-web/nginx.conf **对齐**（补 `gzip_static on` / `gzip_vary on` / `gzip_comp_level 5`，`gzip_types` 补 image/svg+xml、application/wasm、font/woff2）；两份配置均新增 `location = /index.html { add_header Cache-Control "no-cache"; }`（发版白屏向量；admin-web 侧该 location 内逐条重复 S-08 安全头——add_header 在 location 内声明后覆盖继承）。
 
 ## 改配置 checklist（上线前）
 
