@@ -5,6 +5,7 @@ import MainLayout from './layouts/MainLayout';
 import RequireAdmin from './components/RequireAdmin';
 import PrivateRoute from './components/PrivateRoute';
 import PageFallback from './components/PageFallback';
+import RouteErrorBoundary from './components/RouteErrorBoundary';
 
 const NotFoundPage = lazy(() => import('./pages/NotFoundPage'));
 const LoginPage = lazy(() => import('./pages/LoginPage'));
@@ -35,12 +36,27 @@ const withSuspense = (children: ReactNode) => (
 
 export const router = createBrowserRouter(
   [
-    { path: '/login', element: withSuspense(<LoginPage />) },
+    // NETOPT-4：三个顶层路由全部挂 errorElement——react-router 7 data router
+    // 自带内部错误边界，未挂时页面级错误渲染默认英文调试页 "Unexpected
+    // Application Error"（含 stack）；main.tsx 的 ErrorBoundary 包在
+    // RouterProvider 外层，接不到路由内部错误。懒加载 chunk 失效（发版后
+    // 旧 hash）同落此处。子路由错误向最近 errorElement 冒泡，/ 路由一处
+    // 即覆盖全部子页面。
+    {
+      path: '/login',
+      element: withSuspense(<LoginPage />),
+      errorElement: <RouteErrorBoundary />,
+    },
     // AUTH-04：OIDC 回调落地页（公开，token 经 #fragment 回传）
-    { path: '/auth/sso/complete', element: withSuspense(<SsoCompletePage />) },
+    {
+      path: '/auth/sso/complete',
+      element: withSuspense(<SsoCompletePage />),
+      errorElement: <RouteErrorBoundary />,
+    },
     {
       path: '/',
       element: <PrivateRoute><MainLayout /></PrivateRoute>,
+      errorElement: <RouteErrorBoundary />,
       children: [
         { index: true, element: <Navigate to="/dashboard" replace /> },
         { path: '*', element: withSuspense(<NotFoundPage />) },
