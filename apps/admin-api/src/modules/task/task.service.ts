@@ -2036,8 +2036,13 @@ export class TaskService {
       // Find all tasks that have any dependencies set, then filter in-process.
       // Using application-layer filtering avoids JSONB-specific SQL that breaks
       // on non-PostgreSQL engines and is simpler to reason about.
+      // NETOPT-1③: 投影最小化——下游只消费 task.id 与 task.dependencies
+      // （checkDependencies 读 dependencies、claim/trigger/audit 读 id）。
+      // 全实体物化会把 glueSource(text)/runbook(text)/secrets(jsonb 密文)
+      // 逐列拉进内存，而 SUCCESS 回调唯一赢家分支每次都要跑这一扫。
       const allTasksWithDeps = await this.taskRepo
         .createQueryBuilder("t")
+        .select(["t.id", "t.dependencies"])
         .where("t.dependencies IS NOT NULL")
         .getMany();
 
@@ -2593,6 +2598,28 @@ export class TaskService {
         ).map((execution) => [execution.id, execution]),
       );
     }
+    // NETOPT-1⑥: 循环内逐条 taskRepo.findOne（广播判定 + CORE-04 超时动作）
+    // 升级为一次 In() 批查建 Map——多条回调 × 2 个查点最坏 2N 条查询收敛为
+    // 1 条（对齐上方 executionById 的 F-11 模式）。单条回调保持原逐条查
+    // （1 次往返即最优，行为逐字节不变）。与原 findOne 同不带 withDeleted，
+    // 软删除语义一致。
+    let taskById: Map<string, Task> | null = null;
+    if (executionById) {
+      const taskIds = [
+        ...new Set(
+          [...executionById.values()]
+            .map((e) => e.taskId)
+            .filter((id): id is string => Boolean(id)),
+        ),
+      ];
+      taskById = new Map(
+        taskIds.length > 0
+          ? (
+              await this.taskRepo.find({ where: { id: In(taskIds) } })
+            ).map((t) => [t.id, t])
+          : [],
+      );
+    }
     for (const cb of callbacks) {
       try {
         const execution = executionById
@@ -2669,9 +2696,12 @@ export class TaskService {
         // 语义（winner-once）不变。
         let isBroadcast = false;
         if (!execution.executorAddress && execution.taskId) {
-          const taskRow = await this.taskRepo.findOne({
-            where: { id: execution.taskId },
-          });
+          // NETOPT-1⑥: 批量路径查 Map，单条路径保持原 findOne（语义不变）
+          const taskRow = taskById
+            ? (taskById.get(execution.taskId) ?? null)
+            : await this.taskRepo.findOne({
+                where: { id: execution.taskId },
+              });
           isBroadcast = taskRow?.executeMode === "broadcast";
         }
 
@@ -2837,9 +2867,14 @@ export class TaskService {
         //    终态已落定不受影响）。kill（缺省/null）走到这里即无追加动作。
         // 放在 winner 分支保证恰好一次（duplicate 回调在 affected=0 提前返回）。
         if (patch.status === ExecutionStatus.TIMEOUT) {
-          const task = execution.taskId
-            ? await this.taskRepo.findOne({ where: { id: execution.taskId } })
-            : null;
+          // NETOPT-1⑥: 批量路径查 Map，单条路径保持原 findOne（语义不变）
+          const task = !execution.taskId
+            ? null
+            : taskById
+              ? (taskById.get(execution.taskId) ?? null)
+              : await this.taskRepo.findOne({
+                  where: { id: execution.taskId },
+                });
           const action = normalizeTimeoutAction(task?.timeoutAction);
           if (action === "kill_retry" && task) {
             this.logger.warn(

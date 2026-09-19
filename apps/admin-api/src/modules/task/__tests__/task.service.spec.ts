@@ -1792,6 +1792,42 @@ describe("TaskService (__tests__)", () => {
       });
     });
 
+    // NETOPT-1⑥: 批量回调内循环级的 task 查询（广播判定 / CORE-04 超时动作）
+    // 由逐条 findOne 升级为一次 In() 批查建 Map——N 条回调 × 2 个查点最坏
+    // 2N 条查询收敛为 1 条。
+    it("NETOPT-1⑥: batch callbacks resolve task rows via a single find(In) Map, no per-row findOne", async () => {
+      // executorAddress 置 null 触发循环内的广播判定 task 查点
+      const execA = {
+        id: "e-a",
+        status: ExecutionStatus.RUNNING,
+        taskId: "t-a",
+        executorAddress: null,
+        logs: "",
+      };
+      const execB = {
+        id: "e-b",
+        status: ExecutionStatus.RUNNING,
+        taskId: "t-a", // 同一任务两条执行：taskId 需去重
+        executorAddress: null,
+        logs: "",
+      };
+      execRepo.find.mockResolvedValue([execA, execB]);
+      execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      taskRepo.find.mockResolvedValue([{ id: "t-a", executeMode: undefined }]);
+
+      const result = await service.handleCallback([
+        { executionId: "e-a", status: "success", durationMs: 10 },
+        { executionId: "e-b", status: "success", durationMs: 20 },
+      ]);
+
+      expect(result.every((r: any) => r.success)).toBe(true);
+      // 恰一次批查（In 去重后的 taskId 集合），而非逐条 findOne
+      expect(taskRepo.find).toHaveBeenCalledWith({
+        where: { id: In(["t-a"]) },
+      });
+      expect(taskRepo.findOne).not.toHaveBeenCalled();
+    });
+
     // R-06（DEEP_REVIEW 0ef3bbe）: 广播执行的占坑释放。广播 dispatch 对每个目标
     // 执行器 runningTaskCount +1，但执行行 executorAddress 恒为 null——winner 分支
     // 的 releaseExecutorSlot(winnerAddress=null) 早退 no-op。钉住：按任务
@@ -2432,6 +2468,9 @@ describe("TaskService (__tests__)", () => {
         // loses the short-window DB claim".
         let claimCalls = 0;
         const depQb = {
+          // NETOPT-1③: 依赖扫描投影最小化（只取 id+dependencies，避免把
+          // glueSource/runbook/secrets 全实体物化进内存）
+          select: jest.fn().mockReturnThis(),
           where: jest.fn().mockReturnThis(),
           getMany: jest
             .fn()
@@ -2481,7 +2520,7 @@ describe("TaskService (__tests__)", () => {
           logs: "",
         };
         execRepo.findOne.mockResolvedValue(exec);
-        setupDownstream(
+        const depQb = setupDownstream(
           { id: "t-downstream", dependencies: { up: "t-upstream" } },
           [{ taskId: "t-upstream", status: ExecutionStatus.SUCCESS }],
         );
@@ -2497,6 +2536,8 @@ describe("TaskService (__tests__)", () => {
           { executionId: expect.any(String) },
           expect.objectContaining({ attempts: expect.any(Number) }),
         );
+        // NETOPT-1③: 依赖扫描只投影 id+dependencies（下游仅消费这两个字段）
+        expect(depQb.select).toHaveBeenCalledWith(["t.id", "t.dependencies"]);
       });
 
       // R-28（DEEP_REVIEW 0ef3bbe）: 依赖触发的两条系统性缺口回归——
