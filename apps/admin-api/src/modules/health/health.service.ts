@@ -78,6 +78,18 @@ export class HealthService {
     expiresAt: number;
     payload: FullHealthReport;
   } | null = null;
+  // NETOPT-5④: 公开拨测路径的独立短 TTL 缓存（默认 5s，env
+  // HEALTH_PUBLIC_CACHE_TTL_MS 可调，0 = 关闭）。getPublicHealth 虽复用
+  // getFullHealth，但后者缓存默认关闭（health.cacheTtlMs=0）——公开端点
+  // 未鉴权、可被外部监控高频击打，全量计算（DB count×N + Redis ping +
+  // 队列统计）每次真跑既浪费又被放大成负载面。只缓存 {status, timestamp}
+  // 投影（R-25 语义不变，不暴露任何内部指标），与 getFullHealth 缓存槽
+  // 互不影响。
+  private readonly publicCacheTtlMs: number;
+  private publicHealthCache: {
+    expiresAt: number;
+    payload: { status: "healthy" | "degraded" | "unhealthy"; timestamp: string };
+  } | null = null;
 
   constructor(
     @InjectRepository(Task) private taskRepo: Repository<Task>,
@@ -90,10 +102,29 @@ export class HealthService {
     const host = this.configService.get<string>("REDIS_HOST", "localhost");
     const port = this.configService.get<number>("REDIS_PORT", 6379);
     const password = this.configService.get<string>("REDIS_PASSWORD");
+    // NETOPT-5②: ARCH-005 的 REDIS_TLS 同源透传。此前健康检查专线硬编码
+    // 明文 redis://，REDIS_TLS=true 时 ioredis/BullMQ 全走 TLS，唯独本
+    // 客户端连明文端口——TLS-only 的 Redis 上 ping 必然失败（健康检查
+    // 误报），明文兼容实例上则白白多开一条未加密连接。配置源与语义对齐
+    // app.module BullMQ 侧：socket.tls = redis.tls，证书校验跟随
+    // redis.tlsRejectUnauthorized（默认 true，自签环境显式置 false）。
+    const tlsEnabled =
+      this.configService.get<boolean>("redis.tls") === true;
     this.redisClient = createClient({
       url: `redis://${host}:${port}`,
       password: password || undefined,
       database: this.configService.get<number>("redis.db", 0),
+      ...(tlsEnabled
+        ? {
+            socket: {
+              tls: true,
+              rejectUnauthorized:
+                this.configService.get<boolean>(
+                  "redis.tlsRejectUnauthorized",
+                ) !== false,
+            },
+          }
+        : {}),
     });
 
     this.queueFailedMax = this.configService.get<number>(
@@ -113,6 +144,11 @@ export class HealthService {
       0.5,
     );
     this.cacheTtlMs = this.configService.get<number>("health.cacheTtlMs", 0);
+    // NETOPT-5④: 公开拨测缓存窗口，默认 5s（0 = 关闭），见 publicHealthCache 注释
+    this.publicCacheTtlMs = this.configService.get<number>(
+      "health.publicCacheTtlMs",
+      5_000,
+    );
   }
 
   async checkDatabase(): Promise<{
@@ -279,10 +315,16 @@ export class HealthService {
     details?: string;
   }> {
     try {
-      const jobs = await this.taskQueue.getJobs(["wait", "active"]);
+      // NETOPT-5④: getJobCounts 由 Redis 侧聚合，替代此前 getJobs(["wait",
+      // "active"]) 全量物化——积压数千时旧写法逐 job hgetall 只为取个数
+      // （scheduler.service.ts getQueueDepth 的既有注释同因）。wait/active
+      // 缺键时 BullMQ 返回 0，防 null 相加。
+      const counts = await this.taskQueue.getJobCounts("wait", "active");
+      const total =
+        Number(counts?.wait ?? 0) + Number(counts?.active ?? 0);
       return {
         status: "healthy",
-        details: `Scheduler is running, ${jobs.length} jobs in queue`,
+        details: `Scheduler is running, ${total} jobs in queue`,
       };
     } catch (error: unknown) {
       return {
@@ -391,13 +433,33 @@ export class HealthService {
    * R-25（DEEP_REVIEW 0ef3bbe）：公开健康端点的精简响应——只返回整体
    * status + timestamp，不暴露 executor 在线数、队列深度、任务计数等
    * 内部运维指标。详细指标走需鉴权的 getFullHealth()。
+   *
+   * NETOPT-5④: 公开路径吃独立短 TTL 缓存（publicCacheTtlMs，默认 5s）——
+   * 本端点未鉴权，可被外部监控高频击打；缓存的只是 {status, timestamp}
+   * 投影，R-25 的不暴露语义与实时性（5s 窗口）折衷见 publicHealthCache 注释。
    */
   async getPublicHealth(): Promise<{
     status: "healthy" | "degraded" | "unhealthy";
     timestamp: string;
   }> {
+    if (this.publicCacheTtlMs > 0) {
+      const cached = this.publicHealthCache;
+      if (cached && Date.now() < cached.expiresAt) {
+        return cached.payload;
+      }
+    }
+
     const full = await this.getFullHealth();
-    return { status: full.status, timestamp: full.timestamp };
+    const payload = { status: full.status, timestamp: full.timestamp };
+
+    if (this.publicCacheTtlMs > 0) {
+      this.publicHealthCache = {
+        expiresAt: Date.now() + this.publicCacheTtlMs,
+        payload,
+      };
+    }
+
+    return payload;
   }
 
   async getLiveness(): Promise<{ status: "healthy" }> {

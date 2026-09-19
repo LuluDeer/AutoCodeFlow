@@ -462,6 +462,13 @@ export default () => ({
       process.env.HEALTH_EXECUTOR_ONLINE_RATIO_MIN || "0.5",
     ),
     cacheTtlMs: parseInt(process.env.HEALTH_CACHE_TTL_MS || "0", 10),
+    // NETOPT-5④: 公开健康端点（未鉴权 GET /health）的独立短 TTL 缓存窗口，
+    // 默认 5s；0 = 关闭。只缓存 {status, timestamp} 投影，不改变 getFullHealth
+    // 缓存默认关闭的语义，详见 health.service 的 publicHealthCache 注释。
+    publicCacheTtlMs: parseInt(
+      process.env.HEALTH_PUBLIC_CACHE_TTL_MS || "5000",
+      10,
+    ),
   },
 });
 
