@@ -10,7 +10,18 @@ export type ApiCall = <T = unknown>(
   method: string,
   path: string,
   body?: unknown,
+  timeoutMs?: number,
 ) => Promise<T>;
+
+/**
+ * NETOPT-6④：analyze/suggest 类工具的 per-call 超时预算。
+ *
+ * admin 侧同步 AI 预算是 60s×2（两次 LLM 往返），而 apiRequest 默认
+ * REQUEST_TIMEOUT_MS=30s 结构性小于服务端预算——AI 恰好跑满预算成功返回时，
+ * 客户端早已放弃。analyze_execution / suggest_schedule / analyze_application
+ * 这三个同步 AI 端点用 120s 覆盖（> 服务端 60s×2），其余端点维持 30s 默认。
+ */
+export const ANALYZE_TIMEOUT_MS = 120_000;
 
 const JSON_CONTENT = (data: unknown) => ({
   content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
@@ -374,6 +385,8 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
       const data = await call<unknown>(
         "POST",
         `/tasks/${taskId}/executions/${executionId}/analyze`,
+        undefined,
+        ANALYZE_TIMEOUT_MS,
       );
       return JSON_CONTENT(data);
     },
@@ -403,6 +416,8 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
       const data = await call<unknown>(
         "POST",
         `/tasks/${taskId}/suggest-schedule`,
+        undefined,
+        ANALYZE_TIMEOUT_MS,
       );
       return JSON_CONTENT(data);
     },
@@ -701,6 +716,8 @@ export function registerApplicationTools(
       const data = await call<unknown>(
         "POST",
         `/applications/${applicationId}/analyze`,
+        undefined,
+        ANALYZE_TIMEOUT_MS,
       );
       return JSON_CONTENT(data);
     },

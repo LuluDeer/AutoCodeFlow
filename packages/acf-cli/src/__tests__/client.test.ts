@@ -64,6 +64,7 @@ import {
   unwrap,
   resetClient,
   formatApiError,
+  ANALYZE_TIMEOUT_MS,
 } from "../client";
 import contract from "../../../contract-fixtures/contract.json";
 
@@ -179,8 +180,22 @@ describe("client methods (mocked axios)", () => {
   it("post sends the body and unwraps the envelope", async () => {
     axiosInstance.post.mockResolvedValueOnce(envelope({ id: "a1" }));
     const result = await post<{ id: string }>("/tasks", { name: "n" });
-    expect(axiosInstance.post).toHaveBeenCalledWith("/tasks", { name: "n" });
+    expect(axiosInstance.post).toHaveBeenCalledWith(
+      "/tasks",
+      { name: "n" },
+      { timeout: undefined },
+    );
     expect(result).toEqual({ id: "a1" });
+  });
+
+  it("post forwards a per-call timeout override (NETOPT-6④)", async () => {
+    axiosInstance.post.mockResolvedValueOnce(envelope({ aiAnalysis: "ok" }));
+    await post("/tasks/t1/executions/e1/analyze", undefined, ANALYZE_TIMEOUT_MS);
+    expect(axiosInstance.post).toHaveBeenCalledWith(
+      "/tasks/t1/executions/e1/analyze",
+      undefined,
+      { timeout: ANALYZE_TIMEOUT_MS },
+    );
   });
 
   it("put sends the body (application update uses PUT)", async () => {

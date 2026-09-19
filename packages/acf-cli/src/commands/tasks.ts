@@ -6,7 +6,7 @@ import axios from 'axios';
 import { spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
-import { get, post, patch, del, formatApiError } from '../client';
+import { get, post, patch, del, formatApiError, ANALYZE_TIMEOUT_MS } from '../client';
 
 interface Task {
   id: string;
@@ -240,7 +240,13 @@ export function tasksCommand(): Command {
     .action(async (taskId, execId) => {
       const spinner = ora('Running AI analysis…').start();
       try {
-        const result = await post<{ aiAnalysis: string }>(`/tasks/${taskId}/executions/${execId}/analyze`);
+        // NETOPT-6④：同步 AI 端点（服务端预算 60s×2）用 120s per-call 覆盖，
+        // 否则默认 30s 结构性小于服务端预算，AI 跑满预算成功返回时 CLI 已超时。
+        const result = await post<{ aiAnalysis: string }>(
+          `/tasks/${taskId}/executions/${execId}/analyze`,
+          undefined,
+          ANALYZE_TIMEOUT_MS,
+        );
         spinner.stop();
         console.log(chalk.bold('\nAI Analysis'));
         console.log(result.aiAnalysis || 'No analysis available (AI not configured).');
@@ -257,8 +263,11 @@ export function tasksCommand(): Command {
     .action(async (id) => {
       const spinner = ora('Asking AI for schedule suggestion…').start();
       try {
+        // NETOPT-6④：同上——suggest-schedule 也是同步 AI 端点。
         const result = await post<{ suggestedCron: string; currentCron: string | null; reasoning: string }>(
           `/tasks/${id}/suggest-schedule`,
+          undefined,
+          ANALYZE_TIMEOUT_MS,
         );
         spinner.stop();
         console.log(chalk.bold('Schedule Suggestion'));

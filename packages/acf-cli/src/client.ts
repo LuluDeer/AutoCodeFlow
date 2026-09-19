@@ -13,6 +13,16 @@ import {
 
 let _client: AxiosInstance | null = null;
 
+/**
+ * NETOPT-6④：analyze/suggest 类调用的 per-call 超时预算。
+ *
+ * admin 侧同步 AI 预算是 60s×2（两次 LLM 往返），实例默认 30s 结构性小于
+ * 服务端预算——AI 跑满预算成功返回时 CLI 早已放弃。task analyze /
+ * suggest-schedule / app analyze 用 120s 覆盖（axios per-request timeout
+ * 覆盖实例默认），其余端点维持 30s。
+ */
+export const ANALYZE_TIMEOUT_MS = 120_000;
+
 /** base URL without trailing slashes（/auth/refresh 直连拼接用） */
 function baseUrl(): string {
   return getApiUrl().replace(/\/+$/, "");
@@ -149,8 +159,13 @@ export async function get<T>(
   return unwrap<T>(r.data);
 }
 
-export async function post<T>(path: string, body?: unknown): Promise<T> {
-  const r = await getClient().post<unknown>(path, body);
+export async function post<T>(
+  path: string,
+  body?: unknown,
+  timeoutMs?: number,
+): Promise<T> {
+  // per-request timeout 覆盖实例默认（undefined 时 axios 回落实例默认 30s）。
+  const r = await getClient().post<unknown>(path, body, { timeout: timeoutMs });
   return unwrap<T>(r.data);
 }
 
