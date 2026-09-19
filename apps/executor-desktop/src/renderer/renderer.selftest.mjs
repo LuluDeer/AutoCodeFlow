@@ -504,4 +504,35 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
   }
 }
 
-console.log('renderer selftest: design tokens, accessibility, contrast, focus, layout, spacing, IPC anchors, F-21/F-22/F-37, DSK-05, PERF-DSK-01, SEC-DSK-01, EXP-04/05/09 guards passed');
+// ── EXP-06（本轮体验审查）：改完配置保存后，页内诊断必须刷新 ─────────────
+//
+// 「Python 运行环境」页的诊断块回答的是"我配的到底生效了没有"，而原实现只在
+// `active` 变化时拉取一次。用户在这一页改完 uvPath / 解释器池目录 / 下载预算
+// 并点「保存配置」后，诊断块**仍显示旧值**——于是他会怀疑保存没生效而反复保存，
+// 或带着错误认知去排障。这类"改完不刷新"不报错，只让页面上显示的信息与真实
+// 状态不一致。
+{
+  const configPage = pages[1]; // ConfigPage.tsx
+  if (!configPage.includes('refreshPyEnv')) {
+    throw new Error('EXP-06: ConfigPage 未抽出 refreshPyEnv()——诊断无法在保存后刷新');
+  }
+  // 保存成功分支里必须调用它（只在失败分支调用没意义）
+  const saveIdx = configPage.indexOf('async function save()');
+  if (saveIdx === -1) throw new Error('EXP-06: 找不到 save()');
+  const saveBody = configPage.slice(saveIdx, saveIdx + 1600);
+  if (!saveBody.includes('refreshPyEnv()')) {
+    throw new Error('EXP-06: save() 成功后未调用 refreshPyEnv()——改完配置诊断仍显示旧值');
+  }
+  // 且必须在"保存成功"分支内，而不是 catch/失败分支
+  const okIdx = saveBody.indexOf('setSaved(true)');
+  const callIdx = saveBody.indexOf('refreshPyEnv()');
+  if (okIdx === -1 || callIdx < okIdx) {
+    throw new Error('EXP-06: refreshPyEnv() 必须在保存成功分支（setSaved(true) 之后）调用');
+  }
+  // 切页时仍要刷新（原行为不能被改坏）
+  if (!/useEffect\(\(\) => \{\s*if \(active !== 'python'\) return;[\s\S]{0,80}refreshPyEnv\(\)/.test(configPage)) {
+    throw new Error("EXP-06: 切到 python 页时仍须调用 refreshPyEnv()（原行为不得丢失）");
+  }
+}
+
+console.log('renderer selftest: design tokens, accessibility, contrast, focus, layout, spacing, IPC anchors, F-21/F-22/F-37, DSK-05, PERF-DSK-01, SEC-DSK-01, EXP-04/05/06/09 guards passed');
