@@ -376,4 +376,30 @@ export class UsersService implements OnModuleInit {
   async bumpSessionVersion(userId: number): Promise<void> {
     await this.usersRepository.increment({ id: userId }, "sessionVersion", 1);
   }
+
+  /**
+   * NETOPT-5⑤: TOTP 重放防护——原子消费命中的 counter，返回是否占位成功。
+   *
+   * 单条条件 UPDATE（无读改写，防并发竞态）：仅当 lastTotpCounter 为 NULL
+   * （从未消费 / 无 TOTP 用户首次占位）或小于本次命中 counter 时置为本次值；
+   * affected=0 表示该 counter 已被使用（重放）或被并发请求先占——调用方
+   * （auth.service.totpVerifyLogin）按无效码拒绝。单调递增语义同 HOTP
+   * 计数器模型；列可空，无 TOTP 用户保持 NULL 不受影响。
+   */
+  async consumeTotpCounter(
+    userId: number,
+    matchedCounter: number,
+  ): Promise<boolean> {
+    const result = await this.usersRepository
+      .createQueryBuilder()
+      .update()
+      .set({ lastTotpCounter: matchedCounter })
+      .where("id = :id", { id: userId })
+      .andWhere(
+        "(lastTotpCounter IS NULL OR lastTotpCounter < :matched)",
+        { matched: matchedCounter },
+      )
+      .execute();
+    return (result.affected ?? 0) > 0;
+  }
 }

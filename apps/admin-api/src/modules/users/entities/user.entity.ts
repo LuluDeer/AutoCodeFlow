@@ -61,6 +61,14 @@ export class User {
   @Column({ default: 0 })
   sessionVersion: number;
 
+  // NETOPT-5⑤: TOTP 重放防护——最近一次成功通过 totpVerifyLogin 的 counter。
+  // 可空：无 TOTP 用户恒 NULL；存量 TOTP 用户首次登录时自然占位。校验侧条件
+  // UPDATE（NULL 或 < 本次命中才放行并写入，见 UsersService.consumeTotpCounter），
+  // 同一 6 位码在 ±1 步窗口内的第二次通过被拒绝（重放/并发占位）。
+  // 迁移 1790000000031。
+  @Column({ type: "int", nullable: true })
+  lastTotpCounter: number | null;
+
   // AUTH-04: OIDC IdP 的稳定身份标识（sub 声明）。可空：本地密码登录用户
   // 恒为 NULL；首次 SSO 登录按 username 匹配成功后写入绑定。唯一部分索引
   // （WHERE NOT NULL）保证一个 sub 至多绑定一个账号。

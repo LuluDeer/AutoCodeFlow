@@ -190,6 +190,23 @@ export class AuthService {
       throw new UnauthorizedException("Invalid TOTP code");
     }
 
+    // NETOPT-5⑤: TOTP 重放防护。totpVerify 命中的 counter 此前零消费——
+    // 同一 6 位码在 ±1 步（约 90s）窗口内可反复通过第二因子。现原子占位
+    // （lastTotpCounter 为 NULL 或更小才放行并写入，UsersService.consumeTotpCounter）：
+    // 占位失败 = 重放或并发占位，按无效码同形态拒绝（同文案不泄露「码其实
+    // 有效」，失败计数口径一致——重放尝试同样不能绕过锁定）。
+    const matched = check.matchedCounter;
+    const consumed =
+      matched !== undefined &&
+      (await this.usersService.consumeTotpCounter(user.id, matched));
+    if (!consumed) {
+      await this.usersService.recordLoginFailure(user.id, {
+        maxFail: AuthService.MAX_FAIL,
+        lockMinutes: AuthService.LOCK_MINUTES,
+      });
+      throw new UnauthorizedException("Invalid TOTP code");
+    }
+
     await this.usersService.resetLoginFailure(user.id);
     return this.generateTokens(user, dto.meta);
   }
@@ -219,6 +236,9 @@ export class AuthService {
    * Requires a previously staged secret (setup must have been called).
    */
   async totpEnable(userId: number, code: string) {
+    // NETOPT-5⑤: enable 不消费 lastTotpCounter——一次性启用由 totpEnabled
+    // 标志守门（重放同一码无收益：启用后 setup 拒绝、enable 也拒绝），
+    // 且此处消费会给「刚启用就登录」制造无谓的占位争用。
     const user = await this.usersService.findById(userId);
     if (user.totpEnabled) {
       throw new BadRequestException("TOTP is already enabled");
@@ -246,6 +266,10 @@ export class AuthService {
     userId: number,
     opts: { password?: string; code?: string },
   ): Promise<{ disabled: boolean }> {
+    // NETOPT-5⑤: disable 也不消费 lastTotpCounter——这是已登录会话内的
+    // 操作，且合法序列「同码先登录（占位 counter C）后关闭 2FA（同窗口
+    // 的码 counter 也是 C）」会被单调递增防线误伤，把用户锁在 2FA 关闭
+    // 流程之外。风险面（需已持有有效 JWT）与重放收益不成比例。
     const user = await this.usersService.findByIdRaw(userId);
     if (!user) throw new UnauthorizedException("User not found");
     if (!user.totpEnabled) {
