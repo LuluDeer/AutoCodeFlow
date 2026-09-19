@@ -69,6 +69,10 @@ export default function ConfigPage() {
   const [saved, setSaved] = useState(false);
   // D 修正：保存失败必须可见（原实现 reject 后按钮永久 disabled）
   const [saveError, setSaveError] = useState<string | null>(null);
+  // NETOPT-7⑤（2026-09-20）：首屏配置读取失败的页内呈现（桌面端无 toast 体系）。
+  // configStore.getAllMasked 读损坏配置/解密异常时 getConfig() 会 reject——
+  // 不与 saveError 复用同一 state：保存失败行的「保存失败：」前缀会撒谎。
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [localIPs, setLocalIPs] = useState<string[]>([]);
@@ -88,7 +92,16 @@ export default function ConfigPage() {
 
   useEffect(() => {
     Promise.all([window.electronAPI.getConfig(), window.electronAPI.getLocalIPs()])
-      .then(([cfg, ips]) => { setForm(cfg); setLocalIPs(ips); setLoaded(true); });
+      .then(([cfg, ips]) => { setForm(cfg); setLocalIPs(ips); setLoaded(true); })
+      .catch((err: unknown) => {
+        // NETOPT-7⑤（2026-09-20）：getConfig() 走主进程 configStore.getAllMasked——
+        // 配置文件损坏/schema 校验抛错/token 解密异常时该 IPC reject。原实现无
+        // .catch：loaded 恒 false → 整页永久「加载中...」+ unhandled rejection，
+        // 用户既进不了设置页也不知道原因。对齐 EXP-04 修法（StatusWindow.tsx
+        // getStatus() 同源缺陷的先例）：脱离加载态，把原因呈现在页内错误行。
+        setLoadError(`配置读取失败：${err instanceof Error ? err.message : String(err)}。表单已重置为默认值，修复配置文件后重开本页可重新读取。`);
+        setLoaded(true);
+      });
     // 旧版 preload 可能未暴露 autolaunch 通道——容错降级为隐藏开关
     if (typeof window.electronAPI.getAutoLaunch === 'function') {
       window.electronAPI.getAutoLaunch().then(setAutoLaunch).catch(() => undefined);
@@ -228,6 +241,13 @@ export default function ConfigPage() {
       <div className="cfg-body">
         <div className="cfg-scroll">
           <div className="cfg-scroll-inner">
+
+          {/* NETOPT-7⑤：首屏配置读取失败——脱离「加载中」后必须把原因呈现出来，
+              否则用户看到的是一张"空表单"而无从知晓读取失败（复用 cfg-save-error
+              同型错误行；不与保存失败的 state 合并，避免文案前缀撒谎）。 */}
+          {loadError && (
+            <div className="cfg-save-error" role="alert">⚠ {loadError}</div>
+          )}
 
           {active === 'connection' && (
             <>
