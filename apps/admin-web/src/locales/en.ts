@@ -1579,6 +1579,13 @@ export default {
   'templates.trigger.cron': 'Cron scheduled',
   'templates.trigger.fixedRate': 'Fixed interval',
   'templates.trigger.api': 'API triggered',
+  // UX-10: display labels for the official template categories. The keys are the
+  // Chinese seed values stored by admin-api — the English UI must not leak them.
+  'templates.category.backup': 'Backup',
+  'templates.category.inspection': 'Inspection',
+  'templates.category.sync': 'Sync',
+  'templates.category.cleanup': 'Cleanup',
+  'templates.category.notify': 'Notification',
   'templates.config.cron': '({{expr}})',
   'templates.config.fixedRate': '(every {{rate}}s)',
   'templates.config.timeout': 'Timeout {{seconds}}s',

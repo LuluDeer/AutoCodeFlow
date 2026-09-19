@@ -1592,6 +1592,13 @@ export default {
   'templates.trigger.cron': 'Cron 定时',
   'templates.trigger.fixedRate': '固定间隔',
   'templates.trigger.api': 'API 触发',
+  // UX-10：官方模板分类的展示标签。键是 admin-api 种子里实际存的中文值
+  // （task-template.constants.ts），中文界面下与原文一致，英文界面下不再露中文。
+  'templates.category.backup': '备份',
+  'templates.category.inspection': '巡检',
+  'templates.category.sync': '同步',
+  'templates.category.cleanup': '清理',
+  'templates.category.notify': '通知',
   'templates.config.cron': '（{{expr}}）',
   'templates.config.fixedRate': '（每 {{rate}}s）',
   'templates.config.timeout': '超时 {{seconds}}s',

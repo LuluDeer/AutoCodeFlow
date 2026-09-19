@@ -31,6 +31,38 @@ const CATEGORY_COLOR: Record<string, string> = {
   备份: 'blue', 巡检: 'green', 同步: 'purple', 清理: 'orange', 通知: 'cyan',
 };
 
+/**
+ * UX-10（本轮体验审查）：模板分类的展示标签与配色。
+ *
+ * 缺陷：`category` 在 admin-api 里是自由文本 `varchar(32)`
+ * （task-template.entity.ts），官方种子值写死为中文（task-template.constants.ts
+ * 的「备份/巡检/同步/清理/通知」）。前端直接 `{tpl.category}` 渲染，于是：
+ *   · **英文界面下分类标签仍是中文**——同一张卡片上的触发方式已走 t() 显示
+ *     "Cron Schedule"，分类却是"备份"，中英混排；
+ *   · 配色表以**中文显示名**为键，一旦有人把分类改成英文/本地化文案，配色
+ *     静默退回 default 灰——即"改个文案就掉色"，键与语义错位。
+ *
+ * 修法：分类 → i18n key 的映射表（键仍是后端实际存的中文种子值，因为那是
+ * 数据契约，不能前端擅自改），渲染时过 t()，英文界面即显示 Backup 等。
+ *
+ * 未知分类回退**原始值**（不显示"未知"）：分类是用户自建模板时自由填写的，
+ * 露出原文才可诊断；配色回退 default 灰。
+ */
+const CATEGORY_T_KEY: Record<string, string> = {
+  备份: 'templates.category.backup',
+  巡检: 'templates.category.inspection',
+  同步: 'templates.category.sync',
+  清理: 'templates.category.cleanup',
+  通知: 'templates.category.notify',
+};
+
+/** 分类展示文本：已知分类走 i18n，未知分类回退原始值。 */
+function categoryLabel(category: string | null | undefined, t: TFn): string {
+  if (!category) return '';
+  const key = CATEGORY_T_KEY[category];
+  return key ? t(key) : category;
+}
+
 /** 把模板 config 摘要成一行人类可读描述。 */
 function configSummary(config: Record<string, unknown>, t: TFn): string {
   const bits: string[] = [];
@@ -151,7 +183,13 @@ export default function TaskTemplatesPage() {
                 {tpl.description || t('templates.noDesc')}
               </Paragraph>
               <Space size={4} wrap style={{ marginBottom: 8 }}>
-                {tpl.category && <Tag color={CATEGORY_COLOR[tpl.category] || 'default'}>{tpl.category}</Tag>}
+                {tpl.category && (
+                  // UX-10：此前直接渲染 {tpl.category}（中文种子值），英文界面
+                  // 下与相邻已翻译的触发方式标签中英混排。
+                  <Tag color={CATEGORY_COLOR[tpl.category] || 'default'}>
+                    {categoryLabel(tpl.category, t)}
+                  </Tag>
+                )}
                 <Tag icon={<ApiOutlined />}>{TRIGGER_LABEL(t)[tpl.config.triggerType as string] ?? (tpl.config.triggerType ?? '—')}</Tag>
                 {tpl.config.runtime ? <Tag icon={<CodeOutlined />}>{String(tpl.config.runtime)}</Tag> : null}
               </Space>
