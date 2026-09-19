@@ -33,10 +33,15 @@ import { TaskEnv } from './types';
  * response work; rejected requests get the envelope's `message` appended to
  * the axios error message.
  *
- * B-4（中台↔执行器深度审查）：与 python SDK（autocodeflow-http client.py）的
- * 可靠性契约**对齐**——旧实现是纯 axios 薄包装（无重试、无熔断），而 python
- * SDK 有完整「重试 + 熔断 + Retry-After 头解析」契约；两侧行为不对齐会让跨
- * SDK 消费方对可靠性产生错误预期。本包现补齐同款语义：
+ * B-4（中台↔执行器深度审查）：与 python 回调客户端（autocodeflow-http
+ * client.py）的可靠性契约**对齐**——旧实现是纯 axios 薄包装（无重试、无熔断），
+ * 而 autocodeflow-http 有完整「重试 + 熔断 + Retry-After 头解析」契约；两侧行为
+ * 不对齐会让跨 SDK 消费方对可靠性产生错误预期。
+ *
+ * BUG-15 复审澄清 parity 前提：这里说的「python 侧契约」**仅指
+ * autocodeflow-http**（Admin API 回调 HTTP 客户端）。任务内 python SDK
+ * （autoflow-sdk）并没有自动重试——不要把本包的 parity 前提误读为 autoflow-sdk；
+ * 「本包补齐对齐 python」的说法只对 autocodeflow-http 成立。本包现补齐同款语义：
  * - 重试：仅幂等方法（GET/HEAD/OPTIONS，`safeMethodsOnly`）在可重试错误上重试
  *   （429/500/502/503/504 或网络层错误：超时/连接拒绝/断网），指数退避
  *   （minWaitMs×2^n，封顶 maxWaitMs），尊重 `Retry-After` 头（delta-seconds
@@ -174,6 +179,25 @@ export class CircuitBreaker {
       this.openedAt = Date.now();
       this.failures = 0;
     }
+  }
+
+  /**
+   * NETOPT-6①（PK-09 parity）：half-open 探测以**不可熔断**结果结束时释放探测槽。
+   *
+   * python autocodeflow-http client.py 的 `_request` 用
+   * ``finally: if probe_acquired: release_probe()`` 保证探测槽在所有路径
+   * （成功 / 可熔断失败 / 不可熔断失败）上都释放；本包旧实现里探测请求收到
+   * 4xx 这类不可重试错误时既不走 `onSuccess` 也不走 `onFailure`，
+   * `probeInFlight` 永久为 true → half_open 态再无请求可放行 → 该 HttpClient
+   * 进程内永久砖死（后续全部抛 `CircuitBreakerOpenError`）。
+   *
+   * 注意：**只允许实际占用探测槽的那个请求**调用（`send()` 在 tryAcquire
+   * 返回 true 且此刻状态为 half_open 时记录持有）；并发被拒的请求不得调用，
+   * 否则会提前释放他人在飞的探测槽。状态为 closed/open 时调用是无害 no-op
+   * （probeInFlight 仅在 half_open 态为 true）。
+   */
+  onProbeSettled(): void {
+    this.probeInFlight = false;
   }
 
   /** 测试/观测钩子。 */
@@ -452,12 +476,21 @@ export class HttpClient {
       if (!this.breaker.tryAcquire()) {
         throw new CircuitBreakerOpenError();
       }
+      // NETOPT-6①（PK-09 parity）：本尝试是否占用了 half-open 探测槽。
+      // tryAcquire 在 half_open 态返回 true 即恰为本次占用探测槽（并发被拒的
+      // 请求在 tryAcquire 处已抛出，不会走到这里）。占用后**所有**出路都必须
+      // 释放探测槽：成功 → onSuccess（含清槽）；可熔断失败 → onFailure（half_open
+      // 态清槽）；不可熔断失败（如 4xx）→ onProbeSettled。否则探测请求收到
+      // 4xx 时 probeInFlight 永久为 true，客户端进程内砖死——镜像 python
+      // autocodeflow-http client.py 的 try/finally release_probe()。
+      const holdsProbe = this.breaker.getState() === 'half_open';
       let response: AxiosResponse<T>;
       try {
         response = await this.dispatch<T>(client, method, url, data, config);
       } catch (error) {
         const breakable = isRetryableError(error, this.retry.retryableStatuses);
         if (breakable) this.breaker.onFailure();
+        else if (holdsProbe) this.breaker.onProbeSettled();
         const canRetry =
           breakable && isSafe && attempt < maxAttempts - 1;
         if (!canRetry) throw error;

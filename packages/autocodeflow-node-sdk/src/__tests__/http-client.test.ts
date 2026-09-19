@@ -518,6 +518,55 @@ describe('HttpClient', () => {
       await expect(client.get('/items')).rejects.toBe(badRequest);
       expect(mockInstance.get).toHaveBeenCalledTimes(8);
     });
+
+    // NETOPT-6①：half-open 探测收到不可重试的 4xx 时，探测槽必须被释放
+    // （PK-09 parity：镜像 python autocodeflow-http 的 try/finally
+    // release_probe）。修复前探测请求收到 400 既不走 onSuccess 也不走
+    // onFailure → probeInFlight 永久为 true → 该 HttpClient 进程内永久砖死
+    // （后续全部抛 CircuitBreakerOpenError）。
+    it('NETOPT-6①: a 400 hitting the half-open probe releases the slot so later requests can probe again', async () => {
+      // 必须先开 fake timers：Date.now() 随假时钟从 0 起跑，advanceTimersByTime
+      // 才能把 open 态推进过 60s 复位时间（见下方 unit semantics 的同款说明）。
+      jest.useFakeTimers();
+      try {
+        const err503 = () =>
+          Object.assign(new Error('Request failed with status code 503'), {
+            response: { status: 503, headers: {}, data: {} },
+          });
+        const bad400 = Object.assign(
+          new Error('Request failed with status code 400'),
+          { response: { status: 400, headers: {}, data: {} } },
+        );
+        const client = new HttpClient(BASE_URL, TOKEN, undefined, undefined, {
+          retry: { maxRetries: 0 }, // 每次请求只尝试一次，失败计数可控
+        });
+
+        // 5 次可熔断失败（503）→ open；open 态快速失败不再触达实例
+        mockInstance.get.mockRejectedValue(err503());
+        for (let i = 0; i < 5; i++) {
+          await expect(client.get('/items')).rejects.toBeTruthy();
+        }
+        expect(mockInstance.get).toHaveBeenCalledTimes(5);
+        await expect(client.get('/items')).rejects.toThrow(CircuitBreakerOpenError);
+        expect(mockInstance.get).toHaveBeenCalledTimes(5);
+
+        // 复位时间过后 → 惰性转 half-open，放行的探测请求收到 400（不可重试）
+        jest.advanceTimersByTime(61_000);
+        mockInstance.get.mockRejectedValueOnce(bad400);
+        await expect(client.get('/items')).rejects.toBe(bad400);
+        expect(mockInstance.get).toHaveBeenCalledTimes(6);
+
+        // 修复断言（还原此处应红：后续请求全抛 CircuitBreakerOpenError）：
+        // 探测槽已被释放，下一个请求可再次作为探测放行，成功 → closed。
+        mockInstance.get.mockResolvedValueOnce({
+          data: { code: 200, data: { recovered: true } },
+        });
+        await expect(client.get('/items')).resolves.toEqual({ recovered: true });
+        expect(mockInstance.get).toHaveBeenCalledTimes(7);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
   });
 
   describe('circuit breaker unit semantics (B-4)', () => {
@@ -561,6 +610,30 @@ describe('HttpClient', () => {
         cb.onFailure(); // 探测失败 → 重新 open
         expect(cb.getState()).toBe('open');
         expect(cb.tryAcquire()).toBe(false);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    // NETOPT-6①：onProbeSettled 释放 half-open 探测槽——对应探测以不可熔断
+    // 错误（如 4xx）结束的路径；closed/open 态下调用是无害 no-op。
+    it('NETOPT-6①: onProbeSettled releases the slot so half-open can probe again', () => {
+      jest.useFakeTimers();
+      try {
+        const cb = new CircuitBreaker(1, 50);
+        cb.onFailure(); // → open
+        jest.advanceTimersByTime(51); // → 下次 tryAcquire 惰性转 half-open
+        expect(cb.tryAcquire()).toBe(true); // 占用探测槽
+        expect(cb.tryAcquire()).toBe(false); // 探测在飞 → 其余阻塞
+        cb.onProbeSettled(); // 探测以不可熔断错误结束 → 释放槽
+        expect(cb.tryAcquire()).toBe(true); // 可再次探测
+        expect(cb.getState()).toBe('half_open');
+        cb.onSuccess(); // 探测成功 → closed
+        expect(cb.getState()).toBe('closed');
+        // closed/open 态下调用为 no-op，不影响状态
+        cb.onProbeSettled();
+        expect(cb.getState()).toBe('closed');
+        expect(cb.tryAcquire()).toBe(true);
       } finally {
         jest.useRealTimers();
       }
