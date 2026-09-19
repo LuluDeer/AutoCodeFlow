@@ -185,6 +185,42 @@ describe("SchedulerService", () => {
       );
     });
 
+    // NETOPT-3③: checkMisfires 此前只挂 onModuleInit——Leader failover 后
+    // 新 Leader 永远不再补跑，FIRE_ONCE 错失补偿就此静默丢失。晋升瞬间
+    // 必须补跑一轮 misfire 检查。
+    it("NETOPT-3③: promotion (wasLeader=false -> leader) runs a misfire check", async () => {
+      const misfireSpy = jest
+        .spyOn(service, "checkMisfires")
+        .mockResolvedValue();
+      redisLockService.acquireLock.mockResolvedValueOnce({
+        key: "scheduler:leader",
+        lockId: "leader-lock-id",
+        ttlMs: 30000,
+        released: false,
+        release: jest.fn().mockResolvedValue(true),
+      });
+      await service.initLeaderElection();
+      expect(service.getStats().isLeader).toBe(true);
+      await Promise.resolve(); // 让 fire-and-forget 的补跑 settle
+      expect(misfireSpy).toHaveBeenCalledTimes(1);
+      misfireSpy.mockRestore();
+    });
+
+    it("NETOPT-3③: re-acquiring leadership after demotion re-runs the misfire check; retention while leader does not", async () => {
+      const misfireSpy = jest
+        .spyOn(service, "checkMisfires")
+        .mockResolvedValue();
+      // 首次晋升
+      await makeLeader();
+      await Promise.resolve();
+      expect(misfireSpy).toHaveBeenCalledTimes(1);
+      // 已是 Leader 的重复竞选成功（续期路径）不再补跑
+      await (service as any).tryAcquireLeadership();
+      await Promise.resolve();
+      expect(misfireSpy).toHaveBeenCalledTimes(1);
+      misfireSpy.mockRestore();
+    });
+
     it("stays follower when the leader lock is held by another instance", async () => {
       redisLockService.acquireLock.mockResolvedValue(null);
       await service.initLeaderElection();
