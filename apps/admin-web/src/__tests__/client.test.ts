@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import axios, { AxiosError, AxiosHeaders, type AxiosAdapter } from 'axios';
+import axios, { AxiosError, AxiosHeaders, CanceledError, type AxiosAdapter } from 'axios';
 import { message } from 'antd';
 import { client, getApiBaseUrl } from '../api/client';
 import { logoutRemote } from '../api/logout';
@@ -77,6 +77,35 @@ describe('DR-06 safe-method retries', () => {
     await result;
     expect(adapter).toHaveBeenCalledTimes(2);
     expect(message.error).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+describe('NETOPT-7① canceled requests bypass retry and toast', () => {
+  // 主动取消的两种真实形态：
+  // - CancelToken/CanceledError（axios 自有取消、dispatchRequest 预检 abort）
+  // - AbortController 在传输层 abort 时 xhr adapter 抛的 AxiosError{code:'ERR_CANCELED'}
+  it.each([
+    ['CanceledError', (config: Parameters<AxiosAdapter>[0]) => new CanceledError('canceled', config)],
+    ['AxiosError{ERR_CANCELED}', (config: Parameters<AxiosAdapter>[0]) => new AxiosError('canceled', AxiosError.ERR_CANCELED, config)],
+  ])('%s (with config) is rejected as-is: no retry, no toast, no leftover timer', async (_name, makeErr) => {
+    adapter.mockImplementation(async (config) => { throw makeErr(config); });
+    const result = expect(client.get('/tasks', { adapter })).rejects.toThrow();
+    await vi.runAllTimersAsync();
+    await result;
+    expect(adapter).toHaveBeenCalledTimes(1);
+    expect(message.error).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('CanceledError without config (pre-dispatch abort) rejects the cancel, not a TypeError', async () => {
+    const canceledErr = new CanceledError('canceled');
+    adapter.mockImplementation(async () => { throw canceledErr; });
+    const result = expect(client.get('/tasks', { adapter })).rejects.toBe(canceledErr);
+    await vi.runAllTimersAsync();
+    await result;
+    expect(adapter).toHaveBeenCalledTimes(1);
+    expect(message.error).not.toHaveBeenCalled();
     expect(vi.getTimerCount()).toBe(0);
   });
 });
