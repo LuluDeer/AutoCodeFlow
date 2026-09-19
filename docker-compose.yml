@@ -229,9 +229,11 @@ services:
   # 对象存放在此，主库 execution_log_lines 不再增长（优化笔记 2.6）
   # X-3（可扩展性审查）：本单实例 minio 为文件存储单点；生产建议云 S3/OSS，
   # 或 minio 分布式多节点模式。
-  # 注意：admin 侧 log-retention 清理不覆盖外置对象——需配置 bucket lifecycle
-  # 使 execution-logs/ 前缀对象与 LOG_RETENTION_DAYS 同步过期，否则 minio_data
-  # 卷无限增长，操作步骤见 docs/operations.md「S3/MinIO 日志对象生命周期」。
+  # 注意：admin 侧对象回收由 WIKI-LOG-S3GC（S3LogObjectRetentionService，每日
+  # 03:35）承担——按过期 s3 指针批量 remove execution-logs/ 前缀对象并清空指针
+  # （单轮上限、余量次轮续收），admin 正常运行时 minio_data 卷不会随日志对象
+  # 无限增长。bucket lifecycle 仅为可选兜底（admin 长期停机等场景），步骤见
+  # docs/operations.md「S3/MinIO 日志对象生命周期」。
   minio:
     # E-34（DEEP_REVIEW 0ef3bbe）：旧 latest 浮动 tag 使日志存储组件升级不可复现
     # （其余服务均 pin：postgres:16-alpine / redis:7）。pin 到具体 RELEASE tag，
