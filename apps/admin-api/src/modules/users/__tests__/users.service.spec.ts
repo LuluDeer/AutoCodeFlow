@@ -492,6 +492,33 @@ describe("UsersService", () => {
       expect(repo.remove).not.toHaveBeenCalled();
     });
 
+  // ─── NETOPT-5⑤: TOTP 重放防护——原子消费 counter ──────────────────────
+  describe("consumeTotpCounter (NETOPT-5⑤)", () => {
+    it("consumes via a single conditional UPDATE (NULL-or-older gate, no read-modify-write)", async () => {
+      const qb = makeQb([{ affected: 1 }]);
+      repo.createQueryBuilder.mockReturnValue(qb);
+
+      const ok = await service.consumeTotpCounter(1, 60_000_001);
+
+      expect(ok).toBe(true);
+      expect(qb.update).toHaveBeenCalled();
+      expect(qb.set).toHaveBeenCalledWith({ lastTotpCounter: 60_000_001 });
+      // 条件形态：NULL（首次占位）或更小 counter 才放行
+      const whereSql = [
+        JSON.stringify(qb.where.mock.calls[0]),
+        JSON.stringify(qb.andWhere.mock.calls.map((c: unknown[]) => c[0])),
+      ].join(" ");
+      expect(whereSql).toContain("lastTotpCounter IS NULL");
+      expect(whereSql).toContain("lastTotpCounter < :matched");
+    });
+
+    it("returns false when the counter was already consumed (affected=0)", async () => {
+      const qb = makeQb([{ affected: 0 }]);
+      repo.createQueryBuilder.mockReturnValue(qb);
+      expect(await service.consumeTotpCounter(1, 60_000_001)).toBe(false);
+    });
+  });
+
     it("still enforces the last-admin guard when no acting user is passed", async () => {
       // 内部调用（actingUserId 缺省）跳过自删判定，但最后管理员守卫不放松。
       repo.findOne.mockResolvedValue({
