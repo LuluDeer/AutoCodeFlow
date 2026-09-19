@@ -79,6 +79,8 @@ const makeRepo = (overrides: Partial<Record<string, jest.Mock>> = {}) => ({
     returning: jest.fn().mockReturnThis(),
     groupBy: jest.fn().mockReturnThis(),
     orderBy: jest.fn().mockReturnThis(),
+    // NETOPT-1⑧: detectLostExecutions 扫描带上限
+    take: jest.fn().mockReturnThis(),
     // FEAT-04: metrics-history aggregate query applies a LIMIT guard
     limit: jest.fn().mockReturnThis(),
     getRawMany: jest.fn().mockResolvedValue([]),
@@ -480,6 +482,7 @@ describe("ExecutorService (__tests__)", () => {
           returning: jest.fn().mockReturnThis(),
           groupBy: jest.fn().mockReturnThis(),
           orderBy: jest.fn().mockReturnThis(),
+          take: jest.fn().mockReturnThis(),
           limit: jest.fn().mockReturnThis(),
           getRawMany: jest.fn().mockResolvedValue([]),
           getRawOne: jest.fn().mockResolvedValue(null),
@@ -2735,6 +2738,14 @@ describe("ExecutorService (__tests__)", () => {
         expect(warn).not.toHaveBeenCalled();
       },
     );
+
+    // NETOPT-1⑧: 扫描无界 getMany 在僵尸行积压时一次物化全部行并逐行终态写
+    // 放大为长事务风暴——补 take(1000)（对齐 scheduler O-2），截断后下一轮
+    // 5 分钟 tick 自收敛。逐行 transitionToTerminal 语义不变（A1 收口）。
+    it("NETOPT-1⑧: scan is bounded with take(1000) so a backlog self-converges over ticks", async () => {
+      await service.detectLostExecutions();
+      expect(qb.take).toHaveBeenCalledWith(1000);
+    });
   });
 
   describe("cleanupOldRecords", () => {
