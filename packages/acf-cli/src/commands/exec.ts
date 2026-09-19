@@ -150,8 +150,15 @@ export function execCommand(): Command {
         process.stderr.write(
           chalk.gray(`[tail] following execution ${execId} (status: ${exec.status ?? 'unknown'}) — Ctrl+C to detach\n`),
         );
+        // NETOPT-2②：done 帧是「日志流完整收尾」的唯一判据。此前 stream
+        // 'end' 一律 process.exit(0)——服务端/网络在 done 帧之前断流（反代
+        // 超时、进程重启）时，tail 静默以 0 退出，CI 里 `acf exec tail … &&
+        // …` 把断流当成功。sawDone 记录是否见过 done 帧：见过才 exit(0)，
+        // 否则明示日志流中断并以非零码退出。
+        let sawDone = false;
         const parser = createSseParser((msg) => {
           if (msg.event === 'done') {
+            sawDone = true;
             process.stderr.write(chalk.gray('[tail] done\n'));
             process.exit(0);
           }
@@ -171,7 +178,24 @@ export function execCommand(): Command {
         stream.on('data', (chunk: Buffer | string) => {
           parser.feed(chunk.toString('utf-8'));
         });
-        stream.on('end', () => process.exit(0));
+        stream.on('end', () => {
+          if (sawDone) {
+            process.exit(0);
+            // 防穿透：测试里 process.exit 常被钉成桩（正常返回），结构上
+            // 也不能让「完整收尾」落进下面的失败路径。
+            return;
+          }
+          // 断流且没有 done 帧：执行可能仍在运行。用 exitCode 赋值而非
+          // process.exit(1)，让事件循环自然收尾（流已 end，无挂起句柄）。
+          process.stderr.write(
+            chalk.red(
+              '[tail] log stream interrupted before a done frame — the execution may still be running. Retry with `acf exec tail ' +
+                execId +
+                '`.\n',
+            ),
+          );
+          process.exitCode = 1;
+        });
         stream.on('error', (err: Error) => {
           process.stderr.write(chalk.red(`[tail] stream error: ${err.message}\n`));
           process.exit(1);
