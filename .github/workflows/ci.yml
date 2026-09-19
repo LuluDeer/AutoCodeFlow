@@ -675,6 +675,12 @@ jobs:
         run: |
           node scripts/check-enum-drift.mjs --selftest
           node scripts/check-enum-drift.mjs
+      # NETOPT-3（第二轮深潜）：实体显式命名 @Index ⊆ 迁移 DDL 静态守卫——
+      # task_executions 两个声明索引从未落进迁移的 PK-10 同型漂移兜底。
+      - name: Index drift guard (NETOPT-3)
+        run: |
+          node scripts/check-index-drift.mjs --selftest
+          node scripts/check-index-drift.mjs
       # python_task_multiversion（FR-08/D15）：failureReason 的**四方**清单对齐守卫。
       # 同一枚举同时存在于 protocol.json（事实源）、admin TS 枚举、autoflow-sdk
       # 的 Python 校验集、executor-node 可上报集。任何一处漏改都是**静默**故障：
