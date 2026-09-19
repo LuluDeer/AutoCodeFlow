@@ -17,7 +17,7 @@ export class CreateSilenceDto {
 
   @ApiPropertyOptional({
     description:
-      "仅静默该渠道类型（wechat/dingtalk/slack/email）；空 = 全部渠道",
+      "仅作范围记录（isSilenced 在渠道扇出前判定，无法按渠道裁剪投递，NETOPT-5① 如实化）；取值须为已注册渠道类型",
   })
   channelType?: string;
 
@@ -29,7 +29,7 @@ export class CreateSilenceDto {
 
   @ApiPropertyOptional({
     description:
-      "仅静默该级别及以下（info/warning/error/critical）；空 = 全部级别",
+      "仅静默该级别（精确匹配 info/warning/error/critical，非「及以下」）；空 = 全部级别",
   })
   level?: string;
 

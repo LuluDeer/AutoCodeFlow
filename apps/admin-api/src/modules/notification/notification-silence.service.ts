@@ -50,6 +50,30 @@ export class NotificationSilenceService {
     if (input.scope === "application" && !input.applicationId) {
       throw new BadRequestException("scope=application requires applicationId");
     }
+    // NETOPT-5①: level 枚举校验（此前任意字符串都落库，静默可能因手误
+    // 永不命中）。口径与 AlertLevel 一致（info/warning/error/critical）。
+    const VALID_SILENCE_LEVELS = ["info", "warning", "error", "critical"];
+    if (
+      input.level != null &&
+      !VALID_SILENCE_LEVELS.includes(String(input.level))
+    ) {
+      throw new BadRequestException(
+        `invalid level ${String(input.level)}; expected one of ${VALID_SILENCE_LEVELS.join(", ")}`,
+      );
+    }
+    // NETOPT-5①: durationMinutes 数字校验。运行时 @Body() 无 ValidationPipe
+    // 白名单（见 CreateSilenceDto 注释），字符串 "abc" 直达此处——旧逻辑
+    // `"abc" > 0` 恒 false 跳过折算，endTime 落 NULL = 永不过期静默。
+    if (
+      input.durationMinutes != null &&
+      (typeof input.durationMinutes !== "number" ||
+        !Number.isFinite(input.durationMinutes) ||
+        input.durationMinutes <= 0)
+    ) {
+      throw new BadRequestException(
+        `invalid durationMinutes ${String(input.durationMinutes)}; expected a positive number`,
+      );
+    }
     if (
       input.channelType != null &&
       !["email", "slack", "dingtalk", "wecom", "webhook"].includes(

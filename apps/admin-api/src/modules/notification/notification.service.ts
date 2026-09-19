@@ -503,18 +503,50 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  isSilenced(taskId?: string, level?: AlertLevel): boolean {
+  /**
+   * NETOPT-5①: isSilenced 现按 scope 判定匹配范围。
+   *
+   * 此前匹配只看 taskId+level+时间窗，完全忽略 scope/applicationId——
+   * scope=application（无 taskId）的规则因 `!silence.taskId` 恒真而匹配
+   * 一切任务的通知，等于「应用级静默 = 全平台消音」，方向是吞告警（最危险）。
+   * 现语义：
+   * - scope=task → 仅匹配该 taskId；
+   * - scope=application → 仅匹配 applicationId 等于该规则 applicationId 的
+   *   任务通知（无 applicationId 上下文的通知，如 executor 上下线拨测，
+   *   不属于任何应用，不匹配——静默缺证时放行告警，fail-open）；
+   * - scope=global / 未标记 scope 的存量内存规则 → 沿用既有字段回退语义
+   *   （设了 taskId 按任务匹配，否则全局），存量行为零漂移。
+   *
+   * channelType 有意不参与判定：本方法在渠道扇出前同步调用，届时无法知道
+   * 各渠道的投递结果，按渠道裁剪属于造假实现。channelType 仅作范围记录
+   * （与 admin-web NotificationSettingsPage 的「scope=task/application 均以
+   * taskId 判定，channelType 仅作范围记录」注释一致），见实体注释。
+   */
+  isSilenced(
+    taskId?: string,
+    level?: AlertLevel,
+    applicationId?: string,
+  ): boolean {
     const now = new Date();
 
     for (const silence of this.silences.values()) {
-      const matchesTask = !silence.taskId || silence.taskId === taskId;
+      let matchesScope: boolean;
+      if (silence.scope === "application") {
+        matchesScope =
+          !!silence.applicationId && applicationId === silence.applicationId;
+      } else if (silence.scope === "task") {
+        matchesScope = !!silence.taskId && silence.taskId === taskId;
+      } else {
+        // global（含存量未标记 scope 的内存规则）
+        matchesScope = !silence.taskId || silence.taskId === taskId;
+      }
       const matchesLevel = !silence.level || silence.level === level;
 
       const isActive =
         (!silence.startTime || silence.startTime <= now) &&
         (!silence.endTime || silence.endTime >= now);
 
-      if (matchesTask && matchesLevel && isActive) {
+      if (matchesScope && matchesLevel && isActive) {
         return true;
       }
     }
@@ -658,8 +690,10 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     level: AlertLevel = AlertLevel.INFO,
     taskId?: string,
     channels?: AlertChannel[],
+    // NETOPT-5①: 应用上下文透传，供 scope=application 静默判定
+    applicationId?: string,
   ) {
-    if (this.isSilenced(taskId, level)) {
+    if (this.isSilenced(taskId, level, applicationId)) {
       this.logger.debug(
         `Alert silenced for task ${taskName} (level: ${level})`,
       );
@@ -694,8 +728,10 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     aiAnalysis?: string,
     taskId?: string,
     runbook?: string | null,
+    // NETOPT-5①: 应用上下文透传，供 scope=application 静默判定
+    applicationId?: string,
   ) {
-    if (this.isSilenced(taskId, AlertLevel.ERROR)) {
+    if (this.isSilenced(taskId, AlertLevel.ERROR, applicationId)) {
       this.logger.debug(`Failure alert silenced for task ${taskName}`);
       return;
     }
@@ -723,8 +759,10 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     execId: string,
     durationMs: number,
     taskId?: string,
+    // NETOPT-5①: 应用上下文透传，供 scope=application 静默判定
+    applicationId?: string,
   ) {
-    if (this.isSilenced(taskId, AlertLevel.INFO)) {
+    if (this.isSilenced(taskId, AlertLevel.INFO, applicationId)) {
       this.logger.debug(`Success alert silenced for task ${taskName}`);
       return;
     }
@@ -750,8 +788,10 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     execId: string,
     timeoutSec: number,
     taskId?: string,
+    // NETOPT-5①: 应用上下文透传，供 scope=application 静默判定
+    applicationId?: string,
   ) {
-    if (this.isSilenced(taskId, AlertLevel.WARNING)) {
+    if (this.isSilenced(taskId, AlertLevel.WARNING, applicationId)) {
       this.logger.debug(`Timeout alert silenced for task ${taskName}`);
       return;
     }
@@ -808,13 +848,16 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     webhookUrl?: string,
     taskId?: string,
     runbook?: string | null,
+    // NETOPT-5①: 应用上下文透传（调用方 execution-events.listener 已持有
+    // Task 实体，applicationId 可直接带来），供 scope=application 静默判定
+    applicationId?: string,
   ) {
     const taskChannels =
       (alarmChannels?.map((c) => c.toLowerCase()) as AlertChannel[]) || [];
 
     // 补传 taskId：修复原先 isSilenced(undefined,...) 使任务级静默窗口对本路径
     // 失效的问题，与 notifyFailure 保持一致（taskId 缺省时行为不变）。
-    if (this.isSilenced(taskId, AlertLevel.ERROR)) {
+    if (this.isSilenced(taskId, AlertLevel.ERROR, applicationId)) {
       this.logger.debug(`Failure alert silenced for task ${taskName}`);
       return;
     }
@@ -827,6 +870,7 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
         aiAnalysis,
         taskId,
         runbook,
+        applicationId,
       );
     }
     const payload: NotificationPayload = {
