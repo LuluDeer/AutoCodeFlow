@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   DOWNLOAD_TIMEOUT_MS,
   EXECUTOR_PORT,
@@ -97,9 +97,16 @@ export default function ConfigPage() {
 
   // 切到「Python 运行环境」页时刷新诊断（旧版 preload 无此通道时静默降级为
   // 不显示诊断块，不影响其余设置项的编辑与保存）。
-  useEffect(() => {
-    if (active !== 'python') return;
-    if (typeof window.electronAPI.getPythonEnvStatus !== 'function') return;
+  //
+  // EXP-06（本轮体验审查）：抽出 refreshPyEnv()，并在**保存成功后**再调一次。
+  // 原实现只在 `active` 变化时拉取，于是用户在「Python 运行环境」页改完
+  // uvPath / 解释器池目录 / 下载预算并点「保存配置」后，诊断块**仍显示旧值**
+  // ——而诊断块的全部意义就是回答"我配的到底生效了没有"。用户因此会怀疑
+  // 保存没生效而反复保存，或者带着错误的认知去排障（看不到 uv 路径已变、
+  // 池里已有解释器）。这类"改完不刷新"的缺陷不会报错，只是让用户看到的
+  // 信息与真实状态不一致。
+  const refreshPyEnv = useCallback(() => {
+    if (typeof window.electronAPI.getPythonEnvStatus !== 'function') return () => {};
     let cancelled = false;
     setPyEnvError(null);
     window.electronAPI
@@ -109,7 +116,12 @@ export default function ConfigPage() {
         if (!cancelled) setPyEnvError(err instanceof Error ? err.message : String(err));
       });
     return () => { cancelled = true; };
-  }, [active]);
+  }, []);
+
+  useEffect(() => {
+    if (active !== 'python') return;
+    return refreshPyEnv();
+  }, [active, refreshPyEnv]);
 
   function set(key: string, value: unknown) {
     setForm((f) => ({ ...f, [key]: value }));
@@ -142,6 +154,10 @@ export default function ConfigPage() {
       } else {
         setSaved(true);
         setTimeout(() => setSaved(false), 3000);
+        // EXP-06：保存成功后立刻重取 Python 环境诊断——用户刚改的就是 uvPath /
+        // 解释器池 / 下载预算这些值，诊断块必须如实反映"改完之后的实际生效值"。
+        // 只在成功分支调用：失败时保留上一次的诊断（比清空更有参考价值）。
+        refreshPyEnv();
       }
     } catch (err) {
       // D 修正：原实现未包 try——saveConfig reject 会让 saving 永久为 true，
