@@ -120,6 +120,32 @@ describe("MetricsService", () => {
       expect(result.successRate).toBe(0);
       expect(result.avgDurationMs).toBe(0);
     });
+
+    // NETOPT-1④: 两处执行聚合都带「近 30 天」时间界——task_executions 峰值
+    // 行数下全表 GROUP BY / AVG 随历史线性变慢（dashboard 首屏高频路径）。
+    it("NETOPT-1④: bounds both aggregations to the 30-day window via parameter binding", async () => {
+      const qb = makeQb({
+        getRawMany: jest.fn().mockResolvedValue([]),
+        getRawOne: jest.fn().mockResolvedValue({ avg: null }),
+      });
+      execRepo.createQueryBuilder.mockReturnValue(qb);
+      await service.getSummary();
+
+      // 状态计数聚合：where 带 createdAt >= :windowStart，参数为 Date
+      const whereCalls = qb.where.mock.calls.map((c: any[]) => c[0]);
+      expect(whereCalls).toContain("e.createdAt >= :windowStart");
+      // AVG 聚合：andWhere 同样带时间界
+      const andWhereCalls = qb.andWhere.mock.calls.map((c: any[]) => c[0]);
+      expect(andWhereCalls).toContain("e.createdAt >= :windowStart");
+      // 窗口 ≈ 30 天前（允许秒级时钟误差），且以参数绑定（Date）而非内联字面量
+      const windowArg = qb.where.mock.calls.find(
+        (c: any[]) => c[0] === "e.createdAt >= :windowStart",
+      )?.[1] as { windowStart: Date };
+      expect(windowArg.windowStart).toBeInstanceOf(Date);
+      const ageMs = Date.now() - windowArg.windowStart.getTime();
+      expect(ageMs).toBeGreaterThanOrEqual(30 * 86_400_000 - 60_000);
+      expect(ageMs).toBeLessThan(31 * 86_400_000);
+    });
   });
 
   describe("getDailyTrend", () => {
@@ -250,6 +276,48 @@ describe("MetricsService", () => {
       reportRepo.save.mockResolvedValue(generated);
       const result = await service.getTodayReport();
       expect(result).toEqual(generated);
+    });
+
+    // NETOPT-1⑤: 并发首访竞态——findOne 落空后两请求各自 generateReport，
+    // 败者撞 triggerDay 唯一索引（23505）应重读返回赢家写入的行，而非 500。
+    it("NETOPT-1⑤: on unique-violation (23505) re-reads the winner's report instead of 500", async () => {
+      reportRepo.findOne
+        .mockResolvedValueOnce(null) // 首次读：不存在
+        .mockResolvedValueOnce({ id: "r-winner" }); // 冲突后重读：赢家已写入
+      const qb = makeQb({
+        getRawMany: jest.fn().mockResolvedValue([]),
+        getRawOne: jest
+          .fn()
+          .mockResolvedValue({ avg: "0", max: "0", min: "0" }),
+      });
+      execRepo.createQueryBuilder.mockReturnValue(qb);
+      reportRepo.create.mockReturnValue({ id: "r-loser" });
+      // save 抛出带 PG code 的唯一冲突（模拟 TypeORM QueryFailedError 包装形态）
+      const dupErr = Object.assign(new Error("duplicate key"), {
+        code: "23505",
+      });
+      reportRepo.save.mockRejectedValueOnce(dupErr);
+
+      const result = await service.getTodayReport();
+      expect(result).toEqual({ id: "r-winner" });
+      expect(reportRepo.findOne).toHaveBeenCalledTimes(2);
+    });
+
+    it("NETOPT-1⑤: non-unique-violation errors still propagate", async () => {
+      reportRepo.findOne.mockResolvedValue(null);
+      const qb = makeQb({
+        getRawMany: jest.fn().mockResolvedValue([]),
+        getRawOne: jest
+          .fn()
+          .mockResolvedValue({ avg: "0", max: "0", min: "0" }),
+      });
+      execRepo.createQueryBuilder.mockReturnValue(qb);
+      reportRepo.create.mockReturnValue({ id: "r-x" });
+      reportRepo.save.mockRejectedValueOnce(new Error("connection refused"));
+
+      await expect(service.getTodayReport()).rejects.toThrow(
+        "connection refused",
+      );
     });
   });
 

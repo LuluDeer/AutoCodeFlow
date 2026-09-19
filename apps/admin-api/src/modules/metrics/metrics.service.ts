@@ -30,9 +30,22 @@ export class MetricsService {
     private readonly configService: ConfigService,
   ) {}
 
+  /** NETOPT-1④: getSummary 执行聚合的时间窗（天），取舍见 getSummary 内注 */
+  private static readonly AGGREGATION_WINDOW_DAYS = 30;
+
   async getSummary() {
     const todayStart = new Date();
     todayStart.setHours(0, 0, 0, 0);
+
+    // NETOPT-1④: 聚合时间界——task_executions 虽有 90 天 retention，但峰值
+    // 行数下全表 GROUP BY / AVG 仍随历史线性变慢（dashboard 首屏高频路径）。
+    // 两处执行聚合收敛到「近 30 天」窗口：successRate/avgDuration 语义从
+    // 「全历史」改为「近 30 天」（与 getDailyTrend 默认 7 天、generateReport
+    // 单日窗口同族，均属运营近况视图；totalTasks/执行器计数不受影响）。
+    // 用 TypeORM 参数绑定（Date 对象）而非原生 interval 字面量，保持引擎无关。
+    const windowStart = new Date(
+      Date.now() - MetricsService.AGGREGATION_WINDOW_DAYS * 86_400_000,
+    );
 
     const [totalTasks, totalExecutors, onlineExecutors, todayRuns] =
       await Promise.all([
@@ -48,6 +61,7 @@ export class MetricsService {
       .createQueryBuilder("e")
       .select("e.status", "status")
       .addSelect("COUNT(*)", "count")
+      .where("e.createdAt >= :windowStart", { windowStart })
       .groupBy("e.status")
       .getRawMany();
 
@@ -63,6 +77,7 @@ export class MetricsService {
       .createQueryBuilder("e")
       .select("AVG(e.duration)", "avg")
       .where("e.status = :s", { s: ExecutionStatus.SUCCESS })
+      .andWhere("e.createdAt >= :windowStart", { windowStart })
       .getRawOne();
 
     return {
@@ -212,7 +227,30 @@ export class MetricsService {
       where: { triggerDay: today },
     });
     if (!report) {
-      report = await this.generateReport(today);
+      try {
+        report = await this.generateReport(today);
+      } catch (err: unknown) {
+        // NETOPT-1⑤: 并发首访竞态——两请求同日同时 findOne 落空后各自
+        // generateReport→save，败者撞 triggerDay 唯一索引（SQLSTATE 23505）
+        // 直接 500。此处识别唯一冲突后重读一次返回赢家已写入的行（改动最小，
+        // 免去 upsert 对 create()/save() 返回形态的扰动）；重读仍无行则原样
+        // 上抛。TypeORM 会把驱动错误包一层，code 可能在本体/driverError/cause
+        // 上，逐一探测。
+        const code = (e: unknown): string | undefined => {
+          if (!e || typeof e !== "object") return undefined;
+          const anyErr = e as {
+            code?: string;
+            driverError?: { code?: string };
+            cause?: { code?: string };
+          };
+          return anyErr.code ?? anyErr.driverError?.code ?? anyErr.cause?.code;
+        };
+        if (code(err) !== "23505") throw err;
+        report = await this.reportRepo.findOne({
+          where: { triggerDay: today },
+        });
+        if (!report) throw err;
+      }
     }
     return report;
   }
