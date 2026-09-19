@@ -1,0 +1,29 @@
+perf(web): SSE 日志追加是 O(n²)，长日志页面越跑越卡（PERF-06）
+
+缺陷（ExecutionDetailPage）：
+  onMessage: (e) => setStreamLines((prev) => prev ? [...prev, line] : [line])
+而渲染函数体里**无条件**执行 `streamLines.join('\n')`。
+
+于是**每来一行**都付两遍 O(n)：一次整数组拷贝、一次整串拼接。持续输出的任务
+每秒可推几十行 → 累计 **O(n²)**。20k 行时单单一次 join 就是 20k 段字符串拼接，
+而它在**每个渲染**里都跑；SSE 回调与渲染同在主线程，于是页面随日志增长越来越
+卡，直到滚动与输入都掉帧——用户看到的正是「执行详情页开着就越来越卡」。
+
+修法两步（各配独立反证）：
+  ① **批量累积 + 按帧刷新**：到达的行先进 ref 缓冲，用 requestAnimationFrame
+     合并成"一帧最多一次 setState"——一帧来 1 行或来 50 行代价相同；
+     卸载/换执行时 cancelAnimationFrame + 清空缓冲（否则卸载后回调仍会
+     setState，React 会警告且白做一次拷贝）。
+  ② **join 用 useMemo 缓存**：依赖只有 streamLines 与 data?.logs 两个真正决定
+     结果的量；父组件因别的原因重渲（搜索打字、级别下拉、重试链数据到达…）
+     不再重拼整份日志。
+
+验证：admin-web 961 passed / 109 files（含新增 8 条反证）；tsc --noEmit 0 error；
+lint 0 error。
+反证 8 条（execution-log-append.perf06.test.ts），已实测两向都变红：
+  · 把 ① 改回逐行 `[...prev, line]` → 2 条红；
+  · 把 ② 改回渲染体内裸 join → 2 条红。
+其中行为层用**显式桩掉的 rAF + 手动泵帧**，使"一帧内到达 50 行只触发 1 次
+状态更新"成为确定性断言（jsdom 的 rAF 不可靠，不桩就无法断言帧语义）。
+另有一条「反例存档」用例：把 useMemo 从源码里摘掉后断言裸 join 再无残留，
+钉住"裸 join 一定出现在每个渲染里"这个前提——它不是风格问题而是量级问题。
