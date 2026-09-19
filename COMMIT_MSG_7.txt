@@ -1,0 +1,25 @@
+fix(experience): 模板分类标签在英文界面下露中文（UX-10）
+
+缺陷：`category` 在 admin-api 里是自由文本 `varchar(32)`
+（task-template.entity.ts:37），官方种子值写死中文（task-template.constants.ts
+的「备份/巡检/同步/清理/通知」）。前端 `TaskTemplatesPage` 有两处以**中文显示
+名**为键：
+  ① 标签直接 `{tpl.category}` 渲染 → 英文界面下分类仍是中文，而**同一张卡片**
+     上相邻的触发方式已走 t() 显示 "Cron scheduled"——中英混排；
+  ② `CATEGORY_COLOR` 也以中文显示名为键 → 一旦把分类文案改成英文/本地化，
+     配色**静默退回 default 灰**（"改个文案就掉色"，键与语义错位）。
+
+修法：新增 分类→i18n key 映射与 `categoryLabel()`，渲染过 t()；英文界面显示
+Backup / Inspection / Sync / Cleanup / Notification。映射表的键仍是后端实际
+存的中文种子值——那是数据契约，前端不得擅自改。
+
+未知分类回退**原始值**而非显示「未知」：分类是用户自建模板时自由填写的，露出
+原文才可诊断；配色继续回退 default 灰。
+
+验证：admin-web 949 passed / 107 files；lint 0 error；zh/en 词条 2205 对齐、
+en 里 0 处中文残留。
+反证 8 条（template-category-label.ux10.test.ts）：
+  · 行为层把渲染改回 `{tpl.category}` → 2 条变红；
+  · 其中一条**读后端 task-template.constants.ts 作为事实源**，逐项断言每个种子
+    分类都在前端映射表里有条目——后端新增种子分类而前端漏翻译时即刻变红，
+    避免映射表与种子静默脱节。
