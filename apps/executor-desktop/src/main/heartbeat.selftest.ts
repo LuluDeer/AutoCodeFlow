@@ -194,7 +194,47 @@ function main(): void {
     }
   }
 
-  console.log('heartbeat selftest: all assertions passed (NaN port → no uncaught throw; admin probe URL sanitized)');
+  // ── 5. EXP-03：心跳只能经 startHeartbeat() 启动（防再次漏传 adminApiUrl）──
+  {
+    const read = (rel: string): string =>
+      fs.readFileSync(path.join(__dirname, '..', 'src', 'main', rel), 'utf-8');
+
+    // 唯一入口必须存在且把两个参数都传上。
+    const handlers = read('ipc-handlers.ts');
+    assert.ok(
+      /export function startHeartbeat\(/.test(handlers),
+      'EXP-03: ipc-handlers.ts 必须导出 startHeartbeat()（全仓唯一心跳启动入口）',
+    );
+    const fnBody = handlers.slice(handlers.indexOf('export function startHeartbeat('));
+    const fn = fnBody.slice(0, fnBody.indexOf('\n}') + 2);
+    assert.ok(
+      /heartbeat\.start\(/.test(fn) && /adminApiUrl/.test(fn),
+      'EXP-03: startHeartbeat() 必须把 adminApiUrl 一起传给 heartbeat.start()'
+      + '——只传端口会让中台直达探针静默失效（F-3 修的正是这个）',
+    );
+
+    // 生产代码里不得再出现任何"直接调 heartbeat.start(...)"的第二条路径：
+    // F-3 给 start() 加了 adminApiUrl 参数后，全仓 5 处调用点只有 1 处传了它，
+    // 漏传的恰好是用户最常走的路径（开机自启 / 点启动 / 改配置保存），
+    // 于是中台直达探针形同虚设。收敛为单一入口后再加参数就不会漏。
+    for (const rel of ['ipc-handlers.ts', 'index.ts']) {
+      const src = read(rel);
+      // 去掉注释，避免注释里引用的旧写法被判违规
+      const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+      // startHeartbeat() 内部那一处是**唯一**允许的直接调用（在 ipc-handlers 里）
+      const direct = [...code.matchAll(/heartbeat\.start\(/g)].length;
+      const allowed = rel === 'ipc-handlers.ts' ? 1 : 0;
+      assert.strictEqual(
+        direct,
+        allowed,
+        `EXP-03: ${rel} 里出现了 ${direct} 处 heartbeat.start() 直接调用`
+        + `（应为 ${allowed} 处）——请改用 startHeartbeat()，`
+        + '否则新加的心跳参数会再次在某些路径上漏传',
+      );
+    }
+  }
+
+  console.log('heartbeat selftest: all assertions passed (NaN port → no uncaught throw; admin probe URL sanitized; EXP-03 single start entrypoint)');
 }
 
 main();

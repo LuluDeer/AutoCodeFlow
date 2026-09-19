@@ -4,7 +4,7 @@ import { ExecutorProcess } from './executor-process';
 import { HeartbeatMonitor } from './heartbeat';
 import { TrayManager } from './tray';
 import { WindowManager } from './window-manager';
-import { registerIpcHandlers } from './ipc-handlers';
+import { registerIpcHandlers, startHeartbeat } from './ipc-handlers';
 import { getAutoLaunchEnabled, setAutoLaunchEnabled } from './autolaunch';
 import { initUpdater } from './updater';
 import { Notifier } from './notifier';
@@ -76,10 +76,10 @@ app.whenReady().then(async () => {
     // F-3: 传入 adminApiUrl——HeartbeatMonitor 增加直达中台的 /api/health 探针，
     // 与本地 /health/live 做 AND 逻辑（executor-node 子进程活着但中台链路断开时
     // 桌面也能感知离线）。
-    heartbeat.start(
-      configStore.get('executorPort'),
-      configStore.get('adminApiUrl') || undefined,
-    );
+    // EXP-03：这条原本是**唯一**传对了参数、却是最少被走到的路径。现与其余
+    // 四条统一收敛到 startHeartbeat()（同源读取端口 + adminApiUrl），
+    // 避免"五处调用点各自传参、漏一个就静默退化"。
+    startHeartbeat();
   };
   trayManager.onStop = async () => {
     heartbeat.stop();
@@ -136,7 +136,12 @@ app.whenReady().then(async () => {
   } else if (cfg.autoStartExecutor) {
     // 已配置且设置了自动启动
     await executorProcess.start(cfg);
-    heartbeat.start(cfg.executorPort);
+    // EXP-03（本轮体验审查）：此前写 `heartbeat.start(cfg.executorPort)`
+    // ——漏了 adminApiUrl，于是**开机自启这条最常见的路径上**中台直达探针
+    // 静默失效（VPN 断裂时托盘仍显示"在线"）。改走 ipc-handlers 的
+    // startHeartbeat()，它是全仓唯一的心跳启动入口，端口与 adminApiUrl
+    // 同源读取，不会再出现"某个调用点少传一个参数"。
+    startHeartbeat();
   }
 });
 
