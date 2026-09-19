@@ -2034,8 +2034,28 @@ export class TaskService {
    * R4-P3: 下游触发前先做短窗 DB claim——两个上游依赖几乎同时成功时，
    * 两个回调的 checkDependencies 都可能读到"全部依赖已满足"的快照并各自
    * 触发下游；条件 UPDATE 的行级锁串行化保证只有一个赢家真正 trigger。
+   *
+   * NETOPT-3②（扇出静默丢失治理，迁移 1790000000030 depsFiredAt）：
+   * - 单个下游 trigger() 失败不再中断其余扇出（此前外层 catch 一断全断），
+   *   记为部分失败并**回滚该下游的 claim**（见 rollbackDependencyClaim）；
+   * - 扇出全部成功（含"无可触发的下游"的空成功）后，条件 UPDATE 落
+   *   depsFiredAt = now 标记；失败/部分失败刻意不落，留 NULL：
+   *   handleCallback 的重复回调分支（affected=0）读到 SUCCESS + NULL 标记
+   *   时重放本方法——覆盖「trigger 失败」「终态提交后扇出前崩溃」两类
+   *   此前永久静默丢失的窗口。
+   * - residual（如实记录）：不建周期对账 sweeper。执行器整批重试覆盖崩溃
+   *   窗口；静默失败窗现可由 `depsFiredAt IS NULL 的 SUCCESS 行` + error
+   *   日志观测。并发双重复回调下"败者先落标记、胜者 trigger 失败"的窄
+   *   竞态仍可丢一次扇出（标记语义是"扇出尝试已收敛"），不做跨行协议。
+   *
+   * @param completedTaskId   完成（SUCCESS）的上游任务 id
+   * @param completedExecutionId 上游执行行 id——用于落 depsFiredAt 标记
    */
-  private async triggerDependentTasks(completedTaskId: string) {
+  private async triggerDependentTasks(
+    completedTaskId: string,
+    completedExecutionId?: string,
+  ) {
+    let fanoutFailed = false;
     try {
       // Find all tasks that have any dependencies set, then filter in-process.
       // Using application-layer filtering avoids JSONB-specific SQL that breaks
@@ -2062,9 +2082,15 @@ export class TaskService {
         const canTrigger = await this.checkDependencies(task);
         if (!canTrigger) continue;
 
+        // NETOPT-3②: claim 前先读原 lastTriggerTime，trigger 失败时按它回滚
+        //（CAS 保护见 rollbackDependencyClaim）。
+        const prevLastTriggerTime = await this.taskRepo.findOne({
+          where: { id: task.id },
+          select: ["id", "lastTriggerTime"],
+        });
         // R4-P3: short-window DB claim — exactly one concurrent fan-out wins.
-        const claimed = await this.claimDependencyTrigger(task.id);
-        if (!claimed) {
+        const claimedAt = await this.claimDependencyTrigger(task.id);
+        if (!claimedAt) {
           this.logger.log(
             `Dependency trigger for task ${task.id} claimed by a concurrent fan-out within the dedup window, skip`,
           );
@@ -2078,7 +2104,25 @@ export class TaskService {
         // 行 triggerType 错记 manual、且因无 user 主体绕过控制器审计。这里：
         // ① 透传 triggerType="dependency"；② best-effort 写一条系统审计（无 user
         // 主体，username 标 system:dependency；审计自身抛错绝不影响主链触发）。
-        await this.trigger(task.id, {}, null, "dependency");
+        try {
+          await this.trigger(task.id, {}, null, "dependency");
+        } catch (triggerErr) {
+          // NETOPT-3②: trigger 失败 → 回滚 claim（缩小不可重试窗口）+ 部分
+          // 失败标记（不落 depsFiredAt），并继续扇出其余下游（不改变回调
+          // item 的 success 语义——终态已落定，扇出是旁路 best-effort）。
+          fanoutFailed = true;
+          await this.rollbackDependencyClaim(
+            task.id,
+            claimedAt,
+            prevLastTriggerTime?.lastTriggerTime ?? null,
+          );
+          this.logger.error(
+            `NETOPT-3②: dependency trigger failed for task ${task.id}; claim rolled back, depsFiredAt left NULL for replay: ${
+              triggerErr instanceof Error ? triggerErr.message : String(triggerErr)
+            }`,
+          );
+          continue;
+        }
         try {
           await this.audit?.log({
             username: "system:dependency",
@@ -2100,8 +2144,65 @@ export class TaskService {
         }
       }
     } catch (err) {
+      // NETOPT-3②: 扫描/判定层失败同样视为扇出未完成——不落标记，留给
+      // 重复回调重放。
+      fanoutFailed = true;
       this.logger.error(
         `Failed to trigger dependent tasks: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    // NETOPT-3②: 扇出全部成功才落 depsFiredAt（失败/部分失败不落）。
+    if (!fanoutFailed && completedExecutionId) {
+      await this.markDependencyFanoutComplete(completedExecutionId);
+    }
+  }
+
+  /**
+   * NETOPT-3②: 扇出全部成功后的完成标记（幂等条件 UPDATE：仅当仍为 NULL
+   * 时落 now）。best-effort：标记写失败只记日志——重复回调的重放判据读
+   * 不到标记时宁可多重放一次（扇出自身有 claim 去重，重放是安全的）。
+   */
+  private async markDependencyFanoutComplete(executionId: string): Promise<void> {
+    try {
+      await this.execRepo.update(
+        { id: executionId, depsFiredAt: IsNull() },
+        { depsFiredAt: new Date() },
+      );
+    } catch (err) {
+      this.logger.warn(
+        `NETOPT-3②: failed to mark depsFiredAt on execution ${executionId} (replay will re-attempt): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+
+  /**
+   * NETOPT-3②: claimDependencyTrigger 的失败补偿——把 lastTriggerTime 回滚
+   * 到 claim 前的原值（prev 为 NULL 时恢复 NULL）。CAS 保护：WHERE 钉住
+   * 本次的 claimedAt，若期间又有并发写（另一个扇出/调度触发）推进了
+   * lastTriggerTime，则本次回滚 no-op——绝不覆盖他人的新状态。
+   */
+  private async rollbackDependencyClaim(
+    taskId: string,
+    claimedAt: Date,
+    prev: Date | null,
+  ): Promise<void> {
+    try {
+      await this.taskRepo
+        .createQueryBuilder()
+        .update(Task)
+        .set({ lastTriggerTime: prev })
+        .where('"id" = :id AND "lastTriggerTime" = :claimedAt', {
+          id: taskId,
+          claimedAt,
+        })
+        .execute();
+    } catch (err) {
+      this.logger.warn(
+        `NETOPT-3②: dependency claim rollback failed for task ${taskId} (claim stays, window-limited): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
       );
     }
   }
@@ -2111,6 +2212,9 @@ export class TaskService {
    * 的条件 UPDATE 思路）：仅当 tasks.lastTriggerTime 在去重窗口之外（或为
    * NULL）时才允许本调用推进它并获得触发权；affected=0 表示窗口内已有
    * 并发赢家（另一个 fan-out、或紧邻的一次调度触发），本次跳过。
+   *
+   * NETOPT-3②: 返回值从 boolean 改为本次 claim 写入的时间戳（失败返回
+   * null）——trigger() 失败时 rollbackDependencyClaim 需要它做 CAS 回滚。
    *
    * 权衡（选 lastTriggerTime 而非新增列的最小侵入方案）：
    * - 免去新列 + 迁移；复用 scheduler 已在写的列。
@@ -2123,20 +2227,21 @@ export class TaskService {
    * - 不加 status 门：与既有行为一致（PAUSED 下游当前也会被依赖触发），
    *   本方法只负责去重，不改变可触发性。
    */
-  private async claimDependencyTrigger(taskId: string): Promise<boolean> {
+  private async claimDependencyTrigger(taskId: string): Promise<Date | null> {
     const windowStart = new Date(
       Date.now() - DEPENDENCY_TRIGGER_CLAIM_WINDOW_MS,
     );
+    const claimedAt = new Date();
     const result = await this.taskRepo
       .createQueryBuilder()
       .update(Task)
-      .set({ lastTriggerTime: new Date() })
+      .set({ lastTriggerTime: claimedAt })
       .where(
         '"id" = :id AND ("lastTriggerTime" IS NULL OR "lastTriggerTime" < :windowStart)',
         { id: taskId, windowStart },
       )
       .execute();
-    return (result?.affected ?? 0) > 0;
+    return (result?.affected ?? 0) > 0 ? claimedAt : null;
   }
 
   /**
@@ -2813,6 +2918,24 @@ export class TaskService {
           recordRuntime("autoflow_callback_business_total", {
             result: "duplicate",
           });
+          // NETOPT-3②: 依赖扇出的丢失补偿重放。两条此前永久静默丢扇出的
+          // 路径都收敛到这里：① 终态提交后、扇出前进程崩溃（执行器整批重发
+          // 落到本分支）；② 扇出 trigger 失败（depsFiredAt 刻意留 NULL）。
+          // 判据 = 行已是 SUCCESS 终态 且 depsFiredAt 仍为 NULL（扇出全部
+          // 成功时已落标记，不会重放——幂等由标记保证，重放内部的 claim
+          // 去重再兜一层并发安全）。标记列是旁路信号，非终态，不触碰 A1
+          // 状态机。
+          if (
+            fresh &&
+            fresh.taskId &&
+            fresh.status === ExecutionStatus.SUCCESS &&
+            !fresh.depsFiredAt
+          ) {
+            this.logger.warn(
+              `NETOPT-3②: duplicate callback for SUCCESS execution ${cb.executionId} with depsFiredAt=NULL — replaying dependency fan-out for task ${fresh.taskId}`,
+            );
+            await this.triggerDependentTasks(fresh.taskId, fresh.id);
+          }
           results.push({ executionId: cb.executionId, success: true });
           continue;
         }
@@ -2912,7 +3035,8 @@ export class TaskService {
         // at the affected gate above) and keeps the TASK-004 conditional
         // UPDATE semantics: exactly one caller observes the transition.
         if (patch.status === ExecutionStatus.SUCCESS) {
-          await this.triggerDependentTasks(execution.taskId);
+          // NETOPT-3②: 传执行行 id——扇出全部成功后在该行落 depsFiredAt 标记。
+          await this.triggerDependentTasks(execution.taskId, cb.executionId);
         }
 
         // LOG-01: persist structured log lines for pagination/SSE. When the
