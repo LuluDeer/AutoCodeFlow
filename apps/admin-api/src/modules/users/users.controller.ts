@@ -19,7 +19,7 @@ import * as bcrypt from "bcrypt";
 import { UsersService } from "./users.service";
 import { CreateUserDto } from "./dto/create-user.dto";
 import { UpdateUserDto } from "./dto/update-user.dto";
-import { PaginationDto } from "../../common/dto/pagination.dto";
+import { PageQueryDto } from "../../common/dto/pagination.dto";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { RolesGuard } from "../../common/guards/roles.guard";
 import { Roles } from "../../common/decorators/roles.decorator";
@@ -68,7 +68,16 @@ export class UsersController {
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Get user list" })
-  findAll(@Query() pagination: PaginationDto) {
+  // API-07（本轮体验审查）：改用 PageQueryDto（只有 page/pageSize）。
+  // 原用 PaginationDto，而后者携带**任务专用**的 name/status/runtime 三个
+  // 过滤字段——于是本端点的 OpenAPI 参数表上出现了
+  // `name` = "Fuzzy search by task name"，而 `usersService.findAll` 只读
+  // page/pageSize，**完全忽略**它。调用方传 `?name=alice` 会拿到 HTTP 200 +
+  // 未过滤的全量用户列表，**无法分辨"没有匹配"与"过滤没生效"**。整个响应
+  // 没有任何信号说明参数被忽略了。
+  // 改为不含过滤字段的基类后，契约如实；被移除的字段本就被忽略，故这是纯
+  // 契约收窄，运行时行为零变化。
+  findAll(@Query() pagination: PageQueryDto) {
     return this.usersService.findAll(pagination);
   }
 
