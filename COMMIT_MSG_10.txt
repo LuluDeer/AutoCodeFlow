@@ -1,0 +1,34 @@
+fix(desktop): 心跳启动点漏传 adminApiUrl，中台直达探针在最常走的路径上静默失效（EXP-03）
+
+缺陷：F-3 给 `HeartbeatMonitor.start()` 加了第二个参数 `adminApiUrl`，用于
+「本地 /health/live + 中台 /api/health 直达探针」的 **AND** 逻辑——后者的存在
+意义正是"executor-node 子进程活着、但它与中台的链路断了"（VPN 断裂等）。
+
+而全仓 5 处调用点里**只有 1 处**传了这个参数：
+  ✅ index.ts 托盘启动路径
+  ❌ ipc-handlers 配置保存后 reload
+  ❌ ipc-handlers 向导保存并关闭
+  ❌ ipc-handlers executor:start IPC
+  ❌ index.ts 开机自启（autoStartExecutor）路径
+
+后果：**用户实际最常走的路径恰好是漏传的那四条**——开机自启、点「启动执行器」、
+改完配置保存。于是中台直达探针形同虚设：断连时托盘仍显示"在线"，用户对中台
+断连无感知——正是 F-3 要修的问题，却只在最少被走到的托盘路径上被修好了。
+
+这类故障的形态值得单独记一笔：**加了参数但大部分调用点没跟上**，不报错、不让
+任何测试变红、不产生日志，只让功能静默退化成修复前的样子。5 个调用点各写一遍
+参数列表，加第 6 个参数时必然再漏一次。
+
+修法：收敛为**全仓唯一的心跳启动入口** `startHeartbeat()`（ipc-handlers 导出），
+端口与 adminApiUrl 一律从同一份已消毒落盘配置读取；5 处调用点全部改走它，从根
+上消除"某个调用点少传一个参数"的可能。
+
+验证：desktop test:main 全部 selftest 通过；test:renderer 通过；tsc --noEmit
+0 error。
+反证（heartbeat.selftest.ts 新增第 5 段守卫）：
+  · 断言 startHeartbeat() 存在且确实把 adminApiUrl 传进 heartbeat.start()；
+  · 断言 ipc-handlers.ts 里 heartbeat.start() 直接调用**恰好 1 处**（即入口
+    自身）、index.ts 里**恰好 0 处**——任一路径绕开入口即红；
+  · 已实测：在 index.ts 重新加回一处 `heartbeat.start(cfg.executorPort)` →
+    守卫立即报红并直接点名「请改用 startHeartbeat()，否则新加的心跳参数会再次
+    在某些路径上漏传」。
