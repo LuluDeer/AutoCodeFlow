@@ -2335,14 +2335,45 @@ export class ExecutorService {
   async cleanupOldRecords(): Promise<void> {
     if (this.leaderGate && !this.leaderGate.isLeader) return;
     const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
-    const execResult = await this.execRepo.delete({
-      createdAt: LessThan(ninetyDaysAgo),
-    });
-    if (execResult.affected && execResult.affected > 0) {
+    // NETOPT-1②: 单条无界 DELETE 在峰值行数下是长事务（锁表 + WAL 风暴），
+    // 改分批 DELETE（对齐下方 cleanupExpiredMetricsHistory 的 R-09 模式）。
+    const deleted = await this.cleanupOldTaskExecutions(ninetyDaysAgo);
+    if (deleted > 0) {
       this.logger.log(
-        `Q7 Cleanup: removed ${execResult.affected} old task executions (>90 days)`,
+        `Q7 Cleanup: removed ${deleted} old task executions (>90 days)`,
       );
     }
+  }
+
+  /** NETOPT-1②: task_executions retention 分批大小（对齐 R-09 metrics 模式） */
+  private static readonly EXECUTION_RETENTION_BATCH_SIZE = 5000;
+
+  /**
+   * NETOPT-1②: task_executions 90 天 retention，返回清理总行数。cutoff 可
+   * 注入以便测试。分批 DELETE（id IN (SELECT ... LIMIT 批大小)）循环直至
+   * 单批不足批大小，避免长事务锁表；多实例下仅 cron Leader 执行（入口已门禁）。
+   */
+  async cleanupOldTaskExecutions(cutoff: Date): Promise<number> {
+    let totalDeleted = 0;
+    let batchDeleted = 0;
+    do {
+      const result = await this.execRepo
+        .createQueryBuilder()
+        .delete()
+        .where(
+          `"id" IN (
+            SELECT "victim"."id" FROM "task_executions" "victim"
+            WHERE "victim"."createdAt" < :cutoff
+            ORDER BY "victim"."id"
+            LIMIT :batchSize
+          )`,
+          { cutoff, batchSize: ExecutorService.EXECUTION_RETENTION_BATCH_SIZE },
+        )
+        .execute();
+      batchDeleted = result.affected ?? 0;
+      totalDeleted += batchDeleted;
+    } while (batchDeleted >= ExecutorService.EXECUTION_RETENTION_BATCH_SIZE);
+    return totalDeleted;
   }
 
   // R-09（DEEP_REVIEW 0ef3bbe）: executor_metrics_history 无 retention——每执行器

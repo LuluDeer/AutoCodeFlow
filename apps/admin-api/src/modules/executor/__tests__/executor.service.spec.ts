@@ -2738,12 +2738,71 @@ describe("ExecutorService (__tests__)", () => {
   });
 
   describe("cleanupOldRecords", () => {
-    it("deletes executions older than 90 days", async () => {
-      execRepo.delete.mockResolvedValue({ affected: 5 });
+    it("cron 入口按 90 天 cutoff 委派分批清理", async () => {
+      const spy = jest
+        .spyOn(service, "cleanupOldTaskExecutions")
+        .mockResolvedValue(5);
       await service.cleanupOldRecords();
-      expect(execRepo.delete).toHaveBeenCalledWith(
-        expect.objectContaining({ createdAt: expect.anything() }),
+      expect(spy).toHaveBeenCalledTimes(1);
+      const arg = spy.mock.calls[0][0] as Date;
+      // cutoff ≈ 90 天前（允许时钟推进的秒级误差）
+      const ninetyDaysMs = 90 * 24 * 60 * 60 * 1000;
+      expect(ninetyDaysMs - (Date.now() - arg.getTime())).toBeLessThan(60_000);
+    });
+  });
+
+  // NETOPT-1②: task_executions retention 分批 DELETE——原单条无界 DELETE
+  // 在峰值行数下是长事务（锁表 + WAL 风暴）。对齐 R-09 metrics 模式。
+  describe("cleanupOldTaskExecutions (NETOPT-1②)", () => {
+    const makeDeleteQb = (batchAffected: number) => ({
+      delete: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      execute: jest.fn().mockResolvedValue({ affected: batchAffected }),
+    });
+
+    it("deletes in batches and stops when batch < size", async () => {
+      // 第一批满批 5000 → 继续；第二批 100 → 停
+      const qb1 = makeDeleteQb(5000);
+      const qb2 = makeDeleteQb(100);
+      execRepo.createQueryBuilder
+        .mockReturnValueOnce(qb1 as any)
+        .mockReturnValueOnce(qb2 as any);
+      const cutoff = new Date("2026-06-14T00:00:00.000Z");
+      const total = await service.cleanupOldTaskExecutions(cutoff);
+      expect(total).toBe(5100);
+      // 两次 DELETE 调用
+      expect(execRepo.createQueryBuilder).toHaveBeenCalledTimes(2);
+      // 断言 where 子句带 cutoff 参数（createdAt < cutoff）与批大小
+      expect(qb1.where).toHaveBeenCalledWith(
+        expect.stringContaining('"createdAt" < :cutoff'),
+        expect.objectContaining({ cutoff, batchSize: 5000 }),
       );
+      expect(qb1.where).toHaveBeenCalledWith(
+        expect.stringContaining("FROM \"task_executions\""),
+        expect.anything(),
+      );
+    });
+
+    it("single undersized batch runs exactly one DELETE", async () => {
+      const qb = makeDeleteQb(7);
+      execRepo.createQueryBuilder.mockReturnValue(qb as any);
+      const total = await service.cleanupOldTaskExecutions(new Date());
+      expect(total).toBe(7);
+      expect(execRepo.createQueryBuilder).toHaveBeenCalledTimes(1);
+    });
+
+    it("zero expired rows → no further batches", async () => {
+      const qb = makeDeleteQb(0);
+      execRepo.createQueryBuilder.mockReturnValue(qb as any);
+      expect(await service.cleanupOldTaskExecutions(new Date())).toBe(0);
+      expect(execRepo.createQueryBuilder).toHaveBeenCalledTimes(1);
+    });
+
+    it("cron entry honors LeaderGate (non-leader skips)", async () => {
+      (service as unknown as { leaderGate: { isLeader: boolean } }).leaderGate =
+        { isLeader: false };
+      await service.cleanupOldRecords();
+      expect(execRepo.createQueryBuilder).not.toHaveBeenCalled();
     });
   });
 
