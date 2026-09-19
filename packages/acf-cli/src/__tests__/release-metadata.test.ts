@@ -16,7 +16,7 @@
  * 反证：把 `.version(pkg.version)` 改回 `.version('1.0.0')` → 本文件变红。
  */
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 
@@ -80,19 +80,40 @@ describe('acf-cli 版本号：必须来自 package.json，不得硬编码', () =
 
   it('行为层：构建产物 self-report 的版本 == package.json（真实执行，非读源码）', () => {
     const entry = join(PKG_DIR, 'dist', 'index.js');
-    // 构建产物必须在场；CI 的 acf-cli-test job 先 build 再 test（与
-    // admin-web 的 PERF-01 守卫同款约定）。产物缺失时显式失败而非静默跳过
-    // ——一个读不到产物就 skip 的守卫在 CI 里等于不存在。
+
+    // 产物缺失时**就地构建**，而不是报错要求调用方先 build。
+    //
+    // 为什么这么改（真实教训）：首版写成"缺产物就 throw 并提示 npm run build"，
+    // 依赖的是"CI 里 build 排在 test 之前"这一**约定**。结果 CI 有两个跑本包
+    // 测试的 job（acf-cli-test 与矩阵化的 windows-node-tests），我只给前者加了
+    // build，后者立刻以 `MODULE_NOT_FOUND: dist/index.js` 变红——同一个包、同一个
+    // 守卫，漏改一处就红一次。把"确保产物在场"收进守卫自身，就从**约定**变成
+    // **结构保证**：无论谁在什么顺序下跑本文件，它都自足。
+    //
+    // 注意仍**不是**静默跳过：构建失败会抛出，断言照旧生效——一个读不到产物
+    // 就 skip 的守卫等于不存在。
+    if (!existsSync(entry)) {
+      try {
+        execFileSync('npm', ['run', 'build'], {
+          cwd: PKG_DIR,
+          stdio: 'ignore',
+          shell: process.platform === 'win32',
+        });
+      } catch (err) {
+        throw new Error(
+          `构建产物缺失且就地构建失败：${entry}。本守卫读产物而非源码——`
+            + `源码里写了什么不代表打出来的包是什么。原始错误：${String(err)}`,
+        );
+      }
+    }
+
     let out: string;
     try {
       out = execFileSync(process.execPath, [entry, '--version'], {
         encoding: 'utf-8',
       }).trim();
     } catch (err) {
-      throw new Error(
-        `无法执行构建产物 ${entry} —— 请先 npm run build（本守卫读产物而非源码，`
-          + `源码里写了什么不代表打出来的包是什么）。原始错误：${String(err)}`,
-      );
+      throw new Error(`无法执行构建产物 ${entry}。原始错误：${String(err)}`);
     }
     expect(out).toBe(pkg.version);
   });
