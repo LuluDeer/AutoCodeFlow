@@ -144,6 +144,27 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
     return () => { const { current } = fetchSeq; fetchSeq.current = current + 1; };
   }, [fetchAll]);
 
+  // NETOPT-7③（2026-09-20）：deploy/upgrade/upgrade-all 成功后的延时刷新不再直接
+  // `setTimeout(fetchAll, …)`——fetchAll 是 useCallback([applicationId, page])，
+  // 定时器持有动作时刻的旧闭包：1.5-2s 窗口内翻页，定时器会以旧 page 重发请求，
+  // 且调用时自增 fetchSeq 使自己成为最新序号，旧页数据覆盖新页（分页器停在新页）；
+  // 卸载后定时器照发（cleanup 自增的 seq 被 fetchAll 调用时再次自增作废）。
+  // 改为经 ref 每次渲染同步到最新 fetchAll，timer 登记表在卸载时统一 clear。
+  const fetchAllRef = useRef(fetchAll);
+  useEffect(() => { fetchAllRef.current = fetchAll; });
+  const refreshTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const scheduleDelayedRefresh = useCallback((delayMs: number) => {
+    const timer = setTimeout(() => {
+      refreshTimersRef.current = refreshTimersRef.current.filter((t) => t !== timer);
+      void fetchAllRef.current();
+    }, delayMs);
+    refreshTimersRef.current.push(timer);
+  }, []);
+  useEffect(() => () => {
+    for (const timer of refreshTimersRef.current) clearTimeout(timer);
+    refreshTimersRef.current = [];
+  }, []);
+
   // Auto-poll while any deployment is in progress
   useEffect(() => {
     const inProgress = deployments.some(d => d.status === 'deploying' || d.status === 'upgrading' || d.status === 'pending');
@@ -171,7 +192,7 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
       }
       setDeployModalOpen(false);
       deployForm.resetFields();
-      setTimeout(fetchAll, 1500);
+      scheduleDelayedRefresh(1500);
     } catch (err: unknown) {
       if (isFormValidationError(err)) return;
       message.error(getErrMsg(err, t('appDeploy.msg.deployFail')));
@@ -239,7 +260,7 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
     try {
       await deploymentsApi.upgrade(id);
       message.success(t('appDeploy.msg.upgradeStarted'));
-      setTimeout(fetchAll, 2000);
+      scheduleDelayedRefresh(2000);
     } catch (err: unknown) {
       message.error(getErrMsg(err, t('appDeploy.msg.upgradeFail')));
     }
@@ -255,7 +276,7 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
     try {
       const result = await applicationsApi.upgradeAll(applicationId);
       message.success(t('appDeploy.msg.upgradeAllDone', { succeeded: result.succeeded, total: result.total }));
-      setTimeout(fetchAll, 2000);
+      scheduleDelayedRefresh(2000);
     } catch (err: unknown) {
       message.error(getErrMsg(err, t('appDeploy.msg.upgradeAllFail')));
     } finally {
