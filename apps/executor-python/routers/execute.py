@@ -947,6 +947,40 @@ def list_live_execution_entries() -> list['_LiveExecution']:
         return list(_live_executions.values())
 
 
+# NETOPT-6②: 在跑执行已解析的池解释器路径登记表（maintenance 池回收的
+# liveness 否决权数据源；与上方 _live_executions 同一 threading.Lock 纪律）。
+# 背景：glue（AC-11a）与无依赖 python（AC-04c）两条路径把池解释器直接当
+# cmd[0] 跑、不建 venv——`_venv_dependency_homes` 的 pyvenv.cfg home 扫描
+# 覆盖不了它们；而池目录 mtime 只在安装时写入，活跃版本反而最优先被 LRU
+# 回收。不登记的话，6h 清扫/紧急清扫会在任务运行中途 rmtree 掉解释器目录，
+# 在跑任务当场断火。登记点：`_ensure_interpreter` 解析成功后（ensure_venv 的
+# uv venv 窗口、glue、无依赖 python 三处）；注销点：ensure_venv 的 finally、
+# run_task spawn 前 killed 检查点早退、run_task 的 finally（幂等 discard）。
+# main.py lifespan 通过 maintenance.register_live_pool_paths_provider 接线。
+_live_pool_interpreters: set[str] = set()
+_live_pool_interpreters_lock = threading.Lock()
+
+
+def _register_live_pool_interpreter(path: 'str | Path') -> None:
+    """登记一个正在被使用的池解释器路径（幂等；str 化后存集合）。"""
+    with _live_pool_interpreters_lock:
+        _live_pool_interpreters.add(str(path))
+
+
+def _unregister_live_pool_interpreter(path: 'str | Path | None') -> None:
+    """解除登记（幂等 discard；None 或未登记的路径均为无害 no-op）。"""
+    if path is None:
+        return
+    with _live_pool_interpreters_lock:
+        _live_pool_interpreters.discard(str(path))
+
+
+def list_live_pool_interpreter_paths() -> list[str]:
+    """maintenance.register_live_pool_paths_provider 的数据源（快照副本）。"""
+    with _live_pool_interpreters_lock:
+        return sorted(_live_pool_interpreters)
+
+
 def _get_task_lock(task_id: str) -> asyncio.Lock:
     """E6 (node task-worker.ts maxConcurrentPerTask=1 parity): the per-task
     execution lock — same-task executions queue here instead of racing
@@ -2875,23 +2909,35 @@ async def ensure_venv(
                 str(python_version), timeout=_interpreter_download_timeout()
             )
             venv_args.extend(['--python', str(pool_python)])
+            # NETOPT-6②：`uv venv` 进行中该池目录还没有任何 venv 的 pyvenv.cfg
+            # home 指向它（venv 依赖扫描覆盖不了这个窗口），先登记防并发 LRU
+            # 回收；venv 建成后由 pyvenv.cfg home 接管，失败清理后自然解除。
+            _register_live_pool_interpreter(str(pool_python))
         # 兼容红线 §4.1：无版本分支的剩余 argv 与改造前逐字节相同。
         venv_args.extend(['--no-project', str(venv_dir)])
         logger.info(f'Creating venv with uv: {venv_dir}')
         try:
-            code, out = await _run_uv(venv_args, UV_VENV_TIMEOUT_SECONDS, env=install_env)
-        except asyncio.TimeoutError:
-            # R4-C P2: a timed-out `uv venv` leaves a half-built directory behind;
-            # the `if not venv_dir.exists()` check would then silently reuse the
-            # broken venv forever. Remove it before surfacing the failure.
-            shutil.rmtree(venv_dir, ignore_errors=True)
-            raise RuntimeError(f'uv venv timed out after {UV_VENV_TIMEOUT_SECONDS}s (uv process killed)')
-        except Exception:
-            shutil.rmtree(venv_dir, ignore_errors=True)
-            raise
-        if code != 0:
-            shutil.rmtree(venv_dir, ignore_errors=True)
-            raise RuntimeError(f'uv venv failed: {_truncate_error_message(out)}')
+            try:
+                code, out = await _run_uv(venv_args, UV_VENV_TIMEOUT_SECONDS, env=install_env)
+            except asyncio.TimeoutError:
+                # R4-C P2: a timed-out `uv venv` leaves a half-built directory behind;
+                # the `if not venv_dir.exists()` check would then silently reuse the
+                # broken venv forever. Remove it before surfacing the failure.
+                shutil.rmtree(venv_dir, ignore_errors=True)
+                raise RuntimeError(f'uv venv timed out after {UV_VENV_TIMEOUT_SECONDS}s (uv process killed)')
+            except Exception:
+                shutil.rmtree(venv_dir, ignore_errors=True)
+                raise
+            if code != 0:
+                shutil.rmtree(venv_dir, ignore_errors=True)
+                raise RuntimeError(f'uv venv failed: {_truncate_error_message(out)}')
+        finally:
+            # NETOPT-6②：成功 → pyvenv.cfg home 已指向池目录（依赖扫描接管）；
+            # 失败 → venv 已删/未建成，无依赖者。两条路径都可解除登记。
+            # 条件短路保证 python_version 为 None（pool_python 未绑定）时不求值。
+            _unregister_live_pool_interpreter(
+                str(pool_python) if python_version is not None else None
+            )
 
     if requirements:
         _validate_requirements(requirements)
@@ -3318,6 +3364,10 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
             resolved_interpreter = str(
                 await _ensure_interpreter(runtime_version, timeout=_interpreter_download_timeout())
             )
+            # NETOPT-6②：glue 用池解释器直接当 cmd[0] 跑（不建 venv，pyvenv.cfg
+            # 依赖扫描覆盖不了），登记进 liveness 集合阻止 LRU 回收在跑期间删
+            # 目录；run_task 的 finally（与 spawn 前 killed 早退）注销。
+            _register_live_pool_interpreter(resolved_interpreter)
         except Exception as exc:  # noqa: BLE001 - 全部归类为解释器不可获取
             if not _is_interpreter_unavailable(exc):
                 raise
@@ -3339,6 +3389,9 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
             resolved_interpreter = str(
                 await _ensure_interpreter(runtime_version, timeout=_interpreter_download_timeout())
             )
+            # NETOPT-6②：无依赖 python 同样直接跑池解释器（不建 venv），登记
+            # 进 liveness 集合；run_task 的 finally（与 spawn 前 killed 早退）注销。
+            _register_live_pool_interpreter(resolved_interpreter)
         except Exception as exc:  # noqa: BLE001 - 全部归类为解释器不可获取
             if not _is_interpreter_unavailable(exc):
                 raise
@@ -3415,6 +3468,9 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
     # kill endpoint already pushed the terminal killed callback and unregistered
     # the execution; bail out before spawning anything.
     if entry is not None and entry.cancelled:
+        # NETOPT-6②：尚未 spawn，先解除池解释器 liveness 登记再退出
+        # （下方大 try 的 finally 覆盖不到这里；幂等 discard，其余路径为 no-op）。
+        _unregister_live_pool_interpreter(resolved_interpreter)
         return {
             'success': False,
             'logs': '',
@@ -3585,3 +3641,8 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
         # callback ownership), matching node's release-on-completion posture.
         if entry is not None:
             entry.proc = None
+        # NETOPT-6②：解除池解释器 liveness 登记（幂等 discard——glue/无依赖
+        # python 路径登记过 resolved_interpreter；venv 路径的 python_bin 是
+        # venv shim 而非池路径，discard 未登记键为无害 no-op。变量在解释器
+        # 解析段无条件初始化为 None，finally 处必已绑定）。
+        _unregister_live_pool_interpreter(resolved_interpreter)

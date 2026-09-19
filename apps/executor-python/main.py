@@ -165,6 +165,9 @@ async def lifespan(app: FastAPI):
     # E8: disk TTL reclamation (node startWorkDirCleanup). The live-execution
     # snapshot provider is registered first so sweeps can protect active dirs.
     maintenance.register_live_entries_provider(execute.list_live_execution_entries)
+    # NETOPT-6②: 池回收的 liveness 否决权数据源——在跑执行已解析的池解释器
+    # 路径（glue/无依赖 python 直接当 cmd[0] 跑，venv 依赖扫描覆盖不了）。
+    maintenance.register_live_pool_paths_provider(execute.list_live_pool_interpreter_paths)
     maintenance.start_disk_cleanup_task()
     logger.info(f'Executor started: {settings.app_name} @ {settings.executor_address}')
     yield
