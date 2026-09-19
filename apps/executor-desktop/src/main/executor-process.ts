@@ -12,6 +12,7 @@ import {
   resolveInterpretersDir as resolveInterpretersDirPure,
 } from './uv-paths';
 import { listLocalIPv4s } from './network-util';
+import { LineSplitter } from './child-line-splitter';
 
 export type ExecutorStatus = 'stopped' | 'pending' | 'online' | 'offline';
 
@@ -65,6 +66,12 @@ export class ExecutorProcess {
    * 失败且无成功信号）时，/health/live 存活**不得**把托盘翻回 'online'。
    */
   private adminRegistration: 'unknown' | 'registered' | 'failed' = 'unknown';
+  /**
+   * NETOPT-2⑦: 子进程输出按行缓冲（一个 data chunk ≠ 一行）。每次 start()
+   * 重建；进程退出时 flush 冲洗残留半行。详见 child-line-splitter.ts 头注。
+   */
+  private stdoutSplitter = new LineSplitter((line) => this.emitChildLine(line, false));
+  private stderrSplitter = new LineSplitter((line) => this.emitChildLine(line, true));
 
   getStatus(): ExecutorStatus {
     return this.currentStatus;
@@ -194,20 +201,22 @@ export class ExecutorProcess {
     // Start health-polling as primary online/offline signal
     this.startHealthPoll(config.executorPort);
 
+    // NETOPT-2⑦: data 回调只做按行缓冲拆分——此前每个 chunk 直送
+    // handleChildOutput，多行 chunk / 跨块半行都会让合法 JSON 行进不了
+    // 结构化通道（详见 child-line-splitter.ts 头注）。
     this.proc.stdout?.on('data', (chunk: Buffer) => {
-      const line = chunk.toString();
-      log.info(`[executor] ${line.trim()}`);
-      this.handleChildOutput(line, false);
+      this.stdoutSplitter.feed(chunk.toString('utf-8'));
     });
 
     this.proc.stderr?.on('data', (chunk: Buffer) => {
-      const line = chunk.toString();
-      log.warn(`[executor:err] ${line.trim()}`);
-      this.handleChildOutput(line, true);
+      this.stderrSplitter.feed(chunk.toString('utf-8'));
     });
 
     this.proc.on('exit', (code, signal) => {
       log.info(`Executor exited: code=${code} signal=${signal}`);
+      // NETOPT-2⑦: 退出时冲洗残留半行（不以换行结束的最后一行也算一行）。
+      this.stdoutSplitter.flush();
+      this.stderrSplitter.flush();
       this.proc = null;
       this.stopHealthPoll();
       if (!this.stopping) {
@@ -476,6 +485,20 @@ export class ExecutorProcess {
         this.notifyStatus('offline');
       }
     }
+  }
+
+  /**
+   * NETOPT-2⑦: 单行交付点（LineSplitter 的回调）。日志格式与旧实现逐字一致
+   * （stdout → log.info `[executor] …`，stderr → log.warn `[executor:err] …`），
+   * 差别只在「按行」而非「按 chunk」。
+   */
+  private emitChildLine(line: string, isErr: boolean): void {
+    if (isErr) {
+      log.warn(`[executor:err] ${line.trim()}`);
+    } else {
+      log.info(`[executor] ${line.trim()}`);
+    }
+    this.handleChildOutput(line, isErr);
   }
 
   private broadcastLog(line: string): void {
