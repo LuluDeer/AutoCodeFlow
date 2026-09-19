@@ -119,6 +119,64 @@ def register_live_entries_provider(fn) -> None:
         _live_entries_provider = fn
 
 
+# NETOPT-6②: 在跑执行的池解释器路径 provider —— routers/execute 在
+# `_ensure_interpreter` 解析成功后登记、任务结束时注销（进程内 set + 锁），
+# main.py lifespan 里与 E8 provider 一起接线。这是池回收的**第二道否决权**：
+# glue（AC-11a）与无依赖 python（AC-04c）两条路径把池解释器直接当 cmd[0]
+# 跑、不建 venv，`_venv_dependency_homes` 扫不到任何依赖——不查这道 liveness
+# 的话，6h 清扫/紧急清扫的 LRU 回收会在任务运行中途把解释器目录 rmtree 掉
+# （在跑任务当场断火）。且池目录 mtime 只在安装时写入，越活跃的版本 mtime
+# 越老、反而最优先被回收——没有这道否决权，活跃任务恰恰处于最危险的被回收
+# 位置（对照 venv 路径：venv 的 pyvenv.cfg home 指向池目录，第一道否决权已覆盖）。
+_live_pool_paths_provider = lambda: []  # noqa: E731
+_live_pool_paths_provider_guard = threading.Lock()
+
+
+def register_live_pool_paths_provider(fn) -> None:
+    """Install the getter returning pool interpreter paths currently in use by
+    running executions（绝对路径，通常为池内版本目录下的 python 可执行文件）。
+
+    与 E8 的 ``register_live_entries_provider`` 同一接线纪律：由 main.py
+    lifespan 注入 routers/execute 的快照 getter，避免 maintenance <-> routers
+    循环 import。"""
+    global _live_pool_paths_provider
+    with _live_pool_paths_provider_guard:
+        _live_pool_paths_provider = fn
+
+
+def _live_pool_paths() -> list[str] | None:
+    """在跑执行正在使用的池解释器路径快照。
+
+    provider 失败返回 ``None``——调用方必须按「liveness 未知」**fail-closed**
+    跳过回收：与 E8 `_live_workdir_names` 同一纪律，liveness 不明时宁可让池
+    暂时超红线，也不能赌「没有任务在用」而删掉在跑解释器。"""
+    try:
+        return [str(p) for p in (_live_pool_paths_provider() or [])]
+    except Exception:
+        logger.exception('live pool paths provider failed; skipping reclamation')
+        return None
+
+
+def _is_live_pool_path(path: Path, live_paths: list[str]) -> bool:
+    """`path` 是否与某个在跑池解释器路径相同或包含它。
+
+    在跑登记的是池目录内的 python 可执行文件（如
+    `<pool>/cpython-3.12.11-<plat>-none/python.exe`），回收候选是整个版本
+    目录——用「live 路径位于候选目录之内（或相等）」判定，与
+    `_venv_dependency_homes` 的 normcase/normpath 键纪律一致（Windows 大小
+    写不敏感）。"""
+    key = os.path.normcase(os.path.normpath(str(path)))
+    for raw in live_paths:
+        try:
+            live = Path(raw)
+        except (OSError, ValueError):  # pragma: no cover - 畸形路径不入集合
+            continue
+        live_key = os.path.normcase(os.path.normpath(str(live)))
+        if live_key == key or _path_within(live, path):
+            return True
+    return False
+
+
 def _live_workdir_names():
     """Names under work_dir that back a live execution right now.
 
@@ -420,6 +478,28 @@ def _attempt_reclaim(
     依赖检查是**否决权**：只要还有 venv 的 home 指向该目录，就绝不回收——
     宁可让池暂时超红线（响亮的告警）也不能把用户的 venv 弄废。"""
     name, path, size, mtime = entry
+    # NETOPT-6②：第一道否决权——在跑执行已解析的池解释器。glue（AC-11a）与
+    # 无依赖 python（AC-04c）把池解释器直接当 cmd[0] 跑、不建 venv，下面的
+    # venv 依赖扫描对它们无能为力；不查这道的话，任务运行中会被 LRU 回收
+    # 断火（且活跃版本 mtime 最老、最优先被回收）。provider 失败 = liveness
+    # 未知 = fail-closed 全部跳过。
+    live_paths = _live_pool_paths()
+    if live_paths is None:
+        logger.warning(
+            'Skipping reclamation of interpreter %s (%s): live-execution pool '
+            'path provider failed — liveness unknown, refusing to delete (fail-closed)',
+            name, reason,
+        )
+        return False, 0
+    if _is_live_pool_path(path, live_paths):
+        logger.warning(
+            'Skipping reclamation of interpreter %s (%s): a running execution '
+            'has resolved and is using it right now (%s). Deleting it would kill '
+            'the running task mid-flight (glue/dependency-free python runs the '
+            'pool interpreter directly as cmd[0]).',
+            name, reason, ', '.join(live_paths[:5]),
+        )
+        return False, 0
     key = os.path.normcase(os.path.normpath(str(path)))
     dependents = dependency_homes.get(key) or []
     if not dependents:
@@ -453,13 +533,18 @@ def enforce_interpreter_pool_limits() -> dict:
     触发即**先告警**，再按目录 mtime 升序尝试回收最久未使用的版本，直到重新
     落入红线之内。
 
-    回收有三条硬约束：
+    回收有四条硬约束：
       1. **引用感知**（关键正确性）：任何仍被任务 venv 依赖的版本一律跳过
          （venv 的 `bin/python` 只是 shim，真身就是池里那个目录——删了 venv 当场
          报废，见 `_venv_dependency_homes`）。
       2. **超限不可回收时不删任何东西**：全部候选都被 pin 住时，只留一条响亮的
          告警。宁可池暂时超红线，也不能悄悄弄废用户的 venv。
       3. **只碰解释器池**：任务 venv 与 workdir 一概不动（那是 TTL 清扫的职责）。
+      4. **在跑执行优先（NETOPT-6②）**：任何在跑执行已解析、正在使用的池解释器
+         路径一律跳过——glue（AC-11a）与无依赖 python（AC-04c）不建 venv，约束 1
+         的 venv 依赖扫描覆盖不了它们；不查这道的话，活跃版本（mtime 最老）
+         恰恰最优先被回收，在跑任务运行中被 rmtree 断火。liveness provider 失败
+         时按「未知」fail-closed 全部跳过。
 
     回收后调用 `interpreters.invalidate_cache()` 让上报清单收敛。"""
     counts = {'reclaimedVersions': 0, 'reclaimedBytes': 0, 'poolBytes': 0,

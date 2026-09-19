@@ -1558,6 +1558,91 @@ def test_ensure_venv_creation_failure_removes_venv_dir(tmp_path, monkeypatch):
     assert not venv_dir.exists()
 
 
+def test_ensure_venv_registers_pool_interpreter_during_creation_and_releases_after(tmp_path, monkeypatch):
+    """NETOPT-6②：`uv venv` 期间池解释器必须登记在册（此刻 venv 尚无
+    pyvenv.cfg，venv 依赖扫描覆盖不了这个窗口），ensure_venv 返回后解除
+    （此后由 pyvenv.cfg home 接管第一道否决权）。"""
+    from routers import execute as execute_module
+
+    pool_python = tmp_path / 'pool' / 'cpython-3.9.20-x' / 'python.exe'
+    pool_python.parent.mkdir(parents=True)
+    pool_python.write_bytes(b'')
+
+    async def fake_ensure_interpreter(version, timeout):
+        return pool_python
+
+    monkeypatch.setattr(execute_module, '_ensure_interpreter', fake_ensure_interpreter)
+
+    during = []
+
+    class FakeProc:
+        returncode = 0
+
+        async def communicate(self):
+            return b'', b''
+
+        def kill(self):
+            pass
+
+        async def wait(self):
+            return 0
+
+    async def fake_exec(*args, **kwargs):
+        during.append(execute_module.list_live_pool_interpreter_paths())
+        return FakeProc()
+
+    monkeypatch.setattr(execute_module.asyncio, 'create_subprocess_exec', fake_exec)
+    monkeypatch.setattr(execute_module.settings, 'pypi_registry_url', '')
+
+    execute_module._live_pool_interpreters.clear()
+    try:
+        asyncio.run(execute_module.ensure_venv(
+            tmp_path / '.venvs' / 'task-live', [], python_version='3.9'))
+    finally:
+        execute_module._live_pool_interpreters.clear()
+
+    assert during and during[0] == [str(pool_python)], (
+        f'`uv venv` 运行期间池解释器必须已登记，实际 {during}'
+    )
+    assert execute_module.list_live_pool_interpreter_paths() == [], (
+        'ensure_venv 返回后登记必须解除'
+    )
+
+
+def test_ensure_venv_failure_releases_pool_interpreter_registration(tmp_path, monkeypatch):
+    """NETOPT-6② 反证：`uv venv` 失败路径同样必须解除登记（防 liveness 泄漏
+    把该池版本永久 pin 死）。"""
+    from routers import execute as execute_module
+
+    pool_python = tmp_path / 'pool' / 'cpython-3.9.20-x' / 'python.exe'
+    pool_python.parent.mkdir(parents=True)
+    pool_python.write_bytes(b'')
+
+    async def fake_ensure_interpreter(version, timeout):
+        return pool_python
+
+    monkeypatch.setattr(execute_module, '_ensure_interpreter', fake_ensure_interpreter)
+    monkeypatch.setattr(execute_module, 'UV_VENV_TIMEOUT_SECONDS', 5)
+    monkeypatch.setattr(execute_module.settings, 'pypi_registry_url', '')
+
+    async def fake_exec(*args, **kwargs):
+        return _FakeUvProc(tmp_path / '.venvs' / 'task-dead', returncode=1, output=b'boom')
+
+    monkeypatch.setattr(execute_module.asyncio, 'create_subprocess_exec', fake_exec)
+
+    execute_module._live_pool_interpreters.clear()
+    try:
+        with pytest.raises(RuntimeError, match='uv venv failed'):
+            asyncio.run(execute_module.ensure_venv(
+                tmp_path / '.venvs' / 'task-dead', [], python_version='3.9'))
+    finally:
+        execute_module._live_pool_interpreters.clear()
+
+    assert execute_module.list_live_pool_interpreter_paths() == [], (
+        '失败路径也必须解除登记'
+    )
+
+
 def _make_reusable_venv(venv_dir, version_info='3.12.13'):
     """Create a venv dir that passes ensure_venv's reuse validation.
 
@@ -1790,6 +1875,59 @@ def test_run_task_runtime_version_resolves_interpreter_and_runs_with_it(monkeypa
     assert spawns[0][0] == str(pool_python), (
         f'无依赖分支必须用解析出的解释器执行，实际 argv[0]={spawns[0][0]!r}'
     )
+
+
+def test_run_task_registers_pool_interpreter_liveness_during_the_run(monkeypatch, tmp_path):
+    """NETOPT-6②：AC-04c 无依赖分支运行期间，解析出的池解释器必须登记进
+    liveness 集合（maintenance 池回收的否决权数据源），run_task 结束后注销。
+
+    反证场景：glue（AC-11a）/无依赖 python（AC-04c）不建 venv，pyvenv.cfg
+    依赖扫描覆盖不了——不登记的话，6h/紧急 LRU 回收会在任务运行中途 rmtree
+    掉解释器目录断火，且活跃版本（mtime 最老）最优先被回收。"""
+    from routers import execute as execute_module
+    from routers.execute import ExecuteRequest, run_task
+
+    monkeypatch.setattr(execute_module.settings, 'work_dir', str(tmp_path))
+    monkeypatch.setattr(execute_module.settings, 'admin_api_url', 'http://admin.local')
+    monkeypatch.setattr(execute_module.settings, 'admin_api_url_internal', '')
+    monkeypatch.setattr(execute_module.settings, 'admin_api_url_external', '')
+    monkeypatch.setattr(execute_module.settings, 'executor_shared_token', 'tok')
+    monkeypatch.setattr(execute_module.settings, 'executor_secret', '')
+
+    pool_python = tmp_path / 'pool' / 'cpython-3.9.25-windows-x86_64-none' / 'python.exe'
+    pool_python.parent.mkdir(parents=True)
+    pool_python.write_bytes(b'')
+
+    async def fake_ensure_interpreter(version, timeout):
+        return pool_python
+
+    monkeypatch.setattr(execute_module, '_ensure_interpreter', fake_ensure_interpreter)
+
+    during_run = []
+
+    async def fake_spawn(*args, **kwargs):
+        # spawn 时刻 = 解释器已解析、进程即将运行：liveness 必须已登记
+        during_run.append(execute_module.list_live_pool_interpreter_paths())
+        return _FakeTaskProc()
+
+    monkeypatch.setattr(execute_module.asyncio, 'create_subprocess_exec', fake_spawn)
+
+    execute_module._live_pool_interpreters.clear()
+    try:
+        req = ExecuteRequest(executionId='exec-live-pool', task={
+            'id': 'task-live-pool', 'runtime': 'python', 'script': 'print(1)',
+            'runtimeVersion': '3.9',
+        })
+        result = asyncio.run(run_task(req))
+    finally:
+        execute_module._live_pool_interpreters.clear()
+
+    assert result['success'] is True
+    assert during_run == [[str(pool_python)]], (
+        f'运行中（spawn 时刻）池解释器必须已登记进 liveness 集合，实际 {during_run}'
+    )
+    # run_task 返回 = 进程结束：登记必须解除，否则该池版本此后永远无法回收
+    assert execute_module.list_live_pool_interpreter_paths() == []
 
 
 def test_run_task_runtime_version_unavailable_fails_loudly(monkeypatch, tmp_path):

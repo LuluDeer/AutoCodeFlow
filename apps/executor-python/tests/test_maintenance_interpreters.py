@@ -392,3 +392,104 @@ def test_dependency_scan_matches_the_exact_pool_directory(layout):
     assert referenced.exists(), 'the referenced version must survive'
     assert not unreferenced.exists(), 'the unreferenced version is reclaimed'
     assert result['reclaimedVersions'] == 1
+
+
+# ---------------------------------------------------------------------------
+# NETOPT-6②：在跑执行的池解释器否决权（liveness provider）
+# ---------------------------------------------------------------------------
+
+def test_reclamation_skips_a_version_a_running_execution_is_using(layout, caplog):
+    """NETOPT-6②：在跑执行已解析的池解释器路径拥有最高否决权。
+
+    glue（AC-11a）/无依赖 python（AC-04c）不建 venv，pyvenv.cfg 依赖扫描覆盖
+    不了它们——没有这道否决权，LRU 回收（活跃版本 mtime 最老、最优先被回收）
+    会在任务运行中途 rmtree 掉解释器目录，当场断火。"""
+    import logging
+
+    work_root, pool_root = layout
+    settings.interpreter_single_version_mb = 1
+    big = _make_version(pool_root, 'cpython-3.9.20-x', 2 * MB)
+    live_python = big / 'python.exe'  # 在跑执行解析出的解释器（池目录内的可执行文件）
+
+    previous = maintenance._live_pool_paths_provider
+    maintenance.register_live_pool_paths_provider(lambda: [str(live_python)])
+    try:
+        with caplog.at_level(logging.WARNING):
+            result = maintenance.enforce_interpreter_pool_limits()
+    finally:
+        maintenance.register_live_pool_paths_provider(previous)
+
+    assert result['reclaimedVersions'] == 0
+    assert result['pinnedVersions'] == 1
+    assert big.exists(), 'a pool version a running execution is using must survive reclamation'
+    assert any('running execution' in r.getMessage() for r in caplog.records)
+
+
+def test_reclamation_only_skips_versions_running_executions_use(layout):
+    """否决权只保护在跑路径：其余版本照常回收（否则 liveness 接线等于关掉回收）。"""
+    work_root, pool_root = layout
+    settings.interpreter_single_version_mb = 1
+    stale = _make_version(pool_root, 'cpython-3.8.20-x', 2 * MB)
+    live = _make_version(pool_root, 'cpython-3.12.11-x', 2 * MB)
+    live_python = live / 'python.exe'
+
+    previous = maintenance._live_pool_paths_provider
+    maintenance.register_live_pool_paths_provider(lambda: [str(live_python)])
+    try:
+        result = maintenance.enforce_interpreter_pool_limits()
+    finally:
+        maintenance.register_live_pool_paths_provider(previous)
+
+    assert not stale.exists(), 'the version no running execution uses is reclaimed as before'
+    assert live.exists(), 'the version a running execution resolved survives'
+    assert result['reclaimedVersions'] == 1
+    assert result['pinnedVersions'] == 1
+
+
+def test_live_paths_provider_failure_pins_everything_fail_closed(layout, caplog):
+    """provider 失败 = liveness 未知 = fail-closed 全部跳过（与 E8 同纪律）。"""
+    import logging
+
+    work_root, pool_root = layout
+    settings.interpreter_single_version_mb = 1
+    big = _make_version(pool_root, 'cpython-3.9.20-x', 2 * MB)
+
+    def broken():
+        raise RuntimeError('registry exploded')
+
+    previous = maintenance._live_pool_paths_provider
+    maintenance.register_live_pool_paths_provider(broken)
+    try:
+        with caplog.at_level(logging.WARNING):
+            result = maintenance.enforce_interpreter_pool_limits()
+    finally:
+        maintenance.register_live_pool_paths_provider(previous)
+
+    assert big.exists()
+    assert result['reclaimedVersions'] == 0
+    assert result['pinnedVersions'] == 1
+    assert any('fail-closed' in r.getMessage() for r in caplog.records)
+
+
+def test_live_pool_interpreter_registry_is_idempotent_and_snapshot_is_a_copy():
+    """NETOPT-6② execute 侧登记表：幂等登记/注销，快照是防御性副本。"""
+    from routers import execute as execute_module
+
+    live_python = str('/pool/cpython-3.9.20-x/python.exe')
+    execute_module._live_pool_interpreters.clear()
+    try:
+        execute_module._register_live_pool_interpreter(live_python)
+        execute_module._register_live_pool_interpreter(live_python)  # 幂等
+        assert execute_module.list_live_pool_interpreter_paths() == [live_python]
+
+        snapshot = execute_module.list_live_pool_interpreter_paths()
+        snapshot.append('mutated')  # 改快照不得影响登记表
+        assert execute_module.list_live_pool_interpreter_paths() == [live_python]
+
+        execute_module._unregister_live_pool_interpreter(live_python)
+        assert execute_module.list_live_pool_interpreter_paths() == []
+        execute_module._unregister_live_pool_interpreter(None)  # no-op
+        execute_module._unregister_live_pool_interpreter('/never-registered')  # 幂等 no-op
+        assert execute_module.list_live_pool_interpreter_paths() == []
+    finally:
+        execute_module._live_pool_interpreters.clear()
