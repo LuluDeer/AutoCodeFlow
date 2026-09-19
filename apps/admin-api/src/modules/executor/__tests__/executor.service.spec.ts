@@ -2789,7 +2789,7 @@ describe("ExecutorService (__tests__)", () => {
         expect.objectContaining({ cutoff, batchSize: 5000 }),
       );
       expect(qb1.where).toHaveBeenCalledWith(
-        expect.stringContaining("FROM \"task_executions\""),
+        expect.stringContaining('FROM "task_executions"'),
         expect.anything(),
       );
     });
