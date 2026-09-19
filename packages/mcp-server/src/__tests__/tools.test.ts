@@ -27,6 +27,7 @@ import {
   registerProjectTools,
   buildExecutionTimeline,
   TASK_TEMPLATES,
+  ANALYZE_TIMEOUT_MS,
 } from "../tools";
 
 const registerFns = [
@@ -361,7 +362,62 @@ describe("application read/analyze tools", () => {
     await tools.get("analyze_application")!.handler({ applicationId: "a1" });
     expect(call).toHaveBeenNthCalledWith(1, "GET", "/applications");
     expect(call).toHaveBeenNthCalledWith(2, "GET", "/applications/a1");
-    expect(call).toHaveBeenNthCalledWith(3, "POST", "/applications/a1/analyze");
+    expect(call).toHaveBeenNthCalledWith(
+      3,
+      "POST",
+      "/applications/a1/analyze",
+      undefined,
+      ANALYZE_TIMEOUT_MS,
+    );
+  });
+});
+
+// NETOPT-6④：analyze/suggest 类端点的服务端预算是同步 AI 的 60s×2，默认
+// REQUEST_TIMEOUT_MS=30s 结构性小于它——客户端必须在调用点带 120s per-call
+// 覆盖，否则 AI 跑满预算成功返回时 MCP 侧早已超时。
+describe("analyze/suggest per-call timeout budget", () => {
+  it("analyze_execution / suggest_schedule / analyze_application pass the 120s budget", async () => {
+    await tools.get("analyze_execution")!.handler({
+      taskId: "t1",
+      executionId: "e1",
+    });
+    await tools.get("suggest_schedule")!.handler({ taskId: "t1" });
+    await tools.get("analyze_application")!.handler({ applicationId: "a1" });
+    expect(call).toHaveBeenNthCalledWith(
+      1,
+      "POST",
+      "/tasks/t1/executions/e1/analyze",
+      undefined,
+      ANALYZE_TIMEOUT_MS,
+    );
+    expect(call).toHaveBeenNthCalledWith(
+      2,
+      "POST",
+      "/tasks/t1/suggest-schedule",
+      undefined,
+      ANALYZE_TIMEOUT_MS,
+    );
+    expect(call).toHaveBeenNthCalledWith(
+      3,
+      "POST",
+      "/applications/a1/analyze",
+      undefined,
+      ANALYZE_TIMEOUT_MS,
+    );
+  });
+
+  it("keeps the default 30s budget on non-AI endpoints", async () => {
+    await tools.get("trigger_task")!.handler({ taskId: "t1" });
+    await tools.get("get_execution_stats")!.handler({ taskId: "t1" });
+    // 非 AI 端点不得携带第 4 参（超时覆盖）——结构性预算只在 analyze/suggest
+    // 类调用上放宽。
+    expect(call).toHaveBeenNthCalledWith(
+      1,
+      "POST",
+      "/tasks/t1/trigger",
+      {},
+    );
+    expect(call).toHaveBeenNthCalledWith(2, "GET", "/tasks/t1/stats");
   });
 });
 

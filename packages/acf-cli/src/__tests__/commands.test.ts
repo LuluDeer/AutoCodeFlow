@@ -52,6 +52,8 @@ vi.mock('../client', () => ({
   del: vi.fn(),
   resetClient: vi.fn(),
   formatApiError: (e: unknown) => String(e),
+  // NETOPT-6④：analyze/suggest 命令透传给 post 的 per-call 预算常量
+  ANALYZE_TIMEOUT_MS: 120_000,
 }));
 
 vi.mock('../config', () => ({
@@ -238,6 +240,51 @@ describe('acf task list (P2 contract fix)', () => {
       status: undefined,
       name: 'foo',
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NETOPT-6④：analyze/suggest 类子命令带 120s per-call 预算（服务端同步 AI
+// 预算 60s×2，实例默认 30s 结构性小于它）。
+// ---------------------------------------------------------------------------
+describe('analyze/suggest subcommands per-call budget (NETOPT-6④)', () => {
+  it('acf task analyze posts with the 120s budget', async () => {
+    mockedPost.mockResolvedValueOnce({ aiAnalysis: 'root cause: x' });
+    await run(tasksCommand(), 'task analyze t1 e1');
+    expect(mockedPost).toHaveBeenCalledWith(
+      '/tasks/t1/executions/e1/analyze',
+      undefined,
+      120_000,
+    );
+  });
+
+  it('acf task suggest-schedule posts with the 120s budget', async () => {
+    mockedPost.mockResolvedValueOnce({
+      suggestedCron: '0 2 * * *',
+      currentCron: null,
+      reasoning: 'r',
+    });
+    await run(tasksCommand(), 'task suggest-schedule t1');
+    expect(mockedPost).toHaveBeenCalledWith(
+      '/tasks/t1/suggest-schedule',
+      undefined,
+      120_000,
+    );
+  });
+
+  it('acf app analyze posts with the 120s budget', async () => {
+    mockedPost.mockResolvedValueOnce({
+      appId: 'a1',
+      appName: 'demo',
+      analysis: 'healthy',
+      stats: { totalTasks: 0, avgSuccessRate: 100, avgDuration: 0, criticalTasks: [] },
+    });
+    await run(appsCommand(), 'app analyze a1');
+    expect(mockedPost).toHaveBeenCalledWith(
+      '/applications/a1/analyze',
+      undefined,
+      120_000,
+    );
   });
 });
 

@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import Table from 'cli-table3';
 import chalk from 'chalk';
 import ora from 'ora';
-import { get, post, put, del, formatApiError } from '../client';
+import { get, post, put, del, formatApiError, ANALYZE_TIMEOUT_MS } from '../client';
 
 interface Application {
   id: string;
@@ -199,12 +199,14 @@ export function appsCommand(): Command {
     .action(async (id) => {
       const spinner = ora('Running AI health analysis…').start();
       try {
+        // NETOPT-6④：同步 AI 端点（服务端预算 60s×2）用 120s per-call 覆盖，
+        // 否则默认 30s 结构性小于服务端预算，AI 跑满预算成功返回时 CLI 已超时。
         const result = await post<{
           appId: string;
           appName: string;
           analysis: string;
           stats: { totalTasks: number; avgSuccessRate: number; avgDuration: number; criticalTasks: string[] };
-        }>(`/applications/${id}/analyze`);
+        }>(`/applications/${id}/analyze`, undefined, ANALYZE_TIMEOUT_MS);
         spinner.stop();
         console.log(chalk.bold(`\nAI Health Analysis — ${result.appName}`));
         console.log(chalk.gray('─'.repeat(60)));
