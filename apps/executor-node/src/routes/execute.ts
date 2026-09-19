@@ -1052,12 +1052,29 @@ async function ensurePythonVenv(opts: EnsureVenvOptions): Promise<string> {
   }
 
   if (!fs.existsSync(venvDir)) {
-    const uv = await resolveUvForExecute();
     const venvArgs = ['venv'];
+    let uv: string;
     if (declaredVersion) {
-      // D8：只传池内绝对路径，绝不传裸版本号（裸版本号 = uv 的自动下载语义）。
+      // EXP-02（本轮体验审查）：**必须先解析解释器，再解析 uv**。
+      //
+      // 此前顺序相反（先 `resolveUvForExecute()`），后果是：在一台既没装 uv、
+      // 任务又声明了 Python 版本的执行器上，抛出的永远是
+      //   「uv is not available on this executor (no UV_BIN, not on PATH, ...)」
+      // 该文案既不含 `解释器 <X.Y> 无法获取` 骨架、也不匹配
+      // `prepareFailureReason` 的解释器规则，于是落到 `unknown`；
+      // 而 **python 执行器在同一情形下报 `interpreter_unavailable`**
+      // ——同一失败在两个执行器上归类不同，排障者按分类筛选会漏掉一半。
+      //
+      // `ensureVersion()` 走的是解释器池/下载器，**不需要 uv**，所以把它提前
+      // 能得到更准确的归因：池里没有 + 下不下来 → `interpreter_unavailable`
+      // （附「候选执行器」快照，调度侧据此改派）；池里有 → 再解析 uv，此时
+      // uv 缺失才是真正的根因。
       const poolPython = await ensureInterpreter(declaredVersion, logPrepare);
+      uv = await resolveUvForExecute();
+      // D8：只传池内绝对路径，绝不传裸版本号（裸版本号 = uv 的自动下载语义）。
       venvArgs.push('--python', poolPython);
+    } else {
+      uv = await resolveUvForExecute();
     }
     // 兼容红线 §4.1/AC-10a：无版本分支的剩余 argv 与改造前逐字节相同。
     venvArgs.push('--no-project', venvDir);
