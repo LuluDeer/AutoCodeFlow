@@ -1,0 +1,36 @@
+fix(api): 分页 DTO 混入任务过滤字段，/users 契约公示了不生效的参数（API-07）
+
+根因不在 users 端点本身，而在分层：`PaginationDto` 历史上把三个**任务专用**
+过滤字段（`name` / `status` / `runtime`）混进了"分页"这个通用概念，于是它们被
+6 个 DTO 继承、出现在**所有**分页端点的 OpenAPI 参数表上——包括根本不读它们的
+端点。最典型的是 `GET /users`：契约写着
+  `name` —— "Fuzzy search by task name"
+而 `usersService.findAll` 只取 page/pageSize，**完全忽略 name**。
+
+危害不是"多几个无用参数"：`?name=alice` 会**静默返回未过滤的全量用户列表**
+且 HTTP 200。调用方（acf-cli / mcp-server / 手工调 API 的运维）无法分辨
+"没有匹配"与"过滤没生效"，会据此得出错误结论；整个响应没有任何信号说明参数
+被忽略了。这类"契约承诺了、实现没做"的缺陷不会让任何测试变红。
+
+修法：分页与业务过滤**分层**——
+  · 新增 `PageQueryDto`：只有 page/pageSize 的纯分页基类；
+  · `PaginationDto extends PageQueryDto`：保留任务过滤字段，既有 6 个 DTO
+    行为完全不变；
+  · 不消费这些过滤器的端点（`GET /users`、`GET /config/history`）改继承
+    `PageQueryDto`，`users.service.findAll` 签名同步收窄。
+这是**纯契约收窄**：被移除的字段本来就被忽略，删掉不改变任何运行时行为
+—— openapi.json 的 diff 是 54 行纯删除，零新增。
+
+验证：admin-api 3024 passed / 184 suites；tsc --noEmit 0 error；eslint 0 error；
+openapi.json + api-types.ts 已重生成（仅删减）；check-failure-reasons /
+docs-site sync-check 两个仓库守卫全绿。
+反证 10 条（pagination-layering.api07.spec.ts）：
+  · 契约层断言 `/users` 的参数表**恰好**只剩 page/pageSize，且反向断言
+    `/tasks` 仍**保留** name/status（防止把真正在用的也一刀切砍掉）；
+  · 源码层断言 users 的 controller 与 service 签名都收窄、且不再 import
+    PaginationDto（"改了一半"的典型形态是只改一处）；
+  · 已实测把 users 改回 PaginationDto → 1 条变红。
+写守卫时踩到两个坑并已修正：① `Object.keys(new PaginationDto())` 取不到
+`@IsOptional()` 的可选字段（值为 undefined 且不产生自有属性）——那样"基类没有
+name"会永远为真、断言退化；改为**读源码里的属性声明**。② Jest 的 `expect`
+不接受第二参数（vitest 专有），断言消息只能走注释。
