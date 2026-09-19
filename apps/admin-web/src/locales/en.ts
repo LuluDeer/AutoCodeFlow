@@ -2137,6 +2137,11 @@ export default {
   'errorFallback.reload': 'Reload',
   'errorFallback.copied': 'Copied',
   'errorFallback.copy': 'Copy error details',
+  // NETOPT-4：路由级错误兜底（RouteErrorBoundary）——懒加载 chunk 失效分支
+  'routerError.chunkTitle': 'New version available, please refresh',
+  'routerError.chunkDesc':
+    'A new version of the app has been deployed and the assets of this page are no longer available. Click the button below to load the latest version.',
+  'routerError.refresh': 'Refresh page',
   'stateError.loadingFailed': 'Failed to load',
   'stateError.requestFailed': 'Request failed. Please try again later.',
   'stateError.copySuccess': 'Error details copied to clipboard',
