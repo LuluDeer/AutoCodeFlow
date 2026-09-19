@@ -32,10 +32,19 @@ export const DEFAULT_LOG_PARTITION_ENABLED = true;
  * （并发写入、驱动差异、分区关闭）。5000 × 200 = 单晚至多 100 万行，余量
  * 交给下一个 cron 周期——保留期清理幂等，晚一晚无副作用。与同模块
  * S3_LOG_OBJECT_MAX_ROUNDS=50 同款姿态。
+ *
+ * NETOPT-8④: 常量本体迁至 common/utils/capped-batched-delete.util（该
+ * helper 已被 executor/audit/outbox retention 统一复用），此处 re-export
+ * 保持既有导入面（本文件与其 spec）不变。
  */
-export const LOG_RETENTION_MAX_DELETE_ROUNDS = 200;
-/** 单次 pass 墙钟上限（10 分钟）：防慢查询叠加把 cron 拖成常驻任务 */
-export const LOG_RETENTION_MAX_DURATION_MS = 10 * 60 * 1000;
+export {
+  LOG_RETENTION_MAX_DELETE_ROUNDS,
+  LOG_RETENTION_MAX_DURATION_MS,
+} from "../../../common/utils/capped-batched-delete.util";
+import {
+  LOG_RETENTION_MAX_DELETE_ROUNDS,
+  LOG_RETENTION_MAX_DURATION_MS,
+} from "../../../common/utils/capped-batched-delete.util";
 
 /**
  * DB-002 + ARCH-22: execution_log_lines 的保留期清理。
