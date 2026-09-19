@@ -16,7 +16,14 @@
   "packages": {
     "packages/autocodeflow-node-sdk": {
       "release-type": "node",
-      "component": "autocodeflow-sdk"
+      "component": "autocodeflow-sdk",
+      "extra-files": [
+        "/packages/docs-site/sdk-node.md",
+        "/packages/docs-site/sdk-python.md",
+        "/packages/docs-site/getting-started.md",
+        "/packages/docs-site/release.md",
+        "/packages/docs-site/index.md"
+      ]
     },
     "packages/mcp-server": {
       "release-type": "node",
