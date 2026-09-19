@@ -65,6 +65,24 @@ const row = (
     ...overrides,
   }) as AppDeployment;
 
+/**
+ * NETOPT-5⑦: fake timers 有界泵进——按被测真实节奏（interval 钳制下限
+ * 250ms）逐段推进探测窗直到条件满足（或步数耗尽，交由后续显式断言给出
+ * 可读失败）。消掉此前「900ms 真实预算赌 CI 空闲」的时长赌注：探测窗
+ * 不再依赖墙钟，负载下零假红。
+ */
+async function pumpUntil(
+  condition: () => boolean,
+  stepMs = 250,
+  maxSteps = 12,
+): Promise<void> {
+  for (let i = 0; i < maxSteps && !condition(); i++) {
+    await jest.advanceTimersByTimeAsync(stepMs);
+  }
+  // 收尾刷一次微任务（promoteRest / failBatch 的尾段）
+  await jest.advanceTimersByTimeAsync(0);
+}
+
 const mockApp = {
   id: "app-1",
   name: "my-app",
@@ -342,11 +360,19 @@ describe("AppDeploymentService rollout（DEP-02/DEP-03）", () => {
         strategy: "canary",
         percentage: 100,
       });
-      await service.handleHeartbeat({
-        deploymentId: "d1",
-        status: "running",
-      } as any);
-      await new Promise((r) => setTimeout(r, 900));
+      // NETOPT-5⑦: fake timers 逐段泵进探测窗（真实节奏 waitMs(250)×2），
+      // 不再赌真实 900ms 预算在 CI 负载下足够。
+      jest.useFakeTimers();
+      try {
+        await service.handleHeartbeat({
+          deploymentId: "d1",
+          status: "running",
+        } as any);
+        await pumpUntil(() => mockAxiosGet.mock.calls.length >= 3);
+        await pumpUntil(() => !(service as any).rolloutBatches.has("app-1"));
+      } finally {
+        jest.useRealTimers();
+      }
 
       expect(mockAxiosGet).toHaveBeenCalledTimes(3);
       // 无 promotion 台 → 批次收尾
@@ -456,12 +482,18 @@ describe("AppDeploymentService rollout（DEP-02/DEP-03）", () => {
         percentage: 34, // ceil(3×34%)=2 → 首批 d1+d2，promotion d3
       });
       // d1 心跳确认 RUNNING → probing → 探测窗耗尽 → failBatch（回滚 d2）
-      await service.handleHeartbeat({
-        deploymentId: "d1",
-        status: "running",
-      } as any);
-      // failThreshold=2 × interval 250ms + 回滚 push 余量
-      await new Promise((r) => setTimeout(r, 900));
+      // NETOPT-5⑦: fake timers 逐段泵进（failThreshold=2 × interval 250ms），
+      // 条件为「回滚 push 已发出」，消掉真实 900ms 预算的时长赌注。
+      jest.useFakeTimers();
+      try {
+        await service.handleHeartbeat({
+          deploymentId: "d1",
+          status: "running",
+        } as any);
+        await pumpUntil(() => mockAxiosPost.mock.calls.length > 0);
+      } finally {
+        jest.useRealTimers();
+      }
 
       // 回滚 push 被触发（d2 为已升级台）——axios.post 走 upgrade 链
       expect(mockAxiosPost).toHaveBeenCalled();
