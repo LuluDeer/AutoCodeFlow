@@ -343,6 +343,29 @@ elif command -v python3 >/dev/null 2>&1 && python3 -c "import fastapi, uvicorn, 
   PYTHON_BIN="python3"
 fi
 
+# 把 venv 的解释器路径转成**绝对路径**再使用。
+# 为什么必须转：下面启动时会 `cd apps/executor-python`（uvicorn 需要以该目录
+# 为 cwd 才能 import main:app），而上面三个分支测出来的都是**相对当前目录**
+# 的路径——cd 之后它们立刻失效。Windows 上的表现是 env 直接报
+#   env: 'apps/executor-python/.venv/Scripts/python.exe': No such file or directory
+# 于是 executor-python 永远起不来、wait_http 60s 超时 → e2e-full-windows 全红。
+# 这不是"venv 没装"：CI 的 L-5 步骤确实建了 venv 并装了依赖（日志可见
+# Collecting fastapi…），是**路径在 cd 之后失效**。对照 executor-node 分支：
+# 它用 `node dist/main.js`（命令名，与 cwd 无关）所以从不踩这个坑。
+# `python3` 是命令名而非路径，realpath 会解析失败——保留原值。
+if [[ -n "$PYTHON_BIN" && "$PYTHON_BIN" != "python3" ]]; then
+  PYTHON_BIN="$(cd "$(dirname "$PYTHON_BIN")" && pwd)/$(basename "$PYTHON_BIN")"
+  # 启动前断言：上面的转换必须在**转换之后**仍然可执行。真出问题时这里
+  # 立刻指出"解释器路径不可用"，而不是等 wait_http 60s 超时后只报含糊的
+  # "未就绪"——那会把人引向"服务起得慢"的错误方向（本缺陷就是这么被
+  # 掩盖的：日志里真正的原因只有一行 env: No such file or directory，
+  # 埋在 60s 超时之后）。
+  [[ -x "$PYTHON_BIN" ]] || {
+    echo "✗ executor-python 解释器不可用：$PYTHON_BIN" >&2
+    exit 1
+  }
+fi
+
 if [[ -n "$PYTHON_BIN" ]]; then
   echo "── E-18：启动 executor-python(:$PORT_EXECUTOR_PYTHON) ──"
   (
