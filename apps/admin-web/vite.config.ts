@@ -3,7 +3,7 @@ import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import dotenv from 'dotenv';
 import { fileURLToPath } from 'node:url';
-import { gzipSync, brotliCompressSync, constants as zlibConstants } from 'node:zlib';
+import { gzipSync, constants as zlibConstants } from 'node:zlib';
 import { readdir, readFile, writeFile, stat } from 'node:fs/promises';
 import { join, isAbsolute } from 'node:path';
 // F-30（DEEP_REVIEW 0ef3bbe）：首帧主题脚本的单一来源。
@@ -26,12 +26,16 @@ export function themeInitPlugin(): Plugin {
   };
 }
 
-// 网络性能审计（2026-09-18）：构建产物预压缩 .gz/.br，nginx gzip_static 直接
-// 发送预压缩文件，免去实时压缩 CPU 并支持 brotli。
+// 网络性能审计（2026-09-18）：构建产物预压缩 .gz，nginx gzip_static 直接
+// 发送预压缩文件，免去实时压缩 CPU。
+// NETOPT-2③（2026-09-19）：不再生成 .br——曾以 BROTLI_MAX_QUALITY=11 同步
+// 产出 .br，但部署镜像 nginx:1.27-alpine 官方版**无 ngx_brotli 模块**，
+// nginx.conf 的 gzip_static 只服务 .gz：.br 是纯死产物（实测 dist 84 个/
+// 约 1.5MB），quality-11 每次构建白付 CPU。未来换带 brotli 的镜像再恢复。
 // 实现选型：不引 vite-plugin-compression——0.5.1 用模块级共享 mtimeCache，同一
 // 构建里注册 gzip+brotli 两个实例时第二个实例会跳过全部文件（实测 0 个 .br）；
-// 且 O-21 本就不赞成为此引入新依赖。这里用零依赖内联插件，一次遍历产出两
-// 种格式，行为确定（best 压缩级别、>=1024B 才压缩，与 nginx gzip_min_length
+// 且 O-21 本就不赞成为此引入新依赖。这里用零依赖内联插件，一次遍历产出
+// .gz，行为确定（best 压缩级别、>=1024B 才压缩，与 nginx gzip_min_length
 // 对齐；worker 产物 .wasm 一并覆盖）。
 const ASSET_COMPRESS_EXT_RE = /\.(js|css|html|json|svg|xml|ico|txt|wasm|mjs)$/;
 const ASSET_COMPRESS_MIN_BYTES = 1024;
@@ -64,13 +68,6 @@ function precompressAssetsPlugin(): Plugin {
           const content = await readFile(file);
           const gz = gzipSync(content, { level: zlibConstants.Z_BEST_COMPRESSION });
           await writeFile(`${file}.gz`, gz);
-          const br = brotliCompressSync(content, {
-            params: {
-              [zlibConstants.BROTLI_PARAM_QUALITY]: zlibConstants.BROTLI_MAX_QUALITY,
-              [zlibConstants.BROTLI_PARAM_MODE]: zlibConstants.BROTLI_MODE_TEXT,
-            },
-          });
-          await writeFile(`${file}.br`, br);
         } catch (err) {
           console.error(`[precompress-assets] failed on ${file}:`, err);
         }
@@ -117,9 +114,10 @@ export default defineConfig({
     // O-17（生产排障回溯）：产出 sourcemap 但不注入到 bundle（'hidden'）——
     // 浏览器不自动加载，Sentry/排障侧按 URL 拉取对应 .map；比 'sourcemap'
     // 更省首屏（不内嵌 sourceMappingURL）。
-    // 网络性能审计（2026-09-18）：预压缩在构建期生成 .gz/.br（上方
-    // viteCompression 插件），nginx gzip_static 直接发送预压缩文件，相对
-    // O-21 的"仅运行时 gzip"省去实时压缩 CPU 并支持 brotli。
+    // 网络性能审计（2026-09-18）：预压缩在构建期生成 .gz（上方
+    // precompress-assets 内联插件；NETOPT-2③ 起 .br 已停生成，见其头注），
+    // nginx gzip_static 直接发送预压缩文件，相对 O-21 的"仅运行时 gzip"
+    // 省去实时压缩 CPU。
     sourcemap: 'hidden',
     rollupOptions: {
       output: {
