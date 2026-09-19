@@ -469,7 +469,14 @@ def simple_index(request: Request, _user: str = Depends(verify_auth)):
 @app.get("/simple/{package_name}/", response_class=HTMLResponse)
 def package_index(package_name: str, request: Request, _user: str = Depends(verify_auth)):
     """PEP 503 per-package index (pip 消费入口)."""
-    d = PACKAGES_DIR / normalize(package_name)
+    # NETOPT-5⑥: 读取路径与上传侧（PKG-DIR-01）共用同一道包名安全闸。
+    # Windows 主机上 ``Path("C:/base") / "C:foo"`` 会**丢弃左操作数**
+    # （pathlib 语义），归一化后仍带盘符/分隔符的包名可让本端点落包根之外。
+    # 不合法按 404 处理——对 pip 而言与「包不存在」不可区分，不泄露闸的存在。
+    normalized = normalize(package_name)
+    if not is_safe_package_name(normalized):
+        raise HTTPException(status_code=404, detail="Package not found")
+    d = PACKAGES_DIR / normalized
     if not d.exists():
         raise HTTPException(status_code=404, detail="Package not found")
     # N18: hashes come from upload-time sidecars (lazily backfilled for
@@ -499,6 +506,11 @@ def package_index(package_name: str, request: Request, _user: str = Depends(veri
 def download_package(package_name: str, filename: str, _user: str = Depends(verify_auth)):
     # S9: path-traversal guard — reject filenames that escape the package directory
     safe_name = normalize(package_name)
+    # NETOPT-5⑥: 包目录名同样过 is_safe_package_name——文件名侧的目录分量
+    # 下一行剥掉，但 `C:foo` 这类盘符名会在此处让 ``PACKAGES_DIR / safe_name``
+    # 丢根（pathlib 语义），与上传侧同一威胁模型，同闸同语义（404）。
+    if not is_safe_package_name(safe_name):
+        raise HTTPException(status_code=404, detail="File not found")
     safe_filename = Path(filename).name  # strip any directory components
     f = PACKAGES_DIR / safe_name / safe_filename
     if not f.exists() or not f.is_file():
