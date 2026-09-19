@@ -158,6 +158,21 @@ export default function ExecutionDetailPage() {
   const [killing, setKilling] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
   const [streamLines, setStreamLines] = useState<string[] | null>(null);
+  // PERF-06（本轮体验审查）：SSE 日志追加改**批量累积 + 按帧刷新**。
+  //
+  // 原实现 `setStreamLines((prev) => [...prev, line])` 每来一行就：
+  //   ① 复制整个数组（O(n)）；② 触发一次渲染，而渲染里第 388 行会
+  //   `streamLines.join('\n')` 再走一遍 O(n)。
+  // 一个持续输出的任务每秒可推几十行，于是**每行**都付 O(n)——累计 O(n²)。
+  // 20k 行时单次 join 就是 20k 字符串拼接，页面随日志增长越来越卡，
+  // 直到日志区滚动/打字都跟着掉帧（渲染在主线程，与 SSE 回调同线程）。
+  //
+  // 改为把到达的行推进 ref 缓冲，用 requestAnimationFrame 合并成一帧一次
+  // 的 state 更新：无论一帧里来几行（0 行也行、50 行也行），每帧最多一次
+  // 数组拷贝 + 一次渲染。join 的结果另用 useMemo 缓存（见 rawLogs），
+  // 避免"父组件因别的原因重渲也重算 join"。
+  const pendingStreamLinesRef = useRef<string[]>([]);
+  const streamFlushRafRef = useRef<number | null>(null);
   const [streaming, setStreaming] = useState(false);
   const [streamDisconnected, setStreamDisconnected] = useState(false);
   const [reconnectKey, setReconnectKey] = useState(0);
@@ -252,6 +267,8 @@ export default function ExecutionDetailPage() {
     setStreaming(true);
     setStreamDisconnected(false);
     setStreamLines([]);
+    // PERF-06：换执行/重连时清空增量缓冲，避免上一轮的残留行混进新日志。
+    pendingStreamLinesRef.current = [];
 
     let client: { close: () => void } | null = null;
     let retryCount = 0;
@@ -277,7 +294,17 @@ export default function ExecutionDetailPage() {
         onMessage: (e) => {
           try {
             const line = JSON.parse(e.data) as string;
-            setStreamLines((prev) => (prev ? [...prev, line] : [line]));
+            // PERF-06：只入缓冲，由 rAF 合并刷新（见 pendingStreamLinesRef 注释）。
+            pendingStreamLinesRef.current.push(line);
+            if (streamFlushRafRef.current === null) {
+              streamFlushRafRef.current = requestAnimationFrame(() => {
+                streamFlushRafRef.current = null;
+                const batch = pendingStreamLinesRef.current;
+                if (batch.length === 0) return;
+                pendingStreamLinesRef.current = [];
+                setStreamLines((prev) => (prev ? prev.concat(batch) : batch.slice()));
+              });
+            }
           } catch { /* ignore malformed */ }
         },
         onStatus: (status) => {
@@ -342,6 +369,13 @@ export default function ExecutionDetailPage() {
       clearRetryTimer();
       client?.close();
       client = null;
+      // PERF-06：取消挂起的 rAF，否则卸载后回调仍会 setState（React 会警告
+      // "state update on an unmounted component"，且会白做一次数组拷贝）。
+      if (streamFlushRafRef.current !== null) {
+        cancelAnimationFrame(streamFlushRafRef.current);
+        streamFlushRafRef.current = null;
+      }
+      pendingStreamLinesRef.current = [];
       setStreaming(false);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -385,7 +419,16 @@ export default function ExecutionDetailPage() {
   }, [inputKeyword]);
 
   // U2: 当前展示的日志：级别过滤视图 > 完整日志 > SSE 流 > 实体回调日志
-  const rawLogs = streamLines ? streamLines.join('\n') : (data?.logs ?? '');
+  //
+  // PERF-06（本轮体验审查）：join 用 useMemo 缓存。原先它写在渲染函数体里
+  // **无条件**执行——父组件因任何原因重渲（搜索框打字、级别下拉、重试链数据
+  // 到达……）都会把整份日志重新拼一遍。日志越长这次白工越贵，而它与这些
+  // state 毫无关系。依赖只有 streamLines 与 data?.logs 两个真正决定结果的量。
+  const rawLogs = useMemo(
+    () => (streamLines ? streamLines.join('\n') : (data?.logs ?? '')),
+    [streamLines, data?.logs],
+  );
+
   const displayLogs = filteredLogs ?? fullLogs ?? rawLogs;
   const logsTruncated = filteredLogs === null && fullLogs === null && LOG_TRUNCATION_MARKER.test(rawLogs);
 
