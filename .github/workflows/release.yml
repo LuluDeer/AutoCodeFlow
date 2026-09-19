@@ -79,6 +79,8 @@ jobs:
           checks = {
               "@autocodeflow/sdk (packages/autocodeflow-node-sdk/package.json)":
                   pkg_json_version("packages/autocodeflow-node-sdk/package.json"),
+              "@autocodeflow/cli (packages/acf-cli/package.json)":
+                  pkg_json_version("packages/acf-cli/package.json"),
               "autocodeflow-mcp-server (packages/mcp-server/package.json)":
                   pkg_json_version("packages/mcp-server/package.json"),
               "autoflow-sdk (packages/autoflow-sdk/pyproject.toml)":
@@ -108,10 +110,13 @@ jobs:
   # publishConfig.access=public（scoped 包默认 private，必须显式 public）。
   # 若发内网 Verdaccio（apps/registry-npm），把 registry-url 换成私有地址
   # 并改用 verdaccio 用户 token。
-  # 注：acf-cli 暂不纳入——npmjs 上 `acf-cli` 名称已被第三方占用
-  # （npm view acf-cli → 1.0.1），直接 publish 必然 403；如需发布请先
-  # 改名（如 @autocodeflow/cli——勿用 @autoflow/*，该 org 已被抢注，见
-  # f0f8b96 改名理由）再加入矩阵。
+  # 注：CLI 的包名是 `@autocodeflow/cli`，**不是** `acf-cli`——后者在 npmjs 上
+  # 已被第三方占用（`npm view acf-cli` → 1.0.1，一个 NPM+Java 安装指南），
+  # 直接 publish 必然 403，故长期未纳入矩阵。改用本仓已持有的 `@autocodeflow`
+  # scope（与 @autocodeflow/sdk 同 scope，品牌一致且不会被抢注）。
+  # `bin` 名保持 `acf` 不变——终端命令改名会破坏既有脚本与用户肌肉记忆，
+  # 而 bin 名不必与包名一致。
+  # 注意勿用 `@autoflow/*`：该 scope 已被抢注（见 f0f8b96 改名理由）。
   publish-npm:
     needs: version-guard
     runs-on: ubuntu-latest
@@ -128,6 +133,8 @@ jobs:
         include:
           - dir: packages/autocodeflow-node-sdk
             pkg: '@autocodeflow/sdk'
+          - dir: packages/acf-cli
+            pkg: '@autocodeflow/cli'
           - dir: packages/mcp-server
             pkg: 'autocodeflow-mcp-server'
     steps:

@@ -1,13 +1,27 @@
 {
-  "name": "acf-cli",
-  "version": "1.0.0",
+  "name": "@autocodeflow/cli",
+  "version": "1.4.3",
   "description": "AutoCodeFlow CLI — manage tasks, executions and applications from the terminal",
+  "license": "MIT",
   "main": "dist/index.js",
   "bin": {
     "acf": "dist/index.js"
   },
+  "files": [
+    "dist",
+    "!dist/__tests__"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/LuluDeer/AutoCodeFlow.git",
+    "directory": "packages/acf-cli"
+  },
   "scripts": {
     "build": "tsc",
+    "prepublishOnly": "npm run build",
     "dev": "ts-node src/index.ts",
     "start": "node dist/index.js",
     "test": "vitest run",

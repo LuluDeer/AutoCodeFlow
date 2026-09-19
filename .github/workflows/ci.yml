@@ -488,6 +488,13 @@ jobs:
         working-directory: packages/acf-cli
       - run: npm run typecheck
         working-directory: packages/acf-cli
+      # 构建必须先于测试：release-metadata.test.ts 的版本号守卫**执行构建产物**
+      # （`node dist/index.js --version`）来比对 package.json——源码里写了什么
+      # 不代表打出来的包是什么，而"包自称的版本号"恰恰是发布物最不该骗人的
+      # 一个输出。该守卫在产物缺失时会显式失败而非静默跳过；故这里必须先 build，
+      # 否则守卫在 CI 里等于不存在（同 admin-web 的 PERF-01 守卫约定）。
+      - run: npm run build
+        working-directory: packages/acf-cli
       - run: npm test
         working-directory: packages/acf-cli
 
@@ -660,6 +667,18 @@ jobs:
       - name: Failure-reason enum alignment guard (FR-08/D15)
         run: |
           node scripts/check-failure-reasons.mjs
+      # 发布配置一致性守卫（改名发布 @autocodeflow/cli 时新增）。
+      # 本仓发版链路跨四份互不校验的配置：release-please-config.json 的
+      # packages / linked-versions，与 release.yml 的 version-guard /
+      # publish-npm 矩阵。任一处漏配都不报错，只会让某个包**静默地**永远发不
+      # 出去或永远不 bump 版本。真实缺陷：packages/acf-cli 早在 a4dad9b 就进了
+      # release-please 的 packages，却漏了 linked-versions，于是被管理却永远
+      # 卡在 1.0.0；同时因包名被 npm 第三方占用而从未发布，仓库里没有任何东西
+      # 会为此报警。零依赖，秒级。
+      - name: Release config consistency guard
+        run: |
+          node scripts/check-release-config.mjs --selftest
+          node scripts/check-release-config.mjs
       # E-38（DEEP_REVIEW 0ef3bbe）：install.sh 单一事实源守卫——content.ts 由
       # scripts/install.sh 构建期生成。这里重跑生成器后用 git diff --exit-code 校验
       # 已提交产物与源同步：只改了 install.sh 忘了重生 content.ts（或反之）即红。

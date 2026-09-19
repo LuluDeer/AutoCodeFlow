@@ -44,6 +44,13 @@ const configDir = process.env.ACF_CONFIG_DIR;
  */
 function createStore(): Conf<AcfConfig> {
   const base = {
+    // ⚠ 刻意保持 'acf-cli'，**不随包名改成 '@autocodeflow/cli'**。
+    // 这个值决定凭据文件的磁盘位置（如 ~/.config/acf-cli/config.json），
+    // 而它是**用户机器上的持久状态**：改名会让既有用户下次运行时读不到旧配置，
+    // 表现为"莫名掉登录"（access/refresh token 都还在旧目录里）。
+    // 包名只是 npm 上的标识，与磁盘布局不必一致；新建目录带来的唯一收益是好看，
+    // 代价却是每个已装用户重新登录一次。
+    // 若将来确需迁移，必须配套"读旧目录 → 写新目录"的一次性搬迁，不能只改这里。
     projectName: 'acf-cli',
     ...(configDir ? { cwd: configDir } : {}),
     defaults: {
