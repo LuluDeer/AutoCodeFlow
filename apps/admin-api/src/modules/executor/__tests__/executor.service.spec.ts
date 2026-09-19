@@ -31,6 +31,8 @@ import { resetRuntimeGauges } from "../../metrics/runtime-metrics-entry";
 import { AuditService } from "../../audit/audit.service";
 // NETOPT-8④: 分批 DELETE 双闸上限（公共 helper）
 import { LOG_RETENTION_MAX_DELETE_ROUNDS } from "../../../common/utils/capped-batched-delete.util";
+// NETOPT-8①: S3 日志对象回收（stub fromConfig 不触达 minio Client）
+import { S3LogStorage } from "../../task/log-storage/s3-log-storage";
 
 jest.mock("axios");
 // F-3: dispatch now consults the SSRF layer before every outbound POST. These
@@ -2839,6 +2841,125 @@ describe("ExecutorService (__tests__)", () => {
         expect(warned).toBe(true);
       } finally {
         warnSpy.mockRestore();
+      }
+    });
+
+    // NETOPT-8①: S3 驱动下 task_executions 行删除会让 S3 GC（候选只能来自
+    // 存活行）永远看不到行上的日志对象 → 永久孤儿。每批须先 remove 对象再
+    // 删行；remove 失败的行保留（指针留待下轮重试）；非 S3 部署直删不变。
+    it("NETOPT-8①: S3 驱动下每批先回收 S3 日志对象再删行", async () => {
+      const s3 = { remove: jest.fn().mockResolvedValue(undefined) };
+      const fromConfigSpy = jest
+        .spyOn(S3LogStorage, "fromConfig")
+        .mockReturnValue(s3 as unknown as S3LogStorage);
+      try {
+        configService.get.mockImplementation((key: string) =>
+          key === "logStorage.driver"
+            ? "s3"
+            : key === "logStorage.endpoint"
+              ? "http://127.0.0.1:9000"
+              : undefined,
+        );
+        execRepo.find.mockResolvedValue([
+          { id: "exec-a", logObjectKey: "execution-logs/exec-a.log.gz" },
+          { id: "exec-b", logObjectKey: null },
+        ]);
+        execRepo.delete.mockResolvedValue({ affected: 2 });
+        const total = await service.cleanupOldTaskExecutions(new Date());
+        // 带指针的行先 remove（无指针行无需 remove）
+        expect(s3.remove).toHaveBeenCalledTimes(1);
+        expect(s3.remove).toHaveBeenCalledWith("execution-logs/exec-a.log.gz");
+        // victim 选取：createdAt<cutoff、按 id 排序、批大小截断（两列投影）
+        const findArg = execRepo.find.mock.calls[0][0] as {
+          select: string[];
+          take: number;
+        };
+        expect(findArg.select).toEqual(
+          expect.arrayContaining(["id", "logObjectKey"]),
+        );
+        expect(findArg.take).toBe(5000);
+        // DELETE 收 remove 成功 + 无指针的行（In 算子取 .value 断言集合）
+        const delArg = execRepo.delete.mock.calls[0][0] as {
+          id: { value: string[] };
+        };
+        expect(delArg.id.value).toEqual(["exec-a", "exec-b"]);
+        expect(total).toBe(2);
+        // S3 路径不再走单条子查询 DELETE
+        expect(execRepo.createQueryBuilder).not.toHaveBeenCalled();
+      } finally {
+        fromConfigSpy.mockRestore();
+      }
+    });
+
+    it("NETOPT-8①: remove 失败的行从本批 DELETE 剔除（指针留待下轮重试）", async () => {
+      const s3 = { remove: jest.fn() };
+      s3.remove.mockRejectedValueOnce(new Error("s3 down")); // exec-a 失败
+      s3.remove.mockResolvedValueOnce(undefined); // exec-b 成功
+      const fromConfigSpy = jest
+        .spyOn(S3LogStorage, "fromConfig")
+        .mockReturnValue(s3 as unknown as S3LogStorage);
+      const warnSpy = jest.spyOn(Logger.prototype, "warn");
+      try {
+        configService.get.mockImplementation((key: string) =>
+          key === "logStorage.driver" ? "s3" : undefined,
+        );
+        execRepo.find.mockResolvedValue([
+          { id: "exec-a", logObjectKey: "execution-logs/exec-a.log.gz" },
+          { id: "exec-b", logObjectKey: "execution-logs/exec-b.log.gz" },
+        ]);
+        execRepo.delete.mockResolvedValue({ affected: 1 });
+        const total = await service.cleanupOldTaskExecutions(new Date());
+        const delArg = execRepo.delete.mock.calls[0][0] as {
+          id: { value: string[] };
+        };
+        // 失败行不删（行在 → 指针在 → S3 GC 仍可见），成功行照删
+        expect(delArg.id.value).toEqual(["exec-b"]);
+        expect(total).toBe(1);
+        expect(
+          warnSpy.mock.calls.some((c) =>
+            String(c[0]).includes("S3 日志对象删除失败"),
+          ),
+        ).toBe(true);
+      } finally {
+        fromConfigSpy.mockRestore();
+        warnSpy.mockRestore();
+      }
+    });
+
+    it("NETOPT-8①: 全部 remove 失败 → 本批不删行也不挂死（0 行等下轮）", async () => {
+      const s3 = { remove: jest.fn().mockRejectedValue(new Error("s3 down")) };
+      const fromConfigSpy = jest
+        .spyOn(S3LogStorage, "fromConfig")
+        .mockReturnValue(s3 as unknown as S3LogStorage);
+      try {
+        configService.get.mockImplementation((key: string) =>
+          key === "logStorage.driver" ? "s3" : undefined,
+        );
+        execRepo.find.mockResolvedValue([
+          { id: "exec-a", logObjectKey: "execution-logs/exec-a.log.gz" },
+        ]);
+        const total = await service.cleanupOldTaskExecutions(new Date());
+        expect(total).toBe(0);
+        expect(execRepo.delete).not.toHaveBeenCalled();
+      } finally {
+        fromConfigSpy.mockRestore();
+      }
+    });
+
+    it("NETOPT-8①: 非 S3 部署保持直删现状（不触达 S3LogStorage）", async () => {
+      const fromConfigSpy = jest
+        .spyOn(S3LogStorage, "fromConfig")
+        .mockReturnValue(null);
+      try {
+        const qb = makeDeleteQb(3);
+        execRepo.createQueryBuilder.mockReturnValue(qb as any);
+        const total = await service.cleanupOldTaskExecutions(new Date());
+        expect(total).toBe(3);
+        expect(execRepo.find).not.toHaveBeenCalled();
+        expect(execRepo.delete).not.toHaveBeenCalled();
+        expect(fromConfigSpy).toHaveBeenCalled();
+      } finally {
+        fromConfigSpy.mockRestore();
       }
     });
   });

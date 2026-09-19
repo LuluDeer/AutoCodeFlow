@@ -89,6 +89,9 @@ import type { EstimatedDurations } from "./executor-score.util";
 import { TracingService } from "../../common/tracing/tracing.service";
 // AUTH-05: 高危操作（rotate-token / 删除执行器）审计留痕
 import { AuditService } from "../audit/audit.service";
+// NETOPT-8①: task_executions retention 删行前回收 S3 日志对象——S3 GC 候选
+// 只能来自存活行，行删指针消失即成永久孤儿（详见 deleteExpiredExecutionRowsBatch）
+import { S3LogStorage } from "../task/log-storage/s3-log-storage";
 // NETOPT-8④: 分批 DELETE 循环的轮数/墙钟双闸（LOG-RETENTION-01 回移植）
 import { cappedBatchedDelete } from "../../common/utils/capped-batched-delete.util";
 // A6: 对账端点响应契约（三端共载，见 DTO 头注）
@@ -2363,32 +2366,99 @@ export class ExecutorService {
    *
    * NETOPT-8④: 循环收口改走公共 cappedBatchedDelete——补 LOG-RETENTION-01
    * 轮数/墙钟双闸（affected 恒返满批时旧 `do..while` 永不终止，已实测 OOM）。
+   * NETOPT-8①: S3 驱动下每批先回收行上的日志对象再删行（防 S3 永久孤儿），
+   * 见 deleteExpiredExecutionRowsBatch。
    */
   async cleanupOldTaskExecutions(cutoff: Date): Promise<number> {
+    const s3 = this.resolveS3LogStorage();
     return cappedBatchedDelete({
       batchSize: ExecutorService.EXECUTION_RETENTION_BATCH_SIZE,
       logLabel: "Q7",
       logger: this.logger,
-      executeBatch: async () => {
-        const result = await this.execRepo
-          .createQueryBuilder()
-          .delete()
-          .where(
-            `"id" IN (
-              SELECT "victim"."id" FROM "task_executions" "victim"
-              WHERE "victim"."createdAt" < :cutoff
-              ORDER BY "victim"."id"
-              LIMIT :batchSize
-            )`,
-            {
-              cutoff,
-              batchSize: ExecutorService.EXECUTION_RETENTION_BATCH_SIZE,
-            },
-          )
-          .execute();
-        return result.affected ?? 0;
-      },
+      executeBatch: () => this.deleteExpiredExecutionRowsBatch(cutoff, s3),
     });
+  }
+
+  /**
+   * NETOPT-8①: 单批 task_executions 清理，返回本批实际删除行数（0 = 收口）。
+   *
+   * s3 为 null（非 S3 部署：driver=db，或 s3 但 endpoint 未配）→ 单条分批
+   * 子查询 DELETE，行为=既往（直删行）。
+   * s3 非空 → 先 SELECT victims（id + logObjectKey 两列，createdAt<cutoff，
+   * ORDER BY id，take 批大小），对带指针的行先 remove S3 日志对象再删行：
+   * S3 GC（s3-log-object-retention.service 的 selectExpiredBatch）候选只能
+   * 来自存活行（logStorage='s3' AND logObjectKey IS NOT NULL），行一删指针
+   * 消失，execution-logs/<execId>.log.gz 就永无人回收成永久孤儿。remove
+   * 失败的行从本批 DELETE 集合剔除（指针留待下轮 cron 重试），只 warn 不
+   * 中断；全部失败时本批返回 0（循环收口，等下一 cron 周期）。
+   */
+  private async deleteExpiredExecutionRowsBatch(
+    cutoff: Date,
+    s3: S3LogStorage | null,
+  ): Promise<number> {
+    if (!s3) {
+      const result = await this.execRepo
+        .createQueryBuilder()
+        .delete()
+        .where(
+          `"id" IN (
+            SELECT "victim"."id" FROM "task_executions" "victim"
+            WHERE "victim"."createdAt" < :cutoff
+            ORDER BY "victim"."id"
+            LIMIT :batchSize
+          )`,
+          { cutoff, batchSize: ExecutorService.EXECUTION_RETENTION_BATCH_SIZE },
+        )
+        .execute();
+      return result.affected ?? 0;
+    }
+    const victims = await this.execRepo.find({
+      select: ["id", "logObjectKey"],
+      where: { createdAt: LessThan(cutoff) },
+      order: { id: "ASC" },
+      take: ExecutorService.EXECUTION_RETENTION_BATCH_SIZE,
+    });
+    if (victims.length === 0) return 0;
+    const deletableIds: string[] = [];
+    for (const victim of victims) {
+      const key = victim.logObjectKey;
+      if (!key) {
+        // 无外置日志对象（db 驱动行 / 指针已被 S3 GC 清空）：直接删行
+        deletableIds.push(victim.id);
+        continue;
+      }
+      try {
+        await s3.remove(key);
+      } catch (err: unknown) {
+        // fail-open：对象删不掉就跳过——行保留 = 指针保留 = 下轮 cron 仍能
+        // 定位该对象（S3 GC / 本清理重试），绝不因单对象失败中断整批。
+        this.logger.warn(
+          `NETOPT-8①: S3 日志对象删除失败，跳过 execution ${victim.id}（${key}）: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+        continue;
+      }
+      deletableIds.push(victim.id);
+    }
+    if (deletableIds.length === 0) return 0;
+    const result = await this.execRepo.delete({ id: In(deletableIds) });
+    return result.affected ?? 0;
+  }
+
+  /**
+   * NETOPT-8①: 惰性解析可选 S3 日志后端（S3LogObjectRetentionService /
+   * TaskService.resolveS3Storage 同款：fromConfig 是进程内单例语义，缓存于
+   * 本实例）。非 s3 驱动返回 null，retention 走既有直删路径。
+   */
+  private s3LogStorage: S3LogStorage | null = null;
+  private s3LogStorageResolved = false;
+  private resolveS3LogStorage(): S3LogStorage | null {
+    if (!this.s3LogStorageResolved) {
+      this.s3LogStorage = S3LogStorage.fromConfig(this.configService);
+      this.s3LogStorageResolved = true;
+    }
+    return this.s3LogStorage;
   }
 
   // R-09（DEEP_REVIEW 0ef3bbe）: executor_metrics_history 无 retention——每执行器
