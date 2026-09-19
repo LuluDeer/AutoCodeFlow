@@ -118,8 +118,12 @@ describe("AuditService — SEC-10 append-only 旁路封堵", () => {
       calls.push(sql);
       return [];
     });
+    // NETOPT-1②: 分批改造后每批先取 victim id，再在 bypass 事务内按 id 删除
+    const emFind = jest
+      .fn()
+      .mockResolvedValue([{ id: 1 }, { id: 2 }, { id: 3 }]);
     const emDelete = jest.fn(async () => ({ affected: 3 }));
-    const emRepo = { delete: emDelete };
+    const emRepo = { find: emFind, delete: emDelete };
     const em = {
       query: emQuery,
       getRepository: jest.fn(() => emRepo),
@@ -140,16 +144,62 @@ describe("AuditService — SEC-10 append-only 旁路封堵", () => {
     const service = module.get(AuditService);
 
     await service.cleanupOldAuditLogs();
-    expect(dataSource.transaction).toHaveBeenCalledTimes(1);
-    // 顺序：先 SET LOCAL bypass，再 delete
+    expect(dataSource.transaction).toHaveBeenCalledTimes(1); // 单批 3 < 5000 即停
+    // 顺序：先 SET LOCAL bypass，再取 victim，最后 delete
     expect(emQuery).toHaveBeenCalledWith(
       expect.stringContaining("SET LOCAL app.bypass_audit_guard = 'on'"),
     );
-    expect(emDelete).toHaveBeenCalledWith({ createdAt: expect.anything() });
+    expect(emFind).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ createdAt: expect.anything() }),
+        take: 5000,
+      }),
+    );
+    expect(emDelete).toHaveBeenCalledWith({ id: expect.anything() });
     // delete 发生在 SET LOCAL 之后
     expect(emQuery.mock.invocationCallOrder[0]).toBeLessThan(
       emDelete.mock.invocationCallOrder[0],
     );
+  });
+
+  it("NETOPT-1②: 单批满批 → 循环下一批（每批一个 bypass 事务），不足批大小即停", async () => {
+    const emQuery = jest.fn(async () => []);
+    const emFind = jest
+      .fn()
+      .mockResolvedValueOnce(
+        Array.from({ length: 5000 }, (_, i) => ({ id: i + 1 })),
+      )
+      .mockResolvedValueOnce([{ id: 9999 }]);
+    const emDelete = jest
+      .fn()
+      .mockResolvedValueOnce({ affected: 5000 })
+      .mockResolvedValueOnce({ affected: 1 });
+    const emRepo = { find: emFind, delete: emDelete };
+    const em = {
+      query: emQuery,
+      getRepository: jest.fn(() => emRepo),
+    } as unknown as ObjectLiteral;
+    const dataSource = {
+      transaction: jest.fn(async (cb: (em: unknown) => Promise<number>) =>
+        cb(em),
+      ),
+    } as unknown as DataSource;
+
+    const module = await Test.createTestingModule({
+      providers: [
+        AuditService,
+        { provide: getRepositoryToken(AuditLog), useValue: {} },
+        { provide: DataSource, useValue: dataSource },
+      ],
+    }).compile();
+    const service = module.get(AuditService);
+
+    const total = await (service as any).retentionDelete(new Date());
+    expect(total).toBe(5001);
+    // 满批 → 第二批；第二批 1 < 5000 → 停
+    expect(dataSource.transaction).toHaveBeenCalledTimes(2);
+    expect(emFind).toHaveBeenCalledTimes(2);
+    expect(emDelete).toHaveBeenCalledTimes(2);
   });
 
   it("log() 仍是 INSERT 唯一入口（repo.create + repo.save，行为不变）", async () => {

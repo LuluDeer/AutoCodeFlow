@@ -1,6 +1,6 @@
 import { Injectable, Logger, Optional } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { DataSource, Repository, LessThan } from "typeorm";
+import { DataSource, Repository, LessThan, In } from "typeorm";
 import { Cron } from "@nestjs/schedule";
 import { AuditLog } from "./entities/audit-log.entity";
 // ARCH-31 §5: cron 维护任务统一 Leader 门禁（@Optional——既有单测直接 new
@@ -16,6 +16,9 @@ import { LeaderGateService } from "../../common/leader-gate/leader-gate.service"
  * 应用代码中唯一放行点就是本服务的清理任务。
  */
 const AUDIT_GUARD_BYPASS_SQL = `SET LOCAL app.bypass_audit_guard = 'on'`;
+
+/** NETOPT-1②: retention 分批大小（对齐 executor.service R-09 metrics 模式）。 */
+const AUDIT_RETENTION_BATCH_SIZE = 5000;
 
 /**
  * API-09（本轮体验审查）：把用户输入安全地放进 **ILIKE 模式串**。
@@ -74,15 +77,34 @@ export class AuditService {
    * `app.bypass_audit_guard = 'on'` so the append-only trigger
    * (migration 1790000000006) lets the rows go; everything else —
    * UPDATE/DELETE from any other path — hits the trigger's exception.
+   *
+   * NETOPT-1②: 原实现是**单个** bypass 事务包一条无界 DELETE——峰值行数下
+   * 是长事务（锁表 + WAL 风暴）。改分批：每批先取一批 victim id，再在
+   * **各自的** bypass 事务内按 id 删除（放行语义不变，仍只有本路径能删）；
+   * 单批不足批大小即停。批大小对齐 executor.service R-09 metrics 模式。
    */
   private async retentionDelete(cutoff: Date): Promise<number> {
-    return this.dataSource.transaction(async (em) => {
-      await em.query(AUDIT_GUARD_BYPASS_SQL);
-      const result = await em
-        .getRepository(AuditLog)
-        .delete({ createdAt: LessThan(cutoff) });
-      return result.affected ?? 0;
-    });
+    let totalDeleted = 0;
+    let batchDeleted = 0;
+    do {
+      batchDeleted = await this.dataSource.transaction(async (em) => {
+        await em.query(AUDIT_GUARD_BYPASS_SQL);
+        const auditRepo = em.getRepository(AuditLog);
+        const victims = await auditRepo.find({
+          select: ["id"],
+          where: { createdAt: LessThan(cutoff) },
+          order: { id: "ASC" },
+          take: AUDIT_RETENTION_BATCH_SIZE,
+        });
+        if (victims.length === 0) return 0;
+        const result = await auditRepo.delete({
+          id: In(victims.map((v) => v.id)),
+        });
+        return result.affected ?? 0;
+      });
+      totalDeleted += batchDeleted;
+    } while (batchDeleted >= AUDIT_RETENTION_BATCH_SIZE);
+    return totalDeleted;
   }
 
   async log(payload: AuditLogPayload): Promise<void> {
