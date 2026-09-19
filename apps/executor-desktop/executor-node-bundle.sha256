@@ -116,4 +116,9 @@
 #     **整批放弃**（该机所有任务的终态永久丢失，含同批无关的成功任务）。
 #     本机(Windows) ncc 0.44 重打（2469kB → 2474kB）；CI Ubuntu 侧独立重打
 #     得到**同一个** cee23087…，再次印证 ncc 0.44 的跨平台字节确定性。
-cee230872422e85c7f182e384b92612e55a4dfb2d84b05b970a83c7b179db9df  index.js
+#   - 本轮（fix(experience) EXP-02）：execute.ts 的 ensurePythonVenv 把
+#     `ensureInterpreter(declaredVersion)` 提到 `resolveUvForExecute()` 之前
+#     ——此前顺序相反，导致「uv 缺失」错误遮蔽了解释器归因，node 报 unknown
+#     而 python 报 interpreter_unavailable（同一失败两端分类不同）。
+#     本机(Windows) ncc 0.44 重打（2474kB → 2475kB）。
+dc8abcdaa553916410e6cf4d5e5b7726a9890997d22ddd3448d2736a3dfb8c93  index.js
