@@ -4,15 +4,24 @@ import * as fs from "fs";
 import * as path from "path";
 import { ApplicationService } from "../application.service";
 import { Application, ApplicationStatus } from "../entities/application.entity";
+import { AppDeployment } from "../entities/app-deployment.entity";
 import { ModuleRef } from "@nestjs/core";
 import { AiService } from "../../ai/ai.service";
 // ARCH-30: 应用健康分析走 AiAnalysisService 封装
 import { AiAnalysisService } from "../../ai/ai-analysis.service";
+import { UserRole } from "../../users/entities/user.entity";
+// NETOPT-8③: remove() 的执行器清理扇出（stop + uninstall）走 axios
+import { ExecutorService } from "../../executor/executor.service";
 
 // R4/R1: deployFromGit spawns git and resolves the repo host — pin both so
 // the specs never touch the network or a real binary.
 jest.mock("child_process", () => ({ spawn: jest.fn() }));
 jest.mock("node:dns/promises", () => ({ lookup: jest.fn() }));
+jest.mock("axios", () => ({
+  __esModule: true,
+  default: { post: jest.fn().mockResolvedValue({ status: 200 }) },
+}));
+import axios from "axios";
 import { spawn } from "child_process";
 import { lookup } from "node:dns/promises";
 import { EventEmitter } from "events";
@@ -922,5 +931,152 @@ describe("ApplicationService", () => {
       expect(appRepo.remove).toHaveBeenCalledWith(app);
       unlink.mockRestore();
     });
+  });
+});
+
+// NETOPT-8③: 应用删除不再静默——admin 侧 remove() 在 DB 删除完成后对
+// 「有部署的执行器」best-effort 并行扇出：先逐部署 POST /app-stop（既有
+// 端点），再 POST /app-uninstall（新端点）。执行器全挂 / 旧版 404 都只
+// warn，绝不影响删除主流程（应用行此时已删除）。
+describe("ApplicationService.remove — executor cleanup fanout (NETOPT-8③)", () => {
+  let service: ApplicationService;
+  let appRepo: ReturnType<typeof makeRepo>;
+  let deploymentRepo: { find: jest.Mock };
+  let executorService: {
+    getExecutorUrl: jest.Mock;
+    getSharedToken: jest.Mock;
+  };
+  const mockedAxiosPost = (axios as unknown as { post: jest.Mock }).post;
+
+  beforeEach(async () => {
+    appRepo = makeRepo();
+    deploymentRepo = { find: jest.fn().mockResolvedValue([]) };
+    executorService = {
+      getExecutorUrl: jest.fn(
+        (addr: string, p: string) => `http://${addr}/${p}`,
+      ),
+      getSharedToken: jest.fn().mockResolvedValue("shared-token"),
+    };
+    // assertAndPinExecutorUrl 的 DNS 解析桩（public IP → 放行）
+    mockedLookup.mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
+    mockedAxiosPost.mockReset();
+    mockedAxiosPost.mockResolvedValue({ status: 200 });
+    const module = await Test.createTestingModule({
+      providers: [
+        ApplicationService,
+        { provide: getRepositoryToken(Application), useValue: appRepo },
+        {
+          provide: getRepositoryToken(AppDeployment),
+          useValue: deploymentRepo,
+        },
+        { provide: ExecutorService, useValue: executorService },
+        { provide: ModuleRef, useValue: { get: jest.fn() } },
+        {
+          provide: AiService,
+          useValue: { analyzeAppHealth: jest.fn().mockResolvedValue("") },
+        },
+        {
+          provide: AiAnalysisService,
+          useValue: { analyzeFailure: jest.fn().mockResolvedValue("") },
+        },
+      ],
+    }).compile();
+    service = module.get(ApplicationService);
+  });
+
+  const appRow = () =>
+    ({
+      id: "app-1",
+      name: "Demo",
+      ownerUserId: null,
+      packageUrl: null,
+    }) as Application;
+
+  it("删除路径会先逐部署 app-stop 再 app-uninstall（同地址执行器去重扇出）", async () => {
+    appRepo.findOne.mockResolvedValue(appRow());
+    deploymentRepo.find.mockResolvedValue([
+      { id: "dep-1", executorAddress: "exec-1:8100" },
+      { id: "dep-2", executorAddress: "exec-1:8100" },
+    ]);
+
+    await service.remove("app-1", { id: 1, role: UserRole.ADMIN });
+
+    // 顺序：stop(dep-1) → stop(dep-2) → uninstall(app-1)
+    expect(mockedAxiosPost).toHaveBeenCalledTimes(3);
+    expect(mockedAxiosPost.mock.calls[0][0]).toContain("/api/app-stop");
+    expect(mockedAxiosPost.mock.calls[0][1]).toEqual({ deploymentId: "dep-1" });
+    expect(mockedAxiosPost.mock.calls[1][0]).toContain("/api/app-stop");
+    expect(mockedAxiosPost.mock.calls[1][1]).toEqual({ deploymentId: "dep-2" });
+    expect(mockedAxiosPost.mock.calls[2][0]).toContain("/api/app-uninstall");
+    expect(mockedAxiosPost.mock.calls[2][1]).toEqual({ appId: "app-1" });
+    // 通道/凭据形态与 app-deployment stop() 同源：Bearer sharedToken + 禁重定向
+    expect(mockedAxiosPost.mock.calls[2][2]).toEqual(
+      expect.objectContaining({
+        maxRedirects: 0,
+        headers: { Authorization: "Bearer shared-token" },
+      }),
+    );
+    // 部署行查询发生在 DB 删除之前（CASCADE 后就查不到了）
+    expect(deploymentRepo.find).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { applicationId: "app-1" } }),
+    );
+    expect(appRepo.remove).toHaveBeenCalled();
+  });
+
+  it("执行器全挂时应用仍被删且 remove() 不抛错", async () => {
+    appRepo.findOne.mockResolvedValue(appRow());
+    deploymentRepo.find.mockResolvedValue([
+      { id: "dep-1", executorAddress: "exec-1:8100" },
+    ]);
+    mockedAxiosPost.mockRejectedValue(new Error("connect timeout"));
+
+    await expect(
+      service.remove("app-1", { id: 1, role: UserRole.ADMIN }),
+    ).resolves.toBeUndefined();
+    expect(appRepo.remove).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "app-1" }),
+    );
+  });
+
+  it("旧版执行器对 app-uninstall 返回 404 仍不影响删除主流程", async () => {
+    appRepo.findOne.mockResolvedValue(appRow());
+    deploymentRepo.find.mockResolvedValue([
+      { id: "dep-1", executorAddress: "exec-1:8100" },
+    ]);
+    mockedAxiosPost.mockImplementation(async (url: string) => {
+      if (String(url).includes("/api/app-uninstall")) {
+        throw Object.assign(new Error("Request failed with status code 404"), {
+          response: { status: 404 },
+        });
+      }
+      return { status: 200 };
+    });
+
+    await expect(
+      service.remove("app-1", { id: 1, role: UserRole.ADMIN }),
+    ).resolves.toBeUndefined();
+    // stop 仍发出（旧执行器支持），uninstall 失败被吞
+    expect(mockedAxiosPost.mock.calls[0][0]).toContain("/api/app-stop");
+    expect(appRepo.remove).toHaveBeenCalled();
+  });
+
+  it("无部署行时不发任何执行器请求", async () => {
+    appRepo.findOne.mockResolvedValue(appRow());
+    deploymentRepo.find.mockResolvedValue([]);
+
+    await service.remove("app-1", { id: 1, role: UserRole.ADMIN });
+    expect(mockedAxiosPost).not.toHaveBeenCalled();
+    expect(appRepo.remove).toHaveBeenCalled();
+  });
+
+  it("部署行查询失败时跳过扇出但应用照删（best-effort）", async () => {
+    appRepo.findOne.mockResolvedValue(appRow());
+    deploymentRepo.find.mockRejectedValue(new Error("db down"));
+
+    await expect(
+      service.remove("app-1", { id: 1, role: UserRole.ADMIN }),
+    ).resolves.toBeUndefined();
+    expect(mockedAxiosPost).not.toHaveBeenCalled();
+    expect(appRepo.remove).toHaveBeenCalled();
   });
 });

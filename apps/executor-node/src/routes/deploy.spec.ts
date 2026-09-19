@@ -35,6 +35,8 @@ import {
   formatDotenvValue,
   pruneOldReleases,
   rotateAppLogIfNeeded,
+  runningAppRoots,
+  runningApps,
   shouldReportProcessExit,
   suppressNextRestartExitReport,
   validateShellEntrypoint,
@@ -807,5 +809,117 @@ describe('.env serialization (E-40)', () => {
     const written = buildDotenvContent(envVars);
     expect(written).toContain('APP_MODE="prod"');
     expect(written.split('\n').every((l) => /^[A-Za-z_][A-Za-z0-9_]*="/.test(l))).toBe(true);
+  });
+});
+
+// NETOPT-8③: 应用删除清理——admin 侧 remove() 在删 DB 行后 best-effort 扇出
+// 先 /app-stop 后 /app-uninstall；executor 侧新增 /app-uninstall 路由：
+// 停 daemon（复用 /app-stop 语义）→ rm -rf apps/<appId>，幂等 + 路径安全。
+describe('POST /api/app-uninstall (NETOPT-8③)', () => {
+  const appRootOf = (appId: string) => path.resolve('/tmp/test-workdir', 'apps', appId);
+
+  const makeDaemonChild = () => {
+    const child = new EventEmitter() as unknown as import('child_process').ChildProcess & {
+      pid: number;
+      killed: boolean;
+    };
+    (child as unknown as { pid: number }).pid = 4321;
+    (child as unknown as { killed: boolean }).killed = false;
+    return child;
+  };
+
+  afterEach(() => {
+    runningApps.clear();
+    runningAppRoots.clear();
+  });
+
+  it('stops daemons recorded under apps/<appId> then removes the app directory', async () => {
+    const killSpy = jest.spyOn(process, 'kill').mockImplementation(() => true);
+    try {
+      const child = makeDaemonChild();
+      runningApps.set('dep-1', child);
+      runningAppRoots.set('dep-1', appRootOf('app-1'));
+      (mockFs.existsSync as jest.Mock).mockImplementation(
+        (p: unknown) => p === appRootOf('app-1'),
+      );
+
+      const res = await request(app).post('/api/app-uninstall').send({ appId: 'app-1' });
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual(
+        expect.objectContaining({ ok: true, appId: 'app-1', removed: true, stopped: ['dep-1'] }),
+      );
+      // daemon 停机走既有 /app-stop 语义（SIGTERM 全树；win32 为 taskkill /T /F）
+      if (process.platform !== 'win32') {
+        expect(killSpy).toHaveBeenCalledWith(-4321, 'SIGTERM');
+      } else {
+        expect(mockCp.spawn).toHaveBeenCalledWith(
+          'taskkill',
+          ['/T', '/F', '/PID', '4321'],
+          expect.objectContaining({ stdio: 'ignore' }),
+        );
+      }
+      expect(runningApps.has('dep-1')).toBe(false);
+      expect(runningAppRoots.has('dep-1')).toBe(false);
+      // 目录删除 apps/<appId>
+      expect(mockFs.rmSync).toHaveBeenCalledWith(
+        appRootOf('app-1'),
+        expect.objectContaining({ recursive: true, force: true }),
+      );
+      // 清掉 SIGKILL 升级定时器
+      child.emit('exit', 0);
+    } finally {
+      killSpy.mockRestore();
+    }
+  });
+
+  it('accepts applicationId as the body alias (deploy payload parity)', async () => {
+    const res = await request(app).post('/api/app-uninstall').send({ applicationId: 'app-alias' });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(expect.objectContaining({ ok: true, appId: 'app-alias' }));
+  });
+
+  it('is idempotent: a second call (or missing app dir) is still success', async () => {
+    (mockFs.existsSync as jest.Mock).mockReturnValue(false);
+    const first = await request(app).post('/api/app-uninstall').send({ appId: 'app-gone' });
+    expect(first.status).toBe(200);
+    expect(first.body).toEqual(
+      expect.objectContaining({ ok: true, appId: 'app-gone', removed: false, stopped: [] }),
+    );
+    const second = await request(app).post('/api/app-uninstall').send({ appId: 'app-gone' });
+    expect(second.status).toBe(200);
+    expect(second.body.ok).toBe(true);
+    expect(mockFs.rmSync).not.toHaveBeenCalled();
+  });
+
+  it('rejects an rm failure without crashing (best-effort result reported)', async () => {
+    (mockFs.existsSync as jest.Mock).mockReturnValue(true);
+    (mockFs.rmSync as jest.Mock).mockImplementation(() => {
+      throw new Error('EBUSY: resource busy');
+    });
+    const res = await request(app).post('/api/app-uninstall').send({ appId: 'app-busy' });
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.removed).toBe(false);
+    expect(res.body.error).toContain('EBUSY');
+  });
+
+  it.each([
+    ['../escape'],
+    ['../../etc'],
+    ['C:\evil'],
+    ['/etc/passwd'],
+    ['has space'],
+    ['..'],
+  ])('rejects unsafe appId %j (segment whitelist + traversal)', async (appId) => {
+    const res = await request(app).post('/api/app-uninstall').send({ appId });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/appId/i);
+    expect(mockFs.rmSync).not.toHaveBeenCalled();
+  });
+
+  it('requires appId (400 when missing)', async () => {
+    const res = await request(app).post('/api/app-uninstall').send({});
+    expect(res.status).toBe(400);
+    expect(mockFs.rmSync).not.toHaveBeenCalled();
   });
 });
