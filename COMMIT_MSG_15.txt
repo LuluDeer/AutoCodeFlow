@@ -1,0 +1,22 @@
+fix(test): PERF-10 守卫里 String.replace 漏传替换串，CI 的 tsc -b 报 TS2554
+
+CI 抓到 `src/__tests__/install-wizard-polling.perf10.test.ts(33,5): error TS2554:
+Expected 2 arguments, but got 1`——`String.replace(regex)` 漏了第二个参数
+（替换串），stripComments 实际什么都没删。
+
+**本地没抓到、CI 抓到了，原因值得记一笔**：`admin-web` 的 `typecheck` 不是
+`tsc --noEmit -p tsconfig.app.json`，而是 `npm run build` 里的 **`tsc -b`**
+（solution-style，**包含 `src/__tests__/**`**）。我本地只跑了前者的等价物
+（`tsconfig.app.json`），它不含测试文件，于是这个错误被漏过。CI 的
+`admin-web-build` / `windows-admin-web` 跑的是 `npm run build`，因此两个 job
+同时变红。
+
+修法：补上替换串 `''`。
+教训：**核对某个子项目"CI 实际跑什么"再跑**——本仓 admin-web 的构建即类型检查，
+且覆盖测试文件；只跑 `tsconfig.app.json` 会给出虚假的"0 error"。
+
+验证（这次按 CI 的确切命令跑）：
+  · `npx tsc -b` → 0 error（此前 exit 2）；
+  · `npm run lint` → 0 error；
+  · `npm run build` → 成功（39.1s）；
+  · `npx vitest run` 该文件 → 9 passed。

@@ -30,7 +30,7 @@ const WIZARD = readFileSync(
   'utf-8',
 );
 const stripComments = (s: string) =>
-  s.replace(/\/\*[\s\S]*?\*\//g).replace(/^\s*\/\/.*$/gm, '');
+  s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 const CODE = stripComments(WIZARD);
 
 describe('PERF-10 源码层：轮询 tick 必须判可见性', () => {
