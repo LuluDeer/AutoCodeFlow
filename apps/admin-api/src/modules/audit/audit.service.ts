@@ -1,9 +1,4 @@
-import {
-  BadRequestException,
-  Injectable,
-  Logger,
-  Optional,
-} from "@nestjs/common";
+import { Injectable, Logger, Optional } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { DataSource, Repository, LessThan } from "typeorm";
 import { Cron } from "@nestjs/schedule";
@@ -21,6 +16,33 @@ import { LeaderGateService } from "../../common/leader-gate/leader-gate.service"
  * 应用代码中唯一放行点就是本服务的清理任务。
  */
 const AUDIT_GUARD_BYPASS_SQL = `SET LOCAL app.bypass_audit_guard = 'on'`;
+
+/**
+ * API-09（本轮体验审查）：把用户输入安全地放进 **ILIKE 模式串**。
+ *
+ * 两个问题一起修：
+ *
+ * ① **LIKE 元字符未转义**（真实缺陷）。`username` 过滤此前直接拼
+ *    `` `%${input}%` ``。而 ILIKE 里 `%` 是"任意字符"、`_` 是"任意单字符"
+ *    ——运维搜一个真的含下划线的用户名（如 `zhang_san`）时，输入里那个 `_`
+ *    会被当成通配符，**匹配到 `zhangXsan` 这类无关账号**；搜 `%` 则匹配全部。
+ *    结果集看起来"能用"，只是多了些不该有的行——用户很难察觉，会据此得出
+ *    错误的审计结论（"这个账号在这次操作里出现过"）。转义后 `%`/`_` 才表示
+ *    字面量，符合用户在搜索框里的直觉。
+ *
+ * ② **`action` 的白名单过严**（体验缺陷）。原实现要求 `^[a-zA-Z0-9_.\-\s]+$`，
+ *    否则 400 "Invalid action parameter"。但注入风险早已由**绑定参数**消除
+ *    （值从不拼进 SQL），该白名单只剩副作用：用户输入中文、`:`、`/`
+ *    （如想按 `task.updateGlue` 之外的自然描述搜）直接吃 400，看到的是英文
+ *    技术报错而非"没有匹配"。故放宽为"仅限制长度"，并靠转义保证字面量语义。
+ *
+ * `escapeLikePattern` 用反斜杠转义 `\` `%` `_`；PG 的 LIKE 默认以 `\` 为
+ * 转义字符，故无需额外 ESCAPE 子句。反斜杠必须**先**转义（否则会把后面刚加
+ * 的转义符再转一次）。
+ */
+export function escapeLikePattern(input: string): string {
+  return input.replace(/\\/g, "\\\\").replace(/[%_]/g, "\\$&");
+}
 
 export interface AuditLogPayload {
   userId?: number;
@@ -108,14 +130,12 @@ export class AuditService {
       .orderBy("log.createdAt", "DESC");
 
     if (action) {
+      // API-09：放宽原来的 `^[a-zA-Z0-9_.\-\s]+$` 白名单（那会让中文 / `:` / `/`
+      // 等合法搜索直接吃 400，而注入风险早已由绑定参数消除），改为只限长度 +
+      // 转义 LIKE 元字符。见 escapeLikePattern 注释。
       const sanitizedAction = action.trim().slice(0, 100);
-      if (!/^[a-zA-Z0-9_.\-\s]+$/.test(sanitizedAction)) {
-        // S13: a client-supplied filter value must map to 400, not an
-        // unhandled Error that surfaces as a 500.
-        throw new BadRequestException("Invalid action parameter");
-      }
       qb.andWhere("log.action ILIKE :action", {
-        action: `%${sanitizedAction}%`,
+        action: `%${escapeLikePattern(sanitizedAction)}%`,
       });
     }
     if (resource) qb.andWhere("log.resource = :resource", { resource });
@@ -204,20 +224,20 @@ export class AuditService {
       .createQueryBuilder("log")
       .orderBy("log.createdAt", "DESC");
 
-    // SEC-03: Validate and sanitize action parameter to prevent SQL injection and performance issues
+    // API-09（本轮体验审查）：放宽 SEC-03 的白名单。
+    //
+    // 原实现要求 `^[a-zA-Z0-9_.\-\s]+$`，否则 400。但：
+    //   · 注入风险早已由**绑定参数**消除（值从不拼进 SQL，`ILIKE :action`），
+    //     该白名单对安全没有增量；
+    //   · 它只剩副作用——用户输入中文、`:`、`/` 这类**完全正常**的搜索词会吃
+    //     400 + 英文技术报错，而用户期待的是"没有匹配"或结果列表。
+    //
+    // 改为只限长度（防 DoS），并转义 LIKE 元字符保证 `%`/`_` 按字面量匹配。
+    // 与 exportCsv 的同款判断逐条对齐（R4 P1-2 要求两条路径同一过滤集）。
     if (action) {
-      // Limit action length to prevent DoS
       const sanitizedAction = action.trim().slice(0, 100);
-      // Only allow alphanumeric, underscore, hyphen, and space characters
-      if (!/^[a-zA-Z0-9_.\-\s]+$/.test(sanitizedAction)) {
-        // S13: BadRequestException (400) instead of a bare Error (500) — the
-        // value comes straight from the client query string.
-        throw new BadRequestException(
-          "Invalid action parameter: only alphanumeric characters, underscores, hyphens, and spaces are allowed",
-        );
-      }
       qb.andWhere("log.action ILIKE :action", {
-        action: `%${sanitizedAction}%`,
+        action: `%${escapeLikePattern(sanitizedAction)}%`,
       });
     }
 
@@ -250,8 +270,10 @@ export class AuditService {
     options: { username?: string; startTime?: string; endTime?: string },
   ): void {
     if (options.username) {
+      // API-09：转义 LIKE 元字符，使 `_` / `%` 按字面量匹配（见
+      // escapeLikePattern 的注释——未转义时搜 `zhang_san` 会命中 `zhangXsan`）。
       qb.andWhere("log.username ILIKE :username", {
-        username: `%${options.username}%`,
+        username: `%${escapeLikePattern(options.username.slice(0, 100))}%`,
       });
     }
     if (options.startTime) {
