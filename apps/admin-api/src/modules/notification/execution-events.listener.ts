@@ -90,6 +90,10 @@ export class ExecutionEventsListener implements OnModuleInit, OnModuleDestroy {
         undefined,
         event.taskId ?? undefined,
         task?.runbook,
+        // NETOPT-5①: 透传应用上下文——scope=application 的静默只应命中
+        // 该应用下任务的通知（此前 isSilenced 完全忽略 scope，应用级静默
+        // 等于全平台消音）。Task 实体本就为此处 alarmEmail/runbook 回查所得。
+        task?.applicationId ?? undefined,
       );
     } catch (err: unknown) {
       const notifyErrMsg = err instanceof Error ? err.message : String(err);
