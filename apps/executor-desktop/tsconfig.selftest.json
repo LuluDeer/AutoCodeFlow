@@ -17,6 +17,7 @@
     "src/main/log-tail.selftest.ts",
     "src/main/child-line-splitter.ts",
     "src/main/child-line-splitter.selftest.ts",
+    "src/main/executor-priority.selftest.ts",
     "src/main/uv-paths.ts",
     "src/main/uv-wiring.selftest.ts",
     "src/main/config-sanitize.ts",

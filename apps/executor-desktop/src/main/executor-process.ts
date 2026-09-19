@@ -1,5 +1,6 @@
 import { ChildProcess, spawn } from 'child_process';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { app, BrowserWindow } from 'electron';
 import { AppConfig } from './config-store';
@@ -181,20 +182,17 @@ export class ExecutorProcess {
     // 4-4（audit-r4）：桌面端任务进程不让抢占 UI——Windows 下调低子进程
     // 优先级为 BelowNormal（无 Linux niceness 等价物；POSIX 保持默认，避免
     // 在生产 Linux 上误伤任务吞吐）。best-effort：失败不阻断启动。
+    // NETOPT-2⑧: 此前为这一条调用一次性 spawn powershell——每次启动执行器都
+    // 拉起一个 PowerShell 进程（冷启动数百 ms～秒级 CPU + 一闪而过的黑窗风险）。
+    // 改用 Node 内建 os.setPriority（Node ≥10.14）：同步、零进程开销、跨版本
+    // 稳定。失败（如被组策略/安全软件限制）仅 warn，不阻断启动。
     if (process.platform === 'win32' && this.proc.pid !== undefined) {
       try {
-        spawn(
-          'powershell',
-          [
-            '-NoProfile',
-            '-NonInteractive',
-            '-Command',
-            `(Get-Process -Id ${this.proc.pid} -ErrorAction SilentlyContinue).PriorityClass = 'BelowNormal'`,
-          ],
-          { stdio: 'ignore', windowsHide: true },
+        os.setPriority(this.proc.pid, os.constants.priority.PRIORITY_BELOW_NORMAL);
+      } catch (err) {
+        log.warn(
+          `Failed to set executor priority to BelowNormal: ${err instanceof Error ? err.message : err}`,
         );
-      } catch {
-        /* best-effort */
       }
     }
 
