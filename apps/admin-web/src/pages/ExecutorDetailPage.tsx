@@ -166,7 +166,15 @@ export default function ExecutorDetailPage() {
   const setOfflineMut = useMutation({
     mutationFn: () => executorsApi.setOffline(id!),
     onSuccess: () => { message.success(t('executorDetail.offline.offlineSuccess')); refreshExecutor(); },
-    onError: (e) => { message.error(t('executorDetail.offline.offlineFail', { err: e.message })); },
+    // UX-11（本轮体验审查）：此前直接取 `e.message`，绕过了全站的错误消息归一。
+    // axios 错误的 `message` 是 **"Request failed with status code 400"** 这类
+    // 英文技术串，而后端给用户看的原因在 `response.data.message` 里（如
+    // 「执行器正在运行任务，无法置为离线」）。后果：同一次失败，本页显示英文
+    // 技术串，而**同一文件第 161 行**（removeExecutor）已是正确的 getErrMsg
+    // 写法——同一页面两种错误文案。
+    // 直接取 `e.message` 还有个隐患：`e` 若是非 Error 值（reject 了字符串或
+    // 普通对象）会得到 `undefined`，页面上直接出现 "undefined"。
+    onError: (e) => { message.error(t('executorDetail.offline.offlineFail', { err: getErrMsg(e) })); },
   });
   const setOffline = () => setOfflineMut.mutate();
   const settingOffline = setOfflineMut.isPending;

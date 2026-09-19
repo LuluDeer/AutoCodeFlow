@@ -515,7 +515,13 @@ export default function TaskFormPage() {
         }
         return;
       }
-      message.error(err instanceof Error ? err.message : t('taskForm.validate.fail'));
+      // UX-11（本轮体验审查）：此前手写 `err instanceof Error ? err.message : ...`。
+      // 它比直接取 `e.message` 好，但仍绕过了全站归一：axios 错误的 `message`
+      // 是 "Request failed with status code 400" 这类英文技术串，真正的业务
+      // 原因在 `response.data.message` 里。getErrMsg 同时覆盖这两种形状，且
+      // 本文件第 39 行本就导入了它（同页其它错误路径已在用）——同页两套文案
+      // 才是问题所在。
+      message.error(getErrMsg(err, t('taskForm.validate.fail')));
       return;
     }
     const values = form.getFieldsValue(true);
@@ -650,7 +656,8 @@ export default function TaskFormPage() {
       await form.validateFields();
     } catch (err: unknown) {
       if (isFormValidationError(err)) return;
-      message.error(err instanceof Error ? err.message : t('taskForm.validate.fail'));
+      // UX-11：同 openSaveAsTemplate——统一走 getErrMsg（见上方注释）。
+      message.error(getErrMsg(err, t('taskForm.validate.fail')));
       return;
     }
     // F-28（DEEP_REVIEW 0ef3bbe）：原为 `name: cond ? undefined : undefined` 死三元
