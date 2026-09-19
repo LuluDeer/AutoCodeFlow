@@ -2225,7 +2225,29 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
   /** DEP-03：逐台健康探测——GET http://<host>:<port><path>，
    *  interval 间隔重试 failThreshold 次；探活成功即提升其余台；窗口耗尽
    *  失败 → failBatch（自动回滚已升级台）。 */
+  /**
+   * NETOPT-1①: 探测以 `void` fire-and-forget 启动（心跳确认路径 + tick 驱动
+   * 路径），而内部 failBatch（claimRolloutRows/markRolloutState 等 DB 写）与
+   * promoteRest 均不在任何 try/catch 内——同 rolloutTick 的 unhandledRejection
+   * 整实例退出风险。全程兜底：记日志、不外抛、不推进批次状态（行保持
+   * probing/pending，由 tick 的硬超时分支兜底收尾）。
+   */
   private async probeDeployment(
+    batch: RolloutBatch,
+    deploymentId: string,
+  ): Promise<void> {
+    try {
+      await this.probeDeploymentInner(batch, deploymentId);
+    } catch (err: unknown) {
+      this.logger.error(
+        `Health probe for deployment ${deploymentId} (batch ${batch.batchId}) failed: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+
+  private async probeDeploymentInner(
     batch: RolloutBatch,
     deploymentId: string,
   ): Promise<void> {
@@ -2405,10 +2427,37 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     batch.tickTimer = t;
   }
 
+  /**
+   * NETOPT-1①: 批次推进 tick 以 `void` fire-and-forget 运行（scheduleRolloutTick
+   * 的 setTimeout 回调），而方法体内的 repo.find / failBatch / touchRolloutLease
+   * 等 DB 读写此前均不在任何 try/catch 内——一次瞬时 DB 抖动就会以
+   * unhandledRejection 冒泡到 main.ts 的 process.on("unhandledRejection") →
+   * gracefulFatalShutdown → 整实例退出。此处全程兜底（对齐 outbox-dispatcher
+   * scanOnce 的「绝不外抛」纪律）：记日志、不外抛、不改批次/行状态；批次仍在
+   * 途则续排下一 tick 重试，硬超时收尾由下一 tick 顶部的兜底分支裁决。
+   */
   private async rolloutTick(appId: string): Promise<void> {
     const batch = this.rolloutBatches.get(appId);
     if (!batch) return;
+    try {
+      await this.rolloutTickInner(appId, batch);
+    } catch (err: unknown) {
+      this.logger.error(
+        `Rollout tick for batch ${batch.batchId} failed (batch kept, retry on next tick): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      // 批次仍在途（未被 failBatch 收尾删除）才续排；行级状态保持不动。
+      if (this.rolloutBatches.has(appId)) {
+        this.scheduleRolloutTick(appId, ROLLOUT_TICK_MS);
+      }
+    }
+  }
 
+  private async rolloutTickInner(
+    appId: string,
+    batch: RolloutBatch,
+  ): Promise<void> {
     if (Date.now() - batch.startedAt > ROLLOUT_BATCH_TIMEOUT_MS) {
       const stuckId = batch.upgradedIds[0];
       await this.failBatch(batch, stuckId, "batch hard timeout");
