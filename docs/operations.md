@@ -165,7 +165,8 @@ mc ilm rule ls autoflow-minio/autoflow-logs
 | `.env` secrets | `JWT_SECRET` / `DB_PASSWORD` / `REDIS_PASSWORD` / `EXECUTOR_SECRET` / `MINIO_ROOT_PASSWORD` / `INITIAL_ADMIN_PASSWORD` 等 | 文件级备份并妥善保管权限；丢失后按「安全加固」节重建并轮换 |
 | 上传包目录 | admin-api 容器内 `uploads/packages`（应用包）与 `uploads/executor-packages`（执行器包） | **注意**：compose 未为 admin-api 挂载卷，该目录仅存于容器文件系统，容器重建即丢失。备份：`docker compose cp admin-api:/app/uploads /backup/autoflow/uploads_$(date +%F)`；或接受重建后重新上传 |
 | S3/MinIO 日志桶 | `LOG_STORAGE_DRIVER=s3` 时 `autoflow-logs` 桶 `execution-logs/` 前缀对象（`minio_data` 卷） | `mc mirror autoflow-minio/autoflow-logs /backup/autoflow/minio/`；MinIO 卷本身无内置备份，仅镜像导出 |
-| 包仓库缓存（可选） | `pypi_data`（registry-pypi `/data/packages`）、`npm_data`（registry-npm verdaccio storage） | 仅上游包缓存，可从 PyPI/npm 重建，备份优先级低 |
+| 上游包缓存（可选） | `pypi_data`（registry-pypi `/data/packages` 中代理自 PyPI 的上游缓存） | 仅上游包缓存，可从 PyPI 重新拉取重建，备份优先级低 |
+| 私有发布包（必须备份） | `npm_data`（registry-npm verdaccio storage，含私有发布的 `@autoflow/*`）与 `pypi_data` 中手动 `twine upload` 的私有 wheel | 私有发布物**无法从 PyPI/npm 上游重建**——必须备份（如 `docker run --rm -v autoflow_npm_data:/data -v $(pwd):/backup alpine tar czf /backup/npm_data_$(date +%F).tar.gz /data`），或在恢复预案中明确接受「从源码重新走 CI 发布」的替代流程并演练 |
 
 ### 恢复步骤骨架
 
