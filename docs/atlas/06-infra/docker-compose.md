@@ -1,5 +1,5 @@
 # docker-compose 逐服务拆解
-> 所属: docs/atlas/06-infra · 最后核对: 2026-09-13 · 对应代码: docker-compose.yml（根，413 行）、infra/docker-compose.yml（51 行）
+> 所属: docs/atlas/06-infra · 最后核对: 2026-09-19 · 对应代码: docker-compose.yml（根，733 行）、infra/docker-compose.yml（51 行）
 
 ## 怎么用
 
@@ -11,7 +11,7 @@ docker compose --profile minio up -d     # 追加可选服务（replica/minio/ja
 
 根 compose 网络：`autoflow-internal`（`internal: true`，服务间通信）+ `autoflow-public`（对外）。日志统一 `json-file`，`max-size 10m / max-file 5`。
 
-## 服务清单（根 docker-compose.yml，11 个）
+## 服务清单（根 docker-compose.yml，19 个）
 
 ### postgres（基础设施）
 - 镜像 `postgres:16-alpine`；env `POSTGRES_USER/PASSWORD/DB`；卷 `postgres_data`；`mem_limit 1g`、`shm_size 256mb`（审计聚合与迁移索引需要）。
@@ -21,10 +21,10 @@ docker compose --profile minio up -d     # 追加可选服务（replica/minio/ja
 - 同镜像；**演示形态**：不做真流复制，只提供可连空实例供联调 `DB_READ_REPLICA_URL` 的读写路由。真实读副本用云 RDS / PG 流复制。无端口映射。
 
 ### redis（基础设施）
-- 镜像 `redis:7-alpine`；卷 `redis_data`；healthcheck `redis-cli ping`；deploy 限额 256M/0.5 CPU。
+- 镜像 `redis:7-alpine`；卷 `redis_data`；healthcheck 为 exec 形态 `['CMD','redis-cli','-a','${REDIS_PASSWORD}','ping']`（M-2：带密码鉴权，密码作为独立 argv 传入避免引号问题）；`requirepass` 强制（`REDIS_PASSWORD` 走 `:?` 显式注入）；deploy 限额 256M/0.5 CPU。
 
 ### admin-api（核心）
-- build `./apps/admin-api`；端口 `3105:3105`；`mem_limit 768m`。
+- build `./apps/admin-api`；端口 `127.0.0.1:3105:3105`（E-03：loopback-only，禁止 `0.0.0.0` 直暴）；`mem_limit 768m`。
 - env：DB 指向 `postgres`、Redis 指向 `redis`、`JWT_SECRET/JWT_REFRESH_SECRET/EXECUTOR_SECRET`、`CORS_ORIGINS/ADMIN_WEB_ORIGIN`、`AI_PROVIDER`、`LOG_STORAGE_*`（driver db|s3）、`INITIAL_ADMIN_EMAIL/PASSWORD` 等（全表见 [env-vars.md](env-vars.md)）。
 - **depends_on：postgres + redis 均 `service_healthy`**；healthcheck `wget http://localhost:3105/api/health/live`（start_period 60s）。
 
@@ -57,9 +57,18 @@ docker compose --profile minio up -d     # 追加可选服务（replica/minio/ja
 - 镜像 `jaegertracing/all-in-one:1.57`；`COLLECTOR_OTLP_ENABLED=true`；端口 `127.0.0.1:4317/4318/16686`；卷 `jaeger_data:/badger`。
 - 现状：平台仅用 `@opentelemetry/api`，span 未出站——此服务为未来接 Jaeger/Tempo 预置，未启用时零资源。
 
-## 卷清单（8 个命名卷）
+### pg-backup（profile: `backup`，M-1）
+- 镜像 `postgres:16-alpine`（复用 pg_dump）；卷 `backup_data:/backup`；挂载 `scripts/pg-backup.sh`（只读）为入口脚本，`scripts/pg-backup-entrypoint.sh` 把 `BACKUP_SCHEDULE`（busybox crond，缺省每日 02:00）写进 crontab 后前台跑 crond。
+- 备份保留 `BACKUP_RETENTION_DAYS`（缺省 30）天；depends_on postgres `service_healthy`。脚本带 `-o pipefail` + 最小尺寸校验（NETOPT-4），pg_dump 失败不会伪装成空备份成功。
 
-`postgres_data` `redis_data` `minio_data` `pypi_data` `npm_data` `executor_python_data` `executor_node_data` `jaeger_data`
+### monitoring 栈（profile: `monitoring`，M-3/M-4，7 服务）
+- `prometheus`（`prom/prometheus:v2.53.0`，127.0.0.1:9090，卷 `prometheus_data`）+ `grafana`（11.1.0，127.0.0.1:3000，卷 `grafana_data`；管理口令 `GRAFANA_ADMIN_PASSWORD` 走 `:?` 显式注入，无 admin 弱缺省）+ `alertmanager`（v0.27.0，127.0.0.1:9093）。
+- `postgres-exporter` / `redis-exporter`（基础设施指标，仅 internal 网络）；`loki`（3.0.0，127.0.0.1:3100，卷 `loki_data`）+ `promtail`（经宿主 `/var/run/docker.sock` 聚合全部容器日志；`cap_drop: [ALL]` + `read_only: true` + tmpfs /tmp 最小加固，positions 由 tmpfs 承载）。
+- 启用：`docker compose --profile monitoring up -d`；配置文件在 `config/monitoring/`。OBS-02 告警入站需 HMAC 签名，接线见 docs/deployment.md「监控」段。
+
+## 卷清单（13 个命名卷）
+
+`postgres_data` `redis_data` `minio_data` `pypi_data` `npm_data` `executor_python_data` `executor_node_data` `jaeger_data`（基础栈）· `backup_data`（pg-backup）· `prometheus_data` `grafana_data` `loki_data`（monitoring）· `interpreter_cache`（python_task_multiversion：解释器缓存池，executor-python 与 executor-node 共享，豁免 TTL 清扫，见 docker-compose.yml 内注释）
 
 ## 依赖链（depends_on 汇总）
 
