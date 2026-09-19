@@ -1,26 +1,30 @@
-fix(ci): windows-node-tests 漏了 acf-cli 的 build，版本号守卫 MODULE_NOT_FOUND
+fix(release): acf-cli 漏进 release-please manifest——Release PR 把它从 1.4.3 倒退到 1.0.0
 
-CI 抓到（Windows 专属 job）：`windows-node-tests (packages/acf-cli)` 红，
-`MODULE_NOT_FOUND: .../dist/index.js` + `requireStack: []`。
+解除 release-please 的永久卡点后（PR #4 标签 pending→tagged），release-please
+首次真正开出了 Release PR（#9），立刻暴露出这个新缺陷：
 
-根因：`release-metadata.test.ts` 的版本号守卫会**执行构建产物**
-（`node dist/index.js --version`）比对 package.json。而本包有**两个** CI job 跑测试
-——`acf-cli-test` 与矩阵化的 `windows-node-tests`——我上一批只给前者加了 build
-步骤，后者的 acf-cli 分支走的是 `npm run typecheck`，于是产物不存在、守卫报错。
-**同一个包、同一个守卫，漏改一处就红一次**。
+    packages/acf-cli/package.json    - "version": "1.4.3"   + "version": "1.0.0"
+    packages/mcp-server/package.json - "version": "1.4.3"   + "version": "1.5.0"
 
-本机复现确认：清掉 dist 后 `node dist/index.js --version` 抛
-`Cannot find module .../dist/index.js`（与 CI 逐字一致），证明是缺 build 而非
-`require('../package.json')` 路径问题（后者在本机 Windows 上正常输出 1.4.3）。
+同批四个包，三个正常走 1.4.3 → 1.5.0，唯独 acf-cli 倒退到 1.0.0。
 
-修法两层（都不依赖对方）：
- ① `windows-node-tests` 的 acf-cli 分支补 `npm run build`（显式、失败信息清楚）；
- ② **把"确保产物在场"收进守卫自身**——产物缺失时就地 `npm run build` 后继续，
-    而不是 `throw` 要求调用方先构建。理由：原先依赖的是"CI 里 build 排在 test
-    之前"这一**约定**，而约定会漏（本次就漏了）；收进守卫后从**约定**变成
-    **结构保证**，无论谁在什么顺序下跑、有几个 job 跑，它都自足。
-    注意仍**不是**静默跳过：就地构建失败会抛出，断言照旧生效。
+根因：release-please-manifest.json 是 release-please 的「上次发到哪了」基线。
+acf-cli 在上一轮（b049272）写进了 release-please-config.json 的 packages 与
+linked-versions.components，却漏进了 manifest——基线缺失时 release-please 把
+它当全新包从 1.0.0 起算。
 
-验证：acf-cli 112 passed / 1 skipped；实测删掉 dist 后守卫自愈（自动构建 → 8 条
-全过，且 dist 被重建）；反证仍有效（把 `.version(pkg.version)` 改回硬编码
-`'1.0.0'` → 2 条转红）；CI YAML 已解析确认两个 job 的步骤正确。
+这是上一轮「acf-cli 漏进 linked-versions、卡在 1.0.0」（缺陷 #1）换了形态复发：
+那次是永远不 bump，这次是版本倒退。两者都只在真正发版那天才暴露，且都会让
+lockstep 破功、被 version-guard 在 tag 那一刻才拦下。
+
+修复：
+- release-please-manifest.json 补 packages/acf-cli: 1.4.3
+- check-release-config.mjs 新增第 ⑤ 层：config.packages 与 manifest 的键必须
+  一一对应（双向：漏条目 + 残留条目）。五层合起来保证「config 写了谁 /
+  manifest 记了谁 / lockstep 带上谁 / version-guard 校验谁 / 矩阵发谁」
+  五份事实指向同一个包集合。
+- selftest 补 3 例（2 反例 + 1 向后兼容正向），总计 8 例 / 6 反例；
+  收尾计数改为按 want>0 实算，不再写死「4 个反例」（已失真）。
+- mutation 验证：移除 manifest 里的 acf-cli → 守卫精确报 ⑤ 并 exit 1。
+
+PR #9 已作废关闭（它基于旧的、缺条目的 main 生成）。
