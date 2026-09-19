@@ -571,6 +571,41 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
   }
 }
 
+// ── NETOPT-7⑥：HistoryPage 日志读取必须 try/catch/finally ──────────────
+//
+// readLog IPC 任一次 reject（日志文件被 TTL 清理/IPC 异常）时，原实现无 catch：
+// setLoading(false) 不执行 → 永久「加载日志...」，且 1.5s/5s 轮询反复重抛
+// unhandled rejection。与 AppsPage 的 AppLogViewer（同一 IPC 形态已有 try/catch
+// + error 态）对齐：失败可见 + 终止无限轮询 + loading 必须复位。
+{
+  const historyPage = pages[2];
+  const logViewerIdx = historyPage.indexOf('function LogViewer');
+  if (logViewerIdx === -1) throw new Error('NETOPT-7⑥: 找不到 LogViewer');
+  const start = historyPage.indexOf('const fetchLog = useCallback');
+  if (start === -1) throw new Error('NETOPT-7⑥: 找不到 LogViewer.fetchLog');
+  // 块边界：fetchLog 函数体不可能跨到其后第一个 useEffect 之后
+  const rest = historyPage.slice(start);
+  const next = rest.indexOf('useEffect', 1);
+  const block = next >= 0 ? rest.slice(0, next) : rest;
+  if (!/try\s*\{/.test(block) || !block.includes('} catch (err) {') || !/finally\s*\{/.test(block)) {
+    throw new Error('NETOPT-7⑥: fetchLog 必须 try/catch/finally（否则 reject 后永久「加载日志...」）');
+  }
+  if (!block.includes('setLoading(false)')) {
+    throw new Error('NETOPT-7⑥: setLoading(false) 不在 fetchLog 内（应置于 finally）');
+  }
+  if (!block.includes('setError(')) {
+    throw new Error('NETOPT-7⑥: 读取失败未写 error 态 —— 用户看不到原因');
+  }
+  // 失败后必须终止轮询（否则 1.5s/5s 反复失败重抛）
+  if (!block.includes('clearInterval(timerRef.current)')) {
+    throw new Error('NETOPT-7⑥: 失败分支未终止轮询——会反复重试重抛');
+  }
+  // 错误必须渲染为页内可见（role="alert"）
+  if (!/role="alert"/.test(historyPage.slice(logViewerIdx))) {
+    throw new Error('NETOPT-7⑥: 日志读取错误行缺 role="alert" —— 失败对用户不可见');
+  }
+}
+
 // ── NETOPT-6⑥：渲染树必须有全局 ErrorBoundary 兜底 ─────────────────
 // 背景：main.tsx 此前直接 render(<App />)，全 renderer 零边界——任一组件
 // 渲染期抛错（EXP-09 记录过该事故形态：preload 缺方法同步抛 → 整树卸载
