@@ -169,11 +169,21 @@ jobs:
   # U-1（2026-09）：已迁移到 PyPI Trusted Publishing（OIDC，免长期 token）——
   # 本 job 声明 `permissions: id-token: write` 且不再使用 secrets.PYPI_API_TOKEN，
   # 发布凭证由 pypi.org 侧 OIDC 动态签发，无长期 token 泄露面。
-  # ⚠ 发布前唯一待办的**外部手动步骤**：在 pypi.org 项目（autoflow-sdk）的
-  #   "Publishing" 设置页登记本仓库
-  #   owner/repo + workflow 文件名（release.yml）+ environment（release），
-  #   未登记时下一次 tag 推送的发布会以明确报错失败（而非静默跳过）。
+  # ⚠ 本 job 依赖一个**仓库外的手动登记**，漏做则发版当天才失败（v1.5.0 实证）：
+  #     Trusted publishing exchange failure: invalid-publisher:
+  #     valid token, but no corresponding publisher
+  #   该报错**不指向本注释**（v1.5.0 排查实证：报错只给出 OIDC claims，需要靠
+  #   claims 反推登记缺失），排查成本很高——故登记参数在此固化。
+  #   登记步骤与逐字参数见 docs/release-checklist.md「4.2.1 PyPI 发布凭证」：
+  #     pypi.org → autoflow-sdk → Publishing → Add a new trusted publisher
+  #     Owner=LuluDeer / Repository=AutoCodeFlow /
+  #     Workflow name=release.yml（只文件名，无 .github/workflows/ 前缀）/
+  #     Environment name=release（必须填：本 job 有 environment: release，
+  #     OIDC claims 的 sub 因此是 repo:LuluDeer/AutoCodeFlow:environment:release，
+  #     PyPI 侧留空即与之不匹配）
   # 登记完成后，本 job 不再需要任何 PyPI secret。
+  # 临时回退（登记未完成时）：给下方 Publish 步骤加回
+  #   password: ${{ secrets.PYPI_API_TOKEN }}（该 secret 仍在仓库中）。
   # 内网发布：加 `repository-url: https://<registry-pypi-host>/...` 并把
   # token 换成私有 registry 凭证（apps/registry-pypi）。
   publish-pypi:
