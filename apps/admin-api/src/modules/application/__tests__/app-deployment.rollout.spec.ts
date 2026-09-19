@@ -563,4 +563,104 @@ describe("AppDeploymentService rollout（DEP-02/DEP-03）", () => {
       expect((service as any).rolloutTimers.size).toBe(0);
     }, 15000);
   });
+
+  // NETOPT-1①: rolloutTick / probeDeployment 以 `void` fire-and-forget 运行，
+  // 顶层必须有兜底 catch——否则瞬时 DB 抖动以 unhandledRejection 冒泡到
+  // main.ts 的 process.on → gracefulFatalShutdown → 整实例退出。
+  describe("NETOPT-1①: fire-and-forget tick/探测的顶层兜底（unhandledRejection 防线）", () => {
+    const seedBatch = (overrides: Record<string, any> = {}) => {
+      const batch = {
+        batchId: "rollout-netopt1",
+        applicationId: "app-1",
+        strategy: "canary" as const,
+        percentage: 34,
+        healthCheck: null,
+        upgradedIds: ["d1"],
+        promotedIds: [] as string[],
+        startedAt: Date.now(),
+        timer: null,
+        tickTimer: null,
+        ...overrides,
+      };
+      (service as any).rolloutBatches.set("app-1", batch);
+      return batch;
+    };
+
+    it("rolloutTick：repo.find 拒绝 → 方法正常 resolve 不外抛，批次保留并续排下一 tick", async () => {
+      const batch = seedBatch();
+      const errSpy = jest
+        .spyOn((service as any).logger, "error")
+        .mockImplementation(() => {});
+      repo.find.mockRejectedValue(new Error("transient db down"));
+
+      // 缺陷形态（无兜底）：此调用会 reject → void 前缀下成为
+      // unhandledRejection → main.ts gracefulFatalShutdown 整实例退出。
+      await expect(
+        (service as any).rolloutTick("app-1"),
+      ).resolves.toBeUndefined();
+
+      expect(errSpy).toHaveBeenCalledWith(
+        expect.stringContaining("transient db down"),
+      );
+      // 批次状态保持（不改行级状态、不误判失败），留待下一 tick 重试。
+      expect((service as any).rolloutBatches.has("app-1")).toBe(true);
+      expect(batch.tickTimer).not.toBeNull();
+      // 续排的 timer 已登记，onModuleDestroy（afterEach）可统一清理。
+      expect((service as any).rolloutTimers.has(batch.tickTimer)).toBe(true);
+    });
+
+    it("rolloutTick：批次已被 failBatch 收尾删除后出错 → 不续排僵尸 tick", async () => {
+      seedBatch();
+      jest
+        .spyOn((service as any).logger, "error")
+        .mockImplementation(() => {});
+      repo.find.mockRejectedValue(new Error("db down"));
+      // 模拟错误发生前批次已被收尾删除（failBatch 会 delete rolloutBatches）
+      const inner = (service as any).rolloutTickInner.bind(service);
+      (service as any).rolloutTickInner = async (appId: string) => {
+        (service as any).rolloutBatches.delete(appId);
+        await inner(appId);
+      };
+
+      await expect(
+        (service as any).rolloutTick("app-1"),
+      ).resolves.toBeUndefined();
+      expect((service as any).rolloutBatches.has("app-1")).toBe(false);
+      // 批次已不在内存 → catch 分支不得续排（无批次可推进）
+      const seeded = (service as any).rolloutBatches.get("app-1");
+      expect(seeded).toBeUndefined();
+    });
+
+    it("probeDeployment：探测链路拒绝 → 方法正常 resolve 不外抛，批次状态不推进", async () => {
+      const batch = seedBatch({
+        healthCheck: {
+          path: "/health",
+          port: 3001,
+          interval: 100,
+          failThreshold: 1,
+          timeoutMs: 100,
+        },
+      });
+      const errSpy = jest
+        .spyOn((service as any).logger, "error")
+        .mockImplementation(() => {});
+      // findByIdRaw 需要拿到行（否则走 "deployment row vanished" 失败路径）
+      repo.findOne.mockResolvedValue(row("d1"));
+      // probeOnce 内部任何重抛（探测/HTTP 层异常）此前会经 void 前缀
+      // 变成 unhandledRejection；以 mock 直接模拟该重抛形态。
+      (service as any).probeOnce = jest
+        .fn()
+        .mockRejectedValue(new Error("probe layer blew up"));
+
+      await expect(
+        (service as any).probeDeployment(batch, "d1"),
+      ).resolves.toBeUndefined();
+
+      expect(errSpy).toHaveBeenCalledWith(
+        expect.stringContaining("probe layer blew up"),
+      );
+      // 不推进批次状态：批次仍在内存、行级收尾交给 tick 硬超时兜底。
+      expect((service as any).rolloutBatches.has("app-1")).toBe(true);
+    });
+  });
 });
