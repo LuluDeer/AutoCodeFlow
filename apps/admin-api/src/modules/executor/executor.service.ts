@@ -89,6 +89,8 @@ import type { EstimatedDurations } from "./executor-score.util";
 import { TracingService } from "../../common/tracing/tracing.service";
 // AUTH-05: 高危操作（rotate-token / 删除执行器）审计留痕
 import { AuditService } from "../audit/audit.service";
+// NETOPT-8④: 分批 DELETE 循环的轮数/墙钟双闸（LOG-RETENTION-01 回移植）
+import { cappedBatchedDelete } from "../../common/utils/capped-batched-delete.util";
 // A6: 对账端点响应契约（三端共载，见 DTO 头注）
 import type { TerminalStatesResponseDto } from "./dto/executor-terminal-states.dto";
 
@@ -2358,28 +2360,35 @@ export class ExecutorService {
    * NETOPT-1②: task_executions 90 天 retention，返回清理总行数。cutoff 可
    * 注入以便测试。分批 DELETE（id IN (SELECT ... LIMIT 批大小)）循环直至
    * 单批不足批大小，避免长事务锁表；多实例下仅 cron Leader 执行（入口已门禁）。
+   *
+   * NETOPT-8④: 循环收口改走公共 cappedBatchedDelete——补 LOG-RETENTION-01
+   * 轮数/墙钟双闸（affected 恒返满批时旧 `do..while` 永不终止，已实测 OOM）。
    */
   async cleanupOldTaskExecutions(cutoff: Date): Promise<number> {
-    let totalDeleted = 0;
-    let batchDeleted = 0;
-    do {
-      const result = await this.execRepo
-        .createQueryBuilder()
-        .delete()
-        .where(
-          `"id" IN (
-            SELECT "victim"."id" FROM "task_executions" "victim"
-            WHERE "victim"."createdAt" < :cutoff
-            ORDER BY "victim"."id"
-            LIMIT :batchSize
-          )`,
-          { cutoff, batchSize: ExecutorService.EXECUTION_RETENTION_BATCH_SIZE },
-        )
-        .execute();
-      batchDeleted = result.affected ?? 0;
-      totalDeleted += batchDeleted;
-    } while (batchDeleted >= ExecutorService.EXECUTION_RETENTION_BATCH_SIZE);
-    return totalDeleted;
+    return cappedBatchedDelete({
+      batchSize: ExecutorService.EXECUTION_RETENTION_BATCH_SIZE,
+      logLabel: "Q7",
+      logger: this.logger,
+      executeBatch: async () => {
+        const result = await this.execRepo
+          .createQueryBuilder()
+          .delete()
+          .where(
+            `"id" IN (
+              SELECT "victim"."id" FROM "task_executions" "victim"
+              WHERE "victim"."createdAt" < :cutoff
+              ORDER BY "victim"."id"
+              LIMIT :batchSize
+            )`,
+            {
+              cutoff,
+              batchSize: ExecutorService.EXECUTION_RETENTION_BATCH_SIZE,
+            },
+          )
+          .execute();
+        return result.affected ?? 0;
+      },
+    });
   }
 
   // R-09（DEEP_REVIEW 0ef3bbe）: executor_metrics_history 无 retention——每执行器
@@ -2414,30 +2423,33 @@ export class ExecutorService {
    * R-09: 删除 createdAt 早于保留期截止的指标历史行，返回清理总行数。
    * now 可注入以便测试。分批 DELETE 对齐 log-retention-cleanup 的
    * cleanupExpiredLinesByDelete 模式。
+   * NETOPT-8④: 循环收口改走公共 cappedBatchedDelete（LOG-RETENTION-01
+   * 轮数/墙钟双闸，防 affected 恒满批时无界循环 OOM）。
    */
   async cleanupExpiredMetricsHistory(now: Date = new Date()): Promise<number> {
     const retentionDays = this.resolveMetricsRetentionDays();
     const cutoff = new Date(now.getTime() - retentionDays * 86_400_000);
-    let totalDeleted = 0;
-    let batchDeleted = 0;
-    do {
-      const result = await this.metricsHistoryRepo
-        .createQueryBuilder()
-        .delete()
-        .where(
-          `"id" IN (
-            SELECT "victim"."id" FROM "executor_metrics_history" "victim"
-            WHERE "victim"."createdAt" < :cutoff
-            ORDER BY "victim"."id"
-            LIMIT :batchSize
-          )`,
-          { cutoff, batchSize: ExecutorService.METRICS_RETENTION_BATCH_SIZE },
-        )
-        .execute();
-      batchDeleted = result.affected ?? 0;
-      totalDeleted += batchDeleted;
-    } while (batchDeleted >= ExecutorService.METRICS_RETENTION_BATCH_SIZE);
-    return totalDeleted;
+    return cappedBatchedDelete({
+      batchSize: ExecutorService.METRICS_RETENTION_BATCH_SIZE,
+      logLabel: "R-09",
+      logger: this.logger,
+      executeBatch: async () => {
+        const result = await this.metricsHistoryRepo
+          .createQueryBuilder()
+          .delete()
+          .where(
+            `"id" IN (
+              SELECT "victim"."id" FROM "executor_metrics_history" "victim"
+              WHERE "victim"."createdAt" < :cutoff
+              ORDER BY "victim"."id"
+              LIMIT :batchSize
+            )`,
+            { cutoff, batchSize: ExecutorService.METRICS_RETENTION_BATCH_SIZE },
+          )
+          .execute();
+        return result.affected ?? 0;
+      },
+    });
   }
 
   /** R-09: 解析保留期（复用 logRetention.days，对齐 artifacts-retention 口径） */

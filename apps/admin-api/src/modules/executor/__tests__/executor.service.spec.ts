@@ -29,6 +29,8 @@ import { DOMAIN_EVENTS } from "../../../common/events/domain-events";
 import { resetRuntimeGauges } from "../../metrics/runtime-metrics-entry";
 // AUTH-05: 高危操作审计断言
 import { AuditService } from "../../audit/audit.service";
+// NETOPT-8④: 分批 DELETE 双闸上限（公共 helper）
+import { LOG_RETENTION_MAX_DELETE_ROUNDS } from "../../../common/utils/capped-batched-delete.util";
 
 jest.mock("axios");
 // F-3: dispatch now consults the SSRF layer before every outbound POST. These
@@ -2815,6 +2817,30 @@ describe("ExecutorService (__tests__)", () => {
       await service.cleanupOldRecords();
       expect(execRepo.createQueryBuilder).not.toHaveBeenCalled();
     });
+
+    // NETOPT-8④: LOG-RETENTION-01 双闸回移植——affected 恒返满批（并发写入
+    // 持续补进 / 驱动 affected 语义差异）时旧 `do..while(batchDeleted>=5000)`
+    // 永不终止（log-retention-cleanup 已实测 OOM 挂死）。未修复时本用例在
+    // 无界循环上超时转红。
+    it("NETOPT-8④: affected 恒返满批也在轮数上限处终止并 warn（不挂死）", async () => {
+      const warnSpy = jest.spyOn(Logger.prototype, "warn");
+      try {
+        const qb = makeDeleteQb(5000);
+        qb.execute.mockResolvedValue({ affected: 5000 });
+        execRepo.createQueryBuilder.mockReturnValue(qb as any);
+        const total = await service.cleanupOldTaskExecutions(new Date());
+        expect(total).toBe(5000 * LOG_RETENTION_MAX_DELETE_ROUNDS);
+        expect(execRepo.createQueryBuilder).toHaveBeenCalledTimes(
+          LOG_RETENTION_MAX_DELETE_ROUNDS,
+        );
+        const warned = warnSpy.mock.calls.some((c) =>
+          String(c[0]).includes("轮数上限"),
+        );
+        expect(warned).toBe(true);
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
   });
 
   // R-09（DEEP_REVIEW 0ef3bbe）: executor_metrics_history retention 清理。
@@ -2881,6 +2907,29 @@ describe("ExecutorService (__tests__)", () => {
         { isLeader: false };
       await service.cleanupMetricsHistory();
       expect(metricsHistoryRepo.createQueryBuilder).not.toHaveBeenCalled();
+    });
+
+    // NETOPT-8④: metrics 分批 DELETE 同样补轮数/墙钟双闸（未修复时本用例
+    // 在无界循环上超时转红）。
+    it("NETOPT-8④: affected 恒返满批也在轮数上限处终止并 warn（不挂死）", async () => {
+      configService.get.mockReturnValue(30);
+      const warnSpy = jest.spyOn(Logger.prototype, "warn");
+      try {
+        const qb = makeDeleteQb(5000);
+        qb.execute.mockResolvedValue({ affected: 5000 });
+        metricsHistoryRepo.createQueryBuilder.mockReturnValue(qb as any);
+        const total = await service.cleanupExpiredMetricsHistory(new Date());
+        expect(total).toBe(5000 * LOG_RETENTION_MAX_DELETE_ROUNDS);
+        expect(metricsHistoryRepo.createQueryBuilder).toHaveBeenCalledTimes(
+          LOG_RETENTION_MAX_DELETE_ROUNDS,
+        );
+        const warned = warnSpy.mock.calls.some((c) =>
+          String(c[0]).includes("轮数上限"),
+        );
+        expect(warned).toBe(true);
+      } finally {
+        warnSpy.mockRestore();
+      }
     });
   });
 
