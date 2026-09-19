@@ -71,6 +71,21 @@ assert(compose.includes("- '127.0.0.1:4873:4873'"), 'registry-npm host port must
 assert(compose.includes('./apps/registry-npm/config.yaml:/verdaccio/conf/config.yaml:ro'), 'config.yaml must be mounted read-only');
 assert(compose.includes('npm_data:/verdaccio/storage'), 'registry-npm storage must use the persistent npm_data volume');
 
+// NETOPT-8⑧: registry-npm 容器加固四件套（对齐 registry-pypi 段的 E-10 形态）。
+// verdaccio 只写 storage 卷（htpasswd 也在其中）与 tmpfs /tmp，日志走 stdout，
+// read_only 根文件系统不影响任何功能路径。
+const registryNpmBlock = findBlock(compose.split(/\r?\n/), 'registry-npm', 2);
+for (const key of [
+  'read_only: true',
+  'security_opt:',
+  '- no-new-privileges:true',
+  "cap_drop: ['ALL']",
+  'tmpfs:',
+  '- /tmp',
+]) {
+  requireInBlock(registryNpmBlock, key);
+}
+
 for (const needle of [
   '| Anonymous | ping / healthcheck | ✅ Allowed |',
   '| Anonymous | package metadata / tarball download | ❌ Denied |',

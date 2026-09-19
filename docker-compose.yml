@@ -513,6 +513,17 @@ services:
     volumes:
       - npm_data:/verdaccio/storage
       - ./apps/registry-npm/config.yaml:/verdaccio/conf/config.yaml:ro
+    # NETOPT-8⑧: E-10 同款加固——registry-pypi 段（read_only/no-new-privileges/
+    # cap_drop/tmpfs）三件套+tmpfs 齐全，本段此前全缺。verdaccio 只写 storage 卷
+    # （npm_data:/verdaccio/storage，htpasswd 也在其中，见 config.yaml），日志走
+    # stdout（log: { type: stdout }），conf 为只读挂载——read_only 根文件系统
+    # 不影响任何功能路径；tmpfs /tmp 供运行期临时文件。
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: ['ALL']
+    tmpfs:
+      - /tmp
     healthcheck:
       # R8 冒烟发现：verdaccio 5 监听 0.0.0.0（仅 IPv4），容器内 localhost
       # 优先解析 ::1 → healthcheck 恒 connection refused/unhealthy。用 127.0.0.1。
