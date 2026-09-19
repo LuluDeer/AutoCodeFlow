@@ -70,6 +70,52 @@ describe("NotificationSilenceService (FEAT-01)", () => {
     ).rejects.toThrow(BadRequestException);
   });
 
+  // NETOPT-5①: level 枚举与 durationMinutes 数字校验。此前字符串 "abc" 直达
+  // `durationMinutes > 0`（恒 false）跳过折算 → endTime=NULL 的永不过期静默。
+  describe("input validation (NETOPT-5①)", () => {
+    it("rejects invalid level values", async () => {
+      await expect(
+        service.create({ scope: "global", level: "urgent" }),
+      ).rejects.toThrow(BadRequestException);
+      await expect(
+        service.create({ scope: "global", level: "info " }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it("accepts the four valid AlertLevel values", async () => {
+      for (const level of ["info", "warning", "error", "critical"]) {
+        await expect(
+          service.create({ scope: "global", level, durationMinutes: 5 }),
+        ).resolves.toBeDefined();
+      }
+    });
+
+    it("rejects non-numeric / non-positive durationMinutes with 400 semantics", async () => {
+      // 字符串 "abc"：旧逻辑落成永不过期静默（> 0 对字符串恒 false）
+      await expect(
+        service.create({ scope: "global", durationMinutes: "abc" as never }),
+      ).rejects.toThrow(BadRequestException);
+      await expect(
+        service.create({ scope: "global", durationMinutes: 0 }),
+      ).rejects.toThrow(BadRequestException);
+      await expect(
+        service.create({ scope: "global", durationMinutes: -5 }),
+      ).rejects.toThrow(BadRequestException);
+      await expect(
+        service.create({ scope: "global", durationMinutes: NaN }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it("durationMinutes absent or null still creates an unbounded silence (legacy allowed)", async () => {
+      await expect(
+        service.create({ scope: "global", durationMinutes: null }),
+      ).resolves.toBeDefined();
+      await expect(
+        service.create({ scope: "global" }),
+      ).resolves.toBeDefined();
+    });
+  });
+
   it("lists active rows via filtered query", async () => {
     const qb = {
       where: jest.fn().mockReturnThis(),

@@ -13,7 +13,10 @@ import {
  * - scope=global：静默所有渠道的所有通知（可按 level 收窄）；
  * - scope=task：仅静默某一任务（taskId 必填）；
  * - scope=application：仅静默某一应用下的任务（applicationId 必填）；
- * - channelType 为空 = 全渠道；指定 = 仅该渠道（email/slack/dingtalk/wecom/webhook）。
+ * - channelType 仅作范围记录（审计/管理台展示），**不参与 isSilenced 判定**：
+ *   isSilenced 在渠道扇出前同步调用，此刻投递渠道集合尚未确定，按渠道裁剪
+ *   无法如实实现（NETOPT-5①：注释如实化，此前「指定 = 仅该渠道」的表述是
+ *   契约谎言——后端从未消费该列做过滤，admin-web 同注释自证）。
  * NotificationService 仍持内存 Map 作为热路径判定，本表是重启后的恢复源
  * （写穿 + onModuleInit 回灌），DB 不可用时降级回纯内存语义。
  */
@@ -30,7 +33,7 @@ export class NotificationSilence {
   @Column({ type: "varchar", length: 16, default: "global" })
   scope: SilenceScope;
 
-  /** 空 = 全渠道；否则 email/slack/dingtalk/wecom/webhook/feishu（NF-05） */
+  /** 仅作范围记录（不参与 isSilenced 判定，见类注释）；email/slack/…/feishu（NF-05） */
   @Column({ type: "varchar", length: 32, nullable: true })
   channelType: string | null;
 

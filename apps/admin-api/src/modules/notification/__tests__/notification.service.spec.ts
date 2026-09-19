@@ -148,7 +148,8 @@ describe("NotificationService", () => {
         "task-1",
       );
 
-      expect(spy).toHaveBeenCalledWith("task-1", AlertLevel.ERROR);
+      // NETOPT-5①: isSilenced 增加第三参 applicationId（此处未传 → undefined）
+      expect(spy).toHaveBeenCalledWith("task-1", AlertLevel.ERROR, undefined);
       spy.mockRestore();
     });
 
@@ -190,7 +191,7 @@ describe("NotificationService", () => {
         ["email"],
       );
 
-      expect(spy).toHaveBeenCalledWith(undefined, AlertLevel.ERROR);
+      expect(spy).toHaveBeenCalledWith(undefined, AlertLevel.ERROR, undefined);
       spy.mockRestore();
     });
   });
@@ -701,6 +702,110 @@ describe("NotificationService", () => {
         undefined,
       );
       sendToChannels.mockRestore();
+    });
+  });
+
+  // ============================================================================
+  // NETOPT-5①: isSilenced 的 scope 语义。此前匹配只看 taskId+level+时间窗，
+  // scope/applicationId 全被忽略——scope=application（无 taskId）的规则因
+  // `!silence.taskId` 恒真而匹配一切任务的通知，应用级静默 = 全平台消音，
+  // 方向是吞告警（最危险）。
+  // ============================================================================
+  describe("isSilenced — scope-aware matching (NETOPT-5①)", () => {
+    const addAppSilence = () =>
+      service.addSilence({
+        scope: "application",
+        applicationId: "app-A",
+        durationMinutes: 10,
+      } as never);
+
+    it("scope=application only silences tasks of that application", () => {
+      addAppSilence();
+      expect(service.isSilenced("task-1", AlertLevel.CRITICAL, "app-A")).toBe(
+        true,
+      );
+    });
+
+    it("scope=application does NOT silence tasks of other applications (was: swallowed everything)", () => {
+      addAppSilence();
+      expect(service.isSilenced("task-2", AlertLevel.CRITICAL, "app-B")).toBe(
+        false,
+      );
+    });
+
+    it("scope=application does NOT silence notifications without application context (executor alerts)", () => {
+      addAppSilence();
+      // executor 上下线等无 applicationId 的通知不属于任何应用 → 放行
+      expect(service.isSilenced(undefined, AlertLevel.WARNING)).toBe(false);
+      expect(service.isSilenced("task-3", AlertLevel.CRITICAL)).toBe(false);
+    });
+
+    it("scope=application with missing applicationId silences nothing (fail-open)", () => {
+      service.addSilence({
+        scope: "application",
+        durationMinutes: 10,
+      } as never);
+      expect(service.isSilenced("task-1", AlertLevel.CRITICAL, "app-A")).toBe(
+        false,
+      );
+    });
+
+    it("scope=task still matches only its own task (regression)", () => {
+      service.addSilence({
+        scope: "task",
+        taskId: "t-42",
+        durationMinutes: 10,
+      } as never);
+      expect(service.isSilenced("t-42", AlertLevel.ERROR)).toBe(true);
+      expect(service.isSilenced("t-other", AlertLevel.ERROR)).toBe(false);
+      expect(service.isSilenced(undefined, AlertLevel.ERROR)).toBe(false);
+    });
+
+    it("legacy in-memory silences without explicit scope keep field-based semantics", () => {
+      // 未标记 scope 的存量内存规则：设了 taskId 按任务匹配，否则全局
+      service.addSilence({ taskId: "t-7", durationMinutes: 10 });
+      expect(service.isSilenced("t-7")).toBe(true);
+      expect(service.isSilenced("t-8")).toBe(false);
+
+      service.addSilence({ durationMinutes: 10 });
+      expect(service.isSilenced("whatever")).toBe(true);
+      expect(service.isSilenced()).toBe(true);
+    });
+
+    it("notifyFailureWithConfig forwards applicationId so application-scoped silences apply", async () => {
+      addAppSilence();
+      const sendAll = jest
+        .spyOn(service, "sendAll")
+        .mockResolvedValue(undefined);
+      await service.notifyFailureWithConfig(
+        "job",
+        "exec-1",
+        "boom",
+        "",
+        undefined,
+        undefined,
+        undefined,
+        "task-1",
+        undefined,
+        "app-A",
+      );
+      expect(sendAll).not.toHaveBeenCalled();
+
+      // 其他应用的任务不受影响
+      await service.notifyFailureWithConfig(
+        "job",
+        "exec-2",
+        "boom",
+        "",
+        undefined,
+        undefined,
+        undefined,
+        "task-2",
+        undefined,
+        "app-B",
+      );
+      expect(sendAll).toHaveBeenCalledWith(expect.anything());
+      sendAll.mockRestore();
     });
   });
 
