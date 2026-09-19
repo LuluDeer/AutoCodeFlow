@@ -1,5 +1,5 @@
 # 三种执行器横向对比
-> 所属: docs/atlas/01-apps · 最后核对: 2026-09-13 · 对应代码: apps/executor-node/src、apps/executor-python、apps/executor-desktop/src
+> 所属: docs/atlas/01-apps · 最后核对: 2026-09-19 · 对应代码: apps/executor-node/src、apps/executor-python、apps/executor-desktop/src
 
 ## 选型对比表
 
@@ -27,7 +27,7 @@
 - **回调令牌注入**：node/python 均注入 `AUTOFLOW_CALLBACK_TOKEN` / `AUTOFLOW_ADMIN_API_URL` / `AUTOFLOW_EXECUTOR_ADDRESS` / `AUTOFLOW_ARTIFACTS_DIR` / `AUTOFLOW_TRACE_ID`（字段语义见 [executor-node 执行管线](executor-node/execution-pipeline.md)）。
 - **磁盘回收**：node 清日志 + workDir + 死信回调（file-logger.ts）；python 额外覆盖 `.git_cache` 与 `.venvs`（maintenance.py），并保护运行中执行的目录。
 - **HTTP API 面**（本机，供 admin 与运维）：两者都有 `/health`（+live/ready 或 readiness）、`GET /api/logs/:executionId`（分页 ≤2000）、`POST /api/config/reload`；node 多出 deploy / update-package。
-- **安全姿态对齐点**：入站 `/api/*` 均为 Bearer 门（无 token 默认 dev 放行，`REQUIRE_TOKEN=true` 改为拒绝）；gitRepo SSRF 守卫（scheme 白名单 + 私网拒绝，python 多一个 `EXECUTOR_ALLOW_PRIVATE_NETWORK` 放行开关）；每执行回调令牌注入用户参数之后（用户不可覆盖）。
+- **安全姿态对齐点**：入站 `/api/*` 均为 Bearer 门，且**缺省 fail-closed**（两端 auth.ts/auth.py 一致）——一个 token 都没配置时一律 503 拒绝（S-3：裸执行器接受任意代码执行的风险高于开发便利），本地 dev 放行需**显式**设 `EXECUTOR_ALLOW_NO_TOKEN=true`；`REQUIRE_TOKEN=true` 是更早的强制 fail-closed 开关，保持兼容。gitRepo SSRF 守卫（scheme 白名单 + 私网拒绝，python 多一个 `EXECUTOR_ALLOW_PRIVATE_NETWORK` 放行开关）；每执行回调令牌注入用户参数之后（用户不可覆盖）。
 - **python 独有约束**：node 运行时的 requirements 被忽略并告警（不装 npm 包）；`PYPI_REGISTRY_URL` 禁止 userinfo/query/fragment（凭据不得进 argv）。
 - **node 独有能力**：`POST /api/deploy` 应用部署（git/zip → npm/pip 装依赖 → once/daemon/scheduled 运行 + `POST /api/app-deployments/heartbeat` 上报）；`POST /api/update-package` 执行器包自升级（SHA-256 校验）。
 
