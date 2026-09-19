@@ -1,6 +1,5 @@
 import { Test } from "@nestjs/testing";
 import { getRepositoryToken } from "@nestjs/typeorm";
-import { BadRequestException } from "@nestjs/common";
 import { DataSource } from "typeorm";
 import { AuditService } from "../audit.service";
 import { AuditLog } from "../entities/audit-log.entity";
@@ -145,17 +144,50 @@ describe("AuditService", () => {
       expect(qbMock.andWhere).not.toHaveBeenCalled();
     });
 
-    it("rejects invalid action characters", async () => {
-      await expect(service.findAll({ action: "inject'xss" })).rejects.toThrow(
-        "Invalid action parameter",
-      );
+    // API-09（本轮体验审查）：这两条原断言「含特殊字符的 action 一律 400」。
+    // 那条白名单被**有意**放宽了，理由如下（安全性反而更强，不是削弱）：
+    //   · 注入风险从来不由白名单承担——`action` 一直是**绑定参数**
+    //     （`log.action ILIKE :action`），值从不拼进 SQL。旧白名单对安全
+    //     没有增量，只是"看起来更安全"。
+    //   · 它只剩副作用：用户想按中文、`:`、`/` 这类正常词搜索时直接吃 400 +
+    //     英文技术报错，而期待的是"没有匹配"或结果列表。
+    //   · 真正需要处理的是 LIKE **元字符**（`%` / `_`）——旧实现把这个漏了：
+    //     `username` 分支根本没白名单，搜 `zhang_san` 会命中 `zhangXsan`。
+    // 现改为「只限长度 + 转义 LIKE 元字符」，两条路径（findAll/exportCsv）
+    // 同一判据。故此处断言从「必须 400」改为「必须被转义后当字面量绑定」。
+    it("API-09: action 含特殊字符时不再 400，而是转义后按字面量绑定", async () => {
+      const qbMock = {
+        orderBy: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        getManyAndCount: jest.fn().mockResolvedValue([[], 0]),
+      };
+      (repo as any).createQueryBuilder = jest.fn().mockReturnValue(qbMock);
+
+      await service.findAll({ action: "inject'xss" });
+
+      // 值仍然走绑定参数（无字符串拼接），且原文按字面量传入
+      expect(qbMock.andWhere).toHaveBeenCalledWith("log.action ILIKE :action", {
+        action: "%inject'xss%",
+      });
     });
 
-    // S13: client-supplied filter values must map to 400, not a bare Error (500)
-    it("S13: findAll rejects an invalid action with BadRequestException", async () => {
-      await expect(
-        service.findAll({ action: "inject'xss" }),
-      ).rejects.toBeInstanceOf(BadRequestException);
+    it("API-09: action 里的 LIKE 元字符被转义（%) 与 _ 按字面量匹配）", async () => {
+      const qbMock = {
+        orderBy: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        getManyAndCount: jest.fn().mockResolvedValue([[], 0]),
+      };
+      (repo as any).createQueryBuilder = jest.fn().mockReturnValue(qbMock);
+
+      await service.findAll({ action: "100%_done" });
+
+      expect(qbMock.andWhere).toHaveBeenCalledWith("log.action ILIKE :action", {
+        action: "%100\\%\\_done%",
+      });
     });
 
     it("caps pageSize at 100", async () => {
@@ -363,13 +395,25 @@ describe("AuditService", () => {
       expect(csv).toContain("task.create");
     });
 
-    // S13: exportCsv shares the action filter validation with findAll
-    it("S13: exportCsv rejects an invalid action with BadRequestException", async () => {
+    // API-09：exportCsv 与 findAll 共用同一过滤判据（R4 P1-2 的 parity 要求）。
+    // 同 findAll 的两条：白名单放宽为「只限长度 + 转义 LIKE 元字符」，
+    // 故此处断言从「必须 400」改为「转义后按字面量绑定」——两条路径必须同款。
+    it("API-09: exportCsv 与 findAll 同款——特殊字符不再 400，转义后字面量绑定", async () => {
       const qb = makeExportQb([]);
       (repo as any).createQueryBuilder = jest.fn().mockReturnValue(qb);
-      await expect(
-        service.exportCsv({ action: "bad<script>" }),
-      ).rejects.toBeInstanceOf(BadRequestException);
+      await service.exportCsv({ action: "bad<script>" });
+      expect(qb.andWhere).toHaveBeenCalledWith("log.action ILIKE :action", {
+        action: "%bad<script>%",
+      });
+    });
+
+    it("API-09: exportCsv 同样转义 LIKE 元字符", async () => {
+      const qb = makeExportQb([]);
+      (repo as any).createQueryBuilder = jest.fn().mockReturnValue(qb);
+      await service.exportCsv({ action: "a_b%c" });
+      expect(qb.andWhere).toHaveBeenCalledWith("log.action ILIKE :action", {
+        action: "%a\\_b\\%c%",
+      });
     });
 
     it("caps export at 10000 rows via limit()", async () => {
