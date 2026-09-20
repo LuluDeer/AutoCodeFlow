@@ -6,13 +6,13 @@
 ## 版本矩阵
 
 <!-- x-release-please-version -->
-当前 lockstep 版本 **1.5.0**，三包版本号一致、同批发布：<!-- x-release-please-version -->
+当前 lockstep 版本 **1.5.1**，三包版本号一致、同批发布：<!-- x-release-please-version -->
 
 | 包 | 注册表 | 当前版本 | 版本元数据单一来源 |
 |----|--------|---------|-------------------|
-| `@autocodeflow/sdk` | npm（scoped 公开包） | **1.5.0**<!-- x-release-please-version --> | `packages/autocodeflow-node-sdk/package.json` |
-| `autoflow-sdk` | PyPI | **1.5.0**<!-- x-release-please-version --> | `packages/autoflow-sdk/pyproject.toml`（+ `autoflow_sdk.__version__`） |
-| `autocodeflow-mcp-server` | npm | **1.5.0**<!-- x-release-please-version --> | `packages/mcp-server/package.json` |
+| `@autocodeflow/sdk` | npm（scoped 公开包） | **1.5.1**<!-- x-release-please-version --> | `packages/autocodeflow-node-sdk/package.json` |
+| `autoflow-sdk` | PyPI | **1.5.1**<!-- x-release-please-version --> | `packages/autoflow-sdk/pyproject.toml`（+ `autoflow_sdk.__version__`） |
+| `autocodeflow-mcp-server` | npm | **1.5.1**<!-- x-release-please-version --> | `packages/mcp-server/package.json` |
 
 > `@autocodeflow/cli` 已改名并接入发布链路（原 `acf-cli` 包名被 npm 第三方
 > 占用；勿用 `@autoflow/*`，该 org 已被抢注）。它与另三包同处 lockstep 组，
