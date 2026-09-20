@@ -13,7 +13,13 @@ jest.mock('./logger', () => ({ logger: { info: jest.fn(), warn: jest.fn(), error
 const ledger = new Int32Array(new SharedArrayBuffer(4));
 const postMock = jest.fn().mockResolvedValue({ data: {} });
 const requestMock = jest.fn().mockResolvedValue({ data: {} });
-jest.mock('./admin-client', () => ({ postLong: postMock, request: requestMock }));
+// ARCH-33: 命令结果回报走 admin-client.post（与长轮询的 postLong 分开）。
+const adminPostMock = jest.fn().mockResolvedValue({ data: {} });
+jest.mock('./admin-client', () => ({
+  postLong: postMock,
+  request: requestMock,
+  post: adminPostMock,
+}));
 const acceptExecution = jest.fn().mockReturnValue({ status: 200, payload: { status: 'accepted' } });
 const truncateCallbackErrorMessage = (m?: string) => m;
 jest.mock('./routes/execute', () => ({
@@ -27,6 +33,13 @@ jest.mock('./scheduler', () => ({
   getRunningCount,
   getRunningCountArray: () => ledger,
 }));
+// ARCH-33: 命令执行分派走真实模块会发本地 HTTP——单测里打桩，只断言
+// 「哪些命令被派发执行」与「结果是否上报」。commands.ts 自身另有 spec。
+const executeControlCommand = jest.fn();
+jest.mock('./commands', () => {
+  const actual = jest.requireActual('./commands');
+  return { ...actual, executeControlCommand };
+});
 
 describe('pull loop (ARCH-32 + E-01 预留槽位)', () => {
   let pullOnce: () => Promise<void>;
@@ -175,13 +188,59 @@ describe('pull loop (ARCH-32 + E-01 预留槽位)', () => {
     expect(Atomics.load(ledger, 0)).toBe(0);
   });
 
-  it('满载（账本已达 maxConcurrentTasks）：不预留不发 pull', async () => {
+  // ARCH-33（ADR-016）：满载语义**已改变**——旧实现满载时直接 return，连长轮询
+  // 都不发。若沿用，执行器满载时控制面命令（deploy/stop/config-reload）永远
+  // 送不到，运维操作静默失效。现在满载仍长轮询，但：
+  //   ① 不预留槽位（账本不动）；
+  //   ② 上报 freeSlots=0，让服务端**不出队任务**（取走也没槽位跑，等于把
+  //      「暂时没容量」固化成执行失败——E-01 关闭的那类问题）。
+  it('满载（账本已达 maxConcurrentTasks）：不预留槽位，但仍长轮询并上报 freeSlots=0', async () => {
     Atomics.store(ledger, 0, 2);
     await pullOnce();
-    expect(postMock).not.toHaveBeenCalled();
+    expect(postMock).toHaveBeenCalledTimes(1);
+    expect(postMock).toHaveBeenCalledWith(
+      '/api/executors/pull',
+      expect.objectContaining({ freeSlots: 0 }),
+      40_000,
+      expect.any(AbortSignal),
+    );
     // 未凭空预留/释放——账本保持原值
     expect(Atomics.load(ledger, 0)).toBe(2);
     expect(acceptExecution).not.toHaveBeenCalled();
+  });
+
+  // ARCH-33: 满载轮若仍被带回任务（旧中台不认识 freeSlots），**不领取**——
+  // 没有槽位就执行会把瞬态容量问题固化成执行失败。载荷留给 stale sweep 收敛。
+  it('满载但服务端仍带回任务：不领取、不回调、账本不动', async () => {
+    Atomics.store(ledger, 0, 2);
+    postMock.mockResolvedValueOnce({
+      data: {
+        code: 0,
+        message: 'ok',
+        data: { task: { executionId: 'exec-at-cap', task: {} } },
+      },
+    });
+    await pullOnce();
+    expect(acceptExecution).not.toHaveBeenCalled();
+    expect(pushCallback).not.toHaveBeenCalled();
+    expect(Atomics.load(ledger, 0)).toBe(2);
+    expect(
+      logger.warn.mock.calls.some((c: unknown[]) =>
+        String(c[0]).includes('at capacity'),
+      ),
+    ).toBe(true);
+  });
+
+  // ARCH-33: 有空槽时 freeSlots 如实上报（预留后的实际空闲数）。
+  it('有空槽：freeSlots 按预留后的实际空闲数上报', async () => {
+    Atomics.store(ledger, 0, 0); // maxConcurrentTasks = 2
+    await pullOnce();
+    expect(postMock).toHaveBeenCalledWith(
+      '/api/executors/pull',
+      expect.objectContaining({ freeSlots: 1 }),
+      40_000,
+      expect.any(AbortSignal),
+    );
   });
 
   // E-07 残差收口：旧实现只 clearInterval，已发出的那轮长轮询（服务端阻塞至多
@@ -293,6 +352,181 @@ describe('pull loop (ARCH-32 + E-01 预留槽位)', () => {
     expect(
       logger.warn.mock.calls.some((c: unknown[]) => String(c[0]).includes('Pull failed')),
     ).toBe(false);
+  });
+});
+
+/**
+ * ARCH-33（ADR-016）：控制面命令通道——中台经 pull 响应下发命令，执行器
+ * 本地执行后回报结果。
+ *
+ * 本组用例固化四条关键不变量：
+ *   ① 命令在**任何** return 之前被执行（含「无任务」与「满载」两条早退路径）；
+ *   ② 逐条串行执行（app-uninstall 依赖同批 app-stop 的时序）；
+ *   ③ 结果逐条回报 /executors/command-result，上报失败不影响主链；
+ *   ④ 畸形条目丢弃且不执行。
+ */
+describe('pull control commands (ARCH-33)', () => {
+  let pullOnce: () => Promise<void>;
+  let resetConfigPullThrottleForTest: () => void;
+  let logger: { warn: jest.Mock; info: jest.Mock };
+
+  const commandResponse = (commands: unknown[], task: unknown = null) => ({
+    data: {
+      code: 0,
+      message: 'ok',
+      data: { task, commands, configVersion: undefined },
+    },
+  });
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    Atomics.store(ledger, 0, 0);
+    adminPostMock.mockResolvedValue({ data: {} });
+    ({ pullOnce, resetConfigPullThrottleForTest } = require('./pull'));
+    resetConfigPullThrottleForTest();
+    ({ logger } = require('./logger'));
+    executeControlCommand.mockImplementation(async (cmd: { commandId: string; type: string }) => ({
+      commandId: cmd.commandId,
+      type: cmd.type,
+      ok: true,
+      status: 200,
+      durationMs: 5,
+    }));
+  });
+
+  it('无任务轮也执行命令（命令不得随早退路径丢弃）', async () => {
+    postMock.mockResolvedValueOnce(
+      commandResponse([
+        { commandId: 'c1', type: 'config-reload', payload: { maxConcurrentTasks: 4 } },
+      ]),
+    );
+
+    await pullOnce();
+
+    expect(executeControlCommand).toHaveBeenCalledTimes(1);
+    expect(executeControlCommand.mock.calls[0][0]).toMatchObject({
+      commandId: 'c1',
+      type: 'config-reload',
+    });
+    // 结果回报中台
+    const report = adminPostMock.mock.calls.find(
+      (c) => c[0] === '/api/executors/command-result',
+    );
+    expect(report).toBeDefined();
+    expect(report![1]).toMatchObject({
+      commandId: 'c1',
+      type: 'config-reload',
+      ok: true,
+      address: 'localhost:8002',
+    });
+  });
+
+  it('满载轮同样执行命令（freeSlots=0 只挡任务，不挡命令）', async () => {
+    Atomics.store(ledger, 0, 2);
+    postMock.mockResolvedValueOnce(
+      commandResponse([{ commandId: 'c2', type: 'app-stop', payload: { deploymentId: 'd1' } }]),
+    );
+
+    await pullOnce();
+
+    expect(executeControlCommand).toHaveBeenCalledTimes(1);
+    expect(acceptExecution).not.toHaveBeenCalled();
+    expect(Atomics.load(ledger, 0)).toBe(2);
+  });
+
+  it('命令与任务同批：命令先执行，任务照常领取', async () => {
+    const order: string[] = [];
+    executeControlCommand.mockImplementationOnce(async (cmd: { commandId: string; type: string }) => {
+      order.push('command');
+      return { commandId: cmd.commandId, type: cmd.type, ok: true, durationMs: 1 };
+    });
+    acceptExecution.mockImplementationOnce(() => {
+      order.push('accept');
+      return { status: 200, payload: { status: 'accepted' } };
+    });
+    postMock.mockResolvedValueOnce(
+      commandResponse(
+        [{ commandId: 'c3', type: 'config-reload', payload: {} }],
+        { executionId: 'exec-with-cmd', task: {} },
+      ),
+    );
+
+    await pullOnce();
+
+    expect(order).toEqual(['command', 'accept']);
+  });
+
+  it('逐条串行：stop 先于 uninstall（同批时序不得被打乱）', async () => {
+    const seen: string[] = [];
+    executeControlCommand.mockImplementation(async (cmd: { commandId: string; type: string }) => {
+      seen.push(cmd.type);
+      return { commandId: cmd.commandId, type: cmd.type, ok: true, durationMs: 1 };
+    });
+    postMock.mockResolvedValueOnce(
+      commandResponse([
+        { commandId: 's1', type: 'app-stop', payload: { deploymentId: 'd1' } },
+        { commandId: 's2', type: 'app-stop', payload: { deploymentId: 'd2' } },
+        { commandId: 'u1', type: 'app-uninstall', payload: { appId: 'a1' } },
+      ]),
+    );
+
+    await pullOnce();
+
+    expect(seen).toEqual(['app-stop', 'app-stop', 'app-uninstall']);
+  });
+
+  it('畸形条目丢弃且不执行（缺 commandId / 未知 type）', async () => {
+    postMock.mockResolvedValueOnce(
+      commandResponse([
+        { type: 'config-reload', payload: {} }, // 缺 commandId
+        { commandId: 'x1', type: 'rm-rf-slash', payload: {} }, // 未知 type
+        { commandId: 'ok1', type: 'config-reload', payload: {} },
+      ]),
+    );
+
+    await pullOnce();
+
+    expect(executeControlCommand).toHaveBeenCalledTimes(1);
+    expect(executeControlCommand.mock.calls[0][0]).toMatchObject({ commandId: 'ok1' });
+  });
+
+  it('命令执行抛错：不冒泡到 pull 循环（下一轮继续取件）', async () => {
+    executeControlCommand.mockRejectedValueOnce(new Error('local route exploded'));
+    postMock.mockResolvedValueOnce(
+      commandResponse([{ commandId: 'c9', type: 'config-reload', payload: {} }]),
+    );
+
+    await expect(pullOnce()).resolves.toBeUndefined();
+  });
+
+  it('结果上报失败：只 warn，不影响任务领取与账本', async () => {
+    adminPostMock.mockRejectedValueOnce(new Error('admin unreachable'));
+    postMock.mockResolvedValueOnce(
+      commandResponse(
+        [{ commandId: 'c10', type: 'config-reload', payload: {} }],
+        { executionId: 'exec-after-report-fail', task: {} },
+      ),
+    );
+
+    await pullOnce();
+
+    expect(acceptExecution).toHaveBeenCalledTimes(1);
+    expect(
+      logger.warn.mock.calls.some((c: unknown[]) =>
+        String(c[0]).includes('Failed to report result'),
+      ),
+    ).toBe(true);
+  });
+
+  it('旧中台（无 commands 字段）：行为逐字节不变', async () => {
+    postMock.mockResolvedValueOnce({
+      data: { code: 0, message: 'ok', data: { task: { executionId: 'legacy', task: {} } } },
+    });
+
+    await pullOnce();
+
+    expect(executeControlCommand).not.toHaveBeenCalled();
+    expect(acceptExecution).toHaveBeenCalledTimes(1);
   });
 });
 

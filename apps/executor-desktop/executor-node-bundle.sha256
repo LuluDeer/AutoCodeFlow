@@ -145,4 +145,12 @@
 #     本次按 ADR-005 同 commit 重打：本机(Windows) ncc 0.44 产出 239bbd2e…，
 #     与 CI（ubuntu-latest）侧独立重打的 actual **逐字节一致**（又一次印证
 #     ncc 0.44 的跨平台字节确定性，见上文 cc54aa2f/a4dad9b 注记）。bundle 2508kB。
-239bbd2eefd6063d9018ee909865fcdde3bd10498e7572b7774aca37e763c454  index.js
+#   - ARCH-33（ADR-016）：控制面 pull 通道。executor-node 新增
+#     src/commands.ts（中台经 pull 响应下发的控制命令 → 本地路由回环执行 +
+#     结果上报），pull.ts 改为**始终长轮询**（满载时上报 freeSlots=0 而非
+#     短路——旧实现在满载时连长轮询都不发，控制命令永远送不到），
+#     config.ts 的 PROTOCOL_VERSION 1 → 2。
+#     桌面端内嵌执行器若漏打，**公网中台 + 内网执行器**拓扑下的部署/停止/
+#     热更新仍会全部超时（本 ADR 要修的就是这个故障面）。按 ADR-005 同 commit
+#     重打：本机(Windows) ncc 0.44 产出 3680d5e7…，bundle 2521kB。
+3680d5e795c13745e6ef31cab4154993743547715ac9e89084303a52fcd2301e  index.js

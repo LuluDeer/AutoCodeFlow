@@ -1,6 +1,6 @@
 import { config } from './config';
 import { logger } from './logger';
-import { postLong, request } from './admin-client';
+import { post, postLong, request } from './admin-client';
 import { unwrapAdminResponseData } from './admin-envelope';
 import { getRunningCount, getRunningCountArray } from './scheduler';
 import { getExecutorAuthToken } from './routes/logs';
@@ -10,6 +10,11 @@ import {
   ExecuteRequest,
 } from './routes/execute';
 import { pushCallback } from './callback';
+import {
+  ControlCommandResult,
+  executeControlCommand,
+  parseControlCommand,
+} from './commands';
 import axios from 'axios';
 
 /**
@@ -94,8 +99,50 @@ export function resetConfigPullThrottleForTest(): void {
   lastConfigAttemptAt = 0;
 }
 
-async function maybePullConfig(adminConfigVersion: unknown): Promise<void> {
-  if (typeof adminConfigVersion !== 'string' || adminConfigVersion.length === 0) {
+/**
+ * ARCH-33（ADR-016）：执行本批控制面命令，并把结果上报中台。
+ *
+ * 逐条**串行**执行——app-uninstall 依赖同一批里先到的 app-stop 已生效，
+ * 并发会把「先停后删」的时序打乱。
+ *
+ * 单条失败不中断整批：一条坏命令不该让同批的其余命令一起丢掉。
+ *
+ * 结果上报是 **best-effort**：上报失败只 warn。业务终态另有回调通道收敛
+ * （deploy → /app-deployments/heartbeat；update-package → push-result），
+ * 结果上报覆盖的是这两条之外没有回执通道的命令。
+ */
+async function runControlCommands(rawCommands: unknown): Promise<void> {
+  if (!Array.isArray(rawCommands) || rawCommands.length === 0) return;
+
+  const results: ControlCommandResult[] = [];
+  for (const raw of rawCommands) {
+    const cmd = parseControlCommand(raw);
+    if (!cmd) {
+      // 畸形条目：中台侧 parseCommand 已拦一道，这里是第二道（队列被外部
+      // 写入 / 版本错配）。丢弃 + warn，不上报（没有 commandId 可关联）。
+      logger.warn('[command] Discarded malformed control command from pull response');
+      continue;
+    }
+    results.push(await executeControlCommand(cmd));
+  }
+
+  for (const result of results) {
+    try {
+      await post('/api/executors/command-result', {
+        ...result,
+        address: config.executorAddressPublic || config.executorAddress,
+      });
+    } catch (err: unknown) {
+      logger.warn(
+        `[command] Failed to report result for ${result.commandId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+}
+
+async function maybePullConfig(adminConfigVersion: unknown): Promise<void> {  if (typeof adminConfigVersion !== 'string' || adminConfigVersion.length === 0) {
     return; // 旧版 admin 无指纹字段 → 不拉取（行为不变）
   }
   if (appliedConfigVersion === adminConfigVersion) return;
@@ -154,14 +201,25 @@ export async function pullOnce(): Promise<void> {
   // 1-3: 停滞看门狗句柄（finally 摘除）。
   let stallTimer: NodeJS.Timeout | null = null;
   try {
-    // 原子预留：add 返回旧值，旧值已 ≥ 上限说明无空闲槽位——回退并跳过
-    // 本轮（与 acceptExecution 的 add-then-check 同款原子模式）。
-    const previous = Atomics.add(getRunningCountArray(), 0, 1);
-    if (previous >= config.maxConcurrentTasks) {
-      Atomics.sub(getRunningCountArray(), 0, 1);
-      return;
+    // ARCH-33（ADR-016）：先算空闲槽位，再决定是否预留。
+    //
+    // 旧实现满载时直接 return，连长轮询都不发——若沿用，**执行器满载时控制
+    // 命令永远送不到**（部署/停止/热更新全部静默失效）。现在满载时仍然长轮询，
+    // 只是不预留槽位、不让服务端出队任务（freeSlots=0 告知服务端）。
+    const freeSlots = config.maxConcurrentTasks - getRunningCount();
+
+    if (freeSlots > 0) {
+      // 原子预留：add 返回旧值，旧值已 ≥ 上限说明无空闲槽位——回退并跳过
+      // 本轮（与 acceptExecution 的 add-then-check 同款原子模式）。
+      const previous = Atomics.add(getRunningCountArray(), 0, 1);
+      if (previous >= config.maxConcurrentTasks) {
+        Atomics.sub(getRunningCountArray(), 0, 1);
+        // 竞态：预检到预留之间被别的派发占满。本轮不预留槽位，但仍继续
+        // 长轮询取命令（下面 freeSlots 重新按实际账本计算）。
+      } else {
+        slotReserved = true;
+      }
     }
-    slotReserved = true;
 
     controller = new AbortController();
     pullAbortController = controller;
@@ -175,17 +233,40 @@ export async function pullOnce(): Promise<void> {
       {
         address: config.executorAddressPublic || config.executorAddress,
         waitMs: 25_000,
+        // ARCH-33: 服务端据此决定是否出队任务。预留已经计入账本
+        // （getRunningCount() 含本次预留），故直接按当前账本算即可：
+        //   预留成功 → max-1 ≥ 1 → 服务端派任务（正是预留的目的）；
+        //   满载/竞态 → max-max = 0 → 服务端只发命令，不派任务。
+        freeSlots: Math.max(0, config.maxConcurrentTasks - getRunningCount()),
       },
       40_000,
       controller.signal,
     );
     const payload = unwrapAdminResponseData(resp?.data);
+
+    // ARCH-33（ADR-016）：先执行控制面命令。**在任何 return 之前**——命令
+    // 与任务在同一次响应里下发，若先处理任务，下面的早退路径会把这批命令
+    // 连同响应一起丢掉（而中台已经认为它们投递成功了）。
+    await runControlCommands(payload?.commands);
+
     const task = payload?.task as (ExecuteRequest & { traceparent?: string }) | null;
     if (!task || !task.executionId) {
       // 空闲轮：无任务占用领取时序，才同步拉配置（失败不阻塞取件，下一轮
       // 再试；NETOPT-9-6 节流防止指纹不一致时每秒轰炸 config 端点）。
       await maybePullConfig(payload?.configVersion);
       return; // 无任务：finally 释放预留
+    }
+
+    // ARCH-33: 满载轮不该带回任务（服务端已按 freeSlots=0 跳过出队）。防御
+    // 路径——若仍带回（旧中台不认识 freeSlots），**不领取**并释放预留：没有
+    // 槽位就执行会把「暂时没容量」固化成执行失败（E-01 关闭的那类问题）。
+    // 载荷留在队列里由 stale sweep 收敛，与既有「执行器长期不拉取」同一路径。
+    if (!slotReserved) {
+      logger.warn(
+        `Pull returned execution ${task.executionId} while at capacity — not claiming it ` +
+          '(admin stale sweep converges the orphan RUNNING row)',
+      );
+      return;
     }
 
     logger.info(`Pulled execution ${task.executionId} from admin pull queue`);
@@ -272,12 +353,14 @@ let pullLoopInterval: NodeJS.Timeout | null = null;
 export function startPullLoop(): NodeJS.Timeout {
   // E-07: 保存句柄（原实现直接 return 丢弃）；停机路径据此停止 pull 循环。
   pullLoopInterval = setInterval(() => {
-    // 廉价预检（预留本身在 pullOnce 内原子完成，双保险不改变正确性）：
-    // E-01 后 getRunningCount() 诚实包含预留中的槽位，满载时连 pullOnce
-    // 都不必进入。
-    if (getRunningCount() < config.maxConcurrentTasks) {
-      void pullOnce();
-    }
+    // ARCH-33（ADR-016）：**不再**按满载短路。旧实现在满载时连 pullOnce 都
+    // 不进（`getRunningCount() < maxConcurrentTasks`），若沿用则执行器满载时
+    // 控制命令永远送不到——部署/停止/热更新全部静默失效。现在始终轮询：
+    // 满载时 pullOnce 内部按 freeSlots=0 上报，服务端只发命令、不派任务。
+    //
+    // 成本：满载执行器多出与空闲执行器相同的长轮询流量（1 请求/25s，服务端
+    // 阻塞窗口内不占 CPU）。这个代价换「满载时仍可运维」，值得。
+    void pullOnce();
   }, 1000);
   return pullLoopInterval;
 }
