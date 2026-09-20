@@ -350,5 +350,15 @@ export const EXECUTOR_VERSION = readPackageVersion();
  * 两侧（executor-node / executor-python main._register_payload）与 admin 的
  * PROTOCOL_SUPPORTED_MIN 必须保持同值；protocol.json 的 `versioning` 段是
  * 该矩阵的单一事实源（B-3 审查项）。
+ *
+ * ARCH-33（ADR-016）：1 → 2。新增 pull 响应的可选 `commands` 数组与
+ * `/api/executors/command-result` 结果上报端点。按 protocol.json 的
+ * evolutionRules 第 1 条（「新增**可选**字段且旧端可忽略时：仍需 bump
+ * protocolVersion」）——中台必须能区分「该执行器认识 commands」与「不认识」，
+ * 否则会把控制命令发进一个被静默忽略的字段里。
+ *
+ * 中台侧门禁：PROTOCOL_CONTROL_PLANE_MIN = 2（protocol-compat.util.ts）。
+ * `supportedMinProtocolVersion` 保持 1——旧执行器照常注册，只是收不到命令
+ * （兼容性红线：不得因缺新字段被剔除）。
  */
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;

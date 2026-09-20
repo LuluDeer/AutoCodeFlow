@@ -9,6 +9,8 @@ import {
   HealthReadyResponseSchema,
   KillResponseSchema,
   LogsResponseSchema,
+  ControlCommandSchema,
+  CommandResultSchema,
 } from "./generated/protocol.schemas";
 
 const PROTOCOL_RELATIVE = path.join(
@@ -57,6 +59,9 @@ const SCHEMAS: Record<string, { safeParse: (v: unknown) => { success: boolean; e
   HealthReadyResponse: HealthReadyResponseSchema,
   KillResponse: KillResponseSchema,
   LogsResponse: LogsResponseSchema,
+  // ARCH-33（ADR-016）：控制面 pull 通道的命令与结果上报形状
+  ControlCommand: ControlCommandSchema,
+  CommandResult: CommandResultSchema,
 };
 
 interface InvalidVector {
@@ -85,6 +90,21 @@ describe("A3 executor-protocol 向量（zod 侧）", () => {
 
     // 生成物与协议文件的 schema 名集合必须一致（漏生成 = 契约面缺失）
     expect(Object.keys(SCHEMAS).sort()).toEqual(schemaNames.sort());
+  });
+
+  it("A3 覆盖闸：protocol.schemas 的**每个** schema 都必须有向量（此前无此守卫）", () => {
+    // 缺口背景（ARCH-33 实施时补）：上面那条断言比的是**手维护的 SCHEMAS 表**
+    // 与**向量键**，从不与 protocol.schemas 比对。于是「往 schemas 加一个 schema
+    // 却不加向量」在两侧都悄无声息地通过——新契约面等于没被任何测试覆盖。
+    // python 侧同款（test_protocol_schemas.py 的 _SCHEMAS 是从 _VECTORS 反推的，
+    // 天然看不见「有 schema 无向量」）。本断言把 schemas 段本身拉进比对。
+    const declared = Object.keys(protocol.schemas).filter(
+      (k) => !k.startsWith("$"),
+    );
+    const withVectors = schemaNames;
+    expect(declared.sort()).toEqual(withVectors.sort());
+    // 反永真：两侧都非空，且确实存在若干 schema（防止有人把 schemas 段清空）
+    expect(declared.length).toBeGreaterThanOrEqual(5);
   });
 
   it("executionId 的 pattern 与执行器运行时守卫逐字符一致（不是各写一份）", () => {

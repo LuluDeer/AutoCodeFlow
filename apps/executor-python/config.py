@@ -386,5 +386,11 @@ EXECUTOR_VERSION = '2.0.0'
 # packages/executor-protocol/protocol.json 的 `versioning` 段：新增可选字段时
 # bump 此值；不向后兼容改动必须同时 bump $schemaVersion 与 PROTOCOL_VERSION。
 # 两侧（executor-python / executor-node config.ts）必须同值。
-PROTOCOL_VERSION = 1
+#
+# ARCH-33（ADR-016）：1 → 2。新增 pull 响应的可选 `commands` 数组与
+# /api/executors/command-result 结果上报端点。中台必须能区分「该执行器认识
+# commands」与「不认识」，否则会把控制命令发进一个被静默忽略的字段里。
+# 中台侧门禁：PROTOCOL_CONTROL_PLANE_MIN = 2（protocol-compat.util.ts）。
+# `supportedMinProtocolVersion` 保持 1——旧执行器照常注册，只是收不到命令。
+PROTOCOL_VERSION = 2
 

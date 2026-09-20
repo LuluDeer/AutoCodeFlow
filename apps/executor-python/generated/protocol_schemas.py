@@ -84,3 +84,23 @@ class LogsResponse(BaseModel):
     lines: list[str]
     totalLines: int = Field(ge=0)
     hasMore: bool
+
+
+class ControlCommand(BaseModel):
+    model_config = ConfigDict(extra="allow", strict=True)
+    commandId: str = Field(pattern="^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+    type: Literal["deploy", "app-stop", "app-uninstall", "config-reload", "kill-execution", "update-package"]
+    payload: dict[str, Any] | None = Field(default=None)
+    issuedAt: int | None = Field(default=None)
+    schemaVersion: int | None = Field(default=None)
+
+
+class CommandResult(BaseModel):
+    model_config = ConfigDict(extra="allow", strict=True)
+    commandId: str
+    type: Literal["deploy", "app-stop", "app-uninstall", "config-reload", "kill-execution", "update-package"]
+    ok: bool
+    status: int | None = Field(default=None)
+    error: str | None = Field(default=None)
+    durationMs: int | None = Field(ge=0, default=None)
+    address: str | None = Field(default=None)
