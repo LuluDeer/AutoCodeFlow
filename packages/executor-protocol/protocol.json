@@ -3,7 +3,7 @@
   "$comment": "A3（DEEP_REVIEW 0ef3bbe §七）executor-protocol —— admin-api / executor-node / executor-python 三方共享的执行器协议契约向量。单一事实源，语言无关，三端测试套件加载同一份文件断言。此前这些语义只靠两侧注释互相引用（\"见 node execute.ts:xxx parity\"）维持，属于\"注释里的 parity\"——本文件把它变成\"红在 CI\"。规则：向量只能追加、不能修改（已发布端按旧向量断言）；语义变更属破坏性契约变更，须三端同批发布并 bump $schemaVersion。",
   "versioning": {
     "$comment": "B-3/U-2（中台↔执行器深度审查）：协议版本协商机制。$schemaVersion 标识**线缆协议**（register/heartbeat/callback/pull 的载荷形状与语义），与执行器实现版本（EXECUTOR_VERSION，如 2.0.0）**解耦**——协议可在不 bump 实现版本的情况下演进（如新增可选字段）。执行器在 register 载荷上报 `protocolVersion`；中台按兼容矩阵分支（旧协议执行器不发送某新字段时中台兜底，**不**硬拒——与 EXECUTOR_MIN_VERSION 实现版本门禁是两套闸）。",
-    "currentProtocolVersion": 1,
+    "currentProtocolVersion": 2,
     "supportedMinProtocolVersion": 1,
     "compatibilityMatrix": [
       {
@@ -11,6 +11,12 @@
         "adminSupported": true,
         "executorImplementedBy": ["executor-node", "executor-python"],
         "$comment": "基线协议：register/heartbeat/callback/pull 的既有字段全集。"
+      },
+      {
+        "protocolVersion": 2,
+        "adminSupported": true,
+        "executorImplementedBy": ["executor-node", "executor-python"],
+        "$comment": "ARCH-33（ADR-016）控制面 pull 通道：pull 响应新增**可选** commands 数组（中台下发的控制命令：deploy / app-stop / app-uninstall / config-reload / kill-execution / update-package），以及执行器侧的结果上报端点 POST /executors/command-result。中台以 PROTOCOL_CONTROL_PLANE_MIN=2 为闸：仅当执行器上报 protocolVersion >= 2 才下发 commands——v1 执行器会静默忽略该字段，中台却会误判投递成功。注意 supportedMinProtocolVersion 仍为 1：v1 执行器照常注册、照常收任务，只是收不到控制命令（由 admin 退回 push 路径）。"
       }
     ],
     "evolutionRules": [
@@ -374,6 +380,71 @@
           "description": "fromLine + 本页行数 < totalLines，admin/UI 据此翻页"
         }
       }
+    },
+    "ControlCommand": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["commandId", "type"],
+      "properties": {
+        "commandId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+          "description": "ARCH-33（ADR-016）控制面命令的关联 id（admin 侧 randomUUID）。执行器用它回报结果，admin 据此把「命令没生效」与「命令没送达」区分开。字符集与 executionId 同款——它同样会进日志与 Redis 键。"
+        },
+        "type": {
+          "enum": ["deploy", "app-stop", "app-uninstall", "config-reload", "kill-execution", "update-package"],
+          "description": "**封闭枚举**：执行器按类型**自行构造**本地路由（绝不接受 admin 下发的自由路径）。新增类型必须三端同批，否则执行器按未知类型丢弃并 warn。注意 executor-python 只有 config-reload / kill-execution 两个本地路由，其余四类如实回报 unsupported（见本文件 executorNodeOnly 段）——这是既有的能力缺口，不是本协议引入的。"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "命令参数，逐类型形状不同（deploy 对齐 DeployPayload、kill-execution 取 executionId、app-stop 取 deploymentId、app-uninstall 取 appId）。此处只约束为自由对象：逐类型形状由各执行器的本地路由自行校验（它们是 apply 逻辑的单一事实源），协议层不重复建模，避免出现「协议说是 A、路由实际要 B」的第二事实源。"
+        },
+        "issuedAt": {
+          "type": "integer",
+          "description": "入队时刻（epoch ms）。执行器按 admin 下发的 EXECUTOR_CMD_TTL_MS 判定过期并丢弃——与任务载荷的 pushedAt 同策。缺省视为不过期（旧 admin 不发该字段时行为不变）。"
+        },
+        "schemaVersion": {
+          "type": "integer",
+          "description": "命令载荷的形状版本。与顶层 $schemaVersion 解耦：命令通道可独立演进。执行器遇到不认识的版本应丢弃并 warn（不猜测语义）。"
+        }
+      }
+    },
+    "CommandResult": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["commandId", "type", "ok"],
+      "properties": {
+        "commandId": {
+          "type": "string",
+          "description": "回显被执行命令的 commandId——admin 侧按此关联。"
+        },
+        "type": {
+          "enum": ["deploy", "app-stop", "app-uninstall", "config-reload", "kill-execution", "update-package"],
+          "description": "回显命令类型（便于 admin 侧按类型统计，无需回查队列）。"
+        },
+        "ok": {
+          "type": "boolean",
+          "description": "本地路由是否**受理**了该命令。注意语义边界：true 只表示「执行器已受理」，**不**表示命令已生效——deploy/update-package 的本地路由是先应答再 setImmediate 异步干活。业务终态另有回调通道收敛（deploy → /app-deployments/heartbeat；update-package → push-result），本结果仅作可观测性与排障。"
+        },
+        "status": {
+          "type": ["integer", "null"],
+          "description": "本地路由返回的 HTTP 状态码（传输失败时为 null）。"
+        },
+        "error": {
+          "type": ["string", "null"],
+          "description": "失败原因（已截断至 1000 字符）。**必须接受 null**：成功时执行器显式发 null 或省略。"
+        },
+        "durationMs": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "本地路由处理耗时（毫秒），用于排障。"
+        },
+        "address": {
+          "type": "string",
+          "description": "执行器地址——admin 侧据此校验上报者身份（validateTokenByAddress）。"
+        }
+      }
     }
   },
   "schemaVectors": {
@@ -659,6 +730,107 @@
           "name": "totalLines-negative",
           "payload": { "lines": [], "totalLines": -1, "hasMore": false },
           "expectErrorPath": ["totalLines"]
+        }
+      ]
+    },
+    "ControlCommand": {
+      "valid": [
+        {
+          "commandId": "b3f1c2d4-5e6a-7b8c-9d0e-1f2a3b4c5d6e",
+          "type": "deploy",
+          "payload": { "deploymentId": "d1", "appName": "web" },
+          "issuedAt": 1700000000000,
+          "schemaVersion": 1
+        },
+        {
+          "commandId": "cmd-1",
+          "type": "config-reload",
+          "$comment": "payload / issuedAt / schemaVersion 全省略：admin 侧 parseCommand 会把缺失 payload 归一为 {}，issuedAt 缺失视为不过期。旧 admin 不下发这两个字段时行为必须不变。"
+        },
+        {
+          "commandId": "cmd-2",
+          "type": "kill-execution",
+          "payload": { "executionId": "exec-9" }
+        },
+        {
+          "commandId": "cmd-3",
+          "type": "update-package",
+          "payload": { "packageId": "p1", "downloadUrl": "http://admin:3105/x.zip" }
+        }
+      ],
+      "invalid": [
+        {
+          "name": "missing-commandId",
+          "payload": { "type": "deploy" },
+          "expectErrorPath": ["commandId"],
+          "$comment": "缺 commandId 的命令无法关联结果上报——两侧执行器都会丢弃并 warn，此处由 schema 同样拒绝。"
+        },
+        {
+          "name": "missing-type",
+          "payload": { "commandId": "c1" },
+          "expectErrorPath": ["type"]
+        },
+        {
+          "name": "unknown-type",
+          "payload": { "commandId": "c1", "type": "rm-rf" },
+          "expectErrorPath": ["type"],
+          "$comment": "封闭枚举的核心断言：中台不得借命令通道下发任意类型（进而任意本地路径）。"
+        },
+        {
+          "name": "commandId-path-traversal",
+          "payload": { "commandId": "../etc/passwd", "type": "deploy" },
+          "expectErrorPath": ["commandId"],
+          "$comment": "commandId 会进 Redis 键与日志，字符集闸与 executionId 同款。"
+        }
+      ]
+    },
+    "CommandResult": {
+      "valid": [
+        {
+          "commandId": "cmd-1",
+          "type": "config-reload",
+          "ok": true,
+          "status": 200,
+          "durationMs": 12,
+          "address": "10.0.0.5:9100"
+        },
+        {
+          "commandId": "cmd-2",
+          "type": "deploy",
+          "ok": false,
+          "error": "connect ECONNREFUSED 127.0.0.1:9100",
+          "$comment": "传输失败形态：无 status（省略或 null 都合法）。"
+        },
+        {
+          "commandId": "cmd-3",
+          "type": "deploy",
+          "ok": false,
+          "status": null,
+          "error": null,
+          "$comment": "**显式 null**：执行器成功时把 status/error 发成字面 null（node 侧 ControlCommandResult 的可选字段序列化）。故这两个字段的 type 必须含 null。"
+        }
+      ],
+      "invalid": [
+        {
+          "name": "missing-ok",
+          "payload": { "commandId": "c1", "type": "deploy" },
+          "expectErrorPath": ["ok"]
+        },
+        {
+          "name": "ok-not-boolean",
+          "payload": { "commandId": "c1", "type": "deploy", "ok": "yes" },
+          "expectErrorPath": ["ok"],
+          "$comment": "同 KillResponse：刻意不用 'true'/1——pydantic lax 会强转。"
+        },
+        {
+          "name": "unknown-type",
+          "payload": { "commandId": "c1", "type": "nope", "ok": true },
+          "expectErrorPath": ["type"]
+        },
+        {
+          "name": "durationMs-negative",
+          "payload": { "commandId": "c1", "type": "deploy", "ok": true, "durationMs": -1 },
+          "expectErrorPath": ["durationMs"]
         }
       ]
     }

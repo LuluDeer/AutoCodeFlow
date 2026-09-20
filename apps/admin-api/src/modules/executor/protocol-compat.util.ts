@@ -14,6 +14,22 @@
 export const PROTOCOL_SUPPORTED_MIN = 1;
 
 /**
+ * ARCH-33（ADR-016）：**控制面命令通道**的最低协议版本。
+ *
+ * 协议 v2 新增 pull 响应的可选 `commands` 数组与结果上报端点。低于 v2 的
+ * 执行器（含所有 v1 与未上报的存量执行器）会**忽略** `commands` 字段——若
+ * 中台照发，命令就静默消失了：部署行停在 DEPLOYING 直到 cron sweep 判失败，
+ * stop/uninstall 这类 best-effort 命令连痕迹都没有。
+ *
+ * 因此命令下发必须过这道门禁：`protocolVersion < 2` → 回退 push（对 NAT 执行
+ * 器会失败，但那是**可见的**失败，且与今日行为一致；静默丢操作不可接受）。
+ *
+ * 与 `PROTOCOL_SUPPORTED_MIN` 的关系：后者是「不得剔除」的兼容性红线（保持
+ * 1，旧执行器照常注册），本常量是「新增能力可用性」的门槛。两者语义正交。
+ */
+export const PROTOCOL_CONTROL_PLANE_MIN = 2;
+
+/**
  * 兼容性判定：未上报（null）的存量旧执行器按基线协议 1 兜底（兼容），
  * 上报且低于下限的视为不兼容（不拒绝，仅 warn）。
  */
@@ -23,4 +39,21 @@ export function isProtocolCompliant(
 ): boolean {
   if (protocolVersion === null || protocolVersion === undefined) return true;
   return Number.isInteger(protocolVersion) && protocolVersion >= supportedMin;
+}
+
+/**
+ * ARCH-33: 该执行器是否支持控制面命令通道（协议 >= 2）。
+ *
+ * 未上报（null/undefined）= 存量旧执行器 → **不支持**。这与
+ * `isProtocolCompliant` 的兜底方向**刻意相反**：那里兜底为「兼容」（不剔除
+ * 旧执行器），这里兜底为「不支持」（不向不认识的执行器发新语义字段）。
+ */
+export function supportsControlPlane(
+  protocolVersion: number | null | undefined,
+): boolean {
+  if (protocolVersion === null || protocolVersion === undefined) return false;
+  return (
+    Number.isInteger(protocolVersion) &&
+    protocolVersion >= PROTOCOL_CONTROL_PLANE_MIN
+  );
 }
