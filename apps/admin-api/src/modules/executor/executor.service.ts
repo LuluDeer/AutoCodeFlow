@@ -32,7 +32,6 @@ import {
 // 认的终态」和「对账回的终态」会各自漂移。
 import {
   transitionToTerminal,
-  transitionOneToTerminal,
   TERMINAL_EXECUTION_STATUSES,
 } from "../task/execution-terminal";
 import { Task, TaskCodeSource } from "../task/entities/task.entity";
@@ -126,6 +125,17 @@ export const TERMINAL_STATES_DEFAULT_LOOKBACK_MS = 24 * 60 * 60 * 1000;
  * 服务端分页（见 findAll 注释）。
  */
 export const EXECUTOR_LIST_LIMIT = 500;
+const MAX_RUNNING_EXECUTION_IDS = 10_000; // NETOPT-C P2-1: 与 E9 maxConcurrentTasks 采纳上界一致
+
+// NETOPT-D P3-3: 截断 warn 节流状态——模块级而非实例字段（sanitize 是实例
+// 方法，节流跨心跳共享；多实例无状态部署下不重复刷日志）。
+const lastTruncationWarn = new Map<string, { dropped: number; at: number }>();
+/** 测试出口：清空 warn 节流状态——模块级 Map 跨测试残留会形成隐性顺序依赖
+ *  （现测试靠换 address 规避；NETOPT-F P3 补 reset 消除依赖）。 */
+export function __resetTruncationWarnStateForTest(): void {
+  lastTruncationWarn.clear();
+}
+const TRUNCATION_WARN_THROTTLE_MS = 60_000;
 
 @Injectable()
 export class ExecutorService {
@@ -419,6 +429,12 @@ export class ExecutorService {
       .execute();
   }
 
+  // NETOPT-F P3: releaseExecutorSlotBatch 已删除——批次 D 后重启恢复的计数
+  // 权威改为"调用方 e.runningTaskCount=0 + save"（didRestart / missing-baseline
+  // 两分支均清零），批量减槽不再有任何生产调用点。死代码若保留会诱导后人
+  // 重新引入"恢复后再减槽"的双减 bug（恢复已清零、再减一次即虚低）。若未来
+  // 确需批量减槽，须回到单计数权威语义重新设计。
+
   private parseExecutorStartedAt(value?: string | Date | null): Date | null {
     if (!value) return null;
     const date = value instanceof Date ? value : new Date(value);
@@ -445,6 +461,39 @@ export class ExecutorService {
       return true;
     }
     return false;
+  }
+
+  /**
+   * NETOPT-F P2-F1: 重启恢复的时间基线。startupId-only 重启（换了 startupId 但
+   * 未上报 restartedAt）时 incomingStartedAt 为 null，而 shouldFailAfterRestart
+   * 对 null 基线放行**全部** RUNNING 行——异步恢复会误杀恢复窗口内闸门新派发
+   * 的行（startTime >= 重启时刻）。不得静默退化。
+   * 早期实现退回 DB 侧旧基线 executorStartedAt（T0）作 onlyStartedBefore，但该
+   * 基线实际"零恢复"：T0 那轮已终态化 startTime<T0 的行，当前存活 RUNNING 行
+   * startTime 必然 >= T0，严格 < 过滤下一条都不终态化，旧进程死掉的行只能靠
+   * stale sweep 回收（不丢任务——计数已清零、闸门不超派——但恢复路径空转）。
+   * 修法：基线改取**服务端本次心跳处理时刻 now**——startTime<now 的旧行被
+   * 终态化、恢复后新派发（startTime>now）存活；DB 旧基线仅作 warn 展示
+   * （日志可审计），不参与判定。
+   */
+  private resolveRestartBaseline(
+    address: string,
+    incomingStartedAt: Date | null,
+    incomingStartupId: string | null,
+    dbBaseline: Date | string | null | undefined,
+  ): Date {
+    if (incomingStartedAt) return incomingStartedAt;
+    const db = this.parseExecutorStartedAt(dbBaseline);
+    const now = new Date();
+    this.logger.warn(
+      `Executor ${address} restarted with a new startupId=${incomingStartupId} ` +
+        `but no restartedAt; using server-side now=${now.toISOString()} as the ` +
+        `recovery baseline (startupId-only restart, time baseline degraded; ` +
+        `DB executorStartedAt=${
+          db ? db.toISOString() : "(null)"
+        } was stale). Rows started after this baseline are NOT failed.`,
+    );
+    return now;
   }
 
   /**
@@ -593,9 +642,12 @@ export class ExecutorService {
         executorAddress,
         status: ExecutionStatus.RUNNING,
       },
-      // Defensive cap: a single executor can only run a finite number of tasks
-      // (bounded by maxConcurrentTasks). 1000 leaves headroom without scanning unboundedly.
-      take: 1000,
+      // NETOPT-C P3: take 与 E9 采纳域（maxConcurrentTasks ≤10000）对齐——旧 1000
+      // 在并发 >1000 时第 1001+ 行不立即标 EXECUTOR_RESTART，滞留 RUNNING 直到
+      // stale 兜底（分类降级为 STALE_RECOVERED）。ORDER BY 让重启恢复按启动时间
+      // 确定性执行（无排序时 DB 行序不定，同批重复恢复会漂移）。
+      take: 10_000,
+      order: { startTime: "ASC" },
     });
     const executionsToFail = runningExecutions.filter((execution) =>
       this.shouldFailAfterRestart(execution, onlyStartedBefore),
@@ -605,50 +657,78 @@ export class ExecutorService {
     const tasks =
       taskIds.length > 0 ? await this.taskRepo.findBy({ id: In(taskIds) }) : [];
     const taskMap = new Map(tasks.map((t) => [t.id, t]));
+    // NETOPT-D P2-D1: 重启恢复从"逐行 UPDATE+RETURNING + 逐行减槽 + 逐行入队"
+    // 改为"单条批量终态 UPDATE + 按 address 一次性减槽"——满载执行器重启时
+    // 逐行写放大（≈2×N 次 DB 往返 + N 次行锁竞争 + N 次 Redis enqueue）会把
+    // register/heartbeat 单条请求推到全局 30s 超时（timeout.interceptor.ts）
+    // 之外，触发 408 重复恢复。批量版与 scheduler.service 的 stale sweep 同构
+    // （transitionToTerminal 批量入口，status-IN 条件 + RETURNING winner 语义）；
+    // 单行乐观锁冲突在批量 UPDATE 中不适用（无 version 条件，行锁由 DB 排队），
+    // R-11 的"不击穿整批"本意由"单条 UPDATE...IN 原子 + 整体 catch 交 stale
+    // sweep 收敛"等价承接。
+    if (executionsToFail.length === 0) {
+      return 0;
+    }
     let failedCount = 0;
     let errorCount = 0;
-    for (const execution of executionsToFail) {
-      const task = execution.taskId
-        ? (taskMap.get(execution.taskId) ?? null)
-        : null;
-      // R-11（DEEP_REVIEW 0ef3bbe）：逐行 try/catch 异常隔离——单行乐观锁冲突
-      // （OptimisticLockVersionMismatchError）或其他 DB 异常不得击穿整个
-      // register/heartbeat 流程（否则心跳 500 → 执行器被连锁判离线）。
-      // 失败行留给 stale sweep 收敛；异常计数超阈值时整体 warn。
-      try {
-        execution.status = ExecutionStatus.FAILED;
-        execution.endTime = new Date();
-        execution.failureReason = ExecutionFailureReason.EXECUTOR_RESTART;
-        execution.errorMessage =
-          "[System] Executor restarted before reporting completion";
-        execution.logs = `${execution.logs || ""}\n[System] Executor restarted; execution marked as FAILED`;
-        // A1: 走统一终态门（带 open-status 谓词 + RETURNING），替代裸 save。
-        // 已终态的行不会被覆盖，避免双重释放槽位/双重调度重试。
-        const result = await transitionOneToTerminal(this.execRepo, {
-          id: execution.id,
-          patch: {
-            status: ExecutionStatus.FAILED,
-            endTime: execution.endTime,
-            failureReason: ExecutionFailureReason.EXECUTOR_RESTART,
-            errorMessage: execution.errorMessage,
-            logs: execution.logs,
-          },
-        });
-        if (result.transitioned) {
-          const addr =
-            result.rows[0]?.executorAddress ?? execution.executorAddress;
-          await this.releaseExecutorSlot(addr);
-          if (task) await this.scheduleRetryAfterRecovery(task, execution);
-          failedCount++;
+    try {
+      const addressSnapshot = new Map<string, string | null>(
+        executionsToFail.map((e) => [e.id, e.executorAddress]),
+      );
+      const terminal = await transitionToTerminal(this.execRepo, {
+        ids: executionsToFail.map((e) => e.id),
+        patch: {
+          status: ExecutionStatus.FAILED,
+          endTime: new Date(),
+          failureReason: ExecutionFailureReason.EXECUTOR_RESTART,
+          errorMessage:
+            "[System] Executor restarted before reporting completion",
+          logs: () =>
+            `CASE WHEN "logs" IS NULL THEN '' ELSE "logs"::text END || ` +
+            `E'\n[System] Executor restarted; execution marked as FAILED'`,
+        },
+        from: [ExecutionStatus.RUNNING],
+        addressSnapshot,
+      });
+      failedCount = terminal.rows.length;
+      // NETOPT-E P2-1: 本函数**不再负责减槽**——计数权威交给调用方的
+      // e.runningTaskCount = 0 + save（register/heartbeat 的 didRestart /
+      // shouldRecoverMissingBaseline 分支均在同一请求内清零后落库；心跳带真实
+      // 上报值时白名单覆盖优先）。此前异步路径（heartbeat 的 void 调用）在
+      // save 之后按"旧 winner 数"对已含新派发的计数做 GREATEST 倒扣，会把
+      // 新任务计数清零（如 save 写 N 后 GREATEST(N-8000,0)=0）——一个心跳窗
+      // 内欠计超派。恢复完成前的计数归零语义不变：执行器重启后旧任务已全部
+      // 终态化，runningTaskCount 本应归 0 或自报新值。
+      // 重试入队仍逐行：每条需新建 PENDING 行（retryCount/params 各自不同）+
+      // BullMQ add；预算检查在 scheduleRetryAfterRecovery 内部，逐行 try/catch
+      // 保留异常隔离（入队失败不影响已完成的终态落库）。
+      const winnerIds = new Set(terminal.rows.map((r) => r.id));
+      for (const execution of executionsToFail) {
+        if (!winnerIds.has(execution.id)) continue;
+        const task = execution.taskId
+          ? (taskMap.get(execution.taskId) ?? null)
+          : null;
+        if (!task) continue;
+        try {
+          await this.scheduleRetryAfterRecovery(task, execution);
+        } catch (err: unknown) {
+          errorCount++;
+          this.logger.warn(
+            `R-11: Failed to schedule retry for execution ${execution.id} after restart ` +
+              `(executor=${executorAddress}): ${
+                err instanceof Error ? err.message : String(err)
+              }. Execution already marked FAILED; retry skipped.`,
+          );
         }
-      } catch (err: unknown) {
-        errorCount++;
-        this.logger.warn(
-          `R-11: Failed to mark execution ${execution.id} as FAILED after restart ` +
-            `(executor=${executorAddress}): ${err instanceof Error ? err.message : String(err)}. ` +
-            `Stale sweep will pick it up.`,
-        );
       }
+    } catch (err: unknown) {
+      errorCount = executionsToFail.length;
+      this.logger.warn(
+        `R-11: Batch fail of ${executionsToFail.length} running execution(s) after restart ` +
+          `(executor=${executorAddress}): ${
+            err instanceof Error ? err.message : String(err)
+          }. Stale sweep will pick them up.`,
+      );
     }
     if (executionsToFail.length > 0) {
       this.logger.warn(
@@ -658,7 +738,10 @@ export class ExecutorService {
             : ""),
       );
     }
-    // R-P0-009: Return the count of failed executions for caller to adjust runningTaskCount
+    // R-P0-009（NETOPT-F P3 注释更新）: 返回值曾供调用方按 winner 数倒扣
+    // runningTaskCount——批次 D 后计数权威改为"调用方 e.runningTaskCount=0 +
+    // save"（didRestart / missing-baseline 分支均清零），本函数返回值现仅用于
+    // 日志/统计（failedCount），不再有减槽用途。
     return failedCount;
   }
 
@@ -802,7 +885,20 @@ export class ExecutorService {
       e.protocolVersion = data.protocolVersion;
     }
     if (didRestart) {
-      await this.failRunningExecutionsAfterRestart(data.address);
+      // NETOPT-E P2-1: 同步恢复也传重启基准时刻（只终态化旧行），与心跳
+      // didRestart 的异步恢复同语义；计数归零由下方 e.runningTaskCount=0 +
+      // save 承担（本函数已不再减槽）。
+      // NETOPT-F P2-1 / NETOPT-G P3: startupId-only 重启（无 restartedAt）时
+      // resolveRestartBaseline 取**服务端本次心跳处理时刻 now**（DB 旧值只作
+      // warn 展示、不参与判定）——旧注释"退回 DB 旧值"是已被否决的零恢复
+      // 中间实现，勿改回。
+      const baseline = this.resolveRestartBaseline(
+        data.address,
+        incomingStartedAt,
+        incomingStartupId,
+        e.executorStartedAt,
+      );
+      await this.failRunningExecutionsAfterRestart(data.address, baseline);
       // R-P0-008: Reset runningTaskCount to 0 after executor restart
       e.runningTaskCount = 0;
     } else if (shouldRecoverMissingBaseline) {
@@ -953,7 +1049,10 @@ export class ExecutorService {
   /**
    * CONSISTENCY-02: heartbeat ingest for executor-node 上报的 runningExecutionIds。
    * 输入为 executor 可控字段，须严格防御：非数组视为未上报（返回 null）；逐项仅
-   * 保留匹配安全字符集 [A-Za-z0-9_-] 的字符串（其余丢弃）；最多裁剪至 200 项。
+   * 保留匹配安全字符集 [A-Za-z0-9_-] 的字符串（其余丢弃）；最多裁剪至 10000 项
+   * （与 E9 采纳域 maxConcurrentTasks ≤10000 对齐——旧的 200 封顶在并发 >200 时
+   * 让第 201+ 个在跑执行从 stale sweep 的 includes() 判据里消失，存活宽限静默
+   * 失效，健康长任务被提前恢复成 FAILED）。
    * null 与 [] 语义不同——null = 旧版执行器未上报该字段（见实体注释），[] = 已
    * 上报且当前空闲。
    *
@@ -963,13 +1062,57 @@ export class ExecutorService {
    * 形态压到最小（防注入控制字符/超长垃圾项）。若未来 executionId 改用其他
    * 格式，须同步复核此集合而不是盲目放宽。
    */
-  private sanitizeRunningExecutionIds(value: unknown): string[] | null {
+  private sanitizeRunningExecutionIds(
+    value: unknown,
+    address?: string,
+  ): string[] | null {
     if (!Array.isArray(value)) return null;
+    // NETOPT-D P3-7: 防御超长垃圾数组的 CPU DoS 面。NETOPT-E P3-1 修订：不做
+    // 前置 slice——>2× 上界时先截断会让窗口外合法 id 静默丢失，且 dropped 口径
+    // 低估（25000 全合法时报丢 10000、实丢 15000）。改为全量线性遍历：数组在
+    // JSON 解析时已物化进内存，正则 ^[A-Za-z0-9_-]+$ 是 O(1)/项，遍历成本由
+    // 解析成本主导，不再显著放大 DoS 面；合法项 10000 封顶 + dropped 精确计数。
     const safe: string[] = [];
+    let validCount = 0;
     for (const item of value) {
       if (typeof item === "string" && /^[A-Za-z0-9_-]+$/.test(item)) {
-        safe.push(item);
-        if (safe.length >= 200) break;
+        validCount++;
+        if (safe.length < MAX_RUNNING_EXECUTION_IDS) {
+          safe.push(item);
+        }
+      }
+    }
+    // NETOPT-D P2-D2: warn 补 address 与丢弃条数——运维按执行器定位溢出源，
+    // 而不是在全仓日志里猜是哪台机器超发。
+    // NETOPT-D P3-3: warn 节流——执行器持续超发时每心跳一条会把日志刷成噪
+    // 音；同 address 同丢弃量 60s 内只 warn 一次（丢弃量变化立即更新重计时）。
+    if (validCount > MAX_RUNNING_EXECUTION_IDS) {
+      const dropped = validCount - MAX_RUNNING_EXECUTION_IDS;
+      const key = address ?? "?";
+      const prev = lastTruncationWarn.get(key);
+      const now = Date.now();
+      if (
+        !prev ||
+        prev.dropped !== dropped ||
+        now - prev.at > TRUNCATION_WARN_THROTTLE_MS
+      ) {
+        this.logger.warn(
+          `runningExecutionIds exceeded ${MAX_RUNNING_EXECUTION_IDS} (executor=${key}, ${dropped} overflow id(s) dropped); ` +
+            `overflow ids lose the stale-sweep survival grace (healthy long tasks may be recovered early)`,
+        );
+        lastTruncationWarn.set(key, { dropped, at: now });
+        if (lastTruncationWarn.size > 100) {
+          // 淘汰最旧一条，防 Map 无限膨胀（超发执行器是少数异常）
+          let oldest: string | null = null;
+          let oldestAt = Infinity;
+          for (const [k, v] of lastTruncationWarn) {
+            if (v.at < oldestAt) {
+              oldestAt = v.at;
+              oldest = k;
+            }
+          }
+          if (oldest) lastTruncationWarn.delete(oldest);
+        }
       }
     }
     return safe;
@@ -1074,9 +1217,46 @@ export class ExecutorService {
       ...metricValues
     } = metrics;
     if (didRestart) {
-      await this.failRunningExecutionsAfterRestart(address);
+      // NETOPT-D P2-3: 重启恢复不阻塞心跳线程——批量 FAILED 落库 + 批量减槽
+      // 先行，逐行重试入队异步收敛；恢复中途失败的行由 stale sweep 兜底
+      // （R-11 既有收敛路径）。E9 高容量下近万行逐行入队会让单次心跳拖到
+      // 全局超时之外、触发 markStaleOffline 误判刚重启的执行器。
+      // NETOPT-E P2-1: 异步恢复带 onlyStartedBefore（重启基准时刻）——恢复
+      // find 谓词只有 address + RUNNING，无时间过滤时会把恢复期间闸门新派发
+      // 的行（startTime >= 重启时刻）一并终态化误杀。传 incomingStartedAt 后
+      // shouldFailAfterRestart 只放行 startTime < 重启时刻的旧行。
+      // NETOPT-F P2-1 / NETOPT-G P3: startupId-only 重启（无 restartedAt）时
+      // resolveRestartBaseline 取**服务端 now**（DB 旧基线仅 warn 展示）——对
+      // startTime<now 的旧行终态化、恢复后新派发（startTime>now）存活。旧注释
+      // "基线退回 DB 旧值"与实现矛盾，已改正，勿改回零恢复中间形态。
+      const baseline = this.resolveRestartBaseline(
+        address,
+        incomingStartedAt,
+        incomingStartupId,
+        e.executorStartedAt,
+      );
+      void this.failRunningExecutionsAfterRestart(address, baseline).catch(
+        (err: unknown) => {
+          this.logger.warn(
+            `Restart recovery for ${address} failed asynchronously: ${
+              err instanceof Error ? err.message : String(err)
+            }. Stale sweep will pick up remaining RUNNING rows.`,
+          );
+        },
+      );
+      // NETOPT-E P3-1: 重启分支同样清零内存 runningTaskCount（与 register
+      // 分支 :870/:877 对齐）。异步恢复会批量减槽落库，但本心跳后续
+      // save(e) 会把内存里的旧高值原样写回——用旧值覆盖恢复结果，派发
+      // 闸门 runningTaskCount 虚高、欠派。清零后若本次心跳带真实上报值，
+      // 白名单覆盖仍生效（见下方 metricValues 写入环）。
+      e.runningTaskCount = 0;
     } else if (shouldRecoverMissingBaseline) {
       await this.failRunningExecutionsAfterRestart(address, incomingStartedAt);
+      // NETOPT-F P2-F2: missing-baseline 分支与 register 同型分支（:908）对称
+      // ——异步恢复会批量减槽落库，但本心跳后续 save(e) 会把内存里的旧高值
+      // 原样写回，用旧值覆盖恢复结果，闸门 runningTaskCount 虚高、欠派。
+      // 清零后若本次心跳带真实上报值，白名单覆盖仍生效。
+      e.runningTaskCount = 0;
     }
 
     // R-P0-006: Use save() without version check for heartbeat to avoid frequent conflicts
@@ -1126,6 +1306,27 @@ export class ExecutorService {
       );
       delete metricValues.maxConcurrentTasks;
     }
+    // NETOPT-D P2-D2: runningTaskCount 是派发闸门的数字列（selectLeastLoaded/
+    // 容量守卫直接读它判满）——执行器上报面不可信，必须与数组截顶共享同一
+    // 上界（MAX_RUNNING_EXECUTION_IDS）。否则真实在跑 >10000 时闸门误判有空位
+    // 而超发；且被数组截断丢弃的 id 在 stale includes() 判据里被判"不在跑"，
+    // 健康长任务被提前恢复成 FAILED。非法值视同未上报（DB 值不动）。
+    if (
+      metricValues.runningTaskCount !== undefined &&
+      (!Number.isInteger(metricValues.runningTaskCount) ||
+        metricValues.runningTaskCount < 0 ||
+        metricValues.runningTaskCount > MAX_RUNNING_EXECUTION_IDS)
+    ) {
+      this.logger.warn(
+        `Executor ${address} reported invalid runningTaskCount=${String(
+          metricValues.runningTaskCount,
+        )} (expected integer in 0..${MAX_RUNNING_EXECUTION_IDS}); keeping stored value`,
+      );
+      // NETOPT-E P3-1: 越界只删字段、DB 值不动——持续越界上报期间派发闸门用
+      // 陈旧计数判满（可能误判满/空），但下一次合法上报即自纠正；不为此引入
+      // 半采纳状态（半采纳值同样不可信）。
+      delete metricValues.runningTaskCount;
+    }
     // U16: deadLetterCount 采纳（node ab4971f / python 001 起上报）。非法值
     // 视同未上报——从 metricValues 删除，DB 值不动，与上轮 maxConcurrentTasks
     // 采纳同模式。
@@ -1162,8 +1363,10 @@ export class ExecutorService {
     // 覆盖，避免旧版心跳把新版已写入的活性集合擦回 null。deadLetterCount
     // 经上方白名单校验后采纳落列（U16），>0 时仍保留告警。
     if (runningExecutionIds !== undefined) {
-      e.runningExecutionIds =
-        this.sanitizeRunningExecutionIds(runningExecutionIds);
+      e.runningExecutionIds = this.sanitizeRunningExecutionIds(
+        runningExecutionIds,
+        address,
+      );
     }
     // python_task_multiversion（WS2 · CONTRACT §2.2/§2.3 · 兼容性红线 3）：
     // 心跳采纳 `interpreters`——三态必须精确区分，任一态混淆都会造成调度错判：
@@ -1194,6 +1397,11 @@ export class ExecutorService {
       );
     }
 
+    // NETOPT-F P3-3（读改写竞态，仅文档化）：heartbeat 的整实体 save 可覆盖
+    // dispatch 的原子 +1 与 stale sweep 的原子 -1——每事件至多 1 槽偏差，且
+    // 下一心跳（执行器如实上报 runningTaskCount）即自纠正。不加锁/版本校验
+    // 是有意取舍（R-P0-006：心跳高频、乐观锁冲突会反噬吞吐）；偏差窗口内的
+    // 闸门判满/判空是暂时的，不上报的旧版执行器才依赖该近似。
     const saved = await this.repo.save(e);
     try {
       await this.metricsHistoryRepo.save(
@@ -2263,12 +2471,28 @@ export class ExecutorService {
     // 写放大为长事务风暴；截断后下一轮 5 分钟 tick 自收敛（余量行仍满足
     // RUNNING + 阈值谓词）。逐行写保留：终态必须走 transitionToTerminal
     //（A1 收口）并按 RETURNING 地址逐台释放槽位，不能改批量 UPDATE。
-    const lostExecs = await this.execRepo
-      .createQueryBuilder("exec")
-      .where("exec.status = :status", { status: ExecutionStatus.RUNNING })
-      .andWhere("exec.startTime < :threshold", { threshold: broadThreshold })
-      .take(1000)
-      .getMany();
+    // NETOPT-E P3-3: 与主 stale sweep 同档——take 1000 无 order 无循环，在
+    // 单执行器 10000 并发（E9 采纳域）下每 5 分钟只处理前 1000 行，第 1001+
+    // 行滞留到下一轮（恢复吞吐 < 故障规模时永不自收敛）。分页循环 +
+    // startTime/id 双键排序对齐 scheduler.service 的 STALE_SWEEP 同款约定。
+    const lostExecs: TaskExecution[] = [];
+    const LOST_SWEEP_PAGE = 1000;
+    const LOST_SWEEP_MAX = 20_000;
+    let pageOffset = 0;
+    while (lostExecs.length < LOST_SWEEP_MAX) {
+      const page = await this.execRepo
+        .createQueryBuilder("exec")
+        .where("exec.status = :status", { status: ExecutionStatus.RUNNING })
+        .andWhere("exec.startTime < :threshold", { threshold: broadThreshold })
+        .orderBy("exec.startTime", "ASC")
+        .addOrderBy("exec.id", "ASC")
+        .take(LOST_SWEEP_PAGE)
+        .skip(pageOffset)
+        .getMany();
+      lostExecs.push(...page);
+      if (page.length < LOST_SWEEP_PAGE) break;
+      pageOffset += page.length;
+    }
     if (lostExecs.length === 0) return;
 
     // Batch-fetch tasks and executors to avoid N+1 queries
