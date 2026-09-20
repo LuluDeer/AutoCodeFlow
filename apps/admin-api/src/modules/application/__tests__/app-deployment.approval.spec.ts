@@ -11,6 +11,8 @@ import {
 import { ApplicationVersion } from "../entities/application-version.entity";
 import { ApplicationService } from "../application.service";
 import { ExecutorService } from "../../executor/executor.service";
+// ARCH-33（ADR-016）：控制面 pull 通道的测试替身（默认 push）
+import { controlPlaneMocks } from "../../../common/testing/control-plane-mocks";
 import { AuditService } from "../../audit/audit.service";
 
 // Mock axios to avoid real HTTP calls (same as app-deployment.service.spec).
@@ -98,7 +100,9 @@ describe("AppDeploymentService — DEP-04 审批流", () => {
       selectLeastLoaded: jest
         .fn()
         .mockResolvedValue({ id: "exec-1", address: "executor:3001" }),
-    };
+      // ARCH-33（ADR-016）：默认 push（本 spec 验证 push 路径语义）
+      ...controlPlaneMocks(),
+    } as unknown as typeof executorService;
     audit = { log: jest.fn().mockResolvedValue(undefined) };
 
     const module = await Test.createTestingModule({

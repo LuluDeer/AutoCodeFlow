@@ -101,6 +101,10 @@ import { RuntimeModule } from "./modules/runtime/runtime.module";
           .max(55000)
           .default(25000),
         EXECUTOR_PULL_TTL_MS: Joi.number().integer().min(1000).default(900000),
+        // ARCH-33（ADR-016）：控制面命令队列的载荷过期阈值
+        // （configuration.ts executor.cmdTtlMs 消费）。默认 30min，**长于**
+        // 任务载荷 TTL——丢任务有 stale sweep 兜底，丢控制命令没有任何兜底。
+        EXECUTOR_CMD_TTL_MS: Joi.number().integer().min(1000).default(1800000),
         // F-07（本轮审计）: 调度候选执行器池上限（configuration.ts
         // executor.candidatePoolSize 消费，selectLeastLoaded / dispatch 的
         // take 截断）。默认 500 与既有硬编码一致。

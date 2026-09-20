@@ -12,6 +12,8 @@ import { Test } from "@nestjs/testing";
 import { APP_GUARD } from "@nestjs/core";
 import * as request from "supertest";
 import { ExecutorService } from "../executor.service";
+// ARCH-33（ADR-016）：控制面 pull 通道的测试替身（默认 push）
+import { controlPlaneMocks } from "../../../common/testing/control-plane-mocks";
 import { SystemConfigService } from "../../config/config.service";
 import { JwtAuthGuard } from "../../../common/guards/jwt-auth.guard";
 import { RolesGuard } from "../../../common/guards/roles.guard";
@@ -61,6 +63,8 @@ describe("ExecutorController", () => {
 
   it("forwards all admin API URL hot-reload fields to executor", async () => {
     const svc = {
+      // ARCH-33（ADR-016）：默认 push（本组用例验证 push 路径语义）
+      ...controlPlaneMocks(),
       findOne: jest.fn().mockResolvedValue({
         id: "executor-1",
         address: "executor.local:8001",
@@ -127,6 +131,8 @@ describe("ExecutorController", () => {
   // re-issues and retries EXACTLY ONCE.
   it("re-issues the token and retries once when the push is rejected 401", async () => {
     const svc = {
+      // ARCH-33（ADR-016）：默认 push（本组用例验证 push 路径语义）
+      ...controlPlaneMocks(),
       findOne: jest.fn().mockResolvedValue({
         id: "executor-1",
         address: "executor.local:8001",
@@ -174,6 +180,8 @@ describe("ExecutorController", () => {
 
   it("throws the fixed error when the 401 retry also fails (no error echo, no third attempt)", async () => {
     const svc = {
+      // ARCH-33（ADR-016）：默认 push（本组用例验证 push 路径语义）
+      ...controlPlaneMocks(),
       findOne: jest.fn().mockResolvedValue({
         id: "executor-1",
         address: "executor.local:8001",
@@ -222,6 +230,8 @@ describe("ExecutorController", () => {
 
   it("does not retry on non-401 failures (connect/timeout stay single-shot)", async () => {
     const svc = {
+      // ARCH-33（ADR-016）：默认 push（本组用例验证 push 路径语义）
+      ...controlPlaneMocks(),
       findOne: jest.fn().mockResolvedValue({
         id: "executor-1",
         address: "executor.local:8001",
@@ -270,6 +280,8 @@ describe("ExecutorController", () => {
       getExecutorUrl: jest
         .fn()
         .mockReturnValue("http://executor.local:8001/api/config/reload"),
+      // ARCH-33（ADR-016）：默认 push（本组用例验证 push 路径的失败语义）
+      ...controlPlaneMocks(),
     });
 
     it("执行器离线 → 503（不是 401）", async () => {
@@ -385,6 +397,8 @@ describe("ExecutorController", () => {
     //    计数 reissued_success +1。
     it("re-issues once after a first-attempt 401 and succeeds on the retry (a)", async () => {
       const svc = {
+        // ARCH-33（ADR-016）：默认 push（本组用例验证 push 路径语义）
+        ...controlPlaneMocks(),
         findOne: jest.fn().mockResolvedValue(makeOnlineExecutor()),
         issueToken: jest
           .fn()
@@ -424,6 +438,8 @@ describe("ExecutorController", () => {
     //    建议动作齐全；计数 still_unauthorized +1。
     it("surfaces the precise still-401 message after the retry also fails with 401 (b)", async () => {
       const svc = {
+        // ARCH-33（ADR-016）：默认 push（本组用例验证 push 路径语义）
+        ...controlPlaneMocks(),
         findOne: jest.fn().mockResolvedValue(makeOnlineExecutor()),
         issueToken: jest.fn().mockResolvedValue({ token: "t", tokenHash: "h" }),
         getExecutorUrl: jest
@@ -455,6 +471,8 @@ describe("ExecutorController", () => {
     //    重试计数——只有真正的 401 裁定才进 metric。
     it("keeps non-401 failures single-shot and leaves the retry counter untouched (c)", async () => {
       const svc = {
+        // ARCH-33（ADR-016）：默认 push（本组用例验证 push 路径语义）
+        ...controlPlaneMocks(),
         findOne: jest.fn().mockResolvedValue(makeOnlineExecutor()),
         issueToken: jest.fn().mockResolvedValue({ token: "t", tokenHash: "h" }),
         getExecutorUrl: jest
@@ -480,6 +498,8 @@ describe("ExecutorController", () => {
     // c) 补充：首发 2xx 的正常路径完全不触碰重签与计数。
     it("does not re-issue or count anything when the first push succeeds (c)", async () => {
       const svc = {
+        // ARCH-33（ADR-016）：默认 push（本组用例验证 push 路径语义）
+        ...controlPlaneMocks(),
         findOne: jest.fn().mockResolvedValue(makeOnlineExecutor()),
         issueToken: jest.fn().mockResolvedValue({ token: "t", tokenHash: "h" }),
         getExecutorUrl: jest
@@ -505,6 +525,8 @@ describe("ExecutorController", () => {
     // d) 重试仅一次：首发 401 + 重试 401 后总计恰两次 POST、两次签发，无第三次。
     it("retries the push EXACTLY once, never a second re-issue cycle (d)", async () => {
       const svc = {
+        // ARCH-33（ADR-016）：默认 push（本组用例验证 push 路径语义）
+        ...controlPlaneMocks(),
         findOne: jest.fn().mockResolvedValue(makeOnlineExecutor()),
         issueToken: jest.fn().mockResolvedValue({ token: "t", tokenHash: "h" }),
         getExecutorUrl: jest
@@ -537,6 +559,8 @@ describe("ExecutorController", () => {
         getExecutorUrl: jest
           .fn()
           .mockReturnValue("http://executor.local:8001/api/config/reload"),
+        // ARCH-33（ADR-016）：默认 push（本用例验证 push 重签重试计数）
+        ...controlPlaneMocks(),
       };
       const controllerA = new ExecutorController(
         svcA as any,
@@ -556,6 +580,8 @@ describe("ExecutorController", () => {
         getExecutorUrl: jest
           .fn()
           .mockReturnValue("http://executor.local:8001/api/config/reload"),
+        // ARCH-33（ADR-016）：默认 push
+        ...controlPlaneMocks(),
       };
       const controllerB = new ExecutorController(
         svcB as any,
@@ -581,6 +607,8 @@ describe("ExecutorController", () => {
 
   it("rejects config reload for offline executor", async () => {
     const svc = {
+      // ARCH-33（ADR-016）：默认 push（本组用例验证 push 路径语义）
+      ...controlPlaneMocks(),
       findOne: jest.fn().mockResolvedValue({
         id: "executor-1",
         address: "executor.local:8001",
@@ -1115,20 +1143,29 @@ describe("ExecutorController", () => {
     });
 
     // ARCH-32（ADR-015）: POST /executors/pull 长轮询端点
+    // ARCH-33（ADR-016）: 响应新增 commands（控制面命令）与 freeSlots 入参。
     describe("POST /executors/pull — 长轮询派发", () => {
-      const makeSvc = (dispatchMode: string) => ({
+      const makeSvc = (
+        dispatchMode: string,
+        protocolVersion: number | null = 2,
+      ) => ({
         validateTokenByAddress: jest.fn().mockResolvedValue(true),
         findByAddress: jest.fn().mockResolvedValue({
           id: "e-pull",
           address: "nat:9999",
           dispatchMode,
+          protocolVersion,
         }),
       });
 
       it("pull 执行器：返回队列载荷", async () => {
         const svc = makeSvc("pull");
         const payload = { executionId: "exec-9", task: {}, params: {} };
-        const pullService = { pull: jest.fn().mockResolvedValue(payload) };
+        const pullService = {
+          pullWork: jest
+            .fn()
+            .mockResolvedValue({ task: payload, commands: [] }),
+        };
         const controller = new ExecutorController(
           svc as any,
           { get: jest.fn().mockReturnValue("25000") } as any,
@@ -1143,17 +1180,110 @@ describe("ExecutorController", () => {
 
         // E-1（中台↔执行器深度审查）：pull 响应附带 configVersion 配置指纹
         // （确定性 sha256 截短；执行器据此做 pull 配置热更新）。
+        // ARCH-33: 协议 v2 的 pull 执行器额外拿到 commands（此处为空数组，
+        // 表示「中台支持命令通道，本次没有命令」——省略字段会被执行器误读为
+        // 「中台太旧」）。
         expect(result).toEqual({
           task: payload,
           dispatchMode: "pull",
+          commands: [],
           configVersion: expect.any(String),
         });
-        expect(pullService.pull).toHaveBeenCalledWith("e-pull", 25000);
+        expect(pullService.pullWork).toHaveBeenCalledWith("e-pull", 25000, {
+          wantTask: true,
+        });
+      });
+
+      it("ARCH-33：协议 v1 的 pull 执行器**不**下发 commands（对端不认识该字段）", async () => {
+        const svc = makeSvc("pull", 1);
+        const pullService = {
+          pullWork: jest.fn().mockResolvedValue({ task: null, commands: [] }),
+        };
+        const controller = new ExecutorController(
+          svc as any,
+          { get: jest.fn().mockReturnValue("25000") } as any,
+          {} as any,
+          pullService as any,
+        );
+
+        const result = await controller.pullDispatch(
+          { address: "nat:9999" },
+          "Bearer token",
+        );
+
+        expect(result).not.toHaveProperty("commands");
+      });
+
+      it("ARCH-33：未上报协议版本的存量 pull 执行器同样不下发 commands", async () => {
+        const svc = makeSvc("pull", null);
+        const pullService = {
+          pullWork: jest.fn().mockResolvedValue({ task: null, commands: [] }),
+        };
+        const controller = new ExecutorController(
+          svc as any,
+          { get: jest.fn().mockReturnValue("25000") } as any,
+          {} as any,
+          pullService as any,
+        );
+
+        const result = await controller.pullDispatch(
+          { address: "nat:9999" },
+          "Bearer token",
+        );
+
+        expect(result).not.toHaveProperty("commands");
+      });
+
+      it("ARCH-33：freeSlots=0（满载）→ wantTask=false，服务端不出队任务", async () => {
+        const svc = makeSvc("pull");
+        const pullService = {
+          pullWork: jest
+            .fn()
+            .mockResolvedValue({ task: null, commands: [{ commandId: "c1" }] }),
+        };
+        const controller = new ExecutorController(
+          svc as any,
+          { get: jest.fn().mockReturnValue("25000") } as any,
+          {} as any,
+          pullService as any,
+        );
+
+        const result = await controller.pullDispatch(
+          { address: "nat:9999", freeSlots: 0 },
+          "Bearer token",
+        );
+
+        expect(pullService.pullWork).toHaveBeenCalledWith("e-pull", 25000, {
+          wantTask: false,
+        });
+        // 命令照常下发——这正是「满载时仍可运维」的关键
+        expect(result.commands).toEqual([{ commandId: "c1" }]);
+      });
+
+      it("ARCH-33：freeSlots 缺省（旧执行器）→ 按有空槽处理，行为与今日一致", async () => {
+        const svc = makeSvc("pull");
+        const pullService = {
+          pullWork: jest.fn().mockResolvedValue({ task: null, commands: [] }),
+        };
+        const controller = new ExecutorController(
+          svc as any,
+          { get: jest.fn().mockReturnValue("25000") } as any,
+          {} as any,
+          pullService as any,
+        );
+
+        await controller.pullDispatch({ address: "nat:9999" }, "Bearer token");
+
+        expect(pullService.pullWork).toHaveBeenCalledWith("e-pull", 25000, {
+          wantTask: true,
+        });
       });
 
       it("waitMs 按服务端上限钳位（EXECUTOR_PULL_WAIT_MS）", async () => {
         const svc = makeSvc("pull");
-        const pullService = { pull: jest.fn().mockResolvedValue(null) };
+        const pullService = {
+          pullWork: jest.fn().mockResolvedValue({ task: null, commands: [] }),
+        };
         const controller = new ExecutorController(
           svc as any,
           { get: jest.fn().mockReturnValue("25000") } as any,
@@ -1166,12 +1296,14 @@ describe("ExecutorController", () => {
           "Bearer token",
         );
 
-        expect(pullService.pull).toHaveBeenCalledWith("e-pull", 25000);
+        expect(pullService.pullWork).toHaveBeenCalledWith("e-pull", 25000, {
+          wantTask: true,
+        });
       });
 
       it("push 执行器轮询：返回空载荷且不触队列", async () => {
         const svc = makeSvc("push");
-        const pullService = { pull: jest.fn() };
+        const pullService = { pullWork: jest.fn() };
         const controller = new ExecutorController(
           svc as any,
           { get: jest.fn().mockReturnValue("25000") } as any,
@@ -1191,7 +1323,7 @@ describe("ExecutorController", () => {
           dispatchMode: "push",
           configVersion: expect.any(String),
         });
-        expect(pullService.pull).not.toHaveBeenCalled();
+        expect(pullService.pullWork).not.toHaveBeenCalled();
       });
 
       it("无效令牌 401", async () => {

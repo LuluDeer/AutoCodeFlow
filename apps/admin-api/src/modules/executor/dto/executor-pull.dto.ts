@@ -21,4 +21,18 @@ export class ExecutorPullDto {
     example: 25000,
   })
   waitMs?: number;
+
+  /**
+   * ARCH-33（ADR-016）：执行器当前空闲槽位数。
+   *
+   * 缺省 = 未上报（旧执行器）→ 服务端按「有空槽」处理，任务照常出队，行为
+   * 与今日逐字节一致。显式上报 0 = 满载：服务端**不出队任务**，但仍下发
+   * 控制面命令——否则执行器满载时部署/停止/热更新全部静默失效。
+   */
+  @ApiPropertyOptional({
+    description:
+      "执行器当前空闲槽位数；0 = 满载（服务端只下发控制命令，不派任务）。缺省按有空槽处理",
+    example: 2,
+  })
+  freeSlots?: number;
 }

@@ -10,6 +10,8 @@ import {
 import { ApplicationVersion } from "../entities/application-version.entity";
 import { ApplicationService } from "../application.service";
 import { ExecutorService } from "../../executor/executor.service";
+// ARCH-33（ADR-016）：控制面 pull 通道的测试替身（默认 push）
+import { controlPlaneMocks } from "../../../common/testing/control-plane-mocks";
 import { RolloutState } from "../entities/app-deployment.entity";
 
 // Mock axios（既有套件同约定：无真实 HTTP）。
@@ -122,7 +124,9 @@ describe("AppDeploymentService rollout（DEP-02/DEP-03）", () => {
       ),
       getSharedToken: jest.fn().mockResolvedValue("tok"),
       selectLeastLoaded: jest.fn(),
-    };
+      // ARCH-33（ADR-016）：默认 push（本 spec 验证 push/rollout 语义）
+      ...controlPlaneMocks(),
+    } as unknown as typeof executorService;
 
     const module = await Test.createTestingModule({
       providers: [

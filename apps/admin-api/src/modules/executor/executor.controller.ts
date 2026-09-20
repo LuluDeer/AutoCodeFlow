@@ -7,6 +7,7 @@ import {
   UnauthorizedException,
   ServiceUnavailableException,
   BadGatewayException,
+  BadRequestException,
   Headers,
   Param,
   Patch,
@@ -59,6 +60,8 @@ import { isVersionCompliant } from "./version-compare.util";
 import {
   PROTOCOL_SUPPORTED_MIN,
   isProtocolCompliant,
+  // ARCH-33（ADR-016）：控制面命令通道的协议门禁（>= 2 才下发 commands）。
+  supportsControlPlane,
 } from "./protocol-compat.util";
 // ARCH-32: pull 派发长轮询端点（ADR-015）
 import { ExecutorPullService } from "./executor-pull.service";
@@ -379,6 +382,14 @@ export class ExecutorController {
       // 客户端期望的等待窗口；服务端按 EXECUTOR_PULL_WAIT_MS 钳位
       // （上限 55s，低于反代通用 60s 读超时）。
       waitMs?: number;
+      // ARCH-33（ADR-016）：执行器当前空闲槽位数。缺省 = 未上报（旧执行器）
+      // → 按「有空槽」处理，任务照常出队，行为与今日逐字节一致。
+      //
+      // 为什么需要它：pull 循环原本只在有空闲槽位时才长轮询（E-01 预留槽位
+      // 方案）。若沿用，**执行器满载时控制命令永远送不到**——部署、停止、
+      // 热更新全部静默失效。带上 freeSlots 后执行器始终长轮询，服务端据此
+      // 决定是否出队任务（`freeSlots <= 0` 时**不出队**，见 pullWork）。
+      freeSlots?: number;
     },
     @Headers("authorization") auth: string,
   ) {
@@ -409,13 +420,29 @@ export class ExecutorController {
     const waitMs = Number.isFinite(requestedWait)
       ? Math.max(0, Math.min(requestedWait, maxWait))
       : maxWait;
-    const payload =
-      executor.dispatchMode === "pull"
-        ? await this.pullService.pull(executor.id, waitMs)
-        : null;
+    // ARCH-33: 任务出队门禁。缺省（未上报）按「有槽位」放行——存量旧执行器
+    // 不发该字段，行为必须与今日一致。显式上报 0/负数 = 满载：只发命令。
+    const wantTask =
+      body.freeSlots === undefined || body.freeSlots === null
+        ? true
+        : Number(body.freeSlots) > 0;
+    const isPull = executor.dispatchMode === "pull";
+    // ARCH-33: 只有支持控制面协议的 pull 执行器才拿命令——协议 < 2 的执行器
+    // 会忽略 commands 字段（中台侧 resolveExecutorTransport 已按同一判据回退
+    // push，此处再守一道：响应体绝不携带对端不认识的语义字段）。
+    const wantCommands =
+      isPull && supportsControlPlane(executor.protocolVersion);
+    const { task: payload, commands } = isPull
+      ? await this.pullService.pullWork(executor.id, waitMs, { wantTask })
+      : { task: null, commands: [] };
     return {
       task: payload ?? null,
       dispatchMode: executor.dispatchMode,
+      // ARCH-33: 控制面命令（deploy / app-stop / app-uninstall /
+      // config-reload / kill-execution / update-package）。空数组而非省略
+      // 字段——执行器侧据此判定「中台是否支持命令通道」，省略会让 v2 执行器
+      // 无法区分「没有命令」与「中台太旧」。
+      ...(wantCommands ? { commands } : {}),
       // E-1（中台↔执行器深度审查）：附带配置指纹——pull 执行器检测到与本地
       // 已应用版本不一致时，主动 GET /api/executors/config 拉取全量配置热更新
       // （push 执行器仍走 admin 主动 POST /api/config/reload）。
@@ -424,6 +451,72 @@ export class ExecutorController {
         executor,
       ),
     };
+  }
+
+  @Public()
+  // ARCH-33（ADR-016）：命令执行结果上报。与 heartbeat 同属执行器出站机器面，
+  // 鉴权同款（per-executor 令牌 + address 身份键）。best-effort 语义：中台侧
+  // 只记日志 + 写短期结果键（排障读面），**不是**业务终态的事实源——deploy 由
+  // /app-deployments/heartbeat 收敛，update-package 由 push-result 收敛。
+  @WriteGuard("executor", {
+    scope: "token",
+    reason: "执行器上报 pull 控制命令的执行结果（ARCH-33，机器面非用户会话）",
+  })
+  @Post("command-result")
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: "Report pull control-command execution result",
+    description:
+      "ARCH-33: pull-mode executors report the outcome of a control command " +
+      "(deploy / app-stop / app-uninstall / config-reload / kill-execution / " +
+      "update-package) they consumed from the pull response. Best-effort — " +
+      "business terminal states still converge through their own callbacks.",
+  })
+  @ApiResponse({ status: 200, description: "Result recorded" })
+  @ApiResponse({ status: 401, description: "Invalid executor token" })
+  async reportCommandResult(
+    @Body()
+    body: {
+      commandId: string;
+      address: string;
+      type: string;
+      ok: boolean;
+      status?: number;
+      error?: string | null;
+      durationMs?: number;
+    },
+    @Headers("authorization") auth: string,
+  ) {
+    const token = auth?.startsWith("Bearer ") ? auth.slice(7) : auth;
+    const isValid = await this.svc.validateTokenByAddress(body.address, token);
+    if (!isValid) {
+      throw new UnauthorizedException("Invalid executor token");
+    }
+    if (!body.commandId || !body.type) {
+      throw new BadRequestException("commandId and type are required");
+    }
+    if (body.ok) {
+      this.logger.log(
+        `Pull command ${body.type} (${body.commandId}) succeeded on ${body.address}` +
+          (body.durationMs !== undefined ? ` in ${body.durationMs}ms` : ""),
+      );
+    } else {
+      this.logger.warn(
+        `Pull command ${body.type} (${body.commandId}) FAILED on ${body.address}` +
+          `${body.status !== undefined ? ` (HTTP ${body.status})` : ""}: ${body.error ?? "unknown error"}`,
+      );
+    }
+    await this.pullService?.recordCommandResult(body.commandId, {
+      commandId: body.commandId,
+      type: body.type,
+      address: body.address,
+      ok: body.ok === true,
+      status: body.status ?? null,
+      error: body.error ?? null,
+      durationMs: body.durationMs ?? null,
+      reportedAt: new Date().toISOString(),
+    });
+    return { ok: true };
   }
 
   @Public()
@@ -947,6 +1040,28 @@ export class ExecutorController {
       appName: executor.appName,
       startupId: executor.executorStartupId ?? null,
     });
+    // ARCH-33（ADR-016）：pull 执行器走命令队列。
+    //
+    // 语义损失**如实声明**：push 返回执行器的响应体（「已应用」），pull 只能
+    // 返回「已入队」。返回体因此带 `queued: true` + `commandId`，UI 据此区分，
+    // **不谎报成功**。终态由执行器经 /executors/command-result 上报。
+    //
+    // UI-18 此前把 pull 执行器的这个入口在管理台上**禁用**了（入站 POST 对
+    // NAT 执行器必然失败）——本改动让那个禁用理由消失，见 admin-web 同批改动。
+    const routed = await this.svc.deliverControlCommand({
+      executorId: executor.id,
+      address: executor.address,
+      type: "config-reload",
+      payload: body as Record<string, unknown>,
+    });
+    if (routed.delivered === "pull") {
+      return {
+        queued: true,
+        commandId: routed.commandId,
+        message:
+          "Config update queued for the pull-mode executor; it applies the change on its next pull (within ~1s).",
+      };
+    }
     const url = this.svc.getExecutorUrl(executor.address, "api/config/reload");
     // F-3: SSRF guard — never send the per-executor token to a
     // metadata/loopback/link-local target. With idempotent reuse a blocked

@@ -15,6 +15,8 @@ import {
 import { ApplicationVersion } from "../entities/application-version.entity";
 import { ApplicationService } from "../application.service";
 import { ExecutorService } from "../../executor/executor.service";
+// ARCH-33（ADR-016）：控制面 pull 通道的测试替身（默认 push）
+import { controlPlaneMocks } from "../../../common/testing/control-plane-mocks";
 import { DOMAIN_EVENTS } from "../../../common/events/domain-events";
 
 // Mock axios to avoid real HTTP calls
@@ -99,7 +101,14 @@ describe("AppDeploymentService", () => {
   let executorService: jest.Mocked<
     Pick<
       ExecutorService,
-      "findOne" | "getExecutorUrl" | "getSharedToken" | "selectLeastLoaded"
+      | "findOne"
+      | "getExecutorUrl"
+      | "getSharedToken"
+      | "selectLeastLoaded"
+      // ARCH-33（ADR-016）：控制面 pull 通道的三项（默认 push，见 helper）
+      | "resolveExecutorTransport"
+      | "deliverControlCommand"
+      | "enqueueExecutorCommand"
     >
   >;
 
@@ -127,7 +136,10 @@ describe("AppDeploymentService", () => {
       // 部署指令鉴权头现走 DB 优先的 getSharedToken
       getSharedToken: jest.fn().mockResolvedValue(""),
       selectLeastLoaded: jest.fn().mockResolvedValue(mockExecutor),
-    };
+      // ARCH-33: 默认 push——本 spec 验证的是 push 路径语义，pull 通道的
+      // 行为由 control-plane 专项用例覆盖。
+      ...controlPlaneMocks(),
+    } as unknown as typeof executorService;
 
     const module = await Test.createTestingModule({
       providers: [

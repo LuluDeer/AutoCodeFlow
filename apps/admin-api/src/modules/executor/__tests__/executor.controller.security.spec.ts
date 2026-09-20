@@ -2,6 +2,8 @@ import { UnauthorizedException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { ExecutorController } from "../executor.controller";
 import { ExecutorStatus, ExecutorType } from "../entities/executor.entity";
+// ARCH-33（ADR-016）：控制面 pull 通道的测试替身（默认 push）
+import { controlPlaneMocks } from "../../../common/testing/control-plane-mocks";
 
 jest.mock("axios", () => {
   const actual = jest.requireActual("axios");
@@ -52,6 +54,9 @@ describe("ExecutorController — F-2 heartbeat / F-7 register mass-assignment gu
     // N26 (round-8): register response now carries the stored tokenHash so
     // the executor can adopt it as its per-execution callback signing secret.
     getCallbackSecretByAddress: jest.fn().mockResolvedValue("$2b$12$hash"),
+    // ARCH-33（ADR-016）：默认 push——本 spec 验证的 SSRF/错误脱敏语义都在
+    // push 路径上（pull 通道的路径由执行器按封闭枚举构造，不经 admin 的 URL）。
+    ...controlPlaneMocks(),
     ...overrides,
   });
 
@@ -285,6 +290,9 @@ describe("ExecutorController — F-2 heartbeat / F-7 register mass-assignment gu
         getExecutorUrl: jest
           .fn()
           .mockReturnValue("http://169.254.169.254:80/api/config/reload"),
+        // ARCH-33（ADR-016）：默认 push——本用例验证 SSRF 闸在 push 路径上
+        // 先于凭据外发；pull 通道的路径由封闭枚举构造，不走该 URL。
+        ...controlPlaneMocks(),
       });
       const controller = new ExecutorController(
         svc as any,

@@ -16,6 +16,8 @@ import { JwtAuthGuard } from "../../../common/guards/jwt-auth.guard";
 import { ROLES_KEY } from "../../../common/decorators/roles.decorator";
 import { UserRole } from "../../users/entities/user.entity";
 import { ExecutorStatus, ExecutorType } from "../entities/executor.entity";
+// ARCH-33（ADR-016）：控制面 pull 通道的测试替身（默认 push）
+import { controlPlaneMocks } from "../../../common/testing/control-plane-mocks";
 
 jest.mock("axios", () => {
   const actual = jest.requireActual("axios");
@@ -84,6 +86,9 @@ describe("ExecutorController — W2 RBAC matrix for management write endpoints",
       getExecutorUrl: jest
         .fn()
         .mockReturnValue("http://10.0.0.9:8001/api/config/reload"),
+      // ARCH-33（ADR-016）：默认 push——本 spec 验证的是 RBAC 矩阵（谁被拒），
+      // 与传输方式无关；保持 push 让 reload-config happy path 照旧打真实 HTTP 桩。
+      ...controlPlaneMocks(),
       rotateToken: jest.fn().mockResolvedValue({
         token: "fresh-token",
         expiresAt: "2026-01-01T00:00:00.000Z",
