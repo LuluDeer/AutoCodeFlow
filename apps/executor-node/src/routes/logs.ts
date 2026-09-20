@@ -4,6 +4,7 @@ import * as path from 'path';
 import { createInterface } from 'readline';
 import { config } from '../config';
 import { logger } from '../logger';
+import { getPinnedLogFilePath } from '../file-logger';
 // A3（kill/logs 契约化）：出参契约（由 protocol.json 生成，勿手改产物）
 import { LogsResponseSchema } from '../generated/protocol.schemas';
 
@@ -64,10 +65,16 @@ logsRouter.get('/logs/:executionId', async (req: Request, res: Response) => {
   }
 
   // B-05: file-logger writes to logs/{date}/{executionId}.log
-  // Scan dated subdirectories most-recent first to find the log file.
+  // NETOPT-D P3-6: 钉路径（accept 时 pin 的启动日分片）是活跃执行的单一事实
+  // 源——长任务跨天后这里不靠"猜日期目录"，直接命中；日期扫描降级为兜底
+  // （旧执行/未 pin 场景），flat 路径兜底保持原状。
   const logsBase = path.resolve(path.join(config.workDir, 'logs'));
   let logFile: string | undefined;
-  if (fs.existsSync(logsBase)) {
+  const pinned = getPinnedLogFilePath(safeId);
+  if (pinned && fs.existsSync(pinned)) {
+    logFile = pinned;
+  }
+  if (!logFile && fs.existsSync(logsBase)) {
     // Scan dated subdirectories most-recent first
     let dateDirs: string[] = [];
     try {

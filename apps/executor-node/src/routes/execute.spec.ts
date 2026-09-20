@@ -60,6 +60,13 @@ jest.mock('../callback', () => ({
   truncateCallbackErrorMessage: jest.fn((m?: string) => m),
 }));
 
+// NETOPT-F P2-3: zip 渠道包下载 mock。默认测试不触发 zip 下载；用例内再
+// mockImplementation 成挂起 Promise 捕获 signal，模拟真实 download.ts 的
+// abort→reject('Download aborted') 语义。
+jest.mock('../lib/download', () => ({
+  downloadFile: jest.fn(),
+}));
+
 jest.mock('../file-logger', () => ({
   appendLog: jest.fn(),
   getDeadLetterCount: jest.fn(() => 0),
@@ -69,6 +76,9 @@ jest.mock('../file-logger', () => ({
   // 单独覆盖 diskUsagePercent 返回值。
   diskUsagePercent: jest.fn(() => 0),
   DISK_CRITICAL_PERCENT: 95,
+  // NETOPT-9-4: 日志分片钉住（createExecutionEntry/release 调用，mock 无副作用）。
+  pinLogFilePath: jest.fn(),
+  unpinLogFilePath: jest.fn(),
 }));
 
 // Worker stub that mirrors the real TaskWorker contract:
@@ -117,7 +127,7 @@ jest.mock('../task-worker', () => {
 // Imports
 // ---------------------------------------------------------------------------
 
-import { executeRouter, runTask, gitCheckoutTo, killRunningTaskProcesses, BoundedLogBuffer } from './execute';
+import { executeRouter, runTask, gitCheckoutTo, killRunningTaskProcesses, abortAllLiveExecutions, BoundedLogBuffer, resolveBwrapPath, buildTaskSandboxArgv, __resetBwrapPathCacheForTest } from './execute';
 import { buildNpmRcContent, executionExists, quoteShellArgForPlatform } from './execute';
 // A3（kill/logs 契约化）：kill 真实出参用生成的 schema 现校验
 import { KillResponseSchema } from '../generated/protocol.schemas';
@@ -125,6 +135,7 @@ import { pushCallback } from '../callback';
 import { taskWorkerManager } from '../task-worker';
 import { config as testConfig } from '../config';
 import { verifyToken } from '../middleware/auth';
+import { downloadFile as mockDownloadFile } from '../lib/download';
 
 const mockFs = fs as jest.Mocked<typeof fs>;
 const mockCp = childProcess as jest.Mocked<typeof childProcess>;
@@ -299,6 +310,25 @@ describe('POST /api/execute', () => {
     expect(res.status).toBe(503);
     expect(res.body.error).toMatch(/disk is critically full/);
     expect(Atomics.load(_runningCountArr, 0)).toBe(0);
+  });
+
+  it('NETOPT-9-1: returns 503 during the shutdown-drain window and never touches the capacity ledger', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const shutdownState = require('../shutdown-state') as {
+      setExecutorShuttingDown: (v: boolean) => void;
+      resetShutdownStateForTest: () => void;
+    };
+    shutdownState.setExecutorShuttingDown(true);
+    try {
+      const res = await request(appNoAuth).post('/api/execute')
+        .send({ executionId: 'exec-503-shutdown', task: { runtime: 'node' } });
+      expect(res.status).toBe(503);
+      expect(res.body.error).toMatch(/shutting down/);
+      // 账本不减不增（守卫在容量操作之前返回）
+      expect(Atomics.load(_runningCountArr, 0)).toBe(0);
+    } finally {
+      shutdownState.resetShutdownStateForTest();
+    }
   });
 
   it('returns 400 for invalid gitRepo scheme', async () => {
@@ -543,6 +573,234 @@ describe('killRunningTaskProcesses', () => {
     proc.emit('close', 0);
     await promise;
     expect(killRunningTaskProcesses()).toBe(0);
+  });
+});
+
+describe('abortAllLiveExecutions (NETOPT-C P3)', () => {
+  it('marks every live execution aborted + aborts its controller (prepare-stage children tree-killed via runCommand signal)', async () => {
+    const proc = new EventEmitter() as EventEmitter & {
+      stdout: EventEmitter; stderr: EventEmitter; pid: number; kill: jest.Mock;
+    };
+    proc.stdout = new EventEmitter();
+    proc.stderr = new EventEmitter();
+    proc.pid = 4243;
+    proc.kill = jest.fn();
+    (mockCp.spawn as jest.Mock).mockReturnValue(proc);
+
+    const promise = runTask(
+      { id: 'task-abort', name: 'a', cmd: 'node', args: ['x.js'], workDir: '/tmp/test-workdir', env: {}, timeout: 60 },
+      {},
+      'exec-abort',
+    );
+
+    const n = abortAllLiveExecutions();
+    expect(n).toBe(1);
+    // 幂等：已 abort 的不重复
+    expect(abortAllLiveExecutions()).toBe(0);
+
+    // 停机路径随后照常树杀 runProcess 登记的进程组
+    const killed = killRunningTaskProcesses();
+    expect(killed).toBe(1);
+
+    proc.emit('close', 0);
+    await promise;
+    expect(killRunningTaskProcesses()).toBe(0);
+  });
+
+  it('abort during git-checkout prepare tree-kills the clone child via runCommand signal (NETOPT-D P3-2)', async () => {
+    // N2: 既有 abort 用例只覆盖 runProcess 运行阶段；prepare 阶段的 git clone
+    // 走 runCommand（spawn options 含 signal）——abort 后其 signal 必须已触发，
+    // 否则 detached 克隆进程在停机后继续下载（孤儿家族）。
+    testConfig.maxConcurrentTasks = 5;
+    let gitSpawnCall = 0;
+    const pendingGit: Array<Function> = [];
+    const spawnSignals: Array<AbortSignal | undefined> = [];
+    (mockCp.spawn as jest.Mock).mockImplementation((_cmd: string, _args: string[], opts?: any) => {
+      gitSpawnCall++;
+      if (opts?.signal) spawnSignals.push(opts.signal);
+      return {
+        stdout: { on: jest.fn() },
+        stderr: { on: jest.fn() },
+        on: jest.fn((event: string, cb: Function) => {
+          if (event === 'close') pendingGit.push(cb);
+        }),
+        kill: jest.fn(),
+        pid: 33333,
+      };
+    });
+
+    let captured: { onComplete?: () => void; runPrepared?: any } = {};
+    (taskWorkerManager.execute as jest.Mock).mockImplementationOnce(
+      async (_tid: string, _eid: string, _task: any, _params: any, onComplete?: () => void, runPrepared?: any) => {
+        captured = { onComplete, runPrepared };
+      },
+    );
+
+    const execRes = await request(appNoAuth).post('/api/execute').send({
+      executionId: 'exec-abort-during-git',
+      task: { runtime: 'node', gitRepo: 'https://example.com/repo.git' },
+    });
+    expect(execRes.status).toBe(200);
+    await flushAsync();
+    expect(captured.runPrepared).toBeTruthy();
+
+    // 轮到执行：prepare 开始 git clone（pending spawn）
+    let prepError: any;
+    const prep = (async () => {
+      try {
+        await captured.runPrepared!(() => undefined);
+      } catch (err) {
+        prepError = err;
+      }
+    })();
+    await flushAsync();
+    expect(gitSpawnCall).toBeGreaterThan(0);
+
+    // 停机 drain：abort 所有 live execution → git clone 的 runCommand signal 触发
+    const n = abortAllLiveExecutions();
+    expect(n).toBe(1);
+    expect(spawnSignals.length).toBeGreaterThan(0);
+    for (const sig of spawnSignals) {
+      expect(sig!.aborted).toBe(true);
+    }
+
+    // 树杀后的 git 子进程退出 → prepare 转 ExecutionCancelledError
+    for (const close of pendingGit.splice(0)) close(null);
+    await prep;
+    expect(prepError?.name).toBe('ExecutionCancelledError');
+
+    // 真实 worker 同款收尾：catch 内 onComplete 幂等释放容量（本测试手动驱动
+    // runPrepared 绕过了 stub 的 try/catch，这里补上等价收尾再断言归零）
+    captured.onComplete?.();
+    expect(Atomics.load(_runningCountArr, 0)).toBe(0);
+
+    // P3-4: abort（停机，非 kill）时 prepare 阶段补推 status=failed 终态回调
+    const failed = (pushCallback as jest.Mock).mock.calls
+      .map((c) => c[0])
+      .filter((p: any) => p.executionId === 'exec-abort-during-git' && p.status === 'failed');
+    expect(failed).toHaveLength(1);
+    expect(failed[0].failureReason).toBeUndefined();
+    // NETOPT-E P3-4: 补推终态同时写 execMeta——桌面历史对停机 abort 的执行
+    // 能看到结束原因（此前只 pushCallback，观测层与 dispatch 失败分支不一致）。
+    const metaWrites = (mockFs.writeFileSync as jest.Mock).mock.calls.filter((c) =>
+      String(c[0]).endsWith('exec-abort-during-git.json'),
+    );
+    expect(metaWrites.length).toBeGreaterThan(0);
+    expect(String(metaWrites[metaWrites.length - 1][1])).toContain('"status": "failed"');
+  });
+
+  it('abort during zip-download prepare rejects via the passed signal and pushes a failed terminal (NETOPT-F P2-3)', async () => {
+    // P2-3: 既有 prepare-abort 用例只走 git checkout 渠道；zip 渠道（execute.ts:1442
+    // downloadFile 透传 entry.abortController.signal）接线正确但零测试——把这行
+    // signal 删掉全绿。mock 下载为挂起 Promise（abort 触发 reject，与真实
+    // download.ts 语义一致），abort 后断言 signal 已触发 + 补推 failed 终态 +
+    // execMeta 落盘 + 容量归零。
+    testConfig.maxConcurrentTasks = 5;
+    (mockDownloadFile as jest.Mock).mockImplementation(
+      (_url: string, _dest: string, opts?: { signal?: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          const sig = opts?.signal;
+          if (!sig) {
+            reject(new Error('zip test: abort signal missing'));
+            return;
+          }
+          if (sig.aborted) {
+            reject(new Error('Download aborted'));
+            return;
+          }
+          sig.addEventListener('abort', () => reject(new Error('Download aborted')), { once: true });
+          // 永不 resolve——abort 由测试驱动
+        }),
+    );
+
+    let captured: { onComplete?: () => void; runPrepared?: any } = {};
+    (taskWorkerManager.execute as jest.Mock).mockImplementationOnce(
+      async (_tid: string, _eid: string, _task: any, _params: any, onComplete?: () => void, runPrepared?: any) => {
+        captured = { onComplete, runPrepared };
+      },
+    );
+
+    const execRes = await request(appNoAuth).post('/api/execute').send({
+      executionId: 'exec-abort-during-zip',
+      task: {
+        runtime: 'node',
+        codeSource: 'application_zip',
+        applicationId: 'app-1',
+        packageUrl: 'https://example.com/app.zip',
+      },
+    });
+    expect(execRes.status).toBe(200);
+    await flushAsync();
+    expect(captured.runPrepared).toBeTruthy();
+
+    let prepError: any;
+    const prep = (async () => {
+      try {
+        await captured.runPrepared!(() => undefined);
+      } catch (err) {
+        prepError = err;
+      }
+    })();
+    await flushAsync();
+    expect(mockDownloadFile).toHaveBeenCalled();
+    const dlOpts = (mockDownloadFile as jest.Mock).mock.calls[0][2] as { signal?: AbortSignal };
+    expect(dlOpts.signal).toBeTruthy();
+
+    // 停机 drain：abort 所有 live execution → zip 下载持有的 signal 必须已触发
+    const n = abortAllLiveExecutions();
+    expect(n).toBe(1);
+    expect(dlOpts.signal!.aborted).toBe(true);
+
+    await prep;
+    expect(prepError?.name).toBe('ExecutionCancelledError');
+
+    // 真实 worker 同款收尾：catch 内 onComplete 幂等释放容量
+    captured.onComplete?.();
+    expect(Atomics.load(_runningCountArr, 0)).toBe(0);
+
+    // P3-4 同款：abort（停机）时 zip prepare 补推 status=failed 终态回调 + execMeta
+    const failed = (pushCallback as jest.Mock).mock.calls
+      .map((c) => c[0])
+      .filter((p: any) => p.executionId === 'exec-abort-during-zip' && p.status === 'failed');
+    expect(failed).toHaveLength(1);
+    expect(failed[0].failureReason).toBeUndefined();
+    const metaWrites = (mockFs.writeFileSync as jest.Mock).mock.calls.filter((c) =>
+      String(c[0]).endsWith('exec-abort-during-zip.json'),
+    );
+    expect(metaWrites.length).toBeGreaterThan(0);
+    expect(String(metaWrites[metaWrites.length - 1][1])).toContain('"status": "failed"');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// runProcess stdio (NETOPT-9-2)
+// ---------------------------------------------------------------------------
+
+describe('runProcess stdio (NETOPT-9-2)', () => {
+  it('task process spawns with stdio ignoring stdin (never holds an open stdin pipe)', async () => {
+    const proc = new EventEmitter() as EventEmitter & {
+      stdout: EventEmitter; stderr: EventEmitter; pid: number; kill: jest.Mock;
+    };
+    proc.stdout = new EventEmitter();
+    proc.stderr = new EventEmitter();
+    proc.pid = 7777;
+    proc.kill = jest.fn();
+    (mockCp.spawn as jest.Mock).mockReturnValue(proc);
+
+    const promise = runTask(
+      { id: 'task-stdio', name: 's', cmd: 'node', args: ['stdin.js'], workDir: '/tmp/test-workdir', env: {}, timeout: 60 },
+      {},
+      'exec-stdio',
+    );
+
+    // 裸任务（无 git/npm 准备步骤）只 spawn 一次——即任务进程本身。
+    const spawnCalls = (mockCp.spawn as jest.Mock).mock.calls;
+    expect(spawnCalls.length).toBe(1);
+    const options = spawnCalls[0][2] as Record<string, unknown>;
+    expect(options.stdio).toEqual(['ignore', 'pipe', 'pipe']);
+
+    proc.emit('close', 0);
+    await promise;
   });
 });
 
@@ -1568,4 +1826,131 @@ describe('A3-C 协议闸门：schemaVectors.ExecuteRequest.invalid 必须被 /ex
       expect(res.body.error.length).toBeGreaterThan(0);
     });
   }
+});
+
+// ── NETOPT-F P3: bwrap 探测缓存状态机 ─────────────────────────────────────
+// resolveBwrapPath 的缓存规则：仅"确定"结论写缓存（status=0 找到、status=1
+// clean not-found）；status=null（timeout/信号）与异常是"本次没探到"，不写
+// 缓存留待重试——否则启动期一次撞车会把执行器存活期内所有 bwrap 任务永久
+// fail-closed。jest.mock('child_process') 全量 mock 下 spawnSync 是 jest.fn。
+describe('NETOPT-F P3: bwrap probe cache state machine', () => {
+  const cp = require('child_process');
+  const spawnSyncMock = cp.spawnSync as jest.Mock;
+
+  beforeEach(() => {
+    __resetBwrapPathCacheForTest();
+    jest.clearAllMocks();
+  });
+  afterAll(() => {
+    __resetBwrapPathCacheForTest();
+  });
+
+  it('status 0: caches the real path, second call does not re-probe', () => {
+    spawnSyncMock.mockReturnValue({
+      status: 0,
+      stdout: '/usr/bin/bwrap\n',
+    });
+    expect(resolveBwrapPath()).toBe('/usr/bin/bwrap');
+    expect(resolveBwrapPath()).toBe('/usr/bin/bwrap');
+    expect(spawnSyncMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('status 1 (clean not-found): caches empty, second call does not re-probe', () => {
+    spawnSyncMock.mockReturnValue({ status: 1, stdout: '' });
+    expect(resolveBwrapPath()).toBe('');
+    expect(resolveBwrapPath()).toBe('');
+    expect(spawnSyncMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('status null (timeout): returns empty but does NOT cache — next call re-probes', () => {
+    spawnSyncMock.mockReturnValue({ status: null, stdout: '' });
+    expect(resolveBwrapPath()).toBe('');
+    // 未缓存：第二次调用必须重新探测
+    expect(resolveBwrapPath()).toBe('');
+    expect(spawnSyncMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('exception during probe: returns empty but does NOT cache — next call re-probes', () => {
+    spawnSyncMock.mockImplementation(() => {
+      throw new Error('spawn ENOENT');
+    });
+    expect(resolveBwrapPath()).toBe('');
+    expect(resolveBwrapPath()).toBe('');
+    expect(spawnSyncMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('after a cached not-found, reset hook re-enables probing', () => {
+    spawnSyncMock.mockReturnValue({ status: 1, stdout: '' });
+    expect(resolveBwrapPath()).toBe('');
+    __resetBwrapPathCacheForTest();
+    spawnSyncMock.mockReturnValue({ status: 0, stdout: '/usr/bin/bwrap\n' });
+    expect(resolveBwrapPath()).toBe('/usr/bin/bwrap');
+    expect(spawnSyncMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ── NETOPT-G P2-2: buildTaskSandboxArgv 拒绝/argv 构造分支 ───────────────────
+// 此前 5 个状态机用例只测 resolveBwrapPath 缓存，从不经过 buildTaskSandboxArgv
+// ——"TASK_SANDBOX=bwrap 而二进制缺失/平台不符时绝不静默降级直跑"的安全承诺
+// 零回归保护（若误删 :2338 throw 或改回退直跑，全部用例仍绿）。本 describe
+// 钉死三条：win32 守卫、fail-closed 拒绝、成功路径 argv。
+describe('NETOPT-G P2-2: bwrap argv construction fail-closed branches', () => {
+  const cp = require('child_process');
+  const spawnSyncMock = cp.spawnSync as jest.Mock;
+  const originalPlatform = process.platform;
+
+  beforeEach(() => {
+    __resetBwrapPathCacheForTest();
+    jest.clearAllMocks();
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+  });
+  afterEach(() => {
+    Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
+    __resetBwrapPathCacheForTest();
+  });
+
+  it('passthrough when TASK_SANDBOX is not bwrap', () => {
+    (testConfig as { taskSandbox: string }).taskSandbox = '';
+    const out = buildTaskSandboxArgv('node', ['-e', 'x'], '/work/a');
+    expect(out).toEqual({ cmd: 'node', args: ['-e', 'x'] });
+  });
+
+  it('win32: throws "not supported on Windows" (never runs unsandboxed)', () => {
+    (testConfig as { taskSandbox: string }).taskSandbox = 'bwrap';
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    expect(() => buildTaskSandboxArgv('node', [], '/work/a')).toThrow(/not supported on Windows/);
+    expect(spawnSyncMock).not.toHaveBeenCalled();
+  });
+
+  it('bwrap not on PATH: throws fail-closed (no silent downgrade to unsandboxed)', () => {
+    (testConfig as { taskSandbox: string }).taskSandbox = 'bwrap';
+    spawnSyncMock.mockReturnValue({ status: 1, stdout: '' });
+    expect(() => buildTaskSandboxArgv('node', ['run.js'], '/work/a')).toThrow(/not on PATH/);
+    expect(spawnSyncMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('probe timeout (status null): still throws fail-closed for THIS task, no cache poison', () => {
+    (testConfig as { taskSandbox: string }).taskSandbox = 'bwrap';
+    spawnSyncMock.mockReturnValue({ status: null, stdout: '' });
+    expect(() => buildTaskSandboxArgv('node', [], '/work/a')).toThrow(/not on PATH/);
+    // 未写缓存：下一任务重新探测
+    spawnSyncMock.mockReturnValue({ status: 0, stdout: '/usr/bin/bwrap\n' });
+    expect(buildTaskSandboxArgv('node', [], '/work/a').cmd).toBe('/usr/bin/bwrap');
+    expect(spawnSyncMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('success path: wraps under bwrap with die-with-parent/unshare-all and bind cwd', () => {
+    (testConfig as { taskSandbox: string }).taskSandbox = 'bwrap';
+    spawnSyncMock.mockReturnValue({ status: 0, stdout: '/usr/bin/bwrap\n' });
+    const out = buildTaskSandboxArgv('python', ['main.py', '--flag'], '/work/x');
+    expect(out.cmd).toBe('/usr/bin/bwrap');
+    const a = out.args;
+    expect(a).toContain('--die-with-parent');
+    expect(a).toContain('--unshare-all');
+    expect(a).toContain('--share-net');
+    expect(a).toContain('--chdir');
+    const sep = a.indexOf('--');
+    expect(sep).toBeGreaterThan(-1);
+    expect(a.slice(sep + 1)).toEqual(['python', 'main.py', '--flag']);
+  });
 });

@@ -21,6 +21,7 @@ import {
   getRunningCount,
   startHeartbeat,
   registerInterpretersProvider,
+  waitForRunningCountZero,
   ReportedInterpreter,
 } from './scheduler';
 import { interpretersForReport, resolveUvBin } from './interpreters';
@@ -40,9 +41,11 @@ import {
 import { checkAdminApiConnectivity, initAdminClients, post, postWithStaticToken } from './admin-client';
 import { adoptExecutorTokenHash } from './admin-envelope';
 import { recordRegistration } from './heartbeat-state';
+import { setExecutorShuttingDown, isExecutorShuttingDown } from './shutdown-state';
 import { taskWorkerManager } from './task-worker';
 import { startPullLoop, stopPullLoop } from './pull';
-import { killRunningTaskProcesses } from './routes/execute';
+import { killRunningTaskProcesses, abortAllLiveExecutions } from './routes/execute';
+import { abortDeployInFlight, runningApps } from './routes/deploy';
 import { healthRouter } from './routes/health';
 import { executeRouter } from './routes/execute';
 import { configRouter } from './routes/config';
@@ -199,11 +202,10 @@ async function notifyOffline(): Promise<void> {
 
 // Graceful shutdown
 let heartbeatInterval: NodeJS.Timeout | null = null;
-let isShuttingDown = false;
 
 async function gracefulShutdown(signal: string, exitCode = 0): Promise<void> {
-  if (isShuttingDown) return;
-  isShuttingDown = true;
+  if (isExecutorShuttingDown()) return;
+  setExecutorShuttingDown(true);
 
   logger.info(`Received ${signal}, initiating graceful shutdown...`);
 
@@ -211,6 +213,12 @@ async function gracefulShutdown(signal: string, exitCode = 0): Promise<void> {
   // （与 python main.py 取消 _pull_task 对等）。pull 循环每秒一次，若不停机会
   // 与后续停机步骤竞争领取任务。
   stopPullLoop();
+
+  // NETOPT-E P2-2: 中止全部 in-flight 部署 provisioning（git clone/npm/pip/
+  // unzip/download——detached 长耗时命令，不中止会在执行器退出后成孤儿，Windows
+  // 下持锁让新实例同 app 部署 EBUSY）。已启动的 daemon（runningApps）不受影响：
+  // 应用进程生命周期独立于执行器，停机日志下方提示存活数量。
+  abortDeployInFlight();
 
   // Stop heartbeat
   if (heartbeatInterval) {
@@ -220,6 +228,13 @@ async function gracefulShutdown(signal: string, exitCode = 0): Promise<void> {
 
   // Stop accepting new requests before task shutdown can enqueue final callbacks
   server.close();
+  // NETOPT-9-1: server.close() only refuses NEW connections — keep-alive
+  // connections established before the drain window keep serving requests
+  // (push dispatch would still claim tasks during the 30s grace). closeIdle
+  // Connections() tears down the idle half of those so an in-flight /execute
+  // on a live connection hits the acceptExecution 503 guard instead of being
+  // accepted and SIGKILLed at grace expiry.
+  server.closeIdleConnections?.();
 
   // Stop log cleanup thread + buffered log writer
   stopLogCleanup();
@@ -235,11 +250,24 @@ async function gracefulShutdown(signal: string, exitCode = 0): Promise<void> {
     if (Date.now() - startTime > maxWait) {
       // Grace expired: kill the detached task process groups, otherwise they
       // outlive the executor as unmanaged orphans (callbacks from tasks killed below may not be reported; queued callbacks are drained normally).
+      // NETOPT-C P3: 先 abort 全部活跃执行——prepare 阶段的 runCommand 子进程
+      // （git clone/npm/uv，detached 不登记）由 abort signal 树杀，检查点随
+      // 即静默退出释放槽位；killRunningTaskProcesses 只管 runProcess 登记的
+      // 任务进程组。两者缺一都会让槽位卡到进程退出。
+      const aborted = abortAllLiveExecutions();
       const killed = killRunningTaskProcesses();
       logger.warn(
         `Grace period expired, ${getRunningCount()} task(s) still running, forcing shutdown` +
+          (aborted > 0 ? ` — aborted ${aborted} prepare/active execution(s)` : '') +
           (killed > 0 ? ` — killed ${killed} task process group(s)` : ''),
       );
+      // NETOPT-9-7: give the killed tasks' close → runTask catch → pushCallback
+      // chain a bounded window to enqueue their terminal callbacks before the
+      // callback thread's final "queue empty → break" check (parity with
+      // executor-python's await_background_tasks_after_kill, QA8). Without
+      // this, killed tasks' callbacks race the thread shutdown and are lost
+      // with the process.
+      await waitForRunningCountZero(5_000, 100);
       break;
     }
     logger.info(`Waiting for ${getRunningCount()} task(s) to complete...`);
@@ -257,7 +285,11 @@ async function gracefulShutdown(signal: string, exitCode = 0): Promise<void> {
   // Send offline notification
   await notifyOffline();
 
-  logger.info('Executor shutdown complete');
+  // NETOPT-E P2-2: 提示存活 daemon（不随执行器停机——独立生命周期）。
+  logger.info(
+    `Executor shutdown complete` +
+      (runningApps.size > 0 ? ` (${runningApps.size} app daemon(s) left running)` : ''),
+  );
   process.exit(exitCode);
 }
 

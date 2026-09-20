@@ -109,6 +109,9 @@ jest.mock('../file-logger', () => ({
   // P2 磁盘水位：mock 默认"无压力"，各用例行为与引入前一致。
   diskUsagePercent: jest.fn(() => 0),
   DISK_CRITICAL_PERCENT: 95,
+  // NETOPT-9-4: 日志分片钉住（createExecutionEntry/release 调用，mock 无副作用）。
+  pinLogFilePath: jest.fn(),
+  unpinLogFilePath: jest.fn(),
 }));
 
 jest.mock('../task-worker', () => {

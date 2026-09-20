@@ -4,6 +4,7 @@ import * as crypto from 'crypto';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
+import { StringDecoder } from 'string_decoder';
 import { config } from '../config';
 import { logger, runWithTrace } from '../logger';
 import {
@@ -17,7 +18,8 @@ import { gatherArtifacts, artifactsDirFor, ArtifactManifestEntry } from '../arti
 import { getCurrentToken } from '../middleware/auth';
 import { getCurrentAdminUrl } from '../admin-client';
 import { resolveAdminApiBaseUrl } from '../admin-api-url';
-import { appendLog, getDeadLetterCount, registerActiveWorkdirProvider, diskUsagePercent, DISK_CRITICAL_PERCENT } from '../file-logger';
+import { appendLog, getDeadLetterCount, registerActiveWorkdirProvider, diskUsagePercent, DISK_CRITICAL_PERCENT, pinLogFilePath, unpinLogFilePath } from '../file-logger';
+import { isExecutorShuttingDown } from '../shutdown-state';
 import { taskWorkerManager, ExecutionCancelledError } from '../task-worker';
 import { runCommand, killProcessTree } from '../run-command';
 import { buildChildEnv } from '../env-whitelist';
@@ -110,9 +112,11 @@ function queueGitCheckout<T>(cacheKey: string, job: () => Promise<T>): Promise<T
  *  cache and failed `fetch` forever. Validate with git itself and quarantine
  *  (rename, not delete — forensics + Windows may still see file locks) so the
  *  next checkout self-heals by re-cloning. */
-async function isBareGitRepo(cacheDir: string): Promise<boolean> {
+async function isBareGitRepo(cacheDir: string, signal?: AbortSignal): Promise<boolean> {
   if (!fs.existsSync(path.join(cacheDir, 'HEAD'))) return false;
-  const probe = await runCommand('git', ['-C', cacheDir, 'rev-parse', '--is-bare-repository'], { timeout: 15_000 });
+  // NETOPT-D P3-1: 停机时 abort 15s 探针（gitCheckoutTo 已在 :145 传 signal），
+  // 否则槽位释放延后、waitForRunningCountZero(5s) 等不到归零。
+  const probe = await runCommand('git', ['-C', cacheDir, 'rev-parse', '--is-bare-repository'], { timeout: 15_000, signal });
   return probe.status === 0 && probe.stdout.trim() === 'true';
 }
 
@@ -141,7 +145,7 @@ export async function gitCheckoutTo(
   const cacheDir = path.join(config.workDir, '.git_cache', repoDirName(repoUrl));
   await queueGitCheckout(cacheDir, async () => {
     if (signal?.aborted) throw new ExecutionCancelledError(dest);
-    if (fs.existsSync(cacheDir) && !(await isBareGitRepo(cacheDir))) {
+    if (fs.existsSync(cacheDir) && !(await isBareGitRepo(cacheDir, signal))) {
       logger.warn(`[git] cache ${cacheDir} is not a valid bare repo (killed clone?) — quarantining and re-cloning`);
       quarantineBrokenCache(cacheDir);
     }
@@ -325,6 +329,9 @@ function pushKilledCallbackOnce(executionId: string, entry: ExecutionEntry): voi
 }
 
 function createExecutionEntry(executionId: string, taskId: string): ExecutionEntry {
+  // NETOPT-9-4: pin the log shard at accept so a cross-midnight run keeps one
+  // log file (unpinned at release; the reject path below unpins too).
+  pinLogFilePath(executionId);
   const entry: ExecutionEntry = {
     executionId,
     taskId,
@@ -341,6 +348,7 @@ function createExecutionEntry(executionId: string, taskId: string): ExecutionEnt
       entry.capacityReleased = true;
       Atomics.sub(getRunningCountArray(), 0, 1);
       liveExecutions.delete(entry.executionId);
+      unpinLogFilePath(entry.executionId);
     },
   };
   return entry;
@@ -418,6 +426,14 @@ export function acceptExecution(
   opts?: AcceptExecutionOptions,
 ): { status: number; payload: Record<string, unknown> } {
   const slotPreReserved = opts?.slotPreReserved === true;
+  // NETOPT-9-1: shutdown-drain guard — must run BEFORE any capacity-ledger
+  // operation (ledger untouched: no add, no sub). During the graceful-drain
+  // window an in-flight push on a keep-alive connection otherwise claims a
+  // task with 200, only to be SIGKILLed at grace expiry (final callback lost,
+  // admin left with a zombie RUNNING row).
+  if (isExecutorShuttingDown()) {
+    return { status: 503, payload: { error: 'Executor is shutting down' } };
+  }
   if (slotPreReserved) {
     // E-01 预留模式（见 AcceptExecutionOptions）：不再 add——调用方已占位。
     if (Atomics.load(getRunningCountArray(), 0) > config.maxConcurrentTasks) {
@@ -443,6 +459,7 @@ export function acceptExecution(
       if (entry) {
         entry.capacityReleased = true;
         liveExecutions.delete(entry.executionId);
+        unpinLogFilePath(entry.executionId);
       }
     } else if (entry) {
       entry.release();
@@ -994,10 +1011,11 @@ function interpreterFailureSnapshot(
 async function ensureInterpreter(
   version: string,
   logPrepare: (m: string) => void,
+  signal?: AbortSignal,
 ): Promise<string> {
   logPrepare(`Resolving Python ${version} from the interpreter pool`);
   try {
-    return await ensureVersion(version);
+    return await ensureVersion(version, { signal });
   } catch (err) {
     if (err instanceof InterpreterUnavailableError) {
       const message = interpreterFailureMessage(err.version, err);
@@ -1074,7 +1092,7 @@ async function ensurePythonVenv(opts: EnsureVenvOptions): Promise<string> {
       // 能得到更准确的归因：池里没有 + 下不下来 → `interpreter_unavailable`
       // （附「候选执行器」快照，调度侧据此改派）；池里有 → 再解析 uv，此时
       // uv 缺失才是真正的根因。
-      const poolPython = await ensureInterpreter(declaredVersion, logPrepare);
+      const poolPython = await ensureInterpreter(declaredVersion, logPrepare, opts.signal);
       uv = await resolveUvForExecute();
       // D8：只传池内绝对路径，绝不传裸版本号（裸版本号 = uv 的自动下载语义）。
       venvArgs.push('--python', poolPython);
@@ -1222,6 +1240,26 @@ export async function dispatchExecutionToWorker(
         // 走 worker onComplete（未取消标记时），幂等防双释放。
         if (entry.killedByRequest && !entry.cancelled) {
           pushKilledCallbackOnce(executionId, entry);
+        } else if (entry.aborted && !entry.killedByRequest) {
+          // NETOPT-D P3-4: 停机 drain 的 abort（abortAllLiveExecutions，非 kill
+          // 端点）——killedByRequest 未置位，无 killed 回调可推，worker 的
+          // catch 只 log 不补推。这里补一条 status=failed 无 failureReason 的
+          // 终态回调（与 E-07 / worker stop() 排队分支同语义），否则 admin 侧
+          // 该行留 RUNNING 直到 stale sweep 兜底，分类降级为 STALE_RECOVERED。
+          // NETOPT-E P3-3: 与回调同写 execMeta——桌面 history/通知以 meta 为
+          // 观测面，只推回调不落 meta 会让这类停机 abort 的任务在历史里
+          // 看不到结束原因（观测层与 dispatch 失败分支不一致）。
+          writeExecMeta(executionId, {
+            status: 'failed',
+            endTime: Date.now(),
+            errorMessage: 'Executor is shutting down before this execution started',
+          });
+          pushCallback({
+            executionId,
+            status: 'failed',
+            errorMessage: 'Executor is shutting down before this execution started',
+            ...(entry.traceparent ? { traceparent: entry.traceparent } : {}),
+          });
         }
         throw err instanceof ExecutionCancelledError ? err : new ExecutionCancelledError(executionId);
       }
@@ -1398,9 +1436,13 @@ async function prepareExecution(
     try {
       // 复用既有下载链：SSRF 闸（fail-closed）+ Bearer 首跳 + 跨跳剥离 +
       // 绝对超时 + 体积上限。size cap 与 python 侧 200MB 对齐。
+      // NETOPT-E P3-2: 透传 abort signal——停机/杀端点时 stalled 的包下载
+      // 立即断连，prepare 槽位即刻释放（否则要等 ZIP_DOWNLOAD_TIMEOUT_MS
+      // 自身超时，跨过停机 5s 硬杀窗口）。
       await downloadFile(packageUrl, zipPath, {
         timeoutMs: ZIP_DOWNLOAD_TIMEOUT_MS,
         maxBytes: config.packageDownloadMaxBytes,
+        signal: entry.abortController.signal,
       });
     } catch (err) {
       if (err instanceof ExecutionCancelledError || entry.aborted) throw err;
@@ -1667,7 +1709,7 @@ async function prepareExecution(
     } else if (declaredVersion) {
       // glue 渠道 + 声明版本（AC-11a）：不建 venv、不装依赖，但要用声明的
       // 解释器执行——否则"声明了版本"在 glue 任务上会被静默忽略。
-      resolvedInterpreter = await ensureInterpreter(declaredVersion, logPrepare);
+      resolvedInterpreter = await ensureInterpreter(declaredVersion, logPrepare, entry.abortController.signal);
     }
   }
   checkAbort();
@@ -2088,6 +2130,23 @@ export class BoundedLogBuffer {
  *  the kill endpoint (改动1) find the process tree of one execution. */
 const runningTaskProcesses = new Map<string, ChildProcess>();
 
+/** NETOPT-C P3: 宽限到期时对运行表中所有执行补一次 abort。prepare 阶段的
+ *  git/npm/uv 子进程走 runCommand（detached、不登记进 runningTaskProcesses），
+ *  killRunningTaskProcesses 够不到它们；abort 经 runCommand 的 signal 接线
+ *  （run-command.ts onAbort）立即树杀，检查点随后因 entry.aborted 静默退出并
+ *  释放槽位。不推 killed 回调——终态回调仍由 worker 失败路径产出（停机语义
+ *  status=failed 无 failureReason，与 E-07 一致）。 */
+export function abortAllLiveExecutions(): number {
+  let aborted = 0;
+  for (const entry of liveExecutions.values()) {
+    if (entry.aborted) continue;
+    entry.aborted = true;
+    entry.abortController.abort();
+    aborted++;
+  }
+  return aborted;
+}
+
 /** Kill every running task's process group (POSIX) / process (win32).
  *  Called when the executor's graceful-shutdown grace period expires so
  *  detached children don't outlive the executor as unmanaged orphans. */
@@ -2169,7 +2228,11 @@ async function runTaskInner(task: any, params: Record<string, any>, executionId:
       exitCode: result.exitCode,
       logs: truncateCallbackLogs(result.logs),
       durationMs: Date.now() - startTime,
-      artifacts: await collectTerminalArtifacts(executionId, workDir),
+      // NETOPT-D P3-3: 停机 drain 期间跳过终态 artifacts 收集（best-effort 变
+      // 零成本）——gather 若超过回调 flush 窗口，stopCallbackThread 见空队列
+      // 退出，随后入队的终态回调随进程退出丢失。停机路径的产物清单价值远
+      // 低于终态回调本身。
+      artifacts: isExecutorShuttingDown() ? undefined : await collectTerminalArtifacts(executionId, workDir),
       ...(liveExecutions.get(executionId)?.traceparent
         ? { traceparent: liveExecutions.get(executionId)!.traceparent }
         : {}),
@@ -2199,7 +2262,9 @@ async function runTaskInner(task: any, params: Record<string, any>, executionId:
       errorMessage: truncateCallbackErrorMessage(killed ? 'Task process tree killed by admin request' : message),
       ...(killed ? { failureReason: 'killed' as CallbackFailureReason } : {}),
       durationMs: Date.now() - startTime,
-      artifacts: await collectTerminalArtifacts(executionId, workDir),
+      // NETOPT-D P3-3: 同成功路径——停机时跳过 artifacts 收集，防 flush 窗口
+      // 被 gather 消耗导致终态回调丢失。
+      artifacts: isExecutorShuttingDown() ? undefined : await collectTerminalArtifacts(executionId, workDir),
       ...(liveExecutions.get(executionId)?.traceparent
         ? { traceparent: liveExecutions.get(executionId)!.traceparent }
         : {}),
@@ -2219,7 +2284,48 @@ async function runTaskInner(task: any, params: Record<string, any>, executionId:
  * 同语义）。仅检查二进制存在性（同 python）；user namespace 被内核禁用属
  * 运行时失败，由 bwrap 非零退出 → 任务失败（fail-closed 自然达成）。
  */
-function buildTaskSandboxArgv(
+// NETOPT-F P3-1: `which bwrap` 每任务同步探测未缓存——该 spawnSync 在任务进程
+// 登记进 runningTaskProcesses 之前执行（:2391），bwrap 部署下每个任务阻塞事件
+// 循环最长 3s，且 kill 端点若落在这 3s 窗口则 killProcessTree 落空（进程树尚
+// 未登记）。仿 resolveUvBin 的模块级缓存：探测一次、失败按结果缓存（bwrap 可
+// 能在任务运行期间被安装，但执行器进程存活期内 PATH 通常不变；失败缓存避免
+// 每任务重复 3s 阻塞，代价是需重启执行器才能重新探测——与 fail-closed 语义
+// 一致，不降级沙箱）。
+let cachedBwrapPath: string | undefined;
+/** 测试出口：清空 bwrap 探测缓存（缓存状态机无 reset 钩子会导致行为零回归
+ *  锁——NETOPT-F P3 补测试的配套）。 */
+export function __resetBwrapPathCacheForTest(): void {
+  cachedBwrapPath = undefined;
+}
+export function resolveBwrapPath(): string {
+  if (cachedBwrapPath !== undefined) return cachedBwrapPath;
+  try {
+    const which = spawnSync('which', ['bwrap'], { encoding: 'utf8', timeout: 3000 });
+    if (which.status === 0 && which.stdout) {
+      const path = which.stdout.trim().split(/\r?\n/)[0] || '';
+      cachedBwrapPath = path;
+      return path;
+    }
+    // NETOPT-F P3: 仅"确定"结论写缓存——status===0（找到）上方已写；
+    // status===1 是 clean not-found（bwrap 真不在 PATH）→ 写空缓存。
+    // status===null（超时/信号中断）与异常是"本次没探到"，不代表 bwrap
+    // 不在 PATH——写空缓存会把启动期一次撞车（CPU 争抢导致 3s 超时）变成
+    // 执行器存活期内所有 bwrap 任务永久 fail-closed。不写、留待下一任务
+    // 重试；本任务仍按无 bwrap 拒绝（fail-closed 不降级）。
+    if (which.status === 1) {
+      cachedBwrapPath = '';
+    }
+  } catch {
+    // 异常：不写缓存，留待重试
+  }
+  return '';
+}
+
+// NETOPT-G P2-2: 测试出口——buildTaskSandboxArgv 的 win32 守卫 / fail-closed
+// 拒绝 / argv 构造分支此前零测试（5 个状态机用例只测 resolveBwrapPath 缓存，
+// 从不经过本函数，"配置了 bwrap 而二进制缺失/平台不符时绝不静默降级直跑"的
+// 安全承诺无回归保护）。导出后可在 spec 中钉拒绝与成功路径。
+export function buildTaskSandboxArgv(
   cmd: string,
   args: string[],
   cwd: string,
@@ -2232,15 +2338,7 @@ function buildTaskSandboxArgv(
       'TASK_SANDBOX=bwrap is not supported on Windows; unset TASK_SANDBOX to run tasks unsandboxed',
     );
   }
-  let bwrapPath = '';
-  try {
-    const which = spawnSync('which', ['bwrap'], { encoding: 'utf8', timeout: 3000 });
-    if (which.status === 0 && which.stdout) {
-      bwrapPath = which.stdout.trim().split(/\r?\n/)[0] || '';
-    }
-  } catch {
-    bwrapPath = '';
-  }
+  const bwrapPath = resolveBwrapPath();
   if (!bwrapPath) {
     throw new Error(
       'TASK_SANDBOX=bwrap is configured but the bwrap binary is not on PATH; ' +
@@ -2299,6 +2397,12 @@ function runProcess(
       env,
       detached: process.platform !== 'win32',
       windowsHide: true,
+      // NETOPT-9-2: no stdin pipe (the default would hold an open write end in
+      // the executor forever). Tasks that read stdin (python input(), shell
+      // read, CLIs that detect a pipe) previously hung until timeout — or, with
+      // timeout=0 (unbounded), occupied a capacity slot permanently until the
+      // kill endpoint. Mirrors run-command.ts stdio: ['ignore','pipe','pipe'].
+      stdio: ['ignore', 'pipe', 'pipe'],
     });
     // W-24 (windows-findings): when spawn fails on Windows (ENOENT — bad
     // executable, unreadable/oversized cwd e.g. >260-char WORK_DIR without
@@ -2320,13 +2424,21 @@ function runProcess(
       runningTaskProcesses.set(executionId ?? `pid-${proc.pid}`, proc);
     }
 
+    // NETOPT-9-8: decode with StringDecoder so a multi-byte UTF-8 sequence
+    // split across chunk boundaries is not corrupted into U+FFFD (CJK output
+    // from python/node tasks previously got mojibake'd in both the in-memory
+    // callback logs and the on-disk log backfill).
+    const stdoutDecoder = new StringDecoder('utf8');
+    const stderrDecoder = new StringDecoder('utf8');
     proc.stdout.on('data', (d: Buffer) => {
-      const output = d.toString();
+      const output = stdoutDecoder.write(d);
+      if (!output) return;
       logBuffer.append(output);
       if (executionId) appendLog(executionId, output);
     });
     proc.stderr.on('data', (d: Buffer) => {
-      const output = d.toString();
+      const output = stderrDecoder.write(d);
+      if (!output) return;
       logBuffer.append(output);
       if (executionId) appendLog(executionId, output);
     });
@@ -2397,6 +2509,19 @@ function runProcess(
         stopMemoryWatchdog = null;
       }
       unregister();
+      // NETOPT-9-8: flush any trailing partial multi-byte sequence buffered
+      // in the decoders so the terminal callback/logs carry the complete
+      // output (end() is a no-op when nothing is buffered).
+      const stdoutTail = stdoutDecoder.end();
+      if (stdoutTail) {
+        logBuffer.append(stdoutTail);
+        if (executionId) appendLog(executionId, stdoutTail);
+      }
+      const stderrTail = stderrDecoder.end();
+      if (stderrTail) {
+        logBuffer.append(stderrTail);
+        if (executionId) appendLog(executionId, stderrTail);
+      }
       if (settled) return;
       settled = true;
       const exitCode = code ?? 1;

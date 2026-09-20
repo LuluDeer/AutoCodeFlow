@@ -62,7 +62,10 @@ async function sweep(): Promise<void> {
       await jest.runOnlyPendingTimersAsync();
       for (let i = 0; i < 10; i++) await Promise.resolve();
     })(),
-    2_000,
+    // NETOPT-E: 5s 而非 2s——守卫只为防 fake-timer 死锁（wedged sweep 挂到
+    // jest 不透明超时），不是性能断言；全量 35+ suite 并行时 CPU 争抢可让
+    // 单次 sweep 实际执行超过 2s（资源竞争型 flake，隔离跑恒过）。
+    5_000,
     'fake-timer sweep',
   );
 }

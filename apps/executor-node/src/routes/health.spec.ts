@@ -128,6 +128,24 @@ describe('health route admin API probing', () => {
     expect(res.body.tokenValid).toBe(true);
   });
 
+  it('NETOPT-C P3: /health/ready returns 503 while the executor is shutting down (drain window)', async () => {
+    const shutdownState = require('../shutdown-state') as {
+      setExecutorShuttingDown: (v: boolean) => void;
+      resetShutdownStateForTest: () => void;
+    };
+    shutdownState.setExecutorShuttingDown(true);
+    try {
+      const app = express();
+      app.use('/', healthRouter);
+      const res = await request(app).get('/health/ready');
+      expect(res.status).toBe(503);
+      expect(res.body.status).toBe('not_ready');
+      expect(res.body.reason).toMatch(/shutting down/);
+    } finally {
+      shutdownState.resetShutdownStateForTest();
+    }
+  });
+
   it('reports adminApiReachable on GET /health', async () => {
     server = http.createServer((req, res) => {
       requestedPaths.push(req.url || '');

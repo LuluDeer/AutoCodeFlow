@@ -661,6 +661,168 @@ describe('interpreters: ensureVersion', () => {
     expect(install[1]).toEqual(['python', 'install', '--no-config', '--no-progress', '3.11']);
   });
 
+  it('forwards the abort signal into the uv install child (NETOPT-D P2-1)', async () => {
+    // P2-1: 停机/杀端点 abort 必须到达 uv python install 的 runCommand signal——
+    // 否则 detached 下载子进程在 executor 退出后继续下载（孤儿进程家族）。
+    const bin = poolBin('3.11.13');
+    const controller = new AbortController();
+    let listed: unknown[] = [];
+    runCommand.mockImplementation(async (_cmd: string, args: string[]) => {
+      if (args[0] === '--version') return { status: 0, stdout: 'uv 0.8.17', stderr: '' };
+      if (args[0] === 'python' && args[1] === 'list') {
+        return { status: 0, stdout: JSON.stringify(listed), stderr: '' };
+      }
+      if (args[0] === 'python' && args[1] === 'install') {
+        listed = [entry('3.11.13', bin)]; // 下载后池里就有了
+        mockExecutableFiles([bin]);
+        return { status: 0, stdout: 'Installed Python 3.11.13', stderr: '' };
+      }
+      return { status: 0, stdout: '', stderr: '' };
+    });
+
+    await expect(ensureVersion('3.11', { signal: controller.signal })).resolves.toBe(bin);
+
+    const install = runCommand.mock.calls.find((c) => (c[1] as string[])[1] === 'install')!;
+    expect((install[2] as { signal?: AbortSignal }).signal).toBe(controller.signal);
+
+    // NETOPT-F P3-1: 主下载链上的两个探针（--version / python list）同样必须
+    // 收 signal——否则停机 abort 时探针跑到自身超时才停（10s/30s），槽位释放
+    // 拖过 main.ts 5s 硬杀窗口、终态回调丢失。install 已钉，探针未钉。
+    const versionProbe = runCommand.mock.calls.find(
+      (c) => (c[1] as string[])[0] === '--version',
+    )!;
+    expect((versionProbe[2] as { signal?: AbortSignal }).signal).toBe(controller.signal);
+    const listProbe = runCommand.mock.calls.find(
+      (c) => (c[1] as string[])[0] === 'python' && (c[1] as string[])[1] === 'list',
+    )!;
+    expect((listProbe[2] as { signal?: AbortSignal }).signal).toBe(controller.signal);
+
+    // 已触发 abort 的 signal 也照常透传（run-command 对 aborted signal 立即树杀）。
+    // 修复：mock 模拟 run-command 的 abort 语义（收到 aborted signal 立即抛）——
+    // 原写法在 abort 后命中 :683 填好的池缓存，掩盖了 abort 语义（resolve 而非 reject）。
+    controller.abort();
+    runCommand.mockImplementation(
+      async (
+        _cmd: string,
+        args: string[],
+        opts?: { signal?: AbortSignal },
+      ) => {
+        if (opts?.signal?.aborted) throw new Error('aborted');
+        if (args[0] === '--version') return { status: 0, stdout: 'uv 0.8.17', stderr: '' };
+        if (args[0] === 'python' && args[1] === 'list') {
+          return { status: 0, stdout: '[]', stderr: '' }; // 池空，强制走下载
+        }
+        return { status: 0, stdout: '', stderr: '' };
+      },
+    );
+    // :683 的成功下载已填好 discoverInstalled 的 TTL 缓存——force 刷新为
+    // "空池"，否则 ensureVersion 入口缓存命中直接返回 bin，掩盖 abort 语义。
+    await discoverInstalled({ force: true });
+    await expect(ensureVersion('3.11', { signal: controller.signal })).rejects.toThrow();
+  });
+
+  it('NETOPT-F P3-2: shares one in-flight install per version; an abort of the shared download fails both waiters (known limitation)', async () => {
+    // 已知限制固化：B 复用 A 的 in-flight 下载（同一 pending），A abort 树杀后
+    // B 也以 interpreter_unavailable 同败——不无限共享，失败后格子清理、后续
+    // 执行重新下载。此测试钉住共享语义 + 同败行为，防无意改回"各自下载"。
+    const bin = poolBin('3.11.13');
+    let releaseInstall!: (v: unknown) => void;
+    const installGate = new Promise((resolve) => {
+      releaseInstall = resolve;
+    });
+    runCommand.mockImplementation(
+      async (
+        _cmd: string,
+        args: string[],
+        opts?: { signal?: AbortSignal },
+      ) => {
+        if (opts?.signal?.aborted) throw new Error('aborted');
+        if (args[0] === '--version') return { status: 0, stdout: 'uv 0.8.17', stderr: '' };
+        if (args[0] === 'python' && args[1] === 'list') {
+          return { status: 0, stdout: '[]', stderr: '' }; // 池恒空 → 每次走下载
+        }
+        if (args[0] === 'python' && args[1] === 'install') {
+          await installGate; // 下载挂起，直到 abort 或显式释放
+          // 模拟 run-command 的 abort 语义：收到已 abort 的 signal 立即树杀抛错
+          //（与 :692 既有用例同款）——否则 install 返回 status 0 会走 corrupt 分支。
+          if (opts?.signal?.aborted) throw new Error('aborted');
+          return { status: 0, stdout: '', stderr: '' };
+        }
+        return { status: 0, stdout: '', stderr: '' };
+      },
+    );
+    await discoverInstalled({ force: true });
+
+    // A/B 各自持自己的 abort 信号（真实场景是两个 execution 的 controller）：
+    // A 的 abort 树杀共享下载（install 进程挂在 A 的 signal 上），复用了同一
+    // pending 的 B 也同败——这正是本测试要钉的"共享下载 abort 已知限制"。
+    const controllerA = new AbortController();
+    const controllerB = new AbortController();
+    const pA = ensureVersion('3.11', { signal: controllerA.signal }); // A 占 in-flight 格
+    // 等 A 真正走到 installVersion（install runCommand 调用发生）——ensureVersion
+    // 先 await discoverInstalled 再 set inFlight，一次 setImmediate 不够。
+    const hasInstallCall = () =>
+      runCommand.mock.calls.some(
+        (c) => (c[1] as string[])[0] === 'python' && (c[1] as string[])[1] === 'install',
+      );
+    for (let i = 0; i < 200 && !hasInstallCall(); i++) {
+      await new Promise((r) => setImmediate(r));
+    }
+    expect(hasInstallCall()).toBe(true);
+    const pB = ensureVersion('3.11', { signal: controllerB.signal }); // B 复用
+
+    // 共享语义的本质：**同一版本只发起一次下载**（install runCommand 计数 1）。
+    // 不钉 promise 引用相等——pB 可能命中 inFlight 格（直接复用）或在全局下载
+    // 队列排队（withDownloadSlot 并发闸），两者都表现为"无第二次 install"；
+    // 钉引用会把实现细节耦合进测试。
+    expect(
+      runCommand.mock.calls.filter(
+        (c) => (c[1] as string[])[0] === 'python' && (c[1] as string[])[1] === 'install',
+      ),
+    ).toHaveLength(1);
+    // A/B 均挂起在共享下载上（未各自 resolve）。
+    const pAState = await Promise.race([
+      pA.then(() => 'resolved', () => 'rejected'),
+      new Promise<string>((r) => setTimeout(() => r('pending'), 50)),
+    ]);
+    const pBState = await Promise.race([
+      pB.then(() => 'resolved', () => 'rejected'),
+      new Promise<string>((r) => setTimeout(() => r('pending'), 50)),
+    ]);
+    expect(pAState).toBe('pending');
+    expect(pBState).toBe('pending');
+
+    // A abort → 树杀共享下载 → A 与 B 同败（B 不 abort，纯粹被共享 pending 拖累）。
+    controllerA.abort();
+    releaseInstall(undefined);
+    await expect(pA).rejects.toThrow(/aborted/);
+    await expect(pB).rejects.toThrow(/aborted/);
+
+    // 失败后格子清理：下一次 ensureVersion 重新发起下载（不再复用失败格）。
+    controller2: {
+      const c2 = new AbortController();
+      // 失败格子清理后的重试：install 成功后列表刷新必须能看到新条目，否则
+      // installVersion 的"成功后重探"走 corrupt 分支（install 后 list 仍空）。
+      let listed2: unknown[] = [];
+      runCommand.mockImplementation(
+        async (_cmd: string, args: string[], opts?: { signal?: AbortSignal }) => {
+          if (opts?.signal?.aborted) throw new Error('aborted');
+          if (args[0] === '--version') return { status: 0, stdout: 'uv 0.8.17', stderr: '' };
+          if (args[0] === 'python' && args[1] === 'list') {
+            return { status: 0, stdout: JSON.stringify(listed2), stderr: '' };
+          }
+          if (args[0] === 'python' && args[1] === 'install') {
+            listed2 = [entry('3.11.13', bin)];
+            mockExecutableFiles([bin]);
+            return { status: 0, stdout: 'Installed', stderr: '' };
+          }
+          return { status: 0, stdout: '', stderr: '' };
+        },
+      );
+      await expect(ensureVersion('3.11', { signal: c2.signal })).resolves.toBe(bin);
+    }
+  });
+
   it('passes --mirror when configured', async () => {
     config.uvPythonInstallMirror = 'https://mirror.internal/pypi';
     const bin = poolBin('3.11.13');

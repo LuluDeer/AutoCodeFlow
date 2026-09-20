@@ -190,4 +190,97 @@ describe('downloadFile (shared Bearer downloader)', () => {
       await closeServer(server);
     }
   }, 10_000);
+
+  it('aborts an in-flight slow download via AbortSignal and removes the partial file', async () => {
+    // NETOPT-F P2-2: onAbort → req.destroy() → reject('Download aborted') 这条
+    // 承诺此前零单测——删掉 addEventListener('abort', onAbort) 全绿。慢滴 server
+    // 保证下载挂起（整体 deadline 120s 远未到），abort 必须在对方响应当口生效。
+    const sockets = new Set<import('net').Socket>();
+    const server = http.createServer((_req, res) => {
+      res.writeHead(200, { 'content-length': '1000' });
+      res.write('chunk');
+      const drip = setInterval(() => res.write('x'), 50);
+      res.on('close', () => clearInterval(drip));
+    });
+    server.on('connection', (socket) => {
+      sockets.add(socket);
+      socket.on('close', () => sockets.delete(socket));
+    });
+    const port = await listen(server);
+    const dest = tempDest();
+    try {
+      const controller = new AbortController();
+      const pending = downloadFile(`http://127.0.0.1:${port}/slow.zip`, dest, {
+        signal: controller.signal,
+      });
+      // 等下载真正挂起（写流已开、响应已到），再 abort。
+      await new Promise((r) => setTimeout(r, 150));
+      controller.abort();
+      await expect(pending).rejects.toThrow(/Download aborted/);
+      await expectFileGone(dest);
+    } finally {
+      await closeServer(server, sockets);
+    }
+  }, 10_000);
+
+  it('propagates the same AbortSignal through a redirect hop', async () => {
+    // NETOPT-F P2-2: redirect 递归调用（download.ts:198）必须把 signal 透传给
+    // 下一跳——漏传则 abort 只杀掉首跳、递归下载继续跑到整体 deadline。302 后
+    // 第二跳挂起，abort 断言 reject 来自递归调用。
+    const sockets = new Set<import('net').Socket>();
+    const serverB = http.createServer((_req, res) => {
+      res.writeHead(200, { 'content-length': '1000' });
+      res.write('chunk');
+      const drip = setInterval(() => res.write('x'), 50);
+      res.on('close', () => clearInterval(drip));
+    });
+    serverB.on('connection', (socket) => {
+      sockets.add(socket);
+      socket.on('close', () => sockets.delete(socket));
+    });
+    const portB = await listen(serverB);
+    const serverA = http.createServer((_req, res) => {
+      res.writeHead(302, { location: `http://127.0.0.1:${portB}/final` });
+      res.end();
+    });
+    const portA = await listen(serverA);
+    const dest = tempDest();
+    try {
+      const controller = new AbortController();
+      const pending = downloadFile(`http://127.0.0.1:${portA}/hop`, dest, {
+        signal: controller.signal,
+      });
+      await new Promise((r) => setTimeout(r, 150));
+      controller.abort();
+      await expect(pending).rejects.toThrow(/Download aborted/);
+      await expectFileGone(dest);
+    } finally {
+      await closeServer(serverA);
+      await closeServer(serverB, sockets);
+    }
+  }, 10_000);
+
+  it('rejects immediately when the signal is already aborted before the call', async () => {
+    // NETOPT-F P2-2: 预检（download.ts:161-163）——abort 后再发起下载必须同步
+    // reject 且不产生任何 HTTP 请求（server 请求计数保持 0）。
+    let requests = 0;
+    const server = http.createServer((_req, res) => {
+      requests += 1;
+      res.writeHead(200);
+      res.end('x');
+    });
+    const port = await listen(server);
+    const dest = tempDest();
+    try {
+      const controller = new AbortController();
+      controller.abort();
+      await expect(
+        downloadFile(`http://127.0.0.1:${port}/pkg.zip`, dest, { signal: controller.signal }),
+      ).rejects.toThrow(/Download aborted/);
+      await new Promise((r) => setTimeout(r, 50));
+      expect(requests).toBe(0);
+    } finally {
+      await closeServer(server);
+    }
+  }, 10_000);
 });

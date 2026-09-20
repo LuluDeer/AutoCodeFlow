@@ -36,6 +36,29 @@ export function getLogFilePath(executionId: string, date?: Date): string {
   return path.join(dateDir, `${executionId}.log`);
 }
 
+// NETOPT-9-4: pin an execution's log file to the date shard it STARTED in.
+// getLogFilePath() resolves "today" at call time, so a task running across
+// midnight used to split its log across two date shards — routes/logs.ts
+// scans newest-first and breaks on the first hit, so the pre-midnight half
+// became unreachable and totalLines reset mid-run. The execution pins its
+// path once at accept (createExecutionEntry); appendLog/appendLogSync use the
+// pinned path while it lives, and release() unpins at the terminal transition.
+const pinnedLogPaths = new Map<string, string>();
+
+export function pinLogFilePath(executionId: string, date?: Date): string {
+  const filePath = getLogFilePath(executionId, date);
+  pinnedLogPaths.set(executionId, filePath);
+  return filePath;
+}
+
+export function unpinLogFilePath(executionId: string): void {
+  pinnedLogPaths.delete(executionId);
+}
+
+export function getPinnedLogFilePath(executionId: string): string | undefined {
+  return pinnedLogPaths.get(executionId);
+}
+
 // --- Buffered async log writer -------------------------------------------------
 // appendFileSync per stdout chunk blocked the event loop (heartbeats, /health)
 // under high-output tasks. Writes now buffer in memory and flush to disk every
@@ -85,7 +108,7 @@ export function stopLogWriter(): void {
 }
 
 export function appendLog(executionId: string, content: string): void {
-  const filePath = getLogFilePath(executionId);
+  const filePath = pinnedLogPaths.get(executionId) ?? getLogFilePath(executionId);
   const pending = pendingWrites.get(filePath) ?? '';
   let combined = `${pending}${content}\n`;
   // Drop the oldest buffered content if a pathological chunk burst outgrows
@@ -100,7 +123,7 @@ export function appendLog(executionId: string, content: string): void {
 /** Backwards-compatible synchronous append used by callers that must see the
  *  content on disk immediately (tests, read-back helpers). */
 export function appendLogSync(executionId: string, content: string): void {
-  const filePath = getLogFilePath(executionId);
+  const filePath = pinnedLogPaths.get(executionId) ?? getLogFilePath(executionId);
   fs.appendFileSync(filePath, content + '\n');
 }
 
@@ -139,6 +162,12 @@ export function deleteOldLogs(retentionDays: number): number {
 
   try {
     const dateDirs = fs.readdirSync(logsDir);
+    // NETOPT-C P3: 仍被 pin 的日志分片不得物理删除——超长任务（timeout=0）
+    // 跨 retention 运行时起始分片会被整目录 rmSync，后续 append 因目录消失
+    // ENOENT，磁盘历史静默丢失。
+    const pinnedDirs = new Set(
+      [...pinnedLogPaths.values()].map((p) => path.resolve(path.dirname(p))),
+    );
     for (const dateDir of dateDirs) {
       // Directory names are YYYY-MM-DD (see formatDate) — stat.birthtime is
       // unreliable on Linux (often falls back to mtime/epoch), so derive the
@@ -147,7 +176,12 @@ export function deleteOldLogs(retentionDays: number): number {
       if (!m) continue;
       const dirTime = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])).getTime();
       if (Number.isNaN(dirTime) || dirTime >= cutoff) continue;
-      fs.rmSync(path.join(logsDir, dateDir), { recursive: true, force: true });
+      const dirPath = path.resolve(path.join(logsDir, dateDir));
+      if (pinnedDirs.has(dirPath)) {
+        logger.debug(`Skipping log directory with pinned active log: ${dateDir}`);
+        continue;
+      }
+      fs.rmSync(dirPath, { recursive: true, force: true });
       deletedCount++;
       logger.debug(`Deleted old log directory: ${dateDir}`);
     }
@@ -277,6 +311,11 @@ function removePath(target: string): boolean {
   }
 }
 
+/** NETOPT-C P3: 正则转义——活跃 executionId 拼进 meta 文件名匹配时防元字符误伤。 */
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 function removeOlderThan(
   dir: string,
   cutoffMs: number,
@@ -286,6 +325,9 @@ function removeOlderThan(
     filesOnly?: boolean;
     /** A6: 名字匹配者既不占 keepNewest 名额，也照常按 cutoff 删除。 */
     exclude?: RegExp;
+    /** NETOPT-C P3: 名字匹配者一律不删（既不按 cutoff，也不计 keepNewest）——
+     *  用于活跃执行的 meta 文件保护（区别于 exclude 的"不占名额但照删"）。 */
+    protected?: RegExp;
   } = {},
 ): number {
   let deleted = 0;
@@ -303,6 +345,8 @@ function removeOlderThan(
     // toward keepNewest nor recursively removed (it is not a callback payload).
     if (options.filesOnly && entry.isDirectory()) continue;
     if (options.directoryNames && entry.isDirectory() && !options.directoryNames.test(entry.name)) continue;
+    // NETOPT-C P3: protected 全跳过——活跃执行的 meta 文件不受 TTL 约束。
+    if (options.protected && options.protected.test(entry.name)) continue;
     // A6: 排除项不进 withMtime → 不占 keepNewest 名额，也不被保留（任由
     // cutoff 判定）。用于死信侧车：它必须与自己的 payload 同生共死，但不该
     // 把 keepNewest 的额度吃掉一半。
@@ -410,13 +454,14 @@ function removeOrphanCallbackMetaFiles(callbackDir: string, nowMs: number): numb
  *  overflow. Safe to run at startup and on an interval. */
 export function cleanupWorkDir(
   ttlDays: number = CLEANUP_TTL_DAYS,
-): { workDirs: number; caches: number; packages: number; deadLetters: number; orphanMetaFiles: number } {
+): { workDirs: number; caches: number; packages: number; deadLetters: number; orphanMetaFiles: number; metaFiles: number } {
   const cutoff = Date.now() - ttlDays * 24 * 60 * 60 * 1000;
   let workDirs = 0;
   let caches = 0;
   let packages = 0;
   let deadLetters = 0;
   let orphanMetaFiles = 0;
+  let metaFiles = 0;
 
   // E-08: 活跃执行保护——liveness 未知（provider 抛错/返回空）时删 Nothing
   // （fail-safe，对齐 python maintenance._live_workdir_names）；否则跳过活跃
@@ -435,7 +480,7 @@ export function cleanupWorkDir(
       'cleanupWorkDir: active execution probe unavailable (liveness unknown) — ' +
       'skipping all deletions (fail-safe)',
     );
-    return { workDirs: 0, caches: 0, packages: 0, deadLetters: 0, orphanMetaFiles: 0 };
+    return { workDirs: 0, caches: 0, packages: 0, deadLetters: 0, orphanMetaFiles: 0, metaFiles: 0 };
   }
   const activeExecIds = active.executionIds;
   const activeTaskIds = active.taskIds;
@@ -537,6 +582,25 @@ export function cleanupWorkDir(
       path.join(config.workDir, 'callbacks'),
       Date.now(),
     );
+
+    // 6. NETOPT-9-3: meta/*.json — execution metadata written by execute.ts
+    //    writeExecMeta (one file per execution; the desktop history builder
+    //    and notifier read them). Nothing ever reclaimed them, so a
+    //    long-running executor accumulated them unboundedly, and past ~500
+    //    files the desktop notifier's slice(0,500) scan window could
+    //    permanently miss new-task terminal notifications. TTL aligns with
+    //    the logs; filesOnly mirrors the dead-letter sweep (only regular
+    //    files are reclaimed; the `meta` directory itself is protected by
+    //    PROTECTED_WORKDIR_NAMES so it is never swept as a workdir).
+    // NETOPT-C P3: 活跃执行的 meta 文件受保护——长跑任务（timeout=0）的 meta
+    // mtime 停在 running 写入时刻，按 TTL 清扫会删掉仍在用的历史/通知数据。
+    metaFiles = removeOlderThan(path.join(config.workDir, 'meta'), cutoff, {
+      filesOnly: true,
+      protected:
+        activeExecIds.size > 0
+          ? new RegExp(`^(${[...activeExecIds].map(escapeRegExp).join('|')})\\.json$`)
+          : undefined,
+    });
   } catch (error: unknown) {
     logger.error(
       `Workdir cleanup error: ${error instanceof Error ? error.message : String(error)}`,
@@ -558,7 +622,7 @@ export function cleanupWorkDir(
     );
   }
 
-  return { workDirs, caches, packages, deadLetters, orphanMetaFiles };
+  return { workDirs, caches, packages, deadLetters, orphanMetaFiles, metaFiles };
 }
 
 const MAX_PKG_UPDATES = 3;
@@ -608,10 +672,10 @@ let workdirCleanupInterval: NodeJS.Timeout | null = null;
 export function startWorkDirCleanup(ttlDays: number = CLEANUP_TTL_DAYS): void {
   const sweep = () => {
     const r = cleanupWorkDir(ttlDays);
-    const total = r.workDirs + r.caches + r.packages + r.deadLetters + r.orphanMetaFiles;
+    const total = r.workDirs + r.caches + r.packages + r.deadLetters + r.orphanMetaFiles + r.metaFiles;
     if (total > 0) {
       logger.info(
-        `Workdir cleanup removed ${total} item(s): ${r.workDirs} workdir(s), ${r.caches} cache entr(ies), ${r.packages} package(s), ${r.deadLetters} dead-letter file(s), ${r.orphanMetaFiles} orphan meta file(s)`,
+        `Workdir cleanup removed ${total} item(s): ${r.workDirs} workdir(s), ${r.caches} cache entr(ies), ${r.packages} package(s), ${r.deadLetters} dead-letter file(s), ${r.orphanMetaFiles} orphan meta file(s), ${r.metaFiles} meta file(s)`,
       );
     }
     // P2：磁盘水位（TTL 基于 mtime，磁盘在 TTL 窗口内被撑满时无主动应对）。
@@ -625,7 +689,7 @@ export function startWorkDirCleanup(ttlDays: number = CLEANUP_TTL_DAYS): void {
       const emergency = cleanupWorkDir(Math.max(1, Math.floor(ttlDays / 2)));
       const eTotal =
         emergency.workDirs + emergency.caches + emergency.packages +
-        emergency.deadLetters + emergency.orphanMetaFiles;
+        emergency.deadLetters + emergency.orphanMetaFiles + emergency.metaFiles;
       if (eTotal > 0) {
         logger.warn(`Emergency cleanup removed ${eTotal} item(s)`);
       }

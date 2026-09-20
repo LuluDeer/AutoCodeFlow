@@ -45,6 +45,16 @@ export function validateCredentialFreeHttpUrl(value: string, settingName: string
  * 执行器起不来——任务本身还有「无版本无依赖走 python3」的兼容路径可走。
  * 非法值绝不透传给 uv：降级为官方源比把畸形 URL 拼进 argv 安全。
  */
+/** NETOPT-E P3-5: env 整数解析——空串/NaN 回退默认值，0 与负值保留原值
+ * 交给后续钳制（`x || fallback` 会把 0 吞成默认值，env MAX_CONCURRENT_TASKS=0
+ * 将落到 10 而非钳到下界 1——语义未钉）。 */
+function envInt(name: string, fallback: number): number {
+  const raw = (process.env[name] ?? '').trim();
+  if (raw === '') return fallback;
+  const v = parseInt(raw, 10);
+  return Number.isFinite(v) ? v : fallback;
+}
+
 function validateOptionalUrlSetting(value: string, settingName: string): string {
   try {
     return validateCredentialFreeHttpUrl(value, settingName);
@@ -86,9 +96,20 @@ export const config = {
     const key = Object.keys(process.env).find(k => k.toLowerCase() === 'work_dir');
     return (key && process.env[key]) || '/tmp/autocodeflow/tasks';
   },
-  maxConcurrentTasks: parseInt(process.env.MAX_CONCURRENT_TASKS || '10', 10),
+  // NETOPT-D P3-5: env 钳 1..10000，与 MAX_RUNNING_EXECUTION_IDS / admin
+  // isAdoptableMaxConcurrentTasks 采纳域同源——否则设到 50000 时 accept 放行
+  // 50000 而心跳体截到 10000，容量账本与心跳申报永久脱节。
+  maxConcurrentTasks: Math.min(Math.max(envInt('MAX_CONCURRENT_TASKS', 10), 1), 10_000),
   taskTimeoutSeconds: parseInt(process.env.TASK_TIMEOUT_SECONDS || '300', 10),
-  heartbeatIntervalSeconds: parseInt(process.env.HEARTBEAT_INTERVAL_SECONDS || '30', 10),
+  // NETOPT-9-5: cap at 60s (same bound as /config/reload). A misconfigured
+  // HEARTBEAT_INTERVAL_SECONDS (e.g. 300) would otherwise sit outside admin's
+  // own 30s*3 stale-detection window and get the executor marked OFFLINE
+  // between heartbeats — dispatch stops silently until the next beat.
+  // NETOPT-C P3: 上下界都钳——热更闸门是 5..60，env 解析漏下界会让
+  // HEARTBEAT_INTERVAL_SECONDS=1 变成每秒一次心跳（违背同一契约）。
+  // NETOPT-F P3-2: 改用 envInt（`|| 30` 会把 env=0 吞成默认 30——语义应为
+  // 钳到下界 5；与 maxConcurrentTasks 已改 envInt 的语义对齐）。
+  heartbeatIntervalSeconds: Math.min(Math.max(envInt('HEARTBEAT_INTERVAL_SECONDS', 30), 5), 60),
   logRetentionDays: parseInt(process.env.LOG_RETENTION_DAYS || '7', 10),
   // ---------------------------------------------------------------------
   // P2/L-2：磁盘水位红线（对齐 executor-python config.disk_warn_percent /
