@@ -17,7 +17,7 @@ pip install autoflow-sdk
 ```
 
 <!-- x-release-please-version -->
-当前 1.5.0，要求 Python ≥ 3.9。<!-- x-release-please-version -->
+当前 1.5.1，要求 Python ≥ 3.9。<!-- x-release-please-version -->
 
 ### 2. 写任务脚本
 
@@ -61,7 +61,7 @@ npm install @autocodeflow/sdk
 ```
 
 <!-- x-release-please-version -->
-当前 1.5.0，要求 Node ≥ 18。<!-- x-release-please-version -->
+当前 1.5.1，要求 Node ≥ 18。<!-- x-release-please-version -->
 
 平台任务形态下无需手工安装：entrypoint（打包）任务在
 `requirements` 里声明 `["@autocodeflow/sdk"]`，执行器自动安装并注入
