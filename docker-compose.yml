@@ -154,6 +154,13 @@ services:
       # 被 cgroup 杀掉会连带同一容器的其它进程一起阵亡。
       NODE_OPTIONS: '--max-old-space-size=512'
       APP_PROTOCOL: ${APP_PROTOCOL:-http}
+      # APP-002: 上传应用包时用它拼 executor 可下载的 packageUrl
+      # （{API_BASE_URL}/uploads/packages/...）；未配置时上传接口直接 500。
+      # 缺省 http://admin-api:3105 仅对**同 compose 网络内**的 executor-python /
+      # executor-node 可达；宿主上的桌面执行器或跨机执行器必须在根 .env 覆盖为
+      # 它们能访问的地址（私网地址还需 EXECUTOR_ALLOW_PRIVATE_NETWORK=true，
+      # 否则执行器自己的 ssrf-guard 会拒掉下载）。
+      API_BASE_URL: ${API_BASE_URL:-http://admin-api:3105}
       # LOG-02: execution log storage (db | s3); s3 needs the minio profile
       LOG_STORAGE_DRIVER: ${LOG_STORAGE_DRIVER:-db}
       LOG_STORAGE_ENDPOINT: ${LOG_STORAGE_ENDPOINT:-minio:9000}
