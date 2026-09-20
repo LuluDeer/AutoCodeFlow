@@ -1091,27 +1091,41 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     }
 
     try {
-      const url = this.executorService.getExecutorUrl(
-        deployment.executorAddress,
-        `api/app-stop`,
-      );
-      // R8: stop() is an outbound admin→executor request, same exposure as
-      // dispatch — run the executor SSRF policy (metadata/link-local refused)
-      // before contacting the address. A refusal is logged and treated like
-      // any other stop-signal failure: the row still transitions to STOPPED.
-      // F-3 (SEC-NEW): pin the connection to the validated IP.
-      const pinned = await assertAndPinExecutorUrl(url);
-      const pinCfg = pinnedAxiosConfig(pinned);
-      await axios.post(
-        url,
-        { deploymentId: deployment.id },
-        {
-          timeout: 10_000,
-          headers: await this.getExecutorHeaders(),
-          maxRedirects: 0,
-          ...pinCfg,
-        },
-      );
+      // ARCH-33（ADR-016）：pull 执行器走命令队列。stop 本就是 best-effort
+      // （下方 catch 只 warn，行仍转 STOPPED），所以入队即视为「已通知」。
+      const routed = await this.executorService.deliverControlCommand({
+        executorId: deployment.executorId,
+        address: deployment.executorAddress,
+        type: "app-stop",
+        payload: { deploymentId: deployment.id },
+      });
+      if (routed.delivered === "pull") {
+        this.logger.log(
+          `Stop signal queued for pull executor ${deployment.executorAddress} (deployment ${deployment.id}, commandId=${routed.commandId})`,
+        );
+      } else {
+        const url = this.executorService.getExecutorUrl(
+          deployment.executorAddress,
+          `api/app-stop`,
+        );
+        // R8: stop() is an outbound admin→executor request, same exposure as
+        // dispatch — run the executor SSRF policy (metadata/link-local refused)
+        // before contacting the address. A refusal is logged and treated like
+        // any other stop-signal failure: the row still transitions to STOPPED.
+        // F-3 (SEC-NEW): pin the connection to the validated IP.
+        const pinned = await assertAndPinExecutorUrl(url);
+        const pinCfg = pinnedAxiosConfig(pinned);
+        await axios.post(
+          url,
+          { deploymentId: deployment.id },
+          {
+            timeout: 10_000,
+            headers: await this.getExecutorHeaders(),
+            maxRedirects: 0,
+            ...pinCfg,
+          },
+        );
+      }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.warn(`Stop signal failed (executor may be offline): ${msg}`);
@@ -1287,6 +1301,55 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     // while skipping the guard entirely (dispatch and package-push both run
     // assertSafeExecutorUrl). The full URL goes through the same policy; a
     // refusal takes the FAILED branch below like any other push failure.
+    //
+    // ARCH-33（ADR-016）：传输分流。pull 执行器（NAT 内）无法被中台拨入——
+    // 生产实证：公网中台 + 公司内网执行器拓扑下，此处 3 次重试全部 30s 超时
+    // （app_deployments.statusMessage = "Failed to reach executor after 3
+    // attempts: timeout of 30000ms exceeded"）。改为把部署载荷投进该执行器的
+    // pull 命令队列，由执行器长轮询取走后本地 POST /api/deploy 执行。
+    //
+    // 语义零损失：本行的 DEPLOYING 状态与 push 路径同刻度（下方 save 已发生），
+    // 终态仍由执行器 /app-deployments/heartbeat 收敛。
+    const payload = {
+      deploymentId: deployment.id,
+      applicationId: app.id,
+      appName: app.name,
+      gitRepo: app.gitRepo || null,
+      gitBranch: app.gitBranch || "main",
+      gitCommit: app.gitCommit || null,
+      packageUrl: (app as any).packageUrl || null,
+      version: app.version || null,
+      runtime: app.runtime,
+      entrypoint: deployment.startCommand || app.entrypoint,
+      runMode: deployment.runMode,
+      env: { ...(app.env ?? {}), ...(deployment.env ?? {}) },
+      upgrade,
+    };
+
+    // ARCH-33: 先试 pull 通道。delivered='pull' 表示已入队——此时**不**再走
+    // 下方 HTTP 重试（那对本地址必然超时，且会白等 90 秒才落 FAILED）。
+    const routed = await this.executorService.deliverControlCommand({
+      executorId: deployment.executorId,
+      address: deployment.executorAddress,
+      type: "deploy",
+      payload,
+    });
+    if (routed.delivered === "pull") {
+      deployment.status = upgrade
+        ? DeploymentStatus.UPGRADING
+        : DeploymentStatus.DEPLOYING;
+      deployment.statusMessage = `Deploy command queued for pull executor (commandId=${routed.commandId})`;
+      deployment.deployedCommit = app.gitCommit || null;
+      deployment.deployedVersion = app.version || null;
+      deployment.deployedAt = new Date();
+      await this.repo.save(deployment);
+      await this.saveVersionSnapshot(deployment, app, "deploying");
+      this.logger.log(
+        `Deploy ${deployment.id} queued for pull executor ${deployment.executorAddress} (commandId=${routed.commandId})`,
+      );
+      return;
+    }
+
     const url = this.executorService.getExecutorUrl(
       deployment.executorAddress,
       "api/deploy",
@@ -1303,22 +1366,6 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       await this.repo.save(deployment);
       return;
     }
-
-    const payload = {
-      deploymentId: deployment.id,
-      applicationId: app.id,
-      appName: app.name,
-      gitRepo: app.gitRepo || null,
-      gitBranch: app.gitBranch || "main",
-      gitCommit: app.gitCommit || null,
-      packageUrl: (app as any).packageUrl || null,
-      version: app.version || null,
-      runtime: app.runtime,
-      entrypoint: deployment.startCommand || app.entrypoint,
-      runMode: deployment.runMode,
-      env: { ...(app.env ?? {}), ...(deployment.env ?? {}) },
-      upgrade,
-    };
 
     // Retry up to 3 times with exponential back-off (1s, 2s, 4s)
     const MAX_ATTEMPTS = 3;

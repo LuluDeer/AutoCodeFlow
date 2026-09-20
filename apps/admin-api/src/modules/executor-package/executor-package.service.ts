@@ -6,6 +6,7 @@ import {
   ServiceUnavailableException,
   Logger,
   OnModuleInit,
+  Optional,
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository, Like, FindOptionsWhere } from "typeorm";
@@ -37,6 +38,8 @@ import {
   QueryExecutorPackageDto,
 } from "./dto/executor-package.dto";
 import { ExecutorStatus } from "../executor/entities/executor.entity";
+// ARCH-33（ADR-016）：pull 执行器的包推送改走命令队列（控制面 pull 通道）。
+import { ExecutorService } from "../executor/executor.service";
 
 /** Upload directory for executor package files (relative to process working directory) */
 const UPLOAD_DIR = path.join(process.cwd(), "uploads", "executor-packages");
@@ -63,6 +66,12 @@ export class ExecutorPackageService implements OnModuleInit {
     @InjectRepository(ExecutorPackage)
     private readonly repo: Repository<ExecutorPackage>,
     private readonly configService: ConfigService,
+    // ARCH-33（ADR-016）：pull 执行器的包推送改走命令队列，需要按 id 定位
+    // 执行器行并判协议版本。@Optional 仅为既有单测装配兼容（先例
+    // executor.service 的 eventBus/audit）——provider 缺失时 pushToExecutors
+    // 退化为纯 push（行为与今日一致），主链不受影响。
+    @Optional()
+    private readonly executorService: ExecutorService | null = null,
   ) {
     // Ensure upload directories exist on startup
     if (!fs.existsSync(UPLOAD_DIR)) {
@@ -496,6 +505,39 @@ export class ExecutorPackageService implements OnModuleInit {
     const downloadUrl = parsedUrl.toString();
     const results = await Promise.allSettled(
       targets.map(async (executor) => {
+        // ARCH-33（ADR-016）：pull 执行器（NAT 内）走命令队列。逐台独立判定
+        // ——混合机队里 push 执行器照旧走 HTTP，一台的失败不影响其余目标。
+        //
+        // 语义损失**如实声明**：push 能同步拿到执行器的 accepted 响应；pull
+        // 只能确认「已入队」。逐台结果因此带 `queued: true`（而非 success），
+        // 终态仍由既有 push-result 回调收敛。
+        if (this.executorService) {
+          const routed = await this.executorService.deliverControlCommand({
+            executorId: executor.id,
+            address: executor.address,
+            type: "update-package",
+            payload: {
+              packageId: pkg.id,
+              name: pkg.name,
+              version: pkg.version,
+              type: pkg.type,
+              downloadUrl,
+              checksum: pkg.checksum,
+            },
+          });
+          if (routed.delivered === "pull") {
+            this.logger.log(
+              `Queued package ${pkg.name}@${pkg.version} for pull executor ${executor.address} (commandId=${routed.commandId})`,
+            );
+            return {
+              executorId: executor.id,
+              address: executor.address,
+              success: true,
+              queued: true,
+              commandId: routed.commandId,
+            };
+          }
+        }
         const url = executor.address.startsWith("http")
           ? executor.address
           : `http://${executor.address}`;

@@ -312,6 +312,10 @@ describe("A2 写面守卫穷举扫描（write-guard-coverage）", () => {
         "ExecutorController.offline",
         "ExecutorController.pullDispatch",
         "ExecutorController.register",
+        // ARCH-33（ADR-016）：pull 控制命令的执行结果上报（机器面，非用户会话）。
+        // 与 pullDispatch 同属执行器长轮询通道的写面：执行器只持有自己的令牌，
+        // 端点内以 validateTokenByAddress(address, token) 自证身份。
+        "ExecutorController.reportCommandResult",
         "ExecutorPackageController.pushResult",
       ].sort(),
     );

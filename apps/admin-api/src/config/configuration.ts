@@ -228,6 +228,12 @@ export default () => ({
     // 长期不拉取时由既有 stale sweep 收敛执行行，队列只负责卫生丢弃）。
     pullWaitMs: parseInt(process.env.EXECUTOR_PULL_WAIT_MS || "25000", 10),
     pullTtlMs: parseInt(process.env.EXECUTOR_PULL_TTL_MS || "900000", 10),
+    // ARCH-33（ADR-016）：控制面命令队列的载荷过期阈值。默认 30min，**刻意
+    // 长于任务载荷**（15min）：丢任务的后果是执行行卡住、由既有 stale sweep
+    // 收敛；丢控制命令没有任何兜底——部署指令消失后 app_deployments 行会停在
+    // DEPLOYING 直到 2 分钟的 cron sweep 才判失败，stop/uninstall 这类
+    // best-effort 命令丢了连痕迹都没有。
+    cmdTtlMs: parseInt(process.env.EXECUTOR_CMD_TTL_MS || "1800000", 10),
     // F-07（本轮审计）: 调度候选执行器池上限（selectLeastLoaded / dispatch 的
     // take 截断）。默认 500 与既有硬编码一致——超过上限的第 501+ 台执行器
     // 永远不进候选集；边缘计算数千台舰队可调大。service 层对非法值回退 500。

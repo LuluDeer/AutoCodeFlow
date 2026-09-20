@@ -523,6 +523,10 @@ export class ApplicationService implements OnModuleInit {
    * （既有端点，旧执行器也支持），再 POST /app-uninstall（新端点——旧版
    * 执行器 404 属预期，按 best-effort 失败处理只 warn 继续）。任何失败
    * 绝不外抛。
+   *
+   * ARCH-33（ADR-016）：pull 执行器（NAT 内）改为把整批命令投进 pull 命令
+   * 队列——LPUSH 入队 + RPOP 出队是 FIFO，故按「先 stop 后 uninstall」的
+   * 顺序逐条入队即还原了 push 路径的时序（先停全部 daemon，再删目录）。
    */
   private async uninstallAppOnExecutor(
     appId: string,
@@ -531,6 +535,42 @@ export class ApplicationService implements OnModuleInit {
   ): Promise<void> {
     const executorService = this.executorService;
     if (!executorService) return;
+
+    // ARCH-33: 先判一次传输方式——整批命令要么全走 pull，要么全走 push，
+    // 不允许一台执行器上两条路径混发（否则 stop 走队列、uninstall 走 HTTP，
+    // 时序就乱了）。resolveExecutorTransport 是纯读判定，不会产生副作用。
+    const transport = await executorService
+      .resolveExecutorTransport({ address })
+      .catch(() => ({ mode: "push" as const, executor: null }));
+    if (transport.mode === "pull" && transport.executor) {
+      const executorId = transport.executor.id;
+      try {
+        for (const deploymentId of deploymentIds) {
+          await executorService.enqueueExecutorCommand(executorId, "app-stop", {
+            deploymentId,
+          });
+        }
+        await executorService.enqueueExecutorCommand(
+          executorId,
+          "app-uninstall",
+          {
+            appId,
+          },
+        );
+        this.logger.log(
+          `NETOPT-8③/ARCH-33: 应用 ${appId} 的清理命令已入队（executor=${address}，` +
+            `stop×${deploymentIds.length} + uninstall×1，pull 通道）`,
+        );
+      } catch (err: unknown) {
+        this.logger.warn(
+          `NETOPT-8③/ARCH-33: 清理命令入队失败（best-effort 继续），executor=${address}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+      return;
+    }
+
     for (const deploymentId of deploymentIds) {
       try {
         const url = executorService.getExecutorUrl(address, "api/app-stop");
