@@ -208,7 +208,9 @@ async def gather_artifacts_for_callback(
     manifest: list[dict[str, str]] = []
     owns_client = client is None
     if owns_client:
-        client = httpx.AsyncClient(timeout=30)
+        # NETOPT-D P3: trust_env=False 与同进程 scheduler.py/execute.py 对齐——
+        # 上传走 admin 内部通道，不经系统代理。
+        client = httpx.AsyncClient(timeout=30, trust_env=False)
     try:
         for item in items:
             try:
