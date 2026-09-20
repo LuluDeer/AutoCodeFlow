@@ -99,6 +99,44 @@ class TestNotifyClient:
         assert "1234ms" in body["content"]
 
     @pytest.mark.asyncio
+    async def test_instance_client_reused_across_calls(self, respx_mock):
+        """NETOPT-10-7: 懒客户端复用——连续 notify 共享同一 AsyncClient（连接池），
+        aclose 后重建新实例。"""
+        route = respx_mock.post("http://localhost:3105/api/notification/send").mock(
+            return_value=httpx.Response(200, json={})
+        )
+        client = NotifyClient(admin_api_url="http://localhost:3105")
+        c1 = client._get_client()
+        assert await client.notify("t1", "m1") is True
+        assert await client.notify("t2", "m2") is True
+        assert client._get_client() is c1  # 同一实例（连接池复用，两次调用共用）
+        assert route.call_count == 2
+        await client.aclose()
+        assert client._get_client() is not c1  # 关闭后惰性重建
+
+    @pytest.mark.asyncio
+    async def test_client_trust_env_disabled(self):
+        """NETOPT-C P3: trust_env=False 与其余三端对齐——通知不出站代理。"""
+        client = NotifyClient(admin_api_url="http://localhost:3105")
+        try:
+            http_client = client._get_client()
+            assert http_client.trust_env is False
+        finally:
+            await client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_async_context_manager_closes_pool(self, respx_mock):
+        """NETOPT-C P3: async with 兜底——退出即 aclose 释放连接池。"""
+        respx_mock.post("http://localhost:3105/api/notification/send").mock(
+            return_value=httpx.Response(200, json={})
+        )
+        async with NotifyClient(admin_api_url="http://localhost:3105") as client:
+            assert await client.notify("t", "m") is True
+            c = client._get_client()
+            assert not c.is_closed
+        assert c.is_closed
+
+    @pytest.mark.asyncio
     async def test_auth_token_header(self, respx_mock):
         route = respx_mock.post("http://localhost:3105/api/notification/send").mock(
             return_value=httpx.Response(200, json={})

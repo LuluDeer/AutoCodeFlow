@@ -5,7 +5,8 @@ import httpx
 import pytest
 import respx
 
-from autoflow_sdk.callback import CallbackClient, CallbackDisabledError
+from autoflow_sdk import callback as callback_module
+from autoflow_sdk.callback import CALLBACK_MAX_ATTEMPTS, CallbackClient, CallbackDisabledError
 
 URL = "http://admin.test/api/executions/callback"
 
@@ -214,15 +215,155 @@ class TestEnvelopeUnwrapping:
         assert make_client().report_success() is None
 
 
-class TestTransportFailures:
+class TestRetrySemantics:
+    """NETOPT-10-1: report() retries transport failures and 5xx/429 with
+    bounded exponential backoff; 4xx stay single-shot. Backoff is neutralised
+    in tests via monkeypatch so the suite stays fast and deterministic."""
+
+    @staticmethod
+    def _no_sleep(_attempt):
+        return None
+
+    def _patch_sleep(self, monkeypatch):
+        monkeypatch.setattr(
+            callback_module.CallbackClient,
+            "_sleep_before_retry",
+            staticmethod(lambda _attempt: None),
+        )
+
     @respx.mock
-    def test_timeout_propagates_without_retry(self):
+    def test_transport_error_exhausts_attempts_then_propagates(self, monkeypatch):
+        self._patch_sleep(monkeypatch)
         route = respx.post(URL).mock(side_effect=httpx.ReadTimeout("callback timed out"))
 
         with pytest.raises(httpx.ReadTimeout, match="callback timed out"):
             make_client(timeout=0.1).report_success()
 
+        assert route.call_count == CALLBACK_MAX_ATTEMPTS
+
+    @respx.mock
+    def test_transport_error_then_success_recovers(self, monkeypatch):
+        self._patch_sleep(monkeypatch)
+        route = respx.post(URL).mock(side_effect=[
+            httpx.ReadTimeout("blip"),
+            httpx.Response(200, json={"results": []}),
+        ])
+
+        assert make_client(timeout=0.1).report_success() == {"results": []}
+        assert route.call_count == 2
+
+    @respx.mock
+    def test_503_then_success_recovers(self, monkeypatch):
+        self._patch_sleep(monkeypatch)
+        route = respx.post(URL).mock(side_effect=[
+            httpx.Response(503, text="Service Unavailable"),
+            httpx.Response(200, json={"results": []}),
+        ])
+
+        assert make_client().report_success() == {"results": []}
+        assert route.call_count == 2
+
+    @respx.mock
+    def test_429_then_success_recovers(self, monkeypatch):
+        self._patch_sleep(monkeypatch)
+        route = respx.post(URL).mock(side_effect=[
+            httpx.Response(429, text="Too Many Requests"),
+            httpx.Response(200, json={"results": []}),
+        ])
+
+        assert make_client().report_success() == {"results": []}
+        assert route.call_count == 2
+
+    @respx.mock
+    def test_persistent_500_raises_after_all_attempts(self, monkeypatch):
+        self._patch_sleep(monkeypatch)
+        route = respx.post(URL).mock(return_value=httpx.Response(500, text="boom"))
+
+        with pytest.raises(httpx.HTTPStatusError):
+            make_client().report_success()
+
+        assert route.call_count == CALLBACK_MAX_ATTEMPTS
+
+    @respx.mock
+    def test_4xx_is_not_retried(self, monkeypatch):
+        self._patch_sleep(monkeypatch)
+        route = respx.post(URL).mock(return_value=httpx.Response(401, json={
+            "code": 401, "message": "Invalid or expired execution callback token", "data": None,
+        }))
+
+        with pytest.raises(httpx.HTTPStatusError):
+            make_client().report_success()
+
         assert route.call_count == 1
+
+    @respx.mock
+    def test_408_is_not_retried(self, monkeypatch):
+        """NETOPT-C P3: 与 executor 侧 401/408 重试的差异是**有意的**——SDK 4xx
+        一律单发即抛（含 408），任务作者自管终态上报。钉死单发语义，防止未来
+        被顺手加进重试集而放大重复回调。"""
+        self._patch_sleep(monkeypatch)
+        route = respx.post(URL).mock(return_value=httpx.Response(408, text="Request Timeout"))
+
+        with pytest.raises(httpx.HTTPStatusError):
+            make_client().report_success()
+
+        assert route.call_count == 1
+
+
+class TestNonJson2xxBody:
+    """NETOPT-C P3: 2xx 但 body 非 JSON = 服务端契约违约——统一抛
+    HTTPStatusError（docstring 承诺的类型契约），不再裸抛 ValueError。"""
+
+    @respx.mock
+    def test_2xx_non_json_raises_http_status_error(self):
+        route = respx.post(URL).mock(return_value=httpx.Response(200, text="<html>gateway</html>"))
+
+        with pytest.raises(httpx.HTTPStatusError):
+            make_client().report_success()
+
+        assert route.call_count == 1
+
+    @respx.mock
+    def test_2xx_non_json_message_includes_body_preview(self):
+        # NETOPT-E P3-2: 摘要文本必须出现在异常消息里（原实现写死消息无信息量，
+        # 排查时不知道服务端回了什么）。断言前 200 字符摘要在场。
+        respx.post(URL).mock(return_value=httpx.Response(200, text="<html>gateway boom</html>"))
+
+        with pytest.raises(httpx.HTTPStatusError) as excinfo:
+            make_client().report_success()
+        assert "<html>gateway boom</html>" in str(excinfo.value)
+
+
+class TestTrustEnvPinned:
+    """NETOPT-E P3-4: SDK 回调出站必须 trust_env=False（admin 内部通道不经
+    系统代理）；被误删/改成 True 时本测试立即红。"""
+
+    def test_report_client_pins_trust_env_false(self, monkeypatch):
+        captured = {}
+
+        class _FakeResp:
+            status_code = 200
+            request = httpx.Request("POST", URL)
+
+            def json(self):
+                return {"ok": True}
+
+        class _FakeClient:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def post(self, *args, **kwargs):
+                return _FakeResp()
+
+        monkeypatch.setattr(callback_module.httpx, "Client", _FakeClient)
+        make_client().report_success()
+        assert captured.get("trust_env") is False
 
 
 class TestErrorReadability:

@@ -338,6 +338,19 @@ describe('TaskContext', () => {
       });
     });
 
+    it('reportFailure rejects invalid failureReason locally without sending HTTP (NETOPT-F P3-2)', async () => {
+      // 白名单早拒对齐 python SDK（callback.py VALID_FAILURE_REASONS）——非法值
+      // 不发请求，否则 admin @IsIn 400 + 4xx 单发语义下任务代码只拿到远端错误。
+      const ctx = ctxWithPost();
+      // 本地早拒是同步 throw（不发 HTTP），用 toThrow 而非 rejects。
+      expect(() =>
+        ctx.reportFailure(new Error('x'), { failureReason: 'stale_recovered' }),
+      ).toThrow(/invalid failureReason/);
+      // stale_recovered 是 admin stale sweep 的溯源标记，上报方无从得知自己的
+      // 执行是被谁终态化的——白名单收窄为 executorReportable 子集。
+      expect(post).not.toHaveBeenCalled();
+    });
+
     it('reportFailure truncates errorMessage to the 4 KB DTO cap', async () => {
       const ctx = ctxWithPost();
       await ctx.reportFailure('x'.repeat(ERROR_MESSAGE_MAX_LENGTH + 100));
