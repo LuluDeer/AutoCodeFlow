@@ -96,6 +96,34 @@ def test_gather_no_admin_url_returns_empty(tmp_path):
     assert asyncio.run(gather_artifacts_for_callback("e", tmp_path, None, "t")) == []
 
 
+def test_gather_owns_client_pins_trust_env_false(tmp_path, monkeypatch):
+    """NETOPT-E P3-4: gather 自建上传 client 必须 trust_env=False（上传走
+    admin 内部通道，不经系统代理）；被误删/改成 True 时本测试立即红。"""
+    _make_art(tmp_path, "a.png", b"1")
+    captured = {}
+
+    def factory(*args, **kwargs):
+        captured.update(kwargs)
+
+        class _Fake:
+            async def aclose(self):
+                pass
+
+        return _Fake()
+
+    monkeypatch.setattr(artifacts.httpx, "AsyncClient", factory)
+
+    async def fake_upload(client, admin_base_url, execution_id, item, token):
+        return True
+
+    monkeypatch.setattr(artifacts, "_upload_one", fake_upload)
+    asyncio.run(
+        gather_artifacts_for_callback("e", tmp_path, "http://admin:3105", "t")
+    )
+    assert captured.get("trust_env") is False
+    assert captured.get("timeout") == 30
+
+
 def test_gather_no_artifacts_returns_empty(tmp_path):
     assert asyncio.run(
         gather_artifacts_for_callback("e", tmp_path, "http://admin:3105", "t")
