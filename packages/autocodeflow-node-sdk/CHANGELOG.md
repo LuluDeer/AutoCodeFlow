@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.5.1](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.5.0...v1.5.1) (2026-09-20)
+
+
+### Bug Fixes
+
+* **node-sdk:** 熔断器 half-open 探测槽遇不可熔断错误永久卡死（NETOPT-6①） ([9b1d01c](https://github.com/LuluDeer/AutoCodeFlow/commit/9b1d01c6bf2592a31a78ec88598f2175eed2ee8e))
+* **packages:** NETOPT-F analyzer null-confidence 用例+定调注释补第 9 出站点（routers/execute.py 包下载 trust_env=False+follow_redirects=False）、http/notify/sdk trust_env 钉死测试、uv.lock 入库可重现构建 ([037b8c2](https://github.com/LuluDeer/AutoCodeFlow/commit/037b8c254d34d8aabc62596084baf2295bb40538))
+
 ## [1.5.0](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.4.3...v1.5.0) (2026-09-19)
 
 
