@@ -290,8 +290,16 @@ describe('TaskFormPage：编辑态来源回填与 runtimeVersion（FR-06/AC-17b�
 
     renderPage();
     await screen.findByDisplayValue('py-task');
-    // 编辑态回填后版本字段可见（runtime=python）
-    expect(document.querySelector('[data-testid="runtime-version-select"]')).toBeTruthy();
+    // 编辑态回填后版本字段可见（runtime=python）。
+    // 必须 waitFor：RuntimeVersionField 的可见性由 Form.useWatch('runtime') 驱动，
+    // 该订阅的首次通知与 `findByDisplayValue('py-task')` 的返回**不同拍**——
+    // 表单值已回填（输入框可见）时 useWatch 可能尚未把 runtime 推到 'python'，
+    // 组件此刻仍 return null。同步断言在全量套件并行/CI 慢机上会偶发拿到 null
+    // （main 侧 run 35528428962 实测：同一 commit 在 develop 绿、在 main 红）。
+    // 本文件 400/409 行对同一断言早已是 waitFor 形态，此处补齐一致。
+    await vi.waitFor(() => {
+      expect(document.querySelector('[data-testid="runtime-version-select"]')).toBeTruthy();
+    });
 
     // 切到 node：版本字段整体消失，提交必须显式清掉旧声明
     fireEvent.click(screen.getByRole('radio', { name: 'Node.js' }));
