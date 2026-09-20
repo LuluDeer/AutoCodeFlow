@@ -14,6 +14,7 @@ import {
   recordHeartbeat,
   setAdminApiReachable,
 } from '../heartbeat-state';
+import { isExecutorShuttingDown } from '../shutdown-state';
 // A3-C：就绪探针出参必经生成的协议 schema（契约不再只是被测试引用的产物）。
 import { HealthReadyResponseSchema } from '../generated/protocol.schemas';
 
@@ -198,6 +199,12 @@ healthRouter.get('/health/admin-status', (_req: Request, res: Response) => {
 // /health/readiness 保留为 deprecated alias 一个版本。CPU 判定同样改用跨平台
 // sampleCpuPercent()，不再用 Windows 恒 0 的 os.loadavg()[0]。
 healthRouter.get('/health/ready', async (_req: Request, res: Response) => {
+  // NETOPT-C P3: drain 窗口内探活不得认为可接流——停机中一律 not_ready（LB
+  // 摘流），与 admin-api /api/health/ready 对等语义。
+  if (isExecutorShuttingDown()) {
+    sendReady(res, 503, { status: 'not_ready', reason: 'executor is shutting down' });
+    return;
+  }
   const totalMem = os.totalmem();
   const freeMem = os.freemem();
   const cpuUsage = sampleCpuPercent();

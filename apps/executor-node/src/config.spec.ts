@@ -258,6 +258,104 @@ describe('resolveAdminApiBaseUrl priority (AUTOFLOW-API-URL-01)', () => {
     ).toBe('https://public.example.com/api');
   });
 });
+// NETOPT-C P3: env 心跳间隔上下界钳制——热更闸门是 5..60，env 解析漏下界会让
+// HEARTBEAT_INTERVAL_SECONDS=1 变成每秒一次心跳（违背同一契约）。
+describe('executor-node config heartbeatIntervalSeconds env clamping (NETOPT-C P3)', () => {
+  const originalEnv = process.env;
+
+  beforeEach(() => {
+    jest.resetModules();
+    process.env = { ...originalEnv };
+    delete process.env.HEARTBEAT_INTERVAL_SECONDS;
+  });
+
+  afterAll(() => {
+    process.env = originalEnv;
+  });
+
+  it('defaults to 30 when unset', async () => {
+    const { config } = await import('./config');
+    expect(config.heartbeatIntervalSeconds).toBe(30);
+  });
+
+  it('clamps below 5 up to 5 (1 / -5 would otherwise beat every second)', async () => {
+    process.env.HEARTBEAT_INTERVAL_SECONDS = '1';
+    const { config } = await import('./config');
+    expect(config.heartbeatIntervalSeconds).toBe(5);
+
+    delete process.env.HEARTBEAT_INTERVAL_SECONDS;
+    process.env.HEARTBEAT_INTERVAL_SECONDS = '-5';
+    jest.resetModules();
+    const { config: c2 } = await import('./config');
+    expect(c2.heartbeatIntervalSeconds).toBe(5);
+  });
+
+  it('clamps above 60 down to 60 (NETOPT-9-5)', async () => {
+    process.env.HEARTBEAT_INTERVAL_SECONDS = '300';
+    const { config } = await import('./config');
+    expect(config.heartbeatIntervalSeconds).toBe(60);
+  });
+
+  it('non-numeric falls back to 30', async () => {
+    process.env.HEARTBEAT_INTERVAL_SECONDS = 'abc';
+    const { config } = await import('./config');
+    expect(config.heartbeatIntervalSeconds).toBe(30);
+  });
+
+  it('env=0 clamps to the lower bound 5, not the default 30 (NETOPT-F P3-2)', async () => {
+    // 旧 `parseInt(...) || 30` 会把 0 吞成默认 30——语义应为钳到下界 5
+    // （与 maxConcurrentTasks 已改 envInt 的语义对齐）。
+    process.env.HEARTBEAT_INTERVAL_SECONDS = '0';
+    const { config } = await import('./config');
+    expect(config.heartbeatIntervalSeconds).toBe(5);
+  });
+});
+
+// NETOPT-E P3-5: env maxConcurrentTasks 钳 1..10000——且 0 必须走下界钳制
+// （旧 `|| 10` 把 0 吞成默认 10，语义未钉；负数/NaN/>10000 各有明确落点）。
+describe('executor-node config maxConcurrentTasks env clamping (NETOPT-E P3-5)', () => {
+  const originalEnv = process.env;
+
+  beforeEach(() => {
+    jest.resetModules();
+    process.env = { ...originalEnv };
+    delete process.env.MAX_CONCURRENT_TASKS;
+  });
+
+  afterAll(() => {
+    process.env = originalEnv;
+  });
+
+  it('defaults to 10 when unset', async () => {
+    const { config } = await import('./config');
+    expect(config.maxConcurrentTasks).toBe(10);
+  });
+
+  it('clamps 0 up to 1 (not the 10 default — 0 must reach the clamp)', async () => {
+    process.env.MAX_CONCURRENT_TASKS = '0';
+    const { config } = await import('./config');
+    expect(config.maxConcurrentTasks).toBe(1);
+  });
+
+  it('clamps negatives up to 1', async () => {
+    process.env.MAX_CONCURRENT_TASKS = '-5';
+    const { config } = await import('./config');
+    expect(config.maxConcurrentTasks).toBe(1);
+  });
+
+  it('clamps above 10000 down to 10000 (E9 adoption bound)', async () => {
+    process.env.MAX_CONCURRENT_TASKS = '50000';
+    const { config } = await import('./config');
+    expect(config.maxConcurrentTasks).toBe(10_000);
+  });
+
+  it('non-numeric falls back to 10', async () => {
+    process.env.MAX_CONCURRENT_TASKS = 'abc';
+    const { config } = await import('./config');
+    expect(config.maxConcurrentTasks).toBe(10);
+  });
+});
+
 // `_SECONDS`。此前只读 `_SECONDS`，于是桌面端用户填的值**完全不生效**
 // （设置页承诺了、执行器不读）——而若真按秒解析，300000 会被钳成 86400 秒。
 describe('executor-node config interpreterDownloadTimeoutMs', () => {

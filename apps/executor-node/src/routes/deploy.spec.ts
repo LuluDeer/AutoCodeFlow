@@ -25,8 +25,14 @@ jest.mock('../logger', () => ({
 jest.mock('../admin-client', () => ({
   post: jest.fn().mockResolvedValue({ data: {} }),
 }));
+jest.mock('../shutdown-state', () => ({
+  isExecutorShuttingDown: jest.fn(() => false),
+  setExecutorShuttingDown: jest.fn(),
+  resetShutdownStateForTest: jest.fn(),
+}));
 
 import {
+
   buildDeploymentPaths,
   buildDotenvContent,
   deployRouter,
@@ -42,6 +48,8 @@ import {
   validateShellEntrypoint,
 } from './deploy';
 import * as downloadLib from '../lib/download';
+import * as runCommandLib from '../run-command';
+import { isExecutorShuttingDown } from '../shutdown-state';
 import { buildChildEnv as _buildChildEnv } from '../env-whitelist';
 
 const app = express();
@@ -368,6 +376,40 @@ describe('POST /api/deploy — async pipeline', () => {
       ),
     );
     expect(mockCp.spawnSync).not.toHaveBeenCalled();
+  });
+
+  it('NETOPT-E P2-2: rejects /deploy with 503 while the executor is draining', async () => {
+    (isExecutorShuttingDown as jest.Mock).mockReturnValue(true);
+    try {
+      const res = await request(app).post('/api/deploy').send(basePayload);
+      expect(res.status).toBe(503);
+      expect(res.body.error).toMatch(/shutting down/i);
+      expect(mockCp.spawn).not.toHaveBeenCalled();
+    } finally {
+      (isExecutorShuttingDown as jest.Mock).mockReturnValue(false);
+    }
+  });
+
+  it('NETOPT-E P2-2: provisioning runCommand calls carry the deploy abort signal', async () => {
+    (mockCp.spawn as jest.Mock).mockImplementation(() => okChild());
+    const runCommandSpy = jest.spyOn(runCommandLib, 'runCommand');
+    try {
+      const res = await request(app).post('/api/deploy').send(basePayload);
+      expect(res.status).toBe(200);
+      await waitFor(() =>
+        (mockCp.spawn as jest.Mock).mock.calls.some(
+          (c: unknown[]) => (c[1] as string[])[0] === 'clone',
+        ),
+      );
+      // git clone 的 runCommand options 必须携带 deployAbort.signal（停机时树杀
+      // detached provisioning，防孤儿进程 / Windows 持锁 EBUSY）。
+      const cloneCall = runCommandSpy.mock.calls.find(
+        (c: any) => c[0] === 'git',
+      );
+      expect(cloneCall?.[2]?.signal).toBeInstanceOf(AbortSignal);
+    } finally {
+      runCommandSpy.mockRestore();
+    }
   });
 
   it('passes the validated branch to git clone when one is specified', async () => {

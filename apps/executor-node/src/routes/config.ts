@@ -117,16 +117,31 @@ configRouter.post('/config/reload', async (req: Request, res: Response) => {
     // 手检没覆盖的**类型/形状**错误（如 maxConcurrentTasks 传字符串、
     // adminApiUrls 传非数组），且必须发生在任何 config 写入**之前**，畸形载荷
     // 绝不允许改到一半状态。
-    if (body.maxConcurrentTasks !== undefined && body.maxConcurrentTasks < 1) {
-      res.status(400).json({ error: 'maxConcurrentTasks must be >= 1' });
+    if (
+      body.maxConcurrentTasks !== undefined &&
+      (body.maxConcurrentTasks < 1 || body.maxConcurrentTasks > 10_000)
+    ) {
+      // NETOPT-D P3-5: 上界与 E9 采纳域一致（admin 心跳体截断到 10000、容量
+      // 账本 MAX_RUNNING_EXECUTION_IDS 同源）；热更放开无上界会让 accept 放行
+      // 的并发数超出心跳/账本可表达范围，自相矛盾。
+      res.status(400).json({ error: 'maxConcurrentTasks must be between 1 and 10000' });
       return;
     }
     if (body.taskTimeoutSeconds !== undefined && body.taskTimeoutSeconds < 1) {
       res.status(400).json({ error: 'taskTimeoutSeconds must be >= 1' });
       return;
     }
-    if (body.heartbeatIntervalSeconds !== undefined && body.heartbeatIntervalSeconds < 5) {
-      res.status(400).json({ error: 'heartbeatIntervalSeconds must be >= 5' });
+    // NETOPT-9-5: upper cap as well as the lower bound. admin-api's stale
+    // sweep judges OFFLINE from its own stored interval ×3 (default 30s×3=90s);
+    // a hot-reload to >=120s would make every heartbeat land inside the
+    // "stale" window and the executor get marked OFFLINE between beats
+    // (dispatch stops, desktop tray blinks). The shared protocol schema only
+    // enforces min(5), so this executor-side gate is the operative bound.
+    if (
+      body.heartbeatIntervalSeconds !== undefined &&
+      (body.heartbeatIntervalSeconds < 5 || body.heartbeatIntervalSeconds > 60)
+    ) {
+      res.status(400).json({ error: 'heartbeatIntervalSeconds must be between 5 and 60' });
       return;
     }
     const parsedReq = ConfigReloadRequestSchema.safeParse(req.body);
@@ -158,8 +173,8 @@ configRouter.post('/config/reload', async (req: Request, res: Response) => {
     }
 
     if (body.heartbeatIntervalSeconds !== undefined) {
-      if (body.heartbeatIntervalSeconds < 5) {
-        res.status(400).json({ error: 'heartbeatIntervalSeconds must be >= 5' });
+      if (body.heartbeatIntervalSeconds < 5 || body.heartbeatIntervalSeconds > 60) {
+        res.status(400).json({ error: 'heartbeatIntervalSeconds must be between 5 and 60' });
         return;
       }
       config.heartbeatIntervalSeconds = body.heartbeatIntervalSeconds;

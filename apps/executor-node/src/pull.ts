@@ -80,11 +80,28 @@ const PULL_STALL_TIMEOUT_MS = 45_000;
  */
 let appliedConfigVersion: string | null = null;
 
+// NETOPT-9-6: 配置拉取重试节流。指纹持续不一致且本地 reload 持续失败时，
+// 1s 一轮的 pull 循环此前每轮都发一次 GET /api/executors/config +
+// POST /api/config/reload（无尝试间隔），既是无谓的 admin 压力，也占着
+// 这一轮的领取时序。节流到 ≥30s 一次尝试。
+const CONFIG_RETRY_THROTTLE_MS = 30_000;
+let lastConfigAttemptAt = 0;
+
+/** Test hook: the retry throttle is module-level sticky state — jest's module
+ *  registry keeps it across tests in one file, which would throttle the first
+ *  config pull of every later test. Reset it between tests. */
+export function resetConfigPullThrottleForTest(): void {
+  lastConfigAttemptAt = 0;
+}
+
 async function maybePullConfig(adminConfigVersion: unknown): Promise<void> {
   if (typeof adminConfigVersion !== 'string' || adminConfigVersion.length === 0) {
     return; // 旧版 admin 无指纹字段 → 不拉取（行为不变）
   }
   if (appliedConfigVersion === adminConfigVersion) return;
+  const now = Date.now();
+  if (now - lastConfigAttemptAt < CONFIG_RETRY_THROTTLE_MS) return;
+  lastConfigAttemptAt = now;
   try {
     const address = config.executorAddressPublic || config.executorAddress;
     // GET /api/executors/config 走 request()（自动鉴权 + failover + 401 自愈），
@@ -163,15 +180,19 @@ export async function pullOnce(): Promise<void> {
       controller.signal,
     );
     const payload = unwrapAdminResponseData(resp?.data);
-    // E-1: 配置指纹比对 + 主动拉取（失败不阻塞取件，下一轮重试）。
-    await maybePullConfig(payload?.configVersion);
     const task = payload?.task as (ExecuteRequest & { traceparent?: string }) | null;
-    if (!task || !task.executionId) return; // 无任务：finally 释放预留
+    if (!task || !task.executionId) {
+      // 空闲轮：无任务占用领取时序，才同步拉配置（失败不阻塞取件，下一轮
+      // 再试；NETOPT-9-6 节流防止指纹不一致时每秒轰炸 config 端点）。
+      await maybePullConfig(payload?.configVersion);
+      return; // 无任务：finally 释放预留
+    }
 
     logger.info(`Pulled execution ${task.executionId} from admin pull queue`);
     const { traceparent, ...body } = task;
-    // 预留即正式占用：slotPreReserved 模式下 accept 不再重复计数，容量检
-    // 查必然通过；执行完成时 entry.release() 释放的就是这个预留槽位。
+    // NETOPT-9-6: 任务先落地再拉配置——原先在 accept 之前 await
+    // maybePullConfig（GET 10s + 本地 reload 10s，最坏 ~20s），既延迟了
+    // 已到手任务的领取，又按 E-01 语义让 admin 看到该预留槽位长期被占。
     const accepted = acceptExecution(body as ExecuteRequest, traceparent, {
       slotPreReserved: true,
     });
@@ -214,6 +235,10 @@ export async function pullOnce(): Promise<void> {
         ),
       });
     }
+    // 领取/拒绝处理完毕后再拉配置：fire-and-forget（maybePullConfig 内部
+    // 全 try/catch，绝不 throw），不阻塞下一轮取件；失败保留旧版本号，由
+    // 节流窗口后的下一轮再试。
+    void maybePullConfig(payload?.configVersion);
   } catch (err: unknown) {
     // E-07: 停机 abort 是预期中止，不是故障——记 info 而非 warn，避免把正常
     // 关机路径污染成告警噪声（运维侧 warn 应保持可行动信号）。

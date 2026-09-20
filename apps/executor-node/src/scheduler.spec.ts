@@ -18,6 +18,37 @@ describe('scheduler', () => {
     jest.restoreAllMocks();
   });
 
+  it('NETOPT-9-7: waitForRunningCountZero resolves once the ledger drains, bounded by maxWaitMs', async () => {
+    jest.useFakeTimers();
+    const { incrementRunning, decrementRunning, waitForRunningCountZero } = require('./scheduler');
+    incrementRunning();
+    incrementRunning();
+    let settled = 'pending';
+    const promise = waitForRunningCountZero(5_000, 100).then((v: boolean) => {
+      settled = v ? 'zero' : 'timeout';
+      return v;
+    });
+
+    // 账本未清 → 持续等待（不提前返回）
+    await jest.advanceTimersByTimeAsync(1_000);
+    expect(settled).toBe('pending');
+
+    decrementRunning();
+    decrementRunning();
+    await jest.advanceTimersByTimeAsync(100);
+    expect(settled).toBe('zero');
+    await expect(promise).resolves.toBe(true);
+  });
+
+  it('NETOPT-9-7: waitForRunningCountZero times out (returns false) when the ledger never drains', async () => {
+    jest.useFakeTimers();
+    const { incrementRunning, waitForRunningCountZero } = require('./scheduler');
+    incrementRunning();
+    const promise = waitForRunningCountZero(500, 100);
+    await jest.advanceTimersByTimeAsync(600);
+    await expect(promise).resolves.toBe(false);
+  });
+
   it('uses the hot-reloaded interval on the next tick', async () => {
     jest.useFakeTimers();
     const setIntervalSpy = jest.spyOn(global, 'setInterval');
@@ -50,7 +81,7 @@ describe('scheduler', () => {
     clearInterval(timer);
   });
 
-  it('reports registered running execution ids (capped) and dead-letter count in the heartbeat body', async () => {
+  it('reports registered running execution ids (E9-aligned cap) and dead-letter count in the heartbeat body', async () => {
     jest.useFakeTimers();
     const {
       startHeartbeat,
@@ -68,13 +99,46 @@ describe('scheduler', () => {
     await jest.advanceTimersByTimeAsync(12_000);
     expect(post.mock.calls.length).toBeGreaterThan(0);
     const body = post.mock.calls.at(-1)![1];
-    expect(body.runningExecutionIds).toHaveLength(200);
+    // NETOPT-C P2-1: 上限与 E9（maxConcurrentTasks ≤10000）对齐——252 个在跑
+    // 执行必须全量上报（旧 200 封顶会让第 201+ 个失去 stale-sweep 存活宽限）。
+    expect(body.runningExecutionIds).toHaveLength(252);
     expect(body.deadLetterCount).toBe(7);
 
     // Providers may be re-registered (module reload) — latest wins.
     registerRunningExecutionIdsProvider(() => []);
     await jest.advanceTimersByTimeAsync(12_000);
     expect(post.mock.calls.at(-1)![1].runningExecutionIds).toEqual([]);
+
+    clearInterval(timer);
+  });
+
+  it('NETOPT-D P3: truncates at the 10000 heartbeat cap and warns', async () => {
+    // 批次 C 把 cap 从 200 提到 10000 后，只证"上限>252"不足以防回退——
+    // 钉死 10000 边界 + warn 分支（稳态不可达，属防御网，显式造 10001 条）。
+    jest.useFakeTimers();
+    const {
+      startHeartbeat,
+      registerRunningExecutionIdsProvider,
+      registerDeadLetterCountProvider,
+    } = require('./scheduler');
+    registerRunningExecutionIdsProvider(() =>
+      Array.from({ length: 10_001 }, (_, i) => `exec-${i}`),
+    );
+    registerDeadLetterCountProvider(() => 0);
+    const warnSpy = jest
+      .spyOn(require('./logger').logger, 'warn')
+      .mockImplementation(() => undefined);
+    const timer = startHeartbeat();
+
+    await jest.advanceTimersByTimeAsync(12_000);
+    const body = post.mock.calls.at(-1)![1];
+    expect(body.runningExecutionIds).toHaveLength(10_000);
+    expect(body.runningExecutionIds[0]).toBe('exec-0');
+    expect(body.runningExecutionIds[9_999]).toBe('exec-9999');
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('runningExecutionIds exceeds heartbeat cap 10000'),
+    );
+    warnSpy.mockRestore();
 
     clearInterval(timer);
   });
