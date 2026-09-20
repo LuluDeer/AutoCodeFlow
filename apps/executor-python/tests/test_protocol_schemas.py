@@ -61,6 +61,23 @@ def test_scan_surface_is_wired():
     assert set(_SCHEMAS) == set(_VECTORS)
 
 
+def test_every_declared_schema_has_vectors():
+    """A3 覆盖闸：protocol.schemas 的**每个** schema 都必须有向量（此前无此守卫）。
+
+    缺口背景（ARCH-33 实施时补）：上面的 ``_SCHEMAS`` 是从 ``_VECTORS`` **反推**
+    出来的（``for name in _VECTORS if hasattr(ps, name)``），于是它只能发现
+    「有向量无生成类」，**永远看不见「有 schema 无向量」**——往 protocol.json
+    的 schemas 段加一个 schema 却不加向量，两侧都悄无声息地通过，新契约面等于
+    没有任何测试覆盖。本断言把 schemas 段本身拉进比对。
+    """
+    declared = {
+        k for k in _PROTOCOL["schemas"] if not k.startswith("$")
+    }
+    assert declared == set(_VECTORS)
+    # 反永真：确实存在若干 schema（防止有人把 schemas 段清空后本条恒真）
+    assert len(declared) >= 5
+
+
 def _valid_cases():
     for name, v in _VECTORS.items():
         for i, payload in enumerate(v.get("valid", [])):

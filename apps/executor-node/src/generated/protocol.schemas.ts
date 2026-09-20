@@ -81,3 +81,23 @@ export const LogsResponseSchema = z.object({
   "hasMore": z.boolean(),
 }).strict();
 export type LogsResponse = z.infer<typeof LogsResponseSchema>;
+
+export const ControlCommandSchema = z.object({
+  "commandId": z.string().regex(new RegExp("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")),
+  "type": z.enum(["deploy", "app-stop", "app-uninstall", "config-reload", "kill-execution", "update-package"]),
+  "payload": z.record(z.unknown()).optional(),
+  "issuedAt": z.number().int().optional(),
+  "schemaVersion": z.number().int().optional(),
+}).passthrough();
+export type ControlCommand = z.infer<typeof ControlCommandSchema>;
+
+export const CommandResultSchema = z.object({
+  "commandId": z.string(),
+  "type": z.enum(["deploy", "app-stop", "app-uninstall", "config-reload", "kill-execution", "update-package"]),
+  "ok": z.boolean(),
+  "status": z.number().int().nullable().optional(),
+  "error": z.string().nullable().optional(),
+  "durationMs": z.number().int().min(0).optional(),
+  "address": z.string().optional(),
+}).passthrough();
+export type CommandResult = z.infer<typeof CommandResultSchema>;
