@@ -254,6 +254,18 @@ export function buildExecutorChildEnv(input: {
   workDir: string;
   maxConcurrentTasks: number;
   sharedToken: string;
+  /**
+   * ARCH-32/ARCH-33（ADR-015/ADR-016）：pull 回连模式。
+   *
+   * `true` 时下发 `EXECUTOR_PULL_MODE=true`，执行器改为主动长轮询 admin-api
+   * 领取任务与控制面命令，admin 不再需要反向连入本机。
+   *
+   * 为什么桌面端尤其需要它：桌面的典型部署就是「公网中台 + 内网办公机」——
+   * 办公机在 NAT 后**没有**可填的公网地址，push 模式在该拓扑下必然超时
+   * （生产实证："Failed to reach executor after 3 attempts: timeout of
+   * 30000ms exceeded"），而这正是本开关要解掉的故障面。
+   */
+  pullMode?: boolean;
 }): Record<string, string> {
   const env: Record<string, string> = {
     APP_NAME: input.appName,
@@ -282,6 +294,13 @@ export function buildExecutorChildEnv(input: {
   };
   // 日志级别仅在显式配置时下发；空值保持 executor-node 自身的 info 默认。
   if (input.logLevel) env.LOG_LEVEL = input.logLevel;
+  // ARCH-33：pull 模式**只在开启时下发**。executor-node 读的是
+  // `EXECUTOR_PULL_MODE === 'true'`，下发 'false' 与不下发等价，但少写一个键
+  // 能让「用户从未碰过这个开关」与「用户显式关掉」在子进程环境里区分不开——
+  // 这里选择显式下发 'false' 反而更差：它会被 `...process.env` 里用户手工设的
+  // EXECUTOR_PULL_MODE=true 覆盖成关闭。故只在 true 时写入，false 时保留
+  // 环境里已有的值（用户手工开的仍生效）。
+  if (input.pullMode) env.EXECUTOR_PULL_MODE = 'true';
   return env;
 }
 

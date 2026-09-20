@@ -219,6 +219,53 @@ function main(): void {
   assert.strictEqual(childEnv.PORT, '8002');
   assert.strictEqual(childEnv.APP_NAME, 'my-executor');
 
+  // ---- 6b. ARCH-33：pull 回连模式的子进程契约 ----
+  //
+  // 这是第三个"漏了不报错、只是永远不工作"的键，且故障形态最隐蔽：
+  // 用户打开回连模式后，admin 不再反向连入（按协议 v2 走命令队列），
+  // 若 env 没下发，执行器仍以 push 注册——表现为"设置页显示已开启、
+  // 任务却永远派不下来"，且日志里没有任何错误。
+  //
+  // 反证：从 buildExecutorChildEnv 里删掉 EXECUTOR_PULL_MODE 那行，
+  // 本组断言立即失败。
+  const pullEnv = buildExecutorChildEnv({
+    appName: 'x', port: 8002, bindAddress: '0.0.0.0', executorHost: '0.0.0.0',
+    adminApiUrl: 'http://a', workDir: '/w', maxConcurrentTasks: 1, sharedToken: 't',
+    pullMode: true,
+  });
+  assert.strictEqual(
+    pullEnv.EXECUTOR_PULL_MODE,
+    'true',
+    'EXECUTOR_PULL_MODE 必须下发：缺了它用户开了回连模式、执行器却仍以 push 注册，任务永远派不下来',
+  );
+  // executor-node 读的是 `process.env.EXECUTOR_PULL_MODE === 'true'`（严格串比较），
+  // 下发 '1' / 'yes' 都会被判为 false——必须精确是 'true'。
+  assert.strictEqual(
+    pullEnv.EXECUTOR_PULL_MODE,
+    'true',
+    "值必须精确为 'true'（executor-node 做严格串比较，'1'/'yes' 都等于关闭）",
+  );
+
+  // 关闭态**不得**写入该键：executor-process 的 env 是 `{...process.env, ...child}`，
+  // 写入 'false' 会覆盖用户手工设的 EXECUTOR_PULL_MODE=true。不写则保留环境值。
+  const noPull = buildExecutorChildEnv({
+    appName: 'x', port: 8002, bindAddress: '0.0.0.0', executorHost: '0.0.0.0',
+    adminApiUrl: 'http://a', workDir: '/w', maxConcurrentTasks: 1, sharedToken: 't',
+  });
+  assert.ok(
+    !('EXECUTOR_PULL_MODE' in noPull),
+    "未开启回连模式时不得下发 EXECUTOR_PULL_MODE（否则会覆盖用户手工设的环境变量）",
+  );
+  const explicitOff = buildExecutorChildEnv({
+    appName: 'x', port: 8002, bindAddress: '0.0.0.0', executorHost: '0.0.0.0',
+    adminApiUrl: 'http://a', workDir: '/w', maxConcurrentTasks: 1, sharedToken: 't',
+    pullMode: false,
+  });
+  assert.ok(
+    !('EXECUTOR_PULL_MODE' in explicitOff),
+    '显式 false 同样不下发（保持"不干扰环境变量"语义）',
+  );
+
   // 通配监听地址（0.0.0.0 / ::）**不得**被当成对外地址下发：admin-api 把
   // 0.0.0.0/8 归为 reserved 且无条件拒绝（连私网开关也不放行），下发它 =
   // 一个"注册成功、显示在线、永远派发不到"的执行器。此时应留空，让
@@ -289,7 +336,7 @@ function main(): void {
   );
 
   console.log('[selftest] desktop uv wiring: OK');
-  console.log('[selftest] desktop child env contract: OK (BIND_ADDRESS + private-network escape hatch)');
+  console.log('[selftest] desktop child env contract: OK (BIND_ADDRESS + private-network escape hatch + pull mode)');
   console.log(`[selftest]   default interpreters dir: ${resolveInterpretersDir('', '/home/u/.config/ACF')}`);
 
   // ---- 7. UX-DSK-UV：诊断面的 uv 解析必须与 executor-node 同真值 ----

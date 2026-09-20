@@ -64,6 +64,7 @@ executor-desktop 是 **Electron 托盘应用**：把 ncc 打包的 executor-node
 - 桌面端自身**不直接**与 admin-api 通信（仅 `config:test-connection` 探活 `GET /api/health` 帮用户排错）；注册/心跳/回调全部由内置 executor-node 内核完成，契约见 [执行器协议契约](../executor-contract.md)。
 - 用户在向导/配置页填的 `adminApiUrl`、token、并发数等，经 IPC 落入 config-store 后，转换为内核的 env。
 - 配置变更即"停内核→按新配置重启"（`config:save` handler），对 admin 而言表现为一次重启（`startupId` 变化触发令牌轮换）。
+- **网络拓扑与回连模式（ARCH-32/ARCH-33，ADR-015/ADR-016）**：默认 push 模式要求 admin 能**反向连入**本机，故设置页的「对外地址」必须是一个 admin 可达的地址。桌面的典型部署「公网中台 + 内网办公机」下办公机在 NAT 后**没有**可填的公网地址，push 必然超时（生产实证 `Failed to reach executor after 3 attempts: timeout of 30000ms exceeded`）。此时应在设置页 → 网络 & 地址打开**回连模式**（`config-store.pullMode`）：执行器改为主动长轮询 admin-api 领取任务与控制面命令，admin 无需连入。该开关经 `buildExecutorChildEnv` 下发为子进程 env `EXECUTOR_PULL_MODE=true`（`uv-paths.ts` 有自检钉住；关闭时**不写该键**，以免覆盖用户手工设置的环境变量）。
 
 ## 目录结构与关键文件
 

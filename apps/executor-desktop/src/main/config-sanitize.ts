@@ -64,6 +64,9 @@ export const BOOLEAN_FIELDS: readonly string[] = [
   'autoStart',
   'autoStartExecutor',
   'notifyEnabled',
+  // ARCH-33：pull 回连模式开关。非布尔丢弃而非强转——`'false'` 是真值串，
+  // 强转会把它变成 true，等于用户关掉 pull 却反而打开了。
+  'pullMode',
 ];
 
 /**

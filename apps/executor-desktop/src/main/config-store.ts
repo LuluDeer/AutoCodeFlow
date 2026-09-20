@@ -40,6 +40,23 @@ export interface AppConfig {
   interpreterDownloadTimeoutMs?: number;
   /** 私有 PyPI 源（依赖安装用）。空 = 用默认源。 */
   pypiRegistryUrl?: string;
+
+  /**
+   * ARCH-32/ARCH-33（ADR-015/ADR-016）：pull 回连模式开关。
+   *
+   * `true` = 执行器主动长轮询 admin-api 领取任务**与控制面命令**（部署/停止/
+   * 卸载/配置热更新/终止/包更新），admin 无需反向连入本机。
+   *
+   * 为什么桌面端必须有这个开关（而不是让用户手改环境变量）：桌面的典型部署
+   * 就是「公网中台 + 内网办公机」——正是 push 模式必然失败的拓扑。此前设置页
+   * 只提示「跨网络或 NAT 环境需填外网 IP / 域名」，但办公机在 NAT 后根本
+   * 没有可填的公网地址，用户按提示怎么填都不会通。pull 模式才是该拓扑的正解。
+   *
+   * 兼容红线：与 uv* 字段同样**可选**，缺省 false（= 保持既有 push 行为）。
+   * 旧配置文件没有这个键，electron-store 的 schema default 会补上，老用户
+   * 升级后行为不变、也不需要迁移。
+   */
+  pullMode?: boolean;
 }
 
 const schema = {
@@ -65,6 +82,9 @@ const schema = {
   uvPythonInstallMirror: { type: 'string', default: '' },
   interpreterDownloadTimeoutMs: { type: 'number', default: 0 },
   pypiRegistryUrl: { type: 'string', default: '' },
+  // ARCH-33：默认 false = 保持既有 push 行为。旧配置文件缺该键时由 schema
+  // default 补齐，升级后行为不变（兼容红线，与 uv* 字段同处置）。
+  pullMode: { type: 'boolean', default: false },
 } as const;
 
 /**
