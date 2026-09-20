@@ -20,6 +20,9 @@ from admin_api import build_admin_api_url, get_admin_api_base_url
 from config import settings, EXECUTOR_VERSION, PROTOCOL_VERSION
 import psutil
 from auth import get_current_token, adopt_executor_token_hash, request_with_self_heal
+# ARCH-33（ADR-016）：pull 控制面命令的本地执行分派。commands.py 对 scheduler
+# 只在函数内延迟导入 get_http_client，故此处模块级导入不成环。
+from commands import run_control_commands
 
 logger = logging.getLogger(__name__)
 
@@ -415,9 +418,15 @@ async def pull_task() -> None:
         # finally 是唯一释放点，杜绝双释放。
         reserved = False
         try:
-            if not try_reserve_running_slot():
-                continue  # 满载：本轮不拉取（未预留任何槽位）
-            reserved = True
+            # ARCH-33（ADR-016）：**不再**在满载时 continue。旧实现在满载时
+            # 连 pull 都不发，若沿用则执行器满载时控制命令永远送不到——部署/
+            # 停止/热更新全部静默失效。现在始终长轮询：满载时上报
+            # freeSlots=0，服务端只发命令、不派任务。
+            #
+            # 成本：满载执行器多出与空闲执行器相同的长轮询流量（1 请求/25s，
+            # 服务端阻塞窗口内不占 CPU）。这个代价换「满载时仍可运维」。
+            if try_reserve_running_slot():
+                reserved = True
             token = await get_current_token()
             client = get_http_client()  # O-24: shared per-loop pool
             response = await request_with_self_heal(
@@ -428,6 +437,11 @@ async def pull_task() -> None:
                 json={
                     'address': settings.executor_address_public or settings.executor_address,
                     'waitMs': 25000,
+                    # ARCH-33: 服务端据此决定是否出队任务。预留已计入账本
+                    # （running_count 含本次预留），故直接按当前账本算：
+                    #   预留成功 → max-1 ≥ 1 → 服务端派任务（正是预留的目的）；
+                    #   满载/竞态 → max-max = 0 → 服务端只发命令，不派任务。
+                    'freeSlots': max(0, settings.max_concurrent_tasks - get_running_count()),
                 },
                 timeout=35,
             )
@@ -436,11 +450,28 @@ async def pull_task() -> None:
                 data = _unwrap_envelope(response.json()) or {}
             except Exception:  # pragma: no cover - non-JSON / empty admin bodies
                 continue  # finally 释放预留
+            # ARCH-33（ADR-016）：先执行控制面命令。**在任何 continue 之前**——
+            # 命令与任务在同一次响应里下发，若先处理任务，下面的早退路径会把
+            # 这批命令连同响应一起丢掉（而中台已经认为它们投递成功了）。
+            await run_control_commands(data.get('commands'))
             # E-1: 配置指纹比对 + 主动拉取（失败不阻塞取件，下一轮重试）。
             await _maybe_pull_config(data.get('configVersion'))
             task = data.get('task')
             if not isinstance(task, dict) or not task.get('executionId'):
                 continue  # 无任务：finally 释放预留
+
+            # ARCH-33: 满载轮不该带回任务（服务端已按 freeSlots=0 跳过出队）。
+            # 防御路径——若仍带回（旧中台不认识 freeSlots），**不领取**并释放
+            # 预留：没有槽位就执行会把「暂时没容量」固化成执行失败（E-01 关闭
+            # 的那类问题）。载荷留给 admin 侧 stale sweep 收敛，与既有「执行器
+            # 长期不拉取」同一路径。
+            if not reserved:
+                logger.warning(
+                    'Pull returned execution %s while at capacity — not claiming it '
+                    '(admin stale sweep converges the orphan RUNNING row)',
+                    task.get('executionId'),
+                )
+                continue
 
             execution_id = str(task['executionId'])
             traceparent = task.get('traceparent')

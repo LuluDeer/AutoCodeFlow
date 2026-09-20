@@ -5,6 +5,8 @@ import httpx
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch, MagicMock
 from scheduler import _send_heartbeat, heartbeat_task, _http_client_by_loop
+# ARCH-33（ADR-016）：控制面命令分派模块（命令执行/回报路径的桩目标）
+import commands as commands_module
 
 
 def test_get_http_client_pins_trust_env_false(monkeypatch):
@@ -532,17 +534,271 @@ class TestPullDispatch:
         assert scheduler_module.get_running_count() == 0
 
     @pytest.mark.asyncio
-    async def test_pull_loop_skips_polling_at_capacity(self, monkeypatch):
+    async def test_pull_loop_polls_at_capacity_with_free_slots_zero(self, monkeypatch):
+        """ARCH-33（ADR-016）：满载语义**已改变**。
+
+        旧实现满载时 `continue`，连长轮询都不发。若沿用，执行器满载时控制面
+        命令（deploy/stop/config-reload）永远送不到——运维操作静默失效。
+        现在满载仍长轮询，但上报 freeSlots=0，服务端据此只发命令、不派任务。
+        """
         import scheduler as scheduler_module
         self._reset_running_count()
         monkeypatch.setattr(scheduler_module.settings, 'max_concurrent_tasks', 0)
+        resp = httpx.Response(
+            200,
+            json={'code': 0, 'message': 'ok', 'data': {'task': None}},
+            request=httpx.Request('POST', 'http://test.com'),
+        )
+        await self._setup_common(monkeypatch, resp)
 
-        async def fail_heal(client, method, url, **kwargs):
-            raise AssertionError('must not poll at capacity')
+        await self._run_loop_briefly(1.4)
 
-        monkeypatch.setattr(scheduler_module, 'request_with_self_heal', fail_heal)
+        # 满载仍发起了 pull，且如实上报 freeSlots=0
+        assert self.pull_request_kwargs.get('json', {}).get('freeSlots') == 0
+        # 未预留槽位：账本保持 0（max=0，本就无槽可留）
+        assert scheduler_module.get_running_count() == 0
 
-        await self._run_loop_briefly(0.6)
+    @pytest.mark.asyncio
+    async def test_pull_loop_reports_free_slots_when_idle(self, monkeypatch):
+        """有空槽时 freeSlots 如实上报（预留后的实际空闲数）。"""
+        import scheduler as scheduler_module
+        self._reset_running_count()
+        monkeypatch.setattr(scheduler_module.settings, 'max_concurrent_tasks', 3)
+        resp = httpx.Response(
+            200,
+            json={'code': 0, 'message': 'ok', 'data': {'task': None}},
+            request=httpx.Request('POST', 'http://test.com'),
+        )
+        await self._setup_common(monkeypatch, resp)
+
+        await self._run_loop_briefly(1.4)
+
+        # 预留已计入账本（1），故 3 - 1 = 2
+        assert self.pull_request_kwargs.get('json', {}).get('freeSlots') == 2
+
+    @pytest.mark.asyncio
+    async def test_pull_loop_at_capacity_does_not_claim_task(self, monkeypatch):
+        """ARCH-33: 满载轮若仍被带回任务（旧中台不认识 freeSlots），**不领取**。
+
+        没有槽位就执行会把瞬态容量问题固化成执行失败（E-01 关闭的那类问题）。
+        载荷留给 admin 侧 stale sweep 收敛。
+        """
+        import routers.execute as execute_module
+        import scheduler as scheduler_module
+        self._reset_running_count()
+        monkeypatch.setattr(scheduler_module.settings, 'max_concurrent_tasks', 0)
+        resp = httpx.Response(
+            200,
+            json={'code': 0, 'message': 'ok',
+                  'data': {'task': {'executionId': 'exec-at-cap', 'task': {'id': 't1'}}}},
+            request=httpx.Request('POST', 'http://test.com'),
+        )
+        await self._setup_common(monkeypatch, resp)
+        accept_mock = MagicMock()
+        monkeypatch.setattr(execute_module, 'accept_execution', accept_mock)
+
+        await self._run_loop_briefly(1.4)
+
+        assert accept_mock.call_count == 0
+        assert scheduler_module.get_running_count() == 0
+
+
+class TestPullControlCommands:
+    """ARCH-33（ADR-016）：pull 控制面命令通道。
+
+    固化四条关键不变量：
+      ① 命令在**任何** continue 之前被执行（含「无任务」与「满载」两条早退路径）；
+      ② 逐条串行执行（app-uninstall 依赖同批 app-stop 的时序）；
+      ③ 结果逐条回报 /executors/command-result，上报失败不影响主循环；
+      ④ 畸形条目丢弃且不执行。
+    """
+
+    async def _run_loop_briefly(self, seconds=1.4):
+        import scheduler as scheduler_module
+        task = asyncio.create_task(scheduler_module.pull_task())
+        await asyncio.sleep(seconds)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    def _reset_running_count(self):
+        import scheduler as scheduler_module
+        scheduler_module.running_count = 0
+
+    async def _setup_common(self, monkeypatch, resp):
+        import scheduler as scheduler_module
+        monkeypatch.setattr(
+            scheduler_module, 'get_current_token',
+            AsyncMock(return_value='static-token'),
+        )
+
+        async def fake_heal(client, method, url, **kwargs):
+            self.pull_request_kwargs = kwargs
+            return resp
+
+        monkeypatch.setattr(scheduler_module, 'request_with_self_heal', fake_heal)
+
+    def _resp(self, commands, task=None):
+        return httpx.Response(
+            200,
+            json={'code': 0, 'message': 'ok',
+                  'data': {'task': task, 'commands': commands}},
+            request=httpx.Request('POST', 'http://test.com'),
+        )
+
+    @pytest.mark.asyncio
+    async def test_commands_executed_on_idle_round(self, monkeypatch):
+        """无任务轮也执行命令（命令不得随早退路径丢弃）。"""
+        import scheduler as scheduler_module
+        self._reset_running_count()
+        await self._setup_common(monkeypatch, self._resp([
+            {'commandId': 'c1', 'type': 'config-reload', 'payload': {}},
+        ]))
+
+        executed = []
+
+        async def fake_run(raw_commands):
+            for raw in raw_commands:
+                executed.append(raw['commandId'])
+
+        monkeypatch.setattr(scheduler_module, 'run_control_commands', fake_run)
+
+        await self._run_loop_briefly()
+
+        assert 'c1' in executed
+
+    @pytest.mark.asyncio
+    async def test_commands_executed_at_capacity(self, monkeypatch):
+        """满载轮同样执行命令（freeSlots=0 只挡任务，不挡命令）。"""
+        import routers.execute as execute_module
+        import scheduler as scheduler_module
+        self._reset_running_count()
+        monkeypatch.setattr(scheduler_module.settings, 'max_concurrent_tasks', 0)
+        await self._setup_common(monkeypatch, self._resp([
+            {'commandId': 'c2', 'type': 'config-reload', 'payload': {}},
+        ]))
+        accept_mock = MagicMock()
+        monkeypatch.setattr(execute_module, 'accept_execution', accept_mock)
+
+        executed = []
+
+        async def fake_run(raw_commands):
+            for raw in raw_commands:
+                executed.append(raw['commandId'])
+
+        monkeypatch.setattr(scheduler_module, 'run_control_commands', fake_run)
+
+        await self._run_loop_briefly(1.4)
+
+        assert 'c2' in executed
+        assert accept_mock.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_commands_processed_before_task(self, monkeypatch):
+        """命令与任务同批：命令先执行，任务照常领取。"""
+        import routers.execute as execute_module
+        import scheduler as scheduler_module
+        self._reset_running_count()
+        order = []
+        await self._setup_common(monkeypatch, self._resp(
+            [{'commandId': 'c3', 'type': 'config-reload', 'payload': {}}],
+            task={'executionId': 'exec-with-cmd', 'task': {'id': 't1'}},
+        ))
+
+        async def fake_run(_raw):
+            order.append('command')
+
+        def fake_accept(req, tp=None, slot_pre_reserved=False):
+            order.append('accept')
+            return {'status': 'accepted'}
+
+        monkeypatch.setattr(scheduler_module, 'run_control_commands', fake_run)
+        monkeypatch.setattr(execute_module, 'accept_execution', fake_accept)
+
+        await self._run_loop_briefly()
+
+        assert order[:2] == ['command', 'accept']
+        self._reset_running_count()
+
+    @pytest.mark.asyncio
+    async def test_malformed_commands_discarded(self, monkeypatch):
+        """畸形条目丢弃且不执行（缺 commandId / 未知 type / 非 dict）。"""
+        import scheduler as scheduler_module
+        self._reset_running_count()
+        executed = []
+        await self._setup_common(monkeypatch, self._resp([
+            {'type': 'config-reload', 'payload': {}},   # 缺 commandId
+            {'commandId': 'x', 'type': 'evil'},         # 未知 type
+            'not-a-dict',
+            {'commandId': 'ok1', 'type': 'config-reload', 'payload': {}},
+        ]))
+
+        async def fake_execute(command):
+            executed.append(command['commandId'])
+            return {'commandId': command['commandId'], 'type': command['type'],
+                    'ok': True, 'durationMs': 1}
+
+        reported = []
+
+        async def fake_report(result):
+            reported.append(result['commandId'])
+
+        monkeypatch.setattr(commands_module, 'execute_control_command', fake_execute)
+        monkeypatch.setattr(commands_module, 'report_command_result', fake_report)
+
+        await self._run_loop_briefly()
+
+        assert 'ok1' in executed
+        assert all(cid == 'ok1' for cid in executed)
+        assert 'ok1' in reported
+
+    @pytest.mark.asyncio
+    async def test_command_execution_error_does_not_break_loop(self, monkeypatch):
+        """命令执行抛错：不冒泡到 pull 循环（下一轮继续取件）。"""
+        import scheduler as scheduler_module
+        self._reset_running_count()
+        await self._setup_common(monkeypatch, self._resp([
+            {'commandId': 'c9', 'type': 'config-reload', 'payload': {}},
+        ]))
+
+        async def boom(_raw):
+            raise RuntimeError('command pipeline exploded')
+
+        monkeypatch.setattr(scheduler_module, 'run_control_commands', boom)
+        warns = []
+        monkeypatch.setattr(
+            scheduler_module.logger, 'warning',
+            lambda msg, *a, **k: warns.append(msg % a if a else msg),
+        )
+
+        await self._run_loop_briefly(1.4)
+
+        # 异常被 pull 循环的 except 吞掉并记 warn，循环存活
+        assert any('Pull failed' in w for w in warns)
+        assert scheduler_module.get_running_count() == 0
+
+    @pytest.mark.asyncio
+    async def test_old_admin_without_commands_field_is_unchanged(self, monkeypatch):
+        """旧中台（无 commands 字段）：行为逐字节不变。"""
+        import routers.execute as execute_module
+        import scheduler as scheduler_module
+        self._reset_running_count()
+        resp = httpx.Response(
+            200,
+            json={'code': 0, 'message': 'ok',
+                  'data': {'task': {'executionId': 'legacy', 'task': {'id': 't1'}}}},
+            request=httpx.Request('POST', 'http://test.com'),
+        )
+        await self._setup_common(monkeypatch, resp)
+        accept_mock = MagicMock(return_value={'status': 'accepted'})
+        monkeypatch.setattr(execute_module, 'accept_execution', accept_mock)
+
+        await self._run_loop_briefly()
+
+        assert accept_mock.call_count >= 1
+        self._reset_running_count()
 
 
 # ---------------------------------------------------------------------------
