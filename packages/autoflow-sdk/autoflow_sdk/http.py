@@ -32,6 +32,11 @@ class HttpClient:
         self._headers = headers or {}
 
     def _client(self) -> httpx.Client:
+        # NETOPT-E P3-4（trust_env 三分法，反向交叉引用）: 本包是任务内
+        # admin-api 回调/通用 HTTP 通道（内部通道）——trust_env=False 禁代理
+        # 直连内网。AI 外发（autocodeflow-ai analyzer）**刻意保留**代理+CA
+        # （True）；凭据 URL 包下载（executor-python execute.py）False 防凭据
+        # 泄漏进代理。改任何一端的取值前先读 analyzer.py 的定调注释。
         return httpx.Client(
             base_url=self.base_url,
             timeout=self._timeout,
@@ -91,6 +96,8 @@ class AsyncHttpClient:
             base_url=self.base_url,
             timeout=self._timeout,
             headers=self._headers,
+            # NETOPT-E P3-4: 同 _client()——内部通道禁代理直连内网
+            # （AI 外发例外见 analyzer.py 三分法定调注释）。
             trust_env=False,
         )
 

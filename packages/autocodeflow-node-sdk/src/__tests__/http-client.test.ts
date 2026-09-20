@@ -384,6 +384,103 @@ describe('HttpClient', () => {
       expect(mockInstance.post).toHaveBeenCalledTimes(1);
     });
 
+    // NETOPT-F P2-4: reportSuccess/reportFailure 直报通道（POST
+    // /api/executions/callback）豁免 safeMethodsOnly——对齐 autoflow-sdk
+    // callback.py（5xx/429/网络错误有界退避，4xx 契约拒绝仍单发）。任务代码
+    // 同步通道无 executor 侧落盘重放兜底，一次瞬时抖动即丢终态。
+    it('retries the callback POST on 503 then succeeds (NETOPT-F P2-4)', async () => {
+      const serverError = Object.assign(
+        new Error('Request failed with status code 503'),
+        { response: { status: 503, headers: {}, data: {} } },
+      );
+      mockInstance.post
+        .mockRejectedValueOnce(serverError)
+        .mockResolvedValueOnce({
+          data: { code: 200, message: 'success', data: { results: [] } },
+        });
+      const client = new HttpClient(BASE_URL, TOKEN, undefined, undefined, {
+        retry: { maxRetries: 1, minWaitMs: 1 },
+      });
+
+      await expect(
+        client.post('/api/executions/callback', [{ executionId: 'e1', status: 'success' }]),
+      ).resolves.toEqual({ results: [] });
+      expect(mockInstance.post).toHaveBeenCalledTimes(2);
+    });
+
+    it('stops retrying the callback POST after maxRetries+1 attempts (NETOPT-F P2-4)', async () => {
+      const serverError = Object.assign(
+        new Error('Request failed with status code 503'),
+        { response: { status: 503, headers: {}, data: {} } },
+      );
+      mockInstance.post.mockRejectedValue(serverError);
+      const client = new HttpClient(BASE_URL, TOKEN, undefined, undefined, {
+        retry: { maxRetries: 1, minWaitMs: 1 },
+      });
+
+      await expect(
+        client.post('/api/executions/callback', [{ executionId: 'e1', status: 'success' }]),
+      ).rejects.toBe(serverError);
+      expect(mockInstance.post).toHaveBeenCalledTimes(2);
+    });
+
+    it('does NOT widen retries for a sibling route (NETOPT-G P3 predicate)', async () => {
+      // isTerminalCallbackUrl 收紧为段界正则：/api/executions/callback-extra
+      // 不是回调端点——POST 返回 507 时保持单发（不豁免 safeMethodsOnly）。
+      const serverError = Object.assign(
+        new Error('Request failed with status code 507'),
+        { response: { status: 507, headers: {}, data: {} } },
+      );
+      mockInstance.post.mockRejectedValue(serverError);
+      const client = new HttpClient(BASE_URL, TOKEN, undefined, undefined, {
+        retry: { maxRetries: 3, minWaitMs: 1 },
+      });
+
+      await expect(
+        client.post('/api/executions/callback-extra', [{ executionId: 'e1', status: 'success' }]),
+      ).rejects.toBe(serverError);
+      expect(mockInstance.post).toHaveBeenCalledTimes(1);
+    });
+
+    it('retries the callback POST on an uncommon 5xx (507) then succeeds (NETOPT-G P2-1)', async () => {
+      // 非常见 5xx 不在 RETRYABLE_HTTP_STATUSES（429/500/502/503/504）——回调
+      // 通道必须按 python callback.py 的 `>=500` 全量重试，否则 501/505/507/508/599
+      // 单发即抛、一次抖动丢终态。删掉 isCallbackRetryableStatus 本用例立即红。
+      const serverError = Object.assign(
+        new Error('Request failed with status code 507'),
+        { response: { status: 507, headers: {}, data: {} } },
+      );
+      mockInstance.post
+        .mockRejectedValueOnce(serverError)
+        .mockResolvedValueOnce({
+          data: { code: 200, message: 'success', data: { results: [] } },
+        });
+      const client = new HttpClient(BASE_URL, TOKEN, undefined, undefined, {
+        retry: { maxRetries: 1, minWaitMs: 1 },
+      });
+
+      await expect(
+        client.post('/api/executions/callback', [{ executionId: 'e1', status: 'success' }]),
+      ).resolves.toEqual({ results: [] });
+      expect(mockInstance.post).toHaveBeenCalledTimes(2);
+    });
+
+    it('keeps the callback POST single-shot on 4xx contract rejections (NETOPT-F P2-4)', async () => {
+      const badRequest = Object.assign(
+        new Error('Request failed with status code 400'),
+        { response: { status: 400, headers: {}, data: {} } },
+      );
+      mockInstance.post.mockRejectedValue(badRequest);
+      const client = new HttpClient(BASE_URL, TOKEN, undefined, undefined, {
+        retry: { maxRetries: 3 },
+      });
+
+      await expect(
+        client.post('/api/executions/callback', [{ executionId: 'e1', status: 'success' }]),
+      ).rejects.toBe(badRequest);
+      expect(mockInstance.post).toHaveBeenCalledTimes(1);
+    });
+
     it('respects the Retry-After header (delta-seconds) over the exponential backoff', async () => {
       const serverError = Object.assign(
         new Error('Request failed with status code 429'),
