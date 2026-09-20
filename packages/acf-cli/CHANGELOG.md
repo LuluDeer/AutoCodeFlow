@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.5.1](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.5.0...v1.5.1) (2026-09-20)
+
+
+### Bug Fixes
+
+* **cli:** --wait 轮询超时与 exec tail SSE 断流不再静默 exit 0 ([ffed6cc](https://github.com/LuluDeer/AutoCodeFlow/commit/ffed6cc4b5d248f545b30b99247b9d33da8ead83))
+* **mcp-server,acf-cli:** analyze/suggest 类调用带 120s per-call 预算，消除与 admin 同步 AI 预算的结构性倒挂（NETOPT-6④） ([d4f3bd2](https://github.com/LuluDeer/AutoCodeFlow/commit/d4f3bd22f43394dfcc95fa2328cf868277b6fe39))
+
 ## [1.5.0](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.4.3...v1.5.0) (2026-09-19)
 
 
