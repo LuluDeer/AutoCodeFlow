@@ -68,7 +68,11 @@ beforeEach(() => {
   useAuthStore.setState({ user: { id: 1, username: 'root', role: 'admin' } });
   vi.mocked(executorsApi.list).mockReset().mockResolvedValue([] as never);
   vi.mocked(deploymentsApi.upgrade).mockReset().mockResolvedValue(undefined as never);
-  vi.mocked(deploymentsApi.list).mockReset().mockImplementation(async (_appId: string, p?: number) => ({
+  // deploymentsApi.list 的首参是可选的 applicationId（page/pageSize/approvalStatus
+  // 均可省略），mock 实现必须接受同形签名——写成必填 `_appId: string` 会因
+  // `string | undefined` 不可赋给 `string` 而被 tsc -b 拒绝（CI admin-web-build /
+  // windows-admin-web 双红）。
+  vi.mocked(deploymentsApi.list).mockReset().mockImplementation(async (_appId?: string, p?: number) => ({
     data: [dep(p === 2 ? 'dep-2' : 'dep-1', p === 2 ? '10.0.0.2' : '10.0.0.1')],
     total: 40,
   }) as never);

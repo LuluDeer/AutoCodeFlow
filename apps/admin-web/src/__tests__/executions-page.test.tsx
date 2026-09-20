@@ -208,12 +208,18 @@ describe('ExecutionsPage 筛选与请求参数（QA-03）', () => {
   it('搜索任务名：防抖窗口内不发请求，300ms 停顿后恰好一次并以 taskName 下发（NETOPT-G P3）', async () => {
     // 旧用例用真实 waitFor（timeout 2000）只锁"最终发了请求"——删掉 useDebounce
     // 全绿。对照 command-palette.test.tsx 的 fake-timer 范本：真断言防抖行为。
+    // 注意：useFakeTimers 必须在初始加载（findByText 轮询）**之后**启用——fake
+    // timers 下 Testing Library 的 waitFor 轮询不推进，renderPage 的初始加载会
+    // 挂到 30s 超时（STACK_TRACE_ERROR / timed out）。
+    mockedTasks.allExecutions.mockResolvedValue(pageFixture([]));
+    renderPage();
+    await screen.findByText('暂无执行记录');
+
+    // 初始渲染已请求一次列表（findByText 等待的正是这次）——清计数后防抖断言
+    // 从 0 基线出发。
+    mockedTasks.allExecutions.mockClear();
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
     try {
-      mockedTasks.allExecutions.mockResolvedValue(pageFixture([]));
-      renderPage();
-      await screen.findByText('暂无执行记录');
-
       fireEvent.change(screen.getByPlaceholderText('搜索任务名'), { target: { value: '备' } });
       // 防抖窗口内不发请求（useDebounce 默认 300ms）
       act(() => {
@@ -226,7 +232,9 @@ describe('ExecutionsPage 筛选与请求参数（QA-03）', () => {
         vi.advanceTimersByTime(1);
       });
       expect(mockedTasks.allExecutions).toHaveBeenCalledTimes(1);
-      expect(mockedTasks.allExecutions).toHaveBeenCalledWith(expect.objectContaining({ taskName: '备' }));
+      // 参数直接取属性断言（与旧用例同形态，避免 ObjectContaining 对含
+      // undefined 键对象的匹配怪癖）。
+      expect((mockedTasks.allExecutions.mock.calls[0]?.[0] as { taskName?: string } | undefined)?.taskName).toBe('备');
 
       // 继续输入（未停顿 300ms）：不叠加请求，只合并最终值
       fireEvent.change(screen.getByPlaceholderText('搜索任务名'), { target: { value: '备份' } });
@@ -238,9 +246,7 @@ describe('ExecutionsPage 筛选与请求参数（QA-03）', () => {
         vi.advanceTimersByTime(1);
       });
       expect(mockedTasks.allExecutions).toHaveBeenCalledTimes(2);
-      expect(mockedTasks.allExecutions).toHaveBeenLastCalledWith(
-        expect.objectContaining({ taskName: '备份' }),
-      );
+      expect((mockedTasks.allExecutions.mock.calls[1]?.[0] as { taskName?: string } | undefined)?.taskName).toBe('备份');
     } finally {
       vi.useRealTimers();
     }

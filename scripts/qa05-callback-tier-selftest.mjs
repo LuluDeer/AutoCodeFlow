@@ -25,6 +25,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, openSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import http from 'node:http';
+import net from 'node:net';
 import path from 'node:path';
 
 import { ensureDatabase } from './pg-provision.lib.mjs';
@@ -38,9 +39,37 @@ const PG_CONTAINER = `acf-qa05cb-pg-${STAMP}`;
 const REDIS_CONTAINER = `acf-qa05cb-redis-${STAMP}`;
 
 const randPort = () => 15000 + Math.floor(Math.random() * 10000);
-const PG_PORT = Number(process.env.QA05_DB_PORT || randPort());
-const REDIS_PORT = Number(process.env.QA05_REDIS_PORT || randPort());
-const API_PORT = Number(process.env.QA05_API_PORT || randPort());
+/**
+ * R22 根治（2026-09-20 CI 实爆）：三个随机端口此前**各自独立抽取、互不查重**，
+ * 自身就有约 0.03% 的自碰撞率（实测 67/200000）；更要命的是碰撞后的失败形态
+ * ——被撞的那个服务静默起不来（如 admin-api EADDRINUSE 直接 exit(1)），而
+ * waitForHttp 只会空等 90s 后抛一句 "(fetch failed)"，指向错误的方向。
+ *
+ * 两层防护：
+ *   ① 抽取时去重（本函数）——消除自碰撞；
+ *   ② 开工前对**本脚本要自己占**的端口做 TCP 预检（见 main 内）——拦截上一轮
+ *      selftest 残留进程占着端口的情况。环境变量显式指定的端口被占 = 用户意图
+ *      与实际冲突，直接报错；随机抽到的被占则**自动重抽**（不该让一次倒霉的
+ *      抽样把整轮 CI 判红）。
+ */
+const usedPorts = new Set();
+const envPort = (name) => (process.env[name] ? Number(process.env[name]) : null);
+function drawPort() {
+  for (let i = 0; i < 500; i += 1) {
+    const p = randPort();
+    if (usedPorts.has(p)) continue;
+    usedPorts.add(p);
+    return p;
+  }
+  throw new Error('无法分配互不冲突的随机端口（500 次尝试）');
+}
+/** null = 未显式指定，可在预检阶段重抽。 */
+const PG_PORT_ENV = envPort('QA05_DB_PORT');
+const REDIS_PORT_ENV = envPort('QA05_REDIS_PORT');
+const API_PORT_ENV = envPort('QA05_API_PORT');
+let PG_PORT = PG_PORT_ENV ?? drawPort();
+let REDIS_PORT = REDIS_PORT_ENV ?? drawPort();
+let API_PORT = API_PORT_ENV ?? drawPort();
 const DB_HOST = process.env.QA05_DB_HOST || 'localhost';
 const DB_USER = process.env.QA05_DB_USER || 'autoflow';
 const DB_PASS = process.env.QA05_DB_PASS || 'test';
@@ -73,7 +102,32 @@ const run = (cmd, args, opts = {}) =>
   spawnSync(cmd, args, { encoding: 'utf8', timeout: 300_000, ...opts });
 const hasCommand = (cmd) => run('sh', ['-c', `command -v ${cmd}`]).status === 0;
 
-async function waitForHttp(url, timeoutMs = 90_000) {
+/** TCP 层探测：区别于 fetch——能分辨「端口没人在听」与「有服务但不回 HTTP」。 */
+function probeTcp(host, port, timeoutMs = 1500) {
+  return new Promise((resolve) => {
+    const sock = net.connect({ host, port });
+    const done = (verdict) => {
+      sock.destroy();
+      resolve(verdict);
+    };
+    sock.setTimeout(timeoutMs);
+    sock.once('connect', () => done('open'));
+    sock.once('timeout', () => done('timeout'));
+    sock.once('error', (e) => done(e.code || 'error'));
+  });
+}
+
+/**
+ * 等 HTTP 就绪，并在超时时给出**可用**的诊断（CI run 35499194130 的教训）。
+ *
+ * 原实现只抛 `waitForHttp timeout: <url> (fetch failed)`：fetch failed 同时
+ * 覆盖「ECONNREFUSED（无人监听）」「DNS 失败」「代理拦截」等完全不同的原因，
+ * 且脚本随后 cleanup 会 rmSync(tmpDir) **删掉唯一的 admin-api 日志**——真机
+ * 报障时现场已被自己销毁，只能靠猜（本轮为此浪费了整整一轮排查）。
+ * 现在超时路径必须回答三件事：子进程还活着吗（exitCode/signal）、端口在 TCP
+ * 层是否有人听、admin-api 日志尾部说了什么。
+ */
+async function waitForHttp(url, timeoutMs = 90_000, probe = null) {
   const deadline = Date.now() + timeoutMs;
   let last = '';
   while (Date.now() < deadline) {
@@ -82,11 +136,36 @@ async function waitForHttp(url, timeoutMs = 90_000) {
       if (res.ok) return true;
       last = `HTTP ${res.status}`;
     } catch (e) {
-      last = e instanceof Error ? e.message : String(e);
+      const cause = e?.cause?.code ? ` cause=${e.cause.code}` : '';
+      last = `${e instanceof Error ? e.message : String(e)}${cause}`;
     }
     await sleep(1000);
   }
-  throw new Error(`waitForHttp timeout: ${url} (${last})`);
+
+  const lines = [`waitForHttp timeout: ${url} (${last})`];
+  if (probe) {
+    const { child, host = 'localhost', port, logFile } = probe;
+    if (child) {
+      lines.push(
+        `  子进程：pid=${child.pid} exitCode=${child.exitCode} signalCode=${child.signalCode}` +
+          `${child.exitCode === null && child.signalCode === null ? '（仍在运行——不是崩溃，是起不来或端口不对）' : '（已退出——见下方日志的致命错误）'}`,
+      );
+    }
+    lines.push(`  TCP ${host}:${port} → ${await probeTcp(host, port)}`);
+    if (logFile) {
+      try {
+        const tail = readFileSync(logFile, 'utf8')
+          .split('\n')
+          .filter((l) => l.trim() && !l.startsWith('query:'))
+          .slice(-12)
+          .join('\n');
+        lines.push(`  admin-api 日志尾部（${logFile}）：\n${tail}`);
+      } catch (e) {
+        lines.push(`  （读取 admin-api 日志失败：${e instanceof Error ? e.message : e}）`);
+      }
+    }
+  }
+  throw new Error(lines.join('\n'));
 }
 
 function baseEnv(port) {
@@ -233,6 +312,37 @@ async function main() {
   tmpDir = mkdtempSync(path.join(tmpdir(), 'acf-qa05cb-'));
   console.log(`临时目录：${tmpDir}`);
 
+  // 端口预检（本轮 CI 实爆的直接根因面）：docker run -p 在宿主机端口被占用时
+  // 的表现依赖 docker 版本/driver（有的直接失败，有的建了容器但映射不可用），
+  // 而 admin-api 撞端口则必然是 EADDRINUSE 退出。无论哪条路径，下游都只会
+  // 看到「服务起不来」。故这里**在动任何东西之前**就把端口探一遍：
+  //   · 环境变量显式指定的端口被占 → 用户意图与实际冲突，报错（附占用者查法）；
+  //   · 随机抽到的端口被占 → 静默重抽（不让倒霉抽样把 CI 判红）。
+  //
+  // 只检「本脚本要自己占」的端口：SKIP_DOCKER 模式下 PG/Redis 是**复用外部**
+  // 的，它们本就应当在监听，探到 open 是预期状态而非冲突。
+  const checkPort = async (envVal, current, getLabel) => {
+    const verdict = await probeTcp('127.0.0.1', current, 1200);
+    if (verdict !== 'open') return current;
+    if (envVal !== null) {
+      throw new Error(
+        `端口预检失败：${getLabel()} 端口 ${current} 已被占用（TCP open，但该端口由环境变量显式指定）。` +
+          `\n  查占用者：lsof -iTCP:${current} -sTCP:LISTEN ；或更换该环境变量的值。`,
+      );
+    }
+    const fresh = drawPort();
+    console.log(`  ⚠ ${getLabel()} 随机端口 ${current} 已被占用 → 自动改抽 ${fresh}`);
+    return fresh;
+  };
+  API_PORT = await checkPort(API_PORT_ENV, API_PORT, () => 'API');
+  if (DOCKER_MODE) {
+    PG_PORT = await checkPort(PG_PORT_ENV, PG_PORT, () => 'PG');
+    REDIS_PORT = await checkPort(REDIS_PORT_ENV, REDIS_PORT, () => 'Redis');
+  }
+  console.log(
+    `端口预检通过（PG :${PG_PORT} / Redis :${REDIS_PORT} / API :${API_PORT}${DOCKER_MODE ? '' : '；PG/Redis 外部复用不检'}）`,
+  );
+
   for (const name of (run('docker', ['ps', '-a', '--filter', 'name=acf-qa05cb-', '--format', '{{.Names}}']).stdout || '')
     .split('\n').map((s) => s.trim()).filter(Boolean)) {
     run('docker', ['rm', '-f', name]);
@@ -264,7 +374,8 @@ async function main() {
   ok('空库迁移链真跑通过', migrate.status === 0, migrate.stderr || migrate.stdout);
   if (migrate.status !== 0) return summary();
 
-  const apiLog = openSync(path.join(tmpDir, 'admin-api.log'), 'a');
+  const apiLogPath = path.join(tmpDir, 'admin-api.log');
+  const apiLog = openSync(apiLogPath, 'a');
   const apiChild = spawn('node', ['dist/main.js'], {
     cwd: API_DIR,
     env: baseEnv(API_PORT),
@@ -273,7 +384,33 @@ async function main() {
   });
   apiChild.unref();
   children.push(apiChild);
-  await waitForHttp(`http://localhost:${API_PORT}/api/health`);
+  // 先记日志再等：启动失败（如 EADDRINUSE）时 pid 早就不在，exitCode 由这里捕获。
+  const apiExit = new Promise((resolve) => {
+    apiChild.once('exit', (code, signal) => {
+      console.log(`  ⚠ admin-api 子进程提前退出：exitCode=${code} signal=${signal}`);
+      resolve();
+    });
+    apiChild.once('error', (e) => {
+      console.log(`  ⚠ admin-api 子进程 spawn 失败：${e.message}`);
+      resolve();
+    });
+  });
+  await Promise.race([
+    waitForHttp(`http://localhost:${API_PORT}/api/health`, 90_000, {
+      child: apiChild,
+      host: 'localhost',
+      port: API_PORT,
+      logFile: apiLogPath,
+    }),
+    // 子进程已退出就没必要再空等满 90s——立刻把日志摊开（原来的行为是
+    // 把一个已经死掉的进程当成"慢启动"，白等 90s 再报一句 fetch failed）。
+    apiExit.then(() => waitForHttp(`http://localhost:${API_PORT}/api/health`, 1_000, {
+      child: apiChild,
+      host: 'localhost',
+      port: API_PORT,
+      logFile: apiLogPath,
+    })),
+  ]);
   ok('admin-api 就绪（空库迁移链真跑）', true);
 
   const token = await login();
@@ -500,10 +637,16 @@ function cleanup() {
   }
   run('docker', ['rm', '-f', PG_CONTAINER, REDIS_CONTAINER]);
   if (tmpDir) {
-    try {
-      rmSync(tmpDir, { recursive: true, force: true });
-    } catch {
-      /* ignore */
+    // 失败时**保留**临时目录：admin-api.log（唯一的启动诊断证据）在被删掉的
+    // 目录里，正是本轮真机报障只能靠猜的原因（CI 35499194130）。成功仍清理。
+    if (process.exitCode) {
+      console.log(`（失败：保留诊断目录 ${tmpDir}，含 admin-api.log）`);
+    } else {
+      try {
+        rmSync(tmpDir, { recursive: true, force: true });
+      } catch {
+        /* ignore */
+      }
     }
   }
 }

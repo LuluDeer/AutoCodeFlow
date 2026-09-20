@@ -128,7 +128,21 @@
 #     回调区残留 `*.tmp`，getDeadLetterCount 与死信保留扫描排除 `.tmp`。
 #     本机(Windows) ncc 0.44 重打（2475kB → 2479kB），同目录重复构建两次
 #     逐字节一致（05993801…）。
-#   - 本轮（NETOPT-6⑤）：routes/execute.ts parsePackageRequirements 剥 UTF-8
+#   - NETOPT-6⑤：routes/execute.ts parsePackageRequirements 剥 UTF-8
 #     BOM——包内 requirements.txt 带 BOM 时首行依赖不再静默丢失（与 python
 #     执行器同形对齐）。本机(Windows) ncc 0.44 重打，2479kB（fba4a0cd…）。
-fba4a0cd4c9d6e6822ffb972faac68eb69ba370da40d5058e206c70b3feff70f  index.js
+#   - 本轮（NETOPT-8③ + NETOPT-F）：漏打补账。f1cb0d04 只回填了 NETOPT-6⑤ 的
+#     哈希，此后**两次改 executor-node/src 的提交都没重打 bundle**，CI 的
+#     desktop-bundle-drift 因此连续报红（actual=239bbd2e… ≠ expected=fba4a0cd…）：
+#       · c41fd22d（NETOPT-8③）：删除应用时执行器清理 apps/<appId>——admin 扇出
+#         stop/uninstall + executor 新增 /app-uninstall（routes/deploy.ts、
+#         routes/execute.ts、main.ts、routes/health.ts 等）；
+#       · d74355aa（NETOPT-F）：bwrap 探测模块级缓存（interpreters.ts
+#         resolveBwrapPath）、in-flight 下载 abort 固化、prepare 信号收口、
+#         file-logger/scheduler/download/pull 等。
+#     危害与本文件既有的 cc54aa2f 注记同类：源码修了却在**发布物**里缺席——
+#     桌面端内嵌执行器仍是旧行为（/app-uninstall 端点根本不存在）。
+#     本次按 ADR-005 同 commit 重打：本机(Windows) ncc 0.44 产出 239bbd2e…，
+#     与 CI（ubuntu-latest）侧独立重打的 actual **逐字节一致**（又一次印证
+#     ncc 0.44 的跨平台字节确定性，见上文 cc54aa2f/a4dad9b 注记）。bundle 2508kB。
+239bbd2eefd6063d9018ee909865fcdde3bd10498e7572b7774aca37e763c454  index.js

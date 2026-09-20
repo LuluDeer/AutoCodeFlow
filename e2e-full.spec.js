@@ -82,7 +82,25 @@ await page.waitForTimeout(2000);
 });
 
 // ── 3. 任务管理：新建任务（带Cron + JS 脚本）───────────────────────────────
-const E2E_CRON_TASK_NAME = 'E2E-测试任务-每分钟';
+// NETOPT-6⑦ 修订（CI run 35499194130 实爆）：原实现有两处**必然**失败，与
+// 被测行为无关，属于"用例根本没走到业务断言"的形态缺陷：
+//
+//  ① 任务名用了中文 `E2E-测试任务-每分钟`，而 TaskFormPage 的 name 字段有
+//     硬规则 `pattern: /^[a-zA-Z0-9_-]+$/`（表单侧；i18n
+//     `taskForm.field.name.pattern` = "只允许字母、数字、下划线、连字符"）。
+//     填完点提交 → form.validateFields() 抛 errorFields → handleSubmit 在
+//     校验分支 return，**不发 POST**。日志里 "✓ 任务表单提交" 只是"点了按钮"，
+//     下面的 `formSubmitted` 却据此置真，于是断言必然 `deleted=0 > 0` 失败。
+//     故改 ASCII 名（与同文件其它用例的 `e2e-create-<ts>` 命名一致）。
+//
+//  ② 直接 fill 了一个 `input[id*="cron"]` 就以为设了 Cron——但 Cron 输入框是
+//     `{triggerType === 'cron' && ...}` 条件渲染的，而表单 initialValues 是
+//     triggerType='manual'，**该输入框默认根本不存在**。同理 entrypoint 是
+//     required 且无默认值，原用例从未填过它。二者叠加下即使名称合法，
+//     validateFields 仍会因 entrypoint 必填而 return。
+//     现按同文件用例 25 的既有成功路径补齐：先选 Cron 触发方式 → 填 Cron 表达式
+//     → 填入口文件 → 再提交。
+const E2E_CRON_TASK_NAME = 'e2e-cron-every-minute';
 // NETOPT-6⑦：本用例历史上会真的建成 `* * * * *` 每分钟定时任务且从不清理——
 // 整轮 e2e 结束后它继续每分钟真实派发，挤占唯一执行器槽位，污染后续所有
 // 轮次（最典型的症状：后续用例的触发长时间 pending/超时）。cleanupE2ECronTasks
@@ -121,51 +139,69 @@ test('3. 任务管理 — 新建定时任务', async ({ page, request }) => {
   const taskCountText = await page.locator('body').innerText();
   console.log('  页面内容片段:', taskCountText.slice(0, 200).replace(/\n/g, ' '));
 
-  // 点击新建任务
-  const newBtn = page.getByRole('button', { name: /新建|创建|\+|New/i }).first();
+  // 点击新建任务（表格空态也有一个「去创建」按钮，故限定页头 extra 区那个）
+  const newBtn = page.getByRole('button', { name: /新建|创建任务|New/i }).first();
   const visible = await newBtn.isVisible().catch(() => false);
+  // formSubmitted 只在**真实观察到 POST /api/tasks** 后置真——历史实现是
+  // "点了按钮就算提交"，于是校验被拦（根本没发请求）时反而去断言"任务应该在
+  // 列表里"，把一条必然失败伪装成业务回归。
   let formSubmitted = false;
   if (visible) {
     await newBtn.click();
+    await page.waitForURL(/\/tasks\/new/, { timeout: 15000 });
     await page.waitForLoadState('networkidle');
     console.log('  跳转到任务表单:', page.url());
 
-    // 填写任务名
-    const nameField = page.locator('input[id*="name"], input[placeholder*="任务名"], input[placeholder*="name"]').first();
-    const hasName = await nameField.isVisible().catch(() => false);
-    if (hasName) {
-      await nameField.fill(E2E_CRON_TASK_NAME);
-    }
+    // 任务名：必须匹配表单规则 ^[a-zA-Z0-9_-]+$（见文件头 ①）。
+    // 用 #name 精确定位（同文件用例 25 的既有写法），避免
+    // `input[id*="name"]` 命中 desc 里含 "name" 的无关输入框。
+    await page.locator('#name').fill(E2E_CRON_TASK_NAME);
+    // 入口文件：required 且无默认值（见文件头 ②）——此前从未填写。
+    await page.locator('#entrypoint').fill('index.js');
 
-    // 填写 Cron 表达式
-    const cronField = page.locator('input[id*="cron"], input[placeholder*="cron"], input[placeholder*="Cron"]').first();
-    const hasCron = await cronField.isVisible().catch(() => false);
-    if (hasCron) {
-      await cronField.fill('* * * * *');
-      console.log('  ✓ 设置 Cron: * * * * *');
-    }
+    // 触发方式默认 manual，Cron 输入框是条件渲染的——必须先选中 Cron 定时。
+    await page.getByRole('radio', { name: /Cron 定时/ }).click();
+    const cronField = page.locator('#cronExpression');
+    await cronField.waitFor({ state: 'visible', timeout: 10000 });
+    await cronField.fill('* * * * *');
+    console.log('  ✓ 设置 Cron: * * * * *');
 
-    // 等待代码编辑器加载（Monaco / CodeMirror）
-    await page.waitForTimeout(2000);
+    // 注：本表单创建态**没有**代码编辑器——glueSource 由创建成功后才渲染的
+    // GlueEditor 写入（见 TaskFormPage「分区五」注释）。历史实现这里等 Monaco
+    // 并用 keyboard.type 打脚本，实际永远 hasEditor=false，属无效步骤；
+    // 保留为条件分支仅用于兼容将来把编辑器前移到创建态。
     const monacoEditor = page.locator('.monaco-editor, .cm-editor').first();
     const hasEditor = await monacoEditor.isVisible().catch(() => false);
     if (hasEditor) {
       await monacoEditor.click();
       await page.keyboard.press('Control+a');
-      await page.keyboard.type('console.log("E2E test task running:", new Date().toISOString());\nreturn { status: "ok", ts: Date.now() };');
+      await page.keyboard.type('console.log("E2E test task running:", new Date().toISOString());');
       console.log('  ✓ 填写 JS脚本');
     }
 
     await page.screenshot({ path: '/tmp/e2e-03-task-form.png', fullPage: false });
 
-    // 提交表单
-    const submitBtn = page.getByRole('button', { name: /保存|提交|确定|Save|Submit/i }).first();
-    const hasSubmit = await submitBtn.isVisible().catch(() => false);
-    if (hasSubmit) {
-      await submitBtn.click();
-      await page.waitForTimeout(2000);
-      formSubmitted = true;
-      console.log('  ✓ 任务表单提交');
+    // 提交：必须点提交条里的**主按钮**。历史选择器 /保存|提交|确定/ 会先命中
+    // 同一 Space 里排在更前面的「保存为模板」（label 含"保存"）——点它只弹模板
+    // 弹窗，表单永远不会提交（这是本用例第三个必然失败点）。
+    // 提交条有 data-testid，且创建态主按钮文案为「创建任务」。
+    const submitBtn = page
+      .locator('[data-testid="task-form-submit-bar"]')
+      .getByRole('button', { name: /创建任务|保存更改/ });
+    await submitBtn.click();
+    // 以真实响应为提交凭据（成功 201；被校验拦下则不会有任何请求 → 这里超时，
+    // 报错信息直接指向"表单校验未通过"，而不是伪装成列表断言失败）。
+    const createResp = await page
+      .waitForResponse(
+        (r) => r.url().includes('/api/tasks') && r.request().method() === 'POST',
+        { timeout: 15000 },
+      )
+      .catch(() => null);
+    if (createResp) {
+      formSubmitted = createResp.status() === 201;
+      console.log(`  ✓ 任务表单提交（POST /api/tasks → ${createResp.status()}）`);
+    } else {
+      console.log('  ⚠ 提交后未观察到 POST /api/tasks（表单校验拦截或按钮未命中）');
     }
   }
   await page.screenshot({ path: '/tmp/e2e-03-task-list.png', fullPage: false });
