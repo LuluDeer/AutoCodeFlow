@@ -58,9 +58,42 @@ class NotifyClient:
         )
     """
 
-    def __init__(self, admin_api_url: str = "http://localhost:3105", auth_token: Optional[str] = None):
+    def __init__(
+        self,
+        admin_api_url: str = "http://localhost:3105",
+        auth_token: Optional[str] = None,
+        timeout: float = 10.0,
+    ):
         self._base = admin_api_url.rstrip("/")
         self._token = auth_token
+        self._timeout = timeout
+        # NETOPT-10-7: 实例级懒客户端（连接池复用）——任务收尾常见连续
+        # notify_failure + notify_success 两次调用，此前每次新建 AsyncClient
+        # = 两次完整 TLS 握手。check-then-set 在 asyncio 单线程内原子。
+        self._client: Optional[httpx.AsyncClient] = None
+
+    def _get_client(self) -> httpx.AsyncClient:
+        if self._client is None or self._client.is_closed:
+            # NETOPT-C P3: trust_env=False 与其余三端对齐（autoflow-sdk
+            # callback/http.py、autocodeflow-http client）——任务进程回调不走
+            # 代理，通知也不该走代理（同一进程同一出站策略，避免代理泄漏
+            # 通知内容或被代理拦截）。
+            self._client = httpx.AsyncClient(timeout=self._timeout, trust_env=False)
+        return self._client
+
+    async def aclose(self) -> None:
+        """显式关闭底层 AsyncClient（连接池释放；幂等）。"""
+        if self._client and not self._client.is_closed:
+            await self._client.aclose()
+            self._client = None
+
+    # NETOPT-C P3: async context manager 兜底——任务作者忘调 aclose 时
+    # `async with NotifyClient(...) as client:` 保证连接池释放。
+    async def __aenter__(self) -> "NotifyClient":
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        await self.aclose()
 
     def _headers(self) -> dict[str, str]:
         h: dict[str, str] = {}
@@ -98,14 +131,13 @@ class NotifyClient:
             payload["webhookUrl"] = webhook_url
 
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                # N22: admin-api route is singular `/api/notification/send`
-                # (NotificationConfigController @Controller("notification")).
-                resp = await client.post(
-                    f"{self._base}/api/notification/send",
-                    json=payload,
-                    headers=self._headers(),
-                )
+            # N22: admin-api route is singular `/api/notification/send`
+            # (NotificationConfigController @Controller("notification")).
+            resp = await self._get_client().post(
+                f"{self._base}/api/notification/send",
+                json=payload,
+                headers=self._headers(),
+            )
         except Exception as e:
             logger.error(f"Failed to send notification: {e}")
             return False

@@ -40,8 +40,10 @@ import { TaskEnv } from './types';
  *
  * BUG-15 复审澄清 parity 前提：这里说的「python 侧契约」**仅指
  * autocodeflow-http**（Admin API 回调 HTTP 客户端）。任务内 python SDK
- * （autoflow-sdk）并没有自动重试——不要把本包的 parity 前提误读为 autoflow-sdk；
- * 「本包补齐对齐 python」的说法只对 autocodeflow-http 成立。本包现补齐同款语义：
+ * （autoflow-sdk）**自批次 B 起**（NETOPT-10-1）report()/report_failure()
+ * 已有 3 次有界重试（5xx/429/TransportError、4xx 单发）——本包 send() 对
+ * `/api/executions/callback` 的 POST 同步豁免（见 isTerminalCallbackUrl），
+ * 其余非幂等仍不重试。本包现补齐同款语义：
  * - 重试：仅幂等方法（GET/HEAD/OPTIONS，`safeMethodsOnly`）在可重试错误上重试
  *   （429/500/502/503/504 或网络层错误：超时/连接拒绝/断网），指数退避
  *   （minWaitMs×2^n，封顶 maxWaitMs），尊重 `Retry-After` 头（delta-seconds
@@ -50,7 +52,8 @@ import { TaskEnv } from './types';
  *   `CircuitBreakerOpenError`）；resetTimeoutMs 后 half-open 放行单个探测请求，
  *   成功即 closed，失败重新 open——与 python 的 `_CircuitBreaker` 同构；
  * - 非幂等方法（POST/PUT/DELETE）**不自动重试**，但同样计入熔断失败
- *   （与 python `_should_retry` 语义一致）。
+ *   （与 python `_should_retry` 语义一致）；唯一例外是终态回调直报通道
+ *   POST `/api/executions/callback`（NETOPT-F P2-4，见 isTerminalCallbackUrl）。
  */
 
 /**
@@ -82,11 +85,34 @@ export const SAFE_METHODS: ReadonlySet<string> = new Set([
   'OPTIONS',
 ]);
 
+/** NETOPT-F P2-4: reportSuccess/reportFailure 直报通道（POST
+ *  `/api/executions/callback`）豁免 safeMethodsOnly——对齐 autoflow-sdk
+ *  callback.py（CALLBACK_MAX_ATTEMPTS=3：5xx/429/网络错误有界退避，4xx
+ *  契约拒绝仍单发）。任务代码同步通道没有 executor 侧落盘重放兜底，一次
+ *  瞬时抖动即丢终态、admin 侧该行滞留 RUNNING 直到 stale sweep 回收
+ *  （真实 failureReason 丢失）。
+ *  NETOPT-G P3: 路径判定用段界正则（`/api/executions/callback` 后必须是
+ *  `/`、`?` 或串尾）而非裸 startsWith——兄弟路由 /api/executions/callback-extra
+ *  不应被误判为回调端点而豁免重试。注意与 withExecutorAddress 的精确尾正则
+ *  （/\/executions\/callback\/?$/）语义差异：前者是"是否回调通道"（豁免
+ *  重试），后者是"是否 stamp executorAddress"（数据改写），两谓词对
+ *  /api/executions/callback 系路径收敛一致即可，兄弟路由下各自收紧不互扰。 */
+export function isTerminalCallbackUrl(url: string, method: Method): boolean {
+  return (
+    method.toUpperCase() === 'POST' &&
+    /^\/api\/executions\/callback(?:\/|\?|$)/.test(url)
+  );
+}
+
 /** 与 python `_RETRYABLE_HTTP_STATUSES = {429, 500, 502, 503, 504}` 对齐。 */
 export const RETRYABLE_HTTP_STATUSES: readonly number[] = [429, 500, 502, 503, 504];
 
 export interface HttpRetryConfig {
-  /** 最大重试次数（不含首次请求；默认 3 → 至多 4 次尝试，对齐 python max_retries）。 */
+  /** 最大重试次数（不含首次请求；默认 3 → 至多 4 次尝试）。
+   *  NETOPT-G P3: 旧注释"对齐 python max_retries"引错常量——python
+   *  CALLBACK_MAX_ATTEMPTS=3 是**总尝试次数**（重试 2 次），node 默认
+   *  maxRetries=3 是重试 3 次（总 4 次尝试），比 python 多一次。行为无害
+   *  （多一次退避更稳），此处如实标注差异，勿再引 python 常量背书。 */
   maxRetries: number;
   /** 首次退避基数（ms；默认 1000，对齐 python min_wait=1.0s）。 */
   minWaitMs: number;
@@ -251,6 +277,19 @@ export function isRetryableError(
     return true;
   }
   return isNetworkLevelError(error);
+}
+
+/**
+ * NETOPT-G P2-1: 回调通道（POST /api/executions/callback）的 5xx 全量可重试判定
+ * ——对齐 python callback.py 的 `status_code >= 500 or == 429`。RETRYABLE_HTTP_
+ * STATUSES 只列常见 5xx（429/500/502/503/504），501/505/507/508/599 等非常见
+ * 码 python 会同源退避重试、node 此前单发即抛——"一次抖动丢终态"洞在非常见
+ * 码上残留。仅在 isTerminalCallbackUrl 为真时叠加本判定（safe-GET 路径保持
+ * 原集合，避免把 501 也纳入常规重试面）。
+ */
+export function isCallbackRetryableStatus(error: unknown): boolean {
+  const status = (error as AxiosError)?.response?.status;
+  return typeof status === 'number' && (status >= 500 || status === 429);
 }
 
 /**
@@ -469,7 +508,10 @@ export class HttpClient {
   ): Promise<T> {
     const client = this.requireEnabled();
     const isSafe =
-      !this.retry.safeMethodsOnly || SAFE_METHODS.has(method.toUpperCase());
+      !this.retry.safeMethodsOnly ||
+      SAFE_METHODS.has(method.toUpperCase()) ||
+      // NETOPT-F P2-4: callback 直报通道豁免（对齐 autoflow-sdk）。
+      isTerminalCallbackUrl(url, method);
     const maxAttempts = this.retry.maxRetries + 1;
 
     for (let attempt = 0; ; attempt++) {
@@ -488,7 +530,13 @@ export class HttpClient {
       try {
         response = await this.dispatch<T>(client, method, url, data, config);
       } catch (error) {
-        const breakable = isRetryableError(error, this.retry.retryableStatuses);
+        // NETOPT-G P2-1: 回调通道 5xx 全量可重试（对齐 python >=500）——非常见
+        // 5xx 不在 RETRYABLE_HTTP_STATUSES，叠加回调判定后 501/505/507/508/599
+        // 也走有界退避（同时计入熔断，与 python 5xx 计熔断一致）。
+        const callbackChannel = isTerminalCallbackUrl(url, method);
+        const breakable =
+          isRetryableError(error, this.retry.retryableStatuses) ||
+          (callbackChannel && isCallbackRetryableStatus(error));
         if (breakable) this.breaker.onFailure();
         else if (holdsProbe) this.breaker.onProbeSettled();
         const canRetry =

@@ -5,6 +5,38 @@ import respx
 from autoflow_sdk.http import HttpClient, AsyncHttpClient, HttpClientError
 
 
+class TestTrustEnvPinned:
+    """NETOPT-D P3-2: http.py 两端 trust_env=False 无属性断言测试——
+    SDK 任务 HTTP 走 admin-api/内部通道，禁代理 env（与 callback/notify
+    http.py 对齐）。钉死构造 kwargs，防未来被机械改成默认 True 让任务
+    回调经代理 env 泄漏。"""
+
+    def test_sync_client_pins_trust_env_false(self, monkeypatch):
+        captured: dict = {}
+        orig = httpx.Client.__init__
+
+        def spy(self, *a, **kw):
+            captured.update(kw)
+            return orig(self, *a, **kw)
+
+        monkeypatch.setattr(httpx.Client, "__init__", spy)
+        c = HttpClient(base_url="http://api.test")
+        c._client()
+        assert captured.get("trust_env") is False
+
+    def test_async_client_pins_trust_env_false(self, monkeypatch):
+        captured: dict = {}
+        orig = httpx.AsyncClient.__init__
+
+        def spy(self, *a, **kw):
+            captured.update(kw)
+            return orig(self, *a, **kw)
+
+        monkeypatch.setattr(httpx.AsyncClient, "__init__", spy)
+        AsyncHttpClient(base_url="http://api.test")
+        assert captured.get("trust_env") is False
+
+
 class TestHttpClientInit:
     def test_base_url_strips_trailing_slash(self):
         c = HttpClient(base_url="http://example.com/")

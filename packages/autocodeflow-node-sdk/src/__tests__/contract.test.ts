@@ -5,10 +5,14 @@
  * acf-cli / mcp-server / 本包 / autoflow-sdk 消费同一份文件）。
  * 契约语义与信封源头见 contract-fixtures/README.md。
  */
+import { existsSync, readFileSync } from "node:fs";
+import * as path from "node:path";
+
 import contract from "../../../contract-fixtures/contract.json";
 
 import axios from "axios";
 import { HttpClient } from "../http-client";
+import { VALID_FAILURE_REASONS } from "../context";
 
 jest.mock("axios");
 
@@ -111,6 +115,42 @@ describe("contract-fixtures (QA-07 shared vectors)", () => {
       } else {
         await expect(onRejected(error)).rejects.toBe(error);
       }
+    }
+  });
+});
+
+// ── NETOPT-G P3: executor-protocol 契约（node-sdk 侧）────────────────────────
+// 白名单三源（protocol.json executorReportable / python callback.py / node
+// context.ts）当前逐值相等，但 CI 交叉闸门此前只盖到 executor-node 与
+// admin-api 两侧（executor-protocol-contract.spec.ts），node-sdk 的
+// VALID_FAILURE_REASONS 无测试比对 protocol.json——未来新增 failureReason
+// 值会静默落后，直到某任务上报 → admin @IsIn 400 拒掉整批回调。本 describe
+// 与 executor-node 侧同款 findRepoRoot 加载同一份单一事实源。
+const PROTOCOL_RELATIVE = path.join("packages", "executor-protocol", "protocol.json");
+
+function findRepoRoot(from: string): string {
+  let dir = from;
+  for (let i = 0; i < 12; i++) {
+    if (existsSync(path.join(dir, PROTOCOL_RELATIVE))) return dir;
+    dir = path.dirname(dir);
+  }
+  throw new Error(`executor-protocol/protocol.json not found above ${from}`);
+}
+
+const protocol = JSON.parse(
+  readFileSync(path.join(findRepoRoot(__dirname), PROTOCOL_RELATIVE), "utf-8"),
+);
+
+describe("executor-protocol parity (node-sdk side)", () => {
+  it("VALID_FAILURE_REASONS 与 failureReason.executorReportable 逐值一致", () => {
+    expect([...VALID_FAILURE_REASONS].sort()).toEqual(
+      [...protocol.failureReason.executorReportable].sort(),
+    );
+  });
+
+  it("白名单不含 admin 内部专用取值（stale_recovered 等）", () => {
+    for (const internal of protocol.failureReason.adminInternalOnly) {
+      expect(VALID_FAILURE_REASONS).not.toContain(internal);
     }
   });
 });

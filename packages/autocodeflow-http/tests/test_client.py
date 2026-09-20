@@ -474,3 +474,76 @@ class TestPk09CircuitBreakerExceptionFilter:
             await client.get("/data")
         assert breaker._failure_count == 2
         assert breaker.is_open
+# NETOPT-10-5: 重试/熔断异常集对齐——ReadError（NetworkError 子类）必须可重试；
+# RemoteProtocolError（ProtocolError 子类）按模块 docstring 计入熔断失败计数
+# （此前两者都不重试、RemoteProtocolError 也不计熔断）。
+class TestNetworkErrorExceptionAlignment:
+    FAST = dict(max_retries=3, min_wait_sec=0.001, max_wait_sec=0.002)
+
+    @pytest.mark.asyncio
+    async def test_read_error_is_retried_for_safe_methods(self, respx_mock):
+        route = respx_mock.get("http://api.example.com/data").mock(
+            side_effect=[httpx.ReadError("connection lost"), httpx.Response(200, json={"ok": True})]
+        )
+        client = AutoFlowHttpClient(
+            base_url="http://api.example.com",
+            retry_config=RetryConfig(**self.FAST),
+        )
+        resp = await client.get("/data")
+        assert resp.status_code == 200
+        assert route.call_count == 2  # ReadError -> one retry -> 200
+
+    @pytest.mark.asyncio
+    async def test_write_error_is_retried_for_safe_methods(self, respx_mock):
+        route = respx_mock.get("http://api.example.com/data").mock(
+            side_effect=[httpx.WriteError("broken pipe"), httpx.Response(200, json={"ok": True})]
+        )
+        client = AutoFlowHttpClient(
+            base_url="http://api.example.com",
+            retry_config=RetryConfig(**self.FAST),
+        )
+        resp = await client.get("/data")
+        assert resp.status_code == 200
+        assert route.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_remote_protocol_error_not_retried_but_counts_toward_breaker(self, respx_mock):
+        breaker = CircuitBreaker(failure_threshold=2, reset_timeout_sec=999)
+        route = respx_mock.get("http://api.example.com/data").mock(
+            side_effect=httpx.RemoteProtocolError("peer reset")
+        )
+        client = AutoFlowHttpClient(
+            base_url="http://api.example.com",
+            circuit_breaker=breaker,
+            retry_config=RetryConfig(**self.FAST),
+        )
+        for _ in range(2):
+            with pytest.raises(httpx.RemoteProtocolError):
+                await client.get("/data")
+        # ProtocolError 不在重试集（NetworkError 父类之外）→ 单次尝试
+        assert route.call_count == 2
+        # 但计入熔断失败计数 → 两次失败后熔断打开
+        assert breaker.is_open
+# NETOPT-C P3: trust_env=False 四端对齐 + async context manager 兜底。
+class TestClientLifecycle:
+    @pytest.mark.asyncio
+    async def test_client_trust_env_disabled(self):
+        client = AutoFlowHttpClient(base_url="http://api.example.com")
+        try:
+            http_client = client._get_client()
+            assert http_client.trust_env is False
+        finally:
+            await client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_async_context_manager_closes_pool(self, respx_mock):
+        route = respx_mock.get("http://api.example.com/data").mock(
+            return_value=httpx.Response(200, json={"ok": True})
+        )
+        async with AutoFlowHttpClient(base_url="http://api.example.com") as client:
+            resp = await client.get("/data")
+            assert resp.status_code == 200
+            assert route.call_count == 1
+            c = client._get_client()
+            assert not c.is_closed
+        assert c.is_closed

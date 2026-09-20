@@ -45,14 +45,35 @@ export interface ReportFailureOptions {
   durationMs?: number;
   /**
    * admin-api `ExecutionFailureReason` value. Defaults to `script_error` —
-   * the same default as the python SDK. Note the deliberate divergence:
-   * the python SDK validates the value client-side against its whitelist
-   * and raises ValueError, while the node SDK stays a thin client and lets
-   * the admin DTO validation reject unknown values (see
-   * docs/sdk-guide.md capability matrix).
+   * the same default as the python SDK.
+   *
+   * NETOPT-F P3-2: 本地白名单早拒，与 python SDK 对齐（callback.py 的
+   * VALID_FAILURE_REASONS 早拒 ValueError）——旧实现是 thin client 靠 admin
+   * DTO @IsIn 拒绝；非法值发 admin 被 400 拒后（P2-4 的 4xx 单发语义）任务
+   * 代码拿到远端错误且白烧一次 HTTP。白名单与 admin 的 executorReportable
+   * 子集同源（单一事实源：
+   * packages/executor-protocol/protocol.json failureReason.executorReportable，
+   * 与 python callback.py 逐值对齐；改动前先同步协议与 python 端）。
    */
   failureReason?: string;
 }
+
+/** admin-api `ExecutionFailureReason` 中**执行器可上报**子集（与 python SDK
+ *  callback.py VALID_FAILURE_REASONS 逐值对齐）。 */
+export const VALID_FAILURE_REASONS: ReadonlySet<string> = new Set([
+  'package_fetch_failed',
+  'script_error',
+  'timeout',
+  'executor_offline',
+  'executor_restart',
+  'dependency_install_failed',
+  'git_fetch_failed',
+  'runtime_missing',
+  'sandbox_unavailable',
+  'interpreter_unavailable',
+  'killed',
+  'unknown',
+]);
 
 /**
  * Runtime context handed to every task handler.
@@ -274,6 +295,15 @@ export class TaskContext {
    */
   reportFailure(error: unknown, options: ReportFailureOptions = {}): Promise<unknown> {
     const { summary, durationMs, failureReason = 'script_error' } = options;
+    // NETOPT-F P3-2: 本地早拒（python SDK 同款）——非法值不发 HTTP，报错
+    // 带合法值列表；否则 admin @IsIn 400 后 P2-4 的 4xx 单发语义下任务代码
+    // 只拿到远端错误。
+    if (!VALID_FAILURE_REASONS.has(failureReason)) {
+      throw new TypeError(
+        `invalid failureReason ${JSON.stringify(failureReason)}; expected one of ` +
+          [...VALID_FAILURE_REASONS].sort().join(', '),
+      );
+    }
     const item: Record<string, unknown> = {
       executionId: this.env.executionId,
       status: 'failed',

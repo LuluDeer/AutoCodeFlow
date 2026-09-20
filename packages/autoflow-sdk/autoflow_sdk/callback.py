@@ -38,11 +38,26 @@ the inner ``data`` — for the callback endpoint that is ``{results: [...]}``.
 """
 from typing import Any, Dict, List, Optional
 
+import random
+import time
+
 import httpx
 
 # CallbackItemDto field constraints (keep in sync with the admin DTO).
 ERROR_MESSAGE_MAX_LENGTH = 4096
 LOGS_MAX_LENGTH = 512_000
+
+# NETOPT-10-1: bounded retry for report(). A single transient network blip
+# previously lost the terminal callback entirely — the execution then sat
+# RUNNING until admin's stale sweep "recovered" it as stale_recovered, and the
+# real failureReason/errorMessage was lost forever (see executor-python's
+# _send_callback_with_retry, O-20). Retries are safe because admin's
+# transitionToTerminal is guarded by `status IN (open gate)`: a duplicate
+# terminal callback affects 0 rows (idempotent).
+CALLBACK_MAX_ATTEMPTS = 3
+CALLBACK_RETRY_BASE_DELAY_S = 0.5
+CALLBACK_RETRY_MAX_DELAY_S = 2.0
+CALLBACK_RETRY_JITTER_S = 0.25
 
 # ExecutionFailureReason enum values accepted by the DTO validation.
 #
@@ -179,15 +194,75 @@ class CallbackClient:
         if not self.enabled:
             raise CallbackDisabledError(self.disabled_reason)
         payload = [self._with_defaults(item) for item in items]
-        with httpx.Client(timeout=self.timeout, trust_env=False) as client:
-            resp = client.post(
-                self.callback_url,
-                json=payload,
-                headers={"Authorization": f"Bearer {self.token}"},
-            )
-            if resp.status_code >= 400:
-                raise self._status_error(resp)
-            return unwrap_envelope(resp.json())
+        # NETOPT-10-1: retry network-layer failures and 5xx/429 with bounded
+        # exponential backoff + jitter. Non-retryable 4xx keep single-shot
+        # semantics (a rejected batch is a contract violation — validation
+        # errors won't heal on retry, and burning attempts only delays the
+        # caller's own fallback).
+        #
+        # NETOPT-C P3: 与 executor 侧回调通道的重试差异是**有意的**——executor
+        # (apps/executor-python/routers/execute.py) 对 401/408 做有限重试且有
+        # 落盘重放兜底；SDK 是无状态任务代码的同步通道，4xx 一律单发即抛
+        # （含 408），任务作者须自行处理终态上报。若要对等加 408 重试，必须
+        # 同时补磁盘重放，否则只是放大重复回调（admin 终态幂等靠
+        # status IN (open gate) 条件 UPDATE，不是万能）。
+        #
+        # NETOPT-D P3（跨包交叉引用）: 与 autocodeflow-http 的策略差异同样
+        # **有意**——该包是通用任务出站通道，4xx 不抛（透传响应体）且对
+        # ProtocolError 不重试（对端中途断连重试收益低）；本包与 autocodeflow-ai
+        # 则重试 ProtocolError（有界）并对 4xx 抛异常（回调=契约、AI=可降级
+        # 分类）。改任何一端的重试集前，先读对端 docstring 对齐语义。
+        last_error: Optional[Exception] = None
+        for attempt in range(1, CALLBACK_MAX_ATTEMPTS + 1):
+            try:
+                with httpx.Client(timeout=self.timeout, trust_env=False) as client:
+                    resp = client.post(
+                        self.callback_url,
+                        json=payload,
+                        headers={"Authorization": f"Bearer {self.token}"},
+                    )
+                if resp.status_code >= 500 or resp.status_code == 429:
+                    last_error = self._status_error(resp)
+                    if attempt < CALLBACK_MAX_ATTEMPTS:
+                        self._sleep_before_retry(attempt)
+                        continue
+                    raise last_error
+                if resp.status_code >= 400:
+                    raise self._status_error(resp)
+                try:
+                    body = resp.json()
+                except ValueError:
+                    # NETOPT-C P3: 2xx 但 body 非 JSON = 服务端契约违约。按
+                    # docstring 承诺的类型契约统一抛 HTTPStatusError（原先裸
+                    # ValueError 不在契约内，调用方 catch HTTPStatusError 会漏）。
+                    body_preview = resp.text[:200].replace("\n", " ")
+                    # NETOPT-D P3: 消息带 body 摘要（前 200 字符），排障有信息量。
+                    raise httpx.HTTPStatusError(
+                        "Admin API returned non-JSON body on 2xx callback response: "
+                        f"{body_preview!r}",
+                        request=resp.request,
+                        response=resp,
+                    ) from None
+                return unwrap_envelope(body)
+            except httpx.TransportError as exc:
+                # Transport-level failure (connect/read/write/timeout/protocol
+                # reset). After the final attempt the original exception type
+                # is re-raised so callers can still catch httpx.ReadTimeout & co.
+                last_error = exc
+                if attempt < CALLBACK_MAX_ATTEMPTS:
+                    self._sleep_before_retry(attempt)
+                    continue
+                raise
+        raise last_error  # pragma: no cover - loop always returns or raises
+
+    @staticmethod
+    def _sleep_before_retry(attempt: int) -> None:
+        """Exponential backoff with jitter between retry attempts."""
+        delay = min(
+            CALLBACK_RETRY_BASE_DELAY_S * (2 ** (attempt - 1)),
+            CALLBACK_RETRY_MAX_DELAY_S,
+        )
+        time.sleep(delay + random.uniform(0, CALLBACK_RETRY_JITTER_S))
 
     @staticmethod
     def _status_error(resp: httpx.Response) -> httpx.HTTPStatusError:

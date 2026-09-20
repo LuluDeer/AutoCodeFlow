@@ -15,11 +15,13 @@
     后服务端实际已提交导致重复副作用。需要重试 mutating 请求时显式设
     ``safe_methods_only=False``（仅当端点自带幂等键才合适）。
 - **会重试的异常类型**：``httpx.HTTPStatusError``（可重试状态码）、
-  ``httpx.TimeoutException``、``httpx.ConnectError``。其余异常（ValueError/业务错误）
+  ``httpx.TimeoutException``、``httpx.NetworkError``（父类，覆盖 ConnectError /
+  ReadError / WriteError / CloseError）。其余异常（ValueError/业务错误）
   不重试、不计入熔断。
-- **熔断**：仅上述网络类/5xx/429 计入 ``CircuitBreaker`` 失败计数（见
-  ``_CIRCUIT_BREAKABLE_EXC``）；非网络异常不计。熔断 open 时请求直接抛
-  ``RuntimeError("Circuit breaker is open ...")``。
+- **熔断**：网络类（上表 + ``httpx.ProtocolError``，即对端中途断连的
+  RemoteProtocolError / LocalProtocolError）/ 5xx / 429 计入 ``CircuitBreaker``
+  失败计数（见 ``_CIRCUIT_BREAKABLE_EXC``）；非网络异常不计。熔断 open 时请求
+  直接抛 ``RuntimeError("Circuit breaker is open ...")``。
 
 ### 与 node SDK 的 parity 关系
 
@@ -29,7 +31,6 @@
 """
 from __future__ import annotations
 
-import asyncio
 import time
 import logging
 from dataclasses import dataclass, field
@@ -57,8 +58,8 @@ SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 _CIRCUIT_BREAKABLE_EXC = (
     httpx.HTTPStatusError,  # 5xx / 429（_do 只对 retryable_statuses 抛）
     httpx.TimeoutException,
-    httpx.ConnectError,
-    httpx.NetworkError,
+    httpx.NetworkError,     # 父类：ConnectError / ReadError / WriteError / CloseError
+    httpx.ProtocolError,    # RemoteProtocolError / LocalProtocolError（对端中途断连）
 )
 
 
@@ -200,14 +201,23 @@ class AutoFlowHttpClient:
         self._retry = retry_config or RetryConfig()
         self._breaker = circuit_breaker or CircuitBreaker()
         # PK-09(1): 实例级 AsyncClient 单例（lazy init），实现连接池复用。
-        # 此前每请求新建 AsyncClient → 零连接复用。
+        # 此前每请求新建 AsyncClient → 零连接复用。初始化是 check-then-set，
+        # 在 asyncio 单线程事件循环内原子（无需锁；见 _get_client）。
         self._client: Optional[httpx.AsyncClient] = None
-        self._client_lock = asyncio.Lock()
 
     def _get_client(self) -> httpx.AsyncClient:
-        """PK-09: lazy-init 实例级 AsyncClient，复用连接池。"""
+        """PK-09: lazy-init 实例级 AsyncClient，复用连接池。
+
+        NETOPT-C P3: trust_env=False 与 autoflow-sdk（callback/http.py）、
+        autocodeflow-notify 对齐——任务进程的 HTTP 出站一律不读代理 env，
+        避免回调绕过代理而本客户端走代理的策略分裂。
+        NETOPT-E P3-3（反向交叉引用）: 唯一的例外是 autocodeflow-ai 的
+        AI 外发出站（analyzer.py）——它走外部/公网端点，**刻意保留**代理与
+        自定义 CA（见其 NETOPT-D P2-6 定调注释）。内部通道与外部通道是两种
+        不同的刻意策略，不是漏设。
+        """
         if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(timeout=self._timeout)
+            self._client = httpx.AsyncClient(timeout=self._timeout, trust_env=False)
         return self._client
 
     async def aclose(self) -> None:
@@ -215,6 +225,14 @@ class AutoFlowHttpClient:
         if self._client and not self._client.is_closed:
             await self._client.aclose()
             self._client = None
+
+    # NETOPT-C P3: async context manager 兜底——任务作者忘调 aclose 时
+    # `async with AutoFlowHttpClient(...) as client:` 保证连接池释放。
+    async def __aenter__(self) -> "AutoFlowHttpClient":
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        await self.aclose()
 
     def _build_headers(self, extra: dict[str, str] | None = None) -> dict[str, str]:
         headers: dict[str, str] = {}
@@ -270,7 +288,7 @@ class AutoFlowHttpClient:
                 wait=_WaitWithRetryAfter(
                     wait_exponential(multiplier=self._retry.min_wait_sec, max=self._retry.max_wait_sec)
                 ),
-                retry=retry_if_exception_type((httpx.HTTPStatusError, httpx.TimeoutException, httpx.ConnectError)),
+                retry=retry_if_exception_type((httpx.HTTPStatusError, httpx.TimeoutException, httpx.NetworkError)),
                 reraise=True,
             )(_do)
 
