@@ -35,6 +35,31 @@ export function decrementRunning(): void {
   Atomics.sub(runningCountArray, 0, 1);
 }
 
+/**
+ * NETOPT-9-7: bounded wait for the running-task ledger to reach zero.
+ *
+ * Used by main.ts after killRunningTaskProcesses() at grace expiry: the killed
+ * processes' close → runTask catch → pushCallback chain needs a small window to
+ * enqueue their terminal callbacks before stopCallbackThread()'s final
+ * "queue empty → break" check, otherwise those callbacks are lost with the
+ * process (parity with executor-python's await_background_tasks_after_kill,
+ * QA8). Bounded so shutdown can never hang on a task whose ledger slot is
+ * leaked.
+ *
+ * Exported (not private) so the wait itself is unit-testable with fake timers
+ * + a mocked getRunningCount.
+ */
+export async function waitForRunningCountZero(
+  maxWaitMs = 5_000,
+  pollMs = 100,
+): Promise<boolean> {
+  const deadline = Date.now() + maxWaitMs;
+  while (getRunningCount() > 0 && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  }
+  return getRunningCount() === 0;
+}
+
 // For backward compatibility — use getRunningCount() directly for new code
 export const runningCount = getRunningCount;  // alias to the function
 
@@ -43,6 +68,11 @@ export const runningCount = getRunningCount;  // alias to the function
 // would form a cycle, so the data owners register their getters here.
 let runningExecutionIdsProvider: () => string[] = () => [];
 let deadLetterCountProvider: () => number = () => 0;
+
+/** NETOPT-C P2-1: 心跳活性清单上限——与 admin E9 采纳域（maxConcurrentTasks
+ *  ≤10000）对齐，保证容量上界内每个在跑执行都能进入 stale-sweep 存活宽限
+ *  （旧 200 封顶在并发 >200 时让第 201+ 个 id 从 includes() 判据里消失）。 */
+export const MAX_RUNNING_EXECUTION_IDS = 10_000;
 
 export function registerRunningExecutionIdsProvider(fn: () => string[]): void {
   runningExecutionIdsProvider = fn;
@@ -168,15 +198,21 @@ async function sendHeartbeat() {
     const traceId = randomUUID();
 
     logger.info(`[${traceId}] Sending heartbeat`);
+    const runningIds = runningExecutionIdsProvider();
+    if (runningIds.length > MAX_RUNNING_EXECUTION_IDS) {
+      logger.warn(
+        `runningExecutionIds exceeds heartbeat cap ${MAX_RUNNING_EXECUTION_IDS} (${runningIds.length} running) — overflow ids lose stale-sweep grace`,
+      );
+    }
     const resp = await post('/api/executors/heartbeat', {
       address: config.executorAddressPublic || config.executorAddress,
       cpuUsage,
       memUsage,
       runningTaskCount: getRunningCount(),
       // STALE-01: admin 的 stale sweep 据此跳过"回调只是迟到"（重试退避、
-      // 同任务排队）的执行，避免误判失败+提前释放容量；裁剪 200 封顶报文。
-      // deadLetterCount 暴露落盘回调积压，供运维感知长期断连。
-      runningExecutionIds: runningExecutionIdsProvider().slice(0, 200),
+      // 同任务排队）的执行，避免误判失败+提前释放容量。上限与 E9 对齐（见
+      // MAX_RUNNING_EXECUTION_IDS），deadLetterCount 暴露落盘回调积压。
+      runningExecutionIds: runningIds.slice(0, MAX_RUNNING_EXECUTION_IDS),
       deadLetterCount: deadLetterCountProvider(),
       // FR-13/FR-14（CONTRACT.md §2.3）：解释器缓存池清单。**始终发送该字段**
       // （哪怕为空数组）——`[]` 表示"已上报且池为空"，而字段缺席表示"旧执行器

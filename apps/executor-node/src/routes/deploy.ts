@@ -11,6 +11,7 @@ import { downloadFile } from '../lib/download';
 import { assertSafeHttpUrl } from '../lib/ssrf-guard';
 import { isSafePathSegment } from '../safe-path';
 import { guardZipOrThrow } from '../zip-guard';
+import { isExecutorShuttingDown } from '../shutdown-state';
 
 export const deployRouter = Router();
 
@@ -33,6 +34,21 @@ interface DeployPayload {
 
 /** Map of deploymentId -> running child process (daemon mode) */
 const runningApps = new Map<string, ChildProcess>();
+
+/**
+ * NETOPT-E P2-2: 部署 provisioning 的中止信号。deploy 的 setImmediate 后台任务
+ * 在 res.json 后继续跑（git clone/npm/pip/unzip 等 detached 长耗时命令），停机
+ * 时若不中止会成孤儿进程（Windows 下持锁可让新实例同 app 部署 EBUSY）。执行器
+ * gracefulShutdown 调 abortDeployInFlight() 中止全部 in-flight provisioning；
+ * 已启动的 daemon（runningApps）不在本集合内——应用进程的生命周期独立于执行器
+ * （执行器升级/维护不应杀掉用户部署的生产服务），停机日志会提示存活 daemon 数。
+ */
+const deployAbort = new AbortController();
+
+/** NETOPT-E P2-2: 停机入口调用——中止全部 in-flight 部署 provisioning。 */
+export function abortDeployInFlight(): void {
+  if (!deployAbort.signal.aborted) deployAbort.abort();
+}
 
 /**
  * NETOPT-8③: deploymentId -> appRoot（apps/<appId> 绝对路径）登记表，在
@@ -136,7 +152,7 @@ async function installDeps(
       const npmCmd = isWin ? 'npm.cmd' : 'npm';
       const npmArgs = ['install', '--production'];
       if (config.npmRegistryUrl) npmArgs.push(`--registry=${config.npmRegistryUrl}`);
-      const r = await runCommand(npmCmd, npmArgs, { cwd: deployDir, env, timeout: 300_000, shell: isWin });
+      const r = await runCommand(npmCmd, npmArgs, { cwd: deployDir, env, timeout: 300_000, shell: isWin, signal: deployAbort.signal });
       if (r.status !== 0) throw new Error(r.stderr?.toString() || 'npm install failed');
     }
   } else if (runtime === 'python') {
@@ -146,12 +162,12 @@ async function installDeps(
       const venvDir = path.join(deployDir, '.venv');
       // Try 'python3' first (Linux/macOS), fall back to 'python' (Windows)
       const pythonCmd = isWin ? 'python' : 'python3';
-      const venvR = await runCommand(pythonCmd, ['-m', 'venv', venvDir], { cwd: deployDir, env, timeout: 60_000 });
+      const venvR = await runCommand(pythonCmd, ['-m', 'venv', venvDir], { cwd: deployDir, env, timeout: 60_000, signal: deployAbort.signal });
       if (venvR.status !== 0) throw new Error(venvR.stderr?.toString() || `${pythonCmd} -m venv failed`);
       const bins = venvBins(venvDir);
       const pipArgs = ['install', '-r', 'requirements.txt'];
       if (config.pythonRegistryUrl) pipArgs.push('-i', config.pythonRegistryUrl);
-      const pipR = await runCommand(bins.pip, pipArgs, { cwd: deployDir, env, timeout: 300_000 });
+      const pipR = await runCommand(bins.pip, pipArgs, { cwd: deployDir, env, timeout: 300_000, signal: deployAbort.signal });
       if (pipR.status !== 0) throw new Error(pipR.stderr?.toString() || 'pip install failed');
     }
   }
@@ -351,8 +367,14 @@ function redactUrl(u: string): string {
  *  shared downloader (Bearer token + cross-host redirect stripping + absolute
  *  download deadline + size cap) so deploy and update-package behave
  *  identically — update-package previously had a second, token-less copy. */
-export function downloadPackage(url: string, dest: string, maxRedirects = 5, sendAuth = true): Promise<void> {
-  return downloadFile(url, dest, { maxRedirects, sendAuth }).then(() => undefined);
+export function downloadPackage(
+  url: string,
+  dest: string,
+  maxRedirects = 5,
+  sendAuth = true,
+  signal?: AbortSignal,
+): Promise<void> {
+  return downloadFile(url, dest, { maxRedirects, sendAuth, signal }).then(() => undefined);
 }
 
 function validatePackageUrl(packageUrl: string): string | null {
@@ -605,14 +627,14 @@ async function assertSafeZipEntries(zipPath: string): Promise<void> {
     const listR = await runCommand(
       'powershell.exe',
       ['-NoProfile', '-Command', script, zipPath],
-      { timeout: 30_000 },
+      { timeout: 30_000, signal: deployAbort.signal },
     );
     if (listR.status !== 0) {
       throw new Error(listR.stderr?.toString() || 'zip listing failed');
     }
     entries = listR.stdout.toString().split(/\r?\n/).filter(Boolean);
   } else {
-    const listR = await runCommand('unzip', ['-Z1', zipPath], { timeout: 30_000 });
+    const listR = await runCommand('unzip', ['-Z1', zipPath], { timeout: 30_000, signal: deployAbort.signal });
     if (listR.status !== 0) {
       throw new Error(listR.stderr?.toString() || 'unzip listing failed');
     }
@@ -627,6 +649,11 @@ async function assertSafeZipEntries(zipPath: string): Promise<void> {
 
 /** Main deploy handler */
 deployRouter.post('/deploy', async (req: Request, res: Response) => {
+  // NETOPT-E P2-2: drain 守卫——停机宽限窗口内不再接受新部署（provisioning 是
+  // detached 长耗时命令，停机中接受会在宽限到期后留孤儿子进程）。
+  if (isExecutorShuttingDown()) {
+    return res.status(503).json({ error: 'Executor is shutting down' });
+  }
   const payload = req.body as DeployPayload;
   const { deploymentId, appName, gitRepo, gitBranch, gitCommit, packageUrl, version, runtime, entrypoint, runMode, env: envVars = {}, upgrade = false } = payload;
 
@@ -711,7 +738,7 @@ deployRouter.post('/deploy', async (req: Request, res: Response) => {
         // Package-based deployment: download zip and extract into a temporary release dir.
         logger.info(`[deploy] Downloading package from ${redactUrl(packageUrl)}`);
         const zipPath = path.join(paths.tmpDir, `${paths.releaseKey}.zip`);
-        await downloadPackage(packageUrl, zipPath);
+        await downloadPackage(packageUrl, zipPath, 5, true, deployAbort.signal);
         // SEC-05: zip-bomb guard — reject declared-size bombs (ratio /
         // entry-count / per-file & total caps, bounded nested probing)
         // BEFORE handing the archive to Expand-Archive / unzip. Runs after
@@ -734,12 +761,12 @@ deployRouter.post('/deploy', async (req: Request, res: Response) => {
               zipPath,
               paths.extractDir,
             ],
-            { timeout: 60_000 },
+            { timeout: 60_000, signal: deployAbort.signal },
           );
           if (psR.status !== 0) throw new Error(psR.stderr?.toString() || 'Expand-Archive failed');
           unzipOk = true;
         } else {
-          const unzipR = await runCommand('unzip', ['-o', zipPath, '-d', paths.extractDir], { timeout: 60_000 });
+          const unzipR = await runCommand('unzip', ['-o', zipPath, '-d', paths.extractDir], { timeout: 60_000, signal: deployAbort.signal });
           if (unzipR.status !== 0) throw new Error(unzipR.stderr?.toString() || 'unzip failed');
           unzipOk = true;
         }
@@ -762,12 +789,12 @@ deployRouter.post('/deploy', async (req: Request, res: Response) => {
         logger.info(`[deploy] Cloning ${gitRepo}@${gitBranch || '<default>'}`);
         const cloneR = await runCommand(
           'git', cloneArgs,
-          { cwd: paths.extractDir, timeout: 120_000 },
+          { cwd: paths.extractDir, timeout: 120_000, signal: deployAbort.signal },
         );
         if (cloneR.status !== 0) throw new Error(cloneR.stderr?.toString() || 'git clone failed');
 
         if (gitCommit) {
-          const coR = await runCommand('git', ['checkout', gitCommit], { cwd: paths.extractDir, timeout: 30_000 });
+          const coR = await runCommand('git', ['checkout', gitCommit], { cwd: paths.extractDir, timeout: 30_000, signal: deployAbort.signal });
           if (coR.status !== 0) throw new Error(coR.stderr?.toString() || 'git checkout failed');
         }
       }

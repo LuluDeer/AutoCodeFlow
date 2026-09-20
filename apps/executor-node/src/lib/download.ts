@@ -21,6 +21,11 @@ export interface DownloadFileOptions {
   timeoutMs?: number;
   /** Reject when more than this many bytes are received. */
   maxBytes?: number;
+  /** Abort signal: when fired the in-flight request is destroyed and the
+   *  promise rejects with 'Download aborted'. Used by the execution kill /
+   *  shutdown path so a stalled package download cannot hold its prepare slot
+   *  until the overall deadline (120s+) expires. */
+  signal?: AbortSignal;
 }
 
 const DEFAULT_TIMEOUT_MS = 120_000;
@@ -113,8 +118,17 @@ export function downloadFile(url: string, dest: string, options: DownloadFileOpt
     // eslint-disable-next-line @typescript-eslint/no-require-imports -- dynamic protocol selection, ESM import cannot be conditional
     const proto = url.startsWith('https') ? require('https') : require('http');
     const file = fs.createWriteStream(dest);
+    // 类型上不声明 undefined 联合：proto.get 同步返回 ClientRequest，回调与
+    // 同步续段（req.on/setTimeout）执行时必已赋值；`| undefined` 会让 strict
+    // 下所有闭包引用报 TS18048（批次 D 全量编译暴露的真实构建阻断）。
+    let req: import('http').ClientRequest;
+    const onAbort = () => {
+      req?.destroy();
+      fail(new Error('Download aborted'));
+    };
     const cleanup = () => {
       clearTimeout(deadline);
+      options.signal?.removeEventListener('abort', onAbort);
     };
     const fail = (err: Error) => {
       if (settled) return;
@@ -142,8 +156,14 @@ export function downloadFile(url: string, dest: string, options: DownloadFileOpt
       headers['Authorization'] = `Bearer ${config.token}`;
     }
 
-    let req: import('http').ClientRequest;
     try {
+      if (options.signal) {
+        if (options.signal.aborted) {
+          fail(new Error('Download aborted'));
+          return;
+        }
+        options.signal.addEventListener('abort', onAbort, { once: true });
+      }
       req = proto.get(url, { headers }, (res: import('http').IncomingMessage) => {
         if (settled) { res.resume(); return; }
         if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
@@ -175,7 +195,7 @@ export function downloadFile(url: string, dest: string, options: DownloadFileOpt
           // re-uses dest — a late poll MUST NOT delete the fresh download.
           file.destroy();
           removePartialFile(file, dest, false);
-          downloadFile(nextUrl.href, dest, { maxRedirects: maxRedirects - 1, sendAuth: nextSendAuth, timeoutMs, maxBytes })
+          downloadFile(nextUrl.href, dest, { maxRedirects: maxRedirects - 1, sendAuth: nextSendAuth, timeoutMs, maxBytes, signal: options.signal })
             .then(resolve, reject);
           return;
         }

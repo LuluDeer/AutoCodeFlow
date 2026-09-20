@@ -138,8 +138,29 @@ describe('config reload route', () => {
     const res = await authPost({ maxConcurrentTasks: 0 });
 
     expect(res.status).toBe(400);
-    expect(res.body).toEqual({ error: 'maxConcurrentTasks must be >= 1' });
+    // NETOPT-D P3-5: 下界 1 保留，文案与上界钳制合并（1..10000 与 E9 采纳域一致）
+    expect(res.body).toEqual({ error: 'maxConcurrentTasks must be between 1 and 10000' });
     expect(mockConfig.maxConcurrentTasks).toBe(10);
+  });
+
+  // NETOPT-D P3-5: 上界钳制——热更到 50000 会让 accept 放行 50000 而心跳体
+  // 截到 10000（MAX_RUNNING_EXECUTION_IDS），容量账本与心跳申报永久脱节。
+  it('rejects maxConcurrentTasks above 10000 without mutating config (NETOPT-D P3-5)', async () => {
+    const res = await authPost({ maxConcurrentTasks: 50_000 });
+
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({ error: 'maxConcurrentTasks must be between 1 and 10000' });
+    expect(mockConfig.maxConcurrentTasks).toBe(10);
+  });
+
+  // NETOPT-9-5: 上限钳制——热更到 >=120s 会让 admin 自身 30s×3 的 stale 判定
+  // 在每个心跳周期内误判 OFFLINE（派发停止、托盘闪烁）。
+  it('rejects heartbeatIntervalSeconds above 60 without mutating config (NETOPT-9-5)', async () => {
+    const res = await authPost({ heartbeatIntervalSeconds: 600 });
+
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({ error: 'heartbeatIntervalSeconds must be between 5 and 60' });
+    expect(mockConfig.heartbeatIntervalSeconds).toBe(30);
   });
 
   // A3-C：协议闸门兜底手检没覆盖的**类型/形状**错误，且发生在任何写入之前。

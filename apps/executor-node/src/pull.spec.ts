@@ -12,7 +12,8 @@ jest.mock('./logger', () => ({ logger: { info: jest.fn(), warn: jest.fn(), error
 // 直接对真实 Int32Array 计数断言，而不是只看调用关系。
 const ledger = new Int32Array(new SharedArrayBuffer(4));
 const postMock = jest.fn().mockResolvedValue({ data: {} });
-jest.mock('./admin-client', () => ({ postLong: postMock }));
+const requestMock = jest.fn().mockResolvedValue({ data: {} });
+jest.mock('./admin-client', () => ({ postLong: postMock, request: requestMock }));
 const acceptExecution = jest.fn().mockReturnValue({ status: 200, payload: { status: 'accepted' } });
 const truncateCallbackErrorMessage = (m?: string) => m;
 jest.mock('./routes/execute', () => ({
@@ -29,12 +30,14 @@ jest.mock('./scheduler', () => ({
 
 describe('pull loop (ARCH-32 + E-01 预留槽位)', () => {
   let pullOnce: () => Promise<void>;
+  let resetConfigPullThrottleForTest: () => void;
   let logger: { warn: jest.Mock; info: jest.Mock };
 
   beforeEach(() => {
     jest.clearAllMocks();
     Atomics.store(ledger, 0, 0);
-    ({ pullOnce } = require('./pull'));
+    ({ pullOnce, resetConfigPullThrottleForTest } = require('./pull'));
+    resetConfigPullThrottleForTest(); // NETOPT-9-6: 节流是粘性模块状态，跨用例重置
     ({ logger } = require('./logger'));
   });
 
@@ -184,6 +187,66 @@ describe('pull loop (ARCH-32 + E-01 预留槽位)', () => {
   // E-07 残差收口：旧实现只 clearInterval，已发出的那轮长轮询（服务端阻塞至多
   // 25s）仍在飞——窗口末端带回的任务照样会被领取执行，与「停机第一步停止取件」
   // 相悖，进程也因 socket 未关多挂至多 25s。本用例固化「abort 立即结束窗口」。
+  it('NETOPT-9-6: 有任务轮——任务先 accept 落地，配置拉取在其后（fire-and-forget）', async () => {
+    const events: string[] = [];
+    acceptExecution.mockImplementationOnce(() => {
+      events.push('accept');
+      return { status: 200, payload: { status: 'accepted' } };
+    });
+    requestMock.mockImplementationOnce(async () => {
+      events.push('config-fetch');
+      // 非对象载荷 → maybePullConfig 提前返回，不触发本地 /config/reload
+      return { data: { data: 'not-an-object' } };
+    });
+    postMock.mockImplementationOnce(async () => {
+      events.push('post');
+      return {
+        data: {
+          code: 0,
+          message: 'ok',
+          data: {
+            configVersion: 'cfg-1',
+            task: { executionId: 'exec-order', task: {} },
+          },
+        },
+      };
+    });
+
+    await pullOnce();
+    await new Promise((r) => setImmediate(r)); // flush fire-and-forget config fetch
+
+    expect(acceptExecution).toHaveBeenCalledTimes(1);
+    expect(requestMock).toHaveBeenCalledTimes(1);
+    // 顺序：长轮询返回 → accept 领取 → 配置拉取（领取不被配置拉取延迟）
+    expect(events).toEqual(['post', 'accept', 'config-fetch']);
+  });
+
+  it('NETOPT-9-6: 空闲轮（无任务）才同步拉配置；请求失败被吞掉、下一轮受节流', async () => {
+    requestMock.mockImplementationOnce(async () => {
+      throw new Error('admin unreachable');
+    });
+    postMock.mockImplementationOnce(async () => ({
+      data: { code: 0, message: 'ok', data: { configVersion: 'cfg-1' } },
+    }));
+
+    await pullOnce(); // 空闲轮：await maybePullConfig → 请求失败被 catch 吞掉
+
+    expect(requestMock).toHaveBeenCalledTimes(1);
+    expect(acceptExecution).not.toHaveBeenCalled();
+  });
+
+  it('NETOPT-9-6: 指纹持续不一致且 reload 失败时，重试被 30s 节流（不每轮轰炸）', async () => {
+    postMock.mockResolvedValueOnce({
+      data: { code: 0, message: 'ok', data: { configVersion: 'cfg-1' } },
+    });
+    requestMock.mockResolvedValue({ data: { data: 'not-an-object' } });
+
+    await pullOnce(); // 第一次尝试（节流窗口开启）
+    await pullOnce(); // 第二次：距上次 <30s → 跳过
+
+    expect(requestMock).toHaveBeenCalledTimes(1);
+  });
+
   it('E-07：停机 abort 在飞长轮询——窗口立即结束、释放预留、不记 warn', async () => {
     let capturedSignal: AbortSignal | null = null;
     postMock.mockImplementationOnce(

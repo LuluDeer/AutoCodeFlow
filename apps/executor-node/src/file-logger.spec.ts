@@ -360,6 +360,66 @@ describe('cleanupWorkDir (disk reclamation)', () => {
     expect(fs.existsSync(deadPayload)).toBe(true);
   });
 
+  it('NETOPT-9-3: reclaims expired meta/*.json but never the meta dir or protected names', () => {
+    const metaDir = path.join(dir, 'meta');
+    fs.mkdirSync(metaDir, { recursive: true });
+    const oldDate = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000); // > 7d TTL
+    const recentDate = new Date(Date.now() - 60 * 60 * 1000);        // fresh
+
+    const staleMeta = path.join(metaDir, 'stale.json');
+    const freshMeta = path.join(metaDir, 'fresh.json');
+    fs.writeFileSync(staleMeta, '{"exitCode":1}');
+    fs.writeFileSync(freshMeta, '{"exitCode":0}');
+    fs.utimesSync(staleMeta, oldDate, oldDate);
+    fs.utimesSync(freshMeta, recentDate, recentDate);
+
+    const result = fl.cleanupWorkDir(7);
+    expect(result.metaFiles).toBe(1);
+    expect(fs.existsSync(staleMeta)).toBe(false);
+    expect(fs.existsSync(freshMeta)).toBe(true);
+    // 保护名目录本身永不清扫（与 workdir 保护同一语义）
+    expect(fs.existsSync(metaDir)).toBe(true);
+  });
+
+  it('NETOPT-C P3: 活跃执行的 meta 文件不受 TTL 清扫（长跑任务 mtime 停在 running）', () => {
+    const metaDir = path.join(dir, 'meta');
+    fs.mkdirSync(metaDir, { recursive: true });
+    const oldDate = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
+    const liveMeta = path.join(metaDir, 'exec-live-meta.json');
+    const staleMeta = path.join(metaDir, 'stale-meta.json');
+    fs.writeFileSync(liveMeta, '{"status":"running"}');
+    fs.writeFileSync(staleMeta, '{"status":"failed"}');
+    fs.utimesSync(liveMeta, oldDate, oldDate);
+    fs.utimesSync(staleMeta, oldDate, oldDate);
+
+    fl.registerActiveWorkdirProvider(() => ({
+      executionIds: new Set(['exec-live-meta']),
+      taskIds: new Set(),
+    }));
+
+    const result = fl.cleanupWorkDir(7);
+    expect(result.metaFiles).toBe(1);
+    expect(fs.existsSync(staleMeta)).toBe(false);
+    expect(fs.existsSync(liveMeta)).toBe(true); // 活跃保护
+  });
+
+  it('NETOPT-C P3: 仍被 pin 的日志分片不被 deleteOldLogs 物理删除', () => {
+    const staleDate = '2020-01-01';
+    const pinnedDir = path.join(dir, 'logs', staleDate);
+    fs.mkdirSync(pinnedDir, { recursive: true });
+    fs.writeFileSync(path.join(pinnedDir, 'exec-pinned.log'), 'data');
+    fs.writeFileSync(path.join(pinnedDir, 'exec-other.log'), 'data');
+
+    fl.pinLogFilePath('exec-pinned', new Date('2020-01-01T00:00:00Z'));
+
+    expect(fl.deleteOldLogs(7)).toBe(0); // 目录被 pin 保护
+    expect(fs.existsSync(pinnedDir)).toBe(true);
+
+    fl.unpinLogFilePath('exec-pinned');
+    expect(fl.deleteOldLogs(7)).toBe(1); // 解钉后正常回收
+    expect(fs.existsSync(pinnedDir)).toBe(false);
+  });
+
   it('getDeadLetterCount excludes *.tmp crash artifacts from the backlog metric (NETOPT-4)', () => {
     const deadDir = path.join(dir, 'callbacks', 'dead-letter');
     fs.mkdirSync(deadDir, { recursive: true });
@@ -448,6 +508,50 @@ describe('cleanupWorkDir (disk reclamation)', () => {
     expect(fs.existsSync(liveNm)).toBe(true);
     expect(fs.existsSync(deadCache)).toBe(false);
     expect(fs.existsSync(deadNm)).toBe(false);
+  });
+});
+
+describe('NETOPT-9-4: pinned log file path (cross-midnight executions)', () => {
+  let dir: string;
+  let fl: FileLoggerModule;
+
+  beforeEach(() => {
+    // 钉在 6-15 23:59:30（本地时间），随后跨过 6-16 午夜
+    jest.useFakeTimers({ now: new Date(2026, 5, 15, 23, 59, 30) });
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'acf-fl-pin-'));
+    fl = loadModule(dir);
+  });
+
+  afterEach(() => {
+    fl.stopLogCleanup();
+    fl.stopWorkDirCleanup();
+    fl.stopLogWriter();
+    jest.useRealTimers();
+  });
+
+  it('keeps writing to the START shard when the wall clock crosses midnight', async () => {
+    fl.pinLogFilePath('exec-midnight');
+    fl.appendLog('exec-midnight', 'before midnight');
+    await fl.flushLogs();
+
+    jest.setSystemTime(new Date(2026, 5, 16, 0, 0, 10)); // cross midnight
+    fl.appendLog('exec-midnight', 'after midnight');
+    await fl.flushLogs();
+
+    const startShard = path.join(dir, 'logs', '2026-06-15', 'exec-midnight.log');
+    expect(fs.readFileSync(startShard, 'utf-8')).toBe('before midnight\nafter midnight\n');
+    // 未钉住的执行路径写“当前”分片 —— 钉住后不再分裂出第二天分片
+    expect(fs.existsSync(path.join(dir, 'logs', '2026-06-16', 'exec-midnight.log'))).toBe(false);
+  });
+
+  it('unpins on unpinLogFilePath so subsequent writes go to the current shard', async () => {
+    fl.pinLogFilePath('exec-unpin');
+    fl.unpinLogFilePath('exec-unpin');
+    jest.setSystemTime(new Date(2026, 5, 16, 0, 5, 0));
+    fl.appendLog('exec-unpin', 'after unpin');
+    await fl.flushLogs();
+
+    expect(fs.existsSync(path.join(dir, 'logs', '2026-06-16', 'exec-unpin.log'))).toBe(true);
   });
 });
 

@@ -156,7 +156,7 @@ function isExecutable(file: string): boolean {  try {
  * cmd/PowerShell 下不存在（main.ts 的 `detectAvailableRuntimes` 用它是依赖
  * Git-Bash 的既有妥协），而本模块要在桌面客户端裸 Windows 上可靠工作。
  */
-export async function resolveUvBin(): Promise<UvResolution> {
+export async function resolveUvBin(signal?: AbortSignal): Promise<UvResolution> {
   if (uvResolution) return uvResolution;
 
   const explicit = (config.uvBin || '').trim();
@@ -176,6 +176,7 @@ export async function resolveUvBin(): Promise<UvResolution> {
   const onPath = await runCommand('uv', ['--version'], {
     timeout: 10_000,
     env: buildChildEnv(),
+    signal,
   });
   if (onPath.status === 0) {
     uvResolution = { path: 'uv', source: 'path' };
@@ -371,7 +372,7 @@ function canonicalize(candidate: string): string {
  *     （AC-14b）；整体失败返回 `[]` + warn。
  */
 export async function discoverInstalled(
-  opts: { timeoutMs?: number; force?: boolean } = {},
+  opts: { timeoutMs?: number; force?: boolean; signal?: AbortSignal } = {},
 ): Promise<InterpreterInfo[]> {
   const now = Date.now();
   if (!opts.force && poolCache && now - poolCache.at < DISCOVERY_CACHE_TTL_MS) {
@@ -379,7 +380,7 @@ export async function discoverInstalled(
   }
 
   const root = poolRoot();
-  const uv = await resolveUvBin();
+  const uv = await resolveUvBin(opts.signal);
   if (!uv.path) {
     return fallbackDiscovery('uv binary is not available', root);
   }
@@ -402,6 +403,7 @@ export async function discoverInstalled(
       cwd: root,
       timeout: opts.timeoutMs ?? DISCOVERY_TIMEOUT_MS,
       env: uvChildEnv(),
+      signal: opts.signal,
     },
   );
 
@@ -982,21 +984,32 @@ const inFlight = new Map<string, Promise<string>>();
  */
 export async function ensureVersion(
   version: string,
-  opts: { timeoutMs?: number } = {},
+  opts: { timeoutMs?: number; signal?: AbortSignal } = {},
 ): Promise<string> {
   // NFR-03：畸形版本在这里终止，绝不进 argv / 绝不进路径。
   const requested = normalizeRuntimeVersion(version);
 
   // 先刷新一次探测缓存，让 resolvePythonBin 的同步快路径有依据。
-  await discoverInstalled();
+  // NETOPT-E P3-1: 透传 abort signal——停机时 uv python list 探针
+  // （默认 30s）若跑到自身超时才停，槽位释放会拖过 main.ts 5s 硬杀窗口，
+  // 终态回调随之丢失。
+  await discoverInstalled({ signal: opts.signal });
   const cached = resolvePythonBin(requested);
   if (cached) return cached;
 
   const existing = inFlight.get(requested);
   if (existing) return existing;
 
+  // NETOPT-F P3-2（已知限制，固化不重构）：按版本共享一次下载——A 执行先
+  // 占 inFlight 格，B 执行（同版本）复用同一 pending。A 的 abort 树杀
+  // `uv python install` 后，复用该 pending 的 B 也以 interpreter_unavailable
+  // 失败（同败）。这是"共享一次下载"的固有语义：若给每个等待者独立下载，
+  // 会重复拉取同一版本；若只在 A 失败后为 B 重启下载，则 B 已把 abort 信号
+  // 透传进同一 runCommand（:1193），同样失败。B 的 signal 确已透传（批次 D
+  // 已验证），无孤儿进程面。失败后 inFlight 格子清理（finally），后续执行
+  // 会重新走下载——收敛于"失败即重试"，不无限共享。
   const pending = withDownloadSlot(() =>
-    installVersion(requested, opts.timeoutMs ?? config.interpreterDownloadTimeoutMs),
+    installVersion(requested, opts.timeoutMs ?? config.interpreterDownloadTimeoutMs, opts.signal),
   ).finally(() => {
     // 只清自己这一格：后来者可能已经放进去了一个新的 promise。
     if (inFlight.get(requested) === pending) inFlight.delete(requested);
@@ -1117,8 +1130,9 @@ function fallbackDiscovery(reason: string, root: string): InterpreterInfo[] {
 async function installVersion(
   requested: string,
   timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<string> {
-  const uv = await resolveUvBin();
+  const uv = await resolveUvBin(signal);
   if (!uv.path) {
     throw new InterpreterUnavailableError(
       requested,
@@ -1133,7 +1147,7 @@ async function installVersion(
   // 排队期间别人可能已经装好了（全局单下载队列的等待者走"缓存命中"复用，
   // 不得重复下载——CONTRACT.md §3.2 并发互斥）。
   invalidateCache();
-  await discoverInstalled({ force: true });
+  await discoverInstalled({ force: true, signal });
   const afterQueue = resolvePythonBin(requested);
   if (afterQueue) return afterQueue;
 
@@ -1182,6 +1196,9 @@ async function installVersion(
     cwd: root,
     timeout: timeoutMs,
     env: uvChildEnv(),
+    // NETOPT-D P2-1: 停机/杀端点 abort 时树杀 uv 下载子进程（run-command 的
+    // signal 语义），否则 detached 子进程在 executor 退出后继续下载。
+    signal,
   });
   const elapsed = Date.now() - started;
 
@@ -1207,7 +1224,7 @@ async function installVersion(
   // 后置校验：uv 返回 0 不等于池里就有可用的解释器（磁盘满、解压半途失败等
   // 都可能留下一个"装了一半"的目录）。必须实测路径存在 + 主次版本相符。
   invalidateCache();
-  const discovered = await discoverInstalled({ force: true });
+  const discovered = await discoverInstalled({ force: true, signal });
   const hit = resolvePythonBin(requested);
   const matching = discovered.filter(
     (e) => e.available && versionMatches(e.version, requested),
