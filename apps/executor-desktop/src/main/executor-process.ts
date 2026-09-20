@@ -235,6 +235,9 @@ export class ExecutorProcess {
   async stop(): Promise<void> {
     if (!this.proc) return;
     this.stopping = true;
+    // NETOPT-D P3-3: drain 期（最长 8s）health poll 仍跑会把 pending 翻回
+    // online（/health/live 恒 200）——观感闪烁；先停 poll，代际守卫清在飞请求。
+    this.stopHealthPoll();
     this.notifyStatus('pending');
 
     return new Promise((resolve) => {

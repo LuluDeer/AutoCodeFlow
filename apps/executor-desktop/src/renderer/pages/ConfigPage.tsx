@@ -145,7 +145,11 @@ export default function ConfigPage() {
   async function toggleAutoLaunch(enable: boolean) {
     setAutoLaunch(enable); // 乐观更新，失败由 catch 回滚
     try {
-      await window.electronAPI.setAutoLaunch(enable);
+      // DEV-AUTOLAUNCH：主进程在开发模式会拒绝写入并返回 { ok: false }
+      // （而非 reject）——同样要回滚开关，否则 UI 显示「已开启」、
+      // 系统层却无自启项。
+      const r = await window.electronAPI.setAutoLaunch(enable);
+      if (!r || r.ok !== true) setAutoLaunch(!enable);
     } catch {
       setAutoLaunch(!enable);
     }

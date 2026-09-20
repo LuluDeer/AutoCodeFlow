@@ -89,8 +89,11 @@ app.whenReady().then(async () => {
   trayManager.onOpenConfig = () => windowManager.openConfig();
   trayManager.onOpenHistory = () => windowManager.openHistory();
   trayManager.onToggleAutoLaunch = async (enable) => {
-    await setAutoLaunchEnabled(enable);
-    configStore.save({ autoStart: enable });
+    // DEV-AUTOLAUNCH：setAutoLaunchEnabled 返回是否真正生效——开发模式拒绝
+    // 写入且返回 false，此时**不能**把 autoStart 存成 true，否则托盘/设置页
+    // 会误显示「已开启」而系统层其实没有自启项（且历史残留已被清理）。
+    const applied = await setAutoLaunchEnabled(enable);
+    if (applied) configStore.save({ autoStart: enable });
     trayManager.rebuildMenu();
   };
   trayManager.getAutoLaunch = () => configStore.get('autoStart');

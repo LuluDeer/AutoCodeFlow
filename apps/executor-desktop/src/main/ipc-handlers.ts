@@ -5,11 +5,12 @@ import * as http from 'http';
 import * as https from 'https';
 import * as path from 'path';
 import * as fs from 'fs';
+import { pickRecentMetaFiles } from './meta-files';
 import * as net from 'net';
 import * as childProcess from 'child_process';
 import { configStore, executorProcess, heartbeat, syncNotifierWithConfig, trayManager, windowManager } from './index';
 import { setAutoLaunchEnabled, getAutoLaunchEnabled } from './autolaunch';
-import { checkForUpdates, downloadUpdate, quitAndInstall } from './updater';
+import { checkForUpdatesUserInitiated, downloadUpdate, quitAndInstall } from './updater';
 import {
   checkPathWithinDomains,
   hasAllowedLogExtension,
@@ -288,7 +289,12 @@ export function registerIpcHandlers(): void {
     // 重启后却没起来，且设置页的自启动开关走的是另一条 IPC（即时生效），
     // 两处行为不一致。首设走向导的用户 100% 踩到。
     if (safeCfg.autoStart === true) {
-      await setAutoLaunchEnabled(true);
+      // DEV-AUTOLAUNCH：同样的返回值校验——写入被拒（开发模式）时必须把
+      // 刚落盘的 autoStart 回写为 false，否则向导关闭后托盘菜单的
+      // getAutoLaunch（读 config.autoStart）会误显示「已开启」。
+      if (!(await setAutoLaunchEnabled(true))) {
+        configStore.save({ autoStart: false });
+      }
     }
     windowManager.closeWizard();
     windowManager.openStatus();
@@ -433,17 +439,23 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('autolaunch:get', async () => getAutoLaunchEnabled());
 
   ipcMain.handle('autolaunch:set', async (_event, enable: boolean) => {
-    await setAutoLaunchEnabled(enable);
-    configStore.save({ autoStart: enable });
+    // DEV-AUTOLAUNCH：返回是否真实生效。开发模式拒绝写入（返回 false），
+    // 配置与 IPC 结果必须一致——否则设置页开关会停留在「已开启」，
+    // 重启后却弹出 Electron 帮助页（裸 electron.exe 自启）。
+    const applied = await setAutoLaunchEnabled(enable);
+    if (applied) configStore.save({ autoStart: enable });
     trayManager.rebuildMenu();
-    return { ok: true };
+    return { ok: applied };
   });
 
   // ── 自动更新（DSK-03）─────────────────────────────────
   // renderer 主动触发一次检查（设置页「检查更新」按钮）；dev 未打包时
-  // updater 未初始化，checkForUpdates 静默失败返回 ok:false。
+  // updater 未初始化，checkForUpdates 静默 no-op，仍返回 ok:true（NETOPT-F
+  // P3-2: 旧注释称"静默失败返回 ok:false"与实现不符——runCheck 恒 return
+  // ok:true，错误经 updater:error 广播显性化）。
   ipcMain.handle('updater:check', async () => {
-    await checkForUpdates();
+    // NETOPT-C P3: 用户主动检查——错误显性化（后台定时检查保持静默）
+    await checkForUpdatesUserInitiated();
     return { ok: true };
   });
 
@@ -462,18 +474,29 @@ export function registerIpcHandlers(): void {
   });
 
   // ── 历史记录 & 日志 ────────────────────────────────────
-  ipcMain.handle('history:get', () => {
+  ipcMain.handle('history:get', async () => {
     const workDir = configStore.get('workDir') as string | undefined;
     if (!workDir) return [];
     const metaDir = path.join(workDir, 'meta');
     if (!fs.existsSync(metaDir)) return [];
     try {
-      const files = fs.readdirSync(metaDir).filter((f: string) => f.endsWith('.json'));
-      const records = files.map((f: string) => {
-        try {
-          return JSON.parse(fs.readFileSync(path.join(metaDir, f), 'utf-8'));
-        } catch { return null; }
-      }).filter(Boolean);
+      // NETOPT-D P2-D7: 与 notifier 共享 pickRecentMetaFiles（mtime 倒序 +
+      // 并行 stat + 逐条容错）——此前两处各写一份、选取语义漂移（notifier
+      // 字典序取前 N、这里自己排序）。
+      // NETOPT-E P3-3: 候选**无截断**（D2 后 readdir 读全量、BATCH=200 仅并发
+      // 分批，不再有"stat 上限 2000 粗挡"——注释曾写旧语义）；读取成本依赖
+      // 下游 retention（meta TTL 清扫）。文件解析也异步化（fs.promises + 
+      // Promise.all）：≤500 个 meta 的同步 readFileSync 会让 Electron 主线程
+      // 在打开历史页时阻塞数百 ms，与"零同步 stat"目标同向。
+      const files = await pickRecentMetaFiles(metaDir, 500);
+      const parsed = await Promise.all(
+        files.map(async (f: string) => {
+          try {
+            return JSON.parse(await fs.promises.readFile(path.join(metaDir, f), 'utf-8'));
+          } catch { return null; }
+        }),
+      );
+      const records = parsed.filter(Boolean);
       // sort by startTime desc
       records.sort((a: any, b: any) => (b.startTime || 0) - (a.startTime || 0));
       return records;
@@ -527,19 +550,54 @@ export function registerIpcHandlers(): void {
     }
     const workDir = configStore.get('workDir') as string | undefined;
     if (!workDir) return { lines: [], totalLines: 0 };
-    // look in today's dir and yesterday's dir
-    const tryDates = [new Date(), new Date(Date.now() - 86400000)];
-    for (const d of tryDates) {
-      const dateStr = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-      const logFile = path.join(workDir, 'logs', dateStr, `${executionId}.log`);
-      const check = checkPathWithinDomains(logFile, getAllowedLogDomains());
-      if (!check.ok) {
-        return { lines: [], totalLines: 0, error: check.error };
+    // NETOPT-C P2-2: 不再猜"今天+昨天"——执行器把日志钉死在启动日分片后，跨
+    // 天的长任务文件在 logs/<启动日>/<id>.log，两天窗口必落空。与 /api/logs
+    // 同语义：扫全部日期分片 newest-first（有界），flat 路径兜底。
+    const logsBase = path.join(workDir, 'logs');
+    let target: string | undefined;
+    if (fs.existsSync(logsBase)) {
+      // NETOPT-D P2-2: 只扫 YYYY-MM-DD 日期分片——flat 残留文件（UUID 类 id
+      // 半数以 a-f 开头）字典序倒排全在日期前，不过滤会让扫描窗被 flat 吃光、
+      // 0 个日期分片被扫到（日志静默空白）。flat 由下方兜底路径负责，不进扫描窗。
+      // NETOPT-D P3-1: 去掉 slice(0,60) 硬编码魔数——与 /api/logs 无截断口径
+      // 对齐；logRetentionDays 调大（如 90 天）后长任务日志在桌面仍可读。扫描
+      // 是目录列举 + 每候选一次 existsSync/realpath，成本可忽略。
+      const dateDirs = (fs.readdirSync(logsBase) as string[])
+        .filter((n: string) => /^\d{4}-\d{2}-\d{2}$/.test(n))
+        .sort().reverse();
+      // NETOPT-E P3-2: domains 在候选循环内不变，提到循环外一次（每候选一次
+      // join/正则构造是纯冗余；候选多（90 天日志）时放大为每轮轮询的成本）。
+      const logDomains = getAllowedLogDomains();
+      for (const dateDir of dateDirs) {
+        const logFile = path.join(logsBase, dateDir, `${executionId}.log`);
+        if (!fs.existsSync(logFile)) continue;
+        const check = checkPathWithinDomains(logFile, logDomains);
+        if (!check.ok) {
+          // NETOPT-D P3-4: 该候选域校验失败——跳过继续（与 flat 兜底同语义），
+          // 而不是整体 return error 让其他分片/兜底文件静默不可达。
+          log.warn(`log:read domain check failed, skipping candidate: ${logFile} (${check.error})`);
+          continue;
+        }
+        target = check.resolvedPath!;
+        break;
       }
-      const target = check.resolvedPath!;
-      if (fs.existsSync(target)) {
-        return readLogIncremental(target, fromLine);
+      if (!target) {
+        const flat = path.join(logsBase, `${executionId}.log`);
+        if (fs.existsSync(flat)) {
+          const check = checkPathWithinDomains(flat, logDomains);
+          if (check.ok) {
+            target = check.resolvedPath!;
+          } else {
+            log.warn(`log:read flat domain check failed: ${flat} (${check.error})`);
+          }
+        }
       }
+    }
+    if (target) {
+      // NETOPT-D P3-5: 域校验收敛为候选层逐次（executionId 已过
+      // ^[A-Za-z0-9_-]+$ 白名单、目录名来自 readdir，路径不可能由渲染层注入
+      // 遍历；符号链接逃逸在命中文件上仍被拦下，攻击面不变）。
+      return readLogIncremental(target, fromLine);
     }
     return { lines: [], totalLines: 0 };
   });
