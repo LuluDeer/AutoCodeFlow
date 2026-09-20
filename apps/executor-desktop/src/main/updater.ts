@@ -1,6 +1,7 @@
 import { app, BrowserWindow } from 'electron';
 import { autoUpdater } from 'electron-updater';
 import log from './logger';
+import { createRunCheck } from './updater-runcheck';
 
 /**
  * DSK-03: 桌面自动更新（双源）。
@@ -121,6 +122,19 @@ function resolveGenericFeedUrl(): string | null {
 /** 检查计时器（initUpdater 幂等用的句柄）。 */
 let checkTimer: NodeJS.Timeout | null = null;
 
+// NETOPT-C P3: updater:error 的显性化开关——用户主动检查 / 用户确认的下载
+// 才广播；后台定时检查保持静默（离线/私服 404 不打扰用户）。
+// NETOPT-D P3-1 / NETOPT-E P3-1 / NETOPT-E P2-4: runCheck 互斥 + 归因局部化
+// 状态机（后台在飞→用户串行等待、用户在飞→后台跳过、error 只认最近发起方）
+// 已抽到 updater-runcheck.ts（无 electron 依赖，selftest 直接驱动真实实现）。
+// 这里只保留 downloading（下载显性流程标记，不属于检查状态机）。
+// NETOPT-E P2-4: electron-updater 的 checkForUpdates 返回 Promise<UpdateCheckResult | null>，
+// 状态机只认 Promise<void>——包一层丢弃返回值（检查周期语义只关心完成/失败）。
+const runCheckState = createRunCheck(() =>
+  autoUpdater.checkForUpdates().then(() => undefined),
+);
+let downloading = false;
+
 /**
  * 初始化并启动延迟检查。仅生产环境调用（index.ts 里 app.isPackaged 守卫）。
  * 幂等：重复调用只挂一次 timer。
@@ -148,14 +162,20 @@ export function initUpdater(): void {
     // electron-updater 某些 provider 组合不会自行拦截，这里统一再挡一道。
     if (!isNewerVersion(remote, local)) {
       log.info(`updater: remote ${remote} not newer than local ${local}, ignored`);
+      // NETOPT-D P3-3: 检查周期结束（无论结果）复位 surface 标志——
+      // 防残留：用户主动检查成功后，后续任意 error（如下载阶段的意外事件）
+      // 仍被按用户检查归因而广播。
+      runCheckState.resetSurface();
       return;
     }
     log.info(`updater: update available ${local} -> ${remote}`);
+    runCheckState.resetSurface();
     broadcast(UPDATE_EVENTS.available, { version: remote, current: local });
   });
 
   autoUpdater.on('update-not-available', (info) => {
     log.info(`updater: up to date (${String(info.version ?? 'unknown')})`);
+    runCheckState.resetSurface();
   });
 
   autoUpdater.on('download-progress', (p) => {
@@ -175,9 +195,20 @@ export function initUpdater(): void {
   });
 
   autoUpdater.on('error', (err) => {
-    // 静默失败：离线/私服无网络/404 都只落日志，不打扰用户
-    log.warn(`updater: check failed (silently ignored): ${err.message}`);
-    broadcast(UPDATE_EVENTS.error, { message: err.message });
+    // NETOPT-C P3: 后台定时检查（启动 30s）离线/私服 404 是常态噪音，只落
+    // 日志不打扰用户；仅用户主动检查（updater:check）或正在下载（DSK-03
+    // 用户确认后的显性流程）时才广播 error 让渲染层显性化。
+    // NETOPT-D P3-1: 标志在 runCheck 发起时覆盖（latest 语义），error 事件与
+    // 检查调用异步到达，按"最近一次发起"归因。
+    // NETOPT-D P3-3: 归因完成后立即复位——error 是检查周期的终结事件之一，
+    // 复位不会吞掉本次 surface 判断（surface 已取局部值），只防残留污染
+    // 后续后台检查的错误归类。
+    log.warn(`updater: check/download error: ${err.message}`);
+    const surface = runCheckState.surfaceError || downloading;
+    runCheckState.resetSurface();
+    if (surface) {
+      broadcast(UPDATE_EVENTS.error, { message: err.message });
+    }
   });
 
   checkTimer = setTimeout(() => {
@@ -186,22 +217,46 @@ export function initUpdater(): void {
   checkTimer.unref();
 }
 
-/** 触发一次检查（延迟检查与 renderer 主动刷新共用）。静默吞错。 */
+/** 后台/静默检查：错误只落日志（NETOPT-C P3）。 */
 export async function checkForUpdates(): Promise<void> {
-  try {
-    await autoUpdater.checkForUpdates();
-  } catch (err: any) {
-    log.warn(`updater: checkForUpdates failed (silently ignored): ${err?.message ?? err}`);
-  }
+  await runCheck(false);
+}
+
+/** 用户主动检查（ipc updater:check）：错误经 updater:error 广播显性化。 */
+export async function checkForUpdatesUserInitiated(): Promise<void> {
+  await runCheck(true);
+}
+
+/**
+ * 检查入口（互斥 + 归因局部化，NETOPT-E P3-1 / P2-4）。
+ * 状态机本体在 updater-runcheck.ts（createRunCheck），此处只委托：
+ *  - 后台发起（initUpdater 定时 tick / 静默入口）：in-flight 已有检查（无论
+ *    谁发起）→ 复用同一 promise（跳过），不排队、不覆盖归因——后台检查是
+ *    软性的，用户检查进行中不必再排一队，且避免 latest 覆盖把后台噪音 error
+ *    张冠李戴给用户。注意：并发调用**复用 in-flight promise**，并非 reject
+ *    （electron-updater 只拒绝并发 checkForUpdates 本身）。
+ *  - 用户发起（ipc updater:check）：若后台检查在飞，先等它结束（失败不阻
+ *    断）再**串行发起自己的检查**；surfaceError 只在本次检查周期内置位、
+ *    结束即复位——error 事件只认真正在跑的这次检查的发起方。
+ * 这取代了 NETOPT-D P3-1 的"latest 语义"：那版并发时后台先起、用户后点，
+ * 用户复用后台 in-flight 检查并把 latest 覆盖为 true，后台噪音 error 被
+ * 广播给用户、而用户自己的错误（若有）被静默。
+ */
+function runCheck(userInitiated: boolean): Promise<void> {
+  return userInitiated ? runCheckState.user() : runCheckState.background();
 }
 
 /** 用户确认后执行：下载新版本（autoDownload=false 时的显式下载入口）。 */
 export async function downloadUpdate(): Promise<void> {
+  downloading = true;
   try {
     await autoUpdater.downloadUpdate();
   } catch (err: any) {
-    // 下载失败同样静默落日志；渲染层由 update-error 事件感知（若已订阅）
+    // 下载失败经 autoUpdater 'error' 事件广播（downloading 标记在位），
+    // 此处仍落日志兜底
     log.warn(`updater: downloadUpdate failed: ${err?.message ?? err}`);
+  } finally {
+    downloading = false;
   }
 }
 

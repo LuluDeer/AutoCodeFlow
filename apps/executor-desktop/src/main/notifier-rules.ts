@@ -86,6 +86,96 @@ export function shouldNotifyTaskTransition(
   return prev !== next;
 }
 
+/** knownFiles 增量水位线的防膨胀上限（超过后裁到 META_KNOWN_RETAIN）。 */
+export const META_KNOWN_LIMIT = 1000;
+/** knownFiles 裁剪后的保留量。 */
+export const META_KNOWN_RETAIN = 500;
+
+/** 一轮扫描中解析出的 meta 文件项（raw 已是 JSON.parse 产物）。 */
+export interface MetaScanItem {
+  file: string;
+  raw: unknown;
+}
+
+/** 应弹出通知的终态事件。 */
+export interface NotifyCandidate {
+  file: string;
+  event: TaskTerminalEvent;
+}
+
+/** decideScan 的决策输出。 */
+export interface ScanDecision {
+  toNotify: NotifyCandidate[];
+  newSeen: Map<string, string>;
+  newKnown: Map<string, number>;
+}
+
+/**
+ * NETOPT-G P1-1: 水位线决策纯函数——P2-F3 通知风暴的回归锁。notifier.ts
+ * 只负责 readdir/readFile/new Notification，全部决策在此，裸 Node selftest
+ * 可逐语义断言（把决策与 Electron 解耦是"接线对、断言空"主线的收尾）。
+ *
+ * 语义锁（selftest 钉死）：
+ *  - silentFirstScan：只推进水位线、零通知（桌面重启/切 workDir 后首扫静默
+ *    追平，旧任务不轰炸）；
+ *  - normal：首见 success/failed 通知；同 id 同状态去重（shouldNotifyTaskTransition）；
+ *  - knownFiles 防膨胀**只裁 known、绝不裁 seen**（P2-F3：两表同节奏裁剪会让
+ *    被裁 executionId 下轮被当 fresh 重读、prev=undefined → 一次轮询突发约
+ *    500 条重复系统通知，且每新增任务周期性复发）；
+ *  - seenStatus 的回收走 pruneSeenByLiveFiles（按磁盘存在性懒清），与本决策
+ *    分离——被清 id 的 meta 文件已不存在、下轮不会重读，无风暴面。
+ */
+export function decideScan(
+  items: MetaScanItem[],
+  seen: ReadonlyMap<string, string>,
+  known: ReadonlyMap<string, number>,
+  silentFirstScan: boolean,
+): ScanDecision {
+  const newSeen = new Map(seen);
+  let newKnown = new Map(known);
+  const toNotify: NotifyCandidate[] = [];
+  for (const item of items) {
+    const event = summarizeExecMeta(item.raw);
+    if (!event) continue; // running / 非法 / 缺字段——不入集合，下轮重看
+    if (silentFirstScan) {
+      newSeen.set(event.executionId, event.status);
+      newKnown.set(item.file, Date.now());
+      continue;
+    }
+    const prev = newSeen.get(event.executionId);
+    if (!shouldNotifyTaskTransition(prev, event.status)) {
+      // 该 executionId 已通知过（同状态）——文件已定稿，记住后不再重扫
+      newKnown.set(item.file, Date.now());
+      continue;
+    }
+    newSeen.set(event.executionId, event.status);
+    newKnown.set(item.file, Date.now());
+    toNotify.push({ file: item.file, event });
+  }
+  if (newKnown.size > META_KNOWN_LIMIT) {
+    newKnown = new Map(Array.from(newKnown.entries()).slice(-META_KNOWN_RETAIN));
+  }
+  return { toNotify, newSeen, newKnown };
+}
+
+/**
+ * seenStatus 按本轮磁盘存在性懒清：executionId 对应的 meta 文件
+ * （`<id>.json`，executor-node writeExecMeta 命名）不在 liveFileNames 中 →
+ * 删除死条目（history:clear / meta TTL 清扫后回收；executionId 为平台 UUID
+ * 唯一、文件不重写同名，故懒清无漏报面）。与 knownFiles 裁剪不同步——绝不
+ * 因"表太大"裁 seen（P2-F3 语义）。
+ */
+export function pruneSeenByLiveFiles(
+  seen: ReadonlyMap<string, string>,
+  liveFileNames: ReadonlySet<string>,
+): Map<string, string> {
+  const pruned = new Map<string, string>();
+  for (const [id, status] of seen) {
+    if (liveFileNames.has(`${id}.json`)) pruned.set(id, status);
+  }
+  return pruned;
+}
+
 /**
  * 执行器状态转移是否应发出离线通知。规则：仅 next==='offline' 且
  * prev 非 offline、非 stopped 时通知。
