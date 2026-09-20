@@ -97,7 +97,9 @@ function renderPage() {
 }
 
 function getLogPre(): HTMLElement {
-  const pre = document.querySelector('[data-testid="log-pre"]');
+  // querySelector 的静态返回类型是 Element（缺 HTMLElement 的数百个 DOM 成员），
+  // 泛型参数把断言收敛在取数处，函数签名不必放宽成 Element。
+  const pre = document.querySelector<HTMLElement>('[data-testid="log-pre"]');
   if (!pre) throw new Error('日志 pre 未渲染');
   return pre;
 }

@@ -126,7 +126,10 @@ describe('admin-web query GET cancellation', () => {
     // 断言每个 GET 都带**真实 AbortSignal**（not expect.anything()）
     for (const [, config] of mockGet.mock.calls) {
       expect(config).toEqual(expect.objectContaining({ signal: expect.any(AbortSignal) }));
-      expect(config.signal).toBeInstanceOf(AbortSignal);
+      // config 在 client.get 签名里是可选的第二参——`?.` 只满足 tsc 的可空收窄，
+      // 断言强度不变：config 缺失时 config?.signal 为 undefined，toBeInstanceOf
+      // 同样红。
+      expect(config?.signal).toBeInstanceOf(AbortSignal);
     }
 
     for (const hook of hooks) hook.unmount();
@@ -146,7 +149,7 @@ describe('admin-web query GET cancellation', () => {
     expect(lastCall[1]).toEqual(
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
-    expect(lastCall[1].signal).toBeInstanceOf(AbortSignal);
+    expect(lastCall[1]?.signal).toBeInstanceOf(AbortSignal);
 
     stats.unmount();
   });
@@ -228,7 +231,7 @@ describe('admin-web query GET cancellation', () => {
     const call = mockGet.mock.calls.find(([url]) => url === '/task-templates')!;
     expect(call).toBeDefined();
     expect(call[1]).toEqual(expect.objectContaining({ signal: expect.any(AbortSignal) }));
-    expect(call[1].signal).toBeInstanceOf(AbortSignal);
+    expect(call[1]?.signal).toBeInstanceOf(AbortSignal);
 
     templates.unmount();
   });
