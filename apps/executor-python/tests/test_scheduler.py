@@ -4,7 +4,37 @@ import pytest
 import httpx
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch, MagicMock
-from scheduler import _send_heartbeat, heartbeat_task
+from scheduler import _send_heartbeat, heartbeat_task, _http_client_by_loop
+
+
+def test_get_http_client_pins_trust_env_false(monkeypatch):
+    """NETOPT-E P3-4: 共享 pull/heartbeat client 必须 trust_env=False（内部
+    通道不经系统代理）；被误删/改成 True 时本测试立即红。"""
+    captured = {}
+
+    def factory(*args, **kwargs):
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr("scheduler.httpx.AsyncClient", factory)
+    _http_client_by_loop.clear()
+    client = _get_http_client_for_test()
+    assert captured.get("trust_env") is False
+    assert captured.get("timeout") == 10.0
+    _http_client_by_loop.clear()
+
+
+def _get_http_client_for_test():
+    # get_http_client 需要 running loop；pytest-asyncio 同步用例下没有。
+    # 用 asyncio.run 包装，模拟生产调用上下文。
+    import asyncio
+    import scheduler
+    return asyncio.run(_get_in_loop())
+
+
+async def _get_in_loop():
+    import scheduler
+    return scheduler.get_http_client()
 
 
 def create_mock_response(status_code: int = 200) -> httpx.Response:
