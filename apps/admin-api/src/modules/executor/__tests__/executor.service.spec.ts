@@ -7,7 +7,11 @@ import {
   ForbiddenException,
   Logger,
 } from "@nestjs/common";
-import { ExecutorService, EXECUTOR_LIST_LIMIT } from "../executor.service";
+import {
+  ExecutorService,
+  EXECUTOR_LIST_LIMIT,
+  __resetTruncationWarnStateForTest,
+} from "../executor.service";
 import { Executor, ExecutorStatus } from "../entities/executor.entity";
 import { ExecutorMetricsHistory } from "../entities/executor-metrics-history.entity";
 import { Task } from "../../task/entities/task.entity";
@@ -83,8 +87,13 @@ const makeRepo = (overrides: Partial<Record<string, jest.Mock>> = {}) => ({
     returning: jest.fn().mockReturnThis(),
     groupBy: jest.fn().mockReturnThis(),
     orderBy: jest.fn().mockReturnThis(),
+    // NETOPT-E P3-3: detectLostExecutions 分页扫描加 id 平局键（startTime 相同
+    // 时确定性排序，与 scheduler STALE_SWEEP 同款双键约定）
+    addOrderBy: jest.fn().mockReturnThis(),
     // NETOPT-1⑧: detectLostExecutions 扫描带上限
     take: jest.fn().mockReturnThis(),
+    // NETOPT-E P3-3: 分页循环的 skip 偏移
+    skip: jest.fn().mockReturnThis(),
     // FEAT-04: metrics-history aggregate query applies a LIMIT guard
     limit: jest.fn().mockReturnThis(),
     getRawMany: jest.fn().mockResolvedValue([]),
@@ -245,13 +254,9 @@ describe("ExecutorService (__tests__)", () => {
         startupId: "startup-new",
       });
 
-      expect(runningExecution.status).toBe(ExecutionStatus.FAILED);
-      expect(runningExecution.failureReason).toBe(
-        ExecutionFailureReason.EXECUTOR_RESTART,
-      );
-      expect(runningExecution.errorMessage).toContain("Executor restarted");
-      // A1: 终态写走 transitionOneToTerminal（createQueryBuilder 链），不再经
-      // execRepo.save。断言条件 UPDATE 的 patch 携带 FAILED。
+      // NETOPT-D P2-D1: 重启恢复走**批量** transitionToTerminal（单条
+      // UPDATE...IN）——不再原地 mutate 内存对象，DB 行经条件 UPDATE 终态化。
+      expect(runningExecution.status).toBe(ExecutionStatus.RUNNING);
       const qbResults = (execRepo.createQueryBuilder as jest.Mock).mock.results;
       const setPatches = qbResults.flatMap((r: any) =>
         r.value.set.mock.calls.map((c: any) => c[0]),
@@ -259,9 +264,162 @@ describe("ExecutorService (__tests__)", () => {
       expect(
         setPatches.some((p: any) => p.status === ExecutionStatus.FAILED),
       ).toBe(true);
+      expect(
+        setPatches.some(
+          (p: any) =>
+            p.failureReason === ExecutionFailureReason.EXECUTOR_RESTART,
+        ),
+      ).toBe(true);
+      expect(
+        setPatches.some((p: any) =>
+          String(p.errorMessage).includes("Executor restarted"),
+        ),
+      ).toBe(true);
+      // 批量：单次 QB 调用完成全部终态写（旧逐行版为 N 次）。
+      expect(execRepo.createQueryBuilder).toHaveBeenCalledTimes(1);
       expect(taskQueue.add).not.toHaveBeenCalled();
     });
 
+    it("NETOPT-D P3-2: fail-restart recovery queries take 10000 with startTime ASC", async () => {
+      // 批次 D 把 take 提到 10000 + ORDER BY startTime——钉死 find 参数，
+      // 防止未来悄悄回退 take:1000 而 CI 全绿。
+      const existing = {
+        appName: "e1",
+        address: "127.0.0.1:3105",
+        status: ExecutorStatus.ONLINE,
+        executorStartupId: "startup-old",
+      };
+      executorRepo.findOne.mockResolvedValue(existing);
+      executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      execRepo.find.mockResolvedValue([]);
+
+      await service.register({
+        appName: "e1",
+        address: existing.address,
+        startupId: "startup-new",
+      });
+
+      expect(execRepo.find).toHaveBeenCalledWith(
+        expect.objectContaining({
+          take: 10_000,
+          order: { startTime: "ASC" },
+        }),
+      );
+    });
+
+    it("NETOPT-E P2-1: recovery does not batch-release slots; count is zeroed by save", async () => {
+      // 旧版（批次 D）恢复对 winner 行做 releaseExecutorSlotBatch——异步心跳
+      // 路径在 save 之后按"旧 winner 数"对已含新派发的计数 GREATEST 倒扣，会
+      // 把新任务计数清零欠计。修复后恢复不再触碰计数（计数权威 = 调用方
+      // e.runningTaskCount=0 + save / 心跳自报覆盖）。
+      const existing = {
+        appName: "e1",
+        address: "127.0.0.1:3105",
+        status: ExecutorStatus.ONLINE,
+        executorStartupId: "startup-old",
+        runningTaskCount: 7,
+      };
+      const e1: any = {
+        id: "exec-1",
+        executorAddress: existing.address,
+        status: ExecutionStatus.RUNNING,
+        logs: "l1",
+      };
+      const e2: any = {
+        id: "exec-2",
+        executorAddress: existing.address,
+        status: ExecutionStatus.RUNNING,
+        logs: "l2",
+      };
+      executorRepo.findOne.mockResolvedValue(existing);
+      executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      execRepo.find.mockResolvedValue([e1, e2]);
+      taskRepo.findBy.mockResolvedValue([]);
+      // 批量 UPDATE 命中 2 行 → addressSnapshot 兜底 winner rows。
+      execRepo.createQueryBuilder.mockImplementation(() => ({
+        update: jest.fn().mockReturnThis(),
+        delete: jest.fn().mockReturnThis(),
+        set: jest.fn().mockReturnThis(),
+        leftJoin: jest.fn().mockReturnThis(),
+        innerJoin: jest.fn().mockReturnThis(),
+        getMany: jest.fn().mockResolvedValue([]),
+        getOne: jest.fn().mockResolvedValue(null),
+        select: jest.fn().mockReturnThis(),
+        addSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        returning: jest.fn().mockReturnThis(),
+        groupBy: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        addOrderBy: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        limit: jest.fn().mockReturnThis(),
+        getRawMany: jest.fn().mockResolvedValue([]),
+        getRawOne: jest.fn().mockResolvedValue(null),
+        getCount: jest.fn().mockResolvedValue(0),
+        execute: jest.fn().mockResolvedValue({ affected: 2 }),
+      }));
+
+      await service.register({
+        appName: "e1",
+        address: existing.address,
+        startupId: "startup-new",
+      });
+
+      // 恢复不再触碰 executorRepo 计数（无 releaseExecutorSlotBatch）。
+      expect(executorRepo.createQueryBuilder).not.toHaveBeenCalled();
+      // 计数归零由 save 承担（R-P0-008 语义）。
+      const saved = (executorRepo.save as jest.Mock).mock.calls[0][0] as any;
+      expect(saved.runningTaskCount).toBe(0);
+    });
+
+    it("NETOPT-E P2-1: recovery only fails rows started before the restart moment (new dispatches survive)", async () => {
+      // 异步/同步恢复的 find 谓词只有 address + RUNNING；didRestart 恢复现带
+      // onlyStartedBefore（重启基准时刻），startTime >= 重启时刻的新派发行
+      // 必须存活——否则执行器重启后闸门新派的任务被恢复误杀终态化。
+      const existing = {
+        appName: "e1",
+        address: "127.0.0.1:3105",
+        status: ExecutorStatus.ONLINE,
+        executorStartupId: "startup-old",
+      };
+      const oldRow: any = {
+        id: "exec-old",
+        executorAddress: existing.address,
+        status: ExecutionStatus.RUNNING,
+        startTime: new Date("2026-01-01T00:00:00.000Z"),
+      };
+      const newRow: any = {
+        id: "exec-new",
+        executorAddress: existing.address,
+        status: ExecutionStatus.RUNNING,
+        startTime: new Date("2026-01-02T00:00:00.000Z"),
+      };
+      executorRepo.findOne.mockResolvedValue(existing);
+      executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      execRepo.find.mockResolvedValue([oldRow, newRow]);
+      taskRepo.findBy.mockResolvedValue([]);
+      const qb = execRepo.createQueryBuilder();
+      qb.execute.mockResolvedValue({
+        affected: 1,
+        raw: [{ id: "exec-old", executorAddress: existing.address }],
+      });
+      execRepo.createQueryBuilder.mockReturnValue(qb);
+
+      await service.register({
+        appName: "e1",
+        address: existing.address,
+        startupId: "startup-new",
+        restartedAt: "2026-01-01T12:00:00.000Z",
+      });
+
+      // transitionToTerminal 的 ids 只含旧行（exec-new 存活）。
+      const idsWhere = qb.where.mock.calls.find((c: any) =>
+        String(c[0]).includes("IN (:...ids)"),
+      );
+      expect(idsWhere?.[1].ids).toEqual(["exec-old"]);
+    });
     it("schedules a retry for restart-failed executions when attempts remain", async () => {
       const existing = {
         appName: "e1",
@@ -358,10 +516,19 @@ describe("ExecutorService (__tests__)", () => {
         startupId: "startup-new",
       });
 
-      expect(runningExecution.status).toBe(ExecutionStatus.FAILED);
-      expect(runningExecution.failureReason).toBe(
-        ExecutionFailureReason.EXECUTOR_RESTART,
+      // NETOPT-D P2-D1: 批量终态——DB 行经条件 UPDATE 终态化，内存对象不 mutate。
+      expect(runningExecution.status).toBe(ExecutionStatus.RUNNING);
+      const qbResults = (execRepo.createQueryBuilder as jest.Mock).mock.results;
+      const setPatches = qbResults.flatMap((r: any) =>
+        r.value.set.mock.calls.map((c: any) => c[0]),
       );
+      expect(
+        setPatches.some(
+          (p: any) =>
+            p.status === ExecutionStatus.FAILED &&
+            p.failureReason === ExecutionFailureReason.EXECUTOR_RESTART,
+        ),
+      ).toBe(true);
       expect(existing.executorStartupId).toBe("startup-new");
     });
 
@@ -435,14 +602,26 @@ describe("ExecutorService (__tests__)", () => {
         startupId: "startup-new",
       });
 
-      expect(runningExecution.status).toBe(ExecutionStatus.FAILED);
+      // NETOPT-D P2-D1: 批量终态——DB 行经条件 UPDATE 终态化，内存对象不 mutate。
+      expect(runningExecution.status).toBe(ExecutionStatus.RUNNING);
+      const qbResults = (execRepo.createQueryBuilder as jest.Mock).mock.results;
+      const setPatches = qbResults.flatMap((r: any) =>
+        r.value.set.mock.calls.map((c: any) => c[0]),
+      );
+      expect(
+        setPatches.some((p: any) => p.status === ExecutionStatus.FAILED),
+      ).toBe(true);
       expect(execRepo.delete).toHaveBeenCalledWith("retry-exec");
       expect(existing.executorStartupId).toBe("startup-new");
       expect(executorRepo.save).toHaveBeenCalledWith(existing);
     });
 
-    // R-11（DEEP_REVIEW 0ef3bbe）：单行乐观锁冲突不得击穿整个重启恢复流程。
-    it("R-11: a single row save failure (optimistic lock) does not abort the rest", async () => {
+    // R-11（DEEP_REVIEW 0ef3bbe）：重启恢复流程中任何写失败不得击穿 register
+    // （否则心跳/注册 500 → 执行器被连锁判离线）。
+    // NETOPT-D P2-D1 后终态写是**单条 UPDATE...IN**（原子）——没有"逐行"可言；
+    // 单次批量 SQL 失败由整体 catch 承接（errorCount=全部），失败行留给 stale
+    // sweep 收敛，与原逐行隔离语义等价：不 500、不半途而废、不重复调度。
+    it("R-11: a batch terminal-write failure does not abort the registration flow", async () => {
       const existing = {
         appName: "e1",
         address: "127.0.0.1:3105",
@@ -465,39 +644,34 @@ describe("ExecutorService (__tests__)", () => {
       executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
       execRepo.find.mockResolvedValue([okExecution, conflictExecution]);
       taskRepo.findBy.mockResolvedValue([]);
-      // A1: 终态写走 transitionOneToTerminal（createQueryBuilder 链）。让第一次
-      // QB execute（ok 行）抛乐观锁错误，第二次（conflict 行）成功——验证单行
-      // 失败不击穿整体恢复流程。
-      let terminalWriteIdx = 0;
-      execRepo.createQueryBuilder.mockImplementation(() => {
-        const idx = terminalWriteIdx++;
-        return {
-          update: jest.fn().mockReturnThis(),
-          delete: jest.fn().mockReturnThis(),
-          set: jest.fn().mockReturnThis(),
-          leftJoin: jest.fn().mockReturnThis(),
-          innerJoin: jest.fn().mockReturnThis(),
-          getMany: jest.fn().mockResolvedValue([]),
-          getOne: jest.fn().mockResolvedValue(null),
-          select: jest.fn().mockReturnThis(),
-          addSelect: jest.fn().mockReturnThis(),
-          where: jest.fn().mockReturnThis(),
-          andWhere: jest.fn().mockReturnThis(),
-          returning: jest.fn().mockReturnThis(),
-          groupBy: jest.fn().mockReturnThis(),
-          orderBy: jest.fn().mockReturnThis(),
-          take: jest.fn().mockReturnThis(),
-          limit: jest.fn().mockReturnThis(),
-          getRawMany: jest.fn().mockResolvedValue([]),
-          getRawOne: jest.fn().mockResolvedValue(null),
-          getCount: jest.fn().mockResolvedValue(0),
-          execute: jest.fn().mockImplementation(async () => {
-            if (idx === 0)
-              throw new Error("OptimisticLockVersionMismatchError");
-            return { affected: 1 };
-          }),
-        };
-      });
+      // A1: 终态写走 transitionToTerminal（createQueryBuilder 链）。批量 UPDATE
+      // 抛乐观锁类错误——验证单条批量写失败不击穿整体注册流程。
+      execRepo.createQueryBuilder.mockImplementation(() => ({
+        update: jest.fn().mockReturnThis(),
+        delete: jest.fn().mockReturnThis(),
+        set: jest.fn().mockReturnThis(),
+        leftJoin: jest.fn().mockReturnThis(),
+        innerJoin: jest.fn().mockReturnThis(),
+        getMany: jest.fn().mockResolvedValue([]),
+        getOne: jest.fn().mockResolvedValue(null),
+        select: jest.fn().mockReturnThis(),
+        addSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        returning: jest.fn().mockReturnThis(),
+        groupBy: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        addOrderBy: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        limit: jest.fn().mockReturnThis(),
+        getRawMany: jest.fn().mockResolvedValue([]),
+        getRawOne: jest.fn().mockResolvedValue(null),
+        getCount: jest.fn().mockResolvedValue(0),
+        execute: jest
+          .fn()
+          .mockRejectedValue(new Error("OptimisticLockVersionMismatchError")),
+      }));
 
       await service.register({
         appName: "e1",
@@ -505,11 +679,11 @@ describe("ExecutorService (__tests__)", () => {
         startupId: "startup-new",
       });
 
-      // The ok row must still be marked FAILED
-      expect(okExecution.status).toBe(ExecutionStatus.FAILED);
-      // Both rows attempted the terminal write via the QB path; the first
-      // threw but the loop continued to the second.
-      expect(execRepo.createQueryBuilder).toHaveBeenCalledTimes(2);
+      // 批量 UPDATE 失败 → 无行终态化、无槽位释放、无重试入队（留给 stale sweep）。
+      expect(okExecution.status).toBe(ExecutionStatus.RUNNING);
+      expect(conflictExecution.status).toBe(ExecutionStatus.RUNNING);
+      expect(execRepo.createQueryBuilder).toHaveBeenCalledTimes(1);
+      expect(taskQueue.add).not.toHaveBeenCalled();
       // Registration must not have thrown (no 500)
       expect(existing.executorStartupId).toBe("startup-new");
     });
@@ -1266,6 +1440,10 @@ describe("ExecutorService (__tests__)", () => {
         status: ExecutorStatus.ONLINE,
         executorStartupId: null,
         executorStartedAt: null,
+        // NETOPT-F P2-F2: 遗留执行器升级首报 restartedAt 时 DB 可能有陈旧高计数
+        // ——missing-baseline 分支必须清零（与 register :908 对称），否则本心跳
+        // save(e) 把旧高值写回，闸门欠派。
+        runningTaskCount: 17,
       };
       const oldExecution: any = {
         id: "exec-old",
@@ -1291,12 +1469,10 @@ describe("ExecutorService (__tests__)", () => {
         startupId: "startup-new",
       });
 
-      expect(oldExecution.status).toBe(ExecutionStatus.FAILED);
-      expect(oldExecution.failureReason).toBe(
-        ExecutionFailureReason.EXECUTOR_RESTART,
-      );
+      // NETOPT-D P2-D1: 批量终态——DB 行经条件 UPDATE 终态化，内存对象不 mutate。
+      expect(oldExecution.status).toBe(ExecutionStatus.RUNNING);
       expect(newExecution.status).toBe(ExecutionStatus.RUNNING);
-      // A1: 终态写走 transitionOneToTerminal（createQueryBuilder 链）。oldExecution
+      // A1: 终态写走 transitionToTerminal（createQueryBuilder 链）。oldExecution
       // 被推进终态（patch=FAILED）；newExecution 未过 shouldFailAfterRestart 门，
       // 不走终态写 → createQueryBuilder 恰被调用一次。
       const qbResults = (execRepo.createQueryBuilder as jest.Mock).mock.results;
@@ -1306,8 +1482,75 @@ describe("ExecutorService (__tests__)", () => {
       expect(
         setPatches.some((p: any) => p.status === ExecutionStatus.FAILED),
       ).toBe(true);
+      expect(
+        setPatches.some(
+          (p: any) =>
+            p.failureReason === ExecutionFailureReason.EXECUTOR_RESTART,
+        ),
+      ).toBe(true);
       expect(execRepo.createQueryBuilder).toHaveBeenCalledTimes(1);
       expect(executor.executorStartupId).toBe("startup-new");
+      // NETOPT-F P2-F2: missing-baseline 分支清零 runningTaskCount（不再逐行
+      // 减槽后计数权威在调用方；旧高值 17 不得残留到 save）。
+      expect(executor.runningTaskCount).toBe(0);
+    });
+
+    it("NETOPT-E P2-1: async didRestart recovery is time-filtered and does not touch slot counts", async () => {
+      // 心跳 didRestart → failRunningExecutionsAfterRestart 走 void 异步路径；
+      // 修复前不带 onlyStartedBefore——恢复 find 只有 address+RUNNING 谓词，
+      // 会把恢复期间闸门新派发的行（startTime >= 重启时刻）一并误杀终态化；
+      // 且旧版批量减槽在 save 之后按旧 winner 数倒扣已含新派发的计数，欠计
+      // 超派。修复后：① 恢复传 incomingStartedAt（只终态化旧行）；② 恢复不
+      // 再减槽，计数权威 = 调用方 e.runningTaskCount=0 + save。
+      const executor = {
+        address: "127.0.0.1:3105",
+        status: ExecutorStatus.ONLINE,
+        executorStartupId: "startup-old",
+        executorStartedAt: new Date("2026-01-01T00:00:00.000Z"),
+        runningTaskCount: 9,
+      };
+      const oldRow: any = {
+        id: "exec-old",
+        executorAddress: executor.address,
+        status: ExecutionStatus.RUNNING,
+        startTime: new Date("2026-01-01T00:00:00.000Z"),
+        logs: "old",
+      };
+      const newRow: any = {
+        id: "exec-new",
+        executorAddress: executor.address,
+        status: ExecutionStatus.RUNNING,
+        startTime: new Date("2026-01-02T00:00:00.000Z"),
+        logs: "new",
+      };
+      executorRepo.findOne.mockResolvedValue(executor);
+      executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      execRepo.find.mockResolvedValue([oldRow, newRow]);
+      taskRepo.findBy.mockResolvedValue([]);
+      const qb = execRepo.createQueryBuilder();
+      qb.execute.mockResolvedValue({
+        affected: 1,
+        raw: [{ id: "exec-old", executorAddress: executor.address }],
+      });
+      execRepo.createQueryBuilder.mockReturnValue(qb);
+
+      await service.heartbeat(executor.address, {
+        startupId: "startup-new",
+        restartedAt: "2026-01-01T12:00:00.000Z",
+      });
+      // void 异步恢复：心跳返回后可能未完成，flush 微任务/IO 再断言。
+      await new Promise((resolve) => setImmediate(resolve));
+
+      // ① transitionToTerminal 的 ids 只含旧行（exec-new 存活）。
+      const idsWhere = qb.where.mock.calls.find((c: any) =>
+        String(c[0]).includes("IN (:...ids)"),
+      );
+      expect(idsWhere?.[1].ids).toEqual(["exec-old"]);
+      // ② 恢复不再触碰 executorRepo 计数（无 releaseExecutorSlotBatch）。
+      expect(executorRepo.createQueryBuilder).not.toHaveBeenCalled();
+      // ③ 计数归零由 save 承担（本次心跳未上报 runningTaskCount → 写 0）。
+      const saved = (executorRepo.save as jest.Mock).mock.calls[0][0] as any;
+      expect(saved.runningTaskCount).toBe(0);
     });
 
     it("continues heartbeat restart recovery when one retry enqueue fails", async () => {
@@ -1354,18 +1597,182 @@ describe("ExecutorService (__tests__)", () => {
       taskQueue.add
         .mockRejectedValueOnce(new Error("redis down"))
         .mockResolvedValueOnce(undefined);
+      // NETOPT-D P2-D1: 批量 UPDATE 命中 2 行 = ids.length → 在无 raw 返回的
+      // 驱动下由 addressSnapshot 兜底构造 winner rows（transitionToTerminal
+      // 的"affected === ids.length"兜底分支）。
+      execRepo.createQueryBuilder.mockImplementation(() => ({
+        update: jest.fn().mockReturnThis(),
+        delete: jest.fn().mockReturnThis(),
+        set: jest.fn().mockReturnThis(),
+        leftJoin: jest.fn().mockReturnThis(),
+        innerJoin: jest.fn().mockReturnThis(),
+        getMany: jest.fn().mockResolvedValue([]),
+        getOne: jest.fn().mockResolvedValue(null),
+        select: jest.fn().mockReturnThis(),
+        addSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        returning: jest.fn().mockReturnThis(),
+        groupBy: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        addOrderBy: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        limit: jest.fn().mockReturnThis(),
+        getRawMany: jest.fn().mockResolvedValue([]),
+        getRawOne: jest.fn().mockResolvedValue(null),
+        getCount: jest.fn().mockResolvedValue(0),
+        execute: jest.fn().mockResolvedValue({ affected: 2 }),
+      }));
 
       await service.heartbeat(executor.address, { startupId: "startup-new" });
+      // NETOPT-D P2-3: 心跳路径的恢复已改为 fire-and-forget（不阻塞心跳线程）。
+      // 本测试全 mock、promise 链同步 resolve，flush 一次宏任务即可收敛断言。
+      await new Promise((resolve) => setImmediate(resolve));
 
-      expect(firstExecution.status).toBe(ExecutionStatus.FAILED);
-      expect(secondExecution.status).toBe(ExecutionStatus.FAILED);
-      // A1: 终态写走 transitionOneToTerminal（createQueryBuilder 链），故
-      // execRepo.save 仅被 scheduleRetryAfterRecovery 调用（创建 retry exec）。
-      // 第一个 retry（firstExecution）enqueue 失败 → 删除其刚创建的 retry 行。
+      // 批量终态：DB 行经条件 UPDATE 终态化，内存对象不 mutate。
+      expect(firstExecution.status).toBe(ExecutionStatus.RUNNING);
+      expect(secondExecution.status).toBe(ExecutionStatus.RUNNING);
+      // 两个 winner 行的重试逐行入队：第一个 enqueue 失败 → 删除其刚创建的
+      // retry 行；第二个成功。
       expect(execRepo.delete).toHaveBeenCalledWith("retry-1");
       expect(taskQueue.add).toHaveBeenCalledTimes(2);
       expect(executor.executorStartupId).toBe("startup-new");
       expect(executorRepo.save).toHaveBeenCalledWith(executor);
+    });
+
+    it("does not block the heartbeat on restart recovery (NETOPT-D P2-3)", async () => {
+      // P2-3: 恢复可能涉及近万行逐行入队——若心跳 await 恢复，单个心跳请求会
+      // 拖到全局超时之外，markStaleOffline 误判刚重启的执行器。钉死"不阻塞"。
+      const executor = {
+        address: "127.0.0.1:3105",
+        status: ExecutorStatus.ONLINE,
+        executorStartupId: "startup-old",
+      };
+      executorRepo.findOne.mockResolvedValue(executor);
+      executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      // 恢复内部第一步 execRepo.find 永不 resolve——若心跳 await 恢复会卡死。
+      execRepo.find.mockReturnValueOnce(new Promise(() => {}));
+
+      // heartbeat 公开契约返回 saved 执行器（executor.interpreters.spec 依赖），
+      // 核心断言是"不阻塞"：execRepo.find 永不 resolve 时 heartbeat 仍立即返回。
+      await expect(
+        service.heartbeat(executor.address, { startupId: "startup-new" }),
+      ).resolves.toMatchObject({
+        address: "127.0.0.1:3105",
+        executorStartupId: "startup-new",
+      });
+      expect(executor.executorStartupId).toBe("startup-new");
+    });
+
+    it("NETOPT-F P2-F1: startupId-only restart uses server-side now (old rows failed, new dispatches survive)", async () => {
+      // 执行器换了 startupId 但未上报 restartedAt（滚动升级/旧版执行器只报
+      // startupId）。批次 E 早期实现退回 DB 侧 executorStartedAt（T0）作基线
+      // ——但 T0 那轮已终态化 startTime<T0 的行，当前 RUNNING 行 startTime
+      // 必然 >= T0，严格 < 过滤下**一条都不终态化**，恢复路径空转（零恢复）。
+      // 修法：基线取服务端本次心跳处理时刻 now——startTime<now 的旧行终态化、
+      // startTime>now 的新派发存活；DB 旧基线仅作 warn 展示不参与判定。
+      // 注意 newRow 时间戳必须晚于真实 now（动态构造），否则真机时间下
+      // newRow 也会被终态化、断言失败——这正是"零恢复"缺陷的回归探测器。
+      const dbBaseline = new Date(Date.now() - 3600_000); // T0：一小时前
+      const executor = {
+        address: "127.0.0.1:3105",
+        status: ExecutorStatus.ONLINE,
+        executorStartupId: "startup-old",
+        executorStartedAt: dbBaseline,
+      };
+      const oldRow: any = {
+        id: "exec-old",
+        executorAddress: executor.address,
+        status: ExecutionStatus.RUNNING,
+        startTime: new Date(Date.now() - 1800_000), // 半小时前（< now → 终态化）
+      };
+      const newRow: any = {
+        id: "exec-new",
+        executorAddress: executor.address,
+        status: ExecutionStatus.RUNNING,
+        startTime: new Date(Date.now() + 60_000), // 一分钟后（> now → 存活）
+      };
+      executorRepo.findOne.mockResolvedValue(executor);
+      executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      execRepo.find.mockResolvedValue([oldRow, newRow]);
+      taskRepo.findBy.mockResolvedValue([]);
+      const qb = execRepo.createQueryBuilder();
+      qb.execute.mockResolvedValue({
+        affected: 1,
+        raw: [{ id: "exec-old", executorAddress: executor.address }],
+      });
+      execRepo.createQueryBuilder.mockReturnValue(qb);
+      const warnSpy = jest.spyOn((service as any).logger, "warn");
+
+      // 心跳只发 startupId，不发 restartedAt。
+      await service.heartbeat(executor.address, { startupId: "startup-new" });
+      await new Promise((resolve) => setImmediate(resolve));
+
+      // transitionToTerminal 的 ids 只含旧行（exec-new 存活）。
+      const idsWhere = qb.where.mock.calls.find((c: any) =>
+        String(c[0]).includes("IN (:...ids)"),
+      );
+      expect(idsWhere?.[1].ids).toEqual(["exec-old"]);
+      // 基线降级必须显式 warn（可审计）——服务端 now + 降级事实。
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("server-side now"),
+      );
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("time baseline degraded"),
+      );
+      warnSpy.mockRestore();
+    });
+
+    it("NETOPT-F P3-2: both-null baseline (no restartedAt AND no DB executorStartedAt) still degrades to now and warns (null)", async () => {
+      // P3-2/P3-5: 报告担忧"db=null 时 warn 尾句与事实相反"——当前实现基线恒为
+      // 服务端 now（db 仅作展示），"Rows started after this baseline are NOT
+      // failed"在所有路径都成立。钉死 both-null 情形：warn 必须含 "(null)" 展示、
+      // 行为仍为 now 基线（旧行 fail、新行存活）。
+      const executor = {
+        address: "127.0.0.1:3105",
+        status: ExecutorStatus.ONLINE,
+        executorStartupId: "startup-old",
+        executorStartedAt: null, // DB 侧也无时间基线
+      };
+      const oldRow: any = {
+        id: "exec-old-null",
+        executorAddress: executor.address,
+        status: ExecutionStatus.RUNNING,
+        startTime: new Date(Date.now() - 1800_000),
+      };
+      const newRow: any = {
+        id: "exec-new-null",
+        executorAddress: executor.address,
+        status: ExecutionStatus.RUNNING,
+        startTime: new Date(Date.now() + 60_000),
+      };
+      executorRepo.findOne.mockResolvedValue(executor);
+      executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      execRepo.find.mockResolvedValue([oldRow, newRow]);
+      taskRepo.findBy.mockResolvedValue([]);
+      const qb = execRepo.createQueryBuilder();
+      qb.execute.mockResolvedValue({
+        affected: 1,
+        raw: [{ id: "exec-old-null", executorAddress: executor.address }],
+      });
+      execRepo.createQueryBuilder.mockReturnValue(qb);
+      const warnSpy = jest.spyOn((service as any).logger, "warn");
+
+      await service.heartbeat(executor.address, { startupId: "startup-new" });
+      await new Promise((resolve) => setImmediate(resolve));
+
+      const idsWhere = qb.where.mock.calls.find((c: any) =>
+        String(c[0]).includes("IN (:...ids)"),
+      );
+      expect(idsWhere?.[1].ids).toEqual(["exec-old-null"]);
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("DB executorStartedAt=(null)"),
+      );
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("time baseline degraded"),
+      );
+      warnSpy.mockRestore();
     });
 
     // CONSISTENCY-02: heartbeat ingest for the optional liveness report.
@@ -1385,7 +1792,7 @@ describe("ExecutorService (__tests__)", () => {
       expect(executor.runningExecutionIds).toEqual(["exec-a", "exec_b-1"]);
     });
 
-    it("trims runningExecutionIds to 200 and drops ids outside the safe charset", async () => {
+    it("trims runningExecutionIds to 10000 and drops ids outside the safe charset", async () => {
       const executor = {
         address: "127.0.0.1:3105",
         status: ExecutorStatus.ONLINE,
@@ -1393,23 +1800,185 @@ describe("ExecutorService (__tests__)", () => {
       };
       executorRepo.findOne.mockResolvedValue(executor);
       executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      // NETOPT-D P3-1: 垃圾项必须排在合法项**之前**——旧用例把 6 个垃圾项排在
+      // 10010 个合法项末尾，sanitize 在 validCount 触顶前就 break，垃圾项根本
+      // 遍历不到，charset 丢弃断言空转（实现改坏也全绿）。前置后每次遍历真实
+      // 命中垃圾项。
       const noisy = [
-        ...Array.from({ length: 210 }, (_, i) => `exec-${i}`),
         "with space",
         "with/slash",
         "with.dot",
         42 as unknown as string,
         null as unknown as string,
+        ...Array.from({ length: 10_010 }, (_, i) => `exec-${i}`),
       ];
 
       await service.heartbeat("127.0.0.1:3105", { runningExecutionIds: noisy });
 
       const ids = executor.runningExecutionIds as string[];
-      expect(ids).toHaveLength(200);
+      // NETOPT-C P2-1: 上限与 E9 maxConcurrentTasks 采纳域同源（10000）——并发
+      // 在容量上界内时 stale-sweep 存活宽限（includes() 判据）永不丢 id。
+      expect(ids).toHaveLength(10_000);
       expect(ids.every((id) => /^[A-Za-z0-9_-]+$/.test(id))).toBe(true);
       expect(ids).not.toContain("with space");
       expect(ids).not.toContain("with/slash");
       expect(ids).not.toContain("with.dot");
+      // NETOPT-D P3-2: 锁"第 10001 缺失"窗口——截断后第 10001 个合法 id 必须
+      // 不在（它在 stale includes() 判据里意味着失去存活宽限）。
+      expect(ids).not.toContain("exec-10000");
+      // 第一个合法 id 保留（截断从尾部开始，头部不受影响）
+      expect(ids).toContain("exec-0");
+    });
+
+    it("logs a warning when runningExecutionIds hits the heartbeat cap", async () => {
+      const executor = {
+        address: "127.0.0.1:3105",
+        status: ExecutorStatus.ONLINE,
+        runningExecutionIds: null,
+      };
+      executorRepo.findOne.mockResolvedValue(executor);
+      executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      const warnSpy = jest
+        .spyOn((service as any).logger, "warn")
+        .mockImplementation(() => undefined);
+      try {
+        await service.heartbeat("127.0.0.1:3105", {
+          runningExecutionIds: Array.from(
+            { length: 10_001 },
+            (_, i) => `exec-${i}`,
+          ),
+        });
+        // 断言必须在 mockRestore 之前——restore 会清除 spy 的调用记录
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.stringContaining("runningExecutionIds exceeded"),
+        );
+        // NETOPT-D P2-D2: warn 补 address 与丢弃条数，便于按执行器定位溢出源。
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.stringContaining("127.0.0.1:3105"),
+        );
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.stringContaining("1 overflow id(s) dropped"),
+        );
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it("NETOPT-E P3-4: throttles truncation warnings (same address + drop count, 60s window)", async () => {
+      // NETOPT-F P3: 显式清空节流状态，消除对前序用例（同模块 Map）的顺序依赖。
+      __resetTruncationWarnStateForTest();
+      const executor = {
+        address: "127.0.0.10:3105",
+        status: ExecutorStatus.ONLINE,
+        runningExecutionIds: null,
+      };
+      executorRepo.findOne.mockResolvedValue(executor);
+      executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      const warnSpy = jest
+        .spyOn((service as any).logger, "warn")
+        .mockImplementation(() => undefined);
+      const truncWarns = () =>
+        warnSpy.mock.calls.filter((c) =>
+          String(c[0]).includes("runningExecutionIds exceeded"),
+        ).length;
+      try {
+        // 第一次：必打。
+        await service.heartbeat("127.0.0.10:3105", {
+          runningExecutionIds: Array.from(
+            { length: 10_001 },
+            (_, i) => `exec-${i}`,
+          ),
+        });
+        expect(truncWarns()).toBe(1);
+        // 第二次（同 address、同 dropped、60s 窗口内）：节流——不打。
+        await service.heartbeat("127.0.0.10:3105", {
+          runningExecutionIds: Array.from(
+            { length: 10_001 },
+            (_, i) => `exec-${i}`,
+          ),
+        });
+        expect(truncWarns()).toBe(1);
+        // 丢弃量变化（10001 → 20001）立即解除节流并更新计时。
+        await service.heartbeat("127.0.0.10:3105", {
+          runningExecutionIds: Array.from(
+            { length: 20_001 },
+            (_, i) => `exec-${i}`,
+          ),
+        });
+        expect(truncWarns()).toBe(2);
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it("NETOPT-E P3-1: oversized arrays are fully scanned so dropped count is exact", async () => {
+      const executor = {
+        address: "127.0.0.11:3105",
+        status: ExecutorStatus.ONLINE,
+        runningExecutionIds: null,
+      };
+      executorRepo.findOne.mockResolvedValue(executor);
+      executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      const warnSpy = jest
+        .spyOn((service as any).logger, "warn")
+        .mockImplementation(() => undefined);
+      try {
+        // 25000 个合法 id：不做前置 slice——全量遍历后合法项保留前 10000，
+        // dropped 必须精确为 15000（旧实现先 slice(0,20000) 再遍历，报丢
+        // 10000、实丢 15000，口径低估）。
+        const huge = Array.from({ length: 25_000 }, (_, i) => `exec-${i}`);
+        await service.heartbeat("127.0.0.11:3105", {
+          runningExecutionIds: huge,
+        });
+        const ids = executor.runningExecutionIds as string[];
+        expect(ids).toHaveLength(10_000);
+        expect(ids).toContain("exec-0");
+        expect(ids).not.toContain("exec-10000");
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.stringContaining("15000 overflow id(s) dropped"),
+        );
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it("NETOPT-D P2-D2: clamps out-of-range runningTaskCount (keeps stored value)", async () => {
+      const executor = {
+        address: "127.0.0.1:3105",
+        status: ExecutorStatus.ONLINE,
+        maxConcurrentTasks: 100,
+        runningTaskCount: 7,
+      };
+      executorRepo.findOne.mockResolvedValue(executor);
+      executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      const warnSpy = jest
+        .spyOn((service as any).logger, "warn")
+        .mockImplementation(() => undefined);
+      try {
+        for (const bad of [10_001, -1, 1.5, "10" as unknown as number]) {
+          await service.heartbeat("127.0.0.1:3105", { runningTaskCount: bad });
+          expect(executor.runningTaskCount).toBe(7); // DB 值不动
+        }
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.stringContaining("invalid runningTaskCount"),
+        );
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it("NETOPT-D P2-D2: adopts in-range runningTaskCount as reported", async () => {
+      const executor = {
+        address: "127.0.0.1:3105",
+        status: ExecutorStatus.ONLINE,
+        runningTaskCount: 7,
+      };
+      executorRepo.findOne.mockResolvedValue(executor);
+      executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+
+      await service.heartbeat("127.0.0.1:3105", { runningTaskCount: 42 });
+
+      expect(executor.runningTaskCount).toBe(42);
     });
 
     it("treats a malformed (non-array) report as unreported → null", async () => {
@@ -2749,6 +3318,42 @@ describe("ExecutorService (__tests__)", () => {
     it("NETOPT-1⑧: scan is bounded with take(1000) so a backlog self-converges over ticks", async () => {
       await service.detectLostExecutions();
       expect(qb.take).toHaveBeenCalledWith(1000);
+    });
+
+    it("NETOPT-E P3-3: paginates with skip and an id tie-break when a full page is drained", async () => {
+      // NETOPT-E P3-3 补钉：分页循环的生产代码正确（take1000/skip 循环 +
+      // startTime/id 双键排序），但旧用例只断言 take(1000)——若有人把
+      // addOrderBy/skip 从链上摘掉、或把分页循环改回单次 getMany，全绿。
+      // 本用例：第一页满 1000 → skip 必须推进到 1000 再查第二页 → 第二页空
+      // 终止；双键排序（startTime ASC + id ASC）钉死确定性分页。
+      const fullPage = Array.from({ length: 1000 }, (_, i) => ({
+        ...candidate,
+        id: `lost-${i}`,
+      }));
+      qb.getMany.mockResolvedValueOnce(fullPage).mockResolvedValueOnce([]);
+      await service.detectLostExecutions();
+      // 两页：满页 1000 + 空页终止。只断言 qb（扫描链）上的调用——处理链
+      // 逐行 transitionToTerminal 也用 execRepo.createQueryBuilder，不能数总次数。
+      expect(qb.getMany).toHaveBeenCalledTimes(2);
+      expect(qb.take).toHaveBeenCalledWith(1000);
+      expect(qb.skip).toHaveBeenCalledWith(1000);
+      expect(qb.addOrderBy).toHaveBeenCalledWith("exec.id", "ASC");
+      expect(qb.orderBy).toHaveBeenCalledWith("exec.startTime", "ASC");
+    });
+
+    it("NETOPT-E P3-3: short first page terminates without a second query", async () => {
+      // 反方向钉死：首页不足 1000（短页）→ 不再发第二次查询（page.length <
+      // LOST_SWEEP_PAGE → break）。防止"无脑循环到 MAX"或漏 break。
+      const shortPage = Array.from({ length: 7 }, (_, i) => ({
+        ...candidate,
+        id: `lost-s-${i}`,
+      }));
+      qb.getMany.mockResolvedValueOnce(shortPage);
+      await service.detectLostExecutions();
+      expect(qb.getMany).toHaveBeenCalledTimes(1);
+      // 首页扫描链也调 skip(0)（pageOffset 起始值）——钉"无第二次查询推进"。
+      expect(qb.skip).toHaveBeenCalledTimes(1);
+      expect(qb.skip).toHaveBeenCalledWith(0);
     });
   });
 
