@@ -101,14 +101,15 @@ beforeEach(() => {
 
 afterEach(() => cleanup());
 
-describe('UI-18: 批量 reload-config 对 pull 执行器门控（ARCH-32 入站推送不可达）', () => {
-  it('混合选择：确认后仅对 push 执行器发送 reload，pull 被剔除', async () => {
+describe('UI-18 → ARCH-33: 批量 reload-config 门控（判据由「pull」改为「pull 且协议<2」）', () => {
+  it('混合选择：确认后仅对 push 执行器发送 reload，v1 pull 被剔除', async () => {
     const confirmSpy = vi.spyOn(Modal, 'confirm').mockImplementation(((opt: { onOk?: () => void }) => {
       void opt.onOk?.();
     }) as never);
     renderBatch([
       makeExecutor({ id: 'ex-push', appName: 'push-exec', dispatchMode: 'push' }),
-      makeExecutor({ id: 'ex-pull', appName: 'pull-exec', dispatchMode: 'pull' }),
+      // v1 pull：不认识 commands 字段，会静默忽略 → 必须剔除
+      makeExecutor({ id: 'ex-pull', appName: 'pull-exec', dispatchMode: 'pull', protocolVersion: 1 }),
     ]);
 
     const btn = findBtn(document.body, '批量配置热更新');
@@ -119,12 +120,32 @@ describe('UI-18: 批量 reload-config 对 pull 执行器门控（ARCH-32 入站�
     confirmSpy.mockRestore();
   });
 
-  it('全为 pull：直接提示不弹确认、不发请求', async () => {
+  // ARCH-33（ADR-016）核心行为变更：协议 v2 的 pull 执行器**可以**热更新了。
+  // 旧判据（dispatchMode === 'pull' 即剔除）对它已失效——继续剔除等于把
+  // ADR-016 搬上 pull 通道的控制面能力白做。
+  it('ARCH-33：协议 v2 的 pull 执行器**不再**被剔除（控制面已上 pull 通道）', async () => {
+    const confirmSpy = vi.spyOn(Modal, 'confirm').mockImplementation(((opt: { onOk?: () => void }) => {
+      void opt.onOk?.();
+    }) as never);
+    renderBatch([
+      makeExecutor({ id: 'ex-push', appName: 'push-exec', dispatchMode: 'push' }),
+      makeExecutor({ id: 'ex-pull2', appName: 'pull-v2', dispatchMode: 'pull', protocolVersion: 2 }),
+    ]);
+
+    const btn = findBtn(document.body, '批量配置热更新');
+    btn!.click();
+    await vi.waitFor(() => expect(mockedApi.reloadConfig).toHaveBeenCalledTimes(2));
+    expect(mockedApi.reloadConfig).toHaveBeenCalledWith('ex-pull2', {});
+    expect(mockedApi.reloadConfig).toHaveBeenCalledWith('ex-push', {});
+    confirmSpy.mockRestore();
+  });
+
+  it('全为 v1 pull：直接提示不弹确认、不发请求', async () => {
     const warnSpy = vi.spyOn(message, 'warning').mockImplementation(() => undefined as never);
     const confirmSpy = vi.spyOn(Modal, 'confirm').mockImplementation(() => undefined as never);
     renderBatch([
-      makeExecutor({ id: 'ex-p1', appName: 'p1', dispatchMode: 'pull' }),
-      makeExecutor({ id: 'ex-p2', appName: 'p2', dispatchMode: 'pull' }),
+      makeExecutor({ id: 'ex-p1', appName: 'p1', dispatchMode: 'pull', protocolVersion: 1 }),
+      makeExecutor({ id: 'ex-p2', appName: 'p2', dispatchMode: 'pull' }), // 未上报 = v1
     ]);
 
     const btn = findBtn(document.body, '批量配置热更新');
@@ -135,16 +156,60 @@ describe('UI-18: 批量 reload-config 对 pull 执行器门控（ARCH-32 入站�
     warnSpy.mockRestore();
     confirmSpy.mockRestore();
   });
+
+  it('全为 v2 pull：可以正常批量热更新（不再提示「仅 pull」）', async () => {
+    const warnSpy = vi.spyOn(message, 'warning').mockImplementation(() => undefined as never);
+    const confirmSpy = vi.spyOn(Modal, 'confirm').mockImplementation(((opt: { onOk?: () => void }) => {
+      void opt.onOk?.();
+    }) as never);
+    renderBatch([
+      makeExecutor({ id: 'ex-p1', appName: 'p1', dispatchMode: 'pull', protocolVersion: 2 }),
+      makeExecutor({ id: 'ex-p2', appName: 'p2', dispatchMode: 'pull', protocolVersion: 2 }),
+    ]);
+
+    const btn = findBtn(document.body, '批量配置热更新');
+    btn!.click();
+    await vi.waitFor(() => expect(mockedApi.reloadConfig).toHaveBeenCalledTimes(2));
+    expect(warnSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+    confirmSpy.mockRestore();
+  });
 });
 
-describe('UI-18: 详情页 pull 执行器（派发模式展示 + 入站推送入口禁用）', () => {
-  it('显示派发模式 Pull 回连 Tag，配置热更新按钮 disabled', async () => {
+describe('UI-18 → ARCH-33: 详情页控制面入口门控', () => {
+  it('v1 pull 执行器：显示 Pull 回连 Tag，配置热更新按钮 disabled', async () => {
+    mockedApi.get.mockResolvedValue(
+      makeExecutor({ id: 'ex-pull', appName: 'pull-exec', address: 'nat:9999', dispatchMode: 'pull', protocolVersion: 1 }),
+    );
     renderDetail();
     await screen.findAllByText('pull-exec');
 
     expect(await screen.findByText('Pull 回连')).toBeTruthy();
     const btn = findBtn(document.body, '配置热更新');
     expect(btn).toBeTruthy();
+    expect(btn!.disabled).toBe(true);
+  });
+
+  it('ARCH-33：协议 v2 pull 执行器按钮**可用**（控制面已上 pull 通道）', async () => {
+    mockedApi.get.mockResolvedValue(
+      makeExecutor({ id: 'ex-pull', appName: 'pull-v2', address: 'nat:9999', dispatchMode: 'pull', protocolVersion: 2 }),
+    );
+    renderDetail();
+    await screen.findAllByText('pull-v2');
+
+    const btn = findBtn(document.body, '配置热更新');
+    expect(btn).toBeTruthy();
+    expect(btn!.disabled).toBe(false);
+  });
+
+  it('未上报协议版本的 pull 执行器：按钮 disabled（兜底为不支持）', async () => {
+    mockedApi.get.mockResolvedValue(
+      makeExecutor({ id: 'ex-pull', appName: 'pull-legacy', address: 'nat:9999', dispatchMode: 'pull' }),
+    );
+    renderDetail();
+    await screen.findAllByText('pull-legacy');
+
+    const btn = findBtn(document.body, '配置热更新');
     expect(btn!.disabled).toBe(true);
   });
 

@@ -18,6 +18,8 @@ import { useTranslation } from 'react-i18next';
 import type { Executor } from '../../api/executors';
 import { executorsApi } from '../../api/executors';
 import { getErrMsg } from '../../utils/error';
+// ARCH-33（ADR-016）：pull 控制面可用性判据（UI-18 判据的修订版）
+import { isControlPlaneUnavailable } from '../../utils/control-plane';
 import '../../i18n';
 
 const { Text } = Typography;
@@ -107,9 +109,15 @@ export default function BatchActionBar({ selected, isAdmin, onDone }: BatchActio
       message.warning(t('batchAction.noneOnline'));
       return;
     }
-    // UI-18: reload-config 是 admin→执行器入站 POST，pull 模式执行器（ARCH-32，
-    // NAT 内零入站可达）必然失败——从批量目标中剔除，全为 pull 时直接提示。
-    const pushable = online.filter((ex) => ex.dispatchMode !== 'pull');
+    // UI-18 → ARCH-33（ADR-016）修订：原判据是「pull 模式必然失败」——那在
+    // ADR-015 只搬了任务派发时成立（reload-config 仍是入站 POST）。ADR-016 把
+    // 控制面也搬上 pull 通道后，**协议 >= 2 的 pull 执行器可以正常热更新**，
+    // 该判据对它已失效，继续禁用等于把新能力白做。
+    //
+    // 修订后的判据是「pull **且** 协议 < 2」：v2 之前的 pull 执行器会静默
+    // 忽略 commands 字段，中台却会误判投递成功——所以那批仍必须剔除，且不能
+    // 只靠「入站不可达」这个恰好成立的巧合。
+    const pushable = online.filter((ex) => !isControlPlaneUnavailable(ex));
     const skippedPull = online.length - pushable.length;
     if (pushable.length === 0) {
       message.warning(t('batchAction.reloadPullOnly'));

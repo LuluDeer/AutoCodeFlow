@@ -42,6 +42,17 @@ export interface Executor {
   dispatchMode?: 'push' | 'pull';
 
   /**
+   * ARCH-33（ADR-016）: 协议版本。pull 执行器的控制面入口（配置热更新等）
+   * 只在协议 >= 2 时可用——v2 起中台经 pull 响应的 commands 字段下发控制命令，
+   * v1 执行器会静默忽略该字段。
+   *
+   * null/undefined = 存量旧执行器未上报（按 v1 处理，即不支持控制面）。
+   * 与 versionCompliant 的兜底方向**刻意相反**：那个是「不得剔除旧执行器」
+   * 的兼容性红线（缺省 true），这个是「新增能力可用性」门槛（缺省 false）。
+   */
+  protocolVersion?: number | null;
+
+  /**
 
    * EXE-VER-1/UI-17: EXECUTOR_MIN_VERSION 门禁的读面投影——执行器版本低于
 

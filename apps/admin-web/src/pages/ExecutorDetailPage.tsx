@@ -18,6 +18,8 @@ import { currentLocale } from '../utils/locale';
 import { formatRelativeTime, formatDurationShort, formatDateTime } from '../utils/timeFormat';
 // P2-5（executor lifecycle audit）：心跳陈旧判定与后端判死阈值同源
 import { HEARTBEAT_TIMEOUT_FALLBACK_MS, isHeartbeatStale } from '../utils/executorLiveness';
+// ARCH-33（ADR-016）：pull 控制面可用性判据（UI-18 判据的修订版）
+import { isControlPlaneUnavailable } from '../utils/control-plane';
 // F-36（DEEP_REVIEW 0ef3bbe）：编辑弹窗字段白名单（回填/提交都不再整体快照透传）。
 import { executorEditFormValues, pickExecutorEditPayload, type ExecutorEditValues } from './executor-edit';
 import { useAuthStore, isAdminUser } from '../store/auth';
@@ -283,9 +285,13 @@ export default function ExecutorDetailPage() {
           <Space wrap size={4}>
             <Button.Group>
               <Button onClick={() => { editForm.setFieldsValue(executorEditFormValues(executor)); setEditOpen(true); }}>{t('executorDetail.edit')}</Button>
-              {/* UI-18: pull 模式执行器（ARCH-32）不可入站推送——入口禁用 */}
-              <Tooltip title={executor.dispatchMode === 'pull' ? t('executorDetail.config.pullDisabledTooltip') : undefined}>
-                <Button disabled={executor.dispatchMode === 'pull'} onClick={() => setConfigOpen(true)}>{t('executorDetail.configHotReload')}</Button>
+              {/* UI-18 → ARCH-33（ADR-016）修订：判据由「pull 模式」改为
+                  「pull 且协议 < 2」。ADR-016 把控制面搬上 pull 通道后，
+                  协议 v2 的 pull 执行器可以正常热更新；v1 及未上报版本的
+                  pull 执行器仍必须禁用——它们会**静默忽略** commands 字段，
+                  比入站失败更危险（失败可见，静默不可见）。 */}
+              <Tooltip title={isControlPlaneUnavailable(executor) ? t('executorDetail.config.pullDisabledTooltip') : undefined}>
+                <Button disabled={isControlPlaneUnavailable(executor)} onClick={() => setConfigOpen(true)}>{t('executorDetail.configHotReload')}</Button>
               </Tooltip>
               <Button
                 danger
