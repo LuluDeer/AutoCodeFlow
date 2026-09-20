@@ -11,6 +11,8 @@ import {
 import { ApplicationVersion } from "../entities/application-version.entity";
 import { ApplicationService } from "../application.service";
 import { ExecutorService } from "../../executor/executor.service";
+// ARCH-33（ADR-016）：控制面 pull 通道的测试替身（默认 push）
+import { controlPlaneMocks } from "../../../common/testing/control-plane-mocks";
 
 /**
  * FEAT-20（迁移 1790000000004）：部署写面 triggerType/operator 落库断言。
@@ -77,7 +79,9 @@ describe("AppDeploymentService — FEAT-20 triggerType/operator 落库", () => {
       getExecutorUrl: jest.fn((addr: string, p: string) => `${addr}/${p}`),
       getSharedToken: jest.fn().mockResolvedValue(""),
       selectLeastLoaded: jest.fn().mockResolvedValue(mockExecutor),
-    };
+      // ARCH-33（ADR-016）：默认 push（本 spec 验证 push 路径语义）
+      ...controlPlaneMocks(),
+    } as unknown as typeof executorService;
 
     const module = await Test.createTestingModule({
       providers: [

@@ -12,6 +12,8 @@ import { AiAnalysisService } from "../../ai/ai-analysis.service";
 import { UserRole } from "../../users/entities/user.entity";
 // NETOPT-8③: remove() 的执行器清理扇出（stop + uninstall）走 axios
 import { ExecutorService } from "../../executor/executor.service";
+// ARCH-33（ADR-016）：控制面 pull 通道的测试替身（默认 push）
+import { controlPlaneMocks } from "../../../common/testing/control-plane-mocks";
 
 // R4/R1: deployFromGit spawns git and resolves the repo host — pin both so
 // the specs never touch the network or a real binary.
@@ -945,6 +947,9 @@ describe("ApplicationService.remove — executor cleanup fanout (NETOPT-8③)", 
   let executorService: {
     getExecutorUrl: jest.Mock;
     getSharedToken: jest.Mock;
+    // ARCH-33（ADR-016）：清理扇出先判传输方式（默认 push）
+    resolveExecutorTransport: jest.Mock;
+    enqueueExecutorCommand: jest.Mock;
   };
   const mockedAxiosPost = (axios as unknown as { post: jest.Mock }).post;
 
@@ -956,6 +961,7 @@ describe("ApplicationService.remove — executor cleanup fanout (NETOPT-8③)", 
         (addr: string, p: string) => `http://${addr}/${p}`,
       ),
       getSharedToken: jest.fn().mockResolvedValue("shared-token"),
+      ...controlPlaneMocks(),
     };
     // assertAndPinExecutorUrl 的 DNS 解析桩（public IP → 放行）
     mockedLookup.mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);

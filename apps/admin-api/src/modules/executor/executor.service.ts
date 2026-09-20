@@ -63,7 +63,9 @@ import { isVersionCompliant } from "./version-compare.util";
 // PROTOCOL-VER（B-3/U-2）：协议版本兼容矩阵（与实现版本门禁解耦）。
 import {
   PROTOCOL_SUPPORTED_MIN,
+  PROTOCOL_CONTROL_PLANE_MIN,
   isProtocolCompliant,
+  supportsControlPlane,
 } from "./protocol-compat.util";
 // ARCH-32: pull 模式派发队列（ADR-015）——NAT 内执行器零入站回连
 import { ExecutorPullService } from "./executor-pull.service";
@@ -585,6 +587,9 @@ export class ExecutorService {
    * 实现自 task.service.notifyExecutorKill 收敛至此（kill 端点 node/python
    * 两端均已就绪），TaskService 现委托本方法，避免两份逻辑。
    * 契约：地址为空跳过；任何失败（离线/404/超时）仅 warn，绝不抛出。
+   *
+   * ARCH-33（ADR-016）：pull 执行器（NAT 内）改走命令队列入队——此前本方法
+   * 对 NAT 地址必然超时，而它是 stale sweep 的「防双跑」关键路径。
    */
   async notifyExecutorKill(
     executionId: string,
@@ -592,6 +597,15 @@ export class ExecutorService {
   ): Promise<void> {
     if (!executorAddress) return;
     try {
+      // ARCH-33: pull 执行器入队即返回（best-effort 语义不变——入队失败回退
+      // push，下方 catch 仍把任何异常收敛为 warn）。
+      const routed = await this.deliverControlCommand({
+        address: executorAddress,
+        type: "kill-execution",
+        payload: { executionId },
+      });
+      if (routed.delivered === "pull") return;
+
       const token = await this.getSharedToken();
       const headers = token ? { Authorization: `Bearer ${token}` } : {};
       const url = this.getExecutorUrl(
@@ -752,6 +766,121 @@ export class ExecutorService {
    */
   async findByAddress(address: string): Promise<Executor | null> {
     return this.repo.findOne({ where: { address } });
+  }
+
+  /**
+   * ARCH-33（ADR-016）：解析一次「中台→执行器」控制面调用的传输方式。
+   *
+   * 这是所有控制面调用点（deploy / app-stop / app-uninstall / config-reload /
+   * kill / update-package）的**唯一分流出口**。判定顺序：
+   *
+   *   1. 能定位到执行器行（按 id 优先，回退 address）——定位不到就没有
+   *      dispatchMode/protocolVersion 可判，回退 push（存量行为）；
+   *   2. `dispatchMode === 'pull'`——push 执行器照旧走 HTTP；
+   *   3. `supportsControlPlane(protocolVersion)`——协议 < 2 的 pull 执行器会
+   *      忽略 commands 字段，回退 push（失败可见，优于静默丢操作）。
+   *
+   * 返回 `executor` 便于调用方复用（避免二次查库）。
+   */
+  async resolveExecutorTransport(opts: {
+    executorId?: string | null;
+    address?: string | null;
+  }): Promise<{ mode: "push" | "pull"; executor: Executor | null }> {
+    try {
+      const executor = opts.executorId
+        ? await this.repo.findOne({ where: { id: opts.executorId } })
+        : opts.address
+          ? await this.repo.findOne({ where: { address: opts.address } })
+          : null;
+      if (!executor) return { mode: "push", executor: null };
+      if (executor.dispatchMode !== "pull") {
+        return { mode: "push", executor };
+      }
+      if (!supportsControlPlane(executor.protocolVersion)) {
+        // 可见的降级：pull 执行器但协议太旧。回退 push 后对 NAT 地址必然
+        // 超时——但那是一条调用方**看得见**的失败，且与升级前行为一致；
+        // 静默把命令丢进一个执行器不认识的字段才是真正的事故。
+        this.logger.warn(
+          `Executor ${executor.address} is pull-mode but reports protocolVersion=${executor.protocolVersion ?? "unset"} ` +
+            `(< ${PROTOCOL_CONTROL_PLANE_MIN}); falling back to push for this control-plane call — ` +
+            `upgrade the executor to enable the pull command channel`,
+        );
+        return { mode: "push", executor };
+      }
+      return { mode: "pull", executor };
+    } catch (err) {
+      this.logger.warn(
+        `Transport resolution failed for executor ` +
+          `${opts.executorId ?? opts.address ?? "(none)"}: ` +
+          `${err instanceof Error ? err.message : String(err)} — falling back to push`,
+      );
+      return { mode: "push", executor: null };
+    }
+  }
+
+  /**
+   * ARCH-33（ADR-016）：把一条控制面命令投进执行器的 pull 命令队列。
+   *
+   * 返回 commandId（结果上报与排障的关联键）。抛错表示**未投递**——调用方
+   * 据此决定回退 push 还是按既有失败路径处理（绝不静默吞掉）。
+   */
+  async enqueueExecutorCommand(
+    executorId: string,
+    type: string,
+    payload: Record<string, unknown>,
+  ): Promise<string> {
+    if (!this.pullService) {
+      throw new Error(
+        "Pull command channel unavailable: ExecutorPullService not wired",
+      );
+    }
+    const commandId = await this.pullService.enqueueCommand(
+      executorId,
+      type,
+      payload,
+    );
+    this.logger.log(
+      `Queued control command ${type} (${commandId}) for pull executor ${executorId}`,
+    );
+    return commandId;
+  }
+
+  /**
+   * ARCH-33（ADR-016）：命令下发的**统一入口**——按传输方式分流。
+   *
+   * push：调用方自行发 HTTP（各调用点的 URL/超时/载荷各不相同，收敛到此
+   *       只会造出一个巨型 switch）。
+   * pull：入队并返回 commandId；入队失败**回退 push**（Redis 抖动时宁可
+   *       试一次 HTTP，也不要把操作丢掉）。
+   *
+   * 返回 `delivered: 'pull'` 表示已入队（**不等于已执行**——执行器异步取件
+   * 后本地执行，终态由各自的回调通道收敛，见 ADR-016「语义边界」）。
+   */
+  async deliverControlCommand(opts: {
+    executorId?: string | null;
+    address: string;
+    type: string;
+    payload: Record<string, unknown>;
+  }): Promise<{ delivered: "push" | "pull"; commandId?: string }> {
+    const { mode, executor } = await this.resolveExecutorTransport({
+      executorId: opts.executorId,
+      address: opts.address,
+    });
+    if (mode !== "pull" || !executor) return { delivered: "push" };
+    try {
+      const commandId = await this.enqueueExecutorCommand(
+        executor.id,
+        opts.type,
+        opts.payload,
+      );
+      return { delivered: "pull", commandId };
+    } catch (err) {
+      this.logger.warn(
+        `Failed to queue ${opts.type} for pull executor ${executor.address}: ` +
+          `${err instanceof Error ? err.message : String(err)} — falling back to push`,
+      );
+      return { delivered: "push" };
+    }
   }
 
   async register(data: {

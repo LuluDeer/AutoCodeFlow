@@ -2394,6 +2394,34 @@
         ]
       }
     },
+    "/executors/command-result": {
+      "post": {
+        "description": "ARCH-33: pull-mode executors report the outcome of a control command (deploy / app-stop / app-uninstall / config-reload / kill-execution / update-package) they consumed from the pull response. Best-effort — business terminal states still converge through their own callbacks.",
+        "operationId": "ExecutorController_reportCommandResult",
+        "parameters": [
+          {
+            "name": "authorization",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Result recorded"
+          },
+          "401": {
+            "description": "Invalid executor token"
+          }
+        },
+        "summary": "Report pull control-command execution result",
+        "tags": [
+          "Executors"
+        ]
+      }
+    },
     "/executors/config": {
       "get": {
         "description": "E-1: pull 执行器在长轮询响应中发现 configVersion 与本地不一致时调用，拉取与 admin 主动推送 /api/config/reload 同形的配置载荷（执行器侧走与 /api/config/reload 完全相同的校验与应用路径）。per-executor 令牌认证，address 走查询参数（与 register/heartbeat 同源）。",
@@ -8035,6 +8063,11 @@
             "type": "number",
             "description": "客户端期望的长轮询等待窗口（毫秒）；服务端按 EXECUTOR_PULL_WAIT_MS 钳位（上限 55s）",
             "example": 25000
+          },
+          "freeSlots": {
+            "type": "number",
+            "description": "执行器当前空闲槽位数；0 = 满载（服务端只下发控制命令，不派任务）。缺省按有空槽处理",
+            "example": 2
           }
         },
         "required": [

@@ -1039,6 +1039,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/executors/command-result": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Report pull control-command execution result
+         * @description ARCH-33: pull-mode executors report the outcome of a control command (deploy / app-stop / app-uninstall / config-reload / kill-execution / update-package) they consumed from the pull response. Best-effort — business terminal states still converge through their own callbacks.
+         */
+        post: operations["ExecutorController_reportCommandResult"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/executors/config": {
         parameters: {
             query?: never;
@@ -3413,6 +3433,11 @@ export interface components {
              * @example 25000
              */
             waitMs?: number;
+            /**
+             * @description 执行器当前空闲槽位数；0 = 满载（服务端只下发控制命令，不派任务）。缺省按有空槽处理
+             * @example 2
+             */
+            freeSlots?: number;
         };
         TerminalStateItemDto: {
             /**
@@ -5313,6 +5338,33 @@ export interface operations {
         };
         responses: {
             /** @description Dispatch payload or empty */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid executor token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    ExecutorController_reportCommandResult: {
+        parameters: {
+            query?: never;
+            header: {
+                authorization: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Result recorded */
             200: {
                 headers: {
                     [name: string]: unknown;
