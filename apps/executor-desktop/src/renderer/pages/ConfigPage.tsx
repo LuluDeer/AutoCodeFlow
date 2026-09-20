@@ -377,7 +377,24 @@ export default function ConfigPage() {
 
               <div className="info-banner">
                 <span className="info-banner-icon">💡</span>
-                <span>Admin 平台通过<strong>对外地址</strong>向本机推送任务。同局域网选上面的 IP 即可；跨网络或 NAT 环境需填外网 IP / 域名。</span>
+                <span>Admin 平台通过<strong>对外地址</strong>向本机推送任务。同局域网选上面的 IP 即可；跨网络或 NAT 环境请改用下面的<strong>回连模式</strong>——办公机在 NAT 后没有可填的公网地址。</span>
+              </div>
+
+              {/* ARCH-33（ADR-016）：pull 回连模式。
+                  桌面端的典型部署是「公网中台 + 内网办公机」，而办公机在 NAT 后
+                  根本没有可填的公网地址——push 模式下 admin 每次拨入都超时
+                  （生产实证 "Failed to reach executor after 3 attempts"）。
+                  回连模式由执行器主动长轮询，中台无需反向连入。 */}
+              <div className="cfg-toggle-card">
+                <div className="cfg-toggle-info">
+                  <strong>回连模式（推荐用于跨网络 / NAT）</strong>
+                  <span>
+                    执行器主动连接平台领取任务，平台无需连入本机。
+                    内网办公机、云主机、NAT 后一律建议打开；保存后执行器会自动重启生效。
+                  </span>
+                </div>
+                <Toggle id="pullMode" label="回连模式" checked={form.pullMode === true}
+                  onChange={(v) => set('pullMode', v)} />
               </div>
             </>
           )}

@@ -131,6 +131,9 @@ export class ExecutorProcess {
         // P3-1：设置页日志级别透传给 executor-node（此前 config.logLevel 是
         // 没有任何消费者的死字段）。
         logLevel: config.logLevel,
+        // ARCH-33：pull 回连模式。开启后执行器主动长轮询，admin 无需反向连入
+        // 本机——「公网中台 + 内网办公机」拓扑下这是唯一能通的形态。
+        pullMode: config.pullMode === true,
         adminApiUrl: config.adminApiUrl,
         workDir: config.workDir,
         maxConcurrentTasks: config.maxConcurrentTasks,

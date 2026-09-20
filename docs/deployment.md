@@ -996,3 +996,4 @@ docker compose -f docker-compose.yml -f docker-compose.ha.yml up -d --scale admi
 | python 能力缺口 | python 执行器只有 `config-reload` / `kill-execution` 两个本地路由；`deploy`/`app-stop`/`app-uninstall`/`update-package` 是 node-only（`protocol.json` 的 `executorNodeOnly` 段已登记）。python 收到这四类**如实回报 unsupported**，而非回环打一个必然 404 的请求。这是**既有**缺口，不是本改动引入的回归 |
 | 日志回填 | `GET api/logs/:id` 属**读**方向，单向 pull 通道载不了响应体——**明确不在本机制范围内**。NAT 执行器维持既有降级路径（终态回调携带日志尾部） |
 | 升级顺序 | 无约束：中台先升级 → 旧执行器回落 push（行为不变）；执行器先升级 → 上报 v2，旧中台忽略该字段（行为不变） |
+| 桌面端开关 | 设置页 → **网络 & 地址** → 「回连模式」。桌面的典型部署「公网中台 + 内网办公机」下办公机在 NAT 后没有可填的公网地址，push 必然超时——回连模式是该拓扑的唯一正解。落 `config-store.pullMode`，经 `buildExecutorChildEnv` 下发 `EXECUTOR_PULL_MODE=true`，保存即重启内核生效；缺省 `false`（旧配置文件由 schema default 补齐，升级后行为不变） |
