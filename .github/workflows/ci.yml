@@ -1106,7 +1106,7 @@ jobs:
         run: bash scripts/e2e-full.sh
       - name: Upload e2e logs & failure screenshots
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-artifacts
           path: |
@@ -1226,7 +1226,7 @@ jobs:
         run: bash scripts/e2e-full.sh
       - name: Upload e2e logs & failure screenshots
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-windows-artifacts
           path: |
@@ -1289,7 +1289,7 @@ jobs:
         # 同 mac：CI 只产构件不发布（repository 字段触发的默认 publisher）
         run: npm run dist:linux -- --publish never
       - name: Upload Linux bundles
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: desktop-linux-bundles
           path: |
@@ -1430,7 +1430,7 @@ jobs:
         # 会默认走 GitHub publisher（缺 GH_TOKEN 即炸）——显式 never。
         run: npm run dist:mac -- --publish never
       - name: Upload macOS bundles
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: desktop-macos-bundles
           path: |
