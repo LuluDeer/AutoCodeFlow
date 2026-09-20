@@ -73,6 +73,16 @@ export function checkVersions() {
     for (const mm of text.matchAll(/lockstep\s*\*{0,2}(\d+\.\d+\.\d+)\*{0,2}/gi)) {
       found.add(mm[1]);
     }
+    // 带 `x-release-please-version` 标记的行：与 release-please 的更新面**同源**
+    // 判据。原先只认上面两种措辞形态，于是 release.md 版本矩阵表格里的
+    // `**1.4.4**`（表格行，非「当前 X.Y.Z」措辞）长期是**校验盲区**——它已经
+    // 漂到 1.4.4 而标题还写 1.4.3，守卫却一声不吭。改为「凡是 release-please
+    // 会去改的行，就必须等于事实源」，判据面与更新面天然对齐，不会再有盲区。
+    for (const line of text.split(/\r?\n/)) {
+      if (!line.includes("x-release-please-version")) continue;
+      const mm = /\d+\.\d+\.\d+/.exec(line);
+      if (mm) found.add(mm[0]);
+    }
     for (const v of found) {
       if (v !== version) {
         errors.push(`${page}：版本声明 ${v} ≠ 事实源 ${version}（lockstep 漂移）`);

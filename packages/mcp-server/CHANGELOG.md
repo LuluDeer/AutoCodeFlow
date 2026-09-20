@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.5.0](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.4.3...v1.5.0) (2026-09-19)
+
+
+### Features
+
+* **optimize:** 全量优化落地——性能/可扩展/安全/可靠性/CI 门禁 ([a4dad9b](https://github.com/LuluDeer/AutoCodeFlow/commit/a4dad9b56e5277b6b75be62958882fcc408d163b))
+
+
+### Bug Fixes
+
+* **experience:** 修 4 个体验级真实缺陷（回调整批丢失 / 401 误登出 / 校验原因不可见 / DAG 恒空） ([ef7dc99](https://github.com/LuluDeer/AutoCodeFlow/commit/ef7dc999f4266928bfa75dfbe9b192973e24a760))
+
 ## [1.4.0](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.3.0...v1.4.0) (2026-09-16)
 
 
