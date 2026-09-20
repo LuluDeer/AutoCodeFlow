@@ -23,8 +23,10 @@ export const registryApi = {
   // List all PyPI packages — proxied through admin-api to avoid CORS/auth issues.
   // UI-16：不再 try/catch 吞错返回 []（失败与空态语义分离），错误透出给页面
   // StateError 呈现（对齐 taskTemplatesApi.list 透出先例）。
-  listPypiPackages: async (): Promise<string[]> => {
-    const resp = await client.get('/registry/pypi/packages') as { packages: string[] };
+  listPypiPackages: async (signal?: AbortSignal): Promise<string[]> => {
+    const resp = signal
+      ? await client.get('/registry/pypi/packages', { signal }) as { packages: string[] }
+      : await client.get('/registry/pypi/packages') as { packages: string[] };
     return resp.packages ?? [];
   },
 
@@ -56,8 +58,10 @@ export const registryApi = {
   },
 
   // List npm packages — proxied through admin-api（UI-16：同 PyPI，错误透出）
-  listNpmPackages: async (): Promise<NpmPackage[]> => {
-    const resp = await client.get('/registry/npm/packages') as { packages: NpmPackage[] };
+  listNpmPackages: async (signal?: AbortSignal): Promise<NpmPackage[]> => {
+    const resp = signal
+      ? await client.get('/registry/npm/packages', { signal }) as { packages: NpmPackage[] }
+      : await client.get('/registry/npm/packages') as { packages: NpmPackage[] };
     return resp.packages ?? [];
   },
 };

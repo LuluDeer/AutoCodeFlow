@@ -149,7 +149,7 @@ function DeadLetterSection({ subscriptions }: { subscriptions: EventSubscription
 
   const { data: deadLetters, isLoading, error: deadLettersError, refetch: refetchDeadLetters } = useQuery({
     queryKey: ['event-dead-letters', expandedId],
-    queryFn: () => eventSubscriptionsApi.listDeadLetters(expandedId as string, 1, 20),
+    queryFn: ({ signal }) => eventSubscriptionsApi.listDeadLetters(expandedId as string, 1, 20, signal),
     enabled: !!expandedId,
   });
 
@@ -417,7 +417,7 @@ export default function EventSubscriptionsSettings() {
   // UI-16：读请求失败要页内可见（此前失败只留空表，与「尚无订阅」不可区分）
   const { data: subscriptions = [], isLoading, error: subsError, refetch: refetchSubs } = useQuery({
     queryKey: ['event-subscriptions'],
-    queryFn: eventSubscriptionsApi.list,
+    queryFn: ({ signal }) => eventSubscriptionsApi.list(signal),
   });
 
   const toggleMut = useMutation({

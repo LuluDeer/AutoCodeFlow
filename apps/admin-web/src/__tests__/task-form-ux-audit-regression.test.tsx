@@ -11,6 +11,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import TaskFormPage from '../pages/TaskFormPage';
 import { tasksApi } from '../api/tasks';
 import { executorsApi } from '../api/executors';
@@ -78,6 +79,15 @@ function itemByLabel(re: RegExp): HTMLElement {
 const UPSTREAM_ID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
 const APP_ID = '11111111-2222-3333-4444-555555555555';
 
+
+
+const testQueryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+const renderPage = () =>
+  render(
+    <QueryClientProvider client={testQueryClient}>
+      <TaskFormPage />
+    </QueryClientProvider>,
+  );
 beforeEach(() => {
   mockRouteParams = { id: 'task-1' };
   vi.mocked(executorsApi.list).mockReset().mockResolvedValue([] as never);
@@ -111,7 +121,7 @@ describe('D1 fixed_rate 非 60 整数倍不得被静默改写', () => {
       params: {},
     } as never);
 
-    render(<TaskFormPage />);
+    renderPage();
     await screen.findByDisplayValue('fixed-task');
 
     const input = itemByLabel(/执行间隔/).querySelector('input') as HTMLInputElement;
@@ -135,7 +145,7 @@ describe('D1 fixed_rate 非 60 整数倍不得被静默改写', () => {
       triggerType: 'fixed_rate', fixedRate: 90, timeoutSeconds: 300, maxRetry: 3, params: {},
     } as never);
 
-    render(<TaskFormPage />);
+    renderPage();
     await screen.findByDisplayValue('fixed-task2');
 
     const input = itemByLabel(/执行间隔/).querySelector('input') as HTMLInputElement;
@@ -159,7 +169,7 @@ describe('D2 编辑态回填告警配置（alarmEmail / alarmChannels）', () =>
       alarmChannels: ['email', 'slack'],
     } as never);
 
-    render(<TaskFormPage />);
+    renderPage();
     await screen.findByDisplayValue('alarm-task');
     await waitFor(() => expect(executorsApi.list).toHaveBeenCalled());
 
@@ -183,7 +193,7 @@ describe('D2 编辑态回填告警配置（alarmEmail / alarmChannels）', () =>
       alarmChannels: ['email'],
     } as never);
 
-    render(<TaskFormPage />);
+    renderPage();
     await screen.findByDisplayValue('alarm-task2');
 
     // 用户只改超时，完全没碰告警区
@@ -203,7 +213,7 @@ describe('D2 编辑态回填告警配置（alarmEmail / alarmChannels）', () =>
 describe('D3 「保存为模板」固化上游依赖（NF-02）', () => {
   it('选中上游依赖后存模板：config.dependencies 携带映射，且不带载体键', async () => {
     mockRouteParams = {}; // 创建态（保存为模板只在创建态提供）
-    render(<TaskFormPage />);
+    renderPage();
     await screen.findByPlaceholderText('daily-report');
     fireEvent.change(screen.getByPlaceholderText('daily-report'), { target: { value: 'dep-task' } });
     fireEvent.change(screen.getByPlaceholderText('tasks/main.py'), { target: { value: 'main.py' } });

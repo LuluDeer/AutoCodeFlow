@@ -372,7 +372,7 @@ function SilenceRulesPanel({ active }: { active: boolean }) {
   // 仅在「静默规则」Tab 激活时拉取，避免进入页面即发 ADMIN-only 请求。
   const { data: silences, isLoading: loading, refetch: refresh, error } = useQuery({
     queryKey: ['notif', 'silences'],
-    queryFn: silencesApi.list,
+    queryFn: ({ signal }) => silencesApi.list(signal),
     enabled: active,
   });
 
@@ -541,7 +541,7 @@ export default function NotificationSettingsPage() {
   // F-16（DEEP_REVIEW 0ef3bbe）：useRequest → useQuery / useMutation（主栈统一）。
   const { data: channels, isLoading: loading, refetch: refresh, error: channelsError } = useQuery({
     queryKey: ['notif', 'channels'],
-    queryFn: notificationApi.getChannels,
+    queryFn: ({ signal }) => notificationApi.getChannels(signal),
   });
   const channel = channels?.find((c) => c.key === activeTab);
 

@@ -29,8 +29,10 @@ import {
   PlusOutlined, DeleteOutlined, ToolOutlined, LockOutlined, SaveOutlined,
 } from '@ant-design/icons';
 import { useNavigate, useSearchParams, useParams } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
 import { configApi } from '../api/config';
 import { tasksApi } from '../api/tasks';
+import { queryKeys } from '../api/queries';
 import { executorsApi } from '../api/executors';
 import { applicationsApi } from '../api/applications';
 import { taskTemplatesApi } from '../api/task-templates';
@@ -163,6 +165,10 @@ const SECTION_IDS = ['sec-basic', 'sec-trigger', 'sec-executor', 'sec-params', '
 export default function TaskFormPage() {
   const { t } = useTranslation();
   const nav = useNavigate();
+  // NETOPT-E P2-3: 保存为模板是 task-templates 写——不失效则列表页 staleTime
+  // 30s 内跳转看不到新模板（与 TaskDetailPage 的 NETOPT-D P2-D6 修复同型；
+  // 两个"存模板"入口必须对齐失效图）。
+  const queryClient = useQueryClient();
   const { id: editId } = useParams<{ id: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
   const appId = searchParams.get('applicationId');
@@ -711,6 +717,10 @@ export default function TaskFormPage() {
       });
       message.success(t('taskForm.tpl.saved', { name: meta.name.trim() }));
       setTplModalOpen(false);
+      // NETOPT-E P2-3: 与 TaskDetailPage 的存模板路径对齐——写后失效模板列表。
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.taskTemplates.list,
+      });
     } catch (err: unknown) {
       // validateFields 的 reject 是带 errorFields 的校验对象，不是请求错误——
       // 仅对真正的请求失败弹 toast，表单校验错误由 Form 自带红字呈现。

@@ -13,6 +13,7 @@ import { executorsApi } from '../api/executors';
 import { useNavigate, Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { getErrMsg, isFormValidationError } from '../utils/error';
+import { normFileList } from '../utils/upload';
 import { formatDateTime, formatRelativeTime } from '../utils/timeFormat';
 import { useAuthStore, isAdminUser } from '../store/auth';
 import PageHeader from '../components/PageHeader';
@@ -224,8 +225,9 @@ export default function ApplicationListPage() {
       const formData = new FormData();
       formData.append('name', values.name);
       formData.append('runtime', values.runtime || 'node');
-      if (values.file?.fileList?.[0]?.originFileObj) {
-        formData.append('file', values.file.fileList[0].originFileObj);
+      const file = values.file as { originFileObj?: File }[] | undefined;
+      if (file?.[0]?.originFileObj) {
+        formData.append('file', file[0].originFileObj);
       }
       setUploading(true);
       await applicationsApi.upload(formData);
@@ -670,6 +672,7 @@ export default function ApplicationListPage() {
             label={t('appList.upload.zip')}
             rules={[{ required: true, message: t('appList.upload.zipRequired') }]}
             valuePropName="fileList"
+            getValueFromEvent={normFileList}
             tooltip={{
               title: t('appList.upload.zipTooltip'),
               icon: <InfoCircleOutlined />,

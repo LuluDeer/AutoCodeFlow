@@ -5,6 +5,7 @@
  *  2) TaskFormPage 交互：入口按钮 → 表单校验门 → Modal 提交载荷 → 成功/失败反馈。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import TaskFormPage from '../pages/TaskFormPage';
 import { templateConfigFromFormValues } from '../utils/task-template-config-from-form';
@@ -159,9 +160,23 @@ describe('templateConfigFromFormValues 纯映射（FEAT-13）', () => {
 });
 
 describe('TaskFormPage「保存为模板」交互（FEAT-13）', () => {
+  // NETOPT-E P2-3: TaskFormPage 现使用 useQueryClient（存模板后失效列表）——
+  // 渲染必须包 Provider，否则 hook 抛错。
+  function renderPage() {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const utils = render(
+      <QueryClientProvider client={queryClient}>
+        <TaskFormPage />
+      </QueryClientProvider>,
+    );
+    return { ...utils, queryClient };
+  }
+
   /** 填完必填项后点击入口按钮，等 Modal 表单出现 */
   async function openTplModal() {
-    render(<TaskFormPage />);
+    renderPage();
     await screen.findByTestId('save-as-template');
     fireEvent.change(screen.getByPlaceholderText('daily-report'), { target: { value: 'nightly-report' } });
     fireEvent.change(screen.getByPlaceholderText('tasks/main.py'), { target: { value: 'main.py' } });
@@ -177,7 +192,7 @@ describe('TaskFormPage「保存为模板」交互（FEAT-13）', () => {
   });
 
   it('必填项缺失时入口被校验门拦截，不打开 Modal', async () => {
-    render(<TaskFormPage />);
+    renderPage();
     fireEvent.click(await screen.findByTestId('save-as-template'));
     await waitFor(() => expect(screen.getByText('请输入任务名称')).toBeTruthy());
     expect(screen.queryByText('保存为自定义模板')).toBeNull();
@@ -230,6 +245,24 @@ describe('TaskFormPage「保存为模板」交互（FEAT-13）', () => {
     expect(taskTemplatesApi.create).not.toHaveBeenCalled();
   });
 
+  it('NETOPT-E P2-3: 保存成功后失效 task-templates.list', async () => {
+    const { queryClient } = renderPage();
+    await screen.findByTestId('save-as-template');
+    fireEvent.change(screen.getByPlaceholderText('daily-report'), { target: { value: 'nightly-report' } });
+    fireEvent.change(screen.getByPlaceholderText('tasks/main.py'), { target: { value: 'main.py' } });
+    fireEvent.click(screen.getByTestId('save-as-template'));
+    await screen.findByTestId('tpl-name-input');
+    fireEvent.change(screen.getByTestId('tpl-name-input'), { target: { value: '夜报模板' } });
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
+    fireEvent.click(screen.getByTestId('tpl-save-confirm'));
+    await waitFor(() => expect(taskTemplatesApi.create).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(invalidateSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ queryKey: ['task-templates', 'list'] }),
+      ),
+    );
+  });
+
   it('编辑态不渲染「保存为模板」入口（模板固化属于创建态语义）', async () => {
     mockRouteParams = { id: 'task-1' };
     vi.mocked(tasksApi.get).mockResolvedValue({
@@ -237,7 +270,7 @@ describe('TaskFormPage「保存为模板」交互（FEAT-13）', () => {
       status: 'active', triggerType: 'manual', maxRetry: 3, timeout: 300,
       createdAt: '2026-09-01T00:00:00Z', updatedAt: '2026-09-01T00:00:00Z',
     } as never);
-    render(<TaskFormPage />);
+    renderPage();
     await waitFor(() => expect((screen.getByPlaceholderText('daily-report') as HTMLInputElement).value).toBe('t1'));
     expect(screen.queryByTestId('save-as-template')).toBeNull();
   });

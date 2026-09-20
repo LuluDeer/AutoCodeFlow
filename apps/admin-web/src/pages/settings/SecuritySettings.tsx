@@ -201,7 +201,7 @@ export function SessionsCard() {
   const qc = useQueryClient();
   const { data: sessions, isLoading, refetch, isFetching, error: sessionsError } = useQuery({
     queryKey: ['auth-sessions'],
-    queryFn: authApi.listSessions,
+    queryFn: ({ signal }) => authApi.listSessions(signal),
   });
 
   const { mutateAsync: revokeOne } = useMutation({

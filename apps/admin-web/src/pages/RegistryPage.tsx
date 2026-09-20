@@ -6,6 +6,7 @@ import {
 import { useQuery } from '@tanstack/react-query';
 import { registryApi } from '../api/registry';
 import { getErrMsg } from '../utils/error';
+import { normFileList } from '../utils/upload';
 import { useTranslation } from 'react-i18next';
 import PageHeader from '../components/PageHeader';
 // A7：上传面已收敛为 ADMIN（后端 @Roles(ADMIN)）——前端同步隐藏入口，避免普通
@@ -31,11 +32,12 @@ function PypiTab() {
   // F-16（DEEP_REVIEW 0ef3bbe）：ahooks useRequest → TanStack Query useQuery（主栈统一）。
   const { data: packages = [], isLoading: loading, error, refetch: refresh } = useQuery({
     queryKey: ['registry', 'pypi'],
-    queryFn: registryApi.listPypiPackages,
+    queryFn: ({ signal }) => registryApi.listPypiPackages(signal),
   });
 
-  const handleUpload = async (values: { name: string; version: string; file: { fileList?: { originFileObj?: File }[] } }) => {
-    const fileObj: File | undefined = values.file?.fileList?.[0]?.originFileObj;
+  const handleUpload = async (values: { name: string; version: string; file?: { originFileObj?: File }[] }) => {
+    // normFileList 已将字段值收敛为 UploadFile[]（见 utils/upload.ts）。
+    const fileObj: File | undefined = values.file?.[0]?.originFileObj;
     if (!fileObj) { message.error(t('registry.upload.chooseFile')); return; }
     setUploading(true);
     try {
@@ -133,6 +135,7 @@ function PypiTab() {
             label={t('registry.field.file')}
             rules={[{ required: true, message: t('registry.field.fileRequired') }]}
             valuePropName="fileList"
+            getValueFromEvent={normFileList}
           >
             <Upload
               beforeUpload={() => false}
@@ -162,7 +165,7 @@ function NpmTab() {
   // F-16（DEEP_REVIEW 0ef3bbe）：ahooks useRequest → TanStack Query useQuery（主栈统一）。
   const { data: packages = [], isLoading: loading, error, refetch: refresh } = useQuery({
     queryKey: ['registry', 'npm'],
-    queryFn: registryApi.listNpmPackages,
+    queryFn: ({ signal }) => registryApi.listNpmPackages(signal),
   });
 
   const columns = [

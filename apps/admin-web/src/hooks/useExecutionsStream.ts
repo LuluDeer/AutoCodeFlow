@@ -75,9 +75,17 @@ export function useExecutionsStream({
       return;
     }
 
+    // NETOPT-D P3-3: 合并窗去抖——终态突发（批量 kill / 批量恢复 / 高吞吐
+    // 任务流）时一帧一次 invalidate 会触发连续重取风暴；200ms 内事件合并为
+    // 一次。终态刷新 <3s 验收不受影响（200ms 远小于验收窗口）。
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
     // 具名事件帧：三个终态事件共用同一消费动作（invalidate 列表+汇总面）
     const onTerminalEvent = () => {
-      void invalidateExecutionData(queryClient);
+      if (debounceTimer) return;
+      debounceTimer = setTimeout(() => {
+        debounceTimer = null;
+        void invalidateExecutionData(queryClient);
+      }, 200);
     };
     const events = Object.fromEntries(
       EXECUTION_TERMINAL_EVENTS.map((name) => [name, onTerminalEvent]),
@@ -90,7 +98,13 @@ export function useExecutionsStream({
       events,
     });
 
-    return () => client.close();
+    return () => {
+      if (debounceTimer) {
+        clearTimeout(debounceTimer);
+        debounceTimer = null;
+      }
+      client.close();
+    };
   }, [enabled, token, queryClient]);
 
   return status;

@@ -236,7 +236,13 @@ describe('FEAT-15 EventSubscriptionsSettings', () => {
     renderPage();
     await waitFor(() => expect(screen.getByText('https://ci.example.com/hooks')).toBeTruthy());
     await waitFor(() => expect(screen.getByTestId('dead-letter-table')).toBeTruthy());
-    expect(mocked.listDeadLetters).toHaveBeenCalledWith('e1111111-1111-4111-8111-111111111111', 1, 20);
+    // NETOPT-E P2-2: 页面 queryFn 已接 AbortSignal（listDeadLetters 第 4 参）。
+    expect(mocked.listDeadLetters).toHaveBeenCalledWith(
+      'e1111111-1111-4111-8111-111111111111',
+      1,
+      20,
+      expect.anything(),
+    );
     expect(screen.getAllByText('connect ECONNREFUSED').length).toBeGreaterThanOrEqual(1);
     expect(screen.getByTestId('dead-letter-replay-d1111111-1111-4111-8111-111111111111')).toBeTruthy();
   });

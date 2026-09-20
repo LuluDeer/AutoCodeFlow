@@ -170,6 +170,79 @@ describe('useExecutionsStream 流行为', () => {
     expect(summarySpy.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 
+  it('NETOPT-D P3-3: 200ms 合并窗——突发终态事件合并为一次 invalidate', async () => {
+    vi.useFakeTimers();
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const listKey = queryKeys.executions.list({ page: 1, pageSize: 20 });
+    seedListCache(qc);
+    const listSpy = vi.fn().mockResolvedValue({ items: [], total: 0 });
+    const summarySpy = vi.fn().mockResolvedValue({ totalTasks: 1 });
+
+    function ListObserverProbe() {
+      useQuery({ queryKey: listKey, queryFn: listSpy });
+      return null;
+    }
+    function SummaryObserverProbe() {
+      useQuery({ queryKey: queryKeys.metrics.summary, queryFn: summarySpy });
+      return null;
+    }
+
+    const { unmount } = render(
+      <QueryClientProvider client={qc}>
+        <ListObserverProbe />
+        <SummaryObserverProbe />
+        <StreamStatusProbe />
+      </QueryClientProvider>,
+    );
+    await act(async () => {
+      await qc.refetchQueries({ queryKey: listKey });
+      await qc.refetchQueries({ queryKey: queryKeys.metrics.summary });
+    });
+    const callsBefore = listSpy.mock.calls.length;
+
+    await act(async () => {});
+    expect(FakeEventSource.instances.length).toBe(1);
+    const es = FakeEventSource.instances[0];
+    es.onopen?.();
+
+    // 200ms 内连发 5 帧终态事件——合并窗只允许一次 invalidate。
+    act(() => {
+      for (let i = 0; i < 5; i++) {
+        for (const name of EXECUTION_TERMINAL_EVENTS) es.emit(name);
+      }
+    });
+    act(() => {
+      vi.advanceTimersByTime(150); // 仍在校准窗内：不得触发
+    });
+    await act(async () => {});
+    expect(listSpy.mock.calls.length).toBe(callsBefore);
+
+    act(() => {
+      vi.advanceTimersByTime(100); // 越过 200ms 校准窗：恰好一次
+    });
+    await act(async () => {});
+    expect(listSpy.mock.calls.length).toBe(callsBefore + 1);
+    // 合并窗复位后新事件可再次触发（非一次性短路）。
+    act(() => {
+      es.emit('execution.failed');
+      vi.advanceTimersByTime(200);
+    });
+    await act(async () => {});
+    expect(listSpy.mock.calls.length).toBe(callsBefore + 2);
+
+    // 卸载清理：校准窗内的 pending timer 被清除，不再触发 invalidate。
+    act(() => {
+      for (const name of EXECUTION_TERMINAL_EVENTS) es.emit(name);
+    });
+    const callsAtUnmount = listSpy.mock.calls.length;
+    unmount();
+    act(() => {
+      vi.advanceTimersByTime(2_000);
+    });
+    await act(async () => {});
+    expect(listSpy.mock.calls.length).toBe(callsAtUnmount);
+  });
+
   it('无关事件/默认 message 帧不触发 invalidate（具名事件白名单消费）', async () => {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     seedListCache(qc);

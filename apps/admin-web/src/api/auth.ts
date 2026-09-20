@@ -42,7 +42,10 @@ export const authApi = {
   totpDisable: (data: { password?: string; code?: string }) =>
     client.post('/auth/totp/disable', data) as Promise<{ disabled: boolean }>,
   // ─── SEC-03: 会话管理（DR-04 撤销语义的 UI 面） ───
-  listSessions: () => client.get('/auth/sessions') as Promise<AuthSession[]>,
+  listSessions: (signal?: AbortSignal) =>
+    signal
+      ? client.get('/auth/sessions', { signal }) as Promise<AuthSession[]>
+      : client.get('/auth/sessions') as Promise<AuthSession[]>,
   revokeSession: (id: number) =>
     client.delete(`/auth/sessions/${id}`) as Promise<{ success: boolean }>,
   revokeOtherSessions: () =>

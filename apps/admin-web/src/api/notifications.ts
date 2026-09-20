@@ -9,8 +9,10 @@ export interface NotificationChannel {
 }
 
 export const notificationsApi = {
-  getChannels: () =>
-    client.get('/notification/channels') as Promise<NotificationChannel[]>,
+  getChannels: (signal?: AbortSignal) =>
+    signal
+      ? client.get('/notification/channels', { signal }) as Promise<NotificationChannel[]>
+      : client.get('/notification/channels') as Promise<NotificationChannel[]>,
   updateChannel: (key: string, data: Partial<NotificationChannel>) =>
     client.patch(`/notification/channels/${key}`, data) as Promise<NotificationChannel>,
   testChannel: (key: string, data: Record<string, string>) =>
@@ -55,8 +57,10 @@ export interface CreateSilencePayload {
 }
 
 export const silencesApi = {
-  list: () =>
-    client.get('/notification/silences') as Promise<NotificationSilence[]>,
+  list: (signal?: AbortSignal) =>
+    signal
+      ? client.get('/notification/silences', { signal }) as Promise<NotificationSilence[]>
+      : client.get('/notification/silences') as Promise<NotificationSilence[]>,
   create: (data: CreateSilencePayload) =>
     client.post('/notification/silences', data) as Promise<NotificationSilence>,
   remove: (id: string) =>

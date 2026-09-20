@@ -119,7 +119,7 @@ export default function ApiKeysSettings() {
   // UI-16：读请求失败要页内可见（此前失败只留空表，与「尚未创建 Key」不可区分）
   const { data: keys = [], isLoading, error: keysError, refetch: refetchKeys } = useQuery({
     queryKey: ['api-keys'],
-    queryFn: apiKeysApi.list,
+    queryFn: ({ signal }) => apiKeysApi.list(signal),
   });
 
   const createMut = useMutation({

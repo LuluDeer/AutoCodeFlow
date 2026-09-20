@@ -32,9 +32,14 @@ export interface MyProjectRoles {
 }
 
 export const projectsApi = {
-  list: () => client.get('/projects') as Promise<ProjectViewRow[]>,
-  getMembers: (projectId: string) =>
-    client.get(`/projects/${projectId}/members`) as Promise<ProjectMemberRow[]>,
+  list: (signal?: AbortSignal) =>
+    signal
+      ? client.get('/projects', { signal }) as Promise<ProjectViewRow[]>
+      : client.get('/projects') as Promise<ProjectViewRow[]>,
+  getMembers: (projectId: string, signal?: AbortSignal) =>
+    signal
+      ? client.get(`/projects/${projectId}/members`, { signal }) as Promise<ProjectMemberRow[]>
+      : client.get(`/projects/${projectId}/members`) as Promise<ProjectMemberRow[]>,
   /** ADMIN-only：新增或改角色（(projectId,userId) 唯一，重复即改角色） */
   addMember: (projectId: string, userId: number, role: ProjectRole) =>
     client.post(`/projects/${projectId}/members`, { userId, role }) as Promise<ProjectMemberRow>,

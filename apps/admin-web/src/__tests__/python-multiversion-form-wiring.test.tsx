@@ -12,6 +12,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import TaskFormPage from '../pages/TaskFormPage';
 import { tasksApi } from '../api/tasks';
 import { executorsApi } from '../api/executors';
@@ -91,6 +92,15 @@ async function fillRequiredAndSubmit() {
   fireEvent.click(screen.getByRole('button', { name: /创建任务/ }));
 }
 
+
+
+const testQueryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+const renderPage = () =>
+  render(
+    <QueryClientProvider client={testQueryClient}>
+      <TaskFormPage />
+    </QueryClientProvider>,
+  );
 beforeEach(() => {
   mockRouteParams = {};
   vi.mocked(executorsApi.list).mockReset().mockResolvedValue([] as never);
@@ -113,7 +123,7 @@ afterEach(() => {
 
 describe('TaskFormPage：代码来源选择器接线（FR-18/AC-17b）', () => {
   it('三个来源选项同屏；默认 git 显示 gitRepo 与「关联应用」绑定入口', async () => {
-    render(<TaskFormPage />);
+    renderPage();
     await screen.findByPlaceholderText('daily-report');
 
     for (const v of ['git', 'application_zip', 'glue']) {
@@ -127,7 +137,7 @@ describe('TaskFormPage：代码来源选择器接线（FR-18/AC-17b）', () => {
   });
 
   it('切到 zip 来源：applicationId 变为必填载体，gitRepo 输入框消失', async () => {
-    render(<TaskFormPage />);
+    renderPage();
     await screen.findByPlaceholderText('daily-report');
     pickCodeSource('application_zip');
 
@@ -137,7 +147,7 @@ describe('TaskFormPage：代码来源选择器接线（FR-18/AC-17b）', () => {
   });
 
   it('切到 glue 来源：给出"去下方 Glue 区块编辑"的说明，gitRepo 隐藏', async () => {
-    render(<TaskFormPage />);
+    renderPage();
     await screen.findByPlaceholderText('daily-report');
     pickCodeSource('glue');
 
@@ -146,7 +156,7 @@ describe('TaskFormPage：代码来源选择器接线（FR-18/AC-17b）', () => {
   });
 
   it('zip 来源未选应用：提交被本地拦截（不发请求），并给出分类文案', async () => {
-    render(<TaskFormPage />);
+    renderPage();
     await screen.findByPlaceholderText('daily-report');
     pickCodeSource('application_zip');
     await fillRequiredAndSubmit();
@@ -165,7 +175,7 @@ describe('TaskFormPage：代码来源选择器接线（FR-18/AC-17b）', () => {
     vi.mocked(applicationsApi.list).mockResolvedValue([
       { id: APP_ZIP_ID, name: 'node-app', runtime: 'node' },
     ] as never);
-    render(<TaskFormPage />);
+    renderPage();
     await screen.findByPlaceholderText('daily-report');
     pickCodeSource('application_zip');
 
@@ -182,7 +192,7 @@ describe('TaskFormPage：代码来源选择器接线（FR-18/AC-17b）', () => {
   }, 20_000);
 
   it('新建任务（默认 git 来源）提交：载体字段逐键显式 null，不产生冲突来源', async () => {
-    render(<TaskFormPage />);
+    renderPage();
     await fillRequiredAndSubmit();
     await vi.waitFor(() => expect(tasksApi.create).toHaveBeenCalledTimes(1));
 
@@ -206,7 +216,7 @@ describe('TaskFormPage：代码来源选择器接线（FR-18/AC-17b）', () => {
   }, 20_000);
 
   it('切到 glue 后提交：gitRepo 显式 null，且不写 glueSource（不得删用户的脚本）', async () => {
-    render(<TaskFormPage />);
+    renderPage();
     await screen.findByPlaceholderText('daily-report');
     pickCodeSource('glue');
     await fillRequiredAndSubmit();
@@ -220,7 +230,7 @@ describe('TaskFormPage：代码来源选择器接线（FR-18/AC-17b）', () => {
   }, 20_000);
 
   it('git 来源填了仓库地址：声明 codeSource=git（载荷自证）', async () => {
-    render(<TaskFormPage />);
+    renderPage();
     await screen.findByPlaceholderText('daily-report');
     fireEvent.change(screen.getByPlaceholderText('https://github.com/org/repo.git'), {
       target: { value: 'https://github.com/acme/demo.git' },
@@ -251,7 +261,7 @@ describe('TaskFormPage：编辑态来源回填与 runtimeVersion（FR-06/AC-17b�
       runtimeVersion: '3.12',
     } as never);
 
-    render(<TaskFormPage />);
+    renderPage();
     await screen.findByDisplayValue('glue-task');
     // 来源由 glueSource 推导（无 codeSource 列时）
     expect(screen.getByTestId('code-source-glue-hint')).toBeTruthy();
@@ -278,7 +288,7 @@ describe('TaskFormPage：编辑态来源回填与 runtimeVersion（FR-06/AC-17b�
       runtimeVersion: '3.11',
     } as never);
 
-    render(<TaskFormPage />);
+    renderPage();
     await screen.findByDisplayValue('py-task');
     // 编辑态回填后版本字段可见（runtime=python）
     expect(document.querySelector('[data-testid="runtime-version-select"]')).toBeTruthy();
@@ -308,7 +318,7 @@ describe('TaskFormPage：编辑态来源回填与 runtimeVersion（FR-06/AC-17b�
       applicationId: APP_ZIP_ID,
     } as never);
 
-    render(<TaskFormPage />);
+    renderPage();
     await screen.findByDisplayValue('zip-task');
     // 显式 codeSource 优先：即便 applicationId 命中推导也是同一结果
     expect(screen.getByText('关联应用（必填）')).toBeTruthy();
@@ -363,7 +373,7 @@ describe('TaskFormPage：解释器能力咨询（P2-4，非阻断）', () => {
       triggerType: 'manual',
       runtimeVersion,
     } as never);
-    render(<TaskFormPage />);
+    renderPage();
     return screen.findByDisplayValue('py-task');
   }
 

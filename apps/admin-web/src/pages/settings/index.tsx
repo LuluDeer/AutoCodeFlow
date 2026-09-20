@@ -59,7 +59,7 @@ function TokenSection() {
   // 非管理员不发起查询（GET 会 403），hooks 仍按固定顺序调用。
   const { data: tokenResult, isLoading, error: tokenError, refetch: refetchToken } = useQuery({
     queryKey: ['executor-token'],
-    queryFn: () => configApi.getExecutorToken(),
+    queryFn: ({ signal }) => configApi.getExecutorToken(signal),
     enabled: isAdmin,
   });
 
@@ -267,7 +267,7 @@ function HistoryModal({ configKey, onClose }: { configKey: string; onClose: () =
   const isAdmin = useIsAdmin();
   const { data, isLoading, error: historyError, refetch: refetchHistory } = useQuery({
     queryKey: ['config-history', configKey],
-    queryFn: () => configApi.getHistory({ key: configKey, pageSize: 50 }),
+    queryFn: ({ signal }) => configApi.getHistory({ key: configKey, pageSize: 50 }, signal),
   });
   const { t } = useTranslation();
 
@@ -370,7 +370,7 @@ function SystemConfigTab() {
   // 服务端 403 由下方 configError → StateError 呈现，比空列表更诚实。
   const { data: configs, isLoading, refetch, error: configError } = useQuery({
     queryKey: ['system-configs'],
-    queryFn: () => configApi.findAll(),
+    queryFn: ({ signal }) => configApi.findAll(undefined, signal),
   });
 
   const { mutateAsync: remove } = useMutation({
@@ -480,7 +480,7 @@ function AiConfigTab() {
   // 非管理员不发起查询（GET 会 403），hooks 仍按固定顺序调用（同 TokenSection 模式）。
   const { data: cfg, isLoading, error: cfgError, refetch: refetchCfg } = useQuery({
     queryKey: ['ai-config'],
-    queryFn: () => aiApi.getConfig(),
+    queryFn: ({ signal }) => aiApi.getConfig(signal),
     enabled: isAdmin,
   });
 

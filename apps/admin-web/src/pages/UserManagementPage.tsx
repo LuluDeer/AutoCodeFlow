@@ -69,7 +69,7 @@ export default function UserManagementPage() {
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['users', page, pageSize],
-    queryFn: () => usersApi.list(page, pageSize),
+    queryFn: ({ signal }) => usersApi.list(page, pageSize, signal),
   });
 
   const users: UserWithActive[] = data?.list ?? [];

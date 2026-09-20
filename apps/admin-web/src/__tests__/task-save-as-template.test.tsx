@@ -204,4 +204,27 @@ describe('TaskDetailPage「保存为模板」交互（CORE-03）', () => {
     await waitFor(() => expect(screen.getByText('请输入模板名称')).toBeTruthy());
     expect(taskTemplatesApi.create).not.toHaveBeenCalled();
   });
+
+  it('NETOPT-F P3: 保存成功后失效 task-templates.list（与 TaskFormPage 侧同键）', async () => {
+    // 行为测试锁：删掉 TaskDetailPage 的 invalidate 调用（或改错键）本用例立即变红。
+    // 与 task-form-save-as-template.test 的 TaskFormPage 侧断言逐字同键，双向钉死
+    // "写后读方同 key"契约。
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <TaskDetailPage />
+      </QueryClientProvider>,
+    );
+    fireEvent.click(await screen.findByTestId('save-as-template'));
+    await screen.findByTestId('tpl-name-input');
+    fireEvent.change(screen.getByTestId('tpl-name-input'), { target: { value: '夜报模板' } });
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
+    fireEvent.click(screen.getByTestId('tpl-save-confirm'));
+    await waitFor(() => expect(taskTemplatesApi.create).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(invalidateSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ queryKey: ['task-templates', 'list'] }),
+      ),
+    );
+  });
 });

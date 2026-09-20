@@ -47,7 +47,10 @@ export interface ScheduleSuggestion {
 }
 
 export const aiApi = {
-  getConfig: () => client.get<AiConfig>('/ai/config'),
+  getConfig: (signal?: AbortSignal) =>
+    signal
+      ? client.get<AiConfig>('/ai/config', { signal })
+      : client.get<AiConfig>('/ai/config'),
   saveConfig: (data: SaveAiConfigPayload) => client.post<{ ok: boolean }>('/ai/config', data),
   testConfig: () => client.post<{ ok: boolean; message: string }>('/ai/test'),
   analyzeApp: (appId: string) => client.post<AppHealthReport>(`/applications/${appId}/analyze`),

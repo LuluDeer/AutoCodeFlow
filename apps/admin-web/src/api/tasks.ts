@@ -519,6 +519,8 @@ export const tasksApi = {
     params?: { fromLine?: number; limit?: number; level?: string },
   ) =>
     client.get(`/tasks/${taskId}/executions/${execId}/logs`, { params }) as Promise<ExecutionLogsPage>,
-  schedulerStats: () =>
-    client.get('/tasks/scheduler/stats') as Promise<{ healthy: boolean; activeTimers: number; activeCronTasks: number; runningTaskCount: number; totalScheduledTasks: number; uptime: number }>,
+  schedulerStats: (signal?: AbortSignal) =>
+    signal
+      ? client.get('/tasks/scheduler/stats', { signal }) as Promise<{ healthy: boolean; activeTimers: number; activeCronTasks: number; runningTaskCount: number; totalScheduledTasks: number; uptime: number }>
+      : client.get('/tasks/scheduler/stats') as Promise<{ healthy: boolean; activeTimers: number; activeCronTasks: number; runningTaskCount: number; totalScheduledTasks: number; uptime: number }>,
 };

@@ -9,6 +9,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import TaskFormPage from '../pages/TaskFormPage';
 import {
   deriveExecutorMode,
@@ -89,6 +90,15 @@ if (!window.matchMedia) {
 
 const PIN_UUID = '550e8400-e29b-41d4-a716-446655440000';
 
+
+
+const testQueryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+const renderPage = () =>
+  render(
+    <QueryClientProvider client={testQueryClient}>
+      <TaskFormPage />
+    </QueryClientProvider>,
+  );
 beforeEach(() => {
   mockRouteParams = { id: 'task-1' };
   mockSearch = '';
@@ -205,7 +215,7 @@ describe('TaskFormPage 创建流程提交 payload 完整性（P0 回归，UI-06 
     mockRouteParams = {}; // 创建态：无 :id
     vi.mocked(tasksApi.create).mockReset().mockResolvedValue({ id: 'new-task' } as never);
 
-    render(<TaskFormPage />);
+    renderPage();
 
     // 单页：直接填写核心必填（runtime 由 initialValues 默认 python）。
     const nameInput = await screen.findByPlaceholderText('daily-report');
@@ -238,7 +248,7 @@ describe('TaskFormPage 请求生命周期', () => {
     vi.mocked(tasksApi.get).mockReset().mockImplementation(() => new Promise((resolve) => {
       resolveTask = resolve;
     }) as never);
-    const { unmount } = render(<TaskFormPage />);
+    const { unmount } = renderPage();
 
     await vi.waitFor(() => {
       expect(executorsApi.getGroups).toHaveBeenCalledWith(expect.any(AbortSignal));
@@ -280,7 +290,7 @@ describe('TaskFormPage 编辑态加载 executorId → pinned 选择器（UI-06 �
       params: {},
     } as never);
 
-    render(<TaskFormPage />);
+    renderPage();
     // 单页：无需推进步骤，pinned 选择器同屏渲染；executorId 命中列表项时
     // Select 展示选中项 label（appName + address），而非占位文案。
     expect(await screen.findByText(/node-a/)).toBeTruthy();
@@ -367,7 +377,7 @@ describe('applyMaintenanceWindowsPayload（FEAT-06）', () => {
 describe('TaskFormPage 维护窗口动态行（FEAT-06 组件级，UI-06 单页语义）', () => {
   it('添加行 → 填写 cron → 删除行：输入随行增删', async () => {
     mockRouteParams = {}; // 创建态
-    render(<TaskFormPage />);
+    renderPage();
 
     // 单页：维护窗口区块同屏可达，无需推进步骤。
     const addButton = await screen.findByRole('button', { name: /添加维护窗口/ });
@@ -387,7 +397,7 @@ describe('TaskFormPage 维护窗口动态行（FEAT-06 组件级，UI-06 单页�
   it('填写窗口后提交：payload.maintenanceWindows 带结构化数组', async () => {
     mockRouteParams = {}; // 创建态
     vi.mocked(tasksApi.create).mockReset().mockResolvedValue({ id: 'new-task' } as never);
-    render(<TaskFormPage />);
+    renderPage();
 
     // 单页：同屏填写 name/entrypoint + 维护窗口后直接提交。
     fireEvent.change(await screen.findByPlaceholderText('daily-report'), {
@@ -426,7 +436,7 @@ describe('TaskFormPage 维护窗口动态行（FEAT-06 组件级，UI-06 单页�
       ],
     } as never);
 
-    render(<TaskFormPage />);
+    renderPage();
     // 单页：回填行同屏可见，无需推进步骤。
     expect(await screen.findByDisplayValue('0 22 * * 5')).toBeTruthy();
     expect(screen.getByDisplayValue('0 6 * * 6')).toBeTruthy();
@@ -505,7 +515,7 @@ describe('TaskFormPage suggestCron（F-04 AI 建议 Cron 死链修复）', () =>
       maxRetry: 3,
     } as never);
 
-    render(<TaskFormPage />);
+    renderPage();
 
     // cron 字段（triggerType=cron）渲染建议值而非库内旧值
     expect(await screen.findByDisplayValue('0 */2 * * *')).toBeTruthy();
@@ -530,7 +540,7 @@ describe('TaskFormPage suggestCron（F-04 AI 建议 Cron 死链修复）', () =>
     mockSearch = `suggestCron=${encodeURIComponent('30 7 * * 1')}`;
     vi.mocked(tasksApi.get).mockReset();
 
-    render(<TaskFormPage />);
+    renderPage();
 
     // 创建态 triggerType=manual，cronExpression 字段未挂载——setFieldValue 仍写入
     // 表单 store（preserve），以 toast 断言应用行为
@@ -563,14 +573,14 @@ describe('TASK-PROJ-01 归属项目选择器', () => {
   });
 
   it('渲染归属项目选择器（候选来自 projectsApi.list）', async () => {
-    render(<TaskFormPage />);
+    renderPage();
     expect(await screen.findByTestId('task-project-select')).toBeTruthy();
     expect(projectsApi.list).toHaveBeenCalled();
   });
 
   it('选中项目后提交 payload 携带 projectId', async () => {
     vi.mocked(tasksApi.create).mockReset().mockResolvedValue({ id: 'new-task' } as never);
-    render(<TaskFormPage />);
+    renderPage();
     await screen.findByTestId('task-project-select');
 
     // 填必填项（与既有 P0 用例同款定位）
@@ -598,7 +608,7 @@ describe('TASK-PROJ-01 归属项目选择器', () => {
 
   it('不选项目时提交 projectId 为 undefined（= 未分配，既有行为不变）', async () => {
     vi.mocked(tasksApi.create).mockReset().mockResolvedValue({ id: 'new-task' } as never);
-    render(<TaskFormPage />);
+    renderPage();
     await screen.findByTestId('task-project-select');
 
     fireEvent.change(await screen.findByPlaceholderText('daily-report'), {
@@ -617,7 +627,7 @@ describe('TASK-PROJ-01 归属项目选择器', () => {
 
   it('项目列表拉取失败只 warn，不阻塞表单（未分配仍是合法取值）', async () => {
     vi.mocked(projectsApi.list).mockRejectedValue(new Error('boom') as never);
-    render(<TaskFormPage />);
+    renderPage();
     // 表单仍可用：选择器在场、必填项可填
     expect(await screen.findByTestId('task-project-select')).toBeTruthy();
     expect(document.querySelector('#name')).toBeTruthy();
