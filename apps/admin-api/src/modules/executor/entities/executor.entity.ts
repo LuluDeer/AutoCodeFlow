@@ -61,6 +61,13 @@ export class Executor {
   @Column({ nullable: true }) lastHeartbeat: Date;
   @Column({ nullable: true }) executorStartedAt: Date | null;
   @Column({ nullable: true }) executorStartupId: string | null;
+  /**
+   * 当前在跑任务数（派发闸门 selectLeastLoaded / 容量守卫直接读它判满）。
+   * 心跳白名单采纳域：非负整数 0..10000（与 runningExecutionIds 数组截顶
+   * MAX_RUNNING_EXECUTION_IDS 同源）；非法/缺失不改 DB 值（执行器上报面
+   * 不可信）。重启恢复（register/heartbeat didRestart）不再批量减槽——计数
+   * 权威交给调用方 e.runningTaskCount=0 + save / 心跳自报覆盖（NETOPT-E P2-1）。
+   */
   @Column({ type: "int", default: 0 }) runningTaskCount: number;
   @Column({ type: "float", nullable: true }) cpuUsage: number;
   @Column({ type: "float", nullable: true }) memUsage: number;
@@ -76,9 +83,11 @@ export class Executor {
 
   /**
    * CONSISTENCY-02: executor-node 心跳上报的"当前正在执行的 executionId 列表"
-   * （≤200，执行器侧裁剪）。stale 扫描据此判断 RUNNING 行是否仍在真实执行——
-   * 执行器在线且上报集合包含该 executionId 时跳过本轮误判恢复，避免把回调退避
-   * 重试/排队导致超阈值的正常执行误杀。
+   * （≤10000，与 E9 采纳域 maxConcurrentTasks ≤10000 同源；executor-node
+   * scheduler.ts 与 admin-api sanitizeRunningExecutionIds 双侧一致裁剪——NETOPT-C
+   * P2-1 把旧 200 封顶提到 10000，实体注释同步，勿再改回旧值）。stale 扫描据此
+   * 判断 RUNNING 行是否仍在真实执行——执行器在线且上报集合包含该 executionId 时
+   * 跳过本轮误判恢复，避免把回调退避重试/排队导致超阈值的正常执行误杀。
    * 语义：null = 旧版执行器未上报该字段（区别于 []：[] 表示上报了且当前空闲）。
    */
   @Column({ type: "jsonb", nullable: true })
@@ -109,6 +118,10 @@ export class Executor {
   @Column({ type: "jsonb", nullable: true })
   // NOTE（合流收口）：当前 TypeORM 版本的 @Index options 类型不收 using，
   // 用 as any 仅为通过类型检查；GIN 索引的真实 DDL 需由对应迁移落库。
+  // NETOPT-F P3-4: **死索引确认**——全仓无 `@>` 包含查询（调度侧匹配走
+  // 内存 interpreterSatisfies 纯函数，心跳全量重写整列），GIN 只付维护成本。
+  // 预防性占位：若未来调度把"解释器匹配"下推 SQL 再启用；否则可作 drop 候选
+  // （本轮不动 DDL，避免无谓迁移）。
   @Index("idx_executors_interpreters", { using: "gin" } as any)
   interpreters: ExecutorInterpreter[] | null;
 

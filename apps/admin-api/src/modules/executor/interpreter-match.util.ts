@@ -68,7 +68,8 @@ export const INTERPRETER_UNAVAILABLE_TOKEN = "interpreter_unavailable";
 const MAX_SNAPSHOT_ENTRIES = 10;
 
 /**
- * 采纳面允许的解释器条数上界（对照 `sanitizeRunningExecutionIds` 的 200 上限）：
+ * 采纳面允许的解释器条数上界（刻意独立于 `sanitizeRunningExecutionIds` 的
+ * 10000 上限——解释器清单是低频静态配置，200 条足够且防上报面写放大）：
  * jsonb 列由**执行器上报**填充，不设上界等于把写放大权交给对端。
  */
 const MAX_INTERPRETER_ENTRIES = 200;

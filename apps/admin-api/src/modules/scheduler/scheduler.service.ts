@@ -459,15 +459,33 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     const now = Date.now();
     const DEFAULT_STALE_MS = STALE_SCAN_FALLBACK_MS; // 1-hour fallback
     const initialCutoff = new Date(now - (await this.staleScanWindowMs()));
-    const runningExecs = await this.execRepo.find({
-      where: {
-        status: ExecutionStatus.RUNNING,
-        startTime: LessThan(initialCutoff),
-      },
-      // O-2: bound the initial materialization; recovered rows leave the
-      // RUNNING predicate so the next 10-min tick self-converges a backlog.
-      take: 1000,
-    });
+    // NETOPT-D P3-5: take 提到与 E9 maxConcurrentTasks(≤10000) 同一档位并加
+    // order 保证确定性——单执行器 10000 并发时旧 take:1000 每 10 分钟只恢复
+    // 前 1000 行，第 1001+ 行滞留 RUNNING 直到后续 tick（恢复吞吐 < 故障规模
+    // 时永不自收敛）。分页循环：每页 1000、总量封顶 20000 防极端膨胀目录一次
+    // 物化过多；O-2 的"下一 tick 自收敛"承诺在单 tick 取全量后依然成立
+    // （恢复行离开 RUNNING 谓词，循环条件自然收敛）。
+    const STALE_SWEEP_PAGE = 1000;
+    const STALE_SWEEP_MAX = 20_000;
+    const runningExecs: TaskExecution[] = [];
+    let pageOffset = 0;
+    while (runningExecs.length < STALE_SWEEP_MAX) {
+      const page = await this.execRepo.find({
+        where: {
+          status: ExecutionStatus.RUNNING,
+          startTime: LessThan(initialCutoff),
+        },
+        // NETOPT-E P3-2: startTime 非唯一（同秒批量提交/同任务并发行），
+        // offset 分页无决胜键会在翻页时漏行/重行（不稳定排序下 skip 漂移）。
+        // 加 id 决胜键使排序完全确定。
+        order: { startTime: "ASC", id: "ASC" },
+        take: STALE_SWEEP_PAGE,
+        skip: pageOffset,
+      });
+      runningExecs.push(...page);
+      if (page.length < STALE_SWEEP_PAGE) break;
+      pageOffset += page.length;
+    }
 
     // Get all unique taskIds and fetch their timeouts
     const taskIds = [...new Set(runningExecs.map((e) => e.taskId))];
@@ -598,7 +616,7 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
       // uuid，同一 execution 不会被重复 re-enqueue。
       //
       // timeout=0（不限时）任务不做特判：它们只有在"执行器在线且活性上报仍
-      // 含该 execution"被 defer 到绝对兜底（30min）之后才会进入本恢复路径，
+      // 含该 execution"被 defer 到绝对兜底（5min，O-3 从 30min 收紧）之后才会进入本恢复路径，
       // 上报已不可信（谎报/僵死），与其余行同等对待——kill 通知尽力而为，
       // 预算未耗尽则重试。取舍：极端情况下可能与仍在运行的原进程并行一次，
       // 由 kill 通知兜底；相比"静默丢重试"，这是更安全的失败方向。
@@ -742,7 +760,7 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
    * CONSISTENCY-02: 对超阈值候选做一次执行器活性探测。返回本轮应"跳过恢复"的
    * executionId 集合（deferredIds）。跳过条件——候选行所属执行器 status=ONLINE
    * 且其心跳上报的 runningExecutionIds 命中该 executionId，且 stale 时长未超过
-   * 绝对兜底 max(6×timeout, 30min)。执行器离线 / 无记录 / 未上报（runningExecutionIds
+   * 绝对兜底 max(6×timeout, 5min)（O-3 从 30min 收紧）。执行器离线 / 无记录 / 未上报（runningExecutionIds
    * 为 null 或不含该 id）→ 不跳过，维持既有恢复行为。
    *
    * 探测失败（执行器表查询异常）时降级为"不跳过"（空集），宁可对疑似仍健康的行
@@ -788,14 +806,24 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     }
 
     const byAddress = new Map(executors.map((ex) => [ex.address, ex] as const));
+    // NETOPT-D P3: 候选循环内对 ≤10000 数组逐条 includes() 是 O(N×10000) 热路径
+    // ——批次 C 把截顶从 200 提到 10000 后成本放大 50×。per-address Set 一次构建、
+    // 循环内 O(1) 命中；Set 缺失（= 未上报该字段）语义与原 `!isArray` 分支一致。
+    const runningIdSets = new Map<string, Set<string>>();
+    for (const ex of executors) {
+      if (Array.isArray(ex.runningExecutionIds)) {
+        runningIdSets.set(ex.address, new Set(ex.runningExecutionIds));
+      }
+    }
     for (const c of candidates) {
       const addr = c.exec.executorAddress;
       if (!addr) continue;
       const ex = byAddress.get(addr);
       // 执行器离线 / 无记录 / 未上报该字段 / 未命中该 executionId → 不跳过。
       if (!ex || ex.status !== ExecutorStatus.ONLINE) continue;
-      if (!Array.isArray(ex.runningExecutionIds)) continue;
-      if (!ex.runningExecutionIds.includes(c.exec.id)) continue;
+      const runningIds = runningIdSets.get(addr);
+      if (!runningIds) continue;
+      if (!runningIds.has(c.exec.id)) continue;
 
       // 活性命中，但设绝对兜底：超过 max(6×timeout, 5min) 仍强制恢复（O-3）。
       // ageMs 以 anchor（startTime ?? createdAt）为基准，与 stale 判定同锚。

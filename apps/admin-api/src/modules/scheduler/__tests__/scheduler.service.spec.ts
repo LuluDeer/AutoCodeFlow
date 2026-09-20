@@ -954,6 +954,128 @@ describe("SchedulerService", () => {
       expect(dataSource.createQueryBuilder).toHaveBeenCalledTimes(1);
     });
 
+    it("pages the RUNNING stale scan with a deterministic id tie-breaker and offset progression (NETOPT-F P2-5)", async () => {
+      // 生产已改 order {startTime,id} + take/skip 分页循环（NETOPT-D P3-5/E P3-2），
+      // 但现有用例全 mock 单行——把 id 决胜键/分页 loop 改回单页 find 全绿。
+      // 钉：满页 1000 → 空页终止，首参 order/take/skip=0，第二页 skip=1000。
+      await makeLeader();
+      const staleRows = Array.from({ length: 1000 }, (_, i) => ({
+        id: `exec-page-${i}`,
+        taskId: "task-1",
+        status: ExecutionStatus.RUNNING,
+        startTime: new Date(Date.now() - 2 * 60 * 60 * 1000),
+        executorAddress: "host:3002",
+        errorMessage: null,
+        endTime: null,
+      }));
+      execRepo.find
+        .mockResolvedValueOnce(staleRows) // RUNNING page 1 (full)
+        .mockResolvedValueOnce([]) // RUNNING page 2 (empty → break)
+        .mockResolvedValueOnce([]); // PENDING scan
+      taskRepo.find.mockResolvedValue([]);
+      taskRepo.findBy.mockResolvedValue([]);
+      dataSource.transaction.mockImplementation(async (fn: any) =>
+        fn({
+          createQueryBuilder: () => makeUpdateQb({ affected: 0, raw: [] }),
+        }),
+      );
+
+      await service.recoverStaleExecutions();
+
+      expect(execRepo.find).toHaveBeenCalledTimes(3);
+      const firstCall = execRepo.find.mock.calls[0][0];
+      expect(firstCall.order).toEqual({ startTime: "ASC", id: "ASC" });
+      expect(firstCall.take).toBe(1000);
+      expect(firstCall.skip).toBe(0);
+      const secondCall = execRepo.find.mock.calls[1][0];
+      expect(secondCall.take).toBe(1000);
+      expect(secondCall.skip).toBe(1000);
+    });
+
+    it("issues a single RUNNING scan page when the first page is short (NETOPT-F P2-5)", async () => {
+      // 短页 → while 循环 break，不得发起第二次 RUNNING find（只留 PENDING scan）。
+      await makeLeader();
+      const staleRows = [
+        {
+          id: "exec-short-1",
+          taskId: "task-1",
+          status: ExecutionStatus.RUNNING,
+          startTime: new Date(Date.now() - 2 * 60 * 60 * 1000),
+          executorAddress: "host:3002",
+          errorMessage: null,
+          endTime: null,
+        },
+        {
+          id: "exec-short-2",
+          taskId: "task-1",
+          status: ExecutionStatus.RUNNING,
+          startTime: new Date(Date.now() - 2 * 60 * 60 * 1000),
+          executorAddress: "host:3002",
+          errorMessage: null,
+          endTime: null,
+        },
+        {
+          id: "exec-short-3",
+          taskId: "task-1",
+          status: ExecutionStatus.RUNNING,
+          startTime: new Date(Date.now() - 2 * 60 * 60 * 1000),
+          executorAddress: "host:3002",
+          errorMessage: null,
+          endTime: null,
+        },
+      ];
+      execRepo.find
+        .mockResolvedValueOnce(staleRows) // RUNNING page 1 (short → break)
+        .mockResolvedValueOnce([]); // PENDING scan
+      taskRepo.find.mockResolvedValue([]);
+      taskRepo.findBy.mockResolvedValue([]);
+      dataSource.transaction.mockImplementation(async (fn: any) =>
+        fn({
+          createQueryBuilder: () => makeUpdateQb({ affected: 0, raw: [] }),
+        }),
+      );
+
+      await service.recoverStaleExecutions();
+
+      expect(execRepo.find).toHaveBeenCalledTimes(2);
+      expect(execRepo.find.mock.calls[0][0].skip).toBe(0);
+    });
+
+    it("stops the RUNNING scan at the 20000 cap (NETOPT-F P2-5)", async () => {
+      // while (runningExecs.length < 20000)：每页满 1000 → 恰 20 页后停，
+      // 不得无限翻页；末页 skip=19000。极端膨胀目录一次物化受封顶约束。
+      await makeLeader();
+      const fullPage = Array.from({ length: 1000 }, (_, i) => ({
+        id: `exec-cap-${i}`,
+        taskId: "task-1",
+        status: ExecutionStatus.RUNNING,
+        startTime: new Date(Date.now() - 2 * 60 * 60 * 1000),
+        executorAddress: "host:3002",
+        errorMessage: null,
+        endTime: null,
+      }));
+      execRepo.find.mockImplementation(async (opts: any) => {
+        if (opts?.where?.status === ExecutionStatus.RUNNING) return fullPage;
+        return []; // PENDING scan
+      });
+      taskRepo.find.mockResolvedValue([]);
+      taskRepo.findBy.mockResolvedValue([]);
+      dataSource.transaction.mockImplementation(async (fn: any) =>
+        fn({
+          createQueryBuilder: () => makeUpdateQb({ affected: 0, raw: [] }),
+        }),
+      );
+
+      await service.recoverStaleExecutions();
+
+      const runningCalls = execRepo.find.mock.calls.filter(
+        (c) => c[0]?.where?.status === ExecutionStatus.RUNNING,
+      );
+      expect(runningCalls.length).toBe(20);
+      expect(runningCalls[19][0].skip).toBe(19_000);
+      expect(runningCalls[19][0].take).toBe(1000);
+    });
+
     it("uses per-task timeout bucket with TIMEOUT failure reason in batch UPDATE", async () => {
       await makeLeader();
       const staleExec = {
