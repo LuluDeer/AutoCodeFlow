@@ -952,18 +952,21 @@ docker compose -f docker-compose.yml -f docker-compose.ha.yml up -d --scale admi
 | 入口单点 | nginx/admin-web 仍为单容器；入口级高可用用云 LB 或 K8s Ingress 前置 |
 | 升级 | 拉新镜像后 `up -d --scale admin-api=2` 逐副本替换；迁移在副本启动时幂等执行，多副本同刻启动由「空库多实例种子竞态」防护兜底 |
 
-## 执行器 pull 派发模式（NAT 回连，ARCH-32 / ADR-015）
+## 执行器 pull 派发模式（NAT 回连，ARCH-32 / ADR-015 + ARCH-33 / ADR-016）
 
 默认 **push** 派发要求执行器接受中心端入站连接。执行器位于多层 NAT 内（无公网 IP、不可端口映射）时，设 **pull 模式**即可零入站接入：执行器只用出站连接（长轮询取件 + 心跳 + 回调，同一方向），只要出站能访问中心端 URL（心跳已要求）即可收任务。
+
+> **ARCH-33（ADR-016）起，pull 通道同时承载控制面。** ADR-015 只把「任务派发」搬上了 pull；部署/停止/卸载/配置热更新/终止执行/包推送这些**中台主动拨入执行器**的调用仍是入站 POST，在公网中台 + 内网执行器拓扑下必然超时（生产实证：`app_deployments.statusMessage = "Failed to reach executor after 3 attempts: timeout of 30000ms exceeded"`）。ADR-016 把它们改为经 pull 响应的 `commands` 字段下发，执行器本地回环执行。**协议 v2** 起生效。
 
 ### 使用步骤
 
 ```bash
 # 1. 执行器侧：启动时设 EXECUTOR_PULL_MODE=true（executor-node / executor-python 同名变量）
-#    重启后重注册自动上报 dispatchMode=pull，管理台执行器列表可见
+#    重启后重注册自动上报 dispatchMode=pull + protocolVersion=2，管理台执行器列表可见
 # 2. 中心端（可选调参，默认即工作）：
 #    EXECUTOR_PULL_WAIT_MS=25000   # 长轮询等待窗口，须 < 反代 60s 读超时
-#    EXECUTOR_PULL_TTL_MS=900000   # 队列载荷过期丢弃阈值（15min）
+#    EXECUTOR_PULL_TTL_MS=900000   # 任务载荷过期丢弃阈值（15min）
+#    EXECUTOR_CMD_TTL_MS=1800000   # 控制命令载荷过期阈值（30min，长于任务——丢命令无兜底）
 # 3. 触发任务：调度侧选择语义（分组/标签/亲和/loadScore/占坑）与 push 完全一致
 ```
 
@@ -976,6 +979,20 @@ docker compose -f docker-compose.yml -f docker-compose.ha.yml up -d --scale admi
 | 零行为变化 | 不设 `EXECUTOR_PULL_MODE` 的执行器默认 push，存量部署不受影响 |
 | 多副本（HA） | 队列在共享 Redis，任意 admin-api 副本可应答拉取——与 DEP-HA-1 轮询负载均衡天然兼容 |
 | never-pulled 兜底 | 执行器长期不拉取：载荷超 TTL 丢弃；执行行由既有 stale sweep 收敛（失败→重试预算） |
-| kill 通知 | `notifyExecutorKill`（best-effort 入站）对 NAT 执行器不可达——执行器自身硬超时仍是真正的超时防线，属既有 fail-open 语义 |
 | 广播/钉死 | broadcast 对 pull 执行器逐台入队；pinning 到 pull 执行器同样生效 |
 | 真机验证 | `npm run test:pull-dispatch`——执行器地址设不可达值跑通触发→取件→执行→回调全链（9/9），成功本身即零入站依赖的证明 |
+
+### 控制面 pull 通道（ARCH-33 / ADR-016）
+
+| 项 | 说明 |
+|---|---|
+| 命令队列 | `acf:cmd:{executorId}`，与任务队列 `acf:pull:{executorId}` **物理分离**——任务派发这条已验收链路的语义逐字节不变，命令的更长 TTL 与批量语义互不污染 |
+| 命令类型 | **封闭枚举**六类：`deploy` / `app-stop` / `app-uninstall` / `config-reload` / `kill-execution` / `update-package`。本地路径由执行器按类型**自行构造**，绝不接受中台下发的自由路径 |
+| 协议门禁 | 仅当执行器上报 `protocolVersion >= 2` 才下发 `commands`。v1/未上报的执行器会**静默忽略**该字段——中台若照发会把「静默丢弃」误判成「投递成功」，故退回 push（失败可见） |
+| 满载仍可运维 | 执行器长轮询时上报 `freeSlots`；`0` = 满载 → 服务端**只发命令、不出队任务**（取走也没槽位跑，等于把瞬态容量问题固化成执行失败）。旧实现在满载时连轮询都不发，控制命令永远送不到 |
+| 结果上报 | `POST /api/executors/command-result`（best-effort，仅可观测性）。**业务终态另有通道**：deploy 靠 `/app-deployments/heartbeat` 收敛，update-package 靠 `push-result` |
+| kill 通知 | **ADR-016 起对 v2 pull 执行器可达**（走命令队列）。此前 best-effort 入站对 NAT 执行器不可达，只能依赖执行器自身硬超时；现在队列不可达时仍回落既有 fail-open 语义 |
+| 同步→异步 | `deploy`/`stop`/`uninstall`/`kill` 无损失；`config-reload` 与 `update-package` 失去同步结果，接口如实返回 `queued: true`（**不谎报成功**），终态看执行器上报 |
+| python 能力缺口 | python 执行器只有 `config-reload` / `kill-execution` 两个本地路由；`deploy`/`app-stop`/`app-uninstall`/`update-package` 是 node-only（`protocol.json` 的 `executorNodeOnly` 段已登记）。python 收到这四类**如实回报 unsupported**，而非回环打一个必然 404 的请求。这是**既有**缺口，不是本改动引入的回归 |
+| 日志回填 | `GET api/logs/:id` 属**读**方向，单向 pull 通道载不了响应体——**明确不在本机制范围内**。NAT 执行器维持既有降级路径（终态回调携带日志尾部） |
+| 升级顺序 | 无约束：中台先升级 → 旧执行器回落 push（行为不变）；执行器先升级 → 上报 v2，旧中台忽略该字段（行为不变） |
