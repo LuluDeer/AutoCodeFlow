@@ -9,6 +9,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import TaskFormPage from '../pages/TaskFormPage';
 import {
   templateConfigToFormValues,
@@ -92,6 +93,15 @@ function makeTemplate(overrides: Partial<TaskTemplate> = {}): TaskTemplate {
   };
 }
 
+
+
+const testQueryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+const renderPage = () =>
+  render(
+    <QueryClientProvider client={testQueryClient}>
+      <TaskFormPage />
+    </QueryClientProvider>,
+  );
 beforeEach(() => {
   mockSearch = '';
   vi.mocked(executorsApi.list).mockReset().mockResolvedValue([] as never);
@@ -184,7 +194,7 @@ describe('TaskFormPage 创建态 ?templateId= 预填（组件级，UI-06 单页�
     mockSearch = 'templateId=a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d';
     vi.mocked(taskTemplatesApi.get).mockClear().mockResolvedValue(makeTemplate() as never);
 
-    render(<TaskFormPage />);
+    renderPage();
 
     // 单页全挂载：cronExpression 条件渲染控件（triggerType=cron 预填后）也同屏可见。
     expect(await screen.findByDisplayValue(/周期性备份任务/)).toBeTruthy();
@@ -198,7 +208,7 @@ describe('TaskFormPage 创建态 ?templateId= 预填（组件级，UI-06 单页�
     mockSearch = 'templateId=a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d';
     vi.mocked(taskTemplatesApi.get).mockClear().mockResolvedValue(makeTemplate() as never);
 
-    render(<TaskFormPage />);
+    renderPage();
 
     expect(await screen.findByDisplayValue(/周期性备份任务/)).toBeTruthy();
   }, 30_000);
@@ -208,7 +218,7 @@ describe('TaskFormPage 创建态 ?templateId= 预填（组件级，UI-06 单页�
     vi.mocked(taskTemplatesApi.get).mockClear().mockResolvedValue(makeTemplate() as never);
     vi.mocked(tasksApi.create).mockClear().mockResolvedValue({ id: 'new-task' } as never);
 
-    render(<TaskFormPage />);
+    renderPage();
 
     // 预填可见后再填写必填的 name（模板不提供 name，由用户补全）。
     const nameInput = await screen.findByPlaceholderText('daily-report');
@@ -232,7 +242,7 @@ describe('TaskFormPage 创建态 ?templateId= 预填（组件级，UI-06 单页�
     mockSearch = 'templateId=a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d';
     vi.mocked(taskTemplatesApi.get).mockClear().mockRejectedValue(new Error('boom') as never);
 
-    render(<TaskFormPage />);
+    renderPage();
 
     // 失败后表单仍以空白/默认值渲染，可正常走手动创建。
     expect(await screen.findByPlaceholderText('daily-report')).toBeTruthy();

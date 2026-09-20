@@ -6,6 +6,7 @@ import { TeamOutlined, UserAddOutlined, DeleteOutlined } from '@ant-design/icons
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { projectsApi, type ProjectRole, type ProjectViewRow } from '../api/projects';
+import { queryKeys } from '../api/queries';
 import { usersApi } from '../api/users';
 import { isAdminUser, useAuthStore } from '../store/auth';
 import { getErrMsg } from '../utils/error';
@@ -49,8 +50,8 @@ export default function ProjectsPage() {
 
   // 列表：后端已按主体过滤，前端零额外处理
   const projectsQuery = useQuery({
-    queryKey: ['projects', 'list'],
-    queryFn: () => projectsApi.list(),
+    queryKey: queryKeys.projects.list,
+    queryFn: ({ signal }) => projectsApi.list(signal),
   });
 
   const columns = useMemo(
@@ -156,25 +157,28 @@ function MembersDrawer({ project, isAdmin, onClose }: MembersDrawerProps) {
   const open = project !== null;
 
   const membersQuery = useQuery({
-    queryKey: ['projects', 'members', project?.id],
-    queryFn: () => projectsApi.getMembers(project!.id),
+    queryKey: queryKeys.projects.members(project?.id ?? ''),
+    queryFn: ({ signal }) => projectsApi.getMembers(project!.id, signal),
     enabled: open,
   });
 
   // ADMIN 的添加成员表单需要可选用户清单（/users 为 ADMIN-only 端点，
   // 打开 Drawer 且 isAdmin 时才拉取）
   const usersQuery = useQuery({
-    queryKey: ['projects', 'candidate-users'],
-    queryFn: () => usersApi.list(1, 200),
+    queryKey: queryKeys.projects.candidateUsers,
+    queryFn: ({ signal }) => usersApi.list(1, 200, signal),
     enabled: open && isAdmin,
   });
 
   const invalidate = () => {
     if (project) {
       void queryClient.invalidateQueries({
-        queryKey: ['projects', 'members', project.id],
+        queryKey: queryKeys.projects.members(project.id),
       });
     }
+    // NETOPT-D P3: 成员变化影响当前用户的 myRole/成员态——projects.list 行
+    // 依赖它，不失效则列表页该行角色展示滞后到下次挂载重取。
+    void queryClient.invalidateQueries({ queryKey: queryKeys.projects.list });
   };
 
   const addMutation = useMutation({

@@ -94,9 +94,26 @@ export interface SchedulerMetricsResponse {
 }
 
 export const metricsApi = {
-  getSummary: () => apiClient.get<MetricsSummary>('/metrics/summary'),
-  getDailyTrend: (days = 7) => apiClient.get<DailyTrend[]>(`/metrics/trend?days=${days}`),
-  getExecutorStats: () => apiClient.get<ExecutorStat[]>('/metrics/executors'),
-  getRecentFailures: () => apiClient.get<RecentFailure[]>('/metrics/failures'),
-  getSchedulerMetrics: () => apiClient.get<SchedulerMetricsResponse>('/metrics/scheduler'),
+  // NETOPT-10-3: optional AbortSignal so polling hooks can cancel in-flight
+  // requests on unmount (mirrors executors.ts ternary pattern).
+  getSummary: (signal?: AbortSignal) =>
+    signal
+      ? apiClient.get<MetricsSummary>('/metrics/summary', { signal })
+      : apiClient.get<MetricsSummary>('/metrics/summary'),
+  getDailyTrend: (days = 7, signal?: AbortSignal) =>
+    signal
+      ? apiClient.get<DailyTrend[]>(`/metrics/trend?days=${days}`, { signal })
+      : apiClient.get<DailyTrend[]>(`/metrics/trend?days=${days}`),
+  getExecutorStats: (signal?: AbortSignal) =>
+    signal
+      ? apiClient.get<ExecutorStat[]>('/metrics/executors', { signal })
+      : apiClient.get<ExecutorStat[]>('/metrics/executors'),
+  getRecentFailures: (signal?: AbortSignal) =>
+    signal
+      ? apiClient.get<RecentFailure[]>('/metrics/failures', { signal })
+      : apiClient.get<RecentFailure[]>('/metrics/failures'),
+  getSchedulerMetrics: (signal?: AbortSignal) =>
+    signal
+      ? apiClient.get<SchedulerMetricsResponse>('/metrics/scheduler', { signal })
+      : apiClient.get<SchedulerMetricsResponse>('/metrics/scheduler'),
 };

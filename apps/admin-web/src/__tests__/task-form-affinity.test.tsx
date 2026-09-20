@@ -8,6 +8,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import TaskFormPage from '../pages/TaskFormPage';
 import {
   affinityFormValues,
@@ -101,6 +102,15 @@ async function pickTag(label: string, tag: string) {
   fireEvent.click(matches[matches.length - 1]);
 }
 
+
+
+const testQueryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+const renderPage = () =>
+  render(
+    <QueryClientProvider client={testQueryClient}>
+      <TaskFormPage />
+    </QueryClientProvider>,
+  );
 beforeEach(() => {
   mockRouteParams = {};
   vi.mocked(executorsApi.list).mockReset().mockResolvedValue([] as never);
@@ -152,7 +162,7 @@ describe('NF-04 affinity helpers', () => {
 
 describe('TaskFormPage NF-04 form wiring', () => {
   it('new task mounts both fields and sends selected tags in POST payload', async () => {
-    render(<TaskFormPage />);
+    renderPage();
     fireEvent.change(await screen.findByPlaceholderText('daily-report'), { target: { value: 'affinity-job' } });
     fireEvent.change(screen.getByPlaceholderText('tasks/main.py'), { target: { value: 'main.py' } });
     await pickTag('亲和标签', 'gpu');
@@ -171,7 +181,7 @@ describe('TaskFormPage NF-04 form wiring', () => {
       executorAffinityTags: ['gpu'],
       executorAntiAffinityTags: ['windows'],
     }) as never);
-    render(<TaskFormPage />);
+    renderPage();
 
     expect(await screen.findByText('gpu')).toBeTruthy();
     expect(screen.getByText('windows')).toBeTruthy();
@@ -183,7 +193,7 @@ describe('TaskFormPage NF-04 form wiring', () => {
   }, 15_000);
 
   it('switching to broadcast keeps constraints and switching to pinned disables controls without dropping them', async () => {
-    render(<TaskFormPage />);
+    renderPage();
     const broadcast = screen.getByRole('radio', { name: /广播/ });
     fireEvent.click(broadcast);
     expect(fieldSelect('亲和标签').classList.contains('ant-select-disabled')).toBe(false);
@@ -209,7 +219,7 @@ describe('TaskFormPage NF-04 form wiring', () => {
       executorAffinityTags: ['gpu'],
       executorAntiAffinityTags: ['windows'],
     }) as never);
-    render(<TaskFormPage />);
+    renderPage();
     await screen.findByText('gpu');
     const affinityRemove = fieldSelect('亲和标签').querySelector('.ant-select-selection-item-remove') as HTMLElement | null;
     expect(affinityRemove).toBeTruthy();

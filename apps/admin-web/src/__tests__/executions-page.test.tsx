@@ -14,7 +14,7 @@
  * mock api 模块而非 axios 拦截器）；antd 浏览器 API shim 对齐既有先例。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent, waitFor, act } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import ExecutionsPage from '../pages/ExecutionsPage';
@@ -205,23 +205,46 @@ describe('ExecutionsPage 筛选与请求参数（QA-03）', () => {
     expect(lastCall?.status).toBe('failed');
   });
 
-  it('搜索任务名（防抖后）作为 taskName 参数下发', async () => {
-    mockedTasks.allExecutions.mockResolvedValue(pageFixture([]));
-    renderPage();
-    await screen.findByText('暂无执行记录');
-    const callsBefore = mockedTasks.allExecutions.mock.calls.length;
+  it('搜索任务名：防抖窗口内不发请求，300ms 停顿后恰好一次并以 taskName 下发（NETOPT-G P3）', async () => {
+    // 旧用例用真实 waitFor（timeout 2000）只锁"最终发了请求"——删掉 useDebounce
+    // 全绿。对照 command-palette.test.tsx 的 fake-timer 范本：真断言防抖行为。
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
+    try {
+      mockedTasks.allExecutions.mockResolvedValue(pageFixture([]));
+      renderPage();
+      await screen.findByText('暂无执行记录');
 
-    fireEvent.change(screen.getByPlaceholderText('搜索任务名'), { target: { value: '备份' } });
-    // useDebounce 默认 300ms
-    await waitFor(
-      () => {
-        expect(mockedTasks.allExecutions.mock.calls.length).toBeGreaterThan(callsBefore);
-      },
-      { timeout: 2000 },
-    );
-    const lastCall = mockedTasks.allExecutions.mock.calls[mockedTasks.allExecutions.mock.calls.length - 1]?.[0];
-    expect(lastCall?.taskName).toBe('备份');
-  }, 10000);
+      fireEvent.change(screen.getByPlaceholderText('搜索任务名'), { target: { value: '备' } });
+      // 防抖窗口内不发请求（useDebounce 默认 300ms）
+      act(() => {
+        vi.advanceTimersByTime(299);
+      });
+      expect(mockedTasks.allExecutions).not.toHaveBeenCalled();
+
+      // 停顿满 300ms：恰好一次，携带完整 taskName
+      act(() => {
+        vi.advanceTimersByTime(1);
+      });
+      expect(mockedTasks.allExecutions).toHaveBeenCalledTimes(1);
+      expect(mockedTasks.allExecutions).toHaveBeenCalledWith(expect.objectContaining({ taskName: '备' }));
+
+      // 继续输入（未停顿 300ms）：不叠加请求，只合并最终值
+      fireEvent.change(screen.getByPlaceholderText('搜索任务名'), { target: { value: '备份' } });
+      act(() => {
+        vi.advanceTimersByTime(299);
+      });
+      expect(mockedTasks.allExecutions).toHaveBeenCalledTimes(1);
+      act(() => {
+        vi.advanceTimersByTime(1);
+      });
+      expect(mockedTasks.allExecutions).toHaveBeenCalledTimes(2);
+      expect(mockedTasks.allExecutions).toHaveBeenLastCalledWith(
+        expect.objectContaining({ taskName: '备份' }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   it('刷新按钮触发重新请求', async () => {
     mockedTasks.allExecutions.mockResolvedValue(pageFixture([]));

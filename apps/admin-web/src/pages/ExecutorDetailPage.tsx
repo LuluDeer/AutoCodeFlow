@@ -108,7 +108,8 @@ export default function ExecutorDetailPage() {
   const heartbeatTimeoutMs = runtimeConfig?.heartbeatTimeoutMs ?? HEARTBEAT_TIMEOUT_FALLBACK_MS;
 
   // 写后失效：原 useRequest refresh → invalidateExecutorData（执行器面 +
-  // 任务面联动；executor pinning/分组影响任务派发读面）。
+  // 指标面；NETOPT-D P3-4 起不再联动任务面——删执行器不改任务定义，tasks.all
+  // 过宽，低频自愈 ≤30s 由 ExecutorsPage 自身轮询承担）。
   const queryClient = useQueryClient();
   const refreshExecutor = () => void invalidateExecutorData(queryClient);
 
@@ -126,17 +127,25 @@ export default function ExecutorDetailPage() {
 
   const reloadConfigMut = useMutation({
     mutationFn: (values: Record<string, unknown>) => executorsApi.reloadConfig(id!, values),
-    onSuccess: () => { message.success(t('executorDetail.configPushed')); setConfigOpen(false); },
+    // NETOPT-D P2-D4: 推送配置（maxConcurrentTasks/taskTimeout/heartbeatInterval）
+    // 后执行器热更生效——此前漏失效，详情页无 refetchInterval，最长滞后 30s。
+    onSuccess: () => { message.success(t('executorDetail.configPushed')); setConfigOpen(false); refreshExecutor(); },
   });
   const reloadConfig = (values: Record<string, unknown>) => reloadConfigMut.mutate(values);
   const reloading = reloadConfigMut.isPending;
 
   // AUTH-05 交接：轮换请求体携带可选 reason（≤200，审计 executor.rotate_token）
+  // NETOPT-E P3-4 / NETOPT-G P3: rotate 是执行器面写操作——onSuccess 关弹窗+
+  // 展示新 token 后调用 refreshExecutor()（:146），页面级测试已锁死该刷新必须
+  // 发生（executor-detail-highrisk.test.tsx 断言 invalidate ['executors']+
+  // ['metrics'] 双前缀）。旧注释"从不 refreshExecutor"与实现/测试三方矛盾，
+  // 已改正。
   const rotateTokenMut = useMutation({
     mutationFn: (reason?: string) => executorsApi.rotateToken(id!, reason?.trim() || undefined),
     onSuccess: (res) => {
       setRotateOpen(false);
       rotateForm.resetFields();
+      refreshExecutor();
       Modal.success({
         title: t('executorDetail.rotate.newTokenTitle'),
         content: (
@@ -156,6 +165,9 @@ export default function ExecutorDetailPage() {
     mutationFn: (reason?: string) => executorsApi.remove(id!, reason?.trim() || undefined),
     onSuccess: () => {
       message.success(t('executorDetail.remove.removeSuccess'));
+      // NETOPT-C P3: remove 是执行器面终态写——此前只 navigate 完全不走失效，
+      // 列表页残留已删行直到轮询自愈。与其余写操作对齐走 invalidateExecutorData。
+      refreshExecutor();
       navigate('/executors');
     },
     onError: (e) => { message.error(t('executorDetail.remove.removeFail', { err: getErrMsg(e, t('executorDetail.retry')) })); },

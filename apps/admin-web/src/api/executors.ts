@@ -166,7 +166,10 @@ export const executorsApi = {
     signal
       ? client.get('/executors', { signal }) as Promise<Executor[]>
       : client.get('/executors') as Promise<Executor[]>,
-  get: (id: string) => client.get(`/executors/${id}`) as Promise<Executor>,
+  get: (id: string, signal?: AbortSignal) =>
+    signal
+      ? client.get(`/executors/${id}`, { signal }) as Promise<Executor>
+      : client.get(`/executors/${id}`) as Promise<Executor>,
   update: (id: string, data: Partial<Executor>) =>
     client.patch(`/executors/${id}`, data) as Promise<Executor>,
   getGroups: (signal?: AbortSignal) =>
@@ -204,10 +207,14 @@ export const executorsApi = {
     client.post(`/executors/${id}/reload-config`, data) as Promise<void>,
   setOffline: (id: string) =>
     client.post(`/executors/${id}/set-offline`) as Promise<Executor>,
-  getExecutions: (id: string, params?: { page?: number; pageSize?: number }) =>
-    client.get(`/executors/${id}/executions`, { params }) as Promise<{ total: number; items: ExecutorExecution[] }>,
-  getMetrics: (id: string) =>
-    client.get(`/executors/${id}/metrics`) as Promise<ExecutorMetrics>,
+  getExecutions: (id: string, params?: { page?: number; pageSize?: number }, signal?: AbortSignal) =>
+    signal
+      ? client.get(`/executors/${id}/executions`, { params, signal }) as Promise<{ total: number; items: ExecutorExecution[] }>
+      : client.get(`/executors/${id}/executions`, { params }) as Promise<{ total: number; items: ExecutorExecution[] }>,
+  getMetrics: (id: string, signal?: AbortSignal) =>
+    signal
+      ? client.get(`/executors/${id}/metrics`, { signal }) as Promise<ExecutorMetrics>
+      : client.get(`/executors/${id}/metrics`) as Promise<ExecutorMetrics>,
   /** 获取执行器一键安装命令（含共享 Token，安装向导与执行器列表共用） */
   getInstallCmd: () =>
     client.get('/executors/install-cmd') as Promise<InstallCmdResult>,

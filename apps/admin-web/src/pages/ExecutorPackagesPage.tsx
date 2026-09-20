@@ -14,6 +14,7 @@ import {
 } from '../api/executor-packages';
 import { executorsApi } from '../api/executors';
 import { getErrMsg } from '../utils/error';
+import { normFileList } from '../utils/upload';
 // UI 打磨：时间列统一走 timeFormat 工具（对齐 ProjectsPage/ApplicationListPage 用法）
 import { formatDateTime } from '../utils/timeFormat';
 import { useTranslation } from 'react-i18next';
@@ -153,8 +154,9 @@ export default function ExecutorPackagesPage() {
   }, [load]);
 
   const handleUpload = async (values: Record<string, unknown>) => {
-    const fileList = (values.file as { fileList?: { originFileObj: File }[] })?.fileList;
-    const fileObj: File | undefined = fileList?.[0]?.originFileObj;
+    // normFileList 已将字段值收敛为 UploadFile[]（见 utils/upload.ts）。
+    const fileObj: File | undefined =
+      (values.file as { originFileObj?: File }[] | undefined)?.[0]?.originFileObj;
     if (!fileObj) { message.error(t('execPkg.upload.chooseFile')); return; }
     setUploading(true);
     try {
@@ -372,7 +374,7 @@ export default function ExecutorPackagesPage() {
         footer={null} destroyOnHidden
       >
         <Form form={uploadForm} layout="vertical" onFinish={handleUpload} style={{ marginTop: 8 }}>
-          <Form.Item name="file" label={t('execPkg.upload.field.file')} valuePropName="fileList" rules={[{ required: true, message: t('execPkg.upload.chooseFile') }]}>
+          <Form.Item name="file" label={t('execPkg.upload.field.file')} valuePropName="fileList" getValueFromEvent={normFileList} rules={[{ required: true, message: t('execPkg.upload.chooseFile') }]}>
             <Upload beforeUpload={beforePkgUpload} maxCount={1} accept={extensionsFor(uploadType)}>
               <Button icon={<UploadOutlined />}>{t('execPkg.upload.chooseFileBtn')}</Button>
             </Upload>

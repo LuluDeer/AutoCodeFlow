@@ -48,7 +48,9 @@ export default function AuditLogPage() {
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['audit', page, filters],
-    queryFn: async () => {
+    // NETOPT-C P3: 长挂载页面的 useQuery 也接 AbortSignal——翻页/离开页面后
+    // in-flight 请求被取消，失败 toast 不再打在已离开的页面。
+    queryFn: async ({ signal }) => {
       const params: Record<string, string> = { page: String(page), pageSize: '20' };
       if (filters.action) params.action = filters.action;
       if (filters.resource) params.resource = filters.resource;
@@ -57,7 +59,7 @@ export default function AuditLogPage() {
       if (filters.startTime) params.startTime = filters.startTime;
       if (filters.endTime) params.endTime = filters.endTime;
       const qs = new URLSearchParams(params).toString();
-      return client.get<{ data: AuditLog[]; total: number }>(`/audit?${qs}`) as unknown as { data: AuditLog[]; total: number };
+      return client.get<{ data: AuditLog[]; total: number }>(`/audit?${qs}`, { signal }) as unknown as { data: AuditLog[]; total: number };
     },
   });
 

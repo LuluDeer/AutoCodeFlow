@@ -7,8 +7,10 @@
  * - 新页面与被改造页统一从本文件取 hooks（薄层：包 queryKey 工厂 + api 层
  *   调用，不复制业务逻辑）；
  * - FEAT-17（第二阶段全站推广）：TaskList/TaskDetail/ExecutorList/
- *   ExecutorDetail/ExecutionDetail 等高频页已迁入；低频设置类页面保留
- *   ahooks useRequest（缩水声明见 FEAT-16+17 交付报告）；
+ *   ExecutorDetail/ExecutionDetail 等高频页已迁入；低频设置类页面也已迁入
+ *   useQuery（NETOPT-E P2-2：设置页 queryFn 全部接 AbortSignal，TanStack v5
+ *   默认 cancelOnUnmount 生效——低频页面同样不能有"切页后 in-flight GET
+ *   跑到完、失败仍弹 toast"的残留请求）。
  * - 写操作失效：写后调用 invalidateDashboardQueries / invalidateExecutionsQueries
  *   等本文件导出的失效辅助。
  *
@@ -91,6 +93,16 @@ export const queryKeys = {
     all: ['task-templates'] as const,
     list: ['task-templates', 'list'] as const,
   },
+  // NETOPT-E P3-4: projects 面 queryKey 工厂收口——此前五处内联裸字符串
+  // ['projects', ...]（前缀精确无 bug，属漂移风险：写方/读方各自手拼前缀）。
+  // NETOPT-F P3: projects.all 已移除——它是死工厂键且是潜伏脚枪：调它会按 v5
+  // 前缀语义静默级联刷新 members/candidate-users（读方/写方只用 list/members/
+  // candidateUsers 三键，all 无人消费）。日后需级联刷新时显式列出三键。
+  projects: {
+    list: ['projects', 'list'] as const,
+    members: (id: string) => ['projects', 'members', id] as const,
+    candidateUsers: ['projects', 'candidate-users'] as const,
+  },
 } as const;
 
 // ── Dashboard 汇总 hooks（ARCH-26 示范页一：DashboardPage） ───────────────
@@ -99,7 +111,10 @@ export const queryKeys = {
 export function useMetricsSummary(): UseQueryResult<MetricsSummary> {
   return useQuery({
     queryKey: queryKeys.metrics.summary,
-    queryFn: () => metricsApi.getSummary(),
+    queryFn: ({ signal }) => metricsApi.getSummary(signal),
+    // NETOPT-E P3-3: SSE 断流且无写操作时 KPI 停在最后一帧——30s 轮询兜底
+    // 与 useMetricsStream 注释"断线退化为自身请求节奏"对齐。
+    refetchInterval: 30_000,
   });
 }
 
@@ -107,9 +122,11 @@ export function useMetricsSummary(): UseQueryResult<MetricsSummary> {
 export function useMetricsTrend(days: number): UseQueryResult<DailyTrend[]> {
   return useQuery({
     queryKey: queryKeys.metrics.trend(days),
-    queryFn: () => metricsApi.getDailyTrend(days),
+    queryFn: ({ signal }) => metricsApi.getDailyTrend(days, signal),
     // 趋势窗为历史统计，30s 全局 staleTime 之上再加 60s GC 防切换页签丢失
     gcTime: 60_000,
+    // NETOPT-E P3-3: 同上——SSE 断流兜底 30s 轮询。
+    refetchInterval: 30_000,
   });
 }
 
@@ -117,7 +134,8 @@ export function useMetricsTrend(days: number): UseQueryResult<DailyTrend[]> {
 export function useExecutorStats() {
   return useQuery({
     queryKey: queryKeys.metrics.executorStats,
-    queryFn: () => metricsApi.getExecutorStats(),
+    queryFn: ({ signal }) => metricsApi.getExecutorStats(signal),
+    refetchInterval: 30_000, // NETOPT-E P3-3: SSE 断流兜底
   });
 }
 
@@ -125,7 +143,8 @@ export function useExecutorStats() {
 export function useRecentFailures() {
   return useQuery({
     queryKey: queryKeys.metrics.recentFailures,
-    queryFn: () => metricsApi.getRecentFailures(),
+    queryFn: ({ signal }) => metricsApi.getRecentFailures(signal),
+    refetchInterval: 30_000, // NETOPT-E P3-3: SSE 断流兜底
   });
 }
 
@@ -133,7 +152,8 @@ export function useRecentFailures() {
 export function useSchedulerMetrics() {
   return useQuery({
     queryKey: queryKeys.metrics.scheduler,
-    queryFn: () => metricsApi.getSchedulerMetrics(),
+    queryFn: ({ signal }) => metricsApi.getSchedulerMetrics(signal),
+    refetchInterval: 30_000, // NETOPT-E P3-3: SSE 断流兜底
   });
 }
 
@@ -142,8 +162,8 @@ export function useSchedulerMetrics() {
 export function useSchedulerStats() {
   return useQuery({
     queryKey: queryKeys.scheduler.stats,
-    queryFn: () =>
-      tasksApi.schedulerStats() as Promise<{
+    queryFn: ({ signal }) =>
+      tasksApi.schedulerStats(signal) as Promise<{
         healthy: boolean;
         activeTimers: number;
         activeCronTasks: number;
@@ -261,6 +281,10 @@ export function useAllTasksForDag(): UseQueryResult<PageResult<Task>> {
 export async function invalidateTaskData(client: QueryClient): Promise<void> {
   await client.invalidateQueries({ queryKey: queryKeys.tasks.all });
   await client.invalidateQueries({ queryKey: queryKeys.executions.all });
+  // NETOPT-10-8: trigger 产生新执行会改变 metrics summary/recentFailures/
+  // executors 统计；不失效的话 30s staleTime 窗口内回 Dashboard 直接跳过重取
+  // （metrics SSE 只在 Dashboard 挂载时活跃），KPI 最长滞后一个轮询周期。
+  await client.invalidateQueries({ queryKey: queryKeys.metrics.all });
 }
 
 // 执行器面 ────────────────────────────────────────────────────────────────
@@ -270,7 +294,7 @@ export async function invalidateTaskData(client: QueryClient): Promise<void> {
 export function useExecutorsList(): UseQueryResult<Executor[]> {
   return useQuery({
     queryKey: queryKeys.executors.list,
-    queryFn: () => executorsApi.list(),
+    queryFn: ({ signal }) => executorsApi.list(signal),
     refetchInterval: 30_000,
   });
 }
@@ -279,7 +303,7 @@ export function useExecutorsList(): UseQueryResult<Executor[]> {
 export function useExecutorGroups(): UseQueryResult<string[]> {
   return useQuery({
     queryKey: queryKeys.executors.groups,
-    queryFn: () => executorsApi.getGroups(),
+    queryFn: ({ signal }) => executorsApi.getGroups(signal),
     staleTime: 5 * 60_000, // 分组变化低频，5 分钟内切页零重复拉取
   });
 }
@@ -299,7 +323,7 @@ export function useExecutorGroups(): UseQueryResult<string[]> {
 export function useExecutorRuntimeConfig(): UseQueryResult<ExecutorRuntimeConfig> {
   return useQuery({
     queryKey: queryKeys.executors.runtimeConfig,
-    queryFn: () => executorsApi.getRuntimeConfig(),
+    queryFn: ({ signal }) => executorsApi.getRuntimeConfig(signal),
     staleTime: 5 * 60_000,
   });
 }
@@ -308,7 +332,7 @@ export function useExecutorRuntimeConfig(): UseQueryResult<ExecutorRuntimeConfig
 export function useExecutorDetail(id: string | undefined): UseQueryResult<Executor> {
   return useQuery({
     queryKey: queryKeys.executors.detail(id ?? ''),
-    queryFn: () => executorsApi.get(id!),
+    queryFn: ({ signal }) => executorsApi.get(id!, signal),
     enabled: !!id,
   });
 }
@@ -320,7 +344,7 @@ export function useExecutorMetrics(
 ): UseQueryResult<ExecutorMetrics> {
   return useQuery({
     queryKey: queryKeys.executors.metrics(id ?? ''),
-    queryFn: () => executorsApi.getMetrics(id!),
+    queryFn: ({ signal }) => executorsApi.getMetrics(id!, signal),
     enabled: !!id,
     refetchInterval: 30_000,
     // 轮询不受 staleTime 节流——refetchInterval 独立于 staleTime 生效
@@ -334,16 +358,19 @@ export function useExecutorExecutions(
 ): UseQueryResult<{ total: number; items: ExecutorExecution[] }> {
   return useQuery({
     queryKey: queryKeys.executions.byExecutor(executorId ?? '', params),
-    queryFn: () => executorsApi.getExecutions(executorId!, params),
+    queryFn: ({ signal }) => executorsApi.getExecutions(executorId!, params, signal),
     enabled: !!executorId,
   });
 }
 
 /** 写操作（update/setOffline/rotate/remove/reloadConfig）后失效执行器面 +
- * 任务面（executor pinning 影响任务派发）。 */
+ * 汇总面（NETOPT-C P3：executor 状态/容量变化同时影响 metrics 汇总与
+ * Dashboard KPI）。
+ * NETOPT-D P3-4: 移除 tasks.all——删除/下线执行器不改任务定义，失效任务列表
+ * 只会白白触发任务页重取；任务写操作由 invalidateTaskData 单独覆盖。 */
 export async function invalidateExecutorData(client: QueryClient): Promise<void> {
   await client.invalidateQueries({ queryKey: queryKeys.executors.all });
-  await client.invalidateQueries({ queryKey: queryKeys.tasks.all });
+  await client.invalidateQueries({ queryKey: queryKeys.metrics.all });
 }
 
 // 单执行详情面 ────────────────────────────────────────────────────────────
@@ -402,10 +429,11 @@ export function useExecutionReport(
 
 // 任务模板面 ──────────────────────────────────────────────────────────────
 
-/** GET /task-templates 模板列表（TaskTemplatesPage；写后 invalidate）。 */
+/** GET /task-templates 模板列表（TaskTemplatesPage；写后 invalidate）。
+ *  NETOPT-C P3: 补 AbortSignal——翻页/卸载时 in-flight 请求可被取消。 */
 export function useTaskTemplates(): UseQueryResult<TaskTemplate[]> {
   return useQuery({
     queryKey: queryKeys.taskTemplates.list,
-    queryFn: () => taskTemplatesApi.list(),
+    queryFn: ({ signal }) => taskTemplatesApi.list(signal),
   });
 }

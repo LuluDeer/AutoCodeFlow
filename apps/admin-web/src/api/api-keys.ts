@@ -24,7 +24,10 @@ export interface ApiKeyCreateResult extends ApiKeyView {
 }
 
 export const apiKeysApi = {
-  list: () => client.get('/api-keys') as Promise<ApiKeyView[]>,
+  list: (signal?: AbortSignal) =>
+    signal
+      ? client.get('/api-keys', { signal }) as Promise<ApiKeyView[]>
+      : client.get('/api-keys') as Promise<ApiKeyView[]>,
   create: (data: { name: string; scope: ApiKeyScope; expiresInDays?: number }) =>
     client.post('/api-keys', data) as Promise<ApiKeyCreateResult>,
   revoke: (id: number) =>
