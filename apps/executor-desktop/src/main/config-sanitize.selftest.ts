@@ -160,6 +160,25 @@ function main(): void {
       assert.ok(!('executorToken' in out), '非字符串密钥 → 丢弃');
       assert.ok(!('workDir' in out), '空白 workDir → 丢弃（不覆盖已存值）');
 
+      // ARCH-33：pullMode 必须走布尔白名单——**不得强转**。
+      // `'false'` 是真值串，若用 Boolean('false') 会变成 true，等于用户关掉
+      // 回连模式却反而打开了（该模式下 admin 不再反向连入，故障形态是
+      // "配置看起来生效了、任务却收不到"）。
+      assert.ok(
+        !('pullMode' in sanitizeConfigInput({ pullMode: 'false' })),
+        "pullMode 字符串 'false' 必须丢弃而非强转（Boolean('false') === true）",
+      );
+      assert.strictEqual(
+        sanitizeConfigInput({ pullMode: true }).pullMode,
+        true,
+        '合法 pullMode=true 必须透传',
+      );
+      assert.strictEqual(
+        sanitizeConfigInput({ pullMode: false }).pullMode,
+        false,
+        '合法 pullMode=false 必须透传（显式关闭是有效语义）',
+      );
+
       // 合法 workDir 必须保留
       assert.strictEqual(
         sanitizeConfigInput({ workDir: 'D:/tasks' }).workDir,
