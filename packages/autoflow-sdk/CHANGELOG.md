@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.5.0](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.4.3...v1.5.0) (2026-09-19)
+
+
+### Features
+
+* **optimize:** 全量优化落地——性能/可扩展/安全/可靠性/CI 门禁 ([a4dad9b](https://github.com/LuluDeer/AutoCodeFlow/commit/a4dad9b56e5277b6b75be62958882fcc408d163b))
+
+
+### Bug Fixes
+
+* **experience:** 修 7 个体验级缺陷（暗色不可读 / 告警色阶失效 / 复制假成功 / 桌面端按钮永久禁用） ([9a94481](https://github.com/LuluDeer/AutoCodeFlow/commit/9a944815eaa373c1b5624427b80fd8825328b5f8))
+
 ## [1.4.0](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.3.0...v1.4.0) (2026-09-16)
 
 

@@ -1,6 +1,6 @@
 {
   "name": "@autocodeflow/cli",
-  "version": "1.4.3",
+  "version": "1.5.0",
   "description": "AutoCodeFlow CLI — manage tasks, executions and applications from the terminal",
   "license": "MIT",
   "main": "dist/index.js",
