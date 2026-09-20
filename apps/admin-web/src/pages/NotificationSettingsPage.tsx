@@ -33,7 +33,12 @@ interface TestResult {
 }
 
 const notificationApi = {
-  getChannels: () => client.get('/notification/channels') as Promise<NotificationChannel[]>,
+  // NETOPT-F：与 api/notifications.ts 的 notificationsApi.getChannels 同形——
+  // useQuery 的 queryFn 下发 TanStack 的 AbortSignal，页面卸载/重取时取消在途请求。
+  getChannels: (signal?: AbortSignal) =>
+    signal
+      ? client.get('/notification/channels', { signal }) as Promise<NotificationChannel[]>
+      : client.get('/notification/channels') as Promise<NotificationChannel[]>,
   updateChannel: (key: string, data: Partial<NotificationChannel>) =>
     client.patch(`/notification/channels/${key}`, data) as Promise<NotificationChannel>,
   testChannel: (key: string, data: Record<string, string>) =>
