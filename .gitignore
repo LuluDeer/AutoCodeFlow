@@ -30,6 +30,9 @@ venv/
 .idea/
 .vscode/
 .codebuddy/
+.qoder/
+.zcode/
+.codeartsdoer/
 *.swp
 *.swo
 .DS_Store
@@ -120,4 +123,9 @@ dump.rdb
 
 # pytest 本地 basetemp（测试临时目录，不入库）
 .pytmp/
+.pytmp-e/
+.pytest-tmp/
+
+# vitest 本地输出（不入库）
+vitest-out.json
 
