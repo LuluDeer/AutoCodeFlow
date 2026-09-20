@@ -70,16 +70,19 @@ const emptyMetrics = {
 function renderPage() {
   // FEAT-17: ExecutorDetailPage 改用 TanStack Query——测试包 QueryClientProvider
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
-    <QueryClientProvider client={qc}>
-    <MemoryRouter initialEntries={['/executors/executor-1']}>
-      <Routes>
-        <Route path="/executors/:id" element={<ExecutorDetailPage />} />
-        <Route path="/executors" element={<div>executor-list-mock</div>} />
-      </Routes>
-    </MemoryRouter>
-    </QueryClientProvider>,
-  );
+  return {
+    qc,
+    render: render(
+      <QueryClientProvider client={qc}>
+      <MemoryRouter initialEntries={['/executors/executor-1']}>
+        <Routes>
+          <Route path="/executors/:id" element={<ExecutorDetailPage />} />
+          <Route path="/executors" element={<div>executor-list-mock</div>} />
+        </Routes>
+      </MemoryRouter>
+      </QueryClientProvider>,
+    ),
+  };
 }
 
 /** antd 双汉字按钮自动插空格，textContent 归一化后精确匹配（既有先例） */
@@ -134,6 +137,28 @@ describe('AUTH-05 交接：单台轮换 Token 二次确认（reason 链路）', 
       // antd 静态 Modal holder 为 body 单例不随 cleanup 清理，getAllByText 容忍残留
       expect(screen.getAllByText('新Token（请妥善保存，关闭后不再显示）').length).toBeGreaterThanOrEqual(1);
     });
+  });
+
+  it('rotate 成功后刷新执行器面缓存（NETOPT-F P3-2: refreshExecutor 契约兑现）', async () => {
+    // 批次 E 给 rotateTokenMut.onSuccess 补了 refreshExecutor()（契约兑现）——
+    // 但此前测试只断言 API 调用+Modal，删掉该行全绿。钉死：成功后 invalidate
+    // 必须带 ['executors'] 与 ['metrics'] 前缀（invalidateExecutorData 双面）。
+    mockedApi.rotateToken.mockResolvedValue({ token: 'tok-xyz', expiresAt: '2026-01-01' });
+    const { qc } = renderPage();
+    const spy = vi.spyOn(qc, 'invalidateQueries');
+    await screen.findAllByText('demo-executor');
+    fireEvent.click(findBtn(document.body, '轮换Token')!);
+    await screen.findByText('确认轮换 Token');
+    await act(async () => {
+      fireEvent.click(findBtn(document.body, '确认轮换')!);
+    });
+    await waitFor(() => {
+      expect(spy).toHaveBeenCalled();
+    });
+    const keys = spy.mock.calls.map((c) => (c[0] as { queryKey?: unknown[] })?.queryKey);
+    expect(keys.some((k) => k?.[0] === 'executors')).toBe(true);
+    expect(keys.some((k) => k?.[0] === 'metrics')).toBe(true);
+    spy.mockRestore();
   });
 
   it('填写 reason 确认 → body 精确携带 reason（审计 detail 消费）', async () => {

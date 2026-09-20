@@ -75,18 +75,26 @@ export interface UpdateEventSubscriptionDto {
 }
 
 export const eventSubscriptionsApi = {
-  list: () => client.get<EventSubscription[]>('/event-subscriptions'),
+  list: (signal?: AbortSignal) =>
+    signal
+      ? client.get<EventSubscription[]>('/event-subscriptions', { signal })
+      : client.get<EventSubscription[]>('/event-subscriptions'),
   create: (data: CreateEventSubscriptionDto) =>
     client.post<EventSubscriptionCreateResult>('/event-subscriptions', data),
   update: (id: string, data: UpdateEventSubscriptionDto) =>
     client.patch<EventSubscription>(`/event-subscriptions/${id}`, data),
   remove: (id: string) => client.delete<{ ok: true }>(`/event-subscriptions/${id}`),
   /** 死信分页列表（page 默认 1，limit 默认 20、最大 100） */
-  listDeadLetters: (id: string, page = 1, limit = 20) =>
-    client.get<{ data: EventSubscriptionDeadLetter[]; total: number }>(
-      `/event-subscriptions/${id}/dead-letters`,
-      { params: { page, limit } },
-    ),
+  listDeadLetters: (id: string, page = 1, limit = 20, signal?: AbortSignal) =>
+    signal
+      ? client.get<{ data: EventSubscriptionDeadLetter[]; total: number }>(
+          `/event-subscriptions/${id}/dead-letters`,
+          { params: { page, limit }, signal },
+        )
+      : client.get<{ data: EventSubscriptionDeadLetter[]; total: number }>(
+          `/event-subscriptions/${id}/dead-letters`,
+          { params: { page, limit } },
+        ),
   /**
    * 手动重放：以订阅当前 url/secret 重新签名派发一次（不自动重试）。
    * 成功 { ok: true } 且死信删除；失败 { ok: false, error } 且死信保留。

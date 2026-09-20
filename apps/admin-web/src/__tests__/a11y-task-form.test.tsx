@@ -10,6 +10,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import TaskFormPage from '../pages/TaskFormPage';
 import { executorsApi } from '../api/executors';
 import { applicationsApi } from '../api/applications';
@@ -68,6 +69,15 @@ if (!Element.prototype.scrollIntoView) {
   Element.prototype.scrollIntoView = () => {};
 }
 
+
+
+const testQueryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+const renderPage = () =>
+  render(
+    <QueryClientProvider client={testQueryClient}>
+      <TaskFormPage />
+    </QueryClientProvider>,
+  );
 beforeEach(() => {
   mockRouteParams = {};
   vi.mocked(executorsApi.list).mockReset().mockResolvedValue([] as never);
@@ -82,7 +92,7 @@ afterEach(() => {
 });
 
 async function renderCreateForm() {
-  render(<TaskFormPage />);
+  renderPage();
   await screen.findByPlaceholderText('daily-report');
 }
 

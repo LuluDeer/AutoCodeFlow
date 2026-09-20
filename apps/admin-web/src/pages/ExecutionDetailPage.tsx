@@ -2,12 +2,14 @@ import { Card, Descriptions, Tag, Typography, Button, Space, Badge, message, Ale
 import { ArrowLeftOutlined, SyncOutlined, RedoOutlined, CopyOutlined, StopOutlined, RobotOutlined, DownloadOutlined, SearchOutlined, BookOutlined, ExperimentOutlined, FieldTimeOutlined, LinkOutlined, AppstoreOutlined } from '@ant-design/icons';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
 import { tasksApi } from '../api/tasks';
 import {
   useExecutionDetail,
   useExecutionReport,
   useExecutionRetryChain,
   useTaskDetail,
+  invalidateExecutionData,
 } from '../api/queries';
 import { getApiBaseUrl } from '../api/client';
 import { createSseClient } from '../api/sse-client';
@@ -209,6 +211,7 @@ export default function ExecutionDetailPage() {
   // FEAT-17: 主执行数据换 useExecutionDetail（queryKey 带 taskId+execId，
   // 等价 refreshDeps）；refresh 语义保留给 SSE done/断流轮询兜底调用方。
   const { data, refetch: refresh, isLoading: loading, error } = useExecutionDetail(taskId, execId);
+  const queryClient = useQueryClient();
   const isLive = data?.status === 'running' || data?.status === 'pending';
 
   // ===== UI-05: 重试链数据（CORE-02 语义原样迁移，Card 移入「重试链」Tab）=====
@@ -587,6 +590,10 @@ export default function ExecutionDetailPage() {
       await tasksApi.killExecution(taskId!, execId!);
       message.success(t('execDetail.killed'));
       refresh();
+      // NETOPT-C P2-4: kill 是终态写——只 refetch 本行的话，跳回 /executions
+      // 该行仍显示 running（详情页无 SSE 消费者）。与 ExecutionsPage 对齐，
+      // 双面失效（executions.all + metrics.all）。
+      await invalidateExecutionData(queryClient);
     } catch (err: unknown) {
       message.error(getErrMsg(err, t('execDetail.killFail')));
     } finally {

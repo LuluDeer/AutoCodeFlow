@@ -19,6 +19,7 @@ import {
   useTaskExecutions,
   useTaskStats,
   invalidateTaskData,
+  queryKeys,
 } from '../api/queries';
 import { taskTemplatesApi } from '../api/task-templates';
 import { aiApi, ScheduleSuggestion } from '../api/ai';
@@ -127,6 +128,11 @@ export default function TaskDetailPage() {
       });
       message.success(t('taskDetail.savedAsTemplate', { name: values.name.trim() }));
       setTplModalOpen(false);
+      // NETOPT-D P2-D6: 保存为模板是 task-templates 写——不失效则列表页
+      // staleTime 30s 内跳转看不到新模板（TaskTemplatesPage 无写后触发）。
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.taskTemplates.list,
+      });
     } catch (err: unknown) {
       // validateFields 的 reject 是带 errorFields 的校验对象，不是请求错误——
       // 仅对真正的请求失败弹 toast，表单校验错误由 Form 自带红字呈现。

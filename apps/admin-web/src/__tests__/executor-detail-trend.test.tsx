@@ -146,7 +146,9 @@ describe('ExecutorDetailPage — 资源趋势（24h）卡片（FEAT-04）', () =
     );
     // 空态下不渲染 SVG 折线图
     expect(document.querySelector('.recharts-line')).toBeNull();
-    expect(mockedApi.getMetrics).toHaveBeenCalledWith('executor-1');
+    // NETOPT-10-3: queryFn 透传 AbortSignal——断言第二参是**真实 AbortSignal**
+    //（NETOPT-D P3-1: 硬化 expect.anything()，防回归成裸调用）
+    expect(mockedApi.getMetrics).toHaveBeenCalledWith('executor-1', expect.any(AbortSignal));
   });
 
   it('history 字段缺失（旧响应）：同样走空态兜底，不抛错', async () => {

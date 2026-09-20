@@ -39,8 +39,10 @@ export interface UpsertConfigPayload {
 }
 
 export const configApi = {
-  findAll: (params?: { prefix?: string; tag?: string }) =>
-    client.get<SystemConfig[]>('/config', { params }),
+  findAll: (params?: { prefix?: string; tag?: string }, signal?: AbortSignal) =>
+    signal
+      ? client.get<SystemConfig[]>('/config', { params, signal })
+      : client.get<SystemConfig[]>('/config', { params }),
 
   findOne: (key: string) =>
     client.get<SystemConfig>(`/config/${encodeURIComponent(key)}`),
@@ -54,8 +56,10 @@ export const configApi = {
   remove: (key: string) =>
     client.delete(`/config/${encodeURIComponent(key)}`),
 
-  getHistory: (params?: { key?: string; page?: number; pageSize?: number }) =>
-    client.get<{ data: ConfigHistory[]; total: number }>('/config/history', { params }),
+  getHistory: (params?: { key?: string; page?: number; pageSize?: number }, signal?: AbortSignal) =>
+    signal
+      ? client.get<{ data: ConfigHistory[]; total: number }>('/config/history', { params, signal })
+      : client.get<{ data: ConfigHistory[]; total: number }>('/config/history', { params }),
 
   // FEAT-08：回滚成功返回写回后的配置项；回滚创建条目（= 删除）时后端返回
   // { deleted: true }。
@@ -65,8 +69,10 @@ export const configApi = {
   generateExecutorToken: () =>
     client.post<{ token: string }>('/config/executor-shared-token/generate'),
 
-  getExecutorToken: () =>
-    client.get<{ token: string | null; hasToken: boolean }>('/config/executor-shared-token'),
+  getExecutorToken: (signal?: AbortSignal) =>
+    signal
+      ? client.get<{ token: string | null; hasToken: boolean }>('/config/executor-shared-token', { signal })
+      : client.get<{ token: string | null; hasToken: boolean }>('/config/executor-shared-token'),
 
   // G-1：后端 runtime-version 权威配置（可声明区间 min/max、在线下界 onlineMin、
   // legacy 兜底 legacyDefaultInterpreter、Tier 版本表 tier1/2/3）。

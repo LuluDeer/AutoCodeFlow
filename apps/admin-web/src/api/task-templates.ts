@@ -17,7 +17,11 @@ export interface TaskTemplate {
 }
 
 export const taskTemplatesApi = {
-  list: () => client.get('/task-templates') as Promise<TaskTemplate[]>,
+  // NETOPT-D P3: 与全站 api 层三元形态对齐（其余文件 signal 缺省时传 undefined）。
+  list: (signal?: AbortSignal) =>
+    client.get('/task-templates', signal ? { signal } : undefined) as Promise<
+      TaskTemplate[]
+    >,
   get: (id: string) => client.get(`/task-templates/${id}`) as Promise<TaskTemplate>,
   create: (data: {
     name: string;

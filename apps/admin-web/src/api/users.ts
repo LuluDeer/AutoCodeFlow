@@ -24,10 +24,14 @@ export interface UpdateUserDto {
 }
 
 export const usersApi = {
-  list: (page = 1, pageSize = 20) =>
-    apiClient.get<{ list: User[]; total: number; page: number; pageSize: number }>(
-      `/users?page=${page}&pageSize=${pageSize}`,
-    ),
+  list: (page = 1, pageSize = 20, signal?: AbortSignal) =>
+    signal
+      ? apiClient.get<{ list: User[]; total: number; page: number; pageSize: number }>(
+          `/users?page=${page}&pageSize=${pageSize}`, { signal },
+        )
+      : apiClient.get<{ list: User[]; total: number; page: number; pageSize: number }>(
+          `/users?page=${page}&pageSize=${pageSize}`,
+        ),
 
   create: (data: CreateUserDto) =>
     apiClient.post<User>('/users', data),

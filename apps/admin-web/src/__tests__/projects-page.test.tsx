@@ -2,7 +2,7 @@
  * AUTH-02 后续：ProjectsPage 渲染回归（列表/我的角色徽标/成员抽屉门控/错误态）。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, cleanup, fireEvent } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import ProjectsPage from '../pages/ProjectsPage';
 import { projectsApi, type ProjectViewRow } from '../api/projects';
@@ -138,5 +138,35 @@ describe('ProjectsPage（AUTH-02 后续）', () => {
     // UI-16 约定：StateError 标题 + 重试按钮
     expect(await screen.findByText('加载失败')).toBeTruthy();
     expect(screen.getByRole('button', { name: /重试/ })).toBeTruthy();
+  });
+
+  it('NETOPT-F P3: 成员移除成功后失效 members(id) + list（行为测试锁）', async () => {
+    // 行为测试锁：把 invalidate() 的失效键放宽成 ['projects']（v5 前缀语义会
+    // 连带 members/candidate-users 级联刷新）或删掉任一 invalidate，本用例
+    // 立即变红。NETOPT-D P3 判定"成员变化影响 myRole"只有这里锁住。
+    authState.user = { id: 1, role: 'admin' };
+    vi.mocked(projectsApi.removeMember).mockReset().mockResolvedValue(undefined as never);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ProjectsPage />
+      </QueryClientProvider>,
+    );
+    const memberButtons = await screen.findAllByRole('button', { name: /成员/ });
+    fireEvent.click(memberButtons[0]);
+    await screen.findByText('7');
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
+    fireEvent.click(await screen.findByRole('button', { name: /移除/ }));
+    await waitFor(() => expect(projectsApi.removeMember).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(invalidateSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          queryKey: ['projects', 'members', '00000000-0000-0000-0000-000000000001'],
+        }),
+      ),
+    );
+    expect(invalidateSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ queryKey: ['projects', 'list'] }),
+    );
   });
 });

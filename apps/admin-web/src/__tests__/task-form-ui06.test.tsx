@@ -10,6 +10,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import TaskFormPage from '../pages/TaskFormPage';
 import { tasksApi } from '../api/tasks';
 import { executorsApi } from '../api/executors';
@@ -66,6 +67,15 @@ if (!Element.prototype.scrollIntoView) {
 
 const PIN_UUID = '550e8400-e29b-41d4-a716-446655440000';
 
+
+
+const testQueryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+const renderPage = () =>
+  render(
+    <QueryClientProvider client={testQueryClient}>
+      <TaskFormPage />
+    </QueryClientProvider>,
+  );
 beforeEach(() => {
   mockRouteParams = {};
   mockSearch = '';
@@ -84,7 +94,7 @@ afterEach(() => {
 
 /** 创建态渲染 + 单页可见性就绪 */
 async function renderCreateForm() {
-  render(<TaskFormPage />);
+  renderPage();
   await screen.findByPlaceholderText('daily-report');
 }
 
@@ -131,7 +141,7 @@ describe('UI-06 ① 分区单页布局', () => {
       maxRetry: 3,
       params: {},
     } as never);
-    render(<TaskFormPage />);
+    renderPage();
     expect(await screen.findByTestId('glue-editor')).toBeTruthy();
   });
 
