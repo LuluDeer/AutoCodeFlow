@@ -1,0 +1,41 @@
+fix(docs): 文档站版本声明接入 release-please——每次发版必红的 DOC-09 drift 根治
+
+症状：release-please 的 Release PR 只 bump 代码侧版本，文档站五个页面的版本
+声明不在它的管理面内 → 每次发版 DOC-09 同步校验必红。历史上已红两次
+（35431095819 / 35428936542，两次都是版本 bump 的 PR）。
+
+后果不只是 CI 红：`docs-site-deploy.yml` 在 main push 时跑**同一个** sync-check，
+失败即不部署 —— 也就是说每次发版后**文档站会停止更新**，停在旧版本上误导用户。
+
+修法（与仓库既有解法一致：`__init__.py` 的 __version__ 就是加
+`x-release-please-version` 标记 + 登记 extra-files）：
+
+1. 五个站点页面的 10 处版本声明加上行内标记
+   （sdk-node 1 / sdk-python 2 / getting-started 2 / release 4 / index 1）；
+   标记写在 HTML 注释里（index.md 在 YAML frontmatter，用 `#` 注释），
+   不进入渲染结果——已构建 14 个 HTML 页面逐一扫描确认零泄漏。
+2. 五个 md 登记进 release-please-config.json 的 extra-files（node-sdk 包下）。
+   路径必须写 `/packages/docs-site/...` 根路径形态：release-please 的
+   addPath() 禁止 `../` 逃逸工作区，而 `/` 前缀表示仓库根。
+3. 代码块内的版本声明移出到正文（getting-started ×2、sdk-python ×1）：
+   bash 代码块里加注释会渲染成噪音，移出后才好用 HTML 注释隐藏。
+
+顺带修的两个真实缺陷：
+
+- release.md 版本矩阵表格里的版本号（**1.4.4**）自标题写 1.4.3 起就一直在
+  漂移，而 sync-check 只认「当前 X.Y.Z」/「lockstep X.Y.Z」两种措辞形态，
+  表格行是**校验盲区**。判据改为「凡是带 x-release-please-version 标记的行
+  都必须等于事实源」——判据面与 release-please 的更新面**同源**，不会再有
+  盲区。mutation 验证：把表格改成 9.9.9 → 精确报「版本声明 9.9.9 ≠ 事实源
+  1.4.3」（旧判据对此完全沉默）。
+- release.md 关于 acf-cli 的描述已过时（仍写「暂不发布 / version 1.0.0」），
+  实际它已改名 @autocodeflow/cli 并接入 lockstep（1.4.3）。
+
+踩到的坑（记录以免复发）：**标题行不能用 HTML 注释**。VitePress 会把整行原文
+（含注释文本）塞进 header-anchor 的 aria-label 与锚点 id，于是
+`aria-label="Permalink to 版本矩阵（当前 1.4.3）<!-- x-release-please-version -->"`。
+已将版本号从标题移到正文——正文中的 HTML 注释是安全的（已验证）。
+
+验证：sync-check 七面无 drift · sync-check.selftest 全过 · release-config
+guard 五层通过 · vitepress build 成功且 14 页零标记泄漏 · 本地按 Generic
+updater 规则模拟 bump → 10 处声明全部会被改成目标版本。

@@ -787,3 +787,96 @@ cd packages/mcp-server && npx tsc --noEmit
 - **acf-cli**：HTTP client 自动拆 ResponseInterceptor envelope；`task create/update/delete/pause/resume/kill/logs`、`app deploy/deployments/versions`、`task executions` 全部走正确路径与字段名。
 - **mcp-server**：同 HTTP 拆包；新增 `kill_execution` / `pause_task` / `resume_task` / `list_deployments`；已有 `get_application` / `deploy_application` / `get_execution_logs` 配套。
 - **docker-compose.yml**：minio profile（端口 9000/9001，volume，healthcheck）+ admin-api 注入 7 项 `LOG_STORAGE_*` 默认值。
+
+---
+
+## 发版链路打通专项（2026-09-19，v1.5.0 发版轮）
+
+从「CLI 改名 + 接入发布链路」到「v1.5.0 四包全发布」的一整轮，共挖出并修复
+**6 个真实缺陷**，其中 4 个只在**真正发版那天**才暴露。按发现顺序：
+
+### ① release-please 被历史 PR 永久卡住（发版阻塞）
+
+推送 main 后 release-please 成功退出但拒绝开 Release PR：
+`⚠ There are untagged, merged release PRs outstanding - aborting`。
+
+**根因不是「手工打了 tag」**——钉到代码级：`manifest.ts:1146-1157` 的
+`findMergedReleasePullRequests()` 只用 `hasAllLabels(['autorelease: pending'], pr.labels)`
+判定 outstanding，**完全不看 tag 是否存在**。PR #4 的标签实测是
+`autorelease: pending`（#1–#3 都是 `tagged`），而 v1.2.0 tag 确实打在它的
+merge commit 上——tag 打了、标签没更新，于是永久卡死。
+**修法**：把 PR #4 标签改回 `autorelease: tagged`（与 #1–#3 一致）即解除。
+
+### ② acf-cli 漏进 manifest → Release PR 把它从 1.4.3 倒退到 1.0.0
+
+卡点解除后 release-please 首次真开 PR（#9），立刻暴露：同批四包中三个正常走
+1.4.3→1.5.0，唯独 acf-cli **倒退**到 1.0.0。根因：`release-please-manifest.json`
+是「上次发到哪了」的基线，acf-cli 进了 config 却漏进 manifest → 基线丢失 →
+被当全新包从 1.0.0 起算。这是上一轮「漏进 linked-versions 卡在 1.0.0」换了
+形态复发（那次永不 bump，这次版本倒退）。
+**修法**：补 manifest 条目 + 给 `scripts/check-release-config.mjs` 加**第 ⑤ 层**
+（config.packages ↔ manifest 双向对齐）。selftest 8 例 / 6 反例，mutation 验证
+有牙（移除条目 → 精确报 ⑤ 并 exit 1）。
+
+### ③ e2e-full-windows 长期全红：venv 相对路径在 cd 之后失效
+
+`env: 'apps/executor-python/.venv/Scripts/python.exe': No such file or directory`。
+不是「venv 没装」（CI 日志可见 pip 安装成功），而是：探测分支在**脚本工作目录**
+测出相对路径，启动段却 `cd apps/executor-python` 后再用它 → 失效 → 进程根本没
+起 → 空等 60s 超时，把人引向「服务起得慢」。对照 executor-node 用 `node dist/main.js`
+（命令名，与 cwd 无关）所以从不踩坑。
+**修法**：转绝对路径 + 加启动前 `-x` 断言（真出问题时立刻报错，不等 60s）。
+修后**用例 49（Python 执行器全链）在 Windows 上首次真正通过**。
+注：该 job 只在 PR 事件触发，历史只真跑过 2 次、两次都红，push 轮全是
+skipped 故长期看不出来。
+
+### ④ 文档站版本声明不在 release-please 管理面内 → 每次发版必红 + 文档站停部署
+
+release-please 只 bump 代码侧，docs-site 五个页面的版本声明无人同步。后果比
+CI 红更严重：`docs-site-deploy.yml` 跑同一个 sync-check，**失败即不部署**——
+即每次发版后文档站停止更新、停在旧版本误导用户。历史已红 2 次。
+**修法**：10 处声明加 `x-release-please-version` 标记 + 五个 md 登记进
+extra-files（路径须写 `/packages/docs-site/...` 根路径形态，release-please 的
+`addPath()` 禁止 `../`）。
+顺带修：`release.md` 版本矩阵表格里的版本号长期漂移却是**校验盲区**（守卫只
+认「当前 X.Y.Z」/「lockstep X.Y.Z」两种措辞，表格行不匹配）。判据改为「凡带
+标记的行必须等于事实源」，让判据面与 release-please 更新面**同源**。
+
+### ⑤ PyPI Trusted Publishing 未登记 → publish-pypi 失败
+
+`invalid-publisher: valid token, but no corresponding publisher`。不是配置写错：
+`a4dad9b` 在工作流里完成了 OIDC 迁移，并把登记写成 **commit message 里的
+「发布前唯一待办的外部手动步骤」**——commit message 不是清单，没人会翻。
+v1.4.3 及以前走 `secrets.PYPI_API_TOKEN`，掩盖了缺口；v1.5.0 是第一次真正走
+OIDC，必然失败。**修法**：在 pypi.org 登记 Trusted Publisher（参数已固化进
+`docs/release-checklist.md` 4.2.1 与 release.yml 注释）。
+
+### ⑥ SDK 发版抢占 GitHub latest → 全量装机用户桌面更新 404（结构性复发）
+
+客户端报 `Cannot find latest.yml ... releases/download/v1.5.0/latest.yml 404`。
+electron-updater 的 github provider **硬编码查 `/releases/latest`**
+（`GitHubProvider.js:162`），**无法**指定 tag（`channel` 只改文件名不改 latest
+选择）。而 round-14 把桌面解耦成 `desktop-v*` 后，**两条 tag 线仍共用同一个
+GitHub Releases 池**：`v*` Release 是 SDK 发版产物、**0 资产**，一旦比
+desktop-v* 新就抢占 latest。**每次 SDK 发版都会复发**。
+**修法**：`release.yml` 新增 `demote-sdk-release` job，自动把 `v*` Release 标为
+prerelease（GitHub latest 判定排除 prerelease）→ 永久退出竞争。
+- 未采纳 `skip-github-release`：其 action 描述是 "do not try to **tag** releases"，
+  启用会连 tag 都不打、`release.yml` 由 tag 触发 → **彻底断掉发布链路**。
+- 未采纳「同一 repo 改用具体 release assets」：源码已证无指定 tag 的入口。
+
+### v1.5.0 发布结果
+
+`@autocodeflow/sdk` / `autocodeflow-mcp-server` / `@autocodeflow/cli`（**首次
+发布**，包名从被占用的 `acf-cli` 改来）/ `autoflow-sdk`(PyPI) 四包全部 1.5.0；
+文档站线上 1.5.0；自动打 tag 与自动建 Release **均已打通**（此前
+「人工 tag 仍是主路径」的清单已更新为废弃）。
+
+### 方法学教训（两条，可复用）
+
+1. **仓库外的手动步骤必须写进发版清单，不能只写进 commit message**。本轮 ⑤
+   （PyPI 登记）与 ⑥（latest 核对）都是这个模式：工作流改了、外部步骤没做、
+   发版当天才炸，且报错**不指向**缺失的那一步，排查成本高。
+2. **判定"修好了"必须看可观测事实，不能看 CI 绿**。本轮多次遇到「CI 绿但没
+   验证到」：e2e job 因并发取消显示 skipped、`gh run rerun` 后 Release PR 判定
+   `remained the same` 而没重算 extra-files——都靠回到日志/API 逐条核对才定位。

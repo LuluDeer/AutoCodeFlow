@@ -147,21 +147,76 @@ npm/PyPI 包发布**不走**上节人工 tag——走 release-please 管道：
 push main）→ 自动打 tag v* → 触发 release.yml（version-guard + environment
 审批 + npm/PyPI publish）`。
 
-**v1.3.0 实测结论（2026-09-13，修正预期）**：自动打 tag **未打通**——
-`command: github-release` 是 v4 的无效 input（被忽略）；状态机另有三层阻断
-（v1.2.0 缺 GitHub Release 对象（已补建）/ 非规范 merge 标题解析错误吞 feat
-遍历 / 手工 PR 不被接纳）。当前**人工 tag 仍是主路径**：
-- [ ] Release PR 合并后，人工 `git tag vX.Y.Z <merge-sha> && git push origin vX.Y.Z`；
-- [ ] tag push 自动触发「Release」workflow（version-guard → publish）✓ 已实测可靠；
-- [ ] 发布后**必须建 GitHub Release 对象**（`gh release create vX.Y.Z --verify-tag`），
-  否则状态机卡 outstanding（v1.2.0 缺口的教训）；
-- [ ] 自动化若要重启：方向 = main 上 merge commit 标题规范化（或 squash 合并习惯）
-  + release-please 状态机修复，涉及协作流程变更需拍板。
+**v1.5.0 实测结论（2026-09-19，自动化已打通）**：自动打 tag **已打通**——
+release-please 的永久卡点（PR #4 停留在 `autorelease: pending` 标签）解除后，
+合并 Release PR 即自动打 `v*` tag 并触发 release.yml。下列人工步骤**已废弃**：
+- ~~Release PR 合并后人工 `git tag`~~ — 自动完成；
+- ~~发布后手工补建 GitHub Release 对象~~ — 自动完成。
+
+- [ ] tag push 自动触发「Release」workflow（version-guard → environment 审批
+  → publish）；**审批闸需人工 Approve**（`environment: release`）。
+- [ ] 发布后核对注册表：npm 三个包 + PyPI `autoflow-sdk` 均到达目标版本。
+- [ ] 发布后核对桌面自动更新源未被抢占（见 4.2.2）。
+
+### 4.2.1 PyPI 发布凭证：Trusted Publishing（OIDC）登记
+
+`publish-pypi` 走 **Trusted Publishing**（无长期 token，`permissions: id-token: write`）。
+它依赖一个**仓库外的手动登记**，漏做则发布在发版当天才炸（v1.5.0 实证）：
+
+```
+Trusted publishing exchange failure: invalid-publisher:
+valid token, but no corresponding publisher
+```
+
+**一次性登记（每个 PyPI 项目做一次）**：
+pypi.org → 登录 → Your projects → `autoflow-sdk` → **Publishing** →
+**Add a new trusted publisher** → GitHub Actions，按下表逐字填写：
+
+| 字段 | 值 |
+|------|-----|
+| PyPI Project | `autoflow-sdk` |
+| Owner | `LuluDeer` |
+| Repository | `AutoCodeFlow` |
+| Workflow name | `release.yml`（**只文件名**，不要带 `.github/workflows/` 前缀） |
+| Environment name | `release`（**必须填**：本 job 声明了 `environment: release`，OIDC claims 的 `sub` 因此是 `repo:LuluDeer/AutoCodeFlow:environment:release`；PyPI 侧留空会与之不匹配） |
+
+- [ ] 已完成上述登记（漏做 → publish-pypi 在发版时失败，且报错不指向本节）。
+- [ ] 若暂不登记：可临时在 `publish-pypi` 步骤加回
+  `password: ${{ secrets.PYPI_API_TOKEN }}`（该 secret 仍在），但长期应回 OIDC。
+
+> **教训（v1.5.0）**：`a4dad9b` 在工作流里完成了 OIDC 迁移，并把登记写成
+> commit message 里的「发布前唯一待办的外部手动步骤」——但 commit message
+> 不是清单，没人会翻。凡是**仓库外的手动步骤**，必须写进本节这类发版清单。
 
 > **桌面端独立发布（round-14 起）**：`apps/executor-desktop` 已从上述 lockstep
 > 解耦，走独立 `release-desktop.yml` + `desktop-vX.Y.Z` tag——纯桌面 hotfix
 > 只发安装包，不再连带 bump/重发 npm/PyPI。详见
 > docs/release-checklist.md 头部与 packages/docs-site/release.md「桌面端独立发布」。
+
+### 4.2.2 发版后核对：桌面自动更新源（GitHub latest）未被抢占
+
+**为什么必须核对**：electron-updater 的 github provider **硬编码**查仓库的
+latest release（`GitHubProvider.js` → `/releases/latest`），**无法**指定 tag。
+桌面包发在 `desktop-v*`、SDK 发版产生 `v*`，**两条 tag 线共用同一个 GitHub
+Releases 池**；`v*` Release 不含任何安装包，一旦它成为 latest，全量装机用户
+的自动更新即 404（v1.5.0 实证，客户端报
+`Cannot find latest.yml in the latest release artifacts ... 404`）。
+
+`release.yml` 已有 `demote-sdk-release` job 自动把 `v*` Release 标为 prerelease
+（GitHub latest 判定排除 prerelease）以杜绝该问题，但**该 job 只在发版时跑、
+且可能因 Release 尚未创建而 warning 跳过**——故发版后人工核对一次：
+
+```bash
+gh api repos/LuluDeer/AutoCodeFlow/releases/latest --jq '{tag:.tag_name, assets:(.assets|length)}'
+```
+
+- [ ] `tag` 以 `desktop-v` 开头（而非 `v1.x.x`），且 `assets` > 0。
+- [ ] 若显示为 `v*`：立刻 `gh release edit <v-tag> --prerelease` 纠正，
+      然后重新核对——此时客户端更新会自行恢复，无需重装。
+
+> **快速自检**（三平台 channel file 均应可达）：
+> `https://github.com/LuluDeer/AutoCodeFlow/releases/latest/download/latest.yml`
+> （另有 `latest-mac.yml` / `latest-linux.yml`）。
 
 ### 4.3 更新 CHANGELOG（可选）
 
