@@ -46,7 +46,7 @@ vi.mock('../api/applications', () => ({
   },
   deploymentsApi: {
     deploy: vi.fn(),
-    listByApplication: vi.fn(),
+    list: vi.fn(),
   },
 }));
 vi.mock('../api/executors', () => ({
@@ -117,7 +117,7 @@ beforeEach(() => {
   mockInfo.mockClear();
   mockError.mockClear();
   vi.mocked(applicationsApi.list).mockResolvedValue([APP] as never);
-  vi.mocked(deploymentsApi.listByApplication).mockResolvedValue([] as never);
+  vi.mocked(deploymentsApi.list).mockResolvedValue({ data: [], total: 0 } as never);
   vi.mocked(executorsApi.list).mockResolvedValue([] as never);
 });
 
