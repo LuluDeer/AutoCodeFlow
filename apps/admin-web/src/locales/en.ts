@@ -1552,6 +1552,14 @@ export default {
   'appDeploy.mode.once': 'Run once',
   'appDeploy.mode.daemon': 'Daemon process',
   'appDeploy.mode.scheduled': 'Scheduled task',
+  'appDeploy.mode.hint':
+    'Run once: start the process, do not restart after exit. Daemon: auto-restart on abnormal exit (up to 10 attempts, backoff to 60s). Scheduled: deliver code only, no process — trigger it from Task Scheduling.',
+  'appDeploy.mode.hintDaemon':
+    'Auto-restarts on abnormal exit (up to 10 attempts). A clean exit (code 0) is not restarted.',
+  'appDeploy.mode.hintScheduled':
+    'Code is delivered but no process is started — create a task under Task Scheduling to run it.',
+  'appDeploy.redeploy.reuseHint':
+    'Redeploying reuses this device’s existing record (no new record is created).',
   'appDeploy.executor.availableHeader': 'Available executors ({{count}}, occupied filtered out)',
   'appDeploy.executor.overview': 'Available executors overview (occupied filtered out)',
   'appDeploy.executor.more': '...and {{count}} more',
