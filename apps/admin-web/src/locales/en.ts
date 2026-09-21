@@ -2252,6 +2252,7 @@ export default {
   'heatBars.rowTitle': '{{address}} · {{status}}',
 
   'requireAdmin.subTitle': 'Sorry, you do not have permission to access this page. It is visible to administrators only.',
+  'requireAdmin.forbiddenHint': 'This page requires the administrator (admin) role. Your current account lacks permission; contact your system administrator to request access.',
   'requireAdmin.back': 'Back to Console',
   // UX-07: a failed profile fetch no longer spins forever — show a retryable error.
   'requireAdmin.profileFailTitle': 'Could not verify your account permissions',

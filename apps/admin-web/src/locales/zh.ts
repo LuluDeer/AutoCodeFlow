@@ -2259,6 +2259,7 @@ export default {
   'heatBars.rowTitle': '{{address}} · {{status}}',
 
   'requireAdmin.subTitle': '抱歉，您没有权限访问该页面，此页面仅管理员可见。',
+  'requireAdmin.forbiddenHint': '此页面需要管理员（admin）角色。当前账号权限不足，如确需访问，请联系系统管理员为您开通。',
   'requireAdmin.back': '返回控制台',
   // UX-07：profile 拉取失败时不再永久转圈，给出可重试的错误态。
   'requireAdmin.profileFailTitle': '无法确认您的账号权限',
