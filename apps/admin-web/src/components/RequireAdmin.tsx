@@ -76,7 +76,14 @@ export default function RequireAdmin({ children }: { children: ReactNode }) {
       <Result
         status="403"
         title="403"
-        subTitle={t('requireAdmin.subTitle')}
+        subTitle={
+          <>
+            {/* P1-20（UX 审计）：403 页只说`仅管理员可见''却不告诉用户缺什么、找谁开通 */}
+            {t('requireAdmin.subTitle')}
+            <br />
+            {t('requireAdmin.forbiddenHint')}
+          </>
+        }
         extra={
           <Button type="primary" onClick={() => nav('/dashboard', { replace: true })}>
             {t('requireAdmin.back')}
