@@ -32,7 +32,7 @@ import {
   InfoCircleOutlined, ClusterOutlined, RocketOutlined, ApartmentOutlined, PushpinOutlined,
   PlusOutlined, DeleteOutlined, ToolOutlined, LockOutlined, SaveOutlined,
 } from '@ant-design/icons';
-import { useNavigate, useSearchParams, useParams } from 'react-router-dom';
+import { useNavigate, useSearchParams, useParams, useBlocker } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { configApi } from '../api/config';
 import { tasksApi } from '../api/tasks';
@@ -219,6 +219,16 @@ export default function TaskFormPage() {
   const depNameSnapshotRef = useRef<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [loadingTask, setLoadingTask] = useState(isEdit);
+  // P1-4（UX 审计）：表单 dirty 守卫——用户改过且未保存时，拦截站内跳转与浏览器关闭。
+  const [dirty, setDirty] = useState(false);
+  const navigationBlocker = useBlocker(dirty);
+  // P1-4：浏览器关闭/刷新未保存守卫（站内跳转由 navigationBlocker + 确认弹窗兜底）。
+  useEffect(() => {
+    if (!dirty) return;
+    const handler = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ''; };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [dirty]);
   const [showCronHelper, setShowCronHelper] = useState(false);
   // Glue: createdTaskId is set after create so GlueEditor can save to the real task id
   const [createdTaskId, setCreatedTaskId] = useState<string | null>(null);
@@ -467,7 +477,7 @@ export default function TaskFormPage() {
         if (active && !controller.signal.aborted) message.error(t('taskForm.load.taskFailed'));
       })
       .finally(() => {
-        if (active && !controller.signal.aborted) setLoadingTask(false);
+        if (active && !controller.signal.aborted) { setLoadingTask(false); setDirty(false); }
       });
 
     return () => {
@@ -488,6 +498,7 @@ export default function TaskFormPage() {
         form.setFieldsValue(templateConfigToFormValues(tpl.config));
         if (tpl.description) form.setFieldValue('description', tpl.description);
         setTriggerType(templateTriggerAndRuntime(tpl).triggerType);
+        setDirty(false);
         // python_task_multiversion（FR-06/FR-18）：`runtimeVersion` 与 `codeSource`
         // **不在表单字段树里**（前者由 RuntimeVersionField 自持 state，后者由来源
         // 选择器自持 state），因此 `setFieldsValue` 对它们无效——必须像编辑态回填
@@ -724,6 +735,7 @@ export default function TaskFormPage() {
           typeof payload.runtime === 'string' ? payload.runtime : 'python',
         );
         setCreatedTaskId(created.id);
+        setDirty(false);
         // 创建成功后滚到 Glue 区块（原 step3 语义：创建后进入 Glue 编排）
         setTimeout(() => scrollToSection(SECTION_IDS[4]), 50);
       }
@@ -1015,6 +1027,8 @@ export default function TaskFormPage() {
             initialValues={{ triggerType: 'manual', runtime: 'python', timeout: 300, maxRetry: 3, retryDelay: 0, priority: 2, timeoutAction: 'kill' }}
             onValuesChange={(changed) => {
               if (changed.triggerType) setTriggerType(changed.triggerType);
+              // P1-4：用户手改即标记未保存（antd setFieldsValue 程序化回填不触发本回调）。
+              setDirty(true);
             }}
           >
             {/* 分区一：基本配置（原 step 0） */}
@@ -1826,6 +1840,18 @@ export default function TaskFormPage() {
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
           {t('taskForm.tpl.hint')}
         </Typography.Text>
+      </Modal>
+      {/* P1-4：未保存守卫——用户在表单有改动时点页头返回/面包屑/浏览器关闭，拦截并二次确认。 */}
+      <Modal
+        open={navigationBlocker.state === 'blocked'}
+        title={t('taskForm.unsaved.title')}
+        okText={t('taskForm.unsaved.ok')}
+        cancelText={t('taskForm.unsaved.cancel')}
+        okButtonProps={{ danger: true }}
+        onOk={() => navigationBlocker.proceed?.()}
+        onCancel={() => navigationBlocker.reset?.()}
+      >
+        <Typography.Paragraph>{t('taskForm.unsaved.message')}</Typography.Paragraph>
       </Modal>
     </div>
   );
