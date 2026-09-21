@@ -58,6 +58,27 @@ export const PACKAGE_UPLOAD_TMP_DIR = path.join(UPLOAD_DIR, "upload-tmp");
  *  upload duration (the interceptor caps uploads at 500 MB / 60s timeouts). */
 const UPLOAD_TMP_STALE_MS = 60 * 60 * 1000;
 
+/**
+ * 遗留 P1-10：push 逐执行器结果明细。
+ *
+ * 旧响应只面向聚合（前端读 queued/success/error 三态），逐执行器失败原因散在
+ * runtime 对象里、类型未声明。这里显式建模每台结果：status 三态机 + 可选
+ * commandId/error；success 布尔保留供旧消费方兼容。
+ */
+export type ExecutorPushResultStatus = "queued" | "success" | "error";
+export interface ExecutorPushResult {
+  executorId: string;
+  address: string;
+  /** queued=已入 pull 命令队列；success=push 同步 accepted；error=失败。 */
+  status: ExecutorPushResultStatus;
+  /** queued 时回填中台命令 ID（终态由 push-result 回调收敛）。 */
+  commandId?: string;
+  /** error 时回填诊断信息。 */
+  error?: string;
+  /** 向后兼容：旧消费方读布尔。 */
+  success: boolean;
+}
+
 @Injectable()
 export class ExecutorPackageService implements OnModuleInit {
   private readonly logger = new Logger(ExecutorPackageService.name);
@@ -457,9 +478,7 @@ export class ExecutorPackageService implements OnModuleInit {
     executorIds?: string[],
     executorRepo?: import("../executor/entities/executor.entity").Executor[],
     sharedToken?: string,
-  ): Promise<
-    { executorId: string; address: string; success: boolean; error?: string }[]
-  > {
+  ): Promise<ExecutorPushResult[]> {
     const pkg = await this.findOne(id);
 
     const all = executorRepo ?? [];
@@ -532,8 +551,8 @@ export class ExecutorPackageService implements OnModuleInit {
             return {
               executorId: executor.id,
               address: executor.address,
+              status: "queued" as const,
               success: true,
-              queued: true,
               commandId: routed.commandId,
             };
           }
@@ -574,6 +593,7 @@ export class ExecutorPackageService implements OnModuleInit {
         return {
           executorId: executor.id,
           address: executor.address,
+          status: "success" as const,
           success: true,
         };
       }),
@@ -585,6 +605,7 @@ export class ExecutorPackageService implements OnModuleInit {
         : {
             executorId: targets[i].id,
             address: targets[i].address,
+            status: "error" as const,
             success: false,
             error: (r.reason as Error)?.message ?? String(r.reason),
           },
