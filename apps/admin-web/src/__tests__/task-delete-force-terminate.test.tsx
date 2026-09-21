@@ -21,6 +21,7 @@ import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import TaskListPage from '../pages/TaskListPage';
 import { tasksApi, type Task } from '../api/tasks';
+import { useAuthStore } from '../store/auth';
 
 vi.mock('../api/tasks', async () => {
   const actual = await vi.importActual<typeof import('../api/tasks')>('../api/tasks');
@@ -75,6 +76,7 @@ function renderPage() {
 
 beforeEach(() => {
   cleanup();
+  useAuthStore.setState({ user: { id: 1, username: 'root', role: 'admin' } });
   vi.clearAllMocks();
   mockedTasks.list.mockResolvedValue({
     items: [makeTask(), makeTask({ id: 'task-2', name: '巡检任务', status: 'paused' })],
