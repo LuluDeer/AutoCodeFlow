@@ -196,6 +196,33 @@ curl -sI -H "Authorization: Bearer $EXECUTOR_TOKEN" \
 
 回归闸：`apps/admin-api/src/common/__tests__/uploads-proxy-consistency.spec.ts` 断言两份仓库内配置都有 `location ^~ /uploads/`（反证：删掉即转红）。
 
+#### 应用部署的 release 目录与 Windows 注意事项（APP-002 后续）
+
+执行器把应用发布到 `<workDir>/apps/<appId>/releases/<version>-<deploymentId>/`，并用 `current` 软链（**Windows 上是 junction**）指向当前生效的 release。两个与平台相关的坑：
+
+**① Windows 上 junction 不能被 rename 覆盖。** "把新 junction 改名到已存在的 junction 上"抛 `EPERM`，而 POSIX 上覆盖目录符号链接是合法的。所以升级路径必须先 `unlink` 旧链接再 `rename`（`unlink` 对 junction **不穿透**，只删链接、目标目录与内容完好）。表现为：
+
+```
+EPERM: operation not permitted, rename
+'...\tasks\apps\<appId>\current.next-<pid>-<ts>' -> '...\tasks\apps\<appId>\current'
+```
+
+典型特征是**首次部署成功、之后每次升级都失败**（首次 `current` 尚不存在，rename 无冲突）。
+
+**② 同 `(version, deploymentId)` 重复部署会命中同一个 release 目录。** 若不处理，`removePathIfExists(finalReleaseDir)` 会删掉 `current` 正在指向的**活目录**，磁盘上无法保留历史版本；最严重的是失败回滚 `restoreCurrentRelease` 会把 `current` 指回一个刚被删除的目录 → 应用彻底不可用。执行器现用 `resolveReleasePaths` 在目标已存在时改用带唯一后缀的新目录规避。
+
+**③ `runMode` 三档的真实语义**（此前 UI 无任何说明，且"单次"与"常驻"实现上等价）：
+
+| 模式 | 行为 |
+| --- | --- |
+| `once` 单次执行 | 启动进程；退出后不重启（退出码 0 记 stopped，非 0 记 failed） |
+| `daemon` 常驻进程 | 启动进程；**异常退出自动重启**（1s 起指数退避至 60s，连续 10 次后放弃并记 failed）。退出码 0 视为主动结束，不重启 |
+| `scheduled` 定时任务 | **只下发代码，不启动进程**——由「任务调度」里的任务触发运行 |
+
+`daemon` 的重启由 `daemonSpecs` 登记驱动：`stop`/`app-uninstall`/`upgrade` 通过摘除登记阻止复活（这是"该不该继续跑"的唯一权威——进程退出处理器里 `runningApps` 已删除，用它判定会让重启永不发生）。执行器自身停机时不重启，避免拉起孤儿进程。
+
+回归闸：`apps/executor-node/src/routes/deploy-fs.spec.ts` 用**真实文件系统**构造 junction 断言上述行为（反证：删掉 `EPERM` 处理 → 3 条用例转红；让 `resolveReleasePaths` 不换目录 → 3 条转红）。`deploy-restart.spec.ts` 覆盖重启决策矩阵。注意 `deploy.spec.ts` 把 `fs`/`child_process` 全 mock 了，平台语义在那种测试里**根本不存在**——这正是这两类缺陷能上线的直接原因。
+
 ### 反代 SSE/长流验证（部署前必跑，BUG-17）
 
 SSE 能否存活**完全取决于代理层**（缓冲、读取超时、连接复用），应用侧单测覆盖不到。

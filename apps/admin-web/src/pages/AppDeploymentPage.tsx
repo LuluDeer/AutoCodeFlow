@@ -457,7 +457,13 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
             </Popconfirm>
           )}
           {(r.status === 'stopped' || r.status === 'failed') && (
-            <Tooltip title={isAdmin ? undefined : t('appDeploy.op.adminOnlyDeploy')}>
+            <Tooltip
+              title={
+                isAdmin
+                  ? t('appDeploy.redeploy.reuseHint')
+                  : t('appDeploy.op.adminOnlyDeploy')
+              }
+            >
               <Button
                 size="small"
                 type="primary"
@@ -602,17 +608,37 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
         />
 
         <Form form={deployForm} layout="vertical" onValuesChange={(changed) => { if (changed.runMode) setRunMode(changed.runMode); }}>
-          <Form.Item name="runMode" label={t('appDeploy.field.runMode')} initialValue="once">
+          <Form.Item name="runMode" label={t('appDeploy.field.runMode')} initialValue="once" extra={t('appDeploy.mode.hint')}>
             <Radio.Group buttonStyle="solid">
               <Radio.Button value="once">{t('appDeploy.mode.once')}</Radio.Button>
               <Radio.Button value="daemon">{t('appDeploy.mode.daemon')}</Radio.Button>
               <Radio.Button value="scheduled">{t('appDeploy.mode.scheduled')}</Radio.Button>
             </Radio.Group>
           </Form.Item>
+          {/* 生产反馈：此前三个模式无任何说明，用户看不出区别。选中后给出该模式的
+              具体行为（尤其是 scheduled「只下发代码不启动」这一点，用户原话是
+              "这个部署是部署应用，为什么要管什么模式呢"——根因就是这个语义没有
+              在任何地方被解释过）。 */}
+          {runMode === 'scheduled' && (
+            <Alert
+              type="info"
+              showIcon
+              style={{ marginBottom: 16 }}
+              message={t('appDeploy.mode.hintScheduled')}
+            />
+          )}
           {runMode === 'daemon' && (
-            <Form.Item name="startCommand" label={t('appDeploy.field.startCommand')} tooltip={t('appDeploy.field.startCommandTooltip')}>
-              <Input placeholder="node dist/server.js" />
-            </Form.Item>
+            <>
+              <Alert
+                type="info"
+                showIcon
+                style={{ marginBottom: 16 }}
+                message={t('appDeploy.mode.hintDaemon')}
+              />
+              <Form.Item name="startCommand" label={t('appDeploy.field.startCommand')} tooltip={t('appDeploy.field.startCommandTooltip')}>
+                <Input placeholder="node dist/server.js" />
+              </Form.Item>
+            </>
           )}
           <Form.Item
             name="executorId"
