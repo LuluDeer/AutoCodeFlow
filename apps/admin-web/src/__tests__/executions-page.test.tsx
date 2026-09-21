@@ -138,8 +138,16 @@ describe('ExecutionsPage 列表渲染（QA-03）', () => {
     expect(screen.getAllByText('成功').length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText('失败').length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText('运行中').length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText('cron')).toBeTruthy();
-    expect(screen.getByText('manual')).toBeTruthy();
+    // P1-17（UX 审计）：触发方式列走 triggerLabel 唯一事实源——已知值本地化，
+    // 不再直接渲染后端裸 token。旧断言把 `getByText('cron')`/`getByText('manual')`
+    // 钉死在裸枚举渲染上（旧实现之所以"对"是因为它根本没翻译），现改为断言
+    // 本地化标签出现、且小写裸 token 不再出现。
+    expect(screen.getByText('Cron')).toBeTruthy();
+    expect(screen.getByText('手动')).toBeTruthy();
+    expect(screen.queryByText('cron')).toBeNull();
+    expect(screen.queryByText('manual')).toBeNull();
+    // 未知 triggerType 回退原始 token（triggerLabel 契约：保留可诊断信息）
+    expect(screen.getByText('timeout_retry')).toBeTruthy();
     // 执行器地址在 Tooltip + 文本双层渲染（列内 Tooltip 包 Text），多命中容忍
     expect(screen.getAllByText('10.0.0.1:3002').length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText('exit code 1')).toBeTruthy();

@@ -72,9 +72,12 @@ describe('UX-06 纯函数：已知取值查表、未知取值回退原始 token'
   });
 });
 
-describe('UX-06 源码层：四处调用点不得再渲染裸枚举', () => {
+describe('UX-06 源码层：调用点不得再渲染裸枚举', () => {
   const APP = stripComments(read('pages/ApplicationDetailPage.tsx'));
   const TASK = stripComments(read('pages/TaskDetailPage.tsx'));
+  // P1-17（UX 审计）：执行记录页触发方式列此前 `{v || '-'}` 直接输出后端 token
+  // （cron/manual/fixed_rate），是排查失败最常落地的页面。现收敛到同一事实源。
+  const EXEC = stripComments(read('pages/ExecutionsPage.tsx'));
 
   it('ApplicationDetailPage 任务列表触发方式列：不再 <Tag>{r.triggerType}</Tag>', () => {
     expect(APP).not.toMatch(/<Tag>\{r\.triggerType\}<\/Tag>/);
@@ -100,5 +103,15 @@ describe('UX-06 源码层：四处调用点不得再渲染裸枚举', () => {
     ] as const) {
       expect(src, `${name} 未从 utils/trigger-label 导入`).toContain("from '../utils/trigger-label'");
     }
+  });
+
+  it('P1-17 ExecutionsPage 触发方式列走 triggerLabel，不再渲染 {v || \'-\'} 裸枚举', () => {
+    expect(EXEC, 'ExecutionsPage 未从 utils/trigger-label 导入').toContain(
+      "from '../utils/trigger-label'",
+    );
+    expect(EXEC).toContain('triggerLabel(v, t)');
+    // 旧形态是触发列 `render: (v) => <Text>{v || '-'}</Text>`——钉住它不回来。
+    // （该文件内触发列是唯一 `{v || '-'}` 直出处。）
+    expect(EXEC).not.toContain("{v || '-'}");
   });
 });
