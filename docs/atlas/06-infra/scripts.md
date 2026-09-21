@@ -15,7 +15,7 @@
 
 - 开发：`dev`（infra+install+迁移+并行起服务）、`install`、`infra-up`、`infra-down`。
 - 构建/部署：`build`、`start`、`stop`、`restart`。
-- 质量：`test` / `lint` / `typecheck`（ARCH-20：**全部委托** `npm run test:all` 等，Makefile 不维护命令清单）。
+- 质量：`test` / `lint` / `typecheck`（ARCH-20：**全部委托** `npm run test:unit` 等，Makefile 不维护命令清单）。
 - 数据库：`db-migrate`、`db-migrate-revert`、`db-migrate-gen`、`demo-seed`、`demo-seed-selftest`。
 - 运维：`logs`、`status`、`clean`、`help`。
 

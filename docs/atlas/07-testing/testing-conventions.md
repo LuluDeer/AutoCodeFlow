@@ -26,7 +26,7 @@
 
 ## 与 Makefile / dev.sh 的关系
 
-- `make test` / `make lint` / `make typecheck` **全部委托**根 package.json（`npm run test:all` 等），Makefile 不维护命令清单（ARCH-20）。
+- `make test` / `make lint` / `make typecheck` **全部委托**根 package.json（`npm run test:unit` 等），Makefile 不维护命令清单（ARCH-20）。
 - `dev.sh` 只负责起开发环境（infra、install、迁移、4 服务），**不含任何测试步骤**——验证永远显式跑。
 - `scripts/ci-local.sh` 可在本地一条命令复刻 ci.yml 全部 job（远端无凭证时的等价物）。
 
@@ -58,11 +58,11 @@
 | executor-node | `cd apps/executor-node && npm run build && npx jest` | 全链改动 → `bash scripts/e2e-full.sh` |
 | executor-python | `npm run test:python` | 回调/注册语义 → 真机项对照 [VERIFY-MATRIX](../../VERIFY-MATRIX.md) |
 | admin-web | `npm run test:web` + `npm run typecheck` + `npm run build` | 页面走查 → `apps/admin-web/e2e` 手动 Playwright |
-| 客户端四包（cli/mcp/双 SDK） | 对应包测试（契约面向量会联动） | admin-api 信封改动 → 四端全跑 + `npm run test:all` |
+| 客户端四包（cli/mcp/双 SDK） | 对应包测试（契约面向量会联动） | admin-api 信封改动 → 四端全跑 + `npm run test:unit` |
 | scripts/ 下工具 | 对应 `*.selftest.*`（见 [contract-and-selftest](contract-and-selftest.md) 清单） | 真机门禁脚本按其头注跑 live 形态 |
 | 桌面端 | `cd apps/executor-desktop && npm run test:main && npm run test:renderer` | 改了主进程/IPC → `npm run test:e2e` 冒烟 3 例 |
 | nginx/反代配置 | `npm run test:nginx-sse` | 见 [nginx-and-reverse-proxy](../06-infra/nginx-and-reverse-proxy.md) |
-| 不确定影响面 | `npm run test:all` + `npm run typecheck:all` | 终极兜底 `bash scripts/e2e-full.sh`；`make test`（委托 `npm run test:all`，ARCH-20） |
+| 不确定影响面 | `npm run test:unit` + `npm run typecheck:all` | 终极兜底 `bash scripts/e2e-full.sh`；`make test`（委托 `npm run test:unit`，ARCH-20） |
 
 ## 常见场景 → 先读哪篇
 
@@ -81,7 +81,7 @@
 - **executor-node / admin-web / python 侧**：均未配置 coverage 门槛（如实缺省，不是"已达标"）。
 - **admin-api 的 CI e2e 只覆盖 auth / executors / tasks 三个域 + OpenAPI 导出**；notification、application/deployment、metrics 等域 HTTP 层靠 mock 单测，真实链路由根级 45 例 e2e 部分覆盖（审批/RBAC/SSRF/私服有红线用例，其余域按 UI 走查粒度）。
 - **admin-web vitest 不在 CI**（CI 只有 lint+build），测试绿不绿依赖本地自觉——改前端必须手动 `npm run test:web`。
-- **桌面端无单元框架**：全部为自研自测脚本 + 3 例 Electron 冒烟，冒烟仅 PR/手动触发；executor-desktop 也不在 `test:all` 里（只有根 `test:desktop`）。
+- **桌面端无单元框架**：全部为自研自测脚本 + 3 例 Electron 冒烟，冒烟仅 PR/手动触发；executor-desktop 也不在 `test:unit` 里（只有根 `test:desktop`）。
 - **`lint:node` 显式跳过**（executor-node 无 eslint.config.*，ESLint v9 需要 flat config，ARCH-20 记录在案）——executor-node 只有类型检查与 jest 两道门。
 - **executor-desktop / scripts 真机门禁大多不在默认 CI 轮**（arch31 三件套、nginx-sse、qa05、private-registry:live 均为本地/真机轮跑），真正的回归拦截依赖人工按 [VERIFY-MATRIX](../../VERIFY-MATRIX.md) 执行。
 - ci.yml 内两处注释与实际配置有滞后（e2e"43 例" vs spec 实际 45 个 `test()`；coverage 注释 68/58/56/69 vs package.json 75/69/84/84）——**读 CI 注释时以配置文件为准**，本目录各篇均按配置文件口径记录。

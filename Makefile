@@ -84,10 +84,10 @@ stop: ## 停止所有服务
 restart: stop start ## 重启所有服务
 
 # ── 代码质量 ──────────────────────────────────────────────────
-# ARCH-20: 委托给根 package.json 的统一入口（npm run test:all / typecheck:all /
+# ARCH-20: 委托给根 package.json 的统一入口（npm run test:unit / typecheck:all /
 # lint:all），避免两处命令清单漂移 —— Makefile 仅保留少数高频便捷目标。
-test: ## 运行所有测试（等价 npm run test:all，覆盖全部子项目）
-	npm run test:all
+test: ## 运行所有测试（等价 npm run test:unit，覆盖全部子项目）
+	npm run test:unit
 
 lint: ## 运行代码检查（等价 npm run lint:all）
 	npm run lint:all
@@ -129,7 +129,7 @@ status: ## 查看服务运行状态
 
 clean: ## 清理构建产物和缓存（不删根 node_modules / 工具缓存）
 	# E-30（DEEP_REVIEW 0ef3bbe）：旧实现从仓库根 find -name node_modules -exec rm -rf
-	# 会连根 package.json 的 node_modules（npm run test:all/lint:all 的载体）、.zcode
+	# 会连根 package.json 的 node_modules（npm run test:unit/lint:all 的载体）、.zcode
 	# 下依赖、docs-site 等全部子项目依赖一起删——"清理构建产物"变成全量重装；
 	# `-name dist` 还会误删任何叫 dist 的数据目录。改为只在 apps/* packages/* 下清
 	# node_modules/dist/__pycache__，根 node_modules 与 .zcode 不碰。
