@@ -402,14 +402,14 @@ function SystemConfigTab() {
       render: (_: unknown, row: SystemConfig) => (
         <Space size={4}>
           <Tooltip title={isAdmin ? t('sysSettings.config.edit') : t('sysSettings.config.editAdminOnly')}>
-            <Button size="small" icon={<EditOutlined />} onClick={() => setEditTarget(row)} disabled={!isAdmin} />
+            <Button size="small" icon={<EditOutlined />} onClick={() => setEditTarget(row)} disabled={!isAdmin} aria-label={t('sysSettings.config.editAria')} />
           </Tooltip>
           <Tooltip title={t('sysSettings.history.tooltip')}>
-            <Button size="small" icon={<HistoryOutlined />} onClick={() => setHistoryKey(row.key)} />
+            <Button size="small" icon={<HistoryOutlined />} onClick={() => setHistoryKey(row.key)} aria-label={t('sysSettings.history.aria')} />
           </Tooltip>
           <Popconfirm title={t('sysSettings.config.deleteConfirm')} onConfirm={() => remove(row.key)} okText={t('sysSettings.config.delete')} okButtonProps={{ danger: true }} disabled={!isAdmin}>
             <Tooltip title={isAdmin ? t('sysSettings.config.delete') : t('sysSettings.config.deleteAdminOnly')}>
-              <Button size="small" danger icon={<DeleteOutlined />} disabled={!isAdmin} />
+              <Button size="small" danger icon={<DeleteOutlined />} disabled={!isAdmin} aria-label={t('sysSettings.config.deleteAria')} />
             </Tooltip>
           </Popconfirm>
         </Space>

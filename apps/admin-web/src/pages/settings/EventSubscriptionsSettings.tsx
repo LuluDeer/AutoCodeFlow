@@ -509,7 +509,7 @@ export default function EventSubscriptionsSettings() {
             okButtonProps={{ danger: true }}
             onConfirm={() => removeMut.mutate(record.id)}
           >
-            <Button size="small" danger icon={<DeleteOutlined />} data-testid={`sub-delete-${record.id}`} />
+            <Button size="small" danger icon={<DeleteOutlined />} data-testid={`sub-delete-${record.id}`} aria-label={t('eventSub.deleteAria')} />
           </Popconfirm>
         </Space>
       ),
