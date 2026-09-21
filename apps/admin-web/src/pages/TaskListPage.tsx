@@ -451,6 +451,7 @@ export default function TaskListPage() {
           </Tooltip>
           <Popconfirm
             title={t('taskList.deleteConfirm')}
+            description={t('taskList.deleteForceTerminateDesc')}
             onConfirm={() => handleDelete(r.id)}
             okText={t('taskList.ok')} okButtonProps={{ danger: true }}
           >
@@ -535,7 +536,7 @@ export default function TaskListPage() {
           <Button size="small" icon={<ThunderboltOutlined />} loading={batchLoading} disabled={batchLoading} onClick={handleBatchTrigger}>{t('taskList.batchTrigger')}</Button>
           <Button size="small" loading={batchLoading} disabled={batchLoading} onClick={handleBatchPause}>{t('taskList.batchPause')}</Button>
           <Button size="small" loading={batchLoading} disabled={batchLoading} onClick={handleBatchResume}>{t('taskList.batchResume')}</Button>
-          <Popconfirm title={t('taskList.batchTrigger.confirm', { count: selectedRowKeys.length })} onConfirm={handleBatchDelete} okText={t('taskList.ok')} okButtonProps={{ danger: true }}>
+          <Popconfirm title={t('taskList.batchDelete.confirm', { count: selectedRowKeys.length })} onConfirm={handleBatchDelete} okText={t('taskList.ok')} okButtonProps={{ danger: true }}>
             <Button size="small" danger icon={<DeleteOutlined />} loading={batchLoading} disabled={batchLoading}>{t('taskList.batchDelete')}</Button>
           </Popconfirm>
           <Button size="small" disabled={batchLoading} onClick={() => setSelectedRowKeys([])}>{t('taskList.cancelSelect')}</Button>

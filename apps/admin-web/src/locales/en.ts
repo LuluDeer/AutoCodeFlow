@@ -161,6 +161,7 @@ export default {
   'taskList.batchDelete': 'Delete selected',
   'taskList.cancelSelect': 'Clear selection',
   'taskList.batchTrigger.confirm': 'Delete {{count}} tasks?',
+  'taskList.batchDelete.confirm': 'Delete {{count}} task(s)? Running executions will be forcefully terminated.',
   'taskList.triggerModal.title': 'Trigger now: {{name}}',
   'taskList.trigger': 'Trigger',
   'taskList.cancel': 'Cancel',
@@ -231,6 +232,7 @@ export default {
   'taskList.action.trigger': 'Run now',
   'taskList.action.delete': 'Delete',
   'taskList.deleteConfirm': 'Delete this task?',
+  'taskList.deleteForceTerminateDesc': 'Running executions will be forcefully terminated.',
   'taskList.ok': 'Delete',
 
   'execs.title': 'Execution history',
@@ -1000,6 +1002,7 @@ export default {
   'taskDetail.saveAsTemplate': 'Save as Template',
   'taskDetail.edit': 'Edit',
   'taskDetail.confirmDelete': 'Delete this task?',
+  'taskDetail.deleteForceTerminateDesc': 'Running executions will be forcefully terminated.',
   'taskDetail.delete': 'Delete',
   'taskDetail.state.running': 'Running',
   'taskDetail.state.paused': 'Paused',
