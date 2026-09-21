@@ -147,10 +147,10 @@ import { RuntimeModule } from "./modules/runtime/runtime.module";
 
         // Executor
         EXECUTOR_SECRET: Joi.string().min(16).required(),
-        EXECUTOR_SHARED_TOKEN: Joi.string().min(16).optional(),
+        EXECUTOR_SHARED_TOKEN: Joi.string().min(16).optional().allow(""),
         // N23: optional dedicated HMAC secret for per-execution callback
-        // tokens; falls back to the executor shared token when unset.
-        EXECUTION_CALLBACK_SECRET: Joi.string().min(16).optional(),
+        // tokens; falls back to the executor shared token when unset or empty.
+        EXECUTION_CALLBACK_SECRET: Joi.string().min(16).optional().allow(""),
 
         // CORS — ARCH-001: explicit origin whitelist (comma separated).
         // Empty in development = only http://localhost:* / http://127.0.0.1:*
