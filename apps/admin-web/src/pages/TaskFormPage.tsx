@@ -1628,11 +1628,11 @@ export default function TaskFormPage() {
                 </Form.Item>
 
                 <Form.Item name="maxRetry" label={<>{t('taskForm.field.maxRetry')} <Text type="secondary" style={{ fontSize: 12 }}>{t('taskForm.field.maxRetry.hint')}</Text></>}>
-                  <InputNumber min={1} max={10} style={{ width: 120 }} />
+                  <InputNumber min={0} max={10} style={{ width: 120 }} />
                 </Form.Item>
 
                 <Form.Item name="retryDelay" label={<>{t('taskForm.field.retryDelay')} <Text type="secondary" style={{ fontSize: 12 }}>{t('taskForm.field.retryDelay.hint')}</Text></>}>
-                  <InputNumber min={0} max={3600} style={{ width: 160 }} />
+                  <InputNumber min={0} style={{ width: 160 }} />
                 </Form.Item>
 
                 {/* CORE-02: 可重试错误类型白名单——留空 = 全部可重试（既有语义）；
