@@ -2223,5 +2223,31 @@ describe("SchedulerService", () => {
       await service.scheduleOne(task);
       expect(service.getStats().activeCronTasks).toBe(0);
     });
+
+    // E-P1-R4: fixed_rate 分支有 runningTasks re-entry 保护，cron 分支原漏。
+    // 旧 cron 回调直接 findOne+enqueue，当上一拍仍在途时会再发一次 DB 查询与
+    // 入队竞争。本用例预置 in-flight 标记，回调应短路且不查库——旧实现无此
+    // 短路，taskRepo.findOne 仍被调用（红）。
+    it("E-P1-R4: cron callback skips when a previous tick is still in flight", async () => {
+      await makeLeader();
+      const scheduleSpy = jest.spyOn(nodeCron, "schedule");
+      const task = makeTask({
+        triggerType: TaskTriggerType.CRON,
+        cronExpression: "0 * * * *",
+      });
+      await service.scheduleOne(task);
+      const callback = scheduleSpy.mock.calls[0][1] as () => Promise<void>;
+      // 模拟上一拍仍在途。
+      (service as any).runningTasks.set(task.id, true);
+      const warnSpy = jest.spyOn((service as any).logger, "warn");
+
+      await callback();
+
+      expect(taskRepo.findOne).not.toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("still running"),
+      );
+      scheduleSpy.mockRestore();
+    });
   });
 });
