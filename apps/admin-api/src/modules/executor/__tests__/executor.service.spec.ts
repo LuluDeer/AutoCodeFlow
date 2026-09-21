@@ -12,7 +12,7 @@ import {
   EXECUTOR_LIST_LIMIT,
   __resetTruncationWarnStateForTest,
 } from "../executor.service";
-import { Executor, ExecutorStatus } from "../entities/executor.entity";
+import { Executor, ExecutorOfflineReason, ExecutorStatus } from "../entities/executor.entity";
 import { ExecutorMetricsHistory } from "../entities/executor-metrics-history.entity";
 import { Task } from "../../task/entities/task.entity";
 import {
@@ -2724,7 +2724,11 @@ describe("ExecutorService (__tests__)", () => {
       await service.markOffline("127.0.0.1:3105");
       expect(executorRepo.update).toHaveBeenCalledWith(
         { address: "127.0.0.1:3105" },
-        expect.objectContaining({ status: ExecutorStatus.OFFLINE }),
+        expect.objectContaining({
+          status: ExecutorStatus.OFFLINE,
+          // 遗留 P1-24：优雅下线落 manual。
+          offlineReason: ExecutorOfflineReason.MANUAL,
+        }),
       );
     });
 
@@ -3716,7 +3720,11 @@ describe("ExecutorService (__tests__)", () => {
         { id: "exec-1", appName: "app", address: "http://host" },
       ]);
       await service.markStaleOffline();
-      expect(qb.set).toHaveBeenCalledWith({ status: ExecutorStatus.OFFLINE });
+      expect(qb.set).toHaveBeenCalledWith({
+        status: ExecutorStatus.OFFLINE,
+        // 遗留 P1-24：心跳超时判死落 stale_timeout，与优雅下线区分。
+        offlineReason: ExecutorOfflineReason.STALE_TIMEOUT,
+      });
       expect(qb.where).toHaveBeenCalledWith(
         expect.stringContaining("status = :status"),
         expect.objectContaining({ status: ExecutorStatus.ONLINE }),
@@ -3826,6 +3834,8 @@ describe("ExecutorService (__tests__)", () => {
       });
       expect(executorRepo.save).toHaveBeenCalledWith(executor);
       expect(saved.status).toBe(ExecutorStatus.OFFLINE);
+      // 遗留 P1-24：管理员手动下线落 manual。
+      expect(saved.offlineReason).toBe(ExecutorOfflineReason.MANUAL);
       expect(saved.lastHeartbeat).toBeInstanceOf(Date);
     });
 
