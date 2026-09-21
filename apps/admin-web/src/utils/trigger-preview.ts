@@ -200,6 +200,26 @@ export function nextCronFireTimes(
 }
 
 /**
+ * P1-3（UX-AUDIT-2026-09-21）：cron 预览在「时区未指定/非法」时是否必须降级为警示态。
+ *
+ * 证据链：本文件 `nextCronFireTimes` 在 tz 为空时用**浏览器本地时区**推算
+ * （`offsetMinutes` 的 `if (!tz) return -getTimezoneOffset()`）；而后端
+ * `scheduler.service` 在 tz 为空时用**服务端进程时区**。两者在跨时区部署下
+ * 可能相差数小时——典型场景：UTC 笔记本给 Asia/Shanghai 服务器配 `0 8 * * *`，
+ * 预览自信地显示「08:00」，实际触发差 8 小时，且**正好错在"用户以为对上了"的
+ * 方向**（最危险的一类错误）。
+ *
+ * 旧实现的错：组件把浏览器本地时区标成 `服务器默认时区（浏览器本地）` 并照常
+ * 渲染 5 个时刻——用户无从察觉这不是调度器真正使用的时区。
+ *
+ * 故：本函数为 true 时，组件**不得**自信渲染时刻，而改显「由服务端时区决定，
+ * 可能不准」的警示 Alert。空串与非法 IANA 都算"未解析"（二者都拿不到确定时区）。
+ */
+export function previewNeedsTimezoneWarning(timezone?: string | null): boolean {
+  return validateTimezone(timezone) === null;
+}
+
+/**
  * fixed_rate 预览：每 intervalSeconds 秒一次，下次触发=now+interval 链。
  * interval 非法（<1 或非有限数）返回 []。
  */

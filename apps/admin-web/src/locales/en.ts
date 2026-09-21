@@ -2328,6 +2328,7 @@ export default {
   'triggerPreview.unparsable': 'Preview unavailable: expression cannot be parsed or no fire times within a year',
   'triggerPreview.empty': 'Waiting for input…',
   'triggerPreview.tzFallbackLabel': 'Server default timezone (browser local)',
+  'triggerPreview.tzUnresolved': 'No timezone set: actual firing uses the server process timezone; this preview uses the browser local timezone and may be off.',
 
   'time.relative.justNow': 'just now',
   'time.relative.minsAgo': '{{n}} min ago',

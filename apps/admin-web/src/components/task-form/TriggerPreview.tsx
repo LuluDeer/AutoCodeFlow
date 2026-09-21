@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { Alert, Space, Spin, Tag, Typography, theme } from 'antd';
+import { Alert, Space, Tag, Typography, theme } from 'antd';
 import { ClockCircleOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import '../../i18n';
@@ -8,6 +8,7 @@ import {
   nextFixedRateFireTimes,
   formatFireTime,
   validateTimezone,
+  previewNeedsTimezoneWarning,
 } from '../../utils/trigger-preview';
 
 const { Text } = Typography;
@@ -62,10 +63,13 @@ export default function TriggerPreview({
         timezone,
       );
       const tz = validateTimezone(timezone);
+      // P1-3：tz 为空/非法时浏览器推算 ≠ 服务端进程时区，不得自信渲染时刻。
       return {
         kind: 'cron' as const,
         times,
-        tzLabel: tz ?? t('triggerPreview.tzFallbackLabel'),
+        // 已解析时区才显示具体时区名；未解析时不冒充「服务器默认时区」。
+        tzLabel: tz ?? '',
+        tzUnresolved: previewNeedsTimezoneWarning(timezone),
       };
     }
     if (triggerType === 'fixed_rate') {
@@ -74,7 +78,7 @@ export default function TriggerPreview({
         TRIGGER_PREVIEW_COUNT,
         anchor,
       );
-      return { kind: 'fixed_rate' as const, times, tzLabel: '' };
+      return { kind: 'fixed_rate' as const, times, tzLabel: '', tzUnresolved: false };
     }
     return null;
   }, [triggerType, cronExpression, fixedRate, timezone, anchor]);
@@ -85,6 +89,9 @@ export default function TriggerPreview({
     preview.kind === 'cron' && !!cronExpression?.trim() && preview.times.length === 0;
   const sparse =
     preview.times.length > 0 && preview.times.length < TRIGGER_PREVIEW_COUNT;
+  // P1-3：有效表达式但时区未解析——浏览器推算的时刻可能与服务端差数小时，
+  // 改显警示而非自信渲染时刻。
+  const tzWarn = preview.kind === 'cron' && preview.tzUnresolved && preview.times.length > 0;
 
   return (
     <div
@@ -104,7 +111,7 @@ export default function TriggerPreview({
         <Text strong style={{ fontSize: 13 }}>{t('triggerPreview.title')}</Text>
         <Text type="secondary" style={{ fontSize: 12 }}>
           {t('triggerPreview.nextCount', { count: TRIGGER_PREVIEW_COUNT })}
-          {preview.kind === 'cron' && (
+          {preview.kind === 'cron' && preview.tzLabel && (
             <> · {t('triggerPreview.timezone', { tz: preview.tzLabel })}</>
           )}
           {preview.kind === 'fixed_rate' && (
@@ -113,7 +120,15 @@ export default function TriggerPreview({
         </Text>
       </Space>
 
-      {preview.times.length > 0 ? (
+      {tzWarn ? (
+        // P1-3：时区未指定/非法——时刻由服务端进程时区决定，浏览器本地推算可能不准。
+        <Alert
+          type="warning"
+          showIcon
+          title={t('triggerPreview.tzUnresolved')}
+          style={{ padding: '4px 12px' }}
+        />
+      ) : preview.times.length > 0 ? (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
           {preview.times.map((time, i) => (
             <Tag key={i} style={{ fontFamily: 'monospace', marginInlineEnd: 0 }}>
@@ -139,8 +154,8 @@ export default function TriggerPreview({
           style={{ padding: '4px 12px' }}
         />
       ) : (
+        // P2-1：空输入不是"加载中"——去掉假的 Spin 转圈（旧实现误把空态当 loading）。
         <Text type="secondary" style={{ fontSize: 12 }}>
-          <Spin size="small" style={{ marginRight: 6 }} />
           {t('triggerPreview.empty')}
         </Text>
       )}

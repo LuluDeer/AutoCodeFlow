@@ -2337,6 +2337,7 @@ export default {
   'triggerPreview.unparsable': '暂无法预览：表达式无法解析或一年内无触发时刻',
   'triggerPreview.empty': '等待输入…',
   'triggerPreview.tzFallbackLabel': '服务器默认时区（浏览器本地）',
+  'triggerPreview.tzUnresolved': '未指定时区：实际触发由服务端进程时区决定，此处按浏览器本地推算，可能不准。',
 
   'time.relative.justNow': '刚刚',
   'time.relative.minsAgo': '{{n}}分钟前',
