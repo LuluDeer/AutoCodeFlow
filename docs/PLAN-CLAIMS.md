@@ -360,6 +360,7 @@
 | 1790000000029 | AddTaskExecutionDeclaredIndexes | NETOPT-3（第二轮深潜） | 预分配（task_executions 补实体已声明但迁移从未创建的 (taskId,status) 与 (status,createdAt) 索引 + config_history createdAt；CREATE INDEX IF NOT EXISTS 幂等；消灭 PENDING 兜底清扫 O(全表) 游走） |
 | 1790000000030 | AddExecutionDepsFiredAt | NETOPT-3（第二轮深潜） | 预分配（task_executions 增 depsFiredAt 可空 timestamptz：NULL=依赖扇出未确认完成；依赖扇出成功后落值、重复回调重放判据；ADD COLUMN IF NOT EXISTS 幂等） |
 | 1790000000031 | AddUserLastTotpCounter | NETOPT-5（第三轮） | 预分配（users 增 lastTotpCounter 可空 int：TOTP 重放防护——验证命中后条件 UPDATE `WHERE lastTotpCounter < :matched` 占位，拒绝已用 counter 的重放；ADD COLUMN IF NOT EXISTS 幂等） |
+| 1790000000032 | AddExecutorOfflineReason | ENG 审计遗留 P1-24（executors 离线原因区分） | 已落盘（executors 增 offlineReason 可空 enum：manual=优雅 markOffline / stale_timeout=心跳超时判死；心跳恢复置 NULL；ADD COLUMN IF NOT EXISTS 幂等） |
 
 ## 变更日志
 
