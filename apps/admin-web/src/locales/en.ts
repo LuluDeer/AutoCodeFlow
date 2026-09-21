@@ -1344,8 +1344,22 @@ export default {
   'install.envLabel': 'Environment variable reference',
   'install.envDesc': 'The install command configures the following environment variables automatically. If you need to configure or debug manually, make sure the shared Token field is EXECUTOR_SHARED_TOKEN and fill in a callable address for your deployment network:',
   'install.envBlockLabel': 'Environment variable',
+  // P0-9 (UX audit): network mode. Behind NAT the machine MUST use pull — the
+  // wizard previously only taught push, which yields a topology that registers,
+  // shows online, and never receives a single dispatch.
+  'install.networkMode': 'Network mode',
+  'install.networkMode.push': 'Platform connects out (default)',
+  'install.networkMode.pull': 'Executor dials in (NAT / private network)',
+  'install.networkMode.pushDesc': 'This platform can reach the executor address directly. Requires a callback address reachable from the platform.',
+  'install.networkMode.pullDesc': 'The executor long-polls the platform for work, so no platform-reachable address is needed — use this behind NAT, on private networks, or on machines without a public IP.',
+  'install.networkMode.pullNoticeTitle': 'About dial-in mode',
+  'install.networkMode.pullNoticeDesc': 'Selecting dial-in writes EXECUTOR_PULL_MODE=true into the environment block below. Run the command before starting the executor; the address field is no longer required (the platform never connects to it).',
+  'install.baselineFail': 'Could not load the current executor list, so "which executor is new" cannot be determined safely. Check your network and retry.',
   'install.noteTitle': 'Note',
-  'install.noteDesc': 'Make sure the target server has Node.js 16+ installed (npx available) and can reach this platform API address.',
+  // P2 (UX audit): the old copy contradicted install.sh in three ways — the
+  // script requires Node 24, runs via curl|bash (not npx), and exits on
+  // non-Linux platforms.
+  'install.noteDesc': 'The install script targets Linux (it exits on other platforms). It needs Node.js 24+ and curl, and runs as curl … | bash — npx is not involved.',
   'install.reinstall': 'Reinstall',
   'install.nextAwait': 'Next: wait for executor to come online',
   'install.step5Title': 'Waiting for executor to come online',
