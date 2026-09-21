@@ -49,6 +49,12 @@ export interface AppDeployment {
   /** DEP-04: 审批推进状态（null=非审批路径） */
   approvalStatus?: 'pending_approval' | 'approved' | 'rejected' | 'cancelled' | null;
   approvalMeta?: DeploymentApprovalMeta | null;
+  /**
+   * P1-9（UX-AUDIT-2026-09-21）：灰度发布状态。后端 RolloutState：
+   * pending=待灰度 / probing=首批观察中 / promoted=已转正全量 /
+   * failed=灰度失败 / rolled_back=已回滚。null=非灰度部署。
+   */
+  rolloutState?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -147,8 +153,19 @@ export const applicationsApi = {
   webhook: (payload: unknown) => client.post<{ ok: boolean }>('/applications/webhook', payload),
   syncTasks: (id: string) =>
     client.post<{ ok: boolean; registeredCount: number }>(`/applications/${id}/sync-tasks`),
-  upgradeAll: (id: string) =>
-    client.post<{ ok: boolean; total: number; succeeded: number; failed: number }>(`/applications/${id}/upgrade-all`),
+  /**
+   * P1-9：后端 upgrade-all 早已支持 body.rollout（灰度策略），前端此前 POST 时
+   * 不带 body——灰度发布在 UI 上没有任何入口。现在把策略透传：
+   *   strategy='canary' 时按 percentage% 灰度首批，后端自动观察/转正/回滚。
+   */
+  upgradeAll: (
+    id: string,
+    rollout?: { strategy: 'full' | 'canary'; percentage?: number },
+  ) =>
+    client.post<{ ok: boolean; total: number; succeeded: number; failed: number }>(
+      `/applications/${id}/upgrade-all`,
+      rollout ? { rollout } : {},
+    ),
   getVersionHistory: (id: string) =>
     client.get<VersionHistoryEntry[]>(`/applications/${id}/versions`),
   // DEP-01：统一发布追溯视图（版本 × 最近一次部署），分页（pageSize 默认 50、上限 200）
@@ -157,7 +174,19 @@ export const applicationsApi = {
       params: { page, pageSize },
     }),
   rollback: (appId: string, targetId: string) =>
-    client.post<{ ok: boolean; rolledBackTo: string | null; total: number; succeeded: number; failed: number }>(
+    client.post<{
+      ok: boolean;
+      rolledBackTo: string | null;
+      total: number;
+      succeeded: number;
+      failed: number;
+      /**
+       * P1-14：后端 R16——legacy（无版本快照）行的回滚只恢复 version/commit，
+       * 无法恢复 packageUrl（legacy 行不存历史 packageUrl）。前端必须如实提示，
+       * 否则用户以为连包也回退了。
+       */
+      packageUrlRestored?: boolean;
+    }>(
       `/applications/${appId}/rollback/${targetId}`,
     ),
 };

@@ -45,11 +45,22 @@ export interface ExecutorPackageListParams {
   status?: string;
 }
 
+/**
+ * P1-10（UX-AUDIT-2026-09-21）：推送扇出结果。
+ *
+ * 后端 executor-package.service.ts 对**正在执行任务**的执行器不会立即推送，
+ * 而是入队异步安装并返回 `queued: true` + `commandId`。旧前端类型只有
+ * success/error，把 queued 行当成"未推送/失败"，多执行器扇出结果不可见。
+ */
 export interface PushResult {
   executorId: string;
   address: string;
   success: boolean;
   error?: string;
+  /** 后端：执行器忙，安装已入队异步执行（不是失败，也不是立即成功） */
+  queued?: boolean;
+  /** 入队后由执行器异步执行的命令 id，用于后续查询状态 */
+  commandId?: string;
 }
 
 export const executorPackagesApi = {
