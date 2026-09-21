@@ -338,15 +338,15 @@ docker compose exec admin-api npm run migration:run
 
 ```bash
 # 查看迁移状态
-docker compose exec admin-api pnpm run migration:show
+docker compose exec admin-api npm run migration:show
 # 手动运行迁移
-docker compose exec admin-api pnpm run migration:run
+docker compose exec admin-api npm run migration:run
 ```
 
 ## 贡献指南
 
 1. Fork 本仓库并创建功能分支：`git checkout -b feat/your-feature`
-2. 提交代码并确保测试通过：`pnpm run test`
+2. 提交代码并确保测试通过：`npm run test`
 3. 提交 Pull Request，描述变更内容
 
 ## License
