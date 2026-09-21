@@ -18,6 +18,7 @@ import { tasksApi, Task, summarizeBatch, type BatchItemResult } from '../api/tas
 import { useTasksList, invalidateTaskData } from '../api/queries';
 import { getErrMsg } from '../utils/error';
 import { useDebounce } from '../hooks/useDebounce';
+import { useAuthStore, isAdminUser } from '../store/auth';
 import { priorityTag } from '../utils/priority';
 // P1-1/P1-2（UX-AUDIT-2026-09-21）：列表页显示真实的「下次执行」与「上次执行」
 import { nextRunAt, formatFireTime } from '../utils/trigger-preview';
@@ -48,6 +49,8 @@ const TRIGGER_COLOR: Record<string, string> = {
 
 export default function TaskListPage() {
   const nav = useNavigate();
+  // P1-5：写操作仅管理员可用（普通用户按钮禁用+提示，不发起会 403 的请求）。
+  const isAdmin = isAdminUser(useAuthStore((s) => s.user));
   const { t } = useTranslation();
   // F-15（DEEP_REVIEW 0ef3bbe）：主色/淡色背景走 antd token，暗色主题自适应。
   const { token } = theme.useToken();
@@ -432,19 +435,21 @@ export default function TaskListPage() {
           <Tooltip title={t('taskList.action.detail')}>
             <Button type="text" size="small" icon={<EyeOutlined />} onClick={() => nav(`/tasks/${r.id}`)} />
           </Tooltip>
-          <Tooltip title={t('taskList.action.edit')}>
-            <Button type="text" size="small" icon={<EditOutlined />} onClick={() => nav(`/tasks/${r.id}/edit`)} />
+          <Tooltip title={isAdmin ? t('taskList.action.edit') : t('taskList.adminOnly')}>
+            <Button type="text" size="small" icon={<EditOutlined />} disabled={!isAdmin} onClick={() => nav(`/tasks/${r.id}/edit`)} />
           </Tooltip>
-          <Tooltip title={t('taskList.action.clone')}>
+          <Tooltip title={isAdmin ? t('taskList.action.clone') : t('taskList.adminOnly')}>
             <Button
               type="text" size="small" icon={<CopyOutlined />}
               loading={cloningId === r.id}
+              disabled={!isAdmin}
               onClick={() => handleClone(r)}
             />
           </Tooltip>
-          <Tooltip title={t('taskList.action.trigger')}>
+          <Tooltip title={isAdmin ? t('taskList.action.trigger') : t('taskList.adminOnly')}>
             <Button
               type="text" size="small" icon={<ThunderboltOutlined />}
+              disabled={!isAdmin}
               onClick={() => handleTrigger(r.id, r.name, r.params)}
               style={{ color: token.colorPrimary }}
             />
@@ -455,8 +460,8 @@ export default function TaskListPage() {
             onConfirm={() => handleDelete(r.id)}
             okText={t('taskList.ok')} okButtonProps={{ danger: true }}
           >
-            <Tooltip title={t('taskList.action.delete')}>
-              <Button type="text" size="small" icon={<DeleteOutlined />} danger />
+            <Tooltip title={isAdmin ? t('taskList.action.delete') : t('taskList.adminOnly')}>
+              <Button type="text" size="small" icon={<DeleteOutlined />} danger disabled={!isAdmin} />
             </Tooltip>
           </Popconfirm>
         </Space>
@@ -476,9 +481,11 @@ export default function TaskListPage() {
             <Button icon={<FileTextOutlined />} onClick={() => nav('/task-templates')}>
               {t('taskList.templates')}
             </Button>
-            <Button type="primary" icon={<PlusOutlined />} onClick={() => nav('/tasks/new')}>
+            <Tooltip title={isAdmin ? undefined : t('taskList.adminOnly')}>
+            <Button type="primary" icon={<PlusOutlined />} disabled={!isAdmin} onClick={() => nav('/tasks/new')}>
               {t('taskList.create')}
             </Button>
+            </Tooltip>
           </>
         }
       />
@@ -533,11 +540,11 @@ export default function TaskListPage() {
         <div style={{ background: token.colorPrimaryBg, border: `1px solid ${token.colorPrimaryBorder}`, borderRadius: 6, padding: '8px 16px', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <CheckSquareOutlined style={{ color: token.colorPrimary }} />
           <Text><Trans i18nKey="taskList.selected" values={{ count: selectedRowKeys.length }}><strong>0</strong></Trans></Text>
-          <Button size="small" icon={<ThunderboltOutlined />} loading={batchLoading} disabled={batchLoading} onClick={handleBatchTrigger}>{t('taskList.batchTrigger')}</Button>
-          <Button size="small" loading={batchLoading} disabled={batchLoading} onClick={handleBatchPause}>{t('taskList.batchPause')}</Button>
-          <Button size="small" loading={batchLoading} disabled={batchLoading} onClick={handleBatchResume}>{t('taskList.batchResume')}</Button>
+          <Button size="small" icon={<ThunderboltOutlined />} loading={batchLoading} disabled={batchLoading || !isAdmin} onClick={handleBatchTrigger}>{t('taskList.batchTrigger')}</Button>
+          <Button size="small" loading={batchLoading} disabled={batchLoading || !isAdmin} onClick={handleBatchPause}>{t('taskList.batchPause')}</Button>
+          <Button size="small" loading={batchLoading} disabled={batchLoading || !isAdmin} onClick={handleBatchResume}>{t('taskList.batchResume')}</Button>
           <Popconfirm title={t('taskList.batchDelete.confirm', { count: selectedRowKeys.length })} onConfirm={handleBatchDelete} okText={t('taskList.ok')} okButtonProps={{ danger: true }}>
-            <Button size="small" danger icon={<DeleteOutlined />} loading={batchLoading} disabled={batchLoading}>{t('taskList.batchDelete')}</Button>
+            <Button size="small" danger icon={<DeleteOutlined />} loading={batchLoading} disabled={batchLoading || !isAdmin}>{t('taskList.batchDelete')}</Button>
           </Popconfirm>
           <Button size="small" disabled={batchLoading} onClick={() => setSelectedRowKeys([])}>{t('taskList.cancelSelect')}</Button>
         </div>

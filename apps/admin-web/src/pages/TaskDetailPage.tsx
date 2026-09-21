@@ -34,6 +34,7 @@ import { extractTemplateConfigFromTask } from '../utils/task-template-extract';
 // python_task_multiversion（P2-3）：旧任务没有 codeSource 列时按迁移同序推导展示
 import { deriveCodeSourceFromTask } from './executor-mode';
 import { useTranslation } from 'react-i18next';
+import { useAuthStore, isAdminUser } from '../store/auth';
 import '../i18n';
 import GlueEditor from '../components/GlueEditor';
 import TaskDependencyGraph from '../components/TaskDependencyGraph';
@@ -95,6 +96,8 @@ const STATUS_LABEL = (t: (k: string) => string): Record<string, string> => ({
 
 export default function TaskDetailPage() {
   const { t } = useTranslation();
+  // P1-5：任务写操作仅管理员可用。
+  const isAdmin = isAdminUser(useAuthStore((s) => s.user));
   // F-15（DEEP_REVIEW 0ef3bbe）：成功率语义色走 antd token，暗色主题自适应。
   const { token } = theme.useToken();
   const { id } = useParams<{ id: string }>();
@@ -352,9 +355,9 @@ export default function TaskDetailPage() {
         ]}
         extra={
           <>
-            <Button icon={<ThunderboltOutlined />} type="primary" onClick={handleTrigger}>{t('taskDetail.triggerNow')}</Button>
-            {isActive && <Button icon={<PauseCircleOutlined />} loading={toggleLoading} disabled={toggleLoading} onClick={handlePause}>{t('taskDetail.pause')}</Button>}
-            {isPaused && <Button icon={<PlayCircleOutlined />} type="primary" loading={toggleLoading} disabled={toggleLoading} onClick={handleResume}>{t('taskDetail.resume')}</Button>}
+            <Tooltip title={isAdmin ? undefined : t('taskList.adminOnly')}><Button icon={<ThunderboltOutlined />} type="primary" disabled={!isAdmin} onClick={handleTrigger}>{t('taskDetail.triggerNow')}</Button></Tooltip>
+            {isActive && <Tooltip title={isAdmin ? undefined : t('taskList.adminOnly')}><Button icon={<PauseCircleOutlined />} loading={toggleLoading} disabled={toggleLoading || !isAdmin} onClick={handlePause}>{t('taskDetail.pause')}</Button></Tooltip>}
+            {isPaused && <Tooltip title={isAdmin ? undefined : t('taskList.adminOnly')}><Button icon={<PlayCircleOutlined />} type="primary" loading={toggleLoading} disabled={toggleLoading || !isAdmin} onClick={handleResume}>{t('taskDetail.resume')}</Button></Tooltip>}
             <Button icon={<RobotOutlined />} onClick={handleAiSuggest} loading={aiLoading}>{t('taskDetail.aiSuggestion')}</Button>
             {/* CORE-03 收尾：把当前任务配置固化为自定义模板（POST /task-templates） */}
             <Button
@@ -364,9 +367,9 @@ export default function TaskDetailPage() {
             >
               {t('taskDetail.saveAsTemplate')}
             </Button>
-            <Button icon={<EditOutlined />} onClick={handleEdit}>{t('taskDetail.edit')}</Button>
+            <Tooltip title={isAdmin ? undefined : t('taskList.adminOnly')}><Button icon={<EditOutlined />} disabled={!isAdmin} onClick={handleEdit}>{t('taskDetail.edit')}</Button></Tooltip>
             <Popconfirm title={t('taskDetail.confirmDelete')} description={t('taskDetail.deleteForceTerminateDesc')} onConfirm={handleDelete} okText={t('taskDetail.delete')} okButtonProps={{ danger: true }}>
-              <Button icon={<DeleteOutlined />} danger>{t('taskDetail.delete')}</Button>
+              <Tooltip title={isAdmin ? undefined : t('taskList.adminOnly')}><Button icon={<DeleteOutlined />} danger disabled={!isAdmin}>{t('taskDetail.delete')}</Button></Tooltip>
             </Popconfirm>
           </>
         }
