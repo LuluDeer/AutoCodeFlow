@@ -104,17 +104,23 @@ describe('AppDeploymentPage：部署模式的说明文案（生产反馈回归�
     const path = await import('node:path');
     // jsdom 环境下 import.meta.url 不是 file: scheme，故用 cwd（vitest 以包根为
     // cwd 运行）拼绝对路径。
-    const src = await fs.readFile(
+    const pageSrc = await fs.readFile(
       path.resolve(process.cwd(), 'src/pages/AppDeploymentPage.tsx'),
       'utf-8',
     );
+    // P1-15：runMode 字段 + 模式说明抽到共享组件 DeployModeFields（两页复用），
+    // 故接线守卫改查组件源码；redeploy 按钮的 tooltip 仍在详情页源码里。
+    const fieldsSrc = await fs.readFile(
+      path.resolve(process.cwd(), 'src/components/DeployModeFields.tsx'),
+      'utf-8',
+    );
 
-    // runMode 字段的 extra 说明
-    expect(src).toMatch(/name="runMode"[\s\S]{0,200}extra=\{t\('appDeploy\.mode\.hint'\)\}/);
-    // scheduled / daemon 各自的 Alert 说明
-    expect(src).toMatch(/runMode === 'scheduled'[\s\S]{0,300}appDeploy\.mode\.hintScheduled/);
-    expect(src).toMatch(/runMode === 'daemon'[\s\S]{0,300}appDeploy\.mode\.hintDaemon/);
-    // 重新部署按钮的 tooltip 说明复用语义
-    expect(src).toMatch(/appDeploy\.redeploy\.reuseHint/);
+    // runMode 字段的 extra 说明（在共享组件里）
+    expect(fieldsSrc).toMatch(/name="runMode"[\s\S]{0,200}extra=\{t\('appDeploy\.mode\.hint'\)\}/);
+    // scheduled / daemon 各自的 Alert 说明（在共享组件里）
+    expect(fieldsSrc).toMatch(/mode === 'scheduled'[\s\S]{0,300}appDeploy\.mode\.hintScheduled/);
+    expect(fieldsSrc).toMatch(/mode === 'daemon'[\s\S]{0,300}appDeploy\.mode\.hintDaemon/);
+    // 重新部署按钮的 tooltip 说明复用语义（仍在详情页源码里）
+    expect(pageSrc).toMatch(/appDeploy\.redeploy\.reuseHint/);
   });
 });
