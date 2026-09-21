@@ -59,6 +59,8 @@ import {
   assertZipFileSafe,
   resolveZipGuardLimits,
 } from "../../common/utils/zip-guard.util";
+// P1-11：从上传 zip 中读取 manifest.json（按需读中央目录 + 单个条目）
+import { readManifestFromZip } from "../../common/utils/zip-manifest.util";
 import {
   ClamdInfectionError,
   ClamdUnavailableError,
@@ -356,6 +358,37 @@ export class ApplicationController {
       }
       const packageUrl = `${apiBase}/uploads/packages/${filename}`;
 
+      // P1-11：解析 zip 内 manifest.json，回填 manifest/entrypoint/runtime。
+      // 与 git 部署路径（application.service.deployFromGit）对齐——此前 zip 上传
+      // 完全不解析 manifest，entrypoint 只能靠人手填，填错就部署失败。
+      // 容错：找不到/损坏/非法 JSON 只 warn，不阻断上传（manifest 是增强不是闸门）。
+      // 优先级：用户在表单显式选的 runtime > manifest.runtime > 既有值。
+      let manifestParsed: Record<string, unknown> | undefined;
+      let manifestEntrypoint: string | undefined;
+      let manifestRuntime: string | undefined;
+      try {
+        const manifestText = readManifestFromZip(tmpPath);
+        if (manifestText) {
+          const parsed: unknown = JSON.parse(manifestText);
+          if (parsed && typeof parsed === "object") {
+            manifestParsed = parsed as Record<string, unknown>;
+            if (typeof manifestParsed.entrypoint === "string" && manifestParsed.entrypoint) {
+              manifestEntrypoint = manifestParsed.entrypoint;
+            }
+            if (typeof manifestParsed.runtime === "string" && manifestParsed.runtime) {
+              manifestRuntime = manifestParsed.runtime;
+            }
+            this.logger.log(
+              `Parsed manifest.json from uploaded package for ${name}: runtime=${manifestRuntime ?? "-"} entrypoint=${manifestEntrypoint ?? "-"}`,
+            );
+          }
+        }
+      } catch (err: unknown) {
+        this.logger.warn(
+          `zip manifest.json 解析失败（忽略，继续上传）: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+
       // Upsert the application record: create if not exists, update packageUrl if exists.
       // This makes upload idempotent and supports iterative releases.
       let app;
@@ -365,13 +398,18 @@ export class ApplicationController {
           app = await this.svc.update(existing.id, {
             packageUrl,
             ...(runtime ? { runtime } : {}),
+            ...(!runtime && manifestRuntime ? { runtime: manifestRuntime } : {}),
+            ...(manifestParsed ? { manifest: manifestParsed } : {}),
+            ...(manifestEntrypoint ? { entrypoint: manifestEntrypoint } : {}),
           });
         } else {
           app = await this.svc.create({
             name,
             packageUrl,
-            runtime: runtime || "python",
+            runtime: runtime || manifestRuntime || "python",
             version: "1.0.0",
+            ...(manifestParsed ? { manifest: manifestParsed } : {}),
+            ...(manifestEntrypoint ? { entrypoint: manifestEntrypoint } : {}),
           });
         }
       } catch (err: unknown) {
