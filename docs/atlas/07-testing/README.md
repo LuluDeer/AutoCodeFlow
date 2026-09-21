@@ -33,7 +33,7 @@
 
 | 命令 | 跑什么 |
 |---|---|
-| `npm run test:all` | api + node + python + web + cli + mcp + pypi + sdk-py + node-sdk（9 个套件；**不含** desktop 与 scripts 自测） |
+| `npm run test:unit` | api + node + python + web + cli + mcp + pypi + sdk-py + node-sdk（9 个套件；**不含** desktop 与 scripts 自测） |
 | `npm run test:api` / `test:node` | admin-api / executor-node 的 jest |
 | `npm run test:python` / `test:pypi` | executor-python / registry-pypi 的 pytest |
 | `npm run test:web` / `test:cli` / `test:mcp` | admin-web / acf-cli / mcp-server 的 vitest |

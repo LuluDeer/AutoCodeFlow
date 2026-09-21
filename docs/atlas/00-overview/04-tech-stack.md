@@ -39,7 +39,7 @@
 
 - 根 `package.json`：`test:*` / `typecheck:*` / `lint:*` / `build:*` 按组件命名，全部是 `cd <子目录> && ...` 转发。
 - `Makefile`：`make dev / build / test / migration / logs / help`。
-- 测试总入口：`npm run test:all`（9 个组件串行）。
+- 测试总入口：`npm run test:unit`（9 个组件串行）。
 
 ## 相关文档
 
