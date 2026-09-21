@@ -394,3 +394,28 @@ describe('TaskListPage 克隆链路（QA-03 第二阶段）', () => {
     expect(screen.queryByText('task-detail-mock')).toBeNull();
   });
 });
+
+
+describe('遗留 P1-3：下次执行列在 tz 为空时附服务端时区注记', () => {
+  it('空时区 cron 任务悬停下次执行，tooltip 含服务端时区警示文案', async () => {
+    mockedTasks.list.mockResolvedValue({
+      items: [makeTask({ id: 'tz-1', name: '时区缺失任务', timezone: '' })],
+      total: 1, page: 1, pageSize: 20,
+    });
+    renderPage();
+    await screen.findByText('时区缺失任务');
+
+    // 下次执行列单元格：在活动行里找形如日期时间的文本
+    const row = document.body.querySelector('.ant-table-row') as HTMLElement;
+    expect(row).toBeTruthy();
+    const cell = Array.from(row.querySelectorAll('span')).find((s) =>
+      /\d{2}\/\d{2} \d{2}:\d{2}:\d{2}/.test(s.textContent ?? ''),
+    ) as HTMLElement | undefined;
+    expect(cell).toBeTruthy();
+
+    await act(async () => { fireEvent.mouseEnter(cell!); });
+    await waitFor(() =>
+      expect(document.body.textContent).toContain('未指定时区'),
+    );
+  });
+});
