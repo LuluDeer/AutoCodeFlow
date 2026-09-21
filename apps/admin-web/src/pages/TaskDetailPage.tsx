@@ -358,15 +358,18 @@ export default function TaskDetailPage() {
             <Tooltip title={isAdmin ? undefined : t('taskList.adminOnly')}><Button icon={<ThunderboltOutlined />} type="primary" disabled={!isAdmin} onClick={handleTrigger}>{t('taskDetail.triggerNow')}</Button></Tooltip>
             {isActive && <Tooltip title={isAdmin ? undefined : t('taskList.adminOnly')}><Button icon={<PauseCircleOutlined />} loading={toggleLoading} disabled={toggleLoading || !isAdmin} onClick={handlePause}>{t('taskDetail.pause')}</Button></Tooltip>}
             {isPaused && <Tooltip title={isAdmin ? undefined : t('taskList.adminOnly')}><Button icon={<PlayCircleOutlined />} type="primary" loading={toggleLoading} disabled={toggleLoading || !isAdmin} onClick={handleResume}>{t('taskDetail.resume')}</Button></Tooltip>}
-            <Button icon={<RobotOutlined />} onClick={handleAiSuggest} loading={aiLoading}>{t('taskDetail.aiSuggestion')}</Button>
+            <Tooltip title={isAdmin ? undefined : t('taskList.adminOnly')}><Button icon={<RobotOutlined />} onClick={handleAiSuggest} loading={aiLoading} disabled={!isAdmin}>{t('taskDetail.aiSuggestion')}</Button></Tooltip>
             {/* CORE-03 收尾：把当前任务配置固化为自定义模板（POST /task-templates） */}
+            <Tooltip title={isAdmin ? undefined : t('taskList.adminOnly')}>
             <Button
               icon={<SaveOutlined />}
               data-testid="save-as-template"
               onClick={() => { tplForm.setFieldsValue({ name: t('taskDetail.templateNameFormat', { name: task.name }) }); setTplModalOpen(true); }}
+              disabled={!isAdmin}
             >
               {t('taskDetail.saveAsTemplate')}
             </Button>
+          </Tooltip>
             <Tooltip title={isAdmin ? undefined : t('taskList.adminOnly')}><Button icon={<EditOutlined />} disabled={!isAdmin} onClick={handleEdit}>{t('taskDetail.edit')}</Button></Tooltip>
             <Popconfirm title={t('taskDetail.confirmDelete')} description={t('taskDetail.deleteForceTerminateDesc')} onConfirm={handleDelete} okText={t('taskDetail.delete')} okButtonProps={{ danger: true }}>
               <Tooltip title={isAdmin ? undefined : t('taskList.adminOnly')}><Button icon={<DeleteOutlined />} danger disabled={!isAdmin}>{t('taskDetail.delete')}</Button></Tooltip>

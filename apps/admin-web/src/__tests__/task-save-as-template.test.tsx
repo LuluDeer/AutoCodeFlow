@@ -12,6 +12,7 @@ import { tasksApi } from '../api/tasks';
 import { taskTemplatesApi } from '../api/task-templates';
 import { extractTemplateConfigFromTask } from '../utils/task-template-extract';
 import type { Task } from '../api/tasks';
+import { useAuthStore } from '../store/auth';
 
 vi.mock('../api/tasks', () => ({
   tasksApi: {
@@ -91,6 +92,7 @@ const BASE_TASK: Task = {
 } as Task;
 
 beforeEach(() => {
+  useAuthStore.setState({ user: { id: 1, username: 'root', role: 'admin' } });
   vi.mocked(tasksApi.get).mockReset().mockResolvedValue(BASE_TASK as never);
   vi.mocked(tasksApi.executions).mockReset().mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 20 } as never);
   vi.mocked(tasksApi.stats).mockReset().mockResolvedValue({ recentExecutions: [], successRate: 0, avgDuration: 0, totalRuns: 0 } as never);
@@ -233,5 +235,26 @@ describe('TaskDetailPage「保存为模板」交互（CORE-03）', () => {
         expect.objectContaining({ queryKey: ['task-templates', 'list'] }),
       ),
     );
+  });
+});
+
+
+describe('遗留 P1-5：非管理员禁用「保存为模板」与「AI 建议」', () => {
+  it('非管理员时两按钮均 disabled（旧实现裸开，普通用户可点出 403）', async () => {
+    useAuthStore.setState({ user: { id: 2, username: 'dev', role: 'user' } });
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <TaskDetailPage />
+      </QueryClientProvider>,
+    );
+    await screen.findByTestId('save-as-template');
+    const saveBtn = screen.getByTestId('save-as-template') as HTMLButtonElement;
+    expect(saveBtn.disabled).toBe(true);
+    // AI 建议按钮无 data-testid，按图标类名定位
+    const aiBtn = Array.from(document.body.querySelectorAll('button')).find((b) =>
+      b.querySelector('.anticon-robot'),
+    ) as HTMLButtonElement | undefined;
+    expect(aiBtn).toBeTruthy();
+    expect(aiBtn!.disabled).toBe(true);
   });
 });
