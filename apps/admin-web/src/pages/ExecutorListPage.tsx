@@ -363,11 +363,20 @@ export default function ExecutorListPage() {
               />
             </Tooltip>
             <ViewToggle value={viewMode} onChange={handleViewChange} />
-            {isAdmin && <Button onClick={() => navigate('/executors/install')}>{t('execList.installWizard')}</Button>}
+            {/* P2-8（UX-AUDIT）：「安装向导」与「快速添加」两套入口此前无差别说明——
+                一个是引导式（检测 OS/配网络模式/验证连接），一个是只吐一行命令自行执行。
+                用 Tooltip 一句话区分，避免用户在两条路之间凭直觉选错。 */}
             {isAdmin && (
-              <Button icon={<PlusCircleOutlined />} type="primary" onClick={fetchInstallCmd}>
-                {t('execList.quickAdd')}
-              </Button>
+              <Tooltip title={t('execList.installWizard.tip')}>
+                <Button onClick={() => navigate('/executors/install')}>{t('execList.installWizard')}</Button>
+              </Tooltip>
+            )}
+            {isAdmin && (
+              <Tooltip title={t('execList.quickAdd.tip')}>
+                <Button icon={<PlusCircleOutlined />} type="primary" onClick={fetchInstallCmd}>
+                  {t('execList.quickAdd')}
+                </Button>
+              </Tooltip>
             )}
           </Space>
         }
