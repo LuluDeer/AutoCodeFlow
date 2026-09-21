@@ -38,6 +38,7 @@ vi.mock('../api/task-templates', () => ({
 vi.mock('../api/ai', () => ({ aiApi: { suggestSchedule: vi.fn() } }));
 vi.mock('react-router-dom', () => ({
   useNavigate: () => vi.fn(),
+  useBlocker: () => ({ state: 'unblocked' as const, proceed: () => {}, reset: () => {} }),
   useParams: () => ({ id: 'task-1' }),
   Link: (props: { to: string; children: React.ReactNode }) => <a href={props.to}>{props.children}</a>,
 }));
@@ -130,7 +131,7 @@ describe('extractTemplateConfigFromTask 纯映射（CORE-03）', () => {
     });
   });
 
-  it('排除非配置字段（id/name/status/applicationId/git*/glue*/createdAt 等）', () => {
+  it('排除非配置字段（id/name/status/applicationId/gitCommit/glue*/createdAt 等）；P1-7 起 gitRepo/gitBranch 随模板固化', () => {
     const config = extractTemplateConfigFromTask({
       ...BASE_TASK,
       status: 'paused',
@@ -144,9 +145,15 @@ describe('extractTemplateConfigFromTask 纯映射（CORE-03）', () => {
       description: '任务描述不应进 config',
     } as Task);
     const keys = Object.keys(config);
-    for (const forbidden of ['id', 'name', 'status', 'description', 'applicationId', 'executorAppName', 'gitRepo', 'gitBranch', 'gitCommit', 'glueSource', 'glueLanguage', 'createdAt', 'updatedAt']) {
+    // 旧实现（P1-7 前）曾把 gitRepo/gitBranch 一并排除——那是错的：codeSource='git'
+    // 缺了配对的仓库/分支，模板实例化时「代码来源」会静默失效甚至 400。新契约：
+    // gitRepo/gitBranch 必须随模板固化；gitCommit（部署时点快照）等仍排除。
+    for (const forbidden of ['id', 'name', 'status', 'description', 'applicationId', 'executorAppName', 'gitCommit', 'glueSource', 'glueLanguage', 'createdAt', 'updatedAt']) {
       expect(keys).not.toContain(forbidden);
     }
+    // 新契约：gitRepo/gitBranch 被包含且原值透传
+    expect(config.gitRepo).toBe('https://github.com/x/y');
+    expect(config.gitBranch).toBe('main');
     // 空集合归一为省略
     expect(keys).not.toContain('requirements');
     expect(keys).not.toContain('retryableErrors');
