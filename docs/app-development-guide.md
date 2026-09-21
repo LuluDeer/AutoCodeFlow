@@ -161,8 +161,13 @@ tasks:
 | `TASK_NAME` | 任务名称 | `daily_report` |
 | `EXECUTION_ID` | 本次执行记录 ID | `exec_xyz789` |
 | `AUTOFLOW_<KEY>` | 触发时传入的运行时参数 | `AUTOFLOW_DATE=2024-01-01` |
+| `<凭据名>`（**无前缀**） | 任务级凭据（secrets），按**原名**注入 | `FEISHU_APP_ID=cli_xxx` |
 
 > 任务参数会以 `AUTOFLOW_` 前缀注入环境变量；例如触发参数 `{ "date": "2024-01-01" }` 会变成 `AUTOFLOW_DATE=2024-01-01`。执行结果回调由执行器进程统一处理，任务脚本不需要也不应持有平台回调 token。
+>
+> **凭据（secrets）与参数不是一回事**：在控制台「凭据（secrets）」区配置的键值对按**原名**注入——配置 `FEISHU_APP_ID`，脚本就写 `os.environ["FEISHU_APP_ID"]`（或 `process.env.FEISHU_APP_ID`），**不要**加 `AUTOFLOW_` 前缀。第三方 SDK 认的规范名（boto3 的 `AWS_ACCESS_KEY_ID`、openai 的 `OPENAI_API_KEY`）因此可以直接用。凭据名需是合法环境变量名且不得占用平台保留名（`PATH`、`PYTHON*`、`AUTOFLOW_*` 等），否则保存时接口直接返回 400。凭据值加密存储、保存后不可回读（接口只回 `******`）。
+>
+> 若脚本按带前缀的名字读凭据（历史写法 `AUTOFLOW_FEISHU_APP_ID`），两种读法并存仍然可用；但**推荐改用原名**。
 
 ---
 
