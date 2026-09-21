@@ -1274,11 +1274,26 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
         const cronTask = nodeCron.schedule(
           task.cronExpression,
           async () => {
+            // B-04: Prevent re-entry — mirror the fixed_rate branch. When a
+            // previous cron tick is still inside its findOne/enqueue chain, a
+            // close-spaced schedule must not fire a second overlapping DB query
+            // and enqueue attempt (enqueue's own dedupe still double-guards).
+            if (this.runningTasks.get(taskId)) {
+              this.logger.warn(
+                `Cron task "${task.name}" still running, skipping trigger`,
+              );
+              return;
+            }
             const fireTime = Date.now();
-            const latest = await this.taskRepo.findOne({
-              where: { id: taskId, status: TaskStatus.ACTIVE },
-            });
-            if (latest) await this.enqueue(latest, "cron", fireTime);
+            this.runningTasks.set(taskId, true);
+            try {
+              const latest = await this.taskRepo.findOne({
+                where: { id: taskId, status: TaskStatus.ACTIVE },
+              });
+              if (latest) await this.enqueue(latest, "cron", fireTime);
+            } finally {
+              this.runningTasks.delete(taskId);
+            }
           },
           this.getCronOptions(task),
         );
