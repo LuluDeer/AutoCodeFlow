@@ -7,8 +7,11 @@ import {
   RocketOutlined, StopOutlined, ReloadOutlined, PlusOutlined,
   ThunderboltOutlined, UpCircleOutlined, CheckOutlined, CloseOutlined,
   UndoOutlined,
+  CopyOutlined,
 } from '@ant-design/icons';
 import { deploymentsApi, AppDeployment, applicationsApi } from '../api/applications';
+import { formatRelativeTime } from '../utils/timeFormat';
+import DeployModeFields from '../components/DeployModeFields';
 import { executorsApi, Executor } from '../api/executors';
 import { getErrMsg, isFormValidationError } from '../utils/error';
 // F-26（DEEP_REVIEW 0ef3bbe）：locale 单一来源，不再硬编码 zh-CN
@@ -36,6 +39,14 @@ const APPROVAL_CONFIG = (t: (k: string) => string): Record<string, { color: stri
   rejected: { color: 'red', label: t('appDeploy.approval.rejected') },
   cancelled: { color: 'default', label: t('appDeploy.approval.cancelled') },
 });
+/** P1-9：灰度发布阶段展示配置（与后端 RolloutState 枚举对齐）。 */
+const ROLLOUT_CONFIG: Record<string, { color: string; label: (t: (k: string) => string) => string }> = {
+  pending: { color: 'blue', label: (t) => t('appDeploy.rollout.state.pending') },
+  probing: { color: 'orange', label: (t) => t('appDeploy.rollout.state.probing') },
+  promoted: { color: 'green', label: (t) => t('appDeploy.rollout.state.promoted') },
+  failed: { color: 'red', label: (t) => t('appDeploy.rollout.state.failed') },
+  rolled_back: { color: 'volcano', label: (t) => t('appDeploy.rollout.state.rolledBack') },
+};
 
 function ExecutorCard({ executor }: { executor: Executor }) {
   const { t } = useTranslation();
@@ -64,6 +75,60 @@ function ExecutorCard({ executor }: { executor: Executor }) {
   );
 }
 
+/**
+ * P1-8（UX-AUDIT-2026-09-21）：失败详情可展开 + 一键复制。
+ *
+ * 旧实现用单行 ellipsis tooltip 渲染 statusMessage；而 executor-node 非 0 退出现在
+ * 会把 app.log 尾部（最长 ~2000 字符堆栈）一并上报。单行省略等于把根因藏进
+ * tooltip——用户必须 hover 才能看到，且无法复制去排查。这里改为：默认折叠前
+ * ~180 字符，可展开多行，旁附复制按钮（clipboard 不可用时静默）。
+ */
+function DeployStatusMessage({ text }: { text: string }) {
+  const { t } = useTranslation();
+  const [expanded, setExpanded] = useState(false);
+  const COLLAPSED_LEN = 180;
+  const long = text.length > COLLAPSED_LEN;
+  const shown = long && !expanded ? `${text.slice(0, COLLAPSED_LEN)}...` : text;
+  const onCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      message.success(t('appDeploy.statusMessage.copied'));
+    } catch {
+      /* clipboard 在非安全上下文不可用——静默，不阻断排查 */
+    }
+  };
+  return (
+    <div style={{ minWidth: 0 }}>
+      <Text
+        type="secondary"
+        style={{ fontSize: 11, display: 'block', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}
+      >
+        {shown}
+      </Text>
+      <Space size={2} style={{ marginTop: 2 }}>
+        {long && (
+          <Button
+            type="link"
+            size="small"
+            style={{ fontSize: 11, padding: 0, height: 'auto' }}
+            onClick={() => setExpanded((v) => !v)}
+          >
+            {expanded ? t('appDeploy.statusMessage.collapse') : t('appDeploy.statusMessage.expand')}
+          </Button>
+        )}
+        <Button
+          type="text"
+          size="small"
+          icon={<CopyOutlined />}
+          style={{ fontSize: 11, padding: 0 }}
+          onClick={() => void onCopy()}
+        >
+          {t('appDeploy.statusMessage.copy')}
+        </Button>
+      </Space>
+    </div>
+  );
+}
 export default function AppDeploymentPage({ applicationId }: { applicationId: string }) {
   const { t } = useTranslation();
   // F-15（DEEP_REVIEW 0ef3bbe）：分隔线/浅填充走 antd token，暗色主题自适应。
@@ -80,8 +145,10 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
   const [deployModalOpen, setDeployModalOpen] = useState(false);
   const [deploying, setDeploying] = useState(false);
   const [upgradingAll, setUpgradingAll] = useState(false);
+  // P1-9：全部升级的灰度策略选择（Popconfirm 装不下 Radio，改 Modal）
+  const [rolloutModalOpen, setRolloutModalOpen] = useState(false);
+  const [rolloutStrategy, setRolloutStrategy] = useState<'full' | 'canary'>('full');
   const [deployForm] = Form.useForm();
-  const [runMode, setRunMode] = useState<'once' | 'daemon' | 'scheduled'>('once');
   // R5 RBAC：安装向导为 ADMIN-only，普通用户隐藏入口
   // W3：部署写面（deploy/stop/upgrade/upgrade-all）后端已 @Roles(ADMIN)，按钮级禁用
   const isAdmin = useAuthStore((s) => s.user?.role === 'admin');
@@ -266,7 +333,7 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
     }
   };
 
-  const handleUpgradeAll = async () => {
+  const handleUpgradeAll = async (strategy: 'full' | 'canary') => {
     const runningCount = deployments.filter(d => d.status === 'running').length;
     if (runningCount === 0) {
       message.warning(t('appDeploy.msg.noRunningUpgrade'));
@@ -274,9 +341,14 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
     }
     setUpgradingAll(true);
     try {
-      const result = await applicationsApi.upgradeAll(applicationId);
+      // P1-9：后端 upgrade-all 早已支持 body.rollout，前端此前从不传——灰度发布无入口。
+      const result = await applicationsApi.upgradeAll(
+        applicationId,
+        strategy === 'canary' ? { strategy: 'canary', percentage: 20 } : undefined,
+      );
       message.success(t('appDeploy.msg.upgradeAllDone', { succeeded: result.succeeded, total: result.total }));
       scheduleDelayedRefresh(2000);
+      setRolloutModalOpen(false);
     } catch (err: unknown) {
       message.error(getErrMsg(err, t('appDeploy.msg.upgradeAllFail')));
     } finally {
@@ -300,7 +372,6 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
 
   const openDeployModal = () => {
     deployForm.resetFields();
-    setRunMode('once');
     setDeployModalOpen(true);
   };
 
@@ -315,11 +386,7 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
             {r.executorAddress || r.executorId}
           </Text>
           {r.deployedVersion && <Tag color="blue" style={{ fontSize: 11 }}>v{r.deployedVersion}</Tag>}
-          {r.statusMessage && (
-            <Text type="secondary" style={{ fontSize: 11, display: 'block' }} ellipsis={{ tooltip: r.statusMessage }}>
-              {r.statusMessage}
-            </Text>
-          )}
+          {r.statusMessage && <DeployStatusMessage text={r.statusMessage} />}
         </div>
       ),
     },
@@ -339,6 +406,16 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
             {r.approvalStatus && approvalConfig[r.approvalStatus] && (
               <Tag color={approvalConfig[r.approvalStatus].color} style={{ fontSize: 11 }}>
                 {approvalConfig[r.approvalStatus].label}
+              </Tag>
+            )}
+            {/* P1-9: 灰度发布状态（后端 RolloutState：pending/probing/promoted/failed/rolled_back）。
+                旧实现部署表完全不展示灰度阶段——灰度发布在 UI 上不可见。 */}
+            {r.rolloutState && ROLLOUT_CONFIG[r.rolloutState as keyof typeof ROLLOUT_CONFIG] && (
+              <Tag
+                color={ROLLOUT_CONFIG[r.rolloutState as keyof typeof ROLLOUT_CONFIG].color}
+                style={{ fontSize: 11 }}
+              >
+                {ROLLOUT_CONFIG[r.rolloutState as keyof typeof ROLLOUT_CONFIG].label(t)}
               </Tag>
             )}
           </Space>
@@ -366,12 +443,12 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
       render: (v: string, r: AppDeployment) => {
         const d = v || r.createdAt;
         if (!d) return '-';
-        const diff = Date.now() - new Date(d).getTime();
-        const mins = Math.floor(diff / 60000);
-        const text = mins < 1 ? t('appDeploy.time.justNow') : mins < 60 ? t('appDeploy.time.minutesAgo', { mins }) : t('appDeploy.time.hoursAgo', { hours: Math.floor(mins / 60) });
+        // P2-9：旧实现手搓了一套相对时间（mins<1/<60 两档），与仓库共享
+        // formatRelativeTime（含天/月档、统一 i18n 键 time.relative.*）不一致。
+        // 改用共享工具，Tooltip 仍保留绝对时间。
         return (
           <Tooltip title={new Date(d).toLocaleString(currentLocale())}>
-            <Text type="secondary" style={{ fontSize: 12 }}>{text}</Text>
+            <Text type="secondary" style={{ fontSize: 12 }}>{formatRelativeTime(d, t)}</Text>
           </Tooltip>
         );
       },
@@ -495,24 +572,17 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
         <Space>
           <Button icon={<ReloadOutlined />} size="small" onClick={fetchAll}>{t('appDeploy.action.refresh')}</Button>
           {deployments.filter(d => d.status === 'running').length > 0 && (
-            <Popconfirm
-              title={t('appDeploy.op.upgradeAllTitle', { count: deployments.filter(d => d.status === 'running').length })}
-              description={t('appDeploy.op.upgradeAllDesc')}
-              onConfirm={handleUpgradeAll}
-              okText={t('appDeploy.action.confirmUpgrade')} okButtonProps={{ icon: <UpCircleOutlined /> }}
-              disabled={!isAdmin}
-            >
-              <Tooltip title={isAdmin ? undefined : t('appDeploy.op.adminOnlyUpgrade')}>
-                <Button
-                  icon={<UpCircleOutlined />}
-                  loading={upgradingAll}
-                  size="small"
-                  disabled={!isAdmin}
-                >
-                  {t('appDeploy.action.upgradeAll')}
-                </Button>
-              </Tooltip>
-            </Popconfirm>
+            <Tooltip title={isAdmin ? undefined : t('appDeploy.op.adminOnlyUpgrade')}>
+              {/* P1-9：灰度策略需 Radio 选择，Popconfirm 装不下——改开策略 Modal */}
+              <Button
+                icon={<UpCircleOutlined />}
+                size="small"
+                disabled={!isAdmin}
+                onClick={() => { setRolloutStrategy('full'); setRolloutModalOpen(true); }}
+              >
+                {t('appDeploy.action.upgradeAll')}
+              </Button>
+            </Tooltip>
           )}
           <Tooltip title={isAdmin ? undefined : t('appDeploy.op.adminOnlyDeploy')}>
             <Button
@@ -607,39 +677,10 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
           style={{ marginBottom: 16 }}
         />
 
-        <Form form={deployForm} layout="vertical" onValuesChange={(changed) => { if (changed.runMode) setRunMode(changed.runMode); }}>
-          <Form.Item name="runMode" label={t('appDeploy.field.runMode')} initialValue="once" extra={t('appDeploy.mode.hint')}>
-            <Radio.Group buttonStyle="solid">
-              <Radio.Button value="once">{t('appDeploy.mode.once')}</Radio.Button>
-              <Radio.Button value="daemon">{t('appDeploy.mode.daemon')}</Radio.Button>
-              <Radio.Button value="scheduled">{t('appDeploy.mode.scheduled')}</Radio.Button>
-            </Radio.Group>
-          </Form.Item>
-          {/* 生产反馈：此前三个模式无任何说明，用户看不出区别。选中后给出该模式的
-              具体行为（尤其是 scheduled「只下发代码不启动」这一点，用户原话是
-              "这个部署是部署应用，为什么要管什么模式呢"——根因就是这个语义没有
-              在任何地方被解释过）。 */}
-          {runMode === 'scheduled' && (
-            <Alert
-              type="info"
-              showIcon
-              style={{ marginBottom: 16 }}
-              message={t('appDeploy.mode.hintScheduled')}
-            />
-          )}
-          {runMode === 'daemon' && (
-            <>
-              <Alert
-                type="info"
-                showIcon
-                style={{ marginBottom: 16 }}
-                message={t('appDeploy.mode.hintDaemon')}
-              />
-              <Form.Item name="startCommand" label={t('appDeploy.field.startCommand')} tooltip={t('appDeploy.field.startCommandTooltip')}>
-                <Input placeholder="node dist/server.js" />
-              </Form.Item>
-            </>
-          )}
+        <Form form={deployForm} layout="vertical">
+          {/* P1-15：runMode 字段 + 模式说明抽到共享组件 DeployModeFields，
+              与列表页快速部署复用同一份说明文案。 */}
+          <DeployModeFields buttonStyle="solid" />
           <Form.Item
             name="executorId"
             label={t('appDeploy.field.selectExecutor')}
@@ -705,6 +746,40 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
             <Input.TextArea rows={3} maxLength={200} showCount placeholder={t('appDeploy.reject.reasonPlaceholder')} />
           </Form.Item>
         </Form>
+      </Modal>
+
+      {/* P1-9：全部升级策略 Modal（全量 / 灰度 20%） */}
+      <Modal
+        title={t('appDeploy.rollout.modalTitle')}
+        open={rolloutModalOpen}
+        onOk={() => void handleUpgradeAll(rolloutStrategy)}
+        onCancel={() => setRolloutModalOpen(false)}
+        confirmLoading={upgradingAll}
+        okText={t('appDeploy.action.confirmUpgrade')}
+        okButtonProps={{ icon: <UpCircleOutlined /> }}
+        width={520}
+      >
+        <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
+          {t('appDeploy.op.upgradeAllDesc')}
+        </Text>
+        <Radio.Group
+          value={rolloutStrategy}
+          onChange={(e) => setRolloutStrategy(e.target.value)}
+          style={{ display: 'flex', flexDirection: 'column', gap: 8 }}
+        >
+          <Radio value="full">
+            <Text strong>{t('appDeploy.rollout.full')}</Text>
+            <Text type="secondary" style={{ display: 'block', fontSize: 12 }}>
+              {t('appDeploy.rollout.fullDesc')}
+            </Text>
+          </Radio>
+          <Radio value="canary">
+            <Text strong>{t('appDeploy.rollout.canary')}</Text>
+            <Text type="secondary" style={{ display: 'block', fontSize: 12 }}>
+              {t('appDeploy.rollout.canaryDesc')}
+            </Text>
+          </Radio>
+        </Radio.Group>
       </Modal>
     </div>
   );
