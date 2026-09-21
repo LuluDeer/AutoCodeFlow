@@ -15,10 +15,10 @@ import { toPriorityValue } from './priority';
  *  - description（模板有自己的 description 元字段，避免二义）；
  *  - applicationId（任务与应用的部署绑定关系，克隆到别的执行器不成立）；
  *  - executorAppName（展示用冗余字段，DTO 只有 executorId/executorGroup/executorTags）；
- *  - maintenanceWindows / gitRepo / gitBranch / glueSource / glueLanguage
- *    （前端 Task 接口有、但 CreateTaskDto 子集语义外或任务体量大——
- *    maintenanceWindows 是调度侧窗口非任务形态、git* 属部署时点快照、
- *    glue 模板化留后续轮）；
+ *  - maintenanceWindows / glueSource / glueLanguage
+ *    （maintenanceWindows 是调度侧窗口非任务形态、glue 模板化留后续轮；
+ *    **gitRepo/gitBranch 不在此列**——见 P1-7：它们与 codeSource='git' 配对，
+ *    漏带会让模板实例化时"代码来源"静默失效甚至 400）；
  *  - 注意 `runtimeVersion` 与 `codeSource` **不**在排除之列：两者都是
  *    CreateTaskDto 的合法字段且是用户显式做过的选择（python_task_multiversion
  *    FR-06/FR-18），漏带会让从模板实例化的任务静默落回宿主默认解释器、
@@ -45,6 +45,9 @@ export function extractTemplateConfigFromTask(task: Task): Record<string, unknow
   // 是同一条用户可见缺陷（见 task-template-config-from-form.ts 的同段注释）。
   put('runtimeVersion', task.runtimeVersion);
   put('codeSource', task.codeSource);
+  // P1-7：codeSource='git' 必须配对 gitRepo/gitBranch 固化（见 config-from-form 同段）。
+  put('gitRepo', task.gitRepo);
+  put('gitBranch', task.gitBranch);
   put('entrypoint', task.entrypoint);
   put('requirements', task.requirements);
   put('dependencies', task.dependencies);

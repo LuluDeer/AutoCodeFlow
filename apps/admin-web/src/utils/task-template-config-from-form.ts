@@ -52,6 +52,12 @@ export function templateConfigFromFormValues(
   // 隐式推断。模板里同样照此办理——由调用方传入已归一的值。
   put('runtimeVersion', values.runtimeVersion);
   put('codeSource', values.codeSource);
+  // P1-7（UX-AUDIT-2026-09-21）：codeSource='git' 必须连同 gitRepo/gitBranch
+  // 一起固化，否则模板存下"代码来源=git"却没有仓库地址——从模板建任务时"代码来源"
+  // 静默失效，后端 assertCodeSourceConsistent 还会因 codeSource='git' 却无 gitRepo
+  // 而 400。两者都是 CreateTaskDto 合法字段（create-task.dto.ts:139-140）。
+  put('gitRepo', values.gitRepo);
+  put('gitBranch', values.gitBranch);
   put('requirements', values.requirements);
   put('dependencies', values.dependencies);
   put('params', values.params);
