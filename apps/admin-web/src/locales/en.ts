@@ -1991,6 +1991,7 @@ export default {
   'taskForm.codeSource.switch.intro': 'A task has exactly one code source; fields that no longer apply are cleared on save. The following will be lost:',
   'taskForm.codeSource.switch.ok': 'Switch and clear',
   'taskForm.codeSource.switch.cancel': 'Cancel',
+  'taskForm.codeSource.switch.scriptLoss': '{{n}}-character script (body not shown)',
   'taskForm.field.codeSource.required': 'Please select a code source',
   'taskForm.field.codeSource.git': 'Git repository',
   'taskForm.field.codeSource.gitDesc': 'The executor pulls code from gitRepo',
@@ -2428,6 +2429,9 @@ export default {
   // P1-27: cancelled comes from the scheduler COVER_EARLY auto-cover (not a manual kill)
   'runbook.cancelled': 'This execution was cancelled automatically by the scheduler: a newer trigger of the same task arrived (cover-early strategy), so the earlier run was terminated to avoid duplicate execution. This is not a manual kill (manual kills are marked as Killed). No action needed if expected; if you do not want auto-cover, switch the task block strategy to wait-in-queue.',
   'runbook.unknown': 'No failure reason reported — read the full log and use "AI Analysis" to generate a root-cause report.',
+  // ENG audit E-P2-F4: backfill application_missing / never_dispatched runbook keys.
+  'runbook.applicationMissing': 'The application referenced by this task has been deleted and the code source is broken — the task keeps scheduling but will fail every run. Reassign the code source in the task form (re-upload the app package, or pick a Git repo / Glue script), or disable the task.',
+  'runbook.neverDispatched': 'This run was never dispatched to an executor (queue timeout, or the target executor never picked it up). Check whether the target executor is online, paused, or its concurrency slots are all occupied; retrigger once confirmed. This run has no logs — do not look for a root cause here.',
 
   'eventSub.eventType.executionCompleted': 'Execution completed (execution.completed)',
   'eventSub.eventType.executionFailed': 'Execution failed (execution.failed)',

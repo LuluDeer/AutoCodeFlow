@@ -556,7 +556,7 @@ export default function TaskFormPage() {
                     : l.field === 'glueSource'
                       ? t('taskForm.section.glueTitle')
                       : t('taskForm.field.applicationId')}
-                ：<Text code>{l.value}</Text>
+                ：<Text code>{l.scriptLength != null ? t('taskForm.codeSource.switch.scriptLoss', { n: l.scriptLength }) : l.value}</Text>
               </li>
             ))}
           </ul>

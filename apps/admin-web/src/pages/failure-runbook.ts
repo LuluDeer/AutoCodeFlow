@@ -144,6 +144,9 @@ const RUNBOOK_ACTION_T_KEY: Record<string, string> = {
   cancelled: 'runbook.cancelled',
   interpreter_unavailable: 'runbook.interpreterUnavailable',
   unknown: 'runbook.unknown',
+  // ENG 审计 E-P2-F4：补两条此前漏掉的映射——传 t() 时这两类此前会 t(undefined)。
+  application_missing: 'runbook.applicationMissing',
+  never_dispatched: 'runbook.neverDispatched',
 };
 
 /**

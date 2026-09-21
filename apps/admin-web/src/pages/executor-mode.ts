@@ -536,7 +536,7 @@ export function codeSourceSwitchLosses(
   values: Record<string, unknown>,
   next: CodeSource,
   previous: CodeSource,
-): Array<{ field: string; value: string }> {
+): Array<{ field: string; value: string; scriptLength?: number }> {
   // 以 next 为参数跑一次真实载荷变换，比较前后差异——判定与提交路径**同源**。
   const before = { ...values };
   const after = applyCodeSourcePayload({ ...values }, next, previous);
@@ -546,16 +546,18 @@ export function codeSourceSwitchLosses(
     glueSource: 'Glue 脚本',
     applicationId: '关联应用',
   };
-  const losses: Array<{ field: string; value: string }> = [];
+  const losses: Array<{ field: string; value: string; scriptLength?: number }> = [];
   for (const field of Object.keys(labels)) {
     const prevVal = trimmedOrNull(before[field]);
     const nextVal = trimmedOrNull(after[field]);
     // 只在"原本有值、变换后没了"时计入——全空切换不打扰
     if (prevVal !== null && nextVal === null) {
-      losses.push({
-        field,
-        value: field === 'glueSource' ? `${String(prevVal).length} 个字符的脚本` : String(prevVal),
-      });
+      // ENG 审计 E-P2-F4：脚本长度改为结构化 scriptLength，由调用方走 i18n 渲染。
+      losses.push(
+        field === 'glueSource'
+          ? { field, value: String(String(prevVal).length), scriptLength: String(prevVal).length }
+          : { field, value: String(prevVal) },
+      );
     }
   }
   return losses;

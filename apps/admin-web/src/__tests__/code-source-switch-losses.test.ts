@@ -54,10 +54,11 @@ describe('P0-5: codeSourceSwitchLosses（切换来源的损失预告）', () => 
     );
     expect(losses).toHaveLength(1);
     expect(losses[0].field).toBe('glueSource');
-    // 长度按 trim 后计（与判定口径同源），故断言量级而非精确值
-    expect(losses[0].value).toMatch(/^\d+ 个字符的脚本$/);
-    const n = Number(losses[0].value.match(/^(\d+)/)?.[1]);
-    expect(n).toBeGreaterThan(10);
+    // ENG 审计 E-P2-F4：脚本长度改为结构化 scriptLength（调用方走 i18n 渲染），
+    // value 仅为数字字符串——纯函数不再持有任何用户可见文案。
+    expect(typeof losses[0].scriptLength).toBe("number");
+    expect(losses[0].scriptLength).toBeGreaterThan(10);
+    expect(losses[0].value).toBe(String(losses[0].scriptLength));
     expect(losses[0].value).not.toContain('print'); // 不把代码正文塞进提示
   });
 

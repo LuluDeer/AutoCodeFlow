@@ -1998,6 +1998,7 @@ export default {
   'taskForm.codeSource.switch.intro': '代码来源三选一，切换后不适用的字段会被清空（保存时生效）。以下内容将丢失：',
   'taskForm.codeSource.switch.ok': '确认切换并清空',
   'taskForm.codeSource.switch.cancel': '取消',
+  'taskForm.codeSource.switch.scriptLoss': '{{n}} 个字符的脚本（未展示正文）',
   'taskForm.field.codeSource.required': '请选择代码来源',
   'taskForm.field.codeSource.git': 'Git 仓库',
   'taskForm.field.codeSource.gitDesc': '执行器从 gitRepo 拉取代码',
@@ -2437,6 +2438,10 @@ export default {
   // P1-27：cancelled 来自调度器 COVER_EARLY 自动覆盖（非人工终止）
   'runbook.cancelled': '该执行被调度器自动取消：同一任务有更新的触发到达，按覆盖策略（COVER_EARLY）终止了本次执行以避免重复运行。这不是人工终止——人工终止会标记为「已终止」。若符合预期则无需处理；若不希望被自动覆盖，请把任务的阻断策略改为「排队等待」。',
   'runbook.unknown': '无失败原因上报——阅读完整日志，并可用「AI 分析」生成根因报告。',
+  // ENG 审计 E-P2-F4：补 application_missing / never_dispatched 两条 runbook 键。
+  // 此前 RUNBOOK_ACTION_T_KEY 漏这两项，传 t() 时 t(undefined) 会渲染裸 key。
+  'runbook.applicationMissing': '该任务引用的应用已被删除，代码来源已断——任务会按计划继续调度但每次必然失败。请到任务表单重新指定代码来源（重新上传应用包 / 改选 Git 仓库或 Glue 脚本），或停用该任务。',
+  'runbook.neverDispatched': '本次执行从未被派发到执行器（排队超时，或目标执行器一直未取件）。请检查目标执行器是否在线、是否被暂停、并发槽位是否长期占满；确认后重新触发即可。这条执行没有任何日志——不必在此查找根因。',
 
   'eventSub.eventType.executionCompleted': '执行成功（execution.completed）',
   'eventSub.eventType.executionFailed': '执行失败（execution.failed）',
