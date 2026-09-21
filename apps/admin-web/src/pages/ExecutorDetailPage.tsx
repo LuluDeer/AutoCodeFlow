@@ -263,7 +263,7 @@ export default function ExecutorDetailPage() {
       const cfg = statusMap[v] || { badge: 'default' as BadgeStatus, label: v };
       return <Badge status={cfg.badge} text={cfg.label} />;
     }},
-    { title: t('executorDetail.history.col.startTime'), dataIndex: 'startTime', key: 'startTime', width: 170, render: (v: string) => v ? new Date(v).toLocaleString(currentLocale(), { hour12: false }) : '-' },
+    { title: t('executorDetail.history.col.startTime'), dataIndex: 'startTime', key: 'startTime', width: 170, render: (v: string) => v ? formatDateTime(v) : '-' },
     // F-35（DEEP_REVIEW 0ef3bbe）：时长格式统一走 formatDurationShort（含小时档）
     { title: t('executorDetail.history.col.duration'), dataIndex: 'duration', key: 'duration', width: 90, render: (v: number) => formatDurationShort(v) },
     { title: t('executorDetail.history.col.exitCode'), dataIndex: 'exitCode', key: 'exitCode', width: 80, render: (v: number | null | undefined) => v != null ? <Text type={v !== 0 ? 'danger' : undefined} code>{v}</Text> : '-' },
@@ -581,7 +581,7 @@ export default function ExecutorDetailPage() {
               <YAxis yAxisId="cnt" orientation="right" allowDecimals={false} width={36} tick={{ fontSize: 11, fill: CHART_COLORS.axisText(isDark) }} />
               <RechartTooltip labelFormatter={(label) => trendTooltipLabel(String(label))} labelStyle={{ fontSize: 12 }} />
               <Legend wrapperStyle={{ fontSize: 12 }} />
-              <Line yAxisId="pct" type="monotone" dataKey="cpuUsage" name="CPU %" stroke={CHART_COLORS.cpu} strokeWidth={1.5} dot={false} connectNulls />
+              <Line yAxisId="pct" type="monotone" dataKey="cpuUsage" name={t('executorDetail.trend.cpu')} stroke={CHART_COLORS.cpu} strokeWidth={1.5} dot={false} connectNulls />
               <Line yAxisId="pct" type="monotone" dataKey="memUsage" name={t('executorDetail.trend.mem')} stroke={CHART_COLORS.memory} strokeWidth={1.5} dot={false} connectNulls />
               <Line yAxisId="cnt" type="monotone" dataKey="runningTaskCount" name={t('executorDetail.trend.concurrent')} stroke={CHART_COLORS.concurrent} strokeWidth={1.5} dot={false} connectNulls />
             </LineChart>
@@ -680,7 +680,7 @@ export default function ExecutorDetailPage() {
         <Alert
           type="warning"
           showIcon
-          message={t('executorDetail.highrisk.title')}
+          title={t('executorDetail.highrisk.title')}
           description={t('executorDetail.rotate.desc')}
           style={{ marginBottom: 12 }}
         />
@@ -721,7 +721,7 @@ export default function ExecutorDetailPage() {
         <Alert
           type="warning"
           showIcon
-          message={t('executorDetail.highrisk.irreversible')}
+          title={t('executorDetail.highrisk.irreversible')}
           description={t('executorDetail.remove.desc')}
           style={{ marginBottom: 12 }}
         />

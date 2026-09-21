@@ -17,6 +17,9 @@ import { getErrMsg } from '../utils/error';
 import { normFileList } from '../utils/upload';
 // UI 打磨：时间列统一走 timeFormat 工具（对齐 ProjectsPage/ApplicationListPage 用法）
 import { formatDateTime } from '../utils/timeFormat';
+// D-P2-02b（设计审计 2026-09-22）：包类型读面走唯一事实源 runtimeLabel
+// （node/python 映射成展示名；universal 不在映射表，按设计回退原始 token）。
+import { runtimeLabel } from '../utils/runtime-label';
 import { useTranslation } from 'react-i18next';
 import PageHeader from '../components/PageHeader';
 import PageSkeleton from '../components/PageSkeleton';
@@ -255,7 +258,10 @@ export default function ExecutorPackagesPage() {
       const results = await pushPackage(pushTarget.id, ids);
       setPushResults(results);
     } catch (e: unknown) {
-      setPushResults([{ executorId: '', address: '', success: false, error: (e as Error).message }]);
+      // D-P2-12（设计审计 2026-09-22）：裸 `(e as Error).message` 对 HTTPError
+      // 拿到的是 "Request failed with 500" 之类壳，不读后端 message；走 getErrMsg
+      // 统一解析后端错误体/校验错误/网络错误，兜底文案给可执行提示。
+      setPushResults([{ executorId: '', address: '', success: false, error: getErrMsg(e, t('execPkg.pushFail')) }]);
     } finally { setPushing(false); }
   };
 
@@ -305,7 +311,7 @@ export default function ExecutorPackagesPage() {
       ),
     },
     { title: t('execPkg.col.version'), dataIndex: 'version', width: 100, render: (v: string) => <Tag color="blue">{v}</Tag> },
-    { title: t('execPkg.col.type'), dataIndex: 'type', width: 90, render: (v: string) => <Tag>{v}</Tag> },
+    { title: t('execPkg.col.type'), dataIndex: 'type', width: 90, render: (v: string) => <Tag>{runtimeLabel(v, t)}</Tag> },
     { title: t('execPkg.col.platform'), dataIndex: 'platform', width: 90, render: (v?: string) => v ?? '-' },
     { title: t('execPkg.col.size'), dataIndex: 'fileSize', width: 90, render: (v?: number) => fmtBytes(v) },
     {

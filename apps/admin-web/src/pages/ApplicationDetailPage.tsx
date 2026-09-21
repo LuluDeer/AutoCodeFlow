@@ -18,8 +18,11 @@ import '../i18n';
 import { getErrMsg, isFormValidationError, isNotFoundError } from '../utils/error';
 // UX-06：触发方式 / 版本状态的展示标签唯一事实源（此前直接渲染裸枚举）。
 import { triggerLabel, releaseStatusLabel, TRIGGER_COLOR } from '../utils/trigger-label';
-// F-26（DEEP_REVIEW 0ef3bbe）：locale 单一来源，不再硬编码 zh-CN
-import { currentLocale } from '../utils/locale';
+// D-P2-02b（设计审计 2026-09-22）：runtime 读面走唯一事实源 runtimeLabel
+// （与筛选下拉同源；未知值回退原始 token）。
+import { runtimeLabel } from '../utils/runtime-label';
+// D-P2-09：时间格式化统一走共享 formatDateTime（与全站同源）。
+import { formatDateTime } from '../utils/timeFormat';
 import { useAuthStore, isAdminUser } from '../store/auth';
 import PageHeader from '../components/PageHeader';
 import PageSkeleton from '../components/PageSkeleton';
@@ -117,7 +120,7 @@ function AiAnalysisTab({ appId }: { appId: string }) {
           {report.analysis && (
             <Alert
               type="info"
-              message={t('appDetail.ai.conclusion')}
+              title={t('appDetail.ai.conclusion')}
               description={<pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0, maxHeight: 240, overflow: 'auto' }}>{report.analysis}</pre>}
               showIcon
               icon={<RobotOutlined />}
@@ -154,7 +157,7 @@ function OverviewTab({ app }: { app: Application }) {
       <Card title={t('appDetail.info')}>
         <Descriptions bordered size="small" column={{ xs: 1, sm: 2, md: 3 }}>
           <Descriptions.Item label={t('appDetail.field.version')}><Tag color="blue">{app.version}</Tag></Descriptions.Item>
-          <Descriptions.Item label={t('appDetail.field.runtime')}><Tag>{app.runtime}</Tag></Descriptions.Item>
+          <Descriptions.Item label={t('appDetail.field.runtime')}><Tag>{runtimeLabel(app.runtime, t)}</Tag></Descriptions.Item>
           <Descriptions.Item label={t('appDetail.field.status')}>
             <Tag color={STATUS_COLORS[app.status] || 'default'}>{STATUS_LABELS(t)[app.status] || app.status}</Tag>
           </Descriptions.Item>
@@ -187,10 +190,10 @@ function OverviewTab({ app }: { app: Application }) {
             <Descriptions.Item label={t('appDetail.field.entrypoint')}><Text code>{app.entrypoint}</Text></Descriptions.Item>
           )}
           <Descriptions.Item label={t('appDetail.field.createdAt')}>
-            {app.createdAt ? new Date(app.createdAt).toLocaleString(currentLocale()) : '-'}
+            {app.createdAt ? formatDateTime(app.createdAt) : '-'}
           </Descriptions.Item>
           <Descriptions.Item label={t('appDetail.field.updatedAt')}>
-            {app.updatedAt ? new Date(app.updatedAt).toLocaleString(currentLocale()) : '-'}
+            {app.updatedAt ? formatDateTime(app.updatedAt) : '-'}
           </Descriptions.Item>
         </Descriptions>
 
@@ -345,7 +348,7 @@ function TasksTab({ appId, syncing, onSync }: { appId: string; syncing: boolean;
                 </Tag>
               ),
             },
-            { title: t('appDetail.tasks.col.runtime'), dataIndex: 'runtime', width: 80, render: (v: string) => v ? <Tag color="blue">{v}</Tag> : '-' },
+            { title: t('appDetail.tasks.col.runtime'), dataIndex: 'runtime', width: 80, render: (v: string) => v ? <Tag color="blue">{runtimeLabel(v, t)}</Tag> : '-' },
           ]}
           dataSource={tasks}
           rowKey="id" loading={loading} size="small"
@@ -354,6 +357,7 @@ function TasksTab({ appId, syncing, onSync }: { appId: string; syncing: boolean;
             pageSize: 20,
             total,
             showSizeChanger: false,
+            showTotal: (n) => t('appDetail.tasks.total', { count: n }),
             onChange: (p) => { setPage(p); fetchTasks(p); },
           }}
           // O-19：高频任务表启用 antd 内置 virtual 滚动——固定视口高度 + 固定
@@ -535,7 +539,7 @@ function VersionHistoryTab({ app, onAppReload }: { app: Application; onAppReload
             title: t('appDetail.col.deployedAt'), dataIndex: 'deployedAt', width: 170,
             render: (_: string | null, r: VersionRecord) => {
               const deployedAt = r.createdAt ?? r.deployedAt;
-              return deployedAt ? new Date(deployedAt).toLocaleString(currentLocale()) : '-';
+              return deployedAt ? formatDateTime(deployedAt) : '-';
             },
           },
           {
@@ -663,7 +667,7 @@ function ReleasesTab({ app }: { app: Application }) {
       title: t('appDetail.col.deployedAt'), dataIndex: 'deployedAt', width: 170,
       render: (v: string | null, r: AppReleaseRow) => {
         const time = v ?? r.createdAt;
-        return time ? new Date(time).toLocaleString(currentLocale()) : '-';
+        return time ? formatDateTime(time) : '-';
       },
     },
     {
