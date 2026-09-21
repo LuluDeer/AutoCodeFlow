@@ -6,6 +6,9 @@ import {
   IsNotEmpty,
   MaxLength,
   Min,
+  IsArray,
+  IsUUID,
+  ArrayMaxSize,
 } from "class-validator";
 import { Type } from "class-transformer";
 import {
@@ -95,4 +98,21 @@ export class QueryExecutorPackageDto extends PaginationDto {
   @IsOptional()
   @IsString()
   platform?: string;
+}
+
+// 审计 E-P2-S3：push 端点入参此前是 `@Body("executorIds") executorIds?: string[]`
+// 内联类型，完全不走 class-validator。executorIds 是目标执行器 ID 列表——
+// 旧实现既不校验元素形态（任意字符串都被透传给 pushToExecutors 去 HTTP 调用），
+// 也没有数组长度上限（可传数万条）。现抽 DTO：元素必须是 v4 UUID，且 ≤100 个。
+export class PushExecutorPackageDto {
+  @ApiPropertyOptional({
+    description:
+      "Target executor ID list (v4 UUIDs, <=100). Empty/omitted = push to all online executors",
+    type: [String],
+  })
+  @IsOptional()
+  @IsArray()
+  @IsUUID("4", { each: true })
+  @ArrayMaxSize(100)
+  executorIds?: string[];
 }
