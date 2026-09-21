@@ -217,6 +217,14 @@ export default {
   'taskList.nextRun.cronScheduled': 'Cron scheduled',
   'taskList.nextRun.fixedRunning': 'Fixed-rate running',
   'taskList.nextRun.manual': 'Manual trigger',
+  // P1-1/P1-2 (UX audit): the column now shows the REAL next fire time (it used
+  // to show a static badge while the header promised "Next run"), plus a new
+  // "Last run" column.
+  'taskList.nextRun.unpredictable': 'Cannot estimate',
+  'taskList.nextRun.unpredictableTooltip': 'This expression cannot be parsed locally (it falls outside the supported 5-field preview subset), or this trigger type has no predictable next time. The server-side schedule is authoritative.',
+  'taskList.col.lastRun': 'Last run',
+  'taskList.lastRun.never': 'Never run',
+  'taskList.lastRun.neverTooltip': 'This task has never been triggered since it was created. If it is an enabled scheduled task, scheduling is not taking effect — check its trigger configuration.',
   'taskList.action.detail': 'View details',
   'taskList.action.edit': 'Edit',
   'taskList.action.clone': 'Clone (copy all config to create a copy)',

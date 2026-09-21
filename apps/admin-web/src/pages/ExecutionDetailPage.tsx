@@ -199,11 +199,24 @@ export default function ExecutionDetailPage() {
   // U2: 截断日志兜底——"加载完整日志"成功后覆盖显示（null=未加载）
   const [fullLogs, setFullLogs] = useState<string | null>(null);
   const [loadingFullLogs, setLoadingFullLogs] = useState(false);
+  /**
+   * P1-25（UX-AUDIT-2026-09-21）：完整日志拉取是否被 2 万行上限截断。
+   * 此前只弹一次 transient toast，用户滚动几屏后 toast 早已消失，界面上不留任何
+   * "这份日志不完整"的持久痕迹——而缺的恰是尾部的堆栈。
+   */
+  const [fullLogsTruncated, setFullLogsTruncated] = useState(false);
   // OBS-03: 级别过滤（服务端过滤）——非 ALL 时经分页端点带 level 拉取过滤后
   // 行集，结果落在 filteredLogs（优先级高于 fullLogs/rawLogs）
   const [levelFilter, setLevelFilter] = useState<LogLevelFilter>(LOG_LEVEL_FILTER_ALL);
   const [filteredLogs, setFilteredLogs] = useState<string | null>(null);
   const [loadingFilteredLogs, setLoadingFilteredLogs] = useState(false);
+  /**
+   * P1-25（UX-AUDIT-2026-09-21）：过滤视图是否因 2 万行上限被截断。
+   *
+   * 独立 state 承载（而非沿用 fullLogs 的判据）：过滤视图有自己的分页拉取，
+   * 它的截断与"完整日志"的截断是两回事，混用会漏报其中一种。
+   */
+  const [filteredTruncated, setFilteredTruncated] = useState(false);
   // UI-05: 关键词搜索——inputKeyword 即时回显（受控输入）、activeKeyword
   // 防抖后生效触发分段重算（大日志逐键重切分代价高）。
   const [inputKeyword, setInputKeyword] = useState('');
@@ -450,7 +463,28 @@ export default function ExecutionDetailPage() {
   );
 
   const displayLogs = filteredLogs ?? fullLogs ?? rawLogs;
-  const logsTruncated = filteredLogs === null && fullLogs === null && LOG_TRUNCATION_MARKER.test(rawLogs);
+  /**
+   * P1-25（UX-AUDIT-2026-09-21）：截断告警必须描述**当前正在显示的那份日志**。
+   *
+   * 两个方向都要对：
+   *  ① **不能漏报**——旧判据是 `filteredLogs === null && fullLogs === null &&
+   *     MARKER.test(rawLogs)`，只在显示原始载荷时才提示，于是在**过滤视图被
+   *     截断时恰恰被抑制**：用户按级别过滤后读到一份看起来完整、实则缺尾部的
+   *     日志，而堆栈与致命错误行就在尾部。
+   *  ② **不能误报**——一旦"加载完整日志"成功替换了内容（且那次拉取没有被截断），
+   *     原始载荷里的截断标记已不代表眼前这份日志，此时再挂着"日志已截断"会
+   *     误导用户以为自己看的仍是不全的版本。
+   *
+   * 故按**视图优先级**判定（与 displayLogs 同一套优先级）：
+   *   过滤视图在用 → 看它自己的截断标志；
+   *   否则完整日志在用 → 看它自己的截断标志；
+   *   否则显示原始载荷 → 看载荷内的标记。
+   */
+  const logsTruncated = filteredLogs !== null
+    ? filteredTruncated
+    : fullLogs !== null
+      ? fullLogsTruncated
+      : LOG_TRUNCATION_MARKER.test(rawLogs);
 
   // 日志滚动到底部（displayLogs 覆盖流式追加/加载完整日志/切换过滤视图）
   useEffect(() => {
@@ -544,6 +578,8 @@ export default function ExecutionDetailPage() {
         throw new Error(t('execDetail.fullLogsNoRows'));
       }
       setFullLogs(all.join('\n'));
+      // P1-25：持久记录截断状态（toast 是瞬时的，滚动几屏后就不见了）
+      setFullLogsTruncated(truncated);
       if (truncated) {
         message.warning(t('execDetail.fullLogsTooLarge'));
       } else {
@@ -573,17 +609,26 @@ export default function ExecutionDetailPage() {
     const seq = ++levelFetchSeq.current;
     if (value === LOG_LEVEL_FILTER_ALL) {
       setFilteredLogs(null);
+      setFilteredTruncated(false);
       return;
     }
     if (!taskId || !execId) return;
     setLoadingFilteredLogs(true);
     try {
-      const { lines: all } = await fetchAllLogLines(value, FULL_LOGS_MAX_LINES);
+      // P1-25（UX-AUDIT-2026-09-21）：**必须**接住 truncated。
+      //
+      // 此前只解构 lines、丢弃 truncated，而截断告警（logsTruncated）又被硬门控在
+      // `filteredLogs === null && fullLogs === null`——**恰好在过滤视图被截断时
+      // 它被抑制**。两条叠加：用户按级别过滤后读到一份看起来完整、实则缺尾部的
+      // 日志，而堆栈与致命错误行**就在尾部**。这正是"任务失败找不到原因"的现场。
+      const { lines: all, truncated } = await fetchAllLogLines(value, FULL_LOGS_MAX_LINES);
       if (levelFetchSeq.current !== seq) return;
       setFilteredLogs(all.join('\n'));
+      setFilteredTruncated(truncated);
     } catch (err: unknown) {
       if (levelFetchSeq.current !== seq) return;
       setFilteredLogs(null);
+      setFilteredTruncated(false);
       message.error(getErrMsg(err, t('execDetail.levelFilterFail')));
     } finally {
       if (levelFetchSeq.current === seq) setLoadingFilteredLogs(false);

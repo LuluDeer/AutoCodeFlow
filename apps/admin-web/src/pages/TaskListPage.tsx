@@ -19,6 +19,9 @@ import { useTasksList, invalidateTaskData } from '../api/queries';
 import { getErrMsg } from '../utils/error';
 import { useDebounce } from '../hooks/useDebounce';
 import { priorityTag } from '../utils/priority';
+// P1-1/P1-2（UX-AUDIT-2026-09-21）：列表页显示真实的「下次执行」与「上次执行」
+import { nextRunAt, formatFireTime } from '../utils/trigger-preview';
+import { formatRelativeTime } from '../utils/timeFormat';
 import ParamsEditor from '../components/ParamsEditor';
 import PageHeader from '../components/PageHeader';
 import StateError from '../components/StateError';
@@ -341,21 +344,59 @@ export default function TaskListPage() {
     {
       title: t('taskList.col.nextRun'),
       key: 'nextRun',
-      width: 150,
+      width: 170,
       ...hideOnMobile,
       render: (_: unknown, r: Task) => {
-        if (r.status !== 'active') return <Text type="secondary" style={{ fontSize: 12 }}>{t('taskList.nextRun.none')}</Text>;
-        if (r.triggerType === 'cron' && r.cronExpression) {
+        // P1-1（UX-AUDIT-2026-09-21）：本列此前只渲染静态徽章（「Cron 计划中」
+        // /「定时运行中」），而列题是「下次执行」、tooltip 写着「下次 Cron 触发
+        // 时间」——承诺了时刻却从不给出时刻。用户因此无法回答"这任务下次什么
+        // 时候跑、它到底还在不在跑"，静默不执行在上百个任务里根本发现不了。
+        // 现按真实表达式算出最近一次触发时刻（复用详情页同一套纯函数）。
+        if (r.status !== 'active') {
+          return <Text type="secondary" style={{ fontSize: 12 }}>{t('taskList.nextRun.none')}</Text>;
+        }
+        const next = nextRunAt(r);
+        if (next) {
           return (
-            <Tooltip title={t('taskList.nextRun.cronTooltip')}>
-              <Tag color="blue" style={{ fontSize: 11 }}>{t('taskList.nextRun.cronScheduled')}</Tag>
+            <Tooltip
+              title={t('taskList.nextRun.cronTooltip')}
+            >
+              <Text style={{ fontSize: 12 }}>{formatFireTime(next, r.timezone)}</Text>
             </Tooltip>
           );
         }
-        if (r.triggerType === 'fixed_rate' && r.fixedRate) {
-          return <Tag color="geekblue" style={{ fontSize: 11 }}>{t('taskList.nextRun.fixedRunning')}</Tag>;
+        // 表达式存在但算不出（非法/超子集）——如实说"无法预估"，不编假时刻
+        if (r.triggerType === 'cron' || r.triggerType === 'fixed_rate') {
+          return (
+            <Tooltip title={t('taskList.nextRun.unpredictableTooltip')}>
+              <Text type="secondary" style={{ fontSize: 12 }}>{t('taskList.nextRun.unpredictable')}</Text>
+            </Tooltip>
+          );
         }
         return <Text type="secondary" style={{ fontSize: 12 }}>{t('taskList.nextRun.manual')}</Text>;
+      },
+    },
+    {
+      // P1-2（UX-AUDIT-2026-09-21）：上次触发时刻。该列在 DB 里一直存在、
+      // 后端也一直返回并支持排序，但界面从不显示——于是"任务其实早就不跑了"
+      // 这种最该被发现的静默故障反而最不可见。
+      title: t('taskList.col.lastRun'),
+      key: 'lastRun',
+      width: 150,
+      ...hideOnMobile,
+      render: (_: unknown, r: Task) => {
+        if (!r.lastTriggerTime) {
+          return (
+            <Tooltip title={t('taskList.lastRun.neverTooltip')}>
+              <Text type="secondary" style={{ fontSize: 12 }}>{t('taskList.lastRun.never')}</Text>
+            </Tooltip>
+          );
+        }
+        return (
+          <Tooltip title={new Date(r.lastTriggerTime).toLocaleString()}>
+            <Text style={{ fontSize: 12 }}>{formatRelativeTime(r.lastTriggerTime, t)}</Text>
+          </Tooltip>
+        );
       },
     },
     {

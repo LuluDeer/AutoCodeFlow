@@ -80,6 +80,14 @@ export interface Task {
   projectId?: string | null;
   status: string;
   triggerType: string;
+  /**
+   * P1-2（UX-AUDIT-2026-09-21）：上次触发时刻（调度器维护，DB 列一直存在，
+   * 且**已在后端排序白名单里**——但界面从不显示它）。
+   *
+   * 后果：调度产品最核心的问题"这个任务上次跑是什么时候"答不出来，于是
+   * 「任务其实早就不跑了」这种静默故障在上百个任务里根本发现不了。
+   */
+  lastTriggerTime?: string | null;
   fixedRate?: number;
   cronExpression?: string;
   timezone?: string | null;

@@ -218,6 +218,44 @@ export function nextFixedRateFireTimes(
 }
 
 /**
+ * P1-1（UX-AUDIT-2026-09-21）：任务列表「下次执行」列的真实时刻。
+ *
+ * 该列此前只渲染一个静态徽章（「Cron 计划中」/「定时运行中」），而列题是
+ * 「下次执行」、tooltip 更写着「下次 Cron 触发时间」——**承诺了时刻却从不给出
+ * 时刻**。于是用户无法回答"这任务下次什么时候跑、它到底还在不在跑"。
+ *
+ * 本函数复用详情页已在用的计算链（nextCronFireTimes / nextFixedRateFireTimes），
+ * 只取最近一次；无法计算（表达式非法、已暂停、手动触发）一律返回 null，由调用
+ * 方决定展示什么——**绝不猜一个假时刻**（猜错比不显示更误导）。
+ *
+ * @returns 下一次触发时刻；无法确定时 null
+ */
+export function nextRunAt(
+  task: {
+    status?: string | null;
+    triggerType?: string | null;
+    cronExpression?: string | null;
+    fixedRate?: number | null;
+    timezone?: string | null;
+  },
+  now: Date = new Date(),
+): Date | null {
+  // 只有 active 的任务才真的在调度（暂停/失败的任务不会自己跑起来）
+  if (task.status !== 'active') return null;
+
+  if (task.triggerType === 'cron' && task.cronExpression) {
+    const [next] = nextCronFireTimes(task.cronExpression, 1, now, task.timezone);
+    return next ?? null;
+  }
+  if (task.triggerType === 'fixed_rate' && task.fixedRate) {
+    const [next] = nextFixedRateFireTimes(task.fixedRate, 1, now);
+    return next ?? null;
+  }
+  // manual / 依赖触发：没有可预测的下次时刻——返回 null 而不是编一个
+  return null;
+}
+
+/**
  * 触发时刻 → 展示文本。timezone 有效则按该时区渲染，否则浏览器本地时区。
  * 输出形如「09/08 14:30:00 （GMT+8）」的紧凑本地化文本。
  */
