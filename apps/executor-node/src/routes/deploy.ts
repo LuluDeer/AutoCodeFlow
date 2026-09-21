@@ -644,13 +644,39 @@ function readCurrentTarget(currentLink: string): string | null {
  * 修复：目标目录已存在时改用带唯一后缀的新目录，让每次部署都真正拿到一个新
  * release。首次部署（目录不存在）保持原命名不变，故既有单测与磁盘布局不受影响。
  *
+ * **唯一性来源**：进程内单调递增计数器 + 时间戳 + pid，且循环直到目录确实不
+ * 存在。不能只用 `Date.now()`+pid —— 同一毫秒内的两次调用会得到同一个后缀
+ * （本机测试跑不出来，CI 的 Windows runner 更快，直接把这个缺陷暴露成红：
+ * "连续两次重复部署 → 两次都拿到互不相同的新目录"）。计数器是进程内的，而
+ * 同一台机器上多执行器实例共用 workDir 的情形由最终的存在性循环兜住。
+ *
  * 注意 `buildDeploymentPaths` 仍是**纯函数**（不碰文件系统）——它被单测按精确
  * 路径断言，且"要不要让路"是运行时判定，不属于路径推导。
  */
+
+/** 进程内单调计数器：保证同毫秒内的多次调用也拿到不同后缀。 */
+let releasePathSeq = 0;
+
 export function resolveReleasePaths(paths: DeploymentPaths): DeploymentPaths {
   if (!fs.existsSync(paths.finalReleaseDir)) return paths;
-  const suffix = `${Date.now().toString(36)}-${process.pid.toString(36)}`;
-  const releaseKey = `${paths.releaseKey}-${suffix}`;
+
+  // 循环直到找到一个不存在的目录：计数器已能保证同进程内唯一，这一层是为了
+  // 兜住"同机多实例共用 workDir"的跨进程碰撞。
+  //
+  // ⚠️ 必须有**硬上限**：本函数也被 deploy.spec.ts 以 `fs.existsSync` 恒真的
+  // mock 驱动，无上限的 `while (fs.existsSync(...))` 会死循环并 OOM（实测
+  // "JavaScript heap out of memory"，4GB 堆打满）。计数器已保证同进程唯一，
+  // 故真实环境下这个循环最多走一轮；上限纯粹是防御 mock/异常的 fs 实现。
+  let releaseKey = paths.releaseKey;
+  let finalReleaseDir = paths.finalReleaseDir;
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    releasePathSeq += 1;
+    const suffix = `${Date.now().toString(36)}-${process.pid.toString(36)}-${releasePathSeq.toString(36)}`;
+    releaseKey = `${paths.releaseKey}-${suffix}`;
+    finalReleaseDir = path.join(paths.releasesDir, releaseKey);
+    if (!fs.existsSync(finalReleaseDir)) break;
+  }
+
   logger.info(
     `[deploy] Release dir ${paths.releaseKey} already exists; ` +
       `publishing to ${releaseKey} instead (keeps the live release intact)`,
@@ -658,7 +684,7 @@ export function resolveReleasePaths(paths: DeploymentPaths): DeploymentPaths {
   return {
     ...paths,
     releaseKey,
-    finalReleaseDir: path.join(paths.releasesDir, releaseKey),
+    finalReleaseDir,
     extractDir: path.join(paths.tmpDir, `${releaseKey}-extracting`),
   };
 }

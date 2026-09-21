@@ -303,6 +303,88 @@ describe('deploy 真实文件系统行为（生产故障回归）', () => {
       expect(a.finalReleaseDir).not.toBe(b.finalReleaseDir);
     });
 
+    /**
+     * 同一毫秒内的密集调用必须也拿到不同目录。
+     *
+     * 这条是 CI 抓出来的**真实缺陷**：后缀最初只用 `Date.now()`+pid，同一毫秒
+     * 内两次调用得到同一个后缀 → 两次部署指向同一目录 → 又回到"删掉活 release"
+     * 的老问题上。本机跑不出来（CI 的 Windows runner 更快），
+     * `windows-node-tests` 把它暴露成红。修复是加进程内单调计数器 + 存在性循环。
+     */
+    it('同一毫秒内密集调用 → 后缀仍然互不相同（CI 抓出的缺陷）', () => {
+      const paths = buildDeploymentPaths(root, 'app-1', 'deploy-1', '1.0.0');
+      fs.mkdirSync(paths.finalReleaseDir, { recursive: true });
+
+      // 紧凑循环：全部落在同一毫秒内（不 sleep、不建目录）
+      const keys = new Set<string>();
+      for (let i = 0; i < 50; i++) {
+        keys.add(resolveReleasePaths(paths).releaseKey);
+      }
+      expect(keys.size).toBe(50);
+    });
+
+    it('唯一性不依赖"上一次调用者建了目录"', () => {
+      const paths = buildDeploymentPaths(root, 'app-1', 'deploy-1', '1.0.0');
+      fs.mkdirSync(paths.finalReleaseDir, { recursive: true });
+
+      // 刻意不 mkdir 返回的新目录
+      const a = resolveReleasePaths(paths);
+      const b = resolveReleasePaths(paths);
+      expect(a.releaseKey).not.toBe(b.releaseKey);
+      expect(fs.existsSync(a.finalReleaseDir)).toBe(false);
+      expect(fs.existsSync(b.finalReleaseDir)).toBe(false);
+    });
+
+    /**
+     * `fs.existsSync` 恒真（deploy.spec.ts 的 mock 形态）时必须有界返回。
+     *
+     * 首版实现用了无上限的 `while (fs.existsSync(...))`，在那种 mock 下死循环
+     * 并 OOM（实测 "JavaScript heap out of memory"，4GB 堆打满）——把整个
+     * deploy.spec.ts 套件拖挂。这里用 jest.spyOn 造同样的恒真形态，断言函数
+     * 仍然返回且不挂死。计数器已保证同进程唯一，上限只是防御。
+     */
+    /**
+     * `fs.existsSync` 恒真（deploy.spec.ts 的 mock 形态）时必须有界返回。
+     *
+     * 首版实现用了无上限的 `while (fs.existsSync(...))`，在那种 mock 下死循环
+     * 并 OOM（实测 "JavaScript heap out of memory"，4GB 堆打满）——把整个
+     * deploy.spec.ts 套件拖挂。
+     *
+     * 这条用**源码守卫**而不是行为断言：本套件里 fs 是真实模块，其 exports 属性
+     * 只有 getter（"Cannot set property existsSync … which has only a getter"），
+     * 无法在本文件内伪造恒真 mock。而真正的行为回归已由 deploy.spec.ts 自身承担
+     * —— 它正是用恒真 existsSync 驱动 deploy 路由的，修复前该套件 OOM 崩溃。
+     * 这里补一道静态闸，防止有人把上限改回 while(true)。
+     */
+    it('resolveReleasePaths 的查找循环必须有硬上限（源码守卫，防 OOM 回归）', async () => {
+      const fsMod = await import('node:fs/promises');
+      const pathMod = await import('node:path');
+      const src = await fsMod.readFile(
+        pathMod.resolve(process.cwd(), 'src/routes/deploy.ts'),
+        'utf-8',
+      );
+
+      // 取出 resolveReleasePaths 函数体，并**剥掉注释行**再匹配 —— 函数头注释里
+      // 就写着反面示例（"无上限的 `while (fs.existsSync(...))` 会死循环"），
+      // 不剥注释会让守卫被自己的说明文字绊倒（同类教训见 zip-safety.spec.ts
+      // 的源码守卫）。
+      const start = src.indexOf('export function resolveReleasePaths');
+      expect(start).toBeGreaterThan(-1);
+      const body = src
+        .slice(start, src.indexOf('\n}', start))
+        .split('\n')
+        .filter((line) => {
+          const t = line.trim();
+          return !t.startsWith('//') && !t.startsWith('*') && !t.startsWith('/*');
+        })
+        .join('\n');
+
+      // 必须是有界 for 循环，且不得出现无上限的 while(…existsSync…)
+      expect(body).toMatch(/for\s*\(\s*let attempt = 0;\s*attempt < \d+;/);
+      expect(body).not.toMatch(/while\s*\(\s*!?fs\.existsSync/);
+      expect(body).not.toMatch(/do\s*\{[\s\S]*\}\s*while\s*\(\s*!?fs\.existsSync/);
+    });
+
     it('修复后：删除落在新目录上，活 release 完好（核心保证）', () => {
       const paths = buildDeploymentPaths(root, 'app-1', 'deploy-1', '1.0.0');
       // 上一次部署已发布，current 指向它，目录里有正在被使用的内容

@@ -190,4 +190,15 @@
 #        runningApps 已 delete，用它判定会让重启永不发生）。
 #     按 ADR-005 同 commit 重打：本机(Windows) ncc 0.44 产出 bc24fdbe…，
 #     bundle 2538kB（源码净增）。
-bc24fdbe37743d50aaf9757352ae0c312c312a7e5cb1cd90cce1eb7f22825f77  index.js
+#   - 上述 ② 的收尾（CI 抓出的两个自身缺陷，同一 commit 内修掉）：
+#     a) 唯一后缀最初只用 `Date.now()`+pid —— **同一毫秒内两次调用得到同一个
+#        后缀**，两次部署又指向同一目录，等于没修。本机跑不出来，CI 的
+#        windows-node-tests 直接判红（"连续两次重复部署 → 两次都拿到互不相同的
+#        新目录"）。修法：加进程内单调计数器 releasePathSeq + 存在性循环。
+#     b) 存在性循环首版写成无上限 `while (fs.existsSync(...))`，而 deploy.spec.ts
+#        把 existsSync mock 成恒真 → **死循环 OOM**（实测 4GB 堆打满，
+#        "JavaScript heap out of memory"，整个套件崩）。修法：改为有界 for（上限
+#        100），并加源码守卫禁止退回无上限形态。
+#     按 ADR-005 同 commit 重打：本机(Windows) ncc 0.44 产出 5cf5e98f…，
+#     bundle 2537kB。
+5cf5e98f7723a087cd34c68267468aae3abc9836500d2a86ed0a2a6a72b2f1de  index.js
