@@ -69,6 +69,145 @@ export function shouldReportProcessExit(deploymentId: string): boolean {
   return !restartExitReportsToSuppress.delete(deploymentId);
 }
 
+/**
+ * daemon 自动重启（生产反馈：`常驻` 模式名不副实）。
+ *
+ * 背景：用户反馈「应用部署为什么要管模式？单次/常驻/定时 三个选项里，单次与
+ * 常驻行为完全一样」。核对属实——`startApp` 的 runMode 形参此前**零引用**，
+ * 调用点只有 `runMode === 'daemon' || runMode === 'once'` 一个分支（两者同路），
+ * 且进程退出后只上报 stopped/failed，没有任何重启逻辑。于是"常驻"应用崩一次
+ * 就永久躺平，与"单次"无差别——这不是配置问题，是功能没实现。
+ *
+ * 现在让三个模式真正有区别：
+ *   · once      → 跑完即止，退出后上报 stopped/failed（原行为，不变）；
+ *   · daemon    → **异常退出自动重启**（带指数退避），干净退出（code 0）不重启
+ *                 ——"常驻服务自己正常结束了"应尊重其意图，而不是把它拉起来；
+ *   · scheduled → 只落盘不启动（原行为，不变），由任务调度触发。
+ *
+ * 退避策略：1s 起、每次翻倍、上限 60s；连续失败 **10** 次后放弃并上报 failed
+ * （避免"启动即崩"的应用把执行器变成忙等循环）。计数在**成功运行满 60s** 后
+ * 清零——即"稳定跑过一分钟"才算一次健康启动，否则慢速崩溃循环也会被当成健康。
+ *
+ * 与既有语义的交互：
+ *   · upgrade/stop/uninstall 都会先 `runningApps.delete()`，而重启定时器在回调
+ *     里重新检查 `runningApps.has()`——被显式停掉的 app 不会自我复活；
+ *   · 执行器自身 gracefulShutdown 时不重启（`deployAbort.signal.aborted` 判定），
+ *     因为停机后本进程即将退出，拉起子进程只会成孤儿。
+ */
+const RESTART_BASE_DELAY_MS = 1_000;
+const RESTART_MAX_DELAY_MS = 60_000;
+const RESTART_MAX_ATTEMPTS = 10;
+/** 连续运行满该时长即视为"一次健康启动"，重启计数清零。 */
+const RESTART_HEALTHY_AFTER_MS = 60_000;
+
+interface DaemonSpec {
+  appRoot: string;
+  deployDir: string;
+  runtime: string;
+  entrypoint: string;
+  envVars: Record<string, string>;
+}
+const daemonSpecs = new Map<string, DaemonSpec>();
+const restartAttempts = new Map<string, number>();
+const restartTimers = new Map<string, NodeJS.Timeout>();
+
+/** 测试用：清空重启状态（避免用例间串扰）。 */
+export function resetDaemonRestartState(): void {
+  for (const t of restartTimers.values()) clearTimeout(t);
+  restartTimers.clear();
+  restartAttempts.clear();
+  daemonSpecs.clear();
+}
+
+/**
+ * 进程退出后的 daemon 重启决策。返回 true 表示已安排重启。
+ *
+ * "是否该继续运行"的唯一权威是 `daemonSpecs` 登记（而非 runningApps——退出
+ * 处理器里 runningApps 已被 delete，用它判定会让重启永不发生）：
+ *   · 登记在  → 这是应常驻的 daemon，异常退出即重启；
+ *   · 登记不在 → 非 daemon，或已被 stop/uninstall/upgrade 显式摘除 → 不重启。
+ * 摘除动作统一收敛到 unregisterDaemon()，故"停机意图"只有一个表达点。
+ */
+export function scheduleDaemonRestart(
+  deploymentId: string,
+  exitCode: number | null,
+): boolean {
+  const spec = daemonSpecs.get(deploymentId);
+  if (!spec) return false;
+  // 执行器自身正在停机 → 不重启（拉起即孤儿）。
+  if (deployAbort.signal.aborted) return false;
+  // 干净退出（code 0）= 应用主动结束，不重启。
+  if (exitCode === 0) return false;
+
+  const attempts = (restartAttempts.get(deploymentId) ?? 0) + 1;
+  restartAttempts.set(deploymentId, attempts);
+  if (attempts > RESTART_MAX_ATTEMPTS) {
+    logger.error(
+      `[deploy] App ${deploymentId} crashed ${attempts - 1} times; giving up auto-restart`,
+    );
+    unregisterDaemon(deploymentId);
+    void reportStatus(
+      deploymentId,
+      'failed',
+      undefined,
+      `Exited with code ${exitCode} and exceeded ${RESTART_MAX_ATTEMPTS} auto-restart attempts`,
+    );
+    return false;
+  }
+
+  const delay = Math.min(
+    RESTART_BASE_DELAY_MS * 2 ** (attempts - 1),
+    RESTART_MAX_DELAY_MS,
+  );
+  logger.warn(
+    `[deploy] App ${deploymentId} exited with code ${exitCode}; ` +
+      `auto-restart #${attempts} in ${delay}ms (daemon mode)`,
+  );
+  // unref：重启定时器不应阻止执行器进程退出。
+  const timer = setTimeout(() => {
+    restartTimers.delete(deploymentId);
+    // 定时器触发时再次确认：期间可能已被 stop/uninstall/新部署接管。
+    if (deployAbort.signal.aborted) return;
+    const current = daemonSpecs.get(deploymentId);
+    if (!current) return;
+    try {
+      startApp(
+        deploymentId,
+        current.appRoot,
+        current.deployDir,
+        current.runtime,
+        current.entrypoint,
+        'daemon',
+        current.envVars,
+      );
+    } catch (err: any) {
+      logger.error(
+        `[deploy] Auto-restart of ${deploymentId} failed to spawn: ${err.message}`,
+      );
+      void reportStatus(deploymentId, 'failed', undefined, err.message);
+    }
+  }, delay);
+  timer.unref?.();
+  restartTimers.set(deploymentId, timer);
+  return true;
+}
+
+/** 登记 daemon 重启所需的启动参数（startApp 内调用）。 */
+function registerDaemonSpec(deploymentId: string, spec: DaemonSpec): void {
+  daemonSpecs.set(deploymentId, spec);
+}
+
+/** 摘除 daemon 登记（stop/uninstall/upgrade 接管时调用），使重启不再发生。 */
+function unregisterDaemon(deploymentId: string): void {
+  daemonSpecs.delete(deploymentId);
+  restartAttempts.delete(deploymentId);
+  const t = restartTimers.get(deploymentId);
+  if (t) {
+    clearTimeout(t);
+    restartTimers.delete(deploymentId);
+  }
+}
+
 /** Report app status back to admin-api */
 async function reportStatus(
   deploymentId: string,
@@ -334,11 +473,43 @@ function startApp(
   // Report started
   reportStatus(deploymentId, 'running', child.pid);
 
+  // daemon 重启登记：仅在 daemon 模式下登记（once/scheduled 不重启）。
+  // 登记必须在 exit 处理之前完成——启动即崩的应用会立刻触发 exit。
+  if (runMode === 'daemon') {
+    registerDaemonSpec(deploymentId, {
+      appRoot,
+      deployDir,
+      runtime,
+      entrypoint,
+      envVars,
+    });
+    // 稳定运行满 RESTART_HEALTHY_AFTER_MS 视为一次健康启动 → 重启计数清零。
+    // unref：不阻止执行器进程退出。
+    const healthTimer = setTimeout(() => {
+      if (runningApps.get(deploymentId) === child) {
+        restartAttempts.delete(deploymentId);
+      }
+    }, RESTART_HEALTHY_AFTER_MS);
+    healthTimer.unref?.();
+    child.once('exit', () => clearTimeout(healthTimer));
+  } else {
+    // 非 daemon：确保不会残留上一轮（同一 deploymentId 先 daemon 后改 once）的登记。
+    unregisterDaemon(deploymentId);
+  }
+
   child.on('exit', (code) => {
     runningApps.delete(deploymentId);
     runningAppRoots.delete(deploymentId);
     if (!shouldReportProcessExit(deploymentId)) {
       logger.info(`[deploy] Suppressed exit report for restarted app ${deploymentId}`);
+      // 就地重启（upgrade 路径）：本次退出是刻意为之，不触发自动重启逻辑——
+      // 调用方会立即用新 release 重新 startApp。但仍需安排后续重启能力，
+      // 故此处直接 return（新 startApp 会重新登记 spec）。
+      return;
+    }
+    // daemon 异常退出 → 安排自动重启。返回 true 表示已接管，不再上报终态
+    // （重启成功会重新上报 running；放弃重启时由 scheduleDaemonRestart 上报 failed）。
+    if (scheduleDaemonRestart(deploymentId, code)) {
       return;
     }
     if (code === 0) {
@@ -354,6 +525,11 @@ function startApp(
     runningApps.delete(deploymentId);
     runningAppRoots.delete(deploymentId);
     logger.error(`[deploy] App ${deploymentId} error: ${err.message}`);
+    // spawn 失败（ENOENT 等）同样走重启决策：daemon 下可能是瞬时故障
+    // （例如解释器被临时占用）。scheduleDaemonRestart 内部有次数上限兜底。
+    if (scheduleDaemonRestart(deploymentId, null)) {
+      return;
+    }
     reportStatus(deploymentId, 'failed', undefined, err.message);
   });
 }
@@ -449,6 +625,42 @@ function readCurrentTarget(currentLink: string): string | null {
     logger.warn(`[deploy] Failed to read current release link: ${err.message}`);
   }
   return null;
+}
+
+/**
+ * 同一 `(version, deploymentId)` **重复部署**时，`releaseKey` 与上一次逐字节
+ * 相同，于是 `finalReleaseDir` 指向**上一次发布的那个目录**——也就是 `current`
+ * 正在指向的、可能仍有进程在跑的活目录。后果有三，第三个是数据完整性损伤：
+ *
+ *   1. `removePathIfExists(finalReleaseDir)` 会删掉活 release，retention 想保留
+ *      的"历史版本"实际从未保留（每次覆盖同一个目录名）；
+ *   2. Windows 上若该目录内还有被占用的文件（进程未及退出、或 scheduled 模式下
+ *      有任务正在跑），删除直接 `EPERM`/`EBUSY`，部署失败；
+ *   3. **最严重**：失败路径的 `restoreCurrentRelease(currentLink,
+ *      previousCurrentTarget)` 要把 `current` 指回上一个 release，而那个目录
+ *      恰好就是本次被删掉的 `finalReleaseDir` —— 于是回滚把 `current` 指向一个
+ *      **已不存在的目录**，应用彻底不可用，且日志只说"恢复失败"。
+ *
+ * 修复：目标目录已存在时改用带唯一后缀的新目录，让每次部署都真正拿到一个新
+ * release。首次部署（目录不存在）保持原命名不变，故既有单测与磁盘布局不受影响。
+ *
+ * 注意 `buildDeploymentPaths` 仍是**纯函数**（不碰文件系统）——它被单测按精确
+ * 路径断言，且"要不要让路"是运行时判定，不属于路径推导。
+ */
+export function resolveReleasePaths(paths: DeploymentPaths): DeploymentPaths {
+  if (!fs.existsSync(paths.finalReleaseDir)) return paths;
+  const suffix = `${Date.now().toString(36)}-${process.pid.toString(36)}`;
+  const releaseKey = `${paths.releaseKey}-${suffix}`;
+  logger.info(
+    `[deploy] Release dir ${paths.releaseKey} already exists; ` +
+      `publishing to ${releaseKey} instead (keeps the live release intact)`,
+  );
+  return {
+    ...paths,
+    releaseKey,
+    finalReleaseDir: path.join(paths.releasesDir, releaseKey),
+    extractDir: path.join(paths.tmpDir, `${releaseKey}-extracting`),
+  };
 }
 
 function removePathIfExists(target: string): void {
@@ -557,6 +769,33 @@ export function rotateAppLogIfNeeded(
   }
 }
 
+/**
+ * Atomically repoint `<appRoot>/current` at `targetDir`.
+ *
+ * 生产故障（Windows 升级必失败）：`EPERM: operation not permitted, rename
+ * '...\current.next-<pid>-<ts>' -> '...\current'`。
+ *
+ * 根因是**平台差异**，不是权限问题：Windows 上 `current` 是 **junction**
+ * （下方 symlinkSync 的 'junction' 分支），而"把 junction 改名覆盖到已存在
+ * 的 junction 上"不被允许 —— 抛 `EPERM`。POSIX 上同样的 rename 覆盖目录符号
+ * 链接是合法操作，故 Linux/macOS 从不复现。
+ *
+ * 原实现只 catch 了 `EEXIST`（POSIX 风格的"目标已存在"），于是 Windows 的
+ * `EPERM` 直接冒泡：**首次部署永远成功**（current 尚不存在，rename 无冲突），
+ * **第二次起必失败**。这个"装了 1.0.0 成功、升级就炸"的形状正是本缺陷。
+ *
+ * 修法：Windows 分支先删旧链接再 rename。删除与重建之间有一个极短窗口
+ * `current` 不存在，但这在本函数内是可接受的 —— 该窗口内没有任何读方
+ * （部署是串行的：同一 deploymentId 的并发由 admin-api 的在途守卫拦下），
+ * 且 `restoreCurrentRelease` 会在失败路径上复原。反过来若不做删除，
+ * Windows 上根本没有可用的成功路径。
+ *
+ * `unlinkSync` 对 junction 是安全且正确的：它只删链接本身，**不触碰目标
+ * 目录内容**（已实测：删链接后 release 目录与其内部文件完好）。这里刻意
+ * 不用 `removePathIfExists`（它走 `rmSync(recursive)`）——递归删除作用在
+ * junction 上虽也不会穿透，但语义上"删一棵树"远不如"删一个链接"精确，
+ * 一旦将来 Node 行为变化，递归删除误穿透会直接毁掉 release 内容。
+ */
 function switchCurrentRelease(currentLink: string, targetDir: string): void {
   const tmpLink = `${currentLink}.next-${process.pid}-${Date.now()}`;
   removePathIfExists(tmpLink);
@@ -564,8 +803,17 @@ function switchCurrentRelease(currentLink: string, targetDir: string): void {
   try {
     fs.renameSync(tmpLink, currentLink);
   } catch (err: any) {
-    if (err?.code !== 'EEXIST') throw err;
-    fs.unlinkSync(currentLink);
+    // EEXIST: POSIX 风格的"目标已存在"。
+    // EPERM:  Windows 上 rename 覆盖已存在的 junction（本缺陷）。两者都走
+    //         "先删旧链接再重命名"，语义等价。
+    if (err?.code !== 'EEXIST' && err?.code !== 'EPERM') throw err;
+    // 删除链接本身；目标目录内容不受影响（见函数头注释）。
+    try {
+      fs.unlinkSync(currentLink);
+    } catch (unlinkErr: any) {
+      // ENOENT: 并发/重入导致链接已不在 —— 继续 rename 即可，不算失败。
+      if (unlinkErr?.code !== 'ENOENT') throw unlinkErr;
+    }
     fs.renameSync(tmpLink, currentLink);
   }
 }
@@ -684,12 +932,18 @@ deployRouter.post('/deploy', async (req: Request, res: Response) => {
   if (!isSafePathSegment(appId)) {
     return res.status(400).json({ error: 'applicationId contains unsupported characters' });
   }
-  const paths = buildDeploymentPaths(config.workDir, appId, deploymentId, version);
+  // let（非 const）：下方 resolveReleasePaths 可能因目标目录已存在而换用带唯一
+  // 后缀的新 release 目录，catch 块与后续步骤都要用换过之后的路径。
+  let paths = buildDeploymentPaths(config.workDir, appId, deploymentId, version);
 
   // Acknowledge immediately; deploy runs async
   res.json({ ok: true, deploymentId });
 
   setImmediate(async () => {
+    // 先让路：目标 release 目录已存在（同 version+deploymentId 重复部署）时改用
+    // 新目录，避免删掉 current 正在指向的活 release —— 否则失败回滚会把 current
+    // 指向已删除的目录。详见 resolveReleasePaths 注释。
+    paths = resolveReleasePaths(paths);
     const previousCurrentTarget = readCurrentTarget(paths.currentLink);
     let switchedCurrent = false;
     try {
@@ -697,6 +951,11 @@ deployRouter.post('/deploy', async (req: Request, res: Response) => {
       if (upgrade && runningApps.has(deploymentId)) {
         const existing = runningApps.get(deploymentId)!;
         suppressNextRestartExitReport(deploymentId);
+        // 摘除 daemon 登记：这次退出是升级刻意为之，绝不能被自动重启逻辑
+        // 当成崩溃而把旧 release 的进程再拉起来（下方会用新 release 重新
+        // startApp，届时重新登记）。suppressNextRestartExitReport 只压制
+        // "上报终态"，不阻止重启，两者职责不同、必须都做。
+        unregisterDaemon(deploymentId);
         await new Promise<void>((resolve) => {
           const gracefulTimeout = setTimeout(() => {
             logger.warn(`[deploy] Graceful stop timed out for ${deploymentId}, sending SIGKILL`);
@@ -840,6 +1099,9 @@ deployRouter.post('/deploy', async (req: Request, res: Response) => {
  * 不退 10s 后升级 SIGKILL。返回是否确有 daemon 被停。
  */
 function stopRunningApp(deploymentId: string): boolean {
+  // 先摘除 daemon 登记：这是"停机意图"的唯一表达点——若不摘，exit 处理器会
+  // 把这次刻意停机当成崩溃并自动重启，stop/uninstall 直接失效。
+  unregisterDaemon(deploymentId);
   const child = runningApps.get(deploymentId);
   if (!child) return false;
   killProcessTree(child, 'SIGTERM');
@@ -890,13 +1152,27 @@ deployRouter.post('/app-uninstall', (req: Request, res: Response) => {
 
   // 先停 daemon：本应用名下（appRoot 在目标 apps/<appId> 内）的全部进程，
   // rm -rf 不会杀死已启动进程（POSIX unlink 后 inode 存活），必须显式停。
+  //
+  // 两个登记表都要扫：runningAppRoots 只覆盖"当前活着"的进程，而正在退避等待
+  // 重启的 daemon 已从 runningApps/runningAppRoots 摘除、只剩 daemonSpecs 里的
+  // 登记——只扫前者会让它在 rm -rf 之后被定时器重新拉起，指向已删除的目录。
   const stopped: string[] = [];
+  const targets = new Set<string>();
   for (const [deploymentId, root] of runningAppRoots) {
     const resolvedRoot = path.resolve(root);
     if (resolvedRoot === appRoot || resolvedRoot.startsWith(appRoot + path.sep)) {
-      stopRunningApp(deploymentId);
-      stopped.push(deploymentId);
+      targets.add(deploymentId);
     }
+  }
+  for (const [deploymentId, spec] of daemonSpecs) {
+    const resolvedRoot = path.resolve(spec.appRoot);
+    if (resolvedRoot === appRoot || resolvedRoot.startsWith(appRoot + path.sep)) {
+      targets.add(deploymentId);
+    }
+  }
+  for (const deploymentId of targets) {
+    stopRunningApp(deploymentId);
+    stopped.push(deploymentId);
   }
 
   let removed = false;
@@ -925,4 +1201,20 @@ deployRouter.get('/app-status', (_req: Request, res: Response) => {
   res.json(status);
 });
 
-export { runningApps, runningAppRoots };
+// startApp 一并导出供测试直接驱动（deploy-restart.spec.ts 需要"以 daemon 模式
+// 启动后触发退出"这条链路；走 HTTP 路由会绕进 mock 过的 fs/child_process 分支，
+// 反而测不到重启决策本身）。
+//
+// switchCurrentRelease / restoreCurrentRelease 同样导出：它们是 Windows EPERM
+// 缺陷的**修复点本身**。仅测试"裸 rename 会抛 EPERM"只能证明平台语义，无法证明
+// 本函数处理了它——实测把 EPERM 从 catch 条件里删掉，只测平台语义的用例全绿
+// （变异存活）。导出后可直接断言"junction 覆盖场景下本函数不抛且 current 指向
+// 新 release"，让该缺陷真正被回归测试覆盖。
+export {
+  runningApps,
+  runningAppRoots,
+  daemonSpecs,
+  startApp,
+  switchCurrentRelease,
+  restoreCurrentRelease,
+};
