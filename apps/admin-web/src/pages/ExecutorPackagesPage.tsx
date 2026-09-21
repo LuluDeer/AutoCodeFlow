@@ -32,8 +32,8 @@ interface PkgRow {
   platform?: string; status: string; fileSize?: number;
   uploadedBy?: string; createdAt: string; originalFilename?: string;
 }
-interface Executor { id: string; name: string; address: string; status: string; }
-interface PushResult { executorId: string; address: string; success: boolean; error?: string; }
+interface Executor { id: string; name: string; address: string; status: string; executorVersion?: string; }
+interface PushResult { executorId: string; address: string; success: boolean; error?: string; queued?: boolean; commandId?: string; }
 
 /**
  * 安装包类型选项——必须与后端 `ExecutorPackageType`
@@ -118,6 +118,31 @@ export default function ExecutorPackagesPage() {
   // P2-8：「推送全部」的唯一目标集合——推送范围/按钮禁用/计数文案三处共用。
   const onlineExecutors = executors.filter(e => e.status === 'online');
 
+  // 补充 P2：机队执行器版本分布——包表与机队 executorVersion 关联，让管理员一眼
+  // 看到执行器是否处在混合版本（漂移）状态。旧实现整页无任何机队版本信息，
+  // 推送了新包也不知道哪些执行器还跑旧版。
+  const [fleetVersions, setFleetVersions] = useState<Record<string, number>>({});
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const list = await executorsApi.list();
+        if (cancelled) return;
+        const dist: Record<string, number> = {};
+        for (const e of list ?? []) {
+          const v = e.executorVersion || 'unknown';
+          dist[v] = (dist[v] ?? 0) + 1;
+        }
+        setFleetVersions(dist);
+      } catch {
+        // 机队版本摘要非关键路径：失败静默，不影响包表主流程。
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+  const fleetVersionKeys = Object.keys(fleetVersions);
+  const fleetDriftCount = fleetVersionKeys.length;
+
   const load = useCallback(async () => {
     const seq = ++loadSeq.current;
     setLoading(true);
@@ -152,6 +177,16 @@ export default function ExecutorPackagesPage() {
     // 与 AppDeploymentPage 对齐：依赖变化/卸载时作废本 effect 发起的旧请求。
     return () => { loadSeq.current += 1; };
   }, [load]);
+
+  // 补充 P2：自动刷新——包表/推送结果会异步变化（入队任务完成、状态翻转），
+  // 旧实现必须手动点刷新。30s 轮询一次；弹窗打开或正在加载时跳过，避免打断交互。
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (loading || uploadOpen || !!pushTarget) return;
+      void load();
+    }, 30000);
+    return () => clearInterval(timer);
+  }, [load, loading, uploadOpen, pushTarget]);
 
   const handleUpload = async (values: Record<string, unknown>) => {
     // normFileList 已将字段值收敛为 UploadFile[]（见 utils/upload.ts）。
@@ -348,6 +383,21 @@ export default function ExecutorPackagesPage() {
         <Text type="secondary">{t('execPkg.count', { count: total })}</Text>
       </Space>
 
+      {/* 补充 P2：机队执行器版本分布摘要——多版本并存即漂移，橙色 Tag 提示。 */}
+      {fleetVersionKeys.length > 0 && (
+        <Space style={{ marginBottom: 12 }} size={4} wrap>
+          <Text type="secondary" style={{ fontSize: 12 }}>{t('execPkg.fleetVersions.label')}:</Text>
+          {fleetVersionKeys.sort().map(v => (
+            <Tag key={v} color={fleetDriftCount > 1 ? 'orange' : 'default'}>
+              {v} × {fleetVersions[v]}
+            </Tag>
+          ))}
+          {fleetDriftCount > 1 && (
+            <Text type="warning" style={{ fontSize: 12 }}>{t('execPkg.fleetVersions.drift')}</Text>
+          )}
+        </Space>
+      )}
+
       <Table<PkgRow>
         rowKey="id" columns={columns} dataSource={rows} size="small"
         // UI 打磨：loading 直传——此前恒 false，翻页/刷新期间无任何反馈；
@@ -508,11 +558,15 @@ export default function ExecutorPackagesPage() {
             {pushResults.map((r, i) => (
               <Alert
                 key={i}
-                type={r.success ? 'success' : 'error'}
+                // P1-10：queued（执行器忙、安装已入队异步执行）既不是绿色成功也不是
+                // 红色失败——旧实现 success=true 的 queued 行显示成绿色成功，让管理员
+                // 误以为包已装好；失败/入队/成功三态必须区分。
+                type={r.queued ? 'info' : r.success ? 'success' : 'error'}
                 showIcon
                 title={
                   <>
                     <Text strong>{r.address || t('execPkg.push.task')}</Text>
+                    {r.queued && <Text type="secondary"> — {t('execPkg.push.queued')}</Text>}
                     {r.error && <Text type="danger"> — {r.error}</Text>}
                   </>
                 }
