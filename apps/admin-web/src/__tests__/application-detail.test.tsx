@@ -168,7 +168,8 @@ describe('ApplicationDetailPage 详情加载（QA-03 第二阶段）', () => {
     // 页头 title + 面包屑（多命中容忍）
     expect((await screen.findAllByText('demo-app')).length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText('1.2.0').length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText('python').length).toBeGreaterThanOrEqual(1);
+    // D-P2-02b：运行时读面走 runtimeLabel（python -> Python），不再裸出后端 token。
+    expect(screen.getAllByText('Python').length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText('正常').length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText(/github\.com\/acme\/demo\.git/).length).toBeGreaterThanOrEqual(1);
     expect(mockedApps.get).toHaveBeenCalledWith('app-1');

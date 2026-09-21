@@ -82,10 +82,15 @@ describe('UX-04 行为层：copyText 如实返回真实结果', () => {
 });
 
 describe('UX-04 源码层：三处调用点不得再 fire-and-forget', () => {
+  // D-P1-2（设计审计 2026-09-22）：把 AppDeploymentPage（失败详情复制）与
+  // ExecutionDetailPage（traceId 复制）两处裸 clipboard 也纳入守卫——它们此前
+  // 一处静默 catch、一处 .then() 无 rejection 分支，非安全上下文下假成功/无反馈。
   const SITES = [
     'pages/settings/ApiKeysSettings.tsx',
     'pages/settings/EventSubscriptionsSettings.tsx',
     'pages/ExecutorInstallWizardPage.tsx',
+    'pages/AppDeploymentPage.tsx',
+    'pages/ExecutionDetailPage.tsx',
   ];
 
   it('不再直接调用 navigator.clipboard.writeText', () => {
@@ -121,6 +126,26 @@ describe('UX-04 源码层：三处调用点不得再 fire-and-forget', () => {
     expect(eventSub).toMatch(
       /message\.error\(t\('eventSub\.createResult\.copyFail'\)\)/,
     );
+  });
+
+  it('D-P1-2：AppDeploymentPage 与 ExecutionDetailPage 复制失败分支显式报错（非静默）', () => {
+    // 回归：AppDeploymentPage 此前是 try/await/navigator.clipboard.writeText +
+    // 空 catch（失败零反馈）；ExecutionDetailPage 此前是 .then(onSuccess, onError)
+    // 但非安全上下文下 navigator.clipboard 为 undefined，同步 TypeError 且
+    // .then 链不建立。两处都必须走 copyText 并在失败时 message.error。
+    const deploy = stripComments(read('pages/AppDeploymentPage.tsx'));
+    const execDetail = stripComments(read('pages/ExecutionDetailPage.tsx'));
+
+    for (const [src, label] of [[deploy, 'AppDeploymentPage'], [execDetail, 'ExecutionDetailPage']] as const) {
+      expect(src, `${label} 未使用 copyText`).toContain('copyText(');
+      expect(/if\s*\(\s*ok\s*\)/.test(src), `${label} 未按返回值分支`).toBe(true);
+      expect(/navigator\.clipboard\??\.writeText/.test(src), `${label} 仍裸调 navigator.clipboard.writeText`).toBe(false);
+      // 失败分支必须 message.error，不得静默吞掉
+      expect(/message\.error\(/.test(src), `${label} 复制失败未 message.error`).toBe(true);
+    }
+    // 失败文案走已有共享/专属键（common.copyFailed / execDetail.copyFail）
+    expect(deploy).toMatch(/message\.error\(t\('common\.copyFailed'\)\)/);
+    expect(execDetail).toMatch(/message\.error\(t\('execDetail\.copyFail'\)\)/);
   });
 
   it('i18n：三个 copyFail 键在 zh/en 两套词条里都存在', () => {
