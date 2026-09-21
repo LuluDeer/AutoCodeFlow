@@ -286,16 +286,15 @@ export default () => ({
   // 为「既有宽松语义，需产品拍板后才收紧」）。后果：能 list 到任务的人就能触发
   // 别人的生产任务（备份/部署/清理），也能 pause/resume 掉别人的定时任务。
   //
-  // 取值（默认 `any`，**零行为变化**）：
-  //   - `any`（默认）：保留既有宽松语义——任何已登录用户可 trigger/pause/resume
-  //     任意任务（仍保留 AUTH-02 的 viewer 拒绝）。老部署升级后行为不变。
-  //   - `owner`：仅 ADMIN、任务属主、或该项目内具备 editor 及以上角色者。
-  //     新部署建议开启；团队协作场景下「同项目成员可跑彼此任务」仍被允许。
-  //
-  // 之所以做成开关而非直接收紧：这是**行为变更**，硬改会让现有依赖"我能跑同事
-  // 任务"的团队全体撞 403。给运维显式选择权，比单方面替他们决定更稳妥。
+  // 取值（审计 E-P1-S1：默认从 `any` 翻为 `owner`，安全缺省）：
+  //   - `owner`（**默认**）：未设置 TASK_OPERATE_SCOPE 时即收紧——仅 ADMIN、任务
+  //     属主、或该项目内具备 editor 及以上角色者可 trigger/pause/resume；非成员
+  //     按 403。此前默认 `any` 会让任何登录用户操作任意项目任务（E-P1-S1）。
+  //   - `any`：运维显式设置 TASK_OPERATE_SCOPE=any 才回退旧宽松语义——任何已登录
+  //     用户可操作任意任务（仍保留 AUTH-02 的 viewer 拒绝）。仅确有「全员可跑」
+  //     需求的团队显式 opt-out。
   taskScope: {
-    operate: process.env.TASK_OPERATE_SCOPE === "owner" ? "owner" : "any",
+    operate: process.env.TASK_OPERATE_SCOPE === "any" ? "any" : "owner",
   },
   // N23: dedicated secret for per-execution callback tokens (HMAC key
   // material). Optional: falls back to the executor shared token when

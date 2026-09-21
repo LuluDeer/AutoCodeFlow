@@ -4655,10 +4655,65 @@ describe("TASK-SCOPE-01: assertCanOperate 归属口径开关", () => {
     service = module.get(TaskService);
   }
 
-  describe("默认档 `any`：零行为变化（保留既有宽松语义）", () => {
-    beforeEach(async () => await build(undefined));
+  // 审计 E-P1-S1：默认值已从 `any` 翻为 `owner`。生产未设置 TASK_OPERATE_SCOPE
+  // 时，configuration.ts 现在返回 "owner"（见 configuration.ts taskScope.operate）。
+  // 本组用 build("owner") 钉住「新默认」的安全属性——这是本次翻转的核心回归：
+  // 旧默认下非属主非成员会穿透放行（assertCanOperate 仅拒 viewer），现在必须 403。
+  describe("生产默认（未配置 TASK_OPERATE_SCOPE → owner）：收紧", () => {
+    beforeEach(async () => await build("owner"));
 
-    it("非属主的普通用户仍可操作（既有语义不变）", async () => {
+    it("非成员（非属主、非项目成员）trigger 任意任务被 403", async () => {
+      await expect(service.assertCanOperate(ownedRow, other)).rejects.toThrow(
+        ForbiddenException,
+      );
+    });
+
+    it("属主本人仍可操作", async () => {
+      await expect(
+        service.assertCanOperate(ownedRow, owner),
+      ).resolves.toBeUndefined();
+    });
+
+    it("项目 editor 仍可操作（同项目成员可跑彼此任务）", async () => {
+      access.resolveRole.mockResolvedValue("editor");
+      await expect(
+        service.assertCanOperate(ownedRow, other),
+      ).resolves.toBeUndefined();
+    });
+
+    it("ADMIN 放行", async () => {
+      await expect(
+        service.assertCanOperate(ownedRow, admin),
+      ).resolves.toBeUndefined();
+    });
+
+    it("项目 admin 放行", async () => {
+      access.resolveRole.mockResolvedValue("admin");
+      await expect(
+        service.assertCanOperate(ownedRow, other),
+      ).resolves.toBeUndefined();
+    });
+
+    it("项目 viewer 被拒（AUTH-02 硬约束，与开关无关）", async () => {
+      access.resolveRole.mockResolvedValue("viewer");
+      await expect(service.assertCanOperate(ownedRow, other)).rejects.toThrow(
+        ForbiddenException,
+      );
+    });
+
+    it("拒绝文案指向 TASK_OPERATE_SCOPE=owner", async () => {
+      await expect(service.assertCanOperate(ownedRow, other)).rejects.toThrow(
+        /TASK_OPERATE_SCOPE=owner/,
+      );
+    });
+  });
+
+  // 旧宽松语义现在只能由运维显式 TASK_OPERATE_SCOPE=any 触发（opt-out）。
+  // 本组用 build("any") 保留对该显式档的回归覆盖——证明回退开关仍可用。
+  describe("显式 opt-out `any`：旧宽松语义（仅运维显式关闭收紧）", () => {
+    beforeEach(async () => await build("any"));
+
+    it("非属主普通用户仍可操作（显式 any 档既有语义）", async () => {
       await expect(
         service.assertCanOperate(ownedRow, other),
       ).resolves.toBeUndefined();
@@ -4670,58 +4725,15 @@ describe("TASK-SCOPE-01: assertCanOperate 归属口径开关", () => {
       ).resolves.toBeUndefined();
     });
 
+    it("非成员（resolveRole 返回 null）在显式 any 档仍放行", async () => {
+      access.resolveRole.mockResolvedValue(null);
+      await expect(
+        service.assertCanOperate(ownedRow, other),
+      ).resolves.toBeUndefined();
+    });
+
     it("仍拒绝项目 viewer（AUTH-02 硬约束，与开关无关）", async () => {
       access.resolveRole.mockResolvedValue("viewer");
-      await expect(service.assertCanOperate(ownedRow, other)).rejects.toThrow(
-        ForbiddenException,
-      );
-    });
-  });
-
-  describe("收紧档 `owner`：仅 ADMIN / 属主 / 项目 editor 及以上", () => {
-    beforeEach(async () => await build("owner"));
-
-    it("ADMIN 放行", async () => {
-      await expect(
-        service.assertCanOperate(ownedRow, admin),
-      ).resolves.toBeUndefined();
-    });
-
-    it("属主本人放行", async () => {
-      await expect(
-        service.assertCanOperate(ownedRow, owner),
-      ).resolves.toBeUndefined();
-    });
-
-    it("非属主普通用户被拒（这是与 `any` 档的关键差别）", async () => {
-      await expect(service.assertCanOperate(ownedRow, other)).rejects.toThrow(
-        /TASK_OPERATE_SCOPE=owner/,
-      );
-    });
-
-    it("项目 editor 放行（团队协作：同项目成员仍可跑彼此任务）", async () => {
-      access.resolveRole.mockResolvedValue("editor");
-      await expect(
-        service.assertCanOperate(ownedRow, other),
-      ).resolves.toBeUndefined();
-    });
-
-    it("项目 admin 放行", async () => {
-      access.resolveRole.mockResolvedValue("admin");
-      await expect(
-        service.assertCanOperate(ownedRow, other),
-      ).resolves.toBeUndefined();
-    });
-
-    it("项目 viewer 被拒", async () => {
-      access.resolveRole.mockResolvedValue("viewer");
-      await expect(service.assertCanOperate(ownedRow, other)).rejects.toThrow(
-        ForbiddenException,
-      );
-    });
-
-    it("非成员（resolveRole 返回 null）被拒", async () => {
-      access.resolveRole.mockResolvedValue(null);
       await expect(service.assertCanOperate(ownedRow, other)).rejects.toThrow(
         ForbiddenException,
       );
