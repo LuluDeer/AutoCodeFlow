@@ -59,6 +59,8 @@ const makeRepo = (overrides: Partial<Record<string, jest.Mock>> = {}) => ({
     update: jest.fn().mockReturnThis(),
     set: jest.fn().mockReturnThis(),
     where: jest.fn().mockReturnThis(),
+    // E-P1-R3: sweep UPDATE 现在追加 andWhere 状态守卫，mock 链需补齐该方法。
+    andWhere: jest.fn().mockReturnThis(),
     execute: jest.fn().mockResolvedValue({ affected: 1 }),
   })),
   ...overrides,
@@ -1283,6 +1285,51 @@ describe("AppDeploymentService", () => {
       expect(String(setArg.statusMessage)).toMatch(/5 minutes/);
       // PENDING rows have no version snapshot yet — nothing to mark failed.
       expect(versionRepo.save).not.toHaveBeenCalled();
+    });
+
+    // E-P1-R3: 旧实现 .where("id IN (:...ids)") 无状态条件——SELECT 快照与
+    // UPDATE 之间，并发心跳把某行 PENDING/DEPLOYING→RUNNING 后，本 cron 仍会
+    // 无条件按 id 把它刷成 FAILED。守卫要求源状态仍为预期态，使这类行 affected=0。
+    it("E-P1-R3: sweep UPDATE keeps a status guard so a concurrent heartbeat RUNNING flip is not overwritten", async () => {
+      // 旧实现（无 andWhere）在这条用例下不会校验状态条件——守卫断言即红。
+      const mixed = [
+        {
+          id: "d-pending",
+          status: DeploymentStatus.PENDING,
+          statusMessage: null,
+          deployedVersion: null,
+          deployedCommit: null,
+        },
+        {
+          id: "d-deploy",
+          status: DeploymentStatus.DEPLOYING,
+          statusMessage: null,
+          deployedVersion: null,
+          deployedCommit: null,
+        },
+      ];
+      repo.find.mockResolvedValue(mixed);
+      versionRepo.findOne.mockResolvedValue(null);
+
+      await service.detectStuckDeployments();
+
+      // 两个桶各一条守卫 UPDATE：pendingIds 先、otherIds 后。
+      expect(repo.createQueryBuilder).toHaveBeenCalledTimes(2);
+      const pendingQb = repo.createQueryBuilder.mock.results[0].value;
+      const otherQb = repo.createQueryBuilder.mock.results[1].value;
+      expect(pendingQb.andWhere).toHaveBeenCalledWith(
+        "status = :expectedStatus",
+        { expectedStatus: DeploymentStatus.PENDING },
+      );
+      expect(otherQb.andWhere).toHaveBeenCalledWith(
+        "status IN (:...expectedStatuses)",
+        {
+          expectedStatuses: [
+            DeploymentStatus.DEPLOYING,
+            DeploymentStatus.UPGRADING,
+          ],
+        },
+      );
     });
 
     it("R6: an upgraded legacy deployment (old createdAt, fresh updatedAt) is not in the stuck set", async () => {

@@ -1728,6 +1728,14 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
         .update(AppDeployment)
         .set({ status: DeploymentStatus.FAILED, statusMessage: PENDING_MSG })
         .where("id IN (:...ids)", { ids: pendingIds })
+        // E-P1-R3: must still require the source status to be PENDING. Between the
+        // SELECT snapshot and this UPDATE, a concurrent heartbeat/advance may have
+        // already moved a row PENDING->RUNNING. Blindly writing by id would clobber
+        // a just-succeeded heartbeat into FAILED; the guarded UPDATE makes such rows
+        // affected=0 so they are not overwritten.
+        .andWhere("status = :expectedStatus", {
+          expectedStatus: DeploymentStatus.PENDING,
+        })
         .execute();
     }
     if (otherIds.length > 0) {
@@ -1736,6 +1744,15 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
         .update(AppDeployment)
         .set({ status: DeploymentStatus.FAILED, statusMessage: TIMEOUT_MSG })
         .where("id IN (:...ids)", { ids: otherIds })
+        // E-P1-R3: same as the pending branch -- a DEPLOYING/UPGRADING row already
+        // advanced to RUNNING by a concurrent heartbeat must not be swept back to
+        // FAILED (affected=0).
+        .andWhere("status IN (:...expectedStatuses)", {
+          expectedStatuses: [
+            DeploymentStatus.DEPLOYING,
+            DeploymentStatus.UPGRADING,
+          ],
+        })
         .execute();
     }
 
