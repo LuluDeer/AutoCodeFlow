@@ -15,6 +15,9 @@ import { useTranslation } from 'react-i18next';
 import { getErrMsg, isFormValidationError } from '../utils/error';
 import { normFileList } from '../utils/upload';
 import { formatDateTime, formatRelativeTime } from '../utils/timeFormat';
+// D-P2-02b（设计审计 2026-09-22）：runtime 读面走唯一事实源 runtimeLabel
+// （与筛选下拉同源；未知值回退原始 token）。
+import { runtimeLabel } from '../utils/runtime-label';
 import { useAuthStore, isAdminUser } from '../store/auth';
 import PageHeader from '../components/PageHeader';
 import PageSkeleton from '../components/PageSkeleton';
@@ -396,7 +399,7 @@ export default function ApplicationListPage() {
       dataIndex: 'runtime',
       key: 'runtime',
       width: 90,
-      render: (v: string) => <Tag color="blue">{v}</Tag>,
+      render: (v: string) => <Tag color="blue">{runtimeLabel(v, t)}</Tag>,
     },
     {
       title: t('appList.col.status'),
@@ -574,6 +577,12 @@ export default function ApplicationListPage() {
         rowKey="id"
         loading={loading}
         scroll={{ x: 1000 }}
+        // D-P2-10（设计审计）：主表此前无 pagination prop，antd 默认分页不带
+        // 总数——用户看不到一共多少应用。补 showTotal（客户端筛选后的总数）。
+        pagination={{
+          showSizeChanger: true,
+          showTotal: (n) => t('appList.total', { count: n }),
+        }}
         locale={{
           emptyText: shouldShowSkeleton(loading, loadError, apps.length)
             ? <PageSkeleton variant="table" />

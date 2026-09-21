@@ -92,7 +92,7 @@ function CreateResultModal(props: {
         type="warning"
         showIcon
         icon={<WarningOutlined />}
-        message={t('apiKeys.result.warnTitle')}
+        title={t('apiKeys.result.warnTitle')}
         description={t('apiKeys.result.warnDesc')}
         style={{ marginBottom: 16 }}
       />
@@ -218,7 +218,7 @@ export default function ApiKeysSettings() {
         type="info"
         showIcon
         style={{ marginBottom: 16 }}
-        message={t('apiKeys.alertMessage')}
+        title={t('apiKeys.alertMessage')}
         description={
           <Text type="secondary">
             {t('apiKeys.alertDescPrefix')}<code>Authorization: Bearer acf_…</code>{t('apiKeys.alertDescSuffix')}

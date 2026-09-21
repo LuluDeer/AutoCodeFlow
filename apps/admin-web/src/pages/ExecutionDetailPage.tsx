@@ -875,11 +875,13 @@ export default function ExecutionDetailPage() {
                   icon={<CopyOutlined />}
                   aria-label={t('execDetail.copyTraceId')}
                   data-testid="copy-trace-id"
-                  onClick={() => {
-                    navigator.clipboard.writeText(data.traceId!).then(
-                      () => message.success(t('execDetail.traceIdCopied')),
-                      () => message.error(t('execDetail.copyFail')),
-                    );
+                  onClick={async () => {
+                    // D-P1-2（设计审计 2026-09-22）：非安全上下文下 navigator.clipboard
+                    // 为 undefined，旧写法同步 TypeError 且 .then 链根本不建立——成功失败
+                    // 均无提示。改走 copyText（降级 execCommand），按返回值如实提示。
+                    const ok = await copyText(data.traceId!);
+                    if (ok) message.success(t('execDetail.traceIdCopied'));
+                    else message.error(t('execDetail.copyFail'));
                   }}
                 />
               </Space>
@@ -1303,7 +1305,7 @@ export default function ExecutionDetailPage() {
                           flexWrap: 'wrap',
                         }}
                       >
-                        <Tag color={RETRY_STATUS_COLOR[link.status] || 'default'}>Attempt #{link.retryCount}</Tag>
+                        <Tag color={RETRY_STATUS_COLOR[link.status] || 'default'}>{t('execDetail.retry.attempt', { n: link.retryCount })}</Tag>
                         {link.execId === data?.id ? (
                           <Text strong>{t('execDetail.retry.currentExec')}</Text>
                         ) : (
@@ -1440,7 +1442,7 @@ export default function ExecutionDetailPage() {
               <Alert
                 type="warning"
                 showIcon
-                message={t('execDetail.retriggerConfirm.differs')}
+                title={t('execDetail.retriggerConfirm.differs')}
                 style={{ marginTop: 8 }}
               />
             )}

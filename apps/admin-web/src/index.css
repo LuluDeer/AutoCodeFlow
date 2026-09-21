@@ -29,7 +29,6 @@
   --color-muted: #f1f5f9;
   --color-border: #e2e8f0;
   --color-destructive: #ef4444;
-  --color-ring: #22c55e;
   /* UX-03（本轮体验审查）：warning 语义色。此前三处「中间档」色阶写成
      var(--color-ring)，而 --color-ring 双主题都是 #22C55E（品牌绿）——于是
      「失败 2 次 / P99 300ms / CPU 70%」全部渲染成健康绿，告警语义丢失。
@@ -91,7 +90,6 @@ html[data-theme='dark'] {
   --color-foreground: #f8fafc;
   --color-muted: #1a1e2f;
   --color-border: #334155;
-  --color-ring: #22c55e;
   /* UX-03：暗面用亮一档的 #F59E0B（与 tokens.ts 的 warning 同源）——
      深底上 #D97706 对比度不足。 */
   --color-warning: #f59e0b;
@@ -316,5 +314,20 @@ html[data-theme='dark'] mark.log-search-hit {
     white-space: normal !important;
     overflow-wrap: anywhere;
     max-width: 100%;
+  }
+}
+
+/* ==========================================================================
+   D-P2-13（设计审计 2026-09-22）：reduced-motion 兜底。
+   照 apps/executor-desktop/src/renderer/styles/app.css:1892 同款——只压
+   transition / animation / 平滑滚动，**不动焦点环**（--color-focus-ring 与
+   a11y-focus.css 的焦点可见性是独立诉求，不在此削减）。
+   ========================================================================== */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
   }
 }
