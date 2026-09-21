@@ -531,3 +531,51 @@ export function deriveRuntimeMismatch(
   if (a === null || b === null) return null;
   return a !== b;
 }
+
+/** 后端读路径给每个 secret 叶子返回的字面量（与 admin-api 的 SECRET_MASK_LITERAL 同值）。 */
+const SECRET_MASK_LITERAL = '******';
+
+/**
+ * SEC-02 续（生产故障）：secrets 提交前的**掩码闸门**。
+ *
+ * 掩码（`******`）是读路径的产物，不是凭据。一旦它进入请求体，后端会把字面量
+ * `******` 当成真实值落库——真实凭据被不可逆覆盖，而 UI 上键还在、任务却报
+ * 「缺少凭据」，正是本次生产故障最难查的形态。后端已按**逐键合并**处理
+ * （叶子 = 掩码 → 保留旧值），所以这里的主要职责是"不发出无意义的噪声"，
+ * 同时保留一道**与后端无关**的独立防线：**任何情况下都不把掩码发出去**。
+ *
+ * 语义（与后端 mergeSecretsOnUpdate 对齐）：
+ *   · `undefined`        → 删除该键：后端一个 secret 都不碰（用户没动过凭据）；
+ *   · `null`             → 整体清空（编辑器"清空全部"的显式信号）；
+ *   · 对象               → 逐键过滤掉掩码叶子后原样提交；键的值可以为 null
+ *     （显式删除该键）。
+ * 过滤后若对象变空（用户只碰了掩码行），仍然提交 `{}`：合并语义下空对象 =
+ * 不改任何键，既不销毁凭据也不制造意外写入。
+ */
+export function applySecretsPayload(
+  values: Record<string, unknown>,
+): Record<string, unknown> {
+  const payload = { ...values };
+  const raw = payload.secrets;
+  if (raw === undefined) {
+    // 显式删除比留 `secrets: undefined` 干净：调用方（CLI/日志）看到的载荷形状
+    // 与"后端收到了什么"一致，不留一个"看起来有、其实没有"的键。
+    delete payload.secrets;
+    return payload;
+  }
+  if (raw === null) return payload;
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    // 形状不对（后端 @IsObject 会 400）：不发出去，交给后端按"未提供"处理，
+    // 避免把非对象塞进请求体换来一条与凭据无关的报错。
+    delete payload.secrets;
+    return payload;
+  }
+  const cleaned: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (v === undefined) continue;
+    if (v === SECRET_MASK_LITERAL) continue;
+    cleaned[k] = v;
+  }
+  payload.secrets = cleaned;
+  return payload;
+}

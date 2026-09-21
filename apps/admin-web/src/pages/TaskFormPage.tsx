@@ -7,6 +7,8 @@ import {
   // python_task_multiversion（FR-06/FR-18）：runtimeVersion 声明 + codeSource 互斥
   applyRuntimeVersionPayload,
   applyCodeSourcePayload,
+  // SEC-02 续（生产故障）：凭据的掩码闸门（提交前过滤 ******，防掩码落库）
+  applySecretsPayload,
   deriveCodeSourceFromTask,
   deriveRuntimeMismatch,
   normalizeRuntimeVersion,
@@ -47,6 +49,7 @@ import {
 import { CronHelper } from '../components/CronHelper';
 import { TASK_PRIORITY_OPTIONS, toPriorityValue } from '../utils/priority';
 import ParamsEditor from '../components/ParamsEditor';
+import SecretsEditor from '../components/SecretsEditor';
 import GlueEditor from '../components/GlueEditor';
 import AlarmConfig from '../components/AlarmConfig';
 import PageSkeleton from '../components/PageSkeleton';
@@ -235,6 +238,15 @@ export default function TaskFormPage() {
   const [codeSource, setCodeSource] = useState<CodeSource>('git');
   const previousCodeSourceRef = useRef<CodeSource>('git');
 
+  /**
+   * SEC-02 续（生产故障）：服务端已有凭据（读路径返回的掩码映射）。
+   *
+   * 刻意**不进表单值**，而是作为 SecretsEditor 的展示源：表单值表达的是"本次
+   * 要写什么"，已有凭据由后端按逐键合并语义保留。若把掩码塞进表单值，一次
+   * "只改超时"的保存就会把掩码当真实值写回去（真实凭据不可逆损毁）。
+   */
+  const [secretsExisting, setSecretsExisting] = useState<Record<string, string> | null>(null);
+
   // FEAT-13：「保存为模板」弹窗（表单校验通过后把当前值固化为自定义模板）
   const [tplModalOpen, setTplModalOpen] = useState(false);
   const [tplSaving, setTplSaving] = useState(false);
@@ -361,6 +373,14 @@ export default function TaskFormPage() {
         const derivedSource = deriveCodeSourceFromTask(task);
         setCodeSource(derivedSource);
         previousCodeSourceRef.current = derivedSource;
+        // SEC-02 续（生产故障）：已有凭据只作**展示源**（掩码映射），不进表单值。
+        // 用户必须看得见既有键（否则会以为平台没生效而反复重配），但它的值永远
+        // 回不来——保存时未重新输入的键由后端按合并语义保留。
+        setSecretsExisting(
+          task.secrets && Object.keys(task.secrets).length > 0
+            ? (task.secrets as Record<string, string>)
+            : null,
+        );
         form.setFieldsValue({
           name: task.name,
           description: task.description,
@@ -596,24 +616,29 @@ export default function TaskFormPage() {
       //   → applyRequirementsPayload（依赖渠道，**必须**在来源归一之后——
       //     AC-18b 红线：切换代码来源不得清掉 requirements）
       //   → 维护窗口/超时/重试 → applyDependenciesPayload（载体键删除）
-      const payload = applyDependenciesPayload(
-        applyRetryableErrorsPayload(
-          applyTimeoutPolicyPayload(
-            applyMaintenanceWindowsPayload(
-              applyRequirementsPayload(
-                applyCodeSourcePayload(
-                  applyRuntimeVersionPayload(
-                    buildExecutorPayload(values, executorMode),
-                    runtimeVersion,
+      //   → applySecretsPayload（SEC-02 续：掩码闸门，**最外层**——它只做减法，
+      //     删掉"不该发出去"的 secrets 键/掩码叶子；放在最外层才能保证任何内层
+      //     步骤都不会把它重新带回来。掩码一旦进请求体就是真实凭据被不可逆覆盖）
+      const payload = applySecretsPayload(
+        applyDependenciesPayload(
+          applyRetryableErrorsPayload(
+            applyTimeoutPolicyPayload(
+              applyMaintenanceWindowsPayload(
+                applyRequirementsPayload(
+                  applyCodeSourcePayload(
+                    applyRuntimeVersionPayload(
+                      buildExecutorPayload(values, executorMode),
+                      runtimeVersion,
+                    ),
+                    codeSource,
+                    previousCodeSourceRef.current,
                   ),
-                  codeSource,
-                  previousCodeSourceRef.current,
                 ),
               ),
             ),
           ),
+          depNameSnapshotRef.current,
         ),
-        depNameSnapshotRef.current,
       );
       if (isEdit && editId) {
         await tasksApi.update(editId, payload);
@@ -1579,6 +1604,28 @@ export default function TaskFormPage() {
                 />
                 <Form.Item name="params" label={t('taskForm.field.params')}>
                   <ParamsEditor />
+                </Form.Item>
+                {/*
+                  SEC-02 续（生产故障）：凭据编辑器。此前控制台**完全没有**入口，
+                  而执行器报错文案却在教用户「请在平台 secrets 配置
+                  FEISHU_APP_ID」——一条在 UI 上无法执行的指令（生产实证：用户
+                  按提示配不出凭据，任务报「缺少飞书凭证」）。
+
+                  放在 params 之后：两者语义相邻（都是注入子进程的键值对），但
+                  注入名字不同——params 加 AUTOFLOW_ 前缀，secrets 用**原名**
+                  （第三方 SDK 认规范名），故必须在标签与提示里说清楚。
+                */}
+                <Form.Item
+                  name="secrets"
+                  label={t('taskForm.field.secrets')}
+                  extra={t('taskForm.field.secretsHelp')}
+                >
+                  {/*
+                    existing = 服务端已有凭据（掩码映射）。刻意走 prop 而不是表单值：
+                    表单值只表达"本次要写什么"，已存在的键由后端按逐键合并语义保留
+                    （见 admin-api 的 mergeSecretsOnUpdate 与 applySecretsPayload）。
+                  */}
+                  <SecretsEditor existing={secretsExisting} />
                 </Form.Item>
               </Card>
             </div>
