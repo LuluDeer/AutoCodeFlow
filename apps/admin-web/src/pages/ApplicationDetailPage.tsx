@@ -479,6 +479,11 @@ function VersionHistoryTab({ app, onAppReload }: { app: Application; onAppReload
         try {
           const res = await applicationsApi.rollback(app.id, targetId);
           message.success(t('appDetail.history.rolledBack', { version: res.rolledBackTo ?? version ?? t('appDetail.unknown'), count: res.total ?? 0 }));
+          // P1-14：R16——legacy 行回滚不恢复 packageUrl。旧实现无任何提示，用户以为
+          // 连包也回退了；这里显式 warning 暴露后端的 packageUrlRestored=false。
+          if (res.packageUrlRestored === false) {
+            message.warning(t('appDetail.history.rollbackPkgNotRestored'));
+          }
           await Promise.all([fetchVersions(), onAppReload()]);
         } catch (err: unknown) {
           message.error(getErrMsg(err, t('appDetail.history.rollbackFail')));
@@ -541,7 +546,15 @@ function VersionHistoryTab({ app, onAppReload }: { app: Application; onAppReload
                 records.find(r => r.version === app.version);
               const key = getVersionKey(record);
               const isCurrent = currentRecord && getVersionKey(currentRecord) === key;
-              const rollbackDisabled = !!record.id && record.status !== 'released';
+              // P1-14：旧判据 `!!record.id && record.status !== 'released'` 对 legacy
+              // 行（id 恒为 null）永远 false——即使该行 failed/deploying 也能点回滚，
+              // 与后端 legacy 路径的守卫（无 deployedVersion 则 400）脱节。
+              // 对齐后端两条路径：
+              //   · 有快照 id：后端只允许 released 版本回滚；
+              //   · legacy 行：后端要求有 version，且失败/进行中行不应回滚。
+              const rollbackDisabled = record.id
+                ? record.status !== 'released'
+                : !record.version || ['failed', 'deploying', 'upgrading', 'pending'].includes(record.status);
               if (isCurrent) return <Tag color="green">{t('appDetail.history.currentVersion')}</Tag>;
               return (
                 <Tooltip title={rollbackDisabled ? t('appDetail.history.rollbackReleasedOnly') : !isAdmin ? t('appDetail.history.rollbackAdminOnly') : undefined}>
