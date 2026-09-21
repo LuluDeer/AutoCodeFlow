@@ -187,6 +187,22 @@ const Clock = memo(function Clock({
   );
 });
 
+/**
+ * P1-21（UX 审计）：哪些路由由页面自身通过 PageHeader 的 breadcrumb prop 渲染语义面包屑。
+ * 头部自动面包屑只在页面"不自渲染"时显示，避免详情/编辑/新建页出现双面包屑。
+ * （ExecutorDetailPage /executors/:id 不自带面包屑，故仍保留头部自动面包屑。）
+ */
+export function pageSelfRendersBreadcrumb(pathname: string): boolean {
+  const p = pathname.replace(/\/+$/, '') || '/';
+  if (/^\/tasks\/new(\/|$)/.test(p)) return true;            // 新建任务
+  if (/^\/tasks\/[^/]+\/edit(\/|$)/.test(p)) return true;     // 编辑任务
+  if (/^\/tasks\/[^/]+\/executions\/[^/]+$/.test(p)) return true; // 执行详情
+  if (/^\/tasks\/[^/]+$/.test(p)) return true;               // 任务详情
+  if (/^\/applications\/[^/]+$/.test(p)) return true;         // 应用详情
+  if (p === '/executors/install') return true;                // 安装向导
+  return false;
+}
+
 export default function MainLayout() {
   const nav = useNavigate();
   const location = useLocation();
@@ -536,7 +552,9 @@ export default function MainLayout() {
             style={{ fontSize: 18, color: token.colorTextSecondary }}
           />
           <Space size={12} className="header-breadcrumb">
-            {pathSegments.length > 1 && (
+            {/* P1-21：页面已自渲染语义面包屑（PageHeader breadcrumb prop）时，
+                头部自动面包屑不再重复显示，避免详情/编辑/新建页双面包屑。 */}
+            {pathSegments.length > 1 && !pageSelfRendersBreadcrumb(location.pathname) && (
               <Breadcrumb items={breadcrumbItems} style={{ fontSize: 13 }} />
             )}
           </Space>

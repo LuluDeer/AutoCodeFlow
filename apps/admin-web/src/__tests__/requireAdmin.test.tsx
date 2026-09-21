@@ -38,6 +38,8 @@ describe('RequireAdmin', () => {
     renderGated();
     expect(screen.getByText('403')).toBeTruthy();
     expect(screen.getByText(/仅管理员可见/)).toBeTruthy();
+    // P1-20（UX 审计）：403 页须明确缺什么角色、找谁开通（旧实现只说`仅管理员可见''）
+    expect(screen.getByText(/需要管理员/)).toBeTruthy();
     expect(screen.queryByText('admin-only-content')).toBeNull();
   });
 
