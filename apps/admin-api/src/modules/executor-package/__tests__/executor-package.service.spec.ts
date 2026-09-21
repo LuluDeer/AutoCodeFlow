@@ -510,7 +510,12 @@ describe("ExecutorPackageService", () => {
         key === "app.adminApiUrl" ? baseUrl : "env-token",
       );
       await expect(controller.push(mockPkg.id)).resolves.toEqual([
-        { executorId: "exec-001", address: targets[0].address, success: true },
+        {
+          executorId: "exec-001",
+          address: targets[0].address,
+          status: "success",
+          success: true,
+        },
       ]);
       expect(systemConfig.findOne).toHaveBeenCalledWith("executor.sharedToken");
       // F-3: 守卫换为 assertAndPinExecutorUrl（校验 + pin 一体）。
@@ -650,6 +655,53 @@ describe("ExecutorPackageService", () => {
         service.pushToExecutors(mockPkg.id, undefined, offlineOnly, "db-token"),
       ).rejects.toThrow("No target executors found for push");
       expect(axios.post).not.toHaveBeenCalled();
+    });
+
+    // 遗留 P1-10：逐执行器明细必须带三态 status——旧响应只有 success 布尔，前端
+    // 无法区分 queued（已入 pull 队列）/ success / error，且逐台 error 无类型。
+    it("P1-10: per-executor result carries status + commandId/error detail", async () => {
+      // 错误分支：SSRF 守卫拒绝 → status=error + 诊断信息
+      jest
+        .mocked(assertAndPinExecutorUrl)
+        .mockRejectedValue(new Error("boom"));
+      const errorResults = await service.pushToExecutors(
+        mockPkg.id,
+        undefined,
+        targets,
+        "db-token",
+      );
+      expect(errorResults).toEqual([
+        {
+          executorId: "exec-001",
+          address: "http://executor:8002",
+          status: "error",
+          success: false,
+          error: "boom",
+        },
+      ]);
+      // 成功分支：status=success
+      jest
+        .mocked(assertAndPinExecutorUrl)
+        .mockResolvedValue({
+          url: new URL("http://executor:8002"),
+          pinnedIp: "93.184.216.34",
+          pinned: false,
+        } as any);
+      jest.mocked(axios.post).mockResolvedValue({ data: {} });
+      const okResults = await service.pushToExecutors(
+        mockPkg.id,
+        undefined,
+        targets,
+        "db-token",
+      );
+      expect(okResults).toEqual([
+        {
+          executorId: "exec-001",
+          address: "http://executor:8002",
+          status: "success",
+          success: true,
+        },
+      ]);
     });
   });
 
