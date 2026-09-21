@@ -14,6 +14,7 @@ import { useAuthStore, isAdminUser } from '../store/auth';
 import '../i18n';
 import PageHeader from '../components/PageHeader';
 import StateError from '../components/StateError';
+import { Link } from 'react-router-dom';
 
 const { TextArea } = Input;
 const { Text } = Typography;
@@ -49,32 +50,32 @@ const notificationApi = {
 
 const CHANNEL_CONFIG_FIELDS = (t: (k: string) => string): Record<string, Array<{ key: string; label: string; placeholder?: string }>> => ({
   email: [
-    { key: 'host', label: 'SMTP Host', placeholder: 'smtp.example.com' },
-    { key: 'port', label: 'SMTP Port', placeholder: '587' },
+    { key: 'host', label: t('notif.channel.field.smtpHost'), placeholder: 'smtp.example.com' },
+    { key: 'port', label: t('notif.channel.field.smtpPort'), placeholder: '587' },
     { key: 'user', label: t('notif.channel.field.user') },
     { key: 'password', label: t('notif.channel.field.password') },
     { key: 'from', label: t('notif.channel.field.from'), placeholder: 'noreply@example.com' },
     { key: 'to', label: t('notif.channel.field.to'), placeholder: 'admin@example.com' },
   ],
   slack: [
-    { key: 'webhookUrl', label: 'Webhook URL', placeholder: 'https://hooks.slack.com/services/...' },
+    { key: 'webhookUrl', label: t('notif.channel.field.webhookUrl'), placeholder: 'https://hooks.slack.com/services/...' },
     { key: 'channel', label: t('notif.channel.field.channel'), placeholder: '#alerts' },
   ],
   dingtalk: [
-    { key: 'webhookUrl', label: 'Webhook URL', placeholder: 'https://oapi.dingtalk.com/robot/send?access_token=...' },
+    { key: 'webhookUrl', label: t('notif.channel.field.webhookUrl'), placeholder: 'https://oapi.dingtalk.com/robot/send?access_token=...' },
   ],
   wecom: [
-    { key: 'webhookUrl', label: 'Webhook URL', placeholder: 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=...' },
+    { key: 'webhookUrl', label: t('notif.channel.field.webhookUrl'), placeholder: 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=...' },
   ],
   // NF-05 UI 半场：webhook / feishu 两渠道的 config 形状与后端 channelDefaults
   // 对齐——webhook 存 `{ url }`（N32）；feishu 存 `{ webhookUrl, secret? }`
   // （secret 为可选加签密钥，读面被后端按 secret 类字段掩码为 '***'，与
   // password 同走免必填 + 密文输入，见 ChannelConfigForm 的 secret 豁免）。
   webhook: [
-    { key: 'url', label: 'URL', placeholder: 'https://example.com/hooks/...' },
+    { key: 'url', label: t('notif.channel.field.url'), placeholder: 'https://example.com/hooks/...' },
   ],
   feishu: [
-    { key: 'webhookUrl', label: 'Webhook URL', placeholder: 'https://open.feishu.cn/open-apis/bot/v2/hook/...' },
+    { key: 'webhookUrl', label: t('notif.channel.field.webhookUrl'), placeholder: 'https://open.feishu.cn/open-apis/bot/v2/hook/...' },
     { key: 'secret', label: t('notif.channel.field.secret') },
   ],
 });
@@ -620,6 +621,9 @@ export default function NotificationSettingsPage() {
   })) ?? [];
 
   // FEAT-01: 增量追加「静默规则」Tab（不影响既有渠道 Tab 的组织方式）；
+  // P2-6（UX 审计）：路由层已用 RequireAdmin 整页门控（router.tsx），组件内
+  // isAdmin 在生产路径恒为 true——此三元分支属 defense-in-depth，且被组件测试以
+  // "绕过 RequireAdmin 直渲组件、非管理员不渲染静默 Tab"锁定，故保留不删。
   // 面板仅在激活时拉取列表（ready: active）。
   const tabItems2 = [
     ...tabItems,
@@ -638,6 +642,21 @@ export default function NotificationSettingsPage() {
       <PageHeader
         title={t('notif.title')}
         description={t('notif.description')}
+      />
+      {/* P1-19（UX 审计）：本页只配置通知渠道连通性；各任务在何失败条件下发告警
+          （告警规则）挂在任务的告警配置里，此前通知设置页无指向，用户找不到入口。
+          补一条说明 + 跳转任务列表（不改动 TaskFormPage）。 */}
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginBottom: 16 }}
+        title={t('notif.alarmNotice.title')}
+        description={
+          <Space orientation="vertical" size={4}>
+            <span>{t('notif.alarmNotice.description')}</span>
+            <Link to="/tasks">{t('notif.alarmNotice.link')}</Link>
+          </Space>
+        }
       />
       {/* UI-16：渠道列表请求失败且无任何缓存数据 → 页内错误块（重试=refresh）；
           此前失败会停在 Card loading 后的空白，用户既看不到原因也无重试入口。
