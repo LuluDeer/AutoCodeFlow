@@ -1,5 +1,5 @@
 import { Test, TestingModule } from "@nestjs/testing";
-import { ForbiddenException, BadRequestException } from "@nestjs/common";
+import { ForbiddenException, BadRequestException, ConflictException } from "@nestjs/common";
 import * as bcrypt from "bcrypt";
 import { UsersController } from "../users.controller";
 import { UsersService } from "../users.service";
@@ -13,6 +13,7 @@ const mockUsersService = () => ({
   findById: jest.fn(),
   findByIdOrNull: jest.fn(),
   findByIdRaw: jest.fn(),
+  findByUsername: jest.fn(),
   update: jest.fn(),
   remove: jest.fn(),
   recordLoginFailure: jest.fn(),
@@ -130,6 +131,40 @@ describe("UsersController", () => {
         mockReq,
       );
       expect(usersSvc.update).toHaveBeenCalled();
+    });
+
+    it("non-admin cannot self-update to an occupied username (E-P2-S4)", async () => {
+      // 旧实现：自改 username 撞 DB 唯一索引 → 裸 500；现前置校验 → 409。
+      usersSvc.findByUsername.mockResolvedValue({ id: 99, username: "taken" });
+      await expect(
+        controller.update(
+          2,
+          { username: "taken" } as any,
+          normalUser,
+          mockReq,
+        ),
+      ).rejects.toThrow(ConflictException);
+      expect(usersSvc.update).not.toHaveBeenCalled();
+    });
+
+    it("non-admin self-update to own current username is allowed (E-P2-S4)", async () => {
+      // findByUsername 命中的是自己 → existing.id === id → 放行。
+      usersSvc.findByUsername.mockResolvedValue({ id: 2, username: "bob" });
+      usersSvc.update.mockResolvedValue({ id: 2 });
+      await controller.update(
+        2,
+        { username: "bob" } as any,
+        normalUser,
+        mockReq,
+      );
+      expect(usersSvc.update).toHaveBeenCalled();
+    });
+
+    it("admin updating a user is not subject to self-check (E-P2-S4)", async () => {
+      // admin 分支不做自改 username 唯一性前置校验（仍由服务层/DB 约束兜底）。
+      usersSvc.update.mockResolvedValue({ id: 5 });
+      await controller.update(5, { username: "x" } as any, adminUser, mockReq);
+      expect(usersSvc.findByUsername).not.toHaveBeenCalled();
     });
 
     it("non-admin cannot update another user", async () => {
