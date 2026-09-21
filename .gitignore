@@ -129,3 +129,6 @@ dump.rdb
 # vitest 本地输出（不入库）
 vitest-out.json
 
+# 提交草稿 / release-please 排障草稿（本地临时文件，不入库；E-P1-P2）
+COMMIT_MSG_*.txt
+
