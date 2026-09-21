@@ -192,9 +192,15 @@
       "sandbox_unavailable",
       "interpreter_unavailable",
       "killed",
-      "unknown"
+      "unknown",
+      "application_missing",
+      "never_dispatched"
     ],
-    "adminInternalOnly": ["stale_recovered"],
+    "adminInternalOnly": [
+      "stale_recovered",
+      "application_missing",
+      "never_dispatched"
+    ],
     "executorReportable": [
       "package_fetch_failed",
       "script_error",

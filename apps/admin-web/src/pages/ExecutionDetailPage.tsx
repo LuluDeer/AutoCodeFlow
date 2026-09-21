@@ -79,6 +79,12 @@ const FAILURE_REASON_MAP = (t: (k: string) => string): Record<string, { color: s
   executor_restart: { color: 'volcano', label: t('execDetail.failure.executorRestart'), hint: t('execDetail.failure.executorRestartHint') },
   stale_recovered: { color: 'volcano', label: t('execDetail.failure.staleRecovered'), hint: t('execDetail.failure.staleRecoveredHint') },
   killed: { color: 'default', label: t('execDetail.failure.killed'), hint: t('execDetail.failure.killedHint') },
+  // P0-4（UX-AUDIT-2026-09-21）：引用的应用已删除 → 环境/配置类（gold），处置动作
+  // 是"重新指定代码来源"，与 package_fetch_failed（查网络/地址）不同故独立分类。
+  application_missing: { color: 'gold', label: t('execDetail.failure.applicationMissing'), hint: t('execDetail.failure.applicationMissingHint') },
+  // P0-8（UX-AUDIT-2026-09-21）：从未派发 → volcano（与 executor_offline 同族，
+  // 都是"任务没能到达执行器"），但提示明确区分：它没有任何日志可看。
+  never_dispatched: { color: 'volcano', label: t('execDetail.failure.neverDispatched'), hint: t('execDetail.failure.neverDispatchedHint') },
   unknown: { color: 'default', label: t('execDetail.failure.unknown'), hint: t('execDetail.failure.unknownHint') },
 });
 
