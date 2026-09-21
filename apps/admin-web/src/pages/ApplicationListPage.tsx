@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   Table, Button, Space, Tag, Modal, Form, Input, Select, Upload, message,
-  Typography, Tooltip, Badge, Radio, Empty, Switch,
+  Typography, Tooltip, Badge, Empty, Switch,
 } from 'antd';
 import {
   PlusOutlined, UploadOutlined, ReloadOutlined, GithubOutlined,
@@ -19,6 +19,7 @@ import { useAuthStore, isAdminUser } from '../store/auth';
 import PageHeader from '../components/PageHeader';
 import PageSkeleton from '../components/PageSkeleton';
 import StateError from '../components/StateError';
+import DeployModeFields from '../components/DeployModeFields';
 // UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
 import '../i18n';
 
@@ -72,9 +73,13 @@ function useIsAdmin() {
 
 const GIT_URL_RE = /^(https?:\/\/[\w.@:/~_-]+\.git|git@[\w.-]+:[\w./_-]+\.git)$/;
 
-// F-2：整包 zip 上传体积上限。大包直传容易超时且无进度条，先在前端拦截并提示。
-const MAX_ZIP_UPLOAD_BYTES = 50 * 1024 * 1024; // 50 MiB
-const MAX_ZIP_UPLOAD_LABEL = '50MB';
+// F-2 + P1-12：整包 zip 上传体积上限。大包直传容易超时且无进度条，先在前端拦截并提示。
+// P1-12：前端此前写死 50MB，而后端 multer limits.fileSize = 200 MiB
+// （application.controller.ts:210）——用户在 50~200MB 之间会被前端先拦下、
+// 误以为后端也只收 50MB。对齐到后端上限 200 MiB（跨包无法共享常量，这里显式
+// 注明来源行，后端改了请同步）。
+const MAX_ZIP_UPLOAD_BYTES = 200 * 1024 * 1024; // 200 MiB（对齐 multer limits）
+const MAX_ZIP_UPLOAD_LABEL = '200MB';
 
 const runtimeOptions = [
   { label: 'Node.js', value: 'node' },
@@ -96,6 +101,8 @@ const statusLabels = (t: (k: string) => string): Record<string, string> => ({
 
 interface AppWithStats extends Application {
   runningCount: number;
+  /** P1-13：失败部署数——部署失败后列表页仍显示"运行中"的假象要靠它破。 */
+  failedCount: number;
   totalDeployments: number;
   lastDeployedAt: string | null;
 }
@@ -144,6 +151,7 @@ export default function ApplicationListPage() {
           result.status === 'fulfilled' ? result.value.data : [];
 
         const runningCount = deps.filter((d) => d.status === 'running').length;
+        const failedCount = deps.filter((d) => d.status === 'failed').length;
         const sorted = [...deps].sort(
           (a, b) =>
             new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
@@ -151,7 +159,7 @@ export default function ApplicationListPage() {
         const lastDeployedAt =
           sorted.length > 0 ? (sorted[0].deployedAt ?? sorted[0].createdAt) : null;
 
-        return { ...app, runningCount, totalDeployments: deps.length, lastDeployedAt };
+        return { ...app, runningCount, failedCount, totalDeployments: deps.length, lastDeployedAt };
       });
 
       setApps(enriched);
@@ -403,6 +411,22 @@ export default function ApplicationListPage() {
       width: 130,
       render: (_: unknown, record: AppWithStats) => {
         if (record.totalDeployments === 0) return <Text type="secondary">{t('appList.noDeploy')}</Text>;
+        // P1-13：旧实现无条件显示绿色"运行中 X/Y"——部署全部失败后仍显示绿色，
+        // 用户以为服务正常。runningCount===0 且有部署时：
+        //   · 有失败行 → 红色 Badge + 失败数；
+        //   · 无失败（如全部 stopped）→ 中性 Badge，不再冒充运行中。
+        if (record.runningCount === 0) {
+          const status: 'error' | 'default' = record.failedCount > 0 ? 'error' : 'default';
+          const text = record.failedCount > 0
+            ? t('appList.deployFailed', { failed: record.failedCount, total: record.totalDeployments })
+            : t('appList.deployNotRunning', { total: record.totalDeployments });
+          return (
+            <Space>
+              <Badge status={status} />
+              <Text type={record.failedCount > 0 ? 'danger' : 'secondary'}>{text}</Text>
+            </Space>
+          );
+        }
         return (
           <Space>
             <Badge status="processing" />
@@ -767,22 +791,8 @@ export default function ApplicationListPage() {
               notFoundContent={t('appList.deploy.executorEmpty')}
             />
           </Form.Item>
-          <Form.Item name="runMode" label={t('appList.deploy.runMode')} initialValue="once" rules={[{ required: true, message: t('appList.deploy.runModeRequired') }]}>
-            <Radio.Group>
-              <Radio value="once">{t('appList.deploy.modeOnce')}</Radio>
-              <Radio value="daemon">{t('appList.deploy.modeDaemon')}</Radio>
-              <Radio value="scheduled">{t('appList.deploy.modeScheduled')}</Radio>
-            </Radio.Group>
-          </Form.Item>
-          <Form.Item noStyle shouldUpdate={(prev, cur) => prev.runMode !== cur.runMode}>
-            {({ getFieldValue }) =>
-              getFieldValue('runMode') === 'daemon' ? (
-                <Form.Item name="startCommand" label={t('appList.deploy.startCommand')} tooltip={t('appList.deploy.startCommandTooltip')}>
-                  <Input placeholder="node dist/server.js" />
-                </Form.Item>
-              ) : null
-            }
-          </Form.Item>
+          {/* P1-15：runMode 字段 + 模式说明复用共享组件（旧实现此处无任何模式说明）。 */}
+          <DeployModeFields buttonStyle="outline" />
         </Form>
       </Modal>
     </div>
