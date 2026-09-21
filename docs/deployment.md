@@ -155,6 +155,47 @@ docker compose ps
 
 Admin Web 容器内置 Nginx 是所有 `/api` 请求的统一入口，三条代理语义需要了解：`/api/` 前缀 location 使用**不带 URI** 的 `proxy_pass`，原样保留 `/api` 前缀（与 admin-api 的 `setGlobalPrefix("api")` 对齐，误写成尾斜杠形式会剥离前缀导致全量 404）；`client_max_body_size 510m` 为上传体积预留——执行器包最大 500MB、应用包 200MB、PyPI 代理包 50MB，nginx 默认 1m 会让大包上传直接 413；执行日志 SSE 流（`/api/tasks/<id>/executions/<execId>/logs/stream`）有专有正则 location（`proxy_read_timeout 1h`、`proxy_buffering off`），避免被通用 `/api/` 的 60s 读超时掐断，也不受上传体积语义影响。两份配置 `apps/admin-web/nginx.conf` 与 `infra/nginx/default.conf` 需保持同步。
 
+#### `/uploads/` 必须单独代理（APP-002 生产故障）
+
+**`/uploads` 不在 `/api` 前缀下**：admin-api 的 `app.use("/uploads", …)` 注册在 `setGlobalPrefix("api")` **之前**（`main.ts`），故应用包下载路径是 `/uploads/packages/<file>.zip`（`docs/api-reference.md` 亦如此记载）。若反代只配了 `/api/`，该请求会落进 SPA 回退 `location / { try_files $uri $uri/ /index.html; }` → 磁盘上无此文件 → 回退成 `/index.html` → **HTTP 200 + HTML**。执行器把这段 HTML 当 zip 落盘，zip-guard 解析中央目录时找不到 EOCD 签名，报：
+
+```
+Unsafe package rejected by zip-guard [unparseable]
+```
+
+这个形态**极难定位**：错误信息指向执行器、根因在代理层；状态码是 **200** 而非 404，任何"看状态码"的排查都会认为下载成功；且只有 `packageUrl` 渠道受影响，`gitRepo` 渠道完全正常，表现为"部分应用能部署、部分不能"。
+
+**自建反代（宝塔/Nginx 手配）必须加**（注意三个细节）：
+
+```nginx
+location ^~ /uploads/ {
+    client_max_body_size 510m;
+    proxy_pass http://127.0.0.1:3105;   # ① 不带 URI——带尾斜杠会剥掉 /uploads 前缀
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_read_timeout 300s;
+    proxy_connect_timeout 10s;
+}
+```
+
+① `proxy_pass` **不得带 URI**（`http://host:3105/;` 会重写路径 → 404）。
+② **不得**用 `alias`/`root` 直接指向 `uploads` 目录——该目录的下载鉴权（JWT 或执行器共享 token）由 admin-api 的 `uploadAuth` 中间件强制，绕过它等于把应用包源码重新公开（ARCH-002 专门修掉的破坏性变更）。
+③ `^~` 不可省——普通前缀 location 命中后仍会检查正则 location，`/uploads` 下的 `.js`/`.png` 等会被静态资产正则抢走。
+
+**验证**（zip 魔数是 `PK`，HTML 开头是 `<!`）：
+
+```bash
+curl -s  -H "Authorization: Bearer $EXECUTOR_TOKEN" \
+  https://<域名>/uploads/packages/<已上传文件名>.zip | head -c 2   # 期望 PK
+curl -sI -H "Authorization: Bearer $EXECUTOR_TOKEN" \
+  https://<域名>/uploads/packages/<已上传文件名>.zip | grep -i content-type  # 不得是 text/html
+```
+
+回归闸：`apps/admin-api/src/common/__tests__/uploads-proxy-consistency.spec.ts` 断言两份仓库内配置都有 `location ^~ /uploads/`（反证：删掉即转红）。
+
 ### 反代 SSE/长流验证（部署前必跑，BUG-17）
 
 SSE 能否存活**完全取决于代理层**（缓冲、读取超时、连接复用），应用侧单测覆盖不到。
