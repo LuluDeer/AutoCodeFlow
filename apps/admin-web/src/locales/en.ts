@@ -574,6 +574,10 @@ export default {
 
   'notif.title': 'Notification Settings',
   'notif.description': 'Configure alert notification channels (email / Slack / DingTalk / WeCom / Feishu / generic webhook), silence rules and global test sending.',
+  // P1-19 (UX audit): alarm-rule entry notice - this page configures channels; per-task alarm rules live in the task form
+  'notif.alarmNotice.title': 'Configure notification channels here; task alarm rules are set per task',
+  'notif.alarmNotice.description': 'This page only decides which channel delivers a message. The failure conditions and recipients for a given task are that task alarm configuration, set on the task detail or edit page.',
+  'notif.alarmNotice.link': 'Go to the task list and open a task alarm config',
   'notif.status.enabled': 'Enabled',
   'notif.status.disabled': 'Disabled',
   'notif.channel.email': 'Email',
@@ -600,6 +604,11 @@ export default {
   'notif.channel.field.to': 'Default recipient',
   'notif.channel.field.channel': 'Default channel',
   'notif.channel.field.secret': 'Signing Secret',
+  // P2-7 (UX audit): channel config field labels were hardcoded English
+  'notif.channel.field.smtpHost': 'SMTP Host',
+  'notif.channel.field.smtpPort': 'SMTP Port',
+  'notif.channel.field.webhookUrl': 'Webhook URL',
+  'notif.channel.field.url': 'URL',
   'notif.template.title': 'Message template (optional)',
   'notif.template.expand': 'Expand',
   'notif.template.collapse': 'Collapse',
@@ -2447,3 +2456,4 @@ export default {
   'projects.role.editor': 'Editor',
   'projects.role.admin': 'Project admin',
 } as const;
+
