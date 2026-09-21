@@ -314,6 +314,118 @@ describe("ExecutorService — security regressions (F-2/F-7/F-3/F-5)", () => {
     });
   });
 
+  /**
+   * SEC-02 续（生产故障）：secrets 必须以**单独字段**下发，供执行器按原名注入。
+   *
+   * 生产实证：用户配置 `FEISHU_APP_ID` 后脚本读裸名拿到空串——因为 secrets 此前
+   * 只被合并进 params、统一加 `AUTOFLOW_` 前缀，报错文案里的名字与实际注入的
+   * 名字不是同一个。第三方 SDK（boto3 的 AWS_ACCESS_KEY_ID 等）更无从改写。
+   *
+   * 兼容性红线（本组测试的另一半）：secrets **必须仍然**合并进 params，否则旧
+   * 执行器（不认识 secrets 字段）会彻底拿不到凭据——那是比原缺陷更严重的回归。
+   */
+  describe("SEC-02 续: secrets 单独下发 + params 合并双轨", () => {
+    const mkTask = (secrets: Record<string, unknown> | null) =>
+      ({
+        id: "task-1",
+        name: "t",
+        timeout: 10,
+        status: "active",
+        triggerType: "manual",
+        secrets,
+      }) as unknown as Task;
+
+    const dispatchAndCaptureBody = async (secrets: Record<string, unknown> | null) => {
+      const { assertAndPinExecutorUrl } =
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        require("../../../common/utils/safe-http.util") as {
+          assertAndPinExecutorUrl: jest.Mock;
+        };
+      assertAndPinExecutorUrl.mockResolvedValue({
+        url: new URL("http://10.0.0.9:3002/api/execute"),
+        pinnedIp: "10.0.0.9",
+        pinned: false,
+      });
+      executorRepo.find.mockResolvedValue([
+        {
+          id: "e1",
+          address: "10.0.0.9:3002",
+          status: ExecutorStatus.ONLINE,
+          runningTaskCount: 0,
+          capabilities: [],
+        },
+      ]);
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const axios = require("axios");
+      axios.post.mockResolvedValue({ data: { success: true } });
+      await service.dispatch(
+        mkTask(secrets),
+        { id: "exec-1", params: {} } as TaskExecution,
+      );
+      return axios.post.mock.calls[0][1] as Record<string, unknown>;
+    };
+
+    it("secrets 作为独立字段下发（执行器据此按原名注入）", async () => {
+      const body = await dispatchAndCaptureBody({
+        FEISHU_APP_ID: "cli_abc",
+        FEISHU_APP_SECRET: "sec_xyz",
+      });
+      expect(body.secrets).toEqual({
+        FEISHU_APP_ID: "cli_abc",
+        FEISHU_APP_SECRET: "sec_xyz",
+      });
+    });
+
+    it("兼容红线：secrets 仍然合并进 params（旧执行器行为逐字节不变）", async () => {
+      const body = await dispatchAndCaptureBody({ FEISHU_APP_ID: "cli_abc" });
+      // 旧执行器只读 params，故这里必须仍有该键——否则它们彻底拿不到凭据
+      expect(body.params).toMatchObject({ FEISHU_APP_ID: "cli_abc" });
+    });
+
+    it("无 secrets 时字段为 null（不是 undefined，形状稳定）", async () => {
+      const body = await dispatchAndCaptureBody(null);
+      expect(body.secrets).toBeNull();
+      expect(body.params).not.toHaveProperty("FEISHU_APP_ID");
+    });
+
+    it("secrets 覆盖同名 params（凭据不得被触发参数遮蔽）", async () => {
+      const { assertAndPinExecutorUrl } =
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        require("../../../common/utils/safe-http.util") as {
+          assertAndPinExecutorUrl: jest.Mock;
+        };
+      assertAndPinExecutorUrl.mockResolvedValue({
+        url: new URL("http://10.0.0.9:3002/api/execute"),
+        pinnedIp: "10.0.0.9",
+        pinned: false,
+      });
+      executorRepo.find.mockResolvedValue([
+        {
+          id: "e1",
+          address: "10.0.0.9:3002",
+          status: ExecutorStatus.ONLINE,
+          runningTaskCount: 0,
+          capabilities: [],
+        },
+      ]);
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const axios = require("axios");
+      axios.post.mockResolvedValue({ data: { success: true } });
+      // 触发参数里塞一个同名键（试图遮蔽任务级凭据）
+      await service.dispatch(mkTask({ API_KEY: "real-credential" }), {
+        id: "exec-1",
+        params: { API_KEY: "attacker-supplied" },
+      } as unknown as TaskExecution);
+      const body = axios.post.mock.calls[0][1] as Record<string, unknown>;
+      expect((body.params as Record<string, unknown>).API_KEY).toBe(
+        "real-credential",
+      );
+      expect((body.secrets as Record<string, unknown>).API_KEY).toBe(
+        "real-credential",
+      );
+    });
+  });
+
   describe("F-5: token validation positive cache", () => {
     const rawToken = "raw-secret";
     const hashReady = async () => {

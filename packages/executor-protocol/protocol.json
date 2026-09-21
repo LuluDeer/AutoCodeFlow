@@ -311,7 +311,12 @@
           "description": "同时被用作 workDir 下的目录名——字符集限定是路径穿越的第一道闸（与 node isSafeExecutionIdSegment 同款正则）"
         },
         "task": { "$ref": "#/$defs/TaskConfig" },
-        "params": { "type": ["object", "null"], "additionalProperties": true }
+        "params": { "type": ["object", "null"], "additionalProperties": true },
+        "secrets": {
+          "type": ["object", "null"],
+          "additionalProperties": true,
+          "description": "SEC-02 续：任务级凭据，与 params **分开**传递并按**原名**注入子进程 env（params 仍是 AUTOFLOW_<KEY>）。分开的理由：第三方 SDK 认规范名（AWS_ACCESS_KEY_ID / OPENAI_API_KEY），加前缀后脚本无法改写、凭据不可用。兼容性：secrets 同时仍合并进 params（旧执行器只读 params，行为与今日逐字节一致），故本字段是**纯增量**——旧执行器忽略它、新执行器额外按原名注入一份。执行器侧对键名做白名单校验（[A-Za-z_][A-Za-z0-9_]*）+ 保留名拒绝（PATH/PYTHON*/AUTOFLOW_* 等），非法键静默跳过并 warn。"
+        }
       }
     },
     "ConfigReloadRequest": {

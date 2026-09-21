@@ -30,6 +30,8 @@ from config import settings
 from execution_callback_token import CALLBACK_TOKEN_GRACE_SECONDS, create_execution_callback_token
 from manifest import load_manifest, merge_task_with_manifest
 from artifacts import gather_artifacts_for_callback, artifacts_dir_for
+# SEC-02 续：secrets 按原名注入（含保留名闸门），与 node secret-env.ts 对等。
+from secret_env import inject_secret_env
 from sandbox import (
     SandboxUnavailable,
     build_rlimit_pre_exec,
@@ -62,6 +64,10 @@ except ImportError:
         executionId: str
         task: Dict[str, Any]
         params: Optional[Dict[str, Any]] = None
+        # SEC-02 续：任务级凭据，与 params 分开传递并按原名注入（见下方注入段）。
+        # 本 fallback 分支（SDK 未装）必须与 generated/protocol_schemas.py 同形，
+        # 否则"装了 SDK"与"没装 SDK"两条路径对同一载荷一收一拒。
+        secrets: Optional[Dict[str, Any]] = None
 
 
 # ---------------------------------------------------------------------------
@@ -3329,6 +3335,22 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
         for k, v in req.params.items():
             env[f'AUTOFLOW_{k.upper()}'] = str(v)
 
+    # SEC-02 续（生产故障）：secrets 按**原名**额外注入一份（与 node 侧对等）。
+    # 生产实证：配置 FEISHU_APP_ID 后脚本读裸名拿到空串，因为 secrets 此前与
+    # params 合并、被统一加 AUTOFLOW_ 前缀——报错文案里的名字与实际注入的名字
+    # 不是同一个。params 循环保持原样（secrets 仍合并在其中），两种读法并存。
+    # 保留名/非法名由 secret_env 拒绝（防止 secret 覆盖 PATH / PYTHONIOENCODING
+    # 这类执行器赖以工作的变量）。
+    _skipped_secrets = inject_secret_env(env, getattr(req, 'secrets', None))
+    if _skipped_secrets:
+        # 静默丢弃凭据是最难排查的失败形态——必须留痕（键名不是密值）。
+        _secret_warn = (
+            f'Ignored {len(_skipped_secrets)} task secret(s) whose names are reserved '
+            f'or invalid (must match [A-Za-z_][A-Za-z0-9_]* and must not shadow '
+            f'PATH/AUTOFLOW_*/PYTHON*): ' + ', '.join(_skipped_secrets)
+        )
+        logger.warning(_secret_warn)
+
     # N33 (round-9, parity with executor-node execute.ts N23/N27): per-execution
     # callback credentials — injected AFTER the params loop so user params can
     # never override them. AUTOFLOW_CALLBACK_TOKEN is an HMAC bound to this
@@ -3361,6 +3383,19 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
     # 覆盖，与 AUTOFLOW_CALLBACK_TOKEN 同一纪律）。缺省不注入。
     if entry is not None and entry.traceparent:
         env['AUTOFLOW_TRACE_ID'] = entry.traceparent
+
+    # I18N-01（与 executor-node 对等）：任务子进程的中文日志/异常回溯必须是
+    # 可读的 UTF-8。Python 在 Windows 上 stderr 取 locale 默认编码（实测
+    # cp936/GBK），而本模块按 UTF-8 解码子进程输出（见下方 readline +
+    # decode('utf-8', errors='replace')），于是 GBK 字节被替换成 U+FFFD——
+    # 报错文案（"缺少飞书凭证：…"）彻底不可读。
+    #
+    # 显式注入 PYTHONIOENCODING 让 stdout/stderr 都按 UTF-8 写，与解码口径对齐；
+    # PYTHONUTF8=1 覆盖解释器启动早期的输出路径。POSIX 上本就是 UTF-8，此二项
+    # 为语义 no-op（不改变任何现有行为），价值在 Windows 上运行本执行器时兜住
+    # 同一缺陷。放在 params 注入之后，用户参数不得覆盖。
+    env['PYTHONIOENCODING'] = 'utf-8'
+    env['PYTHONUTF8'] = '1'
 
     # SEC-NEW (F-1/B-1): 任务私有临时目录（<work_dir>/.tmp，0o700）并把
     # TMPDIR/TEMP/TMP 指过去——即便未启用 bwrap 沙箱，任务临时文件也只落在

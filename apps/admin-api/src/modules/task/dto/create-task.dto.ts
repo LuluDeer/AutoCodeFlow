@@ -14,10 +14,13 @@ import {
   IsUUID,
   Matches,
   ValidateNested,
+  Validate,
   IsIn,
 } from "class-validator";
 import { Type } from "class-transformer";
 import { IsUuidShape } from "../../../common/decorators/is-uuid-shape.decorator";
+// SEC-02 续：secrets 键名的可注入性校验（给用户可读的 400，而非执行期静默丢弃）
+import { IsSecretKeyMapConstraint } from "./secret-key-map.constraint";
 import { MaintenanceWindowDto } from "./maintenance-window.dto";
 import {
   TaskStatus,
@@ -231,19 +234,32 @@ export class CreateTaskDto {
   /**
    * SEC-02: 任务级 secrets（凭据键值对，独立于 params 的普通运行参数）。
    * 服务端存储加密（AES-256-GCM，SEC_SECRETS_KEY；未配置降级明文并 warn），
-   * API 读取永久脱敏（叶子值回 ******），派发时解密与 params 合并注入执行器
-   * env（AUTOFLOW_<KEY>，与既有 params 注入同通道）。PATCH 语义：缺省=保留，
-   * 显式 null=清空；已存储的密文不可经 API 回读，更新即整体替换。
+   * API 读取永久脱敏（叶子值回 ******）。派发时解密后走**两条**通道：
+   *   ① 与 params 合并（`AUTOFLOW_<KEY>`，旧执行器只认这条，兼容红线）；
+   *   ② 单独作为载荷 `secrets` 字段下发，供执行器按**原名**注入子进程 env
+   *      ——第三方 SDK 认规范名（AWS_ACCESS_KEY_ID / OPENAI_API_KEY），
+   *      加前缀后脚本无法改写，凭据等于不可用（SEC-02 续，生产故障）。
+   * PATCH（UpdateTaskDto）语义——**逐键合并**，不是整体替换：
+   *   · 字段缺省            = 全部保留；
+   *   · 显式 null           = 清空全部；
+   *   · 对象里的某个键缺省  = 该键保留（用户没在控制台看到它就别无选择）；
+   *   · 叶子值 = `******`   = 该键保留（读路径回给客户端的掩码，回传即"不改"）；
+   *   · 叶子值 = null       = 删除该键；
+   *   · 其它值              = 加密覆盖。
+   * 为什么必须这样：读路径永久脱敏，控制台要显示既有键就必然持有掩码值——
+   * 整体替换会把掩码当真实值落库（真实凭据不可逆损毁，而 UI 上键还在，任务
+   * 却报"缺少凭据"，这是本次生产故障的形状）。
    */
   @ApiPropertyOptional({
     description:
-      "Task-level secrets (credential key/value pairs, stored encrypted at rest with AES-256-GCM when SEC_SECRETS_KEY is configured; plaintext fallback with a warning otherwise). Read paths are always masked. Dispatched to the executor env as AUTOFLOW_<KEY> merged over params.",
+      "Task-level secrets (credential key/value pairs, stored encrypted at rest with AES-256-GCM when SEC_SECRETS_KEY is configured; plaintext fallback with a warning otherwise). Read paths are always masked with the literal ******. Dispatched both merged into params (AUTOFLOW_<KEY>, legacy channel) and as a separate payload field so the executor injects them under their ORIGINAL names (required by third-party SDKs that read canonical names). On PATCH the object is merged per key: an omitted key or a ****** leaf keeps the stored value, a null leaf deletes the key, any other value overwrites it; an explicit null for the whole field clears every secret.",
     type: "object",
     additionalProperties: { type: "string" },
     example: { API_TOKEN: "sk-live-...", DB_PASSWORD: "hunter2" },
   })
   @IsObject()
   @IsOptional()
+  @Validate(IsSecretKeyMapConstraint)
   secrets?: Record<string, unknown> | null;
   @ApiPropertyOptional() @IsString() @IsOptional() executorAppName?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() executorGroup?: string;
