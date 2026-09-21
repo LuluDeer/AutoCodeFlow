@@ -227,15 +227,21 @@ cd "$INSTALL_DIR"
 if [[ -d node_modules ]]; then
   echo "      artifact 已含生产依赖，跳过 npm install"
 elif [[ -f package.json ]]; then
-  npm install --production --silent
+  # E-P2-P3: npm 9+ 废弃 --production，改 --omit=dev。本地 checkout 无 dist，需
+  # devDependencies(typescript) 才能编译；仅 artifact（已有 dist/main.js）省略 dev。
+  if [[ -f dist/main.js ]]; then
+    npm install --omit=dev --silent
+  else
+    npm install --silent
+  fi
 fi
 
-# 编译 TypeScript（如果有 tsconfig）
-if [[ -f tsconfig.json ]] && check_cmd npx; then
-  npx tsc --noEmit 2>/dev/null || true
-  if [[ -f tsconfig.build.json ]]; then
-    npx tsc -p tsconfig.build.json 2>/dev/null || true
-  fi
+# 编译 TypeScript：仅本地 checkout 回退需要（artifact 自带 dist/main.js）。
+# E-P2-P3：旧逻辑只跑 `tsc --noEmit`（不产出）并检测不存在的 tsconfig.build.json，
+# 回退安装永远没有 dist。改为按 tsconfig.json 真正 emit（outDir=./dist）；失败即报错。
+if [[ ! -f dist/main.js ]] && [[ -f tsconfig.json ]] && check_cmd npx; then
+  echo "      本地 checkout：编译 TypeScript 到 dist/..."
+  npx tsc -p tsconfig.json
 fi
 
 # ── 写入配置文件 ───────────────────────────────────────────────────────────────
