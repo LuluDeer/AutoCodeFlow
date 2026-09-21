@@ -6,15 +6,15 @@ import type { ColumnsType } from 'antd/es/table';
 import { client } from '../api/client';
 import { silencesApi, type NotificationSilence, type CreateSilencePayload, type SilenceScope } from '../api/notifications';
 import { getErrMsg } from '../utils/error';
-// F-26（DEEP_REVIEW 0ef3bbe）：locale 单一来源，不再硬编码 zh-CN
-import { currentLocale } from '../utils/locale';
+// D-P2-09（设计审计 2026-09-22）：时间格式化统一走 formatDateTime（与全站同源）。
+import { formatDateTime } from '../utils/timeFormat';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore, isAdminUser } from '../store/auth';
 // UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
 import '../i18n';
 import PageHeader from '../components/PageHeader';
 import StateError from '../components/StateError';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 
 const { TextArea } = Input;
 const { Text } = Typography;
@@ -359,7 +359,7 @@ function SilenceRulesPanel({ active }: { active: boolean }) {
   const scope: SilenceScope = Form.useWatch('scope', form) ?? 'global';
 
   const fmtEndTime = (v: string | null): string =>
-    v ? new Date(v).toLocaleString(currentLocale()) : t('notif.silence.never');
+    v ? formatDateTime(v) : t('notif.silence.never');
 
   /** 剩余时间；已过期或无界（endTime 为空）返回 null */
   const fmtRemaining = (endTime: string | null): string | null => {
@@ -534,7 +534,11 @@ function SilenceRulesPanel({ active }: { active: boolean }) {
 }
 
 export default function NotificationSettingsPage() {
-  const [activeTab, setActiveTab] = useState('email');
+  // D-P2-14（设计审计 2026-09-22）：Tab 选择此前只在本地 useState 里——刷新/深链/
+  // 浏览器前进后退都丢 Tab，永远回到第一渠道。改走 ?tab=（与 ExecutionDetailPage
+  // 同源范式）：渠道 key 动态（来自后端），故按「当前可用 key 集合」归一，非法/缺失
+  // 回退到默认渠道 email。
+  const [searchParams, setSearchParams] = useSearchParams();
   const [globalTestResult, setGlobalTestResult] = useState<TestResult | null>(null);
   const { t } = useTranslation();
   // FEAT-01: 静默规则 CRUD 端点为 ADMIN-only，非管理员不渲染 Tab（零入口，
@@ -549,6 +553,16 @@ export default function NotificationSettingsPage() {
     queryKey: ['notif', 'channels'],
     queryFn: ({ signal }) => notificationApi.getChannels(signal),
   });
+
+  // D-P2-14：可用 Tab key = 后端渠道 key ∪ (admin 时的 silences)。?tab= 命中其中
+  // 之一才采用，否则回退默认渠道 email（渠道异步加载前 availableKeys 为空，会先
+  // 落 email，数据到达后 ?tab= 命中即自动切到目标渠道）。
+  const availableTabKeys = [
+    ...(channels ?? []).map((c) => c.key),
+    ...(isAdmin ? ['silences'] : []),
+  ];
+  const rawTab = searchParams.get('tab');
+  const activeTab = rawTab && availableTabKeys.includes(rawTab) ? rawTab : 'email';
   const channel = channels?.find((c) => c.key === activeTab);
 
   const sendTestMut = useMutation({
@@ -668,7 +682,14 @@ export default function NotificationSettingsPage() {
           {/* W1：ChannelConfigForm 自带渠道私有 form 与测试状态，切 Tab 无需 resetFields */}
           <Tabs
             activeKey={activeTab}
-            onChange={(k) => { setActiveTab(k); }}
+            onChange={(k) => {
+              // D-P2-14：Tab 选择写进 URL ?tab=，刷新/深链/前进后退均保留。
+              setSearchParams((prev) => {
+                const next = new URLSearchParams(prev);
+                next.set('tab', k);
+                return next;
+              });
+            }}
             items={tabItems2}
           />
         </Card>

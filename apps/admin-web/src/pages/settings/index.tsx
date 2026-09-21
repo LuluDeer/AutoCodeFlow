@@ -14,8 +14,8 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { configApi, SystemConfig, ConfigHistory } from '../../api/config';
 import { aiApi, SaveAiConfigPayload } from '../../api/ai';
 import { getErrMsg } from '../../utils/error';
-// F-26（DEEP_REVIEW 0ef3bbe）：locale 单一来源，不再硬编码 zh-CN
-import { currentLocale } from '../../utils/locale';
+// D-P2-09（设计审计 2026-09-22）：时间格式化统一走 formatDateTime（与全站同源）。
+import { formatDateTime } from '../../utils/timeFormat';
 import { copyText } from '../../utils/clipboard';
 import { useAuthStore, isAdminUser } from '../../store/auth';
 import type { ColumnsType } from 'antd/es/table';
@@ -30,6 +30,8 @@ import ApiKeysSettings from './ApiKeysSettings';
 // FEAT-15: 事件订阅 Tab（webhook 出站事件 + 死信 replay），独立文件
 import EventSubscriptionsSettings from './EventSubscriptionsSettings';
 import { useTranslation } from 'react-i18next';
+// D-P2-14：Tab 选择进 URL ?tab=（与 ExecutionDetailPage 同源范式）。
+import { useSearchParams } from 'react-router-dom';
 // UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
 import '../../i18n';
 
@@ -301,7 +303,7 @@ function HistoryModal({ configKey, onClose }: { configKey: string; onClose: () =
 
   const cols: ColumnsType<ConfigHistory> = [
     { title: t('sysSettings.history.col.time'), dataIndex: 'createdAt', width: 170,
-      render: (v: string) => v ? new Date(v).toLocaleString(currentLocale()) : '-' },
+      render: (v: string) => v ? formatDateTime(v) : '-' },
     { title: t('sysSettings.history.col.operator'), dataIndex: 'username', width: 100, render: (v: string) => v ?? t('sysSettings.history.system') },
     { title: t('sysSettings.history.col.action'), dataIndex: 'action', width: 70,
       render: (v: ConfigHistory['action']) => v === 'create' ? t('sysSettings.history.action.create')
@@ -584,7 +586,7 @@ function AiConfigTab() {
               <Divider plain style={{ fontSize: 12, color: token.colorTextTertiary }}>{t('sysSettings.ai.openaiSection')}</Divider>
               <Form.Item
                 name="openaiBaseUrl"
-                label="API Base URL"
+                label={t('sysSettings.ai.baseUrlLabel')}
                 tooltip={t('sysSettings.ai.baseUrlTooltip')}
               >
                 <Input placeholder="https://api.openai.com/v1" />
@@ -593,7 +595,7 @@ function AiConfigTab() {
                 name="openaiApiKey"
                 label={
                   <Space>
-                    API Key
+                    {t('sysSettings.ai.apiKeyLabel')}
                     {cfg?.hasApiKey && <Tag color="green">{t('sysSettings.ai.configured')}</Tag>}
                   </Space>
                 }
@@ -613,7 +615,7 @@ function AiConfigTab() {
           {provider === 'ollama' && (
             <>
               <Divider plain style={{ fontSize: 12, color: token.colorTextTertiary }}>{t('sysSettings.ai.ollamaSection')}</Divider>
-              <Form.Item name="ollamaHost" label="Ollama Host">
+              <Form.Item name="ollamaHost" label={t('sysSettings.ai.ollamaHostLabel')}>
                 <Input placeholder="http://localhost:11434" />
               </Form.Item>
               <Form.Item name="ollamaModel" label={t('sysSettings.ai.modelLabel')}>
@@ -667,6 +669,11 @@ function AiConfigTab() {
 export default function SettingsPage() {
   const isAdmin = useIsAdmin();
   const { t } = useTranslation();
+  // D-P2-14（设计审计 2026-09-22）：Tabs 此前非受控——刷新/深链/前进后退永远回到
+  // 第一个 Tab，用户在「事件订阅」改完配置一刷新就丢了位置。改走 ?tab=（与
+  // ExecutionDetailPage 同源范式）：按当前渲染的 tabs key 集合归一，非法/缺失回退
+  // 到第一个 Tab（admin=token，普通用户=ai），与旧的非受控默认行为一致。
+  const [searchParams, setSearchParams] = useSearchParams();
 
   const tabs = [
     // R4 收紧矩阵：共享 Token 读/生成 ADMIN-only，非管理员直接不渲染该 Tab
@@ -706,6 +713,11 @@ export default function SettingsPage() {
     },
   ];
 
+  // D-P2-14：按渲染出的 tabs key 归一 ?tab=，命中其一才采用，否则回退首个 Tab。
+  const tabKeys = tabs.map((tb) => tb.key);
+  const rawTab = searchParams.get('tab');
+  const activeKey = rawTab && tabKeys.includes(rawTab) ? rawTab : tabKeys[0];
+
   return (
     // UI 打磨（用户反馈）：去掉 maxWidth 900——本页多数 Tab（系统配置/API Keys/
     // 安全/事件订阅）是宽表格，900 上限在宽屏右侧留大片空白，与其它整宽页不一致
@@ -723,7 +735,18 @@ export default function SettingsPage() {
           style={{ marginBottom: 16 }}
         />
       )}
-      <Tabs items={tabs} />
+      <Tabs
+        activeKey={activeKey}
+        onChange={(key) => {
+          // D-P2-14：Tab 选择写进 URL ?tab=，刷新/深链/前进后退均保留。
+          setSearchParams((prev) => {
+            const next = new URLSearchParams(prev);
+            next.set('tab', key);
+            return next;
+          });
+        }}
+        items={tabs}
+      />
     </div>
   );
 }

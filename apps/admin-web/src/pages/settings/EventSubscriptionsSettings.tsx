@@ -19,8 +19,8 @@ import type { ColumnsType } from 'antd/es/table';
 import { getErrMsg } from '../../utils/error';
 // UX-04：统一剪贴板封装（返回是否**真正**复制成功）。
 import { copyText } from '../../utils/clipboard';
-// F-26（DEEP_REVIEW 0ef3bbe）：locale 单一来源，不再硬编码 zh-CN
-import { currentLocale } from '../../utils/locale';
+// D-P2-09（设计审计 2026-09-22）：时间格式化统一走 formatDateTime（与全站同源）。
+import { formatDateTime } from '../../utils/timeFormat';
 import { useTranslation } from 'react-i18next';
 // UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
 import '../../i18n';
@@ -116,7 +116,7 @@ function CreateResultModal(props: {
           <Alert
             type="warning"
             showIcon
-            message={t('eventSub.createResult.alertTitle')}
+            title={t('eventSub.createResult.alertTitle')}
             description={t('eventSub.createResult.alertDesc')}
             style={{ marginBottom: 16 }}
           />
@@ -125,7 +125,7 @@ function CreateResultModal(props: {
           </Paragraph>
         </>
       ) : (
-        <Alert type="success" showIcon message={t('eventSub.createResult.title')} style={{ marginBottom: 16 }} />
+        <Alert type="success" showIcon title={t('eventSub.createResult.title')} style={{ marginBottom: 16 }} />
       )}
       <Space>
         <Text type="secondary">{t('eventSub.createResult.urlLabel')}</Text>
@@ -205,7 +205,7 @@ function DeadLetterSection({ subscriptions }: { subscriptions: EventSubscription
     { title: t('eventSub.deadLetter.col.attempts'), dataIndex: 'attempts', width: 90 },
     {
       title: t('eventSub.deadLetter.col.time'), dataIndex: 'createdAt', width: 160,
-      render: (v: string) => (v ? new Date(v).toLocaleString(currentLocale()) : '-'),
+      render: (v: string) => (v ? formatDateTime(v) : '-'),
     },
     {
       title: t('eventSub.deadLetter.col.action'), key: 'action', width: 90, fixed: 'right' as const,
@@ -466,7 +466,7 @@ export default function EventSubscriptionsSettings() {
         );
       },
     },
-    { title: 'URL', dataIndex: 'url', key: 'url', ellipsis: true, render: (v: string) => <Text code>{v}</Text> },
+    { title: t('eventSub.col.url'), dataIndex: 'url', key: 'url', ellipsis: true, render: (v: string) => <Text code>{v}</Text> },
     {
       title: t('eventSub.col.enabled'), dataIndex: 'enabled', key: 'enabled', width: 80,
       render: (v: boolean, record: EventSubscription) => (
@@ -543,7 +543,7 @@ export default function EventSubscriptionsSettings() {
         type="info"
         showIcon
         style={{ marginBottom: 16 }}
-        message={t('eventSub.alertMessage')}
+        title={t('eventSub.alertMessage')}
         description={
           <Text type="secondary">
             {t('eventSub.alertDesc')}

@@ -14,6 +14,10 @@ import { formatRelativeTime } from '../utils/timeFormat';
 import DeployModeFields from '../components/DeployModeFields';
 import { executorsApi, Executor } from '../api/executors';
 import { getErrMsg, isFormValidationError } from '../utils/error';
+// D-P1-2（设计审计 2026-09-22）：失败详情复制改走统一剪贴板封装（非安全上下文
+// 降级 execCommand，并按返回值如实提示——此前 navigator.clipboard 静默 catch，
+// 失败零反馈，排障者点了复制却粘出空串）。
+import { copyText } from '../utils/clipboard';
 // F-26（DEEP_REVIEW 0ef3bbe）：locale 单一来源，不再硬编码 zh-CN
 import { currentLocale } from '../utils/locale';
 import { useTranslation } from 'react-i18next';
@@ -90,12 +94,11 @@ function DeployStatusMessage({ text }: { text: string }) {
   const long = text.length > COLLAPSED_LEN;
   const shown = long && !expanded ? `${text.slice(0, COLLAPSED_LEN)}...` : text;
   const onCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(text);
-      message.success(t('appDeploy.statusMessage.copied'));
-    } catch {
-      /* clipboard 在非安全上下文不可用——静默，不阻断排查 */
-    }
+    // D-P1-2：copyText 返回是否**真正**复制成功（非安全上下文降级 execCommand），
+    // 成功才报成功，失败明确报错——不再静默吞掉 clipboard 拒绝。
+    const ok = await copyText(text);
+    if (ok) message.success(t('appDeploy.statusMessage.copied'));
+    else message.error(t('common.copyFailed'));
   };
   return (
     <div style={{ minWidth: 0 }}>
@@ -399,7 +402,10 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
         const cfg = statusConfig[s] || { color: 'default', label: s };
         return (
           <Space direction="vertical" size={0}>
-            <Tag color={cfg.color} style={{ border: 'none', background: `${cfg.color}15`, marginInlineEnd: 0 }}>
+            {/* D-P2-08（设计审计）：删掉无效 `background: ${cfg.color}15`——antd
+                预设色名拼成 'green15' 是非法 CSS，浏览器整段丢弃，底色从未生效；
+                让 Tag 自身配色（color=）生效即可。 */}
+            <Tag color={cfg.color} style={{ border: 'none', marginInlineEnd: 0 }}>
               {cfg.label}
             </Tag>
             {/* DEP-04: 审批状态徽标（待审批/已批准/已拒绝/已撤销） */}
@@ -612,7 +618,7 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
         <Alert
           type="warning"
           showIcon
-          message={
+          title={
             isAdmin
               ? t('appDeploy.alert.pendingApprovalAdmin', { count: pendingApprovalCount })
               : t('appDeploy.alert.pendingApprovalUser')
@@ -673,7 +679,7 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
           type="info"
           icon={<ThunderboltOutlined />}
           showIcon
-          message={t('appDeploy.modal.smartScheduling')}
+          title={t('appDeploy.modal.smartScheduling')}
           style={{ marginBottom: 16 }}
         />
 
