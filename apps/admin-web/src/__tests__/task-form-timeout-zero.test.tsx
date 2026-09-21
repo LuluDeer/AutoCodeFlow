@@ -18,6 +18,7 @@
  * 原样保留。只断言"能输入 0"不够——钳值发生在失焦，属于组件内部行为。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { useAuthStore } from '../store/auth';
 import { render, cleanup, waitFor, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
@@ -40,6 +41,7 @@ vi.mock('../components/GlueEditor', () => ({ default: () => <div data-testid="gl
 let mockRouteParams: { id?: string } = {};
 vi.mock('react-router-dom', () => ({
   useNavigate: () => vi.fn(),
+  useBlocker: () => ({ state: 'unblocked' as const, proceed: () => {}, reset: () => {} }),
   useParams: () => mockRouteParams,
   useSearchParams: () => [new URLSearchParams('')],
   Link: (props: { to: string; children: React.ReactNode }) => <a href={props.to}>{props.children}</a>,
@@ -87,6 +89,7 @@ function taskWithTimeout(timeout: number) {
 }
 
 beforeEach(() => {
+  useAuthStore.setState({ user: { id: 1, username: 'root', role: 'admin' } });
   mockRouteParams = { id: 'task-1' };
   vi.mocked(executorsApi.list).mockReset().mockResolvedValue([] as never);
   vi.mocked(executorsApi.getGroups).mockReset().mockResolvedValue([] as never);

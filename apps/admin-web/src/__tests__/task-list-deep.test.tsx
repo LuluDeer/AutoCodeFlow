@@ -13,6 +13,7 @@
  * Modal 内 ParamsEditor 提交用 act 包裹（executor-detail-highrisk 同批先例）。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { useAuthStore } from '../store/auth';
 import { render, screen, cleanup, fireEvent, waitFor, act } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -120,6 +121,7 @@ async function confirmPopconfirm(titleText: string) {
 }
 
 beforeEach(() => {
+  useAuthStore.setState({ user: { id: 1, username: 'root', role: 'admin' } });
   cleanup();
   vi.clearAllMocks();
   mockedTasks.list.mockResolvedValue({

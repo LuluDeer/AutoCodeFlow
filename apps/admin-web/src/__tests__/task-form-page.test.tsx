@@ -8,6 +8,7 @@
  *     pinned 选择器（绑定 executorId）应渲染，证明加载映射真正接线到 UI。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { useAuthStore } from '../store/auth';
 import { render, screen, cleanup, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import TaskFormPage from '../pages/TaskFormPage';
@@ -54,6 +55,7 @@ let mockSetSearchParams = vi.fn((next: URLSearchParams) => {
 });
 vi.mock('react-router-dom', () => ({
   useNavigate: () => vi.fn(),
+  useBlocker: () => ({ state: 'unblocked' as const, proceed: () => {}, reset: () => {} }),
   useParams: () => mockRouteParams,
   useSearchParams: () => {
     if (mockSearch !== mockSearchParamsCacheKey || !mockSearchParamsCache) {
@@ -100,6 +102,7 @@ const renderPage = () =>
     </QueryClientProvider>,
   );
 beforeEach(() => {
+  useAuthStore.setState({ user: { id: 1, username: 'root', role: 'admin' } });
   mockRouteParams = { id: 'task-1' };
   mockSearch = '';
   mockSearchParamsCache = null;
