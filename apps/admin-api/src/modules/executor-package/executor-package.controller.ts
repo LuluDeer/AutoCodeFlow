@@ -52,6 +52,7 @@ import {
   CreateExecutorPackageDto,
   UpdateExecutorPackageDto,
   QueryExecutorPackageDto,
+  PushExecutorPackageDto,
 } from "./dto/executor-package.dto";
 import { ExecutorPackage } from "./executor-package.entity";
 import { UserRole } from "../users/entities/user.entity";
@@ -437,7 +438,7 @@ export class ExecutorPackageController {
   @ApiResponse({ status: 200, description: "Push result" })
   async push(
     @Param("id", ParseUUIDPipe) id: string,
-    @Body("executorIds") executorIds?: string[],
+    @Body() body: PushExecutorPackageDto,
   ): Promise<
     { executorId: string; address: string; success: boolean; error?: string }[]
   > {
@@ -447,6 +448,8 @@ export class ExecutorPackageController {
         this.configService,
         this.systemConfigService,
       )) ?? undefined;
-    return this.svc.pushToExecutors(id, executorIds, executors, sharedToken);
+    // 审计 E-P2-S3：executorIds 现经 PushExecutorPackageDto 校验（v4 UUID × ≤100）。
+    // body 可能为空（单测直接调用 push(id)），故可选链。
+    return this.svc.pushToExecutors(id, body?.executorIds, executors, sharedToken);
   }
 }
