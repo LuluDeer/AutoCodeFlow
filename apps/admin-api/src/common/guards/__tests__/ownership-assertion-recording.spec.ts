@@ -78,7 +78,11 @@ describe("A2-B 落证：TaskService", () => {
   it("assertCanOperate 只落 'task:operate' 证，不冒充 'write'", async () => {
     const svc = newTaskService();
     await runOwnershipScope(async () => {
-      await svc.assertCanOperate({ ownerUserId: 7 }, other);
+      // 审计 E-P1-S1：默认翻转为 owner 后，非属主且无 projectAccess 的调用
+      // 会被 403（落证发生在授权决策之前——拒绝路径同样落 'operate' 证）。
+      await expect(
+        svc.assertCanOperate({ ownerUserId: 7 }, other),
+      ).rejects.toThrow();
       expect(hasOwnershipAssertion("task", "operate")).toBe(true);
       expect(hasOwnershipAssertion("task", "write")).toBe(false);
     });

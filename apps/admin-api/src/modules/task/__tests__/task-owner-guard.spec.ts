@@ -188,12 +188,15 @@ describe("TaskService 项目角色面（AUTH-02）", () => {
       jest.fn(),
       jest.fn().mockResolvedValue("viewer"),
     );
+    // 审计 E-P1-S1：默认翻转为 owner 后，viewer 在 canOperateAsOwner 即被拒
+    // （非 editor/admin），抛 owner-scope 文案；旧的「viewer 只读」专属文案仅在
+    // 显式 opt-out TASK_OPERATE_SCOPE=any 档才到达。viewer 仍 403，只是文案变了。
     await expect(
       svc.assertCanOperate({ ownerUserId: 7, projectId: "p1" }, plainUser),
-    ).rejects.toThrow("viewer");
+    ).rejects.toThrow(/TASK_OPERATE_SCOPE=owner/);
   });
 
-  it("assertCanOperate：viewer 之外（editor/无角色/ADMIN/无主体）一律维持既有行为", async () => {
+  it("assertCanOperate：E-P1-S1 默认 owner 后，editor/ADMIN/无主体放行、非成员 403", async () => {
     const editorSvc = makeServiceWithAccess(
       jest.fn(),
       jest.fn().mockResolvedValue("editor"),
@@ -208,12 +211,17 @@ describe("TaskService 项目角色面（AUTH-02）", () => {
     );
     const row = { ownerUserId: 7, projectId: "p1" };
 
+    // 项目 editor 放行（团队协作：同项目成员可跑彼此任务）。
     await expect(
       editorSvc.assertCanOperate(row, plainUser),
     ).resolves.toBeUndefined();
+    // 审计 E-P1-S1：默认已从 any 翻转为 owner（configuration.ts 未设置
+    // TASK_OPERATE_SCOPE 时返回 owner）。旧断言此处非成员（resolveRole 返回 null）
+    // 穿透放行；新默认下非属主非成员按 403。
     await expect(
       noneSvc.assertCanOperate(row, plainUser),
-    ).resolves.toBeUndefined();
+    ).rejects.toThrow(/TASK_OPERATE_SCOPE=owner/);
+    // ADMIN 短路放行；无主体（机器面）走项目角色旁路仍放行。
     await expect(
       viewerSvc.assertCanOperate(row, admin),
     ).resolves.toBeUndefined();

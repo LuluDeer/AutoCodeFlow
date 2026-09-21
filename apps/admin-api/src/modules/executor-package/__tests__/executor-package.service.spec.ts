@@ -509,7 +509,7 @@ describe("ExecutorPackageService", () => {
       config.get.mockImplementation((key: string) =>
         key === "app.adminApiUrl" ? baseUrl : "env-token",
       );
-      await expect(controller.push(mockPkg.id)).resolves.toEqual([
+      await expect(controller.push(mockPkg.id, {})).resolves.toEqual([
         {
           executorId: "exec-001",
           address: targets[0].address,
@@ -544,7 +544,7 @@ describe("ExecutorPackageService", () => {
       "rejects missing configuration %p before sending",
       async (baseUrl) => {
         config.get.mockReturnValue(baseUrl);
-        await expect(controller.push(mockPkg.id)).rejects.toMatchObject({
+        await expect(controller.push(mockPkg.id, {})).rejects.toMatchObject({
           status: 503,
           message:
             "ADMIN_API_URL is not configured; cannot push executor package",
@@ -560,7 +560,7 @@ describe("ExecutorPackageService", () => {
       "http://host#fragment",
     ])("rejects invalid base URL %s before sending", async (baseUrl) => {
       config.get.mockReturnValue(baseUrl);
-      await expect(controller.push(mockPkg.id)).rejects.toMatchObject({
+      await expect(controller.push(mockPkg.id, {})).rejects.toMatchObject({
         status: 503,
         message: expect.stringContaining("ADMIN_API_URL"),
       });
@@ -569,7 +569,7 @@ describe("ExecutorPackageService", () => {
 
     it("falls back to env when the DB key is unavailable", async () => {
       systemConfig.findOne.mockRejectedValue(new Error("not found"));
-      await controller.push(mockPkg.id);
+      await controller.push(mockPkg.id, {});
       expect(axios.post).toHaveBeenCalledWith(
         expect.any(String),
         expect.any(Object),
@@ -582,9 +582,9 @@ describe("ExecutorPackageService", () => {
     });
 
     it("reads the rotated DB token on the next push", async () => {
-      await controller.push(mockPkg.id);
+      await controller.push(mockPkg.id, {});
       systemConfig.findOne.mockResolvedValue({ value: "rotated-token" });
-      await controller.push(mockPkg.id);
+      await controller.push(mockPkg.id, {});
       expect(axios.post).toHaveBeenLastCalledWith(
         expect.any(String),
         expect.any(Object),
@@ -600,7 +600,7 @@ describe("ExecutorPackageService", () => {
       jest
         .mocked(assertAndPinExecutorUrl)
         .mockRejectedValue(new Error("Unsafe executor URL"));
-      await expect(controller.push(mockPkg.id)).resolves.toEqual([
+      await expect(controller.push(mockPkg.id, {})).resolves.toEqual([
         expect.objectContaining({
           success: false,
           error: "Unsafe executor URL",
