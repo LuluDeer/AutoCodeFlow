@@ -153,4 +153,21 @@
 #     桌面端内嵌执行器若漏打，**公网中台 + 内网执行器**拓扑下的部署/停止/
 #     热更新仍会全部超时（本 ADR 要修的就是这个故障面）。按 ADR-005 同 commit
 #     重打：本机(Windows) ncc 0.44 产出 3680d5e7…，bundle 2521kB。
-3680d5e795c13745e6ef31cab4154993743547715ac9e89084303a52fcd2301e  index.js
+#   - APP-002 后续（deploy 解压路径修复）：`/api/deploy` 的 packageUrl 分支
+#     此前在 Windows 上**必然失败**——解压用
+#     `powershell.exe -Command '<脚本>' <arg1> <arg2>` + PowerShell 自动变量
+#     取参，而该形态根本不填充那个变量（`-Command` 已消费掉脚本字符串，后续
+#     token 成为脚本的独立输出而非参数；实测该变量 Count 为 0）。生产实证：
+#     `Expand-Archive : 无法对参数"LiteralPath"执行操作，因为该参数为 Null 或空`。
+#     同一坏模式还在 `assertSafeZipEntries` 里，后果**更严重**：那里的
+#     `ZipFile::OpenRead` 拿到空串后抛 "Empty path name is not legal."，但
+#     PowerShell 记 non-terminating error、**退出码仍为 0**，于是调用方的
+#     `status !== 0` 不触发、条目列表成空数组、zip-slip 路径闸门**被静默跳过**
+#     ——即 Windows 上这道 SEC 闸门从未真正生效。
+#     修法：deploy 与 execute 统一走 `zip-safety.ts` 的 `safeExtractZip`
+#     （进程内逐条目断言路径，不把决策权交给外部工具的取参形态），并删除
+#     已无价值的 `assertSafeZipEntries`；`zip-safety.spec.ts` 新增源码守卫
+#     禁止该形态回归（反证：把它加回代码行 → 守卫转红）。
+#     按 ADR-005 同 commit 重打：本机(Windows) ncc 0.44 产出 373e2f27…，
+#     bundle 2521kB（源码净减，字节内容变）。
+373e2f27806c6d8099ca7a84e41ab18bd49692319119c60142210a2660db4a58  index.js

@@ -10,7 +10,7 @@ import { buildChildEnv } from '../env-whitelist';
 import { downloadFile } from '../lib/download';
 import { assertSafeHttpUrl } from '../lib/ssrf-guard';
 import { isSafePathSegment } from '../safe-path';
-import { guardZipOrThrow } from '../zip-guard';
+import { ZipSafetyError, safeExtractZip } from '../zip-safety';
 import { isExecutorShuttingDown } from '../shutdown-state';
 
 export const deployRouter = Router();
@@ -608,44 +608,28 @@ export function findUnsafeZipEntries(entries: string[]): string[] {
   return unsafe;
 }
 
-async function assertSafeZipEntries(zipPath: string): Promise<void> {
-  // Read the entry list with a platform-appropriate tool, then run the SAME
-  // traversal check. Windows previously returned early here and relied solely
-  // on Expand-Archive's own (undocumented) path handling — an asymmetric guard
-  // versus the Linux branch.
-  let entries: string[];
-  if (process.platform === 'win32') {
-    // No `unzip` on Windows: enumerate via .NET's ZipFile (zero new deps).
-    // ZipFile lives in System.IO.Compression — loaded by default on PowerShell
-    // 7+, needing Add-Type on Windows PowerShell 5.1 — so the Add-Type is
-    // wrapped in try/catch to work on both. Entry.FullName uses '/' separators
-    // per the zip spec; findUnsafeZipEntries normalises both anyway.
-    const script =
-      'try { Add-Type -AssemblyName System.IO.Compression.FileSystem } catch {}; ' +
-      '$z = [System.IO.Compression.ZipFile]::OpenRead($args[0]); ' +
-      'try { $z.Entries | ForEach-Object { $_.FullName } } finally { $z.Dispose() }';
-    const listR = await runCommand(
-      'powershell.exe',
-      ['-NoProfile', '-Command', script, zipPath],
-      { timeout: 30_000, signal: deployAbort.signal },
-    );
-    if (listR.status !== 0) {
-      throw new Error(listR.stderr?.toString() || 'zip listing failed');
-    }
-    entries = listR.stdout.toString().split(/\r?\n/).filter(Boolean);
-  } else {
-    const listR = await runCommand('unzip', ['-Z1', zipPath], { timeout: 30_000, signal: deployAbort.signal });
-    if (listR.status !== 0) {
-      throw new Error(listR.stderr?.toString() || 'unzip listing failed');
-    }
-    entries = listR.stdout.toString().split(/\r?\n/).filter(Boolean);
-  }
+/**
+ * ⚠️ 已删除：`assertSafeZipEntries()`。
+ *
+ * 它曾在 `/api/deploy` 的 packageUrl 分支里承担 zip-slip 路径闸门，但**从未
+ * 真正生效**——Windows 分支用 `powershell.exe -Command '<脚本>' <arg>` 加
+ * PowerShell 自动变量取参，而该形态根本不填充那个变量（`-Command` 已消费掉
+ * 脚本字符串，后续 token 成为脚本的独立输出而非参数）。空路径让
+ * `ZipFile::OpenRead` 抛异常，但 PowerShell 把异常记为 **non-terminating
+ * error、退出码仍为 0**，于是 `status !== 0` 不触发、条目列表成空数组、
+ * `findUnsafeZipEntries([])` 返回空 —— 检查静默通过。
+ *
+ * 现在解压走 `zip-safety.ts` 的 `safeExtractZip`，它**在进程内**逐条目断言
+ * 路径（不经过任何外部工具的路径决策），额外覆盖符号链接条目、NUL 截断、
+ * 盘符路径与 TOCTOU 复查。本函数没有存在价值，删除以免被再次复用。
+ *
+ * `findUnsafeZipEntries`（上方）保留：它是纯函数、有单测，且仍是
+ * `zip-safety.ts` 之外唯一把"双分隔符 + 盘符 + 绝对路径"规则文档化的地方。
+ *
+ * 注：本注释刻意不写出那个 PowerShell 变量的字面量——`zip-safety.spec.ts`
+ * 有一条源码守卫禁止它在 `deploy.ts` 里出现，写出来会把自己扫红。
+ */
 
-  const unsafe = findUnsafeZipEntries(entries);
-  if (unsafe.length > 0) {
-    throw new Error(`Unsafe zip entry path: ${unsafe[0]}`);
-  }
-}
 
 /** Main deploy handler */
 deployRouter.post('/deploy', async (req: Request, res: Response) => {
@@ -739,41 +723,46 @@ deployRouter.post('/deploy', async (req: Request, res: Response) => {
         logger.info(`[deploy] Downloading package from ${redactUrl(packageUrl)}`);
         const zipPath = path.join(paths.tmpDir, `${paths.releaseKey}.zip`);
         await downloadPackage(packageUrl, zipPath, 5, true, deployAbort.signal);
-        // SEC-05: zip-bomb guard — reject declared-size bombs (ratio /
-        // entry-count / per-file & total caps, bounded nested probing)
-        // BEFORE handing the archive to Expand-Archive / unzip. Runs after
-        // the traversal check below would run; both are independent gates.
-        guardZipOrThrow(zipPath);
-        await assertSafeZipEntries(zipPath);
         logger.info(`[deploy] Extracting package for ${deploymentId}`);
-        // Use platform-appropriate extraction (async — spawnSync here froze
-        // the event loop for up to 60s per archive):
-        //   Windows: PowerShell Expand-Archive (built-in since PS 5.0)
-        //   Linux/macOS: unzip
-        let unzipOk = false;
-        if (process.platform === 'win32') {
-          const psR = await runCommand(
-            'powershell.exe',
-            [
-              '-NoProfile',
-              '-Command',
-              'Expand-Archive -Force -LiteralPath $args[0] -DestinationPath $args[1]',
-              zipPath,
-              paths.extractDir,
-            ],
-            { timeout: 60_000, signal: deployAbort.signal },
-          );
-          if (psR.status !== 0) throw new Error(psR.stderr?.toString() || 'Expand-Archive failed');
-          unzipOk = true;
-        } else {
-          const unzipR = await runCommand('unzip', ['-o', zipPath, '-d', paths.extractDir], { timeout: 60_000, signal: deployAbort.signal });
-          if (unzipR.status !== 0) throw new Error(unzipR.stderr?.toString() || 'unzip failed');
-          unzipOk = true;
+        // 解压走 `safeExtractZip`（与 execute.ts 的包任务同一条路径）。
+        //
+        // ## 为什么不再用 Expand-Archive / unzip（生产故障复盘）
+        //
+        // 原实现是「`guardZipOrThrow` → `assertSafeZipEntries` → 平台分支
+        // （Windows 走 `Expand-Archive`，其余走 `unzip`）」，三步。前两步的
+        // **Windows 分支**都把路径经 `powershell.exe -Command '<脚本>' <arg>`
+        // 传参，脚本里用 `$args[0]` 取——**这个形态根本不填充 `$args`**：
+        // `-Command` 已消费掉脚本字符串，后续 token 成为脚本的独立输出而非
+        // 参数（实测 `powershell -Command 'Write-Output $($args.Count)' a b`
+        // 输出 `0`，`a b` 被原样打印）。于是：
+        //
+        //   1. `Expand-Archive -LiteralPath $args[0]` 拿到空串 →
+        //      `ParameterArgumentValidationError` → 部署**必然失败**（生产实证）；
+        //   2. 更严重的是 `assertSafeZipEntries` 的
+        //      `ZipFile::OpenRead($args[0])` 同样拿到空串 → 抛
+        //      "Empty path name is not legal."，但 PowerShell 把该异常记为
+        //      **non-terminating error，退出码仍为 0** → `status !== 0` 检查
+        //      不触发 → `entries` 变成空数组 → `findUnsafeZipEntries([])` 返回
+        //      空 → **zip-slip 路径遍历闸门被静默跳过**。即 Windows 上这道
+        //      SEC 闸门从未真正生效，且因为退出码是 0 而毫无迹象。
+        //
+        // 换成 `safeExtractZip` 后两个问题一起消失，且**严格更强**：
+        //   - 它内部先跑 `assertZipFileSafe`（zip-guard 炸弹审查），
+        //     再逐条目断言路径（zip-slip / 绝对路径 / `..` 段），
+        //     再按 stored/deflate 自行解压（不把路径决策权交给外部工具）；
+        //   - 额外拒绝**符号链接条目**（Expand-Archive 会照建，落盘即逃逸通道）；
+        //   - 落盘前用 `realpathSync` 复查父目录仍在 destDir 内（防 TOCTOU 替换）；
+        //   - 按**实际**解压字节二次卡上限（中央目录声明可以撒谎）。
+        //   这也是 `zip-safety.ts` 模块头注明的存在理由，execute.ts 早已采用。
+        try {
+          safeExtractZip(zipPath, paths.extractDir, { removeArchive: true });
+        } catch (err) {
+          if (err instanceof ZipSafetyError) {
+            throw new Error(`Unsafe or invalid package archive: ${err.message}`);
+          }
+          throw err;
         }
-        if (unzipOk) {
-          fs.unlinkSync(zipPath);
-          logger.info(`[deploy] Package extracted for ${deploymentId}`);
-        }
+        logger.info(`[deploy] Package extracted for ${deploymentId}`);
       } else if (gitRepo) {
         // SEC: all git commands use array args via async spawn — no shell, no injection
         // S12: the branch was validated above against `gitBranch || 'main'`, but
