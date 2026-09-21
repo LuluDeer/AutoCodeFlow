@@ -40,6 +40,7 @@ export const ExecuteRequestSchema = z.object({
   "executionId": z.string().regex(new RegExp("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")),
   "task": TaskConfigSchema,
   "params": z.record(z.unknown()).nullable().optional(),
+  "secrets": z.record(z.unknown()).nullable().optional(),
 }).passthrough();
 export type ExecuteRequest = z.infer<typeof ExecuteRequestSchema>;
 

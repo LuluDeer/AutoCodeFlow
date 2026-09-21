@@ -421,6 +421,40 @@ export class ExecutorService {
     return { ...(params ?? {}), ...(decrypted ?? {}) };
   }
 
+  /**
+   * SEC-02 续（生产故障）：把解密后的 secrets **单独**作为派发载荷的 `secrets`
+   * 字段下发，供执行器按**原名**注入子进程 env。
+   *
+   * 为什么需要单独一份（而不是只走既有的 params 合并）：此前 secrets 与 params
+   * 合并后统一加 `AUTOFLOW_` 前缀，于是"配置 FEISHU_APP_ID"实际注入的是
+   * `AUTOFLOW_FEISHU_APP_ID`——脚本按提示读裸名永远取不到（生产实证），而
+   * **第三方 SDK 认的就是规范名**（boto3 的 AWS_ACCESS_KEY_ID、openai 的
+   * OPENAI_API_KEY），加前缀后脚本无法改写，凭据等于不可用。
+   *
+   * 兼容性（关键）：secrets **仍然**合并进 params（`buildDispatchParams`
+   * 不动），所以：
+   *   · 旧执行器（不认识 `secrets` 字段）行为与今日**逐字节一致**——它们照旧
+   *     只读 params，照旧注入 `AUTOFLOW_<KEY>`；
+   *   · 新执行器额外按原名注入一份，两种读法并存。
+   * 因此本字段是**纯增量**，无需协议版本门禁（不 bump PROTOCOL_VERSION：没有
+   * 任何行为依赖"对方是否认识它"）。这与 v2 `commands` 的情形不同——那里必须
+   * 门禁，因为 v1 执行器会静默丢弃命令、中台却会误判投递成功。
+   *
+   * 解密失败与 `buildDispatchParams` 同策：抛错让派发失败，绝不静默裸跑。
+   */
+  private buildDispatchSecrets(
+    task: Task,
+  ): Record<string, unknown> | null {
+    try {
+      return this.secretsCrypto.decryptForDispatch(task.secrets) ?? null;
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `Task secrets could not be decrypted for dispatch: ${message}`,
+      );
+    }
+  }
+
   private async releaseExecutorSlot(address?: string | null): Promise<void> {
     if (!address) return;
     await this.repo
@@ -2146,6 +2180,8 @@ export class ExecutorService {
     try {
       // SEC-02: params + decrypted secrets（secrets 覆盖同名 params，仅进派发载荷不落库）
       const dispatchParams = this.buildDispatchParams(task, execution);
+      // SEC-02 续：secrets 另发一份，供执行器按**原名**注入（第三方 SDK 认规范名）。
+      const dispatchSecrets = this.buildDispatchSecrets(task);
       // python_task_multiversion（WS2 · CONTRACT §2.4/§3.1）：zip 渠道任务的
       // `packageUrl` 由 admin 解析后附加到**下发 task 对象**上（push/pull 两条
       // 传输分支共用同一份；解析失败在此抛出 → 走下方同一 catch 回滚占坑）。
@@ -2176,6 +2212,9 @@ export class ExecutorService {
           executionId: execution.id,
           task: dispatchTask,
           params: dispatchParams,
+          // SEC-02 续：secrets 单独下发一份供执行器按原名注入（纯增量字段，
+          // 旧执行器忽略它，见 buildDispatchSecrets 的注释）。
+          secrets: dispatchSecrets,
           // push 经 HTTP 头携带 traceparent；pull 只能并入载荷本体，
           // 执行器侧 pull 循环以同语义注入 AUTOFLOW_TRACE_ID。
           traceparent: traceHeaders["traceparent"],
@@ -2215,6 +2254,8 @@ export class ExecutorService {
           executionId: execution.id,
           task: dispatchTask,
           params: dispatchParams,
+          // SEC-02 续：secrets 单独下发一份供执行器按原名注入（纯增量字段）。
+          secrets: dispatchSecrets,
         },
         {
           timeout: ((task.timeout || 300) + 10) * 1000,
@@ -2461,6 +2502,8 @@ export class ExecutorService {
     );
     // SEC-02: params + decrypted secrets（secrets 覆盖同名 params，仅进派发载荷不落库）
     const dispatchParams = this.buildDispatchParams(task, execution);
+    // SEC-02 续：secrets 另发一份，供执行器按**原名**注入（第三方 SDK 认规范名）。
+    const dispatchSecrets = this.buildDispatchSecrets(task);
     // python_task_multiversion（WS2 · CONTRACT §2.4/§3.1）：广播路径同样解析
     // `packageUrl`。**在扇出之前**解析（一次查询服务全部目标，且解析失败时
     // 整个广播直接失败——`packageUrl` 是任务级属性，解析不到就没有任何一个
@@ -2480,6 +2523,8 @@ export class ExecutorService {
             executionId: execution.id,
             task: dispatchTask,
             params: dispatchParams,
+            // SEC-02 续：secrets 单独下发一份供执行器按原名注入（纯增量字段）。
+            secrets: dispatchSecrets,
             traceparent: broadcastHeaders["traceparent"],
           });
           return {
@@ -2502,6 +2547,8 @@ export class ExecutorService {
             executionId: execution.id,
             task: dispatchTask,
             params: dispatchParams,
+            // SEC-02 续：secrets 单独下发一份供执行器按原名注入（纯增量字段）。
+            secrets: dispatchSecrets,
           },
           {
             timeout: ((task.timeout || 300) + 10) * 1000,
