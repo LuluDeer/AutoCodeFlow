@@ -26,7 +26,7 @@ import axios from 'axios';
 import { config } from './config';
 import { logger } from './logger';
 import { getExecutorAuthToken } from './routes/logs';
-import { ControlCommandSchema } from './generated/protocol.schemas';
+import { ControlCommandSchema, type ControlCommand } from './generated/protocol.schemas';
 
 /** 中台可下发的命令类型（封闭枚举——新增类型必须两端同批）。 */
 export const CONTROL_COMMAND_TYPES = [
@@ -40,13 +40,9 @@ export const CONTROL_COMMAND_TYPES = [
 
 export type ControlCommandType = (typeof CONTROL_COMMAND_TYPES)[number];
 
-/** pull 响应里的一条命令载荷。 */
-export interface ControlCommand {
-  commandId: string;
-  type: string;
-  payload: Record<string, unknown>;
-  issuedAt?: number;
-}
+// E-P2-P4: 单一事实源——命令载荷类型直接来自生成的 ControlCommandSchema，
+// 不再手写第二份 interface（消除协议两端漂移的第二事实源）。
+export type { ControlCommand };
 
 /** 命令执行结果（回传中台 /executors/command-result）。 */
 export interface ControlCommandResult {
@@ -125,7 +121,8 @@ export async function executeControlCommand(
 ): Promise<ControlCommandResult> {
   const startedAt = Date.now();
   const route = COMMAND_ROUTES[cmd.type as ControlCommandType];
-  const path = route.path(cmd.payload);
+  // E-P2-P4: 协议类型里 payload 可选（parse 路径已补 {}，此处再兜底一次边界）。
+  const path = route.path(cmd.payload ?? {});
   const url = `http://127.0.0.1:${config.port}${path}`;
   const token = getExecutorAuthToken();
   try {
