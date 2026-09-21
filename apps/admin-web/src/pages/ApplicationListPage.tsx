@@ -271,12 +271,23 @@ export default function ApplicationListPage() {
     try {
       const values = await quickDeployForm.validateFields();
       setQuickDeploying(true);
-      await deploymentsApi.deploy(quickDeployApp, {
+      const created = await deploymentsApi.deploy(quickDeployApp, {
         executorId: values.executorId || undefined,
         runMode: values.runMode,
         startCommand: values.runMode === 'daemon' ? values.startCommand : undefined,
       });
-      message.success(t('appList.deployCreated'));
+      // P0（UX-AUDIT-2026-09-21 §P0-2）：审批流的应用，后端**只落待审批行、
+      // 不派发**（app-deployment.service.ts 的 `if (app.approvalRequired)` 分支
+      // 直接 return）。此前这里无条件弹「部署已创建」——在一个更常用的入口上
+      // 谎报成功：用户看到绿色提示就关窗走人，实际什么都不会被派发，一行
+      // pending_approval 静静等人批准，而用户不会去审批页（界面刚说创建好了）。
+      // 判定必须与详情页 AppDeploymentPage.handleDeploy 同源，否则同一接口
+      // 两个入口给出两种结论。
+      if (created?.approvalStatus === 'pending_approval') {
+        message.info(t('appDeploy.msg.deployPendingApproval'));
+      } else {
+        message.success(t('appDeploy.msg.deployStarted'));
+      }
       setQuickDeployApp(null);
       fetchApps();
     } catch (err: unknown) {
