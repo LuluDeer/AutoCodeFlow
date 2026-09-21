@@ -238,7 +238,7 @@ export default {
   'taskList.action.clone': '克隆（复制全部配置创建副本）',
   'taskList.action.trigger': '立即执行',
   'taskList.action.delete': '删除',
-  'taskList.deleteConfirm': '确认删除此任务？',
+  'taskList.adminOnly': '仅管理员可操作',  'taskList.deleteConfirm': '确认删除此任务？',
   'taskList.deleteForceTerminateDesc': '正在执行中的运行将被强制终止。',
   'taskList.ok': '删除',
 
