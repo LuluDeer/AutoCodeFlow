@@ -81,7 +81,7 @@
 | docs-site | `npm run build:docs-site`（构建即验证，死链 fail） | vitepress build |
 | contract-fixtures | 无独立命令（被上表四个客户端包的测试加载） | — |
 
-类型检查（Node 侧）：`npm run typecheck:cli` / `typecheck:mcp` / `typecheck:node-sdk`；全量收口 `npm run test:all` 与 `typecheck:all`。
+类型检查（Node 侧）：`npm run typecheck:cli` / `typecheck:mcp` / `typecheck:node-sdk`；全量收口 `npm run test:unit` 与 `typecheck:all`。
 
 ## 包生态的两条硬约束
 

@@ -99,7 +99,7 @@ npm run migration:show
 
 ## 测试命令
 
-> 根级统一入口（`npm run test:all` / `typecheck:all` 等，ARCH-20）见根 `package.json`；
+> 根级统一入口（`npm run test:unit` / `typecheck:all` 等，ARCH-20）见根 `package.json`；
 > monorepo 依赖安装形态与 workspace/turbo 二期评估（ARCH-28）见
 > [docs/arch-28-workspace-evaluation.md](./arch-28-workspace-evaluation.md)。
 

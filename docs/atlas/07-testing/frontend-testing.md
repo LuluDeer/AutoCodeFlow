@@ -11,7 +11,7 @@ npm run typecheck     # tsc -b（CI 会跑）
 npm run build         # tsc -b && vite build（CI admin-web-build job = lint + build）
 ```
 
-根目录快捷方式：`npm run test:web`。**CI 只跑 lint + build，vitest 不在 ci.yml 的 admin-web job 里**——但它在根 `test:all` 链中，本地改动后应手动跑。
+根目录快捷方式：`npm run test:web`。**CI 只跑 lint + build，vitest 不在 ci.yml 的 admin-web job 里**——但它在根 `test:unit` 链中，本地改动后应手动跑。
 
 ## vitest 配置（vite.config.ts 的 `test` 块，无独立 vitest.config）
 
