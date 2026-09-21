@@ -328,12 +328,27 @@ export function useExecutorRuntimeConfig(): UseQueryResult<ExecutorRuntimeConfig
   });
 }
 
-/** GET /executors/:id 执行器详情。 */
+/**
+ * GET /executors/:id 执行器详情。
+ *
+ * P1-23（UX-AUDIT-2026-09-21）：**必须轮询**，否则页面状态是冻结快照。
+ *
+ * 此前本查询没有 refetchInterval（紧挨着的 useExecutorMetrics 有），于是
+ * `status`/`lastHeartbeat` 只来自进入页面那一次拉取：
+ *   · 节点刚死 → 页面可以永远显示"在线"；
+ *   · 节点已恢复 → 页面永远显示"离线"，心跳 tooltip 也冻在旧时刻。
+ * 而用户打开详情页**恰恰是为了诊断这台执行器**，读到的可能是几小时前的状态；
+ * 页面右下角还同时渲染着「每 30s 轮询」的文案，与实际行为相反。
+ *
+ * 30s 与 metrics 同频（也是后端心跳间隔），保证同一屏内两个数据源不互相矛盾。
+ */
 export function useExecutorDetail(id: string | undefined): UseQueryResult<Executor> {
   return useQuery({
     queryKey: queryKeys.executors.detail(id ?? ''),
     queryFn: ({ signal }) => executorsApi.get(id!, signal),
     enabled: !!id,
+    // P1-23：必须轮询（理由见上方注释）——30s 与 metrics 同频
+    refetchInterval: 30_000,
   });
 }
 

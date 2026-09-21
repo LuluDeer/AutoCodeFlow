@@ -225,6 +225,13 @@ export default {
   'taskList.nextRun.cronScheduled': 'Cron 计划中',
   'taskList.nextRun.fixedRunning': '定时运行中',
   'taskList.nextRun.manual': '手动触发',
+  // P1-1/P1-2（UX 审计）：本列改显示**真实**的下次触发时刻（此前只是静态徽章
+  // 「Cron 计划中」，而列题承诺的是「下次执行」）；并补「上次执行」列。
+  'taskList.nextRun.unpredictable': '无法预估',
+  'taskList.nextRun.unpredictableTooltip': '表达式无法在本地解析（超出预览支持的 5 字段子集），或该调度方式无法推算下次时刻。以后端实际调度为准。',
+  'taskList.col.lastRun': '上次执行',
+  'taskList.lastRun.never': '从未执行',
+  'taskList.lastRun.neverTooltip': '该任务自创建以来从未被触发过。若它是定时任务且已启用，说明调度没有生效——请检查触发配置。',
   'taskList.action.detail': '查看详情',
   'taskList.action.edit': '编辑',
   'taskList.action.clone': '克隆（复制全部配置创建副本）',
