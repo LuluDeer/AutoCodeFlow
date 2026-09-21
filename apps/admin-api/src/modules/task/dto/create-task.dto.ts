@@ -17,6 +17,7 @@ import {
   IsIn,
 } from "class-validator";
 import { Type } from "class-transformer";
+import { IsUuidShape } from "../../../common/decorators/is-uuid-shape.decorator";
 import { MaintenanceWindowDto } from "./maintenance-window.dto";
 import {
   TaskStatus,
@@ -334,12 +335,18 @@ export class CreateTaskDto {
    *
    * 写面授权：设置 projectId 改变任务的归属与可见范围，故仅 ADMIN 或该项目的
    * editor/admin 可设置（见 TaskService.assertCanAssignProject）。
+   *
+   * 生产故障修复：校验器由 `@IsUUID()` 换成 `@IsUuidShape()`。前者拒绝
+   * DEFAULT_PROJECT_ID（其版本位是 0，validator.js 只认 1–5），而
+   * `GET /projects` 无条件返回默认项目行 —— 下拉框里唯一可选项恰好是唯一
+   * 被拒项，选项目建任务必现 400 "projectId must be a UUID"。详见
+   * common/decorators/is-uuid-shape.decorator.ts 的文件头注释。
    */
   @ApiPropertyOptional({
     description:
       "Owning project. Omit/null = unassigned (counts toward the Default project view; existing behaviour). Setting it requires ADMIN or editor/admin of that project.",
   })
-  @IsUUID()
+  @IsUuidShape()
   @IsOptional()
   projectId?: string | null;
 }
