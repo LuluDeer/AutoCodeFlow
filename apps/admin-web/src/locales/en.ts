@@ -1976,6 +1976,16 @@ export default {
   'taskForm.params.alertTitle': 'Default Params',
   'taskForm.params.alertDesc': 'These params are injected into the task as AUTOFLOW_<KEY> environment variables on every execution. You can override defaults by passing params with the same name at trigger time.',
   'taskForm.field.params': 'Default Params',
+  // SEC-02 follow-up (production incident): the credentials editor had no entry
+  // point at all, while executor error text told users to "configure
+  // FEISHU_APP_ID in platform secrets" — an instruction that could not be
+  // carried out in the UI. The help text must spell out the difference from
+  // "Default Params": secrets keep their ORIGINAL names, params get AUTOFLOW_.
+  'taskForm.field.secrets': 'Credentials (secrets)',
+  'taskForm.field.secretsHelp':
+    'Injected into the task process under their ORIGINAL env var names — scripts can read os.environ["FEISHU_APP_ID"], and third-party SDKs get their canonical names (boto3 reads AWS_ACCESS_KEY_ID). Unlike "Default Params", which are prefixed with AUTOFLOW_. Values are stored encrypted and can never be read back after saving.',
+  'taskForm.field.secretsMaskRemaining':
+    '{{count}} credential(s) are still shown as masked (not re-entered). Saving now would overwrite the real credentials with the mask literal — re-enter their values, or delete those rows, before saving.',
   'taskForm.glue.createdTitle': 'Task created successfully!',
   'taskForm.glue.createdDesc': 'You can write a Glue script below (optional). A Glue script is code that runs directly on the executor node without needing a linked code repository.',
   'taskForm.glue.done': 'Done, go to task detail',
@@ -2235,6 +2245,19 @@ export default {
   'paramsEditor.valuePlaceholder': 'Default value',
   'paramsEditor.add': 'Add parameter',
   'paramsEditor.tooltip': 'At run time, tasks can read these parameters via the env var AUTOFLOW_<KEY>; they can also be overridden on trigger',
+
+  // SEC-02 follow-up (production incident): credentials editor copy.
+  'secretsEditor.alertTitle': 'Credentials are injected under their original env var names, stored encrypted, and never readable back',
+  'secretsEditor.alertDesc': 'Scripts read them directly (os.environ["FEISHU_APP_ID"]); third-party SDKs get their canonical names (boto3 reads AWS_ACCESS_KEY_ID). After saving, the platform only ever shows the mask ****** — values are not readable again. Keys you do not re-enter keep their stored value automatically.',
+  'secretsEditor.empty': 'No credentials yet, click below to add',
+  'secretsEditor.keyPlaceholder': 'Env var name (e.g. FEISHU_APP_ID)',
+  'secretsEditor.valuePlaceholder': 'Credential value',
+  'secretsEditor.maskedPlaceholder': 'Saved (type a new value to replace)',
+  'secretsEditor.add': 'Add credential',
+  'secretsEditor.remove': 'Remove this credential',
+  'secretsEditor.clearAll': 'Clear all credentials',
+  'secretsEditor.tooltip': 'Names must match [A-Za-z_][A-Za-z0-9_]* and must not shadow platform-reserved names (PATH / PYTHON* / AUTOFLOW_*). Leaving a saved row blank keeps its stored value.',
+  'secretsEditor.touchedWarning': 'On save: values you entered are applied, saved credentials you did not re-enter keep their stored value, and deleted rows are removed.',
 
   'triggerPreview.title': 'Trigger preview',
   'triggerPreview.nextCount': 'Next {{count}} times',

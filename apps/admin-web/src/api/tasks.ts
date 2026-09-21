@@ -84,6 +84,15 @@ export interface Task {
   cronExpression?: string;
   timezone?: string | null;
   params?: Record<string, string | number | boolean>;
+  /**
+   * SEC-02 续（生产故障）：任务级凭据。读路径永久脱敏——每个叶子都是字面量
+   * `******`，真实值（密文或明文）不经过 API 回传；未知键集合 = 该任务没配凭据。
+   *
+   * 声明它是编辑态"显示既有键"的前提（类型层不声明 = 该字段在读面不存在，
+   * 与 alarmEmail 那次同类）：不显示的话用户以为平台没生效而反复重配。
+   * 它**不**进表单值——表单值只表达"本次要写什么"，已有键由后端逐键合并保留。
+   */
+  secrets?: Record<string, string> | null;
   /** CORE-01：DTO 收数字 1-4，PG enum 读回 label 字符串——双形态，见 utils/priority */
   priority?: string | number;
   maxRetry: number;
