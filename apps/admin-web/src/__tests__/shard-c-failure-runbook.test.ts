@@ -67,3 +67,14 @@ describe('P1-27: killed/cancelled 不再无解释', () => {
     expect(seen).toContain('runbook.cancelled');
   });
 });
+
+describe('ENG 审计 E-P2-F4：application_missing / never_dispatched 走 i18n', () => {
+  it('传 t() 时两类解析到 runbook.applicationMissing / runbook.neverDispatched', () => {
+    const seen: string[] = [];
+    const fakeT = (k: string) => { seen.push(k); return `[${k}]`; };
+    expect(failureRunbookAction('application_missing', fakeT).action).toBe('[runbook.applicationMissing]');
+    expect(failureRunbookAction('never_dispatched', fakeT).action).toBe('[runbook.neverDispatched]');
+    expect(seen).toContain('runbook.applicationMissing');
+    expect(seen).toContain('runbook.neverDispatched');
+  });
+});
