@@ -1985,6 +1985,17 @@ export default {
   'taskForm.params.alertTitle': '任务默认参数',
   'taskForm.params.alertDesc': '以下参数会在每次执行时以环境变量 AUTOFLOW_<KEY> 的形式注入到任务中。触发时可传入同名参数覆盖默认值。',
   'taskForm.field.params': '默认参数',
+  // SEC-02 续（生产故障）：凭据编辑器。此前控制台**没有**这个入口，而执行器报错
+  // 文案却在教用户「请在平台 secrets 配置 FEISHU_APP_ID」——一条在 UI 上无法执行
+  // 的指令（生产实证：用户按提示配不出凭据，任务报「缺少飞书凭证」）。
+  // 文案必须说清与"默认参数"的差异：secrets 按**原名**注入（脚本写
+  // FEISHU_APP_ID 就能读到），params 会被加 AUTOFLOW_ 前缀。
+  'taskForm.field.secrets': '凭据（secrets）',
+  'taskForm.field.secretsHelp':
+    '以环境变量原名注入任务进程——脚本 os.environ["FEISHU_APP_ID"]、boto3 的 AWS_ACCESS_KEY_ID 等第三方 SDK 规范名可直接读取。与「默认参数」不同：参数会被加上 AUTOFLOW_ 前缀。值加密存储，保存后不可回读。',
+  // 掩码回写防护：编辑态已存在的凭据只显示掩码，必须重新输入才能保存。
+  'taskForm.field.secretsMaskRemaining':
+    '还有 {{count}} 项凭据显示为掩码（未重新输入）。直接保存会用掩码字符覆盖真实凭据——请重新输入这些凭据的值，或删除对应行后再保存。',
   'taskForm.glue.createdTitle': '任务已创建成功！',
   'taskForm.glue.createdDesc': '你可以在下方编写 Glue 脚本（可选）。Glue 脚本是一段在执行器节点上直接运行的代码，无需关联代码仓库。',
   'taskForm.glue.done': '完成，前往任务详情',
@@ -2244,6 +2255,21 @@ export default {
   'paramsEditor.valuePlaceholder': '默认值',
   'paramsEditor.add': '添加参数',
   'paramsEditor.tooltip': '任务运行时可通过环境变量 AUTOFLOW_<KEY> 读取这些参数，触发时也可以覆盖',
+
+  // SEC-02 续（生产故障）：凭据编辑器。此前这些键**整体缺失**，界面直接渲染
+  // 出裸 key（`secretsEditor.alertTitle` 这种标识符）——已加源码守卫
+  // （__tests__/i18n-source-guard.test.ts）把这一类"漏定义"变成测试失败。
+  'secretsEditor.alertTitle': '凭据以环境变量原名注入，值加密存储且保存后不可回读',
+  'secretsEditor.alertDesc': '脚本用 os.environ["FEISHU_APP_ID"] 直接读取（第三方 SDK 认规范名，如 boto3 的 AWS_ACCESS_KEY_ID）。保存后平台只回显掩码 ******，真实值无法再读出——未重新输入的键会自动保留原值。',
+  'secretsEditor.empty': '暂无凭据，点击下方添加',
+  'secretsEditor.keyPlaceholder': '环境变量名（如 FEISHU_APP_ID）',
+  'secretsEditor.valuePlaceholder': '凭据值',
+  'secretsEditor.maskedPlaceholder': '已保存（输入新值可替换）',
+  'secretsEditor.add': '添加凭据',
+  'secretsEditor.remove': '删除该凭据',
+  'secretsEditor.clearAll': '清空全部凭据',
+  'secretsEditor.tooltip': '键名须匹配 [A-Za-z_][A-Za-z0-9_]*，且不得占用平台保留名（PATH / PYTHON* / AUTOFLOW_* 等）。留空的已保存项 = 保留原值。',
+  'secretsEditor.touchedWarning': '保存后将按你填写的值更新：未重新输入的已保存凭据保持原值，被删掉的行会被移除。',
 
   'triggerPreview.title': '触发预览',
   'triggerPreview.nextCount': '未来 {{count}} 次',
