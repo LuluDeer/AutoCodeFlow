@@ -18,7 +18,7 @@
  * 原样保留。只断言"能输入 0"不够——钳值发生在失焦，属于组件内部行为。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, cleanup, waitFor, fireEvent } from '@testing-library/react';
+import { render, cleanup, waitFor, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 vi.mock('../api/tasks', () => ({

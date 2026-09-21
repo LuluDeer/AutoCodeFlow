@@ -73,6 +73,31 @@ export enum ExecutionFailureReason {
   SANDBOX_UNAVAILABLE = "sandbox_unavailable",
   KILLED = "killed",
   UNKNOWN = "unknown",
+  /**
+   * P0（UX-AUDIT-2026-09-21 §P0-4）：任务引用的应用已不存在（被删除）。
+   *
+   * 此前这条路径抛的是 `Cannot resolve packageUrl ... application <uuid> not
+   * found`，而失败原因由**正则链**从错误文本推断——该消息不含
+   * `package fetch|download package|git clone` 等关键词，于是落到兜底的
+   * UNKNOWN，用户只看到「未知原因：去查看执行日志定位根因」。
+   *
+   * 而原因是 100% 已知的：任务实体持 applicationId 弱引用，应用被删后
+   * `onDelete: "SET NULL"` 只清空该列（任务不会消失），于是任务照旧按 cron
+   * 调度、每次都失败。admin 内部专用（执行器根本不参与这条判定）。
+   */
+  APPLICATION_MISSING = "application_missing",
+  /**
+   * P0（UX-AUDIT-2026-09-21 §P0-8）：执行从未被派发出去（队列侧超时丢弃）。
+   *
+   * 与 STALE_RECOVERED 的差别是**语义更精确**：stale sweep 的 PENDING 桶只回收
+   * 「从未被派发」的行（见 scheduler.service.ts 的注释），却沿用了泛化的
+   * UNKNOWN，而同一次 sweep 的 RUNNING 桶已经升级为 STALE_RECOVERED——同一类
+   * 失败按被哪个桶捡到而有不同分类，是内部不一致。
+   *
+   * 用户侧价值：这类执行**从未在任何机器上运行过**，提示"去看执行日志"是把
+   * 排查方向指向一个不存在的东西；正确指向是"执行器为何没取件 / 是否离线"。
+   */
+  NEVER_DISPATCHED = "never_dispatched",
 }
 
 /**
@@ -88,7 +113,13 @@ export enum ExecutionFailureReason {
  * 各自断言与本常量一致），此处只做类型安全的派生。
  */
 export const ADMIN_INTERNAL_FAILURE_REASONS: readonly ExecutionFailureReason[] =
-  [ExecutionFailureReason.STALE_RECOVERED];
+  [
+    ExecutionFailureReason.STALE_RECOVERED,
+    // P0-4 / P0-8（UX 审计）：两者都只在 admin 内部产生——执行器既不参与
+    // "引用的应用是否还存在"的判定，也无从得知"自己的派发是否已被队列丢弃"。
+    ExecutionFailureReason.APPLICATION_MISSING,
+    ExecutionFailureReason.NEVER_DISPATCHED,
+  ];
 
 export const EXECUTOR_REPORTABLE_FAILURE_REASONS: readonly ExecutionFailureReason[] =
   Object.values(ExecutionFailureReason).filter(

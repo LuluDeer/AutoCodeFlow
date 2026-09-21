@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, memo, type ReactNode } from 'react';
-import { Layout, Menu, Avatar, Dropdown, Typography, Space, theme, Button, Breadcrumb, Tooltip } from 'antd';
+import { Layout, Menu, Avatar, Dropdown, Typography, Space, theme, Button, Breadcrumb, Tooltip, message } from 'antd';
 import {
   DashboardOutlined,
   AppstoreOutlined,
@@ -21,6 +21,7 @@ import {
   SunOutlined,
   MoonOutlined,
   DesktopOutlined,
+  TranslationOutlined,
 } from '@ant-design/icons';
 import { Outlet, useNavigate, useLocation, Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -33,7 +34,9 @@ import { isMacPlatform, searchShortcutHint } from './shortcut-hint';
 import { useThemeStore } from '../theme/store';
 import type { ThemeMode } from '../theme/store';
 // UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
+// P0-7（UX 审计）：setLanguage 此前导出但全站零调用——此处是它的第一个入口。
 import '../i18n';
+import { setLanguage, availableLanguages } from '../i18n';
 
 const { Header, Sider, Content } = Layout;
 const { Text } = Typography;
@@ -187,7 +190,7 @@ const Clock = memo(function Clock({
 export default function MainLayout() {
   const nav = useNavigate();
   const location = useLocation();
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const { user, setUser, setProfileError } = useAuthStore();
   const isAdmin = user?.role === 'admin';
   // UI-03：折叠态持久化到 localStorage（跨会话记忆用户偏好）
@@ -209,6 +212,27 @@ export default function MainLayout() {
   const themeMeta = THEME_BUTTON_META[themeMode];
   const themeLabel = t(themeMeta.labelKey);
   const themeAria = t(themeMeta.ariaKey);
+
+  /**
+   * P0-7（UX 审计）：界面语言。
+   *
+   * 从 i18n 实例读取**当前语言**（而不是自持 state）——语言可能来自
+   * localStorage 的启动检测，若用 useState 初值会与实际生效语言不一致（例如
+   * 英文用户看到按钮标着"中文"）。切换后 i18n.changeLanguage 触发重渲染，
+   * `i18n.language` 随之更新，按钮文案与 aria 自动跟上。
+   */
+  const currentLang: 'zh' | 'en' = i18n.language === 'en' ? 'en' : 'zh';
+  const handleLanguageToggle = () => {
+    // 目标语言从 availableLanguages 推导（而不是写死 'en'/'zh'）：新增语言时
+    // 只需改 i18n 模块一处，控件自动跟上，不会出现"注册了语言但切不到"。
+    const codes = availableLanguages.map((l) => l.code);
+    const idx = codes.indexOf(currentLang);
+    const next = codes[(idx + 1) % codes.length] as 'zh' | 'en';
+    void setLanguage(next).then(() => {
+      // 切换后用**目标语言**播报结果（此刻 t 已指向新语言，读起来才顺）
+      message.success(t('nav.lang.switched', { label: t(`nav.lang.${next}`) }));
+    });
+  };
 
   // R5: 登录响应只含 token，role 需从 GET /auth/profile 补齐。
   // 覆盖两种场景：刚登录（store 里 user 为空）+ 旧 localStorage 会话（user 无 role）。
@@ -533,6 +557,23 @@ export default function MainLayout() {
                 data-testid="theme-toggle"
                 style={{ fontSize: 16, color: token.colorTextSecondary }}
                 onClick={cycleThemeMode}
+              />
+            </Tooltip>
+
+            {/* P0-7（UX 审计）：界面语言切换入口。
+                此前 i18n 基础设施完整（setLanguage / availableLanguages / en 按需
+                分包 / 检测与持久化），但**全站零调用**——detectLanguage 只读
+                localStorage，而没有任何 UI 能写入它，2300+ 行英文词条是死代码，
+                英文用户永远看不到英文界面。此处按主题切换同款形态补上入口。
+                aria 随当前语言变化（读屏可播报），tooltip 说明点击行为。 */}
+            <Tooltip title={t('nav.lang.tooltip', { label: t(`nav.lang.${currentLang}`) })}>
+              <Button
+                type="text"
+                icon={<TranslationOutlined />}
+                aria-label={t('nav.lang.switch.aria', { label: t(`nav.lang.${currentLang}`) })}
+                data-testid="lang-toggle"
+                style={{ fontSize: 16, color: token.colorTextSecondary }}
+                onClick={handleLanguageToggle}
               />
             </Tooltip>
 

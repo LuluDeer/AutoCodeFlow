@@ -94,6 +94,14 @@ export default {
   'nav.theme.dark.aria': 'Switch theme (dark; click to follow system)',
   'nav.theme.system': 'System',
   'nav.theme.system.aria': 'Switch theme (system; click for light)',
+  // P0-7 (UX audit): the i18n infrastructure shipped long ago, but nothing in
+  // the UI ever called setLanguage — the whole bilingual capability was
+  // unreachable. These are the entry point's labels.
+  'nav.lang.tooltip': 'Interface language: {{label}} (click to switch)',
+  'nav.lang.zh': '中文',
+  'nav.lang.en': 'English',
+  'nav.lang.switch.aria': 'Switch interface language (currently {{label}})',
+  'nav.lang.switched': 'Interface language switched to {{label}}',
   'nav.search.aria': 'Global search',
   'nav.help.aria': 'Help documentation',
   'nav.notify.aria': 'Notifications',
@@ -357,6 +365,15 @@ export default {
   'appList.deleteDisableHint': 'Only admins can delete applications',
   'appList.deleteConfirm': 'Delete this application?',
   'appList.deleteConfirmDesc': 'This cannot be undone. Please confirm.',
+  // P0-3 (UX audit): the real consequences go well beyond deleting one row — the
+  // dangerous one is that referencing TASKS survive (applicationId is nulled),
+  // keep being scheduled, and fail on every run while their code source is gone.
+  'appList.deleteImpact.tasks': '{{count}} task(s) referencing this application will LOSE their code source — they are not deleted, they keep being scheduled, and every run will now fail.',
+  'appList.deleteImpact.deployments': '{{count}} deployment record(s) (including rollback points) will be permanently deleted.',
+  'appList.deleteImpact.package': 'The uploaded package file will be deleted from the server disk and cannot be recovered.',
+  'appList.deleteImpact.none': 'No tasks or deployments reference this application — safe to delete.',
+  'appList.deleteImpact.unavailable': 'Impact could not be determined (endpoint unreachable) — please verify manually whether any task references this application.',
+  'appList.deleteOk': 'Delete',
   'appList.status.active': 'Active',
   'appList.status.deploying': 'Deploying',
   'appList.status.failed': 'Failed',
@@ -1667,6 +1684,14 @@ export default {
   'execDetail.failure.killedHint': 'The execution was manually terminated by an administrator.',
   'execDetail.failure.unknown': 'Unknown reason',
   'execDetail.failure.unknownHint': 'Check the error message and execution logs to locate the root cause.',
+  // P0-4 / P0-8 (UX audit): both previously fell through to "unknown reason"
+  // even though each is fully known and needs a completely different action.
+  'execDetail.failure.applicationMissing': 'Referenced application deleted',
+  'execDetail.failure.applicationMissingHint':
+    'This task\'s code source points at an application that no longer exists (deleting an application nulls the reference). The task keeps being scheduled but is guaranteed to fail every time. Re-assign its code source in the task form, or pause the task.',
+  'execDetail.failure.neverDispatched': 'Never dispatched',
+  'execDetail.failure.neverDispatchedHint':
+    'This execution was never dispatched to an executor (queue timeout, or the target executor never picked it up) — it has no logs because it never ran anywhere. Check whether the target executor is online, paused, or has had its slots saturated.',
   // python_task_multiversion (AC-12a): interpreter unavailability is an
   // environment/config failure, not a task-code bug. The hint states that the
   // host interpreter is deliberately NOT used as a fallback (D14) so operators
@@ -1796,6 +1821,10 @@ export default {
   'taskForm.retryable.executorOffline': 'Executor offline',
   'taskForm.retryable.executorRestart': 'Executor restart',
   'taskForm.retryable.interpreterUnavailable': 'Interpreter unavailable',
+  // P0-4/P0-8 (UX audit): the backend hard-excludes application_missing from
+  // retries — the label says so, so nobody ticks it expecting a rescue.
+  'taskForm.retryable.applicationMissing': 'Referenced application deleted (retry cannot help)',
+  'taskForm.retryable.neverDispatched': 'Never dispatched (queue timeout / not picked up)',
   // EXP-01: sandbox configured but unusable (bwrap missing, etc.).
   'taskForm.retryable.sandboxUnavailable': 'Sandbox unavailable',
   'taskForm.retryable.unknown': 'Unknown reason',

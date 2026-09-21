@@ -165,6 +165,19 @@ export class ApplicationController {
     return this.svc.update(id, dto, user);
   }
 
+  /**
+   * P0（UX-AUDIT-2026-09-21 §P0-3）：删除影响面预览（供确认框如实告知后果）。
+   * ADMIN-only，与 remove 同权限面——能看影响面的人就是能删的人。
+   */
+  @Get(":id/removal-impact")
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({
+    summary: "Preview what deleting this application will destroy",
+  })
+  removalImpact(@Param("id") id: string) {
+    return this.svc.describeRemovalImpact(id);
+  }
+
   @Delete(":id")
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Delete application" })

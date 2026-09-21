@@ -41,6 +41,13 @@ export const RETRYABLE_ERROR_OPTIONS: { value: string; labelKey: string }[] = [
   // 补上缺失的 uv，默认重试只会白烧预算并把真实故障延后暴露（修复动作在环境侧，
   // 见 failure-runbook）。
   { value: 'interpreter_unavailable', labelKey: 'taskForm.retryable.interpreterUnavailable' },
+  // P0-4（UX-AUDIT-2026-09-21）：应用被删除后代码来源已断。后端**强制**不重试
+  // （task.processor 的 inherentNonRetryable），此处仍列出是为了让用户在界面上
+  // 看得到这个分类的存在与含义——但标签要如实说明"重试无效"，避免勾了以为有用。
+  { value: 'application_missing', labelKey: 'taskForm.retryable.applicationMissing' },
+  // P0-8（UX-AUDIT-2026-09-21）：从未派发（队列超时/执行器未取件）。与上面相反，
+  // 这一类的重试**有真实价值**（执行器可能恰好恢复），故列入可选且语义正常。
+  { value: 'never_dispatched', labelKey: 'taskForm.retryable.neverDispatched' },
   { value: 'unknown', labelKey: 'taskForm.retryable.unknown' },
 ];
 
