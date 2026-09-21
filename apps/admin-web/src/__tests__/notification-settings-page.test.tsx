@@ -19,6 +19,7 @@ import NotificationSettingsPage from '../pages/NotificationSettingsPage';
 import { client } from '../api/client';
 import { silencesApi } from '../api/notifications';
 import { useAuthStore } from '../store/auth';
+import { MemoryRouter } from 'react-router-dom';
 
 vi.mock('../api/client', () => ({
   client: { get: vi.fn(), patch: vi.fn(), post: vi.fn(), delete: vi.fn() },
@@ -85,7 +86,9 @@ function renderPage() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={queryClient}>
-      <NotificationSettingsPage />
+      <MemoryRouter initialEntries={['/notifications']}>
+        <NotificationSettingsPage />
+      </MemoryRouter>
     </QueryClientProvider>,
   );
 }
@@ -303,7 +306,7 @@ renderPage();
     fireEvent.click(await screen.findByRole('tab', { name: /Feishu/ }));
 
     // 两个配置输入均可经 label 查到；webhookUrl 带飞书官方前缀占位符
-    const webhookUrl = (await screen.findByLabelText('Webhook URL')) as HTMLInputElement;
+    const webhookUrl = (await screen.findByLabelText('Webhook 地址')) as HTMLInputElement;
     expect(webhookUrl.placeholder).toBe('https://open.feishu.cn/open-apis/bot/v2/hook/...');
     expect(screen.getByLabelText('加签密钥')).toBeTruthy();
 
@@ -325,7 +328,7 @@ renderPage();
 renderPage();
     fireEvent.click(await screen.findByRole('tab', { name: /Webhook/ }));
 
-    const url = (await screen.findByLabelText('URL')) as HTMLInputElement;
+    const url = (await screen.findByLabelText('URL 地址')) as HTMLInputElement;
     expect(url.placeholder).toBe('https://example.com/hooks/...');
   });
 
@@ -336,5 +339,13 @@ renderPage();
     const feishu = screen.getByLabelText('飞书') as HTMLInputElement;
     expect(feishu.type).toBe('checkbox');
     expect(feishu.value).toBe('feishu');
+  });
+
+  it('P1-19 顶部告警配置说明块：指向任务级告警规则并跳转任务列表', async () => {
+renderPage();
+    // 旧实现：通知设置页只配渠道连通性，告警规则在任务表单里但此处无任何指向
+    expect(await screen.findByText('这里配置通知渠道，任务告警规则在任务中设置')).toBeTruthy();
+    const link = screen.getByRole('link', { name: /前往任务列表/ }) as HTMLAnchorElement;
+    expect(link.getAttribute('href')).toBe('/tasks');
   });
 });

@@ -586,6 +586,10 @@ export default {
 
   'notif.title': '通知设置',
   'notif.description': '配置告警通知渠道（邮件/Slack/钉钉/企业微信/飞书/自定义 webhook）、静默规则与全局测试发送。',
+  // P1-19（UX 审计）：告警规则入口说明——本页只配渠道，任务级告警规则在任务表单里
+  'notif.alarmNotice.title': '这里配置通知渠道，任务告警规则在任务中设置',
+  'notif.alarmNotice.description': '此页只决定消息走哪个渠道发出；某个任务在什么失败条件下、发给谁，是该任务的告警配置，请在任务详情或编辑页设置。',
+  'notif.alarmNotice.link': '前往任务列表，打开任一任务的告警配置',
   'notif.status.enabled': '已启用',
   'notif.status.disabled': '已禁用',
   'notif.channel.email': '邮件',
@@ -612,6 +616,11 @@ export default {
   'notif.channel.field.to': '默认收件人',
   'notif.channel.field.channel': '默认频道',
   'notif.channel.field.secret': '加签密钥',
+  // P2-7（UX 审计）：渠道配置字段标签此前硬编码英文，补 i18n 键
+  'notif.channel.field.smtpHost': 'SMTP 主机',
+  'notif.channel.field.smtpPort': 'SMTP 端口',
+  'notif.channel.field.webhookUrl': 'Webhook 地址',
+  'notif.channel.field.url': 'URL 地址',
   'notif.template.title': '消息模板（可选）',
   'notif.template.expand': '展开',
   'notif.template.collapse': '收起',
@@ -2456,3 +2465,4 @@ export default {
   'projects.role.editor': '编辑者',
   'projects.role.admin': '项目管理员',
 } as const;
+
