@@ -1130,13 +1130,22 @@ export class TaskService {
     if (normalized.projectId !== undefined) {
       await this.assertCanAssignProject(normalized.projectId, user);
     }
-    // SEC-02: PATCH 语义——secrets 缺省 = 保留旧值（不触碰既有列；R-01:
-    // 保留的是 RAW 原值而非掩码副本）；显式 null / {} = 清空/替换。
+    // SEC-02 续（生产故障）：PATCH 语义三态——
+    //   · 缺省（undefined）  = 保留旧值（不触碰既有列；R-01: 保留 RAW 原值而非掩码副本）；
+    //   · 显式 null          = 清空全部；
+    //   · 对象               = **逐键合并**（不是整体替换）。
+    // 逐键合并的理由：读路径对所有叶子回 `******`，控制台要显示既有键就必然持有
+    // 掩码；整体替换会把掩码当作真实值落库（真实凭据被不可逆覆盖，而 UI 上键还
+    // 在——正是本次生产故障的形状）。合并规则与掩码/删除语义见
+    // secret-crypto.util.ts 的 mergeSecretsOnUpdate。
     if (normalized.secrets !== undefined) {
-      normalized.secrets = this.secretsCrypto.encryptForStorage(
-        normalized.secrets,
-      ) as Record<string, unknown> | null | undefined;
-      t.secrets = normalized.secrets as Record<string, unknown> | null;
+      t.secrets =
+        normalized.secrets === null
+          ? null
+          : (this.secretsCrypto.applyPatch(
+              t.secrets,
+              normalized.secrets as Record<string, unknown>,
+            ) as Record<string, unknown>);
     }
     delete normalized.secrets;
     // NF-04: 亲和/反亲和为可空列，PATCH null 清除语义直接依赖 Object.assign
