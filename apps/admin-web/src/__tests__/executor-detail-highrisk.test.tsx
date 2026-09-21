@@ -289,3 +289,28 @@ describe('AUTH-05 交接：单台删除执行器二次确认（reason 链路）'
     expect(screen.queryByText('executor-list-mock')).toBeNull();
   });
 });
+
+
+describe('遗留 P1-24：离线原因区分优雅下线/心跳超时', () => {
+  it('offlineReason=stale_timeout → Alert 显示心跳超时判死文案', async () => {
+    mockedApi.get.mockResolvedValue({
+      ...executorFixture, status: 'offline', offlineReason: 'stale_timeout',
+    });
+    renderPage();
+    await screen.findAllByText('demo-executor');
+    await waitFor(() =>
+      expect(screen.getAllByText(/心跳超时被判死/).length).toBeGreaterThanOrEqual(1),
+    );
+  });
+
+  it('offlineReason=manual → Alert 显示优雅下线文案', async () => {
+    mockedApi.get.mockResolvedValue({
+      ...executorFixture, status: 'offline', offlineReason: 'manual',
+    });
+    renderPage();
+    await screen.findAllByText('demo-executor');
+    await waitFor(() =>
+      expect(screen.getAllByText(/优雅下线/).length).toBeGreaterThanOrEqual(1),
+    );
+  });
+});
