@@ -50,13 +50,21 @@ import { Input, Modal, Typography, message, theme } from 'antd';
 import type { InputRef } from 'antd';
 import {
   AppstoreOutlined,
+  AuditOutlined,
+  BellOutlined,
   ClusterOutlined,
+  DatabaseOutlined,
+  FileTextOutlined,
   HistoryOutlined,
+  HomeOutlined,
   PauseCircleOutlined,
   PlayCircleOutlined,
   PlusOutlined,
   SearchOutlined,
+  SettingOutlined,
+  TeamOutlined,
   ThunderboltOutlined,
+  UserOutlined,
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { tasksApi } from '../api/tasks';
@@ -181,6 +189,32 @@ const getStaticActions = (t: TFunction): StaticAction[] => [
     adminOnly: true,
     icon: <AppstoreOutlined />,
   },
+];
+
+/**
+ * P2-5（UX 审计）：静态页面导航。
+ *
+ * 命令面板此前只覆盖四类**后端实体**（任务/执行记录/执行器/应用）——审计日志、
+ * 用户管理、通知设置、系统设置、项目、包注册中心等**静态页面**既无后端搜索
+ * 端点、也不在结果分组里，用户搜不到也到不了。这里把这些页面路由作为「操作」
+ * 分组的补充条目（零后端改动）。
+ *
+ * 与主操作（getStaticActions）的区别：主操作**始终可见**；这些页面导航条目
+ * **仅在有输入关键词时按标题/描述做客户端包含匹配后出现**——避免零输入时操作
+ * 分组被 10 个页面入口淹没，同时让「搜索某页」真正可命中。admin-only 页面按
+ * 角色过滤（与主操作同策，优于跳转后 403）。
+ */
+const getPageNavActions = (t: TFunction): StaticAction[] => [
+  { key: 'nav-dashboard', id: 'nav-dashboard', title: t('nav.dashboard'), description: t('palette.pageNav.dashboardDesc'), to: '/dashboard', icon: <HomeOutlined /> },
+  { key: 'nav-task-templates', id: 'nav-task-templates', title: t('nav.taskTemplates'), description: t('palette.pageNav.taskTemplatesDesc'), to: '/task-templates', icon: <FileTextOutlined /> },
+  { key: 'nav-executions', id: 'nav-executions', title: t('nav.executions'), description: t('palette.pageNav.executionsDesc'), to: '/executions', icon: <HistoryOutlined /> },
+  { key: 'nav-executors', id: 'nav-executors', title: t('nav.executors'), description: t('palette.pageNav.executorsDesc'), to: '/executors', icon: <ClusterOutlined /> },
+  { key: 'nav-registry', id: 'nav-registry', title: t('nav.registry'), description: t('palette.pageNav.registryDesc'), to: '/registry', icon: <DatabaseOutlined /> },
+  { key: 'nav-projects', id: 'nav-projects', title: t('nav.projects'), description: t('palette.pageNav.projectsDesc'), to: '/projects', icon: <TeamOutlined /> },
+  { key: 'nav-settings', id: 'nav-settings', title: t('nav.settings'), description: t('palette.pageNav.settingsDesc'), to: '/settings', icon: <SettingOutlined /> },
+  { key: 'nav-users', id: 'nav-users', title: t('nav.users'), description: t('palette.pageNav.usersDesc'), to: '/users', adminOnly: true, icon: <UserOutlined /> },
+  { key: 'nav-notifications', id: 'nav-notifications', title: t('nav.notifications'), description: t('palette.pageNav.notificationsDesc'), to: '/notifications', adminOnly: true, icon: <BellOutlined /> },
+  { key: 'nav-audit', id: 'nav-audit', title: t('nav.audit'), description: t('palette.pageNav.auditDesc'), to: '/audit', adminOnly: true, icon: <AuditOutlined /> },
 ];
 
 interface GroupResult<T> {
@@ -342,6 +376,21 @@ export default function CommandPalette({ open, onOpenChange }: CommandPalettePro
     [isAdmin, t],
   );
 
+  // P2-5：静态页面导航——仅在有输入关键词时按标题/描述客户端包含匹配，
+  // 零输入时为空（操作分组只留两个主操作，不被页面入口淹没）。
+  const pageNavActions = useMemo(
+    () =>
+      getPageNavActions(t)
+        .filter((a) => !a.adminOnly || isAdmin)
+        .filter(
+          (a) =>
+            !!kwLower &&
+            ((a.title || '').toLowerCase().includes(kwLower) ||
+              (a.description || '').toLowerCase().includes(kwLower)),
+        ),
+    [isAdmin, t, kwLower],
+  );
+
   // 客户端包含匹配（小写化）已返回页数据，每组截断前 5 条，并计算扁平索引偏移
   const sections = useMemo<Section[]>(() => {
     const contains = (s?: string | null) => !!s && s.toLowerCase().includes(kwLower);
@@ -396,13 +445,14 @@ export default function CommandPalette({ open, onOpenChange }: CommandPalettePro
       const section: Section = {
         kind,
         items: byKind[kind],
-        statics: kind === 'action' ? visibleActions : undefined,
+        // P2-5：操作分组 = 始终可见的主操作 + 关键词命中的静态页面导航
+        statics: kind === 'action' ? [...visibleActions, ...pageNavActions] : undefined,
         offset,
       };
       offset += byKind[kind].length;
       return section;
     });
-  }, [results, kwLower, visibleActions]);
+  }, [results, kwLower, visibleActions, pageNavActions]);
 
   /** 扁平条目：kind + 实体 item（action 组为占位）+ 可选静态动作引用 */
   interface FlatEntry {
