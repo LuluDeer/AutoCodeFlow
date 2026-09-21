@@ -22,6 +22,10 @@ import { formatDateTime, formatDuration, formatRelativeTime } from '../utils/tim
 import { ExecutionCompareModal, COMPARE_MAX } from '../components/ExecutionCompare';
 import PageHeader from '../components/PageHeader';
 import StateError from '../components/StateError';
+// P1-17（UX 审计）：触发方式列此前直接输出后端裸 token（cron/manual/fixed_rate），
+// 与同列相邻的中文状态 Badge 中英混排。收敛到 utils/trigger-label 唯一事实源，
+// 与 TaskListPage/TaskDetailPage/ApplicationDetailPage 同一份映射。
+import { triggerLabel } from '../utils/trigger-label';
 // UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
 import '../i18n';
 
@@ -158,7 +162,12 @@ export default function ExecutionsPage() {
       dataIndex: 'triggerType',
       width: 90,
       ...hideOnMobile,
-      render: (v: string) => <Text type="secondary" style={{ fontSize: 12 }}>{v || '-'}</Text>,
+      // P1-17：走唯一事实源 triggerLabel（已知值本地化、未知值回退原 token），
+      // 不再直接渲染 {v || '-'} 裸枚举。
+      render: (v: string) => {
+        const label = triggerLabel(v, t);
+        return <Text type="secondary" style={{ fontSize: 12 }}>{label || '-'}</Text>;
+      },
     },
     {
       title: t('execs.col.executor'),
