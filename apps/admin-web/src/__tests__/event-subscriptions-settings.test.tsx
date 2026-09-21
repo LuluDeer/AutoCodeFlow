@@ -309,6 +309,13 @@ describe('FEAT-15 EventSubscriptionsSettings', () => {
     });
   });
 
+  // ENG 审计 E-P2-F1：图标型删除按钮必须有 aria-label（旧实现裸 icon，屏幕阅读器
+  // 读不出操作名；对照 components/ArtifactsList.tsx:82 的 aria-label 范式）。
+  it('ENG E-P2-F1：图标删除按钮带 aria-label', async () => {
+    renderPage();
+    const del = await screen.findByTestId('sub-delete-e1111111-1111-4111-8111-111111111111');
+    expect(del.getAttribute('aria-label')).toBeTruthy();
+  });
   it('无订阅时死信段不渲染', async () => {
     mocked.list.mockResolvedValue([]);
     renderPage();
