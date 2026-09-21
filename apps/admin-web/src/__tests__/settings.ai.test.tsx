@@ -9,6 +9,7 @@ import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/re
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import SettingsPage from '../pages/settings/index';
 import { aiApi } from '../api/ai';
+import { MemoryRouter } from 'react-router-dom';
 import { useAuthStore } from '../store/auth';
 
 // 隔离 api 层：settings 页会 import configApi/aiApi（其底层 client 会拉起 axios 拦截器）
@@ -77,7 +78,9 @@ function renderSettings() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
-      <SettingsPage />
+      <MemoryRouter>
+        <SettingsPage />
+      </MemoryRouter>
     </QueryClientProvider>,
   );
 }

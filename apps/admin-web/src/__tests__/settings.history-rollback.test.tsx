@@ -14,6 +14,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import SettingsPage from '../pages/settings/index';
 import { configApi } from '../api/config';
 import { useAuthStore } from '../store/auth';
+import { MemoryRouter } from 'react-router-dom';
 
 vi.mock('../api/ai', () => ({
   aiApi: {
@@ -121,7 +122,9 @@ function renderSettings() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
-      <SettingsPage />
+      <MemoryRouter>
+        <SettingsPage />
+      </MemoryRouter>
     </QueryClientProvider>,
   );
 }

@@ -122,7 +122,8 @@ describe('P2-7 包类型筛选选项与后端 enum 对齐', () => {
 
     // 下拉选项挂在 body portal
     await screen.findByText('Node.js');
-    expect(screen.getByText('Python')).toBeTruthy();
+    // D-P2-02b：包类型列也走 runtimeLabel（表格行 Tag 与下拉选项均渲染 Python），用 AllBy 容忍双命中。
+    expect(screen.getAllByText('Python').length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText('Universal')).toBeTruthy();
     expect(screen.queryByText('Java')).toBeNull();
     expect(screen.queryByText('Shell')).toBeNull();
