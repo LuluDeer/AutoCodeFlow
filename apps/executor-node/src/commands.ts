@@ -26,6 +26,7 @@ import axios from 'axios';
 import { config } from './config';
 import { logger } from './logger';
 import { getExecutorAuthToken } from './routes/logs';
+import { ControlCommandSchema } from './generated/protocol.schemas';
 
 /** 中台可下发的命令类型（封闭枚举——新增类型必须两端同批）。 */
 export const CONTROL_COMMAND_TYPES = [
@@ -95,21 +96,20 @@ export function isControlCommandType(type: unknown): type is ControlCommandType 
  * 不投递到本地路由。
  */
 export function parseControlCommand(raw: unknown): ControlCommand | null {
-  if (!raw || typeof raw !== 'object') return null;
-  const obj = raw as Record<string, unknown>;
-  const commandId = obj.commandId;
-  const type = obj.type;
-  if (typeof commandId !== 'string' || commandId.length === 0) return null;
-  if (!isControlCommandType(type)) return null;
-  const payload =
-    obj.payload && typeof obj.payload === 'object'
-      ? (obj.payload as Record<string, unknown>)
-      : {};
+  // E-P1-P1: 取件运行时路径走生成的 ControlCommandSchema.safeParse（对齐
+  // execute.ts 对 ExecuteRequest 的做法）——commandId 格式、type 枚举、payload
+  // 类型全部以协议为唯一事实源；畸形 commandId 整条丢弃，不再手写第二套宽松
+  // 校验（旧实现只查「非空字符串」+isControlCommandType，放过含空格/非法字符的 id）。
+  const parsed = ControlCommandSchema.safeParse(raw);
+  if (!parsed.success) return null;
+  const data = parsed.data;
   return {
-    commandId,
-    type,
-    payload,
-    issuedAt: typeof obj.issuedAt === 'number' ? obj.issuedAt : undefined,
+    commandId: data.commandId,
+    type: data.type,
+    // 协议 payload 可选：缺省补 {}——本地路由 path 函数读 payload.executionId，
+    // undefined 会抛（纵深：协议没带 payload 时不丢弃整条命令，仅补空载荷）。
+    payload: data.payload ?? {},
+    issuedAt: data.issuedAt,
   };
 }
 

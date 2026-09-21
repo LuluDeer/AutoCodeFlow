@@ -57,9 +57,21 @@ describe('control command routing (ARCH-33)', () => {
       commandId: 'c1',
       type: 'deploy',
     });
-    // payload 非对象 → 归一为 {}（不把字符串当载荷发出去）
-    expect(parseControlCommand({ commandId: 'c1', type: 'deploy', payload: 'x' })).toMatchObject({
-      payload: {},
+    // E-P1-P1: 切到生成 schema 后，payload 非对象属协议违例——整条命令丢弃
+    // （旧手写实现宽松归一为 {}；新契约对齐 execute.ts 的 safeParse 行为）。
+    expect(parseControlCommand({ commandId: 'c1', type: 'deploy', payload: 'x' })).toBeNull();
+  });
+
+  it('E-P1-P1：畸形 commandId（含空格/前导特殊符）被整条丢弃', () => {
+    // 旧手写校验只查「非空字符串」，放过这些 id；生成 schema 的
+    // ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ 会拒绝。
+    expect(parseControlCommand({ commandId: 'bad id', type: 'deploy' })).toBeNull();
+    expect(parseControlCommand({ commandId: '.leading-dot', type: 'deploy' })).toBeNull();
+    expect(parseControlCommand({ commandId: 'has/slash', type: 'deploy' })).toBeNull();
+    // 合法 id（字母开头、含 ._-）照常通过
+    expect(parseControlCommand({ commandId: 'ok_cmd-1.a', type: 'deploy' })).toMatchObject({
+      commandId: 'ok_cmd-1.a',
+      type: 'deploy',
     });
   });
 
