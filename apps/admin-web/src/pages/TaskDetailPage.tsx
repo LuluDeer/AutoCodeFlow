@@ -365,7 +365,7 @@ export default function TaskDetailPage() {
               {t('taskDetail.saveAsTemplate')}
             </Button>
             <Button icon={<EditOutlined />} onClick={handleEdit}>{t('taskDetail.edit')}</Button>
-            <Popconfirm title={t('taskDetail.confirmDelete')} onConfirm={handleDelete} okText={t('taskDetail.delete')} okButtonProps={{ danger: true }}>
+            <Popconfirm title={t('taskDetail.confirmDelete')} description={t('taskDetail.deleteForceTerminateDesc')} onConfirm={handleDelete} okText={t('taskDetail.delete')} okButtonProps={{ danger: true }}>
               <Button icon={<DeleteOutlined />} danger>{t('taskDetail.delete')}</Button>
             </Popconfirm>
           </>

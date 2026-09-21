@@ -169,6 +169,7 @@ export default {
   'taskList.batchDelete': '批量删除',
   'taskList.cancelSelect': '取消选择',
   'taskList.batchTrigger.confirm': '确认删除 {{count}} 个任务？',
+  'taskList.batchDelete.confirm': '确认删除 {{count}} 个任务？正在执行中的运行将被强制终止。',
   'taskList.triggerModal.title': '立即触发：{{name}}',
   'taskList.trigger': '触发',
   'taskList.cancel': '取消',
@@ -238,6 +239,7 @@ export default {
   'taskList.action.trigger': '立即执行',
   'taskList.action.delete': '删除',
   'taskList.deleteConfirm': '确认删除此任务？',
+  'taskList.deleteForceTerminateDesc': '正在执行中的运行将被强制终止。',
   'taskList.ok': '删除',
 
   // ── 执行记录（ExecutionsPage）──
@@ -1011,6 +1013,7 @@ export default {
   'taskDetail.saveAsTemplate': '保存为模板',
   'taskDetail.edit': '编辑',
   'taskDetail.confirmDelete': '确认删除此任务？',
+  'taskDetail.deleteForceTerminateDesc': '正在执行中的运行将被强制终止。',
   'taskDetail.delete': '删除',
   'taskDetail.state.running': '运行中',
   'taskDetail.state.paused': '已暂停',
