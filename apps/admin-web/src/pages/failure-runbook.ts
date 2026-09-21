@@ -68,6 +68,15 @@ export const FAILURE_RUNBOOK_ACTIONS: Record<string, FailureRunbookEntry> = {
   killed: {
     action: '执行被手动终止（或阻断策略 kill）。与操作者/审计日志核实操作来源。',
   },
+  // P1-27（UX-AUDIT-2026-09-21）：cancelled 来自调度器 COVER_EARLY 自动覆盖
+  // （scheduler.service.ts:1065-1071 把 RUNNING 行 patch 成 CANCELLED，errorMessage
+  // = "Task was covered by new trigger"，**不落 failureReason**）。
+  // 与 killed 的关键区分：killed 是人工终止（task.service.ts:3381 同时写
+  // failureReason=KILLED）；cancelled 是"有更新的触发到达，旧执行被自动顶掉"。
+  // 文案必须让用户认出这是预期的自动覆盖、而非有人手动停了他的执行。
+  cancelled: {
+    action: '该执行被调度器自动取消：同一任务有更新的触发到达，按覆盖策略（COVER_EARLY）终止了本次执行以避免重复运行。这不是人工终止——人工终止会标记为「已终止」。若符合预期则无需处理；若不希望被自动覆盖，请把任务的阻断策略改为「排队等待」。',
+  },
   // python_task_multiversion：解释器不可用 = 环境/配置类失败，
   // 重试无益（故不在默认重试集内）——动作必须是"让运维改环境"而非"再跑一次"。
   interpreter_unavailable: {
@@ -91,15 +100,31 @@ export const FAILURE_RUNBOOK_ACTIONS: Record<string, FailureRunbookEntry> = {
 /**
  * 取分类的建议动作；未收录键（后端扩枚举而前端未同步时）回退 unknown 兜底，
  * 保证卡片在任意 failureReason 值下都有可展示内容。
+ *
  * t 可选：传参时 action 走 i18n key（执行详情页传 t）；缺省保持中文基线
  * （execution-detail-ui05.test.tsx 锚定 FAILURE_RUNBOOK_ACTIONS 逐键动作）。
+ *
+ * status 可选（P1-27）：cancelled 由调度器自动覆盖产生，后端**不落 failureReason**
+ * （见上方 cancelled 注释），仅靠 failureReason 会永远落到 unknown 兜底——
+ * 故 status==='cancelled' 时按 status 命中 cancelled runbook，与人工 killed
+ * （failureReason='killed'，仍走 failureReason 命中）明确区分。
  */
 export function failureRunbookAction(
   failureReason: string | null | undefined,
   t?: (k: string) => string,
+  status?: string | null,
 ): FailureRunbookEntry {
+  // cancelled 必须按 status 命中（failureReason 恒空，见函数注释）
+  if (status === 'cancelled') return resolveRunbook('cancelled', t);
   const category =
     failureReason && FAILURE_RUNBOOK_ACTIONS[failureReason] ? failureReason : 'unknown';
+  return resolveRunbook(category, t);
+}
+
+function resolveRunbook(
+  category: string,
+  t?: (k: string) => string,
+): FailureRunbookEntry {
   if (!t) return FAILURE_RUNBOOK_ACTIONS[category];
   return { action: t(RUNBOOK_ACTION_T_KEY[category]) };
 }
@@ -116,9 +141,16 @@ const RUNBOOK_ACTION_T_KEY: Record<string, string> = {
   executor_restart: 'runbook.executorRestart',
   stale_recovered: 'runbook.staleRecovered',
   killed: 'runbook.killed',
+  cancelled: 'runbook.cancelled',
   interpreter_unavailable: 'runbook.interpreterUnavailable',
   unknown: 'runbook.unknown',
 };
 
-/** 失败定位卡片可见状态：failed / timeout（killed 无排障价值，不渲染） */
-export const FAILURE_CARD_STATUSES: readonly string[] = ['failed', 'timeout'];
+/**
+ * 失败定位卡片可见状态（P1-27 起含 killed/cancelled）。
+ * 此前只有 failed/timeout，注释断言"killed 无排障价值，不渲染"——但 killed 的
+ * 动作文案（手动终止 / 阻断策略 kill，去审计日志核实来源）已在上方写好却成了死代码；
+ * cancelled 则**完全没有** runbook 条目。两类终态用户都需要一句"发生了什么、要不要管"，
+ * 故一并纳入。killed 仍按 failureReason='killed' 命中；cancelled 按 status 命中。
+ */
+export const FAILURE_CARD_STATUSES: readonly string[] = ['failed', 'timeout', 'killed', 'cancelled'];

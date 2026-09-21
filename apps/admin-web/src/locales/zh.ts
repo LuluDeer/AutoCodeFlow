@@ -287,6 +287,9 @@ export default {
   'execList.poll': '轮询',
   'execList.installWizard': '安装向导',
   'execList.quickAdd': '快速添加',
+  // P2-8：两套入口的区分说明（Tooltip）
+  'execList.installWizard.tip': '引导式安装：检测操作系统、配置网络模式（含 NAT 回连 / pull）并验证连接',
+  'execList.quickAdd.tip': '仅生成一行安装命令，自行在目标机器执行；适合脚本化 / 批量装机',
   'execList.searchPlaceholder': '搜索名称、地址、分组',
   'execList.statusAll': '全部状态',
   'execList.groupAll': '全部分组',
@@ -1204,6 +1207,11 @@ export default {
   'executorDetail.offline.confirmContent': '将该执行器标记为离线，正在运行的任务不会被中断。请注意：若执行器进程仍在运行并继续上报心跳，它会在约一个心跳间隔（30 秒）内自动回到在线；如需保持离线，请先停止该执行器进程或注销它。确认继续？',
   'executorDetail.offline.setOffline': '设置离线',
   'executorDetail.offline.alert': '执行器离线，以下指标为最后一次心跳的缓存数据，可能已过期',
+  // P1-24：离线诊断三要素（阈值/最后心跳绝对时刻/已静默时长）
+  'executorDetail.offline.threshold': '判死阈值：连续 {{seconds}} 秒无心跳后，后端会将其标记为离线',
+  'executorDetail.offline.lastSeen': '最后心跳：{{absolute}}（已静默 {{silent}}）',
+  // 补充 P2：满载已饱和语义
+  'executorDetail.saturated': '已满载：达到并发上限，调度器不再向这台执行器派发新任务',
   'executorDetail.status.pending': '等待中',
   'executorDetail.status.running': '运行中',
   'executorDetail.status.success': '成功',
@@ -1693,6 +1701,13 @@ export default {
   'execDetail.killed': '执行已终止',
   'execDetail.killFail': '终止失败',
   'execDetail.retriggered': '已重新触发，新的执行记录将在任务详情中显示',
+  // P1-26：重新触发确认 Modal（携带本次执行参数 + 告知差异 + 不自动导航）
+  'execDetail.retriggerConfirm.title': '重新触发确认',
+  'execDetail.retriggerConfirm.body': '本次将沿用「本次执行的参数」重新触发任务，而不是任务当前的默认参数。',
+  'execDetail.retriggerConfirm.thisParams': '本次执行的参数（即将沿用）：',
+  'execDetail.retriggerConfirm.noParams': '本次执行没有额外参数，将使用任务当前默认参数。',
+  'execDetail.retriggerConfirm.differs': '与任务当前默认参数不同——若默认参数已被修改，本次重跑仍沿用当时的旧参数。',
+  'execDetail.retriggerConfirm.ok': '用本次参数重跑',
   'execDetail.triggerFail': '触发失败',
   'execDetail.fullLogsNoRows': '全量日志端点未返回日志行',
   'execDetail.fullLogsLoaded': '已加载完整日志',
@@ -2394,6 +2409,8 @@ export default {
   'runbook.interpreterUnavailable': '确认执行器已安装 uv 且能访问 Python 下载源；声明 3.7 的任务无法在线获取，需部署方预填解释器缓存卷（或改声明 3.8+ 后重新触发）。系统刻意不回退宿主解释器。',
   'runbook.staleRecovered': '执行器崩溃或失联——中台已终止并重新入队；检查执行器主机日志定位失联原因。',
   'runbook.killed': '执行被手动终止（或阻断策略 kill）。与操作者/审计日志核实操作来源。',
+  // P1-27：cancelled 来自调度器 COVER_EARLY 自动覆盖（非人工终止）
+  'runbook.cancelled': '该执行被调度器自动取消：同一任务有更新的触发到达，按覆盖策略（COVER_EARLY）终止了本次执行以避免重复运行。这不是人工终止——人工终止会标记为「已终止」。若符合预期则无需处理；若不希望被自动覆盖，请把任务的阻断策略改为「排队等待」。',
   'runbook.unknown': '无失败原因上报——阅读完整日志，并可用「AI 分析」生成根因报告。',
 
   'eventSub.eventType.executionCompleted': '执行成功（execution.completed）',

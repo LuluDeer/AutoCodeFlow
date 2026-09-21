@@ -251,6 +251,7 @@ describe('UI-05: 纯函数（failure-runbook / log-search）', () => {
       'package_fetch_failed', 'dependency_install_failed', 'git_fetch_failed',
       'runtime_missing', 'sandbox_unavailable', 'script_error', 'timeout',
       'executor_offline', 'executor_restart', 'stale_recovered', 'killed',
+      'cancelled',
       'interpreter_unavailable', 'unknown',
     ];
     for (const k of KEYS) {

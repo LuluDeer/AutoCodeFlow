@@ -1,4 +1,4 @@
-import { Card, Descriptions, Tag, Typography, Button, Space, Badge, message, Alert, Popconfirm, Result, Select, Input, Tabs, theme } from 'antd';
+import { Card, Descriptions, Tag, Typography, Button, Space, Badge, message, Alert, Popconfirm, Result, Select, Input, Tabs, theme, Modal } from 'antd';
 import { ArrowLeftOutlined, SyncOutlined, RedoOutlined, CopyOutlined, StopOutlined, RobotOutlined, DownloadOutlined, SearchOutlined, BookOutlined, ExperimentOutlined, FieldTimeOutlined, LinkOutlined, AppstoreOutlined } from '@ant-design/icons';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom';
@@ -163,6 +163,8 @@ export default function ExecutionDetailPage() {
   const nav = useNavigate();
   const logRef = useRef<HTMLPreElement>(null);
   const [retrying, setRetrying] = useState(false);
+  // P1-26：重新触发确认 Modal 可见性
+  const [retriggerOpen, setRetriggerOpen] = useState(false);
   const [killing, setKilling] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
   const [streamLines, setStreamLines] = useState<string[] | null>(null);
@@ -652,18 +654,28 @@ export default function ExecutionDetailPage() {
     }
   };
 
-  const handleRetry = async () => {
+  // P1-26（UX-AUDIT-2026-09-21）：「重新触发」此前静默丢弃本次执行参数
+  // （trigger(taskId!) 不传第二参 params），且成功后立刻 nav() 离开现场。
+  // 现：① 携带本次执行的 params 重跑；② 触发前 Modal 告知参数差异；③ 不再自动导航。
+  const openRetrigger = () => setRetriggerOpen(true);
+  const doRetrigger = async () => {
     setRetrying(true);
     try {
-      await tasksApi.trigger(taskId!);
+      await tasksApi.trigger(taskId!, data?.params ?? undefined);
       message.success(t('execDetail.retriggered'));
-      nav(`/tasks/${taskId}`);
+      setRetriggerOpen(false);
     } catch (err: unknown) {
       message.error(getErrMsg(err, t('execDetail.triggerFail')));
     } finally {
       setRetrying(false);
     }
   };
+
+  // P1-26：本次执行参数 vs 任务当前默认参数，供 Modal 内展示差异。
+  const retriggerThisParams = data?.params && Object.keys(data.params).length > 0 ? data.params : null;
+  const retriggerDefaultParams = taskData?.params && Object.keys(taskData.params).length > 0 ? taskData.params : null;
+  const retriggerParamsDiffer = retriggerThisParams != null
+    && JSON.stringify(retriggerThisParams) !== JSON.stringify(retriggerDefaultParams ?? {});
 
   // UI-05: 失败定位卡片可见性（failed/timeout；killed 无排障价值不渲染）
   const showFailureCard = FAILURE_CARD_STATUSES.includes(data?.status || '');
@@ -698,8 +710,9 @@ export default function ExecutionDetailPage() {
         hint: t('execDetail.failure.unrecognizedHint'),
       }
     : undefined;
-  // UI-05: 建议动作（未知键回退 unknown 兜底）
-  const runbookAction = failureRunbookAction(data?.failureReason, t);
+  // UI-05: 建议动作（未知键回退 unknown 兜底）。P1-27：第三参传 status——
+  // cancelled 由调度器自动覆盖产生、不落 failureReason，必须按 status 命中。
+  const runbookAction = failureRunbookAction(data?.failureReason, t, data?.status);
   const runbookText = taskData?.runbook || null;
   // 「3.7 需离线预填」指引的可见性（判据见 interpreterNeedsOfflinePrefill）
   const interpreterOfflinePrefill = interpreterNeedsOfflinePrefill(interpreterCtx);
@@ -765,7 +778,7 @@ export default function ExecutionDetailPage() {
                 type="primary"
                 danger
                 loading={retrying}
-                onClick={handleRetry}
+                onClick={openRetrigger}
               >
                 {t('execDetail.retrigger')}
               </Button>
@@ -1080,7 +1093,7 @@ export default function ExecutionDetailPage() {
                     style={{ marginBottom: 16 }}
                     action={
                       data?.status === 'failed' ? (
-                        <Button size="small" danger icon={<RedoOutlined />} onClick={handleRetry} loading={retrying}>
+                        <Button size="small" danger icon={<RedoOutlined />} onClick={openRetrigger} loading={retrying}>
                           {t('execDetail.retrigger')}
                         </Button>
                       ) : undefined
@@ -1394,6 +1407,48 @@ export default function ExecutionDetailPage() {
           },
         ]}
       />
+
+      {/* P1-26：重新触发确认 Modal——展示本次执行参数（即将沿用）与任务默认参数的差异 */}
+      <Modal
+        title={t('execDetail.retriggerConfirm.title')}
+        open={retriggerOpen}
+        onCancel={() => setRetriggerOpen(false)}
+        onOk={doRetrigger}
+        confirmLoading={retrying}
+        okText={t('execDetail.retriggerConfirm.ok')}
+      >
+        <div style={{ marginBottom: 12 }}>{t('execDetail.retriggerConfirm.body')}</div>
+        {retriggerThisParams ? (
+          <>
+            <Text strong>{t('execDetail.retriggerConfirm.thisParams')}</Text>
+            <pre
+              style={{
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word',
+                padding: 8,
+                borderRadius: 6,
+                fontSize: 12,
+                background: 'var(--log-bg)',
+                color: 'var(--log-text)',
+                fontFamily: 'var(--font-mono)',
+                margin: '8px 0',
+              }}
+            >
+              {Object.entries(retriggerThisParams).map(([k, v]) => `${k} = ${String(v)}`).join('\n')}
+            </pre>
+            {retriggerParamsDiffer && (
+              <Alert
+                type="warning"
+                showIcon
+                message={t('execDetail.retriggerConfirm.differs')}
+                style={{ marginTop: 8 }}
+              />
+            )}
+          </>
+        ) : (
+          <Text type="secondary">{t('execDetail.retriggerConfirm.noParams')}</Text>
+        )}
+      </Modal>
     </div>
   );
 }

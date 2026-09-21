@@ -278,6 +278,9 @@ export default {
   'execList.poll': 'Polling',
   'execList.installWizard': 'Install wizard',
   'execList.quickAdd': 'Quick add',
+  // P2-8: distinguishing tooltips for the two entry points
+  'execList.installWizard.tip': 'Guided setup: detects the OS, configures the network mode (incl. NAT/pull), and verifies the connection',
+  'execList.quickAdd.tip': 'Just prints a one-line install command to run on the target; for scripted / bulk setup',
   'execList.searchPlaceholder': 'Search name, address, group',
   'execList.statusAll': 'All statuses',
   'execList.groupAll': 'All groups',
@@ -1193,6 +1196,11 @@ export default {
   'executorDetail.offline.confirmContent': 'Mark this executor as offline. Running tasks will not be interrupted. Note: if the executor process is still running and keeps sending heartbeats, it will flip back to online within about one heartbeat interval (30s). To keep it offline, stop or deregister the executor process first. Continue?',
   'executorDetail.offline.setOffline': 'Set offline',
   'executorDetail.offline.alert': 'Executor is offline; the metrics below are cached from the last heartbeat and may be stale',
+  // P1-24: offline diagnostics (threshold / absolute last heartbeat / silent for)
+  'executorDetail.offline.threshold': 'Offline threshold: the backend marks it offline after {{seconds}}s without a heartbeat',
+  'executorDetail.offline.lastSeen': 'Last heartbeat: {{absolute}} (silent for {{silent}})',
+  // Supplemental P2: saturated semantics
+  'executorDetail.saturated': 'At capacity: the concurrency limit is reached and the scheduler will no longer dispatch new tasks to this executor',
   'executorDetail.status.pending': 'Pending',
   'executorDetail.status.running': 'Running',
   'executorDetail.status.success': 'Success',
@@ -1684,6 +1692,13 @@ export default {
   'execDetail.killed': 'Execution terminated',
   'execDetail.killFail': 'Failed to terminate',
   'execDetail.retriggered': 'Re-triggered; the new execution will appear in the task details',
+  // P1-26: re-trigger confirmation (carry this execution params + show diff + no auto-nav)
+  'execDetail.retriggerConfirm.title': 'Confirm re-trigger',
+  'execDetail.retriggerConfirm.body': 'This will re-run using THIS execution\'s parameters, not the task\'s current default parameters.',
+  'execDetail.retriggerConfirm.thisParams': 'This execution\'s parameters (will be reused):',
+  'execDetail.retriggerConfirm.noParams': 'This execution had no extra parameters; the task\'s current default parameters will be used.',
+  'execDetail.retriggerConfirm.differs': 'These differ from the task\'s current default parameters — if the defaults changed, this re-run still uses the old ones.',
+  'execDetail.retriggerConfirm.ok': 'Re-run with these parameters',
   'execDetail.triggerFail': 'Failed to trigger',
   'execDetail.fullLogsNoRows': 'The full-log endpoint returned no log lines',
   'execDetail.fullLogsLoaded': 'Full logs loaded',
@@ -2385,6 +2400,8 @@ export default {
   'runbook.interpreterUnavailable': 'Verify uv is installed on the executor and the Python download source is reachable; tasks declaring 3.7 cannot be fetched online and need the operator to pre-provision the interpreter cache volume (or switch to 3.8+ and re-trigger). The host interpreter is deliberately not used as a fallback.',
   'runbook.staleRecovered': 'The executor crashed or lost contact — the platform terminated and re-enqueued it; check the executor host logs for the cause.',
   'runbook.killed': 'The execution was manually terminated (or killed by a blocking policy). Verify the operation source with the operator / audit log.',
+  // P1-27: cancelled comes from the scheduler COVER_EARLY auto-cover (not a manual kill)
+  'runbook.cancelled': 'This execution was cancelled automatically by the scheduler: a newer trigger of the same task arrived (cover-early strategy), so the earlier run was terminated to avoid duplicate execution. This is not a manual kill (manual kills are marked as Killed). No action needed if expected; if you do not want auto-cover, switch the task block strategy to wait-in-queue.',
   'runbook.unknown': 'No failure reason reported — read the full log and use "AI Analysis" to generate a root-cause report.',
 
   'eventSub.eventType.executionCompleted': 'Execution completed (execution.completed)',
