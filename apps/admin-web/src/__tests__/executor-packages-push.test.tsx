@@ -176,7 +176,15 @@ describe('P3-12 推送弹窗执行器列表加载失败', () => {
   it('加载失败显示错误+重试，绝不伪装成「暂无在线调度机」；重试成功后恢复', async () => {
     // 反证：改回 catch { setExecutors([]) }，弹窗会渲染「暂无在线调度机」
     // 且没有任何重试入口——本用例第一段立即转红。
+    // 注意：页面挂载时会为「机队版本漂移摘要」调用一次 executorsApi.list
+    // （补充 P2：ExecutorPackagesPage useEffect 拉机队版本分布）。因此调用序列是：
+    //   mount → resolve（机队版本摘要，失败静默）
+    //   openPushModal → reject（推送弹窗执行器列表加载失败，本用例要测的）
+    //   点重试 → resolve（恢复）
+    // 旧契约只 mock 了「openPushModal 才调 list」，挂载那次多出来后，reject 被
+    // 机队摘要那次消费掉、openPushModal 反而 resolve 了——errAlert 永远不出现。
     vi.mocked(executorsApi.list)
+      .mockResolvedValueOnce([mkExecutor({ id: 'ex-on', status: 'online' })])
       .mockRejectedValueOnce(new Error('网络失败'))
       .mockResolvedValueOnce([mkExecutor({ id: 'ex-on', status: 'online' })]);
     render(<ExecutorPackagesPage />);
@@ -192,7 +200,8 @@ describe('P3-12 推送弹窗执行器列表加载失败', () => {
     expect(startPushButton().disabled).toBe(true);
 
     fireEvent.click(screen.getByRole('button', { name: '重试加载' }));
-    await waitFor(() => expect(executorsApi.list).toHaveBeenCalledTimes(2));
+    // 挂载那次机队版本摘要 + openPushModal 那次 + 本次重试 = 3 次
+    await waitFor(() => expect(executorsApi.list).toHaveBeenCalledTimes(3));
     expect(await screen.findByText(/共\s*1\s*台在线/)).toBeTruthy();
     expect(screen.queryByText(/执行器列表加载失败/)).toBeNull();
     expect(startPushButton().disabled).toBe(false);
