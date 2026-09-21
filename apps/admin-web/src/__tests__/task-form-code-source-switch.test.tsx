@@ -12,6 +12,7 @@
  *  ③ 无值切换（全空）→ 不弹窗、直接切（不打扰）。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { useAuthStore } from '../store/auth';
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
@@ -45,6 +46,7 @@ vi.mock('../components/GlueEditor', () => ({ default: () => <div data-testid="gl
 let mockRouteParams: { id?: string } = {};
 vi.mock('react-router-dom', () => ({
   useNavigate: () => vi.fn(),
+  useBlocker: () => ({ state: 'unblocked' as const, proceed: () => {}, reset: () => {} }),
   useParams: () => mockRouteParams,
   useSearchParams: () => [new URLSearchParams('')],
   Link: (props: { to: string; children: React.ReactNode }) => <a href={props.to}>{props.children}</a>,
@@ -94,6 +96,7 @@ function gitTask() {
 }
 
 beforeEach(() => {
+  useAuthStore.setState({ user: { id: 1, username: 'root', role: 'admin' } });
   mockRouteParams = { id: 'task-1' };
   mockConfirm.mockClear();
   vi.mocked(executorsApi.list).mockReset().mockResolvedValue([] as never);

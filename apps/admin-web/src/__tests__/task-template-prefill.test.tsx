@@ -8,6 +8,7 @@
  *  3) 组件级——创建态带 ?templateId= 时拉模板并预填表单（含失败降级）。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { useAuthStore } from '../store/auth';
 import { render, screen, cleanup, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import TaskFormPage from '../pages/TaskFormPage';
@@ -40,6 +41,7 @@ vi.mock('react-router-dom', async () => {
   return {
     ...actual,
     useNavigate: () => mockNav,
+    useBlocker: () => ({ state: 'unblocked' as const, proceed: () => {}, reset: () => {} }),
     useParams: () => ({}),
     useSearchParams: () => [new URLSearchParams(mockSearch)],
     Link: (props: { to: string; children: React.ReactNode }) => <a href={props.to}>{props.children}</a>,
@@ -103,6 +105,7 @@ const renderPage = () =>
     </QueryClientProvider>,
   );
 beforeEach(() => {
+  useAuthStore.setState({ user: { id: 1, username: 'root', role: 'admin' } });
   mockSearch = '';
   vi.mocked(executorsApi.list).mockReset().mockResolvedValue([] as never);
   vi.mocked(executorsApi.getGroups).mockReset().mockResolvedValue([] as never);
