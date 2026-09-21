@@ -247,6 +247,23 @@ export default function TaskFormPage() {
    */
   const [secretsExisting, setSecretsExisting] = useState<Record<string, string> | null>(null);
 
+  /**
+   * P0（UX-AUDIT-2026-09-21 §P0-1）：编辑态必须把已有 Glue 脚本回填给编辑器。
+   *
+   * GlueEditor 的 source 初值来自 props（`initialSource || ''`），而保存时
+   * **无条件**用当前 state 覆盖服务端。调用方漏传 initialSource 就会形成不可逆
+   * 损毁链：打开已有 glue 任务 → Monaco 空白（用户以为脚本没了）→ 顺手点一下
+   * 语言下拉（onChange 里 setDirty(true)，保存按钮变可用）→ 一点保存，服务端
+   * glueSource 被空串覆盖，且后端 updateGlue 还会把 codeSource 改成 glue、
+   * gitRepo 置 null。
+   *
+   * 全仓 initialSource 只有两个调用点，TaskDetailPage 传了、本文件曾漏传——
+   * 这是编辑任务的主入口，也是唯一漏点。语言同理：**不可**用 runtime 兜底
+   * （javascript 的脚本会被回填成 python 高亮，一保存就把语言改写成 python）。
+   */
+  const [glueSource, setGlueSource] = useState<string | undefined>(undefined);
+  const [glueLanguage, setGlueLanguage] = useState<string | undefined>(undefined);
+
   // FEAT-13：「保存为模板」弹窗（表单校验通过后把当前值固化为自定义模板）
   const [tplModalOpen, setTplModalOpen] = useState(false);
   const [tplSaving, setTplSaving] = useState(false);
@@ -381,6 +398,10 @@ export default function TaskFormPage() {
             ? (task.secrets as Record<string, string>)
             : null,
         );
+        // P0-1：Glue 脚本与语言一并回填（编辑器保存时无条件覆盖服务端，
+        // 漏回填 = 打开编辑页看到空白脚本，一保存即清空用户代码）。
+        setGlueSource(task.glueSource ?? undefined);
+        setGlueLanguage(task.glueLanguage ?? undefined);
         form.setFieldsValue({
           name: task.name,
           description: task.description,
@@ -1648,6 +1669,10 @@ export default function TaskFormPage() {
                 )}
                 <GlueEditor
                   taskId={glueTaskId}
+                  // P0-1：回填已有脚本与语言。漏传 → 编辑器空白 + 一次保存即清空
+                  // 用户代码（后端 updateGlue 无校验、空串照收，见审计报告 §P0-1）。
+                  initialSource={glueSource}
+                  initialLanguage={glueLanguage}
                   taskRuntime={savedRuntime}
                 />
                 <Divider />

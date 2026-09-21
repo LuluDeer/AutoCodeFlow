@@ -790,6 +790,49 @@ describe("TaskService (__tests__)", () => {
       expect(schedulerService.stop).not.toHaveBeenCalled();
       expect(schedulerService.scheduleOne).not.toHaveBeenCalled();
     });
+
+    // ------------------------------------------------------------------------
+    // P0（UX-AUDIT-2026-09-21 §P0-1）：空脚本写入必须被拒绝。
+    //
+    // 前端漏回填是触发器，**真正不可逆的是这里没有任何校验**：`t.glueSource =
+    // source` 空串照收，同时还把 codeSource 改成 glue、gitRepo 置 null。写入后
+    // 任务进入一个自相矛盾的状态——声明"代码来源是 glue"但没有代码，而执行器
+    // 侧 `if (glueSource)` 对空串为假 → 整个 glue 分支被跳过 → 任务静默改用
+    // entrypoint（main.py/index.js）执行，用户的内联脚本既没跑、也找不回来。
+    //
+    // 控制器端点（task.controller.ts:517）收的是裸内联类型、无 class-validator
+    // DTO，故 CLI/MCP/curl 同样能把脚本清空——防线只能设在 service 层。
+    // ------------------------------------------------------------------------
+    it("拒绝空脚本（前端漏回填/CLI 误传都不得清空用户代码）", async () => {
+      const task = {
+        id: "1",
+        glueSource: "print('real')",
+        glueLanguage: "python",
+        gitRepo: "git@github.com:acme/repo.git",
+      };
+      taskRepo.findOne.mockResolvedValue(task);
+      taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
+
+      await expect(service.updateGlue("1", "")).rejects.toThrow(
+        /empty/i,
+      );
+      // 反证核心：拒绝必须发生在任何赋值之前——脚本与来源都保持原样
+      expect(task.glueSource).toBe("print('real')");
+      expect(task.gitRepo).toBe("git@github.com:acme/repo.git");
+      expect(taskRepo.save).not.toHaveBeenCalled();
+    });
+
+    it("拒绝纯空白脚本（只输入空格/换行同样无代码，不得覆盖）", async () => {
+      const task = { id: "1", glueSource: "print('real')", glueLanguage: "python" };
+      taskRepo.findOne.mockResolvedValue(task);
+      taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
+
+      await expect(service.updateGlue("1", "   \n\t  ")).rejects.toThrow(
+        /empty/i,
+      );
+      expect(task.glueSource).toBe("print('real')");
+      expect(taskRepo.save).not.toHaveBeenCalled();
+    });
   });
 
   // ==========================================================================

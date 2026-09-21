@@ -1197,6 +1197,30 @@ export class TaskService {
     // R-03: 写面归属守卫（镜像 update/remove 口径）——updateGlue 等价于
     // 改写任务执行的代码，此前完全绕过归属守卫。
     await this.assertCanWriteProjectAware(t, user);
+    // ---------------------------------------------------------------------
+    // P0（UX-AUDIT-2026-09-21 §P0-1）：拒绝空脚本。
+    //
+    // 此前是 `t.glueSource = source` 直赋，空串照收。写成空串后任务进入一个
+    // 自相矛盾的状态：本方法**总是**把 codeSource 声明为 glue、并清空 gitRepo，
+    // 于是终态是"代码来源=glue，但没有任何代码"。而执行器侧 `if (glueSource)`
+    // 对空串为假 → 整个 glue 分支被跳过 → 任务**静默改用 entrypoint**
+    // （main.py / index.js）执行：用户的内联脚本既没跑、也无从找回。
+    //
+    // 触发路径不止前端一处：控制器端点（task.controller.ts:517）收的是裸内联
+    // 类型、没有 class-validator DTO，CLI/MCP/curl 同样能清空。故防线设在
+    // service 层（写面唯一入口），且必须在**任何赋值之前**——拒绝时脚本、
+    // gitRepo、codeSource 全部保持原样。
+    //
+    // 纯空白同样拒绝：`"  \n "` 在 `if (glueSource)` 下是真值，会被写成脚本
+    // 文件并当成 entrypoint，任务每次都以"空脚本"运行——比空串更隐蔽。
+    // 注意：**不**影响"还没有 glue 脚本"的合法状态（那是 glueSource 为
+    // null/undefined，从不经过本方法）。
+    // ---------------------------------------------------------------------
+    if (typeof source !== "string" || source.trim().length === 0) {
+      throw new BadRequestException(
+        "Glue script source must not be empty — refusing to overwrite the stored script with no code",
+      );
+    }
     t.glueSource = source;
     if (language) t.glueLanguage = language;
     // python_task_multiversion（FR-18 / AC-17b）：glue 写入必须同时**声明**
