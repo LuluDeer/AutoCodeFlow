@@ -28,7 +28,7 @@ import { formatDuration } from '../utils/timeFormat';
 // ExecutionCompare 共用，避免再出现"详情页有标签、Dashboard 露裸枚举"的漂移。
 import { failureReasonLabel } from '../utils/failure-reason-label';
 import { useThemeStore, selectResolvedTheme } from '../theme/store';
-import { CHART_COLORS } from '../theme/tokens';
+import { CHART_COLORS, SEMANTIC_COLORS } from '../theme/tokens';
 import PageHeader from '../components/PageHeader';
 import PageSkeleton from '../components/PageSkeleton';
 import StateError from '../components/StateError';
@@ -67,11 +67,12 @@ function KpiFootnote({ children }: { children?: ReactNode }) {
 export function streamStatusBadge(status: MetricsStreamStatus): { color: string; labelKey: string } {
   switch (status) {
     case 'live':
-      return { color: '#22c55e', labelKey: 'dashboard.stream.live' };
+      // D-P2-04（设计审计）：硬编码 hex 改走 theme/tokens.ts 语义色单源
+      return { color: SEMANTIC_COLORS.success, labelKey: 'dashboard.stream.live' };
     case 'reconnecting':
-      return { color: '#f59e0b', labelKey: 'dashboard.stream.reconnecting' };
+      return { color: SEMANTIC_COLORS.warning, labelKey: 'dashboard.stream.reconnecting' };
     default:
-      return { color: '#94a3b8', labelKey: 'dashboard.stream.connecting' };
+      return { color: SEMANTIC_COLORS.neutral, labelKey: 'dashboard.stream.connecting' };
   }
 }
 
