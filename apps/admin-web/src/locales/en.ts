@@ -443,7 +443,7 @@ export default {
   'appList.deploy.startCommandTooltip': 'Start command for daemon mode, e.g. node dist/server.js',
   'appList.deploy.placeholder.auto': 'auto',
 
-  'registry.title': 'Package marketplace',
+  'registry.title': 'Package registry',
   'registry.description': 'Private PyPI / npm artifact registry; reference packages from tasks and executors.',
   'registry.tab.pypi': 'PyPI (Python)',
   'registry.tab.npm': 'npm (Node.js)',

@@ -912,7 +912,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 
 ---
 
-## Registry — 私有仓库代理
+## Registry — 包注册中心（私有 PyPI / npm 制品仓库代理）
 
 | 方法 | 路径 | 需要认证 | 说明 |
 |------|------|:--------:|------|
