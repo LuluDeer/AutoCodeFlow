@@ -20,6 +20,8 @@ import { getErrMsg } from '../utils/error';
 import { useDebounce } from '../hooks/useDebounce';
 import { useAuthStore, isAdminUser } from '../store/auth';
 import { priorityTag } from '../utils/priority';
+// D-P2-02a（设计审计）：运行时枚举本地化唯一事实源（与 status/priority 同范式）
+import { runtimeLabel } from '../utils/runtime-label';
 // P1-1/P1-2（UX-AUDIT-2026-09-21）：列表页显示真实的「下次执行」与「上次执行」
 import { nextRunAt, formatFireTime, previewNeedsTimezoneWarning } from '../utils/trigger-preview';
 import { formatRelativeTime } from '../utils/timeFormat';
@@ -339,7 +341,9 @@ export default function TaskListPage() {
           const mins = Math.floor(secs / 60);
           const rem = secs % 60;
           const label = rem > 0 ? t('taskList.schedule.minSec', { min: mins, sec: rem }) : t('taskList.schedule.min', { min: mins });
-          return <Text type="secondary" style={{ fontSize: 12 }}>{t('taskList.schedule.sec', { sec: label })}</Text>;
+          // D-P1-1（设计审计）：≥60s 时 label 已是本地化的「N 分钟」/「N 分 M 秒」，
+          // 不再外层套「每 {{sec}} 秒」模板——否则渲染出「每 2 分钟 秒」。
+          return <Text type="secondary" style={{ fontSize: 12 }}>{label}</Text>;
         }
         return <Text type="secondary" style={{ fontSize: 12 }}>{t('taskList.nextRun.none')}</Text>;
       },
@@ -412,7 +416,7 @@ export default function TaskListPage() {
       dataIndex: 'runtime',
       width: 80,
       ...hideOnMobile,
-      render: (v: string) => v ? <Tag>{v}</Tag> : '-',
+      render: (v: string) => v ? <Tag>{runtimeLabel(v, t)}</Tag> : '-',
     },
     {
       title: t('taskList.col.enabled'),

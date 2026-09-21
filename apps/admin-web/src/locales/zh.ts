@@ -221,6 +221,11 @@ export default {
   'taskList.schedule.sec': '每 {{sec}} 秒',
   'taskList.schedule.minSec': '{{min}} 分 {{sec}} 秒',
   'taskList.schedule.min': '{{min}} 分钟',
+  // D-P2-02a（设计审计）：运行时枚举本地化映射（与 status/priority 同范式，
+  // 未知值在调用点回退原始 token）。值为专有名词，中英同形但走 t() 保持一致。
+  'taskList.runtime.python': 'Python',
+  'taskList.runtime.node': 'Node.js',
+  'taskList.runtime.shell': 'Shell',
   'taskList.nextRun.none': '-',
   'taskList.nextRun.cronTooltip': '下次 Cron 触发时间',
   'taskList.nextRun.cronScheduled': 'Cron 计划中',
@@ -1061,6 +1066,8 @@ export default {
   'taskDetail.field.requirements': '依赖包',
   'taskDetail.field.runbook': 'Runbook',
   'taskDetail.field.timeout': '超时',
+  // D-P2-03（设计审计）：0 = 不限时（与 taskForm 字段语义一致），详情页不再显示 '-'
+  'taskDetail.timeout.notLimited': '不限时',
   'taskDetail.field.timeoutAction': '超时动作',
   'taskDetail.timeoutAction.killRetry': '终止并重试',
   'taskDetail.timeoutAction.notifyOnly': '仅通知',

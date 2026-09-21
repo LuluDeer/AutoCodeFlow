@@ -32,6 +32,8 @@ import { logoutRemote } from '../api/logout';
 import CommandPalette from '../components/CommandPalette';
 import { isMacPlatform, searchShortcutHint } from './shortcut-hint';
 import { useThemeStore } from '../theme/store';
+// D-P2-16（设计审计）：品牌渐变唯一事实源（Logo / 用户头像共用）
+import { BRAND_GRADIENT } from '../theme/tokens';
 import type { ThemeMode } from '../theme/store';
 // UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
 // P0-7（UX 审计）：setLanguage 此前导出但全站零调用——此处是它的第一个入口。
@@ -458,7 +460,7 @@ export default function MainLayout() {
               height: 28,
               borderRadius: 8,
               // UI-01：强调色 #22C55E 渐变（MASTER.md Accent/CTA）
-              background: 'linear-gradient(135deg, #22c55e 0%, #16a34a 100%)',
+              background: BRAND_GRADIENT,
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
@@ -657,7 +659,7 @@ export default function MainLayout() {
               >
                 <Avatar
                   size={30}
-                  style={{ background: 'linear-gradient(135deg, #22c55e, #16a34a)', fontSize: 13, flexShrink: 0 }}
+                  style={{ background: BRAND_GRADIENT, fontSize: 13, flexShrink: 0 }}
                 >
                   {user?.username?.[0]?.toUpperCase() || 'U'}
                 </Avatar>

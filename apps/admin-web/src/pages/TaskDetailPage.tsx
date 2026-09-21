@@ -26,6 +26,8 @@ import { aiApi, ScheduleSuggestion } from '../api/ai';
 import { getErrMsg } from '../utils/error';
 // UX-06：触发方式展示标签唯一事实源（此前直接渲染裸枚举）。
 import { triggerLabel, TRIGGER_COLOR } from '../utils/trigger-label';
+// D-P2-02a（设计审计）：运行时枚举本地化唯一事实源
+import { runtimeLabel } from '../utils/runtime-label';
 import { formatDateTime, formatDuration, formatRelativeTime } from '../utils/timeFormat';
 // F-27（DEEP_REVIEW 0ef3bbe）：失败次数派生（纯函数，保证整数）
 import { failedRunCount } from './task-stats';
@@ -94,6 +96,15 @@ const STATUS_LABEL = (t: (k: string) => string): Record<string, string> => ({
   failed: t('taskDetail.status.failed'), timeout: t('taskDetail.status.timeout'), killed: t('taskDetail.status.killed'), cancelled: t('taskDetail.status.cancelled'),
 });
 
+// D-P2-02a（设计审计）：任务级状态（active/paused/inactive/failed）复用 taskList.status.*
+// 词表——此前 failed/inactive 在状态行 Badge 落裸英文 token。未知值回退原始值兜底。
+const TASK_STATUS_LABEL = (t: (k: string) => string): Record<string, string> => ({
+  active: t('taskList.status.active'),
+  paused: t('taskList.status.paused'),
+  inactive: t('taskList.status.inactive'),
+  failed: t('taskList.status.failed'),
+});
+
 export default function TaskDetailPage() {
   const { t } = useTranslation();
   // P1-5：任务写操作仅管理员可用。
@@ -117,6 +128,7 @@ export default function TaskDetailPage() {
   const [tplSaving, setTplSaving] = useState(false);
 
   const statusLabels = STATUS_LABEL(t);
+  const taskStatusLabels = TASK_STATUS_LABEL(t);
 
   const handleSaveAsTemplate = async () => {
     if (!task) return;
@@ -382,7 +394,7 @@ export default function TaskDetailPage() {
         <Space wrap>
           <Badge
             status={isActive ? 'success' : isPaused ? 'warning' : 'default'}
-            text={isActive ? t('taskDetail.state.running') : isPaused ? t('taskDetail.state.paused') : task.status}
+            text={isActive ? t('taskDetail.state.running') : isPaused ? t('taskDetail.state.paused') : (taskStatusLabels[task.status] ?? task.status)}
           />
           {schedulerStats && (
             <>
@@ -452,7 +464,7 @@ export default function TaskDetailPage() {
             children: (
               <Card>
                 <Descriptions size="small" column={{ xs: 1, sm: 2, md: 3 }}>
-                  <Descriptions.Item label={t('taskDetail.field.runtime')}><Tag>{task.runtime}</Tag></Descriptions.Item>
+                  <Descriptions.Item label={t('taskDetail.field.runtime')}><Tag>{runtimeLabel(task.runtime, t)}</Tag></Descriptions.Item>
                   {/* python_task_multiversion（P2-3）：版本声明的读面——此前只能开
                       编辑表单才能确认任务钉了哪个解释器。非 python 任务后端强制
                       runtimeVersion=null，不展示该行。 */}
@@ -531,7 +543,7 @@ export default function TaskDetailPage() {
                       </Typography.Paragraph>
                     </Descriptions.Item>
                   )}
-                  <Descriptions.Item label={t('taskDetail.field.timeout')}>{task.timeout ? t('taskDetail.unit.second', { n: task.timeout }) : '-'}</Descriptions.Item>
+                  <Descriptions.Item label={t('taskDetail.field.timeout')}>{task.timeout ? t('taskDetail.unit.second', { n: task.timeout }) : t('taskDetail.timeout.notLimited')}</Descriptions.Item>
                   {/* CORE-04: 超时策略分级展示 */}
                   <Descriptions.Item label={t('taskDetail.field.timeoutAction')}>
                     {task.timeoutAction === 'kill_retry'
