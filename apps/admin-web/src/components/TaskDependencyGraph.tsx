@@ -35,6 +35,14 @@ function statusColor(n: DagNode['status'], token: AntdToken): string {
 
 export default function TaskDependencyGraph({ taskId }: { taskId: string }) {
   const { t } = useTranslation();
+  // P2-3：节点状态复用共享词表（taskList.status.*），不再渲染裸枚举。
+  const STATUS_LABEL: Record<string, string> = {
+    active: t('taskList.status.active'),
+    paused: t('taskList.status.paused'),
+    inactive: t('taskList.status.inactive'),
+    failed: t('taskList.status.failed'),
+    deleted: t('depGraph.status.deleted'),
+  };
   // F-15（DEEP_REVIEW 0ef3bbe）：连线/节点边框/背景走 antd token，暗色主题自适应。
   const { token } = theme.useToken();
   const nav = useNavigate();
@@ -247,7 +255,7 @@ export default function TaskDependencyGraph({ taskId }: { taskId: string }) {
                     style={{ marginInlineEnd: 0, fontSize: 11, lineHeight: '16px' }}
                     color={n.status === 'active' ? 'green' : n.status === 'paused' ? 'orange' : 'default'}
                   >
-                    {n.status}
+                    {STATUS_LABEL[n.status] ?? n.status}
                   </Tag>
                 </div>
               </div>
