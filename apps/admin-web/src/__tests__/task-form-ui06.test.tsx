@@ -9,6 +9,7 @@
  *     「全挂载下直接提交 payload 完整」由 task-form-page.test 覆盖）。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { useAuthStore } from '../store/auth';
 import { render, screen, cleanup, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import TaskFormPage from '../pages/TaskFormPage';
@@ -33,6 +34,7 @@ vi.mock('react-router-dom', async () => {
   return {
     ...actual,
     useNavigate: () => vi.fn(),
+    useBlocker: () => ({ state: 'unblocked' as const, proceed: () => {}, reset: () => {} }),
     useParams: () => mockRouteParams,
     useSearchParams: () => [new URLSearchParams(mockSearch)],
     Link: (props: { to: string; children: React.ReactNode }) => <a href={props.to}>{props.children}</a>,
@@ -77,6 +79,7 @@ const renderPage = () =>
     </QueryClientProvider>,
   );
 beforeEach(() => {
+  useAuthStore.setState({ user: { id: 1, username: 'root', role: 'admin' } });
   mockRouteParams = {};
   mockSearch = '';
   vi.mocked(executorsApi.list).mockReset().mockResolvedValue([
@@ -160,7 +163,7 @@ describe('UI-06 ① 分区单页布局', () => {
 });
 
 describe('UI-06 ② 触发预览接线', () => {
-  it('manual（默认）不渲染预览；切 cron 且表达式合法 → 渲染 5 个时刻 Tag', async () => {
+  it('manual（默认）不渲染预览；切 cron 且表达式合法但未指定时区 → 降级警示，不自信渲染时刻 Tag（P1-3）', async () => {
     await renderCreateForm();
     expect(screen.queryByTestId('trigger-preview')).toBeNull();
 
@@ -171,14 +174,16 @@ describe('UI-06 ② 触发预览接线', () => {
     fireEvent.change(screen.getByPlaceholderText(/每周一至周五早8点/), {
       target: { value: '*/5 * * * *' },
     });
-    // */5 分钟级表达式必有 5 次命中（一年窗口内必然凑满）。
-    await vi.waitFor(() => {
-      const tags = preview.querySelectorAll('.ant-tag');
-      expect(tags.length).toBe(5);
-    });
-    // 预览标题与时区注记。
+    // P1-3 新契约：创建态默认未指定时区，浏览器时区 != 服务端进程时区；
+    // 旧实现自信渲染 5 个时刻 Tag 并标「服务器默认时区」——会让 UTC 笔记本给
+    // Asia/Shanghai 服务器配的 cron 预览差 8 小时且看似对上。新实现降级警示 Alert，
+    // 一个可信任的时刻 Tag 都不给；5-Tag 正常路径由 trigger-preview-timezone.test.tsx 覆盖。
+    // 等警示出现——findByText 会轮询到 cron 值真正传播、预览重渲染为止。
+    // （不能像旧用例那样等 .ant-tag===0：空态本来就是 0，会在值传播前就提前通过。）
+    expect(await screen.findByText(/服务端进程时区/)).toBeTruthy();
+    // 旧的「服务器默认时区」注记已随 P1-3 移除。
     expect(screen.getByText(/触发预览/)).toBeTruthy();
-    expect(screen.getByText(/服务器默认时区/)).toBeTruthy();
+    expect(screen.queryByText(/服务器默认时区/)).toBeNull();
   }, 15_000);
 
   it('cron 非法表达式 → 预览渲染占位警告（不阻塞表单）', async () => {
