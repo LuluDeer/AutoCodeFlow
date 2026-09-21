@@ -1,11 +1,13 @@
 import { randomBytes } from "crypto";
 import {
   SECRET_ENC_PREFIX,
+  SECRET_MASK_LITERAL,
   decryptSecretValue,
   encryptSecretValue,
   encryptSecretsObject,
   decryptSecretsObject,
   maskSecretsObject,
+  mergeSecretsOnUpdate,
   parseSecretsKey,
   isEncryptedSecret,
 } from "../secret-crypto.util";
@@ -167,6 +169,131 @@ describe("secret-crypto.util (SEC-02)", () => {
       const masked = maskSecretsObject(stored) as Record<string, string>;
       expect(masked.apiKey).toBe("******");
       expect(masked.apiKey).not.toContain(SECRET_ENC_PREFIX);
+    });
+  });
+
+  /**
+   * SEC-02 续（生产故障）：PATCH 的**逐键合并**。
+   *
+   * 本组测试钉住的是"掩码回写"这一不可逆损毁路径：读路径必然把每个叶子换成
+   * `******`，控制台要显示既有键就必然持有掩码——整体替换语义下，一次"只改
+   * 超时"的保存就会把掩码当真实凭据写进库。合并语义让"键缺省 = 保留"，
+   * 掩码只能表达"不改"，永远不落库。
+   */
+  describe("mergeSecretsOnUpdate（掩码回写防护）", () => {
+    const storedEncrypted = () =>
+      encryptSecretsObject(
+        { FEISHU_APP_ID: "cli_real", FEISHU_APP_SECRET: "sec_real" },
+        KEY,
+      ) as Record<string, unknown>;
+
+    it("掩码叶子 → 保留库里原值（真实凭据不被掩码覆盖）", () => {
+      const stored = storedEncrypted();
+      const merged = mergeSecretsOnUpdate(
+        stored,
+        { FEISHU_APP_ID: SECRET_MASK_LITERAL },
+        KEY,
+      );
+      // 逐字节相同：连密文都没重新加密过
+      expect(merged.FEISHU_APP_ID).toBe(stored.FEISHU_APP_ID);
+      expect(decryptSecretsObject(merged, KEY)).toEqual({
+        FEISHU_APP_ID: "cli_real",
+        FEISHU_APP_SECRET: "sec_real",
+      });
+    });
+
+    it("后端读面回给客户端的整体掩码对象回传 = 一个键都不改（本故障的复现路径）", () => {
+      const stored = storedEncrypted();
+      // 控制台拿到的就是 maskForResponse 的结果，一字不改地 PATCH 回来
+      const echoed = maskSecretsObject(stored) as Record<string, unknown>;
+      const merged = mergeSecretsOnUpdate(stored, echoed, KEY);
+      expect(merged).toEqual(stored);
+      expect(decryptSecretsObject(merged, KEY)).toEqual({
+        FEISHU_APP_ID: "cli_real",
+        FEISHU_APP_SECRET: "sec_real",
+      });
+    });
+
+    it("键缺省 → 保留（只提交一个键不会删掉其它凭据）", () => {
+      const stored = storedEncrypted();
+      const merged = mergeSecretsOnUpdate(
+        stored,
+        { NEW_KEY: "v" },
+        KEY,
+      ) as Record<string, unknown>;
+      expect(Object.keys(merged).sort()).toEqual([
+        "FEISHU_APP_ID",
+        "FEISHU_APP_SECRET",
+        "NEW_KEY",
+      ]);
+      expect(merged.FEISHU_APP_ID).toBe(stored.FEISHU_APP_ID);
+    });
+
+    it("叶子 = null → 删除该键（合并语义下「删除」必须显式表达）", () => {
+      const stored = storedEncrypted();
+      const merged = mergeSecretsOnUpdate(
+        stored,
+        { FEISHU_APP_SECRET: null },
+        KEY,
+      ) as Record<string, unknown>;
+      expect(Object.keys(merged)).toEqual(["FEISHU_APP_ID"]);
+    });
+
+    it("真实新值 → 加密覆盖，且不碰其它键", () => {
+      const stored = storedEncrypted();
+      const merged = mergeSecretsOnUpdate(
+        stored,
+        { FEISHU_APP_ID: "cli_rotated" },
+        KEY,
+      ) as Record<string, unknown>;
+      expect(merged.FEISHU_APP_ID).not.toBe(stored.FEISHU_APP_ID);
+      expect(isEncryptedSecret(merged.FEISHU_APP_ID as string)).toBe(true);
+      expect(decryptSecretsObject(merged, KEY)).toEqual({
+        FEISHU_APP_ID: "cli_rotated",
+        FEISHU_APP_SECRET: "sec_real",
+      });
+    });
+
+    it("掩码发给「库里没有的键」 → no-op（绝不把掩码字面量写进库）", () => {
+      const merged = mergeSecretsOnUpdate(
+        null,
+        { NOT_STORED: SECRET_MASK_LITERAL },
+        KEY,
+      );
+      expect(merged).toEqual({});
+    });
+
+    it("stored 为 null 时按空库合并", () => {
+      const merged = mergeSecretsOnUpdate(null, { A: "1" }, KEY) as Record<
+        string,
+        unknown
+      >;
+      expect(decryptSecretsObject(merged, KEY)).toEqual({ A: "1" });
+    });
+
+    it("嵌套对象递归合并（掩码只影响命中的那一层）", () => {
+      const stored = encryptSecretsObject(
+        { db: { user: "u", password: "p" } },
+        KEY,
+      ) as Record<string, any>;
+      const merged = mergeSecretsOnUpdate(
+        stored,
+        { db: { user: SECRET_MASK_LITERAL, password: "new-p" } },
+        KEY,
+      ) as Record<string, any>;
+      expect(merged.db.user).toBe(stored.db.user);
+      expect(decryptSecretsObject(merged, KEY)).toEqual({
+        db: { user: "u", password: "new-p" },
+      });
+    });
+
+    it("降级模式（无 key）同样合并，不留掩码", () => {
+      const merged = mergeSecretsOnUpdate(
+        { A: "plain-a" },
+        { A: SECRET_MASK_LITERAL, B: "plain-b" },
+        null,
+      );
+      expect(merged).toEqual({ A: "plain-a", B: "plain-b" });
     });
   });
 });

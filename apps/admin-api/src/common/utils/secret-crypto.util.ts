@@ -180,6 +180,82 @@ export function decryptSecretsObject(
   return out;
 }
 
+/**
+ * The literal every API read path substitutes for a secret leaf value.
+ *
+ * Exported as a named constant because the WRITE path also needs it: a leaf
+ * carrying this literal means "keep what is stored" (see mergeSecretsOnUpdate).
+ */
+export const SECRET_MASK_LITERAL = "******";
+
+/**
+ * SEC-02 follow-up (production incident): per-key merge for PATCH writes.
+ *
+ * Why this exists — the masked round-trip is structurally unsafe with
+ * whole-object replacement:
+ *   · read paths NEVER return plaintext (every leaf comes back as `******`);
+ *   · the console must show existing keys, so it holds those masked leaves;
+ *   · with replace semantics, submitting that view stores `******` as the
+ *     credential — the real value is destroyed and the task then fails with
+ *     "missing credential" while the UI cheerfully shows the key present.
+ * The old code walked straight into it (TaskService.update assigned the
+ * incoming object verbatim), so the only safe UI was "never show existing
+ * keys", which is exactly the usability hole that produced the incident.
+ *
+ * Merge semantics (each key independently):
+ *   · absent from `incoming`      → keep the stored leaf untouched;
+ *   · `SECRET_MASK_LITERAL`       → keep the stored leaf untouched (the client
+ *     echoed back what the read path gave it);
+ *   · `null` / `undefined`        → delete the key;
+ *   · anything else               → encrypt and overwrite.
+ * A masked leaf for a key that is NOT stored is a no-op — it must never be
+ * persisted as the literal string, which would look like a valid credential.
+ *
+ * `incoming === null` means "clear everything" and is handled by the caller
+ * (it is the documented explicit-clear signal on the DTO).
+ *
+ * Nested objects are merged recursively so the flat-credential shape is not a
+ * silent requirement of the storage layer.
+ */
+export function mergeSecretsOnUpdate(
+  stored: Record<string, unknown> | null | undefined,
+  incoming: Record<string, unknown>,
+  key: Buffer | null,
+): Record<string, unknown> {
+  const base: Record<string, unknown> =
+    stored && typeof stored === "object" ? { ...stored } : {};
+  const out: Record<string, unknown> = { ...base };
+  for (const [k, v] of Object.entries(incoming)) {
+    if (v === SECRET_MASK_LITERAL) {
+      // Keep the stored ciphertext/plaintext verbatim — never re-encrypt and
+      // never write the mask itself.
+      if (k in base) out[k] = base[k];
+      else delete out[k];
+      continue;
+    }
+    if (v === null || v === undefined) {
+      delete out[k];
+      continue;
+    }
+    if (typeof v === "object" && !Array.isArray(v)) {
+      const nestedStored =
+        base[k] && typeof base[k] === "object" && !Array.isArray(base[k])
+          ? (base[k] as Record<string, unknown>)
+          : null;
+      out[k] = mergeSecretsOnUpdate(
+        nestedStored,
+        v as Record<string, unknown>,
+        key,
+      );
+      continue;
+    }
+    // encryptSecretsObject is idempotent on `enc:v1:` values and is a
+    // passthrough when no key is configured (degraded mode).
+    out[k] = encryptSecretsObject({ [k]: v }, key)?.[k] ?? v;
+  }
+  return out;
+}
+
 /** Shape-independent mask used by API read paths: never leak leaf values. */
 export function maskSecretsObject(
   secrets: Record<string, unknown> | null | undefined,
@@ -192,7 +268,7 @@ export function maskSecretsObject(
     } else if (typeof v === "object" && !Array.isArray(v)) {
       out[k] = maskSecretsObject(v as Record<string, unknown>) ?? {};
     } else {
-      out[k] = "******";
+      out[k] = SECRET_MASK_LITERAL;
     }
   }
   return out;
