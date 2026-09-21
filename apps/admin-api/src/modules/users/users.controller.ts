@@ -12,6 +12,7 @@ import {
   Req,
   ForbiddenException,
   BadRequestException,
+  ConflictException,
 } from "@nestjs/common";
 import { ApiTags, ApiOperation, ApiBearerAuth } from "@nestjs/swagger";
 import { Request } from "express";
@@ -118,6 +119,17 @@ export class UsersController {
     // SEC: prevent privilege escalation — non-admins cannot change their own role
     if (!isAdmin && dto.role !== undefined) {
       throw new ForbiddenException("Only admins can change user roles");
+    }
+
+    // 审计 E-P2-S4：普通用户自改 username 时做唯一性占用校验。
+    // 旧实现：自改 username 直接 Object.assign → save，撞 user.username 唯一索引
+    // 时冒成裸 500（23505），对前端不可读。此处前置校验：目标 username 已被他人
+    // 占用 → 409。管理员改他人账号不在本分支（admin 不受此自改限制）。
+    if (!isAdmin && dto.username) {
+      const existing = await this.usersService.findByUsername(dto.username);
+      if (existing && existing.id !== id) {
+        throw new ConflictException("Username is already taken");
+      }
     }
 
     // S12: non-admins must supply currentPassword when changing their password
