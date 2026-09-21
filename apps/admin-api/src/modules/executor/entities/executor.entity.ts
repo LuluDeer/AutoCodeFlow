@@ -15,6 +15,16 @@ export enum ExecutorStatus {
   ONLINE = "online",
   OFFLINE = "offline",
 }
+/**
+ * 遗留 P1-24：离线原因区分。
+ * - manual：优雅下线（执行器主动 shutdown / 管理员手动下线）；
+ * - stale_timeout：心跳超时被 stale sweep 判死。
+ * 仅 status=OFFLINE 时有意义；回到 ONLINE 时置 null。
+ */
+export enum ExecutorOfflineReason {
+  MANUAL = "manual",
+  STALE_TIMEOUT = "stale_timeout",
+}
 export enum ExecutorType {
   PYTHON = "python",
   NODE = "node",
@@ -36,6 +46,9 @@ export class Executor {
     default: ExecutorStatus.OFFLINE,
   })
   status: ExecutorStatus;
+  // 遗留 P1-24：离线原因。null=在线或历史数据未标注。
+  @Column({ type: "enum", enum: ExecutorOfflineReason, nullable: true })
+  offlineReason: ExecutorOfflineReason | null;
   @Column({ type: "enum", enum: ExecutorType, default: ExecutorType.PYTHON })
   type: ExecutorType;
   @Column({ nullable: true }) executorVersion: string;
