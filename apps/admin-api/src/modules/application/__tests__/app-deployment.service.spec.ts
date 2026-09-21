@@ -868,6 +868,30 @@ describe("AppDeploymentService", () => {
         }),
       );
     });
+
+    // P1-14 证伪记录：审计曾推测"前端把部署 id 当版本 id 传给回滚会 400"。
+    // 实跑证伪——前端对 legacy 行传的就是 deploymentId（versionRepo.findOne
+    // 查不到 → 走 legacy 路径按 d.id 命中），不会 400。本测试钉住该行为，
+    // 防止以后有人"修正"成传 synthetic key 或把 legacy 路径删掉。
+    it("P1-14 证伪：以 deploymentId 作为 targetId 回滚 legacy 行不会 400", async () => {
+      versionRepo.findOne.mockResolvedValue(null);
+      repo.find.mockResolvedValue([
+        {
+          id: "deploy-legacy",
+          deployedVersion: "0.9.0",
+          deployedCommit: "cafef00d",
+          status: DeploymentStatus.RUNNING,
+        },
+      ]);
+
+      // 不应抛 BadRequestException
+      const result = await service.rollbackApplication("app-1", "deploy-legacy");
+      expect(result).toEqual(
+        expect.objectContaining({ rolledBackTo: "0.9.0", versionId: null }),
+      );
+      // versionRepo 被以部署 id 查询过（查不到），随后走 legacy 路径
+      expect(versionRepo.findOne).toHaveBeenCalledWith({ where: { id: "deploy-legacy" } });
+    });
   });
 
   describe("version snapshots", () => {
