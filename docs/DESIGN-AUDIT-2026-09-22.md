@@ -9,22 +9,22 @@
 | # | 级别 | 条目 | 状态 | commit |
 |---|---|---|---|---|
 | D-P1-1 | P1 | 任务列表调度列 fixed_rate≥60s 二次包裹出「每 2 分钟 秒」 | ✅ | 6e28d211 |
-| D-P1-2 | P1 | 剪贴板诚实性守卫缺口：AppDeploymentPage 静默 catch、ExecutionDetailPage 无 fallback | ⬜ | — |
-| D-P2-01 | P2 | 全仓 Alert `message=` 迁移残留（~12 处）统一为 `title=` | 🔶 分片A(2处DAG) | 6e28d211 |
-| D-P2-02 | P2 | 依赖图/详情页 runtime、status 等裸枚举未本地化 | 🔶 分片A(列表/详情) | 6e28d211 |
+| D-P1-2 | P1 | 剪贴板诚实性守卫缺口：AppDeploymentPage 静默 catch、ExecutionDetailPage 无 fallback | ✅ | 4832f71e |
+| D-P2-01 | P2 | 全仓 Alert `message=` 迁移残留（~12 处）统一为 `title=` | ✅ 分片A+B | 4832f71e |
+| D-P2-02 | P2 | 依赖图/详情页 runtime、status 等裸枚举未本地化 | ✅ 分片A+B | 4832f71e |
 | D-P2-03 | P2 | timeout=0（不限时）在详情页显示 `-` | ✅ | 6e28d211 |
 | D-P2-04 | P2 | 仪表盘 SSE 状态点色硬编码 hex，未走语义令牌 | ✅ | 6e28d211 |
 | D-P2-05 | P2 | 依赖图节点可点击但无键盘可达 | ✅ | 6e28d211 |
 | D-P2-06 | P2 | 依赖图当前节点阴影硬编码旧 antd 蓝 | ✅ | 6e28d211 |
 | D-P2-07 | P2 | 依赖图整 Tab 加载用裸居中 Spin | ✅ | 6e28d211 |
-| D-P2-08 | P2 | AppDeploymentPage Tag 无效 `background: ${color}15` 死样式 | ⬜ | — |
-| D-P2-09 | P2 | 9 处时间格式化手写 toLocaleString，未统一 formatDateTime | ⬜ | — |
-| D-P2-10 | P2 | 两表分页器缺 showTotal，总数口径不一致 | ⬜ | — |
-| D-P2-11 | P2 | 6 处硬编码英文文案未走 i18n | ⬜ | — |
-| D-P2-12 | P2 | ExecutorPackages 推送失败直接抛 e.message 技术串 | ⬜ | — |
-| D-P2-13 | P2 | admin-web 缺 prefers-reduced-motion 兜底（desktop 有） | ⬜ | — |
-| D-P2-14 | P2 | 两页 Tabs 状态未入 URL，刷新丢失 | ⬜ | — |
-| D-P2-15 | P2 | `--color-ring` 为语义错乱死令牌 | ⬜ | — |
+| D-P2-08 | P2 | AppDeploymentPage Tag 无效 `background: ${color}15` 死样式 | ✅ | 4832f71e |
+| D-P2-09 | P2 | 9 处时间格式化手写 toLocaleString，未统一 formatDateTime | ✅ | 4832f71e |
+| D-P2-10 | P2 | 两表分页器缺 showTotal，总数口径不一致 | ✅ | 4832f71e |
+| D-P2-11 | P2 | 6 处硬编码英文文案未走 i18n | ✅ | 4832f71e |
+| D-P2-12 | P2 | ExecutorPackages 推送失败直接抛 e.message 技术串 | ✅ | 4832f71e |
+| D-P2-13 | P2 | admin-web 缺 prefers-reduced-motion 兜底（desktop 有） | ✅ | 4832f71e |
+| D-P2-14 | P2 | 两页 Tabs 状态未入 URL，刷新丢失 | ✅ | 4832f71e |
+| D-P2-15 | P2 | `--color-ring` 为语义错乱死令牌 | ✅ | 4832f71e |
 | D-P2-16 | P2 | 品牌渐变内联重复 5 处，未收 token | ✅ | 6e28d211 |
 
 ---
