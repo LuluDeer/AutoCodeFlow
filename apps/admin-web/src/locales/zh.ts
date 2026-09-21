@@ -453,8 +453,8 @@ export default {
   'appList.deploy.startCommandTooltip': '常驻进程的启动命令，如 node dist/server.js',
   'appList.deploy.placeholder.auto': 'auto',
 
-  // ── 包市场（RegistryPage）──
-  'registry.title': '包市场',
+  // ── 包注册中心（RegistryPage）──
+  'registry.title': '包注册中心',
   'registry.description': '私有 PyPI / npm 制品仓库；上传后可在任务与执行器侧引用。',
   'registry.tab.pypi': 'PyPI (Python)',
   'registry.tab.npm': 'npm (Node.js)',
