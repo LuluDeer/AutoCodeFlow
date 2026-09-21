@@ -225,6 +225,9 @@ export default function ExecutorDetailPage() {
   const liveMem = metrics?.current?.memUsage ?? executor.memUsage ?? 0;
   const runningCount = metrics?.current?.runningTaskCount ?? executor.runningTaskCount ?? 0;
   const runningPercent = maxConcurrent > 0 ? Math.min(100, Math.round((runningCount / maxConcurrent) * 100)) : 0;
+  // 补充 P2（UX-AUDIT 第 4 路）：满载语义。runningCount 达到并发上限即饱和——
+  // 调度器不再向这台派发新任务；用户需把「目标执行器已饱和」与「根本没有可用执行器」区分开。
+  const isSaturated = maxConcurrent > 0 && runningCount >= maxConcurrent;
 
   // CONSISTENCY-02: 执行器心跳上报的运行中 executionId（null = 旧版未上报）。
   // 与 runningTaskCount 交叉核对：长期不一致提示执行器计数或回调链路异常。
@@ -336,7 +339,14 @@ export default function ExecutorDetailPage() {
           <Descriptions.Item label={t('executorDetail.field.appName')}>{executor.appName}</Descriptions.Item>
           <Descriptions.Item label={t('executorDetail.field.address')}>{executor.address}</Descriptions.Item>
           <Descriptions.Item label={t('executorDetail.field.status')}>
-            <Badge status={isOnline ? 'success' : 'default'} text={executor.status} />
+            {/* P1-28：详情页此前 text={executor.status} 直接渲染裸枚举（online/offline），
+                与列表页同一概念两种措辞（列表页用 execList.status.online=在线）。
+                执行器状态只有 online/offline 两态（executor.entity.ts:15-16），
+                直接复用列表页 i18n 键。 */}
+            <Badge
+              status={isOnline ? 'success' : 'default'}
+              text={isOnline ? t('execList.status.online') : t('execList.status.offline')}
+            />
           </Descriptions.Item>
           <Descriptions.Item label={t('executorDetail.field.type')}>{executor.type || '-'}</Descriptions.Item>
           <Descriptions.Item label={t('executorDetail.field.version')}>{executor.executorVersion || '-'}</Descriptions.Item>
@@ -458,11 +468,36 @@ export default function ExecutorDetailPage() {
         </Descriptions>
       </Card>
 
+      {/* P1-24（UX-AUDIT-2026-09-21）：「为什么离线」必须可回答。
+          旧实现只渲染一句通用文案（executorDetail.offline.alert），判死阈值
+          heartbeatTimeoutMs 取到手后只用于染色、数值从不渲染，用户无法判断
+          「手动下线还是超时判死？静默多久了？91s 抖动还是 3 天故障？」。
+          现 Alert 带上：①判死阈值（秒）②最后心跳绝对时刻 ③已静默时长（相对）。
+          注：后端区分优雅 markOffline 与 stale sweep 两条路径，但 GET /executors/:id
+          响应里**没有**区分字段——不编造字段，只呈现确实可得的三个事实，由用户推断；
+          后端缺口见交付报告。 */}
       {!isOnline && (
         <Alert
           type="warning"
           showIcon
-          message={t('executorDetail.offline.alert')}
+          title={t('executorDetail.offline.alert')}
+          description={
+            <Space orientation="vertical" size={2} style={{ fontSize: 12 }}>
+              <div>
+                {t('executorDetail.offline.threshold', {
+                  seconds: Math.round(heartbeatTimeoutMs / 1000),
+                })}
+              </div>
+              {executor.lastHeartbeat && (
+                <div>
+                  {t('executorDetail.offline.lastSeen', {
+                    absolute: heartbeatAbsolute,
+                    silent: heartbeatText,
+                  })}
+                </div>
+              )}
+            </Space>
+          }
           style={{ marginTop: 16 }}
         />
       )}
@@ -551,7 +586,14 @@ export default function ExecutorDetailPage() {
           <Card style={{ height: '100%' }}>
             <Statistic title={t('executorDetail.currentRunning')} value={runningCount} suffix={`/ ${executor.maxConcurrentTasks ?? '∞'}`} />
             {maxConcurrent > 0 && (
-              <Progress percent={runningPercent} showInfo={false} strokeColor={usageColor(token, runningPercent, 70, 90)} style={{ marginTop: 8 }} />
+              <>
+                <Progress percent={runningPercent} strokeColor={usageColor(token, runningPercent, 70, 90)} style={{ marginTop: 8 }} />
+                {isSaturated && (
+                  <Text type="warning" style={{ fontSize: 12, display: 'block', marginTop: 8 }}>
+                    {t('executorDetail.saturated')}
+                  </Text>
+                )}
+              </>
             )}
             {reportedCount != null && reportedCount !== runningCount && (
               <Text type="warning" style={{ fontSize: 12, display: 'block', marginTop: 8 }}>
