@@ -1316,9 +1316,8 @@ describe("SchedulerService", () => {
         .mockResolvedValueOnce([]) // RUNNING scan
         .mockResolvedValueOnce([]); // PENDING sweep
       // timeout=10s → per-task threshold max(20s, 60s) = 60s
-      taskRepo.find.mockResolvedValue([
-        makeTask({ id: "task-1", timeout: 10 }),
-      ]);
+      // E-P1-R1: staleScanWindowMs 改 findOne(order by timeout ASC LIMIT 1)。
+      taskRepo.findOne.mockResolvedValue({ id: "task-1", timeout: 10 });
 
       const before = Date.now();
       await service.recoverStaleExecutions();
@@ -1336,10 +1335,8 @@ describe("SchedulerService", () => {
     it("N5: keeps the 1h fallback window when no task has a timeout", async () => {
       await makeLeader();
       execRepo.find.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
-      taskRepo.find.mockResolvedValue([
-        makeTask({ id: "task-1", timeout: 0 }),
-        makeTask({ id: "task-2", timeout: 0 }),
-      ]);
+      // timeout=0（不限时）被 MoreThan(0) 排除 → findOne 返回 null → 1h 兜底。
+      taskRepo.findOne.mockResolvedValue(null);
 
       const before = Date.now();
       await service.recoverStaleExecutions();
@@ -1365,9 +1362,7 @@ describe("SchedulerService", () => {
       execRepo.find
         .mockResolvedValueOnce([staleExec])
         .mockResolvedValueOnce([]);
-      taskRepo.find.mockResolvedValue([
-        makeTask({ id: "task-1", timeout: 10 }),
-      ]);
+      taskRepo.findOne.mockResolvedValue({ id: "task-1", timeout: 10 });
       taskRepo.findBy.mockResolvedValue([
         makeTask({ id: "task-1", timeout: 10 }),
       ]);
