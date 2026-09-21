@@ -1565,6 +1565,13 @@ export default {
   'appDeploy.mode.once': '单次执行',
   'appDeploy.mode.daemon': '常驻进程',
   'appDeploy.mode.scheduled': '定时任务',
+  // 生产反馈：三个模式此前没有任何说明，用户看不出区别（且当时"单次/常驻"
+  // 实现上确实完全等价，见 executor-node deploy.ts 的 runMode 注释）。
+  'appDeploy.mode.hint':
+    '单次执行：启动进程，退出后不重启；常驻进程：异常退出自动重启（最多 10 次，退避至 60 秒）；定时任务：只下发代码不启动，由「任务调度」里的任务触发。',
+  'appDeploy.mode.hintDaemon': '异常退出会自动重启（最多 10 次）；正常退出（退出码 0）不重启。',
+  'appDeploy.mode.hintScheduled': '只下发代码，不启动进程——请在「任务调度」里建任务来触发运行。',
+  'appDeploy.redeploy.reuseHint': '重新部署会复用本设备的这条记录（不会新增记录）。',
   'appDeploy.executor.availableHeader': '可用执行器 ({{count}} 台，已过滤占用中)',
   'appDeploy.executor.overview': '可用执行器概况（已过滤占用中）',
   'appDeploy.executor.more': '...还有 {{count}} 台',
