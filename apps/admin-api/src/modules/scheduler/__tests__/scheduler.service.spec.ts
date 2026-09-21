@@ -6,6 +6,7 @@ import {
   computeTriggerDedupTtlMs,
   TRIGGER_DEDUP_MIN_TTL_MS,
   TRIGGER_DEDUP_JITTER_BUFFER_MS,
+  ACTIVE_TASK_PAGE_SIZE,
 } from "../scheduler.service";
 import { SchedulerMetricsService } from "../scheduler-metrics.service";
 import {
@@ -590,6 +591,62 @@ describe("SchedulerService", () => {
       taskRepo.find.mockResolvedValue([task]);
       await service.checkMisfires();
       expect(queue.add).not.toHaveBeenCalled();
+    });
+
+    // E-P2-R3: 旧 checkMisfires 单次 find take:10000——active 超万级时第二页
+    // 任务根本不被读取，misfire 补偿静默漏行。本用例第一页给满 ACTIVE_TASK_PAGE_SIZE
+    // 行、第二页再给一行，断言 find 按 id keyset 推进被再次调用（旧实现只调一次
+    // find，第二页永不到达 → 红）。
+    it("E-P2-R3: paginates past the first page instead of taking a fixed 10000 rows", async () => {
+      await makeLeader();
+      // makeLeader 晋升会触发 NETOPT-3③ 初次 misfire 检查（一次 find），清掉以
+      // 只统计本用例显式调用 checkMisfires 的分页推进。
+      taskRepo.find.mockClear();
+      let page = 0;
+      taskRepo.find.mockImplementation(async () => {
+        page += 1;
+        if (page === 1) {
+          return Array.from({ length: ACTIVE_TASK_PAGE_SIZE }, () => ({
+            id: "p1",
+            lastTriggerTime: null,
+          }));
+        }
+        // 第二页：一行无 lastTriggerTime 的任务（仅验证分页推进，不触发入队）
+        return [{ id: "p2", lastTriggerTime: null }];
+      });
+
+      await service.checkMisfires();
+
+      expect(taskRepo.find).toHaveBeenCalledTimes(2);
+      const secondArgs = taskRepo.find.mock.calls[1][0] as {
+        order: { id: "ASC" };
+        take: number;
+      };
+      expect(secondArgs.order).toEqual({ id: "ASC" });
+      expect(secondArgs.take).toBe(ACTIVE_TASK_PAGE_SIZE);
+    });
+  });
+
+  describe("staleScanWindowMs (E-P1-R1)", () => {
+    // E-P1-R1: 旧实现把全部 active 任务的 id/timeout 拉进内存取 min；现改为按
+    // timeout 升序取第一行（staleThresholdMs 对 timeout 单调非降）。
+    it("picks the shortest-timeout active task via ORDER BY timeout ASC LIMIT 1", async () => {
+      taskRepo.findOne.mockResolvedValue({ id: "t-short", timeout: 30 });
+      const windowMs = await (service as any).staleScanWindowMs();
+      // max(30*2,60)*1000 = 60_000
+      expect(windowMs).toBe(60_000);
+      expect(taskRepo.findOne).toHaveBeenCalledWith(
+        expect.objectContaining({
+          order: { timeout: "ASC" },
+          select: ["id", "timeout"],
+        }),
+      );
+    });
+
+    it("falls back to the 1h window when no active task has a positive timeout", async () => {
+      taskRepo.findOne.mockResolvedValue(null);
+      const windowMs = await (service as any).staleScanWindowMs();
+      expect(windowMs).toBe(60 * 60 * 1000);
     });
   });
 

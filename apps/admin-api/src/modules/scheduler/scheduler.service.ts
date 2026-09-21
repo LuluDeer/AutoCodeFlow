@@ -6,7 +6,7 @@ import {
   Optional,
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { DataSource, In, LessThan, Repository } from "typeorm";
+import { DataSource, In, LessThan, MoreThan, Repository } from "typeorm";
 import { InjectQueue } from "@nestjs/bullmq";
 import { Queue } from "bullmq";
 import { ConfigService } from "@nestjs/config";
@@ -88,6 +88,9 @@ export const TRIGGER_DEDUP_JITTER_BUFFER_MS = 500;
  * N5: stale 扫描的固定兜底窗口——timeout=0（不限时）任务的最短回收延迟。
  */
 export const STALE_SCAN_FALLBACK_MS = 60 * 60 * 1000;
+
+/** E-P1-R1/E-P2-R3: active-task keyset 分页页大小（按 id 升序推进）。 */
+export const ACTIVE_TASK_PAGE_SIZE = 1000;
 
 /**
  * CONSISTENCY-02: 执行器活性探测的绝对兜底参数。当候选 stale 行所属执行器在线
@@ -378,33 +381,41 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
       this.logger.debug("checkMisfires skipped: not the scheduler leader");
       return;
     }
-    const tasks = await this.taskRepo.find({
-      where: { status: TaskStatus.ACTIVE },
-      // O-4: bound the active-task scan.
-      take: 10000,
-    });
     const now = Date.now();
     // P2-8：先收集命中 FIRE_ONCE 补偿的任务，再 Promise.allSettled 并发入队。
     // 每任务使用独立 Redis 锁 key / DB claim（互不依赖），并发安全；单个任务
     // 入队失败不再中断其余任务的补偿（原串行循环中 enqueue 抛错会中断整轮）。
     const misfired: Task[] = [];
-    for (const task of tasks) {
-      if (!task.lastTriggerTime) continue;
-      const gap = now - task.lastTriggerTime.getTime();
-      const threshold =
-        task.triggerType === TaskTriggerType.FIXED_RATE
-          ? (task.fixedRate || 60) * 2000
-          : 2 * 60 * 1000;
-      if (gap > threshold) {
-        if (task.misfireStrategy === MisfireStrategy.FIRE_ONCE) {
-          this.logger.warn(`Misfire detected for "${task.name}", firing once`);
-          misfired.push(task);
-        } else {
-          this.logger.warn(
-            `Misfire detected for "${task.name}", strategy=IGNORE`,
-          );
+    // E-P2-R3: 旧 take:10000 截断——active 超万级时 misfire 补偿漏行。改 id
+    // keyset 分页循环覆盖全部 active 任务（不截断），每页有界、主键范围扫描。
+    let idCursor = "";
+    for (;;) {
+      const tasks = await this.taskRepo.find({
+        where: { status: TaskStatus.ACTIVE, id: MoreThan(idCursor) },
+        order: { id: "ASC" },
+        take: ACTIVE_TASK_PAGE_SIZE,
+      });
+      if (tasks.length === 0) break;
+      for (const task of tasks) {
+        if (!task.lastTriggerTime) continue;
+        const gap = now - task.lastTriggerTime.getTime();
+        const threshold =
+          task.triggerType === TaskTriggerType.FIXED_RATE
+            ? (task.fixedRate || 60) * 2000
+            : 2 * 60 * 1000;
+        if (gap > threshold) {
+          if (task.misfireStrategy === MisfireStrategy.FIRE_ONCE) {
+            this.logger.warn(`Misfire detected for "${task.name}", firing once`);
+            misfired.push(task);
+          } else {
+            this.logger.warn(
+              `Misfire detected for "${task.name}", strategy=IGNORE`,
+            );
+          }
         }
       }
+      if (tasks.length < ACTIVE_TASK_PAGE_SIZE) break;
+      idCursor = tasks[tasks.length - 1].id;
     }
     if (misfired.length > 0) {
       await Promise.allSettled(
@@ -879,20 +890,20 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
    * 轻量查询仅取 id/timeout 两列。
    */
   private async staleScanWindowMs(): Promise<number> {
-    // 注意：此查询**不设 take**——窗口 = 所有 active 任务中最短阈值，截断会
-    // 漏掉最关键的短 timeout 任务，使 cutoff 偏大、僵尸行等待更久。select 已
-    // 只取 id/timeout 两列（status 索引上的轻量扫描），每 2 分钟一次可接受。
-    const tasks = await this.taskRepo.find({
-      where: { status: TaskStatus.ACTIVE },
+    // E-P1-R1: 窗口只需所有 active 任务中的最短阈值。staleThresholdMs(timeout)
+    // = max(timeout*2,60)*1000 对 timeout 单调非降，故取 timeout>0 中 timeout
+    // 最小的一行（ORDER BY timeout ASC LIMIT 1）即可——这正面满足旧注释「不能
+    // take 截断否则漏掉最短 timeout」的约束：我们要的就是最短那一个，不再把
+    // 全表 id/timeout 拉进内存。timeout=0（不限时）不参与收缩，仍由 1h 兜底覆盖。
+    const shortest = await this.taskRepo.findOne({
+      where: { status: TaskStatus.ACTIVE, timeout: MoreThan(0) },
       select: ["id", "timeout"],
+      order: { timeout: "ASC" },
     });
-    let shortestMs = Number.POSITIVE_INFINITY;
-    for (const t of tasks ?? []) {
-      if (t.timeout && t.timeout > 0) {
-        shortestMs = Math.min(shortestMs, staleThresholdMs(t.timeout));
-      }
+    if (!shortest || !shortest.timeout || shortest.timeout <= 0) {
+      return STALE_SCAN_FALLBACK_MS;
     }
-    if (!Number.isFinite(shortestMs)) return STALE_SCAN_FALLBACK_MS;
+    const shortestMs = staleThresholdMs(shortest.timeout);
     // 上限仍为 1h 兜底：超长 timeout 任务的行会被扫描到但被逐行阈值过滤
     return Math.min(shortestMs, STALE_SCAN_FALLBACK_MS);
   }
@@ -916,17 +927,25 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
 
   /** reload 的实际扫描体（抽出以便 tick 计时只包住扫描工作本身） */
   private async reloadActiveTasks(): Promise<void> {
-    // O-4 修正：活跃集合的 id-only 扫描**不做 take 截断**——一旦截断，超过
-    // 上限的已注册任务会因不在 activeIds 里被下方的清理循环误 stop，调度静默
-    // 丢失。取列收窄（仅 id）已把每分钟载荷从全行降到 id 列表；完整行只对
-    // 「尚未注册的新任务」按 id 定向补拉（新任务通常为 0，多数 tick 只做一次
-    // 轻量 id 扫描 + 空补拉短路）。
-    const activeIds = (
-      await this.taskRepo.find({
-        where: { status: TaskStatus.ACTIVE },
+    // O-4 修正：活跃集合的 id-only 扫描**仍必须收齐全部 active id**——一旦截断，
+    // 超过上限的已注册任务会因不在 activeIds 里被下方的清理循环误 stop，调度静默
+    // 丢失。E-P1-R1：把单次无界 find 改为按 id 升序 keyset 分页循环拉全量——
+    // 语义上与旧版等价（仍收齐全部 id），只是每批有界、用主键范围扫描，避免万级
+    // active 单次大结果集。完整行只对「尚未注册的新任务」按 id 定向补拉。
+    const activeIds: string[] = [];
+    let idCursor = "";
+    for (;;) {
+      const rows = await this.taskRepo.find({
+        where: { status: TaskStatus.ACTIVE, id: MoreThan(idCursor) },
         select: ["id"],
-      })
-    ).map((t) => t.id);
+        order: { id: "ASC" },
+        take: ACTIVE_TASK_PAGE_SIZE,
+      });
+      if (rows.length === 0) break;
+      activeIds.push(...rows.map((t) => t.id));
+      if (rows.length < ACTIVE_TASK_PAGE_SIZE) break;
+      idCursor = rows[rows.length - 1].id;
+    }
     const activeSet = new Set(activeIds);
 
     // BUG-01: Stop and clean up timers for tasks that are no longer active
