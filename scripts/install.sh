@@ -5,6 +5,7 @@
 # AutoCodeFlow Executor 一键安装脚本
 # 用法: curl -fsSL https://<admin>/install.sh | bash -s -- --api-url http://admin:3105 --secret mysecret
 # 或本地运行: bash install.sh --api-url http://... --secret ...
+# NAT/内网（中台无法主动连本机）: 追加 --pull（执行器主动回连中台取任务）
 set -euo pipefail
 
 # ── 平台探测（R-02 / windows-findings W-01：本脚本仅支持 Linux）──────────────
@@ -26,6 +27,11 @@ EXECUTOR_SECRET=""
 APP_NAME="executor-node-$(hostname | tr '.' '-')"
 PORT="8002"
 RUNTIME="node"        # node | python | universal
+# P0-9（UX-AUDIT-2026-09-21）：网络模式。push（默认，中台主动连执行器）或
+# pull（执行器主动长轮询中台取任务，ADR-016）——**NAT/内网后唯一可用**。
+# 此前脚本没有这个开关，内网机器只能手改 .env，而"官方一键安装"装出来的
+# 执行器永远是 push：注册成功、列表显示在线，但中台入站 POST 永远到不了它。
+PULL_MODE="false"
 WORK_DIR="/var/lib/autoflow/tasks"
 INSTALL_DIR="/opt/autoflow-executor"
 SERVICE_NAME="autoflow-executor"
@@ -45,6 +51,7 @@ while [[ $# -gt 0 ]]; do
     --runtime)   RUNTIME="$2";         shift 2 ;;
     --work-dir)  WORK_DIR="$2";        shift 2 ;;
     --install-dir) INSTALL_DIR="$2";  shift 2 ;;
+    --pull)      PULL_MODE="true";     shift 1 ;;
     *) echo "Unknown option: $1"; exit 1 ;;
   esac
 done
@@ -249,6 +256,9 @@ LOG_RETENTION_DAYS=7
 # E-09/E-25（DEEP_REVIEW 0ef3bbe）：fail-closed——token 未配置时拒绝
 # 所有未认证请求（503），而非 dev-mode 静默放行。与容器部署基线对齐。
 REQUIRE_TOKEN=true
+# P0-9：回连模式开关（--pull 时为 true）。push 模式显式写 false 而非省略——
+# 与向导展示的环境变量块保持一致，且语义明确。
+EXECUTOR_PULL_MODE=${PULL_MODE}
 EOF
 # 权限收紧：.env 含共享密钥，不可被同机其他用户读取（systemd 以
 # EXECUTOR_USER 运行，root 安装时需要让该用户可读）。

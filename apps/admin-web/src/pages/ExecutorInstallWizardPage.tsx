@@ -16,6 +16,7 @@ import {
   Col,
   Input,
   theme,
+  Radio,
 } from 'antd';
 import PageHeader from '../components/PageHeader';
 import StateError from '../components/StateError';
@@ -79,6 +80,20 @@ export const INSTALL_ENV_KEYS = [
   'EXECUTOR_SHARED_TOKEN',
   'EXECUTOR_ADDRESS_PUBLIC',
   'APP_NAME',
+  /**
+   * P0-9（UX-AUDIT-2026-09-21）：回连模式开关。
+   *
+   * 这是**内网 NAT 场景唯一可用**的接入方式（ADR-016：执行器主动长轮询取任务），
+   * 而向导此前只产出 push-only 的配置——`INSTALL_ENV_KEYS` 与 `scripts/install.sh`
+   * 的 pull 引用数都是 0，而 executor.service.ts 有 51 处。后果是内网机器按"官方
+   * 向导"装完：注册成功、列表显示在线、第 5 步打绿勾，但中台入站 POST 永远到不了
+   * 它——任务派过去永不执行，只能等 stale sweep 判失败。
+   * 即：照着官方引导做，得到一个**必然失败的拓扑**。
+   *
+   * 键名必须是执行器真正读取的那个（config.ts 的 `process.env.EXECUTOR_PULL_MODE`），
+   * 由 install-wizard-env-vars.test.ts 与执行器源码交叉校验。
+   */
+  'EXECUTOR_PULL_MODE',
 ] as const;
 
 /**
@@ -185,6 +200,20 @@ export default function ExecutorInstallWizardPage() {
   const [polling, setPolling] = useState(false);
   const [foundExecutor, setFoundExecutor] = useState<Executor | null>(null);
   const [pollTimedOut, setPollTimedOut] = useState(false);
+  /**
+   * P1-22（UX-AUDIT-2026-09-21）：基线快照获取失败。
+   *
+   * 拿不到基线就不能进第 5 步——否则"只认本次新出现的执行器"这条判据退化为
+   * "任何在线执行器都算新"，在已有执行器的机队里会误报成功并印出别的机器。
+   */
+  const [baselineError, setBaselineError] = useState(false);
+  /**
+   * P0-9（UX-AUDIT-2026-09-21）：网络模式。
+   *
+   * push（默认，中台能主动访问执行器）vs pull（执行器在内网/NAT 后，主动回连）。
+   * 这不是可选优化——**NAT 场景下 push 必然失败**，而向导此前只教学 push。
+   */
+  const [networkMode, setNetworkMode] = useState<'push' | 'pull'>('push');
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -336,17 +365,29 @@ export default function ExecutorInstallWizardPage() {
 
   const handleGoToStep4 = async () => {
     const now = Date.now();
-    // 基线快照：进入本步骤**之前**已存在的执行器 id。取不到（接口失败）时退化为
-    // 空集合——即"任何在线执行器都算新"，与修复前行为一致，不会把用户卡在这一步。
-    let knownIds: ReadonlySet<string> = new Set<string>();
+    // P1-22（UX-AUDIT-2026-09-21）：基线快照**必须**取到，否则第 5 步的判据废掉。
+    //
+    // 本步骤的存在意义就是"只有**本次新出现的**在线执行器才算装成功"
+    // （findNewlyOnlineExecutor 的注释自承「把已有执行器误判成新装的」这个缺陷
+    // 此前没有任何守卫）。而旧实现取不到基线时退化为空集合——空集合意味着
+    // "任何在线执行器都是新的"：在已有执行器的机队里，GET /executors 一次瞬时
+    // 失败就会让第 5 步在 5s 内打绿勾，并**印出另一台机器的名字和地址**。
+    //
+    // 而"网络不健康"恰恰是安装最可能失败的条件——**误报成功比 60s 超时更糟**：
+    // 用户拿着一个假的成功结论离开，真正的执行器可能根本没连上。
+    //
+    // 现改为：失败即**不推进**，显示错误 + 重试。宁可让用户重试一次，也不能给
+    // 一个无法与真实成功区分的假绿。
     try {
       const executors = await executorsApi.list();
-      knownIds = new Set(executors.map((e) => e.id));
-    } catch {
-      // 保持空集合（宽松兜底），下一步的轮询自身还会再试。
+      const knownIds: ReadonlySet<string> = new Set(executors.map((e) => e.id));
+      setBaselineError(false);
+      setCurrentStep(4);
+      startPolling(now, knownIds);
+    } catch (err: unknown) {
+      setBaselineError(true);
+      message.error(getErrMsg(err, t('install.baselineFail')));
     }
-    setCurrentStep(4);
-    startPolling(now, knownIds);
   };
 
   const handleReset = () => {
@@ -375,8 +416,18 @@ export default function ExecutorInstallWizardPage() {
     EXECUTOR_SHARED_TOKEN: sharedToken ?? '<your-executor-shared-token>',
     EXECUTOR_ADDRESS_PUBLIC: '<host-or-ip>:<port>',
     APP_NAME: 'my-executor-1',
+    // P0-9：仅在回连模式下写这一行——push 模式用户抄了 `EXECUTOR_PULL_MODE=false`
+    // 是无害但多余的噪声，而"少抄一行"正是 pull 用户会踩的坑，故 pull 时必写。
+    EXECUTOR_PULL_MODE: networkMode === 'pull' ? 'true' : 'false',
   };
-  const envVarBlock = INSTALL_ENV_KEYS.map((k) => `${k}=${envVarValues[k]}`).join('\n');
+  // pull 模式下 ADDRESS_PUBLIC 不再需要（中台不会主动连它）——省略以免用户
+  // 误以为仍需公网可达地址。
+  const envKeysForMode = (
+    networkMode === 'pull'
+      ? INSTALL_ENV_KEYS.filter((k) => k !== 'EXECUTOR_ADDRESS_PUBLIC')
+      : INSTALL_ENV_KEYS.filter((k) => k !== 'EXECUTOR_PULL_MODE')
+  ) as readonly (typeof INSTALL_ENV_KEYS)[number][];
+  const envVarBlock = envKeysForMode.map((k) => `${k}=${envVarValues[k]}`).join('\n');
 
   return (
     <div>
@@ -557,6 +608,16 @@ export default function ExecutorInstallWizardPage() {
           </Spin>
 
           <Divider />
+          {/* P1-22（UX 审计）：基线拉取失败时在此显式提示——不推进第 5 步
+              （拿不到基线就会把已有执行器误判成"本次新装"并打绿勾）。 */}
+          {baselineError && (
+            <Alert
+              type="error"
+              showIcon
+              style={{ marginBottom: 16 }}
+              title={t('install.baselineFail')}
+            />
+          )}
           <Space>
             <Button onClick={() => setCurrentStep(0)}>{t('install.prev')}</Button>
             <Button type="primary" disabled={!matchedPackage} onClick={handleStep1Next}>
@@ -688,6 +749,34 @@ export default function ExecutorInstallWizardPage() {
 
             <div>
               <Text strong style={{ display: 'block', marginBottom: 8 }}>{t('install.envLabel')}</Text>
+              {/* P0-9（UX 审计）：网络模式选择。放在环境变量块**之前**——它决定
+                  下面那几行怎么写。默认 push（中台能主动访问执行器），内网/NAT
+                  后的机器必须选回连（pull），否则中台入站请求永远到不了它：
+                  注册会成功、列表显示在线、第 5 步打绿勾，但任务永不执行。 */}
+              <Text strong style={{ display: 'block', marginBottom: 6 }}>{t('install.networkMode')}</Text>
+              <Radio.Group
+                value={networkMode}
+                onChange={(e) => setNetworkMode(e.target.value as 'push' | 'pull')}
+                style={{ marginBottom: 8 }}
+                data-testid="install-network-mode"
+              >
+                <Radio.Button value="push">{t('install.networkMode.push')}</Radio.Button>
+                <Radio.Button value="pull">{t('install.networkMode.pull')}</Radio.Button>
+              </Radio.Group>
+              <Paragraph type="secondary" style={{ marginBottom: 8, fontSize: 13 }}>
+                {networkMode === 'pull'
+                  ? t('install.networkMode.pullDesc')
+                  : t('install.networkMode.pushDesc')}
+              </Paragraph>
+              {networkMode === 'pull' && (
+                <Alert
+                  type="info"
+                  showIcon
+                  style={{ marginBottom: 8 }}
+                  title={t('install.networkMode.pullNoticeTitle')}
+                  description={t('install.networkMode.pullNoticeDesc')}
+                />
+              )}
               <Paragraph type="secondary" style={{ marginBottom: 8, fontSize: 13 }}>
                 {t('install.envDesc')}
               </Paragraph>

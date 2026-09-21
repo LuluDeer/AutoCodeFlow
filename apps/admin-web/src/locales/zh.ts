@@ -1356,8 +1356,20 @@ export default {
   'install.envLabel': '环境变量配置参考',
   'install.envDesc': '安装命令会自动配置以下环境变量。如需手动配置或调试，请确保共享 Token 字段名使用 EXECUTOR_SHARED_TOKEN，并按部署网络填写可回调地址：',
   'install.envBlockLabel': '环境变量',
+  // P0-9（UX 审计）：网络模式。内网/NAT 后的机器**必须**选回连——向导此前只教学
+  // push，照着做会得到一个"注册成功、显示在线、但中台请求永远到不了"的拓扑。
+  'install.networkMode': '网络模式',
+  'install.networkMode.push': '中台主动连接（默认）',
+  'install.networkMode.pull': '执行器回连中台（NAT/内网）',
+  'install.networkMode.pushDesc': '中台能直接访问这台执行器的地址。需要填写一个中台可达的「可回调地址」。',
+  'install.networkMode.pullDesc': '执行器主动长轮询中台取任务，无需中台可达地址——适用于内网、NAT 后、无公网 IP 的机器。',
+  'install.networkMode.pullNoticeTitle': '回连模式说明',
+  'install.networkMode.pullNoticeDesc': '选回连模式后，环境变量块会写入 EXECUTOR_PULL_MODE=true。请务必先执行下方命令再启动执行器；地址字段不再需要（中台不会主动连接它）。',
+  'install.baselineFail': '无法获取当前执行器列表，不能安全地判断"哪台是本次新装的"。请检查网络后重试。',
   'install.noteTitle': '注意',
-  'install.noteDesc': '请确保目标服务器已安装 Node.js 16+（npx 可用），且网络可以访问本平台的 API 地址。',
+  // P2（UX 审计）：原文案与 install.sh 三处矛盾——脚本要求 Node 24（NODE_VERSION
+  // 默认值），安装命令是 curl|bash 而非 npx，且脚本在非 Linux 平台直接退出。
+  'install.noteDesc': '安装脚本面向 Linux（非 Linux 会直接退出）。需要已安装 Node.js 24+ 与 curl；命令以 curl … | bash 方式执行，不依赖 npx。',
   'install.reinstall': '重新安装',
   'install.nextAwait': '下一步：等待执行器上线',
   'install.step5Title': '等待执行器上线',
