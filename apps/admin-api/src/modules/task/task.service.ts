@@ -794,11 +794,13 @@ export class TaskService {
 
   /** TASK-SCOPE-01: 读配置判定执行类写面是否收紧到属主口径。 */ private isOperateScopeOwner(): boolean {
     try {
+      // 审计 E-P1-S1：configuration.ts 对未设置 env 现在默认返回 "owner"，
+      // 故未配置即收紧；仅运维显式 TASK_OPERATE_SCOPE=any 才走宽松档。
       return this.configService?.get<string>("taskScope.operate") === "owner";
     } catch {
-      // 配置读取异常按宽松处理（与 ADR-013 既有语义一致，绝不因配置抖动而
-      // 意外收紧、把正常用户挡在门外）。
-      return false;
+      // 配置读取异常按收紧处理（安全缺省，与翻转后的默认一致）——配置抖动
+      // 不再 fail-open 成「任意登录用户可操作任意任务」。
+      return true;
     }
   }
 
