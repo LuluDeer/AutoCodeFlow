@@ -231,7 +231,7 @@ export default {
   'taskList.action.clone': 'Clone (copy all config to create a copy)',
   'taskList.action.trigger': 'Run now',
   'taskList.action.delete': 'Delete',
-  'taskList.deleteConfirm': 'Delete this task?',
+  'taskList.adminOnly': 'Admin only',  'taskList.deleteConfirm': 'Delete this task?',
   'taskList.deleteForceTerminateDesc': 'Running executions will be forcefully terminated.',
   'taskList.ok': 'Delete',
 

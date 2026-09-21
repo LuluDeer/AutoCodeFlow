@@ -34,6 +34,7 @@ import {
 } from '@ant-design/icons';
 import { useNavigate, useSearchParams, useParams, useBlocker } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
+import { useAuthStore, isAdminUser } from '../store/auth';
 import { configApi } from '../api/config';
 import { tasksApi } from '../api/tasks';
 import { queryKeys } from '../api/queries';
@@ -170,6 +171,8 @@ const SECTION_IDS = ['sec-basic', 'sec-trigger', 'sec-executor', 'sec-params', '
 export default function TaskFormPage() {
   const { t } = useTranslation();
   const nav = useNavigate();
+  // P1-5：任务写操作仅管理员可用。
+  const isAdmin = isAdminUser(useAuthStore((s) => s.user));
   // NETOPT-E P2-3: 保存为模板是 task-templates 写——不失效则列表页 staleTime
   // 30s 内跳转看不到新模板（与 TaskDetailPage 的 NETOPT-D P2-D6 修复同型；
   // 两个"存模板"入口必须对齐失效图）。
@@ -1790,10 +1793,12 @@ export default function TaskFormPage() {
                   {t('taskForm.saveAsTemplate')}
                 </Button>
               )}
-              <Button type="primary" onClick={handleSubmit} loading={saving}
+              <Tooltip title={isAdmin ? undefined : t('taskList.adminOnly')}>
+              <Button type="primary" onClick={handleSubmit} loading={saving} disabled={!isAdmin}
                 icon={<ThunderboltOutlined />}>
                 {isEdit ? t('taskForm.submit.saveChanges') : t('taskForm.submit.create')}
               </Button>
+              </Tooltip>
             </Space>
           </div>
         </div>
