@@ -421,6 +421,56 @@ export class ApplicationService implements OnModuleInit {
     path.join(process.cwd(), "uploads", "packages"),
   );
 
+  /**
+   * P0（UX-AUDIT-2026-09-21 §P0-3）：删除前的**影响面预览**。
+   *
+   * 此前确认框只说"删除后无法恢复"，而实际后果远不止删掉这一条记录：
+   *   ① 部署行被 `AppDeployment` 的 onDelete: CASCADE 静默删除（回滚点消失）；
+   *   ② 本地打包 zip 被物理 unlink（不可恢复）；
+   *   ③ **引用它的任务不会消失**，只是 applicationId 被 `onDelete: "SET NULL"`
+   *      置空——任务照旧按 cron 调度，但代码来源已断，此后每次执行都失败，
+   *      而排查入口（应用详情页）已经不存在了。
+   *
+   * ③ 是用户完全无从知晓的那一条，也是本接口存在的理由：让确认框能如实列出
+   * "N 个任务将失去代码来源"。
+   */
+  async describeRemovalImpact(id: string): Promise<{
+    applicationName: string;
+    tasksLosingSource: number;
+    deploymentCount: number;
+    packageFileWillBeDeleted: boolean;
+  }> {
+    const app = await this.findById(id);
+    const deployments = await this.findDeploymentsForRemovalFanout(id);
+    // 任务数走 TaskService（弱引用，无 ORM 关系可直接 count）；TaskService 未
+    // 接线时保守返回 0 而不是抛错——预览失败不该让"删除"整条路走不通。
+    let tasksLosingSource = 0;
+    if (this._taskService) {
+      try {
+        const result = await this._taskService.findAll({
+          applicationId: id,
+        } as never);
+        const items = (result?.items ?? result) as unknown[];
+        tasksLosingSource = Array.isArray(items) ? items.length : 0;
+      } catch (err: unknown) {
+        this.logger.warn(
+          `Removal impact: task count unavailable for application ${id}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
+    return {
+      applicationName: app.name,
+      tasksLosingSource,
+      deploymentCount: deployments.length,
+      // 只对"本地托管的包"为真——远程/用户自带 URL 不会被 unlink
+      packageFileWillBeDeleted: Boolean(
+        app.packageUrl && this.resolveLocalPackagePath(app.packageUrl),
+      ),
+    };
+  }
+
   async remove(
     id: string,
     user?: { id: number; role: UserRole } | null,

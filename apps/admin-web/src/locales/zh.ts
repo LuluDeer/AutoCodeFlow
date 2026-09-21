@@ -100,6 +100,14 @@ export default {
   'nav.theme.dark.aria': '切换主题（当前暗色，点击切换为跟随系统）',
   'nav.theme.system': '跟随系统',
   'nav.theme.system.aria': '切换主题（当前跟随系统，点击切换到亮色）',
+  // P0-7（UX 审计）：i18n 基础设施早就完备（setLanguage / availableLanguages /
+  // en 按需分包），但**界面上没有任何入口**——detectLanguage 只读 localStorage，
+  // 而没有任何 UI 能写入它，于是整套中英双语对用户不可达。此处补入口文案。
+  'nav.lang.tooltip': '界面语言：{{label}}（点击切换）',
+  'nav.lang.zh': '中文',
+  'nav.lang.en': 'English',
+  'nav.lang.switch.aria': '切换界面语言（当前{{label}}）',
+  'nav.lang.switched': '界面语言已切换为 {{label}}',
   'nav.search.aria': '全局搜索',
   'nav.help.aria': '帮助文档',
   'nav.notify.aria': '通知',
@@ -368,6 +376,15 @@ export default {
   'appList.deleteDisableHint': '仅管理员可删除应用',
   'appList.deleteConfirm': '确认删除此应用？',
   'appList.deleteConfirmDesc': '删除后无法恢复，请确认。',
+  // P0-3（UX 审计）：删除的真实后果远超"少一条记录"，其中**引用它的任务**最危险
+  // ——任务不会消失，只是 applicationId 被置空，于是照旧按计划调度却每次都失败，
+  // 而排查入口（应用详情页）已不存在。确认框必须把这条说出来。
+  'appList.deleteImpact.tasks': '{{count}} 个引用此应用的任务将**失去代码来源**——它们不会消失，仍会按计划调度，但此后每次执行都会失败。',
+  'appList.deleteImpact.deployments': '{{count}} 条部署记录（含回滚点）将被永久删除。',
+  'appList.deleteImpact.package': '已上传的应用包文件将从服务器磁盘删除，不可恢复。',
+  'appList.deleteImpact.none': '当前没有任务或部署引用此应用，可以安全删除。',
+  'appList.deleteImpact.unavailable': '影响面未能获取（接口不可达）——请自行确认是否有任务引用此应用。',
+  'appList.deleteOk': '删除',
   'appList.status.active': '正常',
   'appList.status.deploying': '部署中',
   'appList.status.failed': '失败',
@@ -1679,6 +1696,14 @@ export default {
   'execDetail.failure.killedHint': '执行被管理员手动终止。',
   'execDetail.failure.unknown': '未知原因',
   'execDetail.failure.unknownHint': '查看错误信息和执行日志定位根因。',
+  // P0-4 / P0-8（UX 审计）：这两类此前都落「未知原因」，而它们各自 100% 已知、
+  // 且处置方向完全不同——标签与提示必须把它们分开，否则用户被引向错误方向。
+  'execDetail.failure.applicationMissing': '引用的应用已删除',
+  'execDetail.failure.applicationMissingHint':
+    '任务的代码来源指向一个已不存在的应用（应用被删除后，任务的 applicationId 会被置空引用）。任务仍会按计划调度但每次必然失败。请到任务表单重新指定代码来源，或停用该任务。',
+  'execDetail.failure.neverDispatched': '从未派发',
+  'execDetail.failure.neverDispatchedHint':
+    '本次执行从未被派发到执行器（排队超时，或目标执行器一直未取件）——它没有任何日志，因为它从未在任何机器上运行过。请检查目标执行器是否在线/被暂停/槽位长期占满。',
   // python_task_multiversion（AC-12a）：解释器不可用是**环境/配置类**失败
   // （非任务代码问题），色阶与其余 gold 类一致。提示刻意写明"不回退宿主
   // 解释器"——D14 明确要求失败而非降级，不说清会被当成 bug 上报。
@@ -1808,6 +1833,10 @@ export default {
   'taskForm.retryable.executorOffline': '执行器离线',
   'taskForm.retryable.executorRestart': '执行器重启',
   'taskForm.retryable.interpreterUnavailable': '解释器不可用',
+  // P0-4/P0-8（UX 审计）：两条新分类。application_missing 后端强制不重试，
+  // 标签写明"重试无效"以免用户勾了以为能救。
+  'taskForm.retryable.applicationMissing': '引用的应用已删除（重试无效）',
+  'taskForm.retryable.neverDispatched': '从未派发（队列超时/未取件）',
   'taskForm.retryable.unknown': '未知原因',
   'taskForm.priority.low': '低',
   'taskForm.priority.normal': '普通',

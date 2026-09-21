@@ -36,6 +36,11 @@ export const FAILURE_REASON_T_KEYS: Record<string, string> = {
   stale_recovered: 'execDetail.failure.staleRecovered',
   killed: 'execDetail.failure.killed',
   unknown: 'execDetail.failure.unknown',
+  // P0-4 / P0-8（UX-AUDIT-2026-09-21）：两条 admin 内部失败原因此前落 UNKNOWN，
+  // 用户只能看到「未知原因：去查看执行日志定位根因」。而两者都是 100% 已知、
+  // 且处置方向完全不同的场景——补标签是让它们可行动的前提。
+  application_missing: 'execDetail.failure.applicationMissing',
+  never_dispatched: 'execDetail.failure.neverDispatched',
 };
 
 /** 未知 token 的截断宽度（与历史 Dashboard Tag 宽度一致；仅作用于回退分支）。 */

@@ -732,7 +732,12 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
           endTime: finishedAt,
           errorMessage:
             "Execution was never dispatched by the queue (recovered by stale sweep)",
-          failureReason: ExecutionFailureReason.UNKNOWN,
+          // P0-8（UX-AUDIT-2026-09-21）：本桶只回收「从未被派发」的行（见上），
+          // 此前写泛化的 UNKNOWN，用户看到「未知原因：去查看执行日志定位根因」——
+          // 而这类执行**从未在任何机器上运行过，根本没有日志可看**，提示把排查
+          // 方向指向了一个不存在的东西。同一次 sweep 的 RUNNING 桶早已升级为
+          // STALE_RECOVERED，此处补齐以消除"同一类失败按桶分类不同"的不一致。
+          failureReason: ExecutionFailureReason.NEVER_DISPATCHED,
         },
         from: [ExecutionStatus.PENDING],
       });

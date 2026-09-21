@@ -128,6 +128,20 @@ export const applicationsApi = {
   update: (id: string, data: Partial<Application>) =>
     client.put<Application>(`/applications/${id}`, data),
   delete: (id: string) => client.delete<void>(`/applications/${id}`),
+  /**
+   * P0-3（UX-AUDIT-2026-09-21）：删除影响面预览。
+   *
+   * 删除应用的真实后果远超"少一条记录"：部署行 CASCADE 消失、本地包被物理删除、
+   * 而**引用它的任务不会消失**（applicationId 被 SET NULL）——任务照旧按计划调度
+   * 但代码来源已断，此后每次执行都失败，且排查入口（本页）已不存在。
+   */
+  removalImpact: (id: string) =>
+    client.get<{
+      applicationName: string;
+      tasksLosingSource: number;
+      deploymentCount: number;
+      packageFileWillBeDeleted: boolean;
+    }>(`/applications/${id}/removal-impact`),
   upload: (formData: FormData) =>
     client.post<Application>('/applications/upload', formData),
   webhook: (payload: unknown) => client.post<{ ok: boolean }>('/applications/webhook', payload),

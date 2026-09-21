@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   Table, Button, Space, Tag, Modal, Form, Input, Select, Upload, message,
-  Popconfirm, Typography, Tooltip, Badge, Radio, Empty, Switch,
+  Typography, Tooltip, Badge, Radio, Empty, Switch,
 } from 'antd';
 import {
   PlusOutlined, UploadOutlined, ReloadOutlined, GithubOutlined,
@@ -196,6 +196,58 @@ export default function ApplicationListPage() {
     } catch (err: unknown) {
       message.error(getErrMsg(err, t('appList.deleteFail')));
     }
+  };
+
+  /**
+   * P0-3（UX-AUDIT-2026-09-21）：删除前先取影响面，用 Modal 如实列出后果。
+   *
+   * 原实现是裸 Popconfirm（"确认删除此应用？/ 删除后无法恢复"），而真实后果有三条，
+   * 其中**最危险的一条用户完全不知道**：引用它的任务不会消失，只是 applicationId
+   * 被 `onDelete: "SET NULL"` 置空——任务照旧按 cron 调度，但代码来源已断，此后
+   * 每次执行都失败，而排查入口（应用详情页）已经不存在了。
+   *
+   * 影响面拉取失败**不阻断删除**（预览是增强，不是闸门）：降级为原有的通用确认，
+   * 并在文案里提示"影响面未能获取"。否则一次接口抖动会让管理员彻底删不掉东西。
+   */
+  const handleDeleteClick = async (app: Application) => {
+    let impact: Awaited<ReturnType<typeof applicationsApi.removalImpact>> | null = null;
+    try {
+      impact = await applicationsApi.removalImpact(app.id);
+    } catch {
+      impact = null;
+    }
+    const lines: string[] = [];
+    if (impact) {
+      if (impact.tasksLosingSource > 0) {
+        lines.push(t('appList.deleteImpact.tasks', { count: impact.tasksLosingSource }));
+      }
+      if (impact.deploymentCount > 0) {
+        lines.push(t('appList.deleteImpact.deployments', { count: impact.deploymentCount }));
+      }
+      if (impact.packageFileWillBeDeleted) {
+        lines.push(t('appList.deleteImpact.package'));
+      }
+      if (lines.length === 0) lines.push(t('appList.deleteImpact.none'));
+    } else {
+      lines.push(t('appList.deleteImpact.unavailable'));
+    }
+    Modal.confirm({
+      title: t('appList.deleteConfirm'),
+      content: (
+        <div>
+          <p style={{ marginBottom: 8 }}>{t('appList.deleteConfirmDesc')}</p>
+          <ul style={{ margin: 0, paddingLeft: 20 }}>
+            {lines.map((l, i) => (
+              <li key={i}>{l}</li>
+            ))}
+          </ul>
+        </div>
+      ),
+      okText: t('appList.deleteOk'),
+      okButtonProps: { danger: true },
+      cancelText: t('appList.deploy.cancel'),
+      onOk: () => handleDelete(app.id),
+    });
   };
 
   const handleSubmit = async () => {
@@ -400,18 +452,18 @@ export default function ApplicationListPage() {
           <Tooltip title={isAdmin ? t('appList.editHint') : t('appList.editDisableHint')}>
             <Button type="link" size="small" onClick={() => handleEdit(record)} disabled={!isAdmin}>{t('appList.action.edit')}</Button>
           </Tooltip>
-          <Popconfirm
-            title={t('appList.deleteConfirm')}
-            description={t('appList.deleteConfirmDesc')}
-            onConfirm={() => handleDelete(record.id)}
-            okText={t('appList.action.delete')}
-            okButtonProps={{ danger: true }}
-            disabled={!isAdmin}
-          >
-            <Tooltip title={isAdmin ? t('appList.deleteHint') : t('appList.deleteDisableHint')}>
-              <Button type="link" size="small" danger disabled={!isAdmin}>{t('appList.action.delete')}</Button>
-            </Tooltip>
-          </Popconfirm>
+          <Tooltip title={isAdmin ? t('appList.deleteHint') : t('appList.deleteDisableHint')}>
+            {/* P0-3：改为先取影响面再弹 Modal（Popconfirm 装不下逐条后果） */}
+            <Button
+              type="link"
+              size="small"
+              danger
+              disabled={!isAdmin}
+              onClick={() => void handleDeleteClick(record)}
+            >
+              {t('appList.action.delete')}
+            </Button>
+          </Tooltip>
         </Space>
       ),
     },

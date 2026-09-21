@@ -186,21 +186,30 @@ export class TaskProcessor extends WorkerHost {
         failureText.toLowerCase(),
       )
         ? ExecutionFailureReason.INTERPRETER_UNAVAILABLE
-        : /timeout|timed out|etimedout|execution timed/i.test(failureText)
-          ? ExecutionFailureReason.TIMEOUT
-          : /no available executor|executor.*(offline|unavailable)|econnrefused|enotfound|network error|socket hang up/i.test(
-                failureText,
-              )
-            ? ExecutionFailureReason.EXECUTOR_OFFLINE
-            : /git clone|package fetch|pull package|download package|npm install|pip install|requirements|dependency/i.test(
+        // P0-4（UX-AUDIT-2026-09-21）：应用已被删除 → 必须排在 PACKAGE_FETCH
+        // 规则**之前**。此前该错误落 UNKNOWN（消息是 `Cannot resolve
+        // packageUrl ... application <uuid> not found`，不含 package fetch/
+        // download package 等关键词），用户看到「未知原因，去翻执行日志」——
+        // 而原因是 100% 已知且可行动的（引用了一个已被删除的应用）。
+        : /cannot resolve packageurl|application\s+\S+\s+not found/i.test(
+              failureText,
+            )
+          ? ExecutionFailureReason.APPLICATION_MISSING
+          : /timeout|timed out|etimedout|execution timed/i.test(failureText)
+            ? ExecutionFailureReason.TIMEOUT
+            : /no available executor|executor.*(offline|unavailable)|econnrefused|enotfound|network error|socket hang up/i.test(
                   failureText,
                 )
-              ? ExecutionFailureReason.PACKAGE_FETCH_FAILED
-              : /traceback|syntaxerror|referenceerror|typeerror|uncaught|exception|command failed|exit code/i.test(
+              ? ExecutionFailureReason.EXECUTOR_OFFLINE
+              : /git clone|package fetch|pull package|download package|npm install|pip install|requirements|dependency/i.test(
                     failureText,
                   )
-                ? ExecutionFailureReason.SCRIPT_ERROR
-                : ExecutionFailureReason.UNKNOWN;
+                ? ExecutionFailureReason.PACKAGE_FETCH_FAILED
+                : /traceback|syntaxerror|referenceerror|typeerror|uncaught|exception|command failed|exit code/i.test(
+                      failureText,
+                    )
+                  ? ExecutionFailureReason.SCRIPT_ERROR
+                  : ExecutionFailureReason.UNKNOWN;
       // P2: align with the callback path — a TIMEOUT reason must produce
       // TIMEOUT status, not FAILED.
       exec.status =
@@ -260,6 +269,25 @@ export class TaskProcessor extends WorkerHost {
             (p) => typeof p === "string" && p.trim() !== "",
           )
         : [];
+      // P0-4（UX-AUDIT-2026-09-21）：**必然失败**的分类不得烧重试预算。
+      //
+      // `retryableErrors` 留空 = 全部可重试（向后兼容的宽松默认），于是
+      // `application_missing`（任务引用的应用已被删除）会每次调度都把整个重试
+      // 预算烧在一个**结构上不可能成功**的派发上——应用不会自己回来，重试只是
+      // 把必然失败重复 N 次并延后暴露。这与既有 interpreter_unavailable 的处置
+      // 同策（环境/配置类失败，重试无益），但那条靠"不在可选列表里"实现，而这里
+      // 默认集是"全量"，故必须显式排除。
+      //
+      // 注意**只排除**这一类：`never_dispatched`（队列超时/执行器未取件）刻意
+      // 保留重试——执行器可能恰好恢复，重试有真实价值（其 runbook 也如此建议）。
+      const inherentNonRetryable: readonly ExecutionFailureReason[] = [
+        ExecutionFailureReason.APPLICATION_MISSING,
+      ];
+      if (inherentNonRetryable.includes(exec.failureReason as ExecutionFailureReason)) {
+        throw new UnrecoverableError(
+          `${errMsg} (failure is structurally unrecoverable — retrying cannot succeed)`,
+        );
+      }
       if (retryableErrors.length > 0) {
         const haystack =
           `${exec.errorMessage ?? ""}\n${exec.failureReason ?? ""}`.toLowerCase();
