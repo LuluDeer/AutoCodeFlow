@@ -18,6 +18,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, within, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import NotificationSettingsPage from '../pages/NotificationSettingsPage';
+import { MemoryRouter } from 'react-router-dom';
 import { client } from '../api/client';
 
 // 隔离 api 层：页面直接消费 client.get/patch/post
@@ -74,7 +75,9 @@ function renderPage() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={queryClient}>
-      <NotificationSettingsPage />
+      <MemoryRouter initialEntries={['/notifications']}>
+        <NotificationSettingsPage />
+      </MemoryRouter>
     </QueryClientProvider>,
   );
 }
