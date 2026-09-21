@@ -21,7 +21,7 @@ import { useDebounce } from '../hooks/useDebounce';
 import { useAuthStore, isAdminUser } from '../store/auth';
 import { priorityTag } from '../utils/priority';
 // P1-1/P1-2（UX-AUDIT-2026-09-21）：列表页显示真实的「下次执行」与「上次执行」
-import { nextRunAt, formatFireTime } from '../utils/trigger-preview';
+import { nextRunAt, formatFireTime, previewNeedsTimezoneWarning } from '../utils/trigger-preview';
 import { formatRelativeTime } from '../utils/timeFormat';
 import ParamsEditor from '../components/ParamsEditor';
 import PageHeader from '../components/PageHeader';
@@ -360,9 +360,14 @@ export default function TaskListPage() {
         }
         const next = nextRunAt(r);
         if (next) {
+          // 遗留 P1-3：tz 为空/非法时浏览器本地推算 ≠ 服务端进程时区，
+          // tooltip 追加服务端时区注记（沿用 trigger-preview 警示文案）。
+          const tzUnresolved = previewNeedsTimezoneWarning(r.timezone);
           return (
             <Tooltip
-              title={t('taskList.nextRun.cronTooltip')}
+              title={tzUnresolved
+                ? t('taskList.nextRun.cronTooltip') + '\n' + t('triggerPreview.tzUnresolved')
+                : t('taskList.nextRun.cronTooltip')}
             >
               <Text style={{ fontSize: 12 }}>{formatFireTime(next, r.timezone)}</Text>
             </Tooltip>
