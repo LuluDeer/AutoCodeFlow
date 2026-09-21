@@ -755,6 +755,76 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       return this.maskDeploymentForRead(savedRequest);
     }
 
+    // 复用同设备既有记录（生产反馈：每失败一次就多一条记录）。
+    //
+    // 背景：控制台「重新部署」按钮调的就是本方法（POST
+    // /applications/:appId/deploy），而在途守卫只拦 PENDING/DEPLOYING/UPGRADING
+    // ——失败行不拦。于是"失败→重试"每点一次插一条新行，同一台设备堆出 N 条
+    // 记录，而用户期望的是"一台设备一条记录"。
+    //
+    // 语义：同一 (applicationId, executorId) 已有**终态**行（failed/stopped）
+    // 时复用该行原地重推，而不是新建。这样：
+    //   · 列表天然收敛为"每设备一行"，重试不再堆积；
+    //   · 版本历史不丢——每次部署仍写 application_versions 快照
+    //     （saveVersionSnapshot 按 (applicationId, version) 去重），
+    //     发布列表 / 回滚面读的是快照表，不依赖 app_deployments 的行数；
+    //   · 审批行（approvalStatus=pending_approval）**不复用**——它是在途行，
+    //     已由上方守卫拦截，到不了这里；终态审批行复用无副作用（其
+    //     approvalStatus 会被本次重置，见下）。
+    //
+    // 不复用的情形：runMode 改变（用户在"重新部署"弹窗里换了模式）。模式是
+    // 该行的语义配置，静默改写会让"这台设备跑的是常驻还是单次"变得不可追溯，
+    // 故模式变化时仍新建一行，把差异显式留在历史里。
+    const reusable = await this.repo.findOne({
+      where: {
+        applicationId,
+        executorId: executor.id,
+        status: In([DeploymentStatus.FAILED, DeploymentStatus.STOPPED]),
+        runMode: dto.runMode ?? RunMode.DAEMON,
+      },
+      order: { updatedAt: "DESC" },
+    });
+
+    if (reusable) {
+      reusable.executorAddress = executor.address;
+      reusable.runMode = dto.runMode ?? RunMode.DAEMON;
+      reusable.env = dto.env ?? app.env;
+      reusable.startCommand = dto.startCommand ?? app.entrypoint ?? null;
+      // 重置为在途态：心跳会把它收敛到 running/failed。
+      reusable.status = DeploymentStatus.PENDING;
+      reusable.statusMessage = "Redeploying (reusing this deployment record)";
+      reusable.triggerType = trigger?.triggerType ?? null;
+      reusable.operator = trigger?.operator ?? null;
+      // 清掉上一轮的终态残留，避免"新部署却显示旧 PID / 旧审批痕迹"。
+      reusable.pid = null;
+      reusable.approvalStatus = null;
+      reusable.approvalMeta = null;
+      reusable.rolloutState = null;
+      reusable.rolloutMeta = null;
+
+      let reused: AppDeployment;
+      try {
+        reused = await this.repo.save(reusable);
+      } catch (err: unknown) {
+        if (this.isInFlightUniqueViolation(err)) {
+          throw new ConflictException(
+            `Application ${app.name} already has an in-progress deployment. ` +
+              `Wait for it to finish or cancel it first.`,
+          );
+        }
+        throw err;
+      }
+
+      this.logger.log(
+        `Redeploy reuses existing deployment ${reused.id} for ${app.name} on ${executor.address}`,
+      );
+      this.pushDeployToExecutor(reused, app).catch((err) => {
+        this.logger.error(`Failed to push deploy to executor: ${err.message}`);
+      });
+
+      return this.maskDeploymentForRead(reused);
+    }
+
     const deployment = this.repo.create({
       applicationId,
       executorId: executor.id,

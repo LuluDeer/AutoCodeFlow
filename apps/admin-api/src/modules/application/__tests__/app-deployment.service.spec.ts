@@ -440,6 +440,194 @@ describe("AppDeploymentService", () => {
         service.deploy("app-1", { runMode: RunMode.DAEMON }),
       ).rejects.toThrow("connection refused");
     });
+
+    /**
+     * 生产反馈：控制台「重新部署」每失败一次就多一条记录。
+     *
+     * 「重新部署」按钮调的就是本方法（POST /applications/:appId/deploy），而
+     * 在途守卫只拦 PENDING/DEPLOYING/UPGRADING——失败行不拦。于是"失败→重试"
+     * 每点一次插一条新行，同一台设备堆出 N 条。用户期望"一台设备一条记录"。
+     *
+     * 修复后：同一 (applicationId, executorId) 已有终态行（failed/stopped）时
+     * 原地复用该行重推。版本历史不受影响——它存在 application_versions 快照表
+     * （按 (applicationId, version) 去重），与本表的行数无关。
+     */
+    describe("重复部署复用既有记录（生产反馈回归）", () => {
+      /** 第一次 findOne 是在途守卫，第二次是复用查询。 */
+      const guardThenReusable = (
+        reusable: Record<string, unknown> | null,
+      ): void => {
+        repo.findOne
+          .mockResolvedValueOnce(null) // 在途守卫：无在途行
+          .mockResolvedValueOnce(reusable); // 复用查询
+      };
+
+      /**
+       * 记录每次 save **调用瞬间**的状态快照。
+       *
+       * 不能直接读 `repo.save.mock.calls[0][0].status`：mock 存的是对象**引用**，
+       * 而 pushDeployToExecutor 是 fire-and-forget，随后会把同一个对象改成
+       * DEPLOYING——断言"最终值"会与它竞态，看到的是 DEPLOYING 而不是复用时刻
+       * 写入的 PENDING。快照才是本用例要钉的事实。
+       */
+      const snapshotSaves = (): {
+        status: unknown;
+        statusMessage: unknown;
+        pid: unknown;
+      }[] => {
+        const snapshots: {
+          status: unknown;
+          statusMessage: unknown;
+          pid: unknown;
+        }[] = [];
+        repo.save.mockImplementation(async (e: any) => {
+          snapshots.push({
+            status: e.status,
+            statusMessage: e.statusMessage,
+            pid: e.pid,
+          });
+          return e;
+        });
+        return snapshots;
+      };
+
+      it("已有 failed 行 → 复用该行（不新建），并重置为 PENDING 重推", async () => {
+        const existing = {
+          id: "deploy-existing",
+          applicationId: "app-1",
+          executorId: "exec-1",
+          executorAddress: "203.0.113.10:3001",
+          status: DeploymentStatus.FAILED,
+          runMode: RunMode.DAEMON,
+          pid: 4242,
+          statusMessage: "boom",
+        };
+        guardThenReusable(existing);
+        const saves = snapshotSaves();
+
+        const result = await service.deploy("app-1", {
+          executorId: "exec-1",
+          runMode: RunMode.DAEMON,
+        });
+
+        // 复用：没有走 create（create 会造出新 id）
+        expect(repo.create).not.toHaveBeenCalled();
+        expect(result.id).toBe("deploy-existing");
+        // 复用那一刻写入的是 PENDING（在途态），而不是留着 failed。
+        expect(saves[0].status).toBe(DeploymentStatus.PENDING);
+        expect(String(saves[0].statusMessage)).toContain("reusing");
+        // 终态残留被清掉（否则新部署会显示上一轮的 PID）
+        expect(saves[0].pid).toBeNull();
+      });
+
+      it("已有 stopped 行 → 同样复用", async () => {
+        const existing = {
+          id: "deploy-stopped",
+          applicationId: "app-1",
+          executorId: "exec-1",
+          executorAddress: "203.0.113.10:3001",
+          status: DeploymentStatus.STOPPED,
+          runMode: RunMode.DAEMON,
+        };
+        guardThenReusable(existing);
+        const saves = snapshotSaves();
+
+        const result = await service.deploy("app-1", {
+          executorId: "exec-1",
+          runMode: RunMode.DAEMON,
+        });
+
+        expect(repo.create).not.toHaveBeenCalled();
+        expect(result.id).toBe("deploy-stopped");
+        expect(saves[0].status).toBe(DeploymentStatus.PENDING);
+      });
+
+      it("无既有终态行 → 正常新建（不回归）", async () => {
+        guardThenReusable(null);
+        const created = { id: "deploy-new", status: DeploymentStatus.PENDING };
+        repo.create.mockReturnValue(created);
+        repo.save.mockResolvedValue(created);
+
+        const result = await service.deploy("app-1", {
+          executorId: "exec-1",
+          runMode: RunMode.DAEMON,
+        });
+
+        expect(repo.create).toHaveBeenCalled();
+        expect(result.id).toBe("deploy-new");
+      });
+
+      it("复用查询限定在同一执行器上（不跨设备复用）", async () => {
+        guardThenReusable(null);
+        repo.create.mockReturnValue({
+          id: "d",
+          status: DeploymentStatus.PENDING,
+        });
+        repo.save.mockResolvedValue({
+          id: "d",
+          status: DeploymentStatus.PENDING,
+        });
+
+        await service.deploy("app-1", {
+          executorId: "exec-1",
+          runMode: RunMode.DAEMON,
+        });
+
+        const reuseQuery = repo.findOne.mock.calls[1][0] as any;
+        expect(reuseQuery.where.executorId).toBe("exec-1");
+        expect(reuseQuery.where.applicationId).toBe("app-1");
+        // 只复用终态行——在途行由守卫负责，不能在这里被"复用"掉
+        expect(
+          reuseQuery.where.status.value ?? reuseQuery.where.status,
+        ).toEqual(
+          expect.arrayContaining([
+            DeploymentStatus.FAILED,
+            DeploymentStatus.STOPPED,
+          ]),
+        );
+      });
+
+      it("runMode 变化 → 不复用，新建一行把模式差异留在历史里", async () => {
+        // 复用查询带 runMode 条件，故换模式时查不到行 → 走新建。
+        guardThenReusable(null);
+        const created = { id: "deploy-new", status: DeploymentStatus.PENDING };
+        repo.create.mockReturnValue(created);
+        repo.save.mockResolvedValue(created);
+
+        await service.deploy("app-1", {
+          executorId: "exec-1",
+          runMode: RunMode.ONCE,
+        });
+
+        expect(repo.create).toHaveBeenCalled();
+        const reuseQuery = repo.findOne.mock.calls[1][0] as any;
+        // 复用条件里带 runMode —— 这正是"换模式不复用"的实现方式
+        expect(reuseQuery.where.runMode).toBe(RunMode.ONCE);
+      });
+
+      it("复用路径遇到在途唯一冲突（23505）仍转 409", async () => {
+        guardThenReusable({
+          id: "deploy-existing",
+          applicationId: "app-1",
+          executorId: "exec-1",
+          status: DeploymentStatus.FAILED,
+          runMode: RunMode.DAEMON,
+        });
+        repo.save.mockRejectedValue(
+          makeUniqueViolation("uq_app_deployments_application_in_flight"),
+        );
+
+        await expect(
+          service.deploy("app-1", {
+            executorId: "exec-1",
+            runMode: RunMode.DAEMON,
+          }),
+        ).rejects.toMatchObject({
+          constructor: ConflictException,
+          status: 409,
+        });
+      });
+    });
   });
 
   describe("version history", () => {
