@@ -5,6 +5,7 @@
  *  2) TaskFormPage 交互：入口按钮 → 表单校验门 → Modal 提交载荷 → 成功/失败反馈。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { useAuthStore } from '../store/auth';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import TaskFormPage from '../pages/TaskFormPage';
@@ -29,6 +30,7 @@ vi.mock('../components/GlueEditor', () => ({ default: () => <div data-testid="gl
 let mockRouteParams: { id?: string } = {};
 vi.mock('react-router-dom', () => ({
   useNavigate: () => vi.fn(),
+  useBlocker: () => ({ state: 'unblocked' as const, proceed: () => {}, reset: () => {} }),
   useParams: () => mockRouteParams,
   useSearchParams: () => [new URLSearchParams('')],
   Link: (props: { to: string; children: React.ReactNode }) => <a href={props.to}>{props.children}</a>,
@@ -53,6 +55,7 @@ if (!window.matchMedia) {
 }
 
 beforeEach(() => {
+  useAuthStore.setState({ user: { id: 1, username: 'root', role: 'admin' } });
   mockRouteParams = {};
   vi.mocked(tasksApi.get).mockReset().mockResolvedValue({} as never);
   vi.mocked(executorsApi.list).mockReset().mockResolvedValue([] as never);

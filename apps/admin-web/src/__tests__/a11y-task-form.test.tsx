@@ -9,6 +9,7 @@
  *  ④ 提交成功后播报区清空（不残留旧提示）。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { useAuthStore } from '../store/auth';
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import TaskFormPage from '../pages/TaskFormPage';
@@ -38,6 +39,7 @@ vi.mock('react-router-dom', async () => {
   return {
     ...actual,
     useNavigate: () => vi.fn(),
+    useBlocker: () => ({ state: 'unblocked' as const, proceed: () => {}, reset: () => {} }),
     useParams: () => mockRouteParams,
     useSearchParams: () => [new URLSearchParams('')],
     // 无 Router 包裹（对齐 task-form-ui06 先例）：Link 降级为裸 a，避免 Router context 缺失
@@ -79,6 +81,7 @@ const renderPage = () =>
     </QueryClientProvider>,
   );
 beforeEach(() => {
+  useAuthStore.setState({ user: { id: 1, username: 'root', role: 'admin' } });
   mockRouteParams = {};
   vi.mocked(executorsApi.list).mockReset().mockResolvedValue([] as never);
   vi.mocked(executorsApi.getGroups).mockReset().mockResolvedValue([] as never);
