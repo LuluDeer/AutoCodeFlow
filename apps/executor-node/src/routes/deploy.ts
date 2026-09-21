@@ -145,13 +145,17 @@ export function scheduleDaemonRestart(
     logger.error(
       `[deploy] App ${deploymentId} crashed ${attempts - 1} times; giving up auto-restart`,
     );
-    unregisterDaemon(deploymentId);
-    void reportStatus(
-      deploymentId,
-      'failed',
-      undefined,
-      `Exited with code ${exitCode} and exceeded ${RESTART_MAX_ATTEMPTS} auto-restart attempts`,
+    // P1-8：放弃重启时同样把 app.log 尾部带上——反复崩溃的根因在日志里，
+    // 旧实现只报 "Exited with code N and exceeded 10 auto-restart attempts"。
+    const logTail = spec
+      ? readAppLogTail(path.join(spec.deployDir, 'app.log'))
+      : '';
+    const reason = truncateStatusMessage(
+      `Exited with code ${exitCode}; exceeded ${RESTART_MAX_ATTEMPTS} ` +
+        `auto-restart attempts${logTail ? `; recent app.log:\n${logTail}` : ''}`,
     );
+    unregisterDaemon(deploymentId);
+    void reportStatus(deploymentId, 'failed', undefined, reason);
     return false;
   }
 
@@ -517,7 +521,15 @@ function startApp(
       reportStatus(deploymentId, 'stopped', undefined, `Exited with code ${code}`);
     } else {
       logger.warn(`[deploy] App ${deploymentId} exited with code ${code}`);
-      reportStatus(deploymentId, 'failed', undefined, `Exited with code ${code}`);
+      // P1-8：旧实现只上报字面量 "Exited with code N"，entrypoint 错误/缺依赖
+      // 的真正堆栈写在 app.log 里而控制台没有任何入口指向。现在把日志尾部
+      // 一并上报（尾部 seek ~8KB，超长截断保留退出码头 + 错误堆栈尾）。
+      void reportStatus(
+        deploymentId,
+        'failed',
+        undefined,
+        buildFailedExitMessage(code, logFile),
+      );
     }
   });
 
@@ -704,6 +716,73 @@ function removePathIfExists(target: string): void {
 const KEEP_RELEASES = 5;
 const APP_LOG_MAX_BYTES = 50 * 1024 * 1024; // 50MB
 const APP_LOG_KEEP = 3;
+
+/**
+ * P1-8（UX-AUDIT-2026-09-21）：非 0 退出时上报的失败原因。
+ *
+ * 旧实现只上报字面量 `Exited with code N`——entrypoint 写错、缺依赖、运行时
+ * 抛错的真正堆栈全部写在 `app.log` 里，控制台用户只看到一个退出码，且日志
+ * 没有任何入口指向。现在非 0 退出时把 `app.log` 尾部一并带回。
+ *
+ * 读取策略：只 seek 末尾 ~8KB，不把整文件读进内存（app.log 上限 50MB，见
+ * APP_LOG_MAX_BYTES）。best-effort：文件不存在/读失败一律返回 ''，绝不让
+ * 日志读取失败影响终态上报。
+ */
+const APP_LOG_TAIL_BYTES = 8 * 1024;
+const STATUS_MESSAGE_MAX_CHARS = 2000;
+
+export function readAppLogTail(
+  logFile: string,
+  maxBytes: number = APP_LOG_TAIL_BYTES,
+): string {
+  try {
+    if (!fs.existsSync(logFile)) return '';
+    const stat = fs.statSync(logFile);
+    if (stat.size <= 0) return '';
+    const fd = fs.openSync(logFile, 'r');
+    try {
+      const start = Math.max(0, stat.size - maxBytes);
+      const len = stat.size - start;
+      const buf = Buffer.alloc(len);
+      fs.readSync(fd, buf, 0, len, start);
+      // strip UTF-8 BOM if present, then trim surrounding whitespace
+      return buf.toString('utf-8').replace(/^﻿/, '').trim();
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * 心跳 message 列是 text 无长度上限，但上报体过长既浪费也让前端表格无法展示。
+ * 超长时**保留头部一行（退出码）+ 末尾 2000 字符（真正的错误堆栈）**——
+ * 中间省略，而不是简单截断末尾（那会丢掉根因）。
+ */
+export function truncateStatusMessage(
+  message: string,
+  maxChars: number = STATUS_MESSAGE_MAX_CHARS,
+): string {
+  if (message.length <= maxChars) return message;
+  const nl = message.indexOf('\n');
+  const head = nl > 0 ? message.slice(0, nl) : message.slice(0, 80);
+  const omitted = '\n…[truncated]…\n';
+  const tailLen = Math.max(0, maxChars - head.length - omitted.length);
+  return head + omitted + message.slice(-tailLen);
+}
+
+/** 组装非 0 退出的失败原因：退出码 + app.log 尾部。 */
+export function buildFailedExitMessage(
+  code: number | null,
+  logFile: string,
+): string {
+  const tail = readAppLogTail(logFile);
+  const reason = tail
+    ? `Exited with code ${code}; recent app.log:\n${tail}`
+    : `Exited with code ${code}`;
+  return truncateStatusMessage(reason);
+}
 
 /**
  * Prune a deployment's `releases/` history: keep the symlink target that
