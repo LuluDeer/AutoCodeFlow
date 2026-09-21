@@ -70,7 +70,10 @@ beforeEach(() => {
   } as never);
   useAuthStore.setState({ user: { id: 1, username: 'root', role: 'admin' } });
 });
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  useAuthStore.setState({ user: { id: 1, username: 'root', role: 'admin' } });
+});
 
 describe('P1-5: TaskListPage 写操作 isAdmin 门控', () => {
   it('管理员：新建按钮与行内写按钮可用', async () => {
