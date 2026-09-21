@@ -1166,6 +1166,7 @@ export default {
   'execPkg.push.resultTitle': 'Push Results:',
   'execPkg.push.task': 'Push Task',
   'execPkg.push.queued': 'Queued (executor busy; will install when free)',
+  'execPkg.push.commandId': 'Command ID: {{id}}',
   'execPkg.close': 'Close',
 
   'executorDetail.updateSuccess': 'Update successful',
@@ -1212,6 +1213,9 @@ export default {
   // P1-24: offline diagnostics (threshold / absolute last heartbeat / silent for)
   'executorDetail.offline.threshold': 'Offline threshold: the backend marks it offline after {{seconds}}s without a heartbeat',
   'executorDetail.offline.lastSeen': 'Last heartbeat: {{absolute}} (silent for {{silent}})',
+  'executorDetail.offline.reasonManual': 'Reason: graceful offline (executor stopped itself or admin set it offline)',
+  'executorDetail.offline.reasonStale': 'Reason: marked dead on heartbeat timeout (no heartbeat for too long)',
+  'executorDetail.offline.reasonUnknown': 'Reason: unknown (legacy executor did not report)',
   // Supplemental P2: saturated semantics
   'executorDetail.saturated': 'At capacity: the concurrency limit is reached and the scheduler will no longer dispatch new tasks to this executor',
   'executorDetail.status.pending': 'Pending',
