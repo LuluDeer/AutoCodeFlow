@@ -33,7 +33,7 @@ interface PkgRow {
   uploadedBy?: string; createdAt: string; originalFilename?: string;
 }
 interface Executor { id: string; name: string; address: string; status: string; executorVersion?: string; }
-interface PushResult { executorId: string; address: string; success: boolean; error?: string; queued?: boolean; commandId?: string; }
+interface PushResult { executorId: string; address: string; success: boolean; error?: string; queued?: boolean; commandId?: string; status?: 'queued' | 'success' | 'error'; }
 
 /**
  * 安装包类型选项——必须与后端 `ExecutorPackageType`
@@ -555,23 +555,30 @@ export default function ExecutorPackagesPage() {
         ) : (
           <Space orientation="vertical" style={{ width: '100%' }}>
             <Text strong>{t('execPkg.push.resultTitle')}</Text>
-            {pushResults.map((r, i) => (
-              <Alert
-                key={i}
-                // P1-10：queued（执行器忙、安装已入队异步执行）既不是绿色成功也不是
-                // 红色失败——旧实现 success=true 的 queued 行显示成绿色成功，让管理员
-                // 误以为包已装好；失败/入队/成功三态必须区分。
-                type={r.queued ? 'info' : r.success ? 'success' : 'error'}
-                showIcon
-                title={
-                  <>
-                    <Text strong>{r.address || t('execPkg.push.task')}</Text>
-                    {r.queued && <Text type="secondary"> — {t('execPkg.push.queued')}</Text>}
-                    {r.error && <Text type="danger"> — {r.error}</Text>}
-                  </>
-                }
-              />
-            ))}
+            {pushResults.map((r, i) => {
+              // 遗留 P1-10：后端 push 响应补 per-executor 明细（executorId/commandId/
+              // status/error）。优先读 status（queued/success/error），向后兼容旧布尔。
+              const status: 'queued' | 'success' | 'error' =
+                r.status ?? (r.queued ? 'queued' : r.success ? 'success' : 'error');
+              return (
+                <Alert
+                  key={i}
+                  // P1-10：queued（执行器忙、安装已入队异步执行）既不是绿色成功也不是
+                  // 红色失败——旧实现 success=true 的 queued 行显示成绿色成功，让管理员
+                  // 误以为包已装好；失败/入队/成功三态必须区分。
+                  type={status === 'queued' ? 'info' : status === 'success' ? 'success' : 'error'}
+                  showIcon
+                  title={
+                    <>
+                      <Text strong>{r.address || t('execPkg.push.task')}</Text>
+                      {status === 'queued' && <Text type="secondary"> — {t('execPkg.push.queued')}</Text>}
+                      {r.commandId && <Text type="secondary"> — {t('execPkg.push.commandId', { id: r.commandId })}</Text>}
+                      {r.error && <Text type="danger"> — {r.error}</Text>}
+                    </>
+                  }
+                />
+              );
+            })}
           </Space>
         )}
       </Modal>

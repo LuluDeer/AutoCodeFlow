@@ -61,6 +61,8 @@ export interface PushResult {
   queued?: boolean;
   /** 入队后由执行器异步执行的命令 id，用于后续查询状态 */
   commandId?: string;
+  /** 遗留 P1-10：后端 per-executor 状态（queued/success/error），优先于布尔字段 */
+  status?: 'queued' | 'success' | 'error';
 }
 
 export const executorPackagesApi = {
