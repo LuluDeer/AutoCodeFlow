@@ -6,6 +6,7 @@ import {
   encryptSecretsObject,
   encryptSecretValue,
   maskSecretsObject,
+  mergeSecretsOnUpdate,
   parseSecretsKey,
 } from "./secret-crypto.util";
 
@@ -66,6 +67,41 @@ export class SecretsCryptoService {
       );
     }
     return encryptSecretsObject(secrets, this.key);
+  }
+
+  /**
+   * SEC-02 follow-up (production incident): apply a PATCH to stored secrets
+   * **per key** instead of replacing the object wholesale.
+   *
+   * The read path masks every leaf (`******`), so a console that shows the
+   * existing keys necessarily holds those masked values. Under replace
+   * semantics, saving that view persists the mask AS the credential: the real
+   * value is destroyed, and the task then fails with "missing credential"
+   * while the UI still shows the key. Per-key merge removes the hazard at the
+   * persistence boundary (the authoritative place) instead of relying on every
+   * client to never send what it was given:
+   *   · key absent  → kept;
+   *   · leaf = mask → kept (echo of the read path);
+   *   · leaf = null → deleted;
+   *   · otherwise   → encrypted and written.
+   * Callers pass `incoming = null` for the documented "clear all" signal.
+   */
+  applyPatch(
+    stored: Record<string, unknown> | null | undefined,
+    incoming: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const merged = mergeSecretsOnUpdate(stored, incoming, this.key);
+    if (
+      !this.key &&
+      Object.keys(merged).length > 0 &&
+      !this.warnOnce.fired
+    ) {
+      this.warnOnce.fired = true;
+      this.logger.warn(
+        "Storing task secrets in plaintext (SEC_SECRETS_KEY unset) — set the key to encrypt at rest.",
+      );
+    }
+    return merged;
   }
 
   /**

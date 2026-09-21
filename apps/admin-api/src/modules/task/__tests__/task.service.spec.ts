@@ -804,6 +804,11 @@ describe("TaskService (__tests__)", () => {
   describe("R-01: 写路径 RAW 取数（脱敏副本不得回写库）", () => {
     const RAW_SECRETS = { API_KEY: "raw-cipher-or-plain-value" };
     const MASKED = { API_KEY: "******" };
+    /** 多键场景的读面掩码（SEC-02 续的掩码回传用例）。 */
+    const MASKED_FEISHU = {
+      FEISHU_APP_ID: "******",
+      FEISHU_APP_SECRET: "******",
+    };
 
     /**
      * save 落库参数快照。maskSecretsForResponse 在 save 之后**原地**改写
@@ -912,6 +917,79 @@ describe("TaskService (__tests__)", () => {
       expect(persisted[0].gitCommit).toBe("new-sha");
       expect(persisted[0].secrets).toEqual(RAW_SECRETS);
       expect(persisted[0].secrets).not.toEqual(MASKED);
+    });
+
+    // ------------------------------------------------------------------------
+    // SEC-02 续（生产故障）：PATCH 的**逐键合并**。
+    //
+    // R-01 拦住的是"服务端自己把读面副本写回库"；本条拦的是**客户端**把读面
+    // 掩码回传：控制台必须显示既有键（否则用户以为平台没生效而反复重配），看到
+    // 的就是 `******`——整体替换语义下，用户"只改超时"的保存会把掩码当真实凭据
+    // 落库，真实值不可逆损毁，而 UI 上键还在、任务报「缺少飞书凭证」（本故障）。
+    // ------------------------------------------------------------------------
+    it("update：PATCH 回传读面掩码 → 库里真实值原样保留（不落掩码）", async () => {
+      const task = {
+        id: "1",
+        name: "old",
+        status: TaskStatus.PAUSED,
+        secrets: { FEISHU_APP_ID: "cli_real", FEISHU_APP_SECRET: "sec_real" },
+      };
+      taskRepo.findOne.mockResolvedValue(task);
+      const persisted = captureTaskRepoSaves();
+
+      // 客户端把 GET 拿到的掩码对象一字不改地 PATCH 回来
+      const result: any = await service.update("1", {
+        name: "new",
+        secrets: { FEISHU_APP_ID: "******", FEISHU_APP_SECRET: "******" },
+      } as any);
+
+      expect(persisted[0].secrets).toEqual({
+        FEISHU_APP_ID: "cli_real",
+        FEISHU_APP_SECRET: "sec_real",
+      });
+      expect(persisted[0].secrets).not.toContain("******");
+      expect(result.secrets).toEqual(MASKED_FEISHU);
+    });
+
+    it("update：只提交一个新键 → 既有凭据不被删掉（键缺省 = 保留）", async () => {
+      const task = {
+        id: "1",
+        name: "old",
+        status: TaskStatus.PAUSED,
+        secrets: { FEISHU_APP_ID: "cli_real" },
+      };
+      taskRepo.findOne.mockResolvedValue(task);
+      const persisted = captureTaskRepoSaves();
+
+      await service.update("1", {
+        secrets: { NEW_TOKEN: "brand-new" },
+      } as any);
+
+      expect(persisted[0].secrets).toEqual({
+        FEISHU_APP_ID: "cli_real",
+        NEW_TOKEN: "brand-new",
+      });
+    });
+
+    it("update：叶子 null → 删除该键；显式整体 null → 清空全部", async () => {
+      const task = {
+        id: "1",
+        name: "old",
+        status: TaskStatus.PAUSED,
+        secrets: { A: "a", B: "b" },
+      };
+      taskRepo.findOne.mockResolvedValue(task);
+      const persisted = captureTaskRepoSaves();
+
+      await service.update("1", { secrets: { A: null } } as any);
+      expect(persisted[0].secrets).toEqual({ B: "b" });
+
+      taskRepo.findOne.mockResolvedValue({
+        ...task,
+        secrets: { A: "a", B: "b" },
+      });
+      await service.update("1", { secrets: null } as any);
+      expect(persisted[1].secrets).toBeNull();
     });
   });
 
