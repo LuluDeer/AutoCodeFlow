@@ -567,3 +567,99 @@ describe('zip-safety: unsupported compression methods fail closed with an explic
     expect(fs.readFileSync(path.join(destDir, 'deflated.txt'), 'utf8')).toBe('d');
   });
 });
+
+describe('zip-safety: /api/deploy 必须走本模块（生产故障回归）', () => {
+  /**
+   * 故障现场（生产实证）：
+   *
+   *   Expand-Archive : 无法对参数"LiteralPath"执行操作，因为该参数为 Null 或空。
+   *
+   * 根因不是包有问题，而是 `/api/deploy` 的 Windows 解压分支用
+   * `powershell.exe -Command '<脚本>' <arg1> <arg2>` + `$args[0]` 取参——
+   * **该形态不填充 `$args`**：`-Command` 已消费掉脚本字符串，后续 token 成为
+   * 脚本的独立输出而非参数。实测：
+   *
+   *   powershell -Command 'Write-Output "COUNT=$($args.Count)"' a b
+   *   → COUNT=0        （且 `a b` 被原样打印）
+   *
+   * 同一个坏模式还在 `assertSafeZipEntries` 里，且后果**更严重**：那里的
+   * `ZipFile::OpenRead($args[0])` 拿到空串后抛 "Empty path name is not legal."，
+   * 但 PowerShell 把该异常记为 **non-terminating error、退出码仍为 0**，于是
+   * 调用方的 `status !== 0` 检查不触发、`entries` 变成空数组、
+   * `findUnsafeZipEntries([])` 返回空 —— **zip-slip 路径闸门被静默跳过**。
+   *
+   * 即：Windows 上这道 SEC 闸门从未真正生效，且因为退出码是 0 而毫无迹象。
+   * 修法是让 deploy 与 execute 走同一条 `safeExtractZip`（本模块），
+   * 路径判定在**进程内**完成，不把决策权交给任何外部工具的取参形态。
+   */
+  it('源码守卫：deploy.ts 不得再用 $args 取参，且必须调用 safeExtractZip', () => {
+    // 这是"防止回退到坏形态"的静态闸——deploy.spec.ts 把 fs/child_process
+    // 全部 mock 掉了，功能性断言在那里必然是空转，拦不住这类回归。
+    const deploySrc = fs.readFileSync(
+      path.join(__dirname, 'routes', 'deploy.ts'),
+      'utf-8',
+    );
+
+    // 只在**代码行**上判定，先剥掉注释行：故障复盘的长注释里必然要引用这些
+    // 字面量来说明问题（本文件的 describe 头注也引用了），把注释一并扫红会
+    // 逼着人把注释写成不可读的绕口令——那是让守卫反过来伤害可维护性。
+    const codeLines = deploySrc
+      .split('\n')
+      .filter((line) => {
+        const t = line.trim();
+        return !t.startsWith('//') && !t.startsWith('*') && !t.startsWith('/*');
+      })
+      .join('\n');
+
+    // 1) 不得再出现 PowerShell 自动变量取参。`-Command` 形态不填充它，
+    //    任何用法都是错的（Expand-Archive 直接报错，.NET 调用则静默失败）。
+    expect(codeLines).not.toMatch(/\$args\[/);
+
+    // 2) 不得再直接调 Expand-Archive 解压：它把"条目名 → 落盘路径"的决策权
+    //    交给了自己的实现，我们无法逐条目断言目标仍在 destDir 内。
+    expect(codeLines).not.toMatch(/Expand-Archive/);
+
+    // 3) packageUrl 分支必须调用 safeExtractZip。
+    expect(codeLines).toMatch(/safeExtractZip\(/);
+  });
+
+  it('回归本体：safeExtractZip 能解开真实 zip 并逐条目落盘', () => {
+    // 直接证明"换成 safeExtractZip 后解压这条路是通的"——即上面那个
+    // Expand-Archive 报错的场景已不复存在。
+    const { zipPath, destDir } = stage([
+      { name: 'index.js', data: Buffer.from('console.log(1)') },
+      { name: 'src/app.js', data: Buffer.from('export default 1') },
+      { name: 'nested/deep/file.txt', data: Buffer.from('deep') },
+    ]);
+
+    const result = safeExtractZip(zipPath, destDir, { limits: LIMITS });
+
+    expect(result.entries).toBe(3);
+    expect(fs.readFileSync(path.join(destDir, 'index.js'), 'utf8')).toBe('console.log(1)');
+    expect(fs.readFileSync(path.join(destDir, 'src', 'app.js'), 'utf8')).toBe('export default 1');
+    expect(fs.readFileSync(path.join(destDir, 'nested', 'deep', 'file.txt'), 'utf8')).toBe('deep');
+  });
+
+  it('回归本体：路径遍历条目被拒且不落盘（闸门真的在工作）', () => {
+    // 这条是上面"静默跳过"缺陷的反向证明：闸门在进程内判定，绕不过去。
+    const { zipPath, destDir } = stage([
+      { name: '../escape.txt', data: Buffer.from('pwned') },
+    ]);
+
+    expect(() => safeExtractZip(zipPath, destDir, { limits: LIMITS })).toThrow(ZipSafetyError);
+    // 关键：文件**没有**落在 destDir 的父目录里。
+    expect(fs.existsSync(path.join(tmpRoot, 'escape.txt'))).toBe(false);
+  });
+
+  it('回归本体：removeArchive 在解压后删掉 zip（deploy 依赖该语义）', () => {
+    // 旧实现是 `fs.unlinkSync(zipPath)`，新实现把删除交给 safeExtractZip 的
+    // removeArchive 选项——行为必须等价，否则临时 zip 会残留在 tmpDir。
+    const { zipPath, destDir } = stage([{ name: 'a.txt', data: Buffer.from('x') }]);
+    expect(fs.existsSync(zipPath)).toBe(true);
+
+    safeExtractZip(zipPath, destDir, { limits: LIMITS, removeArchive: true });
+
+    expect(fs.existsSync(zipPath)).toBe(false);
+    expect(fs.readFileSync(path.join(destDir, 'a.txt'), 'utf8')).toBe('x');
+  });
+});
