@@ -45,6 +45,7 @@ class ExecuteRequest(BaseModel):
     executionId: str = Field(pattern="^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
     task: TaskConfig
     params: dict[str, Any] | None = Field(default=None)
+    secrets: dict[str, Any] | None = Field(default=None)
 
 
 class ConfigReloadRequest(BaseModel):

@@ -54,7 +54,12 @@ jest.mock('../run-command', () => ({
   killProcessTree: jest.fn(),
 }));
 
+// SEC-02 续：本 mock 只替换 buildChildEnv（测试要的是"子进程 env 干净"），
+// 但 ENV_WHITELIST 是**数据**——secret-env.ts 在模块加载期就用它构建保留名
+// 集合，漏掉这个导出会让 `...ENV_WHITELIST` 抛 "not iterable"，整个套件
+// 直接跑不起来（实测）。故用 requireActual 保留真实集合。
 jest.mock('../env-whitelist', () => ({
+  ...jest.requireActual('../env-whitelist'),
   buildChildEnv: jest.fn(() => ({})),
 }));
 

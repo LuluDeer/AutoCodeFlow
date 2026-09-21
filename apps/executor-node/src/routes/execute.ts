@@ -23,6 +23,8 @@ import { isExecutorShuttingDown } from '../shutdown-state';
 import { taskWorkerManager, ExecutionCancelledError } from '../task-worker';
 import { runCommand, killProcessTree } from '../run-command';
 import { buildChildEnv } from '../env-whitelist';
+// SEC-02 续：secrets 按原名注入（含保留名闸门），见 secret-env.ts 的模块头注释。
+import { injectSecretEnv } from '../secret-env';
 // L-3：任务子进程 POSIX ulimit（NOFILE/CPU）——node 无 preexec_fn，生产路径
 // 包一层 sh+ulimit；win32 原样返回。
 import { applyTaskRlimits } from '../process-rlimits';
@@ -218,6 +220,17 @@ export interface ExecuteRequest {
     [key: string]: unknown;
   };
   params?: Record<string, unknown>;
+  /**
+   * SEC-02 续：任务级凭据，与 params **分开**传递并按**原名**注入子进程 env。
+   *
+   * 为什么与 params 分开：params 走 `AUTOFLOW_<KEY>` 前缀（既有契约，不动），
+   * 而凭据必须能落到**规范名**上——第三方 SDK 认 `AWS_ACCESS_KEY_ID` /
+   * `OPENAI_API_KEY`，脚本无法把 SDK 的读取名改写成带前缀的形态。
+   *
+   * 纯增量字段：admin 仍把 secrets 合并进 params（旧执行器行为逐字节不变），
+   * 故本字段缺失时零影响，无需协议版本门禁。
+   */
+  secrets?: Record<string, unknown> | null;
 }
 
 /** executionId 会被用作 workDir 下的目录名——限定安全字符集，杜绝路径穿越
@@ -1737,6 +1750,37 @@ async function prepareExecution(
     }
   }
 
+  // ---------------------------------------------------------------------
+  // SEC-02 续（生产故障）：secrets 按**原名**额外注入一份。
+  //
+  // 生产实证：用户在平台配置 FEISHU_APP_ID 后，脚本读 `os.environ[
+  // "FEISHU_APP_ID"]` 拿到空串 → 报「缺少飞书凭证」。根因是 secrets 此前与
+  // params 走同一条通道，被统一加上 `AUTOFLOW_` 前缀——报错文案里写的名字
+  // 与实际注入的名字不是同一个，用户照提示配置也永远配不对。
+  //
+  // 现在按原名再注入一份。**params 循环保持原样不动**（secrets 仍合并在其
+  // 中，`AUTOFLOW_<KEY>` 形态继续可用），于是两种读法并存：老脚本读带前缀的
+  // 名字照常工作，新脚本/第三方 SDK 读规范名也能工作。
+  //
+  // 顺序：在 params 之后 —— 同名键 secret 按原名写入的是**不同**的变量名
+  // （params 写 `AUTOFLOW_X`，secret 写 `X`），两者不冲突；但若某个 secret
+  // 的名字与白名单透传的宿主变量同名，这里会在 injectSecretEnv 里被**拒绝**
+  // （见 secret-env.ts 的保留名规则），而不是覆盖掉 PATH 这类关键变量。
+  //
+  // 在 CALLBACK_TOKEN 之前注入：那些是执行器自己的变量，优先级最高（用户
+  // 凭据不得覆盖回调 token，否则任务无法回传终态）。
+  // ---------------------------------------------------------------------
+  const skippedSecretNames = injectSecretEnv(env, body.secrets);
+  if (skippedSecretNames.length > 0) {
+    // 静默丢弃凭据是最难排查的失败形态（脚本报"缺凭据"，用户在平台看配置
+    // 明明存在）——必须留痕。键名本身不是密值，可以安全记入日志。
+    logPrepare(
+      `Ignored ${skippedSecretNames.length} task secret(s) whose names are reserved or invalid ` +
+        `(must match [A-Za-z_][A-Za-z0-9_]* and must not shadow PATH/AUTOFLOW_*/PYTHON*): ` +
+        skippedSecretNames.join(', '),
+    );
+  }
+
   // N23: per-execution callback credentials — injected AFTER the params loop
   // so user params can never override them. The token is an HMAC bound to
   // this executionId with a short TTL (task timeout + grace), derived from
@@ -1793,6 +1837,45 @@ async function prepareExecution(
   // 不注入，与既有行为一致。
   if (entry.traceparent) {
     env['AUTOFLOW_TRACE_ID'] = entry.traceparent;
+  }
+
+  // ---------------------------------------------------------------------
+  // I18N-01（生产故障）：中文任务日志在 Windows 上全是乱码。
+  //
+  // 现象（用户报）：任务失败信息在控制台/日志里是
+  //   RuntimeError: ȱ�ٷ���ƾ֤������ƽ̨ secrets ���� FEISHU_APP_ID
+  // 而报错文案本身是给**人**看的（"缺少飞书凭证：请在平台 secrets 配置…"），
+  // 乱码后完全无法阅读，等于这条最有价值的诊断信息被销毁。
+  //
+  // 根因是**两层编码不匹配**，与执行器是否 mock 无关：
+  //   · Windows 上 Python 的 stderr 编码取 `locale.getpreferredencoding()`
+  //     （实测本机 = cp936/GBK），且 **`sys.stdout.reconfigure()` 管不到
+  //     stderr**——用户脚本里那句"重配 stdout"只救了 stdout，异常回溯走的是
+  //     stderr，仍是 GBK 字节；
+  //   · 执行器用 `StringDecoder('utf8')` 解这两个流（本文件下方），于是 GBK
+  //     字节按 UTF-8 解码 → U+FFFD 替换字符。实测原始字节 `D6 D0 CE C4`
+  //     （GBK "中文"）按 UTF-8 解码即得 `\uFFFD\uFFFD\uFFFD\uFFFD`。
+  //
+  // 修法：给子进程显式注入 `PYTHONIOENCODING=utf-8`，让 Python 的 stdout/
+  // **stderr** 都按 UTF-8 写，与执行器的解码口径对齐。实测四种组合（脚本是否
+  // reconfigure × 有无该变量）只有设了该变量的两种能把中文完整送达。
+  //
+  // 为什么放在这里（runtime 判定之前）：只对 python 任务有意义，且必须在
+  // spawn 之前落到 env 上。放在 params 注入**之后**，与 CALLBACK_TOKEN 同一
+  // 纪律——用户参数不得覆盖它（否则"参数里塞一个 PYTHONIOENCODING"就能把
+  // 日志重新弄乱，而 AUTOFLOW_ 前缀注入本就碰不到这个名字，这里是显式设防）。
+  //
+  // 注意 node runtime 不需要对应处理：Node 的 stdout/stderr 恒为 UTF-8。
+  // shell runtime 也刻意不动——那是用户自己的 cmd/bash 脚本，编码是脚本作者
+  // 的语义（`chcp` 等），执行器不该替它决定。
+  // ---------------------------------------------------------------------
+  if (actualRuntime === 'python') {
+    env['PYTHONIOENCODING'] = 'utf-8';
+    // PYTHONUTF8=1 是 Python 3.7+ 的 UTF-8 模式总闸，覆盖"解释器在启动早期
+    // 就打印"的路径（例如 `-X` 报错、解释器自身的 traceback），那些发生在
+    // PYTHONIOENCODING 生效之前。两者并存是刻意的：前者管 I/O 层，后者管
+    // 解释器级默认编码。
+    env['PYTHONUTF8'] = '1';
   }
 
   let cmd: string;
