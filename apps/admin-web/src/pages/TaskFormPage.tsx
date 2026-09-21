@@ -1391,7 +1391,7 @@ export default function TaskFormPage() {
                           onClick={() => add()}
                           disabled={fields.length >= MAINTENANCE_WINDOWS_MAX}
                         >
-                          {t('taskForm.window.add')}
+                          {t('taskForm.window.add')}（{fields.length}/{MAINTENANCE_WINDOWS_MAX}）
                         </Button>
                       </Form.Item>
                     </>

@@ -2084,6 +2084,7 @@ export default {
   'depGraph.nodeCurrent': 'Current task',
   'depGraph.nodeNavigate': 'Click to navigate to this task',
   'depGraph.legend': 'Left shows upstream dependencies, right shows the downstream trigger chain; arrow direction = post-execution trigger direction. Dot color = task status (green=active, orange=paused).',
+  'depGraph.status.deleted': 'Deleted',
 
   'artifacts.downloadFail': 'Failed to download artifact',
   'artifacts.title': 'Artifacts ({{count}})',

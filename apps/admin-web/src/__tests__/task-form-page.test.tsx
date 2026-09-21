@@ -394,6 +394,18 @@ describe('TaskFormPage 维护窗口动态行（FEAT-06 组件级，UI-06 单页�
     );
   }, 15_000);
 
+  it('P2-2：添加按钮始终显示 (n/10) 取值范围，满员前不再静默变灰', async () => {
+    mockRouteParams = {}; // 创建态
+    renderPage();
+
+    // 旧实现按钮只有「添加维护窗口」、无计数；加满到上限后 disabled 静默变灰。
+    const addButton = await screen.findByRole('button', { name: /添加维护窗口（0\/10）/ });
+    fireEvent.click(addButton);
+    expect(
+      await screen.findByRole('button', { name: /添加维护窗口（1\/10）/ }),
+    ).toBeTruthy();
+  }, 15_000);
+
   it('填写窗口后提交：payload.maintenanceWindows 带结构化数组', async () => {
     mockRouteParams = {}; // 创建态
     vi.mocked(tasksApi.create).mockReset().mockResolvedValue({ id: 'new-task' } as never);

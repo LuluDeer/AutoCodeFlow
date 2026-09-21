@@ -2091,6 +2091,7 @@ export default {
   'depGraph.nodeCurrent': '当前任务',
   'depGraph.nodeNavigate': '点击跳转到该任务',
   'depGraph.legend': '左侧为上游依赖，右侧为下游触发链；箭头方向 = 执行完成后的触发方向。圆点颜色 = 任务状态（绿=启用，橙=暂停）。',
+  'depGraph.status.deleted': '已删除',
 
   'artifacts.downloadFail': '产物下载失败',
   'artifacts.title': '产物（{{count}}）',
