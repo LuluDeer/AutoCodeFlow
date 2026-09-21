@@ -201,4 +201,19 @@
 #        100），并加源码守卫禁止退回无上限形态。
 #     按 ADR-005 同 commit 重打：本机(Windows) ncc 0.44 产出 5cf5e98f…，
 #     bundle 2537kB。
-5cf5e98f7723a087cd34c68267468aae3abc9836500d2a86ed0a2a6a72b2f1de  index.js
+#   - 用户反馈（后台触发执行任务报「缺少飞书凭证」+ 中英文日志乱码）：
+#     · **SEC-02 续**：secrets 此前与 params 合并且统一加 `AUTOFLOW_` 前缀，
+#       而报错文案教的却是「配置 FEISHU_APP_ID」——用户照提示配置也永远配不到
+#       （脚本读裸名恒为空；第三方 SDK 认规范名，更无从改写）。现新增
+#       `secret-env.ts`：secrets 额外按**原名**注入一份（params 通道保持不变，
+#       存量脚本零回归），并带名字闸门（白名单 + 保留名拒绝——一个名为 PATH 的
+#       secret 会让子进程连解释器都找不到）。
+#     · **I18N-01**：Windows 上 Python 的 stderr 取 cp936/GBK，而执行器按 UTF-8
+#       解码子进程输出 → 中文报错变成 `ȱ�ٷ���ƾ֤…`（用户看到的形态），
+#       最有价值的诊断信息被销毁。现给 python 子进程注入 PYTHONIOENCODING=utf-8
+#       + PYTHONUTF8=1（仅 python runtime；node 恒 UTF-8，shell 编码归脚本作者）。
+#     桌面端内嵌执行器漏打这两项 = 用户装的新版本仍然复现同一故障（本次 bug 的
+#     客户端侧修复就在这里），故按 ADR-005 同 commit 重打：本机(Windows) ncc 0.44
+#     产出 0ba5af66…，bundle 2547kB（源码净增：secret-env.ts + execute.ts 两段
+#     注入 + 注释）。
+0ba5af665f2b4feb19a6c3bfd59b7ffe41a0968469cda1bb29a8eb2a6d4ddea5  index.js
