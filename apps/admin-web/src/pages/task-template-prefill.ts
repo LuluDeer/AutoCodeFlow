@@ -26,6 +26,10 @@ export function templateConfigToFormValues(
   // `pick` 天然不写入，保持表单默认空态，向后兼容。
   pick('runtimeVersion');
   pick('codeSource');
+  // P1-7：git 代码来源的仓库/分支必须随模板预填，否则"从模板建任务"时
+  // 代码来源选择静默失效（与 config-from-form / extract 正向映射同段修复）。
+  pick('gitRepo');
+  pick('gitBranch');
   pick('maxRetry');
   pick('retryDelay');
   pick('priority');
