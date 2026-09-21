@@ -615,3 +615,53 @@ describe('CommandPalette — 数据流（防抖 / 降级 / 守卫）', () => {
     }
   });
 });
+
+describe('CommandPalette — P2-5 静态页面导航（UX 审计）', () => {
+  // 旧实现只覆盖任务/执行记录/执行器/应用四类后端实体；审计日志/用户/设置等
+  // 静态页面无搜索路径、在面板里搜不到。现把静态页面路由作为「操作」分组补充，
+  // 仅在有关键词时按标题/描述客户端匹配出现（零输入仍只留两个主操作）。
+  it('零输入只渲染两个主操作，不出现静态页面导航', () => {
+    renderPalette();
+    expect(screen.getByText('新建任务')).toBeTruthy();
+    expect(screen.getByText('创建应用')).toBeTruthy();
+    // 旧缺陷：静态页面本来就无处可搜；修复后也不应零输入即铺满操作分组
+    expect(screen.queryByText('审计日志')).toBeNull();
+    expect(screen.queryByText('系统设置')).toBeNull();
+  });
+
+  it('输入关键词命中静态页面 -> 出现入口，点击直达该页面', async () => {
+    const { container } = renderPalette();
+    const input = getPaletteInput();
+    fireEvent.change(input, { target: { value: '审计' } });
+
+    await waitFor(() => {
+      expect(screen.getByText('审计日志')).toBeTruthy();
+    }, { timeout: 5000 });
+    fireEvent.click(screen.getByText('审计日志'));
+    await waitFor(() => {
+      expect(container.textContent).toContain('route:/audit');
+    });
+  });
+
+  it('另一个静态页面（系统设置）同样可被关键词命中并直达', async () => {
+    const { container } = renderPalette();
+    const input = getPaletteInput();
+    fireEvent.change(input, { target: { value: '设置' } });
+    await waitFor(() => {
+      expect(screen.getByText('系统设置')).toBeTruthy();
+    }, { timeout: 5000 });
+    fireEvent.click(screen.getByText('系统设置'));
+    await waitFor(() => {
+      expect(container.textContent).toContain('route:/settings');
+    });
+  });
+
+  it('admin-only 静态页面（审计日志）对普通用户隐藏', async () => {
+    useAuthStore.setState({ user: { id: 2, username: 'dev', role: 'user' } as never });
+    renderPalette();
+    const input = getPaletteInput();
+    fireEvent.change(input, { target: { value: '审计' } });
+    await new Promise((r) => setTimeout(r, 400));
+    expect(screen.queryByText('审计日志')).toBeNull();
+  });
+});
