@@ -170,4 +170,24 @@
 #     禁止该形态回归（反证：把它加回代码行 → 守卫转红）。
 #     按 ADR-005 同 commit 重打：本机(Windows) ncc 0.44 产出 373e2f27…，
 #     bundle 2521kB（源码净减，字节内容变）。
-373e2f27806c6d8099ca7a84e41ab18bd49692319119c60142210a2660db4a58  index.js
+#   - 用户反馈三连（部署/升级/建任务）：
+#     ① **应用升级在 Windows 上必然失败**（`EPERM: operation not permitted,
+#        rename '...\current.next-<pid>-<ts>' -> '...\current'`）。根因是平台
+#        差异：Windows 上 current 是 junction，"junction 改名覆盖已存在 junction"
+#        抛 EPERM（POSIX 允许覆盖目录符号链接，故 Linux 从不复现），而原实现只
+#        catch EEXIST。表现为"部署 1.0.0 成功、之后每次升级都失败"。修法：EPERM
+#        也走"先 unlink 链接再 rename"（unlink 对 junction 不穿透，已实测目标
+#        目录与内容完好）。新增 deploy-fs.spec.ts 用**真实文件系统**构造 junction
+#        验证——deploy.spec.ts 全 mock fs，这正是该缺陷能上线的直接原因。
+#     ② 同 (version, deploymentId) 重复部署时 releaseKey 相同 → finalReleaseDir
+#        恰是 current 指向的活目录，removePathIfExists 会删掉它；最严重的是失败
+#        回滚 restoreCurrentRelease 会把 current 指向**已删除**的目录 → 应用彻底
+#        不可用。修法：resolveReleasePaths 在目标已存在时改用带唯一后缀的新目录。
+#     ③ daemon 模式名不副实（runMode 形参此前零引用，"单次"与"常驻"实现上完全
+#        等价）。现补异常退出自动重启：1s 起指数退避至 60s，连续 10 次后放弃并
+#        上报 failed；干净退出（code 0）不重启；stop/uninstall/upgrade 通过摘除
+#        daemonSpecs 登记阻止复活（登记是"该不该继续跑"的唯一权威——退出处理器里
+#        runningApps 已 delete，用它判定会让重启永不发生）。
+#     按 ADR-005 同 commit 重打：本机(Windows) ncc 0.44 产出 bc24fdbe…，
+#     bundle 2538kB（源码净增）。
+bc24fdbe37743d50aaf9757352ae0c312c312a7e5cb1cd90cce1eb7f22825f77  index.js
