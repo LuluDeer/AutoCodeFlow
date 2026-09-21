@@ -37,6 +37,7 @@ import {
 // A3-C：协议闸门（由 packages/executor-protocol/protocol.json 生成，勿手改产物）
 import {
   ExecuteRequestSchema,
+  type ExecuteRequest,
   KillResponseSchema,
 } from '../generated/protocol.schemas';
 import {
@@ -205,33 +206,13 @@ function queueTaskInstall<T>(taskId: string, job: () => Promise<T>, isAborted: (
 
 export const executeRouter = Router();
 
-export interface ExecuteRequest {
-  executionId: string;
-  task: {
-    id?: string;
-    name?: string;
-    runtime?: string;
-    entrypoint?: string;
-    timeout?: number;
-    requirements?: string[];
-    gitRepo?: string;
-    gitCommit?: string;
-    gitBranch?: string;
-    [key: string]: unknown;
-  };
-  params?: Record<string, unknown>;
-  /**
-   * SEC-02 续：任务级凭据，与 params **分开**传递并按**原名**注入子进程 env。
-   *
-   * 为什么与 params 分开：params 走 `AUTOFLOW_<KEY>` 前缀（既有契约，不动），
-   * 而凭据必须能落到**规范名**上——第三方 SDK 认 `AWS_ACCESS_KEY_ID` /
-   * `OPENAI_API_KEY`，脚本无法把 SDK 的读取名改写成带前缀的形态。
-   *
-   * 纯增量字段：admin 仍把 secrets 合并进 params（旧执行器行为逐字节不变），
-   * 故本字段缺失时零影响，无需协议版本门禁。
-   */
-  secrets?: Record<string, unknown> | null;
-}
+// E-P2-P4: 单一事实源——请求类型直接来自生成的 ExecuteRequestSchema，不再手写
+// 第二份 interface（消除协议两端漂移的第二事实源）。
+//
+// 其中 secrets（SEC-02）：任务级凭据，与 params 分开传递并按**原名**注入子进程
+// env——params 走 AUTOFLOW_<KEY> 前缀，凭据必须落到规范名（如 AWS_ACCESS_KEY_ID）。
+// 纯增量字段，admin 仍把 secrets 合并进 params，缺失时零影响。
+export type { ExecuteRequest };
 
 /** executionId 会被用作 workDir 下的目录名——限定安全字符集，杜绝路径穿越
  *  （S6/Q11 的字符级前置，深度解析检查见 validateExecutionWorkDir）。 */
@@ -491,7 +472,7 @@ export function acceptExecution(
     }
 
     const executionId = body?.executionId;
-    const params = body?.params;
+    const params = body?.params ?? undefined;
 
     if (!executionId || !body.task) {
       return reject(400, 'executionId and task are required');

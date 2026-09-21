@@ -23,6 +23,7 @@ import {
   executeControlCommand,
   isControlCommandType,
   parseControlCommand,
+  type ControlCommandType,
 } from './commands';
 
 describe('control command routing (ARCH-33)', () => {
@@ -81,7 +82,7 @@ describe('control command routing (ARCH-33)', () => {
     ['app-uninstall', '/api/app-uninstall'],
     ['config-reload', '/api/config/reload'],
     ['update-package', '/api/update-package'],
-  ])('%s → 本地回环 %s（路径由类型决定）', async (type, expectedPath) => {
+  ] as Array<[ControlCommandType, string]>)('%s → 本地回环 %s（路径由类型决定）', async (type, expectedPath) => {
     const result = await executeControlCommand({
       commandId: 'c1',
       type,
