@@ -1177,6 +1177,7 @@ export default {
   'execPkg.push.resultTitle': '推送结果：',
   'execPkg.push.task': '推送任务',
   'execPkg.push.queued': '已入队（执行器忙，将在空闲后自动安装）',
+  'execPkg.push.commandId': '命令 ID：{{id}}',
   'execPkg.close': '关闭',
 
   'executorDetail.updateSuccess': '更新成功',
@@ -1223,6 +1224,9 @@ export default {
   // P1-24：离线诊断三要素（阈值/最后心跳绝对时刻/已静默时长）
   'executorDetail.offline.threshold': '判死阈值：连续 {{seconds}} 秒无心跳后，后端会将其标记为离线',
   'executorDetail.offline.lastSeen': '最后心跳：{{absolute}}（已静默 {{silent}}）',
+  'executorDetail.offline.reasonManual': '离线原因：优雅下线（执行器主动停止或管理员置离线）',
+  'executorDetail.offline.reasonStale': '离线原因：心跳超时被判死（长时间未上报心跳）',
+  'executorDetail.offline.reasonUnknown': '离线原因：未知（旧版执行器未上报）',
   // 补充 P2：满载已饱和语义
   'executorDetail.saturated': '已满载：达到并发上限，调度器不再向这台执行器派发新任务',
   'executorDetail.status.pending': '等待中',

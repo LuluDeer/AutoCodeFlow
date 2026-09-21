@@ -76,6 +76,9 @@ export interface Executor {
    * 而 admin 的 `findAll()` 是直接展开实体（executor.service.ts:1143），
    * 该字段**一直在响应体里**——属于类型漏声明，不是后端不返回。
    */
+  /** 遗留 P1-24：离线原因——manual=优雅下线（主动 shutdown/管理员置离线）；
+   *  stale_timeout=心跳超时被 stale sweep 判死；null=在线或旧版执行器未上报。 */
+  offlineReason?: 'manual' | 'stale_timeout' | null;
   interpreters?: Array<{
     /** 完整补丁版本，如 "3.11.13"（不是任务声明的 X.Y）。 */
     version: string;

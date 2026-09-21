@@ -483,6 +483,15 @@ export default function ExecutorDetailPage() {
           title={t('executorDetail.offline.alert')}
           description={
             <Space orientation="vertical" size={2} style={{ fontSize: 12 }}>
+              {/* 遗留 P1-24：消费后端 offlineReason（manual/stale_timeout），区分
+                  优雅下线与心跳超时判死——此前 GET /:id 无此字段，只能笼统说离线。 */}
+              <div>
+                {(executor as { offlineReason?: string | null }).offlineReason === 'manual'
+                  ? t('executorDetail.offline.reasonManual')
+                  : (executor as { offlineReason?: string | null }).offlineReason === 'stale_timeout'
+                    ? t('executorDetail.offline.reasonStale')
+                    : t('executorDetail.offline.reasonUnknown')}
+              </div>
               <div>
                 {t('executorDetail.offline.threshold', {
                   seconds: Math.round(heartbeatTimeoutMs / 1000),
