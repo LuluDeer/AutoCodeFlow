@@ -207,3 +207,30 @@ describe('P3-12 推送弹窗执行器列表加载失败', () => {
     expect(startPushButton().disabled).toBe(false);
   });
 });
+
+
+describe('遗留 P1-10：push 响应 per-executor 明细（status/commandId/error）', () => {
+  it('逐台渲染：queued 显示命令 ID、error 显示失败原因与执行器地址', async () => {
+    vi.mocked(executorsApi.list).mockResolvedValue([
+      mkExecutor({ id: 'ex-on', appName: 'online-node', status: 'online' }),
+    ]);
+    // 后端新形状：每台带 status（queued/success/error）+ 可选 commandId/error
+    vi.mocked(pushPackage).mockResolvedValue([
+      { executorId: 'ex-on', address: '10.0.0.1:3002', success: true, status: 'success' },
+      { executorId: 'ex-on', address: '10.0.0.2:3002', success: true, status: 'queued', commandId: 'cmd-abc' },
+      { executorId: 'ex-on', address: '10.0.0.3:3002', success: false, status: 'error', error: 'package checksum mismatch' },
+    ]);
+    render(<ExecutorPackagesPage />);
+    expect(await screen.findByText('python-runner')).toBeTruthy();
+
+    openPushModal();
+    expect(await screen.findByText(/共\s*1\s*台在线/)).toBeTruthy();
+    fireEvent.click(startPushButton());
+
+    // queued 行：命令 ID 可见
+    await waitFor(() => expect(screen.getByText(/命令 ID：cmd-abc/)).toBeTruthy());
+    // error 行：失败原因与失败执行器地址可见
+    await waitFor(() => expect(screen.getAllByText(/package checksum mismatch/).length).toBeGreaterThanOrEqual(1));
+    expect(screen.getByText('10.0.0.3:3002')).toBeTruthy();
+  });
+});
