@@ -47,8 +47,9 @@ describe('UX-02：登录页暗色适配', () => {
   it('主按钮与品牌图标收敛到全站强调色，不再是旧 antd 蓝紫', () => {
     expect(code).not.toContain('#1677ff');
     expect(code).not.toContain('#7c3aed');
-    // 与 MainLayout 的品牌渐变同源
-    expect(code).toContain('#22c55e');
+    // 与 MainLayout 的品牌渐变同源——D-P2-16（设计审计）起收敛为
+    // theme/tokens.ts 的 BRAND_GRADIENT 单源（不再内联渐变字面量）。
+    expect(code).toContain('BRAND_GRADIENT');
   });
 
   it('反证：主题变量确实随 data-theme 翻转（否则上面的替换等于没修）', () => {
