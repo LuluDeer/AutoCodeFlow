@@ -1889,6 +1889,12 @@ export default {
   // python_task_multiversion（FR-18 / AC-17b）：代码来源三选一。
   'taskForm.field.codeSource': '代码来源',
   'taskForm.field.codeSource.tooltip': '每条任务只能有「恰好一种」代码来源通道。requirements（PyPI 依赖）属依赖型渠道，可与任一来源并存。',
+  // P0-5（UX 审计）：切换来源会清空不适用字段，而对应输入框随即从界面消失——
+  // 必须先告知"会失去什么"，否则误点一下即不可逆丢配置。
+  'taskForm.codeSource.switch.title': '切换代码来源将清空以下已有配置',
+  'taskForm.codeSource.switch.intro': '代码来源三选一，切换后不适用的字段会被清空（保存时生效）。以下内容将丢失：',
+  'taskForm.codeSource.switch.ok': '确认切换并清空',
+  'taskForm.codeSource.switch.cancel': '取消',
   'taskForm.field.codeSource.required': '请选择代码来源',
   'taskForm.field.codeSource.git': 'Git 仓库',
   'taskForm.field.codeSource.gitDesc': '执行器从 gitRepo 拉取代码',
@@ -1962,6 +1968,9 @@ export default {
   'taskForm.alert.broadcastPin': '已切换到广播模式：此前选定的执行器将在提交时清空（互斥语义）',
   'taskForm.field.timeout': '超时时间',
   'taskForm.field.timeout.unit': '（秒）',
+  // P0-6（UX 审计）：0 = 不限时（后端 @Min(0) 且 timeout-policy 以 <=0 判不限时），
+  // 此前前端下限是 10，导致存量 0 被 antd 静默钳成 10 秒。
+  'taskForm.field.timeout.tooltip': '0 = 不限时（长任务请填 0）；上限 86400 秒。留空按 300 秒。',
   'taskForm.field.timeoutAction': '超时动作',
   'taskForm.field.timeoutAction.hint': '（到时后的处理方式）',
   'taskForm.field.timeoutAction.tooltip': '终止：执行器杀掉进程树（默认）。终止并重试：杀掉后按最大尝试次数重新排队一次。仅通知：不额外下发终止指令，只发超时告警——进程仍会被执行器的硬超时终止。',

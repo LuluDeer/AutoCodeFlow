@@ -514,6 +514,54 @@ export function applyCodeSourcePayload(
 }
 
 /**
+ * P0（UX-AUDIT-2026-09-21 §P0-5）：切换代码来源会**清空**哪些字段（供确认弹窗）。
+ *
+ * ## 为什么需要这个
+ *
+ * `applyCodeSourcePayload` 会把不适用字段显式置 null（PATCH 是 Object.assign
+ * 语义，不发 null 会保留旧值 → 任务静默带两个冲突来源），而对应的输入框是
+ * **条件渲染**的——用户一改单选，框就从 DOM 消失、值也已置 null。两条叠加的
+ * 后果：误点一下「Glue 脚本」，gitRepo/gitBranch 立刻不见了，用户既看不到被清
+ * 的内容、也收不到任何提示，切回来只能凭记忆重填。属误操作不可逆。
+ *
+ * 故在切换前先算"会损失什么"，把选择交给用户——**只列真正有值的字段**，
+ * 全空时不打扰（例如新建任务时来回切换不该弹窗）。
+ *
+ * 复用 applyCodeSourcePayload 的判定，而不是另写一份规则：两处一旦漂移，
+ * 弹窗就会承诺"不清 X"而实际清了 X，比不弹更糟。
+ *
+ * @returns 将被清空的字段清单（人类可读标签 + 值）；空数组 = 无需确认
+ */
+export function codeSourceSwitchLosses(
+  values: Record<string, unknown>,
+  next: CodeSource,
+  previous: CodeSource,
+): Array<{ field: string; value: string }> {
+  // 以 next 为参数跑一次真实载荷变换，比较前后差异——判定与提交路径**同源**。
+  const before = { ...values };
+  const after = applyCodeSourcePayload({ ...values }, next, previous);
+  const labels: Record<string, string> = {
+    gitRepo: 'Git 仓库地址',
+    gitBranch: 'Git 分支',
+    glueSource: 'Glue 脚本',
+    applicationId: '关联应用',
+  };
+  const losses: Array<{ field: string; value: string }> = [];
+  for (const field of Object.keys(labels)) {
+    const prevVal = trimmedOrNull(before[field]);
+    const nextVal = trimmedOrNull(after[field]);
+    // 只在"原本有值、变换后没了"时计入——全空切换不打扰
+    if (prevVal !== null && nextVal === null) {
+      losses.push({
+        field,
+        value: field === 'glueSource' ? `${String(prevVal).length} 个字符的脚本` : String(prevVal),
+      });
+    }
+  }
+  return losses;
+}
+
+/**
  * AC-19a/FR-19：zip 应用的 runtime 与任务 runtime 一致性。
  *  - 任一侧缺失（未选应用 / 应用列表未加载 / 应用无 runtime）→ null
  *    （不判定，交给服务端权威校验，避免列表未就绪时误报）；
