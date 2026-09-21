@@ -1879,6 +1879,12 @@ export default {
   // python_task_multiversion (FR-18 / AC-17b): exactly one code source channel.
   'taskForm.field.codeSource': 'Code source',
   'taskForm.field.codeSource.tooltip': 'A task may have exactly one code source channel. requirements (PyPI dependencies) is a dependency channel and may coexist with any source.',
+  // P0-5 (UX audit): switching the source clears the fields that no longer apply,
+  // and their inputs disappear from the form at the same time — warn first.
+  'taskForm.codeSource.switch.title': 'Switching code source will clear the following configuration',
+  'taskForm.codeSource.switch.intro': 'A task has exactly one code source; fields that no longer apply are cleared on save. The following will be lost:',
+  'taskForm.codeSource.switch.ok': 'Switch and clear',
+  'taskForm.codeSource.switch.cancel': 'Cancel',
   'taskForm.field.codeSource.required': 'Please select a code source',
   'taskForm.field.codeSource.git': 'Git repository',
   'taskForm.field.codeSource.gitDesc': 'The executor pulls code from gitRepo',
@@ -1953,6 +1959,9 @@ export default {
   'taskForm.alert.broadcastPin': 'Switched to Broadcast mode: the previously selected executor will be cleared on submit (mutual exclusion)',
   'taskForm.field.timeout': 'Timeout',
   'taskForm.field.timeout.unit': '(seconds)',
+  // P0-6 (UX audit): 0 = no limit; the previous min of 10 silently clamped
+  // stored 0 values up to a 10-second timeout on blur.
+  'taskForm.field.timeout.tooltip': '0 = no limit (use 0 for long-running tasks); max 86400 seconds. Empty defaults to 300 seconds.',
   'taskForm.field.timeoutAction': 'Timeout Action',
   'taskForm.field.timeoutAction.hint': '(what to do when it fires)',
   'taskForm.field.timeoutAction.tooltip': 'Terminate: the executor kills the process tree (default). Terminate & Retry: after killing, re-queue once per the max attempts. Notify only: no extra termination instruction, only a timeout alert — the process is still terminated by the executor hard timeout.',

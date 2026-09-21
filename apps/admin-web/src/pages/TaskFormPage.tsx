@@ -7,6 +7,8 @@ import {
   // python_task_multiversion（FR-06/FR-18）：runtimeVersion 声明 + codeSource 互斥
   applyRuntimeVersionPayload,
   applyCodeSourcePayload,
+  // P0-5（UX 审计）：切换代码来源前的损失预告（与提交路径同源判定）
+  codeSourceSwitchLosses,
   // SEC-02 续（生产故障）：凭据的掩码闸门（提交前过滤 ******，防掩码落库）
   applySecretsPayload,
   deriveCodeSourceFromTask,
@@ -504,6 +506,54 @@ export default function TaskFormPage() {
       cancelled = true;
     };
   }, [templateId, isEdit, form, t]);
+
+  /**
+   * P0（UX-AUDIT-2026-09-21 §P0-5）：切换代码来源前告知将被清空的字段。
+   *
+   * `applyCodeSourcePayload` 会把不适用字段置为**显式 null**（必须如此：PATCH 是
+   * Object.assign 语义，不发 null 会保留旧值、任务静默带两个冲突来源），而对应
+   * 的输入框是条件渲染的——用户一改单选，gitRepo/gitBranch 的框立刻从 DOM 消失。
+   * 两条叠加的后果：误点一下「Glue 脚本」，gitRepo/gitBranch 就没了，用户既看不到
+   * 被清的内容、也收不到提示，切回来只能凭记忆重填。属误操作不可逆。
+   *
+   * 判据走纯函数 `codeSourceSwitchLosses`（复用 applyCodeSourcePayload，避免
+   * 弹窗承诺与实际清空漂移）；**全空时不打扰**——新建任务来回点不该弹确认。
+   */
+  const handleCodeSourceChange = (next: CodeSource) => {
+    if (next === codeSource) return;
+    const losses = codeSourceSwitchLosses(form.getFieldsValue(true), next, codeSource);
+    if (losses.length === 0) {
+      setCodeSource(next);
+      return;
+    }
+    // 只列真正有值的字段，点名到值——用户才能判断"这就是我要的那份配置"
+    Modal.confirm({
+      title: t('taskForm.codeSource.switch.title'),
+      content: (
+        <div>
+          <p style={{ marginBottom: 8 }}>{t('taskForm.codeSource.switch.intro')}</p>
+          <ul style={{ margin: 0, paddingLeft: 20 }}>
+            {losses.map((l) => (
+              <li key={l.field}>
+                {l.field === 'gitRepo'
+                  ? t('taskForm.field.gitRepo')
+                  : l.field === 'gitBranch'
+                    ? t('taskForm.field.gitBranch')
+                    : l.field === 'glueSource'
+                      ? t('taskForm.section.glueTitle')
+                      : t('taskForm.field.applicationId')}
+                ：<Text code>{l.value}</Text>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ),
+      okText: t('taskForm.codeSource.switch.ok'),
+      cancelText: t('taskForm.codeSource.switch.cancel'),
+      okButtonProps: { danger: true },
+      onOk: () => setCodeSource(next),
+    });
+  };
 
   // F-04（DEEP_REVIEW @0ef3bbe）：AI 建议 Cron 应用——编辑态必须等任务回填
   // 完成后再覆盖 cronExpression，否则任务加载 effect 会用库内旧值盖掉建议值；
@@ -1085,7 +1135,7 @@ export default function TaskFormPage() {
                 >
                   <Radio.Group
                     value={codeSource}
-                    onChange={(e) => setCodeSource(e.target.value as CodeSource)}
+                    onChange={(e) => handleCodeSourceChange(e.target.value as CodeSource)}
                     data-testid="code-source-select"
                   >
                     <Space orientation="vertical" style={{ width: '100%' }}>
@@ -1519,8 +1569,18 @@ export default function TaskFormPage() {
 
                 <Divider style={{ margin: '16px 0' }} />
 
-                <Form.Item name="timeout" label={<>{t('taskForm.field.timeout')} <Text type="secondary" style={{ fontSize: 12 }}>{t('taskForm.field.timeout.unit')}</Text></>}>
-                  <InputNumber min={10} max={86400} style={{ width: 160 }} placeholder="300" />
+                <Form.Item name="timeout" label={<>{t('taskForm.field.timeout')} <Text type="secondary" style={{ fontSize: 12 }}>{t('taskForm.field.timeout.unit')}</Text></>} tooltip={{ title: t('taskForm.field.timeout.tooltip'), icon: <InfoCircleOutlined /> }}>
+                  {/*
+                    P0（UX-AUDIT-2026-09-21 §P0-6）：下限必须是 0（= 不限时）。
+
+                    后端 CreateTaskDto 是 `@Min(0)` 且描述明写 "0 = no limit"，
+                    timeout-policy.util 也以 `timeoutSec <= 0` 判"不限时"。此前
+                    前端写 min={10}，而编辑态回填是 `task.timeoutSeconds ?? task.timeout`
+                    ——存量 timeout=0（不限时）的任务打开编辑页显示 0，antd 在失焦时
+                    按 min 钳到 **10**：一个原本不限时的长任务被无声改成 10 秒超时，
+                    保存后执行必被杀。反向地，用户也无法表达"不限时"。
+                  */}
+                  <InputNumber min={0} max={86400} style={{ width: 160 }} placeholder="300" />
                 </Form.Item>
 
                 {/* CORE-04: 超时策略分级——超时后动作三选一。kill 为既有树杀
