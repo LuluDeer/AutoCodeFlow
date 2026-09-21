@@ -81,6 +81,8 @@ export const SEMANTIC_COLORS = {
   warning: '#F59E0B',
   info: '#3B82F6',
   purple: '#8B5CF6',
+  /** 中性/未连接态（SSE connecting、DAG 等状态点的灰面），亮暗面均可读 */
+  neutral: '#94A3B8',
   /** 图表网格线：亮面浅灰 / 暗面 MASTER border 色 */
   gridLight: '#E2E8F0',
   gridDark: '#334155',
@@ -96,6 +98,13 @@ export const CHART_COLORS = {
   grid: (isDark: boolean) => (isDark ? SEMANTIC_COLORS.gridDark : SEMANTIC_COLORS.gridLight),
   axisText: (isDark: boolean) => (isDark ? '#94A3B8' : '#475569'),
 } as const;
+
+/**
+ * D-P2-16（设计审计）：品牌渐变唯一事实源。
+ * MASTER §Accent/CTA #22C55E → #16A34A，供 Logo 方块 / 用户头像 / 登录主按钮
+ * 共用——改品牌色只改此处，不再五处内联。
+ */
+export const BRAND_GRADIENT = 'linear-gradient(135deg, #22c55e 0%, #16a34a 100%)';
 
 /** SSE 日志区双主题面（亮面白底深字 / 暗面 MASTER 画布 + foreground） */
 export const LOG_PANEL_COLORS = {

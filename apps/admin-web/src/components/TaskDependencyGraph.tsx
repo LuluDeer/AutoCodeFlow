@@ -7,7 +7,8 @@
  * 依赖扇出语义（上游全部 SUCCESS）兜底，无需前端排序保证。
  */
 import { useMemo, useState } from 'react';
-import { Button, Empty, Spin, Tag, Typography, Alert, message, theme } from 'antd';
+import { Button, Empty, Tag, Typography, Alert, message, theme } from 'antd';
+import PageSkeleton from './PageSkeleton';
 import { useNavigate } from 'react-router-dom';
 import { ThunderboltOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
@@ -81,8 +82,9 @@ export default function TaskDependencyGraph({ taskId }: { taskId: string }) {
     }
   };
 
+  // D-P2-07（设计审计）：整 Tab 加载改 PageSkeleton（table 变体），与全站首屏骨架一致
   if (loading && !data) {
-    return <div style={{ textAlign: 'center', padding: 40 }}><Spin /></div>;
+    return <PageSkeleton variant="table" rows={6} />;
   }
   if (error) {
     return (
@@ -152,7 +154,7 @@ export default function TaskDependencyGraph({ taskId }: { taskId: string }) {
         <Alert
           type="warning"
           showIcon
-          message={t('depGraph.cycleAlert')}
+          title={t('depGraph.cycleAlert')}
           style={{ marginBottom: 12 }}
         />
       )}
@@ -160,7 +162,7 @@ export default function TaskDependencyGraph({ taskId }: { taskId: string }) {
         <Alert
           type="info"
           showIcon
-          message={t('depGraph.truncatedAlert', { count: graph.nodes.length })}
+          title={t('depGraph.truncatedAlert', { count: graph.nodes.length })}
           style={{ marginBottom: 12 }}
         />
       )}
@@ -210,7 +212,18 @@ export default function TaskDependencyGraph({ taskId }: { taskId: string }) {
             return (
               <div
                 key={n.id}
+                // D-P2-05（设计审计）：可点击节点补键盘可达——tabIndex + Enter/Space 触发
+                tabIndex={n.isCurrent ? -1 : 0}
+                role={n.isCurrent ? undefined : 'button'}
+                aria-label={n.isCurrent ? t('depGraph.nodeCurrent') : t('depGraph.nodeNavigate')}
                 onClick={() => !n.isCurrent && nav(`/tasks/${n.id}`)}
+                onKeyDown={(e) => {
+                  if (n.isCurrent) return;
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    nav(`/tasks/${n.id}`);
+                  }
+                }}
                 style={{
                   position: 'absolute',
                   left: p.x,
@@ -223,7 +236,7 @@ export default function TaskDependencyGraph({ taskId }: { taskId: string }) {
                   background: n.isCurrent ? token.colorPrimaryBg : token.colorBgContainer,
                   cursor: n.isCurrent ? 'default' : 'pointer',
                   overflow: 'hidden',
-                  boxShadow: n.isCurrent ? '0 2px 8px rgba(22,119,255,0.25)' : undefined,
+                  boxShadow: n.isCurrent ? '0 2px 8px rgba(34,197,94,0.25)' : undefined,
                 }}
                 title={n.isCurrent ? t('depGraph.nodeCurrent') : t('depGraph.nodeNavigate')}
               >

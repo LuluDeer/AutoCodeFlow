@@ -10,6 +10,8 @@ import { useAuthStore, type AuthUser } from '../store/auth';
 import { getErrMsg } from '../utils/error';
 // UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
 import '../i18n';
+// D-P2-16（设计审计）：品牌渐变唯一事实源（Logo 方块 / 主按钮共用）
+import { BRAND_GRADIENT } from '../theme/tokens';
 
 const { Title, Text } = Typography;
 
@@ -117,7 +119,7 @@ export default function LoginPage() {
               // UX-02：此前是旧 antd 蓝紫渐变 #1677ff→#7c3aed，与全站
               // #22C55E 强调色（theme/ThemeProviders.tsx colorPrimary）不一致。
               // 与 MainLayout 的品牌渐变同源（MASTER §Accent/CTA）。
-              background: 'linear-gradient(135deg, #22c55e 0%, #16a34a 100%)',
+              background: BRAND_GRADIENT,
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
@@ -207,7 +209,7 @@ export default function LoginPage() {
                     height: 44,
                     borderRadius: 10,
                     // UX-02：收敛到全站品牌绿（原为旧 antd 蓝紫）。
-                    background: 'linear-gradient(135deg, #22c55e, #16a34a)',
+                    background: BRAND_GRADIENT,
                     border: 'none',
                     fontSize: 15,
                   }}
@@ -260,7 +262,7 @@ export default function LoginPage() {
                   height: 44,
                   borderRadius: 10,
                   // UX-02：收敛到全站品牌绿（原为旧 antd 蓝紫）。
-                  background: 'linear-gradient(135deg, #22c55e, #16a34a)',
+                  background: BRAND_GRADIENT,
                   border: 'none',
                   fontSize: 15,
                 }}

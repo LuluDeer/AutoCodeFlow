@@ -213,6 +213,11 @@ export default {
   'taskList.schedule.sec': 'every {{sec}}s',
   'taskList.schedule.minSec': '{{min}}m {{sec}}s',
   'taskList.schedule.min': '{{min}}min',
+  // D-P2-02a (design audit): runtime enum localized (same pattern as status/priority;
+  // unknown values fall back to the raw token at the call site).
+  'taskList.runtime.python': 'Python',
+  'taskList.runtime.node': 'Node.js',
+  'taskList.runtime.shell': 'Shell',
   'taskList.nextRun.none': '-',
   'taskList.nextRun.cronTooltip': 'Next cron trigger time',
   'taskList.nextRun.cronScheduled': 'Cron scheduled',
@@ -1050,6 +1055,8 @@ export default {
   'taskDetail.field.requirements': 'Dependencies',
   'taskDetail.field.runbook': 'Runbook',
   'taskDetail.field.timeout': 'Timeout',
+  // D-P2-03 (design audit): 0 = no timeout (consistent with the task form); detail page no longer shows '-'
+  'taskDetail.timeout.notLimited': 'No limit',
   'taskDetail.field.timeoutAction': 'Timeout Action',
   'taskDetail.timeoutAction.killRetry': 'Terminate and retry',
   'taskDetail.timeoutAction.notifyOnly': 'Notify only',
