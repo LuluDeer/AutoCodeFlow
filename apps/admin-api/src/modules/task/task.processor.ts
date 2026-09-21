@@ -144,14 +144,9 @@ export class TaskProcessor extends WorkerHost {
       const rawResult = isBroadcast
         ? await this.executorService.dispatchBroadcast(task, exec)
         : await this.executorService.dispatch(task, exec);
-      // Persist the dispatch target immediately so the callback path can
-      // verify the reporting executor and release its slot, even if this
-      // worker's final save loses the race with a fast callback.
-      if (!isBroadcast && exec.executorAddress) {
-        await this.execRepo.update(exec.id, {
-          executorAddress: exec.executorAddress,
-        });
-      }
+      // E-P2-R5: executorAddress 不再在此处单独 update（不在事务内，与终态写
+      // 之间存在 TOCTOU/非原子窗口）。它并入 finally 的 ownedPatch（下方已有
+      // `exec.executorAddress !== undefined` 条件判断），与状态/结果同事务落库。
       // Dispatch success only means the executor accepted the task. The actual
       // result is reported asynchronously via /executions/callback.
       exec.status = ExecutionStatus.RUNNING;
@@ -440,7 +435,9 @@ export class TaskProcessor extends WorkerHost {
                 }
                 if (repairAffected) {
                   terminalPersisted = true;
-                  this.logger.log(
+                  // E-P2-R2: 事务失败后的修复成功属异常路径，用 warn 突出（原 log
+                  // 在常规日志级别下不显眼，运维会错过「主写失败已自愈」信号）。
+                  this.logger.warn(
                     `Repaired execution ${exec.id} state after transaction failure`,
                   );
                 }

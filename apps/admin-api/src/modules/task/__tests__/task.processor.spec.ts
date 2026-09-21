@@ -157,6 +157,31 @@ describe("TaskProcessor", () => {
     expect(live.result).toMatchObject({ status: "accepted" });
   });
 
+  // E-P2-R5: 旧实现 dispatch 后立即 execRepo.update(id, {executorAddress})——
+  // 该 update 不在事务内，与 finally 的终态写之间是非原子窗口。本用例断言：
+  // ①不再单独 update executorAddress；②executorAddress 进入 finally 的条件
+  // UPDATE patch（ownedPatch 已有条件判断）。旧实现 execRepo.update 会被调用
+  // → 断言①红。
+  it("E-P2-R5: persists executorAddress in the transactional patch, not via a separate out-of-tx update", async () => {
+    executorService.dispatch.mockImplementation(async (_task, target: any) => {
+      // 真实现 dispatch 通过入参引用把 executorAddress 写到执行行（executor.service）。
+      target.executorAddress = "127.0.0.1:3105";
+      return {
+        status: "accepted",
+        executionId: "exec-1",
+        executorAddress: "127.0.0.1:3105",
+      };
+    });
+    await processor.handle({ data: { executionId: "exec-1" } } as any);
+
+    expect(execRepo.update).not.toHaveBeenCalled();
+    const queryRunner = dataSource.createQueryRunner.mock.results[0].value;
+    const qb = (queryRunner.manager.createQueryBuilder as jest.Mock).mock
+      .results[0].value;
+    const patch = qb.set.mock.calls[0][0];
+    expect(patch.executorAddress).toBe("127.0.0.1:3105");
+  });
+
   it("marks execution FAILED and rethrows when dispatch fails", async () => {
     executorService.dispatch.mockRejectedValue(new Error("exec failed"));
     await expect(
@@ -482,6 +507,11 @@ describe("TaskProcessor", () => {
     const repairLog = jest
       .spyOn((processor as any).logger, "log")
       .mockImplementation(() => undefined);
+    // E-P2-R2: 修复成功的 "Repaired" 信号已从 log 升到 warn——同时钉住两级，
+    // 确保 affected=0 时两级都不会打出 "Repaired"。
+    const repairWarn = jest
+      .spyOn((processor as any).logger, "warn")
+      .mockImplementation(() => undefined);
     executorService.dispatch.mockRejectedValue(new Error("dispatch failed"));
 
     // Fresh runner: primary QB write throws → rollback → repair path runs.
@@ -549,9 +579,12 @@ describe("TaskProcessor", () => {
         (s: string) => s.includes('"status" IN') || s.includes("status IN"),
       ),
     ).toBe(true);
-    // affected=0 → nothing was clobbered, no "Repaired" log.
+    // affected=0 → nothing was clobbered, no "Repaired" log/warn.
     expect(
       repairLog.mock.calls.some((c: any) => /Repaired/.test(String(c[0]))),
+    ).toBe(false);
+    expect(
+      repairWarn.mock.calls.some((c: any) => /Repaired/.test(String(c[0]))),
     ).toBe(false);
   });
 
