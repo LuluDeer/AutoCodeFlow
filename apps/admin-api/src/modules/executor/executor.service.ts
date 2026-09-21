@@ -18,6 +18,7 @@ import { Cron } from "@nestjs/schedule";
 import axios from "axios";
 import {
   Executor,
+  ExecutorOfflineReason,
   ExecutorStatus,
   ExecutorType,
 } from "./entities/executor.entity";
@@ -1075,6 +1076,8 @@ export class ExecutorService {
     if (incomingStartedAt) e.executorStartedAt = incomingStartedAt;
     if (incomingStartupId) e.executorStartupId = incomingStartupId;
     e.status = ExecutorStatus.ONLINE;
+    // 遗留 P1-24：恢复在线即清除离线原因标注。
+    e.offlineReason = null;
     e.lastHeartbeat = new Date();
     return this.repo.save(e);
   }
@@ -1517,6 +1520,8 @@ export class ExecutorService {
       }
     }
     e.status = ExecutorStatus.ONLINE;
+    // 遗留 P1-24：恢复在线即清除离线原因标注。
+    e.offlineReason = null;
     e.lastHeartbeat = new Date();
     if (incomingStartedAt) e.executorStartedAt = incomingStartedAt;
     if (incomingStartupId) e.executorStartupId = incomingStartupId;
@@ -2954,7 +2959,11 @@ export class ExecutorService {
     const result = await this.repo
       .createQueryBuilder()
       .update(Executor)
-      .set({ status: ExecutorStatus.OFFLINE })
+      // 遗留 P1-24：心跳超时判死与优雅下线区分落值。
+      .set({
+        status: ExecutorStatus.OFFLINE,
+        offlineReason: ExecutorOfflineReason.STALE_TIMEOUT,
+      })
       .where('status = :status AND "lastHeartbeat" < :cutoff', {
         status: ExecutorStatus.ONLINE,
         cutoff,
@@ -3382,7 +3391,12 @@ export class ExecutorService {
   async markOffline(address: string): Promise<void> {
     await this.repo.update(
       { address },
-      { status: ExecutorStatus.OFFLINE, lastHeartbeat: new Date() },
+      // 遗留 P1-24：优雅下线。
+      {
+        status: ExecutorStatus.OFFLINE,
+        offlineReason: ExecutorOfflineReason.MANUAL,
+        lastHeartbeat: new Date(),
+      },
     );
     this.logger.log(`Executor ${address} marked as offline`);
     // FEAT-07: 状态落库后发布 executor.offline（优雅停机路径）。
@@ -3399,6 +3413,8 @@ export class ExecutorService {
   async setOfflineById(id: string): Promise<Executor> {
     const executor = await this.findOne(id);
     executor.status = ExecutorStatus.OFFLINE;
+    // 遗留 P1-24：管理员手动下线。
+    executor.offlineReason = ExecutorOfflineReason.MANUAL;
     executor.lastHeartbeat = new Date();
     const saved = await this.repo.save(executor);
     this.logger.log(
