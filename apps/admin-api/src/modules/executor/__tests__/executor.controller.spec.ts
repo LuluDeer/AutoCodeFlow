@@ -20,6 +20,7 @@ import { RolesGuard } from "../../../common/guards/roles.guard";
 import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+import { createHash } from "crypto";
 import { ExecutorController } from "../executor.controller";
 import { ExecutorStatus, ExecutorType } from "../entities/executor.entity";
 import {
@@ -724,6 +725,11 @@ describe("ExecutorController", () => {
       expect(res.setHeader).toHaveBeenCalledWith(
         "Content-Disposition",
         'attachment; filename="executor-node.tar.gz"',
+      );
+      // E-P2-P6 收尾：executor artifact 通道也必须下发 X-SHA256（install.sh 实走此路由）。
+      expect(res.setHeader).toHaveBeenCalledWith(
+        "X-SHA256",
+        createHash("sha256").update(payload).digest("hex"),
       );
       expect(res.end).toHaveBeenCalledTimes(1);
       expect(Buffer.compare(res.end.mock.calls[0][0] as Buffer, payload)).toBe(
