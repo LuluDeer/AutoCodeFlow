@@ -16,6 +16,7 @@ import {
 import { ApplicationVersion } from "../entities/application-version.entity";
 import { ApplicationService } from "../application.service";
 import { ExecutorService } from "../../executor/executor.service";
+import { AuditService } from "../../audit/audit.service";
 // ARCH-33（ADR-016）：控制面 pull 通道的测试替身（默认 push）
 import { controlPlaneMocks } from "../../../common/testing/control-plane-mocks";
 import { DOMAIN_EVENTS } from "../../../common/events/domain-events";
@@ -1615,5 +1616,104 @@ describe("AppDeploymentService", () => {
       expect(versionRepo.findOne).toHaveBeenCalledTimes(1);
       expect(versionRepo.save).not.toHaveBeenCalled();
     });
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// D3-B-P2-1: 部署 stop/rollback 执行门审计落证（红→绿回归）。
+// 装配 mock AuditService，断言 stop/rollbackDeploymentToPrevious 落
+// deployment.stop / deployment.rollback。
+// ---------------------------------------------------------------------------
+describe("AppDeploymentService — D3-B-P2-1 执行门审计落证", () => {
+  let repo: {
+    findOne: jest.Mock;
+    save: jest.Mock;
+  };
+  let versionRepo: { find: jest.Mock };
+  let service: AppDeploymentService;
+  let audit: { log: jest.Mock };
+
+  beforeEach(async () => {
+    repo = { findOne: jest.fn(), save: jest.fn() };
+    versionRepo = { find: jest.fn() };
+    audit = { log: jest.fn().mockResolvedValue(undefined) };
+    const appService = { findByIdRaw: jest.fn().mockResolvedValue({}), maskEnvForRead: jest.fn((e: unknown) => e) };
+    const executorService = {
+      deliverControlCommand: jest.fn().mockResolvedValue({ delivered: "push" }),
+      getExecutorUrl: jest.fn().mockReturnValue("http://exec:8100/api/app-stop"),
+      getSharedToken: jest.fn().mockResolvedValue("tok"),
+      ...controlPlaneMocks(),
+    } as unknown as ExecutorService;
+
+    const module = await Test.createTestingModule({
+      providers: [
+        AppDeploymentService,
+        { provide: getRepositoryToken(AppDeployment), useValue: repo },
+        { provide: getRepositoryToken(ApplicationVersion), useValue: versionRepo },
+        { provide: ApplicationService, useValue: appService },
+        { provide: ExecutorService, useValue: executorService },
+        { provide: ConfigService, useValue: { get: jest.fn().mockReturnValue(undefined) } },
+        { provide: AuditService, useValue: audit },
+      ],
+    }).compile();
+    service = module.get(AppDeploymentService);
+    mockedLookup.mockReset();
+    mockedLookup.mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
+  });
+
+  it("stop：落证 deployment.stop（含 applicationId/executorAddress）", async () => {
+    const deployment = {
+      id: "deploy-1",
+      applicationId: "app-1",
+      status: DeploymentStatus.RUNNING,
+      executorAddress: "exec:8100",
+      pid: 1234,
+    };
+    repo.findOne.mockResolvedValue(deployment);
+    repo.save.mockResolvedValue({ ...deployment, status: DeploymentStatus.STOPPED, pid: null });
+    mockAxiosPost.mockResolvedValue({ data: {} });
+
+    await service.stop("deploy-1");
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "deployment.stop",
+        resource: "app_deployment",
+        resourceId: "deploy-1",
+        detail: expect.objectContaining({
+          applicationId: "app-1",
+          executorAddress: "exec:8100",
+        }),
+      }),
+    );
+  });
+
+  it("rollbackDeploymentToPrevious：落证 deployment.rollback（含 previousVersion）", async () => {
+    const deployment = {
+      id: "deploy-1",
+      applicationId: "app-1",
+      status: DeploymentStatus.RUNNING,
+      executorAddress: "exec:8100",
+      deployedVersion: "2.0.0",
+    };
+    repo.findOne.mockResolvedValue(deployment);
+    versionRepo.find.mockResolvedValue([
+      { version: "2.0.0", gitCommit: null, snapshot: {} },
+      { version: "1.9.0", gitCommit: null, snapshot: {} },
+    ]);
+    repo.save.mockResolvedValue(deployment);
+    // upgradeWithSnapshot pushes to executor — stub the push path.
+    (service as unknown as { pushDeployToExecutor: jest.Mock }).pushDeployToExecutor =
+      jest.fn().mockResolvedValue(undefined);
+
+    await service.rollbackDeploymentToPrevious("deploy-1");
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "deployment.rollback",
+        resource: "app_deployment",
+        resourceId: "deploy-1",
+        detail: expect.objectContaining({ previousVersion: "1.9.0" }),
+      }),
+    );
   });
 });
