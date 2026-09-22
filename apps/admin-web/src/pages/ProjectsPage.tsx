@@ -274,7 +274,7 @@ function MembersDrawer({ project, isAdmin, onClose }: MembersDrawerProps) {
               showSearch
               optionFilterProp="label"
               placeholder={t('projects.members.userIdPlaceholder')}
-              options={(usersQuery.data?.list ?? []).map((u) => ({
+              options={(usersQuery.data ?? []).map((u) => ({
                 value: u.id,
                 label: `#${u.id} ${u.username}`,
               }))}
