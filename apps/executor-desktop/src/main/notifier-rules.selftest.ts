@@ -14,6 +14,10 @@ import {
   shouldNotifyExecutorStatus,
   shouldNotifyTaskTransition,
   summarizeExecMeta,
+  advanceHeartbeatHysteresis,
+  initialHeartbeatHysteresisState,
+  OFFLINE_CONSECUTIVE_FAILURES,
+  OFFLINE_SILENCE_MS,
 } from './notifier-rules';
 
 function main(): void {
@@ -112,6 +116,59 @@ function main(): void {
   assert.equal(shouldNotifyExecutorStatus(undefined, 'offline'), false, 'cold-start offline silent');
   assert.equal(shouldNotifyExecutorStatus('online', 'online'), false, 'no repeat');
   assert.equal(shouldNotifyExecutorStatus('offline', 'online'), false, 'recovery not notified');
+
+  // ── advanceHeartbeatHysteresis（NETOPT-G P1-5：离线误报迟滞）────────
+  // 生产实证：旧实现单次失败即判离线并弹窗，一天 86 次里 72 次是误报
+  // （中台真实判死阈值 90s）。此处穷举关键路径。
+  {
+    const T0 = 1_000_000;
+    // 1) 单次失败**不**判离线（吸收跨境链路瞬时抖动）
+    let s = initialHeartbeatHysteresisState();
+    let r = advanceHeartbeatHysteresis(s, 'failed', T0);
+    assert.equal(r.offline, false, 'single transient failure must NOT go offline');
+    // 2) 连续失败达阈值才判离线
+    s = r.state;
+    r = advanceHeartbeatHysteresis(s, 'failed', T0 + 30_000);
+    assert.equal(r.offline, false, 'second failure still below threshold');
+    r = advanceHeartbeatHysteresis(r.state, 'failed', T0 + 60_000);
+    assert.equal(r.offline, true, `${OFFLINE_CONSECUTIVE_FAILURES} consecutive failures → offline`);
+  }
+  {
+    const T0 = 1_000_000;
+    // 3) 失败后成功：计数清零、立刻判在线（恢复不做迟滞）
+    let r = advanceHeartbeatHysteresis(initialHeartbeatHysteresisState(), 'failed', T0);
+    r = advanceHeartbeatHysteresis(r.state, 'failed', T0 + 30_000);
+    const rec = advanceHeartbeatHysteresis(r.state, 'ok', T0 + 40_000);
+    assert.equal(rec.offline, false, 'recovery is never offline');
+    assert.equal(rec.state.consecutiveFailures, 0, 'success resets the failure counter');
+    assert.equal(rec.state.lastSuccessAt, T0 + 40_000, 'success records last-success time');
+  }
+  {
+    const T0 = 1_000_000;
+    // 4) 距上次成功超过 90s（与中台 heartbeatInterval×3 同源）→ 判离线，
+    //    即使连续失败次数还没到阈值（覆盖"一次失败后长时间无结果"）
+    let s = initialHeartbeatHysteresisState();
+    s = advanceHeartbeatHysteresis(s, 'ok', T0).state;
+    const r = advanceHeartbeatHysteresis(s, 'failed', T0 + OFFLINE_SILENCE_MS + 1);
+    assert.equal(r.offline, true, 'silence beyond 90s → offline');
+  }
+  {
+    const T0 = 1_000_000;
+    // 5) 从未成功过（lastSuccessAt=null）+ 零星失败：不得仅凭 silence 判离线
+    //    ——否则启动早期会被误判（与既有'unknown 不降级'语义一致）
+    let s = initialHeartbeatHysteresisState();
+    let r = advanceHeartbeatHysteresis(s, 'failed', T0);
+    r = advanceHeartbeatHysteresis(r.state, 'failed', T0 + 10 * OFFLINE_SILENCE_MS);
+    assert.equal(r.offline, false, 'no prior success → silence rule does not apply');
+    // 6) 'unknown'（端点 404/启动早期）既不判离线也不推进失败计数
+    const u = advanceHeartbeatHysteresis(r.state, 'unknown', T0 + 999_999);
+    assert.equal(u.offline, false, 'unknown never triggers offline');
+    assert.equal(
+      u.state.consecutiveFailures,
+      r.state.consecutiveFailures,
+      'unknown does not advance the failure counter',
+    );
+  }
 
   // ── decideScan（NETOPT-G P1-1：水位线决策纯函数，P2-F3 通知风暴回归锁）──
   const fin = (id: string, status: 'success' | 'failed') =>

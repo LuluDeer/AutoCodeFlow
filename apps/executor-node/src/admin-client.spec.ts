@@ -117,11 +117,13 @@ describe('admin-client', () => {
     await post('/api/test', { hello: 'world' });
 
     // O-23：共享实例——baseURL 拼进 url，timeout/headers 作为请求参数传入
+    // NETOPT-G P1-4：默认超时 10s → 20s（跨境链路长尾，见 admin-client.ts
+    // DEFAULT_TIMEOUT_MS 注释）。
     expect(clientUnderTest.request).toHaveBeenCalledWith({
       method: 'post',
       url: 'http://admin-a:3105/api/test',
       data: { hello: 'world' },
-      timeout: 10_000,
+      timeout: 20_000,
       headers: {
         'Content-Type': 'application/json',
         'X-Executor-Token': 'secret-token',
@@ -317,9 +319,92 @@ describe('admin-client', () => {
         method: 'post',
         url: 'http://admin-a:3105/api/test',
         data: undefined,
-        timeout: 10_000,
+        timeout: 20_000,
         headers: expect.any(Object),
       });
+    });
+  });
+
+  // NETOPT-G P1（跨境链路韧性）：单 admin 部署下 retryCount = adminUrls.length
+  // = 1，旧实现"一次抖动即失败"。生产实测 4.5%（80/1759）心跳因此失败，而中台
+  // 90s 判死 → 执行器被置 OFFLINE → dispatch() 只选 ONLINE → 手动触发无响应。
+  describe('single-admin retry floor (NETOPT-G P1)', () => {
+    it('retries a transient transport failure on the ONLY admin instead of failing immediately', async () => {
+      clientUnderTest.request
+        .mockRejectedValueOnce(new Error('socket hang up'))
+        .mockResolvedValueOnce({ data: { ok: true } });
+      initAdminClients(['http://admin-a:3105']);
+
+      const result = await post('/api/executors/heartbeat', { address: 'a:1' });
+
+      expect(result.data).toEqual({ ok: true });
+      // 同一台被重试（而非 failover —— 只有一台）
+      expect(clientUnderTest.request).toHaveBeenCalledTimes(2);
+      expect(getCurrentAdminUrl()).toBe('http://admin-a:3105');
+      expect(clientUnderTest.request.mock.calls[1][0]).toEqual(
+        expect.objectContaining({ url: 'http://admin-a:3105/api/executors/heartbeat' }),
+      );
+    });
+
+    it('gives up after exactly MIN_ATTEMPTS when the only admin stays down', async () => {
+      clientUnderTest.request.mockRejectedValue(new Error('socket hang up'));
+      initAdminClients(['http://admin-a:3105']);
+
+      await expect(post('/api/executors/heartbeat', {})).rejects.toThrow(
+        'All 1 admin servers are unavailable',
+      );
+      // 下限 3：既不无限重试，也不"一次即弃"
+      expect(clientUnderTest.request).toHaveBeenCalledTimes(3);
+    });
+
+    it('retries transient 5xx (admin-api app-layer faults) but not 4xx', async () => {
+      clientUnderTest.request
+        .mockRejectedValueOnce({ message: 'Request failed with status code 502', response: { status: 502 } })
+        .mockResolvedValueOnce({ data: { ok: true } });
+      initAdminClients(['http://admin-a:3105']);
+
+      const ok = await post('/api/executors/pull', {});
+      expect(ok.data).toEqual({ ok: true });
+      expect(clientUnderTest.request).toHaveBeenCalledTimes(2);
+    });
+
+    it('surfaces a 4xx verdict instead of masking it as "servers unavailable"', async () => {
+      // 4xx 是确定性拒绝：不重试，且必须把真实状态码上抛——旧实现吞成
+      // "All 1 admin servers are unavailable"，排障时被误导去查网络。
+      clientUnderTest.request.mockRejectedValue({
+        message: 'Request failed with status code 400',
+        response: { status: 400 },
+      });
+      initAdminClients(['http://admin-a:3105']);
+
+      await expect(post('/api/executors/pull', {})).rejects.toMatchObject({
+        response: { status: 400 },
+      });
+      expect(clientUnderTest.request).toHaveBeenCalledTimes(1);
+    });
+
+    it('surfaces the final 5xx status once retries are exhausted', async () => {
+      clientUnderTest.request.mockRejectedValue({
+        message: 'Request failed with status code 500',
+        response: { status: 500 },
+      });
+      initAdminClients(['http://admin-a:3105']);
+
+      await expect(post('/api/executors/pull', {})).rejects.toMatchObject({
+        response: { status: 500 },
+      });
+      expect(clientUnderTest.request).toHaveBeenCalledTimes(3);
+    });
+
+    it('keeps "one attempt per replica" semantics for multi-admin fleets', async () => {
+      clientUnderTest.request.mockRejectedValue(new Error('down'));
+      initAdminClients(['http://admin-a:3105', 'http://admin-b:3105']);
+
+      await expect(request('get', '/api/health')).rejects.toThrow(
+        'All 2 admin servers are unavailable',
+      );
+      // HA 语义不变：每台恰好试一次（2 台就是 2 次，不得因重试下限变成 3 次）
+      expect(clientUnderTest.request).toHaveBeenCalledTimes(2);
     });
   });
 });

@@ -14,6 +14,11 @@ import {
 } from './uv-paths';
 import { listLocalIPv4s } from './network-util';
 import { LineSplitter } from './child-line-splitter';
+import {
+  advanceHeartbeatHysteresis,
+  initialHeartbeatHysteresisState,
+  type HeartbeatHysteresisState,
+} from './notifier-rules';
 
 export type ExecutorStatus = 'stopped' | 'pending' | 'online' | 'offline';
 
@@ -67,6 +72,14 @@ export class ExecutorProcess {
    * 失败且无成功信号）时，/health/live 存活**不得**把托盘翻回 'online'。
    */
   private adminRegistration: 'unknown' | 'registered' | 'failed' = 'unknown';
+
+  /**
+   * NETOPT-G P1-5：离线判定的迟滞状态（连续失败计数 + 上次成功时刻）。
+   * 仅在 applyAdminStatus（结构化端点主判据）里推进；见 notifier-rules.ts
+   * 的 advanceHeartbeatHysteresis 注释（一天 86 次误报的修复）。
+   */
+  private heartbeatHysteresis: HeartbeatHysteresisState =
+    initialHeartbeatHysteresisState();
   /**
    * NETOPT-2⑦: 子进程输出按行缓冲（一个 data chunk ≠ 一行）。每次 start()
    * 重建；进程退出时 flush 冲洗残留半行。详见 child-line-splitter.ts 头注。
@@ -331,13 +344,48 @@ export class ExecutorProcess {
       | null,
   ): void {
     if (!data || typeof data !== 'object') return;
+
+    // NETOPT-G P1-5（离线误报迟滞）：`heartbeatStatus` 是**最近一次**心跳的
+    // 结果，一次瞬时抖动（跨境链路上 `socket hang up` / TLS 握手中断，生产
+    // 实测占 4.5%）就会是 'failed'。旧实现据此**立刻**判离线并弹系统通知，
+    // 而中台真实判死阈值是 90s——一天 86 次"离线"里 72 次是这种误报。
+    //
+    // 现在把单点快照升级为带迟滞的判定：连续失败 3 次、或距上次成功 >90s
+    // （与中台 heartbeatInterval×3 同源）才判离线；成功立即判在线。
     if (data.heartbeatStatus === 'ok') {
       this.adminRegistration = 'registered';
-    } else if (
+      const ev = advanceHeartbeatHysteresis(
+        this.heartbeatHysteresis,
+        'ok',
+        Date.now(),
+      );
+      this.heartbeatHysteresis = ev.state;
+      if (this.currentStatus !== 'online') {
+        this.notifyStatus('online');
+      }
+      return;
+    }
+
+    if (
       data.heartbeatStatus === 'failed' ||
       data.registration === 'failed'
     ) {
+      const ev = advanceHeartbeatHysteresis(
+        this.heartbeatHysteresis,
+        'failed',
+        Date.now(),
+      );
+      this.heartbeatHysteresis = ev.state;
+      // 迟滞未达阈值：**不**改状态（维持在线），避免单次抖动误报。
+      // registration === 'failed' 单独出现时仍走同一迟滞（它同样是"某一次"
+      // 判定的产物），但计数器不因重复轮询而重复累加——每轮 8s 一次，3 轮
+      // 约 24s，远快于中台 90s 判死，不会掩盖真实掉线。
+      if (!ev.offline) return;
       this.adminRegistration = 'failed';
+      if (this.currentStatus !== 'offline') {
+        this.notifyStatus('offline');
+      }
+      return;
     }
     // 'unknown' / 字段缺失 → 维持现状（不降级、不越权断言在线）。
   }
@@ -477,6 +525,10 @@ export class ExecutorProcess {
     // Registration/heartbeat success confirms admin connectivity beyond just liveness
     if (line.includes('Registered to admin-api') || line.includes('Heartbeat succeeded')) {
       this.adminRegistration = 'registered';
+      // NETOPT-G P1-5：与结构化路径共用同一迟滞状态（两条通道互斥——结构化
+      // 端点可用时不走这里），成功即清零。
+      const ok = advanceHeartbeatHysteresis(this.heartbeatHysteresis, 'ok', Date.now());
+      this.heartbeatHysteresis = ok.state;
       if (this.currentStatus !== 'online') {
         this.notifyStatus('online');
       }
@@ -484,6 +536,15 @@ export class ExecutorProcess {
     }
     // Registration/heartbeat failure: process alive but admin unreachable
     if (line.includes('Register failed') || line.includes('Heartbeat failed')) {
+      const ev = advanceHeartbeatHysteresis(
+        this.heartbeatHysteresis,
+        'failed',
+        Date.now(),
+      );
+      this.heartbeatHysteresis = ev.state;
+      // 同一迟滞口径：单次失败不再立刻判离线（旧实现在此处一次即报，
+      // 生产一天 86 次误报的主因之一）。未达阈值维持现状。
+      if (!ev.offline) return;
       this.adminRegistration = 'failed';
       if (this.currentStatus === 'online' || this.currentStatus === 'pending') {
         this.notifyStatus('offline');
