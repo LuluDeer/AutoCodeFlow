@@ -1,83 +1,23 @@
-import axios, { AxiosInstance, AxiosResponse, AxiosError } from 'axios';
-import http from 'http';
-import https from 'https';
+import { AxiosResponse, AxiosError } from 'axios';
 import { logger } from './logger';
 import { getCurrentToken, getStaticToken, forceTokenRefresh } from './middleware/auth';
 import { normalizeAdminApiBaseUrl } from './admin-api-url';
+import {
+  sharedAxios,
+  MIN_ATTEMPTS,
+  RETRY_BACKOFF_MS,
+  DEFAULT_TIMEOUT_MS,
+  httpStatusOf,
+  isTransientServerError,
+} from './admin-http-agent';
 
-// O-23: previously performRequest called axios.create() on every invocation
-// (and again on every failover retry). Each factory call produced a brand-new
-// client with a fresh connection pool — the keep-alive socket was discarded
-// when the response returned, so every heartbeat / long-poll round-trip paid a
-// fresh TCP handshake (and on TLS endpoints a full TLS re-handshake). A single
-// long-lived instance with a keepAlive agent reuses sockets across all requests
-// and replicas. Per-request baseURL (failover), timeout (default 20s vs 40s
-// long-poll), headers (static vs current token) are still supplied in
-// client.request() so the existing retry/failover/auth semantics stay
-// byte-for-byte identical.
-const sharedHttpAgent = new http.Agent({ keepAlive: true, maxSockets: 32 });
-
-/**
- * NETOPT-G P1-1（跨境链路韧性）：**必须**显式提供 httpsAgent。
- *
- * 旧实现只设了 `httpAgent`——而生产/桌面部署的 admin URL 是 `https://`
- * （例如 `https://redirct.yskj.cc.cd`）。Node 的 http/https 是两个独立模块，
- * axios 对 https 目标只认 `httpsAgent`，`httpAgent` 被完全忽略：于是
- * `keepAlive/maxSockets` 对 TLS 连接**从未生效**，每条请求都新建 socket、走
- * 完整 TCP+TLS 握手，响应后即刻关闭。跨境链路上这直接表现为两类高频告警
- * （生产实测 108 次 + 211 次）：
- *   - `Client network socket disconnected before secure TLS connection was
- *     established`（握手阶段被中间设备/链路掐断）；
- *   - `socket hang up`（复用了一个对端已静默关闭的半开连接）。
- *
- * 显式配置的三项各自的作用：
- *  - `keepAlive: true` + `keepAliveMsecs`：复用 TLS 会话，省掉每次握手的
- *    RTT（跨境 RTT 高，握手成本被放大）；
- *  - `timeout`（socket 级空闲超时）：让**池中已死**的 socket 及时被淘汰，
- *    而不是在下次复用时才以 `socket hang up` 的形式暴露——这是半开连接
- *    问题的根因修复，仅靠请求级 timeout 无法解决（请求发出前连接就已坏）；
- *  - `maxSockets`：与 http 侧同值，防长轮询（40s）+ 心跳 + 回调并发打满。
- *
- * 用 `https.Agent` 的 HTTPS 目标才走这一池；纯 http:// 部署仍走 httpAgent，
- * 两条路径互不影响（测试里 admin URL 多为 http://，故断言面不变）。
- */
-const sharedHttpsAgent = new https.Agent({
-  keepAlive: true,
-  maxSockets: 32,
-  keepAliveMsecs: 10_000,
-  // 池中 socket 的空闲上限：略高于最长请求（长轮询 40s），保证在飞请求不被
-  // 误杀，同时让死连接在 45s 内被回收。
-  timeout: 45_000,
-});
-
-const sharedAxios: AxiosInstance = axios.create({
-  httpAgent: sharedHttpAgent,
-  httpsAgent: sharedHttpsAgent,
-});
+// NETOPT-G P1-1：共享 axios 实例（含 keepAlive 的 http/https agent）现由
+// `admin-http-agent.ts` 提供——因为执行器对 admin 有**两条**独立调用路径
+// （本模块 + middleware/auth.ts::fetchToken），只修一处会漏掉令牌获取那条。
+// 详见该模块注释。
 
 let adminUrls: string[] = [];
 let currentIndex = 0;
-
-/**
- * NETOPT-G P1-2：单次请求的**最少**尝试次数。
- *
- * 为什么是 3：跨境链路上单次瞬时故障（TLS 握手中断/半开 socket/读超时）的
- * 观测概率约 4.5%（生产 80/1759 心跳），两次独立尝试后仍同时失败的概率降到
- * ~0.2%，足以把"偶发失败被记成离线"压到噪声级；再高则放大 admin-api 侧的
- * 5xx 压力（故障期重试风暴），3 是收敛与压力的折中。
- *
- * 与 adminUrls.length 取 max：HA 多台时保持"每台一次"的原语义不变。
- */
-const MIN_ATTEMPTS = 3;
-
-/**
- * 默认请求超时。原为 10s——但对跨境 HTTPS 链路偏紧：TLS 握手 + 反代转发在
- * 业务高峰时段偶发超过 10s（生产日志有 37 次 `timeout of 10000ms exceeded`，
- * 但成功请求 RTT 中位数仅 3.6s，说明是长尾而非普遍变慢）。放到 20s 覆盖长尾，
- * 同时远小于中台 90s 判死阈值，不会把心跳窗口本身拖爆。
- * 长轮询有独立超时（postLong 的 40s），不受此值影响。
- */
-const DEFAULT_TIMEOUT_MS = 20_000;
 
 export function initAdminClients(urls: string[]): void {
   adminUrls = urls.map(normalizeAdminApiBaseUrl).filter(Boolean);
@@ -244,21 +184,20 @@ async function performRequest<T = any>(
       // 502/500，来自 Pod 重启/DB 连接池耗尽）与网络抖动同属**瞬时**故障，
       // 且同样会被记成心跳失败。4xx（除 401）是确定性拒绝，重试无益——不
       // 在此列（保持既有"立即上抛"语义，避免把配置类错误拖成重试风暴）。
-      const status = (error as AxiosError | undefined)?.response?.status;
-      const isTransientServerError =
-        typeof status === 'number' && status >= 500 && status <= 599;
+      const status = httpStatusOf(error);
+      const transientServerError = isTransientServerError(error);
       // 非 5xx 的 HTTP **应答**（4xx 等确定性拒绝）：重试无益且会掩盖真实
       // 状态码。旧实现把它吞成 `All N admin servers are unavailable`，调用方
       // 与运维都看不到"其实是 400/403"——排障时被误导去查网络。直接上抛原
       // 错误（保留 response.status），与 401 的处理同口径。
       const isDeterministicClientError =
-        typeof status === 'number' && !isTransientServerError;
+        typeof status === 'number' && !transientServerError;
 
       if (isDeterministicClientError) throw error;
 
       logger.warn(
         `Request to admin ${adminUrls[currentIndex]} failed: ${error.message}` +
-          (isTransientServerError ? ` (transient ${status}, will retry)` : ''),
+          (transientServerError ? ` (transient ${status}, will retry)` : ''),
       );
 
       if (i < effectiveRetryCount - 1) {
@@ -268,8 +207,8 @@ async function performRequest<T = any>(
         if (adminUrls.length > 1) {
           failover();
         }
-        await new Promise(resolve => setTimeout(resolve, 500));
-      } else if (isTransientServerError) {
+        await new Promise(resolve => setTimeout(resolve, RETRY_BACKOFF_MS));
+      } else if (transientServerError) {
         // 5xx 重试耗尽：保留最后一次的 response 形状（而不是把它抹成"服务器
         // 不可用"），让上层心跳/回调日志能显示真实状态码。
         throw error;
