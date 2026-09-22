@@ -129,13 +129,9 @@ export class Executor {
    * 结构校验/匹配判据均在 `interpreter-match.util.ts`（纯函数单一事实源）。
    */
   @Column({ type: "jsonb", nullable: true })
-  // NOTE（合流收口）：当前 TypeORM 版本的 @Index options 类型不收 using，
-  // 用 as any 仅为通过类型检查；GIN 索引的真实 DDL 需由对应迁移落库。
-  // NETOPT-F P3-4: **死索引确认**——全仓无 `@>` 包含查询（调度侧匹配走
-  // 内存 interpreterSatisfies 纯函数，心跳全量重写整列），GIN 只付维护成本。
-  // 预防性占位：若未来调度把"解释器匹配"下推 SQL 再启用；否则可作 drop 候选
-  // （本轮不动 DDL，避免无谓迁移）。
-  @Index("idx_executors_interpreters", { using: "gin" } as any)
+  // E-P2-R1：原 GIN 索引 idx_executors_interpreters 已由迁移
+  // 1790000000034 DROP——全仓零 `@>` 包含查询（调度侧走内存
+  // interpreterSatisfies），死索引只付维护成本。此处不再声明 @Index。
   interpreters: ExecutorInterpreter[] | null;
 
   /**
