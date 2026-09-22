@@ -1,4 +1,4 @@
-import { Injectable } from "@nestjs/common";
+import { Injectable, Logger } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
 import { InjectQueue } from "@nestjs/bullmq";
@@ -61,6 +61,7 @@ export interface FullHealthReport {
 
 @Injectable()
 export class HealthService {
+  private readonly logger = new Logger(HealthService.name);
   private redisClient: RedisClientType;
 
   // WIKI-OPT-1: 判定阈值配置化（configuration.ts health 节）——队列积压
@@ -127,6 +128,29 @@ export class HealthService {
             },
           }
         : {}),
+    });
+
+    // ── ARCH-008（杀死进程的根因修复）──────────────────────────────────
+    // **必须**注册 error 监听器。node-redis 的 `RedisClient extends EventEmitter`，
+    // 而 EventEmitter 在**没有任何 'error' 监听器**时 `emit('error')` 会直接
+    // throw —— 底层 socket 一断（Redis 重启 / 网络抖动 / 空闲连接被掐），
+    // socket 层的 `emit('error')` 就变成进程级 uncaughtException，冒泡到
+    // main.ts 的 `process.on("uncaughtException")` → gracefulFatalShutdown
+    // → 10s 硬超时 `process.exit(1)`。**整个 admin-api 实例随之消失**，
+    // 直到外部守护（宝塔 nohup 轮询）把它拉起——生产实测造成两次 ~10s 与
+    // ~3 分钟的全站 502 黑洞。
+    //
+    // 本客户端是**全仓唯一**没挂该监听器的 Redis 客户端，而它能杀死进程的
+    // 原因在于库不同：另外两处 ioredis 客户端（executor-pull / redis-lock）
+    // 是**显式手挂**，BullMQ 的共享连接则是 ioredis 自带 `silentEmit` 保护
+    // ——ioredis 在无监听器时只 `console.error` 后返回，**不 throw**；
+    // node-redis 没有这层保护。故"同样的疏忽"只有此处致命。
+    //
+    // 健康检查客户端尤其不该有这个杀伤半径：它只服务 /health 读面，Redis
+    // 不可用时应**如实报 unhealthy**（下方 checkRedis 已有 try/catch 兜底），
+    // 而不是让整个控制平面退出。
+    this.redisClient.on("error", (err: Error) => {
+      this.logger.error(`Health-check redis client error: ${err.message}`);
     });
 
     this.queueFailedMax = this.configService.get<number>(

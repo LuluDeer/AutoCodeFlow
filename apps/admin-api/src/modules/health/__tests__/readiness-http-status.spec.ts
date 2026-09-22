@@ -15,11 +15,15 @@ import { TaskExecution } from "../../task/entities/task-execution.entity";
  * 也不会被摘流量，就绪探针形同虚设。现在按契约返回 503。
  */
 
+// ARCH-008: `on` 必须存在——HealthService 构造时会注册 redis error 监听器
+// （缺它是击穿进程的根因，见 health.service.ts 内注释与 health.service.spec.ts
+// 的红线用例）。mock 漏掉 `on` 会在构造期抛 "on is not a function"。
 jest.mock("redis", () => ({
   createClient: jest.fn(() => ({
     isReady: true,
     connect: jest.fn().mockResolvedValue(undefined),
     ping: jest.fn().mockResolvedValue("PONG"),
+    on: jest.fn(),
   })),
 }));
 
