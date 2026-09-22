@@ -17,6 +17,13 @@ import {
   suggestTemplateKey,
 } from "./task-template.util";
 import { OFFICIAL_TEMPLATE_KEYS } from "./task-template.constants";
+import { UserRole } from "../users/entities/user.entity";
+
+/** E-P2-S1：删除模板时的请求方身份（属主/管理员判定用）。 */
+export interface TemplateRequester {
+  username: string;
+  role: UserRole;
+}
 
 /**
  * CORE-03：任务模板 CRUD。官方模板（迁移 seed，isOfficial=true）只读；
@@ -52,7 +59,10 @@ export class TaskTemplateService {
     return tpl.config;
   }
 
-  async create(dto: CreateTaskTemplateDto): Promise<TaskTemplate> {
+  async create(
+    dto: CreateTaskTemplateDto,
+    createdBy?: string,
+  ): Promise<TaskTemplate> {
     // config 合法性：CreateTaskDto 语义校验，脏模板 400（不落库）。
     await assertValidTaskTemplateConfig(dto.config);
 
@@ -70,6 +80,8 @@ export class TaskTemplateService {
       config: dto.config,
       // 永远由本端点创建为自定义模板；官方仅由迁移 seed 产生。
       isOfficial: false,
+      // E-P2-S1：记录创建人 username（供删除属主校验）。
+      createdBy: createdBy ?? null,
     });
     return this.repo.save(entity);
   }
@@ -89,10 +101,19 @@ export class TaskTemplateService {
     return this.taskService.create(dto);
   }
 
-  async remove(id: string): Promise<void> {
+  async remove(id: string, requester: TemplateRequester): Promise<void> {
     const tpl = await this.findOne(id);
     if (tpl.isOfficial || OFFICIAL_TEMPLATE_KEYS.includes(tpl.key)) {
       throw new ForbiddenException("官方模板不可删除");
+    }
+    // E-P2-S1：属主或 ADMIN 才可删。历史行 createdBy=NULL 安全回退——仅 ADMIN。
+    const isAdmin = requester.role === UserRole.ADMIN;
+    if (tpl.createdBy == null) {
+      if (!isAdmin) {
+        throw new ForbiddenException("历史模板仅管理员可删除");
+      }
+    } else if (tpl.createdBy !== requester.username && !isAdmin) {
+      throw new ForbiddenException("仅属主或管理员可删除该模板");
     }
     await this.repo.delete({ id });
   }
