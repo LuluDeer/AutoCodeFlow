@@ -10,8 +10,10 @@ import {
   ParseUUIDPipe,
   Patch,
   Post,
+  Req,
   UseGuards,
 } from "@nestjs/common";
+import { Request } from "express";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { RolesGuard } from "../../common/guards/roles.guard";
 import { Roles } from "../../common/decorators/roles.decorator";
@@ -29,6 +31,8 @@ import {
 import { Project, DEFAULT_PROJECT_ID } from "./project.entity";
 import type { ProjectRole } from "./entities/project-member.entity";
 import type { ProjectMemberView } from "./project-access.service";
+// D3-B-P1-1: 项目/成员写路由审计落证（与 task.controller 落证同构）。
+import { AuditService } from "../audit/audit.service";
 
 /**
  * 实体行 → 列表视图（附当前主体的成员角色）。纯函数，供 findAll 拼装。
@@ -60,6 +64,8 @@ export class ProjectsController {
   constructor(
     private readonly service: ProjectsService,
     private readonly access: ProjectAccessService,
+    // D3-B-P1-1: 多租户边界写面审计落证（建/改/删项目、成员任免/改角色/移除）。
+    private readonly audit: AuditService,
   ) {}
 
   /**
@@ -104,8 +110,21 @@ export class ProjectsController {
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN)
   @Post()
-  async create(@Body() dto: CreateProjectDto): Promise<Project> {
-    return this.service.create(dto);
+  async create(
+    @Body() dto: CreateProjectDto,
+    @CurrentUser() user: { id: number; username: string } | undefined,
+    @Req() req: Request,
+  ): Promise<Project> {
+    const created = await this.service.create(dto);
+    await this.audit.log({
+      userId: user?.id,
+      username: user?.username,
+      action: "project.create",
+      resource: "project",
+      resourceId: created.id,
+      ip: req.ip,
+    });
+    return created;
   }
 
   @UseGuards(RolesGuard)
@@ -114,8 +133,19 @@ export class ProjectsController {
   async update(
     @Param("id", ParseUUIDPipe) id: string,
     @Body() dto: UpdateProjectDto,
+    @CurrentUser() user: { id: number; username: string } | undefined,
+    @Req() req: Request,
   ): Promise<Project> {
-    return this.service.update(id, dto);
+    const updated = await this.service.update(id, dto);
+    await this.audit.log({
+      userId: user?.id,
+      username: user?.username,
+      action: "project.update",
+      resource: "project",
+      resourceId: id,
+      ip: req.ip,
+    });
+    return updated;
   }
 
   @UseGuards(RolesGuard)
@@ -124,8 +154,19 @@ export class ProjectsController {
   @HttpCode(200)
   async remove(
     @Param("id", ParseUUIDPipe) id: string,
+    @CurrentUser() user: { id: number; username: string } | undefined,
+    @Req() req: Request,
   ): Promise<{ deleted: boolean }> {
-    return this.service.remove(id);
+    const result = await this.service.remove(id);
+    await this.audit.log({
+      userId: user?.id,
+      username: user?.username,
+      action: "project.delete",
+      resource: "project",
+      resourceId: id,
+      ip: req.ip,
+    });
+    return result;
   }
 
   // -----------------------------------------------------------------------
@@ -160,8 +201,20 @@ export class ProjectsController {
   async addMember(
     @Param("id", ParseUUIDPipe) id: string,
     @Body() dto: UpsertProjectMemberDto,
+    @CurrentUser() user: { id: number; username: string } | undefined,
+    @Req() req: Request,
   ): Promise<ProjectMemberView> {
-    return this.access.addMember(id, dto.userId, dto.role);
+    const added = await this.access.addMember(id, dto.userId, dto.role);
+    await this.audit.log({
+      userId: user?.id,
+      username: user?.username,
+      action: "member.grant",
+      resource: "project_member",
+      resourceId: id,
+      detail: { targetUserId: dto.userId, role: dto.role },
+      ip: req.ip,
+    });
+    return added;
   }
 
   @UseGuards(RolesGuard)
@@ -171,8 +224,20 @@ export class ProjectsController {
     @Param("id", ParseUUIDPipe) id: string,
     @Param("userId", ParseIntPipe) userId: number,
     @Body() dto: UpdateProjectMemberDto,
+    @CurrentUser() user: { id: number; username: string } | undefined,
+    @Req() req: Request,
   ): Promise<ProjectMemberView> {
-    return this.access.updateMember(id, userId, dto.role);
+    const updated = await this.access.updateMember(id, userId, dto.role);
+    await this.audit.log({
+      userId: user?.id,
+      username: user?.username,
+      action: "member.update",
+      resource: "project_member",
+      resourceId: id,
+      detail: { targetUserId: userId, role: dto.role },
+      ip: req.ip,
+    });
+    return updated;
   }
 
   @UseGuards(RolesGuard)
@@ -182,8 +247,20 @@ export class ProjectsController {
   async removeMember(
     @Param("id", ParseUUIDPipe) id: string,
     @Param("userId", ParseIntPipe) userId: number,
+    @CurrentUser() user: { id: number; username: string } | undefined,
+    @Req() req: Request,
   ): Promise<{ deleted: boolean }> {
-    return this.access.removeMember(id, userId);
+    const result = await this.access.removeMember(id, userId);
+    await this.audit.log({
+      userId: user?.id,
+      username: user?.username,
+      action: "member.revoke",
+      resource: "project_member",
+      resourceId: id,
+      detail: { targetUserId: userId },
+      ip: req.ip,
+    });
+    return result;
   }
 
   /** AUTH-02：当前登录用户在各项目中的角色（admin-web 用它渲染可用项目）。 */
