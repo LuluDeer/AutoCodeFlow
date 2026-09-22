@@ -1,6 +1,7 @@
 import { Test } from "@nestjs/testing";
 import { getRepositoryToken } from "@nestjs/typeorm";
 import { ConfigService } from "@nestjs/config";
+import { EventEmitter } from "events";
 // NETOPT-5②: 断言 createClient 收到的 TLS 入参
 import { createClient } from "redis";
 import { HealthService } from "../health.service";
@@ -9,11 +10,17 @@ import { Executor } from "../../executor/entities/executor.entity";
 import { TaskExecution } from "../../task/entities/task-execution.entity";
 
 // Mock the redis createClient so HealthService constructor doesn't open a real connection
+//
+// ARCH-008: `on` 必须存在——构造函数现在会注册 error 监听器（缺它就是击穿
+// 进程的根因，见 health.service.ts 内注释）。若这里漏掉 `on`，本套件会在
+// 构造期抛 "on is not a function"，恰好也起到守卫作用。
+const mockRedisOn = jest.fn();
 jest.mock("redis", () => ({
   createClient: jest.fn(() => ({
     isReady: false,
     connect: jest.fn().mockResolvedValue(undefined),
     ping: jest.fn().mockResolvedValue("PONG"),
+    on: mockRedisOn,
   })),
 }));
 
@@ -411,6 +418,53 @@ describe("HealthService", () => {
         socket?: unknown;
       };
       expect(lastCall.socket).toBeUndefined();
+    });
+  });
+
+  // ============================================================================
+  // ARCH-008: 健康检查 Redis 客户端**必须**注册 error 监听器。
+  //
+  // 这是本仓最严重的一次生产事故的根因锁定测试：node-redis 的
+  // `RedisClient extends EventEmitter`，而 EventEmitter 在**无 'error'
+  // 监听器**时 `emit('error')` 会直接 throw。socket 一断即变成进程级
+  // uncaughtException → main.ts gracefulFatalShutdown → exit(1)，整个
+  // admin-api 消失（生产实测两次全站 502）。
+  //
+  // 为什么只有此处致命（另两处 ioredis 客户端同样"忘了挂"却没事）：ioredis
+  // 自带 silentEmit 保护——无监听器时只 console.error 后返回、不 throw；
+  // node-redis 没有这层保护。故本断言不可省。
+  // ============================================================================
+  describe("ARCH-008: redis error listener (进程级存活红线)", () => {
+    it("构造时注册 'error' 监听器（缺它 = Redis 抖动即整实例退出）", async () => {
+      mockRedisOn.mockClear();
+      await buildService({});
+      const errorRegistrations = mockRedisOn.mock.calls.filter(
+        (c) => c[0] === "error",
+      );
+      expect(errorRegistrations).toHaveLength(1);
+      expect(typeof errorRegistrations[0][1]).toBe("function");
+    });
+
+    it("监听器本身不抛——回调可安全接收 Error（否则等于没挂）", async () => {
+      mockRedisOn.mockClear();
+      await buildService({});
+      const handler = mockRedisOn.mock.calls.find(
+        (c) => c[0] === "error",
+      )?.[1] as (err: Error) => void;
+      // 真实场景：socket 断开时 node-redis 传入一个 Error。回调必须吞掉它，
+      // 而不是二次抛出（那会让"已挂监听器"形同虚设）。
+      expect(() => handler(new Error("socket closed"))).not.toThrow();
+    });
+
+    it("EventEmitter 无监听器时 emit('error') 确实会 throw（根因成立的证明）", () => {
+      // 直接用原生 EventEmitter 证明机制，不依赖对 node-redis 内部行为的假设：
+      // 这是"没挂监听器 → 进程崩溃"这条因果链的最小复现。
+      const bare = new EventEmitter();
+      expect(() => bare.emit("error", new Error("boom"))).toThrow("boom");
+      // 挂了监听器之后不再抛——正是本修复的作用
+      const guarded = new EventEmitter();
+      guarded.on("error", () => undefined);
+      expect(() => guarded.emit("error", new Error("boom"))).not.toThrow();
     });
   });
 
