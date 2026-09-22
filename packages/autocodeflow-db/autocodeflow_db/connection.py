@@ -41,8 +41,11 @@ DATABASE_URL_ENV = "DATABASE_URL"
 class DatabaseConfig:
     """Database connection configuration."""
     url: str = "postgresql://localhost:5432/autocodeflow"  # no default credentials; supply via DATABASE_URL env or DatabaseConfig.from_env()
-    pool_size: int = 5
-    pool_overflow: int = 10
+    # D1-P2-6: 任务是短生命周期进程，每进程 5+10=15 连接会在 N 并发进程下顶满
+    # PG max_connections。默认收窄到 pool_size=2 / overflow=0（每进程最多 2 条）；
+    # 需要更大并发的长驻服务可显式覆盖。
+    pool_size: int = 2
+    pool_overflow: int = 0
     echo: bool = False
     pool_recycle: int = DEFAULT_POOL_RECYCLE_SECONDS
 

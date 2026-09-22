@@ -21,8 +21,8 @@ class TestDatabaseConfig:
     def test_defaults(self):
         cfg = DatabaseConfig()
         assert "postgresql" in cfg.url
-        assert cfg.pool_size == 5
-        assert cfg.pool_overflow == 10
+        assert cfg.pool_size == 2
+        assert cfg.pool_overflow == 0
         assert cfg.echo is False
 
     def test_custom_url(self):
@@ -123,8 +123,8 @@ class TestGetSession:
         assert isinstance(session_obj, DatabaseSession)
         mock_create_engine.assert_called_once_with(
             "postgresql://custom:pw@db/test",
-            pool_size=5,
-            max_overflow=10,
+            pool_size=2,
+            max_overflow=0,
             echo=False,
             pool_pre_ping=True,
             pool_recycle=DEFAULT_POOL_RECYCLE_SECONDS,
@@ -170,8 +170,8 @@ class TestFromEnv:
         assert isinstance(session_obj, DatabaseSession)
         mock_create_engine.assert_called_once_with(
             "postgresql://envuser:envpw@envhost:6543/envdb",
-            pool_size=5,
-            max_overflow=10,
+            pool_size=2,
+            max_overflow=0,
             echo=False,
             pool_pre_ping=True,
             pool_recycle=DEFAULT_POOL_RECYCLE_SECONDS,
