@@ -339,3 +339,84 @@ describe('NETOPT-2②: SSE 断流（无 done 帧）不得静默 exit 0', () => {
     }
   });
 });
+
+/**
+ * D1-P2-3：SSE tail 客户端空闲兜底。长连在反代静默丢包/执行器卡死/网络静默
+ * 分区时既不 end 也不发帧——旧代码永久挂起。自首帧起任意数据帧重置窗口；
+ * 连续 60s 无任何数据帧即判静默，以非零码退出。用 fake timers 快进验证。
+ */
+describe('D1-P2-3: SSE tail 空闲看门狗（60s 无数据帧）', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    exitSpy.mockImplementation((() => undefined) as never);
+    process.exitCode = undefined;
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    process.exitCode = undefined;
+  });
+
+  async function bootSilentTail() {
+    const { execCommand } = await import('../commands/exec');
+    const axiosDefault = (await import('axios')).default as unknown as {
+      get: ReturnType<typeof vi.fn>;
+    };
+    (axiosInstance.get as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      data: { code: 0, message: 'success', data: { taskId: 't-1', status: 'running' } },
+    });
+    (axiosInstance.post as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      data: { code: 0, message: 'success', data: { ticket: 'TK-1' } },
+    });
+    const listeners: Record<string, Array<(arg?: unknown) => void>> = {};
+    const fakeStream = {
+      on(evt: string, cb: (arg?: unknown) => void) {
+        (listeners[evt] ??= []).push(cb);
+        return fakeStream;
+      },
+    };
+    axiosDefault.get.mockResolvedValueOnce({ data: fakeStream });
+
+    const stderrChunks: string[] = [];
+    const errSpy = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation((c: string | Uint8Array) => {
+        stderrChunks.push(String(c));
+        return true;
+      });
+
+    const tail = execCommand().parseAsync(['node', 'acf', 'tail', 'e-1']);
+    // 让 action 走完 compat 解析 + 换票 + 建流（microtask flush）。
+    await vi.advanceTimersByTimeAsync(0);
+    await tail.catch(() => {});
+    return { listeners, stderrChunks, errSpy };
+  }
+
+  it('连续 60s 无数据帧 → stderr 提示并 exit(1)', async () => {
+    vi.useFakeTimers();
+    const { listeners, stderrChunks, errSpy } = await bootSilentTail();
+    try {
+      expect(listeners['data']).toBeTruthy();
+      // 快进 61s，全程无任何数据帧。
+      await vi.advanceTimersByTimeAsync(61_000);
+      expect(exitSpy).toHaveBeenCalledWith(1);
+      expect(stderrChunks.join('')).toContain('no data frame for 60s');
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+
+  it('中途收到数据帧重置窗口 → 不会误判空闲', async () => {
+    vi.useFakeTimers();
+    const { listeners, errSpy } = await bootSilentTail();
+    try {
+      // 30s 时收到一帧日志，空闲窗口重置。
+      await vi.advanceTimersByTimeAsync(30_000);
+      listeners['data']![0]!('data: "mid-log"\n\n');
+      // 再走 31s：距首帧仅 31s < 60s，不应触发看门狗。
+      await vi.advanceTimersByTimeAsync(31_000);
+      expect(exitSpy).not.toHaveBeenCalledWith(1);
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+});

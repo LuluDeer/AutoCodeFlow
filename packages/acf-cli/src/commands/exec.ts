@@ -174,11 +174,41 @@ export function execCommand(): Command {
           }
         });
 
+        // D1-P2-3: 客户端空闲兜底。SSE 长连在反代静默丢包 / 执行器卡死 /
+        // 网络静默分区时既不 end 也不发帧——旧代码会永久挂起（CI/脚本里 tail
+        // 永不返回）。自收到首帧起，任意数据帧重置窗口；连续 60s 无任何数据帧
+        // 即判静默，以非零码退出并提示重连。
+        const IDLE_TIMEOUT_MS = 60_000;
+        let idleTimer: NodeJS.Timeout | undefined;
+        const armIdleTimer = (): void => {
+          if (idleTimer) clearTimeout(idleTimer);
+          idleTimer = setTimeout(() => {
+            process.stderr.write(
+              chalk.red(
+                `[tail] no data frame for ${IDLE_TIMEOUT_MS / 1000}s — the stream went silent; retry \`acf exec tail ${execId}\`.\n`,
+              ),
+            );
+            process.exit(1);
+          }, IDLE_TIMEOUT_MS);
+          // unref：看门狗不得阻止进程在无其他活动句柄时退出（生产上流挂死
+          // 不绑架退出；测试里不残留挂起定时器拖慢 vitest）。
+          if (typeof idleTimer.unref === 'function') idleTimer.unref();
+        };
+        const clearIdleTimer = (): void => {
+          if (idleTimer) {
+            clearTimeout(idleTimer);
+            idleTimer = undefined;
+          }
+        };
+        armIdleTimer();
+
         const stream = res.data as NodeJS.ReadableStream;
         stream.on('data', (chunk: Buffer | string) => {
+          armIdleTimer(); // 任意数据帧（含心跳注释行）都重置空闲窗口
           parser.feed(chunk.toString('utf-8'));
         });
         stream.on('end', () => {
+          clearIdleTimer();
           if (sawDone) {
             process.exit(0);
             // 防穿透：测试里 process.exit 常被钉成桩（正常返回），结构上
@@ -197,6 +227,7 @@ export function execCommand(): Command {
           process.exitCode = 1;
         });
         stream.on('error', (err: Error) => {
+          clearIdleTimer();
           process.stderr.write(chalk.red(`[tail] stream error: ${err.message}\n`));
           process.exit(1);
         });
