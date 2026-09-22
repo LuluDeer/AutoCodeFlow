@@ -43,6 +43,11 @@ export class TaskTemplate {
   @Column({ type: "boolean", default: false })
   isOfficial: boolean;
 
+  /** E-P2-S1：创建人用户名（JWT username）。NULL=历史行/迁移 seed，
+   *  删除时仅 ADMIN 可删（安全回退）；新建时记录当前用户。 */
+  @Column({ type: "varchar", length: 100, nullable: true })
+  createdBy: string | null;
+
   @CreateDateColumn()
   createdAt: Date;
 

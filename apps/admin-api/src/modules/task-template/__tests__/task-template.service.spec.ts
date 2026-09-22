@@ -14,6 +14,7 @@ import { TaskTemplateService } from "../task-template.service";
 import { TaskTemplate } from "../entities/task-template.entity";
 import { TaskService } from "../../task/task.service";
 import { OFFICIAL_TASK_TEMPLATES } from "../task-template.constants";
+import { UserRole } from "../../users/entities/user.entity";
 
 const makeRepo = () => ({
   find: jest.fn().mockResolvedValue([]),
@@ -134,16 +135,94 @@ describe("TaskTemplateService (CORE-03)", () => {
 
   it("remove 官方模板被拒 403", async () => {
     repo.findOne.mockResolvedValue(official());
-    await expect(svc.remove("official-1")).rejects.toThrow(ForbiddenException);
+    await expect(
+      svc.remove("official-1", { username: "alice", role: UserRole.USER }),
+    ).rejects.toThrow(ForbiddenException);
     expect(repo.delete).not.toHaveBeenCalled();
   });
 
-  it("remove 自定义模板删除", async () => {
+  it("remove 自定义模板删除（属主放行）", async () => {
     repo.findOne.mockResolvedValue(
-      official({ id: "c-1", key: "mine", isOfficial: false }),
+      official({
+        id: "c-1",
+        key: "mine",
+        isOfficial: false,
+        createdBy: "alice",
+      }),
     );
-    await svc.remove("c-1");
+    await svc.remove("c-1", { username: "alice", role: UserRole.USER });
     expect(repo.delete).toHaveBeenCalledWith({ id: "c-1" });
+  });
+
+  // E-P2-S1 归属矩阵
+  it("remove：非属主非 ADMIN 删除 → 403", async () => {
+    repo.findOne.mockResolvedValue(
+      official({
+        id: "c-1",
+        key: "mine",
+        isOfficial: false,
+        createdBy: "alice",
+      }),
+    );
+    await expect(
+      svc.remove("c-1", { username: "mallory", role: UserRole.USER }),
+    ).rejects.toThrow(ForbiddenException);
+    expect(repo.delete).not.toHaveBeenCalled();
+  });
+
+  it("remove：ADMIN 可删他人模板 → 放行", async () => {
+    repo.findOne.mockResolvedValue(
+      official({
+        id: "c-1",
+        key: "mine",
+        isOfficial: false,
+        createdBy: "alice",
+      }),
+    );
+    await svc.remove("c-1", { username: "root", role: UserRole.ADMIN });
+    expect(repo.delete).toHaveBeenCalledWith({ id: "c-1" });
+  });
+
+  it("remove：createdBy=NULL 历史行仅 ADMIN 可删（普通用户 403）", async () => {
+    repo.findOne.mockResolvedValue(
+      official({
+        id: "legacy",
+        key: "legacy",
+        isOfficial: false,
+        createdBy: null,
+      }),
+    );
+    await expect(
+      svc.remove("legacy", { username: "alice", role: UserRole.USER }),
+    ).rejects.toThrow(ForbiddenException);
+    expect(repo.delete).not.toHaveBeenCalled();
+  });
+
+  it("remove：createdBy=NULL 历史行 ADMIN 可删 → 放行", async () => {
+    repo.findOne.mockResolvedValue(
+      official({
+        id: "legacy",
+        key: "legacy",
+        isOfficial: false,
+        createdBy: null,
+      }),
+    );
+    await svc.remove("legacy", { username: "root", role: UserRole.ADMIN });
+    expect(repo.delete).toHaveBeenCalledWith({ id: "legacy" });
+  });
+
+  it("create：记录创建人 username 到 createdBy", async () => {
+    repo.findOne.mockResolvedValue(null);
+    await svc.create(
+      {
+        name: "Owned",
+        config: { triggerType: "manual", runtime: "node", entrypoint: "x.js" },
+      },
+      "alice",
+    );
+    expect(repo.create).toHaveBeenCalledWith(
+      expect.objectContaining({ createdBy: "alice" }),
+    );
   });
 
   it("instantiate：模板 config 作默认、显式覆盖胜出、复用 TaskService.create", async () => {
