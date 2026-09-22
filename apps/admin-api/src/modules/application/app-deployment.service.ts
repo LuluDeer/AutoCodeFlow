@@ -1262,10 +1262,7 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     // E-P1-R2：乐观锁收口——并发后写撞版本转 409。
     const saved = await this.saveWithOptimisticLock(deployment);
     // D3-B-P2-1: stop 执行门落证（审批门已有痕，执行门此前无痕）。
-    await this.writeTransitionAudit(
-      "deployment.stop",
-      saved,
-    );
+    await this.writeTransitionAudit("deployment.stop", saved);
     // QA1: mask the HTTP return; the raw entity was already persisted.
     return this.maskDeploymentForRead(saved);
   }
@@ -2388,11 +2385,9 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     }
     await this.upgradeWithSnapshot(deployment, previous, trigger);
     // D3-B-P2-1: rollback 执行门落证（回退到上一版本）。
-    await this.writeTransitionAudit(
-      "deployment.rollback",
-      deployment,
-      { previousVersion: previous.version },
-    );
+    await this.writeTransitionAudit("deployment.rollback", deployment, {
+      previousVersion: previous.version,
+    });
   }
 
   /** 快照回退的单台升级（快照字段恢复→pushDeployToExecutor upgrade 链）。

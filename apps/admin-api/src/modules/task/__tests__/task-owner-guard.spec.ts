@@ -218,9 +218,9 @@ describe("TaskService 项目角色面（AUTH-02）", () => {
     // 审计 E-P1-S1：默认已从 any 翻转为 owner（configuration.ts 未设置
     // TASK_OPERATE_SCOPE 时返回 owner）。旧断言此处非成员（resolveRole 返回 null）
     // 穿透放行；新默认下非属主非成员按 403。
-    await expect(
-      noneSvc.assertCanOperate(row, plainUser),
-    ).rejects.toThrow(/TASK_OPERATE_SCOPE=owner/);
+    await expect(noneSvc.assertCanOperate(row, plainUser)).rejects.toThrow(
+      /TASK_OPERATE_SCOPE=owner/,
+    );
     // ADMIN 短路放行；无主体（机器面）走项目角色旁路仍放行。
     await expect(
       viewerSvc.assertCanOperate(row, admin),

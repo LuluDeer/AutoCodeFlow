@@ -315,7 +315,8 @@ export class EventSubscriptionService {
         });
       } catch (err: unknown) {
         this.logger.warn(
-          `Audit write failed: ` + (err instanceof Error ? err.message : String(err)),
+          `Audit write failed: ` +
+            (err instanceof Error ? err.message : String(err)),
         );
       }
     }

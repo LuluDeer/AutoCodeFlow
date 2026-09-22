@@ -11,9 +11,7 @@ import { MigrationInterface, QueryRunner } from "typeorm";
  * 幂等：up = DROP INDEX IF EXISTS；down = 重建 IF NOT EXISTS USING GIN
  * （与 1790000000027 对齐，供 revert 重放）。
  */
-export class DropExecutorInterpretersGinIndex1790000000034
-  implements MigrationInterface
-{
+export class DropExecutorInterpretersGinIndex1790000000034 implements MigrationInterface {
   name = "DropExecutorInterpretersGinIndex1790000000034";
 
   public async up(queryRunner: QueryRunner): Promise<void> {

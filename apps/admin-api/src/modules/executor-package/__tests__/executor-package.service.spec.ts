@@ -661,9 +661,7 @@ describe("ExecutorPackageService", () => {
     // 无法区分 queued（已入 pull 队列）/ success / error，且逐台 error 无类型。
     it("P1-10: per-executor result carries status + commandId/error detail", async () => {
       // 错误分支：SSRF 守卫拒绝 → status=error + 诊断信息
-      jest
-        .mocked(assertAndPinExecutorUrl)
-        .mockRejectedValue(new Error("boom"));
+      jest.mocked(assertAndPinExecutorUrl).mockRejectedValue(new Error("boom"));
       const errorResults = await service.pushToExecutors(
         mockPkg.id,
         undefined,
@@ -680,13 +678,11 @@ describe("ExecutorPackageService", () => {
         },
       ]);
       // 成功分支：status=success
-      jest
-        .mocked(assertAndPinExecutorUrl)
-        .mockResolvedValue({
-          url: new URL("http://executor:8002"),
-          pinnedIp: "93.184.216.34",
-          pinned: false,
-        } as any);
+      jest.mocked(assertAndPinExecutorUrl).mockResolvedValue({
+        url: new URL("http://executor:8002"),
+        pinnedIp: "93.184.216.34",
+        pinned: false,
+      } as any);
       jest.mocked(axios.post).mockResolvedValue({ data: {} });
       const okResults = await service.pushToExecutors(
         mockPkg.id,

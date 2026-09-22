@@ -181,12 +181,12 @@ export class TaskProcessor extends WorkerHost {
         failureText.toLowerCase(),
       )
         ? ExecutionFailureReason.INTERPRETER_UNAVAILABLE
-        // P0-4（UX-AUDIT-2026-09-21）：应用已被删除 → 必须排在 PACKAGE_FETCH
-        // 规则**之前**。此前该错误落 UNKNOWN（消息是 `Cannot resolve
-        // packageUrl ... application <uuid> not found`，不含 package fetch/
-        // download package 等关键词），用户看到「未知原因，去翻执行日志」——
-        // 而原因是 100% 已知且可行动的（引用了一个已被删除的应用）。
-        : /cannot resolve packageurl|application\s+\S+\s+not found/i.test(
+        : // P0-4（UX-AUDIT-2026-09-21）：应用已被删除 → 必须排在 PACKAGE_FETCH
+          // 规则**之前**。此前该错误落 UNKNOWN（消息是 `Cannot resolve
+          // packageUrl ... application <uuid> not found`，不含 package fetch/
+          // download package 等关键词），用户看到「未知原因，去翻执行日志」——
+          // 而原因是 100% 已知且可行动的（引用了一个已被删除的应用）。
+          /cannot resolve packageurl|application\s+\S+\s+not found/i.test(
               failureText,
             )
           ? ExecutionFailureReason.APPLICATION_MISSING
@@ -278,7 +278,11 @@ export class TaskProcessor extends WorkerHost {
       const inherentNonRetryable: readonly ExecutionFailureReason[] = [
         ExecutionFailureReason.APPLICATION_MISSING,
       ];
-      if (inherentNonRetryable.includes(exec.failureReason as ExecutionFailureReason)) {
+      if (
+        inherentNonRetryable.includes(
+          exec.failureReason as ExecutionFailureReason,
+        )
+      ) {
         throw new UnrecoverableError(
           `${errMsg} (failure is structurally unrecoverable — retrying cannot succeed)`,
         );

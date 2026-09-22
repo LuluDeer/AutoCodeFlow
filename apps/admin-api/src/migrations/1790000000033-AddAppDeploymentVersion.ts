@@ -18,9 +18,7 @@ import { MigrationInterface, QueryRunner } from "typeorm";
  *
  * 幂等：ADD/DROP COLUMN IF [NOT] EXISTS——重放与 revert 均无副作用。
  */
-export class AddAppDeploymentVersion1790000000033
-  implements MigrationInterface
-{
+export class AddAppDeploymentVersion1790000000033 implements MigrationInterface {
   name = "AddAppDeploymentVersion1790000000033";
 
   public async up(queryRunner: QueryRunner): Promise<void> {

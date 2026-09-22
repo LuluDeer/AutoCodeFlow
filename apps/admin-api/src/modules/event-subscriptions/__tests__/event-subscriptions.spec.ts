@@ -754,7 +754,6 @@ describe("NETOPT-1⑨ recordDelivery* 原子化（真实 EventSubscriptionServic
   });
 });
 
-
 // ---------------------------------------------------------------------------
 // D3-B-P1-3: webhook 订阅改向审计落证（红→绿回归）。
 // 装配 mock AuditService，断言 create/update/remove 落对应 action，
@@ -788,7 +787,10 @@ describe("FEAT-07 EventSubscriptionService — D3-B-P1-3 审计落证", () => {
           provide: getRepositoryToken(EventSubscriptionDeadLetter),
           useValue: dlRepo,
         },
-        { provide: ConfigService, useValue: { get: jest.fn().mockReturnValue(false) } },
+        {
+          provide: ConfigService,
+          useValue: { get: jest.fn().mockReturnValue(false) },
+        },
         { provide: AuditService, useValue: audit },
       ],
     }).compile();

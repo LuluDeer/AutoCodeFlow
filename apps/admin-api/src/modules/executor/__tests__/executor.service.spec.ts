@@ -12,7 +12,11 @@ import {
   EXECUTOR_LIST_LIMIT,
   __resetTruncationWarnStateForTest,
 } from "../executor.service";
-import { Executor, ExecutorOfflineReason, ExecutorStatus } from "../entities/executor.entity";
+import {
+  Executor,
+  ExecutorOfflineReason,
+  ExecutorStatus,
+} from "../entities/executor.entity";
 import { ExecutorMetricsHistory } from "../entities/executor-metrics-history.entity";
 import { Task } from "../../task/entities/task.entity";
 import {

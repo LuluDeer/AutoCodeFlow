@@ -10,9 +10,7 @@ import { MigrationInterface, QueryRunner } from "typeorm";
  *
  * 幂等：ADD/DROP COLUMN IF [NOT] EXISTS——重放与 revert 均无副作用。
  */
-export class AddTaskTemplateCreatedBy1790000000035
-  implements MigrationInterface
-{
+export class AddTaskTemplateCreatedBy1790000000035 implements MigrationInterface {
   name = "AddTaskTemplateCreatedBy1790000000035";
 
   public async up(queryRunner: QueryRunner): Promise<void> {

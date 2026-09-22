@@ -13,7 +13,11 @@ import * as path from "path";
 import { buildZip } from "./__tests__/zip-samples";
 import { readManifestFromZip } from "./zip-manifest.util";
 
-function writeZip(tmpDir: string, zipName: string, entries: Parameters<typeof buildZip>[0]): string {
+function writeZip(
+  tmpDir: string,
+  zipName: string,
+  entries: Parameters<typeof buildZip>[0],
+): string {
   const zipPath = path.join(tmpDir, zipName);
   fs.writeFileSync(zipPath, buildZip(entries));
   return zipPath;
@@ -29,7 +33,11 @@ describe("readManifestFromZip（P1-11）", () => {
   });
 
   it("能读出根目录 manifest.json（deflate 方法 8）", () => {
-    const manifest = JSON.stringify({ runtime: "node", entrypoint: "dist/main.js", timeout: 300 });
+    const manifest = JSON.stringify({
+      runtime: "node",
+      entrypoint: "dist/main.js",
+      timeout: 300,
+    });
     const zipPath = writeZip(tmpDir, "app.zip", [
       { name: "manifest.json", data: Buffer.from(manifest) },
       { name: "server.js", data: Buffer.from("console.log(1)") },
@@ -42,7 +50,10 @@ describe("readManifestFromZip（P1-11）", () => {
   });
 
   it("stored（方法 0）也能读出", () => {
-    const manifest = JSON.stringify({ runtime: "python", entrypoint: "run.py" });
+    const manifest = JSON.stringify({
+      runtime: "python",
+      entrypoint: "run.py",
+    });
     const zipPath = writeZip(tmpDir, "app.zip", [
       { name: "manifest.json", data: Buffer.from(manifest), method: 0 },
     ]);

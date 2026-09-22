@@ -335,7 +335,9 @@ describe("ExecutorService — security regressions (F-2/F-7/F-3/F-5)", () => {
         secrets,
       }) as unknown as Task;
 
-    const dispatchAndCaptureBody = async (secrets: Record<string, unknown> | null) => {
+    const dispatchAndCaptureBody = async (
+      secrets: Record<string, unknown> | null,
+    ) => {
       const { assertAndPinExecutorUrl } =
         // eslint-disable-next-line @typescript-eslint/no-require-imports
         require("../../../common/utils/safe-http.util") as {
@@ -358,10 +360,10 @@ describe("ExecutorService — security regressions (F-2/F-7/F-3/F-5)", () => {
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const axios = require("axios");
       axios.post.mockResolvedValue({ data: { success: true } });
-      await service.dispatch(
-        mkTask(secrets),
-        { id: "exec-1", params: {} } as TaskExecution,
-      );
+      await service.dispatch(mkTask(secrets), {
+        id: "exec-1",
+        params: {},
+      } as TaskExecution);
       return axios.post.mock.calls[0][1] as Record<string, unknown>;
     };
 

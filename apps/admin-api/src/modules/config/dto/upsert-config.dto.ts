@@ -1,9 +1,4 @@
-import {
-  IsString,
-  IsOptional,
-  IsBoolean,
-  MaxLength,
-} from "class-validator";
+import { IsString, IsOptional, IsBoolean, MaxLength } from "class-validator";
 import { ApiProperty } from "@nestjs/swagger";
 
 export class UpsertConfigDto {

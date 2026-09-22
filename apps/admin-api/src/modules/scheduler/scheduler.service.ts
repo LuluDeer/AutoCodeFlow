@@ -390,8 +390,11 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     // keyset 分页循环覆盖全部 active 任务（不截断），每页有界、主键范围扫描。
     let idCursor = "";
     for (;;) {
+      // 空串游标绝不能拼 `id > ''`（uuid 列 PG 报错）
+      const where: Record<string, unknown> = { status: TaskStatus.ACTIVE };
+      if (idCursor) where.id = MoreThan(idCursor);
       const tasks = await this.taskRepo.find({
-        where: { status: TaskStatus.ACTIVE, id: MoreThan(idCursor) },
+        where,
         order: { id: "ASC" },
         take: ACTIVE_TASK_PAGE_SIZE,
       });
@@ -405,7 +408,9 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
             : 2 * 60 * 1000;
         if (gap > threshold) {
           if (task.misfireStrategy === MisfireStrategy.FIRE_ONCE) {
-            this.logger.warn(`Misfire detected for "${task.name}", firing once`);
+            this.logger.warn(
+              `Misfire detected for "${task.name}", firing once`,
+            );
             misfired.push(task);
           } else {
             this.logger.warn(
@@ -935,8 +940,11 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     const activeIds: string[] = [];
     let idCursor = "";
     for (;;) {
+      // id 是 uuid 列，idCursor 为空串时绝不能拼 `id > ''`（PG 报 invalid input syntax for type uuid）
+      const where: Record<string, unknown> = { status: TaskStatus.ACTIVE };
+      if (idCursor) where.id = MoreThan(idCursor);
       const rows = await this.taskRepo.find({
-        where: { status: TaskStatus.ACTIVE, id: MoreThan(idCursor) },
+        where,
         select: ["id"],
         order: { id: "ASC" },
         take: ACTIVE_TASK_PAGE_SIZE,
