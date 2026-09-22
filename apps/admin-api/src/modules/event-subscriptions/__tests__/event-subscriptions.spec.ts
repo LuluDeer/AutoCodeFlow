@@ -20,6 +20,7 @@ import { DOMAIN_EVENTS } from "../../../common/events/domain-events";
 import { EventSubscription } from "../entities/event-subscription.entity";
 import { EventSubscriptionDeadLetter } from "../entities/event-subscription-dead-letter.entity";
 import { EventSubscriptionService } from "../event-subscription.service";
+import { AuditService } from "../../audit/audit.service";
 import {
   OutboundEventDispatcher,
   OutboundEventDispatcher as Dispatcher,
@@ -750,5 +751,108 @@ describe("NETOPT-1⑨ recordDelivery* 原子化（真实 EventSubscriptionServic
     subRepo.update.mockClear();
     await svc.recordDeliverySuccess(makeSub({ consecutiveFailures: 0 }));
     expect(subRepo.update).not.toHaveBeenCalled();
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// D3-B-P1-3: webhook 订阅改向审计落证（红→绿回归）。
+// 装配 mock AuditService，断言 create/update/remove 落对应 action，
+// detail 只含 URL 哈希（不落明文 URL / 密钥）。
+// ---------------------------------------------------------------------------
+describe("FEAT-07 EventSubscriptionService — D3-B-P1-3 审计落证", () => {
+  const subRepo = {
+    find: jest.fn().mockResolvedValue([]),
+    findOne: jest.fn(),
+    save: jest.fn().mockImplementation((x) => Promise.resolve(x)),
+    create: jest.fn((x) => x),
+    count: jest.fn().mockResolvedValue(0),
+    delete: jest.fn().mockResolvedValue({ affected: 1 }),
+  };
+  const dlRepo = {
+    findAndCount: jest.fn().mockResolvedValue([[], 0]),
+    delete: jest.fn().mockResolvedValue({ affected: 1 }),
+  };
+  let svc: EventSubscriptionService;
+  let audit: { log: jest.Mock };
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    assertSafe.mockResolvedValue(new URL("https://ci.example.com/hooks"));
+    audit = { log: jest.fn().mockResolvedValue(undefined) };
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        EventSubscriptionService,
+        { provide: getRepositoryToken(EventSubscription), useValue: subRepo },
+        {
+          provide: getRepositoryToken(EventSubscriptionDeadLetter),
+          useValue: dlRepo,
+        },
+        { provide: ConfigService, useValue: { get: jest.fn().mockReturnValue(false) } },
+        { provide: AuditService, useValue: audit },
+      ],
+    }).compile();
+    svc = moduleRef.get(EventSubscriptionService);
+  });
+
+  it("create：落证 subscription.create（detail 含 urlHash，不含明文 URL/密钥）", async () => {
+    await svc.create(
+      { url: "https://ci.example.com/hooks", eventTypes: ["execution.failed"] },
+      adminUser,
+    );
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: adminUser.id,
+        username: adminUser.username,
+        action: "subscription.create",
+        resource: "event_subscription",
+      }),
+    );
+    const call = audit.log.mock.calls[0][0];
+    expect(call.detail.urlHash).toMatch(/^[0-9a-f]{12}$/);
+    expect(JSON.stringify(call.detail)).not.toContain("ci.example.com");
+  });
+
+  it("update：落证 subscription.update（detail 含 oldUrlHash/newUrlHash，改向可比对）", async () => {
+    const sub = makeSub({ url: "https://old.example.com/hook" });
+    subRepo.findOne.mockResolvedValue(sub);
+    await svc.update(
+      sub.id,
+      { url: "https://new.example.com/hook", eventTypes: ["execution.failed"] },
+      adminUser,
+    );
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "subscription.update",
+        resourceId: sub.id,
+      }),
+    );
+    const call = audit.log.mock.calls[0][0];
+    expect(call.detail.oldUrlHash).toMatch(/^[0-9a-f]{12}$/);
+    expect(call.detail.newUrlHash).toMatch(/^[0-9a-f]{12}$/);
+    expect(call.detail.urlChanged).toBe(true);
+  });
+
+  it("remove：落证 subscription.delete", async () => {
+    const sub = makeSub();
+    subRepo.findOne.mockResolvedValue(sub);
+    await svc.remove(sub.id, adminUser);
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "subscription.delete",
+        resourceId: sub.id,
+      }),
+    );
+  });
+
+  it("deleteDeadLetter：落证 subscription.deadLetter.delete", async () => {
+    await svc.deleteDeadLetter("dl-1");
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "subscription.deadLetter.delete",
+        resource: "event_subscription_dead_letter",
+        resourceId: "dl-1",
+      }),
+    );
   });
 });
