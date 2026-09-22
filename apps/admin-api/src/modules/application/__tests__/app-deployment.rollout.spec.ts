@@ -36,6 +36,8 @@ const makeRepo = (overrides: Partial<Record<string, jest.Mock>> = {}) => ({
   findAndCount: jest.fn(),
   create: jest.fn((d: any) => ({ ...d, id: d.id ?? "deploy-1" })),
   save: jest.fn((e: any) => Promise.resolve(e)),
+  // E-P1-R2：心跳走 repo.update 条件 UPDATE（不经 save）。
+  update: jest.fn().mockResolvedValue({ affected: 1 }),
   // O-1/O-5: 批量 UPDATE 走 createQueryBuilder().update().set().where().execute()
   // 链（scheduler spec 同款链式 mock）。默认 execute 返回 affected=1。
   createQueryBuilder: jest.fn(() => ({
