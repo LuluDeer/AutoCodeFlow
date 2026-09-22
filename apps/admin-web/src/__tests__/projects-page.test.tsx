@@ -26,7 +26,7 @@ vi.mock('../api/projects', () => ({
   },
 }));
 vi.mock('../api/users', () => ({
-  usersApi: { list: vi.fn() },
+  usersApi: { list: vi.fn(), listAll: vi.fn() },
 }));
 
 // jsdom 缺失 antd 依赖的浏览器 API（对齐 task-templates-page.test 先例）。
@@ -90,12 +90,9 @@ beforeEach(() => {
       createdAt: '2026-09-02T00:00:00.000Z',
     },
   ]);
-  vi.mocked(usersApi.list).mockReset().mockResolvedValue({
-    list: [{ id: 7, username: 'alice', email: 'a@x', role: 'user', createdAt: '', updatedAt: '' }],
-    total: 1,
-    page: 1,
-    pageSize: 200,
-  });
+  vi.mocked(usersApi.listAll).mockReset().mockResolvedValue([
+    { id: 7, username: 'alice', email: 'a@x', role: 'user', createdAt: '', updatedAt: '' },
+  ]);
 });
 
 afterEach(() => {

@@ -164,9 +164,14 @@ function MembersDrawer({ project, isAdmin, onClose }: MembersDrawerProps) {
 
   // ADMIN 的添加成员表单需要可选用户清单（/users 为 ADMIN-only 端点，
   // 打开 Drawer 且 isAdmin 时才拉取）
+  //
+  // 用 listAll 而非 list(1, 200)：后端 pageSize 上限是 100，此前写死 200
+  // 必然 400（"Validation failed: pageSize must not be greater than 100"），
+  // 于是**管理员一打开成员面板就整块报错**（普通用户看不到——该请求
+  // enabled 条件是 isAdmin）。listAll 按 total 翻页取全，用户数 >100 也不会截断。
   const usersQuery = useQuery({
     queryKey: queryKeys.projects.candidateUsers,
-    queryFn: ({ signal }) => usersApi.list(1, 200, signal),
+    queryFn: ({ signal }) => usersApi.listAll(signal),
     enabled: open && isAdmin,
   });
 
