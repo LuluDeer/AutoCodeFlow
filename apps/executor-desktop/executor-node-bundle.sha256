@@ -216,4 +216,9 @@
 #     客户端侧修复就在这里），故按 ADR-005 同 commit 重打：本机(Windows) ncc 0.44
 #     产出 0ba5af66…，bundle 2547kB（源码净增：secret-env.ts + execute.ts 两段
 #     注入 + 注释）。
-45a0f0e16f402c52c182dc651157ddd155e13c68f5cf4e976536a7e8b31fede7  index.js
+#
+# 2026-09-22（NETOPT-G P1：跨境链路韧性）：admin 出站补 https.Agent（keepAlive +
+#   socket 空闲超时）与重试下限，并把 token 获取路径（middleware/auth.ts::fetchToken）
+#   从模块级默认 axios 改为共享实例，agent 配置抽到 admin-http-agent.ts。
+#   本次重打：本机(Windows) ncc 0.44 产出 c52b799d…。
+c52b799dec64c6a004311abd069588668de8f71328d8f216f656ab301e49b5b9  index.js
