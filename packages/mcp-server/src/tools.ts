@@ -27,6 +27,14 @@ const JSON_CONTENT = (data: unknown) => ({
   content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
 });
 
+/**
+ * D1-P2-2: 路径插值 id 的入站白名单。后端 task/task-version/task-execution/
+ * application/app-deployment/executor/project 主键均为 @PrimaryGeneratedColumn("uuid")。
+ * 此前裸 z.string() 直接拼进 /tasks/:id 路径，畸形值（../、斜杠、编码穿越）可造成
+ * 路径穿越；统一收窄为 UUID，非法值在 MCP SDK 入站校验层即拒（不到网络层）。
+ */
+const UUID_PATH_ID = z.string().uuid();
+
 // ---------------------------------------------------------------------------
 // Task templates (ECO-03: create_task_from_template)
 // ---------------------------------------------------------------------------
@@ -151,7 +159,7 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
     "get_task",
     "Get full details of a specific task by its ID, including script source, cron, timeout, and dependencies.",
     {
-      taskId: z.string().describe("Task ID"),
+      taskId: UUID_PATH_ID.describe("Task ID"),
     },
     async ({ taskId }) => {
       const data = await call<unknown>("GET", `/tasks/${taskId}`);
@@ -164,7 +172,7 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
     "trigger_task",
     "Manually trigger a task to run immediately. Returns the execution ID that can be polled with get_execution.",
     {
-      taskId: z.string().describe("Task ID to trigger"),
+      taskId: UUID_PATH_ID.describe("Task ID to trigger"),
       params: z
         .record(z.unknown())
         .optional()
@@ -189,7 +197,7 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
     "update_task",
     'Update an existing task via PATCH (only the fields you pass are changed). Supports executor pinning: set executorId to pin the task to one executor (fails fast if it is offline), or pass executorId: null to clear the pin. executorId is mutually exclusive with executeMode="broadcast" — the backend rejects that combination with 400.',
     {
-      taskId: z.string().describe("Task ID to update"),
+      taskId: UUID_PATH_ID.describe("Task ID to update"),
       name: z.string().optional().describe("New task name"),
       description: z.string().optional().describe("New task description"),
       status: z.string().optional().describe("Task status: active | paused"),
@@ -280,7 +288,7 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
     "list_task_versions",
     "List the historical configuration versions of a task (newest first). Use with rollback_task_version / compare_task_versions.",
     {
-      taskId: z.string().describe("Task ID"),
+      taskId: UUID_PATH_ID.describe("Task ID"),
     },
     async ({ taskId }) => {
       const data = await call<unknown>("GET", `/tasks/${taskId}/versions`);
@@ -293,10 +301,8 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
     "rollback_task_version",
     "Roll a task back to a specific historical version snapshot. Returns the updated task.",
     {
-      taskId: z.string().describe("Task ID"),
-      versionId: z
-        .string()
-        .describe("Version ID to roll back to (from list_task_versions)"),
+      taskId: UUID_PATH_ID.describe("Task ID"),
+      versionId: UUID_PATH_ID.describe("Version ID to roll back to (from list_task_versions)"),
     },
     async ({ taskId, versionId }) => {
       const data = await call<unknown>(
@@ -312,9 +318,9 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
     "compare_task_versions",
     "Diff two task versions. Returns a map of changed fields with their old and new values.",
     {
-      taskId: z.string().describe("Task ID"),
-      versionId1: z.string().describe("First version ID"),
-      versionId2: z.string().describe("Second version ID"),
+      taskId: UUID_PATH_ID.describe("Task ID"),
+      versionId1: UUID_PATH_ID.describe("First version ID"),
+      versionId2: UUID_PATH_ID.describe("Second version ID"),
     },
     async ({ taskId, versionId1, versionId2 }) => {
       const data = await call<unknown>(
@@ -330,7 +336,7 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
     "list_executions",
     "List recent task executions. Optionally filter by taskId and status.",
     {
-      taskId: z.string().optional().describe("Filter by task ID"),
+      taskId: UUID_PATH_ID.optional().describe("Filter by task ID"),
       status: z
         .string()
         .optional()
@@ -360,7 +366,7 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
     "get_execution",
     "Get the details and logs of a specific execution by ID. Includes status, duration, output, logs, and AI analysis if available.",
     {
-      executionId: z.string().describe("Execution ID"),
+      executionId: UUID_PATH_ID.describe("Execution ID"),
     },
     async ({ executionId }) => {
       const data = await call<unknown>(
@@ -376,10 +382,8 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
     "analyze_execution",
     "Trigger AI analysis on a failed execution. Returns the AI-generated root cause and fix suggestion.",
     {
-      taskId: z.string().describe("Task ID"),
-      executionId: z
-        .string()
-        .describe("Execution ID (must be a failed/timeout execution)"),
+      taskId: UUID_PATH_ID.describe("Task ID"),
+      executionId: UUID_PATH_ID.describe("Execution ID (must be a failed/timeout execution)"),
     },
     async ({ taskId, executionId }) => {
       const data = await call<unknown>(
@@ -397,7 +401,7 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
     "get_execution_stats",
     "Get execution statistics for a task: success rate, average duration, and last 20 executions.",
     {
-      taskId: z.string().describe("Task ID"),
+      taskId: UUID_PATH_ID.describe("Task ID"),
     },
     async ({ taskId }) => {
       const data = await call<unknown>("GET", `/tasks/${taskId}/stats`);
@@ -410,7 +414,7 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
     "suggest_schedule",
     "Ask AI to suggest an optimal cron schedule for a task based on its execution history (success rate, avg duration, failure patterns).",
     {
-      taskId: z.string().describe("Task ID"),
+      taskId: UUID_PATH_ID.describe("Task ID"),
     },
     async ({ taskId }) => {
       const data = await call<unknown>(
@@ -428,7 +432,7 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
     "get_execution_logs",
     "Fetch paginated execution logs for a given execution ID. Use fromLine + limit to page through large outputs.",
     {
-      executionId: z.string().describe("Execution ID"),
+      executionId: UUID_PATH_ID.describe("Execution ID"),
       fromLine: z
         .number()
         .int()
@@ -461,8 +465,8 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
     "kill_execution",
     "Force-cancel a running or pending execution by ID. Requires task ID because the underlying route is task-scoped.",
     {
-      taskId: z.string().describe("Task ID that owns the execution"),
-      executionId: z.string().describe("Execution ID to cancel"),
+      taskId: UUID_PATH_ID.describe("Task ID that owns the execution"),
+      executionId: UUID_PATH_ID.describe("Execution ID to cancel"),
     },
     async ({ taskId, executionId }) => {
       const data = await call<unknown>(
@@ -484,10 +488,8 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
     "retry_execution",
     "Re-run a past execution: creates a NEW execution of the same task via the manual-trigger path (the admin API has no native retry endpoint — this is a fresh run, not a continuation of the original attempt counter). The original execution's runtime params are replayed automatically; pass params to override them. Returns the new execution (id) — poll it with get_execution.",
     {
-      taskId: z.string().describe("Task ID that owns the execution"),
-      executionId: z
-        .string()
-        .describe("Execution ID to re-run (from list_executions / get_execution)"),
+      taskId: UUID_PATH_ID.describe("Task ID that owns the execution"),
+      executionId: UUID_PATH_ID.describe("Execution ID to re-run (from list_executions / get_execution)"),
       params: z
         .record(z.unknown())
         .optional()
@@ -520,7 +522,7 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
     "pause_task",
     "Pause a task — stops scheduled triggers. In-progress executions are not affected.",
     {
-      taskId: z.string().describe("Task ID to pause"),
+      taskId: UUID_PATH_ID.describe("Task ID to pause"),
     },
     async ({ taskId }) => {
       const data = await call<unknown>("POST", `/tasks/${taskId}/pause`);
@@ -533,7 +535,7 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
     "resume_task",
     "Resume a previously paused task.",
     {
-      taskId: z.string().describe("Task ID to resume"),
+      taskId: UUID_PATH_ID.describe("Task ID to resume"),
     },
     async ({ taskId }) => {
       const data = await call<unknown>("POST", `/tasks/${taskId}/resume`);
@@ -606,7 +608,7 @@ export function registerApplicationTools(
     "get_application",
     "Get full details of a registered application by ID, including version, git repo info, and runtime config.",
     {
-      applicationId: z.string().describe("Application ID"),
+      applicationId: UUID_PATH_ID.describe("Application ID"),
     },
     async ({ applicationId }) => {
       const data = await call<unknown>("GET", `/applications/${applicationId}`);
@@ -648,7 +650,7 @@ export function registerApplicationTools(
     "update_application",
     "Update an existing application. NOTE: the backend UpdateApplicationDto has no `name` field — renaming is not supported.",
     {
-      applicationId: z.string().describe("Application ID"),
+      applicationId: UUID_PATH_ID.describe("Application ID"),
       description: z.string().optional().describe("Application description"),
       version: z.string().optional().describe("Application version number"),
       runtime: z.string().optional().describe("Runtime type"),
@@ -694,7 +696,7 @@ export function registerApplicationTools(
     "delete_application",
     "Delete an application by ID.",
     {
-      applicationId: z.string().describe("Application ID"),
+      applicationId: UUID_PATH_ID.describe("Application ID"),
     },
     async ({ applicationId }) => {
       const data = await call<unknown>(
@@ -710,7 +712,7 @@ export function registerApplicationTools(
     "analyze_application",
     "Run AI health analysis on an application. Aggregates recent execution stats across all tasks and returns LLM-generated health assessment and recommendations.",
     {
-      applicationId: z.string().describe("Application ID"),
+      applicationId: UUID_PATH_ID.describe("Application ID"),
     },
     async ({ applicationId }) => {
       const data = await call<unknown>(
@@ -736,7 +738,7 @@ export function registerDeploymentTools(
     "list_deployments",
     "List application deployments with optional filtering by application ID and pagination.",
     {
-      applicationId: z.string().optional().describe("Filter by application ID"),
+      applicationId: UUID_PATH_ID.optional().describe("Filter by application ID"),
       page: z
         .number()
         .int()
@@ -770,7 +772,7 @@ export function registerDeploymentTools(
     "deploy_application",
     "Deploy an application to an executor. Leave executorId empty to auto-select the online executor with lowest load. Optionally override run mode, env vars, and start command. NOTE (DEP-04): if the application has deployment approval enabled, the response returns approvalStatus=pending_approval and NOTHING is dispatched — the deployment waits for a second-person approval (POST /app-deployments/:id/approval/approve|reject, or /approval/cancel by the requester). A 409 means the application already has an in-progress deployment.",
     {
-      applicationId: z.string().describe("Application ID"),
+      applicationId: UUID_PATH_ID.describe("Application ID"),
       executorId: z
         .string()
         .optional()
@@ -882,7 +884,7 @@ export function registerDeploymentTools(
     "upgrade_deployment",
     "Trigger an overlay upgrade for a running deployment so it pulls the latest application version.",
     {
-      deploymentId: z.string().describe("Deployment ID to upgrade"),
+      deploymentId: UUID_PATH_ID.describe("Deployment ID to upgrade"),
     },
     async ({ deploymentId }) => {
       const data = await call<unknown>(
@@ -898,7 +900,7 @@ export function registerDeploymentTools(
     "stop_deployment",
     "Stop a running application deployment.",
     {
-      deploymentId: z.string().describe("Deployment ID to stop"),
+      deploymentId: UUID_PATH_ID.describe("Deployment ID to stop"),
     },
     async ({ deploymentId }) => {
       const data = await call<unknown>(
@@ -919,7 +921,7 @@ export function registerDeploymentTools(
     "list_pending_approvals",
     "List deployments awaiting approval (DEP-04 queue, ADMIN only). Returns rows with approvalStatus=pending_approval; each row's id feeds approve_deployment / reject_deployment / cancel_deployment.",
     {
-      applicationId: z.string().optional().describe("Filter by application ID"),
+      applicationId: UUID_PATH_ID.optional().describe("Filter by application ID"),
       page: z
         .number()
         .int()
@@ -952,7 +954,7 @@ export function registerDeploymentTools(
     "approve_deployment",
     "Approve a pending deployment (DEP-04). Approving dispatches it to the executor. Second-person rule: the approver must differ from the requester, otherwise the API returns an error. ADMIN only.",
     {
-      deploymentId: z.string().describe("Pending deployment ID to approve"),
+      deploymentId: UUID_PATH_ID.describe("Pending deployment ID to approve"),
       reason: z
         .string()
         .max(200)
@@ -974,7 +976,7 @@ export function registerDeploymentTools(
     "reject_deployment",
     "Reject a pending deployment (DEP-04). The deployment is never dispatched. Second-person rule applies; ADMIN only.",
     {
-      deploymentId: z.string().describe("Pending deployment ID to reject"),
+      deploymentId: UUID_PATH_ID.describe("Pending deployment ID to reject"),
       reason: z
         .string()
         .max(200)
@@ -996,7 +998,7 @@ export function registerDeploymentTools(
     "cancel_deployment",
     "Cancel own pending deployment request (DEP-04). Requester-only exit: the user who triggered the deployment may withdraw it before anyone approves.",
     {
-      deploymentId: z.string().describe("Pending deployment ID to cancel"),
+      deploymentId: UUID_PATH_ID.describe("Pending deployment ID to cancel"),
     },
     async ({ deploymentId }) => {
       const data = await call<unknown>(
@@ -1032,7 +1034,7 @@ export function registerExecutorTools(server: McpServer, call: ApiCall): void {
     // GET /executors/:id/metrics — exposed as get_executor_metrics below.
     "Get detailed info for a single executor by ID: config, status, group/tags, CPU & memory usage, task counters, and the execution ids it reported running on its last heartbeat. Does NOT include 7-day statistics — use get_executor_metrics for those.",
     {
-      executorId: z.string().describe("Executor ID"),
+      executorId: UUID_PATH_ID.describe("Executor ID"),
     },
     async ({ executorId }) => {
       const data = await call<unknown>("GET", `/executors/${executorId}`);
@@ -1045,7 +1047,7 @@ export function registerExecutorTools(server: McpServer, call: ApiCall): void {
     "get_executor_metrics",
     "Get performance metrics for a single executor: { executor, sevenDayStats (totalExecutions/successful/failed/successRate/averageDurationMs over the last 7 days), current (runningTaskCount/cpuUsage/memUsage) }. Backed by GET /executors/:id/metrics.",
     {
-      executorId: z.string().describe("Executor ID"),
+      executorId: UUID_PATH_ID.describe("Executor ID"),
     },
     async ({ executorId }) => {
       const data = await call<unknown>(
@@ -1181,7 +1183,7 @@ export function registerObservabilityTools(
     "get_execution_timeline",
     'OBS-04 timeline for one execution: created → started → finished timestamps plus a failure triage card (reason → suggested first action, from the failureReason taxonomy) and the AI analysis when present. Use it to answer "where did this run stall and why".',
     {
-      executionId: z.string().describe("Execution ID"),
+      executionId: UUID_PATH_ID.describe("Execution ID"),
     },
     async ({ executionId }) => {
       const data = await call<unknown>(
@@ -1239,10 +1241,10 @@ export function registerObservabilityTools(
         "GET",
         "/metrics/scheduler",
       );
-      const m = (data ?? {}) as Record<string, any>;
-      const counters = m.counters ?? {};
-      const derived = m.derived ?? {};
-      const queue = m.queue ?? {};
+      const m = (data ?? {}) as Record<string, unknown>;
+      const counters = (m.counters ?? {}) as Record<string, unknown>;
+      const derived = (m.derived ?? {}) as Record<string, unknown>;
+      const queue = (m.queue ?? {}) as Record<string, unknown>;
       // PK-05: 缺数值（null/undefined，即 Redis 不可达）不能默认健康——
       // 显式判 false 并带 degraded 说明；failed<100 才算健康。
       const failedDepth =
@@ -1373,7 +1375,7 @@ export function registerProjectTools(server: McpServer, call: ApiCall): void {
     "get_project_members",
     "List members (userId + role) of one project. Admins can read any project; other credentials only projects they belong to (the default project is always readable).",
     {
-      projectId: z.string().describe("Project ID (UUID); use list_projects to resolve"),
+      projectId: UUID_PATH_ID.describe("Project ID (UUID); use list_projects to resolve"),
     },
     async ({ projectId }) => {
       const data = await call<unknown>("GET", `/projects/${projectId}/members`);
