@@ -42,7 +42,7 @@ AutoCodeFlow 是一个分布式任务调度与执行平台，支持动态脚本�
 ### 前置条件
 
 - Docker >= 24 & Docker Compose >= 2.20
-- （本地开发）Node.js >= 20，Python >= 3.11，pnpm >= 8
+- （本地开发）Node.js >= 20，Python >= 3.11，npm >= 10
 
 ### 一键 Docker Compose 启动
 
@@ -88,7 +88,7 @@ docker compose logs -f admin-api
 docker compose up -d postgres redis
 
 # 安装依赖
-pnpm install
+npm install
 
 # 配置各服务环境变量
 cp apps/admin-api/.env.example apps/admin-api/.env
@@ -97,14 +97,14 @@ cp apps/executor-node/.env.example apps/executor-node/.env
 cp apps/executor-python/.env.example apps/executor-python/.env
 
 # 运行数据库迁移
-cd apps/admin-api && pnpm run migration:run && cd ../..
+cd apps/admin-api && npm run migration:run && cd ../..
 
 # 并行启动所有服务（根目录）
-pnpm run dev
+npm run dev
 # 或分别启动：
-# cd apps/admin-api && pnpm run start:dev
-# cd apps/admin-web && pnpm run dev
-# cd apps/executor-node && pnpm run dev
+# cd apps/admin-api && npm run start:dev
+# cd apps/admin-web && npm run dev
+# cd apps/executor-node && npm run dev
 ```
 
 ## 项目结构
