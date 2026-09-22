@@ -19,6 +19,7 @@ import { FeishuChannel } from "../channels/feishu.channel";
 import { RolesGuard } from "../../../common/guards/roles.guard";
 import { ROLES_KEY } from "../../../common/decorators/roles.decorator";
 import { UserRole } from "../../users/entities/user.entity";
+import { AuditService } from "../../audit/audit.service";
 
 const mockConfigService = () => ({
   getAllChannels: jest.fn(),
@@ -47,6 +48,8 @@ describe("NotificationConfigController", () => {
   let svc: ReturnType<typeof mockConfigService>;
   let notif: ReturnType<typeof mockNotificationService>;
   let silence: ReturnType<typeof mockSilenceService>;
+  let auditLog: jest.Mock;
+  const user = { id: 1, username: "admin", role: UserRole.ADMIN } as never;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -55,6 +58,7 @@ describe("NotificationConfigController", () => {
         { provide: NotificationConfigService, useFactory: mockConfigService },
         { provide: NotificationService, useFactory: mockNotificationService },
         { provide: NotificationSilenceService, useFactory: mockSilenceService },
+        { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
       ],
     }).compile();
 
@@ -62,6 +66,7 @@ describe("NotificationConfigController", () => {
     svc = module.get(NotificationConfigService);
     notif = module.get(NotificationService);
     silence = module.get(NotificationSilenceService);
+    auditLog = (module.get(AuditService) as { log: jest.Mock }).log;
   });
 
   afterEach(() => jest.clearAllMocks());
@@ -76,7 +81,7 @@ describe("NotificationConfigController", () => {
   });
 
   describe("updateChannel", () => {
-    it("delegates update to service with key and body", () => {
+    it("delegates update to service with key and body", async () => {
       const updated = {
         key: "slack",
         enabled: true,
@@ -85,17 +90,17 @@ describe("NotificationConfigController", () => {
       svc.updateChannel.mockReturnValue(updated);
       const body = { enabled: true, config: { webhookUrl: "https://x" } };
 
-      const result = controller.updateChannel("slack", body);
+      const result = await controller.updateChannel("slack", body, user);
 
       expect(svc.updateChannel).toHaveBeenCalledWith("slack", body);
       expect(result).toEqual(updated);
     });
 
-    it("throws when service throws for unknown channel", () => {
+    it("throws when service throws for unknown channel", async () => {
       svc.updateChannel.mockImplementation(() => {
         throw new Error("Unknown notification channel: bad");
       });
-      expect(() => controller.updateChannel("bad", {})).toThrow(
+      await expect(controller.updateChannel("bad", {}, user)).rejects.toThrow(
         "Unknown notification channel: bad",
       );
     });
@@ -261,6 +266,7 @@ describe("NotificationConfigController", () => {
           { provide: SlackChannel, useFactory: stubChannel },
           { provide: WebhookChannel, useFactory: stubChannel },
           { provide: FeishuChannel, useFactory: stubChannel },
+          { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
         ],
       }).compile();
       const realController = mod.get(NotificationConfigController);
@@ -322,11 +328,49 @@ describe("NotificationConfigController", () => {
     it("removeSilence：内存与 DB 双删（forgetSilence 只清内存，不重复删库）", async () => {
       (silence.remove as jest.Mock).mockResolvedValue(true);
 
-      const result = await controller.removeSilence("sil-uuid-1");
+      const result = await controller.removeSilence("sil-uuid-1", user);
 
       expect(result).toBe(true);
       expect(notif.forgetSilence).toHaveBeenCalledWith("sil-uuid-1");
       expect(silence.remove).toHaveBeenCalledWith("sil-uuid-1");
+    });
+  });
+
+  // D3-B-P2-2: 渠道/静默增删审计落证（红→绿回归）。
+  describe("D3-B-P2-2 审计落证", () => {
+    it("updateChannel：落证 notification.channel.update", async () => {
+      auditLog.mockClear();
+      await controller.updateChannel("slack", { enabled: true }, user);
+      expect(auditLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "notification.channel.update",
+          resource: "notification_channel",
+          resourceId: "slack",
+        }),
+      );
+    });
+
+    it("createSilence：落证 notification.silence.create", async () => {
+      auditLog.mockClear();
+      await controller.createSilence({ scope: "global", durationMinutes: 60 });
+      expect(auditLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "notification.silence.create",
+          resource: "notification_silence",
+        }),
+      );
+    });
+
+    it("removeSilence：落证 notification.silence.delete", async () => {
+      auditLog.mockClear();
+      await controller.removeSilence("sil-uuid-1", user);
+      expect(auditLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "notification.silence.delete",
+          resource: "notification_silence",
+          resourceId: "sil-uuid-1",
+        }),
+      );
     });
   });
 

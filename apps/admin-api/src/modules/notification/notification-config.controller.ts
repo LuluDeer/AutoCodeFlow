@@ -16,6 +16,8 @@ import {
   ApiResponse,
 } from "@nestjs/swagger";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
+import { CurrentUser } from "../../common/decorators/current-user.decorator";
+import { AuthUser } from "../../common/interfaces/auth-user.interface";
 import { Roles } from "../../common/decorators/roles.decorator";
 import { UserRole } from "../users/entities/user.entity";
 import { NotificationConfigService } from "./notification-config.service";
@@ -33,6 +35,8 @@ import {
 import { CreateSilenceDto } from "./dto/create-silence.dto";
 import { NotificationPayload } from "./channels/base.channel";
 import { WriteGuard } from "../../common/decorators/write-guard.decorator";
+// D3-B-P2-2: 渠道/静默增删审计落证。
+import { AuditService } from "../audit/audit.service";
 
 @ApiTags("Notification Config")
 @ApiBearerAuth("JWT")
@@ -43,6 +47,8 @@ export class NotificationConfigController {
     private readonly configService: NotificationConfigService,
     private readonly notificationService: NotificationService,
     private readonly silenceService: NotificationSilenceService,
+    // D3-B-P2-2: 渠道/静默增删审计落证。
+    private readonly audit: AuditService,
   ) {}
 
   // N11: channel configs carry SMTP credentials (password field) and webhook
@@ -58,11 +64,21 @@ export class NotificationConfigController {
   @Patch("channels/:key")
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Update notification channel config" })
-  updateChannel(
+  async updateChannel(
     @Param("key") key: string,
     @Body() body: { enabled?: boolean; config?: Record<string, string> },
+    @CurrentUser() user: AuthUser,
   ) {
-    return this.configService.updateChannel(key, body);
+    const result = this.configService.updateChannel(key, body);
+    // D3-B-P2-2: 渠道配置变更落证（不落 config 明文——仅 key/enabled 差量）。
+    await this.audit.log({
+      username: user.username,
+      action: "notification.channel.update",
+      resource: "notification_channel",
+      resourceId: key,
+      detail: { enabledChanged: body.enabled !== undefined },
+    });
+    return result;
   }
 
   /**
@@ -186,16 +202,34 @@ export class NotificationConfigController {
     // ARCH-31: 同步进 NotificationService 的内存热路径——此前只落 DB，
     // isSilenced 看不到本规则（要等进程重启回灌才生效）。
     this.notificationService.adoptPersistedSilence(row);
+    // D3-B-P2-2: 静默规则创建落证。
+    await this.audit.log({
+      action: "notification.silence.create",
+      resource: "notification_silence",
+      resourceId: row.id,
+      detail: { scope: body.scope },
+    });
     return row;
   }
 
   @Delete("silences/:id")
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Remove a notification silence" })
-  async removeSilence(@Param("id") id: string) {
+  async removeSilence(
+    @Param("id") id: string,
+    @CurrentUser() user: AuthUser,
+  ) {
     // ARCH-31: 内存 + DB 双删（内存态由 NotificationService 持有，DB 行由
     // silenceService 负责——forgetSilence 只清内存，避免重复删库）。
     this.notificationService.forgetSilence(id);
-    return this.silenceService.remove(id);
+    const removed = await this.silenceService.remove(id);
+    // D3-B-P2-2: 静默规则删除落证。
+    await this.audit.log({
+      username: user.username,
+      action: "notification.silence.delete",
+      resource: "notification_silence",
+      resourceId: id,
+    });
+    return removed;
   }
 }

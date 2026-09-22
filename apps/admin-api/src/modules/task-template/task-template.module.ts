@@ -4,6 +4,8 @@ import { TaskModule } from "../task/task.module";
 import { TaskTemplate } from "./entities/task-template.entity";
 import { TaskTemplateService } from "./task-template.service";
 import { TaskTemplateController } from "./task-template.controller";
+// D3-B-P2-2: 模板删除审计落证。
+import { AuditModule } from "../audit/audit.module";
 
 /**
  * CORE-03：任务模板模块（新独占模块）。
@@ -14,7 +16,7 @@ import { TaskTemplateController } from "./task-template.controller";
  * 故无循环。本模块除 TaskModule 外不依赖任何其他业务模块。
  */
 @Module({
-  imports: [TypeOrmModule.forFeature([TaskTemplate]), TaskModule],
+  imports: [TypeOrmModule.forFeature([TaskTemplate]), TaskModule, AuditModule],
   controllers: [TaskTemplateController],
   providers: [TaskTemplateService],
   exports: [TaskTemplateService],
