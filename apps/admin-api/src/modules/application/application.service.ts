@@ -40,6 +40,9 @@ import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 import { AiService } from "../ai/ai.service";
+// D3-B-P1-2: 应用 CRUD/部署触发审计落证（@Optional 同 executor.service——
+// 既有单测装配未提供时降级为仅日志，主链不因审计故障中断）。
+import { AuditService } from "../audit/audit.service";
 
 /**
  * R4: Promise wrapper around async child_process.spawn. Aggregates
@@ -148,6 +151,9 @@ export class ApplicationService implements OnModuleInit {
     private readonly deploymentRepo: Repository<AppDeployment> | null = null,
     @Optional()
     private readonly executorService: ExecutorService | null = null,
+    // D3-B-P1-2: 审计落证（@Optional 同上——存量 spec 未提供时降级）。
+    @Optional()
+    private readonly audit: AuditService | null = null,
   ) {}
 
   private _taskService: import("../task/task.service").TaskService | null =
@@ -344,6 +350,30 @@ export class ApplicationService implements OnModuleInit {
     }
   }
 
+  /** D3-B-P1-2: best-effort 审计落证（fail-open，审计故障不阻断主链）。 */
+  private async writeAudit(payload: {
+    userId?: number;
+    action: string;
+    resourceId: string;
+    detail?: Record<string, unknown>;
+  }): Promise<void> {
+    if (!this.audit) return;
+    try {
+      await this.audit.log({
+        userId: payload.userId,
+        action: payload.action,
+        resource: "application",
+        resourceId: payload.resourceId,
+        detail: payload.detail as Record<string, any>,
+      });
+    } catch (err: unknown) {
+      this.logger.warn(
+        `Audit write failed for ${payload.action}: ` +
+          (err instanceof Error ? err.message : String(err)),
+      );
+    }
+  }
+
   async create(
     dto: CreateApplicationDto,
     user?: { id: number } | null,
@@ -363,6 +393,13 @@ export class ApplicationService implements OnModuleInit {
     });
     const saved = await this.repo.save(app);
     this.logger.log(`Application created: ${saved.name} (${saved.id})`);
+    // D3-B-P1-2: 创建落证（applicationId + 操作人）。
+    await this.writeAudit({
+      userId: user?.id,
+      action: "application.create",
+      resourceId: saved.id,
+      detail: { name: saved.name },
+    });
 
     // If gitRepo is provided, trigger async deployment
     if (dto.gitRepo) {
@@ -409,6 +446,14 @@ export class ApplicationService implements OnModuleInit {
       : dto;
     Object.assign(app, next);
     const saved = await this.repo.save(app);
+    // D3-B-P1-2: 更新落证（systemBypass=CI webhook 无操作人，userId 留空）。
+    if (!opts?.systemBypass) {
+      await this.writeAudit({
+        userId: user?.id,
+        action: "application.update",
+        resourceId: id,
+      });
+    }
     return this.maskReadSurface(saved);
   }
 
@@ -504,6 +549,13 @@ export class ApplicationService implements OnModuleInit {
       }
     }
     this.logger.log(`Application removed: ${app.name}`);
+    // D3-B-P1-2: 删除落证（applicationId + 操作人 + 名称）。
+    await this.writeAudit({
+      userId: user?.id,
+      action: "application.delete",
+      resourceId: id,
+      detail: { name: app.name },
+    });
     // NETOPT-8③: DB 删除完成后 best-effort 并行扇出（先 stop 后 uninstall）。
     // 任何失败只 warn，绝不外抛——删除应用不得因执行器不可达而失败。
     await this.fanOutAppRemovalToExecutors(app.id, deployments);
@@ -826,6 +878,12 @@ export class ApplicationService implements OnModuleInit {
     app.gitBranch = gitBranch;
     if (gitCommit) app.gitCommit = gitCommit;
     await this.repo.save(app);
+    // D3-B-P1-2: git 部署触发落证（applicationId + git 元信息）。
+    await this.writeAudit({
+      action: "application.deploy",
+      resourceId: id,
+      detail: { gitRepo, gitBranch, gitCommit: gitCommit ?? null },
+    });
 
     const tmpDir = fs.mkdtempSync(
       path.join(os.tmpdir(), "autocodeflow-deploy-"),
