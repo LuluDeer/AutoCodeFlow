@@ -23,6 +23,7 @@ import {
 } from "@nestjs/common";
 import { Response } from "express";
 import { existsSync, readFileSync } from "fs";
+import { createHash } from "crypto";
 import { join, resolve } from "path";
 import {
   ApiTags,
@@ -859,12 +860,17 @@ export class ExecutorController {
       );
     }
     const buffer = readFileSync(file);
+    // E-P2-P6 收尾：与 c308b988 execution-artifacts 下载路由同一套约定——
+    // 下发实际字节 sha256 到 X-SHA256 响应头，供 install.sh 解压前完整性核对。
+    // 此路由已把整包读入 buffer，直接对 buffer 求摘要（不额外读盘）。
+    const sha256 = createHash("sha256").update(buffer).digest("hex");
     res.setHeader("Content-Type", "application/gzip");
     res.setHeader(
       "Content-Disposition",
       'attachment; filename="executor-node.tar.gz"',
     );
     res.setHeader("Content-Length", String(buffer.length));
+    res.setHeader("X-SHA256", sha256);
     res.end(buffer);
   }
 
