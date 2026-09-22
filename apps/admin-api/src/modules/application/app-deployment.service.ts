@@ -1129,6 +1129,33 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     }
   }
 
+  /** D3-B-P2-1: stop/rollback 执行门审计落证（best-effort fail-open，
+   *  同 writeApprovalAudit——审计故障不阻断主链）。 */
+  private async writeTransitionAudit(
+    action: "deployment.stop" | "deployment.rollback",
+    deployment: AppDeployment,
+    extraDetail?: Record<string, unknown>,
+  ): Promise<void> {
+    if (!this.audit) return;
+    try {
+      await this.audit.log({
+        action,
+        resource: "app_deployment",
+        resourceId: deployment.id,
+        detail: {
+          applicationId: deployment.applicationId,
+          executorAddress: deployment.executorAddress,
+          ...(extraDetail ?? {}),
+        },
+      });
+    } catch (err: unknown) {
+      this.logger.warn(
+        `Transition audit write failed: ` +
+          (err instanceof Error ? err.message : String(err)),
+      );
+    }
+  }
+
   /**
    * Trigger upgrade on an existing deployment (git pull + restart).
    */
@@ -1234,6 +1261,11 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     deployment.pid = null;
     // E-P1-R2：乐观锁收口——并发后写撞版本转 409。
     const saved = await this.saveWithOptimisticLock(deployment);
+    // D3-B-P2-1: stop 执行门落证（审批门已有痕，执行门此前无痕）。
+    await this.writeTransitionAudit(
+      "deployment.stop",
+      saved,
+    );
     // QA1: mask the HTTP return; the raw entity was already persisted.
     return this.maskDeploymentForRead(saved);
   }
@@ -2355,6 +2387,12 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       return;
     }
     await this.upgradeWithSnapshot(deployment, previous, trigger);
+    // D3-B-P2-1: rollback 执行门落证（回退到上一版本）。
+    await this.writeTransitionAudit(
+      "deployment.rollback",
+      deployment,
+      { previousVersion: previous.version },
+    );
   }
 
   /** 快照回退的单台升级（快照字段恢复→pushDeployToExecutor upgrade 链）。
