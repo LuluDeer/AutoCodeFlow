@@ -201,11 +201,41 @@ echo "[3/6] 安装执行器..."
 # 项目 checkout；下载失败时回退到本地 checkout 副本（开发场景）。
 ARTIFACT_URL="${ADMIN_API_URL%/}/api/executors/artifact/executor-node.tar.gz"
 TMP_PKG="$(mktemp /tmp/acf-executor-artifact.XXXXXX)"
-trap 'rm -f "$TMP_PKG"' EXIT
+TMP_HEADERS="$(mktemp /tmp/acf-executor-headers.XXXXXX)"
+trap 'rm -f "$TMP_PKG" "$TMP_HEADERS" "${TMP_PKG}.sha256"' EXIT
+REMOTE_OK=0
+# -D 把响应头落盘，供 E-P2-P6 提取 X-SHA256（跨跳时多个响应头块，取最后一条）。
 if curl -fsSL --connect-timeout 10 --retry 2 \
      -H "Authorization: Bearer ${EXECUTOR_SECRET}" \
-     "$ARTIFACT_URL" -o "$TMP_PKG" \
-   && tar -tzf "$TMP_PKG" >/dev/null 2>&1; then
+     -D "$TMP_HEADERS" \
+     "$ARTIFACT_URL" -o "$TMP_PKG"; then
+  # E-P2-P6（阶段一跨端 sha256 校验）：解压前完整性核对。后端 artifact 下载
+  # 路由在响应头下发 X-SHA256（commit c308b988）。响应带该头时，落盘字节必须
+  # 与其一致——不符即删除可疑产物并非零退出（绝不静默解压、也不回退本地副本：
+  # 损坏/篡改必须显式失败）。无该头（旧后端，或暂未下发该头的
+  # /api/executors/artifact 通道）按既有容忍策略放行，仅做后续 tar 结构检查——
+  # 这是与旧后端并存的过渡态。
+  EXPECTED_SHA="$(grep -i '^X-SHA256:' "$TMP_HEADERS" | tr -d '\r' | awk '{print $2}' | tail -n1 | tr '[:upper:]' '[:lower:]' || true)"
+  if [[ -n "$EXPECTED_SHA" ]]; then
+    # 对齐 sha256sum -c 约定：校验文件内写 "<hash>  <绝对路径>"（两空格分隔）。
+    echo "$EXPECTED_SHA  $TMP_PKG" > "${TMP_PKG}.sha256"
+    if ! sha256sum -c "${TMP_PKG}.sha256" >/dev/null 2>&1; then
+      ACTUAL_SHA="$(sha256sum "$TMP_PKG" | awk '{print $1}')"
+      rm -f "$TMP_PKG"
+      echo "错误：执行器 artifact sha256 校验失败（X-SHA256 响应头与落盘字节不符，疑似损坏或被篡改）" >&2
+      echo "  期望: $EXPECTED_SHA" >&2
+      echo "  实际: $ACTUAL_SHA" >&2
+      exit 1
+    fi
+    echo "      sha256 校验通过（X-SHA256）"
+  else
+    echo "      响应未下发 X-SHA256 头（旧后端），跳过完整性校验"
+  fi
+  if tar -tzf "$TMP_PKG" >/dev/null 2>&1; then
+    REMOTE_OK=1
+  fi
+fi
+if [[ "$REMOTE_OK" == "1" ]]; then
   echo "      从 Admin API 下载执行器 artifact..."
   tar -xzf "$TMP_PKG" -C "$INSTALL_DIR"
 else
@@ -219,7 +249,7 @@ else
     die "无法从 ${ARTIFACT_URL} 下载 artifact（确认 admin-api 已启动，且 EXECUTOR_ARTIFACT_DIR 下有 scripts/bundle-executor-artifact.sh 生成的 executor-node.tar.gz），且本脚本不在项目 checkout 内、无本地副本可回退"
   fi
 fi
-rm -f "$TMP_PKG"
+rm -f "$TMP_PKG" "${TMP_PKG}.sha256"
 
 # ── 安装 npm 依赖 ──────────────────────────────────────────────────────────────
 echo "[4/6] 安装 npm 依赖..."
