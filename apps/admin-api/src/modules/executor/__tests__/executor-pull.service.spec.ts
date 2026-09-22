@@ -17,6 +17,8 @@ jest.mock("ioredis", () => ({
       return {
         lpush: jest.fn().mockResolvedValue(1),
         rpop: jest.fn().mockResolvedValue(null),
+        // NETOPT-G P1-8：enqueue / pullWork 的可观测性探测会读 LLEN
+        llen: jest.fn().mockResolvedValue(0),
         get: jest.fn().mockResolvedValue(null),
         set: jest.fn().mockResolvedValue("OK"),
         del: jest.fn().mockResolvedValue(1),
@@ -82,6 +84,92 @@ describe("ExecutorPullService（ARCH-32）", () => {
     expect(typeof parsed.pushedAt).toBe("number");
     // PK-14: 派发载荷顶层附 schemaVersion（与 webhook 信封同源常量 EVENT_SCHEMA_VERSION）。
     expect(parsed.schemaVersion).toBe(1);
+  });
+
+  // ── NETOPT-G P1-8：入队/取件可观测性（本次事故排查的返工成本）──────────
+  //
+  // 背景：生产事故排查中"任务到底有没有进队列"反复消耗双方多轮往返——中台侧
+  // 只能看到 nginx 的 124B 空响应，执行器侧看不到服务端 LPUSH 结果。以下断言
+  // 锁住"入队后回读 LLEN 并记日志"与"wantTask=false 但队列非空时告警"两条
+  // 观测路径，防止日后被当作冗余去掉。
+  describe("P1-8 队列可观测性", () => {
+    const loggerOf = (svc: ExecutorPullService) =>
+      (svc as unknown as { logger: Record<string, jest.Mock> }).logger;
+
+    it("enqueue 成功后回读 LLEN 并记录深度（入队确证）", async () => {
+      const svc = await makeService();
+      const client = clientOf(svc);
+      client.llen.mockResolvedValueOnce(3);
+      const log = jest.spyOn(loggerOf(svc), "log").mockImplementation(() => {});
+
+      await svc.enqueue("exec-1", { executionId: "e1" });
+
+      expect(client.llen).toHaveBeenCalledWith("acf:pull:exec-1");
+      expect(log).toHaveBeenCalledWith(expect.stringContaining("queueDepth=3"));
+    });
+
+    it("LLEN 探测失败只 WARN，绝不让已成功的入队失败", async () => {
+      const svc = await makeService();
+      const client = clientOf(svc);
+      client.llen.mockRejectedValueOnce(new Error("redis down"));
+      const warn = jest
+        .spyOn(loggerOf(svc), "warn")
+        .mockImplementation(() => {});
+
+      // 关键：入队本身必须成功——探测是纯观测，不能回滚一次成功派发
+      await expect(
+        svc.enqueue("exec-1", { executionId: "e1" }),
+      ).resolves.toBeUndefined();
+      expect(client.lpush).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("depth probe failed"),
+      );
+    });
+
+    it("wantTask=false（执行器满载）但队列非空时告警——容量/账本不一致信号", async () => {
+      const svc = await makeService();
+      const client = clientOf(svc);
+      client.rpop.mockResolvedValue(null);
+      client.llen.mockResolvedValue(5); // 队列里还有 5 条
+      const warn = jest
+        .spyOn(loggerOf(svc), "warn")
+        .mockImplementation(() => {});
+
+      const r = await svc.pullWork("exec-1", 0, { wantTask: false });
+
+      expect(r.task).toBeNull();
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("reports no free slots but queue has 5"),
+      );
+    });
+
+    it("wantTask=false 且队列为空时不告警（正常满载，不是异常）", async () => {
+      const svc = await makeService();
+      const client = clientOf(svc);
+      client.rpop.mockResolvedValue(null);
+      client.llen.mockResolvedValue(0);
+      const warn = jest
+        .spyOn(loggerOf(svc), "warn")
+        .mockImplementation(() => {});
+
+      await svc.pullWork("exec-1", 0, { wantTask: false });
+
+      expect(warn).not.toHaveBeenCalledWith(
+        expect.stringContaining("reports no free slots"),
+      );
+    });
+
+    it("wantTask=true 时不触发该探测（正常取件路径零额外 RTT）", async () => {
+      const svc = await makeService();
+      const client = clientOf(svc);
+      routeRpop(client, {
+        task: [JSON.stringify({ executionId: "e1", pushedAt: Date.now() })],
+      });
+
+      await svc.pullWork("exec-1", 0, { wantTask: true });
+
+      expect(client.llen).not.toHaveBeenCalled();
+    });
   });
 
   it("pull：取到载荷即返回（FIFO 出队 + JSON 解析）", async () => {
