@@ -1148,3 +1148,79 @@ describe("project tools (read-only)", () => {
     expect(path).toBe("/projects/me/roles");
   });
 });
+
+// ────────────────────────────────────────────────────────────
+// D1-P2-2: path-interpolated id params must be UUID-validated at the input
+// schema layer (path-traversal guard). The fake-server harness stores the zod
+// shape without running it, so we drive .parse() directly against each id field.
+// ────────────────────────────────────────────────────────────
+describe("D1-P2-2 path id UUID validation", () => {
+  const VALID_UUID = "550e8400-e29b-41d4-a716-446655440000";
+  const malformed = [
+    "../../etc",
+    "t1",
+    "..%2Fadmin",
+    "abc/def",
+    "550e8400-e29b-41d4-a716-446655440000/extra",
+  ];
+
+  // [tool name, field name] pairs whose id is interpolated into a URL path.
+  const pathIdFields: Array<[string, string]> = [
+    ["get_task", "taskId"],
+    ["trigger_task", "taskId"],
+    ["update_task", "taskId"],
+    ["list_task_versions", "taskId"],
+    ["rollback_task_version", "taskId"],
+    ["rollback_task_version", "versionId"],
+    ["compare_task_versions", "taskId"],
+    ["get_execution", "executionId"],
+    ["analyze_execution", "executionId"],
+    ["get_execution_logs", "executionId"],
+    ["kill_execution", "taskId"],
+    ["retry_execution", "executionId"],
+    ["get_execution_stats", "taskId"],
+    ["pause_task", "taskId"],
+    ["resume_task", "taskId"],
+    ["get_application", "applicationId"],
+    ["update_application", "applicationId"],
+    ["delete_application", "applicationId"],
+    ["analyze_application", "applicationId"],
+    ["deploy_application", "applicationId"],
+    ["upgrade_deployment", "deploymentId"],
+    ["stop_deployment", "deploymentId"],
+    ["approve_deployment", "deploymentId"],
+    ["reject_deployment", "deploymentId"],
+    ["cancel_deployment", "deploymentId"],
+    ["get_executor", "executorId"],
+    ["get_executor_metrics", "executorId"],
+    ["get_execution_timeline", "executionId"],
+    ["get_project_members", "projectId"],
+  ];
+
+  type ZodLike = { parse: (v: unknown) => unknown };
+  const fieldSchema = (tool: string, field: string): ZodLike =>
+    (tools.get(tool)!.schema as Record<string, ZodLike>)[field];
+
+  it("accepts a well-formed UUID on every path id field", () => {
+    for (const [tool, field] of pathIdFields) {
+      expect(() => fieldSchema(tool, field).parse(VALID_UUID), `${tool}.${field}`).not.toThrow();
+    }
+  });
+
+  it("rejects path-traversal / non-UUID values before they reach the network", () => {
+    for (const [tool, field] of pathIdFields) {
+      for (const bad of malformed) {
+        expect(
+          () => fieldSchema(tool, field).parse(bad),
+          `${tool}.${field} rejects ${JSON.stringify(bad)}`,
+        ).toThrow();
+      }
+    }
+  });
+
+  it("still accepts an absent optional id filter", () => {
+    const taskIdFilter = (tools.get("list_executions")!.schema as Record<string, ZodLike>).taskId;
+    expect(() => taskIdFilter.parse(undefined)).not.toThrow();
+    expect(() => taskIdFilter.parse(VALID_UUID)).not.toThrow();
+  });
+});
