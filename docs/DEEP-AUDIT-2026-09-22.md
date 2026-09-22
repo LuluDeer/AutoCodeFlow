@@ -8,9 +8,9 @@
 | # | 级别 | 条目 | 状态 | commit |
 |---|---|---|---|---|
 | D2-P1-1 | P1 | bwrap 沙箱在 compose 部署路径实际未启用（文档承诺与安全姿态漂移） | ✅ | 54a1acba |
-| D3-B-P1-1 | P1 | 项目写路由（建/改/删项目、成员）零审计落证 | ⬜ | — |
-| D3-B-P1-2 | P1 | 应用 CRUD/部署触发零审计落证 | ⬜ | — |
-| D3-B-P1-3 | P1 | Webhook 订阅改向零审计落证 | ⬜ | — |
+| D3-B-P1-1 | P1 | 项目写路由（建/改/删项目、成员）零审计落证 | ✅ | 7d533371 |
+| D3-B-P1-2 | P1 | 应用 CRUD/部署触发零审计落证 | ✅ | ddbaa91f |
+| D3-B-P1-3 | P1 | Webhook 订阅改向零审计落证 | ✅ | 6fecb804 |
 | D1-P2-1 | P2 | python http 客户端 docstring 误称 node-sdk 无重试无熔断 | ✅ | 598c2db5 |
 | D1-P2-2 | P2 | mcp-server 路径参数未做 UUID 校验 | ✅ | 9a50acdd |
 | D1-P2-3 | P2 | acf-cli exec tail SSE 流无客户端空闲兜底 | ✅ | 77d177c9 |
@@ -19,10 +19,10 @@
 | D1-P2-7 | P2 | mcp get_scheduler_health 残留 any | ✅ | 9a50acdd |
 | D2-P2-1 | P2 | test:unit 伞未接入 desktop 测试 | ✅ | 50106830 |
 | D2-P2-4 | P2 | updater generic feed 放行 http:（Linux 无签名兜底） | ✅ | 4bfa6702 |
-| D3-M-P2-1 | P2 | CreateProjects 迁移注释与 ON CONFLICT 语义不符 | ⬜ | — |
+| D3-M-P2-1 | P2 | CreateProjects 迁移注释与 ON CONFLICT 语义不符 | ✅ | a28a3a80 |
 | D3-F-P2-1 | P2 | 前端无全局 unhandledrejection 兜底 | ✅ | ef14ffe6 |
-| D3-B-P2-1 | P2 | 部署 stop/rollback 过渡未落证 | ⬜ | — |
-| D3-B-P2-2 | P2 | 任务模板 delete / notification 静默增删未落证 | ⬜ | — |
+| D3-B-P2-1 | P2 | 部署 stop/rollback 过渡未落证 | ✅ | 5788f723 |
+| D3-B-P2-2 | P2 | 任务模板 delete / notification 静默增删未落证 | ✅ | 76526eb5 |
 
 ---
 
