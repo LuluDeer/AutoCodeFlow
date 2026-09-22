@@ -282,7 +282,10 @@ describe("ApplicationController webhook HTTP raw body", () => {
       findByNameWithSecret: jest.fn().mockResolvedValue({
         id: "app-1",
         name: "my-app",
-        webhookSecret: "[FUNC]",
+        // 必须是真实共享密钥：本用例用同一字面量 sign("secret", ...) 计算
+        // HMAC。此处若改成占位符（如曾出现的 "[FUNC]"），签名校验必然失败，
+        // 用例会在 .expect(201) 处拿到 401。
+        webhookSecret: "secret",
       }),
       update: jest.fn().mockResolvedValue({
         id: "app-1",
@@ -387,6 +390,9 @@ describe("ApplicationController upload — APP-002", () => {
   let controller: ApplicationController;
   let rename: jest.SpyInstance;
   let unlink: jest.SpyInstance;
+  // fs.mkdirSync 在本 describe 被桩成 no-op；真实实现单独留一份引用，供
+  // P1-11 用例补建落地目录（见该用例内 rename 桩的注释）。
+  const realMkdirSync = fs.mkdirSync;
   let stagingDir: string;
   let stagedPath: string;
 
@@ -483,7 +489,13 @@ describe("ApplicationController upload — APP-002", () => {
     );
     // 桩 rename：把暂存文件真实移到目标 ZipPath，让 tmpPath 真正消失，
     // 从而精确复现“rename 后读 tmpPath = ENOENT”的生产时序。
+    // 注意：本 describe 把 fs.mkdirSync 桩成 no-op，且 upload 只在
+    // `fs.existsSync(uploadsDir) === false` 时才调用它（existsSync 也被桩成恒
+    // true）——uploads/packages 因此不会被真正创建。这里必须走 mkdirSync 的
+    // 原始实现把落地目录补出来：否则 renameSync 先抛 ENOENT，回退到 copyFile
+    // 时源文件已不在，报出的就是与被测行为无关的 fs 错误。
     rename.mockImplementation(async (from: any, to: any) => {
+      realMkdirSync(path.dirname(to), { recursive: true });
       fs.renameSync(from, to);
     });
 
