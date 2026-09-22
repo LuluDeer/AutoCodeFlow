@@ -450,6 +450,11 @@ export class ExecutorPackageController {
       )) ?? undefined;
     // 审计 E-P2-S3：executorIds 现经 PushExecutorPackageDto 校验（v4 UUID × ≤100）。
     // body 可能为空（单测直接调用 push(id)），故可选链。
-    return this.svc.pushToExecutors(id, body?.executorIds, executors, sharedToken);
+    return this.svc.pushToExecutors(
+      id,
+      body?.executorIds,
+      executors,
+      sharedToken,
+    );
   }
 }

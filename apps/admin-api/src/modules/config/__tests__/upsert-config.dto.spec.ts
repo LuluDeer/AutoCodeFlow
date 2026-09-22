@@ -37,9 +37,9 @@ describe("UpsertConfigDto (E-P2-S2 长度上限)", () => {
   });
 
   it("拒绝超长 key（>200）", async () => {
-    await expect(
-      validate({ key: "k".repeat(201) }),
-    ).rejects.toThrow(BadRequestException);
+    await expect(validate({ key: "k".repeat(201) })).rejects.toThrow(
+      BadRequestException,
+    );
   });
 
   it("拒绝超长 description（>2000）", async () => {

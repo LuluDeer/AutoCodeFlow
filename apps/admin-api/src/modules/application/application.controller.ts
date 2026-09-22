@@ -372,10 +372,16 @@ export class ApplicationController {
           const parsed: unknown = JSON.parse(manifestText);
           if (parsed && typeof parsed === "object") {
             manifestParsed = parsed as Record<string, unknown>;
-            if (typeof manifestParsed.entrypoint === "string" && manifestParsed.entrypoint) {
+            if (
+              typeof manifestParsed.entrypoint === "string" &&
+              manifestParsed.entrypoint
+            ) {
               manifestEntrypoint = manifestParsed.entrypoint;
             }
-            if (typeof manifestParsed.runtime === "string" && manifestParsed.runtime) {
+            if (
+              typeof manifestParsed.runtime === "string" &&
+              manifestParsed.runtime
+            ) {
               manifestRuntime = manifestParsed.runtime;
             }
             this.logger.log(
@@ -398,7 +404,9 @@ export class ApplicationController {
           app = await this.svc.update(existing.id, {
             packageUrl,
             ...(runtime ? { runtime } : {}),
-            ...(!runtime && manifestRuntime ? { runtime: manifestRuntime } : {}),
+            ...(!runtime && manifestRuntime
+              ? { runtime: manifestRuntime }
+              : {}),
             ...(manifestParsed ? { manifest: manifestParsed } : {}),
             ...(manifestEntrypoint ? { entrypoint: manifestEntrypoint } : {}),
           });

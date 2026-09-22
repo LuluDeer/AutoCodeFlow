@@ -23,7 +23,9 @@ describe("DropExecutorInterpretersGinIndex1790000000034（E-P2-R1）", () => {
   });
 
   it("可被 TypeORM 解析（name/up/down 契约）", () => {
-    expect(migration.name).toBe("DropExecutorInterpretersGinIndex1790000000034");
+    expect(migration.name).toBe(
+      "DropExecutorInterpretersGinIndex1790000000034",
+    );
     expect(typeof migration.up).toBe("function");
     expect(typeof migration.down).toBe("function");
   });

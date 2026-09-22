@@ -39,15 +39,15 @@ describe("PushExecutorPackageDto (E-P2-S3 校验)", () => {
   });
 
   it("拒绝非 UUID 元素", async () => {
-    await expect(
-      validate({ executorIds: ["not-a-uuid"] }),
-    ).rejects.toThrow(BadRequestException);
+    await expect(validate({ executorIds: ["not-a-uuid"] })).rejects.toThrow(
+      BadRequestException,
+    );
   });
 
   it("拒绝混合了非法元素的列表", async () => {
-    await expect(
-      validate({ executorIds: [uuid1, "garbage"] }),
-    ).rejects.toThrow(BadRequestException);
+    await expect(validate({ executorIds: [uuid1, "garbage"] })).rejects.toThrow(
+      BadRequestException,
+    );
   });
 
   it("拒绝超过 100 个的列表", async () => {

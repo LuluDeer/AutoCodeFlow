@@ -813,9 +813,7 @@ describe("TaskService (__tests__)", () => {
       taskRepo.findOne.mockResolvedValue(task);
       taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
 
-      await expect(service.updateGlue("1", "")).rejects.toThrow(
-        /empty/i,
-      );
+      await expect(service.updateGlue("1", "")).rejects.toThrow(/empty/i);
       // 反证核心：拒绝必须发生在任何赋值之前——脚本与来源都保持原样
       expect(task.glueSource).toBe("print('real')");
       expect(task.gitRepo).toBe("git@github.com:acme/repo.git");
@@ -823,7 +821,11 @@ describe("TaskService (__tests__)", () => {
     });
 
     it("拒绝纯空白脚本（只输入空格/换行同样无代码，不得覆盖）", async () => {
-      const task = { id: "1", glueSource: "print('real')", glueLanguage: "python" };
+      const task = {
+        id: "1",
+        glueSource: "print('real')",
+        glueLanguage: "python",
+      };
       taskRepo.findOne.mockResolvedValue(task);
       taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
 

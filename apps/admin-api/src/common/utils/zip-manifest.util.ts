@@ -1,4 +1,4 @@
-/**
+﻿/**
  * P1-11（UX-AUDIT-2026-09-21）：从上传的应用 zip 中读取 `manifest.json`。
  *
  * 背景：git 路径的部署早就解析 manifest.json 并回填 app.manifest / entrypoint /
@@ -68,7 +68,6 @@ export function readManifestFromZip(zipPath: string): string | null {
       }
     }
     if (eocdRel < 0) return null;
-    const eocdOff = tailStart + eocdRel;
     const cdCount = u16(tail, eocdRel + 10);
     const cdOffset = u32(tail, eocdRel + 16);
     const cdSize = u32(tail, eocdRel + 12);
@@ -77,11 +76,17 @@ export function readManifestFromZip(zipPath: string): string | null {
     // 2. 读中央目录区
     const cd = readRange(zipPath, cdOffset, cdSize);
 
-    let rootMatch: { localOffset: number; method: number; cSize: number; uSize: number } | null = null;
+    let rootMatch: {
+      localOffset: number;
+      method: number;
+      cSize: number;
+      uSize: number;
+    } | null = null;
     let nestedMatch = rootMatch;
     let off = 0;
     for (let seen = 0; seen < cdCount; seen++) {
-      if (off + CD_HEADER_SIZE > cd.length || u32(cd, off) !== SIG_CD) return null;
+      if (off + CD_HEADER_SIZE > cd.length || u32(cd, off) !== SIG_CD)
+        return null;
       const method = u16(cd, off + 10);
       const cSize = u32(cd, off + 20);
       const uSize = u32(cd, off + 24);
@@ -89,14 +94,21 @@ export function readManifestFromZip(zipPath: string): string | null {
       const nameLen = u16(cd, off + 28);
       const extraLen = u16(cd, off + 30);
       const commentLen = u16(cd, off + 32);
-      const name = cd.toString("utf8", off + CD_HEADER_SIZE, off + CD_HEADER_SIZE + nameLen);
+      const name = cd.toString(
+        "utf8",
+        off + CD_HEADER_SIZE,
+        off + CD_HEADER_SIZE + nameLen,
+      );
       off += CD_HEADER_SIZE + nameLen + extraLen + commentLen;
 
       const isRoot = name === "manifest.json";
       const isNested = name.endsWith("/manifest.json");
       if (!isRoot && !isNested) continue;
       const entry = { localOffset, method, cSize, uSize };
-      if (isRoot) { rootMatch = entry; break; }
+      if (isRoot) {
+        rootMatch = entry;
+        break;
+      }
       nestedMatch = nestedMatch ?? entry;
     }
     const chosen = rootMatch ?? nestedMatch;
@@ -116,7 +128,9 @@ export function readManifestFromZip(zipPath: string): string | null {
     if (chosen.method === 0) return payload.toString("utf8");
     if (chosen.method === 8) {
       try {
-        return inflateRawSync(payload, { maxOutputLength: Math.max(chosen.uSize, 1024 * 1024) }).toString("utf8");
+        return inflateRawSync(payload, {
+          maxOutputLength: Math.max(chosen.uSize, 1024 * 1024),
+        }).toString("utf8");
       } catch {
         return null;
       }

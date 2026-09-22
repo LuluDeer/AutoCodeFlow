@@ -215,10 +215,7 @@ export class NotificationConfigController {
   @Delete("silences/:id")
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Remove a notification silence" })
-  async removeSilence(
-    @Param("id") id: string,
-    @CurrentUser() user: AuthUser,
-  ) {
+  async removeSilence(@Param("id") id: string, @CurrentUser() user: AuthUser) {
     // ARCH-31: 内存 + DB 双删（内存态由 NotificationService 持有，DB 行由
     // silenceService 负责——forgetSilence 只清内存，避免重复删库）。
     this.notificationService.forgetSilence(id);

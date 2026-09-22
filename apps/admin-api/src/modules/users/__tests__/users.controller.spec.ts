@@ -1,5 +1,9 @@
 import { Test, TestingModule } from "@nestjs/testing";
-import { ForbiddenException, BadRequestException, ConflictException } from "@nestjs/common";
+import {
+  ForbiddenException,
+  BadRequestException,
+  ConflictException,
+} from "@nestjs/common";
 import * as bcrypt from "bcrypt";
 import { UsersController } from "../users.controller";
 import { UsersService } from "../users.service";
@@ -137,12 +141,7 @@ describe("UsersController", () => {
       // 旧实现：自改 username 撞 DB 唯一索引 → 裸 500；现前置校验 → 409。
       usersSvc.findByUsername.mockResolvedValue({ id: 99, username: "taken" });
       await expect(
-        controller.update(
-          2,
-          { username: "taken" } as any,
-          normalUser,
-          mockReq,
-        ),
+        controller.update(2, { username: "taken" } as any, normalUser, mockReq),
       ).rejects.toThrow(ConflictException);
       expect(usersSvc.update).not.toHaveBeenCalled();
     });
