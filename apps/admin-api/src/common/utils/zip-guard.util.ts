@@ -40,6 +40,7 @@ export type ZipGuardViolation =
   | "single_file_too_large"
   | "total_uncompressed_exceeded"
   | "nested_zip_too_deep"
+  | "nested_zip_too_large"
   | "unparseable";
 
 export interface ZipGuardLimits {
@@ -47,20 +48,32 @@ export interface ZipGuardLimits {
   maxRatio: number;
   /** Max central-directory entry count (default 10 000). */
   maxEntries: number;
-  /** Max declared uncompressed size of one entry (default 1 GiB). */
+  /** Max declared uncompressed size of one entry (default 512 MiB). */
   maxFileBytes: number;
-  /** Max declared uncompressed total across all entries (default 2 GiB). */
+  /** Max declared uncompressed total across all entries (default 1 GiB). */
   maxTotalUncompressedBytes: number;
   /** Max nested-zip levels evaluated eagerly (default 1). */
   maxNestingDepth: number;
+  /**
+   * Max uncompressed bytes of a single NESTED zip member we materialize in
+   * Node's heap for recursive vetting (default 64 MiB). Nested members are
+   * inflated eagerly, so this is the one place where a CD-declared size turns
+   * into a real heap allocation — it must be far smaller than maxFileBytes to
+   * keep the guard's OWN memory bounded. 2026-09-23 OOM incident: the nested
+   * inflate used the declared size as its cap, so a package that declared a
+   * multi-GiB nested member drove admin-api to ~880 MB RSS and the kernel OOM
+   * killer reaped it on every "upgrade an existing app" upload.
+   */
+  maxNestedInflateBytes: number;
 }
 
 export const ZIP_GUARD_DEFAULT_LIMITS: ZipGuardLimits = {
   maxRatio: 100,
   maxEntries: 10_000,
-  maxFileBytes: 1024 * 1024 * 1024, // 1 GiB
-  maxTotalUncompressedBytes: 2 * 1024 * 1024 * 1024, // 2 GiB
+  maxFileBytes: 512 * 1024 * 1024, // 512 MiB (was 1 GiB)
+  maxTotalUncompressedBytes: 1024 * 1024 * 1024, // 1 GiB (was 2 GiB)
   maxNestingDepth: 1,
+  maxNestedInflateBytes: 64 * 1024 * 1024, // 64 MiB
 };
 
 /** Aggregate central-directory facts for one zip archive. */
@@ -88,6 +101,7 @@ interface RawLimits {
   maxFileBytes?: number;
   maxTotalUncompressedBytes?: number;
   maxNestingDepth?: number;
+  maxNestedInflateBytes?: number;
 }
 
 /** Merge user-supplied limits over the defaults (tests inject small values). */
@@ -118,6 +132,11 @@ export function resolveZipGuardLimits(
       overrides.maxNestingDepth >= 0
         ? overrides.maxNestingDepth
         : ZIP_GUARD_DEFAULT_LIMITS.maxNestingDepth,
+    maxNestedInflateBytes:
+      overrides?.maxNestedInflateBytes &&
+      overrides.maxNestedInflateBytes > 0
+        ? overrides.maxNestedInflateBytes
+        : ZIP_GUARD_DEFAULT_LIMITS.maxNestedInflateBytes,
   };
 }
 
@@ -298,7 +317,7 @@ export function assertZipSafe(
 
   if (depth < limits.maxNestingDepth) {
     for (const name of summary.nestedZipNames) {
-      const inner = extractNestedZipBytes(buf, name);
+      const inner = extractNestedZipBytes(buf, name, limits.maxNestedInflateBytes);
       if (inner) {
         try {
           assertZipSafe(inner, limits, depth + 1);
@@ -358,7 +377,11 @@ function perEntryUncompressedSizes(buf: Buffer): number[] {
  * gigabytes — output is capped at the declared uncompressed size + slack).
  * Returns null when the entry cannot be located/validated.
  */
-function extractNestedZipBytes(buf: Buffer, name: string): Buffer | null {
+function extractNestedZipBytes(
+  buf: Buffer,
+  name: string,
+  maxNestedInflateBytes: number,
+): Buffer | null {
   const eocdOff = locateEocd(buf);
   const cdEntries = U16(buf, eocdOff + 10);
   const cdOffset = U32(buf, eocdOff + 16);
@@ -380,6 +403,17 @@ function extractNestedZipBytes(buf: Buffer, name: string): Buffer | null {
     );
     off += CD_HEADER_SIZE + nameLen + extraLen + commentLen;
     if (entryName !== name) continue;
+
+    // The nested member is materialized in Node's heap below, so its DECLARED
+    // uncompressed size must fit the nested-inflate budget. A package that
+    // declares a bigger nested member is rejected (fail closed) instead of
+    // being allowed to drive a multi-GiB allocation — the 2026-09-23 OOM.
+    if (uncompressedSize > maxNestedInflateBytes) {
+      throw new ZipGuardError(
+        "nested_zip_too_large",
+        `nested zip "${name}" declares ${uncompressedSize} uncompressed bytes (limit ${maxNestedInflateBytes})`,
+      );
+    }
 
     // Read the local file header to find the true data start (its name/extra
     // lengths may differ from the CD record).
@@ -405,12 +439,12 @@ function extractNestedZipBytes(buf: Buffer, name: string): Buffer | null {
     }
     if (method === 8) {
       // Deflate — ZIP method 8 is RAW deflate (no zlib header). Inflate with
-      // the declared size as an absolute output cap (a lying CD cannot make
+      // the nested budget as an absolute output cap (a lying CD cannot make
       // us materialize gigabytes from a small member; maxOutputLength
       // throws when the cap would be exceeded).
       try {
         return inflateRawSync(payload, {
-          maxOutputLength: uncompressedSize,
+          maxOutputLength: maxNestedInflateBytes,
         });
       } catch {
         return null;
@@ -472,6 +506,7 @@ function readNestedZipSliceFromFile(
   cd: Buffer,
   cdEntries: number,
   name: string,
+  maxNestedInflateBytes: number,
 ): Buffer | null {
   let off = 0;
   for (let seen = 0; seen < cdEntries; seen++) {
@@ -491,6 +526,15 @@ function readNestedZipSliceFromFile(
     );
     off += CD_HEADER_SIZE + nameLen + extraLen + commentLen;
     if (entryName !== name) continue;
+
+    // Nested member is inflated into Node's heap below — refuse a declared
+    // size that would not fit the nested-inflate budget (fail closed).
+    if (uncompressedSize > maxNestedInflateBytes) {
+      throw new ZipGuardError(
+        "nested_zip_too_large",
+        `nested zip "${name}" declares ${uncompressedSize} uncompressed bytes (limit ${maxNestedInflateBytes})`,
+      );
+    }
 
     // Local file header: 30 fixed bytes, then name/extra lengths at +26/+28.
     if (localOffset + LOCAL_HEADER_FILENAME_LEN_OFFSET + 4 > fileSize) {
@@ -519,7 +563,9 @@ function readNestedZipSliceFromFile(
     }
     if (method === 8) {
       try {
-        return inflateRawSync(payload, { maxOutputLength: uncompressedSize });
+        return inflateRawSync(payload, {
+          maxOutputLength: maxNestedInflateBytes,
+        });
       } catch {
         return null;
       }
@@ -669,6 +715,7 @@ export function assertZipFileSafe(
         cd,
         cdEntries,
         name,
+        limits.maxNestedInflateBytes,
       );
       if (inner) {
         try {

@@ -102,4 +102,20 @@ export class UploadApplicationDto {
   @IsString()
   @MaxLength(50)
   runtime?: string;
+
+  /**
+   * 上传即产生版本（方案 A）。可选——不传时行为与既往完全一致（只替换包
+   * 文件，不动版本号）。传了则把 application.version 抬到该值，并写一条
+   * application_versions 快照，使详情页版本列表立刻可见。
+   */
+  @ApiPropertyOptional({
+    description:
+      "Version number to record for this upload (e.g. 1.0.1). Omit to keep the current version.",
+    example: "1.0.1",
+    maxLength: 50,
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(50)
+  version?: string;
 }
