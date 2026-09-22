@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.2](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.5.1...v1.5.2) (2026-09-22)
+
+
+### Bug Fixes
+
+* **mcp:** 路径 id 入站收窄为 UUID 并消除 Record&lt;any&gt;（深审 D1-P2-2/D1-P2-7） ([9a50acd](https://github.com/LuluDeer/AutoCodeFlow/commit/9a50acdd6b43a8a9692a76aa91c932ccf87bcc48))
+
 ## [1.5.1](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.5.0...v1.5.1) (2026-09-20)
 
 
