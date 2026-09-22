@@ -106,6 +106,27 @@ export const CHART_COLORS = {
  */
 export const BRAND_GRADIENT = 'linear-gradient(135deg, #22c55e 0%, #16a34a 100%)';
 
+/**
+ * 阶段一设计遗留（设计建议#1）：主操作按钮填充加深档。
+ * 品牌绿 #22C55E 上白字仅 2.28:1（< WCAG 2.1 AA SC 1.4.11 正文 4.5:1）。
+ * 按钮填充改用 green-700 `#15803d`——白字 5.02:1，亮/暗双主题同源均达标；
+ * hover/active 取同色相更深档（白字对比仍 ≥4.5:1）。
+ * 品牌绿 `#22C55E` 仍保留在 `DESIGN_TOKENS.accent` / `BRAND_GRADIENT`（Logo、
+ * 头像）/ `SEMANTIC_COLORS.success`（状态点）——仅主操作按钮填充加深，不改品牌色相。
+ * index.css 的 `.ant-btn-primary` 覆盖块与本处镜像，由
+ * `__tests__/primary-button-contrast.ux.test.ts` 双向钉住（值一致 + 实测对比）。
+ */
+export const PRIMARY_BUTTON = {
+  /** 主按钮填充（白字 5.02:1） */
+  bg: '#15803d',
+  /** hover 填充（白字 7.13:1） */
+  hoverBg: '#166534',
+  /** active 填充（白字 9.11:1） */
+  activeBg: '#14532d',
+  /** 主按钮文字色（antd colorTextLightSolid，亮/暗面均为白） */
+  text: '#FFFFFF',
+} as const;
+
 /** SSE 日志区双主题面（亮面白底深字 / 暗面 MASTER 画布 + foreground） */
 export const LOG_PANEL_COLORS = {
   light: { bg: '#FFFFFF', text: '#0F172A' },
