@@ -441,7 +441,9 @@ def _version_sort_key(v: str):
 @app.get("/", response_class=HTMLResponse)
 def root_index(request: Request, _user: str = Depends(verify_auth)):
     """FEAT-12: 人类可读服务首页（HTML，需认证——与 S9 索引保护策略一致）。"""
-    pkgs = sorted(d.name for d in PACKAGES_DIR.iterdir() if d.is_dir())
+    # D1-P2-4: 根/simple 索引此前裸用 PACKAGES_DIR.iterdir()——目录不可读/被删
+    # 时迭代直接 OSError 500。改用已带 OSError 守卫且排序的 _all_package_dirs()。
+    pkgs = [d.name for d in _all_package_dirs()]
     total_files = sum(
         1
         for p in pkgs
@@ -456,7 +458,9 @@ def root_index(request: Request, _user: str = Depends(verify_auth)):
 @app.get("/simple/", response_class=HTMLResponse)
 def simple_index(request: Request, _user: str = Depends(verify_auth)):
     """PEP 503 root index (pip 消费入口)."""
-    pkgs = sorted(d.name for d in PACKAGES_DIR.iterdir() if d.is_dir())
+    # D1-P2-4: 根/simple 索引此前裸用 PACKAGES_DIR.iterdir()——目录不可读/被删
+    # 时迭代直接 OSError 500。改用已带 OSError 守卫且排序的 _all_package_dirs()。
+    pkgs = [d.name for d in _all_package_dirs()]
     counts = [
         sum(1 for f in (PACKAGES_DIR / p).glob("*") if f.is_file() and not is_meta_file(f.name))
         for p in pkgs

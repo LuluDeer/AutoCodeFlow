@@ -1106,3 +1106,44 @@ class TestUploadEndpointAliasE39:
         assert "sha256" in resp.json()["detail"]
         artifact = tmp_packages_dir / "alias-same" / "alias-same-1.0.0.whl"
         assert artifact.read_bytes() == payload
+
+
+# ---------------------------------------------------------------------------
+# D1-P2-4：GET / 与 GET /simple/ 此前裸用 PACKAGES_DIR.iterdir()——目录被删/
+# 不可读时迭代直接抛 OSError → 500。两处现已共用带 OSError 守卫且排序的
+# _all_package_dirs()。这里钉死守卫行为：枚举失败返回空列表而非上抛，且
+# 正常 listing 保持按名排序。
+# ---------------------------------------------------------------------------
+class TestAllPackageDirsGuard:
+    def test_iterdir_oserror_returns_empty_list(self, monkeypatch):
+        import main as app_module
+
+        class _BoomDir:
+            def iterdir(self):
+                raise OSError("permission denied on packages dir")
+
+        monkeypatch.setattr(app_module, "PACKAGES_DIR", _BoomDir())
+        assert app_module._all_package_dirs() == []
+
+    def test_normal_listing_sorted_by_name(self, tmp_packages_dir, monkeypatch):
+        import main as app_module
+        # 端点读的是模块属性——与 client fixture 同法 patch 到隔离目录。
+        monkeypatch.setattr(app_module, "PACKAGES_DIR", tmp_packages_dir)
+        (tmp_packages_dir / "b-pkg").mkdir()
+        (tmp_packages_dir / "a-pkg").mkdir()
+        (tmp_packages_dir / "c-pkg").mkdir()
+        names = [d.name for d in app_module._all_package_dirs()]
+        assert names == ["a-pkg", "b-pkg", "c-pkg"]
+
+    def test_root_and_simple_endpoints_survive_broken_enumeration(self, client, monkeypatch):
+        """端点层反证：枚举失败时 / 与 /simple/ 不再 500，而是渲染空索引(200)。"""
+        import main as app_module
+
+        class _BoomDir:
+            def iterdir(self):
+                raise OSError("removed")
+
+        monkeypatch.setattr(app_module, "PACKAGES_DIR", _BoomDir())
+        for path in ("/", "/simple/"):
+            resp = client.get(path, auth=AUTH)
+            assert resp.status_code == 200, f"{path} must not 500 on broken enumeration"
