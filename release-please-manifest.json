@@ -1,6 +1,6 @@
 {
-  "packages/autocodeflow-node-sdk": "1.5.1",
+  "packages/autocodeflow-node-sdk": "1.5.2",
   "packages/mcp-server": "1.5.2",
-  "packages/autoflow-sdk": "1.5.1",
+  "packages/autoflow-sdk": "1.5.2",
   "packages/acf-cli": "1.5.2"
 }
