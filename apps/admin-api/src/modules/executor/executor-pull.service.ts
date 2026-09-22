@@ -131,6 +131,28 @@ export class ExecutorPullService {
       pushedAt: Date.now(),
     });
     await client.lpush(this.queueKey(executorId), body);
+
+    // NETOPT-G P1-8（可观测性）：入队后回读 LLEN 并记 INFO。
+    //
+    // 为什么值得多一次 RTT：本次生产事故排查中，"任务到底有没有进队列"反复
+    // 消耗了双方多轮往返——中台侧因 redis-cli 未安装而只能看到 nginx 的
+    // 124B 空响应，执行器侧看不到服务端的 LPUSH 结果，双方都无法单独证明
+    // 队列里有没有东西。此行把入队结果（key + 深度）写进应用日志，日后
+    // "派了却没人取"这类问题一跳可查：LLEN>=1 说明载荷确已入队，问题在取件
+    // 侧；若日志缺失则说明 LPUSH 之前就失败了。
+    //
+    // 失败只 WARN 不上抛：回读仅是观测，LLEN 取不到不应让已成功的入队失败
+    // （那会让 dispatch 回滚占坑、把一次成功派发变成失败）。
+    try {
+      const depth = await client.llen(this.queueKey(executorId));
+      this.logger.log(
+        `Pull enqueue: executor=${executorId} queueDepth=${depth} bytes=${body.length}`,
+      );
+    } catch (err) {
+      this.logger.warn(
+        `Pull enqueue depth probe failed for executor ${executorId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 
   /**
@@ -267,6 +289,28 @@ export class ExecutorPullService {
       await new Promise((r) =>
         setTimeout(r, ExecutorPullService.POLL_INTERVAL_MS),
       );
+    }
+
+    // NETOPT-G P1-8（可观测性）：执行器上报满载（wantTask=false）却仍有任务
+    // 在队列里堆积时告警——"上报满载但队列非空"是执行器账本与队列状态不一致
+    // 的直接信号（本次事故排查中，正是这个组合反复出现却无人可见：中台只能
+    // 看到 pull 返回空载荷，无法区分"真没任务"与"有任务但被 wantTask 门禁
+    // 挡下"）。
+    //
+    // 只 WARN 不干预：wantTask 门禁本身是正确设计（无空闲槽位时取走任务会把
+    // "暂时没容量"固化成执行失败），这里只是把该状态提前暴露给运维，不改变
+    // 取件语义。探测失败静默——纯观测，不应影响取件结果。
+    if (!opts.wantTask) {
+      try {
+        const depth = await client.llen(taskKey);
+        if (depth > 0) {
+          this.logger.warn(
+            `Pull: executor ${executorId} reports no free slots but queue has ${depth} pending task(s) — possible executor capacity/ledger mismatch`,
+          );
+        }
+      } catch {
+        /* 纯观测路径，探测失败不影响取件 */
+      }
     }
 
     return { task, commands };

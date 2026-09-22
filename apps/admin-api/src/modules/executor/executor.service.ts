@@ -76,6 +76,7 @@ import { SecretsCryptoService } from "../../common/utils/secret-crypto.util.serv
 import {
   DOMAIN_EVENTS,
   ExecutorOfflineEventPayload,
+  ExecutorOnlineEventPayload,
 } from "../../common/events/domain-events";
 import { DomainEventBus } from "../../common/services/domain-event-bus.service";
 import { Optional } from "@nestjs/common";
@@ -352,6 +353,30 @@ export class ExecutorService {
     };
     try {
       this.eventBus.emit(DOMAIN_EVENTS.EXECUTOR_OFFLINE, payload);
+    } catch {
+      /* bus contract is fail-open; second fuse */
+    }
+  }
+
+  /**
+   * NETOPT-G P1-6: 状态落库后发布 executor.online（与 emitExecutorOffline 对称：
+   * fail-open、载荷同形）。
+   *
+   * 只在**真实跃迁**（prev !== ONLINE）时由调用方触发——心跳是 30s 高频路径，
+   * 无条件 emit 会把 event_outbox 打爆并给订阅方造成无意义扇出。
+   */
+  private emitExecutorOnline(
+    executor: Pick<Executor, "id" | "appName" | "address">,
+  ): void {
+    if (!this.eventBus) return;
+    const payload: ExecutorOnlineEventPayload = {
+      executorId: executor.id,
+      appName: executor.appName,
+      address: executor.address,
+      occurredAt: new Date().toISOString(),
+    };
+    try {
+      this.eventBus.emit(DOMAIN_EVENTS.EXECUTOR_ONLINE, payload);
     } catch {
       /* bus contract is fail-open; second fuse */
     }
@@ -1517,7 +1542,14 @@ export class ExecutorService {
         writableMetrics[key] = metricValues[key];
       }
     }
+    // NETOPT-G P1-6：记录跃迁前的状态——executor.online 只在**真实恢复**
+    // （非 ONLINE → ONLINE）时发布，避免每次 30s 心跳都刷一条事件。
+    const wasOnline = e.status === ExecutorStatus.ONLINE;
     e.status = ExecutorStatus.ONLINE;
+    // NETOPT-G P1-7：心跳到达即清零"连续超时"计数——这是迟滞判死能自愈的
+    // 关键：一次成功心跳就把"疑似失联"状态彻底解除，下一轮 sweep 必须重新
+    // 从 0 累计，因此"偶发失败 + 恢复"永远不会累积到判死阈值。
+    e.consecutiveHeartbeatMisses = 0;
     // 遗留 P1-24：恢复在线即清除离线原因标注。
     e.offlineReason = null;
     e.lastHeartbeat = new Date();
@@ -1569,6 +1601,12 @@ export class ExecutorService {
     // 是有意取舍（R-P0-006：心跳高频、乐观锁冲突会反噬吞吐）；偏差窗口内的
     // 闸门判满/判空是暂时的，不上报的旧版执行器才依赖该近似。
     const saved = await this.repo.save(e);
+    // NETOPT-G P1-6（状态机对称性）：恢复在线的事件在**落库之后**发布，与
+    // emitExecutorOffline 的三处调用点同口径（状态先落库，事件后发）。
+    // 只在真实跃迁时发——心跳 30s 一次，无条件 emit 会把 outbox 打爆。
+    if (!wasOnline) {
+      this.emitExecutorOnline(saved);
+    }
     try {
       await this.metricsHistoryRepo.save(
         this.metricsHistoryRepo.create({
@@ -1623,11 +1661,17 @@ export class ExecutorService {
    *   5 分钟，于是后端判死后的约 3.5 分钟里 UI 仍把心跳画成"刚刚（绿）"。
    * - `listLimit` / `executorTotal`：findAll() 的截断上限与全量行数，
    *   total > limit 时 UI 必须提示只展示了子集（P3-9）。
+   * - NETOPT-G P1-7 起追加 `staleOfflineConfirmations` 与 `effectiveOfflineAfterMs`：
+   *   迟滞上线后真实判死窗口不再是 `heartbeatTimeoutMs`，而是它 × 确认轮数
+   *   （+ 至多一个扫描周期）。不暴露这两项会让 UI 展示的"多久判离线"与后端
+   *   实际行为不符——正是本字段当初要消灭的那类前后端漂移。
    */
   async getRuntimeConfig(): Promise<{
     heartbeatIntervalMs: number;
     heartbeatTimeoutMultiplier: number;
     heartbeatTimeoutMs: number;
+    staleOfflineConfirmations: number;
+    effectiveOfflineAfterMs: number;
     listLimit: number;
     executorTotal: number;
   }> {
@@ -1637,10 +1681,23 @@ export class ExecutorService {
       this.configService.get<number>("executor.heartbeatTimeoutMultiplier") ||
       3;
     const executorTotal = await this.repo.count();
+    // NETOPT-G P1-7：只解析一次确认轮数（下方两处引用）——重复调用会让
+    // configService.get 在同一请求里被读两次，既浪费也让"有效窗口"与"轮数"
+    // 理论上可能取到不同值（配置热更竞态）。
+    const staleOfflineConfirmations = this.resolveStaleConfirmations();
     return {
       heartbeatIntervalMs,
       heartbeatTimeoutMultiplier,
       heartbeatTimeoutMs: heartbeatIntervalMs * heartbeatTimeoutMultiplier,
+      // NETOPT-G P1-7：判死迟滞的确认轮数，以及据此算出的**实际**判死窗口。
+      // 前端此前只按 heartbeatTimeoutMs（90s）展示"多久判离线"，而迟滞上线后
+      // 真实窗口 = heartbeatTimeoutMs × staleOfflineConfirmations（+ 一个扫描
+      // 周期）。不暴露这两项会让 UI 显示与真实行为不符。
+      staleOfflineConfirmations,
+      effectiveOfflineAfterMs:
+        heartbeatIntervalMs *
+        heartbeatTimeoutMultiplier *
+        staleOfflineConfirmations,
       listLimit: EXECUTOR_LIST_LIMIT,
       executorTotal,
     };
@@ -2934,6 +2991,32 @@ export class ExecutorService {
     return 30;
   }
 
+  /**
+   * NETOPT-G P1-7：判死所需的**连续超时轮数**。
+   *
+   * 默认 2：一次 90s 超时只记为"错过一轮"，连续两轮（≈2×90s + 一个扫描周期）
+   * 才判死。取值依据（生产实测）：
+   *  - 单次心跳失败率约 4.5%，两次独立失败同时发生 ≈ 0.2%——已压到噪声级；
+   *  - 长尾 RTT 最大 153s，单轮 90s 阈值本就会被长尾踩线，两轮确认给了链路
+   *    一次恢复机会；
+   *  - 代价：真实故障检出从 90s 延到 ~210s（多一个确认窗口）。这是**有意
+   *    取舍**——误判的代价（离线通知风暴 + 执行器被移出派发候选 + 运行中
+   *    任务被误标）高于多等 2 分钟；且派发本身有 TTL/sweep 兜底，不会因
+   *    执行器判死晚 2 分钟而丢任务。
+   *
+   * 配置 `executor.staleOfflineConfirmations` 可调；非法值（<1 / 非数）回退
+   * 默认，绝不因配置写错导致"永不判死"或"立即判死"。
+   */
+  private resolveStaleConfirmations(): number {
+    const raw = this.configService.get<number>(
+      "executor.staleOfflineConfirmations",
+    );
+    if (typeof raw === "number" && Number.isFinite(raw) && raw >= 1) {
+      return Math.floor(raw);
+    }
+    return 2;
+  }
+
   /** Auto-scan every 30s, mark executors with expired heartbeat as OFFLINE */
   @Cron("*/30 * * * * *")
   async markStaleOffline() {
@@ -2946,7 +3029,31 @@ export class ExecutorService {
       3;
     const timeoutMs = heartbeatInterval * timeoutMultiplier;
     const cutoff = new Date(Date.now() - timeoutMs);
+    // NETOPT-G P1-7（判死迟滞）：需要**连续**多少轮扫描命中超时才真正判死。
+    const requiredMisses = this.resolveStaleConfirmations();
 
+    // ── 第一步：对"本轮超时但仍标 ONLINE"的行递增计数 ──────────────────
+    //
+    // 这一步把"刚错过一次心跳"与"持续失联"区分开：单次墙钟命中只 +1，
+    // 不改变 status——这正是修复跨境抖动误判的关键。计数在命中时累加、
+    // 在 heartbeat() 到达时清零，因此"偶发失败 + 恢复"不会再判死。
+    //
+    // 用 SQL 表达式自增（而非先查后写）避免并发心跳与 sweep 的读改写竞态。
+    // 同时可顺带记录"疑似失联"观测面（计数 >= 1 即说明已错过至少一轮）。
+    await this.repo
+      .createQueryBuilder()
+      .update(Executor)
+      .set({
+        consecutiveHeartbeatMisses: () => '"consecutiveHeartbeatMisses" + 1',
+      })
+      .where('status = :status AND "lastHeartbeat" < :cutoff', {
+        status: ExecutorStatus.ONLINE,
+        cutoff,
+      })
+      .execute();
+
+    // ── 第二步：只对"计数已达阈值"的行做 ONLINE→OFFLINE 跃迁 ────────────
+    //
     // R-30（DEEP_REVIEW 0ef3bbe）: 消除查询/更新间隙的误发。旧实现先 find 快照
     // staleExecutors，再 repo.update（同条件重查，行级正确），最后事件/通知循环
     // 遍历的是**先查的快照**——间隙内补了心跳（lastHeartbeat 新于 cutoff）的
@@ -2954,6 +3061,10 @@ export class ExecutorService {
     // 条件 UPDATE ... RETURNING：原子地拿到真正发生 ONLINE→OFFLINE 跃迁的行，
     // 事件/通知只对这部分扇出（与 scheduler COVER_EARLY 的条件 UPDATE+RETURNING
     // 同型），间隙误发从结构上消失。
+    //
+    // `consecutiveHeartbeatMisses >= :requiredMisses` 保证：即使两轮扫描之间
+    // 执行器恢复过一次心跳（heartbeat() 已把计数清零、lastHeartbeat 刷新），
+    // 它也不会被本条命中。
     const result = await this.repo
       .createQueryBuilder()
       .update(Executor)
@@ -2962,10 +3073,14 @@ export class ExecutorService {
         status: ExecutorStatus.OFFLINE,
         offlineReason: ExecutorOfflineReason.STALE_TIMEOUT,
       })
-      .where('status = :status AND "lastHeartbeat" < :cutoff', {
-        status: ExecutorStatus.ONLINE,
-        cutoff,
-      })
+      .where(
+        'status = :status AND "lastHeartbeat" < :cutoff AND "consecutiveHeartbeatMisses" >= :requiredMisses',
+        {
+          status: ExecutorStatus.ONLINE,
+          cutoff,
+          requiredMisses,
+        },
+      )
       .returning(["id", "appName", "address"])
       .execute();
 
@@ -2977,7 +3092,7 @@ export class ExecutorService {
     if (transitioned.length === 0) return;
 
     this.logger.warn(
-      `Marked ${transitioned.length} executor(s) as OFFLINE due to heartbeat timeout (${timeoutMs}ms)`,
+      `Marked ${transitioned.length} executor(s) as OFFLINE after ${requiredMisses} consecutive heartbeat misses (>${timeoutMs}ms each)`,
     );
     // FEAT-07: 状态落库后发布 executor.offline（每台恰一次，与下方通知同扇出位）。
     for (const exec of transitioned) {

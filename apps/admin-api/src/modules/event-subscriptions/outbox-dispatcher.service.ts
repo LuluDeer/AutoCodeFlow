@@ -304,6 +304,17 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
         },
       );
       await Promise.all(workers);
+      // NETOPT-G P1-9（可观测性）：整批被取满说明**可能**有积压——本轮只处理了
+      // OUTBOX_BATCH_SIZE 行，剩余留给下一轮（5s 后）。这本身是正常的分页行为
+      // （设计上就是"积压随 tick 自收敛"），但静默的代价是：本次生产事故复盘时
+      // 看到 4 条 `dispatchedAt=''` 的行，无法从日志判断"是刚入队待发"、
+      // "投递失败在退避"、还是"派发器卡住"——只能靠反推。加一行 WARN 把
+      // 饱和信号显式化，配合每行的失败/退避日志即可完整还原派发进度。
+      if (rows.length >= OUTBOX_BATCH_SIZE) {
+        this.logger.warn(
+          `Outbox scan saturated a full batch (${rows.length}); backlog may exceed ${OUTBOX_BATCH_SIZE} — remaining rows will be picked up next tick`,
+        );
+      }
       return rows.length;
     } catch (err: unknown) {
       this.logger.error(

@@ -49,6 +49,27 @@ export class Executor {
   // 遗留 P1-24：离线原因。null=在线或历史数据未标注。
   @Column({ type: "enum", enum: ExecutorOfflineReason, nullable: true })
   offlineReason: ExecutorOfflineReason | null;
+
+  /**
+   * NETOPT-G P1-7（判死迟滞）：连续被判超时的 sweep 轮数。
+   *
+   * 背景：修复前 `markStaleOffline` 是**单次墙钟判定**——只要一次扫描时
+   * `lastHeartbeat < now - 90s` 就立即 ONLINE→OFFLINE。跨境链路上单次心跳
+   * 失败率约 4.5%，且长尾 RTT 可达 153s（生产实测），于是"两次相邻失败 +
+   * 一次长尾"就会踩线判死。生产当天 10 次判死中只有 1 次（14:09）真由宿主
+   * 内核软锁引起，其余 9 次都是链路抖动导致的**误判**——每次误判都会触发
+   * 离线通知、把执行器从派发候选里剔除，并让运行中的任务被误标。
+   *
+   * 语义：sweep 每轮只**递增**该计数，达到 `staleOfflineConfirmations`
+   * （默认 2）才真正置 OFFLINE；任一心跳到达即清零（见 heartbeat()）。
+   * 计数值 >= 1 说明"已错过至少一轮"，可作为"疑似失联"的观测面。
+   *
+   * 为什么用列而不是内存 Map：admin-api 多副本部署（leaderGate 选主执行
+   * sweep），内存计数会在主从切换后丢失，导致新 leader 从 0 重新开始计数
+   * ——判死延迟不可预期。落库后语义跨副本一致。
+   */
+  @Column({ type: "int", default: 0 })
+  consecutiveHeartbeatMisses: number;
   @Column({ type: "enum", enum: ExecutorType, default: ExecutorType.PYTHON })
   type: ExecutorType;
   @Column({ nullable: true }) executorVersion: string;

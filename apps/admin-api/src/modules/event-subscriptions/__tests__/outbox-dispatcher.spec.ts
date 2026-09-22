@@ -319,6 +319,49 @@ describe("FEAT-19 OutboxDispatcher", () => {
       expect(OUTBOX_LEASE_MS).toBeGreaterThan(OUTBOX_MAX_ROW_PROCESSING_MS);
     });
 
+    // NETOPT-G P1-9：整批取满时 WARN（积压可见化）。
+    // 背景：生产事故复盘时看到 4 条 dispatchedAt='' 的行，无法从日志区分
+    // "刚入队待发"/"投递失败在退避"/"派发器卡住"——只能靠反推。饱和信号
+    // 显式化后，配合每行的失败/退避日志即可完整还原派发进度。
+    it("整批取满时 WARN 提示可能有积压（P1-9 可观测性）", async () => {
+      const full = Array.from({ length: OUTBOX_BATCH_SIZE }, (_, i) =>
+        makeRow({ id: `row-${i}`, leaseToken: `token-${i}` }),
+      );
+      dataSourceMock.query.mockResolvedValueOnce(full);
+      const { Logger } = await import("@nestjs/common");
+      const warn = jest
+        .spyOn(Logger.prototype, "warn")
+        .mockImplementation(() => {});
+
+      await outbox.scanOnce();
+
+      expect(
+        warn.mock.calls.some((c) =>
+          String(c[0]).includes("saturated a full batch"),
+        ),
+      ).toBe(true);
+      warn.mockRestore();
+    });
+
+    it("未取满时不 WARN（正常分页，不制造噪声）", async () => {
+      dataSourceMock.query.mockResolvedValueOnce([
+        makeRow({ id: "row-1", leaseToken: "token-1" }),
+      ]);
+      const { Logger } = await import("@nestjs/common");
+      const warn = jest
+        .spyOn(Logger.prototype, "warn")
+        .mockImplementation(() => {});
+
+      await outbox.scanOnce();
+
+      expect(
+        warn.mock.calls.some((c) =>
+          String(c[0]).includes("saturated a full batch"),
+        ),
+      ).toBe(false);
+      warn.mockRestore();
+    });
+
     it("claim 返回互不相交的行并为每行生成独立 token", async () => {
       const rows = [
         makeRow({ id: "row-1", leaseToken: "token-1" }),

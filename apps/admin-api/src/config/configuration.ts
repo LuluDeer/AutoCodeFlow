@@ -218,6 +218,16 @@ export default () => ({
       parseInt(process.env.EXECUTOR_HEARTBEAT_INTERVAL, 10) || 30000,
     heartbeatTimeoutMultiplier:
       parseInt(process.env.EXECUTOR_HEARTBEAT_TIMEOUT_MULTIPLIER, 10) || 3,
+    /**
+     * NETOPT-G P1-7（判死迟滞）：连续多少轮扫描命中超时才真正判 OFFLINE。
+     *
+     * 默认 2；置 1 可恢复修复前的"单次墙钟即判死"行为（回滚开关）。跨境链路
+     * 单次心跳失败率约 4.5%，单轮判定会把链路抖动误判为执行器掉线——生产当天
+     * 10 次判死里 9 次属此类误判。详见 executor.service 的
+     * resolveStaleConfirmations()。
+     */
+    staleOfflineConfirmations:
+      parseInt(process.env.EXECUTOR_STALE_OFFLINE_CONFIRMATIONS, 10) || 2,
     // EXE-VER-1: 执行器最低版本门禁 —— 空（默认）= 关闭，零行为变化。
     // 开启后 register 的 version 低于下限则 403；heartbeat 响应回显
     // minVersion/versionCompliant 供执行器侧漂移告警。比较语义见
