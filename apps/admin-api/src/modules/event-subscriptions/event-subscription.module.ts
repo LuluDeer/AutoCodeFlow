@@ -14,6 +14,8 @@ import {
   OutboxDispatcher,
   OUTBOUND_DISPATCHER_TOKEN,
 } from "./outbox-dispatcher.service";
+// D3-B-P1-3: webhook 订阅改向审计落证。
+import { AuditModule } from "../audit/audit.module";
 
 /**
  * FEAT-07: 出站事件订阅模块（新独占模块）。
@@ -38,6 +40,8 @@ import {
       EventOutbox,
       EventOutboxDeadLetter,
     ]),
+    // D3-B-P1-3: webhook 订阅改向审计落证。
+    AuditModule,
   ],
   controllers: [EventSubscriptionController],
   providers: [

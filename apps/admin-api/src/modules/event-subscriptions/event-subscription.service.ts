@@ -4,11 +4,16 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { ConfigService } from "@nestjs/config";
 import { Repository } from "typeorm";
 import { AuthUser } from "../../common/interfaces/auth-user.interface";
+import { createHash } from "node:crypto";
+// D3-B-P1-3: webhook 订阅改向审计落证（@Optional 同 application.service——
+// 既有单测装配未提供时降级为仅日志）。
+import { AuditService } from "../audit/audit.service";
 import { assertSafeHttpUrl } from "../../common/utils/safe-http.util";
 // A2-B: 属主校验的运行时证据落点
 import { recordOwnershipAssertion } from "../../common/guards/ownership-assertion.store";
@@ -46,6 +51,9 @@ export class EventSubscriptionService {
     @InjectRepository(EventSubscriptionDeadLetter)
     private readonly deadLetterRepo: Repository<EventSubscriptionDeadLetter>,
     private readonly config: ConfigService,
+    // D3-B-P1-3: 审计落证（@Optional 同上——存量 spec 未提供时降级）。
+    @Optional()
+    private readonly audit: AuditService | null = null,
   ) {}
 
   /**
@@ -62,6 +70,36 @@ export class EventSubscriptionService {
 
   private isAdmin(user: AuthUser): boolean {
     return user.role === "admin";
+  }
+
+  /** D3-B-P1-3: URL 哈希（不落明文 webhook URL，仅落 SHA-256 前 12 字符用于改向比对）。 */
+  private urlHash(url: string): string {
+    return createHash("sha256").update(url).digest("hex").slice(0, 12);
+  }
+
+  /** D3-B-P1-3: best-effort 审计落证（fail-open，审计故障不阻断主链）。 */
+  private async writeAudit(payload: {
+    user: AuthUser;
+    action: string;
+    resourceId: string;
+    detail?: Record<string, unknown>;
+  }): Promise<void> {
+    if (!this.audit) return;
+    try {
+      await this.audit.log({
+        userId: payload.user.id,
+        username: payload.user.username,
+        action: payload.action,
+        resource: "event_subscription",
+        resourceId: payload.resourceId,
+        detail: payload.detail,
+      });
+    } catch (err: unknown) {
+      this.logger.warn(
+        `Audit write failed for ${payload.action}: ` +
+          (err instanceof Error ? err.message : String(err)),
+      );
+    }
   }
 
   /** ADMIN/属主校验；不命中抛 403（防订阅 id 枚举语义与 404 混淆）。 */
@@ -132,6 +170,13 @@ export class EventSubscriptionService {
     this.logger.log(
       `Event subscription created id=${sub.id} events=[${sub.eventTypes.join(",")}] by user=${user.id}`,
     );
+    // D3-B-P1-3: 创建落证（URL 哈希，不落密钥明文）。
+    await this.writeAudit({
+      user,
+      action: "subscription.create",
+      resourceId: sub.id,
+      detail: { urlHash: this.urlHash(sub.url), eventTypes: sub.eventTypes },
+    });
     // 一次性回显：仅当服务端代生成时把明文 secret 带回给调用方。
     return {
       subscription: this.mask(sub),
@@ -165,6 +210,8 @@ export class EventSubscriptionService {
     const sub = await this.subRepo.findOne({ where: { id } });
     if (!sub) throw new NotFoundException(`Subscription ${id} not found`);
     this.assertCanManage(sub, user);
+    // D3-B-P1-3: 捕获改向前 URL 哈希（用于比对改向）。
+    const oldUrlHash = this.urlHash(sub.url);
     // O-2: 私网开关开启时更新（含改 URL）同样收窄为 ADMIN。
     if (dto.url !== undefined && dto.url !== sub.url) {
       this.assertPrivateNetworkWriteAllowed(user);
@@ -183,6 +230,17 @@ export class EventSubscriptionService {
     if (dto.enabled !== undefined) sub.enabled = dto.enabled;
 
     const saved = await this.subRepo.save(sub);
+    // D3-B-P1-3: 更新落证（新旧 URL 哈希，不落密钥明文）。
+    await this.writeAudit({
+      user,
+      action: "subscription.update",
+      resourceId: id,
+      detail: {
+        oldUrlHash,
+        newUrlHash: this.urlHash(saved.url),
+        urlChanged: oldUrlHash !== this.urlHash(saved.url),
+      },
+    });
     return this.mask(saved);
   }
 
@@ -191,6 +249,13 @@ export class EventSubscriptionService {
     if (!sub) throw new NotFoundException(`Subscription ${id} not found`);
     this.assertCanManage(sub, user);
     await this.subRepo.delete(id);
+    // D3-B-P1-3: 删除落证。
+    await this.writeAudit({
+      user,
+      action: "subscription.delete",
+      resourceId: id,
+      detail: { urlHash: this.urlHash(sub.url) },
+    });
     // dead_letters 由 FK ON DELETE CASCADE 级联清理。
   }
 
@@ -240,6 +305,20 @@ export class EventSubscriptionService {
 
   async deleteDeadLetter(deadLetterId: string): Promise<void> {
     await this.deadLetterRepo.delete(deadLetterId);
+    // D3-B-P1-3: 死信清理落证（系统路径，无操作人）。
+    if (this.audit) {
+      try {
+        await this.audit.log({
+          action: "subscription.deadLetter.delete",
+          resource: "event_subscription_dead_letter",
+          resourceId: deadLetterId,
+        });
+      } catch (err: unknown) {
+        this.logger.warn(
+          `Audit write failed: ` + (err instanceof Error ? err.message : String(err)),
+        );
+      }
+    }
   }
 
   async saveDeadLetter(row: EventSubscriptionDeadLetter): Promise<void> {
