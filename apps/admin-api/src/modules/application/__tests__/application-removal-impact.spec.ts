@@ -50,7 +50,11 @@ function makeService(
   // 直接注入私有依赖：本用例只验 describeRemovalImpact 的聚合语义
   (svc as unknown as { _taskService: unknown })._taskService =
     overrides.taskService === undefined
-      ? { findAll: jest.fn().mockResolvedValue({ items: overrides.tasks ?? [] }) }
+      ? {
+          findAll: jest
+            .fn()
+            .mockResolvedValue({ items: overrides.tasks ?? [] }),
+        }
       : overrides.taskService;
   return { svc, repo, deploymentRepo };
 }
@@ -93,7 +97,9 @@ describe("P0-3: ApplicationService.describeRemovalImpact", () => {
 
   it("任务数取不到时降级为 0，绝不因预览失败阻断删除路径", async () => {
     const { svc } = makeService({
-      taskService: { findAll: jest.fn().mockRejectedValue(new Error("db down")) },
+      taskService: {
+        findAll: jest.fn().mockRejectedValue(new Error("db down")),
+      },
     });
 
     const impact = await svc.describeRemovalImpact("app-1");

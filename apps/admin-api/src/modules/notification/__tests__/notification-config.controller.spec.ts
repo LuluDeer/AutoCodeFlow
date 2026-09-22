@@ -58,7 +58,10 @@ describe("NotificationConfigController", () => {
         { provide: NotificationConfigService, useFactory: mockConfigService },
         { provide: NotificationService, useFactory: mockNotificationService },
         { provide: NotificationSilenceService, useFactory: mockSilenceService },
-        { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
+        {
+          provide: AuditService,
+          useValue: { log: jest.fn().mockResolvedValue(undefined) },
+        },
       ],
     }).compile();
 
@@ -266,7 +269,10 @@ describe("NotificationConfigController", () => {
           { provide: SlackChannel, useFactory: stubChannel },
           { provide: WebhookChannel, useFactory: stubChannel },
           { provide: FeishuChannel, useFactory: stubChannel },
-          { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
+          {
+            provide: AuditService,
+            useValue: { log: jest.fn().mockResolvedValue(undefined) },
+          },
         ],
       }).compile();
       const realController = mod.get(NotificationConfigController);

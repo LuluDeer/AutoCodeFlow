@@ -443,9 +443,7 @@ export class ExecutorService {
    *
    * 解密失败与 `buildDispatchParams` 同策：抛错让派发失败，绝不静默裸跑。
    */
-  private buildDispatchSecrets(
-    task: Task,
-  ): Record<string, unknown> | null {
+  private buildDispatchSecrets(task: Task): Record<string, unknown> | null {
     try {
       return this.secretsCrypto.decryptForDispatch(task.secrets) ?? null;
     } catch (err: unknown) {

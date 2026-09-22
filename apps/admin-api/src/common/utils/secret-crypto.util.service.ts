@@ -91,11 +91,7 @@ export class SecretsCryptoService {
     incoming: Record<string, unknown>,
   ): Record<string, unknown> {
     const merged = mergeSecretsOnUpdate(stored, incoming, this.key);
-    if (
-      !this.key &&
-      Object.keys(merged).length > 0 &&
-      !this.warnOnce.fired
-    ) {
+    if (!this.key && Object.keys(merged).length > 0 && !this.warnOnce.fired) {
       this.warnOnce.fired = true;
       this.logger.warn(
         "Storing task secrets in plaintext (SEC_SECRETS_KEY unset) — set the key to encrypt at rest.",

@@ -1088,7 +1088,6 @@ describe("ApplicationService.remove — executor cleanup fanout (NETOPT-8③)", 
   });
 });
 
-
 // ---------------------------------------------------------------------------
 // D3-B-P1-2: 应用 CRUD/部署触发审计落证（红→绿回归）。
 // 装配一个 mock AuditService，断言 create/update/remove/deployFromGit 各落
@@ -1109,7 +1108,9 @@ describe("ApplicationService — D3-B-P1-2 审计落证", () => {
         { provide: ModuleRef, useValue: { get: jest.fn() } },
         {
           provide: AiService,
-          useValue: { analyzeAppHealth: jest.fn().mockResolvedValue({ aiAnalysis: "" }) },
+          useValue: {
+            analyzeAppHealth: jest.fn().mockResolvedValue({ aiAnalysis: "" }),
+          },
         },
         {
           provide: AiAnalysisService,
