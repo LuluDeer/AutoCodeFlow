@@ -15,7 +15,27 @@ const mockConfig = {
 jest.mock('../config', () => ({ config: mockConfig }));
 jest.mock('../logger', () => ({ logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn() } }));
 jest.mock('../admin-client', () => ({ initAdminClients: jest.fn() }));
-jest.mock('axios', () => ({ post: jest.fn().mockResolvedValue({ status: 404 }) }));
+// NETOPT-G P1-1：auth.ts 的 token 获取改经 `admin-http-agent` 的共享实例，
+// 该模块在**导入时**就调用 `axios.create(...)` 构造带 keepAlive agent 的实例。
+// 此前本 mock 只提供 `post`，缺 `create` 会让整条 import 链在加载期抛
+// "axios_1.default.create is not a function"（套件直接 failed to run）。
+// 补上 `create`（返回仅含所需方法的实例）以还原真实 axios 的形状。
+jest.mock('axios', () => {
+  const instance = {
+    post: jest.fn().mockResolvedValue({ status: 404 }),
+    get: jest.fn().mockResolvedValue({ status: 404 }),
+    request: jest.fn().mockResolvedValue({ status: 404 }),
+  };
+  return {
+    __esModule: true,
+    default: {
+      post: instance.post,
+      create: jest.fn(() => instance),
+    },
+    post: instance.post,
+    create: jest.fn(() => instance),
+  };
+});
 // config 路由新增了对 execute.ts（运行表/workDir 校验复用）与 fs（workDir
 // 存在性/symlink 检查）的依赖——按边界 mock，避免拉起 execute 全链。
 jest.mock('./execute', () => ({

@@ -3,6 +3,34 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 jest.mock('axios');
+/**
+ * NETOPT-G P1-1：auth.ts 的 token 获取已从**模块级默认 axios**（`axios.post`）
+ * 改为经 `admin-http-agent` 的**共享实例**（带 keepAlive 的 https agent +
+ * 最小重试）——因为默认实例对 https 目标等于每次冷 TLS 握手且零重试，而这是
+ * 执行器取 per-executor 令牌的唯一路径。
+ *
+ * 本 mock 把共享实例的 `post` 接到 axios automock 的同名方法上，使既有断言
+ * （URL / body / 请求配置）继续有效，同时新增 `create` 的 agent 断言面见
+ * admin-http-agent 自身的用例。
+ */
+jest.mock('../admin-http-agent', () => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const realAxios = require('axios');
+  const automocked = realAxios.default ?? realAxios;
+  return {
+    sharedAxios: { post: automocked.post, get: automocked.get, request: automocked.request },
+    MIN_ATTEMPTS: 3,
+    RETRY_BACKOFF_MS: 500,
+    DEFAULT_TIMEOUT_MS: 20_000,
+    httpStatusOf: (error: unknown) =>
+      (error as { response?: { status?: number } } | undefined)?.response?.status,
+    isTransientServerError: (error: unknown) => {
+      const s = (error as { response?: { status?: number } } | undefined)?.response
+        ?.status;
+      return typeof s === 'number' && s >= 500 && s <= 599;
+    },
+  };
+});
 jest.mock('../config', () => ({
   config: {
     token: '',
@@ -37,6 +65,8 @@ describe('auth token fetch', () => {
     const { getCurrentToken } = await import('./auth');
     const { config } = await import('../config');
     return {
+      // NETOPT-G P1-1：token 获取走共享实例，其 post 被 mock 接到 axios
+      // automock 的 post 上（见顶部 jest.mock('../admin-http-agent')）。
       post: axiosDefault.post as jest.Mock,
       getCurrentToken,
       config: config as Record<string, any>,
@@ -55,7 +85,7 @@ describe('auth token fetch', () => {
         address: 'localhost:3002',
         appName: 'test-executor',
       }),
-      { timeout: 10000, headers: {} },
+      { timeout: 20_000, headers: {} },
     );
   });
 
@@ -187,10 +217,16 @@ describe('forceTokenRefresh — R10 stale-credential self-heal', () => {
 
   it('degrades to a no-op while the fetch-failure backoff is active', async () => {
     const { post, getCurrentToken, forceTokenRefresh } = await freshAuth();
-    post.mockRejectedValueOnce(new Error('admin unreachable'));
+    // NETOPT-G P1-1：fetchToken 现带最小重试（3 次），因此一次失败的调用会
+    // 产生多次 POST。用 mockRejectedValue（而非 ...Once）让**所有**尝试都失败，
+    // 才能真实模拟"admin 不可达"——否则第 2 次尝试会拿到 resolved mock 而
+    // 假性成功，测不到 backoff 路径。
+    post.mockRejectedValue(new Error('admin unreachable'));
     // No dynamic token and STATIC_TOKEN is '' → getCurrentToken falls
     // through to the empty static token (dev-mode passthrough).
     await expect(getCurrentToken()).resolves.toBeFalsy();
+    const callsAfterFailedFetch = post.mock.calls.length;
+    expect(callsAfterFailedFetch).toBeGreaterThan(1);
 
     // Even though the next fetch WOULD succeed, the 30s backoff after a
     // failed fetch must short-circuit — concurrent 401s cannot spin.
@@ -199,7 +235,8 @@ describe('forceTokenRefresh — R10 stale-credential self-heal', () => {
       data: { code: 201, message: 'success', data: { token: 'late-token' } },
     });
     await expect(forceTokenRefresh()).resolves.toBeNull();
-    expect(post).toHaveBeenCalledTimes(1);
+    // backoff 生效：没有再发出任何新的 POST（调用次数停留在失败那次的总数）
+    expect(post).toHaveBeenCalledTimes(callsAfterFailedFetch);
   });
 
   it('returns the unchanged token when admin answers idempotently (caller must skip the retry)', async () => {
@@ -216,6 +253,57 @@ describe('forceTokenRefresh — R10 stale-credential self-heal', () => {
     // token and skips a pointless retry in that case.
     await expect(forceTokenRefresh()).resolves.toBe('same-token');
     expect(post).toHaveBeenCalledTimes(2);
+  });
+
+  // NETOPT-G P1-1：token 获取此前是**模块级默认 axios + 零重试**——而它是
+  // 执行器取 per-executor 令牌的唯一路径，失败一次会让所有依赖 token 的请求
+  // （心跳/pull/回调）连带全灭。以下是新增的重试语义回归锁。
+  describe('NETOPT-G P1-1 token 获取重试', () => {
+    it('瞬时连接故障后重试并成功取得 token（旧实现会直接失败）', async () => {
+      const { post, getCurrentToken } = await freshAuth();
+      post
+        .mockRejectedValueOnce(new Error('socket hang up'))
+        .mockResolvedValueOnce({
+          status: 201,
+          data: { code: 201, message: 'success', data: { token: 'retry-token' } },
+        });
+
+      await expect(getCurrentToken()).resolves.toBe('retry-token');
+      expect(post).toHaveBeenCalledTimes(2);
+    });
+
+    it('5xx 属于瞬时故障，同样重试', async () => {
+      const { post, getCurrentToken } = await freshAuth();
+      post
+        .mockRejectedValueOnce({ message: 'Request failed with status code 502', response: { status: 502 } })
+        .mockResolvedValueOnce({
+          status: 201,
+          data: { code: 201, message: 'success', data: { token: 'after-502' } },
+        });
+
+      await expect(getCurrentToken()).resolves.toBe('after-502');
+      expect(post).toHaveBeenCalledTimes(2);
+    });
+
+    it('4xx 是确定性拒绝：立即放弃，不做无谓重试', async () => {
+      const { post, getCurrentToken } = await freshAuth();
+      post.mockRejectedValue({
+        message: 'Request failed with status code 403',
+        response: { status: 403 },
+      });
+
+      await expect(getCurrentToken()).resolves.toBeFalsy();
+      // 只尝试一次——重试 403 不会让令牌变有效，徒增 admin 压力
+      expect(post).toHaveBeenCalledTimes(1);
+    });
+
+    it('重试耗尽后仍失败：回退到 static token（不抛出，保持既有降级语义）', async () => {
+      const { post, getCurrentToken } = await freshAuth();
+      post.mockRejectedValue(new Error('socket hang up'));
+
+      await expect(getCurrentToken()).resolves.toBeFalsy();
+      expect(post).toHaveBeenCalledTimes(3); // MIN_ATTEMPTS 上限，不是无限重试
+    });
   });
 });
 

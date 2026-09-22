@@ -3,12 +3,62 @@
  * This mirrors the auth.py implementation in executor-python.
  */
 import { Request, Response, NextFunction } from 'express';
-import axios from 'axios';
 import { timingSafeEqual } from 'node:crypto';
+import type { AxiosResponse } from 'axios';
 import { config } from '../config';
 import { buildAdminApiUrl } from '../admin-api-url';
 import { executorStartupId } from '../startup-identity';
 import { unwrapAdminResponseData, adoptExecutorTokenHash } from '../admin-envelope';
+import {
+  sharedAxios,
+  DEFAULT_TIMEOUT_MS,
+  RETRY_BACKOFF_MS,
+  httpStatusOf,
+} from '../admin-http-agent';
+
+/**
+ * NETOPT-G P1-1：token 获取的重试次数。
+ *
+ * 与 admin-client 的 MIN_ATTEMPTS 同值（3），但**不复用**其常量：两者语义不同
+ * （那边是"每副本一次 + 单台补偿"，这里是"对同一个 token 端点的纯重试"），
+ * 且 auth.ts 不应依赖 admin-client（会形成循环依赖，见 admin-http-agent.ts 注释）。
+ */
+const TOKEN_FETCH_ATTEMPTS = 3;
+
+/**
+ * 带最小重试的 token 获取（NETOPT-G P1）。
+ *
+ * 只对**瞬时**故障重试（连接层错误 / 5xx）；4xx 是确定性拒绝（令牌被吊销、
+ * 地址未注册等），重试无益且会给 admin 侧加压，直接上抛交给既有 catch 走
+ * static-token 回退。
+ *
+ * 注意：**不**做 failover——token 是 per-executor 的凭据，换一台 admin 取回来
+ * 的仍是同一份身份，与 admin-client 的多副本 failover 语义不同。
+ */
+async function fetchTokenWithRetry(
+  url: string,
+  body: Record<string, unknown>,
+  headers: Record<string, string>,
+): Promise<AxiosResponse<unknown>> {
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt < TOKEN_FETCH_ATTEMPTS; attempt++) {
+    try {
+      return await sharedAxios.post(url, body, {
+        timeout: DEFAULT_TIMEOUT_MS,
+        headers,
+      });
+    } catch (err: unknown) {
+      lastError = err;
+      const status = httpStatusOf(err);
+      const isDeterministic = typeof status === 'number' && status < 500;
+      const isLast = attempt === TOKEN_FETCH_ATTEMPTS - 1;
+      if (isDeterministic || isLast) throw err;
+      await new Promise((resolve) => setTimeout(resolve, RETRY_BACKOFF_MS));
+    }
+  }
+  // 循环要么 return、要么 throw；此行为类型完备性兜底。
+  throw lastError ?? new Error('token fetch failed');
+}
 
 // 5-2（audit-r4）：static token 改为**每次调用读取**——与 python 侧
 // _get_static_token() 每次读 env 的行为对齐。旧实现 `const STATIC_TOKEN =
@@ -90,7 +140,19 @@ async function fetchToken(): Promise<string | null> {
       headers['Authorization'] = `Bearer ${staticToken}`;
     }
 
-    const response = await axios.post(
+    // NETOPT-G P1-1（跨境链路韧性）：改用共享 axios 实例 + 最小重试。
+    //
+    // 旧实现是 `axios.post(...)`（模块级默认实例）——既**没有**带 keepAlive 的
+    // httpsAgent（对 https 目标等于每次冷 TLS 握手），也**没有**任何重试。而这是
+    // 执行器获取 per-executor 令牌的**唯一路径**：它失败一次，所有依赖 token 的
+    // 请求（心跳 / pull / 回调）就**连带全部失败**——故障面比心跳本身更大。
+    // 生产日志的 108 次 TLS 握手中断 + 211 次 socket hang up 有相当一部分落在
+    // 这条路径上（它以 30 分钟周期 + 30s 退避被调用，抖动窗口正撞其上）。
+    //
+    // 重试对 token 端点是安全的：admin-api 按 `startupId` 做了幂等——同
+    // startupId 重复请求返回**当前** token 而非轮换（见下方 R9 注释），因此
+    // 重试不会造成令牌轮换风暴。
+    const response = await fetchTokenWithRetry(
       buildAdminApiUrl(getAdminApiUrl(), '/api/executors/token'),
       {
         address: config.executorAddressPublic || config.executorAddress,
@@ -100,7 +162,7 @@ async function fetchToken(): Promise<string | null> {
         // CURRENT token instead of rotating (N4 register semantics).
         startupId: executorStartupId,
       },
-      { timeout: 10000, headers },
+      headers,
     );
 
     // R9: the token endpoint is a Nest POST — it answers 201, not 200. The
