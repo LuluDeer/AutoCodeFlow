@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.2](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.5.1...v1.5.2) (2026-09-22)
+
+
+### Bug Fixes
+
+* **cli:** exec tail 增加 60s 无数据帧空闲看门狗（深审 D1-P2-3） ([77d177c](https://github.com/LuluDeer/AutoCodeFlow/commit/77d177c9a34d731799a1a6bd8abc8d0a7aae5bd8))
+
 ## [1.5.1](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.5.0...v1.5.1) (2026-09-20)
 
 
