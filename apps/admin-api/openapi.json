@@ -4895,6 +4895,35 @@
         ]
       }
     },
+    "/applications/{id}/removal-impact": {
+      "get": {
+        "operationId": "ApplicationController_removalImpact",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Preview what deleting this application will destroy",
+        "tags": [
+          "Application Management"
+        ]
+      }
+    },
     "/applications/upload": {
       "post": {
         "operationId": "ApplicationController_upload",
@@ -7410,7 +7439,7 @@
           },
           "secrets": {
             "type": "object",
-            "description": "Task-level secrets (credential key/value pairs, stored encrypted at rest with AES-256-GCM when SEC_SECRETS_KEY is configured; plaintext fallback with a warning otherwise). Read paths are always masked. Dispatched to the executor env as AUTOFLOW_<KEY> merged over params.",
+            "description": "Task-level secrets (credential key/value pairs, stored encrypted at rest with AES-256-GCM when SEC_SECRETS_KEY is configured; plaintext fallback with a warning otherwise). Read paths are always masked with the literal ******. Dispatched both merged into params (AUTOFLOW_<KEY>, legacy channel) and as a separate payload field so the executor injects them under their ORIGINAL names (required by third-party SDKs that read canonical names). On PATCH the object is merged per key: an omitted key or a ****** leaf keeps the stored value, a null leaf deletes the key, any other value overwrites it; an explicit null for the whole field clears every secret.",
             "additionalProperties": {
               "type": "string"
             },
@@ -7620,7 +7649,7 @@
           },
           "secrets": {
             "type": "object",
-            "description": "Task-level secrets (credential key/value pairs, stored encrypted at rest with AES-256-GCM when SEC_SECRETS_KEY is configured; plaintext fallback with a warning otherwise). Read paths are always masked. Dispatched to the executor env as AUTOFLOW_<KEY> merged over params.",
+            "description": "Task-level secrets (credential key/value pairs, stored encrypted at rest with AES-256-GCM when SEC_SECRETS_KEY is configured; plaintext fallback with a warning otherwise). Read paths are always masked with the literal ******. Dispatched both merged into params (AUTOFLOW_<KEY>, legacy channel) and as a separate payload field so the executor injects them under their ORIGINAL names (required by third-party SDKs that read canonical names). On PATCH the object is merged per key: an omitted key or a ****** leaf keeps the stored value, a null leaf deletes the key, any other value overwrites it; an explicit null for the whole field clears every secret.",
             "additionalProperties": {
               "type": "string"
             },
