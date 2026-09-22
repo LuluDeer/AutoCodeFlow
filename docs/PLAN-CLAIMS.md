@@ -362,6 +362,7 @@
 | 1790000000031 | AddUserLastTotpCounter | NETOPT-5（第三轮） | 预分配（users 增 lastTotpCounter 可空 int：TOTP 重放防护——验证命中后条件 UPDATE `WHERE lastTotpCounter < :matched` 占位，拒绝已用 counter 的重放；ADD COLUMN IF NOT EXISTS 幂等） |
 | 1790000000032 | AddExecutorOfflineReason | ENG 审计遗留 P1-24（executors 离线原因区分） | 已落盘（executors 增 offlineReason 可空 enum：manual=优雅 markOffline / stale_timeout=心跳超时判死；心跳恢复置 NULL；ADD COLUMN IF NOT EXISTS 幂等） |
 | 1790000000033 | AddAppDeploymentVersion | ENG 审计阶段一 E-P1-R2（AppDeployment 乐观锁） | 本声明占用（app_deployments 增 version INTEGER NOT NULL DEFAULT 1 @VersionColumn；stop/upgrade/回滚 read-modify-write save 撞版本转 409；心跳改条件 UPDATE 不 bump version；ADD/DROP COLUMN IF [NOT] EXISTS 幂等；结构 spec 同批） |
+| 1790000000034 | DropExecutorInterpretersGinIndex | ENG 审计阶段一 E-P2-R1（死 GIN 索引） | 本声明占用（DROP INDEX IF EXISTS idx_executors_interpreters；全仓零 @> 查询，调度走内存 interpreterSatisfies；实体 @Index 声明同步移除；down 重建 GIN 供 revert；结构 spec 同批） |
 
 ## 变更日志
 
