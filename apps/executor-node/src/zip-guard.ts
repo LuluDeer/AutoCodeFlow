@@ -19,8 +19,8 @@ import { logger } from './logger';
  * Limits (env-tunable, security defaults):
  *  - ZIP_MAX_RATIO       uncompressed/compressed total ratio ≤ 100
  *  - ZIP_MAX_ENTRIES     CD entry count ≤ 10 000
- *  - ZIP_MAX_FILE_BYTES  single declared uncompressed size ≤ 1 GiB
- *  - ZIP_MAX_TOTAL_BYTES declared uncompressed total ≤ 2 GiB
+ *  - ZIP_MAX_FILE_BYTES  single declared uncompressed size ≤ 512 MiB
+ *  - ZIP_MAX_TOTAL_BYTES declared uncompressed total ≤ 1 GiB
  *  - ZIP_MAX_NESTING_DEPTH eagerly-probed nested zip levels (default 1;
  *    deeper members are charged by their declared compressed size in the
  *    parent and re-checked by these same rules at their own extraction)
@@ -49,8 +49,11 @@ export type ZipGuardViolation =
 export const ZIP_GUARD_DEFAULT_LIMITS: ZipGuardLimits = {
   maxRatio: 100,
   maxEntries: 10_000,
-  maxFileBytes: 1024 * 1024 * 1024, // 1 GiB
-  maxTotalUncompressedBytes: 2 * 1024 * 1024 * 1024, // 2 GiB
+  // 2026-09-23 OOM incident: lowered from 1 GiB / 2 GiB to keep the
+  // declared-size ceiling in the same order as the real disk budget the
+  // executor has on the shared host, and consistent with admin-api.
+  maxFileBytes: 512 * 1024 * 1024, // 512 MiB
+  maxTotalUncompressedBytes: 1024 * 1024 * 1024, // 1 GiB
   maxNestingDepth: 1,
 };
 

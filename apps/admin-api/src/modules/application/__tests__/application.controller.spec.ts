@@ -24,7 +24,7 @@ import { ApplicationService } from "../application.service";
 import { UserRole } from "../../users/entities/user.entity";
 // SEC-05: uploads are now vetted by the zip-bomb guard — tests need a real,
 // structurally-valid zip (the old 4-byte magic stub fails CD parsing).
-import { buildBenignZip } from "../../../common/utils/__tests__/zip-samples";
+import { buildBenignZip, buildZip } from "../../../common/utils/__tests__/zip-samples";
 
 function sign(secret: string, timestamp: string, body: Buffer): string {
   return (
@@ -46,6 +46,7 @@ describe("ApplicationController webhook", () => {
   let svc: {
     findByNameWithSecret: jest.Mock;
     update: jest.Mock;
+    recordUploadVersion: jest.Mock;
   };
   let deploymentSvc: {
     findRunningByApp: jest.Mock;
@@ -58,6 +59,7 @@ describe("ApplicationController webhook", () => {
     svc = {
       findByNameWithSecret: jest.fn(),
       update: jest.fn(),
+      recordUploadVersion: jest.fn().mockResolvedValue(undefined),
     };
     deploymentSvc = {
       findRunningByApp: jest.fn().mockResolvedValue([]),
@@ -270,15 +272,17 @@ describe("ApplicationController webhook HTTP raw body", () => {
   let svc: {
     findByNameWithSecret: jest.Mock;
     update: jest.Mock;
+    recordUploadVersion: jest.Mock;
   };
 
   beforeEach(async () => {
     jest.spyOn(Date, "now").mockReturnValue(fixedNow);
     svc = {
+      recordUploadVersion: jest.fn().mockResolvedValue(undefined),
       findByNameWithSecret: jest.fn().mockResolvedValue({
         id: "app-1",
         name: "my-app",
-        webhookSecret: "secret",
+        webhookSecret: "[FUNC]",
       }),
       update: jest.fn().mockResolvedValue({
         id: "app-1",
@@ -378,6 +382,7 @@ describe("ApplicationController upload — APP-002", () => {
     findByName: jest.Mock;
     create: jest.Mock;
     update: jest.Mock;
+    recordUploadVersion: jest.Mock;
   };
   let controller: ApplicationController;
   let rename: jest.SpyInstance;
@@ -387,6 +392,7 @@ describe("ApplicationController upload — APP-002", () => {
 
   beforeEach(() => {
     svc = {
+      recordUploadVersion: jest.fn().mockResolvedValue(undefined),
       findByName: jest.fn().mockResolvedValue(null),
       create: jest
         .fn()
@@ -442,11 +448,62 @@ describe("ApplicationController upload — APP-002", () => {
     }
   });
 
+  // NF-03: upload 现为 ADMIN-only 有主操作，需注入 AuthUser，service 才能过属主守卫。
+  const adminUser = {
+    id: 1,
+    username: "admin",
+    email: "admin@example.com",
+    role: UserRole.ADMIN,
+    isActive: true,
+  };
+
   const uploadArgs = () =>
     [
       { originalname: "app.zip", path: stagedPath } as Express.Multer.File,
       { name: "my-app", runtime: "python" },
+      adminUser,
     ] as const;
+
+  // P1-11 回归：upload 必须在 rename(copy) 之后从落地后的 zipPath 读 manifest。
+  // 旧实现读已不存在的 tmpPath → 恒 ENOENT → manifest 静默丢失，entrypoint/
+  // runtime 永不回填。此用例会先于修复失败（entrypoint 为 undefined）。
+  it("P1-11: 从落地后的 zip 回填 manifest 的 entrypoint/runtime", async () => {
+    process.env.API_BASE_URL = "https://api.example.com";
+    // 用真实含 manifest.json 的结构化 zip 覆盖 staging 文件。
+    const manifest = JSON.stringify({
+      runtime: "node",
+      entrypoint: "dist/main.js",
+    });
+    fs.writeFileSync(
+      stagedPath,
+      buildZip([
+        { name: "manifest.json", data: Buffer.from(manifest) },
+        { name: "main.js", data: Buffer.from("console.log(1)") },
+      ]),
+    );
+    // 桩 rename：把暂存文件真实移到目标 ZipPath，让 tmpPath 真正消失，
+    // 从而精确复现“rename 后读 tmpPath = ENOENT”的生产时序。
+    rename.mockImplementation(async (from: any, to: any) => {
+      fs.renameSync(from, to);
+    });
+
+    const app = await controller.upload(
+      { originalname: "app.zip", path: stagedPath } as Express.Multer.File,
+      // 表单未显式传 runtime/entrypoint —— 完全依赖 manifest 回填。
+      { name: "my-app" } as any,
+      adminUser,
+    );
+
+    expect(svc.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runtime: "node",
+        entrypoint: "dist/main.js",
+      }),
+      adminUser,
+    );
+    expect(app.runtime).toBe("node");
+    expect(app.entrypoint).toBe("dist/main.js");
+  });
 
   it("fails fast with an explicit error when API_BASE_URL is not configured", async () => {
     delete process.env.API_BASE_URL;
@@ -482,6 +539,7 @@ describe("ApplicationController upload — APP-002", () => {
       expect.objectContaining({
         packageUrl: expect.stringContaining("https://api.example.com/"),
       }),
+      adminUser,
     );
     // O-11: the staged temp file is consumed and renamed into uploads/packages.
     expect(rename).toHaveBeenCalledTimes(1);

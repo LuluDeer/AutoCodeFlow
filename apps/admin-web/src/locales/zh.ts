@@ -439,6 +439,7 @@ export default {
   'appList.upload.title': '上传应用',
   'appList.upload.nameTooltip': '应用的唯一名称，建议与 ZIP 内 manifest.json 中的 appName 保持一致。',
   'appList.upload.runtimeTooltip': '应用运行时环境，需与代码所依赖的环境一致。',
+  'appList.upload.versionTooltip': '本次上传要记录的版本号，如 1.0.1。留空则保持当前版本号不变。',
   'appList.upload.zip': 'ZIP 文件',
   'appList.upload.zipRequired': '请选择文件',
   'appList.upload.zipTooltip': '将应用代码及 manifest.json 打包为 ZIP 后上传，执行器会自动解压并部署。',

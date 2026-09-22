@@ -122,6 +122,11 @@ export function readManifestFromZip(zipPath: string): string | null {
     const dataStart = chosen.localOffset + 30 + localNameLen + localExtraLen;
     // 防御：声明的压缩大小不能离谱（manifest 文本上限 1MiB）
     if (chosen.cSize <= 0 || chosen.cSize > 1024 * 1024) return null;
+    // 声明的解压大小同样设上限——否则一个谎报 uSize 的条目会让我们把
+    // 极小压缩体膨胀成 GB 级堆分配（manifest 文本本就极小，1MiB 绰绰有余）。
+    // 2026-09-23 OOM 事故：此类无界 inflate 曾把 admin-api 撑爆。
+    const MANIFEST_MAX_BYTES = 1024 * 1024;
+    if (chosen.uSize > MANIFEST_MAX_BYTES) return null;
     const payload = readRange(zipPath, dataStart, chosen.cSize);
     if (payload.length < chosen.cSize) return null;
 
@@ -129,7 +134,7 @@ export function readManifestFromZip(zipPath: string): string | null {
     if (chosen.method === 8) {
       try {
         return inflateRawSync(payload, {
-          maxOutputLength: Math.max(chosen.uSize, 1024 * 1024),
+          maxOutputLength: MANIFEST_MAX_BYTES,
         }).toString("utf8");
       } catch {
         return null;

@@ -429,18 +429,26 @@ export default () => ({
     maxRatio: parseInt(process.env.ZIP_MAX_RATIO || "100", 10),
     // 条目数上限。
     maxEntries: parseInt(process.env.ZIP_MAX_ENTRIES || "10000", 10),
-    // 单文件解压后大小上限（1 GiB）。
+    // 单文件解压后大小上限（512 MiB，2026-09-23 由 1 GiB 下调）。
     maxFileBytes: parseInt(
-      process.env.ZIP_MAX_FILE_BYTES || String(1024 * 1024 * 1024),
+      process.env.ZIP_MAX_FILE_BYTES || String(512 * 1024 * 1024),
       10,
     ),
-    // 全包声明解压总量上限（2 GiB）——比率上限无法约束绝对膨胀。
+    // 全包声明解压总量上限（1 GiB，2026-09-23 由 2 GiB 下调）——比率上限
+    // 无法约束绝对膨胀。
     maxTotalUncompressedBytes: parseInt(
-      process.env.ZIP_MAX_TOTAL_BYTES || String(2 * 1024 * 1024 * 1024),
+      process.env.ZIP_MAX_TOTAL_BYTES || String(1024 * 1024 * 1024),
       10,
     ),
     // 嵌套 zip 积极探测层数（默认 1 层；更深层按其声明大小计入外层比率）。
     maxNestingDepth: parseInt(process.env.ZIP_MAX_NESTING_DEPTH || "1", 10),
+    // 单个嵌套 zip 成员解压进堆的上限（64 MiB）。嵌套成员是唯一"CD 声明
+    // 大小 → 真实堆分配"的路径，必须远小于 maxFileBytes，否则一条谎报尺寸
+    // 的嵌套条目就能把进程撑到 OOM（2026-09-23 事故根因）。
+    maxNestedInflateBytes: parseInt(
+      process.env.ZIP_MAX_NESTED_INFLATE_BYTES || String(64 * 1024 * 1024),
+      10,
+    ),
   },
   // SEC-05: 可选 clamd（ClamAV 守护进程）病毒扫描钩子。默认关闭——零影响；
   // 开启后上传包流式 INSTREAM 送扫，**fail-closed**（扫描不可达/超时/异常

@@ -429,6 +429,7 @@ export default {
   'appList.upload.title': 'Upload application',
   'appList.upload.nameTooltip': 'Unique app name; should match appName in the manifest.json inside the ZIP.',
   'appList.upload.runtimeTooltip': 'Runtime environment; must match what the code depends on.',
+  'appList.upload.versionTooltip': 'Version to record for this upload, e.g. 1.0.1. Leave blank to keep the current version.',
   'appList.upload.zip': 'ZIP file',
   'appList.upload.zipRequired': 'Please choose a file',
   'appList.upload.zipTooltip': 'Package the app code and manifest.json into a ZIP and upload; the executor will unpack and deploy automatically.',

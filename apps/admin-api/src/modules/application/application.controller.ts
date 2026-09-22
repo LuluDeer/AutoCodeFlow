@@ -215,11 +215,12 @@ export class ApplicationController {
   async upload(
     @UploadedFile() file: Express.Multer.File,
     @Body() body: UploadApplicationDto,
+    @CurrentUser() user: AuthUser,
   ) {
     if (!file) throw new BadRequestException("No file uploaded");
     // ARCH-003: name/runtime 经全局 ValidationPipe（whitelist + MaxLength）校验，
     // 不再用裸 @Body("name") 字符串绕过验证管道
-    const { name, runtime } = body;
+    const { name, runtime, version } = body;
     if (!name) throw new BadRequestException("Application name is required");
 
     // diskStorage: the package is staged on disk, not in file.buffer.
@@ -367,7 +368,9 @@ export class ApplicationController {
       let manifestEntrypoint: string | undefined;
       let manifestRuntime: string | undefined;
       try {
-        const manifestText = readManifestFromZip(tmpPath);
+        // BUGFIX：rename/copy 之后 tmpPath 已不存在，必须读落地后的 zipPath；
+        // 此前读 tmpPath 恒 ENOENT → manifest 解析静默失败，entrypoint 永不回填。
+        const manifestText = readManifestFromZip(zipPath);
         if (manifestText) {
           const parsed: unknown = JSON.parse(manifestText);
           if (parsed && typeof parsed === "object") {
@@ -401,24 +404,34 @@ export class ApplicationController {
       try {
         const existing = await this.svc.findByName(name);
         if (existing) {
-          app = await this.svc.update(existing.id, {
-            packageUrl,
-            ...(runtime ? { runtime } : {}),
-            ...(!runtime && manifestRuntime
-              ? { runtime: manifestRuntime }
-              : {}),
-            ...(manifestParsed ? { manifest: manifestParsed } : {}),
-            ...(manifestEntrypoint ? { entrypoint: manifestEntrypoint } : {}),
-          });
+          app = await this.svc.update(
+            existing.id,
+            {
+              packageUrl,
+              ...(runtime ? { runtime } : {}),
+              ...(!runtime && manifestRuntime
+                ? { runtime: manifestRuntime }
+                : {}),
+              // 上传即产生版本（方案 A）：表单显式提供的 version 覆盖既有值，
+              // 使本次上传在 application_versions 里成为可回滚的新版本。
+              ...(version ? { version } : {}),
+              ...(manifestParsed ? { manifest: manifestParsed } : {}),
+              ...(manifestEntrypoint ? { entrypoint: manifestEntrypoint } : {}),
+            },
+            user,
+          );
         } else {
-          app = await this.svc.create({
-            name,
-            packageUrl,
-            runtime: runtime || manifestRuntime || "python",
-            version: "1.0.0",
-            ...(manifestParsed ? { manifest: manifestParsed } : {}),
-            ...(manifestEntrypoint ? { entrypoint: manifestEntrypoint } : {}),
-          });
+          app = await this.svc.create(
+            {
+              name,
+              packageUrl,
+              runtime: runtime || manifestRuntime || "python",
+              version: version || "1.0.0",
+              ...(manifestParsed ? { manifest: manifestParsed } : {}),
+              ...(manifestEntrypoint ? { entrypoint: manifestEntrypoint } : {}),
+            },
+            user,
+          );
         }
       } catch (err: unknown) {
         // R9b: DB upsert failed after the file landed — best-effort unlink so
@@ -430,6 +443,9 @@ export class ApplicationController {
         }
         throw err;
       }
+      // 上传即产生版本（方案 A）：落 application_versions 快照，使 zip 上传也
+      // 出现在版本历史中、可回滚。best-effort——内部自吞异常，绝不影响上传结果。
+      await this.svc.recordUploadVersion(app, user);
       return app;
     } finally {
       // Always clean up the staged temp file. After a successful rename the

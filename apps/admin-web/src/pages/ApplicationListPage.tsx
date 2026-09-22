@@ -288,6 +288,10 @@ export default function ApplicationListPage() {
       const formData = new FormData();
       formData.append('name', values.name);
       formData.append('runtime', values.runtime || 'node');
+      // 上传即产生版本：随包提交版本号，后端据此抬 application.version 并落 application_versions 快照。
+      if (values.version) {
+        formData.append('version', String(values.version).trim());
+      }
       const file = values.file as { originFileObj?: File }[] | undefined;
       if (file?.[0]?.originFileObj) {
         formData.append('file', file[0].originFileObj);
@@ -762,6 +766,16 @@ export default function ApplicationListPage() {
             }}
           >
             <Select options={runtimeOptions} />
+          </Form.Item>
+          <Form.Item
+            name="version"
+            label={t('appList.field.version')}
+            tooltip={{
+              title: t('appList.upload.versionTooltip'),
+              icon: <InfoCircleOutlined />,
+            }}
+          >
+            <Input placeholder="1.0.1" />
           </Form.Item>
           <Form.Item
             name="file"

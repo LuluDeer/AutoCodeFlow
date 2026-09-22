@@ -43,6 +43,9 @@ import { AiService } from "../ai/ai.service";
 // D3-B-P1-2: 应用 CRUD/部署触发审计落证（@Optional 同 executor.service——
 // 既有单测装配未提供时降级为仅日志，主链不因审计故障中断）。
 import { AuditService } from "../audit/audit.service";
+// 上传即产生版本：upload 路径落 application_versions 快照。@Optional 注入
+// （既有单测装配未提供 repo 时跳过快照，不阻断上传主链）。
+import { ApplicationVersion } from "./entities/application-version.entity";
 
 /**
  * R4: Promise wrapper around async child_process.spawn. Aggregates
@@ -154,6 +157,11 @@ export class ApplicationService implements OnModuleInit {
     // D3-B-P1-2: 审计落证（@Optional 同上——存量 spec 未提供时降级）。
     @Optional()
     private readonly audit: AuditService | null = null,
+    // 上传即产生版本（方案 A）：落 application_versions 快照。@Optional
+    // 同上——存量 spec 未提供 repo 时跳过快照，不阻断上传主链。
+    @Optional()
+    @InjectRepository(ApplicationVersion)
+    private readonly versionRepo: Repository<ApplicationVersion> | null = null,
   ) {}
 
   private _taskService: import("../task/task.service").TaskService | null =
@@ -370,6 +378,67 @@ export class ApplicationService implements OnModuleInit {
       this.logger.warn(
         `Audit write failed for ${payload.action}: ` +
           (err instanceof Error ? err.message : String(err)),
+      );
+    }
+  }
+
+  /**
+   * 上传即产生版本（zip 上传路径）：把上传落地后的应用状态写入
+   * application_versions，使「上传新包」也在版本历史/回滚中可见——此前只有
+   * git 部署路径（AppDeploymentService.saveVersionSnapshot）落版本行，zip 上传
+   * 完全不留痕，用户上传新包后无法从版本历史回滚。
+   *
+   * sourceDeploymentId 置 null（区别于部署产生的版本行）。dedupe 键
+   * (applicationId, version)：同一版本号重复上传视为同一次发布，避免唯一索引
+   * 23505；best-effort——快照失败只 warn，绝不阻断上传主链。
+   */
+  async recordUploadVersion(
+    app: Application,
+    user?: { id: number } | null,
+  ): Promise<void> {
+    if (!this.versionRepo) return;
+    if (!app.version) return;
+    try {
+      const existing = await this.versionRepo.findOne({
+        where: {
+          applicationId: app.id,
+          version: app.version,
+          sourceDeploymentId: null,
+        },
+      });
+      if (existing) return;
+      await this.versionRepo.save(
+        this.versionRepo.create({
+          applicationId: app.id,
+          version: app.version,
+          gitCommit: app.gitCommit ?? null,
+          sourceDeploymentId: null,
+          status: "uploaded",
+          snapshot: {
+            id: app.id,
+            name: app.name,
+            description: app.description,
+            version: app.version,
+            runtime: app.runtime,
+            status: app.status,
+            gitRepo: app.gitRepo,
+            gitBranch: app.gitBranch,
+            gitCommit: app.gitCommit,
+            packageUrl: app.packageUrl,
+            manifest: app.manifest,
+            env: app.env,
+            entrypoint: app.entrypoint,
+          },
+          createdBy: user?.id != null ? String(user.id) : null,
+          description: "Package upload",
+        }),
+      );
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // 并发上传同一版本号时唯一索引 (applicationId, version) 会让后者 23505，
+      // 首个写入者已落行——静默即可，不阻断上传。
+      this.logger.warn(
+        `recordUploadVersion: failed to snapshot ${app.id}@${app.version}: ${msg}`,
       );
     }
   }
