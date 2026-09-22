@@ -643,4 +643,43 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
   }
 }
 
-console.log('renderer selftest: design tokens, accessibility, contrast, focus, layout, spacing, IPC anchors, F-21/F-22/F-37, DSK-05, PERF-DSK-01, SEC-DSK-01, EXP-04/05/06/09, ErrorBoundary, NETOPT-7⑤⑥ guards passed');
+// ── 阶段一设计遗留：Tab roving 键盘导航 + 状态持久化 ─────────────────
+// 原实现：Tab 按钮全部默认可 Tab 聚焦（无 roving tabindex）、无 ←/→ 穿梭；
+// 且 useState 恒为 'status'，重开窗口丢失上次停留页。以下守卫钉死两特性
+// 不回退（与既有守卫同为静态源码自检，渲染层无 DOM 测试设施）。
+{
+  // ① Roving tabindex：仅当前选中 Tab tabIndex=0，其余 -1
+  if (!/tabIndex=\{active \? 0 : -1\}/.test(app)) {
+    throw new Error('阶段一遗留：Tab 未实现 roving tabindex（仅当前 Tab 可 Tab 聚焦）');
+  }
+  // ② 方向键穿梭：←/→ 必须在 tablist 的 onKeyDown 上处理（Home/End 一并）
+  if (!app.includes("onKeyDown={onTabListKeyDown}")) {
+    throw new Error('阶段一遗留：tablist 未挂 onKeyDown（方向键穿梭丢失）');
+  }
+  for (const key of ["e.key === 'ArrowRight'", "e.key === 'ArrowLeft'", "e.key === 'Home'", "e.key === 'End'"]) {
+    if (!app.includes(key)) {
+      throw new Error(`阶段一遗留：Tab 键盘导航缺少 ${key}`);
+    }
+  }
+  // 方向键切换后焦点必须跟随（selectTab(next, true) 并 focus 目标按钮）
+  if (!/selectTab\(next, true\)/.test(app) || !/document\.getElementById\(meta\.id\)\?\.focus\(\)/.test(app)) {
+    throw new Error('阶段一遗留：方向键切换后焦点未跟随到新 Tab');
+  }
+  // ③ 持久化：初始态从 localStorage 恢复、切换时落盘
+  if (!app.includes("localStorage.getItem(TAB_STORAGE_KEY)")) {
+    throw new Error('阶段一遗留：Tab 初始态未从 localStorage 恢复');
+  }
+  if (!app.includes("localStorage.setItem(TAB_STORAGE_KEY, tab)")) {
+    throw new Error('阶段一遗留：Tab 切换未落盘 localStorage');
+  }
+  // 恢复值必须经白名单校验（不得渲染未知 Tab）
+  if (!/\(TAB_ORDER as string\[\]\)\.includes\(v\)/.test(app)) {
+    throw new Error('阶段一遗留：持久化 Tab 恢复值未做白名单校验（可渲染未知 Tab）');
+  }
+  // ④ 既有语义不得被重构破坏（与上方既有守卫同源，防重构误删）
+  for (const anchor of ['role="tablist"', 'role="tab"', 'aria-selected', 'role="tabpanel"', 'onSwitchTab']) {
+    if (!app.includes(anchor)) throw new Error(`阶段一遗留：App 重构丢失关键锚点 ${anchor}`);
+  }
+}
+
+console.log('renderer selftest: design tokens, accessibility, contrast, focus, layout, spacing, IPC anchors, F-21/F-22/F-37, DSK-05, PERF-DSK-01, SEC-DSK-01, EXP-04/05/06/09, ErrorBoundary, NETOPT-7⑤⑥, tab roving+persist guards passed');
