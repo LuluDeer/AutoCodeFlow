@@ -12,6 +12,7 @@ import { AiAnalysisService } from "../../ai/ai-analysis.service";
 import { UserRole } from "../../users/entities/user.entity";
 // NETOPT-8③: remove() 的执行器清理扇出（stop + uninstall）走 axios
 import { ExecutorService } from "../../executor/executor.service";
+import { AuditService } from "../../audit/audit.service";
 // ARCH-33（ADR-016）：控制面 pull 通道的测试替身（默认 push）
 import { controlPlaneMocks } from "../../../common/testing/control-plane-mocks";
 
@@ -1084,5 +1085,117 @@ describe("ApplicationService.remove — executor cleanup fanout (NETOPT-8③)", 
     ).resolves.toBeUndefined();
     expect(mockedAxiosPost).not.toHaveBeenCalled();
     expect(appRepo.remove).toHaveBeenCalled();
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// D3-B-P1-2: 应用 CRUD/部署触发审计落证（红→绿回归）。
+// 装配一个 mock AuditService，断言 create/update/remove/deployFromGit 各落
+// 对应 action（applicationId + 操作人）。
+// ---------------------------------------------------------------------------
+describe("ApplicationService — D3-B-P1-2 审计落证", () => {
+  let service: ApplicationService;
+  let appRepo: ReturnType<typeof makeRepo>;
+  let audit: { log: jest.Mock };
+
+  beforeEach(async () => {
+    appRepo = makeRepo();
+    audit = { log: jest.fn().mockResolvedValue(undefined) };
+    const module = await Test.createTestingModule({
+      providers: [
+        ApplicationService,
+        { provide: getRepositoryToken(Application), useValue: appRepo },
+        { provide: ModuleRef, useValue: { get: jest.fn() } },
+        {
+          provide: AiService,
+          useValue: { analyzeAppHealth: jest.fn().mockResolvedValue({ aiAnalysis: "" }) },
+        },
+        {
+          provide: AiAnalysisService,
+          useValue: { analyzeFailure: jest.fn().mockResolvedValue("") },
+        },
+        { provide: AuditService, useValue: audit },
+      ],
+    }).compile();
+    service = module.get(ApplicationService);
+  });
+
+  it("create：落证 application.create（含 userId 与 resourceId）", async () => {
+    appRepo.findOne.mockResolvedValue(null);
+    const saved = { id: "app-new", name: "Demo", ownerUserId: 9 };
+    appRepo.save.mockResolvedValue(saved);
+
+    await service.create({ name: "Demo" } as never, { id: 9 });
+
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: 9,
+        action: "application.create",
+        resource: "application",
+        resourceId: "app-new",
+      }),
+    );
+  });
+
+  it("update：落证 application.update（systemBypass 时不落证）", async () => {
+    const row = { id: "app-1", name: "Demo", ownerUserId: 9, env: null };
+    appRepo.findOne.mockResolvedValue(row);
+    appRepo.save.mockResolvedValue(row);
+
+    await service.update("app-1", { name: "Demo2" } as never, {
+      id: 9,
+      role: UserRole.ADMIN,
+    });
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: 9,
+        action: "application.update",
+        resourceId: "app-1",
+      }),
+    );
+
+    audit.log.mockClear();
+    await service.update("app-1", { name: "X" } as never, null, {
+      systemBypass: true,
+    });
+    expect(audit.log).not.toHaveBeenCalled();
+  });
+
+  it("remove：落证 application.delete（含 name detail）", async () => {
+    const row = { id: "app-1", name: "Demo", ownerUserId: 9, packageUrl: null };
+    appRepo.findOne.mockResolvedValue(row);
+    appRepo.remove.mockResolvedValue(row);
+
+    await service.remove("app-1", { id: 9, role: UserRole.ADMIN });
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: 9,
+        action: "application.delete",
+        resourceId: "app-1",
+        detail: expect.objectContaining({ name: "Demo" }),
+      }),
+    );
+  });
+
+  it("deployFromGit：落证 application.deploy（含 git 元信息）", async () => {
+    const row = { id: "app-1", name: "Demo", env: null };
+    appRepo.findOne.mockResolvedValue(row);
+    mockedLookup.mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
+    mockedSpawn.mockImplementation(() =>
+      fakeSpawn({ status: 0, stdout: "abc123" }),
+    );
+
+    await service.deployFromGit("app-1", "https://github.com/o/r.git", "main");
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "application.deploy",
+        resourceId: "app-1",
+        detail: expect.objectContaining({
+          gitRepo: "https://github.com/o/r.git",
+          gitBranch: "main",
+        }),
+      }),
+    );
   });
 });
