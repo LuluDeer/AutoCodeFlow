@@ -195,3 +195,79 @@ export function shouldNotifyExecutorStatus(
   if (next !== 'offline') return false;
   return prev !== undefined && prev !== 'offline' && prev !== 'stopped';
 }
+
+/**
+ * NETOPT-G P1-5（离线误报迟滞）：把「执行器是否真的掉线」从单点快照升级为
+ * 带迟滞的判定。
+ *
+ * ## 为什么需要（生产实证）
+ *
+ * 桌面端原本用 `/health/admin-status` 的单点 `heartbeatStatus === 'failed'`
+ * 直接判离线（executor-process.ts applyAdminStatus → notifyStatus('offline')
+ * → notifier 弹系统通知）。而 `heartbeatStatus` 是**最近一次**心跳的结果
+ * （heartbeat-state.ts 的 recordHeartbeat），一次瞬时抖动立刻把它置 failed。
+ *
+ * 生产日志（executor-2026-09-22.log）实测：全天 86 次"执行器离线"通知中，
+ * **72 次发生在某次心跳失败后的 0.0 秒内**。而中台的真实判死阈值是
+ * `heartbeatInterval × 3 = 90s`（admin-api executor.service.ts
+ * markStaleOffline）——也就是说这些"离线"绝大多数在中台侧根本没发生，
+ * 执行器一直是在线的。用户被一天 86 次无意义的弹窗打扰，且掩盖了真实故障。
+ *
+ * ## 判定口径（与中台阈值对齐）
+ *
+ * 只有**同时**满足下列之一才判离线：
+ *  - 连续 `OFFLINE_CONSECUTIVE_FAILURES` 次心跳失败（吸收单次抖动）；或
+ *  - 距上次成功心跳超过 `OFFLINE_SILENCE_MS`（90s，与中台
+ *    heartbeatInterval×3 同源）——覆盖"一次失败后长时间没有结果"的场景。
+ *
+ * 心跳成功即立刻清零计数并判在线（恢复不做迟滞：宁可早报恢复，也不要让
+ * 托盘长期显示离线）。
+ *
+ * 纯函数 + 显式传入 state，便于单测穷举；调用方（notifier）持有 state。
+ */
+export const OFFLINE_CONSECUTIVE_FAILURES = 3;
+export const OFFLINE_SILENCE_MS = 90_000;
+
+export interface HeartbeatHysteresisState {
+  /** 连续失败次数（成功即清零）。 */
+  consecutiveFailures: number;
+  /** 上次**成功**心跳的时刻（ms epoch）；从未成功过为 null。 */
+  lastSuccessAt: number | null;
+}
+
+export function initialHeartbeatHysteresisState(): HeartbeatHysteresisState {
+  return { consecutiveFailures: 0, lastSuccessAt: null };
+}
+
+/**
+ * 用一次心跳结果推进状态，并返回是否应判离线。
+ *
+ * `nowMs` 显式传入以便测试注入时间（生产传 Date.now()）。
+ */
+export function advanceHeartbeatHysteresis(
+  state: HeartbeatHysteresisState,
+  outcome: 'ok' | 'failed' | 'unknown',
+  nowMs: number,
+): { offline: boolean; state: HeartbeatHysteresisState } {
+  if (outcome === 'ok') {
+    // 恢复：立刻清零并判在线（不做恢复迟滞）。
+    return {
+      offline: false,
+      state: { consecutiveFailures: 0, lastSuccessAt: nowMs },
+    };
+  }
+
+  if (outcome === 'unknown') {
+    // 启动早期 / 端点不可用：不得据此判离线（与既有"维持现状"语义一致），
+    // 但也不推进失败计数。
+    return { offline: false, state };
+  }
+
+  const consecutiveFailures = state.consecutiveFailures + 1;
+  const silentTooLong =
+    state.lastSuccessAt !== null && nowMs - state.lastSuccessAt > OFFLINE_SILENCE_MS;
+  const offline =
+    consecutiveFailures >= OFFLINE_CONSECUTIVE_FAILURES || silentTooLong;
+
+  return { offline, state: { consecutiveFailures, lastSuccessAt: state.lastSuccessAt } };
+}
