@@ -106,13 +106,21 @@ function parseVersion(v: string): ParsedVersion | null {
   };
 }
 
-/** 解析 AUTOUPDATE_URL；空/非法返回 null（回落 GitHub 源）。 */
+/** 解析 AUTOUPDATE_URL；空/非法/非 https 返回 null（回落 GitHub 源）。 */
 function resolveGenericFeedUrl(): string | null {
   const raw = process.env.AUTOUPDATE_URL;
   if (!raw || raw.trim() === '') return null;
   try {
     const u = new URL(raw.trim());
-    if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+    // D2-P2-4: generic feed 只允许 https:。Linux 无签名兜底，http: 源可被中间人
+    // 替换安装包；一律拒绝（回落默认源），不静默放行。
+    if (u.protocol === 'http:') {
+      log.warn(
+        `updater: refusing insecure http: generic feed (${u.toString()}); require https: and falling back to default source`,
+      );
+      return null;
+    }
+    if (u.protocol !== 'https:') return null;
     return u.toString();
   } catch {
     return null;
