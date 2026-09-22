@@ -6,6 +6,7 @@ import {
   ConflictException,
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+import { OptimisticLockVersionMismatchError } from "typeorm";
 import { AppDeploymentService } from "../app-deployment.service";
 import {
   AppDeployment,
@@ -54,6 +55,8 @@ const makeRepo = (overrides: Partial<Record<string, jest.Mock>> = {}) => ({
   findAndCount: jest.fn(),
   create: jest.fn((d: any) => ({ ...d, id: "deploy-1" })),
   save: jest.fn((e: any) => Promise.resolve({ ...e, id: e.id ?? "deploy-1" })),
+  // E-P1-R2：心跳走轻量条件 UPDATE（不经 @VersionColumn save，避免每跳互撞）。
+  update: jest.fn().mockResolvedValue({ affected: 1 }),
   // O-5: 批量 UPDATE 走 createQueryBuilder 链（scheduler spec 同款链式 mock）。
   createQueryBuilder: jest.fn(() => ({
     update: jest.fn().mockReturnThis(),
@@ -1177,6 +1180,65 @@ describe("AppDeploymentService", () => {
     });
   });
 
+  // E-P1-R2：乐观锁并发回归——同一行两个 read-modify-write，后写撞 version
+  // 必须转 409（而非静默覆盖先写）。心跳走条件 UPDATE 不参与互撞。
+  describe("E-P1-R2 乐观锁（stop/upgrade 并发后写 → 409）", () => {
+    const base = {
+      id: "deploy-1",
+      status: DeploymentStatus.RUNNING,
+      executorAddress: mockExecutor.address,
+      pid: 1234,
+    };
+
+    it("stop：save 撞版本 → ConflictException(409)，不静默覆盖", async () => {
+      repo.findOne.mockResolvedValue({ ...base });
+      repo.save.mockRejectedValue(
+        new OptimisticLockVersionMismatchError("app_deployments", 1, 2),
+      );
+      mockAxiosPost.mockResolvedValue({ data: {} });
+
+      await expect(service.stop("deploy-1")).rejects.toBeInstanceOf(
+        ConflictException,
+      );
+      expect(repo.save).toHaveBeenCalled();
+    });
+
+    it("upgrade：save 撞版本 → ConflictException(409)", async () => {
+      repo.findOne.mockResolvedValue({ ...base });
+      repo.save.mockRejectedValue(
+        new OptimisticLockVersionMismatchError("app_deployments", 1, 2),
+      );
+
+      await expect(service.upgrade("deploy-1")).rejects.toBeInstanceOf(
+        ConflictException,
+      );
+      expect(repo.save).toHaveBeenCalled();
+    });
+
+    it("两次 save 同一行：先写成功后，后写撞版本被挡（顺序模拟并发）", async () => {
+      // 第一次 save 成功（模拟 A 用户 stop 落库、version+1）；
+      // 第二次 save 在旧版本实体上撞版本（模拟 B 用户基于旧快照 save）。
+      repo.findOne.mockResolvedValue({ ...base });
+      repo.save
+        .mockResolvedValueOnce({ ...base, status: DeploymentStatus.STOPPED })
+        .mockRejectedValueOnce(
+          new OptimisticLockVersionMismatchError("app_deployments", 1, 2),
+        );
+      mockAxiosPost.mockResolvedValue({ data: {} });
+
+      const ok = await service.stop("deploy-1");
+      expect(ok.status).toBe(DeploymentStatus.STOPPED);
+
+      // 第二个并发写基于同一旧快照再 save —— 撞版本 → 409。
+      repo.save.mockRejectedValue(
+        new OptimisticLockVersionMismatchError("app_deployments", 1, 2),
+      );
+      await expect(service.stop("deploy-1")).rejects.toBeInstanceOf(
+        ConflictException,
+      );
+    });
+  });
+
   describe("detectStuckDeployments", () => {
     it("marks stuck deployments and their version snapshots as failed", async () => {
       const stuckDeployment = {
@@ -1373,7 +1435,17 @@ describe("AppDeploymentService", () => {
       expect(deployment.status).toBe(DeploymentStatus.RUNNING);
       expect(deployment.pid).toBe(5678);
       expect(deployment.statusMessage).toBe("up and running");
-      expect(repo.save).toHaveBeenCalled();
+      // E-P1-R2：心跳走条件 UPDATE，不再走 save（不 bump version）。
+      expect(repo.save).not.toHaveBeenCalled();
+      expect(repo.update).toHaveBeenCalledWith(
+        { id: "deploy-1" },
+        expect.objectContaining({
+          status: DeploymentStatus.RUNNING,
+          pid: 5678,
+          statusMessage: "up and running",
+          lastHeartbeat: expect.any(Date),
+        }),
+      );
     });
 
     it("silently ignores heartbeat for unknown deployment", async () => {
@@ -1382,6 +1454,7 @@ describe("AppDeploymentService", () => {
         service.handleHeartbeat({ deploymentId: "ghost", status: "running" }),
       ).resolves.toBeUndefined();
       expect(repo.save).not.toHaveBeenCalled();
+      expect(repo.update).not.toHaveBeenCalled();
     });
 
     it("handles unknown status string without crashing", async () => {

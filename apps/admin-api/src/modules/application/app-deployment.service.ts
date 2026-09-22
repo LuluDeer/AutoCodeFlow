@@ -12,7 +12,12 @@ import {
 // ARCH-31: 批次活性租约的持有者标识（hostname:pid）
 import { hostname } from "os";
 import { InjectRepository } from "@nestjs/typeorm";
-import { Repository, LessThan, In } from "typeorm";
+import {
+  Repository,
+  LessThan,
+  In,
+  OptimisticLockVersionMismatchError,
+} from "typeorm";
 import axios from "axios";
 import { ConfigService } from "@nestjs/config";
 import { Cron } from "@nestjs/schedule";
@@ -233,6 +238,29 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     });
     if (!d) throw new NotFoundException(`Deployment ${id} not found`);
     return d;
+  }
+
+  /** E-P1-R2：用户动作（stop/upgrade/回滚）read-modify-write save 的乐观锁收口。
+   *  @VersionColumn 让 save 自动追加 AND version = :expected；并发后写撞版本时
+   *  TypeORM 抛 OptimisticLockVersionMismatchError，这里转 409 让客户端重载重试。
+   *  背景 trace / 心跳写不经过这里（心跳走条件 UPDATE，trace 自带 fail-open）。 */
+  private async saveWithOptimisticLock(
+    deployment: AppDeployment,
+  ): Promise<AppDeployment> {
+    try {
+      return await this.repo.save(deployment);
+    } catch (err: unknown) {
+      if (
+        err instanceof OptimisticLockVersionMismatchError ||
+        (err instanceof Error &&
+          err.name === "OptimisticLockVersionMismatchError")
+      ) {
+        throw new ConflictException(
+          `Deployment ${deployment.id} was modified concurrently; reload and retry`,
+        );
+      }
+      throw err;
+    }
   }
 
   async findById(id: string): Promise<AppDeployment> {
@@ -1133,7 +1161,8 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       deployment.triggerType = trigger.triggerType;
       deployment.operator = trigger.operator;
     }
-    await this.repo.save(deployment);
+    // E-P1-R2：乐观锁收口——并发后写撞版本转 409。
+    await this.saveWithOptimisticLock(deployment);
 
     this.pushDeployToExecutor(deployment, app, true).catch((err) => {
       this.logger.error(`Upgrade push failed: ${err.message}`);
@@ -1203,7 +1232,8 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
 
     deployment.status = DeploymentStatus.STOPPED;
     deployment.pid = null;
-    const saved = await this.repo.save(deployment);
+    // E-P1-R2：乐观锁收口——并发后写撞版本转 409。
+    const saved = await this.saveWithOptimisticLock(deployment);
     // QA1: mask the HTTP return; the raw entity was already persisted.
     return this.maskDeploymentForRead(saved);
   }
@@ -1237,7 +1267,20 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     if (dto.message) deployment.statusMessage = dto.message;
     deployment.lastHeartbeat = new Date();
 
-    await this.repo.save(deployment);
+    // E-P1-R2：心跳走轻量条件 UPDATE，不经过 @VersionColumn save——每次心跳
+    // 都 bump version 会与并发 stop/upgrade 的乐观锁互撞。仅写心跳相关标量列；
+    // 内存对象已按 dto 就地更新，下游版本快照/事件/灰度钩子读到一致值。
+    await this.repo.update(
+      { id: deployment.id },
+      {
+        ...(dto.status && statusMap[dto.status]
+          ? { status: statusMap[dto.status] }
+          : {}),
+        ...(dto.pid !== undefined ? { pid: dto.pid } : {}),
+        ...(dto.message ? { statusMessage: dto.message } : {}),
+        lastHeartbeat: deployment.lastHeartbeat,
+      },
+    );
 
     if (deployment.status === DeploymentStatus.RUNNING) {
       await this.markVersionSnapshotStatus(deployment, "released");
@@ -2352,7 +2395,8 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       deployment.triggerType = trigger.triggerType;
       deployment.operator = trigger.operator;
     }
-    await this.repo.save(deployment);
+    // E-P1-R2：乐观锁收口——并发后写撞版本转 409。
+    await this.saveWithOptimisticLock(deployment);
     await this.pushDeployToExecutor(deployment, pushApp, true);
   }
 

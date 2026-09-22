@@ -7,6 +7,7 @@ import {
   ManyToOne,
   JoinColumn,
   Index,
+  VersionColumn,
 } from "typeorm";
 import { Application } from "./application.entity";
 
@@ -140,4 +141,11 @@ export class AppDeployment {
 
   @CreateDateColumn() createdAt: Date;
   @UpdateDateColumn() updatedAt: Date;
+
+  /** E-P1-R2：乐观锁版本（迁移 1790000000033）。
+   *  read-modify-write 的用户动作（stop/upgrade/回滚）经 save 时由 TypeORM
+   *  自动追加 `AND version = :expected`，并发后写撞版本抛
+   *  OptimisticLockVersionMismatchError → service 转 409。心跳走独立
+   *  条件 UPDATE（不 bump version），避免每次心跳都与用户动作互撞。 */
+  @VersionColumn() version: number;
 }
