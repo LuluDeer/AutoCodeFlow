@@ -135,21 +135,41 @@ export class ArtifactsService {
     return { name, size: buf.length, sha256 };
   }
 
-  /** 打开产物用于流式下载。缺文件 → NotFound。 */
+  /** 流式计算文件 sha256（不整文件入内存）。 */
+  private hashFile(full: string): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const hash = crypto.createHash("sha256");
+      const input = fs.createReadStream(full);
+      input.on("error", reject);
+      input.on("data", (chunk) => hash.update(chunk));
+      input.on("end", () => resolve(hash.digest("hex")));
+    });
+  }
+
+  /** 打开产物用于流式下载。缺文件 → NotFound。
+   *  E-P2-P6：同时计算实际字节 sha256 返回，由下载路由写入 X-SHA256 响应头，
+   *  供安装/消费侧解压前做完整性核对。 */
   async openArtifact(
     execId: string,
     name: string,
-  ): Promise<{ stream: fs.ReadStream; fileSize: number; contentType: string }> {
+  ): Promise<{
+    stream: fs.ReadStream;
+    fileSize: number;
+    contentType: string;
+    sha256: string;
+  }> {
     const full = this.resolveArtifactPath(execId, name);
     if (!fs.existsSync(full)) {
       throw new NotFoundException("Artifact not found");
     }
     const fileSize = fs.statSync(full).size;
     const ext = path.extname(name).toLowerCase();
+    const sha256 = await this.hashFile(full);
     return {
       stream: fs.createReadStream(full),
       fileSize,
       contentType: CONTENT_TYPE_BY_EXT[ext] ?? "application/octet-stream",
+      sha256,
     };
   }
 
