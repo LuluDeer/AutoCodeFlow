@@ -26,8 +26,10 @@
 ### 与 node SDK 的 parity 关系
 
 本包（Python）有上述重试 + 熔断契约；``packages/autocodeflow-node-sdk`` 的
-``http-client.ts`` 是纯 axios 薄包装（``axios.create({timeout: 10_000})``，**无重试
-拦截器、无熔断**）。两侧行为**不对齐**：调用方不能假设 node SDK 会按本契约重试。
+``http-client.ts`` 已补齐同款指数退避重试 + ``CircuitBreaker``（B-4 对齐：
+``CircuitBreakerOpenError``、half-open 探测、``Retry-After`` 解析与可重试状态码
+集合均与本契约同构）。四端（python SDK / node SDK / CLI / MCP）的重试与熔断行为
+已对齐，调用方可按本契约预期 node SDK 侧的退避与熔断语义。
 """
 from __future__ import annotations
 
