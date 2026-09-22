@@ -318,6 +318,27 @@ html[data-theme='dark'] mark.log-search-hit {
 }
 
 /* ==========================================================================
+   阶段一设计遗留（设计建议#1）：主操作按钮白字对比度达 WCAG AA。
+   品牌绿 #22C55E 上白字仅 2.28:1；加深一档到 green-700 #15803d，
+   白字 5.02:1（亮/暗主题同源，均 ≥4.5:1）。品牌绿 #22C55E 仍保留在
+   --color-accent、BRAND_GRADIENT（Logo/头像）、SEMANTIC_COLORS.success
+   （状态点）——仅主操作按钮填充加深，不改品牌色相。
+   hover/active 取同色相随动更深档（白字仍 ≥4.5:1）。
+   用 !important 压过 antd cssinjs 运行时注入的同权重规则（本文件其它组件
+   覆盖同法）；同时覆盖 LoginPage 主按钮内联 BRAND_GRADIENT，使全站主按钮一致。
+   守卫：__tests__/primary-button-contrast.ux.test.ts 实测对比 + 值双向对齐。
+   ========================================================================== */
+.ant-btn-primary:not(.ant-btn-background-ghost):not(:disabled):not(.ant-btn-disabled) {
+  background: #15803d !important;
+}
+.ant-btn-primary:not(.ant-btn-background-ghost):not(:disabled):not(.ant-btn-disabled):hover {
+  background: #166534 !important;
+}
+.ant-btn-primary:not(.ant-btn-background-ghost):not(:disabled):not(.ant-btn-disabled):active {
+  background: #14532d !important;
+}
+
+/* ==========================================================================
    D-P2-13（设计审计 2026-09-22）：reduced-motion 兜底。
    照 apps/executor-desktop/src/renderer/styles/app.css:1892 同款——只压
    transition / animation / 平滑滚动，**不动焦点环**（--color-focus-ring 与
