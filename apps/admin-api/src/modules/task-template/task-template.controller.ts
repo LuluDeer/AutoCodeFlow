@@ -21,6 +21,8 @@ import { CreateTaskTemplateDto } from "./dto/create-task-template.dto";
 import { InstantiateTaskOverlayDto } from "./dto/instantiate-task-overlay.dto";
 import { TaskTemplate } from "./entities/task-template.entity";
 import { WriteGuard } from "../../common/decorators/write-guard.decorator";
+import { CurrentUser } from "../../common/decorators/current-user.decorator";
+import { AuthUser } from "../../common/interfaces/auth-user.interface";
 
 /**
  * CORE-03：任务模板端点（管理台，全部走全局 JwtAuthGuard）。
@@ -85,8 +87,12 @@ export class TaskTemplateController {
   })
   @ApiResponse({ status: 400, description: "Invalid config / key" })
   @ApiResponse({ status: 409, description: "Template key already exists" })
-  create(@Body() dto: CreateTaskTemplateDto): Promise<TaskTemplate> {
-    return this.svc.create(dto);
+  create(
+    @Body() dto: CreateTaskTemplateDto,
+    @CurrentUser() user: AuthUser,
+  ): Promise<TaskTemplate> {
+    // E-P2-S1：记录创建人 username。
+    return this.svc.create(dto, user.username);
   }
 
   @WriteGuard("task-template", { scope: "authenticated" })
@@ -132,8 +138,12 @@ export class TaskTemplateController {
     description: "Official template cannot be deleted",
   })
   @ApiResponse({ status: 404, description: "Template not found" })
-  async remove(@Param("id", ParseUUIDPipe) id: string): Promise<{ ok: true }> {
-    await this.svc.remove(id);
+  async remove(
+    @Param("id", ParseUUIDPipe) id: string,
+    @CurrentUser() user: AuthUser,
+  ): Promise<{ ok: true }> {
+    // E-P2-S1：属主或 ADMIN 才可删；NULL 历史行仅 ADMIN。
+    await this.svc.remove(id, { username: user.username, role: user.role });
     return { ok: true };
   }
 }
