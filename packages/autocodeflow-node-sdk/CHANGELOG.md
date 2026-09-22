@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.2](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.5.1...v1.5.2) (2026-09-22)
+
+
+### 版本对齐
+
+* lockstep 随 `@autocodeflow/cli` / autocodeflow-mcp-server 1.5.2 同批发布，本包无功能变更。
+
 ## [1.5.1](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.5.0...v1.5.1) (2026-09-20)
 
 

@@ -17,7 +17,7 @@ pip install --index-url http://<registry-pypi-host>/simple autoflow-sdk
 ```
 
 <!-- x-release-please-version -->
-当前 1.5.1，要求 Python ≥ 3.9。<!-- x-release-please-version -->
+当前 1.5.2，要求 Python ≥ 3.9。<!-- x-release-please-version -->
 
 运行时依赖 `httpx`、`pyyaml`、`pydantic>=2`（`autoflow_sdk.models` 的协议模型）。
 
@@ -144,7 +144,7 @@ config = TaskConfig(
 
 `TaskContext`、`get_logger`、`HttpClient`、`AsyncHttpClient`、`HttpClientError`、
 `TaskResult`、`ExecuteRequest`、`ExecuteResult`、`TaskConfig`、`CallbackClient`、
-`CallbackDisabledError`（`autoflow_sdk.__version__` 当前 `1.5.1`）。<!-- x-release-please-version -->
+`CallbackDisabledError`（`autoflow_sdk.__version__` 当前 `1.5.2`）。<!-- x-release-please-version -->
 
 ## 下一步
 
