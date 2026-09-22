@@ -42,6 +42,8 @@ security_opt:
 - admin-api/admin-web/nginx 等基础设施服务**未**默认加 `cap_drop`（nginx 需绑定 80 端口、admin-api 镜像当前以 root 启动 node），后续可单独评估；执行器作为最高风险面先行收敛。
 - 回滚：若某任务确需特殊 capability（罕见），在受控的 compose override 中按能力白名单 `cap_add` 单项放开，不要整体恢复 `cap_drop` 缺省。
 
+**任务沙箱 bwrap（DEEP-AUDIT D2-P1-1，2026-09-22）**：根 `docker-compose.yml` 的 `executor-python` 已显式设置 `TASK_SANDBOX=bwrap`——任务进程经 bubblewrap 用户命名空间（`--unshare-all --share-net`）+ 只读根文件系统 + PrivateTmp 隔离。bwrap 依赖内核 **unprivileged user namespaces**：部署前须在目标宿主验证该前提（容器内可 `unshare -U true`，或确认 `kernel.unprivileged_userns_clone=1`、未被 seccomp/AppArmor 策略禁用）。前提不满足（bwrap 未安装，或 userns 被内核/容器策略禁用）时执行器 **fail-closed**：任务直接失败（`failureReason=sandbox_unavailable`，前端 runbook 有处置指引），绝不静默降级为无沙箱运行——此时需安装 bubblewrap / 在宿主放开 unprivileged userns 后重启执行器。
+
 **真机验收清单**（留真机轮执行，本轮本机无 docker 环境未实测）：
 
 1. `docker compose build executor-node executor-python` 成功；

@@ -32,6 +32,7 @@
     "test:oidc-sso": "node scripts/oidc-sso-selftest.mjs",
     "test:nginx-sse": "node scripts/nginx-sse-selftest.mjs",
     "test:ha-compose": "node scripts/ha-compose-selftest.mjs",
+    "test:compose-sandbox": "node scripts/check-compose-sandbox.mjs",
     "test:pull-dispatch": "node scripts/pull-dispatch-selftest.mjs",
     "test:control-plane-pull": "node scripts/control-plane-pull-selftest.mjs",
     "test:qa05-callback-tier": "node scripts/qa05-callback-tier-selftest.mjs",
