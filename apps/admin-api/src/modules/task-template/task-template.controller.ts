@@ -23,6 +23,8 @@ import { TaskTemplate } from "./entities/task-template.entity";
 import { WriteGuard } from "../../common/decorators/write-guard.decorator";
 import { CurrentUser } from "../../common/decorators/current-user.decorator";
 import { AuthUser } from "../../common/interfaces/auth-user.interface";
+// D3-B-P2-2: 模板删除审计落证。
+import { AuditService } from "../audit/audit.service";
 
 /**
  * CORE-03：任务模板端点（管理台，全部走全局 JwtAuthGuard）。
@@ -41,7 +43,11 @@ import { AuthUser } from "../../common/interfaces/auth-user.interface";
 @ApiBearerAuth("JWT")
 @Controller("task-templates")
 export class TaskTemplateController {
-  constructor(private readonly svc: TaskTemplateService) {}
+  constructor(
+    private readonly svc: TaskTemplateService,
+    // D3-B-P2-2: 模板删除审计落证。
+    private readonly audit: AuditService,
+  ) {}
 
   @Get()
   @ApiOperation({
@@ -144,6 +150,13 @@ export class TaskTemplateController {
   ): Promise<{ ok: true }> {
     // E-P2-S1：属主或 ADMIN 才可删；NULL 历史行仅 ADMIN。
     await this.svc.remove(id, { username: user.username, role: user.role });
+    // D3-B-P2-2: 删除落证。
+    await this.audit.log({
+      username: user.username,
+      action: "task_template.delete",
+      resource: "task_template",
+      resourceId: id,
+    });
     return { ok: true };
   }
 }
