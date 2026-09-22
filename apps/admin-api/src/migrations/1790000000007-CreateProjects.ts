@@ -34,8 +34,9 @@ export class CreateProjects1790000000007 implements MigrationInterface {
     await queryRunner.query(`
       CREATE UNIQUE INDEX IF NOT EXISTS "UQ_projects_name" ON "projects" ("name")
     `);
-    // 种子默认项目：幂等（重复执行不覆盖、不报错）。已有自定义 Default
-    // 行（同 name）时 DO NOTHING——绝不静默改写用户数据。
+    // 种子默认项目：幂等（重复执行不覆盖、不报错）。ON CONFLICT ("id")
+    // 仅按主键 id 幂等——若已有同名 Default 行（不同 id），本 INSERT 不会
+    // 与其冲突，而是按固定 id 插入一行新行（不覆盖、不改写用户数据）。
     await queryRunner.query(
       `
       INSERT INTO "projects" ("id", "name", "description")
