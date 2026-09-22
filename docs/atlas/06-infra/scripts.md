@@ -5,7 +5,7 @@
 
 | 脚本 | 作用 | 关键点 |
 |---|---|---|
-| `dev.sh [start\|infra\|stop\|status\|clean]` | 开发环境一键起：infra compose → 各子项目 install → 迁移 → 并行起 4 服务 | 检查 node/npm/python3/docker；自动补 `.env`；打印默认登录 admin/admin123；`clean` 会 `down -v` 清卷 |
+| `dev.sh [start\|infra\|stop\|status\|clean]` | 薄转发壳（E-P2-P5 收口）：`start`→`make dev`、`infra`→`make infra-up`、`stop`→`make infra-down`、`status`→`make status`、`clean`→`make clean`；不再自维护第二套流程 | 行为一律以 Makefile 目标为准（真正的 infra compose → install → 迁移 → 并行起服务在 Makefile 内）；`clean` 经 `make clean` 清卷 |
 | `start-dev.sh` | 较老的启动脚本：根 compose 起 `postgres redis` → 起本地 PG/Redis 自检 → install → 起 admin-api + admin-web（不起执行器） | 容器名硬编码 `autoflow-postgres-1/autoflow-redis-1` |
 | `init-db.sh` | 初始化数据库：psql 连通检查 → `typeorm migration:run` → 检查并创建 admin 用户 | 连接参数经**环境变量前缀**传给 ts-node（防注入，勿改回内插写法）；密码取 `INITIAL_ADMIN_PASSWORD`（兜底 admin123） |
 | `deploy.sh` | 生产/测试部署（见 [deployment-and-ci.md](deployment-and-ci.md)） | `-e env` `-b build --no-cache` `-d` |
