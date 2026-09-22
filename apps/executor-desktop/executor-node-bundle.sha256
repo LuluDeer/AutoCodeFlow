@@ -1,4 +1,4 @@
-﻿# F-19（DEEP_REVIEW 0ef3bbe）：executor-desktop 内嵌 executor-node ncc bundle 的期望 SHA-256。
+# F-19（DEEP_REVIEW 0ef3bbe）：executor-desktop 内嵌 executor-node ncc bundle 的期望 SHA-256。
 #
 # 背景：resources/executor-node/index.js（约 2.1MB / 5 万行）原先是入库产物，与
 # apps/executor-node 源码构成双源，漏打即漂移。出库后：产物本身不再入库（见
