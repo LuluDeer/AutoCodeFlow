@@ -94,9 +94,10 @@ security_opt:
 | `SEC_SECRETS_KEY` | - | 任务级 secrets（tasks.secrets）落库加密密钥，32 字节 hex（`openssl rand -hex 32`）或 base64。留空 = 明文存储（启动 warn 一次，零破坏升级路径）；配置后写路径全加密（AES-256-GCM，`enc:v1:` 信封格式，明文/密文行可共存——存量行首次 update 自然转密文）。**生产环境必须配置并纳入密钥备份**：密钥丢失则密文 secrets 无法解密（任务派发报错，不静默裸跑）；轮换 = 更换 key 后对任务执行一次任意 update |
 | `ZIP_MAX_RATIO` | `100` | SEC-05 上传面 zip bomb 防护——解压比上限（中央目录声明的 uncompressed 总量 / compressed 总量），超出拒绝上传（400） |
 | `ZIP_MAX_ENTRIES` | `10000` | SEC-05——zip 条目数上限，超出拒绝上传（400） |
-| `ZIP_MAX_FILE_BYTES` | `1073741824` | SEC-05——单文件解压后大小上限（字节，默认 1 GiB），超出拒绝上传（400） |
-| `ZIP_MAX_TOTAL_BYTES` | `2147483648` | SEC-05——全包声明解压总量上限（字节，默认 2 GiB；比率上限无法约束绝对膨胀），超出拒绝上传（400） |
+| `ZIP_MAX_FILE_BYTES` | `536870912` | SEC-05——单文件解压后大小上限（字节，默认 512 MiB；2026-09-23 OOM 事故后由 1 GiB 下调），超出拒绝上传（400） |
+| `ZIP_MAX_TOTAL_BYTES` | `1073741824` | SEC-05——全包声明解压总量上限（字节，默认 1 GiB；比率上限无法约束绝对膨胀；2026-09-23 由 2 GiB 下调），超出拒绝上传（400） |
 | `ZIP_MAX_NESTING_DEPTH` | `1` | SEC-05——嵌套 zip 积极探测层数；更深层按其声明大小计入外层比率/总量（探测成本有界），执行器解压时按同规则再校验 |
+| `ZIP_MAX_NESTED_INFLATE_BYTES` | `67108864` | SEC-05——单个嵌套 zip 成员解压进内存的上限（字节，默认 64 MiB）。嵌套成员是唯一「CD 声明大小→真实堆分配」路径，必须远小于 `ZIP_MAX_FILE_BYTES`；2026-09-23 OOM 事故根因，超出即拒绝上传（400，violation `nested_zip_too_large`） |
 | `CLAMD_ENABLED` | `false` | SEC-05 可选 clamd（ClamAV 守护进程）病毒扫描钩子。**默认 false = 零影响**；`true` 时 application / executor-package 上传包流式 INSTREAM 送扫。**失败策略 = fail-closed**：扫描不可达/超时/异常一律拒绝上传（503），检出威胁 400（签名名仅入服务端日志）——未获 verdict 绝不放行（安全缺省） |
 | `CLAMD_HOST` / `CLAMD_PORT` | `127.0.0.1` / `3310` | SEC-05——clamd TCP 地址（`CLAMD_ENABLED=true` 时必达，否则上传全拒） |
 | `CLAMD_TIMEOUT_MS` | `10000` | SEC-05——单次扫描超时（毫秒），超时按 fail-closed 拒绝 |
