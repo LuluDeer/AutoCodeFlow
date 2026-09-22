@@ -109,7 +109,7 @@ describe("ArtifactsService（FEAT-05）", () => {
         sha256: sha(buf),
       });
 
-      const { stream, fileSize, contentType } = await svc.openArtifact(
+      const { stream, fileSize, contentType, sha256 } = await svc.openArtifact(
         EXEC_ID,
         "report.csv",
       );
@@ -118,6 +118,8 @@ describe("ArtifactsService（FEAT-05）", () => {
       expect(Buffer.concat(chunks).equals(buf)).toBe(true);
       expect(fileSize).toBe(buf.length);
       expect(contentType).toBe("text/csv");
+      // E-P2-P6：openArtifact 返回实际字节 sha256（下载路由据此写 X-SHA256 头）。
+      expect(sha256).toBe(sha(buf));
     });
     it("sha256 不符抛 BadRequest 且不留脏文件", async () => {
       const buf = Buffer.from("genuine");

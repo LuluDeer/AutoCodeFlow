@@ -139,13 +139,13 @@ export class ArtifactsController {
     @Param("name") name: string,
     @Res() res: Response,
   ): Promise<void> {
-    const { stream, fileSize, contentType } = await this.svc.openArtifact(
-      execId,
-      name,
-    );
+    const { stream, fileSize, contentType, sha256 } =
+      await this.svc.openArtifact(execId, name);
     res.setHeader("Content-Disposition", buildContentDisposition(name));
     res.setHeader("Content-Type", contentType);
     res.setHeader("Content-Length", fileSize);
+    // E-P2-P6：下发实际字节 sha256（与现有 artifact 路由约定一致，响应头优先）。
+    res.setHeader("X-SHA256", sha256);
     try {
       await pipeline(stream, res);
     } catch (err: unknown) {
