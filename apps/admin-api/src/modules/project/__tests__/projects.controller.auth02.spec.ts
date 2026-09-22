@@ -2,6 +2,7 @@ import { ForbiddenException } from "@nestjs/common";
 import { ProjectsController } from "../projects.controller";
 import { DEFAULT_PROJECT_ID } from "../project.entity";
 import { UserRole } from "../../users/entities/user.entity";
+import { AuditService } from "../../audit/audit.service";
 
 /**
  * AUTH-02：项目成员端点的 RBAC 姿态与默认项目特例。
@@ -27,11 +28,13 @@ describe("ProjectsController（AUTH-02 成员面）", () => {
       listRolesForUser: jest.fn().mockResolvedValue([]),
       resolveRole: jest.fn().mockResolvedValue(null),
     };
+    const audit = { log: jest.fn().mockResolvedValue(undefined) };
     const controller = new ProjectsController(
       service as never,
       access as never,
+      audit as unknown as AuditService,
     );
-    return { controller, service, access };
+    return { controller, service, access, audit };
   };
 
   const user = { id: 7, role: UserRole.USER };
@@ -65,14 +68,98 @@ describe("ProjectsController（AUTH-02 成员面）", () => {
 
   it("addMember/updateMember/removeMember：委托进 ProjectAccessService", async () => {
     const { controller, access } = makeController();
-    await controller.addMember("p1", { userId: 8, role: "editor" });
+    const actor = { id: 7, username: "admin", role: UserRole.ADMIN };
+    const req = { ip: "127.0.0.1" } as never;
+
+    await controller.addMember("p1", { userId: 8, role: "editor" }, actor, req);
     expect(access.addMember).toHaveBeenCalledWith("p1", 8, "editor");
 
-    await controller.updateMember("p1", 8, { role: "viewer" });
+    await controller.updateMember("p1", 8, { role: "viewer" }, actor, req);
     expect(access.updateMember).toHaveBeenCalledWith("p1", 8, "viewer");
 
-    await controller.removeMember("p1", 8);
+    await controller.removeMember("p1", 8, actor, req);
     expect(access.removeMember).toHaveBeenCalledWith("p1", 8);
+  });
+
+  // ---------------------------------------------------------------------
+  // D3-B-P1-1：项目/成员写路由审计落证（红→绿回归）。
+  // ---------------------------------------------------------------------
+  const actor = { id: 7, username: "admin", role: UserRole.ADMIN };
+  const req = { ip: "10.0.0.1" } as never;
+
+  it("create：落证 project.create（含 resourceId=新建项目 id）", async () => {
+    const { controller, service, audit } = makeController();
+    service.create.mockResolvedValue({ id: "new-p", name: "X" });
+    await controller.create({ name: "X" } as never, actor, req);
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: 7,
+        username: "admin",
+        action: "project.create",
+        resource: "project",
+        resourceId: "new-p",
+        ip: "10.0.0.1",
+      }),
+    );
+  });
+
+  it("update：落证 project.update", async () => {
+    const { controller, service, audit } = makeController();
+    service.update.mockResolvedValue({ id: "p1", name: "X" });
+    await controller.update("p1", { name: "Y" } as never, actor, req);
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "project.update",
+        resource: "project",
+        resourceId: "p1",
+      }),
+    );
+  });
+
+  it("remove：落证 project.delete", async () => {
+    const { controller, service, audit } = makeController();
+    service.remove.mockResolvedValue({ deleted: true });
+    await controller.remove("p1", actor, req);
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "project.delete",
+        resource: "project",
+        resourceId: "p1",
+      }),
+    );
+  });
+
+  it("addMember/updateMember/removeMember：落证 member.grant/update/revoke", async () => {
+    const { controller, access, audit } = makeController();
+    access.addMember.mockResolvedValue({});
+    access.updateMember.mockResolvedValue({});
+    access.removeMember.mockResolvedValue({ deleted: true });
+
+    await controller.addMember("p1", { userId: 8, role: "editor" }, actor, req);
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "member.grant",
+        resource: "project_member",
+        resourceId: "p1",
+        detail: expect.objectContaining({ targetUserId: 8, role: "editor" }),
+      }),
+    );
+
+    await controller.updateMember("p1", 8, { role: "viewer" }, actor, req);
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "member.update",
+        detail: expect.objectContaining({ targetUserId: 8, role: "viewer" }),
+      }),
+    );
+
+    await controller.removeMember("p1", 8, actor, req);
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "member.revoke",
+        detail: expect.objectContaining({ targetUserId: 8 }),
+      }),
+    );
   });
 
   it("myRoles：ADMIN 标记 + 本人成员关系列表（无主体则空）", async () => {
