@@ -304,6 +304,14 @@ services:
       EXECUTOR_SECRET: ${EXECUTOR_SECRET:?set EXECUTOR_SECRET in .env}
       WORK_DIR: /data/tasks
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      # DEEP-AUDIT D2-P1-1（2026-09-22）：任务沙箱显式启用 bwrap——bubblewrap
+      # 用户命名空间 + 只读根文件系统 + PrivateTmp 隔离任务进程（最强隔离层）。
+      # 此前 config.py 注释声称「生产容器由 compose 显式开启」而本文件实际未设置，
+      # 最强隔离层在生产路径默认关闭。前置：宿主/内核须允许容器内 unprivileged
+      # user namespaces；bwrap 二进制缺失或 userns 被禁时执行器 fail-closed
+      # （failureReason=sandbox_unavailable），绝不静默降级为无沙箱运行。
+      # 前置验证步骤见 docs/deployment.md「容器安全（SEC-07）」段。
+      TASK_SANDBOX: 'bwrap'
       PYPI_REGISTRY_URL: ${PYPI_REGISTRY_URL:-http://registry-pypi:8003/simple/}
       # ── python_task_multiversion：解释器缓存池与多版本 ──────────────
       # 任务可声明 runtimeVersion（Python 主.次版本）按需获取解释器；不声明
