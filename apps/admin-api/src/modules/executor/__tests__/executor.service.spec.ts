@@ -3673,12 +3673,16 @@ describe("ExecutorService (__tests__)", () => {
     it("derives heartbeatTimeoutMs = interval × multiplier and reports total/cap", async () => {
       configService.get
         .mockReturnValueOnce(15000) // executor.heartbeatInterval
-        .mockReturnValueOnce(4); // executor.heartbeatTimeoutMultiplier
+        .mockReturnValueOnce(4) // executor.heartbeatTimeoutMultiplier
+        .mockReturnValueOnce(3); // executor.staleOfflineConfirmations (P1-7)
       executorRepo.count.mockResolvedValueOnce(7);
       await expect(service.getRuntimeConfig()).resolves.toEqual({
         heartbeatIntervalMs: 15000,
         heartbeatTimeoutMultiplier: 4,
         heartbeatTimeoutMs: 60000,
+        // NETOPT-G P1-7：迟滞后的**真实**判死窗口 = 60s × 3 轮确认
+        staleOfflineConfirmations: 3,
+        effectiveOfflineAfterMs: 180000,
         listLimit: EXECUTOR_LIST_LIMIT,
         executorTotal: 7,
       });
@@ -3692,6 +3696,10 @@ describe("ExecutorService (__tests__)", () => {
       expect(cfg.heartbeatIntervalMs).toBe(30000);
       expect(cfg.heartbeatTimeoutMultiplier).toBe(3);
       expect(cfg.heartbeatTimeoutMs).toBe(90000);
+      // P1-7：默认 2 轮确认 → 真实窗口 180s（UI 必须按这个值展示，否则与后端
+      // 实际判死时机不符——正是本字段当初要消灭的前后端漂移）
+      expect(cfg.staleOfflineConfirmations).toBe(2);
+      expect(cfg.effectiveOfflineAfterMs).toBe(180000);
       expect(cfg.listLimit).toBe(500);
     });
   });
@@ -3701,10 +3709,24 @@ describe("ExecutorService (__tests__)", () => {
     // 遍历快照扇出」改为「条件 UPDATE ... RETURNING + 遍历真实跃迁行扇出」。
     // 事件/通知只对真正 ONLINE→OFFLINE 的行发出——更新间隙内已恢复心跳的执行器
     // 不在 RETURNING 结果里，不再被误发。此处以一次性 QB 桩注入跃迁行。
+    //
+    // NETOPT-G P1-7：本方法现在是**两步** UPDATE——① 对所有超时行递增
+    // consecutiveHeartbeatMisses（不改 status），② 只对计数达阈值的行做
+    // ONLINE→OFFLINE 跃迁。因此 createQueryBuilder 被调用两次：第一次是
+    // "递增"（无 RETURNING），第二次才是"跃迁"（带 RETURNING）。桩必须按顺序
+    // 喂两个 QB，否则第二次调用会拿到 undefined 而抛错。
     const stubTransition = (
       rows: Array<{ id: string; appName: string; address: string }>,
       affected = rows.length,
     ) => {
+      const missQb = {
+        update: jest.fn().mockReturnThis(),
+        set: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        execute: jest
+          .fn()
+          .mockResolvedValue({ affected: rows.length, raw: [] }),
+      };
       const qb = {
         update: jest.fn().mockReturnThis(),
         set: jest.fn().mockReturnThis(),
@@ -3712,18 +3734,35 @@ describe("ExecutorService (__tests__)", () => {
         returning: jest.fn().mockReturnThis(),
         execute: jest.fn().mockResolvedValue({ affected, raw: rows }),
       };
-      executorRepo.createQueryBuilder.mockReturnValueOnce(qb as any);
-      return qb;
+      executorRepo.createQueryBuilder
+        .mockReturnValueOnce(missQb as any)
+        .mockReturnValueOnce(qb as any);
+      return { qb, missQb };
+    };
+
+    /** NETOPT-G P1-7：配置读取顺序为 interval → multiplier → confirmations。 */
+    const stubStaleConfig = (confirmations = 2) => {
+      configService.get
+        .mockReturnValueOnce(30000) // heartbeatInterval
+        .mockReturnValueOnce(3) // timeoutMultiplier
+        .mockReturnValueOnce(confirmations); // staleOfflineConfirmations
     };
 
     it("marks heartbeat-timeout executors as OFFLINE via conditional UPDATE + RETURNING", async () => {
-      configService.get
-        .mockReturnValueOnce(30000) // heartbeatInterval
-        .mockReturnValueOnce(3); // timeoutMultiplier
-      const qb = stubTransition([
+      stubStaleConfig();
+      const { qb, missQb } = stubTransition([
         { id: "exec-1", appName: "app", address: "http://host" },
       ]);
       await service.markStaleOffline();
+      // 第一步：递增错失计数（不改 status）——单轮命中不再直接判死
+      expect(missQb.set).toHaveBeenCalledWith({
+        consecutiveHeartbeatMisses: expect.any(Function),
+      });
+      expect(missQb.where).toHaveBeenCalledWith(
+        expect.stringContaining("status = :status"),
+        expect.objectContaining({ status: ExecutorStatus.ONLINE }),
+      );
+      // 第二步：只对达阈值的行判死
       expect(qb.set).toHaveBeenCalledWith({
         status: ExecutorStatus.OFFLINE,
         // 遗留 P1-24：心跳超时判死落 stale_timeout，与优雅下线区分。
@@ -3733,13 +3772,18 @@ describe("ExecutorService (__tests__)", () => {
         expect.stringContaining("status = :status"),
         expect.objectContaining({ status: ExecutorStatus.ONLINE }),
       );
+      // P1-7：跃迁谓词必须含"连续错失达阈值"，否则单轮抖动仍会判死
+      expect(qb.where).toHaveBeenCalledWith(
+        expect.stringContaining("consecutiveHeartbeatMisses"),
+        expect.objectContaining({ requiredMisses: 2 }),
+      );
       expect(qb.returning).toHaveBeenCalledWith(["id", "appName", "address"]);
     });
 
     // FEAT-07 发布点：状态落库后 emit executor.offline，每台恰一次。
     it("emits executor.offline once per transitioned executor after the status write", async () => {
       resetRuntimeGauges();
-      configService.get.mockReturnValueOnce(30000).mockReturnValueOnce(3);
+      stubStaleConfig();
       const stale = {
         id: "exec-9",
         appName: "stale-app",
@@ -3771,7 +3815,7 @@ describe("ExecutorService (__tests__)", () => {
     // R-30: 更新间隙内已恢复心跳的执行器不被 UPDATE 命中 → 不进 RETURNING →
     // 不误发离线事件/通知（旧实现的快照扇出会把已恢复者一并误发）。
     it("R-30: 间隙内已恢复的执行器不在 RETURNING 结果中则不扇出（只对真实跃迁行扇出）", async () => {
-      configService.get.mockReturnValueOnce(30000).mockReturnValueOnce(3);
+      stubStaleConfig();
       // RETURNING 仅返回真正跃迁的行（已恢复的执行器不在其中）
       stubTransition([
         { id: "exec-still-stale", appName: "stale", address: "10.0.0.9:3002" },
@@ -3794,7 +3838,7 @@ describe("ExecutorService (__tests__)", () => {
     });
 
     it("R-30: RETURNING 零跃迁行时不发事件/通知", async () => {
-      configService.get.mockReturnValueOnce(30000).mockReturnValueOnce(3);
+      stubStaleConfig();
       stubTransition([], 0);
       const bus = { emit: jest.fn() };
       (service as unknown as { eventBus: unknown }).eventBus = bus;
@@ -3808,7 +3852,7 @@ describe("ExecutorService (__tests__)", () => {
     });
 
     it("emit failure is fail-open — markStaleOffline still resolves", async () => {
-      configService.get.mockReturnValueOnce(30000).mockReturnValueOnce(3);
+      stubStaleConfig();
       stubTransition([
         { id: "exec-9", appName: "a", address: "10.0.0.5:3002" },
       ]);
@@ -3821,6 +3865,125 @@ describe("ExecutorService (__tests__)", () => {
 
       await expect(service.markStaleOffline()).resolves.toBeUndefined();
       expect(bus.emit).toHaveBeenCalled();
+    });
+
+    // ── NETOPT-G P1-7：判死迟滞（跨境链路误判修复）──────────────────────
+    describe("P1-7 判死迟滞（连续 N 轮确认）", () => {
+      it("默认确认轮数为 2；单轮超时不判死（谓词要求计数 >= 2）", async () => {
+        stubStaleConfig(); // 默认 2
+        const { qb } = stubTransition([]);
+        await service.markStaleOffline();
+        // 单轮命中只递增计数，跃迁谓词要求 >= 2 → 本轮不判死
+        expect(qb.where).toHaveBeenCalledWith(
+          expect.stringContaining("consecutiveHeartbeatMisses"),
+          expect.objectContaining({ requiredMisses: 2 }),
+        );
+      });
+
+      it("staleOfflineConfirmations=1 退化为修复前的单轮判死（回滚开关）", async () => {
+        stubStaleConfig(1);
+        const { qb } = stubTransition([
+          { id: "exec-1", appName: "a", address: "h" },
+        ]);
+        await service.markStaleOffline();
+        expect(qb.where).toHaveBeenCalledWith(
+          expect.stringContaining("consecutiveHeartbeatMisses"),
+          expect.objectContaining({ requiredMisses: 1 }),
+        );
+      });
+
+      it("非法配置（0 / NaN）回退默认 2，绝不退化成永不判死", async () => {
+        for (const bad of [0, Number.NaN, -5]) {
+          jest.clearAllMocks();
+          configService.get
+            .mockReturnValueOnce(30000)
+            .mockReturnValueOnce(3)
+            .mockReturnValueOnce(bad as number);
+          const { qb } = stubTransition([]);
+          await service.markStaleOffline();
+          expect(qb.where).toHaveBeenCalledWith(
+            expect.stringContaining("consecutiveHeartbeatMisses"),
+            expect.objectContaining({ requiredMisses: 2 }),
+          );
+        }
+      });
+
+      it("心跳到达时清零计数（迟滞可自愈：偶发失败+恢复永不累积到阈值）", async () => {
+        // heartbeat() 必须把 consecutiveHeartbeatMisses 归零，否则计数会跨
+        // "失败—恢复—再失败"累积，迟滞反而变成延迟判死。
+        const e: any = {
+          id: "exec-x",
+          appName: "app",
+          address: "h:1",
+          status: ExecutorStatus.OFFLINE,
+          consecutiveHeartbeatMisses: 5,
+          offlineReason: ExecutorOfflineReason.STALE_TIMEOUT,
+        };
+        executorRepo.findOne.mockResolvedValue(e);
+        executorRepo.save.mockImplementation(async (x: any) => x);
+
+        await service.heartbeat({ address: "h:1" } as any, {} as any);
+
+        expect(executorRepo.save).toHaveBeenCalled();
+        const saved = executorRepo.save.mock.calls[0][0];
+        expect(saved.consecutiveHeartbeatMisses).toBe(0);
+      });
+    });
+
+    // ── NETOPT-G P1-6：状态机对称性（executor.online 事件）───────────────
+    describe("P1-6 executor.online（与非对称状态机修复）", () => {
+      const heartbeatWith = async (status: ExecutorStatus) => {
+        const e: any = {
+          id: "exec-1",
+          appName: "app",
+          address: "h:1",
+          status,
+        };
+        executorRepo.findOne.mockResolvedValue(e);
+        executorRepo.save.mockImplementation(async (x: any) => x);
+        const bus = { emit: jest.fn() };
+        (service as unknown as { eventBus: unknown }).eventBus = bus;
+        await service.heartbeat({ address: "h:1" } as any, {} as any);
+        return bus;
+      };
+
+      it("OFFLINE → ONLINE 的真实跃迁发布 executor.online", async () => {
+        const bus = await heartbeatWith(ExecutorStatus.OFFLINE);
+        expect(bus.emit).toHaveBeenCalledWith(
+          DOMAIN_EVENTS.EXECUTOR_ONLINE,
+          expect.objectContaining({
+            executorId: "exec-1",
+            appName: "app",
+            address: "h:1",
+            occurredAt: expect.any(String),
+          }),
+        );
+      });
+
+      it("已在线的执行器不发布（心跳是 30s 高频路径，无条件 emit 会打爆 outbox）", async () => {
+        const bus = await heartbeatWith(ExecutorStatus.ONLINE);
+        expect(bus.emit).not.toHaveBeenCalled();
+      });
+
+      it("事件发布失败是 fail-open：heartbeat 仍正常返回", async () => {
+        const e: any = {
+          id: "exec-1",
+          appName: "app",
+          address: "h:1",
+          status: ExecutorStatus.OFFLINE,
+        };
+        executorRepo.findOne.mockResolvedValue(e);
+        executorRepo.save.mockImplementation(async (x: any) => x);
+        const bus = {
+          emit: jest.fn(() => {
+            throw new Error("bus exploded");
+          }),
+        };
+        (service as unknown as { eventBus: unknown }).eventBus = bus;
+        await expect(
+          service.heartbeat({ address: "h:1" } as any, {} as any),
+        ).resolves.toBeDefined();
+      });
     });
   });
 

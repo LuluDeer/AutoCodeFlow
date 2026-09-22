@@ -52,6 +52,22 @@ export const DOMAIN_EVENTS = {
    */
   EXECUTOR_OFFLINE: "executor.offline",
   /**
+   * NETOPT-G P1-6（状态机对称性）：执行器由非 ONLINE 恢复为 ONLINE 后发布。
+   *
+   * 为什么补这一条：修复前状态机是**非对称**的——OFFLINE 有事件 + 通知，而
+   * `heartbeat()` 里 `e.status = ONLINE` 是无条件赋值且**不发任何事件**。后果
+   * 有两层：
+   *   1. 排障困难：`event_outbox` 里永远只有 offline，看不到恢复时刻，无法
+   *      还原「判死 → 恢复」的完整时间线（本次生产事故复盘中就卡在这里——需要
+   *      靠执行器侧日志反推中台何时把它改回 ONLINE）；
+   *   2. 订阅方（通知 / 外部 webhook）只能看到"掉线"，看不到"回来了"。
+   *
+   * 语义与 executor.offline 对称：**状态落库后** emit、fail-open、载荷同形。
+   * 只在**真实跃迁**（prev !== ONLINE → ONLINE）时发，避免每 30s 心跳刷一条
+   * 事件（心跳是高频路径，无脑 emit 会把 outbox 打爆）。
+   */
+  EXECUTOR_ONLINE: "executor.online",
+  /**
    * FEAT-07: 应用部署进入 RUNNING 终态（心跳确认）后发布（状态落库后
    * emit，fail-open）。失败类部署态不单列事件——与 execution.* 的
    * 「终态才发」语义一致，部署失败经既有通知渠道外发。
@@ -71,6 +87,12 @@ export interface ExecutorOfflineEventPayload {
   address: string;
   occurredAt: string;
 }
+
+/**
+ * NETOPT-G P1-6: executor.online 载荷——与 ExecutorOfflineEventPayload 同形，
+ * 便于订阅方用同一套解析逻辑处理两个方向。
+ */
+export type ExecutorOnlineEventPayload = ExecutorOfflineEventPayload;
 
 /**
  * FEAT-07: deployment.completed 载荷（全原始类型，common 层不 import 实体）。
