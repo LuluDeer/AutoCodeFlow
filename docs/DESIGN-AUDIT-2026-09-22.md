@@ -27,6 +27,20 @@
 | D-P2-15 | P2 | `--color-ring` 为语义错乱死令牌 | ✅ | 4832f71e |
 | D-P2-16 | P2 | 品牌渐变内联重复 5 处，未收 token | ✅ | 6e28d211 |
 
+## 阶段一设计遗留（2026-09-22 收尾）
+
+审计后的设计建议落地收尾（本轮另起四条提交）：
+
+| 条目 | 状态 | commit |
+|---|---|---|
+| 主按钮白字对比度（设计建议#1）：填充加深到 #15803d（白字 5.02:1，双主题同源），品牌绿在渐变/状态点保留；primary-button-contrast.ux 守卫实测对比+双向对齐 | ✅ | 5f8deab |
+| renderer Tab roving ←/→/Home/End 穿梭 + 焦点跟随、Tab 状态 localStorage 持久化；renderer.selftest 追加结构性守卫 | ✅ | 971ecf53 |
+| renderer i18n：评估为约 5600 字硬编码中文、无 i18n 基建，工作量大——本轮只写建议不动（见下） | 📝 建议 | — |
+| 768–1024px 中宽屏头部：藏时钟、面包屑可收缩+省略号；midwidth-header.ux 守卫 | ✅ | 88b16fa6 |
+| 文档收尾：README 7 处 pnpm→npm；scripts.md 的 dev.sh 改为薄转发描述 | ✅ | 8cf50e18 |
+
+> renderer i18n 建议（未做）：desktop renderer 无 i18next/语言切换基建，5 个页面约 5600 字中文（ConfigPage 占 2844）。宜按 admin-web 既定「未迁移页逐页迁」路线，先抽 tab/标题栏等外层 chrome，再逐页迁移；本轮 desktop 非主交付面，故不展开。
+
 ---
 
 ## P0
