@@ -157,6 +157,40 @@ function main(): void {
   assert.equal(isNewerVersion(undefined as any, '1.0.0'), false, 'undefined remote');
   assert.equal(isNewerVersion(42 as any, '1.0.0'), false, 'number remote');
 
+  // ── D2-P2-4: generic feed 只允许 https: ──────────────────────
+  // 复刻 resolveGenericFeedUrl 的协议白名单（updater.ts 不可直接 import——
+  // 模块加载即拉 electron）。这里既跑行为断言，又结构守卫源文件确实含
+  // http: 拒绝分支，防止后续改动静默放开 http:。
+  const feedProtocolGuard = (raw: string | undefined): string | null => {
+    if (!raw || raw.trim() === '') return null;
+    try {
+      const u = new URL(raw.trim());
+      if (u.protocol === 'http:') return null; // D2-P2-4 拒绝
+      if (u.protocol !== 'https:') return null;
+      return u.toString();
+    } catch {
+      return null;
+    }
+  };
+  assert.equal(
+    feedProtocolGuard('https://updates.example.com/feed/latest.yml'),
+    'https://updates.example.com/feed/latest.yml',
+    'D2-P2-4: https feed accepted',
+  );
+  assert.equal(
+    feedProtocolGuard('http://updates.example.com/feed/latest.yml'),
+    null,
+    'D2-P2-4: http feed rejected (no signature fallback on Linux)',
+  );
+  assert.equal(feedProtocolGuard(''), null, 'D2-P2-4: empty feed → null');
+  assert.equal(feedProtocolGuard(undefined), null, 'D2-P2-4: unset feed → null');
+  assert.equal(feedProtocolGuard('ftp://updates.example.com/x'), null, 'D2-P2-4: non-http(s) → null');
+  // 结构守卫：源文件必须保留 http: 拒绝分支。
+  assert.ok(
+    source.includes("u.protocol === 'http:'") && source.includes('refusing insecure http:'),
+    'D2-P2-4: updater.ts lost the http: generic-feed rejection branch',
+  );
+
   console.log('updater selftest: all assertions passed (pure segment in sync)');
 }
 
