@@ -364,6 +364,7 @@
 | 1790000000033 | AddAppDeploymentVersion | ENG 审计阶段一 E-P1-R2（AppDeployment 乐观锁） | 本声明占用（app_deployments 增 version INTEGER NOT NULL DEFAULT 1 @VersionColumn；stop/upgrade/回滚 read-modify-write save 撞版本转 409；心跳改条件 UPDATE 不 bump version；ADD/DROP COLUMN IF [NOT] EXISTS 幂等；结构 spec 同批） |
 | 1790000000034 | DropExecutorInterpretersGinIndex | ENG 审计阶段一 E-P2-R1（死 GIN 索引） | 本声明占用（DROP INDEX IF EXISTS idx_executors_interpreters；全仓零 @> 查询，调度走内存 interpreterSatisfies；实体 @Index 声明同步移除；down 重建 GIN 供 revert；结构 spec 同批） |
 | 1790000000035 | AddTaskTemplateCreatedBy | ENG 审计阶段一 E-P2-S1（模板删除归属） | 本声明占用（task_templates 增 createdBy varchar(100) 可空；create 记录 JWT username；remove 改属主或 ADMIN 可删，NULL 历史行仅 ADMIN；ADD/DROP COLUMN IF [NOT] EXISTS 幂等；结构 spec 同批） |
+| 1790000000036 | AddExecutorHeartbeatMisses | NETOPT-G P1-7（跨境链路判死迟滞） | 本声明占用（executors 增 consecutiveHeartbeatMisses integer NOT NULL DEFAULT 0：markStaleOffline 由单次墙钟判定改为连续 N 轮确认——每轮只递增计数、达 staleOfflineConfirmations（默认 2）才判死，心跳到达即清零可自愈；DEFAULT 0 保证存量行上线不被误判；ADD/DROP COLUMN IF [NOT] EXISTS 幂等；结构 spec 同批） |
 
 ## 变更日志
 
