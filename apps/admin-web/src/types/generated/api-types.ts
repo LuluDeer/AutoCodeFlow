@@ -2074,6 +2074,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/applications/{id}/removal-impact": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Preview what deleting this application will destroy */
+        get: operations["ApplicationController_removalImpact"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/applications/upload": {
         parameters: {
             query?: never;
@@ -3063,7 +3080,7 @@ export interface components {
             alarmChannels?: string[];
             params?: Record<string, never>;
             /**
-             * @description Task-level secrets (credential key/value pairs, stored encrypted at rest with AES-256-GCM when SEC_SECRETS_KEY is configured; plaintext fallback with a warning otherwise). Read paths are always masked. Dispatched to the executor env as AUTOFLOW_<KEY> merged over params.
+             * @description Task-level secrets (credential key/value pairs, stored encrypted at rest with AES-256-GCM when SEC_SECRETS_KEY is configured; plaintext fallback with a warning otherwise). Read paths are always masked with the literal ******. Dispatched both merged into params (AUTOFLOW_<KEY>, legacy channel) and as a separate payload field so the executor injects them under their ORIGINAL names (required by third-party SDKs that read canonical names). On PATCH the object is merged per key: an omitted key or a ****** leaf keeps the stored value, a null leaf deletes the key, any other value overwrites it; an explicit null for the whole field clears every secret.
              * @example {
              *       "API_TOKEN": "sk-live-...",
              *       "DB_PASSWORD": "hunter2"
@@ -3149,7 +3166,7 @@ export interface components {
             alarmChannels?: string[];
             params?: Record<string, never>;
             /**
-             * @description Task-level secrets (credential key/value pairs, stored encrypted at rest with AES-256-GCM when SEC_SECRETS_KEY is configured; plaintext fallback with a warning otherwise). Read paths are always masked. Dispatched to the executor env as AUTOFLOW_<KEY> merged over params.
+             * @description Task-level secrets (credential key/value pairs, stored encrypted at rest with AES-256-GCM when SEC_SECRETS_KEY is configured; plaintext fallback with a warning otherwise). Read paths are always masked with the literal ******. Dispatched both merged into params (AUTOFLOW_<KEY>, legacy channel) and as a separate payload field so the executor injects them under their ORIGINAL names (required by third-party SDKs that read canonical names). On PATCH the object is merged per key: an omitted key or a ****** leaf keeps the stored value, a null leaf deletes the key, any other value overwrites it; an explicit null for the whole field clears every secret.
              * @example {
              *       "API_TOKEN": "sk-live-...",
              *       "DB_PASSWORD": "hunter2"
@@ -6822,6 +6839,25 @@ export interface operations {
         };
     };
     ApplicationController_remove: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    ApplicationController_removalImpact: {
         parameters: {
             query?: never;
             header?: never;
