@@ -56,7 +56,7 @@ for arg in "$@"; do
     --skip-audit) SKIP_AUDIT=1 ;;
     --py-deps)    PY_DEPS=1 ;;
     -h|--help)    sed -n '2,45p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    *) echo "未知参数: $arg（支持 --skip-e2e --skip-audit --py-deps）"; exit 2 ;;
+    *) echo "未知参数: ${arg}（支持 --skip-e2e --skip-audit --py-deps）"; exit 2 ;;
   esac
 done
 
@@ -179,7 +179,7 @@ job_admin_api_e2e() {
 job_npm_audit() {
   local p
   for p in apps/admin-api apps/executor-node apps/executor-desktop packages/acf-cli packages/mcp-server; do
-    echo "── npm audit（CI matrix: $p）"
+    echo "── npm audit（CI matrix: ${p}）"
     ( cd "$p" && npm audit --registry=https://registry.npmjs.org --omit=dev --audit-level=moderate )
   done
 }
@@ -233,7 +233,7 @@ job_python_packages() {
   local pkg
   py_install pytest pytest-asyncio httpx
   for pkg in autocodeflow-http autocodeflow-notify autocodeflow-db autocodeflow-ai; do
-    echo "── pytest（CI matrix: $pkg）"
+    echo "── pytest（CI matrix: ${pkg}）"
     ( cd "packages/$pkg" && python3 -m pytest tests/ --tb=short )
   done
 }
@@ -243,7 +243,7 @@ job_registry_pypi() {
 }
 
 # ── 调度（顺序与 ci.yml job 声明顺序一致）─────────────────────────────────
-echo "AutoCodeFlow ci-local — 本地等价 CI（root: $ROOT）"
+echo "AutoCodeFlow ci-local — 本地等价 CI（root: ${ROOT}）"
 [[ "$SKIP_E2E" == "1" ]]   && echo "[模式] 跳过 e2e/migration（--skip-e2e）"
 [[ "$SKIP_AUDIT" == "1" ]] && echo "[模式] 跳过 npm audit（--skip-audit）"
 

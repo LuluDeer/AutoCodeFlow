@@ -315,13 +315,13 @@ if [[ -f "$SERVER_METRICS_FILE" ]]; then
       printf "PG 连接峰值: %d   Redis 连接峰值: %d   DB 连接池 active/idle/waiting 峰值: %d/%d/%d\n", pg, rd, pa, pim, pw;
       printf "事件循环延迟峰值: %.4f s   堆占用峰值: %.1f MB   BullMQ 队列深度峰值: %d   调度 tick 峰值: %.1f ms\n", elv, heap, qd, tick;
     }' "$SERVER_METRICS_FILE" >&2
-  echo "（原始采样 CSV：$SERVER_METRICS_FILE） " >&2
+  echo "（原始采样 CSV：${SERVER_METRICS_FILE}） " >&2
 fi
 
 if [[ $RC == 0 ]]; then
-  echo "✓ load-test 通过（日志目录：$LOG_DIR；压测库：$DB_NAME）"
+  echo "✓ load-test 通过（日志目录：${LOG_DIR}；压测库：${DB_NAME}）"
 else
-  echo "✗ load-test exit=$RC（日志目录：$LOG_DIR）" >&2
+  echo "✗ load-test exit=${RC}（日志目录：${LOG_DIR}）" >&2
   echo "── admin-api 日志尾部 ──" >&2
   tail -30 "$LOG_DIR/admin-api.log" >&2 || true
   echo "── executor-node 日志尾部 ──" >&2
