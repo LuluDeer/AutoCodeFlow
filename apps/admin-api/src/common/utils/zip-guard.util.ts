@@ -133,8 +133,7 @@ export function resolveZipGuardLimits(
         ? overrides.maxNestingDepth
         : ZIP_GUARD_DEFAULT_LIMITS.maxNestingDepth,
     maxNestedInflateBytes:
-      overrides?.maxNestedInflateBytes &&
-      overrides.maxNestedInflateBytes > 0
+      overrides?.maxNestedInflateBytes && overrides.maxNestedInflateBytes > 0
         ? overrides.maxNestedInflateBytes
         : ZIP_GUARD_DEFAULT_LIMITS.maxNestedInflateBytes,
   };
@@ -317,7 +316,11 @@ export function assertZipSafe(
 
   if (depth < limits.maxNestingDepth) {
     for (const name of summary.nestedZipNames) {
-      const inner = extractNestedZipBytes(buf, name, limits.maxNestedInflateBytes);
+      const inner = extractNestedZipBytes(
+        buf,
+        name,
+        limits.maxNestedInflateBytes,
+      );
       if (inner) {
         try {
           assertZipSafe(inner, limits, depth + 1);
