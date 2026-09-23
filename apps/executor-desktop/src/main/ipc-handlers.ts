@@ -6,6 +6,10 @@ import * as https from 'https';
 import * as path from 'path';
 import * as fs from 'fs';
 import { pickRecentMetaFiles } from './meta-files';
+// 用户报障（执行器应用显示不对）：应用清单必须按执行器**真实**的
+// apps/<appId>/releases/<version>-<deploymentId>/ 布局解析，而不是把
+// appRoot 的直接子目录（releases/tmp/current）当成部署。见该模块头注。
+import { listDeployedApps } from './app-inventory';
 import * as net from 'net';
 import * as childProcess from 'child_process';
 import { configStore, executorProcess, heartbeat, syncNotifierWithConfig, trayManager, windowManager } from './index';
@@ -672,58 +676,17 @@ export function registerIpcHandlers(): void {
   });
 
   // ── 已部署应用 ─────────────────────────────────────────
-  // 列出本地所有已部署的应用（workDir/apps/<appId>/<deploymentId>/）
+  // 列出本地所有已部署的应用。真实布局是
+  //   <workDir>/apps/<appId>/releases/<version>-<deploymentId>/app.log
+  // （外加 current 软链、tmp 暂存）——不是 apps/<appId>/<deploymentId>/。
+  // 原实现按后者逐层下钻，于是把 releases/tmp/current 当成「部署」列出（假
+  // 条目、版本号丢失），且真实 app.log 永不匹配 → 每行都显示「无日志」。
+  // 解析逻辑收敛到 app-inventory.ts（纯函数，可被 selftest 直接覆盖）。
   ipcMain.handle('apps:list', () => {
     const workDir = configStore.get('workDir') as string | undefined;
-    if (!workDir) return [];
-    const appsDir = path.join(workDir, 'apps');
-    if (!fs.existsSync(appsDir)) return [];
-    const result: Array<{
-      appId: string;
-      deploymentId: string;
-      hasLog: boolean;
-      logPath: string;
-      deployDir: string;
-    }> = [];
-    // D 修正：原为 `catch { /* ignore */ }`——权限/IO 异常会让渲染层看到
-    // 空列表，与"确实没有部署"完全无法区分。改为向上抛出，由 apps:list 的
-    // IPC reject 传入渲染层（AppsPage 已展示错误条）。
-    // 单个条目 stat 失败（并发删除等）仍跳过——那是正常的目录竞争，
-    // 不代表整体列举失败。
-    const appIds = fs.readdirSync(appsDir).filter((d: string) => {
-      try {
-        return fs.statSync(path.join(appsDir, d)).isDirectory();
-      } catch {
-        return false;
-      }
-    });
-    for (const appId of appIds) {
-      const appDir = path.join(appsDir, appId);
-      let deploymentIds: string[];
-      try {
-        deploymentIds = fs.readdirSync(appDir).filter((d: string) => {
-          try {
-            return fs.statSync(path.join(appDir, d)).isDirectory();
-          } catch {
-            return false;
-          }
-        });
-      } catch {
-        continue; // 单应用目录读失败：跳过该应用，不影响其余
-      }
-      for (const deploymentId of deploymentIds) {
-        const deployDir = path.join(appDir, deploymentId);
-        const logPath = path.join(deployDir, 'app.log');
-        result.push({
-          appId,
-          deploymentId,
-          hasLog: fs.existsSync(logPath),
-          logPath,
-          deployDir,
-        });
-      }
-    }
-    return result;
+    // D 修正：目录级失败向上抛出（IPC reject → 渲染层错误条），不冒充
+    // 「暂无已部署应用」；单条目 stat 失败仍只跳过该条目（正常目录竞争）。
+    return listDeployedApps(workDir);
   });
 
   // 读取应用日志（支持分页，从 fromLine 开始）
