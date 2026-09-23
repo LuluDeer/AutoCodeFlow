@@ -44,6 +44,8 @@ export interface AppReleaseEntry {
   releaseKey: string;
   /** 是否为 current 指向的即时版本。 */
   isCurrent: boolean;
+  /** release 目录的 mtime（部署时间），同版本多次部署时靠它区分；读取失败为 null。 */
+  deployedAt: number | null;
   hasLog: boolean;
   logPath: string;
   deployDir: string;
@@ -79,17 +81,31 @@ function readAppMeta(appRoot: string): AppMeta | null {
 const UUID_TAIL_RE =
   /^(.*)-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
 
+/**
+ * 宽松回退：老格式/短 hash 的 releaseKey（如 `1.0.1-dae29737`，deploymentId
+ * 只有 8 位 hex、不是完整 UUID）配不上 UUID_TAIL_RE——原实现把整个 releaseKey
+ * 回落成 deploymentId 且 version=null，于是 UI 显示「版本未知 1.0.1-da」，
+ * 与正常解析出的「v1.0.1 dae29737」并排出现，自相矛盾（用户截图报障）。
+ * 这里按「semver 前缀 + 8 位以上 hex 尾」再试一次，能把版本号如实还原；
+ * 仍配不上（目录名根本不是 releaseKey）才返回 version=null。
+ */
+const LOOSE_TAIL_RE = /^(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.]+)?)-([0-9a-f]{8,})$/i;
+
 export function splitReleaseKey(releaseKey: string): {
   version: string | null;
   deploymentId: string;
 } {
   const m = UUID_TAIL_RE.exec(releaseKey);
-  if (!m) {
-    // 无法解析（异常目录名）：不用假数据冒充，deploymentId 回落为原名，
-    // version 置 null 由 UI 如实显示。
-    return { version: null, deploymentId: releaseKey };
+  if (m) {
+    return { version: m[1] || null, deploymentId: m[2] };
   }
-  return { version: m[1] || null, deploymentId: m[2] };
+  const loose = LOOSE_TAIL_RE.exec(releaseKey);
+  if (loose) {
+    return { version: loose[1], deploymentId: loose[2] };
+  }
+  // 无法解析（异常目录名）：不用假数据冒充，deploymentId 回落为原名，
+  // version 置 null 由 UI 如实显示。
+  return { version: null, deploymentId: releaseKey };
 }
 
 /** current 是指向 releases/<releaseKey> 的软链/junction；读出它的 basename。 */
@@ -177,6 +193,7 @@ export function listDeployedApps(workDir: string | undefined): AppReleaseEntry[]
         version: null,
         releaseKey: '',
         isCurrent: false,
+        deployedAt: null,
         hasLog: false,
         logPath: '',
         deployDir: appRoot,
@@ -188,6 +205,14 @@ export function listDeployedApps(workDir: string | undefined): AppReleaseEntry[]
       const deployDir = path.join(releasesDir, releaseKey);
       const logPath = path.join(deployDir, 'app.log');
       const { version, deploymentId } = splitReleaseKey(releaseKey);
+      // mtime 即部署完成时间（executor 侧 pruneOldReleases 同一判据）——
+      // 同一版本号多次部署时，UI 靠它把行区分开。stat 失败给 null，不影响列出。
+      let deployedAt: number | null = null;
+      try {
+        deployedAt = fs.statSync(deployDir).mtimeMs;
+      } catch {
+        deployedAt = null;
+      }
       result.push({
         appId,
         appName,
@@ -195,6 +220,7 @@ export function listDeployedApps(workDir: string | undefined): AppReleaseEntry[]
         version,
         releaseKey,
         isCurrent: currentKey === releaseKey,
+        deployedAt,
         hasLog: fs.existsSync(logPath),
         logPath,
         deployDir,

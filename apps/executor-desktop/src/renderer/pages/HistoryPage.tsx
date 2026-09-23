@@ -46,6 +46,36 @@ function statusBadge(status?: string) {
   return <span className={`badge ${cls}`}>{labels[status || ''] || '未知'}</span>;
 }
 
+// 执行 ID（executionId）在列表里被 ellipsis 截断（.history-run-id max-width），
+// 用户拿着完整 ID 去对日志是高频动作——此前既看不到全值也复制不了。
+// 点击复制 + title 悬停显示完整 ID；复制成功短暂变色反馈（桌面端无 toast 体系）。
+function CopyableExecId({ id }: { id: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <span
+      className={`history-run-id copyable${copied ? ' copied' : ''}`}
+      title={`${id}\n点击复制完整执行 ID`}
+      role="button"
+      tabIndex={0}
+      onClick={(e) => {
+        e.stopPropagation();
+        navigator.clipboard.writeText(id).then(() => {
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1200);
+        });
+      }}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          navigator.clipboard.writeText(id);
+        }
+      }}
+    >
+      {copied ? '已复制 ✓' : id}
+    </span>
+  );
+}
+
 // ────────────────────────────────────────────────────────────
 // 实时日志查看器
 // ────────────────────────────────────────────────────────────
@@ -368,7 +398,7 @@ export default function HistoryPage() {
                         <div className="history-run-left">
                           <span className="history-run-index">#{runCount - idx}</span>
                           {statusBadge(run.status)}
-                          <span className="history-run-id">{run.executionId}</span>
+                          <CopyableExecId id={run.executionId} />
                         </div>
                         <div className="history-run-right">
                           <span className="history-run-time">{formatTime(run.startTime)}</span>
