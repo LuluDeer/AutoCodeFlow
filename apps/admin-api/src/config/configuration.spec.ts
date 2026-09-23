@@ -413,6 +413,25 @@ describe("configuration (ARCH-27) newly registered config sections", () => {
     expect(loadConfig().executor.allowPrivateNetwork).toBe(true);
   });
 
+  // ARCH-35 P1（生产事故 2026-09-23）：部署归属偏好开关。
+  // 这是修「部署在 A、任务跑在 B」主因的开关——默认必须是 **true**，
+  // 且只有字面量 "false" 才关闭（其余任何值/未设置都保持开启）。
+  // 若默认值被误改成 false，修复会**静默失效**（服务照常启动、日志无异常、
+  // 任务照旧派到未部署该应用的执行器上）——故在此钉住默认值与关闭语义。
+  it("ARCH-35: registers executor.preferDeployedExecutor (默认 true，仅 'false' 关闭)", () => {
+    delete process.env.EXECUTOR_PREFER_DEPLOYED;
+    expect(loadConfig().executor.preferDeployedExecutor).toBe(true);
+
+    process.env.EXECUTOR_PREFER_DEPLOYED = "false";
+    expect(loadConfig().executor.preferDeployedExecutor).toBe(false);
+
+    // 显式 true 与任意其它值都视为开启（宽松解析，只认 "false"）。
+    process.env.EXECUTOR_PREFER_DEPLOYED = "true";
+    expect(loadConfig().executor.preferDeployedExecutor).toBe(true);
+    process.env.EXECUTOR_PREFER_DEPLOYED = "0";
+    expect(loadConfig().executor.preferDeployedExecutor).toBe(true);
+  });
+
   it("registers app.trustProxy from TRUST_PROXY (default false)", () => {
     expect(loadConfig().app.trustProxy).toBe(false);
     process.env.TRUST_PROXY = "true";

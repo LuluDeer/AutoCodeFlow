@@ -35,6 +35,14 @@ async def test_register_executor_posts_capacity_metadata(monkeypatch):
     # 这里钉死探测结果，断言与"真实池内容"解耦（否则本机会因为装了 uv/解释器
     # 而产出不确定的清单）。
     monkeypatch.setattr(main_module, '_discovered_interpreters', [])
+    # ARCH-36（ADR-017 阶段 2）：注册载荷新增 deviceFingerprint——它与本机
+    # 真实机器标识/安装盐绑定，**天然因机器而异**，直接断言会让本用例在
+    # CI 与不同开发机上产出不同期望值。故与上面的 interpreters 同款处理：
+    # 钉死采集结果，把断言与"本机身份"解耦。
+    pinned_fingerprint = 'b3' * 32
+    monkeypatch.setattr(
+        main_module, 'get_device_fingerprint', lambda: pinned_fingerprint
+    )
 
     mock_client = AsyncMock()
     mock_client.post = AsyncMock(return_value=_register_response())
@@ -61,7 +69,43 @@ async def test_register_executor_posts_capacity_metadata(monkeypatch):
         'maxConcurrentTasks': 7,
         'restartedAt': executor_started_at,
         'startupId': executor_startup_id,
+        # ARCH-36（ADR-017 阶段 2）：稳定设备指纹（sha256(deviceId:installSalt)，
+        # 64 位小写十六进制）。采集成功即计入载荷；失败时**整个键缺席**（不是送
+        # null）——见 main.py `_register_payload`。本用例钉死了采集结果，故此处
+        # 断言的是"成功路径必须上报"这一契约。
+        'deviceFingerprint': pinned_fingerprint,
     }
+
+
+@pytest.mark.asyncio
+async def test_register_executor_omits_device_fingerprint_when_collection_fails(
+    monkeypatch,
+):
+    """ARCH-36（ADR-017 阶段 2）：采集失败/不可用时**整个键缺席**，不是送 null。
+
+    这是与本阶段兼容性红线绑定的形态契约：admin 侧对「键缺席」与「显式 null」
+    都保留已存值（`normalizeDeviceFingerprint` 把非 64-hex 一律归为 null →
+    "未上报"），但**node 侧**是 `getDeviceFingerprint() ?? undefined`，序列化后
+    同样缺席。两端必须**同形**，否则将来有人把某一侧"顺手"改成送 null，
+    就会让两端在上报形态上分叉（阶段 3 按指纹做定位时，这类分叉极难排查）。
+
+    更重要的是 fail-open：采集失败绝不能阻断注册（容器无 machine-id、
+    注册表不可读、数据目录只读等），本用例同时钉住"注册照常发出"。
+    """
+    _patch_settings(monkeypatch)
+    monkeypatch.setattr(main_module, 'get_device_fingerprint', lambda: None)
+
+    mock_client = AsyncMock()
+    mock_client.post = AsyncMock(return_value=_register_response())
+
+    with patch('main.get_http_client', return_value=mock_client):
+        await register_executor()
+
+    mock_client.post.assert_awaited_once()
+    _, kwargs = mock_client.post.call_args
+    assert 'deviceFingerprint' not in kwargs['json']
+    # 采集失败不影响其余元数据（fail-open：注册主链逐字节如常）。
+    assert kwargs['json']['appName'] == 'py-executor'
 
 
 @pytest.mark.asyncio

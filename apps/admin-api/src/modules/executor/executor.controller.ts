@@ -185,6 +185,9 @@ export class ExecutorController {
       // python_task_multiversion（WS2 · CONTRACT §2.3）：解释器缓存池清单
       // （可选；结构校验与采纳规则在 service 侧——非法即整字段拒绝采纳）。
       interpreters?: ExecutorInterpreter[];
+      // ARCH-36（ADR-017 阶段 2）：稳定设备指纹（可选；规范化与采纳规则在
+      // service 侧——缺省/非法一律不动 DB 值）。只采集与观测，不参与定位。
+      deviceFingerprint?: string | null;
     },
     @Headers("authorization") auth: string,
   ) {
@@ -219,6 +222,9 @@ export class ExecutorController {
       // 唯一入站通道（内联 @Body() 类型是编译期的，运行时不裁剪），漏了这行
       // 会让上报被静默丢弃且无任何报错。
       interpreters: body.interpreters,
+      // ARCH-36（ADR-017 阶段 2）：转发设备指纹（同一 F-7 白名单纪律——
+      // 漏这行 = 上报被静默丢弃，冲突观测拿不到数据）。
+      deviceFingerprint: body.deviceFingerprint,
     };
     // N4: register + token issuance is idempotent per (address, startupId) —
     // a duplicate register from the SAME process life (same startupId, no
@@ -299,6 +305,9 @@ export class ExecutorController {
       // python_task_multiversion（WS2 · CONTRACT §2.3）：解释器缓存池清单
       // （可选；缺省即保留 DB 旧值，结构校验在 service 侧）。
       interpreters?: ExecutorInterpreter[];
+      // ARCH-36（ADR-017 阶段 2）：稳定设备指纹（可选；缺省/非法即保留 DB
+      // 旧值，规范化在 service 侧）。
+      deviceFingerprint?: string | null;
     },
     @Headers("authorization") auth: string,
   ) {
@@ -330,6 +339,9 @@ export class ExecutorController {
       // python_task_multiversion（WS2）：转发解释器清单（F-2 显式白名单，
       // 漏转发 = 上报被静默丢弃）。
       interpreters: body.interpreters,
+      // ARCH-36（ADR-017 阶段 2）：转发设备指纹（心跳是主要重复观测点——
+      // 两台机器并存时各自 30s 一次的心跳都会走到 service 的观测器）。
+      deviceFingerprint: body.deviceFingerprint,
     };
     const saved = await this.svc.heartbeat(body.address, metrics);
     // R9 (round-8 P1 closure, W3): echo the CURRENT stored tokenHash with

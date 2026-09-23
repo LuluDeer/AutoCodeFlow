@@ -112,6 +112,12 @@ import { RuntimeModule } from "./modules/runtime/runtime.module";
           .integer()
           .min(1)
           .default(500),
+        // ARCH-35 P1（生产事故 2026-09-23）：部署归属偏好开关
+        // （configuration.ts executor.preferDeployedExecutor 消费）。默认
+        // true（修主因）；置 "false" 一行回滚到「不看部署、纯负载择优」。
+        EXECUTOR_PREFER_DEPLOYED: Joi.string()
+          .valid("true", "false")
+          .default("true"),
 
         // Database
         DB_HOST: Joi.string().hostname().default("localhost"),

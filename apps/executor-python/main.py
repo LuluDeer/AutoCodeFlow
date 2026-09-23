@@ -30,6 +30,8 @@ from auth import (
     adopt_executor_token_hash,
     set_on_token_acquired,
 )
+# ARCH-36（ADR-017 阶段 2）：稳定设备指纹（与心跳路径同源，memo 一次）。
+from device_identity import get_device_fingerprint
 
 def _setup_logging() -> None:
     """8-3（audit-r4）：结构化日志。
@@ -320,7 +322,7 @@ def get_interpreters_snapshot() -> list[dict]:
 def _register_payload() -> dict:
     """富元数据单一来源：首次注册与补注册共用，/token fallback 重建行丢的
     type/capabilities/maxConcurrentTasks/version 从这里原样恢复。"""
-    return {
+    payload = {
         'appName': settings.app_name,
         'address': settings.executor_address_public or settings.executor_address,
         'type': 'python',
@@ -342,6 +344,14 @@ def _register_payload() -> dict:
         'restartedAt': executor_started_at,
         'startupId': executor_startup_id,
     }
+    # ARCH-36（ADR-017 阶段 2）：稳定设备指纹（sha256(deviceId:installSalt)）。
+    # 采集失败/不可用 → **整个键缺席**（而非送 null）——与 node 侧
+    # `getDeviceFingerprint() ?? undefined` 逐字节同形，admin 对「键缺席」的
+    # 语义是「保留已存值」；绝不因采集失败阻断注册（fail-open）。
+    fingerprint = get_device_fingerprint()
+    if fingerprint:
+        payload['deviceFingerprint'] = fingerprint
+    return payload
 
 
 async def register_executor() -> bool:

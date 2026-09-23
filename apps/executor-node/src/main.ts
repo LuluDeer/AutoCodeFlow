@@ -41,6 +41,8 @@ import {
 import { checkAdminApiConnectivity, initAdminClients, post, postWithStaticToken } from './admin-client';
 import { adoptExecutorTokenHash } from './admin-envelope';
 import { recordRegistration } from './heartbeat-state';
+// ARCH-36（ADR-017 阶段 2）：稳定设备指纹（register/heartbeat 同源，memo 一次）。
+import { getDeviceFingerprint } from './device-identity';
 import { setExecutorShuttingDown, isExecutorShuttingDown } from './shutdown-state';
 import { taskWorkerManager } from './task-worker';
 import { startPullLoop, stopPullLoop } from './pull';
@@ -144,6 +146,10 @@ async function registerExecutor(): Promise<boolean> {
       maxConcurrent: config.maxConcurrentTasks,
       restartedAt: executorStartedAt,
       startupId: executorStartupId,
+      // ARCH-36（ADR-017 阶段 2）：稳定设备指纹（sha256(deviceId:installSalt)）。
+      // 采集失败/不可用 → null，字段按 undefined 送出（admin 列保持 NULL =
+      // 未上报，行为与引入前一致）；绝不因采集失败阻断注册。
+      deviceFingerprint: getDeviceFingerprint() ?? undefined,
       // FR-13/AC-13a（python_task_upload_and_multiversion, CONTRACT.md §2.3）：
       // 解释器缓存池清单随注册上报。**始终发送该字段**（哪怕为 []）——见
       // scheduler.ts 的字段缺省语义说明。探测有界（≤5s）+ 容错（失败退化 []，

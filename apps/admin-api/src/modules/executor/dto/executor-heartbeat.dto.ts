@@ -119,4 +119,12 @@ export class ExecutorHeartbeatDto {
     type: () => [ExecutorInterpreterDto],
   })
   interpreters?: ExecutorInterpreterDto[];
+
+  @ApiPropertyOptional({
+    description:
+      "ARCH-36 (ADR-017 phase 2): stable install identity — sha256(deviceId + ':' + installSalt) as 64 lowercase hex chars. Omitted/invalid → keep the stored value (a legacy or collection-failed executor must never blank a stored fingerprint). Collected and observed only; it does NOT participate in row lookup.",
+    example: "3f2a1c9d8b7e6f504132a5b6c7d8e9f00a1b2c3d4e5f60718293a4b5c6d7e8f9",
+    nullable: true,
+  })
+  deviceFingerprint?: string | null;
 }

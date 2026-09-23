@@ -5,6 +5,8 @@ import { logger } from './logger';
 import { post } from './admin-client';
 import { recordHeartbeat } from './heartbeat-state';
 import { executorStartedAt, executorStartupId } from './startup-identity';
+// ARCH-36（ADR-017 阶段 2）：设备指纹与 register 同源（同一 memo）。
+import { getDeviceFingerprint } from './device-identity';
 import { adoptExecutorTokenHash, unwrapAdminResponseData } from './admin-envelope';
 
 // BUG-03: Use atomic operations to prevent race conditions in concurrent task counting
@@ -226,6 +228,11 @@ async function sendHeartbeat() {
       maxConcurrentTasks: config.maxConcurrentTasks,
       restartedAt: executorStartedAt,
       startupId: executorStartupId,
+      // ARCH-36（ADR-017 阶段 2）：稳定设备指纹随心跳一并回传。register 已
+      // 落库过，此处是幂等重传（memo 命中，纯内存读取，零进程开销）；价值在于
+      // 「注册时数据目录恰好只读、之后恢复」的场景能自愈，以及 admin 侧可比较
+      // 注册期与心跳期是否一致（不一致 = 盐文件被换/工作目录改了）。
+      deviceFingerprint: getDeviceFingerprint() ?? undefined,
       // EXE-VER-1: 版本随心跳上报（可选字段），中心端 EXECUTOR_MIN_VERSION
       // 门禁开启时在响应中回显 versionCompliant（见下方消费）。
       version: EXECUTOR_VERSION,

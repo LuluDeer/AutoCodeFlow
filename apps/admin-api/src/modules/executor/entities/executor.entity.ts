@@ -36,6 +36,14 @@ export enum ExecutorType {
 @Index(["groupName"])
 @Index(["lastHeartbeat"])
 @Index("uq_executors_address", ["address"], { unique: true })
+// ARCH-36（ADR-017 阶段 2）：指纹查询索引（非唯一）。
+// 为什么现在就建：本阶段只有「同一地址是否出现多个指纹」的内存观测，看似用
+// 不上；但**阶段 3** 要把「先按 fingerprint 定位行」变成注册幂等键（`WHERE
+// deviceFingerprint = $1`），那是每次注册/心跳都要走的路径。索引与列同批落盘，
+// 好过阶段 3 再补一条迁移（且 check-index-drift 要求命名声明必须有对应 DDL）。
+// 非唯一是刻意的：唯一性约束留到阶段 3 回填完成后再加——现在存量行全为 NULL
+// 且允许「同一安装短时间内出现两行」的过渡态，此刻加唯一约束会让迁移失败。
+@Index("idx_executors_device_fingerprint", ["deviceFingerprint"])
 export class Executor {
   @PrimaryGeneratedColumn("uuid") id: string;
   @Column() appName: string;
@@ -95,6 +103,26 @@ export class Executor {
   @Column({ nullable: true }) lastHeartbeat: Date;
   @Column({ nullable: true }) executorStartedAt: Date | null;
   @Column({ nullable: true }) executorStartupId: string | null;
+
+  /**
+   * ARCH-36（ADR-017 阶段 2）：执行器上报的**稳定唯一身份**
+   * `sha256(deviceId + ":" + installSalt)`（64 位小写十六进制）。
+   * 采集实现见 `apps/executor-node/src/device-identity.ts` 与
+   * `apps/executor-python/device_identity.py`（同源）。
+   *
+   * 三态语义（与 `interpreters` / `deadLetterCount` 同款采纳规则）：
+   * - `null` = **未上报**：存量旧执行器（协议 < 3），或新执行器采集失败
+   *   （容器无 machine-id、数据目录只读——fail-open 是硬约束）。两种情形
+   *   用 `protocolVersion` 区分：v3 执行器却为 null = 采集失败需排查。
+   * - 具体值 = 上报并被采纳。字段缺省/非法 → 保留 DB 旧值（不被擦除）。
+   *
+   * **本阶段（阶段 2）该列只用于采集与观测，不参与任何定位**——注册仍按
+   * `address` 定位行（`executor.service.ts` register 首行 findOne）。阶段 3
+   * 才会把它提升为幂等键、把 `address` 降级为可达性元数据（见 ADR-017）。
+   * 索引语义见类级 `@Index("idx_executors_device_fingerprint")` 的注释。
+   */
+  @Column({ type: "varchar", length: 64, nullable: true })
+  deviceFingerprint: string | null;
   /**
    * 当前在跑任务数（派发闸门 selectLeastLoaded / 容量守卫直接读它判满）。
    * 心跳白名单采纳域：非负整数 0..10000（与 runningExecutionIds 数组截顶

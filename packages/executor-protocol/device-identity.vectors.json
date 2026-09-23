@@ -1,0 +1,39 @@
+{
+  "$comment": "ARCH-36（ADR-017 阶段 2）deviceFingerprint 的**三端一致性金标向量**。单一事实源，语言无关：executor-node 的 `src/device-identity.spec.ts` 与 executor-python 的 `tests/test_device_identity.py` 加载**同一份**文件断言同输入同输出。为什么必须有它：指纹是两套独立实现（TS crypto / Python hashlib），一旦某端改动哈希输入拼接方式（如把 ':' 改成 '-'、或漏了盐），该端自身所有单测仍然全绿——只有跨端比对能发现。若两端算法漂移，ADR-017 阶段 3「按指纹定位行」会让同一台机器在 node 执行器与 python 执行器上解析成两个不同身份，直接复现本 ADR 要消灭的那类故障。注意：本段**不属于** protocol.json 的 `schemas`/`schemaVectors`（那两个段有互相覆盖的 CI 闸，且只覆盖线缆 schema）；此处只钉哈希算法本身。规则：向量只能追加、不能修改（已发布端按旧向量断言）。",
+  "algorithm": "deviceFingerprint = sha256(`${deviceId}:${installSalt}`) → 64 位小写十六进制",
+  "fingerprintVectors": [
+    {
+      "name": "windows-machine-guid",
+      "deviceId": "4c4c4544-0044-5910-8038-b7c04f4d4a32",
+      "installSalt": "8f14e45f-ceea-467a-9ae0-1a1c2b3d4e5f",
+      "fingerprint": "3096647e58bbcc0df65e664f36e5bbe00688329b6dd5fa0bdf0a493fb8cf79ff"
+    },
+    {
+      "name": "linux-machine-id",
+      "deviceId": "d3f8b1c2e4a5f60718293a4b5c6d7e8f",
+      "installSalt": "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0",
+      "fingerprint": "7f4050645c612e7320aca04ae80131b8b75b8f8f8cec601e6ead6e346e450422"
+    },
+    {
+      "name": "darwin-platform-uuid",
+      "deviceId": "IOPlatformUUID-EXAMPLE-0001",
+      "installSalt": "123e4567-e89b-12d3-a456-426614174000",
+      "fingerprint": "fbbfa9c8f7b706cbce8461359290f67504d1846327edf16b81ad10d93a115874"
+    }
+  ],
+  "$commentFallback": "deviceId 三级兜底（三平台注册表/文件全不可得）的形态也必须同源：deviceId = sha256(`fallback:${mac}:${hostname}`)，mac 缺失时为空串（注意是**两个**冒号）。两端独立实现「首个非 loopback 网卡 MAC」的枚举方式不同（node 走 os.networkInterfaces()、python 走 psutil），故此处钉的是**形态**而非枚举顺序：mac 归一化为小写冒号分隔后，相同输入必须产出相同 deviceId。",
+  "fallbackVectors": [
+    {
+      "name": "mac+hostname",
+      "mac": "aa:bb:cc:dd:ee:ff",
+      "hostname": "host-1",
+      "deviceId": "885e44e1b1fe9c7c1d859ddf3b631a54555642bd105ecd8e58fb02aa7cc3797a"
+    },
+    {
+      "name": "hostname-only",
+      "mac": "",
+      "hostname": "host-2",
+      "deviceId": "81f6e439eb50ea130d5eda5ad23a8cbfe48af8342583b421c91ebd9879a1bc54"
+    }
+  ]
+}

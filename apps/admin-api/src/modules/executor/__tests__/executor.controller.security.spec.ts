@@ -181,6 +181,11 @@ describe("ExecutorController — F-2 heartbeat / F-7 register mass-assignment gu
           "description",
           // ARCH-32: 派发模式自报随白名单透传（service 侧枚举外值落回 push）
           "dispatchMode",
+          // ARCH-36（ADR-017 阶段 2）：设备指纹随白名单透传。它是**执行器自报**
+          // 的采集值（与 interpreters 同类），service 侧做 64 位十六进制规范化，
+          // 非法即视同未上报。放行它不构成批量赋值风险——它既不是服务端所有列，
+          // 也不参与任何定位（本阶段只采集与观测）。
+          "deviceFingerprint",
           "groupName",
           // python_task_multiversion（WS2）：解释器清单随白名单透传（service
           // 侧做结构校验与采纳决策——非法即整字段拒绝采纳）。

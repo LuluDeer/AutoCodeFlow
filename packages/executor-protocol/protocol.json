@@ -3,7 +3,7 @@
   "$comment": "A3（DEEP_REVIEW 0ef3bbe §七）executor-protocol —— admin-api / executor-node / executor-python 三方共享的执行器协议契约向量。单一事实源，语言无关，三端测试套件加载同一份文件断言。此前这些语义只靠两侧注释互相引用（\"见 node execute.ts:xxx parity\"）维持，属于\"注释里的 parity\"——本文件把它变成\"红在 CI\"。规则：向量只能追加、不能修改（已发布端按旧向量断言）；语义变更属破坏性契约变更，须三端同批发布并 bump $schemaVersion。",
   "versioning": {
     "$comment": "B-3/U-2（中台↔执行器深度审查）：协议版本协商机制。$schemaVersion 标识**线缆协议**（register/heartbeat/callback/pull 的载荷形状与语义），与执行器实现版本（EXECUTOR_VERSION，如 2.0.0）**解耦**——协议可在不 bump 实现版本的情况下演进（如新增可选字段）。执行器在 register 载荷上报 `protocolVersion`；中台按兼容矩阵分支（旧协议执行器不发送某新字段时中台兜底，**不**硬拒——与 EXECUTOR_MIN_VERSION 实现版本门禁是两套闸）。",
-    "currentProtocolVersion": 2,
+    "currentProtocolVersion": 3,
     "supportedMinProtocolVersion": 1,
     "compatibilityMatrix": [
       {
@@ -17,6 +17,12 @@
         "adminSupported": true,
         "executorImplementedBy": ["executor-node", "executor-python"],
         "$comment": "ARCH-33（ADR-016）控制面 pull 通道：pull 响应新增**可选** commands 数组（中台下发的控制命令：deploy / app-stop / app-uninstall / config-reload / kill-execution / update-package），以及执行器侧的结果上报端点 POST /executors/command-result。中台以 PROTOCOL_CONTROL_PLANE_MIN=2 为闸：仅当执行器上报 protocolVersion >= 2 才下发 commands——v1 执行器会静默忽略该字段，中台却会误判投递成功。注意 supportedMinProtocolVersion 仍为 1：v1 执行器照常注册、照常收任务，只是收不到控制命令（由 admin 退回 push 路径）。"
+      },
+      {
+        "protocolVersion": 3,
+        "adminSupported": true,
+        "executorImplementedBy": ["executor-node", "executor-python"],
+        "$comment": "ARCH-36（ADR-017 阶段 2）执行器唯一身份**采集**：register 与 heartbeat 载荷新增**可选** deviceFingerprint = sha256(deviceId + \":\" + installSalt) 的 64 位小写十六进制。方向是**执行器→中台**（中台从不下发该字段），故中台侧只采信、只落库（executors.deviceFingerprint 可空列），**不改变任何定位逻辑**——注册仍按 address 定位行。语义要点：deviceId 跨重启稳定（Windows MachineGuid / Linux /etc/machine-id / macOS IOPlatformUUID，全部不可得时回退首个非 loopback 网卡 MAC + 主机名的哈希），installSalt 为每安装实例首次启动生成的随机 UUID 并持久化于可写数据目录，故「同一台机器重装/换址」指纹不变、「同一地址两台机器」指纹必不同。只上报哈希、绝不上报原始 machine-id。旧执行器不上报该字段 → 列保持 NULL，行为与引入前逐字节一致（兼容性红线）。bump 到 3 的目的正是让中台能区分「v3 执行器应上报却缺失」（采集失败，需排查）与「存量执行器从未上报」（预期为空）——这是本阶段观测冲突率与覆盖率的判据来源。"
       }
     ],
     "evolutionRules": [

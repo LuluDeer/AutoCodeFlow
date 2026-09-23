@@ -15,6 +15,12 @@ import { TaskExecution } from "../task/entities/task-execution.entity";
 // ApplicationModule——后者反向 import 了 TaskModule + ExecutorModule，引入
 // 模块环；实体注册走 TypeOrmModule.forFeature 即可）。
 import { Application } from "../application/entities/application.entity";
+// ARCH-35 P1（生产事故 2026-09-23）：派发时读取「该应用部署在哪台执行器」。
+// 与上方 Application 同理只加 Repository、不 import ApplicationModule
+// （后者反向 import TaskModule + ExecutorModule，引入模块环）。AppDeployment
+// 自带 @ManyToOne(() => Application)，但那是**实体关系**而非模块依赖——
+// TypeORM 解析关系只需 Application 实体已被 forFeature 注册（上一行即是）。
+import { AppDeployment } from "../application/entities/app-deployment.entity";
 import { NotificationModule } from "../notification/notification.module";
 import { SystemConfigModule } from "../config/config.module";
 // SEC-02: dispatch 时解密 task.secrets 与 params 合并注入执行器 env
@@ -33,6 +39,8 @@ import { AuditModule } from "../audit/audit.module";
       ExecutorMetricsHistory,
       // python_task_multiversion（WS2）：packageUrl 解析（只读）。
       Application,
+      // ARCH-35 P1：部署归属偏好（只读 app_deployments，见上方 import 注）。
+      AppDeployment,
     ]),
     BullModule.registerQueue({ name: "task-queue" }),
     NotificationModule,
