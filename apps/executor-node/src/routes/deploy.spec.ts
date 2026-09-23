@@ -854,6 +854,67 @@ describe('.env serialization (E-40)', () => {
   });
 });
 
+// 用户报障（桌面端「本地已部署应用」看不出是哪个应用 / 明明有日志却显示没日志）：
+// 执行器在部署成功时向 <appRoot>/app.json 落一份元数据供本地 UI 展示。
+// 本组钉死两个字段的契约：
+//   · appName —— 没有它，桌面端只能显示 appId（UUID），用户看不出是哪个应用；
+//   · runMode —— 没有它，桌面端无法区分「scheduled 只部署不启动（没有 app.log
+//     是正常的）」与「daemon 启动失败（没有 app.log 是故障）」，只能用一句
+//     模糊话术盖住两种情况，真正失败的 daemon 就被掩盖了。
+describe('app.json metadata contract (desktop app list)', () => {
+  const basePayload = {
+    deploymentId: 'deploy-meta-1',
+    applicationId: 'app-meta',
+    appName: 'Refund Sync',
+    gitRepo: 'https://example.com/repo.git',
+    gitBranch: 'main',
+    runtime: 'node',
+    runMode: 'scheduled',
+  };
+
+  /** 从 mock fs 的 writeFileSync 调用里取出写到 app.json 的那次内容。 */
+  function readWrittenAppJson(): Record<string, unknown> | null {
+    const call = mockFs.writeFileSync.mock.calls.find(
+      (c) => typeof c[0] === 'string' && (c[0] as string).endsWith(`app.json`),
+    );
+    if (!call) return null;
+    return JSON.parse(call[1] as string) as Record<string, unknown>;
+  }
+
+  it('records appName and runMode so the desktop list can explain a missing app.log', async () => {
+    (mockCp.spawn as jest.Mock).mockImplementation(() => {
+      const events = new EventEmitter();
+      return {
+        stdout: { on: jest.fn() },
+        stderr: { on: jest.fn() },
+        on: jest.fn((event: string, cb: Function) => {
+          if (event === 'close') setImmediate(() => cb(0));
+        }),
+        once: jest.fn(),
+        kill: jest.fn(),
+        emit: (event: string, ...args: unknown[]) => events.emit(event, ...args),
+      };
+    });
+
+    const res = await request(app).post('/api/deploy').send(basePayload);
+    expect(res.status).toBe(200);
+
+    // 路由是「先 res.json 应答、再 setImmediate 异步干活」——app.json 落在
+    // 异步段里，必须等它出现（与既有 waitFor 同策略）。
+    for (let i = 0; i < 200 && readWrittenAppJson() === null; i++) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    const meta = readWrittenAppJson();
+    expect(meta).not.toBeNull();
+    expect(meta!.appName).toBe('Refund Sync');
+    // 反证：runMode 必须落盘。若有人把它从 app.json 删掉，桌面端就再也分不清
+    // 「scheduled 正常无日志」与「daemon 启动失败」——本条立即变红。
+    expect(meta!.runMode).toBe('scheduled');
+    expect(meta!.appId).toBe('app-meta');
+    expect(meta!.runtime).toBe('node');
+  });
+});
+
 // NETOPT-8③: 应用删除清理——admin 侧 remove() 在删 DB 行后 best-effort 扇出
 // 先 /app-stop 后 /app-uninstall；executor 侧新增 /app-uninstall 路由：
 // 停 daemon（复用 /app-stop 语义）→ rm -rf apps/<appId>，幂等 + 路径安全。

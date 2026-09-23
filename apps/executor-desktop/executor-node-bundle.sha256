@@ -269,4 +269,15 @@
 #   **逐字节一致**，印证 ncc 0.44 的路径/跨平台确定性（同上文多处注记）。
 #   bundle 2563kB → 2584kB。
 #
-f528b16cd3c514ffa821df7a951a2cfeab186631ac5aef7460f6cf940763b20b  index.js
+# 2026-09-23（用户报障：客户端「本地已部署应用」看不出应用名 / 明明有日志却显示没日志）：
+#   · routes/deploy.ts 的 app.json **补 runMode 字段**。app.log 只有 startApp 才会
+#     创建，而 startApp 仅对 daemon/once 调用——scheduled 模式只部署不启动，没有
+#     app.log 是**正常**的。不落盘 runMode，桌面端就分不清「scheduled 正常无日志」
+#     与「daemon 启动失败」，只能用一句模糊话术盖住两种情况，真正失败的 daemon 被
+#     掩盖（这正是用户「明明有日志，应用 tab 却显示没日志」的认知落差点）。
+#     配套回归：deploy.spec.ts 新增 app.json 契约用例（断言 appName + runMode 落盘，
+#     反证：删掉 runMode → 用例转红）。
+#   本次按 ADR-005 同 commit 重打：本机(Windows) ncc 0.44 产出 b9156891…。
+#   bundle 2584kB → 2585kB（源码净增：一个字段 + 注释）。
+#
+b9156891a2b385ab3c134fc864f028e12a7f7b476c2508011854d1cab7befb8a  index.js

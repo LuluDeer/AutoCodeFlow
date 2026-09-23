@@ -1184,6 +1184,15 @@ deployRouter.post('/deploy', async (req: Request, res: Response) => {
               gitRepo: gitRepo ?? null,
               gitBranch: gitBranch ?? null,
               gitCommit: gitCommit ?? null,
+              // 用户报障（「明明有日志，应用 tab 却显示没日志」）：app.log 只有
+              // startApp 才会创建，而 startApp 仅对 daemon/once 调用（下方
+              // runMode 分支）——scheduled 模式**只部署不启动**，因此没有
+              // app.log 是**正常**的，不是故障。桌面端必须能区分这两种情形：
+              //   scheduled + 无 app.log → 正常（本就不常驻）
+              //   daemon    + 无 app.log → 异常（启动失败/从未成功拉起）
+              // 不落盘 runMode 的话，UI 只能对两种情况都说"可能没常驻运行"，
+              // 真正失败的 daemon 就被这句模糊话术掩盖了。
+              runMode,
               // 最近一次部署（含非 current 的历史 release 也能对上版本）。
               lastVersion: version ?? null,
               lastDeploymentId: deploymentId,
