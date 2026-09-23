@@ -1593,6 +1593,10 @@ export default {
   'appDeploy.msg.cancelSuccess': '已撤销部署请求',
   'appDeploy.msg.cancelFail': '撤销失败',
   'appDeploy.msg.stopped': '已停止',
+  // 用户报障（界面说的和实际不一致）：执行器离线时后端仍把行标记为已停止，
+  // 但停机信号没送到，设备上的进程可能还在跑。必须说清"要人去设备上确认"，
+  // 否则用户以为停干净了。
+  'appDeploy.msg.stopNotDelivered': '已标记为停止，但未能联系到执行器——设备上的进程可能仍在运行，请到该执行器上确认。',
   'appDeploy.msg.stopFail': '操作失败',
   'appDeploy.msg.upgradeStarted': '升级已启动，稍后自动完成',
   'appDeploy.msg.upgradeFail': '升级失败',
@@ -1659,9 +1663,18 @@ export default {
   'appDeploy.mode.hintDaemon': '异常退出会自动重启（最多 10 次）；正常退出（退出码 0）不重启。',
   'appDeploy.mode.hintScheduled': '只下发代码，不启动进程——请在「任务调度」里建任务来触发运行。',
   // 用户报障修正：原文案写「会复用本设备的这条记录（不会新增记录）」，但后端
-  // deploy() 恒定 INSERT 新行——提示与实现相反，用户重试几次就叠几行失败记录，
-  // 且当时没有任何删除出口。现如实描述，并指向上方新增的删除按钮。
-  'appDeploy.redeploy.reuseHint': '重新部署会在本设备新建一条部署记录（原记录保留，可在本行删除）。',
+  // 用户报障（中台提示与实现相反）：本键经历了两版错误文案——
+  //   ① 最早写"会复用本设备的这条记录"（当时 deploy() 其实恒定 INSERT 新行）；
+  //   ② 改成"会在本设备新建一条部署记录"（此时 fe718b3d 已引入同设备复用，
+  //      文案又反过来落后于实现）。
+  // 现按 app-deployment.service.ts 的**真实分支**如实描述：
+  //   · 复用：同应用 + 同执行器 + 该行处于 failed/stopped + **runMode 相同**
+  //     → 原地重置为 pending 重推，不新增行（"重试不再堆积记录"）；
+  //   · 新建：换设备、或换了 runMode（模式是行的语义配置，静默改写会让
+  //     "这台设备跑的是常驻还是单次"不可追溯，故模式变化时显式留痕）。
+  // 用户最常见的路径（同一台设备原样重试）落在"复用"，必须说清不新增行。
+  'appDeploy.redeploy.reuseHint':
+    '重新部署时，若该设备上已有同模式的失败/已停止记录，会复用它原地重推（不新增行）；换设备或更换模式才会新建一条记录。',
   'appDeploy.op.deleteConfirm': '确认删除这条部署记录？',
   'appDeploy.op.deleteHint': '只删除平台上的这条历史记录，不影响执行器上正在运行的进程。',
   'appDeploy.op.adminOnlyDelete': '仅管理员可删除部署记录',
