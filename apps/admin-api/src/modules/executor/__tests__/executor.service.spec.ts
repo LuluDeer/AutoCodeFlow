@@ -41,6 +41,9 @@ import { AuditService } from "../../audit/audit.service";
 import { LOG_RETENTION_MAX_DELETE_ROUNDS } from "../../../common/utils/capped-batched-delete.util";
 // NETOPT-8①: S3 日志对象回收（stub fromConfig 不触达 minio Client）
 import { S3LogStorage } from "../../task/log-storage/s3-log-storage";
+// ARCH-35 P1: 部署归属偏好接线（dispatch 读取 app_deployments）
+import { AppDeployment } from "../../application/entities/app-deployment.entity";
+import { TaskCodeSource } from "../../task/entities/task.entity";
 
 jest.mock("axios");
 // F-3: dispatch now consults the SSRF layer before every outbound POST. These
@@ -5209,6 +5212,10 @@ describe("ExecutorService (__tests__)", () => {
 // 生产装配下 DomainEventBus / AuditService 由 @Global 模块恒提供；构造器对
 // 缺失项各 warn 一次——「executor.offline 事件静默不发」「rotate-token 等高危
 // 操作审计静默不写」两条降级路径因此可见。不改变任何业务行为。
+//
+// ARCH-35 P1 追加第三项：AppDeployment 仓库缺失时同样 warn——否则「部署归属
+// 偏好」会静默不生效，用户以为修复已上线而任务仍可能派到未部署该应用的执行器
+// （正是本次事故现象）。该 warn 仅在开关**未明确关闭**时出现。
 describe("R-26: @Optional 关键依赖缺失可观测性（ExecutorService）", () => {
   let warnSpy: jest.SpyInstance;
 
@@ -5225,6 +5232,10 @@ describe("R-26: @Optional 关键依赖缺失可观测性（ExecutorService）", 
   const buildService = (opts: {
     eventBus: unknown;
     audit: unknown;
+    /** ARCH-35: app_deployments 仓库（@Optional，第 15 个位置参数）。 */
+    appDeploymentRepo?: unknown;
+    /** ARCH-35: executor.preferDeployedExecutor 的返回值。 */
+    preferDeployed?: unknown;
   }): ExecutorService =>
     new ExecutorService(
       {} as never,
@@ -5232,7 +5243,13 @@ describe("R-26: @Optional 关键依赖缺失可观测性（ExecutorService）", 
       {} as never,
       {} as never,
       {} as never,
-      { get: jest.fn().mockReturnValue("http") } as never, // configService
+      {
+        get: jest.fn((key: string) =>
+          key === "executor.preferDeployedExecutor"
+            ? opts.preferDeployed
+            : "http",
+        ),
+      } as never, // configService
       {} as never, // notificationService
       {} as never, // systemConfigService
       {} as never, // secretsCrypto
@@ -5241,6 +5258,8 @@ describe("R-26: @Optional 关键依赖缺失可观测性（ExecutorService）", 
       opts.audit as never, // audit（@Optional）
       null as never, // leaderGate（@Optional）
       null as never, // pullService（@Optional）
+      null as never, // applicationRepo（@Optional）
+      opts.appDeploymentRepo as never, // appDeploymentRepo（@Optional）
     );
 
   const r26Messages = (): string[] =>
@@ -5251,13 +5270,1120 @@ describe("R-26: @Optional 关键依赖缺失可观测性（ExecutorService）", 
   it("eventBus/audit 缺失时各 warn 一次，且不抛", () => {
     expect(() => buildService({ eventBus: null, audit: null })).not.toThrow();
     const msgs = r26Messages();
-    expect(msgs).toHaveLength(2);
+    // 3 = DomainEventBus + AuditService + AppDeployment 仓库（默认开关非 false）
+    expect(msgs).toHaveLength(3);
     expect(msgs.some((m) => m.includes("DomainEventBus"))).toBe(true);
     expect(msgs.some((m) => m.includes("AuditService"))).toBe(true);
+    expect(msgs.some((m) => m.includes("AppDeployment"))).toBe(true);
   });
 
   it("依赖齐备时不产生任何 R-26 warn", () => {
-    buildService({ eventBus: { emit: jest.fn() }, audit: { log: jest.fn() } });
+    buildService({
+      eventBus: { emit: jest.fn() },
+      audit: { log: jest.fn() },
+      appDeploymentRepo: { find: jest.fn() },
+    });
     expect(r26Messages()).toHaveLength(0);
+  });
+
+  it("ARCH-35: 仓库缺失但开关明确关闭时不 warn（主动关闭非装配缺失）", () => {
+    buildService({
+      eventBus: { emit: jest.fn() },
+      audit: { log: jest.fn() },
+      appDeploymentRepo: null,
+      preferDeployed: false,
+    });
+    const msgs = r26Messages();
+    expect(msgs.some((m) => m.includes("AppDeployment"))).toBe(false);
+  });
+
+  it("ARCH-35: 仓库缺失且开关未关闭时 warn（偏好会静默不生效）", () => {
+    buildService({
+      eventBus: { emit: jest.fn() },
+      audit: { log: jest.fn() },
+      appDeploymentRepo: null,
+      preferDeployed: true,
+    });
+    const msgs = r26Messages();
+    expect(msgs.some((m) => m.includes("AppDeployment"))).toBe(true);
+  });
+});
+
+/**
+ * ARCH-34 P0（生产事故 2026-09-23）：address 冲突检测在 service 层的接线。
+ *
+ * 单测（executor-address-conflict.util.spec.ts）已钉死判据本身；本组只验证
+ * **接线**：register/heartbeat 两个入口确实喂给同一个跟踪器，且冲突时确实
+ * 外发一次 ERROR 日志 + 通知。判据正确但没接线 = 生产照旧静默串台。
+ */
+describe("ExecutorService — ARCH-34 address 冲突接线", () => {
+  const ADDR = "192.168.1.100:8002";
+  const A = "aaaaaaaa-0000-4000-8000-000000000001";
+  const B = "bbbbbbbb-0000-4000-8000-000000000002";
+
+  let executorRepo: ReturnType<typeof makeRepo>;
+  let execRepo: ReturnType<typeof makeRepo>;
+  let taskRepo: ReturnType<typeof makeRepo>;
+  let metricsHistoryRepo: ReturnType<typeof makeRepo>;
+  let configService: jest.Mocked<Pick<ConfigService, "get">>;
+  let sendAll: jest.Mock;
+
+  const buildService = async (): Promise<ExecutorService> => {
+    const module = await Test.createTestingModule({
+      providers: [
+        ExecutorService,
+        { provide: getRepositoryToken(Executor), useValue: executorRepo },
+        { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
+        { provide: getRepositoryToken(Task), useValue: taskRepo },
+        {
+          provide: getRepositoryToken(ExecutorMetricsHistory),
+          useValue: metricsHistoryRepo,
+        },
+        {
+          provide: getQueueToken("task-queue"),
+          useValue: { add: jest.fn().mockResolvedValue(undefined) },
+        },
+        { provide: ConfigService, useValue: configService },
+        {
+          provide: NotificationService,
+          useValue: {
+            notifyFailure: jest.fn(),
+            notifyFailureWithConfig: jest.fn(),
+            notifyExecutorOnline: jest.fn().mockResolvedValue(undefined),
+            notifyExecutorOffline: jest.fn().mockResolvedValue(undefined),
+            sendAll,
+          },
+        },
+        {
+          provide: SystemConfigService,
+          useValue: {
+            findOne: jest.fn().mockRejectedValue(new Error("not found")),
+          },
+        },
+        {
+          provide: SecretsCryptoService,
+          useValue: new SecretsCryptoService({ get: () => "" } as any),
+        },
+      ],
+    }).compile();
+    return module.get(ExecutorService);
+  };
+
+  beforeEach(() => {
+    executorRepo = makeRepo();
+    execRepo = makeRepo();
+    taskRepo = makeRepo();
+    metricsHistoryRepo = makeRepo();
+    configService = { get: jest.fn().mockReturnValue("http") } as never;
+    sendAll = jest.fn().mockResolvedValue(undefined);
+    // 冲突告警走 logger.error——测试里静音，避免污染输出（断言靠 spy 计数）。
+    jest.spyOn(Logger.prototype, "error").mockImplementation(() => undefined);
+    jest.spyOn(Logger.prototype, "warn").mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  /** register 与 heartbeat 必须共享同一跟踪器，否则各自"首次见到"，冲突永不触发。 */
+  it("register 与 heartbeat 共享跟踪状态（跨入口可判冲突）", async () => {
+    const svc = await buildService();
+    // 用 register 登记 A（repo.findOne 返回该行，save 原样返回）。
+    executorRepo.findOne.mockResolvedValue({
+      id: "e1",
+      address: ADDR,
+      appName: "node-a",
+      executorStartupId: A,
+      executorStartedAt: new Date("2026-01-01T00:00:00Z"),
+      status: ExecutorStatus.ONLINE,
+      runningTaskCount: 0,
+      version: 1,
+    } as never);
+    executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+    (svc as any).rotateToken = jest.fn().mockResolvedValue({ token: "tok" });
+
+    await svc.register({ appName: "node-a", address: ADDR, startupId: A });
+
+    // heartbeat 上报同一 address 的**另一个**进程生命 B（模拟 B 顶替 A）……
+    executorRepo.findOne.mockResolvedValue({
+      id: "e1",
+      address: ADDR,
+      appName: "node-b",
+      executorStartupId: A,
+      executorStartedAt: new Date("2026-01-01T00:00:00Z"),
+      status: ExecutorStatus.ONLINE,
+      runningTaskCount: 0,
+      version: 1,
+    } as never);
+    await svc.heartbeat(ADDR, { startupId: B });
+    expect(sendAll).not.toHaveBeenCalled();
+
+    // ……随后 A 通过 heartbeat 复活 → 跨入口共享状态使冲突可判。
+    await svc.heartbeat(ADDR, { startupId: A });
+    expect(sendAll).toHaveBeenCalledTimes(1);
+    expect(String(sendAll.mock.calls[0][0].title)).toContain(
+      "Executor address conflict",
+    );
+  });
+
+  /** 冲突必须外发 ERROR 级通知（数据正确性问题，不能只落 debug）。 */
+  it("冲突时外发一次 error 级通知，且载荷含可排障信息", async () => {
+    const svc = await buildService();
+    const svcAny = svc as any;
+    // 直接驱动跟踪器，聚焦"接线 + 载荷"而非重复覆盖判据。
+    svcAny.observeAddressConflict(ADDR, A, "register");
+    svcAny.observeAddressConflict(ADDR, B, "register");
+    svcAny.observeAddressConflict(ADDR, A, "heartbeat");
+
+    expect(sendAll).toHaveBeenCalledTimes(1);
+    const payload = sendAll.mock.calls[0][0];
+    expect(payload.level).toBe("error");
+    expect(payload.title).toContain(ADDR);
+    // 排障必需信息：谁在顶替、谁还活着、怎么修。
+    expect(payload.content).toContain(A);
+    expect(payload.content).toContain(B);
+    expect(payload.content).toContain("EXECUTOR_ADDRESS_PUBLIC");
+  });
+
+  /** 节流：同一组合在窗口内重复冲突只外发一次（心跳是 30s 高频路径）。 */
+  it("冲突告警受节流保护（不刷通知）", async () => {
+    const svc = await buildService();
+    const svcAny = svc as any;
+    svcAny.observeAddressConflict(ADDR, A, "register");
+    svcAny.observeAddressConflict(ADDR, B, "register");
+    for (let i = 0; i < 5; i++) {
+      svcAny.observeAddressConflict(ADDR, A, "heartbeat");
+    }
+    expect(sendAll).toHaveBeenCalledTimes(1);
+  });
+
+  /** 正常重启（A→B 一去不返）绝不告警——防误报红线在 service 层同样成立。 */
+  it("正常重启不告警（防误报）", async () => {
+    const svc = await buildService();
+    const svcAny = svc as any;
+    svcAny.observeAddressConflict(ADDR, A, "register");
+    svcAny.observeAddressConflict(ADDR, B, "register");
+    for (let i = 0; i < 5; i++) {
+      svcAny.observeAddressConflict(ADDR, B, "heartbeat");
+    }
+    expect(sendAll).not.toHaveBeenCalled();
+  });
+
+  /**
+   * fail-open 红线：通知抛错/缺席都绝不能影响注册与心跳主链。
+   * 这是 P0 必须守住的不变量——检测设施本身不能成为新的故障源。
+   */
+  it("通知同步抛错时 register/heartbeat 主链不受影响（fail-open）", async () => {
+    sendAll = jest.fn().mockImplementation(() => {
+      throw new Error("notification backend down");
+    });
+    const svc = await buildService();
+    executorRepo.findOne.mockResolvedValue({
+      id: "e1",
+      address: ADDR,
+      appName: "node-a",
+      executorStartupId: A,
+      executorStartedAt: new Date("2026-01-01T00:00:00Z"),
+      status: ExecutorStatus.ONLINE,
+      runningTaskCount: 0,
+      version: 1,
+    } as never);
+    executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+
+    await expect(svc.heartbeat(ADDR, { startupId: A })).resolves.toBeDefined();
+    await expect(svc.heartbeat(ADDR, { startupId: B })).resolves.toBeDefined();
+    // A 复活触发告警路径，但通知抛错被吞——主链照常返回。
+    await expect(svc.heartbeat(ADDR, { startupId: A })).resolves.toBeDefined();
+  });
+
+  /** 旧执行器（未上报 startupId）零影响：不告警、不抛错。 */
+  it("未上报 startupId 的旧执行器不触发任何冲突告警", async () => {
+    const svc = await buildService();
+    executorRepo.findOne.mockResolvedValue({
+      id: "e1",
+      address: ADDR,
+      appName: "legacy",
+      status: ExecutorStatus.ONLINE,
+      runningTaskCount: 0,
+      version: 1,
+    } as never);
+    executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+
+    await svc.heartbeat(ADDR, {});
+    await svc.heartbeat(ADDR, { startupId: null });
+    expect(sendAll).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * ARCH-35 P1（生产事故 2026-09-23）：部署归属偏好（`partitionByDeploymentAffinity`）
+ * 在 `dispatch()` 中的接线。
+ *
+ * 本块只覆盖**接线与端到端语义**（判据本身的边界已在
+ * `executor-deployment-affinity.util.spec.ts` 的 21 个用例里穷举）：
+ *  - 偏好生效：部署在评分**更差**的执行器上时，任务改派到那台；
+ *  - 降级：部署那台占坑失败（满/离线）→ 回落到全机队，**不失败**；
+ *  - 零行为变化：开关关 / 无 applicationId / 无部署行 / 仓库未装配；
+ *  - 容错：查询抛错不阻断派发；
+ *  - 可观测：决策日志的 deploymentAffinity 字段。
+ */
+describe("ARCH-35 P1: dispatch 部署归属偏好接线（ExecutorService）", () => {
+  let executorRepo: ReturnType<typeof makeRepo>;
+  let execRepo: ReturnType<typeof makeRepo>;
+  let taskRepo: ReturnType<typeof makeRepo>;
+  let metricsHistoryRepo: ReturnType<typeof makeRepo>;
+  let configService: { get: jest.Mock };
+  let appDeploymentRepo: { find: jest.Mock };
+
+  /** 两台在线执行器：e-best 评分最优（负载 0），e-deployed 负载更高。 */
+  const twoExecutors = () => [
+    {
+      id: "e-best",
+      address: "best:1",
+      status: ExecutorStatus.ONLINE,
+      runningTaskCount: 0,
+      maxConcurrentTasks: 10,
+      version: 1,
+    },
+    {
+      id: "e-deployed",
+      address: "deployed:2",
+      status: ExecutorStatus.ONLINE,
+      runningTaskCount: 3,
+      maxConcurrentTasks: 10,
+      version: 1,
+    },
+  ];
+
+  const buildService = async (opts: { withDeploymentRepo?: boolean } = {}) => {
+    const providers: any[] = [
+      ExecutorService,
+      { provide: getRepositoryToken(Executor), useValue: executorRepo },
+      { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
+      { provide: getRepositoryToken(Task), useValue: taskRepo },
+      {
+        provide: getRepositoryToken(ExecutorMetricsHistory),
+        useValue: metricsHistoryRepo,
+      },
+      { provide: getQueueToken("task-queue"), useValue: { add: jest.fn() } },
+      { provide: ConfigService, useValue: configService },
+      {
+        provide: NotificationService,
+        useValue: {
+          notifyFailure: jest.fn(),
+          notifyFailureWithConfig: jest.fn(),
+          notifyExecutorOnline: jest.fn().mockResolvedValue(undefined),
+          notifyExecutorOffline: jest.fn().mockResolvedValue(undefined),
+          sendAll: jest.fn(),
+        },
+      },
+      {
+        provide: SystemConfigService,
+        useValue: { findOne: jest.fn().mockRejectedValue(new Error("nf")) },
+      },
+      {
+        provide: SecretsCryptoService,
+        useValue: new SecretsCryptoService({ get: () => "" } as any),
+      },
+    ];
+    if (opts.withDeploymentRepo !== false) {
+      providers.push({
+        provide: getRepositoryToken(AppDeployment),
+        useValue: appDeploymentRepo,
+      });
+    }
+    const module = await Test.createTestingModule({ providers }).compile();
+    return module.get(ExecutorService);
+  };
+
+  /** 派发目标地址（axios POST 的 URL）。 */
+  const dispatchedTo = (): string => String(mockedAxios.post.mock.calls[0][0]);
+
+  beforeEach(() => {
+    executorRepo = makeRepo();
+    execRepo = makeRepo();
+    taskRepo = makeRepo();
+    metricsHistoryRepo = makeRepo();
+    appDeploymentRepo = { find: jest.fn().mockResolvedValue([]) };
+    // 默认：偏好开启（生产默认）。configService 只对本次新增的 key 返回 true。
+    configService = {
+      get: jest.fn((key: string) =>
+        key === "executor.preferDeployedExecutor" ? true : "http",
+      ),
+    };
+    jest.spyOn(Logger.prototype, "log").mockImplementation(() => undefined);
+    jest.spyOn(Logger.prototype, "warn").mockImplementation(() => undefined);
+    jest.spyOn(Logger.prototype, "error").mockImplementation(() => undefined);
+    // 本 describe 是外层 describe 的**兄弟**（不在其 beforeEach 作用域内），
+    // 故必须自行清理 mock：否则 axios.post 的调用记录会跨用例累积，
+    // dispatchedTo() 取到上一个用例的目标地址。
+    jest.clearAllMocks();
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  /** 核心修复：部署在评分更差的机器上时，任务必须派给**部署的那台**。 */
+  it("偏好生效：派给已部署该应用的执行器（即使它评分更差）", async () => {
+    const svc = await buildService();
+    executorRepo.find.mockResolvedValue(twoExecutors());
+    executorRepo.createQueryBuilder.mockReturnValue({
+      update: jest.fn().mockReturnThis(),
+      set: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      execute: jest.fn().mockResolvedValue({ affected: 1 }),
+    } as never);
+    appDeploymentRepo.find.mockResolvedValue([
+      {
+        executorId: "e-deployed",
+        executorAddress: "deployed:2",
+        status: "running",
+      },
+    ]);
+    mockedAxios.post.mockResolvedValue({ data: { ok: true } });
+
+    await svc.dispatch(
+      {
+        id: "task-1",
+        name: "t",
+        applicationId: "app-1",
+        // codeSource 必须显式声明为非 zip：否则 applicationId 非空 + codeSource
+        // 为空会命中 resolveDispatchTask 的 zip 并集兜底，转而要求 applicationRepo
+        // （本块不装配它）。git 渠道正是 manifest 自动注册产出的真实形态。
+        codeSource: TaskCodeSource.GIT,
+        timeout: 10,
+      } as unknown as Task,
+      { id: "exec-1", params: {} } as TaskExecution,
+    );
+
+    // 若无偏好，e-best（负载 0）会胜出——这正是事故现象。
+    expect(dispatchedTo()).toContain("deployed:2");
+  });
+
+  /** 存量行只有 executorAddress（executorId 为 null）时同样要生效。 */
+  it("偏好生效：executorId 为 null 的存量部署行按 address 命中", async () => {
+    const svc = await buildService();
+    executorRepo.find.mockResolvedValue(twoExecutors());
+    executorRepo.createQueryBuilder.mockReturnValue({
+      update: jest.fn().mockReturnThis(),
+      set: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      execute: jest.fn().mockResolvedValue({ affected: 1 }),
+    } as never);
+    appDeploymentRepo.find.mockResolvedValue([
+      {
+        executorId: null,
+        executorAddress: "deployed:2",
+        status: "running",
+      },
+    ]);
+    mockedAxios.post.mockResolvedValue({ data: { ok: true } });
+
+    await svc.dispatch(
+      {
+        id: "task-1",
+        name: "t",
+        applicationId: "app-1",
+        // codeSource 必须显式声明为非 zip：否则 applicationId 非空 + codeSource
+        // 为空会命中 resolveDispatchTask 的 zip 并集兜底，转而要求 applicationRepo
+        // （本块不装配它）。git 渠道正是 manifest 自动注册产出的真实形态。
+        codeSource: TaskCodeSource.GIT,
+        timeout: 10,
+      } as unknown as Task,
+      { id: "exec-1", params: {} } as TaskExecution,
+    );
+    expect(dispatchedTo()).toContain("deployed:2");
+  });
+
+  /**
+   * 降级红线：部署那台占坑失败（满/离线）时**必须回落**到全机队——
+   * 这是「偏好而非过滤」的关键证据，也是不新增失败面的保证。
+   */
+  it("降级：部署那台占坑失败时回落到其他候选，不抛错", async () => {
+    const svc = await buildService();
+    executorRepo.find.mockResolvedValue(twoExecutors());
+    // 第一次占坑（e-deployed）失败，第二次（e-best）成功。
+    const execute = jest
+      .fn()
+      .mockResolvedValueOnce({ affected: 0 })
+      .mockResolvedValueOnce({ affected: 1 });
+    executorRepo.createQueryBuilder.mockReturnValue({
+      update: jest.fn().mockReturnThis(),
+      set: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      execute,
+    } as never);
+    appDeploymentRepo.find.mockResolvedValue([
+      {
+        executorId: "e-deployed",
+        executorAddress: "deployed:2",
+        status: "running",
+      },
+    ]);
+    mockedAxios.post.mockResolvedValue({ data: { ok: true } });
+
+    await expect(
+      svc.dispatch(
+        {
+          id: "task-1",
+          name: "t",
+          applicationId: "app-1",
+          codeSource: TaskCodeSource.GIT,
+          timeout: 10,
+        } as unknown as Task,
+        { id: "exec-1", params: {} } as TaskExecution,
+      ),
+    ).resolves.toBeDefined();
+
+    // 尝试了两次占坑（先部署那台、后回落），最终派给 e-best。
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(dispatchedTo()).toContain("best:1");
+  });
+
+  /** 开关明确关闭 → 完全不查部署表，顺序与修复前一致。 */
+  it("开关关闭时完全不查询部署表，按纯负载择优", async () => {
+    configService.get.mockImplementation((key: string) =>
+      key === "executor.preferDeployedExecutor" ? false : "http",
+    );
+    const svc = await buildService();
+    executorRepo.find.mockResolvedValue(twoExecutors());
+    executorRepo.createQueryBuilder.mockReturnValue({
+      update: jest.fn().mockReturnThis(),
+      set: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      execute: jest.fn().mockResolvedValue({ affected: 1 }),
+    } as never);
+    mockedAxios.post.mockResolvedValue({ data: { ok: true } });
+
+    await svc.dispatch(
+      {
+        id: "task-1",
+        name: "t",
+        applicationId: "app-1",
+        // codeSource 必须显式声明为非 zip：否则 applicationId 非空 + codeSource
+        // 为空会命中 resolveDispatchTask 的 zip 并集兜底，转而要求 applicationRepo
+        // （本块不装配它）。git 渠道正是 manifest 自动注册产出的真实形态。
+        codeSource: TaskCodeSource.GIT,
+        timeout: 10,
+      } as unknown as Task,
+      { id: "exec-1", params: {} } as TaskExecution,
+    );
+    expect(appDeploymentRepo.find).not.toHaveBeenCalled();
+    expect(dispatchedTo()).toContain("best:1");
+  });
+
+  /** 任务无 applicationId（非应用任务）→ 不查部署表，零行为变化。 */
+  it("任务无 applicationId 时不查询部署表", async () => {
+    const svc = await buildService();
+    executorRepo.find.mockResolvedValue(twoExecutors());
+    executorRepo.createQueryBuilder.mockReturnValue({
+      update: jest.fn().mockReturnThis(),
+      set: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      execute: jest.fn().mockResolvedValue({ affected: 1 }),
+    } as never);
+    mockedAxios.post.mockResolvedValue({ data: { ok: true } });
+
+    await svc.dispatch(
+      { id: "task-1", name: "t", timeout: 10 } as unknown as Task,
+      { id: "exec-1", params: {} } as TaskExecution,
+    );
+    expect(appDeploymentRepo.find).not.toHaveBeenCalled();
+    expect(dispatchedTo()).toContain("best:1");
+  });
+
+  /** 无运行中部署（全 stopped/failed）→ 原序，仍派给评分最优者。 */
+  it("无运行中部署时保持原序（派给评分最优者）", async () => {
+    const svc = await buildService();
+    executorRepo.find.mockResolvedValue(twoExecutors());
+    executorRepo.createQueryBuilder.mockReturnValue({
+      update: jest.fn().mockReturnThis(),
+      set: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      execute: jest.fn().mockResolvedValue({ affected: 1 }),
+    } as never);
+    // 仓库按 status 过滤后返回空（模拟无 running 行）。
+    appDeploymentRepo.find.mockResolvedValue([]);
+    mockedAxios.post.mockResolvedValue({ data: { ok: true } });
+
+    await svc.dispatch(
+      {
+        id: "task-1",
+        name: "t",
+        applicationId: "app-1",
+        // codeSource 必须显式声明为非 zip：否则 applicationId 非空 + codeSource
+        // 为空会命中 resolveDispatchTask 的 zip 并集兜底，转而要求 applicationRepo
+        // （本块不装配它）。git 渠道正是 manifest 自动注册产出的真实形态。
+        codeSource: TaskCodeSource.GIT,
+        timeout: 10,
+      } as unknown as Task,
+      { id: "exec-1", params: {} } as TaskExecution,
+    );
+    expect(dispatchedTo()).toContain("best:1");
+  });
+
+  /** 仓库未装配（存量单测/异常装配）→ 偏好短路，派发照常成功。 */
+  it("部署仓库未装配时短路，派发照常成功", async () => {
+    const svc = await buildService({ withDeploymentRepo: false });
+    executorRepo.find.mockResolvedValue(twoExecutors());
+    executorRepo.createQueryBuilder.mockReturnValue({
+      update: jest.fn().mockReturnThis(),
+      set: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      execute: jest.fn().mockResolvedValue({ affected: 1 }),
+    } as never);
+    mockedAxios.post.mockResolvedValue({ data: { ok: true } });
+
+    await svc.dispatch(
+      {
+        id: "task-1",
+        name: "t",
+        applicationId: "app-1",
+        // codeSource 必须显式声明为非 zip：否则 applicationId 非空 + codeSource
+        // 为空会命中 resolveDispatchTask 的 zip 并集兜底，转而要求 applicationRepo
+        // （本块不装配它）。git 渠道正是 manifest 自动注册产出的真实形态。
+        codeSource: TaskCodeSource.GIT,
+        timeout: 10,
+      } as unknown as Task,
+      { id: "exec-1", params: {} } as TaskExecution,
+    );
+    expect(dispatchedTo()).toContain("best:1");
+  });
+
+  /** best-effort 红线：部署查询抛错绝不能阻断派发（偏好缺失 ≠ 无法调度）。 */
+  it("部署查询抛错时不阻断派发（best-effort 降级）", async () => {
+    const svc = await buildService();
+    executorRepo.find.mockResolvedValue(twoExecutors());
+    executorRepo.createQueryBuilder.mockReturnValue({
+      update: jest.fn().mockReturnThis(),
+      set: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      execute: jest.fn().mockResolvedValue({ affected: 1 }),
+    } as never);
+    appDeploymentRepo.find.mockRejectedValue(new Error("db down"));
+    mockedAxios.post.mockResolvedValue({ data: { ok: true } });
+
+    await expect(
+      svc.dispatch(
+        {
+          id: "task-1",
+          name: "t",
+          applicationId: "app-1",
+          codeSource: TaskCodeSource.GIT,
+          timeout: 10,
+        } as unknown as Task,
+        { id: "exec-1", params: {} } as TaskExecution,
+      ),
+    ).resolves.toBeDefined();
+    expect(dispatchedTo()).toContain("best:1");
+  });
+
+  /** 决策日志必须记录偏好命中面（可回溯「为什么派到这台」）。 */
+  it("决策日志含 deploymentAffinity 命中面", async () => {
+    const svc = await buildService();
+    const logSpy = jest
+      .spyOn(Logger.prototype, "log")
+      .mockImplementation(() => undefined);
+    executorRepo.find.mockResolvedValue(twoExecutors());
+    executorRepo.createQueryBuilder.mockReturnValue({
+      update: jest.fn().mockReturnThis(),
+      set: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      execute: jest.fn().mockResolvedValue({ affected: 1 }),
+    } as never);
+    appDeploymentRepo.find.mockResolvedValue([
+      {
+        executorId: "e-deployed",
+        executorAddress: "deployed:2",
+        status: "running",
+      },
+    ]);
+    mockedAxios.post.mockResolvedValue({ data: { ok: true } });
+
+    await svc.dispatch(
+      {
+        id: "task-1",
+        name: "t",
+        applicationId: "app-1",
+        // codeSource 必须显式声明为非 zip：否则 applicationId 非空 + codeSource
+        // 为空会命中 resolveDispatchTask 的 zip 并集兜底，转而要求 applicationRepo
+        // （本块不装配它）。git 渠道正是 manifest 自动注册产出的真实形态。
+        codeSource: TaskCodeSource.GIT,
+        timeout: 10,
+      } as unknown as Task,
+      { id: "exec-1", params: {} } as TaskExecution,
+    );
+
+    const decision = logSpy.mock.calls
+      .map((c) => String(c[0]))
+      .map((m) => {
+        try {
+          return JSON.parse(m);
+        } catch {
+          return null;
+        }
+      })
+      .find((p) => p && p.event === "dispatch.decision");
+    expect(decision).toBeTruthy();
+    expect(decision.deploymentAffinity).toEqual({
+      preferred: 1,
+      matchedByExecutorId: 1,
+      matchedByAddressOnly: 0,
+      runningDeployments: 1,
+    });
+    // 选中者就是部署那台，且 score 仍是**真实评分**（未被偏好污染）。
+    expect(decision.selected.address).toBe("deployed:2");
+    expect(typeof decision.selected.score).toBe("number");
+  });
+
+  /** 无部署行时决策日志的 deploymentAffinity 仍存在（区分"没部署"与"未适用"）。 */
+  it("无部署行时决策日志记录 preferred=0 而非 null", async () => {
+    const svc = await buildService();
+    const logSpy = jest
+      .spyOn(Logger.prototype, "log")
+      .mockImplementation(() => undefined);
+    executorRepo.find.mockResolvedValue(twoExecutors());
+    executorRepo.createQueryBuilder.mockReturnValue({
+      update: jest.fn().mockReturnThis(),
+      set: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      execute: jest.fn().mockResolvedValue({ affected: 1 }),
+    } as never);
+    appDeploymentRepo.find.mockResolvedValue([]);
+    mockedAxios.post.mockResolvedValue({ data: { ok: true } });
+
+    await svc.dispatch(
+      {
+        id: "task-1",
+        name: "t",
+        applicationId: "app-1",
+        // codeSource 必须显式声明为非 zip：否则 applicationId 非空 + codeSource
+        // 为空会命中 resolveDispatchTask 的 zip 并集兜底，转而要求 applicationRepo
+        // （本块不装配它）。git 渠道正是 manifest 自动注册产出的真实形态。
+        codeSource: TaskCodeSource.GIT,
+        timeout: 10,
+      } as unknown as Task,
+      { id: "exec-1", params: {} } as TaskExecution,
+    );
+
+    const decision = logSpy.mock.calls
+      .map((c) => String(c[0]))
+      .map((m) => {
+        try {
+          return JSON.parse(m);
+        } catch {
+          return null;
+        }
+      })
+      .find((p) => p && p.event === "dispatch.decision");
+    expect(decision.deploymentAffinity).toEqual({
+      preferred: 0,
+      matchedByExecutorId: 0,
+      matchedByAddressOnly: 0,
+      runningDeployments: 0,
+    });
+  });
+});
+
+/**
+ * ARCH-36（ADR-017 阶段 2）：`deviceFingerprint` 冲突/漂移观测在 service 层的接线。
+ *
+ * 判据本身已被 `executor-fingerprint.util.spec.ts` 的 30 个用例钉死；本组只验证
+ * 三件事，且都是"判据正确但没接线就等于没做"的形态：
+ *  1. **接线** —— register 与 heartbeat 两个入口喂给同一个跟踪器；
+ *  2. **可见性** —— 硬冲突外发 ERROR 通知、漂移只留 info 日志、节流生效；
+ *  3. **零行为变化** —— 未上报/非法指纹的存量执行器不登记、不告警、不写库，
+ *     且通知抛错不影响注册/心跳主链（fail-open）。
+ *
+ * 与 P0 的关系也在此显式断言：两个跟踪器**独立外发**，同一台机器同时命中两条
+ * 判据时会收到两条告警（证据面不同，刻意不去重）。
+ */
+describe("ExecutorService — ARCH-36 deviceFingerprint 冲突/漂移接线", () => {
+  const ADDR = "192.168.1.100:8002";
+  const ADDR2 = "10.0.0.7:8002";
+  const ADDR3 = "172.16.5.9:8002";
+  // 合法指纹形态：sha256 的 64 位小写十六进制（与执行器侧同源）。
+  const FP_A = "a1".repeat(32);
+  const FP_B = "b2".repeat(32);
+  const FP_OLD = "c3".repeat(32);
+  const A = "aaaaaaaa-0000-4000-8000-000000000001";
+  const B = "bbbbbbbb-0000-4000-8000-000000000002";
+
+  let executorRepo: ReturnType<typeof makeRepo>;
+  let execRepo: ReturnType<typeof makeRepo>;
+  let taskRepo: ReturnType<typeof makeRepo>;
+  let metricsHistoryRepo: ReturnType<typeof makeRepo>;
+  let configService: jest.Mocked<Pick<ConfigService, "get">>;
+  let sendAll: jest.Mock;
+
+  const buildService = async (): Promise<ExecutorService> => {
+    const module = await Test.createTestingModule({
+      providers: [
+        ExecutorService,
+        { provide: getRepositoryToken(Executor), useValue: executorRepo },
+        { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
+        { provide: getRepositoryToken(Task), useValue: taskRepo },
+        {
+          provide: getRepositoryToken(ExecutorMetricsHistory),
+          useValue: metricsHistoryRepo,
+        },
+        {
+          provide: getQueueToken("task-queue"),
+          useValue: { add: jest.fn().mockResolvedValue(undefined) },
+        },
+        { provide: ConfigService, useValue: configService },
+        {
+          provide: NotificationService,
+          useValue: {
+            notifyFailure: jest.fn(),
+            notifyFailureWithConfig: jest.fn(),
+            notifyExecutorOnline: jest.fn().mockResolvedValue(undefined),
+            notifyExecutorOffline: jest.fn().mockResolvedValue(undefined),
+            sendAll,
+          },
+        },
+        {
+          provide: SystemConfigService,
+          useValue: {
+            findOne: jest.fn().mockRejectedValue(new Error("not found")),
+          },
+        },
+        {
+          provide: SecretsCryptoService,
+          useValue: new SecretsCryptoService({ get: () => "" } as any),
+        },
+      ],
+    }).compile();
+    return module.get(ExecutorService);
+  };
+
+  /** 一行已存在的执行器（register 走重注册路径、heartbeat 直接命中）。 */
+  const existingRow = (overrides: Record<string, unknown> = {}) =>
+    ({
+      id: "e1",
+      address: ADDR,
+      appName: "node-a",
+      status: ExecutorStatus.ONLINE,
+      runningTaskCount: 0,
+      version: 1,
+      ...overrides,
+    }) as never;
+
+  beforeEach(() => {
+    executorRepo = makeRepo();
+    execRepo = makeRepo();
+    taskRepo = makeRepo();
+    metricsHistoryRepo = makeRepo();
+    configService = { get: jest.fn().mockReturnValue("http") } as never;
+    sendAll = jest.fn().mockResolvedValue(undefined);
+    // 冲突告警走 logger.error、漂移走 logger.log——测试里静音，断言靠 spy 计数。
+    jest.spyOn(Logger.prototype, "log").mockImplementation(() => undefined);
+    jest.spyOn(Logger.prototype, "debug").mockImplementation(() => undefined);
+    jest.spyOn(Logger.prototype, "warn").mockImplementation(() => undefined);
+    jest.spyOn(Logger.prototype, "error").mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  /** register 与 heartbeat 必须共享同一跟踪器，否则各自"首次见到"，冲突永不触发。 */
+  it("register 与 heartbeat 共享跟踪状态（跨入口可判硬冲突）", async () => {
+    const svc = await buildService();
+    executorRepo.findOne.mockResolvedValue(existingRow());
+    executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+    (svc as any).rotateToken = jest.fn().mockResolvedValue({ token: "tok" });
+
+    // register 登记安装 A 的指纹。
+    await svc.register({
+      appName: "node-a",
+      address: ADDR,
+      deviceFingerprint: FP_A,
+    });
+    expect(sendAll).not.toHaveBeenCalled();
+
+    // heartbeat 上报同一 address 的**另一个**安装 B → 直接证据成立。
+    await svc.heartbeat(ADDR, { deviceFingerprint: FP_B });
+    expect(sendAll).toHaveBeenCalledTimes(1);
+    expect(String(sendAll.mock.calls[0][0].title)).toContain(
+      "shared by multiple installs",
+    );
+    expect(String(sendAll.mock.calls[0][0].title)).toContain(ADDR);
+  });
+
+  /** 硬冲突必须外发 ERROR 级通知（数据正确性问题，不能只落 debug）。 */
+  it("硬冲突外发一次 error 级通知，且载荷含可排障信息", async () => {
+    const svc = await buildService();
+    const svcAny = svc as any;
+    // 直接驱动接线，聚焦"载荷与级别"而非重复覆盖判据。
+    svcAny.observeDeviceFingerprint(ADDR, FP_A, "register");
+    svcAny.observeDeviceFingerprint(ADDR, FP_B, "heartbeat");
+
+    expect(sendAll).toHaveBeenCalledTimes(1);
+    const payload = sendAll.mock.calls[0][0];
+    expect(payload.level).toBe("error");
+    expect(payload.title).toContain(ADDR);
+    // 排障必需信息：现象（几个指纹）、**并存双方是谁**（只报"有几个"运维仍要
+    // 手工翻日志关联，给不出处置面）、动作（怎么修）、判据来源（为什么可信）。
+    expect(payload.content).toContain(FP_A.slice(0, 12));
+    expect(payload.content).toContain(FP_B.slice(0, 12));
+    expect(payload.content).toContain("EXECUTOR_ADDRESS_PUBLIC");
+    expect(payload.content).toContain("deviceFingerprint");
+  });
+
+  /** 地址漂移（同一安装换 IP）只留 info 日志，**绝不告警**——狼来了红线。 */
+  it("地址漂移只记 log 不告警", async () => {
+    const svc = await buildService();
+    const logSpy = jest
+      .spyOn(Logger.prototype, "log")
+      .mockImplementation(() => undefined);
+    const svcAny = svc as any;
+
+    // 同一指纹先在 ADDR 出现，随后从 ADDR2 上报 = 机器换网。
+    svcAny.observeDeviceFingerprint(ADDR, FP_A, "heartbeat");
+    svcAny.observeDeviceFingerprint(ADDR2, FP_A, "heartbeat");
+
+    expect(sendAll).not.toHaveBeenCalled();
+    const driftLogged = logSpy.mock.calls.some((c) =>
+      String(c[0]).includes("address drift, not a conflict"),
+    );
+    expect(driftLogged).toBe(true);
+  });
+
+  /** 节流：同一 (address, fingerprint) 在窗口内重复冲突只外发一次（心跳 30s 高频）。 */
+  it("冲突告警受节流保护（不刷通知）", async () => {
+    const svc = await buildService();
+    const svcAny = svc as any;
+    svcAny.observeDeviceFingerprint(ADDR, FP_A, "register");
+    svcAny.observeDeviceFingerprint(ADDR, FP_B, "heartbeat"); // 首次告警
+    for (let i = 0; i < 5; i++) {
+      svcAny.observeDeviceFingerprint(ADDR, FP_B, "heartbeat");
+    }
+    expect(sendAll).toHaveBeenCalledTimes(1);
+  });
+
+  /** 正常重启（同一安装、同一指纹）绝不告警——指纹跨重启不变是判据的基石。 */
+  it("正常重启不告警（防误报）", async () => {
+    const svc = await buildService();
+    const svcAny = svc as any;
+    svcAny.observeDeviceFingerprint(ADDR, FP_A, "register");
+    for (let i = 0; i < 5; i++) {
+      svcAny.observeDeviceFingerprint(ADDR, FP_A, "heartbeat");
+    }
+    expect(sendAll).not.toHaveBeenCalled();
+  });
+
+  /**
+   * 两个跟踪器**独立外发**：同一台机器同时命中 P0 时序判据与 ARCH-36 身份判据时，
+   * 会收到两条告警。这是刻意保留的——两条判据的证据面不同（进程并存 vs 安装身份
+   * 冲突），合并会丢失"哪条通路成立"的区分度。
+   */
+  it("P0 与 ARCH-36 两条判据各自独立外发（不去重）", async () => {
+    const svc = await buildService();
+    const svcAny = svc as any;
+    svcAny.observeAddressConflict(ADDR, A, "register");
+    svcAny.observeDeviceFingerprint(ADDR, FP_A, "register");
+    svcAny.observeAddressConflict(ADDR, B, "register");
+    svcAny.observeDeviceFingerprint(ADDR, FP_B, "register"); // 指纹冲突 → 1
+    svcAny.observeAddressConflict(ADDR, A, "heartbeat"); // A 复活 → 2
+    svcAny.observeDeviceFingerprint(ADDR, FP_B, "heartbeat"); // 节流，不加
+
+    expect(sendAll).toHaveBeenCalledTimes(2);
+    const titles = sendAll.mock.calls.map((c) => String(c[0].title));
+    expect(titles.some((t) => t.includes("Executor address conflict"))).toBe(
+      true,
+    );
+    expect(titles.some((t) => t.includes("shared by multiple installs"))).toBe(
+      true,
+    );
+  });
+
+  /** 首注册即上报 → 落列（v3 执行器的正常路径）。 */
+  it("首注册带上合法指纹时写入新行", async () => {
+    const svc = await buildService();
+    executorRepo.findOne.mockResolvedValue(null);
+    executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+
+    await svc.register({
+      appName: "node-a",
+      address: ADDR,
+      deviceFingerprint: FP_A,
+    });
+
+    expect(executorRepo.create).toHaveBeenCalledTimes(1);
+    expect(executorRepo.create.mock.calls[0][0].deviceFingerprint).toBe(FP_A);
+  });
+
+  /** 首注册携带非法指纹 → 视同未上报，列保持 NULL（不写脏值）。 */
+  it("首注册携带非法指纹时不落列（视同未上报）", async () => {
+    const svc = await buildService();
+    executorRepo.findOne.mockResolvedValue(null);
+    executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+
+    await svc.register({
+      appName: "node-a",
+      address: ADDR,
+      deviceFingerprint: "NOT-A-FINGERPRINT",
+    });
+
+    expect(
+      executorRepo.create.mock.calls[0][0].deviceFingerprint,
+    ).toBeUndefined();
+  });
+
+  /** 重注册采纳合法指纹（阶段 3 的读面数据来源）。 */
+  it("重注册采纳合法指纹并落库", async () => {
+    const svc = await buildService();
+    const row = existingRow();
+    executorRepo.findOne.mockResolvedValue(row);
+    executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+
+    await svc.register({
+      appName: "node-a",
+      address: ADDR,
+      deviceFingerprint: FP_A,
+    });
+
+    expect((row as any).deviceFingerprint).toBe(FP_A);
+    expect(executorRepo.save).toHaveBeenCalled();
+  });
+
+  /** 重注册携带非法指纹 → 绝不动 DB（不得把已存值擦成 NULL）。 */
+  it("重注册携带非法指纹时保留 DB 旧值", async () => {
+    const svc = await buildService();
+    const row = existingRow({ deviceFingerprint: FP_OLD });
+    executorRepo.findOne.mockResolvedValue(row);
+    executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+
+    await svc.register({
+      appName: "node-a",
+      address: ADDR,
+      deviceFingerprint: "zzz",
+    });
+
+    expect((row as any).deviceFingerprint).toBe(FP_OLD);
+  });
+
+  /** 心跳采纳合法指纹。 */
+  it("心跳采纳合法指纹", async () => {
+    const svc = await buildService();
+    const row = existingRow({ deviceFingerprint: null });
+    executorRepo.findOne.mockResolvedValue(row);
+    executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+
+    await svc.heartbeat(ADDR, { deviceFingerprint: FP_A });
+
+    expect((row as any).deviceFingerprint).toBe(FP_A);
+  });
+
+  /**
+   * **本阶段最关键的兼容性红线**：心跳缺省该字段时绝不动 DB。
+   * 旧执行器（协议 v1/v2）或采集失败的 v3 执行器每 30s 一次心跳，若"缺省即置
+   * NULL"，会把已存的指纹历史擦光——那正是冲突观测最需要的证据。
+   */
+  it("心跳缺省指纹时绝不清空 DB 已存值", async () => {
+    const svc = await buildService();
+    const row = existingRow({ deviceFingerprint: FP_OLD });
+    executorRepo.findOne.mockResolvedValue(row);
+    executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+
+    await svc.heartbeat(ADDR, {});
+    await svc.heartbeat(ADDR, { cpuUsage: 12 });
+
+    expect((row as any).deviceFingerprint).toBe(FP_OLD);
+  });
+
+  /** 心跳携带非法指纹 → 只留 debug（不 warn 刷屏），DB 保留旧值。 */
+  it("心跳携带非法指纹时保留 DB 旧值", async () => {
+    const svc = await buildService();
+    const row = existingRow({ deviceFingerprint: FP_OLD });
+    executorRepo.findOne.mockResolvedValue(row);
+    executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+
+    await svc.heartbeat(ADDR, { deviceFingerprint: "not-hex-at-all" });
+
+    expect((row as any).deviceFingerprint).toBe(FP_OLD);
+  });
+
+  /**
+   * 存量旧执行器（未上报指纹）零影响：不登记、不告警、不抛错。
+   * 这是"零行为变化"验收的核心断言。
+   */
+  it("未上报指纹的旧执行器不触发任何告警", async () => {
+    const svc = await buildService();
+    const svcAny = svc as any;
+    const errorSpy = jest
+      .spyOn(Logger.prototype, "error")
+      .mockImplementation(() => undefined);
+    executorRepo.findOne.mockResolvedValue(existingRow());
+    executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+
+    await svc.heartbeat(ADDR, {});
+    await svc.heartbeat(ADDR, { deviceFingerprint: null });
+    await svc.heartbeat(ADDR, { deviceFingerprint: "  " });
+
+    expect(sendAll).not.toHaveBeenCalled();
+    expect(errorSpy).not.toHaveBeenCalled();
+    // 计数器仍会 +1（口径："累计观测次数"含未上报），但没有任何指纹被登记。
+    expect(svcAny.deviceFingerprintTracker.stats().reportsWithFingerprint).toBe(
+      0,
+    );
+    expect(svcAny.deviceFingerprintTracker.stats().trackedAddresses).toBe(0);
+  });
+
+  /**
+   * fail-open 红线：通知后端同步抛错时，register/heartbeat 主链照常返回。
+   * 检测设施本身不能成为新的故障源。
+   */
+  it("通知同步抛错时 register/heartbeat 主链不受影响（fail-open）", async () => {
+    sendAll = jest.fn().mockImplementation(() => {
+      throw new Error("notification backend down");
+    });
+    const svc = await buildService();
+    executorRepo.findOne.mockResolvedValue(existingRow());
+    executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+    (svc as any).rotateToken = jest.fn().mockResolvedValue({ token: "tok" });
+
+    await expect(
+      svc.register({
+        appName: "node-a",
+        address: ADDR,
+        deviceFingerprint: FP_A,
+      }),
+    ).resolves.toBeDefined();
+    // FP_B 触发硬冲突路径，但通知抛错被吞——主链照常返回。
+    await expect(
+      svc.heartbeat(ADDR, { deviceFingerprint: FP_B }),
+    ).resolves.toBeDefined();
+  });
+
+  /** 观测口径可读：冲突率、覆盖率是"到底有多少台真的报了"的唯一来源。 */
+  it("观测口径（stats）如实反映覆盖率与冲突率", async () => {
+    const svc = await buildService();
+    const svcAny = svc as any;
+    svcAny.observeDeviceFingerprint(ADDR, FP_A, "heartbeat");
+    svcAny.observeDeviceFingerprint(ADDR, FP_B, "heartbeat"); // 同址双指纹 = 冲突
+    svcAny.observeDeviceFingerprint(ADDR2, FP_A, "heartbeat"); // 漂移
+    svcAny.observeDeviceFingerprint(ADDR3, null, "heartbeat"); // 存量未上报
+
+    const stats = svcAny.deviceFingerprintTracker.stats();
+    expect(stats.reports).toBe(4);
+    expect(stats.reportsWithFingerprint).toBe(3);
+    expect(stats.trackedAddresses).toBe(2);
+    expect(stats.addressesWithMultipleFingerprints).toBe(1);
+    expect(stats.trackedFingerprints).toBe(2);
+    expect(stats.fingerprintsOnMultipleAddresses).toBe(1);
+    expect(stats.conflictRate).toBe(0.5);
   });
 });

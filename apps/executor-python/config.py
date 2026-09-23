@@ -392,5 +392,9 @@ EXECUTOR_VERSION = '2.0.0'
 # commands」与「不认识」，否则会把控制命令发进一个被静默忽略的字段里。
 # 中台侧门禁：PROTOCOL_CONTROL_PLANE_MIN = 2（protocol-compat.util.ts）。
 # `supportedMinProtocolVersion` 保持 1——旧执行器照常注册，只是收不到命令。
-PROTOCOL_VERSION = 2
+#
+# ARCH-36（ADR-017 阶段 2）：2 → 3。register/heartbeat 新增**可选**
+# `deviceFingerprint`（device_identity.py）。中台据此区分「v3 执行器**应**上报
+# 指纹」与「存量执行器从未上报」——前者缺失 = 采集失败，后者缺失 = 预期为空。
+PROTOCOL_VERSION = 3
 

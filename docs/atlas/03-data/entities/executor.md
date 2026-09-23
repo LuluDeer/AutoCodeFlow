@@ -1,6 +1,6 @@
 # Executor 实体（executors 表）— 执行器注册表
 
-> 所属: docs/atlas/03-data · 最后核对: 2026-09-13 · 对应代码: apps/admin-api/src/modules/executor/entities/executor.entity.ts
+> 所属: docs/atlas/03-data · 最后核对: 2026-09-23 · 对应代码: apps/admin-api/src/modules/executor/entities/executor.entity.ts
 
 ## 所属模块与源文件
 
@@ -36,6 +36,7 @@
 | `groupName` | varchar nullable | 逻辑分组（任务 `executorGroup` 的匹配对象） |
 | `tags` | simple-array nullable | 路由标签（任务 `executorTags` AND 子集 / 亲和反亲和） |
 | `description` | text nullable | 描述 |
+| `deviceFingerprint` | varchar(64) nullable | ARCH-36（ADR-017 阶段 2）：稳定设备唯一身份 `sha256(deviceId + ":" + installSalt)`（64 位小写十六进制），执行器经 register/heartbeat 上报。**只采集与观测，不参与任何定位**（注册仍按 `address` 定位行）。NULL = 未上报（存量旧执行器，或协议 v3 却采集失败——两者用 `protocolVersion` 区分）；字段缺省或形态非法一律**保留 DB 旧值**（不得把已存历史擦成 NULL）。采集组成见 [ADR-017](../../../adr/adr-017-executor-unique-identity.md)（迁移 `1790000000038`） |
 | `projectId` | uuid nullable | AUTH-01：归属项目；迁移 `1790000000009` 加列 + FK ON DELETE SET NULL + 索引；存量不回填 |
 | `createdAt` / `updatedAt` | timestamptz | 自动维护 |
 | `version` | int | `@VersionColumn` 乐观锁（R-P0-006，防派发竞态） |
@@ -47,6 +48,7 @@
 | `uq_executors_address` | 实体 `@Index(…, ["address"], { unique: true })` | 地址唯一（重复注册走更新） |
 | `status` / `groupName` / `lastHeartbeat` | 实体 `@Index` | 调度过滤三件套 |
 | `projectId` FK `ON DELETE SET NULL` + 索引 | 迁移 `1790000000009` | AUTH-01 |
+| `idx_executors_device_fingerprint` | 实体 `@Index("idx_executors_device_fingerprint", ["deviceFingerprint"])` | ARCH-36：**故意非唯一**——阶段 2 只按指纹做冲突/漂移观测（「同址多指纹」= 硬冲突），唯一性约束留 ADR-017 阶段 3 回填 `legacy:${address}` 后单独加 |
 
 ## 关系
 
@@ -55,7 +57,7 @@
 
 ## 生命周期与写入方
 
-- **创建/更新**：`ExecutorService`——注册（upsert by address）、心跳（status/指标/runningTaskCount/runningExecutionIds/deadLetterCount 全量刷新）、token 轮换。
+- **创建/更新**：`ExecutorService`——注册（upsert by address）、心跳（status/指标/runningTaskCount/runningExecutionIds/deadLetterCount 全量刷新）、token 轮换。ARCH-36 起 register/heartbeat 还双向写入 `deviceFingerprint`（三态采纳：缺省/非法不动 DB），并在写入**之前**做冲突/漂移观测（`executor-fingerprint.util.ts`）——观测必须在 DB 写入前，否则「本次上报是否新增了一个指纹」这个事件会被自己的写入掩盖。
 - **状态维护**：`ExecutorService` 离线 sweep（心跳超时置 offline）；执行器进程重启经 `executorStartupId` 识别。
 - **读取**：调度派发（group/tags/runtime 过滤 → 亲和/反亲和 → loadScore 择优，CORE-05 的 `estimatedDurationSec` 参与加权）、stale 扫描、admin-web 执行器页。
 

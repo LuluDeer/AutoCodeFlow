@@ -269,6 +269,14 @@ const PROTECTED_WORKDIR_NAMES = new Set([
   // 从一开始就含 `.venvs`，node 侧是本特性才引入这个目录，必须同步）。
   // 它的过期回收走下方与 .git_cache/.node_modules 同构的按分片 TTL 清扫。
   '.venvs',
+  // ARCH-36（ADR-017 阶段 2）：`.device-identity` 存放安装实例盐
+  // （`<workDir>/.device-identity/<kind>.salt`）。**必须保护**——下面第 1 段
+  // 清扫遍历 workDir 的**所有**顶层条目（含普通文件）并按 mtime 删除，盐被删
+  // 掉后下次启动会重新生成，deviceFingerprint 随之静默漂移（默认 7 天一次），
+  // 于是「同一 address 出现两个指纹」这类观测全部失真，ADR-017 阶段 3 以指纹
+  // 为定位键时更会把同一台机器当成新设备。python 侧
+  // `maintenance._PROTECTED_WORKDIR_NAMES` 同名同源。
+  '.device-identity',
 ]);
 
 // E-08: active-execution guard for the workdir sweep. The set of live

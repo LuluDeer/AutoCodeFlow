@@ -31,6 +31,9 @@ logger = logging.getLogger(__name__)
 # Re-exported here so existing importers (main.py, tests) keep working.
 from startup_identity import executor_started_at, executor_startup_id  # noqa: F401
 
+# ARCH-36（ADR-017 阶段 2）：稳定设备指纹（register / heartbeat 同源，memo 一次）。
+from device_identity import get_device_fingerprint
+
 # EXE-VER-1: 版本漂移告警节流（node scheduler.ts warnVersionDriftThrottled 对齐）
 # —— 同一次不合规期最多每 10 分钟 warning 一条，防 30s 心跳刷屏。
 _VERSION_DRIFT_WARN_INTERVAL_SECONDS = 10 * 60
@@ -245,6 +248,55 @@ def _heartbeat_retry_exhausted(retry_state):
     return None
 
 
+def _heartbeat_payload(cpu: float, mem: float) -> dict:
+    """心跳载荷（提为具名函数只为让 ARCH-36 的指纹键可**条件**加入）。
+
+    ARCH-36（ADR-017 阶段 2）：`deviceFingerprint` 在采集成功时才**加入该键**，
+    采集失败时**整个键缺席**——与 node 侧 `getDeviceFingerprint() ?? undefined`
+    （JSON 序列化时丢弃 undefined）逐字节同形。admin 对「键缺席」的语义是
+    「保留已存值」，故缺席与送 null 在此处**不等价**：前者不动 DB，后者需要
+    admin 额外把非字符串判为无效。两端都省略，语义单一。
+    """
+    payload = {
+        'address': settings.executor_address_public or settings.executor_address,
+        'cpuUsage': cpu,
+        'memUsage': mem,
+        'runningTaskCount': get_running_count(),
+        # E-01: runningTaskCount 诚实包含 pull 循环「预留中」的槽位——
+        # 预留即占位（try_reserve_running_slot 与 push 派发同一账本），
+        # admin 容量核算在长轮询窗口内看到的就是满载，不会再把 push 派
+        # 发塞进最后一个空槽（这正是关闭竞态窗口的机制本身）。
+        # E1: liveness report — capped at 200 ids (node parity,
+        # scheduler.ts sendHeartbeat). Always present, never omitted.
+        'runningExecutionIds': _running_execution_ids_provider()[:200],
+        # E2: dead-letter backlog (node scheduler.ts sendHeartbeat sends
+        # deadLetterCountProvider()). Always present, never omitted; the
+        # provider serves a cached count so this never rescans the disk.
+        'deadLetterCount': max(0, int(_dead_letter_count_provider())),
+        # FR-13/FR-14（python_task_multiversion, CONTRACT.md §2.3）：解释器
+        # 缓存池清单——与 runningExecutionIds/deadLetterCount 同一 provider
+        # 模式。池变化时由 WS3 模块的 invalidate_cache 收敛，provider 本身
+        # 走缓存，心跳不会每次探测（NFR-10）。
+        'interpreters': _collect_interpreters(),
+        'restartedAt': executor_started_at,
+        'startupId': executor_startup_id,
+        # EXE-VER-1: 版本随心跳上报（node scheduler.ts 对齐，可选字段）；
+        # 中心端 EXECUTOR_MIN_VERSION 门禁开启时在响应回显合规态（下方消费）。
+        'version': EXECUTOR_VERSION,
+        # PROTOCOL-VER（B-3/U-2）：协议版本随心跳回传（与 register 同源），
+        # 中台可据此在心跳路径做兼容性分支（见 config.py PROTOCOL_VERSION）。
+        'protocolVersion': PROTOCOL_VERSION,
+    }
+    # ARCH-36（ADR-017 阶段 2）：设备指纹随心跳**幂等重传**（register 已落库）。
+    # 价值：①「注册期数据目录恰好只读、之后恢复」可自愈；② admin 可比对注册期
+    # 与心跳期是否一致（不一致 = 盐文件被换 / 工作目录改了）。memo 命中后是纯
+    # 内存读取，心跳路径零额外开销。
+    fingerprint = get_device_fingerprint()
+    if fingerprint:
+        payload['deviceFingerprint'] = fingerprint
+    return payload
+
+
 @retry(
     stop=stop_after_attempt(3),
     # E-44: 心跳重试叠加随机抖动（0~2s），避免多 executor 在相同 admin 恢复
@@ -281,36 +333,7 @@ async def _send_heartbeat(client: httpx.AsyncClient, token: str, trace_id: str =
         build_admin_api_url('/executors/heartbeat'),
         token=token,
         headers=headers,
-        json={
-            'address': settings.executor_address_public or settings.executor_address,
-            'cpuUsage': cpu,
-            'memUsage': mem,
-            'runningTaskCount': get_running_count(),
-            # E-01: runningTaskCount 诚实包含 pull 循环「预留中」的槽位——
-            # 预留即占位（try_reserve_running_slot 与 push 派发同一账本），
-            # admin 容量核算在长轮询窗口内看到的就是满载，不会再把 push 派
-            # 发塞进最后一个空槽（这正是关闭竞态窗口的机制本身）。
-            # E1: liveness report — capped at 200 ids (node parity,
-            # scheduler.ts sendHeartbeat). Always present, never omitted.
-            'runningExecutionIds': _running_execution_ids_provider()[:200],
-            # E2: dead-letter backlog (node scheduler.ts sendHeartbeat sends
-            # deadLetterCountProvider()). Always present, never omitted; the
-            # provider serves a cached count so this never rescans the disk.
-            'deadLetterCount': max(0, int(_dead_letter_count_provider())),
-            # FR-13/FR-14（python_task_multiversion, CONTRACT.md §2.3）：解释器
-            # 缓存池清单——与 runningExecutionIds/deadLetterCount 同一 provider
-            # 模式。池变化时由 WS3 模块的 invalidate_cache 收敛，provider 本身
-            # 走缓存，心跳不会每次探测（NFR-10）。
-            'interpreters': _collect_interpreters(),
-            'restartedAt': executor_started_at,
-            'startupId': executor_startup_id,
-            # EXE-VER-1: 版本随心跳上报（node scheduler.ts 对齐，可选字段）；
-            # 中心端 EXECUTOR_MIN_VERSION 门禁开启时在响应回显合规态（下方消费）。
-            'version': EXECUTOR_VERSION,
-            # PROTOCOL-VER（B-3/U-2）：协议版本随心跳回传（与 register 同源），
-            # 中台可据此在心跳路径做兼容性分支（见 config.py PROTOCOL_VERSION）。
-            'protocolVersion': PROTOCOL_VERSION,
-        },
+        json=_heartbeat_payload(cpu, mem),
         timeout=5,
     )
     response.raise_for_status()

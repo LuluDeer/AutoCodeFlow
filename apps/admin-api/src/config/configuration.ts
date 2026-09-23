@@ -251,6 +251,22 @@ export default () => ({
       process.env.EXECUTOR_CANDIDATE_POOL_SIZE || "500",
       10,
     ),
+    /**
+     * ARCH-35 P1（生产事故 2026-09-23）：部署归属偏好开关。
+     *
+     * 开启后 `dispatch()` 在**已按负载评分排序**的候选序列上做一次稳定分区：
+     * 把「该应用确实正跑在这台」（`app_deployments.status='running'`）的执行器
+     * 整体前置，组内保持原评分顺序；占坑仍按序逐个尝试，前置那台满了/离线了
+     * 就自然降级回全机队。**默认 true**——这是修主因的开关，关掉等于回到
+     * 「用户部署在 A、任务跑在 B」的事故行为。
+     *
+     * 为什么默认开（而非默认关、灰度再开）：本特性**不新增任何失败面**——
+     * 它只改尝试顺序，不剔除任何候选（`partitionByDeploymentAffinity` 的
+     * ordered 与入参同元素集）。无部署行 / 无 running / 单候选时逐字节等于
+     * 旧行为，因此默认开的风险面仅为「任务更倾向落在应用已部署的那台」，
+     * 这正是用户预期。置 false 可一行回滚。
+     */
+    preferDeployedExecutor: process.env.EXECUTOR_PREFER_DEPLOYED !== "false",
     // ARCH-27: SSRF 豁免开关在此统一注册 —— 运行时消费方
     // （safe-http.util.assertSafeExecutorUrl）经 ConfigService 读取，
     // 不再直读 process.env。

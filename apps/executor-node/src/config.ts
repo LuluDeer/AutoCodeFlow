@@ -360,5 +360,12 @@ export const EXECUTOR_VERSION = readPackageVersion();
  * 中台侧门禁：PROTOCOL_CONTROL_PLANE_MIN = 2（protocol-compat.util.ts）。
  * `supportedMinProtocolVersion` 保持 1——旧执行器照常注册，只是收不到命令
  * （兼容性红线：不得因缺新字段被剔除）。
+ *
+ * ARCH-36（ADR-017 阶段 2）：2 → 3。register/heartbeat 新增**可选**
+ * `deviceFingerprint`（`device-identity.ts`）。同样按 evolutionRules 第 1 条
+ * bump：中台据此区分「v3 执行器**应**上报指纹」与「存量执行器从未上报」——
+ * 前者缺失 = 采集失败（要排查），后者缺失 = 预期为空。没有这道区分，冲突率
+ * 与覆盖率两个观测指标都无法解释。注意该字段方向是**执行器→中台**，中台从
+ * 不下发，故 bump 不改变任何既有分支（PROTOCOL_CONTROL_PLANE_MIN 仍为 2）。
  */
-export const PROTOCOL_VERSION = 2;
+export const PROTOCOL_VERSION = 3;

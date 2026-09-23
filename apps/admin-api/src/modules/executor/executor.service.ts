@@ -42,6 +42,18 @@ import { Task, TaskCodeSource } from "../task/entities/task.entity";
 // 避免 executor↔application 的实体关系耦合（ApplicationModule 反向 import
 // TaskModule+ExecutorModule，加关系会引入模块环）。
 import { Application } from "../application/entities/application.entity";
+// ARCH-35 P1（生产事故 2026-09-23）：派发时读取「该应用部署在哪台执行器」。
+// 只加 Repository，不 import ApplicationModule（反向 import 会成环，同上方
+// Application 的注释）。AppDeployment 的 @ManyToOne(Application) 是实体关系，
+// 只需 Application 实体已注册，不构成模块依赖。
+import {
+  AppDeployment,
+  DeploymentStatus,
+} from "../application/entities/app-deployment.entity";
+// ARCH-35 P1：部署归属**偏好**（稳定分区，非过滤）——判据与「为什么不能硬
+// 过滤」的完整论证见 util 头注（执行器侧任务执行不依赖本地部署，硬过滤会
+// 误伤全部未部署任务与 python 执行器）。
+import { partitionByDeploymentAffinity } from "./executor-deployment-affinity.util";
 // python_task_multiversion（WS2 · CONTRACT §1.2/§2.2/§3.1）：解释器缓存池
 // 匹配的唯一事实源（纯函数）。三处调度站点 + pinning 守卫 + 上报采纳共用，
 // 杜绝三份漂移（对齐 executor-score.util.ts 的抽取先例）。
@@ -70,6 +82,21 @@ import {
 } from "./protocol-compat.util";
 // ARCH-32: pull 模式派发队列（ADR-015）——NAT 内执行器零入站回连
 import { ExecutorPullService } from "./executor-pull.service";
+// ARCH-34 P0（生产事故 2026-09-23）：address 冲突检测——`address` 是唯一键
+// 但为执行器自报（NAT 下局域网 IP 可碰撞），两台机器共享同一行会导致注册
+// 互相覆盖、pull 队列被抢、重启恢复互相误杀。本模块只做检测与可见性。
+import {
+  createAddressConflictTracker,
+  type AddressConflictObservation,
+} from "./executor-address-conflict.util";
+// ARCH-36（ADR-017 阶段 2）：deviceFingerprint 校验 + 冲突/漂移观测。
+// 与 P0 的 startupId 时序判据**并存**：P0 覆盖存量执行器（无新字段），本模块
+// 给出跨重启稳定身份带来的**直接**判据（零误报），两者互不替代（见 util 头注）。
+import {
+  createDeviceFingerprintTracker,
+  normalizeDeviceFingerprint,
+  type FingerprintObservation,
+} from "./executor-fingerprint.util";
 // SEC-02: 任务级 secrets 派发解密（落库加密在 TaskService 写路径）
 import { SecretsCryptoService } from "../../common/utils/secret-crypto.util.service";
 // FEAT-07: executor.offline 出站事件（总线 @Global；Optional 注入先例 task.service）
@@ -228,6 +255,32 @@ export class ExecutorService {
     { packageUrl: string; cachedAt: number }
   >();
 
+  /**
+   * ARCH-34 P0：address 冲突跟踪器（**实例字段**，register 与 heartbeat 共享）。
+   *
+   * 为什么是实例而非模块级单例：两个入口跑在同一 provider 实例上，实例字段
+   * 已满足共享需求；模块级状态会跨测试文件泄漏（仓库既有前科见
+   * `__resetTruncationWarnStateForTest` 头注）。
+   *
+   * 多副本部署语义：各副本独立观察，状态不跨实例共享——漏报由「任一副本命中
+   * 即告警」而非状态同步承担，与 tokenValidationCache 等既有进程内缓存同款。
+   */
+  private readonly addressConflictTracker = createAddressConflictTracker();
+
+  /**
+   * ARCH-36（ADR-017 阶段 2）：`deviceFingerprint` 冲突/漂移观测器。
+   *
+   * 与 `addressConflictTracker` **并存**，判据正交：
+   * - 本跟踪器：同一 address 出现两个**不同指纹** → 两台不同安装共用一行
+   *   （直接证据，零误报）；同一指纹换 address → 地址漂移（正常，只记 info）。
+   * - P0 跟踪器：被顶替的**进程生命**复活 → 同一 address 上两个活进程
+   *   （时序推断，覆盖未上报指纹的存量执行器；也覆盖「同机同 kind 同 workDir
+   *   的两个实例共享指纹」这种指纹判不出的形态）。
+   *
+   * 为什么是实例字段而非模块级单例：同 P0 跟踪器（跨测试文件泄漏的前科）。
+   */
+  private readonly deviceFingerprintTracker = createDeviceFingerprintTracker();
+
   // F-07（本轮审计）: 调度候选执行器池上限（EXECUTOR_CANDIDATE_POOL_SIZE，
   // 默认 500，与既有硬编码逐字节一致）。容错解析：非法/非数字（如测试装配里
   // configService.get 的兜底返回值）一律回退 500——**绝不**把 0/NaN 传给
@@ -287,6 +340,13 @@ export class ExecutorService {
     @Optional()
     @InjectRepository(Application)
     private readonly applicationRepo: Repository<Application> | null = null,
+    // ARCH-35 P1（生产事故 2026-09-23）：部署归属偏好所需的 `app_deployments`
+    // 只读仓库。@Optional 同先例——存量单测装配未提供时为 null，此时**整条
+    // 偏好逻辑短路**（与开关关闭同路径），派发顺序逐字节不变。同样**必须是
+    // 最后一个位置参数**（15 个位置参数装配的兼容性约束同上）。
+    @Optional()
+    @InjectRepository(AppDeployment)
+    private readonly appDeploymentRepo: Repository<AppDeployment> | null = null,
   ) {
     this.protocol = this.configService.get<string>("app.protocol") || "http";
     // R-26（DEEP_REVIEW 0ef3bbe）: 关键 @Optional（事件总线 / 高危审计）缺失时
@@ -300,6 +360,20 @@ export class ExecutorService {
     if (!this.audit) {
       this.logger.warn(
         "R-26: AuditService 未装配——executor 高危操作审计将静默不写",
+      );
+    }
+    // ARCH-35 P1（R-26 同款纪律）：部署归属偏好**被期望生效**（开关非 false）
+    // 却没有仓库时，偏好会静默不生效——用户会以为修复已上线，实际任务仍可能
+    // 派到未部署该应用的执行器上（正是本次事故的现象）。故显式 warn。
+    // 仅当开关**明确为 false**（主动关闭，见 configuration.ts）时不告警：
+    // 那是运维的有意选择，不是装配缺失。
+    if (
+      !this.appDeploymentRepo &&
+      this.configService.get("executor.preferDeployedExecutor") !== false
+    ) {
+      this.logger.warn(
+        "R-26: AppDeployment 仓库未装配——ARCH-35 部署归属偏好将静默不生效" +
+          "（任务可能被派到未部署该应用的执行器）",
       );
     }
   }
@@ -334,6 +408,191 @@ export class ExecutorService {
         `audit write failed for ${action} on executor ${executor.id}: ${e instanceof Error ? e.message : String(e)}`,
       );
     }
+  }
+
+  /**
+   * ARCH-34 P0（生产事故 2026-09-23）：`address` 冲突的观测与告警。
+   *
+   * 背景与判据见 `executor-address-conflict.util.ts` 头注（「被顶替的进程生命
+   * 复活」= 同一 address 上两个活进程并存）。此处只负责**可见性**：
+   * 记 ERROR 日志 + 走既有通知渠道。级别取 error 而非 notifyExecutorOffline
+   * 的 warning——掉线是可用性事件，而串台会让**任务与部署跑到错误的机器上**，
+   * 属数据正确性问题。
+   *
+   * 为什么 P0 阶段**不**直接拒绝注册：拒绝会让被顶替的一方彻底失联（用户看到
+   * 「执行器在线但收不到任务」），而当前两侧都无唯一标识时无法判定「谁才是
+   * 合法持有者」。先让问题可见；拒绝语义与身份体系按 ADR-017 分阶段落地
+   * （本文件目前**不含**任何拒绝开关，注册行为与引入前逐字节一致）。
+   *
+   * fail-open：观测与通知的任何失败都绝不影响 register/heartbeat 主链。
+   */
+  private observeAddressConflict(
+    address: string,
+    startupId: string | null | undefined,
+    source: "register" | "heartbeat",
+  ): AddressConflictObservation | null {
+    let obs: AddressConflictObservation | null = null;
+    try {
+      obs = this.addressConflictTracker.observe(address, startupId);
+    } catch (err) {
+      // 纯内存跟踪器不应抛错；真抛了也绝不阻断注册/心跳。
+      this.logger.warn(
+        `address conflict tracking failed for ${address}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return null;
+    }
+    if (!obs?.conflict) return obs;
+
+    // 节流命中：确实冲突但刚告警过 → 只留 debug 痕迹，不重复外发。
+    if (obs.throttled) {
+      this.logger.debug(
+        `Address conflict still present for ${address} (startupId=${obs.startupId}, ${obs.otherStartupIds} other life(s)); alert throttled`,
+      );
+      return obs;
+    }
+
+    const detail =
+      `Executor address conflict detected on "${address}" via ${source}: ` +
+      `startupId=${obs.startupId} is still alive after being displaced by ` +
+      `${obs.displacedStartupId ?? "(unknown)"} (${obs.otherStartupIds} process life(s) seen on this address). ` +
+      `Two executors are sharing one executors row — their registrations overwrite each other, ` +
+      `they compete for the same pull queue (acf:pull:/acf:cmd:), and each one's restart detection ` +
+      `fails the other's running executions. Give each machine a distinct EXECUTOR_ADDRESS_PUBLIC ` +
+      `(or enable pull mode with unique addresses) to separate them.`;
+    this.logger.error(detail);
+    // 通知是 best-effort：`notificationService` 在部分测试装配里可能缺席
+    // （位置参数 `{} as never`），且 sendAll 可能同步抛错——两者都绝不能
+    // 影响注册/心跳主链（与 auditHighRisk 的 fail-open 同款纪律）。
+    try {
+      void Promise.resolve(
+        this.notificationService?.sendAll({
+          title: `Executor address conflict: ${address}`,
+          content:
+            `${detail}\n\n` +
+            `Displaced (now active): ${obs.displacedStartupId ?? "(unknown)"}\n` +
+            `Revived (still alive): ${obs.startupId}\n` +
+            `Time: ${new Date().toLocaleString()}`,
+          level: "error",
+        }),
+      ).catch((err: unknown) =>
+        this.logger.warn(
+          `Failed to send address-conflict notification for ${address}: ${err instanceof Error ? err.message : String(err)}`,
+        ),
+      );
+    } catch (err) {
+      this.logger.warn(
+        `Failed to dispatch address-conflict notification for ${address}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    return obs;
+  }
+
+  /**
+   * ARCH-36（ADR-017 阶段 2）：`deviceFingerprint` 冲突/漂移的观测与告警。
+   *
+   * 判据与方向见 `executor-fingerprint.util.ts` 头注。此处只负责**可见性**：
+   * - 硬冲突（同一 address 两个不同指纹）→ ERROR 日志 + 既有通知渠道，
+   *   级别与 P0 冲突一致（会让任务与部署跑到错误的机器上，属数据正确性问题）。
+   * - 地址漂移（同一指纹换了 address）→ **info 日志**，不告警。这是刻意的：
+   *   机器换网/换 IP 是正常运维动作，把它升级成告警会让告警面失去信噪比
+   *   （P0 头注里说的"狼来了"）。
+   *
+   * 与 P0 的关系：两个跟踪器**同时**接线，各自独立外发。一台机器同时具备两个
+   * 信号特征（已上报指纹 + 进程生命交替）时会收到两条告警——刻意保留：两条
+   * 判据的证据面不同（一条是身份冲突的直接证据，一条是进程并存的时序证据），
+   * 合并会丢失"哪条通路成立"的区分度，而运营侧可用**同一条**处置动作收敛两者
+   * （给每台机器唯一 EXECUTOR_ADDRESS_PUBLIC）。去重不做，节流各自独立。
+   *
+   * fail-open：观测与通知的任何失败都绝不影响 register/heartbeat 主链。
+   */
+  private observeDeviceFingerprint(
+    address: string,
+    fingerprint: string | null | undefined,
+    source: "register" | "heartbeat",
+  ): FingerprintObservation | null {
+    let obs: FingerprintObservation | null = null;
+    try {
+      obs = this.deviceFingerprintTracker.observe(address, fingerprint);
+    } catch (err) {
+      // 纯内存跟踪器不应抛错；真抛了也绝不阻断注册/心跳。
+      this.logger.warn(
+        `deviceFingerprint tracking failed for ${address}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return null;
+    }
+    // 未上报/非法指纹（存量旧执行器）：零动作、零日志——兼容性红线。
+    if (!obs) return obs;
+
+    const shortFingerprint = `${obs.fingerprint.slice(0, 12)}…`;
+
+    if (obs.addressSharedByMultipleInstalls) {
+      if (obs.throttled) {
+        this.logger.debug(
+          `Address "${address}" still shared by multiple installs (fingerprint=${shortFingerprint}, ` +
+            `${obs.fingerprintsOnAddress} distinct deviceFingerprint values seen); alert throttled`,
+        );
+        return obs;
+      }
+      // 列出**全部**并存指纹（不只本次那个）：运维要按清单给每台机器分配唯一
+      // EXECUTOR_ADDRESS_PUBLIC，只报"有几个"而不报"是哪几个"等于没给出处置面。
+      // 与 P0 冲突告警同时给出被顶替者/顶替者两个 startupId 对称。
+      const fingerprintList = obs.distinctFingerprintsOnAddress
+        .map((f) => `${f.slice(0, 12)}…`)
+        .join(", ");
+      const detail =
+        `Executor address shared by multiple installs on "${address}" via ${source}: ` +
+        `${obs.fingerprintsOnAddress} distinct deviceFingerprint values have been reported for this address ` +
+        `(this report: ${shortFingerprint}; all: ${fingerprintList}). Two different machines/installations are sharing one executors row — ` +
+        `their registrations overwrite each other, they compete for the same pull queue (acf:pull:/acf:cmd:), ` +
+        `and each one's restart detection fails the other's running executions. Give each machine a distinct ` +
+        `EXECUTOR_ADDRESS_PUBLIC. (deviceFingerprint-based detection: a stable fingerprint cannot change across ` +
+        `a normal restart, so this is direct evidence rather than the startupId timing heuristic.)`;
+      this.logger.error(detail);
+      // 通知是 best-effort：`notificationService` 在部分测试装配里可能缺席，
+      // 且 sendAll 可能同步抛错——两者都绝不能影响注册/心跳主链（与
+      // observeAddressConflict 同款 fail-open 纪律）。
+      try {
+        void Promise.resolve(
+          this.notificationService?.sendAll({
+            title: `Executor address shared by multiple installs: ${address}`,
+            content:
+              `${detail}\n\n` +
+              `Address: ${address}\n` +
+              `Distinct fingerprints on this address: ${obs.fingerprintsOnAddress}\n` +
+              `Fingerprints: ${fingerprintList}\n` +
+              `This report: ${shortFingerprint}\n` +
+              `Time: ${new Date().toLocaleString()}`,
+            level: "error",
+          }),
+        ).catch((err: unknown) =>
+          this.logger.warn(
+            `Failed to send deviceFingerprint-conflict notification for ${address}: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          ),
+        );
+      } catch (err) {
+        this.logger.warn(
+          `Failed to dispatch deviceFingerprint-conflict notification for ${address}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+      return obs;
+    }
+
+    if (obs.addressDrifted) {
+      // 正常现象，只留一条 log（不告警）：这是阶段 3 把 address 降级为可达性
+      // 元数据之后「执行器换网不再产生幽灵行」的行为预览，此处先让运维看得见。
+      // 用 logger.log（Nest 的 info 级）而非 warn/error——详见上方「为什么不告警」。
+      this.logger.log(
+        `Install ${shortFingerprint} reported from a new address "${address}" via ${source} ` +
+          `(now seen at ${obs.addressesForFingerprint} address(es)) — address drift, not a conflict`,
+      );
+    }
+    return obs;
   }
 
   /**
@@ -958,6 +1217,9 @@ export class ExecutorService {
     dispatchMode?: string;
     // PROTOCOL-VER（B-3/U-2）：协议版本（可选整数；缺省 → 不动 DB）。
     protocolVersion?: number | null;
+    // ARCH-36（ADR-017 阶段 2）：稳定设备指纹（可选；缺省/非法 → 不动 DB）。
+    // 只采集与观测——**不参与任何定位**（本方法首行仍按 address findOne）。
+    deviceFingerprint?: string | null;
     // python_task_multiversion（WS2 · CONTRACT §2.3）：解释器缓存池清单。
     // 缺省 → 不动 DB；结构非法 → 拒绝采纳 + warn；合法（含 []）→ 覆盖。
     interpreters?: ExecutorInterpreter[] | null;
@@ -970,6 +1232,24 @@ export class ExecutorService {
     const maxConcurrentTasks = data.maxConcurrentTasks ?? data.maxConcurrent;
     const incomingStartedAt = this.parseExecutorStartedAt(data.restartedAt);
     const incomingStartupId = data.startupId?.trim() || null;
+    // ARCH-34 P0：address 冲突观测（register 入口）。必须在任何 DB 写入**之前**
+    // 调用——register 会就地改写被共享行的 appName/capabilities/startupId，冲突
+    // 的原始形态（两个进程生命并存）只有在此刻还能完整观察到。
+    // fail-open：观测失败绝不影响注册（见 observeAddressConflict 头注）。
+    this.observeAddressConflict(data.address, incomingStartupId, "register");
+    // ARCH-36（ADR-017 阶段 2）：设备指纹冲突/漂移观测（register 入口）。
+    // 与上一行同理必须在任何 DB 写入**之前**——冲突的原始形态（该地址上曾出现
+    // 过哪些安装）与会话内已写入的 deviceFingerprint 无关，但"本次上报是否新增
+    // 了一个指纹"这个事件只在本次上报时可见。
+    // 规范化后再观测/落库：非法形态（长度/字符集不符）视同未上报。
+    const incomingFingerprint = normalizeDeviceFingerprint(
+      data.deviceFingerprint,
+    );
+    this.observeDeviceFingerprint(
+      data.address,
+      incomingFingerprint,
+      "register",
+    );
     const hasStartupBaseline = Boolean(
       e?.executorStartupId || e?.executorStartedAt,
     );
@@ -1024,6 +1304,10 @@ export class ExecutorService {
           Number.isInteger(data.protocolVersion)
             ? data.protocolVersion
             : undefined,
+        // ARCH-36（ADR-017 阶段 2）：首注册即上报则落列；缺省/非法 → undefined
+        // → 列保持 NULL（= 未上报；存量旧执行器与采集失败都用 protocolVersion
+        // 区分：v3 却为 NULL = 采集失败需排查）。
+        deviceFingerprint: incomingFingerprint ?? undefined,
         // python_task_multiversion：首注册即上报则落列；缺省/非法 → undefined
         // → 列保持 NULL（= 未上报，调度按 ["3.12"] 兜底）。
         interpreters: normalizedInterpreters ?? undefined,
@@ -1070,6 +1354,12 @@ export class ExecutorService {
       Number.isInteger(data.protocolVersion)
     ) {
       e.protocolVersion = data.protocolVersion;
+    }
+    // ARCH-36（ADR-017 阶段 2）：重注册采纳设备指纹（仅在规范化成功时覆盖；
+    // 缺省/非法均不动 DB——旧执行器或采集失败的执行器不得把已存值擦成 NULL，
+    // 与 interpreters 的「缺省即保留」纪律同款）。
+    if (incomingFingerprint !== null) {
+      e.deviceFingerprint = incomingFingerprint;
     }
     if (didRestart) {
       // NETOPT-E P2-1: 同步恢复也传重启基准时刻（只终态化旧行），与心跳
@@ -1379,12 +1669,27 @@ export class ExecutorService {
       // python_task_multiversion（WS2 · CONTRACT §2.3）：解释器缓存池清单。
       // 缺省 → 保留 DB 旧值；结构非法 → 拒绝采纳 + warn；合法（含 []）→ 覆盖。
       interpreters?: ExecutorInterpreter[] | null;
+      // ARCH-36（ADR-017 阶段 2）：稳定设备指纹（可选；缺省/非法 → 保留 DB 旧值）。
+      deviceFingerprint?: string | null;
     },
   ) {
     const e = await this.repo.findOne({ where: { address } });
     if (!e) throw new NotFoundException("Executor not found");
     const incomingStartedAt = this.parseExecutorStartedAt(metrics.restartedAt);
     const incomingStartupId = metrics.startupId?.trim() || null;
+    // ARCH-34 P0：address 冲突观测（heartbeat 入口，30s 高频）。
+    // 这里是冲突的**主要检出点**：两台机器并存时交替注册/心跳，被顶替者的
+    // 心跳必然先于下一次注册到达。节流在跟踪器内按 (address, startupId) 收敛，
+    // 高频路径不会刷日志/通知（见 CONFLICT_ALERT_THROTTLE_MS）。
+    this.observeAddressConflict(address, incomingStartupId, "heartbeat");
+    // ARCH-36（ADR-017 阶段 2）：设备指纹冲突/漂移观测（heartbeat 入口）。
+    // 心跳是**主要**的重复观测点（register 只在启动与补注册时发生），也是
+    // 「同一 address 上两个指纹」最容易先暴露的地方——两台机器并存时它们各自
+    // 30s 一次的心跳都会走到这里。
+    const incomingFingerprint = normalizeDeviceFingerprint(
+      metrics.deviceFingerprint,
+    );
+    this.observeDeviceFingerprint(address, incomingFingerprint, "heartbeat");
     const hasStartupBaseline = Boolean(
       e.executorStartupId || e.executorStartedAt,
     );
@@ -1403,6 +1708,9 @@ export class ExecutorService {
       // python_task_multiversion：interpreters 不是数值指标列，从 metricValues
       // 中摘出单独走结构校验（不进 metricsWhitelist 的数值写入环）。
       interpreters,
+      // ARCH-36（ADR-017 阶段 2）：deviceFingerprint 不是数值指标列，同样摘出
+      // （上方已单独观测过，此处只为不让它落进数值白名单写入环）。
+      deviceFingerprint: _f,
       ...metricValues
     } = metrics;
     if (didRestart) {
@@ -1583,6 +1891,23 @@ export class ExecutorService {
         );
       } else {
         e.interpreters = normalizedInterpreters;
+      }
+    }
+    // ARCH-36（ADR-017 阶段 2）：心跳采纳 `deviceFingerprint`。
+    // 三态与 interpreters 同款，但**非法时只留 debug 不 warn**：指纹是机器
+    // 自报的十六进制串，形态非法说明执行器侧采集/序列化有 bug，而这条路径
+    // 每 30s 一次/台——warn 会给全部异常执行器刷屏，debug 已足够定位（真正的
+    // 可观测价值在 `stats()` 的覆盖率口径：reportsWithFingerprint / reports）。
+    // 关键：缺省/非法一律**不动 DB**——绝不让旧执行器或采集失败的心跳把已存的
+    // 指纹擦成 NULL（那会让冲突观测失去历史，正是本阶段最需要的数据）。
+    if (metrics.deviceFingerprint !== undefined) {
+      if (incomingFingerprint === null) {
+        this.logger.debug(
+          `Executor ${address} reported a non-conformant deviceFingerprint ` +
+            `(expected 64 hex chars); keeping stored value`,
+        );
+      } else {
+        e.deviceFingerprint = incomingFingerprint;
       }
     }
     if (
@@ -1952,6 +2277,17 @@ export class ExecutorService {
       runningTaskCount: number;
       maxConcurrentTasks: number | null;
     }>;
+    /**
+     * ARCH-35 P1：部署归属偏好命中面。null = 偏好未适用（开关关 / 任务无
+     * applicationId / 仓库未装配 / 查询失败）。非 null 时 `preferred=0` 且
+     * `runningDeployments=0` 表示该应用没有运行中的部署。
+     */
+    deploymentAffinity?: {
+      preferred: number;
+      matchedByExecutorId: number;
+      matchedByAddressOnly: number;
+      runningDeployments: number;
+    } | null;
   }): void {
     const selectedScore =
       input.scoredSnapshot.find((s) => s.address === input.selected.address)
@@ -1971,6 +2307,9 @@ export class ExecutorService {
           maxConcurrentTasks: input.selected.maxConcurrentTasks,
         },
         topRunners: input.scoredSnapshot,
+        // ARCH-35 P1：部署归属偏好命中面（见调用点与入参注释）。null 时
+        // 显式输出 null 而非省略——「没这个字段」与「偏好未适用」必须可区分。
+        deploymentAffinity: input.deploymentAffinity ?? null,
       }),
     );
   }
@@ -2169,6 +2508,51 @@ export class ExecutorService {
       .sort((a, b) => a.score - b.score)
       .map((s) => s.executor);
 
+    // 3b. ARCH-35 P1（生产事故 2026-09-23）：**部署归属偏好**。
+    //
+    // 位置刻意选在「评分排序之后、原子占坑之前」：
+    //   - 必须在排序**之后**：分区只调整分组、组内保序，故组内首选仍是评分
+    //     最优者。若在排序前分区，紧接着的全量 sort 会把分组彻底打散（本文件
+    //     上方 `withScores.sort` 是稳定排序但键是 score，分组信息不参与比较）。
+    //   - 必须在占坑**之前**：占坑循环按 `sorted` 顺序逐个尝试，前置的部署
+    //     执行器因此被优先占用；它满了/离线了，循环继续往下走 → **自动降级
+    //     回全机队**，零新增失败面（`ordered` 与入参同元素集）。
+    //
+    // 语义是「偏好」而非「过滤」：执行器侧的任务执行**不依赖**本地是否部署过
+    // 该应用（部署产物树 `<workDir>/apps/<appId>/` 与执行树
+    // `<workDir>/<executionId>/` 互不相交；executor-python 甚至没有 deploy
+    // 路由）。硬过滤会把全部未部署任务与 python 执行器踢出候选集 → 派发失败。
+    // 完整论证见 executor-deployment-affinity.util.ts 头注。
+    //
+    // `scoredSnapshot`（上方）保持为**纯评分**前三名不变——决策日志里的 score
+    // 必须始终是真实负载分，否则「为什么选这台」无法回溯。偏好命中面另记
+    // `deploymentAffinity` 字段。
+    const deployments = await this.resolveRunningDeployments(task);
+    let deploymentAffinity: {
+      preferred: number;
+      matchedByExecutorId: number;
+      matchedByAddressOnly: number;
+      runningDeployments: number;
+    } | null = null;
+    let orderedCandidates = sorted;
+    if (deployments) {
+      const affinity = partitionByDeploymentAffinity(sorted, deployments);
+      orderedCandidates = affinity.ordered;
+      deploymentAffinity = {
+        preferred: affinity.preferredCount,
+        matchedByExecutorId: affinity.matchedByExecutorId,
+        matchedByAddressOnly: affinity.matchedByAddressOnly,
+        runningDeployments: affinity.runningDeployments,
+      };
+      if (affinity.preferredCount > 0) {
+        this.logger.log(
+          `ARCH-35: 任务 "${task.name}" 关联应用 ${task.applicationId} 的部署归属命中 ` +
+            `${affinity.preferredCount} 台候选执行器（id 命中 ${affinity.matchedByExecutorId} / ` +
+            `address 兜底 ${affinity.matchedByAddressOnly}），已前置优先占坑`,
+        );
+      }
+    }
+
     // QA-05/BUG-22：这里原先是「版本 CAS 占坑」——`.andWhere("version = :version")`
     // 用读取时的 version 做乐观锁。它把**良性并发**误判成失败：worker 并发 5 +
     // 单执行器时，第一个占坑成功就把 version +1，其余并发请求的 CAS 全部 affected=0；
@@ -2185,7 +2569,7 @@ export class ExecutorService {
     // 因此 version 谓词是**冗余**的，代价却是把并发占坑变成硬失败 —— 移除它，
     // 不变量不变，失败面收敛为「真的没容量/真的离线」。
     let matched: Executor | null = null;
-    for (const candidate of sorted) {
+    for (const candidate of orderedCandidates) {
       const maxConcurrent = candidate.maxConcurrentTasks ?? Infinity;
 
       // 原子占坑：容量与在线状态在同一条 UPDATE 内复查（无需版本谓词，见上注）
@@ -2230,6 +2614,12 @@ export class ExecutorService {
       scoredCount: withScores.length,
       selected: matched,
       scoredSnapshot,
+      // ARCH-35 P1：部署归属偏好命中面（null = 偏好未适用：开关关/无
+      // applicationId/仓库未装配/读失败）。运维据此区分「没部署」与
+      // 「部署了但没命中候选」——前者 preferred=0 且 runningDeployments=0，
+      // 后者 runningDeployments>0 而 preferred=0（部署那台不在候选池里，
+      // 例如被 group/tags/runtime 过滤掉或已离线）。
+      deploymentAffinity,
     });
 
     this.logger.log(
@@ -2436,6 +2826,57 @@ export class ExecutorService {
       cachedAt: Date.now(),
     });
     return { ...task, packageUrl: app.packageUrl };
+  }
+
+  /**
+   * ARCH-35 P1（生产事故 2026-09-23）：读取「该应用正跑在哪几台执行器上」。
+   *
+   * 事故主因：`app_deployments` 行记了 `executorId`/`executorAddress`，但
+   * manifest 驱动的任务自动注册不写 `task.executorId` → 任务恒走全机队分支 →
+   * 纯按负载挑一台 → 部署在执行器 A 的应用，任务跑到了 B。选执行器时**全仓库
+   * 没有一处**查过部署归属，用户的部署意图在调度面被静默丢弃。
+   *
+   * 返回 `null` 表示「偏好不适用」（开关关 / 仓库未装配 / 任务无 applicationId）
+   * ——调用方据此**完全跳过**分区，顺序不变。返回数组（可能为空）表示「偏好
+   * 适用但无运行中部署」——分区同样退化为原序（util 的快速路径）。
+   *
+   * 查询失败**不抛**：偏好是 best-effort 的调度优化，绝不能因为一次读失败而
+   * 让任务派发失败（那是把「可能派得不理想」升级成「派不出去」）。降级为
+   * warn + 原序，与 `estimatedDurationsByExecutor` 的既有容错同款。
+   *
+   * 为什么不缓存：事故场景正是「刚部署完 A → 立刻下发任务」，任何 TTL 缓存都会
+   * 让用户在最该生效的时刻看到旧结论（仍然派给 B），修复感为零。查询命中
+   * `["applicationId","status"]` 复合索引，相对 dispatch 既有的多轮 DB 往返可忽略。
+   */
+  private async resolveRunningDeployments(
+    task: Task,
+  ): Promise<AppDeployment[] | null> {
+    // 开关：默认开（见 configuration.ts 的论证——本特性不新增失败面）。
+    // 显式 `=== false` 判定：configService 在测试装配里可能返回 "http" 等
+    // 任意值，只有明确 false 才关，避免误关掉修复。
+    if (this.configService.get("executor.preferDeployedExecutor") === false) {
+      return null;
+    }
+    if (!this.appDeploymentRepo) return null;
+    if (!task.applicationId) return null;
+    try {
+      return await this.appDeploymentRepo.find({
+        where: {
+          applicationId: task.applicationId,
+          status: DeploymentStatus.RUNNING,
+        },
+        // 投影最小列：分区只需 id/address/status 三个判据，避免拉回
+        // env/rolloutMeta 等 jsonb 大列（一次派发一次查询，热路径）。
+        select: ["executorId", "executorAddress", "status"],
+      });
+    } catch (err) {
+      // best-effort：读失败不阻断派发（偏好缺失 ≠ 无法调度）。
+      this.logger.warn(
+        `ARCH-35: 读取应用 ${task.applicationId} 的运行中部署失败，` +
+          `本次派发按纯负载择优：${err instanceof Error ? err.message : String(err)}`,
+      );
+      return null;
+    }
   }
 
   /**
