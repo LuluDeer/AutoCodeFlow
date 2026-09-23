@@ -50,6 +50,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   listApps: () => ipcRenderer.invoke('apps:list'),
   readAppLog: (logPath: string, fromLine?: number) =>
     ipcRenderer.invoke('apps:log:read', logPath, fromLine ?? 0),
+  // 写剪贴板（走主进程 Electron clipboard，不受安全上下文/权限限制）
+  writeClipboardText: (text: string) =>
+    ipcRenderer.invoke('clipboard:write-text', text),
 
   // 日志流（主进程 → 渲染进程，单向推送）
   onLogLine: (cb: (line: string) => void) => {

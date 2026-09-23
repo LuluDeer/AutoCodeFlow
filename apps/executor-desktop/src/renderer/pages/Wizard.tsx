@@ -61,9 +61,14 @@ export default function Wizard() {
     if (!form.adminApiUrl) return;
     setTesting(true);
     setTestResult(null);
-    const result = await window.electronAPI.testConnection(form.adminApiUrl);
-    setTestResult(result);
-    setTesting(false);
+    try {
+      setTestResult(await window.electronAPI.testConnection(form.adminApiUrl));
+    } catch (err) {
+      // IPC reject 时 testing 必须复位，否则按钮永久「测试中...」
+      setTestResult({ ok: false, message: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setTesting(false);
+    }
   }
 
   async function finish() {
@@ -252,32 +257,40 @@ function StepExecutor({
   const [portResult, setPortResult] = useState<{ available: boolean; message: string } | null>(null);
 
   useEffect(() => {
-    window.electronAPI.getLocalIPs().then((ips) => {
-      setLocalIPs(ips);
-      // 如果还没填对外地址，自动选第一个
-      if (!form.executorAddressPublic && ips.length > 0) {
-        onChange('executorAddressPublic', `${ips[0]}:${form.executorPort}`);
-      }
-    });
+    window.electronAPI.getLocalIPs()
+      .then((ips) => {
+        setLocalIPs(ips);
+        // 如果还没填对外地址，自动选第一个
+        if (!form.executorAddressPublic && ips.length > 0) {
+          onChange('executorAddressPublic', `${ips[0]}:${form.executorPort}`);
+        }
+      })
+      .catch(() => setLocalIPs([])); // 失败时静默回落到手填输入框，不炸向导
+    // 仅挂载时自动检测一次（form/onChange 有意不入依赖）
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function checkPort() {
     if (!form.executorPort) return;
     setCheckingPort(true);
     setPortResult(null);
-    const result = await window.electronAPI.checkPort(form.executorPort);
-    setPortResult(result);
-    setCheckingPort(false);
+    try {
+      setPortResult(await window.electronAPI.checkPort(form.executorPort));
+    } catch (err) {
+      setPortResult({ available: false, message: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setCheckingPort(false);
+    }
   }
 
   function handlePortChange(v: number) {
     onChange('executorPort', v);
     setPortResult(null);
-    // 同步更新对外地址里的端口。
+    // 端口为有效整数时才同步对外地址里的端口段（清空输入得到 NaN 时不拼出 ":NaN"）。
     // 原实现用 split(':')[0] 取主机段——对 IPv6 字面量（::1 / [::1]）会截成
     // 空串，对用户手填的域名也会误伤；改为只替换「最后一个冒号之后」的端口段，
     // 无冒号时（纯 IP/域名）直接补端口。
-    if (form.executorAddressPublic) {
+    if (form.executorAddressPublic && Number.isInteger(v)) {
       onChange('executorAddressPublic', replaceAddressPort(form.executorAddressPublic, v));
     }
   }
@@ -341,8 +354,10 @@ function StepExecutor({
             </div>
           )}
           {/* HTML 的 min/max 不阻止手输/粘贴越界值——显式给出校验反馈，
-              否则用户可带着非法端口一路点到"完成" */}
-          {!portValid && (
+              否则用户可带着非法端口一路点到"完成"。清空输入（NaN）时不显示
+              越界错误，只在确有整数值但超出范围时提示。 */}
+          {Number.isInteger(form.executorPort) &&
+            (form.executorPort < 1 || form.executorPort > 65535) && (
             <div className="test-result fail" role="alert">
               ✗ 端口必须是 1 – 65535 之间的整数
             </div>

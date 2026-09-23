@@ -1,6 +1,6 @@
 // F-37（DEEP_REVIEW 0ef3bbe）：fs/path/os/net/https 等模块统一在模块顶层 import，
 // 不再在各 handler 函数体内 require（main 进程无打包懒加载收益，纯历史遗留噪音）。
-import { app, ipcMain, shell, BrowserWindow } from 'electron';
+import { app, ipcMain, shell, BrowserWindow, clipboard } from 'electron';
 import * as http from 'http';
 import * as https from 'https';
 import * as path from 'path';
@@ -225,6 +225,15 @@ export function readLastLines(
 }
 
 export function registerIpcHandlers(): void {
+  // ── 剪贴板 ────────────────────────────────────────────
+  // 复制统一走主进程 Electron clipboard：sandboxed renderer 的
+  // navigator.clipboard 在非安全上下文 / 权限受限时可能为 undefined 或
+  // writeText reject（静默失败），而 Electron clipboard 永远可用。
+  ipcMain.handle('clipboard:write-text', (_event, text: unknown) => {
+    clipboard.writeText(typeof text === 'string' ? text : String(text ?? ''));
+    return { ok: true };
+  });
+
   // ── 配置 ──────────────────────────────────────────────
   // SEC-NEW-1: the token is never returned over IPC — the renderer gets a
   // `******` mask (or '') and sends the mask back on save, which config-store

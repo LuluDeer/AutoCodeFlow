@@ -118,6 +118,8 @@ input {
 
 button:focus-visible,
 input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
 [role='button']:focus-visible {
   outline: 2px solid var(--color-accent);
   outline-offset: 2px;
@@ -678,6 +680,7 @@ input:focus-visible,
 }
 .copy-btn:hover { background: var(--bg4); color: var(--text); }
 .copy-btn.copied { color: var(--green); border-color: var(--green-border); background: var(--green-bg); }
+.copy-btn.copy-failed { color: var(--red); border-color: var(--red-border); background: var(--red-bg); }
 
 /* ── 配置页 ── */
 .config-page {
@@ -1477,6 +1480,12 @@ input:focus-visible,
   font-size: 12px;
   padding: var(--space-sm) 0;
 }
+.log-files-error {
+  color: #fca5a5;
+  font-size: 11px;
+  padding: 0 2px 8px;
+  word-break: break-word;
+}
 
 .copy-val-plain { font-family: inherit; }
 .hero-orb-symbol { color: var(--color-on-primary); font-size: 20px; }
@@ -1612,6 +1621,7 @@ input:focus-visible,
 .history-run-id.copyable { cursor: pointer; border-radius: 3px; padding: 0 3px; margin-left: -3px; }
 .history-run-id.copyable:hover { background: var(--surface-2, rgba(255,255,255,0.06)); color: var(--text2); }
 .history-run-id.copyable.copied { color: var(--color-accent); }
+.history-run-id.copyable.copy-failed { color: var(--color-danger); }
 .history-run-time { font-size: 11px; color: var(--text3); }
 .history-run-dur  { font-size: 11px; color: var(--text2); min-width: 36px; text-align: right; }
 .history-run-err  { font-size: 11px; color: var(--color-danger); cursor: help; }
@@ -1912,7 +1922,7 @@ input:focus-visible,
   border-color: var(--green-border);
   color: var(--color-accent);
 }
-.history-chip:focus-visible { outline: 2px solid var(--color-ring); outline-offset: 1px; }
+.history-chip:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {

@@ -5,6 +5,7 @@ declare const window: Window & {
     getHistory: () => Promise<ExecRecord[]>;
     clearHistory: () => Promise<{ ok: boolean }>;
     readLog: (executionId: string, fromLine?: number) => Promise<{ lines: string[]; totalLines: number }>;
+    writeClipboardText: (text: string) => Promise<{ ok: boolean }>;
   };
 };
 
@@ -50,28 +51,36 @@ function statusBadge(status?: string) {
 // 用户拿着完整 ID 去对日志是高频动作——此前既看不到全值也复制不了。
 // 点击复制 + title 悬停显示完整 ID；复制成功短暂变色反馈（桌面端无 toast 体系）。
 function CopyableExecId({ id }: { id: string }) {
-  const [copied, setCopied] = useState(false);
+  // idle/copied/error 三态：鼠标点击与键盘 Enter/Space 走同一个复制函数，
+  // 反馈一致（此前键盘触发无任何反馈）；复制走主进程 clipboard 并兜失败。
+  const [state, setState] = useState<'idle' | 'copied' | 'error'>('idle');
+  useEffect(() => {
+    if (state === 'idle') return;
+    const t = setTimeout(() => setState('idle'), 1200);
+    return () => clearTimeout(t);
+  }, [state]);
+  function doCopy(e: React.SyntheticEvent) {
+    e.stopPropagation();
+    window.electronAPI
+      .writeClipboardText(id)
+      .then((r) => setState(r?.ok === false ? 'error' : 'copied'))
+      .catch(() => setState('error'));
+  }
   return (
     <span
-      className={`history-run-id copyable${copied ? ' copied' : ''}`}
+      className={`history-run-id copyable${state === 'copied' ? ' copied' : state === 'error' ? ' copy-failed' : ''}`}
       title={`${id}\n点击复制完整执行 ID`}
       role="button"
       tabIndex={0}
-      onClick={(e) => {
-        e.stopPropagation();
-        navigator.clipboard.writeText(id).then(() => {
-          setCopied(true);
-          setTimeout(() => setCopied(false), 1200);
-        });
-      }}
+      onClick={doCopy}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();
-          navigator.clipboard.writeText(id);
+          doCopy(e);
         }
       }}
     >
-      {copied ? '已复制 ✓' : id}
+      {state === 'copied' ? '已复制 ✓' : state === 'error' ? '复制失败' : id}
     </span>
   );
 }
@@ -204,13 +213,14 @@ export default function HistoryPage() {
   // 渲染进程且样式不可控（部分平台直接不显示），改用页内确认态。
   const [confirmingClear, setConfirmingClear] = useState(false);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const load = useCallback(async (background: boolean = false) => {
+    // 后台轮询不切 loading：空列表下每 5s 闪烁「加载中...」会掩盖空态。
+    if (!background) setLoading(true);
     try {
       const api = (window as any).electronAPI;
       if (typeof api?.getHistory !== 'function') {
         setError('当前版本不支持读取历史记录');
-        setLoading(false);
+        if (!background) setLoading(false);
         return;
       }
       const data = await api.getHistory();
@@ -219,13 +229,13 @@ export default function HistoryPage() {
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setLoading(false);
+      if (!background) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    load();
-    const t = setInterval(load, 5000);
+    void load(false);
+    const t = setInterval(() => void load(true), 5000);
     return () => clearInterval(t);
   }, [load]);
 
@@ -283,7 +293,7 @@ export default function HistoryPage() {
       <div className="history-toolbar">
         <span className="history-title">历史执行记录</span>
         <div className="history-toolbar-actions">
-          <button className="btn btn-sm" onClick={load}>↻ 刷新</button>
+          <button className="btn btn-sm" onClick={() => void load(false)}>↻ 刷新</button>
           {confirmingClear ? (
             <>
               <span className="history-confirm-text">确认清除全部记录？</span>
