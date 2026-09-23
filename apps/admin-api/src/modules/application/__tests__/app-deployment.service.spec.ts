@@ -7,7 +7,7 @@ import {
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { OptimisticLockVersionMismatchError } from "typeorm";
-import { AppDeploymentService } from "../app-deployment.service";
+import { AppDeploymentService, STOP_NOT_DELIVERED_PREFIX } from "../app-deployment.service";
 import {
   AppDeployment,
   DeploymentStatus,
@@ -1185,6 +1185,55 @@ describe("AppDeploymentService", () => {
 
       const result = await service.stop("deploy-1");
       expect(result.status).toBe(DeploymentStatus.STOPPED);
+    });
+
+    /**
+     * 用户报障（中台显示不可信）：执行器离线时 stop() 仍把行写成 STOPPED，
+     * 但**停机信号没送到**——设备上的进程可能还在跑，而该行已不在 running
+     * （没有停止按钮），用户失去了唯一的真相来源。此前这个失败只写日志，
+     * 接口返回 {status:'stopped'}，前端恒报"已停止"。
+     *
+     * 修法：保留 best-effort 语义（行仍转 STOPPED），但把送达失败如实写进
+     * statusMessage（前缀见 STOP_NOT_DELIVERED_PREFIX），前端据此改用 warning。
+     */
+    it("送达失败时必须把失败写进 statusMessage（不能只写日志）", async () => {
+      const deployment = {
+        id: "deploy-1",
+        status: DeploymentStatus.RUNNING,
+        executorAddress: mockExecutor.address,
+        pid: 1234,
+        statusMessage: null,
+      };
+      repo.findOne.mockResolvedValue(deployment);
+      // save 回传的就是被就地修改后的对象——用它检查写入了什么
+      repo.save.mockImplementation(async (d: Record<string, unknown>) => d);
+      mockAxiosPost.mockRejectedValue(new Error("connect ECONNREFUSED"));
+
+      const result = await service.stop("deploy-1");
+
+      // best-effort 语义保留：行仍转 STOPPED（停机意图已表达，卡在 running 更糟）
+      expect(result.status).toBe(DeploymentStatus.STOPPED);
+      // 反证：送达失败必须可见。若有人删掉这行赋值，前端就再也区分不出
+      // "真的停了"与"信号没送到"，用户又会看到假成功——本条立即变红。
+      expect(result.statusMessage).toContain(STOP_NOT_DELIVERED_PREFIX);
+      expect(result.statusMessage).toContain("ECONNREFUSED");
+    });
+
+    it("送达成功时不得写入失败前缀（反证：不能恒报未送达）", async () => {
+      const deployment = {
+        id: "deploy-1",
+        status: DeploymentStatus.RUNNING,
+        executorAddress: mockExecutor.address,
+        pid: 1234,
+        statusMessage: null,
+      };
+      repo.findOne.mockResolvedValue(deployment);
+      repo.save.mockImplementation(async (d: Record<string, unknown>) => d);
+      mockAxiosPost.mockResolvedValue({ data: {} });
+
+      const result = await service.stop("deploy-1");
+      expect(result.status).toBe(DeploymentStatus.STOPPED);
+      expect(result.statusMessage ?? "").not.toContain(STOP_NOT_DELIVERED_PREFIX);
     });
   });
 
