@@ -1627,6 +1627,7 @@ export default {
   'appDeploy.action.upgrade': '升级',
   'appDeploy.action.stop': '停止',
   'appDeploy.action.redeploy': '重新部署',
+  'appDeploy.action.delete': '删除',
   'appDeploy.action.refresh': '刷新',
   'appDeploy.action.confirmUpgrade': '确认升级',
   'appDeploy.action.upgradeAll': '升级所有',
@@ -1657,7 +1658,15 @@ export default {
     '单次执行：启动进程，退出后不重启；常驻进程：异常退出自动重启（最多 10 次，退避至 60 秒）；定时任务：只下发代码不启动，由「任务调度」里的任务触发。',
   'appDeploy.mode.hintDaemon': '异常退出会自动重启（最多 10 次）；正常退出（退出码 0）不重启。',
   'appDeploy.mode.hintScheduled': '只下发代码，不启动进程——请在「任务调度」里建任务来触发运行。',
-  'appDeploy.redeploy.reuseHint': '重新部署会复用本设备的这条记录（不会新增记录）。',
+  // 用户报障修正：原文案写「会复用本设备的这条记录（不会新增记录）」，但后端
+  // deploy() 恒定 INSERT 新行——提示与实现相反，用户重试几次就叠几行失败记录，
+  // 且当时没有任何删除出口。现如实描述，并指向上方新增的删除按钮。
+  'appDeploy.redeploy.reuseHint': '重新部署会在本设备新建一条部署记录（原记录保留，可在本行删除）。',
+  'appDeploy.op.deleteConfirm': '确认删除这条部署记录？',
+  'appDeploy.op.deleteHint': '只删除平台上的这条历史记录，不影响执行器上正在运行的进程。',
+  'appDeploy.op.adminOnlyDelete': '仅管理员可删除部署记录',
+  'appDeploy.msg.deleted': '部署记录已删除',
+  'appDeploy.msg.deleteFail': '删除部署记录失败',
   'appDeploy.executor.availableHeader': '可用执行器 ({{count}} 台，已过滤占用中)',
   'appDeploy.executor.overview': '可用执行器概况（已过滤占用中）',
   'appDeploy.executor.more': '...还有 {{count}} 台',

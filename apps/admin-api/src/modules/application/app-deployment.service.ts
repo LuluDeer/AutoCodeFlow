@@ -1132,7 +1132,7 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
   /** D3-B-P2-1: stop/rollback 执行门审计落证（best-effort fail-open，
    *  同 writeApprovalAudit——审计故障不阻断主链）。 */
   private async writeTransitionAudit(
-    action: "deployment.stop" | "deployment.rollback",
+    action: "deployment.stop" | "deployment.rollback" | "deployment.delete",
     deployment: AppDeployment,
     extraDetail?: Record<string, unknown>,
   ): Promise<void> {
@@ -1265,6 +1265,78 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     await this.writeTransitionAudit("deployment.stop", saved);
     // QA1: mask the HTTP return; the raw entity was already persisted.
     return this.maskDeploymentForRead(saved);
+  }
+
+  /**
+   * 用户报障：部署失败后记录永久残留、无法删除（「我重新部署了，旧的失败记录还在，
+   * 而且无法删除或者撤销部署」）。
+   *
+   * 背景：app-deployments 此前只有 stop（停机保行），**没有任何删除面**；而
+   * deploy() 恒定 INSERT 新行——于是每次「重新部署」都在列表里叠一条，旧失败行
+   * 既不会被复用也删不掉，列表随重试次数单调膨胀。本方法补齐终态行的清理出口。
+   *
+   * 只允许删除**终态且不在途**的行：
+   *   · FAILED / STOPPED —— 历史残影，删除只影响历史可读性；
+   *   · 在途行（PENDING / DEPLOYING / UPGRADING）一律 409——行是在途唯一性的
+   *     载体（部分唯一索引 uq_app_deployments_application_in_flight 与 deploy()
+   *     的应用层守卫都靠它），删掉等于把「同一应用同时只能有一个部署在途」这条
+   *     不变量连同闸门一起拆了，两个真实进程会同时跑起来；
+   *   · RUNNING 行也拒绝——进程还活着，删行会留下无人认领的孤儿进程（用户想停
+   *     它就应当先走 stop，把进程收掉再删）。
+   *   · 待审批行（approvalStatus=pending_approval）同样拒绝——它有独立的
+   *     reject/cancel 出口，语义上不是"要删的历史"。
+   *
+   * 执行器侧不派发任何指令：能删到的都是终态行，其进程已退出（stop 会把 pid 置
+   * null 并向执行器发过 app-stop；failed 行则由其失败路径收尾）。此处刻意不做
+   * best-effort 停机扇出——对一个已经死掉的部署重发 stop 只会制造噪音日志。
+   */
+  async removeDeployment(
+    deploymentId: string,
+    actor?: { id?: number; username?: string },
+  ): Promise<{ ok: boolean; deletedId: string }> {
+    // R1: 读取走原始行（审计 detail 里要带真实 executorAddress；掩码面不含密钥，
+    // 但保持一致先例——写面一律 findByIdRaw）。
+    const deployment = await this.findByIdRaw(deploymentId);
+
+    // DEP-04: 待审批行有专属出口（approve/reject/cancel），不走删除。
+    if (
+      deployment.approvalStatus === DeploymentApprovalStatus.PENDING_APPROVAL
+    ) {
+      throw new ConflictException(
+        "Deployment is awaiting approval; reject or cancel it instead of deleting it",
+      );
+    }
+
+    const inFlight: DeploymentStatus[] = [
+      DeploymentStatus.PENDING,
+      DeploymentStatus.DEPLOYING,
+      DeploymentStatus.UPGRADING,
+    ];
+    if (inFlight.includes(deployment.status)) {
+      throw new ConflictException(
+        `Deployment ${deploymentId} is in progress (status=${deployment.status}); ` +
+          `wait for it to finish before deleting the record`,
+      );
+    }
+    if (deployment.status === DeploymentStatus.RUNNING) {
+      throw new ConflictException(
+        `Deployment ${deploymentId} is still running; stop it first, then delete the record`,
+      );
+    }
+
+    // 审计先行：删掉行之后就没有 resourceId 可追溯了，落证必须在 delete 之前。
+    await this.writeTransitionAudit("deployment.delete", deployment, {
+      deletedStatus: deployment.status,
+      deployedVersion: deployment.deployedVersion,
+      deletedBy: actor?.username ?? null,
+    });
+
+    await this.repo.delete({ id: deploymentId });
+    this.logger.log(
+      `Deployment record ${deploymentId} deleted (status=${deployment.status}, ` +
+        `application=${deployment.applicationId}) by ${actor?.username ?? "unknown"}`,
+    );
+    return { ok: true, deletedId: deploymentId };
   }
 
   /**

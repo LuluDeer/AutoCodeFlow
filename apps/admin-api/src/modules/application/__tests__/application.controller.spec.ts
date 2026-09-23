@@ -24,7 +24,10 @@ import { ApplicationService } from "../application.service";
 import { UserRole } from "../../users/entities/user.entity";
 // SEC-05: uploads are now vetted by the zip-bomb guard — tests need a real,
 // structurally-valid zip (the old 4-byte magic stub fails CD parsing).
-import { buildBenignZip, buildZip } from "../../../common/utils/__tests__/zip-samples";
+import {
+  buildBenignZip,
+  buildZip,
+} from "../../../common/utils/__tests__/zip-samples";
 
 function sign(secret: string, timestamp: string, body: Buffer): string {
   return (
