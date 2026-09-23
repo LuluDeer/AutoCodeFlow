@@ -278,5 +278,9 @@ workDir **顶层的一切（含文件）**都会被 TTL 清扫按 mtime 删除�
   [ADR-012](./adr-012-executor-token-safestorage.md)（token 存储姿态，本 ADR 不改认证面）、
   [ADR-015](./adr-015-executor-pull-dispatch.md) / [ADR-016](./adr-016-executor-control-plane-pull.md)（pull 通道，队列键受益方）
 - 排查报告：[`docs/reviews/executor-identity-and-dispatch-mismatch-2026-09-23.md`](../reviews/executor-identity-and-dispatch-mismatch-2026-09-23.md)
+- **验收记录**：[`docs/VERIFY-2026-09-23-executor-identity.md`](../VERIFY-2026-09-23-executor-identity.md)
+  —— 按 `VERIFY-MATRIX` 逐项交代 CI/本机证据，并**如实列出未执行的真机项**
+  （executor-node 真机全链、调度真机冒烟、以及本 ADR 的「两台同网段机器 → 冲突告警」
+  真机冒烟；后者只有用户侧的两台机器能复现）。
 - 已落地 P0 切片：`apps/admin-api/src/modules/executor/executor-address-conflict.util.ts` + service 接线（检测与告警，零行为变更）
 - 相关文档：`docs/atlas/04-flows/executor-registration.md`、`docs/atlas/01-apps/admin-api/modules/executor.md`、`docs/atlas/03-data/entities/executor.md`
