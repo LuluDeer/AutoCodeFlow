@@ -2276,7 +2276,11 @@ export interface paths {
         get: operations["AppDeploymentController_findById"];
         put?: never;
         post?: never;
-        delete?: never;
+        /**
+         * Delete a finished deployment record (failed/stopped)
+         * @description Removes a terminal deployment row from the history. In-flight, running and pending-approval deployments are refused with 409 — stop a running one first, and use reject/cancel for an approval-pending one.
+         */
+        delete: operations["AppDeploymentController_remove"];
         options?: never;
         head?: never;
         patch?: never;
@@ -7073,6 +7077,25 @@ export interface operations {
         };
     };
     AppDeploymentController_findById: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AppDeploymentController_remove: {
         parameters: {
             query?: never;
             header?: never;

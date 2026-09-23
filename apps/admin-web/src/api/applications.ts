@@ -208,6 +208,14 @@ export const deploymentsApi = {
     client.post<AppDeployment>(`/app-deployments/${id}/upgrade`),
   stop: (id: string) =>
     client.post<AppDeployment>(`/app-deployments/${id}/stop`),
+  /**
+   * 删除部署记录（用户报障：失败的部署行无法删除，重新部署后旧行永久残留）。
+   *
+   * 仅终态行（failed/stopped）可删；在途/运行中/待审批行后端返回 409 并说明
+   * 正确出口（等它结束 / 先 stop / 走 reject|cancel）——错误信息直接透传给用户。
+   */
+  remove: (id: string) =>
+    client.delete<{ ok: boolean; deletedId: string }>(`/app-deployments/${id}`),
   // DEP-04: 审批三动作（后端 @Roles(ADMIN) + 第二人规则）
   approve: (id: string, reason?: string) =>
     client.post<AppDeployment>(`/app-deployments/${id}/approval/approve`, reason ? { reason } : {}),

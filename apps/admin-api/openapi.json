@@ -5326,6 +5326,34 @@
         "tags": [
           "App Deployment"
         ]
+      },
+      "delete": {
+        "description": "Removes a terminal deployment row from the history. In-flight, running and pending-approval deployments are refused with 409 — stop a running one first, and use reject/cancel for an approval-pending one.",
+        "operationId": "AppDeploymentController_remove",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Delete a finished deployment record (failed/stopped)",
+        "tags": [
+          "App Deployment"
+        ]
       }
     },
     "/app-deployments/applications/{appId}/deploy": {

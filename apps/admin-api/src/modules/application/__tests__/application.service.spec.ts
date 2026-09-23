@@ -4,6 +4,8 @@ import * as fs from "fs";
 import * as path from "path";
 import { ApplicationService } from "../application.service";
 import { Application, ApplicationStatus } from "../entities/application.entity";
+// 上传即产生版本：recordUploadVersion 落 application_versions（@Optional 注入）
+import { ApplicationVersion } from "../entities/application-version.entity";
 import { AppDeployment } from "../entities/app-deployment.entity";
 import { ModuleRef } from "@nestjs/core";
 import { AiService } from "../../ai/ai.service";
@@ -1198,5 +1200,106 @@ describe("ApplicationService — D3-B-P1-2 审计落证", () => {
         }),
       }),
     );
+  });
+
+  // 用户报障回归：zip 上传出来的版本必须能回滚。
+  // 根因：recordUploadVersion 当初把 status 写成 'uploaded'，而回滚面的判据
+  // （后端 rollbackApplication 的 released 守卫、前端 rollbackDisabled）只认
+  // 'released' —— 于是每个上传的旧版本在版本历史里恒显示「仅已发布版本可回滚」。
+  describe("recordUploadVersion（上传即产生版本 → 必须可回滚）", () => {
+    const app = {
+      id: "app-1",
+      name: "Demo",
+      version: "1.0.1",
+      runtime: "node",
+      status: "active",
+      packageUrl: "https://api.example.com/uploads/packages/Demo_1.zip",
+      gitCommit: null,
+      gitBranch: null,
+      gitRepo: null,
+      manifest: null,
+      env: null,
+      entrypoint: "dist/main.js",
+      description: null,
+    } as unknown as Application;
+
+    /** 单独装配：需要注入 ApplicationVersion 的 versionRepo（@Optional）。 */
+    const buildWithVersionRepo = async (versionRepo: {
+      findOne: jest.Mock;
+      save: jest.Mock;
+      create: jest.Mock;
+    }) => {
+      const repo = makeRepo({ findOne: jest.fn() });
+      const module = await Test.createTestingModule({
+        providers: [
+          ApplicationService,
+          { provide: getRepositoryToken(Application), useValue: repo },
+          {
+            provide: getRepositoryToken(ApplicationVersion),
+            useValue: versionRepo,
+          },
+          { provide: ModuleRef, useValue: { get: jest.fn() } },
+          {
+            provide: AiService,
+            useValue: {
+              analyzeAppHealth: jest.fn().mockResolvedValue({ aiAnalysis: "" }),
+            },
+          },
+          {
+            provide: AiAnalysisService,
+            useValue: { analyzeFailure: jest.fn().mockResolvedValue("") },
+          },
+        ],
+      }).compile();
+      return module.get(ApplicationService);
+    };
+
+    it("落库 status='released'（不是 'uploaded'）——否则回滚按钮永久禁用", async () => {
+      const versionRepo = {
+        findOne: jest.fn().mockResolvedValue(null),
+        save: jest.fn().mockImplementation((v: unknown) => Promise.resolve(v)),
+        create: jest.fn().mockImplementation((v: unknown) => v),
+      };
+      const svc = await buildWithVersionRepo(versionRepo);
+
+      await svc.recordUploadVersion(app, { id: 7 });
+
+      expect(versionRepo.save).toHaveBeenCalledTimes(1);
+      const saved = versionRepo.save.mock.calls[0][0] as Record<
+        string,
+        unknown
+      >;
+      expect(saved.status).toBe("released");
+      // 与部署路径产出的版本行在回滚面上必须同权：sourceDeploymentId 为 null
+      // 是「上传来源」的标识，但不影响可回滚性（后端按 id 查快照后只校验 status）。
+      expect(saved.sourceDeploymentId).toBeNull();
+      expect(saved.createdBy).toBe("7");
+    });
+
+    it("同版本号重复上传不重复落行（唯一索引 (applicationId, version)）", async () => {
+      const versionRepo = {
+        findOne: jest.fn().mockResolvedValue({ id: "v-existing" }),
+        save: jest.fn(),
+        create: jest.fn(),
+      };
+      const svc = await buildWithVersionRepo(versionRepo);
+
+      await svc.recordUploadVersion(app, { id: 7 });
+
+      expect(versionRepo.save).not.toHaveBeenCalled();
+    });
+
+    it("快照失败只 warn，不抛（best-effort：绝不阻断上传主链）", async () => {
+      const versionRepo = {
+        findOne: jest.fn().mockResolvedValue(null),
+        save: jest.fn().mockRejectedValue(new Error("db down")),
+        create: jest.fn().mockImplementation((v: unknown) => v),
+      };
+      const svc = await buildWithVersionRepo(versionRepo);
+
+      await expect(
+        svc.recordUploadVersion(app, { id: 7 }),
+      ).resolves.toBeUndefined();
+    });
   });
 });

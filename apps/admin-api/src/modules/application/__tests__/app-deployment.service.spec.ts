@@ -56,6 +56,8 @@ const makeRepo = (overrides: Partial<Record<string, jest.Mock>> = {}) => ({
   findAndCount: jest.fn(),
   create: jest.fn((d: any) => ({ ...d, id: "deploy-1" })),
   save: jest.fn((e: any) => Promise.resolve({ ...e, id: e.id ?? "deploy-1" })),
+  // 用户报障回归：removeDeployment 删除终态部署行（repo.delete({ id })）。
+  delete: jest.fn().mockResolvedValue({ affected: 1 }),
   // E-P1-R2：心跳走轻量条件 UPDATE（不经 @VersionColumn save，避免每跳互撞）。
   update: jest.fn().mockResolvedValue({ affected: 1 }),
   // O-5: 批量 UPDATE 走 createQueryBuilder 链（scheduler spec 同款链式 mock）。
@@ -1633,13 +1635,19 @@ describe("AppDeploymentService — D3-B-P2-1 执行门审计落证", () => {
   let repo: {
     findOne: jest.Mock;
     save: jest.Mock;
+    // 用户报障回归：removeDeployment 删除终态部署行。
+    delete: jest.Mock;
   };
   let versionRepo: { find: jest.Mock };
   let service: AppDeploymentService;
   let audit: { log: jest.Mock };
 
   beforeEach(async () => {
-    repo = { findOne: jest.fn(), save: jest.fn() };
+    repo = {
+      findOne: jest.fn(),
+      save: jest.fn(),
+      delete: jest.fn().mockResolvedValue({ affected: 1 }),
+    };
     versionRepo = { find: jest.fn() };
     audit = { log: jest.fn().mockResolvedValue(undefined) };
     const appService = {
@@ -1735,5 +1743,112 @@ describe("AppDeploymentService — D3-B-P2-1 执行门审计落证", () => {
         detail: expect.objectContaining({ previousVersion: "1.9.0" }),
       }),
     );
+  });
+
+  // 用户报障回归：失败的部署记录删不掉，「重新部署」后旧行永久残留。
+  // 原状：app-deployments 只有 stop（停机保行），零删除面；deploy() 恒定
+  // INSERT——重试几次就叠几行且无法清理。
+  describe("removeDeployment（删除终态部署记录）", () => {
+    const deploymentRow = (overrides: Record<string, unknown> = {}) => ({
+      id: "deploy-1",
+      applicationId: "app-1",
+      executorAddress: "exec:8100",
+      status: DeploymentStatus.FAILED,
+      approvalStatus: null,
+      deployedVersion: "1.0.0",
+      ...overrides,
+    });
+
+    it("FAILED 行：落审计后删除，且不向执行器发任何指令", async () => {
+      repo.findOne.mockResolvedValue(deploymentRow());
+      repo.delete = jest.fn().mockResolvedValue({ affected: 1 });
+      // 清掉同文件前序用例的 axios 足迹——否则「不发指令」断言会被历史调用污染
+      // （本 spec 无全局 clearAllMocks）。
+      mockAxiosPost.mockClear();
+
+      const result = await service.removeDeployment("deploy-1", {
+        id: 1,
+        username: "admin",
+      });
+
+      expect(result).toEqual({ ok: true, deletedId: "deploy-1" });
+      expect(repo.delete).toHaveBeenCalledWith({ id: "deploy-1" });
+      // 审计先于删除（删完就没有 resourceId 可追溯了）
+      expect(audit.log).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "deployment.delete",
+          resource: "app_deployment",
+          resourceId: "deploy-1",
+          detail: expect.objectContaining({
+            deletedStatus: DeploymentStatus.FAILED,
+            deletedBy: "admin",
+          }),
+        }),
+      );
+      // 终态行的进程已退出——不得重发 stop/uninstall 扇出制造噪音
+      expect(mockAxiosPost).not.toHaveBeenCalled();
+    });
+
+    it("STOPPED 行同样可删", async () => {
+      repo.findOne.mockResolvedValue(
+        deploymentRow({ status: DeploymentStatus.STOPPED }),
+      );
+      repo.delete = jest.fn().mockResolvedValue({ affected: 1 });
+
+      await expect(service.removeDeployment("deploy-1")).resolves.toEqual({
+        ok: true,
+        deletedId: "deploy-1",
+      });
+    });
+
+    it.each([
+      [DeploymentStatus.PENDING, "pending"],
+      [DeploymentStatus.DEPLOYING, "deploying"],
+      [DeploymentStatus.UPGRADING, "upgrading"],
+    ])("在途行（%s）拒绝 409 且不删行", async (status) => {
+      repo.findOne.mockResolvedValue(deploymentRow({ status }));
+      repo.delete = jest.fn().mockResolvedValue({ affected: 1 });
+
+      await expect(service.removeDeployment("deploy-1")).rejects.toBeInstanceOf(
+        ConflictException,
+      );
+      // 在途行是「同一应用同时只有一个部署在途」这条不变量的载体
+      // （部分唯一索引 + deploy() 应用层守卫都靠它），删掉等于拆掉闸门。
+      expect(repo.delete).not.toHaveBeenCalled();
+    });
+
+    it("RUNNING 行拒绝 409——进程还活着，应先 stop 再删", async () => {
+      repo.findOne.mockResolvedValue(
+        deploymentRow({ status: DeploymentStatus.RUNNING }),
+      );
+      repo.delete = jest.fn().mockResolvedValue({ affected: 1 });
+
+      await expect(service.removeDeployment("deploy-1")).rejects.toBeInstanceOf(
+        ConflictException,
+      );
+      expect(repo.delete).not.toHaveBeenCalled();
+    });
+
+    it("待审批行拒绝 409——出口是 reject/cancel，不是删除", async () => {
+      repo.findOne.mockResolvedValue(
+        deploymentRow({
+          status: DeploymentStatus.PENDING,
+          approvalStatus: "pending_approval",
+        }),
+      );
+      repo.delete = jest.fn().mockResolvedValue({ affected: 1 });
+
+      await expect(service.removeDeployment("deploy-1")).rejects.toBeInstanceOf(
+        ConflictException,
+      );
+      expect(repo.delete).not.toHaveBeenCalled();
+    });
+
+    it("行不存在 → 404（findByIdRaw 语义）", async () => {
+      repo.findOne.mockResolvedValue(null);
+      await expect(service.removeDeployment("nope")).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+    });
   });
 });

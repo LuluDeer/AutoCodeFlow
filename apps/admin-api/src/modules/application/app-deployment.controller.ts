@@ -2,6 +2,7 @@ import {
   Controller,
   Get,
   Post,
+  Delete,
   Param,
   Body,
   UseGuards,
@@ -228,6 +229,34 @@ export class AppDeploymentController {
   @ApiOperation({ summary: "Stop running deployment" })
   stop(@Param("id") id: string) {
     return this.svc.stop(id);
+  }
+
+  /**
+   * 删除部署记录（用户报障：失败的部署记录无法删除，「重新部署」后旧行永久残留）。
+   *
+   * 只接受终态行（FAILED / STOPPED）；在途行、运行中行、待审批行一律 409 并说明
+   * 正确的出口（等它结束 / 先 stop / 走 reject 或 cancel）。语义与守卫详见
+   * AppDeploymentService.removeDeployment 的方法注释。
+   */
+  // SEC-09: 中档限流（部署干预写面，OPS_THROTTLE 默认 30/min）
+  @Throttle({ default: OPS_THROTTLE })
+  @Delete(":id")
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({
+    summary: "Delete a finished deployment record (failed/stopped)",
+    description:
+      "Removes a terminal deployment row from the history. In-flight, running and " +
+      "pending-approval deployments are refused with 409 — stop a running one first, " +
+      "and use reject/cancel for an approval-pending one.",
+  })
+  remove(
+    @Param("id", ParseUUIDPipe) id: string,
+    @CurrentUser() user: { id: number; username: string },
+  ) {
+    return this.svc.removeDeployment(id, {
+      id: user?.id,
+      username: user?.username,
+    });
   }
 
   /**
