@@ -10,6 +10,18 @@ import { pickRecentMetaFiles } from './meta-files';
 // apps/<appId>/releases/<version>-<deploymentId>/ 布局解析，而不是把
 // appRoot 的直接子目录（releases/tmp/current）当成部署。见该模块头注。
 import { listDeployedApps } from './app-inventory';
+// 用户报障（列表里全是 UUID）：旧部署没有 app.json，本机唯一的名字线索是
+// 执行器自己日志里的 `Current release for <appName> now points to <key>`。
+import { collectReleaseAppNames, applyRecoveredAppNames } from './app-name-recovery';
+// 用户报障（无法撤销部署）：卸载必须走 executor 路由以先停 daemon——见该模块头注。
+import {
+  uninstallApp,
+  resolveReleaseDir,
+  resolveAppRoot,
+  canDeleteRelease,
+  readCurrentReleaseKey,
+  deleteReleaseDir,
+} from './app-uninstall';
 import * as net from 'net';
 import * as childProcess from 'child_process';
 import { configStore, executorProcess, heartbeat, syncNotifierWithConfig, trayManager, windowManager } from './index';
@@ -557,62 +569,46 @@ export function registerIpcHandlers(): void {
     // R13: executionId is renderer-supplied — whitelist its charset first
     // (same ^[A-Za-z0-9_-]+$ rule as admin-api heartbeat sanitization) so it
     // can never carry ../ traversal, then domain-check the final path.
-    if (!isValidExecutionId(executionId)) {
-      log.warn(`log:read rejected invalid executionId: ${JSON.stringify(executionId)}`);
-      return { lines: [], totalLines: 0, error: 'invalid executionId' };
+    const target = resolveExecutionLogFile(executionId);
+    if (!target) return { lines: [], totalLines: 0 };
+    return readLogIncremental(target, fromLine);
+  });
+
+  // 在文件管理器中定位某次执行的日志文件（用户报障：历史执行记录体验差——
+  // 此前只能看/复制 executionId，日志到底落在哪个文件、能不能拿到手都无从得知）。
+  ipcMain.handle('history:reveal-log', (_event, executionId: string) => {
+    const target = resolveExecutionLogFile(executionId);
+    if (!target) {
+      // 区分「id 非法」与「日志已被清理」——两者对用户的下一步动作完全不同。
+      return {
+        ok: false,
+        error: isValidExecutionId(executionId)
+          ? '该次执行的日志文件已不存在（可能已被保留期清理）'
+          : '执行 ID 非法',
+      };
     }
+    // showItemInFolder 只定位不执行，且路径已过白名单+域校验。
+    shell.showItemInFolder(target);
+    return { ok: true, path: target };
+  });
+
+  // 打开任务日志所在的**日期分片目录**（用户常要一次看当天所有执行）。
+  ipcMain.handle('history:open-log-folder', async () => {
     const workDir = configStore.get('workDir') as string | undefined;
-    if (!workDir) return { lines: [], totalLines: 0 };
-    // NETOPT-C P2-2: 不再猜"今天+昨天"——执行器把日志钉死在启动日分片后，跨
-    // 天的长任务文件在 logs/<启动日>/<id>.log，两天窗口必落空。与 /api/logs
-    // 同语义：扫全部日期分片 newest-first（有界），flat 路径兜底。
+    if (!workDir) return { ok: false, error: '未配置工作目录' };
     const logsBase = path.join(workDir, 'logs');
-    let target: string | undefined;
-    if (fs.existsSync(logsBase)) {
-      // NETOPT-D P2-2: 只扫 YYYY-MM-DD 日期分片——flat 残留文件（UUID 类 id
-      // 半数以 a-f 开头）字典序倒排全在日期前，不过滤会让扫描窗被 flat 吃光、
-      // 0 个日期分片被扫到（日志静默空白）。flat 由下方兜底路径负责，不进扫描窗。
-      // NETOPT-D P3-1: 去掉 slice(0,60) 硬编码魔数——与 /api/logs 无截断口径
-      // 对齐；logRetentionDays 调大（如 90 天）后长任务日志在桌面仍可读。扫描
-      // 是目录列举 + 每候选一次 existsSync/realpath，成本可忽略。
-      const dateDirs = (fs.readdirSync(logsBase) as string[])
-        .filter((n: string) => /^\d{4}-\d{2}-\d{2}$/.test(n))
-        .sort().reverse();
-      // NETOPT-E P3-2: domains 在候选循环内不变，提到循环外一次（每候选一次
-      // join/正则构造是纯冗余；候选多（90 天日志）时放大为每轮轮询的成本）。
-      const logDomains = getAllowedLogDomains();
-      for (const dateDir of dateDirs) {
-        const logFile = path.join(logsBase, dateDir, `${executionId}.log`);
-        if (!fs.existsSync(logFile)) continue;
-        const check = checkPathWithinDomains(logFile, logDomains);
-        if (!check.ok) {
-          // NETOPT-D P3-4: 该候选域校验失败——跳过继续（与 flat 兜底同语义），
-          // 而不是整体 return error 让其他分片/兜底文件静默不可达。
-          log.warn(`log:read domain check failed, skipping candidate: ${logFile} (${check.error})`);
-          continue;
-        }
-        target = check.resolvedPath!;
-        break;
-      }
-      if (!target) {
-        const flat = path.join(logsBase, `${executionId}.log`);
-        if (fs.existsSync(flat)) {
-          const check = checkPathWithinDomains(flat, logDomains);
-          if (check.ok) {
-            target = check.resolvedPath!;
-          } else {
-            log.warn(`log:read flat domain check failed: ${flat} (${check.error})`);
-          }
-        }
-      }
+    const check = checkPathWithinDomains(logsBase, getAllowedLogDomains());
+    if (!check.ok) return { ok: false, error: check.error };
+    if (!fs.existsSync(logsBase)) {
+      return { ok: false, error: '日志目录尚不存在（还没有执行过任务）' };
     }
-    if (target) {
-      // NETOPT-D P3-5: 域校验收敛为候选层逐次（executionId 已过
-      // ^[A-Za-z0-9_-]+$ 白名单、目录名来自 readdir，路径不可能由渲染层注入
-      // 遍历；符号链接逃逸在命中文件上仍被拦下，攻击面不变）。
-      return readLogIncremental(target, fromLine);
-    }
-    return { lines: [], totalLines: 0 };
+    // 打开**今天**的分片；没有今天的就退回 logs 根（今天还没跑过任务）。
+    const now = new Date();
+    const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    const todayDir = path.join(logsBase, today);
+    const target = fs.existsSync(todayDir) ? todayDir : logsBase;
+    const err = await shell.openPath(target);
+    return { ok: !err, path: target, error: err || undefined };
   });
 
   // ── 日志文件管理 ───────────────────────────────────────
@@ -695,7 +691,141 @@ export function registerIpcHandlers(): void {
     const workDir = configStore.get('workDir') as string | undefined;
     // D 修正：目录级失败向上抛出（IPC reject → 渲染层错误条），不冒充
     // 「暂无已部署应用」；单条目 stat 失败仍只跳过该条目（正常目录竞争）。
-    return listDeployedApps(workDir);
+    const entries = listDeployedApps(workDir);
+    // 用户报障（看不出是哪个应用）：app.json 是权威来源，但旧部署没有它。
+    // 用执行器日志里的 releaseKey→appName 映射补齐（只读、带签名缓存，
+    // 不覆盖 app.json 已有的值）。回溯不到就保持 null，由 UI 如实显示。
+    const recovered = collectReleaseAppNames(
+      path.join(app.getPath('userData'), 'logs'),
+    );
+    return applyRecoveredAppNames(entries, recovered);
+  });
+
+  // 打开应用目录（用户报障：客户端本地无法查看部署的应用文件夹）
+  ipcMain.handle('apps:open-folder', async (_event, appId: string) => {
+    // 渲染层传的是 apps:list 里的 appId，但仍须走同一套白名单+containment
+    // 校验（R13 姿态）：绝不把渲染层给的字符串直接交给 shell。
+    const resolved = resolveAppRoot(
+      configStore.get('workDir') as string | undefined,
+      appId,
+    );
+    if (!resolved.ok) {
+      log.warn(`apps:open-folder rejected: ${String(appId)} (${resolved.error})`);
+      return { ok: false, error: resolved.error };
+    }
+    if (!fs.existsSync(resolved.appRoot)) {
+      return { ok: false, error: '应用目录不存在（可能已被删除）' };
+    }
+    // shell.openPath 对**目录**是「用资源管理器打开」，不是执行——与
+    // log:open-file 的 .bat/.exe 风险不同：这里的路径已由 resolveAppRoot
+    // 钉死为 <workDir>/apps/<白名单段>，无法指向可执行文件。
+    const err = await shell.openPath(resolved.appRoot);
+    return { ok: !err, error: err || undefined };
+  });
+
+  // 打开某个 release 目录（用户想直接看部署进去的文件/日志）
+  ipcMain.handle(
+    'apps:open-release-folder',
+    async (_event, appId: string, releaseKey: string) => {
+      const resolved = resolveReleaseDir(
+        configStore.get('workDir') as string | undefined,
+        appId,
+        releaseKey,
+      );
+      if (!resolved.ok) {
+        log.warn(
+          `apps:open-release-folder rejected: ${String(appId)}/${String(releaseKey)} (${resolved.error})`,
+        );
+        return { ok: false, error: resolved.error };
+      }
+      if (!fs.existsSync(resolved.releaseDir)) {
+        return { ok: false, error: '该版本目录不存在（可能已被删除）' };
+      }
+      const err = await shell.openPath(resolved.releaseDir);
+      return { ok: !err, error: err || undefined };
+    },
+  );
+
+  // 卸载整个应用（用户报障：无法撤销部署(删除)）
+  ipcMain.handle('apps:uninstall', async (_event, appId: string) => {
+    const workDir = configStore.get('workDir') as string | undefined;
+    const outcome = await uninstallApp({
+      workDir,
+      appId,
+      post: (routePath, body, timeoutMs) =>
+        postToLocalExecutor(routePath, body, timeoutMs),
+    });
+    if (outcome.ok) {
+      log.info(
+        `apps:uninstall ${appId} ok (mode=${outcome.mode}, stopped=${outcome.stopped?.length ?? 0})`,
+      );
+    } else {
+      log.warn(`apps:uninstall ${appId} failed (mode=${outcome.mode}): ${outcome.error}`);
+    }
+    return outcome;
+  });
+
+  // 删除单个历史版本（当前生效版本 / 运行中的版本会被拒绝）
+  ipcMain.handle(
+    'apps:delete-release',
+    async (_event, appId: string, releaseKey: string, deploymentId: string) => {
+      const workDir = configStore.get('workDir') as string | undefined;
+      const resolved = resolveReleaseDir(workDir, appId, releaseKey);
+      if (!resolved.ok) {
+        log.warn(`apps:delete-release rejected: ${resolved.error}`);
+        return { ok: false, error: resolved.error };
+      }
+      // 运行中的 daemon 只登记在 executor 进程内（runningApps/runningAppRoots），
+      // 桌面端读不到 → 回环问一次 /api/app-status。**拿不到答案时按"在运行"
+      // 处理**（保守拒绝）：误删一个正在跑的版本会留下孤儿进程 + 半删目录，
+      // 而误拒只是让用户先去中台停一下——代价不对称，故取保守侧。
+      const status = await postToLocalExecutor('/api/app-status', {}, 5_000, 'GET');
+      let runningDeploymentId: string | null = null;
+      let statusKnown = false;
+      if (status.reached && status.ok) {
+        const table = (status.body ?? {}) as Record<string, { running?: boolean }>;
+        statusKnown = true;
+        const hit = Object.entries(table).find(
+          ([id, v]) => id === deploymentId && v?.running,
+        );
+        runningDeploymentId = hit ? hit[0] : null;
+      }
+      if (!statusKnown) {
+        log.warn(
+          `apps:delete-release ${releaseKey}: executor status unknown (${status.error ?? 'no answer'}) — refusing to delete`,
+        );
+        return {
+          ok: false,
+          error:
+            '无法确认该版本是否正在运行（执行器未响应）。请先在中台停止应用，或稍后重试',
+        };
+      }
+      const gate = canDeleteRelease({
+        releaseKey,
+        currentKey: readCurrentReleaseKey(resolved.appRoot),
+        runningDeploymentId,
+        deploymentId,
+      });
+      if (!gate.ok) return { ok: false, error: gate.reason };
+      if (!fs.existsSync(resolved.releaseDir)) {
+        return { ok: true }; // 幂等：已经不在了
+      }
+      const del = deleteReleaseDir(resolved.releaseDir);
+      if (!del.ok) {
+        log.warn(`apps:delete-release ${releaseKey} failed: ${del.error}`);
+      } else {
+        log.info(`apps:delete-release removed ${appId}/releases/${releaseKey}`);
+      }
+      return del;
+    },
+  );
+
+  // 列出本应用名下正在运行的 daemon（deploymentId → pid），供 UI 显示
+  // 「运行中」并阻止删除正在跑的版本。
+  ipcMain.handle('apps:running', async () => {
+    const res = await postToLocalExecutor('/api/app-status', {}, 5_000, 'GET');
+    if (!res.reached || !res.ok) return {};
+    return (res.body ?? {}) as Record<string, { pid?: number; running?: boolean }>;
   });
 
   // 读取应用日志（支持分页，从 fromLine 开始）
@@ -746,6 +876,153 @@ function checkPortAvailable(port: number): Promise<{ available: boolean; message
     });
     server.listen(port, '0.0.0.0');
   });
+}
+
+/**
+ * 回环调用本地 executor-node 的路由（用户报障：无法撤销部署）。
+ *
+ * 为什么必须经 executor 而不是桌面端直接删目录：`/api/app-uninstall` 会先停
+ * 掉本应用名下的全部 daemon（同时扫 runningAppRoots 与 daemonSpecs），再删目录。
+ * 缺这一步会导致「删了还在跑」或退避中的 daemon 被定时器重新拉起指向已删除
+ * 的目录（见 executor-node/src/routes/deploy.ts::app-uninstall 注释）。
+ *
+ * 鉴权：executor-node 的 /api/* 走 verifyToken，需要 Bearer 令牌。桌面端持有
+ * 的就是下发给孩子进程的那个共享令牌（与 executor-process 同源，走
+ * getDecryptedToken —— 仅主进程可用，绝不过 IPC）。
+ *
+ * `reached=false` 专指「连不上/超时」（executor 没在监听），调用方据此判定
+ * 可以安全回落本地删除；拿到 4xx/5xx 应答则**不**回落（executor 明确拒绝了）。
+ */
+function postToLocalExecutor(
+  routePath: string,
+  body: unknown,
+  timeoutMs: number,
+  method: 'POST' | 'GET' = 'POST',
+): Promise<{ ok: boolean; reached: boolean; status?: number; body?: unknown; error?: string }> {
+  return new Promise((resolve) => {
+    const port = configStore.get('executorPort') as number | undefined;
+    if (!port || !Number.isFinite(port)) {
+      resolve({ ok: false, reached: false, error: '未配置执行器端口' });
+      return;
+    }
+    let token = '';
+    try {
+      token = configStore.getDecryptedToken();
+    } catch {
+      token = ''; // 解密失败：仍尝试无令牌请求，由 executor 侧 503/401 如实回报
+    }
+    const payload = method === 'GET' ? undefined : Buffer.from(JSON.stringify(body ?? {}), 'utf-8');
+    const req = http.request(
+      {
+        hostname: '127.0.0.1',
+        port,
+        path: routePath,
+        method,
+        timeout: timeoutMs,
+        headers: {
+          ...(payload
+            ? { 'Content-Type': 'application/json', 'Content-Length': String(payload.length) }
+            : {}),
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      },
+      (res) => {
+        let raw = '';
+        res.setEncoding('utf-8');
+        res.on('data', (chunk: string) => {
+          // 上限防御：本地路由的应答体是诊断信息，不该有 MB 级响应。
+          if (raw.length < 64 * 1024) raw += chunk;
+        });
+        res.on('end', () => {
+          const status = res.statusCode ?? 0;
+          let parsed: unknown = raw;
+          try {
+            parsed = JSON.parse(raw);
+          } catch {
+            /* 非 JSON 应答（如反代错误页）：原样返回文本 */
+          }
+          const ok = status >= 200 && status < 300;
+          const errText =
+            !ok && parsed && typeof parsed === 'object'
+              ? ((parsed as { error?: string; message?: string }).error ??
+                (parsed as { message?: string }).message)
+              : undefined;
+          resolve({
+            ok,
+            reached: true,
+            status,
+            body: parsed,
+            error: ok ? undefined : (errText ?? `HTTP ${status}`),
+          });
+        });
+      },
+    );
+    req.on('error', (err) => resolve({ ok: false, reached: false, error: err.message }));
+    req.on('timeout', () => {
+      req.destroy();
+      // 超时算「没拿到应答」：executor 可能卡死，但**不**据此回落本地删除——
+      // 卡死的 executor 里可能仍有活着的 daemon，绕过它会孤儿化进程。
+      resolve({ ok: false, reached: true, error: `请求超时 (${timeoutMs}ms)` });
+    });
+    if (payload) req.write(payload);
+    req.end();
+  });
+}
+
+/**
+ * 解析某次执行的日志文件绝对路径；找不到/不合法时返回 null。
+ *
+ * 从 `log:read` 抽出（本轮新增 `history:reveal-log` 复用同一套解析）——两处
+ * 各写一遍必然漂移，而"日志在哪个文件"是**唯一事实**，漂移的后果是
+ * 「能读到的日志定位不到、定位到的文件读不出」。
+ *
+ * 解析规则（原实现语义，逐条保留）：
+ * · executionId 先过 `^[A-Za-z0-9_-]+$` 白名单（R13：渲染层可控，绝不允许
+ *   携带 `../` 遍历）；
+ * · NETOPT-C P2-2：不猜"今天+昨天"——执行器把日志钉死在**启动日**分片后，
+ *   跨天长任务落在 logs/<启动日>/<id>.log，两天窗口必落空。故扫全部日期分片
+ *   newest-first；
+ * · NETOPT-D P2-2：只扫 `YYYY-MM-DD` 分片——flat 残留文件（UUID 类 id 半数
+ *   以 a-f 开头）字典序倒排全排在日期之前，不过滤会让扫描窗被 flat 吃光、
+ *   0 个日期分片被扫到（日志静默空白）；flat 由兜底路径单独负责；
+ * · NETOPT-D P3-1：不设扫描条数上限（与 /api/logs 无截断口径对齐）——
+ *   保留期调大后长任务日志仍可读；
+ * · NETOPT-D P3-4：单候选域校验失败只跳过该候选，不让其他分片静默不可达；
+ * · NETOPT-D P3-5：域校验在候选层逐次做（符号链接逃逸在命中文件上仍被拦下）。
+ */
+function resolveExecutionLogFile(executionId: string): string | null {
+  if (!isValidExecutionId(executionId)) {
+    log.warn(`log path rejected invalid executionId: ${JSON.stringify(executionId)}`);
+    return null;
+  }
+  const workDir = configStore.get('workDir') as string | undefined;
+  if (!workDir) return null;
+  const logsBase = path.join(workDir, 'logs');
+  if (!fs.existsSync(logsBase)) return null;
+
+  const logDomains = getAllowedLogDomains();
+  const dateDirs = (fs.readdirSync(logsBase) as string[])
+    .filter((n: string) => /^\d{4}-\d{2}-\d{2}$/.test(n))
+    .sort()
+    .reverse();
+  for (const dateDir of dateDirs) {
+    const logFile = path.join(logsBase, dateDir, `${executionId}.log`);
+    if (!fs.existsSync(logFile)) continue;
+    const check = checkPathWithinDomains(logFile, logDomains);
+    if (!check.ok) {
+      log.warn(`log domain check failed, skipping candidate: ${logFile} (${check.error})`);
+      continue;
+    }
+    return check.resolvedPath!;
+  }
+
+  const flat = path.join(logsBase, `${executionId}.log`);
+  if (fs.existsSync(flat)) {
+    const check = checkPathWithinDomains(flat, logDomains);
+    if (check.ok) return check.resolvedPath!;
+    log.warn(`log flat domain check failed: ${flat} (${check.error})`);
+  }
+  return null;
 }
 
 function testAdminApiConnection(url: string): Promise<{ ok: boolean; message: string }> {

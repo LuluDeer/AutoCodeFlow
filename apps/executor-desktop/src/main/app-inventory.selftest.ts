@@ -54,7 +54,12 @@ function main(): void {
     // app.json；列表据此显示真实应用名而不是 UUID。
     fs.writeFileSync(
       path.join(aRoot, 'app.json'),
-      JSON.stringify({ appId: APP_A, appName: '订单同步服务', runtime: 'node' }),
+      JSON.stringify({
+        appId: APP_A,
+        appName: '订单同步服务',
+        runtime: 'node',
+        runMode: 'daemon',
+      }),
     );
 
     // current → 较新的 release（同 executor 侧的 switchCurrentRelease 语义）。
@@ -100,12 +105,76 @@ function main(): void {
     assert.strictEqual(bEntries.length, 1, '无 release 的应用应有一条显式占位');
     assert.strictEqual(bEntries[0].hasLog, false);
     assert.strictEqual(bEntries[0].releaseKey, '');
-    // 没有 app.json → 回落为 appId，不抛错、不显示空名字。
-    assert.strictEqual(bEntries[0].appName, APP_B);
+    // 没有 app.json → appName 必须是 **null**（"本机没记录过名字"），不能回落
+    // 成 appId。反证：旧实现回落为 appId，UI 就把 UUID 当应用名渲染——正是用户
+    // 报障的「显示的应用也是ID形式 我都看不出是什么应用」。null 让 UI 能区分
+    // 「有名字」与「没名字」并给出可操作提示（见 app-name-recovery.ts）。
+    assert.strictEqual(
+      bEntries[0].appName,
+      null,
+      'app.json 缺失时 appName 必须为 null（不得用 appId 冒充应用名）',
+    );
 
     // 6) app.json 存在时显示真实应用名（用户报障的另一半：看不出是哪个应用）。
     assert.strictEqual(a1.appName, '订单同步服务', 'app.json 的 appName 必须被读到');
     assert.strictEqual(a2.appName, '订单同步服务');
+    // runMode 必须透出：UI 靠它解释「scheduled 模式只部署不启动，所以没有
+    // app.log 是正常的」——没有它，「无日志」会被误读成故障。
+    assert.strictEqual(a1.runMode, 'daemon', 'app.json 的 runMode 必须透出');
+
+    // ── 用户报障核心回归：resolveReleasePaths 加唯一后缀的目录 ─────────
+    // 同 (version, deploymentId) 重复部署时，executor 不覆盖活目录，而是另起
+    // `releases/<key>-<ts36>-<pid36>-<seq36>`（deploy.ts::resolveReleasePaths）。
+    // 旧解析器用 `^…-<uuid>$` 锚定结尾 → 这类目录一律解析失败，实测输出
+    // `{version: null, deploymentId: '1.0.1-dae29737-…-muczolhj-8t4-1'}`，
+    // 于是 UI 显示「版本未知」+ 一整串不可读 ID，且与同应用下正常解析的行并排。
+    // 下面的字符串取自本机真实目录名（非构造）。
+    const REAL_SUFFIXED = '1.0.1-dae29737-f8f2-423f-a0bf-7044b4b8988b-muczolhj-8t4-1';
+    const suffixed = splitReleaseKey(REAL_SUFFIXED);
+    assert.strictEqual(suffixed.version, '1.0.1', '带唯一后缀的目录必须解析出版本号');
+    assert.strictEqual(
+      suffixed.deploymentId,
+      'dae29737-f8f2-423f-a0bf-7044b4b8988b',
+      '带唯一后缀的目录必须解析出真实 deploymentId（后缀不属于部署身份）',
+    );
+    // 短 hash 老格式 + 唯一后缀（本机另一批真实目录形态）。
+    const REAL_SUFFIXED_SHORT = '1.0.0-dae29737-f8f2-423f-a0bf-7044b4b8988b-muatp8dy-lv4-1';
+    const suffixedShort = splitReleaseKey(REAL_SUFFIXED_SHORT);
+    assert.strictEqual(suffixedShort.version, '1.0.0');
+    assert.strictEqual(
+      suffixedShort.deploymentId,
+      'dae29737-f8f2-423f-a0bf-7044b4b8988b',
+    );
+    // 反证：后缀剥离**不得**误伤异常目录名。`not-a-release-key` 恰好满足
+    // `-a-b-c` 后缀形状，若实现无条件剥离就会解析成 version=null,
+    // deploymentId='not'——伪造出一个看起来合理的部署 ID。
+    const stillWeird = splitReleaseKey('not-a-release-key');
+    assert.strictEqual(
+      stillWeird.deploymentId,
+      'not-a-release-key',
+      '后缀剥离只在剥完确实能解析时才允许采用（反证：不得把异常目录名切碎）',
+    );
+
+    // ── 用户报障：app.log 轮转后仍须算「有日志」──────────────────────
+    // startApp 在启动新进程前把 app.log → .1 → .2 → .3（APP_LOG_KEEP=3）。
+    // 于是「app.log 不存在但 app.log.1 存在」是合法状态（应用已停机/刚轮转）。
+    // 旧实现只看 app.log → 显示「无日志」，用户点不进那份真实存在的历史输出。
+    const keyA3 = `1.0.2-${DEP_A1}`;
+    const dirA3 = path.join(aReleases, keyA3);
+    fs.mkdirSync(dirA3, { recursive: true });
+    fs.writeFileSync(path.join(dirA3, 'app.log.1'), 'rotated output\n');
+    const rotated = listDeployedApps(workDir).find((e) => e.releaseKey === keyA3)!;
+    assert.strictEqual(
+      rotated.hasLog,
+      true,
+      'app.log 已轮转为 app.log.1 时必须仍算有日志（原实现恒 false）',
+    );
+    assert.strictEqual(rotated.logPath, path.join(dirA3, 'app.log.1'));
+    // 无任何日志的 release 仍须如实为 false（反证：不能因为放宽就恒真）。
+    fs.mkdirSync(path.join(aReleases, `1.0.3-${DEP_A2}`), { recursive: true });
+    const noLog = listDeployedApps(workDir).find((e) => e.releaseKey === `1.0.3-${DEP_A2}`)!;
+    assert.strictEqual(noLog.hasLog, false, '一份日志都没有时必须如实为 false');
+    assert.strictEqual(noLog.logPath, '');
 
     // ── releaseKey 拆分：版本号含 '-'（预发布标签）不能切错 ────────────
     const pre = splitReleaseKey(`1.0.0-beta.1-${DEP_A1}`);

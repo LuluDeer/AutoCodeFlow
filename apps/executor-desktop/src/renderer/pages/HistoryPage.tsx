@@ -6,6 +6,8 @@ declare const window: Window & {
     clearHistory: () => Promise<{ ok: boolean }>;
     readLog: (executionId: string, fromLine?: number) => Promise<{ lines: string[]; totalLines: number }>;
     writeClipboardText: (text: string) => Promise<{ ok: boolean }>;
+    revealExecLog: (executionId: string) => Promise<{ ok: boolean; path?: string; error?: string }>;
+    openTaskLogFolder: () => Promise<{ ok: boolean; path?: string; error?: string }>;
   };
 };
 
@@ -18,6 +20,17 @@ interface ExecRecord {
   status?: 'running' | 'success' | 'failed';
   exitCode?: number;
   errorMessage?: string;
+}
+
+/**
+ * 列表里一次执行的开始时间缺省值。
+ *
+ * meta 记录理论上都带 startTime，但早期/异常中断写入的记录可能缺字段——
+ * 排序与展示都要有确定行为，不能让 undefined 参与比较（NaN 排序会让整组
+ * 记录顺序随机抖动，且刷新一次变一次）。
+ */
+function startOf(r: ExecRecord): number {
+  return typeof r.startTime === 'number' && Number.isFinite(r.startTime) ? r.startTime : 0;
 }
 
 function formatDuration(ms?: number): string {
@@ -212,6 +225,35 @@ export default function HistoryPage() {
   // D 修正：原用 window.confirm()。Electron 无边框窗口下原生 confirm 会阻塞
   // 渲染进程且样式不可控（部分平台直接不显示），改用页内确认态。
   const [confirmingClear, setConfirmingClear] = useState(false);
+  // 行内操作反馈（定位日志失败等）——静默失败会让用户以为按钮坏了。
+  const [notice, setNotice] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
+
+  // 操作反馈 6s 后自动消失。
+  useEffect(() => {
+    if (!notice) return;
+    const t = setTimeout(() => setNotice(null), 6000);
+    return () => clearTimeout(t);
+  }, [notice]);
+
+  /** 在文件管理器中定位某次执行的日志文件。 */
+  async function handleRevealLog(executionId: string) {
+    try {
+      const res = await window.electronAPI.revealExecLog(executionId);
+      if (!res.ok) setNotice({ kind: 'err', text: res.error ?? '定位日志失败' });
+    } catch (err) {
+      setNotice({ kind: 'err', text: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  /** 打开任务日志所在目录（一次看当天所有执行）。 */
+  async function handleOpenLogFolder() {
+    try {
+      const res = await window.electronAPI.openTaskLogFolder();
+      if (!res.ok) setNotice({ kind: 'err', text: res.error ?? '打开日志目录失败' });
+    } catch (err) {
+      setNotice({ kind: 'err', text: err instanceof Error ? err.message : String(err) });
+    }
+  }
 
   const load = useCallback(async (background: boolean = false) => {
     // 后台轮询不切 loading：空列表下每 5s 闪烁「加载中...」会掩盖空态。
@@ -276,7 +318,36 @@ export default function HistoryPage() {
     if (!groups[key]) groups[key] = { label: rec.taskName || key, runs: [] };
     groups[key].runs.push(rec);
   }
+  // 组内按开始时间倒序（最新在前）。meta 里 startTime 可能缺失（异常中断
+  // 写入的记录），缺省按 0 处理——否则 undefined 参与减法得 NaN，排序结果
+  // 每次刷新都可能不同，记录顺序会随机抖动。
+  for (const g of Object.values(groups)) {
+    g.runs.sort((a, b) => startOf(b) - startOf(a));
+  }
   const groupEntries = Object.entries(groups);
+
+  // 首次加载后自动展开最近有记录的那一组。
+  //
+  // 用户报障（历史执行记录体验不好）：此前 expandedApp 初始为 null，**所有组
+  // 都是折叠的**——页面打开后只有一排任务名，用户得先点一下才知道里面有没有
+  // 记录、跑成什么样。对"来看最近一次执行结果"这个主场景，等于每次都要多点
+  // 一步，且折叠态与"没有任何记录"在视觉上无从区分。
+  //
+  // 只在用户**尚未手动操作过**时自动展开一次（userToggled 一旦置位就不再
+  // 干预）——否则用户手动折叠某组后，下一次 5s 轮询刷新会把面板又弹开。
+  const userToggled = useRef(false);
+  const autoExpanded = useRef(false);
+  useEffect(() => {
+    if (autoExpanded.current || userToggled.current) return;
+    if (expandedApp !== null || groupEntries.length === 0) return;
+    autoExpanded.current = true;
+    setExpandedApp(groupEntries[0][0]);
+  }, [groupEntries, expandedApp]);
+
+  const toggleGroup = (key: string) => {
+    userToggled.current = true;
+    setExpandedApp((prev) => (prev === key ? null : key));
+  };
 
   // 汇总统计（基于全量，不随过滤变化——作为"总览"语义）
   const totalRuns = records.length;
@@ -294,6 +365,13 @@ export default function HistoryPage() {
         <span className="history-title">历史执行记录</span>
         <div className="history-toolbar-actions">
           <button className="btn btn-sm" onClick={() => void load(false)}>↻ 刷新</button>
+          {/* 用户报障：历史记录只能看，日志拿不到手。直接给一个「打开日志目录」
+              入口（当天分片），配合每行的「定位日志文件」。 */}
+          <button
+            className="btn btn-sm"
+            onClick={() => void handleOpenLogFolder()}
+            title="在文件管理器中打开任务日志目录"
+          >📂 日志目录</button>
           {confirmingClear ? (
             <>
               <span className="history-confirm-text">确认清除全部记录？</span>
@@ -312,6 +390,17 @@ export default function HistoryPage() {
 
       {error && (
         <div className="history-error" role="alert">⚠ {error}</div>
+      )}
+
+      {notice && (
+        <div
+          className={notice.kind === 'ok' ? 'apps-notice' : 'apps-notice apps-notice-err'}
+          role="status"
+          aria-live="polite"
+        >
+          {notice.kind === 'ok' ? '✓ ' : '⚠ '}
+          {notice.text}
+        </div>
       )}
 
       {records.length > 0 && (
@@ -383,7 +472,7 @@ export default function HistoryPage() {
                 <button
                   type="button"
                   className={`history-group-header ${isOpen ? 'open' : ''}`}
-                  onClick={() => setExpandedApp(isOpen ? null : key)}
+                  onClick={() => toggleGroup(key)}
                   aria-expanded={isOpen}
                   aria-controls={`history-runs-${key}`}
                 >
@@ -422,6 +511,11 @@ export default function HistoryPage() {
                             className="btn btn-sm"
                             onClick={() => setViewingLog(run)}
                           >查看日志</button>
+                          <button
+                            className="btn btn-sm"
+                            onClick={() => void handleRevealLog(run.executionId)}
+                            title="在文件管理器中定位该次执行的日志文件"
+                          >📂 定位</button>
                         </div>
                       </div>
                     ))}

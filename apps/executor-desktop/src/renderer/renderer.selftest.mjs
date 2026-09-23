@@ -682,4 +682,88 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
   }
 }
 
-console.log('renderer selftest: design tokens, accessibility, contrast, focus, layout, spacing, IPC anchors, F-21/F-22/F-37, DSK-05, PERF-DSK-01, SEC-DSK-01, EXP-04/05/06/09, ErrorBoundary, NETOPT-7⑤⑥, tab roving+persist guards passed');
+// ── 用户报障回归：应用页可管理（打开目录 / 卸载 / 日志交叉入口）────────
+// 报障原文：「客户端本地无法查看部署的应用文件夹 也无法撤销部署(删除)，
+// 显示的应用也是ID形式 我都看不出是什么应用，明明有日志，但是应用tab却
+// 显示没日志」。以下守卫钉死这四条能力不被后续重构删掉。
+{
+  const appsPage = pages[0];
+  const tabSwitch = readFileSync(resolve(root, 'tab-switch.ts'), 'utf8');
+
+  // ① 应用名不得回落到 appId（UUID）。回落正是"看不出是哪个应用"的根因：
+  // 一旦回落，「有名字」与「没名字」在 UI 上再也分不出来。
+  if (/entries\[0\]\?\.appName \|\| appId/.test(appsPage) || /appName \|\| entry\.appId/.test(appsPage)) {
+    throw new Error('报障回归：应用名回落到 appId（UUID）——用户看不出是哪个应用');
+  }
+  // 无名时必须如实显示「未知应用名」+ 短 ID 供比对
+  if (!appsPage.includes('未知应用名')) {
+    throw new Error('报障回归：旧部署无 app.json 时未如实显示「未知应用名」');
+  }
+  if (!appsPage.includes('appName: string | null')) {
+    throw new Error('报障回归：appName 类型退回非空 string（无法区分"没记录过名字"）');
+  }
+
+  // ② 打开文件夹 + 卸载 + 删除版本：四条 IPC 必须都接上（有按钮无通道＝点了没反应）
+  for (const [anchor, why] of [
+    ['openAppFolder', '打开应用文件夹'],
+    ['openReleaseFolder', '打开版本目录'],
+    ['uninstallApp', '卸载应用'],
+    ['deleteAppRelease', '删除单个版本'],
+  ]) {
+    if (!appsPage.includes(anchor)) {
+      throw new Error(`报障回归：应用页缺少「${why}」能力（${anchor}）`);
+    }
+  }
+  // 删除必须二次确认——这是不可撤销的破坏性操作。
+  if (!appsPage.includes('window.confirm')) {
+    throw new Error('报障回归：删除/卸载缺少二次确认（不可撤销操作不得直接执行）');
+  }
+  // 当前生效版本必须**禁用**删除按钮（删了应用直接不可用），而不是点了才报错。
+  // 运行中的版本同样禁用（主进程会保守拒绝——删正在跑的版本会留下孤儿进程）。
+  if (!/disabled=\{blocked \|\| groupBusy\}/.test(appsPage)) {
+    throw new Error('报障回归：当前生效/运行中的版本未禁用删除按钮');
+  }
+  if (!/const blocked = entry\.isCurrent \|\| isRunning;/.test(appsPage)) {
+    throw new Error('报障回归：删除按钮的禁用条件未同时覆盖 isCurrent 与 isRunning');
+  }
+  // 运行态必须真的从执行器取（getRunningApps），否则「运行中」徽标无从判断，
+  // 用户会把「当前版本」（current 指向）误当成"应用在跑"。
+  if (!appsPage.includes('getRunningApps')) {
+    throw new Error('报障回归：应用页未取运行态（无法区分 current 指向与进程存活）');
+  }
+
+  // ③ 「无日志」必须给出可点的出路（用户报障：明明有日志却显示没日志）
+  // 真实原因：应用日志(app.log)与任务执行日志是两类东西，后者在历史页。
+  if (!appsPage.includes('requestTabSwitch(')) {
+    throw new Error('报障回归：应用页「无日志」未提供跳转历史页的入口（死胡同）');
+  }
+  if (!appsPage.includes('log-empty-hint')) {
+    throw new Error('报障回归：无应用日志时未说明原因（用户会以为日志丢了）');
+  }
+  // 跨 Tab 跳转必须经白名单校验（与托盘路径同款），否则可渲染未知 Tab
+  if (!tabSwitch.includes('TAB_SWITCH_EVENT')) {
+    throw new Error('报障回归：跨 Tab 跳转事件常量缺失');
+  }
+  if (!/\(TAB_ORDER as string\[\]\)\.includes\(t\)/.test(app)) {
+    throw new Error('报障回归：跨 Tab 跳转未做白名单校验（可渲染未知 Tab）');
+  }
+
+  // ④ 历史页：执行日志必须能拿到手（定位文件 / 打开目录）
+  const history = pages[2];
+  for (const anchor of ['revealExecLog', 'openTaskLogFolder']) {
+    if (!history.includes(anchor)) {
+      throw new Error(`报障回归：历史页缺少「${anchor}」能力（日志拿不到手）`);
+    }
+  }
+  // 首次加载自动展开最近一组：全折叠的页面与"没有任何记录"视觉上无从区分
+  if (!history.includes('autoExpanded')) {
+    throw new Error('报障回归：历史页仍全部折叠（与空态无从区分）');
+  }
+
+  // ⑤ 新增样式必须在位（缺样式会让新按钮裸奔/不可辨识）
+  for (const cls of ['.app-group-path', '.apps-notice', '.log-empty-hint', '.app-no-log-link']) {
+    if (!css.includes(cls)) throw new Error(`报障回归：缺少样式 ${cls}`);
+  }
+}
+
+console.log('renderer selftest: design tokens, accessibility, contrast, focus, layout, spacing, IPC anchors, F-21/F-22/F-37, DSK-05, PERF-DSK-01, SEC-DSK-01, EXP-04/05/06/09, ErrorBoundary, NETOPT-7⑤⑥, tab roving+persist, app-management guards passed');

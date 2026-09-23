@@ -34,8 +34,16 @@ import path from 'path';
 /** 一个 releaseKey：`${version}-${deploymentId}`（version 可含 '.'，deploymentId 是 UUID）。 */
 export interface AppReleaseEntry {
   appId: string;
-  /** app.json 里记录的真实应用名；缺失（旧部署）时回落为 appId。 */
-  appName: string;
+  /**
+   * app.json 里记录的真实应用名。
+   *
+   * **null 表示「本地没有记录过这个名字」**，而不是「名字等于 appId」。
+   * 旧实现回落到 appId（UUID）会让 UI 把不可读的 ID 当名字渲染（用户报障
+   * 「显示的应用也是ID形式 我都看不出是什么应用」），也让「有名字」与
+   * 「没名字」在类型上不可区分——UI 无从给出「这是旧版本部署，本机没留名字」
+   * 这种可操作的提示。故此处如实返回 null，由调用方决定回落展示形态。
+   */
+  appName: string | null;
   /** releaseKey 中的 deploymentId 部分（无法解析时为原始 releaseKey）。 */
   deploymentId: string;
   /** releaseKey 中的 version 部分（无法解析时为 null）。 */
@@ -46,9 +54,22 @@ export interface AppReleaseEntry {
   isCurrent: boolean;
   /** release 目录的 mtime（部署时间），同版本多次部署时靠它区分；读取失败为 null。 */
   deployedAt: number | null;
+  /** 是否存在可读的应用日志（含轮转后的 app.log.1/.2/.3）。 */
   hasLog: boolean;
+  /** 最新一份应用日志的路径（无日志时为空串）。 */
   logPath: string;
+  /** 本次 release 的目录（app.log 所在层）。 */
   deployDir: string;
+  /** 应用根目录（跨 release 稳定，含 app.json/current/releases/tmp）。 */
+  appRoot: string;
+  /**
+   * 部署时的 runMode（app.json 记录；旧部署无此字段时为 null）。
+   *
+   * UI 用它解释「为什么这个应用没有 app.log」：`scheduled` 模式**只部署不启动**
+   * （见 deploy.ts 的 runMode 分支——只有 daemon/once 才调 startApp，而 app.log
+   * 由 startApp 创建），所以没有 app.log 是**正常**的，不是故障。
+   */
+  runMode: string | null;
 }
 
 /** <appRoot>/app.json（executor-node 部署成功时落盘的元数据）。 */
@@ -57,10 +78,11 @@ interface AppMeta {
   runtime?: string;
   gitRepo?: string | null;
   gitBranch?: string | null;
+  runMode?: string;
 }
 
 /**
- * 读 app.json。缺失/损坏一律返回 null——**不猜**，由 UI 回落显示 appId
+ * 读 app.json。缺失/损坏一律返回 null——**不猜**，由调用方如实呈现
  * （旧部署没有这份文件，不能因此让整个列表报错）。
  */
 function readAppMeta(appRoot: string): AppMeta | null {
@@ -75,34 +97,72 @@ function readAppMeta(appRoot: string): AppMeta | null {
 
 /**
  * deploymentId 是 UUID（admin-api 的 app_deployments.id 为 uuid 主键）。
- * 从 releaseKey 尾部把 UUID 摘出来：版本号本身可能含 '-'（预发布标签），
- * 所以**从右往左**按最后 5 段匹配 UUID，而不是从左切第一个 '-'。
+ * 从 releaseKey 里把 UUID 摘出来：版本号本身可能含 '-'（预发布标签），
+ * 所以**匹配 UUID 的形状**而不是从左切第一个 '-'。
+ *
+ * 与旧实现的差别（本轮修的真实缺陷）：旧实现用 `^…-<uuid>$` **锚定结尾**，
+ * 于是凡是被 `resolveReleasePaths` 加了唯一后缀的目录一律解析失败。
  */
-const UUID_TAIL_RE =
-  /^(.*)-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
+const UUID_ANYWHERE_RE =
+  /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 
 /**
  * 宽松回退：老格式/短 hash 的 releaseKey（如 `1.0.1-dae29737`，deploymentId
- * 只有 8 位 hex、不是完整 UUID）配不上 UUID_TAIL_RE——原实现把整个 releaseKey
+ * 只有 8 位 hex、不是完整 UUID）配不上 UUID 匹配——原实现把整个 releaseKey
  * 回落成 deploymentId 且 version=null，于是 UI 显示「版本未知 1.0.1-da」，
  * 与正常解析出的「v1.0.1 dae29737」并排出现，自相矛盾（用户截图报障）。
- * 这里按「semver 前缀 + 8 位以上 hex 尾」再试一次，能把版本号如实还原；
- * 仍配不上（目录名根本不是 releaseKey）才返回 version=null。
+ * 这里按「semver 前缀 + 8 位以上 hex 尾」再试一次，能把版本号如实还原。
  */
 const LOOSE_TAIL_RE = /^(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.]+)?)-([0-9a-f]{8,})$/i;
+
+/**
+ * `resolveReleasePaths` 给重复部署加的**唯一后缀**：
+ *   `${Date.now().toString(36)}-${process.pid.toString(36)}-${releasePathSeq.toString(36)}`
+ * （deploy.ts:686），形如 `-muczolhj-8t4-1`。
+ *
+ * 为什么必须显式剥掉：同 (version, deploymentId) 重复部署时，executor 会把新
+ * release 发到 `releases/<key>-<后缀>` 而不是覆盖活目录。**本机真实目录**：
+ *   releases/1.0.1-dae29737-f8f2-423f-a0bf-7044b4b8988b-muczolhj-8t4-1
+ * 旧解析器对它的输出是 `{version: null, deploymentId: '1.0.1-dae…'}` ——
+ * 即「版本未知」+ 一整串不可读 ID，且与同一应用下正常解析的行并排显示。
+ */
+const RELEASE_SUFFIX_RE = /-[0-9a-z]+-[0-9a-z]+-[0-9a-z]+$/;
+
+function parseReleaseKey(key: string): {
+  version: string | null;
+  deploymentId: string;
+} | null {
+  const uuid = UUID_ANYWHERE_RE.exec(key);
+  if (uuid) {
+    // UUID 之后的一切（唯一后缀）都是发布细节，不属于版本/部署身份。
+    const version = key.slice(0, uuid.index).replace(/-+$/, '');
+    return { version: version || null, deploymentId: uuid[0] };
+  }
+  const loose = LOOSE_TAIL_RE.exec(key);
+  if (loose) {
+    return { version: loose[1], deploymentId: loose[2] };
+  }
+  return null;
+}
 
 export function splitReleaseKey(releaseKey: string): {
   version: string | null;
   deploymentId: string;
 } {
-  const m = UUID_TAIL_RE.exec(releaseKey);
-  if (m) {
-    return { version: m[1] || null, deploymentId: m[2] };
+  const direct = parseReleaseKey(releaseKey);
+  if (direct) return direct;
+
+  // 短 hash 老格式 + 唯一后缀（`1.0.1-dae29737-muczolhj-8t4-1`）：上面两条都
+  // 配不上（LOOSE 要求以 hex 结尾，而结尾是后缀的序号）。剥掉后缀再试一次。
+  //
+  // 只在**剥掉后确实能解析**时才采用——否则会把 `not-a-release-key` 这类
+  // 异常目录名误伤成 `not`（见下方回落分支与 selftest 的反证断言）。
+  const stripped = releaseKey.replace(RELEASE_SUFFIX_RE, '');
+  if (stripped !== releaseKey) {
+    const retry = parseReleaseKey(stripped);
+    if (retry) return retry;
   }
-  const loose = LOOSE_TAIL_RE.exec(releaseKey);
-  if (loose) {
-    return { version: loose[1], deploymentId: loose[2] };
-  }
+
   // 无法解析（异常目录名）：不用假数据冒充，deploymentId 回落为原名，
   // version 置 null 由 UI 如实显示。
   return { version: null, deploymentId: releaseKey };
@@ -118,6 +178,30 @@ function readCurrentReleaseKey(currentLink: string): string | null {
     // 悬空链（目标已被删）——不作数，其余 release 照常列出。
     return null;
   }
+}
+
+/**
+ * 应用日志候选名，**按新鲜度排序**。
+ *
+ * `app.log` 是当前写入目标；`startApp` 在启动新进程前调用
+ * `rotateAppLogIfNeeded`（app.log → .1 → .2 → .3，最旧丢弃，见 deploy.ts 的
+ * APP_LOG_KEEP=3）。所以「app.log 不存在但 app.log.1 存在」是**合法状态**
+ * （应用已停机、或刚轮转过），此时必须仍算「有日志」——旧实现只看 app.log，
+ * 会把这种部署显示成「无日志」，用户点不进那份真实存在的历史输出。
+ */
+const APP_LOG_CANDIDATES = ['app.log', 'app.log.1', 'app.log.2', 'app.log.3'];
+
+/** 返回最新一份存在的应用日志路径；一份都没有时返回空串。 */
+function resolveAppLogPath(deployDir: string): string {
+  for (const name of APP_LOG_CANDIDATES) {
+    const candidate = path.join(deployDir, name);
+    try {
+      if (fs.statSync(candidate).isFile()) return candidate;
+    } catch {
+      // 不存在/不可读：试下一份
+    }
+  }
+  return '';
 }
 
 /**
@@ -145,13 +229,17 @@ export function listDeployedApps(workDir: string | undefined): AppReleaseEntry[]
     const appRoot = path.join(appsDir, appId);
     const releasesDir = path.join(appRoot, 'releases');
     const currentKey = readCurrentReleaseKey(path.join(appRoot, 'current'));
-    // 用户报障（看不出是哪个应用）：app.json 由 executor-node 在部署成功时落盘。
-    // 旧部署没有该文件 → 回落显示 appId，绝不因此让列表失败。
+    // app.json 由 executor-node 在部署成功时落盘（跨 release 稳定）。
+    // 旧部署没有该文件 → appName 为 null，由调用方（日志回溯 + UI 回落）处理。
     const meta = readAppMeta(appRoot);
     const appName =
       typeof meta?.appName === 'string' && meta.appName.trim()
         ? meta.appName
-        : appId;
+        : null;
+    const runMode =
+      typeof meta?.runMode === 'string' && meta.runMode.trim()
+        ? meta.runMode
+        : null;
 
     // releases/ 尚不存在（部署进行中/从未成功发布）也要列出应用——
     // 否则「刚点部署、正在解压」这段时间应用在整个页面里凭空消失。
@@ -197,13 +285,15 @@ export function listDeployedApps(workDir: string | undefined): AppReleaseEntry[]
         hasLog: false,
         logPath: '',
         deployDir: appRoot,
+        appRoot,
+        runMode,
       });
       continue;
     }
 
     for (const releaseKey of releaseKeys) {
       const deployDir = path.join(releasesDir, releaseKey);
-      const logPath = path.join(deployDir, 'app.log');
+      const logPath = resolveAppLogPath(deployDir);
       const { version, deploymentId } = splitReleaseKey(releaseKey);
       // mtime 即部署完成时间（executor 侧 pruneOldReleases 同一判据）——
       // 同一版本号多次部署时，UI 靠它把行区分开。stat 失败给 null，不影响列出。
@@ -221,9 +311,11 @@ export function listDeployedApps(workDir: string | undefined): AppReleaseEntry[]
         releaseKey,
         isCurrent: currentKey === releaseKey,
         deployedAt,
-        hasLog: fs.existsSync(logPath),
+        hasLog: logPath !== '',
         logPath,
         deployDir,
+        appRoot,
+        runMode,
       });
     }
   }

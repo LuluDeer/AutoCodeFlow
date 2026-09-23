@@ -3,6 +3,7 @@ import StatusWindow from './pages/StatusWindow';
 import ConfigPage from './pages/ConfigPage';
 import HistoryPage from './pages/HistoryPage';
 import AppsPage from './pages/AppsPage';
+import { TAB_SWITCH_EVENT } from './tab-switch';
 
 type Tab = 'status' | 'config' | 'history' | 'apps';
 
@@ -75,9 +76,25 @@ function MainWindow() {
   useEffect(() => {
     const api = (window as any).electronAPI;
     if (typeof api?.onSwitchTab === 'function') {
-      const unsub = api.onSwitchTab((t: Tab) => setTab(t));
+      // 白名单校验：主进程传来非法 tab 时不切换，避免所有面板被隐藏
+      const unsub = api.onSwitchTab((t: string) => {
+        if ((TAB_ORDER as string[]).includes(t)) setTab(t as Tab);
+      });
       return () => unsub?.();
     }
+  }, []);
+
+  // 页内跨 Tab 跳转（应用页「无应用日志」→ 历史页看执行日志）。
+  // 与托盘路径同款白名单校验：detail 非法时忽略，不切（否则所有面板被隐藏）。
+  useEffect(() => {
+    const onSwitch = (e: Event) => {
+      const t = (e as CustomEvent).detail;
+      if (typeof t === 'string' && (TAB_ORDER as string[]).includes(t)) {
+        setTab(t as Tab);
+      }
+    };
+    window.addEventListener(TAB_SWITCH_EVENT, onSwitch);
+    return () => window.removeEventListener(TAB_SWITCH_EVENT, onSwitch);
   }, []);
 
   /** 选中某 Tab；focus=true 时把焦点跟随到该 Tab 按钮（roving tabindex 约定）。 */

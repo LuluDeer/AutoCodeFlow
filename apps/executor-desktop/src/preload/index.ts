@@ -36,6 +36,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   clearHistory: () => ipcRenderer.invoke('history:clear'),
   readLog: (executionId: string, fromLine?: number) =>
     ipcRenderer.invoke('log:read', executionId, fromLine ?? 0),
+  // 用户报障：历史执行记录体验差——此前只能看/复制 executionId，日志落在哪个
+  // 文件、能不能直接拿到手都无从得知。
+  revealExecLog: (executionId: string) =>
+    ipcRenderer.invoke('history:reveal-log', executionId),
+  openTaskLogFolder: () => ipcRenderer.invoke('history:open-log-folder'),
 
   // 当天日志（主进程日志，用于主窗口启动时加载历史）——此前 StatusWindow
   // 误用 window.electronAPI.invoke('logs:getToday')，而 preload 从未暴露 invoke，
@@ -50,6 +55,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
   listApps: () => ipcRenderer.invoke('apps:list'),
   readAppLog: (logPath: string, fromLine?: number) =>
     ipcRenderer.invoke('apps:log:read', logPath, fromLine ?? 0),
+  // 用户报障：客户端本地无法查看部署的应用文件夹 / 无法撤销部署(删除)。
+  // 打开目录走主进程 shell（渲染层拿不到 Electron API），删除走主进程的
+  // 白名单+containment 校验——渲染层只传 apps:list 给的 appId/releaseKey。
+  openAppFolder: (appId: string) => ipcRenderer.invoke('apps:open-folder', appId),
+  openReleaseFolder: (appId: string, releaseKey: string) =>
+    ipcRenderer.invoke('apps:open-release-folder', appId, releaseKey),
+  uninstallApp: (appId: string) => ipcRenderer.invoke('apps:uninstall', appId),
+  deleteAppRelease: (appId: string, releaseKey: string, deploymentId: string) =>
+    ipcRenderer.invoke('apps:delete-release', appId, releaseKey, deploymentId),
+  getRunningApps: () => ipcRenderer.invoke('apps:running'),
+
   // 写剪贴板（走主进程 Electron clipboard，不受安全上下文/权限限制）
   writeClipboardText: (text: string) =>
     ipcRenderer.invoke('clipboard:write-text', text),

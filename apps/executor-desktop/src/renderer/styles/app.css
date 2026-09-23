@@ -1735,10 +1735,83 @@ textarea:focus-visible,
   white-space: nowrap;
 }
 .app-badge-current { background: var(--green-bg); color: var(--color-accent); }
-.app-deployment-actions { display: flex; gap: 6px; }
+/* 运行态徽标：与「当前版本」区分——current 指向 ≠ 进程活着（daemon 启动失败时
+   current 已切过去但进程没起来）。用蓝底表明"这是运行时状态"而非版本状态。 */
+.app-badge-running {
+  background: rgb(59 130 246 / 0.16);
+  color: #93c5fd;
+  font-weight: 600;
+}
+.app-deployment-actions { display: flex; gap: 6px; align-items: center; }
 .app-no-log { font-size: 11px; color: var(--text3); }
+/* 「无应用日志」不是死胡同：可点跳去历史页看真正的执行日志。用虚线边框
+   表明"这是入口而非状态标签"，同时保持比主操作按钮更弱的视觉权重。 */
+.app-no-log-link {
+  font-size: 11px;
+  color: var(--text2);
+  border-style: dashed;
+  padding: 4px 8px;
+}
+.app-no-log-link:hover { color: var(--text); border-style: solid; }
 .log-fs-deployment-id { font-size: 11px; opacity: 0.7; }
 .log-overlay-content { flex: 1; border-radius: 0 0 var(--radius-lg) var(--radius-lg); }
+
+/* ── 用户报障：应用名不可读 / 无法打开目录 / 无法撤销部署 ───────────── */
+/* 旧部署没有 app.json 时如实显示「未知应用名」+ 短 ID 供比对，
+   而不是把 UUID 当应用名渲染（那样用户看不出是哪个应用）。 */
+.app-group-name-unknown {
+  color: var(--text3);
+  font-family: var(--font-body);
+  font-weight: 500;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.app-group-id-hint {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  opacity: 0.7;
+  padding: 1px 5px;
+  border-radius: var(--radius-sm);
+  background: rgb(248 250 252 / 0.08);
+}
+.app-group-actions { display: flex; gap: 6px; margin-left: var(--space-sm); }
+/* 部署根目录：用户此前完全看不到文件落在哪，现在常显（过长省略，title 给全路径）。 */
+.app-group-path {
+  padding: 6px 14px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text3);
+  background: rgb(248 250 252 / 0.02);
+  border-bottom: 1px solid rgb(248 250 252 / 0.06);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl; /* 路径过长时保留尾部（文件名/目录名比盘符更有信息量） */
+  text-align: left;
+}
+/* 操作结果条：删除/打开目录的结果必须显性化（静默失败＝用户以为按钮坏了）。 */
+.apps-notice {
+  padding: var(--space-sm) var(--space-md);
+  margin-bottom: var(--space-md);
+  border: 1px solid var(--green-border);
+  border-radius: var(--radius);
+  background: var(--green-bg);
+  color: var(--text);
+  font-size: 12px;
+}
+.apps-notice-err { border-color: var(--red-border); background: var(--red-bg); }
+/* 「无应用日志」不是死胡同：给出原因说明（scheduled 模式只部署不启动）。 */
+.log-empty-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: var(--space-md);
+  max-width: 560px;
+}
+.log-empty-hint { font-size: 12px; color: var(--text3); line-height: 1.6; }
+/* 行内图标按钮（打开目录/删除）：固定宽度，避免与「查看日志」抢空间时抖动。 */
+.app-deployment-actions .btn-sm { padding: 4px 8px; }
 
 /* ── Extra badge & button variants ──────────────────────────────── */
 
