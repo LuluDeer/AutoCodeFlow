@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import UpdateBanner from '../components/UpdateBanner';
+import HighlightText from '../components/HighlightText';
 
 declare const window: Window & {
   electronAPI: {
@@ -11,6 +12,7 @@ declare const window: Window & {
     onStatusChange: (cb: (status: string) => void) => () => void;
     listLogFiles: () => Promise<Array<{ label: string; path: string; date: string }>>;
     openLogFile: (filePath: string) => Promise<{ ok: boolean; error?: string }>;
+    writeClipboardText: (text: string) => Promise<{ ok: boolean }>;
   };
 };
 
@@ -31,20 +33,30 @@ const STATUS_DESC: Record<Status, string> = {
 };
 
 function CopyValue({ value, mono = true }: { value: string; mono?: boolean }) {
-  const [copied, setCopied] = useState(false);
+  // 复制走主进程 Electron clipboard（非安全上下文/权限受限时 navigator.clipboard
+  // 会 reject 甚至为 undefined）；成功/失败都给用户明确反馈。
+  const [state, setState] = useState<'idle' | 'copied' | 'error'>('idle');
+  useEffect(() => {
+    if (state === 'idle') return;
+    const t = setTimeout(() => setState('idle'), 1500);
+    return () => clearTimeout(t);
+  }, [state]);
   function copy() {
     if (!value || value === '—') return;
-    navigator.clipboard.writeText(value).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    });
+    window.electronAPI
+      .writeClipboardText(value)
+      .then((r) => setState(r?.ok === false ? 'error' : 'copied'))
+      .catch(() => setState('error'));
   }
   return (
     <div className="copy-row">
       <span className={`copy-val${mono ? '' : ' copy-val-plain'}`}>{value || '—'}</span>
       {value && value !== '—' && (
-        <button className={`copy-btn${copied ? ' copied' : ''}`} onClick={copy}>
-          {copied ? '已复制 ✓' : '复制'}
+        <button
+          className={`copy-btn${state === 'copied' ? ' copied' : state === 'error' ? ' copy-failed' : ''}`}
+          onClick={copy}
+        >
+          {state === 'copied' ? '已复制 ✓' : state === 'error' ? '复制失败' : '复制'}
         </button>
       )}
     </div>
@@ -142,6 +154,9 @@ function LogViewer({
   const inputRef = useRef<HTMLInputElement>(null);
   const [logFiles, setLogFiles] = useState<Array<{ label: string; path: string; date: string }>>([]);
   const [showFiles, setShowFiles] = useState(false);
+  const [fileError, setFileError] = useState<string | null>(null);
+  // 实时日志跟随：用户停在底部时新行自动滚底，向上翻看后不打断（与主日志区一致）
+  const followRef = useRef(true);
 
   // 计算匹配行索引
   const q = query.trim().toLowerCase();
@@ -159,6 +174,27 @@ function LogViewer({
     const el = containerRef.current.querySelector(`[data-logidx="${matchedIndices[safeIdx]}"]`) as HTMLElement | null;
     el?.scrollIntoView({ block: 'center' });
   }, [matchIdx, query]);
+
+  // 非搜索态下实时日志跟随底部（搜索态由上方跳转 effect 接管）
+  useEffect(() => {
+    if (q || !followRef.current || !containerRef.current) return;
+    containerRef.current.scrollTop = containerRef.current.scrollHeight;
+  }, [logs, q]);
+
+  function handleViewerScroll() {
+    const el = containerRef.current;
+    if (!el) return;
+    followRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+  }
+
+  // 打开日志文件失败（关联程序缺失/路径被拒）时给出反馈，而不是点击无反应
+  function openFile(p: string) {
+    setFileError(null);
+    window.electronAPI
+      .openLogFile(p)
+      .then((r) => { if (!r?.ok) setFileError(r?.error || '打开失败'); })
+      .catch(() => setFileError('打开失败'));
+  }
 
   // 加载日志文件列表
   useEffect(() => {
@@ -245,7 +281,7 @@ function LogViewer({
       {/* 主体：日志 + 可选文件面板 */}
       <div className="log-fs-body">
         {/* 日志内容 */}
-        <div className="log-viewer log-fs-content" ref={containerRef}>
+        <div className="log-viewer log-fs-content" ref={containerRef} onScroll={handleViewerScroll}>
           {filtered.map(({ line, i, hit }) => {
             if (!hit) return null;
             const isCurrent = q && matchedIndices[safeMatchIdx] === i;
@@ -262,12 +298,16 @@ function LogViewer({
           {logs.length === 0 && (
             <span className="log-empty">等待日志输出...</span>
           )}
+          {q && totalMatches === 0 && logs.length > 0 && (
+            <span className="log-empty">无匹配结果</span>
+          )}
         </div>
 
         {/* 日志文件侧栏 */}
         {showFiles && (
           <div className="log-fs-files">
             <div className="log-fs-files-title">历史日志文件</div>
+            {fileError && <div className="log-files-error" role="alert">{fileError}</div>}
             {logFiles.length === 0
               ? <div className="log-files-empty">暂无日志文件</div>
               : logFiles.map((f) => (
@@ -275,7 +315,7 @@ function LogViewer({
                     key={f.path}
                     className="log-file-item"
                     title={f.path}
-                    onClick={() => window.electronAPI.openLogFile(f.path)}
+                    onClick={() => openFile(f.path)}
                   >
                     <span className="log-file-label">{f.label}</span>
                     <span className="log-file-open">↗ 打开</span>
@@ -289,22 +329,7 @@ function LogViewer({
   );
 }
 
-// 高亮搜索关键词
-function HighlightText({ text, query }: { text: string; query: string }) {
-  const parts: React.ReactNode[] = [];
-  let last = 0;
-  const lower = text.toLowerCase();
-  const q = query.toLowerCase();
-  let idx = lower.indexOf(q, last);
-  while (idx !== -1) {
-    if (idx > last) parts.push(text.slice(last, idx));
-    parts.push(<mark key={idx} className="log-mark">{text.slice(idx, idx + q.length)}</mark>);
-    last = idx + q.length;
-    idx = lower.indexOf(q, last);
-  }
-  if (last < text.length) parts.push(text.slice(last));
-  return <>{parts}</>;
-}
+// 高亮组件见 components/HighlightText.tsx（与 AppsPage 共用）
 
 // ── 主状态页 ──────────────────────────────────────────
 export default function StatusWindow() {
