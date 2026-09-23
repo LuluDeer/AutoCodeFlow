@@ -280,7 +280,7 @@ JS
           export E2E_NPM_REGISTRY_TOKEN="$PRIV_TOKEN"
           export E2E_PRIVATE_DEP_NAME='@autoflow/e2e-private-dep'
           export E2E_PRIVATE_DEP_SPEC='@autoflow/e2e-private-dep@1.0.0'
-          echo "私服场景已启用：$PRIV_REGISTRY（fixture 已发布；git 源码 fixture=${E2E_PRIVATE_DEP_REPO_URL:-未就绪}）"
+          echo "私服场景已启用：${PRIV_REGISTRY}（fixture 已发布；git 源码 fixture=${E2E_PRIVATE_DEP_REPO_URL:-未就绪}）"
         else
           echo "⚠ 私服 fixture 发布失败，场景跳过（npm publish 退出码非 0）"
         fi
@@ -292,7 +292,7 @@ JS
     fi
   fi
 fi
-[[ "$E2E_PRIVATE_REGISTRY_ENABLED" == "1" ]] || echo "私服场景未启用（E2E_PRIVATE_REGISTRY=$PRIVATE_REGISTRY_MODE；用例 44 将跳过）"
+[[ "$E2E_PRIVATE_REGISTRY_ENABLED" == "1" ]] || echo "私服场景未启用（E2E_PRIVATE_REGISTRY=${PRIVATE_REGISTRY_MODE}；用例 44 将跳过）"
 
 echo "══ [4/6] 启动 executor-node(:$PORT_EXECUTOR) ══"
 (
@@ -442,9 +442,9 @@ cd "$REPO_ROOT"
 
 echo ""
 if [[ $RC == 0 ]]; then
-  echo "✓ e2e 全部通过（日志目录：$LOG_DIR）"
+  echo "✓ e2e 全部通过（日志目录：${LOG_DIR}）"
 else
-  echo "✗ e2e 失败 exit=$RC（日志目录：$LOG_DIR）" >&2
+  echo "✗ e2e 失败 exit=${RC}（日志目录：${LOG_DIR}）" >&2
   echo "── admin-api 日志尾部 ──" >&2
   tail -30 "$LOG_DIR/admin-api.log" >&2 || true
   echo "── executor-node 日志尾部 ──" >&2

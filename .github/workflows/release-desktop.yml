@@ -304,7 +304,15 @@ jobs:
           # 全局计数只会更大，故下界是安全的。
           count="$(gh release view "$tag" --repo "${{ github.repository }}" \
             --json assets --jq '.assets | length')"
-          echo "release 现有资产数 = $count（本 job 上传 ${#files[@]} 个）"
+          # 变量必须写成 ${count} 花括号形态：紧跟其后的全角「（」是多字节字符
+          # （U+FF08 = EF BC 88），而 macOS runner 的 `shell: bash` 走的是系统
+          # /bin/bash（3.2，非 UTF-8 locale），它会把 0xEF 当作标识符的一部分吞进去
+          # → 变量名变成 `count\xEF` → set -u 下直接 `count�: unbound variable`。
+          # 2026-09-23 实证（desktop-v1.6.0 补发 run 35864019734）：macOS job 的
+          # `gh release upload` **已经成功上传全部 6 个资产**，随后死在这条 echo 上
+          # ——于是「发布成功」被渲染成 job 红。同一行在 ubuntu（bash 5.x + UTF-8
+          # locale）正常打印，故只有 macOS 单点复现。花括号界定变量名边界即修。
+          echo "release 现有资产数 = ${count}（本 job 上传 ${#files[@]} 个）"
           if [ "$count" -lt "${#files[@]}" ]; then
             echo "::error::gh release upload 静默未生效：本 job 应上传 ${#files[@]} 个资产，但 $tag 只有 $count 个。job 绿 ≠ 发布成功，请检查上传链路。"
             exit 1

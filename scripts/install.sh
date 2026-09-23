@@ -68,7 +68,7 @@ fi
 die() { echo "错误：$1"; exit 1; }
 
 if [[ ! "$PORT" =~ ^[0-9]{1,5}$ ]] || (( 10#$PORT < 1 || 10#$PORT > 65535 )); then
-  die "--port 必须是 1-65535 的整数（收到: $PORT）"
+  die "--port 必须是 1-65535 的整数（收到: ${PORT}）"
 fi
 if [[ ! "$APP_NAME" =~ ^[A-Za-z0-9._-]+$ ]]; then
   die "--name 只允许字母、数字、点、下划线、连字符（不允许空白/斜杠/引号等字符）"
@@ -81,7 +81,7 @@ if [[ ! "$INSTALL_DIR" =~ ^/[A-Za-z0-9._/-]*$ ]]; then
 fi
 case "$RUNTIME" in
   node|python|universal) ;;
-  *) die "--runtime 只支持 node | python | universal（收到: $RUNTIME）" ;;
+  *) die "--runtime 只支持 node | python | universal（收到: ${RUNTIME}）" ;;
 esac
 
 # SEC-INSTALL-01：ADMIN_API_URL / EXECUTOR_SECRET 此前**未做任何校验**就写进
@@ -99,7 +99,7 @@ esac
 # 注意写法：bash 的 =~ 里不能用 \[ \] 转义方括号（会被当成字面量反斜杠，
 # 导致整个字符类失配、连普通 IPv4 都被拒），必须用 POSIX 形态把 ] 放首位。
 if [[ ! "$ADMIN_API_URL" =~ ^https?://[]A-Za-z0-9._:/@%[-]+$ ]]; then
-  die "--api-url 必须是 http(s):// 开头的合法地址，且只含字母、数字、点、下划线、连字符、冒号、斜杠、@、%、方括号（IPv6）（收到: $ADMIN_API_URL）"
+  die "--api-url 必须是 http(s):// 开头的合法地址，且只含字母、数字、点、下划线、连字符、冒号、斜杠、@、%、方括号（IPv6）（收到: ${ADMIN_API_URL}）"
 fi
 # secret 不允许换行/回车/引号/反斜杠：既是本次注入的入口，也会让后续
 # 转义产生歧义。正常共享密钥不会包含这些字符。
@@ -372,7 +372,7 @@ else
   sleep 2
   if kill -0 $EXEC_PID 2>/dev/null; then
     echo ""
-    echo "✅ 执行器已启动（PID: $EXEC_PID）"
+    echo "✅ 执行器已启动（PID: ${EXEC_PID}）"
     echo "   日志文件: ${INSTALL_DIR}/executor.log"
     echo "   停止: kill \$(cat ${INSTALL_DIR}/executor.pid)"
   else

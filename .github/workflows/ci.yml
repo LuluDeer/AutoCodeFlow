@@ -716,6 +716,18 @@ jobs:
         run: |
           node scripts/check-lint-gates.mjs --selftest
           node scripts/check-lint-gates.mjs
+      # shell「变量名吞掉多字节字符」守卫（desktop-v1.6.0 补发实证）。
+      # 裸 `$count` 紧跟全角「（」时，macOS runner 的 /bin/bash 3.2 在非 UTF-8
+      # locale 下会把 0xEF 并进变量名 → set -u 下 `count�: unbound variable`
+      # 直接中止 step。真实后果：macOS 安装包**已经上传成功**（6 个资产全在），
+      # 却因为这条 echo 死在最后一步，把「发布成功」渲染成 job 红——假红会诱导
+      # 人去重跑或改发布流程，而真正该做的是加花括号。ubuntu（bash 5.x + UTF-8
+      # locale）完全正常，故只在 macOS 单点复现，最易被当成环境抖动糊过去。
+      # 零依赖，秒级；含反证自测。
+      - name: Shell multibyte variable-name guard
+        run: |
+          node scripts/check-shell-multibyte-var.mjs --selftest
+          node scripts/check-shell-multibyte-var.mjs
 
   # ── A4（DEEP_REVIEW §七）：消费方路由面快照守卫（零依赖 node 脚本）──────
   # mcp-server 与 acf-cli 各自硬编码 70+ 条 admin-api 路由字符串，与 openapi

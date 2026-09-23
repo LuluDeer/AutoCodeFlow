@@ -343,7 +343,7 @@ scenario_b_body() {
   fi
   log "[B] 基线 online=${online0}/${total0:-?}；注入 pause ${PAUSE_SECONDS}s（判离线阈值 ${OFFLINE_THRESHOLD_SEC}s = 心跳30s×乘数3，扫描周期 ${SCAN_INTERVAL_SEC}s）"
 
-  log "[B] 注入：docker pause $EXECUTOR_C（进程冻结，心跳停止）"
+  log "[B] 注入：docker pause ${EXECUTOR_C}（进程冻结，心跳停止）"
   if ! mark_unpaused "$EXECUTOR_C"; then
     fail_scenario b "docker pause $EXECUTOR_C 失败"; return
   fi
@@ -411,7 +411,7 @@ scenario_b_body() {
     fi
     curl -sf --max-time "$HTTP_TIMEOUT" -X POST "$API_URL/api/tasks/$task_id/trigger" \
       -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{}' >/dev/null \
-      || fail_scenario b "B3 任务触发失败（task=$task_id）"
+      || fail_scenario b "B3 任务触发失败（task=${task_id}）"
     exec_ok=0
     for ((i = 0; i < 120; i += 10)); do
       exec_body="$(curl -sf --max-time "$HTTP_TIMEOUT" \
@@ -421,9 +421,9 @@ scenario_b_body() {
       sleep 10
     done
     if (( exec_ok == 1 )); then
-      log "[B] 断言 B3 通过：恢复后任务派发执行成功（task=$task_id）"
+      log "[B] 断言 B3 通过：恢复后任务派发执行成功（task=${task_id}）"
     else
-      fail_scenario b "B3 120s 内执行未达 success（task=$task_id）"
+      fail_scenario b "B3 120s 内执行未达 success（task=${task_id}）"
     fi
     curl -sf --max-time "$HTTP_TIMEOUT" -X DELETE "$API_URL/api/tasks/$task_id" \
       -H "Authorization: Bearer $TOKEN" >/dev/null 2>&1 \
@@ -452,7 +452,7 @@ scenario_c_body() {
     return
   fi
   local pri="${admins[0]}" sec="${admins[1]}"
-  log "[C] 双实例：primary=$pri（$API_URL）/ secondary=$sec（$API2_URL）"
+  log "[C] 双实例：primary=${pri}（${API_URL}）/ secondary=${sec}（${API2_URL}）"
 
   local body
   http_get "$API_URL/api/health" | grep -q '"status"' \
@@ -485,7 +485,7 @@ scenario_c_body() {
 
   # 步骤 2：重启 primary——secondary 顶住；每一轮轮询两地址任一 200 即可
   #（允许连续 1 次瞬时抖动）；接管观测窗自本步起算 takeover_budget 秒
-  log "[C] 滚动重启 2/2：docker restart $pri（接管观测窗 ${takeover_budget}s）"
+  log "[C] 滚动重启 2/2：docker restart ${pri}（接管观测窗 ${takeover_budget}s）"
   if ! docker restart "$pri" >/dev/null; then
     fail_scenario c "docker restart $pri 失败"; return
   fi
@@ -563,7 +563,7 @@ run_scenario() { # <场景字母（已规范化，小写）>
   export CHAOS_SCENARIO_LOG="$slog"
   : >"$slog"
   SCENARIO_FAILED=0; SCENARIO_SKIPPED=0
-  echo "════ 场景 ${s^^} 开始（$(date '+%F %T')，日志 $slog）════"
+  echo "════ 场景 ${s^^} 开始（$(date '+%F %T')，日志 ${slog}）════"
   # 注意：场景体必须跑在「当前 shell」而非管道子 shell——早期实现用
   # `scenario_${s}_body 2>&1 | tee` 会把体放进子 shell，导致 fail_scenario/
   # skip_scenario 对 FAILED/SCENARIO_FAILED 的改动随子 shell 退出而丢失，
@@ -597,7 +597,7 @@ main() {
     || { echo "--pause-seconds 需为非负整数" >&2; exit 2; }
   local norm
   norm="$(chaos_normalize_scenarios "$scenarios")" \
-    || { echo "非法场景列表: $scenarios（合法 a|b|c|d|all）" >&2; exit 2; }
+    || { echo "非法场景列表: ${scenarios}（合法 a|b|c|d|all）" >&2; exit 2; }
   local -a scenario_list
   read -ra scenario_list <<< "$norm"
 
@@ -625,7 +625,7 @@ main() {
   ADMIN2_C="${CHAOS_ADMIN2_CONTAINER:-}"
 
   echo "══ AutoFlow 混沌演练 ══"
-  echo "  目标: $API_URL（第二实例 $API2_URL）  场景: ${scenario_list[*]}"
+  echo "  目标: ${API_URL}（第二实例 ${API2_URL}）  场景: ${scenario_list[*]}"
   echo "  redis=$REDIS_C  admin=$ADMIN_C  executor=$EXECUTOR_C"
   echo "  pause=${PAUSE_SECONDS}s 阈值=${OFFLINE_THRESHOLD_SEC}s 扫描=${SCAN_INTERVAL_SEC}s 日志: $LOG_DIR"
 
@@ -649,7 +649,7 @@ main() {
 
   restore_containers
   echo ""
-  echo "══ 混沌演练结束：通过 $PASSED / 失败 $FAILED / 跳过 $SKIPPED（日志：$LOG_DIR）══"
+  echo "══ 混沌演练结束：通过 $PASSED / 失败 $FAILED / 跳过 ${SKIPPED}（日志：${LOG_DIR}）══"
   exit "$FAILED"
 }
 
