@@ -122,23 +122,41 @@ try {
   fs.rmSync(dir, { recursive: true, force: true });
 }
 
-// ── SYNC GUARD：确认 ipc-handlers.ts 的 log:read 扫描前先过滤日期分片。
+// ── SYNC GUARD：确认 log:read 的日志解析在扫描前先过滤日期分片。
 // 若有人把 filter 改回裸 readdirSync 全条目（P2-2 回归），这里立即变红。
+//
+// 2026-09 调整：解析逻辑从 log:read handler 内联抽成了
+// `resolveExecutionLogFile()`（`history:reveal-log` 复用同一套解析——两处各写
+// 一遍必然漂移，而"日志在哪个文件"是唯一事实）。守卫因此改为盯**该函数**，
+// 而不是盯 handler 的字面文本：断言意图（过滤日期分片 + 禁 slice 截断）完全
+// 不变，只是跟随实现搬家；若有人把过滤去掉，这里照样变红。
 const ipcSourcePath = path.join(__dirname, '..', 'src', 'main', 'ipc-handlers.ts');
 const ipcSource = fs.readFileSync(ipcSourcePath, 'utf-8');
 assert.ok(
   ipcSource.includes('\\d{4}-\\d{2}-\\d{2}$'),
   'SYNC: ipc-handlers.ts 缺少日期分片正则',
 );
-const startIdx = ipcSource.indexOf("ipcMain.handle('log:read'");
-assert.ok(startIdx !== -1, 'SYNC: 找不到 log:read handler');
-const nextIdx = ipcSource.indexOf('ipcMain.handle', startIdx + 10);
-const handlerBody = ipcSource.slice(startIdx, nextIdx);
+const startIdx = ipcSource.indexOf('function resolveExecutionLogFile(');
+assert.ok(startIdx !== -1, 'SYNC: 找不到 resolveExecutionLogFile（log:read 的解析实现）');
+const nextFnIdx = ipcSource.indexOf('\nfunction ', startIdx + 10);
+const handlerBody = ipcSource.slice(startIdx, nextFnIdx === -1 ? undefined : nextFnIdx);
 const filterIdx = handlerBody.indexOf('.filter((n: string) =>');
-assert.ok(filterIdx !== -1, 'SYNC: log:read 未在 readdirSync 后过滤日期分片（P2-2 回归）');
+assert.ok(filterIdx !== -1, 'SYNC: 解析未在 readdirSync 后过滤日期分片（P2-2 回归）');
 assert.ok(
   handlerBody.slice(filterIdx, filterIdx + 200).includes('\\d{4}-\\d{2}-\\d{2}'),
-  'SYNC: log:read 的过滤不是日期分片正则（P2-2 回归）',
+  'SYNC: 解析的过滤不是日期分片正则（P2-2 回归）',
+);
+// 反证：log:read 必须**委托**给该解析函数。若有人另起一段内联扫描（绕过
+// 过滤/域校验），上面盯函数的守卫就形同虚设——这条把它堵住。
+const readHandlerIdx = ipcSource.indexOf("ipcMain.handle('log:read'");
+assert.ok(readHandlerIdx !== -1, 'SYNC: 找不到 log:read handler');
+const readHandlerBody = ipcSource.slice(
+  readHandlerIdx,
+  ipcSource.indexOf('ipcMain.handle', readHandlerIdx + 10),
+);
+assert.ok(
+  readHandlerBody.includes('resolveExecutionLogFile('),
+  'SYNC: log:read 未复用 resolveExecutionLogFile（可能出现绕过日期过滤的内联扫描）',
 );
 // NETOPT-E P3-2 / NETOPT-F P3: 整个 log:read handler **不允许**出现 slice(0,N)
 // 截断（filter 前后都禁）——NETOPT-D P3-1 已去掉该魔数（与 /api/logs 无截断

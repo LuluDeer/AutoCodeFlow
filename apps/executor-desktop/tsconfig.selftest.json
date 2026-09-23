@@ -29,7 +29,10 @@
     "src/main/meta-files.ts",
     "src/main/meta-files.selftest.ts",
     "src/main/app-inventory.ts",
-    "src/main/app-inventory.selftest.ts"
+    "src/main/app-inventory.selftest.ts",
+    "src/main/app-uninstall.ts",
+    "src/main/app-uninstall.selftest.ts",
+    "src/main/app-name-recovery.ts"
   ],
   "exclude": []
 }
