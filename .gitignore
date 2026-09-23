@@ -30,6 +30,7 @@ venv/
 .idea/
 .vscode/
 .codebuddy/
+.workbuddy/
 .qoder/
 .zcode/
 .codeartsdoer/
@@ -131,4 +132,19 @@ vitest-out.json
 
 # 提交草稿 / release-please 排障草稿（本地临时文件，不入库；E-P1-P2）
 COMMIT_MSG_*.txt
+
+# 桌面端一次性排查脚本与其输出（本地临时文件，不入库）。
+# 这些是排查具体缺陷时临时写的验证脚本（如逐字比对 normalizeLogLine、回读
+# 构建/测试退出码），不是可复用的工程资产；留在工作区便于追溯，但不该进库。
+# 放在 apps/executor-desktop/ 根下会被 `git add -A` 顺手吞进去。
+apps/executor-desktop/build-check.txt
+apps/executor-desktop/re-check.txt
+apps/executor-desktop/normalize-check.mjs
+apps/executor-desktop/normalize-out.txt
+
+# Windows 环境变量展开残留：某次测试把未展开的 `%SystemDrive%` 当路径用，
+# 于是在 apps/executor-python/ 下生成了一个名为 `%SystemDrive%` 的目录，
+# 里面是 Windows 缓存 .db（3 个文件约 0.9MB）。**不是源码**，不入库。
+# 注意：gitignore 里的 `%` 不是元字符，按字面匹配。
+apps/executor-python/%SystemDrive%/
 
