@@ -3431,6 +3431,11 @@ export interface components {
              */
             runningExecutionIds?: string[];
             /**
+             * @description E-01-RPT (protocol v4): pull long-poll slots reserved but not yet claimed. runningTaskCount counts occupied slots (including this reservation, which is the E-01 anti-oversell mechanism); runningExecutionIds only lists claimed executions. The detail page therefore shows runningTaskCount - reservedSlots as the actual running count. Display only — the dispatch gate never reads this field. Always sent (0 = reported & no reservation); absent = legacy executor.
+             * @example 1
+             */
+            reservedSlots?: number;
+            /**
              * @description Dead letter count
              * @example 0
              */

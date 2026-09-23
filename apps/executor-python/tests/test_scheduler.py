@@ -1,4 +1,6 @@
 import asyncio
+import re
+from pathlib import Path
 
 import pytest
 import httpx
@@ -241,7 +243,8 @@ class TestHeartbeatRunningExecutionIds:
     reported" and skips the protection (scheduler.service.ts:631), which got
     python executors' prepare stages (git clone + venv, up to ~600s) misjudged
     FAILED. The field must therefore ALWAYS be present (empty list = reported
-    & idle), mirror the live-execution registry, and be capped at 200 ids."""
+    & idle), mirror the live-execution registry, and be capped at
+    MAX_RUNNING_EXECUTION_IDS (10000, node parity — NETOPT-C P2-1)."""
 
     async def _capture_body(self, mock_client):
         with patch('scheduler.psutil.cpu_percent', return_value=1.0), \
@@ -275,7 +278,16 @@ class TestHeartbeatRunningExecutionIds:
         assert body['runningExecutionIds'] == []
 
     @pytest.mark.asyncio
-    async def test_heartbeat_truncates_running_execution_ids_to_200(self):
+    async def test_heartbeat_caps_running_execution_ids_at_max(self):
+        """NETOPT-C P2-1 对齐：封顶值 = MAX_RUNNING_EXECUTION_IDS（10000），
+        **不是** 200。
+
+        反证（本用例的原意）：旧实现截断到 200，故「注册 250 个 → 上报 200 个」
+        曾是期望行为。若这里回退成 200，并发 >200 的第 201+ 个在跑执行会从
+        心跳里消失，admin stale sweep 的活性判据（id 是否在数组里）随之失配，
+        健康长跑的任务被提前恢复成 FAILED——正是 E1 引入该字段要消灭的误判。
+        故此处断言「250 个 id 必须**全部**上报」，200 会被这条用例直接判红。
+        """
         import routers.execute as execute_module
         for i in range(250):
             execute_module.register_live_execution(f'exec-{i:03d}')
@@ -284,7 +296,174 @@ class TestHeartbeatRunningExecutionIds:
         mock_client.post = AsyncMock(return_value=create_mock_response(200))
         body = await self._capture_body(mock_client)
 
-        assert len(body['runningExecutionIds']) == 200
+        assert len(body['runningExecutionIds']) == 250, (
+            'NETOPT-C P2-1: 并发 >200 时 ids 必须全部上报（旧 200 封顶会让'
+            '第 201+ 个在跑执行失去 stale sweep 的活性宽限）'
+        )
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_cap_matches_node_and_admin_bound(self):
+        """三端同值守卫：python 封顶必须 === node/admin 的 10000。
+
+        跨端漂移是本次缺陷的根因（python 抄了个不存在的 "node parity" 200），
+        故这里把「执行器侧封顶」与「中台采纳上界」钉在一起：任一端改数而另一端
+        不改，本用例立即红。node 侧对应常量见 apps/executor-node/src/scheduler.ts
+        的 MAX_RUNNING_EXECUTION_IDS，admin 侧见 executor.service.ts 同名常量。
+        """
+        import scheduler as scheduler_module
+        assert scheduler_module.MAX_RUNNING_EXECUTION_IDS == 10_000
+
+        # 与 admin/node 源码里的常量逐字比对（读源码而非硬编码单一数字：两端都改才绿）
+        repo_root = Path(__file__).resolve().parents[3]
+        admin_service = (
+            repo_root
+            / 'apps' / 'admin-api' / 'src' / 'modules' / 'executor' / 'executor.service.ts'
+        )
+        node_scheduler = (
+            repo_root / 'apps' / 'executor-node' / 'src' / 'scheduler.ts'
+        )
+        for path, label in ((admin_service, 'admin-api'), (node_scheduler, 'executor-node')):
+            source = path.read_text(encoding='utf-8')
+            assert re.search(r'MAX_RUNNING_EXECUTION_IDS\s*=\s*10_000', source), (
+                f'{label} 的 MAX_RUNNING_EXECUTION_IDS 不再是 10_000——'
+                f'与 python 侧封顶漂移（{path}）'
+            )
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_overflow_is_trimmed_to_cap(self):
+        """超过封顶时截到 MAX_RUNNING_EXECUTION_IDS（而非无界上报）。
+
+        反证有牙：封顶本身仍必须存在——无界上报会把心跳体推向 admin 的 1mb
+        body 上限（413 → 中台判执行器 OFFLINE，比少报 id 更严重）。
+        """
+        import scheduler as scheduler_module
+        import routers.execute as execute_module
+
+        provider_calls = []
+
+        def _huge_provider():
+            provider_calls.append(1)
+            return [f'exec-{i:05d}' for i in range(scheduler_module.MAX_RUNNING_EXECUTION_IDS + 37)]
+
+        original = execute_module.list_active_execution_ids
+        try:
+            scheduler_module.register_running_execution_ids_provider(_huge_provider)
+            mock_client = AsyncMock()
+            mock_client.post = AsyncMock(return_value=create_mock_response(200))
+            body = await self._capture_body(mock_client)
+            assert len(body['runningExecutionIds']) == scheduler_module.MAX_RUNNING_EXECUTION_IDS
+        finally:
+            # provider 是模块级粘性状态，必须还原，否则污染后续用例
+            scheduler_module.register_running_execution_ids_provider(original)
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_provider_failure_degrades_to_empty_list(self):
+        """反证：provider 抛异常时上报 []，绝不整条心跳失败。
+
+        心跳是活性上报的**唯一**通道——若 provider 抖动导致心跳请求本身失败，
+        中台会在 30s×3 窗口后把执行器判 OFFLINE，派发静默停止，代价远大于
+        少报一轮 id。
+        """
+        import scheduler as scheduler_module
+
+        def _boom():
+            raise RuntimeError('registry corrupted')
+
+        original = scheduler_module._running_execution_ids_provider
+        try:
+            scheduler_module.register_running_execution_ids_provider(_boom)
+            mock_client = AsyncMock()
+            mock_client.post = AsyncMock(return_value=create_mock_response(200))
+            body = await self._capture_body(mock_client)
+            assert body['runningExecutionIds'] == []
+        finally:
+            scheduler_module.register_running_execution_ids_provider(original)
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_provider_non_list_degrades_to_empty_list(self):
+        """反证：provider 返回非列表（如 dict/None）时同样收敛为 []。"""
+        import scheduler as scheduler_module
+
+        original = scheduler_module._running_execution_ids_provider
+        try:
+            scheduler_module.register_running_execution_ids_provider(lambda: {'not': 'a list'})
+            mock_client = AsyncMock()
+            mock_client.post = AsyncMock(return_value=create_mock_response(200))
+            body = await self._capture_body(mock_client)
+            assert body['runningExecutionIds'] == []
+        finally:
+            scheduler_module.register_running_execution_ids_provider(original)
+
+
+class TestHeartbeatReservedSlots:
+    """E-01-RPT（生产实证：RPA5 执行器在中台恒显「当前运行任务 1/10」「活性上报
+    0 条，与运行计数 1 不一致」，而该设备上并没有在执行的任务）。
+
+    根因：E-01 让 pull 循环在发起 25s 长轮询【之前】先原子预留一个槽位
+    （try_reserve_running_slot），预留计入同一个 running 账本——所以
+    runningTaskCount 诚实包含它。但 runningExecutionIds 来自另一个账本
+    （_live_executions），空闲执行器稳态就是「1 + []」。两个数字都对，却度量了
+    不同的东西。修法：把「预留中」的槽位数单独上报（reservedSlots），中台据此
+    把「已占槽位」换算成「实际运行 = runningTaskCount − reservedSlots」。
+
+    字段必须**始终发送**（含 0）——缺席 = 旧版执行器未上报，中台回落旧口径。
+    """
+
+    async def _capture_body(self, mock_client):
+        with patch('scheduler.psutil.cpu_percent', return_value=1.0), \
+             patch('scheduler.psutil.virtual_memory') as mem_mock:
+            mem_mock.return_value = SimpleNamespace(percent=2.0)
+            await _send_heartbeat(mock_client, 'test-token')
+        return mock_client.post.call_args.kwargs['json']
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_reports_reserved_slots_always_present(self):
+        import scheduler as scheduler_module
+        scheduler_module._pull_reserved_slots = 0
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=create_mock_response(200))
+        body = await self._capture_body(mock_client)
+
+        # 始终发送（含 0）——缺席会让中台无法区分「旧执行器」与「无预留」。
+        assert 'reservedSlots' in body
+        assert body['reservedSlots'] == 0
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_reports_active_pull_reservation(self):
+        """反证生产现场：预留 1 + 活性 0 —— 两个字段必须同处一份心跳，中台才能
+        靠 reservedSlots 把「1/10」还原成「实际运行 0」。"""
+        import scheduler as scheduler_module
+        import routers.execute  # noqa: F401 - 装上真实 provider（空注册表）
+        # 忠实复刻 pull_task 的预留两连：账本 +1（runningTaskCount 的来源）
+        # 与预留计数 +1（reservedSlots 的来源）——两者必须同点发生。
+        assert scheduler_module.try_reserve_running_slot() is True
+        scheduler_module._track_pull_reservation()
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=create_mock_response(200))
+        body = await self._capture_body(mock_client)
+
+        assert body['reservedSlots'] == 1
+        assert body['runningTaskCount'] == 1
+        assert body['runningExecutionIds'] == []
+        scheduler_module._pull_reserved_slots = 0
+        scheduler_module.running_count = 0
+
+    def test_reservation_tracking_is_clamped_at_zero(self):
+        """反证：预留计数是纯防御性的 0/1 量——重复撤销不得变成负数（负数上报会
+        让中台算出比真值大的「实际运行数」，比误报不一致更糟）。"""
+        import scheduler as scheduler_module
+        scheduler_module._pull_reserved_slots = 0
+
+        scheduler_module._untrack_pull_reservation()
+        assert scheduler_module.get_pull_reserved_slots() == 0
+
+        scheduler_module._track_pull_reservation()
+        assert scheduler_module.get_pull_reserved_slots() == 1
+        scheduler_module._untrack_pull_reservation()
+        scheduler_module._untrack_pull_reservation()
+        assert scheduler_module.get_pull_reserved_slots() == 0
 
 
 class TestVersionDriftWarning:
@@ -378,6 +557,8 @@ class TestPullDispatch:
         async def fake_heal(client, method, url, **kwargs):
             self.pull_request_kwargs = kwargs
             self.count_during_pull = scheduler_module.get_running_count()
+            # E-01-RPT: 同时捕获长轮询【进行中】的预留上报值。
+            self.reserved_during_pull = scheduler_module.get_pull_reserved_slots()
             return resp
 
         monkeypatch.setattr(scheduler_module, 'request_with_self_heal', fake_heal)
@@ -409,6 +590,9 @@ class TestPullDispatch:
 
         # 预留后发起 pull：长轮询进行中账本已 +1（心跳 runningTaskCount 同源）
         assert self.count_during_pull == 1
+        # E-01-RPT: 同一时刻必须上报 reservedSlots=1——否则中台只能看到
+        # 「计数 1 + 活性 0 条」并恒亮不一致告警（RPA5 生产现象）。
+        assert self.reserved_during_pull == 1
         assert self.pull_request_kwargs.get('json', {}).get('waitMs') == 25000
         assert accept_calls['req'].executionId == 'exec-77'
         assert accept_calls['tp'] == '00-trace-span-01'
@@ -416,6 +600,51 @@ class TestPullDispatch:
         # （账本保持 +1，由执行完成路径归还）
         assert accept_calls['slot_pre_reserved'] is True
         assert scheduler_module.get_running_count() == 1
+        self._reset_running_count()
+
+    @pytest.mark.asyncio
+    async def test_pull_loop_reports_reservation_during_long_poll(self, monkeypatch):
+        """E-01-RPT: 长轮询【进行中】必须上报 reservedSlots=1——这正是生产现场
+        「runningTaskCount=1 + runningExecutionIds=[]」里那个 1 的来源，也是中台
+        能把它从「实际运行数」里扣除的唯一依据。"""
+        import routers.execute as execute_module
+        import scheduler as scheduler_module
+        self._reset_running_count()
+        scheduler_module._pull_reserved_slots = 0
+        resp = httpx.Response(
+            200,
+            json={'code': 0, 'message': 'ok', 'data': {'task': None}},
+            request=httpx.Request('POST', 'http://test.com'),
+        )
+        await self._setup_common(monkeypatch, resp)
+        monkeypatch.setattr(execute_module, 'accept_execution', MagicMock())
+
+        await self._run_loop_briefly()
+
+        # 空窗口归还后归零（否则中台会把空闲执行器永久显示成占用）。
+        assert scheduler_module.get_pull_reserved_slots() == 0
+
+    @pytest.mark.asyncio
+    async def test_pull_loop_clears_reservation_after_claim(self, monkeypatch):
+        """反证：领取成功后预留必须撤销——该执行此后由 runningExecutionIds 代表。
+        若不撤销，中台会把它从实际运行数里再减一次（显示比真值少 1）。"""
+        import routers.execute as execute_module
+        import scheduler as scheduler_module
+        self._reset_running_count()
+        scheduler_module._pull_reserved_slots = 0
+        resp = httpx.Response(
+            200,
+            json={'code': 0, 'message': 'ok',
+                  'data': {'task': {'executionId': 'exec-own', 'task': {}}}},
+            request=httpx.Request('POST', 'http://test.com'),
+        )
+        await self._setup_common(monkeypatch, resp)
+        monkeypatch.setattr(execute_module, 'accept_execution',
+                            lambda req, tp=None, slot_pre_reserved=False: {'status': 'accepted'})
+
+        await self._run_loop_briefly()
+
+        assert scheduler_module.get_pull_reserved_slots() == 0
         self._reset_running_count()
 
     @pytest.mark.asyncio

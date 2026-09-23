@@ -2,7 +2,7 @@ import { config } from './config';
 import { logger } from './logger';
 import { post, postLong, request } from './admin-client';
 import { unwrapAdminResponseData } from './admin-envelope';
-import { getRunningCount, getRunningCountArray } from './scheduler';
+import { getRunningCount, getRunningCountArray, registerPullReservedSlotsProvider } from './scheduler';
 import { getExecutorAuthToken } from './routes/logs';
 import {
   acceptExecution,
@@ -46,6 +46,37 @@ import axios from 'axios';
  *      归还的正是这一个预留槽位，账本零漂移。
  */
 let pullInFlight = false;
+
+/**
+ * E-01-RPT（生产实证：RPA5「当前运行任务 1/10、活性上报 0 条」）：本循环当前
+ * 「已预留但尚未认领」的槽位数，随心跳上报给中台。
+ *
+ * 为什么必须单独上报：预留计入的是 `getRunningCount()` 那个账本（E-01 防超卖
+ * 机制），而 `runningExecutionIds` 来自 `liveExecutions` Map——两个账本，
+ * 度量不同的东西。空闲执行器几乎恒在长轮询窗口内，稳态上报就是
+ * 「runningTaskCount=1 + runningExecutionIds=[]」，中台详情页据此恒亮
+ * 「不一致」告警且显示「当前运行任务 1/10」，而设备上并无任务在跑。
+ *
+ * 不变量：单飞（pullInFlight）保证本值恒为 0 或 1；所有增减都紧贴
+ * `slotReserved` 的状态跃迁，与 Atomics 账本同点增减，杜绝双计数/漏减。
+ */
+let pullReservedSlots = 0;
+
+/** E-01-RPT: 与 `slotReserved = true` 同点调用（预留成立）。 */
+function trackReservation(): void {
+  pullReservedSlots += 1;
+}
+
+/** E-01-RPT: 与 `slotReserved = false` 同点调用（所有权移交或归还）。
+ *  `max(0, …)` 钳制与 python release_running_slot 的钳制口径一致——纯防御，
+ *  真值恒 0/1。 */
+function untrackReservation(): void {
+  pullReservedSlots = Math.max(0, pullReservedSlots - 1);
+}
+
+// 模块加载即接线（main.ts 顶层 import 本模块，故 push 模式下同样注册成功，
+// 此时恒上报 0 = 「已上报且无预留」，语义正确）。
+registerPullReservedSlotsProvider(() => pullReservedSlots);
 
 /**
  * E-07（残差收口）：在飞长轮询的中止句柄。
@@ -97,6 +128,14 @@ let lastConfigAttemptAt = 0;
  *  config pull of every later test. Reset it between tests. */
 export function resetConfigPullThrottleForTest(): void {
   lastConfigAttemptAt = 0;
+}
+
+/** Test hook: E-01-RPT 预留计数是模块级粘性状态（jest 模块注册表跨用例保留）。
+ *  用例若在断言前提前 return（例如在飞长轮询被 mock 抛错），残留值会污染
+ *  后续用例。返回当前值供断言读取。 */
+export function resetPullReservedSlotsForTest(): number {
+  pullReservedSlots = 0;
+  return pullReservedSlots;
 }
 
 /**
@@ -218,6 +257,9 @@ export async function pullOnce(): Promise<void> {
         // 长轮询取命令（下面 freeSlots 重新按实际账本计算）。
       } else {
         slotReserved = true;
+        // E-01-RPT: 预留成立——与账本 +1 同点上报，使中台能区分
+        // 「已占槽位」与「在跑执行」。
+        trackReservation();
       }
     }
 
@@ -280,6 +322,10 @@ export async function pullOnce(): Promise<void> {
     if (accepted.status === 200) {
       // 所有权移交完成：槽位由执行条目持有至终态，finally 不再释放。
       slotReserved = false;
+      // E-01-RPT: 预留已转为正式占用（该 executionId 随之出现在
+      // runningExecutionIds 里）——此刻起它不再是「预留」，故撤销预留上报，
+      // 避免中台把它从「实际运行」里又减一次（重复扣减会让显示比真值少 1）。
+      untrackReservation();
     } else if (accepted.status === 429) {
       // 防御路径（正常流程不可达——预留模式下 accept 的容量检查必然通过；
       // 仅当账本被异常推高/竞态残余时触发）：释放预留 + warn，但【不回调
@@ -342,6 +388,9 @@ export async function pullOnce(): Promise<void> {
     if (slotReserved) {
       // 释放预留（无任务 / accept 非 200 / pull 请求异常）：唯一释放点。
       Atomics.sub(getRunningCountArray(), 0, 1);
+      // E-01-RPT: 与账本 -1 同点撤销预留上报（含 accept 429/400 路径——
+      // 那些路径 slotReserved 仍为 true，由本 finally 统一归还）。
+      untrackReservation();
     }
   }
 }

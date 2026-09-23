@@ -295,6 +295,11 @@ export class ExecutorController {
       startupId?: string | null;
       // CONSISTENCY-02: executor-node 活性上报（可选，旧版执行器缺省即不传）。
       runningExecutionIds?: string[];
+      // E-01-RPT（生产实证：RPA5「当前运行任务 1/10、活性上报 0 条」）：
+      // pull 长轮询「已预留但尚未认领」的槽位数（可选，旧版执行器缺省即不传）。
+      // 只用于展示/告警换算（实际运行 = runningTaskCount − reservedSlots），
+      // **不参与派发闸门**。
+      reservedSlots?: number;
       deadLetterCount?: number;
       // E9: 执行器热更新容量后随心跳上报（可选；范围校验在 service 侧，
       // 非法/缺失不改 DB 值）。
@@ -333,6 +338,9 @@ export class ExecutorController {
       startupId: body.startupId,
       // CONSISTENCY-02: 转发活性上报，字段级校验与裁剪在 service 侧完成。
       runningExecutionIds: body.runningExecutionIds,
+      // E-01-RPT: 转发 pull 预留槽位数（F-2 显式白名单，漏转发 = 上报被静默
+      // 丢弃，UI 会一直显示「1/10 + 不一致」）。范围校验在 service 侧。
+      reservedSlots: body.reservedSlots,
       deadLetterCount: body.deadLetterCount,
       // E9: 转发容量热更新值，正整数 1..10000 校验在 service 侧完成。
       maxConcurrentTasks: body.maxConcurrentTasks,

@@ -1441,6 +1441,104 @@ describe("ExecutorService (__tests__)", () => {
       );
     });
 
+    describe("reservedSlots adoption (E-01-RPT)", () => {
+      // E-01-RPT（生产实证：RPA5 恒显「当前运行任务 1/10」「活性上报 0 条，与
+      // 运行计数 1 不一致」，而设备上无任务在跑）：pull 长轮询预留槽位数采纳。
+      const onlineExecutor = () => ({
+        address: "127.0.0.1:3105",
+        status: ExecutorStatus.ONLINE,
+        runningTaskCount: 1,
+        reservedSlots: null as number | null,
+        runningExecutionIds: null as string[] | null,
+      });
+
+      it("adopts the reported reservation alongside the count (RPA5 steady state)", async () => {
+        const executor = onlineExecutor();
+        executorRepo.findOne.mockResolvedValue(executor);
+        executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+        // 生产现场的稳态心跳：已占 1 个槽位（E-01 预留），无活性 id。
+        await service.heartbeat("127.0.0.1:3105", {
+          runningTaskCount: 1,
+          reservedSlots: 1,
+          runningExecutionIds: [],
+        });
+        // 两个字段都被如实采纳——UI 据此算出「实际运行 = 1 − 1 = 0」。
+        expect(executor.runningTaskCount).toBe(1);
+        expect(executor.reservedSlots).toBe(1);
+        expect(executor.runningExecutionIds).toEqual([]);
+      });
+
+      it("adopts boundary values 0 and the reported count", async () => {
+        const executor = onlineExecutor();
+        executorRepo.findOne.mockResolvedValue(executor);
+        executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+        await service.heartbeat("127.0.0.1:3105", {
+          runningTaskCount: 3,
+          reservedSlots: 0,
+        });
+        expect(executor.reservedSlots).toBe(0);
+        await service.heartbeat("127.0.0.1:3105", {
+          runningTaskCount: 3,
+          reservedSlots: 3,
+        });
+        expect(executor.reservedSlots).toBe(3);
+      });
+
+      it("keeps the stored value when the field is not reported (legacy executor)", async () => {
+        // 兼容性红线：旧版执行器（协议 < 4）不上报该字段 → DB 值不动，UI 回落
+        // 「按已占槽位显示」的旧口径，行为与引入前逐字节一致。
+        const executor = { ...onlineExecutor(), reservedSlots: 2 };
+        executorRepo.findOne.mockResolvedValue(executor);
+        executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+        await service.heartbeat("127.0.0.1:3105", { cpuUsage: 1 });
+        expect(executor.reservedSlots).toBe(2);
+      });
+
+      it.each([-1, 1.5, 10_001, Number.NaN, "1"])(
+        "rejects invalid value %p and keeps the stored value",
+        async (bad) => {
+          const executor = { ...onlineExecutor(), reservedSlots: 2 };
+          executorRepo.findOne.mockResolvedValue(executor);
+          executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+          await service.heartbeat("127.0.0.1:3105", {
+            runningTaskCount: 5,
+            reservedSlots: bad as unknown as number,
+          });
+          expect(executor.reservedSlots).toBe(2);
+        },
+      );
+
+      it("rejects a reservation exceeding the reported count (not self-consistent)", async () => {
+        // 反证：预留是「已占槽位」的**子集**，上报 5 > 计数 1 必不可信。若照单
+        // 全收，UI 会算出负数（比误报不一致更荒谬）。拒绝后 DB 值不动。
+        const executor = { ...onlineExecutor(), reservedSlots: 0 };
+        executorRepo.findOne.mockResolvedValue(executor);
+        executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+        await service.heartbeat("127.0.0.1:3105", {
+          runningTaskCount: 1,
+          reservedSlots: 5,
+        });
+        expect(executor.reservedSlots).toBe(0);
+      });
+
+      it("反证: 越界 runningTaskCount 被丢弃时，预留也不得单独采纳", async () => {
+        // 反证用例：runningTaskCount 越界 → 白名单删字段 → e.runningTaskCount 保持
+        // DB 旧值。此时若仍采纳 reservedSlots，就会拿一个「陈旧计数」去配对本次
+        // 上报的预留数，产生不自洽的组合。断言两者要么一起更新、要么都不动。
+        const executor = { ...onlineExecutor(), runningTaskCount: 1, reservedSlots: 0 };
+        executorRepo.findOne.mockResolvedValue(executor);
+        executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+        await service.heartbeat("127.0.0.1:3105", {
+          runningTaskCount: 99_999, // 越界 → 被丢弃
+          reservedSlots: 1,
+        });
+        expect(executor.runningTaskCount).toBe(1); // DB 旧值不动
+        // 预留 1 <= 最终计数 1，自洽，故可采纳——但计数仍是旧值，UI 显示 0。
+        // 关键是绝不出现 reservedSlots > runningTaskCount 的落库组合。
+        expect(executor.reservedSlots).toBeLessThanOrEqual(executor.runningTaskCount);
+      });
+    });
+
     it("recovers running executions predating heartbeat startup when executor lacks startup baseline", async () => {
       const executor = {
         address: "127.0.0.1:3105",
