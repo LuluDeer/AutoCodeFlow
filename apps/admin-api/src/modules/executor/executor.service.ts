@@ -1526,6 +1526,28 @@ export class ExecutorService {
   }
 
   /**
+   * E-01-RPT: 心跳采纳 `reservedSlots` 的取值域——非负整数 0..MAX_RUNNING_EXECUTION_IDS。
+   *
+   * 上界与 runningTaskCount 同源（NETOPT-D P2-D2）：reservedSlots 是
+   * runningTaskCount 的**子集**，任何超出该上界的值都不可能自洽，越界一律视为
+   * 未上报（不改 DB 值），与 maxConcurrentTasks/deadLetterCount 同模式——
+   * 执行器上报面不可信，白名单字段必须先过范围校验再落列。
+   *
+   * 真实上界其实是 maxConcurrentTasks（pull 循环是单飞的，恒为 0/1），但此处
+   * 刻意**不**按 maxConcurrentTasks 钳制：该列随心跳热更、且本校验发生在容量
+   * 采纳之前，用它做上界会让两个字段的采纳顺序互相影响。真正的自洽性由调用方
+   * 的 `reservedSlots <= effectiveRunningCount` 配对校验兜住（那才是硬约束）。
+   */
+  private static isAdoptableReservedSlots(value: unknown): value is number {
+    return (
+      typeof value === "number" &&
+      Number.isInteger(value) &&
+      value >= 0 &&
+      value <= MAX_RUNNING_EXECUTION_IDS
+    );
+  }
+
+  /**
    * CONSISTENCY-02: heartbeat ingest for executor-node 上报的 runningExecutionIds。
    * 输入为 executor 可控字段，须严格防御：非数组视为未上报（返回 null）；逐项仅
    * 保留匹配安全字符集 [A-Za-z0-9_-] 的字符串（其余丢弃）；最多裁剪至 10000 项
@@ -1663,6 +1685,10 @@ export class ExecutorService {
       restartedAt?: string | Date | null;
       startupId?: string | null;
       runningExecutionIds?: string[] | null;
+      // E-01-RPT（生产实证：RPA5「当前运行任务 1/10、活性上报 0 条」）：pull
+      // 长轮询「已预留但尚未认领」的槽位数。只用于展示/告警换算（实际运行 =
+      // runningTaskCount − reservedSlots），**不参与派发闸门**（见实体注释）。
+      reservedSlots?: number | null;
       deadLetterCount?: number;
       // E9: 执行器热更新容量上报（可选，正整数 1..10000，非法/缺失不改 DB）
       maxConcurrentTasks?: number;
@@ -1705,6 +1731,10 @@ export class ExecutorService {
       restartedAt: _r,
       startupId: _s,
       runningExecutionIds,
+      // E-01-RPT: reservedSlots 不是数值指标列，从 metricValues 中摘出单独走
+      // 「与 runningTaskCount 的一致性」采纳（见下方 reservedSlots 段）——
+      // 它必须与本次上报的 runningTaskCount 配对校验，不能落进通用白名单环。
+      reservedSlots,
       // python_task_multiversion：interpreters 不是数值指标列，从 metricValues
       // 中摘出单独走结构校验（不进 metricsWhitelist 的数值写入环）。
       interpreters,
@@ -1747,6 +1777,10 @@ export class ExecutorService {
       // 闸门 runningTaskCount 虚高、欠派。清零后若本次心跳带真实上报值，
       // 白名单覆盖仍生效（见下方 metricValues 写入环）。
       e.runningTaskCount = 0;
+      // E-01-RPT: 预留同样清零——重启后进程内的 pull 循环已消失，重启前的
+      // 「预留中」槽位必然不复存在，留着会让 UI 把陈旧预留从新计数里减掉
+      // （显示比真值少 1）。若本次心跳带真实上报值，下方采纳段仍会覆盖。
+      e.reservedSlots = 0;
     } else if (shouldRecoverMissingBaseline) {
       await this.failRunningExecutionsAfterRestart(address, incomingStartedAt);
       // NETOPT-F P2-F2: missing-baseline 分支与 register 同型分支（:908）对称
@@ -1754,6 +1788,8 @@ export class ExecutorService {
       // 原样写回，用旧值覆盖恢复结果，闸门 runningTaskCount 虚高、欠派。
       // 清零后若本次心跳带真实上报值，白名单覆盖仍生效。
       e.runningTaskCount = 0;
+      // E-01-RPT: 同 didRestart 分支——陈旧预留不得参与新计数的换算。
+      e.reservedSlots = 0;
     }
 
     // R-P0-006: Use save() without version check for heartbeat to avoid frequent conflicts
@@ -1873,6 +1909,43 @@ export class ExecutorService {
         runningExecutionIds,
         address,
       );
+    }
+    // E-01-RPT（生产实证：RPA5 恒显「当前运行任务 1/10」「活性上报 0 条，与运行
+    // 计数 1 不一致」，而设备上无任务在跑）：采纳 pull 预留槽位数。
+    //
+    // 采纳时机刻意放在**这里**：此刻 e.runningTaskCount 已被上方白名单环写成
+    // 本次上报的最终值（或重启分支清零值），配对校验才拿得到真值。
+    //
+    // 三态纪律（与 runningExecutionIds 同款，这是兼容性红线）：
+    // - `undefined`（旧版执行器未上报）→ **保留 DB 旧值**，UI 回落「按已占槽位
+    //   显示」的旧口径，行为与引入前逐字节一致；
+    // - 非法（非整数/负数/超上界/与 runningTaskCount 不自洽）→ warn + 保留 DB
+    //   旧值（不半采纳——半采纳值同样不可信，与 NETOPT-E P3-1 同调）；
+    // - 合法（**含 0**）→ 覆盖。
+    //
+    // 自洽性硬约束 `reservedSlots <= runningTaskCount`：预留是「已占槽位」的
+    // **子集**（E-01 让预留与正式占用共用同一账本），故预留数不可能超过总数。
+    // 违反即说明该上报不可信（典型成因：本次 runningTaskCount 越界被删、留下
+    // 陈旧低值），此时连 reservedSlots 一起拒绝，让 UI 走旧口径，下一次合法
+    // 上报即自纠正。
+    if (reservedSlots !== undefined) {
+      if (!ExecutorService.isAdoptableReservedSlots(reservedSlots)) {
+        this.logger.warn(
+          `Executor ${address} reported invalid reservedSlots=${String(
+            reservedSlots,
+          )} (expected integer in 0..${MAX_RUNNING_EXECUTION_IDS}); keeping stored value`,
+        );
+      } else if (reservedSlots > e.runningTaskCount) {
+        // 注意用 e.runningTaskCount（最终值）而非 metricValues.runningTaskCount
+        // ——后者可能刚被越界校验删除，读它会是 undefined 而恒判不自洽。
+        this.logger.warn(
+          `Executor ${address} reported reservedSlots=${reservedSlots} exceeding ` +
+            `runningTaskCount=${e.runningTaskCount} (reservations are a subset of ` +
+            `occupied slots); keeping stored reservedSlots`,
+        );
+      } else {
+        e.reservedSlots = reservedSlots;
+      }
     }
     // python_task_multiversion（WS2 · CONTRACT §2.2/§2.3 · 兼容性红线 3）：
     // 心跳采纳 `interpreters`——三态必须精确区分，任一态混淆都会造成调度错判：
@@ -4081,6 +4154,12 @@ export class ExecutorService {
     };
     current: {
       runningTaskCount: number;
+      /**
+       * E-01-RPT: pull 长轮询「已预留但尚未认领」的槽位数。
+       * `null` = 该执行器未上报该字段（旧版执行器）→ 前端回落旧口径，
+       * 不做「实际运行 = runningTaskCount − reservedSlots」换算。
+       */
+      reservedSlots: number | null;
       cpuUsage: number | null;
       memUsage: number | null;
     };
@@ -4139,6 +4218,9 @@ export class ExecutorService {
       },
       current: {
         runningTaskCount: executor.runningTaskCount,
+        // E-01-RPT: 随详情一并下发，供前端把「已占槽位」换算成「实际运行数」
+        // 并抑制 E-01 预留窗口造成的假「不一致」告警。
+        reservedSlots: executor.reservedSlots ?? null,
         cpuUsage: executor.cpuUsage,
         memUsage: executor.memUsage,
       },

@@ -26,11 +26,12 @@
 | `capabilities` | simple-array nullable | 能力标签 |
 | `lastHeartbeat` | timestamptz nullable | 最近心跳（离线判定依据） |
 | `executorStartedAt` / `executorStartupId` | timestamptz / varchar，可空 | 启动追踪（迁移 `1717473142689`，用于重启识别） |
-| `runningTaskCount` | int，default 0 | 在途任务数（心跳维护） |
+| `runningTaskCount` | int，default 0 | **已占槽位**数（心跳维护）——含 E-01 取件预留。派发闸门（`selectLeastLoaded` / 容量守卫）只读它 |
 | `cpuUsage` / `memUsage` / `diskUsage` / `networkLatency` | float nullable | 心跳上报的性能指标 |
 | `totalTaskCount` / `failedTaskCount` | int，default 0 | 累计执行/失败计数 |
 | `maxConcurrentTasks` | int nullable | 并发上限（NULL=不限） |
-| `runningExecutionIds` | jsonb nullable | CONSISTENCY-02：心跳上报的在途 executionId 列表（≤200）；语义：NULL=旧版执行器未上报，`[]`=上报且空闲；stale 扫描据此避免误杀（迁移 `1788700000000`） |
+| `runningExecutionIds` | jsonb nullable | CONSISTENCY-02：心跳上报的**在跑执行** executionId 列表（≤10000）；语义：NULL=旧版执行器未上报，`[]`=上报且空闲；stale 扫描据此避免误杀（迁移 `1788700000000`）。注意与 `runningTaskCount` 来自**两个不同账本**，空闲 pull 执行器稳态为「计数 1 + 本列 `[]`」 |
+| `reservedSlots` | int nullable | E-01-RPT：心跳上报的 pull 长轮询**预留槽位数**。E-01 让 pull 循环在长轮询前先原子预留槽位并计入同一并发账本，故 `runningTaskCount` 含它而 `runningExecutionIds` 不含；详情页据此显示「实际运行 = `runningTaskCount` − `reservedSlots`」。语义：NULL=旧版执行器未上报（回落旧口径），`0`=已上报且无预留；采纳域非负整数且必须 `≤ runningTaskCount`（子集约束，越界拒绝采纳）。**派发闸门绝不读本列**（迁移 `1790000000039`） |
 | `deadLetterCount` | int nullable | U16：执行器回调死信积压数（0..100000 白名单采纳，非法/缺失不改 DB）（迁移 `1788900000000`） |
 | `tokenHash` | varchar nullable，`select: false` | SEC-03：per-executor token 的 bcrypt hash，经 `POST /api/executors/:id/rotate-token` 轮换（迁移 `1717473142682`） |
 | `groupName` | varchar nullable | 逻辑分组（任务 `executorGroup` 的匹配对象） |

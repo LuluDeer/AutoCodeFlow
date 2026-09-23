@@ -280,4 +280,42 @@
 #   本次按 ADR-005 同 commit 重打：本机(Windows) ncc 0.44 产出 b9156891…。
 #   bundle 2584kB → 2585kB（源码净增：一个字段 + 注释）。
 #
-b9156891a2b385ab3c134fc864f028e12a7f7b476c2508011854d1cab7befb8a  index.js
+# 2026-09-23（生产实证：RPA5 执行器在中台恒显「当前运行任务 1/10」「活性上报 0 条，
+#   与运行计数 1 不一致」，而该执行器所在设备上并没有在执行的任务）——E-01-RPT：
+#   · **根因不是计数泄漏，也不是卡住的任务**，而是 E-01 防超卖机制的固有上报口径
+#     缺口：E-01 要求 pull 循环在发起 25s 长轮询【之前】先原子预留一个容量槽位
+#     （pull.ts 的 Atomics.add），预留计入**同一个并发账本**，故 runningTaskCount
+#     在长轮询窗口内**诚实包含**该预留——这正是「长轮询窗口内中台不会再往最后一个
+#     空槽 push 派发」的实现方式本身。而 runningExecutionIds 来自**另一个账本**
+#     （liveExecutions Map），只有真正领取到的执行才有 id。空闲执行器几乎始终处在
+#     长轮询窗口内，于是稳态上报恒为「runningTaskCount=1 + runningExecutionIds=[]」
+#     ——两个数字都对，却度量了不同的东西：前者是**已占槽位**，后者是**在跑执行**。
+#     中台详情页把两者直接交叉核对，遂恒亮不一致告警。这也解释了为什么
+#     `task_executions WHERE status='running'` 是 0 行——现场其实什么都没卡住。
+#   · scheduler.ts 新增 `registerPullReservedSlotsProvider` + `collectReservedSlots()`
+#     （异常/非整数一律收敛为 0，绝不因上报口径问题让心跳失败——心跳失败会让
+#     admin 判 OFFLINE，代价远大于少报一次预留数）；心跳载荷新增 **始终发送** 的
+#     `reservedSlots`（含 0；缺席 = 旧版执行器未上报，中台回落旧口径）。
+#   · pull.ts 新增 `pullReservedSlots` 追踪，所有增减都**紧贴** `slotReserved` 的
+#     状态跃迁（与 Atomics 账本同点增减，杜绝双计数/漏减）：预留成立时 +1、
+#     领取成功（所有权移交）时 −1、finally 唯一释放点 −1。
+#   · config.ts 的 PROTOCOL_VERSION 3 → 4（按 protocol.json 的 evolutionRules 第 1
+#     条：新增可选字段仍需 bump，让中台能区分「v4 执行器上报了预留数」与「旧执行器
+#     未上报」——没有这道区分，中台只能猜，而猜错的方向（把预留当空闲）恰好会重开
+#     E-01 要关闭的超卖竞态）。
+#   · **明确否决**了「用 runningExecutionIds.length 覆盖 runningTaskCount」这一修法：
+#     那会让中台在预留窗口内误判有空槽 → push 派发进已被预留的槽位 → 执行器 accept
+#     返回 429 → 任务被误判永久失败，恰是 E-01 要关闭的竞态。派发闸门仍读
+#     runningTaskCount，E-01 语义逐字节不变。
+#     （本条当时还附了「且 python 侧 ids 截断到 200，并发 >200 时会严重低报」作为
+#     附加理由。该 200 是 python 侧一个**独立缺陷**——它抄了个不存在的 "node
+#     parity"，node 从来是 10000——已在 NETOPT-C P2-1 修正为三端同值 10000，故
+#     此处不再引用它。修正后本条否决**不依赖**那个缺陷：两个账本口径不同，用
+#     派生量覆盖源量本身就是错的。）
+#   桌面端内嵌执行器若漏打，桌面端（pull 模式为主）仍会持续上报「1 + []」→ 中台详情页
+#   继续恒亮不一致告警，本次修复在客户端侧完全缺席。故按 ADR-005 同 commit 重打：
+#   本机(Windows) ncc 0.44 产出 ce5aa19c…，同目录重复构建两次（两次均走
+#   scripts/bundle-executor.sh）**逐字节一致**，印证 ncc 0.44 的路径/跨平台确定性
+#   （同上文多处注记）。bundle 2585kB → 2593kB。
+#
+ce5aa19c583daaf49f360c4d90c9637386ce36dda1ba79e2c7b4c5d8d2597c25  index.js

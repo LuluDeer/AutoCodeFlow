@@ -112,8 +112,7 @@ describe('scheduler', () => {
     clearInterval(timer);
   });
 
-  it('NETOPT-D P3: truncates at the 10000 heartbeat cap and warns', async () => {
-    // 批次 C 把 cap 从 200 提到 10000 后，只证"上限>252"不足以防回退——
+  it('NETOPT-D P3: truncates at the 10000 heartbeat cap and warns', async () => {    // 批次 C 把 cap 从 200 提到 10000 后，只证"上限>252"不足以防回退——
     // 钉死 10000 边界 + warn 分支（稳态不可达，属防御网，显式造 10001 条）。
     jest.useFakeTimers();
     const {
@@ -139,6 +138,66 @@ describe('scheduler', () => {
       expect.stringContaining('runningExecutionIds exceeds heartbeat cap 10000'),
     );
     warnSpy.mockRestore();
+
+    clearInterval(timer);
+  });
+
+  // E-01-RPT（生产实证：RPA5 在中台恒显「当前运行任务 1/10」「活性上报 0 条，
+  // 与运行计数 1 不一致」，而设备上无任务在跑）：心跳必须上报 pull 预留槽位数。
+  it('E-01-RPT: reports reservedSlots in the heartbeat body (always sent, incl. 0)', async () => {
+    jest.useFakeTimers();
+    const {
+      startHeartbeat,
+      registerPullReservedSlotsProvider,
+      registerRunningExecutionIdsProvider,
+    } = require('./scheduler');
+    // 稳态：空闲 pull 执行器几乎始终在长轮询窗口内 → 1 个预留、0 条活性。
+    // （provider 是粘性模块状态，上一用例注册的 10001 条 id 会残留，显式重置。）
+    registerRunningExecutionIdsProvider(() => []);
+    registerPullReservedSlotsProvider(() => 1);
+    const timer = startHeartbeat();
+
+    await jest.advanceTimersByTimeAsync(12_000);
+    const body = post.mock.calls.at(-1)![1];
+    expect(body.reservedSlots).toBe(1);
+    // 反证（生产现场的另一半）：同一份心跳里计数为 1、活性为空——这正是中台
+    // 详情页判定「不一致」的输入。两个字段都必须存在，缺一不可。
+    expect(body.runningTaskCount).toBe(1);
+    expect(body.runningExecutionIds).toEqual([]);
+
+    // 预留归还后必须回落 0（否则中台会把空闲执行器永久显示成占用）。
+    registerPullReservedSlotsProvider(() => 0);
+    await jest.advanceTimersByTimeAsync(12_000);
+    expect(post.mock.calls.at(-1)![1].reservedSlots).toBe(0);
+
+    clearInterval(timer);
+  });
+
+  it('E-01-RPT: 非法 provider 值收敛为 0，绝不因上报口径问题让心跳失败', async () => {
+    // 反证用例：provider 抛错/返回非法值时若让心跳整体失败，admin 会判该执行器
+    // OFFLINE——代价远大于少报一次预留数（与 collectInterpreters 同一取舍）。
+    jest.useFakeTimers();
+    const {
+      startHeartbeat,
+      registerPullReservedSlotsProvider,
+      registerRunningExecutionIdsProvider,
+    } = require('./scheduler');
+    registerRunningExecutionIdsProvider(() => []);
+    registerPullReservedSlotsProvider(() => {
+      throw new Error('provider exploded');
+    });
+    const timer = startHeartbeat();
+
+    await jest.advanceTimersByTimeAsync(12_000);
+    const body = post.mock.calls.at(-1)![1];
+    expect(body.reservedSlots).toBe(0);
+    // 心跳仍然发出（其余字段完好）。
+    expect(body.runningExecutionIds).toEqual([]);
+
+    // 非整数（脏上报）同样收敛为 0，而不是把 NaN 发给中台。
+    registerPullReservedSlotsProvider(() => Number.NaN);
+    await jest.advanceTimersByTimeAsync(12_000);
+    expect(post.mock.calls.at(-1)![1].reservedSlots).toBe(0);
 
     clearInterval(timer);
   });
