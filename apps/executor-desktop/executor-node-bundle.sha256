@@ -234,4 +234,14 @@
 #   b45d9ddf…，与 CI（ubuntu-latest）侧独立重打的 actual **逐字节一致**——再次
 #   印证 ncc 0.44 的跨平台字节确定性（见上文 cc54aa2f/a4dad9b/3680d5e7 注记）。
 #   bundle 2547kB → 2562kB。
-b45d9ddf36e51ae9cad420569a39d18e88d21bf876f12163ad49b643c8df75f4  index.js
+#
+# 2026-09-23（用户报障：执行器的应用显示看不出是哪个应用）：
+#   · routes/deploy.ts 在发布成功处（switchCurrentRelease 之后）于 **appRoot**
+#     落 app.json（appId/appName/runtime/gitRepo/gitBranch/gitCommit/lastVersion/
+#     lastDeploymentId/lastDeployedAt）。此前 appName 只进日志、从不落盘，桌面端
+#     只能拿到 appId(UUID)，「本地已部署应用」列表整屏都是不可读的 ID。
+#     写入为 best-effort（失败只 WARN，不影响部署主链），文件随 release 之外的
+#     appRoot 存放，故跨 release 稳定、pruneOldReleases 不会回收它。
+#   本次按 ADR-005 同 commit 重打：本机(Windows) ncc 0.44 产出 56e16540…。
+#   bundle 2562kB → 2563kB。
+56e1654035549c22eb6cbed478a3b2d56d702f8d51458c6c937b61cc02104704  index.js

@@ -1699,7 +1699,22 @@ input:focus-visible,
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  /* 用户报障（应用显示不对）：原先整行只有一个裸 UUID。现在一行内含
+     版本号 + 「当前版本」徽标 + UUID 缩写，需要横向排布。 */
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
+.app-deployment-version { font-weight: 600; color: var(--text1); }
+.app-deployment-uuid { opacity: 0.55; }
+.app-badge {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-family: var(--font-sans);
+  white-space: nowrap;
+}
+.app-badge-current { background: var(--green-bg); color: var(--color-accent); }
 .app-deployment-actions { display: flex; gap: 6px; }
 .app-no-log { font-size: 11px; color: var(--text3); }
 .log-fs-deployment-id { font-size: 11px; opacity: 0.7; }
