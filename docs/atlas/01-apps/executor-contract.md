@@ -1,5 +1,5 @@
 # 执行器 ↔ admin-api 协议契约
-> 所属: docs/atlas/01-apps · 最后核对: 2026-09-13 · 对应代码: apps/admin-api/src/modules/executor/executor.controller.ts、apps/admin-api/src/modules/task/execution-callback.controller.ts 与 dto/execution-callback.dto.ts、apps/executor-node/src（admin-client.ts/callback.ts/main.ts）、apps/executor-python（main.py/routers/execute.py/scheduler.py）
+> 所属: docs/atlas/01-apps · 最后核对: 2026-09-23 · 对应代码: apps/admin-api/src/modules/executor/executor.controller.ts、apps/admin-api/src/modules/task/execution-callback.controller.ts 与 dto/execution-callback.dto.ts、apps/executor-node/src（admin-client.ts/callback.ts/main.ts/device-identity.ts）、apps/executor-python（main.py/routers/execute.py/scheduler.py/device_identity.py）
 
 本文是执行器（node/python/desktop 内核）与 admin-api 之间机器接口的**双向核实字段表**：左侧为字段，"发送方/接收方"标注实现位置。全局前缀 `/api`；admin 响应恒为 `{code, message, data}` 信封（执行器侧 `unwrapAdminResponseData` / `_unwrap_envelope` 解包）。
 
@@ -19,6 +19,7 @@
 | `maxConcurrentTasks` / `maxConcurrent` | number | — | node 发 `maxConcurrent`；python 发 `maxConcurrentTasks` |
 | `groupName` / `tags` / `description` | string / string[] | — | node 发 groupName；tags/description 仅 admin Swagger 示例可见，两个执行器均未发送 |
 | `restartedAt` / `startupId` | string | — | 进程生命身份（startup-identity.ts / startup_identity.py） |
+| `deviceFingerprint` | string（64 位小写十六进制） | — | **协议 v3 起**：稳定设备身份 `sha256(deviceId + ":" + installSalt)`（node `device-identity.ts` / python `device_identity.py`）。**只采集与观测，不参与定位**；采集失败**不发该键**（不是发 null）——admin 侧字段缺省即不动 DB。组成与三平台取值见 [ADR-017](../../adr/adr-017-executor-unique-identity.md) |
 
 - 响应 `data`：执行器行（id/appName/address/status/…）+ `perExecutorToken`（新注册/重启时轮换，否则 null）+ `tokenHash`（N26，执行器采纳为回调令牌 HMAC 源）。
 
@@ -43,6 +44,7 @@
 | `maxConcurrentTasks` | number | 仅 node（E9：热更容量随心跳上报，1..10000 校验在 admin service） |
 | `diskUsage` / `networkLatency` / `totalTaskCount` / `failedTaskCount` | number | admin DTO 支持但执行器未发送（diskUsage 仅 node `/health` 本地返回） |
 | `restartedAt` / `startupId` | string | 两者 |
+| `deviceFingerprint` | string（64 位小写十六进制） | **协议 v3 起**两者（ARCH-36 / ADR-017 阶段 2）。admin 侧三态采纳：**缺省 / 形态非法一律保留 DB 旧值**（不是置 NULL——否则旧执行器每 30s 的心跳会把已存指纹历史擦光）。同时驱动中台侧的冲突/漂移观测 |
 
 - 响应 `data`：心跳后的执行器行 + `tokenHash` 回显（R9/W3：执行器每次心跳采纳，保持回调令牌密钥与 admin 侧轮换同步）。
 

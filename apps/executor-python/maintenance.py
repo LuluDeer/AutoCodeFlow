@@ -50,6 +50,13 @@ logger = logging.getLogger(__name__)
 _PROTECTED_WORKDIR_NAMES = {
     'logs', 'meta', 'callbacks', '.git_cache', '.venvs', '.node_modules',
     '.pkg-updates', 'apps',
+    # ARCH-36（ADR-017 阶段 2）：安装实例盐目录
+    # （`<work_dir>/.device-identity/<kind>.salt`）。**必须保护**——下方第 1 段
+    # 清扫遍历 work_dir 的**所有**顶层条目（含普通文件）并按 mtime 删除，盐被
+    # 删掉后下次启动重新生成，deviceFingerprint 随之静默漂移（默认 7 天一次），
+    # 「同一 address 出现两个指纹」的观测全部失真。node 侧
+    # `PROTECTED_WORKDIR_NAMES`（file-logger.ts）同名同源。
+    '.device-identity',
 }
 
 

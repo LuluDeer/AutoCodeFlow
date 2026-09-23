@@ -1,6 +1,6 @@
 # 执行器注册 / 心跳 / 动态令牌 / 身份信任链
 
-> 所属: docs/atlas/04-flows · 最后核对: 2026-09-13 · 对应代码: apps/admin-api/src/modules/executor/executor.service.ts、executor.controller.ts、apps/executor-node/src/middleware/auth.ts、startup-identity.ts
+> 所属: docs/atlas/04-flows · 最后核对: 2026-09-23 · 对应代码: apps/admin-api/src/modules/executor/executor.service.ts、executor.controller.ts、executor-address-conflict.util.ts、executor-fingerprint.util.ts、apps/executor-node/src/middleware/auth.ts、startup-identity.ts、device-identity.ts
 
 ## 注册与令牌签发时序
 
@@ -10,8 +10,12 @@
     │ ①POST /api/executors/register          │                                          │
     │   Authorization: Bearer <共享引导token> │ verifyExecutorToken                       │
     │   {appName,address,capabilities,       │ (common/utils/verify-executor-token.util.ts)│
-    │    startupId,restartedAt,...}          │                                          │
+    │    startupId,restartedAt,              │                                          │
+    │    deviceFingerprint,...}              │                                          │
     │───────────────────────────────────────▶│ ExecutorService.registerExecutor (:575)  │
+    │                                        │  ├─ observeAddressConflict（ARCH-34）      │
+    │                                        │  ├─ observeDeviceFingerprint（ARCH-36）    │
+    │                                        │  │   ↑ 两者都必须在 DB 写入**之前**        │
     │                                        │  ├─ register (:463)                       │
     │                                        │  │   新行: repo.create 白名单(F-7) ───────▶ INSERT status=ONLINE
     │                                        │  │   旧行+重启: failRunningExecutionsAfterRestart(:419)
@@ -30,7 +34,8 @@
     │───────────────────────────────────────▶│ validateTokenByAddress (:1715)：          │
     │   {cpuUsage,memUsage,runningTaskCount, │   per-executor bcrypt → 共享 token 兜底    │
     │    runningExecutionIds,deadLetterCount,│   （正结果缓存 60s，负结果不缓存 F-5）       │
-    │    maxConcurrentTasks,startupId}       │ heartbeat (:676) 白名单采纳 → ONLINE/lastHeartbeat
+    │    maxConcurrentTasks,startupId,       │ heartbeat (:676) 白名单采纳 → ONLINE/lastHeartbeat
+    │    deviceFingerprint}                  │ + observeAddressConflict / observeDeviceFingerprint
     │◀─── { executor行, tokenHash 回显 }      │ （tokenHash 回显 R9/W3：执行器每次心跳采纳为 HMAC 源）│
 ```
 
@@ -46,6 +51,8 @@
 | token 端点幂等 | `executor.service.ts:1614` `issueToken()` | 进程内 `issuedTokenCache`（TTL `TOKEN_ISSUE_CACHE_TTL_MS`）同 startupId 复用前仍 bcrypt 复核存量哈希——管理台手动轮换不会被旧缓存复活 |
 | 校验 | `executor.service.ts:1715` `validateTokenByAddress()` | per-executor bcrypt → 失败回退共享 token（DB `executor.sharedToken` → env `EXECUTOR_SECRET`，timingSafeEqual）；正缓存 60s |
 | 心跳采纳白名单 | `heartbeat()` :676 + `isAdoptableMaxConcurrentTasks`（E9，1..10000）/ `isAdoptableDeadLetterCount`（U16，0..100000）/ `runningExecutionIds` 逐项 `^[A-Za-z0-9_-]+$` 裁剪 200（CONSISTENCY-02） | 执行器上报面不可信，先过范围校验再落列 |
+| 指纹冲突/漂移观测 | `executor-fingerprint.util.ts` `DeviceFingerprintTracker` + `executor.service.ts` `observeDeviceFingerprint()`（register/heartbeat 两处接线，共用**同一个** tracking 实例） | ARCH-36（ADR-017 阶段 2）：**纯内存、零 IO**（热路径，心跳 30s/台）。判据两方向——同 `address` 出现第二个不同指纹 = **硬冲突**（直证，非时序推断）→ ERROR + 通知 + 10min 按 `(address,fingerprint)` 节流；同一指纹换新 `address` = **地址漂移**（换网，正常）→ 仅 info。含 `stats()` 观测口径（`reportsWithFingerprint/reports` 覆盖率、`conflictRate`）。与 ARCH-34 的 `observeAddressConflict` **并存不互替**：后者不依赖新字段、对存量执行器仍有效，且覆盖「同机同 kind 同 workDir 两实例共享指纹」这种指纹判不出的形态 |
+| 地址冲突观测 | `executor-address-conflict.util.ts` `ExecutorAddressConflictTracker` + `observeAddressConflict()` | ARCH-34 P0：判据是「**被顶替的**进程生命重新上报」（不是「同 address 不同 startupId」——后者是正常重启的形状） |
 | 30 分钟轮换节奏 | `apps/executor-node/src/middleware/auth.ts`（python 对等 `auth.py`） | 到期前 5 分钟刷新；401 后 30s 退避重签 |
 
 ## 心跳字段语义速查
@@ -59,6 +66,7 @@
 | `deadLetterCount` | — | 回调死信积压观测 |
 | `maxConcurrentTasks` | — | 容量热更（仅 node，1..10000） |
 | `startupId`/`restartedAt` | — | 重启检测基线 |
+| `deviceFingerprint` | — | ARCH-36（ADR-017 阶段 2）：稳定设备身份 `sha256(deviceId:installSalt)`，64 位小写十六进制。**只采集与观测，不参与定位**；缺省/非法**不动 DB**（不是"置 NULL"）；用于「同址双指纹 = 硬冲突」告警与「同指纹换址 = 换网漂移」info 日志。协议 v3 起可用，v1/v2 执行器不发该字段则中台行为与引入前一致 |
 
 ## 失败分支与自愈
 

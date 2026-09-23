@@ -244,4 +244,29 @@
 #     appRoot 存放，故跨 release 稳定、pruneOldReleases 不会回收它。
 #   本次按 ADR-005 同 commit 重打：本机(Windows) ncc 0.44 产出 56e16540…。
 #   bundle 2562kB → 2563kB。
-56e1654035549c22eb6cbed478a3b2d56d702f8d51458c6c937b61cc02104704  index.js
+#
+# 2026-09-23（ARCH-36 / ADR-017 阶段 2：三端 deviceFingerprint 采集 + 中台落列与观测）：
+#   · executor-node 新增 src/device-identity.ts：稳定设备身份
+#     `sha256(deviceId + ":" + installSalt)`（64 位小写十六进制）。deviceId 取
+#     Windows MachineGuid / Linux /etc/machine-id（回退 /var/lib/dbus/machine-id）/
+#     macOS IOPlatformUUID，三者皆不可得时回退「首个非 loopback 网卡 MAC + 主机名」
+#     的哈希；探测用 execFileSync argv 式（不经 shell）+ 2s 超时。
+#   · installSalt 首次启动生成随机 UUID 并持久化于
+#     `<workDir>/.device-identity/<kind>.salt`（按执行器 kind 分域——同机同 workDir 上
+#     并存的 node 与 python 是两个逻辑执行器，共用盐会让 ADR-017 阶段 3 把它们折叠成
+#     同一行，正是该 ADR 要消灭的故障）。
+#   · main.ts / scheduler.ts 在注册与心跳载荷上报 deviceFingerprint；
+#     config.ts 的 PROTOCOL_VERSION 2 → 3；
+#     file-logger.ts 把 `.device-identity` 加入 PROTECTED_WORKDIR_NAMES——
+#     workDir 顶层的一切（含文件）都会被 TTL 清扫按 mtime 删除，盐若被删掉就是
+#     **指纹每周静默漂移一次**（且会在中台伪装成"正常换网"，极难察觉）。
+#   · 采集全程 fail-open：任何失败返回 null 且只 warn 一次，绝不阻断启动/注册；
+#     只上报哈希，绝不上报原始 machineId。
+#   桌面端内嵌执行器若漏打，桌面端不会上报指纹 → 本阶段的冲突观测在桌面端整片缺失，
+#   ADR-017 阶段 3「按指纹定位行」也无法启用（前置条件就是三端都上报）。
+#   本次按 ADR-005 同 commit 重打：本机(Windows) ncc 0.44 产出 f528b16c…，
+#   同目录重复构建两次（直接 ncc 一次 + scripts/bundle-executor.sh 一次）
+#   **逐字节一致**，印证 ncc 0.44 的路径/跨平台确定性（同上文多处注记）。
+#   bundle 2563kB → 2584kB。
+#
+f528b16cd3c514ffa821df7a951a2cfeab186631ac5aef7460f6cf940763b20b  index.js
