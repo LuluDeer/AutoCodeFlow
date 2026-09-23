@@ -107,7 +107,6 @@ function hardenWindow(win: BrowserWindow): void {
 export class WindowManager {
   private statusWindow: BrowserWindow | null = null;
   private wizardWindow: BrowserWindow | null = null;
-  private configWindow: BrowserWindow | null = null;
 
   openWizard(): void {
     if (this.wizardWindow && !this.wizardWindow.isDestroyed()) {
