@@ -48,7 +48,7 @@
 ```
 
 - **注册**：启动时用共享引导 token 调 `POST /executors/register`，携带 `appName/address/type/version/capabilities/maxConcurrent(Tasks)/restartedAt/startupId`；admin 返回执行器行 + `perExecutorToken` + `tokenHash`。幂等键 `(address, startupId)`。
-- **心跳**：默认 30s（`HEARTBEAT_INTERVAL_SECONDS`），报文含 `cpuUsage/memUsage/runningTaskCount/runningExecutionIds(≤200)/deadLetterCount`；python 侧恒发送 `runningExecutionIds`（缺失会被 admin 判为旧版执行器、跳过 prepare 期活性保护）；node 侧额外随心跳热更 `maxConcurrentTasks`。
+- **心跳**：默认 30s（`HEARTBEAT_INTERVAL_SECONDS`），报文含 `cpuUsage/memUsage/runningTaskCount/runningExecutionIds(≤10000)/reservedSlots/deadLetterCount`；python 侧恒发送 `runningExecutionIds`（缺失会被 admin 判为旧版执行器、跳过 prepare 期活性保护）；node 侧额外随心跳热更 `maxConcurrentTasks`。`runningExecutionIds` 两端同封顶 **MAX_RUNNING_EXECUTION_IDS=10000**（NETOPT-C P2-1：python 侧曾误按 200 截断，导致并发 >200 的第 201+ 个在跑执行失去 stale sweep 活性宽限而被误判 FAILED）；`max_concurrent_tasks` 亦同域钳到 1..10000（node env 钳制 + reload 400，python 同）。`reservedSlots`（协议 v4 / E-01-RPT）**恒发送含 0**：`runningTaskCount` 含 E-01 取件预留而 `runningExecutionIds` 不含，中台据此把「已占槽位」换算为「实际运行数」（否则空闲 pull 执行器恒亮「活性上报 0 条，与运行计数 1 不一致」）。
 - **派发接收**：`POST /api/execute`（Bearer 共享 token + 可选 traceparent），同步校验后立即 `{status:'accepted', executionId}`（python 额外带 `executorAddress`），prepare/执行后台化；容量满 429。
 - **回调上报**：终态批量 `POST /executions/callback`，鉴权可用执行器 token 或每执行 `v1.` HMAC 令牌；字段表见 [执行器协议契约](executor-contract.md)。失败落盘 + 死信重放，执行器重启不丢终态。
 - **完整字段与请求/响应示例**：[执行器协议契约](executor-contract.md)；时序：[执行器注册流程](../04-flows/executor-registration.md)、[回调上报](../04-flows/execution-callback.md)。

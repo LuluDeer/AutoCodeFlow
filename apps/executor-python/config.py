@@ -9,6 +9,34 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # 该正则同时是执行器侧的命令注入闸门（NFR-03）：版本只有过白后才会拼进 uv argv。
 RUNTIME_VERSION_PATTERN = re.compile(r'^\d+\.\d+$')
 
+# NETOPT-C P2-1：心跳体 runningExecutionIds 的封顶值，以及 max_concurrent_tasks
+# 的上界。**三端同值**（executor-node scheduler.ts / admin-api
+# executor.service.ts 的 MAX_RUNNING_EXECUTION_IDS 均为 10_000）——它是
+# 「执行器上报面」与「中台采纳面」的公共上界，任一处不同值都会造成越界部分被
+# 静默丢弃，进而让在跑执行失去 stale sweep 的活性宽限。
+#
+# 修的是 python 侧一个**真缺陷**：此处原先没有上界（只有 reload 端点的 >=1
+# 下界），而 scheduler.py 的心跳体把 ids 截断到 **200**（注释还谎称 "node
+# parity"——node 从来是 10000）。两个缺口叠加的效果：
+#
+#   1. 运维把 MAX_CONCURRENT_TASKS 设成 >200（无上界拦截，真的放行）；
+#   2. 第 201+ 个在跑执行从心跳的 runningExecutionIds 里消失；
+#   3. admin stale sweep 以「id 是否出现在该数组里」为**唯一**活性判据
+#      （scheduler.service.ts recoverStaleExecutions），未命中即按 stale 判死；
+#   4. 于是健康长跑的任务（prepare 期 git clone + venv 可达 ~600s）被提前恢复
+#      成 FAILED——正是 E1 引入该字段要消灭的误判，只是触发条件从「0 个 id」
+#      变成了「>200 个 id」。
+#
+# 为什么上界是 10000 而不是另取一个数：
+# ① 与 admin 的 sanitizeRunningExecutionIds 截顶、E9 的 maxConcurrentTasks
+#    采纳域 1..10000 同源（三处必须同值）；
+# ② 心跳 body 体积可行：admin main.ts 只给 /api/executions/callback 开了
+#    55mb，/api/executors/heartbeat 走全局 **1mb**。UUID 形态 id 的单个 JSON
+#    字面量 38 字节 → 10000 个 + 逗号 + 方括号 = 390,001 字节 ≈ 381 KiB，
+#    占 1mb 上限的 37%，跑满封顶仍留 2.6× 余量，不会把心跳打成 413（413 会让
+#    中台把执行器判 OFFLINE，比少报 id 严重得多——故这个上界必须算过账）。
+MAX_RUNNING_EXECUTION_IDS = 10_000
+
 
 def _validate_credential_free_http_url(value: str, setting_name: str) -> str:
     """Shared rule for every setting that is handed to uv as a URL.
@@ -112,6 +140,31 @@ class Settings(BaseSettings):
     executor_secret: str = ''
     work_dir: str = '/tmp/autocodeflow/tasks'
     max_concurrent_tasks: int = 10
+
+    @field_validator('max_concurrent_tasks')
+    @classmethod
+    def _validate_max_concurrent_tasks(cls, value: int) -> int:
+        """钳到 1..MAX_RUNNING_EXECUTION_IDS（与 node 同域）。
+
+        NETOPT-D P3-5（node config.ts）为同一问题在 node 侧做的钳制：
+        `Math.min(Math.max(envInt('MAX_CONCURRENT_TASKS', 10), 1), 10_000)`，
+        注释写明「否则设到 50000 时 accept 放行 50000 而心跳体截到 10000，
+        容量账本与心跳申报永久脱节」。python 此前**只有下界**（reload 端点手检
+        >=1），env 与 reload 都没有上界——于是 MAX_CONCURRENT_TASKS=500 可以
+        真的放行 500 并发，而心跳体只报得出 MAX_RUNNING_EXECUTION_IDS 条 id，
+        第 201+（旧）/第 10001+（今）个在跑执行失去 stale sweep 的活性宽限。
+
+        这里对 env 取**钳制**而非报错（与 node 逐语义一致）：env 是运维启动
+        参数，钳到边界比让执行器起不来更符合「活性优先」。reload 端点走
+        **400 拒绝**（同样对齐 node routes/config.ts 的手检），因为那是交互式
+        推送、报错能立刻反馈给推送方。
+        """
+        if value < 1:
+            return 1
+        if value > MAX_RUNNING_EXECUTION_IDS:
+            return MAX_RUNNING_EXECUTION_IDS
+        return value
+
     # ARCH-32（ADR-015）: pull 派发模式——true 时执行器不依赖入站可达（NAT 内
     # 部署），改经 POST /executors/pull 长轮询取件；register 自报 dispatchMode
     # 'pull'，admin 侧据此走队列传输分支。默认 False = push 行为逐字节不变。
@@ -396,5 +449,14 @@ EXECUTOR_VERSION = '2.0.0'
 # ARCH-36（ADR-017 阶段 2）：2 → 3。register/heartbeat 新增**可选**
 # `deviceFingerprint`（device_identity.py）。中台据此区分「v3 执行器**应**上报
 # 指纹」与「存量执行器从未上报」——前者缺失 = 采集失败，后者缺失 = 预期为空。
-PROTOCOL_VERSION = 3
+#
+# E-01-RPT（生产实证：RPA5「当前运行任务 1/10、活性上报 0 条」）：3 → 4。
+# heartbeat 新增**可选** `reservedSlots`——pull 长轮询「已预留但尚未认领」的
+# 槽位数。E-01 让预留计入 runningTaskCount（防超卖），而 runningExecutionIds
+# 来自另一个账本，故空闲执行器稳态上报「1 + []」，中台详情页恒亮「活性上报
+# 0 条，与运行计数 1 不一致」。中台据此区分「v4 执行器上报了预留数（可换算
+# 实际运行数）」与「旧执行器未上报（按已占槽位显示）」——没有这道区分，中台
+# 只能猜，而猜错的方向（把预留当空闲）恰好会重开 E-01 要关闭的超卖竞态。
+# 方向为**执行器→中台**，PROTOCOL_CONTROL_PLANE_MIN 仍为 2。
+PROTOCOL_VERSION = 4
 

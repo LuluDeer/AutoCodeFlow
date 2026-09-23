@@ -469,12 +469,28 @@ class TestReportingWiring:
         assert 'startupId' in payload
         assert 'protocolVersion' in payload
 
-    def test_protocol_version_bumped_to_3(self):
+    def test_protocol_version_matches_protocol_json(self):
         """协议版本与 protocol.json currentProtocolVersion 同值（强一致性闸在
-        admin-api 侧 protocol-version-consistency.spec.ts，此处只做本地半场）。"""
+        admin-api 侧 protocol-version-consistency.spec.ts，此处只做本地半场）。
+
+        E-01-RPT：原先这里硬编码 `== 3`，于是每次协议 bump 都要改这个与指纹
+        无关的用例（本次 3→4 即被它拦下）。改为**读单一事实源**——这样它守的是
+        「与 protocol.json 同步」这个真正的契约，而不是某一个历史数值。"""
+        import json
+        from pathlib import Path
+
         from config import PROTOCOL_VERSION
 
-        assert PROTOCOL_VERSION == 3
+        protocol_json = (
+            Path(__file__).resolve().parents[3]
+            / 'packages'
+            / 'executor-protocol'
+            / 'protocol.json'
+        )
+        expected = json.loads(protocol_json.read_text(encoding='utf-8'))[
+            'versioning'
+        ]['currentProtocolVersion']
+        assert PROTOCOL_VERSION == expected
 
 
 class TestWorkdirProtection:

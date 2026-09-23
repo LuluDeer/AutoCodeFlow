@@ -9,7 +9,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import AliasChoices, BaseModel, Field, ValidationError
 from auth import verify_token
-from config import settings
+from config import settings, MAX_RUNNING_EXECUTION_IDS
 # A3-C：协议闸门/响应契约（由 packages/executor-protocol/protocol.json 生成，勿手改产物）
 from generated.protocol_schemas import (
     ConfigReloadRequest as ProtocolConfigReloadRequest,
@@ -124,6 +124,16 @@ async def reload_config(req: ConfigReloadRequest, request: Request) -> ConfigRel
     # adminApiUrls 传非数组），且必须发生在任何 settings 写入**之前**。
     if req.max_concurrent_tasks is not None and req.max_concurrent_tasks < 1:
         raise HTTPException(status_code=400, detail='max_concurrent_tasks must be >= 1')
+    # NETOPT-D P3-5 对齐（node routes/config.ts 同一句 'between 1 and 10000'）：
+    # 上界必须与心跳体 runningExecutionIds 的封顶（MAX_RUNNING_EXECUTION_IDS）
+    # 一致——否则放行 >10000 并发时，超出部分的在跑执行报不进心跳，会失去
+    # stale sweep 的活性宽限而被误判 FAILED。此前 python 只检下界，是
+    # 「容量账本与心跳申报脱节」的入口（见 config.py 常量处完整根因）。
+    if req.max_concurrent_tasks is not None and req.max_concurrent_tasks > MAX_RUNNING_EXECUTION_IDS:
+        raise HTTPException(
+            status_code=400,
+            detail=f'max_concurrent_tasks must be between 1 and {MAX_RUNNING_EXECUTION_IDS}',
+        )
     if req.task_timeout_seconds is not None and req.task_timeout_seconds < 1:
         raise HTTPException(status_code=400, detail='task_timeout_seconds must be >= 1')
     if req.heartbeat_interval_seconds is not None and req.heartbeat_interval_seconds < 5:
@@ -146,6 +156,14 @@ async def reload_config(req: ConfigReloadRequest, request: Request) -> ConfigRel
         if req.max_concurrent_tasks is not None:
             if req.max_concurrent_tasks < 1:
                 raise HTTPException(status_code=400, detail='max_concurrent_tasks must be >= 1')
+            # 上界复查（与上方预检同域）。此处不能依赖 Settings 的
+            # field_validator：pydantic 未开 validate_assignment，`settings.x = v`
+            # 这种赋值**不**触发校验器——故端点必须自己守住上界。
+            if req.max_concurrent_tasks > MAX_RUNNING_EXECUTION_IDS:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f'max_concurrent_tasks must be between 1 and {MAX_RUNNING_EXECUTION_IDS}',
+                )
             settings.max_concurrent_tasks = req.max_concurrent_tasks
             updated_fields.append('max_concurrent_tasks')
             logger.info(f'Hot-reloaded max_concurrent_tasks={req.max_concurrent_tasks}')

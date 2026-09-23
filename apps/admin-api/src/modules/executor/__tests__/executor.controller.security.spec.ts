@@ -95,6 +95,12 @@ describe("ExecutorController — F-2 heartbeat / F-7 register mass-assignment gu
           // 拒绝采纳，见 executor.interpreters.spec）。此处置入断言是为了让
           // "漏转发"（字段被白名单静默丢弃、上报永远不生效）在这里变红。
           interpreters: [{ version: "3.7.9", available: true }],
+          // E-01-RPT（生产实证：RPA5「当前运行任务 1/10、活性上报 0 条」）：
+          // reservedSlots 是心跳白名单字段——controller 原样转发，范围校验与
+          // 「reservedSlots <= runningTaskCount」配对校验在 service 侧。此处
+          // 置入断言是为了让"漏转发"（字段被白名单静默丢弃 → UI 永远显示
+          // 「1/10 + 不一致」）在这里变红。
+          reservedSlots: 1,
           // injection attempts below must be dropped by the controller
           tokenHash: "$2b$12$attackerhash",
           version: 99,
@@ -115,6 +121,7 @@ describe("ExecutorController — F-2 heartbeat / F-7 register mass-assignment gu
         startupId: "startup-1",
         maxConcurrentTasks: 100000,
         interpreters: [{ version: "3.7.9", available: true }],
+        reservedSlots: 1,
       });
     });
 

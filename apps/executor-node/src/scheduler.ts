@@ -71,6 +71,66 @@ export const runningCount = getRunningCount;  // alias to the function
 let runningExecutionIdsProvider: () => string[] = () => [];
 let deadLetterCountProvider: () => number = () => 0;
 
+/**
+ * E-01-RPT（生产实证：RPA5「当前运行任务 1/10、活性上报 0 条」）：
+ * pull 长轮询「已预留但尚未认领」的槽位数。
+ *
+ * 背景——为什么需要这个字段：E-01 让 pull 循环在发起 25s 长轮询**之前**先
+ * 原子预留一个容量槽位（`pull.ts` 的 Atomics.add），预留计入同一个并发账本，
+ * 因此 `runningTaskCount` 在长轮询窗口内诚实包含这个预留（这正是关闭
+ * admin 超卖竞态窗口的机制本身，见 pull.ts 顶部注释）。
+ *
+ * 但 `runningExecutionIds` 来自**另一个账本**（`liveExecutions` Map，只有
+ * 真正领取到的执行才有 id）。空闲执行器几乎始终处在长轮询窗口内，于是稳态
+ * 下就是「runningTaskCount=1 + runningExecutionIds=[]」——两个数字都对，
+ * 却度量了不同的东西：前者是**已占槽位**，后者是**在跑执行**。
+ *
+ * 后果（生产现象）：中台详情页把两者交叉核对，遂恒亮「活性上报 0 条，与运行
+ * 计数 1 不一致」，并显示「当前运行任务 1/10」——而该设备上确实没有任何任务
+ * 在跑。这不是计数泄漏，也不是卡住的任务，是 E-01 预留窗口的**上报口径缺失**。
+ *
+ * 修法：预留方（pull 循环）把「预留中」的槽位数单独上报，中台据此把
+ * 「已占槽位」换算成「实际运行 = runningTaskCount − reservedSlots」，派发
+ * 闸门仍读 runningTaskCount（E-01 的防超卖语义逐字节不变）。
+ */
+let pullReservedSlotsProvider: () => number = () => 0;
+
+export function registerPullReservedSlotsProvider(fn: () => number): void {
+  pullReservedSlotsProvider = fn;
+}
+
+/**
+ * E-01-RPT: 预留槽位数上报前的防御性归一。
+ *
+ * 契约：非负整数。provider 异常/返回非法值一律收敛为 0（=「无预留」），
+ * 而非让心跳失败——上报口径缺失只会让中台回落到旧的「按已占槽位显示」，
+ * 而心跳失败会让 admin 判 OFFLINE，代价完全不成比例。
+ *
+ * 不在此处按 maxConcurrentTasks 钳制：该值随 /config/reload 热更，且
+ * 单飞（pullInFlight）保证真值恒为 0 或 1；钳制只会掩盖 provider 的 bug。
+ * admin 侧另有采纳域校验（越界 → 视同未上报，DB 值不动）。
+ */
+function collectReservedSlots(): number {
+  let value: unknown;
+  try {
+    value = pullReservedSlotsProvider();
+  } catch (err: unknown) {
+    logger.warn(
+      `pullReservedSlots provider failed; reporting 0: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+    return 0;
+  }
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+    logger.warn(
+      `pullReservedSlots provider returned a non-integer (${String(value)}); reporting 0`,
+    );
+    return 0;
+  }
+  return value;
+}
+
 /** NETOPT-C P2-1: 心跳活性清单上限——与 admin E9 采纳域（maxConcurrentTasks
  *  ≤10000）对齐，保证容量上界内每个在跑执行都能进入 stale-sweep 存活宽限
  *  （旧 200 封顶在并发 >200 时让第 201+ 个 id 从 includes() 判据里消失）。 */
@@ -215,6 +275,16 @@ async function sendHeartbeat() {
       // 同任务排队）的执行，避免误判失败+提前释放容量。上限与 E9 对齐（见
       // MAX_RUNNING_EXECUTION_IDS），deadLetterCount 暴露落盘回调积压。
       runningExecutionIds: runningIds.slice(0, MAX_RUNNING_EXECUTION_IDS),
+      // E-01-RPT（生产实证：RPA5「当前运行任务 1/10、活性上报 0 条」）：
+      // runningTaskCount 含 pull 长轮询「预留中」的槽位（E-01 防超卖机制），
+      // 而 runningExecutionIds 只含真正领取到的执行——空闲执行器稳态下
+      // 恒为「1 + []」，中台详情页因此恒亮「不一致」告警。此处把预留数单独
+      // 上报，中台即可算出「实际运行 = runningTaskCount − reservedSlots」。
+      //
+      // 语义红线：**始终发送该字段**（含 0），与 runningExecutionIds 同款
+      // 三态纪律——`0` = 已上报且无预留，字段缺席 = 旧版执行器未上报（中台
+      // 回落到「按已占槽位显示」的旧口径，行为与引入前逐字节一致）。
+      reservedSlots: collectReservedSlots(),
       deadLetterCount: deadLetterCountProvider(),
       // FR-13/FR-14（CONTRACT.md §2.3）：解释器缓存池清单。**始终发送该字段**
       // （哪怕为空数组）——`[]` 表示"已上报且池为空"，而字段缺席表示"旧执行器

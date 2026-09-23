@@ -29,9 +29,16 @@ jest.mock('./routes/execute', () => ({
 const pushCallback = jest.fn();
 jest.mock('./callback', () => ({ pushCallback }));
 const getRunningCount = jest.fn(() => Atomics.load(ledger, 0));
+// E-01-RPT: 预留计数上报——pull.ts 在模块加载时用真实 register 接线，故此处
+// 只需收集 provider（断言「上报值随预留状态跃迁」而非只断言调用关系）。
+let reservedSlotsProvider: (() => number) | null = null;
+const registerPullReservedSlotsProvider = jest.fn((fn: () => number) => {
+  reservedSlotsProvider = fn;
+});
 jest.mock('./scheduler', () => ({
   getRunningCount,
   getRunningCountArray: () => ledger,
+  registerPullReservedSlotsProvider,
 }));
 // ARCH-33: 命令执行分派走真实模块会发本地 HTTP——单测里打桩，只断言
 // 「哪些命令被派发执行」与「结果是否上报」。commands.ts 自身另有 spec。
@@ -44,21 +51,29 @@ jest.mock('./commands', () => {
 describe('pull loop (ARCH-32 + E-01 预留槽位)', () => {
   let pullOnce: () => Promise<void>;
   let resetConfigPullThrottleForTest: () => void;
+  let resetPullReservedSlotsForTest: () => number;
   let logger: { warn: jest.Mock; info: jest.Mock };
 
   beforeEach(() => {
     jest.clearAllMocks();
     Atomics.store(ledger, 0, 0);
-    ({ pullOnce, resetConfigPullThrottleForTest } = require('./pull'));
+    ({ pullOnce, resetConfigPullThrottleForTest, resetPullReservedSlotsForTest } =
+      require('./pull'));
     resetConfigPullThrottleForTest(); // NETOPT-9-6: 节流是粘性模块状态，跨用例重置
+    // E-01-RPT: 预留计数同为粘性模块状态（用例在断言前提前 return 会残留）。
+    resetPullReservedSlotsForTest();
     ({ logger } = require('./logger'));
   });
 
   it('取到载荷：预留槽位后发起 pull，acceptExecution 收到 body（剥离 traceparent）与 traceparent', async () => {
     // E-01: 捕获长轮询【进行中】的账本值——预留必须发生在发起 pull 之前。
     let countDuringPull: number | null = null;
+    // E-01-RPT: 同时捕获长轮询【进行中】的**预留上报值**——这正是生产现场
+    // 「runningTaskCount=1 + runningExecutionIds=[]」里那个 1 的来源。
+    let reservedDuringPull: number | null = null;
     postMock.mockImplementationOnce(async () => {
       countDuringPull = Atomics.load(ledger, 0);
+      reservedDuringPull = reservedSlotsProvider?.() ?? null;
       return {
         data: {
           code: 0,
@@ -87,12 +102,54 @@ describe('pull loop (ARCH-32 + E-01 预留槽位)', () => {
     // 预留即占位：pull 请求在账本 +1 的状态下发出（心跳 runningTaskCount
     // 同源，长轮询窗口内 admin 不会再往最后一个空槽 push 派发）。
     expect(countDuringPull).toBe(1);
+    // E-01-RPT: 同一时刻必须上报「有 1 个槽位处于预留中」——否则中台只能看到
+    // 「计数 1 + 活性 0 条」并恒亮不一致告警（RPA5 生产现象）。
+    expect(reservedDuringPull).toBe(1);
     expect(acceptExecution).toHaveBeenCalledWith(
       { executionId: 'exec-9', task: { id: 't1' }, params: {} },
       '00-trace-span-01',
       { slotPreReserved: true },
     );
     expect(pushCallback).not.toHaveBeenCalled();
+  });
+
+  it('E-01-RPT: 预留上报随状态跃迁——无任务/拒绝时归零，领取成功时移交（不重复扣减）', async () => {
+    // 反证用例：预留上报若在「领取成功」后不撤销，中台会把它从实际运行数里
+    // 再减一次（显示比真值少 1）；若在「无任务」后不归零，中台会把空闲执行器
+    // 永久显示成占用。两个方向都在此钉死。
+    expect(reservedSlotsProvider?.()).toBe(0);
+
+    // ① 无任务返回（空轮次）→ 预留归还 → 上报归零。
+    postMock.mockResolvedValueOnce({ data: { code: 0, message: 'ok', data: {} } });
+    await pullOnce();
+    expect(reservedSlotsProvider?.()).toBe(0);
+
+    // ② 领取成功（accept 200）→ 所有权移交给执行条目 → 上报归零（该执行此后
+    //    由 runningExecutionIds 代表，不再算预留）。
+    postMock.mockResolvedValueOnce({
+      data: {
+        code: 0,
+        message: 'ok',
+        data: { task: { executionId: 'exec-own', task: {} } },
+      },
+    });
+    await pullOnce();
+    expect(reservedSlotsProvider?.()).toBe(0);
+
+    // ③ 校验被拒（accept 400）→ 预留归还 → 上报归零。
+    postMock.mockResolvedValueOnce({
+      data: {
+        code: 0,
+        message: 'ok',
+        data: { task: { executionId: 'exec-400', task: {} } },
+      },
+    });
+    acceptExecution.mockReturnValueOnce({
+      status: 400,
+      payload: { error: 'bad payload' },
+    });
+    await pullOnce();
+    expect(reservedSlotsProvider?.()).toBe(0);
   });
 
   it('accept 200：预留转为正式占用，pull 循环不重复释放', async () => {

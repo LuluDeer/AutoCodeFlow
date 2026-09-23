@@ -1299,6 +1299,10 @@ export default {
   'executorDetail.trend.concurrent': '并发任务',
   'executorDetail.currentRunning': '当前运行任务',
   'executorDetail.inconsistent': '活性上报 {{reported}} 条，与运行计数 {{running}} 不一致',
+  // E-01-RPT: 预留槽位说明（显示数 = 已占槽位 − 预留）。显示数已扣除预留，
+  // 此处把差额讲清楚，避免运维把「0/10 但服务端占用 1」当成新的不一致。
+  'executorDetail.reserved.note': '已占 {{occupied}} 个槽位（含 {{reserved}} 个取件预留）',
+  'executorDetail.reserved.tip': 'pull 执行器在长轮询取件前会先预留一个槽位（E-01 防超卖机制）：该槽位算作已占用，但尚无任务在跑。此处显示的是实际运行数（已扣除预留），容量进度条与满载判定仍按已占槽位计算。',
   'executorDetail.totalTasks': '总执行任务数',
   'executorDetail.failedTasks': '失败任务数',
   'executorDetail.historyTitle': '历史任务执行',

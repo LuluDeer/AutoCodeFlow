@@ -38,8 +38,9 @@
 |---|---|---|
 | `address` | string | ✅ 两者 |
 | `cpuUsage` / `memUsage` | number | node：os 采样（CPU 500ms 差分）；python：psutil |
-| `runningTaskCount` | number | 运行计数（node Atomics / python 锁内计数） |
-| `runningExecutionIds` | string[]（≤200） | 两者（STALE-01/E1：**必须恒发送**，空数组=空闲；admin 据此做"回调只是迟到"的活性保护） |
+| `runningTaskCount` | number | 运行计数（node Atomics / python 锁内计数）。**含 E-01 取件预留**——语义是「已占槽位」，不是「在跑执行」；派发闸门（`selectLeastLoaded` / 容量守卫）只读它 |
+| `runningExecutionIds` | string[]（≤10000） | 两者（STALE-01/E1：**必须恒发送**，空数组=空闲；admin 据此做"回调只是迟到"的活性保护）。语义是「在跑执行」，与 `runningTaskCount` 来自**两个不同账本**（node `liveExecutions` Map / python `_live_executions`）。两端同封顶 **MAX_RUNNING_EXECUTION_IDS=10000**（NETOPT-C P2-1；python 侧曾误按 200 截断，注释还谎称 "node parity"——并发 >200 时第 201+ 个在跑执行从本数组消失，失去 stale sweep 活性宽限而被误判 FAILED）；越界截顶会 warn（不静默） |
+| `reservedSlots` | number | **协议 v4 起**两者（E-01-RPT）。pull 长轮询「已预留但尚未认领」的槽位数：E-01 让 pull 循环在发起 25s 长轮询**之前**先原子预留一个槽位并计入同一并发账本，故 `runningTaskCount` 诚实包含它，而 `runningExecutionIds` 不含（尚未领取到 id）。空闲 pull 执行器稳态上报「`runningTaskCount=1` + `runningExecutionIds=[]`」——**两个数字都对**，却度量不同的东西；中台据此把「已占槽位」换算为「实际运行 = `runningTaskCount` − `reservedSlots`」用于展示与告警，**派发闸门仍只读 `runningTaskCount`**。**必须恒发送（含 `0`）**；admin 采纳域为非负整数且 `≤ runningTaskCount`（子集约束），越界即拒绝采纳、库内原值不动 |
 | `deadLetterCount` | number | 两者（落盘回调死信积压） |
 | `maxConcurrentTasks` | number | 仅 node（E9：热更容量随心跳上报，1..10000 校验在 admin service） |
 | `diskUsage` / `networkLatency` / `totalTaskCount` / `failedTaskCount` | number | admin DTO 支持但执行器未发送（diskUsage 仅 node `/health` 本地返回） |
@@ -114,6 +115,7 @@ admin LOG-01 触发：`limit=2000` 分页推进，依赖 `hasMore`。执行器�
 
 1. `CallbackItemDto` 任一字段超限 → **整批**被 ParseArrayPipe 拒绝；执行器侧已按 DTO 上限预截断（logs 10k / errorMessage 4000 / 批 100）。
 2. 心跳缺省 `runningExecutionIds` = 旧版执行器语义，admin 会跳过 prepare 期活性保护——字段可以短，不能省。
+2b. 心跳缺省 `reservedSlots` = 旧版执行器语义，中台详情页回落「按已占槽位显示」的旧口径。**绝不可**用 `runningExecutionIds.length` 覆盖 `runningTaskCount` 来消除「计数与活性条数不一致」告警：那会让中台在预留窗口内误判有空槽 → push 派发进已被预留的槽位 → 执行器 accept 返回 429 → 任务被误判永久失败，恰是 E-01 要关闭的竞态。
 3. 回调令牌算法三方钉死（node `execution-callback-token.ts`、python `execution_callback_token.py`、admin `execution-callback-token.util.ts` 共享同一测试向量），单侧改动即红测试。
 4. 派发响应必须是 2xx + `{status:'accepted'}` 形态；admin 把非 2xx 视为派发失败并回滚容量占坑。
 

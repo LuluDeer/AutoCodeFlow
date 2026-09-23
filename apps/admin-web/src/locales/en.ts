@@ -1288,6 +1288,9 @@ export default {
   'executorDetail.trend.concurrent': 'Concurrent tasks',
   'executorDetail.currentRunning': 'Currently running',
   'executorDetail.inconsistent': '{{reported}} reported live vs {{running}} running count mismatch',
+  // E-01-RPT: reserved-slot note (displayed = occupied − reserved).
+  'executorDetail.reserved.note': '{{occupied}} slots occupied (incl. {{reserved}} pull reservation)',
+  'executorDetail.reserved.tip': 'A pull executor reserves one slot before each long-poll (the E-01 anti-oversell mechanism): the slot counts as occupied but has no task running yet. The value shown here is the actual running count (reservation deducted); the capacity bar and saturation check still use occupied slots.',
   'executorDetail.totalTasks': 'Total task count',
   'executorDetail.failedTasks': 'Failed task count',
   'executorDetail.historyTitle': 'Execution history',

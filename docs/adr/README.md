@@ -31,6 +31,7 @@
 | [ADR-015](./adr-015-executor-pull-dispatch.md) | 执行器 pull 模式派发——NAT 内执行器零入站回连（长轮询拉取，弃 WS 反连） | Accepted |
 | [ADR-016](./adr-016-executor-control-plane-pull.md) | 控制面 pull 通道——部署/停止/卸载/热更新/终止/包推送改走 pull 命令队列（协议 1→2，ARCH-33） | Accepted |
 | [ADR-017](./adr-017-executor-unique-identity.md) | 执行器唯一标识——设备指纹 + 安装实例盐（`address` 降级为可达性元数据，ARCH-34） | Proposed |
+| [ADR-018](./adr-018-executor-occupied-vs-running.md) | 心跳区分「已占槽位」与「在跑执行」——新增 `reservedSlots`（协议 3→4，E-01-RPT） | Accepted |
 
 ## DOC-04 覆盖状态
 

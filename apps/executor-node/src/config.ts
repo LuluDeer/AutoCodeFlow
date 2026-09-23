@@ -367,5 +367,15 @@ export const EXECUTOR_VERSION = readPackageVersion();
  * 前者缺失 = 采集失败（要排查），后者缺失 = 预期为空。没有这道区分，冲突率
  * 与覆盖率两个观测指标都无法解释。注意该字段方向是**执行器→中台**，中台从
  * 不下发，故 bump 不改变任何既有分支（PROTOCOL_CONTROL_PLANE_MIN 仍为 2）。
+ *
+ * E-01-RPT（生产实证：RPA5「当前运行任务 1/10、活性上报 0 条」）：3 → 4。
+ * heartbeat 新增**可选** `reservedSlots`——pull 长轮询「已预留但尚未认领」的
+ * 槽位数。E-01 让预留计入 runningTaskCount（防超卖），而 runningExecutionIds
+ * 来自另一个账本，故空闲执行器稳态上报「1 + []」，中台详情页恒亮「活性上报
+ * 0 条，与运行计数 1 不一致」。同样按 evolutionRules 第 1 条 bump：中台据此
+ * 区分「v4 执行器上报了预留数（可换算实际运行数）」与「旧执行器未上报（按已
+ * 占槽位显示）」——没有这道区分，中台只能猜，而猜错的方向（把预留当空闲）
+ * 恰好会重开 E-01 要关闭的超卖竞态。方向同为**执行器→中台**，
+ * PROTOCOL_CONTROL_PLANE_MIN 仍为 2，不改变任何既有分支。
  */
-export const PROTOCOL_VERSION = 3;
+export const PROTOCOL_VERSION = 4;

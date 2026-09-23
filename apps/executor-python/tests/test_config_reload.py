@@ -2,7 +2,7 @@ import os
 
 import pytest
 
-from config import settings
+from config import settings, MAX_RUNNING_EXECUTION_IDS
 
 
 def test_reload_config_accepts_admin_api_camel_case_payload(auth_client, monkeypatch):
@@ -60,6 +60,66 @@ def test_reload_config_validates_camel_case_payload(auth_client):
 
     assert resp.status_code == 400
     assert resp.json()['detail'] == 'max_concurrent_tasks must be >= 1'
+
+
+class TestMaxConcurrentTasksUpperBound:
+    """NETOPT-D P3-5 对齐：max_concurrent_tasks 必须有上界
+    （MAX_RUNNING_EXECUTION_IDS = 10000），与 node routes/config.ts 的
+    'between 1 and 10000' 同语义。
+
+    反证（本类的存在理由）：此前 python **只检下界**，故 `maxConcurrentTasks:
+    50000` 会被 200 接受并真的放行 50000 并发——而心跳体 runningExecutionIds
+    只报得出 10000 条，第 10001+ 个在跑执行从 admin stale sweep 的活性判据里
+    消失，被提前恢复成 FAILED。这条用例把这个入口钉死。
+    """
+
+    def test_rejects_above_cap(self, auth_client, monkeypatch):
+        monkeypatch.setattr(settings, 'max_concurrent_tasks', 10)
+        resp = auth_client.post(
+            '/api/config/reload',
+            json={'maxConcurrentTasks': MAX_RUNNING_EXECUTION_IDS + 1},
+        )
+        assert resp.status_code == 400
+        assert resp.json()['detail'] == (
+            f'max_concurrent_tasks must be between 1 and {MAX_RUNNING_EXECUTION_IDS}'
+        )
+        # 关键：拒绝必须发生在**任何写入之前**（否则 settings 已被污染）
+        assert settings.max_concurrent_tasks == 10
+
+    def test_rejects_absurd_value(self, auth_client, monkeypatch):
+        """反证有牙：旧实现会接受 50000（仅下界检查）。"""
+        monkeypatch.setattr(settings, 'max_concurrent_tasks', 10)
+        resp = auth_client.post('/api/config/reload', json={'maxConcurrentTasks': 50000})
+        assert resp.status_code == 400
+        assert settings.max_concurrent_tasks == 10
+
+    def test_accepts_cap_boundary(self, auth_client, monkeypatch):
+        """边界值本身必须放行（上界是闭区间，与 node 的 > 10000 判据一致）。"""
+        monkeypatch.setattr(settings, 'max_concurrent_tasks', 10)
+        resp = auth_client.post(
+            '/api/config/reload',
+            json={'maxConcurrentTasks': MAX_RUNNING_EXECUTION_IDS},
+        )
+        assert resp.status_code == 200
+        assert resp.json()['updated_fields'] == ['max_concurrent_tasks']
+        assert settings.max_concurrent_tasks == MAX_RUNNING_EXECUTION_IDS
+
+    def test_env_value_is_clamped_not_rejected(self):
+        """env 走**钳制**（与 node config.ts 的 Math.min(Math.max(...)) 同语义）：
+        运维把 MAX_CONCURRENT_TASKS 设到天上时执行器仍要能起来——钳到上界比
+        启动失败更符合「活性优先」。reload 端点则是 400（交互式推送，能立刻
+        反馈给推送方）。
+        """
+        from config import Settings
+
+        over = Settings(max_concurrent_tasks=MAX_RUNNING_EXECUTION_IDS + 12345)
+        assert over.max_concurrent_tasks == MAX_RUNNING_EXECUTION_IDS
+
+        under = Settings(max_concurrent_tasks=0)
+        assert under.max_concurrent_tasks == 1
+
+        ok = Settings(max_concurrent_tasks=37)
+        assert ok.max_concurrent_tasks == 37
 
 
 def test_reload_config_requires_auth(client):

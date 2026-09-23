@@ -223,14 +223,42 @@ export default function ExecutorDetailPage() {
   // 活性区（最后心跳/运行中执行）在 UI 标注快照语义。
   const liveCpu = metrics?.current?.cpuUsage ?? executor.cpuUsage ?? 0;
   const liveMem = metrics?.current?.memUsage ?? executor.memUsage ?? 0;
-  const runningCount = metrics?.current?.runningTaskCount ?? executor.runningTaskCount ?? 0;
-  const runningPercent = maxConcurrent > 0 ? Math.min(100, Math.round((runningCount / maxConcurrent) * 100)) : 0;
-  // 补充 P2（UX-AUDIT 第 4 路）：满载语义。runningCount 达到并发上限即饱和——
+  // E-01-RPT（生产实证：RPA5 恒显「当前运行任务 1/10」「活性上报 0 条，与运行
+  // 计数 1 不一致」，而设备上无任务在跑）：
+  //
+  // runningTaskCount 是**已占槽位**——它含 E-01 防超卖机制在 pull 长轮询窗口内
+  // 预留的那个槽位（执行器在发起 25s 长轮询【之前】先原子 +1，见 executor-node
+  // pull.ts）。而 runningExecutionIds 是**在跑执行**（来自另一个账本，只有真正
+  // 领取到的执行才有 id）。空闲 pull 执行器几乎始终处在长轮询窗口内，于是稳态
+  // 上报恒为「1 + []」：两个数字都对，却度量了不同的东西。
+  //
+  // 故此处把「已占槽位」拆成两个量：
+  //   - occupiedSlots = 已占槽位（含预留）= 服务端派发闸门读的那个数；
+  //   - runningCount  = 实际在跑 = occupiedSlots − reservedSlots，用于展示与
+  //                     与 runningExecutionIds.length 交叉核对。
+  //
+  // 兼容性：reservedSlots 为 null/undefined（旧版执行器未上报）时回落旧口径
+  // （reserved = 0，runningCount === occupiedSlots），行为与引入前逐字节一致。
+  //
+  // 注意**不可**反过来用 runningExecutionIds.length 去覆盖 runningTaskCount：
+  // 那会让中台在预留窗口内误判有空槽 → push 派发进已被预留的槽位 → 执行器
+  // accept 返回 429 → 任务被误判永久失败，恰是 E-01 要关闭的竞态。
+  const reservedSlots = metrics?.current?.reservedSlots ?? executor.reservedSlots ?? null;
+  // 防御：预留是「已占槽位」的子集，上报异常（> 已占）时钳到 0 而不是显示负数。
+  const occupiedSlots = metrics?.current?.runningTaskCount ?? executor.runningTaskCount ?? 0;
+  const runningCount = reservedSlots != null && reservedSlots > 0 && reservedSlots <= occupiedSlots
+    ? occupiedSlots - reservedSlots
+    : occupiedSlots;
+  // 容量压力（进度条/饱和判定）必须用**已占槽位**：预留中的槽位调度器确实不会
+  // 再派发，用它才与派发闸门口径一致。
+  const runningPercent = maxConcurrent > 0 ? Math.min(100, Math.round((occupiedSlots / maxConcurrent) * 100)) : 0;
+  // 补充 P2（UX-AUDIT 第 4 路）：满载语义。occupiedSlots 达到并发上限即饱和——
   // 调度器不再向这台派发新任务；用户需把「目标执行器已饱和」与「根本没有可用执行器」区分开。
-  const isSaturated = maxConcurrent > 0 && runningCount >= maxConcurrent;
+  const isSaturated = maxConcurrent > 0 && occupiedSlots >= maxConcurrent;
 
   // CONSISTENCY-02: 执行器心跳上报的运行中 executionId（null = 旧版未上报）。
-  // 与 runningTaskCount 交叉核对：长期不一致提示执行器计数或回调链路异常。
+  // 与**实际在跑数**（runningCount，已扣除 E-01 预留）交叉核对：长期不一致提示
+  // 执行器计数或回调链路异常。
   const reportedIds = executor.runningExecutionIds;
   const reportedCount = reportedIds?.length;
 
@@ -603,6 +631,16 @@ export default function ExecutorDetailPage() {
                   </Text>
                 )}
               </>
+            )}
+            {/* E-01-RPT: 预留槽位的可观测性——显示数已扣除它，此处说明差在哪，
+                避免运维把「0/10 但服务端显示 1」当成新的不一致。仅在上报了
+                预留且 >0 时出现（旧版执行器不显示，行为与引入前一致）。 */}
+            {reservedSlots != null && reservedSlots > 0 && reservedSlots <= occupiedSlots && (
+              <Tooltip title={t('executorDetail.reserved.tip')}>
+                <Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 8 }}>
+                  {t('executorDetail.reserved.note', { reserved: reservedSlots, occupied: occupiedSlots })} <InfoCircleOutlined />
+                </Text>
+              </Tooltip>
             )}
             {reportedCount != null && reportedCount !== runningCount && (
               <Text type="warning" style={{ fontSize: 12, display: 'block', marginTop: 8 }}>

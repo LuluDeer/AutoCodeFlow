@@ -156,6 +156,28 @@ export class Executor {
   runningExecutionIds: string[] | null;
 
   /**
+   * E-01-RPT（生产实证：RPA5 恒显「当前运行任务 1/10」「活性上报 0 条，与运行
+   * 计数 1 不一致」，而设备上无任务在跑）：执行器上报的 pull 长轮询
+   * **「已预留但尚未认领」槽位数**。
+   *
+   * 为什么需要它：`runningTaskCount` 含 E-01 预留（防超卖机制本身，见
+   * executor-node pull.ts 顶部注释），而 `runningExecutionIds` 来自另一个账本
+   * （liveExecutions），故空闲 pull 执行器稳态上报「1 + []」。两个数字都对，
+   * 却度量了不同的东西——前者是**已占槽位**，后者是**在跑执行**。
+   *
+   * 采纳域：非负整数 0..maxConcurrentTasks（越界视同未上报，DB 值不动，与
+   * NETOPT-E P3-1 同款「下一次合法上报即自纠正」）。用于**展示与告警判据**：
+   * 实际运行数 = runningTaskCount − reservedSlots。
+   *
+   * **派发闸门绝不读本列**（selectLeastLoaded / 容量守卫仍读 runningTaskCount）
+   * ——否则会重开 E-01 要关闭的超卖竞态。
+   *
+   * 三态语义：null = 旧版执行器未上报（回落「按已占槽位显示」的旧口径，行为
+   * 与引入前逐字节一致）；0 = 已上报且无预留；>0 = 有预留。
+   */
+  @Column({ type: "int", nullable: true }) reservedSlots: number | null;
+
+  /**
    * U16: executor 心跳上报的 dead-letter 积压数（回调重试死信队列长度）。
    * node 端 ab4971f 起上报、python 端 001 起上报；admin 侧经心跳白名单采纳
    * （非负整数 0..100000，非法/缺失不改 DB 值，与 maxConcurrentTasks 同模式）。

@@ -50,7 +50,7 @@
 | 令牌轮换 | `executor.service.ts:1556` `rotateToken()` | `randomBytes(32).toString("hex")`，bcrypt cost 12 存 `tokenHash`（select:false 列），明文只在响应出现一次 |
 | token 端点幂等 | `executor.service.ts:1614` `issueToken()` | 进程内 `issuedTokenCache`（TTL `TOKEN_ISSUE_CACHE_TTL_MS`）同 startupId 复用前仍 bcrypt 复核存量哈希——管理台手动轮换不会被旧缓存复活 |
 | 校验 | `executor.service.ts:1715` `validateTokenByAddress()` | per-executor bcrypt → 失败回退共享 token（DB `executor.sharedToken` → env `EXECUTOR_SECRET`，timingSafeEqual）；正缓存 60s |
-| 心跳采纳白名单 | `heartbeat()` :676 + `isAdoptableMaxConcurrentTasks`（E9，1..10000）/ `isAdoptableDeadLetterCount`（U16，0..100000）/ `runningExecutionIds` 逐项 `^[A-Za-z0-9_-]+$` 裁剪 200（CONSISTENCY-02） | 执行器上报面不可信，先过范围校验再落列 |
+| 心跳采纳白名单 | `heartbeat()` :676 + `isAdoptableMaxConcurrentTasks`（E9，1..10000）/ `isAdoptableDeadLetterCount`（U16，0..100000）/ `runningExecutionIds` 逐项 `^[A-Za-z0-9_-]+$` 裁剪 10000（CONSISTENCY-02 / NETOPT-C P2-1） | 执行器上报面不可信，先过范围校验再落列 |
 | 指纹冲突/漂移观测 | `executor-fingerprint.util.ts` `DeviceFingerprintTracker` + `executor.service.ts` `observeDeviceFingerprint()`（register/heartbeat 两处接线，共用**同一个** tracking 实例） | ARCH-36（ADR-017 阶段 2）：**纯内存、零 IO**（热路径，心跳 30s/台）。判据两方向——同 `address` 出现第二个不同指纹 = **硬冲突**（直证，非时序推断）→ ERROR + 通知 + 10min 按 `(address,fingerprint)` 节流；同一指纹换新 `address` = **地址漂移**（换网，正常）→ 仅 info。含 `stats()` 观测口径（`reportsWithFingerprint/reports` 覆盖率、`conflictRate`）。与 ARCH-34 的 `observeAddressConflict` **并存不互替**：后者不依赖新字段、对存量执行器仍有效，且覆盖「同机同 kind 同 workDir 两实例共享指纹」这种指纹判不出的形态 |
 | 地址冲突观测 | `executor-address-conflict.util.ts` `ExecutorAddressConflictTracker` + `observeAddressConflict()` | ARCH-34 P0：判据是「**被顶替的**进程生命重新上报」（不是「同 address 不同 startupId」——后者是正常重启的形状） |
 | 30 分钟轮换节奏 | `apps/executor-node/src/middleware/auth.ts`（python 对等 `auth.py`） | 到期前 5 分钟刷新；401 后 30s 退避重签 |

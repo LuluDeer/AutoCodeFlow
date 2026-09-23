@@ -99,7 +99,7 @@ task.executorId 非空 ──► pinning：只投该执行器（离线/满载即
 - `markStaleOffline()` `@Cron("*/30 * * * * *")`：`lastHeartbeat` 早于 `EXECUTOR_HEARTBEAT_INTERVAL`(默认 30000ms) × `EXECUTOR_HEARTBEAT_TIMEOUT_MULTIPLIER`(默认 3) 的 ONLINE 行置 OFFLINE，随后逐台 emit `executor.offline` 领域事件 + `notifyExecutorOffline` 通知。
 - `detectLostExecutions()` `@Cron("0 */5 * * * *")`：核对执行器本地在跑与 DB RUNNING 的差集。
 - `cleanupOfflineExecutors()` 每小时删除 OFFLINE 超 7 天的行。
-- 心跳采纳白名单：`maxConcurrentTasks` 仅收 1..10000 整数（E9）、`deadLetterCount` 0..100000（U16）、`runningExecutionIds` 逐项 `^[A-Za-z0-9_-]+$` 且裁剪至 200（CONSISTENCY-02）、`deviceFingerprint` 仅收 64 位小写十六进制（ARCH-36；**缺省/非法一律不动 DB**——否则旧执行器每 30s 的心跳会把已存指纹历史擦成 NULL）。
+- 心跳采纳白名单：`maxConcurrentTasks` 仅收 1..10000 整数（E9）、`deadLetterCount` 0..100000（U16）、`runningExecutionIds` 逐项 `^[A-Za-z0-9_-]+$` 且裁剪至 10000（CONSISTENCY-02 / NETOPT-C P2-1）、`reservedSlots` 非负整数且必须 `≤ runningTaskCount`（E-01-RPT：预留是已占槽位的**子集**，越界即拒绝采纳、库内原值不动；**只供展示与告警换算，派发闸门不读**）、`deviceFingerprint` 仅收 64 位小写十六进制（ARCH-36；**缺省/非法一律不动 DB**——否则旧执行器每 30s 的心跳会把已存指纹历史擦成 NULL）。
 
 ## 与其他模块的关系
 

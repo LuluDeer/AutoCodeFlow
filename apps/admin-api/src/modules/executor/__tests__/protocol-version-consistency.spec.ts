@@ -167,3 +167,93 @@ describe("PROTOCOL-VER 版本一致性（ARCH-33 补的守卫）", () => {
     expect(PROTOCOL_SUPPORTED_MIN).toBeLessThan(PROTOCOL_CONTROL_PLANE_MIN);
   });
 });
+
+/**
+ * NETOPT-C P2-1：`MAX_RUNNING_EXECUTION_IDS` 三端一致性闸。
+ *
+ * ## 缺口背景（这是本次修的真缺陷，不是理论风险）
+ *
+ * 这个常量是「执行器上报面」与「中台采纳面」的公共上界，共四处手抄：
+ *
+ *   1. admin-api  `executor.service.ts`   `MAX_RUNNING_EXECUTION_IDS = 10_000`
+ *      （同时是 sanitizeRunningExecutionIds 的截顶 + E9 maxConcurrentTasks 采纳域）
+ *   2. executor-node `scheduler.ts`        `MAX_RUNNING_EXECUTION_IDS = 10_000`
+ *      （心跳体 `runningIds.slice(0, …)`）
+ *   3. executor-python `config.py`         `MAX_RUNNING_EXECUTION_IDS = 10_000`
+ *      （心跳体截顶 + max_concurrent_tasks 上界）
+ *   4. executor-node `config.ts` / `routes/config.ts` 的 env 钳制与 reload 手检
+ *
+ * python 侧曾长期是 **200**（scheduler.py 硬编码 `[:200]`），注释还写着
+ * "node parity"——node 从来是 10000。抄错没有任何机器兜底，后果是实打实的：
+ * admin 的 stale sweep 以「executionId 是否出现在上报的 runningExecutionIds 里」
+ * 为**唯一**活性判据，并发 >200 时第 201+ 个在跑执行从上报里消失、失去活性
+ * 宽限，被提前恢复成 FAILED——正是 E1 引入该字段要消灭的误判。
+ *
+ * 本闸把四端钉在一起，位置选 admin-api：它是**消费**该数组的一方（据此判
+ * 活性），且已持有同名常量，是「上界被谁消费」的事实源。
+ */
+describe("NETOPT-C P2-1: MAX_RUNNING_EXECUTION_IDS 三端一致性", () => {
+  const CAP = 10_000;
+
+  /** 从 TS 源码抠出 `MAX_RUNNING_EXECUTION_IDS = <n>`（允许 10_000 下划线形态）。 */
+  function readTsCap(relative: string): number {
+    const source = readFileSync(path.join(repoRoot, relative), "utf-8");
+    const match = /MAX_RUNNING_EXECUTION_IDS\s*=\s*([\d_]+)/.exec(source);
+    if (!match) {
+      throw new Error(`MAX_RUNNING_EXECUTION_IDS not found in ${relative}`);
+    }
+    return Number(match[1].replace(/_/g, ""));
+  }
+
+  function readPyCap(relative: string): number {
+    const source = readFileSync(path.join(repoRoot, relative), "utf-8");
+    const match = /^MAX_RUNNING_EXECUTION_IDS\s*=\s*([\d_]+)$/m.exec(source);
+    if (!match) {
+      throw new Error(`MAX_RUNNING_EXECUTION_IDS not found in ${relative}`);
+    }
+    return Number(match[1].replace(/_/g, ""));
+  }
+
+  it("admin-api 与两个执行器的封顶常量同值", () => {
+    const admin = readTsCap(
+      path.join("apps", "admin-api", "src", "modules", "executor", "executor.service.ts"),
+    );
+    const node = readTsCap(
+      path.join("apps", "executor-node", "src", "scheduler.ts"),
+    );
+    const python = readPyCap(
+      path.join("apps", "executor-python", "config.py"),
+    );
+
+    expect(admin).toBe(CAP);
+    expect(node).toBe(CAP);
+    // 这一条就是本次缺陷的回归闸：python 曾为 200。
+    expect(python).toBe(CAP);
+  });
+
+  it("python 心跳体不得再出现硬编码的 200 截断（反证有牙）", () => {
+    // 直接盯住出问题的那一行形态：`..._provider()[:200]`。若有人把 200 改回去
+    // （或换个写法重新引入更小的截断），本断言立即红。
+    const source = readFileSync(
+      path.join(repoRoot, "apps", "executor-python", "scheduler.py"),
+      "utf-8",
+    );
+    expect(source).not.toMatch(/running_execution_ids_provider\(\)\[:\d+\]/);
+    expect(source).toMatch(/MAX_RUNNING_EXECUTION_IDS/);
+  });
+
+  it("python max_concurrent_tasks 必须有 1..CAP 的上界（否则封顶可达性无保障）", () => {
+    // 若 python 允许配置 >CAP 并发，则即便心跳封顶正确，第 CAP+1 个在跑执行
+    // 依然报不进心跳——上界与封顶必须同域，这是「容量账本与心跳申报不脱节」
+    // 的完整条件（node config.ts 的 Math.min(Math.max(..., 1), 10_000) 同理）。
+    const source = readFileSync(
+      path.join(repoRoot, "apps", "executor-python", "config.py"),
+      "utf-8",
+    );
+    const validator =
+      /_validate_max_concurrent_tasks[\s\S]{0,1200}?MAX_RUNNING_EXECUTION_IDS/.exec(
+        source,
+      );
+    expect(validator).not.toBeNull();
+  });
+});

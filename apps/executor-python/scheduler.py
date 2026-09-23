@@ -17,7 +17,7 @@ from tenacity import (
     before_sleep_log,
 )
 from admin_api import build_admin_api_url, get_admin_api_base_url
-from config import settings, EXECUTOR_VERSION, PROTOCOL_VERSION
+from config import settings, EXECUTOR_VERSION, PROTOCOL_VERSION, MAX_RUNNING_EXECUTION_IDS
 import psutil
 from auth import get_current_token, adopt_executor_token_hash, request_with_self_heal
 # ARCH-33（ADR-016）：pull 控制面命令的本地执行分派。commands.py 对 scheduler
@@ -159,6 +159,23 @@ def _get_admin_api_url() -> str:
     return get_admin_api_base_url()
 
 
+# NETOPT-C P2-1 对齐：心跳体 runningExecutionIds 的封顶值 MAX_RUNNING_EXECUTION_IDS
+# 由 config.py 单点定义（executor-node scheduler.ts 同值 10000），随下方 config
+# 导入一并取得。**此前这里硬编码 200**，且旁边那句 "capped at 200 ids (node
+# parity, ...)" 是**错的**——node 侧从来不是 200，它自 NETOPT-C P2-1 起就是
+# 10000。python 抄了一个不存在的"parity"。
+#
+# 为什么这个不一致是真缺陷（不是无害的保守取值）：
+# admin 的 stale sweep（scheduler.service.ts recoverStaleExecutions）把
+# 「该 executionId 出现在执行器上报的 runningExecutionIds 里」当作**唯一**的
+# 活性证据——命中即跳过恢复（宽限到 max(6×timeout, 5min) 的绝对兜底），未命中
+# 则按 stale 判死并恢复成 FAILED。并发 >200 时第 201+ 个在跑执行从上报里
+# 消失，其活性宽限**静默失效**：一个正在健康长跑（prepare 期 git clone + venv
+# 可达 ~600s）的任务会被提前恢复成 FAILED——正是 E1 引入该字段要消灭的误判，
+# 只是触发条件从「0 个 id（旧版不上报）」变成了「>200 个 id」。
+#
+# 完整根因/取值论证（含心跳 1mb body 上限的体积核算）见 config.py 该常量处。
+#
 # E1 (CONSISTENCY round, parity with executor-node scheduler.ts STALE-01):
 # admin's recoverStaleExecutions grants liveness protection ONLY to executors
 # that report runningExecutionIds — a missing field means "legacy executor,
@@ -182,6 +199,45 @@ def register_running_execution_ids_provider(fn) -> None:
     _running_execution_ids_provider = fn
 
 
+def _capped_running_execution_ids() -> list:
+    """心跳体 runningExecutionIds 的取值：截顶到 MAX_RUNNING_EXECUTION_IDS。
+
+    与 node sendHeartbeat 逐语义对齐——**超限要 warn，不能静默截断**：被截掉
+    的 id 会失去 stale sweep 的活性宽限（见常量处根因），静默截断会让运维在
+    任务被误判 FAILED 时完全找不到线索。node 侧同样在此处 logger.warn
+    （scheduler.ts「overflow ids lose stale-sweep grace」），python 此前连
+    截断本身都没记日志。
+
+    provider 由 routers/execute.py 在导入时注册；异常/非列表一律收敛为空列表
+    ——心跳是活性上报的**唯一**通道，绝不能因为 provider 抖动而整条心跳失败
+    （那会让中台判 OFFLINE，比少报 id 严重得多）。
+    """
+    try:
+        ids = _running_execution_ids_provider()
+    except Exception as exc:  # noqa: BLE001 — 心跳路径绝不向上抛
+        logger.warning(
+            'runningExecutionIds provider raised (%s); reporting an empty list '
+            'this round to keep the heartbeat alive',
+            exc,
+        )
+        return []
+    if not isinstance(ids, list):
+        logger.warning(
+            'runningExecutionIds provider returned %s (expected a list); '
+            'reporting an empty list this round',
+            type(ids).__name__,
+        )
+        return []
+    if len(ids) > MAX_RUNNING_EXECUTION_IDS:
+        logger.warning(
+            'runningExecutionIds exceeds heartbeat cap %d (%d running) — '
+            'overflow ids lose stale-sweep grace',
+            MAX_RUNNING_EXECUTION_IDS,
+            len(ids),
+        )
+    return ids[:MAX_RUNNING_EXECUTION_IDS]
+
+
 # E2 (node scheduler.ts deadLetterCountProvider parity): dead-letter backlog
 # reported via heartbeat so long disconnections (callbacks parked on disk)
 # stay visible to ops. Default provider returns 0 — an executor that has
@@ -198,6 +254,52 @@ def register_dead_letter_count_provider(fn) -> None:
     """Install the getter returning the dead-letter file count."""
     global _dead_letter_count_provider
     _dead_letter_count_provider = fn
+
+
+# E-01-RPT（生产实证：RPA5「当前运行任务 1/10、活性上报 0 条」）：
+# pull 长轮询「已预留但尚未认领」的槽位数（node pull.ts 同款上报）。
+#
+# 背景——为什么需要这个字段：E-01 让 pull 循环在发起 25s 长轮询**之前**先原子
+# 预留一个容量槽位（try_reserve_running_slot），预留计入同一个 running 账本，
+# 因此 `runningTaskCount` 在长轮询窗口内诚实包含这个预留（这正是关闭 admin
+# 超卖竞态窗口的机制本身）。
+#
+# 但 `runningExecutionIds` 来自**另一个账本**（routers/execute.py 的
+# _live_executions 字典，只有真正领取到的执行才有 id）。空闲执行器几乎始终
+# 处在长轮询窗口内，于是稳态下就是「runningTaskCount=1 + runningExecutionIds=[]」
+# ——两个数字都对，却度量了不同的东西：前者是**已占槽位**，后者是**在跑执行**。
+#
+# 后果（生产现象）：中台详情页把两者交叉核对，遂恒亮「活性上报 0 条，与运行
+# 计数 1 不一致」，并显示「当前运行任务 1/10」——而该设备上确实没有任何任务
+# 在跑。这不是计数泄漏，也不是卡住的任务，是 E-01 预留窗口的**上报口径缺失**。
+#
+# 修法：预留方（pull 循环）把「预留中」的槽位数单独上报，中台据此把
+# 「已占槽位」换算成「实际运行 = runningTaskCount − reservedSlots」，派发闸门
+# 仍读 runningTaskCount（E-01 的防超卖语义逐字节不变）。
+_pull_reserved_slots = 0
+
+
+def get_pull_reserved_slots() -> int:
+    """E-01-RPT: 当前「已预留但尚未认领」的槽位数（恒为 0 或 1）。
+
+    不变量：pull_task 是单协程串行循环，且所有增减都紧贴 `reserved` 标记的
+    状态跃迁（与 running 账本同点增减），杜绝双计数/漏减。
+    """
+    return _pull_reserved_slots
+
+
+def _track_pull_reservation() -> None:
+    """E-01-RPT: 与 `reserved = True` 同点调用（预留成立）。"""
+    global _pull_reserved_slots
+    _pull_reserved_slots += 1
+
+
+def _untrack_pull_reservation() -> None:
+    """E-01-RPT: 与 `reserved = False` 同点调用（所有权移交或归还）。
+    max(0, …) 钳制与 release_running_slot/decrement_running 的钳制口径一致
+    ——纯防御，真值恒 0/1。"""
+    global _pull_reserved_slots
+    _pull_reserved_slots = max(0, _pull_reserved_slots - 1)
 
 
 # FR-13/FR-14（python_task_multiversion, CONTRACT.md §2.3）：解释器缓存池清单
@@ -266,9 +368,21 @@ def _heartbeat_payload(cpu: float, mem: float) -> dict:
         # 预留即占位（try_reserve_running_slot 与 push 派发同一账本），
         # admin 容量核算在长轮询窗口内看到的就是满载，不会再把 push 派
         # 发塞进最后一个空槽（这正是关闭竞态窗口的机制本身）。
-        # E1: liveness report — capped at 200 ids (node parity,
-        # scheduler.ts sendHeartbeat). Always present, never omitted.
-        'runningExecutionIds': _running_execution_ids_provider()[:200],
+        # E1: liveness report — capped at MAX_RUNNING_EXECUTION_IDS (10000),
+        # matching executor-node scheduler.ts sendHeartbeat. Always present,
+        # never omitted. 见上方常量处的完整根因说明（旧值 200 会让并发 >200
+        # 的在跑执行从活性判据里消失、被 stale sweep 提前恢复成 FAILED）。
+        'runningExecutionIds': _capped_running_execution_ids(),
+        # E-01-RPT（生产实证：RPA5「当前运行任务 1/10、活性上报 0 条」）：
+        # runningTaskCount 含 pull 长轮询「预留中」的槽位（E-01 防超卖机制），
+        # 而 runningExecutionIds 只含真正领取到的执行——空闲执行器稳态下恒为
+        # 「1 + []」，中台详情页因此恒亮「不一致」告警。此处把预留数单独上报，
+        # 中台即可算出「实际运行 = runningTaskCount − reservedSlots」。
+        #
+        # 语义红线：**始终发送该字段**（含 0），与 runningExecutionIds 同款
+        # 三态纪律——`0` = 已上报且无预留，字段缺席 = 旧版执行器未上报（中台
+        # 回落到「按已占槽位显示」的旧口径，行为与引入前逐字节一致）。
+        'reservedSlots': get_pull_reserved_slots(),
         # E2: dead-letter backlog (node scheduler.ts sendHeartbeat sends
         # deadLetterCountProvider()). Always present, never omitted; the
         # provider serves a cached count so this never rescans the disk.
@@ -450,6 +564,9 @@ async def pull_task() -> None:
             # 服务端阻塞窗口内不占 CPU）。这个代价换「满载时仍可运维」。
             if try_reserve_running_slot():
                 reserved = True
+                # E-01-RPT: 预留成立——与账本 +1 同点上报，使中台能区分
+                # 「已占槽位」与「在跑执行」。
+                _track_pull_reservation()
             token = await get_current_token()
             client = get_http_client()  # O-24: shared per-loop pool
             response = await request_with_self_heal(
@@ -507,6 +624,11 @@ async def pull_task() -> None:
                 accept_execution(req, traceparent if isinstance(traceparent, str) else None,
                                  slot_pre_reserved=True)
                 reserved = False  # 所有权移交：完成路径归还该槽位
+                # E-01-RPT: 预留已转为正式占用（该 executionId 随之出现在
+                # runningExecutionIds 里）——此刻起它不再是「预留」，故撤销预留
+                # 上报，避免中台把它从「实际运行」里又减一次（重复扣减会让显示
+                # 比真值少 1）。
+                _untrack_pull_reservation()
             except ExecutionRejected as e:
                 if e.status_code == 429:
                     # 防御路径（正常流程不可达）：释放预留（finally）、warn、
@@ -527,6 +649,9 @@ async def pull_task() -> None:
             if reserved:
                 release_running_slot()
                 reserved = False
+                # E-01-RPT: 与账本 -1 同点撤销预留上报（含 accept 429/400 路径
+                # ——那些路径 reserved 仍为 True，由本 finally 统一归还）。
+                _untrack_pull_reservation()
 
 
 async def heartbeat_task() -> None:

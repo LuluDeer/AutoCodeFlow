@@ -20,11 +20,27 @@ export interface Executor {
   description?: string | null;
   maxConcurrentTasks?: number | null;
   /**
-   * CONSISTENCY-02: executor-node 心跳上报的运行中 executionId 列表（≤200）。
+   * CONSISTENCY-02: 执行器心跳上报的运行中 executionId 列表（≤10000，
+   * MAX_RUNNING_EXECUTION_IDS，三端同值；旧注释误记 ≤200——python 侧曾按 200
+   * 截断，已在 NETOPT-C P2-1 对齐为 10000）。
    * null = 旧版执行器未上报该字段（区别于 []：已上报且当前空闲）。
    * stale 扫描据此跳过"回调只是迟到"的正常执行，详情页据此做活性交叉核对。
    */
   runningExecutionIds?: string[] | null;
+  /**
+   * E-01-RPT（生产实证：RPA5 恒显「当前运行任务 1/10」「活性上报 0 条，与运行
+   * 计数 1 不一致」，而设备上无任务在跑）：pull 长轮询「已预留但尚未认领」的
+   * 槽位数。null = 旧版执行器未上报该字段（区别于 0：已上报且无预留）。
+   *
+   * 为什么需要它：runningTaskCount 含 E-01 预留（防超卖机制本身），而
+   * runningExecutionIds 来自另一个账本（只有真正领取到的执行才有 id），故空闲
+   * pull 执行器稳态上报「1 + []」——两个数字都对，却度量了不同的东西。
+   * 详情页据此把「已占槽位」换算成「实际运行 = runningTaskCount − reservedSlots」。
+   *
+   * **绝不参与派发判定**（那是服务端 selectLeastLoaded 的职责，且必须读
+   * runningTaskCount 才能保住 E-01 的防超卖语义）。
+   */
+  reservedSlots?: number | null;
   /**
    * U16: executor-node/python 心跳上报的回调死信（dead-letter）积压数。
    * null = 旧版执行器未上报该字段（区别于 0：已上报且无积压）。
@@ -103,6 +119,12 @@ export interface ExecutorMetrics {
   };
   current: {
     runningTaskCount: number;
+    /**
+     * E-01-RPT: pull 长轮询「已预留但尚未认领」的槽位数。
+     * null = 该执行器未上报该字段（旧版执行器）→ 详情页回落旧口径
+     * （直接显示 runningTaskCount，不做换算、不比对活性条数）。
+     */
+    reservedSlots?: number | null;
     cpuUsage?: number;
     memUsage?: number;
   };
