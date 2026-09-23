@@ -27,6 +27,7 @@ import { useAuthStore, isAdminUser } from '../store/auth';
 import PageHeader from '../components/PageHeader';
 import PageSkeleton from '../components/PageSkeleton';
 import StateError from '../components/StateError';
+import { useExecutorNames } from '../hooks/useExecutorNames';
 
 /**
  * W3 RBAC（对齐 settings 页先例）：应用详情页内的写操作——同步任务、保存应用设置、
@@ -454,6 +455,8 @@ function VersionHistoryTab({ app, onAppReload }: { app: Application; onAppReload
   const [records, setRecords] = useState<VersionRecord[]>([]);
   const [loading, setLoading] = useState(false);
   const [rollingBack, setRollingBack] = useState<string | null>(null);
+  // 用户报障（中台看不出是哪个执行器）：执行器可读名解析（口径见该 hook）。
+  const { nameOf } = useExecutorNames();
   // UX-05：同 TasksTab——失败只弹 message，records 保持 []，表格 emptyText 显示
   // 「暂无版本历史」，把读取失败谎报成"没有数据"。
   const [loadError, setLoadError] = useState<unknown>(null);
@@ -534,7 +537,22 @@ function VersionHistoryTab({ app, onAppReload }: { app: Application; onAppReload
               </Tag>
             ),
           },
-          { title: t('appDetail.col.executor'), dataIndex: 'executorAddress', ellipsis: true },
+          {
+            title: t('appDetail.col.executor'),
+            dataIndex: 'executorAddress',
+            ellipsis: true,
+            // 用户报障（中台看不出是哪个执行器）：与 ReleasesTab 同口径——解析
+            // 可读名，解析不到如实回落地址。
+            render: (v: string | null) => {
+              const name = nameOf({ executorAddress: v });
+              if (!name) return v || '-';
+              return (
+                <Tooltip title={v ?? undefined}>
+                  <span>{name}</span>
+                </Tooltip>
+              );
+            },
+          },
           {
             title: t('appDetail.col.deployedAt'), dataIndex: 'deployedAt', width: 170,
             render: (_: string | null, r: VersionRecord) => {
@@ -606,6 +624,8 @@ function ReleasesTab({ app }: { app: Application }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<unknown>(null);
   const { t } = useTranslation();
+  // 用户报障（中台看不出是哪个执行器）：执行器可读名解析（口径见该 hook）。
+  const { nameOf } = useExecutorNames();
 
   const fetchReleases = useCallback(async (p: number) => {
     setLoading(true);
@@ -662,7 +682,23 @@ function ReleasesTab({ app }: { app: Application }) {
       title: t('appDetail.releases.col.trigger'), dataIndex: 'triggerType', width: 100,
       render: (v: string | null) => (v ? <Tag>{RELEASE_TRIGGER_LABELS(t)[v] || v}</Tag> : '-'),
     },
-    { title: t('appDetail.col.executor'), dataIndex: 'executorAddress', ellipsis: true, render: (v: string | null) => v || '-' },
+    {
+      title: t('appDetail.col.executor'),
+      dataIndex: 'executorAddress',
+      ellipsis: true,
+      // 用户报障（中台看不出是哪个执行器）：此前只渲染 IP:端口。改为解析执行器
+      // 注册时上报的可读名，解析不到则如实回落地址（不编造）。
+      // 注：AppReleaseRow 没有 executorId，只能按 address 匹配。
+      render: (v: string | null) => {
+        const name = nameOf({ executorAddress: v });
+        if (!name) return v || '-';
+        return (
+          <Tooltip title={v ?? undefined}>
+            <span>{name}</span>
+          </Tooltip>
+        );
+      },
+    },
     {
       title: t('appDetail.col.deployedAt'), dataIndex: 'deployedAt', width: 170,
       render: (v: string | null, r: AppReleaseRow) => {
