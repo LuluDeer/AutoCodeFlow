@@ -84,6 +84,19 @@ const GIT_URL_RE = /^(https?:\/\/[\w.@:/~_-]+\.git|git@[\w.-]+:[\w./_-]+\.git)$/
 const MAX_ZIP_UPLOAD_BYTES = 200 * 1024 * 1024; // 200 MiB（对齐 multer limits）
 const MAX_ZIP_UPLOAD_LABEL = '200MB';
 
+/**
+ * 应用列表统计部署数时每页取多少条。
+ *
+ * 对齐后端上限：`app-deployment.controller.ts` 的 ListDeploymentsQueryDto 声明
+ * `@Max(100)`，超过会被 400 拒绝——不能随手写 500。
+ *
+ * 为什么不是默认的 20：统计口径是「这个应用有几个部署在跑/失败」，用 20 会让
+ * 部署行多的应用分母偏小、且运行中实例可能落在窗口外而漏计（详见 fetchApps 注释）。
+ * 取到上限 100 后，只有部署数 >100 的应用才可能漏计，而这类应用的**分母**仍由
+ * 响应的 total 保证正确（不会谎报"均未运行"以外的错误总数）。
+ */
+const DEPLOYMENT_STATS_PAGE_SIZE = 100;
+
 const runtimeOptions = [
   { label: 'Node.js', value: 'node' },
   { label: 'Python', value: 'python' },
@@ -142,10 +155,18 @@ export default function ApplicationListPage() {
 
       // Fetch all deployments in parallel per app to compute stats.
       // O-6：用并发池（batchSize=6）替换全量 allSettled，避免应用多时瞬间打爆并发/限流。
+      //
+      // 用户报障（中台显示不可信）：此前用 `deploymentsApi.list(app.id)` 的**默认
+      // pageSize=20**，且统计只数当前这一页（`deps.length` / `deps.filter(...)`），
+      // 于是部署行超过 20 条的应用分母恒为 20；更糟的是 `runningCount` 也只数最新
+      // 20 行——**一个正在运行但排在 20 行之外的实例会让整列显示"25 个部署均未运行"**，
+      // 这是应用列表页（看应用的第一屏）对"我的应用在跑吗"给出错误答案。
+      // 修法：① 显式取后端上限 100（controller 的 @Max(100)）；② 分母用响应里
+      // 本就有的 `total`（真实总数），而不是当前页长度。
       const deploymentResults = await mapWithSettledConcurrency(
         data,
         6,
-        (app) => deploymentsApi.list(app.id),
+        (app) => deploymentsApi.list(app.id, 1, DEPLOYMENT_STATS_PAGE_SIZE),
       );
 
       const enriched: AppWithStats[] = data.map((app, i) => {
@@ -162,7 +183,18 @@ export default function ApplicationListPage() {
         const lastDeployedAt =
           sorted.length > 0 ? (sorted[0].deployedAt ?? sorted[0].createdAt) : null;
 
-        return { ...app, runningCount, failedCount, totalDeployments: deps.length, lastDeployedAt };
+        return {
+          ...app,
+          runningCount,
+          failedCount,
+          // 真实总数（响应 total），不是本页条数——否则 >100 个部署时又会被截断
+          // 成 100。取不到 total（异常/旧后端）时如实回落本页条数。
+          totalDeployments:
+            result.status === 'fulfilled' && typeof result.value.total === 'number'
+              ? result.value.total
+              : deps.length,
+          lastDeployedAt,
+        };
       });
 
       setApps(enriched);

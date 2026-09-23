@@ -178,16 +178,51 @@ describe('AppDeploymentPage 删除失败的部署记录（用户报障）', () =
   });
 });
 
-describe('「重新部署」提示文案与实现一致（不再谎报复用记录）', () => {
-  it('源码提示如实说明会新建记录，并指向可删除', async () => {
+describe('「重新部署」提示文案与实现一致（两版错误文案都不得回归）', () => {
+  /**
+   * 本键出过**两版**错误文案，方向相反：
+   *   ① "会复用本设备的这条记录" —— 当时 deploy() 其实恒定 INSERT 新行；
+   *   ② "会在本设备新建一条部署记录" —— fe718b3d 引入同设备复用后，这句又
+   *      反过来落后于实现（最常见路径其实不新增行）。
+   * 故断言不能只钉某一版字面量：必须同时排除两版，并要求文案覆盖**两个分支**
+   * （复用 / 新建）——只描述其一就必然对另一条路径说谎。
+   */
+  it('文案同时说清「复用」与「新建」两条分支，且两版错误文案都不在', async () => {
     const fs = await import('node:fs');
     const path = await import('node:path');
-    const zh = fs.readFileSync(
-      path.resolve(process.cwd(), 'src/locales/zh.ts'),
+    const read = (p: string) => fs.readFileSync(path.resolve(process.cwd(), p), 'utf8');
+    const zh = read('src/locales/zh.ts');
+    const en = read('src/locales/en.ts');
+
+    // ① 两版错误文案都不得回归
+    expect(zh).not.toContain('重新部署会复用本设备的这条记录');
+    expect(zh).not.toContain('重新部署会在本设备新建一条部署记录');
+
+    // ② 必须同时说清两条分支（复用：不新增行；新建：换设备/换模式）
+    const zhHint = zh.match(/'appDeploy\.redeploy\.reuseHint':\s*\n?\s*'([^']+)'/)?.[1] ?? '';
+    expect(zhHint).toMatch(/复用/);
+    expect(zhHint).toMatch(/不新增行/);
+    expect(zhHint).toMatch(/换设备|更换模式/);
+
+    const enHint = en.match(/'appDeploy\.redeploy\.reuseHint':\s*\n?\s*'([^']+)'/)?.[1] ?? '';
+    expect(enHint).toMatch(/reuse/i);
+    expect(enHint).toMatch(/no new row/i);
+    expect(enHint).toMatch(/device or mode/i);
+  });
+
+  it('后端确实同时存在「复用」与「新建」两条分支（文案不是凭空描述）', async () => {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    // 文案的正确性最终由实现决定：这里直接核对后端 service 里两条分支都在，
+    // 避免"文案改了、实现后来又被删掉"造成新的不一致。
+    const svc = fs.readFileSync(
+      path.resolve(process.cwd(), '../admin-api/src/modules/application/app-deployment.service.ts'),
       'utf8',
     );
-    // 旧文案与后端 deploy() 恒定 INSERT 的行为相反（用户被误导），不得回归。
-    expect(zh).not.toContain('重新部署会复用本设备的这条记录');
-    expect(zh).toContain('重新部署会在本设备新建一条部署记录');
+    expect(svc).toMatch(/const reusable = await this\.repo\.findOne/);
+    expect(svc).toMatch(/if \(reusable\) \{/);
+    expect(svc).toMatch(/const deployment = this\.repo\.create\(/);
+    // 复用条件必须含 runMode（文案说"同模式才复用"）
+    expect(svc).toMatch(/runMode: dto\.runMode \?\? RunMode\.DAEMON/);
   });
 });

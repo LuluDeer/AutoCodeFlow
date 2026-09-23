@@ -13,6 +13,8 @@ import { deploymentsApi, AppDeployment, applicationsApi } from '../api/applicati
 import { formatRelativeTime } from '../utils/timeFormat';
 import DeployModeFields from '../components/DeployModeFields';
 import { executorsApi, Executor } from '../api/executors';
+import { useExecutorNames } from '../hooks/useExecutorNames';
+import { isStopNotDelivered } from '../utils/backend-contracts';
 import { getErrMsg, isFormValidationError } from '../utils/error';
 // D-P1-2（设计审计 2026-09-22）：失败详情复制改走统一剪贴板封装（非安全上下文
 // 降级 execCommand，并按返回值如实提示——此前 navigator.clipboard 静默 catch，
@@ -161,6 +163,12 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
   const [rejectForm] = Form.useForm();
   const [rejecting, setRejecting] = useState(false);
   const [actingId, setActingId] = useState<string | null>(null);
+
+  // 用户报障（中台「执行器」列只有 IP:端口）：执行器可读名解析。
+  // **复用 fetchAll 已拉的 executors state**（不传参即自拉——这里必须传，
+  // 否则同一页面会重复请求 /executors，破坏 F-34 的「首屏拉一次、轮询拍不重拉」
+  // 契约，app-deployment-polling.test.tsx 会立即变红）。
+  const { nameOf } = useExecutorNames(executors);
 
   // W7 竞态守卫：fetchAll 无取消机制，翻页/轮询并发时旧响应可覆盖新页数据。
   // 每次调用自增 fetchSeq，仅最后一次请求允许 setState；cleanup（卸载或翻页）
@@ -318,8 +326,17 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
 
   const handleStop = async (id: string) => {
     try {
-      await deploymentsApi.stop(id);
-      message.success(t('appDeploy.msg.stopped'));
+      const res = await deploymentsApi.stop(id);
+      // 用户报障（中台显示不可信）：stop() 是 best-effort——执行器离线/不可达时
+      // 后端仍把行转 STOPPED（停机意图已表达），但**信号没送到**，设备上的进程
+      // 可能还在跑。此前前端恒报"已停止"，用户以为停干净了。后端现在把送达失败
+      // 如实写进 statusMessage（前缀见 backend-contracts），这里据此改用 warning
+      // 并明确让用户去设备上确认。
+      if (isStopNotDelivered(res?.statusMessage)) {
+        message.warning(t('appDeploy.msg.stopNotDelivered'), 8);
+      } else {
+        message.success(t('appDeploy.msg.stopped'));
+      }
       fetchAll();
     } catch (err: unknown) {
       message.error(getErrMsg(err, t('appDeploy.msg.stopFail')));
@@ -395,16 +412,30 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
     {
       title: t('appDeploy.col.executor'),
       key: 'executor',
-      render: (_: unknown, r: AppDeployment) => (
-        // UI 打磨：弹性列内 minWidth:0 + display:block，长地址/状态信息单行省略
-        <div style={{ minWidth: 0 }}>
-          <Text strong style={{ fontSize: 13, display: 'block' }} ellipsis={{ tooltip: r.executorAddress || r.executorId }}>
-            {r.executorAddress || r.executorId}
-          </Text>
-          {r.deployedVersion && <Tag color="blue" style={{ fontSize: 11 }}>v{r.deployedVersion}</Tag>}
-          {r.statusMessage && <DeployStatusMessage text={r.statusMessage} />}
-        </div>
-      ),
+      render: (_: unknown, r: AppDeployment) => {
+        // 用户报障（中台显示看不出是哪个执行器）：本列此前只渲染
+        // `executorAddress`（形如 192.168.4.54:8003），用户无法把它对应到
+        // 「我给那台机器起的名字」。解析口径见 useExecutorNames（优先
+        // executorId，回落 address，匹配不到则如实只显示地址）。
+        const displayName = nameOf(r);
+        return (
+          // UI 打磨：弹性列内 minWidth:0 + display:block，长地址/状态信息单行省略
+          <div style={{ minWidth: 0 }}>
+            <Text strong style={{ fontSize: 13, display: 'block' }} ellipsis={{ tooltip: r.executorAddress || r.executorId }}>
+              {displayName ?? (r.executorAddress || r.executorId)}
+            </Text>
+            {/* 名字与地址都给：名字用于识别，地址用于排查（且是执行器的唯一键）。
+                只显示名字会让人无法在别处（日志/防火墙）对上这台机器。 */}
+            {displayName && (r.executorAddress || r.executorId) && (
+              <Text type="secondary" style={{ fontSize: 11, display: 'block' }} ellipsis>
+                {r.executorAddress || r.executorId}
+              </Text>
+            )}
+            {r.deployedVersion && <Tag color="blue" style={{ fontSize: 11 }}>v{r.deployedVersion}</Tag>}
+            {r.statusMessage && <DeployStatusMessage text={r.statusMessage} />}
+          </div>
+        );
+      },
     },
     {
       title: t('appDeploy.col.status'),

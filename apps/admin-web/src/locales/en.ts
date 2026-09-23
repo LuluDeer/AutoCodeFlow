@@ -1583,6 +1583,7 @@ export default {
   'appDeploy.msg.cancelSuccess': 'Deploy request cancelled',
   'appDeploy.msg.cancelFail': 'Failed to cancel',
   'appDeploy.msg.stopped': 'Stopped',
+  'appDeploy.msg.stopNotDelivered': 'Marked as stopped, but the executor could not be reached — the process may still be running on that device. Please verify on the executor.',
   'appDeploy.msg.stopFail': 'Operation failed',
   'appDeploy.msg.upgradeStarted': 'Upgrade started; will finish automatically',
   'appDeploy.msg.upgradeFail': 'Upgrade failed',
@@ -1649,10 +1650,14 @@ export default {
   'appDeploy.mode.hintScheduled':
     'Code is delivered but no process is started — create a task under Task Scheduling to run it.',
   // User-reported fix: the old copy claimed the record is reused, but the backend
-  // always INSERTs a new row — retries piled up failed rows with no way to remove
-  // them. Now it states the truth and points at the new delete action.
+  // User-reported: the hint contradicted the implementation. It first claimed the
+  // record would be reused (when deploy() actually always INSERTed), then claimed a
+  // new record would be created (after fe718b3d added same-device reuse). Now it
+  // mirrors the real branches in app-deployment.service.ts: same app + same executor
+  // + failed/stopped row + same runMode → reuse in place; different device or
+  // different runMode → new row.
   'appDeploy.redeploy.reuseHint':
-    'Redeploying creates a new deployment record on this device (the original is kept and can be deleted from its row).',
+    'If this device already has a failed/stopped record with the same mode, redeploying reuses it in place (no new row); switching device or mode creates a new record.',
   'appDeploy.op.deleteConfirm': 'Delete this deployment record?',
   'appDeploy.op.deleteHint':
     'Removes only this historical record on the platform; a process still running on the executor is unaffected.',
