@@ -120,6 +120,19 @@ const IN_FLIGHT_UNIQUE_INDEX = "uq_app_deployments_application_in_flight";
 export const RELEASES_DEFAULT_PAGE_SIZE = 50;
 export const RELEASES_MAX_PAGE_SIZE = 200;
 
+/**
+ * stop() 未能把停机信号送达执行器时，写进 statusMessage 的前缀。
+ *
+ * **跨端契约**：admin-web 按这个前缀判断该用 warning 还是 success 提示
+ * （见 AppDeploymentPage 的 handleStop）。改这里必须同步改前端，否则
+ * 「已标记停止但未联系上执行器」会退回被当成成功——那正是本次要修的缺陷。
+ *
+ * 为什么用前缀而不是新增一个响应字段：stop() 的返回体是部署实体（前端各处
+ * 复用同一类型），加字段要动 DTO/掩码/类型三处；而 statusMessage 本就是
+ * 「这条部署当前状况」的既有通道，且会随列表轮询一起回传给用户。
+ */
+export const STOP_NOT_DELIVERED_PREFIX = "[Stop not delivered] ";
+
 /** DEP-01：统一列表的排序键（毫秒时间戳）：有部署取该版本最近一次部署完成时刻
  *  （deployedAt，缺则行 createdAt），无部署取版本行 createdAt。纯函数便于测试。 */
 export function releaseSortTimestampMs(input: {
@@ -1255,6 +1268,16 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.warn(`Stop signal failed (executor may be offline): ${msg}`);
+      // 用户报障（中台显示不可信）：此前失败只写日志，行**照样**转 STOPPED 且
+      // 接口返回 {status:'stopped'}——执行器离线时用户看到"已停止"、行变灰，
+      // 但设备上的进程还在跑，而该行已不在 running（没有停止按钮），用户失去了
+      // 唯一的真相来源。这正是本次报障的主线「界面说的和实际不一致」。
+      //
+      // 保留原 best-effort 语义（行仍转 STOPPED——停机意图已表达，且执行器可能
+      // 只是慢/暂时不可达，卡在 running 更糟），但把**送达失败**如实写进
+      // statusMessage，让前端能区分「真的停了」与「信号没送到」。
+      // 前缀是跨端契约：前端按它决定用 warning 而非 success 提示。
+      deployment.statusMessage = `${STOP_NOT_DELIVERED_PREFIX}${msg}`;
     }
 
     deployment.status = DeploymentStatus.STOPPED;
