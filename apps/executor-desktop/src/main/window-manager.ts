@@ -149,9 +149,12 @@ export class WindowManager {
 
   openStatus(): void {
     const { width: sw, height: sh } = screen.getPrimaryDisplay().workAreaSize;
-    // 固定窗口大小：约屏幕的 60% 宽 × 75% 高，保证内容空间充足且不会太占屏
+    // 固定窗口大小：约屏幕的 60% 宽 × 80% 高，保证内容空间充足且不会太占屏。
+    // 高度上限 720 → 820：配置页的「Python 运行环境」一节（诊断块 + 提示条 +
+    // 5 个字段）在 720px 下几乎整页都要滚动，标题常被裁切；1080p 工作区下
+    // 80% ≈ 820px 可容纳。
     const winW = Math.round(Math.min(sw * 0.6, 960));
-    const winH = Math.round(Math.min(sh * 0.75, 720));
+    const winH = Math.round(Math.min(sh * 0.8, 820));
     this.statusWindow = new BrowserWindow({
       width: winW,
       height: winH,

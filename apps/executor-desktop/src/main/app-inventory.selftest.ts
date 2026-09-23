@@ -112,10 +112,25 @@ function main(): void {
     assert.strictEqual(pre.version, '1.0.0-beta.1', '版本号内的 "-" 不应被当成 UUID 分隔符');
     assert.strictEqual(pre.deploymentId, DEP_A1);
 
-    // 非 UUID 尾（历史/异常目录名）：不伪造数据，version 置 null 如实呈现。
+    // 老格式短 hash（deploymentId 只有 8 位 hex，非完整 UUID）：宽松回退必须
+    // 还原版本号——原实现整体回落为 deploymentId、version=null，UI 显示
+    // 「版本未知 1.0.1-da」与「v1.0.1 dae29737」并排的矛盾形态（用户截图报障）。
+    const shortHash = splitReleaseKey('1.0.1-dae29737');
+    assert.strictEqual(shortHash.version, '1.0.1', '短 hash 老格式必须解析出版本号');
+    assert.strictEqual(shortHash.deploymentId, 'dae29737');
+    const shortHashPre = splitReleaseKey('1.0.0-beta.1-dae29737');
+    assert.strictEqual(shortHashPre.version, '1.0.0-beta.1', '老格式带预发布标签同样要切对');
+    assert.strictEqual(shortHashPre.deploymentId, 'dae29737');
+
+    // 非 releaseKey（异常目录名）：不伪造数据，version 置 null 如实呈现。
     const weird = splitReleaseKey('not-a-release-key');
     assert.strictEqual(weird.version, null);
     assert.strictEqual(weird.deploymentId, 'not-a-release-key');
+
+    // deployedAt：release 目录 mtime 必须透出（同版本多次部署靠它区分行）。
+    assert.strictEqual(typeof a2.deployedAt, 'number', 'release 条目必须带 deployedAt');
+    assert.ok((a2.deployedAt as number) > 0);
+    assert.strictEqual(bEntries[0].deployedAt, null, '无 release 占位行 deployedAt 为 null');
 
     // ── 边界：无 workDir / 无 apps 目录 → 空列表（不是异常） ───────────
     assert.deepStrictEqual(listDeployedApps(undefined), []);
