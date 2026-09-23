@@ -9,6 +9,7 @@ declare const window: Window & {
       version: string | null;
       releaseKey: string;
       isCurrent: boolean;
+      deployedAt: number | null;
       hasLog: boolean;
       logPath: string;
       deployDir: string;
@@ -27,10 +28,20 @@ type AppEntry = {
   releaseKey: string;
   /** current 软链指向的即时版本。 */
   isCurrent: boolean;
+  /** release 目录 mtime（部署时间）；读取失败为 null。 */
+  deployedAt: number | null;
   hasLog: boolean;
   logPath: string;
   deployDir: string;
 };
+
+/** 部署时间行内显示：MM-dd HH:mm（同年省年份，行内空间紧张）。 */
+function formatDeployTime(ms: number | null): string {
+  if (!ms) return '';
+  const d = new Date(ms);
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
 
 function classifyLog(line: string): string {
   const l = line.toLowerCase();
@@ -242,9 +253,14 @@ export default function AppsPage() {
             {/* Deployment rows */}
             {entries.map(entry => (
               <div key={entry.releaseKey || entry.deploymentId} className="app-deployment-row">
-                <span className="app-deployment-id">
-                  {/* 原先只显示裸 UUID（用户看不出是哪个版本、哪个是当前版本）。
-                      现在显示版本号为主、deploymentId 缩写为辅。 */}
+                {/* 完整 releaseKey + 部署时间放 tooltip：行内只显示缩写，
+                    同一版本号多次部署（releaseKey 不同）靠部署时间区分。 */}
+                <span
+                  className="app-deployment-id"
+                  title={entry.releaseKey
+                    ? `部署目录：${entry.releaseKey}\n部署时间：${entry.deployedAt ? new Date(entry.deployedAt).toLocaleString('zh-CN', { hour12: false }) : '未知'}`
+                    : '尚无成功部署（目录下没有 release）'}
+                >
                   {entry.version ? (
                     <span className="app-deployment-version">v{entry.version}</span>
                   ) : (
@@ -255,9 +271,14 @@ export default function AppsPage() {
                       当前版本
                     </span>
                   )}
-                  <span className="app-deployment-uuid" title={entry.deploymentId}>
-                    {entry.deploymentId.slice(0, 8)}
-                  </span>
+                  {entry.releaseKey && (
+                    <span className="app-deployment-uuid">
+                      {entry.deploymentId.slice(0, 8)}
+                    </span>
+                  )}
+                  {entry.deployedAt ? (
+                    <span className="app-deployment-time">{formatDeployTime(entry.deployedAt)}</span>
+                  ) : null}
                 </span>
                 <div className="app-deployment-actions">
                   {entry.hasLog ? (

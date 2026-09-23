@@ -51,11 +51,81 @@ function CopyValue({ value, mono = true }: { value: string; mono?: boolean }) {
   );
 }
 
-function classifyLog(line: string): string {
-  const l = line.toLowerCase();
-  if (l.includes('error') || l.includes('failed') || l.includes('err ')) return 'error';
-  if (l.includes('warn')) return 'warn';
-  return '';
+// ── 日志行规范化 ──────────────────────────────────────
+// 日志区同时混有两种来源的行：
+//   a) getTodayLogs() 读回的落盘文件行 —— electron-log 前置了本地时间戳与级别，
+//      而 executor-node 的 winston 文本又内嵌一份 UTC ISO 时间戳与级别，
+//      于是一行出现两个时间戳且相差 8 小时（用户报障：看着像两条日志）；
+//   b) onLogLine 实时行 —— 只有 winston 的一重 UTC 时间戳。
+// 此外 winston 行的 [traceId] 是 36 字符完整 UUID，心跳每 30s 一条，
+// 整屏日志被时间戳与 traceId 淹没，有效信息反而看不清。
+// 这里在写入 state 前统一规范化（纯展示层，不改落盘格式）：
+//   [14:38:30.519] [INFO] [23fb6898] Sending heartbeat
+// 时间一律显示本地（文件行取外层本地时间；实时行把内嵌 UTC 转本地），
+// 级别统一大写并用于精确着色（不再靠 includes('err ') 猜）。
+type LogLevel = 'error' | 'warn' | '';
+type LogLine = { level: LogLevel; text: string };
+
+// electron-log 文件行：[2026-09-23 14:38:30.519] [info] [executor|executor:err] <rest>
+// （桌面端自身日志没有 [executor] 段，如 "Status window opened"）
+// 捕获组：1=日期 2=时间 3=级别 4=executor/executor:err 5=rest（内层为非捕获组，
+// 避免索引数错——曾把 rest 取成第 5 组 ":err" 内捕获，得到 undefined 炸掉渲染）。
+const OUTER_LOG_RE =
+  /^\[(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}\.\d{3})\] \[(info|warn|error|debug)\] (?:\[(executor(?::err)?)\] )?(.*)$/;
+// winston 文本行：2026-09-23T06:38:30.519Z [INFO] <rest>（UTC，Z 结尾）
+const INNER_LOG_RE =
+  /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2}\.\d{3})Z \[(INFO|WARN|ERROR|DEBUG)\] (.*)$/;
+// winston traceId 前缀：[23fb6898-e228-4ca2-8ed4-956758b5d2f0] <rest>
+const TRACE_ID_RE = /^\[([0-9a-f]{8})(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\] (.*)$/i;
+
+function utcToLocalClock(datePart: string, timePart: string): string {
+  const d = new Date(`${datePart}T${timePart}Z`);
+  if (Number.isNaN(d.getTime())) return timePart;
+  const p = (n: number, w = 2) => String(n).padStart(w, '0');
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${p(d.getMilliseconds(), 3)}`;
+}
+
+function normalizeLogLine(raw: string): LogLine {
+  let clock = '';   // 展示用本地时间 HH:mm:ss.SSS
+  let level = '';   // 大写级别 INFO/WARN/ERROR/DEBUG
+  let rest = raw;
+  let childErr = false;
+
+  const outer = OUTER_LOG_RE.exec(raw);
+  if (outer) {
+    clock = outer[2]; // 外层时间戳已是本地时间，直接取时分秒
+    level = outer[3].toUpperCase();
+    childErr = outer[4] === 'executor:err';
+    rest = outer[5];
+  }
+
+  // 内嵌的 winston 头（文件行的 rest、或实时行的整行）。
+  // 级别内层优先：executor:err 通道的行外层 electron-log 恒为 warn，
+  // 而 winston 自己的级别（ERROR/WARN）才反映真实严重度。
+  const inner = INNER_LOG_RE.exec(rest);
+  if (inner) {
+    if (!clock) clock = utcToLocalClock(inner[1], inner[2]); // 实时行：UTC → 本地
+    level = inner[3];
+    rest = inner[4];
+  }
+
+  // traceId 截短为前 8 位（足够对日志，完整值仍在落盘文件里）
+  const trace = TRACE_ID_RE.exec(rest);
+  if (trace) rest = `[${trace[1]}] ${trace[2]}`;
+
+  // 级别：结构化信息优先；自由文本（任务输出等）回退为旧的关键词猜测。
+  let lvl: LogLevel = '';
+  if (childErr || level === 'ERROR') lvl = 'error';
+  else if (level === 'WARN') lvl = 'warn';
+  else {
+    const l = rest.toLowerCase();
+    if (l.includes('error') || l.includes('failed') || l.includes('err ')) lvl = 'error';
+    else if (l.includes('warn')) lvl = 'warn';
+  }
+
+  // 两种来源都没解析出任何结构（纯文本输出）——原样展示，不强行加壳。
+  if (!clock && !level) return { level: lvl, text: raw };
+  return { level: lvl, text: `[${clock}]${level ? ` [${level}]` : ''} ${rest}` };
 }
 
 // ── 全屏日志查看器 ──────────────────────────────────────
@@ -63,7 +133,7 @@ function LogViewer({
   logs,
   onClose,
 }: {
-  logs: string[];
+  logs: LogLine[];
   onClose: () => void;
 }) {
   const [query, setQuery] = useState('');
@@ -77,7 +147,7 @@ function LogViewer({
   const q = query.trim().toLowerCase();
   const matchedIndices: number[] = [];
   const filtered = logs.map((line, i) => {
-    const hit = q ? line.toLowerCase().includes(q) : true;
+    const hit = q ? line.text.toLowerCase().includes(q) : true;
     if (hit && q) matchedIndices.push(i);
     return { line, i, hit };
   });
@@ -178,15 +248,14 @@ function LogViewer({
         <div className="log-viewer log-fs-content" ref={containerRef}>
           {filtered.map(({ line, i, hit }) => {
             if (!hit) return null;
-            const cls = classifyLog(line);
             const isCurrent = q && matchedIndices[safeMatchIdx] === i;
             return (
               <div
                 key={i}
                 data-logidx={i}
-                className={`log-line ${cls}${isCurrent ? ' log-highlight' : ''}`}
+                className={`log-line ${line.level}${isCurrent ? ' log-highlight' : ''}`}
               >
-                {q ? <HighlightText text={line} query={q} /> : line}
+                {q ? <HighlightText text={line.text} query={q} /> : line.text}
               </div>
             );
           })}
@@ -242,7 +311,7 @@ export default function StatusWindow() {
   const [status, setStatus] = useState<Status>('stopped');
   const [statusLoaded, setStatusLoaded] = useState(false);
   const [config, setConfig] = useState<Record<string, unknown>>({});
-  const [logs, setLogs] = useState<string[]>([]);
+  const [logs, setLogs] = useState<LogLine[]>([]);
   const [acting, setActing] = useState(false);
   // F-22（DEEP_REVIEW 0ef3bbe）：IPC reject 时页内展示错误，避免按钮永久 disabled 且用户无感知
   const [actionError, setActionError] = useState<string | null>(null);
@@ -281,15 +350,16 @@ export default function StatusWindow() {
     // → React 卸载整棵树 → 主窗口只有背景色黑屏，见 preload/index.ts 注释）
     window.electronAPI.getTodayLogs().then((result: any) => {
       if (result?.lines && result.lines.length > 0) {
-        // 过滤掉空行
-        const validLines = result.lines.filter((l: string) => l.trim().length > 0);
-        setLogs(validLines.slice(-500));
+        // 过滤掉空行；落盘行是 electron-log+winston 双时间戳形态，
+        // 统一经 normalizeLogLine 收敛为单时间戳展示（见上方注释）。
+        const validLines = (result.lines as string[]).filter((l) => l.trim().length > 0);
+        setLogs(validLines.slice(-500).map(normalizeLogLine));
       }
     }).catch(() => {});
 
     const offLog = window.electronAPI.onLogLine((line) => {
       setLogs((prev) => {
-        const next = [...prev, line];
+        const next = [...prev, normalizeLogLine(line)];
         return next.length > 2000 ? next.slice(-1600) : next;
       });
     });
@@ -423,7 +493,7 @@ export default function StatusWindow() {
             {logs.length === 0
               ? <span className="log-empty">等待日志输出...</span>
               : logs.map((line, i) => (
-                  <div key={i} className={`log-line ${classifyLog(line)}`}>{line}</div>
+                  <div key={i} className={`log-line ${line.level}`}>{line.text}</div>
                 ))
             }
           </div>
