@@ -1617,6 +1617,7 @@ export default {
   'appDeploy.action.upgrade': 'Upgrade',
   'appDeploy.action.stop': 'Stop',
   'appDeploy.action.redeploy': 'Redeploy',
+  'appDeploy.action.delete': 'Delete',
   'appDeploy.action.refresh': 'Refresh',
   'appDeploy.action.confirmUpgrade': 'Confirm upgrade',
   'appDeploy.action.upgradeAll': 'Upgrade all',
@@ -1647,8 +1648,17 @@ export default {
     'Auto-restarts on abnormal exit (up to 10 attempts). A clean exit (code 0) is not restarted.',
   'appDeploy.mode.hintScheduled':
     'Code is delivered but no process is started — create a task under Task Scheduling to run it.',
+  // User-reported fix: the old copy claimed the record is reused, but the backend
+  // always INSERTs a new row — retries piled up failed rows with no way to remove
+  // them. Now it states the truth and points at the new delete action.
   'appDeploy.redeploy.reuseHint':
-    'Redeploying reuses this device’s existing record (no new record is created).',
+    'Redeploying creates a new deployment record on this device (the original is kept and can be deleted from its row).',
+  'appDeploy.op.deleteConfirm': 'Delete this deployment record?',
+  'appDeploy.op.deleteHint':
+    'Removes only this historical record on the platform; a process still running on the executor is unaffected.',
+  'appDeploy.op.adminOnlyDelete': 'Only administrators can delete deployment records',
+  'appDeploy.msg.deleted': 'Deployment record deleted',
+  'appDeploy.msg.deleteFail': 'Failed to delete the deployment record',
   'appDeploy.executor.availableHeader': 'Available executors ({{count}}, occupied filtered out)',
   'appDeploy.executor.overview': 'Available executors overview (occupied filtered out)',
   'appDeploy.executor.more': '...and {{count}} more',

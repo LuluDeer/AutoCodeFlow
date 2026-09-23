@@ -6,7 +6,7 @@ import {
 import {
   RocketOutlined, StopOutlined, ReloadOutlined, PlusOutlined,
   ThunderboltOutlined, UpCircleOutlined, CheckOutlined, CloseOutlined,
-  UndoOutlined,
+  UndoOutlined, DeleteOutlined,
   CopyOutlined,
 } from '@ant-design/icons';
 import { deploymentsApi, AppDeployment, applicationsApi } from '../api/applications';
@@ -326,6 +326,19 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
     }
   };
 
+  // 用户报障：失败的部署记录删不掉。后端 DELETE :id 只接受终态行
+  // （failed/stopped），在途/运行中/待审批返回 409——错误文案由后端给出，
+  // 此处如实透传（getErrMsg 取响应 message）。
+  const handleDelete = async (id: string) => {
+    try {
+      await deploymentsApi.remove(id);
+      message.success(t('appDeploy.msg.deleted'));
+      fetchAll();
+    } catch (err: unknown) {
+      message.error(getErrMsg(err, t('appDeploy.msg.deleteFail')));
+    }
+  };
+
   const handleUpgrade = async (id: string) => {
     try {
       await deploymentsApi.upgrade(id);
@@ -540,23 +553,40 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
             </Popconfirm>
           )}
           {(r.status === 'stopped' || r.status === 'failed') && (
-            <Tooltip
-              title={
-                isAdmin
-                  ? t('appDeploy.redeploy.reuseHint')
-                  : t('appDeploy.op.adminOnlyDeploy')
-              }
-            >
-              <Button
-                size="small"
-                type="primary"
-                icon={<RocketOutlined />}
-                onClick={() => { deployForm.setFieldValue('executorId', r.executorId); setDeployModalOpen(true); }}
+            <>
+              <Tooltip
+                title={
+                  isAdmin
+                    ? t('appDeploy.redeploy.reuseHint')
+                    : t('appDeploy.op.adminOnlyDeploy')
+                }
+              >
+                <Button
+                  size="small"
+                  type="primary"
+                  icon={<RocketOutlined />}
+                  onClick={() => { deployForm.setFieldValue('executorId', r.executorId); setDeployModalOpen(true); }}
+                  disabled={!isAdmin}
+                >
+                  {t('appDeploy.action.redeploy')}
+                </Button>
+              </Tooltip>
+              {/* 用户报障：终态记录此前无任何删除出口，重试几次就叠几行。
+                  仅终态行渲染（在途/运行中的行后端也会 409）。 */}
+              <Popconfirm
+                title={t('appDeploy.op.deleteConfirm')}
+                onConfirm={() => handleDelete(r.id)}
+                okText={t('appDeploy.action.delete')}
+                okButtonProps={{ danger: true }}
                 disabled={!isAdmin}
               >
-                {t('appDeploy.action.redeploy')}
-              </Button>
-            </Tooltip>
+                <Tooltip title={isAdmin ? t('appDeploy.op.deleteHint') : t('appDeploy.op.adminOnlyDelete')}>
+                  <Button size="small" danger icon={<DeleteOutlined />} disabled={!isAdmin}>
+                    {t('appDeploy.action.delete')}
+                  </Button>
+                </Tooltip>
+              </Popconfirm>
+            </>
           )}
         </Space>
         );

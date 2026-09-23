@@ -365,6 +365,7 @@
 | 1790000000034 | DropExecutorInterpretersGinIndex | ENG 审计阶段一 E-P2-R1（死 GIN 索引） | 本声明占用（DROP INDEX IF EXISTS idx_executors_interpreters；全仓零 @> 查询，调度走内存 interpreterSatisfies；实体 @Index 声明同步移除；down 重建 GIN 供 revert；结构 spec 同批） |
 | 1790000000035 | AddTaskTemplateCreatedBy | ENG 审计阶段一 E-P2-S1（模板删除归属） | 本声明占用（task_templates 增 createdBy varchar(100) 可空；create 记录 JWT username；remove 改属主或 ADMIN 可删，NULL 历史行仅 ADMIN；ADD/DROP COLUMN IF [NOT] EXISTS 幂等；结构 spec 同批） |
 | 1790000000036 | AddExecutorHeartbeatMisses | NETOPT-G P1-7（跨境链路判死迟滞） | 本声明占用（executors 增 consecutiveHeartbeatMisses integer NOT NULL DEFAULT 0：markStaleOffline 由单次墙钟判定改为连续 N 轮确认——每轮只递增计数、达 staleOfflineConfirmations（默认 2）才判死，心跳到达即清零可自愈；DEFAULT 0 保证存量行上线不被误判；ADD/DROP COLUMN IF [NOT] EXISTS 幂等；结构 spec 同批） |
+| 1790000000037 | NormalizeUploadedVersionStatus | 用户报障「旧版本明明也是 zip 包上传的，为什么仅已发布版本可回滚」 | 本声明占用（存量数据修复：application_versions 里 status='uploaded' 且 sourceDeploymentId IS NULL 的行刷成 'released'。0c67ccfd 的 recordUploadVersion 把上传版本写成 'uploaded'，而回滚判据（后端 rollbackApplication / rollbackDeploymentToPrevious、前端 rollbackDisabled）只认 'released'，导致 zip 上传的每个旧版本按钮永久禁用；纯 UPDATE、幂等，down 有意 no-op 不还原缺陷取值；结构 spec 同批） |
 
 ## 变更日志
 

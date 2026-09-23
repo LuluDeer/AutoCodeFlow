@@ -391,6 +391,14 @@ export class ApplicationService implements OnModuleInit {
    * sourceDeploymentId 置 null（区别于部署产生的版本行）。dedupe 键
    * (applicationId, version)：同一版本号重复上传视为同一次发布，避免唯一索引
    * 23505；best-effort——快照失败只 warn，绝不阻断上传主链。
+   *
+   * status 取 **"released"**（不是 "uploaded"）：回滚面（本文件 rollbackApplication
+   * 的 released 守卫、rollbackDeploymentToPrevious 的 released 过滤、前端
+   * ApplicationDetailPage 的 rollbackDisabled 判据）历来只认 "released"。上传的包
+   * 本身就是一个可回滚的发布态——用户上传 1.0.0 再上传 1.0.1 后，1.0.0 必须能一键
+   * 回退。若这里写 "uploaded"，zip 上传出来的每一个旧版本在版本历史里都会显示
+   * 「仅已发布版本可回滚」且按钮永久禁用（这正是本次用户报障）。故与部署路径
+   * （saveVersionSnapshot(..., "released")）统一取 released 语义。
    */
   async recordUploadVersion(
     app: Application,
@@ -413,7 +421,9 @@ export class ApplicationService implements OnModuleInit {
           version: app.version,
           gitCommit: app.gitCommit ?? null,
           sourceDeploymentId: null,
-          status: "uploaded",
+          // 上传即可回滚（详见方法头注）：与部署路径同取 released 语义，
+          // 否则 zip 上传的版本会被回滚守卫判为「仅已发布版本可回滚」。
+          status: "released",
           snapshot: {
             id: app.id,
             name: app.name,
