@@ -1168,6 +1168,38 @@ deployRouter.post('/deploy', async (req: Request, res: Response) => {
       switchedCurrent = true;
       logger.info(`[deploy] Current release for ${appName} now points to ${paths.releaseKey}`);
 
+      // 用户报障（执行器「应用显示」看不出是哪个应用）：此前执行器只把
+      // appName 用于日志，从不落盘——桌面端只能拿到 appId（UUID），列表里
+      // 全是不可读的 ID。这里在 **appRoot**（跨 release 稳定的位置）落一份
+      // app.json 元数据，供本地 UI 展示真实应用名/运行时/仓库。
+      // best-effort：写失败只 WARN，绝不影响部署主链（对齐 .env 写入姿态）。
+      try {
+        fs.writeFileSync(
+          path.join(paths.appRoot, 'app.json'),
+          JSON.stringify(
+            {
+              appId,
+              appName,
+              runtime,
+              gitRepo: gitRepo ?? null,
+              gitBranch: gitBranch ?? null,
+              gitCommit: gitCommit ?? null,
+              // 最近一次部署（含非 current 的历史 release 也能对上版本）。
+              lastVersion: version ?? null,
+              lastDeploymentId: deploymentId,
+              lastDeployedAt: new Date().toISOString(),
+            },
+            null,
+            2,
+          ),
+          { encoding: 'utf-8', mode: 0o600 },
+        );
+      } catch (metaErr: any) {
+        logger.warn(
+          `[deploy] Failed to write app.json for ${appId}: ${metaErr?.message ?? metaErr}`,
+        );
+      }
+
       // E-12: 发布成功后回收旧 releases 历史（保留 current + 最近 N 个），
       // 避免磁盘随每次升级无界增长。best-effort，失败不影响本次发布。
       const pruned = pruneOldReleases(paths.releasesDir, paths.currentLink);

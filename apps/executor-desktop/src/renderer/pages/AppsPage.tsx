@@ -4,7 +4,11 @@ declare const window: Window & {
   electronAPI: {
     listApps: () => Promise<Array<{
       appId: string;
+      appName: string;
       deploymentId: string;
+      version: string | null;
+      releaseKey: string;
+      isCurrent: boolean;
       hasLog: boolean;
       logPath: string;
       deployDir: string;
@@ -15,7 +19,14 @@ declare const window: Window & {
 
 type AppEntry = {
   appId: string;
+  /** app.json 记录的真实应用名；缺失时后端回落为 appId。 */
+  appName: string;
   deploymentId: string;
+  /** releaseKey 里的版本号；无法解析时为 null（UI 如实显示「版本未知」）。 */
+  version: string | null;
+  releaseKey: string;
+  /** current 软链指向的即时版本。 */
+  isCurrent: boolean;
   hasLog: boolean;
   logPath: string;
   deployDir: string;
@@ -106,7 +117,10 @@ function AppLogViewer({ entry, onClose }: { entry: AppEntry; onClose: () => void
     <div className="log-fullscreen">
       <div className="log-fs-bar">
         <span className="log-fs-title">
-          {entry.appId} / <span className="log-fs-deployment-id">{entry.deploymentId.slice(0, 8)}</span>
+          {entry.appName || entry.appId}
+          {entry.version ? ` v${entry.version}` : ''}
+          {entry.isCurrent ? '（当前版本）' : ''} /{' '}
+          <span className="log-fs-deployment-id">{entry.deploymentId.slice(0, 8)}</span>
         </span>
         <div className="log-fs-search">
           <span className="log-fs-search-icon">🔍</span>
@@ -217,7 +231,9 @@ export default function AppsPage() {
             {/* App header */}
             <div className="app-group-header">
               <span className="app-group-icon">📦</span>
-              <span className="app-group-name">{appId}</span>
+              {/* 用户报障：此前只显示 appId（UUID），看不出是哪个应用。
+                  app.json 落地后显示真实应用名，appId 作 tooltip 保留可追溯性。 */}
+              <span className="app-group-name" title={appId}>{entries[0]?.appName || appId}</span>
               <span className="app-group-count">
                 {entries.length} 个部署
               </span>
@@ -225,9 +241,23 @@ export default function AppsPage() {
 
             {/* Deployment rows */}
             {entries.map(entry => (
-              <div key={entry.deploymentId} className="app-deployment-row">
+              <div key={entry.releaseKey || entry.deploymentId} className="app-deployment-row">
                 <span className="app-deployment-id">
-                  {entry.deploymentId}
+                  {/* 原先只显示裸 UUID（用户看不出是哪个版本、哪个是当前版本）。
+                      现在显示版本号为主、deploymentId 缩写为辅。 */}
+                  {entry.version ? (
+                    <span className="app-deployment-version">v{entry.version}</span>
+                  ) : (
+                    <span className="app-deployment-version app-no-log">版本未知</span>
+                  )}
+                  {entry.isCurrent && (
+                    <span className="app-badge app-badge-current" title="current 指向的即时版本">
+                      当前版本
+                    </span>
+                  )}
+                  <span className="app-deployment-uuid" title={entry.deploymentId}>
+                    {entry.deploymentId.slice(0, 8)}
+                  </span>
                 </span>
                 <div className="app-deployment-actions">
                   {entry.hasLog ? (

@@ -27,7 +27,9 @@
     "src/main/heartbeat.selftest.ts",
     "src/main/log-read-date-scan.selftest.ts",
     "src/main/meta-files.ts",
-    "src/main/meta-files.selftest.ts"
+    "src/main/meta-files.selftest.ts",
+    "src/main/app-inventory.ts",
+    "src/main/app-inventory.selftest.ts"
   ],
   "exclude": []
 }
