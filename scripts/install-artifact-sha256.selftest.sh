@@ -65,31 +65,31 @@ echo "== 2) 行为回放三态 =="
 printf 'HTTP/1.1 200 OK\r\nX-SHA256: %s\r\nContent-Length: 18\r\n' "$GOOD_SHA" > "$TMP/h-good.txt"
 TMP_HEADERS="$TMP/h-good.txt" TMP_PKG="$TMP/pkg.tar.gz" run_verify_pipeline
 rc=$?
-if [[ $rc -eq 0 ]]; then ok "头值与字节一致 → 校验通过"; else bad "match 态（rc=$rc）"; fi
+if [[ $rc -eq 0 ]]; then ok "头值与字节一致 → 校验通过"; else bad "match 态（rc=${rc}）"; fi
 
 # 2b) mismatch：头值 != 字节 sha256 → 非零退出
 printf 'HTTP/1.1 200 OK\r\nX-SHA256: %s\r\n' "$BAD_SHA" > "$TMP/h-bad.txt"
 TMP_HEADERS="$TMP/h-bad.txt" TMP_PKG="$TMP/pkg.tar.gz" run_verify_pipeline
 rc=$?
-if [[ $rc -eq 2 ]]; then ok "头值与字节不符 → 非零退出"; else bad "mismatch 态（rc=$rc）"; fi
+if [[ $rc -eq 2 ]]; then ok "头值与字节不符 → 非零退出"; else bad "mismatch 态（rc=${rc}）"; fi
 
 # 2c) no header：响应无 X-SHA256 → 容忍放行
 printf 'HTTP/1.1 200 OK\r\nContent-Type: application/gzip\r\n' > "$TMP/h-none.txt"
 TMP_HEADERS="$TMP/h-none.txt" TMP_PKG="$TMP/pkg.tar.gz" run_verify_pipeline
 rc=$?
-if [[ $rc -eq 1 ]]; then ok "无 X-SHA256 头 → 容忍放行"; else bad "no-header 态（rc=$rc）"; fi
+if [[ $rc -eq 1 ]]; then ok "无 X-SHA256 头 → 容忍放行"; else bad "no-header 态（rc=${rc}）"; fi
 
 # 2d) 跨跳多响应头块：首个块带错误头，末块（最终响应）带正确头 → 取末条
 printf 'HTTP/1.1 302 Found\r\nX-SHA256: %s\r\n\r\nHTTP/1.1 200 OK\r\nX-SHA256: %s\r\n' "$BAD_SHA" "$GOOD_SHA" > "$TMP/h-multi.txt"
 TMP_HEADERS="$TMP/h-multi.txt" TMP_PKG="$TMP/pkg.tar.gz" run_verify_pipeline
 rc=$?
-if [[ $rc -eq 0 ]]; then ok "多响应头块取末条 → 校验通过"; else bad "multi-header 态（rc=$rc）"; fi
+if [[ $rc -eq 0 ]]; then ok "多响应头块取末条 → 校验通过"; else bad "multi-header 态（rc=${rc}）"; fi
 
 # 2e) 大写头名 + CRLF 不影响提取（HTTP 头名不区分大小写、尾随 CRLF）
 printf 'HTTP/1.1 200 OK\r\nx-sha256: %s\r\n' "$GOOD_SHA" > "$TMP/h-lower.txt"
 TMP_HEADERS="$TMP/h-lower.txt" TMP_PKG="$TMP/pkg.tar.gz" run_verify_pipeline
 rc=$?
-if [[ $rc -eq 0 ]]; then ok "小写头名 + CRLF → 校验通过"; else bad "lowercase-header 态（rc=$rc）"; fi
+if [[ $rc -eq 0 ]]; then ok "小写头名 + CRLF → 校验通过"; else bad "lowercase-header 态（rc=${rc}）"; fi
 
 echo
 if [[ $fail -eq 0 ]]; then
