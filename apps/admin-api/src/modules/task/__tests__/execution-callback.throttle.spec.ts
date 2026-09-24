@@ -72,4 +72,60 @@ describe("ExecutionCallbackController — F-5 rate limiting", () => {
       controller.callback("Bearer tok", undefined, [item]),
     ).rejects.toThrow(/shared token/);
   });
+
+  // RT-LOG: 实时日志流端点自带档位。它与 callback 同属**机器面**（速率由
+  // 执行器输出节奏决定，不是人点出来的），因此不能落进 60/min 的全局默认档
+  // ——一个话痨任务每秒可能推好几片，60/min 会让日志在执行中途被限流截断，
+  // 而这恰恰是本端点要修的问题。档位必须显式且高于全局默认。
+  describe("RT-LOG: POST /executions/:id/logs rate limiting", () => {
+    const handlerOf = (name: string) =>
+      Object.getOwnPropertyDescriptor(
+        ExecutionCallbackController.prototype,
+        name,
+      )?.value;
+
+    it("carries its own finite limit above the global default", () => {
+      const limit = Reflect.getMetadata(LIMIT_KEY, handlerOf("appendLogChunk"));
+      const ttl = Reflect.getMetadata(TTL_KEY, handlerOf("appendLogChunk"));
+      expect(limit).toBe(120);
+      expect(ttl).toBe(60_000);
+      // 必须高于全局默认 60——否则实时流会被限流成「比回调还慢」。
+      expect(limit).toBeGreaterThan(60);
+    });
+
+    it("does not skip the throttler", () => {
+      expect(
+        Reflect.getMetadata(SKIP_KEY, handlerOf("appendLogChunk")),
+      ).toBeUndefined();
+    });
+
+    it("limit is configurable via THROTTLE_LOG_STREAM_LIMIT (no silent hardcode)", () => {
+      // 与 CALLBACK_THROTTLE 同款可配：多执行器同出口（NAT）时按
+      // 「执行器数 × 分片/分钟」上调，无需改代码。
+      //
+      // 档位常量在**模块求值期**固化（W-22 现场：装饰器参数早于 ConfigModule
+      // 生命周期），故只能靠 jest.isolateModules + 重设 env 后重新求值模块来
+      // 观测——这也是本文件其余用例读 Reflect 元数据的原因。
+      const prev = process.env.THROTTLE_LOG_STREAM_LIMIT;
+      process.env.THROTTLE_LOG_STREAM_LIMIT = "500";
+      try {
+        let limit: unknown;
+        jest.isolateModules(() => {
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          const mod = require("../execution-callback.controller");
+          limit = Reflect.getMetadata(
+            LIMIT_KEY,
+            Object.getOwnPropertyDescriptor(
+              mod.ExecutionCallbackController.prototype,
+              "appendLogChunk",
+            )?.value,
+          );
+        });
+        expect(limit).toBe(500);
+      } finally {
+        if (prev === undefined) delete process.env.THROTTLE_LOG_STREAM_LIMIT;
+        else process.env.THROTTLE_LOG_STREAM_LIMIT = prev;
+      }
+    });
+  });
 });

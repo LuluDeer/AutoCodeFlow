@@ -47,6 +47,11 @@ from generated.protocol_schemas import (
     ExecuteRequest as ProtocolExecuteRequest,
     KillResponse as ProtocolKillResponse,
 )
+# RT-LOG: Import log stream pusher for real-time log streaming
+try:
+    from log_stream_pusher import LogStreamPusher
+except ImportError:
+    LogStreamPusher = None  # type: ignore[assignment]
 
 
 def _kill_body(ok: bool) -> dict:
@@ -3573,6 +3578,8 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
         file_truncated = False
         file_disabled = False
         lines_since_flush = 0
+        # RT-LOG: Initialize log stream pusher for real-time streaming
+        log_stream_pusher = LogStreamPusher(req.executionId) if LogStreamPusher else None
 
         async def _stream_to_file() -> None:
             # R4-C P1: stdout/stderr used to accumulate without any cap
@@ -3592,6 +3599,15 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
                         captured_chars += len(line)
                     else:
                         captured_truncated = True
+                    # RT-LOG: Push to stream pusher for real-time streaming.
+                    # 交给 pusher 自己按行切分——它保留跨 chunk 的半行缓冲，
+                    # 行号才能与回调日志逐行对齐（此处再切一次会把一行劈成
+                    # 两行、并丢掉真实存在的空行）。
+                    if log_stream_pusher:
+                        try:
+                            await log_stream_pusher.add_output(line)
+                        except Exception as err:
+                            logger.debug(f"[execute] Failed to stream line to pusher: {err}")
                     if file_disabled:
                         continue
                     if streamed_bytes <= MAX_LOG_FILE_BYTES:
@@ -3638,8 +3654,15 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
                 await stream_task
             except BaseException:
                 pass
+            # RT-LOG: Fire-and-forget final flush of log stream pusher on timeout
+            if log_stream_pusher:
+                asyncio.create_task(log_stream_pusher.final_flush())
             raise
         await proc.wait()
+
+        # RT-LOG: Fire-and-forget final flush of log stream pusher before building callback logs
+        if log_stream_pusher:
+            asyncio.create_task(log_stream_pusher.final_flush())
 
         logs = _build_callback_logs(log_chunks, captured_truncated, log_file)
         duration_ms = int((time.monotonic() - started_at) * 1000)
@@ -3658,6 +3681,9 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
         # task are also terminated. E4/E5: same platform branches now live in
         # _kill_process_tree (win32 taskkill /T /F, POSIX killpg SIGKILL).
         await _kill_process_tree(proc)
+        # RT-LOG: Fire-and-forget final flush of log stream pusher on timeout exception
+        if 'log_stream_pusher' in locals() and log_stream_pusher:
+            asyncio.create_task(log_stream_pusher.final_flush())
         try:
             # Reap the killed child so its transport is finalized on a live
             # loop (otherwise it lingers until GC after the loop closed).
@@ -3677,6 +3703,9 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
         }
     except HTTPException as e:
         logging.exception('HTTP error during task execution')
+        # RT-LOG: Fire-and-forget final flush of log stream pusher on HTTP exception
+        if 'log_stream_pusher' in locals() and log_stream_pusher:
+            asyncio.create_task(log_stream_pusher.final_flush())
         return {
             'success': False,
             'logs': '',
@@ -3686,6 +3715,9 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
         }
     except Exception as e:
         logging.exception('Unexpected error during task execution')
+        # RT-LOG: Fire-and-forget final flush of log stream pusher on general exception
+        if 'log_stream_pusher' in locals() and log_stream_pusher:
+            asyncio.create_task(log_stream_pusher.final_flush())
         return {
             'success': False,
             'logs': '',

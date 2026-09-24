@@ -2264,6 +2264,68 @@
         ]
       }
     },
+    "/executions/{id}/logs": {
+      "post": {
+        "description": "Called by the executor while a task is still running to stream log lines incrementally. Accepts a chunk of lines with its 0-based start line number; re-sending the same range is idempotent. Uses the same authentication as the callback endpoint (per-execution `v1.` HMAC token, per-address token, or the shared executor token).",
+        "operationId": "ExecutionCallbackController_appendLogChunk",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "authorization",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "Log chunk with 0-based line offset and the lines themselves",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AppendLogChunkDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Log chunk persisted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "example": {
+                    "count": 10
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request body"
+          },
+          "401": {
+            "description": "Invalid executor token"
+          },
+          "404": {
+            "description": "Execution not found"
+          }
+        },
+        "summary": "Real-time execution log streaming",
+        "tags": [
+          "Execution Callback"
+        ]
+      }
+    },
     "/executors/register": {
       "post": {
         "description": "Called when executor starts to register with admin. Requires shared token for auth.",
@@ -7867,6 +7929,31 @@
         "required": [
           "executionId",
           "status"
+        ]
+      },
+      "AppendLogChunkDto": {
+        "type": "object",
+        "properties": {
+          "fromLine": {
+            "type": "number",
+            "description": "0-based line number offset of the first line in this chunk",
+            "example": 0
+          },
+          "lines": {
+            "description": "Array of log line strings",
+            "example": [
+              "Starting task...",
+              "Step 1 complete"
+            ],
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "fromLine",
+          "lines"
         ]
       },
       "ExecutorInterpreterDto": {

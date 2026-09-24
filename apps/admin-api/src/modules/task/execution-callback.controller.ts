@@ -4,6 +4,7 @@ import {
   Post,
   Body,
   Headers,
+  Param,
   ParseArrayPipe,
   UnauthorizedException,
   Optional,
@@ -25,6 +26,7 @@ import {
 } from "./execution-callback-token.util";
 import { ExecutionCallbackMetricsService } from "./execution-callback-metrics.service";
 import { CallbackItemDto } from "./dto/execution-callback.dto";
+import { AppendLogChunkDto } from "./dto/append-log-chunk.dto";
 import { ExecutorService } from "../executor/executor.service";
 // QA-05：回调档限流提为可配（解析语义与 throttle-profiles 同源）
 import { positiveInt } from "../../config/throttle-profiles";
@@ -53,6 +55,13 @@ const CALLBACK_THROTTLE = {
     // 「执行器数 × 批次数/分钟 × 安全系数」调高。
     limit: positiveInt("THROTTLE_CALLBACK_LIMIT", 60),
     ttl: positiveInt("THROTTLE_CALLBACK_TTL", 60_000),
+  },
+};
+
+const LOG_STREAM_THROTTLE = {
+  default: {
+    limit: positiveInt("THROTTLE_LOG_STREAM_LIMIT", 120),
+    ttl: positiveInt("THROTTLE_LOG_STREAM_TTL", 60_000),
   },
 };
 
@@ -313,6 +322,138 @@ export class ExecutionCallbackController {
       if (claims) return claims;
     }
     return null;
+  }
+
+  /**
+   * RT-LOG: 实时日志流端点。
+   *
+   * 执行器在任务运行期间按增量分片上报日志行（fromLine + lines），落
+   * ExecutionLogLine 后由既有的 SSE 通路（task.controller 的
+   * `/tasks/:id/executions/:execId/logs/stream` → streamExecutionLogs 轮询）
+   * 立即推给前端——即"执行中就能看到日志"，而不是等终态回调才一次性落库。
+   *
+   * 鉴权与 `POST /executions/callback` **同源**（同一套 per-execution HMAC
+   * 令牌 / per-address / 共享令牌三层），因此这里只做「解析令牌 → 判定归属」
+   * 两件事，判定逻辑复用既有私有方法，避免第二份实现漂移。
+   */
+  @WriteGuard("execution", {
+    scope: "token",
+    reason: "执行器持 per-execution HMAC 令牌流式上报运行中日志",
+  })
+  @Post(":id/logs")
+  @Public()
+  @Throttle(LOG_STREAM_THROTTLE)
+  @ApiOperation({
+    summary: "Real-time execution log streaming",
+    description:
+      "Called by the executor while a task is still running to stream log lines " +
+      "incrementally. Accepts a chunk of lines with its 0-based start line number; " +
+      "re-sending the same range is idempotent. Uses the same authentication as the " +
+      "callback endpoint (per-execution `v1.` HMAC token, per-address token, or the " +
+      "shared executor token).",
+  })
+  @ApiResponse({
+    status: 200,
+    description: "Log chunk persisted",
+    schema: { example: { count: 10 } },
+  })
+  @ApiResponse({ status: 400, description: "Invalid request body" })
+  @ApiResponse({ status: 401, description: "Invalid executor token" })
+  @ApiResponse({ status: 404, description: "Execution not found" })
+  @ApiBody({
+    type: AppendLogChunkDto,
+    description: "Log chunk with 0-based line offset and the lines themselves",
+  })
+  async appendLogChunk(
+    @Param("id") executionId: string,
+    @Headers("authorization") auth: string | undefined,
+    @Body() dto: AppendLogChunkDto,
+  ): Promise<{ count: number }> {
+    await this.authorizeExecutionWrite(executionId, auth);
+    return this.taskService.appendLogChunk(
+      executionId,
+      dto.fromLine,
+      dto.lines,
+    );
+  }
+
+  /**
+   * RT-LOG: 单执行维度的写授权——`POST /executions/:id/logs` 专用。
+   *
+   * 与 `callback` 的差别只在**粒度**：回调是批量端点，令牌要对批次里每个
+   * executionId 都成立；这里是单执行端点，令牌只需绑定到路径上的那一个 id。
+   * 因此逐层复用既有构件：
+   *   - `v1.` 前缀 → resolveCallbackSecrets（fleet 全局候选）+ 该执行的
+   *     executorAddress 的 tokenHash（N26 per-executor 兜底），最后校验
+   *     `claims.executionId === executionId`（单执行绑定，比批量的逐项比对更严）；
+   *   - 其它令牌 → per-address 校验，失败再退共享令牌（与 callback 的
+   *     「恰好一个唯一地址时」分支同序）。
+   *
+   * 认证结果照常计入 callbackMetrics（N32 的分类观测面不因新增端点而缺口）。
+   */
+  private async authorizeExecutionWrite(
+    executionId: string,
+    auth: string | undefined,
+  ): Promise<void> {
+    const token = auth?.startsWith("Bearer ") ? auth.slice(7) : auth;
+    if (!token) {
+      // N32: 完全没带 token —— 与"带了但校验失败"区分开。
+      this.callbackMetrics.recordAuthResult("missing_token");
+      throw new UnauthorizedException("Missing executor token");
+    }
+
+    if (token.startsWith(EXECUTION_CALLBACK_TOKEN_PREFIX)) {
+      const secrets = await this.resolveCallbackSecrets();
+      let claims = verifyExecutionCallbackToken(token, secrets);
+      if (!claims) {
+        // N26 per-executor 兜底：该执行的执行器用自己的 tokenHash 作 HMAC 源。
+        const address =
+          await this.taskService.findExecutionAddress(executionId);
+        if (address) {
+          const secret =
+            await this.executorService.getCallbackSecretByAddress(address);
+          if (secret) {
+            claims = verifyExecutionCallbackToken(token, [secret]);
+          }
+        }
+      }
+      if (!claims || claims.executionId !== executionId) {
+        this.callbackMetrics.recordAuthResult(
+          this.isV1TokenExpired(token) ? "v1_expired" : "v1_bad_signature",
+        );
+        throw new UnauthorizedException(
+          "Invalid or expired execution callback token",
+        );
+      }
+      this.callbackMetrics.recordAuthResult("ok");
+      return;
+    }
+
+    // 非 v1 令牌：per-address 校验（地址取自该执行行），失败退共享令牌。
+    const address = await this.taskService.findExecutionAddress(executionId);
+    if (!address) {
+      this.callbackMetrics.recordAuthResult("bad_address");
+      throw new UnauthorizedException(
+        "Executor address not found for execution",
+      );
+    }
+    const isValid = await this.executorService.validateTokenByAddress(
+      address,
+      token,
+    );
+    if (!isValid) {
+      try {
+        await verifyExecutorToken(
+          auth,
+          this.configService,
+          this.systemConfigService,
+        );
+      } catch (err) {
+        this.callbackMetrics.recordAuthResult("legacy_shared_invalid");
+        throw err;
+      }
+    }
+    this.callbackMetrics.recordAuthResult("ok");
   }
 
   /** Candidate HMAC secrets, most-specific first; empty entries dropped. */

@@ -979,6 +979,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/executions/{id}/logs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Real-time execution log streaming
+         * @description Called by the executor while a task is still running to stream log lines incrementally. Accepts a chunk of lines with its 0-based start line number; re-sending the same range is idempotent. Uses the same authentication as the callback endpoint (per-execution `v1.` HMAC token, per-address token, or the shared executor token).
+         */
+        post: operations["ExecutionCallbackController_appendLogChunk"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/executors/register": {
         parameters: {
             query?: never;
@@ -3255,6 +3275,21 @@ export interface components {
                 [key: string]: unknown;
             };
         };
+        AppendLogChunkDto: {
+            /**
+             * @description 0-based line number offset of the first line in this chunk
+             * @example 0
+             */
+            fromLine: number;
+            /**
+             * @description Array of log line strings
+             * @example [
+             *       "Starting task...",
+             *       "Step 1 complete"
+             *     ]
+             */
+            lines: string[];
+        };
         ExecutorInterpreterDto: {
             /**
              * @description Full patch version discovered in the interpreter pool
@@ -5291,6 +5326,56 @@ export interface operations {
             };
             /** @description Invalid shared token */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    ExecutionCallbackController_appendLogChunk: {
+        parameters: {
+            query?: never;
+            header: {
+                authorization: string;
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** @description Log chunk with 0-based line offset and the lines themselves */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AppendLogChunkDto"];
+            };
+        };
+        responses: {
+            /** @description Log chunk persisted */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Invalid request body */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid executor token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Execution not found */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

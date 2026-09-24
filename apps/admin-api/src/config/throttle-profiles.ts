@@ -18,6 +18,14 @@
  *    tasks-batch trigger、app-deployments deploy/approve/reject/cancel/
  *    upgrade/stop、applications upgrade-all/rollback。
  *  - 宽松档（默认）：其余全部读/写路由走全局 THROTTLE_LIMIT=60/min 不变。
+ *  - 机器面独立档（不走本文件常量，各自模块内以 positiveInt 定义，避免把
+ *    「执行器上报节奏」耦合进人操作面的分域矩阵）：
+ *      · execution-callback.controller 的 CALLBACK_THROTTLE（60/min）——
+ *        执行结果上报/心跳；
+ *      · 同文件的 LOG_STREAM_THROTTLE（120/min，RT-LOG）——执行中日志增量
+ *        上报。**必须高于全局默认 60**：它按任务输出节奏触发（最多每秒一片），
+ *        落到默认档会让话痨任务的日志在执行中途被限流截断，而这正是该端点要
+ *        修的问题。两者皆按 IP 计，多执行器同出口（NAT）需按执行器数上调。
  *  - SSE 豁免档：task logs/stream、metrics stream @SkipThrottle()
  *    （长连接建连不进计数窗口，防 Dashboard 自动重连被误杀）。
  *  - 全局旁路：THROTTLE_ENABLED=false → app.module ThrottlerModule 顶层

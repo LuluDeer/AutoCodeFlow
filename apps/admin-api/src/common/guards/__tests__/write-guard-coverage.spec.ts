@@ -307,6 +307,11 @@ describe("A2 写面守卫穷举扫描（write-guard-coverage）", () => {
         "AuthController.refreshToken",
         "AuthController.totpVerifyLogin",
         "ExecutionCallbackController.callback",
+        // RT-LOG：执行中日志的增量上报（机器面，非用户会话）。与 callback 同源
+        // 鉴权：per-execution `v1.` HMAC 令牌 / per-address 令牌 / 共享令牌三层，
+        // 且令牌必须**绑定到路径上的 executionId**（单执行端点，比批量的逐项
+        // 比对更严——否则任一执行器都能往别人的执行里写日志）。
+        "ExecutionCallbackController.appendLogChunk",
         "ExecutorController.getToken",
         "ExecutorController.heartbeat",
         "ExecutorController.offline",
