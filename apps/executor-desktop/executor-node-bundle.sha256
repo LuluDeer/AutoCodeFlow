@@ -318,4 +318,26 @@
 #   scripts/bundle-executor.sh）**逐字节一致**，印证 ncc 0.44 的路径/跨平台确定性
 #   （同上文多处注记）。bundle 2585kB → 2593kB。
 #
-ce5aa19c583daaf49f360c4d90c9637386ce36dda1ba79e2c7b4c5d8d2597c25  index.js
+# 2026-09-24（RT-LOG：执行中日志实时上送）：
+#   · 新增 src/log-stream-pusher.ts：把子进程 stdout/stderr 按行增量推给 admin 的
+#     `POST /executions/:id/logs`，落 ExecutionLogLine 后由既有 SSE 通路
+#     （/tasks/:id/executions/:execId/logs/stream）**执行中**就推给前端，而不是等
+#     终态回调才一次性落库；routes/execute.ts 的 stdout/stderr 两个 data 回调
+#     收敛到同一个 processOutput，并在 timeout / OOM / close / error 四条退出路径
+#     上做 finalFlush（fire-and-forget，失败只 debug——推送绝不能影响任务结果）。
+#   · 本次重打同时修掉首版的两处**静默失效**（本机实测复现，反证用例已入库）：
+#     ① `const token = getCurrentToken()` 漏了 await（该函数是 async），拿到的是
+#        Promise 对象、判空恒为假，Authorization 被拼成 `Bearer [object Promise]`
+#        → 每个分片都 401，执行中永远看不到日志。现改走 admin-client.post（它
+#        await 令牌，并统一带 X-Executor-Token/Authorization 双头、信封拆包、
+#        failover 与 401 自愈重试——执行器对 admin 的出站只应有这一条路径）。
+#     ② 每个 data 分片各做一次 split 且过滤空行：一行被劈到两个分片时记成两行，
+#        行号与回调日志整体错位、空行丢失。现由 pusher 自持半行缓冲
+#        （addOutput），只在遇到 \n 时成行，finalFlush 收尾补发无换行的末行。
+#   · 桌面端内嵌执行器若漏打，客户端侧"执行中看日志"整片缺席（仍是等终态才有）。
+#   本次按 ADR-005 同 commit 重打：本机(Windows) ncc 0.44 产出 668e2cf1…。
+#   **跨平台确定性已实测复核**：先用 HEAD 源码（未含本改动）本机重打，得到
+#   ce5aa19c…，与本文件当时的期望值**逐字节一致**——故本次新值同样可信。
+#   bundle 2593kB → 2600kB。
+#
+668e2cf18caab19d2d0aa1b977632534f6d95c9e19d91da90007eb97b92c25f2  index.js

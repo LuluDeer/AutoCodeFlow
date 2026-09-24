@@ -19,6 +19,7 @@ import { getCurrentToken } from '../middleware/auth';
 import { getCurrentAdminUrl } from '../admin-client';
 import { resolveAdminApiBaseUrl } from '../admin-api-url';
 import { appendLog, getDeadLetterCount, registerActiveWorkdirProvider, diskUsagePercent, DISK_CRITICAL_PERCENT, pinLogFilePath, unpinLogFilePath } from '../file-logger';
+import { LogStreamPusher } from '../log-stream-pusher';
 import { isExecutorShuttingDown } from '../shutdown-state';
 import { taskWorkerManager, ExecutionCancelledError } from '../task-worker';
 import { runCommand, killProcessTree } from '../run-command';
@@ -2481,6 +2482,8 @@ function runProcess(
     // Bounded accumulator — an unbounded `logs += output` OOMs the executor
     // on chatty tasks (memory peaks before the 10k callback truncation).
     const logBuffer = new BoundedLogBuffer();
+    // RT-LOG: Real-time log stream pusher for incremental log streaming
+    const logStreamPusher = executionId ? new LogStreamPusher(executionId) : null;
     // Guard against close firing after timeout has already rejected the promise
     let settled = false;
 
@@ -2494,17 +2497,27 @@ function runProcess(
     // callback logs and the on-disk log backfill).
     const stdoutDecoder = new StringDecoder('utf8');
     const stderrDecoder = new StringDecoder('utf8');
-    proc.stdout.on('data', (d: Buffer) => {
-      const output = stdoutDecoder.write(d);
+
+    // RT-LOG: Helper to process output into lines and stream them
+    const processOutput = (output: string) => {
       if (!output) return;
       logBuffer.append(output);
-      if (executionId) appendLog(executionId, output);
+      if (executionId) {
+        appendLog(executionId, output);
+        // RT-LOG: 交给 pusher 自己按行切分——它保留跨 chunk 的半行缓冲，
+        // 行号才能与回调日志逐行对齐（此处再切一次会把一行劈成两行、
+        // 并丢掉空行）。
+        logStreamPusher?.addOutput(output);
+      }
+    };
+
+    proc.stdout.on('data', (d: Buffer) => {
+      const output = stdoutDecoder.write(d);
+      processOutput(output);
     });
     proc.stderr.on('data', (d: Buffer) => {
       const output = stderrDecoder.write(d);
-      if (!output) return;
-      logBuffer.append(output);
-      if (executionId) appendLog(executionId, output);
+      processOutput(output);
     });
 
     const unregister = () => {
@@ -2522,6 +2535,12 @@ function runProcess(
           if (stopMemoryWatchdog) {
             stopMemoryWatchdog();
             stopMemoryWatchdog = null;
+          }
+          // RT-LOG: Fire-and-forget final flush of log stream pusher before timeout
+          if (logStreamPusher) {
+            logStreamPusher.finalFlush().catch(err => {
+              logger.debug(`[runProcess] Timeout log stream flush failed for execution ${executionId}: ${err}`);
+            });
           }
           // B-06: kill the entire process group so child processes spawned by the task are also terminated
           killProcessTree(proc, 'SIGKILL');
@@ -2555,6 +2574,12 @@ function runProcess(
             stopMemoryWatchdog();
             stopMemoryWatchdog = null;
           }
+          // RT-LOG: Fire-and-forget final flush of log stream pusher before memory limit kill
+          if (logStreamPusher) {
+            logStreamPusher.finalFlush().catch(err => {
+              logger.debug(`[runProcess] Memory watchdog log stream flush failed for execution ${executionId}: ${err}`);
+            });
+          }
           killProcessTree(proc, 'SIGKILL');
           unregister();
           const memErr = new Error(
@@ -2586,6 +2611,12 @@ function runProcess(
         logBuffer.append(stderrTail);
         if (executionId) appendLog(executionId, stderrTail);
       }
+      // RT-LOG: Fire-and-forget final flush of log stream pusher before resolving
+      if (logStreamPusher) {
+        logStreamPusher.finalFlush().catch(err => {
+          logger.debug(`[runProcess] Final log stream flush failed for execution ${executionId}: ${err}`);
+        });
+      }
       if (settled) return;
       settled = true;
       const exitCode = code ?? 1;
@@ -2607,6 +2638,12 @@ function runProcess(
         stopMemoryWatchdog = null;
       }
       unregister();
+      // RT-LOG: Fire-and-forget final flush of log stream pusher on error
+      if (logStreamPusher) {
+        logStreamPusher.finalFlush().catch(e => {
+          logger.debug(`[runProcess] Error handler log stream flush failed for execution ${executionId}: ${e}`);
+        });
+      }
       if (settled) return;
       settled = true;
       // W-24: surface spawn failures (ENOENT on Windows from an unreachable

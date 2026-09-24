@@ -249,9 +249,10 @@ export default function ExecutorDetailPage() {
   const runningCount = reservedSlots != null && reservedSlots > 0 && reservedSlots <= occupiedSlots
     ? occupiedSlots - reservedSlots
     : occupiedSlots;
-  // 容量压力（进度条/饱和判定）必须用**已占槽位**：预留中的槽位调度器确实不会
-  // 再派发，用它才与派发闸门口径一致。
-  const runningPercent = maxConcurrent > 0 ? Math.min(100, Math.round((occupiedSlots / maxConcurrent) * 100)) : 0;
+  // 进度条用**实际运行数**（已扣除 E-01 预留）——与标题 `runningCount / max`
+  // 口径一致，空闲时进度条归零，不再出现「0/10 但进度条 10%」的视觉矛盾。
+  // 预留槽位的信息由下方 `reserved.note` 文本单独说明。
+  const runningPercent = maxConcurrent > 0 ? Math.min(100, Math.round((runningCount / maxConcurrent) * 100)) : 0;
   // 补充 P2（UX-AUDIT 第 4 路）：满载语义。occupiedSlots 达到并发上限即饱和——
   // 调度器不再向这台派发新任务；用户需把「目标执行器已饱和」与「根本没有可用执行器」区分开。
   const isSaturated = maxConcurrent > 0 && occupiedSlots >= maxConcurrent;
