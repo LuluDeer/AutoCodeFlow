@@ -3803,6 +3803,85 @@ describe("TaskService (__tests__)", () => {
       expect(logLineRepo.save).not.toHaveBeenCalled();
     });
 
+    // RT-LOG: 实时流已落行时，回调里的**截断**日志不得把它整体覆盖——
+    // 否则用户看到的终态日志比执行过程中更少，实时流白做。
+    describe("RT-LOG: truncated callback logs must not clobber streamed lines", () => {
+      const TRUNCATED = "head\n...[truncated, total 99999 chars]...\ntail";
+
+      const callbackWith = (logs: string) => [
+        { executionId: "e1", status: "success" as const, logs },
+      ];
+
+      it("keeps streamed lines when the callback logs carry a truncation marker", async () => {
+        execRepo.findOne.mockResolvedValue({
+          id: "e1",
+          status: ExecutionStatus.RUNNING,
+          logStorage: null,
+          logObjectKey: null,
+        });
+        // 实时流已经落了 120 行。
+        logLineRepo.count.mockResolvedValue(120);
+        // 截断日志会走 S3/执行器回填——让它失败，落到"是否覆盖"的判定上。
+        jest
+          .spyOn(service as any, "backfillFullLogsFromExecutor")
+          .mockResolvedValue(false);
+
+        await service.handleCallback(callbackWith(TRUNCATED));
+
+        expect(logLineRepo.count).toHaveBeenCalledWith({
+          where: { executionId: "e1" },
+        });
+        // 关键断言：既有的流式行不得被 delete+replace 掉。
+        expect(logLineRepo.delete).not.toHaveBeenCalledWith({
+          executionId: "e1",
+        });
+      });
+
+      it("still replaces when the callback logs are NOT truncated (authoritative full logs)", async () => {
+        execRepo.findOne.mockResolvedValue({
+          id: "e1",
+          status: ExecutionStatus.RUNNING,
+          logStorage: null,
+          logObjectKey: null,
+        });
+        logLineRepo.count.mockResolvedValue(120);
+
+        await service.handleCallback(callbackWith("full-0\nfull-1"));
+
+        expect(logLineRepo.delete).toHaveBeenCalledWith({
+          executionId: "e1",
+        });
+        expect(logLineRepo.create).toHaveBeenCalledWith({
+          executionId: "e1",
+          lineNumber: 0,
+          content: "full-0",
+          level: null,
+        });
+      });
+
+      it("still writes truncated logs when nothing was streamed (no data to lose)", async () => {
+        execRepo.findOne.mockResolvedValue({
+          id: "e1",
+          status: ExecutionStatus.RUNNING,
+          logStorage: null,
+          logObjectKey: null,
+        });
+        logLineRepo.count.mockResolvedValue(0);
+        jest
+          .spyOn(service as any, "backfillFullLogsFromExecutor")
+          .mockResolvedValue(false);
+
+        await service.handleCallback(callbackWith(TRUNCATED));
+
+        expect(logLineRepo.create).toHaveBeenCalledWith({
+          executionId: "e1",
+          lineNumber: 0,
+          content: "head",
+          level: null,
+        });
+      });
+    });
+
     // 改动4: 快照 executorAddress 为 null、库中实际有地址时仍按库值释放槽位。
     it("releases the slot using the RETURNING executorAddress when the pre-callback snapshot is null (改动4)", async () => {
       const exec = {

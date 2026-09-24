@@ -25,6 +25,7 @@ import {
   IsNull,
   Not,
   Or,
+  Between,
   QueryFailedError,
   Repository,
 } from "typeorm";
@@ -2449,6 +2450,65 @@ export class TaskService {
   }
 
   /**
+   * RT-LOG: 执行行的 executorAddress 查询——回调鉴权的 per-executor HMAC 兜底
+   * 需要它（N26 形态），但仓储本身不对外暴露（收口在 service 内）。
+   * 返回 null 表示执行行不存在。
+   */
+  async findExecutionAddress(executionId: string): Promise<string | null> {
+    const exec = await this.execRepo.findOne({
+      where: { id: executionId },
+      select: ["id", "executorAddress"],
+    });
+    return exec?.executorAddress ?? null;
+  }
+
+  /**
+   * RT-LOG: Append a real-time chunk of log lines from an actively running execution.
+   * Persists into ExecutionLogLine so streamExecutionLogs pushes them immediately via SSE.
+   * Idempotent per (executionId, lineNumber).
+   */
+  async appendLogChunk(
+    executionId: string,
+    fromLine: number,
+    lines: string[],
+  ): Promise<{ count: number }> {
+    if (!Array.isArray(lines) || lines.length === 0) {
+      return { count: 0 };
+    }
+    const exec = await this.execRepo.findOne({
+      where: { id: executionId },
+      select: ["id", "status"],
+    });
+    if (!exec) {
+      throw new NotFoundException(`Execution ${executionId} not found`);
+    }
+
+    const entities = lines.map((content, i) =>
+      this.logLineRepo.create({
+        executionId,
+        lineNumber: fromLine + i,
+        content,
+        level: levelOfLine(content),
+      }),
+    );
+
+    const CHUNK = 500;
+    await this.dataSource.transaction(async (manager) => {
+      // Idempotency: delete only the exact range [fromLine, fromLine + lines.length) to avoid overwriting later chunks
+      const toLine = fromLine + lines.length;
+      await manager.delete(ExecutionLogLine, {
+        executionId,
+        lineNumber: Between(fromLine, toLine - 1),
+      });
+      for (let i = 0; i < entities.length; i += CHUNK) {
+        await manager.save(ExecutionLogLine, entities.slice(i, i + CHUNK));
+      }
+    });
+
+    return { count: lines.length };
+  }
+
+  /**
    * Fetch the current S3 log object for an execution, or null when it does
    * not exist yet (first append page) / cannot be read. Used by the append
    * path of storeLogLines to concatenate multi-page backfills.
@@ -2679,13 +2739,37 @@ export class TaskService {
         );
       }
       if (!stored) {
-        await this.storeLogLines(cb.executionId, cb.logs);
+        // RT-LOG: 若本次执行已经通过实时流落了行，回调里的**截断**日志
+        // （执行器内存里只留了头尾）会把完整流式日志整体覆盖掉——用户看到
+        // 的日志反而比执行中更少（storeLogLines 的 replace 语义先 delete
+        // 再写，正是覆盖点）。故「已有落库行 且 回调日志截断」时跳过写入，
+        // 保留实时流的成果；其余情形（无既有行、或回调日志是未截断的全量）
+        // 一律照常写入，既有语义不变。
+        //
+        // 判据取「已落行数」而非「有无 S3 指针」：S3 回填失败（stored=false）
+        // 时既有行就是实时流的全部成果，同样不能丢。
+        const keepStreamed =
+          LOG_TRUNCATION_MARKER.test(cb.logs) &&
+          (await this.hasStreamedLogLines(cb.executionId));
+        if (!keepStreamed) {
+          await this.storeLogLines(cb.executionId, cb.logs);
+        }
       }
     } catch (err: unknown) {
       this.logger.warn(
         `Failed to backfill missing logs for execution ${cb.executionId} on duplicate callback (${err instanceof Error ? err.message : String(err)})`,
       );
     }
+  }
+
+  /**
+   * RT-LOG: 该执行是否已有落库日志行。
+   *
+   * 只用于「回调日志是截断形态时是否允许覆盖既有行」这一个判定——非截断
+   * 回调日志仍照常走 storeLogLines 的 replace 语义（它是权威全量）。
+   */
+  private async hasStreamedLogLines(executionId: string): Promise<boolean> {
+    return (await this.logLineRepo.count({ where: { executionId } })) > 0;
   }
 
   /**
@@ -3101,7 +3185,17 @@ export class TaskService {
             );
           }
           if (!stored) {
-            await this.storeLogLines(cb.executionId, cb.logs);
+            // RT-LOG: 回调日志是**截断**形态（执行器内存只留头尾）而实时流
+            // 已经落了行时，不能再用它整体覆盖——否则用户看到的终态日志比
+            // 执行过程中更少。其余情形（无既有行、或回调日志未截断）照常
+            // 写入，既有 replace 语义不变。判据与 persistCallbackLogsIfMissing
+            // 同源（见 hasStreamedLogLines）。
+            const keepStreamed =
+              LOG_TRUNCATION_MARKER.test(cb.logs) &&
+              (await this.hasStreamedLogLines(cb.executionId));
+            if (!keepStreamed) {
+              await this.storeLogLines(cb.executionId, cb.logs);
+            }
           }
         }
 
