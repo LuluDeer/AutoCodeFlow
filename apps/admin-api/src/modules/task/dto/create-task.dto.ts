@@ -21,6 +21,8 @@ import { Type } from "class-transformer";
 import { IsUuidShape } from "../../../common/decorators/is-uuid-shape.decorator";
 // SEC-02 续：secrets 键名的可注入性校验（给用户可读的 400，而非执行期静默丢弃）
 import { IsSecretKeyMapConstraint } from "./secret-key-map.constraint";
+// 5 字段 cron 合法性（与调度注册路径同源，取代此前写坏的手写正则）
+import { IsCron5Field } from "./cron-expression.constraint";
 import { MaintenanceWindowDto } from "./maintenance-window.dto";
 import {
   TaskStatus,
@@ -46,13 +48,12 @@ export class CreateTaskDto {
   @ApiPropertyOptional()
   @IsString()
   @IsOptional()
-  @Matches(
-    /^(\*|([0-5]?\d))(\/(\d+))? (\*|([01]?\d|2[0-3]))(\/(\d+))? (\*|([012]?\d|3[01]))(\/(\d+))? (\*|(1[0-2]|0?[1-9]))(\/(\d+))? (\*|[0-7])(\/(\d+))?$/,
-    {
-      message:
-        "cronExpression must be a valid cron expression (5 fields: min hour day month weekday)",
-    },
-  )
+  // 此前是一条手写的 @Matches 正则，且写坏了——它没有逗号列表与范围分支，
+  // 于是 `0 12,18 * * *`、`0 9-17 * * *` 这类合法表达式在保存时被 400 拦死，
+  // 而前端预览器（parseCronExpression）与调度器（nodeCron.validate）都接受
+  // 它们，用户看到"能预览、存不进去"。现改为与调度器注册路径**同一个**校验器，
+  // 详见 cron-expression.constraint.ts。
+  @IsCron5Field()
   cronExpression?: string;
   @ApiPropertyOptional({
     description: "IANA timezone for cron schedules, e.g. Asia/Shanghai",
