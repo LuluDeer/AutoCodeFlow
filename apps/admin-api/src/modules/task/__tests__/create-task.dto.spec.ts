@@ -59,6 +59,67 @@ describe("CreateTaskDto / UpdateTaskDto id validation (R6)", () => {
     });
   });
 
+  // RT-CRON：cronExpression 的形态矩阵（走真实 ValidationPipe，即"保存"路径）。
+  //
+  // 这段是补课：此前 DTO 层**没有**任何针对任务主 cronExpression 的形态用例，
+  // 只有维护窗口那几条——所以一条写坏的校验正则在"能预览、存不进去"的状态下
+  // 存活了很久（前端预览器与调度器都接受 `0 12,18 * * *`，只有 DTO 拒绝）。
+  // 现在把接受面与拒绝面都钉在这里，并显式覆盖「前后端口径一致」这一根因。
+  describe("cronExpression validation (RT-CRON)", () => {
+    const base = { name: "t1", triggerType: "cron" as const };
+
+    // 合法：都必须能保存（修复前 `0 12,18 * * *` 与 `0 9-17 * * *` 会被 400 拦死）
+    it.each([
+      ["0 12,18 * * *", "每天 12 点与 18 点（用户报障现场）"],
+      ["0 9-17 * * *", "时段范围"],
+      ["0 12 * * *", "单值"],
+      ["*/5 * * * *", "步进"],
+      ["0 12,18 * * 1-5", "逗号 + 范围组合"],
+      ["0 0 1,15 * *", "每月 1 号与 15 号"],
+      ["0 9-17/2 * * *", "范围 + 步进"],
+    ])("accepts %s（%s）", async (expr) => {
+      const result = await validateCreate({ ...base, cronExpression: expr });
+      expect(result.cronExpression).toBe(expr);
+    });
+
+    // 非法：必须仍然被拒（不能因为放宽而放过真正写错的表达式）
+    it.each([
+      ["60 12 * * *", "分钟越界"],
+      ["0 25 * * *", "小时越界"],
+      ["0 12 * *", "只有 4 段"],
+      ["0 12 * * * *", "6 段（带秒）——超出本仓 5 段契约"],
+      ["not a cron", "非 cron"],
+      ["0 12 * * sun", "星期名（前端预览器与维护窗口都不支持）"],
+    ])("rejects %s（%s）", async (expr) => {
+      await expect(
+        validateCreate({ ...base, cronExpression: expr }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    // 用户报障的完整回归：预览能算出来、保存也必须成功。
+    it("accepts the reported expression 0 12,18 * * * with a timezone", async () => {
+      const result = await validateCreate({
+        ...base,
+        cronExpression: "0 12,18 * * *",
+        timezone: "Asia/Shanghai",
+      });
+      expect(result.cronExpression).toBe("0 12,18 * * *");
+      expect(result.timezone).toBe("Asia/Shanghai");
+    });
+
+    // UpdateTaskDto 经 PartialType 继承同一校验器——编辑路径同样要能改。
+    it("accepts the same expression on the PATCH path (UpdateTaskDto)", async () => {
+      const result = await validateUpdate({ cronExpression: "0 12,18 * * *" });
+      expect(result.cronExpression).toBe("0 12,18 * * *");
+    });
+
+    it("still rejects an invalid expression on the PATCH path", async () => {
+      await expect(
+        validateUpdate({ cronExpression: "0 12 * * * *" }),
+      ).rejects.toThrow(BadRequestException);
+    });
+  });
+
   describe("UpdateTaskDto (PartialType inherits the id validator)", () => {
     it("accepts a valid UUID v4 id", async () => {
       const result = await validateUpdate({ id: UUID_V4, name: "t1" });
