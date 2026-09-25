@@ -142,8 +142,12 @@ jobs:
       # U-2：jest 按文件哈希分片，4 片并行。覆盖率门不在此（见 admin-api-coverage）。
       # U-3：--retryTimes=2（jest-circus）给偶发时序/资源抖动用例两次重试机会，
       # 重试后仍红才红（playwright e2e 已有 retries:1，单元侧此前无重试机制）。
+      # ESM-1：@nestjs/common 等依赖已是 ESM-only（"type":"module"），jest 的
+      # require(esm) 路径由 vm.SourceTextModule 门控，必须带 --experimental-vm-modules
+      # 才置位（否则 39 个 suite 在 import 处直接 ERR_REQUIRE_ESM 全红）。
+      # 原先此处裸调 `npx jest` 绕过了 package.json 脚本里已有的该 flag，故显式带上。
       - name: Unit tests (shard ${{ matrix.shard }}/4)
-        run: npx jest --shard=${{ matrix.shard }}/4 --retryTimes=2
+        run: npx --node-options=--experimental-vm-modules jest --shard=${{ matrix.shard }}/4 --retryTimes=2
         working-directory: apps/admin-api
 
   # 覆盖率门：全量跑一遍 + coverageThreshold（这是分片化之后唯一不变的全局口径）。
