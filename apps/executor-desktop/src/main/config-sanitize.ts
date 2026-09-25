@@ -68,6 +68,9 @@ export const BOOLEAN_FIELDS: readonly string[] = [
   // ARCH-33：pull 回连模式开关。非布尔丢弃而非强转——`'false'` 是真值串，
   // 强转会把它变成 true，等于用户关掉 pull 却反而打开了。
   'pullMode',
+  // P7b：Agent 总开关。同 pullMode 纪律——`'false'` 强转会把它变成 true，
+  // 等于用户没开 Agent 却被偷偷开了（ADR-022 信任模型变更的入口，更不能错）。
+  'agentEnabled',
 ];
 
 /**

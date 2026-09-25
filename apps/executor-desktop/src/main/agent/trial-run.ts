@@ -1,8 +1,8 @@
-import { spawn } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { CodeExecutionMode } from './permission-profile';
 import { resolveWithinWorkspace } from './workspace';
+import { spawnWithTreeTimeout } from './kill-tree';
 
 /**
  * P7a 续批（agent-and-deployment）：试跑的真实执行体——process 沙箱。
@@ -169,26 +169,6 @@ export async function runTrialInSandbox(input: TrialRunInput): Promise<TrialRunR
     let timedOut = false;
     let settled = false;
 
-    let child;
-    try {
-      child = spawn(command, [resolved.path, ...args], {
-        cwd: input.workspaceRoot,
-        env: childEnv,
-        stdio: ['ignore', 'pipe', 'pipe'],
-        windowsHide: true,
-      });
-    } catch (err) {
-      resolve(refused(`spawn 失败：${err instanceof Error ? err.message : String(err)}`));
-      return;
-    }
-
-    const timer = setTimeout(() => {
-      timedOut = true;
-      // Windows 上 kill() 终止单进程；子进程树残留是已知残差（P7b 换
-      // tree-kill 方案）。超时本身已让结果不可信，先收敛。
-      try { child.kill(); } catch { /* already dead */ }
-    }, timeoutMs);
-
     const collect = (buf: Buffer, isErr: boolean): void => {
       const cap = TRIAL_OUTPUT_CAP;
       const target = isErr ? { get: () => stderr, set: (v: string) => { stderr = v; } } : { get: () => stdout, set: (v: string) => { stdout = v; } };
@@ -205,24 +185,36 @@ export async function runTrialInSandbox(input: TrialRunInput): Promise<TrialRunR
       }
     };
 
-    child.stdout?.on('data', (b: Buffer) => collect(b, false));
-    child.stderr?.on('data', (b: Buffer) => collect(b, true));
+    let timedOutLocal = false;
+    let spawnError: string | null = null;
+    // P7b：spawnWithTreeTimeout——超时经 killTree 整组终止（含孙进程），
+    // 修复 P7a 残差「Windows kill() 只终止单进程，孙进程泄漏」。POSIX 靠
+    // detached 进程组，Windows 靠 taskkill /T /F。
+    void spawnWithTreeTimeout(command, [resolved.path, ...args], {
+      cwd: input.workspaceRoot,
+      env: childEnv,
+    }, timeoutMs, collect).then(({ exitCode, timedOut: to, errorMessage }) => {
+      timedOutLocal = to;
+      spawnError = errorMessage;
+      finish(spawnError ? null : exitCode);
+    });
 
-    const finish = (exitCode: number | null): void => {
+    function finish(exitCode: number | null): void {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
       let out = stdout;
       let errOut = stderr;
+      timedOut = timedOutLocal;
+      if (spawnError) errOut = `${errOut}\n[进程错误] ${spawnError}`;
       if (truncated) {
         out = `${out}\n[输出超过 ${TRIAL_OUTPUT_CAP} 字节，已截断]`;
         errOut = `${errOut}\n[输出超过 ${TRIAL_OUTPUT_CAP} 字节，已截断]`;
       }
       if (timedOut) {
-        errOut = `${errOut}\n[试跑超时（${timeoutMs}ms），进程已被终止]`;
+        errOut = `${errOut}\n[试跑超时（${timeoutMs}ms），进程树已被终止]`;
       }
       resolve({
-        ok: !timedOut && exitCode === 0,
+        ok: !timedOut && !spawnError && exitCode === 0,
         exitCode,
         timedOut,
         stdout: out,
@@ -230,14 +222,7 @@ export async function runTrialInSandbox(input: TrialRunInput): Promise<TrialRunR
         truncated,
         durationMs: Date.now() - t0,
       });
-    };
-
-    child.on('error', (err) => {
-      // 解释器不存在（python 未装）等 spawn 后错误
-      stderr += `\n[进程错误] ${err.message}`;
-      finish(null);
-    });
-    child.on('close', (code) => finish(code));
+    }
   });
 }
 

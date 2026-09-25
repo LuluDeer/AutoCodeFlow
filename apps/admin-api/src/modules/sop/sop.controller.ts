@@ -6,6 +6,7 @@ import {
   Patch,
   Post,
   Query,
+  Res,
   UseGuards,
   ForbiddenException,
 } from "@nestjs/common";
@@ -25,6 +26,7 @@ import { Roles } from "../../common/decorators/roles.decorator";
 import { CurrentUser } from "../../common/decorators/current-user.decorator";
 import { UserRole } from "../users/entities/user.entity";
 import { SopService } from "./sop.service";
+import { SopMediaService } from "./sop-media.service";
 import { ExecutorService } from "../executor/executor.service";
 
 /**
@@ -113,6 +115,7 @@ class AssignSopDto {
 export class SopController {
   constructor(
     private readonly sops: SopService,
+    private readonly media: SopMediaService,
     private readonly executors: ExecutorService,
   ) {}
 
@@ -134,6 +137,34 @@ export class SopController {
   @ApiOperation({ summary: "指派详情（含澄清对话全量）" })
   async assignment(@Param("assignmentId") id: string) {
     return this.sops.getAssignment(id);
+  }
+
+  /**
+   * 媒体下载（P7b，ADMIN-only）：执行器上传的截图/录屏按 id 取回。
+   * 面向中台 Agent（in-process 直读 service 也行，但 Admin Web 复核澄清时
+   * 需要浏览器可达的 URL）与人工复核。
+   */
+  @Get("media/:mediaId")
+  @ApiOperation({ summary: "下载执行器回传的媒体（截图/录屏）" })
+  async downloadMedia(
+    @Param("mediaId") mediaId: string,
+    @Res() res: import("express").Response,
+  ) {
+    const row = await this.media.requireById(mediaId);
+    const { stream, size, mime, name } = this.media.openStream(row);
+    res.setHeader("Content-Type", mime ?? "application/octet-stream");
+    res.setHeader("Content-Length", String(size));
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="${encodeURIComponent(name)}"`,
+    );
+    stream.pipe(res);
+  }
+
+  @Get("assignments/:assignmentId/media")
+  @ApiOperation({ summary: "指派的媒体清单" })
+  async mediaList(@Param("assignmentId") assignmentId: string) {
+    return this.media.listByAssignment(assignmentId);
   }
 
   @Get(":id")

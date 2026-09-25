@@ -88,6 +88,13 @@ export interface AppConfig {
   agentAllowedApps?: string[];
   /** 试跑的网络面约束（域名白名单）。 */
   agentAllowedDomains?: string[];
+
+  /**
+   * P7b：Agent 总开关。**默认 false**——ADR-022 的信任模型变更必须显式
+   * 开启（同 permission-profile 的「默认最保守」）。开启后 agent-host 才会
+   * 开始轮询 agent-collab 通道并接受 SOP 指派。
+   */
+  agentEnabled?: boolean;
 }
 
 // electron-store 11（conf 15）移除了 JSON schema（ajv）支持，旧 schema 里
@@ -135,6 +142,9 @@ const defaults = {
   agentTaskExecution: '',
   agentAllowedApps: [],
   agentAllowedDomains: [],
+  // P7b：Agent 总开关默认 false（ADR-022 显式开启原则；旧配置缺键由
+  // defaults 补齐，升级后零行为变化）。
+  agentEnabled: false,
 } satisfies Partial<AppConfig>;
 
 /**

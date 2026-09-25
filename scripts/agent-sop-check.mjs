@@ -501,6 +501,19 @@ console.log("\n── 4. 协作 API（11 §3/§5）──");
   check("relay role 白名单（tool 往返不对执行器开放）", /role !== "system" && role !== "user" && role !== "assistant"/.test(relaySrc));
   check("SopModule 引入 AiModule（relay 依赖）", /AiModule/.test(readFileSync(join(apiDir, "src/modules/sop/sop.module.ts"), "utf8")));
 
+  // ── P7b：agent 媒体通道（截图/录屏回传）──
+  check("媒体上传端点存在（POST assignments/:id/media）", /@Post\("assignments\/:id\/media"\)/.test(relaySrc));
+  check("上传过 agent:sop 能力闸", /uploadMedia[\s\S]{0,400}authenticateAgent\(/.test(relaySrc));
+  check("上传校验指派归属（防 A 机器给 B 工单塞证据）", /assignment\.targetExecutorId !== executor\.id/.test(relaySrc));
+  const mediaSrc = readFileSync(join(apiDir, "src/modules/sop/sop-media.service.ts"), "utf8");
+  check("媒体名封闭字符集（不承担路径语义）", /SAFE_MEDIA_NAME_RE/.test(mediaSrc));
+  check("媒体 100MB 上限（对齐 artifacts）", /MAX_AGENT_MEDIA_BYTES = 100 \* 1024 \* 1024/.test(mediaSrc));
+  check("存储路径终检越界防御", /startsWith\(path\.resolve\(getAgentMediaRootDir\(\)\) \+ path\.sep\)/.test(mediaSrc));
+  check("mediaRefs 放行 agent-collab/media 平台路径", /agent-collab\\\/media/.test(svcSrc));
+  const appMod = readFileSync(join(apiDir, "src/app.module.ts"), "utf8");
+  void appMod;
+  check("迁移 1790000000042 登记（agent_media）", readFileSync(join(apiDir, "src/migrations/1790000000042-AddAgentMediaTable.ts"), "utf8").includes("agent_media"));
+
   // 协作协议治理（11 §7）：P5/P6 明确留 P7（executor-desktop 实现 client 时进 agentCollab 段）
   const proto = readFileSync(join(root, "packages/executor-protocol/protocol.json"), "utf8");
   check("protocol.json 未混入 agentCollab（非三方共有语义不进 schemas，留 P7 按需登记）",

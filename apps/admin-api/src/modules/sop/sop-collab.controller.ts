@@ -10,13 +10,17 @@ import {
   Param,
   Post,
   UnauthorizedException,
+  UploadedFile,
+  UseInterceptors,
 } from "@nestjs/common";
+import { FileInterceptor } from "@nestjs/platform-express";
 import { ConfigService } from "@nestjs/config";
 
 import { Public } from "../../common/decorators/public.decorator";
 import { ExecutorService } from "../executor/executor.service";
 import { AiService, type MultimodalMessage } from "../ai/ai.service";
 import { SopService } from "./sop.service";
+import { SopMediaService } from "./sop-media.service";
 import type { SopClarificationMediaRef } from "./entities/sop-clarification.entity";
 
 /**
@@ -94,6 +98,7 @@ export class SopCollabController {
   constructor(
     private readonly executors: ExecutorService,
     private readonly sops: SopService,
+    private readonly media: SopMediaService,
     private readonly config: ConfigService,
     private readonly ai: AiService,
   ) {}
@@ -282,6 +287,44 @@ export class SopCollabController {
       usage: res.usage,
       model: res.model,
     };
+  }
+
+  /**
+   * 媒体回传（P7b）：执行器把截图/录屏挂到指派上。
+   *
+   * 返回的 `mediaPath` 是 mediaRefs 的**唯一合法引用形态**
+   * （/api/agent-collab/media/<id>）——澄清提问引用外网 URL 的门在
+   * SopService.validateMediaRefs 早已关死（SSRF 转嫁面），这里给出的是
+   * 平台内路径，中心侧（Qwen 视频理解）经下载端点取字节。
+   *
+   * 归属校验：指派必须属于该执行器（防 A 机器给 B 的工单塞证据）；
+   * 状态不设限——澄清期间（blocked）正是要发截图的场景。
+   */
+  @Post("assignments/:id/media")
+  @HttpCode(HttpStatus.CREATED)
+  @UseInterceptors(FileInterceptor("file"))
+  async uploadMedia(
+    @Param("id") assignmentId: string,
+    @Body() body: { address: string },
+    @UploadedFile() file?: Express.Multer.File,
+    @Headers("authorization") auth?: string,
+  ) {
+    const executor = await this.authenticateAgent(body?.address, auth);
+    const { assignment } = await this.sops.getAssignment(assignmentId);
+    if (assignment.targetExecutorId !== executor.id) {
+      throw new ForbiddenException("指派不属于该执行器");
+    }
+    if (!file?.buffer?.length) {
+      throw new BadRequestException("缺少 file 字段（multipart）");
+    }
+    const stored = await this.media.save({
+      assignmentId,
+      name: file.originalname ?? "media.bin",
+      mime: file.mimetype ?? null,
+      buf: file.buffer,
+      uploadedBy: `executor:${executor.id}`,
+    });
+    return stored;
   }
 
   // ── 内部 ────────────────────────────────────────────────────────

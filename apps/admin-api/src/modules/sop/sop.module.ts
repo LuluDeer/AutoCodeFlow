@@ -6,7 +6,9 @@ import { Sop } from "./entities/sop.entity";
 import { SopVersion } from "./entities/sop-version.entity";
 import { SopAssignment } from "./entities/sop-assignment.entity";
 import { SopClarification } from "./entities/sop-clarification.entity";
+import { AgentMedia } from "./entities/agent-media.entity";
 import { SopService } from "./sop.service";
+import { SopMediaService } from "./sop-media.service";
 import { SopController } from "./sop.controller";
 import { SopCollabController } from "./sop-collab.controller";
 import { AgentModule } from "../agent/agent.module";
@@ -37,6 +39,7 @@ import { AGENT_QUEUE_NAME } from "../agent/runtime/agent.processor";
       SopVersion,
       SopAssignment,
       SopClarification,
+      AgentMedia,
     ]),
     forwardRef(() => AgentModule),
     ExecutorModule,
@@ -46,7 +49,7 @@ import { AGENT_QUEUE_NAME } from "../agent/runtime/agent.processor";
     BullModule.registerQueue({ name: AGENT_QUEUE_NAME }),
   ],
   controllers: [SopController, SopCollabController],
-  providers: [SopService],
+  providers: [SopService, SopMediaService],
   exports: [SopService],
 })
 export class SopModule {}

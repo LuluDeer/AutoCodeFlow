@@ -91,7 +91,7 @@ async function main(): Promise<void> {
       environment: makeEnv(),
       permissions,
       handlers: buildLoopHandlers(
-        { address: 'a:1', client: {} as never, permissions, sop: makeSop([{ kind: 'command', run: 'node verify.js' }]), workspaceRoot: ws, environment: makeEnv() },
+        { address: 'a:1', assignmentId: '11111111-1111-1111-1111-111111111111', client: {} as never, permissions, sop: makeSop([{ kind: 'command', run: 'node verify.js' }]), workspaceRoot: ws, environment: makeEnv() },
         llm,
       ),
     });
@@ -117,7 +117,7 @@ async function main(): Promise<void> {
       environment: makeEnv(),
       permissions,
       handlers: buildLoopHandlers(
-        { address: 'a:1', client: {} as never, permissions, sop: makeSop([{ kind: 'command', run: 'node verify.js' }]), workspaceRoot: ws, environment: makeEnv() },
+        { address: 'a:1', assignmentId: '11111111-1111-1111-1111-111111111111', client: {} as never, permissions, sop: makeSop([{ kind: 'command', run: 'node verify.js' }]), workspaceRoot: ws, environment: makeEnv() },
         llm,
       ),
     });
@@ -139,7 +139,7 @@ async function main(): Promise<void> {
       environment: makeEnv(),
       permissions,
       handlers: buildLoopHandlers(
-        { address: 'a:1', client: {} as never, permissions, sop: makeSop([{ kind: 'command', run: 'node verify.js' }]), workspaceRoot: ws, environment: makeEnv() },
+        { address: 'a:1', assignmentId: '11111111-1111-1111-1111-111111111111', client: {} as never, permissions, sop: makeSop([{ kind: 'command', run: 'node verify.js' }]), workspaceRoot: ws, environment: makeEnv() },
         llm,
       ),
     });
@@ -159,7 +159,7 @@ async function main(): Promise<void> {
       environment: makeEnv(),
       permissions: off,
       handlers: buildLoopHandlers(
-        { address: 'a:1', client: {} as never, permissions: off, sop: makeSop([{ kind: 'command', run: 'node verify.js' }]), workspaceRoot: ws, environment: makeEnv() },
+        { address: 'a:1', assignmentId: '11111111-1111-1111-1111-111111111111', client: {} as never, permissions: off, sop: makeSop([{ kind: 'command', run: 'node verify.js' }]), workspaceRoot: ws, environment: makeEnv() },
         llm,
       ),
     });
@@ -177,7 +177,7 @@ async function main(): Promise<void> {
       environment: makeEnv(),
       permissions,
       handlers: buildLoopHandlers(
-        { address: 'a:1', client: {} as never, permissions, sop: makeSop([{ kind: 'command', run: 'node verify.js' }]), workspaceRoot: ws, environment: makeEnv() },
+        { address: 'a:1', assignmentId: '11111111-1111-1111-1111-111111111111', client: {} as never, permissions, sop: makeSop([{ kind: 'command', run: 'node verify.js' }]), workspaceRoot: ws, environment: makeEnv() },
         llm,
       ),
     });
@@ -190,7 +190,7 @@ async function main(): Promise<void> {
       environment: makeEnv(),
       permissions,
       handlers: buildLoopHandlers(
-        { address: 'a:1', client: {} as never, permissions, sop: makeSop([{ kind: 'command', run: 'node verify.js' }]), workspaceRoot: ws2, environment: makeEnv() },
+        { address: 'a:1', assignmentId: '11111111-1111-1111-1111-111111111111', client: {} as never, permissions, sop: makeSop([{ kind: 'command', run: 'node verify.js' }]), workspaceRoot: ws2, environment: makeEnv() },
         llm2,
       ),
     });
@@ -211,7 +211,7 @@ async function main(): Promise<void> {
       environment: makeEnv(),
       permissions,
       handlers: buildLoopHandlers(
-        { address: 'a:1', client: {} as never, permissions, sop: makeSop([]), workspaceRoot: ws, environment: makeEnv() },
+        { address: 'a:1', assignmentId: '11111111-1111-1111-1111-111111111111', client: {} as never, permissions, sop: makeSop([]), workspaceRoot: ws, environment: makeEnv() },
         llm,
       ),
     });
@@ -228,7 +228,7 @@ async function main(): Promise<void> {
       environment: makeEnv(),
       permissions,
       handlers: buildLoopHandlers(
-        { address: 'a:1', client: {} as never, permissions, sop: makeSop([{ kind: 'command', run: 'node -c "console.log(1)"' }]), workspaceRoot: ws2, environment: makeEnv() },
+        { address: 'a:1', assignmentId: '11111111-1111-1111-1111-111111111111', client: {} as never, permissions, sop: makeSop([{ kind: 'command', run: 'node -c "console.log(1)"' }]), workspaceRoot: ws2, environment: makeEnv() },
         llm2,
       ),
     });
