@@ -455,6 +455,31 @@
 - ⏳ 打包态 Playwright 浏览器分发（electron-builder extraResources）留 P7d
 - ⏳ 托管状态进托盘/状态窗留 P7c（设置页状态行已落地，见上「设置面」行）
 
+### 9.6 P7d 前半（2026-09 落地）：候选应用交付通道 ✅
+
+> **产物**：desktop `agent/zip-writer.ts`（零依赖 store-only ZIP）+ `agent/package-candidate.ts`
+> （manifest 契约打包器）+ `collab-client.uploadCandidatePackage` + host 交付流；
+> admin-api `POST /agent-collab/assignments/:id/candidate-package`（SopModule 引入
+> ExecutorPackageModule）。**07 §3.3 的关键一笔兑现**：「Agent 生成代码 → 落盘为候选
+> 应用 → 经既有通道部署运行」的通道已闭环到「包进系统」。
+
+| 任务 | 产出 | 状态 |
+|---|---|---|
+| ZIP 写入器 | store-only（源码小体量）、零外部依赖、CRC32 向量 + 自解析回读 + 条件 `unzip -t` 交叉验证 | ✅ |
+| 打包器 | manifest.yaml（runtime/entrypoint/来源标记 sop+version+contentHash）+ 工作区源文件；观测产物（截图/录屏）排除；入口缺失如实抛 | ✅ |
+| 交付端点 | agent:sop 能力闸 + 指派归属校验；**复用 ExecutorPackageService.create**——PK 魔数/后缀白名单/SEC-05 zip bomb 逐项生效；来源标记由平台代码打（`uploadedBy=agent:sop:<executorId>`，ADR-022 决策 5）；版本 `+agent.<ts>` 构建元数据（幂等交付不撞唯一约束） | ✅ |
+| host 交付流 | delivered → 打包 → 上传 → packageRef 进回报；**打包/上传失败如实回报 deliver_failed**（验收通过但交付失败是运维可动作信息，掩盖成 completed 会让人误以为应用已进系统） | ✅ |
+
+**关键判断**：
+
+- **不绕过任何既有校验**——candidate-package 是既有校验链的**新入口**，不是旁路；部署本身仍走 deploy_application（DEP-04 审批，方案 C），本端点只负责「包进系统」。
+- **manifest 由平台生成**——runtime 由 interpreter 映射、entrypoint 来自 entry spec、来源标记写进 manifest 注释与包 description；LLM 不接触 manifest 语义。
+- **交付失败 ≠ 验收失败**——两者分开回报，中台可区分「做不出来」与「做出来了但没交上去」。
+
+**验收**：desktop `test:main` **25 套全绿**（+package-candidate 19 项，含 `unzip -t` 独立实现交叉验证）；agent-host e2e 扩至 19 项（候选包 multipart 上传 + packageRef 进回报）；`agent-sop-check` **79 项**（+7 交付通道断言）；tsc/lint/迁移守卫全绿。
+
+**残差（如实）**：包→deploy 的端到端（中台 Agent 发起 deploy_application → DEP-04 审批 → executor-node 拉包部署 → 验收）需真实 LLM 与部署环境，属 P7d 后半；isolated-runner 直接执行路径属 P7e。
+
 ## 10. 立即可开工的建议
 
 **本轮我建议先做 P0**，理由：

@@ -154,6 +154,9 @@ function parseEntry(raw: unknown): EntrySpec | null {
   if (typeof rec.path !== 'string' || rec.path.trim() === '') return null;
   const interpreter = rec.interpreter;
   if (interpreter !== 'python' && interpreter !== 'python3' && interpreter !== 'node') return null;
+  // 路径不允许空白：交付回报的 candidate 串以空格分隔（interpreter path —
+  // notes），含空格的路径会让交付打包的解析歧义——入口文件名一律要求无空白。
+  if (/\s/.test(rec.path)) return null;
   return { interpreter, path: rec.path };
 }
 

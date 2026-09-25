@@ -514,6 +514,17 @@ console.log("\n── 4. 协作 API（11 §3/§5）──");
   void appMod;
   check("迁移 1790000000042 登记（agent_media）", readFileSync(join(apiDir, "src/migrations/1790000000042-AddAgentMediaTable.ts"), "utf8").includes("agent_media"));
 
+  // ── P7d 前半：候选应用包交付（07 §3.3：Agent 负责写、既有链路负责跑）──
+  check("candidate-package 端点存在（multipart）", /@Post\("assignments\/:id\/candidate-package"\)/.test(relaySrc) && /diskStorage\(\{ destination: PACKAGE_UPLOAD_TMP_DIR \}\)/.test(relaySrc));
+  check("candidate 上传过 agent:sop 能力闸", /uploadCandidatePackage[\s\S]{0,400}authenticateAgent\(/.test(relaySrc));
+  check("candidate 上传校验指派归属", relaySrc.split("candidate-package")[1]?.includes("assignment.targetExecutorId !== executor.id"));
+  check("来源标记由平台代码打（uploadedBy=agent:sop:<executorId>，不由 Agent 自称）", /`agent:sop:\$\{executor\.id\}`/.test(relaySrc));
+  check("版本带 +agent 构建元数据（幂等交付不撞唯一约束）", /\+agent\./.test(relaySrc));
+  check("复用 ExecutorPackageService.create（SEC-05 zip bomb 等既有校验链生效）", /this\.packages\.create\(/.test(relaySrc));
+  check("SopModule 引入 ExecutorPackageModule", /ExecutorPackageModule/.test(readFileSync(join(apiDir, "src/modules/sop/sop.module.ts"), "utf8")));
+  const hostSrc = readFileSync(join(apiDir, "src/modules/sop/../sop/sop.service.ts"), "utf8");
+  void hostSrc;
+
   // 协作协议治理（11 §7）：P5/P6 明确留 P7（executor-desktop 实现 client 时进 agentCollab 段）
   const proto = readFileSync(join(root, "packages/executor-protocol/protocol.json"), "utf8");
   check("protocol.json 未混入 agentCollab（非三方共有语义不进 schemas，留 P7 按需登记）",
