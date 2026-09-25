@@ -18,6 +18,7 @@ import { AgentApiClient } from "./tools/agent-api.client";
 import { ToolBinderService } from "./tools/tool-binder.service";
 import { AiModule } from "../ai/ai.module";
 import { TaskModule } from "../task/task.module";
+import { TaskTemplateModule } from "../task-template/task-template.module";
 import { ExecutorModule } from "../executor/executor.module";
 import { ApplicationModule } from "../application/application.module";
 import { SchedulerModule } from "../scheduler/scheduler.module";
@@ -49,6 +50,8 @@ import { AgentEventAggregator } from "./trigger/agent-event-aggregator.service";
     BullModule.registerQueue({ name: AGENT_QUEUE_NAME }),
     AiModule,
     forwardRef(() => TaskModule),
+    // P6 补齐：create_task_from_template 的执行体（TaskTemplateService）
+    TaskTemplateModule,
     forwardRef(() => ExecutorModule),
     forwardRef(() => ApplicationModule),
     // P4: leader 门禁复用 SchedulerService（不另造选举）；通知渠道用于

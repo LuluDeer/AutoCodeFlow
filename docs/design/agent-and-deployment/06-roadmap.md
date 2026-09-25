@@ -480,6 +480,20 @@
 
 **残差（如实）**：包→deploy 的端到端（中台 Agent 发起 deploy_application → DEP-04 审批 → executor-node 拉包部署 → 验收）需真实 LLM 与部署环境，属 P7d 后半；isolated-runner 直接执行路径属 P7e。
 
+### 9.7 P6 补齐（2026-09-26）：写工具执行体 + 中台独立验证 ✅
+
+> **产物**：ToolBinder 绑定 9 个写工具（trigger/retry/kill/pause/resume/create_application/
+> create_task_from_template/deploy_application/deploy_app）、4 个写工具逐工具审批闸、
+> completed 回报触发的独立验证会话。
+
+| 任务 | 说明 | 状态 |
+|---|---|---|
+| 写工具绑定 | incident/sop_authoring 白名单里的写工具自 P3 起从未绑定执行体（模型调用一律「尚未实现」）——全部绑进 ToolBinder；trigger 带 `triggerType=agent`（缺口 6）、retry 回放原 params（NF-06）、deploy 走**方案 C**（DEP-04 pending_approval 透传） | ✅ |
+| 审批闸补齐 | update_task / rollback_task_version / upgrade_deployment / stop_deployment 加 `approvalRequired`（03 §2 需审批，全局写策略放宽也不放行） | ✅ |
+| 独立验证（04 §3 ⑤） | completed 回报触发 sop_review 复核会话：scope = SOP + acceptance kind=platform 任务集；sop_review 加 trigger_task（仍无发布权）；执行器自述以 untrustedResult 标注；验证起不来 fail-open | ✅ |
+
+**验收**：`agent-sop-check` **102 项**（审批闸 4 / 绑定 9 / 验证会话 5）；四套 agent 套件 0 失败；tsc 0、nest build 绿（DI 含 TaskTemplateModule/AppDeploymentService）。
+
 ## 10. 立即可开工的建议
 
 **本轮我建议先做 P0**，理由：
