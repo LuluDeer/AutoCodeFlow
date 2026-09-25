@@ -71,7 +71,7 @@ describe("OpenAPI export (e2e)", () => {
     const json = JSON.stringify(document, null, 2) + "\n";
     const outPath = path.resolve(__dirname, "..", "openapi.json");
     fs.writeFileSync(outPath, json, "utf8");
-    // eslint-disable-next-line no-console
+
     console.log(
       `[openapi-export] wrote ${outPath} (${Buffer.byteLength(json)} bytes, ${pathCount} paths)`,
     );
