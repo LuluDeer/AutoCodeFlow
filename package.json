@@ -7,7 +7,7 @@
     "node": ">=24"
   },
   "scripts": {
-    "test:api": "cd apps/admin-api && npx jest",
+    "test:api": "cd apps/admin-api && npm test",
     "test:node": "cd apps/executor-node && npx jest",
     "test:python": "cd apps/executor-python && python -m pytest -q",
     "test:web": "cd apps/admin-web && npx vitest run",
@@ -51,6 +51,8 @@
     "lint:node": "cd apps/executor-node && npx eslint src --ext .ts",
     "lint:all": "npm run lint:api && npm run lint:web && npm run lint:node",
     "check:lint-gates": "node scripts/check-lint-gates.mjs",
+    "check:desktop-bundle-drift": "node scripts/check-desktop-bundle-drift.mjs",
+    "check:desktop-bundle-drift:selftest": "node scripts/check-desktop-bundle-drift.mjs --selftest",
     "build:web": "cd apps/admin-web && npm run build",
     "build:node": "cd apps/executor-node && npm run build",
     "build:node-sdk": "cd packages/autocodeflow-node-sdk && npm run build",

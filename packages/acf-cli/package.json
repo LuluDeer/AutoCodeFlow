@@ -22,26 +22,28 @@
   "scripts": {
     "build": "tsc",
     "prepublishOnly": "npm run build",
-    "dev": "ts-node src/index.ts",
+    "dev": "tsx src/index.ts",
     "start": "node dist/index.js",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "axios": "1.20.0",
-    "chalk": "4.1.2",
+    "chalk": "^6.0.0",
     "cli-table3": "0.6.5",
-    "commander": "12.0.0",
-    "conf": "10.2.0",
-    "ora": "5.4.1"
+    "commander": "15.0.0",
+    "conf": "^15.1.0",
+    "ora": "^9.4.1"
   },
   "devDependencies": {
-    "@types/node": "24.13.3",
-    "ts-node": "10.9.2",
-    "typescript": "5.4.5",
-    "vitest": "^3.2.4"
+    "@types/node": "24.13.6",
+    "typescript": "^5.9.3",
+    "vitest": "^5.0.1",
+    "tsx": "^4.20.6"
   },
   "engines": {
-    "node": ">=18"
-  }
+    "node": ">=22.12.0"
+  },
+  "_comment_deps": "版本基线（2026-09 依赖审计 + ESM 迁移）：本包为 ESM（type: module，NodeNext 产出）。commander 15 / chalk 6 / ora 9 / conf 15 均为 npm 最新；chalk 6 要求 Node >=22，engines 相应抬至 >=22.12.0（commander 15 同要求）。conf 15 保留 configFileMode/defaults/cwd 语义（config.ts 凭据文件 0600 权限与用户目录布局不变）。",
+  "type": "module"
 }
