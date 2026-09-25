@@ -61,6 +61,33 @@ export interface AppConfig {
    * 升级后行为不变、也不需要迁移。
    */
   pullMode?: boolean;
+
+  /**
+   * P7a（agent-and-deployment / ADR-022）：执行器 Agent 权限档位（09）。
+   *
+   * 全部可选、缺省即最保守（与 uv* / pullMode 同款兼容红线）：旧配置文件
+   * 没有这些键时由 defaults 补齐为 minimal——**升级不会让任何机器突然获得
+   * Agent 能力**，Agent 是"显式开启"而非"默认开启"。
+   *
+   * 为什么这里只存**本地**档位：最终生效档位是 `min(本地, 中台下发上限)`
+   * （ADR-022 决策 4 / 09 §4.2），中台策略经 agent-collab poll 随 sopPolicy
+   * 下发，合并发生在 `agent/permission-profile.ts` 的 mergeWithCenterPolicy。
+   * 落盘只存本地意图，合并结果不落盘（否则"被中台压下来"会被持久化成
+   * 本地意愿，中台放宽后反而回不去）。
+   *
+   * 消毒纪律：这些枚举值**必须**进 config-sanitize.ts 的消毒层——conf 15
+   * 移除 JSON schema 后坏值静默落盘，一个拼错的档位名（sandbox→sandox）
+   * 不会报错，只会把 Agent 带到未定义行为（09 §4.1 明确点名这个踩坑风险）。
+   */
+  agentPermissionProfile?: string;
+  agentCodeExecution?: string;
+  agentSandboxBackend?: string;
+  agentHostAccess?: string;
+  agentTaskExecution?: string;
+  /** hostAccess=app-scoped（P7c）时的应用白名单；P7a 档位下恒空。 */
+  agentAllowedApps?: string[];
+  /** 试跑的网络面约束（域名白名单）。 */
+  agentAllowedDomains?: string[];
 }
 
 // electron-store 11（conf 15）移除了 JSON schema（ajv）支持，旧 schema 里
@@ -94,6 +121,20 @@ const defaults = {
   // ARCH-33：默认 false = 保持既有 push 行为。旧配置文件缺该键时由 defaults
   // 补齐，升级后行为不变（兼容红线，与 uv* 字段同处置）。
   pullMode: false,
+  // P7a（ADR-022）：Agent 权限档位默认 **minimal**（什么都不允许）。
+  // 选 minimal 而非 standard 作默认，是因为这是一次信任模型变更——09 §1
+  // 「默认最保守」原则要求开箱即用档位为「什么都不能做」；且旧配置文件
+  // 根本没有这些键，升级后**不允许**凭空获得"能在本机试跑生成代码"的能力。
+  // 09 §7 待用户确认的「默认预设改 standard」一旦拍板，只改这里。
+  agentPermissionProfile: 'minimal',
+  // 细粒度覆盖缺省**空串** = "不覆盖"（跟随预设），而不是"某个轴值"。
+  // 空串经消毒层保留、经 permission-profile 解析回落到预设值。
+  agentCodeExecution: '',
+  agentSandboxBackend: '',
+  agentHostAccess: '',
+  agentTaskExecution: '',
+  agentAllowedApps: [],
+  agentAllowedDomains: [],
 } satisfies Partial<AppConfig>;
 
 /**

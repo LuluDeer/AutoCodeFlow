@@ -34,7 +34,17 @@
     "src/main/app-inventory.selftest.ts",
     "src/main/app-uninstall.ts",
     "src/main/app-uninstall.selftest.ts",
-    "src/main/app-name-recovery.ts"
+    "src/main/app-name-recovery.ts",
+    "src/main/agent/perception.ts",
+    "src/main/agent/perception.selftest.ts",
+    "src/main/agent/workspace.ts",
+    "src/main/agent/workspace.selftest.ts",
+    "src/main/agent/permission-profile.ts",
+    "src/main/agent/permission-profile.selftest.ts",
+    "src/main/agent/gates.ts",
+    "src/main/agent/gates.selftest.ts",
+    "src/main/agent/loop.ts",
+    "src/main/agent/loop.selftest.ts"
   ],
   "exclude": []
 }

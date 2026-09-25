@@ -14,8 +14,10 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import {
   BOOLEAN_FIELDS,
+  ENUM_FIELDS,
   NUMBER_FIELDS,
   STRING_FIELDS,
+  STRING_LIST_FIELDS,
   coerceNumber,
   sanitizeConfigInput,
 } from './config-sanitize';
@@ -175,6 +177,106 @@ function main(): void {
       );
     }
 
+    // ── 4b. P7a（ADR-022）：Agent 权限档位的封闭枚举消毒 ──────────────────
+    //    反证形态：conf 15 移除 ajv 后坏值**静默落盘**。若这里不消毒，
+    //    `sandox` 会原样写进配置、界面照常显示，而档位解析层把它回落到
+    //    最保守档 →「选了 standard、保存成功、Agent 却按 off 跑」且零日志。
+    {
+      // 合法值保留（大小写/空白归一化）
+      for (const rule of ENUM_FIELDS) {
+        for (const v of rule.values) {
+          const out = sanitizeConfigInput({ [rule.key]: `  ${v.toUpperCase()}  ` });
+          assert.strictEqual(out[rule.key], v, `${rule.key} 的合法值 ${v} 必须归一化保留`);
+        }
+      }
+      // 拼错 / 未知 → 空串（= "不覆盖"，跟随预设），绝不落盘坏值
+      for (const [key, bad] of [
+        ['agentPermissionProfile', 'sandard'],
+        ['agentCodeExecution', 'sandox'],
+        ['agentSandboxBackend', 'docker'],
+        ['agentHostAccess', 'full'],
+        ['agentTaskExecution', 'isolated'],
+      ] as const) {
+        assert.strictEqual(
+          sanitizeConfigInput({ [key]: bad })[key],
+          '',
+          `${key} 的非法值 ${bad} 必须归一化为 ''（不得静默落盘）`,
+        );
+      }
+      // 非字符串（渲染层送来的对象/数字/null）→ 空串而不是删键
+      for (const bad of [42, null, undefined, {}, [], true]) {
+        assert.strictEqual(
+          sanitizeConfigInput({ agentCodeExecution: bad }).agentCodeExecution,
+          '',
+          `非字符串档位值 ${JSON.stringify(bad)} 必须归一化为 ''`,
+        );
+      }
+      // 枚举清单必须与 permission-profile.ts 的轴定义**同源**（两处漂移 =
+      // 消毒层放行、解析层拒绝，或反过来——都是静默行为偏差）
+      const pp = fs.readFileSync(
+        path.join(__dirname, '..', 'src', 'main', 'agent', 'permission-profile.ts'),
+        'utf-8',
+      );
+      const axisOf = (name: string): string[] => {
+        const m = new RegExp(
+          `export const ${name} = \\[([^\\]]*)\\] as const;`,
+        ).exec(pp);
+        assert.ok(m, `SYNC: permission-profile.ts 找不到 ${name} 定义`);
+        return m![1].split(',').map((s) => s.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean);
+      };
+      assert.deepStrictEqual(
+        ENUM_FIELDS.find((r) => r.key === 'agentCodeExecution')!.values,
+        axisOf('CODE_EXECUTION_MODES'),
+        'SYNC: agentCodeExecution 枚举与 CODE_EXECUTION_MODES 漂移',
+      );
+      assert.deepStrictEqual(
+        ENUM_FIELDS.find((r) => r.key === 'agentSandboxBackend')!.values,
+        axisOf('SANDBOX_BACKEND_MODES'),
+        'SYNC: agentSandboxBackend 枚举与 SANDBOX_BACKEND_MODES 漂移',
+      );
+      assert.deepStrictEqual(
+        ENUM_FIELDS.find((r) => r.key === 'agentHostAccess')!.values,
+        axisOf('HOST_ACCESS_MODES'),
+        'SYNC: agentHostAccess 枚举与 HOST_ACCESS_MODES 漂移',
+      );
+      assert.deepStrictEqual(
+        ENUM_FIELDS.find((r) => r.key === 'agentTaskExecution')!.values,
+        axisOf('TASK_EXECUTION_MODES'),
+        'SYNC: agentTaskExecution 枚举与 TASK_EXECUTION_MODES 漂移',
+      );
+      assert.deepStrictEqual(
+        ENUM_FIELDS.find((r) => r.key === 'agentPermissionProfile')!.values,
+        axisOf('AGENT_PRESETS'),
+        'SYNC: agentPermissionProfile 枚举与 AGENT_PRESETS 漂移',
+      );
+    }
+
+    // ── 4c. P7a：白名清单（数组）消毒 ────────────────────────────────────
+    {
+      for (const rule of STRING_LIST_FIELDS) {
+        // 非数组 → 空数组（不得把标量/对象带进 store）
+        for (const bad of [42, null, undefined, {}, 'erp.corp.com', true]) {
+          assert.deepStrictEqual(
+            sanitizeConfigInput({ [rule.key]: bad })[rule.key],
+            [],
+            `${rule.key} 的非数组值必须清空`,
+          );
+        }
+        // 条数封顶 + 非字符串/空白条目剔除
+        const many = Array.from({ length: rule.max + 50 }, (_, i) => `d${i}.example.com`);
+        assert.strictEqual(
+          (sanitizeConfigInput({ [rule.key]: many })[rule.key] as string[]).length,
+          rule.max,
+          `${rule.key} 必须封顶 ${rule.max} 条`,
+        );
+        assert.deepStrictEqual(
+          sanitizeConfigInput({ [rule.key]: ['ok.example.com', '', '  ', 42, null] })[rule.key],
+          ['ok.example.com'],
+          `${rule.key} 必须剔除非法条目`,
+        );
+      }
+    }
+
     // ── 5. 不认识的配置项必须原样透传（新增字段不必改本模块）─────────────
     assert.strictEqual(
       sanitizeConfigInput({ someFutureField: 'x' }).someFutureField,
@@ -200,10 +302,22 @@ function main(): void {
         ...NUMBER_FIELDS.map((r) => r.key),
         ...STRING_FIELDS,
         ...BOOLEAN_FIELDS,
+        ...ENUM_FIELDS.map((r) => r.key),
+        ...STRING_LIST_FIELDS.map((r) => r.key),
       ]) {
         assert.ok(
           new RegExp(`\\b${key}\\b`).test(src),
           `config-store.ts 未出现字段 ${key}——清单已漂移`,
+        );
+      }
+      // P7a：档位字段必须在 config-store 的 **defaults** 里（否则旧配置文件
+      // 升级后读到 undefined，行为与"显式配了 minimal"不等价）。
+      const defaultsBlock = /const defaults = \{([\s\S]*?)\n\} satisfies/.exec(src);
+      assert.ok(defaultsBlock, 'SYNC: config-store.ts 找不到 defaults 块');
+      for (const rule of [...ENUM_FIELDS, ...STRING_LIST_FIELDS]) {
+        assert.ok(
+          new RegExp(`\\b${rule.key}\\s*:`).test(defaultsBlock![1]),
+          `SYNC: ${rule.key} 未进 config-store defaults（旧配置升级后读到 undefined）`,
         );
       }
       // 渲染层的 number input 必须真的经过消毒通道。

@@ -71,6 +71,42 @@ export const BOOLEAN_FIELDS: readonly string[] = [
 ];
 
 /**
+ * P7a（agent-and-deployment / ADR-022）：Agent 权限档位的**封闭枚举**字段。
+ *
+ * 为什么必须进消毒层（09 §4.1 明确点名的踩坑风险）：conf 15 移除 JSON
+ * schema 校验后，坏值**静默落盘**——`sandbox` 拼成 `sandox` 不会有任何报错，
+ * 而档位解析层会把未知值回落到最保守档。故障形态因此变成「用户在设置页
+ * 选了 standard、保存成功、界面也显示 standard，但 Agent 实际按 off 跑」，
+ * 且**没有任何日志**。这类"配置看起来生效了、行为却是另一套"的故障排查
+ * 成本极高。
+ *
+ * 因此这里**在写入前**就把非法档位名归一化成空串（= "不覆盖"，跟随预设），
+ * 而不是让坏值落盘。空串是合法语义，见 config-store.ts 的 defaults 注释。
+ */
+export interface EnumFieldRule {
+  key: string;
+  /** 合法值（小写比较，输入先 trim + 小写化）。 */
+  values: readonly string[];
+}
+
+export const ENUM_FIELDS: readonly EnumFieldRule[] = [
+  {
+    key: 'agentPermissionProfile',
+    values: ['minimal', 'standard', 'developer', 'ops-assist', 'full-trust'],
+  },
+  { key: 'agentCodeExecution', values: ['off', 'sandbox', 'host'] },
+  { key: 'agentSandboxBackend', values: ['none', 'process', 'container', 'vm'] },
+  { key: 'agentHostAccess', values: ['none', 'app-scoped', 'session'] },
+  { key: 'agentTaskExecution', values: ['deploy-only', 'isolated-runner'] },
+];
+
+/** P7a：字符串数组成员（白名单清单）——非数组清空、非字符串条目剔除、条数封顶。 */
+export const STRING_LIST_FIELDS: readonly { key: string; max: number }[] = [
+  { key: 'agentAllowedApps', max: 32 },
+  { key: 'agentAllowedDomains', max: 64 },
+];
+
+/**
  * 把任意入参规整成一个落进 electron-store 安全的值。
  *
  * 非有限数（NaN / ±Infinity）、`null`、`undefined`、`{}`、`[]`、数字字符串
@@ -121,6 +157,36 @@ export function sanitizeConfigInput(
     if (key in out && typeof out[key] !== 'boolean') {
       delete out[key];
     }
+  }
+
+  // P7a（ADR-022）：Agent 权限档位——封闭枚举，非法值归一化为空串（"不覆盖"）。
+  // **不删除该键**：删键意味着"保留已存值"，而一个拼错的值若因此留在盘上，
+  // 用户看到的仍是旧值、界面无法反映"我刚选的那个没生效"。写成空串则让
+  // 该轴明确跟随预设——语义确定、可解释、且不会再有坏值残留。
+  for (const rule of ENUM_FIELDS) {
+    if (!(rule.key in out)) continue;
+    const v = out[rule.key];
+    if (typeof v !== 'string') {
+      out[rule.key] = '';
+      continue;
+    }
+    const normalized = v.trim().toLowerCase();
+    out[rule.key] = rule.values.includes(normalized) ? normalized : '';
+  }
+
+  // P7a：白名清单——非数组一律清空（不得把对象/标量带进 store）；
+  // 条目只留非空字符串并封顶（防超大清单拖垮每次路径/域名校验）。
+  for (const rule of STRING_LIST_FIELDS) {
+    if (!(rule.key in out)) continue;
+    const v = out[rule.key];
+    if (!Array.isArray(v)) {
+      out[rule.key] = [];
+      continue;
+    }
+    out[rule.key] = v
+      .filter((s): s is string => typeof s === 'string' && s.trim() !== '')
+      .map((s) => s.trim())
+      .slice(0, rule.max);
   }
 
   // 密钥字段：非字符串时**丢弃**（ConfigStore.save 里 executorToken 走独立的
