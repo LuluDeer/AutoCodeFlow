@@ -99,7 +99,7 @@ export default function ExecutionReportPanel({
           />
         )}
         <Steps
-          direction="vertical"
+          orientation="vertical"
           size="small"
           current={step}
           items={entries.map((e) => {
@@ -107,7 +107,7 @@ export default function ExecutionReportPanel({
             const mark = isTerminal ? terminalMark(source.status, token) : { icon: undefined as React.ReactNode, color: undefined as string | undefined };
             return {
               title: TIMELINE_PHASE_LABELS(t)[e.phase],
-              description: (
+              content: (
                 <span data-testid={`timeline-${e.phase}`}>
                   {e.at ? formatDateTime(e.at) : '—'}
                   {e.detail ? (

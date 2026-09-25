@@ -184,8 +184,10 @@ describe('P1-25: 截断告警按当前视图判定（过滤/完整视图都不�
     fireEvent.click(loadBtn);
 
     // 拉到 2 万行触顶停拉后：内容已被 fullLogs 替换，但告警必须仍在
+    // （LOG-WIN-01：2 万行 > 500 阈值，渲染形态是 LogWindow div 而非 <pre>；
+    //   断言兼容两种形态——意图是"内容已替换"，不钉死具体元素）
     await vi.waitFor(() => {
-      const pre = document.querySelector('pre');
+      const pre = document.querySelector('pre, [data-testid="log-window"]');
       expect(pre?.textContent).toContain('plain-0');
     });
     expect(screen.getAllByText(/日志已截断/).length).toBeGreaterThan(0);

@@ -1,8 +1,22 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import {
-  Table, Button, Tag, Space, Typography, message, Modal, Select,
-  Badge, Tooltip, Alert, Empty, Popconfirm, Form, Progress, Radio, Input, theme,
-} from 'antd';
+import { Table,
+  Button,
+  Tag,
+  Space,
+  Typography,
+  Modal,
+  Select,
+  Badge,
+  Tooltip,
+  Alert,
+  Empty,
+  Popconfirm,
+  Form,
+  Progress,
+  Radio,
+  Input,
+  theme } from 'antd';
+import { message } from '../utils/toast';
 import {
   RocketOutlined, StopOutlined, ReloadOutlined, PlusOutlined,
   ThunderboltOutlined, UpCircleOutlined, CheckOutlined, CloseOutlined,
@@ -445,7 +459,7 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
         // UI 打磨：状态列收敛为单层 Tag（去掉 Badge+Tag 双重编码，宽 100→120 防审批徽标换行挤压）
         const cfg = statusConfig[s] || { color: 'default', label: s };
         return (
-          <Space direction="vertical" size={0}>
+          <Space orientation="vertical" size={0}>
             {/* D-P2-08（设计审计）：删掉无效 `background: ${cfg.color}15`——antd
                 预设色名拼成 'green15' 是非法 CSS，浏览器整段丢弃，底色从未生效；
                 让 Tag 自身配色（color=）生效即可。 */}
@@ -752,10 +766,12 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
             name="executorId"
             label={t('appDeploy.field.selectExecutor')}
           >
+            {/* antd 6.6：Select 的 dropdownRender 已废弃 → popupRender
+                （签名同为 (menu) => ReactNode，行为不变） */}
             <Select
               placeholder={t('appDeploy.placeholder.autoExecutor')}
               allowClear
-              dropdownRender={(menu) => (
+              popupRender={(menu) => (
                 <>
                   {availableExecutors.length > 0 && (
                     <div style={{ padding: '8px 12px', borderBottom: `1px solid ${token.colorBorderSecondary}` }}>

@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import axios from 'axios';
 import MainLayout from '../layouts/MainLayout';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { authApi } from '../api/auth';
 import { getApiBaseUrl } from '../api/client';
 import { logoutRemote } from '../api/logout';
@@ -56,13 +57,17 @@ describe('DR-04 explicit logout', () => {
       resolveLogout = resolve;
       rejectLogout = reject;
     }));
+    // BELL-01：MainLayout 内 NotificationBell 消费 react-query → 需要 provider
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(
-      <MemoryRouter initialEntries={['/dashboard']}>
-        <Routes>
-          <Route path="/dashboard" element={<MainLayout />} />
-          <Route path="/login" element={<div>Login destination</div>} />
-        </Routes>
-      </MemoryRouter>,
+      <QueryClientProvider client={qc}>
+        <MemoryRouter initialEntries={['/dashboard']}>
+          <Routes>
+            <Route path="/dashboard" element={<MainLayout />} />
+            <Route path="/login" element={<div>Login destination</div>} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
     );
     fireEvent.click(screen.getByText('alice'));
     fireEvent.click(await screen.findByText('退出登录'));
@@ -104,13 +109,17 @@ describe('DR-04 explicit logout', () => {
 
 describe('W8 user menu', () => {
   it('用户菜单不再包含「个人信息」死项（handleUserMenu 只处理 logout）', async () => {
+    // BELL-01：MainLayout 内 NotificationBell 消费 react-query → 需要 provider
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(
-      <MemoryRouter initialEntries={['/dashboard']}>
-        <Routes>
-          <Route path="/dashboard" element={<MainLayout />} />
-          <Route path="/login" element={<div>Login destination</div>} />
-        </Routes>
-      </MemoryRouter>,
+      <QueryClientProvider client={qc}>
+        <MemoryRouter initialEntries={['/dashboard']}>
+          <Routes>
+            <Route path="/dashboard" element={<MainLayout />} />
+            <Route path="/login" element={<div>Login destination</div>} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
     );
     fireEvent.click(screen.getByText('alice'));
     // 退出登录仍在

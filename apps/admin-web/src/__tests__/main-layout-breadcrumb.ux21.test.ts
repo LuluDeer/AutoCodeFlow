@@ -28,8 +28,12 @@ describe('P1-21 面包屑分工：pageSelfRendersBreadcrumb', () => {
     expect(pageSelfRendersBreadcrumb('/users')).toBe(false);
   });
 
-  it('ExecutorDetailPage（/executors/:id）不自带面包屑 → 头部仍显示', () => {
-    expect(pageSelfRendersBreadcrumb('/executors/exec-1')).toBe(false);
+  // BREADCRUMB-01：ExecutorDetailPage 现自渲染「执行器列表 / appName」语义
+  // 面包屑——头部自动面包屑只能取 URL 段（裸 UUID），双份且与页头名称矛盾，
+  // 故 /executors/:id 交由页面自渲染（install 仍须优先命中）。
+  it('ExecutorDetailPage（/executors/:id）自渲染语义面包屑 → 头部隐藏；install 仍自渲染', () => {
+    expect(pageSelfRendersBreadcrumb('/executors/exec-1')).toBe(true);
+    expect(pageSelfRendersBreadcrumb('/executors/install')).toBe(true);
   });
 
   it('末尾斜杠不影响判定', () => {

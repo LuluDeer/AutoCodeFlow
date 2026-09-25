@@ -69,7 +69,7 @@ vi.mock('recharts', async (importOriginal) => {
   const actual = await importOriginal<typeof import('recharts')>();
   return {
     ...actual,
-    ResponsiveContainer: ({ children }: { children: React.ReactElement }) =>
+    ResponsiveContainer: ({ children }: { children: React.ReactElement<Record<string, unknown>> }) =>
       cloneElement(children, { width: 200, height: 36 }),
   };
 });
@@ -283,9 +283,11 @@ describe('UI-09 ExecutionDetailPage 375px 产物', () => {
   });
 
   it('执行信息跨列项独占整行：失败分类/错误信息在独立单列 Descriptions，各断点恒整行', async () => {
-    // UI 打磨回归：antd Descriptions.Item.span 只接受 number，旧写法把响应式
-    // 对象传进 span 无效（md 下跨列项被挤在 1/3 列宽里）。现改为独立的
-    // column={1} Descriptions 渲染——xs 与 md 行为一致，错误信息始终占满整行。
+    // UI 打磨回归：跨列项（失败分类/错误信息）在独立的 column={1} Descriptions 中
+    // 渲染——xs 与 md 行为一致，错误信息始终占满整行。当年改写的动因是
+    // `Descriptions.Item.span` 只接受 number（传响应式对象无效）；antd 6.6.5 起该
+    // 限制已解除（span 支持 'filled'/断点对象），本套件锚定的是**当前布局选择**
+    // （独立单列块）而非 API 限制——若未来合并回主网格，请同步改写本断言。
     mediaMode = 'xs';
     const first = renderWithProviders(<ExecutionDetailPage />, '/tasks/t1/executions/e1');
     await screen.findByText('执行信息');
