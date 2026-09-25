@@ -411,7 +411,9 @@ export class ApplicationService implements OnModuleInit {
         where: {
           applicationId: app.id,
           version: app.version,
-          sourceDeploymentId: null,
+          // TypeORM 1.x：where 里的 null 字面量会抛错（不再编译成 IS NULL）。
+          // 上传路径的 sourceDeploymentId 恒为 NULL，必须显式 IsNull()。
+          sourceDeploymentId: IsNull(),
         },
       });
       if (existing) return;
