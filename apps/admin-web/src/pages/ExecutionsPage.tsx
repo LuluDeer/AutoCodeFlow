@@ -369,7 +369,7 @@ export default function ExecutionsPage() {
             executions.map((r) => {
               const cfg = statusMap[r.status] || { badge: 'default' as BadgeStatus, label: r.status };
               return (
-                <Card key={r.id} size="small" style={{ borderRadius: 10 }}>
+                <Card key={r.id} size="small">
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
                     <Link to={`/tasks/${r.taskId}`} style={{ fontWeight: 500, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       {r.taskName || r.taskId}

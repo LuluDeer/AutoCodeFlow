@@ -88,10 +88,12 @@ export const LAYOUT_TOKENS = {
  * 卡片圆角（px）。
  *
  * ConfigProvider 的全局 `borderRadius` 是 8，而卡片历史上被逐张覆写成 10
- * （约 18 处、多为 DashboardPage）——两者并存造成"同页面两种圆角"。此处把
- * 卡片圆角显式命名为令牌：新卡片引用它，避免继续散落字面量。
- * 注：若要彻底统一，正解是在 buildAntdTheme 里加 `components.Card.borderRadius`
- * 并删掉各页覆写；本令牌是渐进收敛的第一步（不改变现有视觉）。
+ * （约 18 处、多为 DashboardPage）——两者并存造成"同页面两种圆角"。
+ * 现已在 buildAntdTheme 的 `components.Card.borderRadius` 统一声明（值取自
+ * 本常量），各页覆写已删除；调用点无需再写 style。
+ * 注：LoginPage 的提交按钮、DashboardEmptyGuide 的虚线引导块也用 10，但那是
+ * **按钮/自绘容器**而非 Card，语义不同，故不走本令牌（若将来要统一，应各自
+ * 走 Button 组件令牌与容器令牌）。
  */
 export const CARD_RADIUS = 10;
 
