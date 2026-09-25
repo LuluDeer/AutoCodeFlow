@@ -645,6 +645,37 @@ describe("FEAT-07 EventSubscriptionService", () => {
       allowPrivateNetwork: false,
     });
   });
+
+  // ── TypeORM 1.x null-in-where 回归锁（e2e-full case 40 实证）─────────────
+  // TypeORM 1.x 起，where 里的 `null` **字面量**不再编译成 `IS NULL`，而是按
+  // invalidWhereValuesBehavior 默认直接抛
+  // "Null value encountered in property ... To match with SQL NULL, the
+  //  IsNull() operator must be used"。系统级订阅的 userId 列本就是 NULL，
+  // 故非管理员分支必须显式 IsNull()；退回字面量 null 会让普通用户拉订阅
+  // 列表恒 500（管理员走另一分支，故只在非管理员侧复现）。
+  //
+  // 反证（本用例的价值所在）：把源码的 IsNull() 改回 null 字面量 → 本用例转红。
+  // 之所以此前漏网：controller spec 把 findAll 整个 mock 掉了，真正的 TypeORM
+  // 调用从未被执行——本用例改从**仓储层**断言，绕开该盲区。
+  it("findAll：非管理员用 IsNull() 匹配系统级订阅（TypeORM 1.x 下 null 字面量会抛错）", async () => {
+    await svc.findAll(plainUser);
+    expect(subRepoMock.find).toHaveBeenCalledTimes(1);
+    const arg = subRepoMock.find.mock.calls[0][0] as {
+      where: Array<Record<string, unknown>>;
+    };
+    expect(arg.where).toEqual([
+      { userId: plainUser.id },
+      { userId: expect.objectContaining({ _type: "isNull" }) },
+    ]);
+  });
+
+  it("findAll：管理员不加 where（全量可见），且不做 IsNull 匹配", async () => {
+    await svc.findAll(adminUser);
+    const arg = subRepoMock.find.mock.calls[0][0] as {
+      where?: unknown;
+    };
+    expect(arg.where).toBeUndefined();
+  });
 });
 
 /**

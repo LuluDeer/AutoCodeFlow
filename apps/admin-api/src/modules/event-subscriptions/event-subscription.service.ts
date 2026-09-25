@@ -8,7 +8,7 @@ import {
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { ConfigService } from "@nestjs/config";
-import { Repository } from "typeorm";
+import { IsNull, Repository } from "typeorm";
 import { AuthUser } from "../../common/interfaces/auth-user.interface";
 import { createHash } from "node:crypto";
 // D3-B-P1-3: webhook 订阅改向审计落证（@Optional 同 application.service——
@@ -188,7 +188,11 @@ export class EventSubscriptionService {
     const rows = this.isAdmin(user)
       ? await this.subRepo.find({ order: { createdAt: "DESC" }, take: 500 })
       : await this.subRepo.find({
-          where: [{ userId: user.id }, { userId: null }],
+          // TypeORM 1.x：where 里的 `null` 字面量不再编译成 `IS NULL`，而是按
+          // invalidWhereValuesBehavior 默认 **抛错**（0.3.x 是静默 IS NULL）。
+          // 系统级订阅的 userId 列本就是 NULL，故必须显式写 IsNull()；否则普通
+          // 用户拉取订阅列表恒 500（管理员走上面的分支，因此只有非管理员复现）。
+          where: [{ userId: user.id }, { userId: IsNull() }],
           order: { createdAt: "DESC" },
           take: 500,
         });
