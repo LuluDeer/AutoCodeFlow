@@ -77,9 +77,10 @@ describe("A3 执行器协议契约（admin-api 侧）", () => {
       }
     });
 
-    it.each(protocol.failureReason.adminInternalOnly)(
-      "回调 DTO 拒绝执行器上报 admin 内部专用的 %s",
-      async (reason) => {
+    // jest 30 的 it.each 数组重载把回调签名放宽为 (...args: any[] | [any])，
+    // 单参回调不再可赋值——改为 for + 动态 it()，语义与 %s 插值等价。
+    for (const reason of protocol.failureReason.adminInternalOnly) {
+      it(`回调 DTO 拒绝执行器上报 admin 内部专用的 ${reason}`, async () => {
         // A3 前用的是 `@IsIn(Object.values(全集))`——执行器可以上报一个语义上
         // 只有 admin 才该写的取值。此例即为该缺口的回归守卫。
         const dto = plainToInstance(CallbackItemDto, {
@@ -89,8 +90,8 @@ describe("A3 执行器协议契约（admin-api 侧）", () => {
         });
         const errs = await validate(dto, { forbidUnknownValues: false });
         expect(errs.some((e) => e.property === "failureReason")).toBe(true);
-      },
-    );
+      });
+    }
   });
 
   describe("readiness", () => {

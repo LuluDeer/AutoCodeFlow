@@ -9,11 +9,11 @@ import { Test } from "@nestjs/testing";
 import { Reflector } from "@nestjs/core";
 import { createHmac } from "crypto";
 import * as express from "express";
-import * as fs from "fs";
+import fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { Readable } from "node:stream";
-import * as request from "supertest";
+import request from "supertest";
 import { IS_PUBLIC_KEY } from "../../../common/decorators/public.decorator";
 import { ROLES_KEY } from "../../../common/decorators/roles.decorator";
 import { RolesGuard } from "../../../common/guards/roles.guard";
@@ -596,7 +596,7 @@ describe("ApplicationController upload — APP-002", () => {
 describe("ApplicationController RBAC (R1)", () => {
   const guard = new RolesGuard(new Reflector());
   const ctxWith = (
-    handler: (...args: unknown[]) => unknown,
+    handler: (...args: any[]) => unknown,
     role: UserRole,
   ): ExecutionContext =>
     ({

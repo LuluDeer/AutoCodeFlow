@@ -124,7 +124,9 @@ export class FeishuChannel extends BaseChannel {
       this.logger.log(`[Feishu] sent: ${p.title}`);
       return "sent";
     } catch (error) {
-      this.logger.error(`[Feishu] send failed after retries: ${error.message}`);
+      this.logger.error(
+        `[Feishu] send failed after retries: ${error instanceof Error ? error.message : String(error)}`,
+      );
       return "failed";
     }
   }

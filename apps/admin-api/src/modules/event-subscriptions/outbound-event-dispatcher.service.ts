@@ -217,7 +217,13 @@ export class OutboundEventDispatcher implements OnModuleInit, OnModuleDestroy {
     try {
       subs = await this.subRepo.find({
         where: { enabled: true },
-        select: ["id", "url", "secret", "eventTypes", "consecutiveFailures"],
+        select: {
+          id: true,
+          url: true,
+          secret: true,
+          eventTypes: true,
+          consecutiveFailures: true,
+        },
       });
     } catch (err: unknown) {
       // 订阅表读失败：出站是旁路，fail-open 吞掉（总线已是 fail-open，双保险）。
@@ -430,7 +436,13 @@ export class OutboundEventDispatcher implements OnModuleInit, OnModuleDestroy {
     try {
       subs = await this.subRepo.find({
         where: { enabled: true },
-        select: ["id", "url", "secret", "eventTypes", "consecutiveFailures"],
+        select: {
+          id: true,
+          url: true,
+          secret: true,
+          eventTypes: true,
+          consecutiveFailures: true,
+        },
       });
     } catch (err: unknown) {
       throw new Error(

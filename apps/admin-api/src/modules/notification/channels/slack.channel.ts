@@ -86,7 +86,9 @@ export class SlackChannel extends BaseChannel {
       this.logger.log(`[Slack] sent: ${p.title}`);
       return "sent";
     } catch (error) {
-      this.logger.error(`[Slack] send failed after retries: ${error.message}`);
+      this.logger.error(
+        `[Slack] send failed after retries: ${error instanceof Error ? error.message : String(error)}`,
+      );
       return "failed";
     }
   }

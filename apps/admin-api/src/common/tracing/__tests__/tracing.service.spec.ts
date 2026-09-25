@@ -99,7 +99,6 @@ describe("TracingService（OBS-01）", () => {
 
   describe("无 ConfigService 装配（既有单测兼容）", () => {
     it("@Optional 缺省降级为 disabled", () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const svc = new (TracingService as any)();
       expect(svc.isEnabled).toBe(false);
     });

@@ -158,7 +158,7 @@ describe("NotificationConfigService", () => {
     // The new flow calls NotificationService.testChannel(payload, key,
     // override) instead of sendToChannels. The spec mocks the dedicated
     // method on the partial mock used by the test module.
-    const setTestChannel = (impl: (...args: unknown[]) => unknown) => {
+    const setTestChannel = (impl: (...args: any[]) => unknown) => {
       (notificationService as any).testChannel = jest.fn(impl);
     };
 

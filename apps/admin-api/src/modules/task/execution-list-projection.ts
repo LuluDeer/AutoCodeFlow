@@ -67,6 +67,21 @@ export function executionListSelectColumns(repo: MetadataCarrier): string[] {
 }
 
 /**
+ * 同 `executionListSelectColumns`，但产出 `find` 选项要求的**对象形态**
+ * `{ column: true }`。TypeORM 1.x 移除了 `FindOptionsSelect` 的字符串数组
+ * 形态（0.3.x 时代仅靠 `FindOptionsSelectByString` 的字面量元组签名勉强可用），
+ * find 选项统一走对象形态；QueryBuilder 的 `.select(string[])` 不受影响，
+ * 仍走 `executionListSelectColumnsAliased`。
+ */
+export function executionListSelectMap(
+  repo: MetadataCarrier,
+): Record<string, true> {
+  return Object.fromEntries(
+    executionListSelectColumns(repo).map((name) => [name, true as const]),
+  );
+}
+
+/**
  * 同上，但加 `e.` 别名前缀——QueryBuilder（`getManyAndCount`）的 `select`
  * 需要 `"e.columnName"` 形态，而 `find` 的 `select` 只认裸属性名。两者不可混用，
  * 故显式分成两个函数，避免调用方拿错。

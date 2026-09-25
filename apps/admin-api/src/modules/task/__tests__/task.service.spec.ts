@@ -992,7 +992,7 @@ describe("TaskService (__tests__)", () => {
         FEISHU_APP_ID: "cli_real",
         FEISHU_APP_SECRET: "sec_real",
       });
-      expect(persisted[0].secrets).not.toContain("******");
+      expect(Object.values(persisted[0].secrets)).not.toContain("******");
       expect(result.secrets).toEqual(MASKED_FEISHU);
     });
 
@@ -1323,7 +1323,7 @@ describe("TaskService (__tests__)", () => {
       // 一次批量 IN 查询补齐缺失的 taskName
       expect(taskRepo.find).toHaveBeenCalledTimes(1);
       const findArgs = taskRepo.find.mock.calls[0][0];
-      expect(findArgs.select).toEqual(["id", "name"]);
+      expect(findArgs.select).toEqual({ id: true, name: true });
       expect(findArgs.where.id).toEqual(
         expect.objectContaining({ _value: ["t1"] }),
       );
@@ -5488,7 +5488,7 @@ describe("TaskService — QA-02 phase 2 branch gaps", () => {
       // 回填批量查询确实发起（missingIds 非空分支；In() 包装为 FindOperator）
       expect(taskRepo.find).toHaveBeenCalledTimes(1);
       expect(taskRepo.find).toHaveBeenCalledWith(
-        expect.objectContaining({ select: ["id", "name"] }),
+        expect.objectContaining({ select: { id: true, name: true } }),
       );
     });
 

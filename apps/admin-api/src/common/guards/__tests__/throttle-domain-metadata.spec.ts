@@ -156,7 +156,7 @@ describe("SEC-09 分域档位元数据绑定", () => {
     const imports = Reflect.getMetadata("imports", AppModule) as Array<{
       module?: { name?: string };
       providers?: Array<{
-        useFactory?: (...args: unknown[]) => unknown;
+        useFactory?: (...args: any[]) => unknown;
         inject?: unknown[];
       }>;
     }>;

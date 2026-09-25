@@ -73,7 +73,7 @@ import {
 } from "./dto/list-tasks-query.dto";
 // PERF-03：执行列表端点的读投影（排除 logs/aiAnalysis 两个重型 text 列）。
 import {
-  executionListSelectColumns,
+  executionListSelectMap,
   executionListSelectColumnsAliased,
 } from "./execution-list-projection";
 import {
@@ -1379,12 +1379,10 @@ export class TaskService {
       //     不依赖列表响应里的 logs；
       //   · aiAnalysis（同样 text）只在详情页 / 报告端点展示。
       // 故排除它们对功能零影响，却把该端点的响应体缩小一到两个数量级。
-      // 注：`select` 的字符串数组形态在 TypeORM 里属于 FindOptionsSelectByString，
-      // 其类型签名只接受字面量元组，运行时行为与 `string[]` 完全一致——此处按
-      // 运行时正确的形态断言（元数据派生必然得到普通 string[]）。
-      select: executionListSelectColumns(
-        this.execRepo,
-      ) as (keyof TaskExecution)[],
+      // 注：TypeORM 1.x 已移除 find 选项 select 的字符串数组形态
+      // （0.3.x 时代靠 FindOptionsSelectByString 勉强可用），改用对象形态，
+      // 列名仍由元数据运行时派生（见 execution-list-projection.ts）。
+      select: executionListSelectMap(this.execRepo),
       skip: (p.page - 1) * p.pageSize,
       take: p.pageSize,
       order: { createdAt: "DESC" },
@@ -1455,7 +1453,7 @@ export class TaskService {
     if (missingIds.length > 0) {
       const tasks = await this.taskRepo.find({
         where: { id: In(missingIds) },
-        select: ["id", "name"],
+        select: { id: true, name: true },
       });
       for (const t of tasks) taskNameMap.set(t.id, t.name);
     }
@@ -2132,7 +2130,7 @@ export class TaskService {
         //（CAS 保护见 rollbackDependencyClaim）。
         const prevLastTriggerTime = await this.taskRepo.findOne({
           where: { id: task.id },
-          select: ["id", "lastTriggerTime"],
+          select: { id: true, lastTriggerTime: true },
         });
         // R4-P3: short-window DB claim — exactly one concurrent fan-out wins.
         const claimedAt = await this.claimDependencyTrigger(task.id);
@@ -2457,7 +2455,7 @@ export class TaskService {
   async findExecutionAddress(executionId: string): Promise<string | null> {
     const exec = await this.execRepo.findOne({
       where: { id: executionId },
-      select: ["id", "executorAddress"],
+      select: { id: true, executorAddress: true },
     });
     return exec?.executorAddress ?? null;
   }
@@ -2477,7 +2475,7 @@ export class TaskService {
     }
     const exec = await this.execRepo.findOne({
       where: { id: executionId },
-      select: ["id", "status"],
+      select: { id: true, status: true },
     });
     if (!exec) {
       throw new NotFoundException(`Execution ${executionId} not found`);

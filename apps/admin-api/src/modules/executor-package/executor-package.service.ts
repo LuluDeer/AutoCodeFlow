@@ -165,7 +165,7 @@ export class ExecutorPackageService implements OnModuleInit {
     return new Promise((resolve, reject) => {
       const hash = crypto.createHash("sha256");
       const rs = fs.createReadStream(filePath);
-      rs.on("data", (chunk: Buffer) => hash.update(chunk));
+      rs.on("data", (chunk: string | Buffer) => hash.update(chunk));
       rs.on("error", reject);
       rs.on("end", () => resolve(hash.digest("hex")));
     });

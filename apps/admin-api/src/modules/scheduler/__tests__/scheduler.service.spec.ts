@@ -638,7 +638,7 @@ describe("SchedulerService", () => {
       expect(taskRepo.findOne).toHaveBeenCalledWith(
         expect.objectContaining({
           order: { timeout: "ASC" },
-          select: ["id", "timeout"],
+          select: { id: true, timeout: true },
         }),
       );
     });

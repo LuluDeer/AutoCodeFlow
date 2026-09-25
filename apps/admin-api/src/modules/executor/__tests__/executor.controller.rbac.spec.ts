@@ -7,7 +7,7 @@ import { ConfigService } from "@nestjs/config";
 import { Reflector } from "@nestjs/core";
 import { APP_GUARD } from "@nestjs/core";
 import { Test } from "@nestjs/testing";
-import * as request from "supertest";
+import request from "supertest";
 import { ExecutorController } from "../executor.controller";
 import { ExecutorService } from "../executor.service";
 import { SystemConfigService } from "../../config/config.service";

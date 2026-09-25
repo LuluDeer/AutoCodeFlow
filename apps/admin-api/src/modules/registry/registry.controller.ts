@@ -20,7 +20,7 @@ import * as http from "http";
 // esModuleInterop — the default-import form emits `.default` access that is
 // undefined at runtime ("form_data_1.default is not a constructor"). Use the
 // namespace import (same pattern as `import * as Joi` in app.module.ts).
-import * as FormData from "form-data";
+import FormData from "form-data";
 import { Request } from "express";
 import { Roles } from "../../common/decorators/roles.decorator";
 import { UserRole } from "../users/entities/user.entity";

@@ -8,7 +8,7 @@ import { ExecutorMetricsHistory } from "../entities/executor-metrics-history.ent
 import { TaskExecution } from "../../task/entities/task-execution.entity";
 import { Task } from "../../task/entities/task.entity";
 import { ConfigService } from "@nestjs/config";
-import * as bcrypt from "bcrypt";
+import bcrypt from "bcrypt";
 import { NotificationService } from "../../notification/notification.service";
 import { SystemConfigService } from "../../config/config.service";
 // SEC-02: secrets 派发解密（测试默认降级明文）

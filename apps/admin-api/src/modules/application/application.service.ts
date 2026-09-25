@@ -658,7 +658,7 @@ export class ApplicationService implements OnModuleInit {
     try {
       return await this.deploymentRepo.find({
         where: { applicationId: appId },
-        select: ["id", "executorAddress"],
+        select: { id: true, executorAddress: true },
       });
     } catch (err: unknown) {
       this.logger.warn(

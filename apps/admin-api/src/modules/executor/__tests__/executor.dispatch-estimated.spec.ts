@@ -154,14 +154,14 @@ describe("ExecutorService CORE-05（estimatedDurationSec 参与调度评分）",
     await service.selectLeastLoaded();
     expect(execRepo.find).toHaveBeenCalledTimes(1);
     const execArg = execRepo.find.mock.calls[0][0];
-    expect(execArg.select).toEqual(["executorAddress", "taskId"]);
+    expect(execArg.select).toEqual({ executorAddress: true, taskId: true });
     expect(execArg.where.status).toBe(ExecutionStatus.RUNNING);
     expect(execArg.where.executorAddress.value).toEqual(
       expect.arrayContaining(["a:1", "a:2"]),
     );
     expect(taskRepo.find).toHaveBeenCalledTimes(1);
     const taskArg = taskRepo.find.mock.calls[0][0];
-    expect(taskArg.select).toEqual(["id", "estimatedDurationSec"]);
+    expect(taskArg.select).toEqual({ id: true, estimatedDurationSec: true });
     expect(taskArg.where.id.value).toEqual(
       expect.arrayContaining(["t1", "t2"]),
     );

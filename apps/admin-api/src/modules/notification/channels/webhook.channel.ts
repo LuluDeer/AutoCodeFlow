@@ -117,7 +117,9 @@ export class WebhookChannel extends BaseChannel {
       const reason =
         typeof status === "number" && status >= 300 && status < 400
           ? `redirect refused by SSRF policy (maxRedirects=0) — configure the final URL directly (HTTP ${status})`
-          : error.message;
+          : error instanceof Error
+            ? error.message
+            : String(error);
       this.logger.error(`[Webhook] send failed after retries: ${reason}`);
       return "failed";
     }

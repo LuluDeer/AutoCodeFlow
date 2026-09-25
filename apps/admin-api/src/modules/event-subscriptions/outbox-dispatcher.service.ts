@@ -278,7 +278,7 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
       // 可投"把事件提前结清。
       const subs = await this.subRepo.find({
         where: { enabled: true },
-        select: ["id", "eventTypes"],
+        select: { id: true, eventTypes: true },
       });
 
       // 有界并发处理：批量行并行派发（所有行同时开始 → 共享同一租约窗口，
@@ -681,7 +681,7 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
       logger: this.logger,
       executeBatch: async () => {
         const victims = await this.outboxDeadLetterRepo.find({
-          select: ["id", "outboxId"],
+          select: { id: true, outboxId: true },
           where: { deadLetteredAt: LessThan(cutoff) },
           order: { id: "ASC" },
           take: OUTBOX_RETENTION_BATCH_SIZE,

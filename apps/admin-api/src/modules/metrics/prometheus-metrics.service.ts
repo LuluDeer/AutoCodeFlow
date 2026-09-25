@@ -442,7 +442,7 @@ export class PrometheusMetricsService {
     try {
       rows = await this.executorRepository.find({
         where: { status: ExecutorStatus.ONLINE },
-        select: ["address", "diskUsage"],
+        select: { address: true, diskUsage: true },
       });
     } catch {
       return;

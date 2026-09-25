@@ -11,7 +11,7 @@ import {
 import { SwaggerModule, DocumentBuilder } from "@nestjs/swagger";
 import { ConfigService } from "@nestjs/config";
 import helmet from "helmet";
-import * as compression from "compression";
+import compression from "compression";
 import * as express from "express";
 import * as path from "path";
 // W-22 (windows-findings): some values are read at DECORATOR-EVAL time —

@@ -718,7 +718,7 @@ describe("FEAT-19 OutboxDispatcher", () => {
         where: { deadLetteredAt: { value: Date } };
       };
       expect(findArg.select).toEqual(
-        expect.arrayContaining(["id", "outboxId"]),
+        expect.objectContaining({ id: true, outboxId: true }),
       );
       expect(findArg.take).toBe(5000);
       // 90 天期限（长于 dispatched 行的 30d——死信 payload 供运维排查）

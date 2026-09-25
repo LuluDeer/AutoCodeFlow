@@ -25,7 +25,7 @@ describe("AppModule — BullMQ root config (OPS-P1)", () => {
         Array.isArray((m as { providers?: unknown[] }).providers),
     ) as unknown as
       | {
-          providers: Array<{ useFactory?: (...args: unknown[]) => unknown }>;
+          providers: Array<{ useFactory?: (...args: any[]) => unknown }>;
         }
       | undefined;
     if (!bullRoot) {

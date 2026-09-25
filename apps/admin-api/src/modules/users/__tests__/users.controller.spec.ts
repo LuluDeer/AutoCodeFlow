@@ -4,7 +4,7 @@ import {
   BadRequestException,
   ConflictException,
 } from "@nestjs/common";
-import * as bcrypt from "bcrypt";
+import bcrypt from "bcrypt";
 import { UsersController } from "../users.controller";
 import { UsersService } from "../users.service";
 import { AuditService } from "../../audit/audit.service";

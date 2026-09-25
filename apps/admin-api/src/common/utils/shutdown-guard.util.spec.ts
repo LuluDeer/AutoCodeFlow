@@ -39,7 +39,7 @@ describe("installShutdownForceExitGuard (OPS-P3b)", () => {
     exitSpy = jest
       .spyOn(process, "exit")
       .mockImplementation(
-        (() => undefined) as unknown as (code?: number) => never,
+        (() => undefined) as unknown as (code?: string | number) => never,
       );
     logger = { error: jest.fn() };
     installed = [];

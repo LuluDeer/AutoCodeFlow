@@ -5,7 +5,7 @@ import {
 } from "@nestjs/common";
 import { APP_GUARD } from "@nestjs/core";
 import { Test } from "@nestjs/testing";
-import * as request from "supertest";
+import request from "supertest";
 import * as http from "http";
 import * as net from "net";
 import type { AddressInfo } from "net";

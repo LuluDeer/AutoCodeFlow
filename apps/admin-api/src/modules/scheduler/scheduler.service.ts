@@ -815,7 +815,7 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     try {
       executors = await this.dataSource.getRepository(Executor).find({
         where: { address: In(addresses) },
-        select: ["address", "status", "runningExecutionIds"],
+        select: { address: true, status: true, runningExecutionIds: true },
       });
     } catch (err: unknown) {
       this.logger.warn(
@@ -902,7 +902,7 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     // 全表 id/timeout 拉进内存。timeout=0（不限时）不参与收缩，仍由 1h 兜底覆盖。
     const shortest = await this.taskRepo.findOne({
       where: { status: TaskStatus.ACTIVE, timeout: MoreThan(0) },
-      select: ["id", "timeout"],
+      select: { id: true, timeout: true },
       order: { timeout: "ASC" },
     });
     if (!shortest || !shortest.timeout || shortest.timeout <= 0) {
@@ -945,7 +945,7 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
       if (idCursor) where.id = MoreThan(idCursor);
       const rows = await this.taskRepo.find({
         where,
-        select: ["id"],
+        select: { id: true },
         order: { id: "ASC" },
         take: ACTIVE_TASK_PAGE_SIZE,
       });
