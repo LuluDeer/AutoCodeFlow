@@ -357,6 +357,51 @@
 
 **建议先不实现 `session` 与 `full-trust`**——风险最高、需求最不确定。等有真实企业提出需求时再做，届时也更清楚要加什么护栏。
 
+### 9.4 P7a 状态（2026-09 落地）
+
+> **产物**：`apps/executor-desktop/src/main/agent/`（`perception.ts` / `workspace.ts` /
+> `permission-profile.ts` / `gates.ts` / `loop.ts`）+ 五套 selftest 接进 `npm run test:main`；
+> 权限档位接进 `config-store.ts` + `config-sanitize.ts` 消毒层。
+
+| 任务 | 产出 | 状态 |
+|---|---|---|
+| 环境探测 | `collectEnvironmentReport()`（OS/资源/python·python3·node + 能力域自述） | ✅ |
+| workspace 沙箱 | `<workDir>/agent-workspace/<assignmentId>/`，路径域校验 + symlink 不跟随 | ✅ |
+| 权限档位 | 四轴 + 五预设，P7a 实现 `minimal`/`standard`；`min(本地, 中台)` 合并 | ✅ |
+| 硬闸门 | 迭代 15 / 墙钟 2h / 澄清 5 / 试跑 30 / 依赖安装 10（07 §7.1） | ✅ |
+| 迭代循环 | 感知→规划→试跑→诊断状态机（LLM/试跑**依赖注入**，尚未接真体） | ✅（外壳） |
+| LLM + 真实试跑执行体 | — | ⏳ P7a 后续批次（`loop.ts` 已留注入口） |
+| 浏览器能力 | — | ⏳ P7b（能力域**如实**只报 `filesystem`/`http`） |
+
+### 实现中的关键判断
+
+| 判断 | 理由 |
+|---|---|
+| **闸门在动作**之前**判，不在末尾判** | 末判会让最后一轮的副作用（可能已写文件、已跑代码）先发生再被拦，闸门形同虚设。测试钉死「恰好跑满上限、不多跑一轮」——反证：`>=` 改 `>` 立即红（实测允许 16 次） |
+| **墙钟自首次迭代起算，resume 不重置** | 挂起/恢复是常态（等澄清回复、等审批）。重置等于「2 小时上限」可反复续命 |
+| **档位闸独立于次数闸，且在试跑之前** | 次数闸管「还能跑几次」，档位闸管「允许不允许跑」。只查一道必漏：off 档下次数再富余也不该跑。**off 是高合规企业唯一会选的档**，绕过它该档就只是一句注释 |
+| **触顶是合法终态，不是异常** | 返回完整结果带 `stopReason`，不抛。中台要能区分「机器做不了」与「程序崩了」，才能决定换机器还是转人工 |
+| **澄清触顶转人工且不再调 plan** | 两个 Agent 的「礼貌循环」是真实风险（P6 已在中台侧设硬闸）。转人工分支不进下一次规划，不烧令牌 |
+| **能力域不得超前声明** | 未实现浏览器就**不能**报 `browser`——否则中台的可行性预检（10 §建议2）会把需要浏览器的 SOP 派过来，然后卡在这台机器上 |
+| **档位默认 `minimal` 而非 `standard`** | ADR-022 是信任模型变更，必须「显式开启」。旧配置文件没有这些键，升级**不得**凭空获得「在本机试跑生成代码」的能力。09 §7 的「默认是否改 standard」一旦拍板只改 defaults |
+| **档位枚举必须进消毒层** | conf 15 移除 JSON schema 后坏值**静默落盘**：`sandbox` 拼成 `sandox` 不报错、界面照常显示、解析层却回落到最保守档——「配置看起来生效了、行为却是另一套」且零日志（09 §4.1 点名）。故写入前归一化非法值为 `''`（= 不覆盖，跟随预设），**不删键**（删键 = 保留旧值，界面无法反映「刚选的没生效」） |
+
+### 自检抓出的两个真实缺陷（非预置，写测试时发现）
+
+| # | 缺陷 | 后果 | 修法 |
+|---|---|---|---|
+| 1 | `listWorkspaceFiles` **跟随 symlink** | `resolveWithinWorkspace` 只校验**输入**路径、管不到 walk 到达的路径——工作区里一个指向域外的链接就把域外文件列进了 Agent 观察面，沙箱可见性边界被悄悄扩大 | 遇 `isSymbolicLink()` 跳过，不跟随也不列出 |
+| 2 | `resolveWithinWorkspace` 内 `realpathSync(workspaceRoot)` 在工作区不存在时抛 ENOENT | 打破本模块「返回 `ok:false`、**绝不抛**」的契约——调用方是 LLM 驱动的路径解析，抛出去即一次会话崩溃（`workDir` 指向已清理目录即触发） | catch 后收敛为 `{ ok:false, error:'agent workspace does not exist' }` |
+
+### 验收（P7a 批次）
+
+- ✅ `npx tsc -p tsconfig.json --noEmit` 与 `-p tsconfig.selftest.json` 均 0 错误（接手时前者是红的）
+- ✅ `npm run test:main` 17 套全绿（含新增 5 套 agent 自检）
+- ✅ 反证均有牙：删档位闸 / `>=`→`>` / 恢复 symlink 跟随 / 去枚举消毒，逐一实测转红
+- ✅ `check:lint-gates` 绿；`check:desktop-bundle-drift` 摘要一致（未触碰 bundle）
+- ⏳ LLM 真实接入与端到端 spike（07 §9：用真实 SOP 验证「通用 Agent 自主实现」是否成立）
+- ⏳ 默认预设 `standard` 与否待拍板（09 §7）
+
 ## 10. 立即可开工的建议
 
 **本轮我建议先做 P0**，理由：

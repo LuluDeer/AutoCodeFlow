@@ -34,6 +34,7 @@ executor-desktop 是 **Electron 托盘应用**：把 ncc 打包的 executor-node
 │ updater       electron-updater：AUTOUPDATE_URL 泛用源 > GitHub Releases   │
 │ notifier      DSK-04：轮询 workDir/meta/*.json 捕获任务终态发系统通知      │
 │ autolaunch / token-crypto / path-domain / notifier-rules / logger        │
+│ agent/      P7a 执行器 Agent（档位/沙箱/感知/闸门/循环，见 agent.md）      │
 └──────────────────────────────────────────────────────────────────────────┘
         ▲ ipcRenderer.invoke（白名单通道）      │ 'executor:log-line'、
 ┌─ preload（src/preload/index.ts）─┐            │ 'executor:status-change'、
@@ -89,5 +90,6 @@ apps/executor-desktop/
 ## 相关文档
 
 - [IPC 通道白名单与安全收敛](ipc-and-security.md) —— contextIsolation / token 掩码 / 路径域
+- [Agent 子系统（P7a 执行器 Agent）](agent.md) —— 权限档位 / 沙箱工作区 / 硬闸门 / 迭代循环
 - [executor-node](../executor-node/README.md) —— 被托管内核的完整文档
 - [执行器注册流程](../../04-flows/executor-registration.md) · [三种执行器对比](../executors-comparison.md)
