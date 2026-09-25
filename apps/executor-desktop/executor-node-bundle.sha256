@@ -340,4 +340,46 @@
 #   ce5aa19c…，与本文件当时的期望值**逐字节一致**——故本次新值同样可信。
 #   bundle 2593kB → 2600kB。
 #
+# 2026-09-25（依赖审计二轮：electron 43→44 / electron-store 8→11 / ncc 0.44→0.45）：
+#   ⚠ **本行期望值已失效，待 CI 回填**（不是漏打，是构建器换版）。
+#   · `@vercel/ncc` 由 ^0.44.0 升到 ^0.45.0（随本批依赖升级），而期望值 668e2cf1…
+#     是 **ncc 0.44** 的产物。换版后本机（Windows，仓库工作区）用与 CI 完全同款的
+#     命令重打，得到 7a4d3aaa…，bundle 2600kB → 4035kB（+1435kB，webpack 内联版本
+#     随 ncc 升级变化，非本次源码改动所致——本批 executor-node/src 的改动只有
+#     @types/express 5 的类型收窄与注释，运行时零变化）。
+#   · 即便没有换版，本机也算不出 CI 的值：见
+#     docs/design/python-task-upload-and-multiversion/BUNDLE-DRIFT-FINDING.md——
+#     ncc 的 module id 由**真实绝对路径**派生，CI 固定在
+#     /home/runner/work/<repo>/<repo>，本机路径不同则哈希必然不同。
+#   · 故按该文档 §4 的既定处置**不手工回填本机哈希**（填了会让闸"红得更隐蔽"）。
+#     正确流程：推 CI → 取 desktop-bundle-drift 的 actual → 回填本行。
+#   · 已实测的替代验证（比哈希更有意义，均已通过）：本机重打的产物 **能正常启动**
+#     （设备身份解析 / 回调线程 / 日志清理线程 / admin 不可达时的 failover 与重注册
+#     全部正常），且 `npm run test:main` 16 项自检、`npm run test:renderer`、
+#     `tsc --noEmit` 全绿。
+#
+# ── 两道闸的分工（F-19 / ADR-005 加固，2026-09-25）──────────────────────────
+# 本文件现在同时承载两条**互相独立**的信息，各由一个闸消费：
+#
+#   ① source-digest（语义闸，**本地可复现**）
+#      = `node scripts/check-desktop-bundle-drift.mjs --print`
+#      = apps/executor-node/src 下 42 个 bundle 输入文件（.ts，排除 .spec/.test/.d.ts）
+#        按路径排序后 (路径, 内容) 的 sha256。**不含**绝对路径 / OS / ncc 版本，
+#        故跨环境同源码恒同值——本机与 CI 得到同一个值。
+#      消费方：CI 的 desktop-bundle-drift job + 本地 `npm run check:desktop-bundle-drift`。
+#      它回答"改了 src 却没重打 bundle"（ADR-005 的本意），且**推送前本地即可判定**。
+#
+#   ② 末行字节哈希（字节闸，**只有 CI 能判**）
+#      = ncc 重打产物 index.js 的 sha256。
+#      已知局限（见 BUNDLE-DRIFT-FINDING.md）：随**构建绝对路径**与 **ncc 版本**变化，
+#      故本地算不出 CI 的值。它比 ① 更严（能抓"重打了但产物与源码不符"），保留。
+#
+# 回填规则：
+#   · 改了 apps/executor-node/src 后：在 apps/executor-desktop 跑 `npm run build:executor`
+#     重打 bundle，然后回填①②**两者**。① 用 --print 取值；② 在 CI 上取 actual。
+#   · 只换构建器/依赖（不动 src）：① **不变**（这正是它的价值）；② 需按 CI 回填。
+#   · 测试文件（*.spec.ts）改动**不影响**①——它们不进 ncc 产物（已实测确认）。
+#
+# 变更记录：① 的引入即本行；初值 580fc8046a464407…（42 个输入文件）。
+source-digest: 580fc8046a464407087bb29dc596d8994de6b01a38e223570c1dbdb119c60f60
 668e2cf18caab19d2d0aa1b977632534f6d95c9e19d91da90007eb97b92c25f2  index.js
