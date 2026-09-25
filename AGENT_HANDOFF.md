@@ -8,6 +8,8 @@
 
 ## 状态快照
 
+- **本轮（2026-09-25 → P7c 前置增量：Agent 设置面 + 状态可见，develop）**：P7b 提交后发现「agentEnabled 没有任何设置界面——用户无法开启 Agent」，功能不可用即缺陷。增量：①ConfigPage 新增「Agent（实验性）」组——总开关 / 权限预设下拉（**未实现的三档显示为禁用**：选了也会被解析层钳回，界面与行为一致比可点更重要）/ codeExecution 覆盖（host 显示禁用）/ 浏览器域名白名单 textarea；②保存走既有 config:save 通道——**零新面绕过消毒层**（ENUM/STRING_LIST/BOOLEAN_FIELDS 已覆盖全部新字段）；③`agent:get-status` IPC（getAgentHostStatus，只读）+ 状态行（working/processed/lastOutcome/生效档位，进组与保存后刷新，与未保存表单解耦）；④config:save 热同步 syncAgentHostWithConfig（启停轮询不销毁 host，失败不阻塞保存）；⑤preload 暴露 getAgentStatus（旧版容错降级，同 getAutoLaunch 先例）。**验证**：desktop 主 tsconfig / selftest tsconfig tsc 0、renderer.selftest EXIT 0、test:main 全链 EXIT 0。**下一步**：P7c（桌面 GUI + 托盘状态）或 P7d（端到端闭环 + isolated-runner）。
+
 - **本轮（2026-09-25 → P7b：浏览器能力 + 媒体回传 + Agent 托管，develop）**：用户指令「继续推进后续的开发 持续保持推进 不要中途停止」。P7a 续批（LLM relay + 真实试跑）之上交付 roadmap §9.5：
   - **kill-tree**（agent/kill-tree.ts）：跨平台进程树终止——POSIX spawnDetached（detached 进程组 + kill(-pid)）、Windows taskkill /T /F；spawnWithTreeTimeout 打包进 trial-run，**修复 P7a 残差**「超时只杀单进程、孙进程泄漏」（selftest 实测孙进程死亡）。真缺陷：taskkill /F 后进程以 exit code 1 触发 close，与 killTree 回调**竞速**产生 killed=false/exitCode=1 失真快照——修为 killed 同步置位（语义=「终止信号已发出」）+ timedOut 时 exitCode 归 null。
   - **browser.ts**：AgentBrowserSession——7 个封闭动作（navigate/click/type/press/screenshot/extract_text/wait，无 evaluate/exec）；**每次导航过域名白名单**（SOP constraints ∪ 档位 allowedDomains，空白名单拒绝启动也禁一切导航）；全新临时 profile（不携带用户登录态，hostAccess=none 语义保持——两道闸独立不互相冒充）；截图落 workspace/screenshots、录屏（recordVideo）close 时落 browser-recordings。

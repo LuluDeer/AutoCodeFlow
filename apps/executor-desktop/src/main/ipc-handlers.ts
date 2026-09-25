@@ -24,7 +24,7 @@ import {
 } from './app-uninstall';
 import * as net from 'net';
 import * as childProcess from 'child_process';
-import { configStore, executorProcess, heartbeat, syncNotifierWithConfig, trayManager, windowManager } from './index';
+import { configStore, executorProcess, getAgentHostStatus, heartbeat, syncAgentHostWithConfig, syncNotifierWithConfig, trayManager, windowManager } from './index';
 import { setAutoLaunchEnabled, getAutoLaunchEnabled } from './autolaunch';
 import { checkForUpdatesUserInitiated, downloadUpdate, quitAndInstall } from './updater';
 import {
@@ -252,6 +252,9 @@ export function registerIpcHandlers(): void {
   // maps to "keep the stored token".
   ipcMain.handle('config:get', () => configStore.getAllMasked());
 
+  // P7b：Agent 托管状态（设置页 Agent 组的状态行；只读、无敏感字段）
+  ipcMain.handle('agent:get-status', () => getAgentHostStatus());
+
   // BUG-12: the save face only accepts plain-object string|number|boolean
   // values. An array (or nested object carrying getters) would otherwise
   // reach electron-store's dot-notation setter and throw deep inside the
@@ -275,6 +278,9 @@ export function registerIpcHandlers(): void {
     trayManager.rebuildMenu();
     // DSK-04：通知开关 / workDir 可能被改——热同步通知器（开关 + meta 轮询目录）
     syncNotifierWithConfig();
+    // P7b：agentEnabled / 档位 / 中台地址可能被改——热同步 Agent 托管
+    // （内部自行读最新配置，启停轮询不销毁 host；失败仅记日志不阻塞保存）
+    syncAgentHostWithConfig();
     // 如果执行器正在运行，热重载配置（停止后用新配置重启）
     // 注意：配置本身已落盘成功，但"热重载"是用户可感知的副作用——若重启
     // 失败（端口被占 / token 失效等），执行器会停留在停止态。原实现只写日志

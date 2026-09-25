@@ -428,6 +428,7 @@
 | tree-kill | `spawnWithTreeTimeout`：POSIX detached 进程组 `kill(-pid)`、Windows `taskkill /T /F`；**修复 P7a 残差**「超时只杀单进程、孙进程泄漏」（selftest 实测孙进程死亡） | ✅ |
 | Agent 托管 | `AgentHost`：poll → 能力上报（browser 按探测如实声明）→ 沙箱工作区 → **策略合并** → 循环 → 回报 completed/failed/澄清；单飞行防并发；`agentEnabled=false` 零动作 | ✅ |
 | 总开关 | `agentEnabled`（默认 false，ADR-022 显式开启）+ 消毒层布尔纪律 + index.ts 轮询循环接线（30s tick，host 内部 0 等待） | ✅ |
+| **设置面（P7c 前置增量）** | ConfigPage 新增「Agent（实验性）」组：开关 / 预设（未实现档位显示为禁用——选了也会被解析层钳回，界面与行为一致）/ codeExecution 覆盖 / 浏览器域名白名单；`agent:get-status` IPC + 状态行（working/processed/lastOutcome/生效档位，进组与保存后刷新）；config:save 热同步托管 | ✅ |
 | LLM 协议扩展 | plan/diagnose 可带 `"browser":[actions]`——先看页面再写代码；输出（页面文本/截图 mediaPath/录屏）进下一轮上下文 | ✅ |
 | 桌面 GUI 能力 | — | ⏳ P7c |
 | 端到端闭环 | — | ⏳ P7d |
@@ -449,9 +450,10 @@
 - ✅ agent-host 端到端覆盖四条路径：completed / 澄清 / **中台压档 → 档位闸拒 → failed（本地 standard 没有偷偷试跑）** / 单飞行
 - ✅ `agent-sop-check` 扩至 **72 项**（+8 媒体通道断言：端点、能力闸、归属校验、文件名封闭、大小上限、越界终检、mediaRefs 放行、迁移登记）
 - ✅ 迁移守卫绿（87 个迁移注册）；tsc（desktop 双 tsconfig / admin-api）0 错误；lint 绿
+- ✅ 设置面：renderer tsc 0 + renderer.selftest EXIT 0（Agent 组的开关/预设/白名单与状态行走既有 IPC/消毒通道，无新面绕过消毒层）
 - ⏳ 真实浏览器节（browser.selftest §5）在本机如实跳过（chromium 二进制未安装；`npx playwright install chromium` 后可跑）——跳过显式可见，不是假绿
 - ⏳ 打包态 Playwright 浏览器分发（electron-builder extraResources）留 P7d
-- ⏳ 托管状态进托盘/状态窗（UI 面）留 P7c
+- ⏳ 托管状态进托盘/状态窗留 P7c（设置页状态行已落地，见上「设置面」行）
 
 ## 10. 立即可开工的建议
 

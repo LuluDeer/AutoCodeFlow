@@ -124,6 +124,13 @@ src/main/agent/
 - 澄清触顶 → 转人工且**不再调 plan**（不烧令牌）。
 - handler 抛错收敛为 `outcome='error'`，不冒泡炸掉会话。
 
+## 设置面与状态（P7c 前置增量）
+
+- **ConfigPage「Agent（实验性）」组**：agentEnabled 开关、权限预设下拉（minimal/standard 可选；developer/ops-assist/full-trust **显示为禁用**——选了也会被解析层钳回，界面与行为一致比可点更重要）、codeExecution 覆盖、浏览器域名白名单 textarea（逗号/换行分隔 → string[]）。
+- **保存通道零新面**：Agent 字段随 config:get/config:save 走既有通道，消毒层（ENUM_FIELDS/STRING_LIST_FIELDS/BOOLEAN_FIELDS）是唯一防线——设置面**不得**绕过 sanitize 直写。
+- **状态行**：`agent:get-status` IPC（getAgentHostStatus，只读无敏感字段）→ working/processed/lastOutcome/lastEffectiveProfile；进组与保存后各刷新一次（反映**实际运行**状态，与未保存表单解耦）。
+- **热同步**：config:save 后调 syncAgentHostWithConfig()——启停轮询不销毁 host；失败仅记日志不阻塞保存。
+
 ## 常见改动场景
 
 - **新增权限档位**：`permission-profile.ts` 扩 `*_SPEC.implemented` + `IMPLEMENTED_PRESETS` → 同步 `config-sanitize.ts` 的 `ENUM_FIELDS`（selftest 有 SYNC 守卫钉住两处不得漂移）→ 更新 09 §6 分阶段表。注意：放开的档位要在 `trial-run.ts` 同步实现对应行为（如 `host`），否则档位解析层会把它钳回保守档。
