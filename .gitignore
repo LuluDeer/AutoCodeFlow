@@ -33,6 +33,7 @@ venv/
 .workbuddy/
 .qoder/
 .zcode/
+.kiro/
 .codeartsdoer/
 *.swp
 *.swo
