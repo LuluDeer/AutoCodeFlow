@@ -222,3 +222,19 @@ export function syncAgentHostWithConfig(): void {
     log.warn(`[agent-host] sync failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
+
+/** IPC 面：Agent 托管的当前状态（设置页 Agent 组的状态行读它）。 */
+export function getAgentHostStatus(): {
+  enabled: boolean;
+  working: boolean;
+  lastAssignmentId: string | null;
+  lastOutcome: string | null;
+  processed: number;
+  lastEffectiveProfile: string | null;
+} {
+  const cfg = configStore.getAll();
+  return {
+    enabled: cfg.agentEnabled === true,
+    ...(agentHost?.stats ?? { working: false, lastAssignmentId: null, lastOutcome: null, processed: 0, lastEffectiveProfile: null }),
+  };
+}

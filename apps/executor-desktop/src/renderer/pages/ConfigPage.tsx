@@ -50,7 +50,7 @@ function Toggle({ id, label, checked, onChange }: {
   );
 }
 
-type SectionId = 'connection' | 'network' | 'python' | 'general';
+type SectionId = 'connection' | 'network' | 'python' | 'agent' | 'general';
 
 const SECTIONS: { id: SectionId; icon: string; label: string; desc: string }[] = [
   { id: 'connection', icon: '🔗', label: '连接设置', desc: '平台地址与密钥' },
@@ -59,6 +59,7 @@ const SECTIONS: { id: SectionId; icon: string; label: string; desc: string }[] =
   // （uvPath / 镜像 / 池目录 / PyPI 源）虽然后端全部实现，却**没有任何 UI
   // 入口**——运维只能去手工编辑 userData 里的 config.json，实际等于不可用。
   { id: 'python',     icon: '🐍', label: 'Python 运行环境', desc: 'uv、镜像与解释器池' },
+  { id: 'agent',      icon: '🤖', label: 'Agent（实验性）', desc: '执行器 Agent 与权限档位' },
   { id: 'general',   icon: '⚙️', label: '基本设置', desc: '名称与并发数' },
 ];
 
@@ -89,6 +90,12 @@ export default function ConfigPage() {
   // 的是**已保存**的配置，跟着未保存的输入框变化会误导用户。
   const [pyEnv, setPyEnv] = useState<PythonEnvStatus | null>(null);
   const [pyEnvError, setPyEnvError] = useState<string | null>(null);
+  // P7b：Agent 托管状态（进入 Agent 组时拉一次——反映的是**实际运行**状态，
+  // 与上方未保存的表单解耦，同 pyEnv 的"显示已保存配置"语义）。
+  const [agentStatus, setAgentStatus] = useState<{
+    enabled: boolean; working: boolean; processed: number;
+    lastOutcome: string | null; lastEffectiveProfile: string | null;
+  } | null>(null);
 
   useEffect(() => {
     Promise.all([window.electronAPI.getConfig(), window.electronAPI.getLocalIPs()])
@@ -135,6 +142,17 @@ export default function ConfigPage() {
     if (active !== 'python') return;
     return refreshPyEnv();
   }, [active, refreshPyEnv]);
+
+  // P7b：进入 Agent 组时拉托管状态（旧版 preload 未暴露该通道时静默降级
+  // 为不显示状态行——同 getAutoLaunch 先例，不影响其余设置项）。
+  useEffect(() => {
+    if (active !== 'agent') return;
+    if (typeof (window as unknown as { electronAPI?: { getAgentStatus?: () => Promise<{ enabled: boolean; working: boolean; processed: number; lastOutcome: string | null; lastEffectiveProfile: string | null }> } }).electronAPI?.getAgentStatus !== 'function') return;
+    (window as unknown as { electronAPI: { getAgentStatus: () => Promise<{ enabled: boolean; working: boolean; processed: number; lastOutcome: string | null; lastEffectiveProfile: string | null }> } })
+      .electronAPI.getAgentStatus()
+      .then(setAgentStatus)
+      .catch(() => undefined);
+  }, [active, saved]);
 
   function set(key: string, value: unknown) {
     setForm((f) => ({ ...f, [key]: value }));
@@ -544,6 +562,99 @@ export default function ConfigPage() {
                   （池目录下按 <code>cpython-3.7.9-&lt;平台三元组&gt;</code> 命名）。
                   未预填时声明 3.7 的任务会明确失败并归类为
                   <code>interpreter_unavailable</code>，不会悄悄回退到系统解释器。
+                </span>
+              </div>
+            </>
+          )}
+
+          {active === 'agent' && (
+            <>
+              <div className="cfg-header">
+                <h2 className="cfg-title">Agent（实验性）</h2>
+                <p className="cfg-subtitle">
+                  执行器 Agent：领取平台下发的 SOP 指派，在本机自主实现并验证。
+                  默认关闭——开启即接受其权限档位（默认 minimal：只产出代码文本，不在本机执行）。
+                </p>
+              </div>
+
+              <div className="cfg-toggle-card">
+                <div className="cfg-toggle-info">
+                  <strong>启用执行器 Agent</strong>
+                  <span>
+                    开启后桌面端开始轮询平台的 SOP 指派通道。权限档位决定它能做什么——
+                    最终生效档位 = min(本地配置, 中台下发的上限)，公司策略收紧时本地改配置也突破不了。
+                  </span>
+                </div>
+                <Toggle id="agentEnabled" label="启用执行器 Agent" checked={form.agentEnabled === true}
+                  onChange={(v) => set('agentEnabled', v)} />
+              </div>
+
+              {/* 托管状态行：反映**实际运行**状态（与上方未保存表单解耦）。
+                  saved 变化后会重新拉取——保存后立即可见启停是否生效。 */}
+              {agentStatus && (
+                <div className="info-banner">
+                  <span className="info-banner-icon">{agentStatus.working ? '⏳' : agentStatus.enabled ? '🟢' : '⚪'}</span>
+                  <span>
+                    {agentStatus.working
+                      ? '正在处理指派…'
+                      : agentStatus.enabled
+                        ? `已启用，待命中——已处理 ${agentStatus.processed} 个指派`
+                        : '未启用（Agent 不轮询、不接受指派）'}
+                    {agentStatus.lastOutcome ? `；最近结果：${agentStatus.lastOutcome}` : ''}
+                    {agentStatus.lastEffectiveProfile ? `；生效档位：${agentStatus.lastEffectiveProfile}` : ''}
+                  </span>
+                </div>
+              )}
+
+              <div className="cfg-field cfg-field-narrow">
+                <label className="cfg-label">权限预设</label>
+                {/* P7a 只实现 minimal / standard（09 §6）；其余三档是登记在案的
+                    保留名——显示为禁用项让用户知道路线图，但**选不了**（选了也
+                    会被解析层钳回 minimal，界面与行为一致比可点更重要）。 */}
+                <select className="input"
+                  value={String(form.agentPermissionProfile || 'minimal')}
+                  onChange={(e) => set('agentPermissionProfile', e.target.value)}>
+                  <option value="minimal">minimal —— 什么都不做（Agent 仅辅助，高合规）</option>
+                  <option value="standard">standard —— 沙箱内试跑验证（推荐）</option>
+                  <option value="developer" disabled>developer —— 容器沙箱（后续版本）</option>
+                  <option value="ops-assist" disabled>ops-assist —— 操作内网系统（后续版本）</option>
+                  <option value="full-trust" disabled>full-trust —— 完全信任（需书面确认）</option>
+                </select>
+                <span className="cfg-hint">standard = 在受限工作区内试跑生成的代码（process 沙箱：env 白名单 + 路径域 + 超时）</span>
+              </div>
+
+              <div className="cfg-field cfg-field-narrow">
+                <label className="cfg-label">代码执行（细粒度覆盖，留空跟随预设）</label>
+                <select className="input"
+                  value={String(form.agentCodeExecution || '')}
+                  onChange={(e) => set('agentCodeExecution', e.target.value)}>
+                  <option value="">（跟随预设）</option>
+                  <option value="off">off —— 只产出代码文本，不执行</option>
+                  <option value="sandbox">sandbox —— 受限工作区内试跑</option>
+                  <option value="host" disabled>host —— 本机运行（后续版本）</option>
+                </select>
+                <span className="cfg-hint">off 档：Agent 产出代码供人工审阅，交付变成"给人看"</span>
+              </div>
+
+              <div className="cfg-field">
+                <label className="cfg-label">浏览器可达域名（可选，逗号或换行分隔）</label>
+                <textarea className="input" rows={3}
+                  placeholder="erp.corp.com, crm.corp.com"
+                  value={Array.isArray(form.agentAllowedDomains) ? (form.agentAllowedDomains as string[]).join(', ') : ''}
+                  onChange={(e) => set('agentAllowedDomains',
+                    e.target.value.split(/[\n,]/).map((s) => s.trim()).filter(Boolean))} />
+                <span className="cfg-hint">
+                  Agent 浏览器工具的导航白名单——**空白名单 = 禁止一切网页导航**（安全默认）。
+                  SOP 自己的 constraints.allowedDomains 也会叠加生效。
+                </span>
+              </div>
+
+              <div className="info-banner">
+                <span className="info-banner-icon">🛡️</span>
+                <span>
+                  边界由平台代码强制，不靠 AI 自觉：文件操作锁定在专用工作区、解释器封闭枚举
+                  （python/node）、子进程环境变量白名单（凭据不透出）、迭代/时长/试跑次数硬上限、
+                  SOP 验收（acceptance）是唯一交付锚点。每次指派的生效档位随回报记录，可审计。
                 </span>
               </div>
             </>
