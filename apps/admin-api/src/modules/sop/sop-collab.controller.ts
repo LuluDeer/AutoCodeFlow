@@ -15,6 +15,7 @@ import { ConfigService } from "@nestjs/config";
 
 import { Public } from "../../common/decorators/public.decorator";
 import { ExecutorService } from "../executor/executor.service";
+import { AiService, type MultimodalMessage } from "../ai/ai.service";
 import { SopService } from "./sop.service";
 import type { SopClarificationMediaRef } from "./entities/sop-clarification.entity";
 
@@ -94,6 +95,7 @@ export class SopCollabController {
     private readonly executors: ExecutorService,
     private readonly sops: SopService,
     private readonly config: ConfigService,
+    private readonly ai: AiService,
   ) {}
 
   /**
@@ -214,6 +216,72 @@ export class SopCollabController {
       attempt: body.attempt,
     });
     return { accepted };
+  }
+
+  /**
+   * LLM relay（P7a 续批）：执行器 Agent 的推理调用经中台代跑。
+   *
+   * ## 为什么是 relay 而不是把 API key 下发
+   * ① key 不出服务端——客户端被入侵也不泄露 LLM 凭据；② 令牌消耗记在
+   * 中台 metrics（成本归因唯一数据源）；③ 企业 IT 只需在中台配额，不必
+   * 逐台下发 key（09 §4.2 同款集中管控思路）。
+   *
+   * ## 载荷边界
+   * messages ≤64 条、单条 content ≤100KB（防塞爆上游上下文/烧穿配额）；
+   * role 白名单（system/user/assistant——tool 往返由中台 Agent 自己用，
+   * 不对执行器开放）。provider 未启用/不可用时 chatMultimodal fail-open
+   * 返回空 content——**原样透传**，执行器按「模型不可用」降级（不掩盖、
+   * 不造成功假象）。
+   */
+  @Post("llm")
+  @HttpCode(HttpStatus.OK)
+  async llmRelay(
+    @Body()
+    body: {
+      address: string;
+      messages?: Array<{ role?: string; content?: unknown }>;
+      tools?: unknown;
+    },
+    @Headers("authorization") auth: string,
+  ) {
+    await this.authenticateAgent(body?.address, auth);
+
+    const raw = Array.isArray(body?.messages) ? body.messages : [];
+    if (raw.length === 0 || raw.length > 64) {
+      throw new BadRequestException("messages 必须是 1..64 条");
+    }
+    const messages: MultimodalMessage[] = raw.map((m, i) => {
+      const role = m?.role;
+      if (role !== "system" && role !== "user" && role !== "assistant") {
+        throw new BadRequestException(
+          `messages[${i}].role 必须是 system | user | assistant`,
+        );
+      }
+      if (typeof m?.content !== "string" || m.content.length === 0) {
+        throw new BadRequestException(
+          `messages[${i}].content 必须是非空字符串`,
+        );
+      }
+      if (m.content.length > 100_000) {
+        throw new BadRequestException(`messages[${i}].content 超过 100KB 上限`);
+      }
+      return { role, content: m.content } as MultimodalMessage;
+    });
+    const tools = Array.isArray(body?.tools) ? body.tools : undefined;
+    if (tools && tools.length > 32) {
+      throw new BadRequestException("tools 最多 32 个");
+    }
+
+    const res = await this.ai.chatMultimodal({
+      messages,
+      ...(tools ? { tools: tools as never } : {}),
+    });
+    return {
+      content: res.content,
+      toolCalls: res.toolCalls ?? null,
+      usage: res.usage,
+      model: res.model,
+    };
   }
 
   // ── 内部 ────────────────────────────────────────────────────────

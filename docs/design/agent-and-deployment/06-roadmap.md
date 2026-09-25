@@ -357,11 +357,13 @@
 
 **建议先不实现 `session` 与 `full-trust`**——风险最高、需求最不确定。等有真实企业提出需求时再做，届时也更清楚要加什么护栏。
 
-### 9.4 P7a 状态（2026-09 落地）
+### 9.4 P7a 状态（2026-09 落地；同日续批接真实执行体）
 
 > **产物**：`apps/executor-desktop/src/main/agent/`（`perception.ts` / `workspace.ts` /
-> `permission-profile.ts` / `gates.ts` / `loop.ts`）+ 五套 selftest 接进 `npm run test:main`；
-> 权限档位接进 `config-store.ts` + `config-sanitize.ts` 消毒层。
+> `permission-profile.ts` / `gates.ts` / `loop.ts` + 续批 `trial-run.ts` / `collab-client.ts` /
+> `runtime.ts`）+ **八套** selftest 接进 `npm run test:main`；权限档位接进
+> `config-store.ts` + `config-sanitize.ts` 消毒层；admin-api 新增 LLM relay 端点
+> （`POST /agent-collab/llm`）。
 
 | 任务 | 产出 | 状态 |
 |---|---|---|
@@ -369,8 +371,10 @@
 | workspace 沙箱 | `<workDir>/agent-workspace/<assignmentId>/`，路径域校验 + symlink 不跟随 | ✅ |
 | 权限档位 | 四轴 + 五预设，P7a 实现 `minimal`/`standard`；`min(本地, 中台)` 合并 | ✅ |
 | 硬闸门 | 迭代 15 / 墙钟 2h / 澄清 5 / 试跑 30 / 依赖安装 10（07 §7.1） | ✅ |
-| 迭代循环 | 感知→规划→试跑→诊断状态机（LLM/试跑**依赖注入**，尚未接真体） | ✅（外壳） |
-| LLM + 真实试跑执行体 | — | ⏳ P7a 后续批次（`loop.ts` 已留注入口） |
+| 迭代循环 | 感知→规划→试跑→诊断状态机 | ✅ |
+| **LLM 接入（续批）** | `POST /agent-collab/llm` relay——**API key 不出服务端**，令牌消耗记中台 metrics；`CollabClient`（node:http，超时/非 2xx/坏 JSON 全收敛为 `{ok:false}`） | ✅ |
+| **真实试跑执行体（续批）** | `runTrialInSandbox`——process 沙箱：解释器封闭枚举（python/python3/node）、env 白名单（凭据零透出 + `PYTHONUTF8=1` 强制，I18N-01 教训在源头掐断）、cwd 锁定工作区、超时/输出上限 | ✅ |
+| **SOP 验收执行（续批）** | acceptance `kind=command` 经沙箱跑（`<interpreter> <工作区脚本>` 封闭形态）；无 acceptance / `-c` 内联形态**如实判不可验证**，绝不默认通过 | ✅ |
 | 浏览器能力 | — | ⏳ P7b（能力域**如实**只报 `filesystem`/`http`） |
 
 ### 实现中的关键判断
@@ -385,21 +389,28 @@
 | **能力域不得超前声明** | 未实现浏览器就**不能**报 `browser`——否则中台的可行性预检（10 §建议2）会把需要浏览器的 SOP 派过来，然后卡在这台机器上 |
 | **档位默认 `minimal` 而非 `standard`** | ADR-022 是信任模型变更，必须「显式开启」。旧配置文件没有这些键，升级**不得**凭空获得「在本机试跑生成代码」的能力。09 §7 的「默认是否改 standard」一旦拍板只改 defaults |
 | **档位枚举必须进消毒层** | conf 15 移除 JSON schema 后坏值**静默落盘**：`sandbox` 拼成 `sandox` 不报错、界面照常显示、解析层却回落到最保守档——「配置看起来生效了、行为却是另一套」且零日志（09 §4.1 点名）。故写入前归一化非法值为 `''`（= 不覆盖，跟随预设），**不删键**（删键 = 保留旧值，界面无法反映「刚选的没生效」） |
+| **LLM 走中台 relay 而非本地带 key** | key 不出服务端（客户端被入侵不泄露 LLM 凭据）；令牌记中台 metrics 可归因；企业只需在中台配额，不必逐台下发 key。provider 未启用时中台 fail-open 透传空 content，执行器按「模型不可用」降级——不掩盖 |
+| **`host` 档如实拒绝而非静默降级** | 部署方选 host 是想要更强能力；静默按 sandbox 跑 = 「以为开的是 A、实际行为是 B」。未实现档位宁可报「尚未实现」 |
+| **LLM 诊断动作显式映射，绝不 `as` 强转** | LLM 说 `clarify`、循环语义是 `needs_clarification`——两个名字强转能过编译但**语义错位**：「请求澄清」静默变 retry，继续烧轮次、中台永远收不到澄清（续批 selftest 实测抓出的真缺陷） |
+| **无 acceptance 的 SOP 绝不 delivered** | 验收是唯一目标锚点（07 §6），锚点缺失时「跑通了就算交付」= 验收语义归零 |
 
-### 自检抓出的两个真实缺陷（非预置，写测试时发现）
+### 自检抓出的真实缺陷（非预置，写测试时发现）
 
 | # | 缺陷 | 后果 | 修法 |
 |---|---|---|---|
 | 1 | `listWorkspaceFiles` **跟随 symlink** | `resolveWithinWorkspace` 只校验**输入**路径、管不到 walk 到达的路径——工作区里一个指向域外的链接就把域外文件列进了 Agent 观察面，沙箱可见性边界被悄悄扩大 | 遇 `isSymbolicLink()` 跳过，不跟随也不列出 |
 | 2 | `resolveWithinWorkspace` 内 `realpathSync(workspaceRoot)` 在工作区不存在时抛 ENOENT | 打破本模块「返回 `ok:false`、**绝不抛**」的契约——调用方是 LLM 驱动的路径解析，抛出去即一次会话崩溃（`workDir` 指向已清理目录即触发） | catch 后收敛为 `{ ok:false, error:'agent workspace does not exist' }` |
+| 3 | LLM 诊断动作 `as LoopNextAction` 强转（续批） | LLM 的 `clarify` 与循环的 `needs_clarification` 名字不同，强转通过编译但语义错位：「请求澄清」静默变 retry，继续烧轮次、澄清永不上报 | 显式映射表 + 未知名如实抛协议违规（outcome=error） |
 
-### 验收（P7a 批次）
+### 验收（P7a 批次 + 续批）
 
-- ✅ `npx tsc -p tsconfig.json --noEmit` 与 `-p tsconfig.selftest.json` 均 0 错误（接手时前者是红的）
-- ✅ `npm run test:main` 17 套全绿（含新增 5 套 agent 自检）
-- ✅ 反证均有牙：删档位闸 / `>=`→`>` / 恢复 symlink 跟随 / 去枚举消毒，逐一实测转红
+- ✅ `npx tsc -p tsconfig.json --noEmit` 与 `-p tsconfig.selftest.json` 均 0 错误
+- ✅ `npm run test:main` 20 套全绿（含 agent 八套：perception / workspace / permission-profile / gates / loop / **trial-run / collab-client / runtime**）
+- ✅ 反证均有牙：删档位闸 / `>=`→`>` / 恢复 symlink 跟随 / 去枚举消毒 / 诊断动作错映射，逐一实测转红
+- ✅ admin-api relay：`agent-sop-check.mjs` 64 项全绿（新增 6 项 relay 断言：端点存在、agent:sop 能力闸、messages 条数/单条上限、role 白名单、AiModule 装配）
 - ✅ `check:lint-gates` 绿；`check:desktop-bundle-drift` 摘要一致（未触碰 bundle）
-- ⏳ LLM 真实接入与端到端 spike（07 §9：用真实 SOP 验证「通用 Agent 自主实现」是否成立）
+- ⏳ 端到端 spike（07 §9：真实 SOP + 真实 LLM 验证「通用 Agent 自主实现」是否成立——需 DashScope 账号）
+- ⏳ 试跑超时的进程树残留（Windows `kill()` 只终止单进程；P7b 换 tree-kill 方案）
 - ⏳ 默认预设 `standard` 与否待拍板（09 §7）
 
 ## 10. 立即可开工的建议
