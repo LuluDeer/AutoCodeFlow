@@ -32,6 +32,10 @@
 | [ADR-016](./adr-016-executor-control-plane-pull.md) | 控制面 pull 通道——部署/停止/卸载/热更新/终止/包推送改走 pull 命令队列（协议 1→2，ARCH-33） | Accepted |
 | [ADR-017](./adr-017-executor-unique-identity.md) | 执行器唯一标识——设备指纹 + 安装实例盐（`address` 降级为可达性元数据，ARCH-34） | Proposed |
 | [ADR-018](./adr-018-executor-occupied-vs-running.md) | 心跳区分「已占槽位」与「在跑执行」——新增 `reservedSlots`（协议 3→4，E-01-RPT） | Accepted |
+| [ADR-019](./adr-019-center-agent-runtime.md) | 中台 Agent 运行时与隔离——独立队列 + 预算闸门 + fail-open 不回灌主链 | Accepted |
+| [ADR-020](./adr-020-agent-boundary-model.md) | 工具分级与边界闸门——五道检查 + 硬禁用不可配置 + scope 安全默认 | Accepted |
+| [ADR-021](./adr-021-sop-as-executable-contract.md) | SOP 即可执行契约——文档与契约分离、版本不可变 + contentHash | Accepted |
+| [ADR-022](./adr-022-executor-agent-arbitrary-code.md) | 执行器 Agent 与「受控的任意代码执行」信任模型变更——权限档位 + 硬闸门 + 默认最保守 | Accepted |
 
 ## DOC-04 覆盖状态
 
