@@ -30,7 +30,7 @@ vi.mock('axios', () => ({
   },
 }));
 
-vi.mock('../config', () => ({
+vi.mock('../config.js', () => ({
   getApiUrl: () => 'http://localhost:3105',
   getToken: () => tokenState.access,
   getRefreshToken: () => tokenState.refresh,
@@ -40,8 +40,8 @@ vi.mock('../config', () => ({
   showConfig: vi.fn(),
 }));
 
-import { createSseParser } from '../commands/exec';
-import { get } from '../client';
+import { createSseParser } from '../commands/exec.js';
+import { get } from '../client.js';
 
 // exec tail 会在 stream.on('data'/'end') 的异步回调里调 process.exit()。回调可能
 // 在用例结束之后才触发，vitest 随即把它记为 unhandled error 并使整轮非零退出。
@@ -150,7 +150,7 @@ describe('SEC-CLI-01: exec tail 契约', () => {
   }
 
   it('终态：读取服务端的 `lines` 字段并按页输出（此前读 logs 恒为空）', async () => {
-    const { execCommand } = await import('../commands/exec');
+    const { execCommand } = await import('../commands/exec.js');
     (axiosInstance.get as ReturnType<typeof vi.fn>)
       // 1) compat alias 解析执行
       .mockResolvedValueOnce({
@@ -177,7 +177,7 @@ describe('SEC-CLI-01: exec tail 契约', () => {
   });
 
   it('非终态：先取 SSE 票据，再用 ?ticket= 建流（绝不再用 ?access_token=）', async () => {
-    const { execCommand } = await import('../commands/exec');
+    const { execCommand } = await import('../commands/exec.js');
     const axiosDefault = (await import('axios')).default as unknown as {
       get: ReturnType<typeof vi.fn>;
     };
@@ -235,7 +235,7 @@ describe('SEC-CLI-01: exec tail 契约', () => {
  */
 describe('NETOPT-2②: SSE 断流（无 done 帧）不得静默 exit 0', () => {
   async function startTail() {
-    const { execCommand } = await import('../commands/exec');
+    const { execCommand } = await import('../commands/exec.js');
     const axiosDefault = (await import('axios')).default as unknown as {
       get: ReturnType<typeof vi.fn>;
     };
@@ -357,7 +357,7 @@ describe('D1-P2-3: SSE tail 空闲看门狗（60s 无数据帧）', () => {
   });
 
   async function bootSilentTail() {
-    const { execCommand } = await import('../commands/exec');
+    const { execCommand } = await import('../commands/exec.js');
     const axiosDefault = (await import('axios')).default as unknown as {
       get: ReturnType<typeof vi.fn>;
     };

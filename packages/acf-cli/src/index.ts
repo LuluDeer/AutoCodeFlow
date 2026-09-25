@@ -20,15 +20,15 @@
  */
 import { Command } from 'commander';
 import chalk from 'chalk';
-import { loginCommand } from './commands/login';
-import { tasksCommand } from './commands/tasks';
-import { appsCommand } from './commands/apps';
-import { executorsCommand } from './commands/executors';
-import { deployCommand } from './commands/deploy';
-import { auditCommand } from './commands/audit';
-import { execCommand } from './commands/exec';
-import { projectsCommand } from './commands/projects';
-import { showConfig, setApiUrl, setToken } from './config';
+import { loginCommand } from './commands/login.js';
+import { tasksCommand } from './commands/tasks.js';
+import { appsCommand } from './commands/apps.js';
+import { executorsCommand } from './commands/executors.js';
+import { deployCommand } from './commands/deploy.js';
+import { auditCommand } from './commands/audit.js';
+import { execCommand } from './commands/exec.js';
+import { projectsCommand } from './commands/projects.js';
+import { showConfig, setApiUrl, setToken } from './config.js';
 // 版本号单一事实源：直接读 package.json，而不是硬编码字面量。
 //
 // 原实现写死 `.version('1.0.0')`，而 package.json 是 `version-guard` 与
@@ -37,10 +37,9 @@ import { showConfig, setApiUrl, setToken } from './config';
 // 这是发布物里最不该出错的一处：用户报 issue、我们排查兼容性、`acf` 自身
 // 做版本相关的行为分支，读的都是这个数。
 // `resolveJsonModule` 已在 tsconfig 打开；tsc 的 rootDir=src 会把 package.json
-// 视为 src 之外的输入，故用 require 走运行时解析（发布物里 package.json 与
-// dist/ 同级，路径稳定）。
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const pkg = require('../package.json') as { version: string };
+// 视为 src 之外的输入，故走运行时解析（发布物里 package.json 与 dist/ 同级，
+// 路径稳定）。本包为 ESM（type: module），JSON 导入须带 import attribute。
+import pkg from '../package.json' with { type: 'json' };
 
 const program = new Command();
 

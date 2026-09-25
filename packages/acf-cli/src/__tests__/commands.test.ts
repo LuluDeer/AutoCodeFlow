@@ -44,7 +44,7 @@ vi.mock('chalk', () => ({
   },
 }));
 
-vi.mock('../client', () => ({
+vi.mock('../client.js', () => ({
   get: vi.fn(),
   post: vi.fn(),
   put: vi.fn(),
@@ -56,7 +56,7 @@ vi.mock('../client', () => ({
   ANALYZE_TIMEOUT_MS: 120_000,
 }));
 
-vi.mock('../config', () => ({
+vi.mock('../config.js', () => ({
   getApiUrl: () => 'http://localhost:3105',
   getToken: () => '',
   getRefreshToken: () => '',
@@ -68,13 +68,13 @@ vi.mock('../config', () => ({
   showConfig: vi.fn(),
 }));
 
-import { get, post, put, patch, del } from '../client';
-import { appsCommand } from '../commands/apps';
-import { tasksCommand } from '../commands/tasks';
-import { executorsCommand } from '../commands/executors';
-import { deployCommand } from '../commands/deploy';
-import { auditCommand } from '../commands/audit';
-import { loginCommand } from '../commands/login';
+import { get, post, put, patch, del } from '../client.js';
+import { appsCommand } from '../commands/apps.js';
+import { tasksCommand } from '../commands/tasks.js';
+import { executorsCommand } from '../commands/executors.js';
+import { deployCommand } from '../commands/deploy.js';
+import { auditCommand } from '../commands/audit.js';
+import { loginCommand } from '../commands/login.js';
 
 const mockedGet = vi.mocked(get);
 const mockedPost = vi.mocked(post);
@@ -679,7 +679,7 @@ describe('acf audit list', () => {
 // ---------------------------------------------------------------------------
 describe('acf login', () => {
   it('reads accessToken/refreshToken (camelCase) from the login response', async () => {
-    const { setToken, setRefreshToken } = await import('../config');
+    const { setToken, setRefreshToken } = await import('../config.js');
     const accessSpy = vi.mocked(setToken);
     const refreshSpy = vi.mocked(setRefreshToken);
     mockedPost.mockResolvedValueOnce({ accessToken: 'jwt-abc', refreshToken: 'r1' });

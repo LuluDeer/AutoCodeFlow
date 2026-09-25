@@ -38,7 +38,7 @@ vi.mock("axios", () => ({
   },
 }));
 
-vi.mock("../config", () => ({
+vi.mock("../config.js", () => ({
   getApiUrl: () => "http://localhost:3105",
   getToken: () => tokenState.access,
   getRefreshToken: () => tokenState.refresh,
@@ -65,8 +65,8 @@ import {
   resetClient,
   formatApiError,
   ANALYZE_TIMEOUT_MS,
-} from "../client";
-import contract from "../../../contract-fixtures/contract.json";
+} from "../client.js";
+import contract from "../../../contract-fixtures/contract.json" with { type: "json" };
 
 const envelope = (data: unknown) => ({
   data: { code: 0, message: "success", data },

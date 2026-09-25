@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import Table from 'cli-table3';
 import chalk from 'chalk';
 import ora from 'ora';
-import { get, formatApiError } from '../client';
+import { get, formatApiError } from '../client.js';
 
 /** 与后端 ProjectViewRow 对齐（AUTH-02-B 读面过滤视图）。 */
 interface ProjectRow {
