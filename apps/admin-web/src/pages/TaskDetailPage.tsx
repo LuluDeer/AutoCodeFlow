@@ -1,8 +1,26 @@
 import { useState } from 'react';
-import {
-  Card, Descriptions, Tag, Typography, Button, Space, Table, Badge, Tabs,
-  Empty, message, Popconfirm, Tooltip, Modal, Statistic, Row, Col, Form, Alert, Result, Input, theme,
-} from 'antd';
+import { Card,
+  Descriptions,
+  Tag,
+  Typography,
+  Button,
+  Space,
+  Table,
+  Badge,
+  Tabs,
+  Empty,
+  Popconfirm,
+  Tooltip,
+  Modal,
+  Statistic,
+  Row,
+  Col,
+  Form,
+  Alert,
+  Result,
+  Input,
+  theme } from 'antd';
+import { message } from '../utils/toast';
 import {
   ApartmentOutlined,
   ArrowLeftOutlined, ThunderboltOutlined, PauseCircleOutlined,
@@ -29,6 +47,8 @@ import { triggerLabel, TRIGGER_COLOR } from '../utils/trigger-label';
 // D-P2-02a（设计审计）：运行时枚举本地化唯一事实源
 import { runtimeLabel } from '../utils/runtime-label';
 import { formatDateTime, formatDuration, formatRelativeTime } from '../utils/timeFormat';
+// CRON-DESC-01：Cron 表达式的人类可读描述（utils/cron-desc.ts）
+import { describeCron } from '../utils/cron-desc';
 // F-27（DEEP_REVIEW 0ef3bbe）：失败次数派生（纯函数，保证整数）
 import { failedRunCount } from './task-stats';
 // CORE-03 收尾：保存为自定义模板的 config 白名单抽取
@@ -493,9 +513,22 @@ export default function TaskDetailPage() {
                       {triggerLabel(task.triggerType, t) || '-'}
                     </Tag>
                   </Descriptions.Item>
-                  {task.cronExpression && (
-                    <Descriptions.Item label={t('taskDetail.field.cron')}><Text code>{task.cronExpression}</Text></Descriptions.Item>
-                  )}
+                  {task.cronExpression && (() => {
+                    // CRON-DESC-01：表达式旁附人类可读描述（超出子集只显示原表达式）
+                    const cronDesc = describeCron(task.cronExpression, t);
+                    return (
+                      <Descriptions.Item label={t('taskDetail.field.cron')}>
+                        <div>
+                          <Text code>{task.cronExpression}</Text>
+                          {cronDesc && (
+                            <Text type="secondary" style={{ fontSize: 12, display: 'block' }}>
+                              {cronDesc}
+                            </Text>
+                          )}
+                        </div>
+                      </Descriptions.Item>
+                    );
+                  })()}
                   {task.fixedRate && (
                     <Descriptions.Item label={t('taskDetail.field.interval')}>
                       {task.fixedRate >= 3600
@@ -507,7 +540,7 @@ export default function TaskDetailPage() {
                   )}
                   {/* FEAT-06: 任务级维护窗口（命中时调度计划触发被跳过） */}
                   {task.maintenanceWindows && task.maintenanceWindows.length > 0 && (
-                    <Descriptions.Item label={t('taskDetail.field.maintenance')} span={2}>
+                    <Descriptions.Item label={t('taskDetail.field.maintenance')} span="filled">
                       <Space size={[4, 4]} wrap>
                         {task.maintenanceWindows.map((w, i) => (
                           <Tag key={i} color="orange" style={{ fontFamily: 'monospace' }}>
@@ -527,7 +560,7 @@ export default function TaskDetailPage() {
                   )}
                   {/* FEAT-11: 运行手册（markdown 排障知识） */}
                   {task.runbook && (
-                    <Descriptions.Item label={t('taskDetail.field.runbook')} span={2}>
+                    <Descriptions.Item label={t('taskDetail.field.runbook')} span="filled">
                       {/* UI 打磨：代码样式长手册限高内滚，避免描述区被单条目撑爆 */}
                       <Typography.Paragraph
                         style={{
@@ -559,7 +592,7 @@ export default function TaskDetailPage() {
                   </Descriptions.Item>
                   <Descriptions.Item label={t('taskDetail.field.maxRetry')}>{t('taskDetail.countTimes', { count: task.maxRetry ?? 0 })}</Descriptions.Item>
                   {/* CORE-02: 可重试错误类型白名单展示（null/[] = 全部可重试） */}
-                  <Descriptions.Item label={t('taskDetail.field.retryableErrors')} span={2}>
+                  <Descriptions.Item label={t('taskDetail.field.retryableErrors')} span="filled">
                     {task.retryableErrors && task.retryableErrors.length > 0 ? (
                       <Space size={[4, 4]} wrap>
                         {task.retryableErrors.map((r) => (
@@ -605,6 +638,21 @@ export default function TaskDetailPage() {
             ),
             children: (
               <Card>
+                {/* GLUE-HINT-01：代码来源不是内嵌脚本时（zip 应用/Git 仓库），编辑器
+                    空白且「保存脚本」禁用，用户无从判断"这里的代码跑不跑"。补一条
+                    说明横幅，讲清楚内嵌脚本与当前来源的关系。 */}
+                {(() => {
+                  const source = task.codeSource ?? deriveCodeSourceFromTask(task);
+                  return source !== 'glue' ? (
+                    <Alert
+                      type="info"
+                      showIcon
+                      style={{ marginBottom: 12 }}
+                      title={t('taskDetail.glue.notGlueTitle')}
+                      description={t('taskDetail.glue.notGlueDesc')}
+                    />
+                  ) : null;
+                })()}
                 <GlueEditor
                   taskId={id!}
                   initialSource={task.glueSource ?? undefined}

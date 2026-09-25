@@ -7,7 +7,8 @@
  * 依赖扇出语义（上游全部 SUCCESS）兜底，无需前端排序保证。
  */
 import { useMemo, useState } from 'react';
-import { Button, Empty, Tag, Typography, Alert, message, theme } from 'antd';
+import { Button, Empty, Tag, Typography, Alert, theme } from 'antd';
+import { message } from '../utils/toast';
 import PageSkeleton from './PageSkeleton';
 import { useNavigate } from 'react-router-dom';
 import { ThunderboltOutlined } from '@ant-design/icons';

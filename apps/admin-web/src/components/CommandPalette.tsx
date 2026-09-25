@@ -46,7 +46,8 @@ import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import '../i18n';
-import { Input, Modal, Typography, message, theme } from 'antd';
+import { Input, Modal, Typography, theme } from 'antd';
+import { message } from '../utils/toast';
 import type { InputRef } from 'antd';
 import {
   AppstoreOutlined,
@@ -775,8 +776,12 @@ export default function CommandPalette({ open, onOpenChange }: CommandPalettePro
   const allSettled = GROUP_ORDER.every(
     (kind) => kind === 'action' || results[kind].status === 'ok',
   );
-  // 操作分组始终有静态动作兜底，全局空态仅在搜索分组全空时出现
-  const showGlobalEmpty = allSettled && !hasError && flatItems.length === 0;
+  // PALETTE-EMPTY-01：全局空态判定。原实现 `flatItems.length === 0` **恒为
+  // false**——操作分组（新建任务/创建应用）始终兜底至少 2 条，导致搜索无
+  // 匹配时列表静默无反馈。改为：有关键词 + 四路请求均已 ok + 无实体命中
+  // 时显示「无结果」；零输入（idle）不提示，error 态由各组的加载失败行兜底。
+  const hasEntityResults = sections.some((s) => s.kind !== 'action' && s.items.length > 0);
+  const showGlobalEmpty = allSettled && !hasError && !hasEntityResults && !!kwLower;
 
   return (
     <Modal

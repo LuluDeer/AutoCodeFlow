@@ -3,14 +3,19 @@ import {
   Table, Typography, Badge, Tag, Button, Input, Select, Space,
   Empty, Modal, notification, Progress, Tooltip, Alert, theme,
 } from 'antd';
+// MODAL-01：命令式 Modal.* 从 utils/modal 取（吃暗色主题 + i18n locale）；<Modal> JSX 仍用 antd。
+import { Modal as confirmModal } from '../utils/modal';
 import {
   SearchOutlined, FilterOutlined, ClockCircleOutlined, PlusCircleOutlined,
   DesktopOutlined,
+
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { type Executor } from '../api/executors';
 import { useExecutorsList, useExecutorGroups, useExecutorRuntimeConfig } from '../api/queries';
+// MOBILE-CARD-01：≤768px 强制卡片视图（表格在 375px 不可用，见组件注释）
+import { useIsMobile } from '../hooks/useIsMobile';
 import { client } from '../api/client';
 // F-26（DEEP_REVIEW 0ef3bbe）：locale 单一来源，不再硬编码 zh-CN
 import { currentLocale } from '../utils/locale';
@@ -104,6 +109,10 @@ export default function ExecutorListPage() {
   const [installCmdModal, setInstallCmdModal] = useState(false);
   // UI-07 ①：卡片/表格双视图（localStorage 记忆，读失败回退表格）
   const [viewMode, setViewMode] = useState<ExecutorViewMode>(() => readViewMode(typeof localStorage !== 'undefined' ? localStorage : undefined));
+  // MOBILE-CARD-01：移动端强制卡片视图——375px 下 9 列表格横向滚动不可用；
+  // 桌面端仍尊重 localStorage 记忆的用户选择。
+  const isMobile = useIsMobile();
+  const effectiveViewMode: ExecutorViewMode = isMobile ? 'card' : viewMode;
   // UI-07 ③：批量选择（两视图共享选中集合）
   const [selectedRowKeys, setSelectedRowKeys] = useState<string[]>([]);
 
@@ -119,7 +128,7 @@ export default function ExecutorListPage() {
       setInstallCmd(res);
       setInstallCmdModal(true);
     } catch {
-      Modal.error({ title: t('execList.installCmdFail.title'), content: t('execList.installCmdFail.content') });
+      confirmModal.error({ title: t('execList.installCmdFail.title'), content: t('execList.installCmdFail.content') });
     }
   };
 
@@ -257,10 +266,24 @@ export default function ExecutorListPage() {
         <Space orientation="vertical" size={2}>
           {([t('execList.res.cpu'), t('execList.res.mem'), t('execList.res.disk')] as const).map((label, idx) => {
             const isDisk = idx === 2;
+            // DISK-PLACEHOLDER-01：磁盘未上报时显示「未上报」占位而非整行消失——
+            // 列头写着 CPU/内存/磁盘，磁盘行静默蒸发既像 bug 又让人误以为 0%
+            const unreported = isDisk && r.diskUsage == null;
             const val = idx === 0 ? (r.cpuUsage ?? 0)
               : idx === 1 ? (r.memUsage ?? 0)
               : (r.diskUsage ?? 0);
-            if (isDisk && !r.diskUsage) return null;
+            if (unreported) {
+              return (
+                <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <Typography.Text style={{ fontSize: 11, width: 28 }}>{label}</Typography.Text>
+                  <Tooltip title={t('execList.res.diskUnreported')}>
+                    <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                      {t('execList.res.diskUnreported')}
+                    </Typography.Text>
+                  </Tooltip>
+                </div>
+              );
+            }
             return (
               <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                 <Typography.Text style={{ fontSize: 11, width: 28 }}>{label}</Typography.Text>
@@ -280,13 +303,14 @@ export default function ExecutorListPage() {
     {
       title: t('execList.col.tasks'),
       key: 'runningTaskCount',
-      width: 80,
+      // TASKS-NOWRAP-01：100px——80px 会把「1/10任务」折成竖排三行
+      width: 100,
       render: (_: unknown, r: Executor) => {
         const running = r.runningTaskCount ?? 0;
         const max = r.maxConcurrentTasks;
         const label = max != null ? t('execList.tasks.both', { running, max }) : t('execList.tasks.only', { running });
         return (
-          <Typography.Text strong style={{ color: running > 0 ? token.colorPrimary : undefined }}>
+          <Typography.Text strong style={{ color: running > 0 ? token.colorPrimary : undefined, whiteSpace: 'nowrap' }}>
             {label}
           </Typography.Text>
         );
@@ -362,7 +386,8 @@ export default function ExecutorListPage() {
                 text={<Typography.Text type="secondary" style={{ fontSize: 12 }}>{isLive ? t('execList.live') : t('execList.poll')}</Typography.Text>}
               />
             </Tooltip>
-            <ViewToggle value={viewMode} onChange={handleViewChange} />
+            {/* MOBILE-CARD-01：移动端恒卡片，视图切换无意义故隐藏 */}
+            {!isMobile && <ViewToggle value={viewMode} onChange={handleViewChange} />}
             {/* P2-8（UX-AUDIT）：「安装向导」与「快速添加」两套入口此前无差别说明——
                 一个是引导式（检测 OS/配网络模式/验证连接），一个是只吐一行命令自行执行。
                 用 Tooltip 一句话区分，避免用户在两条路之间凭直觉选错。 */}
@@ -461,7 +486,7 @@ export default function ExecutorListPage() {
         />
       ) : null}
 
-      {viewMode === 'card' ? (
+      {effectiveViewMode === 'card' ? (
         <ExecutorCardGrid
           executors={filtered}
           selectedIds={selectedRowKeys}

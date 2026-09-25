@@ -8,7 +8,8 @@
  * 空清单返回 null（整段不渲染，作为详情页的兜底策略）。
  */
 import { useState } from 'react';
-import { Button, List, Space, Spin, Typography, message } from 'antd';
+import { Button, Listy, Space, Spin, Typography } from 'antd';
+import { message } from '../utils/toast';
 import { DownloadOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import '../i18n';
@@ -67,26 +68,22 @@ export default function ArtifactsList({ execId, artifacts }: ArtifactsListProps)
       <Typography.Text strong style={{ fontSize: 13 }}>
         {t('artifacts.title', { count: list.length })}
       </Typography.Text>
-      <List
-        size="small"
+      <Listy
         style={{ marginTop: 8 }}
-        dataSource={list}
-        renderItem={(a) => (
-          <List.Item
-            actions={[
-              <Button
-                key="download"
-                type="link"
-                size="small"
-                icon={<DownloadOutlined />}
-                aria-label={t('artifacts.downloadAria', { name: a.name })}
-                loading={busyName === a.name}
-                disabled={busyName !== null && busyName !== a.name}
-                onClick={() => handleDownload(a.name)}
-              >
-                {t('artifacts.download')}
-              </Button>,
-            ]}
+        // antd 6.6 起 List 已废弃（Listy 取代），Listy 无 List.Item/actions 子形态，
+        // 行布局在此显式复刻：左侧信息、右侧操作，与迁移前的视觉一致。
+        // rowKey 用 name（同一次执行内产物名唯一，api 也以 name 为下载标识）。
+        rowKey="name"
+        items={list}
+        itemRender={(a) => (
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 8,
+              padding: '4px 0',
+            }}
           >
             <Space size={8} wrap>
               <Typography.Text style={{ fontFamily: 'monospace', fontSize: 12 }}>
@@ -101,7 +98,18 @@ export default function ArtifactsList({ execId, artifacts }: ArtifactsListProps)
                 </Typography.Text>
               )}
             </Space>
-          </List.Item>
+            <Button
+              type="link"
+              size="small"
+              icon={<DownloadOutlined />}
+              aria-label={t('artifacts.downloadAria', { name: a.name })}
+              loading={busyName === a.name}
+              disabled={busyName !== null && busyName !== a.name}
+              onClick={() => handleDownload(a.name)}
+            >
+              {t('artifacts.download')}
+            </Button>
+          </div>
         )}
       />
     </div>

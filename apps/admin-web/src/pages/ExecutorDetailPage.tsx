@@ -1,5 +1,8 @@
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import { Card, Descriptions, Table, Badge, Button, Modal, Form, Input, InputNumber, Select, message, Statistic, Row, Col, Progress, Typography, Breadcrumb, Empty, Tooltip, Space, Alert, Result, Tag, theme, Divider } from 'antd';
+import { Card, Descriptions, Table, Badge, Button, Modal, Form, Input, InputNumber, Select, Statistic, Row, Col, Progress, Typography, Breadcrumb, Empty, Tooltip, Space, Alert, Result, Tag, theme, Divider } from 'antd';
+import { message } from '../utils/toast';
+// MODAL-01：命令式 Modal.* 从 utils/modal 取（吃暗色主题 + i18n locale）；<Modal> JSX 仍用 antd。
+import { Modal as confirmModal } from '../utils/modal';
 import { WarningOutlined, CopyOutlined, InfoCircleOutlined, ReloadOutlined, DeleteOutlined } from '@ant-design/icons';
 // FEAT-04: 24h 资源趋势折线图（Tooltip 别名避开 antd Tooltip，DashboardPage 同法）
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartTooltip, Legend, ResponsiveContainer } from 'recharts';
@@ -15,7 +18,7 @@ import {
 import { getErrMsg } from '../utils/error';
 // F-26（DEEP_REVIEW 0ef3bbe）：locale 单一来源 currentLocale() + 统一相对时间 formatRelativeTime()
 import { currentLocale } from '../utils/locale';
-import { formatRelativeTime, formatDurationShort, formatDateTime } from '../utils/timeFormat';
+import { formatRelativeTime, formatDurationShort, formatDateTime, formatDuration } from '../utils/timeFormat';
 // P2-5（executor lifecycle audit）：心跳陈旧判定与后端判死阈值同源
 import { HEARTBEAT_TIMEOUT_FALLBACK_MS, isHeartbeatStale } from '../utils/executorLiveness';
 // ARCH-33（ADR-016）：pull 控制面可用性判据（UI-18 判据的修订版）
@@ -148,7 +151,7 @@ export default function ExecutorDetailPage() {
       setRotateOpen(false);
       rotateForm.resetFields();
       refreshExecutor();
-      Modal.success({
+      confirmModal.success({
         title: t('executorDetail.rotate.newTokenTitle'),
         content: (
           <Space>
@@ -315,7 +318,7 @@ export default function ExecutorDetailPage() {
           isAdmin ? (
           // UI 打磨：头部 5 个操作按钮窄屏收纳换行（wrap + 紧凑间距），不引入 Dropdown
           <Space wrap size={4}>
-            <Button.Group>
+            <Space.Compact>
               <Button onClick={() => { editForm.setFieldsValue(executorEditFormValues(executor)); setEditOpen(true); }}>{t('executorDetail.edit')}</Button>
               {/* UI-18 → ARCH-33（ADR-016）修订：判据由「pull 模式」改为
                   「pull 且协议 < 2」。ADR-016 把控制面搬上 pull 通道后，
@@ -330,7 +333,7 @@ export default function ExecutorDetailPage() {
                 disabled={!isOnline}
                 loading={settingOffline}
                 onClick={() => {
-                  Modal.confirm({
+                  confirmModal.confirm({
                     title: t('executorDetail.offline.confirmTitle'),
                     content: t('executorDetail.offline.confirmContent'),
                     okText: t('executorDetail.confirm'),
@@ -341,9 +344,9 @@ export default function ExecutorDetailPage() {
               >
                 {t('executorDetail.offline.setOffline')}
               </Button>
-            </Button.Group>
+            </Space.Compact>
             {/* 常规操作与高危操作（轮换/删除）之间的视觉分组 */}
-            <Divider type="vertical" style={{ margin: 0 }} />
+            <Divider orientation="vertical" style={{ margin: 0 }} />
             <Tooltip title={t('executorDetail.rotate.oldTokenInvalidTip')}>
               <Button
                 danger
@@ -571,9 +574,24 @@ export default function ExecutorDetailPage() {
                 <Col span={8}><Statistic title={t('executorDetail.stats.totalExecutions')} value={metrics.sevenDayStats.totalExecutions} /></Col>
                 <Col span={8}>
                   <Statistic title={t('executorDetail.stats.successRate')} value={metrics.sevenDayStats.successRate} suffix="%" styles={{ content: { color: token.colorSuccess } }} precision={1} />
-                  <Text type="secondary" style={{ fontSize: 12 }}>{t('executorDetail.stats.succFail', { succ: metrics.sevenDayStats.successful, fail: metrics.sevenDayStats.failed })}</Text>
+                  {/* METRIC-01：分母含超时/已终止等非成功/失败终态，计数行补「其他」，
+                      避免 85.7% 与「成功 6 / 失败 0」对不上 */}
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    {t('executorDetail.stats.succFail', {
+                      succ: metrics.sevenDayStats.successful,
+                      fail: metrics.sevenDayStats.failed,
+                      other: Math.max(
+                        metrics.sevenDayStats.totalExecutions -
+                          metrics.sevenDayStats.successful -
+                          metrics.sevenDayStats.failed,
+                        0,
+                      ),
+                    })}
+                  </Text>
                 </Col>
-                <Col span={8}><Statistic title={t('executorDetail.stats.avgDuration')} value={metrics.sevenDayStats.averageDurationMs} suffix="ms" precision={0} /></Col>
+                {/* EXEC-DETAIL-01：337,261ms 这类裸毫秒不可读，与全站统一走
+                    formatDuration 人性化（5分37秒/1小时2分） */}
+                <Col span={8}><Statistic title={t('executorDetail.stats.avgDuration')} value={formatDuration(metrics.sevenDayStats.averageDurationMs, t)} /></Col>
               </Row>
             ) : (
               !loadingMetrics && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('executorDetail.stats.empty')} />

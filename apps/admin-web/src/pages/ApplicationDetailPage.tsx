@@ -1,8 +1,29 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import {
-  Descriptions, Badge, Card, Table, Button, Space, Tag, Typography, message, Modal, Spin, Empty,
-  Row, Col, Collapse, Tooltip, Tabs, Form, Input, Select, Statistic, Alert, theme,
-} from 'antd';
+// MODAL-01：命令式 Modal 从 utils/modal 取（吃暗色主题 + i18n locale）；
+// 本文件只用命令式 Modal.*，无 <Modal> JSX 组件，故整块从 antd 导入中移除。
+import { Modal } from '../utils/modal';
+import { Descriptions,
+  Badge,
+  Card,
+  Table,
+  Button,
+  Space,
+  Tag,
+  Typography,
+  Spin,
+  Empty,
+  Row,
+  Col,
+  Collapse,
+  Tooltip,
+  Tabs,
+  Form,
+  Input,
+  Select,
+  Statistic,
+  Alert,
+  theme } from 'antd';
+import { message } from '../utils/toast';
 import {
   ArrowLeftOutlined, SyncOutlined, ReloadOutlined, GithubOutlined,
   SaveOutlined, HistoryOutlined,

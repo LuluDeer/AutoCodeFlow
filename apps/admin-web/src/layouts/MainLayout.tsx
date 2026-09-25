@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, memo, type ReactNode } from 'react';
-import { Layout, Menu, Avatar, Dropdown, Typography, Space, theme, Button, Breadcrumb, Tooltip, message } from 'antd';
+import { Layout, Menu, Avatar, Dropdown, Typography, Space, theme, Button, Breadcrumb, Tooltip } from 'antd';
+import { message } from '../utils/toast';
 import {
   DashboardOutlined,
   AppstoreOutlined,
@@ -35,6 +36,8 @@ import { useThemeStore } from '../theme/store';
 // D-P2-16（设计审计）：品牌渐变唯一事实源（Logo / 用户头像共用）
 import { BRAND_GRADIENT } from '../theme/tokens';
 import type { ThemeMode } from '../theme/store';
+// BELL-01：通知铃升级为近期失败速览面板（组件内含未读红点逻辑）
+import NotificationBell from '../components/NotificationBell';
 // UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
 // P0-7（UX 审计）：setLanguage 此前导出但全站零调用——此处是它的第一个入口。
 import '../i18n';
@@ -192,7 +195,9 @@ const Clock = memo(function Clock({
 /**
  * P1-21（UX 审计）：哪些路由由页面自身通过 PageHeader 的 breadcrumb prop 渲染语义面包屑。
  * 头部自动面包屑只在页面"不自渲染"时显示，避免详情/编辑/新建页出现双面包屑。
- * （ExecutorDetailPage /executors/:id 不自带面包屑，故仍保留头部自动面包屑。）
+ * （ExecutorDetailPage /executors/:id 现已自渲染「执行器列表 / appName」面包屑，
+ * 头部自动面包屑只能取到 URL 段——顶栏暴露裸 UUID 且与页头名称两套矛盾，
+ * 故同样交由页面自渲染。）
  */
 export function pageSelfRendersBreadcrumb(pathname: string): boolean {
   const p = pathname.replace(/\/+$/, '') || '/';
@@ -202,6 +207,9 @@ export function pageSelfRendersBreadcrumb(pathname: string): boolean {
   if (/^\/tasks\/[^/]+$/.test(p)) return true;               // 任务详情
   if (/^\/applications\/[^/]+$/.test(p)) return true;         // 应用详情
   if (p === '/executors/install') return true;                // 安装向导
+  // BREADCRUMB-01：执行器详情页自带语义面包屑。注意必须排在 install 之后
+  // （install 同样是 /executors/ 的单段路径，先被上一条接住）。
+  if (/^\/executors\/[^/]+$/.test(p)) return true;            // 执行器详情
   return false;
 }
 
@@ -337,6 +345,22 @@ export default function MainLayout() {
   const [userMenuOpen, setUserMenuOpen] = useState(false);
 
   const selectedKey = '/' + location.pathname.split('/')[1];
+
+  // NAV-EXPAND-01：直达/刷新系统类子页（/users、/audit、/settings 等深链）时，
+  // 自动展开选中项所属的分组。此前 openKeys 只由用户点击驱动并持久化，深链
+  // 进来后父分组保持折叠——选中项高亮在一棵不可见的菜单里，用户失去位置感
+  // （实测 /users、/settings、/audit 直达均复现）。只「加」不「删」，不回写
+  // 持久化，不干扰用户对其他分组的手动折叠；用户随后手动收起也仍被尊重
+  // （effect 只在分组归属变化时触发，不会立刻又弹开）。
+  const selectedGroupKey = menuItems.find((g) =>
+    g.children.some((c) => c.key === selectedKey),
+  )?.key;
+  useEffect(() => {
+    if (!selectedGroupKey) return;
+    setOpenKeysState((prev) =>
+      prev.includes(selectedGroupKey) ? prev : [...prev, selectedGroupKey],
+    );
+  }, [selectedGroupKey]);
 
   // Build breadcrumb items from the current path（UI-10：名称走 i18n key）
   const ROUTE_NAMES: Record<string, string> = {
@@ -613,20 +637,10 @@ export default function MainLayout() {
                 且项目无文档/关于落地页——按评审建议移除该占位按钮，避免误导。 */}
 
             {/* 通知按钮：R6 起 /notifications 为 ADMIN-only（路由门控），
-                对普通用户隐藏该快捷入口，避免点击后落入 403 页 */}
-            {isAdmin && (
-              <Tooltip title={t('nav.notify.aria')}>
-                {/* F-24（DEEP_REVIEW 0ef3bbe）：原 <Badge count={0} dot> 恒亮红点为占位死 UI
-                    （dot 忽略 count，永远显示红点），移除 Badge 包裹，保留可跳转 Bell 按钮 */}
-                <Button
-                  type="text"
-                  icon={<BellOutlined />}
-                  aria-label={t('nav.notify.aria')}
-                  style={{ fontSize: 16 }}
-                  onClick={() => nav('/notifications')}
-                />
-              </Tooltip>
-            )}
+                对普通用户隐藏该快捷入口，避免点击后落入 403 页。
+                BELL-01：升级为近期失败速览面板（未读红点 + 面板内跳转），
+                此前是零反馈的纯跳转。 */}
+            {isAdmin && <NotificationBell />}
 
             {/* 用户头像下拉 */}
             <Dropdown

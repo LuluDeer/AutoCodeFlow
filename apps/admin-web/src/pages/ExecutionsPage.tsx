@@ -1,8 +1,17 @@
 import { useState, useEffect } from 'react';
-import {
-  Table, Typography, Badge, Button, Input, Select, Space,
-  Empty, Tooltip, Popconfirm, message, DatePicker,
-} from 'antd';
+import { Table,
+  Typography,
+  Badge,
+  Button,
+  Input,
+  Select,
+  Space,
+  Empty,
+  Tooltip,
+  Popconfirm,
+  DatePicker,
+  Card } from 'antd';
+import { message } from '../utils/toast';
 import {
   SearchOutlined, FilterOutlined, ReloadOutlined, EyeOutlined, StopOutlined,
   SwapOutlined,
@@ -10,7 +19,7 @@ import {
 import type { Dayjs } from 'dayjs';
 
 import { useQueryClient } from '@tanstack/react-query';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate, Link, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { tasksApi } from '../api/tasks';
 import type { TaskExecution } from '../api/tasks';
@@ -22,6 +31,8 @@ import { formatDateTime, formatDuration, formatRelativeTime } from '../utils/tim
 import { ExecutionCompareModal, COMPARE_MAX } from '../components/ExecutionCompare';
 import PageHeader from '../components/PageHeader';
 import StateError from '../components/StateError';
+// MOBILE-CARD-01：≤768px 时表格 → 卡片列表（结构级降级，CSS 做不到）
+import { useIsMobile } from '../hooks/useIsMobile';
 // P1-17（UX 审计）：触发方式列此前直接输出后端裸 token（cron/manual/fixed_rate），
 // 与同列相邻的中文状态 Badge 中英混排。收敛到 utils/trigger-label 唯一事实源，
 // 与 TaskListPage/TaskDetailPage/ApplicationDetailPage 同一份映射。
@@ -46,13 +57,27 @@ const STATUS_MAP = (t: (k: string) => string): Record<string, { badge: BadgeStat
 export default function ExecutionsPage() {
   const nav = useNavigate();
   const { t } = useTranslation();
+  // MOBILE-CARD-01：≤768px 表格 → 卡片列表
+  const isMobile = useIsMobile();
   // ARCH-26: 写后失效句柄（kill 后 invalidate 执行列表+Dashboard 汇总缓存）
   const queryClient = useQueryClient();
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
-  const [statusFilter, setStatusFilter] = useState<string | undefined>();
-  const [search, setSearch] = useState('');
-  const [executorFilter, setExecutorFilter] = useState('');
+  // URL-SYNC-01：筛选/分页状态以 URL 查询参数为初始源并回写——修复两处体验缺口：
+  // ① Dashboard「失败 Top 任务 → 全部失败」链到 /executions?status=failed，
+  //    此前页面从不读 URL 参数，深链被静默丢弃；
+  // ② 刷新/分享页面后筛选与页码全部丢失。
+  // 时间范围不在 URL（Dayjs 序列化噪音大、深链价值低），仍仅存会话内。
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [page, setPage] = useState(() => {
+    const p = Number(searchParams.get('page'));
+    return Number.isInteger(p) && p > 0 ? p : 1;
+  });
+  const [pageSize, setPageSize] = useState(() => {
+    const ps = Number(searchParams.get('pageSize'));
+    return Number.isInteger(ps) && ps > 0 ? ps : 20;
+  });
+  const [statusFilter, setStatusFilter] = useState<string | undefined>(() => searchParams.get('status') || undefined);
+  const [search, setSearch] = useState(() => searchParams.get('q') || '');
+  const [executorFilter, setExecutorFilter] = useState(() => searchParams.get('executor') || '');
   const [timeRange, setTimeRange] = useState<[Dayjs, Dayjs] | null>(null);
   const [killingId, setKillingId] = useState<string | null>(null);
   // FEAT-03: 多选对比——选中本页行后一键打开指标对比 modal
@@ -81,6 +106,18 @@ export default function ExecutionsPage() {
 
   // 搜索防抖：避免每击键发一次列表请求
   const debouncedSearch = useDebounce(search);
+
+  // URL-SYNC-01：状态→URL 回写（replace 不制造历史记录）。空值不写入，
+  // 保持深链 URL 干净；清空筛选后 URL 回到裸 /executions。
+  useEffect(() => {
+    const next = new URLSearchParams();
+    if (page !== 1) next.set('page', String(page));
+    if (pageSize !== 20) next.set('pageSize', String(pageSize));
+    if (statusFilter) next.set('status', statusFilter);
+    if (debouncedSearch) next.set('q', debouncedSearch);
+    if (executorFilter) next.set('executor', executorFilter);
+    setSearchParams(next, { replace: true });
+  }, [page, pageSize, statusFilter, debouncedSearch, executorFilter, setSearchParams]);
 
   // ARCH-26: TanStack Query 改造——useRequest 轮询（15s）换 query hooks：
   // 筛选参数进 queryKey（参数变化自动重取，等价 refreshDeps）；
@@ -192,9 +229,10 @@ export default function ExecutionsPage() {
     {
       title: t('execs.col.duration'),
       dataIndex: 'duration',
-      width: 80,
+      width: 90,
       ...hideOnMobile,
-      render: (v: number) => v != null ? <Text style={{ fontSize: 12 }}>{formatDuration(v, t)}</Text> : '-',
+      // UI-08：时长如「32分46秒」窄列会折成两行，nowrap 保证单行可扫读
+      render: (v: number) => v != null ? <Text style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{formatDuration(v, t)}</Text> : '-',
     },
     {
       title: t('execs.col.error'),
@@ -320,6 +358,57 @@ export default function ExecutionsPage() {
         />
       ) : null}
 
+      {isMobile ? (
+        /* MOBILE-CARD-01：≤768px 卡片列表——此前 375px 下表格横向滚动，表头
+           「任务名称」逐字竖排、操作列溢出。卡片按值班首查信息组织：状态 +
+           任务名 / 触发·执行器 / 时间·耗时 / 错误 / 详情。 */
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {executions.length === 0 ? (
+            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('execs.empty')} />
+          ) : (
+            executions.map((r) => {
+              const cfg = statusMap[r.status] || { badge: 'default' as BadgeStatus, label: r.status };
+              return (
+                <Card key={r.id} size="small" style={{ borderRadius: 10 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                    <Link to={`/tasks/${r.taskId}`} style={{ fontWeight: 500, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {r.taskName || r.taskId}
+                    </Link>
+                    <Badge status={cfg.badge} text={cfg.label} />
+                  </div>
+                  <div style={{ marginTop: 6, fontSize: 12, color: 'var(--chart-axis-text)' }}>
+                    {[triggerLabel(r.triggerType, t), r.executorAddress].filter(Boolean).join(' · ')}
+                  </div>
+                  <div style={{ marginTop: 4, fontSize: 12, color: 'var(--chart-axis-text)' }}>
+                    {r.startTime ? `${formatRelativeTime(r.startTime, t)} · ${r.duration != null ? formatDuration(r.duration, t) : '-'}` : '-'}
+                  </div>
+                  {r.errorMessage && (
+                    <Typography.Paragraph type="danger" style={{ marginTop: 6, marginBottom: 0, fontSize: 12 }} ellipsis={{ rows: 2, tooltip: r.errorMessage }}>
+                      {r.errorMessage}
+                    </Typography.Paragraph>
+                  )}
+                  <div style={{ marginTop: 8, display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 4 }}>
+                    {r.status === 'running' && (
+                      <Popconfirm
+                        title={t('execs.killConfirm')}
+                        onConfirm={() => handleKill(r)}
+                        okText={t('execs.action.kill')} okButtonProps={{ danger: true }}
+                      >
+                        <Button size="small" danger icon={<StopOutlined />} loading={killingId === r.id}>
+                          {t('execs.action.kill')}
+                        </Button>
+                      </Popconfirm>
+                    )}
+                    <Button size="small" icon={<EyeOutlined />} onClick={() => nav(`/tasks/${r.taskId}/executions/${r.id}`)}>
+                      {t('execs.action.detail')}
+                    </Button>
+                  </div>
+                </Card>
+              );
+            })
+          )}
+        </div>
+      ) : (
       <Table
         rowKey="id"
         columns={columns}
@@ -345,6 +434,7 @@ export default function ExecutionsPage() {
           emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('execs.empty')} />,
         }}
       />
+      )}
 
       <ExecutionCompareModal
         open={compareOpen}

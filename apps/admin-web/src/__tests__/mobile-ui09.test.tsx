@@ -143,14 +143,18 @@ afterEach(() => {
 });
 
 function renderLayout(path = '/dashboard') {
+  // BELL-01：MainLayout 内 NotificationBell 消费 react-query → 需要 provider
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
-    <MemoryRouter initialEntries={[path]}>
-      <Routes>
-        {/* 具体路由在前，* 兜底 MainLayout（react-router 按序匹配） */}
-        <Route path="/tasks" element={<div>tasks-mock</div>} />
-        <Route path="*" element={<MainLayout />} />
-      </Routes>
-    </MemoryRouter>,
+    <QueryClientProvider client={qc}>
+      <MemoryRouter initialEntries={[path]}>
+        <Routes>
+          {/* 具体路由在前，* 兜底 MainLayout（react-router 按序匹配） */}
+          <Route path="/tasks" element={<div>tasks-mock</div>} />
+          <Route path="*" element={<MainLayout />} />
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>,
   );
 }
 

@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import {
-  Steps,
+import { Steps,
   Card,
   Select,
   Button,
@@ -10,14 +9,13 @@ import {
   Spin,
   Tag,
   Divider,
-  message,
   Tooltip,
   Row,
   Col,
   Input,
   theme,
-  Radio,
-} from 'antd';
+  Radio } from 'antd';
+import { message } from '../utils/toast';
 import PageHeader from '../components/PageHeader';
 import StateError from '../components/StateError';
 import {

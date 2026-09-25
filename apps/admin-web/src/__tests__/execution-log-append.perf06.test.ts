@@ -25,8 +25,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+// REFACTOR-EXEC-03：SSE 追加/join 缓存模式随日志子系统迁至 ExecutionLogSection
 const PAGE_SRC = readFileSync(
-  join(__dirname, '..', 'pages', 'ExecutionDetailPage.tsx'),
+  join(__dirname, '..', 'components', 'ExecutionLogSection.tsx'),
   'utf-8',
 );
 const stripComments = (s: string) =>

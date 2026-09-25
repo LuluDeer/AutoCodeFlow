@@ -1,5 +1,6 @@
 import axios from 'axios';
-import { message as antMessage } from 'antd';
+// TOAST-01：走 utils/toast 出口（App 实例优先，暗色主题下 toast 样式正确）
+import { message as antMessage } from '../utils/toast';
 import { useAuthStore } from '../store/auth';
 // F-1：拦截器非 React 组件，直接引用 i18n 单例（与 utils/locale.ts 同模式），
 // 使 403/404/409/429/5xx/网络错误提示随当前语言切换，而非全站硬编码中文。

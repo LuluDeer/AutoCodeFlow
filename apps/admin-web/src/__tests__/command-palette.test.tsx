@@ -17,6 +17,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { useState } from 'react';
 import { render, screen, cleanup, fireEvent, waitFor, act } from '@testing-library/react';
 import { MemoryRouter, Routes, Route, useLocation } from 'react-router-dom';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import CommandPalette from '../components/CommandPalette';
 import MainLayout from '../layouts/MainLayout';
 import { tasksApi } from '../api/tasks';
@@ -226,12 +227,16 @@ describe('CommandPalette — 快捷键与开关（FEAT-09）', () => {
 
   it('MainLayout 全局挂载：头部搜索按钮（tooltip Ctrl K）与 Ctrl+K 均可唤起', async () => {
     useAuthStore.setState({ user: { id: 1, username: 'root', role: 'admin' } as never });
+    // BELL-01：MainLayout 内 NotificationBell 消费 react-query → 需要 provider
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(
-      <MemoryRouter initialEntries={['/dashboard']}>
-        <Routes>
-          <Route path="/dashboard" element={<MainLayout />} />
-        </Routes>
-      </MemoryRouter>,
+      <QueryClientProvider client={qc}>
+        <MemoryRouter initialEntries={['/dashboard']}>
+          <Routes>
+            <Route path="/dashboard" element={<MainLayout />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
     );
     // 头部搜索按钮存在，tooltip 提示「Ctrl K」
     const btn = screen.getByRole('button', { name: '全局搜索' });

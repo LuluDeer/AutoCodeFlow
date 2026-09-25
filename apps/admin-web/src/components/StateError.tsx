@@ -1,4 +1,5 @@
-import { Space, Typography, Button, message } from 'antd';
+import { Space, Typography, Button } from 'antd';
+import { message } from '../utils/toast';
 import { CopyOutlined, ReloadOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { useThemeStore, selectResolvedTheme } from '../theme/store';

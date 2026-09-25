@@ -303,7 +303,7 @@ describe('NF-05 飞书与 webhook 渠道配置面', () => {
     singleChannel({ key: 'feishu', name: 'Feishu', enabled: true, config: {}, description: '飞书自定义机器人' });
 renderPage();
     // fixture 只含飞书渠道，而 activeTab 默认 'email' —— 先点击 Tab 挂载面板
-    fireEvent.click(await screen.findByRole('tab', { name: /Feishu/ }));
+    fireEvent.click(await screen.findByRole('tab', { name: /飞书/ }));
 
     // 两个配置输入均可经 label 查到；webhookUrl 带飞书官方前缀占位符
     const webhookUrl = (await screen.findByLabelText('Webhook 地址')) as HTMLInputElement;

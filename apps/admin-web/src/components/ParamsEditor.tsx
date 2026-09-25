@@ -46,7 +46,7 @@ export default function ParamsEditor({ value, onChange }: ParamsEditorProps) {
     if (!isEcho(value, lastEmittedRef.current)) {
       setRows(toRows(value));
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+
   }, [value]);
 
   const emit = (updated: ParamRow[]) => {

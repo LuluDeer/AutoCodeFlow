@@ -6,7 +6,7 @@ import {
 import {
   CheckCircleOutlined, CloseCircleOutlined, ThunderboltOutlined,
   ClockCircleOutlined, RocketOutlined, ApiOutlined, ReloadOutlined,
-  WarningOutlined,
+  WarningOutlined, MinusCircleOutlined,
 } from '@ant-design/icons';
 import { useNavigate, Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -126,16 +126,25 @@ export default function DashboardPage() {
   const successRate = s?.successRate ?? 0;
   const totalExec = s?.executions?.total ?? 0;
   const runningCount = s?.executions?.running ?? 0;
+  // METRIC-01：图例补「其他状态」行——successRate 分母（total）含超时/已终止/
+  // 运行中，图例此前只展示成功/失败两数，73.33% 与 11+1 在 UI 上对不上。
+  // 其他 = total − 成功 − 失败（后端未单列 timeout/cancelled，差值即为其和）。
+  const execSuccess = s?.executions?.success ?? 0;
+  const execFailed = s?.executions?.failed ?? 0;
+  const execOther = Math.max(totalExec - execSuccess - execFailed, 0);
 
   // UI-16：任一指标读请求失败即整页错误块（四路互斥/并存均可，取首个非空）
   const dashboardError = summaryError ?? trendError ?? execError ?? failError;
 
   const failureList = (failures ?? []).slice(0, 8);
 
+  // I18N-DATAKEY-01：dataKey 用稳定英文键，展示名由 Area name 走 i18n——
+  // 此前用中文「成功/失败」当 dataKey、靠 Legend formatter 映射，Tooltip
+  // 仍是裸中文键，属权宜方案。
   const trendData = (trend ?? []).map(d => ({
     date: d.date.slice(5),
-    成功: d.success,
-    失败: d.failed,
+    success: d.success,
+    failed: d.failed,
   }));
 
   // UI-04 ①：三张 KPI 卡各自的 sparkline 序列（补零 7 天窗，形状稳定）
@@ -275,24 +284,37 @@ export default function DashboardPage() {
             style={{ borderRadius: 10, height: '100%' }}
           >
             <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-              <Progress
-                type="circle"
-                percent={Math.round(successRate * 100) / 100}
-                size={80}
-                strokeColor={successRate >= 95 ? CHART_COLORS.success : successRate >= 80 ? CHART_COLORS.concurrent : CHART_COLORS.failed}
-                format={p => <span style={{ fontSize: 14, fontWeight: 600 }}>{p}%</span>}
-              />
+              <Tooltip title={t('dashboard.successRateHint')}>
+                <Progress
+                  type="circle"
+                  percent={Math.round(successRate * 100) / 100}
+                  size={80}
+                  strokeColor={successRate >= 95 ? CHART_COLORS.success : successRate >= 80 ? CHART_COLORS.concurrent : CHART_COLORS.failed}
+                  format={p => <span style={{ fontSize: 14, fontWeight: 600 }}>{p}%</span>}
+                />
+              </Tooltip>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
                   <CheckCircleOutlined style={{ color: CHART_COLORS.success }} />
-                  <Text>{t('dashboard.success', { count: s?.executions?.success ?? 0 })}</Text>
+                  <Text>{t('dashboard.success', { count: execSuccess })}</Text>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                   <CloseCircleOutlined style={{ color: CHART_COLORS.failed }} />
-                  <Text>{t('dashboard.failed', { count: s?.executions?.failed ?? 0 })}</Text>
+                  <Text>{t('dashboard.failed', { count: execFailed })}</Text>
                 </div>
+                {execOther > 0 && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4 }}>
+                    <Tooltip title={t('dashboard.other.tooltip')}>
+                      <MinusCircleOutlined style={{ color: 'var(--chart-axis-text)' }} />
+                    </Tooltip>
+                    <Text type="secondary">{t('dashboard.other', { count: execOther })}</Text>
+                  </div>
+                )}
               </div>
             </div>
+            <Text type="secondary" style={{ fontSize: 11, display: 'block', marginTop: 2 }}>
+              {t('dashboard.successRateHint')}
+            </Text>
             {/* UI-04 ①：成功率随执行量趋势（同一 sparkline 序列，失败率高时观感即成功率走势） */}
             <KpiSparkline color={CHART_COLORS.cpu} hasData={sparkHasData} data={runSpark} />
           </Card>
@@ -356,10 +378,11 @@ export default function DashboardPage() {
               <XAxis dataKey="date" tick={{ fontSize: 11, fill: CHART_COLORS.axisText(isDark) }} />
               <YAxis tick={{ fontSize: 11, fill: CHART_COLORS.axisText(isDark) }} allowDecimals={false} />
               <RechartTooltip />
-              {/* UI-10：Legend 标签经 formatter 走 i18n（dataKey 保持稳定中文键以匹配数据） */}
-              <Legend formatter={(value: string) => (value === '成功' ? t('dashboard.trend.success') : t('dashboard.trend.failed'))} wrapperStyle={{ fontSize: 12 }} />
-              <Area type="monotone" dataKey="成功" stroke={CHART_COLORS.success} fill="url(#gradSuccess)" strokeWidth={2} />
-              <Area type="monotone" dataKey="失败" stroke={CHART_COLORS.failed} fill="url(#gradFailed)" strokeWidth={2} />
+              {/* I18N-DATAKEY-01：Legend/Tooltip 直接消费 Area name（i18n），
+                  不再需要 formatter 映射中文 dataKey */}
+              <Legend wrapperStyle={{ fontSize: 12 }} />
+              <Area type="monotone" dataKey="success" name={t('dashboard.trend.success')} stroke={CHART_COLORS.success} fill="url(#gradSuccess)" strokeWidth={2} />
+              <Area type="monotone" dataKey="failed" name={t('dashboard.trend.failed')} stroke={CHART_COLORS.failed} fill="url(#gradFailed)" strokeWidth={2} />
             </AreaChart>
           </ResponsiveContainer>
         )}

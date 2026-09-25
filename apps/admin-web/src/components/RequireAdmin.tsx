@@ -1,11 +1,13 @@
 import type { ReactNode } from 'react';
-import { Button, Result, Spin } from 'antd';
+import { Button, Result } from 'antd';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import '../i18n';
 import { useAuthStore, isAdminUser } from '../store/auth';
 import { authApi } from '../api/auth';
 import { getErrMsg } from '../utils/error';
+// UI-08 收尾：路由门控的加载态从裸 Spin 换成页面骨架屏（与全站加载形态统一）
+import PageSkeleton from './PageSkeleton';
 
 /**
  * R5 RBAC 路由门控：包裹 ADMIN-only 路由（/executor-packages、/executors/install、
@@ -63,12 +65,8 @@ export default function RequireAdmin({ children }: { children: ReactNode }) {
         />
       );
     }
-    // 仍在拉取中
-    return (
-      <div style={{ padding: 48, textAlign: 'center' }}>
-        <Spin />
-      </div>
-    );
+    // 仍在拉取中（UI-08 收尾：骨架屏替代裸 Spin）
+    return <PageSkeleton />;
   }
 
   if (!isAdminUser(user)) {

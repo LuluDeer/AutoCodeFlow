@@ -1,8 +1,15 @@
 import { useState } from 'react';
-import {
-  Card, Row, Col, Typography, Tag, Space, Button, Empty, Popconfirm,
-  message, theme,
-} from 'antd';
+import { Card,
+  Row,
+  Col,
+  Typography,
+  Tag,
+  Space,
+  Button,
+  Empty,
+  Popconfirm,
+  theme } from 'antd';
+import { message } from '../utils/toast';
 import {
   CopyOutlined, DeleteOutlined, FileTextOutlined,
   ApiOutlined, FieldTimeOutlined, CodeOutlined,

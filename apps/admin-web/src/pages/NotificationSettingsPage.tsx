@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { Card, Form, Input, Switch, Button, Space, message, Tabs, Divider, Tag, Typography, Alert, Checkbox, Popconfirm, Table, Select, InputNumber, Tooltip, theme } from 'antd';
+import { Card, Form, Input, Switch, Button, Space, Tabs, Divider, Tag, Typography, Alert, Checkbox, Popconfirm, Table, Select, InputNumber, Tooltip, theme } from 'antd';
+import { message } from '../utils/toast';
 import { CheckCircleFilled, CloseCircleFilled, InfoCircleOutlined } from '@ant-design/icons';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import type { ColumnsType } from 'antd/es/table';
@@ -499,8 +500,32 @@ function SilenceRulesPanel({ active }: { active: boolean }) {
               <Input placeholder={t('notif.silence.applicationIdPlaceholder')} />
             </Form.Item>
           )}
-          <Form.Item name="durationMinutes" label={t('notif.silence.duration')} rules={[{ required: true, message: t('notif.silence.duration.required') }]}>
-            <InputNumber min={1} precision={0} placeholder={t('notif.silence.durationPlaceholder')} addonAfter={t('notif.silence.minutes')} style={{ width: 220 }} />
+          <Form.Item label={t('notif.silence.duration')} required>
+            {/* antd 6.6：InputNumber 的 addonAfter 已废弃（官方改用 Space.Compact）。
+                注意：**Form.Item 必须在 Space.Compact 内层并加 noStyle**——若把
+                Space.Compact 塞进 Form.Item 的 children（即 Form.Item 直接包住
+                Compact），antd 拿不到 InputNumber 的 value/onChange 契约，表单值
+                会退化成字符串（实测 durationMinutes 提交成 "30" 而非 30）。 */}
+            <Space.Compact style={{ width: 220 }}>
+              <Form.Item
+                name="durationMinutes"
+                noStyle
+                rules={[{ required: true, message: t('notif.silence.duration.required') }]}
+              >
+                <InputNumber
+                  min={1}
+                  precision={0}
+                  placeholder={t('notif.silence.durationPlaceholder')}
+                  style={{ width: '100%' }}
+                />
+              </Form.Item>
+              <Input
+                value={t('notif.silence.minutes')}
+                readOnly
+                tabIndex={-1}
+                style={{ width: 'auto', pointerEvents: 'none' }}
+              />
+            </Space.Compact>
           </Form.Item>
           <Form.Item name="reason" label={t('notif.silence.reason')}>
             <TextArea rows={2} maxLength={255} placeholder={t('notif.silence.reasonPlaceholder')} />
@@ -598,7 +623,10 @@ export default function NotificationSettingsPage() {
     key: c.key,
     label: (
       <span>
-        {c.name}
+        {/* I18N-CHANNEL-01：tab 标签走本地化映射（邮件/钉钉/企业微信/飞书），
+            与下方「全局测试」区的渠道中文名一致；此前直接渲染后端裸 name
+            （Email/DingTalk/WeCom/Feishu），同页中英两套称呼。 */}
+        {CHANNEL_LABELS(t)[c.key] ?? c.name}
         {c.enabled ? <Tag color="green" style={{ marginLeft: 8 }}>{t('notif.status.enabled')}</Tag> : <Tag style={{ marginLeft: 8 }}>{t('notif.status.disabled')}</Tag>}
       </span>
     ),

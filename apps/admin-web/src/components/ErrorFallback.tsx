@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { FallbackProps } from 'react-error-boundary';
-import { Button, Result, Space, Typography, message } from 'antd';
+import { Button, Result, Space, Typography } from 'antd';
+import { message } from '../utils/toast';
 import { ReloadOutlined, CopyOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import '../i18n';

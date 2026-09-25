@@ -23,10 +23,26 @@ import {
 // PK-02（DEEP_REVIEW 0ef3bbe）：create/update 改用生成的 DTO 类型，
 // payload 由 apply* 链组装后类型收窄为 Record<string, unknown>，调用点显式断言。
 import type { components } from '../types/generated/api-types';
-import {
-  Card, Form, Input, Select, Button, Space, Typography,
-  InputNumber, Radio, Alert, message, Divider, Tag, Tooltip, Anchor, theme, Modal, Grid,
-} from 'antd';
+import { Card,
+  Form,
+  Input,
+  Select,
+  Button,
+  Space,
+  Typography,
+  InputNumber,
+  Radio,
+  Alert,
+  Divider,
+  Tag,
+  Tooltip,
+  Anchor,
+  theme,
+  Modal,
+  Grid } from 'antd';
+import { message } from '../utils/toast';
+// MODAL-01：命令式 Modal.* 从 utils/modal 取（吃暗色主题 + i18n locale）；<Modal> JSX 仍用 antd。
+import { Modal as confirmModal } from '../utils/modal';
 import {
   ThunderboltOutlined, ArrowLeftOutlined,
   InfoCircleOutlined, ClusterOutlined, RocketOutlined, ApartmentOutlined, PushpinOutlined,
@@ -51,9 +67,6 @@ import {
 } from './task-template-prefill';
 import { CronHelper } from '../components/CronHelper';
 import { TASK_PRIORITY_OPTIONS, toPriorityValue } from '../utils/priority';
-import ParamsEditor from '../components/ParamsEditor';
-import SecretsEditor from '../components/SecretsEditor';
-import GlueEditor from '../components/GlueEditor';
 import AlarmConfig from '../components/AlarmConfig';
 import PageSkeleton from '../components/PageSkeleton';
 import TriggerPreview from '../components/task-form/TriggerPreview';
@@ -83,6 +96,9 @@ import {
 // F-28（DEEP_REVIEW 0ef3bbe）：fixed_rate 输入框的分钟/秒换算纯逻辑层
 import { fixedRateToMinutesLabel, parseFixedRateSeconds } from './fixed-rate';
 import PageHeader from '../components/PageHeader';
+// REFACTOR-TASKFORM-01/02：参数与 Glue 分区展示组件（原内联 JSX 原样迁出）
+import TaskFormParamsSection from '../components/task-form/TaskFormParamsSection';
+import TaskFormGlueSection from '../components/task-form/TaskFormGlueSection';
 import { useTranslation } from 'react-i18next';
 import '../i18n';
 
@@ -541,7 +557,7 @@ export default function TaskFormPage() {
       return;
     }
     // 只列真正有值的字段，点名到值——用户才能判断"这就是我要的那份配置"
-    Modal.confirm({
+    confirmModal.confirm({
       title: t('taskForm.codeSource.switch.title'),
       content: (
         <div>
@@ -669,7 +685,7 @@ export default function TaskFormPage() {
     // "提交即失败"显式化——避免用户忽略 warning 直接提交，到执行时才排障。
     if (fleetOfflineWillFail) {
       const go = await new Promise<boolean>((resolve) => {
-        Modal.confirm({
+        confirmModal.confirm({
           title: t('taskForm.submit.offlineFleetConfirm.title'),
           content: t('taskForm.submit.offlineFleetConfirm.content'),
           okText: t('taskForm.submit.offlineFleetConfirm.ok'),
@@ -1023,7 +1039,10 @@ export default function TaskFormPage() {
           {validationAnnouncement}
         </div>
 
-        <div style={{ flex: 1, minWidth: 0 }}>
+        {/* FORM-WIDTH-01：内容列限宽 1080px——此前输入框在 1536px+ 视口下全宽
+            拉伸（单行输入近 1500px），可读性与扫视效率差。锚点条不受影响；
+            Glue 编辑器在此宽度下同样可用。 */}
+        <div style={{ flex: 1, minWidth: 0, maxWidth: 1080 }}>
           <Form
             form={form}
             layout="vertical"
@@ -1607,7 +1626,10 @@ export default function TaskFormPage() {
                 <Form.Item
                   name="timeoutAction"
                   label={<>{t('taskForm.field.timeoutAction')} <Text type="secondary" style={{ fontSize: 12 }}>{t('taskForm.field.timeoutAction.hint')}</Text></>}
-                  initialValue="kill"
+                  // 缺省 kill 由 Form.initialValues 统一提供，与同组 timeout/maxRetry/
+                  // retryDelay/priority 一致。此处再声明 initialValue 会与之冲突
+                  // （antd 告警：Form already set 'initialValues' with path
+                  // 'timeoutAction'），两值相同故语义不变，仅为消除冗余声明。
                   tooltip={{ title: t('taskForm.field.timeoutAction.tooltip'), icon: <InfoCircleOutlined /> }}
                 >
                   <Radio.Group optionType="button" buttonStyle="solid">
@@ -1689,85 +1711,23 @@ export default function TaskFormPage() {
               </Card>
             </div>
 
-            {/* 分区四：参数配置（原 step 2 上半） */}
-            <div id={SECTION_IDS[3]} data-testid="section-params" role="region" aria-label={t('taskForm.section.params')} style={{ scrollMarginTop: 88 }}>
-              <Typography.Title level={5} style={sectionTitleStyle}>{t('taskForm.section.params')}</Typography.Title>
-              <Card style={{ marginBottom: 20 }}>
-                <Alert
-                  type="info"
-                  showIcon
-                  title={t('taskForm.params.alertTitle')}
-                  description={t('taskForm.params.alertDesc')}
-                  style={{ marginBottom: 20 }}
-                />
-                <Form.Item name="params" label={t('taskForm.field.params')}>
-                  <ParamsEditor />
-                </Form.Item>
-                {/*
-                  SEC-02 续（生产故障）：凭据编辑器。此前控制台**完全没有**入口，
-                  而执行器报错文案却在教用户「请在平台 secrets 配置
-                  FEISHU_APP_ID」——一条在 UI 上无法执行的指令（生产实证：用户
-                  按提示配不出凭据，任务报「缺少飞书凭证」）。
-
-                  放在 params 之后：两者语义相邻（都是注入子进程的键值对），但
-                  注入名字不同——params 加 AUTOFLOW_ 前缀，secrets 用**原名**
-                  （第三方 SDK 认规范名），故必须在标签与提示里说清楚。
-                */}
-                <Form.Item
-                  name="secrets"
-                  label={t('taskForm.field.secrets')}
-                  extra={t('taskForm.field.secretsHelp')}
-                >
-                  {/*
-                    existing = 服务端已有凭据（掩码映射）。刻意走 prop 而不是表单值：
-                    表单值只表达"本次要写什么"，已存在的键由后端按逐键合并语义保留
-                    （见 admin-api 的 mergeSecretsOnUpdate 与 applySecretsPayload）。
-                  */}
-                  <SecretsEditor existing={secretsExisting} />
-                </Form.Item>
-              </Card>
-            </div>
+            {/* 分区四：参数配置（原 step 2 上半）
+                REFACTOR-TASKFORM-01：区块展示迁至 TaskFormParamsSection（仍在
+                <Form> 上下文内，字段路径 params/secrets 不变） */}
+            <TaskFormParamsSection secretsExisting={secretsExisting} />
           </Form>
 
           {/* 分区五：Glue 脚本（原 step 3——创建后才有 taskId，保持既有行为语义：
-              创建态在提交成功前不渲染 GlueEditor；编辑态 taskId 已存在直接可编） */}
-          <div id={SECTION_IDS[4]} data-testid="section-glue" role="region" aria-label={t('taskForm.section.glue')} style={{ scrollMarginTop: 88 }}>
-            <Typography.Title level={5} style={sectionTitleStyle}>{t('taskForm.section.glueTitle')}</Typography.Title>
-            {glueTaskId ? (
-              <Card style={{ marginBottom: 20 }}>
-                {!isEdit && createdTaskId && (
-                  <Alert
-                    type="success"
-                    showIcon
-                    title={t('taskForm.glue.createdTitle')}
-                    description={t('taskForm.glue.createdDesc')}
-                    style={{ marginBottom: 20 }}
-                  />
-                )}
-                <GlueEditor
-                  taskId={glueTaskId}
-                  // P0-1：回填已有脚本与语言。漏传 → 编辑器空白 + 一次保存即清空
-                  // 用户代码（后端 updateGlue 无校验、空串照收，见审计报告 §P0-1）。
-                  initialSource={glueSource}
-                  initialLanguage={glueLanguage}
-                  taskRuntime={savedRuntime}
-                />
-                <Divider />
-                <Space>
-                  <Button type="primary" onClick={() => nav(`/tasks/${glueTaskId}`)}>{t('taskForm.glue.done')}</Button>
-                  {!isEdit && (
-                    <Button onClick={() => nav('/tasks')}>{t('taskForm.glue.skip')}</Button>
-                  )}
-                </Space>
-              </Card>
-            ) : (
-              <Card style={{ marginBottom: 20 }}>
-                <Text type="secondary" data-testid="glue-locked-hint">
-                  {t('taskForm.glue.lockedHint')}
-                </Text>
-              </Card>
-            )}
-          </div>
+              创建态在提交成功前不渲染 GlueEditor；编辑态 taskId 已存在直接可编）
+              REFACTOR-TASKFORM-02：区块展示迁至 TaskFormGlueSection */}
+          <TaskFormGlueSection
+            glueTaskId={glueTaskId}
+            isEdit={isEdit}
+            createdTaskId={createdTaskId}
+            glueSource={glueSource}
+            glueLanguage={glueLanguage}
+            savedRuntime={savedRuntime}
+          />
 
           {/* 提交条：单页常驻（不再依附任一步骤），语义与原 step 2 提交按钮一致 */}
           <div

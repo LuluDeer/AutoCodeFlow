@@ -15,6 +15,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MemoryRouter } from 'react-router-dom';
 import AuditLogPage from '../pages/audit';
 import { client } from '../api/client';
 
@@ -61,9 +62,12 @@ const makeLog = (over: Record<string, unknown>) => ({
 
 function renderPage() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  // AUDIT-03：资源ID 列改用 react-router <Link> 跳转详情页 → 渲染需 Router 上下文
   return render(
     <QueryClientProvider client={qc}>
-      <AuditLogPage />
+      <MemoryRouter>
+        <AuditLogPage />
+      </MemoryRouter>
     </QueryClientProvider>,
   );
 }
@@ -105,7 +109,7 @@ afterEach(() => {
 describe('AuditLogPage 列表渲染（QA-03）', () => {
   it('渲染操作人/IP、结果 Tag 双态、资源ID 截断与分页 total', async () => {
     renderPage();
-    expect(await screen.findByText('task.create')).toBeTruthy();
+    expect(await screen.findByText('创建任务')).toBeTruthy();
     expect(screen.getByText('config.update')).toBeTruthy();
     // 成功/失败 Tag
     expect(screen.getAllByText('成功').length).toBeGreaterThanOrEqual(1);
@@ -120,7 +124,7 @@ describe('AuditLogPage 列表渲染（QA-03）', () => {
 
   it('detail 非空渲染「查看」按钮，空/缺省 detail 不渲染', async () => {
     renderPage();
-    await screen.findByText('task.create');
+    await screen.findByText('创建任务');
     // 行2（config.update 有 detail）有查看；行1/3 无 detail 或空对象 → 无按钮
     const viewButtons = (Array.from(document.querySelectorAll('button')) as HTMLButtonElement[])
       .filter((b) => (b.textContent ?? '').replace(/\s/g, '') === '查看');
@@ -145,7 +149,7 @@ describe('AuditLogPage 列表渲染（QA-03）', () => {
 describe('AuditLogPage 筛选链路（QA-03）', () => {
   it('输入关键词+操作人后点搜索 → 查询串携带 action/username 参数并回到第 1 页', async () => {
     renderPage();
-    await screen.findByText('task.create');
+    await screen.findByText('创建任务');
 
     fireEvent.change(screen.getByPlaceholderText('操作关键词'), { target: { value: 'task' } });
     fireEvent.change(screen.getByPlaceholderText('操作人'), { target: { value: 'root' } });
@@ -161,7 +165,7 @@ describe('AuditLogPage 筛选链路（QA-03）', () => {
 
   it('筛选后出现「重置」按钮，点击清空条件重新查询（无筛选参数）', async () => {
     renderPage();
-    await screen.findByText('task.create');
+    await screen.findByText('创建任务');
 
     fireEvent.change(screen.getByPlaceholderText('操作关键词'), { target: { value: 'task' } });
     fireEvent.click(findBtn(document.body, '搜索')!);
@@ -179,7 +183,7 @@ describe('AuditLogPage 筛选链路（QA-03）', () => {
 
   it('资源类型下拉选择后查询串携带 resource 参数', async () => {
     renderPage();
-    await screen.findByText('task.create');
+    await screen.findByText('创建任务');
 
     fireEvent.mouseDown(screen.getByText('资源类型'));
     const option = await screen.findByText('executor', { selector: '.ant-select-item-option-content' });
@@ -222,7 +226,7 @@ describe('AuditLogPage 分页（QA-03）', () => {
 describe('AUTH-05 资源ID 筛选', () => {
   it('输入资源ID后点搜索 → 查询串携带 resourceId 参数', async () => {
     renderPage();
-    await screen.findByText('task.create');
+    await screen.findByText('创建任务');
 
     fireEvent.change(screen.getByPlaceholderText('资源 ID'), {
       target: { value: 'exec-abc-123' },
@@ -236,7 +240,7 @@ describe('AUTH-05 资源ID 筛选', () => {
 
   it('资源类型 + 资源ID 组合筛选 → 查询串同时携带 resource 与 resourceId', async () => {
     renderPage();
-    await screen.findByText('task.create');
+    await screen.findByText('创建任务');
 
     fireEvent.mouseDown(screen.getByText('资源类型'));
     const option = await screen.findByText('executor', { selector: '.ant-select-item-option-content' });
@@ -253,7 +257,7 @@ describe('AUTH-05 资源ID 筛选', () => {
 
   it('重置后查询串不再携带 resourceId', async () => {
     renderPage();
-    await screen.findByText('task.create');
+    await screen.findByText('创建任务');
 
     fireEvent.change(screen.getByPlaceholderText('资源 ID'), { target: { value: 'e-42' } });
     fireEvent.click(findBtn(document.body, '搜索')!);

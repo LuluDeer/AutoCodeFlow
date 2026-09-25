@@ -15,21 +15,23 @@ import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/re
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createElement } from 'react';
 
-// vi.mock 被 hoist 到文件顶部——用 vi.hoisted 定义 mock 句柄
-const { mockLoaderConfig, mockEditor } = vi.hoisted(() => {
-  return {
-    mockLoaderConfig: vi.fn(),
-    mockEditor: vi.fn(),
-  };
+// vitest 5：vi.hoisted 句柄与被 mock 模块的实例在「工厂闭包」「测试文件体」
+// 两次实例化下不保证同源，mock 调用记录也会在 beforeEach 前被清空（实测）。
+// 故 loader.config 的断言走 globalThis 上的普通数组（对 mock 生命周期免疫），
+// Editor 保持 vi.fn、由 beforeEach 注入实现。
+vi.mock('@monaco-editor/react', () => {
+  const g = globalThis as Record<string, unknown> & { __acfMonacoLoaderConfigCalls?: unknown[] };
+  g.__acfMonacoLoaderConfigCalls = [];
+  return ({
+    Editor: vi.fn(),
+    loader: {
+      config: (cfg: unknown) => {
+        g.__acfMonacoLoaderConfigCalls!.push(cfg);
+      },
+      init: vi.fn(),
+    },
+  });
 });
-
-vi.mock('@monaco-editor/react', () => ({
-  Editor: (props: unknown) => mockEditor(props),
-  loader: {
-    config: mockLoaderConfig,
-    init: vi.fn(),
-  },
-}));
 
 vi.mock('monaco-editor', () => ({
   default: { editor: {}, languages: {} },
@@ -56,7 +58,11 @@ vi.mock('antd', async (importOriginal) => {
 });
 
 import GlueEditor from '../components/GlueEditor';
+import { Editor as mockedEditorMod } from '@monaco-editor/react';
 import { tasksApi } from '../api/tasks';
+
+// 与 GlueEditor 消费的是同一个被 mock 的模块实例——句柄直接取 vi.mocked 引用。
+const mockEditor = mockedEditorMod as unknown as ReturnType<typeof vi.fn>;
 
 // jsdom shims
 const g = globalThis as Record<string, unknown>;
@@ -110,10 +116,12 @@ afterEach(() => {
 
 describe('GlueEditor（F-01 本地 Monaco + F-38 行为覆盖）', () => {
   it('① 模块加载时 loader.config 被调用——注入本地 monaco，不从 CDN 加载', () => {
-    // GlueEditor 模块在 import 时即执行 loader.config({ monaco })
-    expect(mockLoaderConfig).toHaveBeenCalled();
-    const configArg = mockLoaderConfig.mock.calls[0][0];
-    expect(configArg).toHaveProperty('monaco');
+    // GlueEditor 模块在 import 时即执行 loader.config({ monaco })。
+    // 断言读工厂写入 globalThis 的普通数组——vitest 5 的 mock 调用记录
+    // 生命周期与「import 期调用 + beforeEach」组合有清空时序，不可依赖。
+    const calls = (globalThis as { __acfMonacoLoaderConfigCalls?: unknown[] }).__acfMonacoLoaderConfigCalls ?? [];
+    expect(calls.length).toBeGreaterThan(0);
+    expect(calls[0]).toHaveProperty('monaco');
   });
 
   it('② 渲染初始 source + language 传入 mock Editor', () => {

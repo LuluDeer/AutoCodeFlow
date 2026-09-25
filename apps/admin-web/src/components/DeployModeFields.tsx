@@ -46,7 +46,7 @@ export default function DeployModeFields({
                     type="warning"
                     showIcon
                     style={{ marginBottom: 12 }}
-                    message={t('appDeploy.mode.hintDaemon')}
+                    title={t('appDeploy.mode.hintDaemon')}
                   />
                   {showStartCommand && (
                     <Form.Item
@@ -64,7 +64,7 @@ export default function DeployModeFields({
                   type="info"
                   showIcon
                   style={{ marginBottom: 12 }}
-                  message={t('appDeploy.mode.hintScheduled')}
+                  title={t('appDeploy.mode.hintScheduled')}
                 />
               )}
             </>

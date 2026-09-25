@@ -214,7 +214,7 @@ function MembersDrawer({ project, isAdmin, onClose }: MembersDrawerProps) {
       }
       size="large"
       open={open}      onClose={onClose}
-      destroyOnClose
+      destroyOnHidden
     >
       {contextHolder}
       {membersQuery.error ? (
