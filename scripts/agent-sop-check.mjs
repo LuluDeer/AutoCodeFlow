@@ -475,6 +475,49 @@ console.log("\n── 3. 边界闸门（SOP 工具）──");
     0,
   );
   check("空 scope 会话调 sop_get 拒（安全默认不变）", vEmpty.kind === "DENY");
+
+  // ── P6 补齐：写工具审批闸（03 §2 需审批项，不随全局写策略放宽）──
+  const approvalArgs = {
+    update_task: { taskId: "t1", patch: {} },
+    rollback_task_version: { taskId: "t1", versionId: "v1" },
+    upgrade_deployment: { deploymentId: "d1" },
+    stop_deployment: { deploymentId: "d1" },
+  };
+  for (const t of ["update_task", "rollback_task_version", "upgrade_deployment", "stop_deployment"]) {
+    const spec = reg.ALL_AGENT_TOOL_SPECS.find((x) => x.name === t);
+    const v = boundary.check(
+      session({ kind: "chat", scopeJson: { unrestricted: true } }),
+      t,
+      approvalArgs[t],
+      0,
+    );
+    check(`${t} → NEED_APPROVAL（03 §2 需审批，全局策略放宽也不放行）`,
+      spec?.approvalRequired === true && v.kind === "NEED_APPROVAL", `kind=${v.kind} reason=${v.kind === "DENY" ? v.reason : "-"}`);
+  }
+  // 复核会话的独立验证能力（04 §3 ⑤）与最小化
+  const reviewTools2 = reg.toolsForSessionKind("sop_review");
+  check("sop_review 含 trigger_task（独立验证：真跑一次平台验收）", reviewTools2.includes("trigger_task"));
+  check("sop_review 仍不含 sop_publish/sop_draft", !reviewTools2.includes("sop_publish") && !reviewTools2.includes("sop_draft"));
+}
+
+// ═══ 3bis. 写工具执行体绑定（P3 遗留承诺兑现）══════════════════════
+console.log("\n── 3bis. 写工具执行体绑定 ──");
+{
+  const binderSrc = readFileSync(join(apiDir, "src/modules/agent/tools/tool-binder.service.ts"), "utf8");
+  for (const t of ["trigger_task", "retry_execution", "kill_execution", "pause_task", "resume_task", "create_application", "create_task_from_template", "deploy_application", "deploy_app"]) {
+    check(`写工具 ${t} 已绑定执行体`, new RegExp(`register\\("${t}"`).test(binderSrc));
+  }
+  check("trigger 走 triggerTypeOverride=agent（执行行可辨 Agent 触发）", /"agent"/.test(binderSrc.split('bindWriteTools')[1] ?? ""));
+  check("retry 与 mcp-server 同语义（回放原 params，无原生端点）", /getExecution\(this\.str\(args\.executionId\)\)/.test(binderSrc));
+  check("deploy 走方案 C（直调 deploy，pending_approval 透传）", /this\.deployments\.deploy\(/.test(binderSrc));
+
+  // 完成回报 → 独立验证会话（04 §3 ⑤）
+  const svcSrc2 = readFileSync(join(apiDir, "src/modules/sop/sop.service.ts"), "utf8");
+  check("completed 回报触发独立验证会话", /input\.status === "completed"\)\s*\{\s*await this\.spawnVerificationSession\(/.test(svcSrc2));
+  check("验证会话 scope 含 SOP + 平台验收任务", /sops: \[a\.sopId\],[\s\S]{0,120}tasks: taskIds/.test(svcSrc2));
+  check("执行器自述以 untrustedResult 标注（注入面纪律）", /untrustedResult/.test(svcSrc2));
+  check("验证会话经 agent-jobs 入队", /reason: `verify:\$\{a\.id\}`/.test(svcSrc2));
+  check("验证起不来 fail-open（完成回报不被吞）", /verification session spawn failed \(fail-open\)/.test(svcSrc2));
 }
 
 // ── 4. 协作 API（结构断言）───────────────────────────────────────
