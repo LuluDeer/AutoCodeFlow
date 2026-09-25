@@ -1,10 +1,12 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import UpdateBanner from '../components/UpdateBanner';
 import HighlightText from '../components/HighlightText';
+import { agentActivityLabel, agentOutcomeLabel, type AgentStatusSnapshot } from '../../main/agent-status-view';
 
 declare const window: Window & {
   electronAPI: {
     getStatus: () => Promise<{ running: boolean; status: string; config: Record<string, unknown> }>;
+    getAgentStatus?: () => Promise<AgentStatusSnapshot>;
     getTodayLogs: () => Promise<{ lines: string[]; date: string }>;
     startExecutor: () => Promise<{ ok: boolean }>;
     stopExecutor: () => Promise<{ ok: boolean }>;
@@ -336,6 +338,8 @@ export default function StatusWindow() {
   const [status, setStatus] = useState<Status>('stopped');
   const [statusLoaded, setStatusLoaded] = useState(false);
   const [config, setConfig] = useState<Record<string, unknown>>({});
+  const [agentStatus, setAgentStatus] = useState<AgentStatusSnapshot | null>(null);
+  const [agentStatusError, setAgentStatusError] = useState<string | null>(null);
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [acting, setActing] = useState(false);
   // F-22（DEEP_REVIEW 0ef3bbe）：IPC reject 时页内展示错误，避免按钮永久 disabled 且用户无感知
@@ -392,6 +396,37 @@ export default function StatusWindow() {
       setStatus(s as Status);
     });
     return () => { offLog(); offStatus(); };
+  }, []);
+
+  useEffect(() => {
+    // 状态窗常驻时也要反映分钟级 Agent 指派的开始/完成。沿用设置页的
+    // 只读 IPC；旧版 preload 缺通道时只影响这两张信息卡。
+    const getAgentStatus = window.electronAPI.getAgentStatus;
+    if (typeof getAgentStatus !== 'function') {
+      setAgentStatusError('当前版本不支持读取 Agent 状态');
+      return;
+    }
+    let cancelled = false;
+    let inFlight = false;
+    const refresh = () => {
+      if (inFlight) return;
+      inFlight = true;
+      void getAgentStatus()
+        .then((snapshot) => {
+          if (cancelled) return;
+          setAgentStatus(snapshot);
+          setAgentStatusError(null);
+        })
+        .catch(() => {
+          if (cancelled) return;
+          setAgentStatus(null);
+          setAgentStatusError('Agent 状态暂不可用');
+        })
+        .finally(() => { inFlight = false; });
+    };
+    refresh();
+    const timer = setInterval(refresh, 2_000);
+    return () => { cancelled = true; clearInterval(timer); };
   }, []);
 
   useEffect(() => {
@@ -498,6 +533,22 @@ export default function StatusWindow() {
           <div className="info-card">
             <div className="info-card-label">监听端口</div>
             <CopyValue value={port} />
+          </div>
+          <div className="info-card">
+            <div className="info-card-label">Agent 托管</div>
+            <div className="info-card-value" role="status" aria-live="polite">
+              {agentStatusError ?? (agentStatus ? agentActivityLabel(agentStatus) : '正在读取...')}
+            </div>
+            {agentStatus && <div className="info-card-detail">已处理 {agentStatus.processed} 个指派</div>}
+          </div>
+          <div className="info-card">
+            <div className="info-card-label">Agent 最近结果</div>
+            <div className="info-card-value">
+              {agentStatus ? agentOutcomeLabel(agentStatus.lastOutcome) : '—'}
+            </div>
+            {agentStatus?.lastEffectiveProfile && (
+              <div className="info-card-detail">上次生效档位：{agentStatus.lastEffectiveProfile}</div>
+            )}
           </div>
         </div>
 

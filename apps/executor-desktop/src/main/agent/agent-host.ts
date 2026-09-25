@@ -24,6 +24,7 @@
 import { ensureWorkspace } from './workspace';
 import { collectEnvironmentReport } from './perception';
 import { probePlaywright } from './browser';
+import { WindowsGuiDriver } from './gui-windows';
 import {
   buildCandidatePackage,
   interpreterToRuntime,
@@ -75,8 +76,15 @@ interface PollAssignmentItem {
 }
 
 export class AgentHost {
+  private ticking = false;
   private working = false;
   private centerPolicy: CenterPolicyInput | null = null;
+  private capabilityAdvertised = false;
+  private lastCapabilities: string | null = null;
+  private lastCapabilityReportAt = 0;
+  private capabilityWriteTail: Promise<unknown> = Promise.resolve();
+  private withdrawAfterWork = false;
+  private resendAssignmentsOnNextPoll = false;
   readonly stats: AgentHostStats = {
     working: false,
     lastAssignmentId: null,
@@ -92,31 +100,131 @@ export class AgentHost {
    * 整个循环**（分钟级——调用方应在自己的定时器里等待本方法）。
    */
   async tick(): Promise<{ worked: boolean; detail?: string }> {
-    const cfg = this.deps.getConfig();
-    if (!cfg.agentEnabled) return { worked: false, detail: 'agent disabled' };
-    if (this.working) return { worked: false, detail: 'single-flight: already working' };
+    if (this.ticking || this.working) return { worked: false, detail: 'single-flight: already working' };
+    this.ticking = true;
+    try {
+      const cfg = this.deps.getConfig();
+      if (!cfg.agentEnabled) {
+        await this.withdrawCapabilities();
+        return { worked: false, detail: 'agent disabled' };
+      }
+      this.withdrawAfterWork = false;
 
-    // poll 恒 0 等待——长等待由外部定时器节奏控制，host 不占住调用线程
-    const poll = await this.deps.client.poll(this.deps.address, { waitMs: 0 });
-    if (!poll.ok) return { worked: false, detail: `poll failed: ${poll.error ?? 'unknown'}` };
+      // 先声明 agent:sop 再 poll：SOP 预检和后续 LLM/回报端点都依赖这个能力。
+      // 首次尚未收到中台权限上限时保守不报 gui；poll 下发策略后再更新。
+      const preflight = await this.advertiseCapabilities(this.centerPolicy !== null);
+      if (!preflight.ok) return { worked: false, detail: `capability failed: ${preflight.error ?? 'unknown'}` };
 
-    // 中台策略随每轮 poll 下发——本地缓存最新值（离线沿用最近一次，09 §调整4）
-    if (poll.sopPolicy && typeof poll.sopPolicy === 'object') {
-      this.centerPolicy = poll.sopPolicy as CenterPolicyInput;
+      // poll 恒 0 等待——长等待由外部定时器节奏控制，host 不占住调用线程
+      const poll = await this.deps.client.poll(this.deps.address, {
+        waitMs: 0,
+        resendAssignments: this.resendAssignmentsOnNextPoll,
+      });
+      if (!poll.ok) return { worked: false, detail: `poll failed: ${poll.error ?? 'unknown'}` };
+      this.resendAssignmentsOnNextPoll = false;
+
+      // 中台策略随每轮 poll 下发——本地缓存最新值（离线沿用最近一次，09 §调整4）
+      if (poll.sopPolicy && typeof poll.sopPolicy === 'object') {
+        this.centerPolicy = poll.sopPolicy as CenterPolicyInput;
+        // 策略拿到后，按最终权限档位更新 GUI 能力；普通 runtime 能力由中台
+        // 的分区合并逻辑保留，Agent 上报不会覆盖 node/python 等能力。
+        await this.advertiseCapabilities(true);
+      }
+
+      if (!this.deps.getConfig().agentEnabled) {
+        // 服务端在构造 poll 响应时已把 assignment 标为 in_progress。
+        // 关闭后不执行它，但要如实回报 failed；回报失败才在下次启用时请求重发。
+        for (const item of poll.items) {
+          if (!item || typeof item !== 'object' || (item as PollAssignmentItem).kind !== 'assignment') continue;
+          const assignment = item as PollAssignmentItem;
+          const reported = await this.deps.client.reportComplete(this.deps.address, assignment.assignmentId, {
+            status: 'failed', attempt: 1,
+            result: { outcome: 'agent_disabled_during_poll', stopMessage: 'Agent 在领取指派期间被关闭，未执行' },
+          });
+          if (!reported.ok) this.resendAssignmentsOnNextPoll = true;
+        }
+        await this.withdrawCapabilities();
+        return { worked: false, detail: 'agent disabled after poll' };
+      }
+
+      const assignment = poll.items.find(
+        (i): i is PollAssignmentItem => !!i && typeof i === 'object' && (i as PollAssignmentItem).kind === 'assignment',
+      );
+      if (!assignment) return { worked: false };
+
+      await this.processAssignment(assignment);
+      return { worked: true, detail: `assignment ${assignment.assignmentId} processed` };
+    } finally {
+      this.ticking = false;
     }
+  }
 
-    const assignment = poll.items.find(
-      (i): i is PollAssignmentItem => !!i && typeof i === 'object' && (i as PollAssignmentItem).kind === 'assignment',
-    );
-    if (!assignment) return { worked: false };
+  private async advertiseCapabilities(
+    includeGui: boolean,
+    report?: Record<string, unknown>,
+  ): Promise<{ ok: boolean; error?: string }> {
+    return this.withCapabilityWrite(async () => {
+      if (!this.deps.getConfig().agentEnabled && !this.working) {
+        return { ok: false, error: 'agent disabled' };
+      }
+      const effective = mergeWithCenterPolicy(
+        resolveLocalPermissions(this.deps.getConfig().agent), this.centerPolicy,
+      );
+      const capabilities = ['agent:sop', 'filesystem', 'http'];
+      if (probePlaywright().available) capabilities.push('browser');
+      if (includeGui && effective.hostAccess === 'app-scoped' &&
+          effective.allowedApps.length > 0 && await new WindowsGuiDriver().probe()) {
+        capabilities.push('gui');
+      }
+      const fingerprint = capabilities.join(',');
+      // 正常 tick 每 30s 续租一次；处理指派期间另有本地定时器续租。
+      // 只跳过同一个 tick 内重复的第二次上报，不能把 DB 里的能力当永久授权。
+      if (!report && this.capabilityAdvertised && fingerprint === this.lastCapabilities &&
+          Date.now() - this.lastCapabilityReportAt < 25_000) return { ok: true };
+      const result = await this.deps.client.reportCapability(this.deps.address, capabilities, report);
+      if (result.ok) {
+        this.capabilityAdvertised = true;
+        this.lastCapabilities = fingerprint;
+        this.lastCapabilityReportAt = Date.now();
+      }
+      return result;
+    });
+  }
 
-    await this.processAssignment(assignment);
-    return { worked: true, detail: `assignment ${assignment.assignmentId} processed` };
+  /** 续报与撤销按请求顺序落库，避免旧续报在撤销后重新授予能力。 */
+  private withCapabilityWrite<T>(operation: () => Promise<T>): Promise<T> {
+    const current = this.capabilityWriteTail.then(operation, operation);
+    this.capabilityWriteTail = current.then(() => undefined, () => undefined);
+    return current;
+  }
+
+  /** 关闭托管时撤销 Agent 能力；若正在处理指派，等回报完成后再撤销。 */
+  async withdrawCapabilities(): Promise<void> {
+    if (this.working) {
+      this.withdrawAfterWork = true;
+      return;
+    }
+    await this.withCapabilityWrite(async () => {
+      if (!this.capabilityAdvertised) return;
+      const result = await this.deps.client.reportCapability(this.deps.address, []);
+      if (result.ok) {
+        this.capabilityAdvertised = false;
+        this.lastCapabilities = null;
+        this.lastCapabilityReportAt = 0;
+      }
+    });
   }
 
   /** 处理一次指派。所有失败收敛为「回报 failed」，绝不把异常抛回轮询循环。 */
   private async processAssignment(item: PollAssignmentItem): Promise<void> {
     this.working = true;
+    this.stats.working = true;
+    // 单次指派可持续数分钟/小时。外部轮询遇 working 会跳过，故在处理期间
+    // 单独续报短效 Agent 能力租约；关闭开关时仍续到终态回报，再撤销能力。
+    const capabilityLeaseTimer = setInterval(() => {
+      void this.advertiseCapabilities(true).catch(() => undefined);
+    }, 30_000);
+    capabilityLeaseTimer.unref?.();
     this.stats.lastAssignmentId = item.assignmentId;
     try {
       const cfg = this.deps.getConfig();
@@ -126,13 +234,37 @@ export class AgentHost {
       const effective = mergeWithCenterPolicy(local, this.centerPolicy);
       this.stats.lastEffectiveProfile = `${effective.preset}(ce=${effective.codeExecution},sb=${effective.sandboxBackend},ha=${effective.hostAccess},te=${effective.taskExecution})`;
 
-      // ── 能力上报：browser 只在真实可用时声明（不超前）────────────────
+      // ── 能力上报：浏览器/GUI 只在真实可用且 GUI 已授权时声明 ───────────
       const capabilities = ['agent:sop', 'filesystem', 'http'];
       if (probePlaywright().available) capabilities.push('browser');
+      const guiDriver = new WindowsGuiDriver();
+      const guiAvailable = effective.hostAccess === 'app-scoped' &&
+        effective.allowedApps.length > 0 && await guiDriver.probe();
+      if (guiAvailable) capabilities.push('gui');
+      const required = Array.isArray(item.sop.frontMatter.capabilities)
+        ? item.sop.frontMatter.capabilities : [];
+      const missing = required.filter((cap) => !capabilities.includes(cap));
+      if (missing.length > 0) {
+        // 上次轮询缓存的中台策略可能在本轮被收紧；服务端按旧能力刚领取
+        // 的工单不能继续进入 LLM/GUI 循环，必须明确回报不可执行。
+        this.stats.lastOutcome = 'permission_denied';
+        this.stats.processed += 1;
+        await this.deps.client.reportComplete(this.deps.address, item.assignmentId, {
+          status: 'failed',
+          attempt: 1,
+          result: {
+            outcome: 'permission_denied',
+            stopMessage: `SOP 所需能力当前不可用：${missing.join(', ')}`,
+            effectiveProfile: this.stats.lastEffectiveProfile,
+          },
+        });
+        return;
+      }
       const environment = await collectEnvironmentReport();
-      await this.deps.client
-        .reportCapability(this.deps.address, capabilities, environment as unknown as Record<string, unknown>)
-        .catch(() => undefined); // 能力上报失败不阻塞指派处理
+      environment.capabilities = capabilities.filter((cap) => cap !== 'agent:sop');
+      await this.advertiseCapabilities(
+        true, environment as unknown as Record<string, unknown>,
+      ).catch(() => undefined); // 能力上报失败不阻塞指派处理
 
       // ── 沙箱工作区 + 循环 ────────────────────────────────────────────
       const workspaceRoot = ensureWorkspace(this.deps.workDir, item.assignmentId);
@@ -145,6 +277,14 @@ export class AgentHost {
           sop: item.sop,
           workspaceRoot,
           environment,
+          guiAvailable,
+          guiDriver,
+          allowGuiAction: (app) => {
+            const latest = this.deps.getConfig();
+            if (!latest.agentEnabled) return false;
+            const now = mergeWithCenterPolicy(resolveLocalPermissions(latest.agent), this.centerPolicy);
+            return now.hostAccess === 'app-scoped' && now.allowedApps.includes(app);
+          },
         },
         {
           // relay 适配：空 content = 中台 LLM 不可用（fail-open 透传）——
@@ -271,8 +411,13 @@ export class AgentHost {
         },
       }).catch(() => undefined);
     } finally {
+      clearInterval(capabilityLeaseTimer);
       this.working = false;
       this.stats.working = false;
+      if (this.withdrawAfterWork && !this.deps.getConfig().agentEnabled) {
+        await this.withdrawCapabilities().catch(() => undefined);
+      }
+      this.withdrawAfterWork = false;
     }
   }
 }

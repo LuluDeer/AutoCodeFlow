@@ -36,7 +36,7 @@ import type { SopClarificationMediaRef } from "./entities/sop-clarification.enti
  * 同一条机器身份链。**不进 JWT/API-Key 体系**。
  *
  * ## 能力闸（11 §5.1）
- * poll/澄清/进度/完成要求执行器 `capabilities` 显式含 `agent:sop`——
+ * 澄清/进度/完成等协作面要求执行器 `agentCapabilities` 显式含 `agent:sop`——
  * **空能力 ≠ 通用**（既有「空 = runtime 通用」语义不沿用，10 §缺口2补）。
  * `capability` 上报端点是**唯一例外**：它就是执行器声明能力的入口。
  *
@@ -402,8 +402,7 @@ export class SopCollabController {
   /** 协作面鉴权 = 机器鉴权 + 显式 `agent:sop` 能力闸（11 §5.1）。 */
   private async authenticateAgent(address: string | undefined, auth?: string) {
     const executor = await this.authenticate(address, auth);
-    const caps: string[] =
-      (executor as { capabilities?: string[] }).capabilities ?? [];
+    const caps = await this.executors.getAgentCapabilities(executor.id);
     if (!caps.includes("agent:sop")) {
       throw new ForbiddenException(
         "该执行器未声明 agent:sop 能力——SOP 协作面只对显式声明的机器开放（空能力 ≠ 通用）",

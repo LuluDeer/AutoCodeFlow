@@ -100,6 +100,16 @@ export class Executor {
   @Column({ type: "varchar", length: 16, default: "push" }) dispatchMode:
     "push" | "pull";
   @Column({ type: "simple-array", nullable: true }) capabilities: string[];
+  /**
+   * P7c：Agent 协作能力与普通任务运行时能力分开落库。Agent 每轮覆盖式上报
+   * （含 [] 撤销）不能擦掉 python/node；执行器重注册也不能擦掉 agent:sop。
+   * select:false 防止 heartbeat/register 的整实体 save 以旧快照回写此列。
+   */
+  @Column({ type: "simple-array", nullable: true, select: false })
+  agentCapabilities: string[] | null;
+  /** Agent 能力租约的最后续报时间；旧行 NULL 不具备协作资格。 */
+  @Column({ type: "timestamptz", nullable: true, select: false })
+  agentCapabilitiesUpdatedAt: Date | null;
   @Column({ nullable: true }) lastHeartbeat: Date;
   @Column({ nullable: true }) executorStartedAt: Date | null;
   @Column({ nullable: true }) executorStartupId: string | null;
