@@ -294,6 +294,7 @@ console.log("\n── 2. SopService（发布/指派/澄清/完成）──");
         }),
       },
       { notify: async (...a) => notifyCalls.push(a) },
+      { getStats: () => ({ isLeader: true }) }, // SchedulerService 打桩
       { add: async (name, data) => ({ name, data }) },
     );
     // 打桩的 NotificationService.notify 计数（升级通知走它）
@@ -518,6 +519,40 @@ console.log("\n── 3bis. 写工具执行体绑定 ──");
   check("执行器自述以 untrustedResult 标注（注入面纪律）", /untrustedResult/.test(svcSrc2));
   check("验证会话经 agent-jobs 入队", /reason: `verify:\$\{a\.id\}`/.test(svcSrc2));
   check("验证起不来 fail-open（完成回报不被吞）", /verification session spawn failed \(fail-open\)/.test(svcSrc2));
+
+  // ── P6 超时治理（11 §6）：纯判定 + 扫描接线 ──
+  transpileGraph("src/modules/sop/sop-timeout.ts");
+  const { evaluateAssignmentTimeouts } = require(join(scratch, "src/modules/sop/sop-timeout.js"));
+  const now = Date.now();
+  const row = (over) => ({
+    id: "a1", status: "assigned", pulledAt: null,
+    createdAt: new Date(now - 31 * 60 * 1000), updatedAt: new Date(now), lastProgressAt: null,
+    ...over,
+  });
+  const ev = evaluateAssignmentTimeouts(
+    [
+      row({ id: "unclaimed" }),
+      row({ id: "fresh", createdAt: new Date(now - 5 * 60 * 1000) }),
+      row({ id: "stalled", status: "in_progress", pulledAt: new Date(now - 3600e3), lastProgressAt: new Date(now - 11 * 60 * 1000) }),
+      row({ id: "alive", status: "in_progress", pulledAt: new Date(now - 3600e3), lastProgressAt: new Date(now - 60 * 1000) }),
+      row({ id: "blocked-wait", status: "blocked", pulledAt: new Date(now - 3600e3), lastProgressAt: new Date(now - 11 * 60 * 1000) }),
+    ],
+    now,
+    { claimTtlMs: 30 * 60 * 1000, progressTtlMs: 10 * 60 * 1000 },
+  );
+  check("领取超时 → unclaimed", ev.unclaimed.map((r) => r.id).join(",") === "unclaimed");
+  check("心跳停滞 → stalled", ev.stalled.map((r) => r.id).join(",") === "stalled");
+  check("blocked（等中台）不误判 stalled", !ev.stalled.some((r) => r.id === "blocked-wait"));
+  const cronSrc = readFileSync(join(apiDir, "src/modules/sop/sop.service.ts"), "utf8");
+  check("超时扫描 @Cron 且过 leader 门禁", /@Cron\("0 \*\/5 \* \* \* \*"\)/.test(cronSrc) && /isSchedulerLeader\(\)/.test(cronSrc));
+  check("leader 读不到时保守跳过（不重复置态）", /isSchedulerLeader\(\): boolean \{\s*try \{[\s\S]*?\} catch \{[\s\S]*?return false;/, );
+
+  // ── 升级环收口：人工回复端点 ──
+  const ctrlSrc = readFileSync(join(apiDir, "src/modules/sop/sop.controller.ts"), "utf8");
+  check("人工回复端点存在（POST clarifications/:id/reply）", /clarifications\/:clarificationId\/reply/.test(ctrlSrc));
+  check("人工回复校验澄清归属（防跨工单答复）", /clarifications\.some\(\(c\) => c\.id === clarificationId\)/.test(ctrlSrc));
+  check("人工回复 resolution 限 answered|sop_amended", /@IsIn\(\["answered", "sop_amended"\]\)/.test(ctrlSrc));
+  check("人工与 Agent 共用 replyClarification（同一道幂等/校验/修订闸门）", /this\.sops\.replyClarification\(/.test(ctrlSrc));
 }
 
 // ── 4. 协作 API（结构断言）───────────────────────────────────────

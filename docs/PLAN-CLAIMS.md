@@ -379,6 +379,8 @@
 
 ## 变更日志
 
+- 2026-09-26 主会话：**P6 收口 done（超时治理 + 升级环人工答复）**：sop-timeout 纯判定（无人领取→failed / 心跳停滞→stalled / blocked 不误判）+ SopService @Cron 5min leader 门禁扫描 + TTL 配置三处同步；人工答复端点（ADMIN，归属校验，resolution 限 answered/sop_amended）+ SopsPage 回复 UI——人工与 Agent 共用 replyClarification 同一道闸门，escalated 环闭环。验证：agent-sop-check 111 项、admin-web/admin-api tsc+lint 0。
+
 - 2026-09-26 主会话：**写工具执行体绑定 + 中台独立验证 done**：①incident/sop_authoring 白名单的 9 个写工具自 P3 起未绑执行体（模型调用一律「尚未实现」），现全绑——trigger 带 triggerType=agent（缺口 6）、retry 回放原 params（NF-06）、deploy 方案 C（DEP-04 pending_approval 透传）；②update_task/rollback/upgrade/stop 加逐工具 approvalRequired（03 §2）；③completed 回报触发 sop_review 独立验证会话（scope=sops+platform tasks；sop_review 加 trigger_task；untrustedResult 注入面纪律；fail-open）。验证：agent-sop-check 102 项、四套 agent 套件绿、tsc/build 绿。
 
 - 2026-09-25 主会话：**P7d 前半 done（候选应用交付通道，07 §3.3 关键一笔）**：desktop zip-writer（零依赖 store-only ZIP，CRC32 向量+自回读+写入层穿越防线+条件 unzip -t 交叉验证真跑）+ package-candidate（manifest 契约：runtime/entrypoint/来源标记；观测产物排除）+ host 交付流（delivered→打包→上传→packageRef 进回报；打包/上传失败如实 deliver_failed）+ admin candidate-package 端点（agent:sop 闸+归属校验+**复用 ExecutorPackageService.create 既有校验链**——SEC-05 zip bomb 逐项生效；来源标记由平台代码打（ADR-022 决策 5）；版本 +agent.<ts> 幂等交付）。**验证**：test:main 25 套全绿、agent-host e2e 19 项、agent-sop-check 79 项、tsc/lint/迁移守卫全绿。**残差**：包→deploy 端到端属 P7d 后半；isolated-runner 属 P7e。

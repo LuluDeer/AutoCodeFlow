@@ -282,6 +282,9 @@ import { RuntimeModule } from "./modules/runtime/runtime.module";
         // （设计文档 11 §3.1）。执行器侧 P7 做 min(本地, 中台) 合并。
         AGENT_SOP_POLICY: Joi.string().default("standard"),
         AGENT_SOP_POLICY_ALLOWED: Joi.string().default("minimal,standard"),
+        // P6 超时治理（11 §6）：领取 30min / 进度心跳 10min（建议值）。
+        SOP_ASSIGNMENT_CLAIM_TTL_MS: Joi.number().integer().min(60000).default(1800000),
+        SOP_ASSIGNMENT_PROGRESS_TTL_MS: Joi.number().integer().min(60000).default(600000),
 
         // AUTH-04: OIDC SSO（授权码模式）。全部可选——OIDC_ENABLED=false 时
         // 其余键不生效，存量部署零变化。
