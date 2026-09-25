@@ -204,6 +204,16 @@ export class AgentBoundaryService {
       }
     }
 
+    // 逐工具的审批闸（如 sop_publish）：**不随**全局写策略放宽而放宽——
+    // 发布权 = 间接指令注入权（SOP 会成为执行器 Agent 的执行依据）。
+    if (spec.approvalRequired) {
+      return {
+        kind: "NEED_APPROVAL",
+        spec,
+        message: `工具 ${toolName} 需人工审批（发布/修订会改变执行器 Agent 的执行依据）。`,
+      };
+    }
+
     if (spec.tier === "write" && policy.writeRequiresApproval) {
       return {
         kind: "NEED_APPROVAL",

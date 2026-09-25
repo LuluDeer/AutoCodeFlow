@@ -1,19 +1,25 @@
-import { Injectable, Logger, OnModuleInit } from "@nestjs/common";
+import {
+  Injectable,
+  Logger,
+  OnModuleInit,
+  Inject,
+  forwardRef,
+} from "@nestjs/common";
 import { AgentApiClient } from "./agent-api.client";
 import { TaskService } from "../../task/task.service";
 import { ExecutorService } from "../../executor/executor.service";
 import { ApplicationService } from "../../application/application.service";
+import { SopService } from "../../sop/sop.service";
 
 /**
- * P3：把只读工具绑定到 admin-api 的内部 Service。
+ * P3：把工具绑定到 admin-api 的内部 Service。
  *
  * ## 为什么单独成 service 而不是写在 module 的 onModuleInit
  * 绑定逻辑会随工具数量增长（P4/P5 还要加写工具与 SOP 工具）。放在模块里
  * 会让 agent.module.ts 变成数百行的装配清单，且难以单独测试。
  *
- * ## P3 范围
- * 只绑**只读工具**（排障主力）。写工具的执行体在 P4/P5 随触发器与 SOP
- * 一起接——它们需要那些模块的能力（如事件聚合、SOP 校验）。
+ * ## 范围
+ * P3 绑只读工具（排障主力）；P5/P6 补 SOP 工具（sop_* → SopService）。
  * 未绑定的工具由 `AgentApiClient.invoke` 如实返回「尚未实现」，不静默成功。
  */
 @Injectable()
@@ -25,12 +31,16 @@ export class ToolBinderService implements OnModuleInit {
     private readonly tasks: TaskService,
     private readonly executors: ExecutorService,
     private readonly applications: ApplicationService,
+    // forwardRef：sop.module ↔ agent.module 装配期环（见 sop.module.ts 头注）
+    @Inject(forwardRef(() => SopService))
+    private readonly sops: SopService,
   ) {}
 
   onModuleInit(): void {
     this.bindTaskTools();
     this.bindApplicationTools();
     this.bindExecutorTools();
+    this.bindSopTools();
     this.logger.log(
       `Agent read-tool handlers bound: ${this.api.implementedTools().join(", ")}`,
     );
@@ -139,6 +149,75 @@ export class ToolBinderService implements OnModuleInit {
 
     this.api.register("get_executor_metrics", async (args) =>
       this.executors.getExecutorMetrics(this.str(args.executorId)),
+    );
+  }
+
+  // ── SOP 组（P5/P6，设计文档 03 §4）──────────────────────────────
+
+  private bindSopTools(): void {
+    this.api.register("sop_list", async (args) =>
+      this.sops.list({
+        status: args.status as string | undefined,
+        page: this.num(args.page, 1),
+        pageSize: this.num(args.pageSize, 20),
+      }),
+    );
+
+    // sop_get：sopId / slug 二选一（slug 是唯一索引，直查）
+    this.api.register("sop_get", async (args) => {
+      if (args.sopId) return this.sops.getSop(this.str(args.sopId));
+      return this.sops.getBySlug(this.str(args.slug));
+    });
+
+    this.api.register("sop_draft", async (args) =>
+      this.sops.draft({
+        slug: this.str(args.slug),
+        title: this.str(args.title),
+        frontMatterYaml: args.frontMatterYaml as string | undefined,
+        bodyMarkdown: args.bodyMarkdown as string | undefined,
+        createdBy: "agent:tool-call",
+      }),
+    );
+
+    this.api.register("sop_publish", async (args) =>
+      this.sops.publish({
+        sopId: this.str(args.sopId),
+        bump: args.bump as "patch" | "minor" | "major" | undefined,
+        changelog: args.changelog as string | undefined,
+        publishedBy: "agent:tool-call",
+      }),
+    );
+
+    this.api.register("sop_assign", async (args) => {
+      let executorId = args.executorId as string | undefined;
+      if (!executorId && args.executorAddress) {
+        const exec = await this.executors.findByAddress(
+          this.str(args.executorAddress),
+        );
+        if (!exec) throw new Error(`执行器 ${args.executorAddress} 不存在`);
+        executorId = exec.id;
+      }
+      if (!executorId)
+        throw new Error("executorId 与 executorAddress 必须提供其一");
+      return this.sops.assign({
+        sopId: this.str(args.sopId),
+        version: args.version as string | undefined,
+        executorId,
+        assignedBy: "agent:tool-call",
+      });
+    });
+
+    this.api.register("sop_reply_clarification", async (args) =>
+      this.sops.replyClarification({
+        clarificationId: this.str(args.clarificationId),
+        resolution: this.str(args.resolution),
+        answer: this.str(args.answer),
+        amendedFrontMatterYaml: args.amendedFrontMatterYaml as
+          string | undefined,
+        amendedBodyMarkdown: args.amendedBodyMarkdown as string | undefined,
+        changelog: args.changelog as string | undefined,
+        replyBy: "agent:tool-call",
+      }),
     );
   }
 
