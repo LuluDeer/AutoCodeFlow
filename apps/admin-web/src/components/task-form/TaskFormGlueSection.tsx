@@ -10,6 +10,7 @@ import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import '../../i18n';
 import GlueEditor from '../GlueEditor';
+import { LAYOUT_TOKENS } from '../../theme/tokens';
 
 const { Text } = Typography;
 const TITLE_STYLE = { margin: '0 0 4px' } as const;
@@ -28,7 +29,7 @@ export default function TaskFormGlueSection({ glueTaskId, isEdit, createdTaskId,
   const nav = useNavigate();
 
   return (
-    <div id="sec-glue" data-testid="section-glue" role="region" aria-label={t('taskForm.section.glue')} style={{ scrollMarginTop: 88 }}>
+    <div id="sec-glue" data-testid="section-glue" role="region" aria-label={t('taskForm.section.glue')} style={{ scrollMarginTop: LAYOUT_TOKENS.anchorScrollOffset }}>
       <Typography.Title level={5} style={TITLE_STYLE}>{t('taskForm.section.glueTitle')}</Typography.Title>
       {glueTaskId ? (
         <Card style={{ marginBottom: 20 }}>
