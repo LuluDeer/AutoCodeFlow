@@ -15,6 +15,7 @@ import { AgentModule } from "../agent/agent.module";
 import { ExecutorModule } from "../executor/executor.module";
 import { NotificationModule } from "../notification/notification.module";
 import { AiModule } from "../ai/ai.module";
+import { ExecutorPackageModule } from "../executor-package/executor-package.module";
 import { AGENT_QUEUE_NAME } from "../agent/runtime/agent.processor";
 
 /**
@@ -46,6 +47,8 @@ import { AGENT_QUEUE_NAME } from "../agent/runtime/agent.processor";
     NotificationModule,
     // P7a 续批：LLM relay（执行器 Agent 的推理经中台代跑，key 不出服务端）
     AiModule,
+    // P7d 前半：候选应用包交付——复用既有包校验链（SEC-05 zip bomb 等）
+    ExecutorPackageModule,
     BullModule.registerQueue({ name: AGENT_QUEUE_NAME }),
   ],
   controllers: [SopController, SopCollabController],

@@ -239,6 +239,65 @@ export class CollabClient {
     }
   }
 
+  /**
+   * 候选应用包上传（P7d 前半）：验收通过的候选打成标准 zip，走既有
+   * executor-package 校验链（admin 侧 zip 魔数/SEC-05）。multipart 字段
+   * 对齐 admin `POST /executor-packages`（name/version/type/platform/
+   * description + file），但鉴权是 agent:sop 机器面、来源由**平台侧**打
+   * 标记（ADR-022 决策 5：来源标记绝不由 Agent 自称）。
+   */
+  async uploadCandidatePackage(
+    address: string,
+    assignmentId: string,
+    pkg: { filename: string; buf: Buffer; runtime: string; sopSlug: string; sopVersion: string; contentHash: string },
+  ): Promise<{ ok: boolean; error?: string; packageId?: string; packageName?: string; packageVersion?: string }> {
+    const boundary = `----acfcand${Date.now()}${Math.floor(Math.random() * 1e8)}`;
+    const field = (name: string, value: string): Buffer =>
+      Buffer.from(
+        [`--${boundary}`, `Content-Disposition: form-data; name="${name}"`, '', value, ''].join('\r\n'),
+        'utf8',
+      );
+    const fileHead = Buffer.from(
+      [
+        `--${boundary}`,
+        `Content-Disposition: form-data; name="file"; filename="${pkg.filename.replace(/[^\w.-]/g, '_')}"`,
+        'Content-Type: application/zip',
+        '',
+        '',
+      ].join('\r\n'),
+      'utf8',
+    );
+    const tail = Buffer.from(`\r\n--${boundary}--\r\n`, 'utf8');
+    const body = Buffer.concat([
+      field('name', `sop-${pkg.sopSlug}`),
+      field('version', `${pkg.sopVersion}+agent.${Date.now().toString(36)}`),
+      field('type', pkg.runtime),
+      field('platform', 'any'),
+      field('description', `agent candidate assignment=${assignmentId} contentHash=${pkg.contentHash}`),
+      fileHead,
+      pkg.buf,
+      tail,
+    ]);
+
+    const res = await this.rawRequest(
+      'POST',
+      `/api/agent-collab/assignments/${encodeURIComponent(assignmentId)}/candidate-package`,
+      {
+        'Content-Type': `multipart/form-data; boundary=${boundary}`,
+        'Content-Length': String(body.length),
+      },
+      body,
+      120_000,
+    );
+    if (!res.ok) return { ok: false, error: res.error ?? `candidate upload failed (status=${res.status})` };
+    try {
+      const parsed = JSON.parse(res.body) as { packageId?: string; name?: string; version?: string };
+      return { ok: true, packageId: parsed.packageId, packageName: parsed.name, packageVersion: parsed.version };
+    } catch {
+      return { ok: false, error: 'candidate upload 响应非法 JSON' };
+    }
+  }
+
   /** 单发 POST（JSON）。所有错误收敛为 RawResult，不抛。 */
   private post(path: string, _address: string, body: unknown, timeoutMs?: number): Promise<RawResult> {
     const payload = Buffer.from(JSON.stringify(body), 'utf8');

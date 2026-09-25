@@ -25,6 +25,10 @@ import { ensureWorkspace } from './workspace';
 import { collectEnvironmentReport } from './perception';
 import { probePlaywright } from './browser';
 import {
+  buildCandidatePackage,
+  interpreterToRuntime,
+} from './package-candidate';
+import {
   mergeWithCenterPolicy,
   resolveLocalPermissions,
   type CenterPolicyInput,
@@ -166,6 +170,55 @@ export class AgentHost {
 
       // ── 回报（幂等键 attempt 由 complete 端点管理）───────────────────
       if (result.outcome === 'delivered') {
+        // 交付（P7d 前半，07 §3.3）：候选打成标准应用包走既有 executor-package
+        // 校验链；打包/上传失败 = 交付未完成，如实回报 failed——验收通过但
+        // 交付失败是运维可动作的信息（重传即可），掩盖成 completed 会让人
+        // 以为应用已进系统。
+        let packageRef: Record<string, unknown> | null = null;
+        let deliverError: string | null = null;
+        try {
+          const entry = result.candidate ?? '';
+          const interpreter = entry.split(' ')[0] ?? '';
+          const entryPath = entry.split(' ')[1] ?? '';
+          const pkg = buildCandidatePackage({
+            workspaceRoot,
+            entry: { interpreter, path: entryPath },
+            sopSlug: item.sop.slug,
+            sopVersion: item.sop.version,
+            contentHash: item.sop.contentHash,
+          });
+          const up = await this.deps.client.uploadCandidatePackage(this.deps.address, item.assignmentId, {
+            filename: pkg.filename,
+            buf: pkg.buf,
+            runtime: interpreterToRuntime(interpreter),
+            sopSlug: item.sop.slug,
+            sopVersion: item.sop.version,
+            contentHash: item.sop.contentHash,
+          });
+          if (!up.ok) deliverError = up.error ?? 'candidate upload failed';
+          else {
+            packageRef = { packageId: up.packageId, name: up.packageName, version: up.packageVersion };
+          }
+        } catch (err) {
+          deliverError = err instanceof Error ? err.message : String(err);
+        }
+
+        if (deliverError !== null) {
+          this.stats.lastOutcome = 'deliver_failed';
+          await this.deps.client.reportComplete(this.deps.address, item.assignmentId, {
+            status: 'failed',
+            attempt: 1,
+            result: {
+              outcome: 'deliver_failed',
+              stopMessage: `交付打包/上传失败：${deliverError}`,
+              iterations: result.iterations,
+              gateSummary: result.gateSummary,
+              effectiveProfile: this.stats.lastEffectiveProfile,
+            },
+          });
+          return;
+        }
+
         await this.deps.client.reportComplete(this.deps.address, item.assignmentId, {
           status: 'completed',
           attempt: 1,
@@ -175,6 +228,7 @@ export class AgentHost {
             trialRuns: result.trialRuns,
             gateSummary: result.gateSummary,
             effectiveProfile: this.stats.lastEffectiveProfile,
+            packageRef,
           },
         });
         return;

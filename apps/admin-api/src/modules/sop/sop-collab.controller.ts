@@ -14,10 +14,13 @@ import {
   UseInterceptors,
 } from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
+import { diskStorage } from "multer";
 import { ConfigService } from "@nestjs/config";
 
 import { Public } from "../../common/decorators/public.decorator";
 import { ExecutorService } from "../executor/executor.service";
+import { ExecutorPackageService } from "../executor-package/executor-package.service";
+import { PACKAGE_UPLOAD_TMP_DIR } from "../executor-package/executor-package.service";
 import { AiService, type MultimodalMessage } from "../ai/ai.service";
 import { SopService } from "./sop.service";
 import { SopMediaService } from "./sop-media.service";
@@ -99,6 +102,7 @@ export class SopCollabController {
     private readonly executors: ExecutorService,
     private readonly sops: SopService,
     private readonly media: SopMediaService,
+    private readonly packages: ExecutorPackageService,
     private readonly config: ConfigService,
     private readonly ai: AiService,
   ) {}
@@ -325,6 +329,59 @@ export class SopCollabController {
       uploadedBy: `executor:${executor.id}`,
     });
     return stored;
+  }
+
+  /**
+   * 候选应用包上传（P7d 前半，07 §3.3）：验收通过的候选打成标准 zip 交给
+   * **既有 executor-package 校验链**（PK 魔数/后缀白名单/zip bomb SEC-05
+   * 逐项生效）——Agent 的自由被限制在生成阶段，运行阶段走既有纪律。
+   *
+   * ## 来源标记由平台代码打（ADR-022 决策 5）
+   * uploadedBy/description 由本端点写 `agent:sop:<executorId>` 与
+   * assignment/contentHash——绝不让 Agent 自称可信来源。版本带
+   * `+agent.<时间戳>` 构建元数据：同 SOP 同版本可重复交付（幂等建包），
+   * 不撞 (name, version, type) 唯一约束。
+   *
+   * 部署本身仍走既有 deploy_application（DEP-04 审批，方案 C）——本端点
+   * 只负责"包进系统"，不触部署。
+   */
+  @Post("assignments/:id/candidate-package")
+  @HttpCode(HttpStatus.CREATED)
+  @UseInterceptors(
+    FileInterceptor("file", {
+      storage: diskStorage({ destination: PACKAGE_UPLOAD_TMP_DIR }),
+      limits: { fileSize: 500 * 1024 * 1024 },
+    }),
+  )
+  async uploadCandidatePackage(
+    @Param("id") assignmentId: string,
+    @Body() body: { address: string; sopSlug?: string; sopVersion?: string; contentHash?: string; runtime?: string },
+    @UploadedFile() file?: Express.Multer.File,
+    @Headers("authorization") auth?: string,
+  ) {
+    const executor = await this.authenticateAgent(body?.address, auth);
+    const { assignment } = await this.sops.getAssignment(assignmentId);
+    if (assignment.targetExecutorId !== executor.id) {
+      throw new ForbiddenException("指派不属于该执行器");
+    }
+    if (!file?.path) {
+      throw new BadRequestException("缺少 file 字段（multipart）");
+    }
+    const runtime = body.runtime === "node" ? "node" : "python";
+    const sopSlug = (body.sopSlug ?? "candidate").slice(0, 64);
+    const pkg = await this.packages.create(
+      {
+        name: `sop-${sopSlug}`,
+        version: `${assignment.sopVersion}+agent.${Date.now().toString(36)}`.slice(0, 64),
+        type: runtime as never,
+        platform: "any",
+        description:
+          `agent candidate assignment=${assignmentId} contentHash=${(body.contentHash ?? "").slice(0, 64)}`,
+      },
+      file,
+      `agent:sop:${executor.id}`,
+    );
+    return { packageId: pkg.id, name: pkg.name, version: pkg.version };
   }
 
   // ── 内部 ────────────────────────────────────────────────────────

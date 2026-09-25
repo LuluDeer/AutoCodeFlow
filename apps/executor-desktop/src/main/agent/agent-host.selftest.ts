@@ -40,7 +40,13 @@ function makeCenter(opts: { llmScript: string[]; sopPolicy?: unknown }) {
     const chunks: Buffer[] = [];
     req.on('data', (c: Buffer) => chunks.push(c));
     req.on('end', () => {
-      const body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') as Record<string, unknown>;
+      // candidate-package 是 multipart 二进制——JSON.parse 会炸，按 raw 记
+      let body: Record<string, unknown> = { __raw: true };
+      try {
+        body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') as Record<string, unknown>;
+      } catch {
+        body = { __multipart: true, bytes: Buffer.concat(chunks).length };
+      }
       const p = req.url ?? '/';
       requests.push({ path: p, body });
       const reply = (obj: unknown): void => {
@@ -73,6 +79,16 @@ function makeCenter(opts: { llmScript: string[]; sopPolicy?: unknown }) {
       }
       if (p === '/api/agent-collab/llm') {
         reply({ content: llmQueue.shift() ?? '{"action":"escalate"}', usage: { tokensIn: 1, tokensOut: 1 }, model: 'test' });
+        return;
+      }
+      if (p.includes('/candidate-package')) {
+        // 模拟既有 executor-package 校验链（zip 魔数 PK）+ 建包
+        const raw = body as { __multipart?: boolean; bytes?: number };
+        reply(
+          raw.__multipart && (raw.bytes ?? 0) > 2 && raw.bytes
+            ? { packageId: 'pkg-1', name: 'sop-e2e-sop', version: '1.0.0+agent.x' }
+            : { message: 'not an archive' },
+        );
         return;
       }
       if (p === '/api/agent-collab/capability' || p.startsWith('/api/agent-collab/assignments/')) {
@@ -151,6 +167,11 @@ async function main(): Promise<void> {
     const complete = center.requests.find((q) => q.path === `/api/agent-collab/assignments/${ASSIGNMENT_ID}/complete`);
     check('回报 completed', complete?.body.status === 'completed', `body=${JSON.stringify(complete?.body).slice(0, 120)}`);
     check('回报带 effectiveProfile（审计可见）', JSON.stringify(complete?.body).includes('effectiveProfile'));
+    // P7d 前半：交付——候选包已上传，packageRef 进回报
+    const cand = center.requests.find((q) => q.path?.includes('/candidate-package'));
+    check('候选包已上传（multipart，>2 字节）', cand !== undefined && cand.body.__multipart === true && (cand.body.bytes as number) > 2);
+    const result = complete?.body.result as { packageRef?: { packageId?: string } } | undefined;
+    check('packageRef 进回报（中台据此走 deploy 通道）', result?.packageRef?.packageId === 'pkg-1', JSON.stringify(result?.packageRef ?? null));
     check('lastOutcome 记录', host.stats.lastOutcome === 'delivered');
     check('工作区产物落盘', fs.existsSync(path.join(workDir, 'agent-workspace', ASSIGNMENT_ID, 'out.txt')));
     await center.close();
