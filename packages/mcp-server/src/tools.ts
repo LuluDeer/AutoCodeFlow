@@ -174,7 +174,7 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
     {
       taskId: UUID_PATH_ID.describe("Task ID to trigger"),
       params: z
-        .record(z.unknown())
+        .record(z.string(), z.unknown())
         .optional()
         .describe("Optional runtime parameters to pass to the task"),
       // NOTE: no executorId parameter here — TriggerTaskDto only accepts
@@ -264,7 +264,7 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
           "Restrict auto-dispatch to executors carrying all these tags",
         ),
       params: z
-        .record(z.unknown())
+        .record(z.string(), z.unknown())
         .optional()
         .describe("Default runtime parameters"),
       applicationId: z
@@ -491,7 +491,7 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
       taskId: UUID_PATH_ID.describe("Task ID that owns the execution"),
       executionId: UUID_PATH_ID.describe("Execution ID to re-run (from list_executions / get_execution)"),
       params: z
-        .record(z.unknown())
+        .record(z.string(), z.unknown())
         .optional()
         .describe(
           "Override the replayed runtime parameters (when absent, the original execution's params are reused; if it had none, the task's current defaults apply)",
@@ -559,7 +559,7 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
         .optional()
         .describe("Task description (defaults to the template blurb)"),
       overrides: z
-        .record(z.unknown())
+        .record(z.string(), z.unknown())
         .optional()
         .describe(
           "Field overrides applied on top of the template (any CreateTaskDto field, e.g. cronExpression, fixedRate, timeoutSeconds, params, requirements, executorGroup)",
@@ -632,10 +632,10 @@ export function registerApplicationTools(
       gitBranch: z.string().optional().describe("Git branch"),
       gitCommit: z.string().optional().describe("Git commit SHA"),
       manifest: z
-        .record(z.unknown())
+        .record(z.string(), z.unknown())
         .optional()
         .describe("Application manifest object"),
-      env: z.record(z.string()).optional().describe("Environment variables"),
+      env: z.record(z.string(), z.string()).optional().describe("Environment variables"),
       entrypoint: z.string().optional().describe("Entry point command"),
       packageUrl: z.string().optional().describe("Package download URL"),
     },
@@ -662,10 +662,10 @@ export function registerApplicationTools(
       gitBranch: z.string().optional().describe("Git branch"),
       gitCommit: z.string().optional().describe("Git commit SHA"),
       manifest: z
-        .record(z.unknown())
+        .record(z.string(), z.unknown())
         .optional()
         .describe("Application manifest object"),
-      env: z.record(z.string()).optional().describe("Environment variables"),
+      env: z.record(z.string(), z.string()).optional().describe("Environment variables"),
       entrypoint: z.string().optional().describe("Entry point command"),
       packageUrl: z.string().optional().describe("Package download URL"),
       webhookSecret: z
@@ -784,7 +784,7 @@ export function registerDeploymentTools(
         .optional()
         .describe("Run mode override (see RunMode enum, e.g. daemon)"),
       env: z
-        .record(z.string())
+        .record(z.string(), z.string())
         .optional()
         .describe("Environment variable overrides"),
       startCommand: z.string().optional().describe("Startup command override"),
@@ -838,7 +838,7 @@ export function registerDeploymentTools(
         .optional()
         .describe("Run mode override (see RunMode enum, e.g. daemon)"),
       env: z
-        .record(z.string())
+        .record(z.string(), z.string())
         .optional()
         .describe("Environment variable overrides"),
       startCommand: z.string().optional().describe("Startup command override"),
