@@ -1,3 +1,7 @@
+import type ElectronStoreClass from 'electron-store' with { 'resolution-mode': 'import' };
+// @ts-expect-error TS1479：electron-store 11 为 ESM-only 包，CJS 主进程的静态
+// import 在类型层被拒绝；运行时由 Electron 44 内置 Node 24 的同步 require(esm)
+// 加载（已冒烟验证，见 package.json 的 _comment_deps）。
 import Store from 'electron-store';
 import * as os from 'os';
 import { app } from 'electron';
@@ -25,7 +29,7 @@ export interface AppConfig {
    * python_task_multiversion：uv 多版本解释器支持（全部可选）。
    *
    * 这些字段**全部可缺省**——旧版本配置文件里没有它们，electron-store 的
-   * schema default 会补上，因此老用户升级后不需要迁移、也不会因为缺字段而
+   * defaults 会补上，因此老用户升级后不需要迁移、也不会因为缺字段而
    * 读配置失败（兼容红线）。
    *
    * 缺省语义：
@@ -53,39 +57,44 @@ export interface AppConfig {
    * 没有可填的公网地址，用户按提示怎么填都不会通。pull 模式才是该拓扑的正解。
    *
    * 兼容红线：与 uv* 字段同样**可选**，缺省 false（= 保持既有 push 行为）。
-   * 旧配置文件没有这个键，electron-store 的 schema default 会补上，老用户
+   * 旧配置文件没有这个键，electron-store 的 defaults 会补上，老用户
    * 升级后行为不变、也不需要迁移。
    */
   pullMode?: boolean;
 }
 
-const schema = {
-  configured: { type: 'boolean', default: false },
-  adminApiUrl: { type: 'string', default: '' },
-  executorName: { type: 'string', default: os.hostname() },
-  executorHost: { type: 'string', default: '0.0.0.0' },
-  executorPort: { type: 'number', default: 8002 },
-  executorAddressPublic: { type: 'string', default: '' },
-  executorToken: { type: 'string', default: '' },
-  workDir: { type: 'string', default: '' },
-  maxConcurrentTasks: { type: 'number', default: 10 },
-  autoStart: { type: 'boolean', default: false },
-  autoStartExecutor: { type: 'boolean', default: true },
+// electron-store 11（conf 15）移除了 JSON schema（ajv）支持，旧 schema 里
+// 的 `type` 校验职责由 config-sanitize.ts 消毒层承接（见 config-sanitize.ts
+// 头注）；`default` 补默认值职责由 conf 仍支持的 `defaults` 选项承载——
+// 语义不变：旧配置文件缺这些键时 electron-store 会补默认值，保证升级后
+// 读配置不炸（兼容红线，与各字段的既有注释同义）。
+const defaults = {
+  configured: false,
+  adminApiUrl: '',
+  executorName: os.hostname(),
+  executorHost: '0.0.0.0',
+  executorPort: 8002,
+  executorAddressPublic: '',
+  executorToken: '',
+  workDir: '',
+  maxConcurrentTasks: 10,
+  autoStart: false,
+  autoStartExecutor: true,
   // DSK-04：系统通知默认开启（用户可在设置页关闭）
-  notifyEnabled: { type: 'boolean', default: true },
-  logLevel: { type: 'string', default: 'info' },
+  notifyEnabled: true,
+  logLevel: 'info',
   // python_task_multiversion：可选，缺省即"用内置默认值"。
   // 显式给 default '' 而不是 required——旧配置文件缺这些键时 electron-store
   // 会补默认值，保证升级后读配置不炸。
-  uvPath: { type: 'string', default: '' },
-  uvPythonInstallDir: { type: 'string', default: '' },
-  uvPythonInstallMirror: { type: 'string', default: '' },
-  interpreterDownloadTimeoutMs: { type: 'number', default: 0 },
-  pypiRegistryUrl: { type: 'string', default: '' },
-  // ARCH-33：默认 false = 保持既有 push 行为。旧配置文件缺该键时由 schema
-  // default 补齐，升级后行为不变（兼容红线，与 uv* 字段同处置）。
-  pullMode: { type: 'boolean', default: false },
-} as const;
+  uvPath: '',
+  uvPythonInstallDir: '',
+  uvPythonInstallMirror: '',
+  interpreterDownloadTimeoutMs: 0,
+  pypiRegistryUrl: '',
+  // ARCH-33：默认 false = 保持既有 push 行为。旧配置文件缺该键时由 defaults
+  // 补齐，升级后行为不变（兼容红线，与 uv* 字段同处置）。
+  pullMode: false,
+} satisfies Partial<AppConfig>;
 
 /**
  * Config-page fields that reference the token but must never receive the
@@ -108,11 +117,18 @@ export function isStrictTokenEncryption(): boolean {
   return v === '1' || v === 'true';
 }
 
+// electron-store 11 的默认导出即类本身；经类型导入拿到实例形状，
+// 运行时构造器（any）在此收窄。
+type ElectronStoreInstance = ElectronStoreClass<AppConfig>;
+const StoreCtor = Store as unknown as new (options?: {
+  defaults?: Partial<AppConfig>;
+}) => ElectronStoreInstance;
+
 export class ConfigStore {
-  private store: Store<AppConfig>;
+  private store: ElectronStoreInstance;
 
   constructor() {
-    this.store = new Store<AppConfig>({ schema: schema as any });
+    this.store = new StoreCtor({ defaults });
     // 初始化 workDir 默认值
     if (!this.store.get('workDir')) {
       this.store.set('workDir', path.join(app.getPath('userData'), 'tasks'));
