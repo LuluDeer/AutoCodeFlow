@@ -7,7 +7,7 @@ dotenv.config({ path: path.resolve(__dirname, '..', '.env') });
 // third-party dependencies may use the Web Crypto global; executor code
 // itself uses node:crypto randomUUID directly)
 if (!globalThis.crypto) {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires, @typescript-eslint/no-require-imports -- crypto polyfill, CJS require needed
+  // eslint-disable-next-line @typescript-eslint/no-require-imports -- crypto polyfill, CJS require needed
   const nodeCrypto = require('crypto');
   (globalThis as any).crypto = nodeCrypto.webcrypto ?? nodeCrypto;
 }

@@ -17,7 +17,7 @@ function loadModule(workDir: string): FileLoggerModule {
   jest.mock('./config', () => ({
     config: { workDir: mockWorkDir, logRetentionDays: 7 },
   }));
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
+
   return require('./file-logger') as FileLoggerModule;
 }
 
@@ -30,7 +30,7 @@ function loadModuleWithWorkDirGetter(getWorkDir: () => string): FileLoggerModule
   jest.mock('./config', () => ({
     config: { get workDir() { return mockGetWorkDir(); }, logRetentionDays: 7 },
   }));
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
+
   return require('./file-logger') as FileLoggerModule;
 }
 

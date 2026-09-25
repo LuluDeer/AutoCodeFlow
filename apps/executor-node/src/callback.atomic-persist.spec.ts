@@ -27,7 +27,7 @@ let mockFsRename: typeof fs.renameSync | null = null;
 const realFs = jest.requireActual('fs') as typeof fs;
 
 jest.mock('fs', () => {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
+
   const actual = jest.requireActual('fs') as typeof fs;
   return new Proxy(actual, {
     get(target, prop) {
@@ -52,7 +52,7 @@ function loadCallbackModule(mockWorkDir: string): CallbackModule {
   jest.doMock('./logger', () => ({
     logger: { debug: jest.fn(), info: jest.fn(), warn: jest.fn(), error: jest.fn() },
   }));
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
+
   return require('./callback') as CallbackModule;
 }
 

@@ -297,7 +297,7 @@ describe('POST /api/execute', () => {
   it('returns 503 when disk usage is critically full (P2 watermark)', async () => {
     // 磁盘水位闸门（file-logger.diskUsagePercent，默认 mock 返回 0=无压力）：
     // 临界水位（≥95%）下任何新任务都被拒绝，且不触碰容量计数。
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
+
     const fileLoggerMock = require('../file-logger') as {
       diskUsagePercent: jest.Mock;
       DISK_CRITICAL_PERCENT: number;
@@ -313,7 +313,7 @@ describe('POST /api/execute', () => {
   });
 
   it('NETOPT-9-1: returns 503 during the shutdown-drain window and never touches the capacity ledger', async () => {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
+
     const shutdownState = require('../shutdown-state') as {
       setExecutorShuttingDown: (v: boolean) => void;
       resetShutdownStateForTest: () => void;

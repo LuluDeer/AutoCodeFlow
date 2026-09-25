@@ -51,7 +51,8 @@ const protocol = JSON.parse(
  * 让它红，那就防不住真正的漂移）。
  */
 
-const SCHEMAS: Record<string, { safeParse: (v: unknown) => { success: boolean; error?: { issues: { path: (string | number)[] }[] } } }> = {
+// zod v4：issue.path 是 PropertyKey[]（含 symbol），这里按使用面放宽。
+const SCHEMAS: Record<string, { safeParse: (v: unknown) => { success: boolean; error?: { issues: { path: (string | number | symbol)[] }[] } } }> = {
   TaskConfig: TaskConfigSchema,
   ExecuteRequest: ExecuteRequestSchema,
   ConfigReloadRequest: ConfigReloadRequestSchema,

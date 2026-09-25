@@ -131,7 +131,7 @@ describe('executor-node config npmRegistryToken (改动3)', () => {
 describe('executor-node EXECUTOR_VERSION single source (E-37)', () => {
   it('equals package.json version (no second hand-maintained copy)', async () => {
     const { EXECUTOR_VERSION } = await import('./config');
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
+
     const pkg = require('../package.json') as { version?: string };
 
     expect(pkg.version).toBeTruthy();
@@ -145,7 +145,7 @@ describe('executor-node EXECUTOR_VERSION single source (E-37)', () => {
     jest.resetModules();
     jest.doMock('../package.json', () => ({ version: '9.9.9' }));
     try {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
+
       const { EXECUTOR_VERSION } = require('./config') as { EXECUTOR_VERSION: string };
       expect(EXECUTOR_VERSION).toBe('9.9.9');
     } finally {

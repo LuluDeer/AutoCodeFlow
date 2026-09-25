@@ -19,7 +19,7 @@ function loadCallbackModule(callbackDir: string): CallbackModule {
   jest.mock('./logger', () => ({
     logger: { debug: jest.fn(), info: jest.fn(), warn: jest.fn(), error: jest.fn() },
   }));
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
+
   return require('./callback') as CallbackModule;
 }
 
