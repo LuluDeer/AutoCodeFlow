@@ -66,9 +66,37 @@ export const SPACE_TOKENS = {
   '3xl': '64px',
 } as const;
 
+/**
+ * 布局尺寸令牌：头部高度与由它派生的滚动留白。
+ *
+ * 为什么单独收口：`88` 此前以字面量散落在 6 处（TaskFormPage 三段分区的
+ * `scrollMarginTop`、两个已拆出区块组件，外加锚点条的 `top`）。它并非随手取的
+ * 数——= 头部高度 56 + 上下留白，两者必须同步改，否则锚点跳转会被吸顶头部
+ * 盖住一截。MainLayout 里 56 还有 3 处耦合使用（logo 按钮、Header、
+ * Content 的 minHeight 计算），改头部高度时这几处要一起动。
+ */
+export const LAYOUT_TOKENS = {
+  /** MainLayout 头部高度（px） */
+  headerHeight: 56,
+  /** 锚点区块的滚动留白（px）：headerHeight + 呼吸空间，防吸顶头部遮挡标题 */
+  anchorScrollOffset: 88,
+  /** MainLayout 侧栏展开宽度（px） */
+  siderWidth: 220,
+} as const;
+
+/**
+ * 卡片圆角（px）。
+ *
+ * ConfigProvider 的全局 `borderRadius` 是 8，而卡片历史上被逐张覆写成 10
+ * （约 18 处、多为 DashboardPage）——两者并存造成"同页面两种圆角"。此处把
+ * 卡片圆角显式命名为令牌：新卡片引用它，避免继续散落字面量。
+ * 注：若要彻底统一，正解是在 buildAntdTheme 里加 `components.Card.borderRadius`
+ * 并删掉各页覆写；本令牌是渐进收敛的第一步（不改变现有视觉）。
+ */
+export const CARD_RADIUS = 10;
+
 /** MASTER.md §Shadow Depths */
-export const SHADOW_TOKENS = {
-  sm: '0 1px 2px rgba(0, 0, 0, 0.05)',
+export const SHADOW_TOKENS = {  sm: '0 1px 2px rgba(0, 0, 0, 0.05)',
   md: '0 4px 6px rgba(0, 0, 0, 0.1)',
   lg: '0 10px 15px rgba(0, 0, 0, 0.1)',
   xl: '0 20px 25px rgba(0, 0, 0, 0.15)',

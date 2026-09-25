@@ -101,6 +101,7 @@ import TaskFormParamsSection from '../components/task-form/TaskFormParamsSection
 import TaskFormGlueSection from '../components/task-form/TaskFormGlueSection';
 import { useTranslation } from 'react-i18next';
 import '../i18n';
+import { LAYOUT_TOKENS } from '../theme/tokens';
 
 const { Text } = Typography;
 
@@ -970,8 +971,15 @@ export default function TaskFormPage() {
   const sectionTitleStyle = { margin: '0 0 4px' };
 
   return (
-    // UI 打磨（用户反馈）：去掉 maxWidth 1080——上限在宽屏右侧留大片空白，
-    // 与 settings 等整宽页不一致；表单改随内容区全宽伸缩
+    // FORM-WIDTH-01（修订）：内容列的 1080px 上限**当前生效**，见下方内容列
+    // （`maxWidth: 1080`）与 `top: 88` 锚点条的说明。
+    //
+    // 该上限经历了一个来回，此处曾留下与实际代码相反的注释，特此记清楚：
+    //   48e4909b 引入 1080 → 4e0206aa 因「宽屏右侧留白过大、与整宽页不一致」
+    //   移除 → f84accc6 重新加回。加回的理由是移除后 1536px+ 视口下单行输入框
+    //   被拉伸到近 1500px，可读性与扫视效率明显变差。
+    // 因此这不是"忘了删的旧限制"，而是权衡后保留的现行设计；若要再次放开，
+    // 应连同本注释与 FORM-WIDTH-01 一起改，避免第二处矛盾。
     <div>
       {/* UI-03：页头标准化（原 Typography.Title 区块迁入 PageHeader，面包屑语义=任务→新建/编辑；
           原返回按钮保留于 extra 首位，行为不变） */}
@@ -1007,7 +1015,7 @@ export default function TaskFormPage() {
             width: 160,
             flexShrink: 0,
             position: 'sticky',
-            top: 88,
+            top: LAYOUT_TOKENS.anchorScrollOffset,
             // G-4：宽屏（≥lg）显示锚点条，窄屏隐藏。断点逻辑内联自洽，
             // 不再与外部 CSS 争夺 display 优先级（此前硬编码 none 会覆盖任何媒体查询）。
             display: screens.lg ? 'block' : 'none',
@@ -1041,7 +1049,9 @@ export default function TaskFormPage() {
 
         {/* FORM-WIDTH-01：内容列限宽 1080px——此前输入框在 1536px+ 视口下全宽
             拉伸（单行输入近 1500px），可读性与扫视效率差。锚点条不受影响；
-            Glue 编辑器在此宽度下同样可用。 */}
+            Glue 编辑器在此宽度下同样可用。
+            注：该上限曾被 4e0206aa 移除、f84accc6 加回（见页面顶部 return 处
+            的完整沿革注释）；当前**保留**，改动前请同步那处说明。 */}
         <div style={{ flex: 1, minWidth: 0, maxWidth: 1080 }}>
           <Form
             form={form}
@@ -1054,7 +1064,7 @@ export default function TaskFormPage() {
             }}
           >
             {/* 分区一：基本配置（原 step 0） */}
-            <div id={SECTION_IDS[0]} data-testid="section-basic" role="region" aria-label={t('taskForm.section.basic')} style={{ scrollMarginTop: 88 }}>
+            <div id={SECTION_IDS[0]} data-testid="section-basic" role="region" aria-label={t('taskForm.section.basic')} style={{ scrollMarginTop: LAYOUT_TOKENS.anchorScrollOffset }}>
               <Typography.Title level={5} style={sectionTitleStyle}>{t('taskForm.section.basic')}</Typography.Title>
               <Card style={{ marginBottom: 20 }}>
                 <Form.Item
@@ -1291,7 +1301,7 @@ export default function TaskFormPage() {
             </div>
 
             {/* 分区二：触发与告警（原 step 1 上半 + step 2 告警/runbook/参数） */}
-            <div id={SECTION_IDS[1]} data-testid="section-trigger" role="region" aria-label={t('taskForm.section.trigger')} style={{ scrollMarginTop: 88 }}>
+            <div id={SECTION_IDS[1]} data-testid="section-trigger" role="region" aria-label={t('taskForm.section.trigger')} style={{ scrollMarginTop: LAYOUT_TOKENS.anchorScrollOffset }}>
               <Typography.Title level={5} style={sectionTitleStyle}>{t('taskForm.section.trigger')}</Typography.Title>
               <Card style={{ marginBottom: 20 }}>
                 <Form.Item name="triggerType" label={t('taskForm.field.triggerType')}>
@@ -1458,7 +1468,7 @@ export default function TaskFormPage() {
             </div>
 
             {/* 分区三：执行器策略与超时重试（原 step 1 下半） */}
-            <div id={SECTION_IDS[2]} data-testid="section-executor" role="region" aria-label={t('taskForm.section.executor')} style={{ scrollMarginTop: 88 }}>
+            <div id={SECTION_IDS[2]} data-testid="section-executor" role="region" aria-label={t('taskForm.section.executor')} style={{ scrollMarginTop: LAYOUT_TOKENS.anchorScrollOffset }}>
               <Typography.Title level={5} style={sectionTitleStyle}>{t('taskForm.section.executor')}</Typography.Title>
               <Card style={{ marginBottom: 20 }}>
                 <Form.Item

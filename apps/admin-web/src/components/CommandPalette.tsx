@@ -49,6 +49,7 @@ import type { TFunction } from 'i18next';
 import '../i18n';
 import { Input, Modal, Typography, theme } from 'antd';
 import { message } from '../utils/toast';
+import { LAYOUT_TOKENS } from '../theme/tokens';
 import type { InputRef } from 'antd';
 import {
   AppstoreOutlined,
@@ -804,7 +805,7 @@ export default function CommandPalette({ open, onOpenChange }: CommandPalettePro
       width={560}
       destroyOnHidden
       closable={false}
-      style={{ top: 88 }}
+      style={{ top: LAYOUT_TOKENS.anchorScrollOffset }}
       styles={{
         header: { padding: 0, marginBottom: 0, background: 'transparent', borderBottom: 'none' },
         body: { paddingTop: 12 },

@@ -10,6 +10,7 @@ import { useTranslation } from 'react-i18next';
 import '../../i18n';
 import ParamsEditor from '../ParamsEditor';
 import SecretsEditor from '../SecretsEditor';
+import { LAYOUT_TOKENS } from '../../theme/tokens';
 
 const TITLE_STYLE = { margin: '0 0 4px' } as const;
 
@@ -20,7 +21,7 @@ export default function TaskFormParamsSection({ secretsExisting }: {
   const { t } = useTranslation();
 
   return (
-    <div id="sec-params" data-testid="section-params" role="region" aria-label={t('taskForm.section.params')} style={{ scrollMarginTop: 88 }}>
+    <div id="sec-params" data-testid="section-params" role="region" aria-label={t('taskForm.section.params')} style={{ scrollMarginTop: LAYOUT_TOKENS.anchorScrollOffset }}>
       <Typography.Title level={5} style={TITLE_STYLE}>{t('taskForm.section.params')}</Typography.Title>
       <Card style={{ marginBottom: 20 }}>
         <Alert

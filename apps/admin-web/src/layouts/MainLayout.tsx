@@ -34,7 +34,7 @@ import CommandPalette from '../components/CommandPalette';
 import { isMacPlatform, searchShortcutHint } from './shortcut-hint';
 import { useThemeStore } from '../theme/store';
 // D-P2-16（设计审计）：品牌渐变唯一事实源（Logo / 用户头像共用）
-import { BRAND_GRADIENT } from '../theme/tokens';
+import { BRAND_GRADIENT, LAYOUT_TOKENS } from '../theme/tokens';
 import type { ThemeMode } from '../theme/store';
 // BELL-01：通知铃升级为近期失败速览面板（组件内含未读红点逻辑）
 import NotificationBell from '../components/NotificationBell';
@@ -451,7 +451,7 @@ export default function MainLayout() {
         collapsed={collapsed}
         onCollapse={setCollapsed}
         trigger={null}
-        width={220}
+        width={LAYOUT_TOKENS.siderWidth}
         style={{
           background: token.colorBgContainer,
           borderRight: `1px solid ${token.colorBorderSecondary}`,
@@ -467,7 +467,7 @@ export default function MainLayout() {
           onClick={() => nav('/dashboard')}
           style={{
             width: '100%',
-            height: 56,
+            height: LAYOUT_TOKENS.headerHeight,
             display: 'flex',
             alignItems: 'center',
             padding: collapsed ? '0 24px' : '0 20px',
@@ -558,7 +558,7 @@ export default function MainLayout() {
             alignItems: 'center',
             justifyContent: 'space-between',
             gap: 8,
-            height: 56,
+            height: LAYOUT_TOKENS.headerHeight,
             position: 'sticky',
             top: 0,
             zIndex: 100,
@@ -694,7 +694,7 @@ export default function MainLayout() {
           style={{
             padding: '20px 24px',
             background: token.colorBgLayout,
-            minHeight: 'calc(100vh - 56px)',
+            minHeight: `calc(100vh - ${LAYOUT_TOKENS.headerHeight}px)`,
             overflow: 'auto',
           }}
         >
