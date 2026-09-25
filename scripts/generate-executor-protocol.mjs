@@ -279,7 +279,8 @@ function zodExpr(node) {
       break;
     case "object": {
       if (node.properties === null) {
-        expr = "z.record(z.unknown())";
+        // zod v4：z.record 必须显式给出 key schema（v3 的单参数形式已移除）。
+        expr = "z.record(z.string(), z.unknown())";
         break;
       }
       const fields = Object.entries(node.properties).map(([name, child]) => {
@@ -291,8 +292,11 @@ function zodExpr(node) {
         const optional = !node.required.has(name) && !hasDefault;
         return `  ${JSON.stringify(name)}: ${expr}${optional ? ".optional()" : ""},`;
       });
-      expr = `z.object({\n${fields.join("\n")}\n})`;
-      expr += node.additionalProperties ? ".passthrough()" : ".strict()";
+      // zod v4：.strict()/.passthrough() 已废弃，改用等价的
+      // z.strictObject / z.looseObject（语义一致：未知键拒绝/放行）。
+      expr = node.additionalProperties
+        ? `z.looseObject({\n${fields.join("\n")}\n})`
+        : `z.strictObject({\n${fields.join("\n")}\n})`;
       break;
     }
     default:

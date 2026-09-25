@@ -87,7 +87,7 @@ describeIf('interpreters (real uv)', () => {
     expect(path.isAbsolute(rel)).toBe(false);
 
     // 真解释器要能跑，且报出的主次版本与请求相符。
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
+
     const { execFileSync } = require('child_process') as typeof import('child_process');
     const out = execFileSync(bin, ['--version'], { encoding: 'utf8' }).trim();
     expect(out).toMatch(/^Python 3\.12\./);
@@ -146,7 +146,7 @@ describeIf('interpreters (real uv)', () => {
   it('UV_PYTHON_DOWNLOADS=manual blocks implicit downloads in the uv child env', async () => {
     // 这条是"venv 阶段绝不隐式下载"（D8）的底层保证：我们给 uv 的子进程环境里
     // 钉了 UV_PYTHON_DOWNLOADS=manual。这里验证该变量确实能改变 uv 行为。
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
+
     const { execFileSync } = require('child_process') as typeof import('child_process');
     const uv = await resolveUvBin();
 

@@ -30,9 +30,9 @@ jest.mock('./run-command', () => ({
   runCommand: jest.fn(),
 }));
 
-// eslint-disable-next-line @typescript-eslint/no-var-requires
+
 const { runCommand } = require('./run-command') as { runCommand: jest.Mock };
-// eslint-disable-next-line @typescript-eslint/no-var-requires
+
 const { config } = require('./config') as {
   config: {
     uvPythonInstallDir: string;

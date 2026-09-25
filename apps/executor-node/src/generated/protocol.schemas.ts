@@ -9,7 +9,7 @@
  */
 import { z } from "zod";
 
-export const TaskConfigSchema = z.object({
+export const TaskConfigSchema = z.looseObject({
   "id": z.string().nullable().optional(),
   "name": z.string().nullable().optional(),
   "runtime": z.string().nullable().optional(),
@@ -33,18 +33,18 @@ export const TaskConfigSchema = z.object({
   "glue_source": z.string().nullable().optional(),
   "glueLanguage": z.enum(["python", "javascript", "shell", "glue_python", "glue_node", "glue_shell"]).nullable().optional(),
   "glue_language": z.enum(["python", "javascript", "shell", "glue_python", "glue_node", "glue_shell"]).nullable().optional(),
-}).passthrough();
+});
 export type TaskConfig = z.infer<typeof TaskConfigSchema>;
 
-export const ExecuteRequestSchema = z.object({
+export const ExecuteRequestSchema = z.looseObject({
   "executionId": z.string().regex(new RegExp("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")),
   "task": TaskConfigSchema,
-  "params": z.record(z.unknown()).nullable().optional(),
-  "secrets": z.record(z.unknown()).nullable().optional(),
-}).passthrough();
+  "params": z.record(z.string(), z.unknown()).nullable().optional(),
+  "secrets": z.record(z.string(), z.unknown()).nullable().optional(),
+});
 export type ExecuteRequest = z.infer<typeof ExecuteRequestSchema>;
 
-export const ConfigReloadRequestSchema = z.object({
+export const ConfigReloadRequestSchema = z.looseObject({
   "maxConcurrentTasks": z.number().int().min(1).optional(),
   "taskTimeoutSeconds": z.number().int().min(1).optional(),
   "heartbeatIntervalSeconds": z.number().int().min(5).optional(),
@@ -54,45 +54,45 @@ export const ConfigReloadRequestSchema = z.object({
   "adminApiUrls": z.array(z.string()).optional(),
   "workDir": z.string().optional(),
   "WORK_DIR": z.string().optional(),
-}).passthrough();
+});
 export type ConfigReloadRequest = z.infer<typeof ConfigReloadRequestSchema>;
 
-export const ConfigReloadResponseSchema = z.object({
+export const ConfigReloadResponseSchema = z.looseObject({
   "success": z.boolean(),
   "message": z.string(),
   "updated_fields": z.array(z.string()),
   "ignored_fields": z.array(z.string()),
-}).passthrough();
+});
 export type ConfigReloadResponse = z.infer<typeof ConfigReloadResponseSchema>;
 
-export const HealthReadyResponseSchema = z.object({
+export const HealthReadyResponseSchema = z.looseObject({
   "status": z.enum(["ready", "not_ready"]),
   "reason": z.string().optional(),
-}).passthrough();
+});
 export type HealthReadyResponse = z.infer<typeof HealthReadyResponseSchema>;
 
-export const KillResponseSchema = z.object({
+export const KillResponseSchema = z.strictObject({
   "ok": z.boolean(),
-}).strict();
+});
 export type KillResponse = z.infer<typeof KillResponseSchema>;
 
-export const LogsResponseSchema = z.object({
+export const LogsResponseSchema = z.strictObject({
   "lines": z.array(z.string()),
   "totalLines": z.number().int().min(0),
   "hasMore": z.boolean(),
-}).strict();
+});
 export type LogsResponse = z.infer<typeof LogsResponseSchema>;
 
-export const ControlCommandSchema = z.object({
+export const ControlCommandSchema = z.looseObject({
   "commandId": z.string().regex(new RegExp("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")),
   "type": z.enum(["deploy", "app-stop", "app-uninstall", "config-reload", "kill-execution", "update-package"]),
-  "payload": z.record(z.unknown()).optional(),
+  "payload": z.record(z.string(), z.unknown()).optional(),
   "issuedAt": z.number().int().optional(),
   "schemaVersion": z.number().int().optional(),
-}).passthrough();
+});
 export type ControlCommand = z.infer<typeof ControlCommandSchema>;
 
-export const CommandResultSchema = z.object({
+export const CommandResultSchema = z.looseObject({
   "commandId": z.string(),
   "type": z.enum(["deploy", "app-stop", "app-uninstall", "config-reload", "kill-execution", "update-package"]),
   "ok": z.boolean(),
@@ -100,5 +100,5 @@ export const CommandResultSchema = z.object({
   "error": z.string().nullable().optional(),
   "durationMs": z.number().int().min(0).optional(),
   "address": z.string().optional(),
-}).passthrough();
+});
 export type CommandResult = z.infer<typeof CommandResultSchema>;

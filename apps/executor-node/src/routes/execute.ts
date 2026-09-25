@@ -2063,7 +2063,9 @@ function killBody(ok: boolean): { ok: boolean } {
   return payload;
 }
 
-executeRouter.post('/executions/:executionId/kill', (req: Request, res: Response) => {
+// @types/express 5：ParamsDictionary 的值放宽为 string | string[]（path-to-regexp 8
+// 的重复段参数才会是数组）；本路由是单一命名段，显式收窄为 string。
+executeRouter.post('/executions/:executionId/kill', (req: Request<{ executionId: string }>, res: Response) => {
   const { executionId } = req.params;
   const entry = liveExecutions.get(executionId);
   if (!entry) {

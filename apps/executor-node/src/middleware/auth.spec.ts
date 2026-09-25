@@ -14,7 +14,7 @@ jest.mock('axios');
  * admin-http-agent 自身的用例。
  */
 jest.mock('../admin-http-agent', () => {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+
   const realAxios = require('axios');
   const automocked = realAxios.default ?? realAxios;
   return {
