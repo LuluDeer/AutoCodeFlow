@@ -60,9 +60,13 @@ const QUESTION_CONTEXT_MAX_BYTES = 16_000;
 /** 完成回报的 resultJson 大小上限。 */
 const RESULT_MAX_BYTES = 64_000;
 
-/** mediaRefs 只接受平台内路径——外网 URL 一律拒绝（11 §5.2 SSRF 转嫁）。 */
+/**
+ * mediaRefs 只接受平台内路径——外网 URL 一律拒绝（11 §5.2 SSRF 转嫁）。
+ * `agent-collab/media`（P7b）：执行器经媒体回传端点上传的截图/录屏，
+ * 返回的 mediaPath 即此形态。
+ */
 const PLATFORM_MEDIA_PATH_RE =
-  /^\/api\/(artifacts|executions|executor-package)\//;
+  /^\/api\/(artifacts|executions|executor-package|agent-collab\/media)\//;
 
 export interface DraftSopInput {
   slug: string;
