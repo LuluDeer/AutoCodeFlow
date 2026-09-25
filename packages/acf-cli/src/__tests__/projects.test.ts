@@ -4,7 +4,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-vi.mock('../client', () => ({
+vi.mock('../client.js', () => ({
   get: vi.fn(),
   post: vi.fn(),
   put: vi.fn(),
@@ -12,8 +12,8 @@ vi.mock('../client', () => ({
   formatApiError: vi.fn((e: unknown) => String(e)),
 }));
 
-import { get } from '../client';
-import { projectsCommand } from '../commands/projects';
+import { get } from '../client.js';
+import { projectsCommand } from '../commands/projects.js';
 
 const mockedGet = vi.mocked(get);
 
