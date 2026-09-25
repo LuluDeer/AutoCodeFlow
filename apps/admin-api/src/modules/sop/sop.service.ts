@@ -11,8 +11,9 @@ import { InjectRepository } from "@nestjs/typeorm";
 import { Cron } from "@nestjs/schedule";
 import { InjectQueue } from "@nestjs/bullmq";
 import type { Queue } from "bullmq";
-import { Repository, In } from "typeorm";
+import { Repository, In, IsNull } from "typeorm";
 import { SchedulerService } from "../scheduler/scheduler.service";
+import { ExecutorService } from "../executor/executor.service";
 import {
   evaluateAssignmentTimeouts,
   CLAIM_TTL_DEFAULT_MS,
@@ -109,6 +110,7 @@ export class SopService {
     private readonly scheduler: SchedulerService,
     @InjectQueue(AGENT_QUEUE_NAME)
     private readonly agentQueue: Queue<AgentJobData>,
+    private readonly executors: ExecutorService,
   ) {}
 
   // ── 起草与发布（P5）────────────────────────────────────────────
@@ -239,8 +241,7 @@ export class SopService {
 
   /**
    * 指派给执行器。只有 published 的 SOP 可指派；maxRounds 指派时快照。
-   * executorId 由调用方解析（ADMIN controller / collab controller 已持有
-   * 执行器身份），本服务保持不依赖 ExecutorService（依赖单向）。
+   * 能力来自独立 Agent 列且必须处于租约内，旧 runtime capabilities 不授权。
    */
   async assign(input: {
     sopId: string;
@@ -259,6 +260,10 @@ export class SopService {
     if (!v) throw new NotFoundException(`SOP ${sop.slug} 无版本 ${version}`);
 
     const fm = v.frontMatterJson as unknown as SopFrontMatter;
+    const capabilities = await this.executors.getAgentCapabilities(
+      input.executorId,
+    );
+    this.requireSopCapabilities(capabilities, fm);
     const assignment = this.assignments.create({
       sopId: sop.id,
       sopVersion: version,
@@ -279,13 +284,17 @@ export class SopService {
    * 指派条目只在**首次领取**时返回（pulledAt IS NULL），同时快照能力与
    * 权限档位——之后 SOP 通过 complete/progress 流转，不重复下发全量正文；
    * 执行器重启丢状态时可带 `resendAssignments=true` 强制重发。
-   * 澄清回复在 resolution 落定后按游标（lastReplyDeliveredAt）投递。
+   * 澄清回复等 P7d 的 Host 消费与 ACK 实现后再投递；此阶段保留游标。
    */
   async pollPending(input: {
     executorId: string;
     resendAssignments?: boolean;
   }): Promise<unknown[]> {
     const items: unknown[] = [];
+    const capabilities = await this.executors.getAgentCapabilities(
+      input.executorId,
+    );
+    if (!capabilities.includes("agent:sop")) return items;
 
     const activeStatuses: SopAssignment["status"][] = [
       "assigned",
@@ -297,68 +306,59 @@ export class SopService {
       order: { createdAt: "ASC" },
     });
 
+    let assignmentSent = false;
     for (const a of open) {
       const firstPull = a.pulledAt === null;
-      if (firstPull || input.resendAssignments) {
-        const payload = await this.assignmentPayload(a);
-        if (payload) items.push(payload);
-      }
-      if (firstPull) {
-        await this.assignments.update(
-          { id: a.id },
-          {
-            pulledAt: new Date(),
-            // 领取即进入执行态——执行器没带 targetAgentSessionId 也照常流转
-            status: a.status === "assigned" ? "in_progress" : a.status,
-          },
-        );
-      }
-    }
-
-    // 澄清回复投递（游标：lastReplyDeliveredAt）
-    const cursorIds = open.map((a) => a.id);
-    if (cursorIds.length > 0) {
-      const answered = await this.clarifications
-        .createQueryBuilder("c")
-        .where("c.assignmentId IN (:...ids)", { ids: cursorIds })
-        .andWhere("c.resolution IS NOT NULL")
-        .orderBy("c.createdAt", "ASC")
-        .getMany();
-      for (const a of open) {
-        const last = a.lastReplyDeliveredAt
-          ? a.lastReplyDeliveredAt.getTime()
-          : 0;
-        for (const c of answered) {
-          if (c.assignmentId !== a.id) continue;
-          if (c.updatedAt.getTime() <= last) continue;
-          items.push({
-            kind: "clarification_reply",
-            clarificationId: c.clientClarificationId ?? c.id,
-            assignmentId: a.id,
-            resolution: c.resolution,
-            newSopVersion: c.newSopVersion,
-            answer: c.answer,
-          });
-          await this.assignments.update(
-            { id: a.id },
-            { lastReplyDeliveredAt: c.updatedAt },
-          );
+      if (!assignmentSent && (firstPull || input.resendAssignments)) {
+        const payload = await this.assignmentPayload(a, capabilities);
+        if (payload) {
+          if (firstPull) {
+            const claim = await this.assignments.update(
+              { id: a.id, pulledAt: IsNull() },
+              {
+                pulledAt: new Date(),
+                // 领取即进入执行态——执行器没带 targetAgentSessionId 也照常流转
+                status: a.status === "assigned" ? "in_progress" : a.status,
+              },
+            );
+            // 两个 poll 可并发读取同一份待领快照；只有 CAS 胜者能投递。
+            if (claim.affected !== 1) continue;
+          }
+          items.push(payload);
+          assignmentSent = true;
+          continue;
         }
       }
+      // resend 是一次性的。未在本轮投递的旧单重新排队，由后续普通 poll
+      // 逐个送出；否则 Host 只处理第一单，其余已领取单会永久丢失。
+      if (input.resendAssignments && !firstPull) {
+        await this.assignments.update({ id: a.id }, { pulledAt: null });
+      }
     }
 
+    // P7d：Host 尚未消费 clarification_reply，也没有 ACK。现在投递并推进
+    // lastReplyDeliveredAt 会永久丢回复；保留回复行与游标，待双端 ACK 实现。
     return items;
   }
 
   /** 首次领取时下发的指派载荷（含 SOP 全量 + contentHash）。 */
   private async assignmentPayload(
     a: SopAssignment,
+    capabilities: string[],
   ): Promise<Record<string, unknown> | null> {
     const sop = await this.sops.findOne({ where: { id: a.sopId } });
     const v = await this.versions.findOne({
       where: { sopId: a.sopId, version: a.sopVersion },
     });
     if (!sop || !v) return null;
+    if (
+      !this.hasSopCapabilities(
+        capabilities,
+        v.frontMatterJson as unknown as SopFrontMatter,
+      )
+    ) {
+      return null;
+    }
     return {
       kind: "assignment",
       assignmentId: a.id,
@@ -373,6 +373,26 @@ export class SopService {
       maxRounds: a.maxRounds,
       clarificationRound: a.clarificationRound,
     };
+  }
+
+  private hasSopCapabilities(
+    capabilities: string[],
+    fm: SopFrontMatter,
+  ): boolean {
+    const required = Array.isArray(fm.capabilities) ? fm.capabilities : [];
+    return (
+      capabilities.includes("agent:sop") &&
+      required.every((cap) => capabilities.includes(cap))
+    );
+  }
+
+  private requireSopCapabilities(
+    capabilities: string[],
+    fm: SopFrontMatter,
+  ): void {
+    if (!this.hasSopCapabilities(capabilities, fm)) {
+      throw new ForbiddenException("执行器未声明 SOP 所需的有效 Agent 能力");
+    }
   }
 
   /**
@@ -927,11 +947,6 @@ export class SopService {
     }
     return a;
   }
-
-  /**
-   * 执行器服务不进来：executorId 由调用方解析后传入（collab controller
-   * 鉴权时已持有执行器身份）。保持 sop → agent 单向、不依赖 executor。
-   */
 
   /** 不可信文本的最低限度清洗：凭据样式串打码（与 S-10 精神同口径）。 */
   private sanitizeUntrusted(text: string): string {

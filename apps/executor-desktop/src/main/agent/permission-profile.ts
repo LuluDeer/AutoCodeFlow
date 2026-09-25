@@ -29,7 +29,7 @@ export type CodeExecutionMode = (typeof CODE_EXECUTION_MODES)[number];
 export const SANDBOX_BACKEND_MODES = ['none', 'process', 'container', 'vm'] as const;
 export type SandboxBackendMode = (typeof SANDBOX_BACKEND_MODES)[number];
 
-/** 本机登录态访问档位。P7a 只实现 none（app-scoped/session 留 P7c/P7d）。 */
+/** 本机登录态访问档位。P7c 开放 app-scoped；session 仍不实现。 */
 export const HOST_ACCESS_MODES = ['none', 'app-scoped', 'session'] as const;
 export type HostAccessMode = (typeof HOST_ACCESS_MODES)[number];
 
@@ -64,7 +64,7 @@ const SANDBOX_BACKEND_SPEC: AxisSpec<SandboxBackendMode> = {
 };
 const HOST_ACCESS_SPEC: AxisSpec<HostAccessMode> = {
   rank: ['none', 'app-scoped', 'session'],
-  implemented: ['none'],
+  implemented: ['none', 'app-scoped'],
 };
 const TASK_EXECUTION_SPEC: AxisSpec<TaskExecutionMode> = {
   rank: ['deploy-only', 'isolated-runner'],
@@ -98,7 +98,7 @@ export interface EffectiveAgentPermissions {
   sandboxBackend: SandboxBackendMode;
   hostAccess: HostAccessMode;
   taskExecution: TaskExecutionMode;
-  /** hostAccess=app-scoped 时的白名单（P7a 恒空——档位未实现）。 */
+  /** hostAccess=app-scoped 时的应用白名单。 */
   allowedApps: string[];
   allowedDomains: string[];
   /** 每个轴的最终值来自本地还是中台（审计用：中台下调要留痕）。 */
@@ -148,6 +148,19 @@ function pickStringList(value: unknown, max: number): string[] {
     .slice(0, max);
 }
 
+/** app-scoped 仅接受进程名，不接受路径、通配符或命令。 */
+export function normalizeAllowedApp(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim().toLowerCase();
+  const name = trimmed.endsWith('.exe') ? trimmed.slice(0, -4) : trimmed;
+  return /^[a-z0-9][a-z0-9._-]{0,63}$/.test(name) ? name : null;
+}
+
+function pickAllowedApps(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.map(normalizeAllowedApp).filter((v): v is string => v !== null))].slice(0, 32);
+}
+
 function clampToImplemented<K extends string>(v: K, spec: AxisSpec<K>, fallback: K): K {
   return spec.implemented.includes(v) ? v : fallback;
 }
@@ -189,7 +202,7 @@ export function resolveLocalPermissions(
     sandboxBackend,
     hostAccess,
     taskExecution,
-    allowedApps: hostAccess === 'none' ? [] : pickStringList(input?.allowedApps, 32),
+    allowedApps: hostAccess === 'app-scoped' ? pickAllowedApps(input?.allowedApps) : [],
     allowedDomains: pickStringList(input?.allowedDomains, 64),
     source: {
       preset: 'local',
@@ -264,7 +277,7 @@ export function mergeWithCenterPolicy(
       ...merged,
       preset: effectivePreset,
       allowedDomains: local.allowedDomains,
-      allowedApps: local.allowedApps,
+      allowedApps: merged.hostAccess === 'app-scoped' ? local.allowedApps : [],
       source: clamped ? allCenterClamped() : local.source,
     };
   }
@@ -298,6 +311,7 @@ function mergeAxes(
     sandboxBackend: clamp(cap.sandboxBackend, local.sandboxBackend, SANDBOX_BACKEND_SPEC.rank, SANDBOX_BACKEND_SPEC.implemented, 'none'),
     hostAccess: clamp(cap.hostAccess, local.hostAccess, HOST_ACCESS_SPEC.rank, HOST_ACCESS_SPEC.implemented, 'none'),
     taskExecution: clamp(cap.taskExecution, local.taskExecution, TASK_EXECUTION_SPEC.rank, TASK_EXECUTION_SPEC.implemented, 'deploy-only'),
+    allowedApps: clamp(cap.hostAccess, local.hostAccess, HOST_ACCESS_SPEC.rank, HOST_ACCESS_SPEC.implemented, 'none') === 'app-scoped' ? local.allowedApps : [],
   };
 }
 

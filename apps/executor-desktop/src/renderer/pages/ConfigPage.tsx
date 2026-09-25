@@ -636,6 +636,35 @@ export default function ConfigPage() {
                 <span className="cfg-hint">off 档：Agent 产出代码供人工审阅，交付变成"给人看"</span>
               </div>
 
+              <div className="cfg-field cfg-field-narrow">
+                <label className="cfg-label">本机应用访问（细粒度覆盖，留空跟随预设）</label>
+                <select className="input"
+                  value={String(form.agentHostAccess || '')}
+                  onChange={(e) => set('agentHostAccess', e.target.value)}>
+                  <option value="">（跟随预设：none）</option>
+                  <option value="none">none —— 不操作已登录应用</option>
+                  <option value="app-scoped">app-scoped —— 仅操作下方白名单应用（Windows）</option>
+                  <option value="session" disabled>session —— 任意本机应用（未实现）</option>
+                </select>
+                <span className="cfg-hint">
+                  GUI 操作需要 SOP 声明 gui、应用进程名命中白名单，且中台权限上限允许。
+                  普通权限的 Agent 无法操作管理员权限窗口。
+                </span>
+              </div>
+
+              <div className="cfg-field">
+                <label className="cfg-label">可操作应用（进程名，逗号或换行分隔）</label>
+                <textarea className="input" rows={2}
+                  placeholder="notepad, excel"
+                  value={Array.isArray(form.agentAllowedApps) ? (form.agentAllowedApps as string[]).join(', ') : ''}
+                  onChange={(e) => set('agentAllowedApps',
+                    e.target.value.split(/[\n,]/).map((s) => s.trim()).filter(Boolean))} />
+                <span className="cfg-hint">
+                  只填进程名，如 notepad；不接受路径或通配符。空白名单时 GUI 能力不可用。
+                  每个动作都会重新校验目标窗口的进程。
+                </span>
+              </div>
+
               <div className="cfg-field">
                 <label className="cfg-label">浏览器可达域名（可选，逗号或换行分隔）</label>
                 <textarea className="input" rows={3}

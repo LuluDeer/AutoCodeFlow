@@ -1,11 +1,21 @@
 import { Tray, Menu, nativeImage, app } from 'electron';
 import * as path from 'path';
 import { ExecutorStatus } from './executor-process';
+import { agentActivityLabel, agentOutcomeLabel, type AgentStatusSnapshot } from './agent-status-view';
 import log from './logger';
 
 export class TrayManager {
   private tray: Tray | null = null;
   private currentStatus: ExecutorStatus = 'stopped';
+  private agentStatus: AgentStatusSnapshot = {
+    enabled: false,
+    polling: false,
+    working: false,
+    lastAssignmentId: null,
+    lastOutcome: null,
+    processed: 0,
+    lastEffectiveProfile: null,
+  };
 
   // 这些回调由 index.ts 注入，避免循环引用
   onStart: (() => Promise<void>) | null = null;
@@ -19,7 +29,7 @@ export class TrayManager {
   init(): void {
     const icon = this.getIcon('stopped');
     this.tray = new Tray(icon);
-    this.tray.setToolTip('AutoCodeFlow Executor');
+    this.updateTooltip();
     this.rebuildMenu();
 
     // 左键单击打开状态窗口
@@ -32,14 +42,32 @@ export class TrayManager {
     this.currentStatus = status;
     this.tray?.setImage(this.getIcon(status));
 
+    this.updateTooltip();
+    this.rebuildMenu();
+  }
+
+  /** Agent 只改菜单和提示；托盘图标仍专指执行器连接状态。 */
+  setAgentStatus(status: AgentStatusSnapshot): void {
+    if (
+      this.agentStatus.enabled === status.enabled &&
+      this.agentStatus.polling === status.polling &&
+      this.agentStatus.working === status.working &&
+      this.agentStatus.processed === status.processed &&
+      this.agentStatus.lastOutcome === status.lastOutcome
+    ) return;
+    this.agentStatus = status;
+    this.updateTooltip();
+    this.rebuildMenu();
+  }
+
+  private updateTooltip(): void {
     const tooltips: Record<ExecutorStatus, string> = {
       online:  'AutoCodeFlow Executor — 在线 ●',
       offline: 'AutoCodeFlow Executor — 离线 ○',
       pending: 'AutoCodeFlow Executor — 启动中 ◐',
       stopped: 'AutoCodeFlow Executor — 已停止',
     };
-    this.tray?.setToolTip(tooltips[status]);
-    this.rebuildMenu();
+    this.tray?.setToolTip(`${tooltips[this.currentStatus]}；Agent：${agentActivityLabel(this.agentStatus)}`);
   }
 
   rebuildMenu(): void {
@@ -56,6 +84,8 @@ export class TrayManager {
 
     const menu = Menu.buildFromTemplate([
       { label: `状态: ${statusLabel}`, enabled: false },
+      { label: `Agent: ${agentActivityLabel(this.agentStatus)}`, enabled: false },
+      { label: `Agent 已处理 ${this.agentStatus.processed} 个指派；最近结果：${agentOutcomeLabel(this.agentStatus.lastOutcome)}`, enabled: false },
       { type: 'separator' },
       {
         label: '启动执行器',
