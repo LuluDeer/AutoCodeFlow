@@ -1,4 +1,5 @@
-.PHONY: help dev install infra-up infra-down build start stop restart clean test lint typecheck db-migrate db-seed logs status
+.PHONY: help dev install infra-up infra-down build start stop restart clean test lint typecheck db-migrate db-seed logs status \
+        deploy deploy-source deploy-dry-run doctor selftest-deploy
 
 # ── AutoFlow 开发命令入口 ──────────────────────────────────────
 # 所有命令均可通过 make <target> 调用
@@ -111,6 +112,24 @@ demo-seed-selftest: ## demo-seed 纯函数自检
 
 db-migrate-gen: ## 生成新的迁移文件
 	cd apps/admin-api && npm run migration:generate
+
+# ── 部署（deploy.sh 双模）────────────────────────────────────
+# P0：一键部署脚本。不带 --mode 时默认 docker（与旧 deploy.sh 行为一致）。
+# 详细用法: ./deploy.sh --help
+deploy: ## 部署（Docker 模式，等同旧 ./deploy.sh）
+	./deploy.sh
+
+deploy-source: ## 源码模式部署（生产推荐；需 root）
+	sudo ./deploy.sh --mode source --env production
+
+deploy-dry-run: ## 试跑部署流程（不改系统）
+	./deploy.sh --mode source --env production --dry-run
+
+doctor: ## 环境体检（部署前/排障用）
+	./deploy.sh doctor
+
+selftest-deploy: ## deploy.sh 自检（29 项纯逻辑回归）
+	bash scripts/deploy.selftest.sh
 
 # ── 监控与调试 ────────────────────────────────────────────
 logs: ## 查看所有服务日志

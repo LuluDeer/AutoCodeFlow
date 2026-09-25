@@ -44,7 +44,30 @@ AutoCodeFlow 是一个分布式任务调度与执行平台，支持动态脚本�
 - Docker >= 24 & Docker Compose >= 2.20
 - （本地开发）Node.js >= 20，Python >= 3.11，npm >= 10
 
-### 一键 Docker Compose 启动
+### 一键部署（推荐）
+
+`deploy.sh` 支持**双模部署**——生产端推荐**源码模式**（性能：执行器高频 fork 短命任务，
+容器网络/overlayfs 开销是复利的），开发/试跑用 Docker 模式：
+
+```bash
+# 源码模式（生产推荐，需 root）
+sudo ./deploy.sh --mode source --env production --i-know-its-production
+
+# Docker 模式（试跑）
+./deploy.sh --mode docker --env staging
+
+# 环境体检（部署前/排障）
+./deploy.sh doctor            # 人类可读
+./deploy.sh doctor --json     # 结构化（供 Agent 消费）
+```
+
+> 不带 `--mode` 时默认 `docker`，与旧版行为一致；`-e/--env` 等旧参数仍可用。
+
+8 阶段流水线：预检 → 配置 → 依赖 → 构建 → 基础设施 → 迁移（**迁移前强制备份**）→ 启动 → 验证。
+含 `status` / `health` / `logs` / `restart` / `rollback` 子命令，以及 `--dry-run` 试跑。
+详见 [部署指南](docs/deployment.md)。
+
+### 一键 Docker Compose 启动（手动路线）
 
 ```bash
 # 1. 克隆仓库
@@ -289,6 +312,13 @@ make build         # 构建所有服务镜像
 make test          # 运行所有测试
 make migration     # 运行数据库迁移
 make logs          # 查看服务日志
+
+# P0 一键部署（deploy.sh 双模）
+make deploy          # Docker 模式部署（等同旧 ./deploy.sh）
+make deploy-source   # 源码模式部署（生产推荐，需 root）
+make deploy-dry-run  # 试跑部署流程（不改系统）
+make doctor          # 环境体检
+make selftest-deploy # deploy.sh 自检（29 项回归）
 ```
 
 ## 数据库迁移

@@ -198,14 +198,57 @@ export default () => ({
     ),
   },
   ai: {
-    provider: process.env.AI_PROVIDER || "disabled", // disabled | openai | ollama
+    provider: process.env.AI_PROVIDER || "disabled", // disabled | openai | ollama | qwen
     openaiApiKey: process.env.OPENAI_API_KEY || "",
     openaiModel: process.env.OPENAI_MODEL || "gpt-4o-mini",
     ollamaHost: process.env.OLLAMA_HOST || "http://localhost:11434",
     ollamaModel: process.env.OLLAMA_MODEL || "llama3",
+    // P1（agent-and-deployment）: Qwen / DashScope 多模态（文本 + 图片 + 视频理解）。
+    // 走 OpenAI 兼容端点，故出站走与 openai 分支同一套 SSRF 守卫 + DNS pin。
+    // maxTokens/timeout 独立于 openai 分支——多模态推理的令牌与延迟需求
+    // 与「失败日志分析」（max_tokens=500）完全不同量级，刻意不共享。
+    qwenApiKey: process.env.QWEN_API_KEY || "",
+    qwenBaseUrl:
+      process.env.QWEN_BASE_URL ||
+      "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    qwenModel: process.env.QWEN_MODEL || "qwen-vl-max",
+    qwenMaxTokens: parseInt(process.env.QWEN_MAX_TOKENS || "4096", 10) || 4096,
+    qwenTimeoutMs:
+      parseInt(process.env.QWEN_TIMEOUT_MS || "120000", 10) || 120000,
     // ARCH-31（2026-09-13）: AI 出站私网豁免（语义见 app.module Joi 段注记）。
     // 默认 false 零行为变化——本地 Ollama（默认 localhost:11434）需显式开启。
     allowPrivateNetwork: process.env.AI_ALLOW_PRIVATE_NETWORK === "true",
+  },
+  // P2（agent-and-deployment）: 中台 Agent 运行时。
+  // 预算是**代码层强制**的闸门（不靠 prompt 叮嘱模型节约）——见
+  // agent-budget.service.ts。此处只做 env → 配置映射，逐次调用实时解析。
+  agent: {
+    budget: {
+      maxSteps: parseInt(process.env.AGENT_BUDGET_MAX_STEPS || "20", 10),
+      maxTokens: parseInt(process.env.AGENT_BUDGET_MAX_TOKENS || "200000", 10),
+      wallClockMs: parseInt(
+        process.env.AGENT_BUDGET_WALL_CLOCK_MS || "1800000",
+        10,
+      ),
+      maxToolCalls: parseInt(
+        process.env.AGENT_BUDGET_MAX_TOOL_CALLS || "50",
+        10,
+      ),
+    },
+    // P4: 触发器。事件路径**先过聚合窗口**再起会话（防风暴——一次执行器
+    // 下线会刷出几十条失败事件，逐条触发会让令牌成本与队列都爆炸）。
+    trigger: {
+      enabled: process.env.AGENT_TRIGGER_ENABLED !== "false",
+      cronEnabled: process.env.AGENT_TRIGGER_CRON_ENABLED !== "false",
+      windowMs: parseInt(process.env.AGENT_TRIGGER_WINDOW_MS || "300000", 10),
+      threshold: parseInt(process.env.AGENT_TRIGGER_THRESHOLD || "3", 10),
+    },
+    // P4: 会话通知（设计文档 02 §7.2）。默认开——渠道未配置时各渠道自行
+    // 跳过；「静默会话不通知」的策略在 AgentNotifyService 内部，不受此开关
+    // 影响（关掉的只是「有事说话」那部分）。
+    notify: {
+      enabled: process.env.AGENT_NOTIFY_ENABLED !== "false",
+    },
   },
   // ARCH-31（2026-09-13）: 事件订阅 webhook 出站私网豁免（订阅创建/更新校验
   // 与 outbox 派发前复核共用此开关）。默认 false 零行为变化。

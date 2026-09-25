@@ -31,6 +31,8 @@ import { ExecutorModule } from "./modules/executor/executor.module";
 import { SchedulerModule } from "./modules/scheduler/scheduler.module";
 import { NotificationModule } from "./modules/notification/notification.module";
 import { AiModule } from "./modules/ai/ai.module";
+// P2（agent-and-deployment）：中台 Agent 运行时
+import { AgentModule } from "./modules/agent/agent.module";
 import { MetricsModule } from "./modules/metrics/metrics.module";
 import { SystemConfigModule } from "./modules/config/config.module";
 import { AuditModule } from "./modules/audit/audit.module";
@@ -221,12 +223,59 @@ import { RuntimeModule } from "./modules/runtime/runtime.module";
 
         // AI (optional)
         AI_PROVIDER: Joi.string()
-          .valid("disabled", "openai", "ollama")
+          .valid("disabled", "openai", "ollama", "qwen")
           .default("disabled"),
         OPENAI_API_KEY: Joi.string().allow("").optional(),
         OPENAI_MODEL: Joi.string().default("gpt-4o-mini"),
         OLLAMA_HOST: Joi.string().uri().default("http://localhost:11434"),
         OLLAMA_MODEL: Joi.string().default("llama3"),
+        // P1（agent-and-deployment）: Qwen / DashScope 多模态。
+        // 走 DashScope 的 OpenAI 兼容端点，故复用 openai 分支的请求骨架
+        // （axios + Bearer + SSRF pin + maxRedirects:0）。
+        // 全部可选——provider != qwen 时这些键不生效，存量部署零变化。
+        QWEN_API_KEY: Joi.string().allow("").optional(),
+        QWEN_BASE_URL: Joi.string()
+          .uri()
+          .default("https://dashscope.aliyuncs.com/compatible-mode/v1"),
+        QWEN_MODEL: Joi.string().default("qwen-vl-max"),
+        // 多模态输出上限：**独立于** openai 分支硬编码的 max_tokens=500
+        // （那个是给失败日志分析用的，刻意省成本；多模态推理 500 远不够）。
+        QWEN_MAX_TOKENS: Joi.number().integer().min(1).default(4096),
+        // 视频理解延迟显著高于纯文本（上传 + 推理数十秒），故超时默认 2 分钟。
+        QWEN_TIMEOUT_MS: Joi.number().integer().min(1000).default(120000),
+
+        // P2（agent-and-deployment）: Agent 预算闸门。
+        // 保守默认——Agent 是唯一会主动烧令牌 + 改生产状态的组件，
+        // 宁可它慢/少做，也不可失控（设计文档 02 §5.3）。
+        // 全部可选：不配置即用 DEFAULT_BUDGET，存量部署零变化。
+        AGENT_BUDGET_MAX_STEPS: Joi.number().integer().min(1).default(20),
+        AGENT_BUDGET_MAX_TOKENS: Joi.number().integer().min(1).default(200000),
+        AGENT_BUDGET_WALL_CLOCK_MS: Joi.number()
+          .integer()
+          .min(1000)
+          .default(1800000),
+        AGENT_BUDGET_MAX_TOOL_CALLS: Joi.number().integer().min(1).default(50),
+
+        // P4（agent-and-deployment）: Agent 触发器。
+        // 全部可选，默认「启用 + 5 分钟窗口 + 阈值 3」——保守起步。
+        AGENT_TRIGGER_ENABLED: Joi.string()
+          .valid("true", "false")
+          .default("true"),
+        // 定时巡检（cron 型）单独开关——有些部署只要事件触发，不要周期性消耗。
+        AGENT_TRIGGER_CRON_ENABLED: Joi.string()
+          .valid("true", "false")
+          .default("true"),
+        AGENT_TRIGGER_WINDOW_MS: Joi.number()
+          .integer()
+          .min(1000)
+          .default(300000),
+        AGENT_TRIGGER_THRESHOLD: Joi.number().integer().min(1).default(3),
+
+        // P4（agent-and-deployment）: Agent 会话通知开关。默认开——
+        // 「静默会话不通知」的策略在服务内，渠道未配置时各渠道自行跳过。
+        AGENT_NOTIFY_ENABLED: Joi.string()
+          .valid("true", "false")
+          .default("true"),
 
         // AUTH-04: OIDC SSO（授权码模式）。全部可选——OIDC_ENABLED=false 时
         // 其余键不生效，存量部署零变化。
@@ -586,6 +635,9 @@ import { RuntimeModule } from "./modules/runtime/runtime.module";
     SchedulerModule,
     NotificationModule,
     AiModule,
+    // P2: 单向依赖——AgentModule 依赖其他业务模块，但不被任何业务模块依赖
+    // （Agent 失败绝不影响调度/执行主链，见 agent.module.ts 头注）。
+    AgentModule,
     MetricsModule,
     SystemConfigModule,
     AuditModule,

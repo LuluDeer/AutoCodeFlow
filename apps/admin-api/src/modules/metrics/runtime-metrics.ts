@@ -59,10 +59,43 @@ export type RuntimeCounterName =
   | "autoflow_push_auth_retry_total"
   // ARCH-30: AI 分析服务化——aiAnalysis 落库率三分类（ok=有分析落库 /
   // fail=重试耗尽 fail-open / skipped=provider 未配置或返回空）。
-  | "autoflow_ai_analysis_total";
+  | "autoflow_ai_analysis_total"
+  // P2（agent-and-deployment）：中台 Agent 运行时五项观测。
+  | "autoflow_agent_sessions_total"
+  | "autoflow_agent_tokens_total"
+  | "autoflow_agent_tool_calls_total"
+  | "autoflow_agent_denied_total"
+  | "autoflow_agent_budget_exceeded_total";
 
 /** 计数器标签集（无标签计数器传空对象） */
 export type RuntimeCounterLabels = Readonly<Record<string, string>>;
+
+/**
+ * P2: Agent 指标用的标签取值集合。
+ *
+ * 为什么在这里**本地重复**而不是从 agent 模块 import：metrics 模块位于
+ * 依赖链上游（见 metrics.module.ts 的既有约束——TaskModule 在上游，
+ * 接入 DI 会引入模块环）。引入 agent 模块的常量会造出
+ * metrics → agent 的编译期依赖，而 agent 又依赖 metrics 的 recordRuntime
+ * （运行时值导入，无环）。故此处保持字面量，并由
+ * `agent-metrics-labels.spec.ts` 断言两侧一致——这正是项目
+ * `check-enum-drift` 精神的手工收口（漂移即测试变红）。
+ */
+export const AGENT_KINDS = [
+  "ops_watch",
+  "incident",
+  "sop_authoring",
+  "sop_review",
+  "app_scaffold",
+  "chat",
+] as const;
+
+export const AGENT_TERMINAL_STATUSES = [
+  "succeeded",
+  "failed",
+  "aborted",
+  "budget_exceeded",
+] as const;
 
 export interface RuntimeCounterSpec {
   help: string;
@@ -129,6 +162,69 @@ export const RUNTIME_COUNTERS: Record<RuntimeCounterName, RuntimeCounterSpec> =
         { result: "ok" },
         { result: "fail" },
         { result: "skipped" },
+      ],
+    },
+    // ═══ P2（agent-and-deployment）：中台 Agent 运行时 ═══
+    // 会话终态分布。status 覆盖面与 AgentSessionStatus 对齐——含
+    // budget_exceeded（预算触顶）与 aborted（人工中止），二者是运维关注重点。
+    autoflow_agent_sessions_total: {
+      help: "Agent sessions reaching a terminal status, by kind and status",
+      labelNames: ["kind", "status"],
+      labelValueSets: AGENT_KINDS.flatMap((kind) =>
+        AGENT_TERMINAL_STATUSES.map((status) => ({ kind, status })),
+      ),
+    },
+    // 成本核心指标：令牌消耗（in/out 分开，因为定价通常不同）。
+    // 这是**唯一**能回答「这功能一个月花多少」的数据源。
+    autoflow_agent_tokens_total: {
+      help: "Agent LLM token consumption by provider, model and direction (cost attribution source of truth)",
+      labelNames: ["provider", "model", "direction"],
+      labelValueSets: [
+        { provider: "qwen", model: "qwen-vl-max", direction: "in" },
+        { provider: "qwen", model: "qwen-vl-max", direction: "out" },
+        { provider: "openai", model: "gpt-4o-mini", direction: "in" },
+        { provider: "openai", model: "gpt-4o-mini", direction: "out" },
+        { provider: "ollama", model: "llama3", direction: "in" },
+        { provider: "ollama", model: "llama3", direction: "out" },
+      ],
+    },
+    // 工具调用分布。status 含 denied（边界拦截）与 circuit_open（熔断）——
+    // 这两个是**安全信号**：denied 激增说明 Agent 在尝试越界或被 scope 卡住。
+    autoflow_agent_tool_calls_total: {
+      help: "Agent tool invocations by tool, tier and status (denied/circuit_open are security signals)",
+      labelNames: ["tool", "tier", "status"],
+      labelValueSets: [
+        { tool: "list_tasks", tier: "read", status: "ok" },
+        { tool: "get_execution", tier: "read", status: "ok" },
+        { tool: "trigger_task", tier: "write", status: "ok" },
+        { tool: "deploy_application", tier: "write", status: "awaiting_approval" },
+        { tool: "approve_deployment", tier: "dangerous", status: "denied" },
+      ],
+    },
+    // 边界闸门拦截计数——按原因区分（设计文档 03 §5.1 的五道检查）。
+    autoflow_agent_denied_total: {
+      help: "Agent tool calls denied by the boundary gate, by reason (allowlist / approval / params / scope / rate)",
+      labelNames: ["reason"],
+      labelValueSets: [
+        { reason: "not_in_toolset" },
+        { reason: "needs_approval" },
+        { reason: "invalid_params" },
+        { reason: "out_of_scope" },
+        { reason: "rate_limited" },
+        { reason: "circuit_open" },
+        { reason: "hard_disabled" },
+      ],
+    },
+    // 预算触顶计数。与令牌指标同属**防成本事故**的双保险：令牌回答
+    // 「已花多少」，本项回答「有多少次差点失控」。
+    autoflow_agent_budget_exceeded_total: {
+      help: "Agent sessions that hit a budget gate, by reason (max_steps / max_tokens / wall_clock / max_tool_calls)",
+      labelNames: ["reason"],
+      labelValueSets: [
+        { reason: "max_steps" },
+        { reason: "max_tokens" },
+        { reason: "wall_clock" },
+        { reason: "max_tool_calls" },
       ],
     },
   };

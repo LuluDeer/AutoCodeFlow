@@ -105,6 +105,24 @@ report.*.json
 # 混沌演练临时 env（含口令，勿入库）
 .env.chaos
 
+# P0 一键部署（deploy.sh）的**每主机**状态文件——绝不可入库。
+#   .deploy-manifest.json / .prev.json —— 记录本机上次部署的 git commit 与
+#     产物指纹，供 `./deploy.sh rollback` 使用。它描述的是**这台机器**当前
+#     跑的是哪一版，不是仓库的共享事实；入库会让别人的 rollback 指向错误的版本。
+#   .deploy-state/ —— 构建产物指纹累积文件，同上。
+.deploy-manifest.json
+.deploy-manifest.prev.json
+.deploy-state/
+
+# qwen-runtime-check 的转译产物落点（脚本自行清理；此为兜底，防中断残留入库）
+apps/admin-api/.qwen-check/
+# agent-runtime-check 同上
+apps/admin-api/.agent-check/
+# agent-boundary-check 同上
+apps/admin-api/.boundary-check/
+# agent-trigger-check 同上
+apps/admin-api/.trigger-check/
+
 # F-19（DEEP_REVIEW 0ef3bbe）：executor-desktop 内嵌 executor-node 的 ncc bundle 出库。
 # 产物（index.js / sourcemap-register.js / *.map，约 2.1MB）不再入库，由
 # `npm run build:executor`（本地）或 CI desktop-* bundle job 打包前重打。

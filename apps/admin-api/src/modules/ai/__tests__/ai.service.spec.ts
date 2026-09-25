@@ -540,3 +540,308 @@ describe("AiService", () => {
     });
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════
+// P1（agent-and-deployment）：Qwen / DashScope 多模态接入
+// ═══════════════════════════════════════════════════════════════════
+describe("P1: qwen provider (multimodal)", () => {
+  let service: AiService;
+  let systemConfig: { findOne: jest.Mock };
+  let configService: { get: jest.Mock };
+
+  /** 让 getAiConfig 解析到给定键值（DB 优先路径）。 */
+  function withQwenConfig(overrides: Record<string, string> = {}) {
+    const values: Record<string, string> = {
+      "ai.provider": "qwen",
+      "ai.qwenApiKey": "sk-test-qwen",
+      "ai.qwenModel": "qwen-vl-max",
+      "ai.qwenBaseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "ai.qwenMaxTokens": "4096",
+      "ai.qwenTimeoutMs": "120000",
+      ...overrides,
+    };
+    systemConfig.findOne.mockImplementation(async (key: string) =>
+      key in values ? { value: values[key] } : null,
+    );
+  }
+
+  beforeEach(async () => {
+    systemConfig = { findOne: jest.fn().mockResolvedValue(null) };
+    configService = { get: jest.fn() };
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        AiService,
+        { provide: ConfigService, useValue: configService },
+        { provide: SystemConfigService, useValue: systemConfig },
+      ],
+    }).compile();
+
+    service = module.get<AiService>(AiService);
+  });
+
+  afterEach(() => jest.clearAllMocks());
+
+  it("provider 非 qwen 时返回空结果且不发出请求（fail-open）", async () => {
+    systemConfig.findOne.mockResolvedValue({ value: "openai" });
+    mockedAxios.post = jest.fn();
+
+    const res = await service.chatMultimodal({
+      messages: [{ role: "user", content: "hi" }],
+    });
+
+    expect(res.content).toBe("");
+    expect(mockedAxios.post).not.toHaveBeenCalled();
+  });
+
+  it("qwen 启用但无 API key 时返回空结果且不发出请求", async () => {
+    withQwenConfig({ "ai.qwenApiKey": "" });
+    mockedAxios.post = jest.fn();
+
+    const res = await service.chatMultimodal({
+      messages: [{ role: "user", content: "hi" }],
+    });
+
+    expect(res.content).toBe("");
+    expect(mockedAxios.post).not.toHaveBeenCalled();
+  });
+
+  it("文本路径：把 prompt 原样送到 qwen 的 /chat/completions", async () => {
+    withQwenConfig();
+    let capturedUrl = "";
+    let capturedBody: any = null;
+    let capturedHeaders: any = null;
+
+    mockedAxios.post = jest.fn().mockImplementation((url, body, cfg) => {
+      capturedUrl = url;
+      capturedBody = body;
+      capturedHeaders = cfg?.headers;
+      return Promise.resolve({
+        data: {
+          choices: [{ message: { content: "分析结果" } }],
+          usage: { prompt_tokens: 10, completion_tokens: 5 },
+        },
+      });
+    });
+
+    const res = await service.chatMultimodal({
+      messages: [{ role: "user", content: "hello" }],
+    });
+
+    expect(capturedUrl).toBe(
+      "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+    );
+    expect(capturedBody.model).toBe("qwen-vl-max");
+    expect(capturedBody.messages).toEqual([{ role: "user", content: "hello" }]);
+    expect(capturedHeaders.Authorization).toBe("Bearer sk-test-qwen");
+    expect(res.content).toBe("分析结果");
+    expect(res.usage).toEqual({ tokensIn: 10, tokensOut: 5 });
+  });
+
+  it("max_tokens 来自 ai.qwenMaxTokens，而非 openai 的硬编码 500", async () => {
+    withQwenConfig({ "ai.qwenMaxTokens": "8192" });
+    let capturedBody: any = null;
+    mockedAxios.post = jest.fn().mockImplementation((_u, body) => {
+      capturedBody = body;
+      return Promise.resolve({ data: { choices: [{ message: { content: "" } }] } });
+    });
+
+    await service.chatMultimodal({
+      messages: [{ role: "user", content: "x" }],
+    });
+
+    expect(capturedBody.max_tokens).toBe(8192);
+    expect(capturedBody.max_tokens).not.toBe(500);
+  });
+
+  it("多模态：content 数组（text + image_url）原样透传", async () => {
+    withQwenConfig();
+    let capturedBody: any = null;
+    mockedAxios.post = jest.fn().mockImplementation((_u, body) => {
+      capturedBody = body;
+      return Promise.resolve({ data: { choices: [{ message: { content: "ok" } }] } });
+    });
+
+    await service.chatMultimodal({
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "这张图有什么问题？" },
+            { type: "image_url", image_url: { url: "https://cdn.example.com/a.png" } },
+          ],
+        },
+      ],
+    });
+
+    expect(Array.isArray(capturedBody.messages[0].content)).toBe(true);
+    expect(capturedBody.messages[0].content[1].type).toBe("image_url");
+  });
+
+  it("视频理解：接受 video_url 扩展片段", async () => {
+    withQwenConfig();
+    let capturedBody: any = null;
+    mockedAxios.post = jest.fn().mockImplementation((_u, body) => {
+      capturedBody = body;
+      return Promise.resolve({ data: { choices: [{ message: { content: "看懂了" } }] } });
+    });
+
+    const res = await service.chatMultimodal({
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "分析这段录屏" },
+            { type: "video_url", video_url: { url: "https://cdn.example.com/r.mp4" } },
+          ],
+        },
+      ],
+    });
+
+    expect(capturedBody.messages[0].content[1].video_url.url).toBe(
+      "https://cdn.example.com/r.mp4",
+    );
+    expect(res.content).toBe("看懂了");
+  });
+
+  it("拒绝非 http(s) 媒体 URL（防 SSRF 转嫁）", async () => {
+    withQwenConfig();
+    mockedAxios.post = jest.fn().mockResolvedValue({
+      data: { choices: [{ message: { content: "x" } }] },
+    });
+
+    await expect(
+      service.chatMultimodal({
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "image_url", image_url: { url: "file:///etc/passwd" } },
+            ],
+          },
+        ],
+      }),
+    ).rejects.toThrow(/non-http\(s\) media URL/);
+
+    expect(mockedAxios.post).not.toHaveBeenCalled();
+  });
+
+  it("tool-calling：请求带 tools 时下发 tool_choice 并回传 tool_calls", async () => {
+    withQwenConfig();
+    let capturedBody: any = null;
+    mockedAxios.post = jest.fn().mockImplementation((_u, body) => {
+      capturedBody = body;
+      return Promise.resolve({
+        data: {
+          choices: [
+            {
+              message: {
+                content: "",
+                tool_calls: [
+                  {
+                    id: "call_1",
+                    type: "function",
+                    function: { name: "list_tasks", arguments: '{"page":1}' },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      });
+    });
+
+    const res = await service.chatMultimodal({
+      messages: [{ role: "user", content: "列出任务" }],
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "list_tasks",
+            description: "列出任务",
+            parameters: { type: "object", properties: {} },
+          },
+        },
+      ],
+    });
+
+    expect(capturedBody.tools).toHaveLength(1);
+    expect(capturedBody.tool_choice).toBe("auto");
+    expect(res.toolCalls?.[0].function.name).toBe("list_tasks");
+  });
+
+  it("不传 tools 时请求体不含 tools/tool_choice 键", async () => {
+    withQwenConfig();
+    let capturedBody: any = null;
+    mockedAxios.post = jest.fn().mockImplementation((_u, body) => {
+      capturedBody = body;
+      return Promise.resolve({ data: { choices: [{ message: { content: "" } }] } });
+    });
+
+    await service.chatMultimodal({
+      messages: [{ role: "user", content: "x" }],
+    });
+
+    expect("tools" in capturedBody).toBe(false);
+    expect("tool_choice" in capturedBody).toBe(false);
+  });
+
+  it("安全：出站走 SSRF pin 且 maxRedirects=0（不新开旁路）", async () => {
+    withQwenConfig();
+    let capturedCfg: any = null;
+    mockedAxios.post = jest.fn().mockImplementation((_u, _b, cfg) => {
+      capturedCfg = cfg;
+      return Promise.resolve({ data: { choices: [{ message: { content: "" } }] } });
+    });
+
+    await service.chatMultimodal({
+      messages: [{ role: "user", content: "x" }],
+    });
+
+    expect(capturedCfg.maxRedirects).toBe(0);
+    expect(capturedCfg.timeout).toBe(120000);
+    // pin 由 pinnedAxiosConfig 注入（httpAgent/httpsAgent + lookup）
+    expect(
+      capturedCfg.httpAgent !== undefined || capturedCfg.httpsAgent !== undefined,
+    ).toBe(true);
+  });
+
+  it("hasApiKeyForProvider：按 provider 判定，且 env 可兜底", async () => {
+    // qwen + DB 有 key → true
+    systemConfig.findOne.mockImplementation(async (k: string) =>
+      k === "ai.provider"
+        ? { value: "qwen" }
+        : k === "ai.qwenApiKey"
+          ? { value: "sk-x" }
+          : null,
+    );
+    await expect(service.hasApiKeyForProvider()).resolves.toBe(true);
+
+    // qwen + DB 无 key + env 有 → true
+    systemConfig.findOne.mockImplementation(async (k: string) =>
+      k === "ai.provider" ? { value: "qwen" } : null,
+    );
+    configService.get.mockImplementation((k: string) =>
+      k === "ai.qwenApiKey" ? "sk-from-env" : undefined,
+    );
+    await expect(service.hasApiKeyForProvider()).resolves.toBe(true);
+
+    // provider=disabled → false（无密钥概念）
+    systemConfig.findOne.mockImplementation(async (k: string) =>
+      k === "ai.provider" ? { value: "disabled" } : null,
+    );
+    configService.get.mockReturnValue(undefined);
+    await expect(service.hasApiKeyForProvider()).resolves.toBe(false);
+  });
+
+  it("getEffectiveConfig 含 qwen 键（密钥不在其中）", async () => {
+    withQwenConfig();
+    const cfg = await service.getEffectiveConfig();
+
+    expect(cfg.qwenModel).toBe("qwen-vl-max");
+    expect(cfg.qwenBaseUrl).toContain("dashscope.aliyuncs.com");
+    expect(cfg.qwenMaxTokens).toBe("4096");
+    // 密钥永不回显
+    expect(JSON.stringify(cfg)).not.toContain("sk-test-qwen");
+  });
+});

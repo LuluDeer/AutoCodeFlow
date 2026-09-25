@@ -108,7 +108,116 @@ security_opt:
 >
 > **解释器缓存相关变量**（`UV_PYTHON_INSTALL_DIR` / `UV_PYTHON_INSTALL_MIRROR` / `INTERPRETER_DOWNLOAD_TIMEOUT_SECONDS` / `INTERPRETER_SINGLE_VERSION_MB` / `INTERPRETER_TOTAL_GB` / `PYTHON_RUNTIME_VERSION_MIN` / `PYTHON_RUNTIME_VERSION_MAX` / `UV_BIN`）根 compose **已注入并带缺省值**（见 `docker-compose.yml` 两个执行器服务与 `admin-api` 服务），无需配置即可用；需要覆盖时在根 `.env` 设同名变量。执行器侧逐项说明见 `apps/executor-python/.env.example` 与 `apps/executor-node/.env.example`，完整说明见下方「解释器缓存与私有化模式」段。
 
-## 快速部署（5 步）
+## 一键部署（推荐，P0）
+
+`deploy.sh` 提供**双模**部署：`docker`（开发/试跑）与 `source`（**生产推荐**）。
+
+```bash
+# 源码模式（生产）——需 root
+sudo ./deploy.sh --mode source --env production --i-know-its-production
+
+# Docker 模式（试跑）
+./deploy.sh --mode docker --env staging
+```
+
+> **向后兼容**：不带 `--mode` 时默认为 `docker`，与旧版 `deploy.sh` 行为一致；
+> `-e/--env`、`-b/--build`、`-d/--detach` 等旧参数仍可用。
+
+### 为什么生产端用源码模式
+
+执行器**高频 fork 短命任务**，容器化的固定开销在这个场景下是复利的：
+
+| 开销项 | Docker 模式 | 源码模式 |
+|---|---|---|
+| 网络 | 用户态 NAT/bridge，每包一次 netfilter | 直连 loopback |
+| 文件 IO | overlayfs 双层（写放大） | 原生文件系统 |
+| 冷启动 | 镜像层解压 | 磁盘直读（mmap） |
+| 任务子进程 | 多一层容器隔离 | 直接 fork，解释器池可预热复用 |
+
+**基础设施仍用容器**（PostgreSQL / Redis / 监控 / 备份）——它们低频、无 fork 风暴，
+容器化的运维收益远大于那点开销。这是刻意的取舍：**性能敏感组件源码，其余容器**。
+
+### 8 阶段流水线
+
+两种模式共用同一套阶段划分，**只有「启动」阶段分叉**（systemd vs compose）：
+
+```
+① 预检 Preflight    平台/版本/端口/磁盘（--skip-preflight 可跳过）
+② 配置解析 Config   .env 缺失则自动生成 + 填充 openssl 随机密钥；
+                    生产模式强校验（长度/占位值/CORS 不含 localhost）
+③ 依赖准备 Deps     源码模式：npm ci / uv venv（复用 Makefile 的 uv 优先策略）
+④ 构建 Build        npm run build；写产物指纹供回滚
+⑤ 基础设施 Infra    PostgreSQL + Redis（复用 infra/docker-compose.yml）
+⑥ 迁移 Migration    迁移前**强制备份**（复用 scripts/pg-backup.sh）
+⑦ 启动 Start  ★分叉  source=systemd + nginx / docker=compose up
+⑧ 验证 Verify       指数退避轮询健康端点（替代旧的 sleep 30）
+```
+
+### 运维子命令
+
+```bash
+./deploy.sh doctor            # 环境体检（部署前/排障）
+./deploy.sh doctor --json     # 结构化输出（供中台 Agent 程序化消费）
+./deploy.sh status            # 组件状态
+./deploy.sh health            # 深度健康（含 DB/Redis 连通性）
+./deploy.sh logs admin-api    # 日志（source=journalctl / docker=compose logs）
+./deploy.sh restart executor-node
+./deploy.sh rollback          # 回滚代码到上一版本
+```
+
+`doctor` 的检查项：平台/Bash/Docker/Node/npm/Python 版本、端口占用（3105/80/8001/8002/5432/6379）、
+磁盘、服务存活、DB+Redis 连通性、`.env` 必填项与 JWT 强度、**Node 堆上限 vs systemd `MemoryMax` 一致性**
+（防 `docs/INCIDENT-2026-09-23-admin-api-oom.md` 那类 OOM：堆上限高于 cgroup 上限时 systemd 会先杀进程）。
+
+### 常用选项
+
+| 选项 | 说明 |
+|---|---|
+| `--mode <source\|docker>` | 部署模式（默认 docker） |
+| `--env <development\|staging\|production>` | 环境 |
+| `--component <name,...>` | 只部署指定组件（滚动升级） |
+| `--with <monitoring,backup>` | 启用附加 profile |
+| `--dry-run` | 只打印将执行的步骤，**不改系统** |
+| `--i-know-its-production` | 生产部署额外确认（防误操作） |
+
+### 源码模式的 systemd 布局
+
+| 项 | 值 |
+|---|---|
+| 安装目录 | `/opt/autocodeflow` |
+| 运行用户 | `acf`（系统用户，非 root） |
+| 服务名 | `acf-admin-api` / `acf-executor-node` / `acf-executor-python` |
+| 日志 | journald（`journalctl -u acf-admin-api`） |
+| 退出 | `SIGTERM` + `TimeoutStopSec=60`（配合项目 R-08 的优雅退出） |
+| 自愈 | `Restart=always` / `RestartSec=5` |
+
+> `admin-web` 是静态产物，由 nginx 直接服务（无独立进程）；部署脚本会生成
+> `/etc/nginx/conf.d/autocodeflow.conf`，其中 `/api/` 反代**已关闭 `proxy_buffering`**
+> 并把读超时设为 300s（SSE/长轮询必需，见下方 BUG-17）。
+
+### 回滚
+
+```bash
+./deploy.sh rollback
+```
+
+每次部署写入 `.deploy-manifest.json`（含 git commit / 组件 / 时间），并保留上一份为
+`.deploy-manifest.prev.json`。回滚**默认只回滚代码，不回滚迁移**——这与
+`docs/rollback-semantics.md` 的既有语义一致（迁移单向，反向回滚会丢数据）。
+需回滚迁移时脚本会提示人工执行 `npm run migration:revert`。
+
+### 自检
+
+```bash
+npm run test:deploy-script     # 或 make selftest-deploy
+```
+
+29 项纯逻辑回归（参数校验/封闭枚举/JSON 契约/生产防护/dry-run 安全性），
+**不改系统、不起服务、不写 .env**。
+
+## 快速部署（5 步，Docker 模式手动路线）
+
+以下为不使用 `deploy.sh` 的手动步骤，等价于 `./deploy.sh --mode docker`：
 
 ### 第 1 步：克隆仓库
 

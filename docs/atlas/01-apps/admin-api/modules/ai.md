@@ -1,10 +1,10 @@
-# ai 模块 — AI 辅助（失败分析 / 排程建议，OpenAI / Ollama）
+# ai 模块 — AI 辅助（失败分析 / 排程建议 / Qwen 多模态，OpenAI / Ollama / Qwen）
 
-> 所属: docs/atlas/01-apps/admin-api/modules · 最后核对: 2026-09-13 · 对应代码: apps/admin-api/src/modules/ai
+> 所属: docs/atlas/01-apps/admin-api/modules · 最后核对: 2026-09（P1） · 对应代码: apps/admin-api/src/modules/ai
 
 ## 职责
 
-对接可选的 AI 提供商（OpenAI 兼容 API 或本地 Ollama），提供三类能力：执行失败根因分析（`analyzeFailure`）、Cron 排程建议（`suggestSchedule`）、应用部署健康分析（`analyzeAppHealth`）。provider 可 `disabled`（默认）——所有入口 fail-open，AI 不可用绝不影响任务主链。
+对接可选的 AI 提供商（OpenAI 兼容 API、本地 Ollama、**Qwen / DashScope 多模态**），提供三类既有能力——执行失败根因分析（`analyzeFailure`）、Cron 排程建议（`suggestSchedule`）、应用部署健康分析（`analyzeAppHealth`）——以及 P1 新增的**多模态对话**（`chatMultimodal`，供中台 Agent 使用）。provider 可 `disabled`（默认）——所有入口 fail-open，AI 不可用绝不影响任务主链。
 
 ## 目录结构与关键文件
 
@@ -25,7 +25,24 @@ modules/ai/
 | POST | `/config` | 保存配置到 system_configs（`batchUpsert`）；key 仅在传非空值时更新 |
 | POST | `/test` | 用固定样例报错真实调一次 provider，返回 `{ok, message}` |
 
-配置键与默认值：`ai.provider`（`disabled | openai | ollama`）、`ai.openaiModel`（`gpt-4o-mini`）、`ai.openaiBaseUrl`（`https://api.openai.com/v1`）、`ai.ollamaHost`（`http://localhost:11434`）、`ai.ollamaModel`（`llama3`）、`ai.openaiApiKey`（`isSecret`）。env 兜底同名：`AI_PROVIDER` / `OPENAI_API_KEY` / `OPENAI_MODEL` / `OLLAMA_HOST` / `OLLAMA_MODEL`（`configuration.ts` 的 `ai` 段）。
+配置键与默认值：`ai.provider`（`disabled | openai | ollama | qwen`）、`ai.openaiModel`（`gpt-4o-mini`）、`ai.openaiBaseUrl`（`https://api.openai.com/v1`）、`ai.ollamaHost`（`http://localhost:11434`）、`ai.ollamaModel`（`llama3`）、`ai.openaiApiKey`（`isSecret`）；P1 新增 Qwen 键 `ai.qwenApiKey`（`isSecret`）、`ai.qwenBaseUrl`（DashScope 兼容端点）、`ai.qwenModel`（`qwen-vl-max`）、`ai.qwenMaxTokens`（`4096`）、`ai.qwenTimeoutMs`（`120000`）。env 兜底同名：`AI_PROVIDER` / `OPENAI_API_KEY` / `OPENAI_MODEL` / `OLLAMA_HOST` / `OLLAMA_MODEL` / `QWEN_API_KEY` / `QWEN_BASE_URL` / `QWEN_MODEL` / `QWEN_MAX_TOKENS` / `QWEN_TIMEOUT_MS`（`configuration.ts` 的 `ai` 段，均已在 `app.module.ts` 的 Joi 注册——ARCH-27 配置收口纪律）。
+
+## P1：Qwen 多模态（agent-and-deployment）
+
+`chatMultimodal(req)` 是中台 Agent 的 LLM 出口，与 `callOpenAI` **并列而非改造**：
+
+| 差异 | callOpenAI（既有） | chatMultimodal（P1） |
+|---|---|---|
+| content | `string` | `string \| MultimodalPart[]`（text / image_url / **video_url**） |
+| max_tokens | 硬编码 `500`（刻意省成本） | `ai.qwenMaxTokens`（默认 4096，独立配置） |
+| tools | 无 | 支持 function calling（P3 Agent 循环的前置） |
+| 超时 | 30s | `ai.qwenTimeoutMs`（默认 120s——视频理解慢） |
+
+**为什么新开方法而不是扩展开 openai 分支**：失败日志分析的 `max_tokens=500` 是刻意的成本策略，若被多模态需求抬高，会让既有分析链路悄然变贵。两者需求不同量级，故分离。
+
+安全姿态与 `callOpenAI` **完全一致**（不新开旁路）：`assertAndPinHttpUrl`（SSRF + DNS pin 关闭 rebinding 窗口）+ `pinnedAxiosConfig` + `maxRedirects: 0`（拒 3xx 绕过首跳校验）。**额外一道**：`validateMediaUrls()` 拒绝非 http(s) 的媒体 URL——媒体 URL 由执行器 Agent 上报（不可信），原样转给 DashScope 就是 SSRF 转嫁；调用方必须保证 URL 来自平台 artifacts 的签名地址。
+
+纯文本路径 `callQwenText()` 复用 `chatMultimodal`，故 `callProvider` 可直接把 qwen 当作既有三类分析的 provider。
 
 ## 关键机制
 
