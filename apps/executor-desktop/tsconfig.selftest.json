@@ -56,7 +56,10 @@
     "src/main/agent/collab-client.ts",
     "src/main/agent/collab-client.selftest.ts",
     "src/main/agent/runtime.ts",
-    "src/main/agent/runtime.selftest.ts"
+    "src/main/agent/runtime.selftest.ts",
+    "src/main/agent/zip-writer.ts",
+    "src/main/agent/package-candidate.ts",
+    "src/main/agent/package-candidate.selftest.ts"
   ],
   "exclude": []
 }
