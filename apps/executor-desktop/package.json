@@ -1,6 +1,6 @@
 {
   "name": "executor-desktop",
-  "version": "1.6.2",
+  "version": "1.6.3",
   "author": "kirdeer",
   "description": "AutoCodeFlow Executor Desktop Client",
   "main": "dist/main/index.js",
@@ -21,29 +21,30 @@
   },
   "dependencies": {
     "auto-launch": "5.0.6",
-    "electron-log": "5.1.7",
-    "electron-store": "8.2.0",
+    "electron-log": "5.4.4",
+    "electron-store": "^11.0.2",
     "electron-updater": "6.8.9"
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",
     "@types/auto-launch": "5.0.5",
-    "@types/node": "^22.12.0",
-    "@types/react": "18.3.3",
-    "@types/react-dom": "18.3.0",
-    "@vercel/ncc": "^0.44.0",
-    "@vitejs/plugin-react": "^6.0.5",
-    "concurrently": "8.2.2",
-    "electron": "^43.4.0",
+    "@types/node": "^24.13.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vercel/ncc": "^0.45.0",
+    "@vitejs/plugin-react": "^6.1.1",
+    "concurrently": "^10.0.5",
+    "electron": "^44.4.5",
     "electron-builder": "^26.15.3",
     "esbuild": "^0.28.2",
-    "js-yaml": "4.3.2",
-    "react": "18.3.1",
-    "react-dom": "18.3.1",
-    "typescript": "5.4.5",
-    "vite": "^8.2.1",
-    "vite-plugin-electron": "0.28.7",
-    "vite-plugin-electron-renderer": "0.14.5"
+    "js-yaml": "^5.4.2",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "typescript": "^5.9.3",
+    "vite": "^8.3.1",
+    "vite-plugin-electron": "^1.1.2",
+    "vite-plugin-electron-renderer": "^1.0.0"
   },
-  "homepage": "https://github.com/LuluDeer/AutoCodeFlow"
+  "homepage": "https://github.com/LuluDeer/AutoCodeFlow",
+  "_comment_deps": "electron-store 11（2026-09 依赖审计二轮升级）：v9+ ESM-only，依赖 Electron 44 内置 Node 24 的同步 require(esm) 加载（已做运行时冒烟）；v10+ 移除 JSON schema，config-store.ts 的旧配置缺键补默认值改用 conf 仍支持的 defaults 选项承载（兼容红线不变），写时类型校验由 config-sanitize.ts 消毒层承接。其余：electron-log 5.4.4 / electron-updater 6.8.9 / electron-builder 26.15.3 / auto-launch 5.0.6 均为最新。"
 }

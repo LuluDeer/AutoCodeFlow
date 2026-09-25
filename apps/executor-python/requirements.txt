@@ -1,10 +1,11 @@
-fastapi==0.136.3
-uvicorn==0.48.0
+fastapi==0.141.1
+uvicorn==0.53.0
 httpx==0.28.1
 psutil==7.2.2
 tenacity>=8.2.0
 pydantic-settings==2.15.0
 PyYAML==6.0.3
 # Runtime dependency installer. 0.11.15 修复 GHSA-pjjw-68hj-v9mw / GHSA-4gg8-gxpx-9rph
-#（pip-audit 门禁），仍支持 `uv venv --no-project` 与在线下载区间 3.8~3.14（实测）。
-uv==0.11.15
+#（pip-audit 门禁），0.12.x 延续该修复线（无新公告），仍支持 `uv venv --no-project`
+# 与在线下载区间 3.8~3.14（实测）。
+uv==0.12.18
