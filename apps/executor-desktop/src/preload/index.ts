@@ -12,6 +12,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // （纯读、不 spawn 进程），让"配置没生效"这类问题当场可见。
   getPythonEnvStatus: () => ipcRenderer.invoke('config:python-env-status'),
 
+  // Agent 托管状态（P7b，只读）——设置页 Agent 组的状态行；旧版 preload
+  // 未暴露时渲染层容错降级为不显示（同 getAutoLaunch 先例）。
+  getAgentStatus: () => ipcRenderer.invoke('agent:get-status'),
+
   // 执行器控制
   startExecutor: () => ipcRenderer.invoke('executor:start'),
   stopExecutor: () => ipcRenderer.invoke('executor:stop'),
