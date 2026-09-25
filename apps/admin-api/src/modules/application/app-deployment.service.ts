@@ -16,6 +16,7 @@ import {
   Repository,
   LessThan,
   In,
+  IsNull,
   OptimisticLockVersionMismatchError,
 } from "typeorm";
 import axios from "axios";
@@ -1678,7 +1679,13 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       where: {
         applicationId: app.id,
         version: app.version,
-        gitCommit: app.gitCommit ?? null,
+        // TypeORM 1.x：where 里的 null **字面量**不再编译成 IS NULL，而是按
+        // invalidWhereValuesBehavior 默认抛错。app.gitCommit 为 null（未接 Git
+        // 的应用、或本机 selftest 的应用）时，这里此前必抛
+        // 「Null value encountered in property 'ApplicationVersion.gitCommit'」，
+        // 直接导致整个部署推送到执行器失败（statusMessage 可见原文）。必须显式
+        // 写 IsNull()。
+        gitCommit: app.gitCommit != null ? app.gitCommit : IsNull(),
         sourceDeploymentId: deployment.id,
       },
     });
@@ -1730,7 +1737,12 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       where: {
         applicationId: deployment.applicationId,
         version: deployment.deployedVersion,
-        gitCommit: deployment.deployedCommit ?? null,
+        // 同 saveVersionSnapshot：null 字面量在 TypeORM 1.x 的 where 里会抛错，
+        // 未接 Git 的部署（deployedCommit 为 null）必须走 IsNull()。
+        gitCommit:
+          deployment.deployedCommit != null
+            ? deployment.deployedCommit
+            : IsNull(),
         sourceDeploymentId: deployment.id,
       },
     });
