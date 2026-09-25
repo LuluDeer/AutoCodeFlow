@@ -5,7 +5,7 @@ import zhCN from 'antd/locale/zh_CN';
 import enUS from 'antd/locale/en_US';
 import { useTranslation } from 'react-i18next';
 import '../i18n';
-import { DESIGN_TOKENS, DARK_TOKENS, LIGHT_TOKENS, FONT_STACKS } from './tokens';
+import { DESIGN_TOKENS, DARK_TOKENS, LIGHT_TOKENS, FONT_STACKS, CARD_RADIUS } from './tokens';
 import {
   useThemeStore,
   selectResolvedTheme,
@@ -49,6 +49,14 @@ export function buildAntdTheme(resolved: 'light' | 'dark'): ThemeConfig {
       fontFamily: FONT_STACKS.body,
       // MASTER §Typography：代码/日志/等宽场景（Typography.Text code 等）跟随
       fontFamilyCode: FONT_STACKS.mono,
+    },
+    components: {
+      // 卡片圆角统一走组件令牌：历史上约 20 处调用点各写 `style={{ borderRadius: 10 }}`
+      // （DashboardPage 内就有 11 处、其中多份是逐字相同的字符串），改圆角要全仓搜索
+      // 替换且极易漏改。此处一次声明，调用点覆写随之删除（视觉不变：仍是 10）。
+      // 注意与全局 token.borderRadius=8 的差异是**有意的**——卡片视觉上比
+      // 按钮/输入框更圆，故不并入全局值。
+      Card: { borderRadius: CARD_RADIUS },
     },
   };
 }

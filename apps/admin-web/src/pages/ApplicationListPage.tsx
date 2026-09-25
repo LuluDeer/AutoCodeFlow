@@ -644,7 +644,7 @@ export default function ApplicationListPage() {
             <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={hasFilters ? t('appList.empty.noMatch') : t('appList.empty.none')} />
           ) : (
             filtered.slice((mobilePage - 1) * MOBILE_PAGE_SIZE, mobilePage * MOBILE_PAGE_SIZE).map((record) => (
-              <Card key={record.id} size="small" style={{ borderRadius: 10 }}>
+              <Card key={record.id} size="small">
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
                   <Link to={`/applications/${record.id}`} style={{ fontWeight: 500, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {record.name}
