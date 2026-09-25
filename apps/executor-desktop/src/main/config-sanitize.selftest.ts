@@ -3,10 +3,10 @@
  * Run via: npm run test:main
  *
  * 反证形态：本测试用**真实的 conf（electron-store 的底座）**起一个带
- * config-store.ts 同款 schema 的 store，把消毒前/后的值分别 set 进去——
- * 消毒前必须抛 `Config schema violation`，消毒后必须落盘成功且值合法。
- * 若有人把 ConfigPage 的 `|| 10` 兜底删掉、或把 sanitizeConfigInput 改成
- * 直接透传，本测试立即变红。
+ * config-store.ts 同款 defaults 的 store，把消毒前/后的值分别 set 进去——
+ * conf 15 移除 ajv 校验后，消毒前的 null **静默落盘**（读回即 null，下游
+ * 拿到即损坏）；消毒后必须落盘成功且值合法。若有人把 ConfigPage 的
+ * `|| 10` 兜底删掉、或把 sanitizeConfigInput 改成直接透传，本测试立即变红。
  */
 import * as assert from 'node:assert';
 import * as fs from 'node:fs';
@@ -20,26 +20,26 @@ import {
   sanitizeConfigInput,
 } from './config-sanitize';
 
-/** 最小化复刻 config-store.ts 的 schema（只留被测字段，语义逐条一致）。 */
-const SCHEMA = {
-  configured: { type: 'boolean', default: false },
-  adminApiUrl: { type: 'string', default: '' },
-  executorName: { type: 'string', default: 'host' },
-  executorHost: { type: 'string', default: '0.0.0.0' },
-  executorPort: { type: 'number', default: 8002 },
-  executorAddressPublic: { type: 'string', default: '' },
-  workDir: { type: 'string', default: '' },
-  maxConcurrentTasks: { type: 'number', default: 10 },
-  logLevel: { type: 'string', default: 'info' },
-  interpreterDownloadTimeoutMs: { type: 'number', default: 0 },
+/** 最小化复刻 config-store.ts 的 defaults（只留被测字段，语义逐条一致）。 */
+const DEFAULTS = {
+  configured: false,
+  adminApiUrl: '',
+  executorName: 'host',
+  executorHost: '0.0.0.0',
+  executorPort: 8002,
+  executorAddressPublic: '',
+  workDir: '',
+  maxConcurrentTasks: 10,
+  logLevel: 'info',
+  interpreterDownloadTimeoutMs: 0,
 } as const;
 
 function makeStore(dir: string): any {
-  // 延迟 require：conf 是 CommonJS，且本文件在 dist-selftest 下运行，
-  // node_modules 解析路径与源码目录一致。
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const Conf = require('conf');
-  return new Conf({ cwd: dir, schema: SCHEMA as any });
+  // 延迟 require：conf 15 为 ESM，Node 24 的同步 require(esm) 返回模块
+  // 命名空间（.default 为类）；本文件在 dist-selftest 下运行，node_modules
+  // 解析路径与源码目录一致。
+  const Conf = require('conf').default ?? require('conf');
+  return new Conf({ cwd: dir, defaults: DEFAULTS });
 }
 
 /** 把补丁按 ConfigStore.save 的形态逐键写入（每键一次 set）。 */
@@ -54,8 +54,9 @@ function main(): void {
     path.join(fs.realpathSync(os.tmpdir()), 'acf-config-sanitize-'),
   );
   try {
-    // ── 1. 反证：不消毒时，清空「最大并发任务数」送来的 null/NaN 会让
-    //       electron-store 抛 schema violation（真实故障，不是假想）────────
+    // ── 1. 反证：不消毒时，清空「最大并发任务数」送来的 null/NaN 会
+    //       **静默落盘**（conf 15 移除 ajv 后不再抛错）——下游直接读到
+    //       null，故障从「保存失败」变成「保存成功但配置坏了」────────
     {
       const store = makeStore(path.join(tmp, 'raw'));
       store.set('workDir', path.join(tmp, 'tasks'));
@@ -63,30 +64,17 @@ function main(): void {
 
       // 渲染层 parseInt('') → NaN → JSON 序列化 → null（IPC 的结构化克隆语义）
       const rawPatch = { executorName: 'renamed', maxConcurrentTasks: null };
-      let threw: Error | null = null;
-      try {
-        applyPatch(store, rawPatch);
-      } catch (err) {
-        threw = err as Error;
-      }
-      assert.ok(threw, '未消毒的 null 必须让 electron-store 抛错（否则本反证无牙）');
-      assert.match(
-        threw!.message,
-        /maxConcurrentTasks/,
-        `schema violation 应点名该字段，实际：${threw!.message}`,
-      );
+      applyPatch(store, rawPatch); // 不抛——这正是问题所在
 
-      // 关键的用户可见后果：异常抛出前，同批次的其它键**已经进了内存 store**
-      // ——即"改了名 + 报了错"，而 UI 只说"保存失败"，用户分不清存没存。
       assert.strictEqual(
         store.get('executorName'),
         'renamed',
-        '部分写入确实发生：这正是"只报一句保存失败"无法表达的事实',
+        '同批次修改已写入（无任何报错提示用户）',
       );
       assert.strictEqual(
         store.get('maxConcurrentTasks'),
-        12,
-        '抛错后该字段保留旧值（与 UI 显示的 10 又不一致）',
+        null,
+        '未消毒的 null 已静默进入存储——executor 读到的将是坏配置',
       );
     }
 
@@ -107,7 +95,7 @@ function main(): void {
       assert.strictEqual(
         store.get('maxConcurrentTasks'),
         10,
-        'NaN/null 必须回落 schema default 10，而不是把整次保存打掉',
+        'NaN/null 必须回落字段默认值 10，而不是把坏值写进存储',
       );
     }
 
