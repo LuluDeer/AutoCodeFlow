@@ -71,9 +71,13 @@
 ### Buttons
 
 ```css
-/* Primary Button */
+/* Primary Button
+   注意（DOC-01 回写）：实装采用 green-700 #15803d 而非本节的 #22C55E——
+   #22C55E 与白色文字的对比度 ~2.1:1 不过 WCAG AA；#15803d ~4.6:1 达标。
+   前端唯一事实源 apps/admin-web/src/theme/tokens.ts 的 PRIMARY_BUTTON，
+   并有 __tests__/primary-button-contrast.ux.test.ts 双向钉住。 */
 .btn-primary {
-  background: #22C55E;
+  background: #15803d;
   color: white;
   padding: 12px 24px;
   border-radius: 8px;
