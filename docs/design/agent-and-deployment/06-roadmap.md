@@ -430,7 +430,7 @@
 | 总开关 | `agentEnabled`（默认 false，ADR-022 显式开启）+ 消毒层布尔纪律 + index.ts 轮询循环接线（30s tick，host 内部 0 等待） | ✅ |
 | **设置面（P7c 前置增量）** | ConfigPage 新增「Agent（实验性）」组：开关 / 预设（未实现档位显示为禁用——选了也会被解析层钳回，界面与行为一致）/ codeExecution 覆盖 / 浏览器域名白名单；`agent:get-status` IPC + 状态行（working/processed/lastOutcome/生效档位，进组与保存后刷新）；config:save 热同步托管 | ✅ |
 | LLM 协议扩展 | plan/diagnose 可带 `"browser":[actions]`——先看页面再写代码；输出（页面文本/截图 mediaPath/录屏）进下一轮上下文 | ✅ |
-| 桌面 GUI 能力 | — | ⏳ P7c |
+| 桌面 GUI 能力 | Windows 原生输入/目标窗口截图 + app-scoped 白名单 | ◐ P7c 已交付 Windows 切片；macOS/Linux 待适配 |
 | 端到端闭环 | — | ⏳ P7d |
 
 ### 实现中的关键判断
@@ -506,6 +506,26 @@
 | 升级环收口 | `escalated_to_human` 此前只有通知没有答复路径——升级之后环就断了。人工与中台 Agent 走**同一个** `replyClarification`（同一道幂等/校验/修订闸门），Admin Web 澄清条目加回复 UI（answered / sop_amended） | ✅ |
 
 **验收**：`agent-sop-check` **111 项**（超时判定 4：unclaimed/stalled/blocked 不误判/未过期不清；接线 6：cron+leader 门禁、答复端点、归属校验、resolution 限制、共用闸门）；admin-web tsc 0 + lint 0。
+
+### 9.9 P7c Windows 切片（2026-09-26）：桌面 GUI + 状态可见 ◐
+
+> **产物**：desktop `agent/gui.ts`（封闭动作、SOP/档位/应用白名单闸门）、
+> `agent/gui-windows.ts`（固定 PowerShell/Win32 后端）、GUI 观察接入规划与诊断循环，
+> 设置页的 `app-scoped` / 应用白名单，以及托盘和状态窗的 Agent 状态。
+
+| 任务 | 状态 |
+|---|---|
+| `hostAccess=app-scoped` 细粒度覆盖 | ✅ 显式配置才启用；中台上限逐轴压回 `none` 时同步清空应用清单 |
+| GUI 封闭动作 | ✅ `focus/click/type/press/screenshot/wait`；每个动作必须命中 SOP `gui` 能力域和本机进程名白名单；每指派累计最多 40 个动作 |
+| Windows 原生执行 | ✅ 固定脚本通过 JSON stdin 收参数，不拼接命令；前台进程逐动作校验，键入时逐字符重查；点击限目标窗口边界，截图仅 `PrintWindow` 目标窗口 |
+| 观察与回传 | ✅ GUI 截图在专用工作区落盘并复用媒体上传通道；动作结果进入下一轮 LLM 上下文 |
+| 状态可见 | ✅ 托盘和状态窗显示托管启停、工作中、已处理数、最近结果；配置保存后立即刷新 |
+| 协作能力租约 | ✅ Agent 能力与普通运行时能力分列；30 秒续报，服务端 2 分钟过期；首次轮询前上报，关闭时撤销 |
+| SOP 领取 | ✅ 一次仅交付一个指派，数据库条件更新确保并发轮询只有一个领取者 |
+
+**验收**：desktop `test:main` 全链通过（新增 GUI 权限/拒绝、Windows driver、运行时观察和状态展示自检）；主进程 TypeScript、renderer build/selftest 均通过。Windows 原生冒烟验证了当前窗口聚焦与拒绝路径；实际点击、输入和成功截图需在授权应用的交互桌面进行真机验收。
+
+**残差**：中台 `sopPolicy.permissionPolicy` 默认 `standard`，会把本地 `app-scoped` 钳回 `none`；启用 GUI 须显式放宽中台上限。macOS/Linux GUI 后端尚未适配，能力上报会如实不含 `gui`。应用白名单当前按进程名精确匹配，不能把它当作进程签名或可执行文件路径校验；企业部署若要求更强应用身份约束，需要在后续切片增加路径/签名绑定。崩溃后已领取指派的重领、澄清回复的持久恢复与确认投递，以及包→审批→部署的真实闭环属 P7d；后者仍待具备 LLM 与部署环境后验证。
 
 ## 10. 立即可开工的建议
 

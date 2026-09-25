@@ -10,6 +10,8 @@
   "include": [
     "src/main/path-domain.ts",
     "src/main/path-domain.selftest.ts",
+    "src/main/agent-status-view.selftest.ts",
+    "src/main/agent-host-lifecycle.selftest.ts",
     "src/main/token-crypto.ts",
     "src/main/token-crypto.selftest.ts",
     "src/main/updater.selftest.ts",
@@ -57,6 +59,8 @@
     "src/main/agent/collab-client.selftest.ts",
     "src/main/agent/runtime.ts",
     "src/main/agent/runtime.selftest.ts",
+    "src/main/agent/gui.selftest.ts",
+    "src/main/agent/gui-windows.selftest.ts",
     "src/main/agent/zip-writer.ts",
     "src/main/agent/package-candidate.ts",
     "src/main/agent/package-candidate.selftest.ts"

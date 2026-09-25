@@ -625,6 +625,14 @@ textarea:focus-visible,
   word-break: break-all;
 }
 
+.info-card-detail {
+  margin-top: 6px;
+  color: var(--text3);
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
 /* 日志区 */
 .log-section {
   display: flex;

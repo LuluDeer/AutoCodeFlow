@@ -203,6 +203,13 @@ function main(): void {
       allowedDomains: ['ok.example.com', '', '  ', 42, null],
     });
     assert.deepStrictEqual(dirty.allowedDomains, ['ok.example.com']);
+
+    const scoped = resolveLocalPermissions({
+      preset: 'standard', hostAccess: 'app-scoped',
+      allowedApps: ['Notepad.exe', 'notepad', '../cmd', 'powershell*', 'Excel'],
+    });
+    assert.strictEqual(scoped.hostAccess, 'app-scoped', 'P7c 的显式 app-scoped 覆盖必须生效');
+    assert.deepStrictEqual(scoped.allowedApps, ['notepad', 'excel'], '应用白名单只保留精确进程名并去重');
   }
 
   // ── 7. 中台合并：min(本地, 中台上限) ──────────────────────────────────
@@ -258,6 +265,20 @@ function main(): void {
     // 7e. 只有白名单、无 permissionPolicy，且本地在白名单内 → 原样
     const onlyList = mergeWithCenterPolicy(local, { allowedProfiles: ['standard'] });
     assert.deepStrictEqual(axesOf(onlyList), axesOf(local));
+
+    const localGui = resolveLocalPermissions({
+      preset: 'standard', hostAccess: 'app-scoped', allowedApps: ['notepad'],
+    });
+    const centerDeniedGui = mergeWithCenterPolicy(localGui, {
+      permissionPolicy: 'standard', allowedProfiles: ['minimal', 'standard'],
+    });
+    assert.strictEqual(centerDeniedGui.hostAccess, 'none', '中台 standard 上限不允许本机 GUI');
+    assert.deepStrictEqual(centerDeniedGui.allowedApps, [], '中台压回 none 后必须清空生效应用清单');
+    const centerAllowsGui = mergeWithCenterPolicy(localGui, {
+      permissionPolicy: 'ops-assist', allowedProfiles: ['minimal', 'standard'],
+    });
+    assert.strictEqual(centerAllowsGui.hostAccess, 'app-scoped');
+    assert.deepStrictEqual(centerAllowsGui.allowedApps, ['notepad']);
   }
 
   // ── 8. 'custom' 细粒度覆盖与 allowedProfiles 的交互（真实缺陷回归）────

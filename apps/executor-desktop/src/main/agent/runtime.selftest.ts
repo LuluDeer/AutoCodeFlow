@@ -20,6 +20,7 @@ import { runAgentLoop } from './loop';
 import { resolveLocalPermissions } from './permission-profile';
 import type { EnvironmentReport } from './perception';
 import { buildLoopHandlers, type SopPayload } from './runtime';
+import type { GuiDriver, GuiDriverInput } from './gui';
 
 let failures = 0;
 function check(name: string, cond: boolean, extra = ''): void {
@@ -234,6 +235,66 @@ async function main(): Promise<void> {
     });
     check('-c 形态不被偷换成跑别的文件（escalate 而非 delivered）', result2.outcome === 'escalated');
     fs.rmSync(ws2, { recursive: true, force: true });
+  }
+
+  // ── 7. P7c GUI 观察：受控动作结果进入下一轮上下文，截图走媒体通道 ──
+  console.log('-- 7. GUI 观察 --');
+  {
+    const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-rt-gui-'));
+    const guiPermissions = resolveLocalPermissions({
+      preset: 'standard', hostAccess: 'app-scoped', allowedApps: ['notepad.exe'],
+    });
+    const sop = makeSop([{ kind: 'platform', taskId: 't' }]);
+    sop.frontMatter.capabilities = ['filesystem', 'gui'];
+    const actions: GuiDriverInput[] = [];
+    const driver: GuiDriver = {
+      async probe() { return true; },
+      async run(input) {
+        actions.push(input);
+        if (input.screenshotPath) fs.writeFileSync(input.screenshotPath, Buffer.from('89504e470d0a1a0a', 'hex'));
+        return { ok: true, detail: 'window checked' };
+      },
+    };
+    const uploads: string[] = [];
+    const client = {
+      async uploadMedia(_address: string, _assignmentId: string, item: { name: string; buf: Buffer }) {
+        uploads.push(item.name);
+        return { ok: true, mediaPath: '/api/agent-collab/media/gui-test' };
+      },
+    };
+    const first = JSON.stringify({
+      files: [], entry: { interpreter: 'node', path: 'main.js' },
+      gui: [{ action: 'focus', app: 'notepad' }, { action: 'screenshot', app: 'notepad' }],
+    });
+    const overBudget = JSON.stringify({
+      files: [], entry: { interpreter: 'node', path: 'main.js' },
+      gui: Array.from({ length: 39 }, () => ({ action: 'focus', app: 'notepad' })),
+    });
+    const llm = makeLlm([first, planJson('main.js', MAIN_OK, VERIFY_OK), overBudget]);
+    const handlers = buildLoopHandlers({
+      address: 'a:1', assignmentId: '11111111-1111-1111-1111-111111111111',
+      client: client as never, permissions: guiPermissions, sop, workspaceRoot: ws,
+      environment: makeEnv(), guiAvailable: true, guiDriver: driver,
+    }, llm);
+    const output = await handlers.plan({ iteration: 1, environment: makeEnv(), feedback: null });
+    check('GUI 动作白名单执行 + 截图上传', actions.length === 2 && uploads.length === 1 && output.includes('mediaPath='));
+    await handlers.plan({ iteration: 2, environment: makeEnv(), feedback: null });
+    check('GUI 观察进下一轮 LLM 上下文', llm.seen[1].includes('/api/agent-collab/media/gui-test'));
+    const beforeBudget = actions.length;
+    const limited = await handlers.plan({ iteration: 3, environment: makeEnv(), feedback: null });
+    check('GUI 动作上限按整个指派累计', actions.length === beforeBudget && limited.includes('超上限'));
+
+    const denied = resolveLocalPermissions({ preset: 'standard', allowedApps: ['notepad'] });
+    const deniedLlm = makeLlm([first]);
+    const deniedHandlers = buildLoopHandlers({
+      address: 'a:1', assignmentId: '11111111-1111-1111-1111-111111111111',
+      client: client as never, permissions: denied, sop, workspaceRoot: ws,
+      environment: makeEnv(), guiAvailable: true, guiDriver: driver,
+    }, deniedLlm);
+    const before = actions.length;
+    const refused = await deniedHandlers.plan({ iteration: 1, environment: makeEnv(), feedback: null });
+    check('hostAccess=none 即使模型请求也不触发原生 GUI', actions.length === before && refused.includes('不可用'));
+    fs.rmSync(ws, { recursive: true, force: true });
   }
 
   console.log(failures ? `\n=== ${failures} 项失败 ===\n` : '\n=== runtime selftest 全部通过 ===\n');

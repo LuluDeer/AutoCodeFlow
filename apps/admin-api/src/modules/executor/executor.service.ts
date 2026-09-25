@@ -1,5 +1,6 @@
 import {
   Injectable,
+  BadRequestException,
   Logger,
   NotFoundException,
   ServiceUnavailableException,
@@ -156,6 +157,8 @@ export const TERMINAL_STATES_DEFAULT_LOOKBACK_MS = 24 * 60 * 60 * 1000;
  * 服务端分页（见 findAll 注释）。
  */
 export const EXECUTOR_LIST_LIMIT = 500;
+/** AgentHost 每 30 秒续报；两分钟无续报则撤去全部协作能力。 */
+export const AGENT_CAPABILITIES_LEASE_MS = 2 * 60 * 1000;
 const MAX_RUNNING_EXECUTION_IDS = 10_000; // NETOPT-C P2-1: 与 E9 maxConcurrentTasks 采纳上界一致
 
 // NETOPT-D P3-3: 截断 warn 节流状态——模块级而非实例字段（sanitize 是实例
@@ -1392,6 +1395,10 @@ export class ExecutorService {
     // 遗留 P1-24：恢复在线即清除离线原因标注。
     e.offlineReason = null;
     e.lastHeartbeat = new Date();
+    // agentCapabilities 是独立写面。即使调用方/测试给了带该字段的旧实体，
+    // register 的整实体 save 也不得用它覆盖并发到达的 Agent 能力上报。
+    delete (e as Partial<Executor>).agentCapabilities;
+    delete (e as Partial<Executor>).agentCapabilitiesUpdatedAt;
     return this.repo.save(e);
   }
 
@@ -2132,12 +2139,48 @@ export class ExecutorService {
   }
 
   /**
-   * P6 agent-collab（设计文档 11 §3.2）：执行器上报能力清单（覆盖式）。
-   * 接 SOP 协作面的机器在此声明 `agent:sop`——「空能力 = runtime 通用」的
-   * 既有语义**不适用**于 SOP 派发（10 §缺口2补），必须显式声明。
+   * P7c：Agent 域能力覆盖式上报。与 register() 的运行时 capabilities 分列，
+   * 因此 GUI 白名单撤销时 [] 能清空 Agent 能力，又不会擦掉 python/node。
    */
   async updateCapabilities(id: string, capabilities: string[]): Promise<void> {
-    await this.repo.update({ id }, { capabilities });
+    const allowed = new Set([
+      "agent:sop",
+      "filesystem",
+      "http",
+      "browser",
+      "gui",
+    ]);
+    if (
+      !Array.isArray(capabilities) ||
+      capabilities.some((cap) => typeof cap !== "string" || !allowed.has(cap))
+    ) {
+      throw new BadRequestException("Agent capabilities 含不支持的能力域");
+    }
+    await this.repo.update(
+      { id },
+      {
+        agentCapabilities: [...new Set(capabilities)],
+        agentCapabilitiesUpdatedAt: new Date(),
+      },
+    );
+  }
+
+  /** 显式取 select:false 列；旧行、失联或撤销均按无 Agent 能力处理。 */
+  async getAgentCapabilities(id: string): Promise<string[]> {
+    const executor = await this.repo.findOne({
+      where: { id },
+      select: {
+        id: true,
+        agentCapabilities: true,
+        agentCapabilitiesUpdatedAt: true,
+      },
+    });
+    const updatedAt = executor?.agentCapabilitiesUpdatedAt?.getTime();
+    const age = updatedAt === undefined ? NaN : Date.now() - updatedAt;
+    if (!Number.isFinite(age) || age < 0 || age > AGENT_CAPABILITIES_LEASE_MS) {
+      return [];
+    }
+    return executor?.agentCapabilities ?? [];
   }
 
   /**

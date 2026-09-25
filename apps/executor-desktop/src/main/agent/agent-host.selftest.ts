@@ -32,7 +32,7 @@ const MAIN_BAD = "process.exit(1);\n";
 const VERIFY_OK = "const c = require('fs').readFileSync('out.txt', 'utf8');\nif (c !== 'fine') process.exit(2);\n";
 
 /** 模拟中台：记录所有请求，按脚本回响应。assignment 只在首个 poll 发出。 */
-function makeCenter(opts: { llmScript: string[]; sopPolicy?: unknown }) {
+function makeCenter(opts: { llmScript: string[]; sopPolicy?: unknown; sopCapabilities?: string[] }) {
   const requests: Array<{ path: string; body: Record<string, unknown> }> = [];
   const llmQueue = [...opts.llmScript];
   let assignmentSent = false;
@@ -63,7 +63,7 @@ function makeCenter(opts: { llmScript: string[]; sopPolicy?: unknown }) {
               sop: {
                 slug: 'e2e-sop', title: 'T', version: '1.0.0', contentHash: 'h',
                 frontMatter: {
-                  capabilities: ['filesystem'],
+                  capabilities: opts.sopCapabilities ?? ['filesystem'],
                   acceptance: [{ kind: 'command', run: 'node verify.js' }],
                   constraints: {},
                 },
@@ -158,6 +158,9 @@ async function main(): Promise<void> {
     const host = new AgentHost({ address: 'a:1', workDir, getConfig: () => config, client });
     const r = await host.tick();
     check('tick 处理了工单', r.worked === true);
+    check('首次 poll 前先声明 agent:sop 能力',
+      center.requests[0]?.path === '/api/agent-collab/capability' &&
+      center.requests[1]?.path === '/api/agent-collab/poll');
     check('能力上报含 agent:sop', center.requests.some((q) => q.path === '/api/agent-collab/capability' && JSON.stringify(q.body.capabilities ?? '').includes('agent:sop')));
     check('浏览器能力按探测如实上报（本机未装二进制 → 无 browser）', (() => {
       const cap = center.requests.find((q) => q.path === '/api/agent-collab/capability');
@@ -174,6 +177,16 @@ async function main(): Promise<void> {
     check('packageRef 进回报（中台据此走 deploy 通道）', result?.packageRef?.packageId === 'pkg-1', JSON.stringify(result?.packageRef ?? null));
     check('lastOutcome 记录', host.stats.lastOutcome === 'delivered');
     check('工作区产物落盘', fs.existsSync(path.join(workDir, 'agent-workspace', ASSIGNMENT_ID, 'out.txt')));
+    const capsBeforeRenew = center.requests.filter((q) => q.path === '/api/agent-collab/capability').length;
+    (host as unknown as { lastCapabilityReportAt: number }).lastCapabilityReportAt -= 30_000;
+    await host.tick();
+    const capsAfterRenew = center.requests.filter((q) => q.path === '/api/agent-collab/capability').length;
+    check('待命轮询会续报 Agent 能力租约', capsAfterRenew > capsBeforeRenew);
+    config.agentEnabled = false;
+    await host.withdrawCapabilities();
+    const capRequests = center.requests.filter((q) => q.path === '/api/agent-collab/capability');
+    const lastCap = capRequests[capRequests.length - 1];
+    check('关闭托管后撤销 Agent 能力', Array.isArray(lastCap?.body.capabilities) && lastCap.body.capabilities.length === 0);
     await center.close();
   }
 
@@ -235,10 +248,82 @@ async function main(): Promise<void> {
     const client = new CollabClient({ baseUrl, token: 't', timeoutMs: 5000 });
     const config: AgentHostConfig = { agentEnabled: true, adminApiUrl: baseUrl, executorToken: 't', agent: { preset: 'minimal' } };
     const host = new AgentHost({ address: 'a:1', workDir, getConfig: () => config, client });
+    const originalReport = client.reportCapability.bind(client);
+    let releaseReport: (() => void) | undefined;
+    const blockedReport = new Promise<void>((resolve) => { releaseReport = resolve; });
+    client.reportCapability = async (...args) => {
+      await blockedReport;
+      return originalReport(...args);
+    };
+    const first = host.tick();
+    const concurrent = await host.tick();
+    check('能力上报尚未完成时再次 tick 会跳过', concurrent.worked === false &&
+      (concurrent.detail ?? '').includes('single-flight'));
+    releaseReport?.();
+    await first;
+    check('并发 tick 只领取一次', center.requests.filter((q) => q.path === '/api/agent-collab/poll').length === 1);
     // 手工置 working → tick 必须跳过
     (host as unknown as { working: boolean }).working = true;
     const r = await host.tick();
     check('处理中时 tick 跳过（单飞行）', r.worked === false && (r.detail ?? '').includes('single-flight'));
+    await center.close();
+  }
+
+  console.log('-- 6. 能力续报与撤销串行 --');
+  {
+    const workDir = newWorkDir();
+    const center = makeCenter({ llmScript: [] });
+    const baseUrl = await center.listen();
+    const client = new CollabClient({ baseUrl, token: 't', timeoutMs: 5000 });
+    const config: AgentHostConfig = { agentEnabled: true, adminApiUrl: baseUrl, executorToken: 't', agent: { preset: 'minimal' } };
+    const host = new AgentHost({ address: 'a:1', workDir, getConfig: () => config, client });
+    const originalReport = client.reportCapability.bind(client);
+    let reportStarted: (() => void) | undefined;
+    let releaseReport: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => { reportStarted = resolve; });
+    const blocked = new Promise<void>((resolve) => { releaseReport = resolve; });
+    let firstReport = true;
+    client.reportCapability = async (...args) => {
+      if (firstReport) {
+        firstReport = false;
+        reportStarted?.();
+        await blocked;
+      }
+      return originalReport(...args);
+    };
+    const running = host.tick();
+    await started;
+    config.agentEnabled = false;
+    const withdrawing = host.withdrawCapabilities();
+    releaseReport?.();
+    await Promise.all([running, withdrawing]);
+    const capabilityReports = center.requests.filter((q) => q.path === '/api/agent-collab/capability');
+    check('关闭时在途续报先落库，最终能力为撤销', capabilityReports.length >= 2 &&
+      Array.isArray(capabilityReports[capabilityReports.length - 1].body.capabilities) &&
+      (capabilityReports[capabilityReports.length - 1].body.capabilities as unknown[]).length === 0);
+    await center.close();
+  }
+
+  console.log('-- 7. 中台策略收紧后拒绝旧能力指派 --');
+  {
+    const workDir = newWorkDir();
+    const center = makeCenter({
+      llmScript: [],
+      sopCapabilities: ['gui'],
+      sopPolicy: { permissionPolicy: 'standard', allowedProfiles: ['minimal', 'standard'] },
+    });
+    const baseUrl = await center.listen();
+    const client = new CollabClient({ baseUrl, token: 't', timeoutMs: 5000 });
+    const config: AgentHostConfig = {
+      agentEnabled: true, adminApiUrl: baseUrl, executorToken: 't',
+      agent: { preset: 'standard', hostAccess: 'app-scoped', allowedApps: ['notepad'] },
+    };
+    const host = new AgentHost({ address: 'a:1', workDir, getConfig: () => config, client });
+    await host.tick();
+    const complete = center.requests.find((q) => q.path === `/api/agent-collab/assignments/${ASSIGNMENT_ID}/complete`);
+    check('最新策略撤销 gui 后明确回报权限不足', complete?.body.status === 'failed' &&
+      (complete?.body.result as { outcome?: string })?.outcome === 'permission_denied');
+    check('能力不足的工单不调用 LLM', !center.requests.some((q) => q.path === '/api/agent-collab/llm'));
     await center.close();
   }
 

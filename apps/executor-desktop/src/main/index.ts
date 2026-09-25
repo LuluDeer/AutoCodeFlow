@@ -3,6 +3,8 @@ import { ConfigStore } from './config-store';
 import { ExecutorProcess } from './executor-process';
 import { AgentHost } from './agent/agent-host';
 import { CollabClient } from './agent/collab-client';
+import type { AgentStatusSnapshot } from './agent-status-view';
+import { agentHostIdentity as buildAgentHostIdentity, agentHostTransition } from './agent-host-lifecycle';
 import { HeartbeatMonitor } from './heartbeat';
 import { TrayManager } from './tray';
 import { WindowManager } from './window-manager';
@@ -151,6 +153,10 @@ app.whenReady().then(async () => {
 
   // P7b：Agent 托管（agentEnabled=true 且配置齐全时开始轮询 agent-collab）
   syncAgentHostWithConfig();
+  // P7c：Agent 处理一单可能持续数分钟，托盘需要在工作态变化时及时更新。
+  // 状态快照是本地内存读取；未变化时 TrayManager 不重建菜单。
+  const agentStatusTimer = setInterval(refreshTrayAgentStatus, 2_000);
+  agentStatusTimer.unref?.();
 });
 
 // DSK-04：配置保存后热同步通知开关与 meta 轮询目录（workDir 可能被改）。
@@ -166,21 +172,50 @@ export function syncNotifierWithConfig(): void {
 
 const AGENT_POLL_INTERVAL_MS = 30_000;
 let agentHost: AgentHost | null = null;
+let agentHostIdentity: string | null = null;
+let agentHostReady: Promise<void> = Promise.resolve();
+let agentTickPromise: Promise<unknown> | null = null;
 let agentTimer: NodeJS.Timeout | null = null;
+let lastAgentStatusRefreshError: string | null = null;
+
+function configuredAgentIdentity(cfg: ReturnType<typeof configStore.getAll>): string {
+  return buildAgentHostIdentity({
+    baseUrl: cfg.adminApiUrl,
+    token: configStore.getDecryptedToken(),
+    address: cfg.executorAddressPublic || `${cfg.executorHost}:${cfg.executorPort}`,
+    workDir: cfg.workDir,
+  });
+}
+
+function queueAgentWithdrawal(host: AgentHost): void {
+  agentHostReady = agentHostReady.then(() => host.withdrawCapabilities()).catch((err) => {
+    log.warn(`[agent-host] capability withdrawal failed: ${err instanceof Error ? err.message : String(err)}`);
+  });
+}
 
 /** 按当前配置重建/启停 agent-host（config:save 后与启动时各调一次）。 */
 export function syncAgentHostWithConfig(): void {
   try {
     const cfg = configStore.getAll();
     if (cfg.agentEnabled && cfg.adminApiUrl && cfg.workDir) {
+      const identity = configuredAgentIdentity(cfg);
+      const transition = agentHostTransition(agentHostIdentity, identity, agentTickPromise !== null);
+      if (transition === 'defer') return;
+      if (transition === 'replace' && agentHost) {
+        // 当前 tick 可能正在使用旧 Client/工作目录；等它结束再切换。
+        queueAgentWithdrawal(agentHost);
+        agentHost = null;
+        agentHostIdentity = null;
+      }
       if (!agentHost) {
+        const boundIdentity = identity;
         agentHost = new AgentHost({
           address: cfg.executorAddressPublic || `${cfg.executorHost}:${cfg.executorPort}`,
           workDir: cfg.workDir,
           getConfig: () => {
             const c = configStore.getAll();
             return {
-              agentEnabled: c.agentEnabled === true,
+              agentEnabled: c.agentEnabled === true && configuredAgentIdentity(c) === boundIdentity,
               adminApiUrl: c.adminApiUrl,
               executorToken: c.executorToken,
               agent: {
@@ -200,41 +235,67 @@ export function syncAgentHostWithConfig(): void {
             token: configStore.getDecryptedToken(),
           }),
         });
+        agentHostIdentity = identity;
         log.info('[agent-host] created (agentEnabled=true)');
       }
       if (!agentTimer) {
         // host.tick 内部恒 0 等待：轮询节奏由本定时器驱动；处理指派是
         // 分钟级动作（LLM 循环），host 单飞行保证不并发
         agentTimer = setInterval(() => {
-          void agentHost?.tick().catch(() => undefined);
+          syncAgentHostWithConfig();
+          const host = agentHost;
+          if (!agentTimer || !host || agentTickPromise) return;
+          const ready = agentHostReady;
+          agentTickPromise = ready.then(async () => {
+            if (host === agentHost) await host.tick();
+          }).catch((err) => {
+            log.warn(`[agent-host] tick failed: ${err instanceof Error ? err.message : String(err)}`);
+          }).finally(() => {
+            agentTickPromise = null;
+            syncAgentHostWithConfig();
+          });
         }, AGENT_POLL_INTERVAL_MS);
         agentTimer.unref?.();
       }
     } else {
-      // 关闭开关 / 配置不全：停轮询但不销毁 host（配置补全后原对象复用）
+      // 关闭开关 / 配置不全：停轮询。host 可在配置补全后按 identity 复用。
       if (agentTimer) {
         clearInterval(agentTimer);
         agentTimer = null;
       }
+      // 当前指派仍在处理时由 host 延后到 finally 撤销；新指派立即停收。
+      if (agentHost) queueAgentWithdrawal(agentHost);
     }
   } catch (err) {
     // Agent 托管绝不影响桌面主链（执行器子进程/心跳/托盘）——失败仅记日志
     log.warn(`[agent-host] sync failed: ${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    // 配置保存后立即反映在托盘，不等下一次状态轮询。
+    refreshTrayAgentStatus();
+  }
+}
+
+function refreshTrayAgentStatus(): void {
+  try {
+    trayManager.setAgentStatus(getAgentHostStatus());
+    lastAgentStatusRefreshError = null;
+  } catch (err) {
+    // 配置损坏等异常不能影响执行器心跳或托盘主链；2 秒轮询也不能
+    // 把同一错误反复刷进日志。
+    const message = err instanceof Error ? err.message : String(err);
+    if (message !== lastAgentStatusRefreshError) {
+      log.warn(`[agent-host] status refresh failed: ${message}`);
+      lastAgentStatusRefreshError = message;
+    }
   }
 }
 
 /** IPC 面：Agent 托管的当前状态（设置页 Agent 组的状态行读它）。 */
-export function getAgentHostStatus(): {
-  enabled: boolean;
-  working: boolean;
-  lastAssignmentId: string | null;
-  lastOutcome: string | null;
-  processed: number;
-  lastEffectiveProfile: string | null;
-} {
+export function getAgentHostStatus(): AgentStatusSnapshot {
   const cfg = configStore.getAll();
   return {
     enabled: cfg.agentEnabled === true,
+    polling: agentTimer !== null,
     ...(agentHost?.stats ?? { working: false, lastAssignmentId: null, lastOutcome: null, processed: 0, lastEffectiveProfile: null }),
   };
 }

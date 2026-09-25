@@ -744,6 +744,105 @@ describe("ExecutorService (__tests__)", () => {
       expect(existing.description).toBe("Production executor");
       expect(existing.status).toBe(ExecutorStatus.ONLINE);
     });
+
+    it("re-register refreshes runtimes without writing a stale Agent capability snapshot", async () => {
+      const existing: any = {
+        id: "executor-1",
+        appName: "node-executor",
+        address: "127.0.0.1:3199",
+        capabilities: ["python"],
+        agentCapabilities: ["agent:sop", "gui"],
+        agentCapabilitiesUpdatedAt: new Date(),
+      };
+      executorRepo.findOne.mockResolvedValue(existing);
+      executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+
+      await service.register({
+        appName: "node-executor",
+        address: existing.address,
+        capabilities: ["python", "node"],
+      });
+
+      expect(existing.capabilities).toEqual(["python", "node"]);
+      expect(executorRepo.save.mock.calls[0][0]).not.toHaveProperty(
+        "agentCapabilities",
+      );
+      expect(executorRepo.save.mock.calls[0][0]).not.toHaveProperty(
+        "agentCapabilitiesUpdatedAt",
+      );
+    });
+
+    it("Agent reports replace only Agent capabilities and [] revokes GUI without touching runtimes", async () => {
+      await service.updateCapabilities("executor-1", [
+        "agent:sop",
+        "gui",
+        "gui",
+      ]);
+      expect(executorRepo.update).toHaveBeenCalledWith(
+        { id: "executor-1" },
+        {
+          agentCapabilities: ["agent:sop", "gui"],
+          agentCapabilitiesUpdatedAt: expect.any(Date),
+        },
+      );
+
+      executorRepo.update.mockClear();
+      await service.updateCapabilities("executor-1", []);
+      expect(executorRepo.update).toHaveBeenCalledWith(
+        { id: "executor-1" },
+        { agentCapabilities: [], agentCapabilitiesUpdatedAt: expect.any(Date) },
+      );
+
+      executorRepo.update.mockClear();
+      await expect(
+        service.updateCapabilities("executor-1", ["python"]),
+      ).rejects.toThrow("Agent capabilities 含不支持的能力域");
+      expect(executorRepo.update).not.toHaveBeenCalled();
+    });
+
+    it("Agent capability reads require a fresh lease and fail closed for legacy and stale rows", async () => {
+      executorRepo.findOne.mockResolvedValueOnce({
+        id: "executor-1",
+        agentCapabilities: ["agent:sop"],
+        agentCapabilitiesUpdatedAt: new Date(Date.now() - 30_000),
+      });
+      expect(await service.getAgentCapabilities("executor-1")).toEqual([
+        "agent:sop",
+      ]);
+      expect(executorRepo.findOne).toHaveBeenCalledWith({
+        where: { id: "executor-1" },
+        select: {
+          id: true,
+          agentCapabilities: true,
+          agentCapabilitiesUpdatedAt: true,
+        },
+      });
+
+      executorRepo.findOne.mockResolvedValueOnce({
+        id: "executor-1",
+        agentCapabilities: ["agent:sop"],
+        agentCapabilitiesUpdatedAt: null,
+      });
+      expect(await service.getAgentCapabilities("executor-1")).toEqual([]);
+      executorRepo.findOne.mockResolvedValueOnce({
+        id: "executor-1",
+        agentCapabilities: ["agent:sop"],
+        agentCapabilitiesUpdatedAt: new Date(Date.now() - 121_000),
+      });
+      expect(await service.getAgentCapabilities("executor-1")).toEqual([]);
+      executorRepo.findOne.mockResolvedValueOnce({
+        id: "executor-1",
+        agentCapabilities: ["agent:sop"],
+        agentCapabilitiesUpdatedAt: new Date(Date.now() + 30_000),
+      });
+      expect(await service.getAgentCapabilities("executor-1")).toEqual([]);
+      executorRepo.findOne.mockResolvedValueOnce({
+        id: "executor-1",
+        agentCapabilities: null,
+        agentCapabilitiesUpdatedAt: new Date(),
+      });
+      expect(await service.getAgentCapabilities("executor-1")).toEqual([]);
+    });
   });
 
   describe("registerExecutor — N4 idempotent token issuance", () => {

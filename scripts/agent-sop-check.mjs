@@ -296,6 +296,7 @@ console.log("\n── 2. SopService（发布/指派/澄清/完成）──");
       { notify: async (...a) => notifyCalls.push(a) },
       { getStats: () => ({ isLeader: true }) }, // SchedulerService 打桩
       { add: async (name, data) => ({ name, data }) },
+      { getAgentCapabilities: async () => opts.agentCapabilities ?? ["agent:sop", "browser", "http"] },
     );
     // 打桩的 NotificationService.notify 计数（升级通知走它）
     svc._notifyCalls = notifyCalls;
@@ -309,6 +310,17 @@ console.log("\n── 2. SopService（发布/指派/澄清/完成）──");
     const d = await svc.draft({ slug, title: "T", frontMatterYaml: VALID_YAML, bodyMarkdown: "# body", createdBy: "user:u1" });
     const { version } = await svc.publish({ sopId: d.id, publishedBy: "user:u1" });
     return { sop: d, version };
+  }
+
+  // 能力可行性：旧 runtime 列不授权 SOP；缺少发布版要求的域也不能指派。
+  {
+    const { svc, asgRepo } = makeSvc({ agentCapabilities: ["agent:sop", "http"] });
+    const { sop } = await seedPublished(svc, "capability-gate");
+    let rejected = false;
+    try {
+      await svc.assign({ sopId: sop.id, executorId: UUID_A, assignedBy: "user:u1" });
+    } catch { rejected = true; }
+    check("缺 browser 能力时拒绝指派", rejected && asgRepo.rows.length === 0);
   }
 
   // 发布语义
