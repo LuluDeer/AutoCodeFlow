@@ -79,7 +79,9 @@ export class WecomChannel extends BaseChannel {
       this.logger.log(`[Wecom] sent: ${p.title}`);
       return "sent";
     } catch (error) {
-      this.logger.error(`[Wecom] send failed after retries: ${error.message}`);
+      this.logger.error(
+        `[Wecom] send failed after retries: ${error instanceof Error ? error.message : String(error)}`,
+      );
       return "failed";
     }
   }

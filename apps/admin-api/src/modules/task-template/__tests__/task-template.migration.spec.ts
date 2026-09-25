@@ -49,7 +49,7 @@ describe("CreateTaskTemplates1789800000000 (CORE-03)", () => {
   it("迁移类可解析：name 与类名一致且 up/down 为函数", () => {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const mod = require(MIGRATION_FILE);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
     const Ctor = Object.values(mod)[0] as any;
     expect(Ctor.name).toBe("CreateTaskTemplates1789800000000");
     expect(Ctor.name.endsWith("1789800000000")).toBe(true);

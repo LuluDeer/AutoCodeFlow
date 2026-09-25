@@ -7,7 +7,7 @@ import {
 } from "@nestjs/common";
 import { APP_INTERCEPTOR } from "@nestjs/core";
 import { Test } from "@nestjs/testing";
-import * as request from "supertest";
+import request from "supertest";
 import { WriteGuard } from "../../decorators/write-guard.decorator";
 import {
   recordOwnershipAssertion,

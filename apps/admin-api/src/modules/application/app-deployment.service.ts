@@ -221,7 +221,7 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     const [data, total] = await this.repo.findAndCount({
       where,
       order: { createdAt: "DESC" },
-      relations: ["application"],
+      relations: { application: true },
       skip: (page - 1) * limit,
       take: limit,
     });
@@ -233,7 +233,7 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     return this.repo.find({
       where: { applicationId },
       order: { createdAt: "DESC" },
-      relations: ["application"],
+      relations: { application: true },
       // O-6: safety cap — a single app should never legitimately have thousands
       // of deployment rows; bounds memory on internal list consumers.
       take: 5000,
@@ -247,7 +247,7 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
   async findByIdRaw(id: string): Promise<AppDeployment> {
     const d = await this.repo.findOne({
       where: { id },
-      relations: ["application"],
+      relations: { application: true },
     });
     if (!d) throw new NotFoundException(`Deployment ${id} not found`);
     return d;
@@ -279,7 +279,7 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
   async findById(id: string): Promise<AppDeployment> {
     const d = await this.repo.findOne({
       where: { id },
-      relations: ["application"],
+      relations: { application: true },
     });
     if (!d) throw new NotFoundException(`Deployment ${id} not found`);
     return this.maskDeploymentForRead(d);
@@ -509,7 +509,7 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
           : (
               await this.versionRepo.find({
                 where: { applicationId },
-                select: ["version"] as never,
+                select: { version: true } as never,
               })
             ).map((v) => v.version),
       );

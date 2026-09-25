@@ -2,7 +2,7 @@ import { Test } from "@nestjs/testing";
 import { INestApplication } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import * as jwt from "jsonwebtoken";
-import * as request from "supertest";
+import request from "supertest";
 import * as fs from "fs";
 import * as nodePath from "path";
 import { Readable } from "stream";

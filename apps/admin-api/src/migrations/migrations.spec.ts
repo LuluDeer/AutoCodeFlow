@@ -29,7 +29,6 @@ const migrationFiles = (): { file: string; stamp: string }[] =>
 // 测试断言逻辑本身不受影响。
 const isCurrentTestFile = (): boolean => {
   try {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const state = (globalThis as any).expect?.getState?.();
     return (
       typeof state?.testPath === "string" &&
@@ -59,7 +58,6 @@ if (
         // eslint-disable-next-line @typescript-eslint/no-require-imports
         const mod = require(path.join(MIGRATIONS_DIR, file));
         const classes = Object.values(mod).filter(
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
           (v: any) => typeof v === "function" && typeof v?.name === "string",
         ) as { name: string }[];
         expect(classes.length).toBeGreaterThan(0);
@@ -91,7 +89,7 @@ if (
       for (const { file } of streamD) {
         // eslint-disable-next-line @typescript-eslint/no-require-imports
         const mod = require(path.join(MIGRATIONS_DIR, file));
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
         const proto = Object.values(mod)[0] as any;
         const instance = new proto();
         expect(instance.name).toBe(proto.name);
@@ -107,7 +105,7 @@ if (
       expect(m).toBeDefined();
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const mod = require(path.join(MIGRATIONS_DIR, m!.file));
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
       const proto = Object.values(mod)[0] as any;
       const instance = new proto();
       expect(instance.name).toBe(proto.name);
@@ -124,7 +122,7 @@ if (
       expect(m).toBeDefined();
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const mod = require(path.join(MIGRATIONS_DIR, m!.file));
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
       const proto = Object.values(mod)[0] as any;
       const instance = new proto();
       expect(instance.name).toBe(proto.name);
@@ -145,7 +143,7 @@ if (
       expect(m).toBeDefined();
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const mod = require(path.join(MIGRATIONS_DIR, m!.file));
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
       const proto = Object.values(mod)[0] as any;
       const instance = new proto();
       expect(instance.name).toBe(proto.name);
@@ -180,7 +178,7 @@ if (
       expect(Number(m!.stamp)).toBeGreaterThan(1789200000000);
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const mod = require(path.join(MIGRATIONS_DIR, m!.file));
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
       const proto = Object.values(mod)[0] as any;
       const instance = new proto();
       expect(instance.name).toBe(proto.name);
@@ -211,7 +209,7 @@ if (
       expect(Number(m!.stamp)).toBeGreaterThan(1790000000019);
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const mod = require(path.join(MIGRATIONS_DIR, m!.file));
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
       const proto = Object.values(mod)[0] as any;
       const instance = new proto();
       expect(instance.name).toBe(proto.name);

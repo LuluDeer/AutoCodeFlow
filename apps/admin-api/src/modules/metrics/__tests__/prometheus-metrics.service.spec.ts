@@ -674,7 +674,7 @@ describe("capacity water-level gauges (OBS-05)", () => {
     expect(find).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { status: "online" },
-        select: ["address", "diskUsage"],
+        select: { address: true, diskUsage: true },
       }),
     );
   });

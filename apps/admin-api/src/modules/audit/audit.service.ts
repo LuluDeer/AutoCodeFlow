@@ -97,7 +97,7 @@ export class AuditService {
           await em.query(AUDIT_GUARD_BYPASS_SQL);
           const auditRepo = em.getRepository(AuditLog);
           const victims = await auditRepo.find({
-            select: ["id"],
+            select: { id: true },
             where: { createdAt: LessThan(cutoff) },
             order: { id: "ASC" },
             take: AUDIT_RETENTION_BATCH_SIZE,

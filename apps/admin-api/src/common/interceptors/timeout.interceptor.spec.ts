@@ -36,7 +36,7 @@ class FixtureController {
   normal() {}
 }
 
-const makeCtx = (handler: (...args: unknown[]) => unknown): ExecutionContext =>
+const makeCtx = (handler: (...args: any[]) => unknown): ExecutionContext =>
   ({
     getHandler: () => handler,
     getClass: () => FixtureController,

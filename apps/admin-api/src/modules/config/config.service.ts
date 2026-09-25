@@ -373,7 +373,7 @@ export class SystemConfigService {
    */
   async getSecretKeys(): Promise<Set<string>> {
     const secrets = await this.repo.find({
-      select: ["key"],
+      select: { key: true },
       where: { isSecret: true },
     });
     return new Set(secrets.map((s) => s.key));

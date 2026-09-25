@@ -7,7 +7,10 @@ import {
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { OptimisticLockVersionMismatchError } from "typeorm";
-import { AppDeploymentService, STOP_NOT_DELIVERED_PREFIX } from "../app-deployment.service";
+import {
+  AppDeploymentService,
+  STOP_NOT_DELIVERED_PREFIX,
+} from "../app-deployment.service";
 import {
   AppDeployment,
   DeploymentStatus,
@@ -187,7 +190,7 @@ describe("AppDeploymentService", () => {
       expect(repo.findAndCount).toHaveBeenCalledWith({
         where: {},
         order: { createdAt: "DESC" },
-        relations: ["application"],
+        relations: { application: true },
         skip: 0,
         take: 20,
       });
@@ -1233,7 +1236,9 @@ describe("AppDeploymentService", () => {
 
       const result = await service.stop("deploy-1");
       expect(result.status).toBe(DeploymentStatus.STOPPED);
-      expect(result.statusMessage ?? "").not.toContain(STOP_NOT_DELIVERED_PREFIX);
+      expect(result.statusMessage ?? "").not.toContain(
+        STOP_NOT_DELIVERED_PREFIX,
+      );
     });
   });
 

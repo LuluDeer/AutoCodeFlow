@@ -145,18 +145,18 @@ export class MetricsService {
       where: { status: ExecutionStatus.FAILED },
       order: { createdAt: "DESC" },
       take: 10,
-      select: [
-        "id",
-        "taskId",
-        "taskName",
-        "errorMessage",
-        "failureReason",
+      select: {
+        id: true,
+        taskId: true,
+        taskName: true,
+        errorMessage: true,
+        failureReason: true,
         // 改动2（可观测性补齐）：透出回调上报的原始退出码，失败溯源不再
         // 只有推断出的 failureReason。
-        "exitCode",
-        "createdAt",
-        "duration",
-      ],
+        exitCode: true,
+        createdAt: true,
+        duration: true,
+      },
     });
   }
 

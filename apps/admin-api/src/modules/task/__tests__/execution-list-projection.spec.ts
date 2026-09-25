@@ -161,7 +161,7 @@ describe("PERF-03 源码层：两个列表端点都带上了投影", () => {
     expect(start).toBeGreaterThan(-1);
     const body = normalize(SERVICE.slice(start, start + 1400));
     expect(body).toMatch(
-      /select:\s*executionListSelectColumns\(\s*this\.execRepo,?\s*\)/,
+      /select:\s*executionListSelectMap\(\s*this\.execRepo,?\s*\)/,
     );
   });
 

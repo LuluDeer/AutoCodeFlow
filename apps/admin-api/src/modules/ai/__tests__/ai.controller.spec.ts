@@ -62,7 +62,7 @@ describe("AiController (N11)", () => {
   describe("RolesGuard semantics", () => {
     const guard = new RolesGuard(new Reflector());
     const ctxWith = (
-      handler: (...args: unknown[]) => unknown,
+      handler: (...args: any[]) => unknown,
       role: UserRole,
     ): ExecutionContext =>
       ({
