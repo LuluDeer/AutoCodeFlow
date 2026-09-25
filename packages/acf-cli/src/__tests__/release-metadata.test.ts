@@ -17,10 +17,12 @@
  */
 import { describe, it, expect } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 
-const PKG_DIR = join(__dirname, '..', '..');
+// ESM 无 __dirname：本测试文件位于 <pkg>/src/__tests__/，上溯两级即包根。
+const PKG_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const pkg = JSON.parse(readFileSync(join(PKG_DIR, 'package.json'), 'utf-8')) as {
   name: string;
   version: string;

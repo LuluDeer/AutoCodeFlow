@@ -1,8 +1,8 @@
 import { Command } from 'commander';
 import * as readline from 'readline';
-import { post, formatApiError } from '../client';
-import { setApiUrl, setToken, setRefreshToken, showConfig } from '../config';
-import { resetClient } from '../client';
+import { post, formatApiError } from '../client.js';
+import { setApiUrl, setToken, setRefreshToken, showConfig } from '../config.js';
+import { resetClient } from '../client.js';
 import chalk from 'chalk';
 
 function prompt(question: string): Promise<string> {

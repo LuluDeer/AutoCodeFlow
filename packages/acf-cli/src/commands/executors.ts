@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import Table from 'cli-table3';
 import chalk from 'chalk';
 import ora from 'ora';
-import { get, post, formatApiError } from '../client';
+import { get, post, formatApiError } from '../client.js';
 
 // Field names aligned with the Executor entity
 // (apps/admin-api/src/modules/executor/entities/executor.entity.ts)

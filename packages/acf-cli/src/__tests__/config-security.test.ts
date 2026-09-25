@@ -31,7 +31,7 @@ const modeOf = (p: string): number => fs.statSync(p).mode & 0o777;
 
 async function loadConfig() {
   process.env.ACF_CONFIG_DIR = dir;
-  return import('../config');
+  return import('../config.js');
 }
 
 // POSIX permission bits are meaningless on Windows CI; the chmod is best-effort

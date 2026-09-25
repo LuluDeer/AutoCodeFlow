@@ -6,7 +6,7 @@ import axios from 'axios';
 import { spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
-import { get, post, patch, del, formatApiError, ANALYZE_TIMEOUT_MS } from '../client';
+import { get, post, patch, del, formatApiError, ANALYZE_TIMEOUT_MS } from '../client.js';
 
 interface Task {
   id: string;

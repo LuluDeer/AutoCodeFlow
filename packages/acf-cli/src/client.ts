@@ -9,7 +9,7 @@ import {
   setToken,
   setRefreshToken,
   clearAuth,
-} from "./config";
+} from "./config.js";
 
 let _client: AxiosInstance | null = null;
 

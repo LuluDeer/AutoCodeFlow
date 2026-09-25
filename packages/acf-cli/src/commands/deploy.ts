@@ -1,7 +1,7 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import ora from 'ora';
-import { post, formatApiError } from '../client';
+import { post, formatApiError } from '../client.js';
 
 interface Deployment {
   id: string;

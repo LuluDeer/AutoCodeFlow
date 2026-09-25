@@ -29,7 +29,7 @@ vi.mock('chalk', () => ({
   },
 }));
 
-vi.mock('../client', () => ({
+vi.mock('../client.js', () => ({
   get: vi.fn(),
   post: vi.fn(),
   put: vi.fn(),
@@ -39,8 +39,8 @@ vi.mock('../client', () => ({
   formatApiError: (e: unknown) => (e instanceof Error ? e.message : String(e)),
 }));
 
-import { get, post } from '../client';
-import { executorsCommand } from '../commands/executors';
+import { get, post } from '../client.js';
+import { executorsCommand } from '../commands/executors.js';
 
 const mockedGet = vi.mocked(get);
 const mockedPost = vi.mocked(post);

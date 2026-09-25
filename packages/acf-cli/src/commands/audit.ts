@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import Table from 'cli-table3';
 import chalk from 'chalk';
 import ora from 'ora';
-import { get, formatApiError } from '../client';
+import { get, formatApiError } from '../client.js';
 
 // Field names aligned with the AuditLog entity
 // (apps/admin-api/src/modules/audit/entities/audit-log.entity.ts);

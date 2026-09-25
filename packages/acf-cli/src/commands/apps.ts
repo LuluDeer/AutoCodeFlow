@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import Table from 'cli-table3';
 import chalk from 'chalk';
 import ora from 'ora';
-import { get, post, put, del, formatApiError, ANALYZE_TIMEOUT_MS } from '../client';
+import { get, post, put, del, formatApiError, ANALYZE_TIMEOUT_MS } from '../client.js';
 
 interface Application {
   id: string;

@@ -20,9 +20,9 @@
 import { Command } from 'commander';
 import axios from 'axios';
 import chalk from 'chalk';
-import { get, post } from '../client';
-import { getApiUrl } from '../config';
-import { formatApiError } from '../client';
+import { get, post } from '../client.js';
+import { getApiUrl } from '../config.js';
+import { formatApiError } from '../client.js';
 
 const TERMINAL = new Set(['success', 'failed', 'timeout', 'killed', 'cancelled']);
 
