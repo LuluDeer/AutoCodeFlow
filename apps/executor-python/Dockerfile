@@ -15,11 +15,17 @@ COPY . .
 
 # Q-08: run as non-root user to reduce container attack surface. uv is installed
 # by pip under /usr/local/bin (not root's home), which is on PATH for appuser.
-RUN addgroup --system appgroup && adduser --system --ingroup appgroup --no-create-home appuser \
+#
+# ESM-2/UV-1: 期望版本从 requirements.txt 现场解析，不再硬编码。此前字面量
+# 'uv 0.11.15' 与 requirements.txt 的 uv==0.12.18 漂移（依赖审计升级只改了
+# requirements.txt），导致两条断言在任何输入下都必然失败、镜像构建全红。
+RUN UV_EXPECTED="$(sed -nE 's/^uv==([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' requirements.txt | head -n1)" \
+    && test -n "$UV_EXPECTED" \
+    && addgroup --system appgroup && adduser --system --ingroup appgroup --no-create-home appuser \
     && mkdir -p /data/tasks /tmp/appuser-home \
     && chown -R appuser:appgroup /data/tasks /app /tmp/appuser-home \
     && command -v uv \
-    && test "$(uv --version | grep -oE 'uv [0-9]+\.[0-9]+\.[0-9]+' | head -n1)" = 'uv 0.11.15'
+    && test "$(uv --version | grep -oE 'uv [0-9]+\.[0-9]+\.[0-9]+' | head -n1)" = "uv $UV_EXPECTED"
 USER appuser
 
 # Keep the runtime lookup explicit and independent of root's home directory.
@@ -30,7 +36,8 @@ ENV PATH="/usr/local/bin:${PATH}" \
 
 # Build-time regression: execute the pinned binary as the actual runtime user
 # and exercise the exact flag used by routers/execute.py.
-RUN test "$(uv --version | grep -oE 'uv [0-9]+\.[0-9]+\.[0-9]+' | head -n1)" = 'uv 0.11.15' \
+RUN UV_EXPECTED="$(sed -nE 's/^uv==([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' requirements.txt | head -n1)" \
+    && test "$(uv --version | grep -oE 'uv [0-9]+\.[0-9]+\.[0-9]+' | head -n1)" = "uv $UV_EXPECTED" \
     && uv venv --no-project /tmp/uv-build-check \
     && test -x /tmp/uv-build-check/bin/python \
     && rm -rf /tmp/uv-build-check
