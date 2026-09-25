@@ -17,7 +17,7 @@ import { IsString, IsIn, IsOptional } from "class-validator";
 
 export class SaveAiConfigDto {
   @IsString()
-  @IsIn(["disabled", "openai", "ollama"])
+  @IsIn(["disabled", "openai", "ollama", "qwen"])
   provider: string;
 
   @IsOptional()
@@ -39,6 +39,27 @@ export class SaveAiConfigDto {
   @IsOptional()
   @IsString()
   ollamaModel?: string;
+
+  // P1: Qwen / DashScope 多模态配置
+  @IsOptional()
+  @IsString()
+  qwenApiKey?: string;
+
+  @IsOptional()
+  @IsString()
+  qwenModel?: string;
+
+  @IsOptional()
+  @IsString()
+  qwenBaseUrl?: string;
+
+  @IsOptional()
+  @IsString()
+  qwenMaxTokens?: string;
+
+  @IsOptional()
+  @IsString()
+  qwenTimeoutMs?: string;
 }
 
 @ApiTags("AI Config")
@@ -60,14 +81,10 @@ export class AiController {
   @ApiOperation({ summary: "Get current AI configuration" })
   async getConfig() {
     const effective = await this.aiService.getEffectiveConfig();
-    // Check if an API key is stored in DB (we return a boolean, never the value)
-    let hasApiKey = false;
-    try {
-      const rec = await this.systemConfig.findOne("ai.openaiApiKey");
-      hasApiKey = !!rec?.value;
-    } catch {
-      hasApiKey = false;
-    }
+    // P1: 按 provider 判定密钥就绪状态（此前硬编码查 ai.openaiApiKey，
+    // 导致「选了 qwen 却显示未配置 API Key」——见 ai.service.hasApiKeyForProvider）。
+    // 仍然只回布尔，永不回传密钥值。
+    const hasApiKey = await this.aiService.hasApiKeyForProvider();
     return { ...effective, hasApiKey };
   }
 
@@ -85,7 +102,7 @@ export class AiController {
       {
         key: "ai.provider",
         value: dto.provider,
-        description: "AI provider: disabled | openai | ollama",
+        description: "AI provider: disabled | openai | ollama | qwen",
       },
       {
         key: "ai.openaiModel",
@@ -107,6 +124,29 @@ export class AiController {
         value: dto.ollamaModel ?? "llama3",
         description: "Ollama model name",
       },
+      // P1: Qwen / DashScope 多模态配置
+      {
+        key: "ai.qwenModel",
+        value: dto.qwenModel ?? "qwen-vl-max",
+        description: "Qwen model name (multimodal: text + image + video)",
+      },
+      {
+        key: "ai.qwenBaseUrl",
+        value:
+          dto.qwenBaseUrl ??
+          "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        description: "Qwen / DashScope OpenAI-compatible base URL",
+      },
+      {
+        key: "ai.qwenMaxTokens",
+        value: dto.qwenMaxTokens ?? "4096",
+        description: "Qwen max_tokens (independent of openai's 500)",
+      },
+      {
+        key: "ai.qwenTimeoutMs",
+        value: dto.qwenTimeoutMs ?? "120000",
+        description: "Qwen request timeout ms (video understanding is slow)",
+      },
     ];
 
     // Only update API key if a new value was provided
@@ -116,6 +156,16 @@ export class AiController {
         value: dto.openaiApiKey,
         isSecret: true,
         description: "OpenAI API key (sensitive)",
+      });
+    }
+
+    // P1: qwen 密钥同样「仅在传非空值时更新」，语义与 openai 一致。
+    if (dto.qwenApiKey && dto.qwenApiKey.trim() !== "") {
+      items.push({
+        key: "ai.qwenApiKey",
+        value: dto.qwenApiKey,
+        isSecret: true,
+        description: "Qwen / DashScope API key (sensitive)",
       });
     }
 

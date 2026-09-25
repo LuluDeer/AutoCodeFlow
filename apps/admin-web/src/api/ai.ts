@@ -1,21 +1,32 @@
 import { client } from './client';
 
 export interface AiConfig {
-  provider: 'disabled' | 'openai' | 'ollama';
+  provider: 'disabled' | 'openai' | 'ollama' | 'qwen';
   openaiModel: string;
   openaiBaseUrl: string;
   ollamaHost: string;
   ollamaModel: string;
+  // P1: Qwen / DashScope 多模态生效配置（密钥除外，只有 hasApiKey 布尔）
+  qwenModel?: string;
+  qwenBaseUrl?: string;
+  qwenMaxTokens?: string;
+  qwenTimeoutMs?: string;
   hasApiKey: boolean;
 }
 
 export interface SaveAiConfigPayload {
-  provider: 'disabled' | 'openai' | 'ollama';
+  provider: 'disabled' | 'openai' | 'ollama' | 'qwen';
   openaiApiKey?: string;
   openaiModel?: string;
   openaiBaseUrl?: string;
   ollamaHost?: string;
   ollamaModel?: string;
+  // P1: Qwen 多模态
+  qwenApiKey?: string;
+  qwenModel?: string;
+  qwenBaseUrl?: string;
+  qwenMaxTokens?: string;
+  qwenTimeoutMs?: string;
 }
 
 /**

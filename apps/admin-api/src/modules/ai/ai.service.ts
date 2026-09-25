@@ -8,6 +8,68 @@ import {
   pinnedAxiosConfig,
 } from "../../common/utils/safe-http.util";
 
+// ═══════════════════════════════════════════════════════════════════
+// P1（agent-and-deployment）：多模态消息契约
+//
+// 为什么需要独立类型而不是复用 string prompt：Qwen 的视频理解要求
+// content 是**数组**（text + image_url + video_url），而既有 callOpenAI
+// 固定传 `content: prompt`（string）。两者请求体形状不兼容，故新增独立
+// 方法（chatMultimodal）而非改造 callOpenAI——后者是给「失败日志分析」
+// 用的，max_tokens=500 是刻意的省成本策略，不能被多模态需求污染。
+// ═══════════════════════════════════════════════════════════════════
+
+/** 多模态消息的一个片段。 */
+export type MultimodalPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } }
+  // ⚠️ video_url 是 **Qwen/DashScope 的扩展**，OpenAI 官方 API 无此类型。
+  // 标注在此以免误以为可移植到 openai provider。
+  | { type: "video_url"; video_url: { url: string } };
+
+export interface MultimodalMessage {
+  role: "system" | "user" | "assistant" | "tool";
+  content: string | MultimodalPart[];
+  /** role=tool 时必填，关联此前的 tool_call。 */
+  tool_call_id?: string;
+  /** role=assistant 且要求调用工具时使用。 */
+  tool_calls?: ToolCall[];
+}
+
+/** LLM 请求的工具调用（function calling）。 */
+export interface ToolCall {
+  id: string;
+  type: "function";
+  function: { name: string; arguments: string };
+}
+
+/** 暴露给 LLM 的工具 schema（P3 的 Agent 工具集用）。 */
+export interface ToolSchema {
+  type: "function";
+  function: {
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+  };
+}
+
+export interface MultimodalRequest {
+  messages: MultimodalMessage[];
+  tools?: ToolSchema[];
+  toolChoice?: "auto" | "none";
+  /** 覆盖 ai.qwenMaxTokens。 */
+  maxTokens?: number;
+}
+
+export interface MultimodalResponse {
+  content: string;
+  toolCalls?: ToolCall[];
+  usage: { tokensIn: number; tokensOut: number };
+  model: string;
+}
+
+/** 媒体 URL 的允许协议（拒绝 file:// / data: 之外的怪协议）。 */
+const MEDIA_URL_RE = /^https?:\/\//i;
+
 @Injectable()
 export class AiService {
   private readonly logger = new Logger(AiService.name);
@@ -205,12 +267,155 @@ export class AiService {
     try {
       if (provider === "openai") return await this.callOpenAI(prompt);
       if (provider === "ollama") return await this.callOllama(prompt);
+      // P1: qwen 走纯文本时复用 OpenAI 兼容分支的骨架，但用 qwen 自己的
+      // 模型/密钥/令牌上限——不作为 openai 的别名，否则「切到 qwen」会意外
+      // 带上 gpt-4o-mini 与 500 令牌上限。
+      if (provider === "qwen") return await this.callQwenText(prompt);
     } catch (e: unknown) {
       this.logger.warn(
         `AI error: ${e instanceof Error ? e.message : String(e)}`,
       );
     }
     return "";
+  }
+
+  /**
+   * P1: Qwen 纯文本路径（供既有三类分析复用：失败分析 / 排程建议 / 应用健康）。
+   *
+   * 与 chatMultimodal 的分工：本方法只处理 string prompt、返回 string，
+   * 与 callOpenAI 契约逐一对应（故可被 callProvider 直接替换使用）；
+   * 多模态与 tool-calling 走 chatMultimodal。
+   */
+  private async callQwenText(prompt: string): Promise<string> {
+    const res = await this.chatMultimodal({
+      messages: [{ role: "user", content: prompt }],
+    });
+    return res.content;
+  }
+
+  /**
+   * P1: 多模态对话（Qwen / DashScope OpenAI 兼容端点）。
+   *
+   * 与 callOpenAI 的关键差异：
+   *  - content 支持数组（text / image_url / video_url）；
+   *  - max_tokens 来自 ai.qwenMaxTokens，**不共享** openai 的 500；
+   *  - 支持 tools（function calling），供 P3 的 Agent 推理循环使用；
+   *  - 不做 sanitizeLogs 截断（多模态载荷不该被 3000 字符截断；
+   *    脱敏责任在调用方，见设计文档 05 §3）。
+   *
+   * 安全：出站走与 callOpenAI 完全相同的守卫——assertAndPinHttpUrl
+   * （SSRF + DNS pin）+ maxRedirects:0（拒 3xx 绕过）。**不新开旁路**。
+   */
+  async chatMultimodal(
+    req: MultimodalRequest,
+  ): Promise<MultimodalResponse> {
+    const provider = await this.getAiConfig("provider", "disabled");
+    if (provider !== "qwen") {
+      // fail-open：与既有 analyzeFailure 一致的姿态——未启用即返回空，
+      // 调用方按「无结果」降级，绝不抛错影响主链。
+      return {
+        content: "",
+        usage: { tokensIn: 0, tokensOut: 0 },
+        model: "",
+      };
+    }
+
+    const apiKey = await this.getAiConfig("qwenApiKey", "");
+    if (!apiKey) {
+      this.logger.warn("chatMultimodal: qwen provider enabled but no API key");
+      return { content: "", usage: { tokensIn: 0, tokensOut: 0 }, model: "" };
+    }
+
+    const model = await this.getAiConfig("qwenModel", "qwen-vl-max");
+    const baseUrl = await this.getAiConfig(
+      "qwenBaseUrl",
+      "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    );
+    const maxTokens = req.maxTokens ?? (await this.getQwenMaxTokens());
+    const timeoutMs = await this.getQwenTimeoutMs();
+
+    // F-3（SEC-NEW）: 与 callOpenAI 同款——校验同时把目标 pin 到通过的 IP
+    // （Host/SNI 保留），关闭 DNS rebinding 窗口。
+    const pinned = await assertAndPinHttpUrl(baseUrl, {
+      allowPrivateNetwork:
+        this.config.get<boolean>("ai.allowPrivateNetwork") === true,
+    });
+    const pinCfg = pinnedAxiosConfig(pinned);
+
+    this.validateMediaUrls(req.messages);
+
+    const body: Record<string, unknown> = {
+      model,
+      messages: req.messages,
+      max_tokens: maxTokens,
+    };
+    if (req.tools && req.tools.length > 0) {
+      body.tools = req.tools;
+      body.tool_choice = req.toolChoice ?? "auto";
+    }
+
+    const r = await axios.post(`${baseUrl}/chat/completions`, body, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      timeout: timeoutMs,
+      // R3: maxRedirects=0 —— 3xx 不得绕过首跳 SSRF 校验（同 callOpenAI）。
+      maxRedirects: 0,
+      ...pinCfg,
+    });
+
+    const choice = r.data?.choices?.[0];
+    const usage = r.data?.usage ?? {};
+    return {
+      content: choice?.message?.content ?? "",
+      toolCalls: choice?.message?.tool_calls ?? undefined,
+      usage: {
+        tokensIn: usage.prompt_tokens ?? 0,
+        tokensOut: usage.completion_tokens ?? 0,
+      },
+      model,
+    };
+  }
+
+  /**
+   * 媒体 URL 校验（P1 安全）。
+   *
+   * 威胁：媒体 URL 由**执行器 Agent 上报**，属于不可信输入。若原样转给
+   * DashScope（服务端拉取），就是 SSRF 转嫁——模型/上报方指定的 URL 会被
+   * 第三方服务请求。虽然 DashScope 在阿里云侧大概率打不到内网，但**不能
+   * 依赖这个假设**（设计文档 05 §3.1）。
+   *
+   * 因此：只接受 http(s)，且调用方必须保证 URL 来自平台 artifacts
+   * （不可猜测的签名 URL），而不是执行器直接给的外部地址。
+   */
+  private validateMediaUrls(messages: MultimodalMessage[]): void {
+    for (const msg of messages) {
+      if (typeof msg.content === "string") continue;
+      for (const part of msg.content) {
+        const url =
+          part.type === "image_url"
+            ? part.image_url?.url
+            : part.type === "video_url"
+              ? part.video_url?.url
+              : undefined;
+        if (url === undefined) continue;
+        if (!MEDIA_URL_RE.test(url)) {
+          throw new Error(
+            `Refusing non-http(s) media URL (scheme not allowed): ${url.slice(0, 64)}`,
+          );
+        }
+      }
+    }
+  }
+
+  private async getQwenMaxTokens(): Promise<number> {
+    const raw = await this.getAiConfig("qwenMaxTokens", "4096");
+    const n = parseInt(raw, 10);
+    return Number.isFinite(n) && n > 0 ? n : 4096;
+  }
+
+  private async getQwenTimeoutMs(): Promise<number> {
+    const raw = await this.getAiConfig("qwenTimeoutMs", "120000");
+    const n = parseInt(raw, 10);
+    return Number.isFinite(n) && n > 0 ? n : 120000;
   }
 
   private async callOpenAI(prompt: string) {
@@ -292,15 +497,82 @@ export class AiService {
       "openaiBaseUrl",
       "ollamaHost",
       "ollamaModel",
+      // P1: Qwen 生效配置（密钥除外——单独以 hasApiKey 语义暴露）
+      "qwenModel",
+      "qwenBaseUrl",
+      "qwenMaxTokens",
+      "qwenTimeoutMs",
     ];
     const result: Record<string, string> = {};
     for (const k of keys) {
       result[k] = await this.getAiConfig(
         k,
-        k === "openaiBaseUrl" ? "https://api.openai.com/v1" : "",
+        k === "openaiBaseUrl"
+          ? "https://api.openai.com/v1"
+          : k === "qwenBaseUrl"
+            ? "https://dashscope.aliyuncs.com/compatible-mode/v1"
+            : "",
       );
     }
     // Never return the API key value — caller requests it separately if needed
     return result;
+  }
+
+  /**
+   * P2: 当前生效的 provider / model（供 Agent 逐条记录「这一步是谁答的」）。
+   *
+   * 为什么由 AiService 暴露而不是调用方自己猜：路由是 AiService 的内部
+   * 决策（provider 枚举 + 各 provider 的默认模型），调用方复制一份解析逻辑
+   * 必然漂移——而 steps.provider/model 正是排查与成本归因的依据，错了会
+   * 把排查引向错误方向。
+   */
+  async getActiveRoute(): Promise<{ provider: string; model: string }> {
+    const provider = await this.getAiConfig("provider", "disabled");
+    if (provider === "qwen") {
+      return {
+        provider,
+        model: await this.getAiConfig("qwenModel", "qwen-vl-max"),
+      };
+    }
+    if (provider === "openai") {
+      return {
+        provider,
+        model: await this.getAiConfig("openaiModel", "gpt-4o-mini"),
+      };
+    }
+    if (provider === "ollama") {
+      return {
+        provider,
+        model: await this.getAiConfig("ollamaModel", "llama3"),
+      };
+    }
+    return { provider, model: "" };
+  }
+
+  /**
+   * P1: 按 provider 返回「该 provider 是否已配置密钥」。
+   *
+   * 为什么需要这个方法：既有 AiController.getConfig 硬编码查
+   * `ai.openaiApiKey`，加了 qwen 之后会让「选了 qwen 但 API Key 显示未配置」
+   * ——前端据此误判为不可用（设计文档 05 §5 改造清单 #3）。
+   */
+  async hasApiKeyForProvider(): Promise<boolean> {
+    const provider = await this.getAiConfig("provider", "disabled");
+    const keyName =
+      provider === "qwen"
+        ? "qwenApiKey"
+        : provider === "openai"
+          ? "openaiApiKey"
+          : null;
+    if (!keyName) return false;
+    try {
+      const rec = await this.systemConfig.findOne(`ai.${keyName}`);
+      if (rec?.value) return true;
+    } catch {
+      // not in DB — fall through to env
+    }
+    // env 兜底：未在 DB 配置时，看 env 注入的同名键（configuration.ts ai 段）
+    const envVal = this.config.get<string>(`ai.${keyName}`, "");
+    return !!envVal;
   }
 }

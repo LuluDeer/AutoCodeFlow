@@ -551,6 +551,8 @@ function AiConfigTab() {
     if (p === 'disabled') return <Badge status="default" text={t('sysSettings.ai.provider.disabled')} />;
     if (p === 'openai') return <Badge status="processing" text="OpenAI" color="green" />;
     if (p === 'ollama') return <Badge status="processing" text="Ollama" color="blue" />;
+    // P1: Qwen / DashScope（多模态——文本 + 图片 + 视频理解）
+    if (p === 'qwen') return <Badge status="processing" text="Qwen" color="purple" />;
     return null;
   };
 
@@ -586,13 +588,14 @@ function AiConfigTab() {
           onRetry={() => { void refetchCfg(); }}
         />
       ) : (
-        <Form form={form} layout="vertical" initialValues={{ provider: 'disabled', openaiModel: 'gpt-4o-mini', openaiBaseUrl: 'https://api.openai.com/v1', ollamaHost: 'http://localhost:11434', ollamaModel: 'llama3' }}>
+        <Form form={form} layout="vertical" initialValues={{ provider: 'disabled', openaiModel: 'gpt-4o-mini', openaiBaseUrl: 'https://api.openai.com/v1', ollamaHost: 'http://localhost:11434', ollamaModel: 'llama3', qwenModel: 'qwen-vl-max', qwenBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', qwenMaxTokens: '4096', qwenTimeoutMs: '120000' }}>
           <Form.Item name="provider" label={t('sysSettings.ai.providerLabel')} rules={[{ required: true }]}>
             <Select
               options={[
                 { value: 'disabled', label: t('sysSettings.ai.provider.disabledOption') },
                 { value: 'openai', label: t('sysSettings.ai.provider.openaiOption') },
                 { value: 'ollama', label: t('sysSettings.ai.provider.ollamaOption') },
+                { value: 'qwen', label: t('sysSettings.ai.provider.qwenOption') },
               ]}
             />
           </Form.Item>
@@ -636,6 +639,51 @@ function AiConfigTab() {
               </Form.Item>
               <Form.Item name="ollamaModel" label={t('sysSettings.ai.modelLabel')}>
                 <Input placeholder="llama3" />
+              </Form.Item>
+            </>
+          )}
+
+          {/* P1: Qwen / DashScope 多模态（文本 + 图片 + 视频理解） */}
+          {provider === 'qwen' && (
+            <>
+              <Divider plain style={{ fontSize: 12, color: token.colorTextTertiary }}>{t('sysSettings.ai.qwenSection')}</Divider>
+              <Alert
+                type="info"
+                showIcon
+                style={{ marginBottom: 16 }}
+                title={t('sysSettings.ai.qwenMultimodalHint')}
+                description={t('sysSettings.ai.qwenMultimodalDetail')}
+              />
+              <Form.Item
+                name="qwenBaseUrl"
+                label={t('sysSettings.ai.baseUrlLabel')}
+                tooltip={t('sysSettings.ai.qwenBaseUrlTooltip')}
+              >
+                <Input placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1" />
+              </Form.Item>
+              <Form.Item
+                name="qwenApiKey"
+                label={
+                  <Space>
+                    {t('sysSettings.ai.apiKeyLabel')}
+                    {cfg?.hasApiKey && <Tag color="green">{t('sysSettings.ai.configured')}</Tag>}
+                  </Space>
+                }
+                tooltip={t('sysSettings.ai.apiKeyTooltip')}
+              >
+                <Input.Password
+                  placeholder={cfg?.hasApiKey ? t('sysSettings.ai.apiKeyConfiguredPlaceholder') : t('sysSettings.ai.apiKeyPlaceholder')}
+                  visibilityToggle={{ visible: apiKeyVisible, onVisibleChange: setApiKeyVisible }}
+                />
+              </Form.Item>
+              <Form.Item name="qwenModel" label={t('sysSettings.ai.modelLabel')} tooltip={t('sysSettings.ai.qwenModelTooltip')}>
+                <Input placeholder="qwen-vl-max" />
+              </Form.Item>
+              <Form.Item name="qwenMaxTokens" label={t('sysSettings.ai.qwenMaxTokensLabel')} tooltip={t('sysSettings.ai.qwenMaxTokensTooltip')}>
+                <Input placeholder="4096" />
+              </Form.Item>
+              <Form.Item name="qwenTimeoutMs" label={t('sysSettings.ai.qwenTimeoutLabel')} tooltip={t('sysSettings.ai.qwenTimeoutTooltip')}>
+                <Input placeholder="120000" />
               </Form.Item>
             </>
           )}
