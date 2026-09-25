@@ -12,6 +12,7 @@ import { SopCollabController } from "./sop-collab.controller";
 import { AgentModule } from "../agent/agent.module";
 import { ExecutorModule } from "../executor/executor.module";
 import { NotificationModule } from "../notification/notification.module";
+import { AiModule } from "../ai/ai.module";
 import { AGENT_QUEUE_NAME } from "../agent/runtime/agent.processor";
 
 /**
@@ -40,6 +41,8 @@ import { AGENT_QUEUE_NAME } from "../agent/runtime/agent.processor";
     forwardRef(() => AgentModule),
     ExecutorModule,
     NotificationModule,
+    // P7a 续批：LLM relay（执行器 Agent 的推理经中台代跑，key 不出服务端）
+    AiModule,
     BullModule.registerQueue({ name: AGENT_QUEUE_NAME }),
   ],
   controllers: [SopController, SopCollabController],

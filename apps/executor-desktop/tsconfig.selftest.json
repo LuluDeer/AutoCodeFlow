@@ -44,7 +44,13 @@
     "src/main/agent/gates.ts",
     "src/main/agent/gates.selftest.ts",
     "src/main/agent/loop.ts",
-    "src/main/agent/loop.selftest.ts"
+    "src/main/agent/loop.selftest.ts",
+    "src/main/agent/trial-run.ts",
+    "src/main/agent/trial-run.selftest.ts",
+    "src/main/agent/collab-client.ts",
+    "src/main/agent/collab-client.selftest.ts",
+    "src/main/agent/runtime.ts",
+    "src/main/agent/runtime.selftest.ts"
   ],
   "exclude": []
 }

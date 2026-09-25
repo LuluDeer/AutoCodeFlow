@@ -492,6 +492,15 @@ console.log("\n── 4. 协作 API（11 §3/§5）──");
   check("question 长度钳位 + 脱敏", /SOP_CLARIFICATION_QUESTION_MAX/.test(svcSrc) && /REDACTED/.test(svcSrc));
   check("澄清会话 scope 只授权被复核的 SOP（最小权限）", /scope: \{ sops: \[a\.sopId\] \}/.test(svcSrc));
 
+  // ── P7a 续批：LLM relay（执行器 Agent 的推理经中台代跑）──
+  const relaySrc = readFileSync(join(apiDir, "src/modules/sop/sop-collab.controller.ts"), "utf8");
+  check("relay 端点存在（POST /agent-collab/llm）", /@Post\("llm"\)/.test(relaySrc));
+  check("relay 过 agent:sop 能力闸（不是裸 authenticate）", /llmRelay[\s\S]{0,600}authenticateAgent\(/.test(relaySrc));
+  check("relay messages 条数钳位（≤64）", /raw\.length === 0 \|\| raw\.length > 64/.test(relaySrc));
+  check("relay 单条 content 上限（≤100KB）", /100_000/.test(relaySrc));
+  check("relay role 白名单（tool 往返不对执行器开放）", /role !== "system" && role !== "user" && role !== "assistant"/.test(relaySrc));
+  check("SopModule 引入 AiModule（relay 依赖）", /AiModule/.test(readFileSync(join(apiDir, "src/modules/sop/sop.module.ts"), "utf8")));
+
   // 协作协议治理（11 §7）：P5/P6 明确留 P7（executor-desktop 实现 client 时进 agentCollab 段）
   const proto = readFileSync(join(root, "packages/executor-protocol/protocol.json"), "utf8");
   check("protocol.json 未混入 agentCollab（非三方共有语义不进 schemas，留 P7 按需登记）",
