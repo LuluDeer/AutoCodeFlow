@@ -2151,7 +2151,7 @@ export class ExecutorService {
    */
   async getTags(): Promise<string[]> {
     const execs = await this.repo.find({
-      select: ["tags"],
+      select: { tags: true },
       // Bound the scan; tag set converges quickly even with thousands of executors.
       take: 5000,
     });
@@ -2303,14 +2303,14 @@ export class ExecutorService {
           executorAddress: In(addresses),
           status: ExecutionStatus.RUNNING,
         },
-        select: ["executorAddress", "taskId"],
+        select: { executorAddress: true, taskId: true },
       });
       if (running.length === 0) return new Map();
 
       const ids = [...new Set(running.map((r) => r.taskId))];
       const rows = await this.taskRepo.find({
         where: { id: In(ids) },
-        select: ["id", "estimatedDurationSec"],
+        select: { id: true, estimatedDurationSec: true },
       });
       const byId = new Map(rows.map((r) => [r.id, r.estimatedDurationSec]));
       const byAddress = new Map<string, EstimatedDurations>();
@@ -2880,7 +2880,7 @@ export class ExecutorService {
     }
     const app = await this.applicationRepo.findOne({
       where: { id: task.applicationId },
-      select: ["id", "name", "packageUrl"],
+      select: { id: true, name: true, packageUrl: true },
     });
     if (!app) {
       throw new Error(
@@ -2940,7 +2940,7 @@ export class ExecutorService {
         },
         // 投影最小列：分区只需 id/address/status 三个判据，避免拉回
         // env/rolloutMeta 等 jsonb 大列（一次派发一次查询，热路径）。
-        select: ["executorId", "executorAddress", "status"],
+        select: { executorId: true, executorAddress: true, status: true },
       });
     } catch (err) {
       // best-effort：读失败不阻断派发（偏好缺失 ≠ 无法调度）。
@@ -3387,7 +3387,7 @@ export class ExecutorService {
       return result.affected ?? 0;
     }
     const victims = await this.execRepo.find({
-      select: ["id", "logObjectKey"],
+      select: { id: true, logObjectKey: true },
       where: { createdAt: LessThan(cutoff) },
       order: { id: "ASC" },
       take: ExecutorService.EXECUTION_RETENTION_BATCH_SIZE,
@@ -4029,7 +4029,7 @@ export class ExecutorService {
     // FEAT-07: 状态落库后发布 executor.offline（优雅停机路径）。
     const exec = await this.repo.findOne({
       where: { address },
-      select: ["id", "appName", "address"],
+      select: { id: true, appName: true, address: true },
     });
     if (exec) this.emitExecutorOffline(exec);
   }

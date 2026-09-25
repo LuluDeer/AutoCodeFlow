@@ -216,14 +216,19 @@ describe("NETOPT-C P2-1: MAX_RUNNING_EXECUTION_IDS 三端一致性", () => {
 
   it("admin-api 与两个执行器的封顶常量同值", () => {
     const admin = readTsCap(
-      path.join("apps", "admin-api", "src", "modules", "executor", "executor.service.ts"),
+      path.join(
+        "apps",
+        "admin-api",
+        "src",
+        "modules",
+        "executor",
+        "executor.service.ts",
+      ),
     );
     const node = readTsCap(
       path.join("apps", "executor-node", "src", "scheduler.ts"),
     );
-    const python = readPyCap(
-      path.join("apps", "executor-python", "config.py"),
-    );
+    const python = readPyCap(path.join("apps", "executor-python", "config.py"));
 
     expect(admin).toBe(CAP);
     expect(node).toBe(CAP);

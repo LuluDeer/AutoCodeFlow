@@ -95,7 +95,9 @@ export class EmailChannel extends BaseChannel {
       this.logger.log(`[Email] sent: ${p.title} -> ${to}`);
       return "sent";
     } catch (error) {
-      this.logger.error(`[Email] send failed after retries: ${error.message}`);
+      this.logger.error(
+        `[Email] send failed after retries: ${error instanceof Error ? error.message : String(error)}`,
+      );
       return "failed";
     }
   }

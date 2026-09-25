@@ -6,7 +6,7 @@ import { getRepositoryToken } from "@nestjs/typeorm";
 import { AuthService } from "../auth.service";
 import { UsersService } from "../../users/users.service";
 import { RefreshToken } from "../entities/refresh-token.entity";
-import * as bcrypt from "bcrypt";
+import bcrypt from "bcrypt";
 
 const mockUser = {
   id: 1,

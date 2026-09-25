@@ -10,7 +10,7 @@ import { ConfigService } from "@nestjs/config";
 import { INestApplication, ExecutionContext } from "@nestjs/common";
 import { Test } from "@nestjs/testing";
 import { APP_GUARD } from "@nestjs/core";
-import * as request from "supertest";
+import request from "supertest";
 import { ExecutorService } from "../executor.service";
 // ARCH-33（ADR-016）：控制面 pull 通道的测试替身（默认 push）
 import { controlPlaneMocks } from "../../../common/testing/control-plane-mocks";

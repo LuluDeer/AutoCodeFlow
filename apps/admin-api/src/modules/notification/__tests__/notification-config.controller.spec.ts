@@ -388,7 +388,7 @@ describe("NotificationConfigController", () => {
   describe("RBAC — channels endpoints are ADMIN-only (N11 + R2)", () => {
     const guard = new RolesGuard(new Reflector());
     const ctxWith = (
-      handler: (...args: unknown[]) => unknown,
+      handler: (...args: any[]) => unknown,
       role: UserRole,
     ): ExecutionContext =>
       ({

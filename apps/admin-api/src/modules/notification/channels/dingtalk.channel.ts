@@ -82,7 +82,7 @@ export class DingtalkChannel extends BaseChannel {
       return "sent";
     } catch (error) {
       this.logger.error(
-        `[Dingtalk] send failed after retries: ${error.message}`,
+        `[Dingtalk] send failed after retries: ${error instanceof Error ? error.message : String(error)}`,
       );
       return "failed";
     }

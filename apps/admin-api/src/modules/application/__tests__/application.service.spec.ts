@@ -1,6 +1,6 @@
 import { Test } from "@nestjs/testing";
 import { getRepositoryToken } from "@nestjs/typeorm";
-import * as fs from "fs";
+import fs from "fs";
 import * as path from "path";
 import { ApplicationService } from "../application.service";
 import { Application, ApplicationStatus } from "../entities/application.entity";

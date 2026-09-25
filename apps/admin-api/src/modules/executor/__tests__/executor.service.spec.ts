@@ -26,7 +26,7 @@ import {
 } from "../../task/entities/task-execution.entity";
 import axios from "axios";
 import { ConfigService } from "@nestjs/config";
-import * as bcrypt from "bcrypt";
+import bcrypt from "bcrypt";
 import { NotificationService } from "../../notification/notification.service";
 import { SystemConfigService } from "../../config/config.service";
 // SEC-02: secrets 派发解密（测试默认降级明文，dispatch 载荷与既往一致）
@@ -1525,7 +1525,11 @@ describe("ExecutorService (__tests__)", () => {
         // 反证用例：runningTaskCount 越界 → 白名单删字段 → e.runningTaskCount 保持
         // DB 旧值。此时若仍采纳 reservedSlots，就会拿一个「陈旧计数」去配对本次
         // 上报的预留数，产生不自洽的组合。断言两者要么一起更新、要么都不动。
-        const executor = { ...onlineExecutor(), runningTaskCount: 1, reservedSlots: 0 };
+        const executor = {
+          ...onlineExecutor(),
+          runningTaskCount: 1,
+          reservedSlots: 0,
+        };
         executorRepo.findOne.mockResolvedValue(executor);
         executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
         await service.heartbeat("127.0.0.1:3105", {
@@ -1535,7 +1539,9 @@ describe("ExecutorService (__tests__)", () => {
         expect(executor.runningTaskCount).toBe(1); // DB 旧值不动
         // 预留 1 <= 最终计数 1，自洽，故可采纳——但计数仍是旧值，UI 显示 0。
         // 关键是绝不出现 reservedSlots > runningTaskCount 的落库组合。
-        expect(executor.reservedSlots).toBeLessThanOrEqual(executor.runningTaskCount);
+        expect(executor.reservedSlots).toBeLessThanOrEqual(
+          executor.runningTaskCount,
+        );
       });
     });
 
@@ -3589,7 +3595,7 @@ describe("ExecutorService (__tests__)", () => {
           take: number;
         };
         expect(findArg.select).toEqual(
-          expect.arrayContaining(["id", "logObjectKey"]),
+          expect.objectContaining({ id: true, logObjectKey: true }),
         );
         expect(findArg.take).toBe(5000);
         // DELETE 收 remove 成功 + 无指针的行（In 算子取 .value 断言集合）

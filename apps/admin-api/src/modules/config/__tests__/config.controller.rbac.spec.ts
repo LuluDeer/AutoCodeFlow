@@ -5,7 +5,7 @@ import {
 } from "@nestjs/common";
 import { APP_GUARD } from "@nestjs/core";
 import { Test } from "@nestjs/testing";
-import * as request from "supertest";
+import request from "supertest";
 import { ConfigController } from "../config.controller";
 import { SystemConfigService } from "../config.service";
 import { RolesGuard } from "../../../common/guards/roles.guard";

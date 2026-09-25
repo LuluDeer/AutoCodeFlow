@@ -282,7 +282,7 @@ export default () => ({
             "[AutoFlow] EXECUTOR_SECRET must be set in production",
           );
         }
-        // eslint-disable-next-line no-console
+
         console.warn(
           "[AutoFlow] WARNING: EXECUTOR_SECRET is empty — executor auth is disabled (dev only)",
         );

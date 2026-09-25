@@ -12,7 +12,7 @@ import {
   ExecutorPackage,
   ExecutorPackageStatus,
 } from "../executor-package.entity";
-import * as fs from "fs";
+import fs from "fs";
 import * as crypto from "crypto";
 import { Readable } from "stream";
 import axios from "axios";
@@ -65,7 +65,20 @@ jest.mock("../../../common/utils/clamd-scan.util", () => {
   };
 });
 
-jest.mock("fs");
+jest.mock("fs", () => ({
+  existsSync: jest.fn(),
+  mkdirSync: jest.fn(),
+  createReadStream: jest.fn(),
+  promises: {
+    open: jest.fn(),
+    stat: jest.fn(),
+    rename: jest.fn(),
+    readFile: jest.fn(),
+    readdir: jest.fn(),
+    unlink: jest.fn(),
+    copyFile: jest.fn(),
+  },
+}));
 const mockFs = fs as jest.Mocked<typeof fs>;
 
 /**

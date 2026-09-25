@@ -420,10 +420,9 @@ import { RuntimeModule } from "./modules/runtime/runtime.module";
         HEALTH_CACHE_TTL_MS: Joi.number().integer().min(0).default(0),
       }),
       // Only validate in production and test environments
-      validationOptions: {
-        allowUnknown: true, // Allow unknown environment variables
-        abortEarly: false, // Report all validation errors, not just the first one
-      },
+      // @nestjs/config 12 迁移到 Standard Schema：对 joi schema 包内默认即
+      // allowUnknown=true、abortEarly=false（此前需在这里显式声明），语义不变，
+      // 无需再传 validationOptions。
     }),
 
     // ARCH-004: global rate limit — tightened default (60 req/min, was 100)
