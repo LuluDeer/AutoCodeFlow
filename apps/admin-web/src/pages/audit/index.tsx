@@ -317,7 +317,7 @@ export default function AuditLogPage() {
               const labelKey = ACTION_LABEL_KEYS[r.action];
               const href = resourceIdHref(r.resource, r.resourceId ?? '');
               return (
-                <Card key={r.id} size="small" style={{ borderRadius: 10 }}>
+                <Card key={r.id} size="small">
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
                     {labelKey ? (
                       <Typography.Text strong style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t(labelKey)}</Typography.Text>

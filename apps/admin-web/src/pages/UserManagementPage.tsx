@@ -355,7 +355,7 @@ export default function UserManagementPage() {
                   : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={searchText ? t('users.empty.noMatch') : t('users.empty.none')} />
               ) : (
                 filteredUsers.map((record: UserWithActive) => (
-                  <Card key={record.id} size="small" style={{ borderRadius: 10 }}>
+                  <Card key={record.id} size="small">
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
                       <Typography.Text strong style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{record.username}</Typography.Text>
                       <Space size={4}>

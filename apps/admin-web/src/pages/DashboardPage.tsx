@@ -212,7 +212,7 @@ export default function DashboardPage() {
       ) : (
         <Row gutter={[16, 16]} align="stretch">
           <Col xs={12} sm={6}>
-            <Card size="small" variant="borderless" style={{ background: 'var(--color-muted)', borderRadius: 10, height: '100%' }}>
+            <Card size="small" variant="borderless" style={{ background: 'var(--color-muted)', height: '100%' }}>
               <Statistic
                 className="ui09-kpi-stat"
                 title={<Text style={{ fontSize: 13 }}>{t('dashboard.kpi.tasks')}</Text>}
@@ -227,7 +227,7 @@ export default function DashboardPage() {
           </Col>
           {/* UI-04 ①：24h 执行量 + sparkline */}
           <Col xs={12} sm={6}>
-            <Card size="small" variant="borderless" style={{ background: 'var(--color-muted)', borderRadius: 10, height: '100%' }}>
+            <Card size="small" variant="borderless" style={{ background: 'var(--color-muted)', height: '100%' }}>
               <Statistic
                 className="ui09-kpi-stat"
                 title={<Text style={{ fontSize: 13 }}>{t('dashboard.kpi.todayRuns')}</Text>}
@@ -240,7 +240,7 @@ export default function DashboardPage() {
           </Col>
           {/* UI-04 ①：运行中 + sparkline */}
           <Col xs={12} sm={6}>
-            <Card size="small" variant="borderless" style={{ background: 'var(--color-muted)', borderRadius: 10, height: '100%' }}>
+            <Card size="small" variant="borderless" style={{ background: 'var(--color-muted)', height: '100%' }}>
               <Statistic
                 className="ui09-kpi-stat"
                 title={<Text style={{ fontSize: 13 }}>{t('dashboard.kpi.running')}</Text>}
@@ -257,7 +257,7 @@ export default function DashboardPage() {
             </Card>
           </Col>
           <Col xs={12} sm={6}>
-            <Card size="small" variant="borderless" style={{ background: 'var(--color-muted)', borderRadius: 10, height: '100%' }}>
+            <Card size="small" variant="borderless" style={{ background: 'var(--color-muted)', height: '100%' }}>
               <Statistic
                 className="ui09-kpi-stat"
                 title={<Text style={{ fontSize: 13 }}>{t('dashboard.kpi.onlineExecutors')}</Text>}
@@ -281,7 +281,7 @@ export default function DashboardPage() {
           <Card
             size="small" variant="borderless"
             title={<Text strong style={{ fontSize: 14 }}>{t('dashboard.successRate')}</Text>}
-            style={{ borderRadius: 10, height: '100%' }}
+            style={{ height: '100%' }}
           >
             <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
               <Tooltip title={t('dashboard.successRateHint')}>
@@ -323,7 +323,7 @@ export default function DashboardPage() {
           <Card
             size="small" variant="borderless"
             title={<Text strong style={{ fontSize: 14 }}>{t('dashboard.avgDuration')}</Text>}
-            style={{ borderRadius: 10, height: '100%', display: 'flex', flexDirection: 'column' }}
+            style={{ height: '100%', display: 'flex', flexDirection: 'column' }}
             styles={{ body: { flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center' } }}
           >
             <div style={{ textAlign: 'center' }}>
@@ -342,7 +342,6 @@ export default function DashboardPage() {
       <Card
         size="small" variant="borderless"
         title={<Text strong style={{ fontSize: 14 }}>{t('dashboard.trend')}</Text>}
-        style={{ borderRadius: 10 }}
         extra={
           <Segmented
             size="small"
@@ -395,7 +394,7 @@ export default function DashboardPage() {
           <Card
             size="small" variant="borderless"
             title={<Text strong style={{ fontSize: 14 }}>{t('dashboard.executors')}</Text>}
-            style={{ borderRadius: 10, height: '100%' }}
+            style={{ height: '100%' }}
             extra={<Link to="/executors" style={{ fontSize: 12 }}>{t('dashboard.executors.all')}</Link>}
           >
             {/* UI-08：首屏（无数据加载中）骨架形态替代 Spin 包裹 */}
@@ -410,7 +409,7 @@ export default function DashboardPage() {
           <Card
             size="small" variant="borderless"
             title={<Text strong style={{ fontSize: 14 }}>{t('dashboard.schedulerLatency')}</Text>}
-            style={{ borderRadius: 10, height: '100%' }}
+            style={{ height: '100%' }}
           >
             <SchedulerLatencyCard metrics={schedMetrics} />
           </Card>
@@ -423,7 +422,7 @@ export default function DashboardPage() {
           <Card
             size="small" variant="borderless"
             title={<Text strong style={{ fontSize: 14 }}>{t('dashboard.failureTop')}</Text>}
-            style={{ borderRadius: 10, height: '100%' }}
+            style={{ height: '100%' }}
             extra={<Link to="/executions?status=failed" style={{ fontSize: 12 }}>{t('dashboard.failureTop.all')}</Link>}
           >
             {/* UI-08：首屏（无数据加载中）骨架形态替代 Spin 包裹 */}
@@ -438,7 +437,7 @@ export default function DashboardPage() {
           <Card
             size="small" variant="borderless"
             title={<Text strong style={{ fontSize: 14 }}>{t('dashboard.recentFailures')}</Text>}
-            style={{ borderRadius: 10, height: '100%' }}
+            style={{ height: '100%' }}
             extra={<Link to="/executions" style={{ fontSize: 12 }}>{t('dashboard.recentFailures.all')}</Link>}
           >
             {/* UI-08：首屏（无数据加载中）骨架形态替代 Spin 包裹 */}

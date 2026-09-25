@@ -669,7 +669,7 @@ export default function TaskListPage() {
                 ? describeCron(r.cronExpression, t)
                 : null;
               return (
-                <Card key={r.id} size="small" style={{ borderRadius: 10 }}>
+                <Card key={r.id} size="small">
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
                     <div style={{ minWidth: 0 }}>
                       <Link to={`/tasks/${r.id}`} style={{ fontWeight: 500 }}>{r.name}</Link>
