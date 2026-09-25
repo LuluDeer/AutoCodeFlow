@@ -419,6 +419,20 @@ async function main() {
 
   console.log(`  终态 rolloutState：${states.replace(/\n/g, ',')}  心跳确认行=${confirmed}  耗时=${elapsed}s`);
 
+  // 失败时把两实例日志里**与灰度相关的行**打出来。这些是代码里 fail-open
+  // 分支（markRolloutState / hydrateRolloutBatch / findInFlightRolloutRows /
+  // settleRolloutRows 全是 catch → logger.warn）唯一的输出面：此前断言只报
+  // confirmed=0，而真正的原因（例如乐观锁冲突、jsonb 写拒绝）被静默吞掉，
+  // 只能靠猜。日志是文件、断言不 dump 就永远看不到。
+  if (Number(confirmed) < 1 || !logA.includes('finished (promoted all)')) {
+    const interesting = /rollout|Rollout|heartbeat|Heartbeat|hydrat|optimistic|version|OptimisticLock|ERROR|WARN/;
+    for (const [label, text] of [['A', logA], ['B', logB]]) {
+      const hits = text.split('\n').filter((l) => interesting.test(l)).slice(-40);
+      console.log(`  ── admin-${label} 灰度相关日志尾部（${hits.length} 行）──`);
+      for (const h of hits) console.log(`     ${h}`);
+    }
+  }
+
   ok('② 非属主实例 B 经 hydration 推进了行（heartbeatConfirmedAt 存在）',
     Number(confirmed) >= 1, `confirmed=${confirmed}`);
   ok('③ 批次在秒级完成（远低于 15min 硬超时）——跨实例协作闭环',
