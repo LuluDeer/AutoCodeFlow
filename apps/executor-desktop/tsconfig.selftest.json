@@ -3,7 +3,9 @@
   "compilerOptions": {
     "outDir": "dist-selftest",
     "rootDir": "src/main",
-    "sourceMap": false
+    "sourceMap": false,
+    "module": "node16",
+    "moduleResolution": "node16"
   },
   "include": [
     "src/main/path-domain.ts",

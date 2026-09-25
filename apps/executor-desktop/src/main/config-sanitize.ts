@@ -10,22 +10,23 @@
  *   设置页「最大并发任务数」用 `parseInt(e.target.value, 10)` 且无兜底——
  *   用户清空输入框时得到 `NaN`，`JSON.stringify(NaN)` 是 `null`，于是
  *   `ConfigStore.save()` 拿着 `null` 去 `store.set('maxConcurrentTasks', null)`，
- *   electron-store（conf + ajv）以
- *   `Config schema violation: maxConcurrentTasks must be number` 抛出。
- *   抛点位于 `config:save` handler 内 → IPC reject → 渲染层 `save()` 的 catch
- *   只显示「保存失败」，但**同批次的其它修改已被部分写入**（executorName 等
- *   在异常前已 set 进内存 store，只是没落盘）。用户看到的是「改了名、也报了错」，
- *   且重新打开设置页可能看到旧值——分不清到底存没存。
+ *   历史故障形态（conf 15 移除 ajv 校验之前）：electron-store（conf + ajv）以
+ *   `Config schema violation` 抛出，IPC reject → 渲染层只显示「保存失败」，但
+ *   同批次其它修改已被部分写入——用户分不清到底存没存。
+ *   conf 15 起 JSON schema 校验被移除：同样的坏值现在**静默落盘**，下游
+ *   （executor 子进程 env、IPC 读面）拿到 null/NaN 直接损坏——故障从
+ *   「保存失败」变成「保存成功但配置坏了」，更隐蔽。消毒层因此从
+ *   「改善报错」升级为「唯一防线」。
  *
  * 因此这里的策略是**写入前消毒**而不是"让 store 去抛"：
- *   - 数值字段一律钳到合法区间，非有限数回落到 schema default；
+ *   - 数值字段一律钳到合法区间，非有限数回落到字段默认值（config-store defaults）；
  *   - 字符串字段非字符串回落 ''；
  *   - `workDir` 空白视为"不修改"（丢弃该键）——否则一次空字符串会把已初始化
  *     的工作目录清成空串，任务落盘点直接消失。
  * 消毒只覆盖"渲染层可能送错"的形状，语义校验（端口是否可用等）仍在调用方。
  */
 
-/** 数值字段的区间与默认值（与 config-store.ts 的 schema default 对齐）。 */
+/** 数值字段的区间与默认值（与 config-store.ts 的 defaults 对齐）。 */
 export interface NumberFieldRule {
   key: string;
   /** 非有限数（NaN / null / undefined / 非数字）时回落的值。 */
@@ -123,7 +124,7 @@ export function sanitizeConfigInput(
   }
 
   // 密钥字段：非字符串时**丢弃**（ConfigStore.save 里 executorToken 走独立的
-  // 加密/掩码分支，塞 null 进去既无意义又会撞 schema）。
+  // 加密/掩码分支，塞 null 进去既无意义又损坏存储）。
   if ('executorToken' in out && typeof out.executorToken !== 'string') {
     delete out.executorToken;
   }
