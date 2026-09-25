@@ -9,19 +9,20 @@
  *             无搜索参数、无分页（全量数组）；
  *   应用      GET /applications                             → Application[]
  *             无搜索参数（全量数组）；
- *   执行记录  GET /tasks/executions/all?page=1&pageSize=5   → PageResult<TaskExecution>
- *             后端固定 createdAt DESC —— 即"最近 5 条"，客户端按 taskName
- *             包含匹配后直达 /tasks/:taskId/executions/:execId。
+ *   执行记录  GET /tasks/executions/all?page=1&pageSize=20&taskName=<kw>
+ *             taskName 为后端 ILIKE %kw% 模糊参数（含 LIKE 元字符转义），
+ *             服务端先过滤出候选，客户端再按 taskName/id 包含匹配后截断前 5 条，
+ *             直达 /tasks/:taskId/executions/:execId。
  *
  * ── 取舍说明（README 注） ───────────────────────────────────────────────────
  * 搜索实现是"客户端包含匹配（小写化）已返回页数据"，并非后端全文检索：
- *   - tasks 是唯一带服务端过滤的分组（name ILIKE 预过滤一页 50 条），执行器/
- *     应用拉全量、执行记录取最近 5 条后前端过滤——当前规模下最省事的方案；
- *   - 已知局限：执行器/应用数量增长后全量拉取变贵；tasks 命中数超过一页时
- *     只能搜到首页数据。
+ *   - tasks 与 executions 两个分组走服务端预过滤（name / taskName ILIKE 各预
+ *     过滤一页候选，50 / 20 条），执行器与应用则拉全量后前端过滤；
+ *   - 已知局限：执行器/应用数量增长后全量拉取变贵；tasks、executions 命中数
+ *     超过一页时只能搜到首页候选。
  * 未来服务端搜索升级点：executors/applications 端点补 ?name= 模糊参数、tasks
- * 换数据库全文索引/pg_trgm、执行记录改用 allExecutions 已有的 taskName 服务端
- * ILIKE 参数——四处请求改为透传关键词即可，本组件 UI/分组/键盘导航均无需变动。
+ * 换数据库全文索引/pg_trgm——请求改为透传关键词即可，本组件 UI/分组/键盘导航
+ * 均无需变动。（executions 已于本轮完成该升级。）
  *
  * ── 交互 ───────────────────────────────────────────────────────────────────
  *   ⌘K / Ctrl+K window keydown 全局唤起/再按切换（焦点在输入框内同样生效）；
@@ -84,8 +85,8 @@ const { Text } = Typography;
 const MAX_PER_GROUP = 5;
 /** tasks 列表单页条数：后端 name ILIKE 预过滤后的候选池 */
 const TASK_PAGE_SIZE = 50;
-/** 执行记录取最近条数（后端 createdAt DESC 定序） */
-const EXECUTION_PAGE_SIZE = 5;
+/** 执行记录候选池条数（服务端按 taskName ILIKE 预过滤后取一页，组内再截断到 5） */
+const EXECUTION_PAGE_SIZE = 20;
 /** 输入防抖毫秒数 */
 const DEBOUNCE_MS = 300;
 
@@ -357,8 +358,12 @@ export default function CommandPalette({ open, onOpenChange }: CommandPalettePro
         setResults((prev) => ({ ...prev, application: { status: 'error', items: [] } }));
       });
 
+    // P2-5 续：执行记录改为**服务端过滤**。此前只拉最近 5 条再客户端包含匹配，
+    // 导致「最近 5 条之外的执行记录永远搜不到」——记录一多搜索就名存实亡。
+    // allExecutions 的 taskName 后端已实现 ILIKE（含 LIKE 元字符转义），
+    // 故此处透传关键词即可，UI/分组/键盘导航均不变。
     tasksApi
-      .allExecutions({ page: 1, pageSize: EXECUTION_PAGE_SIZE })
+      .allExecutions({ page: 1, pageSize: EXECUTION_PAGE_SIZE, taskName: kw })
       .then((page) => {
         if (!alive()) return;
         setResults((prev) => ({ ...prev, execution: { status: 'ok', items: page.items ?? [] } }));

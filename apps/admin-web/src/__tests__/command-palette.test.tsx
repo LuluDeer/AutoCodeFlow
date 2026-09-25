@@ -500,7 +500,13 @@ describe('CommandPalette — 数据流（防抖 / 降级 / 守卫）', () => {
       expect(mockedExecutors.list).toHaveBeenCalledWith();
       expect(mockedApps.list).toHaveBeenCalledTimes(1);
       expect(mockedTasks.allExecutions).toHaveBeenCalledTimes(1);
-      expect(mockedTasks.allExecutions).toHaveBeenCalledWith({ page: 1, pageSize: 5 });
+      // 执行记录必须把关键词透传给服务端（taskName ILIKE）——只拉最近一页再
+      // 客户端过滤会让「最近 N 条之外」的执行记录永远搜不到。
+      expect(mockedTasks.allExecutions).toHaveBeenCalledWith({
+        page: 1,
+        pageSize: 20,
+        taskName: 'deploy',
+      });
 
       // 未停顿 300ms：不叠加请求
       fireEvent.change(input, { target: { value: 'deploy-x' } });
