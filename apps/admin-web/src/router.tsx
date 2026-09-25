@@ -29,6 +29,8 @@ const ApplicationListPage = lazy(() => import('./pages/ApplicationListPage'));
 const ApplicationDetailPage = lazy(() => import('./pages/ApplicationDetailPage'));
 const ExecutionsPage = lazy(() => import('./pages/ExecutionsPage'));
 const ProjectsPage = lazy(() => import('./pages/ProjectsPage'));
+// P5/P6: SOP 管理（全 ADMIN-only——发布权 = 间接指令注入权）
+const SopsPage = lazy(() => import('./pages/SopsPage'));
 
 const withSuspense = (children: ReactNode) => (
   <Suspense fallback={<PageFallback />}>{children}</Suspense>
@@ -84,6 +86,7 @@ export const router = createBrowserRouter(
         { path: 'projects', element: withSuspense(<ProjectsPage />) },
         { path: 'applications/:id', element: withSuspense(<ApplicationDetailPage />) },
         { path: 'executor-packages', element: <RequireAdmin>{withSuspense(<ExecutorPackagesPage />)}</RequireAdmin> },
+        { path: 'sops', element: <RequireAdmin>{withSuspense(<SopsPage />)}</RequireAdmin> },
       ],
     },
   ],
