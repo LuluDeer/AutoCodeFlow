@@ -410,8 +410,48 @@
 - ✅ admin-api relay：`agent-sop-check.mjs` 64 项全绿（新增 6 项 relay 断言：端点存在、agent:sop 能力闸、messages 条数/单条上限、role 白名单、AiModule 装配）
 - ✅ `check:lint-gates` 绿；`check:desktop-bundle-drift` 摘要一致（未触碰 bundle）
 - ⏳ 端到端 spike（07 §9：真实 SOP + 真实 LLM 验证「通用 Agent 自主实现」是否成立——需 DashScope 账号）
-- ⏳ 试跑超时的进程树残留（Windows `kill()` 只终止单进程；P7b 换 tree-kill 方案）
+- ⏳ 试跑超时的进程树残留（→ P7b 已修，见 §9.5）
 - ⏳ 默认预设 `standard` 与否待拍板（09 §7）
+
+### 9.5 P7b 状态（2026-09 落地：浏览器能力 + 媒体回传 + 托管）
+
+> **产物**：desktop `agent/kill-tree.ts`（跨平台树杀）、`agent/browser.ts`
+> （Playwright 封闭动作枚举）、`agent/agent-host.ts`（指派托管）、`collab-client.uploadMedia`、
+> runtime 协议接入 browser 动作；admin-api `agent_media` 表（迁移 `1790000000042`）+
+> 媒体上/下载端点；`agentEnabled` 总开关（默认 false）接进 config-store/消毒层/index.ts。
+> 自检 +2 套（kill-tree / agent-host 端到端），desktop `test:main` **24 套全绿**。
+
+| 任务 | 产出 | 状态 |
+|---|---|---|
+| 浏览器能力 | `AgentBrowserSession`：7 个封闭动作（navigate/click/type/press/screenshot/extract_text/wait）+ **每次导航过域名白名单**（SOP constraints ∪ 权限档位，**空 = 全禁**）+ 全新临时 profile（不碰用户登录态，hostAccess=none 语义保持） | ✅ |
+| 截图/录屏回传 | 截图/录屏落工作区 → `uploadMedia` 即传中台 → `mediaPath`（/api/agent-collab/media/<id>）供澄清 mediaRefs 引用；admin-api 落盘（uploads/agent-media，100MB 上限、归属校验、路径越界终检）+ ADMIN 下载端点 | ✅ |
+| tree-kill | `spawnWithTreeTimeout`：POSIX detached 进程组 `kill(-pid)`、Windows `taskkill /T /F`；**修复 P7a 残差**「超时只杀单进程、孙进程泄漏」（selftest 实测孙进程死亡） | ✅ |
+| Agent 托管 | `AgentHost`：poll → 能力上报（browser 按探测如实声明）→ 沙箱工作区 → **策略合并** → 循环 → 回报 completed/failed/澄清；单飞行防并发；`agentEnabled=false` 零动作 | ✅ |
+| 总开关 | `agentEnabled`（默认 false，ADR-022 显式开启）+ 消毒层布尔纪律 + index.ts 轮询循环接线（30s tick，host 内部 0 等待） | ✅ |
+| LLM 协议扩展 | plan/diagnose 可带 `"browser":[actions]`——先看页面再写代码；输出（页面文本/截图 mediaPath/录屏）进下一轮上下文 | ✅ |
+| 桌面 GUI 能力 | — | ⏳ P7c |
+| 端到端闭环 | — | ⏳ P7d |
+
+### 实现中的关键判断
+
+| 判断 | 理由 |
+|---|---|
+| **导航白名单空 = 全禁** | 白名单是浏览器的唯一边界（Playwright 沙箱不隔离网络）；SOP 没写 allowedDomains 就放行导航等于没有边界 |
+| **全新 Chromium profile** | Playwright 启动的是临时 profile——不携带用户 cookie/登录态，因此 browser 能力**不**触碰 09 §2.3 的 hostAccess 档位语义（那是「操作已登录软件」）；两道闸独立，不互相冒充 |
+| **`killed` 同步置位** | taskkill /F 后进程以 exit code 1 触发 close——异步等 killTree 回调会与 close 竞速，拿到 killed=false/exitCode=1 的失真快照；`timedOut` 时 exitCode 归 null（调用方以 timedOut 判定） |
+| **媒体独立小表而非塞 artifacts** | artifacts 的 verifyUploadAuth 强绑 task_execution 执行行；Agent 媒体归属是 sop_assignments——造假 execId 或开特例都不可取 |
+| **host 先在主进程内，重活全在子进程** | 07 §4.2 要独立子进程是为了不卡主进程；本实现里重计算已全在子进程（试跑 spawn 解释器、浏览器是 Chromium 子进程、LLM 是网络等待），host 本体只做 I/O 编排。host 本身拆子进程留 P7d 打包接线时一并处理——如实记录的阶段取舍 |
+| **能力上报不超前** | browser 只在 `probePlaywright().available` 时声明——中台可行性预检据此派单，不会把需要浏览器的 SOP 派到没浏览器的机器上 |
+
+### 验收（P7b 批次）
+
+- ✅ desktop `test:main` **24 套全绿**（+kill-tree 9 项含「孙进程也死了」树杀实测 / +agent-host 17 项端到端：本地 http server 全真模拟中台的 poll/llm/progress/complete/clarifications）
+- ✅ agent-host 端到端覆盖四条路径：completed / 澄清 / **中台压档 → 档位闸拒 → failed（本地 standard 没有偷偷试跑）** / 单飞行
+- ✅ `agent-sop-check` 扩至 **72 项**（+8 媒体通道断言：端点、能力闸、归属校验、文件名封闭、大小上限、越界终检、mediaRefs 放行、迁移登记）
+- ✅ 迁移守卫绿（87 个迁移注册）；tsc（desktop 双 tsconfig / admin-api）0 错误；lint 绿
+- ⏳ 真实浏览器节（browser.selftest §5）在本机如实跳过（chromium 二进制未安装；`npx playwright install chromium` 后可跑）——跳过显式可见，不是假绿
+- ⏳ 打包态 Playwright 浏览器分发（electron-builder extraResources）留 P7d
+- ⏳ 托管状态进托盘/状态窗（UI 面）留 P7c
 
 ## 10. 立即可开工的建议
 

@@ -1,6 +1,6 @@
-# executor-desktop Agent 子系统（P7a 执行器 Agent + 续批真实执行体）
+# executor-desktop Agent 子系统（P7a 骨架 + P7a 续批执行体 + P7b 浏览器/托管）
 
-> 所属: docs/atlas/01-apps/executor-desktop · 最后核对: 2026-09（P7a + 续批） · 对应代码: `apps/executor-desktop/src/main/agent/`
+> 所属: docs/atlas/01-apps/executor-desktop · 最后核对: 2026-09（P7b） · 对应代码: `apps/executor-desktop/src/main/agent/`
 > 设计文档: [docs/design/agent-and-deployment/](../../../../design/agent-and-deployment/README.md)（07 执行器 Agent / 08 分工 / 09 权限档位 / 11 协作 API）
 > ADR: [ADR-022](../../../../adr/adr-022-executor-agent-arbitrary-code.md)（受控的任意代码执行 · 信任模型变更）
 
@@ -19,13 +19,16 @@ src/main/agent/
 ├── permission-profile.ts    ★ 权限档位（四轴五预设 + min(本地, 中台) 合并）
 ├── gates.ts                 ★ 硬闸门（迭代/墙钟/澄清/试跑/依赖安装）
 ├── loop.ts                  迭代循环外壳（感知→规划→试跑→诊断；执行体依赖注入）
-├── trial-run.ts             ★ 真实试跑执行体（process 沙箱，续批）
-├── collab-client.ts         协作 HTTP 客户端（poll/澄清/进度/完成/LLM relay，续批）
-├── runtime.ts               装配：LLM 协议 + 试跑 + SOP 验收 → LoopHandlers（续批）
-└── *.selftest.ts            八套自检（接进 npm run test:main）
+├── kill-tree.ts             ★ 跨平台进程树终止（P7b：试跑超时杀整树）
+├── trial-run.ts             ★ 真实试跑执行体（process 沙箱）
+├── browser.ts               ★ 浏览器能力（P7b：封闭动作 + 域名白名单 + 截图/录屏）
+├── collab-client.ts         协作 HTTP 客户端（poll/澄清/进度/完成/LLM relay/媒体上传）
+├── runtime.ts               装配：LLM 协议 + 试跑 + 浏览器 + SOP 验收 → LoopHandlers
+├── agent-host.ts            ★ 指派托管（poll→策略合并→循环→回报/澄清，P7b）
+└── *.selftest.ts            十套自检（接进 npm run test:main）
 ```
 
-前五个模块是**纯函数/纯状态机**——不 import electron、不发网络请求、不调模型，可在 `test:main` 下直接断言（同 `path-domain.ts` / `config-sanitize.ts` 的既有惯例）。续批三件（trial-run / collab-client / runtime）有真实副作用（spawn 子进程、发 HTTP），但同样**不 import electron**，且全部失败路径收敛为返回值、绝不抛。
+前五个模块是**纯函数/纯状态机**——不 import electron、不发网络请求、不调模型。续批与 P7b 的模块有真实副作用（spawn、HTTP、Chromium），但同样**不 import electron**，且失败路径全部收敛为返回值、绝不抛。
 
 ## 各模块守的是什么
 
@@ -36,9 +39,12 @@ src/main/agent/
 | `gates` | 迭代/墙钟/试跑/澄清的次数与时长上限 | 无限循环烧资源；两个 Agent 的礼貌循环烧令牌 |
 | `loop` | 控制流：档位闸在试跑之前、触顶是合法终态、澄清触顶转人工 | off 档形同虚设；「做不了」被上报成「崩了」 |
 | `perception` | 探测**绝不抛** + 只读 + 能力域不超前声明 | 「没装 python」这一最需要报告的场景直接崩；中台把需要浏览器的 SOP 派过来然后卡住 |
-| `trial-run`（续批） | 档位闸（off/host 如实拒）+ 解释器封闭枚举 + env 白名单（凭据零透出）+ cwd 锁定 + 超时/输出上限 | 生成代码逃逸沙箱；执行器 token 泄漏进子进程；失控脚本拖垮执行器 |
-| `collab-client`（续批） | 请求形状契约（11 §3）+ 超时强制收敛 + 全错误收敛为 `{ok:false}` | 一次网络悬挂占死整个会话；网络抖动打断状态机 |
-| `runtime`（续批） | LLM 严格 JSON 协议 + 诊断动作**显式映射** + 验收锚点纪律 | LLM 输出被猜测语义继续跑；「请求澄清」静默变 retry 烧轮次；无验收也判交付 |
+| `kill-tree`（P7b） | 超时杀**整棵**进程树（POSIX 进程组 / Windows taskkill /T /F） | 候选代码 spawn 的孙进程在超时后存活，闸门对树形泄漏形同虚设 |
+| `trial-run` | 档位闸（off/host 如实拒）+ 解释器封闭枚举 + env 白名单（凭据零透出）+ cwd 锁定 + 超时/输出上限 | 生成代码逃逸沙箱；执行器 token 泄漏进子进程；失控脚本拖垮执行器 |
+| `browser`（P7b） | 7 个封闭动作 + **每次导航过域名白名单（空 = 全禁）** + 全新临时 profile | LLM 导航到任意站点；触达用户登录态（违反 hostAccess=none 语义） |
+| `collab-client` | 请求形状契约（11 §3）+ 超时强制收敛 + 全错误收敛为 `{ok:false}` | 一次网络悬挂占死整个会话；网络抖动打断状态机 |
+| `runtime` | LLM 严格 JSON 协议 + 诊断动作**显式映射** + 验收锚点纪律 | LLM 输出被猜测语义继续跑；「请求澄清」静默变 retry；无验收也判交付 |
+| `agent-host`（P7b） | 指派全生命周期 + 单飞行 + 策略合并（中台只能往下压）+ `agentEnabled` 总开关 | 并发双指派互相污染；本地配置突破中台上限；未开启的机器凭空获得 Agent |
 
 ## 权限档位（09 / ADR-022 决策 3–4）
 
@@ -57,7 +63,28 @@ src/main/agent/
 - **列目录不跟随 symlink**：`resolveWithinWorkspace` 只校验**输入**路径，管不到 walk 到达的路径；跟随链接会让一个域外链接把域外文件列进 Agent 观察面（本批自检抓出的真实缺陷）。
 - 读写有大小上限（读 256KB / 写 1MB）——防超大文件塞爆 LLM 上下文与磁盘。
 
-## 真实试跑执行体（续批，07 §3.3「唯一新增的执行能力」）
+## 浏览器能力与媒体回传（P7b）
+
+**`AgentBrowserSession`**：一次指派一个会话，`start()` → 批量 `run()` → `close()`（录屏落盘）。
+- **导航域名白名单**（07 §4.1「代码层检查每次导航」）：SOP `constraints.allowedDomains` ∪ 权限档位 `agentAllowedDomains`；**空白名单拒绝启动也拒绝一切导航**。子域语义（`api.erp.corp.com` ⊂ `erp.corp.com`），协议仅 http/https（`file:`/`javascript:` 拒）。
+- **动作封闭枚举**：navigate/click/type/press/screenshot/extract_text/wait——没有 `evaluate`/`exec`，就不存在任意 JS。
+- **全新临时 profile**：不携带用户 cookie/登录态——browser 能力因此**不**触碰 `hostAccess`（那是「操作已登录软件」的档位，09 §2.3）；两道闸独立，不互相冒充。
+- 截图落 `workspace/screenshots/`，录屏落 `workspace/browser-recordings/`（`recordVideo`，close 时落盘）。
+
+**媒体回传**：截图/录屏经 `uploadMedia`（multipart）挂到指派 → 中台 `agent_media` 表登记（迁移 1790000000042）+ 落盘 `uploads/agent-media/<assignmentId>/` → 返回 `mediaPath`（`/api/agent-collab/media/<id>`）——这是澄清 `mediaRefs` 的**唯一合法引用形态**（外网 URL 在 SopService.validateMediaRefs 封死，SSRF 转嫁面）。中台 Admin 经 `GET /api/sop/media/:id`（ADMIN-only）取回，供 Qwen 视频理解与人工复核。
+
+**LLM 协议扩展**：plan/diagnose 响应可带 `"browser":[actions]`（≤40 步）——先看页面再写代码；每步结果（页面文本/截图 mediaPath/录屏 mediaPath）进下一轮上下文。能力闸：SOP `capabilities` 含 `browser` **且**本机 playwright 可用，缺一即回拒绝原因给模型（不静默丢弃）。
+
+## Agent 托管（P7b）：`AgentHost`
+
+指派生命周期的属主：`tick()` = poll（0 等待，节奏由 index.ts 的 30s 定时器驱动）→ 缓存 `sopPolicy` → 领工单 → 能力上报（browser 按探测如实声明）→ 建沙箱 → 环境探测 → **策略合并** → `runAgentLoop` → 回报。
+
+- **单飞行**：处理中再 tick 直接跳过——并发双指派会让沙箱/闸门/报告归属互相污染。
+- **策略合并**：`min(本地, 中台)` 每轮生效；中台压档后试跑被档位闸拒，**如实回报 failed + effectiveProfile**（selftest 钉住「本地 standard 被压后没有偷偷试跑」）。
+- **总开关**：`agentEnabled`（默认 false——ADR-022 显式开启）；进 config-sanitize 布尔消毒（`'false'` 强转会把它变 true，等于用户没开却被偷偷开了）。`syncAgentHostWithConfig()` 在 app ready 与 config:save 时各调一次，启停轮询不销毁 host。
+- **架构取舍（如实）**：07 §4.2 要求独立子进程；当前重活已全在子进程（试跑 spawn 解释器、浏览器是 Chromium 子进程、LLM 是网络等待），host 本体只做 I/O 编排，故先在主进程内运行；host 拆子进程留 P7d 打包接线时一并处理。
+
+## 真实试跑执行体（07 §3.3「唯一新增的执行能力」）
 
 `runTrialInSandbox` 是**所有**「在本机执行生成代码」路径的必经点，四道强制纪律：
 

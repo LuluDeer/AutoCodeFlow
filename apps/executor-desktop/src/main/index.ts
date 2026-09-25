@@ -1,6 +1,8 @@
 import { app, Menu } from 'electron';
 import { ConfigStore } from './config-store';
 import { ExecutorProcess } from './executor-process';
+import { AgentHost } from './agent/agent-host';
+import { CollabClient } from './agent/collab-client';
 import { HeartbeatMonitor } from './heartbeat';
 import { TrayManager } from './tray';
 import { WindowManager } from './window-manager';
@@ -146,6 +148,9 @@ app.whenReady().then(async () => {
     // 同源读取，不会再出现"某个调用点少传一个参数"。
     startHeartbeat();
   }
+
+  // P7b：Agent 托管（agentEnabled=true 且配置齐全时开始轮询 agent-collab）
+  syncAgentHostWithConfig();
 });
 
 // DSK-04：配置保存后热同步通知开关与 meta 轮询目录（workDir 可能被改）。
@@ -155,4 +160,65 @@ export function syncNotifierWithConfig(): void {
   notifier.setEnabled(configStore.get('notifyEnabled'));
   const workDir = configStore.get('workDir');
   notifier.startMetaPolling(workDir ? path.join(workDir, 'meta') : null);
+}
+
+// ── P7b：Agent 托管接线（agent-collab 轮询循环）────────────────────────
+
+const AGENT_POLL_INTERVAL_MS = 30_000;
+let agentHost: AgentHost | null = null;
+let agentTimer: NodeJS.Timeout | null = null;
+
+/** 按当前配置重建/启停 agent-host（config:save 后与启动时各调一次）。 */
+export function syncAgentHostWithConfig(): void {
+  try {
+    const cfg = configStore.getAll();
+    if (cfg.agentEnabled && cfg.adminApiUrl && cfg.workDir) {
+      if (!agentHost) {
+        agentHost = new AgentHost({
+          address: cfg.executorAddressPublic || `${cfg.executorHost}:${cfg.executorPort}`,
+          workDir: cfg.workDir,
+          getConfig: () => {
+            const c = configStore.getAll();
+            return {
+              agentEnabled: c.agentEnabled === true,
+              adminApiUrl: c.adminApiUrl,
+              executorToken: c.executorToken,
+              agent: {
+                preset: c.agentPermissionProfile,
+                codeExecution: c.agentCodeExecution,
+                sandboxBackend: c.agentSandboxBackend,
+                hostAccess: c.agentHostAccess,
+                taskExecution: c.agentTaskExecution,
+                allowedApps: c.agentAllowedApps,
+                allowedDomains: c.agentAllowedDomains,
+              },
+            };
+          },
+          client: new CollabClient({
+            baseUrl: cfg.adminApiUrl,
+            // token 经 getDecryptedToken 现取——ADR-012 的加密信封不落明文
+            token: configStore.getDecryptedToken(),
+          }),
+        });
+        log.info('[agent-host] created (agentEnabled=true)');
+      }
+      if (!agentTimer) {
+        // host.tick 内部恒 0 等待：轮询节奏由本定时器驱动；处理指派是
+        // 分钟级动作（LLM 循环），host 单飞行保证不并发
+        agentTimer = setInterval(() => {
+          void agentHost?.tick().catch(() => undefined);
+        }, AGENT_POLL_INTERVAL_MS);
+        agentTimer.unref?.();
+      }
+    } else {
+      // 关闭开关 / 配置不全：停轮询但不销毁 host（配置补全后原对象复用）
+      if (agentTimer) {
+        clearInterval(agentTimer);
+        agentTimer = null;
+      }
+    }
+  } catch (err) {
+    // Agent 托管绝不影响桌面主链（执行器子进程/心跳/托盘）——失败仅记日志
+    log.warn(`[agent-host] sync failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }

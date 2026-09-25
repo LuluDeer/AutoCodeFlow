@@ -27,6 +27,8 @@
  */
 
 import { randomUUID } from 'crypto';
+import * as fs from 'fs';
+import * as path from 'path';
 import type { LoopHandlers, LoopNextAction, TrialOutcome } from './loop';
 import type { EffectiveAgentPermissions } from './permission-profile';
 import type { EnvironmentReport } from './perception';
@@ -36,6 +38,12 @@ import {
   type TrialInterpreter,
 } from './trial-run';
 import { listWorkspaceFiles, writeWorkspaceFile } from './workspace';
+import {
+  AgentBrowserSession,
+  BROWSER_ACTIONS_MAX,
+  probePlaywright,
+  type BrowserActionInput,
+} from './browser';
 import type { CollabClient } from './collab-client';
 
 /** SOP 载荷（agent-collab poll 的 assignment 条目形状）。 */
@@ -55,6 +63,8 @@ export interface SopPayload {
 
 export interface RuntimeDeps {
   address: string;
+  /** 所属指派（媒体上传的归属；agent-collab 的工单 id）。 */
+  assignmentId: string;
   client: CollabClient;
   permissions: EffectiveAgentPermissions;
   sop: SopPayload;
@@ -164,8 +174,12 @@ export function buildLoopHandlers(deps: RuntimeDeps, llm: LlmClient): LoopHandle
         },
         environment: deps.environment,
         workspaceFiles: listWorkspaceFiles(deps.workspaceRoot),
+        // P7b：最近一轮浏览器观察（页面文本/截图/录屏的 mediaPath 引用）
+        lastBrowserOutputs: lastBrowserOutputs || undefined,
         permissions: {
           codeExecution: deps.permissions.codeExecution,
+          browserAllowed: browserAllowed(),
+          allowedDomains: allowedDomainsForBrowser(),
           note: 'host 档未实现；工作区外路径与非白名单解释器会被平台拒绝',
         },
       },
@@ -197,6 +211,91 @@ export function buildLoopHandlers(deps: RuntimeDeps, llm: LlmClient): LoopHandle
     return { ok: r.ok, output };
   };
 
+  // ── 浏览器（P7b）────────────────────────────────────────────────
+  // 最近一轮浏览器观察（进 baseContext，让下一轮规划看得到页面）。
+  let lastBrowserOutputs = '';
+
+  const browserAllowed = (): boolean =>
+    // ① SOP 必须声明 browser 能力域（capabilities 是能力闸）；② 平台真的
+    // 有 playwright。两者缺一 → 拒绝原因回给模型，不静默丢弃。
+    (deps.sop.frontMatter.capabilities ?? []).includes('browser') && probePlaywright().available;
+
+  const allowedDomainsForBrowser = (): string[] => {
+    const fromSop = (deps.sop.frontMatter.constraints as { allowedDomains?: unknown } | undefined)?.allowedDomains;
+    const sopDomains = Array.isArray(fromSop) ? fromSop.filter((d): d is string => typeof d === 'string') : [];
+    // SOP ∪ 权限档位——两份白名单的并集（档位白名单是机器级授权）
+    return [...new Set([...sopDomains, ...deps.permissions.allowedDomains])];
+  };
+
+  const mimeFor = (name: string): string =>
+    name.endsWith('.png') ? 'image/png' : name.endsWith('.webm') ? 'video/webm' : name.endsWith('.jpg') || name.endsWith('.jpeg') ? 'image/jpeg' : 'application/octet-stream';
+
+  /**
+   * 执行 LLM 请求的浏览器动作序列（封闭枚举 + 每次导航过域名白名单）。
+   * 截图/录屏先落工作区，再尽力上传中台（mediaPath 供澄清 mediaRefs 引用）。
+   * 每步结果汇成摘要文本返回（进 LLM 上下文，截断防塞爆）。
+   */
+  const executeBrowserActions = async (actions: unknown): Promise<string> => {
+    if (!browserAllowed()) {
+      return '[浏览器] 不可用：SOP 未声明 browser 能力域或本机无 Playwright——请改用非浏览器方案。';
+    }
+    if (!Array.isArray(actions) || actions.length === 0) return '';
+    if (actions.length > BROWSER_ACTIONS_MAX) {
+      return `[浏览器] 动作数 ${actions.length} 超上限 ${BROWSER_ACTIONS_MAX}，本轮取消。`;
+    }
+    const session = new AgentBrowserSession(deps.workspaceRoot, allowedDomainsForBrowser());
+    const started = await session.start();
+    if (!started.ok) return `[浏览器] 启动失败：${started.error ?? 'unknown'}`;
+
+    const lines: string[] = [];
+    const uploads: string[] = [];
+    try {
+      for (const [i, a] of actions.entries()) {
+        const input = (a ?? {}) as BrowserActionInput;
+        const r = await session.run(input);
+        if (r.ok) {
+          const bits = [`${i + 1}. ${input.action}`, r.detail ?? '', r.text ? `text=${r.text.slice(0, 500)}` : ''];
+          if (r.screenshotPath) {
+            bits.push(`screenshot=${r.screenshotPath}`);
+            // 截图即传（best-effort）——mediaPath 进摘要，澄清时可直接引用
+            try {
+              const abs = path.join(deps.workspaceRoot, r.screenshotPath);
+              const up = await deps.client.uploadMedia(deps.address, deps.assignmentId, {
+                name: path.basename(r.screenshotPath),
+                mime: mimeFor(r.screenshotPath),
+                buf: fs.readFileSync(abs),
+              });
+              if (up.ok && up.mediaPath) bits.push(`mediaPath=${up.mediaPath}`);
+            } catch {
+              /* 上传失败不阻塞动作序列——文件在工作区，后续可重传 */
+            }
+          }
+          lines.push(bits.filter(Boolean).join(' '));
+        } else {
+          lines.push(`${i + 1}. ${input.action} 失败：${r.refusal ?? r.detail ?? 'unknown'}`);
+        }
+      }
+    } finally {
+      const closed = await session.close();
+      if (closed.videoPath) {
+        lines.push(`recording=${closed.videoPath}`);
+        try {
+          const up = await deps.client.uploadMedia(deps.address, deps.assignmentId, {
+            name: path.basename(closed.videoPath),
+            mime: mimeFor(closed.videoPath),
+            buf: fs.readFileSync(path.join(deps.workspaceRoot, closed.videoPath)),
+          });
+          if (up.ok && up.mediaPath) uploads.push(up.mediaPath);
+        } catch {
+          /* 同上 best-effort */
+        }
+      }
+    }
+    const summary = lines.concat(uploads.map((u) => `upload=${u}`)).join('\n').slice(0, 8_000);
+    lastBrowserOutputs = summary;
+    return summary;
+  };
+
   return {
     // ── plan：LLM 产出文件 + 入口 ────────────────────────────────────
     plan: async ({ iteration, feedback }) => {
@@ -213,10 +312,16 @@ export function buildLoopHandlers(deps: RuntimeDeps, llm: LlmClient): LoopHandle
       if (!parsed) throw new Error('LLM 输出不是合法 JSON（协议违规）');
       const mat = materializeFiles(deps.workspaceRoot, parsed.files);
       if (!mat.ok) throw new Error(`LLM 产出的文件不可落盘：${mat.error}`);
+      // 浏览器动作（P7b）：可选 "browser":[actions]，先看页面再写代码
+      let browserNote = '';
+      if (parsed.browser !== undefined) {
+        const summary = await executeBrowserActions(parsed.browser);
+        if (summary) browserNote = `\n[浏览器观察]\n${summary}`;
+      }
       const spec = parseEntry(parsed.entry);
       if (!spec) throw new Error('LLM 输出缺合法 entry（interpreter 封闭枚举 + path 必填）');
       entry = spec;
-      return `${spec.interpreter} ${spec.path}${typeof parsed.notes === 'string' ? ` — ${parsed.notes.slice(0, 200)}` : ''}`;
+      return `${spec.interpreter} ${spec.path}${typeof parsed.notes === 'string' ? ` — ${parsed.notes.slice(0, 200)}` : ''}${browserNote}`;
     },
 
     // ── trialRun：真沙箱执行 ─────────────────────────────────────────
@@ -241,6 +346,10 @@ export function buildLoopHandlers(deps: RuntimeDeps, llm: LlmClient): LoopHandle
       if (!parsed) throw new Error('LLM 诊断输出不是合法 JSON（协议违规）');
       const mat = materializeFiles(deps.workspaceRoot, parsed.files);
       if (!mat.ok) throw new Error(`LLM 修正文件不可落盘：${mat.error}`);
+      // 浏览器动作（P7b）：诊断阶段同样可看页面（如确认按钮位置变化）
+      if (parsed.browser !== undefined) {
+        await executeBrowserActions(parsed.browser);
+      }
       const action = parsed.action;
       // **显式映射，绝不 as 强转**：LLM 的 "clarify" 与 LoopNextAction 的
       // "needs_clarification" 是两个名字——强转会让「请求澄清」静默变成

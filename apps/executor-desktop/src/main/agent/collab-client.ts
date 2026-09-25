@@ -195,8 +195,73 @@ export class CollabClient {
     }
   }
 
+  /**
+   * 媒体回传（P7b）：把截图/录屏挂到指派上（multipart/form-data）。
+   * 返回的 mediaPath（/api/agent-collab/media/<id>）是澄清 mediaRefs 的
+   * 合法引用形态。
+   */
+  async uploadMedia(
+    address: string,
+    assignmentId: string,
+    file: { name: string; mime: string; buf: Buffer },
+  ): Promise<{ ok: boolean; error?: string; mediaPath?: string }> {
+    // node:http 无 FormData——手工拼 multipart（字段一个：file）
+    const boundary = `----acfagent${Date.now()}${Math.floor(Math.random() * 1e8)}`;
+    const head = Buffer.from(
+      [
+        `--${boundary}`,
+        `Content-Disposition: form-data; name="file"; filename="${file.name.replace(/[^\w.-]/g, '_')}"`,
+        `Content-Type: ${file.mime}`,
+        '',
+        '',
+      ].join('\r\n'),
+      'utf8',
+    );
+    const tail = Buffer.from(`\r\n--${boundary}--\r\n`, 'utf8');
+    const body = Buffer.concat([head, file.buf, tail]);
+
+    const res = await this.rawRequest(
+      'POST',
+      `/api/agent-collab/assignments/${encodeURIComponent(assignmentId)}/media`,
+      {
+        'Content-Type': `multipart/form-data; boundary=${boundary}`,
+        'Content-Length': String(body.length),
+      },
+      body,
+      120_000, // 录屏可能上百 MB，放宽
+    );
+    if (!res.ok) return { ok: false, error: res.error ?? `media upload failed (status=${res.status})` };
+    try {
+      const parsed = JSON.parse(res.body) as { mediaPath?: string };
+      return { ok: true, mediaPath: parsed.mediaPath };
+    } catch {
+      return { ok: false, error: 'media upload 响应非法 JSON' };
+    }
+  }
+
   /** 单发 POST（JSON）。所有错误收敛为 RawResult，不抛。 */
   private post(path: string, _address: string, body: unknown, timeoutMs?: number): Promise<RawResult> {
+    const payload = Buffer.from(JSON.stringify(body), 'utf8');
+    return this.rawRequest(
+      'POST',
+      path,
+      {
+        'Content-Type': 'application/json',
+        'Content-Length': String(payload.length),
+      },
+      payload,
+      timeoutMs,
+    );
+  }
+
+  /** 底层单请求（JSON 与 multipart 共用）。所有错误收敛为 RawResult，不抛。 */
+  private rawRequest(
+    method: string,
+    path: string,
+    headers: Record<string, string>,
+    payload: Buffer,
+    timeoutMs?: number,
+  ): Promise<RawResult> {
     return new Promise((resolve) => {
       let url: URL;
       try {
@@ -206,16 +271,14 @@ export class CollabClient {
         return;
       }
       const impl = url.protocol === 'https:' ? this.httpsImpl : this.httpImpl;
-      const payload = Buffer.from(JSON.stringify(body), 'utf8');
       const req = impl.request(
         {
           hostname: url.hostname,
           port: url.port || (url.protocol === 'https:' ? 443 : 80),
           path: `${url.pathname}${url.search}`,
-          method: 'POST',
+          method,
           headers: {
-            'Content-Type': 'application/json',
-            'Content-Length': payload.length,
+            ...headers,
             Authorization: `Bearer ${this.token}`,
           },
         },
