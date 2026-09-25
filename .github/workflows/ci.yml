@@ -562,6 +562,17 @@ jobs:
       # 基线：0 errors / 5 warnings（warnings 不阻塞）
       - run: npm run lint
         working-directory: apps/admin-web
+      # ── i18n 硬编码守卫 ────────────────────────────────────────────
+      # 界面支持中/英切换，但新页面若把中文写死在 JSX 里，英文界面下就会
+      # 中英混排——而 tsc/lint/vitest 都看不见这种回归（串本身合法、测试也
+      # 多半只断言中文文案）。故单列一道源码级闸。
+      # 走 TS AST 而非 grep：本仓中文注释占比极高，grep 口径把 TaskFormPage
+      # 的 0 处真实硬编码数成 350 处，会直接误导迁移排期（详见
+      # scripts/README-i18n-guard.md）。基线按「文件+串内容」计数比对，只拦
+      # 新增项，故存量 105 处合法串（标签映射 fallback、内部不变量错误信息等）
+      # 不会让这道闸一上来就红。放在 lint 之后、build 之前（快失败，零额外成本）。
+      - run: npm run lint:i18n
+        working-directory: apps/admin-web
       # ── 构建必须先于测试（PERF-01 的产物守卫依赖它）────────────────
       # PERF-01 的回归守卫（src/__tests__/monaco-first-paint.perf01.test.ts）
       # 读的是 **dist/index.html**——只有真跑过 build 才有得读。该守卫在产物
