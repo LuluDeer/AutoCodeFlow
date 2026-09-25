@@ -1,8 +1,23 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import {
-  Table, Button, Input, Select, Space, Tag, Tooltip, Modal, Form,
-  Upload, Checkbox, Alert, Typography, message, Badge, Card, theme,
-} from 'antd';
+import { Table,
+  Button,
+  Input,
+  Select,
+  Space,
+  Tag,
+  Tooltip,
+  Modal,
+  Form,
+  Upload,
+  Checkbox,
+  Alert,
+  Typography,
+  Badge,
+  Card,
+  theme } from 'antd';
+import { message } from '../utils/toast';
+// MODAL-01：命令式 Modal.* 从 utils/modal 取（吃暗色主题 + i18n locale）；<Modal> JSX 仍用 antd。
+import { Modal as confirmModal } from '../utils/modal';
 import type { ColumnsType } from 'antd/es/table';
 import {
   UploadOutlined, CloudDownloadOutlined, SendOutlined, DeleteOutlined,
@@ -266,7 +281,7 @@ export default function ExecutorPackagesPage() {
   };
 
   const handleDelete = (id: string) => {
-    Modal.confirm({
+    confirmModal.confirm({
       title: t('execPkg.deleteConfirm'),
       content: t('execPkg.deleteConfirmDesc'),
       okText: t('execPkg.delete'), okType: 'danger', cancelText: t('execPkg.cancel'),

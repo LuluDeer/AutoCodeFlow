@@ -160,7 +160,8 @@ describe('TaskListPage 筛选组合（QA-03 第二阶段）', () => {
     renderPage();
     await screen.findAllByText(/备份\s*任务|巡检任务/);
     fireEvent.mouseDown(screen.getByText('全部状态'));
-    fireEvent.click(await screen.findByText('运行中', { selector: '.ant-select-item-option-content' }));
+    // SEMANTIC-01：active 状态中文标签为「已启用」
+    fireEvent.click(await screen.findByText('已启用', { selector: '.ant-select-item-option-content' }));
     await waitFor(() => expect(findBtn(document.body, '清除筛选')).toBeTruthy());
 
     fireEvent.click(findBtn(document.body, '清除筛选')!);
@@ -256,8 +257,19 @@ describe('TaskListPage 行内暂停/恢复与删除（QA-03 第二阶段）', ()
     // 第 1 行 active → 点击为 pause
     fireEvent.click(switches[0]);
     await waitFor(() => expect(mockedTasks.pause).toHaveBeenCalledWith('task-1'));
+    // React 19：pause 成功后 refresh() 的列表重渲染会重建 Table 行节点，
+    // 第一次点击前缓存的 switches[1] 已脱离 DOM（事件不再冒泡到 React 根）。
+    // 第二次点击前必须重查当前渲染出的开关。
+    // React 19：waitFor(pause 被调用) 在 mock 调用即刻满足，此时 handlePause
+    // 的 async 链（finally setTogglingId(null)）尚未落定，第二行开关仍处于
+    // togglingId 互斥的 disabled 态。等互斥解除（disabled 翻转）再点击。
+    await waitFor(() => {
+      const sw = document.body.querySelectorAll('.ant-table-row .ant-switch')[1] as HTMLButtonElement;
+      expect(sw.disabled).toBe(false);
+    });
+    const switchesAfter = document.body.querySelectorAll('.ant-table-row .ant-switch') as NodeListOf<HTMLButtonElement>;
     // 第 2 行 paused → 点击为 resume
-    fireEvent.click(switches[1]);
+    fireEvent.click(switchesAfter[1]);
     await waitFor(() => expect(mockedTasks.resume).toHaveBeenCalledWith('task-2'));
   });
 

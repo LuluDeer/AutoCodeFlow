@@ -12,7 +12,11 @@
  * 保留 isAdmin 入参防御（测试断言门控用）。
  */
 import { useState } from 'react';
-import { Alert, Button, Modal, Space, Typography, Tag, message, theme } from 'antd';
+import { Alert, Button, Modal, Space, Typography, Tag, theme } from 'antd';
+import { message } from '../../utils/toast';
+// MODAL-01：命令式 Modal.* 从 utils/modal 取（吃暗色主题 + i18n locale）；
+// 本文件的 <Modal> JSX 组件仍用上面 antd 的 Modal。
+import { Modal as confirmModal } from '../../utils/modal';
 import { ControlOutlined, KeyOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import type { Executor } from '../../api/executors';
@@ -123,7 +127,7 @@ export default function BatchActionBar({ selected, isAdmin, onDone }: BatchActio
       message.warning(t('batchAction.reloadPullOnly'));
       return;
     }
-    Modal.confirm({
+    confirmModal.confirm({
       title: t('batchAction.reloadConfirmTitle', { count: pushable.length }),
       content: skippedPull > 0
         ? `${t('batchAction.reloadConfirmContent')} ${t('batchAction.reloadSkipPull', { count: skippedPull })}`
@@ -148,7 +152,7 @@ export default function BatchActionBar({ selected, isAdmin, onDone }: BatchActio
 
   const handleBatchRotateToken = () => {
     if (batchLoading) return;
-    Modal.confirm({
+    confirmModal.confirm({
       title: t('batchAction.rotateConfirmTitle', { count: selected.length }),
       width: 560,
       content: (
@@ -156,7 +160,7 @@ export default function BatchActionBar({ selected, isAdmin, onDone }: BatchActio
           <Alert
             type="warning"
             showIcon
-            message={t('batchAction.highrisk.title')}
+            title={t('batchAction.highrisk.title')}
             description={t('batchAction.highrisk.desc')}
             style={{ marginBottom: 12 }}
           />

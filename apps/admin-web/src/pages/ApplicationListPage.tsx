@@ -1,8 +1,23 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import {
-  Table, Button, Space, Tag, Modal, Form, Input, Select, Upload, message,
-  Typography, Tooltip, Badge, Empty, Switch,
-} from 'antd';
+import { Table,
+  Button,
+  Space,
+  Tag,
+  Modal,
+  Form,
+  Input,
+  Select,
+  Upload,
+  Typography,
+  Tooltip,
+  Badge,
+  Empty,
+  Card,
+  Pagination,
+  Switch } from 'antd';
+import { message } from '../utils/toast';
+// MODAL-01：命令式 Modal.* 从 utils/modal 取（吃暗色主题 + i18n locale）；<Modal> JSX 仍用 antd。
+import { Modal as confirmModal } from '../utils/modal';
 import {
   PlusOutlined, UploadOutlined, ReloadOutlined, GithubOutlined,
   SearchOutlined, FilterOutlined, EyeOutlined, RocketOutlined,
@@ -21,6 +36,8 @@ import { runtimeLabel } from '../utils/runtime-label';
 import { useAuthStore, isAdminUser } from '../store/auth';
 import PageHeader from '../components/PageHeader';
 import PageSkeleton from '../components/PageSkeleton';
+// MOBILE-CARD-01：≤768px 表格 → 卡片列表（结构级降级，CSS 做不到）
+import { useIsMobile } from '../hooks/useIsMobile';
 import StateError from '../components/StateError';
 import DeployModeFields from '../components/DeployModeFields';
 // UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
@@ -208,6 +225,8 @@ export default function ApplicationListPage() {
 
   useEffect(() => { fetchApps(); }, [fetchApps]);
 
+  // MOBILE-CARD-01：≤768px 表格 → 卡片列表（客户端分页与桌面 Table 同容量）
+  const isMobile = useIsMobile();
   const filtered = useMemo(() => {
     return apps.filter((a) => {
       const matchSearch = !searchText ||
@@ -219,6 +238,14 @@ export default function ApplicationListPage() {
     });
   }, [apps, searchText, statusFilter, runtimeFilter]);
 
+  // MOBILE-CARD-01：移动端卡片列表分页（与桌面 Table 默认 pageSize=10 同容量）
+  const MOBILE_PAGE_SIZE = 10;
+  const [mobilePage, setMobilePage] = useState(1);
+  useEffect(() => {
+    // 筛选收缩后页码越界 → 收回到最后一页（避免筛选后卡片列表空页）
+    const maxPage = Math.max(1, Math.ceil(filtered.length / MOBILE_PAGE_SIZE));
+    if (mobilePage > maxPage) setMobilePage(maxPage);
+  }, [filtered.length, mobilePage]);
   const hasFilters = !!(searchText || statusFilter || runtimeFilter);
 
   const handleCreate = () => {
@@ -257,7 +284,7 @@ export default function ApplicationListPage() {
     try {
       impact = await applicationsApi.removalImpact(app.id);
     } catch {
-      impact = null;
+      // 影响面拉取失败不阻断删除：impact 保持 null，降级为通用确认文案。
     }
     const lines: string[] = [];
     if (impact) {
@@ -274,7 +301,7 @@ export default function ApplicationListPage() {
     } else {
       lines.push(t('appList.deleteImpact.unavailable'));
     }
-    Modal.confirm({
+    confirmModal.confirm({
       title: t('appList.deleteConfirm'),
       content: (
         <div>
@@ -447,7 +474,8 @@ export default function ApplicationListPage() {
     {
       title: t('appList.col.instances'),
       key: 'deployStats',
-      width: 130,
+      // LAYOUT-01：150px——「1 / 1 台运行中」+ Badge 在 130px 内折行成两行
+      width: 150,
       render: (_: unknown, record: AppWithStats) => {
         if (record.totalDeployments === 0) return <Text type="secondary">{t('appList.noDeploy')}</Text>;
         // P1-13：旧实现无条件显示绿色"运行中 X/Y"——部署全部失败后仍显示绿色，
@@ -462,14 +490,14 @@ export default function ApplicationListPage() {
           return (
             <Space>
               <Badge status={status} />
-              <Text type={record.failedCount > 0 ? 'danger' : 'secondary'}>{text}</Text>
+              <Text type={record.failedCount > 0 ? 'danger' : 'secondary'} style={{ whiteSpace: 'nowrap' }}>{text}</Text>
             </Space>
           );
         }
         return (
           <Space>
             <Badge status="processing" />
-            <Text>{t('appList.runningInstances', { running: record.runningCount, total: record.totalDeployments })}</Text>
+            <Text style={{ whiteSpace: 'nowrap' }}>{t('appList.runningInstances', { running: record.runningCount, total: record.totalDeployments })}</Text>
           </Space>
         );
       },
@@ -607,6 +635,72 @@ export default function ApplicationListPage() {
         )}
       </Space>
 
+      {isMobile ? (
+        /* MOBILE-CARD-01：≤768px 卡片列表——此前 7 列表格在 375px 需横向滚动且
+           操作列被截断。卡片按首查信息组织：名称+状态 / 版本·运行时 / 运行实例
+           （P1-13 语义） / 最后部署 / 操作（详情·部署·编辑·删除）。 */
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {filtered.length === 0 ? (
+            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={hasFilters ? t('appList.empty.noMatch') : t('appList.empty.none')} />
+          ) : (
+            filtered.slice((mobilePage - 1) * MOBILE_PAGE_SIZE, mobilePage * MOBILE_PAGE_SIZE).map((record) => (
+              <Card key={record.id} size="small" style={{ borderRadius: 10 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                  <Link to={`/applications/${record.id}`} style={{ fontWeight: 500, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {record.name}
+                  </Link>
+                  <Tag color={statusColors[record.status] || 'default'} style={{ marginInlineEnd: 0 }}>
+                    {statusLabels(t)[record.status] || record.status}
+                  </Tag>
+                </div>
+                <div style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                  {record.version && <Tag style={{ marginInlineEnd: 0 }}>{record.version}</Tag>}
+                  <Tag color="blue" style={{ marginInlineEnd: 0 }}>{runtimeLabel(record.runtime, t)}</Tag>
+                </div>
+                <div style={{ marginTop: 6, fontSize: 12, color: 'var(--chart-axis-text)' }}>
+                  {record.totalDeployments === 0
+                    ? t('appList.noDeploy')
+                    : record.runningCount > 0
+                      ? t('appList.runningInstances', { running: record.runningCount, total: record.totalDeployments })
+                      : record.failedCount > 0
+                        ? t('appList.deployFailed', { failed: record.failedCount, total: record.totalDeployments })
+                        : t('appList.deployNotRunning', { total: record.totalDeployments })}
+                  {' · '}
+                  {t('appList.col.lastDeploy')}：{record.lastDeployedAt ? formatRelativeTime(record.lastDeployedAt, t) : t('appList.notDeployed')}
+                </div>
+                <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                  <Button type="link" size="small" icon={<EyeOutlined />} onClick={() => nav(`/applications/${record.id}`)}>
+                    {t('appList.action.detail')}
+                  </Button>
+                  <Tooltip title={isAdmin ? t('appList.deployHint') : t('appList.deployDisableHint')}>
+                    <Button type="link" size="small" icon={<RocketOutlined />} onClick={() => openQuickDeploy(record.id)} disabled={!isAdmin}>
+                      {t('appList.action.deploy')}
+                    </Button>
+                  </Tooltip>
+                  <Tooltip title={isAdmin ? t('appList.editHint') : t('appList.editDisableHint')}>
+                    <Button type="link" size="small" onClick={() => handleEdit(record)} disabled={!isAdmin}>{t('appList.action.edit')}</Button>
+                  </Tooltip>
+                  <Tooltip title={isAdmin ? t('appList.deleteHint') : t('appList.deleteDisableHint')}>
+                    <Button type="link" size="small" danger disabled={!isAdmin} onClick={() => void handleDeleteClick(record)}>
+                      {t('appList.action.delete')}
+                    </Button>
+                  </Tooltip>
+                </div>
+              </Card>
+            ))
+          )}
+          {filtered.length > MOBILE_PAGE_SIZE && (
+            <Pagination
+              size="small"
+              current={mobilePage}
+              pageSize={MOBILE_PAGE_SIZE}
+              total={filtered.length}
+              onChange={setMobilePage}
+              style={{ alignSelf: 'flex-end' }}
+            />
+          )}
+        </div>
+      ) : (
       <Table
         columns={columns}
         dataSource={filtered}
@@ -629,6 +723,7 @@ export default function ApplicationListPage() {
                 : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('appList.empty.none')} />)),
         }}
       />
+      )}
 
       {/* Create/Edit Modal */}
       <Modal

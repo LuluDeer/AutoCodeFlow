@@ -14,24 +14,30 @@
  *
  * 网络性能审计（2026-09-18）：
  *  - 主包从 `monaco-editor`（index = editor.api + 全量语言贡献）换成
- *    `monaco-editor/esm/vs/editor/editor.api`（只含编辑器核心与语言 API），
- *    再按需注册 GlueEditor 实际使用的三种语言（python/javascript/shell 的
- *    monarch 语法高亮）。实测 vendor-monaco 从 4.16MB 降到 2.42MB（raw），
- *    brotli 后 499KB；ts/json/css/html 等语言贡献不再打进主包。
+ *    editor.api（只含编辑器核心与语言 API），再按需注册 GlueEditor 实际
+ *    使用的三种语言（python/javascript/shell 的 monarch 语法高亮）。实测
+ *    vendor-monaco 从 4.16MB 降到 2.42MB（raw），brotli 后 499KB；
+ *    ts/json/css/html 等语言贡献不再打进主包。
  *  - 移除 TsWorker（ts.worker-*.js 单文件 ~5.9MB）：JavaScript/TypeScript 的
  *    语言服务（补全/诊断）不再加载，降级为 monarch 语法高亮——Glue 脚本
  *    编辑器是短代码输入场景，体积收益远大于 IDE 级补全。如需恢复 JS
  *    IntelliSense，仅需重新引入 ts.worker 并按下表分发 label。
  *      - python/shell → editor.worker（base worker；monarch 分词在主线程）；
  *      - javascript/typescript → ts.worker（语言服务：补全/诊断）。
+ *
+ * monaco-editor 0.56：包 exports 以 `vs/` 为根重写了子路径映射
+ * （`monaco-editor/<sub>` → `./esm/vs/<sub>.js`），且语言贡献从
+ * `esm/vs/basic-languages/<lang>/<lang>.contribution` 迁到
+ * `esm/vs/languages/definitions/<lang>/register`。下面的导入已按新
+ * 规范路径书写（按需注册的体积优化策略不变）。
  */
 import type { Environment } from 'monaco-editor';
-import * as monaco from 'monaco-editor/esm/vs/editor/editor.api';
+import * as monaco from 'monaco-editor/editor/editor.api.js';
 // 只注册编辑器实际使用的语言（monarch 语法高亮贡献从 editor.api 取 languages）
-import 'monaco-editor/esm/vs/basic-languages/python/python.contribution';
-import 'monaco-editor/esm/vs/basic-languages/javascript/javascript.contribution';
-import 'monaco-editor/esm/vs/basic-languages/shell/shell.contribution';
-import EditorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker';
+import 'monaco-editor/languages/definitions/python/register.js';
+import 'monaco-editor/languages/definitions/javascript/register.js';
+import 'monaco-editor/languages/definitions/shell/register.js';
+import EditorWorker from 'monaco-editor/editor/editor.worker.js?worker';
 
 (self as unknown as { MonacoEnvironment: Environment }).MonacoEnvironment = {
   // 不再按 label 分发：所有语言统一返回 base editor.worker（体积优化见文件头注释）。

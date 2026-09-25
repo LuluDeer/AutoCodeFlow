@@ -117,7 +117,7 @@ export default function SecretsEditor({ value, onChange, existing }: SecretsEdit
       setTouched(false);
       touchedRef.current = false;
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+
   }, [value, existing]);
 
   /**
@@ -208,7 +208,7 @@ export default function SecretsEditor({ value, onChange, existing }: SecretsEdit
         type="info"
         showIcon
         icon={<LockOutlined />}
-        message={t('secretsEditor.alertTitle')}
+        title={t('secretsEditor.alertTitle')}
         description={t('secretsEditor.alertDesc')}
         style={{ marginBottom: 12 }}
       />

@@ -1,4 +1,5 @@
-import { Form, Input, Button, Typography, Card, Alert, message } from 'antd';
+import { Form, Input, Button, Typography, Card, Alert } from 'antd';
+import { message } from '../utils/toast';
 import { UserOutlined, LockOutlined, ThunderboltOutlined, SafetyOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { useEffect, useRef, useState } from 'react';

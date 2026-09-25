@@ -1,8 +1,23 @@
 import { useState, useEffect } from 'react';
-import {
-  Card, Table, Button, Space, Tag, Modal, Form, Input, Select, Switch,
-  Typography, Alert, Popconfirm, message, Divider, Spin, Tooltip,
-} from 'antd';
+import { Card,
+  Table,
+  Button,
+  Space,
+  Tag,
+  Modal,
+  Form,
+  Input,
+  Select,
+  Switch,
+  Typography,
+  Alert,
+  Popconfirm,
+  Divider,
+  Tooltip,
+  Skeleton } from 'antd';
+import { message } from '../../utils/toast';
+// MODAL-01：命令式 Modal.* 从 utils/modal 取（吃暗色主题 + i18n locale）；<Modal> JSX 仍用 antd。
+import { Modal as confirmModal } from '../../utils/modal';
 import {
   PlusOutlined, BellOutlined, DeleteOutlined, ThunderboltOutlined,
   EditOutlined,
@@ -173,7 +188,7 @@ function DeadLetterSection({ subscriptions }: { subscriptions: EventSubscription
   });
 
   const handleReplay = (subId: string, dl: EventSubscriptionDeadLetter) => {
-    Modal.confirm({
+    confirmModal.confirm({
       title: t('eventSub.deadLetter.replayConfirm'),
       content: t('eventSub.deadLetter.replayConfirmDesc'),
       okText: t('eventSub.deadLetter.replay'),
@@ -248,8 +263,9 @@ function DeadLetterSection({ subscriptions }: { subscriptions: EventSubscription
           </Button>
         ))}
       </Space>
+      {/* UI-08 收尾：死信列表加载从裸 Spin 换成骨架行（与全站加载形态统一） */}
       {isLoading ? (
-        <Spin />
+        <Skeleton active title={false} paragraph={{ rows: 3 }} />
       ) : deadLettersError ? (
         // UI-16：死信读请求失败 → 页内错误块（重试=refetch），不落「暂无死信」误导空态
         <StateError

@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { Card, Tabs, Table, Button, Upload, Form, Input, Modal, message, Space, Typography, Tag, Empty, theme, Tooltip } from 'antd';
+import { Card, Tabs, Table, Button, Upload, Form, Input, Modal, Space, Typography, Tag, Empty, theme, Tooltip } from 'antd';
+import { message } from '../utils/toast';
 import {
   UploadOutlined, ReloadOutlined, CodeOutlined, InboxOutlined,
 } from '@ant-design/icons';

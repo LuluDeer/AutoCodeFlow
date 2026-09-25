@@ -27,7 +27,10 @@ const stripComments = (s: string) =>
   s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 
 const APP_DEPLOY = stripComments(read('pages/AppDeploymentPage.tsx'));
-const EXEC_DETAIL = stripComments(read('pages/ExecutionDetailPage.tsx'));
+const EXEC_PAGE = stripComments(read('pages/ExecutionDetailPage.tsx'));
+// REFACTOR-EXEC：相关模式随组件拆分迁移（traceId 复制→InfoCard，重试链→RetryChain）
+const EXEC_INFO_CARD = stripComments(read('components/ExecutionInfoCard.tsx'));
+const RETRY_CHAIN = stripComments(read('components/ExecutionRetryChain.tsx'));
 const EXECUTOR_DETAIL = stripComments(read('pages/ExecutorDetailPage.tsx'));
 const APP_DETAIL = stripComments(read('pages/ApplicationDetailPage.tsx'));
 const APP_LIST = stripComments(read('pages/ApplicationListPage.tsx'));
@@ -44,7 +47,7 @@ describe('D-P1-2: 两处裸 clipboard 走 copyText 并按返回值分支', () =>
   it('AppDeploymentPage / ExecutionDetailPage 不再裸调 navigator.clipboard.writeText', () => {
     for (const [name, src] of [
       ['AppDeploymentPage', APP_DEPLOY],
-      ['ExecutionDetailPage', EXEC_DETAIL],
+      ['ExecutionInfoCard', EXEC_INFO_CARD],
     ] as const) {
       expect(/navigator\.clipboard\??\.writeText/.test(src), `${name} 仍裸调 navigator.clipboard.writeText`).toBe(false);
       expect(src, `${name} 未用 copyText`).toContain('copyText(');
@@ -59,8 +62,8 @@ describe('D-P2-01b: Alert 用 title= 而非 deprecated 的 message=', () => {
     expect(APP_DEPLOY).toContain("title={t('appDeploy.modal.smartScheduling')}");
     expect(APP_DEPLOY).not.toMatch(/message=\{t\('appDeploy\.(alert|modal\.smartScheduling)/);
 
-    expect(EXEC_DETAIL).toContain("title={t('execDetail.retriggerConfirm.differs')}");
-    expect(EXEC_DETAIL).not.toContain("message={t('execDetail.retriggerConfirm.differs')}");
+    expect(EXEC_PAGE).toContain("title={t('execDetail.retriggerConfirm.differs')}");
+    expect(EXEC_PAGE).not.toContain("message={t('execDetail.retriggerConfirm.differs')}");
 
     expect(EXECUTOR_DETAIL).toContain("title={t('executorDetail.highrisk.title')}");
     expect(EXECUTOR_DETAIL).toContain("title={t('executorDetail.highrisk.irreversible')}");
@@ -142,8 +145,8 @@ describe('D-P2-11: 硬编码英文补 i18n（zh/en 双键）', () => {
   });
 
   it('源码不再直出硬编码英文', () => {
-    expect(EXEC_DETAIL).toContain("t('execDetail.retry.attempt', { n: link.retryCount })");
-    expect(EXEC_DETAIL).not.toContain('Attempt #{link.retryCount}');
+    expect(RETRY_CHAIN).toContain("t('execDetail.retry.attempt', { n: link.retryCount })");
+    expect(RETRY_CHAIN).not.toContain('Attempt #{link.retryCount}');
     expect(EXECUTOR_DETAIL).not.toContain('name="CPU %"');
     expect(SETTINGS_INDEX).not.toContain('label="API Base URL"');
     expect(SETTINGS_INDEX).not.toContain('Ollama Host');

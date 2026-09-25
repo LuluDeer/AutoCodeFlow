@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { Card, Table, Tag, Button, Space, Typography, Row, Col, Statistic, Modal, message, theme } from 'antd';
+import { Card, Table, Tag, Button, Space, Typography, Row, Col, Statistic, Modal, theme } from 'antd';
+import { message } from '../utils/toast';
 import { useTranslation } from 'react-i18next';
 import '../i18n';
 import { TaskExecution } from '../api/tasks';

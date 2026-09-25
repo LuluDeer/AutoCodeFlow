@@ -1,6 +1,5 @@
 import { useState, useCallback } from 'react';
-import {
-  Table,
+import { Table,
   Button,
   Space,
   Modal,
@@ -9,12 +8,13 @@ import {
   Select,
   Tag,
   Popconfirm,
-  message,
   Card,
   Row,
   Col,
-  theme,
-} from 'antd';
+  Empty,
+  Typography,
+  theme } from 'antd';
+import { message } from '../utils/toast';
 import {
   PlusOutlined,
   SearchOutlined,
@@ -31,6 +31,8 @@ import { useTranslation } from 'react-i18next';
 import PageHeader from '../components/PageHeader';
 import StateError from '../components/StateError';
 import PageSkeleton from '../components/PageSkeleton';
+// MOBILE-CARD-01：≤768px 表格 → 卡片列表（结构级降级，CSS 做不到）
+import { useIsMobile } from '../hooks/useIsMobile';
 // UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
 import '../i18n';
 
@@ -205,6 +207,8 @@ export default function UserManagementPage() {
       });
   }, [resetPwdForm, resetPwdUser, resetPwdMutation, t]);
 
+  // MOBILE-CARD-01：≤768px 表格 → 卡片列表
+  const isMobile = useIsMobile();
   const columns = [
     {
       title: t('users.col.username'),
@@ -341,6 +345,57 @@ export default function UserManagementPage() {
             style={{ marginBottom: 16 }}
           />
         ) : null}
+          {isMobile ? (
+            /* MOBILE-CARD-01：≤768px 卡片列表——6 列定宽表格在 375px 需横向滚动。
+               卡片按首查信息组织：用户名+角色·状态 / 邮箱 / 创建时间 / 操作。 */
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {filteredUsers.length === 0 ? (
+                isLoading
+                  ? <PageSkeleton variant="table" rows={4} />
+                  : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={searchText ? t('users.empty.noMatch') : t('users.empty.none')} />
+              ) : (
+                filteredUsers.map((record: UserWithActive) => (
+                  <Card key={record.id} size="small" style={{ borderRadius: 10 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                      <Typography.Text strong style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{record.username}</Typography.Text>
+                      <Space size={4}>
+                        <Tag color={ROLE_COLORS[record.role] ?? 'default'} style={{ marginInlineEnd: 0 }}>{roleLabels[record.role] ?? record.role}</Tag>
+                        {record.isActive === false
+                          ? <Tag color="orange" style={{ marginInlineEnd: 0 }}>{t('users.status.disabled')}</Tag>
+                          : <Tag color="green" style={{ marginInlineEnd: 0 }}>{t('users.status.active')}</Tag>}
+                      </Space>
+                    </div>
+                    <div style={{ marginTop: 6, fontSize: 12, color: 'var(--chart-axis-text)' }}>
+                      {record.email || '—'}
+                    </div>
+                    <div style={{ marginTop: 4, fontSize: 12, color: 'var(--chart-axis-text)' }}>
+                      {t('users.col.createdAt')}：{record.createdAt ? new Date(record.createdAt).toLocaleString(currentLocale(), { hour12: false }) : '—'}
+                    </div>
+                    <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                      <Button type="link" size="small" icon={<EditOutlined />} onClick={() => openEdit(record)}>
+                        {t('users.action.edit')}
+                      </Button>
+                      <Button type="link" size="small" icon={<LockOutlined />} onClick={() => handleResetPwd(record)}>
+                        {t('users.action.resetPwd')}
+                      </Button>
+                      <Popconfirm
+                        title={t('users.deleteConfirm')}
+                        description={t('users.deleteConfirmDesc', { name: record.username })}
+                        onConfirm={() => deleteMutation.mutate(record.id)}
+                        okText={t('users.action.delete')}
+                        cancelText={t('users.cancel')}
+                        okButtonProps={{ danger: true }}
+                      >
+                        <Button type="link" size="small" danger icon={<DeleteOutlined />}>
+                          {t('users.action.delete')}
+                        </Button>
+                      </Popconfirm>
+                    </div>
+                  </Card>
+                ))
+              )}
+            </div>
+          ) : (
           <Table
             rowKey="id"
             columns={columns}
@@ -368,6 +423,7 @@ export default function UserManagementPage() {
                 : (searchText ? t('users.empty.noMatch') : t('users.empty.none')),
             }}
           />
+          )}
       </Card>
 
       <Modal

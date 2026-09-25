@@ -90,7 +90,8 @@ describe('UX-04 源码层：三处调用点不得再 fire-and-forget', () => {
     'pages/settings/EventSubscriptionsSettings.tsx',
     'pages/ExecutorInstallWizardPage.tsx',
     'pages/AppDeploymentPage.tsx',
-    'pages/ExecutionDetailPage.tsx',
+    // REFACTOR-EXEC-01：traceId 复制随信息卡迁至 ExecutionInfoCard
+    'components/ExecutionInfoCard.tsx',
   ];
 
   it('不再直接调用 navigator.clipboard.writeText', () => {
@@ -134,7 +135,7 @@ describe('UX-04 源码层：三处调用点不得再 fire-and-forget', () => {
     // 但非安全上下文下 navigator.clipboard 为 undefined，同步 TypeError 且
     // .then 链不建立。两处都必须走 copyText 并在失败时 message.error。
     const deploy = stripComments(read('pages/AppDeploymentPage.tsx'));
-    const execDetail = stripComments(read('pages/ExecutionDetailPage.tsx'));
+    const execDetail = stripComments(read('components/ExecutionInfoCard.tsx'));
 
     for (const [src, label] of [[deploy, 'AppDeploymentPage'], [execDetail, 'ExecutionDetailPage']] as const) {
       expect(src, `${label} 未使用 copyText`).toContain('copyText(');

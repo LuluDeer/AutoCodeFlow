@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Select, Button, Space, message, Typography } from 'antd';
+import { Select, Button, Space, Typography } from 'antd';
+import { message } from '../utils/toast';
 import { Editor, loader } from '@monaco-editor/react';
 import { useTranslation } from 'react-i18next';
 import '../i18n';
@@ -63,7 +64,7 @@ import sys
 def main():
     execution_id = os.environ.get('EXECUTION_ID', 'unknown')
     print(f"Hello from Glue script! Execution: {execution_id}")
-    
+
     # Your task logic here
     result = {"status": "ok", "message": "Task completed successfully"}
     print(json.dumps(result))
@@ -81,7 +82,7 @@ if __name__ == '__main__':
 async function main() {
   const executionId = process.env.EXECUTION_ID || 'unknown';
   console.log(\`Hello from Glue script! Execution: \${executionId}\`);
-  
+
   // Your task logic here
   const result = { status: 'ok', message: 'Task completed successfully' };
   console.log(JSON.stringify(result));

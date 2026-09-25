@@ -6,6 +6,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import MainLayout, {
   readCollapsedPreference,
   readMenuOpenKeys,
@@ -48,12 +49,16 @@ afterEach(() => {
 });
 
 function renderLayout(path = '/dashboard') {
+  // BELL-01：MainLayout 内 NotificationBell 消费 react-query → 需要 provider
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
-    <MemoryRouter initialEntries={[path]}>
-      <Routes>
-        <Route path="*" element={<MainLayout />} />
-      </Routes>
-    </MemoryRouter>,
+    <QueryClientProvider client={qc}>
+      <MemoryRouter initialEntries={[path]}>
+        <Routes>
+          <Route path="*" element={<MainLayout />} />
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>,
   );
 }
 
@@ -133,20 +138,22 @@ describe('UI-03 折叠态与持久化', () => {
 
   it('分组展开/收起持久化到 localStorage', async () => {
     renderLayout();
-    // 默认展开：任务/执行
+    // 默认展开：任务/执行。NAV-EXPAND-01：当前路由（/dashboard）所属的
+    // g-overview 会在会话内被自动展开，但**不写入持久化**——持久化层只反映
+    // 用户动作；深链自动展开每次路由都会重新应用，无需落盘。
     expect(readMenuOpenKeys(['g-overview', 'g-tasks', 'g-executions', 'g-executors', 'g-applications', 'g-system']))
       .toEqual(['g-tasks', 'g-executions']);
-    // 点击「概览」展开 → 持久化含 g-overview
-    fireEvent.click(screen.getByText('概览'));
+    // 点击「任务」收起 → 持久化不再含 g-tasks
+    fireEvent.click(screen.getByText('任务'));
     await waitFor(() => {
       const saved = JSON.parse(localStorage.getItem('autoflow-menu-open-keys') || '[]');
-      expect(saved).toContain('g-overview');
+      expect(saved).not.toContain('g-tasks');
     });
-    // 再次点击「概览」收起 → 持久化不再含 g-overview
-    fireEvent.click(screen.getByText('概览'));
+    // 再次点击「任务」展开 → 持久化重新包含 g-tasks
+    fireEvent.click(screen.getByText('任务'));
     await waitFor(() => {
       const saved = JSON.parse(localStorage.getItem('autoflow-menu-open-keys') || '[]');
-      expect(saved).not.toContain('g-overview');
+      expect(saved).toContain('g-tasks');
     });
   });
 

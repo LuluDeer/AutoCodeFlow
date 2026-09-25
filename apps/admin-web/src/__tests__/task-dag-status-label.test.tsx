@@ -46,11 +46,12 @@ describe('P2-3: DAG 节点状态复用共享中文映射（不渲染裸枚举）
     } as never);
   });
 
-  it('节点 Tag 显示中文状态（运行中/已暂停），不出现裸 active/paused', async () => {
+  it('节点 Tag 显示中文状态（已启用/已暂停），不出现裸 active/paused', async () => {
     renderGraph('cur');
     // 旧实现直接渲染 {n.status} → 页面会出现字面 "active"/"paused"
+    // SEMANTIC-01：active 中文标签为「已启用」（调度启用态，非「运行中」）
     expect(await screen.findByText('上游')).toBeTruthy();
-    expect(screen.getByText('运行中')).toBeTruthy();
+    expect(screen.getByText('已启用')).toBeTruthy();
     expect(screen.getByText('已暂停')).toBeTruthy();
     // 裸枚举不应出现在节点上
     expect(screen.queryByText('active')).toBeNull();

@@ -1,8 +1,18 @@
 import { useState } from 'react';
-import {
-  Card, Table, Button, Space, Tag, Modal, Form, Input, Select, InputNumber,
-  Typography, Alert, Popconfirm, message,
-} from 'antd';
+import { Card,
+  Table,
+  Button,
+  Space,
+  Tag,
+  Modal,
+  Form,
+  Input,
+  Select,
+  InputNumber,
+  Typography,
+  Alert,
+  Popconfirm } from 'antd';
+import { message } from '../../utils/toast';
 import {
   PlusOutlined, CopyOutlined, ApiOutlined, WarningOutlined,
 } from '@ant-design/icons';

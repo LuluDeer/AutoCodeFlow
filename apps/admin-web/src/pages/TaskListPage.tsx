@@ -1,8 +1,22 @@
-import { useState } from 'react';
-import {
-  Table, Button, Tag, Space, Typography, message, Input, Select,
-  Badge, Popconfirm, Tooltip, Empty, Switch, Modal, Form, Alert, theme,
-} from 'antd';
+import { useState, useEffect } from 'react';
+import { Table,
+  Button,
+  Tag,
+  Space,
+  Typography,
+  Input,
+  Select,
+  Badge,
+  Popconfirm,
+  Tooltip,
+  Empty,
+  Switch,
+  Modal,
+  Form,
+  Alert,
+  theme,
+  Card } from 'antd';
+import { message } from '../utils/toast';
 import {
   PlusOutlined, SearchOutlined, FilterOutlined, ThunderboltOutlined,
   CopyOutlined, DeleteOutlined, EyeOutlined, EditOutlined,
@@ -13,7 +27,7 @@ import {
 import type { components } from '../types/generated/api-types';
 import { Trans, useTranslation } from 'react-i18next';
 import { useQueryClient } from '@tanstack/react-query';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate, Link, useSearchParams } from 'react-router-dom';
 import { tasksApi, Task, summarizeBatch, type BatchItemResult } from '../api/tasks';
 import { useTasksList, invalidateTaskData } from '../api/queries';
 import { getErrMsg } from '../utils/error';
@@ -25,6 +39,10 @@ import { runtimeLabel } from '../utils/runtime-label';
 // P1-1/P1-2（UX-AUDIT-2026-09-21）：列表页显示真实的「下次执行」与「上次执行」
 import { nextRunAt, formatFireTime, previewNeedsTimezoneWarning } from '../utils/trigger-preview';
 import { formatRelativeTime } from '../utils/timeFormat';
+// CRON-DESC-01：Cron 表达式的人类可读描述（超出子集回退 null，只显示原表达式）
+import { describeCron } from '../utils/cron-desc';
+// MOBILE-CARD-01：≤768px 表格 → 卡片列表（结构级降级）
+import { useIsMobile } from '../hooks/useIsMobile';
 import ParamsEditor from '../components/ParamsEditor';
 import PageHeader from '../components/PageHeader';
 import StateError from '../components/StateError';
@@ -51,14 +69,19 @@ const TRIGGER_COLOR: Record<string, string> = {
 
 export default function TaskListPage() {
   const nav = useNavigate();
+  // MOBILE-CARD-01：≤768px 表格 → 卡片列表
+  const isMobile = useIsMobile();
   // P1-5：写操作仅管理员可用（普通用户按钮禁用+提示，不发起会 403 的请求）。
   const isAdmin = isAdminUser(useAuthStore((s) => s.user));
   const { t } = useTranslation();
   // F-15（DEEP_REVIEW 0ef3bbe）：主色/淡色背景走 antd token，暗色主题自适应。
   const { token } = theme.useToken();
-  const [search, setSearch] = useState('');
-  const [statusFilter, setStatusFilter] = useState<string | undefined>();
-  const [triggerFilter, setTriggerFilter] = useState<string | undefined>();
+  // URL-SYNC-01：筛选/分页以 URL 查询参数为初始源并回写——刷新/分享不丢状态
+  // （与 ExecutionsPage 同一约定：q/status/trigger/page/pageSize）。
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [search, setSearch] = useState(() => searchParams.get('q') || '');
+  const [statusFilter, setStatusFilter] = useState<string | undefined>(() => searchParams.get('status') || undefined);
+  const [triggerFilter, setTriggerFilter] = useState<string | undefined>(() => searchParams.get('trigger') || undefined);
   const [selectedRowKeys, setSelectedRowKeys] = useState<string[]>([]);
   const [triggerTarget, setTriggerTarget] = useState<{ id: string; name: string; defaultParams?: Record<string, unknown> } | null>(null);
   const [triggerParams, setTriggerParams] = useState<Record<string, string>>({});
@@ -66,11 +89,28 @@ export default function TaskListPage() {
   const [togglingId, setTogglingId] = useState<string | null>(null);
   const [batchLoading, setBatchLoading] = useState(false);
 
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
+  const [page, setPage] = useState(() => {
+    const p = Number(searchParams.get('page'));
+    return Number.isInteger(p) && p > 0 ? p : 1;
+  });
+  const [pageSize, setPageSize] = useState(() => {
+    const ps = Number(searchParams.get('pageSize'));
+    return Number.isInteger(ps) && ps > 0 ? ps : 20;
+  });
 
   // 搜索防抖：输入框即时回显 search，列表查询跟随 debounced 值，避免每击键发请求
   const debouncedSearch = useDebounce(search);
+
+  // URL-SYNC-01：状态→URL 回写（replace 不制造历史记录；空值不写入）
+  useEffect(() => {
+    const next = new URLSearchParams();
+    if (page !== 1) next.set('page', String(page));
+    if (pageSize !== 20) next.set('pageSize', String(pageSize));
+    if (statusFilter) next.set('status', statusFilter);
+    if (debouncedSearch) next.set('q', debouncedSearch);
+    if (triggerFilter) next.set('trigger', triggerFilter);
+    setSearchParams(next, { replace: true });
+  }, [page, pageSize, statusFilter, debouncedSearch, triggerFilter, setSearchParams]);
 
   const { data, isLoading: loading, error, refetch } = useTasksList({
     page,
@@ -329,11 +369,22 @@ export default function TaskListPage() {
     {
       title: t('taskList.col.schedule'),
       key: 'schedule',
-      width: 160,
+      width: 190,
       ...hideOnMobile,
       render: (_: unknown, r: Task) => {
         if (r.triggerType === 'cron' && r.cronExpression) {
-          return <Text code style={{ fontSize: 12 }}>{r.cronExpression}</Text>;
+          // CRON-DESC-01：裸表达式下补一行人类可读描述，用户不必心算
+          const desc = describeCron(r.cronExpression, t);
+          return (
+            <div style={{ minWidth: 0 }}>
+              <Text code style={{ fontSize: 12 }}>{r.cronExpression}</Text>
+              {desc && (
+                <Text type="secondary" style={{ fontSize: 11, display: 'block', whiteSpace: 'nowrap' }}>
+                  {desc}
+                </Text>
+              )}
+            </div>
+          );
         }
         if (r.triggerType === 'fixed_rate' && r.fixedRate) {
           const secs = r.fixedRate;
@@ -441,15 +492,19 @@ export default function TaskListPage() {
       fixed: 'right' as const,
       render: (_: unknown, r: Task) => (
         <Space size={2}>
+          {/* A11Y-ICON-01：纯图标按钮补中文 aria-label——此前读屏只能念出
+              antd 图标自带的 aria-label（eye/edit/copy/thunderbolt/delete），
+              中文界面下出现英文图标名，且与 Tooltip 文案不一致 */}
           <Tooltip title={t('taskList.action.detail')}>
-            <Button type="text" size="small" icon={<EyeOutlined />} onClick={() => nav(`/tasks/${r.id}`)} />
+            <Button type="text" size="small" icon={<EyeOutlined />} aria-label={t('taskList.action.detail')} onClick={() => nav(`/tasks/${r.id}`)} />
           </Tooltip>
           <Tooltip title={isAdmin ? t('taskList.action.edit') : t('taskList.adminOnly')}>
-            <Button type="text" size="small" icon={<EditOutlined />} disabled={!isAdmin} onClick={() => nav(`/tasks/${r.id}/edit`)} />
+            <Button type="text" size="small" icon={<EditOutlined />} aria-label={isAdmin ? t('taskList.action.edit') : t('taskList.adminOnly')} disabled={!isAdmin} onClick={() => nav(`/tasks/${r.id}/edit`)} />
           </Tooltip>
           <Tooltip title={isAdmin ? t('taskList.action.clone') : t('taskList.adminOnly')}>
             <Button
               type="text" size="small" icon={<CopyOutlined />}
+              aria-label={isAdmin ? t('taskList.action.clone') : t('taskList.adminOnly')}
               loading={cloningId === r.id}
               disabled={!isAdmin}
               onClick={() => handleClone(r)}
@@ -458,6 +513,7 @@ export default function TaskListPage() {
           <Tooltip title={isAdmin ? t('taskList.action.trigger') : t('taskList.adminOnly')}>
             <Button
               type="text" size="small" icon={<ThunderboltOutlined />}
+              aria-label={isAdmin ? t('taskList.action.trigger') : t('taskList.adminOnly')}
               disabled={!isAdmin}
               onClick={() => handleTrigger(r.id, r.name, r.params)}
               style={{ color: token.colorPrimary }}
@@ -470,7 +526,7 @@ export default function TaskListPage() {
             okText={t('taskList.ok')} okButtonProps={{ danger: true }}
           >
             <Tooltip title={isAdmin ? t('taskList.action.delete') : t('taskList.adminOnly')}>
-              <Button type="text" size="small" icon={<DeleteOutlined />} danger disabled={!isAdmin} />
+              <Button type="text" size="small" icon={<DeleteOutlined />} danger aria-label={isAdmin ? t('taskList.action.delete') : t('taskList.adminOnly')} disabled={!isAdmin} />
             </Tooltip>
           </Popconfirm>
         </Space>
@@ -598,6 +654,92 @@ export default function TaskListPage() {
         />
       )}
 
+      {isMobile ? (
+        /* MOBILE-CARD-01：≤768px 卡片列表——此前 375px 下 10 列表格横向滚动、
+           表头逐字竖排。卡片按值班首查信息组织：名称/描述 → 状态+触发 →
+           调度（含 CRON-DESC-01 可读描述） → 下次/上次执行 → 启用开关 + 操作。
+           批量操作依赖行选择，移动端不提供（桌面保留）。 */
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {tasks.length === 0 ? (
+            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('taskList.empty.none')} />
+          ) : (
+            tasks.map((r) => {
+              const cfg = statusConfig[r.status] || { badge: 'default' as BadgeStatus, label: r.status };
+              const cronDesc = r.triggerType === 'cron' && r.cronExpression
+                ? describeCron(r.cronExpression, t)
+                : null;
+              return (
+                <Card key={r.id} size="small" style={{ borderRadius: 10 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
+                    <div style={{ minWidth: 0 }}>
+                      <Link to={`/tasks/${r.id}`} style={{ fontWeight: 500 }}>{r.name}</Link>
+                      {r.description && (
+                        <Text type="secondary" style={{ fontSize: 12, display: 'block' }} ellipsis={{ tooltip: r.description }}>
+                          {r.description}
+                        </Text>
+                      )}
+                    </div>
+                    <Badge status={cfg.badge} text={cfg.label} />
+                  </div>
+                  <div style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                    <Tag color={TRIGGER_COLOR[r.triggerType] || 'default'} style={{ marginInlineEnd: 0 }}>
+                      {triggerLabel[r.triggerType] || r.triggerType}
+                    </Tag>
+                    <Tag style={{ marginInlineEnd: 0 }}>{runtimeLabel(r.runtime, t)}</Tag>
+                  </div>
+                  {r.triggerType === 'cron' && r.cronExpression && (
+                    <div style={{ marginTop: 6, fontSize: 12, color: 'var(--chart-axis-text)' }}>
+                      <Text code style={{ fontSize: 12 }}>{r.cronExpression}</Text>
+                      {cronDesc && <Text type="secondary" style={{ fontSize: 11, marginLeft: 8 }}>{cronDesc}</Text>}
+                    </div>
+                  )}
+                  <div style={{ marginTop: 6, fontSize: 12, color: 'var(--chart-axis-text)' }}>
+                    {t('taskList.col.lastRun')}：{r.lastTriggerTime
+                      ? formatRelativeTime(r.lastTriggerTime, t)
+                      : t('taskList.lastRun.never')}
+                  </div>
+                  <div style={{ marginTop: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <Switch
+                      size="small"
+                      checked={r.status === 'active'}
+                      loading={togglingId === r.id}
+                      onChange={checked => checked ? handleResume(r.id) : handlePause(r.id)}
+                      disabled={r.status === 'failed' || r.status === 'inactive' || (!!togglingId && togglingId !== r.id) || !isAdmin}
+                      aria-label={t('taskList.col.enabled')}
+                    />
+                    <Space size={2}>
+                      <Tooltip title={t('taskList.action.detail')}>
+                        <Button type="text" size="small" icon={<EyeOutlined />} aria-label={t('taskList.action.detail')} onClick={() => nav(`/tasks/${r.id}`)} />
+                      </Tooltip>
+                      <Tooltip title={isAdmin ? t('taskList.action.edit') : t('taskList.adminOnly')}>
+                        <Button type="text" size="small" icon={<EditOutlined />} aria-label={isAdmin ? t('taskList.action.edit') : t('taskList.adminOnly')} disabled={!isAdmin} onClick={() => nav(`/tasks/${r.id}/edit`)} />
+                      </Tooltip>
+                      <Tooltip title={isAdmin ? t('taskList.action.trigger') : t('taskList.adminOnly')}>
+                        <Button
+                          type="text" size="small" icon={<ThunderboltOutlined />}
+                          aria-label={isAdmin ? t('taskList.action.trigger') : t('taskList.adminOnly')}
+                          disabled={!isAdmin}
+                          onClick={() => handleTrigger(r.id, r.name, r.params)}
+                          style={{ color: token.colorPrimary }}
+                        />
+                      </Tooltip>
+                      <Popconfirm
+                        title={t('taskList.deleteConfirm')}
+                        onConfirm={() => handleDelete(r.id)}
+                        okText={t('taskList.ok')} okButtonProps={{ danger: true }}
+                      >
+                        <Tooltip title={isAdmin ? t('taskList.action.delete') : t('taskList.adminOnly')}>
+                          <Button type="text" size="small" icon={<DeleteOutlined />} danger aria-label={isAdmin ? t('taskList.action.delete') : t('taskList.adminOnly')} disabled={!isAdmin} />
+                        </Tooltip>
+                      </Popconfirm>
+                    </Space>
+                  </div>
+                </Card>
+              );
+            })
+          )}
+        </div>
+      ) : (
       <Table
         rowKey="id"
         rowSelection={rowSelection}
@@ -626,6 +768,7 @@ export default function TaskListPage() {
             ),
         }}
       />
+      )}
     </div>
   );
 }

@@ -90,7 +90,8 @@ describe('PERF-10 源码层：轮询 tick 必须判可见性', () => {
     // 防止后续有人把它改成 `document.hidden` 之类不一致的写法
     for (const rel of [
       ['pages', 'ExecutionsPage.tsx'],
-      ['pages', 'ExecutionDetailPage.tsx'],
+      // REFACTOR-EXEC-03：断流轮询兜底随日志子系统迁至 ExecutionLogSection
+      ['components', 'ExecutionLogSection.tsx'],
       ['pages', 'AppDeploymentPage.tsx'],
     ] as const) {
       const other = readFileSync(join(SRC, rel[0], rel[1]), 'utf-8');

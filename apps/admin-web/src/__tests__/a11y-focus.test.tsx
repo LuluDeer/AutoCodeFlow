@@ -25,6 +25,7 @@ import { useState } from 'react';
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Routes, Route, useLocation } from 'react-router-dom';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import MainLayout from '../layouts/MainLayout';
 import CommandPalette from '../components/CommandPalette';
 import { tasksApi } from '../api/tasks';
@@ -120,15 +121,20 @@ function LocationProbe() {
   return <div>route:{location.pathname}</div>;
 }
 
-/** MainLayout 宿主：带路由探针，可断言导航结果 */
+/** MainLayout 宿主：带路由探针，可断言导航结果。
+ *  BELL-01：MainLayout 内的 NotificationBell 消费 react-query（近期失败），
+ *  渲染宿主需提供 QueryClientProvider。 */
 function renderLayout(initialPath = '/dashboard') {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
-    <MemoryRouter initialEntries={[initialPath]}>
-      <Routes>
-        <Route path="*" element={<MainLayout />} />
-      </Routes>
-      <LocationProbe />
-    </MemoryRouter>,
+    <QueryClientProvider client={qc}>
+      <MemoryRouter initialEntries={[initialPath]}>
+        <Routes>
+          <Route path="*" element={<MainLayout />} />
+        </Routes>
+        <LocationProbe />
+      </MemoryRouter>
+    </QueryClientProvider>,
   );
 }
 

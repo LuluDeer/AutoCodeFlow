@@ -1,9 +1,25 @@
 import { useState, useEffect } from 'react';
-import {
-  Card, Input, Button, Space, message, Typography, Tag, Alert,
-  Switch, Modal, Tabs, Table, Form, Select, Tooltip, Popconfirm,
-  Divider, Badge, theme,
-} from 'antd';
+import { Card,
+  Input,
+  Button,
+  Space,
+  Typography,
+  Tag,
+  Alert,
+  Switch,
+  Modal,
+  Tabs,
+  Table,
+  Form,
+  Select,
+  Tooltip,
+  Popconfirm,
+  Divider,
+  Badge,
+  theme } from 'antd';
+import { message } from '../../utils/toast';
+// MODAL-01：命令式 Modal.* 从 utils/modal 取（吃暗色主题 + i18n locale）；<Modal> JSX 仍用 antd。
+import { Modal as confirmModal } from '../../utils/modal';
 import {
   KeyOutlined, CopyOutlined, EyeOutlined, EyeInvisibleOutlined,
   PlusOutlined, EditOutlined, DeleteOutlined, HistoryOutlined,
@@ -76,7 +92,7 @@ function TokenSection() {
   });
 
   const handleGenerate = () => {
-    Modal.confirm({
+    confirmModal.confirm({
       title: t('sysSettings.token.genTitle'),
       content: t('sysSettings.token.genContent'),
       okText: t('sysSettings.token.genOk'),
