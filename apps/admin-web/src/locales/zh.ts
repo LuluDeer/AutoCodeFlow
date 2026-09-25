@@ -2624,6 +2624,15 @@ export default {
   'projects.role.admin': '项目管理员',
 
   // ── P5/P6: SOP 管理 ──
+  'sops.reply': '回复',
+  'sops.replyTitle': '回复澄清',
+  'sops.replySubmit': '提交答复',
+  'sops.replyAnswered': '直接答复（SOP 不变）',
+  'sops.replyAmended': '修订 SOP 并发新版本',
+  'sops.replyPlaceholder': '答复内容（会回传给执行器 Agent）',
+  'sops.replyAmendedPlaceholder': '修订后的 front-matter YAML（发布为 patch 新版本）',
+  'sops.replyOk': '答复已提交',
+  'sops.replyFailed': '答复提交失败',
   'sops.title': 'SOP 管理',
   'sops.description': '标准作业协议 = Markdown 正文（给人/LLM）+ YAML front-matter（给平台校验的契约）。发布生成不可变版本与 contentHash，指派后执行器 Agent 经协作通道领取与回问。',
   'sops.loadFailed': 'SOP 列表加载失败',

@@ -107,6 +107,30 @@ class AssignSopDto {
   executorAddress?: string;
 }
 
+class HumanReplyDto {
+  @IsIn(["answered", "sop_amended"])
+  resolution: "answered" | "sop_amended";
+
+  @IsString()
+  @MaxLength(8000)
+  answer: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100_000)
+  amendedFrontMatterYaml?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500_000)
+  amendedBodyMarkdown?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  changelog?: string;
+}
+
 @ApiTags("sop")
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard)
@@ -165,6 +189,36 @@ export class SopController {
   @ApiOperation({ summary: "指派的媒体清单" })
   async mediaList(@Param("assignmentId") assignmentId: string) {
     return this.media.listByAssignment(assignmentId);
+  }
+
+  /**
+   * 人工回复澄清（P6 升级环的收口）：escalated_to_human 的澄清此前只有
+   * 通知没有答复路径——升级之后环就断了。人工与中台 Agent 走**同一个**
+   * replyClarification（同一道幂等/校验/修订闸门），resolution 限
+   * answered | sop_amended（sop_amanded 需修订内容，服务层校验）。
+   */
+  @Post("assignments/:assignmentId/clarifications/:clarificationId/reply")
+  @ApiOperation({ summary: "人工回复一条澄清（升级转人工后的答复入口）" })
+  async humanReply(
+    @Param("assignmentId") assignmentId: string,
+    @Param("clarificationId") clarificationId: string,
+    @Body() dto: HumanReplyDto,
+    @CurrentUser() user: { id: string },
+  ) {
+    // 确认澄清确实属于该指派（防跨工单答复）
+    const { clarifications } = await this.sops.getAssignment(assignmentId);
+    if (!clarifications.some((c) => c.id === clarificationId)) {
+      throw new ForbiddenException("澄清不属于该指派");
+    }
+    return this.sops.replyClarification({
+      clarificationId,
+      resolution: dto.resolution,
+      answer: dto.answer,
+      amendedFrontMatterYaml: dto.amendedFrontMatterYaml,
+      amendedBodyMarkdown: dto.amendedBodyMarkdown,
+      changelog: dto.changelog,
+      replyBy: `user:${user.id}`,
+    });
   }
 
   @Get(":id")

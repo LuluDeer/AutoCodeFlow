@@ -494,6 +494,19 @@
 
 **验收**：`agent-sop-check` **102 项**（审批闸 4 / 绑定 9 / 验证会话 5）；四套 agent 套件 0 失败；tsc 0、nest build 绿（DI 含 TaskTemplateModule/AppDeploymentService）。
 
+### 9.8 P6 收口（2026-09-26）：超时治理 + 升级环人工答复 ✅
+
+> **产物**：`sop-timeout.ts`（纯判定）+ SopService 超时扫描（@Cron 每 5 分钟 + leader
+> 门禁）；admin `POST /sop/assignments/:id/clarifications/:cid/reply`（人工答复端点）+
+> SopsPage 澄清回复 UI。配置：`SOP_ASSIGNMENT_CLAIM_TTL_MS` / `SOP_ASSIGNMENT_PROGRESS_TTL_MS`。
+
+| 任务 | 说明 | 状态 |
+|---|---|---|
+| 超时治理（11 §6） | 无人领取（>30min，`pulledAt IS NULL`）→ `failed`；领取后心跳停滞（>10min，仅 in_progress）→ `stalled`。**blocked 不参与失联判定**（等中台澄清回复的责任在中台侧，不是执行器失联）。判定纯函数化，扫描/落库/通知分离；leader 门禁 + fail-open 通知 | ✅ |
+| 升级环收口 | `escalated_to_human` 此前只有通知没有答复路径——升级之后环就断了。人工与中台 Agent 走**同一个** `replyClarification`（同一道幂等/校验/修订闸门），Admin Web 澄清条目加回复 UI（answered / sop_amended） | ✅ |
+
+**验收**：`agent-sop-check` **111 项**（超时判定 4：unclaimed/stalled/blocked 不误判/未过期不清；接线 6：cron+leader 门禁、答复端点、归属校验、resolution 限制、共用闸门）；admin-web tsc 0 + lint 0。
+
 ## 10. 立即可开工的建议
 
 **本轮我建议先做 P0**，理由：
