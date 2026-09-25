@@ -164,6 +164,8 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
     tier: "write",
     resourceKind: "task",
     resourceIdParam: "taskId",
+    /** 03 §2：改生产任务配置需审批——不随全局写策略放宽而放宽。 */
+    approvalRequired: true,
   },
   {
     name: "list_task_versions",
@@ -195,6 +197,8 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
     tier: "write",
     resourceKind: "task",
     resourceIdParam: "taskId",
+    /** 03 §2：影响运行行为需审批。 */
+    approvalRequired: true,
   },
   {
     name: "compare_task_versions",
@@ -553,6 +557,8 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
     },
     tier: "write",
     resourceKind: "none",
+    /** 03 §2：影响在跑部署需审批。 */
+    approvalRequired: true,
   },
   {
     name: "stop_deployment",
@@ -565,6 +571,8 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
     },
     tier: "write",
     resourceKind: "none",
+    /** 03 §2：停掉在跑应用需审批。 */
+    approvalRequired: true,
   },
   {
     name: "list_pending_approvals",
@@ -977,13 +985,18 @@ export const SESSION_TOOL_ALLOWLIST: Record<string, readonly string[] | null> =
     ).map((t) => t.name),
 
     /**
-     * SOP 复核（P6 澄清循环）：读（含 sop_get/sop_list——复核要先读 SOP）
-     * + 澄清回复。**没有** sop_draft/sop_publish——修订只经
-     * sop_reply_clarification 的受控路径（发 patch 版本），不给复核会话
-     * 自由发布权。
+     * SOP 复核（P6 澄清循环 + 交付复核）：读（含 sop_get/sop_list——复核
+     * 要先读 SOP）+ 澄清回复 + trigger_task（04 §3 ⑤ 独立验证——执行器
+     * 回报「完成」不等于真成功，中台按 acceptance kind=platform 真跑一次；
+     * 可触发的任务被会话 scope 的 tasks 集合收窄）。**没有**
+     * sop_draft/sop_publish——修订只经 sop_reply_clarification 的受控路径
+     * （发 patch 版本），不给复核会话自由发布权。
      */
     sop_review: ALL_AGENT_TOOL_SPECS.filter(
-      (t) => t.tier === "read" || t.name === "sop_reply_clarification",
+      (t) =>
+        t.tier === "read" ||
+        t.name === "sop_reply_clarification" ||
+        t.name === "trigger_task",
     ).map((t) => t.name),
 
     /** 应用脚手架（P5/P7）：与 sop_authoring 同集。 */

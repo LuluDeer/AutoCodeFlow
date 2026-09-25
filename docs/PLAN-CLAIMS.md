@@ -379,6 +379,8 @@
 
 ## 变更日志
 
+- 2026-09-26 主会话：**写工具执行体绑定 + 中台独立验证 done**：①incident/sop_authoring 白名单的 9 个写工具自 P3 起未绑执行体（模型调用一律「尚未实现」），现全绑——trigger 带 triggerType=agent（缺口 6）、retry 回放原 params（NF-06）、deploy 方案 C（DEP-04 pending_approval 透传）；②update_task/rollback/upgrade/stop 加逐工具 approvalRequired（03 §2）；③completed 回报触发 sop_review 独立验证会话（scope=sops+platform tasks；sop_review 加 trigger_task；untrustedResult 注入面纪律；fail-open）。验证：agent-sop-check 102 项、四套 agent 套件绿、tsc/build 绿。
+
 - 2026-09-25 主会话：**P7d 前半 done（候选应用交付通道，07 §3.3 关键一笔）**：desktop zip-writer（零依赖 store-only ZIP，CRC32 向量+自回读+写入层穿越防线+条件 unzip -t 交叉验证真跑）+ package-candidate（manifest 契约：runtime/entrypoint/来源标记；观测产物排除）+ host 交付流（delivered→打包→上传→packageRef 进回报；打包/上传失败如实 deliver_failed）+ admin candidate-package 端点（agent:sop 闸+归属校验+**复用 ExecutorPackageService.create 既有校验链**——SEC-05 zip bomb 逐项生效；来源标记由平台代码打（ADR-022 决策 5）；版本 +agent.<ts> 幂等交付）。**验证**：test:main 25 套全绿、agent-host e2e 19 项、agent-sop-check 79 项、tsc/lint/迁移守卫全绿。**残差**：包→deploy 端到端属 P7d 后半；isolated-runner 属 P7e。
 
 - 2026-09-25 主会话：**P7c 前置增量 done（Agent 设置面 + 状态可见）**：ConfigPage「Agent（实验性）」组（总开关/预设下拉——未实现档位显示为禁用（选了也被解析层钳回，界面与行为一致比可点更重要）/codeExecution 覆盖/浏览器域名白名单）+ `agent:get-status` IPC 状态行（working/processed/lastOutcome/生效档位）+ config:save 热同步 syncAgentHostWithConfig + preload getAgentStatus（旧版容错降级）。保存零新面绕过消毒层。验证：desktop 双 tsconfig tsc 0、renderer.selftest 0、test:main 全链 0。**下一步**：P7c（桌面 GUI + 托盘）或 P7d（端到端 + isolated-runner）。

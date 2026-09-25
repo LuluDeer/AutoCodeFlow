@@ -7,8 +7,10 @@ import {
 } from "@nestjs/common";
 import { AgentApiClient } from "./agent-api.client";
 import { TaskService } from "../../task/task.service";
+import { TaskTemplateService } from "../../task-template/task-template.service";
 import { ExecutorService } from "../../executor/executor.service";
 import { ApplicationService } from "../../application/application.service";
+import { AppDeploymentService } from "../../application/app-deployment.service";
 import { SopService } from "../../sop/sop.service";
 
 /**
@@ -31,6 +33,8 @@ export class ToolBinderService implements OnModuleInit {
     private readonly tasks: TaskService,
     private readonly executors: ExecutorService,
     private readonly applications: ApplicationService,
+    private readonly deployments: AppDeploymentService,
+    private readonly templates: TaskTemplateService,
     // forwardRef：sop.module ↔ agent.module 装配期环（见 sop.module.ts 头注）
     @Inject(forwardRef(() => SopService))
     private readonly sops: SopService,
@@ -41,6 +45,9 @@ export class ToolBinderService implements OnModuleInit {
     this.bindApplicationTools();
     this.bindExecutorTools();
     this.bindSopTools();
+    // P6 补齐：写工具执行体（白名单早已包含它们，P3 只绑了只读——
+    // 不绑则模型调用一律「尚未实现」，事件处置/SOP 编排两大场景残废）
+    this.bindWriteTools();
     this.logger.log(
       `Agent read-tool handlers bound: ${this.api.implementedTools().join(", ")}`,
     );
@@ -219,6 +226,95 @@ export class ToolBinderService implements OnModuleInit {
         replyBy: "agent:tool-call",
       }),
     );
+  }
+
+  // ── 写工具组（P6 补齐：binder 头注承诺的「写工具随触发器与 SOP 一起接」）──
+  //
+  // 为什么要绑：incident / sop_authoring 会话的工具白名单里早就包含
+  // trigger_task / retry_execution / kill_execution / pause_task /
+  // resume_task / create_application / create_task_from_template /
+  // deploy_application——但 P3 只绑了只读工具，模型一调这些就得到
+  // 「尚未实现」，白名单形同虚设、事件处置与 SOP 编排两大场景全部残废。
+  //
+  // 身份纪律：user 参数传 undefined——与 analyze_execution 同款既有语义
+  // （无 user 主体 = 系统内部调用，ALS 守卫放行）。trigger 显式传
+  // triggerTypeOverride="agent"（迁移 1790000000040 的缺口 6：Agent 触发
+  // 的执行行带 triggerType='agent'，执行详情页可辨）。
+
+  private bindWriteTools(): void {
+    // trigger_task：排障主力（收敛性、幂等意图、可终止）
+    this.api.register("trigger_task", async (args) =>
+      this.tasks.trigger(
+        this.str(args.taskId),
+        {
+          ...(args.params ? { params: args.params } : {}),
+        } as never,
+        undefined,
+        "agent",
+      ),
+    );
+
+    // retry_execution：admin API 无原生 retry 端点（NF-06）——与 mcp-server
+    // 同语义：回放原执行的 params 走 manual-trigger 路径，产生**新**执行行
+    this.api.register("retry_execution", async (args) => {
+      let params = args.params as Record<string, unknown> | undefined;
+      if (!params) {
+        const prev = (await this.tasks.getExecution(this.str(args.executionId))) as {
+          params?: Record<string, unknown> | null;
+        };
+        if (prev?.params) params = prev.params;
+      }
+      return this.tasks.trigger(
+        this.str(args.taskId),
+        { ...(params ? { params } : {}) } as never,
+        undefined,
+        "agent",
+      );
+    });
+
+    this.api.register("kill_execution", async (args) =>
+      this.tasks.killExecution(this.str(args.executionId)),
+    );
+
+    this.api.register("pause_task", async (args) =>
+      this.tasks.pause(this.str(args.taskId)),
+    );
+
+    this.api.register("resume_task", async (args) =>
+      this.tasks.resume(this.str(args.taskId)),
+    );
+
+    // create_application：新建无破坏（03 §2 Tier 2 允许项）
+    this.api.register("create_application", async (args) =>
+      this.applications.create(
+        {
+          name: this.str(args.name),
+          ...(args.description ? { description: this.str(args.description) } : {}),
+          ...(args.gitRepo ? { gitRepo: this.str(args.gitRepo) } : {}),
+        } as never,
+        null,
+      ),
+    );
+
+    // create_task_from_template：沙箱校验后允许（新建不破坏既有）
+    this.api.register("create_task_from_template", async (args) =>
+      this.templates.instantiate(this.str(args.templateId), (args.overrides ?? {}) as Record<string, unknown>),
+    );
+
+    // deploy_application / deploy_app：**方案 C**（03 §3）——不新增审批机制，
+    // 直接调 deploy；DEP-04 开启时返回 pending_approval 且不派发，Agent 把
+    // 「需要人批」转述给人。审批是唯一事实源（DEP-04），审计链干净。
+    const deployApp = async (args: Record<string, unknown>) =>
+      this.deployments.deploy(
+        this.str(args.applicationId),
+        {
+          ...(args.executorId ? { executorId: this.str(args.executorId) } : {}),
+          ...(args.runMode ? { runMode: args.runMode } : {}),
+          ...(args.env ? { env: args.env } : {}),
+        } as never,
+      );
+    this.api.register("deploy_application", deployApp);
+    this.api.register("deploy_app", deployApp);
   }
 
   // ── 参数取值辅助（闸门已保证类型，这里只做缺省）─────────────────
