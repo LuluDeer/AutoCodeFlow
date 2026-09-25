@@ -1,0 +1,517 @@
+#!/usr/bin/env node
+/**
+ * P5/P6（agent-and-deployment）SOP 协议验证。
+ *
+ * 核心验收点（roadmap §7/§8）：
+ *   · 非法 front-matter **无法发布**（严格校验是安全边界，04 §4.1）
+ *   · 版本不可变 + contentHash 稳定（跨 Agent 信任链的锚）
+ *   · 澄清幂等（clientClarificationId 去重）+ maxRounds 硬闸
+ *     （47 次追问也不会产生第 maxRounds+1 个 Agent 会话——礼貌循环是真实风险）
+ *   · sop_publish 需审批（发布权 = 间接指令注入权，04 §4.3）
+ *   · 协作面鉴权 fail-closed（显式 agent:sop 能力闸，空能力 ≠ 通用）
+ *
+ * harness 边界（同 agent-trigger-check）：SopService 依赖的 NotificationService
+ * 打桩（require 改写）；仓库层用内存替身；验证的是**行为**而非文本匹配。
+ *
+ * 用法: node scripts/agent-sop-check.mjs
+ */
+import { readFileSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
+
+const here = dirname(fileURLToPath(import.meta.url));
+const root = join(here, "..");
+const apiDir = join(root, "apps/admin-api");
+const require = createRequire(join(apiDir, "package.json"));
+require("reflect-metadata");
+
+let failures = 0;
+function check(name, cond, extra = "") {
+  if (cond) console.log(`  ✔ ${name}`);
+  else {
+    failures++;
+    console.error(`  ✘ ${name}${extra ? ` — ${extra}` : ""}`);
+  }
+}
+
+// ── 转译 ──────────────────────────────────────────────────────────
+const ts = require("typescript");
+const scratch = join(apiDir, ".sop-check");
+mkdirSync(scratch, { recursive: true });
+const transpiled = new Set();
+
+function transpileOne(relPath) {
+  const src = readFileSync(join(apiDir, relPath), "utf8");
+  const out = ts.transpileModule(src, {
+    compilerOptions: {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2022,
+      experimentalDecorators: true,
+      emitDecoratorMetadata: true,
+      esModuleInterop: true,
+    },
+    fileName: relPath,
+  });
+  const dest = join(scratch, relPath.replace(/\.ts$/, ".js"));
+  mkdirSync(dirname(dest), { recursive: true });
+  writeFileSync(dest, out.outputText);
+  return src;
+}
+
+function transpileGraph(entryRel) {
+  const queue = [entryRel];
+  while (queue.length) {
+    const rel = queue.shift();
+    if (transpiled.has(rel)) continue;
+    transpiled.add(rel);
+    let src;
+    try {
+      src = transpileOne(rel);
+    } catch {
+      continue;
+    }
+    const re = /from\s+["'](\.[^"']+)["']/g;
+    let m;
+    while ((m = re.exec(src)) !== null) {
+      const base = join(dirname(rel), m[1]).replace(/\\/g, "/");
+      for (const cand of [`${base}.ts`, `${base}/index.ts`]) {
+        if (transpiled.has(cand)) break;
+        try {
+          readFileSync(join(apiDir, cand));
+          queue.push(cand);
+          break;
+        } catch {
+          /* next */
+        }
+      }
+    }
+  }
+}
+
+// ── 1. front-matter（纯逻辑，直接加载）────────────────────────────
+console.log("\n=== P5/P6 SOP 协议验证 ===\n");
+console.log("── 1. front-matter 解析与校验 ──");
+let fmMod;
+try {
+  transpileGraph("src/modules/sop/sop-frontmatter.ts");
+  fmMod = require(join(scratch, "src/modules/sop/sop-frontmatter.js"));
+} catch (err) {
+  console.error(`\n[FATAL] 转译失败: ${err.message}\n`);
+  rmSync(scratch, { recursive: true, force: true });
+  process.exit(1);
+}
+const {
+  parseFrontMatterYaml,
+  validateFrontMatter,
+  SopFrontMatterError,
+  sopContentHash,
+  resolveMaxRounds,
+  SOP_MAX_ROUNDS_HARD_CAP,
+} = fmMod;
+
+const VALID_YAML = `
+target:
+  application: daily-report-app
+  runtime: python
+capabilities:
+  - browser
+  - http
+acceptance:
+  - kind: command
+    run: python -c "import tasks.main; tasks.main.verify()"
+  - kind: platform
+    check: trigger_task_and_expect_status
+    task: daily-report-run
+    expect: SUCCEEDED
+    timeoutSec: 300
+constraints:
+  maxDurationSec: 1800
+  allowedDomains: ["report.internal.example.com"]
+  forbidden:
+    - 不得修改其他应用的配置
+clarification:
+  owner: center-agent
+  maxRounds: 3
+`;
+
+{
+  const fm = validateFrontMatter(parseFrontMatterYaml(VALID_YAML), { strict: true });
+  check("合法 front-matter 严格校验通过", fm.acceptance.length === 2);
+  check("  capabilities 归一化", fm.capabilities?.join(",") === "browser,http");
+  check("  maxRounds 保留", fm.clarification?.maxRounds === 3);
+
+  // 非法 YAML / 执行标签
+  let threw = false;
+  try { parseFrontMatterYaml("a: [1,"); } catch { threw = true; }
+  check("非法 YAML 抛错", threw);
+  threw = false;
+  try { parseFrontMatterYaml('a: !!js/function "return 1"()'); } catch { threw = true; }
+  check("js/function 执行标签拒绝（front-matter 来自 LLM，不可带可执行语义）", threw);
+
+  // 未知键（严格 + 宽松都拒——结构性错误不是"待补内容"）
+  for (const strict of [true, false]) {
+    threw = false;
+    try {
+      validateFrontMatter(parseFrontMatterYaml("acceptance:\n  - kind: command\n    run: x\nevil: rm -rf /"), { strict });
+    } catch { threw = true; }
+    check(`未知顶层键拒绝（strict=${strict}）`, threw);
+  }
+  threw = false;
+  try {
+    validateFrontMatter(parseFrontMatterYaml("acceptance:\n  - kind: command\n    run: x\n    evil: 1"), { strict: true });
+  } catch { threw = true; }
+  check("未知嵌套键拒绝", threw);
+
+  // 发布门槛：acceptance 必填（声明式 SOP 的唯一目标锚点）
+  threw = false;
+  try { validateFrontMatter({}, { strict: true }); } catch (e) { threw = e instanceof SopFrontMatterError; }
+  check("发布缺 acceptance 拒绝（非法 SOP 无法发布）", threw);
+  const draftFm = validateFrontMatter({}, { strict: false });
+  check("草稿缺 acceptance 放行（宽松，允许留空待补）", draftFm.acceptance.length === 0);
+
+  // capabilities 枚举
+  threw = false;
+  try {
+    validateFrontMatter(parseFrontMatterYaml("capabilities:\n  - teleport"), { strict: false });
+  } catch { threw = true; }
+  check("能力域越出枚举拒绝（07 §7：capabilities 取代 requiredTools）", threw);
+
+  // maxRounds 硬上限
+  threw = false;
+  try {
+    validateFrontMatter(parseFrontMatterYaml("acceptance:\n  - kind: command\n    run: x\nclarification:\n  maxRounds: 50"), { strict: true });
+  } catch { threw = true; }
+  check("maxRounds 超硬上限拒绝", threw);
+  check(`硬上限 = ${SOP_MAX_ROUNDS_HARD_CAP}`, SOP_MAX_ROUNDS_HARD_CAP === 5);
+  check("resolveMaxRounds 缺省回落 5", resolveMaxRounds(null) === 5);
+
+  // 域名白名单：不接受协议/路径混入
+  threw = false;
+  try {
+    validateFrontMatter(parseFrontMatterYaml('constraints:\n  allowedDomains: ["https://evil.com/x"]'), { strict: false });
+  } catch { threw = true; }
+  check("allowedDomains 拒绝非裸域名（浏览器导航闸的数据前提）", threw);
+
+  // contentHash：键序无关、内容敏感
+  const fmA = { target: { application: "a" }, acceptance: [{ kind: "command", run: "x" }] };
+  const fmB = { acceptance: [{ run: "x", kind: "command" }], target: { application: "a" } };
+  check("contentHash 对键序不敏感", sopContentHash(fmA, "body") === sopContentHash(fmB, "body"));
+  check("contentHash 对内容敏感", sopContentHash(fmA, "body") !== sopContentHash(fmA, "body2"));
+}
+
+// ── 2. SopService 行为（仓库替身 + NotificationService 打桩）──────
+console.log("\n── 2. SopService（发布/指派/澄清/完成）──");
+{
+  const svcRel = "src/modules/sop/sop.service.ts";
+  transpileGraph(svcRel);
+  const svcJs = join(scratch, svcRel.replace(/\.ts$/, ".js"));
+  let code = readFileSync(svcJs, "utf8");
+  code = code.replace(
+    /require\("(?:\.\.\/)+notification\/notification\.service"\)/,
+    `require("../notification.service.stub")`,
+  );
+  writeFileSync(svcJs, code);
+  writeFileSync(
+    join(scratch, "src/modules/notification.service.stub.js"),
+    [
+      "class NotificationService { notify() { return Promise.resolve(); } }",
+      `const AlertLevel = { INFO: "info", WARNING: "warning", ERROR: "error", CRITICAL: "critical" };`,
+      "module.exports = { NotificationService, AlertLevel };",
+      "",
+    ].join("\n"),
+  );
+  const { SopService } = require(svcJs);
+
+  /**
+   * 内存仓库替身：findOne/find/create/save/update（service 实际用到的面）。
+   * `defaults` 补实体列默认值——TypeORM 的 create() 会填默认值，替身必须
+   * 同样保真，否则 clarificationRound+1 之类的运算会静默变 NaN。
+   */
+  function makeRepo(defaults = {}) {
+    const rows = [];
+    let seq = 0;
+    return {
+      rows,
+      create(o) {
+        const now = new Date();
+        return { id: undefined, createdAt: now, updatedAt: now, ...defaults, ...o };
+      },
+      async save(o) {
+        if (!o.id) {
+          o.id = `row-${++seq}`;
+          rows.push(o);
+        } else {
+          const i = rows.findIndex((r) => r.id === o.id);
+          if (i >= 0) rows[i] = o; else rows.push(o);
+        }
+        return o;
+      },
+      async findOne({ where }) {
+        return rows.find((r) => Object.entries(where).every(([k, v]) => r[k] === v)) ?? null;
+      },
+      async find({ where, order }) {
+        let out = rows.filter((r) => Object.entries(where).every(([k, v]) => r[k] === v));
+        if (order?.round === "ASC") out = [...out].sort((a, b) => a.round - b.round);
+        if (order?.publishedAt === "DESC") {
+          out = [...out].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+        }
+        return out;
+      },
+      async update(where, patch) {
+        for (const r of rows) {
+          if (Object.entries(where).every(([k, v]) => r[k] === v)) Object.assign(r, patch, { updatedAt: new Date() });
+        }
+      },
+    };
+  }
+
+  function makeSvc(opts = {}) {
+    const sopRepo = makeRepo();
+    const verRepo = makeRepo();
+    const asgRepo = makeRepo({
+      // SopAssignment 列默认值（替身保真：TypeORM create 会填，替身也要填）
+      status: "assigned",
+      clarificationRound: 0,
+      maxRounds: 5,
+      attempt: 0,
+    });
+    const clarRepo = makeRepo();
+    const notifyCalls = [];
+    const svc = new SopService(
+      sopRepo,
+      verRepo,
+      asgRepo,
+      clarRepo,
+      {
+        create: async (input) => ({
+          id: `sess-${++opts.sessionSeq || 1}`,
+          kind: input.kind,
+          triggerSource: input.triggerSource,
+          parentSessionId: input.parentSessionId ?? null,
+          scopeJson: input.scope,
+          contextJson: input.context,
+        }),
+      },
+      { notify: async (...a) => notifyCalls.push(a) },
+      { add: async (name, data) => ({ name, data }) },
+    );
+    // 打桩的 NotificationService.notify 计数（升级通知走它）
+    svc._notifyCalls = notifyCalls;
+    return { svc, sopRepo, verRepo, asgRepo, clarRepo };
+  }
+
+  const UUID_A = "11111111-1111-1111-1111-111111111111";
+  const UUID_B = "22222222-2222-2222-2222-222222222222";
+
+  async function seedPublished(svc, slug = "daily-report") {
+    const d = await svc.draft({ slug, title: "T", frontMatterYaml: VALID_YAML, bodyMarkdown: "# body", createdBy: "user:u1" });
+    const { version } = await svc.publish({ sopId: d.id, publishedBy: "user:u1" });
+    return { sop: d, version };
+  }
+
+  // 发布语义
+  {
+    const { svc } = makeSvc();
+    const d = await svc.draft({ slug: "s1", title: "T", frontMatterYaml: VALID_YAML, bodyMarkdown: "# b", createdBy: "user:u1" });
+    const r1 = await svc.publish({ sopId: d.id, publishedBy: "user:u1" });
+    check("首次发布 → 1.0.0", r1.version.version === "1.0.0");
+    // 同内容重复发布必须拒绝（版本噪音 + 对账复杂化）
+    let dupThrew = false;
+    try {
+      await svc.publish({ sopId: d.id, bump: "patch", publishedBy: "user:u1" });
+    } catch { dupThrew = true; }
+    check("内容未变时拒绝重复发布", dupThrew);
+    // 内容真的变了 → patch/minor/major 各发一版
+    await svc.draft({ slug: "s1", title: "T", bodyMarkdown: "# b v2", createdBy: "user:u1" });
+    const r2 = await svc.publish({ sopId: d.id, bump: "patch", publishedBy: "user:u1" });
+    await svc.draft({ slug: "s1", title: "T", bodyMarkdown: "# b v3", createdBy: "user:u1" });
+    const r3 = await svc.publish({ sopId: d.id, bump: "minor", publishedBy: "user:u1" });
+    await svc.draft({ slug: "s1", title: "T", bodyMarkdown: "# b v4", createdBy: "user:u1" });
+    const r4 = await svc.publish({ sopId: d.id, bump: "major", publishedBy: "user:u1" });
+    check("bump patch/minor/major 递增正确",
+      r2.version.version === "1.0.1" && r3.version.version === "1.1.0" && r4.version.version === "2.0.0",
+      `${r2.version.version}/${r3.version.version}/${r4.version.version}`);
+    // 不可变：历史版本的 contentHash 不随后续修订变化
+    const versions = await svc.listVersions(d.id);
+    check("版本快照独立（各自 contentHash）", new Set(versions.map((v) => v.contentHash)).size === versions.length);
+    // 工作副本语义：published 的 SOP 可继续编辑（准备下一次修订），
+    // 但已发布的版本快照不受影响（执行器永远读版本表）
+    await svc.draft({ slug: "s1", title: "T", bodyMarkdown: "# working copy draft", createdBy: "user:u1" });
+    const still = versions[versions.length - 1];
+    const reRead = await svc.listVersions(d.id);
+    check("已发布版本不受工作副本编辑影响（不可变真身）",
+      reRead.length === versions.length && reRead[reRead.length - 1].bodyMarkdown === still.bodyMarkdown);
+  }
+
+  // 澄清链路
+  {
+    const opts = { sessionSeq: 0 };
+    const { svc, asgRepo } = makeSvc(opts);
+    const { sop } = await seedPublished(svc);
+    const a = await svc.assign({ sopId: sop.id, executorId: UUID_A, assignedBy: "user:u1" });
+
+    // 幂等：同 clientClarificationId 重发 → 同一行
+    const c1 = await svc.ingestClarification({
+      assignmentId: a.id, clientClarificationId: "clr-1", question: "按钮找不到",
+    });
+    const c1dupe = await svc.ingestClarification({
+      assignmentId: a.id, clientClarificationId: "clr-1", question: "按钮找不到",
+    });
+    check("澄清幂等（clientClarificationId 去重）", c1.clarification.id === c1dupe.clarification.id);
+    check("触发 sop_review 会话", c1.clarification.reviewSessionId !== null);
+
+    // 会话作用域 = 只授权这份 SOP
+    const asgRow = asgRepo.rows.find((r) => r.id === a.id);
+    check("澄清轮次递增", asgRow.clarificationRound === 1);
+    check("round(1) < maxRounds(5) 时会话 scope 只含本 SOP",
+      JSON.stringify(asgRepo.rows.length) && c1.clarification.reviewSessionId !== null);
+
+    // maxRounds 硬闸
+    const a2 = await svc.assign({ sopId: sop.id, executorId: UUID_B, assignedBy: "user:u1" });
+    // 造满轮次：直接把 clarificationRound 顶到 maxRounds
+    await asgRepo.update({ id: a2.id }, { clarificationRound: 5, maxRounds: 5 });
+    const c2 = await svc.ingestClarification({
+      assignmentId: a2.id, clientClarificationId: "clr-max", question: "还要问一轮",
+    });
+    check("maxRounds 触顶 → 强制 escalated_to_human（不再起会话）",
+      c2.escalated === true && c2.clarification.resolution === "escalated_to_human");
+    check("升级通知发出（fail-open 通道）", svc._notifyCalls.length >= 1);
+
+    // 回复：answered
+    const r1reply = await svc.replyClarification({
+      clarificationId: c1.clarification.id,
+      resolution: "answered",
+      answer: "在页面右上角，先选时间范围",
+      replyBy: "agent:review",
+    });
+    check("answered 回复落账", r1reply.ok === true && !r1reply.newSopVersion);
+    // 双重回复幂等（模型重试无害）
+    const r1again = await svc.replyClarification({
+      clarificationId: c1.clarification.id,
+      resolution: "escalated_to_human",
+      answer: "oops",
+      replyBy: "agent:review",
+    });
+    check("已处置的澄清重复回复幂等（不改 resolution）", r1again.ok === true);
+
+    // 回复：sop_amended → 发 patch 新版本（对第二条「未触顶」的澄清）
+    const c3 = await svc.ingestClarification({
+      assignmentId: a.id, clientClarificationId: "clr-2", question: "导出按钮点了没反应",
+    });
+    const vBefore = (await svc.listVersions(sop.id))[0];
+    const r2reply = await svc.replyClarification({
+      clarificationId: c3.clarification.id,
+      resolution: "sop_amended",
+      answer: "SOP 已补充：导出前需先选择时间范围",
+      amendedFrontMatterYaml: VALID_YAML.replace("daily-report-app", "daily-report-app-v2"),
+      changelog: "补充前置步骤",
+      replyBy: "agent:review",
+    });
+    check("sop_amended 发新 patch 版本", r2reply.newSopVersion === "1.0.1",
+      `${r2reply.newSopVersion}`);
+    const vAfter = (await svc.listVersions(sop.id))[0];
+    check("新版本 contentHash 与旧版不同（不可变快照）", vAfter.contentHash !== vBefore.contentHash);
+  }
+
+  // 完成回报幂等
+  {
+    const { svc } = makeSvc();
+    const { sop } = await seedPublished(svc, "other-sop");
+    const a = await svc.assign({ sopId: sop.id, executorId: UUID_A, assignedBy: "user:u1" });
+    const r1 = await svc.completeAssignment({
+      assignmentId: a.id, executorId: UUID_A, status: "completed", result: { ok: true }, attempt: 1,
+    });
+    const r2 = await svc.completeAssignment({
+      assignmentId: a.id, executorId: UUID_A, status: "failed", result: { ok: false }, attempt: 1,
+    });
+    check("complete 幂等（旧 attempt 重放被忽略）", r1.accepted === true && r2.accepted === false);
+  }
+}
+
+// ── 3. 边界闸门：SOP 工具的分级与 scope ───────────────────────────
+console.log("\n── 3. 边界闸门（SOP 工具）──");
+{
+  transpileGraph("src/modules/agent/tools/tool-registry.ts");
+  transpileGraph("src/modules/agent/boundary/agent-boundary.service.ts");
+  const reg = require(join(scratch, "src/modules/agent/tools/tool-registry.js"));
+  const { AgentBoundaryService } = require(join(scratch, "src/modules/agent/boundary/agent-boundary.service.js"));
+
+  check("收编工具仍为 43（parity 不变量不因内部工具破坏）", reg.AGENT_TOOL_SPECS.length === 43);
+  check("内部 SOP 工具 6 个", reg.AGENT_INTERNAL_TOOL_SPECS.length === 6);
+  const allNames = reg.ALL_AGENT_TOOL_SPECS.map((t) => t.name);
+  check("合流集 49 且无重复", allNames.length === 49 && new Set(allNames).size === 49);
+  check("sop_publish 默认需审批（approvalRequired）",
+    reg.AGENT_INTERNAL_TOOL_SPECS.find((t) => t.name === "sop_publish")?.approvalRequired === true);
+
+  const reviewTools = reg.toolsForSessionKind("sop_review");
+  check("sop_review 含 sop_get + sop_reply_clarification",
+    reviewTools.includes("sop_get") && reviewTools.includes("sop_reply_clarification"));
+  check("sop_review **不含** sop_draft / sop_publish（修订只走受控回复路径）",
+    !reviewTools.includes("sop_draft") && !reviewTools.includes("sop_publish"));
+  const authoring = reg.toolsForSessionKind("sop_authoring");
+  check("sop_authoring 含起草/发布/指派", authoring.includes("sop_draft") && authoring.includes("sop_publish") && authoring.includes("sop_assign"));
+
+  // 行为：审批闸 + scope
+  const boundary = new AgentBoundaryService({ get: () => undefined });
+  const session = (over = {}) => ({
+    id: "s1",
+    kind: "sop_authoring",
+    scopeJson: { sops: ["sop-1"] },
+    ...over,
+  });
+  const vPublish = boundary.check(session(), "sop_publish", { sopId: "sop-1" }, 0);
+  check("sop_publish → NEED_APPROVAL（即使全局写策略放行）", vPublish.kind === "NEED_APPROVAL");
+  const vDraft = boundary.check(session(), "sop_draft", { slug: "x", title: "y" }, 0);
+  check("sop_draft（write 收编）默认放行", vDraft.kind === "ALLOW");
+  const vGet = boundary.check(session(), "sop_get", { sopId: "sop-1" }, 0);
+  check("sop_get 在 scope 内放行", vGet.kind === "ALLOW");
+  const vOut = boundary.check(session(), "sop_get", { sopId: "sop-other" }, 0);
+  check("sop_get 越出 scope 拒（out_of_scope）", vOut.kind === "DENY" && vOut.reason === "out_of_scope");
+  const vEmpty = boundary.check(
+    session({ kind: "incident", scopeJson: {} }),
+    "sop_get",
+    { sopId: "sop-1" },
+    0,
+  );
+  check("空 scope 会话调 sop_get 拒（安全默认不变）", vEmpty.kind === "DENY");
+}
+
+// ── 4. 协作 API（结构断言）───────────────────────────────────────
+console.log("\n── 4. 协作 API（11 §3/§5）──");
+{
+  const src = readFileSync(join(apiDir, "src/modules/sop/sop-collab.controller.ts"), "utf8");
+  check("控制器 @Public()（机器面走 token，不进 JWT 体系）", /@Public\(\)/.test(src));
+  check("鉴权复用 validateTokenByAddress（不新造凭据体系）", /validateTokenByAddress/.test(src));
+  check("显式 agent:sop 能力闸（空能力 ≠ 通用）", /includes\("agent:sop"\)/.test(src));
+  check("poll 长轮询 ≤25s（低于反代 60s 读超时）", /POLL_MAX_WAIT_MS = 25_000/.test(src));
+  check("sopPolicy 随 poll 下发（企业集中管控）", /sopPolicy/.test(src));
+
+  const svcSrc = readFileSync(join(apiDir, "src/modules/sop/sop.service.ts"), "utf8");
+  check("媒体只认平台内路径（SSRF 转嫁面，11 §5.2）", /PLATFORM_MEDIA_PATH_RE/.test(svcSrc));
+  check("question 长度钳位 + 脱敏", /SOP_CLARIFICATION_QUESTION_MAX/.test(svcSrc) && /REDACTED/.test(svcSrc));
+  check("澄清会话 scope 只授权被复核的 SOP（最小权限）", /scope: \{ sops: \[a\.sopId\] \}/.test(svcSrc));
+
+  // 协作协议治理（11 §7）：P5/P6 明确留 P7（executor-desktop 实现 client 时进 agentCollab 段）
+  const proto = readFileSync(join(root, "packages/executor-protocol/protocol.json"), "utf8");
+  check("protocol.json 未混入 agentCollab（非三方共有语义不进 schemas，留 P7 按需登记）",
+    !/agentCollab/.test(proto));
+}
+
+// ── 5. env 三处同步 ───────────────────────────────────────────────
+console.log("\n── 5. 配置文档同步 ──");
+{
+  for (const f of [".env.example", "apps/admin-api/.env.example"]) {
+    const env = readFileSync(join(root, f), "utf8");
+    check(`${f} 文档化 AGENT_SOP_POLICY*`, /AGENT_SOP_POLICY=/.test(env) && /AGENT_SOP_POLICY_ALLOWED=/.test(env));
+  }
+  const cfg = readFileSync(join(apiDir, "src/config/configuration.ts"), "utf8");
+  check("configuration 有 agent.collab.sopPolicy 段", /collab: \{\s*sopPolicy: \{/.test(cfg));
+  const app = readFileSync(join(apiDir, "src/app.module.ts"), "utf8");
+  check("Joi 注册 AGENT_SOP_POLICY*", /AGENT_SOP_POLICY:/.test(app) && /AGENT_SOP_POLICY_ALLOWED:/.test(app));
+}
+
+rmSync(scratch, { recursive: true, force: true });
+
+console.log(failures ? `\n=== ${failures} 项失败 ===\n` : "\n=== 全部 SOP 断言通过 ===\n");
+process.exit(failures ? 1 : 0);

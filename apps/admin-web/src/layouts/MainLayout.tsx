@@ -151,6 +151,7 @@ function buildMenuItems(t: (k: string) => string) {
       label: t('nav.group.system'),
       children: [
         { key: '/users', icon: <UserOutlined />, label: t('nav.users') },
+        { key: '/sops', icon: <FileTextOutlined />, label: t('nav.sops') },
         { key: '/notifications', icon: <BellOutlined />, label: t('nav.notifications') },
         { key: '/audit', icon: <AuditOutlined />, label: t('nav.audit') },
         { key: '/projects', icon: <TeamOutlined />, label: t('nav.projects') },
@@ -162,7 +163,7 @@ function buildMenuItems(t: (k: string) => string) {
 
 // ADMIN-only 菜单入口：普通用户不渲染（后端对应接口均 @Roles(ADMIN)）
 // R6：/notifications 收紧——GET/PATCH /notification/channels 为 ADMIN-only
-const ADMIN_ONLY_MENU_KEYS = new Set(['/executor-packages', '/audit', '/users', '/notifications']);
+const ADMIN_ONLY_MENU_KEYS = new Set(['/executor-packages', '/audit', '/users', '/notifications', '/sops']);
 
 // F-12（DEEP_REVIEW 0ef3bbe）: 实时时钟提取为独立 memoized 子组件。
 // 此前 setInterval 每秒触发 MainLayout 整棵组件树重渲；现在时钟自管 state

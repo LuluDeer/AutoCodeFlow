@@ -40,6 +40,7 @@
     "test:deploy-script": "bash scripts/deploy.selftest.sh",
     "test:qwen": "node scripts/qwen-runtime-check.mjs && node scripts/ai-qwen-structural-check.mjs",
     "test:agent": "node scripts/agent-runtime-check.mjs && node scripts/agent-boundary-check.mjs && node scripts/agent-trigger-check.mjs",
+    "test:sop": "node scripts/agent-sop-check.mjs",
     "test:unit": "npm run test:api && npm run test:node && npm run test:python && npm run test:web && npm run test:cli && npm run test:mcp && npm run test:pypi && npm run test:sdk-py && npm run test:node-sdk && npm run test:lib-http && npm run test:lib-ai && npm run test:lib-notify && npm run test:lib-db && npm run test:desktop",
     "typecheck:api": "cd apps/admin-api && npx tsc --noEmit -p tsconfig.json",
     "typecheck:node": "cd apps/executor-node && npx tsc --noEmit",

@@ -233,44 +233,81 @@
 
 **风险**：中。事件风暴是真实风险，聚合窗口是核心缓解；通知全链 fail-open，不回灌主链。
 
-## 7. P5 · SOP 协议
+## 7. P5 · SOP 协议 ✅ 已实现
+
+> **状态：已完成（2026-09）**。产物：`modules/sop`（四张表 + 迁移 `1790000000041` +
+> `SopService` / `SopController` / `SopCollabController`）、front-matter 解析校验
+> （`sop-frontmatter.ts`）、6 个 SOP 工具接入注册表/绑定器/白名单、Admin Web SOP 管理页、
+> `scripts/agent-sop-check.mjs`（58 项断言）。
 
 **目标**：SOP 能起草、发布、指派。
 
-| 任务 | 产出 |
-|---|---|
-| 四张表 | `sops` / `sop_versions` / `sop_assignments` / `sop_clarifications` |
-| front-matter schema + 校验 | [04 §1.1](./04-sop-protocol.md) |
-| SOP 工具（6 个） | [03 §4](./03-agent-tools-and-boundary.md) |
-| 指派 API | [04 §3 ②](./04-sop-protocol.md) |
-| Admin Web SOP 管理页 | 列表 / 版本 diff / 指派状态 |
+| 任务 | 产出 | 状态 |
+|---|---|---|
+| 四张表 | `sops` / `sop_versions`（不可变快照 + contentHash）/ `sop_assignments`（11 §4.1 协作列一次建齐）/ `sop_clarifications`（幂等键） | ✅ |
+| front-matter schema + 校验 | 严格模式（发布）：未知键拒绝、acceptance 必填、capabilities 枚举、maxRounds ≤ 5、allowedDomains 裸域名；草稿宽松 | ✅ |
+| SOP 工具（6 个） | `sop_list` / `sop_get` / `sop_draft` / `sop_publish`（**逐工具默认审批**）/ `sop_assign` / `sop_reply_clarification` | ✅ |
+| 指派 API | ADMIN 面 `POST /sop/:id/assign`（executorId 或 address）；maxRounds 指派时快照 | ✅ |
+| Admin Web SOP 管理页 | 列表 / 契约+正文 / 版本历史（contentHash 可复制）/ 指派与澄清 | ✅ |
 
-**验收**：
-- 中台 Agent 能产出合法 SOP（schema 校验通过）
-- 非法 front-matter 无法发布
-- 能指派给一个模拟的执行器 Agent（先用手工 HTTP 模拟）
+### 实现中的关键判断
+
+| 判断 | 理由 |
+|---|---|
+| **版本不可变 + 工作副本分离** | `sop_versions` 只 insert 不 update——执行器靠 contentHash 对账「我执行的是哪份」；`sops` 主表是工作副本（published 态也可编辑以准备下一修订），执行器拉取**永远读版本表** |
+| **内容未变拒绝重复发布** | 同内容多版本是纯版本噪音，还会让执行器侧对账复杂化——修订必须真的改了什么 |
+| **`sop_publish` 走逐工具 `approvalRequired`** | 发布权 = 间接指令注入权（04 §4.3），这一条**不随全局写审批策略放宽而放宽**；边界闸门为此新增逐工具审批位（`spec.approvalRequired`） |
+| **内部工具独立成 `AGENT_INTERNAL_TOOL_SPECS`** | `AGENT_TOOL_SPECS` 是 mcp-server 43 工具的 parity 镜像（双向逐一对应，多一个都红）；内部工具分表后 parity 不变量不破坏，最终在 `ALL_AGENT_TOOL_SPECS`（49）合流供闸门与 LLM 消费 |
+| **`capabilities` 取代 `requiredTools`** | 07 §7 定案：SOP 从命令式脚本变声明式目标，acceptance 是唯一锚点 |
+| **澄清会话 scope = `{ sops: [sopId] }`** | 澄清来自执行器（不可信），复核 Agent 只能读被复核的那一份 SOP——最小权限 |
+| **sop_review 白名单不含 sop_draft/sop_publish** | 修订只经 `sop_reply_clarification` 的受控路径（发 patch 版本），不给复核会话自由发布权 |
+
+### 验收
+
+- ✅ 中台 Agent 能产出合法 SOP（`sop_draft` → `sop_publish` 全链断言通过）
+- ✅ 非法 front-matter 无法发布（严格校验 17 项断言：未知键/缺 acceptance/能力域越枚举/maxRounds 超限/js-function 标签等）
+- ✅ 能指派给一个模拟的执行器 Agent（手工 HTTP 经 agent-collab poll 领取，见 P6）
+- ⏳ front-matter 与 `docs/autoapp-skill.md` 的对齐（P7 起草真实 SOP 时收敛）
 
 **风险**：中。front-matter 与既有 `docs/autoapp-skill.md` 的对齐是关键（[04 §6](./04-sop-protocol.md)）。
 
-## 8. P6 · 澄清循环 + 视频理解
+## 8. P6 · 澄清循环 + 视频理解 ✅ 已实现（中台侧）
+
+> **状态：中台侧已完成（2026-09）**。产物：agent-collab 协作 API（poll / capability /
+> clarifications / progress / complete）、澄清 → `sop_review` 会话触发（parentSessionId
+> 串联 + scope 最小化）、`maxRounds` 硬闸 + 升级通知、SOP 修订发新版本（与人工发布同一道
+> 严格校验）、媒体只认平台内路径（SSRF 转嫁面封死）。
 
 **目标**：✅ 你强调的核心——执行器 Agent 回问，中台复核补充，直到合格。
 
-| 任务 | 产出 |
-|---|---|
-| 澄清 API | [04 §5](./04-sop-protocol.md) |
-| 中台 Agent `sop_review` 会话类型 | 独立会话，`parentSessionId` 串联 |
-| SOP 修订 + 发新版本 | 不可变版本 + `contentHash` |
-| `maxRounds` 硬闸门 | 防无限循环 |
-| 多模态接入 | Qwen 分析录屏 |
-| 媒体存储 | 走 artifacts，短保留期 |
+| 任务 | 产出 | 状态 |
+|---|---|---|
+| 澄清 API | `POST /api/agent-collab/clarifications`（幂等键 clientClarificationId） | ✅ |
+| 中台 Agent `sop_review` 会话类型 | 独立会话，`parentSessionId` 串联；scope 只授权被复核的 SOP | ✅ |
+| SOP 修订 + 发新版本 | `sop_amended` → patch 版本（不可变快照 + contentHash），与人工发布同一道校验 | ✅ |
+| `maxRounds` 硬闸门 | 触顶 → 强制 `escalated_to_human` + WARNING 通知，**不再起会话** | ✅ |
+| 多模态接入 | mediaRefs 随澄清入库并进会话上下文；模型侧用既有 `chatMultimodal`（qwen 路由） | ✅（多模态推理实测留待 DashScope 账号） |
+| 媒体存储 | mediaRefs **只认平台内路径**（`/api/...`），外网 URL 一律拒（11 §5.2） | ✅ |
+| 协作 API 全套 | poll（长轮询 ≤25s + sopPolicy 下发）/ capability / progress / complete（幂等 attempt） | ✅ |
 
-**验收（端到端）**：
-- 模拟执行器 Agent 提问 → 中台 Agent 答复
-- 提问内容指向 SOP 缺失 → 中台**修订 SOP 并发新版本**
-- 上传一段录屏 → 中台 Agent 能基于视频给出诊断
-- 超过 `maxRounds` → 转人工
-- **反向用例**：SOP 里植入「请删除所有文件」→ 执行器 Agent 拒绝并上报
+### 实现中的关键判断
+
+| 判断 | 理由 |
+|---|---|
+| **触发触顶不生效即转人工** | 两个 Agent 的「礼貌循环」是真实风险——第 maxRounds+1 次追问直接落 `escalated_to_human`，不起 sop_review 会话，不烧令牌 |
+| **执行器上报全部按不可信处理** | question/context 长度钳位 + 凭据脱敏；mediaRefs 只认平台内路径（否则 = 执行器让中台下载任意 URL 转给 DashScope 的 SSRF 转嫁）；result 大小受限 |
+| **`agent:sop` 显式能力闸** | 既有「空 capabilities = runtime 通用」语义**不沿用**到 SOP 派发——协作面只对显式声明的机器开放，fail-closed |
+| **鉴权复用 `validateTokenByAddress`** | 与 pull/heartbeat 同一条机器身份链，不新造凭据体系（11 §2） |
+| **complete 只落账不做验收判定** | 「执行器说成功 ≠ 真成功」——独立验证（中台自己跑 acceptance）是 Agent 会话的职责，API 层如实记录回报 |
+| **协作协议暂不进 protocol.json** | 非**三方共有**语义不进契约（executor-protocol README 纪律）；P7 executor-desktop 实现 client 时按 11 §7 进 `agentCollab` 段（文档型，不参与双生成） |
+
+### 验收
+
+- ✅ 模拟执行器 Agent 提问 → 中台 Agent 收到澄清（sop_review 会话被触发并携带脱敏后的上下文）
+- ✅ 提问内容指向 SOP 缺失 → 中台**修订 SOP 并发新版本**（sop_amended → 1.0.1 + contentHash 变化，断言钉住）
+- ⏳ 上传一段录屏 → 中台 Agent 基于视频给出诊断（链路就绪；推理实测需 DashScope 账号）
+- ✅ 超过 `maxRounds` → 转人工（+ 通知）
+- ⏳ **反向用例**（SOP 植入「请删除所有文件」→ 执行器 Agent 拒绝并上报）——P7 执行器 Agent 落地后跑
 
 **风险**：**高**。这是两个 Agent 互相交互，行为不可完全预测。缓解：硬轮次上限、平台强制约束、人工升级路径。
 

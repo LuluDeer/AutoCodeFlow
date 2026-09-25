@@ -33,6 +33,7 @@ import { NotificationModule } from "./modules/notification/notification.module";
 import { AiModule } from "./modules/ai/ai.module";
 // P2（agent-and-deployment）：中台 Agent 运行时
 import { AgentModule } from "./modules/agent/agent.module";
+import { SopModule } from "./modules/sop/sop.module";
 import { MetricsModule } from "./modules/metrics/metrics.module";
 import { SystemConfigModule } from "./modules/config/config.module";
 import { AuditModule } from "./modules/audit/audit.module";
@@ -276,6 +277,11 @@ import { RuntimeModule } from "./modules/runtime/runtime.module";
         AGENT_NOTIFY_ENABLED: Joi.string()
           .valid("true", "false")
           .default("true"),
+
+        // P5/P6（agent-and-deployment）: 协作面随 poll 下发的 SOP 策略
+        // （设计文档 11 §3.1）。执行器侧 P7 做 min(本地, 中台) 合并。
+        AGENT_SOP_POLICY: Joi.string().default("standard"),
+        AGENT_SOP_POLICY_ALLOWED: Joi.string().default("minimal,standard"),
 
         // AUTH-04: OIDC SSO（授权码模式）。全部可选——OIDC_ENABLED=false 时
         // 其余键不生效，存量部署零变化。
@@ -638,6 +644,9 @@ import { RuntimeModule } from "./modules/runtime/runtime.module";
     // P2: 单向依赖——AgentModule 依赖其他业务模块，但不被任何业务模块依赖
     // （Agent 失败绝不影响调度/执行主链，见 agent.module.ts 头注）。
     AgentModule,
+    // P5/P6: SOP 协议——与 agent 模块是装配期 forwardRef（澄清起会话 ↔
+    // 工具体绑定），管理面 ADMIN-only、协作面执行器 token（见 sop.module.ts）。
+    SopModule,
     MetricsModule,
     SystemConfigModule,
     AuditModule,

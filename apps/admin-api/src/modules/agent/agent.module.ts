@@ -22,6 +22,7 @@ import { ExecutorModule } from "../executor/executor.module";
 import { ApplicationModule } from "../application/application.module";
 import { SchedulerModule } from "../scheduler/scheduler.module";
 import { NotificationModule } from "../notification/notification.module";
+import { SopModule } from "../sop/sop.module";
 import { AgentTriggerService } from "./trigger/agent-trigger.service";
 import { AgentEventAggregator } from "./trigger/agent-event-aggregator.service";
 
@@ -54,6 +55,8 @@ import { AgentEventAggregator } from "./trigger/agent-event-aggregator.service";
     // 审批请求与升级通知。
     forwardRef(() => SchedulerModule),
     NotificationModule,
+    // P5/P6: SOP 工具体（ToolBinder 绑定 sop_* 到 SopService）。
+    forwardRef(() => SopModule),
   ],
   controllers: [AgentController],
   providers: [

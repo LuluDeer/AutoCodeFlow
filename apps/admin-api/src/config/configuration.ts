@@ -249,6 +249,19 @@ export default () => ({
     notify: {
       enabled: process.env.AGENT_NOTIFY_ENABLED !== "false",
     },
+    // P6: 协作面随 poll 下发的策略（设计文档 11 §3.1）。执行器侧 P7 实现
+    // min(本地, 中台) 合并；离线沿用最近一次缓存，不回落成无限制。
+    collab: {
+      sopPolicy: {
+        permissionPolicy: process.env.AGENT_SOP_POLICY || "standard",
+        allowedProfiles: (
+          process.env.AGENT_SOP_POLICY_ALLOWED || "minimal,standard"
+        )
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean),
+      },
+    },
   },
   // ARCH-31（2026-09-13）: 事件订阅 webhook 出站私网豁免（订阅创建/更新校验
   // 与 outbox 派发前复核共用此开关）。默认 false 零行为变化。

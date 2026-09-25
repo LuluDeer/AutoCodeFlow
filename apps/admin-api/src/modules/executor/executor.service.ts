@@ -2132,6 +2132,15 @@ export class ExecutorService {
   }
 
   /**
+   * P6 agent-collab（设计文档 11 §3.2）：执行器上报能力清单（覆盖式）。
+   * 接 SOP 协作面的机器在此声明 `agent:sop`——「空能力 = runtime 通用」的
+   * 既有语义**不适用**于 SOP 派发（10 §缺口2补），必须显式声明。
+   */
+  async updateCapabilities(id: string, capabilities: string[]): Promise<void> {
+    await this.repo.update({ id }, { capabilities });
+  }
+
+  /**
    * Get all unique executor groups.
    */
   async getGroups(): Promise<string[]> {

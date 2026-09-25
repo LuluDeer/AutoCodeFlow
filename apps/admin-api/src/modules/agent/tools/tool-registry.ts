@@ -38,9 +38,19 @@ export interface AgentToolSpec {
    */
   hardDisabled?: true;
   /** 本工具操作的目标资源类型（scope 校验用）。 */
-  resourceKind?: "application" | "executor" | "task" | "project" | "none";
+  resourceKind?:
+    "application" | "executor" | "task" | "project" | "sop" | "none";
   /** 参数中哪个字段承载资源 id（scope 交叉验证用）。 */
   resourceIdParam?: string;
+  /**
+   * 该工具**默认需要人工审批**（独立于全局 writeRequiresApproval 的
+   * 逐工具闸）。
+   *
+   * 为什么需要它：`sop_publish` 的发布权 = 间接的指令注入权（SOP 会成为
+   * 另一个 Agent 的执行依据，04 §4.3），这一条不随全局写审批策略放宽而
+   * 放宽。注意与 hardDisabled 的区别：需审批的工具人工点头后可执行。
+   */
+  approvalRequired?: true;
 }
 
 /**
@@ -745,9 +755,173 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
   },
 ];
 
+/**
+ * 内部工具（设计文档 03 §4 + 10 §调整2）：Agent 专属能力，mcp-server 不
+ * 暴露——它们是「Agent 的能力」，不是「外部 AI 管理 AutoCodeFlow」的能力。
+ *
+ * ## 为什么独立成表而不是塞进 AGENT_TOOL_SPECS
+ * AGENT_TOOL_SPECS 是 mcp-server 43 工具的**收编镜像**，有双向逐一对应的
+ * parity 断言（多一个都红）。内部工具进同一数组会打破「与 mcp-server 一致」
+ * 这个不变量。分表后：parity 只对 AGENT_TOOL_SPECS 断言，内部工具数量
+ * 自由生长（07 §7 之后还会加），两者最终在 ALL_AGENT_TOOL_SPECS 合流，
+ * 闸门与 LLM 都只见合流后的全集。
+ *
+ * ## P5 的 6 个 SOP 工具（03 §4）
+ * sop_publish 默认需审批（发布权 = 间接指令注入权，04 §4.3）；澄清场景的
+ * 小版本修订走 sop_reply_clarification 自主路径（04 §4.3：后续小版本可配
+ * 自主）——但仍然过与人工发布同一道严格校验 + 不可变快照。
+ */
+export const AGENT_INTERNAL_TOOL_SPECS: readonly AgentToolSpec[] = [
+  {
+    name: "sop_list",
+    description:
+      "List SOPs with slug, title, status (draft|published|deprecated), currentVersion.",
+    parameters: {
+      type: "object",
+      properties: {
+        ...pagination,
+        status: str("Filter by status: draft | published | deprecated"),
+      },
+      additionalProperties: false,
+    },
+    tier: "read",
+    resourceKind: "none",
+  },
+  {
+    name: "sop_get",
+    description:
+      "Get one SOP by id or slug: front-matter (machine contract: target/capabilities/acceptance/constraints) + body markdown.",
+    parameters: {
+      type: "object",
+      properties: {
+        sopId: uuid("SOP id (either sopId or slug)"),
+        slug: str("SOP slug (either sopId or slug)"),
+      },
+      additionalProperties: false,
+    },
+    tier: "read",
+    resourceKind: "sop",
+    resourceIdParam: "sopId",
+  },
+  {
+    name: "sop_draft",
+    description:
+      "Create or update a SOP draft: slug, title, frontMatterYaml (machine contract), bodyMarkdown. Drafts are NOT executable until published.",
+    parameters: {
+      type: "object",
+      properties: {
+        slug: {
+          type: "string",
+          pattern: "^[a-z0-9][a-z0-9-]{0,127}$",
+          description:
+            "Machine-readable slug, lowercase letters/digits/hyphens",
+        },
+        title: str("Human-readable title"),
+        frontMatterYaml: {
+          type: "string",
+          description:
+            "YAML front-matter (machine contract). Parsed and validated; unknown keys rejected at publish.",
+        },
+        bodyMarkdown: {
+          type: "string",
+          description: "Markdown body for humans/LLM",
+        },
+      },
+      required: ["slug", "title"],
+      additionalProperties: false,
+    },
+    tier: "write",
+    resourceKind: "none",
+  },
+  {
+    name: "sop_publish",
+    description:
+      "Publish a SOP version (strict validation + immutable snapshot + contentHash). Requires human approval — publishing grants instruction authority over executor agents.",
+    parameters: {
+      type: "object",
+      properties: {
+        sopId: uuid("SOP id"),
+        bump: {
+          type: "string",
+          enum: ["patch", "minor", "major"],
+          description: "Version bump (default patch; first publish is 1.0.0)",
+        },
+        changelog: str("What changed in this version"),
+      },
+      required: ["sopId"],
+      additionalProperties: false,
+    },
+    tier: "write",
+    resourceKind: "sop",
+    resourceIdParam: "sopId",
+    /** 发布权 = 指令注入权（04 §4.3）——默认审批，不随全局写策略放宽。 */
+    approvalRequired: true,
+  },
+  {
+    name: "sop_assign",
+    description:
+      "Assign a published SOP version to an executor (agent:sop capable). Creates an assignment ticket the executor pulls via agent-collab poll.",
+    parameters: {
+      type: "object",
+      properties: {
+        sopId: uuid("SOP id"),
+        version: str("Version (default: currentVersion)"),
+        executorId: uuid(
+          "Target executor id (either executorId or executorAddress)",
+        ),
+        executorAddress: str(
+          "Target executor address (either executorId or executorAddress)",
+        ),
+      },
+      required: ["sopId"],
+      additionalProperties: false,
+    },
+    tier: "write",
+    resourceKind: "sop",
+    resourceIdParam: "sopId",
+  },
+  {
+    name: "sop_reply_clarification",
+    description:
+      "Reply to an executor-agent clarification. resolution: answered | sop_amended (provide amended content; publishes a new patch version autonomously) | escalated_to_human.",
+    parameters: {
+      type: "object",
+      properties: {
+        clarificationId: str("Clarification id to reply to"),
+        resolution: {
+          type: "string",
+          enum: ["answered", "sop_amended", "escalated_to_human"],
+          description: "How the clarification is resolved",
+        },
+        answer: str("Reply text (goes back to the executor agent)"),
+        amendedFrontMatterYaml: {
+          type: "string",
+          description:
+            "Required when resolution=sop_amended (if contract changed)",
+        },
+        amendedBodyMarkdown: {
+          type: "string",
+          description: "Required when resolution=sop_amended (if body changed)",
+        },
+        changelog: str("Change note for the amended version"),
+      },
+      required: ["clarificationId", "resolution", "answer"],
+      additionalProperties: false,
+    },
+    tier: "write",
+    resourceKind: "none",
+  },
+];
+
+/** 闸门与 LLM 可见的全集：43 收编 + 内部工具（设计文档 10 §调整2）。 */
+export const ALL_AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
+  ...AGENT_TOOL_SPECS,
+  ...AGENT_INTERNAL_TOOL_SPECS,
+];
+
 /** 按名字索引（O(1) 查表，闸门每次调用都要查）。 */
 export const AGENT_TOOL_BY_NAME: ReadonlyMap<string, AgentToolSpec> = new Map(
-  AGENT_TOOL_SPECS.map((t) => [t.name, t]),
+  ALL_AGENT_TOOL_SPECS.map((t) => [t.name, t]),
 );
 
 /**
@@ -762,7 +936,7 @@ export const SESSION_TOOL_ALLOWLIST: Record<string, readonly string[] | null> =
      * 运维值守：**纯只读**。定时巡检不应有副作用——它每小时醒一次，
      * 任何写操作都会被重复执行很多次。
      */
-    ops_watch: AGENT_TOOL_SPECS.filter((t) => t.tier === "read").map(
+    ops_watch: ALL_AGENT_TOOL_SPECS.filter((t) => t.tier === "read").map(
       (t) => t.name,
     ),
 
@@ -771,7 +945,7 @@ export const SESSION_TOOL_ALLOWLIST: Record<string, readonly string[] | null> =
      * 刻意**不含** update_task / delete_* / approve_*——故障处置场景下
      * 改配置与审批应由人来决定。
      */
-    incident: AGENT_TOOL_SPECS.filter(
+    incident: ALL_AGENT_TOOL_SPECS.filter(
       (t) =>
         t.tier === "read" ||
         [
@@ -783,8 +957,11 @@ export const SESSION_TOOL_ALLOWLIST: Record<string, readonly string[] | null> =
         ].includes(t.name),
     ).map((t) => t.name),
 
-    /** SOP 起草：读 + 建应用/建任务/部署（部署仍需审批）。 */
-    sop_authoring: AGENT_TOOL_SPECS.filter(
+    /**
+     * SOP 起草：读 + SOP 工具（起草/发布/指派）+ 建应用/建任务/部署
+     * （部署仍需审批；sop_publish 逐工具默认审批——发布权 = 间接指令注入权）。
+     */
+    sop_authoring: ALL_AGENT_TOOL_SPECS.filter(
       (t) =>
         t.tier === "read" ||
         [
@@ -793,16 +970,24 @@ export const SESSION_TOOL_ALLOWLIST: Record<string, readonly string[] | null> =
           "deploy_application",
           "deploy_app",
           "trigger_task",
+          "sop_draft",
+          "sop_publish",
+          "sop_assign",
         ].includes(t.name),
     ).map((t) => t.name),
 
-    /** SOP 复核（P6）：读 + 澄清回复（澄清工具在 P6 加）。当前纯只读。 */
-    sop_review: AGENT_TOOL_SPECS.filter((t) => t.tier === "read").map(
-      (t) => t.name,
-    ),
+    /**
+     * SOP 复核（P6 澄清循环）：读（含 sop_get/sop_list——复核要先读 SOP）
+     * + 澄清回复。**没有** sop_draft/sop_publish——修订只经
+     * sop_reply_clarification 的受控路径（发 patch 版本），不给复核会话
+     * 自由发布权。
+     */
+    sop_review: ALL_AGENT_TOOL_SPECS.filter(
+      (t) => t.tier === "read" || t.name === "sop_reply_clarification",
+    ).map((t) => t.name),
 
     /** 应用脚手架（P5/P7）：与 sop_authoring 同集。 */
-    app_scaffold: AGENT_TOOL_SPECS.filter(
+    app_scaffold: ALL_AGENT_TOOL_SPECS.filter(
       (t) =>
         t.tier === "read" ||
         [
