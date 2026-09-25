@@ -16,6 +16,7 @@ import { ExecutorModule } from "../executor/executor.module";
 import { NotificationModule } from "../notification/notification.module";
 import { AiModule } from "../ai/ai.module";
 import { ExecutorPackageModule } from "../executor-package/executor-package.module";
+import { SchedulerModule } from "../scheduler/scheduler.module";
 import { AGENT_QUEUE_NAME } from "../agent/runtime/agent.processor";
 
 /**
@@ -45,6 +46,8 @@ import { AGENT_QUEUE_NAME } from "../agent/runtime/agent.processor";
     forwardRef(() => AgentModule),
     ExecutorModule,
     NotificationModule,
+    // P6 超时治理：leader 门禁复用 SchedulerService（与 AgentTrigger 同款）
+    SchedulerModule,
     // P7a 续批：LLM relay（执行器 Agent 的推理经中台代跑，key 不出服务端）
     AiModule,
     // P7d 前半：候选应用包交付——复用既有包校验链（SEC-05 zip bomb 等）

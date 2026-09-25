@@ -96,4 +96,20 @@ export const sopsApi = {
       assignment: SopAssignment;
       clarifications: SopClarification[];
     }>,
+  /** 人工回复澄清（P6 升级环收口：与中台 Agent 共用同一道服务层闸门）。 */
+  replyClarification: (
+    assignmentId: string,
+    clarificationId: string,
+    data: {
+      resolution: 'answered' | 'sop_amended';
+      answer: string;
+      amendedFrontMatterYaml?: string;
+      amendedBodyMarkdown?: string;
+      changelog?: string;
+    },
+  ) =>
+    client.post(
+      `/sop/assignments/${assignmentId}/clarifications/${clarificationId}/reply`,
+      data,
+    ) as Promise<{ ok: boolean; newSopVersion?: string }>,
 };

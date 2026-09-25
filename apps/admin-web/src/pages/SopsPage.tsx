@@ -59,6 +59,14 @@ export default function SopsPage() {
   const [clarifications, setClarifications] = useState<Record<string, SopClarification[]>>({});
   const [draftOpen, setDraftOpen] = useState(false);
   const [draft, setDraft] = useState({ slug: '', title: '', frontMatterYaml: '', bodyMarkdown: '' });
+  // P6 升级环收口：人工回复澄清（escalated_to_human / pending）
+  const [replyTarget, setReplyTarget] = useState<{ assignmentId: string; clarificationId: string } | null>(null);
+  const [reply, setReply] = useState<{ resolution: 'answered' | 'sop_amended'; answer: string; amendedYaml: string }>({
+    resolution: 'answered',
+    answer: '',
+    amendedYaml: '',
+  });
+  const [replying, setReplying] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -95,6 +103,27 @@ export default function SopsPage() {
       message.error(t('sops.loadFailed'));
     }
   }, [t]);
+
+  // 提交人工答复——置于 load/openDetail 之后（依赖它们刷新详情与列表）
+  const submitReply = useCallback(async () => {
+    if (!replyTarget) return;
+    setReplying(true);
+    try {
+      await sopsApi.replyClarification(replyTarget.assignmentId, replyTarget.clarificationId, {
+        resolution: reply.resolution,
+        answer: reply.answer,
+        ...(reply.resolution === 'sop_amended' && reply.amendedYaml ? { amendedFrontMatterYaml: reply.amendedYaml } : {}),
+      });
+      message.success(t('sops.replyOk'));
+      setReplyTarget(null);
+      if (detail) await openDetail(detail);
+      void load();
+    } catch {
+      message.error(t('sops.replyFailed'));
+    } finally {
+      setReplying(false);
+    }
+  }, [reply, replyTarget, detail, openDetail, load, t]);
 
   const createDraft = useCallback(async () => {
     try {
@@ -229,6 +258,17 @@ export default function SopsPage() {
                                   #{c.round} · {c.resolution ?? 'pending'}
                                 </Text>
                                 {c.newSopVersion && <Tag style={{ marginLeft: 8 }}>→ {c.newSopVersion}</Tag>}
+                                {/* P6 升级环收口：escalated/pending 的澄清可由人答复——
+                                    与中台 Agent 共用同一道服务层 replyClarification 闸门 */}
+                                {(c.resolution === null || c.resolution === 'escalated_to_human') && (
+                                  <Button
+                                    size="small"
+                                    style={{ marginLeft: 8 }}
+                                    onClick={() => { setReplyTarget({ assignmentId: a.id, clarificationId: c.id }); setReply({ resolution: 'answered', answer: '', amendedYaml: '' }); }}
+                                  >
+                                    {t('sops.reply')}
+                                  </Button>
+                                )}
                                 <Paragraph style={{ marginBottom: 4 }}>{c.question}</Paragraph>
                                 {c.answer && (
                                   <Paragraph type="secondary" style={{ marginBottom: 0 }}>
@@ -279,6 +319,40 @@ export default function SopsPage() {
             value={draft.bodyMarkdown}
             onChange={(e) => setDraft({ ...draft, bodyMarkdown: e.target.value })}
           />
+        </Space>
+      </Modal>
+      <Modal
+        title={t('sops.replyTitle')}
+        open={replyTarget !== null}
+        onOk={() => void submitReply()}
+        onCancel={() => setReplyTarget(null)}
+        confirmLoading={replying}
+        width={560}
+        okText={t('sops.replySubmit')}
+      >
+        <Space direction="vertical" style={{ width: '100%' }} size="small">
+          <select
+            className="ant-input"
+            value={reply.resolution}
+            onChange={(e) => setReply({ ...reply, resolution: e.target.value as 'answered' | 'sop_amended' })}
+          >
+            <option value="answered">{t('sops.replyAnswered')}</option>
+            <option value="sop_amended">{t('sops.replyAmended')}</option>
+          </select>
+          <Input.TextArea
+            rows={5}
+            placeholder={t('sops.replyPlaceholder')}
+            value={reply.answer}
+            onChange={(e) => setReply({ ...reply, answer: e.target.value })}
+          />
+          {reply.resolution === 'sop_amended' && (
+            <Input.TextArea
+              rows={8}
+              placeholder={t('sops.replyAmendedPlaceholder')}
+              value={reply.amendedYaml}
+              onChange={(e) => setReply({ ...reply, amendedYaml: e.target.value })}
+            />
+          )}
         </Space>
       </Modal>
     </div>

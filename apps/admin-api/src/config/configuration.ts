@@ -261,6 +261,11 @@ export default () => ({
           .map((s) => s.trim())
           .filter(Boolean),
       },
+      // P6 超时治理（11 §6）：领取 30min / 进度心跳 10min（建议值）。
+      assignmentTtls: {
+        claimTtlMs: parseInt(process.env.SOP_ASSIGNMENT_CLAIM_TTL_MS || "1800000", 10),
+        progressTtlMs: parseInt(process.env.SOP_ASSIGNMENT_PROGRESS_TTL_MS || "600000", 10),
+      },
     },
   },
   // ARCH-31（2026-09-13）: 事件订阅 webhook 出站私网豁免（订阅创建/更新校验

@@ -2604,6 +2604,15 @@ export default {
   'projects.role.admin': 'Project admin',
 
   // ── P5/P6: SOP management ──
+  'sops.reply': 'Reply',
+  'sops.replyTitle': 'Reply to clarification',
+  'sops.replySubmit': 'Submit',
+  'sops.replyAnswered': 'Answer directly (SOP unchanged)',
+  'sops.replyAmended': 'Amend SOP and publish a new version',
+  'sops.replyPlaceholder': 'Reply text (sent back to the executor agent)',
+  'sops.replyAmendedPlaceholder': 'Amended front-matter YAML (published as a patch version)',
+  'sops.replyOk': 'Reply submitted',
+  'sops.replyFailed': 'Failed to submit reply',
   'sops.title': 'SOP management',
   'sops.description': 'SOP = Markdown body (for humans/LLM) + YAML front-matter (machine contract). Publishing creates an immutable version with contentHash; executors pull assignments and ask clarifications via the collaboration channel.',
   'sops.loadFailed': 'Failed to load SOPs',

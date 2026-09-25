@@ -8,9 +8,16 @@ import {
   forwardRef,
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
+import { Cron } from "@nestjs/schedule";
 import { InjectQueue } from "@nestjs/bullmq";
 import type { Queue } from "bullmq";
 import { Repository, In } from "typeorm";
+import { SchedulerService } from "../scheduler/scheduler.service";
+import {
+  evaluateAssignmentTimeouts,
+  CLAIM_TTL_DEFAULT_MS,
+  PROGRESS_TTL_DEFAULT_MS,
+} from "./sop-timeout";
 
 import { Sop } from "./entities/sop.entity";
 import { SopVersion } from "./entities/sop-version.entity";
@@ -99,6 +106,7 @@ export class SopService {
     @Inject(forwardRef(() => AgentSessionService))
     private readonly agentSessions: AgentSessionService,
     private readonly notifications: NotificationService,
+    private readonly scheduler: SchedulerService,
     @InjectQueue(AGENT_QUEUE_NAME)
     private readonly agentQueue: Queue<AgentJobData>,
   ) {}
@@ -659,6 +667,82 @@ export class SopService {
       await this.spawnVerificationSession(a, input.result ?? null);
     }
     return { accepted: true };
+  }
+
+  // ── 超时治理（P6，11 §6 生命周期表）────────────────────────────
+
+  /**
+   * 指派超时扫描（每 5 分钟，**仅 leader**——多副本不判 leader 会 N 倍
+   * 扫描 + 重复置态，与 AgentTriggerService 同一门禁）。
+   *
+   * 判定逻辑在 sop-timeout.ts（纯函数，check 脚本可完整断言）；这里只做
+   * 扫描、落库与通知（fail-open——通知失败不影响置态）。
+   */
+  @Cron("0 */5 * * * *")
+  async sweepAssignmentTimeouts(): Promise<void> {
+    if (!this.isSchedulerLeader()) return;
+    const ttls = {
+      claimTtlMs: this.configTtl("SOP_ASSIGNMENT_CLAIM_TTL_MS", CLAIM_TTL_DEFAULT_MS),
+      progressTtlMs: this.configTtl("SOP_ASSIGNMENT_PROGRESS_TTL_MS", PROGRESS_TTL_DEFAULT_MS),
+    };
+    const rows = await this.assignments.find({
+      where: { status: In(["assigned", "in_progress"] as const) },
+    });
+    const { unclaimed, stalled } = evaluateAssignmentTimeouts(rows, Date.now(), ttls);
+
+    for (const a of unclaimed) {
+      await this.assignments.update(
+        { id: a.id },
+        {
+          status: "failed",
+          resultJson: { outcome: "unclaimed_timeout", note: "指派后超过领取时限无人领取——可换执行器重派" },
+        },
+      );
+      this.logger.warn(`SOP assignment unclaimed timeout: id=${a.id} sopVersion=${a.sopVersion}`);
+      this.notifyTimeout(a, "无人领取（领取超时）").catch(() => undefined);
+    }
+    for (const a of stalled) {
+      await this.assignments.update(
+        { id: a.id },
+        {
+          status: "stalled",
+          resultJson: { outcome: "progress_stalled", note: "领取后进度心跳停滞——请核对执行器状态后重派或等待" },
+        },
+      );
+      this.logger.warn(`SOP assignment progress stalled: id=${a.id}`);
+      this.notifyTimeout(a, "进度心跳停滞（卡死嫌疑）").catch(() => undefined);
+    }
+  }
+
+  private isSchedulerLeader(): boolean {
+    try {
+      return this.scheduler.getStats().isLeader === true;
+    } catch {
+      // 读不到 leader 状态时保守跳过：宁可本轮不扫，不可多副本重复置态
+      return false;
+    }
+  }
+
+  private configTtl(envKey: string, fallback: number): number {
+    const raw = process.env[envKey];
+    if (!raw || !raw.trim()) return fallback;
+    const n = parseInt(raw, 10);
+    return Number.isFinite(n) && n > 0 ? n : fallback;
+  }
+
+  /** 超时通知（fail-open——通知失败不影响置态，置态已先行落库）。 */
+  private async notifyTimeout(a: SopAssignment, why: string): Promise<void> {
+    try {
+      await this.notifications.notify(
+        `SOP指派超时`,
+        `指派 ${a.id}（SOP v${a.sopVersion}）${why}，已标记。请在 Admin Web 核对后决定重派或转人工。`,
+        AlertLevel.WARNING,
+      );
+    } catch (err) {
+      this.logger.warn(
+        `timeout notify failed (fail-open): ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 
   /** 从 SOP 版本 front-matter 提取 kind=platform 验收项的任务 id。 */
