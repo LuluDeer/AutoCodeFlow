@@ -116,7 +116,7 @@ function notifyTokenAcquired(): void {
     .then(listener)
     .catch((err: unknown) => {
       const msg = err instanceof Error ? err.message : String(err);
-      // eslint-disable-next-line no-console
+
       console.warn(`[auth] onTokenAcquired listener failed: ${msg}`);
     });
 }
@@ -180,7 +180,7 @@ async function fetchToken(): Promise<string | null> {
           ? payload.token
           : null;
       if (!token) {
-        // eslint-disable-next-line no-console
+
         console.warn('[auth] fetchToken: admin response carried no token');
         return null;
       }
@@ -195,7 +195,7 @@ async function fetchToken(): Promise<string | null> {
     // Fall back to static token if dynamic token fetch fails
     // Log at warn level so token refresh failures are visible in diagnostics
     const msg = _err instanceof Error ? _err.message : String(_err);
-    // eslint-disable-next-line no-console
+
     console.warn(`[auth] fetchToken failed: ${msg}`);
   }
   return null;

@@ -55,7 +55,8 @@ export function getExecutorAuthToken(): string {
   return process.env.EXECUTOR_SHARED_TOKEN || process.env.EXECUTOR_SECRET || config.token || '';
 }
 
-logsRouter.get('/logs/:executionId', async (req: Request, res: Response) => {
+// @types/express 5：单一命名段参数显式收窄为 string（见 execute.ts kill 路由的说明）。
+logsRouter.get('/logs/:executionId', async (req: Request<{ executionId: string }>, res: Response) => {
   const { executionId } = req.params;
   // N4: basename guard — reject if executionId contains path separators or is modified by basename
   const safeId = path.basename(executionId);
