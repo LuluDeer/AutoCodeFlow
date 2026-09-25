@@ -953,14 +953,28 @@ jobs:
         run: |
           ../executor-desktop/node_modules/.bin/ncc build src/main.ts \
             -o ../executor-desktop/resources/executor-node --source-map --no-cache
+      - name: Semantic drift guard — executor-node/src digest must match manifest (F-19 / ADR-005)
+        # 本地即可复现的语义闸（与构建路径/ncc 版本无关），先跑——它红了就是真漂移，
+        # 且失败信息直接给出回填命令，不必等下面的字节闸。
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          node scripts/check-desktop-bundle-drift.mjs --selftest
+          node scripts/check-desktop-bundle-drift.mjs
       - name: Drift guard — rebuilt bundle sha256 must match committed manifest (F-19)
         run: |
           cd "$GITHUB_WORKSPACE"
           BUNDLE="apps/executor-desktop/resources/executor-node/index.js"
           MANIFEST="apps/executor-desktop/executor-node-bundle.sha256"
           ACTUAL="$(sha256sum "$BUNDLE" | awk '{print $1}')"
-          EXPECTED="$(grep -v '^#' "$MANIFEST" | awk '{print $1}')"
+          # 只取**末行**字节哈希：清单里还有 `source-digest:` 行（语义闸用），
+          # 不能再用 grep -v '^#' | awk '{print $1}' —— 那会把两行拼成一个多行
+          # 字符串，与 ACTUAL 永不相等，让本闸恒红。
+          EXPECTED="$(grep -v '^#' "$MANIFEST" | grep -oE '^[0-9a-f]{64}' | tail -n1)"
           echo "actual=$ACTUAL expected=$EXPECTED"
+          if [ -z "$EXPECTED" ]; then
+            echo "::error::$MANIFEST 里取不到末行字节哈希（应形如 '<64位hex>  index.js'）"
+            exit 1
+          fi
           if [ "$ACTUAL" != "$EXPECTED" ]; then
             echo "::error::executor-node bundle drift — run 'npm run build:executor' in apps/executor-desktop and commit refreshed apps/executor-desktop/executor-node-bundle.sha256 (F-19 / ADR-005)."
             exit 1
