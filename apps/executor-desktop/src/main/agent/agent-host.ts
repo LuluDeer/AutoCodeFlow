@@ -35,6 +35,7 @@ import { ensureWorkspace } from './workspace';
 import { collectEnvironmentReport } from './perception';
 import { probePlaywright } from './browser';
 import { WindowsGuiDriver } from './gui-windows';
+import { X11GuiDriver } from './gui-x11';
 import {
   buildCandidatePackage,
   interpreterToRuntime,
@@ -272,7 +273,8 @@ export class AgentHost {
       const capabilities = ['agent:sop', 'filesystem', 'http'];
       if (probePlaywright().available) capabilities.push('browser');
       if (includeGui && effective.hostAccess === 'app-scoped' &&
-          effective.allowedApps.length > 0 && await new WindowsGuiDriver().probe()) {
+          effective.allowedApps.length > 0 &&
+          await (process.platform === 'win32' ? new WindowsGuiDriver() : new X11GuiDriver()).probe()) {
         capabilities.push('gui');
       }
       const fingerprint = capabilities.join(',');
@@ -451,7 +453,9 @@ export class AgentHost {
       // ── 能力上报：浏览器/GUI 只在真实可用且 GUI 已授权时声明 ───────────
       const capabilities = ['agent:sop', 'filesystem', 'http'];
       if (probePlaywright().available) capabilities.push('browser');
-      const guiDriver = new WindowsGuiDriver();
+      // GUI 驱动按平台选择：win32 → PowerShell/Win32 后端；linux → X11/XWayland
+      // 后端（Wayland 原生窗口如实不支持，probe 失败即不报 gui——12 号侦察稿）。
+      const guiDriver = process.platform === 'win32' ? new WindowsGuiDriver() : new X11GuiDriver();
       const guiAvailable = effective.hostAccess === 'app-scoped' &&
         effective.allowedApps.length > 0 && await guiDriver.probe();
       if (guiAvailable) capabilities.push('gui');

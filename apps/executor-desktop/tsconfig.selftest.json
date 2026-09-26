@@ -65,6 +65,7 @@
     "src/main/agent/runtime.selftest.ts",
     "src/main/agent/gui.selftest.ts",
     "src/main/agent/gui-windows.selftest.ts",
+    "src/main/agent/gui-x11.selftest.ts",
     "src/main/agent/zip-writer.ts",
     "src/main/agent/package-candidate.ts",
     "src/main/agent/package-candidate.selftest.ts"
