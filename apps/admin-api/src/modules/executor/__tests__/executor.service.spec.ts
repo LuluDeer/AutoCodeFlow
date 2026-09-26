@@ -6,12 +6,14 @@ import {
   ServiceUnavailableException,
   ForbiddenException,
   Logger,
+  Provider,
 } from "@nestjs/common";
 import {
   ExecutorService,
   EXECUTOR_LIST_LIMIT,
   __resetTruncationWarnStateForTest,
 } from "../executor.service";
+import { ExecutorTokenCacheSyncService } from "../token-cache-sync.service";
 import {
   Executor,
   ExecutorOfflineReason,
@@ -122,7 +124,10 @@ describe("ExecutorService (__tests__)", () => {
   let configService: jest.Mocked<Pick<ConfigService, "get">>;
 
   /** N4: build a service instance wired to a specific executor repo mock. */
-  const makeServiceWithRepo = async (repo: ReturnType<typeof makeRepo>) => {
+  const makeServiceWithRepo = async (
+    repo: ReturnType<typeof makeRepo>,
+    extraProviders: Provider[] = [],
+  ) => {
     const module = await Test.createTestingModule({
       providers: [
         ExecutorService,
@@ -156,6 +161,7 @@ describe("ExecutorService (__tests__)", () => {
           provide: SecretsCryptoService,
           useValue: new SecretsCryptoService({ get: () => "" } as any),
         },
+        ...extraProviders,
       ],
     }).compile();
     return module.get(ExecutorService);
@@ -5409,6 +5415,145 @@ describe("ExecutorService (__tests__)", () => {
       expect(dispatchedAddresses()[0]).toContain("app:1");
     });
   });
+  describe("ARCH-31 §3.7 — 跨实例令牌缓存驱逐广播", () => {
+    const ADDR = "10.0.0.9:3002";
+    const ADDR_OTHER = "10.0.0.8:3002";
+
+    const makeFakeSync = () => ({
+      publishTokenEviction: jest.fn().mockResolvedValue(undefined),
+      bindHandlers: jest.fn(),
+    });
+
+    const makeFixture = async () => {
+      const row: any = {
+        id: "e1",
+        address: ADDR,
+        appName: "node",
+        status: ExecutorStatus.ONLINE,
+        runningTaskCount: 0,
+        tokenHash: null,
+      };
+      const repo = makeRepo({
+        findOne: jest.fn().mockResolvedValue(row),
+        save: jest.fn((e: any) => Promise.resolve(e)),
+      });
+      repo.createQueryBuilder = jest.fn(() => ({
+        addSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        getOne: jest.fn().mockResolvedValue(row),
+      })) as any;
+      const fakeSync = makeFakeSync();
+      const svc = await makeServiceWithRepo(repo, [
+        {
+          provide: ExecutorTokenCacheSyncService,
+          useValue: fakeSync,
+        },
+      ]);
+      return { svc, row, fakeSync };
+    };
+
+    /** 直接填充三张缓存（绕过 bcrypt 流程——既有 rotate/evict 用例已覆盖真实链）。 */
+    const populateCaches = (svc: ExecutorService) => {
+      const anySvc = svc as any;
+      anySvc.tokenValidationCache.set("k1", {
+        address: ADDR,
+        cachedAt: Date.now(),
+      });
+      anySvc.tokenValidationCache.set("k2", {
+        address: ADDR_OTHER,
+        cachedAt: Date.now(),
+      });
+      anySvc.callbackSecretCache.set(ADDR, {
+        hash: "hash-1",
+        cachedAt: Date.now(),
+      });
+      anySvc.issuedTokenCache.set(ADDR, {
+        token: "tok-1",
+        startupId: "s-1",
+        issuedAt: Date.now(),
+      });
+    };
+
+    it("onModuleInit 把驱逐/flush 回调接到同步服务", async () => {
+      const { svc, fakeSync } = await makeFixture();
+      svc.onModuleInit();
+      expect(fakeSync.bindHandlers).toHaveBeenCalledTimes(1);
+      const handlers = fakeSync.bindHandlers.mock.calls[0][0];
+      expect(typeof handlers.onEvict).toBe("function");
+      expect(typeof handlers.onFlush).toBe("function");
+    });
+
+    it("rotateToken 本地逐出后广播该地址", async () => {
+      const { svc, row, fakeSync } = await makeFixture();
+      populateCaches(svc);
+      // R10：rotate 会把新明文重播进 issuedTokenCache——旧明文必须不在（这是
+      // 「别的进程生命拿旧 token 续用」的防线），新条目属于 rotate 的正常产物。
+      const anySvc = svc as any;
+      const oldIssued = anySvc.issuedTokenCache.get(ADDR)?.token;
+      await svc.rotateToken(row.id);
+      expect(fakeSync.publishTokenEviction).toHaveBeenCalledWith(ADDR);
+      expect(anySvc.callbackSecretCache.has(ADDR)).toBe(false);
+      expect(anySvc.issuedTokenCache.get(ADDR)?.token ?? null).not.toBe(
+        oldIssued,
+      );
+      // 其他地址的校验缓存不受影响
+      expect(anySvc.tokenValidationCache.has("k2")).toBe(true);
+    });
+
+    it("removeById 同样广播（删除是更强的撤销）", async () => {
+      const { svc, row, fakeSync } = await makeFixture();
+      (svc as any).repo.remove = jest.fn().mockResolvedValue(undefined);
+      populateCaches(svc);
+      await svc.removeById(row.id);
+      expect(fakeSync.publishTokenEviction).toHaveBeenCalledWith(ADDR);
+      const anySvc = svc as any;
+      expect(anySvc.callbackSecretCache.has(ADDR)).toBe(false);
+      expect(anySvc.issuedTokenCache.has(ADDR)).toBe(false);
+    });
+
+    it("远端广播 onEvict：逐出该地址的全部三条目，不动其他地址", async () => {
+      const { svc, fakeSync } = await makeFixture();
+      svc.onModuleInit();
+      populateCaches(svc);
+      const handlers = fakeSync.bindHandlers.mock.calls[0][0];
+      handlers.onEvict(ADDR);
+      const anySvc = svc as any;
+      expect(anySvc.tokenValidationCache.has("k1")).toBe(false);
+      expect(anySvc.tokenValidationCache.has("k2")).toBe(true);
+      expect(anySvc.callbackSecretCache.has(ADDR)).toBe(false);
+      expect(anySvc.issuedTokenCache.has(ADDR)).toBe(false);
+    });
+
+    it("重连 flush：三张缓存全量清空（自愈漏掉的广播）", async () => {
+      const { svc, fakeSync } = await makeFixture();
+      svc.onModuleInit();
+      populateCaches(svc);
+      const handlers = fakeSync.bindHandlers.mock.calls[0][0];
+      handlers.onFlush();
+      const anySvc = svc as any;
+      expect(anySvc.tokenValidationCache.size).toBe(0);
+      expect(anySvc.callbackSecretCache.size).toBe(0);
+      expect(anySvc.issuedTokenCache.size).toBe(0);
+    });
+
+    it("同步服务缺席（存量装配）：onModuleInit 与 rotate 照常工作", async () => {
+      const row: any = {
+        id: "e1",
+        address: ADDR,
+        appName: "node",
+        status: ExecutorStatus.ONLINE,
+        runningTaskCount: 0,
+        tokenHash: null,
+      };
+      const repo = makeRepo({
+        findOne: jest.fn().mockResolvedValue(row),
+        save: jest.fn((e: any) => Promise.resolve(e)),
+      });
+      const svc = await makeServiceWithRepo(repo);
+      expect(() => svc.onModuleInit()).not.toThrow();
+      await expect(svc.rotateToken(row.id)).resolves.toHaveProperty("token");
+    });
+  });
 });
 
 // R-26（DEEP_REVIEW 0ef3bbe）: @Optional 关键依赖缺失时的静默降级可观测性。
@@ -6589,4 +6734,7 @@ describe("ExecutorService — ARCH-36 deviceFingerprint 冲突/漂移接线", ()
     expect(stats.fingerprintsOnMultipleAddresses).toBe(1);
     expect(stats.conflictRate).toBe(0.5);
   });
+  // ARCH-31 §3.7 收口：三张令牌派生缓存的跨实例驱逐广播。本实例 rotate/remove
+  // 时 PUBLISH；远端实例的广播经 bindHandlers 回调逐出本地缓存；订阅（重）连
+  // 的 flush 全量清空自愈漏消息。同步服务缺失 = 退化为既有 60s TTL（不劣化）。
 });
