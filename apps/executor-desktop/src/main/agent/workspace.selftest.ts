@@ -111,15 +111,23 @@ function main(): void {
     }
 
     // ── 4. ★ 穿越载荷一律拒绝（朴素 path.join 会放行每一条）──────────────
+    // 平台注记（Linux 侧接管）：POSIX 上反斜杠是普通文件名字符，`..\secret.txt`
+    // 解析为工作区内一个字面同名文件、不发生穿越——解析器按平台语义放行是
+    // 正确行为（workspace.ts 的域校验本身平台感知）。Windows 反斜杠载荷只在
+    // win32 断言拒绝；其跨平台再物质化风险（该文件名进 zip 后在 Windows 解出
+    // 穿越）由包写入层的条目名卫生负责，不属于本解析层。
     {
       for (const evil of [
         '../secret.txt',
         '../../secret.txt',
         'sub/../../secret.txt',
-        '..\\secret.txt',
       ]) {
         const r = resolveWithinWorkspace(ws, evil);
         assert.strictEqual(r.ok, false, `穿越载荷 ${evil} 必须被拒`);
+      }
+      if (process.platform === 'win32') {
+        const r = resolveWithinWorkspace(ws, '..\\secret.txt');
+        assert.strictEqual(r.ok, false, '穿越载荷 ..\\secret.txt 必须被拒（win32）');
       }
     }
 
