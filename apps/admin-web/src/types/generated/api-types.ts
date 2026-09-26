@@ -4064,18 +4064,95 @@ export interface components {
             alerts?: components["schemas"]["AlertmanagerAlertDto"][];
         };
         SaveAiConfigDto: Record<string, never>;
-        CreateAgentSessionDto: Record<string, never>;
-        HumanReplyDto: Record<string, never>;
-        DraftSopDto: Record<string, never>;
-        UpdateSopDto: Record<string, never>;
-        PublishSopDto: Record<string, never>;
-        AssignSopDto: Record<string, never>;
-        AgentCollabPollDto: Record<string, never>;
-        AgentCollabCapabilityDto: Record<string, never>;
-        AgentCollabClarificationDto: Record<string, never>;
-        AgentCollabProgressDto: Record<string, never>;
-        AgentCollabCompleteDto: Record<string, never>;
-        AgentCollabAckReplyDto: Record<string, never>;
+        CreateAgentSessionDto: {
+            /** @enum {string} */
+            kind: "ops_watch" | "incident" | "sop_authoring" | "sop_review" | "app_scaffold" | "chat";
+            title?: string;
+            scope?: {
+                [key: string]: unknown;
+            };
+        };
+        HumanReplyDto: {
+            /** @enum {string} */
+            resolution: "answered" | "sop_amended";
+            answer: string;
+            amendedFrontMatterYaml?: string;
+            amendedBodyMarkdown?: string;
+            changelog?: string;
+        };
+        DraftSopDto: {
+            /** @example daily-report */
+            slug: string;
+            title: string;
+            frontMatterYaml?: string;
+            bodyMarkdown?: string;
+        };
+        UpdateSopDto: {
+            title?: string;
+            frontMatterYaml?: string;
+            bodyMarkdown?: string;
+        };
+        PublishSopDto: {
+            /** @enum {string} */
+            bump?: "patch" | "minor" | "major";
+            changelog?: string;
+        };
+        AssignSopDto: {
+            /** @description 指派的具体版本；缺省 = currentVersion */
+            version?: string;
+            /** Format: uuid */
+            executorId?: string;
+            /** @description 按地址指派（executorId 缺省时的替代形态） */
+            executorAddress?: string;
+        };
+        AgentCollabPollDto: {
+            /** @example office-pc-07:8002 */
+            address: string;
+            /** @description 长轮询等待（服务端钳位 ≤25s） */
+            waitMs?: number;
+            resendAssignments?: boolean | string[];
+            inflight?: string[];
+        };
+        AgentCollabCapabilityDto: {
+            address: string;
+            capabilities: string[];
+            report?: {
+                [key: string]: unknown;
+            };
+        };
+        AgentCollabClarificationDto: {
+            address: string;
+            /** Format: uuid */
+            assignmentId: string;
+            clientClarificationId?: string;
+            question: string;
+            context?: {
+                [key: string]: unknown;
+            };
+            mediaRefs?: Record<string, never>[];
+            targetAgentSessionId?: string;
+        };
+        AgentCollabProgressDto: {
+            address: string;
+            progressJson?: {
+                [key: string]: unknown;
+            };
+            targetAgentSessionId?: string;
+        };
+        AgentCollabCompleteDto: {
+            address: string;
+            /** @enum {string} */
+            status: "completed" | "failed";
+            result?: {
+                [key: string]: unknown;
+            };
+            attempt?: number;
+        };
+        AgentCollabAckReplyDto: {
+            address: string;
+            /** Format: uuid */
+            clarificationId: string;
+        };
         UpsertConfigDto: {
             key: string;
             value?: string;

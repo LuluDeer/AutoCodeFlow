@@ -259,7 +259,9 @@ export class ToolBinderService implements OnModuleInit {
     this.api.register("retry_execution", async (args) => {
       let params = args.params as Record<string, unknown> | undefined;
       if (!params) {
-        const prev = (await this.tasks.getExecution(this.str(args.executionId))) as {
+        const prev = (await this.tasks.getExecution(
+          this.str(args.executionId),
+        )) as {
           params?: Record<string, unknown> | null;
         };
         if (prev?.params) params = prev.params;
@@ -289,7 +291,9 @@ export class ToolBinderService implements OnModuleInit {
       this.applications.create(
         {
           name: this.str(args.name),
-          ...(args.description ? { description: this.str(args.description) } : {}),
+          ...(args.description
+            ? { description: this.str(args.description) }
+            : {}),
           ...(args.gitRepo ? { gitRepo: this.str(args.gitRepo) } : {}),
         } as never,
         null,
@@ -298,21 +302,21 @@ export class ToolBinderService implements OnModuleInit {
 
     // create_task_from_template：沙箱校验后允许（新建不破坏既有）
     this.api.register("create_task_from_template", async (args) =>
-      this.templates.instantiate(this.str(args.templateId), (args.overrides ?? {}) as Record<string, unknown>),
+      this.templates.instantiate(
+        this.str(args.templateId),
+        (args.overrides ?? {}) as Record<string, unknown>,
+      ),
     );
 
     // deploy_application / deploy_app：**方案 C**（03 §3）——不新增审批机制，
     // 直接调 deploy；DEP-04 开启时返回 pending_approval 且不派发，Agent 把
     // 「需要人批」转述给人。审批是唯一事实源（DEP-04），审计链干净。
     const deployApp = async (args: Record<string, unknown>) =>
-      this.deployments.deploy(
-        this.str(args.applicationId),
-        {
-          ...(args.executorId ? { executorId: this.str(args.executorId) } : {}),
-          ...(args.runMode ? { runMode: args.runMode } : {}),
-          ...(args.env ? { env: args.env } : {}),
-        } as never,
-      );
+      this.deployments.deploy(this.str(args.applicationId), {
+        ...(args.executorId ? { executorId: this.str(args.executorId) } : {}),
+        ...(args.runMode ? { runMode: args.runMode } : {}),
+        ...(args.env ? { env: args.env } : {}),
+      } as never);
     this.api.register("deploy_application", deployApp);
     this.api.register("deploy_app", deployApp);
   }

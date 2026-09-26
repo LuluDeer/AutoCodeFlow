@@ -242,6 +242,7 @@ describe("SOP Agent capability lease at assignment and poll", () => {
       sopVersion: "1.0.0",
       status: "in_progress",
       pulledAt: new Date(),
+      targetExecutorId: "e1",
       lastReplyDeliveredAt: null,
     });
     const repliedAt = new Date("2026-01-02T00:00:00.000Z");
