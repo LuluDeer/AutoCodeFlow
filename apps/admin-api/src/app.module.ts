@@ -283,8 +283,21 @@ import { RuntimeModule } from "./modules/runtime/runtime.module";
         AGENT_SOP_POLICY: Joi.string().default("standard"),
         AGENT_SOP_POLICY_ALLOWED: Joi.string().default("minimal,standard"),
         // P6 超时治理（11 §6）：领取 30min / 进度心跳 10min（建议值）。
-        SOP_ASSIGNMENT_CLAIM_TTL_MS: Joi.number().integer().min(60000).default(1800000),
-        SOP_ASSIGNMENT_PROGRESS_TTL_MS: Joi.number().integer().min(60000).default(600000),
+        SOP_ASSIGNMENT_CLAIM_TTL_MS: Joi.number()
+          .integer()
+          .min(60000)
+          .default(1800000),
+        SOP_ASSIGNMENT_PROGRESS_TTL_MS: Joi.number()
+          .integer()
+          .min(60000)
+          .default(600000),
+        // 澄清复核兜底（收敛性切片）：复核会话超此时长仍未答复 → escalated
+        SOP_CLARIFICATION_REVIEW_TTL_MS: Joi.number()
+          .integer()
+          .min(60000)
+          .default(1800000),
+        // Agent 媒体（截图/录屏）保留天数（P7b 残差补齐，默认 7 天）
+        AGENT_MEDIA_RETENTION_DAYS: Joi.number().integer().min(1).default(7),
 
         // AUTH-04: OIDC SSO（授权码模式）。全部可选——OIDC_ENABLED=false 时
         // 其余键不生效，存量部署零变化。

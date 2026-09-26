@@ -3695,6 +3695,901 @@
         ]
       }
     },
+    "/agent/sessions": {
+      "get": {
+        "operationId": "AgentController_list",
+        "parameters": [
+          {
+            "name": "kind",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "pageSize",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "List agent sessions (newest first)",
+        "tags": [
+          "Agent"
+        ]
+      },
+      "post": {
+        "operationId": "AgentController_create",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateAgentSessionDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Create an agent session and enqueue it for execution",
+        "tags": [
+          "Agent"
+        ]
+      }
+    },
+    "/agent/sessions/{id}": {
+      "get": {
+        "operationId": "AgentController_detail",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Get an agent session with its steps",
+        "tags": [
+          "Agent"
+        ]
+      }
+    },
+    "/agent/sessions/{id}/resume": {
+      "post": {
+        "operationId": "AgentController_resume",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Resume a paused/failed agent session",
+        "tags": [
+          "Agent"
+        ]
+      }
+    },
+    "/agent/budget": {
+      "get": {
+        "operationId": "AgentController_budgetInfo",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Get effective agent budget settings",
+        "tags": [
+          "Agent"
+        ]
+      }
+    },
+    "/sop": {
+      "get": {
+        "operationId": "SopController_list",
+        "parameters": [
+          {
+            "name": "status",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "pageSize",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "SOP 列表（可按 status 过滤）",
+        "tags": [
+          "sop"
+        ]
+      },
+      "post": {
+        "operationId": "SopController_draft",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DraftSopDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "起草 SOP（draft 态；slug 重复则覆盖草稿）",
+        "tags": [
+          "sop"
+        ]
+      }
+    },
+    "/sop/assignments/{assignmentId}": {
+      "get": {
+        "operationId": "SopController_assignment",
+        "parameters": [
+          {
+            "name": "assignmentId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "指派详情（含澄清对话全量）",
+        "tags": [
+          "sop"
+        ]
+      }
+    },
+    "/sop/media/{mediaId}": {
+      "get": {
+        "operationId": "SopController_downloadMedia",
+        "parameters": [
+          {
+            "name": "mediaId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "下载执行器回传的媒体（截图/录屏）",
+        "tags": [
+          "sop"
+        ]
+      }
+    },
+    "/sop/assignments/{assignmentId}/media": {
+      "get": {
+        "operationId": "SopController_mediaList",
+        "parameters": [
+          {
+            "name": "assignmentId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "指派的媒体清单",
+        "tags": [
+          "sop"
+        ]
+      }
+    },
+    "/sop/assignable-executors": {
+      "get": {
+        "operationId": "SopController_assignableExecutors",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "当前租约内可接 SOP 指派的执行器（agent:sop）",
+        "tags": [
+          "sop"
+        ]
+      }
+    },
+    "/sop/assignments/{assignmentId}/clarifications/{clarificationId}/reply": {
+      "post": {
+        "operationId": "SopController_humanReply",
+        "parameters": [
+          {
+            "name": "assignmentId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "clarificationId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HumanReplyDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "人工回复一条澄清（升级转人工后的答复入口）",
+        "tags": [
+          "sop"
+        ]
+      }
+    },
+    "/sop/{id}": {
+      "get": {
+        "operationId": "SopController_detail",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "SOP 详情",
+        "tags": [
+          "sop"
+        ]
+      },
+      "patch": {
+        "operationId": "SopController_update",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateSopDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "编辑工作副本（published 态也可编辑——真身在不可变版本快照）",
+        "tags": [
+          "sop"
+        ]
+      }
+    },
+    "/sop/{id}/publish": {
+      "post": {
+        "operationId": "SopController_publish",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PublishSopDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "发布（严格校验 + 不可变版本快照 + contentHash）",
+        "tags": [
+          "sop"
+        ]
+      }
+    },
+    "/sop/{id}/assign": {
+      "post": {
+        "operationId": "SopController_assign",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssignSopDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "指派给执行器（executorId 或 executorAddress 二选一）",
+        "tags": [
+          "sop"
+        ]
+      }
+    },
+    "/sop/{id}/versions": {
+      "get": {
+        "operationId": "SopController_versions",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "版本历史（不可变快照列表）",
+        "tags": [
+          "sop"
+        ]
+      }
+    },
+    "/sop/{id}/assignments": {
+      "get": {
+        "operationId": "SopController_assignments",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "指派记录",
+        "tags": [
+          "sop"
+        ]
+      }
+    },
+    "/agent-collab/poll": {
+      "post": {
+        "operationId": "SopCollabController_poll",
+        "parameters": [
+          {
+            "name": "authorization",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentCollabPollDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "SopCollab"
+        ]
+      }
+    },
+    "/agent-collab/capability": {
+      "post": {
+        "operationId": "SopCollabController_capability",
+        "parameters": [
+          {
+            "name": "authorization",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentCollabCapabilityDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "SopCollab"
+        ]
+      }
+    },
+    "/agent-collab/clarifications": {
+      "post": {
+        "operationId": "SopCollabController_clarify",
+        "parameters": [
+          {
+            "name": "authorization",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentCollabClarificationDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "SopCollab"
+        ]
+      }
+    },
+    "/agent-collab/assignments/{id}/progress": {
+      "post": {
+        "operationId": "SopCollabController_progress",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "authorization",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentCollabProgressDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "SopCollab"
+        ]
+      }
+    },
+    "/agent-collab/assignments/{id}/complete": {
+      "post": {
+        "operationId": "SopCollabController_complete",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "authorization",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentCollabCompleteDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "SopCollab"
+        ]
+      }
+    },
+    "/agent-collab/assignments/{id}/clarifications/ack": {
+      "post": {
+        "operationId": "SopCollabController_ackClarificationReply",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "authorization",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentCollabAckReplyDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "SopCollab"
+        ]
+      }
+    },
+    "/agent-collab/llm": {
+      "post": {
+        "operationId": "SopCollabController_llmRelay",
+        "parameters": [
+          {
+            "name": "authorization",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "SopCollab"
+        ]
+      }
+    },
+    "/agent-collab/assignments/{id}/media": {
+      "post": {
+        "operationId": "SopCollabController_uploadMedia",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "authorization",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "SopCollab"
+        ]
+      }
+    },
+    "/agent-collab/assignments/{id}/candidate-package": {
+      "post": {
+        "operationId": "SopCollabController_uploadCandidatePackage",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "authorization",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "SopCollab"
+        ]
+      }
+    },
     "/metrics": {
       "get": {
         "description": "Prometheus text exposition format: scheduler counters (autoflow_scheduler_*), BullMQ queue depth gauges (autoflow_queue_*) and process default metrics (CPU/memory/GC). Requires JWT; disable entirely with METRICS_PROMETHEUS_ENABLED=false.",
@@ -8511,6 +9406,54 @@
         }
       },
       "SaveAiConfigDto": {
+        "type": "object",
+        "properties": {}
+      },
+      "CreateAgentSessionDto": {
+        "type": "object",
+        "properties": {}
+      },
+      "HumanReplyDto": {
+        "type": "object",
+        "properties": {}
+      },
+      "DraftSopDto": {
+        "type": "object",
+        "properties": {}
+      },
+      "UpdateSopDto": {
+        "type": "object",
+        "properties": {}
+      },
+      "PublishSopDto": {
+        "type": "object",
+        "properties": {}
+      },
+      "AssignSopDto": {
+        "type": "object",
+        "properties": {}
+      },
+      "AgentCollabPollDto": {
+        "type": "object",
+        "properties": {}
+      },
+      "AgentCollabCapabilityDto": {
+        "type": "object",
+        "properties": {}
+      },
+      "AgentCollabClarificationDto": {
+        "type": "object",
+        "properties": {}
+      },
+      "AgentCollabProgressDto": {
+        "type": "object",
+        "properties": {}
+      },
+      "AgentCollabCompleteDto": {
+        "type": "object",
+        "properties": {}
+      },
+      "AgentCollabAckReplyDto": {
         "type": "object",
         "properties": {}
       },

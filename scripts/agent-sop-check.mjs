@@ -352,6 +352,8 @@ console.log("\n── 2. SopService（发布/指派/澄清/完成）──");
       { getStats: () => ({ isLeader: true }) }, // SchedulerService 打桩
       { add: async (name, data) => ({ name, data }) },
       { getAgentCapabilities: async () => opts.agentCapabilities ?? ["agent:sop", "browser", "http"] },
+      // ARCH-27 修后：configTtl 经 ConfigService（替身读不到 → 回落 schema default 语义）
+      { get: () => undefined },
     );
     // 打桩的 NotificationService.notify 计数（升级通知走它）
     svc._notifyCalls = notifyCalls;
@@ -851,13 +853,13 @@ console.log("\n── 4. 协作 API（11 §3/§5）──");
     const past = new Date(Date.now() - 8 * 86_400_000);
     utimesSync(join(mediaRoot, idA, rows[0].storedPath.split(/[\\/]/).pop()), past, past);
 
-    const retention = new AgentMediaRetentionService({ isLeader: true }, mediaRepo);
+    const retention = new AgentMediaRetentionService({ isLeader: true }, mediaRepo, { get: () => undefined });
     const removed = await retention.cleanupExpiredMedia(new Date());
     check("超龄媒体目录被整删，未超龄的保留", removed === 1 &&
       !existsSync(join(mediaRoot, idA)) && existsSync(join(mediaRoot, idB)));
     check("磁盘回收同步删 DB 行（不留下载 404 的僵尸行）",
       deletedAssignments.join(",") === idA && rows.length === 1 && rows[0].assignmentId === idB);
-    const retention2 = new AgentMediaRetentionService(null, mediaRepo);
+    const retention2 = new AgentMediaRetentionService(null, mediaRepo, { get: () => undefined });
     check("leader 门禁缺席时清理仍可直调（单实例/测试装配面）", (await retention2.cleanupExpiredMedia(new Date())) === 0);
     check("@Cron 每日清理 + LeaderGate 门禁（ARCH-31 §5 先例）",
       /@Cron\("0 15 3 \* \* \*"\)/.test(readFileSync(join(apiDir, "src/modules/sop/agent-media-retention.service.ts"), "utf8")) &&

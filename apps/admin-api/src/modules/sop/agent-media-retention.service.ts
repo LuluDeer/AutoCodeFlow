@@ -1,5 +1,6 @@
 import { Injectable, Logger, Optional } from "@nestjs/common";
 import { Cron } from "@nestjs/schedule";
+import { ConfigService } from "@nestjs/config";
 import { InjectRepository } from "@nestjs/typeorm";
 import { existsSync, readdirSync, statSync } from "fs";
 import * as fs from "fs";
@@ -26,7 +27,8 @@ import { LeaderGateService } from "../../common/leader-gate/leader-gate.service"
  *   删除 + 同 assignmentId 的 DB 行删除（磁盘与清单同步，不留「下载 404」
  *   的僵尸行）；
  * · best-effort：单目录失败只记日志跳过，绝不阻断其余目录；删除幂等。
- * · 保留期：`AGENT_MEDIA_RETENTION_DAYS`（默认 7，roadmap §11 决策值）。
+ * · 保留期：`AGENT_MEDIA_RETENTION_DAYS`（默认 7，roadmap §11 决策值；
+ *   ARCH-27——运行时读取经 ConfigService，键在 app.module Joi 注册）。
  */
 @Injectable()
 export class AgentMediaRetentionService {
@@ -38,12 +40,13 @@ export class AgentMediaRetentionService {
     private readonly leaderGate: LeaderGateService | null = null,
     @InjectRepository(AgentMedia)
     private readonly mediaRepo: Repository<AgentMedia>,
+    private readonly config: ConfigService,
   ) {}
 
   private resolveRetentionDays(): number {
-    const raw = process.env["AGENT_MEDIA_RETENTION_DAYS"];
-    if (!raw || !raw.trim()) return 7;
-    const n = parseInt(raw, 10);
+    const raw = this.config.get<string | number>("AGENT_MEDIA_RETENTION_DAYS");
+    if (raw === undefined || raw === null || raw === "") return 7;
+    const n = typeof raw === "number" ? raw : parseInt(raw, 10);
     return Number.isFinite(n) && n > 0 ? n : 7;
   }
 
@@ -53,7 +56,9 @@ export class AgentMediaRetentionService {
     try {
       const removed = await this.cleanupExpiredMedia();
       if (removed > 0) {
-        this.logger.log(`Agent media retention: 清理 ${removed} 个过期指派媒体目录`);
+        this.logger.log(
+          `Agent media retention: 清理 ${removed} 个过期指派媒体目录`,
+        );
       }
     } catch (err) {
       this.logger.error(
