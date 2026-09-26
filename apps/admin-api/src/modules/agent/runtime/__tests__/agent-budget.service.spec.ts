@@ -7,7 +7,9 @@ function svc(configValues: Record<string, unknown> = {}) {
   return new AgentBudgetService(config as unknown as ConfigService);
 }
 
-const usage = (patch: Partial<Parameters<AgentBudgetService["check"]>[1]> = {}) => ({
+const usage = (
+  patch: Partial<Parameters<AgentBudgetService["check"]>[1]> = {},
+) => ({
   steps: 0,
   tokensIn: 0,
   tokensOut: 0,
@@ -56,10 +58,16 @@ describe("AgentBudgetService · check（每轮开头判定，顺序固定）", (
     });
     expect(all).toMatchObject({ ok: false, kind: "max_steps" });
 
-    const tokens = s.check(null, usage({ tokensIn: 100_000, tokensOut: 100_000 }));
+    const tokens = s.check(
+      null,
+      usage({ tokensIn: 100_000, tokensOut: 100_000 }),
+    );
     expect(tokens).toMatchObject({ ok: false, kind: "max_tokens" });
 
-    const clock = s.check(null, usage({ startedAt: new Date(Date.now() - 60 * 60 * 1000) }));
+    const clock = s.check(
+      null,
+      usage({ startedAt: new Date(Date.now() - 60 * 60 * 1000) }),
+    );
     expect(clock).toMatchObject({ ok: false, kind: "wall_clock" });
 
     const calls = s.check(null, usage({ toolCalls: 50 }));
@@ -79,7 +87,12 @@ describe("AgentBudgetService · check（每轮开头判定，顺序固定）", (
 
   it("自定义预算快照生效；null 预算回落默认", () => {
     const s = svc();
-    const tiny = { maxSteps: 2, maxTokens: 10, wallClockMs: 1000, maxToolCalls: 1 };
+    const tiny = {
+      maxSteps: 2,
+      maxTokens: 10,
+      wallClockMs: 1000,
+      maxToolCalls: 1,
+    };
     expect(s.check(tiny, usage({ steps: 2 }))).toMatchObject({ ok: false });
     expect(s.check(null, usage({ toolCalls: 50 }))).toMatchObject({
       ok: false,

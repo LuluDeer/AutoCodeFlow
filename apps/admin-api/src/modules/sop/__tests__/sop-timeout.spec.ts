@@ -54,7 +54,10 @@ describe("evaluateAssignmentTimeouts（11 §6 纯判定）", () => {
   });
 
   it("已领取（pulledAt 非 null）不进 unclaimed", () => {
-    const a = assignment({ status: "in_progress", pulledAt: new Date(NOW - 1000) });
+    const a = assignment({
+      status: "in_progress",
+      pulledAt: new Date(NOW - 1000),
+    });
     const out = evaluateAssignmentTimeouts([a], NOW, TTLS);
     expect(out.unclaimed).toEqual([]);
   });
@@ -70,7 +73,11 @@ describe("evaluateAssignmentTimeouts（11 §6 纯判定）", () => {
       status: "in_progress",
       lastProgressAt: new Date(NOW - 11 * 60 * 1000),
     });
-    const out = evaluateAssignmentTimeouts([noProgress, withProgress], NOW, TTLS);
+    const out = evaluateAssignmentTimeouts(
+      [noProgress, withProgress],
+      NOW,
+      TTLS,
+    );
     expect(out.stalled).toEqual([noProgress, withProgress]);
   });
 
@@ -114,7 +121,9 @@ describe("evaluateStuckClarifications（复核兜底判定）", () => {
     createdAt: new Date(NOW - 31 * 60 * 1000),
   };
 
-  function row(reviewSessionStatus: StuckClarificationInput["reviewSessionStatus"]) {
+  function row(
+    reviewSessionStatus: StuckClarificationInput["reviewSessionStatus"],
+  ) {
     return { ...base, reviewSessionStatus };
   }
 
@@ -126,7 +135,11 @@ describe("evaluateStuckClarifications（复核兜底判定）", () => {
   it.each(REVIEW_TERMINAL_STATUSES)(
     "复核会话终态 %s（含 succeeded 但没调答复工具）→ 兜底",
     (status) => {
-      const out = evaluateStuckClarifications([row(status)], NOW, 30 * 60 * 1000);
+      const out = evaluateStuckClarifications(
+        [row(status)],
+        NOW,
+        30 * 60 * 1000,
+      );
       expect(out).toHaveLength(1);
     },
   );
@@ -141,13 +154,19 @@ describe("evaluateStuckClarifications（复核兜底判定）", () => {
       ...young,
       createdAt: new Date(NOW - 31 * 60 * 1000),
     };
-    const out = evaluateStuckClarifications([young, stale], NOW, 30 * 60 * 1000);
+    const out = evaluateStuckClarifications(
+      [young, stale],
+      NOW,
+      30 * 60 * 1000,
+    );
     expect(out).toEqual([stale]);
   });
 
   it("waiting_input / pending 属非终态，同样走 TTL 判定", () => {
     const rows = [row("waiting_input"), row("pending")];
-    expect(evaluateStuckClarifications(rows, NOW, 30 * 60 * 1000)).toHaveLength(2);
+    expect(evaluateStuckClarifications(rows, NOW, 30 * 60 * 1000)).toHaveLength(
+      2,
+    );
     expect(
       evaluateStuckClarifications(
         rows.map((r) => ({ ...r, createdAt: new Date(NOW - 1000) })),
