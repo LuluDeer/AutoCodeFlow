@@ -55,9 +55,7 @@ describe("AgentNotifyService · sessionFinished（静默成功是刻意设计）
 
   it("title 优先于 kind 作 tag", async () => {
     const h = harness();
-    await h.svc.sessionFinished(
-      session({ title: "夜间巡检", summary: "ok" }),
-    );
+    await h.svc.sessionFinished(session({ title: "夜间巡检", summary: "ok" }));
     expect(h.notifications.notify).toHaveBeenCalledWith(
       "Agent:夜间巡检",
       expect.anything(),
@@ -80,7 +78,11 @@ describe("AgentNotifyService · sessionFinished（静默成功是刻意设计）
     );
 
     await h.svc.sessionFinished(
-      session({ status: "budget_exceeded", errorMessage: null, summary: "超限" }),
+      session({
+        status: "budget_exceeded",
+        errorMessage: null,
+        summary: "超限",
+      }),
     );
     expect(h.notifications.notify).toHaveBeenLastCalledWith(
       "Agent:incident",

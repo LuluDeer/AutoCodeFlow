@@ -1,4 +1,9 @@
-import { BadRequestException, ForbiddenException, NotFoundException, UnauthorizedException } from "@nestjs/common";
+import {
+  BadRequestException,
+  ForbiddenException,
+  NotFoundException,
+  UnauthorizedException,
+} from "@nestjs/common";
 
 import { SopCollabController } from "../sop-collab.controller";
 
@@ -13,7 +18,9 @@ function harness(opts?: {
     findByAddress: jest.fn(async (address: string) =>
       address === "unknown" ? null : executor,
     ),
-    validateTokenByAddress: jest.fn(async (..._a: unknown[]) => opts?.tokenOk ?? true),
+    validateTokenByAddress: jest.fn(
+      async (..._a: unknown[]) => opts?.tokenOk ?? true,
+    ),
     getAgentCapabilities: jest.fn(async () => opts?.agentCaps ?? ["agent:sop"]),
     updateCapabilities: jest.fn(async () => undefined),
   };
@@ -31,7 +38,9 @@ function harness(opts?: {
       sop: { id: "sop-1" },
     })),
   };
-  const media = { save: jest.fn(async (v: unknown) => ({ saved: true, ...(v as object) })) };
+  const media = {
+    save: jest.fn(async (v: unknown) => ({ saved: true, ...(v as object) })),
+  };
   const packages = {
     create: jest.fn(async (..._args: unknown[]) => ({
       id: "pkg-1",
@@ -70,7 +79,10 @@ describe("SopCollabController · 鉴权链（11 §2 + 能力闸 11 §5.1）", ()
       h.ctl.capability({ address: "", capabilities: [] } as never, h.auth),
     ).rejects.toThrow(BadRequestException);
     await expect(
-      h.ctl.capability({ address: "unknown", capabilities: [] } as never, h.auth),
+      h.ctl.capability(
+        { address: "unknown", capabilities: [] } as never,
+        h.auth,
+      ),
     ).rejects.toThrow(NotFoundException);
     const bad = harness({ tokenOk: false });
     await expect(
@@ -90,9 +102,18 @@ describe("SopCollabController · 鉴权链（11 §2 + 能力闸 11 §5.1）", ()
 
   it("Bearer 前缀剥离：带与不带前缀、无 header 等价", async () => {
     const h = harness();
-    await h.ctl.capability({ address: "x", capabilities: ["agent:sop"] } as never, h.auth);
-    await h.ctl.capability({ address: "x", capabilities: ["agent:sop"] } as never, "raw-tok");
-    await h.ctl.capability({ address: "x", capabilities: ["agent:sop"] } as never, undefined);
+    await h.ctl.capability(
+      { address: "x", capabilities: ["agent:sop"] } as never,
+      h.auth,
+    );
+    await h.ctl.capability(
+      { address: "x", capabilities: ["agent:sop"] } as never,
+      "raw-tok",
+    );
+    await h.ctl.capability(
+      { address: "x", capabilities: ["agent:sop"] } as never,
+      undefined,
+    );
     expect(h.executors.validateTokenByAddress).toHaveBeenCalledTimes(3);
     expect(h.executors.validateTokenByAddress.mock.calls[0][1]).toBe("tok-1");
     expect(h.executors.validateTokenByAddress.mock.calls[1][1]).toBe("raw-tok");
@@ -120,7 +141,11 @@ describe("SopCollabController · poll（拉模式 + sopPolicy 下发）", () => 
     const h = harness({
       configValues: {
         "agent.collab.sopPolicy.permissionPolicy": "developer",
-        "agent.collab.sopPolicy.allowedProfiles": ["minimal", "standard", "developer"],
+        "agent.collab.sopPolicy.allowedProfiles": [
+          "minimal",
+          "standard",
+          "developer",
+        ],
       },
     });
     h.sops.pollPending
@@ -154,17 +179,32 @@ describe("SopCollabController · poll（拉模式 + sopPolicy 下发）", () => 
 describe("SopCollabController · capability（覆盖式上报入口）", () => {
   it("合法清单写回；非数组按空清单处理", async () => {
     const h = harness();
-    await h.ctl.capability({ address: "x", capabilities: ["agent:sop", "browser"] } as never, h.auth);
-    expect(h.executors.updateCapabilities).toHaveBeenCalledWith("exec-1", ["agent:sop", "browser"]);
-    await h.ctl.capability({ address: "x", capabilities: "agent:sop" } as never, h.auth);
-    expect(h.executors.updateCapabilities).toHaveBeenLastCalledWith("exec-1", []);
+    await h.ctl.capability(
+      { address: "x", capabilities: ["agent:sop", "browser"] } as never,
+      h.auth,
+    );
+    expect(h.executors.updateCapabilities).toHaveBeenCalledWith("exec-1", [
+      "agent:sop",
+      "browser",
+    ]);
+    await h.ctl.capability(
+      { address: "x", capabilities: "agent:sop" } as never,
+      h.auth,
+    );
+    expect(h.executors.updateCapabilities).toHaveBeenLastCalledWith(
+      "exec-1",
+      [],
+    );
   });
 
   it(">32 个或含非字符串/超长项 → 400", async () => {
     const h = harness();
     await expect(
       h.ctl.capability(
-        { address: "x", capabilities: Array.from({ length: 33 }, () => "c") } as never,
+        {
+          address: "x",
+          capabilities: Array.from({ length: 33 }, () => "c"),
+        } as never,
         h.auth,
       ),
     ).rejects.toThrow(BadRequestException);
@@ -172,7 +212,10 @@ describe("SopCollabController · capability（覆盖式上报入口）", () => {
       h.ctl.capability({ address: "x", capabilities: [42] } as never, h.auth),
     ).rejects.toThrow(BadRequestException);
     await expect(
-      h.ctl.capability({ address: "x", capabilities: ["x".repeat(65)] } as never, h.auth),
+      h.ctl.capability(
+        { address: "x", capabilities: ["x".repeat(65)] } as never,
+        h.auth,
+      ),
     ).rejects.toThrow(BadRequestException);
   });
 });
@@ -184,7 +227,11 @@ describe("SopCollabController · clarify / progress / complete / ack", () => {
       { address: "x", assignmentId: "a-1", question: "?" } as never,
       h.auth,
     );
-    expect(out).toEqual({ clarificationId: "cc-1", round: 1, escalated: false });
+    expect(out).toEqual({
+      clarificationId: "cc-1",
+      round: 1,
+      escalated: false,
+    });
     await expect(
       h.ctl.clarify({ address: "x", question: "?" } as never, h.auth),
     ).rejects.toThrow(BadRequestException);
@@ -199,7 +246,11 @@ describe("SopCollabController · clarify / progress / complete / ack", () => {
       { address: "x", assignmentId: "a-1", question: "?" } as never,
       h.auth,
     );
-    expect(escalated).toEqual({ clarificationId: "c-2", round: 2, escalated: true });
+    expect(escalated).toEqual({
+      clarificationId: "c-2",
+      round: 2,
+      escalated: true,
+    });
   });
 
   it("progress：缺省 progressJson/targetAgentSessionId 归 null", async () => {
@@ -218,15 +269,28 @@ describe("SopCollabController · clarify / progress / complete / ack", () => {
   it("complete：非法 status → 400；result/attempt 透传", async () => {
     const h = harness();
     await expect(
-      h.ctl.complete("asg-1", { address: "x", status: "nope" } as never, h.auth),
+      h.ctl.complete(
+        "asg-1",
+        { address: "x", status: "nope" } as never,
+        h.auth,
+      ),
     ).rejects.toThrow(BadRequestException);
     await h.ctl.complete(
       "asg-1",
-      { address: "x", status: "failed", result: { why: "x" }, attempt: 2 } as never,
+      {
+        address: "x",
+        status: "failed",
+        result: { why: "x" },
+        attempt: 2,
+      } as never,
       h.auth,
     );
     expect(h.sops.completeAssignment).toHaveBeenCalledWith(
-      expect.objectContaining({ status: "failed", result: { why: "x" }, attempt: 2 }),
+      expect.objectContaining({
+        status: "failed",
+        result: { why: "x" },
+        attempt: 2,
+      }),
     );
   });
 
@@ -273,7 +337,10 @@ describe("SopCollabController · llmRelay（P7a relay 载荷边界）", () => {
     ).rejects.toThrow(BadRequestException);
     await expect(
       h.ctl.llmRelay(
-        { address: "x", messages: Array.from({ length: 65 }, () => msg) } as never,
+        {
+          address: "x",
+          messages: Array.from({ length: 65 }, () => msg),
+        } as never,
         h.auth,
       ),
     ).rejects.toThrow(BadRequestException);
@@ -301,7 +368,10 @@ describe("SopCollabController · llmRelay（P7a relay 载荷边界）", () => {
     ).rejects.toThrow(/content 必须是非空字符串/);
     await expect(
       h.ctl.llmRelay(
-        { address: "x", messages: [{ role: "user", content: "x".repeat(100_001) }] } as never,
+        {
+          address: "x",
+          messages: [{ role: "user", content: "x".repeat(100_001) }],
+        } as never,
         h.auth,
       ),
     ).rejects.toThrow(/超过 100KB 上限/);
@@ -309,22 +379,35 @@ describe("SopCollabController · llmRelay（P7a relay 载荷边界）", () => {
 
   it("tools：非数组忽略、>32 拒绝、合法透传", async () => {
     const h = harness();
-    await h.ctl.llmRelay({ address: "x", messages: [msg], tools: "x" } as never, h.auth);
+    await h.ctl.llmRelay(
+      { address: "x", messages: [msg], tools: "x" } as never,
+      h.auth,
+    );
     expect(h.ai.chatMultimodal).toHaveBeenLastCalledWith({ messages: [msg] });
     await expect(
       h.ctl.llmRelay(
-        { address: "x", messages: [msg], tools: Array.from({ length: 33 }, () => ({})) } as never,
+        {
+          address: "x",
+          messages: [msg],
+          tools: Array.from({ length: 33 }, () => ({})),
+        } as never,
         h.auth,
       ),
     ).rejects.toThrow(BadRequestException);
     const tools = [{ name: "t" }];
-    await h.ctl.llmRelay({ address: "x", messages: [msg], tools } as never, h.auth);
-    expect(h.ai.chatMultimodal).toHaveBeenLastCalledWith({ messages: [msg], tools });
+    await h.ctl.llmRelay(
+      { address: "x", messages: [msg], tools } as never,
+      h.auth,
+    );
+    expect(h.ai.chatMultimodal).toHaveBeenLastCalledWith({
+      messages: [msg],
+      tools,
+    });
   });
 });
 
 describe("SopCollabController · uploadMedia / uploadCandidatePackage（归属校验）", () => {
-  const file = (patch?: Partial<Express.Multer.File>): Express.Multer.File =>
+  const file = (): Express.Multer.File =>
     ({
       buffer: Buffer.from("png"),
       originalname: "shot.png",
@@ -350,16 +433,29 @@ describe("SopCollabController · uploadMedia / uploadCandidatePackage（归属�
       h.ctl.uploadMedia("asg-1", { address: "x" } as never, undefined, h.auth),
     ).rejects.toThrow(BadRequestException);
     await expect(
-      h.ctl.uploadMedia("asg-1", { address: "x" } as never, { ...file(), buffer: Buffer.alloc(0) }, h.auth),
+      h.ctl.uploadMedia(
+        "asg-1",
+        { address: "x" } as never,
+        { ...file(), buffer: Buffer.alloc(0) },
+        h.auth,
+      ),
     ).rejects.toThrow(BadRequestException);
     await h.ctl.uploadMedia(
       "asg-1",
       { address: "x" } as never,
-      { ...file(), originalname: undefined as never, mimetype: undefined as never },
+      {
+        ...file(),
+        originalname: undefined as never,
+        mimetype: undefined as never,
+      },
       h.auth,
     );
     expect(h.media.save).toHaveBeenLastCalledWith(
-      expect.objectContaining({ name: "media.bin", mime: null, uploadedBy: "executor:exec-1" }),
+      expect.objectContaining({
+        name: "media.bin",
+        mime: null,
+        uploadedBy: "executor:exec-1",
+      }),
     );
   });
 
@@ -367,19 +463,35 @@ describe("SopCollabController · uploadMedia / uploadCandidatePackage（归属�
     const h = harness();
     const out = await h.ctl.uploadCandidatePackage(
       "asg-1",
-      { address: "x", sopSlug: "x".repeat(100), contentHash: "h".repeat(100), runtime: "node" } as never,
+      {
+        address: "x",
+        sopSlug: "x".repeat(100),
+        contentHash: "h".repeat(100),
+        runtime: "node",
+      } as never,
       file(),
       h.auth,
     );
-    expect(out).toEqual({ packageId: "pkg-1", name: "sop-candidate", version: "1.0.0+agent.x" });
+    expect(out).toEqual({
+      packageId: "pkg-1",
+      name: "sop-candidate",
+      version: "1.0.0+agent.x",
+    });
     const meta = h.packages.create.mock.calls[0][0] as Record<string, unknown>;
     expect(meta.name).toBe(`sop-${"x".repeat(64)}`);
     expect((meta.description as string).length).toBeLessThanOrEqual(
       "agent candidate assignment=asg-1 contentHash=".length + 64,
     );
     expect(h.packages.create.mock.calls[0][2]).toBe("agent:sop:exec-1");
-    await h.ctl.uploadCandidatePackage("asg-1", { address: "x" } as never, file(), h.auth);
-    expect((h.packages.create.mock.calls[1][0] as Record<string, unknown>).type).toBe("python");
+    await h.ctl.uploadCandidatePackage(
+      "asg-1",
+      { address: "x" } as never,
+      file(),
+      h.auth,
+    );
+    expect(
+      (h.packages.create.mock.calls[1][0] as Record<string, unknown>).type,
+    ).toBe("python");
   });
 
   it("候选包：非归属 → 403；缺 file.path → 400", async () => {
@@ -388,10 +500,20 @@ describe("SopCollabController · uploadMedia / uploadCandidatePackage（归属�
       assignment: { targetExecutorId: "exec-OTHER" },
     });
     await expect(
-      h.ctl.uploadCandidatePackage("asg-1", { address: "x" } as never, file(), h.auth),
+      h.ctl.uploadCandidatePackage(
+        "asg-1",
+        { address: "x" } as never,
+        file(),
+        h.auth,
+      ),
     ).rejects.toThrow(ForbiddenException);
     await expect(
-      h.ctl.uploadCandidatePackage("asg-1", { address: "x" } as never, undefined, h.auth),
+      h.ctl.uploadCandidatePackage(
+        "asg-1",
+        { address: "x" } as never,
+        undefined,
+        h.auth,
+      ),
     ).rejects.toThrow(BadRequestException);
   });
 });

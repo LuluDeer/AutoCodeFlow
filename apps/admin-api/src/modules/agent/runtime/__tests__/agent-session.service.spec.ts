@@ -41,7 +41,10 @@ function harness(sessionRow: Record<string, unknown> | null = { id: "s-1" }) {
   const emQb = qbChain();
   const em = () => ({
     createQueryBuilder: jest.fn(() => emQb),
-    create: jest.fn((_cls: unknown, v: unknown) => ({ id: "step-3", ...(v as object) })),
+    create: jest.fn((_cls: unknown, v: unknown) => ({
+      id: "step-3",
+      ...(v as object),
+    })),
     save: jest.fn(async (v: unknown) => v),
   });
   const toolCalls = {
@@ -50,7 +53,12 @@ function harness(sessionRow: Record<string, unknown> | null = { id: "s-1" }) {
     find: jest.fn(async () => [{ id: "tc-1" }]),
   };
   const budgetService = {
-    resolveBudget: jest.fn(() => ({ maxSteps: 40, maxTokens: 1000, wallClockMs: 60000, maxToolCalls: 20 })),
+    resolveBudget: jest.fn(() => ({
+      maxSteps: 40,
+      maxTokens: 1000,
+      wallClockMs: 60000,
+      maxToolCalls: 20,
+    })),
   };
   const notify = { sessionFinished: jest.fn(async () => undefined) };
   const svc = new AgentSessionService(
@@ -60,20 +68,37 @@ function harness(sessionRow: Record<string, unknown> | null = { id: "s-1" }) {
     budgetService as never,
     notify as never,
   );
-  return { svc, sessions, sessionQb, listQb, emQb, toolCalls, budgetService, notify };
+  return {
+    svc,
+    sessions,
+    sessionQb,
+    listQb,
+    emQb,
+    toolCalls,
+    budgetService,
+    notify,
+  };
 }
 
 describe("AgentSessionService · 创建与查询", () => {
   it("create：缺省字段归 null/safe default，budget 缺省走 resolveBudget", async () => {
     const h = harness();
-    const out = await h.svc.create({ kind: "incident", triggerSource: "manual" });
+    const out = await h.svc.create({
+      kind: "incident",
+      triggerSource: "manual",
+    });
     expect(out).toMatchObject({
       kind: "incident",
       status: "pending",
       title: null,
       parentSessionId: null,
       scopeJson: {},
-      budgetJson: { maxSteps: 40, maxTokens: 1000, wallClockMs: 60000, maxToolCalls: 20 },
+      budgetJson: {
+        maxSteps: 40,
+        maxTokens: 1000,
+        wallClockMs: 60000,
+        maxToolCalls: 20,
+      },
       totalSteps: 0,
       totalToolCalls: 0,
     });
@@ -96,7 +121,12 @@ describe("AgentSessionService · 创建与查询", () => {
         parentSessionId: "p-1",
         contextJson: { a: 1 },
         scopeJson: { sops: ["sop-1"] },
-        budgetJson: { maxSteps: 1, maxTokens: 2, wallClockMs: 3, maxToolCalls: 4 },
+        budgetJson: {
+          maxSteps: 1,
+          maxTokens: 2,
+          wallClockMs: 3,
+          maxToolCalls: 4,
+        },
       }),
     );
   });
@@ -110,8 +140,15 @@ describe("AgentSessionService · 创建与查询", () => {
 
   it("list：kind/status 过滤接线，page/pageSize 钳位", async () => {
     const h = harness();
-    await h.svc.list({ kind: "incident", status: "running", page: 3, pageSize: 999 });
-    expect(h.listQb.andWhere).toHaveBeenCalledWith("s.kind = :kind", { kind: "incident" });
+    await h.svc.list({
+      kind: "incident",
+      status: "running",
+      page: 3,
+      pageSize: 999,
+    });
+    expect(h.listQb.andWhere).toHaveBeenCalledWith("s.kind = :kind", {
+      kind: "incident",
+    });
     expect(h.listQb.andWhere).toHaveBeenCalledWith("s.status = :status", {
       status: "running",
     });
@@ -125,7 +162,9 @@ describe("AgentSessionService · 创建与查询", () => {
 
   it("findChildren / listSteps / listToolCalls 透传排序读取", async () => {
     const h = harness();
-    await expect(h.svc.findChildren("p-1")).resolves.toEqual([{ id: "child-1" }]);
+    await expect(h.svc.findChildren("p-1")).resolves.toEqual([
+      { id: "child-1" },
+    ]);
     await expect(h.svc.listSteps("s-1")).resolves.toEqual([{ id: "step-1" }]);
     await expect(h.svc.listToolCalls("s-1")).resolves.toEqual([{ id: "tc-1" }]);
   });
@@ -136,7 +175,10 @@ describe("AgentSessionService · 状态迁移（幂等语义）", () => {
     const fresh = harness({ id: "s-1", startedAt: null });
     await fresh.svc.markRunning("s-1");
     expect(fresh.sessionQb.set).toHaveBeenCalledWith(
-      expect.objectContaining({ status: "running", startedAt: expect.any(Date) }),
+      expect.objectContaining({
+        status: "running",
+        startedAt: expect.any(Date),
+      }),
     );
 
     const resumed = harness({ id: "s-1", startedAt: new Date("2026-01-01") });
@@ -279,12 +321,14 @@ describe("AgentSessionService · 步骤与用量（同事务收敛）", () => {
       startedAt: new Date("2026-01-01"),
     });
     const missing = harness(null);
-    await expect(missing.svc.getUsage({ id: "s-1" } as never)).resolves.toEqual({
-      steps: 0,
-      tokensIn: 0,
-      tokensOut: 0,
-      toolCalls: 0,
-      startedAt: null,
-    });
+    await expect(missing.svc.getUsage({ id: "s-1" } as never)).resolves.toEqual(
+      {
+        steps: 0,
+        tokensIn: 0,
+        tokensOut: 0,
+        toolCalls: 0,
+        startedAt: null,
+      },
+    );
   });
 });

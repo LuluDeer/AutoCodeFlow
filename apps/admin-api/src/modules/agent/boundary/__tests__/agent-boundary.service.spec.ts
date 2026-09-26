@@ -18,7 +18,10 @@ function harness(configValues: Record<string, unknown> = {}) {
   const config = {
     get: jest.fn((key: string) => configValues[key]),
   };
-  return { svc: new AgentBoundaryService(config as unknown as ConfigService), config };
+  return {
+    svc: new AgentBoundaryService(config as unknown as ConfigService),
+    config,
+  };
 }
 
 describe("AgentBoundaryService · ① 工具存在性 + 会话白名单", () => {
@@ -41,7 +44,12 @@ describe("AgentBoundaryService · ① 工具存在性 + 会话白名单", () => 
 
   it("incident 不含 update_task——故障处置不改配置", () => {
     const { svc } = harness();
-    const v = svc.check(session(), "update_task", { taskId: "t-1", patch: {} }, 0);
+    const v = svc.check(
+      session(),
+      "update_task",
+      { taskId: "t-1", patch: {} },
+      0,
+    );
     expect(v).toMatchObject({ kind: "DENY", reason: "not_in_toolset" });
   });
 
@@ -214,7 +222,10 @@ describe("AgentBoundaryService · ④ 资源范围（scope 交叉验证）", () 
 describe("AgentBoundaryService · ⑤ 速率与熔断（进程内记账）", () => {
   it("连续失败 ≥3 次熔断；一次成功重置", () => {
     const { svc } = harness();
-    const s = session({ kind: "chat", scopeJson: { unrestricted: true } } as never);
+    const s = session({
+      kind: "chat",
+      scopeJson: { unrestricted: true },
+    } as never);
     svc.recordOutcome("s-1", "get_task", false);
     svc.recordOutcome("s-1", "get_task", false);
     expect(svc.check(s, "get_task", { taskId: "t-1" }, 0)).toMatchObject({
@@ -233,20 +244,39 @@ describe("AgentBoundaryService · ⑤ 速率与熔断（进程内记账）", () 
 
   it("熔断按 (会话, 工具) 隔离；clearSession 只清本会话", () => {
     const { svc } = harness();
-    const s1 = session({ id: "s-1", kind: "chat", scopeJson: { unrestricted: true } } as never);
+    const s1 = session({
+      id: "s-1",
+      kind: "chat",
+      scopeJson: { unrestricted: true },
+    } as never);
     for (let i = 0; i < 3; i++) svc.recordOutcome("s-1", "get_task", false);
     svc.recordOutcome("s-2", "get_task", false);
-    const s2 = session({ id: "s-2", kind: "chat", scopeJson: { unrestricted: true } } as never);
-    expect(svc.check(s1, "get_task", { taskId: "t-1" }, 0)).toMatchObject({ reason: "circuit_open" });
-    expect(svc.check(s2, "get_task", { taskId: "t-1" }, 0)).toMatchObject({ kind: "ALLOW" });
+    const s2 = session({
+      id: "s-2",
+      kind: "chat",
+      scopeJson: { unrestricted: true },
+    } as never);
+    expect(svc.check(s1, "get_task", { taskId: "t-1" }, 0)).toMatchObject({
+      reason: "circuit_open",
+    });
+    expect(svc.check(s2, "get_task", { taskId: "t-1" }, 0)).toMatchObject({
+      kind: "ALLOW",
+    });
     svc.clearSession("s-2");
-    expect(svc.check(s2, "get_task", { taskId: "t-1" }, 0)).toMatchObject({ kind: "ALLOW" });
+    expect(svc.check(s2, "get_task", { taskId: "t-1" }, 0)).toMatchObject({
+      kind: "ALLOW",
+    });
   });
 
   it("同工具调用次数达上限 → rate_limited（配置可调）", () => {
     const { svc } = harness({ "agent.policy.maxCallsPerTool": 2 });
-    const s = session({ kind: "chat", scopeJson: { unrestricted: true } } as never);
-    expect(svc.check(s, "get_task", { taskId: "t-1" }, 1)).toMatchObject({ kind: "ALLOW" });
+    const s = session({
+      kind: "chat",
+      scopeJson: { unrestricted: true },
+    } as never);
+    expect(svc.check(s, "get_task", { taskId: "t-1" }, 1)).toMatchObject({
+      kind: "ALLOW",
+    });
     expect(svc.check(s, "get_task", { taskId: "t-1" }, 2)).toMatchObject({
       kind: "DENY",
       reason: "rate_limited",
@@ -255,24 +285,37 @@ describe("AgentBoundaryService · ⑤ 速率与熔断（进程内记账）", () 
 
   it("readInt 非法值（NaN/非正数）回退默认——限流不可被配坏", () => {
     const { svc } = harness({ "agent.policy.maxCallsPerTool": "abc" });
-    const s = session({ kind: "chat", scopeJson: { unrestricted: true } } as never);
-    expect(svc.check(s, "get_task", { taskId: "t-1" }, 14)).toMatchObject({ kind: "ALLOW" });
+    const s = session({
+      kind: "chat",
+      scopeJson: { unrestricted: true },
+    } as never);
+    expect(svc.check(s, "get_task", { taskId: "t-1" }, 14)).toMatchObject({
+      kind: "ALLOW",
+    });
     expect(svc.check(s, "get_task", { taskId: "t-1" }, 15)).toMatchObject({
       kind: "DENY",
       reason: "rate_limited",
     });
     const zero = harness({ "agent.policy.maxCallsPerTool": 0 });
-    expect(zero.svc.check(s, "get_task", { taskId: "t-1" }, 14)).toMatchObject({ kind: "ALLOW" });
+    expect(zero.svc.check(s, "get_task", { taskId: "t-1" }, 14)).toMatchObject({
+      kind: "ALLOW",
+    });
   });
 });
 
 describe("AgentBoundaryService · ⑥ 分级审批（最后一道，可批准）", () => {
   const chatSession = () =>
-    session({ id: "s-1", kind: "chat", scopeJson: { unrestricted: true } } as never);
+    session({
+      id: "s-1",
+      kind: "chat",
+      scopeJson: { unrestricted: true },
+    } as never);
 
   it("read 工具默认放行", () => {
     const { svc } = harness();
-    expect(svc.check(chatSession(), "get_task", { taskId: "t-1" }, 0)).toMatchObject({
+    expect(
+      svc.check(chatSession(), "get_task", { taskId: "t-1" }, 0),
+    ).toMatchObject({
       kind: "ALLOW",
     });
   });
@@ -294,14 +337,24 @@ describe("AgentBoundaryService · ⑥ 分级审批（最后一道，可批准）
       "agent.policy.dangerousRequiresApproval": true,
     });
     expect(
-      svc.check(chatSession(), "delete_application", { applicationId: "app-1" }, 0),
+      svc.check(
+        chatSession(),
+        "delete_application",
+        { applicationId: "app-1" },
+        0,
+      ),
     ).toMatchObject({ kind: "NEED_APPROVAL" });
     const lax = harness({
       "agent.policy.allowDangerous": true,
       "agent.policy.dangerousRequiresApproval": false,
     });
     expect(
-      lax.svc.check(chatSession(), "delete_application", { applicationId: "app-1" }, 0),
+      lax.svc.check(
+        chatSession(),
+        "delete_application",
+        { applicationId: "app-1" },
+        0,
+      ),
     ).toMatchObject({ kind: "ALLOW" });
   });
 
@@ -309,13 +362,21 @@ describe("AgentBoundaryService · ⑥ 分级审批（最后一道，可批准）
     const { svc } = harness({
       "agent.policy.writeRequiresApproval": false,
     });
-    const chat = session({ id: "s-1", kind: "chat", scopeJson: { unrestricted: true } } as never);
-    expect(svc.check(chat, "update_task", { taskId: "t-1", patch: {} }, 0)).toMatchObject({
+    const chat = session({
+      id: "s-1",
+      kind: "chat",
+      scopeJson: { unrestricted: true },
+    } as never);
+    expect(
+      svc.check(chat, "update_task", { taskId: "t-1", patch: {} }, 0),
+    ).toMatchObject({
       kind: "NEED_APPROVAL",
     });
-    expect(svc.check(chat, "sop_publish", { sopId: "sop-1" }, 0)).toMatchObject({
-      kind: "NEED_APPROVAL",
-    });
+    expect(svc.check(chat, "sop_publish", { sopId: "sop-1" }, 0)).toMatchObject(
+      {
+        kind: "NEED_APPROVAL",
+      },
+    );
   });
 
   it("write + writeRequiresApproval=true → NEED_APPROVAL；false → ALLOW", () => {
