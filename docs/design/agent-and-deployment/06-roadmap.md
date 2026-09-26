@@ -595,7 +595,8 @@ harness 缺陷）；desktop `test:main` **31 套全绿**（+assignment-journal 1
 
 **验收**：desktop `test:main` **32 套全绿**（+isolated-runner 13 项；agent-host e2e 新增
 第 13 节「交付附带直接执行证据」+ 第 2 节 deploy-only 反断言；permission-profile 自检
-更新 isolated-runner 覆盖生效断言）；tsc 0 + lint gates 绿。
+更新 isolated-runner 覆盖生效断言）；tsc 0 + lint gates 绿。设置面的「任务执行方式」
+细粒度覆盖同批补上（见 §9.14 后批注）——此前该轴只能改配置文件触达。
 
 **残差（如实）**：executor-node 侧的 `/execute` 未动（与 08 §1.1 一致）；「直接执行」
 目前只发生在交付时刻一次——按平台任务语义的常驻执行（调度/重试/守护）仍走既有
