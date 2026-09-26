@@ -20,6 +20,7 @@ function harness(overrides?: {
   const calls: Call[] = [];
   const tools = overrides?.tools ?? {
     xdotool: '/usr/bin/xdotool',
+    ffmpeg: '/usr/bin/ffmpeg',
     import: '/usr/bin/import',
   };
   const driver = new X11GuiDriver({
@@ -54,7 +55,9 @@ async function main(): Promise<void> {
   {
     const h = harness({ respond: (call) => (call.args[0] === 'getdisplaygeometry' ? '1920 1080' : '') });
     assert.equal(await h.driver.probe(), true);
-    assert.deepEqual(h.calls.map((c) => c.args[0]), ['getdisplaygeometry']);
+    // probe 序列：几何 + getactivewindow（EWMH 活动窗口基座，GNOME Wayland 缺失
+    // 时如实 false——见 S2 VERIFY-2026-09-27）
+    assert.deepEqual(h.calls.map((c) => c.args[0]), ['getdisplaygeometry', 'getactivewindow']);
   }
 
   // ── invalid app / params never reach the tools ──
@@ -90,7 +93,8 @@ async function main(): Promise<void> {
         const [sub] = call.args;
         if (sub === 'getactivewindow') return W1;
         if (sub === 'getwindowpid') {
-          return normId(call.args[2] as string) === normId(W1) ? 'PID=4242' : 'PID=5000';
+          // getwindowpid <id>（3.2016 无 --shell）：id 在 args[1]
+          return normId(call.args[1] as string) === normId(W1) ? 'PID=4242' : 'PID=5000';
         }
         if (sub === 'search') return '0x0a200002\n0x0a200003';
         if (sub === 'windowactivate') return '';
@@ -101,8 +105,10 @@ async function main(): Promise<void> {
     assert.equal(out.ok, true, out.error);
     // search used an anchored class pattern — app dots cannot widen the match
     const search = h.calls.find((c) => c.args[0] === 'search');
-    assert.equal(search?.args[3], '^(?:gedit)$');
-    assert.equal(h.calls.some((c) => c.args[0] === 'windowactivate' && c.args[2] === '0x0a200002'), true);
+    // --onlyvisible 已移除（XWayland 可见位不可靠）；锚定模式带大小写折叠
+    assert.equal(search?.args[1], '--class');
+    assert.equal(search?.args[2], '^[gG][eE][dD][iI][tT]$');
+    assert.equal(h.calls.some((c) => c.args[0] === 'windowactivate' && c.args[1] === '0x0a200002'), true);
   }
   {
     // Two distinct processes own visible windows of that class → ambiguous.
@@ -110,7 +116,7 @@ async function main(): Promise<void> {
       comms: { 4242: 'gedit', 5001: 'gedit' },
       respond: (call) => {
         if (call.args[0] === 'search') return '0x0a200002\n0x0a200003';
-        if (call.args[0] === 'getwindowpid' && call.args[2] === '0x0a200002') return 'PID=4242';
+        if (call.args[0] === 'getwindowpid' && call.args[1] === '0x0a200002') return 'PID=4242';
         return 'PID=5001';
       },
     });
@@ -131,8 +137,19 @@ async function main(): Promise<void> {
 
   // ── foreground re-verification guards every non-focus action ──
   {
+    // 有状态假体：probe 时 EWMH 基座在（getactivewindow 成功），动作时焦点
+    // 消失——「probe 后、动作前 WM 掉焦点」的时序要如实拒绝。
+    let activeCalls = 0;
     const h = harness({
-      respond: (call) => (call.args[0] === 'getdisplaygeometry' ? '1920 1080' : new Error('No window with focus')),
+      respond: (call) => {
+        if (call.args[0] === 'getdisplaygeometry') return '1920 1080';
+        if (call.args[0] === 'getactivewindow') {
+          activeCalls += 1;
+          if (activeCalls === 1) return '0x0a200002';
+          return new Error('No window with focus');
+        }
+        return new Error('No window with focus');
+      },
     });
     assert.equal((await h.driver.run({ action: 'click', app: 'gedit', x: 1, y: 1 })).error,
       'foreground_window_unavailable');
@@ -208,8 +225,9 @@ async function main(): Promise<void> {
         if (call.args[0] === 'getactivewindow') return '0x0a200002';
         if (call.args[0] === 'getwindowpid') return 'PID=4242';
         if (call.args[0] === 'getwindowgeometry') return 'X=0\nY=0\nWIDTH=4096\nHEIGHT=4096\nSCREEN=0';
-        if (call.binary.endsWith('import')) {
-          fs.writeFileSync(call.args[2] as string, 'png');
+        if (call.binary.endsWith('ffmpeg')) {
+          // 输出路径是最后一个参数（-y 之后）
+          fs.writeFileSync(call.args[call.args.length - 1] as string, 'png');
           return '';
         }
         return '';
@@ -222,17 +240,20 @@ async function main(): Promise<void> {
       assert.equal(out.ok, true, out.error);
       assert.equal(fs.readFileSync(target, 'utf8'), 'png', 'capture renamed into place');
       assert.equal(fs.existsSync(`${target}.tmp-${process.pid}`), false, 'tmp cleaned up');
-      const importCall = h.calls.find((c) => c.binary.endsWith('import'));
-      assert.equal(importCall?.args[0], '-window');
-      // getactivewindow 打印十进制 id——import 收到的就是该原样形态
-      assert.equal(importCall?.args[1], String(parseInt('0x0a200002', 16)), 'window-scoped capture');
+      // 捕获后端 = ffmpeg x11grab（区域抓取自活动窗口矩形；import 在本机栈
+      // XGetImage EAGAIN 已降为后备）。断言区域与窗口几何一致。
+      const grabCall = h.calls.find((c) => c.binary.endsWith('ffmpeg'));
+      assert.notEqual(grabCall, undefined, 'ffmpeg capture attempted');
+      assert.equal(grabCall?.args.includes('-f'), true);
+      assert.equal(grabCall?.args[grabCall.args.indexOf('-i') + 1]?.startsWith(':0.0+'), true, 'grab region on configured display');
+      assert.equal(grabCall?.args.includes('4096x4096'), true, 'video_size equals window rect');
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   }
   {
     const h = harness({
-      tools: { xdotool: '/usr/bin/xdotool', import: null },
+      tools: { xdotool: '/usr/bin/xdotool', ffmpeg: null, import: null },
       comms: { 4242: 'gedit' },
       respond: (call) => {
         if (call.args[0] === 'getactivewindow') return '0x0a200002';
@@ -246,7 +267,11 @@ async function main(): Promise<void> {
       app: 'gedit',
       screenshotPath: path.join(os.tmpdir(), 'acf-no-shot.png'),
     });
-    assert.equal(out.error, 'x11_tool_unavailable: import', 'missing import reported honestly');
+    assert.equal(
+      out.error,
+      'x11_tool_unavailable: ffmpeg/import (capture backend)',
+      'missing capture backend reported honestly',
+    );
   }
 
   // ── oversized capture refused before spawning import ──
@@ -271,15 +296,26 @@ async function main(): Promise<void> {
   if (process.platform === 'linux' && process.env.DISPLAY) {
     const live = new X11GuiDriver();
     if (await live.probe()) {
+      // GNOME Wayland 诚实拒绝双形态：用户焦点在另一个 X11 应用 →
+      // foreground_app_mismatch；焦点在 Wayland 原生窗口/无焦点 → XWayland
+      // 报告无活动窗口 → foreground_window_unavailable。两者都是「无法验证
+      // 前台 == 白名单应用」的正确拒绝，SOP 流程必须先 focus() 再动作。
       const denied = await live.run({ action: 'press', app: 'acf_gui_nonexistent_7c', key: 'ENTER' });
       assert.equal(denied.ok, false);
-      assert.equal(denied.error, 'foreground_app_mismatch');
+      assert.ok(
+        ['foreground_app_mismatch', 'foreground_window_unavailable'].includes(denied.error ?? ''),
+        `denied press: ${denied.error}`,
+      );
       const focus = await live.run({ action: 'focus', app: 'acf_gui_nonexistent_7c' });
       assert.ok(['app_main_window_not_found', 'app_identity_mismatch'].includes(focus.error ?? ''),
         `focus denied: ${focus.error}`);
       const file = path.join(os.tmpdir(), `acf-gui-x11-denied-${process.pid}.png`);
       const capture = await live.run({ action: 'screenshot', app: 'acf_gui_nonexistent_7c', screenshotPath: file });
       assert.equal(capture.ok, false);
+      assert.ok(
+        ['foreground_app_mismatch', 'foreground_window_unavailable'].includes(capture.error ?? ''),
+        `denied capture: ${capture.error}`,
+      );
       assert.equal(fs.existsSync(file), false, 'denied screenshot writes nothing');
       console.log('gui-x11 real smoke: input/focus/capture boundaries denied');
     } else {
