@@ -639,6 +639,8 @@ console.log("\n── 3bis. 写工具执行体绑定 ──");
   check("执行器自述以 untrustedResult 标注（注入面纪律）", /untrustedResult/.test(svcSrc2));
   check("验证会话经 agent-jobs 入队", /reason: `verify:\$\{a\.id\}`/.test(svcSrc2));
   check("验证起不来 fail-open（完成回报不被吞）", /verification session spawn failed \(fail-open\)/.test(svcSrc2));
+  // P7e 前半：isolated-runner 档的执行证据进复核上下文（仍按不可信自述对待）
+  check("验证会话提示可参考 isolatedRun 证据（isolated-runner 档）", /isolatedRun/.test(svcSrc2) && /不可信自述/.test(svcSrc2));
 
   // ── P6 超时治理（11 §6）：纯判定 + 扫描接线 ──
   transpileGraph("src/modules/sop/sop-timeout.ts");
