@@ -223,35 +223,52 @@ console.log("\n── 2. SopService（发布/指派/澄清/完成）──");
   );
   const { SopService } = require(svcJs);
 
+  // typeorm 算子（pollPending 的 CAS 用 IsNull、状态过滤用 In）——替身按同语义匹配
+  const typeorm = require("typeorm");
+  function matchCond(rowVal, cond) {
+    if (cond instanceof typeorm.FindOperator) {
+      if (cond.type === "isNull") return rowVal === null || rowVal === undefined;
+      if (cond.type === "in") return (cond.value ?? []).includes(rowVal);
+      return false;
+    }
+    return rowVal === cond;
+  }
+
   /**
    * 内存仓库替身：findOne/find/create/save/update（service 实际用到的面）。
    * `defaults` 补实体列默认值——TypeORM 的 create() 会填默认值，替身必须
    * 同样保真，否则 clarificationRound+1 之类的运算会静默变 NaN。
+   * 时钟严格递增：回复游标（lastReplyDeliveredAt）按 updatedAt 比较，
+   * 同毫秒时间戳会让「ACK 后不再投递」的语义在替身里失真。
    */
   function makeRepo(defaults = {}) {
     const rows = [];
     let seq = 0;
+    let clock = Date.now() - 10_000;
+    const nextTime = () => new Date((clock += 7));
     return {
       rows,
       create(o) {
-        const now = new Date();
+        const now = nextTime();
         return { id: undefined, createdAt: now, updatedAt: now, ...defaults, ...o };
       },
       async save(o) {
         if (!o.id) {
           o.id = `row-${++seq}`;
+          o.updatedAt = nextTime();
           rows.push(o);
         } else {
           const i = rows.findIndex((r) => r.id === o.id);
+          o.updatedAt = nextTime();
           if (i >= 0) rows[i] = o; else rows.push(o);
         }
         return o;
       },
       async findOne({ where }) {
-        return rows.find((r) => Object.entries(where).every(([k, v]) => r[k] === v)) ?? null;
+        return rows.find((r) => Object.entries(where).every(([k, v]) => matchCond(r[k], v))) ?? null;
       },
       async find({ where, order }) {
-        let out = rows.filter((r) => Object.entries(where).every(([k, v]) => r[k] === v));
+        let out = rows.filter((r) => Object.entries(where).every(([k, v]) => matchCond(r[k], v)));
         if (order?.round === "ASC") out = [...out].sort((a, b) => a.round - b.round);
         if (order?.publishedAt === "DESC") {
           out = [...out].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
@@ -259,24 +276,49 @@ console.log("\n── 2. SopService（发布/指派/澄清/完成）──");
         return out;
       },
       async update(where, patch) {
+        let affected = 0;
         for (const r of rows) {
-          if (Object.entries(where).every(([k, v]) => r[k] === v)) Object.assign(r, patch, { updatedAt: new Date() });
+          if (Object.entries(where).every(([k, v]) => matchCond(r[k], v))) {
+            Object.assign(r, patch, { updatedAt: nextTime() });
+            affected++;
+          }
         }
+        return { affected }; // CAS（claim.affected !== 1）依赖返回值
       },
     };
   }
 
   function makeSvc(opts = {}) {
-    const sopRepo = makeRepo();
-    const verRepo = makeRepo();
+    // 可空列默认 null（TypeORM create() 保真）：pulledAt === null /
+    // resolution === null 这类判定是 poll/ACK 语义的核心，替身里一旦是
+    // undefined 就会静默失真
+    const sopRepo = makeRepo({ currentVersion: null, applicationId: null, bodyMarkdown: null, frontMatterJson: null });
+    const verRepo = makeRepo({ changelog: null });
     const asgRepo = makeRepo({
-      // SopAssignment 列默认值（替身保真：TypeORM create 会填，替身也要填）
       status: "assigned",
       clarificationRound: 0,
       maxRounds: 5,
       attempt: 0,
+      targetExecutorId: null,
+      targetAgentSessionId: null,
+      parentSessionId: null,
+      pulledAt: null,
+      lastProgressAt: null,
+      lastReplyDeliveredAt: null,
+      progressJson: null,
+      resultJson: null,
+      capabilitySnapshotJson: null,
+      permissionProfileAtPull: null,
     });
-    const clarRepo = makeRepo();
+    const clarRepo = makeRepo({
+      clientClarificationId: null,
+      questionContextJson: null,
+      answer: null,
+      resolution: null,
+      newSopVersion: null,
+      mediaRefsJson: null,
+      reviewSessionId: null,
+    });
     const notifyCalls = [];
     const svc = new SopService(
       sopRepo,
@@ -439,6 +481,72 @@ console.log("\n── 2. SopService（发布/指派/澄清/完成）──");
       assignmentId: a.id, executorId: UUID_A, status: "failed", result: { ok: false }, attempt: 1,
     });
     check("complete 幂等（旧 attempt 重放被忽略）", r1.accepted === true && r2.accepted === false);
+  }
+
+  // ── P7d：澄清回复投递 + ACK（双端确认闭环，11 §3.2 收口）──
+  {
+    const opts = { sessionSeq: 0 };
+    const { svc, asgRepo } = makeSvc(opts);
+    const { sop } = await seedPublished(svc, "reply-delivery");
+    const a = await svc.assign({ sopId: sop.id, executorId: UUID_A, assignedBy: "user:u1" });
+
+    const first = await svc.pollPending({ executorId: UUID_A });
+    check("首次 poll 返回指派载荷（含 SOP 全量）",
+      first.length === 1 && first[0].kind === "assignment" && first[0].assignmentId === a.id);
+    const asgRow = asgRepo.rows.find((r) => r.id === a.id);
+    check("领取 CAS：pulledAt 落库 + 状态转 in_progress",
+      asgRow.pulledAt !== null && asgRow.status === "in_progress");
+
+    const idle = await svc.pollPending({ executorId: UUID_A });
+    check("无回复时 poll 不产生回复条目", idle.length === 0);
+
+    const c1 = await svc.ingestClarification({ assignmentId: a.id, clientClarificationId: "clr-d1", question: "q1" });
+    await svc.replyClarification({ clarificationId: c1.clarification.id, resolution: "answered", answer: "答 1", replyBy: "agent:review" });
+    const d1 = await svc.pollPending({ executorId: UUID_A });
+    check("回复随 poll 投递（clarification_reply 条目）",
+      d1.length === 1 && d1[0].kind === "clarification_reply" && d1[0].answer === "答 1");
+    check("投递带澄清 id 与轮次（执行器按 id 幂等去重）",
+      d1[0].clarificationId === c1.clarification.id && d1[0].round === 1);
+
+    const d2 = await svc.pollPending({ executorId: UUID_A });
+    check("ACK 前回复随每次 poll 重发（至少一次投递）",
+      d2.length === 1 && d2[0].clarificationId === c1.clarification.id);
+
+    await svc.ackClarificationReply({ assignmentId: a.id, executorId: UUID_A, clarificationId: c1.clarification.id });
+    const d3 = await svc.pollPending({ executorId: UUID_A });
+    check("ACK 后游标推进，回复不再投递", d3.length === 0);
+
+    let denied = false;
+    try {
+      await svc.ackClarificationReply({ assignmentId: a.id, executorId: UUID_B, clarificationId: c1.clarification.id });
+    } catch { denied = true; }
+    check("ACK 校验指派归属（别人的机器不能推游标）", denied);
+
+    const c2 = await svc.ingestClarification({ assignmentId: a.id, clientClarificationId: "clr-d2", question: "q2" });
+    await svc.replyClarification({
+      clarificationId: c2.clarification.id, resolution: "sop_amended", answer: "已修订",
+      amendedFrontMatterYaml: VALID_YAML.replace("daily-report-app", "daily-report-app-v3"),
+      replyBy: "agent:review",
+    });
+    const d4 = await svc.pollPending({ executorId: UUID_A });
+    const amended = d4.find((x) => x.clarificationId === c2.clarification.id);
+    check("sop_amended 回复附修订版载荷（续跑对账锚前移）",
+      amended?.newSop?.version === "1.0.1" && typeof amended?.newSop?.contentHash === "string" &&
+      amended?.newSop?.bodyMarkdown === "# body");
+    await svc.ackClarificationReply({ assignmentId: a.id, executorId: UUID_A, clarificationId: c2.clarification.id });
+
+    const c3 = await svc.ingestClarification({ assignmentId: a.id, clientClarificationId: "clr-d3", question: "q3" });
+    let unresolvable = false;
+    try {
+      await svc.ackClarificationReply({ assignmentId: a.id, executorId: UUID_A, clarificationId: c3.clarification.id });
+    } catch { unresolvable = true; }
+    check("未回复的澄清 ACK 被拒（无可确认）", unresolvable);
+
+    const resend = await svc.pollPending({ executorId: UUID_A, resendAssignments: [a.id] });
+    check("resendAssignments=[id] 定向重发工单载荷（崩溃恢复）",
+      resend.some((x) => x.kind === "assignment" && x.assignmentId === a.id));
+    const other = await svc.pollPending({ executorId: UUID_B });
+    check("定向重发不影响其它执行器的待办", other.length === 0);
   }
 }
 
@@ -614,6 +722,14 @@ console.log("\n── 4. 协作 API（11 §3/§5）──");
   check("SopModule 引入 ExecutorPackageModule", /ExecutorPackageModule/.test(readFileSync(join(apiDir, "src/modules/sop/sop.module.ts"), "utf8")));
   const hostSrc = readFileSync(join(apiDir, "src/modules/sop/../sop/sop.service.ts"), "utf8");
   void hostSrc;
+
+  // ── P7d：澄清回复投递 + ACK（双端确认，11 §3.2 收口）──
+  check("ack 端点存在（POST assignments/:id/clarifications/ack）", /@Post\("assignments\/:id\/clarifications\/ack"\)/.test(relaySrc));
+  check("ack 过 agent:sop 能力闸（协作面无裸端点）", /ackClarificationReply\([\s\S]{0,400}authenticateAgent\(/.test(relaySrc));
+  check("poll DTO 放宽 resendAssignments 为 boolean | string[]（按单定向重发）", /resendAssignments\?: boolean \| string\[\]/.test(relaySrc));
+  check("pollPending 投递 clarification_reply 条目（P6 保留游标 → P7d 启用）", /kind: "clarification_reply"/.test(svcSrc));
+  check("投递不推游标、ACK 才推（至少一次投递语义）", /pendingReplyItems/.test(svcSrc) && /ackClarificationReply/.test(svcSrc));
+  check("游标单调推进（乱序 ACK 不回退）", /a\.lastReplyDeliveredAt < stamp/.test(svcSrc));
 
   // 协作协议治理（11 §7）：P5/P6 明确留 P7（executor-desktop 实现 client 时进 agentCollab 段）
   const proto = readFileSync(join(root, "packages/executor-protocol/protocol.json"), "utf8");

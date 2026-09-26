@@ -56,8 +56,12 @@ function bearer(auth: string | undefined): string {
 class AgentCollabPollDto {
   address!: string;
   waitMs?: number;
-  /** 执行器丢了本地状态时强制重发指派载荷（含 SOP 全量）。 */
-  resendAssignments?: boolean;
+  /**
+   * 执行器丢了本地状态时强制重发指派载荷（含 SOP 全量）。
+   * `true` = 全部活跃单重发（未投递的旧单重新排队）；
+   * `[id]` = 只重发指定单（P7d 崩溃恢复，定向且不触碰其它单的游标）。
+   */
+  resendAssignments?: boolean | string[];
   inflight?: string[];
 }
 
@@ -92,6 +96,11 @@ class AgentCollabCompleteDto {
   result?: Record<string, unknown>;
   /** 幂等：同 attempt 重放无害。 */
   attempt?: number;
+}
+
+class AgentCollabAckReplyDto {
+  address!: string;
+  clarificationId!: string;
 }
 
 // @Public() + 手工机器鉴权：执行器面（非用户 JWT 面）
@@ -225,6 +234,30 @@ export class SopCollabController {
       attempt: body.attempt,
     });
     return { accepted };
+  }
+
+  /**
+   * 澄清回复 ACK（P7d 双端确认的执行器半边）。执行器把回复落盘并消费
+   * （续跑循环）之后才确认；确认前该回复随每次 poll 重发（至少一次投递），
+   * 执行器侧按 clarificationId 幂等去重——重复投递不产生重复消费。
+   */
+  @Post("assignments/:id/clarifications/ack")
+  @HttpCode(HttpStatus.OK)
+  async ackClarificationReply(
+    @Param("id") assignmentId: string,
+    @Body() body: AgentCollabAckReplyDto,
+    @Headers("authorization") auth: string,
+  ) {
+    const executor = await this.authenticateAgent(body?.address, auth);
+    if (!body?.clarificationId) {
+      throw new BadRequestException("clarificationId 必填");
+    }
+    await this.sops.ackClarificationReply({
+      assignmentId,
+      executorId: executor.id,
+      clarificationId: body.clarificationId,
+    });
+    return { ok: true };
   }
 
   /**

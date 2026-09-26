@@ -527,6 +527,49 @@
 
 **残差**：中台 `sopPolicy.permissionPolicy` 默认 `standard`，会把本地 `app-scoped` 钳回 `none`；启用 GUI 须显式放宽中台上限。macOS/Linux GUI 后端尚未适配，能力上报会如实不含 `gui`。应用白名单当前按进程名精确匹配，不能把它当作进程签名或可执行文件路径校验；企业部署若要求更强应用身份约束，需要在后续切片增加路径/签名绑定。崩溃后已领取指派的重领、澄清回复的持久恢复与确认投递，以及包→审批→部署的真实闭环属 P7d；后者仍待具备 LLM 与部署环境后验证。
 
+### 9.10 P7d 执行器侧鲁棒性切片（2026-09-26）：澄清闭环 + 崩溃恢复 ✅
+
+> **产物**：admin-api poll 投递澄清回复（游标 `lastReplyDeliveredAt`）+ ACK 端点
+> （`POST /agent-collab/assignments/:id/clarifications/ack`）+ `resendAssignments` 支持
+> `[id]` 数组按单定向重发；desktop 新增 `agent/assignment-journal.ts`（原子本地日志）+
+> host 回复消费/续跑/崩溃重领/长跑心跳。**P6 澄清循环自此端到端闭环**——此前执行器
+> 发出澄清后 host 直接返回，中台的回复永远回不到循环里（P7c 交接残差 ④）。
+
+| 任务 | 说明 | 状态 |
+|---|---|---|
+| 回复投递（中台） | `pollPending` 返回 `kind=clarification_reply` 条目（resolution 已落定且晚于游标，轮次升序，≤20 条/次）；**投递不推游标**——至少一次投递，ACK 才推 | ✅ |
+| ACK（中台） | 归属校验（指派×澄清×执行器三向）+ 未回复不可确认 + 游标**单调推进**（乱序 ACK 不回退） | ✅ |
+| 按单重发（中台） | `resendAssignments: true`（全量+重排队）之外新增 `[id]` 定向形态——崩溃恢复只重领本地日志里 running 阶段的单，不触碰其它单的游标 | ✅ |
+| 本地日志（执行器） | `assignment-journal.ts`：`<workDir>/agent-journal/<assignmentId>.json`，tmp+rename 原子写、结构校验、路径消毒（assignmentId 不可信）、7 天陈旧清理 | ✅ |
+| 回复消费（执行器） | 落盘（幂等键先持久化）→ answered/sop_amended **续跑**（问答历史进规划/诊断上下文；sop_amended 附带修订版全量载荷，交付对账锚随之前移）→ 终态/进入下一轮澄清后才 ACK；重发按 clarificationId 幂等去重 | ✅ |
+| 升级终结 | `escalated_to_human` 回复 → 如实回报 failed（升级后无自动答复，人工答复端点对已处置澄清幂等短路）；中台 maxRounds 触顶返回 `escalated=true` 时同样终结 | ✅ |
+| 崩溃重领 | running 阶段崩溃 → 重启后首次 poll 带 `[id]` 重发重跑（工作区仍在）；**问答历史与闸门计数从日志恢复**——重跑不清零预算（墙钟「resume 不重置」纪律落地到崩溃恢复） | ✅ |
+| 长跑心跳 | 循环期间每 60s `reportProgress`——超时扫描对 in_progress 超 10min 无心跳判 stalled，而单轮 LLM 循环完全可能超过 10 分钟（P7c 前真实缺陷） | ✅ |
+
+**关键判断**：
+
+| 判断 | 理由 |
+|---|---|
+| **投递不推游标，ACK 才推** | 投递即推游标会在执行器处理前丢回复（P6 注释里写明的风险）；至少一次投递 + 消费侧按 clarificationId 去重是分布式投递的标准解，且服务端无需新增表列 |
+| **先落盘后发送澄清** | 幂等键（clientClarificationId）先持久化——崩溃窗口内重发同键，中台去重不产生第二条澄清；先发后存 = 可能问丢一轮 |
+| **无循环可喂也 ACK 丢弃** | 日志丢失/从未在本机跑过的回复如果不 ACK，游标永不前进 = 毒消息永久重发；丢弃是唯一收敛路径 |
+| **续跑不清零闸门计数** | 「问一轮 → 续跑清零」就是预算规避通道；`AgentLoopResult` 新增 `counters` 原样回传落盘，墙钟/澄清/试跑上限跨崩溃恢复依然成立 |
+| **升级即终结** | escalated 之后人工答复端点对已处置澄清幂等短路——不会再有回复，挂着装等只会把工单吊死在 blocked |
+| **sop_amended 附带全量载荷** | 指派钉在旧版本上，修订不送达 = 执行器对账锚停留在旧版、续跑按旧 SOP 做；载荷缺失/畸形时如实降级沿用旧版（答案文本仍在上下文） |
+
+**验收**：`agent-sop-check` **130 项**（+19：投递/游标/ACK 归属与单调/修订载荷/按单重发；
+替身补齐可空列 null 保真——`pulledAt === null` 判定在 undefined 下静默失真是本轮抓出的
+harness 缺陷）；desktop `test:main` **31 套全绿**（+assignment-journal 14 项；agent-host e2e
+新增 5 节：回复续跑→ACK、升级终结、awaiting_reply 重启续跑、running 按单重发重跑、ACK
+失败重发不二次消费）；admin-api tsc 0 + nest build 绿 + lint gates 绿。
+
+**残差（如实）**：包→审批→部署的端到端闭环（deploy_application + DEP-04 + 拉包部署 +
+中台 Agent 验收）仍需真实 LLM 与部署环境（P7d 后半）；host 拆独立子进程（07 §4.2 完整
+形态）与打包态 Playwright 浏览器分发留打包接线时一并处理；崩溃重跑沿用「从感知重跑 +
+历史注入」而非断点续跑——重复执行已发生的澄清提问由中台轮次计数与幂等键兜底，令牌
+成本如实多花一轮；`inflight` 字段仍保留未消费（设计文档 §3.1 的存活判定由 progress
+心跳承担）。
+
 ## 10. 立即可开工的建议
 
 **本轮我建议先做 P0**，理由：

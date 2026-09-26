@@ -64,7 +64,8 @@ POST /api/agent-collab/poll
   "address": "office-pc-07:8002",
   "waitMs": 25000,
   "capabilitiesHash": "sha256:...",     // 能力变更检测（变了才重传）
-  "inflight": ["asg-123"]               // 正在处理的指派（中台据此判断存活）
+  "inflight": ["asg-123"],              // 正在处理的指派（中台据此判断存活）
+  "resendAssignments": true             // true=全部活跃单重发；["asg-123"]=按单定向重发（P7d 崩溃恢复）
 }
 ```
 
@@ -86,9 +87,17 @@ POST /api/agent-collab/poll
     {
       "kind": "clarification_reply",
       "clarificationId": "clr-456",
+      "clientClarificationId": "uuid-...",  // 执行器当初生成的幂等键（原样回传，精确对账）
       "assignmentId": "asg-123",
+      "round": 2,
       "resolution": "sop_amended",
-      "newSopVersion": "1.0.2",          // 若修订，执行器需重新拉取
+      "newSopVersion": "1.0.2",
+      "newSop": {                            // sop_amended 时附带修订版全量载荷（P7d）
+        "version": "1.0.2",
+        "contentHash": "sha256:...",
+        "frontMatter": {...},
+        "bodyMarkdown": "..."
+      },
       "answer": "SOP 已补充：需先选择时间范围再点导出"
     }
   ],
@@ -109,8 +118,19 @@ POST /api/agent-collab/poll
 | `POST /api/agent-collab/clarifications` | 发起澄清 | `clarificationId`（客户端生成 UUID） |
 | `POST /api/agent-collab/assignments/:id/progress` | 进度心跳 | `(assignmentId, seq)` |
 | `POST /api/agent-collab/assignments/:id/complete` | 回报完成 | `(assignmentId, attempt)` |
+| `POST /api/agent-collab/assignments/:id/clarifications/ack` | **确认收到澄清回复**（P7d） | 游标单调推进（只前进不后退） |
 
 **为什么幂等键由客户端生成**：网络重试时执行器会重发同一请求，中台按幂等键去重，**不会产生两条澄清**。这与既有 `triggerId`/`executionId` 的去重思路一致。
+
+### 3.2.1 澄清回复的确认投递（双端 ACK，P7d 落地）
+
+回复的投递是**至少一次**语义，闭环由三段组成：
+
+1. **投递**：poll 返回 `resolution` 已落定且晚于游标 `lastReplyDeliveredAt` 的行（按轮次升序）；**投递不推游标**。
+2. **消费**：执行器把回复先落盘进本地日志（崩溃恢复锚点），再触发续跑——answered/sop_amended 带着问答历史继续循环；`escalated_to_human` 如实回报 failed 终结（升级后中台不会再有自动答复，人工答复端点对已处置澄清幂等短路）。
+3. **确认**：续跑到达终态（或进入下一轮澄清）后调 ack，游标推进到该回复的 `updatedAt`。确认前重发的回复由执行器按 `clarificationId` **幂等去重**，不产生二次消费。
+
+游标在服务端**单调推进**：乱序 ACK 不会让游标回退把已消费的回复重新变成待投递。执行器侧没有可喂的循环时（日志丢失/从未在本机跑过）**同样 ACK 丢弃**——不 ACK 才是毒消息（游标不前进 = 回复永久重发）。
 
 ### 3.3 为什么不用 WebSocket
 

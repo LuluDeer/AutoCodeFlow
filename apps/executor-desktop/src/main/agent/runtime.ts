@@ -77,6 +77,24 @@ export interface RuntimeDeps {
   guiDriver?: GuiDriver;
   /** 指派运行期间的权限热收紧闸门（每个 GUI 动作前重新读取）。 */
   allowGuiAction?: (app: string) => boolean;
+  /**
+   * P7d 续跑：此前澄清轮次的问答对——回复之后续跑的规划/诊断都能看到
+   * 「当时问了什么、中台答了什么」，否则续跑会带着和崩溃前一样的疑问
+   * 再问一遍（两个 Agent 的礼貌循环就是这样烧起来的）。
+   */
+  clarificationHistory?: Array<{
+    round: number;
+    question: string;
+    answer: string;
+    resolution: string;
+    newSopVersion?: string | null;
+  }>;
+  /**
+   * P7d 续跑：GUI 动作预算按指派累计（40 上限不随续跑清零）；host 传
+   * 入已花费数，并在每批动作后经 onGuiActions 取回最新累计值落盘。
+   */
+  guiActionsUsed?: number;
+  onGuiActions?: (totalUsed: number) => void;
 }
 
 /** LLM 单轮对话的最小客户端面（CollabClient.llmRelay 已满足）。 */
@@ -193,6 +211,10 @@ export function buildLoopHandlers(deps: RuntimeDeps, llm: LlmClient): LoopHandle
         lastBrowserOutputs: lastBrowserOutputs || undefined,
         // P7c：最近一轮 GUI 观察（仅白名单应用的窗口截图）
         lastGuiOutputs: lastGuiOutputs || undefined,
+        // P7d：澄清问答历史（续跑后规划/诊断能看到中台补了什么）
+        clarificationHistory: deps.clarificationHistory?.length
+          ? deps.clarificationHistory
+          : undefined,
         permissions: {
           codeExecution: deps.permissions.codeExecution,
           browserAllowed: browserAllowed(),
@@ -252,7 +274,8 @@ export function buildLoopHandlers(deps: RuntimeDeps, llm: LlmClient): LoopHandle
 
   // GUI 后端只在 Windows 系统可用；host 的能力上报也使用同一次探测结果。
   const guiDriver = deps.guiDriver ?? new WindowsGuiDriver();
-  let guiActionsUsed = 0;
+  // 预算按指派累计：host 传入已花费数（崩溃恢复/澄清续跑不清零）。
+  let guiActionsUsed = deps.guiActionsUsed ?? 0;
   const guiAllowed = (): boolean =>
     deps.guiAvailable === true &&
     deps.permissions.hostAccess === 'app-scoped' &&
@@ -268,6 +291,7 @@ export function buildLoopHandlers(deps: RuntimeDeps, llm: LlmClient): LoopHandle
       return `[GUI] 会话动作累计 ${guiActionsUsed + actions.length} 超上限 ${GUI_ACTIONS_MAX}，本轮取消。`;
     }
     guiActionsUsed += actions.length;
+    deps.onGuiActions?.(guiActionsUsed);
     const session = new AgentGuiSession({
       workspaceRoot: deps.workspaceRoot,
       allowedApps: deps.permissions.allowedApps,

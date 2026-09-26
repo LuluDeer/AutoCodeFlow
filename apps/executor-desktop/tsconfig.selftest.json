@@ -37,6 +37,8 @@
     "src/main/app-uninstall.ts",
     "src/main/app-uninstall.selftest.ts",
     "src/main/app-name-recovery.ts",
+    "src/main/agent/assignment-journal.ts",
+    "src/main/agent/assignment-journal.selftest.ts",
     "src/main/agent/perception.ts",
     "src/main/agent/perception.selftest.ts",
     "src/main/agent/workspace.ts",
