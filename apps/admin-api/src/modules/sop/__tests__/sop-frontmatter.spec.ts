@@ -31,7 +31,9 @@ describe("stableStringify（contentHash 的前提）", () => {
   });
 
   it("对象键递归排序——键顺序不影响输出", () => {
-    expect(stableStringify({ b: 1, a: 2 })).toBe(stableStringify({ a: 2, b: 1 }));
+    expect(stableStringify({ b: 1, a: 2 })).toBe(
+      stableStringify({ a: 2, b: 1 }),
+    );
     expect(stableStringify({ b: 1, a: 2 })).toBe('{"a":2,"b":1}');
   });
 
@@ -54,7 +56,10 @@ describe("sopContentHash", () => {
       JSON.parse(
         JSON.stringify({
           clarification: { maxRounds: 3, owner: "center-agent" },
-          constraints: { allowedDomains: ["Example.COM"], maxDurationSec: 3600 },
+          constraints: {
+            allowedDomains: ["Example.COM"],
+            maxDurationSec: 3600,
+          },
           acceptance: [{ run: "python3 main.py", kind: "command" }],
           capabilities: ["filesystem"],
           target: { application: "demo-app" },
@@ -69,7 +74,9 @@ describe("sopContentHash", () => {
 
 describe("parseFrontMatterYaml", () => {
   it("合法映射原样返回", () => {
-    expect(parseFrontMatterYaml("acceptance: []\n")).toEqual({ acceptance: [] });
+    expect(parseFrontMatterYaml("acceptance: []\n")).toEqual({
+      acceptance: [],
+    });
   });
 
   it("非法 YAML 包装为 SopFrontMatterError", () => {
@@ -94,7 +101,9 @@ describe("validateFrontMatter · 严格校验矩阵", () => {
     const out = validateFrontMatter(validRaw(), { strict: true });
     expect(out.target).toEqual({ application: "demo-app" });
     expect(out.capabilities).toEqual(["filesystem"]);
-    expect(out.acceptance).toEqual([{ kind: "command", run: "python3 main.py" }]);
+    expect(out.acceptance).toEqual([
+      { kind: "command", run: "python3 main.py" },
+    ]);
     expect(out.constraints?.allowedDomains).toEqual(["example.com"]);
     expect(out.clarification).toEqual({ owner: "center-agent", maxRounds: 3 });
   });
@@ -109,14 +118,17 @@ describe("validateFrontMatter · 严格校验矩阵", () => {
       validateFrontMatter({ ...validRaw(), notes: "hi" }, { strict: true }),
     ).toThrow(/未知键 sop\.notes/);
     expect(() =>
-      validateFrontMatter({ sop: { ...validRaw(), notes: "hi" } }, { strict: false }),
+      validateFrontMatter(
+        { sop: { ...validRaw(), notes: "hi" } },
+        { strict: false },
+      ),
     ).toThrow(/未知键 sop\.notes/);
   });
 
   it("target：非映射 / 未知键 / 空串", () => {
-    expect(() => validateFrontMatter({ target: "x" }, { strict: false })).toThrow(
-      /target 必须是映射/,
-    );
+    expect(() =>
+      validateFrontMatter({ target: "x" }, { strict: false }),
+    ).toThrow(/target 必须是映射/);
     expect(() =>
       validateFrontMatter({ target: { nope: 1 } }, { strict: false }),
     ).toThrow(/未知键 sop\.target\.nope/);
@@ -149,7 +161,10 @@ describe("validateFrontMatter · 严格校验矩阵", () => {
       validateFrontMatter({ capabilities: ["shell"] }, { strict: false }),
     ).toThrow(/不在能力域枚举内/);
     const out = validateFrontMatter(
-      { capabilities: [...SOP_CAPABILITIES], acceptance: [{ kind: "command", run: "x" }] },
+      {
+        capabilities: [...SOP_CAPABILITIES],
+        acceptance: [{ kind: "command", run: "x" }],
+      },
       { strict: true },
     );
     expect(out.capabilities).toEqual([...SOP_CAPABILITIES]);
@@ -169,7 +184,12 @@ describe("validateFrontMatter · 严格校验矩阵", () => {
     ).toThrow(/非空数组/);
     expect(() =>
       validateFrontMatter(
-        { acceptance: Array.from({ length: 11 }, () => ({ kind: "command", run: "x" })) },
+        {
+          acceptance: Array.from({ length: 11 }, () => ({
+            kind: "command",
+            run: "x",
+          })),
+        },
         { strict: true },
       ),
     ).toThrow(/最多 10 项/);
@@ -183,13 +203,19 @@ describe("validateFrontMatter · 严格校验矩阵", () => {
       ),
     ).toThrow(/未知键 sop\.acceptance\[0\]\.retry/);
     expect(() =>
-      validateFrontMatter({ acceptance: [{ kind: "eval" }] }, { strict: false }),
+      validateFrontMatter(
+        { acceptance: [{ kind: "eval" }] },
+        { strict: false },
+      ),
     ).toThrow(/kind 必须是 command \| platform/);
   });
 
   it("acceptance command：run 缺失严格拒绝、草稿放行；空串拒绝", () => {
     expect(() =>
-      validateFrontMatter({ acceptance: [{ kind: "command" }] }, { strict: true }),
+      validateFrontMatter(
+        { acceptance: [{ kind: "command" }] },
+        { strict: true },
+      ),
     ).toThrow(/（command）缺 run/);
     const draft = validateFrontMatter(
       { acceptance: [{ kind: "command" }] },
@@ -206,7 +232,10 @@ describe("validateFrontMatter · 严格校验矩阵", () => {
 
   it("acceptance platform：check 必填（严格）、task/expect/timeoutSec 可选", () => {
     expect(() =>
-      validateFrontMatter({ acceptance: [{ kind: "platform" }] }, { strict: true }),
+      validateFrontMatter(
+        { acceptance: [{ kind: "platform" }] },
+        { strict: true },
+      ),
     ).toThrow(/（platform）缺 check/);
     const out = validateFrontMatter(
       {
@@ -239,17 +268,17 @@ describe("validateFrontMatter · 严格校验矩阵", () => {
   it("constraints：maxDurationSec 60..86400、allowedDomains 裸域名、forbidden 数组", () => {
     for (const bad of [59, 86401, 60.5]) {
       expect(() =>
-        validateFrontMatter({ constraints: { maxDurationSec: bad } }, { strict: false }),
+        validateFrontMatter(
+          { constraints: { maxDurationSec: bad } },
+          { strict: false },
+        ),
       ).toThrow(/maxDurationSec 必须是 60\.\.86400 的整数/);
     }
     expect(() =>
       validateFrontMatter({ constraints: "x" }, { strict: false }),
     ).toThrow(/constraints 必须是映射/);
     expect(() =>
-      validateFrontMatter(
-        { constraints: { other: 1 } },
-        { strict: false },
-      ),
+      validateFrontMatter({ constraints: { other: 1 } }, { strict: false }),
     ).toThrow(/未知键 sop\.constraints\.other/);
     expect(() =>
       validateFrontMatter(
@@ -290,11 +319,17 @@ describe("validateFrontMatter · 严格校验矩阵", () => {
       validateFrontMatter({ clarification: { who: 1 } }, { strict: false }),
     ).toThrow(/未知键 sop\.clarification\.who/);
     expect(() =>
-      validateFrontMatter({ clarification: { owner: "executor" } }, { strict: false }),
+      validateFrontMatter(
+        { clarification: { owner: "executor" } },
+        { strict: false },
+      ),
     ).toThrow(/owner 必须是 center-agent \| human/);
     for (const bad of [0, 6, 2.5]) {
       expect(() =>
-        validateFrontMatter({ clarification: { maxRounds: bad } }, { strict: false }),
+        validateFrontMatter(
+          { clarification: { maxRounds: bad } },
+          { strict: false },
+        ),
       ).toThrow(/maxRounds/);
     }
     const out = validateFrontMatter(
@@ -312,22 +347,29 @@ describe("resolveMaxRounds", () => {
   it("null / 无 clarification / 无 maxRounds → 默认 5", () => {
     expect(resolveMaxRounds(null)).toBe(SOP_DEFAULT_MAX_ROUNDS);
     expect(resolveMaxRounds({ acceptance: [] })).toBe(SOP_DEFAULT_MAX_ROUNDS);
-    expect(
-      resolveMaxRounds({ acceptance: [], clarification: {} }),
-    ).toBe(SOP_DEFAULT_MAX_ROUNDS);
+    expect(resolveMaxRounds({ acceptance: [], clarification: {} })).toBe(
+      SOP_DEFAULT_MAX_ROUNDS,
+    );
   });
 
   it("front-matter 值生效但被硬上限钳住", () => {
-    expect(resolveMaxRounds({ acceptance: [], clarification: { maxRounds: 2 } })).toBe(2);
+    expect(
+      resolveMaxRounds({ acceptance: [], clarification: { maxRounds: 2 } }),
+    ).toBe(2);
     expect(
       resolveMaxRounds({ acceptance: [], clarification: { maxRounds: 99 } }),
     ).toBe(SOP_MAX_ROUNDS_HARD_CAP);
   });
 
   it("非法值（<1 / 非数字）回默认", () => {
-    expect(resolveMaxRounds({ acceptance: [], clarification: { maxRounds: 0 } })).toBe(5);
     expect(
-      resolveMaxRounds({ acceptance: [], clarification: { maxRounds: "3" as unknown as number } }),
+      resolveMaxRounds({ acceptance: [], clarification: { maxRounds: 0 } }),
+    ).toBe(5);
+    expect(
+      resolveMaxRounds({
+        acceptance: [],
+        clarification: { maxRounds: "3" as unknown as number },
+      }),
     ).toBe(5);
   });
 
