@@ -16,6 +16,8 @@ describe("AiController (N11)", () => {
   const mockAiService = () => ({
     getEffectiveConfig: jest.fn(),
     analyzeFailure: jest.fn(),
+    // P1（qwen provider）：getConfig 依赖它判定「是否已配密钥」——缺了会 TypeError
+    hasApiKeyForProvider: jest.fn().mockResolvedValue(true),
   });
   const mockSystemConfig = () => ({
     findOne: jest.fn(),

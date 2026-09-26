@@ -14,12 +14,19 @@ function harness(required: string[] = []) {
     bodyMarkdown: "Do the work",
   };
   const rows: any[] = [];
+  const clarificationRows: any[] = [];
   const sops = { findOne: jest.fn().mockResolvedValue(sop) };
   const versions = { findOne: jest.fn().mockResolvedValue(version) };
   const assignments = {
     create: jest.fn((value: unknown) => value),
     save: jest.fn(async (value: unknown) => value),
     find: jest.fn(async () => rows),
+    findOne: jest.fn(
+      async ({ where }: { where: Record<string, unknown> }) =>
+        rows.find((candidate) =>
+          Object.entries(where).every(([k, v]) => candidate[k] === v),
+        ) ?? null,
+    ),
     update: jest.fn(
       async (where: { id: string }, patch: Record<string, unknown>) => {
         const row = rows.find((candidate) => candidate.id === where.id);
@@ -44,6 +51,17 @@ function harness(required: string[] = []) {
     ),
   };
   const clarifications = {
+    find: jest.fn(async ({ where }: { where: Record<string, unknown> }) =>
+      clarificationRows.filter((candidate) =>
+        Object.entries(where).every(([k, v]) => candidate[k] === v),
+      ),
+    ),
+    findOne: jest.fn(
+      async ({ where }: { where: Record<string, unknown> }) =>
+        clarificationRows.find((candidate) =>
+          Object.entries(where).every(([k, v]) => candidate[k] === v),
+        ) ?? null,
+    ),
     createQueryBuilder: jest.fn(() => ({
       where: jest.fn().mockReturnThis(),
       andWhere: jest.fn().mockReturnThis(),
@@ -61,7 +79,14 @@ function harness(required: string[] = []) {
     clarifications,
     executors,
   }) as SopService;
-  return { service, rows, assignments, executors, clarifications };
+  return {
+    service,
+    rows,
+    clarificationRows,
+    assignments,
+    executors,
+    clarifications,
+  };
 }
 
 describe("SOP Agent capability lease at assignment and poll", () => {
@@ -207,7 +232,51 @@ describe("SOP Agent capability lease at assignment and poll", () => {
     expect(h.assignments.update).not.toHaveBeenCalled();
   });
 
-  it("does not advance clarification reply cursors before Host supports ACK", async () => {
+  it("delivers replied clarifications at least once and advances the cursor only on ack", async () => {
+    // P7d 双端 ACK：resolution 落定的回复随 poll 投递（投递不推游标 = 至少
+    // 一次），执行器消费落盘后经 ackClarificationReply 确认才推进游标。
+    const h = harness();
+    h.rows.push({
+      id: "a1",
+      sopId: "sop-1",
+      sopVersion: "1.0.0",
+      status: "in_progress",
+      pulledAt: new Date(),
+      lastReplyDeliveredAt: null,
+    });
+    const repliedAt = new Date("2026-01-02T00:00:00.000Z");
+    h.clarificationRows.push({
+      id: "clr-1",
+      assignmentId: "a1",
+      round: 1,
+      resolution: "answered",
+      answer: "在页面右上角",
+      updatedAt: repliedAt,
+    });
+
+    const first = (await h.service.pollPending({
+      executorId: "e1",
+    })) as Array<{ kind: string; clarificationId: string; answer: string }>;
+    expect(first).toHaveLength(1);
+    expect(first[0].kind).toBe("clarification_reply");
+    expect(first[0].clarificationId).toBe("clr-1");
+    expect(first[0].answer).toBe("在页面右上角");
+
+    // ACK 前：游标不动，回复随每次 poll 重发（至少一次投递）
+    expect(await h.service.pollPending({ executorId: "e1" })).toHaveLength(1);
+    expect(h.rows[0].lastReplyDeliveredAt).toBeNull();
+
+    await h.service.ackClarificationReply({
+      assignmentId: "a1",
+      executorId: "e1",
+      clarificationId: "clr-1",
+    });
+    expect(h.rows[0].lastReplyDeliveredAt).toEqual(repliedAt);
+    // ACK 后：不再投递
+    expect(await h.service.pollPending({ executorId: "e1" })).toEqual([]);
+  });
+
+  it("ack rejects cross-executor confirmation and unresolved clarifications", async () => {
     const h = harness();
     h.rows.push({
       id: "a1",
@@ -215,10 +284,33 @@ describe("SOP Agent capability lease at assignment and poll", () => {
       sopVersion: "1.0.0",
       status: "blocked",
       pulledAt: new Date(),
+      targetExecutorId: "e1",
       lastReplyDeliveredAt: null,
     });
-    expect(await h.service.pollPending({ executorId: "e1" })).toEqual([]);
+    h.clarificationRows.push({
+      id: "clr-1",
+      assignmentId: "a1",
+      round: 1,
+      resolution: null,
+      updatedAt: new Date(),
+    });
+    // 未回复的澄清不可确认
+    await expect(
+      h.service.ackClarificationReply({
+        assignmentId: "a1",
+        executorId: "e1",
+        clarificationId: "clr-1",
+      }),
+    ).rejects.toThrow("尚未回复");
+    // 别人的机器不能推游标
+    h.clarificationRows[0].resolution = "answered";
+    await expect(
+      h.service.ackClarificationReply({
+        assignmentId: "a1",
+        executorId: "e2",
+        clarificationId: "clr-1",
+      }),
+    ).rejects.toThrow("不属于该执行器");
     expect(h.rows[0].lastReplyDeliveredAt).toBeNull();
-    expect(h.assignments.update).not.toHaveBeenCalled();
   });
 });

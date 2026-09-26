@@ -7,6 +7,7 @@ import {
   Inject,
   forwardRef,
 } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Cron } from "@nestjs/schedule";
 import { InjectQueue } from "@nestjs/bullmq";
@@ -116,6 +117,8 @@ export class SopService {
     @InjectQueue(AGENT_QUEUE_NAME)
     private readonly agentQueue: Queue<AgentJobData>,
     private readonly executors: ExecutorService,
+    // ARCH-27：TTL 等运行时配置经 ConfigService（app.module Joi 注册）
+    private readonly config: ConfigService,
   ) {}
 
   // ── 起草与发布（P5）────────────────────────────────────────────
@@ -323,7 +326,10 @@ export class SopService {
     ];
     const open = (
       await this.assignments.find({
-        where: { targetExecutorId: input.executorId, status: In(activeStatuses) },
+        where: {
+          targetExecutorId: input.executorId,
+          status: In(activeStatuses),
+        },
         order: { createdAt: "ASC" },
       })
     ).sort(
@@ -387,7 +393,10 @@ export class SopService {
       ? new Date(a.lastReplyDeliveredAt).getTime()
       : 0;
     const pending = rows
-      .filter((r) => r.resolution !== null && new Date(r.updatedAt).getTime() > cursor)
+      .filter(
+        (r) =>
+          r.resolution !== null && new Date(r.updatedAt).getTime() > cursor,
+      )
       .sort((x, y) => x.round - y.round);
     const out: unknown[] = [];
     for (const r of pending) {
@@ -830,23 +839,38 @@ export class SopService {
   async sweepAssignmentTimeouts(): Promise<void> {
     if (!this.isSchedulerLeader()) return;
     const ttls = {
-      claimTtlMs: this.configTtl("SOP_ASSIGNMENT_CLAIM_TTL_MS", CLAIM_TTL_DEFAULT_MS),
-      progressTtlMs: this.configTtl("SOP_ASSIGNMENT_PROGRESS_TTL_MS", PROGRESS_TTL_DEFAULT_MS),
+      claimTtlMs: this.configTtl(
+        "SOP_ASSIGNMENT_CLAIM_TTL_MS",
+        CLAIM_TTL_DEFAULT_MS,
+      ),
+      progressTtlMs: this.configTtl(
+        "SOP_ASSIGNMENT_PROGRESS_TTL_MS",
+        PROGRESS_TTL_DEFAULT_MS,
+      ),
     };
     const rows = await this.assignments.find({
       where: { status: In(["assigned", "in_progress"] as const) },
     });
-    const { unclaimed, stalled } = evaluateAssignmentTimeouts(rows, Date.now(), ttls);
+    const { unclaimed, stalled } = evaluateAssignmentTimeouts(
+      rows,
+      Date.now(),
+      ttls,
+    );
 
     for (const a of unclaimed) {
       await this.assignments.update(
         { id: a.id },
         {
           status: "failed",
-          resultJson: { outcome: "unclaimed_timeout", note: "指派后超过领取时限无人领取——可换执行器重派" },
+          resultJson: {
+            outcome: "unclaimed_timeout",
+            note: "指派后超过领取时限无人领取——可换执行器重派",
+          },
         },
       );
-      this.logger.warn(`SOP assignment unclaimed timeout: id=${a.id} sopVersion=${a.sopVersion}`);
+      this.logger.warn(
+        `SOP assignment unclaimed timeout: id=${a.id} sopVersion=${a.sopVersion}`,
+      );
       this.notifyTimeout(a, "无人领取（领取超时）").catch(() => undefined);
     }
     for (const a of stalled) {
@@ -854,7 +878,10 @@ export class SopService {
         { id: a.id },
         {
           status: "stalled",
-          resultJson: { outcome: "progress_stalled", note: "领取后进度心跳停滞——请核对执行器状态后重派或等待" },
+          resultJson: {
+            outcome: "progress_stalled",
+            note: "领取后进度心跳停滞——请核对执行器状态后重派或等待",
+          },
         },
       );
       this.logger.warn(`SOP assignment progress stalled: id=${a.id}`);
@@ -916,7 +943,11 @@ export class SopService {
       this.logger.warn(
         `SOP clarification review stuck → escalated: clarification=${row.id} assignment=${a.id} session=${row.reviewSessionId ?? "none"}`,
       );
-      await this.notifyEscalation(a, { ...row, resolution: "escalated_to_human" }, "复核会话未产出答复（失败或超时）").catch(() => undefined);
+      await this.notifyEscalation(
+        a,
+        { ...row, resolution: "escalated_to_human" },
+        "复核会话未产出答复（失败或超时）",
+      ).catch(() => undefined);
     }
   }
 
@@ -943,9 +974,11 @@ export class SopService {
   }
 
   private configTtl(envKey: string, fallback: number): number {
-    const raw = process.env[envKey];
-    if (!raw || !raw.trim()) return fallback;
-    const n = parseInt(raw, 10);
+    // ARCH-27：运行时读取经 ConfigService（键已在 app.module Joi 注册，
+    // 缺省回落 schema default）；兼容 Joi default 的 number 形态。
+    const raw = this.config.get<string | number>(envKey);
+    if (raw === undefined || raw === null || raw === "") return fallback;
+    const n = typeof raw === "number" ? raw : parseInt(raw, 10);
     return Number.isFinite(n) && n > 0 ? n : fallback;
   }
 
@@ -973,14 +1006,16 @@ export class SopService {
       where: { sopId, version },
     });
     if (!v) return [];
-    const fm = v.frontMatterJson as
-      | { acceptance?: Array<{ kind?: string; task?: string }> }
-      | null;
+    const fm = v.frontMatterJson as {
+      acceptance?: Array<{ kind?: string; task?: string }>;
+    } | null;
     const items = Array.isArray(fm?.acceptance) ? fm!.acceptance : [];
     return [
       ...new Set(
         items
-          .filter((it) => it?.kind === "platform" && typeof it.task === "string")
+          .filter(
+            (it) => it?.kind === "platform" && typeof it.task === "string",
+          )
           .map((it) => it.task as string),
       ),
     ];
@@ -992,7 +1027,10 @@ export class SopService {
     executorResult: Record<string, unknown> | null,
   ): Promise<void> {
     try {
-      const taskIds = await this.acceptancePlatformTaskIds(a.sopId, a.sopVersion);
+      const taskIds = await this.acceptancePlatformTaskIds(
+        a.sopId,
+        a.sopVersion,
+      );
       // P7e 前半：isolated-runner 档的执行器会在交付时附上直接执行证据
       // （isolatedRun）——提示复核会话可以拿它辅助判断，但纪律不变：
       // 它仍是 untrustedResult 的一部分，是对方的自述而非事实。
