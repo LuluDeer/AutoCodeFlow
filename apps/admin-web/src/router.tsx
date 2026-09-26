@@ -31,6 +31,8 @@ const ExecutionsPage = lazy(() => import('./pages/ExecutionsPage'));
 const ProjectsPage = lazy(() => import('./pages/ProjectsPage'));
 // P5/P6: SOP 管理（全 ADMIN-only——发布权 = 间接指令注入权）
 const SopsPage = lazy(() => import('./pages/SopsPage'));
+// P2 遗留补齐: Agent 会话查看面（全 ADMIN-only——会话能改系统状态）
+const AgentSessionsPage = lazy(() => import('./pages/AgentSessionsPage'));
 
 const withSuspense = (children: ReactNode) => (
   <Suspense fallback={<PageFallback />}>{children}</Suspense>
@@ -87,6 +89,7 @@ export const router = createBrowserRouter(
         { path: 'applications/:id', element: withSuspense(<ApplicationDetailPage />) },
         { path: 'executor-packages', element: <RequireAdmin>{withSuspense(<ExecutorPackagesPage />)}</RequireAdmin> },
         { path: 'sops', element: <RequireAdmin>{withSuspense(<SopsPage />)}</RequireAdmin> },
+        { path: 'agent-sessions', element: <RequireAdmin>{withSuspense(<AgentSessionsPage />)}</RequireAdmin> },
       ],
     },
   ],

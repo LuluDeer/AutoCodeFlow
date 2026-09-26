@@ -47,6 +47,8 @@ export interface SopAssignment {
   lastProgressAt: string | null;
   progressJson: Record<string, unknown> | null;
   attempt: number;
+  /** 澄清回复投递游标（P7d 双端 ACK）：执行器确认后推进。 */
+  lastReplyDeliveredAt: string | null;
   capabilitySnapshotJson: Record<string, unknown> | null;
   permissionProfileAtPull: string | null;
   assignedBy: string;

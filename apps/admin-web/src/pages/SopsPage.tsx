@@ -258,6 +258,15 @@ export default function SopsPage() {
                                   #{c.round} · {c.resolution ?? 'pending'}
                                 </Text>
                                 {c.newSopVersion && <Tag style={{ marginLeft: 8 }}>→ {c.newSopVersion}</Tag>}
+                                {/* P7d 双端 ACK：回复经 poll 投递、执行器消费后确认；
+                                    游标（lastReplyDeliveredAt）推进过该行才算确认——
+                                    未确认的回复会随执行器每次 poll 重发 */}
+                                {c.resolution !== null && (
+                                  a.lastReplyDeliveredAt !== null &&
+                                  new Date(a.lastReplyDeliveredAt).getTime() >= new Date(c.updatedAt).getTime()
+                                    ? <Tag style={{ marginLeft: 8 }} color="green">{t('sops.replyAcked')}</Tag>
+                                    : <Tag style={{ marginLeft: 8 }} color="orange">{t('sops.replyAwaitingAck')}</Tag>
+                                )}
                                 {/* P6 升级环收口：escalated/pending 的澄清可由人答复——
                                     与中台 Agent 共用同一道服务层 replyClarification 闸门 */}
                                 {(c.resolution === null || c.resolution === 'escalated_to_human') && (

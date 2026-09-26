@@ -109,7 +109,7 @@
 | 挂起/恢复机制 | 可重入的 `run()`（从 DB 重建 messages） | ✅ |
 | 指标 | 5 项（sessions/tokens/tool_calls/denied/budget_exceeded） | ✅ |
 | HTTP 面 | 会话列表/详情/创建/恢复/预算（全部 ADMIN-only） | ✅ |
-| Admin Web 会话查看页 | 只读视图 | ⏳ 留待 P3 一并做（先有数据再看） |
+| Admin Web 会话查看页 | 只读视图 | ✅ 已实现（2026-09-26 补齐，见 §9.12） |
 
 ### 实现中的关键判断
 
@@ -601,6 +601,28 @@ harness 缺陷）；desktop `test:main` **31 套全绿**（+assignment-journal 1
 目前只发生在交付时刻一次——按平台任务语义的常驻执行（调度/重试/守护）仍走既有
 deploy 通道，属 P7d 后半的端到端闭环；`codeExecution=host` 与 `isolated-runner` 的组合
 会被沙箱如实拒绝（host 档仍未实现）。
+
+### 9.12 可见性收口（2026-09-26）：Agent 会话查看页 + 澄清投递状态 ✅
+
+> **产物**：admin-web `AgentSessionsPage`（P2 遗留的「会话查看页」——此前 HTTP 面已
+> 存在但**无任何 UI 消费**，运维只能查库）+ SopsPage 澄清回复的投递/确认状态 +
+> 交付复核会话提示可参考 `isolatedRun` 证据（纪律不变：仍按不可信自述对待）。
+
+| 任务 | 说明 | 状态 |
+|---|---|---|
+| Agent 会话列表 | kind/status 筛选 + 用量列（步/令牌/工具调用）+ 生效预算行（`GET /agent/budget`）；ADMIN-only 路由门控 + 菜单隐藏 | ✅ |
+| 会话详情抽屉 | 推理步骤（逐条 provider/model/令牌/时延——「这一步是谁答的」）、工具调用（tier/status/args/denied 理由）、子会话（澄清/交付复核的因果链）、scope/context/result JSON | ✅ |
+| 恢复动作 | 唯一写动作；沿用服务端终态守卫（succeeded/aborted 拒绝）；走与首次运行同一条可重入链路 | ✅ |
+| 澄清投递状态 | SopsPage 澄清条目按游标 `lastReplyDeliveredAt` 显示「执行器已确认 / 待执行器确认」——未确认的回复正在随 poll 重发，运维可据此判断环卡在哪一端 | ✅ |
+| 复核证据提示 | `spawnVerificationSession` 在回报含 `isolatedRun` 时提示复核会话可参考（exitCode/durationMs/输出摘要），不改变「独立验证」的职责边界 | ✅ |
+
+**关键判断**：中台 Agent 的行为留痕（`agent_sessions`/`agent_steps`/`agent_tool_calls`）
+自 P2 起落库、HTTP 面自 P2 起暴露，但没有 UI 就是「功能不可用」（同 P7c 的
+agentEnabled 教训）；本轮只做**读 + 恢复**，不新增任何绕过闸门的操作面。
+
+**验收**：admin-web tsc 0 + build 绿 + lint 0 errors + i18n 守卫通过（usageOf 的硬编码
+中文被扫出后改走 i18n）+ vitest **1265 项全绿**（含 zh/en key 对齐）；admin-api tsc 0 +
+nest build 绿；`agent-sop-check` **131 项**（+1 isolatedRun 提示断言）。
 
 ## 10. 立即可开工的建议
 
