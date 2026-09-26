@@ -2640,6 +2640,22 @@ export default {
   // P7d: clarification reply delivery state (acked once the cursor advances)
   'sops.replyAcked': 'Acknowledged by executor',
   'sops.replyAwaitingAck': 'Awaiting executor ack',
+  // SOP operations: assign dialog + re-dispatch + media visibility
+  'sops.assign': 'Assign',
+  'sops.assignTitle': 'Assign SOP',
+  'sops.assignHint': 'Only published SOPs can be assigned; executors are filtered by the current agent capability lease (valid for 2 minutes)',
+  'sops.assignVersion': 'Version',
+  'sops.assignExecutorPlaceholder': 'Pick an executor (only machines with agent:sop inside the lease)',
+  'sops.assignEmpty': 'No executor can take assignments — enable the Agent on a desktop first (capability lease renews every 30s, expires in 2 minutes)',
+  'sops.assignSubmit': 'Assign',
+  'sops.assignOk': 'Assigned (the executor will pick it up on its next poll)',
+  'sops.assignFailed': 'Assign failed (check the executor capability lease and the SOP version)',
+  'sops.assignNote': 'Executors pick up assignments via agent-collab poll; maxRounds is snapshotted from the SOP front-matter at assign time.',
+  'sops.reassign': 'Re-assign',
+  'sops.mediaTitle': 'Uploaded media (screenshots / recordings)',
+  'sops.mediaView': 'View',
+  'sops.mediaViewFailed': 'Failed to open media',
+  'sops.mediaRefsLabel': 'Attachments',
 
   // ── P2 leftover: Agent sessions view (AgentSessionsPage, ADMIN-only) ──
   'nav.agents': 'Agent sessions',

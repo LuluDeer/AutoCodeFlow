@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
+  Alert,
   Button,
   Drawer,
   Input,
   message,
   Modal,
+  Select,
   Space,
   Table,
   Tabs,
@@ -17,7 +19,14 @@ import type { ColumnsType } from 'antd/es/table';
 
 import PageHeader from '../components/PageHeader';
 import { sopsApi } from '../api/sops';
-import type { Sop, SopAssignment, SopClarification, SopVersion } from '../api/sops';
+import type {
+  AssignableExecutor,
+  Sop,
+  SopAssignment,
+  SopClarification,
+  SopMedia,
+  SopVersion,
+} from '../api/sops';
 
 /**
  * P5/P6：SOP 管理页（ADMIN-only）。
@@ -67,6 +76,13 @@ export default function SopsPage() {
     amendedYaml: '',
   });
   const [replying, setReplying] = useState(false);
+  // 指派对话框（P5 核心动作此前无 UI 入口）：版本 + 租约内可接单执行器
+  const [assignTarget, setAssignTarget] = useState<Sop | null>(null);
+  const [assignForm, setAssignForm] = useState<{ version: string; executorId: string }>({ version: '', executorId: '' });
+  const [assignable, setAssignable] = useState<AssignableExecutor[]>([]);
+  const [assigning, setAssigning] = useState(false);
+  // 指派媒体（截图/录屏——执行器回传的证据，此前在 UI 不可见）
+  const [media, setMedia] = useState<Record<string, SopMedia[]>>({});
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -92,15 +108,65 @@ export default function SopsPage() {
       setVersions(vs);
       setAssignments(asg);
       const clars: Record<string, SopClarification[]> = {};
+      const med: Record<string, SopMedia[]> = {};
       await Promise.all(
         asg.map(async (a) => {
           const d = await sopsApi.assignment(a.id);
           clars[a.id] = d.clarifications;
+          // 媒体清单失败不阻断详情（单指派 best-effort）
+          try {
+            med[a.id] = await sopsApi.assignmentMedia(a.id);
+          } catch {
+            med[a.id] = [];
+          }
         }),
       );
       setClarifications(clars);
+      setMedia(med);
     } catch {
       message.error(t('sops.loadFailed'));
+    }
+  }, [t]);
+
+  // 打开指派对话框：拉当前租约内可接单的执行器（空 = 没有机器开着 Agent）
+  const openAssign = useCallback(async (sop: Sop, prefillVersion?: string) => {
+    setAssignTarget(sop);
+    setAssignForm({ version: prefillVersion || sop.currentVersion || '', executorId: '' });
+    setAssignable([]);
+    try {
+      setAssignable(await sopsApi.listAssignableExecutors());
+    } catch {
+      message.error(t('sops.assignFailed'));
+    }
+  }, [t]);
+
+  const submitAssign = useCallback(async () => {
+    if (!assignTarget || !assignForm.executorId) return;
+    setAssigning(true);
+    try {
+      await sopsApi.assign(assignTarget.id, {
+        version: assignForm.version || undefined,
+        executorId: assignForm.executorId,
+      });
+      message.success(t('sops.assignOk'));
+      setAssignTarget(null);
+      if (detail) await openDetail(detail);
+      void load();
+    } catch {
+      message.error(t('sops.assignFailed'));
+    } finally {
+      setAssigning(false);
+    }
+  }, [assignTarget, assignForm, detail, openDetail, load, t]);
+
+  /** 查看澄清附件：平台路径 /api/agent-collab/media/<id> → 取 id 经鉴权 blob 打开 */
+  const viewClarificationMedia = useCallback(async (platformPath: string) => {
+    const id = /media\/([^/]+)$/.exec(platformPath)?.[1];
+    if (!id) return;
+    try {
+      await sopsApi.viewMedia(id);
+    } catch {
+      message.error(t('sops.mediaViewFailed'));
     }
   }, [t]);
 
@@ -177,6 +243,18 @@ export default function SopsPage() {
       render: (_, a) => `${a.clarificationRound}/${a.maxRounds}`,
     },
     { title: t('sops.col.updatedAt'), dataIndex: 'updatedAt', width: 170, render: (v: string) => new Date(v).toLocaleString() },
+    {
+      title: t('sops.col.actions'),
+      width: 90,
+      // 重派：失败/停滞/取消的工单一键换机重发（预填原版本）——运维此前
+      // 只能 curl assign 端点
+      render: (_, a) =>
+        ['failed', 'stalled', 'cancelled'].includes(a.status) && detail ? (
+          <Button size="small" onClick={() => void openAssign(detail, a.sopVersion)}>
+            {t('sops.reassign')}
+          </Button>
+        ) : null,
+    },
   ];
 
   return (
@@ -246,7 +324,37 @@ export default function SopsPage() {
                 label: t('sops.tab.assignments'),
                 children: (
                   <>
+                    <Space style={{ marginBottom: 12 }}>
+                      <Button
+                        type="primary"
+                        size="small"
+                        disabled={detail.status !== 'published'}
+                        onClick={() => void openAssign(detail)}
+                      >
+                        {t('sops.assign')}
+                      </Button>
+                      <Text type="secondary">{t('sops.assignHint')}</Text>
+                    </Space>
                     <Table<SopAssignment> rowKey="id" columns={assignmentColumns} dataSource={assignments} pagination={false} size="small" />
+                    {assignments.some((a) => (media[a.id]?.length ?? 0) > 0) && (
+                      <div style={{ marginTop: 16 }}>
+                        <Text strong>{t('sops.mediaTitle')}</Text>
+                        {assignments
+                          .filter((a) => (media[a.id]?.length ?? 0) > 0)
+                          .flatMap((a) =>
+                            (media[a.id] ?? []).map((m) => (
+                              <div key={m.id} style={{ marginTop: 4 }}>
+                                <Button size="small" onClick={() => void sopsApi.viewMedia(m.id).catch(() => message.error(t('sops.mediaViewFailed')))}>
+                                  {t('sops.mediaView')}
+                                </Button>
+                                <Text style={{ marginLeft: 8 }}>
+                                  {m.name} · {Math.round(m.sizeBytes / 1024)}KB · {new Date(m.createdAt).toLocaleString()}
+                                </Text>
+                              </div>
+                            )),
+                          )}
+                      </div>
+                    )}
                     {assignments.some((a) => (clarifications[a.id]?.length ?? 0) > 0) && (
                       <div style={{ marginTop: 16 }}>
                         {assignments
@@ -279,6 +387,22 @@ export default function SopsPage() {
                                   </Button>
                                 )}
                                 <Paragraph style={{ marginBottom: 4 }}>{c.question}</Paragraph>
+                                {/* 澄清附件（截图/录屏）——此前在 UI 不可见，复核全凭文字 */}
+                                {(c.mediaRefsJson?.length ?? 0) > 0 && (
+                                  <Paragraph style={{ marginBottom: 4 }}>
+                                    <Text type="secondary">{t('sops.mediaRefsLabel')}：</Text>
+                                    {(c.mediaRefsJson ?? []).map((ref) => (
+                                      <Button
+                                        key={ref.url}
+                                        size="small"
+                                        style={{ marginRight: 8 }}
+                                        onClick={() => void viewClarificationMedia(ref.url)}
+                                      >
+                                        {t('sops.mediaView')} · {ref.kind}
+                                      </Button>
+                                    ))}
+                                  </Paragraph>
+                                )}
                                 {c.answer && (
                                   <Paragraph type="secondary" style={{ marginBottom: 0 }}>
                                     {c.answer}
@@ -362,6 +486,45 @@ export default function SopsPage() {
               onChange={(e) => setReply({ ...reply, amendedYaml: e.target.value })}
             />
           )}
+        </Space>
+      </Modal>
+      <Modal
+        title={t('sops.assignTitle')}
+        open={assignTarget !== null}
+        onOk={() => void submitAssign()}
+        onCancel={() => setAssignTarget(null)}
+        confirmLoading={assigning}
+        width={620}
+        okText={t('sops.assignSubmit')}
+        okButtonProps={{ disabled: !assignForm.executorId }}
+      >
+        <Space direction="vertical" style={{ width: '100%' }} size="small">
+          {assignable.length === 0 && (
+            <Alert type="warning" showIcon message={t('sops.assignEmpty')} />
+          )}
+          <Select
+            style={{ width: '100%' }}
+            placeholder={t('sops.assignVersion')}
+            value={assignForm.version || undefined}
+            onChange={(v) => setAssignForm({ ...assignForm, version: v })}
+            options={versions.map((v) => ({
+              value: v.version,
+              label: `${v.version} (${v.contentHash.slice(0, 8)}…)`,
+            }))}
+          />
+          <Select
+            style={{ width: '100%' }}
+            showSearch
+            optionFilterProp="label"
+            placeholder={t('sops.assignExecutorPlaceholder')}
+            value={assignForm.executorId || undefined}
+            onChange={(v) => setAssignForm({ ...assignForm, executorId: v })}
+            options={assignable.map((e) => ({
+              value: e.id,
+              label: `${e.appName} (${e.address}) · ${e.agentCapabilities.join(',')}`,
+            }))}
+          />
+          <Text type="secondary">{t('sops.assignNote')}</Text>
         </Space>
       </Modal>
     </div>

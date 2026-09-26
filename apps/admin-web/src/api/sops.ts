@@ -72,6 +72,27 @@ export interface SopClarification {
   updatedAt: string;
 }
 
+export interface SopMedia {
+  id: string;
+  assignmentId: string;
+  name: string;
+  mime: string | null;
+  sizeBytes: number;
+  storedPath: string;
+  uploadedBy: string;
+  createdAt: string;
+}
+
+/** 指派可选执行器（P7c 租约投影：只含当前租约内声明 agent:sop 的机器）。 */
+export interface AssignableExecutor {
+  id: string;
+  appName: string;
+  address: string;
+  status: string;
+  lastHeartbeat: string | null;
+  agentCapabilities: string[];
+}
+
 export const sopsApi = {
   list: (params?: { status?: string; page?: number; pageSize?: number }) =>
     client.get('/sop', { params }) as Promise<{ items: Sop[]; total: number }>,
@@ -114,4 +135,22 @@ export const sopsApi = {
       `/sop/assignments/${assignmentId}/clarifications/${clarificationId}/reply`,
       data,
     ) as Promise<{ ok: boolean; newSopVersion?: string }>,
+  /** 指派可选执行器（租约内 agent:sop 的机器；空 = 没有机器开着 Agent）。 */
+  listAssignableExecutors: () =>
+    client.get('/sop/assignable-executors') as Promise<AssignableExecutor[]>,
+  /** 指派的媒体清单（截图/录屏）。 */
+  assignmentMedia: (assignmentId: string) =>
+    client.get(`/sop/assignments/${assignmentId}/media`) as Promise<SopMedia[]>,
+  /**
+   * 查看媒体：blob 请求 + objectURL 新开页（直链无法携带鉴权头会 401，
+   * 与 artifacts 的 download() 同一写法；浏览器能内联显示 png/webm）。
+   */
+  viewMedia: async (mediaId: string): Promise<void> => {
+    const blob = await client.get<Blob>(`/sop/media/${mediaId}`, {
+      responseType: 'blob',
+    } as never);
+    const url = URL.createObjectURL(blob);
+    window.open(url, '_blank', 'noopener');
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  },
 };

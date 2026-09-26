@@ -811,6 +811,9 @@ console.log("\n── 4. 协作 API（11 §3/§5）──");
   check("pollPending 投递 clarification_reply 条目（P6 保留游标 → P7d 启用）", /kind: "clarification_reply"/.test(svcSrc));
   check("投递不推游标、ACK 才推（至少一次投递语义）", /pendingReplyItems/.test(svcSrc) && /ackClarificationReply/.test(svcSrc));
   check("游标单调推进（乱序 ACK 不回退）", /a\.lastReplyDeliveredAt < stamp/.test(svcSrc));
+  // 指派面：列表投影刻意剥离短效租约字段，指派对话框走独立端点按租约过滤
+  check("assignable-executors 端点存在（指派对话框的数据源）", /@Get\("assignable-executors"\)/.test(readFileSync(join(apiDir, "src/modules/sop/sop.controller.ts"), "utf8")));
+  check("可指派执行器复用 getAgentCapabilities 租约判定（不另造 TTL 语义）", /listSopCapableExecutors[\s\S]{0,600}getAgentCapabilities\(e\.id\)/.test(readFileSync(join(apiDir, "src/modules/executor/executor.service.ts"), "utf8")));
 
   // ── P7b 残差补齐：agent_media 保留清理（行为测试，真实临时目录）──
   {
