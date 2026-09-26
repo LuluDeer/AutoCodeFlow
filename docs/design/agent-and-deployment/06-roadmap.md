@@ -525,7 +525,7 @@
 
 **验收**：desktop `test:main` 全链通过（新增 GUI 权限/拒绝、Windows driver、运行时观察和状态展示自检）；主进程 TypeScript、renderer build/selftest 均通过。Windows 原生冒烟验证了当前窗口聚焦与拒绝路径；实际点击、输入和成功截图需在授权应用的交互桌面进行真机验收。
 
-**残差**：中台 `sopPolicy.permissionPolicy` 默认 `standard`，会把本地 `app-scoped` 钳回 `none`；启用 GUI 须显式放宽中台上限。macOS/Linux GUI 后端尚未适配，能力上报会如实不含 `gui`。应用白名单当前按进程名精确匹配，不能把它当作进程签名或可执行文件路径校验；企业部署若要求更强应用身份约束，需要在后续切片增加路径/签名绑定。崩溃后已领取指派的重领、澄清回复的持久恢复与确认投递，以及包→审批→部署的真实闭环属 P7d；后者仍待具备 LLM 与部署环境后验证。
+**残差**：中台 `sopPolicy.permissionPolicy` 默认 `standard`，会把本地 `app-scoped` 钳回 `none`；启用 GUI 须显式放宽中台上限。Linux GUI 后端已完成侦察（[12-executor-gui-linux.md](./12-executor-gui-linux.md)：结论 = X11/XWayland 后端可行、Wayland 原生窗口如实不支持，口径 ~2.5 天，未立项实施）；macOS GUI 后端尚未适配——两者能力上报均如实不含 `gui`。应用白名单当前按进程名精确匹配，不能把它当作进程签名或可执行文件路径校验；企业部署若要求更强应用身份约束，需要在后续切片增加路径/签名绑定。崩溃后已领取指派的重领、澄清回复的持久恢复与确认投递，以及包→审批→部署的真实闭环属 P7d；后者仍待具备 LLM 与部署环境后验证。
 
 ### 9.10 P7d 执行器侧鲁棒性切片（2026-09-26）：澄清闭环 + 崩溃恢复 ✅
 
