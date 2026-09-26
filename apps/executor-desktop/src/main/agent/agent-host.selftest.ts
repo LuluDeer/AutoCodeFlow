@@ -59,12 +59,15 @@ function makeCenter(opts: {
   pollScript?: Array<{ items: unknown[]; sopPolicy?: unknown }>;
   /** P7d：首次 ACK 回 500（重发去重路径）。 */
   failFirstAck?: boolean;
+  /** P7d：澄清上报前 N 次回 503（发送失败重试路径；N=2 才能观察跨 tick 重试）。 */
+  failClarifyTimes?: number;
 }) {
   const requests: Array<{ path: string; body: Record<string, unknown> }> = [];
   const llmQueue = [...opts.llmScript];
   const pollQueue = opts.pollScript ? [...opts.pollScript] : null;
   let assignmentSent = false;
   const ackCalls: string[] = [];
+  const clarifyCalls: Array<Record<string, unknown>> = [];
   const server = http.createServer((req, res) => {
     const chunks: Buffer[] = [];
     req.on('data', (c: Buffer) => chunks.push(c));
@@ -142,7 +145,14 @@ function makeCenter(opts: {
         return;
       }
       if (p === '/api/agent-collab/clarifications') {
-        reply({ ok: true, escalated: false, round: 1 });
+        clarifyCalls.push(body);
+        const failTimes = opts.failClarifyTimes ?? 0;
+        if (clarifyCalls.length <= failTimes) {
+          res.writeHead(503, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ message: 'clarify boom' }));
+          return;
+        }
+        reply({ ok: true, escalated: false, round: clarifyCalls.length });
         return;
       }
       reply({ ok: true });
@@ -198,6 +208,7 @@ function seedJournal(workDir: string, over: Partial<AssignmentJournal> = {}): vo
     replies: [],
     counters: { iterations: 0, clarifications: 0, trialRuns: 0, dependencyInstalls: 0, startedAt: Date.now() },
     guiActionsUsed: 0,
+    lastSendError: null,
     updatedAt: new Date().toISOString(),
     ...over,
   };
@@ -587,6 +598,44 @@ async function main(): Promise<void> {
     check('证据留在工作区 isolated-runs/（打包排除，不污染候选包）',
       fs.existsSync(path.join(workDir, 'agent-workspace', ASSIGNMENT_ID, 'isolated-runs', 'run-1.log')));
     check('lastOutcome 记录 delivered', host.stats.lastOutcome === 'delivered');
+    check('交付后日志清理', loadAssignmentJournal(journalDirFor(workDir), ASSIGNMENT_ID) === null);
+    await center.close();
+  }
+
+  console.log('-- 15. 澄清发送失败：按幂等键重试（同 tick 快恢复 + 跨 tick 兜底）--');
+  {
+    const workDir = newWorkDir();
+    const center = makeCenter({
+      llmScript: [PLAN_BAD, DIAG_CLARIFY, PLAN_OK],
+      failClarifyTimes: 2, // 连败两次：同 tick 重试也失败，才能观察跨 tick 持久化
+      pollScript: [
+        { items: [{ kind: 'assignment', assignmentId: ASSIGNMENT_ID, sop: SOP_PAYLOAD }] },
+        { items: [] }, // 无待办——触发重试路径
+        { items: [replyItem()] },
+      ],
+    });
+    const baseUrl = await center.listen();
+    const client = new CollabClient({ baseUrl, token: 't', timeoutMs: 5000 });
+    const host = new AgentHost({ address: 'a:1', workDir, getConfig: () => makeConfig(baseUrl), client });
+    await host.tick(); // 领单 → 澄清 → 发送失败 → 同 tick 重试仍失败
+    const j1 = loadAssignmentJournal(journalDirFor(workDir), ASSIGNMENT_ID);
+    check('两次失败都发生（同 tick 快恢复先试了一次）',
+      center.requests.filter((q) => q.path === '/api/agent-collab/clarifications').length === 2);
+    check('持续失败被记录（lastSendError 持久化）',
+      j1?.phase === 'awaiting_reply' && (j1?.lastSendError ?? '').length > 0);
+    check('两次失败沿用同一个幂等键',
+      (center.requests.filter((q) => q.path === '/api/agent-collab/clarifications')[0]?.body.clientClarificationId) ===
+      (center.requests.filter((q) => q.path === '/api/agent-collab/clarifications')[1]?.body.clientClarificationId));
+    await host.tick(); // 无待办 tick → 跨 tick 重试（成功）
+    const j2 = loadAssignmentJournal(journalDirFor(workDir), ASSIGNMENT_ID);
+    const clarifies = center.requests.filter((q) => q.path === '/api/agent-collab/clarifications');
+    check('跨 tick 重试发出第三次请求', clarifies.length === 3);
+    check('三次请求同一个幂等键（服务端去重不产生第二条澄清）',
+      clarifies[0]?.body.clientClarificationId === clarifies[2]?.body.clientClarificationId);
+    check('成功后 lastSendError 清除', j2?.lastSendError === null);
+    await host.tick(); // 回复到达 → 续跑交付
+    const complete = center.requests.find((q) => q.path.endsWith('/complete'));
+    check('重试成功后链路照常走完（completed）', complete?.body.status === 'completed');
     check('交付后日志清理', loadAssignmentJournal(journalDirFor(workDir), ASSIGNMENT_ID) === null);
     await center.close();
   }

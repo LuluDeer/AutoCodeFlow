@@ -16,8 +16,11 @@ import { SchedulerService } from "../scheduler/scheduler.service";
 import { ExecutorService } from "../executor/executor.service";
 import {
   evaluateAssignmentTimeouts,
+  evaluateStuckClarifications,
   CLAIM_TTL_DEFAULT_MS,
   PROGRESS_TTL_DEFAULT_MS,
+  type ReviewSessionStatus,
+  type StuckClarificationInput,
 } from "./sop-timeout";
 
 import { Sop } from "./entities/sop.entity";
@@ -664,10 +667,16 @@ export class SopService {
     });
     if (!row)
       throw new NotFoundException(`澄清 ${input.clarificationId} 不存在`);
-    if (row.resolution) {
-      // 已处置过：幂等返回，不重复修订（同一轮两次回复 = 模型重试，无害）
+    if (row.resolution && row.resolution !== "escalated_to_human") {
+      // 已答复/已修订：幂等返回，不重复修订（同一轮两次回复 = 模型重试，无害）
       return { ok: true, newSopVersion: row.newSopVersion ?? undefined };
     }
+    // resolution=escalated_to_human 的行**允许再答**——这是人工接管的窗口：
+    // maxRounds 触顶或复核兜底都把 resolution 预置为 escalated，若这里幂等
+    // 短路，人答了也落不了库（P6 收口的答复路径对它要接管的行恰好失效）。
+    // 接管把 resolution 改为 answered/sop_amended；row.updatedAt 前移使投递
+    // 游标重新未覆盖——执行器尚未消费升级答复时，poll 到的就是接管答复。
+    // 若执行器已按升级答复终结指派，接管答复不再投递（恢复路径 = 重派）。
     if (
       !(SOP_CLARIFICATION_RESOLUTIONS as readonly string[]).includes(
         input.resolution,
@@ -850,6 +859,77 @@ export class SopService {
       );
       this.logger.warn(`SOP assignment progress stalled: id=${a.id}`);
       this.notifyTimeout(a, "进度心跳停滞（卡死嫌疑）").catch(() => undefined);
+    }
+
+    await this.sweepStuckClarifications();
+  }
+
+  /**
+   * 澄清复核兜底（11 §6「澄清无人回 → 转人工」）：复核会话终态/超时仍未
+   * 产出答复的澄清由扫描强制 escalated_to_human。没有这道兜底，复核会话
+   * 失败（LLM 不可用/预算触顶/进程崩溃）会让澄清行永远无 resolution、
+   * 指派永远 blocked——P7c 之前「投递不推进游标」是留待双端 ACK，而这里
+   * 是「永远不会有人回复」，两者都会让循环无声死锁。
+   *
+   * 兜底即 replyClarification(escalated) 的落库语义：resolution 置位 +
+   * blocked 解除——执行器经 poll 收到升级答复后如实回报 failed（P7d）。
+   */
+  private async sweepStuckClarifications(): Promise<void> {
+    const pending = await this.clarifications.find({
+      where: { resolution: IsNull() },
+      order: { createdAt: "ASC" },
+      take: 100,
+    });
+    if (pending.length === 0) return;
+
+    const reviewTtlMs = this.configTtl(
+      "SOP_CLARIFICATION_REVIEW_TTL_MS",
+      30 * 60 * 1000,
+    );
+    const inputs: StuckClarificationInput[] = [];
+    for (const c of pending) {
+      inputs.push({
+        clarificationId: c.id,
+        assignmentId: c.assignmentId,
+        createdAt: c.createdAt,
+        reviewSessionStatus: await this.reviewSessionStatus(c.reviewSessionId),
+      });
+    }
+    const stuck = evaluateStuckClarifications(inputs, Date.now(), reviewTtlMs);
+    for (const s of stuck) {
+      const row = pending.find((c) => c.id === s.clarificationId);
+      if (!row) continue;
+      const a = await this.assignments.findOne({
+        where: { id: row.assignmentId },
+      });
+      if (!a) continue;
+      await this.clarifications.update(
+        { id: row.id },
+        { resolution: "escalated_to_human" },
+      );
+      // blocked → in_progress：升级即复核完毕（与 replyClarification 同一
+      // 落库后态）；若执行器已失联，in_progress 会被失联扫描接住，不会再
+      // 被 blocked 的豁免挡住
+      if (a.status === "blocked") {
+        await this.assignments.update({ id: a.id }, { status: "in_progress" });
+      }
+      this.logger.warn(
+        `SOP clarification review stuck → escalated: clarification=${row.id} assignment=${a.id} session=${row.reviewSessionId ?? "none"}`,
+      );
+      await this.notifyEscalation(a, { ...row, resolution: "escalated_to_human" }, "复核会话未产出答复（失败或超时）").catch(() => undefined);
+    }
+  }
+
+  /** 复核会话状态只读投影；读不到（已清理等）按 null 处理——立即兜底。 */
+  private async reviewSessionStatus(
+    reviewSessionId: string | null,
+  ): Promise<ReviewSessionStatus | null> {
+    if (!reviewSessionId) return null;
+    try {
+      const session = await this.agentSessions.requireById(reviewSessionId);
+      return session.status as ReviewSessionStatus;
+    } catch {
+      return null;
     }
   }
 

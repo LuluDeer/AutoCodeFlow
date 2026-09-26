@@ -624,6 +624,37 @@ agentEnabled 教训）；本轮只做**读 + 恢复**，不新增任何绕过闸
 中文被扫出后改走 i18n）+ vitest **1265 项全绿**（含 zh/en key 对齐）；admin-api tsc 0 +
 nest build 绿；`agent-sop-check` **131 项**（+1 isolatedRun 提示断言）。
 
+### 9.13 收敛性切片（2026-09-26）：四个「无声死锁/泄漏」点 ✅
+
+> **产物**：澄清复核兜底（blocked 必有出口）+ 人工接管升级澄清（修 P6 收口死路）+
+> 执行器澄清发送失败重试（幂等键自愈）+ agent 媒体保留清理（P7b 注释了 30 天清理
+> 却从未实现——100MB/文件的无限累积）。全部由「沿链路推演故障」挖出，非外部报障。
+
+| 缺口 | 后果 | 修法 |
+|---|---|---|
+| **复核会话失败 → 澄清永远无 resolution** | LLM 不可用/预算触顶/会话崩溃/模型只给结论没调答复工具，澄清行永远 NULL、指派永远 blocked——两个 Agent 的循环无声死锁（11 §6「澄清无人回 → 转人工」从未实现） | `evaluateStuckClarifications`（纯判定）+ 同一 @Cron 扫描接线：会话终态/缺失立即兜底、running 超 `SOP_CLARIFICATION_REVIEW_TTL_MS`（默认 30min）兜底 → escalated_to_human + blocked 解除 + 通知 | 
+| **人工接管升级澄清被幂等短路吞掉** | P6 收口给升级行放了回复按钮，但 `replyClarification` 对 resolution 已置位的行幂等返回——升级行的 resolution 在入账时就已置 `escalated_to_human`，**人答了也落不了库**，答复路径对它要接管的行恰好失效 | 幂等豁免 `escalated_to_human`：接管把 resolution 改 answered/sop_amended，updatedAt 前移使投递游标重新未覆盖；已答复（非升级）行仍严格幂等 |
+| **澄清发送失败后执行器无限等** | `sendClarification` 网络失败时 journal 停在 awaiting_reply，中台从没收到澄清，指派最终被失联扫描误判 stalled | journal 记 `lastSendError`；同 tick 先试一次快恢复，跨 tick 用**同一个幂等键**重试（服务端去重保证不产生第二条澄清），成功后清除 |
+| **agent_media 无保留清理** | 截图/录屏单文件可达 100MB，sop-media 头注写了「30 天保留清理按目录整删」但清理服务从未存在 | `AgentMediaRetentionService`（对齐 ARCH-31 §5 维护任务先例：每日 @Cron + LeaderGate 门禁）：目录粒度磁盘回收 + DB 行同步删（不留下载 404 僵尸行）；`AGENT_MEDIA_RETENTION_DAYS` 默认 7（roadmap §11 决策值） |
+
+**关键判断**：
+
+| 判断 | 理由 |
+|---|---|
+| **succeeded 但没调答复工具的复核会话也兜底** | 「给出结论」≠「回复了执行器」——模型没调 sop_reply_clarification 时循环同样死锁；resolution 为 NULL 的 succeeded 行就是这种形态 |
+| **接管豁免只对 escalated 行开放** | answered/sop_amended 行保持严格幂等（模型重试无害）；escalated 是唯一「人在环」状态，允许改写才有接管语义 |
+| **接管答复不保证送达** | 执行器可能已按升级答复终结指派——此时接管只更新行（Admin Web 可见），恢复路径是重派；不为此引入「复活终态指派」的复杂度 |
+| **重试沿用原幂等键** | 服务端 ingestClarification 按 clientClarificationId 去重——重试天然幂等，不需要额外的去抖状态 |
+
+**验收**：`agent-sop-check` **142 项**（+11：兜底纯判定 4 / sweep 行为 3 / 接管 2 / 媒体
+清理行为 4——真实临时目录验证整删与 DB 行同步）；desktop `test:main` **32 套全绿**
+（agent-host e2e +第 15 节：同 tick 快恢复 + 跨 tick 重试 + 三请求同幂等键）；admin-api
+tsc 0 + nest build 绿 + lint gates 绿；env 三处文档同步（TTL/保留期两键）。
+
+**残差（如实）**：SopsPage 对「已按升级终结的指派」尚无重派按钮（客户端已有
+`sopsApi.assign`，属小 UI 增量）；媒体清理的 DB 行删除按 assignmentId 整批（部分
+文件超龄部分未超龄的目录按最旧文件判定整删——媒体是证据集合，不拆单文件）。
+
 ## 10. 立即可开工的建议
 
 **本轮我建议先做 P0**，理由：

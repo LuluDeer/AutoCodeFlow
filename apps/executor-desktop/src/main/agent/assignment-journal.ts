@@ -62,6 +62,11 @@ export interface AssignmentJournal {
   counters: GateCounters | null;
   /** 续跑期间累计的 GUI 动作数（40 上限按指派累计，不随续跑清零）。 */
   guiActionsUsed: number;
+  /**
+   * 澄清发送失败的原因（null = 已送达或无待发）。非空时 tick 会用**同一个**
+   * clientClarificationId 重试——幂等键保证重试不会产生第二条澄清。
+   */
+  lastSendError: string | null;
   updatedAt: string;
 }
 
@@ -103,6 +108,7 @@ export function loadAssignmentJournal(dir: string, assignmentId: string): Assign
       asked: Array.isArray(parsed.asked) ? parsed.asked : [],
       replies: Array.isArray(parsed.replies) ? parsed.replies : [],
       guiActionsUsed: typeof parsed.guiActionsUsed === 'number' ? parsed.guiActionsUsed : 0,
+      lastSendError: typeof parsed.lastSendError === 'string' ? parsed.lastSendError : null,
     };
   } catch {
     return null;

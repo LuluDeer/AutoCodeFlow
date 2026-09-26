@@ -225,6 +225,9 @@ export class AgentHost {
         await this.processAssignment(assignment);
         worked = true;
       }
+      // 发送失败的澄清按幂等键重试（网络抖动的自愈——服务端按
+      // clientClarificationId 去重，重试绝不产生第二条澄清）
+      if (await this.retryPendingClarificationSends()) worked = true;
       return {
         worked,
         ...(worked ? { detail: assignment ? `assignment ${assignment.assignmentId} processed` : 'clarification replies consumed' } : {}),
@@ -326,6 +329,7 @@ export class AgentHost {
       replies: existing?.replies ?? [],
       counters: existing?.counters ?? null,
       guiActionsUsed: existing?.guiActionsUsed ?? 0,
+      lastSendError: existing?.lastSendError ?? null,
       updatedAt: new Date().toISOString(),
     };
     try {
@@ -393,6 +397,7 @@ export class AgentHost {
     }
     journal.phase = 'running';
     journal.pendingQuestion = null;
+    journal.lastSendError = null; // 悬而未决的提问已被回复，发送错误随之作废
     try {
       saveAssignmentJournal(dir, journal);
     } catch {
@@ -680,25 +685,7 @@ export class AgentHost {
       } catch {
         /* 落盘失败仍发送：本轮窗口内崩溃会丢恢复点，但澄清链路不断 */
       }
-      const sent = await this.deps.client.sendClarification(this.deps.address, {
-        assignmentId,
-        clientClarificationId,
-        question,
-        targetAgentSessionId: assignmentId,
-      });
-      if (sent.ok && sent.escalated) {
-        // 中台 maxRounds 触顶已强制升级——不会再有回复，如实终结本单
-        this.stats.lastOutcome = 'escalated_to_human';
-        const reported = await this.deps.client.reportComplete(this.deps.address, assignmentId, {
-          status: 'failed',
-          attempt: 1,
-          result: {
-            outcome: 'escalated_to_human',
-            stopMessage: `澄清轮次触顶（第 ${sent.round ?? result.clarifications} 轮），已升级人工`,
-          },
-        });
-        if (reported.ok) clearAssignmentJournal(dir, assignmentId);
-      }
+      await this.sendClarificationForJournal(journal);
       return;
     }
 
@@ -717,6 +704,82 @@ export class AgentHost {
       },
     });
     if (reported.ok) clearAssignmentJournal(dir, assignmentId);
+  }
+
+  /**
+   * 发送（或按幂等键重试）日志里未送达的澄清。
+   * 成功：清除 lastSendError；若中台侧已触顶升级（escalated=true），如实
+   * 终结本单。失败：记录原因，下个 tick 重试——幂等键不变，中台去重。
+   */
+  private async sendClarificationForJournal(journal: AssignmentJournal): Promise<void> {
+    const dir = this.journalDir();
+    const assignmentId = journal.assignmentId;
+    const outstanding = this.outstandingAsk(journal);
+    if (!outstanding) return;
+    const sent = await this.deps.client.sendClarification(this.deps.address, {
+      assignmentId,
+      clientClarificationId: outstanding.clientClarificationId,
+      question: outstanding.question,
+      targetAgentSessionId: assignmentId,
+    });
+    if (sent.ok) {
+      if (journal.lastSendError !== null) {
+        journal.lastSendError = null;
+        try {
+          saveAssignmentJournal(dir, journal);
+        } catch {
+          /* 清除失败无害——下次发送成功再清 */
+        }
+      }
+      if (sent.escalated) {
+        // 中台 maxRounds 触顶已强制升级——不会再有回复，如实终结本单
+        this.stats.lastOutcome = 'escalated_to_human';
+        const reported = await this.deps.client.reportComplete(this.deps.address, assignmentId, {
+          status: 'failed',
+          attempt: 1,
+          result: {
+            outcome: 'escalated_to_human',
+            stopMessage: `澄清轮次触顶（第 ${sent.round ?? outstanding.round} 轮），已升级人工`,
+          },
+        });
+        if (reported.ok) clearAssignmentJournal(dir, assignmentId);
+      }
+      return;
+    }
+    journal.lastSendError = (sent.error ?? 'clarification send failed').slice(0, 200);
+    try {
+      saveAssignmentJournal(dir, journal);
+    } catch {
+      /* 落盘失败则退化为「无重试」——与旧行为一致 */
+    }
+  }
+
+  /** 未获得回复的最近一次提问（重试只针对它；无则返回 null）。 */
+  private outstandingAsk(journal: AssignmentJournal): JournalAsked | null {
+    for (let i = journal.asked.length - 1; i >= 0; i--) {
+      const a = journal.asked[i];
+      if (!journal.replies.some((r) => r.clientClarificationId === a.clientClarificationId)) {
+        return a;
+      }
+    }
+    return null;
+  }
+
+  /** 重试所有发送失败的澄清。返回是否发生了重试动作。 */
+  private async retryPendingClarificationSends(): Promise<boolean> {
+    let retried = false;
+    try {
+      for (const journal of listAssignmentJournals(this.journalDir())) {
+        if (journal.phase !== 'awaiting_reply' || journal.lastSendError === null) continue;
+        if (!this.outstandingAsk(journal)) continue;
+        this.stats.lastOutcome = 'clarification_send_retry';
+        await this.sendClarificationForJournal(journal);
+        retried = true;
+      }
+    } catch {
+      /* 日志扫描失败就跳过——下个 tick 再试 */
+    }
+    return retried;
   }
 }
 

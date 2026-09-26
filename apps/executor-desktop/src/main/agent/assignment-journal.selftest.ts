@@ -45,6 +45,7 @@ function makeJournal(assignmentId: string, over: Partial<AssignmentJournal> = {}
     replies: [],
     counters: { iterations: 2, clarifications: 1, trialRuns: 2, dependencyInstalls: 0, startedAt: 1234 },
     guiActionsUsed: 0,
+    lastSendError: null,
     updatedAt: new Date().toISOString(),
     ...over,
   };
