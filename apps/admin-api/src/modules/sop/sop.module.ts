@@ -9,6 +9,7 @@ import { SopClarification } from "./entities/sop-clarification.entity";
 import { AgentMedia } from "./entities/agent-media.entity";
 import { SopService } from "./sop.service";
 import { SopMediaService } from "./sop-media.service";
+import { AgentMediaRetentionService } from "./agent-media-retention.service";
 import { SopController } from "./sop.controller";
 import { SopCollabController } from "./sop-collab.controller";
 import { AgentModule } from "../agent/agent.module";
@@ -55,7 +56,7 @@ import { AGENT_QUEUE_NAME } from "../agent/runtime/agent.processor";
     BullModule.registerQueue({ name: AGENT_QUEUE_NAME }),
   ],
   controllers: [SopController, SopCollabController],
-  providers: [SopService, SopMediaService],
+  providers: [SopService, SopMediaService, AgentMediaRetentionService],
   exports: [SopService],
 })
 export class SopModule {}

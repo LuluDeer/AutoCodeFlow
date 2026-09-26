@@ -15,7 +15,8 @@
  *
  * 用法: node scripts/agent-sop-check.mjs
  */
-import { readFileSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, rmSync, mkdirSync, mkdtempSync, utimesSync, existsSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
@@ -320,20 +321,32 @@ console.log("\n── 2. SopService（发布/指派/澄清/完成）──");
       reviewSessionId: null,
     });
     const notifyCalls = [];
+    // 会话打桩：记录创建的会话与状态（澄清复核兜底的 sweep 要按 requireById
+    // 读会话状态——测试改写状态来模拟「复核会话失败/成功」）
+    const sessionStore = new Map();
     const svc = new SopService(
       sopRepo,
       verRepo,
       asgRepo,
       clarRepo,
       {
-        create: async (input) => ({
-          id: `sess-${++opts.sessionSeq || 1}`,
-          kind: input.kind,
-          triggerSource: input.triggerSource,
-          parentSessionId: input.parentSessionId ?? null,
-          scopeJson: input.scope,
-          contextJson: input.context,
-        }),
+        create: async (input) => {
+          const id = `sess-${++opts.sessionSeq || 1}`;
+          sessionStore.set(id, "running");
+          return {
+            id,
+            kind: input.kind,
+            triggerSource: input.triggerSource,
+            parentSessionId: input.parentSessionId ?? null,
+            scopeJson: input.scope,
+            contextJson: input.context,
+          };
+        },
+        requireById: async (id) => {
+          const status = sessionStore.get(id);
+          if (!status) throw new Error("session not found");
+          return { id, status };
+        },
       },
       { notify: async (...a) => notifyCalls.push(a) },
       { getStats: () => ({ isLeader: true }) }, // SchedulerService 打桩
@@ -342,6 +355,7 @@ console.log("\n── 2. SopService（发布/指派/澄清/完成）──");
     );
     // 打桩的 NotificationService.notify 计数（升级通知走它）
     svc._notifyCalls = notifyCalls;
+    svc._sessionStore = sessionStore;
     return { svc, sopRepo, verRepo, asgRepo, clarRepo };
   }
 
@@ -548,6 +562,71 @@ console.log("\n── 2. SopService（发布/指派/澄清/完成）──");
     const other = await svc.pollPending({ executorId: UUID_B });
     check("定向重发不影响其它执行器的待办", other.length === 0);
   }
+
+  // ── 澄清复核兜底 + 人工接管（收敛性切片：blocked 一定有出口）──
+  {
+    // 纯判定（11 §6「澄清无人回 → 转人工」）
+    transpileGraph("src/modules/sop/sop-timeout.ts");
+    const { evaluateStuckClarifications } = require(join(scratch, "src/modules/sop/sop-timeout.js"));
+    const now = Date.now();
+    const row = (over) => ({ clarificationId: "c", assignmentId: "a", createdAt: new Date(now - 1000), reviewSessionStatus: "running", ...over });
+    const ev = evaluateStuckClarifications(
+      [
+        row({ clarificationId: "session-failed", reviewSessionStatus: "failed" }),
+        row({ clarificationId: "session-gone", reviewSessionStatus: null }),
+        row({ clarificationId: "succeeded-no-reply", reviewSessionStatus: "succeeded" }),
+        row({ clarificationId: "running-fresh" }),
+        row({ clarificationId: "running-stale", createdAt: new Date(now - 31 * 60 * 1000) }),
+      ],
+      now,
+      30 * 60 * 1000,
+    );
+    check("复核兜底判定：会话终态/缺失/超时即转人工，健康的 running 不动",
+      JSON.stringify(ev.map((r) => r.clarificationId)) ===
+      JSON.stringify(["session-failed", "session-gone", "succeeded-no-reply", "running-stale"]));
+
+    // sweep 行为：会话失败 → 澄清 escalated + blocked 解除 + 通知
+    const opts = { sessionSeq: 0 };
+    const { svc, asgRepo, clarRepo } = makeSvc(opts);
+    const { sop } = await seedPublished(svc, "review-fallback");
+    const a = await svc.assign({ sopId: sop.id, executorId: UUID_A, assignedBy: "user:u1" });
+    await svc.pollPending({ executorId: UUID_A }); // 领取（in_progress）
+    const c1 = await svc.ingestClarification({ assignmentId: a.id, clientClarificationId: "clr-s1", question: "q1" });
+    // 会话失败 → sweep 兜底
+    svc._sessionStore.set(c1.clarification.reviewSessionId, "failed");
+    await svc.sweepStuckClarifications();
+    let row1 = clarRepo.rows.find((r) => r.id === c1.clarification.id);
+    const asg1 = asgRepo.rows.find((r) => r.id === a.id);
+    check("复核会话失败 → 澄清被兜底 escalated_to_human", row1.resolution === "escalated_to_human");
+    check("兜底解除 blocked（执行器经 poll 收到升级答复后如实终结）", asg1.status === "in_progress");
+    check("兜底发出升级通知（fail-open 通道）", svc._notifyCalls.length >= 1);
+
+    // 健康的 running 不被兜底
+    const c2 = await svc.ingestClarification({ assignmentId: a.id, clientClarificationId: "clr-s2", question: "q2" });
+    await svc.sweepStuckClarifications();
+    let row2 = clarRepo.rows.find((r) => r.id === c2.clarification.id);
+    check("running 中的复核会话不被兜底", row2.resolution === null);
+
+    // 人工接管：对已 escalated 的行再答（此前被幂等短路吞掉——P6 收口死路）
+    await svc.replyClarification({
+      clarificationId: c1.clarification.id,
+      resolution: "answered",
+      answer: "人工接管：这样处理",
+      replyBy: "user:op1",
+    });
+    row1 = clarRepo.rows.find((r) => r.id === c1.clarification.id);
+    check("人工可接管已升级的澄清（resolution 改 answered + answer 落库）",
+      row1.resolution === "answered" && row1.answer === "人工接管：这样处理");
+    // 已答复（非升级）行仍然幂等短路
+    await svc.replyClarification({
+      clarificationId: c1.clarification.id,
+      resolution: "sop_amended",
+      answer: "重试不应生效",
+      replyBy: "user:op1",
+    });
+    row1 = clarRepo.rows.find((r) => r.id === c1.clarification.id);
+    check("已答复行保持幂等（不被后续回复改写）", row1.resolution === "answered" && row1.answer === "人工接管：这样处理");
+  }
 }
 
 // ── 3. 边界闸门：SOP 工具的分级与 scope ───────────────────────────
@@ -732,6 +811,57 @@ console.log("\n── 4. 协作 API（11 §3/§5）──");
   check("pollPending 投递 clarification_reply 条目（P6 保留游标 → P7d 启用）", /kind: "clarification_reply"/.test(svcSrc));
   check("投递不推游标、ACK 才推（至少一次投递语义）", /pendingReplyItems/.test(svcSrc) && /ackClarificationReply/.test(svcSrc));
   check("游标单调推进（乱序 ACK 不回退）", /a\.lastReplyDeliveredAt < stamp/.test(svcSrc));
+
+  // ── P7b 残差补齐：agent_media 保留清理（行为测试，真实临时目录）──
+  {
+    transpileGraph("src/modules/sop/sop-media.service.ts");
+    transpileGraph("src/modules/sop/agent-media-retention.service.ts");
+    const { SopMediaService } = require(join(scratch, "src/modules/sop/sop-media.service.js"));
+    const { AgentMediaRetentionService } = require(join(scratch, "src/modules/sop/agent-media-retention.service.js"));
+
+    const mediaRoot = mkdtempSync(join(tmpdir(), "agent-media-check-"));
+    process.env.AGENT_MEDIA_DIR = mediaRoot;
+    const rows = [];
+    const deletedAssignments = [];
+    const mediaRepo = {
+      rows,
+      create(o) {
+        return { id: `m-${rows.length + 1}`, createdAt: new Date(), ...o };
+      },
+      async save(o) {
+        rows.push(o);
+        return o;
+      },
+      async delete(where) {
+        deletedAssignments.push(where.assignmentId);
+        for (let i = rows.length - 1; i >= 0; i--) {
+          if (rows[i].assignmentId === where.assignmentId) rows.splice(i, 1);
+        }
+      },
+    };
+    const media = new SopMediaService(mediaRepo);
+    const idA = "11111111-1111-1111-1111-111111111111";
+    const idB = "22222222-2222-2222-2222-222222222222";
+    await media.save({ assignmentId: idA, name: "old.png", mime: "image/png", buf: Buffer.from("a"), uploadedBy: "t" });
+    await media.save({ assignmentId: idB, name: "new.png", mime: "image/png", buf: Buffer.from("b"), uploadedBy: "t" });
+    // 把 A 目录里的文件 mtime 拨到 8 天前（保留期默认 7 天）
+    const past = new Date(Date.now() - 8 * 86_400_000);
+    utimesSync(join(mediaRoot, idA, rows[0].storedPath.split(/[\\/]/).pop()), past, past);
+
+    const retention = new AgentMediaRetentionService({ isLeader: true }, mediaRepo);
+    const removed = await retention.cleanupExpiredMedia(new Date());
+    check("超龄媒体目录被整删，未超龄的保留", removed === 1 &&
+      !existsSync(join(mediaRoot, idA)) && existsSync(join(mediaRoot, idB)));
+    check("磁盘回收同步删 DB 行（不留下载 404 的僵尸行）",
+      deletedAssignments.join(",") === idA && rows.length === 1 && rows[0].assignmentId === idB);
+    const retention2 = new AgentMediaRetentionService(null, mediaRepo);
+    check("leader 门禁缺席时清理仍可直调（单实例/测试装配面）", (await retention2.cleanupExpiredMedia(new Date())) === 0);
+    check("@Cron 每日清理 + LeaderGate 门禁（ARCH-31 §5 先例）",
+      /@Cron\("0 15 3 \* \* \*"\)/.test(readFileSync(join(apiDir, "src/modules/sop/agent-media-retention.service.ts"), "utf8")) &&
+      /leaderGate\.isLeader/.test(readFileSync(join(apiDir, "src/modules/sop/agent-media-retention.service.ts"), "utf8")));
+    rmSync(mediaRoot, { recursive: true, force: true });
+    delete process.env.AGENT_MEDIA_DIR;
+  }
 
   // 协作协议治理（11 §7）：P5/P6 明确留 P7（executor-desktop 实现 client 时进 agentCollab 段）
   const proto = readFileSync(join(root, "packages/executor-protocol/protocol.json"), "utf8");
