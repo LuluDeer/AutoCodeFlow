@@ -283,14 +283,20 @@ X11/XWayland 后端承载（设计见
 中台不会把需要 GUI 的 SOP 派到这台机器：
 
 ```bash
-# Ubuntu/Debian：GUI 后端的两个系统依赖
-sudo apt-get install -y xdotool imagemagick
+# Ubuntu/Debian：GUI 后端的系统依赖
+sudo apt-get install -y xdotool ffmpeg
 ```
 
 | 依赖 | 用途 | 缺失时的表现 |
 | --- | --- | --- |
 | `xdotool` | 窗口枚举 / focus / 点击 / 键入（XWayland） | 能力上报不含 `gui`（probe 失败） |
-| `imagemagick`（`import`） | 目标窗口级截图 | 仅 screenshot 动作报 `x11_tool_unavailable: import`，其余动作可用 |
+| `ffmpeg`（x11grab） | 目标窗口区域截图 | 仅 screenshot 动作报 `x11_tool_unavailable`，其余动作可用 |
+
+**会话要求（S2 实测，[VERIFY-2026-09-27-gui-x11.md](./VERIFY-2026-09-27-gui-x11.md)）**：
+probe 的第三道硬条件是 EWMH 活动窗口可读——GNOME **Wayland** 会话上该属性恒空，
+能力会被如实 withhold；**Xorg/X11 会话**（登录界面选「Ubuntu on Xorg」，或 XFCE/KDE-X11）
+完整可用。旧版 ImageMagick `import` 在本机栈 XGetImage 报 EAGAIN，已由 ffmpeg 替代
+（ImageMagick 仍作为其他栈的后备被探测）。
 
 部署约束（如实）：
 
