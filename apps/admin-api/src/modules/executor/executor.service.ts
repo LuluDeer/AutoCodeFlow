@@ -1,5 +1,6 @@
 import {
   Injectable,
+  OnModuleInit,
   BadRequestException,
   Logger,
   NotFoundException,
@@ -24,6 +25,7 @@ import {
   ExecutorType,
 } from "./entities/executor.entity";
 import { ExecutorMetricsHistory } from "./entities/executor-metrics-history.entity";
+import { ExecutorTokenCacheSyncService } from "./token-cache-sync.service";
 import {
   TaskExecution,
   ExecutionFailureReason,
@@ -172,7 +174,7 @@ export function __resetTruncationWarnStateForTest(): void {
 const TRUNCATION_WARN_THROTTLE_MS = 60_000;
 
 @Injectable()
-export class ExecutorService {
+export class ExecutorService implements OnModuleInit {
   private readonly logger = new Logger(ExecutorService.name);
   private readonly protocol: string;
 
@@ -350,6 +352,12 @@ export class ExecutorService {
     @Optional()
     @InjectRepository(AppDeployment)
     private readonly appDeploymentRepo: Repository<AppDeployment> | null = null,
+    // ARCH-31 §3.7 收口：跨实例令牌缓存驱逐广播（pub/sub）。@Optional 同
+    // eventBus 先例——存量单测装配未提供时为 null，多实例失效窗口退化为
+    // 改造前的 60s TTL（不劣化）。**必须是最后一个位置参数**（既有 spec
+    // 以位置参数 `new ExecutorService(...)` 直接装配，带默认值的尾参不破坏）。
+    @Optional()
+    private readonly tokenCacheSync: ExecutorTokenCacheSyncService | null = null,
   ) {
     this.protocol = this.configService.get<string>("app.protocol") || "http";
     // R-26（DEEP_REVIEW 0ef3bbe）: 关键 @Optional（事件总线 / 高危审计）缺失时
@@ -379,6 +387,37 @@ export class ExecutorService {
           "（任务可能被派到未部署该应用的执行器）",
       );
     }
+  }
+
+  /**
+   * ARCH-31 §3.7：接通跨实例驱逐广播。本实例 rotate/remove 时广播；远端实例
+   * 的广播与重连 flush 经这两个回调回到本地逐出。同步服务缺席（@Optional）
+   * 或 Redis 不可用时是 no-op——多实例失效窗口退化为既有 60s TTL。
+   */
+  onModuleInit(): void {
+    this.tokenCacheSync?.bindHandlers({
+      onEvict: (address) => this.evictLocalTokenCaches(address),
+      onFlush: () => this.flushLocalTokenCaches(),
+    });
+  }
+
+  /** 三张令牌派生缓存的本地逐出（rotate/remove 的本实例半边；远端经广播触发）。 */
+  private evictLocalTokenCaches(address: string): void {
+    this.evictTokenValidationsFor(address);
+    this.callbackSecretCache.delete(address);
+    this.issuedTokenCache.delete(address);
+  }
+
+  /** 订阅（重）连上的自愈：全量清空。正缓存只存成功结果，代价是多一轮 bcrypt。 */
+  private flushLocalTokenCaches(): void {
+    this.tokenValidationCache.clear();
+    this.callbackSecretCache.clear();
+    this.issuedTokenCache.clear();
+  }
+
+  /** 广播驱逐（fire-and-forget；同步服务缺席 = 其他实例走 60s TTL 兜底）。 */
+  private broadcastTokenEviction(address: string): void {
+    void this.tokenCacheSync?.publishTokenEviction(address);
   }
 
   /**
@@ -3761,10 +3800,10 @@ export class ExecutorService {
     // executor-node self-heals a stale bearer within one request round-trip
     // (401 → forceTokenRefresh → POST /token → adopt token+hash → retry),
     // so a manual rotation converges in ≤ one heartbeat interval.
-    this.callbackSecretCache.delete(executor.address);
-    // F-5：正缓存里的旧凭据条目同样必须立刻失效，否则「撤销」在 60s 内不生效
-    // （旧 token 心跳/回调仍被接受）。见 evictTokenValidationsFor。
-    this.evictTokenValidationsFor(executor.address);
+    // ARCH-31 §3.7：本地逐出 + 跨实例广播（其他实例毫秒级逐出，广播失败走
+    // 60s TTL 兜底）。否则「撤销」在其他实例上仍有一段失效窗口。
+    this.evictLocalTokenCaches(executor.address);
+    this.broadcastTokenEviction(executor.address);
     // R10: seed the idempotent-issuance cache with the fresh plaintext under
     // the executor's CURRENT startupId. Without this, the self-healing
     // POST /token (same startupId) would find the cache still holding the
@@ -3879,8 +3918,10 @@ export class ExecutorService {
     this.issuedTokenCache.delete(executor.address);
     // 同理清掉该地址的 callback 密钥候选与 F-5 正缓存：行都没了，旧 token
     // 更不能继续被接受（否则删除执行器后旧凭据还有 60s 可用窗口）。
-    this.callbackSecretCache.delete(executor.address);
-    this.evictTokenValidationsFor(executor.address);
+    // ARCH-31 §3.7：跨实例广播同 rotate——删除是更强的撤销，别的实例也必须
+    // 立刻忘记该地址的全部派生缓存。
+    this.evictLocalTokenCaches(executor.address);
+    this.broadcastTokenEviction(executor.address);
     this.logger.log(`Executor ${id} (${executor.address}) removed by admin`);
     // AUTH-05: executor deletion is destructive — audit it (with the
     // admin-supplied reason when present). Best-effort, after the mutation.
