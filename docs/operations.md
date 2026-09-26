@@ -274,6 +274,36 @@ curl -H 'Authorization: Bearer <token>' http://localhost:3105/api/executors
 
 ---
 
+### 桌面执行器 Agent 的 GUI 能力（Linux 依赖清单）
+
+executor-desktop 的 Agent（实验性）能力域中，`gui`（操作本机应用窗口）在 Linux 上由
+X11/XWayland 后端承载（设计见
+[agent-and-deployment/12-executor-gui-linux.md](./design/agent-and-deployment/12-executor-gui-linux.md)）。
+按「依赖文档化 + probe 如实降级」交付——不装依赖不会报错，只是能力租约里**不出现** `gui`，
+中台不会把需要 GUI 的 SOP 派到这台机器：
+
+```bash
+# Ubuntu/Debian：GUI 后端的两个系统依赖
+sudo apt-get install -y xdotool imagemagick
+```
+
+| 依赖 | 用途 | 缺失时的表现 |
+| --- | --- | --- |
+| `xdotool` | 窗口枚举 / focus / 点击 / 键入（XWayland） | 能力上报不含 `gui`（probe 失败） |
+| `imagemagick`（`import`） | 目标窗口级截图 | 仅 screenshot 动作报 `x11_tool_unavailable: import`，其余动作可用 |
+
+部署约束（如实）：
+
+- 仅覆盖 **X11/XWayland 窗口**（Electron/Chrome/多数 C/S 客户端）；GNOME 等
+  **Wayland 原生窗口**无标准注入协议，agent 侧如实拒绝，不做假闸门。
+- 需要**交互桌面会话**（DISPLAY 有效）；无头服务器上能力自动不可用。
+- 启用路径：桌面端设置 → Agent（实验性）→ hostAccess 显式升到 `app-scoped` +
+  应用白名单；中台 `sopPolicy.permissionPolicy` 需同步放宽（默认 `standard` 会钳回）。
+- 动作安全边界：逐动作核对前台窗口进程名 == 应用白名单；点击限制在目标窗口
+  矩形内；截图仅截目标窗口（非全屏）。
+
+---
+
 ## 横向扩容（多执行器）
 
 ### 添加执行器节点
