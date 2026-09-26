@@ -12,6 +12,7 @@ import {
   Table,
   Tabs,
   Tag,
+  Tooltip,
   Typography,
 } from 'antd';
 import { ReloadOutlined } from '@ant-design/icons';
@@ -54,6 +55,9 @@ function assignmentStatusTag(status: SopAssignment['status']) {
   };
   return <Tag color={map[status]}>{status}</Tag>;
 }
+
+/** 终态工单：可重派（换机重发），也不会再消费任何澄清答复。 */
+const TERMINAL_ASSIGNMENT_STATUSES: SopAssignment['status'][] = ['failed', 'stalled', 'cancelled'];
 
 export default function SopsPage() {
   const { t } = useTranslation();
@@ -181,6 +185,12 @@ export default function SopsPage() {
         ...(reply.resolution === 'sop_amended' && reply.amendedYaml ? { amendedFrontMatterYaml: reply.amendedYaml } : {}),
       });
       message.success(t('sops.replyOk'));
+      // 接管未送达（9.13 残差）：执行器已按升级收尾的指派不再消费答复——
+      // 接管只更新澄清行，恢复路径是重派。不提示会让运维误以为已送达。
+      const target = assignments.find((x) => x.id === replyTarget.assignmentId);
+      if (target && TERMINAL_ASSIGNMENT_STATUSES.includes(target.status)) {
+        message.warning(t('sops.replyNotDelivered'), 6);
+      }
       setReplyTarget(null);
       if (detail) await openDetail(detail);
       void load();
@@ -189,7 +199,13 @@ export default function SopsPage() {
     } finally {
       setReplying(false);
     }
-  }, [reply, replyTarget, detail, openDetail, load, t]);
+  }, [reply, replyTarget, assignments, detail, openDetail, load, t]);
+
+  /** 该指派是否存在仍挂着升级（escalated_to_human）的澄清——升级终态时接管答复不投递。 */
+  const hasEscalatedClarification = useCallback(
+    (assignmentId: string) => (clarifications[assignmentId] ?? []).some((c) => c.resolution === 'escalated_to_human'),
+    [clarifications],
+  );
 
   const createDraft = useCallback(async () => {
     try {
@@ -247,13 +263,20 @@ export default function SopsPage() {
       title: t('sops.col.actions'),
       width: 90,
       // 重派：失败/停滞/取消的工单一键换机重发（预填原版本）——运维此前
-      // 只能 curl assign 端点
-      render: (_, a) =>
-        ['failed', 'stalled', 'cancelled'].includes(a.status) && detail ? (
+      // 只能 curl assign 端点。升级终态的行带「答复不投递」提示（9.13 残差）。
+      render: (_, a) => {
+        if (!detail || !TERMINAL_ASSIGNMENT_STATUSES.includes(a.status)) return null;
+        const button = (
           <Button size="small" onClick={() => void openAssign(detail, a.sopVersion)}>
             {t('sops.reassign')}
           </Button>
-        ) : null,
+        );
+        return hasEscalatedClarification(a.id) ? (
+          <Tooltip title={t('sops.reassignEscalatedHint')}>{button}</Tooltip>
+        ) : (
+          button
+        );
+      },
     },
   ];
 
@@ -385,6 +408,12 @@ export default function SopsPage() {
                                   >
                                     {t('sops.reply')}
                                   </Button>
+                                )}
+                                {/* 升级终态：接管答复不投递（执行器已按升级收尾），重派即恢复路径 */}
+                                {c.resolution === 'escalated_to_human' && TERMINAL_ASSIGNMENT_STATUSES.includes(a.status) && (
+                                  <Tooltip title={t('sops.reassignEscalatedHint')}>
+                                    <Text type="warning" style={{ marginLeft: 8 }}>{t('sops.escalatedNotDelivered')}</Text>
+                                  </Tooltip>
                                 )}
                                 <Paragraph style={{ marginBottom: 4 }}>{c.question}</Paragraph>
                                 {/* 澄清附件（截图/录屏）——此前在 UI 不可见，复核全凭文字 */}
