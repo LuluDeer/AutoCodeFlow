@@ -8,6 +8,8 @@
  * 澄清路径（LLM 判 clarify → sendClarification）；策略合并路径
  * （中台下压 minimal → 试跑被档位闸拒 → 如实回报 failed + effectiveProfile）；
  * agentEnabled=false 不动；单飞行不并发。
+ * P7d：澄清回复消费（answered → 续跑 → ACK）、升级回复终结、崩溃恢复
+ * （awaiting_reply 重启续跑 / running 按单重发重跑）、ACK 失败重发去重。
  */
 import * as assert from 'node:assert';
 import * as fs from 'node:fs';
@@ -16,6 +18,13 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { AgentHost, type AgentHostConfig } from './agent-host';
 import { CollabClient } from './collab-client';
+import {
+  journalDirFor,
+  loadAssignmentJournal,
+  saveAssignmentJournal,
+  clearAssignmentJournal,
+  type AssignmentJournal,
+} from './assignment-journal';
 
 let failures = 0;
 function check(name: string, cond: boolean, extra = ''): void {
@@ -31,11 +40,31 @@ const MAIN_OK = "require('fs').writeFileSync('out.txt', 'fine');\n";
 const MAIN_BAD = "process.exit(1);\n";
 const VERIFY_OK = "const c = require('fs').readFileSync('out.txt', 'utf8');\nif (c !== 'fine') process.exit(2);\n";
 
+const SOP_PAYLOAD = {
+  slug: 'e2e-sop', title: 'T', version: '1.0.0', contentHash: 'h',
+  frontMatter: {
+    capabilities: ['filesystem'],
+    acceptance: [{ kind: 'command', run: 'node verify.js' }],
+    constraints: {},
+  },
+  bodyMarkdown: '# do',
+};
+
 /** 模拟中台：记录所有请求，按脚本回响应。assignment 只在首个 poll 发出。 */
-function makeCenter(opts: { llmScript: string[]; sopPolicy?: unknown; sopCapabilities?: string[] }) {
+function makeCenter(opts: {
+  llmScript: string[];
+  sopPolicy?: unknown;
+  sopCapabilities?: string[];
+  /** P7d：poll 响应脚本（逐次弹出；缺省沿用「首单 + 空」行为）。 */
+  pollScript?: Array<{ items: unknown[]; sopPolicy?: unknown }>;
+  /** P7d：首次 ACK 回 500（重发去重路径）。 */
+  failFirstAck?: boolean;
+}) {
   const requests: Array<{ path: string; body: Record<string, unknown> }> = [];
   const llmQueue = [...opts.llmScript];
+  const pollQueue = opts.pollScript ? [...opts.pollScript] : null;
   let assignmentSent = false;
+  const ackCalls: string[] = [];
   const server = http.createServer((req, res) => {
     const chunks: Buffer[] = [];
     req.on('data', (c: Buffer) => chunks.push(c));
@@ -54,6 +83,15 @@ function makeCenter(opts: { llmScript: string[]; sopPolicy?: unknown; sopCapabil
         res.end(JSON.stringify(obj));
       };
       if (p === '/api/agent-collab/poll') {
+        if (pollQueue) {
+          // 脚本模式：严格逐次弹出（耗尽回空），不落入缺省行为
+          const next = pollQueue.shift();
+          reply({
+            sopPolicy: opts.sopPolicy ?? { permissionPolicy: 'standard', allowedProfiles: ['minimal', 'standard'] },
+            ...(next ?? { items: [] }),
+          });
+          return;
+        }
         if (!assignmentSent) {
           assignmentSent = true;
           reply({
@@ -61,13 +99,11 @@ function makeCenter(opts: { llmScript: string[]; sopPolicy?: unknown; sopCapabil
               kind: 'assignment',
               assignmentId: ASSIGNMENT_ID,
               sop: {
-                slug: 'e2e-sop', title: 'T', version: '1.0.0', contentHash: 'h',
+                ...SOP_PAYLOAD,
                 frontMatter: {
+                  ...SOP_PAYLOAD.frontMatter,
                   capabilities: opts.sopCapabilities ?? ['filesystem'],
-                  acceptance: [{ kind: 'command', run: 'node verify.js' }],
-                  constraints: {},
                 },
-                bodyMarkdown: '# do',
               },
             }],
             sopPolicy: opts.sopPolicy ?? { permissionPolicy: 'standard', allowedProfiles: ['minimal', 'standard'] },
@@ -79,6 +115,16 @@ function makeCenter(opts: { llmScript: string[]; sopPolicy?: unknown; sopCapabil
       }
       if (p === '/api/agent-collab/llm') {
         reply({ content: llmQueue.shift() ?? '{"action":"escalate"}', usage: { tokensIn: 1, tokensOut: 1 }, model: 'test' });
+        return;
+      }
+      if (p.includes('/clarifications/ack')) {
+        ackCalls.push(p);
+        if (opts.failFirstAck && ackCalls.length === 1) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ message: 'ack boom' }));
+          return;
+        }
+        reply({ ok: true });
         return;
       }
       if (p.includes('/candidate-package')) {
@@ -104,6 +150,7 @@ function makeCenter(opts: { llmScript: string[]; sopPolicy?: unknown; sopCapabil
   });
   return {
     requests,
+    ackCalls,
     listen: (): Promise<string> =>
       new Promise((resolve) => {
         server.listen(0, '127.0.0.1', () => {
@@ -113,6 +160,48 @@ function makeCenter(opts: { llmScript: string[]; sopPolicy?: unknown; sopCapabil
       }),
     close: (): Promise<void> => new Promise((r) => server.close(() => r())),
   };
+}
+
+function makeConfig(baseUrl: string, over: Partial<AgentHostConfig> = {}): AgentHostConfig {
+  return {
+    agentEnabled: true, adminApiUrl: baseUrl, executorToken: 't',
+    agent: { preset: 'standard' },
+    ...over,
+  };
+}
+
+const PLAN_BAD = JSON.stringify({ files: [{ path: 'main.js', content: MAIN_BAD }, { path: 'verify.js', content: VERIFY_OK }], entry: { interpreter: 'node', path: 'main.js' } });
+const PLAN_OK = JSON.stringify({ files: [{ path: 'main.js', content: MAIN_OK }, { path: 'verify.js', content: VERIFY_OK }], entry: { interpreter: 'node', path: 'main.js' }, notes: 'n' });
+const DIAG_CLARIFY = JSON.stringify({ action: 'clarify', question: 'SOP 没说要输出到哪里' });
+
+function replyItem(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    kind: 'clarification_reply',
+    assignmentId: ASSIGNMENT_ID,
+    clarificationId: 'srv-1',
+    clientClarificationId: 'client-1',
+    round: 1,
+    resolution: 'answered',
+    answer: '输出写到 out.txt，先跑 main 再跑 verify',
+    newSopVersion: null,
+    ...over,
+  };
+}
+
+function seedJournal(workDir: string, over: Partial<AssignmentJournal> = {}): void {
+  const journal: AssignmentJournal = {
+    assignmentId: ASSIGNMENT_ID,
+    sop: SOP_PAYLOAD,
+    phase: 'running',
+    pendingQuestion: null,
+    asked: [],
+    replies: [],
+    counters: { iterations: 0, clarifications: 0, trialRuns: 0, dependencyInstalls: 0, startedAt: Date.now() },
+    guiActionsUsed: 0,
+    updatedAt: new Date().toISOString(),
+    ...over,
+  };
+  saveAssignmentJournal(journalDirFor(workDir), journal);
 }
 
 async function main(): Promise<void> {
@@ -324,6 +413,147 @@ async function main(): Promise<void> {
     check('最新策略撤销 gui 后明确回报权限不足', complete?.body.status === 'failed' &&
       (complete?.body.result as { outcome?: string })?.outcome === 'permission_denied');
     check('能力不足的工单不调用 LLM', !center.requests.some((q) => q.path === '/api/agent-collab/llm'));
+    await center.close();
+  }
+
+  console.log('-- 8. 澄清回复消费：answered → 续跑 → 交付 → ACK --');
+  {
+    const workDir = newWorkDir();
+    const center = makeCenter({
+      llmScript: [PLAN_BAD, DIAG_CLARIFY, PLAN_OK],
+      pollScript: [
+        { items: [{ kind: 'assignment', assignmentId: ASSIGNMENT_ID, sop: SOP_PAYLOAD }] }, // 首次 poll 由缺省行为发工单——脚本从第二次 poll 开始接手
+        { items: [replyItem()] },
+      ],
+    });
+    const baseUrl = await center.listen();
+    const client = new CollabClient({ baseUrl, token: 't', timeoutMs: 5000 });
+    const host = new AgentHost({ address: 'a:1', workDir, getConfig: () => makeConfig(baseUrl), client });
+    const r1 = await host.tick();
+    check('第一轮：领单 → 澄清发出', r1.worked === true &&
+      center.requests.some((q) => q.path === '/api/agent-collab/clarifications'));
+    check('澄清后日志 phase=awaiting_reply（恢复锚点已落盘）',
+      loadAssignmentJournal(journalDirFor(workDir), ASSIGNMENT_ID)?.phase === 'awaiting_reply');
+    check('澄清后不回报终态', !center.requests.some((q) => q.path.endsWith('/complete')));
+    const r2 = await host.tick();
+    check('第二轮：回复被消费', r2.worked === true);
+    const ack = center.requests.find((q) => q.path === `/api/agent-collab/assignments/${ASSIGNMENT_ID}/clarifications/ack`);
+    check('续跑终态后才 ACK（幂等键回传中台推游标）',
+      ack !== undefined && ack.body.clarificationId === 'srv-1');
+    const complete = center.requests.find((q) => q.path.endsWith('/complete'));
+    check('续跑跑通 → completed + 交付', complete?.body.status === 'completed');
+    // 续跑的 plan（第 3 次 LLM 调用）必须能看到问答历史——否则会带着同样的疑问再问一遍
+    const llmCalls = center.requests.filter((q) => q.path === '/api/agent-collab/llm');
+    const continuationCtx = JSON.stringify(llmCalls[2]?.body ?? {});
+    check('续跑上下文带澄清问答历史', continuationCtx.includes('out.txt，先跑 main') && continuationCtx.includes('clarificationHistory'));
+    check('续跑日志已清（终态）', loadAssignmentJournal(journalDirFor(workDir), ASSIGNMENT_ID) === null);
+    // 回复已在同一轮处理——不重发指派
+    const polls = center.requests.filter((q) => q.path === '/api/agent-collab/poll');
+    check('消费回复的 poll 未请求重发', polls.every((q) => q.body.resendAssignments === undefined));
+    await center.close();
+  }
+
+  console.log('-- 9. 升级回复：escalated_to_human → 如实终结 --');
+  {
+    const workDir = newWorkDir();
+    const center = makeCenter({
+      llmScript: [PLAN_BAD, DIAG_CLARIFY],
+      pollScript: [
+        { items: [{ kind: 'assignment', assignmentId: ASSIGNMENT_ID, sop: SOP_PAYLOAD }] },
+        { items: [replyItem({ resolution: 'escalated_to_human', answer: null })] },
+      ],
+    });
+    const baseUrl = await center.listen();
+    const client = new CollabClient({ baseUrl, token: 't', timeoutMs: 5000 });
+    const host = new AgentHost({ address: 'a:1', workDir, getConfig: () => makeConfig(baseUrl), client });
+    await host.tick();
+    const r2 = await host.tick();
+    check('升级回复被消费', r2.worked === true);
+    const complete = center.requests.find((q) => q.path.endsWith('/complete'));
+    check('升级后如实回报 failed（绝不挂着装等）',
+      complete?.body.status === 'failed' &&
+      (complete?.body.result as { outcome?: string })?.outcome === 'escalated_to_human');
+    check('升级路径不调 LLM（无自动答复可续）',
+      center.requests.filter((q) => q.path === '/api/agent-collab/llm').length === 2);
+    check('终结后 ACK + 日志清理',
+      center.ackCalls.length === 1 && loadAssignmentJournal(journalDirFor(workDir), ASSIGNMENT_ID) === null);
+    await center.close();
+  }
+
+  console.log('-- 10. 崩溃恢复：awaiting_reply 重启后经新 host 续跑 --');
+  {
+    const workDir = newWorkDir();
+    const center = makeCenter({
+      llmScript: [PLAN_BAD, DIAG_CLARIFY, PLAN_OK],
+      pollScript: [
+        { items: [{ kind: 'assignment', assignmentId: ASSIGNMENT_ID, sop: SOP_PAYLOAD }] },
+        { items: [replyItem()] },
+      ],
+    });
+    const baseUrl = await center.listen();
+    const client = new CollabClient({ baseUrl, token: 't', timeoutMs: 5000 });
+    const host1 = new AgentHost({ address: 'a:1', workDir, getConfig: () => makeConfig(baseUrl), client });
+    await host1.tick(); // 领单 → 澄清 → 「崩溃」（host1 不再使用）
+    const host2 = new AgentHost({ address: 'a:1', workDir, getConfig: () => makeConfig(baseUrl), client });
+    const r = await host2.tick(); // 重启实例：日志恢复 → 回复消费 → 续跑
+    check('重启实例消费了回复并续跑', r.worked === true);
+    const polls = center.requests.filter((q) => q.path === '/api/agent-collab/poll');
+    check('awaiting_reply 恢复不需要重发（回复走投递）',
+      JSON.stringify(polls[1]?.body ?? {}).includes('"resendAssignments"') === false);
+    const complete = center.requests.find((q) => q.path.endsWith('/complete'));
+    check('重启后续跑仍能交付', complete?.body.status === 'completed');
+    check('续跑后 ACK', center.ackCalls.length === 1);
+    await center.close();
+  }
+
+  console.log('-- 11. 崩溃恢复：running 阶段 → 按单重发重跑 --');
+  {
+    const workDir = newWorkDir();
+    seedJournal(workDir, { phase: 'running' }); // 循环中途崩溃的现场
+    const center = makeCenter({
+      llmScript: [PLAN_OK],
+      pollScript: [
+        { items: [{ kind: 'assignment', assignmentId: ASSIGNMENT_ID, sop: SOP_PAYLOAD }] },
+      ],
+    });
+    const baseUrl = await center.listen();
+    const client = new CollabClient({ baseUrl, token: 't', timeoutMs: 5000 });
+    const host = new AgentHost({ address: 'a:1', workDir, getConfig: () => makeConfig(baseUrl), client });
+    const r = await host.tick();
+    check('重启后重领了崩溃指派', r.worked === true);
+    const poll = center.requests.find((q) => q.path === '/api/agent-collab/poll');
+    check('poll 请求按 id 定向重发（数组形态）',
+      JSON.stringify(poll?.body.resendAssignments ?? null) === JSON.stringify([ASSIGNMENT_ID]));
+    const complete = center.requests.find((q) => q.path.endsWith('/complete'));
+    check('重跑完成交付', complete?.body.status === 'completed');
+    check('重跑后日志清理', loadAssignmentJournal(journalDirFor(workDir), ASSIGNMENT_ID) === null);
+    await center.close();
+  }
+
+  console.log('-- 12. ACK 失败重发：不二次消费 --');
+  {
+    const workDir = newWorkDir();
+    const center = makeCenter({
+      llmScript: [PLAN_BAD, DIAG_CLARIFY, PLAN_OK],
+      failFirstAck: true,
+      pollScript: [
+        { items: [{ kind: 'assignment', assignmentId: ASSIGNMENT_ID, sop: SOP_PAYLOAD }] },
+        { items: [replyItem()] },
+        { items: [replyItem()] }, // ACK 失败 → 中台重发同一条回复
+      ],
+    });
+    const baseUrl = await center.listen();
+    const client = new CollabClient({ baseUrl, token: 't', timeoutMs: 5000 });
+    const host = new AgentHost({ address: 'a:1', workDir, getConfig: () => makeConfig(baseUrl), client });
+    await host.tick();
+    await host.tick(); // 消费回复 → 续跑交付 → ACK（首次失败）
+    await host.tick(); // 重发到达 → 幂等去重 → 补 ACK
+    const llmCalls = center.requests.filter((q) => q.path === '/api/agent-collab/llm');
+    check('重发不触发第二次续跑（LLM 调用次数不变）', llmCalls.length === 3);
+    const completes = center.requests.filter((q) => q.path.endsWith('/complete'));
+    check('重发不产生第二次回报', completes.length === 1);
+    check('ACK 重试成功（毒消息防护闭环）', center.ackCalls.length === 2);
+    check('日志最终已清', loadAssignmentJournal(journalDirFor(workDir), ASSIGNMENT_ID) === null);
     await center.close();
   }
 

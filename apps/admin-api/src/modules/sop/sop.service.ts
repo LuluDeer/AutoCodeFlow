@@ -67,6 +67,8 @@ import {
 const QUESTION_CONTEXT_MAX_BYTES = 16_000;
 /** 完成回报的 resultJson 大小上限。 */
 const RESULT_MAX_BYTES = 64_000;
+/** 单次 poll 的条目上限（指派恒 1；回复游标未推进时防重发塞爆响应）。 */
+const POLL_ITEMS_MAX = 20;
 
 /**
  * mediaRefs 只接受平台内路径——外网 URL 一律拒绝（11 §5.2 SSRF 转嫁）。
@@ -283,12 +285,20 @@ export class SopService {
    *
    * 指派条目只在**首次领取**时返回（pulledAt IS NULL），同时快照能力与
    * 权限档位——之后 SOP 通过 complete/progress 流转，不重复下发全量正文；
-   * 执行器重启丢状态时可带 `resendAssignments=true` 强制重发。
-   * 澄清回复等 P7d 的 Host 消费与 ACK 实现后再投递；此阶段保留游标。
+   * 执行器重启丢状态时可带 `resendAssignments=true` 强制重发全部活跃单
+   * （未投递的旧单重新排队），或 `resendAssignments=[id]` 只重发指定单
+   * （P7d 崩溃恢复：host 本地日志里还有 running 阶段的指派时，只重领这一张，
+   * 不打扰其它单的游标状态）。
+   *
+   * 澄清回复（P7d 双端 ACK）：`resolution` 已落定且晚于游标
+   * `lastReplyDeliveredAt` 的行随 poll 投递。**投递不推游标**——执行器把
+   * 回复落盘并消费（续跑循环）之后经 ack 端点确认才推进；确认前回复随
+   * 每次 poll 重发。至少一次投递 + 执行器按 clarificationId 幂等去重，
+   * 崩溃不丢回复、也不重复消费。
    */
   async pollPending(input: {
     executorId: string;
-    resendAssignments?: boolean;
+    resendAssignments?: boolean | string[];
   }): Promise<unknown[]> {
     const items: unknown[] = [];
     const capabilities = await this.executors.getAgentCapabilities(
@@ -296,20 +306,33 @@ export class SopService {
     );
     if (!capabilities.includes("agent:sop")) return items;
 
+    const resendAll = input.resendAssignments === true;
+    const resendIds = Array.isArray(input.resendAssignments)
+      ? input.resendAssignments.filter(
+          (x): x is string => typeof x === "string" && x.length > 0,
+        )
+      : [];
+
     const activeStatuses: SopAssignment["status"][] = [
       "assigned",
       "in_progress",
       "blocked",
     ];
-    const open = await this.assignments.find({
-      where: { targetExecutorId: input.executorId, status: In(activeStatuses) },
-      order: { createdAt: "ASC" },
-    });
+    const open = (
+      await this.assignments.find({
+        where: { targetExecutorId: input.executorId, status: In(activeStatuses) },
+        order: { createdAt: "ASC" },
+      })
+    ).sort(
+      (a, b) =>
+        new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+    );
 
     let assignmentSent = false;
     for (const a of open) {
       const firstPull = a.pulledAt === null;
-      if (!assignmentSent && (firstPull || input.resendAssignments)) {
+      const requested = firstPull || resendAll || resendIds.includes(a.id);
+      if (!assignmentSent && requested) {
         const payload = await this.assignmentPayload(a, capabilities);
         if (payload) {
           if (firstPull) {
@@ -331,14 +354,110 @@ export class SopService {
       }
       // resend 是一次性的。未在本轮投递的旧单重新排队，由后续普通 poll
       // 逐个送出；否则 Host 只处理第一单，其余已领取单会永久丢失。
-      if (input.resendAssignments && !firstPull) {
+      // 按 id 重发（崩溃恢复）是定向动作，不触碰其它单的排队状态。
+      if (resendAll && !firstPull) {
         await this.assignments.update({ id: a.id }, { pulledAt: null });
       }
     }
 
-    // P7d：Host 尚未消费 clarification_reply，也没有 ACK。现在投递并推进
-    // lastReplyDeliveredAt 会永久丢回复；保留回复行与游标，待双端 ACK 实现。
+    // 澄清回复投递（P7d）：游标不前进则随每次 poll 重发，直到执行器 ACK。
+    for (const a of open) {
+      if (items.length >= POLL_ITEMS_MAX) break;
+      for (const reply of await this.pendingReplyItems(a)) {
+        if (items.length >= POLL_ITEMS_MAX) break;
+        items.push(reply);
+      }
+    }
     return items;
+  }
+
+  /**
+   * 指派的待投递澄清回复：resolution 已落定、晚于游标，按轮次升序。
+   * sop_amended 附上修订后的版本载荷——执行器续跑时按修订版执行
+   * （contentHash 是它交付对账的锚，修订不送达 = 对账锚停留在旧版）。
+   */
+  private async pendingReplyItems(a: SopAssignment): Promise<unknown[]> {
+    const rows = await this.clarifications.find({
+      where: { assignmentId: a.id },
+    });
+    const cursor = a.lastReplyDeliveredAt
+      ? new Date(a.lastReplyDeliveredAt).getTime()
+      : 0;
+    const pending = rows
+      .filter((r) => r.resolution !== null && new Date(r.updatedAt).getTime() > cursor)
+      .sort((x, y) => x.round - y.round);
+    const out: unknown[] = [];
+    for (const r of pending) {
+      const item: Record<string, unknown> = {
+        kind: "clarification_reply",
+        assignmentId: a.id,
+        clarificationId: r.id,
+        clientClarificationId: r.clientClarificationId,
+        round: r.round,
+        resolution: r.resolution,
+        answer: r.answer,
+        newSopVersion: r.newSopVersion,
+      };
+      if (r.resolution === "sop_amended" && r.newSopVersion) {
+        const payload = await this.amendedSopPayload(a.sopId, r.newSopVersion);
+        if (payload) item.newSop = payload;
+      }
+      out.push(item);
+    }
+    return out;
+  }
+
+  /**
+   * 执行器 ACK 澄清回复（P7d 双端确认的中台半边）。
+   * 游标单调推进（只前进不后退）：乱序确认不会让游标回退把已消费的
+   * 回复重新变成待投递。
+   */
+  async ackClarificationReply(input: {
+    assignmentId: string;
+    executorId: string;
+    clarificationId: string;
+  }): Promise<{ ok: true }> {
+    const a = await this.assignments.findOne({
+      where: { id: input.assignmentId },
+    });
+    if (!a) throw new NotFoundException(`指派 ${input.assignmentId} 不存在`);
+    if (a.targetExecutorId !== input.executorId) {
+      throw new ForbiddenException("指派不属于该执行器");
+    }
+    const row = await this.clarifications.findOne({
+      where: { id: input.clarificationId },
+    });
+    if (!row || row.assignmentId !== a.id) {
+      throw new NotFoundException("澄清不存在或不属于该指派");
+    }
+    if (row.resolution === null) {
+      throw new BadRequestException("该澄清尚未回复，无可确认");
+    }
+    const stamp = new Date(row.updatedAt);
+    if (!a.lastReplyDeliveredAt || a.lastReplyDeliveredAt < stamp) {
+      await this.assignments.update(
+        { id: a.id },
+        { lastReplyDeliveredAt: stamp },
+      );
+    }
+    return { ok: true };
+  }
+
+  /** sop_amended 回复附带的修订版本载荷（续跑按修订版执行与对账）。 */
+  private async amendedSopPayload(
+    sopId: string,
+    version: string,
+  ): Promise<Record<string, unknown> | null> {
+    const v = await this.versions.findOne({
+      where: { sopId, version },
+    });
+    if (!v) return null;
+    return {
+      version: v.version,
+      contentHash: v.contentHash,
+      frontMatter: v.frontMatterJson,
+      bodyMarkdown: v.bodyMarkdown,
+    };
   }
 
   /** 首次领取时下发的指派载荷（含 SOP 全量 + contentHash）。 */

@@ -40,7 +40,6 @@ import {
   type GateStopReason,
 } from './gates';
 import type { EnvironmentReport } from './perception';
-
 /** 一步的处置（诊断结论 → 下一步动作）。 */
 export type LoopNextAction =
   /** 继续下一轮（改代码 → 回试跑）。 */
@@ -87,6 +86,12 @@ export interface AgentLoopResult {
   iterations: number;
   trialRuns: number;
   clarifications: number;
+  /**
+   * 闸门原始计数（P7d）：调用方持久化后传回 `input.counters`，澄清续跑
+   * 与崩溃恢复的预算因此跨运行连续——墙钟「自首次迭代起算，resume 不重置」
+   * 的纪律靠它落地，否则每次续跑都是一次清零。
+   */
+  counters: GateCounters;
   /** 要发给中台的澄清问题（outcome=clarification_requested 时非空）。 */
   pendingQuestion?: string;
   /** 最终候选实现（outcome=delivered 时为通过验收的版本）。 */
@@ -118,6 +123,7 @@ function stopped(
     iterations: counters.iterations,
     trialRuns: counters.trialRuns,
     clarifications: counters.clarifications,
+    counters,
     gateSummary: summarizeGates(snapshot, now),
   };
 }
@@ -175,6 +181,7 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<AgentLoopResu
           iterations: counters.iterations,
           trialRuns: counters.trialRuns,
           clarifications: counters.clarifications,
+          counters,
           candidate,
           gateSummary: summarizeGates(snapshot(), t),
         };
@@ -192,6 +199,7 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<AgentLoopResu
           iterations: counters.iterations,
           trialRuns: counters.trialRuns,
           clarifications: counters.clarifications,
+          counters,
           candidate,
           gateSummary: summarizeGates(snapshot(), now()),
         };
@@ -206,6 +214,7 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<AgentLoopResu
           iterations: counters.iterations,
           trialRuns: counters.trialRuns,
           clarifications: counters.clarifications,
+          counters,
           candidate,
           gateSummary: summarizeGates(snapshot(), now()),
         };
@@ -222,6 +231,7 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<AgentLoopResu
             iterations: counters.iterations,
             trialRuns: counters.trialRuns,
             clarifications: counters.clarifications,
+            counters,
             candidate,
             gateSummary: summarizeGates(snapshot(), t),
           };
@@ -233,6 +243,7 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<AgentLoopResu
             iterations: counters.iterations,
             trialRuns: counters.trialRuns,
             clarifications: counters.clarifications,
+            counters,
             candidate,
             gateSummary: summarizeGates(snapshot(), now()),
           };
@@ -242,6 +253,7 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<AgentLoopResu
           iterations: counters.iterations,
           trialRuns: counters.trialRuns,
           clarifications: counters.clarifications,
+          counters,
           candidate,
           pendingQuestion: `第 ${counters.clarifications} 轮澄清：候选实现未通过验收，需要中台补充 SOP 信息`,
           gateSummary: summarizeGates(snapshot(), now()),
@@ -258,6 +270,7 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<AgentLoopResu
       iterations: counters.iterations,
       trialRuns: counters.trialRuns,
       clarifications: counters.clarifications,
+      counters,
       gateSummary: summarizeGates(snapshot(), t),
     };
   }

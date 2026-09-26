@@ -71,12 +71,12 @@ export class CollabClient {
   /** 长轮询待办（指派 / 澄清回复）。waitMs 由服务端钳位 ≤25s。 */
   async poll(
     address: string,
-    opts: { waitMs?: number; resendAssignments?: boolean } = {},
+    opts: { waitMs?: number; resendAssignments?: boolean | string[] } = {},
   ): Promise<{ ok: boolean; error?: string; items: unknown[]; sopPolicy?: unknown }> {
     const res = await this.post('/api/agent-collab/poll', address, {
       address,
       ...(opts.waitMs !== undefined ? { waitMs: opts.waitMs } : {}),
-      ...(opts.resendAssignments ? { resendAssignments: true } : {}),
+      ...(opts.resendAssignments !== undefined ? { resendAssignments: opts.resendAssignments } : {}),
     }, Math.max(this.timeoutMs, (opts.waitMs ?? 0) + 10_000));
     if (!res.ok) return { ok: false, error: res.error ?? `poll failed (status=${res.status})`, items: [] };
     try {
@@ -139,6 +139,23 @@ export class CollabClient {
       ...(input.targetAgentSessionId ? { targetAgentSessionId: input.targetAgentSessionId } : {}),
     });
     return res.ok ? { ok: true } : { ok: false, error: res.error ?? `progress failed (status=${res.status})` };
+  }
+
+  /**
+   * 澄清回复 ACK（P7d 双端确认）：回复落盘并消费之后调用。确认前中台
+   * 随每次 poll 重发该回复——至少一次投递，消费侧按 clarificationId 去重。
+   */
+  async ackClarificationReply(
+    address: string,
+    assignmentId: string,
+    clarificationId: string,
+  ): Promise<{ ok: boolean; error?: string }> {
+    const res = await this.post(
+      `/api/agent-collab/assignments/${encodeURIComponent(assignmentId)}/clarifications/ack`,
+      address,
+      { address, clarificationId },
+    );
+    return res.ok ? { ok: true } : { ok: false, error: res.error ?? `ack failed (status=${res.status})` };
   }
 
   /** 回报完成（幂等键 attempt）。 */
