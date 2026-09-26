@@ -11,8 +11,8 @@
 > 57/57 通过（multi-instance 17 + rollout 20 + outbox claim 7 + outbox-dup 13），清单 5/5 在
 > 新硬件/新 OS 上可复现；整体仍不标
 > done 的保留项以文内实际仍为 🟡/🔴 的条目为准：本地文件系统共享卷（3.5 🔴）、
-> 令牌缓存 Redis 化（3.7 🟡）、快速路径重试 pendingTimers（总表 #8 🟡），另多主机
-> （跨机）拓扑尚留验。范围：`apps/admin-api/src`。
+> 快速路径重试 pendingTimers（总表 #8 🟡），另多主机（跨机）拓扑尚留验；
+> 令牌缓存（3.7）已于 2026-09-26 经 Redis pub/sub 驱逐广播收口（🟡→🟢）。范围：`apps/admin-api/src`。
 > 目的：盘点全部**进程内单例状态**，标注每一项在多实例（水平扩容 / 滚动重启 /
 > 无会话粘滞负载均衡）下的兼容性、失效后果与风险等级，并给出 outbox / silence
 > 两项的 Redis 化评估。
@@ -21,7 +21,7 @@
 > 灰度批次、outbox 四类已改造为「DB 共享真相 + 读穿/claim/租约」并经真机双实例
 > 端到端验证；无 Leader 门禁的 @Cron（3.8）已于 2026-09-13 经独立 `cron:leader`
 > 选举统一收口（🟡→🟢）；**本地文件系统**（需共享卷）仍是水平扩容的主要部署约束，
-> 令牌缓存（3.7）等剩余 🟡 项按 §5 建议继续加固。
+> 令牌缓存（3.7）已于 2026-09-26 收口（🟡→🟢，驱逐广播）；剩余 🟡 项按 §5 建议继续加固。
 >
 > 本文保留历轮盘点/评估与验证事实；silence、channel config、rollout、outbox 四项
 > 拆分实现与逐项双实例验证均已完成（见 §5「后续实现拆分」与文末清单），剩余加固
@@ -54,7 +54,7 @@ claim；④ 路由到任意实例是否等价。
 | 6 | 产物/包本地磁盘 `uploads/`、artifacts root | 本地 FS | 否（除非共享卷） | 无 | 🔴 高 |
 | 7 | FEAT-19 outbox 派发扫描 `OutboxDispatcher` | DB 表（共享） | 是 | DB 行状态 | 🟡 中 |
 | 8 | FEAT-07 快速路径重试 `pendingTimers` | 进程内 Set | 否 | outbox 兜底 | 🟡 中 |
-| 9 | 执行器令牌缓存（3 个 Map） | 进程内 Map | 否 | TTL 60s / rotate 逐实例清 | 🟡 中 |
+| 9 | 执行器令牌缓存（3 个 Map） | 进程内 Map | **驱逐事件跨实例广播**（Redis pub/sub，§3.7） | TTL 60s 兜底 + 重连全量清空 | 🟢 低（2026-09-26 收口） |
 | 10 | 无 Leader 门禁的 `@Cron`（原 8 个） | ~~各实例并行~~ 已由 `LeaderGateService`（`cron:leader`）门禁收口（3.8，2026-09-13） | 锁共享 | fail-open + 15s 校验 | 🟢 低（已收口） |
 | 11 | 运行时指标 `counters`/`gauges`、`SchedulerMetrics`、`ExecutionCallbackMetrics` | 进程内 / 模块级 | 否 | Prometheus per-target | 🟢 低 |
 | 12 | SSE 槽位 `sseStreams*` / `MetricsStreamSlotService.activeStreams` | 进程内计数 | 否 | 按实例线性叠加（已文档化） | 🟢 低 |
@@ -204,16 +204,31 @@ OnModuleInit + 每 5s 扫描。claim **在数据库内完成**：单条
 禁止回环地址（SSRF 纪律）无法在本机离线闭环，需公网可达接收端——属交付验收，
 不改变 claim 侧结论。
 
-### 3.7 🟡 执行器令牌缓存（轮换延迟）
+### 3.7 ✅ 已收口（2026-09-26）：执行器令牌缓存跨实例驱逐广播
 
-`ExecutorService` 三个正缓存（`tokenValidationCache` / `callbackSecretCache` /
-`issuedTokenCache`，:63/:73/:110）均为进程内：
+原状（🟡）：`ExecutorService` 三个正缓存（`tokenValidationCache` / `callbackSecretCache` /
+`issuedTokenCache`）均为进程内，`rotateToken`/`removeById` 只 evict **本实例**条目——
+其他实例最长 60s 内仍以旧 hash 为 HMAC 候选、旧 token 仍命中校验正缓存（「撤销凭据」
+多实例失效窗口）；`POST /executors/token` 幂等复用（R9）按实例命中，落到不同实例会
+再轮换一次（冷启动语义，无害，保持不变）。
 
-- `rotateToken` 只 evict **本实例**的 `callbackSecretCache`/`issuedTokenCache`
-  （:1558-1559, :1670），其他实例的最长 60s 内仍以旧 hash 为 HMAC 候选 → 轮换窗口内
-  旧令牌短暂仍被接受（与单实例 F-5/N26 的取舍同源，多实例放大为「部分实例仍认旧」）；
-- `POST /executors/token` 的幂等复用（R9）也按实例命中：请求落到不同实例会再轮换一次
-  （冷启动语义，注释已承认无害）。
+**收口实现（`modules/executor/token-cache-sync.service.ts` + ExecutorService 接线）**：
+Redis pub/sub **驱逐广播**——热路径零改动（本地缓存保持进程内，bcrypt 省略语义不变）；
+`rotateToken`/`removeById` 本地逐出后 `PUBLISH executor:token-cache:evict {address}`，
+其他实例毫秒级收到并逐出该地址的全部三条目。三层 fail-open：
+
+1. 广播正常送达 → 撤销跨实例即时生效；
+2. 消息丢失（订阅端瞬断）→ 退化为既有 60s TTL（与改造前等价，不劣化）；
+3. 订阅连接 `ready`（首连+每次重连）→ **全量清空**本地三缓存，自愈漏掉的消息。
+
+Redis 整体不可用 → 发布被吞、订阅不建立，语义完全回到改造前。发布/订阅各占一条
+独立 ioredis 连接（订阅态不能跑普通命令）；发布端 `enableOfflineQueue=false`
+（迟到的驱逐没有意义，宁可如实失败走 TTL）。装配：`@Optional` 尾参注入
+ExecutorService（先例 eventBus），单测缺席 = 现状。
+
+测试：token-cache-sync 11 例（订阅接线/载荷校验/畸形忽略/flush 双触发/发布失败吞/
+destroy no-op）+ executor.service 6 例（接线/rotate 广播/remove 广播/远端逐出不动
+其他地址/flush 清空/缺席装配照常）。
 
 ### 3.8 ✅ 已收口（2026-09-13）：`@Cron` 统一 Leader 门禁
 
