@@ -1,4 +1,5 @@
 import { spawn, ChildProcess } from 'child_process';
+import { StringDecoder } from 'string_decoder';
 
 export interface RunCommandOptions {
   cwd?: string;
@@ -68,6 +69,12 @@ export function runCommand(
     const CAP = 10 * 1024 * 1024;
     let stdout = '';
     let stderr = '';
+    // NETOPT-9-8 (same as execute.ts runProcess): decode with StringDecoder so
+    // a multi-byte UTF-8 sequence split across chunk boundaries is not turned
+    // into U+FFFD per chunk. runCommand's callers (deploy / interpreters /
+    // runtime-detection) feed this text to logs, manifests and probes.
+    const stdoutDecoder = new StringDecoder('utf8');
+    const stderrDecoder = new StringDecoder('utf8');
     const timer = opts.timeout
       ? setTimeout(() => {
           killProcessTree(child, 'SIGKILL');
@@ -88,17 +95,21 @@ export function runCommand(
       opts.signal?.removeEventListener('abort', onAbort);
     };
     child.stdout?.on('data', (d: Buffer) => {
-      if (stdout.length < CAP) stdout += d.toString();
+      if (stdout.length < CAP) stdout += stdoutDecoder.write(d);
     });
     child.stderr?.on('data', (d: Buffer) => {
-      if (stderr.length < CAP) stderr += d.toString();
+      if (stderr.length < CAP) stderr += stderrDecoder.write(d);
     });
     child.on('error', (err) => {
       clearWatchers();
+      stdout += stdoutDecoder.end();
+      stderr += stderrDecoder.end();
       resolve({ status: null, stdout, stderr: `${stderr}${err.message}` });
     });
     child.on('close', (code) => {
       clearWatchers();
+      stdout += stdoutDecoder.end();
+      stderr += stderrDecoder.end();
       resolve({ status: code, stdout, stderr });
     });
   });

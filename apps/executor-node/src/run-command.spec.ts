@@ -120,3 +120,43 @@ describe('runCommand abort semantics (NETOPT-E P3)', () => {
     });
   });
 });
+
+// NETOPT-9-8（残差收口）：execute.ts runProcess 已用 StringDecoder 解流，
+// runCommand 的 per-chunk d.toString() 是最后一处——多字节 UTF-8 序列被
+// chunk 边界劈开时逐 chunk 变 U+FFFD（deploy/interpreters/runtime-detection
+// 的输出都在这条路径上）。
+describe('runCommand chunk decoding (NETOPT-9-8)', () => {
+  it('keeps multi-byte UTF-8 sequences split across chunks intact', async () => {
+    const proc = fakeProc();
+    mockSpawn.mockReturnValue(proc);
+
+    const promise = runCommand('node', ['--version'], {});
+    const zh = Buffer.from('中', 'utf8'); // E4 B8 AD — 劈在序列中间
+    proc.stdout.emit('data', zh.subarray(0, 2));
+    proc.stdout.emit('data', zh.subarray(2));
+    proc.emit('close', 0);
+    await expect(promise).resolves.toEqual({ status: 0, stdout: '中', stderr: '' });
+  });
+
+  it('flushes a trailing partial sequence via decoder.end on close', async () => {
+    const proc = fakeProc();
+    mockSpawn.mockReturnValue(proc);
+
+    const promise = runCommand('node', ['--version'], {});
+    proc.stdout.emit('data', Buffer.from([0xe4, 0xb8])); // 悬空的半个序列
+    proc.emit('close', 0);
+    await expect(promise).resolves.toEqual({ status: 0, stdout: '\uFFFD', stderr: '' });
+  });
+
+  it('decodes stderr the same way', async () => {
+    const proc = fakeProc();
+    mockSpawn.mockReturnValue(proc);
+
+    const promise = runCommand('node', ['--version'], {});
+    const warn = Buffer.from('警告', 'utf8');
+    proc.stderr.emit('data', warn.subarray(0, 3));
+    proc.stderr.emit('data', warn.subarray(3));
+    proc.emit('close', 1);
+    await expect(promise).resolves.toEqual({ status: 1, stdout: '', stderr: '警告' });
+  });
+});

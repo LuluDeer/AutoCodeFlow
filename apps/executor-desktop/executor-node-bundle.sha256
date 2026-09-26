@@ -381,5 +381,9 @@
 #   · 测试文件（*.spec.ts）改动**不影响**①——它们不进 ncc 产物（已实测确认）。
 #
 # 变更记录：① 的引入即本行；初值 580fc8046a464407…（42 个输入文件）。
-source-digest: 580fc8046a464407087bb29dc596d8994de6b01a38e223570c1dbdb119c60f60
-7a4d3aaa77f4105fa793c2043c4c1bcd2dca7cfd33e8d598e662e266738b1bcd  index.js
+#   · 2026-09-26 NETOPT-9-8 残差收口（run-command.ts StringDecoder）：①② 本地
+#     Linux（node 24.13）重打回填。实验证实：暂存源码改动重打 == CI 旧值
+#     （7a4d3aaa…）逐字节一致——"② 随构建绝对路径变化"的旧发现在当前工具链
+#     （ncc 0.45 产物与 map 均无绝对路径）已不成立，② 可本地回填，CI 仍权威复验。
+source-digest: af0b215b6ad123fd11de94ea95661153965536066532b4df4227caae60bbd995
+92b65845ea287fbd0a4d187b9e3383720048adc4002be1a30ac326447541fdb9  index.js
