@@ -652,6 +652,24 @@ export default function ConfigPage() {
                 </span>
               </div>
 
+              <div className="cfg-field cfg-field-narrow">
+                <label className="cfg-label">任务执行方式（细粒度覆盖，留空跟随预设）</label>
+                {/* P7e 前半：isolated-runner 已实现（08 §2.4 方案 A 的独立执行端点）。
+                    中台上限 standard 时仍被钳回 deploy-only——与 GUI 同款集中管控。 */}
+                <select className="input"
+                  value={String(form.agentTaskExecution || '')}
+                  onChange={(e) => set('agentTaskExecution', e.target.value)}>
+                  <option value="">（跟随预设：deploy-only）</option>
+                  <option value="deploy-only">deploy-only —— 只交付候选包，执行走既有部署通道</option>
+                  <option value="isolated-runner">isolated-runner —— 交付时在本机直接执行一次（留执行证据）</option>
+                </select>
+                <span className="cfg-hint">
+                  isolated-runner：交付后在本机独立执行端点跑一次候选（与试跑同一套 process
+                  沙箱：解释器封闭枚举 + env 白名单），执行证据随回报交给中台复核。
+                  中台权限上限是 standard 时仍会被钳回 deploy-only，须放宽到 developer+。
+                </span>
+              </div>
+
               <div className="cfg-field">
                 <label className="cfg-label">可操作应用（进程名，逗号或换行分隔）</label>
                 <textarea className="input" rows={2}
