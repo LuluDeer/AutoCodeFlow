@@ -35,7 +35,9 @@ export class AddAgentMediaTable1790000000042 implements MigrationInterface {
   }
 
   public async down(queryRunner: QueryRunner): Promise<void> {
-    await queryRunner.query(`DROP INDEX IF EXISTS "idx_agent_media_assignmentId"`);
+    await queryRunner.query(
+      `DROP INDEX IF EXISTS "idx_agent_media_assignmentId"`,
+    );
     await queryRunner.query(`DROP TABLE IF EXISTS "agent_media"`);
   }
 }

@@ -126,9 +126,12 @@ describe("AiController (N11)", () => {
 
       const result = await controller.getConfig();
 
+      // P1（qwen provider）：密钥判定改走 hasApiKeyForProvider()——按当前
+      // provider 选对应配置键（旧实现硬编码 ai.openaiApiKey，会让「选了
+      // qwen 却显示未配置」）。仍然只回布尔，永不回传密钥值。
+      expect(aiSvc.hasApiKeyForProvider).toHaveBeenCalledTimes(1);
       expect(result.hasApiKey).toBe(true);
       expect(JSON.stringify(result)).not.toContain("sk-super-secret");
-      expect(sysCfg.findOne).toHaveBeenCalledWith("ai.openaiApiKey");
     });
   });
 });

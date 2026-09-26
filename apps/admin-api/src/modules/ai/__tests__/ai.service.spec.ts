@@ -643,7 +643,9 @@ describe("P1: qwen provider (multimodal)", () => {
     let capturedBody: any = null;
     mockedAxios.post = jest.fn().mockImplementation((_u, body) => {
       capturedBody = body;
-      return Promise.resolve({ data: { choices: [{ message: { content: "" } }] } });
+      return Promise.resolve({
+        data: { choices: [{ message: { content: "" } }] },
+      });
     });
 
     await service.chatMultimodal({
@@ -659,7 +661,9 @@ describe("P1: qwen provider (multimodal)", () => {
     let capturedBody: any = null;
     mockedAxios.post = jest.fn().mockImplementation((_u, body) => {
       capturedBody = body;
-      return Promise.resolve({ data: { choices: [{ message: { content: "ok" } }] } });
+      return Promise.resolve({
+        data: { choices: [{ message: { content: "ok" } }] },
+      });
     });
 
     await service.chatMultimodal({
@@ -668,7 +672,10 @@ describe("P1: qwen provider (multimodal)", () => {
           role: "user",
           content: [
             { type: "text", text: "这张图有什么问题？" },
-            { type: "image_url", image_url: { url: "https://cdn.example.com/a.png" } },
+            {
+              type: "image_url",
+              image_url: { url: "https://cdn.example.com/a.png" },
+            },
           ],
         },
       ],
@@ -683,7 +690,9 @@ describe("P1: qwen provider (multimodal)", () => {
     let capturedBody: any = null;
     mockedAxios.post = jest.fn().mockImplementation((_u, body) => {
       capturedBody = body;
-      return Promise.resolve({ data: { choices: [{ message: { content: "看懂了" } }] } });
+      return Promise.resolve({
+        data: { choices: [{ message: { content: "看懂了" } }] },
+      });
     });
 
     const res = await service.chatMultimodal({
@@ -692,7 +701,10 @@ describe("P1: qwen provider (multimodal)", () => {
           role: "user",
           content: [
             { type: "text", text: "分析这段录屏" },
-            { type: "video_url", video_url: { url: "https://cdn.example.com/r.mp4" } },
+            {
+              type: "video_url",
+              video_url: { url: "https://cdn.example.com/r.mp4" },
+            },
           ],
         },
       ],
@@ -775,7 +787,9 @@ describe("P1: qwen provider (multimodal)", () => {
     let capturedBody: any = null;
     mockedAxios.post = jest.fn().mockImplementation((_u, body) => {
       capturedBody = body;
-      return Promise.resolve({ data: { choices: [{ message: { content: "" } }] } });
+      return Promise.resolve({
+        data: { choices: [{ message: { content: "" } }] },
+      });
     });
 
     await service.chatMultimodal({
@@ -791,7 +805,9 @@ describe("P1: qwen provider (multimodal)", () => {
     let capturedCfg: any = null;
     mockedAxios.post = jest.fn().mockImplementation((_u, _b, cfg) => {
       capturedCfg = cfg;
-      return Promise.resolve({ data: { choices: [{ message: { content: "" } }] } });
+      return Promise.resolve({
+        data: { choices: [{ message: { content: "" } }] },
+      });
     });
 
     await service.chatMultimodal({
@@ -802,7 +818,8 @@ describe("P1: qwen provider (multimodal)", () => {
     expect(capturedCfg.timeout).toBe(120000);
     // pin 由 pinnedAxiosConfig 注入（httpAgent/httpsAgent + lookup）
     expect(
-      capturedCfg.httpAgent !== undefined || capturedCfg.httpsAgent !== undefined,
+      capturedCfg.httpAgent !== undefined ||
+        capturedCfg.httpsAgent !== undefined,
     ).toBe(true);
   });
 

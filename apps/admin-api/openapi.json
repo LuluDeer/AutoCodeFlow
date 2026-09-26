@@ -9411,51 +9411,280 @@
       },
       "CreateAgentSessionDto": {
         "type": "object",
-        "properties": {}
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "ops_watch",
+              "incident",
+              "sop_authoring",
+              "sop_review",
+              "app_scaffold",
+              "chat"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "scope": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "required": [
+          "kind"
+        ]
       },
       "HumanReplyDto": {
         "type": "object",
-        "properties": {}
+        "properties": {
+          "resolution": {
+            "type": "string",
+            "enum": [
+              "answered",
+              "sop_amended"
+            ]
+          },
+          "answer": {
+            "type": "string"
+          },
+          "amendedFrontMatterYaml": {
+            "type": "string"
+          },
+          "amendedBodyMarkdown": {
+            "type": "string"
+          },
+          "changelog": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "resolution",
+          "answer"
+        ]
       },
       "DraftSopDto": {
         "type": "object",
-        "properties": {}
+        "properties": {
+          "slug": {
+            "type": "string",
+            "example": "daily-report"
+          },
+          "title": {
+            "type": "string"
+          },
+          "frontMatterYaml": {
+            "type": "string"
+          },
+          "bodyMarkdown": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "slug",
+          "title"
+        ]
       },
       "UpdateSopDto": {
         "type": "object",
-        "properties": {}
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "frontMatterYaml": {
+            "type": "string"
+          },
+          "bodyMarkdown": {
+            "type": "string"
+          }
+        }
       },
       "PublishSopDto": {
         "type": "object",
-        "properties": {}
+        "properties": {
+          "bump": {
+            "type": "string",
+            "enum": [
+              "patch",
+              "minor",
+              "major"
+            ]
+          },
+          "changelog": {
+            "type": "string"
+          }
+        }
       },
       "AssignSopDto": {
         "type": "object",
-        "properties": {}
+        "properties": {
+          "version": {
+            "type": "string",
+            "description": "指派的具体版本；缺省 = currentVersion"
+          },
+          "executorId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "executorAddress": {
+            "type": "string",
+            "description": "按地址指派（executorId 缺省时的替代形态）"
+          }
+        }
       },
       "AgentCollabPollDto": {
         "type": "object",
-        "properties": {}
+        "properties": {
+          "address": {
+            "type": "string",
+            "example": "office-pc-07:8002"
+          },
+          "waitMs": {
+            "type": "number",
+            "description": "长轮询等待（服务端钳位 ≤25s）"
+          },
+          "resendAssignments": {
+            "oneOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            ]
+          },
+          "inflight": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "address"
+        ]
       },
       "AgentCollabCapabilityDto": {
         "type": "object",
-        "properties": {}
+        "properties": {
+          "address": {
+            "type": "string"
+          },
+          "capabilities": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "report": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "required": [
+          "address",
+          "capabilities"
+        ]
       },
       "AgentCollabClarificationDto": {
         "type": "object",
-        "properties": {}
+        "properties": {
+          "address": {
+            "type": "string"
+          },
+          "assignmentId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "clientClarificationId": {
+            "type": "string"
+          },
+          "question": {
+            "type": "string"
+          },
+          "context": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "mediaRefs": {
+            "additionalProperties": true,
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "targetAgentSessionId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "address",
+          "assignmentId",
+          "question"
+        ]
       },
       "AgentCollabProgressDto": {
         "type": "object",
-        "properties": {}
+        "properties": {
+          "address": {
+            "type": "string"
+          },
+          "progressJson": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "targetAgentSessionId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "address"
+        ]
       },
       "AgentCollabCompleteDto": {
         "type": "object",
-        "properties": {}
+        "properties": {
+          "address": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "completed",
+              "failed"
+            ]
+          },
+          "result": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "attempt": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "address",
+          "status"
+        ]
       },
       "AgentCollabAckReplyDto": {
         "type": "object",
-        "properties": {}
+        "properties": {
+          "address": {
+            "type": "string"
+          },
+          "clarificationId": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "address",
+          "clarificationId"
+        ]
       },
       "UpsertConfigDto": {
         "type": "object",
