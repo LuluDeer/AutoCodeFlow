@@ -2184,6 +2184,52 @@ export class ExecutorService {
   }
 
   /**
+   * SOP 指派的可选执行器：**当前租约内**声明了 `agent:sop` 的机器。
+   *
+   * 为什么不走 findAll 的列表投影：agentCapabilities 在列表响应里被刻意
+   * 剥离（短效租约字段，快照会让「显示有能力」与「实际还有效」脱节）。
+   * 这里逐台复用 getAgentCapabilities 的租约判定——同一份 TTL 语义，不为
+   * 指派面另造一份（复刻必然漂移）。指派面还要求能看能力明细（中台可行性
+   * 预检的展示需求），故原样返回能力清单。
+   */
+  async listSopCapableExecutors(): Promise<
+    Array<{
+      id: string;
+      appName: string;
+      address: string;
+      status: string;
+      lastHeartbeat: Date | null;
+      agentCapabilities: string[];
+    }>
+  > {
+    const rows = await this.repo.find({
+      order: { lastHeartbeat: "DESC" },
+      take: 100,
+    });
+    const out: Array<{
+      id: string;
+      appName: string;
+      address: string;
+      status: string;
+      lastHeartbeat: Date | null;
+      agentCapabilities: string[];
+    }> = [];
+    for (const e of rows) {
+      const caps = await this.getAgentCapabilities(e.id);
+      if (!caps.includes("agent:sop")) continue;
+      out.push({
+        id: e.id,
+        appName: e.appName,
+        address: e.address,
+        status: e.status,
+        lastHeartbeat: e.lastHeartbeat ?? null,
+        agentCapabilities: caps,
+      });
+    }
+    return out;
+  }
+
+  /**
    * Get all unique executor groups.
    */
   async getGroups(): Promise<string[]> {

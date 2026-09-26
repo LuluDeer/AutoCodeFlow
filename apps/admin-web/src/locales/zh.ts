@@ -2660,6 +2660,22 @@ export default {
   // P7d：澄清回复的确认投递状态（游标 lastReplyDeliveredAt 推进后即「已确认」）
   'sops.replyAcked': '执行器已确认',
   'sops.replyAwaitingAck': '待执行器确认',
+  // SOP 操作面补齐：指派对话框 + 失败单重派 + 回传媒体可见
+  'sops.assign': '指派',
+  'sops.assignTitle': '指派 SOP',
+  'sops.assignHint': '仅 published 的 SOP 可指派；执行器按当前 Agent 能力租约过滤（2 分钟内有效）',
+  'sops.assignVersion': '版本',
+  'sops.assignExecutorPlaceholder': '选择执行器（仅列出租约内声明 agent:sop 的机器）',
+  'sops.assignEmpty': '没有可接指派的执行器——先在桌面端启用 Agent（能力租约 30 秒续报、2 分钟过期）',
+  'sops.assignSubmit': '指派',
+  'sops.assignOk': '指派成功（执行器将在下次 poll 领取）',
+  'sops.assignFailed': '指派失败（核对执行器能力租约与 SOP 版本）',
+  'sops.assignNote': '指派后执行器经 agent-collab poll 领取；maxRounds 在指派时从 SOP front-matter 快照。',
+  'sops.reassign': '重派',
+  'sops.mediaTitle': '回传媒体（截图/录屏）',
+  'sops.mediaView': '查看',
+  'sops.mediaViewFailed': '媒体打开失败',
+  'sops.mediaRefsLabel': '附件',
 
   // ── P2 遗留补齐: Agent 会话查看面（AgentSessionsPage，全 ADMIN-only）──
   'nav.agents': 'Agent 会话',

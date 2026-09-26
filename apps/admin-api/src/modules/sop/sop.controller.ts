@@ -192,6 +192,18 @@ export class SopController {
   }
 
   /**
+   * 指派可选执行器（P7c 租约投影）：只列**当前租约内**声明了 agent:sop 的
+   * 机器。列表投影刻意剥离 agentCapabilities（短效租约，快照会误导），
+   * 指派面因此走这台独立端点——Admin Web 的指派对话框据此渲染可选项，
+   * 空列表 = 「没有任何机器开着 Agent」，而不是让 assign 端点报错兜圈。
+   */
+  @Get("assignable-executors")
+  @ApiOperation({ summary: "当前租约内可接 SOP 指派的执行器（agent:sop）" })
+  async assignableExecutors() {
+    return this.executors.listSopCapableExecutors();
+  }
+
+  /**
    * 人工回复澄清（P6 升级环的收口）：escalated_to_human 的澄清此前只有
    * 通知没有答复路径——升级之后环就断了。人工与中台 Agent 走**同一个**
    * replyClarification（同一道幂等/校验/修订闸门），resolution 限

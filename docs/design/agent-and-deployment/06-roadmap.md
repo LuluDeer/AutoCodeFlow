@@ -655,6 +655,27 @@ tsc 0 + nest build 绿 + lint gates 绿；env 三处文档同步（TTL/保留期
 `sopsApi.assign`，属小 UI 增量）；媒体清理的 DB 行删除按 assignmentId 整批（部分
 文件超龄部分未超龄的目录按最旧文件判定整删——媒体是证据集合，不拆单文件）。
 
+### 9.14 SOP 操作面补齐（2026-09-26）：指派 UI + 重派 + 媒体可见 ✅
+
+> **产物**：SopsPage 指派对话框（P5 核心动作此前**只能 curl/MCP/Agent 工具发起**
+> ——`sopsApi.assign` 在客户端存在却从未被任何页面调用）+ 失败单重派 + 回传媒体
+> 可见（澄清附件与指派级媒体此前在 UI 完全不可见，复核全凭文字）。
+
+| 任务 | 说明 | 状态 |
+|---|---|---|
+| 指派对话框 | 版本选择（contentHash 可辨）+ 执行器选择——数据源是新端点 `GET /sop/assignable-executors`：**当前租约内**声明 agent:sop 的机器（列表投影刻意剥离短效租约字段，指派面走独立端点；空列表 = 没有机器开着 Agent，而非让 assign 报错兜圈） | ✅ |
+| 失败单重派 | failed/stalled/cancelled 工单行内「重派」按钮，预填原版本——运维此前同样只能 curl | ✅ |
+| 回传媒体可见 | 指派级媒体清单（`GET /assignments/:id/media` 端点已存在但零消费）+ 澄清条目渲染 mediaRefs 附件按钮；查看走鉴权 blob + objectURL（直链 401，与 artifacts download 同写法） | ✅ |
+| 租约复用 | `ExecutorService.listSopCapableExecutors` 逐台复用 `getAgentCapabilities` 的同一份 TTL 判定——不为指派面另造租约语义（复刻必然漂移） | ✅ |
+
+**验收**：admin-web tsc 0 + build 绿 + lint 0 errors + i18n 守卫通过 + vitest **1265 项
+全绿**；admin-api tsc 0 + nest build 绿；`agent-sop-check` **144 项**（+2 端点与租约
+复用断言）。
+
+**残差（如实）**：可接单执行器的租约判定是 N+1 查询（N≤100，心跳倒序取前 100）——
+执行器规模上千时需要改为 SQL 侧 JSONB 过滤；接管答复对已终结指派不投递（重派即
+恢复路径），指派表格暂不为这种行显示「接管未送达」提示。
+
 ## 10. 立即可开工的建议
 
 **本轮我建议先做 P0**，理由：
