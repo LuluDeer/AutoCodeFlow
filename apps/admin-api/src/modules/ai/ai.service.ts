@@ -306,9 +306,7 @@ export class AiService {
    * 安全：出站走与 callOpenAI 完全相同的守卫——assertAndPinHttpUrl
    * （SSRF + DNS pin）+ maxRedirects:0（拒 3xx 绕过）。**不新开旁路**。
    */
-  async chatMultimodal(
-    req: MultimodalRequest,
-  ): Promise<MultimodalResponse> {
+  async chatMultimodal(req: MultimodalRequest): Promise<MultimodalResponse> {
     const provider = await this.getAiConfig("provider", "disabled");
     if (provider !== "qwen") {
       // fail-open：与既有 analyzeFailure 一致的姿态——未启用即返回空，

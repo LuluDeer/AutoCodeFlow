@@ -197,7 +197,11 @@ export const RUNTIME_COUNTERS: Record<RuntimeCounterName, RuntimeCounterSpec> =
         { tool: "list_tasks", tier: "read", status: "ok" },
         { tool: "get_execution", tier: "read", status: "ok" },
         { tool: "trigger_task", tier: "write", status: "ok" },
-        { tool: "deploy_application", tier: "write", status: "awaiting_approval" },
+        {
+          tool: "deploy_application",
+          tier: "write",
+          status: "awaiting_approval",
+        },
         { tool: "approve_deployment", tier: "dangerous", status: "denied" },
       ],
     },

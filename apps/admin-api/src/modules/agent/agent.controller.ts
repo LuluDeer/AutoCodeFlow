@@ -7,7 +7,13 @@ import {
   Query,
   UseGuards,
 } from "@nestjs/common";
-import { ApiTags, ApiOperation, ApiBearerAuth } from "@nestjs/swagger";
+import {
+  ApiTags,
+  ApiOperation,
+  ApiBearerAuth,
+  ApiProperty,
+  ApiPropertyOptional,
+} from "@nestjs/swagger";
 import { InjectQueue } from "@nestjs/bullmq";
 import type { Queue } from "bullmq";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
@@ -29,10 +35,12 @@ import {
 } from "class-validator";
 
 export class CreateAgentSessionDto {
+  @ApiProperty({ enum: AGENT_SESSION_KINDS as unknown as string[] })
   @IsString()
   @IsIn(AGENT_SESSION_KINDS as unknown as string[])
   kind: AgentSessionKind;
 
+  @ApiPropertyOptional()
   @IsOptional()
   @IsString()
   @MaxLength(255)
@@ -48,6 +56,7 @@ export class CreateAgentSessionDto {
   context?: Record<string, unknown>;
 
   /** 作用域约束（设计文档 03 §5.3）。不传 = 空 scope（不可操作任何资源）。 */
+  @ApiPropertyOptional({ type: "object", additionalProperties: true })
   @IsOptional()
   @IsObject()
   scope?: Record<string, unknown>;

@@ -11,7 +11,13 @@ import {
   ForbiddenException,
 } from "@nestjs/common";
 
-import { ApiTags, ApiBearerAuth, ApiOperation } from "@nestjs/swagger";
+import {
+  ApiTags,
+  ApiBearerAuth,
+  ApiOperation,
+  ApiProperty,
+  ApiPropertyOptional,
+} from "@nestjs/swagger";
 import {
   IsIn,
   IsOptional,
@@ -38,21 +44,25 @@ import { ExecutorService } from "../executor/executor.service";
  */
 
 class DraftSopDto {
+  @ApiProperty({ example: "daily-report" })
   @IsString()
   @Matches(/^[a-z0-9][a-z0-9-]{0,127}$/, {
     message: "slug 只允许小写字母/数字/连字符，1..128",
   })
   slug: string;
 
+  @ApiProperty()
   @IsString()
   @MaxLength(255)
   title: string;
 
+  @ApiPropertyOptional()
   @IsOptional()
   @IsString()
   @MaxLength(100_000)
   frontMatterYaml?: string;
 
+  @ApiPropertyOptional()
   @IsOptional()
   @IsString()
   @MaxLength(500_000)
@@ -64,16 +74,19 @@ class DraftSopDto {
 }
 
 class UpdateSopDto {
+  @ApiPropertyOptional()
   @IsOptional()
   @IsString()
   @MaxLength(255)
   title?: string;
 
+  @ApiPropertyOptional()
   @IsOptional()
   @IsString()
   @MaxLength(100_000)
   frontMatterYaml?: string;
 
+  @ApiPropertyOptional()
   @IsOptional()
   @IsString()
   @MaxLength(500_000)
@@ -81,10 +94,12 @@ class UpdateSopDto {
 }
 
 class PublishSopDto {
+  @ApiPropertyOptional({ enum: ["patch", "minor", "major"] })
   @IsOptional()
   @IsIn(["patch", "minor", "major"])
   bump?: "patch" | "minor" | "major";
 
+  @ApiPropertyOptional()
   @IsOptional()
   @IsString()
   @MaxLength(2000)
@@ -92,15 +107,20 @@ class PublishSopDto {
 }
 
 class AssignSopDto {
+  @ApiPropertyOptional({ description: "指派的具体版本；缺省 = currentVersion" })
   @IsOptional()
   @IsString()
   @MaxLength(32)
   version?: string;
 
+  @ApiPropertyOptional({ format: "uuid" })
   @IsOptional()
   @IsUUID()
   executorId?: string;
 
+  @ApiPropertyOptional({
+    description: "按地址指派（executorId 缺省时的替代形态）",
+  })
   @IsOptional()
   @IsString()
   @MaxLength(255)
@@ -108,23 +128,28 @@ class AssignSopDto {
 }
 
 class HumanReplyDto {
+  @ApiProperty({ enum: ["answered", "sop_amended"] })
   @IsIn(["answered", "sop_amended"])
   resolution: "answered" | "sop_amended";
 
+  @ApiProperty()
   @IsString()
   @MaxLength(8000)
   answer: string;
 
+  @ApiPropertyOptional()
   @IsOptional()
   @IsString()
   @MaxLength(100_000)
   amendedFrontMatterYaml?: string;
 
+  @ApiPropertyOptional()
   @IsOptional()
   @IsString()
   @MaxLength(500_000)
   amendedBodyMarkdown?: string;
 
+  @ApiPropertyOptional()
   @IsOptional()
   @IsString()
   @MaxLength(2000)

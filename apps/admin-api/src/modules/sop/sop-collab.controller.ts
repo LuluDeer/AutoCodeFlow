@@ -16,6 +16,7 @@ import {
 import { FileInterceptor } from "@nestjs/platform-express";
 import { diskStorage } from "multer";
 import { ConfigService } from "@nestjs/config";
+import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 
 import { Public } from "../../common/decorators/public.decorator";
 import { ExecutorService } from "../executor/executor.service";
@@ -54,52 +55,81 @@ function bearer(auth: string | undefined): string {
 }
 
 class AgentCollabPollDto {
+  @ApiProperty({ example: "office-pc-07:8002" })
   address!: string;
+  @ApiPropertyOptional({ description: "长轮询等待（服务端钳位 ≤25s）" })
   waitMs?: number;
   /**
    * 执行器丢了本地状态时强制重发指派载荷（含 SOP 全量）。
    * `true` = 全部活跃单重发（未投递的旧单重新排队）；
    * `[id]` = 只重发指定单（P7d 崩溃恢复，定向且不触碰其它单的游标）。
    */
+  @ApiPropertyOptional({
+    oneOf: [{ type: "boolean" }, { type: "array", items: { type: "string" } }],
+  })
   resendAssignments?: boolean | string[];
+  @ApiPropertyOptional({ isArray: true, type: "string" })
   inflight?: string[];
 }
 
 class AgentCollabCapabilityDto {
+  @ApiProperty()
   address!: string;
   /** 能力域清单（覆盖式）。接 SOP 的机器必须显式含 `agent:sop`。 */
+  @ApiProperty({ isArray: true, type: "string" })
   capabilities!: string[];
   /** 富结构能力报告（可选，P7 的可行性预检用）。 */
+  @ApiPropertyOptional({ type: "object", additionalProperties: true })
   report?: Record<string, unknown>;
 }
 
 class AgentCollabClarificationDto {
+  @ApiProperty()
   address!: string;
+  @ApiProperty({ format: "uuid" })
   assignmentId!: string;
   /** 客户端生成的幂等键（UUID）——重试重发不产生两条澄清。 */
+  @ApiPropertyOptional()
   clientClarificationId?: string;
+  @ApiProperty()
   question!: string;
+  @ApiPropertyOptional({ type: "object", additionalProperties: true })
   context?: Record<string, unknown>;
+  @ApiPropertyOptional({
+    type: "object",
+    additionalProperties: true,
+    isArray: true,
+  })
   mediaRefs?: SopClarificationMediaRef[];
+  @ApiPropertyOptional()
   targetAgentSessionId?: string;
 }
 
 class AgentCollabProgressDto {
+  @ApiProperty()
   address!: string;
+  @ApiPropertyOptional({ type: "object", additionalProperties: true })
   progressJson?: Record<string, unknown>;
+  @ApiPropertyOptional()
   targetAgentSessionId?: string;
 }
 
 class AgentCollabCompleteDto {
+  @ApiProperty()
   address!: string;
+  @ApiProperty({ enum: ["completed", "failed"] })
   status!: "completed" | "failed";
+  @ApiPropertyOptional({ type: "object", additionalProperties: true })
   result?: Record<string, unknown>;
   /** 幂等：同 attempt 重放无害。 */
+  @ApiPropertyOptional()
   attempt?: number;
 }
 
 class AgentCollabAckReplyDto {
+  @ApiProperty()
   address!: string;
+  @ApiProperty({ format: "uuid" })
   clarificationId!: string;
 }
 
@@ -388,7 +418,14 @@ export class SopCollabController {
   )
   async uploadCandidatePackage(
     @Param("id") assignmentId: string,
-    @Body() body: { address: string; sopSlug?: string; sopVersion?: string; contentHash?: string; runtime?: string },
+    @Body()
+    body: {
+      address: string;
+      sopSlug?: string;
+      sopVersion?: string;
+      contentHash?: string;
+      runtime?: string;
+    },
     @UploadedFile() file?: Express.Multer.File,
     @Headers("authorization") auth?: string,
   ) {
@@ -405,11 +442,14 @@ export class SopCollabController {
     const pkg = await this.packages.create(
       {
         name: `sop-${sopSlug}`,
-        version: `${assignment.sopVersion}+agent.${Date.now().toString(36)}`.slice(0, 64),
+        version:
+          `${assignment.sopVersion}+agent.${Date.now().toString(36)}`.slice(
+            0,
+            64,
+          ),
         type: runtime as never,
         platform: "any",
-        description:
-          `agent candidate assignment=${assignmentId} contentHash=${(body.contentHash ?? "").slice(0, 64)}`,
+        description: `agent candidate assignment=${assignmentId} contentHash=${(body.contentHash ?? "").slice(0, 64)}`,
       },
       file,
       `agent:sop:${executor.id}`,
