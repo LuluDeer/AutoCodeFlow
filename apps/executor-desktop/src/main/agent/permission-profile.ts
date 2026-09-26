@@ -33,7 +33,7 @@ export type SandboxBackendMode = (typeof SANDBOX_BACKEND_MODES)[number];
 export const HOST_ACCESS_MODES = ['none', 'app-scoped', 'session'] as const;
 export type HostAccessMode = (typeof HOST_ACCESS_MODES)[number];
 
-/** 任务执行方式。isolated-runner 留 P7e；shared-runner **故意不提供**（08 §2.4）。 */
+/** 任务执行方式。isolated-runner P7e 前半实现；shared-runner **故意不提供**（08 §2.4）。 */
 export const TASK_EXECUTION_MODES = ['deploy-only', 'isolated-runner'] as const;
 export type TaskExecutionMode = (typeof TASK_EXECUTION_MODES)[number];
 
@@ -68,7 +68,8 @@ const HOST_ACCESS_SPEC: AxisSpec<HostAccessMode> = {
 };
 const TASK_EXECUTION_SPEC: AxisSpec<TaskExecutionMode> = {
   rank: ['deploy-only', 'isolated-runner'],
-  implemented: ['deploy-only'],
+  // P7e 前半放开 isolated-runner（desktop 本地独立执行端点，08 §2.4 方案 A）
+  implemented: ['deploy-only', 'isolated-runner'],
 };
 
 /** P7a 实现的预设（09 §6 分阶段实现表）。 */
@@ -318,6 +319,15 @@ function mergeAxes(
 /** 快捷判定：当前档位是否允许试跑（P7a 的核心开关）。 */
 export function allowsTrialRun(p: EffectiveAgentPermissions): boolean {
   return p.codeExecution === 'sandbox' || p.codeExecution === 'host';
+}
+
+/**
+ * 快捷判定：当前档位是否允许直接执行任务（P7e 前半）。
+ * `isolated-runner` = 交付时在本机直接执行一次候选（独立执行端点，08 §2.4
+ * 方案 A）；默认 `deploy-only` = 只交付包、执行走既有 deploy 通道。
+ */
+export function allowsDirectTaskExecution(p: EffectiveAgentPermissions): boolean {
+  return p.taskExecution === 'isolated-runner';
 }
 
 /**

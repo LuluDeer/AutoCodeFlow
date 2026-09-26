@@ -264,6 +264,7 @@ async function main(): Promise<void> {
     check('候选包已上传（multipart，>2 字节）', cand !== undefined && cand.body.__multipart === true && (cand.body.bytes as number) > 2);
     const result = complete?.body.result as { packageRef?: { packageId?: string } } | undefined;
     check('packageRef 进回报（中台据此走 deploy 通道）', result?.packageRef?.packageId === 'pkg-1', JSON.stringify(result?.packageRef ?? null));
+    check('deploy-only 档交付不带直接执行证据（isolated-run 是显式档位行为）', (complete?.body.result as Record<string, unknown> | undefined)?.isolatedRun === undefined);
     check('lastOutcome 记录', host.stats.lastOutcome === 'delivered');
     check('工作区产物落盘', fs.existsSync(path.join(workDir, 'agent-workspace', ASSIGNMENT_ID, 'out.txt')));
     const capsBeforeRenew = center.requests.filter((q) => q.path === '/api/agent-collab/capability').length;
@@ -554,6 +555,39 @@ async function main(): Promise<void> {
     check('重发不产生第二次回报', completes.length === 1);
     check('ACK 重试成功（毒消息防护闭环）', center.ackCalls.length === 2);
     check('日志最终已清', loadAssignmentJournal(journalDirFor(workDir), ASSIGNMENT_ID) === null);
+    await center.close();
+  }
+
+  console.log('-- 13. isolated-runner：交付附带直接执行证据 --');
+  {
+    const workDir = newWorkDir();
+    const center = makeCenter({
+      llmScript: [PLAN_OK],
+      // 中台上限必须显式放宽到含 isolated-runner 的预设（developer+），
+      // 否则 standard 档的 taskExecution 被钳回 deploy-only——与 GUI 同款
+      // 「中台只能往下压」语义
+      sopPolicy: { permissionPolicy: 'developer', allowedProfiles: ['standard', 'developer'] },
+      pollScript: [
+        { items: [{ kind: 'assignment', assignmentId: ASSIGNMENT_ID, sop: SOP_PAYLOAD }] },
+      ],
+    });
+    const baseUrl = await center.listen();
+    const client = new CollabClient({ baseUrl, token: 't', timeoutMs: 5000 });
+    const config = makeConfig(baseUrl, { agent: { preset: 'standard', taskExecution: 'isolated-runner' } });
+    const host = new AgentHost({ address: 'a:1', workDir, getConfig: () => config, client });
+    const r = await host.tick();
+    check('isolated-runner 档下交付完成', r.worked === true);
+    const complete = center.requests.find((q) => q.path.endsWith('/complete'));
+    check('回报 completed', complete?.body.status === 'completed');
+    const result = complete?.body.result as {
+      isolatedRun?: { source?: string; ok?: boolean; logPath?: string; seq?: number };
+    } | undefined;
+    check('回报附带直接执行证据（ok + 来源标记）',
+      result?.isolatedRun?.ok === true && result.isolatedRun.source === 'agent:sop:a:1');
+    check('证据留在工作区 isolated-runs/（打包排除，不污染候选包）',
+      fs.existsSync(path.join(workDir, 'agent-workspace', ASSIGNMENT_ID, 'isolated-runs', 'run-1.log')));
+    check('lastOutcome 记录 delivered', host.stats.lastOutcome === 'delivered');
+    check('交付后日志清理', loadAssignmentJournal(journalDirFor(workDir), ASSIGNMENT_ID) === null);
     await center.close();
   }
 

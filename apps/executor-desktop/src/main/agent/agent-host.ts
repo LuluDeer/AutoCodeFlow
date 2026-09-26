@@ -42,13 +42,16 @@ import {
 import {
   mergeWithCenterPolicy,
   resolveLocalPermissions,
+  allowsDirectTaskExecution,
   type CenterPolicyInput,
+  type EffectiveAgentPermissions,
   type LocalAgentConfigInput,
 } from './permission-profile';
 import { runAgentLoop, type AgentLoopResult } from './loop';
 import { buildLoopHandlers, newClarificationId, type SopPayload } from './runtime';
 import type { CollabClient } from './collab-client';
 import type { GateLimits } from './gates';
+import { runIsolatedTask } from './isolated-runner';
 import {
   clearAssignmentJournal,
   journalDirFor,
@@ -534,7 +537,7 @@ export class AgentHost {
         ...(journal.counters ? { counters: journal.counters } : {}),
       });
 
-      await this.reportLoopResult(journal, result, workspaceRoot);
+      await this.reportLoopResult(journal, result, workspaceRoot, effective);
     } catch (err) {
       // 兜底：循环外的意外（poll 载荷畸形、磁盘故障……）也要如实回报
       this.stats.lastOutcome = 'host_error';
@@ -564,6 +567,7 @@ export class AgentHost {
     journal: AssignmentJournal,
     result: AgentLoopResult,
     workspaceRoot: string,
+    effective: EffectiveAgentPermissions,
   ): Promise<void> {
     const dir = this.journalDir();
     const assignmentId = journal.assignmentId;
@@ -578,10 +582,12 @@ export class AgentHost {
       // 以为应用已进系统。对账锚用 journal.sop——澄清修订后续跑按修订版交付。
       let packageRef: Record<string, unknown> | null = null;
       let deliverError: string | null = null;
+      let entrySpec: { interpreter: string; path: string } | null = null;
       try {
         const entry = result.candidate ?? '';
         const interpreter = entry.split(' ')[0] ?? '';
         const entryPath = entry.split(' ')[1] ?? '';
+        entrySpec = { interpreter, path: entryPath };
         const pkg = buildCandidatePackage({
           workspaceRoot,
           entry: { interpreter, path: entryPath },
@@ -603,6 +609,22 @@ export class AgentHost {
         }
       } catch (err) {
         deliverError = err instanceof Error ? err.message : String(err);
+      }
+
+      // 直接执行证据（P7e 前半，08 §2.4 方案 A）：isolated-runner 档下交付
+      // 后在本机跑一次候选。发生在交付之后——执行失败不翻转交付判定，
+      // 证据如实进回报（中台复核按不可信自述对待），本地不悄悄重试或掩盖。
+      let isolatedRun: Record<string, unknown> | null = null;
+      if (entrySpec !== null && allowsDirectTaskExecution(effective)) {
+        const run = await runIsolatedTask({
+          workspaceRoot,
+          entry: entrySpec,
+          runSeq: 1,
+          source: `agent:sop:${this.deps.address}`,
+          codeExecution: effective.codeExecution,
+          taskExecution: effective.taskExecution,
+        });
+        isolatedRun = { ...run };
       }
 
       if (deliverError !== null) {
@@ -632,6 +654,7 @@ export class AgentHost {
           gateSummary: result.gateSummary,
           effectiveProfile: this.stats.lastEffectiveProfile,
           packageRef,
+          ...(isolatedRun !== null ? { isolatedRun } : {}),
         },
       });
       if (reported.ok) clearAssignmentJournal(dir, assignmentId);

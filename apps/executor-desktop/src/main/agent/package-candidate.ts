@@ -18,8 +18,8 @@ import { listWorkspaceFiles } from './workspace';
  *   requirements: 从 SOP frontMatter.target 侧透传（P7a 恒空数组占位）
  */
 
-/** 打包时排除的观测产物目录（截图/录屏是证据不是应用源码）。 */
-const EXCLUDED_PREFIXES = ['browser-recordings/', 'screenshots/'];
+/** 打包时排除的观测产物目录（截图/录屏/执行证据是记录不是应用源码）。 */
+const EXCLUDED_PREFIXES = ['browser-recordings/', 'screenshots/', 'isolated-runs/'];
 
 /** interpreter → 包 runtime 类型（executor-node 可执行的运行时域）。 */
 export function interpreterToRuntime(interpreter: string): 'python' | 'node' {
