@@ -570,6 +570,38 @@ harness 缺陷）；desktop `test:main` **31 套全绿**（+assignment-journal 1
 成本如实多花一轮；`inflight` 字段仍保留未消费（设计文档 §3.1 的存活判定由 progress
 心跳承担）。
 
+### 9.11 P7e 前半（2026-09-26）：isolated-runner 直接执行路径 ◐
+
+> **产物**：`TASK_EXECUTION_SPEC` 放开 `isolated-runner`（09 §6 档位实现顺序的最后一轴）+
+> 新增 `agent/isolated-runner.ts`（desktop 本地**独立执行端点**，08 §2.4 方案 A）+
+> `allowsDirectTaskExecution` 判定 + host 交付流附带直接执行证据。四轴中
+> `taskExecution` 是最后一个「配置了但无运行时行为」的轴，本轮补齐。
+
+| 任务 | 说明 | 状态 |
+|---|---|---|
+| 档位放开 | `isolated-runner` 从保留值变为可实现档；预设仍只放开 minimal/standard（developer/ops-assist/full-trust 待真实需求） | ✅ |
+| 独立执行端点 | `runIsolatedTask`：desktop 本地执行候选——**复用试跑的同一套 process 沙箱**（解释器封闭枚举/env 白名单/路径域/树杀），不另造执行器；**不复用 /execute**（manifest 劫持防护的信任前提相反，shared-runner 故意不提供） | ✅ |
+| 来源标记 | `agent:sop:<address>` 由平台代码打（ADR-022 决策 5），不由 Agent 自称 | ✅ |
+| 双重档位闸 | host 判 `allowsDirectTaskExecution` + runner 内部**再判一次**（动作之前判，闸门纪律）；deploy-only 如实拒绝 | ✅ |
+| 证据链 | 执行发生在验收通过、包已交付**之后**：ok/refusal/exitCode/output 摘要进回报 `isolatedRun`，全文落 `isolated-runs/run-N.log`；执行失败**不翻转交付判定**（证据如实上交，中台复核按不可信自述对待）；打包器排除 `isolated-runs/`（证据不污染候选包） | ✅ |
+
+**关键判断**：
+
+| 判断 | 理由 |
+|---|---|
+| **端点在 desktop 本地而非 executor-node** | 08 §1.1 的硬决策「executor-node/python 保持纯净」——独立端点是**新的执行路径**，不是往已加固资产上加分支；desktop 已有完整沙箱执行体，复用比新造好 |
+| **执行证据不改变交付判定** | 验收锚点已通过、包已交付；直接执行是 `isolated-runner` 档下「交付附带第一方运行证据」——失败证据让中台复核有据可判，本地重试/掩盖反而制造假象 |
+| **中台上限语义不变** | 本地开 isolated-runner 而中台 cap 是 standard 时仍被钳回 deploy-only（enterprise 显式放宽到 developer+ 才生效）——与 GUI 的 app-scoped 同款集中管控 |
+
+**验收**：desktop `test:main` **32 套全绿**（+isolated-runner 13 项；agent-host e2e 新增
+第 13 节「交付附带直接执行证据」+ 第 2 节 deploy-only 反断言；permission-profile 自检
+更新 isolated-runner 覆盖生效断言）；tsc 0 + lint gates 绿。
+
+**残差（如实）**：executor-node 侧的 `/execute` 未动（与 08 §1.1 一致）；「直接执行」
+目前只发生在交付时刻一次——按平台任务语义的常驻执行（调度/重试/守护）仍走既有
+deploy 通道，属 P7d 后半的端到端闭环；`codeExecution=host` 与 `isolated-runner` 的组合
+会被沙箱如实拒绝（host 档仍未实现）。
+
 ## 10. 立即可开工的建议
 
 **本轮我建议先做 P0**，理由：

@@ -33,6 +33,7 @@ import {
   PRESET_DEFINITIONS,
   SANDBOX_BACKEND_MODES,
   TASK_EXECUTION_MODES,
+  allowsDirectTaskExecution,
   allowsTrialRun,
   mergeWithCenterPolicy,
   permissionsFromConfig,
@@ -121,9 +122,11 @@ function main(): void {
     );
     assert.strictEqual(allowsTrialRun(overridden), false);
 
-    // 指向未实现档（host / container / session / isolated-runner）一律**回落
-    // 预设值**（而非"按配置执行"）。关键点：回落目标必须是**预设的那一档**，
-    // 不得高于它——standard 配 host 得到的是 sandbox，不是 host。
+    // 指向未实现档（host / vm / session）一律**回落预设值**（而非"按配置
+    // 执行"）。关键点：回落目标必须是**预设的那一档**，不得高于它——
+    // standard 配 host 得到的是 sandbox，不是 host。
+    // isolated-runner 自 P7e 前半起**已实现**（08 §2.4 方案 A：desktop 本地
+    // 独立执行端点），细粒度覆盖应生效——不再钳回 deploy-only。
     const tried = resolveLocalPermissions({
       preset: 'standard',
       codeExecution: 'host',
@@ -133,8 +136,18 @@ function main(): void {
     });
     assert.deepStrictEqual(
       axesOf(tried),
-      ['sandbox', 'process', 'none', 'deploy-only'],
-      '本地配置不得把未实现的档位变成事实（回落预设值，绝不高于预设）',
+      ['sandbox', 'process', 'none', 'isolated-runner'],
+      '未实现轴（host/vm/session）回落预设值；已实现的 isolated-runner 覆盖生效',
+    );
+    assert.strictEqual(
+      allowsDirectTaskExecution(tried),
+      true,
+      'isolated-runner 档必须允许直接执行任务（P7e 前半的行为锚）',
+    );
+    assert.strictEqual(
+      allowsDirectTaskExecution(resolveLocalPermissions({ preset: 'standard' })),
+      false,
+      '默认 deploy-only 不允许直接执行（交付走既有 deploy 通道）',
     );
     assert.strictEqual(
       tried.codeExecution,
