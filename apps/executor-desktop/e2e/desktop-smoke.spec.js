@@ -1,4 +1,4 @@
-// QA-12：executor-desktop Playwright `_electron` 冒烟 3 例。
+// QA-12 / N-10：executor-desktop Playwright `_electron` 冒烟。
 //
 // 覆盖点（对应 BUG-12 / SEC-NEW-1 的桌面端安全与可启动性回归）：
 //   ① 应用可启动：首启打开配置向导（wizard 窗口渲染，无白屏）；
@@ -82,16 +82,24 @@ test.describe('executor-desktop 冒烟（Playwright _electron）', () => {
       // python_task_multiversion：补 getPythonEnvStatus（设置页「Python 运行环境」
       // 的诊断面——只读回报实际生效的 uv / 解释器池路径，不写配置、不下发凭据）。
       const channels = await win.evaluate(() => Object.keys(window.electronAPI).sort());
+      // N-10 复核：本白名单**早已漂移**（此 job 是 PR/dispatch 门控，develop push 不跑，
+      // 故长期无人发现）。实测运行时 41 个通道，白名单只列了 32 个——漏掉
+      // deleteAppRelease / getAgentStatus / getRunningApps / openAppFolder /
+      // openReleaseFolder / openTaskLogFolder / revealExecLog / uninstallApp /
+      // writeClipboardText 共 9 个。白名单失守意味着"通道漂移守卫"名存实亡
+      // （新通道加进来不会有任何提示）。此处按**实测运行时**对齐，
+      // 并保留"新增即红"的原意：下次加通道而不改这里，本用例仍会红。
       expect(channels).toEqual(
         [
-          'checkForUpdate', 'checkPort', 'clearHistory', 'closeWindow', 'downloadUpdate',
-          'getAutoLaunch', 'getConfig', 'getHistory', 'getLocalIPs', 'getPythonEnvStatus',
-          'getStatus',
-          'getTodayLogs', 'installUpdate', 'listApps', 'listLogFiles', 'minimizeWindow', 'onLogLine',
+          'checkForUpdate', 'checkPort', 'clearHistory', 'closeWindow', 'deleteAppRelease',
+          'downloadUpdate', 'getAgentStatus', 'getAutoLaunch', 'getConfig', 'getHistory',
+          'getLocalIPs', 'getPythonEnvStatus', 'getRunningApps', 'getStatus', 'getTodayLogs',
+          'installUpdate', 'listApps', 'listLogFiles', 'minimizeWindow', 'onLogLine',
           'onStatusChange', 'onSwitchTab', 'onUpdateAvailable', 'onUpdateDownloaded',
-          'onUpdateError', 'onUpdateProgress', 'openLogFile', 'readAppLog', 'readLog',
+          'onUpdateError', 'onUpdateProgress', 'openAppFolder', 'openLogFile',
+          'openReleaseFolder', 'openTaskLogFolder', 'readAppLog', 'readLog', 'revealExecLog',
           'saveAndCloseWizard', 'saveConfig', 'setAutoLaunch', 'startExecutor',
-          'stopExecutor', 'testConnection',
+          'stopExecutor', 'testConnection', 'uninstallApp', 'writeClipboardText',
         ].sort(),
       );
     } finally {
@@ -125,6 +133,92 @@ test.describe('executor-desktop 冒烟（Playwright _electron）', () => {
       const bodyText = (await win.textContent('body')) || '';
       expect(bodyText).toContain('状态监控');
       expect(bodyText).toContain('运行日志');
+    } finally {
+      await app.close();
+      fs.rmSync(userData, { recursive: true, force: true });
+    }
+  });
+
+  // ── N-10：计划点名的三个场景（注册 / 托盘 / 任务面板）──────────────
+  // 复核发现原 spec 覆盖的是「启动/preload/退出」，**与计划点名的三场景无交集**，
+  // 故按 IPC 真实契约补测。三例都走 preload 暴露的通道（渲染进程真实可达面），
+  // 不断言主进程内部对象——内部实现可重构，IPC 契约才是回归面。
+
+  test('注册：executor:status 的 IPC 契约稳定且 config 读面恒脱敏', async () => {
+    const userData = tmpUserData();
+    const app = await launchApp({ ELECTRON_USER_DATA_DIR: userData });
+    try {
+      const win = await app.firstWindow();
+      await win.waitForLoadState('domcontentloaded');
+
+      // 经 preload 桥取执行器状态（"注册/连接状态"的渲染进程可见面）
+      const st = await win.evaluate(() => window.electronAPI.getStatus());
+      // 契约三键必须齐全（running/status/config）——缺一即渲染层状态区失据
+      expect(Object.keys(st).sort()).toEqual(['config', 'running', 'status']);
+      expect(typeof st.running).toBe('boolean');
+      expect(typeof st.status).toBe('string');
+      // 首启未启动：running 必为 false（不得谎报在跑）
+      expect(st.running).toBe(false);
+      // config 读面恒脱敏（SEC-NEW-1 红线，与既有 preload 用例同口径但此处
+      // 从 executor:status 这条**另一条**通道再验一次——两条通道都带 config，
+      // 只验一条会漏掉另一条的脱敏回归）
+      const cfg = st.config || {};
+      for (const k of ['token', 'executorSecret', 'secret', 'password']) {
+        if (k in cfg && cfg[k] != null) {
+          expect(String(cfg[k])).toMatch(/^\*+$/);
+        }
+      }
+    } finally {
+      await app.close();
+      fs.rmSync(userData, { recursive: true, force: true });
+    }
+  });
+
+  test('托盘：状态窗口（托盘左键打开的那一扇）承载状态与 Agent 提示面', async () => {
+    const userData = tmpUserData();
+    const app = await launchApp({ ELECTRON_USER_DATA_DIR: userData });
+    try {
+      const win = await app.firstWindow();
+      await win.waitForLoadState('domcontentloaded');
+      await expect(win.getByText('欢迎使用').first()).toBeVisible({ timeout: 15000 });
+      // 托盘 onOpenStatus → windowManager.focusOrOpenStatus() 载入 #status；
+      // 此处以同一入口（hash 切换）复现"托盘打开状态窗口"的渲染结果。
+      await win.evaluate(() => { window.location.hash = '#status'; window.location.reload(); });
+      await win.waitForLoadState('domcontentloaded');
+      await win.waitForTimeout(1500);
+
+      const body = (await win.textContent('body')) || '';
+      // 托盘 tooltip 的两块信息在状态窗口同样可见（执行器状态 + Agent 活动）
+      expect(body).toMatch(/在线|离线|启动中|已停止/);
+      expect(body).toContain('状态监控');
+      // 托盘菜单项对应的动作面必须在窗口内可达（启动/停止）
+      expect(await win.locator('button').count()).toBeGreaterThan(0);
+    } finally {
+      await app.close();
+      fs.rmSync(userData, { recursive: true, force: true });
+    }
+  });
+
+  test('任务面板：history:get 返回数组且条目契约稳定（面板取数面）', async () => {
+    const userData = tmpUserData();
+    const app = await launchApp({ ELECTRON_USER_DATA_DIR: userData });
+    try {
+      const win = await app.firstWindow();
+      await win.waitForLoadState('domcontentloaded');
+
+      // 隔离 userData + 无 workDir → 必为空数组（不得抛错、不得返回 null：
+      // 面板对 null 会渲染崩溃，这正是本用例要钉的回归面）
+      const hist = await win.evaluate(() => window.electronAPI.getHistory());
+      expect(Array.isArray(hist)).toBe(true);
+
+      // 有 workDir 但目录不存在时同样必须是数组（fail-safe 取数面）
+      await win.evaluate(async () => {
+        const cfg = await window.electronAPI.getConfig();
+        return window.electronAPI.saveConfig({ ...cfg, workDir: '/nonexistent-acf-e2e' });
+      });
+      const hist2 = await win.evaluate(() => window.electronAPI.getHistory());
+      expect(Array.isArray(hist2)).toBe(true);
+      expect(hist2.length).toBe(0);
     } finally {
       await app.close();
       fs.rmSync(userData, { recursive: true, force: true });
