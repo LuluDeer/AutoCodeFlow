@@ -66,6 +66,10 @@ apps/executor-*/tasks/
 /tmp/
 .cache/
 .temp/
+# ARCH-28b（N-01）：turbo 本地缓存目录。本仓不接入 turbo 多包模式（见
+# docs/ARCH-28b-turbo-adoption.md），但沙箱/本地实测 turbo 会在仓库根留下
+# .turbo/（含 cache 与 manifest），不应入库。
+.turbo/
 
 # 工具运行时文件
 .codegraph/

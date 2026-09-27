@@ -684,6 +684,16 @@ jobs:
         run: |
           node scripts/check-migrations.mjs
           node scripts/check-migrations.selftest.mjs
+      # ARCH-28b（N-01）：no-hoisting 安装模型守卫。turbo 多包模式要求根 manifest
+      # 提供 workspace 发现面，而本仓一旦把 8 个子项目列进根 workspaces，npm 的
+      # prefix 就上移到仓库根，**8 个子项目的 npm ci 全部 ERESOLVE 失败**（实测
+      # 2026-09-27，见 docs/ARCH-28b-turbo-adoption.md §3）；报错文本还与被跑的
+      # 项目无关（在 executor-node 里跑，报的是 admin-api 的 ioredis/typeorm），
+      # 且部分列出时"红一半绿一半"最易被当 flake。故直接盯结构，不看退出码。
+      - name: No-hoisting install model guard (ARCH-28b/N-01)
+        run: |
+          node scripts/check-no-hoisting.mjs --selftest
+          node scripts/check-no-hoisting.mjs
       # PK-26（A8）：TS 枚举 ⊆ PG 枚举 静态守卫——防 scheduler 写路径枚举漂移
       # （N2 教训第三次重演兜底）。零依赖 node 脚本，秒级。
       - name: Enum drift guard (PK-26/A8)
