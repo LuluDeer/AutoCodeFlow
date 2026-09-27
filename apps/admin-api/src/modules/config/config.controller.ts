@@ -11,7 +11,21 @@ import {
   Query,
   ParseIntPipe,
 } from "@nestjs/common";
-import { ApiTags, ApiOperation, ApiBearerAuth } from "@nestjs/swagger";
+// ARCH-23 / N-12：响应体类型标注。此前本控制器 11 个 2xx 全部只有
+// `{ description: "" }`、**没有 schema**，前端 `gen:api-types` 无从生成类型，
+// 只能手写 `apps/admin-web/src/api/config.ts` 里的 SystemConfig/ConfigHistory
+// （且已实测漂移：手写的 `tag` 字段后端根本没有、`userId` 仍是 string 而
+// 后端自迁移 1790000000023 起已是 integer）。用专用响应 DTO——实体类没有
+// `@ApiProperty`，直接标 `type: SystemConfig` 会 emit 空壳 schema
+// （`properties:{}`），前端生成 `Record<string, never>`，且被 CI 的 PK-15
+// 空 schema 闸打红（本仓在 Application 上实测踩过）。
+import {
+  ApiTags,
+  ApiOperation,
+  ApiBearerAuth,
+  ApiResponse,
+  getSchemaPath,
+} from "@nestjs/swagger";
 import { Request } from "express";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { RolesGuard } from "../../common/guards/roles.guard";
@@ -22,6 +36,16 @@ import { UserRole } from "../users/entities/user.entity";
 import { SystemConfigService, UpsertConfig } from "./config.service";
 import { UpsertConfigDto } from "./dto/upsert-config.dto";
 import { ConfigHistoryQueryDto } from "./dto/config-history-query.dto";
+// ARCH-23 / N-12：本模块响应体 DTO（详见 dto/config-response.dto.ts 头注——
+// 为什么不能标实体、掩码语义、以及本批查出的前端手写类型漂移）。
+import {
+  ConfigDeleteResultDto,
+  ConfigHistoryPageDto,
+  ExecutorSharedTokenDto,
+  ExecutorSharedTokenStatusDto,
+  RuntimeVersionContractDto,
+  SystemConfigResponseDto,
+} from "./dto/config-response.dto";
 import { PaginationDto } from "../../common/dto/pagination.dto";
 // G-1：版本契约的权威源（无 DI 纯函数模块，跨模块引用同 safe-http.util 先例）
 import { getSupportedRange } from "../task/runtime-version.util";
@@ -45,6 +69,13 @@ export class ConfigController {
   @Get()
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "List all config entries" })
+  @ApiResponse({
+    status: 200,
+    description:
+      "Config rows sorted by key (optionally filtered by prefix/tag). " +
+      "Secret rows have value replaced by the mask '***'.",
+    type: [SystemConfigResponseDto],
+  })
   async findAll(@Query("prefix") prefix?: string, @Query("tag") tag?: string) {
     let configs: import("./entities/system-config.entity").SystemConfig[];
     if (prefix) {
@@ -65,6 +96,13 @@ export class ConfigController {
   // SEC-CFG-01: 同 findAll——历史读面会暴露非 secret 键的 old/new 值。
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Get config change history" })
+  @ApiResponse({
+    status: 200,
+    description:
+      "Paged history, newest first. Rows whose persisted isSecret=true (or whose " +
+      "key is currently secret) have oldValue/newValue masked as '***'; null stays null.",
+    type: ConfigHistoryPageDto,
+  })
   async getHistory(@Query() query?: ConfigHistoryQueryDto) {
     const page = query?.page ?? 1;
     const limit = query?.pageSize ?? 20;
@@ -92,6 +130,13 @@ export class ConfigController {
   // SEC-CFG-01: 同上。
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Get history for a specific config key" })
+  @ApiResponse({
+    status: 200,
+    description:
+      "Paged history for one key. Rows whose persisted isSecret=true (or this key " +
+      "is currently secret) have oldValue/newValue masked as '***'; null stays null.",
+    type: ConfigHistoryPageDto,
+  })
   async getHistoryByKey(
     @Param("key") key: string,
     @Query() pagination?: PaginationDto,
@@ -119,6 +164,24 @@ export class ConfigController {
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Rollback config to a historical version" })
+  // ARCH-23 / N-12：本端点**真的有两种成功形态**（ConfigService.rollback）：
+  //   ① 普通回滚（update/delete 历史）→ 返回写回后的 SystemConfig 实体；
+  //   ② 回滚一条 action='create' 的历史（= 撤销创建）→ 返回 {deleted:true}。
+  // 只标一种就是"文档按想象写"（前端会照它写代码然后拿到另一种形状），故用
+  // oneOf 如实表达。注意这里不能写 `type: SystemConfig`（实体无 @ApiProperty
+  // → 空壳 schema → PK-15 闸红），必须 $ref 响应 DTO。
+  @ApiResponse({
+    status: 201,
+    description:
+      "Rolled-back config row, or {deleted:true} when the target history row was " +
+      "the creation of that key (rollback = undo the creation)",
+    schema: {
+      oneOf: [
+        { $ref: getSchemaPath(SystemConfigResponseDto) },
+        { $ref: getSchemaPath(ConfigDeleteResultDto) },
+      ],
+    },
+  })
   async rollback(
     // S15: validate the path param as an integer — a non-numeric id must map
     // to 400 (ValidationPipe) instead of reaching TypeORM/PG and surfacing
@@ -138,6 +201,13 @@ export class ConfigController {
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Generate or rotate executor shared token" })
+  @ApiResponse({
+    status: 201,
+    description:
+      "Newly generated 64-hex token, returned once. The store keeps it with " +
+      "isSecret=true, so later GET /config returns '***' for it.",
+    type: ExecutorSharedTokenDto,
+  })
   async generateExecutorSharedToken(
     @CurrentUser() user: AuthUser,
     @Req() req: Request,
@@ -168,6 +238,14 @@ export class ConfigController {
   @Roles(UserRole.ADMIN)
   @ApiOperation({
     summary: "Get current executor shared token (plaintext, admin only)",
+  })
+  @ApiResponse({
+    status: 200,
+    description:
+      "Current token in plaintext. A missing key is NOT a 404: it degrades to " +
+      "{token:null, hasToken:false} (admin-web relies on that to render the " +
+      "'not configured yet' state).",
+    type: ExecutorSharedTokenStatusDto,
   })
   async getExecutorSharedToken() {
     try {
@@ -201,6 +279,14 @@ export class ConfigController {
       "Returns contract constants only — no config-store values, no secrets.",
   })
   @Get("runtime-version")
+  @ApiResponse({
+    status: 200,
+    description:
+      "Effective contract constants only (no config-store values, no secrets). " +
+      "Deliberately NOT ADMIN-gated — every user who can create a task needs the " +
+      "correct range in the form.",
+    type: RuntimeVersionContractDto,
+  })
   async getRuntimeVersion() {
     const range = getSupportedRange();
     return {
@@ -215,6 +301,13 @@ export class ConfigController {
   // SEC-CFG-01: 同上——单键读面是「按名取任意配置」的直接入口。
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Get a single config entry" })
+  @ApiResponse({
+    status: 200,
+    description:
+      "The config row for this key. A secret key has value replaced by '***'. " +
+      "A missing key is a 404.",
+    type: SystemConfigResponseDto,
+  })
   async findOne(@Param("key") key: string) {
     const c = await this.configService.findOne(key);
     return c.isSecret ? { ...c, value: "***" } : c;
@@ -224,6 +317,15 @@ export class ConfigController {
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Create or update a config entry" })
+  // ARCH-23 / N-12：写面回显**真实值**（不做掩码）——S3 的 '***' 哨兵只在
+  // isSecret 且行已存在时表示"保持原值"，读回来的仍是库中真值。
+  @ApiResponse({
+    status: 200,
+    description:
+      "The persisted config row after upsert (real value, not masked — a " +
+      "submitted '***' on an existing secret key means 'keep stored value')",
+    type: SystemConfigResponseDto,
+  })
   async upsert(
     @Body() dto: UpsertConfigDto,
     @CurrentUser() user: AuthUser,
@@ -240,6 +342,14 @@ export class ConfigController {
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Batch create or update config entries" })
+  // ARCH-23 / N-12：整批包在单事务内，返回**与入参同序**的结果数组。
+  @ApiResponse({
+    status: 201,
+    description:
+      "Persisted rows in the same order as the submitted items (transactional: " +
+      "any failure rolls the whole batch back). Real values, not masked.",
+    type: [SystemConfigResponseDto],
+  })
   async batchUpsert(
     @Body() items: UpsertConfig[],
     @CurrentUser() user: AuthUser,
@@ -256,6 +366,13 @@ export class ConfigController {
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Delete a config entry" })
+  @ApiResponse({
+    status: 200,
+    description:
+      "Always {deleted:true} on success; a missing key is a 404 (there is no " +
+      "{deleted:false} branch).",
+    type: ConfigDeleteResultDto,
+  })
   async remove(
     @Param("key") key: string,
     @CurrentUser() user: AuthUser,
