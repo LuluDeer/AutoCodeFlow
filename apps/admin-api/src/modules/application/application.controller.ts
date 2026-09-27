@@ -36,11 +36,11 @@ import { AuthUser } from "../../common/interfaces/auth-user.interface";
 import { UserRole } from "../users/entities/user.entity";
 import { ApplicationService } from "./application.service";
 import { AppDeploymentService } from "./app-deployment.service";
-// ARCH-23 / N-12：响应体类型标注用（原仅用于服务层，控制器此前未标注响应 schema——
-// 208 个 2xx 里 174 个缺 schema，前端因此无从生成类型、只能手写 interface）。
-// 注意：Application.webhookSecret 是 `select: false`，正常查询不会带出；
-// 读面另有 maskReadSurface 对 env 脱敏，故此处的实体标注不会泄漏密文。
-import { Application } from "./entities/application.entity";
+// ARCH-23 / N-12：响应体类型标注用**专用 DTO**而非实体——实体没有 @ApiProperty，
+// @nestjs/swagger 只会 emit 空壳 schema（properties:{}），前端生成出
+// Record<string, never>，且会被 CI 的 PK-15 空 schema 闸打红（本仓实测踩过）。
+// DTO 显式声明字段并**排除 webhookSecret**（select:false 的 HMAC 密钥）。
+import { ApplicationResponseDto } from "./dto/application-response.dto";
 import { DeploymentTriggerType } from "./entities/app-deployment.entity";
 import {
   CreateApplicationDto,
@@ -137,7 +137,7 @@ export class ApplicationController {
   @ApiResponse({
     status: 200,
     description: "Application list (env masked, webhookSecret never selected)",
-    type: [Application],
+    type: [ApplicationResponseDto],
   })
   // AUTH-01: 可选 projectId 过滤（"default" = 默认项目视图，含未分配行）。
   findAll(@Query("projectId") projectId?: string) {
@@ -149,7 +149,7 @@ export class ApplicationController {
   @ApiResponse({
     status: 200,
     description: "Application details",
-    type: Application,
+    type: ApplicationResponseDto,
   })
   findById(@Param("id") id: string) {
     return this.svc.findById(id);
@@ -170,7 +170,7 @@ export class ApplicationController {
   @ApiResponse({
     status: 201,
     description: "Created application",
-    type: Application,
+    type: ApplicationResponseDto,
   })
   create(@Body() dto: CreateApplicationDto, @CurrentUser() user: AuthUser) {
     // NF-03: 创建即落 owner（ADMIN 创建也落，可追溯）
@@ -183,7 +183,7 @@ export class ApplicationController {
   @ApiResponse({
     status: 200,
     description: "Updated application",
-    type: Application,
+    type: ApplicationResponseDto,
   })
   update(
     @Param("id") id: string,

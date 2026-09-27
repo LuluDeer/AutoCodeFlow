@@ -719,6 +719,93 @@ describe("ExecutorService (__tests__)", () => {
       expect(result.status).toBe(ExecutorStatus.ONLINE);
     });
 
+    // N-09（微基准暴露的注册/心跳采纳域不对称）：心跳钳正整数 1..10000，
+    // register 此前零校验 → maxConcurrentTasks:0 落库后
+    //   ① loadScore 除零得 Infinity；② 容量闸 `runningTaskCount < 0` 恒 false，
+    //   该执行器被**永久排除在派发之外**（绿灯但不干活，与 P0-2 bindAddress 同型）。
+    describe("maxConcurrentTasks adoption symmetry (N-09)", () => {
+      it("首次注册 maxConcurrentTasks=0 → 视为未上报（不得落库 0）", async () => {
+        executorRepo.findOne.mockResolvedValue(null);
+        executorRepo.create.mockImplementation((e: any) => e);
+        executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+
+        const result = await service.register({
+          appName: "bad-executor",
+          address: "127.0.0.1:3197",
+          type: "node",
+          maxConcurrentTasks: 0,
+        });
+
+        // 关键：绝不能是 0——0 会让容量闸恒 false、该机永久收不到任务
+        expect(result.maxConcurrentTasks).not.toBe(0);
+        expect(result.maxConcurrentTasks).toBeUndefined();
+      });
+
+      it("首次注册负数/小数/超上界 → 均视为未上报", async () => {
+        for (const bad of [-1, 1.5, 10_001, Number.NaN]) {
+          executorRepo.findOne.mockResolvedValue(null);
+          executorRepo.create.mockImplementation((e: any) => e);
+          executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+          const result = await service.register({
+            appName: "bad-executor",
+            address: "127.0.0.1:3198",
+            type: "node",
+            maxConcurrentTasks: bad,
+          });
+          expect(result.maxConcurrentTasks).toBeUndefined();
+        }
+      });
+
+      it("重注册非法值 → 保留既有存量值（不写荒谬容量）", async () => {
+        const existing: any = {
+          appName: "old",
+          address: "127.0.0.1:3199",
+          status: ExecutorStatus.ONLINE,
+          capabilities: ["node"],
+          maxConcurrentTasks: 8,
+        };
+        executorRepo.findOne.mockResolvedValue(existing);
+        executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+
+        await service.register({
+          appName: "old",
+          address: "127.0.0.1:3199",
+          type: "node",
+          maxConcurrentTasks: 0,
+        });
+
+        expect(existing.maxConcurrentTasks).toBe(8);
+      });
+
+      it("合法值边界（1 与 10000）正常采纳", async () => {
+        for (const good of [1, 10_000]) {
+          executorRepo.findOne.mockResolvedValue(null);
+          executorRepo.create.mockImplementation((e: any) => e);
+          executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+          const result = await service.register({
+            appName: "ok-executor",
+            address: "127.0.0.1:3200",
+            type: "node",
+            maxConcurrentTasks: good,
+          });
+          expect(result.maxConcurrentTasks).toBe(good);
+        }
+      });
+
+      it("maxConcurrent 别名同样受采纳域约束（防绕道）", async () => {
+        executorRepo.findOne.mockResolvedValue(null);
+        executorRepo.create.mockImplementation((e: any) => e);
+        executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+        const result = await service.register({
+          appName: "alias-executor",
+          address: "127.0.0.1:3201",
+          type: "node",
+          maxConcurrent: 0,
+        });
+        expect(result.maxConcurrentTasks).toBeUndefined();
+      });
+    });
+
     it("updates mutable metadata and maxConcurrentTasks on re-register", async () => {
       const existing: any = {
         appName: "old",
