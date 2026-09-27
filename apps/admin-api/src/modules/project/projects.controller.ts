@@ -14,6 +14,16 @@ import {
   UseGuards,
 } from "@nestjs/common";
 import { Request } from "express";
+// ARCH-23 / N-12：响应体类型标注。此前本控制器**零 swagger 装饰器**，
+// openapi.json 里 10 个 2xx 全部只有 description 没有 schema，前端无从生成类型。
+// 用专用响应 DTO（实体无 @ApiProperty 会 emit 空壳 schema → PK-15 闸红）。
+import { ApiOperation, ApiResponse } from "@nestjs/swagger";
+import {
+  ProjectViewDto,
+  ProjectEntityDto,
+  ProjectMemberViewDto,
+  MyProjectRolesDto,
+} from "./dto/project-response.dto";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { RolesGuard } from "../../common/guards/roles.guard";
 import { Roles } from "../../common/decorators/roles.decorator";
@@ -81,6 +91,13 @@ export class ProjectsController {
    * 均未调用 /projects），无兼容性破坏面。
    */
   @Get()
+  @ApiOperation({ summary: "List projects visible to the caller" })
+  @ApiResponse({
+    status: 200,
+    description:
+      "ADMIN sees all; others see default project plus their memberships",
+    type: [ProjectViewDto],
+  })
   async findAll(
     @CurrentUser() user: { id: number; role: UserRole } | undefined,
   ): Promise<ProjectViewRow[]> {
@@ -103,6 +120,12 @@ export class ProjectsController {
   }
 
   @Get(":id")
+  @ApiOperation({ summary: "Get project by id" })
+  @ApiResponse({
+    status: 200,
+    description: "Project (entity shape, no myRole)",
+    type: ProjectEntityDto,
+  })
   async findOne(@Param("id", ParseUUIDPipe) id: string): Promise<Project> {
     return this.service.findOne(id);
   }
@@ -110,6 +133,12 @@ export class ProjectsController {
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN)
   @Post()
+  @ApiOperation({ summary: "Create project (ADMIN)" })
+  @ApiResponse({
+    status: 201,
+    description: "Created project (entity shape)",
+    type: ProjectEntityDto,
+  })
   async create(
     @Body() dto: CreateProjectDto,
     @CurrentUser() user: { id: number; username: string } | undefined,
@@ -130,6 +159,12 @@ export class ProjectsController {
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN)
   @Patch(":id")
+  @ApiOperation({ summary: "Update project (ADMIN)" })
+  @ApiResponse({
+    status: 200,
+    description: "Updated project (entity shape)",
+    type: ProjectEntityDto,
+  })
   async update(
     @Param("id", ParseUUIDPipe) id: string,
     @Body() dto: UpdateProjectDto,
@@ -181,6 +216,12 @@ export class ProjectsController {
   // -----------------------------------------------------------------------
 
   @Get(":id/members")
+  @ApiOperation({ summary: "List project members" })
+  @ApiResponse({
+    status: 200,
+    description: "Member rows",
+    type: [ProjectMemberViewDto],
+  })
   async listMembers(
     @Param("id", ParseUUIDPipe) id: string,
     @CurrentUser() user: { id: number; role: UserRole } | undefined,
@@ -198,6 +239,12 @@ export class ProjectsController {
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN)
   @Post(":id/members")
+  @ApiOperation({ summary: "Add or upsert a project member (ADMIN)" })
+  @ApiResponse({
+    status: 201,
+    description: "Member row",
+    type: ProjectMemberViewDto,
+  })
   async addMember(
     @Param("id", ParseUUIDPipe) id: string,
     @Body() dto: UpsertProjectMemberDto,
@@ -220,6 +267,12 @@ export class ProjectsController {
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN)
   @Patch(":id/members/:userId")
+  @ApiOperation({ summary: "Change a member's role (ADMIN)" })
+  @ApiResponse({
+    status: 200,
+    description: "Updated member row",
+    type: ProjectMemberViewDto,
+  })
   async updateMember(
     @Param("id", ParseUUIDPipe) id: string,
     @Param("userId", ParseIntPipe) userId: number,
@@ -265,6 +318,12 @@ export class ProjectsController {
 
   /** AUTH-02：当前登录用户在各项目中的角色（admin-web 用它渲染可用项目）。 */
   @Get("me/roles")
+  @ApiOperation({ summary: "Caller's roles across projects" })
+  @ApiResponse({
+    status: 200,
+    description: "Caller roles",
+    type: MyProjectRolesDto,
+  })
   async myRoles(
     @CurrentUser() user: { id: number; role: UserRole } | undefined,
   ): Promise<{

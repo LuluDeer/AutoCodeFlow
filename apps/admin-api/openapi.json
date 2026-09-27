@@ -7922,9 +7922,20 @@
         "parameters": [],
         "responses": {
           "200": {
-            "description": ""
+            "description": "ADMIN sees all; others see default project plus their memberships",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ProjectViewDto"
+                  }
+                }
+              }
+            }
           }
         },
+        "summary": "List projects visible to the caller",
         "tags": [
           "Projects"
         ]
@@ -7944,9 +7955,17 @@
         },
         "responses": {
           "201": {
-            "description": ""
+            "description": "Created project (entity shape)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectEntityDto"
+                }
+              }
+            }
           }
         },
+        "summary": "Create project (ADMIN)",
         "tags": [
           "Projects"
         ]
@@ -7967,9 +7986,17 @@
         ],
         "responses": {
           "200": {
-            "description": ""
+            "description": "Project (entity shape, no myRole)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectEntityDto"
+                }
+              }
+            }
           }
         },
+        "summary": "Get project by id",
         "tags": [
           "Projects"
         ]
@@ -7998,9 +8025,17 @@
         },
         "responses": {
           "200": {
-            "description": ""
+            "description": "Updated project (entity shape)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectEntityDto"
+                }
+              }
+            }
           }
         },
+        "summary": "Update project (ADMIN)",
         "tags": [
           "Projects"
         ]
@@ -8042,9 +8077,20 @@
         ],
         "responses": {
           "200": {
-            "description": ""
+            "description": "Member rows",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ProjectMemberViewDto"
+                  }
+                }
+              }
+            }
           }
         },
+        "summary": "List project members",
         "tags": [
           "Projects"
         ]
@@ -8073,9 +8119,17 @@
         },
         "responses": {
           "201": {
-            "description": ""
+            "description": "Member row",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectMemberViewDto"
+                }
+              }
+            }
           }
         },
+        "summary": "Add or upsert a project member (ADMIN)",
         "tags": [
           "Projects"
         ]
@@ -8114,9 +8168,17 @@
         },
         "responses": {
           "200": {
-            "description": ""
+            "description": "Updated member row",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectMemberViewDto"
+                }
+              }
+            }
           }
         },
+        "summary": "Change a member's role (ADMIN)",
         "tags": [
           "Projects"
         ]
@@ -8157,9 +8219,17 @@
         "parameters": [],
         "responses": {
           "200": {
-            "description": ""
+            "description": "Caller roles",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MyProjectRolesDto"
+                }
+              }
+            }
           }
         },
+        "summary": "Caller's roles across projects",
         "tags": [
           "Projects"
         ]
@@ -10392,6 +10462,84 @@
         "type": "object",
         "properties": {}
       },
+      "ProjectViewDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Project id (uuid)"
+          },
+          "name": {
+            "type": "string",
+            "description": "Project name"
+          },
+          "description": {
+            "type": "string",
+            "description": "Description",
+            "nullable": true
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string",
+            "description": "Creation time (ISO-8601)"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string",
+            "description": "Last update time (ISO-8601)"
+          },
+          "myRole": {
+            "type": "string",
+            "description": "Calling subject's role in this project; null for non-members. ADMIN also gets its real member row here (honest, not synthesized).",
+            "nullable": true,
+            "enum": [
+              "viewer",
+              "editor",
+              "admin"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "createdAt",
+          "updatedAt"
+        ]
+      },
+      "ProjectEntityDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Project id (uuid)"
+          },
+          "name": {
+            "type": "string",
+            "description": "Unique project name"
+          },
+          "description": {
+            "type": "string",
+            "description": "Description",
+            "nullable": true
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string",
+            "description": "Creation time (ISO-8601)"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string",
+            "description": "Last update time (ISO-8601)"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "createdAt",
+          "updatedAt"
+        ]
+      },
       "CreateProjectDto": {
         "type": "object",
         "properties": {
@@ -10426,6 +10574,44 @@
             "maxLength": 500
           }
         }
+      },
+      "ProjectMemberViewDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Membership row id (uuid)"
+          },
+          "projectId": {
+            "type": "string",
+            "description": "Project id (uuid)"
+          },
+          "userId": {
+            "type": "number",
+            "description": "User id"
+          },
+          "role": {
+            "type": "string",
+            "description": "Role granted to this member",
+            "enum": [
+              "viewer",
+              "editor",
+              "admin"
+            ]
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string",
+            "description": "Membership creation time (ISO-8601)"
+          }
+        },
+        "required": [
+          "id",
+          "projectId",
+          "userId",
+          "role",
+          "createdAt"
+        ]
       },
       "UpsertProjectMemberDto": {
         "type": "object",
@@ -10466,6 +10652,31 @@
             ]
           }
         }
+      },
+      "MyProjectRolesDto": {
+        "type": "object",
+        "properties": {
+          "userId": {
+            "type": "number",
+            "description": "Calling user id; null when the request carries no user",
+            "nullable": true
+          },
+          "isAdmin": {
+            "type": "boolean",
+            "description": "True when the caller is ADMIN (admin-web uses this to render all projects)"
+          },
+          "memberships": {
+            "description": "Membership rows for the calling user across all projects",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProjectMemberViewDto"
+            }
+          }
+        },
+        "required": [
+          "isAdmin",
+          "memberships"
+        ]
       }
     }
   },
