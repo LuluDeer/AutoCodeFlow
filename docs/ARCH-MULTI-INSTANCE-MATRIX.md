@@ -11,7 +11,7 @@
 > 57/57 通过（multi-instance 17 + rollout 20 + outbox claim 7 + outbox-dup 13），清单 5/5 在
 > 新硬件/新 OS 上可复现；整体仍不标
 > done 的保留项以文内实际仍为 🟡/🔴 的条目为准：本地文件系统共享卷（3.5 🔴）、
-> 快速路径重试 pendingTimers（总表 #8 🟡），另多主机（跨机）拓扑尚留验；
+快速路径重试（总表 #8）已于 2026-09-27 收口（🟡→🟢，单次投递 + 扫描器统一重试），另多主机（跨机）拓扑尚留验；
 > 令牌缓存（3.7）已于 2026-09-26 经 Redis pub/sub 驱逐广播收口（🟡→🟢）。范围：`apps/admin-api/src`。
 > 目的：盘点全部**进程内单例状态**，标注每一项在多实例（水平扩容 / 滚动重启 /
 > 无会话粘滞负载均衡）下的兼容性、失效后果与风险等级，并给出 outbox / silence
@@ -53,7 +53,7 @@ claim；④ 路由到任意实例是否等价。
 | 5 | 灰度批次 `rolloutBatches` / `rolloutTimers` | 进程内 Map/Set | 部分（行级状态 + 活性租约 + 失败 claim） | 行级 `rolloutState` + 条件 UPDATE claim + 租约 sweep | 🟡 中（本轮改造） |
 | 6 | 产物/包本地磁盘 `uploads/`、artifacts root | 本地 FS | 否（除非共享卷） | 无 | 🔴 高 |
 | 7 | FEAT-19 outbox 派发扫描 `OutboxDispatcher` | DB 表（共享） | 是 | DB 行状态 | 🟡 中 |
-| 8 | FEAT-07 快速路径重试 `pendingTimers` | 进程内 Set | 否 | outbox 兜底 | 🟡 中 |
+| 8 | FEAT-07 快速路径重试 ~~`pendingTimers`~~ | ~~进程内 Set~~ **已移除**（快速路径单次投递，重试归扫描器租约 + attempts，§3.7 同轮收口） | **是**（重试事实源=outbox 行） | 租约 60s + 退避 5s→5min + MAX 20 次死信 | 🟢 低（2026-09-27 收口） |
 | 9 | 执行器令牌缓存（3 个 Map） | 进程内 Map | **驱逐事件跨实例广播**（Redis pub/sub，§3.7） | TTL 60s 兜底 + 重连全量清空 | 🟢 低（2026-09-26 收口） |
 | 10 | 无 Leader 门禁的 `@Cron`（原 8 个） | ~~各实例并行~~ 已由 `LeaderGateService`（`cron:leader`）门禁收口（3.8，2026-09-13） | 锁共享 | fail-open + 15s 校验 | 🟢 低（已收口） |
 | 11 | 运行时指标 `counters`/`gauges`、`SchedulerMetrics`、`ExecutionCallbackMetrics` | 进程内 / 模块级 | 否 | Prometheus per-target | 🟢 低 |
@@ -178,7 +178,7 @@ PATCH 保存**写穿**（upsert），各实例按 `CHANNEL_CONFIG_REFRESH_MS`（
 多实例若无共享卷，A 写入的包/产物 B 读不到；跨实例下载 404。需共享卷（NFS/对象存储）
 或在部署文档钉死。
 
-### 3.6 🟡 outbox 派发（行级 claim + 租约已落地；剩快速路径收口）
+### 3.6 🟢 outbox 派发（行级 claim + 租约 + 单次投递语义，#8 已收口）
 
 > **状态校正（2026-09-12）**：本节原先描述「缺行级 claim」已不成立——claim/租约在
 > 早前轮次（c01f477）已实现，本轮又补上快速路径收口。以下为**当前实际语义**。
@@ -203,6 +203,16 @@ OnModuleInit + 每 5s 扫描。claim **在数据库内完成**：单条
 `npm run test:arch31-outbox` 7/7）；「同一事件实际投递到 webhook 的次数」因订阅回调面
 禁止回环地址（SSRF 纪律）无法在本机离线闭环，需公网可达接收端——属交付验收，
 不改变 claim 侧结论。
+
+> **#8 收口（2026-09-27，🟡→🟢）**：快速路径不再做进程内重试——`dispatch` 与扫描器
+> 调用的 `deliverToSubscribers` 均为**单次投递**，重试/退避/死信节奏统一由扫描器的
+> 租约（60s）+ attempts（MAX 20 → event_outbox_dead_letters 终态）机制持有。进程内
+> `pendingTimers`/`waitMs`/`parkDeadLetter` 整体移除：崩溃丢重试与「快速路径 vs 扫描
+> 器」重复投递窗口不复存在（扫描器 claim 排他）。终败死信双面写齐：独立
+> `event_outbox_dead_letters`（归档）+ `event_subscription_dead_letters`（运维面：
+> 死信列表 + 手动重放，逐订阅 fail-open）。延迟取舍：瞬时抖动的首重试从 +2s（进程内）
+> 变为 ≤5s（扫描周期）——换取单一事实源，值得。测试：event-subscriptions.spec 重写
+> 重试/SSRF/聚合断言 + outbox-dispatcher.spec 补终败运维面断言，75/75。
 
 ### 3.7 ✅ 已收口（2026-09-26）：执行器令牌缓存跨实例驱逐广播
 

@@ -16,9 +16,13 @@
  * at-least-once 决策（FEAT-19 升级为跨进程 outbox 兜底）：事件到达即
  * ① 同步落一行 event_outbox（OutboxDispatcher.enqueue，写成功即事件"已接收"
  * ——进程重启不丢，OutboxDispatcher 周期扫描补投，at-least-once，订阅方幂等），
- * ② 内存快照待发订阅列表走首投 + 最多 3 次尝试指数退避（setTimeout 队列，
- * 纯进程内快速路径）→ 终败落 event_subscription_dead_letters + 更新订阅失败
- * 统计。两路并行：快速路径低延迟，outbox 兜底跨进程不丢。
+ * ② 内存快照待发订阅列表走**单次首投**。
+ *
+ * ARCH-31 #8 收口（2026-09-27）：快速路径不再做进程内重试（原 3 次尝试 +
+ * setTimeout 退避的 pendingTimers 是纯实例状态——崩溃丢重试、与扫描器并存
+ * 时有重复投递窗口）。首投失败即把行留给 outbox 扫描器：重试/退避/死信全部
+ * 归扫描器的租约 + attempts 机制（跨进程、崩溃安全）。终败时扫描器负责把
+ * 订阅死信（运维面，可重放）与独立 outbox 死信（归档）都写齐。
  */
 import {
   Injectable,
@@ -48,9 +52,7 @@ import { EventSubscriptionDeadLetter } from "./entities/event-subscription-dead-
 import { EventSubscriptionService } from "./event-subscription.service";
 import {
   buildEventPayload,
-  MAX_DELIVERY_ATTEMPTS,
   OUTBOUND_TIMEOUT_MS,
-  retryDelayMs,
   SUBSCRIBABLE_EVENTS,
   subscriptionMatches,
 } from "./event-subscription.util";
@@ -92,20 +94,18 @@ export interface OutboxDispatcherLike {
 export interface DeliveryAggregate {
   targetCount: number;
   deliveredCount: number;
+  /**
+   * ARCH-31 #8 单次投递语义下本调用**不再产生**死信（终败死信由扫描器
+   * 经 deadLetterToSubscribers 落运维面）——恒为 0，保留字段仅为扫描器
+   * 聚合消费面的接口稳定。
+   */
   deadLetteredCount: number;
-  deadLetterPersistenceFailures: number;
 }
-
-type DeliveryOutcome =
-  | { kind: "delivered" }
-  | { kind: "dead-lettered" }
-  | { kind: "dead-letter-persistence-failure" };
 
 @Injectable()
 export class OutboundEventDispatcher implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(OutboundEventDispatcher.name);
   /** 在途重试 timer 句柄（模块销毁时统一 clearTimeout，优雅关闭）。 */
-  private readonly pendingTimers = new Set<NodeJS.Timeout>();
   private readonly busListeners: Array<
     [DomainEventName, (p: unknown) => unknown]
   > = [];
@@ -163,8 +163,6 @@ export class OutboundEventDispatcher implements OnModuleInit, OnModuleDestroy {
       this.bus.off(event, listener);
     }
     this.busListeners.length = 0;
-    for (const t of this.pendingTimers) clearTimeout(t);
-    this.pendingTimers.clear();
   }
 
   private subscribe(eventName: DomainEventName): void {
@@ -241,11 +239,14 @@ export class OutboundEventDispatcher implements OnModuleInit, OnModuleDestroy {
     this.logger.log(
       `Outbound event "${eventName}" → ${targets.length} subscription(s)`,
     );
+    // ARCH-31 #8：首投一次，不进程内重试——失败即交棒 outbox 扫描器
+    // （重试/退避/死信的单一事实源，跨进程崩溃安全）。
     const outcomes = await Promise.all(
-      targets.map((sub) => this.deliverWithRetries(sub, eventName, payload)),
+      targets.map((sub) => this.deliverOnceAndRecord(sub, eventName, payload)),
     );
-    // 全部订阅都投递成功才收口 outbox 行（见上注：部分失败必须留给扫描重试）
-    if (outboxRowId && outcomes.every((o) => o.kind === "delivered")) {
+    const deliveredCount = outcomes.filter(Boolean).length;
+    // 全部订阅都投递成功才收口 outbox 行（部分失败必须留给扫描重试）
+    if (outboxRowId && deliveredCount === targets.length) {
       try {
         await outbox?.markFastPathDelivered?.(outboxRowId);
       } catch (err: unknown) {
@@ -255,33 +256,33 @@ export class OutboundEventDispatcher implements OnModuleInit, OnModuleDestroy {
           }`,
         );
       }
+    } else {
+      this.logger.warn(
+        `Outbound event "${eventName}": ${targets.length - deliveredCount}/${
+          targets.length
+        } delivery failed on fast path — outbox scanner owns retries`,
+      );
     }
   }
 
-  /** 单订阅派发：首投 + 最多 3 次尝试指数退避 → 终败死信。 */
-  private async deliverWithRetries(
+  /** 首投一次 + 成功统计。失败上抛（调用方聚合；重试归 outbox 扫描器）。 */
+  private async deliverOnceAndRecord(
     sub: EventSubscription,
     eventName: string,
     payload: ReturnType<typeof buildEventPayload>,
-  ): Promise<DeliveryOutcome> {
-    let lastError = "unknown error";
-    for (let attempt = 1; attempt <= MAX_DELIVERY_ATTEMPTS; attempt++) {
-      if (attempt > 1) {
-        const delay = retryDelayMs(attempt - 1);
-        await this.waitMs(delay);
-      }
-      try {
-        await this.deliverOnce(sub, eventName, payload);
-        await this.safeRecordSuccess(sub);
-        return { kind: "delivered" };
-      } catch (err: unknown) {
-        lastError = err instanceof Error ? err.message : String(err);
-        this.logger.warn(
-          `Outbound delivery attempt ${attempt}/${MAX_DELIVERY_ATTEMPTS} failed for subscription ${sub.id} (${eventName}): ${lastError}`,
-        );
-      }
+  ): Promise<boolean> {
+    try {
+      await this.deliverOnce(sub, eventName, payload);
+      await this.safeRecordSuccess(sub);
+      return true;
+    } catch (err: unknown) {
+      this.logger.warn(
+        `Outbound delivery failed for subscription ${sub.id} (${eventName}): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return false;
     }
-    return this.parkDeadLetter(sub, eventName, payload, lastError);
   }
 
   /** 单次投递：SSRF 复核（订阅 url 可能被并发 PATCH，出站前再验一次）→ 签名 POST。 */
@@ -344,17 +345,6 @@ export class OutboundEventDispatcher implements OnModuleInit, OnModuleDestroy {
     });
   }
 
-  /** 退避等待：进程内 timer，登记句柄供优雅关闭。 */
-  private waitMs(ms: number): Promise<void> {
-    return new Promise<void>((resolve) => {
-      const t = setTimeout(() => {
-        this.pendingTimers.delete(t);
-        resolve();
-      }, ms);
-      this.pendingTimers.add(t);
-    });
-  }
-
   private async safeRecordSuccess(sub: EventSubscription): Promise<void> {
     try {
       await this.subService.recordDeliverySuccess(sub);
@@ -367,66 +357,17 @@ export class OutboundEventDispatcher implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  /**
-   * 终败：死信落库 + 订阅失败统计 + warn 日志。
-   *
-   * The persistence result is part of the outcome.  The outbox caller must not
-   * mark its source row dispatched when this write failed, otherwise the event
-   * would be lost while the subscription dead-letter API still has no record.
-   */
-  private async parkDeadLetter(
-    sub: EventSubscription,
-    eventName: string,
-    payload: ReturnType<typeof buildEventPayload>,
-    lastError: string,
-  ): Promise<DeliveryOutcome> {
-    const error = lastError.slice(0, 1024);
-    this.logger.warn(
-      `Outbound delivery to subscription ${sub.id} (${eventName}) dead-lettered after ${MAX_DELIVERY_ATTEMPTS} attempts: ${error}`,
-    );
-    let persisted = false;
-    try {
-      await this.deadLetterRepo.save(
-        this.deadLetterRepo.create({
-          subscriptionId: sub.id,
-          eventType: eventName,
-          payload: payload as unknown as Record<string, unknown>,
-          error,
-          attempts: MAX_DELIVERY_ATTEMPTS,
-        }),
-      );
-      persisted = true;
-    } catch (err: unknown) {
-      this.logger.error(
-        `Failed to persist dead letter for subscription ${sub.id}: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
-    }
-    try {
-      await this.subService.recordDeliveryFailure(sub, error);
-    } catch (err: unknown) {
-      this.logger.warn(
-        `Failed to update failure stats for subscription ${sub.id}: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
-    }
-    return persisted
-      ? { kind: "dead-lettered" }
-      : { kind: "dead-letter-persistence-failure" };
-  }
-
   // ─── FEAT-19: outbox 补投复用的派发面 ──────────────────────────────────────
 
   /**
    * 给定事件与完整出站信封，对当前 enabled 订阅中匹配该事件的每一订阅执行
-   * 同款派发（含 3 次退避 + 死信 + 失败统计）。
+   * **单次**派发（签名/SSRF 复核/超时纪律与快速路径同源）。
    *
-   * OutboxDispatcher 扫描补投时调用：复用既有 deliverWithRetries（签名/SSRF
-   * 复核/超时纪律/死信语义零复制）。任一订阅失败不外抛（deliverWithRetries
-   * 已兜底为死信落库）——本方法拒绝（reject）仅当订阅快照读取失败（DB 抖动
-   * 等），由 outbox 侧行退避重试。
+   * OutboxDispatcher 扫描补投时调用（ARCH-31 #8：重试节奏由扫描器的
+   * 租约 + attempts 机制统一持有，本方法不再做进程内退避/死信）。失败不
+   * 外抛、计入 deliveredCount 缺口——由 outbox 侧行退避重试；终败死信
+   * 由扫描器经 deadLetterToSubscribers 落运维面。本方法拒绝（reject）仅当
+   * 订阅快照读取失败（DB 抖动等），由 outbox 侧行退避重试。
    */
   async deliverToSubscribers(
     eventName: string,
@@ -455,25 +396,85 @@ export class OutboundEventDispatcher implements OnModuleInit, OnModuleDestroy {
       subscriptionMatches(s.eventTypes, eventName),
     );
     if (targets.length === 0) {
-      return {
-        targetCount: 0,
-        deliveredCount: 0,
-        deadLetteredCount: 0,
-        deadLetterPersistenceFailures: 0,
-      };
+      return { targetCount: 0, deliveredCount: 0, deadLetteredCount: 0 };
     }
     const outcomes = await Promise.all(
-      targets.map((sub) => this.deliverWithRetries(sub, eventName, payload)),
+      targets.map((sub) => this.deliverOnceAndRecord(sub, eventName, payload)),
     );
     return {
       targetCount: targets.length,
-      deliveredCount: outcomes.filter((o) => o.kind === "delivered").length,
-      deadLetteredCount: outcomes.filter((o) => o.kind === "dead-lettered")
-        .length,
-      deadLetterPersistenceFailures: outcomes.filter(
-        (o) => o.kind === "dead-letter-persistence-failure",
-      ).length,
+      deliveredCount: outcomes.filter(Boolean).length,
+      deadLetteredCount: 0,
     };
+  }
+
+  /**
+   * 终败死信落运维面（OutboxDispatcher 扫描在行终态时调用，ARCH-31 #8）：
+   * 对当前匹配该事件的每个 enabled 订阅写一条 event_subscription_dead_letters
+   * （运维死信列表 + 手动重放的数据源）并累计失败统计。逐订阅 fail-open：
+   * 单条失败只记日志，不影响其他订阅与行终态（独立 outbox 死信已由扫描器
+   * 先行落库归档）。
+   */
+  async deadLetterToSubscribers(
+    eventName: string,
+    payload: ReturnType<typeof buildEventPayload>,
+    error: string,
+    attempts: number,
+  ): Promise<{ targetCount: number; deadLetteredCount: number }> {
+    let subs: EventSubscription[];
+    try {
+      subs = await this.subRepo.find({
+        where: { enabled: true },
+        select: {
+          id: true,
+          url: true,
+          secret: true,
+          eventTypes: true,
+          consecutiveFailures: true,
+        },
+      });
+    } catch (err: unknown) {
+      this.logger.error(
+        `Terminal dead-letter "${eventName}": failed to load subscriptions (operator surface missed): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return { targetCount: 0, deadLetteredCount: 0 };
+    }
+    const targets = subs.filter((s) =>
+      subscriptionMatches(s.eventTypes, eventName),
+    );
+    let deadLettered = 0;
+    for (const sub of targets) {
+      try {
+        await this.deadLetterRepo.save(
+          this.deadLetterRepo.create({
+            subscriptionId: sub.id,
+            eventType: eventName,
+            payload: payload as unknown as Record<string, unknown>,
+            error: error.slice(0, 1024),
+            attempts,
+          }),
+        );
+        deadLettered += 1;
+      } catch (err: unknown) {
+        this.logger.error(
+          `Failed to persist dead letter for subscription ${sub.id}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+      try {
+        await this.subService.recordDeliveryFailure(sub, error.slice(0, 1024));
+      } catch (err: unknown) {
+        this.logger.warn(
+          `Failed to update failure stats for subscription ${sub.id}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
+    return { targetCount: targets.length, deadLetteredCount: deadLettered };
   }
 
   // ─── replay（controller 经 service 校验属主后调用）──────────────────────────
@@ -508,10 +509,5 @@ export class OutboundEventDispatcher implements OnModuleInit, OnModuleDestroy {
     }
     await this.subService.deleteDeadLetter(deadLetter.id);
     return { ok: true };
-  }
-
-  /** 测试辅助：当前在途 timer 数。 */
-  pendingTimerCount(): number {
-    return this.pendingTimers.size;
   }
 }

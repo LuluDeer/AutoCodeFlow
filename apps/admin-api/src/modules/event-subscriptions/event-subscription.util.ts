@@ -34,21 +34,6 @@ export const MAX_EVENT_SUBSCRIPTIONS = 200;
 /** 出站请求超时（毫秒），与 notification WebhookChannel 的 10s 对齐。 */
 export const OUTBOUND_TIMEOUT_MS = 10_000;
 
-/** 重试参数：最多 3 次尝试（首次 + 2 重试），指数退避基座 1s。 */
-export const MAX_DELIVERY_ATTEMPTS = 3;
-export const RETRY_BASE_DELAY_MS = 1_000;
-
-/**
- * 第 n 次失败后的重试延迟：base * 2^(n-1)，封顶 30s。
- * attempt=1（首次失败后）→ 1s；attempt=2 → 2s；attempt>=3 → 4s（封顶内）。
- * 纯函数（随机源注入可选留扩展；本轮确定性退避即可测）。
- */
-export function retryDelayMs(failedAttempt: number): number {
-  const base =
-    RETRY_BASE_DELAY_MS * Math.pow(2, Math.max(0, failedAttempt - 1));
-  return Math.min(base, 30_000);
-}
-
 // ─── FEAT-19: outbox（跨进程 at-least-once）参数 ────────────────────────────
 
 /** outbox 补投退避基座（毫秒）：第 n 次失败后延迟 base * 2^(n-1)。 */
@@ -61,7 +46,7 @@ export const MAX_OUTBOX_ATTEMPTS = 20;
 /**
  * outbox 第 n 次失败后的补投延迟：5s * 2^(n-1)，封顶 5min。
  * attempt=1 → 5s；2 → 10s；3 → 20s；4 → 40s；5 → 80s；… ≥7 封顶 5min。
- * 纯函数，与进程内 retryDelayMs 分立（outbox 是跨进程慢路径，节奏放宽）。
+ * 纯函数（ARCH-31 #8 收口后重试节奏的唯一事实源——快速路径不再有进程内退避）。
  */
 export function outboxRetryDelayMs(failedAttempt: number): number {
   const base =
