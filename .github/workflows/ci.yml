@@ -391,18 +391,26 @@ jobs:
           # GHSA 是稳定身份）；新增豁免必须在下方注释登记模块链+原因+复查日期。
           #
           # ── 豁免清单（append-only，逐条注明链路/原因/复查日期）──
-          # GHSA-vcc3-ghjq-m6fr  decode-uri-component ≤0.2.2 DoS
-          #   链：admin-api minio@8.0.7→query-string@7.1.3→decode-uri-component@0.2.2
-          #   原因：上游 minio 8.x 钉 query-string ^7，修复需其大版本变更
-          #   复查：2026-10-01（届时评估 npm overrides 强升 query-string@9）
+          # N-13（2026-09-27 复查）：**GHSA-vcc3-ghjq-m6fr 已清偿**——原计划
+          # 「评估 overrides 强升 query-string@9」经真实 MinIO 端到端实测**不可行**
+          # （query-string@9 是 ESM-only，minio 的 CJS require 拿到 {default:...}，
+          # 运行时 `qs.stringify is not a function`）；但**更精准的
+          # `overrides.decode-uri-component=0.5.0` 实测安全**（真实 MinIO
+          # put/stat/get+gunzip/listObjectsV2/remove 全通过 + admin-api 全量
+          # 226 套件 3790 例全绿），已在 apps/admin-api/package.json 落地。
+          # 该条已从下方 known 列表移除；复查机制见 scripts/check-dependency-review.mjs。
           # GHSA-528h-pc64-c93x  stream-json ≤3.4.0 O(depth²) DoS
           #   链：admin-api minio@8.0.7→stream-json@1.9.1
-          #   原因：同上（minio 8.x 钉 stream-json ^1.8）
-          #   复查：2026-10-01（同上）
+          #   原因：minio 8.x 钉 stream-json ^1.8；其 notification.js 硬依赖
+          #         `stream-json/jsonl/Parser.js`（v1 路径 + 大写 P）
+          #   复查：2026-10-01（**N-13 实测：不可用 override 强升**——stream-json@3
+          #         改名为 src/jsonl/parser.js 小写并加 exports map，且 minio.js
+          #         第 32 行**无条件 eager require** notification.js，于是
+          #         `require('minio')` 本身即抛 MODULE_NOT_FOUND，整条 S3 日志链全废。
+          #         到期动作=续期豁免或换 S3 客户端，不得 override）
           #
           echo "Still failing after retries — matching against exemption list (SEC-06)..."
-          known='GHSA-vcc3-ghjq-m6fr
-          GHSA-528h-pc64-c93x'
+          known='GHSA-528h-pc64-c93x'
           # 提取 JSON 中所有 moderate 及以上 advisory 的 GHSA id（去重排序）
           found=$(node -e '
             const a = require("/tmp/audit.json");
@@ -428,6 +436,18 @@ jobs:
           fi
           echo "::notice::All findings are known exemptions (SEC-06). Next review date: 2026-10-01."
           exit 0
+
+      # N-13 / BUG-04：豁免**复查机制**。上面那道闸回答「有没有新漏洞」，
+      # 这道回答「我们接受的那些，还该继续接受吗」——豁免清单里早就写了复查日期，
+      # 但此前没有任何东西会读它：日期到了不红、不提醒，全靠人记得（BUG-04 就是
+      # 这样挂了 19 天）。本步在到期日当天即 fail-closed，并校验「CI 活跃豁免
+      # 集合 ↔ 脚本注册表」双向一致（含僵尸豁免与日期漂移两个方向）。
+      # 矩阵也补 docs-site（此前 lockfile-integrity 漏审的那一项）。
+      - name: Dependency exemption review guard (N-13/BUG-04)
+        if: matrix.project == 'apps/admin-api'
+        run: |
+          node scripts/check-dependency-review.mjs --selftest
+          node scripts/check-dependency-review.mjs
 
   # ── Python 依赖漏洞审计（E-2，SEC-NEW）───────────────────────────
   # executor-python / registry-pypi 用 == 精确锁定（可复现），但此前 CI 无
