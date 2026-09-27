@@ -1,43 +1,5 @@
 {
   "accepted": {
-    "api/tasks.ts": [
-      "任务列表分页响应无效：",
-      "任务列表请求已取消",
-      "第",
-      "页缺少 items",
-      "请求第",
-      "页却返回第",
-      "页",
-      "第",
-      "页 pageSize=",
-      "，应为",
-      "第",
-      "页 total=",
-      "，首请求 total=",
-      "第",
-      "页 totalPages=",
-      "，应为",
-      "第",
-      "页返回",
-      "条，超过 pageSize 上限",
-      "首请求 total=",
-      "无效",
-      "需要",
-      "页，超过安全上限",
-      "应有",
-      "页，但返回 totalPages=",
-      "total=0 但首请求仍返回任务",
-      "第",
-      "页应有",
-      "条，实际",
-      "条，拒绝返回部分结果",
-      "任务缺少有效 id，无法校验重复或缺页",
-      "任务",
-      "在多个分页中重复出现",
-      "应返回",
-      "条任务，实际聚合",
-      "条，拒绝返回部分结果"
-    ],
     "utils/cron-desc.ts": [
       "日",
       "一",
@@ -87,12 +49,6 @@
       "秒",
       "小时",
       "分"
-    ],
-    "api/event-subscriptions.ts": [
-      "执行成功（execution.completed）",
-      "执行失败（execution.failed）",
-      "执行器离线（executor.offline）",
-      "部署完成（deployment.completed）"
     ],
     "utils/priority.ts": [
       "低",
