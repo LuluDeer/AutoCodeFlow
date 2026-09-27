@@ -130,7 +130,33 @@ if (process.argv.includes('--check')) {
   }
 
   if (violations.length === 0) {
-    console.log(`✅ i18n 守卫通过：未发现新增硬编码中文界面串（基线内 ${acceptedTotal} 处已接受）。`);
+    // ── N-04 反向检查：基线里「已经不存在」的条目 ──────────────────────
+    // 此前守卫只查「新增」（实串 ∉ 基线），不查「陈旧」（基线 ∉ 实串）。
+    // 后果是**迁移完成后基线不会自己缩小**：把一处硬编码改成 t('key') 之后，
+    // 那条基线记录永远留在文件里，"已接受 N 处"这个数字只增不减，
+    // 于是迁移进度读不出来、也没有任何东西提醒该删它。
+    // 本项目已实测踩到：`pages/executor-mode.ts` 的 4 条中文映射，其**值从未被渲染**
+    // （循环只取 Object.keys，展示由调用方按 field 走 i18n），属死数据却一直计在
+    // 待迁移量里——改成语义化字段清单后才暴露。
+    // 故：实串消耗不掉的预算余额 = 陈旧条目，一律失败并要求删除。
+    const stale = [];
+    for (const [k, left] of budget.entries()) {
+      if (left > 0) {
+        const [file, text] = k.split('\u0000');
+        stale.push({ file, text, left });
+      }
+    }
+    if (stale.length > 0) {
+      console.error(`❌ i18n 基线陈旧：${stale.length} 条已接受项在源码中**已不存在**。`);
+      console.error("   成因通常是「该处已迁移为 t('key')」，但基线记录没同步删除——");
+      console.error('   不删的话「已接受 N 处」只增不减，迁移进度无法从该数字读出。');
+      console.error('   修法：从 scripts/i18n-baseline.json 的 accepted 里删掉下列条目。\n');
+      for (const s of stale) {
+        console.error(`   ${s.file}  ${JSON.stringify(s.text)}${s.left > 1 ? `  (×${s.left} 未消耗)` : ''}`);
+      }
+      process.exit(1);
+    }
+    console.log(`✅ i18n 守卫通过：未发现新增硬编码中文界面串（基线内 ${acceptedTotal} 处已接受，无陈旧项）。`);
     process.exit(0);
   }
 
