@@ -97,6 +97,28 @@ AUTH-01 落地了 Project 实体与 `tasks/applications.projectId`，但**没有
 - 未做：项目内 executor/package 的角色细分、「仅成员可执行」收紧开关——均登记为后续。
   （原「未做：项目列表按成员过滤」已由 2026-09-13 读面过滤裁定兑现，见下。）
 
+> **2026-09-27 更新（N-02 复核销账，逐条回读源码）**：上述两条「未做」经复核后**性质已变**，
+> 记录为准确状态而非继续挂着：
+>
+> - **「仅成员可执行」收紧开关 → 已兑现**（2026-09-15 TASK-SCOPE-01，见本文 §2 更新段）：
+>   `TASK_OPERATE_SCOPE` 已落地，且**默认值就是收紧档 `owner`**（`configuration.ts:390`
+>   实测：未设置该 env 时即按 owner 收紧，仅 `=any` 才回退旧宽松语义）。
+>   比本 ADR 当年设想的「可选开关」更进一步——默认已安全，宽松需显式声明。
+> - **「项目内 executor/package 角色细分」→ 复核后判定为「能力扩张」而非缺口**：
+>   实测 `executor.controller.ts` 的**全部写端点**（PATCH `:id` / POST `:id/reload-config` /
+>   `:id/rotate-token` / `:id/set-offline` / DELETE `:id`）均带 `@Roles(UserRole.ADMIN)`，
+>   `executor-package.controller.ts` 更是**类级** `@Roles(UserRole.ADMIN)`（覆盖全路由）。
+>   即当前姿态**比项目角色细分更严**（只有 ADMIN，普通用户连自己项目的执行器也管不了）。
+>   故「细分」的真实含义是**把权限下放给项目 editor/admin**——属**能力扩张**，会扩大攻击面
+>   （能改执行器元数据 / 轮换令牌 / 删执行器的席位变多），与本文 §2「只增放行、不收紧」的
+>   既有裁定方向**相反**，**必须产品拍板**，不单方面实施。
+>   附实测事实：`executor.projectId` / `executor_packages.projectId` 两列**已存在**
+>   （迁移 1790000000009），但全仓**零处读用**（在 executor 模块内 `grep projectId`
+>   仅命中实体定义自身）——列已备好，一旦拍板即可接权限判定，无需再动迁移。
+> - **「项目列表按成员过滤」→ 已兑现**（2026-09-13 AUTH-02-B `0318dfe`，见本文 §6）。
+> - **「admin-web 权限门控 UI」→ 已兑现**（`ProjectsPage.tsx` 用 `isAdminUser` 门控
+>   操作区、成员管理 Drawer ADMIN 增删改 / 普通用户只读）。
+
 ### 6. 读面过滤（2026-09-13 追加裁定：AUTH-02 后续）
 
 `GET /projects` 从「全员可读全量列表」收紧为按主体过滤：
