@@ -1005,6 +1005,18 @@ jobs:
           cd "$GITHUB_WORKSPACE"
           node scripts/check-desktop-bundle-drift.mjs --selftest
           node scripts/check-desktop-bundle-drift.mjs
+      # N-11 / DSK-02·03：桌面**更新链元数据**守卫。
+      # electron-updater 的更新链靠三处元数据严格对齐（builder 的 artifactName
+      # ↔ 打包生成的 latest-*.yml 的 url ↔ publish/updater 的源语义）。错位时
+      # **打包成功、安装成功、更新永远 404**，而 updater 对 4xx/5xx 一律静默
+      # log.warn（不打扰用户）→ 用户侧只是"点检查更新没反应"，CI 全绿。
+      # 本仓已实爆两次同型事故（desktop-v1.5.1 嵌套 artifactName 三平台全挂、
+      # v1.5.0 SDK 抢 latest release）。纯静态读配置，秒级零依赖。
+      - name: Desktop update-chain metadata guard (N-11)
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          node scripts/check-desktop-update-chain.mjs --selftest
+          node scripts/check-desktop-update-chain.mjs
       - name: Drift guard — rebuilt bundle sha256 must match committed manifest (F-19)
         run: |
           cd "$GITHUB_WORKSPACE"
