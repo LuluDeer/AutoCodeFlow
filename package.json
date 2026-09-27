@@ -60,6 +60,8 @@
     "check:dependency-review": "node scripts/check-dependency-review.mjs",
     "check:dependency-review:selftest": "node scripts/check-dependency-review.mjs --selftest",
     "check:dependency-review:report": "node scripts/check-dependency-review.mjs --report",
+    "check:desktop-update-chain": "node scripts/check-desktop-update-chain.mjs",
+    "check:desktop-update-chain:selftest": "node scripts/check-desktop-update-chain.mjs --selftest",
     "check:response-schema": "node scripts/check-openapi-response-schema.mjs",
     "check:response-schema:selftest": "node scripts/check-openapi-response-schema.mjs --selftest",
     "check:response-schema:report": "node scripts/check-openapi-response-schema.mjs --report",
