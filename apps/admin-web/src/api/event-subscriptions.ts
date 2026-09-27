@@ -8,12 +8,22 @@ import { client } from './client';
  *    generatedSecret 字段一次性回显（此后任何读端点不可见）；
  *  - 事件目录（稳定契约，只增不改）：execution.completed / execution.failed /
  *    executor.offline / deployment.completed。
+ *
+ * N-04：本常量原本是 `{value, label}` 形式且 label 为中文，但**没有任何消费方读过
+ * label**——实测 `EventSubscriptionsSettings.tsx` 的两条渲染路径都按 value 走 i18n：
+ *   · Select 选项：`t(eventTypeLabelKey(o.value))`（:397）
+ *   · 列表/死信 Tag：`eventTypeLabel(v)` 在命中时返回 `found.value`（:81，返回的是
+ *     **英文事件名**而非中文 label）
+ * 即那 4 条中文 label 是死数据：既误导读者以为改这里能改文案，又让 i18n 守卫把
+ * 4 个永不渲染的串记进基线、虚增待迁移量（与 `executor-mode.ts` 的 labels 同型，
+ * 是 N-04 引入「基线陈旧」反向检查后暴露出的第二例）。
+ * 改为纯 value 清单：语义与用法一致，且文案唯一来源收敛到 locales。
  */
 export const EVENT_TYPE_OPTIONS = [
-  { value: 'execution.completed', label: '执行成功（execution.completed）' },
-  { value: 'execution.failed', label: '执行失败（execution.failed）' },
-  { value: 'executor.offline', label: '执行器离线（executor.offline）' },
-  { value: 'deployment.completed', label: '部署完成（deployment.completed）' },
+  { value: 'execution.completed' },
+  { value: 'execution.failed' },
+  { value: 'executor.offline' },
+  { value: 'deployment.completed' },
 ] as const;
 
 export type EventSubscriptionEventType = (typeof EVENT_TYPE_OPTIONS)[number]['value'];

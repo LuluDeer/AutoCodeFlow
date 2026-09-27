@@ -1,4 +1,9 @@
 import { client } from './client';
+// N-04：分页校验的诊断文案走 i18n。这些 Error.message 由 TaskListPage 的
+// `useTasksList` error 交给 StateError 直接渲染（StateError 读 error.message），
+// 属**用户可见**面——英文界面下不能露中文。非组件文件引用 i18n 单例，
+// 与 api/client.ts 的 http.error.* 同模式。
+import i18n from '../i18n';
 // PK-02（DEEP_REVIEW 0ef3bbe）: 改用生成的 DTO 类型，删除 Partial<Task> hack。
 import type { components } from '../types/generated/api-types';
 
@@ -283,12 +288,14 @@ function taskListRequestConfig(params: TaskListParams | undefined, signal?: Abor
 }
 
 function invalidTaskListResponse(reason: string): Error {
-  return new Error(`任务列表分页响应无效：${reason}`);
+  return new Error(
+    i18n.t('taskList.invalidResponse', { reason }),
+  );
 }
 
 function throwIfTaskListAborted(signal?: AbortSignal): void {
   if (!signal?.aborted) return;
-  throw signal.reason ?? new Error('任务列表请求已取消');
+  throw signal.reason ?? new Error(i18n.t('taskList.requestCancelled'));
 }
 
 function validateTaskListPage(
@@ -298,31 +305,31 @@ function validateTaskListPage(
   expectedTotalPages: number,
 ): void {
   if (!result || !Array.isArray(result.items)) {
-    throw invalidTaskListResponse(`第 ${expectedPage} 页缺少 items`);
+    throw invalidTaskListResponse(i18n.t('taskList.pageMissingItems', { page: expectedPage }));
   }
   if (result.page !== expectedPage) {
     throw invalidTaskListResponse(
-      `请求第 ${expectedPage} 页却返回第 ${String(result.page)} 页`,
+      i18n.t('taskList.pageMismatch', { expected: expectedPage, actual: String(result.page) }),
     );
   }
   if (result.pageSize !== TASK_LIST_PAGE_SIZE) {
     throw invalidTaskListResponse(
-      `第 ${expectedPage} 页 pageSize=${String(result.pageSize)}，应为 ${TASK_LIST_PAGE_SIZE}`,
+      i18n.t('taskList.pageSizeMismatch', { page: expectedPage, actual: String(result.pageSize), expected: TASK_LIST_PAGE_SIZE }),
     );
   }
   if (result.total !== expectedTotal) {
     throw invalidTaskListResponse(
-      `第 ${expectedPage} 页 total=${String(result.total)}，首请求 total=${expectedTotal}`,
+      i18n.t('taskList.pageTotalMismatch', { page: expectedPage, actual: String(result.total), expected: expectedTotal }),
     );
   }
   if (result.totalPages !== undefined && result.totalPages !== expectedTotalPages) {
     throw invalidTaskListResponse(
-      `第 ${expectedPage} 页 totalPages=${String(result.totalPages)}，应为 ${expectedTotalPages}`,
+      i18n.t('taskList.pageTotalPagesMismatch', { page: expectedPage, actual: String(result.totalPages), expected: expectedTotalPages }),
     );
   }
   if (result.items.length > TASK_LIST_PAGE_SIZE) {
     throw invalidTaskListResponse(
-      `第 ${expectedPage} 页返回 ${result.items.length} 条，超过 pageSize 上限`,
+      i18n.t('taskList.pageOverPageSize', { page: expectedPage, count: result.items.length }),
     );
   }
 }
@@ -357,12 +364,12 @@ async function listAllTasks(
   );
   throwIfTaskListAborted(signal);
   if (!Number.isInteger(first.total) || first.total < 0) {
-    throw invalidTaskListResponse(`首请求 total=${String(first.total)} 无效`);
+    throw invalidTaskListResponse(i18n.t('taskList.firstTotalInvalid', { total: String(first.total) }));
   }
   const expectedTotalPages = Math.ceil(first.total / TASK_LIST_PAGE_SIZE);
   if (expectedTotalPages > TASK_LIST_MAX_PAGES) {
     throw invalidTaskListResponse(
-      `total=${first.total} 需要 ${expectedTotalPages} 页，超过安全上限 ${TASK_LIST_MAX_PAGES}`,
+      i18n.t('taskList.tooManyPages', { total: first.total, pages: expectedTotalPages, max: TASK_LIST_MAX_PAGES }),
     );
   }
   if (
@@ -370,14 +377,14 @@ async function listAllTasks(
     (!Number.isInteger(first.totalPages) || first.totalPages !== expectedTotalPages)
   ) {
     throw invalidTaskListResponse(
-      `total=${first.total} 应有 ${expectedTotalPages} 页，但返回 totalPages=${String(first.totalPages)}`,
+      i18n.t('taskList.totalPagesMismatch', { total: first.total, expected: expectedTotalPages, actual: String(first.totalPages) }),
     );
   }
   validateTaskListPage(first, 1, first.total, expectedTotalPages);
 
   if (expectedTotalPages === 0) {
     if (first.items.length !== 0) {
-      throw invalidTaskListResponse('total=0 但首请求仍返回任务');
+      throw invalidTaskListResponse(i18n.t('taskList.totalZeroButItems'));
     }
     return { ...first, items: [], page: 1, pageSize: TASK_LIST_PAGE_SIZE, totalPages: 0 };
   }
@@ -421,7 +428,7 @@ async function listAllTasks(
     const expectedPage = index + 1;
     if (page.items.length !== expectedItemsOnPage(expectedPage)) {
       throw invalidTaskListResponse(
-        `第 ${expectedPage} 页应有 ${expectedItemsOnPage(expectedPage)} 条，实际 ${page.items.length} 条，拒绝返回部分结果`,
+        i18n.t('taskList.pageItemCountMismatch', { page: expectedPage, expected: expectedItemsOnPage(expectedPage), actual: page.items.length }),
       );
     }
   });
@@ -430,16 +437,16 @@ async function listAllTasks(
   const ids = new Set<string>();
   for (const item of items) {
     if (!item || typeof item.id !== 'string' || item.id.length === 0) {
-      throw invalidTaskListResponse('任务缺少有效 id，无法校验重复或缺页');
+      throw invalidTaskListResponse(i18n.t('taskList.itemMissingId'));
     }
     if (ids.has(item.id)) {
-      throw invalidTaskListResponse(`任务 ${item.id} 在多个分页中重复出现`);
+      throw invalidTaskListResponse(i18n.t('taskList.itemDuplicated', { id: item.id }));
     }
     ids.add(item.id);
   }
   if (items.length !== first.total) {
     throw invalidTaskListResponse(
-      `应返回 ${first.total} 条任务，实际聚合 ${items.length} 条，拒绝返回部分结果`,
+      i18n.t('taskList.aggregateCountMismatch', { expected: first.total, actual: items.length }),
     );
   }
 
