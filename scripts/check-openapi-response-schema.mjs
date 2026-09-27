@@ -53,8 +53,40 @@ const root = path.resolve(here, '..');
 const SPEC = 'apps/admin-api/openapi.json';
 const BASELINE = 'scripts/openapi-response-schema-baseline.json';
 
-/** 收集全部 2xx 响应及其是否有 schema。 */
+/** 收集全部 2xx 响应及其 schema 是否**实质有效**。 */
 export function collect(spec) {
+  // 「有 content」不等于「有可用类型」：@nestjs/swagger 对**实体类**（无 @ApiProperty）
+  // 会 emit `{type:'object', properties:{}}` —— 一个**空壳 schema**。前端据此生成的是
+  // `Record<string, never>`，比没有 schema 更坏（看着有类型，实际什么都写不了）。
+  // 故先把「空 object schema」的具名组件收集起来，凡 `$ref` 指向它们的响应一律
+  // **不算已覆盖**。这一条是本守卫首版**真实的假绿来源**：首版只看 `res.content`
+  // 是否存在，于是把 9 条空壳响应（Application/TaskTemplate/EventSubscription 等）
+  // 计成了"已覆盖"——CI 的 PK-15 空 schema 闸正是这样把本仓打红的（见 74afb6f8 的
+  // api-types-drift 失败），而本守卫当时却报绿，属"守卫之间口径不一致"。
+  const schemas = spec.components?.schemas ?? {};
+  const emptySchemas = new Set(
+    Object.entries(schemas)
+      .filter(([, s]) => {
+        if (!s || typeof s !== 'object') return false;
+        if (s.allOf || s.anyOf || s.oneOf) return false;
+        if (s.type !== 'object') return false;
+        // 只有 properties 存在且为空才算空壳；无 properties 键的（如纯 $ref 别名）不判
+        return s.properties && Object.keys(s.properties).length === 0;
+      })
+      .map(([n]) => n),
+  );
+
+  const refsOf = (node) => {
+    const found = [];
+    const walk = (n) => {
+      if (!n || typeof n !== 'object') return;
+      if (typeof n.$ref === 'string') found.push(n.$ref.split('/').pop());
+      for (const v of Object.values(n)) walk(v);
+    };
+    walk(node);
+    return found;
+  };
+
   const rows = [];
   for (const [p, ops] of Object.entries(spec.paths ?? {})) {
     for (const [method, op] of Object.entries(ops ?? {})) {
@@ -63,14 +95,29 @@ export function collect(spec) {
       const tag = (op.tags && op.tags[0]) || '(untagged)';
       for (const [code, res] of Object.entries(op.responses ?? {})) {
         if (!/^2\d\d$/.test(code)) continue;
-        const hasSchema = Boolean(res && (res.content || res.schema || res.$ref));
+        const schemaNode =
+          res?.content?.['application/json']?.schema ??
+          res?.content?.['*/*']?.schema ??
+          res?.schema ??
+          (res?.$ref ? { $ref: res.$ref } : null);
+        const hasContent = Boolean(schemaNode);
+        // 空壳判定：引用了空 schema，且 schema 本身没有任何内联字段
+        const inlineProps =
+          schemaNode && typeof schemaNode === 'object' && schemaNode.properties
+            ? Object.keys(schemaNode.properties).length
+            : null;
+        const refs = hasContent ? refsOf(schemaNode) : [];
+        const hollow =
+          hasContent &&
+          (inlineProps === 0 || (inlineProps === null && refs.length > 0 && refs.every((r) => emptySchemas.has(r))));
         rows.push({
           key: `${method.toUpperCase()} ${p} ${code}`,
           tag,
           path: p,
           method: method.toUpperCase(),
           code,
-          hasSchema,
+          hasSchema: hasContent && !hollow,
+          hollow,
           summary: op.summary ?? op.operationId ?? '',
         });
       }
@@ -79,21 +126,33 @@ export function collect(spec) {
   return rows;
 }
 
-/** 汇总统计（总数 / 已覆盖 / 按 tag 缺口排名）。 */
+/** 汇总统计（总数 / 已覆盖 / 空壳 / 按 tag 缺口排名）。 */
 export function summarize(rows) {
   const total = rows.length;
   const covered = rows.filter((r) => r.hasSchema).length;
+  // 空壳单独计数并暴露：它们**看着有 schema 却生成不出可用类型**，
+  // 是"覆盖率虚高"的唯一来源，必须与真覆盖分开报。
+  const hollow = rows.filter((r) => r.hollow).length;
   const byTag = new Map();
   for (const r of rows) {
-    const e = byTag.get(r.tag) ?? { total: 0, covered: 0 };
+    const e = byTag.get(r.tag) ?? { total: 0, covered: 0, hollow: 0 };
     e.total += 1;
     if (r.hasSchema) e.covered += 1;
+    if (r.hollow) e.hollow += 1;
     byTag.set(r.tag, e);
   }
   const gaps = [...byTag.entries()]
     .map(([tag, e]) => ({ tag, ...e, gap: e.total - e.covered }))
     .sort((a, b) => b.gap - a.gap || a.tag.localeCompare(b.tag));
-  return { total, covered, uncovered: total - covered, pct: total ? (covered / total) * 100 : 100, byTag, gaps };
+  return {
+    total,
+    covered,
+    hollow,
+    uncovered: total - covered,
+    pct: total ? (covered / total) * 100 : 100,
+    byTag,
+    gaps,
+  };
 }
 
 export function loadBaseline(p) {
@@ -134,11 +193,35 @@ export function check({ rows, baseline }) {
     );
   }
 
-  // ③ 棘轮上探提示（有进步就该更新基线，否则下次可能悄悄退回去）
+  // ③ 空壳 schema（"看着有、生成不出类型"）：新增即红。
+  // 这是本守卫首版的假绿来源——只判 `res.content` 存在会把实体类引用的空壳
+  // 计成已覆盖。基线里已有的空壳（TaskTemplate/EventSubscription 等，属历史遗留）
+  // 记入 baseline.hollowKeys 以允许存量，但**新增**空壳必须拦住：它会让覆盖率虚高，
+  // 且前端生成出 `Record<string, never>` 比没有类型更坏。
+  const hollowKeys = rows.filter((r) => r.hollow).map((r) => r.key).sort();
+  const baseHollow = new Set(baseline.hollowKeys ?? []);
+  const newHollow = hollowKeys.filter((k) => !baseHollow.has(k));
+  for (const k of newHollow) {
+    failures.push(
+      `新增空壳 schema：${k} 的响应引用了一个 properties 为空的组件（通常是直接标注**实体类**——` +
+        `实体没有 @ApiProperty，@nestjs/swagger 只 emit {type:'object',properties:{}}）。` +
+        `前端会生成 Record<string, never>，比没有类型更坏。请改标响应 DTO（带 @ApiProperty）。`,
+    );
+  }
+
+  // ④ 棘轮上探提示（有进步就该更新基线，否则下次可能悄悄退回去）
   if (s.covered > baseCovered) {
     notes.push(
       `覆盖率已提升：${baseCovered} → ${s.covered}（+${s.covered - baseCovered}）。` +
         `请运行 node scripts/check-openapi-response-schema.mjs --update 更新基线（棘轮只增不减）。`,
+    );
+  }
+
+  if (s.hollow > 0) {
+    notes.push(
+      `空壳 schema（引用空组件，生成不出可用类型）：${s.hollow} 条` +
+        `${baseHollow.size > 0 ? `（基线已接受 ${baseHollow.size} 条存量）` : ''}` +
+        `。清单：${hollowKeys.slice(0, 5).join(', ')}${hollowKeys.length > 5 ? ' …' : ''}`,
     );
   }
 
@@ -154,15 +237,20 @@ export function check({ rows, baseline }) {
 function writeBaseline(rows) {
   const s = summarize(rows);
   const coveredKeys = rows.filter((r) => r.hasSchema).map((r) => r.key).sort();
+  const hollowKeys = rows.filter((r) => r.hollow).map((r) => r.key).sort();
   const payload = {
     $comment:
-      'ARCH-23 / N-12 响应 schema 覆盖率棘轮基线。coveredKeys = 已验证有 response schema 的 ' +
+      'ARCH-23 / N-12 响应 schema 覆盖率棘轮基线。coveredKeys = 已验证有**实质** response schema 的 ' +
       'METHOD PATH CODE 条目（防倒退：删装饰器即红）；coveredCount = 覆盖总数下限（只增不减）。' +
-      '补齐装饰器后用 --update 上探。覆盖率低不是缺陷本身，但**倒退**是。',
+      'hollowKeys = 引用**空壳组件**（properties 为空的具名 schema）的响应——看着有 schema，' +
+      '前端却只生成 Record<string, never>。存量记此以允许历史遗留，**新增即红**。' +
+      '补齐装饰器后用 --update 上探。覆盖率低不是缺陷本身，但**倒退与空壳新增**是。',
     coveredCount: s.covered,
     totalCount: s.total,
     pct: Number(s.pct.toFixed(1)),
+    hollowCount: s.hollow,
     coveredKeys,
+    hollowKeys,
   };
   fs.writeFileSync(path.join(root, BASELINE), `${JSON.stringify(payload, null, 2)}\n`);
   return payload;
@@ -188,14 +276,23 @@ function main() {
 
   if (args.includes('--report')) {
     const s = summarize(rows);
-    console.log(`响应 schema 覆盖率：${s.covered}/${s.total}（${s.pct.toFixed(1)}%），缺口 ${s.uncovered}`);
+    console.log(
+      `响应 schema 覆盖率：${s.covered}/${s.total}（${s.pct.toFixed(1)}%），缺口 ${s.uncovered}` +
+        `，其中空壳 ${s.hollow} 条`,
+    );
     console.log('\n按 tag 缺口排名（前 25）：');
     for (const g of s.gaps.slice(0, 25)) {
-      if (g.gap === 0) continue;
-      console.log(`  gap=${String(g.gap).padStart(3)}  (${g.covered}/${g.total})  ${g.tag}`);
+      if (g.gap === 0 && g.hollow === 0) continue;
+      console.log(
+        `  gap=${String(g.gap).padStart(3)}  (${g.covered}/${g.total})${g.hollow ? ` [空壳${g.hollow}]` : ''}  ${g.tag}`,
+      );
+    }
+    if (s.hollow > 0) {
+      console.log('\n空壳 schema（引用空组件，前端生成 Record<string, never>）：');
+      for (const r of rows.filter((x) => x.hollow)) console.log(`  ${r.key}  [${r.tag}]`);
     }
     console.log('\n缺口明细（前 15 条）：');
-    for (const r of rows.filter((x) => !x.hasSchema).slice(0, 15)) {
+    for (const r of rows.filter((x) => !x.hasSchema && !x.hollow).slice(0, 15)) {
       console.log(`  ${r.key}  [${r.tag}]  ${r.summary}`.slice(0, 130));
     }
     process.exit(0);

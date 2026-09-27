@@ -52,7 +52,7 @@ function usage() {
 用法: node scripts/micro-benchmark.mjs [options]
 
 选项:
-  --scenario NAME          all | handle-callback | store-log-lines | dispatch-decision（默认 all）
+  --scenario NAME          all | handle-callback | store-log-lines | dispatch-decision | load-score（默认 all）
   --iterations N           每个场景正式采样次数（默认 ${DEFAULT_ITERATIONS}）
   --warmup N               每个场景预热次数（默认 ${DEFAULT_WARMUP}）
   --threshold-ms NAME=MS   场景 p95 阈值，超过则退出码 1；可重复传
@@ -62,7 +62,8 @@ function usage() {
 示例:
   node scripts/micro-benchmark.mjs
   node scripts/micro-benchmark.mjs --scenario dispatch-decision --iterations 50
-  node scripts/micro-benchmark.mjs --threshold-ms dispatch-decision=8 --threshold-ms store-log-lines=40`);
+  node scripts/micro-benchmark.mjs --threshold-ms dispatch-decision=8 --threshold-ms store-log-lines=40
+  node scripts/micro-benchmark.mjs --scenario load-score --threshold-ms load-score=1.5`);
 }
 
 export function parseArgs(argv) {
@@ -120,7 +121,7 @@ export function parseArgs(argv) {
   if (!Number.isInteger(opts.warmup) || opts.warmup < 0) {
     throw new Error("--warmup 必须是 >= 0 的整数");
   }
-  const allowed = new Set(["all", "handle-callback", "store-log-lines", "dispatch-decision"]);
+  const allowed = new Set(["all", "handle-callback", "store-log-lines", "dispatch-decision", "load-score"]);
   if (!allowed.has(opts.scenario)) {
     throw new Error(`--scenario 不支持: ${opts.scenario}`);
   }
@@ -280,6 +281,51 @@ export function benchmarkDispatchDecision(
   };
 }
 
+/**
+ * N-09：loadScore **公式本身**的微基准（与上面的「派发决策」区分开）。
+ *
+ * 为什么单独一个场景：`benchmarkDispatchDecision` 度量的是「500 候选的筛选+排序」
+ * 这条**端到端决策**成本（O(n log n) 占主导），而 `computeExecutorLoadScoreModel`
+ * 是每次派发都要跑的**单点公式**（4 项加权 + 长任务惩罚）。两者的退化诱因不同：
+ * 前者随候选规模退化，后者随**公式改动**退化（加一项权重、把 longTaskPenalty
+ * 从 O(1) 改成 O(n) 遍历估时数组都会在这里体现，却在 500 候选的排序噪声里被淹没）。
+ * CORE-05 的公式被 dispatch/selectLeastLoaded 双站点共享，单点退化会同时影响两处。
+ *
+ * 覆盖四种输入形态（缺省值路径最容易退化成 NaN/隐式类型转换）：
+ *   · 满信息（load/cpu/mem/估时齐全）
+ *   · 缺 cpu/mem（`?? 0` 兜底路径）
+ *   · maxConcurrentTasks 缺省（`?? 10` 兜底路径）
+ *   · 估时数组为长序列（longTaskPenalty 的遍历成本）
+ */
+export function benchmarkLoadScore(
+  executors = makeExecutors(),
+  estimatedDurations = makeEstimatedDurationsByAddress(executors),
+) {
+  let acc = 0;
+  let undefinedCount = 0;
+  for (const e of executors) {
+    const score = computeExecutorLoadScoreModel(e, {
+      estimatedDurations: estimatedDurations.get(e.address) ?? [],
+    });
+    if (!Number.isFinite(score)) undefinedCount += 1;
+    acc += score;
+  }
+  // 兜底路径单独跑一遍：缺 cpu/mem/max 的执行器（真实注册早期常见）
+  const bare = { id: "bare", address: "bare:1", runningTaskCount: 3 };
+  const bareScore = computeExecutorLoadScoreModel(bare, { estimatedDurations: [] });
+  const zeroMax = computeExecutorLoadScoreModel(
+    { id: "z", address: "z:1", runningTaskCount: 1, maxConcurrentTasks: 0 },
+    { estimatedDurations: [] },
+  );
+  return {
+    executors: executors.length,
+    checksum: Number(acc.toFixed(6)),
+    nonFinite: undefinedCount,
+    bareScore,
+    zeroMaxScore: zeroMax,
+  };
+}
+
 function benchOne(name, fn, { iterations, warmup }) {
   for (let i = 0; i < warmup; i += 1) fn();
   const samplesMs = [];
@@ -309,6 +355,7 @@ function scenariosFor(name) {
     "handle-callback": () => benchmarkHandleCallbackBatch(),
     "store-log-lines": () => benchmarkStoreLogLines(),
     "dispatch-decision": () => benchmarkDispatchDecision(),
+    "load-score": () => benchmarkLoadScore(),
   };
   if (name === "all") return all;
   return { [name]: all[name] };

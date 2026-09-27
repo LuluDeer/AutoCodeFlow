@@ -1673,3 +1673,37 @@ jobs:
         run: |
           node scripts/check-openapi-response-schema.mjs --selftest
           node scripts/check-openapi-response-schema.mjs
+
+  # ── N-09（QA-10）：关键路径微基准防退化闸 ──────────────────────────
+  # 为什么单开一个 job 而不是塞进既有单测：微基准**依赖机器性能**，
+  # 塞进功能测试会让"性能退化"与"逻辑错误"混在同一个红里，无法归因；
+  # 且它跑得极快（4 场景 × 20 次采样，本机 <1s），独立 job 成本可忽略。
+  #
+  # 触发策略（刻意的）：
+  #   · `selftest`（纯函数断言 + 模型与真实公式同序）**每次 push 都跑**——
+  #     它不依赖机器性能，是真正的逻辑闸（阈值/gate/场景枚举/除零探针）。
+  #   · 阈值门只在 `schedule`（月度）与手动触发跑，且阈值取**宽松档**：
+  #     GitHub 共享 runner 的性能抖动可达数倍，把本机阈值搬上去必然假红，
+  #     假红的闸等于没有闸（本仓 lint-gates / coverage 棘轮都吃过这个亏）。
+  #     月度跑的目的不是"精确门禁"而是"留下趋势基线 + 拦住数量级退化"。
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      # 零依赖脚本（Node 原生 perf_hooks），无需 npm ci
+      - name: Micro-benchmark selftest (logic gate — every push)
+        run: node scripts/micro-benchmark.selftest.mjs
+      - name: Micro-benchmark thresholds (trend gate — schedule/manual only)
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        run: |
+          node scripts/micro-benchmark.mjs --scenario all --json > /tmp/bench.json
+          node -e "
+          const r = require('/tmp/bench.json');
+          const rows = Array.isArray(r) ? r : (r.results ?? []);
+          console.log('benchmark results:');
+          for (const b of rows) console.log('  ' + b.name + ' p95=' + b.p95Ms + 'ms');
+          "

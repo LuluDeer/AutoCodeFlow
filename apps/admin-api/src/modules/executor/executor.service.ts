@@ -1271,7 +1271,31 @@ export class ExecutorService implements OnModuleInit {
     });
     const isFirstTime = !e;
     const capabilities = data.capabilities ?? data.runtime;
-    const maxConcurrentTasks = data.maxConcurrentTasks ?? data.maxConcurrent;
+    // N-09 微基准暴露的注册/心跳**采纳域不对称**（本轮净新发现）：
+    // 心跳路径经 isAdoptableMaxConcurrentTasks 钳到正整数 1..10000（其注释写明
+    // "防止执行器经心跳写入荒谬容量饿死派发闸门"），而 **register 路径此前零校验**
+    // ——DTO 上 maxConcurrentTasks 连 @IsInt/@Min 都没有，服务层也直接落库。
+    // 后果（实测链路）：`maxConcurrentTasks: 0` 落库后，
+    //   ① `computeExecutorLoadScore` 的 `runningTaskCount / max` = 0/0 → **Infinity**
+    //      （评分面被污染，同分排序失去意义）；
+    //   ② 更严重的是 selectLeastLoaded 的容量闸 `runningTaskCount < max`
+    //      → `0 < 0` 恒 false，**该执行器被永久排除在派发之外**（"注册成功、永远
+    //      收不到一个任务"，与 P0-2 的 bindAddress 事故同型：绿灯但不干活）。
+    // 故与心跳同口径：非法值视同**未上报**（不写 DB、保留既有值/列默认），
+    // 而不是静默钳成某个值——执行器自报面不可信，猜它"想报几"比不采纳更危险。
+    const rawMaxConcurrent = data.maxConcurrentTasks ?? data.maxConcurrent;
+    let maxConcurrentTasks: number | undefined;
+    if (rawMaxConcurrent !== undefined) {
+      if (ExecutorService.isAdoptableMaxConcurrentTasks(rawMaxConcurrent)) {
+        maxConcurrentTasks = rawMaxConcurrent;
+      } else {
+        this.logger.warn(
+          `Executor ${data.address} registered invalid maxConcurrentTasks=${String(
+            rawMaxConcurrent,
+          )} (expected integer in 1..10000); treating as not reported`,
+        );
+      }
+    }
     const incomingStartedAt = this.parseExecutorStartedAt(data.restartedAt);
     const incomingStartupId = data.startupId?.trim() || null;
     // ARCH-34 P0：address 冲突观测（register 入口）。必须在任何 DB 写入**之前**
