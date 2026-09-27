@@ -1,6 +1,6 @@
 # 开发计划任务认领板
 
-> 配套文档：[DEVELOPMENT-PLAN-2026-09.md](./DEVELOPMENT-PLAN-2026-09.md)（上期计划）+ [DEVELOPMENT-PLAN-2026-09H2.md](./DEVELOPMENT-PLAN-2026-09H2.md)（**H2 长期计划，2026-09-08 起生效**——新任务详情/验收/排期见其 §10 注册表）
+> 配套文档：[DEVELOPMENT-PLAN-2026-10.md](./DEVELOPMENT-PLAN-2026-10.md)（**本期计划，2026-09-27 起生效**——N-01~N-13 注册表 + 轮 27-30 建议）+ [DEVELOPMENT-PLAN-2026-09H2.md](./DEVELOPMENT-PLAN-2026-09H2.md)（上期 H2 计划，任务池已于 2026-09-27 全部清偿）+ [DEVELOPMENT-PLAN-2026-09.md](./DEVELOPMENT-PLAN-2026-09.md)（更早）
 > 本板是多会话并行开发**唯一的认领事实源**。规则：
 > 1. **认领**：把状态改为 `claimed` 并填 Owner（会话唯一名，如 `main-A`）+ 时间 + 文件足迹（预计要改的文件，供他人避让）。
 > 2. **开工**：`claimed → in_progress`；**完成**：`done` + 填 commit hash；**放弃/移交**：`unclaimed` 并清空 Owner（备注留交接说明）。
