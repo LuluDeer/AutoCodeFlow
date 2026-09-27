@@ -4374,6 +4374,69 @@ export interface components {
             pid?: number;
             message?: string;
         };
+        ExecutorPackagePushRecordDto: {
+            /** @description Target executor id */
+            executorId: string;
+            /**
+             * @description Push outcome
+             * @enum {string}
+             */
+            status: "downloaded" | "failed";
+            /** @description Package version pushed */
+            version: string;
+            /** @description Failure reason when status=failed */
+            error?: string;
+            /** @description When this push attempt happened (ISO-8601) */
+            timestamp: string;
+        };
+        ExecutorPackageResponseDto: {
+            /** @description Package id (uuid) */
+            id: string;
+            /** @description Package name */
+            name: string;
+            /** @description Package version */
+            version: string;
+            /** @description Package type (runtime/tooling taxonomy) */
+            type: string;
+            /** @description Target platform (null when the package is platform-agnostic) */
+            platform?: string | null;
+            /** @description Stored filename */
+            filename?: string | null;
+            /** @description Original upload filename */
+            originalFilename?: string | null;
+            /** @description MIME type */
+            mimeType?: string | null;
+            /** @description Size in bytes */
+            fileSize: number;
+            /** @description SHA-256 checksum */
+            checksum?: string | null;
+            /** @description Description */
+            description?: string | null;
+            /** @description Lifecycle status (active / deprecated / …) */
+            status: string;
+            /** @description Uploader identity */
+            uploadedBy?: string | null;
+            /** @description Push attempts against executors */
+            pushHistory?: components["schemas"]["ExecutorPackagePushRecordDto"][];
+            /** @description Owning project id (null = default project view) */
+            projectId?: string | null;
+            /**
+             * Format: date-time
+             * @description Creation time (ISO-8601)
+             */
+            createdAt: string;
+            /**
+             * Format: date-time
+             * @description Last update time (ISO-8601)
+             */
+            updatedAt: string;
+        };
+        ExecutorPackageListDto: {
+            /** @description Page of packages */
+            items: components["schemas"]["ExecutorPackageResponseDto"][];
+            /** @description Total matching packages (before paging) */
+            total: number;
+        };
         UpdateExecutorPackageDto: {
             /** @description Package name */
             name?: string;
@@ -8661,7 +8724,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ExecutorPackageListDto"];
+                };
             };
         };
     };
@@ -8714,12 +8779,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Latest package info */
+            /** @description Latest package info (null when none matches) */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ExecutorPackageResponseDto"];
+                };
             };
         };
     };
@@ -8740,7 +8807,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ExecutorPackageResponseDto"];
+                };
             };
             /** @description Package not found */
             404: {
@@ -8800,7 +8869,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ExecutorPackageResponseDto"];
+                };
             };
             /** @description Package not found */
             404: {

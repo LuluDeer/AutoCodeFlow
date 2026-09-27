@@ -6811,7 +6811,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Package list"
+            "description": "Package list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecutorPackageListDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -6850,7 +6857,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Latest package info"
+            "description": "Latest package info (null when none matches)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecutorPackageResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -6880,7 +6894,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Package details"
+            "description": "Package details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecutorPackageResponseDto"
+                }
+              }
+            }
           },
           "404": {
             "description": "Package not found"
@@ -6921,7 +6942,14 @@
         },
         "responses": {
           "200": {
-            "description": "Updated successfully"
+            "description": "Updated successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecutorPackageResponseDto"
+                }
+              }
+            }
           },
           "404": {
             "description": "Package not found"
@@ -10278,6 +10306,157 @@
         "required": [
           "deploymentId",
           "status"
+        ]
+      },
+      "ExecutorPackagePushRecordDto": {
+        "type": "object",
+        "properties": {
+          "executorId": {
+            "type": "string",
+            "description": "Target executor id"
+          },
+          "status": {
+            "type": "string",
+            "description": "Push outcome",
+            "enum": [
+              "downloaded",
+              "failed"
+            ]
+          },
+          "version": {
+            "type": "string",
+            "description": "Package version pushed"
+          },
+          "error": {
+            "type": "string",
+            "description": "Failure reason when status=failed"
+          },
+          "timestamp": {
+            "type": "string",
+            "description": "When this push attempt happened (ISO-8601)"
+          }
+        },
+        "required": [
+          "executorId",
+          "status",
+          "version",
+          "timestamp"
+        ]
+      },
+      "ExecutorPackageResponseDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Package id (uuid)"
+          },
+          "name": {
+            "type": "string",
+            "description": "Package name"
+          },
+          "version": {
+            "type": "string",
+            "description": "Package version"
+          },
+          "type": {
+            "type": "string",
+            "description": "Package type (runtime/tooling taxonomy)"
+          },
+          "platform": {
+            "type": "string",
+            "description": "Target platform (null when the package is platform-agnostic)",
+            "nullable": true
+          },
+          "filename": {
+            "type": "string",
+            "description": "Stored filename",
+            "nullable": true
+          },
+          "originalFilename": {
+            "type": "string",
+            "description": "Original upload filename",
+            "nullable": true
+          },
+          "mimeType": {
+            "type": "string",
+            "description": "MIME type",
+            "nullable": true
+          },
+          "fileSize": {
+            "type": "number",
+            "description": "Size in bytes"
+          },
+          "checksum": {
+            "type": "string",
+            "description": "SHA-256 checksum",
+            "nullable": true
+          },
+          "description": {
+            "type": "string",
+            "description": "Description",
+            "nullable": true
+          },
+          "status": {
+            "type": "string",
+            "description": "Lifecycle status (active / deprecated / …)"
+          },
+          "uploadedBy": {
+            "type": "string",
+            "description": "Uploader identity",
+            "nullable": true
+          },
+          "pushHistory": {
+            "description": "Push attempts against executors",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ExecutorPackagePushRecordDto"
+            }
+          },
+          "projectId": {
+            "type": "string",
+            "description": "Owning project id (null = default project view)",
+            "nullable": true
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string",
+            "description": "Creation time (ISO-8601)"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string",
+            "description": "Last update time (ISO-8601)"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "version",
+          "type",
+          "fileSize",
+          "status",
+          "createdAt",
+          "updatedAt"
+        ]
+      },
+      "ExecutorPackageListDto": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "description": "Page of packages",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ExecutorPackageResponseDto"
+            }
+          },
+          "total": {
+            "type": "number",
+            "description": "Total matching packages (before paging)"
+          }
+        },
+        "required": [
+          "items",
+          "total"
         ]
       },
       "UpdateExecutorPackageDto": {
