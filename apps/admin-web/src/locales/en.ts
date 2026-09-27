@@ -198,6 +198,26 @@ export default {
   'taskList.triggerParams.desc': 'Parameters here override task defaults and are injected as AUTOFLOW_<KEY> env vars. Leave empty to use task defaults.',
   'taskList.params.label': 'Execution parameters',
   'taskList.error.title': 'Failed to load task list',
+  // ── N-04: pagination-contract diagnostics (thrown by api/tasks.ts → StateError renders error.message) ──
+  // Developer-readable response-contract diagnostics, not ordinary UI copy; the English side
+  // keeps the same information density (exact page numbers/counts) because losing a number
+  // during troubleshooting means reproducing the whole scenario again.
+  'taskList.invalidResponse': 'Invalid task list pagination response: {{reason}}',
+  'taskList.requestCancelled': 'Task list request was cancelled',
+  'taskList.pageMissingItems': 'Page {{page}} is missing items',
+  'taskList.pageMismatch': 'Requested page {{expected}} but got page {{actual}}',
+  'taskList.pageSizeMismatch': 'Page {{page}} has pageSize={{actual}}, expected {{expected}}',
+  'taskList.pageTotalMismatch': 'Page {{page}} has total={{actual}}, first request returned total={{expected}}',
+  'taskList.pageTotalPagesMismatch': 'Page {{page}} has totalPages={{actual}}, expected {{expected}}',
+  'taskList.pageOverPageSize': 'Page {{page}} returned {{count}} rows, exceeding the pageSize cap',
+  'taskList.firstTotalInvalid': 'First request returned an invalid total={{total}}',
+  'taskList.tooManyPages': 'total={{total}} requires {{pages}} pages, exceeding the safety cap of {{max}}',
+  'taskList.totalPagesMismatch': 'total={{total}} should be {{expected}} pages, but totalPages={{actual}} was returned',
+  'taskList.totalZeroButItems': 'total=0 but the first request still returned tasks',
+  'taskList.pageItemCountMismatch': 'Page {{page}} should have {{expected}} rows but has {{actual}}; refusing to return a partial result',
+  'taskList.itemMissingId': 'A task is missing a valid id, so duplicates or missing pages cannot be verified',
+  'taskList.itemDuplicated': 'Task {{id}} appears in multiple pages',
+  'taskList.aggregateCountMismatch': 'Expected {{expected}} tasks but aggregated {{actual}}; refusing to return a partial result',
   'taskList.empty.noMatch': 'No matching tasks',
   'taskList.empty.none': 'No tasks yet',
   'taskList.empty.createFirst': 'Create your first task',
