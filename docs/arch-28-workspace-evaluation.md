@@ -207,6 +207,28 @@ NestJS/Electron/vite 等对 `node_modules` 物理布局有假设的生态位仍�
 后续若执行 ARCH-28b（turbo）或 workspace 迁移，以同口径（develop 全绿
 run、`gh run view --json jobs` 步骤级时长）回填对比表。
 
+### 5.1 ARCH-28b（N-01）回填 —— 2026-09-27
+
+ARCH-28b 已执行，**结论=不接入 turbo 多包模式**（turbo 的启用前提与本仓
+ARCH-20 no-hoisting 裁定互斥：根一旦声明 `workspaces`，8 个子项目 `npm ci`
+全部 ERESOLVE 失败）。完整实测见 **[ARCH-28b-turbo-adoption.md](./ARCH-28b-turbo-adoption.md)**。
+
+同口径基线（run 36300739454，develop，全绿，2026-09-27）：
+
+| 指标 | ARCH-28（2026-09-08） | ARCH-28b（2026-09-27） |
+|---|---|---|
+| 关键路径 job | e2e-full 242s / docker-multiarch 315s | **selftests 544s**（其中串行自检 518s）/ admin-web-build 320s（其中 vitest 286s）/ e2e-full 287s |
+| npm ci 单步 | 13s（admin-api-test） | 12s（admin-api-test） |
+| npm ci 占所在 job | 6%~12% | 2.5%（admin-web-build）~10%（admin-api-test） |
+
+**方向性修正（对 ARCH-28 §2 的 turbo 判断）**：ARCH-28 §2 判「turbo 可增量接入、
+风险低」，实测证伪——turbo 多包模式**同样要求根成为安装根**，与 no-hoisting
+是互斥而非可叠加；单包模式（`--single-package`）缓存虽生效，但 CI 每个 job 是
+独立 runner + 全新 checkout，本地缓存不可跨 job 复用，而 §2 预判的收益点
+（「admin-web 在 4 个 job 重复 build」）实测每个 build step 仅 8~12s。
+真正的关键路径瓶颈是 ①`selftests` 的 518s 串行自检 ②`admin-web` 的 286s
+全量 vitest+coverage——两者都不是包级任务，turbo 用不上。
+
 ## 6. 改动清单（本轮）
 
 | 文件 | 变更 |
