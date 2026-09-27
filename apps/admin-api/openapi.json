@@ -190,7 +190,14 @@
         "parameters": [],
         "responses": {
           "200": {
-            "description": "Staged secret + otpauth URL"
+            "description": "Staged secret + otpauth URL",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TotpSetupResponseDto"
+                }
+              }
+            }
           },
           "400": {
             "description": "TOTP already enabled"
@@ -224,7 +231,14 @@
         },
         "responses": {
           "200": {
-            "description": "TOTP enabled"
+            "description": "TOTP enabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TotpEnableResponseDto"
+                }
+              }
+            }
           },
           "400": {
             "description": "Invalid code or nothing staged"
@@ -248,7 +262,14 @@
         "parameters": [],
         "responses": {
           "200": {
-            "description": "TOTP disabled (or was not on)"
+            "description": "TOTP disabled (or was not on)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TotpDisableResponseDto"
+                }
+              }
+            }
           },
           "401": {
             "description": "Confirmation failed"
@@ -311,7 +332,17 @@
         "parameters": [],
         "responses": {
           "200": {
-            "description": "Session list"
+            "description": "Session list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AuthSessionRowDto"
+                  }
+                }
+              }
+            }
           }
         },
         "security": [
@@ -365,7 +396,14 @@
         "parameters": [],
         "responses": {
           "200": {
-            "description": "Revocation count"
+            "description": "Revocation count",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RevokeOthersResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -5717,7 +5755,17 @@
         ],
         "responses": {
           "200": {
-            "description": ""
+            "description": "Application list (env masked, webhookSecret never selected)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Application"
+                  }
+                }
+              }
+            }
           }
         },
         "security": [
@@ -5745,7 +5793,14 @@
         },
         "responses": {
           "201": {
-            "description": ""
+            "description": "Created application",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Application"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -5774,7 +5829,14 @@
         ],
         "responses": {
           "200": {
-            "description": ""
+            "description": "Application details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Application"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -5811,7 +5873,14 @@
         },
         "responses": {
           "200": {
-            "description": ""
+            "description": "Updated application",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Application"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -8164,6 +8233,24 @@
           "expiresAt"
         ]
       },
+      "TotpSetupResponseDto": {
+        "type": "object",
+        "properties": {
+          "secret": {
+            "type": "string",
+            "description": "Base32-encoded TOTP secret (staged, not yet active)"
+          },
+          "otpauthUrl": {
+            "type": "string",
+            "description": "otpauth:// URL for authenticator apps",
+            "example": "otpauth://totp/AutoCodeFlow:admin?secret=...&issuer=AutoCodeFlow"
+          }
+        },
+        "required": [
+          "secret",
+          "otpauthUrl"
+        ]
+      },
       "TotpCodeDto": {
         "type": "object",
         "properties": {
@@ -8175,6 +8262,30 @@
         },
         "required": [
           "code"
+        ]
+      },
+      "TotpEnableResponseDto": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Always true on success (400 otherwise)"
+          }
+        },
+        "required": [
+          "enabled"
+        ]
+      },
+      "TotpDisableResponseDto": {
+        "type": "object",
+        "properties": {
+          "disabled": {
+            "type": "boolean",
+            "description": "True when this call actually turned TOTP off; false when it was already off (idempotent no-op)"
+          }
+        },
+        "required": [
+          "disabled"
         ]
       },
       "TotpVerifyDto": {
@@ -8198,6 +8309,65 @@
           "username",
           "password",
           "code"
+        ]
+      },
+      "AuthSessionRowDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "refresh_tokens row id (opaque session handle)"
+          },
+          "jti": {
+            "type": "string",
+            "description": "JWT id of the session; also the revoke key"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string",
+            "description": "Session creation time (ISO-8601)"
+          },
+          "expiresAt": {
+            "format": "date-time",
+            "type": "string",
+            "description": "Session expiry (ISO-8601)",
+            "nullable": true
+          },
+          "userAgent": {
+            "type": "string",
+            "description": "User-Agent captured at login",
+            "nullable": true
+          },
+          "ip": {
+            "type": "string",
+            "description": "Client IP captured at login",
+            "nullable": true
+          },
+          "current": {
+            "type": "boolean",
+            "description": "True for the session making this request"
+          }
+        },
+        "required": [
+          "id",
+          "jti",
+          "createdAt",
+          "expiresAt",
+          "userAgent",
+          "ip",
+          "current"
+        ]
+      },
+      "RevokeOthersResponseDto": {
+        "type": "object",
+        "properties": {
+          "revoked": {
+            "type": "number",
+            "description": "Number of sessions revoked"
+          }
+        },
+        "required": [
+          "revoked"
         ]
       },
       "CreateUserDto": {
@@ -9710,6 +9880,10 @@
         "required": [
           "key"
         ]
+      },
+      "Application": {
+        "type": "object",
+        "properties": {}
       },
       "CreateApplicationDto": {
         "type": "object",

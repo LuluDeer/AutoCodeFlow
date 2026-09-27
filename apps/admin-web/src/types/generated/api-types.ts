@@ -3392,12 +3392,29 @@ export interface components {
             /** @description 票据过期时间（ISO 8601） */
             expiresAt: string;
         };
+        TotpSetupResponseDto: {
+            /** @description Base32-encoded TOTP secret (staged, not yet active) */
+            secret: string;
+            /**
+             * @description otpauth:// URL for authenticator apps
+             * @example otpauth://totp/AutoCodeFlow:admin?secret=...&issuer=AutoCodeFlow
+             */
+            otpauthUrl: string;
+        };
         TotpCodeDto: {
             /**
              * @description 6 位 TOTP 动态验证码
              * @example 123456
              */
             code: string;
+        };
+        TotpEnableResponseDto: {
+            /** @description Always true on success (400 otherwise) */
+            enabled: boolean;
+        };
+        TotpDisableResponseDto: {
+            /** @description True when this call actually turned TOTP off; false when it was already off (idempotent no-op) */
+            disabled: boolean;
         };
         TotpVerifyDto: {
             /** @example admin */
@@ -3409,6 +3426,32 @@ export interface components {
              * @example 123456
              */
             code: string;
+        };
+        AuthSessionRowDto: {
+            /** @description refresh_tokens row id (opaque session handle) */
+            id: string;
+            /** @description JWT id of the session; also the revoke key */
+            jti: string;
+            /**
+             * Format: date-time
+             * @description Session creation time (ISO-8601)
+             */
+            createdAt: string;
+            /**
+             * Format: date-time
+             * @description Session expiry (ISO-8601)
+             */
+            expiresAt: string | null;
+            /** @description User-Agent captured at login */
+            userAgent: string | null;
+            /** @description Client IP captured at login */
+            ip: string | null;
+            /** @description True for the session making this request */
+            current: boolean;
+        };
+        RevokeOthersResponseDto: {
+            /** @description Number of sessions revoked */
+            revoked: number;
         };
         CreateUserDto: {
             /** @example admin */
@@ -4162,6 +4205,7 @@ export interface components {
             /** @default false */
             isSecret: boolean;
         };
+        Application: Record<string, never>;
         CreateApplicationDto: {
             /** @description Unique application name */
             name: string;
@@ -4573,7 +4617,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["TotpSetupResponseDto"];
+                };
             };
             /** @description TOTP already enabled */
             400: {
@@ -4602,7 +4648,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["TotpEnableResponseDto"];
+                };
             };
             /** @description Invalid code or nothing staged */
             400: {
@@ -4627,7 +4675,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["TotpDisableResponseDto"];
+                };
             };
             /** @description Confirmation failed */
             401: {
@@ -4683,7 +4733,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["AuthSessionRowDto"][];
+                };
             };
         };
     };
@@ -4728,7 +4780,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["RevokeOthersResponseDto"];
+                };
             };
         };
     };
@@ -7931,11 +7985,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description Application list (env masked, webhookSecret never selected) */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["Application"][];
+                };
             };
         };
     };
@@ -7952,11 +8009,14 @@ export interface operations {
             };
         };
         responses: {
+            /** @description Created application */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["Application"];
+                };
             };
         };
     };
@@ -7971,11 +8031,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description Application details */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["Application"];
+                };
             };
         };
     };
@@ -7994,11 +8057,14 @@ export interface operations {
             };
         };
         responses: {
+            /** @description Updated application */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["Application"];
+                };
             };
         };
     };

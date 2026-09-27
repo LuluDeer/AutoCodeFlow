@@ -26,6 +26,7 @@ import {
   ApiBearerAuth,
   ApiConsumes,
   ApiBody,
+  ApiResponse,
 } from "@nestjs/swagger";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { Public } from "../../common/decorators/public.decorator";
@@ -35,6 +36,11 @@ import { AuthUser } from "../../common/interfaces/auth-user.interface";
 import { UserRole } from "../users/entities/user.entity";
 import { ApplicationService } from "./application.service";
 import { AppDeploymentService } from "./app-deployment.service";
+// ARCH-23 / N-12：响应体类型标注用（原仅用于服务层，控制器此前未标注响应 schema——
+// 208 个 2xx 里 174 个缺 schema，前端因此无从生成类型、只能手写 interface）。
+// 注意：Application.webhookSecret 是 `select: false`，正常查询不会带出；
+// 读面另有 maskReadSurface 对 env 脱敏，故此处的实体标注不会泄漏密文。
+import { Application } from "./entities/application.entity";
 import { DeploymentTriggerType } from "./entities/app-deployment.entity";
 import {
   CreateApplicationDto,
@@ -128,6 +134,11 @@ export class ApplicationController {
 
   @Get()
   @ApiOperation({ summary: "Get application list" })
+  @ApiResponse({
+    status: 200,
+    description: "Application list (env masked, webhookSecret never selected)",
+    type: [Application],
+  })
   // AUTH-01: 可选 projectId 过滤（"default" = 默认项目视图，含未分配行）。
   findAll(@Query("projectId") projectId?: string) {
     return this.svc.findAll(projectId);
@@ -135,6 +146,11 @@ export class ApplicationController {
 
   @Get(":id")
   @ApiOperation({ summary: "Get application details" })
+  @ApiResponse({
+    status: 200,
+    description: "Application details",
+    type: Application,
+  })
   findById(@Param("id") id: string) {
     return this.svc.findById(id);
   }
@@ -151,6 +167,11 @@ export class ApplicationController {
   @Post()
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Create application" })
+  @ApiResponse({
+    status: 201,
+    description: "Created application",
+    type: Application,
+  })
   create(@Body() dto: CreateApplicationDto, @CurrentUser() user: AuthUser) {
     // NF-03: 创建即落 owner（ADMIN 创建也落，可追溯）
     return this.svc.create(dto, user);
@@ -159,6 +180,11 @@ export class ApplicationController {
   @Put(":id")
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Update application" })
+  @ApiResponse({
+    status: 200,
+    description: "Updated application",
+    type: Application,
+  })
   update(
     @Param("id") id: string,
     @Body() dto: UpdateApplicationDto,
