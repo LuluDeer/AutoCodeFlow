@@ -5,7 +5,7 @@
  * - 签名格式与 applications 发版 webhook 先例逐字节一致
  *   （sha256= + hex(HMAC-SHA256(secret, `${timestamp}.${rawBody}`))）。
  * - 过滤只发订阅的事件类型；enabled=false 不发。
- * - 重试退避（3 次尝试）与终败死信落库 + 失败统计。
+ * - 单次首投（ARCH-31 #8：重试/退避/死信归 outbox 扫描器统一持有）。
  * - replay 成功删行 / 失败保行。
  * - CRUD：url SSRF 拒内网、secret 脱敏、属主校验。
  */
@@ -27,8 +27,6 @@ import {
   OUTBOX_DISPATCHER_TOKEN,
 } from "../outbound-event-dispatcher.service";
 import {
-  MAX_DELIVERY_ATTEMPTS,
-  retryDelayMs,
   subscriptionMatches,
   SUBSCRIBABLE_EVENTS,
 } from "../event-subscription.util";
@@ -122,14 +120,6 @@ function makeDl(
 }
 
 describe("FEAT-07 event-subscription.util", () => {
-  it("retryDelayMs 指数退避（1s → 2s → 4s，封顶 30s）", () => {
-    expect(retryDelayMs(1)).toBe(1000);
-    expect(retryDelayMs(2)).toBe(2000);
-    expect(retryDelayMs(3)).toBe(4000);
-    expect(retryDelayMs(50)).toBe(30000);
-    expect(retryDelayMs(0)).toBe(1000);
-  });
-
   it("subscriptionMatches 只命中订阅的事件名；空集不命中", () => {
     expect(subscriptionMatches(["execution.failed"], "execution.failed")).toBe(
       true,
@@ -366,7 +356,6 @@ describe("FEAT-07 OutboundEventDispatcher", () => {
       targetCount: 2,
       deliveredCount: 2,
       deadLetteredCount: 0,
-      deadLetterPersistenceFailures: 0,
     });
   });
 
@@ -384,31 +373,23 @@ describe("FEAT-07 OutboundEventDispatcher", () => {
       targetCount: 0,
       deliveredCount: 0,
       deadLetteredCount: 0,
-      deadLetterPersistenceFailures: 0,
     });
   });
 
-  it("失败重试：最多 3 次尝试后死信落库 + 失败统计", async () => {
-    jest.useFakeTimers();
-    try {
-      subRepoMock.find.mockResolvedValue([makeSub()]);
-      axiosPost.mockRejectedValue(new Error("connect ECONNREFUSED"));
-      bus.emit(DOMAIN_EVENTS.EXECUTION_FAILED, { executionId: "e4" });
-      // flush microtasks + timers until settled
-      for (let i = 0; i < 20 && axiosPost.mock.calls.length < 3; i++) {
-        await Promise.resolve();
-        await jest.runAllTimersAsync();
-      }
-      expect(axiosPost).toHaveBeenCalledTimes(MAX_DELIVERY_ATTEMPTS);
-      expect(dlRepoMock.save).toHaveBeenCalledTimes(1);
-      const dl = dlRepoMock.save.mock.calls[0][0];
-      expect(dl.eventType).toBe("execution.failed");
-      expect(dl.attempts).toBe(3);
-      expect(dl.error).toContain("ECONNREFUSED");
-      expect(subServiceMock.recordDeliveryFailure).toHaveBeenCalled();
-    } finally {
-      jest.useRealTimers();
+  it("首投失败：单次尝试即交棒（无进程内重试、无进程内死信）", async () => {
+    // ARCH-31 #8：快速路径只投一次——重试/退避/死信全部归 outbox 扫描器
+    // （租约 + attempts 机制，跨进程崩溃安全）。行保持 open 由扫描器接管。
+    subRepoMock.find.mockResolvedValue([makeSub()]);
+    axiosPost.mockRejectedValue(new Error("connect ECONNREFUSED"));
+    bus.emit(DOMAIN_EVENTS.EXECUTION_FAILED, { executionId: "e4" });
+    for (let i = 0; i < 10 && axiosPost.mock.calls.length < 1; i++) {
+      await Promise.resolve();
     }
+    await new Promise((r) => setTimeout(r, 0));
+    expect(axiosPost).toHaveBeenCalledTimes(1);
+    // 无进程内死信：终败死信由扫描器终态时统一落运维面（deadLetterToSubscribers）
+    expect(dlRepoMock.save).not.toHaveBeenCalled();
+    expect(subServiceMock.recordDeliveryFailure).not.toHaveBeenCalled();
   });
 
   it("deliverToSubscribers：全可靠死信返回 deadLettered 聚合", async () => {
@@ -424,38 +405,11 @@ describe("FEAT-07 OutboundEventDispatcher", () => {
           data: {},
         },
       );
-      await jest.runAllTimersAsync();
-      await expect(resultPromise).resolves.toEqual({
-        targetCount: 1,
-        deliveredCount: 0,
-        deadLetteredCount: 1,
-        deadLetterPersistenceFailures: 0,
-      });
-    } finally {
-      jest.useRealTimers();
-    }
-  });
-
-  it("deliverToSubscribers：死信写失败返回 persistence failure", async () => {
-    jest.useFakeTimers();
-    try {
-      subRepoMock.find.mockResolvedValue([makeSub()]);
-      axiosPost.mockRejectedValue(new Error("down"));
-      dlRepoMock.save.mockRejectedValueOnce(new Error("dead letter db down"));
-      const resultPromise = dispatcher.deliverToSubscribers(
-        "execution.failed",
-        {
-          event: "execution.failed",
-          occurredAt: "t",
-          data: {},
-        },
-      );
-      await jest.runAllTimersAsync();
+      // 单次投递语义（ARCH-31 #8）：失败不进程内死信，交给扫描器重试。
       await expect(resultPromise).resolves.toEqual({
         targetCount: 1,
         deliveredCount: 0,
         deadLetteredCount: 0,
-        deadLetterPersistenceFailures: 1,
       });
     } finally {
       jest.useRealTimers();
@@ -479,30 +433,22 @@ describe("FEAT-07 OutboundEventDispatcher", () => {
     );
   });
 
-  it("出站前 SSRF 复核拒绝（确定性失败→终败死信，不再重试）", async () => {
-    jest.useFakeTimers();
-    try {
-      // F-3: 出站复核现走 assertAndPinHttpUrl（校验 + pin 一体）。
-      assertAndPin.mockRejectedValue(
-        new BadRequestException("URL host 127.0.0.1 is on the deny list"),
-      );
-      subRepoMock.find.mockResolvedValue([
-        makeSub({ url: "http://127.0.0.1:9999/hook" }),
-      ]);
-      bus.emit(DOMAIN_EVENTS.EXECUTION_FAILED, {});
-      // SSRF 拒绝是确定性失败但走同一条 retry 循环（3 次尝试 × 退避），
-      // 用 fake timers 快进到全部尝试结束。
-      for (let i = 0; i < 20 && dlRepoMock.save.mock.calls.length < 1; i++) {
-        await Promise.resolve();
-        await jest.runAllTimersAsync();
-      }
-      expect(dlRepoMock.save).toHaveBeenCalledTimes(1);
-      const dl = dlRepoMock.save.mock.calls[0][0];
-      expect(dl.error).toContain("SSRF");
-      expect(axiosPost).not.toHaveBeenCalled();
-    } finally {
-      jest.useRealTimers();
+  it("出站前 SSRF 复核拒绝（确定性失败→交棒扫描器，无进程内死信）", async () => {
+    // F-3: 出站复核现走 assertAndPinHttpUrl（校验 + pin 一体）。
+    assertAndPin.mockRejectedValue(
+      new BadRequestException("URL host 127.0.0.1 is on the deny list"),
+    );
+    subRepoMock.find.mockResolvedValue([
+      makeSub({ url: "http://127.0.0.1:9999/hook" }),
+    ]);
+    bus.emit(DOMAIN_EVENTS.EXECUTION_FAILED, {});
+    // ARCH-31 #8：确定性失败单次首投即止——axios 绝不发出、快速路径不写死信
+    // （终败死信由扫描器终态时统一落运维面）。
+    for (let i = 0; i < 20; i++) {
+      await Promise.resolve();
     }
+    expect(axiosPost).not.toHaveBeenCalled();
+    expect(dlRepoMock.save).not.toHaveBeenCalled();
   });
 
   it("replay 成功：以订阅当前 url/secret 重签一次，死信删除", async () => {

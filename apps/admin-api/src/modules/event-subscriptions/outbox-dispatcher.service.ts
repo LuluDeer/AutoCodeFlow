@@ -55,11 +55,9 @@ import { LeaderGateService } from "../../common/leader-gate/leader-gate.service"
 // NETOPT-8②: retention 分批删除的轮数/墙钟双闸（LOG-RETENTION-01 公共 helper）
 import { cappedBatchedDelete } from "../../common/utils/capped-batched-delete.util";
 import {
-  MAX_DELIVERY_ATTEMPTS,
   MAX_OUTBOX_ATTEMPTS,
   OUTBOUND_TIMEOUT_MS,
   outboxRetryDelayMs,
-  retryDelayMs,
 } from "./event-subscription.util";
 
 /** 扫描间隔（毫秒）。 */
@@ -79,13 +77,12 @@ export const OUTBOX_BATCH_SIZE = 5;
  */
 export const OUTBOX_PROCESS_CONCURRENCY = 3;
 /**
- * 单行在正常派发窗口内的最长时间：每个订阅的重试是串行的，但同一 outbox
+ * 单行在正常派发窗口内的最长时间：每个订阅的投递是串行的（ARCH-31 #8
+ * 单次投递语义——重试归扫描器租约机制，不在派发调用内退避），同一 outbox
  * 行的多个订阅由 deliverToSubscribers 并行执行，因此时间上界不随订阅数相乘。
+ * 旧公式（3 次尝试 × 超时 + 进程内退避）随 pendingTimers 一并移除。
  */
-export const OUTBOX_MAX_ROW_PROCESSING_MS =
-  MAX_DELIVERY_ATTEMPTS * OUTBOUND_TIMEOUT_MS +
-  retryDelayMs(1) +
-  retryDelayMs(2);
+export const OUTBOX_MAX_ROW_PROCESSING_MS = OUTBOUND_TIMEOUT_MS + 5_000;
 /** 单行租约的有效期；过期后其它实例可安全回收。 */
 export const OUTBOX_LEASE_MS = 60_000;
 
@@ -135,6 +132,7 @@ class StaleOutboxOwnerError extends Error {
 
 /** OutboundEventDispatcher 的结构最小面（本服务消费的入口）。 */
 interface OutboundDispatcherLike {
+  /** ARCH-31 #8：单次投递（重试/退避/死信归扫描器租约 + attempts 机制）。 */
   deliverToSubscribers(
     eventName: string,
     payload: {
@@ -146,8 +144,18 @@ interface OutboundDispatcherLike {
     targetCount: number;
     deliveredCount: number;
     deadLetteredCount: number;
-    deadLetterPersistenceFailures: number;
   }>;
+  /** 行终态时的订阅死信落运维面（逐订阅 fail-open）。 */
+  deadLetterToSubscribers(
+    eventName: string,
+    payload: {
+      event: string;
+      occurredAt: string;
+      data: Record<string, unknown>;
+    },
+    error: string,
+    attempts: number,
+  ): Promise<{ targetCount: number; deadLetteredCount: number }>;
 }
 
 @Injectable()
@@ -353,40 +361,33 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
       return;
     }
     try {
-      // 复用既有派发器（进程内重试语义含 SSRF 复核/退避/死信/统计）——
-      // outbox 只负责「跨进程不丢」的兜底语义。
+      // 复用既有派发器（单次投递语义含 SSRF 复核/签名/统计）——重试/退避/
+      // 死信节奏统一由本扫描器的租约 + attempts 机制持有（ARCH-31 #8 收口：
+      // 消灭派发调用内的进程内重试状态，跨进程崩溃安全）。
       const aggregate = await dispatcher.deliverToSubscribers(
         row.eventType,
         row.payload as never,
       );
-      // Marking dispatched is only safe when every target is either delivered
-      // or represented by a reliably persisted subscription dead letter. A
-      // persistence failure (or an incomplete/malformed aggregate) keeps the
-      // source row retryable so the event cannot disappear silently.
-      const settledTargetCount =
-        (aggregate?.deliveredCount ?? 0) + (aggregate?.deadLetteredCount ?? 0);
-      const persistenceFailures = aggregate?.deadLetterPersistenceFailures ?? 0;
-      const aggregateSettled =
-        persistenceFailures === 0 &&
-        (aggregate?.targetCount === 0 ||
-          aggregate?.targetCount === settledTargetCount);
-      if (!aggregateSettled) {
+      const settled =
+        aggregate !== undefined &&
+        (aggregate.targetCount === 0 ||
+          aggregate.deliveredCount === aggregate.targetCount);
+      if (!settled) {
         this.logger.warn(
-          `Outbox row ${row.id} kept retryable: delivery aggregate is not settled ` +
-            `(targets=${aggregate?.targetCount ?? "unknown"}, settled=${settledTargetCount}, ` +
-            `persistenceFailures=${persistenceFailures})`,
+          `Outbox row ${row.id} kept retryable: delivery not fully settled ` +
+            `(targets=${aggregate?.targetCount ?? "unknown"}, delivered=${aggregate?.deliveredCount ?? "unknown"})`,
         );
         await this.handleFailure(
           row,
-          new Error(
-            `delivery aggregate unsettled (dead letter persistence failures: ${persistenceFailures})`,
-          ),
+          new Error("delivery aggregate unsettled"),
+          targets,
+          dispatcher,
         );
         return;
       }
       await this.markDispatched(row);
     } catch (err: unknown) {
-      await this.handleFailure(row, err);
+      await this.handleFailure(row, err, targets, dispatcher);
     }
   }
 
@@ -419,7 +420,12 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
   }
 
   /** 失败路径：attempts+1、指数退避（封顶 5min）；超阈值落死信 + 行终态。 */
-  private async handleFailure(row: EventOutbox, err: unknown): Promise<void> {
+  private async handleFailure(
+    row: EventOutbox,
+    err: unknown,
+    targets?: EventSubscription[],
+    dispatcher?: OutboundDispatcherLike,
+  ): Promise<void> {
     const message = (err instanceof Error ? err.message : String(err)).slice(
       0,
       1024,
@@ -429,6 +435,30 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
       this.logger.warn(
         `Outbox row ${row.id} (${row.eventType}) dead-lettered after ${attempts} attempts: ${message}`,
       );
+      // ARCH-31 #8：终败死信同时落运维面（event_subscription_dead_letters，
+      // 死信列表 + 手动重放的数据源）。逐订阅 fail-open——单条失败不影响
+      // 其他订阅与行终态（独立 outbox 死信在下方事务里先行落库归档）。
+      if (dispatcher && targets && targets.length > 0) {
+        try {
+          const dl = await dispatcher.deadLetterToSubscribers(
+            row.eventType,
+            row.payload as never,
+            message,
+            attempts,
+          );
+          if (dl.deadLetteredCount < dl.targetCount) {
+            this.logger.warn(
+              `Terminal dead letters for row ${row.id}: ${dl.deadLetteredCount}/${dl.targetCount} persisted (operator surface incomplete)`,
+            );
+          }
+        } catch (err2: unknown) {
+          this.logger.error(
+            `Terminal dead-letter write failed for row ${row.id} (operator surface missed): ${
+              err2 instanceof Error ? err2.message : String(err2)
+            }`,
+          );
+        }
+      }
       // Persist the independent outbox dead letter first. Only after that
       // succeeds may the guarded source-row update make the event terminal.
       // This intentionally leaves the row retryable when persistence fails.

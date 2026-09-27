@@ -98,12 +98,15 @@ describe("FEAT-19 OutboxDispatcher", () => {
   };
   // deliverToSubscribers 的桩：默认成功；失败用例改 reject。
   const dispatcherMock = {
+    // ARCH-31 #8：单次投递语义（重试/退避/死信归扫描器租约 + attempts 机制）
     deliverToSubscribers: jest.fn().mockResolvedValue({
       targetCount: 1,
       deliveredCount: 1,
       deadLetteredCount: 0,
-      deadLetterPersistenceFailures: 0,
     }),
+    deadLetterToSubscribers: jest
+      .fn()
+      .mockResolvedValue({ targetCount: 1, deadLetteredCount: 1 }),
   };
   const configMock = {
     get: jest.fn((key: string) =>
@@ -128,7 +131,10 @@ describe("FEAT-19 OutboxDispatcher", () => {
       targetCount: 1,
       deliveredCount: 1,
       deadLetteredCount: 0,
-      deadLetterPersistenceFailures: 0,
+    });
+    dispatcherMock.deadLetterToSubscribers.mockResolvedValue({
+      targetCount: 1,
+      deadLetteredCount: 1,
     });
     const moduleRef = await Test.createTestingModule({
       providers: [
@@ -313,9 +319,11 @@ describe("FEAT-19 OutboxDispatcher", () => {
       // 3 x 10s HTTP timeout + 1s + 2s backoff = 33s; the 60s lease leaves
       // enough margin for DB reads and finalization while the row is active.
       // 批量（BATCH_SIZE=5）行共享同一租约窗口且并行派发，因此最坏窗口仍由
-      // 单行上界决定，不随行数相乘。
+      // 单行上界决定，不随行数相乘。ARCH-31 #8：单次投递语义下上界 =
+      // OUTBOUND_TIMEOUT_MS(10s) + 调度余量 5s（旧 3 次尝试公式随
+      // pendingTimers 移除）。
       expect(OUTBOX_BATCH_SIZE).toBe(5);
-      expect(OUTBOX_MAX_ROW_PROCESSING_MS).toBe(33_000);
+      expect(OUTBOX_MAX_ROW_PROCESSING_MS).toBe(15_000);
       expect(OUTBOX_LEASE_MS).toBeGreaterThan(OUTBOX_MAX_ROW_PROCESSING_MS);
     });
 
@@ -464,6 +472,14 @@ describe("FEAT-19 OutboxDispatcher", () => {
       expect(outboxRepoMock.update).toHaveBeenCalledWith(
         expect.objectContaining({ id: row.id }),
         expect.objectContaining({ deadLettered: true, leaseToken: null }),
+      );
+      // ARCH-31 #8：终败同时落运维面（event_subscription_dead_letters，
+      // 死信列表 + 手动重放的数据源）——按匹配订阅逐条写入。
+      expect(dispatcherMock.deadLetterToSubscribers).toHaveBeenCalledWith(
+        row.eventType,
+        row.payload,
+        expect.stringContaining("still down"),
+        MAX_OUTBOX_ATTEMPTS + 1,
       );
       // 死信行不再设置退避指针。
       const patch = outboxRepoMock.update.mock.calls[0][1] as Record<
