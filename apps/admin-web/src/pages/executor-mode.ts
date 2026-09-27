@@ -540,14 +540,14 @@ export function codeSourceSwitchLosses(
   // 以 next 为参数跑一次真实载荷变换，比较前后差异——判定与提交路径**同源**。
   const before = { ...values };
   const after = applyCodeSourcePayload({ ...values }, next, previous);
-  const labels: Record<string, string> = {
-    gitRepo: 'Git 仓库地址',
-    gitBranch: 'Git 分支',
-    glueSource: 'Glue 脚本',
-    applicationId: '关联应用',
-  };
+  // N-04：此处原有一份 `labels: Record<string,string>` 中文映射，但**值从未被读过**
+  // ——循环只取 `Object.keys(labels)`，展示文案由调用方（TaskFormPage）按 `field`
+  // 走 i18n key 渲染。留着它有两个害处：① 死数据，读代码的人会以为改这里能改文案；
+  // ② 它让 i18n 守卫把 4 个**永不渲染**的中文串记进基线，虚增待迁移量。
+  // 改为显式字段清单：语义更准（这就是"要检查哪些字段"），且不再有可误改的文案。
+  const LOSS_FIELDS = ['gitRepo', 'gitBranch', 'glueSource', 'applicationId'] as const;
   const losses: Array<{ field: string; value: string; scriptLength?: number }> = [];
-  for (const field of Object.keys(labels)) {
+  for (const field of LOSS_FIELDS) {
     const prevVal = trimmedOrNull(before[field]);
     const nextVal = trimmedOrNull(after[field]);
     // 只在"原本有值、变换后没了"时计入——全空切换不打扰

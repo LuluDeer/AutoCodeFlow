@@ -94,12 +94,6 @@
       "执行器离线（executor.offline）",
       "部署完成（deployment.completed）"
     ],
-    "pages/executor-mode.ts": [
-      "Git 仓库地址",
-      "Git 分支",
-      "Glue 脚本",
-      "关联应用"
-    ],
     "utils/priority.ts": [
       "低",
       "普通",
