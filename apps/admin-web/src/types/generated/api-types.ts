@@ -3300,8 +3300,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /** List projects visible to the caller */
         get: operations["ProjectsController_findAll"];
         put?: never;
+        /** Create project (ADMIN) */
         post: operations["ProjectsController_create"];
         delete?: never;
         options?: never;
@@ -3316,12 +3318,14 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /** Get project by id */
         get: operations["ProjectsController_findOne"];
         put?: never;
         post?: never;
         delete: operations["ProjectsController_remove"];
         options?: never;
         head?: never;
+        /** Update project (ADMIN) */
         patch: operations["ProjectsController_update"];
         trace?: never;
     };
@@ -3332,8 +3336,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /** List project members */
         get: operations["ProjectsController_listMembers"];
         put?: never;
+        /** Add or upsert a project member (ADMIN) */
         post: operations["ProjectsController_addMember"];
         delete?: never;
         options?: never;
@@ -3354,6 +3360,7 @@ export interface paths {
         delete: operations["ProjectsController_removeMember"];
         options?: never;
         head?: never;
+        /** Change a member's role (ADMIN) */
         patch: operations["ProjectsController_updateMember"];
         trace?: never;
     };
@@ -3364,6 +3371,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /** Caller's roles across projects */
         get: operations["ProjectsController_myRoles"];
         put?: never;
         post?: never;
@@ -4463,6 +4471,47 @@ export interface components {
             secret?: string;
         };
         CreateApiKeyDto: Record<string, never>;
+        ProjectViewDto: {
+            /** @description Project id (uuid) */
+            id: string;
+            /** @description Project name */
+            name: string;
+            /** @description Description */
+            description?: string | null;
+            /**
+             * Format: date-time
+             * @description Creation time (ISO-8601)
+             */
+            createdAt: string;
+            /**
+             * Format: date-time
+             * @description Last update time (ISO-8601)
+             */
+            updatedAt: string;
+            /**
+             * @description Calling subject's role in this project; null for non-members. ADMIN also gets its real member row here (honest, not synthesized).
+             * @enum {string|null}
+             */
+            myRole?: "viewer" | "editor" | "admin" | null;
+        };
+        ProjectEntityDto: {
+            /** @description Project id (uuid) */
+            id: string;
+            /** @description Unique project name */
+            name: string;
+            /** @description Description */
+            description?: string | null;
+            /**
+             * Format: date-time
+             * @description Creation time (ISO-8601)
+             */
+            createdAt: string;
+            /**
+             * Format: date-time
+             * @description Last update time (ISO-8601)
+             */
+            updatedAt: string;
+        };
         CreateProjectDto: {
             /** @description Project name */
             name: string;
@@ -4474,6 +4523,24 @@ export interface components {
             name?: string;
             /** @description Project description */
             description?: string;
+        };
+        ProjectMemberViewDto: {
+            /** @description Membership row id (uuid) */
+            id: string;
+            /** @description Project id (uuid) */
+            projectId: string;
+            /** @description User id */
+            userId: number;
+            /**
+             * @description Role granted to this member
+             * @enum {string}
+             */
+            role: "viewer" | "editor" | "admin";
+            /**
+             * Format: date-time
+             * @description Membership creation time (ISO-8601)
+             */
+            createdAt: string;
         };
         UpsertProjectMemberDto: {
             /** @description User ID */
@@ -4492,6 +4559,14 @@ export interface components {
              * @enum {string}
              */
             role?: "viewer" | "editor" | "admin";
+        };
+        MyProjectRolesDto: {
+            /** @description Calling user id; null when the request carries no user */
+            userId?: number | null;
+            /** @description True when the caller is ADMIN (admin-web uses this to render all projects) */
+            isAdmin: boolean;
+            /** @description Membership rows for the calling user across all projects */
+            memberships: components["schemas"]["ProjectMemberViewDto"][];
         };
     };
     responses: never;
@@ -9466,11 +9541,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description ADMIN sees all; others see default project plus their memberships */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ProjectViewDto"][];
+                };
             };
         };
     };
@@ -9487,11 +9565,14 @@ export interface operations {
             };
         };
         responses: {
+            /** @description Created project (entity shape) */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ProjectEntityDto"];
+                };
             };
         };
     };
@@ -9506,11 +9587,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description Project (entity shape, no myRole) */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ProjectEntityDto"];
+                };
             };
         };
     };
@@ -9548,11 +9632,14 @@ export interface operations {
             };
         };
         responses: {
+            /** @description Updated project (entity shape) */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ProjectEntityDto"];
+                };
             };
         };
     };
@@ -9567,11 +9654,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description Member rows */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ProjectMemberViewDto"][];
+                };
             };
         };
     };
@@ -9590,11 +9680,14 @@ export interface operations {
             };
         };
         responses: {
+            /** @description Member row */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ProjectMemberViewDto"];
+                };
             };
         };
     };
@@ -9634,11 +9727,14 @@ export interface operations {
             };
         };
         responses: {
+            /** @description Updated member row */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ProjectMemberViewDto"];
+                };
             };
         };
     };
@@ -9651,11 +9747,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description Caller roles */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["MyProjectRolesDto"];
+                };
             };
         };
     };

@@ -1,8 +1,8 @@
 {
   "$comment": "ARCH-23 / N-12 响应 schema 覆盖率棘轮基线。coveredKeys = 已验证有**实质** response schema 的 METHOD PATH CODE 条目（防倒退：删装饰器即红）；coveredCount = 覆盖总数下限（只增不减）。hollowKeys = 引用**空壳组件**（properties 为空的具名 schema）的响应——看着有 schema，前端却只生成 Record<string, never>。存量记此以允许历史遗留，**新增即红**。补齐装饰器后用 --update 上探。覆盖率低不是缺陷本身，但**倒退与空壳新增**是。",
-  "coveredCount": 38,
+  "coveredCount": 46,
   "totalCount": 208,
-  "pct": 18.3,
+  "pct": 22.1,
   "hollowCount": 5,
   "coveredKeys": [
     "GET /applications 200",
@@ -22,7 +22,13 @@
     "GET /health/metrics 200",
     "GET /health/ready 200",
     "GET /health/services 200",
+    "GET /projects 200",
+    "GET /projects/me/roles 200",
+    "GET /projects/{id} 200",
+    "GET /projects/{id}/members 200",
     "GET /tasks 200",
+    "PATCH /projects/{id} 200",
+    "PATCH /projects/{id}/members/{userId} 200",
     "POST /applications 201",
     "POST /auth/login 200",
     "POST /auth/logout 200",
@@ -40,6 +46,8 @@
     "POST /executors/token 201",
     "POST /executors/{id}/rotate-token 200",
     "POST /notification/send 201",
+    "POST /projects 201",
+    "POST /projects/{id}/members 201",
     "POST /tasks 201",
     "POST /tasks/{id}/trigger 200",
     "PUT /applications/{id} 200"
