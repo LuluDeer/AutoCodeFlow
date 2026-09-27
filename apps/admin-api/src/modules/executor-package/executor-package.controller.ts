@@ -40,6 +40,13 @@ import {
   ApiConsumes,
   ApiBody,
 } from "@nestjs/swagger";
+// ARCH-23 / N-12：响应体类型标注。此前本控制器 11 个 2xx 全部只有 description
+// 没有 schema（前端无从生成类型）。用专用响应 DTO——实体无 @ApiProperty 会 emit
+// 空壳 schema（PK-15 闸红），且 DTO 顺带**排除 filePath**（服务器绝对路径不进对外契约）。
+import {
+  ExecutorPackageResponseDto,
+  ExecutorPackageListDto,
+} from "./dto/executor-package-response.dto";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { RolesGuard } from "../../common/guards/roles.guard";
 import { Roles } from "../../common/decorators/roles.decorator";
@@ -168,7 +175,11 @@ export class ExecutorPackageController {
 
   @Get()
   @ApiOperation({ summary: "Get executor package list" })
-  @ApiResponse({ status: 200, description: "Package list" })
+  @ApiResponse({
+    status: 200,
+    description: "Package list",
+    type: ExecutorPackageListDto,
+  })
   findAll(
     @Query() query: QueryExecutorPackageDto,
   ): Promise<{ items: ExecutorPackage[]; total: number }> {
@@ -187,7 +198,11 @@ export class ExecutorPackageController {
     required: false,
     description: "Platform (optional)",
   })
-  @ApiResponse({ status: 200, description: "Latest package info" })
+  @ApiResponse({
+    status: 200,
+    description: "Latest package info (null when none matches)",
+    type: ExecutorPackageResponseDto,
+  })
   findLatest(
     @Query("type") type: string,
     @Query("platform") platform?: string,
@@ -203,7 +218,11 @@ export class ExecutorPackageController {
   @Get(":id")
   @ApiOperation({ summary: "Get executor package details" })
   @ApiParam({ name: "id", description: "Package ID" })
-  @ApiResponse({ status: 200, description: "Package details" })
+  @ApiResponse({
+    status: 200,
+    description: "Package details",
+    type: ExecutorPackageResponseDto,
+  })
   @ApiResponse({ status: 404, description: "Package not found" })
   findOne(@Param("id", ParseUUIDPipe) id: string): Promise<ExecutorPackage> {
     return this.svc.findOne(id);
@@ -212,7 +231,11 @@ export class ExecutorPackageController {
   @Patch(":id")
   @ApiOperation({ summary: "Update executor package info" })
   @ApiParam({ name: "id", description: "Package ID" })
-  @ApiResponse({ status: 200, description: "Updated successfully" })
+  @ApiResponse({
+    status: 200,
+    description: "Updated successfully",
+    type: ExecutorPackageResponseDto,
+  })
   @ApiResponse({ status: 404, description: "Package not found" })
   update(
     @Param("id", ParseUUIDPipe) id: string,
