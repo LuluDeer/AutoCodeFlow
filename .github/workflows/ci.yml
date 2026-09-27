@@ -1662,3 +1662,14 @@ jobs:
       - name: Empty-schema guard against whitelist (PK-15)
         run: |
           node -e "const fs=require('fs');const doc=JSON.parse(fs.readFileSync('apps/admin-api/openapi.json','utf8'));const wl=JSON.parse(fs.readFileSync('scripts/openapi-empty-schema-whitelist.json','utf8')).whitelist;const empty=Object.entries(doc.components?.schemas??{}).filter(([n,s])=>s&&s.type==='object'&&s.properties&&Object.keys(s.properties).length===0&&!s.allOf&&!s.anyOf&&!s.oneOf).map(([n])=>n);const extra=empty.filter(n=>!wl.includes(n));if(extra.length){console.error('::error:: openapi.json 出现白名单外的空 object schema（PK-02 未落地前禁止新增）: '+extra.join(', ')+' —— 补 DTO @ApiProperty 装饰器，或（PK-02 落地后）清空 scripts/openapi-empty-schema-whitelist.json');process.exit(1);}console.log('empty-schema guard ok: '+empty.length+' empty / '+Object.keys(doc.components?.schemas??{}).length+' schemas, all whitelisted');"
+      # ARCH-23 / N-12：响应体 schema **覆盖率棘轮**守卫。
+      # 实测发现「OpenAPI→前端类型生成」链路本身早已全通（openapi.json 已提交、
+      # gen:api-types 可跑、上面三道 drift 闸都在），但**手写 interface 替换过半**
+      # 这个验收指标卡住的真因在后端：208 个 2xx 响应里 174 个（84%）**没有 schema**
+      # （只写 description:""），没有 schema 就没有可生成的类型。本守卫把覆盖率
+      # 变成只增不减的棘轮——基线里已覆盖的条目若缺失（有人删装饰器）即红，
+      # 覆盖总数低于基线即红；覆盖率提升时提示 --update 上探。
+      - name: Response-schema coverage ratchet (ARCH-23/N-12)
+        run: |
+          node scripts/check-openapi-response-schema.mjs --selftest
+          node scripts/check-openapi-response-schema.mjs

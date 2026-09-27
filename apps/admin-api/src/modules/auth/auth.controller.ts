@@ -23,6 +23,15 @@ import { AuditService } from "../audit/audit.service";
 import { LoginDto } from "./dto/login.dto";
 import { RefreshTokenDto } from "./dto/refresh-token.dto";
 import { TotpCodeDto, TotpVerifyDto } from "./dto/totp.dto";
+// ARCH-23 / N-12：响应体 DTO——此前这些端点只有 description 没有 type，
+// openapi.json 里对应 2xx 无 schema，前端无法生成类型（详见该 DTO 文件头注）。
+import {
+  TotpSetupResponseDto,
+  TotpEnableResponseDto,
+  TotpDisableResponseDto,
+  AuthSessionRowDto,
+  RevokeOthersResponseDto,
+} from "./dto/auth-response.dto";
 import { SseTicketResponseDto } from "./dto/sse-ticket.dto";
 import { Public } from "../../common/decorators/public.decorator";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
@@ -244,7 +253,11 @@ export class AuthController {
       "Generates a Base32 secret and otpauth:// URL, stores it in staged (disabled) state. " +
       "Call POST /auth/totp/enable with a valid code from the authenticator to activate.",
   })
-  @ApiResponse({ status: 200, description: "Staged secret + otpauth URL" })
+  @ApiResponse({
+    status: 200,
+    description: "Staged secret + otpauth URL",
+    type: TotpSetupResponseDto,
+  })
   @ApiResponse({ status: 400, description: "TOTP already enabled" })
   totpSetup(@CurrentUser() user: AuthUser) {
     return this.authService.totpSetup(user.id);
@@ -261,7 +274,11 @@ export class AuthController {
     description:
       "Verifies one valid code against the staged secret, then sets totpEnabled=true.",
   })
-  @ApiResponse({ status: 200, description: "TOTP enabled" })
+  @ApiResponse({
+    status: 200,
+    description: "TOTP enabled",
+    type: TotpEnableResponseDto,
+  })
   @ApiResponse({ status: 400, description: "Invalid code or nothing staged" })
   totpEnable(@CurrentUser() user: AuthUser, @Body() dto: TotpCodeDto) {
     return this.authService.totpEnable(user.id, dto.code);
@@ -281,7 +298,11 @@ export class AuthController {
     description:
       "Requires the account password or a valid TOTP code as confirmation.",
   })
-  @ApiResponse({ status: 200, description: "TOTP disabled (or was not on)" })
+  @ApiResponse({
+    status: 200,
+    description: "TOTP disabled (or was not on)",
+    type: TotpDisableResponseDto,
+  })
   @ApiResponse({ status: 401, description: "Confirmation failed" })
   totpDisable(
     @CurrentUser() user: AuthUser,
@@ -340,7 +361,11 @@ export class AuthController {
       "One row per active (non-revoked, non-expired) refresh token. The row matching " +
       "the sid claim of the caller's access token is flagged current=true.",
   })
-  @ApiResponse({ status: 200, description: "Session list" })
+  @ApiResponse({
+    status: 200,
+    description: "Session list",
+    type: [AuthSessionRowDto],
+  })
   listSessions(@CurrentUser() user: AuthUser, @Req() req: Request) {
     return this.authService.listSessions(user.id, sidOf(req));
   }
@@ -394,7 +419,11 @@ export class AuthController {
       "Bulk remote-logout of other devices. Without a sid claim this degenerates to " +
       "revoking ALL sessions (fail-safe, never keeps unknown sessions).",
   })
-  @ApiResponse({ status: 200, description: "Revocation count" })
+  @ApiResponse({
+    status: 200,
+    description: "Revocation count",
+    type: RevokeOthersResponseDto,
+  })
   async revokeOtherSessions(
     @CurrentUser() user: AuthUser,
     @Req() req: Request,
