@@ -3,11 +3,22 @@
 > 跨会话交接文档：新会话从这里恢复。
 > 状态以代码与 `docs/optimization-notes.md` 为准，文档可能滞后。
 
-更新时间：2026-09-27（轮 27 N-01/N-03/N-13 三项清偿 + 轮 28 N-04 迁移收尾/N-02 复核销账；详情见状态快照首两条）
+更新时间：2026-09-27（轮 27 三项清偿 + 轮 28 N-04/N-02 + 轮 29 N-12/N-09/N-11/N-10；详情见状态快照首三条）
 当前分支：`develop`
 
 ## 状态快照
 
+- **本轮（2026-09-27 → 轮 29：N-12 / N-09 / N-11 / N-10 四项推进，develop）**：轮 28 后继续（轮 27/28 详见下两条快照）。**全部提交已推送且 CI 逐笔验证绿**。
+  - **N-12（ARCH-23 OpenAPI→前端类型）→ 三批落地，覆盖率 34→50（16.3%→24.0%）**。**★ 认领前复核改变了任务定位**：生成链路**早已全通**（openapi.json 已提交、`gen:api-types` 可跑、CI `api-types-drift` 三道闸齐备），重跑零 diff；卡住的**真因在后端**——实测 208 个 2xx 里 **174 个（84%）没有 schema**（只写 `description:""`），没有 schema 就没有可生成类型。缺口：Task 27 / sop 13 / Executors 12 / App Deployment 11 / System Config 11 …
+    - **交付①守卫**（`74afb6f8` + `9b5758fa`）：`check-openapi-response-schema.mjs`（23 项有齿自检）——覆盖率**只增不减棘轮**，按 `METHOD PATH CODE` 条目钉住（非只记百分比，否则"补 3 个又删 3 个"被掩盖），接入 CI `api-types-drift`。**★ 该守卫首版有假绿**：只看 `res.content` 是否存在，把「引用了**空壳 schema**（实体类无 @ApiProperty → `properties:{}`）」也算已覆盖——实测**9 条既有条目本来就是空壳**。已修为：空壳不算覆盖 + 单独计数 + **新增空壳即红** + `--report` 列清单。
+    - **交付②补覆盖**：Auth 5（TOTP setup/enable/disable + sessions 列表 + revoke-others）+ Application 4 + Projects 8（`9b8bb0f5`）+ Executor Package 4（`fcfffc36`）。**过程中纠正多处我自己写错的契约**（"文档按想象写"比没有 schema 更坏）：`totpDisable` 返回 `{disabled}` 而非 `{enabled}` 且对未开启账号返回 `{disabled:false}` 仍 200（幂等）；Projects 的 `findOne/create/update` 返回**实体**不带 `myRole`（故拆 `ProjectEntityDto`）；`myRoles` 实际是 `{userId,isAdmin,memberships[]}` 而非我臆测的映射形态；`platform`/`filename` 实体为 nullable 而非非空。
+    - **顺带纠正一个契约层问题（非安全缺陷）**：`ExecutorPackage.filePath`（"Absolute file path on the server"）**真的会进响应体**。该控制器类级 `@Roles(ADMIN)` → **泄漏面仅限管理员，不构成对不可信用户的泄漏**；但不该进对外契约文档 → DTO 显式排除。**未改运行时行为**（响应体仍含，仅契约不声明），已在 commit 写明供后续决定。
+    - **过程教训（如实）**：`74afb6f8` 只跑了自建守卫就提交，**没跑同 job 的既有 PK-15 空 schema 守卫**，CI 当场红（`Application` 空壳超白名单）。与既有 lint 教训（"改前只跑了 check:lint-gates 配置面"）同型——**新增/修改守卫后必须跑它所在 job 的完整命令序列**。
+    - **导出 e2e 的方法论注记**：需 PG+Redis，且**不能用带历史迁移残留的库**（本机 `autocodeflow` 库在半迁移态失败：`type "task_blockstrategy_enum" does not exist`）；正解是建干净临时库（`DROP/CREATE DATABASE acf_openapi_gen`）导出、用完即删。
+  - **N-09（QA-10 微基准）→ 补 load-score 场景 + CI 接线，并当场暴露一个真实生产缺陷（已修）**（`9b5758fa`）。**① 新增 `load-score` 场景**：与既有 `dispatch-decision` 刻意区分——后者度量"500 候选筛选+排序"（O(n log n) 主导），前者度量**单点公式**；两者退化诱因不同，单点退化会被排序噪声淹没。**② ★ 该场景当场暴露注册/心跳采纳域不对称**：心跳经 `isAdoptableMaxConcurrentTasks` 钳正整数 1..10000（注释写明"防止写入荒谬容量饿死派发闸门"），而 **register 路径零校验**（DTO 连 `@IsInt`/`@Min` 都没有）。实测后果：`maxConcurrentTasks:0` 落库后 ① `runningTaskCount/0` → **Infinity**（`Infinity.toFixed(3)` 仍为 Infinity，JSON 序列化成 **null**，决策日志 score 失真）② `selectLeastLoaded` 容量闸 `0 < 0` 恒 false → **该执行器被永久排除在派发之外**（"注册成功、永远收不到一个任务"，与 P0-2 bindAddress 同型）。修法与心跳**同口径**（非法值视同未上报，不写 DB）。+5 例回归，**反证**：还原未校验版本 → 4 例转红。**③ CI 接线**：新 `benchmark` job，`selftest` 每次 push 跑（逻辑闸）、阈值门只 schedule/手动跑（共享 runner 抖动会假红，假红的闸等于没有闸）。
+  - **N-11（Linux 打包/自动更新）→ 更新链元数据守卫**（`b2a70876`）。复核：`dist:linux`、`electron-updater`、updater 模块、CI job、release-desktop 三平台打包+uv 校验**均已在位**；缺的是「更新链」可静态验证的那一半。**为什么必须静态拦**：electron-updater 靠三处元数据对齐（builder 的 `artifactName` ↔ latest-*.yml 的 url ↔ publish/updater 源语义），错位时**打包成功、安装成功、更新永远 404**，而 updater 对 4xx/5xx **一律静默 log.warn** → 用户侧只是"点检查更新没反应"，**CI 全绿**。本仓实爆两次（`desktop-v1.5.1` 嵌套 `AppImage:` 键致 scheme 校验三平台全挂；`v1.5.0` SDK 抢 `latest` release）。守卫 14 项自检，**反证**：复现嵌套形态 → exit 1。**修了守卫首版假阳性**：只支持 publish 列表形态，而本仓用映射形态 → 误报"无 publish 段"（与 N-12 教训同型：**守卫首版必须先喂真实配置**）。
+  - **N-10（Electron e2e）→ 补计划点名三场景，7/7 真跑通**（`8e4893e2`）。**认领前复核发现计划与实现交集为空**：计划写"注册/托盘/任务面板"，原 spec 覆盖的是"启动/preload/主窗口/退出"。按 IPC 真实契约补测（走 preload 通道，不断言主进程内部对象）。**④ 顺带修复长期失守的守卫**：既有「通道白名单不漂移」用例**当时是红的**——白名单 32 个、运行时 **41** 个，漏 9 个；**长期无人发现因为该 job 是 PR/dispatch 门控、develop push 不跑**。**反证**：注入 `probeExtraChannel` 并**按 CI 口径 `npm run build` 重建 dist**（关键——e2e 跑 prebuilt `dist/`，不重建则改动不被拾取，我第一轮反证因此假绿）→ 用例转红；还原+重建 → 绿。
+  - **待办**：轮 29 余项 N-06（host 拆子进程 + Playwright 分发）；轮 30 N-05（需 DashScope）、N-07（macOS GUI 侦察）、N-08（SOP 演示包）；滚动项 Xorg 复跑/跨机；N-02③（能力扩张，待产品拍板）。
 - **本轮（2026-09-27 → 轮 28：N-04 迁移收尾 + N-02 复核销账，develop）**：轮 27 三项清偿后继续推进（三项详见下一条快照，均已推送且 CI 绿）。
   - **N-04（i18n 迁移收尾）→ done（两个 commit）**。**★ 先修正任务前提**：计划行写「清点未迁移页面并完成」，实测基线 105 处**并非都需迁移**——逐文件回读源码按「中文串是否真的会渲染给用户」分四类：**REACHABLE 40**（`api/tasks.ts` 36 + `api/event-subscriptions.ts` 4，`Error.message` 经 `StateError`（:44-47 实测读 `error.message`）直渲）／**FALLBACK 55**（全部是「可选 `t` 参数的中文缺省值」）／**DATA 5**／**DEAD 4**／DEFAULT 1。
     - **首刀**（`cfb92293`）：清出 `executor-mode.ts` 的死 `labels` 映射（值从未被渲染——循环只取 `Object.keys`，展示由 `TaskFormPage:568-576` 按 field 逐项 `t(...)`）；**守卫补「基线陈旧」反向检查**——此前只查「新增」不查「陈旧」，导致**迁移完成后基线不会自己缩小**、"已接受 N 处"只增不减、**迁移进度无法从该数字读出**（本项目已实测踩到，正是那 4 条死数据）。反证：塞不存在的串 → exit 1。
