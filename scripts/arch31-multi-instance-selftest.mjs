@@ -39,7 +39,18 @@ const PG_CONTAINER = `acf-arch31-pg-${STAMP}`;
 const REDIS_CONTAINER = `acf-arch31-redis-${STAMP}`;
 
 // 端口默认随机（15000-25000 段），避免重跑/并发跑与上一次残留容器撞端口。
-const randPort = () => 15000 + Math.floor(Math.random() * 10000);
+// 进程内不重复端口池：randPort 各自独立取随机会撞车（实测 API/IdP 同取
+// 一口 → EADDRINUSE 偶发自检红）。从 15000-24999 无放回抽取。
+const usedPorts = new Set();
+const randPort = () => {
+  for (;;) {
+    const p = 15000 + Math.floor(Math.random() * 10000);
+    if (!usedPorts.has(p)) {
+      usedPorts.add(p);
+      return p;
+    }
+  }
+};
 const PG_PORT = Number(process.env.ARCH31_DB_PORT || randPort());
 const REDIS_PORT = Number(process.env.ARCH31_REDIS_PORT || randPort());
 const DB_HOST = process.env.ARCH31_DB_HOST || 'localhost';
