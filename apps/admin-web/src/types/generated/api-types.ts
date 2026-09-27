@@ -4205,7 +4205,56 @@ export interface components {
             /** @default false */
             isSecret: boolean;
         };
-        Application: Record<string, never>;
+        ApplicationResponseDto: {
+            /** @description Application id (uuid) */
+            id: string;
+            /** @description Unique application name */
+            name: string;
+            /** @description Human description */
+            description?: string | null;
+            /** @description Application version */
+            version: string;
+            /** @description Runtime identifier (node / python / shell …) */
+            runtime: string;
+            /** @description Lifecycle status */
+            status: string;
+            /** @description Git repository URL */
+            gitRepo?: string | null;
+            /** @description Git branch */
+            gitBranch?: string | null;
+            /** @description Pinned git commit */
+            gitCommit?: string | null;
+            /** @description Deployment manifest (jsonb) */
+            manifest?: Record<string, never> | null;
+            /**
+             * @description Environment map; secret-class keys are masked as *** on every read surface
+             * @example {
+             *       "LOG_LEVEL": "info",
+             *       "DB_PASSWORD": "***"
+             *     }
+             */
+            env?: Record<string, never> | null;
+            /** @description Entrypoint path */
+            entrypoint?: string | null;
+            /** @description Package download URL */
+            packageUrl?: string | null;
+            /** @description Whether deployment requires approval */
+            approvalRequired: boolean;
+            /** @description Owning project id (null = default project view) */
+            projectId?: string | null;
+            /** @description Owner user id */
+            ownerUserId?: number | null;
+            /**
+             * Format: date-time
+             * @description Creation time (ISO-8601)
+             */
+            createdAt: string;
+            /**
+             * Format: date-time
+             * @description Last update time (ISO-8601)
+             */
+            updatedAt: string;
+        };
         CreateApplicationDto: {
             /** @description Unique application name */
             name: string;
@@ -7991,7 +8040,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Application"][];
+                    "application/json": components["schemas"]["ApplicationResponseDto"][];
                 };
             };
         };
@@ -8015,7 +8064,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Application"];
+                    "application/json": components["schemas"]["ApplicationResponseDto"];
                 };
             };
         };
@@ -8037,7 +8086,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Application"];
+                    "application/json": components["schemas"]["ApplicationResponseDto"];
                 };
             };
         };
@@ -8063,7 +8112,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Application"];
+                    "application/json": components["schemas"]["ApplicationResponseDto"];
                 };
             };
         };

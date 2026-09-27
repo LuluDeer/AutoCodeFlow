@@ -103,6 +103,42 @@ function spec(entries) {
   assert('无基线时零失败但给出提示', f.length === 0 && n.some((x) => x.includes('基线')));
 }
 
+// ── ⑦ 空壳 schema：引用空组件不得算已覆盖（首版假绿来源） ──────────
+{
+  // 造「实体类无 @ApiProperty」的典型产物：具名 schema 存在但 properties 为空
+  const hollowSpec = {
+    components: {
+      schemas: {
+        BareEntity: { type: 'object', properties: {} },
+        RealDto: { type: 'object', properties: { id: { type: 'string' } } },
+      },
+    },
+    paths: {
+      '/hollow': { get: { tags: ['T'], responses: { 200: { description: '', content: { 'application/json': { schema: { $ref: '#/components/schemas/BareEntity' } } } } } } },
+      '/real': { get: { tags: ['T'], responses: { 200: { description: '', content: { 'application/json': { schema: { $ref: '#/components/schemas/RealDto' } } } } } } },
+    },
+  };
+  const rows = collect(hollowSpec);
+  const hollow = rows.find((r) => r.path === '/hollow');
+  const real = rows.find((r) => r.path === '/real');
+  assert('引用空壳组件的响应 hasSchema=false（不算已覆盖）', hollow.hasSchema === false);
+  assert('引用空壳组件的响应 hollow=true（单独标记）', hollow.hollow === true);
+  assert('引用有字段 DTO 的响应 hasSchema=true', real.hasSchema === true && real.hollow === false);
+  assert('summarize 单独暴露空壳计数', summarize(rows).hollow === 1);
+}
+
+// ── ⑧ 新增空壳必须被拦住（存量允许、新增即红） ─────────────────────
+{
+  const rows = collect({
+    components: { schemas: { BareEntity: { type: 'object', properties: {} } } },
+    paths: { '/h': { get: { tags: ['T'], responses: { 200: { description: '', content: { 'application/json': { schema: { $ref: '#/components/schemas/BareEntity' } } } } } } } },
+  });
+  const { failures: f1 } = check({ rows, baseline: { coveredCount: 0, coveredKeys: [], hollowKeys: [] } });
+  assert('新增空壳必须被检出', f1.some((x) => x.includes('新增空壳')));
+  const { failures: f2 } = check({ rows, baseline: { coveredCount: 0, coveredKeys: [], hollowKeys: ['GET /h 200'] } });
+  assert('基线已接受的存量空壳不重复报红', !f2.some((x) => x.includes('新增空壳')));
+}
+
 // ── ⑥ 反证有牙：真实 openapi.json 喂进去必须绿（守卫不能空转） ──────
 {
   const fs = await import('node:fs');

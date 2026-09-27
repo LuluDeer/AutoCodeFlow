@@ -6,6 +6,7 @@
 import assert from "node:assert/strict";
 import {
   benchmarkDispatchDecision,
+  benchmarkLoadScore,
   benchmarkHandleCallbackBatch,
   benchmarkStoreLogLines,
   computeExecutorLoadScoreModel,
@@ -103,6 +104,34 @@ test("dispatch 决策模型从候选里返回可用执行器", () => {
   assert.equal(r.available > 0, true);
   assert.match(r.chosenId, /^executor-/);
   assert.equal(typeof r.chosenScore, "number");
+});
+
+test("load-score 场景：兜底路径不产生 NaN（缺 cpu/mem/max 的真实注册早期形态）", () => {
+  const r = benchmarkLoadScore(makeExecutors(20), makeEstimatedDurationsByAddress(makeExecutors(20)));
+  assert.equal(r.nonFinite, 0, "任何执行器的 score 都不应为 NaN/Infinity");
+  assert.equal(Number.isFinite(r.bareScore), true, "缺 cpu/mem/maxConcurrentTasks 时必须走 ?? 兜底");
+  // 注意：**刻意断言 Infinity 而非有限值**——模型如实复现了真实公式的除零行为
+  // （`maxConcurrentTasks ?? 10` 只兜 null/undefined，0 会穿透 → runningTaskCount/0）。
+  // 这不是 benchmark 的 bug，而是把生产缺陷暴露出来的探针；修法在写入侧
+  // （register 采纳域，见 executor.service.ts 的 N-09 注记），不在公式侧。
+  // 之所以钉住它：一旦有人给公式加 `|| 10` 兜底（看似无害），这里会红，
+  // 从而强制他去看"为什么会有 0 落库"——那才是真问题。
+  assert.equal(r.zeroMaxScore, Infinity, "0 容量在公式侧确实除零得 Infinity（探针价值所在）");
+  assert.equal(typeof r.checksum, "number");
+});
+
+test("load-score 场景：与真实公式同序（权重 0.5/0.25/0.25/0.1）", () => {
+  // 单点复核：load=1.0 时 score 应恰为 0.5（其余项为 0）
+  const score = computeExecutorLoadScoreModel(
+    { id: "e", address: "e:1", runningTaskCount: 10, maxConcurrentTasks: 10, cpuUsage: 0, memUsage: 0 },
+    { estimatedDurations: [] },
+  );
+  assert.equal(Number(score.toFixed(3)), 0.5);
+});
+
+test("parseArgs 接受 load-score 场景", () => {
+  const opts = parseArgs(["--scenario", "load-score"]);
+  assert.equal(opts.scenario, "load-score");
 });
 
 console.log(`\n${passed} assertions passed`);

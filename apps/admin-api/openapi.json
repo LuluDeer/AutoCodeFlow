@@ -5761,7 +5761,7 @@
                 "schema": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/components/schemas/Application"
+                    "$ref": "#/components/schemas/ApplicationResponseDto"
                   }
                 }
               }
@@ -5797,7 +5797,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Application"
+                  "$ref": "#/components/schemas/ApplicationResponseDto"
                 }
               }
             }
@@ -5833,7 +5833,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Application"
+                  "$ref": "#/components/schemas/ApplicationResponseDto"
                 }
               }
             }
@@ -5877,7 +5877,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Application"
+                  "$ref": "#/components/schemas/ApplicationResponseDto"
                 }
               }
             }
@@ -9881,9 +9881,108 @@
           "key"
         ]
       },
-      "Application": {
+      "ApplicationResponseDto": {
         "type": "object",
-        "properties": {}
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Application id (uuid)"
+          },
+          "name": {
+            "type": "string",
+            "description": "Unique application name"
+          },
+          "description": {
+            "type": "string",
+            "description": "Human description",
+            "nullable": true
+          },
+          "version": {
+            "type": "string",
+            "description": "Application version"
+          },
+          "runtime": {
+            "type": "string",
+            "description": "Runtime identifier (node / python / shell …)"
+          },
+          "status": {
+            "type": "string",
+            "description": "Lifecycle status"
+          },
+          "gitRepo": {
+            "type": "string",
+            "description": "Git repository URL",
+            "nullable": true
+          },
+          "gitBranch": {
+            "type": "string",
+            "description": "Git branch",
+            "nullable": true
+          },
+          "gitCommit": {
+            "type": "string",
+            "description": "Pinned git commit",
+            "nullable": true
+          },
+          "manifest": {
+            "type": "object",
+            "description": "Deployment manifest (jsonb)",
+            "nullable": true
+          },
+          "env": {
+            "type": "object",
+            "description": "Environment map; secret-class keys are masked as *** on every read surface",
+            "nullable": true,
+            "example": {
+              "LOG_LEVEL": "info",
+              "DB_PASSWORD": "***"
+            }
+          },
+          "entrypoint": {
+            "type": "string",
+            "description": "Entrypoint path",
+            "nullable": true
+          },
+          "packageUrl": {
+            "type": "string",
+            "description": "Package download URL",
+            "nullable": true
+          },
+          "approvalRequired": {
+            "type": "boolean",
+            "description": "Whether deployment requires approval"
+          },
+          "projectId": {
+            "type": "string",
+            "description": "Owning project id (null = default project view)",
+            "nullable": true
+          },
+          "ownerUserId": {
+            "type": "number",
+            "description": "Owner user id",
+            "nullable": true
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string",
+            "description": "Creation time (ISO-8601)"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string",
+            "description": "Last update time (ISO-8601)"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "version",
+          "runtime",
+          "status",
+          "approvalRequired",
+          "createdAt",
+          "updatedAt"
+        ]
       },
       "CreateApplicationDto": {
         "type": "object",
