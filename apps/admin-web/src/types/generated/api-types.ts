@@ -4204,6 +4204,115 @@ export interface components {
             /** Format: uuid */
             clarificationId: string;
         };
+        SystemConfigResponseDto: {
+            /** @description Config row id (serial) */
+            id: number;
+            /**
+             * @description Unique config key (e.g. executor.sharedToken)
+             * @example executor.sharedToken
+             */
+            key: string;
+            /**
+             * @description Stored value. Read surfaces (GET /config, GET /config/{key}) replace it with the mask sentinel '***' when isSecret=true; write/rollback surfaces (PUT /config, POST /config/batch, POST /config/history/{id}/rollback) return the real persisted value. May be null when the row was written without a value.
+             * @example ***
+             */
+            value?: string | null;
+            /** @description Human description. Also the field matched by the `tag` query filter on GET /config (regex on description) — there is no separate tag column. */
+            description?: string | null;
+            /**
+             * @description Value type. All write paths validate against this closed set (SystemConfigService.validateConfig), so any value in the store came from it.
+             * @enum {string}
+             */
+            valueType: "string" | "number" | "boolean" | "json";
+            /** @description True when the value is secret: read surfaces mask it as '***' and a submitted '***' means 'keep the stored value' rather than 'write the mask' */
+            isSecret: boolean;
+            /**
+             * Format: date-time
+             * @description Creation time (ISO-8601)
+             */
+            createdAt: string;
+            /**
+             * Format: date-time
+             * @description Last update time (ISO-8601)
+             */
+            updatedAt: string;
+        };
+        ConfigHistoryResponseDto: {
+            /** @description History row id (serial) */
+            id: number;
+            /** @description Config key this history row belongs to */
+            configKey: string;
+            /** @description Previous value. '***' when masked (row isSecret=true, or the key is currently secret); null when the entry did not exist before. null is distinct from the mask and must not be rendered as 'hidden'. */
+            oldValue?: string | null;
+            /** @description New value. '***' when masked; null when the entry was deleted by this change (remove records newValue=null). */
+            newValue?: string | null;
+            /** @description Description snapshot taken when this change was recorded */
+            description?: string | null;
+            /**
+             * @description valueType snapshot persisted with this row (migration 1790000000018). null = pre-migration row, metadata unknown — do not read null as 'string'.
+             * @enum {string|null}
+             */
+            valueType?: "string" | "number" | "boolean" | "json" | null;
+            /** @description isSecret snapshot persisted with this row (migration 1790000000018). null = pre-migration row, metadata unknown — do not read null as false. true always masks oldValue/newValue on the read surfaces. */
+            isSecret?: boolean | null;
+            /**
+             * @description What produced this row (rollback marks rows written by the rollback endpoint)
+             * @enum {string}
+             */
+            action: "create" | "update" | "delete" | "rollback";
+            /** @description Acting user id (integer since migration 1790000000023); null when the actor is unknown (e.g. rows written before operator context was recorded) */
+            userId?: number | null;
+            /** @description Acting username */
+            username?: string | null;
+            /** @description Acting client IP */
+            ipAddress?: string | null;
+            /**
+             * Format: date-time
+             * @description When this change was recorded (ISO-8601)
+             */
+            createdAt: string;
+        };
+        ConfigHistoryPageDto: {
+            /** @description Page of history rows, newest first (old/new masked per row) */
+            data: components["schemas"]["ConfigHistoryResponseDto"][];
+            /** @description Total matching rows before paging */
+            total: number;
+        };
+        ExecutorSharedTokenDto: {
+            /**
+             * @description Freshly generated executor shared token (64 hex chars). Returned once at rotation time; the config store keeps it with isSecret=true so later reads of GET /config return '***'.
+             * @example 9f2c4a1d7b3e5f8091a2b3c4d5e6f70819a2b3c4d5e6f70819a2b3c4d5e6f708
+             */
+            token: string;
+        };
+        ExecutorSharedTokenStatusDto: {
+            /** @description Current shared token in plaintext (ADMIN only). null when no token is stored — this endpoint never 404s for a missing key. */
+            token?: string | null;
+            /** @description True when a non-empty token is stored (token !== null) */
+            hasToken: boolean;
+        };
+        RuntimeVersionContractDto: {
+            /**
+             * @description Currently effective declareable lower bound (PYTHON_RUNTIME_VERSION_MIN, default 3.7)
+             * @example 3.7
+             */
+            min: string;
+            /**
+             * @description Currently effective declareable upper bound (PYTHON_RUNTIME_VERSION_MAX, default 3.14)
+             * @example 3.14
+             */
+            max: string;
+            /**
+             * @description Online-download floor (contract constant, not configurable): uv cannot download interpreters below it, so those versions need an offline pre-populated cache volume
+             * @example 3.8
+             */
+            onlineMin: string;
+            /**
+             * @description Fallback interpreter for legacy executors that report no interpreters list
+             * @example 3.12
+             */
+            legacyDefaultInterpreter: string;
+        };
         UpsertConfigDto: {
             key: string;
             value?: string;
@@ -4212,6 +4321,10 @@ export interface components {
             valueType: string;
             /** @default false */
             isSecret: boolean;
+        };
+        ConfigDeleteResultDto: {
+            /** @description Always true on success — a missing key is a 404, never {deleted:false} */
+            deleted: boolean;
         };
         ApplicationResponseDto: {
             /** @description Application id (uuid) */
@@ -7744,11 +7857,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description Config rows sorted by key (optionally filtered by prefix/tag). Secret rows have value replaced by the mask '***'. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["SystemConfigResponseDto"][];
+                };
             };
         };
     };
@@ -7765,11 +7881,14 @@ export interface operations {
             };
         };
         responses: {
+            /** @description The persisted config row after upsert (real value, not masked — a submitted '***' on an existing secret key means 'keep stored value') */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["SystemConfigResponseDto"];
+                };
             };
         };
     };
@@ -7787,11 +7906,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description Paged history, newest first. Rows whose persisted isSecret=true (or whose key is currently secret) have oldValue/newValue masked as '***'; null stays null. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ConfigHistoryPageDto"];
+                };
             };
         };
     };
@@ -7815,11 +7937,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description Paged history for one key. Rows whose persisted isSecret=true (or this key is currently secret) have oldValue/newValue masked as '***'; null stays null. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ConfigHistoryPageDto"];
+                };
             };
         };
     };
@@ -7834,11 +7959,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description Rolled-back config row, or {deleted:true} when the target history row was the creation of that key (rollback = undo the creation) */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["SystemConfigResponseDto"] | components["schemas"]["ConfigDeleteResultDto"];
+                };
             };
         };
     };
@@ -7851,11 +7979,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description Newly generated 64-hex token, returned once. The store keeps it with isSecret=true, so later GET /config returns '***' for it. */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ExecutorSharedTokenDto"];
+                };
             };
         };
     };
@@ -7868,11 +7999,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description Current token in plaintext. A missing key is NOT a 404: it degrades to {token:null, hasToken:false} (admin-web relies on that to render the 'not configured yet' state). */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ExecutorSharedTokenStatusDto"];
+                };
             };
         };
     };
@@ -7885,11 +8019,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description Effective contract constants only (no config-store values, no secrets). Deliberately NOT ADMIN-gated — every user who can create a task needs the correct range in the form. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["RuntimeVersionContractDto"];
+                };
             };
         };
     };
@@ -7904,11 +8041,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description The config row for this key. A secret key has value replaced by '***'. A missing key is a 404. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["SystemConfigResponseDto"];
+                };
             };
         };
     };
@@ -7923,11 +8063,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description Always {deleted:true} on success; a missing key is a 404 (there is no {deleted:false} branch). */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ConfigDeleteResultDto"];
+                };
             };
         };
     };
@@ -7944,11 +8087,14 @@ export interface operations {
             };
         };
         responses: {
+            /** @description Persisted rows in the same order as the submitted items (transactional: any failure rolls the whole batch back). Real values, not masked. */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["SystemConfigResponseDto"][];
+                };
             };
         };
     };
