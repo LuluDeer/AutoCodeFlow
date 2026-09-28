@@ -33,6 +33,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // 无边框窗口控制
   minimizeWindow: () => ipcRenderer.invoke('window:minimize'),
+  getWindowState: () => ipcRenderer.invoke('window:get-state'),
+  toggleMaximizeWindow: () => ipcRenderer.invoke('window:toggle-maximize'),
+  onWindowMaximizeChange: (cb: (maximized: boolean) => void) => {
+    const handler = (_: Electron.IpcRendererEvent, maximized: boolean) => cb(maximized);
+    ipcRenderer.on('window:maximize-change', handler);
+    return () => ipcRenderer.removeListener('window:maximize-change', handler);
+  },
   closeWindow: () => ipcRenderer.invoke('window:close'),
 
   // 历史记录 & 日志文件读取

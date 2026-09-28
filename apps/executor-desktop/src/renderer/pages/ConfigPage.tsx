@@ -10,6 +10,7 @@ import {
 declare const window: Window & {
   electronAPI: {
     getConfig: () => Promise<Record<string, unknown>>;
+    getStatus?: () => Promise<{ running: boolean }>;
     saveConfig: (cfg: Record<string, unknown>) => Promise<{ ok: boolean; reloadError?: string }>;
     testConnection: (url: string) => Promise<{ ok: boolean; message: string }>;
     getLocalIPs: () => Promise<string[]>;
@@ -63,10 +64,35 @@ const SECTIONS: { id: SectionId; icon: string; label: string; desc: string }[] =
   { id: 'general',   icon: '⚙️', label: '基本设置', desc: '名称与并发数' },
 ];
 
+const SECTION_KEYS: Record<SectionId, string[]> = {
+  connection: ['adminApiUrl', 'executorToken'],
+  network: ['executorHost', 'executorPort', 'executorAddressPublic', 'pullMode'],
+  python: ['uvPath', 'uvPythonInstallMirror', 'uvPythonInstallDir', 'pypiRegistryUrl', 'interpreterDownloadTimeoutMs'],
+  agent: ['agentEnabled', 'agentPermissionProfile', 'agentCodeExecution', 'agentHostAccess', 'agentTaskExecution', 'agentAllowedApps', 'agentAllowedDomains'],
+  general: ['executorName', 'maxConcurrentTasks', 'logLevel', 'autoStartExecutor', 'notifyEnabled'],
+};
+
+function sameConfigValue(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function listText(value: unknown): string {
+  return Array.isArray(value) ? value.join('\n') : '';
+}
+
+function parseListText(value: string): string[] {
+  return value.split(/[\n,]/).map((entry) => entry.trim()).filter(Boolean);
+}
+
 export default function ConfigPage() {
   const [form, setForm] = useState<Record<string, unknown>>({});
+  const [savedForm, setSavedForm] = useState<Record<string, unknown>>({});
+  const [allowedAppsText, setAllowedAppsText] = useState('');
+  const [allowedDomainsText, setAllowedDomainsText] = useState('');
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [checkingSaveImpact, setCheckingSaveImpact] = useState(false);
+  const [saveImpact, setSaveImpact] = useState<'running' | 'unknown' | null>(null);
   const [saved, setSaved] = useState(false);
   // D 修正：保存失败必须可见（原实现 reject 后按钮永久 disabled）
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -99,7 +125,14 @@ export default function ConfigPage() {
 
   useEffect(() => {
     Promise.all([window.electronAPI.getConfig(), window.electronAPI.getLocalIPs()])
-      .then(([cfg, ips]) => { setForm(cfg); setLocalIPs(ips); setLoaded(true); })
+      .then(([cfg, ips]) => {
+        setForm(cfg);
+        setSavedForm(cfg);
+        setAllowedAppsText(listText(cfg.agentAllowedApps));
+        setAllowedDomainsText(listText(cfg.agentAllowedDomains));
+        setLocalIPs(ips);
+        setLoaded(true);
+      })
       .catch((err: unknown) => {
         // NETOPT-7⑤（2026-09-20）：getConfig() 走主进程 configStore.getAllMasked——
         // 配置文件损坏/schema 校验抛错/token 解密异常时该 IPC reject。原实现无
@@ -160,6 +193,13 @@ export default function ConfigPage() {
     if (key === 'adminApiUrl') setTestResult(null);
   }
 
+  const dirtySections = new Set(
+    SECTIONS.filter((section) => SECTION_KEYS[section.id].some(
+      (key) => !sameConfigValue(form[key], savedForm[key]),
+    )).map((section) => section.id),
+  );
+  const isDirty = dirtySections.size > 0;
+
   async function toggleAutoLaunch(enable: boolean) {
     setAutoLaunch(enable); // 乐观更新，失败由 catch 回滚
     try {
@@ -174,8 +214,14 @@ export default function ConfigPage() {
   }
 
   async function save() {
+    if (!isDirty) {
+      setSaveImpact(null);
+      return;
+    }
+    setSaveImpact(null);
     setSaving(true);
     setSaveError(null);
+    setSaved(false);
     try {
       const r = await window.electronAPI.saveConfig(form);
       // 主进程可能返回 ok:false（载荷形状被拒——防御路径）。不能把它当成功，
@@ -185,8 +231,10 @@ export default function ConfigPage() {
       } else if (r?.reloadError) {
         // 配置已落盘，但执行器热重载可能失败——此时不能报"已生效"，
         // 否则用户以为执行器在跑，实际已停在停止态。
+        setSavedForm(form);
         setSaveError(`配置已保存，但执行器重启失败：${r.reloadError}。请在「状态监控」页手动启动。`);
       } else {
+        setSavedForm(form);
         setSaved(true);
         setTimeout(() => setSaved(false), 3000);
         // EXP-06：保存成功后立刻重取 Python 环境诊断——用户刚改的就是 uvPath /
@@ -197,9 +245,33 @@ export default function ConfigPage() {
     } catch (err) {
       // D 修正：原实现未包 try——saveConfig reject 会让 saving 永久为 true，
       // 「保存配置」按钮永久禁用且用户完全无感知，只能重启应用。
-      setSaveError(err instanceof Error ? err.message : String(err));
+      setSaveError(`保存失败：${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function requestSave() {
+    if (!isDirty || saving || checkingSaveImpact) return;
+    setCheckingSaveImpact(true);
+    setSaveImpact(null);
+    try {
+      const getStatus = window.electronAPI.getStatus;
+      if (typeof getStatus !== 'function') {
+        setSaveImpact('unknown');
+        return;
+      }
+      const snapshot = await getStatus();
+      if (snapshot.running) {
+        setSaveImpact('running');
+      } else {
+        await save();
+      }
+    } catch {
+      // 状态无法确认时保守提示，不把运行中的任务当作空闲任务处理。
+      setSaveImpact('unknown');
+    } finally {
+      setCheckingSaveImpact(false);
     }
   }
 
@@ -252,7 +324,10 @@ export default function ConfigPage() {
           >
             <span className="cfg-nav-icon">{s.icon}</span>
             <div className="cfg-nav-text">
-              <span className="cfg-nav-label">{s.label}</span>
+              <span className="cfg-nav-label">
+                {s.label}
+                {dirtySections.has(s.id) && <span className="cfg-nav-dirty" title="本组有未保存更改" aria-label="有未保存更改" />}
+              </span>
               <span className="cfg-nav-sub">{s.desc}</span>
             </div>
           </button>
@@ -606,7 +681,7 @@ export default function ConfigPage() {
                 </div>
               )}
 
-              <div className="cfg-field cfg-field-narrow">
+              <div className="cfg-field cfg-agent-select-field">
                 <label className="cfg-label">权限预设</label>
                 {/* P7a 只实现 minimal / standard（09 §6）；其余三档是登记在案的
                     保留名——显示为禁用项让用户知道路线图，但**选不了**（选了也
@@ -623,7 +698,7 @@ export default function ConfigPage() {
                 <span className="cfg-hint">standard = 在受限工作区内试跑生成的代码（process 沙箱：env 白名单 + 路径域 + 超时）</span>
               </div>
 
-              <div className="cfg-field cfg-field-narrow">
+              <div className="cfg-field cfg-agent-select-field">
                 <label className="cfg-label">代码执行（细粒度覆盖，留空跟随预设）</label>
                 <select className="input"
                   value={String(form.agentCodeExecution || '')}
@@ -636,7 +711,7 @@ export default function ConfigPage() {
                 <span className="cfg-hint">off 档：Agent 产出代码供人工审阅，交付变成"给人看"</span>
               </div>
 
-              <div className="cfg-field cfg-field-narrow">
+              <div className="cfg-field cfg-agent-select-field">
                 <label className="cfg-label">本机应用访问（细粒度覆盖，留空跟随预设）</label>
                 <select className="input"
                   value={String(form.agentHostAccess || '')}
@@ -652,7 +727,7 @@ export default function ConfigPage() {
                 </span>
               </div>
 
-              <div className="cfg-field cfg-field-narrow">
+              <div className="cfg-field cfg-agent-select-field">
                 <label className="cfg-label">任务执行方式（细粒度覆盖，留空跟随预设）</label>
                 {/* P7e 前半：isolated-runner 已实现（08 §2.4 方案 A 的独立执行端点）。
                     中台上限 standard 时仍被钳回 deploy-only——与 GUI 同款集中管控。 */}
@@ -671,27 +746,31 @@ export default function ConfigPage() {
               </div>
 
               <div className="cfg-field">
-                <label className="cfg-label">可操作应用（进程名，逗号或换行分隔）</label>
-                <textarea className="input" rows={2}
-                  placeholder="notepad, excel"
-                  value={Array.isArray(form.agentAllowedApps) ? (form.agentAllowedApps as string[]).join(', ') : ''}
-                  onChange={(e) => set('agentAllowedApps',
-                    e.target.value.split(/[\n,]/).map((s) => s.trim()).filter(Boolean))} />
+                <label className="cfg-label">可操作应用（进程名）<span className="cfg-label-count">{Array.isArray(form.agentAllowedApps) ? form.agentAllowedApps.length : 0} 项</span></label>
+                <textarea className="input cfg-list-input" rows={6}
+                  placeholder={'notepad\nexcel'}
+                  value={allowedAppsText}
+                  onChange={(e) => {
+                    setAllowedAppsText(e.target.value);
+                    set('agentAllowedApps', parseListText(e.target.value));
+                  }} />
                 <span className="cfg-hint">
-                  只填进程名，如 notepad；不接受路径或通配符。空白名单时 GUI 能力不可用。
+                  每行一个，也支持逗号分隔。只填进程名，如 notepad；不接受路径或通配符。空白名单时 GUI 能力不可用。
                   每个动作都会重新校验目标窗口的进程。
                 </span>
               </div>
 
               <div className="cfg-field">
-                <label className="cfg-label">浏览器可达域名（可选，逗号或换行分隔）</label>
-                <textarea className="input" rows={3}
-                  placeholder="erp.corp.com, crm.corp.com"
-                  value={Array.isArray(form.agentAllowedDomains) ? (form.agentAllowedDomains as string[]).join(', ') : ''}
-                  onChange={(e) => set('agentAllowedDomains',
-                    e.target.value.split(/[\n,]/).map((s) => s.trim()).filter(Boolean))} />
+                <label className="cfg-label">浏览器可达域名（可选）<span className="cfg-label-count">{Array.isArray(form.agentAllowedDomains) ? form.agentAllowedDomains.length : 0} 项</span></label>
+                <textarea className="input cfg-list-input" rows={6}
+                  placeholder={'erp.corp.com\ncrm.corp.com'}
+                  value={allowedDomainsText}
+                  onChange={(e) => {
+                    setAllowedDomainsText(e.target.value);
+                    set('agentAllowedDomains', parseListText(e.target.value));
+                  }} />
                 <span className="cfg-hint">
-                  Agent 浏览器工具的导航白名单——**空白名单 = 禁止一切网页导航**（安全默认）。
+                  每行一个，也支持逗号分隔。Agent 浏览器工具的导航白名单——<strong>空白名单 = 禁止一切网页导航</strong>（安全默认）。
                   SOP 自己的 constraints.allowedDomains 也会叠加生效。
                 </span>
               </div>
@@ -808,14 +887,34 @@ export default function ConfigPage() {
           </div>
         </div>
 
+        {saveImpact && (
+          <div className="cfg-save-impact" role="alert">
+            <div className="cfg-save-impact-text">
+              <strong>{saveImpact === 'running' ? '执行器正在运行' : '无法确认执行器运行状态'}</strong>
+              <span>
+                {saveImpact === 'running'
+                  ? '保存会立即重启执行器，正在运行的任务可能中断。请确认任务可以中断后继续。'
+                  : '保存可能重启执行器并中断正在运行的任务。请确认任务可以中断后继续。'}
+              </span>
+            </div>
+            <div className="cfg-save-impact-actions">
+              <button className="btn btn-sm" onClick={() => setSaveImpact(null)}>取消</button>
+              <button className="btn btn-primary btn-sm" onClick={save} disabled={saving}>
+                {saveImpact === 'running' ? '确认保存并重启' : '仍要保存'}
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* 底部保存栏 */}
         <div className="cfg-footer">
           {saveError && (
-            <div className="cfg-save-error" role="alert">⚠ 保存失败：{saveError}</div>
+            <div className="cfg-save-error" role="alert">⚠ {saveError}</div>
           )}
-          {saved && <div className="saved-toast">✓ 已保存，配置已生效</div>}
-          <button className="btn btn-primary btn-lg" onClick={save} disabled={saving}>
-            {saving ? '保存中...' : '保存配置'}
+          {saved && !isDirty && <div className="saved-toast">✓ 已保存，配置已生效</div>}
+          {isDirty && <div className="cfg-unsaved" role="status"><span aria-hidden="true" />有未保存更改</div>}
+          <button className="btn btn-primary btn-lg" onClick={requestSave} disabled={saving || checkingSaveImpact || !isDirty || saveImpact !== null}>
+            {saving ? '保存中...' : checkingSaveImpact ? '检查运行状态...' : '保存配置'}
           </button>
         </div>
       </div>

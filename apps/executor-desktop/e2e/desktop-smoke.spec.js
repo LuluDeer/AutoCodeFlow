@@ -94,12 +94,13 @@ test.describe('executor-desktop 冒烟（Playwright _electron）', () => {
           'checkForUpdate', 'checkPort', 'clearHistory', 'closeWindow', 'deleteAppRelease',
           'downloadUpdate', 'getAgentStatus', 'getAutoLaunch', 'getConfig', 'getHistory',
           'getLocalIPs', 'getPythonEnvStatus', 'getRunningApps', 'getStatus', 'getTodayLogs',
-          'installUpdate', 'listApps', 'listLogFiles', 'minimizeWindow', 'onLogLine',
+          'getWindowState', 'installUpdate', 'listApps', 'listLogFiles', 'minimizeWindow', 'onLogLine',
           'onStatusChange', 'onSwitchTab', 'onUpdateAvailable', 'onUpdateDownloaded',
+          'onWindowMaximizeChange',
           'onUpdateError', 'onUpdateProgress', 'openAppFolder', 'openLogFile',
           'openReleaseFolder', 'openTaskLogFolder', 'readAppLog', 'readLog', 'revealExecLog',
           'saveAndCloseWizard', 'saveConfig', 'setAutoLaunch', 'startExecutor',
-          'stopExecutor', 'testConnection', 'uninstallApp', 'writeClipboardText',
+          'stopExecutor', 'testConnection', 'toggleMaximizeWindow', 'uninstallApp', 'writeClipboardText',
         ].sort(),
       );
     } finally {
@@ -133,6 +134,54 @@ test.describe('executor-desktop 冒烟（Playwright _electron）', () => {
       const bodyText = (await win.textContent('body')) || '';
       expect(bodyText).toContain('状态监控');
       expect(bodyText).toContain('运行日志');
+    } finally {
+      await app.close();
+      fs.rmSync(userData, { recursive: true, force: true });
+    }
+  });
+
+  test('主窗口按工作区放大，支持最大化并记住调整后的尺寸', async () => {
+    const userData = tmpUserData();
+    const app = await launchApp({ ELECTRON_USER_DATA_DIR: userData });
+    try {
+      const wizard = await app.firstWindow();
+      await expect(wizard.getByText('欢迎使用').first()).toBeVisible({ timeout: 15000 });
+      const cfg = await wizard.evaluate(() => window.electronAPI.getConfig());
+      const statusWindowReady = app.waitForEvent('window');
+      await wizard.evaluate((config) => {
+        void window.electronAPI.saveAndCloseWizard({ ...config, autoStart: false, autoStartExecutor: false });
+      }, cfg);
+      const status = await statusWindowReady;
+      await expect(status.getByRole('button', { name: '最大化窗口' })).toBeVisible();
+
+      const initial = await app.evaluate(({ BrowserWindow, screen }) => {
+        const win = BrowserWindow.getAllWindows()[0];
+        return {
+          bounds: win.getBounds(),
+          workArea: screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea,
+        };
+      });
+      expect(initial.bounds.width).toBeGreaterThanOrEqual(Math.min(1200, Math.round(initial.workArea.width * 0.75)));
+      expect(initial.bounds.height).toBeGreaterThanOrEqual(Math.min(700, Math.round(initial.workArea.height * 0.78)));
+      expect(initial.bounds.width).toBeLessThanOrEqual(initial.workArea.width);
+      expect(initial.bounds.height).toBeLessThanOrEqual(initial.workArea.height);
+
+      await status.getByRole('button', { name: '最大化窗口' }).click();
+      await expect(status.getByRole('button', { name: '还原窗口' })).toBeVisible();
+      expect(await status.evaluate(() => window.electronAPI.getWindowState())).toEqual({ maximized: true });
+      await status.getByRole('button', { name: '还原窗口' }).click();
+      await expect(status.getByRole('button', { name: '最大化窗口' })).toBeVisible();
+
+      const targetWidth = Math.min(1100, initial.workArea.width);
+      const targetHeight = Math.min(680, initial.workArea.height);
+      await app.evaluate(({ BrowserWindow }, size) => {
+        BrowserWindow.getAllWindows()[0].setSize(size.width, size.height);
+      }, { width: targetWidth, height: targetHeight });
+      const closed = status.waitForEvent('close');
+      await status.getByRole('button', { name: '关闭窗口' }).click();
+      await closed;
+      const saved = JSON.parse(fs.readFileSync(path.join(userData, 'status-window.json'), 'utf8'));
+      expect(saved).toMatchObject({ width: targetWidth, height: targetHeight, maximized: false });
     } finally {
       await app.close();
       fs.rmSync(userData, { recursive: true, force: true });
