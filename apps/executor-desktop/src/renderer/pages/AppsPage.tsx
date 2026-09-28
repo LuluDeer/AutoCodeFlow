@@ -407,8 +407,8 @@ export default function AppsPage() {
     refreshActive();
     const timer = setInterval(() => { if (active()) void refresh(true); }, 10000);
     const onVisible = () => refreshActive();
-    const observer = panel && new MutationObserver(refreshActive);
-    observer?.observe(panel, { attributes: true, attributeFilter: ['hidden'] });
+    const observer = panel ? new MutationObserver(refreshActive) : null;
+    if (panel) observer?.observe(panel, { attributes: true, attributeFilter: ['hidden'] });
     document.addEventListener('visibilitychange', onVisible);
     return () => {
       clearInterval(timer);
@@ -605,7 +605,18 @@ export default function AppsPage() {
         </div>
       )}
 
-      {loading && apps.length === 0 && !error && <div className="apps-loading">正在读取本地应用…</div>}
+      {loading && apps.length === 0 && !error && (
+        <div className="apps-list" aria-label="正在读取本地应用">
+          {Array.from({ length: 4 }, (_, i) => (
+            <div key={i} className="skeleton skeleton-group">
+              <div className="skeleton-line w-45" />
+              <div className="skeleton-row">
+                <div className="skeleton-line w-70" />
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       {apps.length === 0 && !loading && !error && (
         <div className="apps-empty">
@@ -741,7 +752,7 @@ export default function AppsPage() {
                         </div>
                         <div className="app-deployment-actions">
                           {entry.hasLog ? (
-                            <button type="button" className="btn btn-sm btn-success" onClick={() => setViewing(entry)}>应用日志</button>
+                            <button type="button" className="btn btn-sm" onClick={() => setViewing(entry)}>应用日志</button>
                           ) : (
                             <button
                               type="button"

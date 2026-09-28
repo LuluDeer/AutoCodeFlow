@@ -430,7 +430,7 @@ function StepFinish({
 }) {
   return (
     <>
-      <div className="wizard-title">确认配置 🎉</div>
+      <div className="wizard-title">确认配置</div>
       <div className="wizard-subtitle">检查以下信息，完成后执行器将自动注册到平台。</div>
       <div className="wizard-body">
         <div className="confirm-grid">
@@ -453,18 +453,18 @@ function StepFinish({
         </div>
 
         <div className="toggle-row">
-          <Toggle id="autoStartExecutor" label="应用启动时自动运行执行器" checked={form.autoStartExecutor} onChange={(v) => onChange('autoStartExecutor', v)} />
           <div className="toggle-info">
             <strong>应用启动时自动运行执行器</strong>
             <span>打开 Executor 桌面端后自动连接平台</span>
           </div>
+          <Toggle id="autoStartExecutor" label="应用启动时自动运行执行器" checked={form.autoStartExecutor} onChange={(v) => onChange('autoStartExecutor', v)} />
         </div>
         <div className="toggle-row">
-          <Toggle id="autoStart" label="开机自动启动" checked={form.autoStart} onChange={(v) => onChange('autoStart', v)} />
           <div className="toggle-info">
             <strong>开机自动启动</strong>
             <span>系统开机后自动运行 Executor</span>
           </div>
+          <Toggle id="autoStart" label="开机自动启动" checked={form.autoStart} onChange={(v) => onChange('autoStart', v)} />
         </div>
       </div>
       {error && (
