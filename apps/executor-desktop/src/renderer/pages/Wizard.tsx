@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import Icon from '../components/Icon';
 
 declare const window: Window & {
   electronAPI: {
@@ -102,7 +103,7 @@ export default function Wizard() {
         <div className="wizard-header">
           <div className="wizard-header-drag wizard-drag-region">
             <div className="wizard-brand">
-              <div className="wizard-brand-icon">⚡</div>
+              <div className="wizard-brand-icon"><Icon name="zap" /></div>
               <span className="wizard-brand-name">AutoCodeFlow Executor</span>
             </div>
           </div>
@@ -112,7 +113,7 @@ export default function Wizard() {
             title="关闭向导"
             aria-label="关闭向导"
           >
-            ✕
+            <Icon name="close" className="icon-xs" />
           </button>
           <div className="wizard-progress">
             {Array.from({ length: TOTAL_STEPS }, (_, i) => (
@@ -164,26 +165,33 @@ export default function Wizard() {
 function StepWelcome({ onNext }: { onNext: () => void }) {
   return (
     <>
-      <div className="wizard-title">欢迎使用 👋</div>
+      <div className="wizard-title">欢迎使用</div>
       <div className="wizard-subtitle">几步配置，让执行器连上平台开始工作。</div>
       <div className="wizard-body">
+        <div className="wizard-hero" aria-hidden="true">
+          <span className="wizard-hero-glyph"><Icon name="zap" /></span>
+          <div className="wizard-hero-text">
+            <strong>AutoCodeFlow 执行器</strong>
+            <span>常驻本机，接收并运行来自平台的自动化任务</span>
+          </div>
+        </div>
         <div className="wizard-features">
           <div className="wizard-feature">
-            <div className="wizard-feature-icon icon-blue">🔗</div>
+            <div className="wizard-feature-icon icon-blue"><Icon name="link" /></div>
             <div className="wizard-feature-text">
               <strong>连接 Admin 平台</strong>
               <span>填入服务端 IP 和端口，测试连通性</span>
             </div>
           </div>
           <div className="wizard-feature">
-            <div className="wizard-feature-icon icon-purple">🖥️</div>
+            <div className="wizard-feature-icon icon-purple"><Icon name="monitor" /></div>
             <div className="wizard-feature-text">
               <strong>配置本机信息</strong>
               <span>自动检测本机 IP，一键填入，小白友好</span>
             </div>
           </div>
           <div className="wizard-feature">
-            <div className="wizard-feature-icon icon-green">✅</div>
+            <div className="wizard-feature-icon icon-green"><Icon name="check-circle" /></div>
             <div className="wizard-feature-text">
               <strong>自动注册上线</strong>
               <span>完成后常驻托盘，自动接收调度任务</span>
@@ -192,7 +200,7 @@ function StepWelcome({ onNext }: { onNext: () => void }) {
         </div>
       </div>
       <div className="wizard-actions">
-        <button className="btn btn-primary btn-lg" onClick={onNext}>开始配置 →</button>
+        <button className="btn btn-primary btn-lg" onClick={onNext}>开始配置 <Icon name="chevron-right" className="icon-xs" /></button>
       </div>
     </>
   );
@@ -217,7 +225,7 @@ function StepConnect({
         <div className="field">
           <label className="label">Admin API 地址</label>
           <div className="input-group">
-            <input
+            <input aria-label="Admin API 地址"
               className={`input${testResult && !testResult.ok ? ' error' : ''}`}
               placeholder="http://192.168.1.10:3001"
               value={url}
@@ -231,14 +239,14 @@ function StepConnect({
           <span className="hint">格式：http://服务器IP:端口，例如 http://192.168.1.10:3001</span>
           {testResult && (
             <div className={`test-result ${testResult.ok ? 'ok' : 'fail'}`}>
-              {testResult.ok ? '✓' : '✗'} {testResult.message}
+              <Icon name={testResult.ok ? 'check' : 'close'} className="icon-xs" /> {testResult.message}
             </div>
           )}
         </div>
       </div>
       <div className="wizard-actions">
-        <button className="btn" onClick={onBack}>← 返回</button>
-        <button className="btn btn-primary" onClick={onNext} disabled={!url}>下一步 →</button>
+        <button className="btn" onClick={onBack}><Icon name="chevron-right" className="icon-xs icon-flip-h" /> 返回</button>
+        <button className="btn btn-primary" onClick={onNext} disabled={!url}>下一步 <Icon name="chevron-right" className="icon-xs" /></button>
       </div>
     </>
   );
@@ -326,7 +334,7 @@ function StepExecutor({
       <div className="wizard-body">
         <div className="field">
           <label className="label">执行器名称</label>
-          <input
+          <input aria-label="执行器名称"
             className="input"
             placeholder="my-workstation"
             value={form.executorName}
@@ -338,7 +346,7 @@ function StepExecutor({
         <div className="field">
           <label className="label">监听端口</label>
           <div className="input-group">
-            <input
+            <input aria-label="监听端口"
               className={`input${portResult && !portResult.available ? ' error' : ''}`}
               type="number" min={1024} max={65535}
               value={form.executorPort}
@@ -350,7 +358,7 @@ function StepExecutor({
           </div>
           {portResult && (
             <div className={`test-result ${portResult.available ? 'ok' : 'fail'}`}>
-              {portResult.available ? '✓' : '✗'} {portResult.message}
+              <Icon name={portResult.available ? 'check' : 'close'} className="icon-xs" /> {portResult.message}
             </div>
           )}
           {/* HTML 的 min/max 不阻止手输/粘贴越界值——显式给出校验反馈，
@@ -359,7 +367,7 @@ function StepExecutor({
           {Number.isInteger(form.executorPort) &&
             (form.executorPort < 1 || form.executorPort > 65535) && (
             <div className="test-result fail" role="alert">
-              ✗ 端口必须是 1 – 65535 之间的整数
+              <Icon name="close" className="icon-xs" /> 端口必须是 1 – 65535 之间的整数
             </div>
           )}
         </div>
@@ -389,7 +397,7 @@ function StepExecutor({
               </div>
             </div>
           )}
-          <input
+          <input aria-label="对外地址（Admin API 回调此地址下发任务）"
             className="input wizard-address-input"
             placeholder={`192.168.x.x:${form.executorPort}`}
             value={form.executorAddressPublic}
@@ -400,7 +408,7 @@ function StepExecutor({
 
         <div className="field">
           <label className="label">执行器密钥（Token）</label>
-          <input
+          <input aria-label="执行器密钥（Token）"
             className="input"
             type="password"
             placeholder="与平台配置的 EXECUTOR_SECRET 一致"
@@ -410,8 +418,8 @@ function StepExecutor({
         </div>
       </div>
       <div className="wizard-actions">
-        <button className="btn" onClick={onBack}>← 返回</button>
-        <button className="btn btn-primary" onClick={onNext} disabled={!canNext}>下一步 →</button>
+        <button className="btn" onClick={onBack}><Icon name="chevron-right" className="icon-xs icon-flip-h" /> 返回</button>
+        <button className="btn btn-primary" onClick={onNext} disabled={!canNext}>下一步 <Icon name="chevron-right" className="icon-xs" /></button>
       </div>
     </>
   );
@@ -429,7 +437,7 @@ function StepFinish({
 }) {
   return (
     <>
-      <div className="wizard-title">确认配置 🎉</div>
+      <div className="wizard-title">确认配置</div>
       <div className="wizard-subtitle">检查以下信息，完成后执行器将自动注册到平台。</div>
       <div className="wizard-body">
         <div className="confirm-grid">
@@ -452,27 +460,27 @@ function StepFinish({
         </div>
 
         <div className="toggle-row">
-          <Toggle id="autoStartExecutor" label="应用启动时自动运行执行器" checked={form.autoStartExecutor} onChange={(v) => onChange('autoStartExecutor', v)} />
           <div className="toggle-info">
             <strong>应用启动时自动运行执行器</strong>
             <span>打开 Executor 桌面端后自动连接平台</span>
           </div>
+          <Toggle id="autoStartExecutor" label="应用启动时自动运行执行器" checked={form.autoStartExecutor} onChange={(v) => onChange('autoStartExecutor', v)} />
         </div>
         <div className="toggle-row">
-          <Toggle id="autoStart" label="开机自动启动" checked={form.autoStart} onChange={(v) => onChange('autoStart', v)} />
           <div className="toggle-info">
             <strong>开机自动启动</strong>
             <span>系统开机后自动运行 Executor</span>
           </div>
+          <Toggle id="autoStart" label="开机自动启动" checked={form.autoStart} onChange={(v) => onChange('autoStart', v)} />
         </div>
       </div>
       {error && (
-        <div className="wizard-error" role="alert">⚠ 保存失败：{error}</div>
+        <div className="wizard-error" role="alert"><Icon name="warning" className="icon-xs" /> 保存失败：{error}</div>
       )}
       <div className="wizard-actions">
-        <button className="btn" onClick={onBack} disabled={saving}>← 返回</button>
+        <button className="btn" onClick={onBack} disabled={saving}><Icon name="chevron-right" className="icon-xs icon-flip-h" /> 返回</button>
         <button className="btn btn-primary btn-lg" onClick={onFinish} disabled={saving}>
-          {saving ? '启动中...' : '完成并启动 ✓'}
+          {saving ? '启动中...' : <>完成并启动 <Icon name="check" className="icon-xs" /></>}
         </button>
       </div>
     </>

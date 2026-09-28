@@ -856,6 +856,17 @@ export function registerIpcHandlers(): void {
     const win = BrowserWindow.fromWebContents(event.sender);
     win?.minimize();
   });
+  ipcMain.handle('window:get-state', (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    return { maximized: win?.isMaximized() === true };
+  });
+  ipcMain.handle('window:toggle-maximize', (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win || !win.isResizable()) return { maximized: false };
+    if (win.isMaximized()) win.unmaximize();
+    else win.maximize();
+    return { maximized: win.isMaximized() };
+  });
   ipcMain.handle('window:close', (event) => {
     const win = BrowserWindow.fromWebContents(event.sender);
     win?.close();

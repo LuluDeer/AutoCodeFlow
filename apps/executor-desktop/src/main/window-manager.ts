@@ -1,6 +1,6 @@
 import { BrowserWindow, app, screen } from 'electron';
 import * as path from 'path';
-import { existsSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync } from 'fs';
 import log from './logger';
 
 const PRELOAD_PATH = path.join(__dirname, '../preload/index.js');
@@ -15,6 +15,37 @@ function resolveRendererIndex(): string {
 }
 
 const RENDERER_INDEX = resolveRendererIndex();
+
+type SavedWindowSize = { width: number; height: number; maximized: boolean };
+
+function statusWindowStatePath(): string {
+  return path.join(app.getPath('userData'), 'status-window.json');
+}
+
+function readStatusWindowSize(): SavedWindowSize | null {
+  try {
+    const value: unknown = JSON.parse(readFileSync(statusWindowStatePath(), 'utf8'));
+    if (!value || typeof value !== 'object') return null;
+    const state = value as Partial<SavedWindowSize>;
+    if (!Number.isFinite(state.width) || !Number.isFinite(state.height)) return null;
+    return { width: state.width!, height: state.height!, maximized: state.maximized === true };
+  } catch {
+    return null;
+  }
+}
+
+function saveStatusWindowSize(win: BrowserWindow): void {
+  try {
+    const { width, height } = win.getNormalBounds();
+    writeFileSync(statusWindowStatePath(), JSON.stringify({
+      width,
+      height,
+      maximized: win.isMaximized(),
+    } satisfies SavedWindowSize));
+  } catch (error) {
+    log.warn('Could not save status window size:', error);
+  }
+}
 
 /**
  * BUG-12: one hardened webPreferences block shared by every window.
@@ -46,11 +77,12 @@ function sharedWebPreferences(): Electron.WebPreferences {
  *   - 兜底定时器（3s）强制 show，避免首绘分钟级延迟时窗口永不出现。
  * 窗口已带不透明 backgroundColor，提前 show 也无白闪/透明空洞。
  */
-function showWhenReady(win: BrowserWindow): void {
+function showWhenReady(win: BrowserWindow, maximize = false): void {
   let shown = false;
   const doShow = () => {
     if (shown || win.isDestroyed()) return;
     shown = true;
+    if (maximize) win.maximize();
     win.show();
   };
   win.once('ready-to-show', doShow);
@@ -147,18 +179,22 @@ export class WindowManager {
   }
 
   openStatus(): void {
-    const { width: sw, height: sh } = screen.getPrimaryDisplay().workAreaSize;
-    // 固定窗口大小：约屏幕的 60% 宽 × 80% 高，保证内容空间充足且不会太占屏。
-    // 高度上限 720 → 820：配置页的「Python 运行环境」一节（诊断块 + 提示条 +
-    // 5 个字段）在 720px 下几乎整页都要滚动，标题常被裁切；1080p 工作区下
-    // 80% ≈ 820px 可容纳。
-    const winW = Math.round(Math.min(sw * 0.6, 960));
-    const winH = Math.round(Math.min(sh * 0.8, 820));
+    const workArea = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
+    const saved = readStatusWindowSize();
+    // 首次打开以工作区 84% × 88% 为基准；高密度应用/任务/日志有足够宽度。
+    // 用户手动调整后记住常规尺寸；换显示器时再钳进当前工作区。
+    const minWidth = Math.min(760, workArea.width);
+    const minHeight = Math.min(560, workArea.height);
+    const fit = (value: number, min: number, max: number) => Math.min(max, Math.max(min, Math.round(value)));
+    const winW = fit(saved?.width ?? Math.min(workArea.width * 0.84, 2200), minWidth, workArea.width);
+    const winH = fit(saved?.height ?? Math.min(workArea.height * 0.88, 1200), minHeight, workArea.height);
     this.statusWindow = new BrowserWindow({
       width: winW,
       height: winH,
-      minWidth: 760,
-      minHeight: 560,
+      x: Math.round(workArea.x + (workArea.width - winW) / 2),
+      y: Math.round(workArea.y + (workArea.height - winH) / 2),
+      minWidth,
+      minHeight,
       show: false,
       frame: false,
       resizable: true,
@@ -171,7 +207,11 @@ export class WindowManager {
       webPreferences: sharedWebPreferences(),
     });
 
-    showWhenReady(this.statusWindow);
+    const win = this.statusWindow;
+    showWhenReady(win, saved?.maximized === true);
+    win.on('maximize', () => win.webContents.send('window:maximize-change', true));
+    win.on('unmaximize', () => win.webContents.send('window:maximize-change', false));
+    win.on('close', () => { if (!win.isDestroyed()) saveStatusWindowSize(win); });
     // SEC-DSK-01：导航/弹窗/webview 守卫（每个窗口都必须挂）
     hardenWindow(this.statusWindow);
     loadPage(this.statusWindow, 'status');
