@@ -27,7 +27,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { resolveWithinWorkspace } from './workspace';
+import { resolveWithinWorkspace, toWorkspaceRelative } from './workspace';
 
 /** 动作封闭枚举。 */
 export const BROWSER_ACTIONS = [
@@ -231,8 +231,12 @@ export class AgentBrowserSession {
             const v = (p as { video?: () => { path: () => Promise<string> } | null }).video?.();
             if (v) {
               const abs = await v.path();
-              const rel = path.relative(this.workspaceRoot, abs).replace(/\\/g, '/');
-              if (!rel.startsWith('..')) videoPath = rel;
+              // 同 gui.ts：必须用 toWorkspaceRelative 而非裸 path.relative——
+              // 录屏目录是 realpath 折叠过的，而 workspaceRoot 未必，macOS 上
+              // 两者不同源会算出 `../../..` 形态（进而被下面的 startsWith 丢弃，
+              // 录屏静默丢失）。
+              const rel = toWorkspaceRelative(this.workspaceRoot, abs);
+              if (rel !== null) videoPath = rel;
             }
           }
         } catch {

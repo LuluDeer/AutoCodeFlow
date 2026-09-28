@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { randomUUID } from 'crypto';
-import { resolveWithinWorkspace } from './workspace';
+import { resolveWithinWorkspace, toWorkspaceRelative } from './workspace';
 import { normalizeAllowedApp } from './permission-profile';
 
 /** P7c: GUI 动作只接受这组封闭操作；应用名必须逐次命中本机白名单。 */
@@ -149,7 +149,12 @@ export class AgentGuiSession {
         if (!stat.isFile() || stat.size === 0 || stat.size > 10 * 1024 * 1024) {
           return { ok: false, refusal: 'GUI 截图为空或超过 10MB 上限' };
         }
-        return { ok: true, screenshotPath: path.relative(this.workspaceRoot, request.screenshotPath).replace(/\\/g, '/'), detail: result.detail };
+        // 必须经 toWorkspaceRelative：workspaceRoot 与 realpath 后的截图路径
+        // 在 macOS（/var → /private/var）不同源，直接 path.relative 会算出
+        // `../../..` 穿越形态，调用方再 path.join 就再也读不到这张图（静默失败）。
+        const relativePath = toWorkspaceRelative(this.workspaceRoot, request.screenshotPath);
+        if (relativePath === null) return { ok: false, refusal: 'GUI 截图路径逃出工作区' };
+        return { ok: true, screenshotPath: relativePath, detail: result.detail };
       }
       return { ok: true, detail: result.detail };
     } catch (err) {
