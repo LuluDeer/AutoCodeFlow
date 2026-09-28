@@ -29,6 +29,7 @@ import {
   listWorkspaceFiles,
   readWorkspaceFile,
   resolveWithinWorkspace,
+  toWorkspaceRelative,
   writeWorkspaceFile,
 } from './workspace';
 
@@ -260,6 +261,60 @@ function main(): void {
       assert.deepStrictEqual(listWorkspaceFiles(ws, 'nope'), []);
       // 排序稳定（供 LLM 观察自身产物时的输出可复现）
       assert.deepStrictEqual(files, [...files].sort());
+    }
+
+    // ── 9b. ★ toWorkspaceRelative：realpath 后的域内路径必须回到相对形态 ──
+    // 真实缺陷（2026-09-28，desktop-macos-bundle 抓到）：resolveWithinWorkspace
+    // 返回 **realpath 折叠**过的绝对路径，而调用方手上的 workspaceRoot 未必
+    // 折叠过。macOS 的 os.tmpdir() 是 `/var/folders/...`，realpath 却是
+    // `/private/var/folders/...`（/var 是指向 /private/var 的 symlink），于是
+    // 裸 `path.relative(workspaceRoot, resolved)` 算出 `../../../../private/var/...`
+    // 这种穿越形态——截图上传随后 path.join 拼到域外、静默读不到文件。
+    //
+    // 这里用「symlink 祖先」把它变成**跨平台**可复现的断言：工作区放在
+    // 链接路径下，故 workspaceRoot（链接路径）与 resolveWithinWorkspace 的
+    // 返回值（真实路径）必然不同源——与 macOS 的形状完全同构。
+    {
+      const linkParent = path.join(tmp, 'link-parent');
+      fs.mkdirSync(linkParent, { recursive: true });
+      const realDir = path.join(tmp, 'real-parent');
+      fs.mkdirSync(realDir, { recursive: true });
+      const viaLink = path.join(linkParent, 'linked');
+      try {
+        fs.symlinkSync(realDir, viaLink, 'junction');
+      } catch {
+        try {
+          fs.symlinkSync(realDir, viaLink);
+        } catch {
+          /* 无 symlink 权限（部分 Windows 非开发者模式）→ 跳过本段 */
+        }
+      }
+      if (fs.existsSync(viaLink)) {
+        // workspaceRoot 走链接路径；真实工作区目录在 realDir 下
+        const linkedWs = ensureWorkspace(viaLink, 'asg-linked');
+        fs.writeFileSync(path.join(linkedWs, 'shot.png'), 'x');
+        const resolvedShot = resolveWithinWorkspace(linkedWs, 'shot.png');
+        assert.strictEqual(resolvedShot.ok, true);
+
+        const rel = toWorkspaceRelative(linkedWs, (resolvedShot as { path: string }).path);
+        assert.strictEqual(
+          rel,
+          'shot.png',
+          'realpath 折叠后的域内文件必须得到纯相对路径（裸 path.relative 会给出 ../../.. 穿越形态）',
+        );
+        // 反证：朴素写法在链接祖先下确实会退化成穿越形态（证明本断言有牙）
+        const naive = path.relative(linkedWs, (resolvedShot as { path: string }).path).replace(/\\/g, '/');
+        assert.ok(
+          naive === 'shot.png' || naive.startsWith('../'),
+          `朴素 path.relative 在链接祖先下应退化为穿越形态，实际=${naive}`,
+        );
+        // 调用方的真实用法：拼回绝对路径必须能读到文件（这正是此前静默失败的环节）
+        assert.strictEqual(fs.existsSync(path.join(linkedWs, rel as string)), true, '相对路径必须可拼回并读到文件');
+
+        // 域外一律 null
+        assert.strictEqual(toWorkspaceRelative(linkedWs, path.join(tmp, 'outside-x.png')), null, '域外路径必须返回 null');
+        assert.strictEqual(toWorkspaceRelative(linkedWs, linkedWs), null, '工作区根自身不是有效的产物相对路径');
+      }
     }
 
     // ── 10. 不同指派之间互不可见（隔离是沙箱的语义）──────────────────────
