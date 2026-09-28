@@ -361,7 +361,7 @@ export default function ConfigPage() {
               <div className="cfg-field">
                 <label className="cfg-label">Admin API 地址</label>
                 <div className="cfg-row">
-                  <input className="input" placeholder="http://192.168.1.10:3001"
+                  <input aria-label="Admin API 地址" className="input" placeholder="http://192.168.1.10:3001"
                     value={String(form.adminApiUrl || '')}
                     onChange={(e) => set('adminApiUrl', e.target.value)} />
                   <button className="btn cfg-test-button" onClick={test} disabled={testing}>
@@ -378,7 +378,7 @@ export default function ConfigPage() {
 
               <div className="cfg-field">
                 <label className="cfg-label">执行器密钥</label>
-                <input className="input" type="password" placeholder="EXECUTOR_SECRET 的值"
+                <input aria-label="执行器密钥" className="input" type="password" placeholder="EXECUTOR_SECRET 的值"
                   value={String(form.executorToken || '')}
                   onChange={(e) => set('executorToken', e.target.value)} />
                 <span className="cfg-hint">与 Admin 服务端 EXECUTOR_SECRET 环境变量保持一致</span>
@@ -398,7 +398,7 @@ export default function ConfigPage() {
                   <label className="cfg-label">监听地址</label>
                   {/* P2-2：bind host 此前只在向导里硬编码 0.0.0.0、设置页无入口，
                       用户事后无法修改。它直接决定子进程的 BIND_ADDRESS。 */}
-                  <input className="input" placeholder="0.0.0.0"
+                  <input aria-label="监听地址" className="input" placeholder="0.0.0.0"
                     value={String(form.executorHost || '0.0.0.0')}
                     onChange={(e) => set('executorHost', e.target.value)}
                     onBlur={(e) => {
@@ -415,7 +415,7 @@ export default function ConfigPage() {
                   {/* 与「最大并发任务数」同源缺陷：清空输入框 → NaN → 显示 8002
                       却保存 null。留空回落默认端口；失焦时把越界的 1–65535
                       之外的值钳回（HTML min/max 不阻止手输/粘贴）。 */}
-                  <input className="input" type="number" min={1} max={65535} value={port}
+                  <input aria-label="监听端口" className="input" type="number" min={1} max={65535} value={port}
                     onChange={(e) => set('executorPort',
                       parseBoundedInt(e.target.value, EXECUTOR_PORT.fallback,
                         EXECUTOR_PORT.min, EXECUTOR_PORT.max))}
@@ -435,7 +435,7 @@ export default function ConfigPage() {
                     显示在线、却永远派发不到的执行器。文案改为如实说明，
                     并在留空时自动填入第一块网卡（下方已有 IP 快速填入）；
                     主进程构造子进程 env 时还会再兜底一次（buildExecutorChildEnv）。 */}
-                <input className="input" placeholder="必填，如 192.168.1.20:8002"
+                <input aria-label="对外地址" className="input" placeholder="必填，如 192.168.1.20:8002"
                   value={String(form.executorAddressPublic || '')}
                   onChange={(e) => set('executorAddressPublic', e.target.value)}
                   onBlur={(e) => {
@@ -582,7 +582,7 @@ export default function ConfigPage() {
 
               <div className="cfg-field">
                 <label className="cfg-label">uv 可执行文件路径（uvPath）</label>
-                <input className="input" placeholder="留空 = 用自带 uv，其次回退系统 PATH"
+                <input aria-label="uv 可执行文件路径（uvPath）" className="input" placeholder="留空 = 用自带 uv，其次回退系统 PATH"
                   value={String(form.uvPath || '')}
                   onChange={(e) => set('uvPath', e.target.value)} />
                 <span className="cfg-hint">
@@ -592,7 +592,7 @@ export default function ConfigPage() {
 
               <div className="cfg-field">
                 <label className="cfg-label">解释器镜像源（uvPythonInstallMirror）</label>
-                <input className="input" placeholder="留空 = 用 uv 官方源（需要外网）"
+                <input aria-label="解释器镜像源（uvPythonInstallMirror）" className="input" placeholder="留空 = 用 uv 官方源（需要外网）"
                   value={String(form.uvPythonInstallMirror || '')}
                   onChange={(e) => set('uvPythonInstallMirror', e.target.value)} />
                 <span className="cfg-hint">
@@ -603,7 +603,7 @@ export default function ConfigPage() {
 
               <div className="cfg-field">
                 <label className="cfg-label">解释器池目录（uvPythonInstallDir）</label>
-                <input className="input" placeholder="留空 = 用户数据目录下的 interpreters"
+                <input aria-label="解释器池目录（uvPythonInstallDir）" className="input" placeholder="留空 = 用户数据目录下的 interpreters"
                   value={String(form.uvPythonInstallDir || '')}
                   onChange={(e) => set('uvPythonInstallDir', e.target.value)} />
                 <span className="cfg-hint">
@@ -614,7 +614,7 @@ export default function ConfigPage() {
 
               <div className="cfg-field">
                 <label className="cfg-label">私有 PyPI 源（pypiRegistryUrl）</label>
-                <input className="input" placeholder="留空 = 用官方 PyPI"
+                <input aria-label="私有 PyPI 源（pypiRegistryUrl）" className="input" placeholder="留空 = 用官方 PyPI"
                   value={String(form.pypiRegistryUrl || '')}
                   onChange={(e) => set('pypiRegistryUrl', e.target.value)} />
                 <span className="cfg-hint">
@@ -624,7 +624,7 @@ export default function ConfigPage() {
 
               <div className="cfg-field cfg-field-narrow">
                 <label className="cfg-label">解释器下载超时（毫秒）</label>
-                <input className="input" type="number" min={0}
+                <input aria-label="解释器下载超时（毫秒）" className="input" type="number" min={0}
                   value={displayNumber(form.interpreterDownloadTimeoutMs, DOWNLOAD_TIMEOUT_MS.fallback)}
                   onChange={(e) => set('interpreterDownloadTimeoutMs',
                     parseBoundedInt(e.target.value, DOWNLOAD_TIMEOUT_MS.fallback,
@@ -691,7 +691,7 @@ export default function ConfigPage() {
                 {/* P7a 只实现 minimal / standard（09 §6）；其余三档是登记在案的
                     保留名——显示为禁用项让用户知道路线图，但**选不了**（选了也
                     会被解析层钳回 minimal，界面与行为一致比可点更重要）。 */}
-                <select className="input"
+                <select aria-label="权限预设" className="input"
                   value={String(form.agentPermissionProfile || 'minimal')}
                   onChange={(e) => set('agentPermissionProfile', e.target.value)}>
                   <option value="minimal">minimal —— 什么都不做（Agent 仅辅助，高合规）</option>
@@ -705,7 +705,7 @@ export default function ConfigPage() {
 
               <div className="cfg-field cfg-agent-select-field">
                 <label className="cfg-label">代码执行（细粒度覆盖，留空跟随预设）</label>
-                <select className="input"
+                <select aria-label="代码执行（细粒度覆盖，留空跟随预设）" className="input"
                   value={String(form.agentCodeExecution || '')}
                   onChange={(e) => set('agentCodeExecution', e.target.value)}>
                   <option value="">（跟随预设）</option>
@@ -718,7 +718,7 @@ export default function ConfigPage() {
 
               <div className="cfg-field cfg-agent-select-field">
                 <label className="cfg-label">本机应用访问（细粒度覆盖，留空跟随预设）</label>
-                <select className="input"
+                <select aria-label="本机应用访问（细粒度覆盖，留空跟随预设）" className="input"
                   value={String(form.agentHostAccess || '')}
                   onChange={(e) => set('agentHostAccess', e.target.value)}>
                   <option value="">（跟随预设：none）</option>
@@ -736,7 +736,7 @@ export default function ConfigPage() {
                 <label className="cfg-label">任务执行方式（细粒度覆盖，留空跟随预设）</label>
                 {/* P7e 前半：isolated-runner 已实现（08 §2.4 方案 A 的独立执行端点）。
                     中台上限 standard 时仍被钳回 deploy-only——与 GUI 同款集中管控。 */}
-                <select className="input"
+                <select aria-label="任务执行方式（细粒度覆盖，留空跟随预设）" className="input"
                   value={String(form.agentTaskExecution || '')}
                   onChange={(e) => set('agentTaskExecution', e.target.value)}>
                   <option value="">（跟随预设：deploy-only）</option>
@@ -752,7 +752,7 @@ export default function ConfigPage() {
 
               <div className="cfg-field">
                 <label className="cfg-label">可操作应用（进程名）<span className="cfg-label-count">{Array.isArray(form.agentAllowedApps) ? form.agentAllowedApps.length : 0} 项</span></label>
-                <textarea className="input cfg-list-input" rows={6}
+                <textarea aria-label="可操作应用（进程名）" className="input cfg-list-input" rows={6}
                   placeholder={'notepad\nexcel'}
                   value={allowedAppsText}
                   onChange={(e) => {
@@ -767,7 +767,7 @@ export default function ConfigPage() {
 
               <div className="cfg-field">
                 <label className="cfg-label">浏览器可达域名（可选）<span className="cfg-label-count">{Array.isArray(form.agentAllowedDomains) ? form.agentAllowedDomains.length : 0} 项</span></label>
-                <textarea className="input cfg-list-input" rows={6}
+                <textarea aria-label="浏览器可达域名（可选）" className="input cfg-list-input" rows={6}
                   placeholder={'erp.corp.com\ncrm.corp.com'}
                   value={allowedDomainsText}
                   onChange={(e) => {
@@ -800,7 +800,7 @@ export default function ConfigPage() {
 
               <div className="cfg-field">
                 <label className="cfg-label">执行器名称</label>
-                <input className="input" placeholder="my-executor-1"
+                <input aria-label="执行器名称" className="input" placeholder="my-executor-1"
                   value={String(form.executorName || '')}
                   onChange={(e) => set('executorName', e.target.value)} />
                 <span className="cfg-hint">在管理平台中显示的唯一名称，建议使用机器名或角色命名</span>
@@ -813,7 +813,7 @@ export default function ConfigPage() {
                     于是"界面显示 10、实际保存 NaN"。NaN 经 IPC 序列化为 null，
                     主进程写入时撞 electron-store 的 schema 校验整次抛错。
                     这里与保存路径同源：留空 = 回落默认 10，越界钳到 1–100。 */}
-                <input className="input" type="number" min={1} max={100}
+                <input aria-label="最大并发任务数" className="input" type="number" min={1} max={100}
                   value={displayNumber(form.maxConcurrentTasks, MAX_CONCURRENT_TASKS.fallback)}
                   onChange={(e) => set('maxConcurrentTasks',
                     parseBoundedInt(e.target.value, MAX_CONCURRENT_TASKS.fallback,
@@ -829,7 +829,7 @@ export default function ConfigPage() {
                 {/* P3-1：logLevel 此前是没有任何消费者的死字段（向导硬编码 info、
                     设置页无入口、executor-node logger 也不读 LOG_LEVEL）。现已
                     两端打通：桌面文件日志 + 子进程 winston 均按此级别输出。 */}
-                <select className="input"
+                <select aria-label="日志级别" className="input"
                   value={['debug', 'info', 'error'].includes(String(form.logLevel))
                     ? String(form.logLevel) : 'info'}
                   onChange={(e) => set('logLevel', e.target.value)}>
