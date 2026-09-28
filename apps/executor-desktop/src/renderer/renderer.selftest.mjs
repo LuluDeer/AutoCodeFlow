@@ -13,12 +13,13 @@ const requiredTokens = [
   '--color-background: #020617',
   '--color-foreground: #f8fafc',
   '--space-md: 16px',
-  // 该 token 的**值**在样式打磨时被细化过（加了 -1px 偏移并叠了第二层阴影），
-  // 但本行期望值没跟着改，导致 test:renderer 在 main 上长期为红（断言与实现
-  // 脱节，而非样式有问题）。这里对齐到实际值；真正的意图是"多层阴影 token
-  // 必须存在且被 --shadow 引用"，值本身仍由设计系统决定。
-  '--shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.12)',
-  "--font-heading: 'Fira Code'",
+  // 阴影 token 在本次体系化重构中被细化为「多层、同色相、逐级抬升」的午夜蓝
+  // 阶梯（更深、更通透的双层阴影）。断言意图是「多层阴影 token 必须存在且被
+  // --shadow 引用」，具体值由设计系统决定，这里对齐到实际实现。
+  '--shadow-md: 0 4px 10px -2px rgb(0 0 0 / 0.35), 0 2px 4px -2px rgb(0 0 0 / 0.20)',
+  // 标题改用正文无衬线：Fira Code 等宽字体不含中文字形，中文标题回落会显糙，
+  // 大号标题用 sans 更稳。--font-heading 仍作为独立 token 保留。
+  '--font-heading: var(--font-body)',
   "--font-body: 'Fira Sans'",
 ];
 for (const token of requiredTokens) {
@@ -49,7 +50,9 @@ const btnForegrounds = [
   { cls: 'btn-danger', want: '#fff' },
 ];
 for (const { cls, want } of btnForegrounds) {
-  const block = css.match(new RegExp(`\\.${cls}\\s*\\{([^}]*)\\}`, 's'));
+  // 选择器可能是分组形态（`.btn-primary,\n.btn-success {`），正则需允许类名后
+  // 跟若干 `, .xxx` 再到 `{`，否则提取不到声明块而误报。
+  const block = css.match(new RegExp(`\\.${cls}(?:\\s*,\\s*\\.[\\w-]+)*\\s*\\{([^}]*)\\}`, 's'));
   if (!block || !new RegExp(`color:\\s*${want.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*;`).test(block[1])) {
     throw new Error(`button foreground does not use the high-contrast dark foreground: .${cls} 应为 ${want}`);
   }

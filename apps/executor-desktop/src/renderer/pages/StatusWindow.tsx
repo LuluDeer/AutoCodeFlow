@@ -173,6 +173,24 @@ function normalizeLogLine(raw: string): LogLine {
   return makeLogLine(lvl, `[${clock}]${level ? ` [${level}]` : ''} ${rest}`);
 }
 
+// 规范化后的行形如 `[HH:mm:ss.SSS] [LEVEL] 正文`。渲染时拆成时间 / 级别 /
+// 正文三段并分别着色：时间戳与级别不再和正文抢视觉权重，扫读时一眼定位级别。
+const STRUCTURED_LINE_RE =
+  /^\[(\d{2}:\d{2}:\d{2}(?:\.\d+)?)\](?: \[(DEBUG|INFO|WARN|ERROR)\])? (.*)$/s;
+
+function FormattedLogText({ text }: { text: string }) {
+  const m = STRUCTURED_LINE_RE.exec(text);
+  if (!m) return <>{text}</>;
+  const [, clock, level, rest] = m;
+  return (
+    <>
+      <span className="ll-time">{clock}</span>
+      {level && <span className={`ll-level ll-${level.toLowerCase()}`}>{level}</span>}
+      <span className="ll-msg">{rest}</span>
+    </>
+  );
+}
+
 // ── 全屏日志查看器 ──────────────────────────────────────
 function LogViewer({
   logs,
@@ -395,7 +413,7 @@ function LogViewer({
                 data-logidx={i}
                 className={`log-line ${line.level}${isCurrent ? ' log-highlight' : ''}`}
               >
-                {q ? <HighlightText text={line.text} query={q} /> : line.text}
+                {q ? <HighlightText text={line.text} query={q} /> : <FormattedLogText text={line.text} />}
               </div>
             );
           })}
@@ -715,7 +733,7 @@ export default function StatusWindow({ active }: { active: boolean }) {
             {logs.length === 0
               ? <span className="log-empty">等待日志输出...</span>
               : previewLogs.map((line) => (
-                  <div key={line.id} className={`log-line ${line.level}`}>{line.text}</div>
+                  <div key={line.id} className={`log-line ${line.level}`}><FormattedLogText text={line.text} /></div>
                 ))
             }
           </div>
