@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import UpdateBanner from '../components/UpdateBanner';
 import HighlightText from '../components/HighlightText';
 import Icon from '../components/Icon';
+import FormattedLogText from '../components/FormattedLogText';
 import { agentActivityLabel, agentOutcomeLabel, type AgentStatusSnapshot } from '../../main/agent-status-view';
 import { requestTabSwitch } from '../tab-switch';
 
@@ -27,6 +28,13 @@ const STATUS_LABEL: Record<Status, string> = {
   offline: '连接已断开',
   pending: '正在启动...',
   stopped: '已停止',
+};
+
+const STATUS_BADGE: Record<Status, string> = {
+  online: 'badge-success',
+  offline: 'badge-error',
+  pending: 'badge-pending',
+  stopped: 'badge-stopped',
 };
 
 const STATUS_DESC: Record<Status, string> = {
@@ -175,21 +183,7 @@ function normalizeLogLine(raw: string): LogLine {
 
 // 规范化后的行形如 `[HH:mm:ss.SSS] [LEVEL] 正文`。渲染时拆成时间 / 级别 /
 // 正文三段并分别着色：时间戳与级别不再和正文抢视觉权重，扫读时一眼定位级别。
-const STRUCTURED_LINE_RE =
-  /^\[(\d{2}:\d{2}:\d{2}(?:\.\d+)?)\](?: \[(DEBUG|INFO|WARN|ERROR)\])? (.*)$/s;
-
-function FormattedLogText({ text }: { text: string }) {
-  const m = STRUCTURED_LINE_RE.exec(text);
-  if (!m) return <>{text}</>;
-  const [, clock, level, rest] = m;
-  return (
-    <>
-      <span className="ll-time">{clock}</span>
-      {level && <span className={`ll-level ll-${level.toLowerCase()}`}>{level}</span>}
-      <span className="ll-msg">{rest}</span>
-    </>
-  );
-}
+// FormattedLogText 已收口为共享组件（components/FormattedLogText.tsx）。
 
 // ── 全屏日志查看器 ──────────────────────────────────────
 function LogViewer({
@@ -644,10 +638,16 @@ export default function StatusWindow({ active }: { active: boolean }) {
         <UpdateBanner />
 
         <section className={`hero-card hero-${status}`} aria-label="执行器状态">
-          <div className="hero-indicator" aria-hidden="true" />
+          <div className="hero-glyph" aria-hidden="true">
+            <Icon name={status === 'online' ? 'activity' : status === 'offline' ? 'warning' : 'server'} />
+            <span className={`hero-indicator-dot${status === 'pending' ? ' is-pending' : ''}`} />
+          </div>
           <div className="hero-info">
             <div className="hero-eyebrow">执行器状态 <span aria-hidden="true">/</span> {name}</div>
-            <h1 className="hero-name" aria-live="polite">{statusLabel}</h1>
+            <div className="hero-status-row">
+              <h1 className="hero-name" aria-live="polite">{statusLabel}</h1>
+              {running && <span className={`badge ${STATUS_BADGE[status]}`}>{statusLabel}</span>}
+            </div>
             <p className="hero-status-text">{statusDescription}</p>
             {actionError && <div className="hero-error" role="alert">{actionError}</div>}
           </div>
@@ -659,15 +659,16 @@ export default function StatusWindow({ active }: { active: boolean }) {
             )}
             {!statusLoaded || status === 'pending' ? (
               <button className="btn btn-success" disabled>
+                <Icon name="refresh" className="icon-spin" />
                 {pendingAction === 'stop' ? '正在停止...' : '正在启动...'}
               </button>
             ) : running ? (
               <button className="btn btn-outline-danger" onClick={handleStop} disabled={acting}>
-                停止执行器
+                <Icon name="stop" /> 停止执行器
               </button>
             ) : (
               <button className="btn btn-success" onClick={handleStart} disabled={acting}>
-                启动执行器
+                <Icon name="play" /> 启动执行器
               </button>
             )}
           </div>
@@ -677,22 +678,25 @@ export default function StatusWindow({ active }: { active: boolean }) {
           <section className="overview-card" aria-label="连接信息">
             <div className="overview-heading">连接信息</div>
             <div className="overview-row">
-              <span className="overview-label">平台地址</span>
+              <span className="overview-label"><Icon name="server" className="overview-label-icon" />平台地址</span>
               <span className="overview-value overview-value-mono" title={apiUrl}>{apiUrl}</span>
             </div>
             <div className="overview-row">
-              <span className="overview-label">对外地址</span>
+              <span className="overview-label"><Icon name="link" className="overview-label-icon" />对外地址</span>
               <CopyValue value={addr || `（自动）:${port}`} />
             </div>
             <div className="overview-row">
-              <span className="overview-label">监听端口</span>
+              <span className="overview-label"><Icon name="globe" className="overview-label-icon" />监听端口</span>
               <CopyValue value={port} />
             </div>
           </section>
           <section className="overview-card" aria-label="Agent 托管">
             <div className="overview-heading">Agent 托管</div>
-            <div className="overview-agent-status" role="status" aria-live="polite">
-              {agentStatusError ?? (agentStatus ? agentActivityLabel(agentStatus) : '正在读取...')}
+            <div className="overview-agent-head">
+              <span className={`agent-status-dot${agentStatus?.working ? ' is-working' : agentStatus ? ' is-ok' : ''}`} aria-hidden="true" />
+              <div className="overview-agent-status" role="status" aria-live="polite">
+                {agentStatusError ?? (agentStatus ? agentActivityLabel(agentStatus) : '正在读取...')}
+              </div>
             </div>
             <div className="overview-agent-meta">
               <span>已处理 {agentStatus?.processed ?? 0} 个指派</span>
@@ -706,7 +710,7 @@ export default function StatusWindow({ active }: { active: boolean }) {
         <div className="log-section">
           <div className="log-header">
             <div className="log-heading">
-              <span className="log-title">运行日志</span>
+              <span className="log-title"><Icon name="terminal" className="log-title-icon" />运行日志</span>
               <span className="log-count">{logs.length} 行{logs.length > PREVIEW_LOG_LINES ? ` · 预览最近 ${PREVIEW_LOG_LINES} 行` : ''}</span>
               {severityCounts.warn > 0 && <button className="log-severity warn" onClick={() => openLogViewer('warn')}>警告 {severityCounts.warn}</button>}
               {severityCounts.error > 0 && <button className="log-severity error" onClick={() => openLogViewer('error')}>错误 {severityCounts.error}</button>}
@@ -714,7 +718,7 @@ export default function StatusWindow({ active }: { active: boolean }) {
             <div className="log-actions">
               <button className="btn btn-sm" onClick={() => openLogViewer()}><Icon name="expand" /> 查看日志</button>
               <button className="btn btn-sm" onClick={jumpPreviewToBottom}><Icon name="arrow-down" /> {unreadLogs > 0 ? `${unreadLogs} 条新日志` : '底部'}</button>
-              <button className="btn btn-sm" onClick={clearDisplayedLogs} title="仅清空当前窗口显示，不删除日志文件">清空显示</button>
+              <button className="btn btn-sm" onClick={clearDisplayedLogs} title="仅清空当前窗口显示，不删除日志文件"><Icon name="trash" /> 清空显示</button>
             </div>
           </div>
           <div
