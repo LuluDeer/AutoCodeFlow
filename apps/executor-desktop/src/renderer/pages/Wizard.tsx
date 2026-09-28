@@ -168,6 +168,13 @@ function StepWelcome({ onNext }: { onNext: () => void }) {
       <div className="wizard-title">欢迎使用</div>
       <div className="wizard-subtitle">几步配置，让执行器连上平台开始工作。</div>
       <div className="wizard-body">
+        <div className="wizard-hero" aria-hidden="true">
+          <span className="wizard-hero-glyph"><Icon name="zap" /></span>
+          <div className="wizard-hero-text">
+            <strong>AutoCodeFlow 执行器</strong>
+            <span>常驻本机，接收并运行来自平台的自动化任务</span>
+          </div>
+        </div>
         <div className="wizard-features">
           <div className="wizard-feature">
             <div className="wizard-feature-icon icon-blue"><Icon name="link" /></div>

@@ -3,10 +3,36 @@
 > 跨会话交接文档：新会话从这里恢复。
 > 状态以代码与 `docs/optimization-notes.md` 为准，文档可能滞后。
 
+更新时间：2026-09-28（轮 30：executor-desktop 客户端 UI 全面深度优化）
+当前分支：`codex/executor-client-ui`（worktree：`C:\Users\12154\.codex\worktrees\executor-client-ui\AutoCodeFlow`）
+
+## 状态快照
+
+- **本轮（2026-09-28 → 轮 30：executor-desktop 客户端 UI 全面深度优化，codex/executor-client-ui）**：用户在 codex 基线（`f45f1049`/`cdfbb247`/`b68afe5d` 已完成体系化重构与图标收口）之上，认为 zcode 接手那轮「很一般」，指定**均衡全面升维**（视觉精致 + 排版节奏 + 交互反馈三路并进），聚焦 `apps/executor-desktop` 渲染层。
+  - **方法**：先通读 renderer 全部页面与 2289 行 app.css 建立问题台账，按自测守卫锚点安全增强；每步跑 `renderer.selftest` + `tsc --noEmit` + `vite build` 三件套，最后用 `e2e/screenshots.cjs` 真实启动应用逐页截图，并经两轮独立视觉评审迭代（第一轮抓出"大片死空/ID裸露/应用卡片无锚点/已停止态平淡"四处真实短板并逐条修复，第二轮确认升维）。
+  - **视觉/排版升维**：
+    - 状态页 hero 横幅从「孤立小圆点」重构为**状态图块 + 内嵌状态点**（`.hero-glyph`/`.hero-indicator-dot`），加动态图标（online=activity / offline=warning / 其余=server）与运行徽章；「已停止」态副文案与标题对比度补强（此前灰字几乎不可读）。
+    - 连接信息行加图标（server/link/globe）；Agent 卡片加状态点（复用 `.agent-status-dot`）。
+    - Tab 栏加**激活指示条**（`.tab.active::after`）；标题栏品牌图标收口到公共 `Icon` 组件。
+    - 应用卡片加**色块头像**（`.app-avatar`，首字母/未知态 `?`）；应用工作目录路径改为**芯片样式**；执行 ID 改为**可点击复制芯片**（替代裸露原始数据）。
+    - 历史组头统计改为**摘要胶囊**（`.history-stat-summary`），成功/失败计数只在非零时显示，减少零碎感。
+    - 空态（Apps/History）加**引导文案 + 引导按钮**；Wizard 欢迎页加**品牌 hero 块**（`.wizard-hero`）。
+    - 日志区字号 12→12.5、行高 1.7→1.75、对比度提升；历史/应用列表区 `flex:1` 收尾，消除宽屏下部大片纯黑死空。
+  - **交互/一致性升维**：
+    - **结构化日志着色全面统一**：把 `FormattedLogText` 从 StatusWindow 提取为共享组件，Status/History/Apps 三个日志查看器统一「时间/级别/正文」三段着色（此前仅 Status 有）。
+    - **图标体系扩展 12 枚**（copy/box/activity/cpu/server/play/stop/eye/eye-off/info/download/clock/layout），全部走同一 24 viewBox / currentColor / 1.8 描边规范；为 15+ 个纯文字按钮补充图标（启动/停止/清空/清除/确认/定位/查看日志/测试连接/检查更新等），消除「纯文字按钮」与「图标按钮」混用的不一致。
+    - 运行中徽章加**脉冲点**（CSS `::before` 生成，替代硬编码 `●` 字符）；pending/保存中按钮加 `icon-spin` 旋转反馈。
+    - 「已停止」徽章从复用 offline 改为独立 `.badge-stopped`（对比度更清晰）；停止态 hero 卡片加边框与微渐变。
+  - **验证**：`renderer.selftest` 全绿（设计 token/可访问性/对比度/焦点/布局/IPC 锚点/F-21/F-22/F-37/DSK-05/PERF-DSK-01/SEC-DSK-01/EXP-04/05/06/09 等全部守卫）；`tsc --noEmit` 0 错；`vite build` 绿；`npm run test:main` 全绿（含 agent-host e2e 与全部主进程自测）；`e2e/screenshots.cjs` 16 页截图全部生成且两轮视觉评审确认升维。
+  - **未动**：主进程业务逻辑、admin-web/api、IPC 契约、CSP、自测守卫语义。新增文件 `components/FormattedLogText.tsx`。
+  - **下一步（可选）**：窗口默认尺寸与内容密度的联动（宽屏下部仍偏空，需产品定默认窗宽）；历史失败行加「重跑」闭环；未知应用的「重新识别」引导。
+
+---
+
 更新时间：2026-09-27（轮 27 三项清偿 + 轮 28 N-04/N-02 + 轮 29 N-12/N-09/N-11/N-10；详情见状态快照首三条）
 当前分支：`develop`
 
-## 状态快照
+## 状态快照（历史）
 
 - **本轮（2026-09-27 → 轮 29：N-12 / N-09 / N-11 / N-10 四项推进，develop）**：轮 28 后继续（轮 27/28 详见下两条快照）。**全部提交已推送且 CI 逐笔验证绿**。
   - **N-12（ARCH-23 OpenAPI→前端类型）→ 三批落地，覆盖率 34→50（16.3%→24.0%）**。**★ 认领前复核改变了任务定位**：生成链路**早已全通**（openapi.json 已提交、`gen:api-types` 可跑、CI `api-types-drift` 三道闸齐备），重跑零 diff；卡住的**真因在后端**——实测 208 个 2xx 里 **174 个（84%）没有 schema**（只写 `description:""`），没有 schema 就没有可生成类型。缺口：Task 27 / sop 13 / Executors 12 / App Deployment 11 / System Config 11 …

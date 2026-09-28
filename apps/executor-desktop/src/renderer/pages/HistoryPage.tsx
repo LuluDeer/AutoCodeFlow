@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Icon from '../components/Icon';
+import FormattedLogText from '../components/FormattedLogText';
 
 declare const window: Window & {
   electronAPI: {
@@ -206,9 +207,9 @@ function LogViewer({ record, onClose }: { record: ExecRecord; onClose: () => voi
   }
 
   function renderLine(line: string) {
-    if (!needle) return line;
+    if (!needle) return <FormattedLogText text={line} />;
     const at = line.toLowerCase().indexOf(needle);
-    if (at < 0) return line;
+    if (at < 0) return <FormattedLogText text={line} />;
     return <>{line.slice(0, at)}<mark className="history-log-match">{line.slice(at, at + needle.length)}</mark>{line.slice(at + needle.length)}</>;
   }
 
@@ -238,7 +239,7 @@ function LogViewer({ record, onClose }: { record: ExecRecord; onClose: () => voi
           className={`history-chip${issuesOnly ? ' active' : ''}`}
           aria-pressed={issuesOnly}
           onClick={() => { setIssuesOnly((prev) => !prev); setVisibleLogCount(350); autoScroll.current = false; setFollowing(false); }}
-        >仅异常</button>
+        ><Icon name="warning" className="icon-xs" /> 仅异常</button>
         <span className="history-log-count" role="status">
           {needle || issuesOnly ? `匹配 ${visibleLines.length} 行 · ` : ''}显示 {displayedLines.length} / 已载入 {lines.length} 行 · 文件共 {linesRef.current} 行
         </span>
@@ -447,7 +448,7 @@ export default function HistoryPage({ active }: { active: boolean }) {
     <div className="history-page">
       <div className="history-toolbar">
         <div className="history-heading">
-          <span className="history-title">历史执行记录</span>
+          <span className="history-title"><Icon name="clock" className="history-title-icon" />历史执行记录</span>
           <span className="history-subtitle">
             {q || statusFilter !== 'all' ? `显示 ${filtered.length} / ${totalRuns} 次执行 · ${groupEntries.length} 个任务` : `${totalRuns} 次执行 · ${groupEntries.length} 个任务`}
           </span>
@@ -465,7 +466,7 @@ export default function HistoryPage({ active }: { active: boolean }) {
             className="btn btn-sm btn-danger-ghost"
             onClick={() => setConfirmingClear(true)}
             disabled={records.length === 0 || confirmingClear}
-          >清除全部</button>
+          ><Icon name="trash" /> 清除全部</button>
         </div>
       </div>
 
@@ -476,7 +477,7 @@ export default function HistoryPage({ active }: { active: boolean }) {
             <span>执行日志文件会保留在日志目录中。</span>
           </div>
           <div className="history-clear-actions">
-            <button className="btn btn-sm btn-danger" onClick={handleClear}>确认清除</button>
+            <button className="btn btn-sm btn-danger" onClick={handleClear}><Icon name="trash" /> 确认清除</button>
             <button className="btn btn-sm" onClick={() => setConfirmingClear(false)}>取消</button>
           </div>
         </div>
@@ -544,11 +545,7 @@ export default function HistoryPage({ active }: { active: boolean }) {
         </div>
       ) : groupEntries.length === 0 ? (
         <div className="history-empty">
-          <span className="empty-state-icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-              <circle cx="12" cy="12" r="8.5" /><path d="M12 7v5l3 2" />
-            </svg>
-          </span>
+          <span className="empty-state-icon" aria-hidden="true"><Icon name="clock" /></span>
           <strong>{error ? '记录暂时无法显示' : records.length > 0 ? '没有匹配的执行记录' : '还没有执行记录'}</strong>
           <span>{error
             ? '读取失败，请稍后重试。'
@@ -556,6 +553,9 @@ export default function HistoryPage({ active }: { active: boolean }) {
               // 有记录但过滤后为空——必须与"完全没记录"区分开
               ? '没有符合当前筛选条件的记录。'
               : '暂无执行记录。执行任务后将在此显示。'}</span>
+          {!error && records.length === 0 && (
+            <span className="empty-hint">可以在管理后台创建并触发任务，执行记录会出现在这里。</span>
+          )}
           {records.length > 0 && <button className="btn btn-sm" onClick={() => { setQuery(''); setStatusFilter('all'); resetVisibleResults(); }}>清除筛选</button>}
         </div>
       ) : (
@@ -584,9 +584,11 @@ export default function HistoryPage({ active }: { active: boolean }) {
                   </div>
                   <div className="history-group-meta">
                     <span className="history-group-latest">最近 {statusBadge(lastRun.status)}</span>
-                    <span className="history-stat success">{successCount} 成功</span>
-                    <span className="history-stat failed">{failCount} 失败</span>
-                    <span className="history-stat total">{runCount} 次</span>
+                    <span className="history-stat-summary">
+                      {successCount > 0 && <span className="history-stat success">{successCount} 成功</span>}
+                      {failCount > 0 && <span className="history-stat failed">{failCount} 失败</span>}
+                      <span className="history-stat total">{runCount} 次</span>
+                    </span>
                     <span className="history-stat time" title={lastRun?.startTime ? new Date(lastRun.startTime).toLocaleString('zh-CN', { hour12: false }) : undefined}>{formatTime(lastRun?.startTime)}</span>
                   </div>
                 </button>
@@ -608,7 +610,7 @@ export default function HistoryPage({ active }: { active: boolean }) {
                           <button
                             className="btn btn-sm"
                             onClick={() => setViewingLog(run)}
-                          >查看日志</button>
+                          ><Icon name="terminal" /> 查看日志</button>
                           <button
                             className="btn btn-sm"
                             onClick={() => void handleRevealLog(run.executionId)}
