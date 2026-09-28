@@ -225,7 +225,7 @@ function StepConnect({
         <div className="field">
           <label className="label">Admin API 地址</label>
           <div className="input-group">
-            <input
+            <input aria-label="Admin API 地址"
               className={`input${testResult && !testResult.ok ? ' error' : ''}`}
               placeholder="http://192.168.1.10:3001"
               value={url}
@@ -334,7 +334,7 @@ function StepExecutor({
       <div className="wizard-body">
         <div className="field">
           <label className="label">执行器名称</label>
-          <input
+          <input aria-label="执行器名称"
             className="input"
             placeholder="my-workstation"
             value={form.executorName}
@@ -346,7 +346,7 @@ function StepExecutor({
         <div className="field">
           <label className="label">监听端口</label>
           <div className="input-group">
-            <input
+            <input aria-label="监听端口"
               className={`input${portResult && !portResult.available ? ' error' : ''}`}
               type="number" min={1024} max={65535}
               value={form.executorPort}
@@ -397,7 +397,7 @@ function StepExecutor({
               </div>
             </div>
           )}
-          <input
+          <input aria-label="对外地址（Admin API 回调此地址下发任务）"
             className="input wizard-address-input"
             placeholder={`192.168.x.x:${form.executorPort}`}
             value={form.executorAddressPublic}
@@ -408,7 +408,7 @@ function StepExecutor({
 
         <div className="field">
           <label className="label">执行器密钥（Token）</label>
-          <input
+          <input aria-label="执行器密钥（Token）"
             className="input"
             type="password"
             placeholder="与平台配置的 EXECUTOR_SECRET 一致"
