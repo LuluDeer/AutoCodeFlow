@@ -316,7 +316,11 @@ export default function ConfigPage() {
 
       {/* 侧边导航 */}
       <nav className="cfg-nav">
-        <div className="cfg-nav-heading">设置</div>
+        <div className="cfg-nav-brand">
+          <span className="cfg-nav-brand-icon"><Icon name="gear" /></span>
+          <span className="cfg-nav-brand-text">设置</span>
+        </div>
+        <div className="cfg-nav-heading">设置分区</div>
         {SECTIONS.map(s => (
           <button
             key={s.id}
@@ -361,7 +365,7 @@ export default function ConfigPage() {
                     value={String(form.adminApiUrl || '')}
                     onChange={(e) => set('adminApiUrl', e.target.value)} />
                   <button className="btn cfg-test-button" onClick={test} disabled={testing}>
-                    {testing ? '测试中…' : '测试连接'}
+                    {testing ? <><Icon name="refresh" className="icon-spin" /> 测试中…</> : <><Icon name="zap" /> 测试连接</>}
                   </button>
                 </div>
                 {testResult && (
@@ -877,7 +881,7 @@ export default function ConfigPage() {
                     onClick={checkUpdate}
                     disabled={checking || typeof window.electronAPI.checkForUpdate !== 'function'}
                   >
-                    {checking ? '检查中…' : '检查更新'}
+                    {checking ? <><Icon name="refresh" className="icon-spin" /> 检查中…</> : <><Icon name="refresh" /> 检查更新</>}
                   </button>
                 </div>
                 {checkMsg && <span className="cfg-hint" role="status">{checkMsg}</span>}
@@ -901,7 +905,7 @@ export default function ConfigPage() {
             <div className="cfg-save-impact-actions">
               <button className="btn btn-sm" onClick={() => setSaveImpact(null)}>取消</button>
               <button className="btn btn-primary btn-sm" onClick={save} disabled={saving}>
-                {saveImpact === 'running' ? '确认保存并重启' : '仍要保存'}
+                <Icon name="check" className="icon-xs" /> {saveImpact === 'running' ? '确认保存并重启' : '仍要保存'}
               </button>
             </div>
           </div>
@@ -915,7 +919,7 @@ export default function ConfigPage() {
           {saved && !isDirty && <div className="saved-toast"><Icon name="check" className="icon-xs" /> 已保存，配置已生效</div>}
           {isDirty && <div className="cfg-unsaved" role="status"><span aria-hidden="true" />有未保存更改</div>}
           <button className="btn btn-primary btn-lg" onClick={requestSave} disabled={saving || checkingSaveImpact || !isDirty || saveImpact !== null}>
-            {saving ? '保存中...' : checkingSaveImpact ? '检查运行状态...' : '保存配置'}
+            {saving ? <><Icon name="refresh" className="icon-spin" /> 保存中...</> : checkingSaveImpact ? '检查运行状态...' : '保存配置'}
           </button>
         </div>
       </div>

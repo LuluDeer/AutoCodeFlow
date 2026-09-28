@@ -3,6 +3,7 @@ import StatusWindow from './pages/StatusWindow';
 import ConfigPage from './pages/ConfigPage';
 import HistoryPage from './pages/HistoryPage';
 import AppsPage from './pages/AppsPage';
+import Icon from './components/Icon';
 import { TAB_SWITCH_EVENT } from './tab-switch';
 
 type Tab = 'status' | 'config' | 'history' | 'apps';
@@ -28,14 +29,14 @@ const TABS: TabMeta[] = [
 ];
 
 function TabIcon({ kind }: { kind: Tab }) {
-  return (
-    <svg className="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
-      {kind === 'status' && <><circle cx="12" cy="12" r="8.5" /><path d="M4 12h4l2-3.5 3.5 7 2-3.5H20" /></>}
-      {kind === 'config' && <><path d="M4 7h3m4 0h9M4 17h9m4 0h3" /><circle cx="9" cy="7" r="2" /><circle cx="15" cy="17" r="2" /></>}
-      {kind === 'history' && <><circle cx="12" cy="12" r="8.5" /><path d="M12 7v5l3 2" /></>}
-      {kind === 'apps' && <><rect x="4" y="4" width="6" height="6" rx="1.2" /><rect x="14" y="4" width="6" height="6" rx="1.2" /><rect x="4" y="14" width="6" height="6" rx="1.2" /><rect x="14" y="14" width="6" height="6" rx="1.2" /></>}
-    </svg>
-  );
+  // 收口到公共 Icon 组件（与页内图标同一套 24 viewBox 线条语言）
+  const map: Record<Tab, Parameters<typeof Icon>[0]['name']> = {
+    status: 'activity',
+    config: 'gear',
+    history: 'clock',
+    apps: 'box',
+  };
+  return <Icon name={map[kind]} className="tab-icon" />;
 }
 
 /** 读取持久化的上次 Tab；非法/缺失值回落 status（不得渲染未知 Tab）。 */
@@ -170,9 +171,7 @@ function MainWindow() {
       <div className="titlebar" onDoubleClick={toggleMaximize}>
         <div className="titlebar-brand">
           <span className="titlebar-mark" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" focusable="false">
-              <path d="m6 8 4 4-4 4M13 16h5" />
-            </svg>
+            <Icon name="zap" />
           </span>
           <span className="titlebar-title">AutoCodeFlow</span>
           <span className="titlebar-edition">执行器</span>

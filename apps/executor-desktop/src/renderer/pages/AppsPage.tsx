@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import HighlightText from '../components/HighlightText';
 import Icon from '../components/Icon';
+import FormattedLogText from '../components/FormattedLogText';
 import { requestTabSwitch } from '../tab-switch';
 
 declare const window: Window & {
@@ -334,7 +335,7 @@ function AppLogViewer({ entry, onClose }: { entry: AppEntry; onClose: () => void
                 data-logidx={i}
                 className={`log-line ${classifyLog(line)}${isCurrent ? ' log-highlight' : ''}`}
               >
-                {q ? <HighlightText text={line} query={q} /> : line}
+                {q ? <HighlightText text={line} query={q} /> : <FormattedLogText text={line} />}
               </div>
             );
           })}
@@ -553,7 +554,7 @@ export default function AppsPage() {
     <div className="status-page apps-page">
       <div className="apps-toolbar">
         <div className="apps-heading">
-          <h1 className="apps-title">本地应用</h1>
+          <h1 className="apps-title"><Icon name="box" className="apps-title-icon" />本地应用</h1>
           <span className="apps-total">{grouped.length} 个应用 · {releaseCount} 个版本{runningCount > 0 && ` · ${runningCount} 个运行中`}</span>
         </div>
         <button className="btn btn-sm" onClick={() => void refresh(false)} disabled={loading}>
@@ -620,14 +621,13 @@ export default function AppsPage() {
 
       {apps.length === 0 && !loading && !error && (
         <div className="apps-empty">
-          <span className="empty-state-icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-              <rect x="4" y="4" width="6" height="6" rx="1.2" /><rect x="14" y="4" width="6" height="6" rx="1.2" />
-              <rect x="4" y="14" width="6" height="6" rx="1.2" /><rect x="14" y="14" width="6" height="6" rx="1.2" />
-            </svg>
-          </span>
+          <span className="empty-state-icon" aria-hidden="true"><Icon name="box" /></span>
           <strong>还没有部署应用</strong>
           <span>在管理后台部署应用后，这里会显示本机版本和运行日志。</span>
+          <span className="empty-hint">如果你刚部署过，可以点击上方「刷新」重新扫描本地目录。</span>
+          <button className="btn btn-sm" onClick={() => void refresh(false)} disabled={loading}>
+            <Icon name="refresh" /> 立即刷新
+          </button>
         </div>
       )}
 
@@ -666,9 +666,14 @@ export default function AppsPage() {
                 onClick={() => setExpandedApps(previous => ({ ...previous, [appId]: !expanded }))}
               >
                 <span className="app-group-main">
-                  <span className={`app-group-name${name ? '' : ' app-group-name-unknown'}`} title={`${name ?? '未知应用名'} · 应用 ID：${appId}`}>
-                    {name ?? '未知应用名'}
-                    {!name && <span className="app-group-id-hint">{appId.slice(0, 8)}</span>}
+                  <span className="app-group-name-row">
+                    <span className={`app-avatar${name ? '' : ' app-avatar-unknown'}`} aria-hidden="true">
+                      {name ? name.trim().charAt(0).toUpperCase() : '?'}
+                    </span>
+                    <span className={`app-group-name${name ? '' : ' app-group-name-unknown'}`} title={name ? `${name} · 应用 ID：${appId}` : `该应用未在本机登记名称（旧部署）· 应用 ID：${appId}`}>
+                      {name ?? '未知应用名'}
+                      {!name && <span className="app-group-id-hint">{appId.slice(0, 8)}</span>}
+                    </span>
                   </span>
                   <span className="app-group-summary">
                     {current ? `当前 ${current.version ? `v${current.version}` : '版本未知'}` : '无当前版本'}
@@ -676,7 +681,7 @@ export default function AppsPage() {
                   </span>
                 </span>
                 <span className="app-group-header-meta">
-                  {group.runningCount > 0 && <span className="app-badge app-badge-running">● {group.runningCount} 运行中</span>}
+                  {group.runningCount > 0 && <span className="app-badge app-badge-running">{group.runningCount} 运行中</span>}
                   <span className="app-group-count">{entries.filter(entry => entry.releaseKey).length || 0} 个版本</span>
                   <span className={`app-group-chevron${expanded ? ' expanded' : ''}`} aria-hidden="true"><Icon name="chevron-down" /></span>
                 </span>
@@ -743,7 +748,7 @@ export default function AppsPage() {
                           <div className="app-deployment-top">
                             <span className="app-deployment-version">{label}</span>
                             {entry.isCurrent && <span className="app-badge app-badge-current" title="current 指向的生效版本">当前版本</span>}
-                            {isRunning && <span className="app-badge app-badge-running" title={`进程运行中${running[entry.deploymentId]?.pid ? `（PID ${running[entry.deploymentId]?.pid}）` : ''}`}>● 运行中</span>}
+                            {isRunning && <span className="app-badge app-badge-running" title={`进程运行中${running[entry.deploymentId]?.pid ? `（PID ${running[entry.deploymentId]?.pid}）` : ''}`}>运行中</span>}
                           </div>
                           <div className="app-deployment-sub">
                             {entry.releaseKey ? `部署 ${entry.deploymentId.slice(0, 8)}` : '等待版本落盘'}
