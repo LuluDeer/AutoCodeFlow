@@ -887,7 +887,7 @@ select.input {
 .log-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 9px; min-width: 0; }
 .log-title { display: inline-flex; align-items: center; gap: 7px; color: var(--text2); font-size: 13px; font-weight: 650; }
 .log-title-icon { width: 14px; height: 14px; color: var(--text4); }
-.log-count { color: var(--text4); font-size: 11px; }
+.log-count { color: var(--text3); font-size: 11px; }
 .log-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-left: auto; }
 
 .log-severity {
@@ -896,6 +896,9 @@ select.input {
   background: transparent;
   cursor: pointer;
   padding: 2px 8px;
+  min-height: 24px;
+  display: inline-flex;
+  align-items: center;
   font-size: 11px;
   font-weight: 500;
 }
@@ -1050,6 +1053,7 @@ select.input {
   background: transparent;
   color: var(--text);
   font-size: 12px;
+  min-height: 24px;
 }
 .log-fs-input::placeholder { color: var(--text4); }
 .log-fs-count { flex-shrink: 0; font-size: 11px; color: var(--text3); white-space: nowrap; font-variant-numeric: tabular-nums; }
@@ -1473,7 +1477,7 @@ select.input {
 .apps-empty strong { color: var(--text); font-size: 15px; font-weight: 650; }
 .history-empty > span:last-child,
 .apps-empty > span:last-child { max-width: 360px; line-height: 1.65; }
-.empty-hint { font-size: 11px; color: var(--text4); margin-top: 2px; }
+.empty-hint { font-size: 11px; color: var(--text3); margin-top: 2px; }
 .empty-state-icon {
   display: inline-flex;
   align-items: center;
@@ -1608,6 +1612,7 @@ select.input {
   background-color: var(--surface-1);
   color: var(--text2);
   font-size: 11px;
+  cursor: pointer;
 }
 
 .apps-error {
@@ -1755,7 +1760,7 @@ select.input {
   margin-top: 3px;
   font-family: var(--font-mono);
   font-size: 10px;
-  color: var(--text4);
+  color: var(--text3);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1930,7 +1935,7 @@ select.input {
   background: var(--yellow);
   box-shadow: 0 0 0 3px var(--yellow-bg);
 }
-.cfg-nav-sub { font-size: 10px; color: var(--text4); line-height: 1.25; }
+.cfg-nav-sub { font-size: 10px; color: var(--text3); line-height: 1.25; }
 .cfg-nav-item.active .cfg-nav-sub { color: var(--accent); opacity: 0.75; }
 
 .cfg-body { flex: 1; display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
@@ -1950,7 +1955,7 @@ select.input {
 
 .cfg-field { margin-bottom: 24px; }
 .cfg-label { display: block; margin-bottom: 7px; font-size: 12px; font-weight: 600; color: var(--text2); letter-spacing: -0.01em; }
-.cfg-label-count { margin-left: 7px; font-size: 11px; font-weight: 500; color: var(--text4); }
+.cfg-label-count { margin-left: 7px; font-size: 11px; font-weight: 500; color: var(--text3); }
 .cfg-hint { display: block; margin-top: 6px; font-size: 11px; color: var(--text3); line-height: 1.6; }
 
 .cfg-row { display: flex; gap: 8px; align-items: center; }
