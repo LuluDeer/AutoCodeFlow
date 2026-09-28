@@ -639,6 +639,7 @@ select.input {
   display: flex;
   gap: 10px;
   padding: 11px 14px;
+  margin-bottom: 24px;
   border-radius: var(--radius-lg);
   background: var(--blue-bg);
   border: 1px solid var(--blue-border);
@@ -1238,8 +1239,9 @@ select.input {
   max-width: 1280px;
   margin-inline: auto;
 }
-/* 让列表区在视觉上收尾：列表占满剩余空间，下方不留大片纯黑死空 */
-.history-groups { flex: 1; min-height: 0; }
+/* 历史页不再用 flex:1 强制拉伸列表区——组数少时会造成视觉上的"空荡感"。
+   让列表自然高度排列，下方留白由页面容器统一处理。 */
+.history-groups { display: flex; flex-direction: column; gap: 8px; }
 .history-toolbar {
   display: flex;
   align-items: center;
@@ -1341,7 +1343,6 @@ select.input {
 .history-group-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 10px;
   width: 100%;
   padding: 10px 14px;
@@ -1369,7 +1370,7 @@ select.input {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.history-group-meta { display: flex; align-items: center; gap: 11px; flex-shrink: 0; flex-wrap: wrap; }
+.history-group-meta { display: flex; align-items: center; gap: 11px; flex-shrink: 0; flex-wrap: wrap; margin-left: auto; }
 .history-group-latest { display: inline-flex; align-items: center; gap: 6px; color: var(--text3); font-size: 11px; }
 .history-stat { font-size: 11px; color: var(--text3); white-space: nowrap; }
 .history-stat-summary { display: inline-flex; align-items: center; gap: 8px; padding: 2px 10px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface-1); }
@@ -1484,7 +1485,9 @@ select.input {
 }
 .empty-state-icon svg, .empty-state-icon .icon { width: 23px; height: 23px; }
 
-/* 宽屏：折叠分组 2 列扫描，展开组整行；超宽 3 列 */
+/* 宽屏：折叠分组 2 列扫描，展开组整行；超宽 3 列。
+   但组数 ≤ 4 时强制单列——否则"1 个展开组 + 3 个折叠组"会在 2 列网格里
+   错位（展开组占整行后，下一组从第二列开始，视觉混乱）。 */
 @media (min-width: 1500px) {
   .history-groups {
     display: grid;
@@ -1493,9 +1496,16 @@ select.input {
     align-items: start;
   }
   .history-group.expanded { grid-column: 1 / -1; }
+  /* 组数少时单列排列，避免展开/折叠混排错位 */
+  .history-groups:has(.history-group:nth-child(-n+4):last-child) {
+    grid-template-columns: 1fr;
+  }
 }
 @media (min-width: 2000px) {
   .history-groups { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .history-groups:has(.history-group:nth-child(-n+6):last-child) {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* ==========================================================================
@@ -1608,7 +1618,7 @@ select.input {
 .apps-loading { padding: 34px 0; color: var(--text3); font-size: 12px; text-align: center; }
 .apps-results-summary { color: var(--text3); font-size: 11px; }
 
-.apps-list { display: flex; flex-direction: column; gap: 8px; flex: 1; min-height: 0; }
+.apps-list { display: flex; flex-direction: column; gap: 8px; }
 
 .app-group-card {
   border: 1px solid var(--border);
@@ -1924,8 +1934,9 @@ select.input {
 .cfg-scroll { flex: 1; overflow-y: auto; min-height: 0; display: flex; flex-direction: column; scrollbar-width: thin; }
 .cfg-scroll-inner {
   width: 100%;
-  max-width: 800px;
-  /* 左对齐贴近侧栏（旧版居中导致侧栏与表单间大片死空），保留舒适最大宽度 */
+  max-width: none;
+  /* 取消人为限宽——内容区本就由 cfg-layout 的 1180px 约束，再限 800px
+     会在侧栏与表单之间制造不对称的左右留白。 */
   padding: 26px 36px 26px;
 }
 .cfg-scroll::-webkit-scrollbar { width: 9px; }
@@ -1960,7 +1971,7 @@ select.input {
   justify-content: space-between;
   gap: 16px;
   padding: 14px 18px;
-  margin-bottom: 10px;
+  margin-bottom: 24px;
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   background: var(--surface-1);
