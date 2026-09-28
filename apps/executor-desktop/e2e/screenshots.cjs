@@ -42,8 +42,12 @@ function mkWorkDir() {
 }
 
 (async () => {
-  fs.rmSync(OUT, { recursive: true, force: true });
+  // 只清空 OUT 的内容、不删除根目录本身：OUT 可能正在资源管理器中打开，
+  // Windows 下 rmdir 一个「在 Explorer 中打开」的目录会 EBUSY。文件可正常覆盖。
   fs.mkdirSync(OUT, { recursive: true });
+  for (const entry of fs.readdirSync(OUT)) {
+    fs.rmSync(path.join(OUT, entry), { recursive: true, force: true });
+  }
   const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'acf-shots-user-'));
   const workDir = mkWorkDir();
   const app = await electron.launch({

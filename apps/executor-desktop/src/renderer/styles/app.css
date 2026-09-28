@@ -689,6 +689,9 @@ select.input {
   min-height: 0;
   padding: 18px 22px 16px;
   gap: 14px;
+  width: 100%;
+  max-width: 1200px;
+  margin-inline: auto;
 }
 
 /* 主状态横幅：垂直居中，控件右缘居中，消除旧版“小点 + 大片空洞”的失衡 */
@@ -800,6 +803,8 @@ select.input {
 .overview-row .copy-row { min-width: 0; }
 .overview-row .copy-val { font-size: 12px; }
 .overview-row .copy-btn { padding: 3px 9px; }
+.overview-row .copy-row { justify-content: flex-start; }
+.overview-row .copy-val { flex: 0 1 auto; max-width: 460px; }
 
 .overview-agent-status {
   color: var(--text);
@@ -1184,6 +1189,9 @@ select.input {
   box-sizing: border-box;
   padding: 16px 20px;
   overflow-y: auto;
+  width: 100%;
+  max-width: 1280px;
+  margin-inline: auto;
 }
 .history-toolbar {
   display: flex;
@@ -1716,7 +1724,7 @@ select.input {
 /* ==========================================================================
  * Config 页 —— 布局
  * ========================================================================== */
-.cfg-layout { display: flex; height: 100%; overflow: hidden; }
+.cfg-layout { display: flex; height: 100%; overflow: hidden; width: 100%; max-width: 1180px; margin-inline: auto; }
 
 .cfg-nav {
   width: 196px;
