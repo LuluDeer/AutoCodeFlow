@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import Icon from '../components/Icon';
 
 declare const window: Window & {
   electronAPI: {
@@ -92,7 +93,7 @@ function CopyableExecId({ id }: { id: string }) {
       aria-label={`复制执行 ID ${id}`}
       onClick={doCopy}
     >
-      {state === 'copied' ? '已复制 ✓' : state === 'error' ? '复制失败' : id}
+      {state === 'copied' ? <>已复制 <Icon name="check" className="icon-xs" /></> : state === 'error' ? '复制失败' : id}
     </button>
   );
 }
@@ -220,7 +221,7 @@ function LogViewer({ record, onClose }: { record: ExecRecord; onClose: () => voi
           {statusBadge(record.status)}
         </div>
         <div className="history-overlay-actions">
-          <button className="btn btn-sm" onClick={onClose}>✕ 关闭</button>
+          <button className="btn btn-sm" onClick={onClose}><Icon name="close" /> 关闭</button>
         </div>
       </div>
       <div className="history-log-tools">
@@ -242,7 +243,7 @@ function LogViewer({ record, onClose }: { record: ExecRecord; onClose: () => voi
           {needle || issuesOnly ? `匹配 ${visibleLines.length} 行 · ` : ''}显示 {displayedLines.length} / 已载入 {lines.length} 行 · 文件共 {linesRef.current} 行
         </span>
         <button type="button" className="btn btn-sm" onClick={goToBottom}>
-          {following ? '↓ 跟随中' : '↓ 跟随最新'}
+          <Icon name="arrow-down" /> {following ? '跟随中' : '跟随最新'}
         </button>
       </div>
       <div className="log-viewer log-overlay-content" ref={containerRef} onScroll={handleScroll}>
@@ -253,7 +254,7 @@ function LogViewer({ record, onClose }: { record: ExecRecord; onClose: () => voi
             setVisibleLogCount((count) => count + 350);
           }}>再显示更早的日志 · 剩余 {hiddenLogCount} 行</button>
         )}
-        {error && <span className="log-empty" role="alert">⚠ 日志读取失败：{error}（轮询已停止；关闭后重新打开可重试）</span>}
+        {error && <span className="log-empty" role="alert"><Icon name="warning" className="icon-xs" /> 日志读取失败：{error}（轮询已停止；关闭后重新打开可重试）</span>}
         {loading && lines.length === 0 && !error && <span className="log-empty">加载日志...</span>}
         {!loading && lines.length === 0 && !error && <span className="log-empty">暂无日志（日志文件可能尚未生成）</span>}
         {!loading && lines.length > 0 && visibleLines.length === 0 && <span className="log-empty">当前日志中没有匹配内容</span>}
@@ -452,14 +453,14 @@ export default function HistoryPage({ active }: { active: boolean }) {
           </span>
         </div>
         <div className="history-toolbar-actions">
-          <button className="btn btn-sm" onClick={() => void load(false)} disabled={loading}>↻ 刷新</button>
+          <button className="btn btn-sm" onClick={() => void load(false)} disabled={loading}><Icon name="refresh" /> 刷新</button>
           {/* 用户报障：历史记录只能看，日志拿不到手。直接给一个「打开日志目录」
               入口（当天分片），配合每行的「定位日志文件」。 */}
           <button
             className="btn btn-sm"
             onClick={() => void handleOpenLogFolder()}
             title="在文件管理器中打开任务日志目录"
-          >📂 日志目录</button>
+          ><Icon name="folder" /> 日志目录</button>
           <button
             className="btn btn-sm btn-danger-ghost"
             onClick={() => setConfirmingClear(true)}
@@ -482,7 +483,7 @@ export default function HistoryPage({ active }: { active: boolean }) {
       )}
 
       {error && (
-        <div className="history-error" role="alert">⚠ {error}</div>
+        <div className="history-error" role="alert"><Icon name="warning" className="icon-xs" /> {error}</div>
       )}
 
       {notice && (
@@ -491,7 +492,7 @@ export default function HistoryPage({ active }: { active: boolean }) {
           role="status"
           aria-live="polite"
         >
-          {notice.kind === 'ok' ? '✓ ' : '⚠ '}
+          {notice.kind === 'ok' ? <Icon name="check" className="icon-xs" /> : <Icon name="warning" className="icon-xs" />}
           {notice.text}
         </div>
       )}
@@ -500,7 +501,7 @@ export default function HistoryPage({ active }: { active: boolean }) {
         <>
           <div className="history-filters">
             <div className="history-search">
-              <span className="history-search-icon" aria-hidden="true">🔍</span>
+              <span className="history-search-icon" aria-hidden="true"><Icon name="search" /></span>
               <input
                 className="history-search-input"
                 type="search"
@@ -569,7 +570,7 @@ export default function HistoryPage({ active }: { active: boolean }) {
                   aria-controls={`history-runs-${key}`}
                 >
                   <div className="history-group-left">
-                    <span className={`history-group-arrow ${isOpen ? 'open' : ''}`}>▶</span>
+                    <span className={`history-group-arrow ${isOpen ? 'open' : ''}`}><Icon name="chevron-right" className="icon-xs" /></span>
                     <span className="history-group-name" title={group.label}>{group.label}</span>
                   </div>
                   <div className="history-group-meta">
@@ -603,9 +604,9 @@ export default function HistoryPage({ active }: { active: boolean }) {
                             className="btn btn-sm"
                             onClick={() => void handleRevealLog(run.executionId)}
                             title="在文件管理器中定位该次执行的日志文件"
-                          >📂 定位</button>
+                          ><Icon name="external" /> 定位</button>
                         </div>
-                        {run.errorMessage && <div className="history-run-err" title={run.errorMessage}>⚠ {run.errorMessage.replace(/\s+/g, ' ').trim()}</div>}
+                        {run.errorMessage && <div className="history-run-err" title={run.errorMessage}><Icon name="warning" className="icon-xs" /><span>{run.errorMessage.replace(/\s+/g, ' ').trim()}</span></div>}
                         {!run.errorMessage && run.status === 'failed' && run.exitCode !== undefined && <div className="history-run-err">退出码 {run.exitCode}</div>}
                       </div>
                     ))}

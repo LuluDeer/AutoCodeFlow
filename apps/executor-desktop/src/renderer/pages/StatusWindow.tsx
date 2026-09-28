@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import UpdateBanner from '../components/UpdateBanner';
 import HighlightText from '../components/HighlightText';
+import Icon from '../components/Icon';
 import { agentActivityLabel, agentOutcomeLabel, type AgentStatusSnapshot } from '../../main/agent-status-view';
 import { requestTabSwitch } from '../tab-switch';
 
@@ -59,7 +60,7 @@ function CopyValue({ value, mono = true }: { value: string; mono?: boolean }) {
           className={`copy-btn${state === 'copied' ? ' copied' : state === 'error' ? ' copy-failed' : ''}`}
           onClick={copy}
         >
-          {state === 'copied' ? '已复制 ✓' : state === 'error' ? '复制失败' : '复制'}
+          {state === 'copied' ? <>已复制 <Icon name="check" className="icon-xs" /></> : state === 'error' ? '复制失败' : '复制'}
         </button>
       )}
     </div>
@@ -311,7 +312,7 @@ function LogViewer({
         <span className="log-fs-title">运行日志 <small>{logs.length} 行</small></span>
 
         <div className="log-fs-search">
-          <span className="log-fs-search-icon">🔍</span>
+          <span className="log-fs-search-icon"><Icon name="search" /></span>
           <input
             ref={inputRef}
             className="log-fs-input"
@@ -328,17 +329,17 @@ function LogViewer({
           )}
           {q && totalMatches > 0 && (
             <>
-              <button className="log-fs-nav" aria-label="上一条匹配日志" onClick={() => setMatchIdx((p) => Math.max(0, p - 1))}>↑</button>
-              <button className="log-fs-nav" aria-label="下一条匹配日志" onClick={() => setMatchIdx((p) => Math.min(totalMatches - 1, p + 1))}>↓</button>
+              <button className="log-fs-nav" aria-label="上一条匹配日志" onClick={() => setMatchIdx((p) => Math.max(0, p - 1))}><Icon name="arrow-up" /></button>
+              <button className="log-fs-nav" aria-label="下一条匹配日志" onClick={() => setMatchIdx((p) => Math.min(totalMatches - 1, p + 1))}><Icon name="arrow-down" /></button>
             </>
           )}
         </div>
 
         <div className="log-fs-actions">
           <button className="btn btn-sm" onClick={() => setShowFiles((v) => !v)}>
-            📂 日志文件
+            <Icon name="folder" /> 日志文件
           </button>
-          <button className="btn btn-sm" onClick={onClose}>✕ 关闭</button>
+          <button className="btn btn-sm" onClick={onClose}><Icon name="close" /> 关闭</button>
         </div>
       </div>
       <div className="log-fs-tools">
@@ -422,7 +423,7 @@ function LogViewer({
                     onClick={() => openFile(f.path)}
                   >
                     <span className="log-file-label">{f.label}</span>
-                    <span className="log-file-open">↗ 打开</span>
+                    <span className="log-file-open"><Icon name="external" className="icon-xs" /> 打开</span>
                   </button>
                 ))
             }
@@ -693,8 +694,8 @@ export default function StatusWindow({ active }: { active: boolean }) {
               {severityCounts.error > 0 && <button className="log-severity error" onClick={() => openLogViewer('error')}>错误 {severityCounts.error}</button>}
             </div>
             <div className="log-actions">
-              <button className="btn btn-sm" onClick={() => openLogViewer()}>⛶ 查看日志</button>
-              <button className="btn btn-sm" onClick={jumpPreviewToBottom}>{unreadLogs > 0 ? `↓ ${unreadLogs} 条新日志` : '↓ 底部'}</button>
+              <button className="btn btn-sm" onClick={() => openLogViewer()}><Icon name="expand" /> 查看日志</button>
+              <button className="btn btn-sm" onClick={jumpPreviewToBottom}><Icon name="arrow-down" /> {unreadLogs > 0 ? `${unreadLogs} 条新日志` : '底部'}</button>
               <button className="btn btn-sm" onClick={clearDisplayedLogs} title="仅清空当前窗口显示，不删除日志文件">清空显示</button>
             </div>
           </div>

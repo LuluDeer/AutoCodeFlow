@@ -5,6 +5,10 @@
 }
 
 :root {
+  /* 让原生控件（下拉、滚动条、搜索框清除按钮）跟随深色主题渲染，
+     否则 Windows 上 select 弹出层/滚动条是刺眼的亮色块。 */
+  color-scheme: dark;
+
   /* UI-13: semantic palette from design-system/autocodeflow/MASTER.md. */
   --color-primary: #0f172a;
   --color-on-primary: #ffffff;
@@ -335,7 +339,7 @@ textarea:focus-visible,
 .log-viewer {
   background: #0d1117;
   color: #d4d4d4;
-  font-family: 'SF Mono', 'Menlo', 'Monaco', 'Consolas', monospace;
+  font-family: var(--font-mono);
   font-size: 11.5px;
   line-height: 1.65;
   padding: 12px 14px;
@@ -860,7 +864,7 @@ textarea:focus-visible,
 .ip-option.selected { border-color: var(--accent); background: var(--accent-muted); }
 
 .ip-addr {
-  font-family: 'SF Mono', 'Menlo', monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   color: var(--text);
 }
@@ -1107,7 +1111,7 @@ textarea:focus-visible,
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-family: 'SF Mono', 'Menlo', monospace;
+  font-family: var(--font-mono);
 }
 
 .log-file-open {
@@ -2209,8 +2213,17 @@ textarea:focus-visible,
 /* ── Extra badge & button variants ──────────────────────────────── */
 
 /* ── Extra badge & button variants ──────────────────────────────── */
-.badge-success { background: var(--green-bg); color: var(--color-accent); }
-.badge-error   { background: var(--red-bg); color: var(--color-destructive); }
+/* 历史页 statusBadge 使用的四态变体。此前 success/error 只有底色没有边框、
+   ::before 状态点无背景色（渲染成看不见的空点），running/offline 完全未定义
+   ——「运行中」徽标一直是一枚裸文本。统一补齐边框 + 状态点。 */
+.badge-success { background: var(--green-bg); color: var(--color-accent); border: 1px solid var(--green-border); }
+.badge-success::before { background: var(--green); }
+.badge-error   { background: var(--red-bg); color: var(--color-destructive); border: 1px solid var(--red-border); }
+.badge-error::before { background: var(--red); }
+.badge-pending { background: var(--yellow-bg); color: var(--yellow); border: 1px solid var(--yellow-border); }
+.badge-pending::before { background: var(--yellow); animation: pulse 0.8s infinite; }
+.badge-offline { background: var(--bg3); color: var(--text3); border: 1px solid var(--border2); }
+.badge-offline::before { background: var(--text3); }
 .btn-danger-ghost {
   background: transparent;
   color: #f87171;
@@ -2220,6 +2233,84 @@ textarea:focus-visible,
   background: var(--red-bg);
   color: #fca5a5;
 }
+
+/* ── 统一线性图标（components/Icon.tsx）──────────────────────────
+   页面内的 emoji 字符图标已全部替换为 Icon 组件；尺寸按容器在此收口，
+   颜色一律继承 color（状态色由外层容器决定）。 */
+.icon {
+  width: 14px;
+  height: 14px;
+  flex: none;
+}
+.icon-xs {
+  width: 12px;
+  height: 12px;
+  vertical-align: -2px;
+}
+.btn .icon { width: 13px; height: 13px; }
+.btn-lg .icon { width: 14px; height: 14px; }
+.app-icon-button .icon { width: 15px; height: 15px; }
+.log-fs-search-icon { display: inline-flex; }
+.log-fs-search-icon .icon { width: 13px; height: 13px; }
+.log-fs-nav .icon { width: 14px; height: 14px; display: block; }
+.log-file-open { display: inline-flex; align-items: center; gap: 2px; }
+.log-file-open .icon { width: 11px; height: 11px; }
+.history-search-icon { display: inline-flex; }
+.history-search-icon .icon { width: 13px; height: 13px; }
+.apps-search-icon { display: inline-flex; }
+.apps-search-icon .icon { width: 15px; height: 15px; }
+.apps-search button { display: inline-flex; align-items: center; }
+.apps-search button .icon { width: 13px; height: 13px; }
+.cfg-nav-icon { display: inline-flex; }
+.cfg-nav-icon .icon { width: 16px; height: 16px; }
+.update-banner-icon { display: inline-flex; align-items: center; }
+.update-banner-icon .icon { width: 17px; height: 17px; }
+.info-banner-icon { display: inline-flex; margin-top: 1px; }
+.info-banner-icon .icon { width: 15px; height: 15px; }
+.wizard-feature-icon { display: inline-flex; align-items: center; justify-content: center; }
+.wizard-feature-icon .icon { width: 18px; height: 18px; }
+.history-group-arrow { display: inline-flex; }
+.history-group-arrow .icon { width: 12px; height: 12px; }
+.history-run-err { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.history-run-err > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.icon-flip-h { transform: scaleX(-1); }
+/* 图标翻转用于「返回」方向；reduced-motion 不受影响（transform 静态）。 */
+
+/* Agent 托管状态点（ConfigPage）：替代 🟢⚪⏳ emoji 的 CSS 版状态点。 */
+.agent-status-dot {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  margin-top: 5px;
+  border-radius: 50%;
+  background: var(--text4);
+  box-shadow: 0 0 0 4px rgb(148 163 184 / 0.14);
+}
+.agent-status-dot.is-ok { background: var(--green); box-shadow: 0 0 0 4px var(--green-bg); }
+.agent-status-dot.is-working { background: var(--yellow); box-shadow: 0 0 0 4px var(--yellow-bg); animation: pulse 1.2s infinite; }
+
+/* ConfigPage 中已使用但此前无样式的辅助类（列表输入 / 计数 / Agent 选择列）。 */
+.cfg-list-input {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.7;
+  min-height: 120px;
+  resize: vertical;
+}
+.cfg-label-count { margin-left: 8px; color: var(--text4); font-weight: 500; font-size: 11px; }
+.cfg-agent-select-field { max-width: 560px; }
+
+/* Wizard 品牌图标：与主窗标题栏 mark 同一视觉语言（accent 描边块），
+   替换原先突兀的蓝紫渐变（与全局绿色 accent 相冲突）。 */
+.wizard-brand-icon {
+  width: 32px; height: 32px;
+  background: var(--accent-muted);
+  border: 1px solid var(--green-border);
+  color: var(--accent);
+  border-radius: 8px;
+  display: flex; align-items: center; justify-content: center;
+}
+.wizard-brand-icon .icon { width: 18px; height: 18px; }
 
 /* ── DSK-05：自动更新提示条（状态监控页顶部）─────────────────────── */
 .update-banner {
@@ -2287,11 +2378,18 @@ textarea:focus-visible,
 .apps-error,
 .history-error { margin-bottom: var(--space-md); }
 
-.history-clear-confirm { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 10px 12px; border: 1px solid var(--red-border); border-radius: var(--radius); background: var(--red-bg); }
-.history-clear-confirm > div:first-child { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.history-clear-confirm strong { color: var(--text); font-size: 12px; }
-.history-clear-confirm span { color: var(--text2); font-size: 11px; }
-.history-clear-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.history-clear-confirm,
+.apps-confirm { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 10px 12px; border: 1px solid var(--red-border); border-radius: var(--radius); background: var(--red-bg); }
+.history-clear-confirm > div:first-child,
+.apps-confirm > div:first-child { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.history-clear-confirm strong,
+.apps-confirm strong { color: var(--text); font-size: 12px; }
+.history-clear-confirm span,
+.apps-confirm span { color: var(--text2); font-size: 11px; }
+.history-clear-actions,
+.apps-confirm-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+/* 应用页的确认条出现在展开的版本列表里，与上下内容留出呼吸感。 */
+.apps-confirm { margin: 10px 14px 0; }
 .history-toolbar-actions { align-items: center; }
 
 .cfg-save-error {
