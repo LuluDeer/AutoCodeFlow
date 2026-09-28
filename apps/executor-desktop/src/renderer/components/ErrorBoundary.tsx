@@ -50,7 +50,7 @@ class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundarySta
           <p className="error-boundary-hint">
             界面已停止工作。点击下方按钮重载渲染层；若反复出现，请重启应用并附上错误摘要反馈。
           </p>
-          <button className="btn-primary" onClick={this.handleReload}>
+          <button className="btn btn-primary" onClick={this.handleReload}>
             重载渲染层
           </button>
         </div>
