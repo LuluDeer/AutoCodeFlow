@@ -293,18 +293,26 @@ function parseRgb(str) {
       await status.waitForTimeout(200);
     }
 
-    // ── 窄窗口审计（调整窗口大小）──
-    // Electron 窗口不能用 CDP Browser.setWindowBounds（无 browser 上下文），
-    // 改用 Playwright 的 setViewportSize——它调整的是 webContents 视口，
-    // 触发与真实窗口缩放相同的响应式媒体查询。
+    // ── 窄窗口审计（真实窗口缩放，非视口模拟）──
+    // setViewportSize 只是 Emulation.setDeviceMetricsOverride——模拟视口指标，
+    // 真实 BrowserWindow 不动，不触发主进程 resize 事件/尺寸记忆逻辑。
+    // 正确做法：app.evaluate 在主进程对真实窗口调 setSize。
     const sizes = [
       { w: 960, h: 640, label: '窄窗口960x640' },
       { w: 760, h: 560, label: '最小760x560' },
     ];
     for (const s of sizes) {
       try {
-        await status.setViewportSize({ width: s.w, height: s.h });
-        await status.waitForTimeout(400);
+        await app.evaluate(({ BrowserWindow }, { w, h }) => {
+          const win = BrowserWindow.getAllWindows()[0];
+          if (win) {
+            if (win.isMaximized()) win.unmaximize();
+            win.setSize(w, h);
+          }
+        }, { w: s.w, h: s.h });
+        await status.waitForTimeout(500);
+        const realSize = await status.evaluate(() => ({ w: window.innerWidth, h: window.innerHeight }));
+        console.log(`  真实窗口缩放至 ${realSize.w}x${realSize.h}（请求 ${s.w}x${s.h}）`);
         // 逐页审计
         for (const tab of ['状态监控', '配置', '历史', '应用']) {
           await status.getByRole('tab', { name: tab }).click();
@@ -315,6 +323,11 @@ function parseRgb(str) {
         addIssue('info', s.label, 'resize-fail', String(e).slice(0, 80));
       }
     }
+    // 恢复窗口尺寸
+    await app.evaluate(({ BrowserWindow }) => {
+      const win = BrowserWindow.getAllWindows()[0];
+      if (win) win.setSize(1440, 900);
+    });
 
     // ── 输出报告 ──
     const sev = { err: 0, warn: 0, info: 0 };
