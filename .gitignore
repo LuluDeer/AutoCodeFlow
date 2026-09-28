@@ -80,6 +80,7 @@ apps/executor-*/tasks/
 # E2E 测试临时文件
 test-results/
 playwright-report/
+e2e/.screenshots/
 .playwright-mcp/
 
 # OpenAPI 导出产物（ARCH-23）……产物**入库**：CI api-types-drift job 以

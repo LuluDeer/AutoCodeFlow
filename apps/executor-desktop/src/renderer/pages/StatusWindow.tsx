@@ -1,7 +1,10 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import UpdateBanner from '../components/UpdateBanner';
 import HighlightText from '../components/HighlightText';
+import Icon from '../components/Icon';
+import FormattedLogText from '../components/FormattedLogText';
 import { agentActivityLabel, agentOutcomeLabel, type AgentStatusSnapshot } from '../../main/agent-status-view';
+import { requestTabSwitch } from '../tab-switch';
 
 declare const window: Window & {
   electronAPI: {
@@ -25,6 +28,13 @@ const STATUS_LABEL: Record<Status, string> = {
   offline: '连接已断开',
   pending: '正在启动...',
   stopped: '已停止',
+};
+
+const STATUS_BADGE: Record<Status, string> = {
+  online: 'badge-success',
+  offline: 'badge-error',
+  pending: 'badge-pending',
+  stopped: 'badge-stopped',
 };
 
 const STATUS_DESC: Record<Status, string> = {
@@ -58,7 +68,7 @@ function CopyValue({ value, mono = true }: { value: string; mono?: boolean }) {
           className={`copy-btn${state === 'copied' ? ' copied' : state === 'error' ? ' copy-failed' : ''}`}
           onClick={copy}
         >
-          {state === 'copied' ? '已复制 ✓' : state === 'error' ? '复制失败' : '复制'}
+          {state === 'copied' ? <>已复制 <Icon name="check" className="icon-xs" /></> : state === 'error' ? '复制失败' : '复制'}
         </button>
       )}
     </div>
@@ -78,7 +88,36 @@ function CopyValue({ value, mono = true }: { value: string; mono?: boolean }) {
 // 时间一律显示本地（文件行取外层本地时间；实时行把内嵌 UTC 转本地），
 // 级别统一大写并用于精确着色（不再靠 includes('err ') 猜）。
 type LogLevel = 'error' | 'warn' | '';
-type LogLine = { level: LogLevel; text: string };
+type LogLine = { id: number; level: LogLevel; text: string };
+type LogLevelFilter = 'all' | 'warn' | 'error';
+const MAX_LOG_LINES = 2000;
+const PREVIEW_LOG_LINES = 120;
+const LOG_VIEWER_PAGE = 350;
+let nextLogLineId = 0;
+
+function makeLogLine(level: LogLevel, text: string): LogLine {
+  return { id: ++nextLogLineId, level, text };
+}
+
+function retainRecentLogs(lines: LogLine[]): LogLine[] {
+  return lines.length > MAX_LOG_LINES ? lines.slice(-MAX_LOG_LINES) : lines;
+}
+
+// 首次读取文件期间可能已有实时行到达：用最长重叠前后缀合并，避免覆盖新行或重复显示。
+function mergeHistoryWithLive(history: LogLine[], live: LogLine[]): LogLine[] {
+  const maxOverlap = Math.min(history.length, live.length);
+  let overlap = 0;
+  for (let count = maxOverlap; count > 0; count--) {
+    let same = true;
+    for (let i = 0; i < count; i++) {
+      const a = history[history.length - count + i];
+      const b = live[i];
+      if (a.level !== b.level || a.text !== b.text) { same = false; break; }
+    }
+    if (same) { overlap = count; break; }
+  }
+  return retainRecentLogs([...history, ...live.slice(overlap)]);
+}
 
 // electron-log 文件行：[2026-09-23 14:38:30.519] [info] [executor|executor:err] <rest>
 // （桌面端自身日志没有 [executor] 段，如 "Status window opened"）
@@ -138,20 +177,31 @@ function normalizeLogLine(raw: string): LogLine {
   }
 
   // 两种来源都没解析出任何结构（纯文本输出）——原样展示，不强行加壳。
-  if (!clock && !level) return { level: lvl, text: raw };
-  return { level: lvl, text: `[${clock}]${level ? ` [${level}]` : ''} ${rest}` };
+  if (!clock && !level) return makeLogLine(lvl, raw);
+  return makeLogLine(lvl, `[${clock}]${level ? ` [${level}]` : ''} ${rest}`);
 }
+
+// 规范化后的行形如 `[HH:mm:ss.SSS] [LEVEL] 正文`。渲染时拆成时间 / 级别 /
+// 正文三段并分别着色：时间戳与级别不再和正文抢视觉权重，扫读时一眼定位级别。
+// FormattedLogText 已收口为共享组件（components/FormattedLogText.tsx）。
 
 // ── 全屏日志查看器 ──────────────────────────────────────
 function LogViewer({
   logs,
+  initialFilter,
   onClose,
 }: {
   logs: LogLine[];
+  initialFilter: LogLevelFilter;
   onClose: () => void;
 }) {
   const [query, setQuery] = useState('');
+  const [levelFilter, setLevelFilter] = useState<LogLevelFilter>(initialFilter);
   const [matchIdx, setMatchIdx] = useState(0);
+  const [visibleCount, setVisibleCount] = useState(LOG_VIEWER_PAGE);
+  const [following, setFollowing] = useState(true);
+  const [wrapLines, setWrapLines] = useState(false);
+  const [fileQuery, setFileQuery] = useState('');
   const containerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const [logFiles, setLogFiles] = useState<Array<{ label: string; path: string; date: string }>>([]);
@@ -160,14 +210,25 @@ function LogViewer({
   // 实时日志跟随：用户停在底部时新行自动滚底，向上翻看后不打断（与主日志区一致）
   const followRef = useRef(true);
 
-  // 计算匹配行索引
   const q = query.trim().toLowerCase();
-  const matchedIndices: number[] = [];
-  const filtered = logs.map((line, i) => {
-    const hit = q ? line.text.toLowerCase().includes(q) : true;
-    if (hit && q) matchedIndices.push(i);
-    return { line, i, hit };
-  });
+  const counts = useMemo(() => ({
+    error: logs.filter((line) => line.level === 'error').length,
+    warn: logs.filter((line) => line.level === 'warn').length,
+  }), [logs]);
+  const filtered = useMemo(() => logs
+    .map((line, i) => ({ line, i }))
+    .filter(({ line }) => levelFilter === 'all' || line.level === levelFilter)
+    .filter(({ line }) => !q || line.text.toLowerCase().includes(q)), [logs, levelFilter, q]);
+  const matchedIndices = q ? filtered.map(({ i }) => i) : [];
+  // 检索匹配可以很多，但只挂载当前结果附近的行；上下跳转仍覆盖全部匹配。
+  const searchStart = q && filtered.length > LOG_VIEWER_PAGE
+    ? Math.max(0, Math.min(matchIdx - 100, filtered.length - LOG_VIEWER_PAGE))
+    : 0;
+  const displayed = q
+    ? filtered.slice(searchStart, searchStart + LOG_VIEWER_PAGE)
+    : filtered.slice(-visibleCount);
+  const hiddenCount = filtered.length - displayed.length;
+  const visibleLogFiles = logFiles.filter((file) => `${file.label} ${file.path}`.toLowerCase().includes(fileQuery.trim().toLowerCase()));
 
   // 跳转到当前匹配项
   useEffect(() => {
@@ -175,18 +236,21 @@ function LogViewer({
     const safeIdx = Math.min(matchIdx, matchedIndices.length - 1);
     const el = containerRef.current.querySelector(`[data-logidx="${matchedIndices[safeIdx]}"]`) as HTMLElement | null;
     el?.scrollIntoView({ block: 'center' });
-  }, [matchIdx, query]);
+  }, [matchIdx, query, levelFilter]);
 
   // 非搜索态下实时日志跟随底部（搜索态由上方跳转 effect 接管）
   useEffect(() => {
     if (q || !followRef.current || !containerRef.current) return;
     containerRef.current.scrollTop = containerRef.current.scrollHeight;
-  }, [logs, q]);
+  }, [logs, q, levelFilter, visibleCount]);
 
   function handleViewerScroll() {
     const el = containerRef.current;
     if (!el) return;
-    followRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+    if (el.scrollHeight - el.scrollTop - el.clientHeight < 40) {
+      followRef.current = true;
+      setFollowing(true);
+    }
   }
 
   // 打开日志文件失败（关联程序缺失/路径被拒）时给出反馈，而不是点击无反应
@@ -243,18 +307,29 @@ function LogViewer({
 
   const totalMatches = matchedIndices.length;
   const safeMatchIdx = totalMatches ? Math.min(matchIdx, totalMatches - 1) : 0;
+  function jumpToLatest() {
+    setQuery('');
+    setVisibleCount(LOG_VIEWER_PAGE);
+    followRef.current = true;
+    setFollowing(true);
+    requestAnimationFrame(() => {
+      if (containerRef.current) containerRef.current.scrollTop = containerRef.current.scrollHeight;
+    });
+  }
 
   return (
     <div className="log-fullscreen">
       {/* 顶栏 */}
       <div className="log-fs-bar">
-        <span className="log-fs-title">运行日志</span>
+        <span className="log-fs-title">运行日志 <small>{logs.length} 行</small></span>
 
         <div className="log-fs-search">
-          <span className="log-fs-search-icon">🔍</span>
+          <span className="log-fs-search-icon"><Icon name="search" /></span>
           <input
             ref={inputRef}
             className="log-fs-input"
+            type="search"
+            aria-label="搜索运行日志"
             placeholder="搜索日志… (Ctrl+F)"
             value={query}
             onChange={(e) => { setQuery(e.target.value); setMatchIdx(0); }}
@@ -266,53 +341,93 @@ function LogViewer({
           )}
           {q && totalMatches > 0 && (
             <>
-              <button className="log-fs-nav" onClick={() => setMatchIdx((p) => Math.max(0, p - 1))}>↑</button>
-              <button className="log-fs-nav" onClick={() => setMatchIdx((p) => Math.min(totalMatches - 1, p + 1))}>↓</button>
+              <button className="log-fs-nav" aria-label="上一条匹配日志" onClick={() => setMatchIdx((p) => Math.max(0, p - 1))}><Icon name="arrow-up" /></button>
+              <button className="log-fs-nav" aria-label="下一条匹配日志" onClick={() => setMatchIdx((p) => Math.min(totalMatches - 1, p + 1))}><Icon name="arrow-down" /></button>
             </>
           )}
         </div>
 
         <div className="log-fs-actions">
           <button className="btn btn-sm" onClick={() => setShowFiles((v) => !v)}>
-            📂 日志文件
+            <Icon name="folder" /> 日志文件
           </button>
-          <button className="btn btn-sm" onClick={onClose}>✕ 关闭</button>
+          <button className="btn btn-sm" onClick={onClose}><Icon name="close" /> 关闭</button>
         </div>
+      </div>
+      <div className="log-fs-tools">
+        <div className="log-level-filters" role="group" aria-label="筛选日志级别">
+          {([['all', '全部', logs.length], ['warn', '警告', counts.warn], ['error', '错误', counts.error]] as const).map(([value, label, count]) => (
+            <button
+              key={value}
+              className={`log-level-chip${levelFilter === value ? ' active' : ''}`}
+              aria-pressed={levelFilter === value}
+              onClick={() => { setLevelFilter(value); setMatchIdx(0); setVisibleCount(LOG_VIEWER_PAGE); }}
+            >{label} {count}</button>
+          ))}
+        </div>
+        <span className="log-fs-summary">
+          {q
+            ? `匹配 ${filtered.length} 行${filtered.length > displayed.length ? ` · 显示 ${searchStart + 1}–${searchStart + displayed.length}` : ''}`
+            : `显示 ${displayed.length} / ${filtered.length} 行`}
+          {logs.length === MAX_LOG_LINES ? ' · 更早记录请打开日志文件' : ''}
+        </span>
+        <button className="btn btn-sm" aria-pressed={wrapLines} onClick={() => setWrapLines((value) => !value)}>{wrapLines ? '取消折行' : '折行'}</button>
+        <button className="btn btn-sm" onClick={jumpToLatest}>{following && !q ? '已跟随最新' : '查看最新'}</button>
       </div>
 
       {/* 主体：日志 + 可选文件面板 */}
       <div className="log-fs-body">
         {/* 日志内容 */}
-        <div className="log-viewer log-fs-content" ref={containerRef} onScroll={handleViewerScroll}>
-          {filtered.map(({ line, i, hit }) => {
-            if (!hit) return null;
+        <div
+          className={`log-viewer log-fs-content${wrapLines ? ' wrap' : ''}`}
+          ref={containerRef}
+          tabIndex={0}
+          onScroll={handleViewerScroll}
+          onWheel={(event) => { if (event.deltaY < 0) { followRef.current = false; setFollowing(false); } }}
+          onPointerDown={(event) => {
+            if (event.clientX > event.currentTarget.getBoundingClientRect().right - 18) {
+              followRef.current = false;
+              setFollowing(false);
+            }
+          }}
+          onKeyDown={(event) => {
+            if (['ArrowUp', 'PageUp', 'Home'].includes(event.key)) { followRef.current = false; setFollowing(false); }
+          }}
+        >
+          {hiddenCount > 0 && !q && (
+            <button className="log-load-older" onClick={() => { followRef.current = false; setFollowing(false); setVisibleCount((n) => n + LOG_VIEWER_PAGE); }}>
+              加载更早的日志（还有 {hiddenCount} 行）
+            </button>
+          )}
+          {displayed.map(({ line, i }) => {
             const isCurrent = q && matchedIndices[safeMatchIdx] === i;
             return (
               <div
-                key={i}
+                key={line.id}
                 data-logidx={i}
                 className={`log-line ${line.level}${isCurrent ? ' log-highlight' : ''}`}
               >
-                {q ? <HighlightText text={line.text} query={q} /> : line.text}
+                {q ? <HighlightText text={line.text} query={q} /> : <FormattedLogText text={line.text} />}
               </div>
             );
           })}
           {logs.length === 0 && (
             <span className="log-empty">等待日志输出...</span>
           )}
-          {q && totalMatches === 0 && logs.length > 0 && (
-            <span className="log-empty">无匹配结果</span>
+          {filtered.length === 0 && logs.length > 0 && (
+            <span className="log-empty">{q ? '无匹配结果' : '此级别暂无日志'}</span>
           )}
         </div>
 
         {/* 日志文件侧栏 */}
         {showFiles && (
           <div className="log-fs-files">
-            <div className="log-fs-files-title">历史日志文件</div>
+            <div className="log-fs-files-title">历史日志文件 · {logFiles.length}</div>
+            <input className="log-file-search" type="search" aria-label="搜索日志文件" placeholder="按日期或文件名查找" value={fileQuery} onChange={(event) => setFileQuery(event.target.value)} />
             {fileError && <div className="log-files-error" role="alert">{fileError}</div>}
-            {logFiles.length === 0
-              ? <div className="log-files-empty">暂无日志文件</div>
-              : logFiles.map((f) => (
+            {visibleLogFiles.length === 0
+              ? <div className="log-files-empty">{fileQuery ? '没有匹配的日志文件' : '暂无日志文件'}</div>
+              : visibleLogFiles.map((f) => (
                   <button
                     key={f.path}
                     className="log-file-item"
@@ -320,7 +435,7 @@ function LogViewer({
                     onClick={() => openFile(f.path)}
                   >
                     <span className="log-file-label">{f.label}</span>
-                    <span className="log-file-open">↗ 打开</span>
+                    <span className="log-file-open"><Icon name="external" className="icon-xs" /> 打开</span>
                   </button>
                 ))
             }
@@ -334,46 +449,49 @@ function LogViewer({
 // 高亮组件见 components/HighlightText.tsx（与 AppsPage 共用）
 
 // ── 主状态页 ──────────────────────────────────────────
-export default function StatusWindow() {
+export default function StatusWindow({ active }: { active: boolean }) {
   const [status, setStatus] = useState<Status>('stopped');
+  const [running, setRunning] = useState(false);
   const [statusLoaded, setStatusLoaded] = useState(false);
   const [config, setConfig] = useState<Record<string, unknown>>({});
   const [agentStatus, setAgentStatus] = useState<AgentStatusSnapshot | null>(null);
   const [agentStatusError, setAgentStatusError] = useState<string | null>(null);
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [acting, setActing] = useState(false);
+  const [pendingAction, setPendingAction] = useState<'start' | 'stop' | null>(null);
   // F-22（DEEP_REVIEW 0ef3bbe）：IPC reject 时页内展示错误，避免按钮永久 disabled 且用户无感知
   const [actionError, setActionError] = useState<string | null>(null);
   const [fullscreen, setFullscreen] = useState(false);
+  const [logViewerFilter, setLogViewerFilter] = useState<LogLevelFilter>('all');
+  const [unreadLogs, setUnreadLogs] = useState(0);
+  const clearedRef = useRef(false);
   const logRef = useRef<HTMLDivElement>(null);
   const autoScroll = useRef(true);
 
+  // 页面常驻挂载；切回状态页时重取配置与进程状态，避免设置保存后仍显示旧值。
   useEffect(() => {
-    // EXP-04（本轮体验审查）：此前无 .catch —— `executor:status` handler 要读
-    // configStore.getAllMasked()，配置文件损坏/schema 校验抛错/token 解密异常时
-    // 该 IPC reject，于是 statusLoaded 永远为 false：状态徽章永久停在「加载中...」
-    // 大按钮永久灰色不可点，且页内没有任何错误提示（actionError 只由
-    // handleStart/handleStop 设置）。用户既无法从界面启动执行器也不知道原因，
-    // 只能重启应用且大概率复现——「按钮永久 disabled + 错误被吞」。
-    //
-    // 同文件 getTodayLogs() 本就有 .catch，属遗漏而非设计。修法与它对齐：
-    // 失败时也置 statusLoaded=true（status 保持 stopped，让按钮可点），并把
-    // 原因写进既有的 actionError 错误条。
+    if (!active) return;
+    let cancelled = false;
     window.electronAPI
       .getStatus()
-      .then((s) => {
-        setStatus(s.status as Status);
-        setConfig(s.config);
+      .then((snapshot) => {
+        if (cancelled) return;
+        setStatus(snapshot.status as Status);
+        setRunning(snapshot.running);
+        setConfig(snapshot.config);
+        setActionError(null);
       })
       .catch((err: unknown) => {
+        if (cancelled) return;
         setActionError(
           `无法读取执行器状态：${err instanceof Error ? err.message : String(err)}。可尝试重启应用；若持续出现请检查配置文件是否损坏。`,
         );
       })
-      .finally(() => {
-        setStatusLoaded(true);
-      });
+      .finally(() => { if (!cancelled) setStatusLoaded(true); });
+    return () => { cancelled = true; };
+  }, [active]);
 
+  useEffect(() => {
     // 启动时先加载当天的历史日志（经 preload 暴露的方法；禁止用
     // window.electronAPI.invoke —— preload 不暴露 invoke，会同步抛异常
     // → React 卸载整棵树 → 主窗口只有背景色黑屏，见 preload/index.ts 注释）
@@ -382,18 +500,20 @@ export default function StatusWindow() {
         // 过滤掉空行；落盘行是 electron-log+winston 双时间戳形态，
         // 统一经 normalizeLogLine 收敛为单时间戳展示（见上方注释）。
         const validLines = (result.lines as string[]).filter((l) => l.trim().length > 0);
-        setLogs(validLines.slice(-500).map(normalizeLogLine));
+        if (!clearedRef.current) {
+          const historical = validLines.slice(-500).map(normalizeLogLine);
+          setLogs((live) => mergeHistoryWithLive(historical, live));
+        }
       }
     }).catch(() => {});
 
     const offLog = window.electronAPI.onLogLine((line) => {
-      setLogs((prev) => {
-        const next = [...prev, normalizeLogLine(line)];
-        return next.length > 2000 ? next.slice(-1600) : next;
-      });
+      setLogs((prev) => retainRecentLogs([...prev, normalizeLogLine(line)]));
+      if (!autoScroll.current) setUnreadLogs((count) => count + 1);
     });
     const offStatus = window.electronAPI.onStatusChange((s) => {
       setStatus(s as Status);
+      setRunning(s !== 'stopped');
     });
     return () => { offLog(); offStatus(); };
   }, []);
@@ -401,6 +521,7 @@ export default function StatusWindow() {
   useEffect(() => {
     // 状态窗常驻时也要反映分钟级 Agent 指派的开始/完成。沿用设置页的
     // 只读 IPC；旧版 preload 缺通道时只影响这两张信息卡。
+    if (!active) return;
     const getAgentStatus = window.electronAPI.getAgentStatus;
     if (typeof getAgentStatus !== 'function') {
       setAgentStatusError('当前版本不支持读取 Agent 状态');
@@ -427,149 +548,196 @@ export default function StatusWindow() {
     refresh();
     const timer = setInterval(refresh, 2_000);
     return () => { cancelled = true; clearInterval(timer); };
-  }, []);
+  }, [active]);
 
   useEffect(() => {
     if (autoScroll.current && logRef.current) {
       logRef.current.scrollTop = logRef.current.scrollHeight;
     }
-  }, [logs]);
+  }, [logs, active]);
 
   // F-22（DEEP_REVIEW 0ef3bbe）：启动/停止 IPC 包 try/finally，reject 时按钮 disabled
   // 状态必须恢复，否则只能重启应用；失败原因落到页内错误条。
   async function handleStart() {
     setActing(true);
+    setPendingAction('start');
     setActionError(null);
     try {
-      await window.electronAPI.startExecutor();
+      const result = await window.electronAPI.startExecutor();
+      if (!result?.ok) throw new Error('执行器启动失败，请查看运行日志');
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err));
     } finally {
       setActing(false);
+      setPendingAction(null);
     }
   }
   async function handleStop() {
     setActing(true);
+    setPendingAction('stop');
     setActionError(null);
     try {
-      await window.electronAPI.stopExecutor();
+      const result = await window.electronAPI.stopExecutor();
+      if (!result?.ok) throw new Error('执行器停止失败，请查看运行日志');
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err));
     } finally {
       setActing(false);
+      setPendingAction(null);
     }
   }
   function handleScroll() {
     if (!logRef.current) return;
     const { scrollTop, scrollHeight, clientHeight } = logRef.current;
-    autoScroll.current = scrollHeight - scrollTop - clientHeight < 40;
+    if (scrollHeight - scrollTop - clientHeight < 40) {
+      autoScroll.current = true;
+      setUnreadLogs(0);
+    }
   }
 
   const handleClose = useCallback(() => setFullscreen(false), []);
+  const previewLogs = useMemo(() => active ? logs.slice(-PREVIEW_LOG_LINES) : [], [active, logs]);
+  const severityCounts = useMemo(() => ({
+    error: logs.filter((line) => line.level === 'error').length,
+    warn: logs.filter((line) => line.level === 'warn').length,
+  }), [logs]);
+  function openLogViewer(filter: LogLevelFilter = 'all') {
+    setLogViewerFilter(filter);
+    setFullscreen(true);
+  }
+  function jumpPreviewToBottom() {
+    if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
+    autoScroll.current = true;
+    setUnreadLogs(0);
+  }
+  function clearDisplayedLogs() {
+    clearedRef.current = true;
+    setLogs([]);
+    setUnreadLogs(0);
+  }
 
-  const isActive = status === 'online' || status === 'pending';
   const port = String(config.executorPort || 8002);
   const addr = String(config.executorAddressPublic || '');
   const name = String(config.executorName || 'Executor');
   const apiUrl = String(config.adminApiUrl || '—');
-
-  const ORB_EMOJI: Record<Status, string> = {
-    online: '✦', offline: '✦', pending: '↻', stopped: '○',
-  };
+  const statusLabel = !statusLoaded ? '正在读取状态' : status === 'pending' && pendingAction === 'stop'
+    ? '正在停止'
+    : STATUS_LABEL[status];
+  const statusDescription = status === 'offline' && running
+    ? '本地进程仍在运行，但与平台的心跳连接中断。请检查网络或连接设置。'
+    : status === 'pending' && pendingAction === 'stop'
+      ? '正在安全停止执行器进程'
+      : STATUS_DESC[status];
 
   return (
     <>
-      {fullscreen && <LogViewer logs={logs} onClose={handleClose} />}
+      {fullscreen && <LogViewer logs={logs} initialFilter={logViewerFilter} onClose={handleClose} />}
 
       <div className="status-page">
         {/* DSK-05：自动更新出口。idle 态自身返回 null，不占版面 */}
         <UpdateBanner />
 
-        {/* 大状态卡 */}
-        <div className="hero-card">
-          <div className={`hero-orb ${status}`}>
-            <span className="hero-orb-symbol">{ORB_EMOJI[status]}</span>
+        <section className={`hero-card hero-${status}`} aria-label="执行器状态">
+          <div className="hero-glyph" aria-hidden="true">
+            <Icon name={status === 'online' ? 'activity' : status === 'offline' ? 'warning' : 'server'} />
+            <span className={`hero-indicator-dot${status === 'pending' ? ' is-pending' : ''}`} />
           </div>
           <div className="hero-info">
-            <div className="hero-name">{name}</div>
-            <div className="hero-status-text">{STATUS_DESC[status]}</div>
-            <div className="hero-controls">
-              {!statusLoaded ? (
-                <button className="btn btn-success" disabled>▶ 启动执行器</button>
-              ) : isActive ? (
-                <button className="btn btn-danger" onClick={handleStop} disabled={acting || status === 'pending'}>
-                  ⏹ 停止执行器
-                </button>
-              ) : (
-                <button className="btn btn-success" onClick={handleStart} disabled={acting}>
-                  ▶ 启动执行器
-                </button>
-              )}
-              <span className={`badge ${statusLoaded ? status : 'stopped'}`}>
-                {statusLoaded ? STATUS_LABEL[status] : '加载中...'}
-              </span>
+            <div className="hero-eyebrow">执行器状态 <span aria-hidden="true">/</span> {name}</div>
+            <div className="hero-status-row">
+              <h1 className="hero-name" aria-live="polite">{statusLabel}</h1>
+              {running && <span className={`badge ${STATUS_BADGE[status]}`}>{statusLabel}</span>}
             </div>
-            {actionError && (
-              // F-22（DEEP_REVIEW 0ef3bbe）：启动/停止失败的页内错误条（桌面端无 toast 体系）
-              <div className="hero-error" role="alert">{actionError}</div>
+            <p className="hero-status-text">{statusDescription}</p>
+            {actionError && <div className="hero-error" role="alert">{actionError}</div>}
+          </div>
+          <div className="hero-controls">
+            {status === 'offline' && running && (
+              <button className="btn btn-primary" onClick={() => requestTabSwitch('config')}>
+                检查连接设置
+              </button>
+            )}
+            {!statusLoaded || status === 'pending' ? (
+              <button className="btn btn-success" disabled>
+                <Icon name="refresh" className="icon-spin" />
+                {pendingAction === 'stop' ? '正在停止...' : '正在启动...'}
+              </button>
+            ) : running ? (
+              <button className="btn btn-outline-danger" onClick={handleStop} disabled={acting}>
+                <Icon name="stop" /> 停止执行器
+              </button>
+            ) : (
+              <button className="btn btn-success" onClick={handleStart} disabled={acting}>
+                <Icon name="play" /> 启动执行器
+              </button>
             )}
           </div>
-        </div>
+        </section>
 
-        {/* 信息网格 */}
-        <div className="info-grid">
-          <div className="info-card">
-            <div className="info-card-label">Admin API</div>
-            <div className="info-card-value info-card-value-mono">{apiUrl}</div>
-          </div>
-          <div className="info-card">
-            <div className="info-card-label">对外地址</div>
-            <CopyValue value={addr || `（自动）:${port}`} />
-          </div>
-          <div className="info-card">
-            <div className="info-card-label">执行器名称</div>
-            <div className="info-card-value">{name}</div>
-          </div>
-          <div className="info-card">
-            <div className="info-card-label">监听端口</div>
-            <CopyValue value={port} />
-          </div>
-          <div className="info-card">
-            <div className="info-card-label">Agent 托管</div>
-            <div className="info-card-value" role="status" aria-live="polite">
-              {agentStatusError ?? (agentStatus ? agentActivityLabel(agentStatus) : '正在读取...')}
+        <div className="overview-grid">
+          <section className="overview-card" aria-label="连接信息">
+            <div className="overview-heading">连接信息</div>
+            <div className="overview-row">
+              <span className="overview-label"><Icon name="server" className="overview-label-icon" />平台地址</span>
+              <span className="overview-value overview-value-mono" title={apiUrl}>{apiUrl}</span>
             </div>
-            {agentStatus && <div className="info-card-detail">已处理 {agentStatus.processed} 个指派</div>}
-          </div>
-          <div className="info-card">
-            <div className="info-card-label">Agent 最近结果</div>
-            <div className="info-card-value">
-              {agentStatus ? agentOutcomeLabel(agentStatus.lastOutcome) : '—'}
+            <div className="overview-row">
+              <span className="overview-label"><Icon name="link" className="overview-label-icon" />对外地址</span>
+              <CopyValue value={addr || `（自动）:${port}`} />
             </div>
-            {agentStatus?.lastEffectiveProfile && (
-              <div className="info-card-detail">上次生效档位：{agentStatus.lastEffectiveProfile}</div>
-            )}
-          </div>
+            <div className="overview-row">
+              <span className="overview-label"><Icon name="globe" className="overview-label-icon" />监听端口</span>
+              <CopyValue value={port} />
+            </div>
+          </section>
+          <section className="overview-card" aria-label="Agent 托管">
+            <div className="overview-heading">Agent 托管</div>
+            <div className="overview-agent-head">
+              <span className={`agent-status-dot${agentStatus?.working ? ' is-working' : agentStatus ? ' is-ok' : ''}`} aria-hidden="true" />
+              <div className="overview-agent-status" role="status" aria-live="polite">
+                {agentStatusError ?? (agentStatus ? agentActivityLabel(agentStatus) : '正在读取...')}
+              </div>
+            </div>
+            <div className="overview-agent-meta">
+              <span>已处理 {agentStatus?.processed ?? 0} 个指派</span>
+              <span>最近结果：{agentStatus ? agentOutcomeLabel(agentStatus.lastOutcome) : '—'}</span>
+              {agentStatus?.lastEffectiveProfile && <span>上次生效档位：{agentStatus.lastEffectiveProfile}</span>}
+            </div>
+          </section>
         </div>
 
         {/* 日志区 */}
         <div className="log-section">
           <div className="log-header">
-            <span className="log-title">运行日志</span>
+            <div className="log-heading">
+              <span className="log-title"><Icon name="terminal" className="log-title-icon" />运行日志</span>
+              <span className="log-count">{logs.length} 行{logs.length > PREVIEW_LOG_LINES ? ` · 预览最近 ${PREVIEW_LOG_LINES} 行` : ''}</span>
+              {severityCounts.warn > 0 && <button className="log-severity warn" onClick={() => openLogViewer('warn')}>警告 {severityCounts.warn}</button>}
+              {severityCounts.error > 0 && <button className="log-severity error" onClick={() => openLogViewer('error')}>错误 {severityCounts.error}</button>}
+            </div>
             <div className="log-actions">
-              <button className="btn btn-sm" onClick={() => setFullscreen(true)}>⛶ 全屏</button>
-              <button
-                className="btn btn-sm"
-                onClick={() => { if (logRef.current) { logRef.current.scrollTop = logRef.current.scrollHeight; autoScroll.current = true; } }}
-              >↓ 底部</button>
-              <button className="btn btn-sm" onClick={() => setLogs([])}>清空</button>
+              <button className="btn btn-sm" onClick={() => openLogViewer()}><Icon name="expand" /> 查看日志</button>
+              <button className="btn btn-sm" onClick={jumpPreviewToBottom}><Icon name="arrow-down" /> {unreadLogs > 0 ? `${unreadLogs} 条新日志` : '底部'}</button>
+              <button className="btn btn-sm" onClick={clearDisplayedLogs} title="仅清空当前窗口显示，不删除日志文件"><Icon name="trash" /> 清空显示</button>
             </div>
           </div>
-          <div className="log-viewer" ref={logRef} onScroll={handleScroll}>
+          <div
+            className="log-viewer"
+            ref={logRef}
+            tabIndex={0}
+            onScroll={handleScroll}
+            onWheel={(event) => { if (event.deltaY < 0) autoScroll.current = false; }}
+            onPointerDown={(event) => {
+              if (event.clientX > event.currentTarget.getBoundingClientRect().right - 18) autoScroll.current = false;
+            }}
+            onKeyDown={(event) => {
+              if (['ArrowUp', 'PageUp', 'Home'].includes(event.key)) autoScroll.current = false;
+            }}
+          >
             {logs.length === 0
               ? <span className="log-empty">等待日志输出...</span>
-              : logs.map((line, i) => (
-                  <div key={i} className={`log-line ${line.level}`}>{line.text}</div>
+              : previewLogs.map((line) => (
+                  <div key={line.id} className={`log-line ${line.level}`}><FormattedLogText text={line.text} /></div>
                 ))
             }
           </div>

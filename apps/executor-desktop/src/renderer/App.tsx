@@ -3,6 +3,7 @@ import StatusWindow from './pages/StatusWindow';
 import ConfigPage from './pages/ConfigPage';
 import HistoryPage from './pages/HistoryPage';
 import AppsPage from './pages/AppsPage';
+import Icon from './components/Icon';
 import { TAB_SWITCH_EVENT } from './tab-switch';
 
 type Tab = 'status' | 'config' | 'history' | 'apps';
@@ -17,16 +18,26 @@ interface TabMeta {
   key: Tab;
   id: string;
   panel: string;
-  icon: string;
   label: string;
 }
 
 const TABS: TabMeta[] = [
-  { key: 'status', id: 'status-tab', panel: 'status-panel', icon: '📡', label: '状态监控' },
-  { key: 'config', id: 'config-tab', panel: 'config-panel', icon: '⚙️', label: '配置' },
-  { key: 'history', id: 'history-tab', panel: 'history-panel', icon: '📋', label: '历史' },
-  { key: 'apps', id: 'apps-tab', panel: 'apps-panel', icon: '📦', label: '应用' },
+  { key: 'status', id: 'status-tab', panel: 'status-panel', label: '状态监控' },
+  { key: 'config', id: 'config-tab', panel: 'config-panel', label: '配置' },
+  { key: 'history', id: 'history-tab', panel: 'history-panel', label: '历史' },
+  { key: 'apps', id: 'apps-tab', panel: 'apps-panel', label: '应用' },
 ];
+
+function TabIcon({ kind }: { kind: Tab }) {
+  // 收口到公共 Icon 组件（与页内图标同一套 24 viewBox 线条语言）
+  const map: Record<Tab, Parameters<typeof Icon>[0]['name']> = {
+    status: 'activity',
+    config: 'gear',
+    history: 'clock',
+    apps: 'box',
+  };
+  return <Icon name={map[kind]} className="tab-icon" />;
+}
 
 /** 读取持久化的上次 Tab；非法/缺失值回落 status（不得渲染未知 Tab）。 */
 function readInitialTab(): Tab {
@@ -62,6 +73,29 @@ export default function App() {
 function MainWindow() {
   // 初始态从 localStorage 恢复（重开窗口记住上次 Tab），而非恒为 status。
   const [tab, setTab] = useState<Tab>(readInitialTab);
+  const [maximized, setMaximized] = useState(false);
+
+  useEffect(() => {
+    const api = (window as any).electronAPI;
+    let mounted = true;
+    if (typeof api?.getWindowState === 'function') {
+      void api.getWindowState()
+        .then((state: { maximized?: boolean }) => { if (mounted) setMaximized(state?.maximized === true); })
+        .catch(() => {});
+    }
+    const off = typeof api?.onWindowMaximizeChange === 'function'
+      ? api.onWindowMaximizeChange((value: boolean) => setMaximized(value))
+      : null;
+    return () => { mounted = false; if (typeof off === 'function') off(); };
+  }, []);
+
+  function toggleMaximize() {
+    const action = (window as any).electronAPI?.toggleMaximizeWindow;
+    if (typeof action !== 'function') return;
+    void action()
+      .then((state: { maximized?: boolean }) => setMaximized(state?.maximized === true))
+      .catch(() => {});
+  }
 
   // 持久化：每次切换即落盘；读取在 readInitialTab 已做合法性校验。
   useEffect(() => {
@@ -132,22 +166,43 @@ function MainWindow() {
 
   return (
     <div className="app">
-      {/* 无边框窗口标题栏——拖拽区域 + 窗口控制 */}
-      <div className="titlebar">
-        <span className="titlebar-title">AutoCodeFlow Executor</span>
+      {/* 无边框窗口标题栏——拖拽区域 + 窗口控制；双击空白区切换最大化
+          （Windows 原生标题栏的标准行为，无边框下需自行补上） */}
+      <div className="titlebar" onDoubleClick={toggleMaximize}>
+        <div className="titlebar-brand">
+          <span className="titlebar-mark" aria-hidden="true">
+            <Icon name="zap" />
+          </span>
+          <span className="titlebar-title">AutoCodeFlow</span>
+          <span className="titlebar-edition">执行器</span>
+        </div>
         <div className="titlebar-right">
           <button
             className="titlebar-btn"
             onClick={() => (window as any).electronAPI?.minimizeWindow?.()}
             title="最小化"
             aria-label="最小化窗口"
-          >─</button>
+          >
+            <svg className="titlebar-control-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true" focusable="false"><path d="M5 12h14" /></svg>
+          </button>
+          <button
+            className="titlebar-btn"
+            onClick={toggleMaximize}
+            title={maximized ? '还原' : '最大化'}
+            aria-label={maximized ? '还原窗口' : '最大化窗口'}
+          >
+            <svg className="titlebar-control-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" aria-hidden="true" focusable="false">
+              {maximized ? <><path d="M8 7V4h11v11h-3" /><rect x="5" y="9" width="11" height="11" rx="1" /></> : <rect x="5" y="5" width="14" height="14" rx="1" />}
+            </svg>
+          </button>
           <button
             className="titlebar-btn titlebar-btn-close"
             onClick={() => (window as any).electronAPI?.closeWindow?.()}
             title="关闭"
             aria-label="关闭窗口"
-          >✕</button>
+          >
+            <svg className="titlebar-control-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true" focusable="false"><path d="m6 6 12 12M18 6 6 18" /></svg>
+          </button>
         </div>
       </div>
 
@@ -173,7 +228,7 @@ function MainWindow() {
               // roving tabindex：仅当前选中 Tab 可被 Tab 键聚焦
               tabIndex={active ? 0 : -1}
             >
-              <span className="tab-icon">{meta.icon}</span>
+              <TabIcon kind={meta.key} />
               {meta.label}
             </button>
           );
@@ -182,9 +237,9 @@ function MainWindow() {
 
       {/* 内容区 — 所有页面常驻 DOM，用 display 控制显隐，避免切 tab 时重新挂载导致闪烁 */}
       <div className="main-content">
-        <div id="status-panel" role="tabpanel" aria-labelledby="status-tab" hidden={tab !== 'status'} className={tab === 'status' ? 'tab-panel is-active' : 'tab-panel'}><StatusWindow /></div>
+        <div id="status-panel" role="tabpanel" aria-labelledby="status-tab" hidden={tab !== 'status'} className={tab === 'status' ? 'tab-panel is-active' : 'tab-panel'}><StatusWindow active={tab === 'status'} /></div>
         <div id="config-panel" role="tabpanel" aria-labelledby="config-tab" hidden={tab !== 'config'} className={tab === 'config' ? 'tab-panel is-active' : 'tab-panel'}><ConfigPage /></div>
-        <div id="history-panel" role="tabpanel" aria-labelledby="history-tab" hidden={tab !== 'history'} className={tab === 'history' ? 'tab-panel is-active' : 'tab-panel'}><HistoryPage /></div>
+        <div id="history-panel" role="tabpanel" aria-labelledby="history-tab" hidden={tab !== 'history'} className={tab === 'history' ? 'tab-panel is-active' : 'tab-panel'}><HistoryPage active={tab === 'history'} /></div>
         <div id="apps-panel" role="tabpanel" aria-labelledby="apps-tab" hidden={tab !== 'apps'} className={tab === 'apps' ? 'tab-panel is-active' : 'tab-panel'}><AppsPage /></div>
       </div>
     </div>
