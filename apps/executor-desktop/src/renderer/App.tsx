@@ -165,8 +165,9 @@ function MainWindow() {
 
   return (
     <div className="app">
-      {/* 无边框窗口标题栏——拖拽区域 + 窗口控制 */}
-      <div className="titlebar">
+      {/* 无边框窗口标题栏——拖拽区域 + 窗口控制；双击空白区切换最大化
+          （Windows 原生标题栏的标准行为，无边框下需自行补上） */}
+      <div className="titlebar" onDoubleClick={toggleMaximize}>
         <div className="titlebar-brand">
           <span className="titlebar-mark" aria-hidden="true">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" focusable="false">

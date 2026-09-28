@@ -715,13 +715,20 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
     }
   }
   // 删除必须二次确认——这是不可撤销的破坏性操作。
-  if (!appsPage.includes('window.confirm')) {
-    throw new Error('报障回归：删除/卸载缺少二次确认（不可撤销操作不得直接执行）');
+  // （UI 接手轮）原生 window.confirm 在无边框窗口下会阻塞渲染进程且样式不可控
+  // （HistoryPage 清除历史早已因此改为页内确认），应用页对齐为页内确认条
+  // pendingConfirm + role="alertdialog"；守卫同步钉住页内确认态存在。
+  if (!appsPage.includes('pendingConfirm') || !appsPage.includes('role="alertdialog"')) {
+    throw new Error('报障回归：删除/卸载缺少页内二次确认（不可撤销操作不得直接执行）');
+  }
+  if (/window\.confirm\(/.test(appsPage)) {
+    throw new Error('UI 回归：应用页仍在使用原生 confirm 弹窗（无边框窗口下不可靠，须走页内确认条）');
   }
   // 当前生效版本必须**禁用**删除按钮（删了应用直接不可用），而不是点了才报错。
   // 运行中的版本同样禁用（主进程会保守拒绝——删正在跑的版本会留下孤儿进程）。
-  if (!/disabled=\{blocked \|\| groupBusy\}/.test(appsPage)) {
-    throw new Error('报障回归：当前生效/运行中的版本未禁用删除按钮');
+  // 页内确认条打开期间也禁用（避免叠加出第二个确认态）。
+  if (!/disabled=\{blocked \|\| groupBusy \|\| Boolean\(pendingConfirm\)\}/.test(appsPage)) {
+    throw new Error('报障回归：删除按钮的禁用条件未同时覆盖 isCurrent/isRunning/确认态');
   }
   if (!/const blocked = entry\.isCurrent \|\| isRunning;/.test(appsPage)) {
     throw new Error('报障回归：删除按钮的禁用条件未同时覆盖 isCurrent 与 isRunning');

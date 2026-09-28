@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import Icon from './Icon';
 
 /**
  * DSK-05：桌面自动更新的渲染层出口。
@@ -138,7 +139,7 @@ export default function UpdateBanner() {
   if (phase === 'error') {
     return (
       <div className="update-banner update-banner-error" role="alert">
-        <span className="update-banner-icon" aria-hidden="true">⚠</span>
+        <span className="update-banner-icon" aria-hidden="true"><Icon name="warning" /></span>
         <div className="update-banner-text">
           <strong>更新失败</strong>
           <span>{error}</span>
@@ -155,14 +156,14 @@ export default function UpdateBanner() {
   if (phase === 'downloaded') {
     return (
       <div className="update-banner update-banner-ready" role="status" aria-live="polite">
-        <span className="update-banner-icon" aria-hidden="true">✦</span>
+        <span className="update-banner-icon" aria-hidden="true"><Icon name="spark" /></span>
         <div className="update-banner-text">
           <strong>新版本 {version || ''} 已下载完成</strong>
           <span>重启应用即可完成安装</span>
         </div>
         <div className="update-banner-actions">
           <button className="btn btn-sm btn-success" onClick={handleInstall} disabled={busy}>
-            {busy ? '安装中…' : '↻ 重启并安装'}
+            {busy ? '安装中…' : <><Icon name="refresh" /> 重启并安装</>}
           </button>
         </div>
       </div>
@@ -173,7 +174,7 @@ export default function UpdateBanner() {
     const pct = Math.max(0, Math.min(100, Math.round(percent)));
     return (
       <div className="update-banner update-banner-downloading" role="status" aria-live="polite">
-        <span className="update-banner-icon" aria-hidden="true">↓</span>
+        <span className="update-banner-icon" aria-hidden="true"><Icon name="arrow-down" /></span>
         <div className="update-banner-text">
           <strong>正在下载新版本 {version || ''}（{pct}%）</strong>
           {total > 0 && (
@@ -195,7 +196,7 @@ export default function UpdateBanner() {
   // phase === 'available'
   return (
     <div className="update-banner update-banner-available" role="status" aria-live="polite">
-      <span className="update-banner-icon" aria-hidden="true">↑</span>
+      <span className="update-banner-icon" aria-hidden="true"><Icon name="arrow-up" /></span>
       <div className="update-banner-text">
         <strong>发现新版本 {version || ''}</strong>
         <span>当前版本已可升级</span>

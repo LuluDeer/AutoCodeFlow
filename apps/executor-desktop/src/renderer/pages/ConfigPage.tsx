@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import Icon, { type IconName } from '../components/Icon';
 import {
   DOWNLOAD_TIMEOUT_MS,
   EXECUTOR_PORT,
@@ -53,15 +54,15 @@ function Toggle({ id, label, checked, onChange }: {
 
 type SectionId = 'connection' | 'network' | 'python' | 'agent' | 'general';
 
-const SECTIONS: { id: SectionId; icon: string; label: string; desc: string }[] = [
-  { id: 'connection', icon: '🔗', label: '连接设置', desc: '平台地址与密钥' },
-  { id: 'network',    icon: '🌐', label: '网络地址', desc: '端口与对外 IP' },
+const SECTIONS: { id: SectionId; icon: IconName; label: string; desc: string }[] = [
+  { id: 'connection', icon: 'link', label: '连接设置', desc: '平台地址与密钥' },
+  { id: 'network',    icon: 'globe', label: '网络地址', desc: '端口与对外 IP' },
   // python_task_multiversion：内网/离线部署的关键配置面。此前这些字段
   // （uvPath / 镜像 / 池目录 / PyPI 源）虽然后端全部实现，却**没有任何 UI
   // 入口**——运维只能去手工编辑 userData 里的 config.json，实际等于不可用。
-  { id: 'python',     icon: '🐍', label: 'Python 运行环境', desc: 'uv、镜像与解释器池' },
-  { id: 'agent',      icon: '🤖', label: 'Agent（实验性）', desc: '执行器 Agent 与权限档位' },
-  { id: 'general',   icon: '⚙️', label: '基本设置', desc: '名称与并发数' },
+  { id: 'python',     icon: 'terminal', label: 'Python 运行环境', desc: 'uv、镜像与解释器池' },
+  { id: 'agent',      icon: 'bot', label: 'Agent（实验性）', desc: '执行器 Agent 与权限档位' },
+  { id: 'general',   icon: 'gear', label: '基本设置', desc: '名称与并发数' },
 ];
 
 const SECTION_KEYS: Record<SectionId, string[]> = {
@@ -322,7 +323,7 @@ export default function ConfigPage() {
             className={`cfg-nav-item${active === s.id ? ' active' : ''}`}
             onClick={() => setActive(s.id)}
           >
-            <span className="cfg-nav-icon">{s.icon}</span>
+            <span className="cfg-nav-icon"><Icon name={s.icon} /></span>
             <div className="cfg-nav-text">
               <span className="cfg-nav-label">
                 {s.label}
@@ -343,7 +344,7 @@ export default function ConfigPage() {
               否则用户看到的是一张"空表单"而无从知晓读取失败（复用 cfg-save-error
               同型错误行；不与保存失败的 state 合并，避免文案前缀撒谎）。 */}
           {loadError && (
-            <div className="cfg-save-error" role="alert">⚠ {loadError}</div>
+            <div className="cfg-save-error" role="alert"><Icon name="warning" className="icon-xs" /> {loadError}</div>
           )}
 
           {active === 'connection' && (
@@ -365,7 +366,7 @@ export default function ConfigPage() {
                 </div>
                 {testResult && (
                   <div className={`test-result ${testResult.ok ? 'ok' : 'fail'}`}>
-                    {testResult.ok ? '✓' : '✗'} {testResult.message}
+                    <Icon name={testResult.ok ? 'check' : 'close'} className="icon-xs" /> {testResult.message}
                   </div>
                 )}
                 <span className="cfg-hint">AutoCodeFlow 管理平台的 API 地址，格式 http://IP:端口</span>
@@ -469,7 +470,7 @@ export default function ConfigPage() {
               )}
 
               <div className="info-banner">
-                <span className="info-banner-icon">💡</span>
+                <span className="info-banner-icon"><Icon name="bulb" /></span>
                 <span>Admin 平台通过<strong>对外地址</strong>向本机推送任务。同局域网选上面的 IP 即可；跨网络或 NAT 环境请改用下面的<strong>回连模式</strong>——办公机在 NAT 后没有可填的公网地址。</span>
               </div>
 
@@ -563,11 +564,11 @@ export default function ConfigPage() {
                 </div>
               )}
               {pyEnvError && (
-                <div className="cfg-save-error" role="alert">⚠ 无法读取 Python 环境状态：{pyEnvError}</div>
+                <div className="cfg-save-error" role="alert"><Icon name="warning" className="icon-xs" /> 无法读取 Python 环境状态：{pyEnvError}</div>
               )}
 
               <div className="info-banner">
-                <span className="info-banner-icon">💡</span>
+                <span className="info-banner-icon"><Icon name="bulb" /></span>
                 <span>
                   安装包只自带 <strong>uv</strong>（包管理器），<strong>不含 Python 本体</strong>。
                   任务首次用到某个 Python 版本时由 uv 获取：<strong>能上外网</strong>则自动下载；
@@ -631,7 +632,7 @@ export default function ConfigPage() {
               </div>
 
               <div className="info-banner">
-                <span className="info-banner-icon">📌</span>
+                <span className="info-banner-icon"><Icon name="pin" /></span>
                 <span>
                   <strong>Python 3.7 无法在线获取</strong>，必须由运维离线预填解释器池
                   （池目录下按 <code>cpython-3.7.9-&lt;平台三元组&gt;</code> 命名）。
@@ -668,7 +669,7 @@ export default function ConfigPage() {
                   saved 变化后会重新拉取——保存后立即可见启停是否生效。 */}
               {agentStatus && (
                 <div className="info-banner">
-                  <span className="info-banner-icon">{agentStatus.working ? '⏳' : agentStatus.enabled ? '🟢' : '⚪'}</span>
+                  <span className={`agent-status-dot${agentStatus.working ? ' is-working' : agentStatus.enabled ? ' is-ok' : ''}`} aria-hidden="true" />
                   <span>
                     {agentStatus.working
                       ? '正在处理指派…'
@@ -776,7 +777,7 @@ export default function ConfigPage() {
               </div>
 
               <div className="info-banner">
-                <span className="info-banner-icon">🛡️</span>
+                <span className="info-banner-icon"><Icon name="shield" /></span>
                 <span>
                   边界由平台代码强制，不靠 AI 自觉：文件操作锁定在专用工作区、解释器封闭枚举
                   （python/node）、子进程环境变量白名单（凭据不透出）、迭代/时长/试跑次数硬上限、
@@ -909,9 +910,9 @@ export default function ConfigPage() {
         {/* 底部保存栏 */}
         <div className="cfg-footer">
           {saveError && (
-            <div className="cfg-save-error" role="alert">⚠ {saveError}</div>
+            <div className="cfg-save-error" role="alert"><Icon name="warning" className="icon-xs" /> {saveError}</div>
           )}
-          {saved && !isDirty && <div className="saved-toast">✓ 已保存，配置已生效</div>}
+          {saved && !isDirty && <div className="saved-toast"><Icon name="check" className="icon-xs" /> 已保存，配置已生效</div>}
           {isDirty && <div className="cfg-unsaved" role="status"><span aria-hidden="true" />有未保存更改</div>}
           <button className="btn btn-primary btn-lg" onClick={requestSave} disabled={saving || checkingSaveImpact || !isDirty || saveImpact !== null}>
             {saving ? '保存中...' : checkingSaveImpact ? '检查运行状态...' : '保存配置'}

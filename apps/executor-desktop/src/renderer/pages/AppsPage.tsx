@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import HighlightText from '../components/HighlightText';
+import Icon from '../components/Icon';
 import { requestTabSwitch } from '../tab-switch';
 
 declare const window: Window & {
@@ -78,6 +79,11 @@ type AppGroup = {
 const INITIAL_APP_COUNT = 30;
 const INITIAL_RELEASE_COUNT = 3;
 const MORE_RELEASE_COUNT = 20;
+
+/** 页内二次确认的载荷（替代原生的 confirm 弹窗）。 */
+type PendingConfirm =
+  | { kind: 'uninstall'; appId: string; name: string; count: number }
+  | { kind: 'delete-release'; appId: string; entry: AppEntry; label: string };
 
 function classifyLog(line: string): string {
   const l = line.toLowerCase();
@@ -217,7 +223,7 @@ function AppLogViewer({ entry, onClose }: { entry: AppEntry; onClose: () => void
           <span className="log-fs-deployment-id">{entry.deploymentId.slice(0, 8)}</span>
         </span>
         <div className="log-fs-search">
-          <span className="log-fs-search-icon">🔍</span>
+          <span className="log-fs-search-icon"><Icon name="search" /></span>
           <input
             className="log-fs-input"
             type="search"
@@ -233,8 +239,8 @@ function AppLogViewer({ entry, onClose }: { entry: AppEntry; onClose: () => void
           )}
           {q && totalMatches > 0 && (
             <>
-              <button className="log-fs-nav" aria-label="上一条匹配应用日志" onClick={() => setMatchIdx(p => Math.max(0, p - 1))}>↑</button>
-              <button className="log-fs-nav" aria-label="下一条匹配应用日志" onClick={() => setMatchIdx(p => Math.min(totalMatches - 1, p + 1))}>↓</button>
+              <button className="log-fs-nav" aria-label="上一条匹配应用日志" onClick={() => setMatchIdx(p => Math.max(0, p - 1))}><Icon name="arrow-up" /></button>
+              <button className="log-fs-nav" aria-label="下一条匹配应用日志" onClick={() => setMatchIdx(p => Math.min(totalMatches - 1, p + 1))}><Icon name="arrow-down" /></button>
             </>
           )}
         </div>
@@ -244,11 +250,11 @@ function AppLogViewer({ entry, onClose }: { entry: AppEntry; onClose: () => void
             onClick={() => setAutoRefresh(v => !v)}
             title={autoRefresh ? '关闭自动刷新' : '开启自动刷新（2s）'}
           >
-            {autoRefresh ? '⟳ 实时' : '⟳ 已暂停'}
+            <Icon name="refresh" /> {autoRefresh ? '实时' : '已暂停'}
           </button>
-          <button className="btn btn-sm" onClick={() => fetchLogs(0)}>↺ 全部重载</button>
-          <button className="btn btn-sm" onClick={jumpToLatest}>{following && !q ? '↓ 跟随最新' : '↓ 查看最新'}</button>
-          <button className="btn btn-sm" onClick={onClose}>✕ 关闭</button>
+          <button className="btn btn-sm" onClick={() => fetchLogs(0)}><Icon name="refresh" /> 全部重载</button>
+          <button className="btn btn-sm" onClick={jumpToLatest}><Icon name="arrow-down" /> {following && !q ? '跟随最新' : '查看最新'}</button>
+          <button className="btn btn-sm" onClick={onClose}><Icon name="close" /> 关闭</button>
         </div>
       </div>
       <div className="log-fs-body">
@@ -286,7 +292,7 @@ function AppLogViewer({ entry, onClose }: { entry: AppEntry; onClose: () => void
           {/* D 修正：读取失败必须显性化，不能与「无日志」混为一谈 */}
           {error && !loading && (
             <div className="log-error" role="alert">
-              ⚠ 读取日志失败：{error}（自动刷新已停止，可点「实时」重试）
+              <Icon name="warning" className="icon-xs" /> 读取日志失败：{error}（自动刷新已停止，可点「实时」重试）
             </div>
           )}
           {!loading && !error && !entry.hasLog && (
@@ -311,7 +317,7 @@ function AppLogViewer({ entry, onClose }: { entry: AppEntry; onClose: () => void
                   onClose();
                   requestTabSwitch('history');
                 }}
-              >📋 去「历史」查看执行日志</button>
+              ><Icon name="doc" /> 去「历史」查看执行日志</button>
             </div>
           )}
           {!loading && !error && entry.hasLog && lines.length === 0 && (
@@ -357,6 +363,10 @@ export default function AppsPage() {
   const [notice, setNotice] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
   // 正在执行破坏性操作的 appId——期间禁用按钮，避免重复点击。
   const [busy, setBusy] = useState<string | null>(null);
+  // 破坏性操作（卸载应用 / 删除版本）的页内二次确认态。原实现用原生 confirm
+  // 弹窗——无边框窗口下会阻塞渲染进程且样式不可控（部分平台直接
+  // 不显示，HistoryPage 清除历史早已因此改为页内确认），此处对齐。
+  const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm | null>(null);
   const hasLoadedRef = useRef(false);
 
   // 正在运行的常驻应用（deploymentId → pid）。删除版本时主进程会自行再查一次
@@ -422,18 +432,9 @@ export default function AppsPage() {
     if (!res.ok) setNotice({ kind: 'err', text: `打开文件夹失败：${res.error ?? '未知原因'}` });
   }
 
-  /** 删除单个历史版本（用户报障：无法撤销部署）。 */
+  /** 删除单个历史版本（用户报障：无法撤销部署）。仅由页内确认条触发。 */
   async function handleDeleteRelease(entry: AppEntry) {
     const label = entry.version ? `v${entry.version}` : entry.releaseKey;
-    if (
-      !window.confirm(
-        `确定删除本地版本 ${label}（${entry.deploymentId.slice(0, 8)}）吗？\n\n` +
-          `· 只删除本机上这一份部署文件，不影响中台的部署记录；\n` +
-          `· 该操作不可撤销。`,
-      )
-    ) {
-      return;
-    }
     setBusy(entry.appId + entry.releaseKey);
     try {
       const res = await window.electronAPI.deleteAppRelease(
@@ -454,18 +455,8 @@ export default function AppsPage() {
     }
   }
 
-  /** 卸载整个应用（本机目录 + 停止常驻进程）。 */
+  /** 卸载整个应用（本机目录 + 停止常驻进程）。仅由页内确认条触发。 */
   async function handleUninstall(appId: string, displayName: string, count: number) {
-    if (
-      !window.confirm(
-        `确定从本机卸载「${displayName}」吗？\n\n` +
-          `· 将停止该应用在本机运行的进程，并删除全部 ${count} 份部署文件；\n` +
-          `· 中台的部署记录不会被删除——中台仍会显示该应用已部署到此执行器；\n` +
-          `· 该操作不可撤销。`,
-      )
-    ) {
-      return;
-    }
     setBusy(appId);
     try {
       const res = await window.electronAPI.uninstallApp(appId);
@@ -566,20 +557,20 @@ export default function AppsPage() {
           <span className="apps-total">{grouped.length} 个应用 · {releaseCount} 个版本{runningCount > 0 && ` · ${runningCount} 个运行中`}</span>
         </div>
         <button className="btn btn-sm" onClick={() => void refresh(false)} disabled={loading}>
-          {loading ? '加载中...' : '↺ 刷新'}
+          {loading ? '加载中...' : <><Icon name="refresh" /> 刷新</>}
         </button>
       </div>
 
       <div className="apps-controls">
         <div className="apps-search">
-          <span className="apps-search-icon" aria-hidden="true">⌕</span>
+          <span className="apps-search-icon" aria-hidden="true"><Icon name="search" /></span>
           <input
             value={search}
             onChange={event => setSearch(event.target.value)}
             placeholder="搜索应用名、版本或部署 ID"
             aria-label="搜索应用名、版本或部署 ID"
           />
-          {search && <button type="button" onClick={() => setSearch('')} aria-label="清除搜索">×</button>}
+          {search && <button type="button" onClick={() => setSearch('')} aria-label="清除搜索"><Icon name="close" className="icon-xs" /></button>}
         </div>
         <div className="apps-filters" aria-label="应用筛选">
           <button type="button" className={filter === 'all' ? 'active' : ''} aria-pressed={filter === 'all'} onClick={() => setFilter('all')}>全部</button>
@@ -599,7 +590,7 @@ export default function AppsPage() {
 
       {error && (
         <div className="apps-error" role="alert">
-          ⚠ 加载应用列表失败：{error}
+          <Icon name="warning" className="icon-xs" /> 加载应用列表失败：{error}
         </div>
       )}
 
@@ -609,7 +600,7 @@ export default function AppsPage() {
           role="status"
           aria-live="polite"
         >
-          {notice.kind === 'ok' ? '✓ ' : '⚠ '}
+          {notice.kind === 'ok' ? <Icon name="check" className="icon-xs" /> : <Icon name="warning" className="icon-xs" />}
           {notice.text}
         </div>
       )}
@@ -676,7 +667,7 @@ export default function AppsPage() {
                 <span className="app-group-header-meta">
                   {group.runningCount > 0 && <span className="app-badge app-badge-running">● {group.runningCount} 运行中</span>}
                   <span className="app-group-count">{entries.filter(entry => entry.releaseKey).length || 0} 个版本</span>
-                  <span className={`app-group-chevron${expanded ? ' expanded' : ''}`} aria-hidden="true">⌄</span>
+                  <span className={`app-group-chevron${expanded ? ' expanded' : ''}`} aria-hidden="true"><Icon name="chevron-down" /></span>
                 </span>
               </button>
 
@@ -685,18 +676,49 @@ export default function AppsPage() {
                   <div className="app-group-tools">
                     <span className="app-group-path" title={entries[0]?.appRoot ?? ''}>{entries[0]?.appRoot}</span>
                     <div className="app-group-actions">
-                      <button type="button" className="btn btn-sm" onClick={() => void handleOpenFolder(entries[0], false)} title="在文件资源管理器中打开该应用的部署目录">打开应用目录</button>
+                      <button type="button" className="btn btn-sm" onClick={() => void handleOpenFolder(entries[0], false)} title="在文件资源管理器中打开该应用的部署目录"><Icon name="folder" /> 打开应用目录</button>
                       <button
                         type="button"
                         className="btn btn-sm btn-danger"
-                        onClick={() => void handleUninstall(appId, name ?? appId.slice(0, 8), entries.length)}
-                        disabled={groupBusy}
+                        onClick={() => setPendingConfirm({ kind: 'uninstall', appId, name: name ?? appId.slice(0, 8), count: entries.length })}
+                        disabled={groupBusy || Boolean(pendingConfirm)}
                         title="停止本机进程并删除该应用的全部本地部署文件"
                       >
                         {busy === appId ? '处理中…' : '卸载应用'}
                       </button>
                     </div>
                   </div>
+                  {pendingConfirm && pendingConfirm.appId === appId && (
+                    <div className="apps-confirm" role="alertdialog" aria-labelledby={`apps-confirm-title-${appId}`}>
+                      <div>
+                        <strong id={`apps-confirm-title-${appId}`}>
+                          {pendingConfirm.kind === 'uninstall'
+                            ? `确定从本机卸载「${pendingConfirm.name}」吗？`
+                            : `确定删除本地版本 ${pendingConfirm.label}（${pendingConfirm.entry.deploymentId.slice(0, 8)}）吗？`}
+                        </strong>
+                        <span>
+                          {pendingConfirm.kind === 'uninstall'
+                            ? `将停止该应用在本机运行的进程，并删除全部 ${pendingConfirm.count} 份部署文件；中台的部署记录不会被删除。`
+                            : '只删除本机上这一份部署文件，不影响中台的部署记录。'}
+                          {' '}该操作不可撤销。
+                        </span>
+                      </div>
+                      <div className="apps-confirm-actions">
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-danger"
+                          disabled={Boolean(busy)}
+                          onClick={() => {
+                            const action = pendingConfirm;
+                            setPendingConfirm(null);
+                            if (action.kind === 'uninstall') void handleUninstall(action.appId, action.name, action.count);
+                            else void handleDeleteRelease(action.entry);
+                          }}
+                        >{pendingConfirm.kind === 'uninstall' ? '确认卸载' : '确认删除'}</button>
+                        <button type="button" className="btn btn-sm" onClick={() => setPendingConfirm(null)} autoFocus>取消</button>
+                      </div>
+                    </div>
+                  )}
                   <div className="app-releases-heading">本地版本 {query && !group.nameMatches ? `· 匹配 ${releases.length} 个` : ''}</div>
                   {releases.slice(0, limit).map(entry => {
                     const isRunning = Boolean(running[entry.deploymentId]?.running);
@@ -732,19 +754,19 @@ export default function AppsPage() {
                           )}
                           {entry.releaseKey && (
                             <>
-                              <button type="button" className="btn btn-sm app-icon-button" onClick={() => void handleOpenFolder(entry, true)} title="打开该版本的部署目录" aria-label={`打开 ${label} 的部署目录`}>📂</button>
+                              <button type="button" className="btn btn-sm app-icon-button" onClick={() => void handleOpenFolder(entry, true)} title="打开该版本的部署目录" aria-label={`打开 ${label} 的部署目录`}><Icon name="folder" /></button>
                               <button
                                 type="button"
-                                className="btn btn-sm btn-danger app-icon-button"
-                                disabled={blocked || groupBusy}
-                                onClick={() => void handleDeleteRelease(entry)}
+                                className="btn btn-sm btn-danger-ghost app-icon-button"
+                                disabled={blocked || groupBusy || Boolean(pendingConfirm)}
+                                onClick={() => setPendingConfirm({ kind: 'delete-release', appId, entry, label })}
                                 title={entry.isCurrent
                                   ? '当前生效版本不可删除；请先部署新版本，或卸载整个应用'
                                   : isRunning
                                     ? '该版本的进程正在运行，请先在中台停止应用再删除'
                                     : '删除本机上这一份部署文件（不影响中台记录）'}
                                 aria-label={`删除 ${label} 的本地部署`}
-                              >{busy === entry.appId + entry.releaseKey ? '…' : '🗑'}</button>
+                              >{busy === entry.appId + entry.releaseKey ? '…' : <Icon name="trash" />}</button>
                             </>
                           )}
                         </div>
