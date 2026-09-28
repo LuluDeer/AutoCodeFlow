@@ -532,7 +532,16 @@ export default function HistoryPage({ active }: { active: boolean }) {
       )}
 
       {loading && records.length === 0 ? (
-        <div className="history-empty">加载中...</div>
+        <div className="history-groups" aria-label="正在加载历史记录">
+          {Array.from({ length: 3 }, (_, i) => (
+            <div key={i} className="skeleton skeleton-group">
+              <div className="skeleton-row">
+                <div className="skeleton-line w-45" />
+                <div className="skeleton-line w-30 ml-auto" />
+              </div>
+            </div>
+          ))}
+        </div>
       ) : groupEntries.length === 0 ? (
         <div className="history-empty">
           <span className="empty-state-icon" aria-hidden="true">
@@ -597,7 +606,7 @@ export default function HistoryPage({ active }: { active: boolean }) {
                             {run.endTime !== undefined ? formatDuration(run.endTime - run.startTime) : '—'}
                           </span>
                           <button
-                            className="btn btn-sm history-view-log"
+                            className="btn btn-sm"
                             onClick={() => setViewingLog(run)}
                           >查看日志</button>
                           <button
