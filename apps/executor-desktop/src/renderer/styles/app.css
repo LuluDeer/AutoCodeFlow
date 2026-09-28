@@ -573,6 +573,7 @@ select.input {
   align-items: center;
   gap: 6px;
   padding: 3px 10px 3px 9px;
+  min-height: 24px;
   border-radius: 20px;
   font-size: 11px;
   font-weight: 600;
@@ -616,6 +617,7 @@ select.input {
 .copy-btn {
   flex-shrink: 0;
   padding: 4px 10px;
+  min-height: 24px;
   font-family: inherit;
   font-size: 11px;
   font-weight: 500;
@@ -732,8 +734,8 @@ select.input {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 52px;
-  height: 52px;
+  width: 56px;
+  height: 56px;
   flex: none;
   border: 1px solid var(--green-border);
   border-radius: var(--radius-lg);
@@ -1405,6 +1407,7 @@ select.input {
   font-size: 11px;
   color: var(--text3);
   max-width: 190px;
+  min-height: 24px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
