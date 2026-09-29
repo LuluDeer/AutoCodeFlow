@@ -76,10 +76,16 @@ const renderList = () =>
     </MemoryRouter>,
   );
 
-/** 按可见文本找 button（span 文本 → 最近 button 祖先） */
+/** 按可见文本找 button（span 文本 → 最近 button 祖先）。
+ *  forceRender 下隐藏弹窗内容也进 DOM（弹窗标题「创建应用」与页头按钮同
+ *  文案），页面级按钮须排除弹窗内的匹配。 */
 const getBtn = (label: string) => {
-  const el = screen.getByText(label);
-  return el.closest('button') as HTMLButtonElement;
+  const el = screen
+    .getAllByText(label)
+    .map((node) => node.closest('button'))
+    .find((b) => b && !b.closest('.ant-modal'));
+  if (!el) throw new Error(`page button not found: ${label}`);
+  return el as HTMLButtonElement;
 };
 
 describe('应用列表页写按钮 isAdmin 门控（W3）', () => {
