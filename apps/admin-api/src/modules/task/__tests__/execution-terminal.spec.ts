@@ -70,10 +70,13 @@ const SUCCESS_PATCH = {
 } as const;
 
 describe("A1 执行终态跃迁（transitionToTerminal）", () => {
-  it("常量：开放态 = pending/running，终态 = 其余五个，两者无交集", () => {
+  it("常量：开放态 = pending/running/waiting，终态 = 其余五个，两者无交集", () => {
+    // MUTEX-01：WAITING（互斥排队态）属打开态——kill/取消/COVER_EARLY 必须
+    // 能终结一条还在排队的执行；它不是终态。
     expect([...OPEN_EXECUTION_STATUSES]).toEqual([
       ExecutionStatus.PENDING,
       ExecutionStatus.RUNNING,
+      ExecutionStatus.WAITING,
     ]);
     expect([...TERMINAL_EXECUTION_STATUSES]).toEqual([
       ExecutionStatus.SUCCESS,
@@ -100,6 +103,7 @@ describe("A1 执行终态跃迁（transitionToTerminal）", () => {
     expect(calls[0].params.gate).toEqual([
       ExecutionStatus.PENDING,
       ExecutionStatus.RUNNING,
+      ExecutionStatus.WAITING,
     ]);
     expect(calls[0].returning).toEqual(["id", "executorAddress"]);
   });

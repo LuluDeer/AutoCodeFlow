@@ -6780,6 +6780,129 @@
         ]
       }
     },
+    "/mutex-groups": {
+      "get": {
+        "operationId": "MutexGroupController_findAll",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "List mutex groups (for app form dropdown & admin)",
+        "tags": [
+          "Application Management"
+        ]
+      },
+      "post": {
+        "operationId": "MutexGroupController_create",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateMutexGroupDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Create a mutex group",
+        "tags": [
+          "Application Management"
+        ]
+      }
+    },
+    "/mutex-groups/{id}": {
+      "put": {
+        "operationId": "MutexGroupController_update",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateMutexGroupDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Update a mutex group (name / maxConcurrentPerDevice)",
+        "tags": [
+          "Application Management"
+        ]
+      },
+      "delete": {
+        "operationId": "MutexGroupController_remove",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "force",
+            "required": false,
+            "in": "query",
+            "description": "组上仍挂应用时需显式 force=true 才允许删除",
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Delete a mutex group (attached apps become ungrouped)",
+        "tags": [
+          "Application Management"
+        ]
+      }
+    },
     "/executor-packages": {
       "post": {
         "operationId": "ExecutorPackageController_create",
@@ -10375,6 +10498,11 @@
             "description": "Owning project id (null = default project view)",
             "nullable": true
           },
+          "mutexGroupId": {
+            "type": "string",
+            "description": "MUTEX-01: mutex group id (null = app does not participate in per-device mutual exclusion)",
+            "nullable": true
+          },
           "ownerUserId": {
             "type": "number",
             "description": "Owner user id",
@@ -10449,6 +10577,11 @@
             "type": "boolean",
             "description": "DEP-04: require second-person approval before new deployments dispatch",
             "default": false
+          },
+          "mutexGroupId": {
+            "type": "string",
+            "description": "MUTEX-01: mutex group id this app joins (null = no mutual exclusion)",
+            "nullable": true
           }
         },
         "required": [
@@ -10504,6 +10637,11 @@
             "type": "boolean",
             "description": "DEP-04: require second-person approval before new deployments dispatch",
             "default": false
+          },
+          "mutexGroupId": {
+            "type": "string",
+            "description": "MUTEX-01: mutex group id this app joins (null = no mutual exclusion)",
+            "nullable": true
           },
           "status": {
             "type": "string",
@@ -10627,6 +10765,53 @@
           "deploymentId",
           "status"
         ]
+      },
+      "CreateMutexGroupDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "互斥组名（唯一），如 ziniao-browser",
+            "maxLength": 64
+          },
+          "maxConcurrentPerDevice": {
+            "type": "number",
+            "description": "同一台设备上该组允许的并发执行数（≥1，默认 1 = 组内串行）",
+            "minimum": 1,
+            "maximum": 100,
+            "default": 1
+          },
+          "description": {
+            "type": "string",
+            "description": "组用途说明",
+            "maxLength": 500
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
+      "UpdateMutexGroupDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "互斥组名（唯一），如 ziniao-browser",
+            "maxLength": 64
+          },
+          "maxConcurrentPerDevice": {
+            "type": "number",
+            "description": "同一台设备上该组允许的并发执行数（≥1，默认 1 = 组内串行）",
+            "minimum": 1,
+            "maximum": 100,
+            "default": 1
+          },
+          "description": {
+            "type": "string",
+            "description": "组用途说明",
+            "maxLength": 500
+          }
+        }
       },
       "ExecutorPackagePushRecordDto": {
         "type": "object",

@@ -6,6 +6,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   parseCronExpression,
+  suggestCronStepRewrite,
   nextCronFireTimes,
   nextFixedRateFireTimes,
   formatFireTime,
@@ -42,6 +43,67 @@ describe('parseCronExpression（DTO 子集解析）', () => {
     const p = parseCronExpression('0 8 * * 7');
     expect(p).not.toBeNull();
     expect(p!.dayOfWeek.has(0)).toBe(true);
+  });
+
+  it('裸 n/step（POSIX n..max/step 语义）接受——后端写边界会等价规范化', () => {
+    // 用户实报案例：预览与保存曾在此分叉（后端旧门按 node-cron 原样拒绝）。
+    // 现后端落库前等价改写为 n-max/step（cron-normalize.util），预览按同一
+    // POSIX 语义放行——「能预览」重新等于「能保存」。
+    expect(parseCronExpression('12/20 6-23 * * *')).not.toBeNull();
+    expect(parseCronExpression('5/10 * * * *')).not.toBeNull();
+    expect(parseCronExpression('0 5/10 * * *')).not.toBeNull();
+    expect(parseCronExpression('59/15 * * * *')).not.toBeNull();
+    // 逗号混写同样接受
+    expect(parseCronExpression('12/20,45 * * * *')).not.toBeNull();
+    // */step 与 范围/step 不受影响
+    expect(parseCronExpression('*/20 6-23 * * *')).not.toBeNull();
+    expect(parseCronExpression('12-59/20 6-23 * * *')).not.toBeNull();
+  });
+
+  it('规范化前后触发时刻完全一致（n/step ≡ n-max/step）', () => {
+    const NOW = new Date(2026, 8, 8, 10, 30, 0, 0);
+    for (const raw of ['12/20 6-23 * * *', '5/10 * * * *', '0 5/10 * * *']) {
+      const rewritten = suggestCronStepRewrite(raw);
+      expect(rewritten).not.toBeNull();
+      expect(nextCronFireTimes(raw, 8, NOW)).toEqual(
+        nextCronFireTimes(rewritten!, 8, NOW),
+      );
+    }
+  });
+});
+
+describe('suggestCronStepRewrite（裸 n/step 等价改写建议）', () => {
+  it('裸 n/step → n-max/step（各字段上限正确）', () => {
+    expect(suggestCronStepRewrite('12/20 6-23 * * *')).toBe('12-59/20 6-23 * * *');
+    expect(suggestCronStepRewrite('5/10 * * * *')).toBe('5-59/10 * * * *');
+    expect(suggestCronStepRewrite('0 5/10 * * *')).toBe('0 5-23/10 * * *');
+    expect(suggestCronStepRewrite('0 8 * * 1/2')).toBe('0 8 * * 1-7/2');
+    // 逗号混写只改写裸步进部分
+    expect(suggestCronStepRewrite('12/20,45 * * * *')).toBe('12-59/20,45 * * * *');
+  });
+
+  it('无需改写或无法解析时返回 null', () => {
+    expect(suggestCronStepRewrite('*/20 6-23 * * *')).toBeNull();
+    expect(suggestCronStepRewrite('12-59/20 6-23 * * *')).toBeNull();
+    expect(suggestCronStepRewrite('0 8 * * 1-5')).toBeNull();
+    expect(suggestCronStepRewrite('12/0 * * * *')).toBeNull(); // 步进 0：不给同样非法的"建议"
+    expect(suggestCronStepRewrite('abc')).toBeNull();
+    expect(suggestCronStepRewrite('')).toBeNull();
+  });
+
+  it('改写结果可被 parseCronExpression 解析（改写前后数值集合一致）', () => {
+    for (const expr of ['12/20 6-23 * * *', '5/10 * * * *', '0 5/10 * * *', '12/20,45 * * * *']) {
+      const rewritten = suggestCronStepRewrite(expr);
+      expect(rewritten).not.toBeNull();
+      const a = parseCronExpression(rewritten!);
+      expect(a).not.toBeNull();
+      // 等价性抽样：改写表达式的分钟集合应包含原表达式的起始值（12/20 → 12 起）
+      if (expr.startsWith('12/20')) {
+        expect(a!.minute.has(12)).toBe(true);
+        expect(a!.minute.has(32)).toBe(true);
+        expect(a!.minute.has(52)).toBe(true);
+      }
+    }
   });
 });
 

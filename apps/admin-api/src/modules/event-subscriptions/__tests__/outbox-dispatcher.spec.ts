@@ -55,7 +55,7 @@ function makeRow(overrides: Partial<EventOutbox> = {}): EventOutbox {
 
 describe("FEAT-19 OutboxDispatcher", () => {
   const dataSourceMock = {
-    query: jest.fn().mockResolvedValue([]),
+    query: jest.fn().mockResolvedValue([[], 0]),
     /**
      * 终态路径在事务内「先写死信、再条件 finalize」。mock 层无法回滚，
      * 因此 manager 直接复用同两个 repo 桩，用例按「事务发生 + finalize 条件
@@ -119,7 +119,7 @@ describe("FEAT-19 OutboxDispatcher", () => {
   beforeEach(async () => {
     jest.clearAllMocks();
     dataSourceMock.query.mockReset();
-    dataSourceMock.query.mockResolvedValue([]);
+    dataSourceMock.query.mockResolvedValue([[], 0]);
     dataSourceMock.transaction.mockReset();
     dataSourceMock.transaction.mockImplementation(async (work) =>
       work({
@@ -275,7 +275,7 @@ describe("FEAT-19 OutboxDispatcher", () => {
         leaseUntil: new Date(Date.now() + 60_000),
         leaseToken: "claim-token",
       });
-      dataSourceMock.query.mockResolvedValueOnce([row]);
+      dataSourceMock.query.mockResolvedValueOnce([[row], 1]);
       // 有匹配订阅（否则 processRow 走无订阅短路，不调派发面）。
       subRepoMock.find.mockResolvedValue([
         { id: "s1", eventTypes: ["execution.failed"] },
@@ -296,8 +296,31 @@ describe("FEAT-19 OutboxDispatcher", () => {
       expect(patch.dispatchedAt).toBeInstanceOf(Date);
     });
 
+    it("TypeORM 1.x 对 UPDATE 返回 [rows, affected] 元组：按行数组解包后再补投（回归：Outbox row undefined 刷屏）", async () => {
+      // 生产事故（2026-09-29 排查）：PostgresQueryRunner.query 对 UPDATE 语句
+      // 组装 result.raw = [raw.rows, raw.rowCount]；旧代码 `as EventOutbox[]`
+      // 把元组当行数组消费 → rows[0] 是行数组、rows[1] 是数字 → 每个被处理的
+      // "行" id=undefined，markDispatched 的 WHERE 被 TypeORM 拒收（
+      // "Outbox row undefined" 每 5s 刷两条），真正的 outbox 行从未被投递。
+      const row = makeRow({ leaseToken: "claim-token" });
+      dataSourceMock.query.mockResolvedValueOnce([[row], 1]);
+      subRepoMock.find.mockResolvedValue([
+        { id: "s1", eventTypes: ["execution.failed"] },
+      ]);
+      const n = await outbox.scanOnce();
+      expect(n).toBe(1);
+      expect(dispatcherMock.deliverToSubscribers).toHaveBeenCalledWith(
+        "execution.failed",
+        row.payload,
+      );
+      expect(outboxRepoMock.update).toHaveBeenCalledWith(
+        expect.objectContaining({ id: row.id, leaseToken: "claim-token" }),
+        expect.objectContaining({ dispatchedAt: expect.any(Date) }),
+      );
+    });
+
     it("claim SQL 原子地选择并更新 lease，活动租约由谓词跳过且过期可回收", async () => {
-      dataSourceMock.query.mockResolvedValueOnce([]);
+      dataSourceMock.query.mockResolvedValueOnce([[], 0]);
       await outbox.scanOnce();
       const [sql, params] = dataSourceMock.query.mock.calls[0] as [
         string,
@@ -335,7 +358,7 @@ describe("FEAT-19 OutboxDispatcher", () => {
       const full = Array.from({ length: OUTBOX_BATCH_SIZE }, (_, i) =>
         makeRow({ id: `row-${i}`, leaseToken: `token-${i}` }),
       );
-      dataSourceMock.query.mockResolvedValueOnce(full);
+      dataSourceMock.query.mockResolvedValueOnce([full, full.length]);
       const { Logger } = await import("@nestjs/common");
       const warn = jest
         .spyOn(Logger.prototype, "warn")
@@ -353,7 +376,8 @@ describe("FEAT-19 OutboxDispatcher", () => {
 
     it("未取满时不 WARN（正常分页，不制造噪声）", async () => {
       dataSourceMock.query.mockResolvedValueOnce([
-        makeRow({ id: "row-1", leaseToken: "token-1" }),
+        [makeRow({ id: "row-1", leaseToken: "token-1" })],
+        1,
       ]);
       const { Logger } = await import("@nestjs/common");
       const warn = jest
@@ -375,11 +399,14 @@ describe("FEAT-19 OutboxDispatcher", () => {
         makeRow({ id: "row-1", leaseToken: "token-1" }),
         makeRow({ id: "row-2", leaseToken: "token-2" }),
       ];
-      dataSourceMock.query.mockResolvedValueOnce(rows);
+      dataSourceMock.query.mockResolvedValueOnce([rows, rows.length]);
       const otherInstanceRows = [
         makeRow({ id: "row-3", leaseToken: "token-3" }),
       ];
-      dataSourceMock.query.mockResolvedValueOnce(otherInstanceRows);
+      dataSourceMock.query.mockResolvedValueOnce([
+        [otherInstanceRows],
+        otherInstanceRows.length,
+      ]);
       await expect(outbox.scanOnce()).resolves.toBe(2);
       expect(dataSourceMock.query).toHaveBeenCalledTimes(1);
       expect(new Set(rows.map((row) => row.leaseToken)).size).toBe(rows.length);
@@ -390,7 +417,7 @@ describe("FEAT-19 OutboxDispatcher", () => {
 
     it("补投失败：attempts+1 且 nextAttemptAt = now + 退避（outboxRetryDelayMs）", async () => {
       const row = makeRow({ attempts: 2, leaseToken: "claim-token" });
-      dataSourceMock.query.mockResolvedValueOnce([row]);
+      dataSourceMock.query.mockResolvedValueOnce([[row], 1]);
       subRepoMock.find.mockResolvedValue([
         { id: "s1", eventTypes: ["execution.failed"] },
       ]);
@@ -416,7 +443,7 @@ describe("FEAT-19 OutboxDispatcher", () => {
 
     it("无匹配订阅：不调派发面，行直接终态回写（防冷订阅集积压）", async () => {
       const row = makeRow({ leaseToken: "claim-token" });
-      dataSourceMock.query.mockResolvedValueOnce([row]);
+      dataSourceMock.query.mockResolvedValueOnce([[row], 1]);
       subRepoMock.find.mockResolvedValue([
         { id: "s1", eventTypes: ["executor.offline"] },
       ]);
@@ -441,7 +468,8 @@ describe("FEAT-19 OutboxDispatcher", () => {
         .mockReset()
         .mockResolvedValue(undefined);
       dataSourceMock.query.mockResolvedValueOnce([
-        makeRow({ leaseToken: "claim-token" }),
+        [makeRow({ leaseToken: "claim-token" })],
+        1,
       ]);
       const first = outbox.scanOnce();
       const second = await outbox.scanOnce();
@@ -454,7 +482,7 @@ describe("FEAT-19 OutboxDispatcher", () => {
   describe("死信阈值", () => {
     it(`超过 ${MAX_OUTBOX_ATTEMPTS} 次：落 event_outbox_dead_letters + deadLettered 终态`, async () => {
       const row = makeRow({ attempts: MAX_OUTBOX_ATTEMPTS });
-      dataSourceMock.query.mockResolvedValueOnce([row]);
+      dataSourceMock.query.mockResolvedValueOnce([[row], 1]);
       subRepoMock.find.mockResolvedValue([
         { id: "s1", eventTypes: ["execution.failed"] },
       ]);
@@ -492,7 +520,7 @@ describe("FEAT-19 OutboxDispatcher", () => {
 
     it("未到阈值：不落死信，只退避", async () => {
       const row = makeRow({ attempts: MAX_OUTBOX_ATTEMPTS - 1 });
-      dataSourceMock.query.mockResolvedValueOnce([row]);
+      dataSourceMock.query.mockResolvedValueOnce([[row], 1]);
       subRepoMock.find.mockResolvedValue([
         { id: "s1", eventTypes: ["execution.failed"] },
       ]);
@@ -512,7 +540,7 @@ describe("FEAT-19 OutboxDispatcher", () => {
 
     it("死信持久化失败：不标 dispatched，源行保持可重试", async () => {
       const row = makeRow({ attempts: 0 });
-      dataSourceMock.query.mockResolvedValueOnce([row]);
+      dataSourceMock.query.mockResolvedValueOnce([[row], 1]);
       subRepoMock.find.mockResolvedValue([
         { id: "s1", eventTypes: ["execution.failed"] },
       ]);
@@ -540,7 +568,7 @@ describe("FEAT-19 OutboxDispatcher", () => {
         attempts: MAX_OUTBOX_ATTEMPTS,
         leaseToken: "stale-token",
       });
-      dataSourceMock.query.mockResolvedValueOnce([row]);
+      dataSourceMock.query.mockResolvedValueOnce([[row], 1]);
       subRepoMock.find.mockResolvedValue([
         { id: "s1", eventTypes: ["execution.failed"] },
       ]);
@@ -570,7 +598,7 @@ describe("FEAT-19 OutboxDispatcher", () => {
         attempts: MAX_OUTBOX_ATTEMPTS,
         leaseToken: "stale-token",
       });
-      dataSourceMock.query.mockResolvedValueOnce([row]);
+      dataSourceMock.query.mockResolvedValueOnce([[row], 1]);
       subRepoMock.find.mockResolvedValue([
         { id: "s1", eventTypes: ["execution.failed"] },
       ]);
@@ -636,7 +664,7 @@ describe("FEAT-19 OutboxDispatcher", () => {
     it("enabled 时 OnModuleInit 启动扫描 + 周期 timer；destroy 清理", async () => {
       jest.useFakeTimers();
       try {
-        dataSourceMock.query.mockResolvedValue([]);
+        dataSourceMock.query.mockResolvedValue([[], 0]);
         outbox.onModuleInit();
         // 启动扫描已触发一轮。
         await Promise.resolve();
