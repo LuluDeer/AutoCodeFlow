@@ -5,11 +5,11 @@
  * 可测试性与 react-refresh（组件文件只导出组件）。
  *
  * 零新依赖决策（认领记录已论证）：admin-web 无 node-cron/cronstrue，为预览
- * 引包不值得——本文件手写轻量解析，**只支持后端 CreateTaskDto @Matches 正则
- * 允许的 5 字段子集**（结构正则同口径复用语义：星号/数字/范围/步进/逗号），
- * 超出子集或语义非法（2 月 30 日等）一律返回 null → UI 渲染占位文案，
- * 绝不猜错时刻误导用户。后端运行时合法性由 node-cron.validate 把关（scheduler
- * 注册路径），前端预览是纯展示增强，非法表达式不影响提交校验链。
+ * 引包不值得——本文件手写轻量解析，**只支持后端 DTO 校验门（node-cron 可注册
+ * 的 5 字段纯数字子集）**（星号/数字/范围/步进/逗号；裸 n/step 除外，见
+ * parseField），超出子集或语义非法（2 月 30 日等）一律返回 null → UI 渲染
+ * 占位文案，绝不猜错时刻误导用户。后端运行时合法性由 node-cron.validate
+ * 把关（scheduler 注册路径），前端预览是纯展示增强，非法表达式不影响提交校验链。
  *
  * 时区感知：与 scheduler.getCronOptions 同一语义——timezone 字符串经
  * Intl.DateTimeFormat 校验，非法回退服务端默认（此处=浏览器本地时区）。
@@ -21,10 +21,9 @@ import { currentLocale } from './locale';
 
 /**
  * 5 字段 cron 结构正则（分 时 日 月 周）：星号、数字、范围、步进及逗号组合。
- * DTO 的 @Matches 是其「无逗号」子集（逗号组合在 DTO 层会被拒——CronHelper
- * 预设/常见写法均不用逗号）；预览层按超集宽容解析，逗号组合若整体语义合法
- * 也给出预览，提交是否放行仍由后端 DTO/validate 裁决（预览绝不放宽后端口径，
- * 只是展示层不重复拦截）。语义越界（逗号展开后超范围）仍拒绝。
+ * 结构正则只是粗筛；`n/step` 形态的语义拒绝在 parseField（结构正则无法简洁
+ * 表达「步进只能跟在 * 或范围后」）。DTO 端则由 cron-expression.constraint
+ * 收敛到 nodeCron.validate——两端口径一致：预览器接受的 ⊆ 调度器可注册的。
  */
 const CRON_5FIELD_RE =
   /^(\*|[0-5]?\d)(?:\/\d+)?(?:[,-](\*|[0-5]?\d)(?:\/\d+)?)* (\*|[01]?\d|2[0-3])(?:\/\d+)?(?:[,-](\*|[01]?\d|2[0-3])(?:\/\d+)?)* (\*|[012]?\d|3[01])(?:\/\d+)?(?:[,-](\*|[012]?\d|3[01])(?:\/\d+)?)* (\*|1[0-2]|0?[1-9])(?:\/\d+)?(?:[,-](\*|1[0-2]|0?[1-9])(?:\/\d+)?)* (\*|[0-7])(?:\/\d+)?(?:[,-](\*|[0-7])(?:\/\d+)?)*$/;
@@ -35,8 +34,13 @@ const FIELD_PART_RE = /^(\*|\d+)(?:-(\d+))?(?:\/(\d+))?$/;
 type FieldSet = Set<number>;
 
 /**
- * 把单字段展开为数值集合（星号/n/a-b/n-s/步进/逗号，POSIX n/step=n..max 语义）。
+ * 把单字段展开为数值集合（星号/n/a-b/步进/逗号）。
  * 越界/空集返回 null。与 admin-api parseField 语义一致。
+ *
+ * 裸 `n/step`（如 `12/20`）虽是合法 POSIX（≡ n..max/step），但调度器注册
+ * 路径 `nodeCron.validate` 拒绝它——放行就会复现「预览能出、保存 400」
+ * （DTO 门与 node-cron 同源）。故此处在解析层即拒绝，与保存门同口径；
+ * 等价改写建议由 `suggestCronStepRewrite` 提供。
  */
 function parseField(raw: string, min: number, max: number): FieldSet | null {
   const out = new Set<number>();
@@ -45,12 +49,12 @@ function parseField(raw: string, min: number, max: number): FieldSet | null {
     if (!m) return null;
     const step = m[3] !== undefined ? parseInt(m[3], 10) : 1;
     if (!Number.isInteger(step) || step < 1) return null;
+    if (m[1] !== '*' && m[2] === undefined && m[3] !== undefined) return null;
     let lo = min;
     let hi = max;
     if (m[1] !== '*') {
       lo = parseInt(m[1], 10);
-      hi =
-        m[2] !== undefined ? parseInt(m[2], 10) : m[3] !== undefined ? max : lo;
+      hi = m[2] !== undefined ? parseInt(m[2], 10) : lo;
       if (!Number.isInteger(lo) || !Number.isInteger(hi)) return null;
       if (lo < min || hi > max || lo > hi) return null;
     }
@@ -94,6 +98,37 @@ export function parseCronExpression(expr: string): ParsedCron | null {
     domAll: fields[2] === '*',
     dowAll: fields[4] === '*',
   };
+}
+
+/** 各字段上限（分 时 日 月 周），供裸 n/step 改写为显式范围用 */
+const FIELD_MAXES = [59, 23, 31, 12, 7] as const;
+
+/**
+ * 裸 `n/step` 写法（如 `12/20`）的等价改写建议：把每个裸 n/step 部分改写为
+ * node-cron 接受的 `n-max/step`（POSIX n/step ≡ n..max/step，与展开语义
+ * 严格一致）。其余部分原样保留。
+ *
+ * 返回 null 的情形：表达式结构本身不可解析（CRON_5FIELD_RE 不通过）、
+ * 或不含裸 n/step（无需改写）。步进为 0 时不改写（留给解析/后端报错，
+ * 不给用户一个同样非法的「建议」）。供表单校验产出可操作的错误文案。
+ */
+export function suggestCronStepRewrite(expr: string): string | null {
+  const trimmed = (expr ?? '').trim().replace(/\s+/g, ' ');
+  if (!trimmed || !CRON_5FIELD_RE.test(trimmed)) return null;
+  const fields = trimmed.split(' ');
+  let changed = false;
+  const rewritten = fields.map((field, i) =>
+    field
+      .split(',')
+      .map((part) => {
+        const m = /^(\d+)\/(\d+)$/.exec(part);
+        if (!m || parseInt(m[2], 10) < 1) return part;
+        changed = true;
+        return `${m[1]}-${FIELD_MAXES[i]}/${m[2]}`;
+      })
+      .join(','),
+  );
+  return changed ? rewritten.join(' ') : null;
 }
 
 /**
