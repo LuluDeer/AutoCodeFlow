@@ -18,6 +18,8 @@ export enum ApplicationStatus {
 @Entity("applications")
 @Index(["status"])
 @Index(["createdAt"])
+// MUTEX-01：挂组查询/组删除级联定位（迁移 1790000000044 同名 DDL）。
+@Index("idx_applications_mutex_group", ["mutexGroupId"])
 export class Application {
   @PrimaryGeneratedColumn("uuid") id: string;
 
@@ -73,6 +75,17 @@ export class Application {
    */
   @Column({ type: "uuid", nullable: true })
   projectId: string | null;
+
+  /**
+   * MUTEX-01（应用互斥组，迁移 1790000000044）：应用挂入的互斥组（可空）。
+   * NULL = 不参与互斥——该应用的执行只受设备 maxConcurrentTasks 约束，行为
+   * 与引入本特性前逐字节一致。非空时，该应用产生的执行在**同一台设备上**
+   * 与同组其它应用的执行互斥（组内并发数见 MutexGroup.maxConcurrentPerDevice）。
+   * 调度侧消费的是执行行上的组快照（task_executions.mutexGroupId），本列是
+   * 配置事实源；组删除（FK SET NULL）后应用自动回到不参与互斥。
+   */
+  @Column({ type: "uuid", nullable: true })
+  mutexGroupId: string | null;
 
   /**
    * NF-03（任务级 RBAC 预研）：创建者用户 id。语义与 tasks.ownerUserId

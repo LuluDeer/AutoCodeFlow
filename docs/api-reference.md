@@ -267,6 +267,27 @@ Content-Type: application/json
 
 ---
 
+## Mutex Groups — 应用互斥组（MUTEX-01）
+
+**问题背景**：一类自动化应用（如多个紫鸟浏览器操作应用）对同一外部资源做自动化——它们**互相之间**在同一台设备上必须串行，但与其它无冲突应用（接口类）照常并发，设备自身的 `maxConcurrentTasks` 槽位照常生效。
+
+**调度语义（单一事实源）**：同一台设备上，同一互斥组的执行同时最多 `maxConcurrentPerDevice` 个（默认 1 = 组内串行）；**跨组互不影响、跨设备互不影响**。未挂组的应用行为与引入前逐字节一致。
+
+**范围取舍**：只约束单播派发（`executeMode` 默认值）；broadcast 的语义就是刻意全机队同时跑，不参与互斥。互斥与任务既有路由（pinned / group / tags）叠加：先筛选候选设备，再在候选内做互斥占坑。
+
+**排队语义**：所有候选设备的同组占用已满时，执行进入显式 `waiting` 排队态（不消耗 BullMQ 重试预算、不计入任务超时），由中台每 10 秒的唤醒扫描重新尝试派发；等待中的执行可被人工 kill / 取消，`blockStrategy=DISCARD/COVER_EARLY` 也将排队中的执行视作"上一轮还没跑完"。
+
+| 方法 | 路径 | 需要认证 | 说明 |
+|------|------|:--------:|------|
+| GET | `/mutex-groups` | 是 | 列出互斥组（应用表单下拉与组管理消费） |
+| POST | `/mutex-groups` | 是* | 创建组：`{ name ≤64 唯一, maxConcurrentPerDevice ≥1 默认 1, description? }`；重名 409 |
+| PUT | `/mutex-groups/:id` | 是* | 更新组名 / `maxConcurrentPerDevice`（热生效——下次派发即按新值判定） |
+| DELETE | `/mutex-groups/:id` | 是* | 删除组。组上仍挂应用时需 `?force=true`（删除后应用经 FK SET NULL 回到「不参与互斥」；在途执行按创建时的组快照走完） |
+
+> *写面仅 ADMIN（`@Roles(ADMIN)`）。应用挂组走既有应用写面：`POST/PUT /applications` 的 `mutexGroupId` 字段（uuid，可空；组不存在 404）。执行行携带创建时的组快照（`task_executions.mutexGroupId`），组删除不影响在途执行。
+
+---
+
 ## App Deployments — 应用部署
 
 | 方法 | 路径 | 需要认证 | 说明 |

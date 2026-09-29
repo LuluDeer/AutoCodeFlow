@@ -27,6 +27,8 @@ import { AiAnalysisService } from "../ai/ai-analysis.service";
 // 遗留模块耦合。终态事件改由 taskService.publishTerminalEventForDispatch 经
 // 事件总线统一发布。
 import { TaskService, INTERPRETER_UNAVAILABLE_PATTERN } from "./task.service";
+// MUTEX-01：互斥阻塞错误前缀（dispatch 抛出，processor 分类链最前面识别）。
+import { MUTEX_WAIT_TOKEN } from "./execution-mutex";
 
 // PERF-P3a: worker 并发 1→5，消除队头阻塞（一个慢 dispatch HTTP 不再卡住
 // 整条队列）。安全性依据：执行器容量闸门在 dispatch 内由 DB 原子操作保证
@@ -99,6 +101,13 @@ export class TaskProcessor extends WorkerHost {
     // semantics that let a FAILED row be re-dispatched must remain intact — do
     // not drop FAILED from this list).
     //
+    // MUTEX-01: WAITING is claimable — the 15s wake sweep (scheduler) flips a
+    // mutex-queued execution back to PENDING and re-enqueues it; between the
+    // flip and the job run the row is PENDING, but a wake job that raced a
+    // concurrent wake (sweep runs on one leader only) or a manual re-trigger
+    // path must still be able to claim a row that stayed WAITING. Waiting time
+    // does not poison startTime: the claim re-writes it on every claim.
+    //
     // CONSISTENCY-01: RUNNING is deliberately NOT claimable. A stalled BullMQ
     // job (worker crash / lost lock) is redelivered and re-runs handle() while
     // the DB row is still RUNNING from the first claim. Previously a second
@@ -118,7 +127,11 @@ export class TaskProcessor extends WorkerHost {
       .set({ status: ExecutionStatus.RUNNING, startTime })
       .where("id = :id", { id: executionId })
       .andWhere("status IN (:...claimable)", {
-        claimable: [ExecutionStatus.PENDING, ExecutionStatus.FAILED],
+        claimable: [
+          ExecutionStatus.PENDING,
+          ExecutionStatus.FAILED,
+          ExecutionStatus.WAITING,
+        ],
       })
       .execute();
     if (!claimed.affected) {
@@ -161,6 +174,28 @@ export class TaskProcessor extends WorkerHost {
       const errMsg = err instanceof Error ? err.message : String(err);
       const errStack =
         err instanceof Error ? err.stack || err.message : String(err);
+      // MUTEX-01：互斥阻塞 —— 必须排在分类链**最前面**（与 interpreter token
+      // 同款先例：`[mutex_wait]` 前缀识别先于正则链，否则会被
+      // `/executor.*(offline|unavailable)/` 之类规则误吞）。
+      //
+      // 语义：所有候选设备的同组占用已满 → 执行进入显式排队态 WAITING，当前
+      // job **正常结束**（提前 return，不 rethrow）——① worker 槽位立即释放，
+      // 不让排队执行占着 5 路并发；② 不烧 BullMQ 重试预算（attempts 一次都没
+      // 消耗，唤醒后全新 job 带完整预算）；③ 失败分类/日志/AI 分析/终态事件/
+      // 通知全链路都不触发（这不是失败，是调度等待）。唤醒由 scheduler 的
+      // 15s leader cron 把 WAITING 条件翻回 PENDING 并重新入队。
+      //
+      // finally 仍会执行：WAITING 非终态，走 ownedPatch 的条件 UPDATE（open 态
+      // 门，RUNNING→WAITING 命中）落库，pendingTerminalEvent 恒为 null。
+      if (errMsg.startsWith(MUTEX_WAIT_TOKEN)) {
+        exec.status = ExecutionStatus.WAITING;
+        exec.failureReason = null;
+        exec.errorMessage = errMsg.slice(MUTEX_WAIT_TOKEN.length);
+        this.logger.log(
+          `Execution ${executionId} queued (mutex wait): task "${task.name}" waiting for a free slot in its mutex group`,
+        );
+        return;
+      }
       exec.errorMessage = errMsg;
       const failureText = `${errMsg}\n${errStack}`;
       // python_task_multiversion（WS2 · CONTRACT §2.5 / D14）：解释器不可获取
