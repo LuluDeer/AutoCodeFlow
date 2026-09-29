@@ -22,6 +22,8 @@ import { Application } from "../application/entities/application.entity";
 // 自带 @ManyToOne(() => Application)，但那是**实体关系**而非模块依赖——
 // TypeORM 解析关系只需 Application 实体已被 forFeature 注册（上一行即是）。
 import { AppDeployment } from "../application/entities/app-deployment.entity";
+// MUTEX-01：互斥组实体（只读消费，见下方 forFeature 注）。
+import { MutexGroup } from "../application/entities/mutex-group.entity";
 import { NotificationModule } from "../notification/notification.module";
 import { SystemConfigModule } from "../config/config.module";
 // SEC-02: dispatch 时解密 task.secrets 与 params 合并注入执行器 env
@@ -42,6 +44,9 @@ import { AuditModule } from "../audit/audit.module";
       Application,
       // ARCH-35 P1：部署归属偏好（只读 app_deployments，见上方 import 注）。
       AppDeployment,
+      // MUTEX-01：互斥组配置（只读，组内并发数；只加 Repository 不 import
+      // ApplicationModule，避免模块环——与上方 Application 同理）。
+      MutexGroup,
     ]),
     BullModule.registerQueue({ name: "task-queue" }),
     NotificationModule,

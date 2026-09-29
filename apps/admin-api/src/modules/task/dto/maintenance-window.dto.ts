@@ -1,10 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
-import {
-  IsNotEmpty,
-  IsOptional,
-  IsString,
-  MaxLength,
-} from "class-validator";
+import { IsNotEmpty, IsOptional, IsString, MaxLength } from "class-validator";
 // 与调度主 cron 同一语义门（规范化后 nodeCron.validate + 界内守卫）——
 // 取代此前裸结构正则 @Matches(CRON_5FIELD_RE)：结构正则会放行「调度器
 // 注册后永不触发」的形态（如 32-40 * * * *，node-cron v4 validate 误放），

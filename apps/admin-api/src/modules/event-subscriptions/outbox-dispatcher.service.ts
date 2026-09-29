@@ -278,9 +278,7 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
         `,
         [now, OUTBOX_BATCH_SIZE, leaseUntil],
       )) as [EventOutbox[], number];
-      const rows: EventOutbox[] = Array.isArray(claimed?.[0])
-        ? claimed[0]
-        : [];
+      const rows: EventOutbox[] = Array.isArray(claimed?.[0]) ? claimed[0] : [];
 
       // 无行可投：提前返回，跳过空轮的订阅表查询（该查询只服务于有行时的派发）。
       if (rows.length === 0) return 0;

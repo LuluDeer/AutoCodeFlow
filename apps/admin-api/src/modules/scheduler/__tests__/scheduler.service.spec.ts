@@ -752,11 +752,16 @@ describe("SchedulerService", () => {
       );
       // A1: 条件 UPDATE 的形状已收口到 task/execution-terminal 单一入口，
       // 门槛常量不再由本调用方抄写（此前是字面量 `[...open]`）。
+      // MUTEX-01：open 态门含 WAITING——排队中的执行同样可被 COVER_EARLY 覆盖。
       expect(coverQb.where).toHaveBeenCalledWith(
         '"id" IN (:...ids) AND "status" IN (:...gate)',
         {
           ids: ["running-1"],
-          gate: [ExecutionStatus.PENDING, ExecutionStatus.RUNNING],
+          gate: [
+            ExecutionStatus.PENDING,
+            ExecutionStatus.RUNNING,
+            ExecutionStatus.WAITING,
+          ],
         },
       );
       expect(coverQb.returning).toHaveBeenCalledWith(["id", "executorAddress"]);
@@ -1164,11 +1169,16 @@ describe("SchedulerService", () => {
 
       // A1: 条件 UPDATE 保留终态保护语义：仅 open 状态可被置 FAILED；
       // 形状统一由 task/execution-terminal 提供（门槛常量不再本处抄写）。
+      // MUTEX-01：open 态门扩展为 PENDING/RUNNING/WAITING（排队态同属打开态）。
       expect(updateQb.where).toHaveBeenCalledWith(
         '"id" IN (:...ids) AND "status" IN (:...gate)',
         {
           ids: expect.arrayContaining(["exec-timeout"]),
-          gate: [ExecutionStatus.PENDING, ExecutionStatus.RUNNING],
+          gate: [
+            ExecutionStatus.PENDING,
+            ExecutionStatus.RUNNING,
+            ExecutionStatus.WAITING,
+          ],
         },
       );
       expect(updateQb.set).toHaveBeenCalledWith(
@@ -2300,6 +2310,86 @@ describe("SchedulerService", () => {
         expect.stringContaining("still running"),
       );
       scheduleSpy.mockRestore();
+    });
+  });
+
+  // ── MUTEX-01：互斥排队唤醒 sweep ─────────────────────────────────────────
+  describe("wakeMutexQueuedExecutions (MUTEX-01)", () => {
+    const waitingExec = {
+      id: "exec-wait-1",
+      taskId: "task-1",
+      status: ExecutionStatus.WAITING,
+      errorMessage: "排队原因",
+    } as unknown as TaskExecution;
+
+    const makeFlipQb = (affected: number) => ({
+      update: jest.fn().mockReturnThis(),
+      set: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      execute: jest.fn().mockResolvedValue({ affected }),
+    });
+
+    it("非 Leader 直接跳过（多实例下仅 Leader 唤醒）", async () => {
+      await service.wakeMutexQueuedExecutions();
+      expect(execRepo.find).not.toHaveBeenCalled();
+    });
+
+    it("Leader：WAITING 行被条件翻转回 PENDING 并按任务预算重新入队", async () => {
+      await makeLeader();
+      execRepo.find.mockResolvedValue([waitingExec]);
+      taskRepo.findBy.mockResolvedValue([makeTask({ maxRetry: 3 })]);
+      const flipQb = makeFlipQb(1);
+      execRepo.createQueryBuilder.mockReturnValue(flipQb);
+
+      await service.wakeMutexQueuedExecutions();
+
+      expect(execRepo.find).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { status: ExecutionStatus.WAITING } }),
+      );
+      // 条件翻转独占唤醒权：WAITING → PENDING，且清空排队原因。
+      expect(flipQb.set).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: ExecutionStatus.PENDING,
+          errorMessage: null,
+        }),
+      );
+      // 入队载荷只带 executionId；attempts 用任务完整预算（等待期间未消耗）。
+      expect(queue.add).toHaveBeenCalledWith(
+        "execute",
+        { executionId: "exec-wait-1" },
+        expect.objectContaining({ attempts: 3 }),
+      );
+    });
+
+    it("翻转落空（并发 kill / 重复唤醒）→ 不入队", async () => {
+      await makeLeader();
+      execRepo.find.mockResolvedValue([waitingExec]);
+      taskRepo.findBy.mockResolvedValue([makeTask()]);
+      execRepo.createQueryBuilder.mockReturnValue(makeFlipQb(0));
+
+      await service.wakeMutexQueuedExecutions();
+
+      expect(queue.add).not.toHaveBeenCalled();
+    });
+
+    it("入队失败 → 回滚为 WAITING，等待下轮 sweep 再试", async () => {
+      await makeLeader();
+      execRepo.find.mockResolvedValue([waitingExec]);
+      taskRepo.findBy.mockResolvedValue([makeTask()]);
+      execRepo.createQueryBuilder.mockReturnValue(makeFlipQb(1));
+      queue.add.mockRejectedValueOnce(new Error("redis down"));
+
+      await service.wakeMutexQueuedExecutions();
+
+      // 最后一次写是 WAITING 回滚（条件：PENDING → WAITING）。
+      const setCalls = execRepo.createQueryBuilder.mock.results
+        .map((r: any) => r.value)
+        .filter(Boolean)
+        .map((qb: any) => qb.set.mock.calls[qb.set.mock.calls.length - 1]?.[0]);
+      expect(
+        setCalls.some((p: any) => p && p.status === ExecutionStatus.WAITING),
+      ).toBe(true);
+      expect(queue.add).toHaveBeenCalled();
     });
   });
 });

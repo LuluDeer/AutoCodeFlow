@@ -15,6 +15,18 @@ export interface Application {
   entrypoint?: string;
   /** DEP-04: 开启后新部署冻结为待审批，需第二人批准后才派发 */
   approvalRequired?: boolean;
+  /** MUTEX-01: 挂入的互斥组（null = 不参与互斥，仅受设备槽位约束） */
+  mutexGroupId?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** MUTEX-01: 应用互斥组——同设备×同组的执行并发上限（默认 1 = 组内串行）。 */
+export interface MutexGroup {
+  id: string;
+  name: string;
+  maxConcurrentPerDevice: number;
+  description?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -189,6 +201,17 @@ export const applicationsApi = {
     }>(
       `/applications/${appId}/rollback/${targetId}`,
     ),
+};
+
+/** MUTEX-01：互斥组配置管理（读面全登录用户，写面 ADMIN）。 */
+export const mutexGroupsApi = {
+  list: () => client.get<MutexGroup[]>('/mutex-groups'),
+  create: (data: { name: string; maxConcurrentPerDevice?: number; description?: string }) =>
+    client.post<MutexGroup>('/mutex-groups', data),
+  update: (id: string, data: { name?: string; maxConcurrentPerDevice?: number; description?: string }) =>
+    client.put<MutexGroup>(`/mutex-groups/${id}`, data),
+  remove: (id: string, force = false) =>
+    client.delete<{ ok: boolean }>(`/mutex-groups/${id}${force ? '?force=true' : ''}`),
 };
 
 export const deploymentsApi = {

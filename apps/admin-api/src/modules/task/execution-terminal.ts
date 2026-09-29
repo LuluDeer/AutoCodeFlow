@@ -33,10 +33,15 @@ import {
  * import task 模块，凭空引入循环依赖面（ARCH-24 已因 DI 环挂死过一次）。
  */
 
-/** 打开态：允许推进到终态的起始状态集合（终态保护门的单一事实源）。 */
+/** 打开态：允许推进到终态的起始状态集合（终态保护门的单一事实源）。
+ *
+ * MUTEX-01：WAITING（互斥排队态）属于打开态——人工 kill/取消与 COVER_EARLY
+ * （新触发覆盖旧执行）必须能终结一条还在排队的执行；它不是终态，也绝不能被
+ * 任何终态写路径挡在门外。 */
 export const OPEN_EXECUTION_STATUSES: readonly ExecutionStatus[] = [
   ExecutionStatus.PENDING,
   ExecutionStatus.RUNNING,
+  ExecutionStatus.WAITING,
 ];
 
 /** 终态集合：已收敛、不可再被任何写路径改写的状态。 */
