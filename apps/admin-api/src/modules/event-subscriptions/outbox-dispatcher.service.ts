@@ -252,7 +252,11 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
       // 都会进入此处）。活动租约被跳过，过期租约可由本轮回收。
       const now = new Date();
       const leaseUntil = new Date(now.getTime() + OUTBOX_LEASE_MS);
-      const rows = (await this.dataSource.query(
+      // TypeORM 1.x postgres：query() 对 UPDATE/DELETE 返回 [rows, affected]
+      // 元组（PostgresQueryRunner 组装 result.raw = [raw.rows, raw.rowCount]），
+      // 不是行数组——直接当行数组消费会让每个被处理的"行" id=undefined
+      // （markDispatched 的 WHERE 被 TypeORM 拒收），真正的 outbox 行从未被补投。
+      const claimed = (await this.dataSource.query(
         `
           WITH "claimable" AS (
             SELECT "id"
@@ -273,7 +277,10 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
           RETURNING "outbox".*
         `,
         [now, OUTBOX_BATCH_SIZE, leaseUntil],
-      )) as EventOutbox[];
+      )) as [EventOutbox[], number];
+      const rows: EventOutbox[] = Array.isArray(claimed?.[0])
+        ? claimed[0]
+        : [];
 
       // 无行可投：提前返回，跳过空轮的订阅表查询（该查询只服务于有行时的派发）。
       if (rows.length === 0) return 0;

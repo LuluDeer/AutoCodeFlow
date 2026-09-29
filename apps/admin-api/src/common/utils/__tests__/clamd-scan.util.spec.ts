@@ -5,11 +5,16 @@
  */
 import * as net from "net";
 import * as http from "http";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
+import { PassThrough } from "stream";
 import { EICAR_STRING } from "./zip-samples";
 import {
   isFailedVerdict,
   parseClamdReply,
   scanBufferWithClamd,
+  scanStreamWithClamd,
 } from "../clamd-scan.util";
 
 /** Minimal fake clamd: asserts the INSTREAM framing, replies with canned text. */
@@ -177,6 +182,83 @@ describe("clamd-scan.util (SEC-05)", () => {
         timeoutMs: 100,
       });
       expect(v).toEqual({ ok: true });
+    });
+  });
+
+  describe("scanStreamWithClamd", () => {
+    const disabledCfg = {
+      enabled: false,
+      host: "127.0.0.1",
+      port: 1,
+      timeoutMs: 100,
+    };
+    const enabledCfg = (port: number, timeoutMs = 5000) => ({
+      enabled: true,
+      host: "127.0.0.1",
+      port,
+      timeoutMs,
+    });
+
+    it("enabled=false：挂一次性 error 监听并 destroy 流（fd 不泄漏）", async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clamd-stream-"));
+      try {
+        const file = path.join(dir, "pkg.zip");
+        fs.writeFileSync(file, "zip");
+        const stream = fs.createReadStream(file);
+        const v = await scanStreamWithClamd(stream, disabledCfg);
+        expect(v).toEqual({ ok: true });
+        expect(stream.destroyed).toBe(true);
+        expect(stream.listenerCount("error")).toBeGreaterThanOrEqual(1);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("ARCH-008 回归：禁用时遗留流的 error 有监听器，不再 uncaughtException", async () => {
+      // 生产事故（2026-09-29）：controller 为禁用的扫描创建了
+      // fs.createReadStream(tmpPath) 后无人消费——异步 open 失败（该文件
+      // 随后被 rename 走）时 'error' 无监听器，Node 直接 throw 成
+      // uncaughtException，整实例退出。这里用 emit 显式复现：无监听器时
+      // EventEmitter.emit('error') 会同步 throw，本断言在修复前必失败。
+      const stream = new PassThrough();
+      const v = await scanStreamWithClamd(stream, disabledCfg);
+      expect(v).toEqual({ ok: true });
+      expect(() =>
+        stream.emit("error", new Error("late async open failure")),
+      ).not.toThrow();
+    });
+
+    it("enabled=true：文件流经 INSTREAM 分块发出，清洁回复 → ok", async () => {
+      const fake = await startFakeClamd("stream: OK\n");
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clamd-stream-"));
+      try {
+        const file = path.join(dir, "pkg.zip");
+        fs.writeFileSync(file, EICAR_STRING);
+        const v = await scanStreamWithClamd(
+          fs.createReadStream(file),
+          enabledCfg(fake.port),
+        );
+        expect(v).toEqual({ ok: true });
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+        fake.close();
+      }
+    });
+
+    it("enabled=true：源流 open 失败 → fail-closed 拒绝（不外抛）", async () => {
+      const missing = path.join(
+        os.tmpdir(),
+        `clamd-missing-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      );
+      const v = await scanStreamWithClamd(
+        fs.createReadStream(missing),
+        enabledCfg(1, 2000),
+      );
+      expect(v.ok).toBe(false);
+      // open 的 ENOENT 与 clamd 端口拒连存在竞态，两者均为 fail-closed 裁决。
+      expect(["error", "unreachable"]).toContain(
+        isFailedVerdict(v) ? v.reason : "ok",
+      );
     });
   });
 });
