@@ -1,5 +1,6 @@
 import { ChildProcess, spawn } from 'child_process';
 import * as fs from 'fs';
+import * as http from 'http';
 import * as os from 'os';
 import * as path from 'path';
 import { app, BrowserWindow } from 'electron';
@@ -66,6 +67,19 @@ export class ExecutorProcess {
   private onStatusChange: StatusChangeCallback | null = null;
   private currentStatus: ExecutorStatus = 'stopped';
   /**
+   * 最近一次 start() 下发给子进程的端口与共享令牌（仅主进程内存，与子进程 env
+   * 同源）。stop() 的 HTTP 优雅停机通道凭此构造请求——必须用子进程**实际**拿到
+   * 的值而不是当前配置：配置可能在启动后被改过但尚未重启。
+   */
+  private childPort: number | null = null;
+  private childSharedToken = '';
+  /**
+   * 停机宽限上限。与 executor-node gracefulShutdown 的任务排空窗口（main.ts
+   * maxWait = 30s）对齐：正常情况下子进程远早于该上限退出（drain 完成即退），
+   * 超时才强杀兜底。旧值 8s 会把 executor-node 正在进行的 30s 排空拦腰截断。
+   */
+  private static readonly STOP_GRACE_MS = 30_000;
+  /**
    * R23: admin registration/heartbeat verdict. F-2 后主判据为
    * /health/admin-status 结构化状态（applyAdminStatus）；inferStatusFromLog
    * 仅作旧内嵌 bundle（无该端点）的降级回退。为 'failed'（Register/Heartbeat
@@ -121,6 +135,9 @@ export class ExecutorProcess {
     }
     this.stopping = false;
     this.adminRegistration = 'unknown';
+    // 记录下发给子进程的端口/令牌（stop 的 HTTP 优雅停机通道用，见字段注释）。
+    this.childPort = config.executorPort;
+    this.childSharedToken = resolveToken(config);
     this.notifyStatus('pending');
 
     const entryPath = this.getEntryPath();
@@ -251,38 +268,111 @@ export class ExecutorProcess {
   async stop(): Promise<void> {
     if (!this.proc) return;
     this.stopping = true;
-    // NETOPT-D P3-3: drain 期（最长 8s）health poll 仍跑会把 pending 翻回
+    // NETOPT-D P3-3: drain 期（上限 30s）health poll 仍跑会把 pending 翻回
     // online（/health/live 恒 200）——观感闪烁；先停 poll，代际守卫清在飞请求。
     this.stopHealthPoll();
     this.notifyStatus('pending');
 
     return new Promise((resolve) => {
       const proc = this.proc!;
+      let settled = false;
       const finish = () => {
+        if (settled) return;
+        settled = true;
         clearTimeout(timer);
         this.proc = null;
         this.notifyStatus('stopped');
         resolve();
       };
       const timer = setTimeout(() => {
-        log.warn('Graceful shutdown timeout (8s), force-killing');
+        log.warn(
+          `Graceful shutdown timeout (${ExecutorProcess.STOP_GRACE_MS / 1000}s), force-killing`,
+        );
         this.forceKillTree(proc);
         finish();
-      }, 8_000);
+      }, ExecutorProcess.STOP_GRACE_MS);
 
       proc.once('exit', finish);
 
-      // R-08 (windows-findings): on win32 child.kill('SIGTERM') is
-      // TerminateProcess — it does NOT run executor-node's graceful
-      // handler, and it leaves the task's own child processes running
-      // as orphans. Tree-kill with taskkill /T /F so the whole executor +
-      // its task tree is reaped. On POSIX, SIGTERM triggers the graceful
-      // chain (drain + group kill) as designed.
-      if (process.platform === 'win32') {
-        this.forceKillTree(proc);
-      } else {
-        proc.kill('SIGTERM');
-      }
+      // 三平台统一的停机序：先请 executor-node 的 HTTP 关停端点（子进程收到后
+      // 跑与 SIGTERM 完全相同的 gracefulShutdown：30s 排空任务 → 停回调线程 →
+      // flushLogs → notifyOffline），成功则等它自行退出。
+      // 端点不可用（无令牌 / 被拒 / 超时）时回落旧路径：win32 直接树杀——
+      // ELECTRON_RUN_AS_NODE 子进程在 Windows 收不到可用的 SIGTERM（proc.kill
+      // 等价 TerminateProcess，graceful 链根本不会跑），强杀是唯一兜底；
+      // POSIX 的 SIGTERM 仍走既有 graceful 链，语义与 HTTP 端点一致。
+      void this.requestGracefulHttpShutdown().then((gracefulAccepted) => {
+        if (settled) return; // 子进程已退出（exit 事件先行）
+        if (gracefulAccepted) {
+          log.info('Graceful shutdown accepted by executor; waiting for drain');
+          return;
+        }
+        log.warn('HTTP graceful shutdown unavailable; falling back to signal/kill');
+        if (process.platform === 'win32') {
+          this.forceKillTree(proc);
+        } else {
+          proc.kill('SIGTERM');
+        }
+      });
+    });
+  }
+
+  /**
+   * 请求 executor-node 的 POST /api/shutdown（仅本机可达 + 共享令牌鉴权，与
+   * /api/* 同一凭据源）。子进程应答 2xx 即视为已受理并开始优雅停机。
+   *
+   * 为什么必须走 HTTP：Windows 下子进程经 ELECTRON_RUN_AS_NODE 启动，任务栏
+   * 无控制台、信号不可达——taskkill /F 只会立刻整树强杀，executor-node 的
+   * gracefulShutdown（排空回调 → flushLogs → notifyOffline）全被跳过，内存态
+   * 回调队列里的任务终态随之丢失，中台任务永久卡 running。HTTP 是该形态下唯一
+   * 能携带"优雅停机"语义的通道。
+   *
+   * 返回 false = 通道不可用（未配置令牌 / 非 2xx / 连接失败 / 超时），调用方
+   * 回落信号/强杀路径。绝不让该请求阻塞停机：3s 超时，失败立即回落。
+   */
+  private requestGracefulHttpShutdown(): Promise<boolean> {
+    const port = this.childPort;
+    const token = this.childSharedToken;
+    if (!port || !Number.isFinite(port) || !token) {
+      // 未配置共享令牌时 executor-node 的 /api/* fail-closed（503），请求必然
+      // 被拒——不必发起，直接回落。
+      return Promise.resolve(false);
+    }
+    return new Promise((resolve) => {
+      const payload = Buffer.from('{}', 'utf-8');
+      const req = http.request(
+        {
+          hostname: '127.0.0.1',
+          port,
+          path: '/api/shutdown',
+          method: 'POST',
+          timeout: 3_000,
+          headers: {
+            'Content-Type': 'application/json',
+            'Content-Length': String(payload.length),
+            Authorization: `Bearer ${token}`,
+          },
+        },
+        (res) => {
+          res.resume();
+          const status = res.statusCode ?? 0;
+          const ok = status >= 200 && status < 300;
+          if (!ok) {
+            log.warn(`Graceful shutdown endpoint refused: HTTP ${status}`);
+          }
+          resolve(ok);
+        },
+      );
+      req.on('error', (err) => {
+        log.warn(`Graceful shutdown endpoint unreachable: ${err.message}`);
+        resolve(false);
+      });
+      req.on('timeout', () => {
+        req.destroy();
+        resolve(false);
+      });
+      req.write(payload);
+      req.end();
     });
   }
 

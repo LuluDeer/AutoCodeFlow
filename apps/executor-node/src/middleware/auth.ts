@@ -78,6 +78,33 @@ export function getStaticToken(): string | null {
 }
 
 /**
+ * POST /api/shutdown（本机优雅关停端点）的凭据校验。
+ *
+ * 与 /api/* 的 verifyToken 同一信任源——共享令牌（EXECUTOR_SHARED_TOKEN /
+ * EXECUTOR_SECRET / --token）与当前动态令牌任一匹配即放行，constant-time
+ * 比较；未配置任何凭据时 fail-closed（与 verifyToken 的 503 语义一致，
+ * 防止本机任意进程随意关停执行器）。
+ *
+ * 为什么不复用 verifyToken：它会 await refreshTokenIfNeeded()——admin 不可达
+ * 时一次 token 刷新要等到网络超时（最多 3 次重试），而"中台链路异常"恰恰是
+ * 停机最常见的场景之一；关停路径不应依赖对 admin 的网络可达性。
+ */
+export function matchesExecutorCredential(candidate: unknown): boolean {
+  if (typeof candidate !== 'string' || !candidate) return false;
+  const validTokens: string[] = [];
+  const staticToken = readStaticToken();
+  if (staticToken) validTokens.push(staticToken);
+  if (dynamicToken) validTokens.push(dynamicToken);
+  if (validTokens.length === 0) return false;
+  const providedBuf = Buffer.from(candidate);
+  return validTokens.some((validToken) => {
+    const validBuf = Buffer.from(validToken);
+    // timingSafeEqual requires same-length buffers; mismatched lengths still reject
+    return providedBuf.length === validBuf.length && timingSafeEqual(providedBuf, validBuf);
+  });
+}
+
+/**
  * S-3（audit-r4）：dev-mode allow-all 的显式开关。无 token 时默认 fail-closed；
  * 仅 EXECUTOR_ALLOW_NO_TOKEN=true（兼容 1/yes/on）显式放行未认证请求
  * （与 executor-python auth.py::_allow_no_token_dev_mode 同款语义）。
