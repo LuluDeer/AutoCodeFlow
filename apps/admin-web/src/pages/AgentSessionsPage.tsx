@@ -303,7 +303,7 @@ export default function AgentSessionsPage() {
         width={920}
         open={detail !== null}
         onClose={() => setDetail(null)}
-        destroyOnClose
+        destroyOnHidden
         extra={
           resumable ? (
             <Button

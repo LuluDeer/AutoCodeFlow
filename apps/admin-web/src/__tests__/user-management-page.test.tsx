@@ -167,7 +167,7 @@ describe('UserManagementPage 新建用户（QA-03）', () => {
     expect(mockedUsers.create).not.toHaveBeenCalled();
   });
 
-  it('合法提交：create 收到 username/password/role payload 并提示成功', async () => {
+  it('合法提交：create 收到 username/password/email/role payload 并提示成功', async () => {
     mockedUsers.create.mockResolvedValue(makeUser({}) as never);
     renderPage();
     await screen.findByText('alice');
@@ -175,6 +175,8 @@ describe('UserManagementPage 新建用户（QA-03）', () => {
 
     fireEvent.change(screen.getByPlaceholderText('请输入用户名'), { target: { value: 'dave' } });
     fireEvent.change(screen.getByPlaceholderText('请输入密码'), { target: { value: 'Str0ng!Pass' } });
+    // P1-4：新建态后端 @IsEmail() 必填——表单同步补必填规则，合法邮箱随 payload 上送
+    fireEvent.change(screen.getByLabelText('邮箱'), { target: { value: 'dave@corp.io' } });
     fireEvent.click(findBtn(document.body, '创建')!);
 
     await waitFor(() => {
@@ -183,6 +185,7 @@ describe('UserManagementPage 新建用户（QA-03）', () => {
     const dto = mockedUsers.create.mock.calls[0][0];
     expect(dto.username).toBe('dave');
     expect(dto.password).toBe('Str0ng!Pass');
+    expect(dto.email).toBe('dave@corp.io');
     expect(dto.role).toBe('user'); // Select 初始值
     expect(await screen.findByText('用户创建成功')).toBeTruthy();
   });
@@ -195,6 +198,8 @@ describe('UserManagementPage 新建用户（QA-03）', () => {
 
     fireEvent.change(screen.getByPlaceholderText('请输入用户名'), { target: { value: 'dave' } });
     fireEvent.change(screen.getByPlaceholderText('请输入密码'), { target: { value: 'Str0ng!Pass' } });
+    // P1-4：新建态邮箱必填，先填合法邮箱才能到达后端失败路径
+    fireEvent.change(screen.getByLabelText('邮箱'), { target: { value: 'dave@corp.io' } });
     fireEvent.click(findBtn(document.body, '创建')!);
 
     await waitFor(() => {
@@ -202,6 +207,25 @@ describe('UserManagementPage 新建用户（QA-03）', () => {
     });
     // getErrMsg 提取 Error.message
     await screen.findByText('用户名已存在');
+  });
+
+  it('P1-4：新建态邮箱必填+格式校验（对应后端 @IsEmail()）：空/非法都被拦截，不调用 create', async () => {
+    renderPage();
+    await screen.findByText('alice');
+    fireEvent.click(screen.getByText('新建用户'));
+
+    fireEvent.change(screen.getByPlaceholderText('请输入用户名'), { target: { value: 'dave' } });
+    fireEvent.change(screen.getByPlaceholderText('请输入密码'), { target: { value: 'Str0ng!Pass' } });
+    // 邮箱留空 → required 规则拦截（此前新建态零校验，400 只弹原始后端 toast）
+    fireEvent.click(findBtn(document.body, '创建')!);
+    await screen.findByText('请输入邮箱');
+    expect(mockedUsers.create).not.toHaveBeenCalled();
+
+    // 邮箱非法 → type: 'email' 规则拦截
+    fireEvent.change(screen.getByLabelText('邮箱'), { target: { value: 'not-an-email' } });
+    fireEvent.click(findBtn(document.body, '创建')!);
+    await screen.findByText('请输入有效邮箱');
+    expect(mockedUsers.create).not.toHaveBeenCalled();
   });
 });
 

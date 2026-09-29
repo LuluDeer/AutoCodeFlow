@@ -340,7 +340,7 @@ export default function SopsPage() {
         width={860}
         open={detail !== null}
         onClose={() => setDetail(null)}
-        destroyOnClose
+        destroyOnHidden
       >
         {detail && (
           <Tabs

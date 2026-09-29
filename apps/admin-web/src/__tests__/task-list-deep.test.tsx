@@ -172,6 +172,26 @@ describe('TaskListPage 筛选组合（QA-03 第二阶段）', () => {
     });
     expect(screen.queryByText('清除筛选')).toBeNull();
   });
+
+  // P2-18（生产审查）：任务实体 status 只有 active/paused，失败在执行维度——
+  // 值班最常筛「最近一次执行失败」。后端 GET /tasks 以 lastStatus 查询参数支持。
+  it('P2-18：最近执行筛选 → list 透传 lastStatus（failed）并随清除筛选复位', async () => {
+    renderPage();
+    await screen.findAllByText(/备份\s*任务|巡检任务/);
+    const callsBefore = mockedTasks.list.mock.calls.length;
+
+    fireEvent.mouseDown(screen.getByText('最近执行', { selector: '.ant-select-placeholder' }));
+    fireEvent.click(await screen.findByText('失败', { selector: '.ant-select-item-option-content' }));
+    await waitFor(() => expect(mockedTasks.list.mock.calls.length).toBeGreaterThan(callsBefore));
+    const lastCall = mockedTasks.list.mock.calls[mockedTasks.list.mock.calls.length - 1]?.[0];
+    expect(lastCall?.lastStatus).toBe('failed');
+
+    fireEvent.click(findBtn(document.body, '清除筛选')!);
+    await waitFor(() => {
+      const cleared = mockedTasks.list.mock.calls[mockedTasks.list.mock.calls.length - 1]?.[0];
+      expect(cleared?.lastStatus).toBeUndefined();
+    });
+  });
 });
 
 describe('TaskListPage 批量操作（QA-03 第二阶段）', () => {
