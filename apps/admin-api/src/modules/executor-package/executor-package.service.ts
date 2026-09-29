@@ -24,6 +24,7 @@ import {
   assertZipFileSafe,
   resolveZipGuardLimits,
 } from "../../common/utils/zip-guard.util";
+import { createResponseReadStream } from "../../common/utils/response-stream.util";
 import {
   isFailedVerdict,
   scanBufferWithClamd,
@@ -451,7 +452,13 @@ export class ExecutorPackageService implements OnModuleInit {
     } catch {
       // Row exists but stat failed — fall back to the recorded size.
     }
-    return { stream: fs.createReadStream(pkg.filePath), fileSize, pkg };
+    // P1-2（ARCH-008）：existsSync/stat 之后、流 open 之前文件被删的竞态下，
+    // ENOENT 不再是无监听 error → uncaughtException，降级为该次下载失败。
+    return {
+      stream: createResponseReadStream(pkg.filePath, this.logger),
+      fileSize,
+      pkg,
+    };
   }
 
   /**

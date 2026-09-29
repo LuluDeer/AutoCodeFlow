@@ -652,6 +652,174 @@ describe("TaskService (__tests__)", () => {
       // where.status should be a Not() wrapper, not a plain string
       expect(typeof callArgs.where.status).toBe("object");
     });
+
+    // P2-18 回归锚定：不带 lastStatus 的请求必须保持既有 findAndCount 路径
+    // （零 QueryBuilder），防止子查询分支意外接管默认路径。
+    it("P2-18 回归锚定：无 lastStatus 时仍走 findAndCount，不建任何 QB", async () => {
+      taskRepo.findAndCount.mockResolvedValue([[{ id: "1" }], 1]);
+      const result = await service.findAll({ page: 1, pageSize: 10 });
+      expect(taskRepo.findAndCount).toHaveBeenCalledTimes(1);
+      expect(taskRepo.createQueryBuilder).not.toHaveBeenCalled();
+      expect(execRepo.createQueryBuilder).not.toHaveBeenCalled();
+      expect(result).toHaveProperty("total", 1);
+    });
+
+    // P2-18: lastStatus 分支的子查询契约。断言用分步 QB 桩（跟随本 spec 的
+    // mock-repo 风格）：嵌套形态 EXISTS( SELECT 1 ... te.id = (最近一条子查询))
+    // 与最近一条排序（createdAt DESC, id DESC LIMIT 1）由桩返回的 SQL 文本锁定。
+    it("P2-18: lastStatus=failed 走 QB 分支且嵌入 EXISTS 关联子查询（findAndCount 不被调用）", async () => {
+      const taskQb = {
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        select: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        getManyAndCount: jest.fn().mockResolvedValue([[{ id: "t1" }], 1]),
+      };
+      taskRepo.createQueryBuilder.mockReturnValue(taskQb);
+
+      // execRepo 被调用两次：te2（最近一条标量子查询）与 te（EXISTS 外层）
+      const te2Qb = {
+        select: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        addOrderBy: jest.fn().mockReturnThis(),
+        limit: jest.fn().mockReturnThis(),
+        getParameters: jest.fn().mockReturnValue({}),
+        getQuery: jest
+          .fn()
+          .mockReturnValue("SELECT te2.id FROM task_executions te2"),
+      };
+      const teQb = {
+        select: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        setParameters: jest.fn().mockReturnThis(),
+        getParameters: jest.fn().mockReturnValue({ lastStatus: "failed" }),
+        getQuery: jest
+          .fn()
+          .mockReturnValue("SELECT 1 FROM task_executions te"),
+      };
+      execRepo.createQueryBuilder.mockImplementation((alias: string) =>
+        alias === "te2" ? te2Qb : teQb,
+      );
+
+      const result = await service.findAll({
+        page: 1,
+        pageSize: 10,
+        lastStatus: "failed",
+      } as any);
+
+      // 分支判定：QB 路径生效，findAndCount 零调用
+      expect(taskRepo.findAndCount).not.toHaveBeenCalled();
+      expect(taskQb.getManyAndCount).toHaveBeenCalledTimes(1);
+
+      // EXISTS 子查询嵌入主查询且携带 lastStatus 参数
+      const existsCall = taskQb.andWhere.mock.calls.find(([sql]: [string]) =>
+        sql.startsWith("EXISTS ("),
+      );
+      expect(existsCall).toBeTruthy();
+      expect(existsCall![0]).toBe("EXISTS (SELECT 1 FROM task_executions te)");
+      expect(existsCall![1]).toEqual({ lastStatus: "failed" });
+
+      // 最近一条子查询（createdAt DESC、tie-break id DESC、LIMIT 1）被嵌入 EXISTS
+      expect(teQb.andWhere).toHaveBeenCalledWith(
+        `te.id = (${te2Qb.getQuery()})`,
+      );
+      expect(te2Qb.orderBy).toHaveBeenCalledWith("te2.createdAt", "DESC");
+      expect(te2Qb.addOrderBy).toHaveBeenCalledWith("te2.id", "DESC");
+      expect(te2Qb.limit).toHaveBeenCalledWith(1);
+      expect(te2Qb.where).toHaveBeenCalledWith("te2.taskId = task.id");
+
+      // where 基线：status != DELETED；缺省排序 createdAt DESC + 首页分页
+      expect(taskQb.where).toHaveBeenCalledWith("task.status != :__deleted", {
+        __deleted: "deleted",
+      });
+      expect(taskQb.orderBy).toHaveBeenCalledWith("task.createdAt", "DESC");
+      expect(taskQb.skip).toHaveBeenCalledWith(0);
+      expect(taskQb.take).toHaveBeenCalledWith(10);
+
+      expect(result).toHaveProperty("total", 1);
+    });
+
+    it("P2-18: QB 分支逐项镜像其余过滤项（显式 status 覆盖基线 / ILIKE / default 项目 OR 语义 / sortBy）", async () => {
+      const taskQb = {
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        select: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        getManyAndCount: jest.fn().mockResolvedValue([[], 0]),
+      };
+      taskRepo.createQueryBuilder.mockReturnValue(taskQb);
+      const noopSub = (sql: string) => ({
+        select: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        addOrderBy: jest.fn().mockReturnThis(),
+        limit: jest.fn().mockReturnThis(),
+        setParameters: jest.fn().mockReturnThis(),
+        getParameters: jest.fn().mockReturnValue({}),
+        getQuery: jest.fn().mockReturnValue(sql),
+      });
+      const te2Qb = noopSub("SELECT te2.id FROM task_executions te2");
+      const teQb = noopSub("SELECT 1 FROM task_executions te");
+      execRepo.createQueryBuilder.mockImplementation((alias: string) =>
+        alias === "te2" ? te2Qb : teQb,
+      );
+
+      await service.findAll({
+        page: 2,
+        pageSize: 5,
+        lastStatus: "success",
+        status: "active",
+        name: "备份",
+        runtime: "python",
+        applicationId: "app-1",
+        projectId: "default",
+        sortBy: "name",
+        sortOrder: "asc",
+      } as any);
+
+      // 显式 status 精确等值替换 !=deleted 基线（镜像 where.status = p.status）
+      expect(taskQb.where).toHaveBeenCalledTimes(1);
+      expect(taskQb.where).toHaveBeenCalledWith("task.status = :__status", {
+        __status: "active",
+      });
+      expect(taskQb.andWhere).toHaveBeenCalledWith(
+        "task.name ILIKE :__name",
+        { __name: "%备份%" },
+      );
+      expect(taskQb.andWhere).toHaveBeenCalledWith(
+        "task.runtime = :__runtime",
+        { __runtime: "python" },
+      );
+      expect(taskQb.andWhere).toHaveBeenCalledWith(
+        "task.applicationId = :__applicationId",
+        { __applicationId: "app-1" },
+      );
+      // AUTH-01 "default"：未分配行 + 默认项目行一起命中
+      expect(taskQb.andWhere).toHaveBeenCalledWith(
+        "(task.projectId IS NULL OR task.projectId = :__defaultPid)",
+        expect.objectContaining({ __defaultPid: expect.any(String) }),
+      );
+      // F-03 排序映射 + 方向归一 + 分页
+      expect(taskQb.orderBy).toHaveBeenCalledWith("task.name", "ASC");
+      expect(taskQb.skip).toHaveBeenCalledWith(5);
+      expect(taskQb.take).toHaveBeenCalledWith(5);
+    });
+
+    it("P2-18 沿革：fields=lastStatus（幽灵列）现在直接 400", async () => {
+      taskRepo.findAndCount.mockResolvedValue([[], 0]);
+      await expect(
+        service.findAll({ page: 1, pageSize: 10, fields: "lastStatus" } as any),
+      ).rejects.toThrow(BadRequestException);
+      // 幽灵列请求不应触达任何查询
+      expect(taskRepo.findAndCount).not.toHaveBeenCalled();
+    });
   });
 
   describe("update", () => {

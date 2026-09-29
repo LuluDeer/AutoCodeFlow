@@ -13,6 +13,7 @@ import { Repository } from "typeorm";
 
 import { AgentMedia } from "./entities/agent-media.entity";
 import { getEnvVar } from "../../config/env";
+import { createResponseReadStream } from "../../common/utils/response-stream.util";
 
 /**
  * P7b（agent-and-deployment）：Agent 媒体存储（截图/录屏回传的落盘与读取）。
@@ -146,7 +147,10 @@ export class SopMediaService {
       throw new NotFoundException("媒体文件缺失（可能已被保留期清理）");
     }
     return {
-      stream: createReadStream(abs),
+      // P1-2（ARCH-008）：existsSync/statSync 之后、流 open 之前文件被删的
+      // 竞态下，ENOENT 降级为该次下载失败（warn + destroy），不再无监听
+      // error 冒泡为 uncaughtException。
+      stream: createResponseReadStream(abs, this.logger),
       size: statSync(abs).size,
       mime: row.mime,
       name: row.name,

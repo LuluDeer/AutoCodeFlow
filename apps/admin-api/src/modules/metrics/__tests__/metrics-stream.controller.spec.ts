@@ -27,6 +27,8 @@ interface MockRes {
   setHeader: (k: string, v: string) => void;
   flushHeaders: () => void;
   write: (chunk: string) => boolean;
+  /** P1-1b：compression 中间件挂的 flush（真实现 flush zlib），mock 记调用数 */
+  flush: jest.Mock;
   end: () => void;
   on: (event: string, cb: () => void) => void;
   writableEnded: boolean;
@@ -45,6 +47,7 @@ function makeMockRes(): { res: MockRes; close: () => void } {
       res.writes.push(chunk);
       return true;
     },
+    flush: jest.fn(),
     end: () => {
       res.ended = true;
       res.writableEnded = true;
@@ -307,6 +310,56 @@ describe("MetricsStreamController — GET /metrics/stream（UI-14 第一阶段�
     // 流仍正常收尾
     expect(res.ended).toBe(true);
   });
+
+  it("P1-1b：每帧写出后立刻调用 res.flush()（zlib 缓冲兜底，守卫式）", async () => {
+    const svc = makeSvc();
+    const { controller } = await makeModule(svc);
+    const { res } = makeMockRes();
+    const req = makeReq();
+
+    const done = controller.stream(req as never, res as never);
+    const close = req.on.mock.calls.find(
+      ([e]: [string]) => e === "close",
+    )?.[1] as () => void;
+    setImmediate(() => close());
+    await done;
+
+    // 至少一个快照帧 + done 帧
+    expect(res.writes.length).toBeGreaterThan(0);
+    // 每次 write 都伴随一次 flush——帧滞留 zlib 缓冲的形态被结构性排除
+    expect(res.flush).toHaveBeenCalledTimes(res.writes.length);
+  });
+
+  it("P1-1b：空闲超过 idlePingMs 后写出 ': ping' 注释帧（保活字节真实写出）", async () => {
+    const svc = makeSvc();
+    // intervalMs=1 / idlePingMs=1（getter 要求 >0 才采纳）：循环第一拍后
+    // 空闲即 >= 1ms，注释帧必然出现。等待用轮询而非固定窗——重载 worker 下
+    // 1ms 定时器可能迟到，60ms 固定窗有假红风险（轮询上限 4s，正常 ~10ms 内
+    // 命中）；abort 收尾由 close 回调驱动。
+    const { controller } = await makeModule(svc, {
+      intervalMs: 1,
+      idlePingMs: 1,
+    });
+    let closeCb: (() => void) | null = null;
+    const req = {
+      on: jest.fn().mockImplementation((_e: string, cb: () => void) => {
+        closeCb = cb;
+      }),
+    };
+    const { res } = makeMockRes();
+
+    const done = controller.stream(req as never, res as never);
+    for (let i = 0; i < 40; i++) {
+      if (parseFrames(res.writes).some((f) => f.comment)) break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    (closeCb as () => void)();
+    await done;
+
+    const comments = parseFrames(res.writes).filter((f) => f.comment);
+    expect(comments.length).toBeGreaterThanOrEqual(1);
+    expect(comments[0].data).toContain("ping");
+  }, 10_000);
 
   it("释放幂等：releaseSlot 双调用（控制器 finally + 内部兜底）只归一次", async () => {
     const svc = makeSvc();

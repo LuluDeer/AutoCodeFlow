@@ -30,6 +30,7 @@ import { TimeoutInterceptor } from "./common/interceptors/timeout.interceptor";
 import { isOriginAllowed } from "./common/utils/cors-origin.util";
 import { installShutdownForceExitGuard } from "./common/utils/shutdown-guard.util";
 import { buildHelmetOptions } from "./common/utils/security-headers.util";
+import { sseAwareCompressionFilter } from "./common/utils/sse-compression.util";
 import { createUploadAuthMiddleware } from "./common/middleware/upload-auth.middleware";
 import { SystemConfigService } from "./modules/config/config.service";
 // import { TraceMiddleware } from "./common/middleware/trace.middleware";
@@ -125,18 +126,22 @@ async function bootstrap() {
     configService.get<string>("app.nodeEnv") === "production";
   app.use(helmet(buildHelmetOptions(isProductionEnv)));
 
-  // O-22: gzip HTTP responses for JSON/HTML payloads. SSE log streaming
-  // (GET /api/tasks/:id/executions/:execId/logs/stream) MUST be excluded — a
-  // never-ending text/event-stream cannot be buffered into a gzip block, and
-  // compressing it would break per-line flushing. Path-based filter keeps the
-  // SSE route on the default (uncompressed) behavior while every other route
-  // transparently benefits.
+  // O-22: gzip HTTP responses for JSON/HTML payloads. SSE responses MUST be
+  // excluded — a never-ending text/event-stream cannot be buffered into a gzip
+  // block, and compressing it would break per-line flushing.
+  // P1-1a（nginx-sse 生产事故根治）：旧的 filter 只按路径排除 /logs/stream，
+  // 漏掉了后来的 /metrics/stream 与 /executions/stream —— text/event-stream 在
+  // mime-db 中是 compressible，默认 filter 放行 gzip 后 res.write 进 zlib deflate，
+  // 小帧滞留 zlib 内部缓冲（不满 16KB chunkSize 且无人 flush 就永不落 socket），
+  // 心跳/快照帧全部被吞 → nginx 60s proxy_read_timeout upstream timed out。
+  // 现改为按响应 content-type 豁免（writeHead 时 Content-Type 已由 SSE 控制器
+  // setHeader，时序依据与 /logs/stream 路径兜底见 sse-compression.util.ts 头注），
+  // 未来任何 SSE 路由自动豁免；其余请求仍走 compression 默认判定链。
+  // 判定谓词抽在 common/utils/sse-compression.util.ts（单测直接测它，不 import
+  // 本文件——顶层有 dotenv 副作用）。
   app.use(
     compression({
-      filter: (req, res) => {
-        if (req.path.endsWith("/logs/stream")) return false;
-        return compression.filter(req, res);
-      },
+      filter: sseAwareCompressionFilter,
     }),
   );
 
