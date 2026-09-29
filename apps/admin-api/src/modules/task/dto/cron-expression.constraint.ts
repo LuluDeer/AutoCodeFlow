@@ -6,6 +6,7 @@ import {
   ValidatorConstraintInterface,
 } from "class-validator";
 import * as nodeCron from "node-cron";
+import { normalizeCron5Field, isCron5FieldInBounds } from "../cron-normalize.util";
 
 /**
  * 5 字段 cron 表达式的合法性校验（DTO 层，给用户可读的 400）。
@@ -31,16 +32,14 @@ import * as nodeCron from "node-cron";
  * 即意味着"调度器确实能注册它"，两边不可能再分叉。
  * （维护窗口的 `parseWindowCron` 早已是这个做法，本次是向它对齐。）
  *
- * ## 为什么额外钉死 5 段
+ * ## 裸 n/step 的规范化（cron UX 统一）
  *
- * `nodeCron.validate` 还接受 **6 段**（带秒，如 `0 12 * * * *`）。本仓对外的
- * cron 契约是 5 段——错误文案、前端预览器、维护窗口都按 5 段实现。若这里放行
- * 6 段，前端预览器会解析失败并显示"无法预览"，等于把同一个"预览与保存不一致"
- * 换个方向再犯一次。故显式要求恰好 5 个字段。
- *
- * 注意：5 段但**语义**非法（越界、倒序范围）的表达式由 `nodeCron.validate`
- * 拒绝；`parseField` 那层更细的展开校验只用于"求下次触发时间"，不参与合法性
- * 判定，避免引入第二套口径。
+ * `12/20` 这类「起始值/步进」写法是 POSIX/Vixie 合法语义（≡ `12-59/20`，
+ * 展开集合严格一致），Linux crontab / Quartz 用户会自然写出，前端预览器与
+ * 维护窗口也按此语义解析——但 node-cron 拒绝它。处理方式不是拒绝用户，而是
+ * **先规范化再校验**：`isValidCronExpression` 对规范化产物调
+ * `nodeCron.validate`；持久化边界（task.service 的 normalizeTaskDto）落库
+ * 规范式。用户语法不打折，存储始终是调度器可注册的形态。
  *
  * ## 为什么额外钉死 5 段 + 纯数字
  *
@@ -79,7 +78,16 @@ export function isValidCronExpression(expr: unknown): boolean {
   if (fields.length !== CRON_FIELD_COUNT) return false;
   // 再钉字符集：node-cron 接受 sun/jan 这类名字，前端预览器与维护窗口不接受。
   if (!fields.every((f) => NUMERIC_FIELD_RE.test(f))) return false;
-  return nodeCron.validate(trimmed);
+  // 裸 n/step 先等价规范化（12/20 → 12-59/20），再过界内守卫与调度器同一
+  // 校验器。界内守卫必须放在 validate 之前/并列：node-cron v4 的 validate
+  // 对越界范围（32-40 * * * *）与倒序范围（12-5 * * * *）返回 true 但调度
+  // 注册后永不触发——放行等于静默失效，预览器/维护窗口也拒绝这些形态。
+  const canonical = normalizeCron5Field(trimmed);
+  return (
+    canonical !== null &&
+    isCron5FieldInBounds(canonical) &&
+    nodeCron.validate(canonical)
+  );
 }
 
 @ValidatorConstraint({ name: "isCron5Field", async: false })

@@ -3,6 +3,8 @@ import { ConfigService } from "@nestjs/config";
 import axios from "axios";
 import * as nodeCron from "node-cron";
 import { SystemConfigService } from "../config/config.service";
+// 与任务写边界同一份 cron 规范化（裸 n/step 等价改写），语法口径不漂移
+import { normalizeCron5Field } from "../task/cron-normalize.util";
 import {
   assertAndPinHttpUrl,
   pinnedAxiosConfig,
@@ -181,10 +183,13 @@ export class AiService {
       if (parsed.suggestedCron && parsed.reasoning) {
         // WIKI-OPT-3: cron 校验前置到服务层——AI 偶发返回非 5 字段 cron
         // （如 "every 5 minutes"）若原样透出，前端采纳落库后调度注册会
-        // 崩溃。用 node-cron.validate 把关（与 scheduler 注册 /
-        // maintenance-window util 同一实现，行为不漂移）；非法 → warn +
-        // 回退当前值，并保留 fallback 标记语义（调用方据此区分 AI 建议与回退）。
-        if (!nodeCron.validate(parsed.suggestedCron)) {
+        // 崩溃。先与任务写边界同一份 normalizeCron5Field 规范化（AI 也可能
+        // 产出 POSIX 裸 n/step 形态，如 "12/20 * * * *"），再以 node-cron
+        // .validate 把关（与 scheduler 注册同一实现，行为不漂移）；
+        // 非法 → warn + 回退当前值，并保留 fallback 标记语义（调用方据此
+        // 区分 AI 建议与回退）。
+        const canonical = normalizeCron5Field(parsed.suggestedCron);
+        if (canonical === null || !nodeCron.validate(canonical)) {
           this.logger.warn(
             `suggestSchedule: AI returned invalid cron expression: "${parsed.suggestedCron}"`,
           );
@@ -194,7 +199,7 @@ export class AiService {
             fallback: true,
           };
         }
-        return parsed;
+        return { ...parsed, suggestedCron: canonical };
       }
       // AI-002: JSON 合法但字段缺失——同样视为解析失败并记 warn
       this.logger.warn(

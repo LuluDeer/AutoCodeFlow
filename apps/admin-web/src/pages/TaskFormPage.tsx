@@ -119,22 +119,19 @@ const RUNTIME_OPTIONS = [
 ];
 
 /**
- * Cron 门校验（与后端 DTO/调度器同口径）：裸 `n/step`（如 `12/20`）是 POSIX
- * 合法但 node-cron 拒绝的写法——此前只拦在提交后的 400，配合预览器曾放行
- * 该形态，用户会看到「能预览出触发时间、保存却报错」。现在在输入时即给出
- * 带等价改写的错误文案；主 cron 与维护窗口 start/end 三个字段共用。
- * （admin-web 不引 node-cron，判定复用预览器 parseCronExpression——其子集
- * 已收紧到「调度器可注册」口径，见 trigger-preview.ts。）
+ * Cron 结构校验（前端即时反馈）：结构不可解析时在输入旁直接标红，不再等
+ * 提交后的笼统 400。裸 `n/step`（如 `12/20`）**放行**——后端写边界会做等价
+ * 规范化（POSIX n/step ≡ n-max/step，admin-api cron-normalize.util），提交
+ * 时 handleSubmit 也前置同一规范化并 toast 告知实际存储形态，故这里无需
+ * （也不应）拦截。
+ * （admin-web 不引 node-cron，判定复用预览器 parseCronExpression。）
+ * 主 cron 与维护窗口 start/end 三个字段共用。
  */
 const cronGateValidator =
   (t: (k: string, opts?: Record<string, unknown>) => string) =>
   (_rule: unknown, value: string | undefined) => {
     const v = (value ?? '').trim();
     if (!v) return Promise.resolve(); // 空值交给 required 规则
-    const rewrite = suggestCronStepRewrite(v);
-    if (rewrite) {
-      return Promise.reject(new Error(t('taskForm.field.cron.stepUnsupported', { suggestion: rewrite })));
-    }
     if (!parseCronExpression(v)) {
       return Promise.reject(new Error(t('taskForm.field.cron.invalid')));
     }
@@ -705,6 +702,27 @@ export default function TaskFormPage() {
       return;
     }
     setValidationAnnouncement('');
+    // cron UX 统一：裸 n/step 写法（如 `12/20 6-23 * * *`）在提交前做等价
+    // 规范化（12/20 ≡ 12-59/20，POSIX n/step 展开语义严格一致；后端写边界
+    // 是同一份规则 admin-api cron-normalize.util，此处前置只为把"实际存储
+    // 形态"立刻告知用户——保存成功后 toast 通知，落库与回显均为规范式）。
+    // 预览器本就按 POSIX 语义解析，规范前后触发时刻不变。
+    let cronNormalizeNote: string | null = null;
+    const canonicalizeInPlace = (raw: unknown): unknown => {
+      if (typeof raw !== 'string' || !raw.trim()) return raw;
+      const canonical = suggestCronStepRewrite(raw);
+      if (!canonical) return raw;
+      cronNormalizeNote = t('taskForm.field.cron.normalized', { suggestion: canonical });
+      return canonical;
+    };
+    values.cronExpression = canonicalizeInPlace(values.cronExpression);
+    if (Array.isArray(values.maintenanceWindows)) {
+      for (const w of values.maintenanceWindows) {
+        if (!w || typeof w !== 'object') continue;
+        w.start = canonicalizeInPlace(w.start);
+        w.end = canonicalizeInPlace(w.end);
+      }
+    }
     // G-2：离线层（3.7）+ 在线舰队无一台缓存 = 提交后必然 interpreter_unavailable。
     // 不阻断（服务端仍是权威，在线层本就"先下载后有"），但用 Modal.confirm 把
     // "提交即失败"显式化——避免用户忽略 warning 直接提交，到执行时才排障。
@@ -769,12 +787,14 @@ export default function TaskFormPage() {
       if (isEdit && editId) {
         await tasksApi.update(editId, payload);
         message.success(t('taskForm.submit.updated'));
+        if (cronNormalizeNote) message.info(cronNormalizeNote);
         nav(`/tasks/${editId}`);
       } else {
         const created = await tasksApi.create(
           payload as components["schemas"]["CreateTaskDto"],
         );
         message.success(t('taskForm.submit.created'));
+        if (cronNormalizeNote) message.info(cronNormalizeNote);
         setSavedRuntime(
           typeof payload.runtime === 'string' ? payload.runtime : 'python',
         );
