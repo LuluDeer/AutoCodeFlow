@@ -27,6 +27,8 @@ interface MockRes {
   setHeader: (k: string, v: string) => void;
   flushHeaders: () => void;
   write: (chunk: string) => boolean;
+  /** P1-1b：compression 中间件挂的 flush（真实现 flush zlib），mock 记调用数 */
+  flush: jest.Mock;
   end: () => void;
   on: (event: string, cb: () => void) => void;
   writableEnded: boolean;
@@ -45,6 +47,7 @@ function makeMockRes(): { res: MockRes; close: () => void } {
       res.writes.push(chunk);
       return true;
     },
+    flush: jest.fn(),
     end: () => {
       res.ended = true;
       res.writableEnded = true;
@@ -285,4 +288,58 @@ describe("ExecutionsStreamController — GET /executions/stream（FEAT-16）", (
     (closeCb as () => void)();
     await done;
   });
+
+  it("P1-1b：每帧写出后立刻调用 res.flush()（zlib 缓冲兜底，守卫式）", async () => {
+    const { controller, bus } = await makeModule();
+    const { res } = makeMockRes();
+
+    let closeCb: (() => void) | null = null;
+    const done = controller.stream(
+      {
+        on: (_e: string, cb: () => void) => {
+          closeCb = cb;
+        },
+      } as never,
+      res as never,
+    );
+    await new Promise((r) => setImmediate(r));
+    bus.emit(DOMAIN_EVENTS.EXECUTION_COMPLETED, terminalPayload());
+    await new Promise((r) => setImmediate(r));
+    (closeCb as () => void)();
+    await done;
+
+    // 事件帧（event 行 + data 行两段 write）+ done 帧
+    expect(res.writes.length).toBeGreaterThan(0);
+    // 每次 write 都伴随一次 flush——注释帧/事件帧滞留 zlib 缓冲的形态被结构性排除
+    expect(res.flush).toHaveBeenCalledTimes(res.writes.length);
+  });
+
+  it("P1-1b：空闲超过 idlePingMs 后写出 ': ping' 注释帧（保活字节真实写出）", async () => {
+    // idlePingMs=1（getter 要求 >0 才采纳）：主循环 1s 粒度扫描，首个扫描拍
+    // （~1s 后）空闲时长即满足条件，注释帧必然出现。等待用轮询而非固定窗——
+    // 全量套件重载下 1s 扫描拍可能迟到数百毫秒，固定窗会假红（轮询上限 4s，
+    // 测试超时显式放宽到 10s），正常路径仍在 ~1.1s 结束。
+    const { controller } = await makeModule({ idlePingMs: 1 });
+    const { res } = makeMockRes();
+
+    let closeCb: (() => void) | null = null;
+    const done = controller.stream(
+      {
+        on: (_e: string, cb: () => void) => {
+          closeCb = cb;
+        },
+      } as never,
+      res as never,
+    );
+    for (let i = 0; i < 40; i++) {
+      if (parseFrames(res.writes).some((f) => f.comment)) break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    (closeCb as () => void)();
+    await done;
+
+    const comments = parseFrames(res.writes).filter((f) => f.comment);
+    expect(comments.length).toBeGreaterThanOrEqual(1);
+    expect(comments[0].data).toContain("ping");
+  }, 10_000);
 });

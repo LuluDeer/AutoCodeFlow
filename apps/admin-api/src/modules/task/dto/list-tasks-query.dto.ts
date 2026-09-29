@@ -5,6 +5,7 @@ import {
   TaskRuntime,
   TaskTriggerType,
 } from "../entities/task.entity";
+import { ExecutionStatus } from "../entities/task-execution.entity";
 
 /**
  * F-10（DEEP_REVIEW 0ef3bbe）: 任务列表轻量投影白名单。
@@ -25,6 +26,12 @@ import {
  * 任务名），量级与 id/name 同级，不属于 params/glueSource 那类大文本；真正
  * 的重量列（secrets/params/glueSource/requirements/runbook/maintenanceWindows）
  * 仍严格排除。
+ *
+ * 沿革（P2-18 落地轮）：曾混入 `lastStatus` / `lastRunTime` / `nextRunTime`
+ * 三个**幽灵项**——Task 实体从来没有这三列（全量迁移史亦无），`?fields=` 传
+ * 它们会 400，属于"契约公示了不存在的列"的假 API 面，已删除。lastStatus 的
+ * 产品语义（按最近一次执行状态筛任务）改由同名 query 参数承担——它是执行
+ * 维度的派生过滤，见 ListTasksQueryDto#lastStatus 的子查询实现。
  */
 export const TASK_PROJECTION_WHITELIST = [
   "id",
@@ -45,9 +52,6 @@ export const TASK_PROJECTION_WHITELIST = [
   "maxRetry",
   "retryDelay",
   "lastTriggerTime",
-  "lastRunTime",
-  "lastStatus",
-  "nextRunTime",
   "createdAt",
   "updatedAt",
   // PERF-02: DAG 边集来源，见文件头注释。
@@ -78,6 +82,21 @@ export class ListTasksQueryDto extends PaginationDto {
   @IsOptional()
   @IsEnum(TaskStatus)
   status?: string;
+
+  /**
+   * P2-18: 按任务**最近一次执行**的状态筛任务（值域 = ExecutionStatus）。
+   *
+   * 语义钉死：`lastStatus=X` ⇔ 该任务在 task_executions 里最近一次执行
+   * （taskId 下 createdAt DESC、tie-break id DESC 取第一条）的 status === X。
+   * 最近一次还在 pending/running 也如实参与筛选——值班看到的就是当前真实状态。
+   *
+   * 实现说明：Task 实体没有 lastStatus 冗余列（刻意不加 schema）——service 层
+   * findAll 用关联子查询（EXISTS + 标量子查询取最近一条）实现，与实体 status
+   * （active/paused）正交。这是**执行维度**的派生过滤，不属于投影白名单。
+   */
+  @IsOptional()
+  @IsEnum(ExecutionStatus)
+  lastStatus?: ExecutionStatus;
 
   @IsOptional()
   @IsEnum(TaskRuntime)
