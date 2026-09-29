@@ -270,6 +270,8 @@ export default function ApplicationListPage() {
 
   const handleEdit = (app: Application) => {
     setEditingApp(app);
+    // forceRender 下 Form 已挂载，同步回填不依赖弹窗动画时序
+    form.setFieldsValue(app);
     setModalOpen(true);
     fetchMutexGroups();
   };
@@ -770,6 +772,10 @@ export default function ApplicationListPage() {
         open={modalOpen}
         onOk={handleSubmit}
         onCancel={() => setModalOpen(false)}
+        // forceRender：Form 随页面首帧挂载——handleEdit 可在弹窗动画开始前
+        // 同步回填表单值（原本只靠 afterOpenChange 动画结束后回填，动画事件
+        // 缺失的环境里表单会是空的）。
+        forceRender
         afterOpenChange={(open) => {
           if (open) {
             if (editingApp) {
@@ -788,7 +794,19 @@ export default function ApplicationListPage() {
             label={t('appList.field.name')}
             rules={[
               { required: true, message: t('appList.field.nameRequired') },
-              { pattern: /^[a-zA-Z0-9_-]+$/, message: t('appList.field.namePattern') },
+              // 字符白名单只在**新建**时校验：编辑态名字是 disabled 的不可变
+              // 标识（handleSubmit 本就 delete 掉 name 再提交），而 zip 上传
+              // 通道历来不限字符——存量应用名若含非 ASCII 字符（如复制粘贴
+              // 带入的 U+2011 不断行连字符），对禁用字段套白名单会把每一次
+              // 编辑保存都拦死，用户却无从修复。
+              ...(!editingApp
+                ? [
+                    {
+                      pattern: /^[a-zA-Z0-9_-]+$/,
+                      message: t('appList.field.namePattern'),
+                    },
+                  ]
+                : []),
             ]}
             tooltip={{
               title: t('appList.field.nameTooltip'),
