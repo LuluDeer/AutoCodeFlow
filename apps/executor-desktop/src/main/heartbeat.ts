@@ -1,13 +1,21 @@
 import * as http from 'http';
 import * as https from 'https';
 import log from './logger';
+// 与 executor-process（applyAdminStatus / inferStatusFromLog）共用同一份离线
+// 迟滞判定（NETOPT-G P1-5）：连续 3 次失败、或距上次成功 >90s 才判离线。
+// 此前本文件自带 FAILURE_THRESHOLD=2——10s 探针间隔下 20s 即判死，比中台
+// 真实的 90s 判死激进得多，一次抖动就把托盘打成 offline。
+import {
+  advanceHeartbeatHysteresis,
+  initialHeartbeatHysteresisState,
+  type HeartbeatHysteresisState,
+} from './notifier-rules';
 
 export type HeartbeatStatus = 'online' | 'offline';
 type StatusCallback = (status: HeartbeatStatus) => void;
 
 const INTERVAL_MS = 10_000;
 const TIMEOUT_MS = 3_000;
-const FAILURE_THRESHOLD = 2;
 const DEFAULT_PORT = 8002;
 
 /**
@@ -59,11 +67,12 @@ export function normalizeAdminProbeUrl(url: unknown): string | null {
 export class HeartbeatMonitor {
   private timer: ReturnType<typeof setInterval> | null = null;
   private immediateTimer: ReturnType<typeof setTimeout> | null = null;
-  /** F-3: 本地 /health/live 与 admin /api/health **分通道**连续失败计数。
-   *  单通道合并计数会互相掩盖（同一轮内 admin 失败先到、本地成功后到会把
-   *  admin 失败清零），AND 逻辑失效——必须各计各的。 */
-  private localFailures = 0;
-  private adminFailures = 0;
+  /** F-3: 本地 /health/live 与 admin /api/health **分通道**迟滞状态（各计各的，
+   *  单通道合并计数会互相掩盖——同一轮内 admin 失败先到、本地成功后到会把
+   *  admin 失败清零，AND 逻辑失效）。迟滞口径与 notifier-rules 同源：
+   *  连续 3 次失败、或距上次成功 >90s 才判该通道离线。 */
+  private localHysteresis: HeartbeatHysteresisState = initialHeartbeatHysteresisState();
+  private adminHysteresis: HeartbeatHysteresisState = initialHeartbeatHysteresisState();
   private port = 8002;
   /** F-3: 直达中台的探针地址（如 http://localhost:3000）；未配置则跳过 admin 探针。 */
   private adminApiUrl: string | null = null;
@@ -88,10 +97,14 @@ export class HeartbeatMonitor {
     // ERR_INVALID_URL（不走 'error' 事件），未捕获异常从 setInterval 回调冒泡。
     this.port = normalizeHeartbeatPort(port);
     this.adminApiUrl = normalizeAdminProbeUrl(adminApiUrl);
-    this.localFailures = 0;
-    this.adminFailures = 0;
+    this.localHysteresis = initialHeartbeatHysteresisState();
+    this.adminHysteresis = initialHeartbeatHysteresisState();
     this.timer = setInterval(() => this.check(), INTERVAL_MS);
-    // 立即检查一次（句柄保存，stop() 必须能取消它 — R25）
+    // 立即检查一次（句柄保存，stop() 必须能取消它 — R25）。
+    // 启动误报窗口（NETOPT-G 同款口径）：首探 1.5s，此后每 10s 一轮，第 3 次
+    // 失败发生在 1.5 + 2×10 = 21.5s——执行器慢启动 >21.5s 才可能被误判 offline，
+    // 且子进程起来后的首次成功探针会经 recordSuccess 的恢复边沿把状态翻回
+    // online（旧实现 FAILURE_THRESHOLD=2 时 11.5s 即判死且永不自愈）。
     this.immediateTimer = setTimeout(() => this.check(), 1_500);
   }
 
@@ -139,20 +152,48 @@ export class HeartbeatMonitor {
   }
 
   private recordSuccess(channel: 'local' | 'admin'): void {
-    if (channel === 'local') this.localFailures = 0;
-    else this.adminFailures = 0;
+    // 同一份迟滞判定：成功即清零该通道计数并锚定本次成功时刻（90s 静默判死
+    // 的基准点）。
+    const ev = advanceHeartbeatHysteresis(
+      channel === 'local' ? this.localHysteresis : this.adminHysteresis,
+      'ok',
+      Date.now(),
+    );
+    if (channel === 'local') this.localHysteresis = ev.state;
+    else this.adminHysteresis = ev.state;
+    // 恢复边沿：此前判过 offline、且现在**所有启用通道**都恢复健康时才翻回
+    // online——只发这一次（emit 自带 lastStatus 去重，健康期间每 10s 的成功
+    // 探针不会重复发），修复"心跳判死 offline 后托盘永久卡离线"（旧实现
+    // recordSuccess 只清零计数、从不 emit online，而 executor-process 自己的
+    // currentStatus 一直是 online，其恢复路径不会触发——两路无人翻回）。
+    if (this.lastStatus === 'offline' && this.allChannelsHealthy()) {
+      this.emit('online');
+    }
   }
 
   private recordFailure(channel: 'local' | 'admin', reason: string): void {
-    if (channel === 'local') this.localFailures++;
-    else this.adminFailures++;
-    const n = channel === 'local' ? this.localFailures : this.adminFailures;
-    log.debug(
-      `Heartbeat failure #${n} (${channel}): ${reason}`,
+    const ev = advanceHeartbeatHysteresis(
+      channel === 'local' ? this.localHysteresis : this.adminHysteresis,
+      'failed',
+      Date.now(),
     );
-    if (n >= FAILURE_THRESHOLD) {
+    if (channel === 'local') this.localHysteresis = ev.state;
+    else this.adminHysteresis = ev.state;
+    log.debug(
+      `Heartbeat failure #${ev.state.consecutiveFailures} (${channel}): ${reason}`,
+    );
+    if (ev.offline) {
       this.emit('offline');
     }
+  }
+
+  /** AND 恢复判定：全部启用的探针通道当前都健康（连续失败计数均已清零）。 */
+  private allChannelsHealthy(): boolean {
+    if (this.localHysteresis.consecutiveFailures > 0) return false;
+    if (this.adminApiUrl !== null && this.adminHysteresis.consecutiveFailures > 0) {
+      return false;
+    }
+    return true;
   }
 
   private emit(status: HeartbeatStatus): void {

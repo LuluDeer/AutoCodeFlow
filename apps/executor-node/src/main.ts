@@ -54,7 +54,7 @@ import { configRouter } from './routes/config';
 import { logsRouter } from './routes/logs';
 import { deployRouter } from './routes/deploy';
 import { updatePackageRouter } from './routes/update-package';
-import { verifyToken, setOnTokenAcquired } from './middleware/auth';
+import { verifyToken, setOnTokenAcquired, matchesExecutorCredential } from './middleware/auth';
 
 const app = express();
 app.use(express.json());
@@ -65,6 +65,44 @@ app.use('/api', verifyToken, logsRouter);
 app.use('/api', verifyToken, deployRouter);
 app.use('/api', verifyToken, updatePackageRouter);
 app.use('/api', configRouter);
+
+/**
+ * POST /api/shutdown —— 仅本机可达的优雅关停端点（executor-desktop 的
+ * ExecutorProcess.stop 调用）。
+ *
+ * 为什么需要：桌面客户端的子进程经 ELECTRON_RUN_AS_NODE 启动，Windows 下收不到
+ * 可用的 SIGTERM（proc.kill 等价 TerminateProcess，taskkill /T /F 更是直接整树
+ * 强杀）——本文件的 gracefulShutdown（停止 pull → 30s 排空任务 → 停回调线程
+ * 排空内存态回调 → flushLogs → notifyOffline）在此之前在 Windows 停机时**从不
+ * 运行**，内存态回调队列里的任务终态随之丢失，中台任务永久卡 running。
+ *
+ * 鉴权：与 /api/* 同源凭据（共享令牌 / 当前动态令牌，constant-time 比较）；
+ * 未配置任何凭据时 fail-closed——本机其他进程不能随意关停执行器。
+ * 刻意不走 verifyToken：后者会先做 token 刷新（依赖 admin 可达），关停恰恰
+ * 常发生于中台链路异常时，见 matchesExecutorCredential 注释。
+ *
+ * 响应 202 = 已受理；随后延迟 50ms 再进入 gracefulShutdown，让应答先完整落盘
+ * （server.close() 会拒绝新连接，不能在同一 tick 内 tear down）。重入安全由
+ * gracefulShutdown 的 isExecutorShuttingDown 门禁保证（与 SIGTERM/SIGINT/
+ * SIGBREAK 并发到达时只跑一次）。
+ */
+app.post('/api/shutdown', (req, res) => {
+  const header = req.headers.authorization || '';
+  const parts = header.split(' ');
+  const bearer =
+    parts.length === 2 && parts[0].toLowerCase() === 'bearer' ? parts[1] : null;
+  if (!matchesExecutorCredential(bearer)) {
+    res.status(401).json({ error: 'Invalid or missing executor token' });
+    return;
+  }
+  logger.info(
+    'Authorized HTTP shutdown request received — initiating graceful shutdown',
+  );
+  res.status(202).json({ ok: true, message: 'graceful shutdown initiated' });
+  setTimeout(() => {
+    void gracefulShutdown('HTTP_SHUTDOWN');
+  }, 50).unref();
+});
 
 /**
  * 探测并上报本机运行能力（shell/node/python）。

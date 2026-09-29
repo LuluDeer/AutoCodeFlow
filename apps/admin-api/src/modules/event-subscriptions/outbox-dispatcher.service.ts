@@ -167,6 +167,13 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
   private readonly enabled: boolean;
   /** 派发面懒解析缓存：undefined=未解析，null=缺席（令牌取不到）。 */
   private resolvedDispatcher: OutboundDispatcherLike | null | undefined;
+  /**
+   * 上次「claim 返回形状异常」告警的墙钟（毫秒）。形状异常 = query() 返回
+   * 不是 TypeORM 1.x postgres 的 [rows, affected] 元组（驱动升级/差异会把
+   * 旧形状带回来）。空轮降级是兜底不是静音：60s 节流告警，与"真的无行可投"
+   * 区分开，否则补投链路停摆且零日志。
+   */
+  private lastClaimShapeWarnAt = 0;
 
   constructor(
     private readonly moduleRef: ModuleRef,
@@ -278,7 +285,31 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
         `,
         [now, OUTBOX_BATCH_SIZE, leaseUntil],
       )) as [EventOutbox[], number];
-      const rows: EventOutbox[] = Array.isArray(claimed?.[0]) ? claimed[0] : [];
+      const claimShapeValid =
+        Array.isArray(claimed) && Array.isArray(claimed?.[0]);
+      const rows: EventOutbox[] = claimShapeValid ? claimed[0] : [];
+      if (!claimShapeValid) {
+        // P3：形状守卫——按空轮降级（下轮重试），但必须告警并与"真的无行
+        // 可投"区分：此前形状意外时降级为空轮且零日志，补投静默停摆无法
+        // 排查。60s 节流防每 5s 一条日志风暴；告警带实际形状信息供定位。
+        const nowMs = Date.now();
+        if (nowMs - this.lastClaimShapeWarnAt >= 60_000) {
+          this.lastClaimShapeWarnAt = nowMs;
+          this.logger.warn(
+            `Outbox claim returned an unexpected shape (expected [rows, affected] tuple) — dispatch degraded to an empty round this cycle. Actual shape: ${
+              Array.isArray(claimed)
+                ? `array(len=${claimed.length}, item[0] type=${typeof claimed[0]}${
+                    claimed[0] && typeof claimed[0] === "object"
+                      ? `, item[0] keys=[${Object.keys(claimed[0] as object)
+                          .slice(0, 8)
+                          .join(",")}]`
+                      : ""
+                  })`
+                : typeof claimed
+            }`,
+          );
+        }
+      }
 
       // 无行可投：提前返回，跳过空轮的订阅表查询（该查询只服务于有行时的派发）。
       if (rows.length === 0) return 0;

@@ -9,13 +9,12 @@
  */
 import { useState } from 'react';
 import { Button, Listy, Space, Spin, Typography } from 'antd';
-import { message } from '../utils/toast';
 import { DownloadOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import '../i18n';
 import { artifactsApi, ExecutionArtifact } from '../api/artifacts';
 import { useExecutionArtifacts } from '../api/queries';
-import { getErrMsg } from '../utils/error';
+import { showApiError } from '../utils/error';
 import { formatArtifactSize } from '../utils/artifactSize';
 
 interface ArtifactsListProps {
@@ -45,7 +44,7 @@ export default function ArtifactsList({ execId, artifacts }: ArtifactsListProps)
     try {
       await artifactsApi.downloadArtifact(execId, name);
     } catch (err: unknown) {
-      message.error(getErrMsg(err, t('artifacts.downloadFail')));
+      showApiError(err, t('artifacts.downloadFail'));
     } finally {
       setBusyName(null);
     }

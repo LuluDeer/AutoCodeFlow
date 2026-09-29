@@ -25,7 +25,7 @@ import { tasksApi } from '../api/tasks';
 import type { TaskExecution } from '../api/tasks';
 import { useExecutionsList, invalidateExecutionData } from '../api/queries';
 import { useExecutionsStream } from '../hooks/useExecutionsStream';
-import { getErrMsg } from '../utils/error';
+import { showApiError } from '../utils/error';
 import { useDebounce } from '../hooks/useDebounce';
 import { formatDateTime, formatDuration, formatRelativeTime } from '../utils/timeFormat';
 import { ExecutionCompareModal, COMPARE_MAX } from '../components/ExecutionCompare';
@@ -99,7 +99,7 @@ export default function ExecutionsPage() {
       // 一处 invalidate 同时刷新两个示范页的缓存）。
       await invalidateExecutionData(queryClient);
     } catch (err: unknown) {
-      message.error(getErrMsg(err, t('execs.kill.fail')));
+      showApiError(err, t('execs.kill.fail'));
     } finally {
       setKillingId(null);
     }

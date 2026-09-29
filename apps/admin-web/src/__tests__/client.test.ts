@@ -65,9 +65,32 @@ describe('DR-06 safe-method retries', () => {
 
   it.each([400, 403, 404, 409, 429])('GET does not retry HTTP %i', async (status) => {
     adapter.mockImplementation(failure(status));
-    await expect(client.get('/tasks', { adapter })).rejects.toEqual({ message: `HTTP ${status}` });
+    // DUP-TOAST：拦截器对这些状态码弹过 toast，reject 值带 __toastedByClient
+    // 标——页面 catch 的 showApiError 兜底据此去重，不再二次弹错。
+    // P1-3：reject 值同时带数字型 __status（HTTP 状态码），utils/error 的
+    // isNotFoundError 据此判定 404（拦截器已剥掉 err.response，原路径恒 false）。
+    await expect(client.get('/tasks', { adapter })).rejects.toEqual({ message: `HTTP ${status}`, __toastedByClient: true, __status: status });
     expect(adapter).toHaveBeenCalledTimes(1);
     expect(message.error).toHaveBeenCalledExactlyOnceWith(`HTTP ${status}`, 4);
+  });
+
+  it('P1-3: 404 的 reject 值带 __status=404，isNotFoundError 据此恢复生效', async () => {
+    adapter.mockImplementation(failure(404));
+    const rejected: unknown = await client.get('/tasks', { adapter }).then(
+      () => { throw new Error('should reject'); },
+      (err: unknown) => err,
+    );
+    expect((rejected as { __status?: unknown }).__status).toBe(404);
+  });
+
+  it('P1-3: 响应体为字符串原语时 __status 挂不上，reject 原样返回字符串', async () => {
+    adapter.mockImplementation(async (config) => {
+      throw new AxiosError('Request failed', undefined, config, undefined, {
+        config, status: 404, statusText: 'Not Found', headers: new AxiosHeaders(),
+        data: 'not found',
+      });
+    });
+    await expect(client.get('/tasks', { adapter })).rejects.toBe('not found');
   });
 
   it.each([undefined, 503])('GET stops after a second transient failure ($0)', async (status) => {
@@ -147,7 +170,7 @@ describe('401 refresh and DR-04 logout race', () => {
     const post = vi.spyOn(axios, 'post')
       .mockImplementationOnce(() => new Promise(resolve => { resolveRefresh = resolve; }))
       .mockResolvedValueOnce({ data: { success: true } });
-    const result = expect(client.get('/tasks', { adapter })).rejects.toEqual({ message: 'HTTP 401' });
+    const result = expect(client.get('/tasks', { adapter })).rejects.toEqual({ message: 'HTTP 401', __status: 401 });
     await vi.advanceTimersByTimeAsync(0);
     expect(post).toHaveBeenCalledTimes(1);
     await logoutRemote();

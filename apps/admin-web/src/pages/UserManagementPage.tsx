@@ -24,7 +24,7 @@ import {
 } from '@ant-design/icons';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { usersApi, type User, type CreateUserDto, type UpdateUserDto } from '../api/users';
-import { getErrMsg, isFormValidationError } from '../utils/error';
+import { isFormValidationError, showApiError } from '../utils/error';
 // F-26（DEEP_REVIEW 0ef3bbe）：locale 单一来源，不再硬编码 zh-CN
 import { currentLocale } from '../utils/locale';
 import { useTranslation } from 'react-i18next';
@@ -33,6 +33,8 @@ import StateError from '../components/StateError';
 import PageSkeleton from '../components/PageSkeleton';
 // MOBILE-CARD-01：≤768px 表格 → 卡片列表（结构级降级，CSS 做不到）
 import { useIsMobile } from '../hooks/useIsMobile';
+// USER-SEARCH-01：搜索防抖（列表查询跟随 debounced 值，输入框即时回显）
+import { useDebounce } from '../hooks/useDebounce';
 // UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
 import '../i18n';
 
@@ -69,22 +71,21 @@ export default function UserManagementPage() {
 
   const roleLabels = ROLE_LABELS(t);
 
+  // USER-SEARCH-01：搜索走**后端** search 参数（username/email ILIKE 模糊匹配）
+  // ——原先在前端 filter 当页数据，用户数超过一页时搜索结果不完整且误导
+  // （total 还是全量数）。输入防抖 300ms，翻页/搜索互不拖累。
+  const debouncedSearch = useDebounce(searchText);
+
   const { data, isLoading, error, refetch } = useQuery({
-    queryKey: ['users', page, pageSize],
-    queryFn: ({ signal }) => usersApi.list(page, pageSize, signal),
+    queryKey: ['users', page, pageSize, debouncedSearch],
+    queryFn: ({ signal }) =>
+      usersApi.list(page, pageSize, signal, debouncedSearch || undefined),
   });
 
   const users: UserWithActive[] = data?.list ?? [];
   const total: number = data?.total ?? 0;
 
-  const filteredUsers = searchText
-    ? users.filter(
-        (u) =>
-          u.username.toLowerCase().includes(searchText.toLowerCase()) ||
-          (u.email ?? '').toLowerCase().includes(searchText.toLowerCase()),
-      )
-    : users;
-  // Reset to page 1 when search text changes
+  // Reset to page 1 when search text changes（后端按新 search 重新分页）
   const handleSearch = (val: string) => { setSearchText(val); setPage(1); };
 
   const createMutation = useMutation({
@@ -96,7 +97,7 @@ export default function UserManagementPage() {
       createForm.resetFields();
     },
     onError: (err: unknown) => {
-      message.error(getErrMsg(err, t('users.createFail')));
+      showApiError(err, t('users.createFail'));
     },
   });
 
@@ -110,7 +111,7 @@ export default function UserManagementPage() {
       createForm.resetFields();
     },
     onError: (err: unknown) => {
-      message.error(getErrMsg(err, t('users.updateFail')));
+      showApiError(err, t('users.updateFail'));
     },
   });
 
@@ -121,7 +122,7 @@ export default function UserManagementPage() {
       queryClient.invalidateQueries({ queryKey: ['users'] });
     },
     onError: (err: unknown) => {
-      message.error(getErrMsg(err, t('users.deleteFail')));
+      showApiError(err, t('users.deleteFail'));
     },
   });
 
@@ -134,7 +135,7 @@ export default function UserManagementPage() {
       resetPwdForm.resetFields();
     },
     onError: (err: unknown) => {
-      message.error(getErrMsg(err, t('users.pwdResetFail')));
+      showApiError(err, t('users.pwdResetFail'));
     },
   });
 
@@ -177,7 +178,7 @@ export default function UserManagementPage() {
       })
       .catch((err: unknown) => {
         if (isFormValidationError(err)) return;
-        message.error(getErrMsg(err, t('users.submitFail')));
+        showApiError(err, t('users.submitFail'));
       });
   }, [createForm, editing, createMutation, updateMutation, t]);
 
@@ -203,7 +204,7 @@ export default function UserManagementPage() {
       })
       .catch((err: unknown) => {
         if (isFormValidationError(err)) return;
-        message.error(getErrMsg(err, t('users.submitFail')));
+        showApiError(err, t('users.submitFail'));
       });
   }, [resetPwdForm, resetPwdUser, resetPwdMutation, t]);
 
@@ -349,12 +350,12 @@ export default function UserManagementPage() {
             /* MOBILE-CARD-01：≤768px 卡片列表——6 列定宽表格在 375px 需横向滚动。
                卡片按首查信息组织：用户名+角色·状态 / 邮箱 / 创建时间 / 操作。 */
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {filteredUsers.length === 0 ? (
+              {users.length === 0 ? (
                 isLoading
                   ? <PageSkeleton variant="table" rows={4} />
-                  : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={searchText ? t('users.empty.noMatch') : t('users.empty.none')} />
+                  : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={debouncedSearch ? t('users.empty.noMatch') : t('users.empty.none')} />
               ) : (
-                filteredUsers.map((record: UserWithActive) => (
+                users.map((record: UserWithActive) => (
                   <Card key={record.id} size="small">
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
                       <Typography.Text strong style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{record.username}</Typography.Text>
@@ -399,7 +400,7 @@ export default function UserManagementPage() {
           <Table
             rowKey="id"
             columns={columns}
-            dataSource={filteredUsers}
+            dataSource={users}
             // UI 打磨：loading 直传——此前恒 false，refetch 期间无任何反馈；
             // emptyText 首屏骨架保留（UI-08 语义不变）
             loading={isLoading}
@@ -420,7 +421,7 @@ export default function UserManagementPage() {
               // UI-08：首屏（无数据加载中）以骨架屏替代表格 Spin
               emptyText: isLoading
                 ? <PageSkeleton variant="table" rows={4} />
-                : (searchText ? t('users.empty.noMatch') : t('users.empty.none')),
+                : (debouncedSearch ? t('users.empty.noMatch') : t('users.empty.none')),
             }}
           />
           )}
@@ -477,13 +478,21 @@ export default function UserManagementPage() {
           <Form.Item
             name="email"
             label={t('users.field.email')}
+            // P1-4（生产审查）：与后端契约对齐（admin-api users DTO）——
+            // create-user.dto.ts 的 email 为 @IsEmail() 必填（此前新建态零校验，
+            // 必填拦截只弹原始 400 toast）；update-user.dto.ts 是
+            // PartialType(CreateUserDto)：选填，但填了必须格式合法。
             rules={
               editing
                 ? [{ type: 'email', message: t('users.field.emailInvalid') }]
-                : []
+                : [
+                    { required: true, message: t('users.field.emailRequired') },
+                    { type: 'email', message: t('users.field.emailInvalid') },
+                  ]
             }
           >
-            <Input placeholder={t('users.field.emailPlaceholder')} type="email" />
+            {/* 新建态后端必填，「选填」占位符只在编辑态成立 */}
+            <Input placeholder={editing ? t('users.field.emailPlaceholder') : undefined} type="email" />
           </Form.Item>
           <Form.Item
             name="role"

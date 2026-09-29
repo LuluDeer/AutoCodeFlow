@@ -120,6 +120,54 @@ describe("CreateTaskDto / UpdateTaskDto id validation (R6)", () => {
     });
   });
 
+  // P2（时区审计）：timezone 此前只有 @IsString @IsOptional，非法值落库后
+  // 调度侧静默降级为服务器时区（getCronOptions warn 后放行）——写面直接 400。
+  // 探针与调度/窗口评估同一实现（isValidTimeZone），校验过 = 运行时真能用。
+  describe("timezone validation (P2)", () => {
+    const base = { name: "t1", triggerType: "cron" as const };
+
+    it.each([
+      ["Asia/Shanghai", "常用 IANA 名"],
+      ["UTC", "UTC"],
+      ["America/New_York", "含 DST 的 IANA 名"],
+      ["Etc/GMT+8", "Etc 固定偏移形态"],
+      [
+        "  Asia/Shanghai  ",
+        "首尾空白（按 trim 后判定——调度侧消费的正是 trim 产物）",
+      ],
+    ])("accepts %s（%s）", async (tz) => {
+      const result = await validateCreate({ ...base, timezone: tz });
+      expect(result.timezone).toBe(tz);
+    });
+
+    it.each([
+      ["UTC+8", "偏移写法（IANA 名才合法）"],
+      ["not-a-zone", "垃圾串"],
+    ])("rejects %s（%s）", async (tz) => {
+      await expect(validateCreate({ ...base, timezone: tz })).rejects.toThrow(
+        BadRequestException,
+      );
+    });
+
+    it("empty string passes (= unset, aligned with the scheduler's trim-empty behavior)", async () => {
+      const result = await validateCreate({ ...base, timezone: "" });
+      expect(result.timezone).toBe("");
+    });
+
+    it("omitted stays optional", async () => {
+      const result = await validateCreate({ ...base });
+      expect(result.timezone).toBeUndefined();
+    });
+
+    it("PATCH path inherits the validator via PartialType", async () => {
+      await expect(validateUpdate({ timezone: "UTC+8" })).rejects.toThrow(
+        BadRequestException,
+      );
+      const ok = await validateUpdate({ timezone: "Asia/Shanghai" });
+      expect(ok.timezone).toBe("Asia/Shanghai");
+    });
+  });
+
   describe("UpdateTaskDto (PartialType inherits the id validator)", () => {
     it("accepts a valid UUID v4 id", async () => {
       const result = await validateUpdate({ id: UUID_V4, name: "t1" });

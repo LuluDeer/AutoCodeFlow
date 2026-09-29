@@ -18,7 +18,7 @@ import {
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import type { ColumnsType } from 'antd/es/table';
 import { authApi, AuthSession } from '../../api/auth';
-import { getErrMsg } from '../../utils/error';
+import { showApiError } from '../../utils/error';
 // F-26（DEEP_REVIEW 0ef3bbe）：locale 单一来源，不再硬编码 zh-CN
 import { currentLocale } from '../../utils/locale';
 import StateError from '../../components/StateError';
@@ -75,7 +75,7 @@ export function TotpCard() {
     },
     // UI-15：绑定起点失败不能静默（按钮 loading 复位后界面无任何反馈）
     onError: (err: unknown) => {
-      message.error(getErrMsg(err, t('security.totp.setupFail')));
+      showApiError(err, t('security.totp.setupFail'));
     },
   });
 
@@ -90,7 +90,7 @@ export function TotpCard() {
     },
     // UI-15：动态码错误等失败反馈（常见失败=验证码错误/过期）
     onError: (err: unknown) => {
-      message.error(getErrMsg(err, t('security.totp.enableFail')));
+      showApiError(err, t('security.totp.enableFail'));
     },
   });
 
@@ -103,7 +103,7 @@ export function TotpCard() {
     },
     // UI-15：密码校验失败等反馈
     onError: (err: unknown) => {
-      message.error(getErrMsg(err, t('security.totp.disableFail')));
+      showApiError(err, t('security.totp.disableFail'));
     },
   });
 
@@ -221,7 +221,7 @@ export function SessionsCard() {
     },
     // UI-15：吊销失败反馈（会话可能已被服务端清理）
     onError: (err: unknown) => {
-      message.error(getErrMsg(err, t('security.session.revokeFail')));
+      showApiError(err, t('security.session.revokeFail'));
     },
   });
 
@@ -233,7 +233,7 @@ export function SessionsCard() {
     },
     // UI-15：同上，批量吊销失败同样要有可见反馈
     onError: (err: unknown) => {
-      message.error(getErrMsg(err, t('security.session.revokeOthersFail')));
+      showApiError(err, t('security.session.revokeOthersFail'));
     },
   });
 

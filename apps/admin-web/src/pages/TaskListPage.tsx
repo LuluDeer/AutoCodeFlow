@@ -30,7 +30,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useNavigate, Link, useSearchParams } from 'react-router-dom';
 import { tasksApi, Task, summarizeBatch, type BatchItemResult } from '../api/tasks';
 import { useTasksList, invalidateTaskData } from '../api/queries';
-import { getErrMsg } from '../utils/error';
+import { showApiError } from '../utils/error';
 import { useDebounce } from '../hooks/useDebounce';
 import { useAuthStore, isAdminUser } from '../store/auth';
 import { priorityTag } from '../utils/priority';
@@ -82,6 +82,9 @@ export default function TaskListPage() {
   const [search, setSearch] = useState(() => searchParams.get('q') || '');
   const [statusFilter, setStatusFilter] = useState<string | undefined>(() => searchParams.get('status') || undefined);
   const [triggerFilter, setTriggerFilter] = useState<string | undefined>(() => searchParams.get('trigger') || undefined);
+  // P2-18（生产审查）：最近一次执行结果筛选——值班最常问"哪些任务上次跑挂了"。
+  // 后端契约：GET /tasks 新增 lastStatus 查询参数（@IsEnum(ExecutionStatus)）。
+  const [lastStatusFilter, setLastStatusFilter] = useState<string | undefined>(() => searchParams.get('lastStatus') || undefined);
   const [selectedRowKeys, setSelectedRowKeys] = useState<string[]>([]);
   const [triggerTarget, setTriggerTarget] = useState<{ id: string; name: string; defaultParams?: Record<string, unknown> } | null>(null);
   const [triggerParams, setTriggerParams] = useState<Record<string, string>>({});
@@ -109,8 +112,9 @@ export default function TaskListPage() {
     if (statusFilter) next.set('status', statusFilter);
     if (debouncedSearch) next.set('q', debouncedSearch);
     if (triggerFilter) next.set('trigger', triggerFilter);
+    if (lastStatusFilter) next.set('lastStatus', lastStatusFilter);
     setSearchParams(next, { replace: true });
-  }, [page, pageSize, statusFilter, debouncedSearch, triggerFilter, setSearchParams]);
+  }, [page, pageSize, statusFilter, debouncedSearch, triggerFilter, lastStatusFilter, setSearchParams]);
 
   const { data, isLoading: loading, error, refetch } = useTasksList({
     page,
@@ -118,6 +122,7 @@ export default function TaskListPage() {
     name: debouncedSearch || undefined,
     status: statusFilter,
     triggerType: triggerFilter,
+    lastStatus: lastStatusFilter,
   });
   // FEAT-17: 写后失效句柄（原 useRequest refresh → invalidate 面收口）
   const queryClient = useQueryClient();
@@ -126,7 +131,14 @@ export default function TaskListPage() {
   const tasks: Task[] = data?.items ?? [];
   const total: number = data?.total ?? 0;
 
-  const hasFilters = !!(search || statusFilter || triggerFilter);
+  const hasFilters = !!(search || statusFilter || triggerFilter || lastStatusFilter);
+
+  // 翻页/筛选变化后当前页数据会变，跨页选中行不再可见——清空选中防误比
+  // （与 ExecutionsPage 同一约定；旧实现只随批量操作清空，筛选后残留的
+  // 选中 id 会把不可见行卷进批量触发/删除）。
+  useEffect(() => {
+    setSelectedRowKeys([]);
+  }, [page, pageSize, statusFilter, triggerFilter, lastStatusFilter, debouncedSearch]);
 
   const rowSelection = {
     selectedRowKeys,
@@ -171,28 +183,28 @@ export default function TaskListPage() {
     if (batchLoading) return;
     setBatchLoading(true);
     try { reportBatch(await tasksApi.batchTrigger(selectedRowKeys), 'taskList.batchTriggered'); }
-    catch (err: unknown) { message.error(getErrMsg(err, t('taskList.batchTriggerFail'))); }
+    catch (err: unknown) { showApiError(err, t('taskList.batchTriggerFail')); }
     finally { setBatchLoading(false); }
   };
   const handleBatchPause = async () => {
     if (batchLoading) return;
     setBatchLoading(true);
     try { reportBatch(await tasksApi.batchPause(selectedRowKeys), 'taskList.batchPaused'); }
-    catch (err: unknown) { message.error(getErrMsg(err, t('taskList.batchPauseFail'))); }
+    catch (err: unknown) { showApiError(err, t('taskList.batchPauseFail')); }
     finally { setBatchLoading(false); }
   };
   const handleBatchResume = async () => {
     if (batchLoading) return;
     setBatchLoading(true);
     try { reportBatch(await tasksApi.batchResume(selectedRowKeys), 'taskList.batchResumed'); }
-    catch (err: unknown) { message.error(getErrMsg(err, t('taskList.batchResumeFail'))); }
+    catch (err: unknown) { showApiError(err, t('taskList.batchResumeFail')); }
     finally { setBatchLoading(false); }
   };
   const handleBatchDelete = async () => {
     if (batchLoading) return;
     setBatchLoading(true);
     try { reportBatch(await tasksApi.batchDelete(selectedRowKeys), 'taskList.batchDeleted'); }
-    catch (err: unknown) { message.error(getErrMsg(err, t('taskList.batchDeleteFail'))); }
+    catch (err: unknown) { showApiError(err, t('taskList.batchDeleteFail')); }
     finally { setBatchLoading(false); }
   };
 
@@ -215,7 +227,7 @@ export default function TaskListPage() {
       setTriggerTarget(null);
       setTimeout(refresh, 1000);
     } catch (err: unknown) {
-      message.error(getErrMsg(err, t('taskList.triggerFail')));
+      showApiError(err, t('taskList.triggerFail'));
     } finally {
       setTriggering(false);
     }
@@ -225,7 +237,7 @@ export default function TaskListPage() {
     if (togglingId) return;
     setTogglingId(id);
     try { await tasksApi.pause(id); message.success(t('taskList.paused')); refresh(); }
-    catch (err: unknown) { message.error(getErrMsg(err, t('taskList.pauseFail'))); }
+    catch (err: unknown) { showApiError(err, t('taskList.pauseFail')); }
     finally { setTogglingId(null); }
   };
 
@@ -233,13 +245,13 @@ export default function TaskListPage() {
     if (togglingId) return;
     setTogglingId(id);
     try { await tasksApi.resume(id); message.success(t('taskList.resumed')); refresh(); }
-    catch (err: unknown) { message.error(getErrMsg(err, t('taskList.resumeFail'))); }
+    catch (err: unknown) { showApiError(err, t('taskList.resumeFail')); }
     finally { setTogglingId(null); }
   };
 
   const handleDelete = async (id: string) => {
     try { await tasksApi.delete(id); message.success(t('taskList.deleted')); refresh(); }
-    catch (err: unknown) { message.error(getErrMsg(err, t('taskList.deleteFail'))); }
+    catch (err: unknown) { showApiError(err, t('taskList.deleteFail')); }
   };
 
   // CORE-03-lite：一键克隆——复制任务全部可编辑字段生成 "-copy-" 副本，
@@ -298,7 +310,7 @@ export default function TaskListPage() {
       message.success(t('taskList.cloned', { name: cloneName }));
       nav(`/tasks/${created.id}`);
     } catch (err: unknown) {
-      message.error(getErrMsg(err, t('taskList.cloneFail')));
+      showApiError(err, t('taskList.cloneFail'));
     } finally {
       setCloningId(null);
     }
@@ -561,7 +573,7 @@ export default function TaskListPage() {
           placeholder={t('taskList.searchPlaceholder')}
           prefix={<SearchOutlined />}
           value={search}
-          onChange={e => setSearch(e.target.value)}
+          onChange={e => { setSearch(e.target.value); setPage(1); }}
           allowClear
           style={{ width: 220, maxWidth: '100%' }}
         />
@@ -570,7 +582,7 @@ export default function TaskListPage() {
           allowClear
           style={{ width: 110, maxWidth: '100%' }}
           value={statusFilter}
-          onChange={setStatusFilter}
+          onChange={v => { setStatusFilter(v); setPage(1); }}
           suffixIcon={<FilterOutlined />}
           options={[
             { value: 'active', label: t('taskList.status.active') },
@@ -582,15 +594,31 @@ export default function TaskListPage() {
           allowClear
           style={{ width: 120, maxWidth: '100%' }}
           value={triggerFilter}
-          onChange={setTriggerFilter}
+          onChange={v => { setTriggerFilter(v); setPage(1); }}
           options={[
             { value: 'manual', label: t('taskList.trigger.manual') },
             { value: 'cron', label: t('taskList.trigger.cron') },
             { value: 'fixed_rate', label: t('taskList.trigger.fixed_rate') },
           ]}
         />
+        {/* P2-18（生产审查）：「最近执行」筛选——任务实体 status 只有 active/paused，
+            失败在执行维度；后端 GET /tasks 以 lastStatus（@IsEnum(ExecutionStatus)）
+            支持按最近一次执行结果筛任务。值班最常用三档：success/failed/timeout
+            （label 复用既有执行状态 key execs.status.*）。 */}
+        <Select
+          placeholder={t('taskList.lastRunAll')}
+          allowClear
+          style={{ width: 110, maxWidth: '100%' }}
+          value={lastStatusFilter}
+          onChange={v => { setLastStatusFilter(v); setPage(1); }}
+          options={[
+            { value: 'success', label: t('execs.status.success') },
+            { value: 'failed', label: t('execs.status.failed') },
+            { value: 'timeout', label: t('execs.status.timeout') },
+          ]}
+        />
         {hasFilters && (
-          <Button size="small" onClick={() => { setSearch(''); setStatusFilter(undefined); setTriggerFilter(undefined); }}>
+          <Button size="small" onClick={() => { setSearch(''); setStatusFilter(undefined); setTriggerFilter(undefined); setLastStatusFilter(undefined); setPage(1); }}>
             {t('taskList.clearFilters')}
           </Button>
         )}

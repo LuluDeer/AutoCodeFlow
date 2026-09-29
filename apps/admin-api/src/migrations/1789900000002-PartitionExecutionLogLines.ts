@@ -26,7 +26,8 @@ import {
  * - 状态 A：表存在且 relkind='p'（已是分区父表）→ 无操作（新库直建分区
  *   即此状态；重跑迁移幂等）。
  * - 状态 B：普通表存在（relkind='r'）→ 存量库在线搬迁，四步全在**事务外
- *   的守卫式 SQL** 中（TypeORM 迁移默认包事务，PG DDL 可回滚，但第 3 步
+ *   的守卫式 SQL** 中（本迁移声明 transaction = false 显式关闭 TypeORM
+ *   默认的外层事务包裹——见类内声明；PG DDL 可回滚，但第 3 步
  *   INSERT..SELECT 大表耗时长——守卫式推进保证中断后重跑续行，不重复搬迁）：
  *   1. RENAME execution_log_lines → execution_log_lines_legacy（ACCESS
  *      EXCLUSIVE 瞬时持有，元数据操作，无数据拷贝）；
@@ -61,6 +62,17 @@ export class PartitionExecutionLogLines1789900000002 implements MigrationInterfa
 
   /** 预建分区窗口：today-1 ~ today+7（含端点） */
   private static readonly PRECREATE_OFFSET_DAYS = [-1, 0, 1, 2, 3, 4, 5, 6, 7];
+
+  /**
+   * 与类注释「四步全在事务外的守卫式 SQL」对齐：声明 transaction = false，
+   * TypeORM 不再包外层事务（长 INSERT..SELECT 不全程持外层事务，否则与
+   * 注释承诺不符，且长时间占用 vacuum/锁预算）。无外层事务下依然安全的
+   * 依据：状态机整体在单个 DO 块内——PG 将 DO 块作为**单条语句**执行，
+   * 自带隐式事务的 all-or-nothing 语义，原子性不因去掉外层事务而破坏；
+   * DO 块外的步骤 4 逐条 CREATE TABLE IF NOT EXISTS 幂等，中断重跑先命中
+   * relkind='p' 无操作分支、再补齐剩余分区，可重入。
+   */
+  transaction = false;
 
   public async up(queryRunner: QueryRunner): Promise<void> {
     // 步骤 0（状态判定 + 状态 C 新库直建 / 状态 B 存量搬迁）——

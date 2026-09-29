@@ -32,6 +32,9 @@ import { MetricsStreamSlotService } from "./metrics-stream-slot.service";
  *   与 metrics/stream 的「快照即数据」语义不同，不引入快照查询。
  * - 保活：1s 粒度扫描 idle ping——事件驱动流无固定数据帧节奏，静默期可能远超
  *   反代 proxy_read_timeout（QA3 先例：": ping" 注释帧，SSE 规范要求客户端忽略）。
+ *   P1-1b（nginx-sse）：每帧写出后 res.flush()（typeof 守卫）——此前压缩中间件
+ *   把帧吞进 zlib 缓冲，心跳写了但字节到不了反代；压缩豁免（P1-1a）后 flush
+ *   为 no-op 兜底，保证空闲流每 idlePingMs 必有字节到达。
  * - @Res() library mode 直写（@Sse()/Observable 会破全局 envelope 拦截器，
  *   logs/stream N8、metrics/stream 同款论述）+ @SkipTimeout()（流挂起时长 =
  *   客户端停留时长）。鉴权回退走 ?ticket= 短时 SSE 票据（POST /auth/sse-ticket，
@@ -89,9 +92,16 @@ export class ExecutionsStreamController {
       const ac = new AbortController();
       req.on("close", () => ac.abort());
 
+      // P1-1b（nginx-sse）：每帧写出后立刻 flush（typeof 守卫）——此前
+      // compression 对 text/event-stream 走 gzip，注释帧/事件帧滞留 zlib
+      // 缓冲不落 socket，idle ping 写了但到不了反代（根因详见
+      // sse-compression.util.ts 头注）。SSE 已按 content-type 豁免压缩
+      // （P1-1a），此处 flush 保留为兜底；无 compression 环境/mock res
+      // 没有 flush，必须 typeof 守卫。
       const write = (chunk: string) => {
         if (res.writableEnded) return;
         res.write(chunk);
+        if (typeof res.flush === "function") res.flush();
       };
       const sendEvent = (event: string, payload: unknown) => {
         write(`event: ${event}\n`);

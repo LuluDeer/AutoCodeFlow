@@ -15,7 +15,7 @@ import { LAYOUT_TOKENS } from '../../theme/tokens';
 const { Text } = Typography;
 const TITLE_STYLE = { margin: '0 0 4px' } as const;
 
-export default function TaskFormGlueSection({ glueTaskId, isEdit, createdTaskId, glueSource, glueLanguage, savedRuntime }: {
+export default function TaskFormGlueSection({ glueTaskId, isEdit, createdTaskId, glueSource, glueLanguage, savedRuntime, onGlueDirtyChange }: {
   /** 创建成功后的新任务 id 或编辑态任务 id；null = 尚不可编辑脚本 */
   glueTaskId: string | null;
   isEdit: boolean;
@@ -24,6 +24,8 @@ export default function TaskFormGlueSection({ glueTaskId, isEdit, createdTaskId,
   glueSource: string | undefined;
   glueLanguage: string | undefined;
   savedRuntime: string;
+  /** GLUE-DIRTY-01：GlueEditor 有未保存改动时外抛，父级并入跳转/关闭守卫 */
+  onGlueDirtyChange?: (dirty: boolean) => void;
 }) {
   const { t } = useTranslation();
   const nav = useNavigate();
@@ -49,6 +51,7 @@ export default function TaskFormGlueSection({ glueTaskId, isEdit, createdTaskId,
             initialSource={glueSource}
             initialLanguage={glueLanguage}
             taskRuntime={savedRuntime}
+            onDirtyChange={onGlueDirtyChange}
           />
           <Divider />
           <Space>

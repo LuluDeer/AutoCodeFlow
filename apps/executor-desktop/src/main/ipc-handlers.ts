@@ -1,6 +1,6 @@
 // F-37（DEEP_REVIEW 0ef3bbe）：fs/path/os/net/https 等模块统一在模块顶层 import，
 // 不再在各 handler 函数体内 require（main 进程无打包懒加载收益，纯历史遗留噪音）。
-import { app, ipcMain, shell, BrowserWindow, clipboard } from 'electron';
+import { app, dialog, ipcMain, shell, BrowserWindow, clipboard } from 'electron';
 import * as http from 'http';
 import * as https from 'https';
 import * as path from 'path';
@@ -25,6 +25,8 @@ import {
 import * as net from 'net';
 import * as childProcess from 'child_process';
 import { configStore, executorProcess, getAgentHostStatus, heartbeat, syncAgentHostWithConfig, syncNotifierWithConfig, trayManager, windowManager } from './index';
+import type { AppConfig } from './config-store';
+import { decryptToken } from './token-crypto';
 import { setAutoLaunchEnabled, getAutoLaunchEnabled } from './autolaunch';
 import { checkForUpdatesUserInitiated, downloadUpdate, quitAndInstall } from './updater';
 import {
@@ -88,6 +90,78 @@ export function startHeartbeat(): void {
     // HeartbeatMonitor 内部 normalizeAdminProbeUrl 会收敛为 null 并跳过该探针。
     configStore.get('adminApiUrl') || undefined,
   );
+}
+
+/**
+ * 会真正进入 executor-node 子进程的配置字段——executor-process.start() 组装
+ * 子进程 env 的全部输入（APP_NAME、PORT、BIND_ADDRESS、EXECUTOR_ADDRESS、
+ * EXECUTOR_ADDRESS_PUBLIC、ADMIN_API_URL、WORK_DIR、MAX_CONCURRENT_TASKS、
+ * EXECUTOR_SHARED_TOKEN、uv 组环境变量）+ spawn 参数。改动这些字段必须重启
+ * 子进程才生效；其余字段（notifyEnabled / logLevel / autoStart / agent* 档位
+ * 等）由桌面主进程热同步（syncNotifierWithConfig / syncAgentHostWithConfig /
+ * applyLogLevel）或根本不进子进程，保存后不需要重启。
+ */
+const EXECUTOR_RESTART_REQUIRED_FIELDS: ReadonlyArray<keyof AppConfig> = [
+  'adminApiUrl',
+  'executorName',
+  'executorHost',
+  'executorPort',
+  'executorAddressPublic',
+  'executorToken',
+  'workDir',
+  'maxConcurrentTasks',
+  // python_task_multiversion：uv / 解释器池 / 私有源（buildUvChildEnv 下发）。
+  'uvPath',
+  'uvPythonInstallDir',
+  'uvPythonInstallMirror',
+  'interpreterDownloadTimeoutMs',
+  'pypiRegistryUrl',
+  // ARCH-33：pull 回连模式（EXECUTOR_PULL_MODE 只在 true 时下发）。
+  'pullMode',
+];
+
+/**
+ * 判断两次**已落盘**配置之间是否存在"必须重启执行器才生效"的字段变化。
+ *
+ * 为什么需要：旧 config:save 只要执行器在跑就无条件 stop+start——改一个通知
+ * 开关也会杀掉正在运行的任务。其余字段（notifyEnabled / logLevel / autoStart /
+ * agent* 档位等）要么由桌面主进程热同步（syncNotifierWithConfig /
+ * syncAgentHostWithConfig / applyLogLevel），要么根本不进子进程，保存后无需重启。
+ *
+ * executorToken 比较的是**解密后的明文**：safeStorage 每次加密产生不同密文，
+ * 直接比较信封会把"重输同一个 token"误判成变化。
+ */
+export function restartRequiredFieldsChanged(before: AppConfig, after: AppConfig): boolean {
+  for (const key of EXECUTOR_RESTART_REQUIRED_FIELDS) {
+    if (key === 'executorToken') {
+      if (decryptToken(before.executorToken) !== decryptToken(after.executorToken)) {
+        return true;
+      }
+      continue;
+    }
+    if (before[key] !== after[key]) return true;
+  }
+  return false;
+}
+
+/**
+ * 确需重启且执行器正在运行时，先征得用户同意——重启会中断正在运行的任务。
+ * 取消只意味着"暂不重启"：配置本身已落盘成功，下次手动启动执行器 / 应用
+ * 重启时自然生效。
+ */
+async function confirmExecutorRestart(): Promise<boolean> {
+  const { response } = await dialog.showMessageBox({
+    type: 'question',
+    buttons: ['重启执行器', '暂不重启'],
+    defaultId: 0,
+    cancelId: 1,
+    noLink: true,
+    message: '配置已保存，需要重启执行器才能生效',
+    detail:
+      '重启执行器会中断正在运行的任务。要现在重启吗？\n' +
+      '（选择「暂不重启」后，新配置将在下次启动执行器时生效）',
+  });
+  return response === 0;
 }
 
 /**
@@ -266,6 +340,9 @@ export function registerIpcHandlers(): void {
     if (!isPlainConfig(cfg)) {
       return { ok: false, error: 'invalid config payload' };
     }
+    // 字段 diff 基线：保存**前**的已落盘配置。只有"必须重启子进程才生效"的
+    // 字段真正变化时才考虑重启执行器（见 EXECUTOR_RESTART_REQUIRED_FIELDS）。
+    const configBefore = configStore.getAll();
     // UX-DSK-NUM：写入前消毒。渲染层的 number input 清空后会送来 NaN（IPC
     // 序列化成 null），直接进 electron-store 会撞 ajv 的 `must be number`
     // 校验并**整次抛出**——此时同批次的其它修改已部分写入，UI 却只显示一句
@@ -281,28 +358,45 @@ export function registerIpcHandlers(): void {
     // P7b：agentEnabled / 档位 / 中台地址可能被改——热同步 Agent 托管
     // （内部自行读最新配置，启停轮询不销毁 host；失败仅记日志不阻塞保存）
     syncAgentHostWithConfig();
-    // 如果执行器正在运行，热重载配置（停止后用新配置重启）
+    // 如果执行器正在运行：只有"必须重启子进程才生效"的字段（workDir、端口、
+    // token、adminApiUrl、并发数、uv 组等）变化时才热重载——旧实现只要在跑
+    // 就无条件 stop+start，改一个通知开关也会杀掉正在运行的任务。
     // 注意：配置本身已落盘成功，但"热重载"是用户可感知的副作用——若重启
     // 失败（端口被占 / token 失效等），执行器会停留在停止态。原实现只写日志
     // 却仍返回 ok:true，渲染层于是显示"已保存，配置已生效"，而执行器其实已经
     // 死了且无任何提示。现改为把 reload 结果一并回传，让 UI 如实呈现。
     let reloadError: string | null = null;
+    let restartSkipped = false;
     if (executorProcess.isRunning()) {
-      try {
-        heartbeat.stop();
-        await executorProcess.stop();
-        await executorProcess.start(configStore.getAll());
-        // EXP-03（本轮体验审查）：改走 startHeartbeat()，把 adminApiUrl 一并传入。
-        startHeartbeat();
-        log.info('Executor reloaded with new config');
-      } catch (err: any) {
-        reloadError = err?.message ?? String(err);
-        log.error('Failed to reload executor after config save:', reloadError);
-        // 重启失败时心跳必须保持停止，避免对一个未运行的执行器报 online
-        heartbeat.stop();
+      if (!restartRequiredFieldsChanged(configBefore, configStore.getAll())) {
+        log.info(
+          'Config saved; no restart-required fields changed — executor left running',
+        );
+      } else if (await confirmExecutorRestart()) {
+        try {
+          heartbeat.stop();
+          await executorProcess.stop();
+          await executorProcess.start(configStore.getAll());
+          // EXP-03（本轮体验审查）：改走 startHeartbeat()，把 adminApiUrl 一并传入。
+          startHeartbeat();
+          log.info('Executor reloaded with new config');
+        } catch (err: any) {
+          reloadError = err?.message ?? String(err);
+          log.error('Failed to reload executor after config save:', reloadError);
+          // 重启失败时心跳必须保持停止，避免对一个未运行的执行器报 online
+          heartbeat.stop();
+        }
+      } else {
+        // 用户选择暂不重启：配置已落盘，下次启动执行器时生效。
+        restartSkipped = true;
+        log.info(
+          'Config saved; executor restart deferred by user — takes effect on next start',
+        );
       }
     }
-    return reloadError ? { ok: true, reloadError } : { ok: true };
+    if (reloadError) return { ok: true, reloadError };
+    if (restartSkipped) return { ok: true, restartDeferred: true };
+    return { ok: true };
   });
 
   ipcMain.handle('config:save-and-close-wizard', async (_event, cfg) => {

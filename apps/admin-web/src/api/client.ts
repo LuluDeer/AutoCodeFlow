@@ -54,6 +54,18 @@ export function getAvailableEnvironments(): { internal: string; external: string
   };
 }
 
+/**
+ * DUP-TOAST（本轮审计）：给「拦截器已弹过 toast」的 reject 值打标，
+ * utils/error.showApiError 据此跳过页面 catch 里的重复兜底 toast。
+ * 注意：只在**实际弹过 toast**的分支打标（401 静默跳登录分支不打标，
+ * 保持该路径页面兜底提示的原有行为）。
+ */
+function markToastedByClient(value: unknown): void {
+  if (value !== null && typeof value === 'object') {
+    (value as Record<string, unknown>)['__toastedByClient'] = true;
+  }
+}
+
 // Q-02: read token from the Zustand auth store — single source of truth.
 client.interceptors.request.use((config) => {
   const token = useAuthStore.getState().token;
@@ -155,6 +167,23 @@ client.interceptors.response.use(
       await new Promise<void>(resolve => setTimeout(resolve, 1000));
       return _client(originalRequest);
     }
+    // DUP-TOAST（本轮审计）：拦截器统一弹错后，页面 catch 里的 showApiError
+    // 兜底原先还会对同一失败再弹一次（message.error + getErrMsg 的组合
+    // 全站约 90 处）——同一次失败连弹两条。这里在实际 reject 的值上打标去重。
+    // reject 形态是 `err.response?.data || err`（envelope 对象或 axios error
+    // 本身），标必须打在页面 catch **实际收到**的那个值上；响应体为字符串
+    // 原语时挂不上属性（不打标，页面兜底会补一条，可接受的边界）。
+    const rejectValue: unknown = err.response?.data || err;
+    // P1-3（生产审查）：把 HTTP 状态码以数字型 `__status` 挂在页面 catch 实际
+    // 收到的 rejectValue 上。此前 utils/error.isNotFoundError 只会读原始 axios
+    // error 的 `response.status`，而本拦截器 reject 的是 `err.response?.data`
+    // （.response 已剥掉）——404 判定恒为 false，「404 → 跳回列表」分支从未
+    // 生效。与 markToastedByClient 同点合并打标：同样只在 rejectValue 是对象时
+    // 可挂；响应体为字符串原语挂不上（isNotFoundError 退回旧的
+    // response?.status 路径，可接受边界，与上方注释口径一致）。
+    if (err.response && rejectValue !== null && typeof rejectValue === 'object') {
+      (rejectValue as Record<string, unknown>)['__status'] = status;
+    }
     // Show a user-friendly toast for common HTTP errors (skip 401 which is handled above)
     if (status && status !== 401) {
       // F-1：HTTP 状态文案走 i18n（key: http.error.<code>），业务 message/error 仍优先。
@@ -171,10 +200,13 @@ client.interceptors.response.use(
         err.response?.data?.error ||
         i18n.t(httpKey, { status });
       antMessage.error(msg, 4);
+      markToastedByClient(rejectValue);
     } else if (!err.response) {
       // Network error
       antMessage.error(i18n.t('http.error.network'), 4);
+      markToastedByClient(rejectValue);
     }
-    return Promise.reject(err.response?.data || err);
+    // 401 静默跳登录分支未弹 toast，不打标——页面兜底行为与之前逐位一致。
+    return Promise.reject(rejectValue);
   },
 );

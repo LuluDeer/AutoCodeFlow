@@ -698,6 +698,86 @@ describe("TaskProcessor", () => {
     expect(taskService.publishTerminalEventForDispatch).not.toHaveBeenCalled();
     expect(aiService.analyzeFailure).not.toHaveBeenCalled();
   });
+
+  // MUTEX-01 P3：互斥排队的执行被唤醒后，dispatch 因「无可用/离线执行器」失败
+  // 时与组满路径同策——回 WAITING 等下轮唤醒，不进 BullMQ 重试链烧预算。
+  it("mutex-grouped execution whose dispatch fails with no-executor-available goes back to WAITING (MUTEX-01 P3)", async () => {
+    execRepo.findOne = jest
+      .fn()
+      .mockResolvedValue({ ...exec, mutexGroupId: "group-1" });
+    executorService.dispatch.mockRejectedValue(
+      new Error(
+        "No available executor (all candidates are offline or at capacity)",
+      ),
+    );
+
+    // 不 reject —— job 正常完成，执行回 WAITING。
+    await expect(
+      processor.handle({ data: { executionId: "exec-1" } } as any),
+    ).resolves.toBeUndefined();
+
+    const persistedPatch = (
+      dataSource.createQueryRunner as jest.Mock
+    ).mock.results
+      .map((r) => r.value)
+      .map((qr) => qr.manager.createQueryBuilder.mock.results[0]?.value)
+      .filter(Boolean)
+      .map((qb) => (qb.set as jest.Mock).mock.calls[0]?.[0])
+      .find((patch) => patch && typeof patch === "object") as
+      Record<string, unknown> | undefined;
+    expect(persistedPatch).toBeDefined();
+    expect(persistedPatch!.status).toBe(ExecutionStatus.WAITING);
+    expect(persistedPatch!.failureReason).toBeNull();
+    expect(String(persistedPatch!.errorMessage)).toContain(
+      "No available executor",
+    );
+
+    // 排队不是失败：无终态事件、无 AI 分析。
+    expect(taskService.publishTerminalEventForDispatch).not.toHaveBeenCalled();
+    expect(aiService.analyzeFailure).not.toHaveBeenCalled();
+  });
+
+  // 「No online executors ...」消息族在分类链落 UNKNOWN——互斥回队判定必须
+  // 连它一起收，否则整机队下线时被唤醒的执行仍烧重试预算。
+  it("mutex-grouped execution whose dispatch fails with no-online-executors also goes back to WAITING (MUTEX-01 P3)", async () => {
+    execRepo.findOne = jest
+      .fn()
+      .mockResolvedValue({ ...exec, mutexGroupId: "group-1" });
+    executorService.dispatch.mockRejectedValue(
+      new Error("No online executors match the requested group/tags/runtime"),
+    );
+
+    await expect(
+      processor.handle({ data: { executionId: "exec-1" } } as any),
+    ).resolves.toBeUndefined();
+
+    const persistedPatch = (
+      dataSource.createQueryRunner as jest.Mock
+    ).mock.results
+      .map((r) => r.value)
+      .map((qr) => qr.manager.createQueryBuilder.mock.results[0]?.value)
+      .filter(Boolean)
+      .map((qb) => (qb.set as jest.Mock).mock.calls[0]?.[0])
+      .find((patch) => patch && typeof patch === "object") as
+      Record<string, unknown> | undefined;
+    expect(persistedPatch!.status).toBe(ExecutionStatus.WAITING);
+  });
+
+  // 负例：无组快照的执行维持既有失败语义（FAILED + rethrow 进重试链）。
+  it("non-grouped execution keeps the legacy FAILED + rethrow path for the same failure", async () => {
+    executorService.dispatch.mockRejectedValue(
+      new Error(
+        "No available executor (all candidates are offline or at capacity)",
+      ),
+    );
+
+    await expect(
+      processor.handle({ data: { executionId: "exec-1" } } as any),
+    ).rejects.toThrow("No available executor");
+
+    const live = await execRepo.findOne.mock.results[0].value;
+    expect(live.status).toBe(ExecutionStatus.FAILED);
+  });
 });
 
 // PERF-P3a: worker 并发配置断言。@nestjs/bullmq v11 的 @Processor 装饰器把

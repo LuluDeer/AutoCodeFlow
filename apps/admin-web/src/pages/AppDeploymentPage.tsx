@@ -29,7 +29,7 @@ import DeployModeFields from '../components/DeployModeFields';
 import { executorsApi, Executor } from '../api/executors';
 import { useExecutorNames } from '../hooks/useExecutorNames';
 import { isStopNotDelivered } from '../utils/backend-contracts';
-import { getErrMsg, isFormValidationError } from '../utils/error';
+import { isFormValidationError, showApiError } from '../utils/error';
 // D-P1-2（设计审计 2026-09-22）：失败详情复制改走统一剪贴板封装（非安全上下文
 // 降级 execCommand，并按返回值如实提示——此前 navigator.clipboard 静默 catch，
 // 失败零反馈，排障者点了复制却粘出空串）。
@@ -287,7 +287,7 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
       scheduleDelayedRefresh(1500);
     } catch (err: unknown) {
       if (isFormValidationError(err)) return;
-      message.error(getErrMsg(err, t('appDeploy.msg.deployFail')));
+      showApiError(err, t('appDeploy.msg.deployFail'));
     } finally {
       setDeploying(false);
     }
@@ -301,7 +301,7 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
       message.success(t('appDeploy.msg.approveSuccess'));
       fetchAll();
     } catch (err: unknown) {
-      message.error(getErrMsg(err, t('appDeploy.msg.approveFail')));
+      showApiError(err, t('appDeploy.msg.approveFail'));
     } finally {
       setActingId(null);
     }
@@ -319,7 +319,7 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
       fetchAll();
     } catch (err: unknown) {
       if (isFormValidationError(err)) return;
-      message.error(getErrMsg(err, t('appDeploy.msg.rejectFail')));
+      showApiError(err, t('appDeploy.msg.rejectFail'));
     } finally {
       setRejecting(false);
     }
@@ -332,7 +332,7 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
       message.success(t('appDeploy.msg.cancelSuccess'));
       fetchAll();
     } catch (err: unknown) {
-      message.error(getErrMsg(err, t('appDeploy.msg.cancelFail')));
+      showApiError(err, t('appDeploy.msg.cancelFail'));
     } finally {
       setActingId(null);
     }
@@ -353,7 +353,7 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
       }
       fetchAll();
     } catch (err: unknown) {
-      message.error(getErrMsg(err, t('appDeploy.msg.stopFail')));
+      showApiError(err, t('appDeploy.msg.stopFail'));
     }
   };
 
@@ -366,7 +366,7 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
       message.success(t('appDeploy.msg.deleted'));
       fetchAll();
     } catch (err: unknown) {
-      message.error(getErrMsg(err, t('appDeploy.msg.deleteFail')));
+      showApiError(err, t('appDeploy.msg.deleteFail'));
     }
   };
 
@@ -376,7 +376,7 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
       message.success(t('appDeploy.msg.upgradeStarted'));
       scheduleDelayedRefresh(2000);
     } catch (err: unknown) {
-      message.error(getErrMsg(err, t('appDeploy.msg.upgradeFail')));
+      showApiError(err, t('appDeploy.msg.upgradeFail'));
     }
   };
 
@@ -397,7 +397,7 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
       scheduleDelayedRefresh(2000);
       setRolloutModalOpen(false);
     } catch (err: unknown) {
-      message.error(getErrMsg(err, t('appDeploy.msg.upgradeAllFail')));
+      showApiError(err, t('appDeploy.msg.upgradeAllFail'));
     } finally {
       setUpgradingAll(false);
     }

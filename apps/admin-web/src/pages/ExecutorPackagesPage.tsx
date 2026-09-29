@@ -28,7 +28,7 @@ import {
   deprecatePackage, activatePackage, downloadPackage,
 } from '../api/executor-packages';
 import { executorsApi } from '../api/executors';
-import { getErrMsg } from '../utils/error';
+import { getErrMsg, showApiError } from '../utils/error';
 import { normFileList } from '../utils/upload';
 // UI 打磨：时间列统一走 timeFormat 工具（对齐 ProjectsPage/ApplicationListPage 用法）
 import { formatDateTime } from '../utils/timeFormat';
@@ -184,7 +184,7 @@ export default function ExecutorPackagesPage() {
     } catch (err: unknown) {
       if (seq !== loadSeq.current) return;
       setLoadError(err);
-      message.error(getErrMsg(err, t('execPkg.loadFail')));
+      showApiError(err, t('execPkg.loadFail'));
     } finally {
       if (seq === loadSeq.current) setLoading(false);
     }
@@ -225,7 +225,7 @@ export default function ExecutorPackagesPage() {
       setUploadOpen(false);
       uploadForm.resetFields();
       load();
-    } catch (err: unknown) { message.error(getErrMsg(err, t('execPkg.upload.fail'))); } finally { setUploading(false); }
+    } catch (err: unknown) { showApiError(err, t('execPkg.upload.fail')); } finally { setUploading(false); }
   };
 
   // F-3：accept 只收窄系统选择器；拖拽/手动选「所有文件」仍可绕过，
@@ -294,7 +294,7 @@ export default function ExecutorPackagesPage() {
       if (pkg.status === 'active') await deprecatePackage(pkg.id);
       else await activatePackage(pkg.id);
       load();
-    } catch (err: unknown) { message.error(getErrMsg(err, t('execPkg.operateFail'))); }
+    } catch (err: unknown) { showApiError(err, t('execPkg.operateFail')); }
   };
 
   // download 路由在 JwtAuthGuard 后，<a href> 无法携带 Authorization（会 401），
@@ -304,7 +304,7 @@ export default function ExecutorPackagesPage() {
     try {
       await downloadPackage(pkg.id, pkg.originalFilename ?? `${pkg.name}-${pkg.version}`);
     } catch (err: unknown) {
-      message.error(getErrMsg(err, t('execPkg.downloadFail')));
+      showApiError(err, t('execPkg.downloadFail'));
     } finally {
       setDownloadingId(null);
     }

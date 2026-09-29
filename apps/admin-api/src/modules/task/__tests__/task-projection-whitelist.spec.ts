@@ -51,4 +51,15 @@ describe("TASK_PROJECTION_WHITELIST — PERF-02 DAG 边集来源", () => {
     const unique = new Set(TASK_PROJECTION_WHITELIST);
     expect(unique.size).toBe(TASK_PROJECTION_WHITELIST.length);
   });
+
+  it("P2-18 沿革：幽灵白名单项已删除（实体/迁移史均无这三列）", () => {
+    // lastStatus/lastRunTime/nextRunTime 曾混入白名单，但 Task 实体从未有过
+    // 这些列（全量迁移史核实无 last_status）——fields 传它们只会 400，属于
+    // "契约公示了不存在的列" 的假 API 面。lastStatus 的产品语义改由同名
+    // query 参数承担（service.findAll 的 EXISTS 子查询，执行维度派生过滤）。
+    // 反证：把任一项加回白名单，本用例立刻变红。
+    for (const ghost of ["lastStatus", "lastRunTime", "nextRunTime"]) {
+      expect(TASK_PROJECTION_WHITELIST).not.toContain(ghost);
+    }
+  });
 });

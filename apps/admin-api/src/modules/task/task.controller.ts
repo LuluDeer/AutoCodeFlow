@@ -36,6 +36,8 @@ import { TriggerTaskDto } from "./dto/trigger-task.dto";
 import { RollbackTaskDto } from "./dto/rollback-task.dto";
 import { BatchTaskIdsDto } from "./dto/batch-task.dto";
 import { ListTasksQueryDto } from "./dto/list-tasks-query.dto";
+// P2-18: lastStatus @ApiQuery 的值域（与 TaskExecution.status 列共用口径）
+import { ExecutionStatus } from "./entities/task-execution.entity";
 import {
   AllExecutionsQueryDto,
   ExecutionLogsQueryDto,
@@ -140,6 +142,20 @@ export class TaskController {
     name: "status",
     required: false,
     description: "Filter by status (active/paused/inactive)",
+  })
+  // P2-18: 最近一次执行状态过滤——对齐上方 status 块风格；值域与
+  // TaskExecution.status 列一致（ExecutionStatus）。
+  @ApiQuery({
+    name: "lastStatus",
+    required: false,
+    enum: ExecutionStatus,
+    description:
+      "P2-18: filter tasks whose MOST RECENT execution has this status " +
+      "(latest task_executions row per task: createdAt DESC, id DESC). " +
+      "Values: pending/running/waiting/success/failed/timeout/killed/" +
+      "cancelled. An in-flight latest execution (pending/running) matches " +
+      "as-is. Implemented as an EXISTS subquery — composable with the " +
+      "other list filters.",
   })
   @ApiQuery({
     name: "name",

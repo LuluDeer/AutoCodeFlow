@@ -12,7 +12,7 @@ import {
   useTaskDetail,
   invalidateExecutionData,
 } from '../api/queries';
-import { getErrMsg } from '../utils/error';
+import { getErrMsg, showApiError } from '../utils/error';
 import { useTranslation } from 'react-i18next';
 import '../i18n';
 // OBS-04: 分析报告/时间线面板（核心展示逻辑独立成组件文件，便于单独测试）
@@ -143,7 +143,7 @@ export default function ExecutionDetailPage() {
       // 双面失效（executions.all + metrics.all）。
       await invalidateExecutionData(queryClient);
     } catch (err: unknown) {
-      message.error(getErrMsg(err, t('execDetail.killFail')));
+      showApiError(err, t('execDetail.killFail'));
     } finally {
       setKilling(false);
     }
@@ -160,7 +160,7 @@ export default function ExecutionDetailPage() {
       message.success(t('execDetail.retriggered'));
       setRetriggerOpen(false);
     } catch (err: unknown) {
-      message.error(getErrMsg(err, t('execDetail.triggerFail')));
+      showApiError(err, t('execDetail.triggerFail'));
     } finally {
       setRetrying(false);
     }
@@ -273,7 +273,7 @@ export default function ExecutionDetailPage() {
                     message.success(t('execDetail.aiAnalyzeDone'));
                     refresh();
                   } catch (err: unknown) {
-                    message.error(getErrMsg(err, t('execDetail.aiAnalyzeFail')));
+                    showApiError(err, t('execDetail.aiAnalyzeFail'));
                   } finally {
                     setAnalyzing(false);
                   }

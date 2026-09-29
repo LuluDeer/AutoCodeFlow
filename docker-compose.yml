@@ -126,6 +126,16 @@ services:
       # E-03: loopback-only——admin-api 宿主面仅本机可路由（其余端口同款写法）；
       # 执行器回程走内网 ADMIN_API_URL=http://admin-api:3105，不依赖宿主映射
       - '127.0.0.1:3105:3105'
+    # .env 全量注入容器环境（configuration.ts 消费约 120 键，下方白名单只覆盖
+    # 少数关键键，此前约 90 键如 SEC_SECRETS_KEY / THROTTLE_* / OIDC_* /
+    # AGENT_* / 通知渠道等永不进容器）。合并优先级：本段 environment 显式键 >
+    # env_file > 镜像 ENV——即 DB_HOST/REDIS_HOST 等拓扑键仍以 environment 的
+    # postgres/redis 为准（.env 里面向本机部署的 localhost 值不会破坏容器拓扑），
+    # staging override 的 LOG_LEVEL: debug 也继续压过 env_file 的同键值。
+    # 注意区分：compose 的 ${VAR} 插值仍从宿主 shell + 项目 .env 读取（用于
+    # 解析本文件与 :? 守卫），env_file 只负责把键注入容器环境，两者共存无冲突。
+    env_file:
+      - .env
     environment:
       NODE_ENV: ${NODE_ENV:-production}
       DB_HOST: postgres

@@ -899,6 +899,14 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
    *   占坑事务重新判定（竞态输家再次 WAITING，下轮 sweep 收敛），唤醒本身
    *   不做任何「占用已释放」的推断，因此不可能漏唤醒，也不需要与终态写路径
    *   （A1 终态门、多处调用点）耦合出新的通知链路；
+   * - 同组短路（P3 惊群修复）：单轮内每个互斥组只唤醒**最早的一条**作为探针，
+   *   其余同组候选本轮跳过。dispatch 的组满判定是逐候选一次 FOR UPDATE 占坑
+   *   事务（claimExecutorSlotForExecution）——组满时同组其余候选**必然同样
+   *   失败**，全量唤醒只是每 10s 白烧 take:200 个 job。探针失败会回 WAITING
+   *   （MutexWaitError 路径）或离线排队（processor 互斥执行回 WAITING 路径），
+   *   下轮 sweep 再试；组有容量时探针成功占用、下轮唤醒下一条，以 10s 粒度
+   *   逐条排空——组级唤醒保证不变，只是把"同一判断重复 N 次"收敛为 1 次。
+   *   无组（mutexGroupId=null）候选不受影响，照旧全量唤醒。
    * - 延迟：≤10s + 队列延迟，相对浏览器自动化任务的分钟级时长可忽略；
    * - 多实例：与 reload/checkMisfires 同款 isLeader 门，单 Leader 执行。
    *
@@ -927,7 +935,17 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     );
 
     let woken = 0;
+    // 同组短路：本轮已唤醒过探针的互斥组（组 id → 已探）。
+    const probedGroups = new Set<string>();
+    let skippedSameGroup = 0;
     for (const exec of waiting) {
+      if (exec.mutexGroupId) {
+        if (probedGroups.has(exec.mutexGroupId)) {
+          skippedSameGroup += 1;
+          continue;
+        }
+        probedGroups.add(exec.mutexGroupId);
+      }
       // 条件翻转独占唤醒权：同一执行不会被重复入队（sweep 重叠 / 与用户
       // kill 竞态时，kill 赢家先把行终态化，本 UPDATE affected=0 跳过）。
       // errorMessage（排队原因）一并清空——后续失败由各自路径写自己的原因。
@@ -969,9 +987,12 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
         );
       }
     }
-    if (woken > 0) {
+    if (woken > 0 || skippedSameGroup > 0) {
       this.logger.log(
-        `MUTEX-01: woke ${woken}/${waiting.length} mutex-queued execution(s) for re-dispatch`,
+        `MUTEX-01: woke ${woken}/${waiting.length} mutex-queued execution(s) for re-dispatch` +
+          (skippedSameGroup > 0
+            ? ` (skipped ${skippedSameGroup} same-group candidate(s) this round — group probe already in flight)`
+            : ""),
       );
     }
   }
@@ -1084,7 +1105,15 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     // 约束（发布窗口内人工补跑是预期操作）。可观测性：metrics 的
     // triggersSkippedMaintenance + 本日志，executions 不建行（窗口内
     // 每个触发点都会跳过，建行会淹没执行记录）。
-    const activeWindow = findActiveMaintenanceWindow(task.maintenanceWindows);
+    // 时区：窗口 cron 与调度主 cron 同一语义——按任务自身 timezone 的分区
+    // 壁钟评估（P2 修复：此前按服务器本地时区评估，UTC 容器下窗口错位数
+    // 小时）。未配置/空串/存量非法值由 util 内部降级服务端本地时区（非法值
+    // 的写面拦截见 timezone.constraint.ts）。
+    const activeWindow = findActiveMaintenanceWindow(
+      task.maintenanceWindows,
+      undefined,
+      task.timezone?.trim() || undefined,
+    );
     if (activeWindow) {
       this.logger.log(
         `Task "${task.name}" trigger skipped: inside maintenance window ` +
