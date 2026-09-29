@@ -47,6 +47,7 @@ type BadgeStatus = 'success' | 'processing' | 'error' | 'default' | 'warning';
 const STATUS_MAP = (t: (k: string) => string): Record<string, { badge: BadgeStatus; label: string }> => ({
   pending:   { badge: 'default',    label: t('execs.status.pending') },
   running:   { badge: 'processing', label: t('execs.status.running') },
+  waiting:   { badge: 'warning',    label: t('execs.status.waiting') },
   success:   { badge: 'success',    label: t('execs.status.success') },
   failed:    { badge: 'error',      label: t('execs.status.failed') },
   timeout:   { badge: 'warning',    label: t('execs.status.timeout') },
@@ -320,6 +321,7 @@ export default function ExecutionsPage() {
           options={[
             { value: 'pending',   label: t('execs.status.pending') },
             { value: 'running',   label: t('execs.status.running') },
+            { value: 'waiting',   label: t('execs.status.waiting') },
             { value: 'success',   label: t('execs.status.success') },
             { value: 'failed',    label: t('execs.status.failed') },
             { value: 'timeout',   label: t('execs.status.timeout') },

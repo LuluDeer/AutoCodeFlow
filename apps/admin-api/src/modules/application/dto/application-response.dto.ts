@@ -81,6 +81,13 @@ export class ApplicationResponseDto {
   })
   projectId: string | null;
 
+  @ApiPropertyOptional({
+    description:
+      "MUTEX-01: mutex group id (null = app does not participate in per-device mutual exclusion)",
+    nullable: true,
+  })
+  mutexGroupId: string | null;
+
   @ApiPropertyOptional({ description: "Owner user id", nullable: true })
   ownerUserId: number | null;
 

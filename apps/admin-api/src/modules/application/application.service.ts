@@ -463,6 +463,8 @@ export class ApplicationService implements OnModuleInit {
     if (existing) {
       throw new ConflictException(`Application "${dto.name}" already exists`);
     }
+    // MUTEX-01：挂组前置校验（FK 只兜底 23503 → 500；前置给 400/404 更可读）。
+    if (dto.mutexGroupId) await this.assertMutexGroupExists(dto.mutexGroupId);
 
     const app = this.repo.create({
       ...dto,
@@ -499,6 +501,20 @@ export class ApplicationService implements OnModuleInit {
     return saved;
   }
 
+  /**
+   * MUTEX-01：互斥组存在性校验（挂组写面的前置 404；经 repo.manager 直查
+   * MutexGroup，避免为一次校验引入对 MutexGroupService 的依赖）。
+   */
+  private async assertMutexGroupExists(groupId: string): Promise<void> {
+    const rows: Array<{ id: string }> = await this.repo.manager.query(
+      `SELECT "id" FROM "mutex_groups" WHERE "id" = $1 LIMIT 1`,
+      [groupId],
+    );
+    if (!rows[0]) {
+      throw new NotFoundException(`互斥组 ${groupId} 不存在`);
+    }
+  }
+
   async update(
     id: string,
     dto: UpdateApplicationDto,
@@ -518,6 +534,8 @@ export class ApplicationService implements OnModuleInit {
     // values (webhook version bumps and upload upserts both flow through
     // here without touching env). The response is masked again so the
     // public webhook route can never echo raw secrets.
+    // MUTEX-01：换组/挂组前置校验（同 create；显式 null = 摘组，放行）。
+    if (dto.mutexGroupId) await this.assertMutexGroupExists(dto.mutexGroupId);
     const app = await this.findByIdRaw(id);
     const next: UpdateApplicationDto = dto.env
       ? {

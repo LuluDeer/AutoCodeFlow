@@ -20,6 +20,10 @@
  */
 import * as nodeCron from "node-cron";
 import {
+  isCron5FieldInBounds,
+  normalizeCron5Field,
+} from "../../cron-normalize.util";
+import {
   isValidCronExpression,
   IsCron5FieldConstraint,
 } from "../cron-expression.constraint";
@@ -30,6 +34,10 @@ const VALID: Array<[string, string]> = [
   ["0 9-17 * * *", "每天 9 点到 17 点每小时"],
   ["0 12 * * *", "每天 12 点（单值，修复前就通过）"],
   ["*/5 * * * *", "每 5 分钟（步进，修复前就通过）"],
+  ["12/20 6-23 * * *", "裸 n/step（用户报障现场；写边界规范化为 12-59/20）"],
+  ["5/10 * * * *", "裸 n/step（分钟起始值步进 → 5-59/10）"],
+  ["0 5/10 * * *", "裸 n/step（小时 → 5-23/10）"],
+  ["0 8 * * 1/2", "裸 n/step（周 → 1-7/2，单双周odd 命中 1/3/5/7）"],
   ["0 */2 * * *", "每 2 小时"],
   ["0 9-17/2 * * *", "范围 + 步进"],
   ["0 12-18/2 * * *", "范围 + 步进（另一形态）"],
@@ -53,6 +61,8 @@ const INVALID: Array<[string, string]> = [
   ["0 12 * * * *", "6 段（带秒）——超出本仓 5 段契约"],
   ["0 12 * * * * *", "7 段"],
   ["abc", "非数字"],
+  ["12/0 * * * *", "步进 0"],
+  ["70/20 * * * *", "裸 n/step 且越界（规范化产物为倒序范围 70-59/20）"],
   ["", "空串"],
   ["   ", "纯空白"],
   ["not-valid-cron", "调度器用例里的同款非法值"],
@@ -108,10 +118,17 @@ describe("cron 表达式合法性（RT-CRON）", () => {
     ];
 
     it.each(allExprs)(
-      "契约内表达式的判定与 nodeCron.validate 一致：%s",
+      "契约内表达式的判定与「validate(规范化产物)+界内守卫」一致：%s",
       (expr) => {
         if (!isInRepoContract(expr)) return; // 契约外形态由下面两组专项覆盖
-        expect(isValidCronExpression(expr)).toBe(nodeCron.validate(expr));
+        // cron UX 统一后的不变量：DTO 门 = nodeCron.validate(规范化产物)
+        // **且** 界内守卫。后者必须并列——node-cron v4 的 validate 对越界
+        // 范围（70-59/20 * * * *）与倒序范围（12-5 * * * *）误放行，调度
+        // 注册后永不触发；预览器与维护窗口 parseField 均拒绝该形态。
+        const canonical = normalizeCron5Field(expr) ?? expr;
+        const schedulable =
+          nodeCron.validate(canonical) && isCron5FieldInBounds(canonical);
+        expect(isValidCronExpression(expr)).toBe(schedulable);
       },
     );
 

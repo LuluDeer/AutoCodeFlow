@@ -30,6 +30,8 @@ import {
 } from "../task/entities/task-execution.entity";
 // A1: 终态跃迁（条件 UPDATE + RETURNING + 驱动兜底）与开放态常量的单一事实源。
 import { transitionToTerminal } from "../task/execution-terminal";
+// MUTEX-01：互斥组快照解析（执行入队时从 task→application 带下）。
+import { resolveTaskMutexGroupId } from "../task/execution-mutex";
 import { Executor, ExecutorStatus } from "../executor/entities/executor.entity";
 import { ExecutorService } from "../executor/executor.service";
 import {
@@ -889,6 +891,92 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
+   * MUTEX-01（应用互斥组）：互斥排队唤醒。
+   *
+   * WAITING 执行的唤醒语义：任意同组执行在任意设备上终态释放后，排队的执行
+   * 就应该被重新尝试派发。本 sweep 是**唯一唤醒机制**（刻意不做终态钩子）：
+   * - 正确性：每 10s 无条件重试所有 WAITING——组占用是否真的释放由 dispatch
+   *   占坑事务重新判定（竞态输家再次 WAITING，下轮 sweep 收敛），唤醒本身
+   *   不做任何「占用已释放」的推断，因此不可能漏唤醒，也不需要与终态写路径
+   *   （A1 终态门、多处调用点）耦合出新的通知链路；
+   * - 延迟：≤10s + 队列延迟，相对浏览器自动化任务的分钟级时长可忽略；
+   * - 多实例：与 reload/checkMisfires 同款 isLeader 门，单 Leader 执行。
+   *
+   * WAITING → PENDING 用条件 UPDATE 独占唤醒权（并发/重复触发只入队一次），
+   * 入队失败回滚为 WAITING（否则该执行沦为无 job 的 PENDING，10 分钟后被
+   * stale sweep 误标 never_dispatched）。唤醒 job 带任务完整重试预算（等待
+   * 期间 attempts 一次都没消耗，语义等同一次全新派发尝试）。
+   */
+  @Cron(CronExpression.EVERY_10_SECONDS)
+  async wakeMutexQueuedExecutions() {
+    if (!this.isLeader) return;
+    const waiting = await this.execRepo.find({
+      where: { status: ExecutionStatus.WAITING },
+      order: { createdAt: "ASC" },
+      take: 200,
+    });
+    if (waiting.length === 0) return;
+
+    const taskIds = [...new Set(waiting.map((e) => e.taskId))];
+    const tasks = await this.taskRepo.findBy({ id: In(taskIds) });
+    const attemptsByTask = new Map(
+      tasks.map((t) => [t.id, Math.max(1, t.maxRetry ?? 1)]),
+    );
+    const priorityByTask = new Map(
+      tasks.map((t) => [t.id, normalizeTaskPriority(t.priority)]),
+    );
+
+    let woken = 0;
+    for (const exec of waiting) {
+      // 条件翻转独占唤醒权：同一执行不会被重复入队（sweep 重叠 / 与用户
+      // kill 竞态时，kill 赢家先把行终态化，本 UPDATE affected=0 跳过）。
+      // errorMessage（排队原因）一并清空——后续失败由各自路径写自己的原因。
+      const flipped = await this.execRepo
+        .createQueryBuilder()
+        .update(TaskExecution)
+        .set({ status: ExecutionStatus.PENDING, errorMessage: null })
+        .where("id = :id AND status = :waiting", {
+          id: exec.id,
+          waiting: ExecutionStatus.WAITING,
+        })
+        .execute();
+      if (!flipped.affected) continue;
+      try {
+        await this.queue.add(
+          "execute",
+          { executionId: exec.id },
+          {
+            attempts: attemptsByTask.get(exec.taskId) ?? 1,
+            priority: priorityByTask.get(exec.taskId),
+          },
+        );
+        woken += 1;
+      } catch (err: unknown) {
+        // 回滚为 WAITING：保住「排队等唤醒」的状态，下轮 sweep 再试。
+        await this.execRepo
+          .createQueryBuilder()
+          .update(TaskExecution)
+          .set({ status: ExecutionStatus.WAITING })
+          .where("id = :id AND status = :pending", {
+            id: exec.id,
+            pending: ExecutionStatus.PENDING,
+          })
+          .execute();
+        this.logger.warn(
+          `MUTEX-01: wake re-enqueue failed for execution ${exec.id}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
+    if (woken > 0) {
+      this.logger.log(
+        `MUTEX-01: woke ${woken}/${waiting.length} mutex-queued execution(s) for re-dispatch`,
+      );
+    }
+  }
+
+  /**
    * N5: stale 扫描的初始窗口 = min(所有 active 任务中最短的
    * max(2×timeout, 60s) 阈值, 1h 兜底)。timeout=0（不限时）任务不参与收缩，
    * 仍由 1h 兜底覆盖；没有任何短 timeout 任务时窗口保持 1h，扫描开销不变。
@@ -1060,13 +1148,24 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
         return null;
       }
 
+      // MUTEX-01：阻塞策略把互斥排队态计入「前一轮还没跑完」。WAITING 的执行
+      // 尚未在任何设备开跑，但对 DISCARD/COVER_EARLY 的用户语义而言它与
+      // RUNNING 等价（这一轮触发的就是上一次触发还没落地的结果）：
+      // - DISCARD：上一触发还在排队 → 本轮丢弃（否则唤醒后同任务并发跑）；
+      // - COVER_EARLY：覆盖（取消排队中的执行，新触发取而代之——排队中的
+      //   执行无 executorAddress，transitionToTerminal 释放槽位为 no-op）。
+      // PENDING 刻意不计入：队列积压（BullMQ backlog）是常态，计入了会改变
+      // 既有语义。
       if (task.blockStrategy === BlockStrategy.DISCARD) {
         const running = await this.execRepo.findOne({
-          where: { taskId: task.id, status: ExecutionStatus.RUNNING },
+          where: {
+            taskId: task.id,
+            status: In([ExecutionStatus.RUNNING, ExecutionStatus.WAITING]),
+          },
         });
         if (running) {
           this.logger.warn(
-            `Task "${task.name}" is RUNNING (blockStrategy=DISCARD), skip trigger`,
+            `Task "${task.name}" is ${running.status.toUpperCase()} (blockStrategy=DISCARD), skip trigger`,
           );
           this.schedulerMetrics.recordTriggerSkippedBlockStrategy();
           return null;
@@ -1075,11 +1174,15 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
 
       if (task.blockStrategy === BlockStrategy.COVER_EARLY) {
         const running = await this.execRepo.findOne({
-          where: { taskId: task.id, status: ExecutionStatus.RUNNING },
+          where: {
+            taskId: task.id,
+            status: In([ExecutionStatus.RUNNING, ExecutionStatus.WAITING]),
+          },
+          order: { createdAt: "DESC" },
         });
         if (running) {
           this.logger.warn(
-            `Task "${task.name}" is RUNNING (blockStrategy=COVER_EARLY), cancelling running execution ${running.id}`,
+            `Task "${task.name}" is ${running.status.toUpperCase()} (blockStrategy=COVER_EARLY), cancelling running execution ${running.id}`,
           );
           // R4-P1: the previous blind save() could overwrite a SUCCESS that
           // a concurrent callback had already committed (and double-release
@@ -1123,6 +1226,9 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
           params: task.params,
           triggerType,
           taskVersion: task.currentVersion,
+          // MUTEX-01：互斥组快照（task→application 一次主键查询；任务未挂
+          // 应用/应用未挂组时为 null，零额外查询）。
+          mutexGroupId: await resolveTaskMutexGroupId(this.dataSource, task),
           // OBS-01: 追踪开启时由入队侧生成 trace 根（NULL=追踪未开启）。
           traceId: this.newExecutionTraceId(),
         }),

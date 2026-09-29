@@ -2844,6 +2844,42 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/mutex-groups": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List mutex groups (for app form dropdown & admin) */
+        get: operations["MutexGroupController_findAll"];
+        put?: never;
+        /** Create a mutex group */
+        post: operations["MutexGroupController_create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/mutex-groups/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Update a mutex group (name / maxConcurrentPerDevice) */
+        put: operations["MutexGroupController_update"];
+        post?: never;
+        /** Delete a mutex group (attached apps become ungrouped) */
+        delete: operations["MutexGroupController_remove"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/executor-packages": {
         parameters: {
             query?: never;
@@ -4363,6 +4399,8 @@ export interface components {
             approvalRequired: boolean;
             /** @description Owning project id (null = default project view) */
             projectId?: string | null;
+            /** @description MUTEX-01: mutex group id (null = app does not participate in per-device mutual exclusion) */
+            mutexGroupId?: string | null;
             /** @description Owner user id */
             ownerUserId?: number | null;
             /**
@@ -4403,6 +4441,8 @@ export interface components {
              * @default false
              */
             approvalRequired: boolean;
+            /** @description MUTEX-01: mutex group id this app joins (null = no mutual exclusion) */
+            mutexGroupId?: string | null;
         };
         UpdateApplicationDto: {
             /** @description Unique application name */
@@ -4431,6 +4471,8 @@ export interface components {
              * @default false
              */
             approvalRequired: boolean;
+            /** @description MUTEX-01: mutex group id this app joins (null = no mutual exclusion) */
+            mutexGroupId?: string | null;
             /**
              * @description Application status
              * @enum {string}
@@ -4486,6 +4528,28 @@ export interface components {
             /** @description Process PID */
             pid?: number;
             message?: string;
+        };
+        CreateMutexGroupDto: {
+            /** @description 互斥组名（唯一），如 ziniao-browser */
+            name: string;
+            /**
+             * @description 同一台设备上该组允许的并发执行数（≥1，默认 1 = 组内串行）
+             * @default 1
+             */
+            maxConcurrentPerDevice: number;
+            /** @description 组用途说明 */
+            description?: string;
+        };
+        UpdateMutexGroupDto: {
+            /** @description 互斥组名（唯一），如 ziniao-browser */
+            name?: string;
+            /**
+             * @description 同一台设备上该组允许的并发执行数（≥1，默认 1 = 组内串行）
+             * @default 1
+             */
+            maxConcurrentPerDevice: number;
+            /** @description 组用途说明 */
+            description?: string;
         };
         ExecutorPackagePushRecordDto: {
             /** @description Target executor id */
@@ -8840,6 +8904,89 @@ export interface operations {
         };
         responses: {
             201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    MutexGroupController_findAll: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    MutexGroupController_create: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateMutexGroupDto"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    MutexGroupController_update: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateMutexGroupDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    MutexGroupController_remove: {
+        parameters: {
+            query?: {
+                /** @description 组上仍挂应用时需显式 force=true 才允许删除 */
+                force?: boolean;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };

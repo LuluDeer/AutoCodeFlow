@@ -53,6 +53,8 @@ import {
   transitionToTerminal,
   transitionOneToTerminal,
 } from "./execution-terminal";
+// MUTEX-01：互斥组快照解析（执行创建时从 task→application 带下）。
+import { resolveTaskMutexGroupId } from "./execution-mutex";
 import { ExecutionLogLine } from "./entities/execution-log-line.entity";
 import { TaskVersion } from "./entities/task-version.entity";
 // python_task_multiversion（FR-19 / AC-19a）：zip 来源的 runtime 一致性校验
@@ -66,6 +68,8 @@ import { Application } from "../application/entities/application.entity";
 import { CreateTaskDto } from "./dto/create-task.dto";
 import { UpdateTaskDto } from "./dto/update-task.dto";
 import { TriggerTaskDto } from "./dto/trigger-task.dto";
+// cron 写边界规范化：裸 n/step（POSIX 语义）等价改写为调度器可注册的规范式
+import { normalizeCron5Field } from "./cron-normalize.util";
 import { PaginationDto, paginate } from "../../common/dto/pagination.dto";
 import {
   ListTasksQueryDto,
@@ -486,6 +490,38 @@ export class TaskService {
         normalized.timeoutWarnRatio,
       );
     }
+    // cron UX 统一：裸 n/step（如 12/20，POSIX 语义）在写边界等价改写为
+    // node-cron 可注册的规范式（12-59/20）——DTO 门已按「规范化后校验」放行，
+    // 这里保证**落库的永远是调度器可注册的形态**，调度注册（nodeCron.schedule）
+    // 与维护窗口匹配（parseWindowCron）零特判。规范化语义上是严格等价展开，
+    // 只改写形态；结构不可解析时 fail-closed 400（DTO 放行的输入到不了这里，
+    // 属于对非 DTO 调用方的纵深防御）。维护窗口 start/end 同款处理——否则
+    // 窗口 cron 会重演「存得进去、parseWindowCron 解析不了、窗口静默不生效」。
+    if (
+      normalized.cronExpression !== undefined &&
+      normalized.cronExpression !== null
+    ) {
+      // 显式 null = 清空（PATCH 语义，@IsOptional 同样放行），不参与规范化
+      normalized.cronExpression = this.assertNormalizableCron(
+        normalized.cronExpression,
+        "cronExpression",
+      );
+    }
+    if (Array.isArray(normalized.maintenanceWindows)) {
+      normalized.maintenanceWindows = normalized.maintenanceWindows.map(
+        (w, i) => ({
+          ...w,
+          start: this.assertNormalizableCron(
+            w.start,
+            `maintenanceWindows[${i}].start`,
+          ),
+          end: this.assertNormalizableCron(
+            w.end,
+            `maintenanceWindows[${i}].end`,
+          ),
+        }),
+      );
+    }
     // W-21: requirements reach `uv pip install` / `npm install` as argv on
     // the executor. Reject option-shaped specs (`--index-url http://evil`
     // would hijack the package index) and blank entries here, mirroring the
@@ -512,6 +548,21 @@ export class TaskService {
       normalized.executeMode,
     );
     return normalized as T;
+  }
+
+  /**
+   * cron 写边界规范化（见 normalizeTaskDto 内注释）。null（结构不可解析）
+   * 属于「DTO 门不可能放行」的纵深防御分支：显式 400 拒绝，绝不静默落库
+   * 调度器跑不了的表达式——那比 400 糟糕得多（存进去却永不触发）。
+   */
+  private assertNormalizableCron(value: unknown, field: string): string {
+    const normalized = normalizeCron5Field(value);
+    if (normalized === null) {
+      throw new BadRequestException(
+        `${field} must be a valid 5-field cron expression (min hour day month weekday)`,
+      );
+    }
+    return normalized;
   }
 
   private inferFailureReason(
@@ -1313,6 +1364,8 @@ export class TaskService {
           // R-28: 默认 manual；依赖触发方传入 "dependency"。
           triggerType: triggerTypeOverride ?? "manual",
           taskVersion: task.currentVersion,
+          // MUTEX-01：互斥组快照（task→application；未挂组为 null）。
+          mutexGroupId: await resolveTaskMutexGroupId(manager, task),
           traceId: this.tracing?.isValidTraceId(traceId) ? traceId : null,
         }),
       );
@@ -2006,6 +2059,8 @@ export class TaskService {
           params: dto.params ?? task.params,
           triggerType: "rollback",
           taskVersion: dto.gitCommit,
+          // MUTEX-01：互斥组快照（task→application；未挂组为 null）。
+          mutexGroupId: await resolveTaskMutexGroupId(manager, task),
         }),
       );
     });
