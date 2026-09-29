@@ -13,7 +13,7 @@ import '../i18n';
 // monaco-editor 全量包（含全部语言贡献与 ts.worker）。
 import { monaco } from './monaco-setup';
 import { tasksApi } from '../api/tasks';
-import { getErrMsg } from '../utils/error';
+import { showApiError } from '../utils/error';
 
 // 就地启用本地 monaco（模块级一次性配置；后续 loader.init() 直接解析到该实例，
 // 不再发起任何 CDN 请求）。
@@ -33,20 +33,29 @@ interface GlueEditorProps {
   initialSource?: string;
   initialLanguage?: string;
   taskRuntime?: string;
+  /** dirty 变化外抛：父级据此拦截未保存脚本丢失（useBlocker/beforeunload） */
+  onDirtyChange?: (dirty: boolean) => void;
 }
 
-export default function GlueEditor({ taskId, initialSource, initialLanguage, taskRuntime }: GlueEditorProps) {
+export default function GlueEditor({ taskId, initialSource, initialLanguage, taskRuntime, onDirtyChange }: GlueEditorProps) {
   const { t } = useTranslation();
   const [source, setSource] = useState(initialSource || '');
   const [language, setLanguage] = useState(initialLanguage || taskRuntime || 'python');
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
+  // GLUE-DIRTY-01：dirty 原先是纯内部 state——用户改了脚本没保存就关页/刷新，
+  // 改动静默丢失且无任何拦截。统一经 markDirty 外抛给父级（表单页把它并进
+  // useBlocker/beforeunload 条件，详情页据此挂 beforeunload 守卫）。
+  const markDirty = useCallback((v: boolean) => {
+    setDirty(v);
+    onDirtyChange?.(v);
+  }, [onDirtyChange]);
 
   useEffect(() => {
     setSource(initialSource || '');
     setLanguage(initialLanguage || taskRuntime || 'python');
-    setDirty(false);
-  }, [taskId, initialSource, initialLanguage, taskRuntime]);
+    markDirty(false);
+  }, [taskId, initialSource, initialLanguage, taskRuntime, markDirty]);
 
   const editorLang = LANGUAGE_MAP[language] || 'python';
 
@@ -110,18 +119,18 @@ echo '{"status": "ok", "message": "Task completed successfully"}'
     try {
       await tasksApi.updateGlue(taskId, source, language);
       message.success(t('glueEditor.saveSuccess'));
-      setDirty(false);
+      markDirty(false);
     } catch (err: unknown) {
-      message.error(getErrMsg(err, t('glueEditor.saveFail')));
+      showApiError(err, t('glueEditor.saveFail'));
     } finally {
       setSaving(false);
     }
-  }, [taskId, source, language, t]);
+  }, [taskId, source, language, markDirty, t]);
 
   const useTemplate = () => {
     const tpl = defaultTemplates[language] || defaultTemplates.python;
     setSource(tpl);
-    setDirty(true);
+    markDirty(true);
   };
 
   return (
@@ -130,7 +139,7 @@ echo '{"status": "ok", "message": "Task completed successfully"}'
         <Text strong>{t('glueEditor.title')}</Text>
         <Select
           value={language}
-          onChange={(v) => { setLanguage(v); setDirty(true); }}
+          onChange={(v) => { setLanguage(v); markDirty(true); }}
           style={{ width: 140 }}
           options={[
             { label: 'Python', value: 'python' },
@@ -155,7 +164,7 @@ echo '{"status": "ok", "message": "Task completed successfully"}'
         height="400px"
         language={editorLang}
         value={source}
-        onChange={(v) => { setSource(v || ''); setDirty(true); }}
+        onChange={(v) => { setSource(v || ''); markDirty(true); }}
         theme="vs-dark"
         options={{
           minimap: { enabled: false },

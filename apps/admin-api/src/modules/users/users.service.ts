@@ -14,7 +14,12 @@ import { User, UserRole } from "./entities/user.entity";
 import { RefreshToken } from "../auth/entities/refresh-token.entity";
 import { CreateUserDto } from "./dto/create-user.dto";
 import { UpdateUserDto } from "./dto/update-user.dto";
-import { PageQueryDto, paginate } from "../../common/dto/pagination.dto";
+import { ListUsersDto } from "./dto/list-users.dto";
+import { paginate } from "../../common/dto/pagination.dto";
+import { ILike } from "typeorm";
+// NETOPT-3⑤/API-09 同款先例（task.service getAllExecutions）：LIKE 元字符
+// 转义 util 第三处落点（同模块函数导入，不新增依赖）。
+import { escapeLikePattern } from "../audit/audit.service";
 
 /**
  * ARCH-31: PG 唯一约束冲突（23505）判定——种子竞态里「输家」据此降级为跳过。
@@ -131,16 +136,21 @@ export class UsersService implements OnModuleInit {
     return this.usersRepository.save(user);
   }
 
-  // API-07（本轮体验审查）：签名收窄为 PageQueryDto。本方法**只**消费
-  // page/pageSize，而原签名 PaginationDto 还带着任务的 name/status/runtime
-  // ——那三个字段既没被读，又被 OpenAPI 当作本端点的可用过滤参数公示给调用方
-  // （传了静默无效）。签名如实后，类型层面也不再暗示这里支持那些过滤。
-  async findAll(pagination: PageQueryDto) {
-    const { page, pageSize } = pagination;
+  // API-07（历史）：签名曾从 PaginationDto 收窄为 PageQueryDto（任务专用过滤
+  // 字段从未被消费）。本轮接入 ListUsersDto.search：username/email ILIKE
+  // 模糊匹配。`_`/`%` 经 escapeLikePattern 按字面量处理——否则搜含下划线的
+  // 用户名（zhang_san）会静默匹配到无关账号（见 audit.service API-09 注释）。
+  async findAll(pagination: ListUsersDto) {
+    const { page, pageSize, search } = pagination;
+    // trim 后空串 = 无过滤（避免生成 `%%` 全匹配的无效 where）
+    const pattern = search ? `%${escapeLikePattern(search)}%` : null;
     const [list, total] = await this.usersRepository.findAndCount({
       skip: (page - 1) * pageSize,
       take: pageSize,
       order: { createdAt: "DESC" },
+      ...(pattern
+        ? { where: [{ username: ILike(pattern) }, { email: ILike(pattern) }] }
+        : {}),
     });
     return paginate(list, total, page, pageSize);
   }

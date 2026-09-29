@@ -35,7 +35,7 @@ import {
 import { useNavigate } from 'react-router-dom';
 import { executorPackagesApi, ExecutorPackage } from '../api/executor-packages';
 import { executorsApi, Executor, InstallCmdResult } from '../api/executors';
-import { getErrMsg } from '../utils/error';
+import { showApiError } from '../utils/error';
 import { copyText } from '../utils/clipboard';
 import { useTranslation, Trans } from 'react-i18next';
 // UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
@@ -281,7 +281,7 @@ export default function ExecutorInstallWizardPage() {
       setInstallCmd(result);
       setCurrentStep(3);
     } catch (err: unknown) {
-      message.error(getErrMsg(err, t('install.getCmdFail')));
+      showApiError(err, t('install.getCmdFail'));
     } finally {
       setGeneratingCmd(false);
     }
@@ -384,7 +384,7 @@ export default function ExecutorInstallWizardPage() {
       startPolling(now, knownIds);
     } catch (err: unknown) {
       setBaselineError(true);
-      message.error(getErrMsg(err, t('install.baselineFail')));
+      showApiError(err, t('install.baselineFail'));
     }
   };
 

@@ -21,7 +21,7 @@ import { ControlOutlined, KeyOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import type { Executor } from '../../api/executors';
 import { executorsApi } from '../../api/executors';
-import { getErrMsg } from '../../utils/error';
+import { getErrMsg, showApiError } from '../../utils/error';
 // ARCH-33（ADR-016）：pull 控制面可用性判据（UI-18 判据的修订版）
 import { isControlPlaneUnavailable } from '../../utils/control-plane';
 import '../../i18n';
@@ -143,7 +143,7 @@ export default function BatchActionBar({ selected, isAdmin, onDone }: BatchActio
           }, t('batchAction.operateFail'));
           finish(summary, t('batchAction.batchReload'));
         } catch (err) {
-          message.error(getErrMsg(err, t('batchAction.reloadFail')));
+          showApiError(err, t('batchAction.reloadFail'));
           setBatchLoading(false);
         }
       },
@@ -188,7 +188,7 @@ export default function BatchActionBar({ selected, isAdmin, onDone }: BatchActio
           }
           finish(summary, t('batchAction.batchRotate'));
         } catch (err) {
-          message.error(getErrMsg(err, t('batchAction.rotateFail')));
+          showApiError(err, t('batchAction.rotateFail'));
           setBatchLoading(false);
         }
       },

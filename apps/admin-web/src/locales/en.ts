@@ -2657,6 +2657,8 @@ export default {
   'sops.loadFailed': 'Failed to load SOPs',
   'sops.refresh': 'Refresh',
   'sops.newDraft': 'New draft',
+  'sops.slugRequired': 'Slug is required (unique identifier of the SOP)',
+  'sops.slugInvalid': 'Slug allows lowercase letters, digits and hyphens only (1-128 chars, starting with a letter or digit)',
   'sops.draftCreated': 'Draft saved',
   'sops.draftFailed': 'Failed to save draft (check slug and YAML syntax)',
   'sops.create': 'Save draft',

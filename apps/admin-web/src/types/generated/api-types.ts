@@ -5210,6 +5210,8 @@ export interface operations {
             query?: {
                 page?: components["schemas"]["Object"];
                 pageSize?: components["schemas"]["Object"];
+                /** @description Fuzzy search by username or email (case-insensitive) */
+                search?: string;
             };
             header?: never;
             path?: never;

@@ -24,7 +24,7 @@ import { tasksApi } from '../api/tasks';
 import type { TaskExecution } from '../api/tasks';
 import { getApiBaseUrl } from '../api/client';
 import { createSseClient } from '../api/sse-client';
-import { getErrMsg } from '../utils/error';
+import { showApiError } from '../utils/error';
 import { copyText } from '../utils/clipboard';
 import { LOG_LEVEL_VALUES, logLineHighlightClass } from '../utils/logLevel';
 // UI-05: 搜索高亮分段（纯函数）+ 防抖常量
@@ -512,7 +512,7 @@ export default function ExecutionLogSection({
       }
     } catch (err: unknown) {
       if (fullLogsFetchSeq.current !== seq) return;
-      message.error(getErrMsg(err, t('execDetail.fullLogsLoadFail')));
+      showApiError(err, t('execDetail.fullLogsLoadFail'));
     } finally {
       if (fullLogsFetchSeq.current === seq) setLoadingFullLogs(false);
     }
@@ -553,7 +553,7 @@ export default function ExecutionLogSection({
       if (levelFetchSeq.current !== seq) return;
       setFilteredLogs(null);
       setFilteredTruncated(false);
-      message.error(getErrMsg(err, t('execDetail.levelFilterFail')));
+      showApiError(err, t('execDetail.levelFilterFail'));
     } finally {
       if (levelFetchSeq.current === seq) setLoadingFilteredLogs(false);
     }

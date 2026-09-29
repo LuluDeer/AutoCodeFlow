@@ -31,7 +31,7 @@ import {
   EventSubscriptionDeadLetter,
 } from '../../api/event-subscriptions';
 import type { ColumnsType } from 'antd/es/table';
-import { getErrMsg } from '../../utils/error';
+import { showApiError } from '../../utils/error';
 // UX-04：统一剪贴板封装（返回是否**真正**复制成功）。
 import { copyText } from '../../utils/clipboard';
 // D-P2-09（设计审计 2026-09-22）：时间格式化统一走 formatDateTime（与全站同源）。
@@ -183,7 +183,7 @@ function DeadLetterSection({ subscriptions }: { subscriptions: EventSubscription
     // UI-15：mutateAsync 的 rejection 已被 Modal.confirm onOk 消费（Promise 返回
     // 给确认弹窗），但为不依赖消费方形态，这里兜底 toast（双路径都有反馈）。
     onError: (err: unknown) => {
-      message.error(getErrMsg(err, t('eventSub.deadLetter.replayReqFail')));
+      showApiError(err, t('eventSub.deadLetter.replayReqFail'));
     },
   });
 
@@ -322,7 +322,7 @@ function SubscriptionFormModal(props: {
     // UI-15：创建失败反馈（Modal 保持打开由 handleOk 的 await 链路承担，
     // 这里补 toast 保证文案可见且不依赖调用形态）。
     onError: (err: unknown) => {
-      message.error(getErrMsg(err, t('eventSub.createFail')));
+      showApiError(err, t('eventSub.createFail'));
     },
   });
   const [created, setCreated] = useState<EventSubscriptionCreateResult | null>(null);
@@ -342,7 +342,7 @@ function SubscriptionFormModal(props: {
     },
     // UI-15：更新失败反馈（SSRF 深校验 400 等后端文案经 getErrMsg 透出）
     onError: (err: unknown) => {
-      message.error(getErrMsg(err, t('eventSub.updateFail')));
+      showApiError(err, t('eventSub.updateFail'));
     },
   });
 
@@ -445,7 +445,7 @@ export default function EventSubscriptionsSettings() {
     },
     // UI-15：开关切换失败反馈（Switch 会自动回弹，但失败原因仍需可见）
     onError: (err: unknown) => {
-      message.error(getErrMsg(err, t('eventSub.updateStatusFail')));
+      showApiError(err, t('eventSub.updateStatusFail'));
     },
   });
 
@@ -457,7 +457,7 @@ export default function EventSubscriptionsSettings() {
     },
     // UI-15：删除失败反馈
     onError: (err: unknown) => {
-      message.error(getErrMsg(err, t('eventSub.deleteFail')));
+      showApiError(err, t('eventSub.deleteFail'));
     },
   });
 

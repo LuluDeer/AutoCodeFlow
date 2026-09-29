@@ -543,6 +543,16 @@
                 }
               ]
             }
+          },
+          {
+            "name": "search",
+            "required": false,
+            "in": "query",
+            "description": "Fuzzy search by username or email (case-insensitive)",
+            "schema": {
+              "maxLength": 100,
+              "type": "string"
+            }
           }
         ],
         "responses": {
