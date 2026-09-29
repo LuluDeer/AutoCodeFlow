@@ -57,6 +57,10 @@ import {
 // 过滤」的完整论证见 util 头注（执行器侧任务执行不依赖本地部署，硬过滤会
 // 误伤全部未部署任务与 python 执行器）。
 import { partitionByDeploymentAffinity } from "./executor-deployment-affinity.util";
+// MUTEX-01（应用互斥组）：占坑互斥错误（processor 分类链最前面识别并置
+// WAITING）；互斥组配置只读仓库（组内并发数）。
+import { MutexWaitError } from "../task/execution-mutex";
+import { MutexGroup } from "../application/entities/mutex-group.entity";
 // python_task_multiversion（WS2 · CONTRACT §1.2/§2.2/§3.1）：解释器缓存池
 // 匹配的唯一事实源（纯函数）。三处调度站点 + pinning 守卫 + 上报采纳共用，
 // 杜绝三份漂移（对齐 executor-score.util.ts 的抽取先例）。
@@ -358,6 +362,12 @@ export class ExecutorService implements OnModuleInit {
     // 以位置参数 `new ExecutorService(...)` 直接装配，带默认值的尾参不破坏）。
     @Optional()
     private readonly tokenCacheSync: ExecutorTokenCacheSyncService | null = null,
+    // MUTEX-01（应用互斥组）：组内并发数只读仓库。@Optional 同先例——存量
+    // 单测装配未提供时为 null，挂组执行降级为「不参与互斥」（宁可不约束，
+    // 不可派不出去，见 claimExecutorSlotForExecution）。
+    @Optional()
+    @InjectRepository(MutexGroup)
+    private readonly mutexGroupRepo: Repository<MutexGroup> | null = null,
   ) {
     this.protocol = this.configService.get<string>("app.protocol") || "http";
     // R-26（DEEP_REVIEW 0ef3bbe）: 关键 @Optional（事件总线 / 高危审计）缺失时
@@ -905,6 +915,9 @@ export class ExecutorService implements OnModuleInit {
       triggerType: execution.triggerType ?? fallbackTriggerType,
       taskVersion: execution.taskVersion ?? task.currentVersion,
       retryCount: nextRetryCount,
+      // MUTEX-01：重试执行继承原执行的互斥组快照——重试与原执行是同一条
+      // 业务语义，若不继承，被互斥挡过的执行在重试时会绕开组约束。
+      mutexGroupId: execution.mutexGroupId ?? null,
     });
     const saved = await this.execRepo.save(retryExecution);
     try {
@@ -2548,6 +2561,123 @@ export class ExecutorService implements OnModuleInit {
     );
   }
 
+  /**
+   * MUTEX-01（应用互斥组）：单候选占坑。
+   *
+   * 返回值三态：
+   * - "claimed"    占坑成功（无组：容量+在线原子 UPDATE 命中；有组：事务内
+   *                容量+在线+组占用三闸全过，且已把执行行地址落库为占用标记）；
+   * - "unavailable" 该候选离线或容量已满（与引入互斥前的失败语义一致）；
+   * - "mutex_full"  该候选在线且有余位，但同设备同组占用已达组内并发数。
+   *
+   * ── 为什么挂组路径要事务 + executors 行锁 ────────────────────────────────
+   * 占用账本从执行行推导（status='running' AND executorAddress AND mutexGroupId），
+   * 而执行行地址在旧流程里要等 dispatch HTTP 返回后才由 processor finally 落库
+   * ——窗口横跨整个 HTTP 时长，两个同组派发会在窗口内互相看不见对方，双双
+   * 通过占用检查。修复：把「执行行落地址」挪进占坑事务，并用 `SELECT ... FOR
+   * UPDATE` 先锁 executors 行——同设备派发在行锁上串行化，后到者的事务读到的
+   * 占用计数必然包含先到者**已提交**的占用标记（先到者持锁期间写后提交，
+   * 后到者拿到锁时其写已可见），竞态窗口归零。事务失败的候选整体回滚（含
+   * 地址标记与 runningTaskCount 增量），换下一个候选。
+   *
+   * 无组执行保持原有单条 UPDATE（QA-05 论证见调用点注释）——默认人群零行为
+   * 变化、零事务开销。
+   *
+   * 组配置缺失（执行创建后组被删）：快照仍在但约束源已消失，按用户删除意图
+   * 降级为「不参与互斥」，走无组路径并 warn 一次。
+   */
+  private async claimExecutorSlotForExecution(
+    candidate: Executor,
+    execution: TaskExecution,
+  ): Promise<"claimed" | "unavailable" | "mutex_full"> {
+    const legacyClaim = async (): Promise<"claimed" | "unavailable"> => {
+      const maxConcurrent = candidate.maxConcurrentTasks ?? Infinity;
+      // 原子占坑：容量与在线状态在同一条 UPDATE 内复查（无需版本谓词）
+      const result = await this.repo
+        .createQueryBuilder()
+        .update(Executor)
+        .set({ runningTaskCount: () => '"runningTaskCount" + 1' })
+        .where("id = :id", { id: candidate.id })
+        .andWhere("status = :status", { status: ExecutorStatus.ONLINE })
+        .andWhere(
+          maxConcurrent === Infinity ? "1=1" : '"runningTaskCount" < :max',
+          maxConcurrent === Infinity ? {} : { max: maxConcurrent },
+        )
+        .execute();
+      return result.affected && result.affected > 0 ? "claimed" : "unavailable";
+    };
+
+    if (!execution.mutexGroupId) return legacyClaim();
+
+    if (!this.mutexGroupRepo) {
+      // 单测/极简装配未提供仓库：互斥约束无法求值，降级为不参与互斥（与
+      // 组被删同向——宁可不约束，不可派不出去）。
+      this.logger.warn(
+        `MUTEX-01: MutexGroup 仓库未装配，执行 ${execution.id} 本次派发不参与互斥`,
+      );
+      return legacyClaim();
+    }
+
+    const group = await this.mutexGroupRepo.findOne({
+      where: { id: execution.mutexGroupId },
+    });
+    if (!group) {
+      this.logger.warn(
+        `MUTEX-01: 执行 ${execution.id} 的互斥组 ${execution.mutexGroupId} 已不存在，` +
+          `本次派发不参与互斥（组删除后快照执行按无组语义走完）`,
+      );
+      return legacyClaim();
+    }
+
+    return this.repo.manager.transaction(async (manager) => {
+      // 1) 行锁串行化：同设备的并发派发在此排队，锁内读到的占用状态必含
+      //    先到者已提交的标记（竞态关闭的关键，见方法头注）。
+      const lockRows: Array<{
+        address: string;
+        status: string;
+        runningTaskCount: number;
+        maxConcurrentTasks: number | null;
+      }> = await manager.query(
+        `SELECT "address", "status"::text AS "status", "runningTaskCount", "maxConcurrentTasks"
+         FROM "executors" WHERE "id" = $1 FOR UPDATE`,
+        [candidate.id],
+      );
+      const row = lockRows[0];
+      if (!row || row.status !== ExecutorStatus.ONLINE) return "unavailable";
+      const maxConcurrent = row.maxConcurrentTasks ?? Infinity;
+      if (row.runningTaskCount >= maxConcurrent) return "unavailable";
+
+      // 2) 组占用闸：同设备 × 同组、status='running' 的执行数（部分索引
+      //    idx_task_executions_group_occupancy 服务）。
+      const occRows: Array<{ count: number }> = await manager.query(
+        `SELECT COUNT(*)::int AS count FROM "task_executions"
+         WHERE "executorAddress" = $1 AND "mutexGroupId" = $2 AND "status" = 'running'`,
+        [row.address, execution.mutexGroupId],
+      );
+      if ((occRows[0]?.count ?? 0) >= group.maxConcurrentPerDevice) {
+        return "mutex_full";
+      }
+
+      // 3) 占用标记 + 槽位增量同事务落库：与容量增量原子共生，回滚同生共死。
+      //    条件 status='running' 与 processor 的 claim 一致（本执行在 dispatch
+      //    前必已被 claim 为 RUNNING；条件兜底防异常装配下的幽灵标记）。
+      await manager.query(
+        `UPDATE "task_executions" SET "executorAddress" = $1
+         WHERE "id" = $2 AND "status" = 'running'`,
+        [row.address, execution.id],
+      );
+      await manager.query(
+        `UPDATE "executors" SET "runningTaskCount" = "runningTaskCount" + 1 WHERE "id" = $1`,
+        [candidate.id],
+      );
+      this.logger.debug(
+        `MUTEX-01: 执行 ${execution.id}（组 ${group.name}）占坑 ${row.address} ` +
+          `（组占用 ${occRows[0]?.count ?? 0}+1/${group.maxConcurrentPerDevice}）`,
+      );
+      return "claimed";
+    });
+  }
+
   async dispatch(task: Task, execution: TaskExecution) {
     let candidates: Executor[];
     // E-2: 决策日志的候选池基数（pinned=1；fleet 查询=SQL Top-K 后的行数）。
@@ -2802,37 +2932,40 @@ export class ExecutorService implements OnModuleInit {
     //    被置 OFFLINE 的行会被这条 UPDATE 挡掉）。
     // 因此 version 谓词是**冗余**的，代价却是把并发占坑变成硬失败 —— 移除它，
     // 不变量不变，失败面收敛为「真的没容量/真的离线」。
+    //
+    // MUTEX-01（应用互斥组）：占坑升级为 `claimExecutorSlotForExecution`——
+    // 无组执行走原有单条 UPDATE（逐字节不变）；挂组执行在事务内加「同设备×
+    // 同组占用 < 组内并发数」闸。全部候选都因互斥满载而落空时抛 MutexWaitError
+    // （processor 置 WAITING 排队，不烧重试预算）；至少一个候选是纯容量/离线
+    // 落空时保持原有失败语义（BullMQ 重试）——容量满载的排队语义不在本特性
+    // 范围内，不因互斥存在而改变。
     let matched: Executor | null = null;
+    let anyMutexBlocked = false;
     for (const candidate of orderedCandidates) {
-      const maxConcurrent = candidate.maxConcurrentTasks ?? Infinity;
-
-      // 原子占坑：容量与在线状态在同一条 UPDATE 内复查（无需版本谓词，见上注）
-      const result = await this.repo
-        .createQueryBuilder()
-        .update(Executor)
-        .set({ runningTaskCount: () => '"runningTaskCount" + 1' })
-        .where("id = :id", { id: candidate.id })
-        .andWhere("status = :status", { status: ExecutorStatus.ONLINE })
-        .andWhere(
-          maxConcurrent === Infinity ? "1=1" : '"runningTaskCount" < :max',
-          maxConcurrent === Infinity ? {} : { max: maxConcurrent },
-        )
-        .execute();
-
-      if (result.affected && result.affected > 0) {
-        // Update successful, synchronize local state
+      const outcome = await this.claimExecutorSlotForExecution(
+        candidate,
+        execution,
+      );
+      if (outcome === "claimed") {
         candidate.runningTaskCount += 1;
         candidate.version += 1;
         matched = candidate;
         break;
       }
-      // 该候选已满 / 已离线（并发占坑不再是失败来源）：试下一个候选
+      if (outcome === "mutex_full") anyMutexBlocked = true;
+      // "unavailable"（已满/已离线，并发占坑不再是失败来源）：试下一个候选
     }
 
-    if (!matched)
+    if (!matched) {
+      if (anyMutexBlocked) {
+        throw new MutexWaitError(
+          `任务 "${task.name}" 的所有候选设备上互斥组占用已满，执行进入排队等待`,
+        );
+      }
       throw new Error(
         "No available executor (all candidates are offline or at capacity)",
       );
+    }
 
     // E-2（中台↔执行器深度审查）：调度决策**结构化日志**——之前只有一行
     // `Dispatching task ... to executor ...`，运维无法回溯「为什么选这台、过滤
@@ -2958,6 +3091,20 @@ export class ExecutorService implements OnModuleInit {
         .set({ runningTaskCount: () => 'GREATEST("runningTaskCount" - 1, 0)' })
         .where("id = :id", { id: matched.id })
         .execute();
+      // MUTEX-01：挂组执行在占坑事务内已把地址落库为占用标记（status 仍为
+      // running）。占坑回滚时必须同步清除标记——占用从执行行推导，不清除
+      // 则该执行以「running + 地址」继续占着组位，同组后续派发被幽灵占用
+      // 挡住（这是「无第二账本」设计的代价：释放也是对执行行的写）。条件
+      // 带地址防误清（重试路径已换候选时不动新标记）。
+      if (execution.mutexGroupId) {
+        await this.execRepo
+          .createQueryBuilder()
+          .update(TaskExecution)
+          .set({ executorAddress: null })
+          .where("id = :id", { id: execution.id })
+          .andWhere("executorAddress = :addr", { addr: matched.address })
+          .execute();
+      }
       this.tracing
         ?.startSpan(execution.traceId, "dispatch.http", {
           executor: matched.address,

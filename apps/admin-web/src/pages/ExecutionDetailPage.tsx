@@ -40,6 +40,7 @@ const { Text } = Typography;
 const STATUS_MAP = (t: (k: string) => string): Record<string, { color: string; label: string }> => ({
   pending: { color: 'default', label: t('execDetail.status.pending') },
   running: { color: 'processing', label: t('execDetail.status.running') },
+  waiting: { color: 'orange', label: t('execDetail.status.waiting') },
   success: { color: 'green', label: t('execDetail.status.success') },
   failed: { color: 'red', label: t('execDetail.status.failed') },
   timeout: { color: 'orange', label: t('execDetail.status.timeout') },

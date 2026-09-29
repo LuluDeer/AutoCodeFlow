@@ -13,6 +13,18 @@ import { Task } from "./task.entity";
 export enum ExecutionStatus {
   PENDING = "pending",
   RUNNING = "running",
+  /**
+   * MUTEX-01（迁移 1790000000044）：互斥排队态。任务挂了互斥组、且候选设备
+   * 上的组占用已满时，执行进入 waiting 等待唤醒重派（15s leader cron）。
+   * 语义要点：
+   * - **不是终态**也不进 stale sweep 的任何回收桶（PENDING/RUNNING 两桶都按
+   *   status 精确过滤）——排队多久都不会被误杀；等待无超时，人工 kill/取消
+   *   经 A1 终态门照常可用（WAITING 在 OPEN_EXECUTION_STATUSES 内）。
+   * - 不消耗 BullMQ 重试预算：processor 命中互斥阻塞时把执行置 waiting 并
+   *   正常结束 job（不 rethrow），唤醒后作为全新 job 重新入队。
+   * - task.timeout 从真正开跑（startTime）起算，排队时间不计。
+   */
+  WAITING = "waiting",
   SUCCESS = "success",
   FAILED = "failed",
   TIMEOUT = "timeout",
@@ -162,6 +174,14 @@ export interface ExecutionArtifact {
 @Index("idx_task_executions_start_time_running", ["startTime"], {
   where: "\"status\" = 'running'",
 })
+// MUTEX-01（迁移 1790000000044）：组占用判定的部分索引——dispatch 占坑事务内
+// 的 `WHERE executorAddress=:addr AND mutexGroupId=:g AND status='running'`
+// 计数查询走它；只覆盖真正参与互斥的行（组为空的执行不进索引）。
+@Index(
+  "idx_task_executions_group_occupancy",
+  ["executorAddress", "mutexGroupId"],
+  { where: '"status" = \'running\' AND "mutexGroupId" IS NOT NULL' },
+)
 export class TaskExecution {
   @PrimaryGeneratedColumn("uuid") id: string;
   @Column() taskId: string;
@@ -229,6 +249,17 @@ export class TaskExecution {
    */
   @Column({ type: "timestamptz", nullable: true })
   depsFiredAt: Date | null;
+
+  /**
+   * MUTEX-01（迁移 1790000000044）：创建执行时从 task→application 带下的
+   * **互斥组快照**（无 FK）。调度侧互斥判定只读本列：
+   * - 非空 → dispatch 占坑时检查「同设备同组占用 < 组内并发数」，满了置
+   *   waiting 排队；
+   * - NULL → 不参与互斥，派发行为与引入前逐字节一致。
+   * 为什么是快照而不是运行时 join：占用判定是热路径单表查询；且组被删
+   * （应用 FK SET NULL）后在途执行仍按创建时的组语义走完，历史不失真。
+   */
+  @Column({ type: "uuid", nullable: true }) mutexGroupId: string | null;
 
   /** R-P0-007: Optimistic lock version for preventing concurrent updates */
   @VersionColumn() version: number;
