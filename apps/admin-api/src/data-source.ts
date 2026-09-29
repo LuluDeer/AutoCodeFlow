@@ -27,6 +27,13 @@ export const AppDataSource = new DataSource({
   entities: [__dirname + "/modules/**/*.entity{.ts,.js}"],
   migrations: [__dirname + "/migrations/*{.ts,.js}"],
   synchronize: false,
+  // TypeORM 1.x 把迁移事务默认模式从 0.3.x 的 "each" 改成了 "all"（整链单
+  // 事务），且 "all" 下一律禁止迁移实例覆盖 transaction
+  // （ForbiddenTransactionModeOverrideError）。迁移链按 "each" 语义设计：
+  // 1790000000022 用 CREATE INDEX CONCURRENTLY（PG 硬性禁止事务块内执行）、
+  // 1789900000002 声明 transaction=false 让守卫式 SQL 真正出事务——两者都
+  // 依赖 per-migration 覆盖合法。显式钉回 "each"，恢复每迁移独立事务语义。
+  migrationsTransactionMode: "each",
   logging:
     getEnvVar("NODE_ENV") !== "production" ? ["query", "error"] : ["error"],
 });

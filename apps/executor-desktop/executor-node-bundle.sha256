@@ -385,5 +385,11 @@
 #     Linux（node 24.13）重打回填。实验证实：暂存源码改动重打 == CI 旧值
 #     （7a4d3aaa…）逐字节一致——"② 随构建绝对路径变化"的旧发现在当前工具链
 #     （ncc 0.45 产物与 map 均无绝对路径）已不成立，② 可本地回填，CI 仍权威复验。
-source-digest: af0b215b6ad123fd11de94ea95661153965536066532b4df4227caae60bbd995
-92b65845ea287fbd0a4d187b9e3383720048adc4002be1a30ac326447541fdb9  index.js
+#   - 2026-09-29 生产审查 P1/执行链路批次（b8442a26…）：executor-node 新增
+#     POST /api/shutdown（matchesExecutorCredential constant-time 鉴权，
+#     fail-closed，不依赖 admin 可达）+ gracefulShutdown 支持 HTTP_SHUTDOWN
+#     入口——桌面端三平台优雅停机（HTTP drain，宽限 8s→30s）的服务端半边。
+#     改动 main.ts 与 middleware/auth.ts 两文件，按 ADR-005 同 commit 重打回填
+#     （Windows node 24.21 本地重打，依赖 CI 权威复验）。
+source-digest: 93a300c38f9cc6943314f5d3b9fc47fab951b75e0977111c191eab6726d3386d
+533faef3405a50146f5a9c0ba9c668353e06491d072fb661a3796b5baf7d5d4c  index.js
