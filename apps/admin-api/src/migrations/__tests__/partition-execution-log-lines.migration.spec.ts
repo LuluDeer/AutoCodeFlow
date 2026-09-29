@@ -33,6 +33,10 @@ describe("PartitionExecutionLogLines1789900000002（ARCH-22）", () => {
     expect(typeof migration.down).toBe("function");
   });
 
+  it("transaction=false：与注释「四步全在事务外」一致（DO 块单语句自带原子性，步骤 4 幂等）", () => {
+    expect((migration as any).transaction).toBe(false);
+  });
+
   it("分区父表 DDL：PARTITION BY RANGE (createdAt) + 联合主键 (id, createdAt)", () => {
     expect(sql.includes('PARTITION BY RANGE ("createdAt")')).toBe(true);
     // PK 必须含分区键——PG 硬约束（分区表唯一约束必须包含分区键）

@@ -23,7 +23,9 @@
     "swagger:export": "npx --node-options=--experimental-vm-modules jest --config ./test/jest-e2e.json -t \"OpenAPI export\"",
     "migration:run": "npm run typeorm -- migration:run -d src/data-source.ts",
     "migration:revert": "npm run typeorm -- migration:revert -d src/data-source.ts",
-    "migration:generate": "npm run typeorm -- migration:generate -d src/data-source.ts"
+    "migration:generate": "npm run typeorm -- migration:generate -d src/data-source.ts",
+    "migration:run:prod": "typeorm migration:run -d dist/data-source.js",
+    "migration:revert:prod": "typeorm migration:revert -d dist/data-source.js"
   },
   "dependencies": {
     "@nestjs/bullmq": "^12.0.0",

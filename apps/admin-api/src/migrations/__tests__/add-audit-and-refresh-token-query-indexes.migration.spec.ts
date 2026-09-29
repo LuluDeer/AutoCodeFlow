@@ -31,29 +31,37 @@ describe("AddAuditAndRefreshTokenQueryIndexes1790000000022（PK-16）", () => {
     expect(typeof migration.down).toBe("function");
   });
 
-  it("up：补 audit_logs(action,createdAt) 复合索引", () => {
+  it("transaction=false：CONCURRENTLY 建索引的前置（PG 禁止事务块内 CONCURRENTLY）", () => {
+    expect((migration as any).transaction).toBe(false);
+  });
+
+  it("up：补 audit_logs(action,createdAt) 复合索引（CONCURRENTLY，不锁写）", () => {
     const upPart = sql.split("public async down")[0];
     expect(upPart).toContain(
-      'CREATE INDEX IF NOT EXISTS "idx_audit_logs_action_created_at"',
+      'CREATE INDEX CONCURRENTLY IF NOT EXISTS "idx_audit_logs_action_created_at"',
     );
     expect(upPart).toContain('ON "audit_logs" ("action", "createdAt")');
   });
 
-  it("up：补 refresh_tokens(userId) 与 refresh_tokens(expiresAt) 两个普通索引", () => {
+  it("up：补 refresh_tokens(userId) 与 refresh_tokens(expiresAt) 两个普通索引（CONCURRENTLY）", () => {
     const upPart = sql.split("public async down")[0];
     expect(upPart).toContain(
-      'CREATE INDEX IF NOT EXISTS "idx_refresh_tokens_user_id"',
+      'CREATE INDEX CONCURRENTLY IF NOT EXISTS "idx_refresh_tokens_user_id"',
     );
     expect(upPart).toContain('ON "refresh_tokens" ("userId")');
     expect(upPart).toContain(
-      'CREATE INDEX IF NOT EXISTS "idx_refresh_tokens_expires_at"',
+      'CREATE INDEX CONCURRENTLY IF NOT EXISTS "idx_refresh_tokens_expires_at"',
     );
     expect(upPart).toContain('ON "refresh_tokens" ("expiresAt")');
   });
 
-  it("全部为普通索引（非 UNIQUE——不触碰数据行，只加查询面）", () => {
+  it("全部为普通索引（非 UNIQUE——不触碰数据行，只加查询面），且全部 CONCURRENTLY", () => {
     expect(sql).not.toContain("CREATE UNIQUE INDEX");
-    expect(sql.match(/CREATE INDEX IF NOT EXISTS/g)?.length).toBe(3);
+    expect(sql.match(/CREATE INDEX CONCURRENTLY IF NOT EXISTS/g)?.length).toBe(
+      3,
+    );
+    // 不允许残留非并发的建索引语句（CONCURRENTLY 靠 transaction=false 前提）
+    expect(sql.match(/CREATE INDEX (?!CONCURRENTLY)/g)).toBeNull();
   });
 
   it("down：逆序回收三个索引（幂等 DROP INDEX IF EXISTS）", () => {
