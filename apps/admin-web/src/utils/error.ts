@@ -1,3 +1,7 @@
+// TOAST-01：错误 toast 与全站同走 utils/toast 出口（App 实例优先，暗色主题
+// 下样式正确）；仅此一处 import，供 showApiError 使用。
+import { message } from './toast';
+
 /**
  * Extract a human-readable message from an unknown catch value.
  * Handles Axios-style errors (err.response.data.message), plain Error,
@@ -16,6 +20,27 @@ export function getErrMsg(err: unknown, defaultMsg = '操作失败'): string {
     if (typeof obj['message'] === 'string') return obj['message'];
   }
   return defaultMsg;
+}
+
+/**
+ * DUP-TOAST（本轮审计）：api/client.ts 的响应拦截器已对常见 HTTP 错误（403/
+ * 404/409/429/5xx/网络错误）统一弹过一次 toast，并在 reject 值上打了
+ * `__toastedByClient` 标（reject 形态是 `err.response?.data || err`——标打在
+ * 页面 catch 实际收到的那个对象上）。页面 catch 的兜底提示统一走本函数：
+ * 已打标的直接 return（同一失败只弹拦截器那一条），未打标（本地异常、
+ * 非 client 发起的请求失败）才弹 getErrMsg 归一后的消息。
+ *
+ * fallback 语义与 getErrMsg 的 defaultMsg 一致：不传时回退「操作失败」。
+ */
+export function showApiError(err: unknown, fallback?: string): void {
+  if (
+    err !== null &&
+    typeof err === 'object' &&
+    (err as Record<string, unknown>)['__toastedByClient'] === true
+  ) {
+    return;
+  }
+  message.error(getErrMsg(err, fallback));
 }
 
 /** Returns true when the caught value is an Ant Design form validation error (has errorFields). */

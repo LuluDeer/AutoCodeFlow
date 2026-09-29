@@ -65,7 +65,9 @@ describe('DR-06 safe-method retries', () => {
 
   it.each([400, 403, 404, 409, 429])('GET does not retry HTTP %i', async (status) => {
     adapter.mockImplementation(failure(status));
-    await expect(client.get('/tasks', { adapter })).rejects.toEqual({ message: `HTTP ${status}` });
+    // DUP-TOAST：拦截器对这些状态码弹过 toast，reject 值带 __toastedByClient
+    // 标——页面 catch 的 showApiError 兜底据此去重，不再二次弹错。
+    await expect(client.get('/tasks', { adapter })).rejects.toEqual({ message: `HTTP ${status}`, __toastedByClient: true });
     expect(adapter).toHaveBeenCalledTimes(1);
     expect(message.error).toHaveBeenCalledExactlyOnceWith(`HTTP ${status}`, 4);
   });

@@ -36,7 +36,7 @@ import { tasksApi, Task } from '../api/tasks';
 import AppDeploymentPage from './AppDeploymentPage';
 import { useTranslation } from 'react-i18next';
 import '../i18n';
-import { getErrMsg, isFormValidationError, isNotFoundError } from '../utils/error';
+import { getErrMsg, isFormValidationError, isNotFoundError, showApiError } from '../utils/error';
 // UX-06：触发方式 / 版本状态的展示标签唯一事实源（此前直接渲染裸枚举）。
 import { triggerLabel, releaseStatusLabel, TRIGGER_COLOR } from '../utils/trigger-label';
 // D-P2-02b（设计审计 2026-09-22）：runtime 读面走唯一事实源 runtimeLabel
@@ -514,7 +514,7 @@ function VersionHistoryTab({ app, onAppReload }: { app: Application; onAppReload
           }
           await Promise.all([fetchVersions(), onAppReload()]);
         } catch (err: unknown) {
-          message.error(getErrMsg(err, t('appDetail.history.rollbackFail')));
+          showApiError(err, t('appDetail.history.rollbackFail'));
         } finally {
           setRollingBack(null);
         }
@@ -832,7 +832,7 @@ export default function ApplicationDetailPage() {
     try {
       const result = await applicationsApi.syncTasks(id);
       message.success(t('appDetail.tasks.synced', { count: result.registeredCount }));
-    } catch (err: unknown) { message.error(getErrMsg(err, t('appDetail.tasks.syncFail'))); }
+    } catch (err: unknown) { showApiError(err, t('appDetail.tasks.syncFail')); }
     finally { setSyncing(false); }
   };
 

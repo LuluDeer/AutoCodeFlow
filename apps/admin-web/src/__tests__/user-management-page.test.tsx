@@ -3,7 +3,7 @@
  *
  * 覆盖核心交互：
  *  1) 列表渲染（角色 Tag 中文映射 / 禁用状态 Tag / 邮箱缺省占位）；
- *  2) 客户端搜索（username/email 过滤 + 无匹配文案）；
+ *  2) 搜索走后端 search 参数（关键词透传 + 命中过滤 + 无匹配文案）；
  *  3) 新建用户（表单校验失败路径：弱密码被拦 + 成功路径：payload 精确）；
  *  4) 编辑用户（预填 + update 调用）；
  *  5) 删除（Popconfirm 确认 → remove(id)，对齐 settings.history-rollback 先例）；
@@ -117,11 +117,26 @@ describe('UserManagementPage 列表渲染（QA-03）', () => {
     expect(screen.getByText('共 3 条')).toBeTruthy();
   });
 
-  it('搜索用户名过滤列表，无匹配显示「没有匹配的用户」', async () => {
+  it('搜索走后端 search 参数：关键词透传、命中过滤、无匹配文案', async () => {
+    // USER-SEARCH-01：搜索改为后端过滤（username/email ILIKE）——原先在前端
+    // filter 当页数据，用户数超过一页时结果不完整。mock 按第 4 个参数
+    // （search）模拟服务端行为，断言页面透传关键词且不再本地过滤。
+    mockedUsers.list.mockImplementation((_page, _pageSize, _signal, search) => {
+      const filtered = search
+        ? usersFixture.filter((u) =>
+            u.username.toLowerCase().includes(search.toLowerCase()) ||
+            (u.email ?? '').toLowerCase().includes(search.toLowerCase()))
+        : usersFixture;
+      return Promise.resolve({ list: filtered, total: filtered.length, page: 1, pageSize: 20 });
+    });
     renderPage();
     await screen.findByText('alice');
     fireEvent.change(screen.getByPlaceholderText('搜索用户名或邮箱'), {
       target: { value: 'bob' },
+    });
+    // 关键词经防抖透传给后端 list，且页码重置为 1
+    await waitFor(() => {
+      expect(mockedUsers.list).toHaveBeenCalledWith(1, 20, expect.anything(), 'bob');
     });
     await waitFor(() => {
       expect(screen.queryByText('alice')).toBeNull();

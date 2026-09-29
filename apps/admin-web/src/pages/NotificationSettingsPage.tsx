@@ -6,7 +6,7 @@ import { useQuery, useMutation } from '@tanstack/react-query';
 import type { ColumnsType } from 'antd/es/table';
 import { client } from '../api/client';
 import { silencesApi, type NotificationSilence, type CreateSilencePayload, type SilenceScope } from '../api/notifications';
-import { getErrMsg } from '../utils/error';
+import { getErrMsg, showApiError } from '../utils/error';
 // D-P2-09（设计审计 2026-09-22）：时间格式化统一走 formatDateTime（与全站同源）。
 import { formatDateTime } from '../utils/timeFormat';
 import { useTranslation } from 'react-i18next';
@@ -139,7 +139,7 @@ function ChannelTemplatePanel({
       });
     },
     onSuccess: () => { message.success(t('notif.template.saved')); onSaved(); },
-    onError: (err: unknown) => { message.error(getErrMsg(err, t('notif.template.saveFail'))); },
+    onError: (err: unknown) => { showApiError(err, t('notif.template.saveFail')); },
   });
   const saveTemplate = (values: { titleTemplate?: string; contentTemplate?: string }) =>
     saveTemplateMut.mutate(values);
@@ -250,7 +250,7 @@ function ChannelConfigForm({
       await notificationApi.updateChannel(channelKey, { config: values });
     },
     onSuccess: () => { message.success(t('notif.channel.saved')); onSaved(); },
-    onError: (err: unknown) => { message.error(getErrMsg(err, t('notif.channel.saveFail'))); },
+    onError: (err: unknown) => { showApiError(err, t('notif.channel.saveFail')); },
   });
   const updateChannel = (values: Record<string, string>) => updateChannelMut.mutate(values);
   const updating = updateChannelMut.isPending;
@@ -261,7 +261,7 @@ function ChannelConfigForm({
       setTestResult({ success: result.success, message: result.message, channel: channelKey });
     },
     onError: (err: unknown) => {
-      message.error(getErrMsg(err, t('notif.channel.testFail')));
+      showApiError(err, t('notif.channel.testFail'));
       setTestResult({ success: false, message: getErrMsg(err, t('notif.channel.testFail')), channel: channelKey });
     },
   });
@@ -389,7 +389,7 @@ function SilenceRulesPanel({ active }: { active: boolean }) {
       await silencesApi.create(payload);
     },
     onSuccess: () => { message.success(t('notif.silence.created')); form.resetFields(); refresh(); },
-    onError: (err: unknown) => { message.error(getErrMsg(err, t('notif.silence.createFail'))); },
+    onError: (err: unknown) => { showApiError(err, t('notif.silence.createFail')); },
   });
   const createRule = (payload: CreateSilencePayload) => createRuleMut.mutate(payload);
   const creating = createRuleMut.isPending;
@@ -399,7 +399,7 @@ function SilenceRulesPanel({ active }: { active: boolean }) {
       await silencesApi.remove(id);
     },
     onSuccess: () => { message.success(t('notif.silence.deleted')); refresh(); },
-    onError: (err: unknown) => { message.error(getErrMsg(err, t('notif.silence.deleteFail'))); },
+    onError: (err: unknown) => { showApiError(err, t('notif.silence.deleteFail')); },
   });
   const removeRule = (id: string) => removeRuleMut.mutate(id);
 
@@ -608,7 +608,7 @@ export default function NotificationSettingsPage() {
       await notificationApi.updateChannel(activeTab, { enabled });
     } catch (err: unknown) {
       // UI-15：渠道启停失败反馈（此前失败静默，Switch 视觉状态与后端不一致且无提示）
-      message.error(getErrMsg(err, t('notif.channel.updateFail')));
+      showApiError(err, t('notif.channel.updateFail'));
       return;
     }
     refresh();

@@ -30,7 +30,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useNavigate, Link, useSearchParams } from 'react-router-dom';
 import { tasksApi, Task, summarizeBatch, type BatchItemResult } from '../api/tasks';
 import { useTasksList, invalidateTaskData } from '../api/queries';
-import { getErrMsg } from '../utils/error';
+import { showApiError } from '../utils/error';
 import { useDebounce } from '../hooks/useDebounce';
 import { useAuthStore, isAdminUser } from '../store/auth';
 import { priorityTag } from '../utils/priority';
@@ -128,6 +128,13 @@ export default function TaskListPage() {
 
   const hasFilters = !!(search || statusFilter || triggerFilter);
 
+  // 翻页/筛选变化后当前页数据会变，跨页选中行不再可见——清空选中防误比
+  // （与 ExecutionsPage 同一约定；旧实现只随批量操作清空，筛选后残留的
+  // 选中 id 会把不可见行卷进批量触发/删除）。
+  useEffect(() => {
+    setSelectedRowKeys([]);
+  }, [page, pageSize, statusFilter, triggerFilter, debouncedSearch]);
+
   const rowSelection = {
     selectedRowKeys,
     onChange: (keys: React.Key[]) => setSelectedRowKeys(keys as string[]),
@@ -171,28 +178,28 @@ export default function TaskListPage() {
     if (batchLoading) return;
     setBatchLoading(true);
     try { reportBatch(await tasksApi.batchTrigger(selectedRowKeys), 'taskList.batchTriggered'); }
-    catch (err: unknown) { message.error(getErrMsg(err, t('taskList.batchTriggerFail'))); }
+    catch (err: unknown) { showApiError(err, t('taskList.batchTriggerFail')); }
     finally { setBatchLoading(false); }
   };
   const handleBatchPause = async () => {
     if (batchLoading) return;
     setBatchLoading(true);
     try { reportBatch(await tasksApi.batchPause(selectedRowKeys), 'taskList.batchPaused'); }
-    catch (err: unknown) { message.error(getErrMsg(err, t('taskList.batchPauseFail'))); }
+    catch (err: unknown) { showApiError(err, t('taskList.batchPauseFail')); }
     finally { setBatchLoading(false); }
   };
   const handleBatchResume = async () => {
     if (batchLoading) return;
     setBatchLoading(true);
     try { reportBatch(await tasksApi.batchResume(selectedRowKeys), 'taskList.batchResumed'); }
-    catch (err: unknown) { message.error(getErrMsg(err, t('taskList.batchResumeFail'))); }
+    catch (err: unknown) { showApiError(err, t('taskList.batchResumeFail')); }
     finally { setBatchLoading(false); }
   };
   const handleBatchDelete = async () => {
     if (batchLoading) return;
     setBatchLoading(true);
     try { reportBatch(await tasksApi.batchDelete(selectedRowKeys), 'taskList.batchDeleted'); }
-    catch (err: unknown) { message.error(getErrMsg(err, t('taskList.batchDeleteFail'))); }
+    catch (err: unknown) { showApiError(err, t('taskList.batchDeleteFail')); }
     finally { setBatchLoading(false); }
   };
 
@@ -215,7 +222,7 @@ export default function TaskListPage() {
       setTriggerTarget(null);
       setTimeout(refresh, 1000);
     } catch (err: unknown) {
-      message.error(getErrMsg(err, t('taskList.triggerFail')));
+      showApiError(err, t('taskList.triggerFail'));
     } finally {
       setTriggering(false);
     }
@@ -225,7 +232,7 @@ export default function TaskListPage() {
     if (togglingId) return;
     setTogglingId(id);
     try { await tasksApi.pause(id); message.success(t('taskList.paused')); refresh(); }
-    catch (err: unknown) { message.error(getErrMsg(err, t('taskList.pauseFail'))); }
+    catch (err: unknown) { showApiError(err, t('taskList.pauseFail')); }
     finally { setTogglingId(null); }
   };
 
@@ -233,13 +240,13 @@ export default function TaskListPage() {
     if (togglingId) return;
     setTogglingId(id);
     try { await tasksApi.resume(id); message.success(t('taskList.resumed')); refresh(); }
-    catch (err: unknown) { message.error(getErrMsg(err, t('taskList.resumeFail'))); }
+    catch (err: unknown) { showApiError(err, t('taskList.resumeFail')); }
     finally { setTogglingId(null); }
   };
 
   const handleDelete = async (id: string) => {
     try { await tasksApi.delete(id); message.success(t('taskList.deleted')); refresh(); }
-    catch (err: unknown) { message.error(getErrMsg(err, t('taskList.deleteFail'))); }
+    catch (err: unknown) { showApiError(err, t('taskList.deleteFail')); }
   };
 
   // CORE-03-lite：一键克隆——复制任务全部可编辑字段生成 "-copy-" 副本，
@@ -298,7 +305,7 @@ export default function TaskListPage() {
       message.success(t('taskList.cloned', { name: cloneName }));
       nav(`/tasks/${created.id}`);
     } catch (err: unknown) {
-      message.error(getErrMsg(err, t('taskList.cloneFail')));
+      showApiError(err, t('taskList.cloneFail'));
     } finally {
       setCloningId(null);
     }
@@ -561,7 +568,7 @@ export default function TaskListPage() {
           placeholder={t('taskList.searchPlaceholder')}
           prefix={<SearchOutlined />}
           value={search}
-          onChange={e => setSearch(e.target.value)}
+          onChange={e => { setSearch(e.target.value); setPage(1); }}
           allowClear
           style={{ width: 220, maxWidth: '100%' }}
         />
@@ -570,7 +577,7 @@ export default function TaskListPage() {
           allowClear
           style={{ width: 110, maxWidth: '100%' }}
           value={statusFilter}
-          onChange={setStatusFilter}
+          onChange={v => { setStatusFilter(v); setPage(1); }}
           suffixIcon={<FilterOutlined />}
           options={[
             { value: 'active', label: t('taskList.status.active') },
@@ -582,7 +589,7 @@ export default function TaskListPage() {
           allowClear
           style={{ width: 120, maxWidth: '100%' }}
           value={triggerFilter}
-          onChange={setTriggerFilter}
+          onChange={v => { setTriggerFilter(v); setPage(1); }}
           options={[
             { value: 'manual', label: t('taskList.trigger.manual') },
             { value: 'cron', label: t('taskList.trigger.cron') },
@@ -590,7 +597,7 @@ export default function TaskListPage() {
           ]}
         />
         {hasFilters && (
-          <Button size="small" onClick={() => { setSearch(''); setStatusFilter(undefined); setTriggerFilter(undefined); }}>
+          <Button size="small" onClick={() => { setSearch(''); setStatusFilter(undefined); setTriggerFilter(undefined); setPage(1); }}>
             {t('taskList.clearFilters')}
           </Button>
         )}

@@ -29,7 +29,7 @@ import {
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { configApi, SystemConfig, ConfigHistory } from '../../api/config';
 import { aiApi, SaveAiConfigPayload } from '../../api/ai';
-import { getErrMsg } from '../../utils/error';
+import { showApiError } from '../../utils/error';
 // D-P2-09（设计审计 2026-09-22）：时间格式化统一走 formatDateTime（与全站同源）。
 import { formatDateTime } from '../../utils/timeFormat';
 import { copyText } from '../../utils/clipboard';
@@ -87,7 +87,7 @@ function TokenSection() {
     // UI-15：生成失败反馈（handleGenerate 的 onOk await 链会 reject，
     // 但 antd Modal.confirm 静默吞掉该 rejection——必须显式 onError）
     onError: (err: unknown) => {
-      message.error(getErrMsg(err, t('sysSettings.token.genFail')));
+      showApiError(err, t('sysSettings.token.genFail'));
     },
   });
 
@@ -226,7 +226,7 @@ function EditModal({ record, onClose, onSaved }: EditModalProps) {
     // UI-15：保存失败反馈（Modal 保持打开由 handleOk await 链承担，
     // onError 补 toast 保证失败原因可见且不依赖调用形态）
     onError: (err: unknown) => {
-      message.error(getErrMsg(err, isNew ? t('sysSettings.config.addFail') : t('sysSettings.config.updateFail')));
+      showApiError(err, isNew ? t('sysSettings.config.addFail') : t('sysSettings.config.updateFail'));
     },
   });
 
@@ -306,7 +306,7 @@ function HistoryModal({ configKey, onClose }: { configKey: string; onClose: () =
     // UI-15：兜底 onError 补齐（与上方注记一致——统一 toast 已覆盖，
     // 显式 onError 保证不依赖 client 拦截器行为也必有反馈）。
     onError: (err: unknown) => {
-      message.error(getErrMsg(err, t('sysSettings.history.rollbackFail')));
+      showApiError(err, t('sysSettings.history.rollbackFail'));
     },
   });
 
@@ -399,7 +399,7 @@ function SystemConfigTab() {
     },
     // UI-15：删除失败反馈（对齐回滚 onError 形态）
     onError: (err: unknown) => {
-      message.error(getErrMsg(err, t('sysSettings.config.deleteFail')));
+      showApiError(err, t('sysSettings.config.deleteFail'));
     },
   });
 
@@ -523,7 +523,7 @@ function AiConfigTab() {
     },
     // UI-15：保存失败反馈（handleSave await 链的 rejection 无人消费时兜底）
     onError: (err: unknown) => {
-      message.error(getErrMsg(err, t('sysSettings.ai.saveFail')));
+      showApiError(err, t('sysSettings.ai.saveFail'));
     },
   });
 
@@ -541,7 +541,7 @@ function AiConfigTab() {
       await save(vals as SaveAiConfigPayload);
     } catch (err: unknown) {
       if (err && typeof err === 'object' && 'errorFields' in err) return;
-      message.error(getErrMsg(err, t('sysSettings.ai.saveFail')));
+      showApiError(err, t('sysSettings.ai.saveFail'));
     }
   };
 

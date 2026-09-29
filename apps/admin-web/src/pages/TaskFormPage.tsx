@@ -59,7 +59,7 @@ import { applicationsApi } from '../api/applications';
 import { taskTemplatesApi } from '../api/task-templates';
 // TASK-PROJ-01: 归属项目候选（任务可归入某项目；不选 = 未分配）
 import { projectsApi } from '../api/projects';
-import { getErrMsg, isFormValidationError } from '../utils/error';
+import { getErrMsg, isFormValidationError, showApiError } from '../utils/error';
 import { templateConfigFromFormValues } from '../utils/task-template-config-from-form';
 import {
   templateConfigToFormValues,
@@ -262,14 +262,17 @@ export default function TaskFormPage() {
   const [loadingTask, setLoadingTask] = useState(isEdit);
   // P1-4（UX 审计）：表单 dirty 守卫——用户改过且未保存时，拦截站内跳转与浏览器关闭。
   const [dirty, setDirty] = useState(false);
-  const navigationBlocker = useBlocker(dirty);
+  // GLUE-DIRTY-01：Glue 脚本编辑器的未保存改动同样要拦——原先 dirty 只覆盖
+  // 表单字段，脚本改完不保存直接关页/跳转是无声丢失。
+  const [glueDirty, setGlueDirty] = useState(false);
+  const navigationBlocker = useBlocker(dirty || glueDirty);
   // P1-4：浏览器关闭/刷新未保存守卫（站内跳转由 navigationBlocker + 确认弹窗兜底）。
   useEffect(() => {
-    if (!dirty) return;
+    if (!dirty && !glueDirty) return;
     const handler = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ''; };
     window.addEventListener('beforeunload', handler);
     return () => window.removeEventListener('beforeunload', handler);
-  }, [dirty]);
+  }, [dirty, glueDirty]);
   const [showCronHelper, setShowCronHelper] = useState(false);
   // Glue: createdTaskId is set after create so GlueEditor can save to the real task id
   const [createdTaskId, setCreatedTaskId] = useState<string | null>(null);
@@ -670,7 +673,7 @@ export default function TaskFormPage() {
       // 原因在 `response.data.message` 里。getErrMsg 同时覆盖这两种形状，且
       // 本文件第 39 行本就导入了它（同页其它错误路径已在用）——同页两套文案
       // 才是问题所在。
-      message.error(getErrMsg(err, t('taskForm.validate.fail')));
+      showApiError(err, t('taskForm.validate.fail'));
       return;
     }
     const values = form.getFieldsValue(true);
@@ -835,7 +838,7 @@ export default function TaskFormPage() {
     } catch (err: unknown) {
       if (isFormValidationError(err)) return;
       // UX-11：同 openSaveAsTemplate——统一走 getErrMsg（见上方注释）。
-      message.error(getErrMsg(err, t('taskForm.validate.fail')));
+      showApiError(err, t('taskForm.validate.fail'));
       return;
     }
     // F-28（DEEP_REVIEW 0ef3bbe）：原为 `name: cond ? undefined : undefined` 死三元
@@ -850,7 +853,7 @@ export default function TaskFormPage() {
       meta = await tplForm.validateFields();
     } catch (err: unknown) {
       if (isFormValidationError(err)) return;
-      message.error(getErrMsg(err, t('taskForm.tpl.saveFail')));
+      showApiError(err, t('taskForm.tpl.saveFail'));
       return;
     }
     const values = form.getFieldsValue(true);
@@ -897,7 +900,7 @@ export default function TaskFormPage() {
       // validateFields 的 reject 是带 errorFields 的校验对象，不是请求错误——
       // 仅对真正的请求失败弹 toast，表单校验错误由 Form 自带红字呈现。
       if (isFormValidationError(err)) return;
-      message.error(getErrMsg(err, t('taskForm.tpl.saveFail')));
+      showApiError(err, t('taskForm.tpl.saveFail'));
     } finally {
       setTplSaving(false);
     }
@@ -1116,7 +1119,13 @@ export default function TaskFormPage() {
                   label={t('taskForm.field.name')}
                   rules={[
                     { required: true, message: t('taskForm.field.name.required') },
-                    { pattern: /^[a-zA-Z0-9_-]+$/, message: t('taskForm.field.name.pattern') },
+                    // 字符白名单只在**新建**时校验：编辑态名字是 disabled 的不可变
+                    // 标识（不进 update 载荷），存量任务名若含非 ASCII 字符，对
+                    // 禁用字段套白名单会把每一次编辑保存都拦死，用户却无从修复
+                    // （同款先例：ApplicationListPage，1a4d3758）。
+                    ...(!isEdit
+                      ? [{ pattern: /^[a-zA-Z0-9_-]+$/, message: t('taskForm.field.name.pattern') }]
+                      : []),
                   ]}
                   tooltip={{ title: isEdit ? t('taskForm.field.name.tooltipEdit') : t('taskForm.field.name.tooltip'), icon: <InfoCircleOutlined /> }}
                 >
@@ -1786,6 +1795,7 @@ export default function TaskFormPage() {
             glueSource={glueSource}
             glueLanguage={glueLanguage}
             savedRuntime={savedRuntime}
+            onGlueDirtyChange={setGlueDirty}
           />
 
           {/* 提交条：单页常驻（不再依附任一步骤），语义与原 step 2 提交按钮一致 */}

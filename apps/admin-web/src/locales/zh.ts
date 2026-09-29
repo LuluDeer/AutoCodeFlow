@@ -2676,6 +2676,8 @@ export default {
   'sops.loadFailed': 'SOP 列表加载失败',
   'sops.refresh': '刷新',
   'sops.newDraft': '新建草稿',
+  'sops.slugRequired': '请填写 slug（SOP 唯一标识）',
+  'sops.slugInvalid': 'slug 只允许小写字母、数字和连字符（1–128 位，字母或数字开头）',
   'sops.draftCreated': '草稿已保存',
   'sops.draftFailed': '草稿保存失败（检查 slug 与 YAML 语法）',
   'sops.create': '保存草稿',

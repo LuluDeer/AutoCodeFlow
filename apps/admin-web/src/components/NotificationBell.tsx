@@ -8,12 +8,13 @@
  * 设计：
  * - 数据源复用 /metrics/failures（Dashboard 最近失败同一接口，30s staleTime
  *   + SSE 兜底，不加新端点）；
- * - 未读红点 = createdAt 晚于 localStorage 记录的「上次查看」时刻的失败数
- *   （无后端已读模型，本地记忆即可满足"有没有新失败"的诉求）；
+ * - 未读红点 = createdAt 晚于「上次查看」时刻的失败数（无后端已读模型，
+ *   本地记忆即可满足"有没有新失败"的诉求；lastSeen 读进 state——markSeen
+ *   后同帧归零，不再等下一次数据刷新才重渲染）；
  * - 打开面板即记为已读；面板底部提供「全部失败」深链（/executions?status=failed，
  *   URL-SYNC-01 已让该深链生效）与「通知设置」入口。
  */
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { Badge, Button, Popover, Typography, Empty } from 'antd';
 import { BellOutlined } from '@ant-design/icons';
 import { Link, useNavigate } from 'react-router-dom';
@@ -41,7 +42,10 @@ export default function NotificationBell() {
   const { t } = useTranslation();
   const { data: failures } = useRecentFailures();
 
-  const lastSeen = readLastSeen();
+  // BELL-02：lastSeen 读进 state——原先每次渲染直读 localStorage，markSeen
+  // 只写存储不触发重渲染，红点要等 useRecentFailures 下一次刷新才消失。
+  // 初始值仍从 localStorage 取，写路径不变（跨刷新持久）。
+  const [lastSeen, setLastSeen] = useState(() => readLastSeen());
   // useMemo 稳定引用：unreadCount 的依赖数组需要引用级稳定（否则每次渲染重算）
   const list = useMemo(() => failures ?? [], [failures]);
 
@@ -58,12 +62,14 @@ export default function NotificationBell() {
     const maxTs = list.reduce((acc, f) => {
       const ts = new Date(f.createdAt).getTime();
       return Number.isFinite(ts) && ts > acc ? ts : acc;
-    }, readLastSeen());
+    }, lastSeen);
     try {
       window.localStorage.setItem(LAST_SEEN_KEY, String(maxTs));
     } catch {
       /* 隐私模式等 localStorage 不可用时静默降级（红点常驻无害） */
     }
+    // 立即归零未读：setState 触发重渲染，unreadCount 同帧变 0。
+    setLastSeen(maxTs);
   };
 
   const content = (
