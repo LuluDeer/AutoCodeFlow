@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.3](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.5.2...v1.5.3) (2026-09-29)
+
+
+### 版本对齐
+
+* lockstep 随 autocodeflow-mcp-server 1.5.3 同批发布（ip-address@10.7.2 SSRF 安全补丁），本包无功能变更。
+
 ## [1.5.2](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.5.1...v1.5.2) (2026-09-22)
 
 
