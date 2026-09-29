@@ -249,6 +249,13 @@ export type TaskListParams = {
   name?: string;
   status?: string;
   triggerType?: string;
+  /**
+   * P2-18（生产审查）：按最近一次执行结果筛任务（后端 GET /tasks 新增 lastStatus
+   * 查询参数，@IsEnum(ExecutionStatus)：pending/running/waiting/success/failed/
+   * timeout/killed/cancelled）。生成文件 api-types.ts 的 query 类型尚无该字段，
+   * 待 openapi 重导出后并入生成类型。
+   */
+  lastStatus?: string;
   runtime?: string;
   applicationId?: string;
   /** F-10: 逗号分隔的投影字段白名单（如 'id,name'）。 */

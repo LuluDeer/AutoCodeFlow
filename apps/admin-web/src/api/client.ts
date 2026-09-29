@@ -174,6 +174,16 @@ client.interceptors.response.use(
     // 本身），标必须打在页面 catch **实际收到**的那个值上；响应体为字符串
     // 原语时挂不上属性（不打标，页面兜底会补一条，可接受的边界）。
     const rejectValue: unknown = err.response?.data || err;
+    // P1-3（生产审查）：把 HTTP 状态码以数字型 `__status` 挂在页面 catch 实际
+    // 收到的 rejectValue 上。此前 utils/error.isNotFoundError 只会读原始 axios
+    // error 的 `response.status`，而本拦截器 reject 的是 `err.response?.data`
+    // （.response 已剥掉）——404 判定恒为 false，「404 → 跳回列表」分支从未
+    // 生效。与 markToastedByClient 同点合并打标：同样只在 rejectValue 是对象时
+    // 可挂；响应体为字符串原语挂不上（isNotFoundError 退回旧的
+    // response?.status 路径，可接受边界，与上方注释口径一致）。
+    if (err.response && rejectValue !== null && typeof rejectValue === 'object') {
+      (rejectValue as Record<string, unknown>)['__status'] = status;
+    }
     // Show a user-friendly toast for common HTTP errors (skip 401 which is handled above)
     if (status && status !== 401) {
       // F-1：HTTP 状态文案走 i18n（key: http.error.<code>），业务 message/error 仍优先。

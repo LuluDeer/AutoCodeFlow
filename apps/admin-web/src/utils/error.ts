@@ -62,9 +62,17 @@ export function isFormValidationError(err: unknown): boolean {
  *
  * 注意：axios 拦截器在 401 且刷新失败时会 logout + 跳登录，那条链路不经过
  * 这里；此处只处理「已经拿到响应且状态码是 404」的情形。
+ *
+ * P1-3（生产审查）：api/client.ts 的响应拦截器 reject 的是
+ * `err.response?.data`（原始 error 的 .response 已剥掉），并在该值上挂了数字型
+ * `__status`（见 client.ts 同名注释）——此前只读 `err.response?.status` 对
+ * 拦截器的 reject 值恒为 false，页面「404 → 跳回列表」从未生效。现优先读
+ * `__status`；对直接传 axios 原始 error（带 response.status）的调用方保留
+ * 旧路径回退。
  */
 export function isNotFoundError(err: unknown): boolean {
   if (err === null || typeof err !== 'object') return false;
-  const status = (err as { response?: { status?: unknown } })?.response?.status;
-  return status === 404;
+  const status = (err as { __status?: unknown }).__status;
+  if (status !== undefined) return status === 404;
+  return (err as { response?: { status?: unknown } })?.response?.status === 404;
 }

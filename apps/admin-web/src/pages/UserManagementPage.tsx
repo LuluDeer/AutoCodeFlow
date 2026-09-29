@@ -478,13 +478,21 @@ export default function UserManagementPage() {
           <Form.Item
             name="email"
             label={t('users.field.email')}
+            // P1-4（生产审查）：与后端契约对齐（admin-api users DTO）——
+            // create-user.dto.ts 的 email 为 @IsEmail() 必填（此前新建态零校验，
+            // 必填拦截只弹原始 400 toast）；update-user.dto.ts 是
+            // PartialType(CreateUserDto)：选填，但填了必须格式合法。
             rules={
               editing
                 ? [{ type: 'email', message: t('users.field.emailInvalid') }]
-                : []
+                : [
+                    { required: true, message: t('users.field.emailRequired') },
+                    { type: 'email', message: t('users.field.emailInvalid') },
+                  ]
             }
           >
-            <Input placeholder={t('users.field.emailPlaceholder')} type="email" />
+            {/* 新建态后端必填，「选填」占位符只在编辑态成立 */}
+            <Input placeholder={editing ? t('users.field.emailPlaceholder') : undefined} type="email" />
           </Form.Item>
           <Form.Item
             name="role"

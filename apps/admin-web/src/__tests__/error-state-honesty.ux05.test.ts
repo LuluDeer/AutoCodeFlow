@@ -43,6 +43,30 @@ describe('UX-05 工具：isNotFoundError 只认 404', () => {
   });
 });
 
+// P1-3（生产审查）：client.ts 拦截器 reject 的是 err.response?.data（.response
+// 已剥掉）并挂了数字型 __status——isNotFoundError 必须优先读它，否则 404 判定
+// 对页面 catch 实际收到的值恒为 false（「404 → 跳回列表」从未生效）。
+describe('P1-3 工具：isNotFoundError 优先读拦截器打的 __status 标', () => {
+  it('client.ts reject 形态：__status=404 → true', () => {
+    expect(isNotFoundError({ message: 'HTTP 404', __toastedByClient: true, __status: 404 })).toBe(true);
+  });
+
+  it('__status=500 → false（留在原位重试）', () => {
+    expect(isNotFoundError({ message: 'HTTP 500', __toastedByClient: true, __status: 500 })).toBe(false);
+  });
+
+  it('裸 axios error 形态（无 __status，有 response.status=404）→ 回退仍为 true', () => {
+    expect(isNotFoundError({ response: { status: 404 } })).toBe(true);
+  });
+
+  it('两处都没有状态码 / 纯字符串 / undefined → false', () => {
+    expect(isNotFoundError({ message: 'boom' })).toBe(false);
+    expect(isNotFoundError({ __status: '404' })).toBe(false); // 非数字型不认
+    expect(isNotFoundError('not found')).toBe(false);
+    expect(isNotFoundError(undefined)).toBe(false);
+  });
+});
+
 describe('UX-05 源码层：三处失败态必须在页内可见（带重试）', () => {
   it('① TasksTab：失败写入 state 而非只弹 message，且渲染 StateError', () => {
     // 失败态 state 存在

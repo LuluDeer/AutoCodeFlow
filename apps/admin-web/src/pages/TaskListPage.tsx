@@ -82,6 +82,9 @@ export default function TaskListPage() {
   const [search, setSearch] = useState(() => searchParams.get('q') || '');
   const [statusFilter, setStatusFilter] = useState<string | undefined>(() => searchParams.get('status') || undefined);
   const [triggerFilter, setTriggerFilter] = useState<string | undefined>(() => searchParams.get('trigger') || undefined);
+  // P2-18（生产审查）：最近一次执行结果筛选——值班最常问"哪些任务上次跑挂了"。
+  // 后端契约：GET /tasks 新增 lastStatus 查询参数（@IsEnum(ExecutionStatus)）。
+  const [lastStatusFilter, setLastStatusFilter] = useState<string | undefined>(() => searchParams.get('lastStatus') || undefined);
   const [selectedRowKeys, setSelectedRowKeys] = useState<string[]>([]);
   const [triggerTarget, setTriggerTarget] = useState<{ id: string; name: string; defaultParams?: Record<string, unknown> } | null>(null);
   const [triggerParams, setTriggerParams] = useState<Record<string, string>>({});
@@ -109,8 +112,9 @@ export default function TaskListPage() {
     if (statusFilter) next.set('status', statusFilter);
     if (debouncedSearch) next.set('q', debouncedSearch);
     if (triggerFilter) next.set('trigger', triggerFilter);
+    if (lastStatusFilter) next.set('lastStatus', lastStatusFilter);
     setSearchParams(next, { replace: true });
-  }, [page, pageSize, statusFilter, debouncedSearch, triggerFilter, setSearchParams]);
+  }, [page, pageSize, statusFilter, debouncedSearch, triggerFilter, lastStatusFilter, setSearchParams]);
 
   const { data, isLoading: loading, error, refetch } = useTasksList({
     page,
@@ -118,6 +122,7 @@ export default function TaskListPage() {
     name: debouncedSearch || undefined,
     status: statusFilter,
     triggerType: triggerFilter,
+    lastStatus: lastStatusFilter,
   });
   // FEAT-17: 写后失效句柄（原 useRequest refresh → invalidate 面收口）
   const queryClient = useQueryClient();
@@ -126,14 +131,14 @@ export default function TaskListPage() {
   const tasks: Task[] = data?.items ?? [];
   const total: number = data?.total ?? 0;
 
-  const hasFilters = !!(search || statusFilter || triggerFilter);
+  const hasFilters = !!(search || statusFilter || triggerFilter || lastStatusFilter);
 
   // 翻页/筛选变化后当前页数据会变，跨页选中行不再可见——清空选中防误比
   // （与 ExecutionsPage 同一约定；旧实现只随批量操作清空，筛选后残留的
   // 选中 id 会把不可见行卷进批量触发/删除）。
   useEffect(() => {
     setSelectedRowKeys([]);
-  }, [page, pageSize, statusFilter, triggerFilter, debouncedSearch]);
+  }, [page, pageSize, statusFilter, triggerFilter, lastStatusFilter, debouncedSearch]);
 
   const rowSelection = {
     selectedRowKeys,
@@ -596,8 +601,24 @@ export default function TaskListPage() {
             { value: 'fixed_rate', label: t('taskList.trigger.fixed_rate') },
           ]}
         />
+        {/* P2-18（生产审查）：「最近执行」筛选——任务实体 status 只有 active/paused，
+            失败在执行维度；后端 GET /tasks 以 lastStatus（@IsEnum(ExecutionStatus)）
+            支持按最近一次执行结果筛任务。值班最常用三档：success/failed/timeout
+            （label 复用既有执行状态 key execs.status.*）。 */}
+        <Select
+          placeholder={t('taskList.lastRunAll')}
+          allowClear
+          style={{ width: 110, maxWidth: '100%' }}
+          value={lastStatusFilter}
+          onChange={v => { setLastStatusFilter(v); setPage(1); }}
+          options={[
+            { value: 'success', label: t('execs.status.success') },
+            { value: 'failed', label: t('execs.status.failed') },
+            { value: 'timeout', label: t('execs.status.timeout') },
+          ]}
+        />
         {hasFilters && (
-          <Button size="small" onClick={() => { setSearch(''); setStatusFilter(undefined); setTriggerFilter(undefined); setPage(1); }}>
+          <Button size="small" onClick={() => { setSearch(''); setStatusFilter(undefined); setTriggerFilter(undefined); setLastStatusFilter(undefined); setPage(1); }}>
             {t('taskList.clearFilters')}
           </Button>
         )}
