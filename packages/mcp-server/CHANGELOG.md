@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.6.0](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.5.3...v1.6.0) (2026-09-29)
+
+
+### Features
+
+* **optimize:** 全量优化落地——性能/可扩展/安全/可靠性/CI 门禁 ([a4dad9b](https://github.com/LuluDeer/AutoCodeFlow/commit/a4dad9b56e5277b6b75be62958882fcc408d163b))
+
+
+### Bug Fixes
+
+* **experience:** 修 4 个体验级真实缺陷（回调整批丢失 / 401 误登出 / 校验原因不可见 / DAG 恒空） ([ef7dc99](https://github.com/LuluDeer/AutoCodeFlow/commit/ef7dc999f4266928bfa75dfbe9b192973e24a760))
+* **infra:** E-31 engines&gt;=24 + E-18 CI python e2e + PK-21 注释修正 + PK-28 prepublishOnly clean（DEEP_REVIEW §六） ([f5f6a4a](https://github.com/LuluDeer/AutoCodeFlow/commit/f5f6a4a30a0c7469a7d7c177c9299d5097504089))
+* **mcp-server,acf-cli:** analyze/suggest 类调用带 120s per-call 预算，消除与 admin 同步 AI 预算的结构性倒挂（NETOPT-6④） ([d4f3bd2](https://github.com/LuluDeer/AutoCodeFlow/commit/d4f3bd22f43394dfcc95fa2328cf868277b6fe39))
+* **mcp-server:** 同步代码内硬编码版本号 1.3.0 → 1.4.1 ([dac8852](https://github.com/LuluDeer/AutoCodeFlow/commit/dac8852dd08046ea23a5254b1888beb0e21aef26))
+* **mcp-server:** 锁定 ip-address@10.7.2 修 CI npm-audit 两个 SSRF 公告 ([5bd3acc](https://github.com/LuluDeer/AutoCodeFlow/commit/5bd3acc759b7af9ca602b90e49ef3acc532513f4))
+* **mcp:** 路径 id 入站收窄为 UUID 并消除 Record&lt;any&gt;（深审 D1-P2-2/D1-P2-7） ([9a50acd](https://github.com/LuluDeer/AutoCodeFlow/commit/9a50acdd6b43a8a9692a76aa91c932ccf87bcc48))
+
 ## [1.5.3](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.5.2...v1.5.3) (2026-09-29)
 
 

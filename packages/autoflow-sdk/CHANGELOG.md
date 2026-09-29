@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.6.0](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.5.3...v1.6.0) (2026-09-29)
+
+
+### Features
+
+* **optimize:** 全量优化落地——性能/可扩展/安全/可靠性/CI 门禁 ([a4dad9b](https://github.com/LuluDeer/AutoCodeFlow/commit/a4dad9b56e5277b6b75be62958882fcc408d163b))
+
+
+### Bug Fixes
+
+* **experience:** 修 7 个体验级缺陷（暗色不可读 / 告警色阶失效 / 复制假成功 / 桌面端按钮永久禁用） ([9a94481](https://github.com/LuluDeer/AutoCodeFlow/commit/9a944815eaa373c1b5624427b80fd8825328b5f8))
+* **packages:** NETOPT-F analyzer null-confidence 用例+定调注释补第 9 出站点（routers/execute.py 包下载 trust_env=False+follow_redirects=False）、http/notify/sdk trust_env 钉死测试、uv.lock 入库可重现构建 ([037b8c2](https://github.com/LuluDeer/AutoCodeFlow/commit/037b8c254d34d8aabc62596084baf2295bb40538))
+
 ## [1.5.3](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.5.2...v1.5.3) (2026-09-29)
 
 

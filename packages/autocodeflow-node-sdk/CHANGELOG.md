@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.6.0](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.5.3...v1.6.0) (2026-09-29)
+
+
+### Features
+
+* **optimize:** 全量优化落地——性能/可扩展/安全/可靠性/CI 门禁 ([a4dad9b](https://github.com/LuluDeer/AutoCodeFlow/commit/a4dad9b56e5277b6b75be62958882fcc408d163b))
+
+
+### Bug Fixes
+
+* **node-sdk:** 熔断器 half-open 探测槽遇不可熔断错误永久卡死（NETOPT-6①） ([9b1d01c](https://github.com/LuluDeer/AutoCodeFlow/commit/9b1d01c6bf2592a31a78ec88598f2175eed2ee8e))
+* **packages:** NETOPT-F analyzer null-confidence 用例+定调注释补第 9 出站点（routers/execute.py 包下载 trust_env=False+follow_redirects=False）、http/notify/sdk trust_env 钉死测试、uv.lock 入库可重现构建 ([037b8c2](https://github.com/LuluDeer/AutoCodeFlow/commit/037b8c254d34d8aabc62596084baf2295bb40538))
+* **sdk-node:** base URL 双写 /api 致回调全 404 + logger 遇不可序列化 meta 抛错打崩任务 ([7c2e1c0](https://github.com/LuluDeer/AutoCodeFlow/commit/7c2e1c0df918a95b03c4ff8056ececd025f665c2))
+
 ## [1.5.3](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.5.2...v1.5.3) (2026-09-29)
 
 
