@@ -1,9 +1,14 @@
 /**
  * FEAT-06: maintenance-window.util.ts 纯逻辑回归。
  * 全部用固定时刻断言（now 作入参注入），不依赖真实时钟。
+ *
+ * 时区用例（P2 修复）刻意全部以 UTC instant 断言 / 等价性断言表达：
+ * 带 timezone 的评估结果只依赖注入的 now 与显式时区名，与运行测试的
+ * 宿主机时区无关（无 timezone 路径保持按服务端本地时间，不在断言里钉死）。
  */
 import {
   findActiveMaintenanceWindow,
+  isValidTimeZone,
   lastWindowCronFireBefore,
   MAINTENANCE_WINDOW_LOOKBACK_MINUTES,
   TaskMaintenanceWindows,
@@ -212,5 +217,131 @@ describe("findActiveMaintenanceWindow（窗口命中判定）", () => {
     expect(
       findActiveMaintenanceWindow(w, at("2026-06-16T03:30:00")),
     ).toBeNull();
+  });
+});
+
+describe("findActiveMaintenanceWindow（任务时区感知，P2 修复）", () => {
+  const daily = (start: string, end: string): TaskMaintenanceWindows => [
+    { start, end, description: "发布冻结" },
+  ];
+
+  it("Asia/Shanghai 任务（UTC 容器视角）：窗口内命中", () => {
+    // 2026-06-15T19:30:00Z = 上海 2026-06-16 03:30（02:30-04:00 窗口内）
+    const w = daily("30 2 * * *", "0 4 * * *");
+    expect(
+      findActiveMaintenanceWindow(
+        w,
+        at("2026-06-15T19:30:00Z"),
+        "Asia/Shanghai",
+      ),
+    ).toEqual(w[0]);
+    // 恰在 start 触达分钟（上海 02:30 = 18:30Z）也命中
+    expect(
+      findActiveMaintenanceWindow(
+        w,
+        at("2026-06-15T18:30:00Z"),
+        "Asia/Shanghai",
+      ),
+    ).toEqual(w[0]);
+  });
+
+  it("Asia/Shanghai 任务（UTC 容器视角）：窗口外不命中（含恰在 end 触达分钟）", () => {
+    const w = daily("30 2 * * *", "0 4 * * *");
+    // 上海 20:00（12:00Z）——窗口外
+    expect(
+      findActiveMaintenanceWindow(
+        w,
+        at("2026-06-15T12:00:00Z"),
+        "Asia/Shanghai",
+      ),
+    ).toBeNull();
+    // 上海 04:00 整（20:00Z 前一分钟 19:59Z 仍在窗内；20:00Z 恰关窗）
+    expect(
+      findActiveMaintenanceWindow(
+        w,
+        at("2026-06-15T19:59:00Z"),
+        "Asia/Shanghai",
+      ),
+    ).toEqual(w[0]);
+    expect(
+      findActiveMaintenanceWindow(
+        w,
+        at("2026-06-15T20:00:00Z"),
+        "Asia/Shanghai",
+      ),
+    ).toBeNull();
+  });
+
+  it("timezone=UTC：命中判定与 UTC 壁钟一致（证明评估真的走了显式时区）", () => {
+    const w = daily("30 2 * * *", "0 4 * * *");
+    expect(
+      findActiveMaintenanceWindow(w, at("2026-06-15T03:00:00Z"), "UTC"),
+    ).toEqual(w[0]);
+    expect(
+      findActiveMaintenanceWindow(w, at("2026-06-15T05:00:00Z"), "UTC"),
+    ).toBeNull();
+  });
+
+  it("非法 timezone：降级为与无 timezone 调用完全等价（存量脏数据防御）", () => {
+    const w = daily("30 2 * * *", "0 4 * * *");
+    const now = at("2026-06-15T03:10:00");
+    expect(findActiveMaintenanceWindow(w, now, "Not/AZone")).toEqual(
+      findActiveMaintenanceWindow(w, now),
+    );
+    expect(
+      lastWindowCronFireBefore("30 2 * * *", now, 60, "Not/AZone"),
+    ).toEqual(lastWindowCronFireBefore("30 2 * * *", now, 60));
+  });
+});
+
+describe("lastWindowCronFireBefore（任务时区感知，P2 修复）", () => {
+  it("Asia/Shanghai：壁钟 02:30 触达换算回正确的 UTC instant", () => {
+    // 上海 2026-06-16 03:35（=19:35Z）回扫 → 最近触达 = 上海 02:30 = 18:30Z
+    const fire = lastWindowCronFireBefore(
+      "30 2 * * *",
+      at("2026-06-15T19:35:00Z"),
+      MAINTENANCE_WINDOW_LOOKBACK_MINUTES,
+      "Asia/Shanghai",
+    );
+    expect(fire?.toISOString()).toBe("2026-06-15T18:30:00.000Z");
+  });
+
+  it("DST 春季跳变（America/New_York 2026-03-08 02:00→03:00）：被跳过的壁钟分钟不误命中", () => {
+    // 壁钟 02:30 在跳变日不存在 → 最近触达回落到 3/7 的 02:30 EST（=07:30Z）
+    const fire = lastWindowCronFireBefore(
+      "30 2 * * *",
+      at("2026-03-08T10:00:00Z"),
+      MAINTENANCE_WINDOW_LOOKBACK_MINUTES,
+      "America/New_York",
+    );
+    expect(fire?.toISOString()).toBe("2026-03-07T07:30:00.000Z");
+  });
+
+  it("DST 秋季回拨（America/New_York 2026-11-01 02:00→01:00）：重复壁钟分钟取后触达", () => {
+    // 壁钟 01:30 当天出现两次：01:30 EDT（05:30Z）与 01:30 EST（06:30Z）
+    // → 最近触达是后者
+    const fire = lastWindowCronFireBefore(
+      "30 1 * * *",
+      at("2026-11-01T09:00:00Z"),
+      MAINTENANCE_WINDOW_LOOKBACK_MINUTES,
+      "America/New_York",
+    );
+    expect(fire?.toISOString()).toBe("2026-11-01T06:30:00.000Z");
+  });
+});
+
+describe("isValidTimeZone（DTO 写面共用的探针）", () => {
+  it("合法 IANA 名 → true（含 UTC 与固定偏移形态）", () => {
+    expect(isValidTimeZone("Asia/Shanghai")).toBe(true);
+    expect(isValidTimeZone("UTC")).toBe(true);
+    expect(isValidTimeZone("America/New_York")).toBe(true);
+    expect(isValidTimeZone("Etc/GMT+8")).toBe(true);
+  });
+
+  it("非法值 → false（垃圾串 / 偏移写法 / 空串）", () => {
+    expect(isValidTimeZone("Asia/Shanghai ")).toBe(false);
+    expect(isValidTimeZone("UTC+8")).toBe(false);
+    expect(isValidTimeZone("not-a-zone")).toBe(false);
+    expect(isValidTimeZone("")).toBe(false);
   });
 });

@@ -1,3 +1,4 @@
+import { Logger } from "@nestjs/common";
 import { DataSource, EntityManager } from "typeorm";
 
 /**
@@ -37,10 +38,16 @@ export class MutexWaitError extends Error {
  * 返回 null 的三种情形同语义（= 不参与互斥）：任务未挂应用 / 应用未挂组 /
  * 应用或组已不存在。组在执行创建之后被删除的，不影响已带快照的在途执行。
  *
- * 查询失败不抛：互斥是叠加约束而非派发前提，读失败降级为「不参与互斥」并
- * 由调用方 warn（与 ARCH-35 部署偏好的容错口径一致——绝不让调度优化升级成
- * 派发失败）。
+ * 查询失败不抛：互斥是叠加约束而非派发前提，读失败降级为「不参与互斥」，
+ * 与 ARCH-35 部署偏好的容错口径一致——绝不让调度优化升级成派发失败。
+ * 降级必须可观测：本函数内直接 logger.warn（task/application 上下文 + 错误
+ * 原文）。头注曾承诺「由调用方 warn」，但 4 个调用点（scheduler/task/executor
+ * 三处入队）均未实现——静默解除互斥正是审计确认的问题，改为函数内告警，
+ * 不再依赖调用方自觉。Logger 取自 @nestjs/common（框架基座包，所有模块必
+ * 然已加载，不引入实体类依赖、不破坏下方「零模块依赖」约束的本意）。
  */
+const logger = new Logger("ExecutionMutex");
+
 export async function resolveTaskMutexGroupId(
   db: DataSource | EntityManager,
   task: { id: string; applicationId: string | null },
@@ -52,7 +59,13 @@ export async function resolveTaskMutexGroupId(
       [task.applicationId],
     );
     return rows[0]?.mutexGroupId ?? null;
-  } catch {
+  } catch (err: unknown) {
+    logger.warn(
+      `MUTEX-01: resolveTaskMutexGroupId failed for task ${task.id} ` +
+        `(application ${task.applicationId}) — degraded to "no mutex group", ` +
+        `mutual exclusion is NOT enforced for this execution: ` +
+        `${err instanceof Error ? err.message : String(err)}`,
+    );
     return null;
   }
 }
