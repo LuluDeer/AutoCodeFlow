@@ -163,6 +163,14 @@ export async function scanStreamWithClamd(
   logger?: Pick<Logger, "warn" | "error">,
 ): Promise<ClamdVerdict> {
   if (!cfg.enabled) {
+    // ARCH-008: callers may hand over a stream they created before checking
+    // `enabled` (the upload path did exactly that). An unconsumed
+    // fs.ReadStream still opens its file asynchronously — a failed open then
+    // emits 'error' with no listener, which Node throws as an
+    // uncaughtException. Park a one-shot listener and destroy() so an
+    // abandoned stream can neither crash the process nor leak its fd.
+    input.once("error", () => {});
+    input.destroy();
     return { ok: true };
   }
   return new Promise<ClamdVerdict>((resolve) => {

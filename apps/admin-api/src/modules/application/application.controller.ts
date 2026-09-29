@@ -303,49 +303,58 @@ export class ApplicationController {
       // never an allow. An infection is a 400 with a generic message (the
       // signature name is logged server-side only). The staged file is streamed
       // to clamd INSTREAM instead of being buffered in memory.
-      try {
-        const verdict = await scanStreamWithClamd(
-          fs.createReadStream(tmpPath),
-          {
-            enabled: this.configService.get<boolean>("clamd.enabled") === true,
-            host: this.configService.get<string>("clamd.host") || "127.0.0.1",
-            port: this.configService.get<number>("clamd.port") || 3310,
-            timeoutMs:
-              this.configService.get<number>("clamd.timeoutMs") || 10000,
-          },
-          this.logger,
-        );
-        if (isFailedVerdict(verdict)) {
-          if (verdict.reason === "infected") {
-            this.logger.warn(
-              `Application package upload rejected: clamd infection ${verdict.detail}`,
-            );
-            throw new ClamdInfectionError(verdict.detail);
-          }
-          throw new ClamdUnavailableError(
-            verdict.reason === "timeout"
-              ? "timeout"
-              : verdict.reason === "error"
-                ? "error"
-                : "unreachable",
-            verdict.detail,
+      // ARCH-008: the scan stream is constructed only when scanning will
+      // actually run. A ReadStream created for a disabled scan still opens
+      // its file asynchronously; if that open loses the race with the rename
+      // below it fails ENOENT with no 'error' listener — an uncaughtException
+      // that took the whole instance down (2026-09-29 prod).
+      const clamdEnabled =
+        this.configService.get<boolean>("clamd.enabled") === true;
+      if (clamdEnabled) {
+        try {
+          const verdict = await scanStreamWithClamd(
+            fs.createReadStream(tmpPath),
+            {
+              enabled: clamdEnabled,
+              host: this.configService.get<string>("clamd.host") || "127.0.0.1",
+              port: this.configService.get<number>("clamd.port") || 3310,
+              timeoutMs:
+                this.configService.get<number>("clamd.timeoutMs") || 10000,
+            },
+            this.logger,
           );
-        }
-      } catch (err: unknown) {
-        if (
-          err instanceof ClamdInfectionError ||
-          err instanceof ClamdUnavailableError
-        ) {
-          if (err instanceof ClamdInfectionError) {
-            throw new BadRequestException(
-              "Package rejected: antivirus scan detected a threat",
+          if (isFailedVerdict(verdict)) {
+            if (verdict.reason === "infected") {
+              this.logger.warn(
+                `Application package upload rejected: clamd infection ${verdict.detail}`,
+              );
+              throw new ClamdInfectionError(verdict.detail);
+            }
+            throw new ClamdUnavailableError(
+              verdict.reason === "timeout"
+                ? "timeout"
+                : verdict.reason === "error"
+                  ? "error"
+                  : "unreachable",
+              verdict.detail,
             );
           }
-          throw new ServiceUnavailableException(
-            "Package rejected: antivirus scan is unavailable (fail-closed)",
-          );
+        } catch (err: unknown) {
+          if (
+            err instanceof ClamdInfectionError ||
+            err instanceof ClamdUnavailableError
+          ) {
+            if (err instanceof ClamdInfectionError) {
+              throw new BadRequestException(
+                "Package rejected: antivirus scan detected a threat",
+              );
+            }
+            throw new ServiceUnavailableException(
+              "Package rejected: antivirus scan is unavailable (fail-closed)",
+            );
+          }
+          throw err;
         }
-        throw err;
       }
 
       // APP-002: packageUrl 会被 executor 节点拉取。旧实现缺 API_BASE_URL 时静默
