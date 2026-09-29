@@ -79,6 +79,42 @@ export function resolveWithinWorkspace(
 }
 
 /**
+ * 工作区内绝对路径 → 工作区相对路径（POSIX 分隔符）。域外返回 null。
+ *
+ * ★ 为什么不能直接 `path.relative(workspaceRoot, abs)`（真实缺陷，2026-09-28）：
+ * `resolveWithinWorkspace` 返回的是**经 realpath 折叠**的绝对路径，而调用方
+ * 手上的 `workspaceRoot` 常是**未折叠**的原始字符串。两者在「工作区祖先含
+ * symlink」时不属于同一棵字符串树——macOS 上 `os.tmpdir()` 返回
+ * `/var/folders/...`，而 realpath 是 `/private/var/folders/...`（`/var` 本身
+ * 是指向 `/private/var` 的 symlink），于是 `path.relative` 算出
+ * `../../../../private/var/...` 这种穿越形态。
+ *
+ * 后果是**静默**的：调用方（runtime.ts 的 GUI/浏览器截图上传）拿到这个"相对
+ * 路径"后 `path.join(workspaceRoot, rel)` 会拼出域外路径而读不到文件，截图
+ * 上传默默失败，Agent 观察面里只剩一条本机路径字符串。故这里把 root 也折叠
+ * 一次再算相对路径——两边同源，结果才是真正的域内相对路径。
+ *
+ * 该缺陷只在 macOS 复现（Windows/Linux 的 tmpdir 通常已是 realpath），故
+ * CI 的 desktop-macos-bundle 是唯一能抓到它的闸；workspace.selftest.ts 用
+ * 「symlink 祖先」形态把它变成跨平台可复现的回归断言。
+ */
+export function toWorkspaceRelative(workspaceRoot: string, absPath: string): string | null {
+  let realRoot: string;
+  try {
+    realRoot = fs.realpathSync(workspaceRoot);
+  } catch {
+    // 工作区不存在时退回词法解析：与 resolveWithinWorkspace 的失败语义一致
+    // （那里也把「根不存在」收敛为解析失败，而不是抛）。
+    realRoot = path.resolve(workspaceRoot);
+  }
+  const rel = path.relative(realRoot, path.resolve(absPath)).replace(/\\/g, '/');
+  if (rel === '' || rel === '.' || rel === '..' || rel.startsWith('../')) return null;
+  // 盘符形态（win32 跨盘时 path.relative 会返回绝对路径）同样视为域外。
+  if (path.isAbsolute(rel) || /^[a-zA-Z]:\//.test(rel)) return null;
+  return rel;
+}
+
+/**
  * 列出工作区文件（相对路径，供 LLM 观察自身产物）。
  *
  * ★ 目录遍历**绝不跟随 symlink**：工作区内一个指向域外的链接若被跟随，
