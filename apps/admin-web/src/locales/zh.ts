@@ -2197,6 +2197,8 @@ export default {
   'taskForm.field.cron.required': '请输入 Cron 表达式',
   'taskForm.field.cron.helper': '不会写？点击使用 Cron 辅助工具',
   'taskForm.field.cron.placeholder': '0 8 * * 1-5  (每周一至周五早8点)',
+  'taskForm.field.cron.invalid': '无法解析：需 5 段数字 Cron（分 时 日 月 周）',
+  'taskForm.field.cron.stepUnsupported': '调度器不支持「起始值/步进」写法（如 12/20），请改为：{{suggestion}}',
   'taskForm.field.timezone': '时区',
   'taskForm.field.timezone.tooltip': 'IANA 时区名称，例如 Asia/Shanghai；留空则使用服务端默认时区',
   'taskForm.field.fixedRate': '执行间隔',

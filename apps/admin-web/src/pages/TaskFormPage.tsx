@@ -70,6 +70,7 @@ import { TASK_PRIORITY_OPTIONS, toPriorityValue } from '../utils/priority';
 import AlarmConfig from '../components/AlarmConfig';
 import PageSkeleton from '../components/PageSkeleton';
 import TriggerPreview from '../components/task-form/TriggerPreview';
+import { parseCronExpression, suggestCronStepRewrite } from '../utils/trigger-preview';
 // python_task_multiversion（FR-06/AC-06a/AC-06b）：Python 版本组合框。
 // 独立成组件的原因见其头注释（useWatch 必须在无条件渲染的组件内，否则
 // TaskFormPage 的 loadingTask 早退会让 hook 数随分支变化）。
@@ -116,6 +117,29 @@ const RUNTIME_OPTIONS = [
   { value: 'node', label: 'Node.js' },
   { value: 'shell', label: 'Shell' },
 ];
+
+/**
+ * Cron 门校验（与后端 DTO/调度器同口径）：裸 `n/step`（如 `12/20`）是 POSIX
+ * 合法但 node-cron 拒绝的写法——此前只拦在提交后的 400，配合预览器曾放行
+ * 该形态，用户会看到「能预览出触发时间、保存却报错」。现在在输入时即给出
+ * 带等价改写的错误文案；主 cron 与维护窗口 start/end 三个字段共用。
+ * （admin-web 不引 node-cron，判定复用预览器 parseCronExpression——其子集
+ * 已收紧到「调度器可注册」口径，见 trigger-preview.ts。）
+ */
+const cronGateValidator =
+  (t: (k: string, opts?: Record<string, unknown>) => string) =>
+  (_rule: unknown, value: string | undefined) => {
+    const v = (value ?? '').trim();
+    if (!v) return Promise.resolve(); // 空值交给 required 规则
+    const rewrite = suggestCronStepRewrite(v);
+    if (rewrite) {
+      return Promise.reject(new Error(t('taskForm.field.cron.stepUnsupported', { suggestion: rewrite })));
+    }
+    if (!parseCronExpression(v)) {
+      return Promise.reject(new Error(t('taskForm.field.cron.invalid')));
+    }
+    return Promise.resolve();
+  };
 
 // Executor dispatch modes exposed to the user
 const EXECUTOR_MODE_OPTIONS = (t: (k: string) => string) => [
@@ -1323,7 +1347,10 @@ export default function TaskFormPage() {
                   <Form.Item
                     name="cronExpression"
                     label={t('taskForm.field.cron')}
-                    rules={[{ required: true, message: t('taskForm.field.cron.required') }]}
+                    rules={[
+                      { required: true, message: t('taskForm.field.cron.required') },
+                      { validator: cronGateValidator(t) },
+                    ]}
                     extra={
                       <Button type="link" size="small" onClick={() => setShowCronHelper(true)}>
                         {t('taskForm.field.cron.helper')}
@@ -1404,6 +1431,7 @@ export default function TaskFormPage() {
                             rules={[
                               { required: true, message: t('taskForm.window.startRequired') },
                               { pattern: /^(\*|([0-5]?\d))(\/(\d+))? (\*|([01]?\d|2[0-3]))(\/(\d+))? (\*|([012]?\d|3[01]))(\/(\d+))? (\*|(1[0-2]|0?[1-9]))(\/(\d+))? (\*|[0-7])(\/(\d+))?$/, message: t('taskForm.window.cronFormat') },
+                              { validator: cronGateValidator(t) },
                             ]}
                           >
                             <Input placeholder={t('taskForm.window.startPlaceholder')} style={{ width: 200, fontFamily: 'monospace' }} />
@@ -1414,6 +1442,7 @@ export default function TaskFormPage() {
                             rules={[
                               { required: true, message: t('taskForm.window.endRequired') },
                               { pattern: /^(\*|([0-5]?\d))(\/(\d+))? (\*|([01]?\d|2[0-3]))(\/(\d+))? (\*|([012]?\d|3[01]))(\/(\d+))? (\*|(1[0-2]|0?[1-9]))(\/(\d+))? (\*|[0-7])(\/(\d+))?$/, message: t('taskForm.window.cronFormat') },
+                              { validator: cronGateValidator(t) },
                             ]}
                           >
                             <Input placeholder={t('taskForm.window.endPlaceholder')} style={{ width: 200, fontFamily: 'monospace' }} />
