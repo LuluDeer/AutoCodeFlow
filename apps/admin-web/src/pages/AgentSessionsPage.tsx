@@ -16,6 +16,8 @@ import type { ColumnsType } from 'antd/es/table';
 
 import PageHeader from '../components/PageHeader';
 import { agentApi } from '../api/agent';
+// SOPS-TIME-01：startedAt 列与 SopsPage 同走 formatDateTime（locale 感知 + 空值 '—'）
+import { formatDateTime } from '../utils/timeFormat';
 import type {
   AgentBudget,
   AgentSession,
@@ -153,7 +155,7 @@ export default function AgentSessionsPage() {
       ellipsis: true,
     },
     { title: t('agents.col.usage'), width: 200, render: (_, s) => usageOf(s, t) },
-    { title: t('agents.col.startedAt'), dataIndex: 'startedAt', width: 170, render: (v: string | null) => (v ? new Date(v).toLocaleString() : '—') },
+    { title: t('agents.col.startedAt'), dataIndex: 'startedAt', width: 170, render: (v: string | null) => formatDateTime(v) },
     {
       title: t('sops.col.actions'),
       width: 90,
@@ -267,7 +269,7 @@ export default function AgentSessionsPage() {
               placeholder={t('agents.filter.kind')}
               style={{ width: 160 }}
               value={kindFilter}
-              onChange={setKindFilter}
+              onChange={v => { setKindFilter(v); setPage(1); }}
               options={['ops_watch', 'incident', 'sop_authoring', 'sop_review', 'app_scaffold', 'chat'].map((k) => ({
                 value: k,
                 label: k,
@@ -278,7 +280,7 @@ export default function AgentSessionsPage() {
               placeholder={t('agents.filter.status')}
               style={{ width: 160 }}
               value={statusFilter}
-              onChange={setStatusFilter}
+              onChange={v => { setStatusFilter(v); setPage(1); }}
               options={Object.keys(STATUS_COLORS).map((s) => ({ value: s, label: s }))}
             />
             <Button icon={<ReloadOutlined />} onClick={() => void load()}>
@@ -301,7 +303,7 @@ export default function AgentSessionsPage() {
         width={920}
         open={detail !== null}
         onClose={() => setDetail(null)}
-        destroyOnClose
+        destroyOnHidden
         extra={
           resumable ? (
             <Button

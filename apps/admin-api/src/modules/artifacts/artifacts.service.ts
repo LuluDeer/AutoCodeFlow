@@ -19,6 +19,7 @@ import {
 import { SystemConfigService } from "../config/config.service";
 import { ExecutorService } from "../executor/executor.service";
 import { verifyExecutorToken } from "../../common/utils/verify-executor-token.util";
+import { createResponseReadStream } from "../../common/utils/response-stream.util";
 import {
   getArtifactRootDir,
   MAX_ARTIFACT_COUNT,
@@ -165,8 +166,10 @@ export class ArtifactsService {
     const fileSize = fs.statSync(full).size;
     const ext = path.extname(name).toLowerCase();
     const sha256 = await this.hashFile(full);
+    // P1-2（ARCH-008）：existsSync/statSync 之后、流 open 之前文件被删的竞态下，
+    // ENOENT 降级为该次下载失败（warn + destroy），不再无监听 error 冒泡。
     return {
-      stream: fs.createReadStream(full),
+      stream: createResponseReadStream(full, this.logger),
       fileSize,
       contentType: CONTENT_TYPE_BY_EXT[ext] ?? "application/octet-stream",
       sha256,

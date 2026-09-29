@@ -77,7 +77,7 @@ import type { Executor } from '../api/executors';
 import { applicationsApi } from '../api/applications';
 import type { Application } from '../api/applications';
 import { useAuthStore, isAdminUser } from '../store/auth';
-import { getErrMsg } from '../utils/error';
+import { showApiError } from '../utils/error';
 import { useDebounce } from '../hooks/useDebounce';
 
 const { Text } = Typography;
@@ -528,7 +528,7 @@ export default function CommandPalette({ open, onOpenChange }: CommandPalettePro
         nav(`/tasks/${item.id}`);
         onOpenChange(false);
       } catch (err: unknown) {
-        message.error(getErrMsg(err, t('palette.actionFail', { action: label })));
+        showApiError(err, t('palette.actionFail', { action: label }));
       } finally {
         setActingKey(null);
       }

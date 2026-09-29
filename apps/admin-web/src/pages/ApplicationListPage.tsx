@@ -28,7 +28,7 @@ import { applicationsApi, Application, deploymentsApi, AppDeployment, mutexGroup
 import { executorsApi } from '../api/executors';
 import { useNavigate, Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { getErrMsg, isFormValidationError } from '../utils/error';
+import { isFormValidationError, showApiError } from '../utils/error';
 import { normFileList } from '../utils/upload';
 import { formatDateTime, formatRelativeTime } from '../utils/timeFormat';
 // D-P2-02b（设计审计 2026-09-22）：runtime 读面走唯一事实源 runtimeLabel
@@ -231,7 +231,7 @@ export default function ApplicationListPage() {
       setApps(enriched);
     } catch (err: unknown) {
       setLoadError(err);
-      message.error(getErrMsg(err, t('appList.loadFail')));
+      showApiError(err, t('appList.loadFail'));
     } finally {
       setLoading(false);
     }
@@ -293,7 +293,7 @@ export default function ApplicationListPage() {
       message.success(t('appList.mutexGroup.created'));
     } catch (err: unknown) {
       if (isFormValidationError(err)) return;
-      message.error(getErrMsg(err, t('appList.mutexGroup.saveFail')));
+      showApiError(err, t('appList.mutexGroup.saveFail'));
     } finally {
       setGroupSaving(false);
     }
@@ -305,7 +305,7 @@ export default function ApplicationListPage() {
       message.success(t('appList.deleted'));
       fetchApps();
     } catch (err: unknown) {
-      message.error(getErrMsg(err, t('appList.deleteFail')));
+      showApiError(err, t('appList.deleteFail'));
     }
   };
 
@@ -378,7 +378,7 @@ export default function ApplicationListPage() {
       fetchApps();
     } catch (err: unknown) {
       if (isFormValidationError(err)) return;
-      message.error(getErrMsg(err, t('appList.saveFail')));
+      showApiError(err, t('appList.saveFail'));
     }
   };
 
@@ -404,7 +404,7 @@ export default function ApplicationListPage() {
       fetchApps();
     } catch (err: unknown) {
       if (isFormValidationError(err)) return;
-      message.error(getErrMsg(err, t('appList.uploadFail')));
+      showApiError(err, t('appList.uploadFail'));
     } finally {
       setUploading(false);
     }
@@ -459,7 +459,7 @@ export default function ApplicationListPage() {
       fetchApps();
     } catch (err: unknown) {
       if (isFormValidationError(err)) return;
-      message.error(getErrMsg(err, t('appList.deployFail')));
+      showApiError(err, t('appList.deployFail'));
     } finally {
       setQuickDeploying(false);
     }

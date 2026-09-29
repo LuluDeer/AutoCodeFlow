@@ -24,13 +24,17 @@ export interface UpdateUserDto {
 }
 
 export const usersApi = {
-  list: (page = 1, pageSize = 20, signal?: AbortSignal) => {
+  // USER-SEARCH-01：可选 search——后端 ListUsersDto 对 username/email 做
+  // ILIKE 模糊匹配（前端只传参，不再前端 filter 当页数据）。
+  list: (page = 1, pageSize = 20, signal?: AbortSignal, search?: string) => {
     // 后端 PageQueryDto 对 pageSize 有 @Max(100)；超出会 400
     // "Validation failed: pageSize must not be greater than 100"。
     // 在此夹紧而不是信任调用方——契约违规应在 API 层被挡住，而不是让
     // 页面拿到一个 400 后只显示泛化错误（成员面板曾因此整块不可用）。
     const safePageSize = Math.min(Math.max(1, Math.trunc(pageSize) || 20), 100);
-    const url = `/users?page=${page}&pageSize=${safePageSize}`;
+    const url = `/users?page=${page}&pageSize=${safePageSize}${
+      search ? `&search=${encodeURIComponent(search)}` : ''
+    }`;
     return signal
       ? apiClient.get<{ list: User[]; total: number; page: number; pageSize: number }>(
           url, { signal },

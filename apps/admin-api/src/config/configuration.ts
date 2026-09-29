@@ -617,6 +617,12 @@ export const buildTypeOrmDataSourceOptions = (config: {
     entities: [__dirname + "/../**/*.entity{.ts,.js}"],
     migrations: [__dirname + "/../migrations/*{.ts,.js}"],
     migrationsRun: config.app.nodeEnv !== "development",
+    // 与 data-source.ts（CLI 迁移路径）同因：TypeORM 1.x 把迁移事务默认模式
+    // 从 "each" 改成 "all"，且 "all" 下禁止迁移实例覆盖 transaction
+    // （ForbiddenTransactionModeOverrideError）——1790000000022 的 CONCURRENTLY
+    // 建索引与 1789900000002 的事务外守卫式 SQL 都依赖 per-migration 覆盖。
+    // 空库 + migrationsRun 启动（CI e2e / 新环境自举）时 pending 链必触发该错。
+    migrationsTransactionMode: "each",
     synchronize: false,
     logging: config.app.nodeEnv === "development",
     extra: {

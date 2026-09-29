@@ -1051,23 +1051,9 @@ export class TaskService {
   }
 
   async findAll(p: ListTasksQueryDto) {
-    const where: Record<string, unknown> = { status: Not(TaskStatus.DELETED) };
-    if (p.status) where.status = p.status as TaskStatus;
-    if (p.name) where.name = ILike(`%${p.name}%`);
-    if (p.runtime) where.runtime = p.runtime;
-    if (p.applicationId) where.applicationId = p.applicationId;
-    // AUTH-01: projectId 过滤——"default" 映射为默认项目（未分配 NULL 行
-    // 一起归入默认项目视图，Or 处理）；具体 uuid 则精确匹配。
-    if (p.projectId) {
-      if (p.projectId === "default") {
-        where.projectId = Or(IsNull(), In([DEFAULT_PROJECT_ID]));
-      } else {
-        where.projectId = p.projectId;
-      }
-    }
-
     // F-10（DEEP_REVIEW 0ef3bbe）: 轻量投影——?fields=id,name 时只 select
     // 白名单列，跳过 params/secrets/glueSource 等重量列。非法字段 400。
+    // （前置解析与 lastStatus 分支共用：两条路径的投影/排序语义必须一致。）
     let select: Record<string, true> | undefined;
     if (p.fields) {
       const requested = p.fields
@@ -1106,6 +1092,32 @@ export class TaskService {
       };
     }
 
+    // P2-18: lastStatus（最近一次执行状态）——执行维度的派生过滤，Task 实体
+    // 无冗余列（刻意不改 schema），走 QueryBuilder 关联子查询分支；不带
+    // lastStatus 时保持 findAndCount 既有路径逐字节不变。
+    if (p.lastStatus) {
+      // order 恒为单键（缺省 createdAt 或校验后的 sortBy）
+      const [[sortKey, dir]] = Object.entries(order) as Array<
+        [string, "ASC" | "DESC"]
+      >;
+      return this.findAllByLastStatus(p, select, sortKey, dir);
+    }
+
+    const where: Record<string, unknown> = { status: Not(TaskStatus.DELETED) };
+    if (p.status) where.status = p.status as TaskStatus;
+    if (p.name) where.name = ILike(`%${p.name}%`);
+    if (p.runtime) where.runtime = p.runtime;
+    if (p.applicationId) where.applicationId = p.applicationId;
+    // AUTH-01: projectId 过滤——"default" 映射为默认项目（未分配 NULL 行
+    // 一起归入默认项目视图，Or 处理）；具体 uuid 则精确匹配。
+    if (p.projectId) {
+      if (p.projectId === "default") {
+        where.projectId = Or(IsNull(), In([DEFAULT_PROJECT_ID]));
+      } else {
+        where.projectId = p.projectId;
+      }
+    }
+
     const [list, total] = await this.taskRepo.findAndCount({
       where,
       select,
@@ -1113,15 +1125,118 @@ export class TaskService {
       take: p.pageSize,
       order,
     });
-    // SEC-02: 列表响应 secrets 永久脱敏（叶子值回 ******，密文不外泄）。
-    // F-10: 投影模式下 secrets 不在 select 内，maskForResponse 收到 undefined
-    // 仍是 no-op（不会把 undefined 写成掩码）。
-    if (!select) {
-      list.forEach((t) => {
-        t.secrets = this.secretsCrypto.maskForResponse(t.secrets) as
-          Record<string, unknown> | null | undefined;
+    this.maskListSecrets(list, select);
+    return paginate(list, total, p.page, p.pageSize);
+  }
+
+  /**
+   * SEC-02/F-10 列表后处理（findAndCount 与 lastStatus QB 两分支共用同一段）：
+   * 默认投影下列表响应 secrets 永久脱敏（叶子值回 ******，密文不外泄）；
+   * 投影模式下 secrets 不在 select 内，不进入该循环（maskForResponse 收到
+   * undefined 仍是 no-op，不会把 undefined 写成掩码——语义与内联版一致）。
+   */
+  private maskListSecrets(
+    list: Task[],
+    select: Record<string, true> | undefined,
+  ): void {
+    if (select) return;
+    list.forEach((t) => {
+      t.secrets = this.secretsCrypto.maskForResponse(t.secrets) as
+        Record<string, unknown> | null | undefined;
+    });
+  }
+
+  /**
+   * P2-18: findAll 的 lastStatus 分支（QueryBuilder 版）。
+   *
+   * 语义对齐 findAndCount 路径的全部约定——status!=DELETED 基线（显式 status
+   * 时精确等值替换基线，同 `where.status = p.status` 的覆盖语义）、name ILIKE、
+   * runtime/applicationId 等值、projectId "default"→(IS NULL OR 默认项目)、
+   * F-03 排序白名单与方向归一、F-10 投影、分页 skip/take、SEC-02 脱敏后处理
+   * （maskListSecrets 同段共用）——仅多一个 EXISTS 子查询：
+   *
+   *   该任务最近一次执行（task_executions 中该 taskId 下 createdAt DESC、
+   *   tie-break id DESC 的第一条）的 status = :lastStatus。
+   *
+   * 最近一次还在 pending/running 也如实参与筛选（值班看到的就是当前真实状态）。
+   *
+   * 索引注记（核实于 task-execution.entity.ts @Index 声明 + 迁移史）：
+   * - EXISTS 外层（te）：te."taskId" = task."id" AND te."status" = :lastStatus
+   *   命中复合索引 idx_task_executions_task_id_status(taskId, status)；
+   * - 最内标量子查询（te2）：按 IDX_task_executions_taskId（taskId 单列索引，
+   *   1717473142679 建立）定位该任务的执行行后排序取 TOP1——行数规模 = 单任务
+   *   执行数，无 (taskId, createdAt) 复合索引可接受；如生产画像显示单任务执行
+   *   数巨大再评估迁移，本轮不加。
+   * - 子查询经 TypeORM QB API 生成（本仓无自定义 namingStrategy，物理列名为
+   *   驼峰 "taskId"/"createdAt"——切勿手写 snake_case 的 task_id/created_at）。
+   */
+  private async findAllByLastStatus(
+    p: ListTasksQueryDto,
+    select: Record<string, true> | undefined,
+    sortKey: string,
+    dir: "ASC" | "DESC",
+  ) {
+    const qb = this.taskRepo.createQueryBuilder("task");
+
+    // where 基线与过滤项逐项镜像 findAndCount 路径
+    if (p.status) {
+      qb.where("task.status = :__status", { __status: p.status });
+    } else {
+      qb.where("task.status != :__deleted", { __deleted: TaskStatus.DELETED });
+    }
+    if (p.name) {
+      qb.andWhere("task.name ILIKE :__name", { __name: `%${p.name}%` });
+    }
+    if (p.runtime) {
+      qb.andWhere("task.runtime = :__runtime", { __runtime: p.runtime });
+    }
+    if (p.applicationId) {
+      qb.andWhere("task.applicationId = :__applicationId", {
+        __applicationId: p.applicationId,
       });
     }
+    // AUTH-01 同款语义："default" → 未分配行与默认项目行一起命中
+    if (p.projectId) {
+      if (p.projectId === "default") {
+        qb.andWhere(
+          "(task.projectId IS NULL OR task.projectId = :__defaultPid)",
+          { __defaultPid: DEFAULT_PROJECT_ID },
+        );
+      } else {
+        qb.andWhere("task.projectId = :__projectId", {
+          __projectId: p.projectId,
+        });
+      }
+    }
+
+    // lastStatus EXISTS：关联子查询（te/te2 引用外层别名 task 的行）
+    const latestSub = this.execRepo
+      .createQueryBuilder("te2")
+      .select("te2.id")
+      .where("te2.taskId = task.id")
+      .orderBy("te2.createdAt", "DESC")
+      .addOrderBy("te2.id", "DESC")
+      .limit(1);
+    const existsSub = this.execRepo
+      .createQueryBuilder("te")
+      .select("1")
+      .where("te.taskId = task.id")
+      .andWhere("te.status = :lastStatus", { lastStatus: p.lastStatus })
+      .andWhere(`te.id = (${latestSub.getQuery()})`)
+      .setParameters(latestSub.getParameters());
+    qb.andWhere(`EXISTS (${existsSub.getQuery()})`, existsSub.getParameters());
+
+    // F-10 投影（QB 形态：task.<col> 列表）——白名单校验已在 findAll 前置段
+    // 完成，secrets 永不可能出现在 select 内。
+    if (select) {
+      qb.select(Object.keys(select).map((col) => `task.${col}`));
+    }
+    // F-03 排序（sortKey 已过白名单，无注入面）
+    qb.orderBy(`task.${sortKey}`, dir);
+    qb.skip((p.page - 1) * p.pageSize).take(p.pageSize);
+
+    const [list, total] = await qb.getManyAndCount();
+    this.maskListSecrets(list, select);
     return paginate(list, total, p.page, p.pageSize);
   }
 

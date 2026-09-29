@@ -16,7 +16,7 @@ import { useTranslation } from 'react-i18next';
 import '../i18n';
 import { tasksApi } from '../api/tasks';
 import { useAllTasksForDag } from '../api/queries';
-import { getErrMsg } from '../utils/error';
+import { showApiError } from '../utils/error';
 import StateError from './StateError';
 import { buildDependencyGraph, type DagNode } from './dag-layout';
 
@@ -77,7 +77,7 @@ export default function TaskDependencyGraph({ taskId }: { taskId: string }) {
       await tasksApi.batchTrigger(chainTaskIds);
       message.success(t('depGraph.chainTriggered', { count: chainTaskIds.length }));
     } catch (err: unknown) {
-      message.error(getErrMsg(err, t('depGraph.chainTriggerFail')));
+      showApiError(err, t('depGraph.chainTriggerFail'));
     } finally {
       setChainTriggering(false);
     }

@@ -5210,6 +5210,8 @@ export interface operations {
             query?: {
                 page?: components["schemas"]["Object"];
                 pageSize?: components["schemas"]["Object"];
+                /** @description Fuzzy search by username or email (case-insensitive) */
+                search?: string;
             };
             header?: never;
             path?: never;
@@ -5322,6 +5324,8 @@ export interface operations {
                 runtime?: string;
                 /** @description F-10: comma-separated projection whitelist (e.g. 'id,name'). Only whitelisted lightweight columns are selected — params/secrets/glueSource and other heavy columns are skipped. Illegal fields → 400. */
                 fields?: unknown;
+                /** @description P2-18: filter tasks whose MOST RECENT execution has this status (latest task_executions row per task: createdAt DESC, id DESC). Values: pending/running/waiting/success/failed/timeout/killed/cancelled. An in-flight latest execution (pending/running) matches as-is. Implemented as an EXISTS subquery — composable with the other list filters. */
+                lastStatus?: "pending" | "running" | "waiting" | "success" | "failed" | "timeout" | "killed" | "cancelled";
             };
             header?: never;
             path?: never;

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Card,
   Descriptions,
   Tag,
@@ -41,7 +41,7 @@ import {
 } from '../api/queries';
 import { taskTemplatesApi } from '../api/task-templates';
 import { aiApi, ScheduleSuggestion } from '../api/ai';
-import { getErrMsg } from '../utils/error';
+import { getErrMsg, showApiError } from '../utils/error';
 // UX-06：触发方式展示标签唯一事实源（此前直接渲染裸枚举）。
 import { triggerLabel, TRIGGER_COLOR } from '../utils/trigger-label';
 // D-P2-02a（设计审计）：运行时枚举本地化唯一事实源
@@ -146,6 +146,16 @@ export default function TaskDetailPage() {
   const [tplModalOpen, setTplModalOpen] = useState(false);
   const [tplForm] = Form.useForm<{ name: string; description?: string; category?: string }>();
   const [tplSaving, setTplSaving] = useState(false);
+  // GLUE-DIRTY-01：Glue 脚本编辑器有未保存改动时拦截浏览器关闭/刷新——
+  // 详情页没有表单 dirty 语义，beforeunload 是唯一守卫层。
+  const [glueDirty, setGlueDirty] = useState(false);
+
+  useEffect(() => {
+    if (!glueDirty) return;
+    const handler = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ''; };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [glueDirty]);
 
   const statusLabels = STATUS_LABEL(t);
   const taskStatusLabels = TASK_STATUS_LABEL(t);
@@ -172,7 +182,7 @@ export default function TaskDetailPage() {
       // validateFields 的 reject 是带 errorFields 的校验对象，不是请求错误——
       // 仅对真正的请求失败弹 toast，表单校验错误由 Form 自带红字呈现。
       if (err && typeof err === 'object' && 'errorFields' in err) return;
-      message.error(getErrMsg(err, t('taskDetail.saveAsTemplateFail')));
+      showApiError(err, t('taskDetail.saveAsTemplateFail'));
     } finally {
       setTplSaving(false);
     }
@@ -186,7 +196,7 @@ export default function TaskDetailPage() {
       const result = await aiApi.suggestSchedule(id);
       setAiSuggestion(result);
     } catch (err: unknown) {
-      message.error(getErrMsg(err, t('taskDetail.aiAnalyzeFail')));
+      showApiError(err, t('taskDetail.aiAnalyzeFail'));
       setAiModalOpen(false);
     } finally {
       setAiLoading(false);
@@ -238,7 +248,7 @@ export default function TaskDetailPage() {
       setTriggerModalOpen(false);
       setTimeout(refreshExecs, TRIGGER_REFRESH_DELAY_MS);
     } catch (err: unknown) {
-      message.error(getErrMsg(err, t('taskDetail.triggerFail')));
+      showApiError(err, t('taskDetail.triggerFail'));
     } finally {
       setTriggering(false);
     }
@@ -248,7 +258,7 @@ export default function TaskDetailPage() {
     if (toggleLoading) return;
     setToggleLoading(true);
     try { await tasksApi.pause(id!); message.success(t('taskDetail.paused')); refreshTask(); }
-    catch (err: unknown) { message.error(getErrMsg(err, t('taskDetail.pauseFail'))); }
+    catch (err: unknown) { showApiError(err, t('taskDetail.pauseFail')); }
     finally { setToggleLoading(false); }
   };
 
@@ -256,13 +266,13 @@ export default function TaskDetailPage() {
     if (toggleLoading) return;
     setToggleLoading(true);
     try { await tasksApi.resume(id!); message.success(t('taskDetail.resumed')); refreshTask(); }
-    catch (err: unknown) { message.error(getErrMsg(err, t('taskDetail.resumeFail'))); }
+    catch (err: unknown) { showApiError(err, t('taskDetail.resumeFail')); }
     finally { setToggleLoading(false); }
   };
 
   const handleDelete = async () => {
     try { await tasksApi.delete(id!); message.success(t('taskDetail.deleted')); nav('/tasks'); }
-    catch (err: unknown) { message.error(getErrMsg(err, t('taskDetail.deleteFail'))); }
+    catch (err: unknown) { showApiError(err, t('taskDetail.deleteFail')); }
   };
 
   const handleEdit = () => {
@@ -276,7 +286,7 @@ export default function TaskDetailPage() {
       await tasksApi.killExecution(id!, execId);
       message.success(t('taskDetail.killed'));
       refreshExecs();
-    } catch (err: unknown) { message.error(getErrMsg(err, t('taskDetail.killFail'))); }
+    } catch (err: unknown) { showApiError(err, t('taskDetail.killFail')); }
     finally { setKillingId(null); }
   };
 
@@ -658,6 +668,7 @@ export default function TaskDetailPage() {
                   initialSource={task.glueSource ?? undefined}
                   initialLanguage={task.glueLanguage ?? undefined}
                   taskRuntime={task.runtime}
+                  onDirtyChange={setGlueDirty}
                 />
               </Card>
             ),

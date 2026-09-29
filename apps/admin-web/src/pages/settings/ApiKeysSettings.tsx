@@ -18,7 +18,7 @@ import {
 } from '@ant-design/icons';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiKeysApi, ApiKeyView, ApiKeyScope, ApiKeyCreateResult } from '../../api/api-keys';
-import { getErrMsg } from '../../utils/error';
+import { showApiError } from '../../utils/error';
 // UX-04：统一剪贴板封装（返回是否**真正**复制成功，失败时降级 execCommand）。
 import { copyText } from '../../utils/clipboard';
 import { formatDateTime } from '../../utils/timeFormat';
@@ -150,7 +150,7 @@ export default function ApiKeysSettings() {
     // 创建成功）。getErrMsg 取后端文案（client 拦截器会再叠一层全局 toast，
     // 但 mutation 层文案更贴动作语义，与 UserManagementPage 同形态）。
     onError: (err: unknown) => {
-      message.error(getErrMsg(err, t('apiKeys.createFail')));
+      showApiError(err, t('apiKeys.createFail'));
     },
   });
 
@@ -163,7 +163,7 @@ export default function ApiKeysSettings() {
     // UI-15：吊销失败补 onError（QA-03 前科：此前失败静默，按钮 loading 复位
     // 但无任何提示）。文案走 getErrMsg（axios 错误取 response.data.message）。
     onError: (err: unknown) => {
-      message.error(getErrMsg(err, t('apiKeys.revokeFail')));
+      showApiError(err, t('apiKeys.revokeFail'));
     },
   });
 

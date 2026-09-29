@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   Alert,
@@ -20,6 +20,8 @@ import type { ColumnsType } from 'antd/es/table';
 
 import PageHeader from '../components/PageHeader';
 import { sopsApi } from '../api/sops';
+// SOPS-TIME-01：时间列统一走 formatDateTime（locale 感知 + 空值回退 '—'）
+import { formatDateTime } from '../utils/timeFormat';
 import type {
   AssignableExecutor,
   Sop,
@@ -72,6 +74,8 @@ export default function SopsPage() {
   const [clarifications, setClarifications] = useState<Record<string, SopClarification[]>>({});
   const [draftOpen, setDraftOpen] = useState(false);
   const [draft, setDraft] = useState({ slug: '', title: '', frontMatterYaml: '', bodyMarkdown: '' });
+  // SOPS-DRAFT-01：新建草稿提交中——Modal confirmLoading + 防重复提交
+  const [creatingDraft, setCreatingDraft] = useState(false);
   // P6 升级环收口：人工回复澄清（escalated_to_human / pending）
   const [replyTarget, setReplyTarget] = useState<{ assignmentId: string; clarificationId: string } | null>(null);
   const [reply, setReply] = useState<{ resolution: 'answered' | 'sop_amended'; answer: string; amendedYaml: string }>({
@@ -105,10 +109,17 @@ export default function SopsPage() {
     void load();
   }, [load]);
 
+  // SOPS-RACE-01：openDetail 无取消机制，快速连点两行时旧详情的响应可晚于
+  // 新详情 resolve，把 versions/assignments/澄清覆盖成旧行的数据。每次调用
+  // 自增 fetchSeq，仅最后一次请求允许 setState（与 AppDeploymentPage 同款）。
+  const detailSeq = useRef(0);
+
   const openDetail = useCallback(async (sop: Sop) => {
+    const seq = ++detailSeq.current;
     setDetail(sop);
     try {
       const [vs, asg] = await Promise.all([sopsApi.versions(sop.id), sopsApi.assignments(sop.id)]);
+      if (seq !== detailSeq.current) return; // 已有更新的请求/关闭，丢弃过期响应
       setVersions(vs);
       setAssignments(asg);
       const clars: Record<string, SopClarification[]> = {};
@@ -125,9 +136,11 @@ export default function SopsPage() {
           }
         }),
       );
+      if (seq !== detailSeq.current) return; // 已有更新的请求/关闭，丢弃过期响应
       setClarifications(clars);
       setMedia(med);
     } catch {
+      if (seq !== detailSeq.current) return;
       message.error(t('sops.loadFailed'));
     }
   }, [t]);
@@ -208,9 +221,24 @@ export default function SopsPage() {
   );
 
   const createDraft = useCallback(async () => {
+    // SOPS-DRAFT-01：slug 是 SOP 的唯一标识，后端规则 ^[a-z0-9][a-z0-9-]{0,127}$
+    // （sop.controller.ts DraftSopDto）。前端先校验再发请求——空 slug/非法字符
+    // 就地提示，不发注定失败的请求。
+    const slug = draft.slug.trim();
+    if (!slug) {
+      message.warning(t('sops.slugRequired'));
+      return;
+    }
+    if (!/^[a-z0-9][a-z0-9-]{0,127}$/.test(slug)) {
+      message.warning(t('sops.slugInvalid'));
+      return;
+    }
+    // 防重复提交：Modal okButton 走 confirmLoading，回调再挡一层（连点/回车）
+    if (creatingDraft) return;
+    setCreatingDraft(true);
     try {
       await sopsApi.draft({
-        slug: draft.slug,
+        slug,
         title: draft.title,
         frontMatterYaml: draft.frontMatterYaml || undefined,
         bodyMarkdown: draft.bodyMarkdown || undefined,
@@ -221,15 +249,17 @@ export default function SopsPage() {
       void load();
     } catch {
       message.error(t('sops.draftFailed'));
+    } finally {
+      setCreatingDraft(false);
     }
-  }, [draft, load, t]);
+  }, [draft, creatingDraft, load, t]);
 
   const sopColumns: ColumnsType<Sop> = [
     { title: 'slug', dataIndex: 'slug', width: 200 },
     { title: t('sops.col.title'), dataIndex: 'title', ellipsis: true },
     { title: t('sops.col.status'), dataIndex: 'status', width: 110, render: (s: Sop['status']) => statusTag(s) },
     { title: t('sops.col.version'), dataIndex: 'currentVersion', width: 100, render: (v: string | null) => v ?? '—' },
-    { title: t('sops.col.updatedAt'), dataIndex: 'updatedAt', width: 170, render: (v: string) => new Date(v).toLocaleString() },
+    { title: t('sops.col.updatedAt'), dataIndex: 'updatedAt', width: 170, render: (v: string) => formatDateTime(v) },
     {
       title: t('sops.col.actions'),
       width: 100,
@@ -245,7 +275,7 @@ export default function SopsPage() {
     { title: t('sops.col.version'), dataIndex: 'version', width: 90 },
     { title: 'contentHash', dataIndex: 'contentHash', width: 130, render: (h: string) => <Text copyable={{ text: h }}>{h.slice(0, 12)}…</Text> },
     { title: t('sops.col.publishedBy'), dataIndex: 'publishedBy', width: 160 },
-    { title: t('sops.col.publishedAt'), dataIndex: 'publishedAt', width: 170, render: (v: string) => new Date(v).toLocaleString() },
+    { title: t('sops.col.publishedAt'), dataIndex: 'publishedAt', width: 170, render: (v: string) => formatDateTime(v) },
     { title: 'changelog', dataIndex: 'changelog', ellipsis: true },
   ];
 
@@ -258,7 +288,7 @@ export default function SopsPage() {
       width: 120,
       render: (_, a) => `${a.clarificationRound}/${a.maxRounds}`,
     },
-    { title: t('sops.col.updatedAt'), dataIndex: 'updatedAt', width: 170, render: (v: string) => new Date(v).toLocaleString() },
+    { title: t('sops.col.updatedAt'), dataIndex: 'updatedAt', width: 170, render: (v: string) => formatDateTime(v) },
     {
       title: t('sops.col.actions'),
       width: 90,
@@ -310,7 +340,7 @@ export default function SopsPage() {
         width={860}
         open={detail !== null}
         onClose={() => setDetail(null)}
-        destroyOnClose
+        destroyOnHidden
       >
         {detail && (
           <Tabs
@@ -371,7 +401,7 @@ export default function SopsPage() {
                                   {t('sops.mediaView')}
                                 </Button>
                                 <Text style={{ marginLeft: 8 }}>
-                                  {m.name} · {Math.round(m.sizeBytes / 1024)}KB · {new Date(m.createdAt).toLocaleString()}
+                                  {m.name} · {Math.round(m.sizeBytes / 1024)}KB · {formatDateTime(m.createdAt)}
                                 </Text>
                               </div>
                             )),
@@ -455,6 +485,7 @@ export default function SopsPage() {
         open={draftOpen}
         onOk={() => void createDraft()}
         onCancel={() => setDraftOpen(false)}
+        confirmLoading={creatingDraft}
         width={720}
         okText={t('sops.create')}
       >
@@ -493,14 +524,17 @@ export default function SopsPage() {
         okText={t('sops.replySubmit')}
       >
         <Space direction="vertical" style={{ width: '100%' }} size="small">
-          <select
-            className="ant-input"
+          {/* SOPS-UI-01：原生 <select className="ant-input"> 换 antd Select——
+              原生控件不吃暗色主题，下拉是白底黑字，与其余表单控件割裂 */}
+          <Select
+            style={{ width: '100%' }}
             value={reply.resolution}
-            onChange={(e) => setReply({ ...reply, resolution: e.target.value as 'answered' | 'sop_amended' })}
-          >
-            <option value="answered">{t('sops.replyAnswered')}</option>
-            <option value="sop_amended">{t('sops.replyAmended')}</option>
-          </select>
+            onChange={(v) => setReply({ ...reply, resolution: v as 'answered' | 'sop_amended' })}
+            options={[
+              { value: 'answered', label: t('sops.replyAnswered') },
+              { value: 'sop_amended', label: t('sops.replyAmended') },
+            ]}
+          />
           <Input.TextArea
             rows={5}
             placeholder={t('sops.replyPlaceholder')}

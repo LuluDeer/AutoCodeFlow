@@ -6,7 +6,7 @@ import {
 } from '@ant-design/icons';
 import { useQuery } from '@tanstack/react-query';
 import { registryApi } from '../api/registry';
-import { getErrMsg } from '../utils/error';
+import { showApiError } from '../utils/error';
 import { normFileList } from '../utils/upload';
 import { useTranslation } from 'react-i18next';
 import PageHeader from '../components/PageHeader';
@@ -52,7 +52,7 @@ function PypiTab() {
       form.resetFields();
       refresh();
     } catch (err: unknown) {
-      message.error(getErrMsg(err, t('registry.upload.fail')));
+      showApiError(err, t('registry.upload.fail'));
     } finally {
       setUploading(false);
     }

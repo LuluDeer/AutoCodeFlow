@@ -36,6 +36,9 @@ import { MetricsStreamSlotService } from "./metrics-stream-slot.service";
  * - 快照内容：getSummary（KPI 面共用查询）+ getExecutorStats（热力条概要）
  *   + getSchedulerMetrics（队列深度/调度健康）。任一查询失败不终止流——
  *   发 error 帧降级，下一拍继续（fail-open 观测语义）。
+ * - P1-1b（nginx-sse）：帧写出后立刻 res.flush()（typeof 守卫）——此前
+ *   compression 对 text/event-stream 走 gzip，帧滞留 zlib 缓冲不落 socket，
+ *   心跳帧写了但到不了反代（根因详见 sse-compression.util.ts 头注）。
  */
 @ApiTags("metrics")
 @ApiBearerAuth()
@@ -92,9 +95,16 @@ export class MetricsStreamController {
       const ac = new AbortController();
       req.on("close", () => ac.abort());
 
+      // P1-1b（nginx-sse）：每帧写出后立刻 flush。compression 中间件会给
+      // res 挂 flush()（真正 flush zlib —— compression/index.js:93-97）；
+      // SSE 响应已按 content-type 豁免压缩（sse-compression.util.ts，P1-1a），
+      // 此时 flush 是无害 no-op，但保留调用作为兜底：帧不再可能滞留 zlib
+      // 缓冲。无 compression 的运行环境（及单测 mock res）没有 flush，
+      // 必须 typeof 守卫后调用。
       const write = (chunk: string) => {
         if (res.writableEnded) return;
         res.write(chunk);
+        if (typeof res.flush === "function") res.flush();
       };
       const send = (payload: unknown, event?: string) => {
         write(event ? `event: ${event}\n` : "");

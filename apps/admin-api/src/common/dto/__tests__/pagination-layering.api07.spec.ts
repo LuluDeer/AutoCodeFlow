@@ -136,17 +136,22 @@ describe("API-07 受影响端点：契约参数表与实际消费的过滤器一
 });
 
 describe("API-07 源码层：users 端点与服务签名都已收窄", () => {
-  it("users.controller 的 findAll 收 PageQueryDto", () => {
+  it("users.controller 的 findAll 收 ListUsersDto（PageQueryDto 分层 + 真实消费的 search）", () => {
     const src = read("apps/admin-api/src/modules/users/users.controller.ts");
-    expect(src).toMatch(/findAll\(@Query\(\)\s*pagination:\s*PageQueryDto\)/);
+    expect(src).toMatch(/findAll\(@Query\(\)\s*pagination:\s*ListUsersDto\)/);
     // 且不再 import PaginationDto（那是"改了一半"的典型形态）
     expect(src).not.toMatch(/import\s*\{\s*PaginationDto\s*\}/);
   });
 
   it("users.service 的 findAll 签名同步收窄", () => {
     const src = read("apps/admin-api/src/modules/users/users.service.ts");
-    expect(src).toMatch(/async findAll\(pagination:\s*PageQueryDto\)/);
+    expect(src).toMatch(/async findAll\(pagination:\s*ListUsersDto\)/);
     expect(src).not.toMatch(/import\s*\{[^}]*\bPaginationDto\b[^}]*\}/);
+  });
+
+  it("ListUsersDto 继承 PageQueryDto（分层而非复制）", () => {
+    const src = read("apps/admin-api/src/modules/users/dto/list-users.dto.ts");
+    expect(src).toMatch(/class ListUsersDto extends PageQueryDto/);
   });
 
   it("config-history DTO 收 PageQueryDto", () => {

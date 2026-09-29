@@ -319,6 +319,51 @@ describe("FEAT-19 OutboxDispatcher", () => {
       );
     });
 
+    // P3：形状守卫——claim 返回不是 [rows, affected] 元组时降级为空轮，但必须
+    // warn（60s 节流）并与"真的无行可投"区分，否则补投链路静默停摆零日志。
+    it("claim 返回形状意外 → 降级空轮 + warn（含实际形状信息，60s 节流）", async () => {
+      // 旧驱动形状：行数组直接返回（元组的第一位不是数组）
+      dataSourceMock.query.mockResolvedValueOnce([
+        makeRow({ id: "row-x" }),
+      ] as never);
+      const { Logger } = await import("@nestjs/common");
+      const warn = jest
+        .spyOn(Logger.prototype, "warn")
+        .mockImplementation(() => {});
+
+      await expect(outbox.scanOnce()).resolves.toBe(0);
+      expect(
+        warn.mock.calls.some((c) => String(c[0]).includes("unexpected shape")),
+      ).toBe(true);
+      expect(
+        warn.mock.calls.some((c) => String(c[0]).includes("array(len=1")),
+      ).toBe(true);
+
+      // 60s 节流：紧接的下一轮同样形状异常，不再重复 warn
+      dataSourceMock.query.mockResolvedValueOnce([
+        makeRow({ id: "row-y" }),
+      ] as never);
+      await outbox.scanOnce();
+      const shapeWarns = warn.mock.calls.filter((c) =>
+        String(c[0]).includes("unexpected shape"),
+      );
+      expect(shapeWarns).toHaveLength(1);
+      warn.mockRestore();
+    });
+
+    it("真的空轮（[[], 0] 元组形状正确）不 warn", async () => {
+      dataSourceMock.query.mockResolvedValueOnce([[], 0]);
+      const { Logger } = await import("@nestjs/common");
+      const warn = jest
+        .spyOn(Logger.prototype, "warn")
+        .mockImplementation(() => {});
+      await expect(outbox.scanOnce()).resolves.toBe(0);
+      expect(
+        warn.mock.calls.some((c) => String(c[0]).includes("unexpected shape")),
+      ).toBe(false);
+      warn.mockRestore();
+    });
+
     it("claim SQL 原子地选择并更新 lease，活动租约由谓词跳过且过期可回收", async () => {
       dataSourceMock.query.mockResolvedValueOnce([[], 0]);
       await outbox.scanOnce();

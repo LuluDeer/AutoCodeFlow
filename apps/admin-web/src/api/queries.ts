@@ -213,6 +213,8 @@ export function useTasksList(params: {
   name?: string;
   status?: string;
   triggerType?: string;
+  /** P2-18：最近一次执行结果筛选（lastStatus），透传 GET /tasks 查询参数。 */
+  lastStatus?: string;
 }): UseQueryResult<PageResult<Task>> {
   return useQuery({
     queryKey: queryKeys.tasks.list(params),
