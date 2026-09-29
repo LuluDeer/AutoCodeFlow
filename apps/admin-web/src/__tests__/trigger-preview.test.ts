@@ -45,17 +45,30 @@ describe('parseCronExpression（DTO 子集解析）', () => {
     expect(p!.dayOfWeek.has(0)).toBe(true);
   });
 
-  it('裸 n/step（POSIX 合法但 node-cron 拒绝）拒绝——与调度器注册门同口径', () => {
-    // 用户实报案例：预览曾放行 12/20，保存时后端 nodeCron.validate 400
-    expect(parseCronExpression('12/20 6-23 * * *')).toBeNull();
-    expect(parseCronExpression('5/10 * * * *')).toBeNull();
-    expect(parseCronExpression('0 5/10 * * *')).toBeNull();
-    expect(parseCronExpression('59/15 * * * *')).toBeNull();
-    // 逗号混写同样拒绝
-    expect(parseCronExpression('12/20,45 * * * *')).toBeNull();
-    // */step 与 范围/step 仍接受
+  it('裸 n/step（POSIX n..max/step 语义）接受——后端写边界会等价规范化', () => {
+    // 用户实报案例：预览与保存曾在此分叉（后端旧门按 node-cron 原样拒绝）。
+    // 现后端落库前等价改写为 n-max/step（cron-normalize.util），预览按同一
+    // POSIX 语义放行——「能预览」重新等于「能保存」。
+    expect(parseCronExpression('12/20 6-23 * * *')).not.toBeNull();
+    expect(parseCronExpression('5/10 * * * *')).not.toBeNull();
+    expect(parseCronExpression('0 5/10 * * *')).not.toBeNull();
+    expect(parseCronExpression('59/15 * * * *')).not.toBeNull();
+    // 逗号混写同样接受
+    expect(parseCronExpression('12/20,45 * * * *')).not.toBeNull();
+    // */step 与 范围/step 不受影响
     expect(parseCronExpression('*/20 6-23 * * *')).not.toBeNull();
     expect(parseCronExpression('12-59/20 6-23 * * *')).not.toBeNull();
+  });
+
+  it('规范化前后触发时刻完全一致（n/step ≡ n-max/step）', () => {
+    const NOW = new Date(2026, 8, 8, 10, 30, 0, 0);
+    for (const raw of ['12/20 6-23 * * *', '5/10 * * * *', '0 5/10 * * *']) {
+      const rewritten = suggestCronStepRewrite(raw);
+      expect(rewritten).not.toBeNull();
+      expect(nextCronFireTimes(raw, 8, NOW)).toEqual(
+        nextCronFireTimes(rewritten!, 8, NOW),
+      );
+    }
   });
 });
 

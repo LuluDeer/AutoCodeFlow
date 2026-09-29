@@ -2183,7 +2183,7 @@ export default {
   'taskForm.field.cron.helper': 'Not sure how? Click to use the Cron helper',
   'taskForm.field.cron.placeholder': '0 8 * * 1-5  (weekdays at 8 AM)',
   'taskForm.field.cron.invalid': 'Cannot parse: a 5-field numeric Cron is required (min hour day month weekday)',
-  'taskForm.field.cron.stepUnsupported': 'The scheduler does not accept the "value/step" form (e.g., 12/20); use: {{suggestion}}',
+  'taskForm.field.cron.normalized': 'Normalized the "value/step" form to: {{suggestion}} (fire times unchanged)',
   'taskForm.field.timezone': 'Timezone',
   'taskForm.field.timezone.tooltip': 'IANA timezone name, e.g., Asia/Shanghai; empty uses the server default timezone',
   'taskForm.field.fixedRate': 'Interval',
