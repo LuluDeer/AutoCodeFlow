@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.3](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.5.2...v1.5.3) (2026-09-29)
+
+
+### Bug Fixes
+
+* **mcp-server:** 锁定 ip-address@10.7.2 修 CI npm-audit 两个 SSRF 公告 ([5bd3acc](https://github.com/LuluDeer/AutoCodeFlow/commit/5bd3acc759b7af9ca602b90e49ef3acc532513f4))
+
 ## [1.5.2](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.5.1...v1.5.2) (2026-09-22)
 
 
