@@ -27,10 +27,7 @@
     },
     "packages/mcp-server": {
       "release-type": "node",
-      "component": "autocodeflow-mcp-server",
-      "extra-files": [
-        "src/index.ts"
-      ]
+      "component": "autocodeflow-mcp-server"
     },
     "packages/autoflow-sdk": {
       "release-type": "python",

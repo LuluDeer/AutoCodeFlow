@@ -711,8 +711,14 @@ migration_phase() {
     fi
 
     if [ "$MODE" = "docker" ]; then
-        log "  执行迁移（容器内）..."
-        run compose exec -T admin-api npm run migration:run
+        # Docker 模式必须走 prod 脚本（typeorm CLI + dist/data-source.js）：
+        # 运行镜像 npm ci --omit=dev 无 ts-node / src，dev 版 migration:run
+        # （ts-node src/data-source.ts）在容器内必炸。compose run（而非 exec）：
+        # 迁移发生在 ⑦ start 之前，全新部署时 admin-api 容器尚未运行，exec
+        # 必报 "service not running"；run 以一次性容器跑完即弃（--rm），端口
+        # 不发布、restart 策略默认 no，不会与后续 up 冲突。
+        log "  执行迁移（容器内，prod 入口）..."
+        run compose run --rm -T admin-api npm run migration:run:prod
     else
         log "  执行迁移..."
         run bash -c "cd '$ROOT_DIR/apps/admin-api' && npm run migration:run"
@@ -1097,9 +1103,14 @@ EOF
   回滚代码而保留迁移后的 schema 通常安全；反向回滚迁移会丢数据。
 
   若确认需要回滚迁移，请人工执行：
-    cd apps/admin-api && npm run migration:revert
-
 EOF
+    # docker 模式容器内无 ts-node/src（npm ci --omit=dev + 仅 dist），回滚与
+    # 迁移同理必须走 prod 入口——与 migration_phase 的 compose run 姿态一致
+    if [ "$MODE" = "docker" ]; then
+        printf '    docker compose run --rm -T admin-api npm run migration:revert:prod\n\n'
+    else
+        printf '    cd apps/admin-api && npm run migration:revert\n\n'
+    fi
 
     if [ "$ASSUME_YES" = false ]; then
         printf '  继续回滚代码？[y/N] '

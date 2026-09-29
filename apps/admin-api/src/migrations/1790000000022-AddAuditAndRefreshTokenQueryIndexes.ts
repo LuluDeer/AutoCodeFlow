@@ -19,23 +19,35 @@ import { MigrationInterface, QueryRunner } from "typeorm";
  *
  * 幂等：CREATE/DROP INDEX IF [NOT] EXISTS，重复执行与 revert 重放均无
  * 副作用。全部为非唯一普通索引，不触碰数据行。
+ *
+ * 并发建索引（PK-16 补充）：audit_logs 是高频写入大表，非并发 CREATE INDEX
+ * 会长时间阻塞写入。三个索引均走 CREATE INDEX CONCURRENTLY——PG 硬约束
+ * "CONCURRENTLY 不能在事务块内执行"，故本迁移声明 transaction = false
+ * （TypeORM MigrationExecutor 读取迁移实例属性 transaction，false 时不包
+ * 外层事务）；两条必须同时成立，缺一即报
+ * "CREATE INDEX CONCURRENTLY cannot run inside a transaction block"。
+ * 每条语句自身原子（失败半成品索引由 PG 自动清理），IF NOT EXISTS 保证
+ * 重跑可重入。down 为人工 revert 路径（维护窗口执行），保持普通 DROP。
  */
 export class AddAuditAndRefreshTokenQueryIndexes1790000000022 implements MigrationInterface {
   name = "AddAuditAndRefreshTokenQueryIndexes1790000000022";
 
+  /** CONCURRENTLY 不能在事务内执行——本迁移不走外层事务（见类注释） */
+  transaction = false;
+
   public async up(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.query(`
-      CREATE INDEX IF NOT EXISTS "idx_audit_logs_action_created_at"
+      CREATE INDEX CONCURRENTLY IF NOT EXISTS "idx_audit_logs_action_created_at"
       ON "audit_logs" ("action", "createdAt")
     `);
 
     await queryRunner.query(`
-      CREATE INDEX IF NOT EXISTS "idx_refresh_tokens_user_id"
+      CREATE INDEX CONCURRENTLY IF NOT EXISTS "idx_refresh_tokens_user_id"
       ON "refresh_tokens" ("userId")
     `);
 
     await queryRunner.query(`
-      CREATE INDEX IF NOT EXISTS "idx_refresh_tokens_expires_at"
+      CREATE INDEX CONCURRENTLY IF NOT EXISTS "idx_refresh_tokens_expires_at"
       ON "refresh_tokens" ("expiresAt")
     `);
   }
