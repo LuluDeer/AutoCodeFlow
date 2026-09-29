@@ -6,7 +6,10 @@ import {
   ValidatorConstraintInterface,
 } from "class-validator";
 import * as nodeCron from "node-cron";
-import { normalizeCron5Field, isCron5FieldInBounds } from "../cron-normalize.util";
+import {
+  normalizeCron5Field,
+  isCron5FieldInBounds,
+} from "../cron-normalize.util";
 
 /**
  * 5 字段 cron 表达式的合法性校验（DTO 层，给用户可读的 400）。

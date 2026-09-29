@@ -636,6 +636,68 @@ describe("TaskProcessor", () => {
 
     expect(executorService.dispatch).toHaveBeenCalled();
   });
+
+  // ── MUTEX-01：互斥排队态（waiting）────────────────────────────────────────
+  //
+  // 唤醒路径依赖「WAITING 可被 claim」：15s 唤醒 sweep 把 WAITING 翻回 PENDING
+  // 后重新入队，若竞态下行仍是 WAITING（并发唤醒/手动路径），claim 也必须放行，
+  // 否则唤醒 job 永远空转、执行永久排队。
+  it("claims a WAITING row so the mutex wake sweep can re-dispatch it (MUTEX-01)", async () => {
+    execRepo.findOne = jest
+      .fn()
+      .mockResolvedValue({ ...exec, status: ExecutionStatus.WAITING });
+    executorService.dispatch.mockResolvedValue({ status: "accepted" });
+
+    await processor.handle({ data: { executionId: "exec-1" } } as any);
+
+    const claimQb = (execRepo.createQueryBuilder as jest.Mock).mock.results[0]
+      .value;
+    const claimable = (claimQb.andWhere as jest.Mock).mock.calls
+      .map((c: any) => c)
+      .find((c: any) => String(c[0]).includes("status IN"))?.[1]?.claimable as
+      string[] | undefined;
+    expect(claimable).toContain(ExecutionStatus.WAITING);
+    expect(claimable).not.toContain(ExecutionStatus.RUNNING);
+    // WAITING 行被 claim（affected=1）→ dispatch 真正发生。
+    expect(executorService.dispatch).toHaveBeenCalledTimes(1);
+  });
+
+  // 互斥阻塞不是失败：processor 识别 `[mutex_wait]` 前缀后把执行置 WAITING 并
+  // **正常结束 job**（不 rethrow → 不烧 BullMQ 重试预算），失败分类/AI 分析/
+  // 终态事件全链路不触发；错误文本剥掉 token 后作为排队原因写入 errorMessage。
+  it("mutex-wait dispatch failure parks the execution in WAITING without rethrow (MUTEX-01)", async () => {
+    executorService.dispatch.mockRejectedValue(
+      new Error(
+        '[mutex_wait]任务 "ziniao-app" 的所有候选设备上互斥组占用已满，执行进入排队等待',
+      ),
+    );
+
+    // 不 reject —— job 正常完成，执行保持打开态等待唤醒。
+    await expect(
+      processor.handle({ data: { executionId: "exec-1" } } as any),
+    ).resolves.toBeUndefined();
+
+    // 落库面：finally 的非终态条件 UPDATE 带着WAITING 状态 + 清空的
+    // failureReason + 剥掉 token 的排队原因。
+    const persistedPatch = (
+      dataSource.createQueryRunner as jest.Mock
+    ).mock.results
+      .map((r) => r.value)
+      .map((qr) => qr.manager.createQueryBuilder.mock.results[0]?.value)
+      .filter(Boolean)
+      .map((qb) => (qb.set as jest.Mock).mock.calls[0]?.[0])
+      .find((patch) => patch && typeof patch === "object") as
+      Record<string, unknown> | undefined;
+    expect(persistedPatch).toBeDefined();
+    expect(persistedPatch!.status).toBe(ExecutionStatus.WAITING);
+    expect(persistedPatch!.failureReason).toBeNull();
+    expect(String(persistedPatch!.errorMessage)).not.toContain("[mutex_wait]");
+    expect(String(persistedPatch!.errorMessage)).toContain("互斥组占用已满");
+
+    // 不是失败：无终态事件、无 AI 分析、无失败通知。
+    expect(taskService.publishTerminalEventForDispatch).not.toHaveBeenCalled();
+    expect(aiService.analyzeFailure).not.toHaveBeenCalled();
+  });
 });
 
 // PERF-P3a: worker 并发配置断言。@nestjs/bullmq v11 的 @Processor 装饰器把

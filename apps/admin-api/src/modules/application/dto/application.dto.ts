@@ -6,6 +6,7 @@ import {
   IsEnum,
   IsNotEmpty,
   IsBoolean,
+  IsUUID,
   MaxLength,
 } from "class-validator";
 import { ApplicationStatus } from "../entities/application.entity";
@@ -57,6 +58,20 @@ export class CreateApplicationDto {
   @IsOptional()
   @IsBoolean()
   approvalRequired?: boolean;
+
+  /**
+   * MUTEX-01（应用互斥组）：挂入的互斥组 id。null/不传 = 不参与互斥（默认，
+   * 行为与引入前一致）。服务层校验组存在性（FK 只兜底，前置校验给 400 而非
+   * 500）；同一组内的应用在同一台设备上互斥（组内并发数默认 1）。
+   */
+  @ApiPropertyOptional({
+    description:
+      "MUTEX-01: mutex group id this app joins (null = no mutual exclusion)",
+    nullable: true,
+  })
+  @IsOptional()
+  @IsUUID()
+  mutexGroupId?: string | null;
 }
 
 // PK-02（DEEP_REVIEW 0ef3bbe）: 手写 Optional 字段改为 PartialType(CreateApplicationDto)。

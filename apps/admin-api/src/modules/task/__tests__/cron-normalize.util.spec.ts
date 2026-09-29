@@ -59,7 +59,11 @@ function expandAll(expr: string): Array<Set<number>> | null {
   if (fields.length !== 5) return null;
   const out: Array<Set<number>> = [];
   for (let i = 0; i < 5; i++) {
-    const expanded = expandField(fields[i], FIELD_RANGES[i][0], FIELD_RANGES[i][1]);
+    const expanded = expandField(
+      fields[i],
+      FIELD_RANGES[i][0],
+      FIELD_RANGES[i][1],
+    );
     if (!expanded) return null;
     out.push(expanded);
   }
@@ -68,9 +72,7 @@ function expandAll(expr: string): Array<Set<number>> | null {
 
 describe("normalizeCron5Field（裸 n/step 等价改写）", () => {
   it("裸 n/step → n-max/step（各字段上限正确）", () => {
-    expect(normalizeCron5Field("12/20 6-23 * * *")).toBe(
-      "12-59/20 6-23 * * *",
-    );
+    expect(normalizeCron5Field("12/20 6-23 * * *")).toBe("12-59/20 6-23 * * *");
     expect(normalizeCron5Field("5/10 * * * *")).toBe("5-59/10 * * * *");
     expect(normalizeCron5Field("0 5/10 * * *")).toBe("0 5-23/10 * * *");
     expect(normalizeCron5Field("0 8 * * 1/2")).toBe("0 8 * * 1-7/2");
@@ -78,9 +80,7 @@ describe("normalizeCron5Field（裸 n/step 等价改写）", () => {
   });
 
   it("逗号混写只改写裸步进部分，其余原样保留", () => {
-    expect(normalizeCron5Field("12/20,45 * * * *")).toBe(
-      "12-59/20,45 * * * *",
-    );
+    expect(normalizeCron5Field("12/20,45 * * * *")).toBe("12-59/20,45 * * * *");
     expect(normalizeCron5Field("0 9-17/2,5/10 * * *")).toBe(
       "0 9-17/2,5-23/10 * * *",
     );

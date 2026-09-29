@@ -53,6 +53,8 @@ import {
   transitionToTerminal,
   transitionOneToTerminal,
 } from "./execution-terminal";
+// MUTEX-01：互斥组快照解析（执行创建时从 task→application 带下）。
+import { resolveTaskMutexGroupId } from "./execution-mutex";
 import { ExecutionLogLine } from "./entities/execution-log-line.entity";
 import { TaskVersion } from "./entities/task-version.entity";
 // python_task_multiversion（FR-19 / AC-19a）：zip 来源的 runtime 一致性校验
@@ -509,8 +511,14 @@ export class TaskService {
       normalized.maintenanceWindows = normalized.maintenanceWindows.map(
         (w, i) => ({
           ...w,
-          start: this.assertNormalizableCron(w.start, `maintenanceWindows[${i}].start`),
-          end: this.assertNormalizableCron(w.end, `maintenanceWindows[${i}].end`),
+          start: this.assertNormalizableCron(
+            w.start,
+            `maintenanceWindows[${i}].start`,
+          ),
+          end: this.assertNormalizableCron(
+            w.end,
+            `maintenanceWindows[${i}].end`,
+          ),
         }),
       );
     }
@@ -1356,6 +1364,8 @@ export class TaskService {
           // R-28: 默认 manual；依赖触发方传入 "dependency"。
           triggerType: triggerTypeOverride ?? "manual",
           taskVersion: task.currentVersion,
+          // MUTEX-01：互斥组快照（task→application；未挂组为 null）。
+          mutexGroupId: await resolveTaskMutexGroupId(manager, task),
           traceId: this.tracing?.isValidTraceId(traceId) ? traceId : null,
         }),
       );
@@ -2049,6 +2059,8 @@ export class TaskService {
           params: dto.params ?? task.params,
           triggerType: "rollback",
           taskVersion: dto.gitCommit,
+          // MUTEX-01：互斥组快照（task→application；未挂组为 null）。
+          mutexGroupId: await resolveTaskMutexGroupId(manager, task),
         }),
       );
     });

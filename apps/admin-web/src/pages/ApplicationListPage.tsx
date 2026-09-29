@@ -14,7 +14,8 @@ import { Table,
   Empty,
   Card,
   Pagination,
-  Switch } from 'antd';
+  Switch,
+  InputNumber } from 'antd';
 import { message } from '../utils/toast';
 // MODAL-01：命令式 Modal.* 从 utils/modal 取（吃暗色主题 + i18n locale）；<Modal> JSX 仍用 antd。
 import { Modal as confirmModal } from '../utils/modal';
@@ -23,7 +24,7 @@ import {
   SearchOutlined, FilterOutlined, EyeOutlined, RocketOutlined,
   InfoCircleOutlined,
 } from '@ant-design/icons';
-import { applicationsApi, Application, deploymentsApi, AppDeployment } from '../api/applications';
+import { applicationsApi, Application, deploymentsApi, AppDeployment, mutexGroupsApi, MutexGroup } from '../api/applications';
 import { executorsApi } from '../api/executors';
 import { useNavigate, Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -163,6 +164,19 @@ export default function ApplicationListPage() {
   // F-2：整包 zip 上传期间禁用确定按钮并给 loading，避免重复点击触发多次上传
   //（与 ExecutorPackagesPage 的 uploading 模式对齐）。
   const [uploading, setUploading] = useState(false);
+  // MUTEX-01：互斥组下拉数据 + 内联建组弹窗（应用编辑/创建均可挂组）。
+  const [mutexGroups, setMutexGroups] = useState<MutexGroup[]>([]);
+  const [groupModalOpen, setGroupModalOpen] = useState(false);
+  const [groupForm] = Form.useForm();
+  const [groupSaving, setGroupSaving] = useState(false);
+
+  const fetchMutexGroups = useCallback(async () => {
+    try {
+      setMutexGroups(await mutexGroupsApi.list());
+    } catch {
+      // 下拉数据拉取失败不阻断主流程：表单仍可用（只是暂时选不了组）。
+    }
+  }, []);
 
   const fetchApps = useCallback(async () => {
     setLoading(true);
@@ -251,11 +265,36 @@ export default function ApplicationListPage() {
   const handleCreate = () => {
     setEditingApp(null);
     setModalOpen(true);
+    fetchMutexGroups();
   };
 
   const handleEdit = (app: Application) => {
     setEditingApp(app);
     setModalOpen(true);
+    fetchMutexGroups();
+  };
+
+  // MUTEX-01：内联建组——建组成功后自动选中新组，用户无需再翻下拉。
+  const handleGroupSave = async () => {
+    try {
+      const values = await groupForm.validateFields();
+      setGroupSaving(true);
+      const created = await mutexGroupsApi.create({
+        name: values.name,
+        maxConcurrentPerDevice: values.maxConcurrentPerDevice ?? 1,
+        description: values.description,
+      });
+      setGroupModalOpen(false);
+      groupForm.resetFields();
+      setMutexGroups((prev) => [...prev, created]);
+      form.setFieldsValue({ mutexGroupId: created.id });
+      message.success(t('appList.mutexGroup.created'));
+    } catch (err: unknown) {
+      if (isFormValidationError(err)) return;
+      message.error(getErrMsg(err, t('appList.mutexGroup.saveFail')));
+    } finally {
+      setGroupSaving(false);
+    }
   };
 
   const handleDelete = async (id: string) => {
@@ -857,6 +896,86 @@ export default function ApplicationListPage() {
             }}
           >
             <Switch checkedChildren={t('appList.field.approvalOn')} unCheckedChildren={t('appList.field.approvalOff')} />
+          </Form.Item>
+
+          {/* MUTEX-01: 互斥组——同组应用在同一台设备上排队串行（组内并发数默认
+              1），不同组/未挂组的应用照常并发；设备槽位上限不受影响 */}
+          <Form.Item
+            label={t('appList.field.mutexGroup')}
+            tooltip={{
+              title: t('appList.field.mutexGroupTooltip'),
+              icon: <InfoCircleOutlined />,
+            }}
+          >
+            <Space.Compact style={{ display: 'flex', width: '100%' }}>
+              <Form.Item
+                name="mutexGroupId"
+                noStyle
+              >
+                <Select
+                  allowClear
+                  placeholder={t('appList.field.mutexGroupPlaceholder')}
+                  style={{ flex: 1 }}
+                  options={mutexGroups.map((g) => ({
+                    value: g.id,
+                    label: t('appList.field.mutexGroupOption', {
+                      name: g.name,
+                      max: g.maxConcurrentPerDevice,
+                    }),
+                  }))}
+                />
+              </Form.Item>
+              <Button
+                icon={<PlusOutlined />}
+                onClick={() => setGroupModalOpen(true)}
+                disabled={!isAdmin}
+                title={t('appList.field.mutexGroupNew')}
+              />
+            </Space.Compact>
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      {/* MUTEX-01: 内联新建互斥组——建完自动选中，不打断应用编辑流 */}
+      <Modal
+        title={t('appList.mutexGroup.title')}
+        open={groupModalOpen}
+        onOk={handleGroupSave}
+        onCancel={() => setGroupModalOpen(false)}
+        confirmLoading={groupSaving}
+        destroyOnHidden
+        width={440}
+      >
+        <Form form={groupForm} layout="vertical">
+          <Form.Item
+            name="name"
+            label={t('appList.mutexGroup.name')}
+            rules={[
+              { required: true, message: t('appList.mutexGroup.nameRequired') },
+            ]}
+            tooltip={{
+              title: t('appList.mutexGroup.nameTooltip'),
+              icon: <InfoCircleOutlined />,
+            }}
+          >
+            <Input placeholder="ziniao-browser" maxLength={64} />
+          </Form.Item>
+          <Form.Item
+            name="maxConcurrentPerDevice"
+            label={t('appList.mutexGroup.maxConcurrent')}
+            initialValue={1}
+            tooltip={{
+              title: t('appList.mutexGroup.maxConcurrentTooltip'),
+              icon: <InfoCircleOutlined />,
+            }}
+          >
+            <InputNumber min={1} max={100} precision={0} style={{ width: 140 }} />
+          </Form.Item>
+          <Form.Item
+            name="description"
+            label={t('appList.mutexGroup.description')}
+          >
+            <Input.TextArea rows={2} placeholder={t('appList.mutexGroup.descriptionPlaceholder')} />
           </Form.Item>
         </Form>
       </Modal>
