@@ -23,6 +23,8 @@ import { IsUuidShape } from "../../../common/decorators/is-uuid-shape.decorator"
 import { IsSecretKeyMapConstraint } from "./secret-key-map.constraint";
 // 5 字段 cron 合法性（与调度注册路径同源，取代此前写坏的手写正则）
 import { IsCron5Field } from "./cron-expression.constraint";
+// P2（时区审计）：IANA 时区写面校验（与调度侧/窗口评估同一 Intl 探针）
+import { IsIanaTimezone } from "./timezone.constraint";
 import { MaintenanceWindowDto } from "./maintenance-window.dto";
 import {
   TaskStatus,
@@ -59,6 +61,10 @@ export class CreateTaskDto {
     description: "IANA timezone for cron schedules, e.g. Asia/Shanghai",
   })
   @IsString()
+  // P2：非法时区此前静默降级为服务器时区调度（getCronOptions warn 后放行）
+  // ——写面直接 400，探针与调度/窗口评估同一实现（timezone.constraint.ts）。
+  // 空串/纯空白 = 未设置（对齐调度侧 trim 空行为），照常放行。
+  @IsIanaTimezone()
   @IsOptional()
   timezone?: string;
   @ApiPropertyOptional() @IsInt() @Min(1) @IsOptional() fixedRate?: number;

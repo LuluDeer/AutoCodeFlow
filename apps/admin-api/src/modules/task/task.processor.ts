@@ -30,6 +30,15 @@ import { TaskService, INTERPRETER_UNAVAILABLE_PATTERN } from "./task.service";
 // MUTEX-01：互斥阻塞错误前缀（dispatch 抛出，processor 分类链最前面识别）。
 import { MUTEX_WAIT_TOKEN } from "./execution-mutex";
 
+/**
+ * MUTEX-01 P3：「无可用/在线执行器」消息族（executor.service dispatch /
+ * dispatchBroadcast 空候选集的既有文案）。`No available executor ...` 在
+ * 下方分类链落 EXECUTOR_OFFLINE，但 `No online executors ...` 落 UNKNOWN
+ * ——互斥回队判定必须两族都收，否则整机队下线时被唤醒的 WAITING 执行仍会
+ * 烧重试预算（分类链本身的归因不在本修复范围）。
+ */
+const NO_EXECUTOR_AVAILABLE_RE = /no (available|online) executor/i;
+
 // PERF-P3a: worker 并发 1→5，消除队头阻塞（一个慢 dispatch HTTP 不再卡住
 // 整条队列）。安全性依据：执行器容量闸门在 dispatch 内由 DB 原子操作保证
 // （executor.service selectLeastLoaded + 条件 UPDATE 占坑），worker 并发
@@ -242,6 +251,30 @@ export class TaskProcessor extends WorkerHost {
                   : ExecutionFailureReason.UNKNOWN;
       // P2: align with the callback path — a TIMEOUT reason must produce
       // TIMEOUT status, not FAILED.
+      // MUTEX-01 P3：互斥排队的执行在 dispatch 因「无可用/离线执行器」失败时，
+      // 与组满（MutexWaitError）路径同策——不进 BullMQ 失败重试链，回到
+      // WAITING 由唤醒 sweep 每 10s 重试。理由：这类失败是"现在派不出去"
+      // 而非"必然失败"，执行器恢复/组容量释放后同一执行就能派出去；走重试
+      // 链会烧光预算后落 failed，把一个可自愈的排队问题误判成死（审计确认：
+      // 组满路径正确回 WAITING，离线路径却进重试链，两者语义不一致）。
+      // 判定 = failureReason 落 EXECUTOR_OFFLINE，或消息命中无执行器文案族
+      // （后者在分类链落 UNKNOWN，见 NO_EXECUTOR_AVAILABLE_RE 注释）。
+      // timeout / interpreter_unavailable / 应用缺失等分类在此**之前**已定，
+      // 不受影响（dispatch 超时仍走 UnrecoverableError 防二次派发）。
+      // 防无限循环：每次回队都有本日志；唤醒 sweep 每轮日志 woken/跳过数。
+      if (
+        exec.mutexGroupId &&
+        (exec.failureReason === ExecutionFailureReason.EXECUTOR_OFFLINE ||
+          NO_EXECUTOR_AVAILABLE_RE.test(errMsg))
+      ) {
+        exec.status = ExecutionStatus.WAITING;
+        exec.failureReason = null;
+        exec.errorMessage = errMsg;
+        this.logger.log(
+          `Execution ${executionId} queued (no executor available): task "${task.name}" dispatch failed without an online executor — back to WAITING for the mutex wake sweep`,
+        );
+        return;
+      }
       exec.status =
         exec.failureReason === ExecutionFailureReason.TIMEOUT
           ? ExecutionStatus.TIMEOUT

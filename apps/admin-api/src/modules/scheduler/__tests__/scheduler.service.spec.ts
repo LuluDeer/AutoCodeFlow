@@ -2391,5 +2391,37 @@ describe("SchedulerService", () => {
       ).toBe(true);
       expect(queue.add).toHaveBeenCalled();
     });
+
+    // P3 惊群修复：组满时同组其余候选的 dispatch 必然同样失败（每候选一次
+    // FOR UPDATE 占坑事务）——单轮内每组只唤醒最早一条作为探针，其余跳过
+    //（保持 WAITING，下轮再试）；无组候选不受影响。
+    it("同组短路：单轮内每个互斥组只唤醒最早一条，其余同组候选跳过（无组候选照旧）", async () => {
+      await makeLeader();
+      const makeWaiting = (id: string, groupId: string | null) =>
+        ({
+          id,
+          taskId: "task-1",
+          status: ExecutionStatus.WAITING,
+          mutexGroupId: groupId,
+        }) as unknown as TaskExecution;
+      // createdAt ASC：g-A 的两条在前，g-B 一条，无组一条
+      execRepo.find.mockResolvedValue([
+        makeWaiting("exec-gA-1", "group-A"),
+        makeWaiting("exec-gA-2", "group-A"),
+        makeWaiting("exec-gB-1", "group-B"),
+        makeWaiting("exec-none", null),
+      ]);
+      taskRepo.findBy.mockResolvedValue([makeTask()]);
+      execRepo.createQueryBuilder.mockReturnValue(makeFlipQb(1));
+
+      await service.wakeMutexQueuedExecutions();
+
+      const enqueuedIds = queue.add.mock.calls.map(
+        (c: any[]) => (c[1] as { executionId: string }).executionId,
+      );
+      // 组 A 只唤醒探针（最早一条），组 B 与无组候选照常唤醒
+      expect(enqueuedIds).toEqual(["exec-gA-1", "exec-gB-1", "exec-none"]);
+      expect(enqueuedIds).not.toContain("exec-gA-2");
+    });
   });
 });
