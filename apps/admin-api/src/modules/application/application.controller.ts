@@ -52,7 +52,8 @@ import { ListReleasesQueryDto } from "./dto/app-release.dto";
 import { UpgradeAllDto } from "./dto/rollout.dto";
 import * as fs from "fs";
 import * as path from "path";
-import { createHmac, timingSafeEqual } from "crypto";
+// FEAT-21: HMAC 校验收敛到共享纯函数（与 alerts / 任务 webhook 同源）
+import { verifyWebhookSignature } from "../../common/utils/webhook-hmac.util";
 import type { Request } from "express";
 import { ConfigService } from "@nestjs/config";
 // SEC-09: 限流分域——upgrade-all/rollback 属集群干预写面，挂中档
@@ -536,55 +537,18 @@ export class ApplicationController {
         ApplicationController.WEBHOOK_AUTH_FAILURE_MESSAGE,
       );
     }
-    if (!signature) {
+    // HMAC-SHA256 signature verification (same convention as GitHub webhooks)
+    // This route is public for CI/CD systems, so every matching application must
+    // have a webhookSecret and callers must sign the raw body with a timestamp.
+    // FEAT-21: 校验算法/窗口/常数时间比较收敛到 webhook-hmac.util（三处 webhook 同源）。
+    const failure = verifyWebhookSignature(
+      { rawBody: req?.rawBody, signature, timestamp },
+      targetApp.webhookSecret,
+    );
+    if (failure) {
       logger.warn(
-        `Webhook: missing X-Hub-Signature-256 header for app "${dto.appName}"`,
+        `Webhook: signature verification failed (${failure}) for app "${dto.appName}"`,
       );
-      throw new UnauthorizedException(
-        ApplicationController.WEBHOOK_AUTH_FAILURE_MESSAGE,
-      );
-    }
-    if (!timestamp) {
-      logger.warn(
-        `Webhook: missing X-AutoCodeFlow-Timestamp header for app "${dto.appName}"`,
-      );
-      throw new UnauthorizedException(
-        ApplicationController.WEBHOOK_AUTH_FAILURE_MESSAGE,
-      );
-    }
-    const timestampMs = Number(timestamp);
-    const now = Date.now();
-    if (
-      !Number.isFinite(timestampMs) ||
-      Math.abs(now - timestampMs) > 5 * 60 * 1000
-    ) {
-      logger.warn(`Webhook: stale timestamp for app "${dto.appName}"`);
-      throw new UnauthorizedException(
-        ApplicationController.WEBHOOK_AUTH_FAILURE_MESSAGE,
-      );
-    }
-    const body = req?.rawBody;
-    if (!body) {
-      logger.warn(
-        `Webhook: raw request body is unavailable for app "${dto.appName}"`,
-      );
-      throw new UnauthorizedException(
-        ApplicationController.WEBHOOK_AUTH_FAILURE_MESSAGE,
-      );
-    }
-    const expected =
-      "sha256=" +
-      createHmac("sha256", targetApp.webhookSecret)
-        .update(Buffer.concat([Buffer.from(`${timestamp}.`), body]))
-        .digest("hex");
-    const expectedBuf = Buffer.from(expected);
-    const receivedBuf = Buffer.from(signature);
-    // Constant-time comparison to prevent timing attacks
-    const valid =
-      expectedBuf.length === receivedBuf.length &&
-      timingSafeEqual(expectedBuf, receivedBuf);
-    if (!valid) {
-      logger.warn(`Webhook: invalid signature for app "${dto.appName}"`);
       throw new UnauthorizedException(
         ApplicationController.WEBHOOK_AUTH_FAILURE_MESSAGE,
       );

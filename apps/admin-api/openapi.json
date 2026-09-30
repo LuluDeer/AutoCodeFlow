@@ -1496,6 +1496,126 @@
         ]
       }
     },
+    "/tasks/{id}/webhook": {
+      "get": {
+        "description": "Returns `{ enabled, url }`. The secret is never returned.",
+        "operationId": "TaskController_webhookStatus",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Webhook status"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Get task webhook status",
+        "tags": [
+          "Task Management"
+        ]
+      }
+    },
+    "/tasks/{id}/webhook/enable": {
+      "post": {
+        "description": "Issues a new webhook secret, returned ONCE in `secret`. Enabling an already-enabled task rotates the secret.",
+        "operationId": "TaskController_webhookEnable",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Webhook URL + one-time secret"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Enable the task webhook",
+        "tags": [
+          "Task Management"
+        ]
+      }
+    },
+    "/tasks/{id}/webhook/rotate": {
+      "post": {
+        "description": "Old secret stops working immediately; new secret shown once.",
+        "operationId": "TaskController_webhookRotate",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Webhook URL + one-time secret"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Rotate the task webhook secret",
+        "tags": [
+          "Task Management"
+        ]
+      }
+    },
+    "/tasks/{id}/webhook/disable": {
+      "post": {
+        "description": "Clears the secret; signed calls start answering 401.",
+        "operationId": "TaskController_webhookDisable",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "`{ enabled: false }`"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Disable the task webhook",
+        "tags": [
+          "Task Management"
+        ]
+      }
+    },
     "/tasks/{id}/executions": {
       "get": {
         "description": "Get the execution history list for a task.",
@@ -2256,6 +2376,76 @@
         "summary": "Batch delete tasks (deprecated)",
         "tags": [
           "Task Management"
+        ]
+      }
+    },
+    "/webhooks/tasks/{taskId}": {
+      "post": {
+        "description": "Public machine endpoint. Requires X-AutoCodeFlow-Timestamp and X-Hub-Signature-256 headers; the signature is HMAC-SHA256 over `${timestamp}.${rawBody}` with the task's webhook secret (enable via POST /api/tasks/:id/webhook/enable). Body `{ params }` overrides the task's default params for this execution. Add `?wait=1&timeout=N` to park the request until the execution reaches a terminal state (N ≤ 300s; on timeout `completed:false` plus the latest snapshot). Unknown task / disabled webhook / bad signature all answer the same 401.",
+        "operationId": "TaskWebhookController_trigger",
+        "parameters": [
+          {
+            "name": "taskId",
+            "required": true,
+            "in": "path",
+            "description": "Task UUID",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-hub-signature-256",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-autocodeflow-timestamp",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "wait",
+            "required": false,
+            "in": "query",
+            "description": "'1'/'true' = 同步等待终态（缺省入队即返回）",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "timeout",
+            "required": false,
+            "in": "query",
+            "description": "wait 模式超时秒数（1-300，缺省 60）",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TriggerTaskDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Trigger a task via inbound webhook",
+        "tags": [
+          "Task Webhooks"
         ]
       }
     },

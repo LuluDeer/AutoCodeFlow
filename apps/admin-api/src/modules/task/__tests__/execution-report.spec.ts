@@ -16,6 +16,7 @@ import { getQueueToken } from "@nestjs/bullmq";
 import { ConfigService } from "@nestjs/config";
 import { TaskService } from "../task.service";
 import { TaskController } from "../task.controller";
+import { TaskWebhookService } from "../task-webhook.service";
 import { Task } from "../entities/task.entity";
 import { TaskExecution } from "../entities/task-execution.entity";
 import { ExecutionLogLine } from "../entities/execution-log-line.entity";
@@ -106,6 +107,7 @@ describe("OBS-04 execution report/timeline", () => {
           },
         },
         { provide: AuditService, useValue: { log: jest.fn() } },
+        { provide: TaskWebhookService, useValue: {} }, // FEAT-21: 本 spec 不触 webhook 面，空 stub 占位
         {
           provide: SecretsCryptoService,
           useValue: new SecretsCryptoService({ get: () => "" } as any),
