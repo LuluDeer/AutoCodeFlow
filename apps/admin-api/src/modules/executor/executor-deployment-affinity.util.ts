@@ -1,5 +1,7 @@
 /**
  * ARCH-35 P1（生产事故 2026-09-23）：应用部署归属的**调度偏好**（单一事实源）。
+ * FEAT-22 方案 A v1（生产反馈 2026-09-30）在本文件追加 strict 约束的纯函数面
+ * （`collectDeploymentExecutorKeys`）——两种模式并存，语义见下。
  *
  * ── 背景：这次事故的真正主因 ─────────────────────────────────────────────
  * 中台上「应用只部署在执行器 A」，但创建/下发任务时任务跑到了执行器 B。
@@ -87,6 +89,10 @@ export interface DeploymentAffinityDeployment {
   executorAddress?: string | null;
   /** `app_deployments.status`；仅 running 计入。 */
   status?: string | null;
+  /** FEAT-22 方案 B：部署行记录的当版版本号；legacy 行可为 null。 */
+  deployedVersion?: string | null;
+  /** FEAT-22 方案 B：版本并列时的时序兜底（running 行内部取最新）。 */
+  deployedAt?: Date | string | null;
 }
 
 /** 分区结果：`ordered` 供调用方按序占坑，其余字段供决策日志回溯。 */
@@ -177,4 +183,122 @@ export function partitionByDeploymentAffinity<
     matchedByAddressOnly,
     runningDeployments: running.length,
   };
+}
+
+// ── FEAT-22 方案 A v1：deploymentPolicy=strict 的集合约束面 ────────────────
+//
+// 与上方「偏好」的关系：strict 不是偏好分级，而是另一档**派发约束模式**
+// （EXECUTOR_DEPLOYMENT_POLICY=strict）：任务关联应用存在「用户显式指定过
+// 设备」的部署行时，候选集收窄为该集合，绝不静默换机。生产反馈的案例正是
+// 偏好语义覆盖不了的：once 部署跑完 5 秒即 stopped，偏好只认 running，
+// 任务漂到全机队负载最优的陌生设备上。
+//
+// 状态口径（哪些行算「用户显式指定过」）：
+//   - running  —— 正在跑（daemon/scheduled 常态）；
+//   - stopped  —— once 跑完即 stopped，正是本次事故场景，**必须计入**；
+//   - upgrading—— 升级在途，用户意图明确；
+//   - failed / pending / deploying 不计入：部署失败与在途未确认都不构成
+//     「指定过」（宁可从严；解除出口是删除部署行，DELETE 仅收终态行）。
+// 与 RUNNING 常量同款纪律：字符串复述实体枚举，漂移由
+// executor-deployment-entity-registration.spec.ts 的契约测试兜底。
+export const DEPLOYMENT_STATUS_STOPPED = "stopped";
+export const DEPLOYMENT_STATUS_UPGRADING = "upgrading";
+
+export const DEPLOYMENT_CONSTRAINT_STATUSES = [
+  DEPLOYMENT_STATUS_RUNNING,
+  DEPLOYMENT_STATUS_STOPPED,
+  DEPLOYMENT_STATUS_UPGRADING,
+] as const;
+
+/** strict 约束的匹配键集合（去重、去空白，语义与分区函数的收集逻辑一致）。 */
+export interface DeploymentExecutorKeys {
+  /** `app_deployments.executorId` 非空集合（精确、抗地址漂移）。 */
+  ids: string[];
+  /** `app_deployments.executorAddress` 非空集合（兜底：存量行/设备重注册）。 */
+  addresses: string[];
+}
+
+/**
+ * 从部署行集合提取 strict 约束的匹配键（id 集 + address 集）。
+ *
+ * 纯函数、零 IO：调用方（executor.service）拿键去做
+ * `id IN (:...ids) OR address IN (:...addrs)` 的 ONLINE 设备查询——**绕开**
+ * fleet SQL Top-K。为什么必须绕开：Top-K 按 runningTaskCount 升序截断，
+ * 负载高的部署设备可能根本不在候选池里，软偏好只会「池内前置」，strict 的
+ * 硬约束则不能容忍这个截断盲区（池外部署设备在 strict 下必须可见）。
+ * 状态过滤由调用方的 where 承担（IN 三态），本函数不做状态判断——传入已按
+ * DEPLOYMENT_CONSTRAINT_STATUSES 过滤的行。
+ */
+export function collectDeploymentExecutorKeys(
+  deployments: readonly DeploymentAffinityDeployment[],
+): DeploymentExecutorKeys {
+  const ids = new Set<string>();
+  const addresses = new Set<string>();
+  for (const d of deployments) {
+    const id = typeof d.executorId === "string" ? d.executorId.trim() : "";
+    if (id) ids.add(id);
+    const addr =
+      typeof d.executorAddress === "string" ? d.executorAddress.trim() : "";
+    if (addr) addresses.add(addr);
+  }
+  return { ids: [...ids], addresses: [...addresses] };
+}
+
+/**
+ * FEAT-22 方案 B（版本跟随部署）：确定执行器上「该应用部署的是什么版本」。
+ *
+ * 语义：派发命中部署设备时，任务执行改用**该设备部署行记录的当版包**
+ * （deployedVersion → application_versions.snapshot.packageUrl，快照解析在
+ * 调用方），设备上是什么版本就跑什么版本；未命中的执行器（prefer 降级回
+ * 全机队的设备）返回 null = 跑应用当前版本。
+ *
+ * 行选择规则（同一台设备可能有多条部署行，once + scheduled 并存）：
+ *   1. 匹配：executorId 相等**或** executorAddress 相等的行都算该设备的
+ *      （与 partitionByDeploymentAffinity 的 id 优先/address 兜底同源语义，
+ *      覆盖存量行无 id、设备重注册 id 变地址不变等混合口径）；
+ *   2. 状态优先：running 行 > 其它（stopped 的 once 行也有版本痕迹——
+ *      strict 模式正靠它闭环「指定机器 + 指定版本」）；
+ *   3. 时序兜底：同状态取 deployedAt 最新（缺失视为最旧）；
+ *   4. deployedVersion 非空字符串才算数（legacy 行 null → 跳过该行；
+ *      全部行都无版本 → 返回 null，调用方回退当前版）。
+ *
+ * 纯函数、零 IO：版本号 → 快照 packageUrl 的解析（查 application_versions）
+ * 留在调用方，本函数只做行选择。
+ */
+export function pickDeploymentVersionForExecutor(
+  deployments: readonly DeploymentAffinityDeployment[],
+  executor: DeploymentAffinityCandidate,
+): string | null {
+  const matched = deployments.filter((d) => {
+    const id = typeof d.executorId === "string" ? d.executorId.trim() : "";
+    const addr =
+      typeof d.executorAddress === "string" ? d.executorAddress.trim() : "";
+    return (
+      (Boolean(id) && id === executor.id) ||
+      (Boolean(addr) && addr === executor.address)
+    );
+  });
+  // 有版本痕迹的行才参与（legacy null 行不阻塞其它行）。
+  const versioned = matched.filter(
+    (d) => typeof d.deployedVersion === "string" && d.deployedVersion.trim(),
+  );
+  if (versioned.length === 0) return null;
+  const running = versioned.filter(
+    (d) => d.status === DEPLOYMENT_STATUS_RUNNING,
+  );
+  const pool = running.length > 0 ? running : versioned;
+  const timeOf = (d: DeploymentAffinityDeployment): number => {
+    const raw = d.deployedAt;
+    if (raw instanceof Date) return raw.getTime();
+    if (typeof raw === "string") {
+      const parsed = Date.parse(raw);
+      if (!Number.isNaN(parsed)) return parsed;
+    }
+    return Number.NEGATIVE_INFINITY;
+  };
+  let best = pool[0];
+  for (const d of pool) {
+    if (timeOf(d) > timeOf(best)) best = d;
+  }
+  return best.deployedVersion!.trim();
 }

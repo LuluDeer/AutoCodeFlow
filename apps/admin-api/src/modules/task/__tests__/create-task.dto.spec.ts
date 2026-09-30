@@ -723,4 +723,62 @@ describe("CreateTaskDto / UpdateTaskDto id validation (R6)", () => {
       ).rejects.toThrow(BadRequestException);
     });
   });
+
+  // FEAT-22 方案 A v2：任务级部署约束模式。校验只钉值域（'strict' | 'prefer' |
+  // null 透传 = 跟随全局）；调度语义（集合收窄 / WAITING 排队 / 覆盖优先级）
+  // 在 executor.service 实现（见 FEAT-22 方案 A 接线 spec）。
+  describe("deploymentPolicy validation (FEAT-22)", () => {
+    it("accepts 'strict' and 'prefer'", async () => {
+      const strict = await validateCreate({
+        name: "t1",
+        triggerType: "api",
+        deploymentPolicy: "strict",
+      });
+      expect(strict.deploymentPolicy).toBe("strict");
+      const prefer = await validateCreate({
+        name: "t1",
+        triggerType: "api",
+        deploymentPolicy: "prefer",
+      });
+      expect(prefer.deploymentPolicy).toBe("prefer");
+    });
+
+    it("stays optional when absent", async () => {
+      const result = await validateCreate({ name: "t1", triggerType: "api" });
+      expect(result.deploymentPolicy).toBeUndefined();
+    });
+
+    it("accepts explicit null (PATCH follow-global semantics)", async () => {
+      const result = await validateUpdate({
+        deploymentPolicy: null,
+      });
+      expect(result.deploymentPolicy).toBeNull();
+    });
+
+    it("rejects a value outside the two-value domain", async () => {
+      await expect(
+        validateCreate({
+          name: "t1",
+          triggerType: "api",
+          deploymentPolicy: "bogus",
+        }),
+      ).rejects.toThrow(BadRequestException);
+      // 大小写敏感——约束模式必须显式选择（与全局解析的宽容判定一致）。
+      await expect(
+        validateCreate({
+          name: "t1",
+          triggerType: "api",
+          deploymentPolicy: "STRICT",
+        }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it("UpdateTaskDto inherits the validator", async () => {
+      const ok = await validateUpdate({ deploymentPolicy: "strict" });
+      expect(ok.deploymentPolicy).toBe("strict");
+      await expect(
+        validateUpdate({ deploymentPolicy: "filter" }),
+      ).rejects.toThrow(BadRequestException);
+    });
+  });
 });

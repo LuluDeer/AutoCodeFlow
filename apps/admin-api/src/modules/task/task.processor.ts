@@ -29,6 +29,9 @@ import { AiAnalysisService } from "../ai/ai-analysis.service";
 import { TaskService, INTERPRETER_UNAVAILABLE_PATTERN } from "./task.service";
 // MUTEX-01：互斥阻塞错误前缀（dispatch 抛出，processor 分类链最前面识别）。
 import { MUTEX_WAIT_TOKEN } from "./execution-mutex";
+// FEAT-22 方案 A v1：strict 部署约束的排队 token——与 MUTEX_WAIT_TOKEN 同位
+// 识别（见下方 catch 内注释），置 WAITING 不烧重试预算。
+import { DEPLOYMENT_WAIT_TOKEN } from "./execution-deployment-wait";
 
 /**
  * MUTEX-01 P3：「无可用/在线执行器」消息族（executor.service dispatch /
@@ -202,6 +205,22 @@ export class TaskProcessor extends WorkerHost {
         exec.errorMessage = errMsg.slice(MUTEX_WAIT_TOKEN.length);
         this.logger.log(
           `Execution ${executionId} queued (mutex wait): task "${task.name}" waiting for a free slot in its mutex group`,
+        );
+        return;
+      }
+      // FEAT-22 方案 A v1：strict 部署约束排队——与互斥 token 完全同策、同位
+      // （必须在正则分类链之前，否则「部署约束设备离线」的文案会被
+      // EXECUTOR_OFFLINE 规则误吞成可重试失败，烧光预算后落 FAILED）。语义：
+      // 任务关联应用的部署设备集合当前全部不可派发（离线/满载/被过滤），
+      // strict 承诺「不换机」→ 显式排队态 WAITING，等 scheduler 既有 10s
+      // WAITING sweep 唤醒重派（对全部 WAITING 无条件重试，天然覆盖本路径）。
+      // 逃逸出口见 execution-deployment-wait.ts 头注（删部署行 / 切回 prefer）。
+      if (errMsg.startsWith(DEPLOYMENT_WAIT_TOKEN)) {
+        exec.status = ExecutionStatus.WAITING;
+        exec.failureReason = null;
+        exec.errorMessage = errMsg.slice(DEPLOYMENT_WAIT_TOKEN.length);
+        this.logger.log(
+          `Execution ${executionId} queued (deployment constraint wait): task "${task.name}" waiting for a deployable device in its app's deployment set`,
         );
         return;
       }
@@ -407,6 +426,14 @@ export class TaskProcessor extends WorkerHost {
           status: exec.status,
           ...(exec.executorAddress !== undefined
             ? { executorAddress: exec.executorAddress }
+            : {}),
+          // FEAT-22 配套观测：dispatch 阶段解析的应用包/版本留痕（仅 zip 渠道
+          // 会赋值；未赋值 = 字段 undefined = 不进 patch，存量列保持 NULL）。
+          ...(exec.resolvedPackageUrl !== undefined
+            ? { resolvedPackageUrl: exec.resolvedPackageUrl }
+            : {}),
+          ...(exec.resolvedPackageVersion !== undefined
+            ? { resolvedPackageVersion: exec.resolvedPackageVersion }
             : {}),
           ...(exec.result !== undefined ? { result: exec.result } : {}),
           ...(exec.logs !== undefined ? { logs: exec.logs } : {}),

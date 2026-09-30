@@ -238,3 +238,45 @@ describe('TaskFormPage NF-04 form wiring', () => {
     expect(payload.executorAntiAffinityTags).toBeNull();
   }, 15_000);
 });
+
+/**
+ * FEAT-22 方案 A v2：任务级部署约束模式（deploymentPolicy）的表单接线。
+ *
+ * 契约：默认「跟随全局」（null）；编辑态回填持久化值并在 PATCH 中保留；
+ * pinned 模式控件禁用但值保留（与亲和约束同款语义）。
+ */
+describe('TaskFormPage FEAT-22 deploymentPolicy wiring', () => {
+  it('new task mounts the select defaulting to follow-global and POSTs null', async () => {
+    renderPage();
+    fireEvent.change(await screen.findByPlaceholderText('daily-report'), { target: { value: 'policy-job' } });
+    fireEvent.change(screen.getByPlaceholderText('tasks/main.py'), { target: { value: 'main.py' } });
+    // 默认选中「跟随全局」（Select 内显示该文案）
+    expect(fieldSelect('部署设备约束').textContent).toContain('跟随全局');
+    fireEvent.click(screen.getByRole('button', { name: /创建任务/ }));
+    await waitFor(() => expect(tasksApi.create).toHaveBeenCalledTimes(1));
+    const payload = vi.mocked(tasksApi.create).mock.calls[0][0] as Record<string, unknown>;
+    expect(payload.deploymentPolicy).toBeNull();
+  }, 15_000);
+
+  it('edit mode hydrates the persisted policy and preserves it on PATCH', async () => {
+    mockRouteParams = { id: 'task-1' };
+    vi.mocked(tasksApi.get).mockResolvedValue(baseTask({
+      deploymentPolicy: 'strict',
+    }) as never);
+    renderPage();
+    // 等表单加载完成后字段才挂载（与上方亲和编辑用例的等待同款）。
+    await screen.findByText('部署设备约束', { selector: '.ant-form-item-label label' });
+    expect(fieldSelect('部署设备约束').textContent).toContain('仅部署设备');
+    fireEvent.click(screen.getByRole('button', { name: /保存更改/ }));
+    await waitFor(() => expect(tasksApi.update).toHaveBeenCalledTimes(1));
+    const payload = vi.mocked(tasksApi.update).mock.calls[0][1] as Record<string, unknown>;
+    expect(payload.deploymentPolicy).toBe('strict');
+  }, 15_000);
+
+  it('pinned mode disables the control without dropping the stored value', async () => {
+    renderPage();
+    await screen.findByPlaceholderText('daily-report');
+    fireEvent.click(screen.getByRole('radio', { name: /指定执行器/ }));
+    expect(fieldSelect('部署设备约束').classList.contains('ant-select-disabled')).toBe(true);
+  }, 15_000);
+});

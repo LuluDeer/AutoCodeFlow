@@ -110,6 +110,13 @@ export enum TaskCodeSource {
   APPLICATION_ZIP = "application_zip",
 }
 
+/**
+ * FEAT-22 方案 A：部署约束模式（任务级覆盖值；null = 跟随全局
+ * executor.deploymentPolicy）。与 executor.deployment.entity 的 DeploymentStatus
+ * 无关——这是调度策略，不是部署状态。
+ */
+export type TaskDeploymentPolicy = "strict" | "prefer";
+
 @Entity("tasks")
 @Index(["status"])
 @Index(["applicationId"])
@@ -298,6 +305,27 @@ export class Task {
    */
   @Column({ type: "simple-array", nullable: true }) executorAntiAffinityTags:
     string[] | null;
+
+  /**
+   * FEAT-22 方案 A v2：任务级部署约束模式（可空，null = 跟随全局
+   * `executor.deploymentPolicy`，即 EXECUTOR_DEPLOYMENT_POLICY）。
+   *
+   * 语义（'strict' | 'prefer' | null）：
+   *  - 'strict'：任务关联应用存在「用户显式指定过设备」的部署行
+   *    （running/stopped/upgrading）时候选集收窄为该集合，集合全部不可派发
+   *    → WAITING 排队（不烧重试预算、不换机）；
+   *  - 'prefer'：ARCH-35 软偏好（running 部署前置，派不出去降级全机队）——
+   *    显式选择可让单个任务**退出**全局 strict；
+   *  - null：跟随全局配置（灰度期默认形态，存量行全部为 null 零行为变化）。
+   *
+   * 优先级链（文档口径，与 dispatch 实现一致）：executorId pin >
+   * executorAppName 点名 > 本字段的部署约束 > 全机队；master 开关
+   * `preferDeployedExecutor=false` 时部署感知整体下线，本字段不生效（运维
+   * 级 kill-switch 高于任务级选择）。与 executeMode=broadcast 的关系：
+   * broadcast 扇出语义独立，本字段不参与（同 ARCH-35 偏好）。
+   */
+  @Column({ type: "varchar", nullable: true })
+  deploymentPolicy: TaskDeploymentPolicy | null;
 
   /**
    * Pinned executor: when set, dispatch targets ONLY this executor,
