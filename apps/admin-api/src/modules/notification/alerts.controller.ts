@@ -12,8 +12,9 @@ import {
 } from "@nestjs/common";
 import { ApiBody, ApiOperation, ApiTags } from "@nestjs/swagger";
 import { Request } from "express";
-import { createHmac, timingSafeEqual } from "crypto";
 import { ConfigService } from "@nestjs/config";
+// FEAT-21: HMAC 校验收敛到共享纯函数（与 applications / 任务 webhook 同源）
+import { verifyWebhookSignature } from "../../common/utils/webhook-hmac.util";
 import { Public } from "../../common/decorators/public.decorator";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
@@ -77,8 +78,9 @@ export class AlertsController {
   }
 
   /**
-   * 统一 HMAC 校验（算法/窗口/常数时间比较与 applications webhook 先例
-   * 逐参数一致）。失败统一 401，具体原因只进日志。
+   * 统一 HMAC 校验（算法/窗口/常数时间比较收敛到
+   * common/utils/webhook-hmac.util，与 applications webhook / 任务 webhook
+   * 先例逐参数一致）。失败统一 401，具体原因只进日志。
    */
   private verifySignature(
     rawBody: Buffer | undefined,
@@ -89,36 +91,14 @@ export class AlertsController {
     const authFail = () =>
       new UnauthorizedException("Alert webhook authentication failed");
 
-    if (!signature || !timestamp) {
+    const failure = verifyWebhookSignature(
+      { rawBody, signature, timestamp },
+      secret,
+    );
+    if (failure) {
       this.logger.warn(
-        `Alert webhook: missing signature/timestamp header (${!signature ? "no signature" : "no timestamp"})`,
+        `Alert webhook: signature verification failed (${failure})`,
       );
-      throw authFail();
-    }
-    const timestampMs = Number(timestamp);
-    if (
-      !Number.isFinite(timestampMs) ||
-      Math.abs(Date.now() - timestampMs) > 5 * 60 * 1000
-    ) {
-      this.logger.warn("Alert webhook: stale or invalid timestamp");
-      throw authFail();
-    }
-    if (!rawBody) {
-      this.logger.warn("Alert webhook: raw request body is unavailable");
-      throw authFail();
-    }
-    const expected =
-      "sha256=" +
-      createHmac("sha256", secret)
-        .update(Buffer.concat([Buffer.from(`${timestamp}.`), rawBody]))
-        .digest("hex");
-    const expectedBuf = Buffer.from(expected);
-    const receivedBuf = Buffer.from(signature);
-    const valid =
-      expectedBuf.length === receivedBuf.length &&
-      timingSafeEqual(expectedBuf, receivedBuf);
-    if (!valid) {
-      this.logger.warn("Alert webhook: invalid signature");
       throw authFail();
     }
   }

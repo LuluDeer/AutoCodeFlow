@@ -52,7 +52,7 @@
     "helmet": "^8.3.0",
     "ioredis": "^6.0.0",
     "joi": "^18.2.9",
-    "js-yaml": "5.2.3",
+    "js-yaml": "5.4.2",
     "minio": "^8.0.7",
     "node-cron": "^4.6.0",
     "nodemailer": "^10.0.10",
@@ -128,15 +128,16 @@
   },
   "overrides": {
     "@nestjs/swagger": {
-      "js-yaml": "5.2.3"
+      "js-yaml": "5.4.2"
     },
     "multer": "2.4.0",
     "typeorm": {
       "ioredis": "$ioredis"
     },
-    "decode-uri-component": "0.5.0"
+    "decode-uri-component": "0.5.0",
+    "fast-uri": "^3.1.8"
   },
   "_comment-deps": "F-15（本轮审计）: class-validator ^0.14.4 = npm 当前 0.14.x 最新（0.14.1+ 的既定安全修复线；升级前实测 node_modules 已解析到 0.14.4，manifest 与解析结果对齐）。class-transformer 保持 ^0.5.1：0.5.1 即 npm 最新版（不存在 0.5.2）。0.15.x 属 0.x 语义内的大步进（潜在 breaking），未纳入本轮，待全量回归后另行评估。",
   "_comment-overrides": "F-16（本轮审计）: overrides.multer=2.3.0 为统一规避 multer <2.x 的安全公告（busboy 解析 DoS 等）；npm 不支持 JSON 注释，故以 _comment 键登记锁定原因。升级 @nestjs/platform-express 自带 multer 前，任何改动须先核对 CVE 状态。package.json 顶层 _ 前缀键仅供本地记录，不影响 npm install 解析。",
-  "_comment_overrides": "overrides.multer=2.4.0 为统一规避 multer <2.x 的安全公告；overrides.typeorm.ioredis=$ioredis 用于让 typeorm@1.1.1 的 peerOptional ioredis@^5.0.4 放行到根依赖的 ioredis@6（typeorm 仅在配置 Redis 缓存/订阅时才触碰 ioredis，本服务未使用，peer 范围未跟上 ioredis 6 属上游滞后），待 typeorm 放宽 peer 后可移除。"
+  "_comment_overrides": "overrides.multer=2.4.0 为统一规避 multer <2.x 的安全公告；overrides.typeorm.ioredis=$ioredis 用于让 typeorm@1.1.1 的 peerOptional ioredis@^5.0.4 放行到根依赖的 ioredis@6（typeorm 仅在配置 Redis 缓存/订阅时才触碰 ioredis，本服务未使用，peer 范围未跟上 ioredis 6 属上游滞后），待 typeorm 放宽 peer 后可移除。overrides.fast-uri=^3.1.8 为清偿 GHSA-hrr3-gc8f-f4qj（fast-uri 主机名大小写归一化缺陷，medium；链路 ajv→fast-uri 3.1.7，3.1.8 为 3.x 补丁位，2026-09-30）。js-yaml 5.2.3→5.4.2 为清偿 GHSA-r3ph-w7gj-g6xm（maxTotalMergeKeys CPU 放大，medium；5.0.0–5.4.0 全中，直接依赖与 @nestjs/swagger 作用域 override 同步升，2026-09-30）。"
 }

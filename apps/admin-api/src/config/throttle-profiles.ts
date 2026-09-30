@@ -67,3 +67,13 @@ export const OPS_THROTTLE: ThrottleProfile = {
   ttl: positiveInt("THROTTLE_OPS_TTL", 60_000),
   limit: positiveInt("THROTTLE_OPS_LIMIT", 30),
 };
+
+/**
+ * 宽档（FEAT-21）：入站任务 webhook 触发端 POST /webhooks/tasks/:taskId
+ * （默认 60 次 / 60s，与全局默认档同值但显式入矩阵——外部系统的自动重试
+ * 是正常流量，不与人的操作面共享预算；调参走 THROTTLE_WEBHOOK_TTL/LIMIT）。
+ */
+export const WEBHOOK_THROTTLE: ThrottleProfile = {
+  ttl: positiveInt("THROTTLE_WEBHOOK_TTL", 60_000),
+  limit: positiveInt("THROTTLE_WEBHOOK_LIMIT", 60),
+};

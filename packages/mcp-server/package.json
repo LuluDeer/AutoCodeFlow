@@ -36,6 +36,9 @@
     "url": "git+https://github.com/LuluDeer/AutoCodeFlow.git",
     "directory": "packages/mcp-server"
   },
+  "overrides": {
+    "fast-uri": "^3.1.8"
+  },
   "engines": {
     "node": ">=20.19"
   }

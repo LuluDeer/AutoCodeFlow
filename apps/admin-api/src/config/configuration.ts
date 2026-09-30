@@ -89,6 +89,9 @@ export default () => ({
     authTtl: parseInt(process.env.THROTTLE_AUTH_TTL || "60000", 10),
     opsLimit: parseInt(process.env.THROTTLE_OPS_LIMIT || "30", 10),
     opsTtl: parseInt(process.env.THROTTLE_OPS_TTL || "60000", 10),
+    // FEAT-21: 任务 webhook 触发端（/webhooks/tasks/:taskId）独立档
+    webhookLimit: parseInt(process.env.THROTTLE_WEBHOOK_LIMIT || "60", 10),
+    webhookTtl: parseInt(process.env.THROTTLE_WEBHOOK_TTL || "60000", 10),
   },
   // SSE 日志流并发上限（进程内计数）：单 execution / 全局。
   // task.service.ts 读取本配置节；此前 sse 节从未注册，env 覆盖是死代码，现补齐。

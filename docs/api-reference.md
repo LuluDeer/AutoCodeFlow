@@ -430,7 +430,24 @@ probing 探测通过前的已升级台，批次失败时 → rolled_back（自�
   端点直接 `500`（缺省拒绝），而不是静默放行——详见
   `apps/admin-api/src/common/guards/write-guard-enforcement.interceptor.ts`。
 | POST | `/tasks/:id/trigger` | 是 | 手动触发任务立即执行（可带自定义参数） |
+| GET | `/tasks/:id/webhook` | 是 | 查询任务 webhook 状态（`{ enabled, url }`；secret 永不回传，FEAT-21） |
+| POST | `/tasks/:id/webhook/enable` | 是 | 启用任务 webhook——生成密钥一次性回显 `{ url, secret }`（对已启用任务等价轮换） |
+| POST | `/tasks/:id/webhook/rotate` | 是 | 轮换任务 webhook 密钥（旧密钥立即失效，新密钥一次性回显） |
+| POST | `/tasks/:id/webhook/disable` | 是 | 停用任务 webhook（清空密钥，签名请求即刻 401） |
 | POST | `/tasks/:id/pause` | 是 | 暂停任务（停止调度，不影响进行中的执行） |
+
+**任务 webhook 入站触发（FEAT-21）：**
+
+> 公开端点 `POST /api/webhooks/tasks/:taskId`（`@Public`，免 JWT），凭**任务级** webhook secret 做 HMAC 校验，签名纪律与发版 webhook 完全一致：
+>
+> - `X-AutoCodeFlow-Timestamp`: 当前 Unix 毫秒时间戳，允许 5 分钟窗口。
+> - `X-Hub-Signature-256`: `sha256=<hex>`，其中 `<hex>` 为 `HMAC_SHA256(taskWebhookSecret, "${timestamp}.${rawBody}")`。
+>
+> 请求体与手动触发同形（`{ "params": { ... } }`，缺省用任务默认参数），params 覆盖任务默认参数落到本次执行。响应 200 = 已入队（返回 execution 行）；追加查询串 `?wait=1&timeout=N`（N ≤ 300，缺省 60）切**同步等待**——HTTP 挂起到执行终态，响应 `{ completed, execution }`（白名单视图：id/status/result/errorMessage/failureReason/startTime/endTime/duration/executorAddress/exitCode，无日志大对象）；超时 `completed:false` + 最新快照，不视为错误。限流独立档 60/min/IP（`THROTTLE_WEBHOOK_TTL/LIMIT` 可调）。
+>
+> ⚠️ 任务不存在 / webhook 未启用 / 签名失败**统一返回相同的 401**（`"Task webhook authentication failed"`）——taskId 枚举不可探测。密钥经 `POST /tasks/:id/webhook/enable` 生成（明文仅回显一次，服务端存 SEC-02 加密信封）。长任务的结果回传建议改用出站事件订阅（`execution.completed` / `execution.failed`，见事件订阅节）而非同步等待。
+>
+> **依赖链结果透传**：下游任务的 params 里声明 `$upstream`（整个上游执行上下文）或 `$upstream.<dot-path>`（如 `$upstream.result.screenshot`），依赖触发时自动替换为上游 SUCCESS 执行的 {executionId, status, result, errorMessage, failureReason, startTime, endTime, duration, executorAddress, exitCode}——"跑应用 → 依赖任务回写结果"的链在平台内闭环；未声明哨兵的下游行为不变。
 | POST | `/tasks/:id/resume` | 是 | 恢复任务调度 |
 | POST | `/tasks/batch/trigger` | 是 | 批量触发（部分失败不影响其他任务；兼容别名 `POST /tasks-batch/trigger`） |
 | POST | `/tasks/batch/pause` | 是 | 批量暂停（兼容别名 `POST /tasks-batch/pause`） |

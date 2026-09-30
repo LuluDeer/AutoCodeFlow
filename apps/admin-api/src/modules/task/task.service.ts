@@ -199,6 +199,134 @@ type TaskSortKey = (typeof TASK_SORT_WHITELIST)[number];
 export const DEPENDENCY_TRIGGER_CLAIM_WINDOW_MS = 10_000;
 
 /**
+ * FEAT-21: 依赖触发链的上游结果透传（opt-in）。
+ *
+ * triggerDependentTasks 此前以 this.trigger(task.id, {}) 触发下游——下游永远
+ * 拿不到上游的执行结果，"跑应用 → 依赖任务回写结果"这类链在平台内串不起来。
+ * 透传走 **opt-in 哨兵**而非无条件注入：下游任务 params 里值为 `$upstream`
+ * （整个上游上下文对象）或 `$upstream.<dot-path>`（取上下文字段，路径落空
+ * 归 null）的字符串在触发时被替换。未声明哨兵的下游行为逐字节不变——
+ * 不注入即不走 dto.params 覆盖语义，仍用任务默认 params。
+ */
+export const TASK_PARAMS_MAX_BYTES = 65_536;
+
+export const UPSTREAM_SENTINEL = "$upstream";
+
+export interface UpstreamExecutionContext {
+  executionId: string;
+  status: string;
+  result: Record<string, unknown> | null;
+  errorMessage: string | null;
+  failureReason: string | null;
+  startTime: Date | null;
+  endTime: Date | null;
+  duration: number | null;
+  executorAddress: string | null;
+  exitCode: number | null;
+}
+
+/** 从上游执行行取透传上下文（结构化子集——logs 等大字段不进扇出路径）。 */
+export function buildUpstreamContext(exec: {
+  id: string;
+  status: string;
+  result?: Record<string, unknown> | null;
+  errorMessage?: string | null;
+  failureReason?: string | null;
+  startTime?: Date | null;
+  endTime?: Date | null;
+  duration?: number | null;
+  executorAddress?: string | null;
+  exitCode?: number | null;
+}): UpstreamExecutionContext {
+  return {
+    executionId: exec.id,
+    status: exec.status,
+    result: exec.result ?? null,
+    errorMessage: exec.errorMessage ?? null,
+    failureReason: exec.failureReason ?? null,
+    startTime: exec.startTime ?? null,
+    endTime: exec.endTime ?? null,
+    duration: exec.duration ?? null,
+    executorAddress: exec.executorAddress ?? null,
+    exitCode: exec.exitCode ?? null,
+  };
+}
+
+/** walk 内部标记："该字符串不是哨兵，原样保留"。 */
+const SENTINEL_SKIP = Symbol("sentinel-skip");
+
+/**
+ * 深遍历判定 params 是否声明了 $upstream 哨兵（含 dot-path 变体）。
+ * triggerDependentTasks 用它做**查询门**：本批下游无人 opt-in 时不读上游
+ * 执行行——无声明场景连一笔查询都不产生（存量扇出逐字节零变化）。
+ */
+export function paramsDeclareUpstreamSentinel(
+  params: Record<string, unknown> | null | undefined,
+): boolean {
+  if (!params) return false;
+  const walk = (node: unknown): boolean => {
+    if (typeof node === "string") {
+      return (
+        node === UPSTREAM_SENTINEL || node.startsWith(`${UPSTREAM_SENTINEL}.`)
+      );
+    }
+    if (Array.isArray(node)) return node.some(walk);
+    if (node !== null && typeof node === "object") {
+      return Object.values(node).some(walk);
+    }
+    return false;
+  };
+  return walk(params);
+}
+
+/**
+ * 深遍历 params，把哨兵字符串替换为上游上下文（整对象或 dot-path 取值）。
+ * 未命中任何哨兵时**返回原引用**（调用方据此判定"未注入"），命中时返回
+ * 深拷贝后的新对象。ctx 内的 Date 原样保留（jsonb 序列化由驱动统一处理）。
+ */
+export function injectUpstreamContext(
+  params: Record<string, unknown> | null | undefined,
+  ctx: UpstreamExecutionContext | null,
+): Record<string, unknown> | null {
+  if (!params || !ctx) return params ?? null;
+  let touched = false;
+  const resolveString = (value: string): unknown => {
+    if (value === UPSTREAM_SENTINEL) return ctx;
+    if (value.startsWith(`${UPSTREAM_SENTINEL}.`)) {
+      let cur: unknown = ctx;
+      for (const seg of value.slice(UPSTREAM_SENTINEL.length + 1).split(".")) {
+        if (cur === null || cur === undefined || typeof cur !== "object") {
+          cur = null;
+          break;
+        }
+        cur = (cur as Record<string, unknown>)[seg];
+      }
+      return cur === undefined ? null : cur;
+    }
+    return SENTINEL_SKIP;
+  };
+  const walk = (node: unknown): unknown => {
+    if (typeof node === "string") {
+      const resolved = resolveString(node);
+      if (resolved !== SENTINEL_SKIP) {
+        touched = true;
+        return resolved;
+      }
+      return node;
+    }
+    if (Array.isArray(node)) return node.map(walk);
+    if (node !== null && typeof node === "object") {
+      const out: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(node)) out[k] = walk(v);
+      return out;
+    }
+    return node;
+  };
+  const replaced = walk(params) as Record<string, unknown>;
+  return touched ? replaced : params;
+}
+
+/**
  * R6: PG 唯一约束/主键冲突（SQLSTATE 23505 unique_violation）。客户端自带
  * 已存在的 id 时 insert 撞主键，驱动抛 QueryFailedError——若不拦截会经全局
  * 过滤器裸 500。识别后统一转 409 ConflictException。
@@ -2239,6 +2367,40 @@ export class TaskService {
   }
 
   /**
+   * FEAT-21: 读上游执行行的透传上下文（结构化子集）。行不存在/查询失败一律
+   * 返回 null——透传是增强而非依赖，绝不阻断扇出主链。
+   */
+  private async loadUpstreamContext(
+    executionId: string,
+  ): Promise<UpstreamExecutionContext | null> {
+    try {
+      const row = await this.execRepo.findOne({
+        where: { id: executionId },
+        select: {
+          id: true,
+          status: true,
+          result: true,
+          errorMessage: true,
+          failureReason: true,
+          startTime: true,
+          endTime: true,
+          duration: true,
+          executorAddress: true,
+          exitCode: true,
+        },
+      });
+      return row ? buildUpstreamContext(row) : null;
+    } catch (err: unknown) {
+      this.logger.warn(
+        `FEAT-21: failed to load upstream execution ${executionId} for context injection: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return null;
+    }
+  }
+
+  /**
    * R4-P0: check and trigger tasks that depend on the completed task.
    * Invoked from handleCallback on the unique SUCCESS-transition winner path
    * (moved from TaskProcessor, where the exec.status === SUCCESS condition
@@ -2274,13 +2436,14 @@ export class TaskService {
       // Find all tasks that have any dependencies set, then filter in-process.
       // Using application-layer filtering avoids JSONB-specific SQL that breaks
       // on non-PostgreSQL engines and is simpler to reason about.
-      // NETOPT-1③: 投影最小化——下游只消费 task.id 与 task.dependencies
-      // （checkDependencies 读 dependencies、claim/trigger/audit 读 id）。
-      // 全实体物化会把 glueSource(text)/runbook(text)/secrets(jsonb 密文)
-      // 逐列拉进内存，而 SUCCESS 回调唯一赢家分支每次都要跑这一扫。
+      // NETOPT-1③: 投影最小化——下游只消费 task.id、task.dependencies 与
+      // task.params（FEAT-21 哨兵注入读 params；checkDependencies 读
+      // dependencies、claim/trigger/audit 读 id）。全实体物化会把
+      // glueSource(text)/runbook(text)/secrets(jsonb 密文) 逐列拉进内存，
+      // 而 SUCCESS 回调唯一赢家分支每次都要跑这一扫。
       const allTasksWithDeps = await this.taskRepo
         .createQueryBuilder("t")
-        .select(["t.id", "t.dependencies"])
+        .select(["t.id", "t.dependencies", "t.params"])
         .where("t.dependencies IS NOT NULL")
         .getMany();
 
@@ -2290,6 +2453,15 @@ export class TaskService {
           t.dependencies &&
           Object.values(t.dependencies).includes(completedTaskId),
       );
+
+      // FEAT-21: 上游执行上下文（opt-in 哨兵注入用）。**查询门**：仅当本批
+      // 下游有任务声明哨兵时才读上游执行行——无人 opt-in 的存量扇出零新增
+      // 查询；行缺席（历史防御分支）时 ctx=null，哨兵按"未声明"处理。
+      const upstreamCtx =
+        completedExecutionId &&
+        dependentTasks.some((t) => paramsDeclareUpstreamSentinel(t.params))
+          ? await this.loadUpstreamContext(completedExecutionId)
+          : null;
 
       for (const task of dependentTasks) {
         // Check if all dependencies are satisfied
@@ -2318,8 +2490,32 @@ export class TaskService {
         // 行 triggerType 错记 manual、且因无 user 主体绕过控制器审计。这里：
         // ① 透传 triggerType="dependency"；② best-effort 写一条系统审计（无 user
         // 主体，username 标 system:dependency；审计自身抛错绝不影响主链触发）。
+        // FEAT-21: 哨兵命中才注入（走 dto.params 覆盖语义）；未声明哨兵的
+        // 下游保持 this.trigger(id, {}) 逐字节不变。注入后总体积超
+        // TASK_PARAMS_MAX_BYTES 时放弃注入（warn + 默认 params 触发）——
+        // 上游 result 过大不该阻断扇出。
+        let triggerPayload: { params?: Record<string, unknown> } = {};
+        const injected = injectUpstreamContext(task.params, upstreamCtx);
+        if (injected !== null && injected !== task.params) {
+          let injectedSize = 0;
+          try {
+            injectedSize = Buffer.byteLength(
+              JSON.stringify(injected) ?? "",
+              "utf8",
+            );
+          } catch {
+            injectedSize = TASK_PARAMS_MAX_BYTES + 1;
+          }
+          if (injectedSize > TASK_PARAMS_MAX_BYTES) {
+            this.logger.warn(
+              `FEAT-21: upstream context injection for task ${task.id} exceeds ${TASK_PARAMS_MAX_BYTES} bytes — falling back to default params`,
+            );
+          } else {
+            triggerPayload = { params: injected };
+          }
+        }
         try {
-          await this.trigger(task.id, {}, null, "dependency");
+          await this.trigger(task.id, triggerPayload, null, "dependency");
         } catch (triggerErr) {
           // NETOPT-3②: trigger 失败 → 回滚 claim（缩小不可重试窗口）+ 部分
           // 失败标记（不落 depsFiredAt），并继续扇出其余下游（不改变回调

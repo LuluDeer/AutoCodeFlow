@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { Card,
   Descriptions,
   Tag,
@@ -23,14 +23,20 @@ import { Card,
 import { message } from '../utils/toast';
 import {
   ApartmentOutlined,
+  ApiOutlined,
   ArrowLeftOutlined, ThunderboltOutlined, PauseCircleOutlined,
   PlayCircleOutlined, DeleteOutlined, ReloadOutlined, EditOutlined,
   EyeOutlined, ClockCircleOutlined, StopOutlined, RobotOutlined, CodeOutlined,
   CheckCircleOutlined, CloseCircleOutlined, FieldTimeOutlined, SaveOutlined,
+  SyncOutlined,
 } from '@ant-design/icons';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { tasksApi, TaskExecution } from '../api/tasks';
+import type {
+  TaskWebhookSecretIssued,
+  TaskWebhookStatus,
+} from '../api/tasks';
 import {
   useSchedulerStats,
   useTaskDetail,
@@ -138,6 +144,52 @@ export default function TaskDetailPage() {
   const [aiSuggestion, setAiSuggestion] = useState<ScheduleSuggestion | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [triggerModalOpen, setTriggerModalOpen] = useState(false);
+
+  // FEAT-21: 任务 webhook 管理。secret 只在 enable/rotate 响应中一次性出现，
+  // 关闭弹窗即丢弃——后端读面永不回传。
+  const [webhookStatus, setWebhookStatus] = useState<TaskWebhookStatus | null>(null);
+  const [issuedSecret, setIssuedSecret] = useState<TaskWebhookSecretIssued | null>(null);
+
+  const loadWebhookStatus = useCallback(() => {
+    if (!id) return;
+    tasksApi.webhookStatus(id)
+      .then(setWebhookStatus)
+      .catch(() => setWebhookStatus(null));
+  }, [id]);
+
+  useEffect(() => {
+    loadWebhookStatus();
+  }, [loadWebhookStatus]);
+
+  const handleWebhookEnable = async () => {
+    if (!id) return;
+    try {
+      setIssuedSecret(await tasksApi.webhookEnable(id));
+      loadWebhookStatus();
+    } catch (err) {
+      showApiError(err, t('taskDetail.webhook.title'));
+    }
+  };
+
+  const handleWebhookRotate = async () => {
+    if (!id) return;
+    try {
+      setIssuedSecret(await tasksApi.webhookRotate(id));
+      loadWebhookStatus();
+    } catch (err) {
+      showApiError(err, t('taskDetail.webhook.title'));
+    }
+  };
+
+  const handleWebhookDisable = async () => {
+    if (!id) return;
+    try {
+      await tasksApi.webhookDisable(id);
+      setWebhookStatus((prev) => (prev ? { ...prev, enabled: false } : prev));
+    } catch (err) {
+      showApiError(err, t('taskDetail.webhook.title'));
+    }
+  };
   const [triggerParams, setTriggerParams] = useState<Record<string, string>>({});
   const [triggering, setTriggering] = useState(false);
   const [killingId, setKillingId] = useState<string | null>(null);
@@ -492,6 +544,7 @@ export default function TaskDetailPage() {
             key: 'info',
             label: t('taskDetail.tab.info'),
             children: (
+              <>
               <Card>
                 <Descriptions size="small" column={{ xs: 1, sm: 2, md: 3 }}>
                   <Descriptions.Item label={t('taskDetail.field.runtime')}><Tag>{runtimeLabel(task.runtime, t)}</Tag></Descriptions.Item>
@@ -639,6 +692,57 @@ export default function TaskDetailPage() {
                   </div>
                 )}
               </Card>
+              {/* FEAT-21: 任务 webhook 入站触发卡片。管理按钮仅管理员（P1-5 同口径，
+                  后端 assertCanOperate 兜底）；secret 一次性回显，读面永不回传。
+                  viewer 调状态接口会 403——非管理员且状态未取到时整卡隐藏，
+                  避免"未启用"的误导性展示。 */}
+              {(isAdmin || webhookStatus !== null) && (
+              <Card
+                size="small"
+                style={{ marginTop: 16 }}
+                title={
+                  <Space>
+                    <ApiOutlined />
+                    {t('taskDetail.webhook.title')}
+                    <Tag color={webhookStatus?.enabled ? 'success' : 'default'}>
+                      {webhookStatus?.enabled ? t('taskDetail.webhook.enabled') : t('taskDetail.webhook.disabled')}
+                    </Tag>
+                  </Space>
+                }
+              >
+                {webhookStatus?.enabled ? (
+                  <>
+                    <Typography.Paragraph type="secondary" style={{ marginBottom: 8, fontSize: 12 }}>
+                      {t('taskDetail.webhook.desc')}
+                    </Typography.Paragraph>
+                    <Typography.Paragraph style={{ marginBottom: 8 }}>
+                      <Text type="secondary">{t('taskDetail.webhook.url')}：</Text>
+                      <Typography.Text code copyable style={{ fontSize: 12 }}>
+                        {webhookStatus.url}
+                      </Typography.Text>
+                    </Typography.Paragraph>
+                    <Space style={{ marginBottom: 8 }}>
+                      <Popconfirm title={t('taskDetail.webhook.rotateConfirm')} onConfirm={handleWebhookRotate}>
+                        <Button size="small" icon={<SyncOutlined />} disabled={!isAdmin}>{t('taskDetail.webhook.rotate')}</Button>
+                      </Popconfirm>
+                      <Popconfirm title={t('taskDetail.webhook.disableConfirm')} onConfirm={handleWebhookDisable}>
+                        <Button size="small" danger disabled={!isAdmin}>{t('taskDetail.webhook.disable')}</Button>
+                      </Popconfirm>
+                    </Space>
+                    <Typography.Paragraph type="secondary" style={{ marginBottom: 0, fontSize: 12 }}>
+                      {t('taskDetail.webhook.waitHint')}
+                    </Typography.Paragraph>
+                  </>
+                ) : (
+                  <Tooltip title={isAdmin ? undefined : t('taskList.adminOnly')}>
+                    <Button size="small" type="primary" disabled={!isAdmin} onClick={handleWebhookEnable}>
+                      {t('taskDetail.webhook.enable')}
+                    </Button>
+                  </Tooltip>
+                )}
+              </Card>
+              )}
+              </>
             ),
           },
           {
@@ -730,6 +834,32 @@ export default function TaskDetailPage() {
           },
         ]}
       />
+
+      {/* FEAT-21: webhook 密钥一次性回显弹窗——enable/rotate 响应中的明文
+          密钥只在本弹窗可见，关闭即丢弃（后端只存加密信封，无法再取）。 */}
+      <Modal
+        title={<Space><ApiOutlined /> {t('taskDetail.webhook.secretTitle')}</Space>}
+        open={!!issuedSecret}
+        footer={null}
+        onCancel={() => setIssuedSecret(null)}
+        width={560}
+        destroyOnHidden
+      >
+        <Alert type="warning" showIcon title={t('taskDetail.webhook.secretDesc')} style={{ marginBottom: 12 }} />
+        {issuedSecret && (
+          <>
+            <Typography.Paragraph style={{ marginBottom: 8 }}>
+              <Text type="secondary">{t('taskDetail.webhook.url')}：</Text>
+              <Typography.Text code copyable style={{ fontSize: 12 }}>
+                {issuedSecret.url}
+              </Typography.Text>
+            </Typography.Paragraph>
+            <Typography.Text code copyable style={{ fontSize: 12, wordBreak: 'break-all' }}>
+              {issuedSecret.secret}
+            </Typography.Text>
+          </>
+        )}
+      </Modal>
 
       {/* 触发弹窗 */}
       <Modal
