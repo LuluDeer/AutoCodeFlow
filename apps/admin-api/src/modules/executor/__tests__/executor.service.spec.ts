@@ -45,6 +45,10 @@ import { LOG_RETENTION_MAX_DELETE_ROUNDS } from "../../../common/utils/capped-ba
 import { S3LogStorage } from "../../task/log-storage/s3-log-storage";
 // ARCH-35 P1: 部署归属偏好接线（dispatch 读取 app_deployments）
 import { AppDeployment } from "../../application/entities/app-deployment.entity";
+import { Application } from "../../application/entities/application.entity";
+import { ApplicationVersion } from "../../application/entities/application-version.entity";
+import { DeploymentConstraintWaitError } from "../../task/execution-deployment-wait";
+import { DEPLOYMENT_CONSTRAINT_STATUSES } from "../executor-deployment-affinity.util";
 import { TaskCodeSource } from "../../task/entities/task.entity";
 
 jest.mock("axios");
@@ -5669,6 +5673,8 @@ describe("R-26: @Optional 关键依赖缺失可观测性（ExecutorService）", 
     audit: unknown;
     /** ARCH-35: app_deployments 仓库（@Optional，第 15 个位置参数）。 */
     appDeploymentRepo?: unknown;
+    /** FEAT-22 方案 B: application_versions 仓库（@Optional，第 17 个位置参数）。 */
+    applicationVersionRepo?: unknown;
     /** ARCH-35: executor.preferDeployedExecutor 的返回值。 */
     preferDeployed?: unknown;
   }): ExecutorService =>
@@ -5695,6 +5701,9 @@ describe("R-26: @Optional 关键依赖缺失可观测性（ExecutorService）", 
       null as never, // pullService（@Optional）
       null as never, // applicationRepo（@Optional）
       opts.appDeploymentRepo as never, // appDeploymentRepo（@Optional）
+      null as never, // tokenCacheSync（@Optional，位于 mutexGroupRepo 前）
+      null as never, // mutexGroupRepo（@Optional）
+      opts.applicationVersionRepo as never, // applicationVersionRepo（@Optional，尾参）
     );
 
   const r26Messages = (): string[] =>
@@ -5705,11 +5714,13 @@ describe("R-26: @Optional 关键依赖缺失可观测性（ExecutorService）", 
   it("eventBus/audit 缺失时各 warn 一次，且不抛", () => {
     expect(() => buildService({ eventBus: null, audit: null })).not.toThrow();
     const msgs = r26Messages();
-    // 3 = DomainEventBus + AuditService + AppDeployment 仓库（默认开关非 false）
-    expect(msgs).toHaveLength(3);
+    // 4 = DomainEventBus + AuditService + AppDeployment 仓库 +
+    // ApplicationVersion 仓库（默认开关非 false）
+    expect(msgs).toHaveLength(4);
     expect(msgs.some((m) => m.includes("DomainEventBus"))).toBe(true);
     expect(msgs.some((m) => m.includes("AuditService"))).toBe(true);
     expect(msgs.some((m) => m.includes("AppDeployment"))).toBe(true);
+    expect(msgs.some((m) => m.includes("ApplicationVersion"))).toBe(true);
   });
 
   it("依赖齐备时不产生任何 R-26 warn", () => {
@@ -5717,6 +5728,7 @@ describe("R-26: @Optional 关键依赖缺失可观测性（ExecutorService）", 
       eventBus: { emit: jest.fn() },
       audit: { log: jest.fn() },
       appDeploymentRepo: { find: jest.fn() },
+      applicationVersionRepo: { findOne: jest.fn() },
     });
     expect(r26Messages()).toHaveLength(0);
   });
@@ -6428,6 +6440,734 @@ describe("ARCH-35 P1: dispatch 部署归属偏好接线（ExecutorService）", (
       matchedByAddressOnly: 0,
       runningDeployments: 0,
     });
+  });
+});
+
+/**
+ * FEAT-22 方案 A v1（生产反馈 2026-09-30：once 部署 5 秒失效，webhook 任务漂移
+ * 到非部署设备）：`deploymentPolicy=strict` 部署约束在 `dispatch()` 中的接线。
+ *
+ * 只覆盖**接线与端到端语义**（键提取/状态口径已在 util spec 穷举）：
+ *  - 收窄：strict 下候选池来自「部署集合 ∩ ONLINE」直查，fleet SQL Top-K
+ *    **不被调用**（绕开截断盲区）；stopped 行计入集合（once 事故场景）；
+ *  - 不换机：集合全离线 / 集合内被过滤光 → DeploymentConstraintWaitError
+ *    （processor 据此置 WAITING 不烧预算），绝不回落全机队；
+ *  - 优先级：appName 点名时不叠加约束；无部署行时约束不适用（删行即解除）；
+ *  - 口径契约：strict 的部署行查询必须按 running/stopped/upgrading 三态。
+ */
+describe("FEAT-22 方案 A: dispatch 部署约束 strict 接线（ExecutorService）", () => {
+  let executorRepo: ReturnType<typeof makeRepo>;
+  let execRepo: ReturnType<typeof makeRepo>;
+  let taskRepo: ReturnType<typeof makeRepo>;
+  let metricsHistoryRepo: ReturnType<typeof makeRepo>;
+  let configService: { get: jest.Mock };
+  let appDeploymentRepo: { find: jest.Mock };
+
+  /** strict 下的部署集合：一条 stopped 行（once 跑完即 stopped 的事故形态）。 */
+  const stoppedDeploymentRow = () => ({
+    executorId: "e-deployed",
+    executorAddress: "deployed:2",
+    status: "stopped",
+  });
+
+  /** 集合直查的命中面：只有部署那台在线（模拟 fleet 其余设备不在集合内）。 */
+  const deployedExecutor = () => ({
+    id: "e-deployed",
+    address: "deployed:2",
+    appName: "deployed-app",
+    status: ExecutorStatus.ONLINE,
+    runningTaskCount: 3,
+    maxConcurrentTasks: 10,
+    version: 1,
+  });
+
+  /** fleet 池两台（v2 prefer 覆盖用例用）：e-best 负载 0 评分最优。 */
+  const twoExecutors = () => [
+    {
+      id: "e-best",
+      address: "best:1",
+      status: ExecutorStatus.ONLINE,
+      runningTaskCount: 0,
+      maxConcurrentTasks: 10,
+      version: 1,
+    },
+    {
+      id: "e-deployed",
+      address: "deployed:2",
+      status: ExecutorStatus.ONLINE,
+      runningTaskCount: 3,
+      maxConcurrentTasks: 10,
+      version: 1,
+    },
+  ];
+
+  /**
+   * 集合直查与原子占坑共用 executorRepo.createQueryBuilder——mock 必须同时
+   * 具备两条链面：getMany（集合查询）与 update/set/execute（占坑）。
+   */
+  const mockSetQueryAndClaim = (opts: {
+    setQueryResult: unknown[];
+    claimAffected?: number | jest.Mock;
+  }) => {
+    executorRepo.createQueryBuilder.mockReturnValue({
+      update: jest.fn().mockReturnThis(),
+      set: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      take: jest.fn().mockReturnThis(),
+      getMany: jest.fn().mockResolvedValue(opts.setQueryResult),
+      execute:
+        typeof opts.claimAffected === "function"
+          ? (opts.claimAffected as jest.Mock)
+          : jest.fn().mockResolvedValue({ affected: opts.claimAffected ?? 1 }),
+    } as never);
+  };
+
+  const buildService = async (): Promise<ExecutorService> => {
+    const module = await Test.createTestingModule({
+      providers: [
+        ExecutorService,
+        { provide: getRepositoryToken(Executor), useValue: executorRepo },
+        { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
+        { provide: getRepositoryToken(Task), useValue: taskRepo },
+        {
+          provide: getRepositoryToken(ExecutorMetricsHistory),
+          useValue: metricsHistoryRepo,
+        },
+        { provide: getQueueToken("task-queue"), useValue: { add: jest.fn() } },
+        { provide: ConfigService, useValue: configService },
+        {
+          provide: NotificationService,
+          useValue: {
+            notifyFailure: jest.fn(),
+            notifyFailureWithConfig: jest.fn(),
+            notifyExecutorOnline: jest.fn().mockResolvedValue(undefined),
+            notifyExecutorOffline: jest.fn().mockResolvedValue(undefined),
+            sendAll: jest.fn(),
+          },
+        },
+        {
+          provide: SystemConfigService,
+          useValue: { findOne: jest.fn().mockRejectedValue(new Error("nf")) },
+        },
+        {
+          provide: SecretsCryptoService,
+          useValue: new SecretsCryptoService({ get: () => "" } as any),
+        },
+        { provide: getRepositoryToken(AppDeployment), useValue: appDeploymentRepo },
+      ],
+    }).compile();
+    return module.get(ExecutorService);
+  };
+
+  /** strict 模式的 config mock（preferDeployed 开 + deploymentPolicy=strict）。 */
+  const enableStrict = () => {
+    configService.get.mockImplementation((key: string) =>
+      key === "executor.preferDeployedExecutor"
+        ? true
+        : key === "executor.deploymentPolicy"
+          ? "strict"
+          : "http",
+    );
+  };
+
+  const gitTask = (overrides: Record<string, unknown> = {}) =>
+    ({
+      id: "task-1",
+      name: "t",
+      applicationId: "app-1",
+      // codeSource 必须显式声明为非 zip：否则 applicationId 非空 + codeSource
+      // 为空会命中 resolveDispatchTask 的 zip 并集兜底，转而要求 applicationRepo
+      // （本块不装配它）。git 渠道正是 manifest 自动注册产出的真实形态。
+      codeSource: TaskCodeSource.GIT,
+      timeout: 10,
+      ...overrides,
+    }) as unknown as Task;
+
+  const dispatchTask = (svc: ExecutorService, task: Task) =>
+    svc.dispatch(task, { id: "exec-1", params: {} } as TaskExecution);
+
+  beforeEach(() => {
+    executorRepo = makeRepo();
+    execRepo = makeRepo();
+    taskRepo = makeRepo();
+    metricsHistoryRepo = makeRepo();
+    appDeploymentRepo = {
+      find: jest.fn().mockResolvedValue([stoppedDeploymentRow()]),
+    };
+    configService = { get: jest.fn() };
+    jest.spyOn(Logger.prototype, "log").mockImplementation(() => undefined);
+    jest.spyOn(Logger.prototype, "warn").mockImplementation(() => undefined);
+    jest.spyOn(Logger.prototype, "error").mockImplementation(() => undefined);
+    jest.clearAllMocks();
+    // clearAllMocks 之后统一装配 config mock（本块的默认形态 = strict 开）。
+    enableStrict();
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  /** 核心语义：stopped 部署行（once 事故场景）也把任务钉在部署那台。 */
+  it("strict：候选池来自集合直查（fleet Top-K 不被调用），派给 stopped 部署的那台", async () => {
+    const svc = await buildService();
+    mockSetQueryAndClaim({ setQueryResult: [deployedExecutor()] });
+    mockedAxios.post.mockResolvedValue({ data: { ok: true } });
+    const logSpy = jest
+      .spyOn(Logger.prototype, "log")
+      .mockImplementation(() => undefined);
+
+    await dispatchTask(svc, gitTask());
+
+    // 集合直查替代了 fleet SQL Top-K——绕开截断盲区是 strict 的硬要求。
+    expect(executorRepo.find).not.toHaveBeenCalled();
+    expect(String(mockedAxios.post.mock.calls[0][0])).toContain("deployed:2");
+
+    const decision = logSpy.mock.calls
+      .map((c) => String(c[0]))
+      .map((m) => {
+        try {
+          return JSON.parse(m);
+        } catch {
+          return null;
+        }
+      })
+      .find((p) => p && p.event === "dispatch.decision");
+    expect(decision).toBeTruthy();
+    expect(decision.deploymentConstraint).toEqual({
+      mode: "strict",
+      // 全局开关开启（enableStrict），任务未带 deploymentPolicy → 来源 global。
+      source: "global",
+      setSize: 1,
+      onlineInSet: 1,
+    });
+    // strict 下软偏好不参与（约束已收窄），deploymentAffinity 必须显式 null。
+    expect(decision.deploymentAffinity).toBeNull();
+  });
+
+  /** 不换机红线：集合全离线 → DeploymentConstraintWaitError，绝不回落全机队。 */
+  it("strict：集合全离线时抛 DeploymentConstraintWaitError（不回落、不派发）", async () => {
+    const svc = await buildService();
+    mockSetQueryAndClaim({ setQueryResult: [] });
+    mockedAxios.post.mockResolvedValue({ data: { ok: true } });
+
+    await expect(dispatchTask(svc, gitTask())).rejects.toBeInstanceOf(
+      DeploymentConstraintWaitError,
+    );
+    // 没有任何占坑/派发动作发生过（集合外设备零接触）。
+    expect(mockedAxios.post).not.toHaveBeenCalled();
+    expect(executorRepo.find).not.toHaveBeenCalled();
+  });
+
+  /** 集合内设备被 tags 过滤光 → 同样走 WAITING 出口，不落终态失败。 */
+  it("strict：集合内被 group/tags 过滤光时抛 DeploymentConstraintWaitError（消息含过滤口径）", async () => {
+    const svc = await buildService();
+    mockSetQueryAndClaim({ setQueryResult: [deployedExecutor()] });
+    mockedAxios.post.mockResolvedValue({ data: { ok: true } });
+
+    await expect(
+      dispatchTask(svc, gitTask({ executorTags: ["gpu"] })),
+    ).rejects.toThrow(/过滤后可用 0 台/);
+    expect(mockedAxios.post).not.toHaveBeenCalled();
+  });
+
+  /** 优先级：appName 点名是更强的用户意图——约束不叠加，走既有 fleet 池。 */
+  it("strict：appName 点名时不应用约束（fleet Top-K 照常）", async () => {
+    const svc = await buildService();
+    executorRepo.find.mockResolvedValue([
+      {
+        id: "e-best",
+        address: "best:1",
+        appName: "best-app",
+        status: ExecutorStatus.ONLINE,
+        runningTaskCount: 0,
+        maxConcurrentTasks: 10,
+        version: 1,
+      },
+    ]);
+    executorRepo.createQueryBuilder.mockReturnValue({
+      update: jest.fn().mockReturnThis(),
+      set: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      execute: jest.fn().mockResolvedValue({ affected: 1 }),
+    } as never);
+    mockedAxios.post.mockResolvedValue({ data: { ok: true } });
+
+    await dispatchTask(svc, gitTask({ executorAppName: "best-app" }));
+
+    expect(appDeploymentRepo.find).not.toHaveBeenCalled();
+    expect(executorRepo.find).toHaveBeenCalled();
+    expect(String(mockedAxios.post.mock.calls[0][0])).toContain("best:1");
+  });
+
+  /** 解除出口：部署行删光 → 约束消失，回全机队（行为与 prefer 一致）。 */
+  it("strict：无部署行时约束不适用，回全机队派发", async () => {
+    const svc = await buildService();
+    appDeploymentRepo.find.mockResolvedValue([]);
+    executorRepo.find.mockResolvedValue([
+      {
+        id: "e-best",
+        address: "best:1",
+        status: ExecutorStatus.ONLINE,
+        runningTaskCount: 0,
+        maxConcurrentTasks: 10,
+        version: 1,
+      },
+    ]);
+    executorRepo.createQueryBuilder.mockReturnValue({
+      update: jest.fn().mockReturnThis(),
+      set: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      execute: jest.fn().mockResolvedValue({ affected: 1 }),
+    } as never);
+    mockedAxios.post.mockResolvedValue({ data: { ok: true } });
+
+    await dispatchTask(svc, gitTask());
+
+    expect(executorRepo.find).toHaveBeenCalled();
+    expect(String(mockedAxios.post.mock.calls[0][0])).toContain("best:1");
+  });
+
+  /** 口径契约：strict 的部署行查询必须按 running/stopped/upgrading 三态。 */
+  it("strict：部署行查询的状态口径为 DEPLOYMENT_CONSTRAINT_STATUSES 三态", async () => {
+    const svc = await buildService();
+    mockSetQueryAndClaim({ setQueryResult: [deployedExecutor()] });
+    mockedAxios.post.mockResolvedValue({ data: { ok: true } });
+
+    await dispatchTask(svc, gitTask());
+
+    const where = appDeploymentRepo.find.mock.calls[0][0].where;
+    expect(where.applicationId).toBe("app-1");
+    // In(...) 是 FindOperator，value 承载状态数组——任一常量与实体枚举漂移
+    // 会先被 executor-deployment-entity-registration.spec 的契约测试拦下。
+    expect(where.status.value).toEqual([...DEPLOYMENT_CONSTRAINT_STATUSES]);
+  });
+
+  // ── v2：任务级 deploymentPolicy 覆盖全局 ────────────────────────────────
+  /** 任务 strict + 全局 prefer → 约束生效（个别任务显式钉死的灰度形态）。 */
+  it("v2：任务 deploymentPolicy=strict 覆盖全局 prefer，约束生效且来源记 task", async () => {
+    configService.get.mockImplementation((key: string) =>
+      key === "executor.preferDeployedExecutor"
+        ? true
+        : key === "executor.deploymentPolicy"
+          ? "prefer"
+          : "http",
+    );
+    const svc = await buildService();
+    mockSetQueryAndClaim({ setQueryResult: [deployedExecutor()] });
+    mockedAxios.post.mockResolvedValue({ data: { ok: true } });
+    const logSpy = jest
+      .spyOn(Logger.prototype, "log")
+      .mockImplementation(() => undefined);
+
+    await dispatchTask(svc, gitTask({ deploymentPolicy: "strict" }));
+
+    // 走了集合直查（fleet Top-K 未被调用）——任务级覆盖确实生效。
+    expect(executorRepo.find).not.toHaveBeenCalled();
+    expect(String(mockedAxios.post.mock.calls[0][0])).toContain("deployed:2");
+
+    const decision = logSpy.mock.calls
+      .map((c) => String(c[0]))
+      .map((m) => {
+        try {
+          return JSON.parse(m);
+        } catch {
+          return null;
+        }
+      })
+      .find((p) => p && p.event === "dispatch.decision");
+    expect(decision.deploymentConstraint).toMatchObject({
+      mode: "strict",
+      source: "task",
+    });
+  });
+
+  /** 任务 prefer + 全局 strict → 约束不适用，回软偏好（个别任务显式退出）。 */
+  it("v2：任务 deploymentPolicy=prefer 覆盖全局 strict，走软偏好（fleet 池）", async () => {
+    const svc = await buildService();
+    executorRepo.find.mockResolvedValue(twoExecutors());
+    executorRepo.createQueryBuilder.mockReturnValue({
+      update: jest.fn().mockReturnThis(),
+      set: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      execute: jest.fn().mockResolvedValue({ affected: 1 }),
+    } as never);
+    appDeploymentRepo.find.mockResolvedValue([
+      {
+        executorId: "e-deployed",
+        executorAddress: "deployed:2",
+        status: "running",
+      },
+    ]);
+    mockedAxios.post.mockResolvedValue({ data: { ok: true } });
+
+    await dispatchTask(svc, gitTask({ deploymentPolicy: "prefer" }));
+
+    // fleet Top-K 照常（strict 的集合直查未走）；部署行查询按 RUNNING 口径。
+    expect(executorRepo.find).toHaveBeenCalled();
+    const where = appDeploymentRepo.find.mock.calls[0][0].where;
+    expect(where.status).toBe("running");
+    // 软偏好仍然生效：部署那台评分更差也前置占坑。
+    expect(String(mockedAxios.post.mock.calls[0][0])).toContain("deployed:2");
+  });
+});
+
+/**
+ * FEAT-22 方案 B（版本跟随部署）：派发命中部署设备时，任务改跑该设备部署行
+ * 记录的当版包（deployedVersion → application_versions.snapshot.packageUrl）。
+ *
+ * 只覆盖**接线与端到端语义**（行选择已在 util spec 穷举）：
+ *  - 跟随生效：zip 任务 + 命中部署设备 → 载荷 packageUrl = 当版快照包，
+ *    执行行留痕当版版本，versionFollow 结构化日志；
+ *  - 回退红线：版本行缺失 / snapshot 无 packageUrl / 版本仓库未装配 /
+ *    非部署设备（prefer 降级）→ 一律回退当前版，绝不阻断派发；
+ *  - 渠道门：git 渠道任务不参与（代码来自仓库，部署版本无关）；
+ *  - strict + stopped 行：once 部署跑完的设备也按当版跑（闭环）。
+ */
+describe("FEAT-22 方案 B: dispatch 版本跟随部署接线（ExecutorService）", () => {
+  let executorRepo: ReturnType<typeof makeRepo>;
+  let execRepo: ReturnType<typeof makeRepo>;
+  let taskRepo: ReturnType<typeof makeRepo>;
+  let metricsHistoryRepo: ReturnType<typeof makeRepo>;
+  let configService: { get: jest.Mock };
+  let appDeploymentRepo: { find: jest.Mock };
+  let applicationRepo: { findOne: jest.Mock };
+  let applicationVersionRepo: { findOne: jest.Mock };
+
+  const CURRENT_PKG = "http://pkg/current.zip";
+  const V12_PKG = "http://pkg/1.2.0.zip";
+
+  /** 当前版行（resolveDispatchTask 的 zip 渠道解析源）。 */
+  const appRow = () => ({
+    id: "app-1",
+    name: "demo-app",
+    packageUrl: CURRENT_PKG,
+    version: "9.9.9",
+  });
+
+  /** 版本快照行（deployedVersion → snapshot.packageUrl）。 */
+  const versionRow = (pkg: string) => ({
+    id: "v-row",
+    snapshot: { packageUrl: pkg },
+  });
+
+  /** 部署设备（prefer 池内评分更差；strict 直查命中面）。 */
+  const deployedExecutor = () => ({
+    id: "e-deployed",
+    address: "deployed:2",
+    status: ExecutorStatus.ONLINE,
+    runningTaskCount: 3,
+    maxConcurrentTasks: 10,
+    version: 1,
+  });
+
+  /** 非部署设备（评分最优）。 */
+  const bestExecutor = () => ({
+    id: "e-best",
+    address: "best:1",
+    status: ExecutorStatus.ONLINE,
+    runningTaskCount: 0,
+    maxConcurrentTasks: 10,
+    version: 1,
+  });
+
+  const mockClaim = (affected: number | jest.Mock) => {
+    executorRepo.createQueryBuilder.mockReturnValue({
+      update: jest.fn().mockReturnThis(),
+      set: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      execute:
+        typeof affected === "function"
+          ? (affected as jest.Mock)
+          : jest.fn().mockResolvedValue({ affected }),
+    } as never);
+  };
+
+  const buildService = async (opts: {
+    withVersionRepo?: boolean;
+  } = {}): Promise<ExecutorService> => {
+    const providers: any[] = [
+      ExecutorService,
+      { provide: getRepositoryToken(Executor), useValue: executorRepo },
+      { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
+      { provide: getRepositoryToken(Task), useValue: taskRepo },
+      {
+        provide: getRepositoryToken(ExecutorMetricsHistory),
+        useValue: metricsHistoryRepo,
+      },
+      { provide: getQueueToken("task-queue"), useValue: { add: jest.fn() } },
+      { provide: ConfigService, useValue: configService },
+      {
+        provide: NotificationService,
+        useValue: {
+          notifyFailure: jest.fn(),
+          notifyFailureWithConfig: jest.fn(),
+          notifyExecutorOnline: jest.fn().mockResolvedValue(undefined),
+          notifyExecutorOffline: jest.fn().mockResolvedValue(undefined),
+          sendAll: jest.fn(),
+        },
+      },
+      {
+        provide: SystemConfigService,
+        useValue: { findOne: jest.fn().mockRejectedValue(new Error("nf")) },
+      },
+      {
+        provide: SecretsCryptoService,
+        useValue: new SecretsCryptoService({ get: () => "" } as any),
+      },
+      { provide: getRepositoryToken(AppDeployment), useValue: appDeploymentRepo },
+      { provide: getRepositoryToken(Application), useValue: applicationRepo },
+    ];
+    if (opts.withVersionRepo !== false) {
+      providers.push({
+        provide: getRepositoryToken(ApplicationVersion),
+        useValue: applicationVersionRepo,
+      });
+    }
+    const module = await Test.createTestingModule({ providers }).compile();
+    return module.get(ExecutorService);
+  };
+
+  /** zip 渠道任务（版本跟随的适用面）。 */
+  const zipTask = (overrides: Record<string, unknown> = {}) =>
+    ({
+      id: "task-1",
+      name: "t",
+      applicationId: "app-1",
+      codeSource: TaskCodeSource.APPLICATION_ZIP,
+      timeout: 10,
+      ...overrides,
+    }) as unknown as Task;
+
+  const dispatchTask = (svc: ExecutorService, task: Task, exec?: TaskExecution) => {
+    const execution = exec ?? ({ id: "exec-1", params: {} } as TaskExecution);
+    return svc.dispatch(task, execution).then(() => execution);
+  };
+
+  const payloadOf = () =>
+    (mockedAxios.post.mock.calls[0][1] as { task: { packageUrl?: string } })
+      .task.packageUrl;
+
+  beforeEach(() => {
+    executorRepo = makeRepo();
+    execRepo = makeRepo();
+    taskRepo = makeRepo();
+    metricsHistoryRepo = makeRepo();
+    appDeploymentRepo = {
+      find: jest.fn().mockResolvedValue([
+        {
+          executorId: "e-deployed",
+          executorAddress: "deployed:2",
+          status: "running",
+          deployedVersion: "1.2.0",
+          deployedAt: "2026-09-30T10:00:00Z",
+        },
+      ]),
+    };
+    applicationRepo = { findOne: jest.fn().mockResolvedValue(appRow()) };
+    applicationVersionRepo = {
+      findOne: jest.fn().mockResolvedValue(versionRow(V12_PKG)),
+    };
+    configService = {
+      get: jest.fn((key: string) =>
+        key === "executor.preferDeployedExecutor"
+          ? true
+          : key === "executor.deploymentPolicy"
+            ? "prefer"
+            : "http",
+      ),
+    };
+    jest.spyOn(Logger.prototype, "log").mockImplementation(() => undefined);
+    jest.spyOn(Logger.prototype, "warn").mockImplementation(() => undefined);
+    jest.spyOn(Logger.prototype, "error").mockImplementation(() => undefined);
+    jest.clearAllMocks();
+    // clearAllMocks 之后统一装配（同 FEAT-22 块的纪律）。
+    appDeploymentRepo.find.mockResolvedValue([
+      {
+        executorId: "e-deployed",
+        executorAddress: "deployed:2",
+        status: "running",
+        deployedVersion: "1.2.0",
+        deployedAt: "2026-09-30T10:00:00Z",
+      },
+    ]);
+    applicationRepo.findOne.mockResolvedValue(appRow());
+    applicationVersionRepo.findOne.mockResolvedValue(versionRow(V12_PKG));
+    configService.get.mockImplementation((key: string) =>
+      key === "executor.preferDeployedExecutor"
+        ? true
+        : key === "executor.deploymentPolicy"
+          ? "prefer"
+          : "http",
+    );
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it("跟随生效：命中部署设备改跑当版快照包，执行行留痕当版版本", async () => {
+    const svc = await buildService();
+    executorRepo.find.mockResolvedValue([bestExecutor(), deployedExecutor()]);
+    mockClaim(1);
+    mockedAxios.post.mockResolvedValue({ data: { ok: true } });
+    const logSpy = jest
+      .spyOn(Logger.prototype, "log")
+      .mockImplementation(() => undefined);
+
+    const exec = await dispatchTask(svc, zipTask());
+
+    // 版本快照按 (applicationId, version) 精确查询。
+    expect(applicationVersionRepo.findOne).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { applicationId: "app-1", version: "1.2.0" },
+      }),
+    );
+    // 载荷包 = 当版快照包（不是应用当前版）。
+    expect(payloadOf()).toBe(V12_PKG);
+    // 执行行留痕当版。
+    expect(exec.resolvedPackageVersion).toBe("1.2.0");
+    expect(exec.resolvedPackageUrl).toBe(V12_PKG);
+    // 结构化日志可回溯。
+    const follow = logSpy.mock.calls
+      .map((c) => String(c[0]))
+      .map((m) => {
+        try {
+          return JSON.parse(m);
+        } catch {
+          return null;
+        }
+      })
+      .find((p) => p && p.event === "dispatch.versionFollow");
+    expect(follow).toMatchObject({
+      version: "1.2.0",
+      packageUrl: V12_PKG,
+      executor: "deployed:2",
+    });
+  });
+
+  it("prefer 降级到非部署设备：跑当前版，不查版本库", async () => {
+    const svc = await buildService();
+    executorRepo.find.mockResolvedValue([bestExecutor(), deployedExecutor()]);
+    // 部署那台占坑失败 → 顺延 best（非部署设备）。
+    const execute = jest
+      .fn()
+      .mockResolvedValueOnce({ affected: 0 })
+      .mockResolvedValueOnce({ affected: 1 });
+    mockClaim(execute);
+    mockedAxios.post.mockResolvedValue({ data: { ok: true } });
+
+    const exec = await dispatchTask(svc, zipTask());
+
+    expect(applicationVersionRepo.findOne).not.toHaveBeenCalled();
+    expect(payloadOf()).toBe(CURRENT_PKG);
+    expect(exec.resolvedPackageVersion).toBe("9.9.9");
+  });
+
+  it("版本行缺失：回退当前版 + warn，不阻断派发", async () => {
+    const svc = await buildService();
+    executorRepo.find.mockResolvedValue([bestExecutor(), deployedExecutor()]);
+    mockClaim(1);
+    applicationVersionRepo.findOne.mockResolvedValue(null);
+    const warnSpy = jest
+      .spyOn(Logger.prototype, "warn")
+      .mockImplementation(() => undefined);
+    mockedAxios.post.mockResolvedValue({ data: { ok: true } });
+
+    await dispatchTask(svc, zipTask());
+
+    expect(payloadOf()).toBe(CURRENT_PKG);
+    expect(warnSpy.mock.calls.some((c) => String(c[0]).includes("方案 B"))).toBe(
+      true,
+    );
+  });
+
+  it("snapshot 无 packageUrl：回退当前版", async () => {
+    const svc = await buildService();
+    executorRepo.find.mockResolvedValue([bestExecutor(), deployedExecutor()]);
+    mockClaim(1);
+    applicationVersionRepo.findOne.mockResolvedValue({
+      id: "v-row",
+      snapshot: {},
+    });
+    mockedAxios.post.mockResolvedValue({ data: { ok: true } });
+
+    await dispatchTask(svc, zipTask());
+
+    expect(payloadOf()).toBe(CURRENT_PKG);
+  });
+
+  it("strict + stopped 行（once 闭环）：按部署行当版跑", async () => {
+    configService.get.mockImplementation((key: string) =>
+      key === "executor.preferDeployedExecutor"
+        ? true
+        : key === "executor.deploymentPolicy"
+          ? "strict"
+          : "http",
+    );
+    appDeploymentRepo.find.mockResolvedValue([
+      {
+        executorId: "e-deployed",
+        executorAddress: "deployed:2",
+        status: "stopped",
+        deployedVersion: "2.0.0",
+      },
+    ]);
+    applicationVersionRepo.findOne.mockResolvedValue(
+      versionRow("http://pkg/2.0.0.zip"),
+    );
+    const svc = await buildService();
+    // strict 集合直查：executorRepo.find（fleet Top-K）不被调用，走 getMany。
+    executorRepo.createQueryBuilder.mockReturnValue({
+      update: jest.fn().mockReturnThis(),
+      set: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      take: jest.fn().mockReturnThis(),
+      getMany: jest.fn().mockResolvedValue([deployedExecutor()]),
+      execute: jest.fn().mockResolvedValue({ affected: 1 }),
+    } as never);
+    mockedAxios.post.mockResolvedValue({ data: { ok: true } });
+
+    await dispatchTask(svc, zipTask());
+
+    expect(executorRepo.find).not.toHaveBeenCalled();
+    expect(applicationVersionRepo.findOne).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { applicationId: "app-1", version: "2.0.0" },
+      }),
+    );
+    expect(payloadOf()).toBe("http://pkg/2.0.0.zip");
+  });
+
+  it("版本仓库未装配：回退当前版，不抛", async () => {
+    const svc = await buildService({ withVersionRepo: false });
+    executorRepo.find.mockResolvedValue([bestExecutor(), deployedExecutor()]);
+    mockClaim(1);
+    mockedAxios.post.mockResolvedValue({ data: { ok: true } });
+
+    await dispatchTask(svc, zipTask());
+
+    expect(payloadOf()).toBe(CURRENT_PKG);
+  });
+
+  it("git 渠道任务不参与版本跟随（代码来自仓库，部署版本无关）", async () => {
+    const svc = await buildService();
+    executorRepo.find.mockResolvedValue([bestExecutor(), deployedExecutor()]);
+    mockClaim(1);
+    mockedAxios.post.mockResolvedValue({ data: { ok: true } });
+
+    await dispatchTask(
+      svc,
+      zipTask({ codeSource: TaskCodeSource.GIT }) as Task,
+    );
+
+    expect(applicationVersionRepo.findOne).not.toHaveBeenCalled();
+    expect(payloadOf()).toBeUndefined();
   });
 });
 

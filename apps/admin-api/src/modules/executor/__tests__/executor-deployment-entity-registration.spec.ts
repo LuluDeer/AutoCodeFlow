@@ -28,7 +28,10 @@ import {
   DeploymentStatus,
 } from "../../application/entities/app-deployment.entity";
 import { Application } from "../../application/entities/application.entity";
-import { DEPLOYMENT_STATUS_RUNNING } from "../executor-deployment-affinity.util";
+import {
+  DEPLOYMENT_CONSTRAINT_STATUSES,
+  DEPLOYMENT_STATUS_RUNNING,
+} from "../executor-deployment-affinity.util";
 
 /**
  * `buildMetadatas()` 是 protected（TypeORM 只在 initialize() 内部调用它）。
@@ -101,6 +104,18 @@ describe("ARCH-35 P1: AppDeployment 在 executor 侧二次注册的元数据完�
     expect(Object.values(DeploymentStatus)).toContain(
       DEPLOYMENT_STATUS_RUNNING,
     );
+  });
+
+  it("FEAT-22: strict 约束状态集的每个值都在实体 enum 内（契约点随口径扩展）", () => {
+    const meta = ds.entityMetadatas.find((m) => m.target === AppDeployment)!;
+    const statusCol = meta.columns.find((c) => c.propertyName === "status")!;
+    expect(statusCol).toBeDefined();
+    // strict 口径 = running/stopped/upgrading（DEPLOYMENT_CONSTRAINT_STATUSES）。
+    // 任一常量与实体枚举漂移的后果：strict 集合查询恒空 → 约束恒不适用
+    // （静默退化为全机队，用户「只在部署设备跑」的预期落空且无报错）。
+    for (const status of DEPLOYMENT_CONSTRAINT_STATUSES) {
+      expect(Object.values(DeploymentStatus)).toContain(status);
+    }
   });
 
   it("AppDeployment 与 Executor 同处一张元数据图（forFeature 双侧注册）", () => {

@@ -1770,7 +1770,9 @@ export default {
   'appDeploy.col.actions': '操作',
   'appDeploy.runMode.once': '单次',
   'appDeploy.runMode.daemon': '常驻',
-  'appDeploy.runMode.scheduled': '定时',
+  // 与部署弹窗的改名（appDeploy.mode.scheduled）保持同一术语——列表列显示
+  // 「定时」会让用户以为与 cron 绑定，实际语义是"仅部署待命、设备优先"。
+  'appDeploy.runMode.scheduled': '仅部署待触发',
   'appDeploy.time.justNow': '刚刚',
   'appDeploy.time.minutesAgo': '{{mins}}分钟前',
   'appDeploy.time.hoursAgo': '{{hours}}小时前',
@@ -1815,13 +1817,24 @@ export default {
   'appDeploy.placeholder.autoExecutor': '自动选择最空闲的执行器（推荐）',
   'appDeploy.mode.once': '单次执行',
   'appDeploy.mode.daemon': '常驻进程',
-  'appDeploy.mode.scheduled': '定时任务',
+  // FEAT-22 配套 UX（生产反馈 2026-09-30，第二起 runMode 语义误读）：原名
+  // 「定时任务」让 webhook/手动触发用户按"触发方式"理解而直接排除它——实际
+  // 语义是"仅部署待命、不启动进程，任务触发时（定时/手动/webhook/依赖链）
+  // 部署设备优先"。改名直说语义，不再暗示与定时计划绑定。
+  'appDeploy.mode.scheduled': '仅部署（待任务触发）',
   // 生产反馈：三个模式此前没有任何说明，用户看不出区别（且当时"单次/常驻"
   // 实现上确实完全等价，见 executor-node deploy.ts 的 runMode 注释）。
+  // runMode 管的是"部署产物在设备上的进程形态"，不是触发方式（触发方式属于
+  // 任务调度域：cron/手动/webhook/依赖链）——文案统一到这个心智模型。
   'appDeploy.mode.hint':
-    '单次执行：启动进程，退出后不重启；常驻进程：异常退出自动重启（最多 10 次，退避至 60 秒）；定时任务：只下发代码不启动，由「任务调度」里的任务触发。',
+    '单次执行：部署后立即运行一次，结束即完事；常驻进程：异常退出自动重启（最多 10 次，退避至 60 秒）；仅部署（待任务触发）：只下发代码不启动进程，任务触发时优先派到部署设备。',
   'appDeploy.mode.hintDaemon': '异常退出会自动重启（最多 10 次）；正常退出（退出码 0）不重启。',
-  'appDeploy.mode.hintScheduled': '只下发代码，不启动进程——请在「任务调度」里建任务来触发运行。',
+  'appDeploy.mode.hintScheduled':
+    '只下发代码，不启动进程——应用的部署设备将作为任务执行的优先目标（触发方式与部署模式无关，定时/手动/webhook 均可）。请在「任务调度」里建任务来触发运行。',
+  // FEAT-22 配套 UX：once 是三个模式里唯一"跑完即失效"的——必须说清部署记录
+  // 会变已停止、对后续任务调度没有绑定作用，并把用户引向正确的模式。
+  'appDeploy.mode.hintOnce':
+    '部署后会立即运行一次进程，正常退出后部署记录变为「已停止」——后续任务触发不会再经过这次部署，设备也不会因此被绑定。若希望任务优先派到该设备，请选择「仅部署（待任务触发）」。',
   // 用户报障修正：原文案写「会复用本设备的这条记录（不会新增记录）」，但后端
   // 用户报障（中台提示与实现相反）：本键经历了两版错误文案——
   //   ① 最早写"会复用本设备的这条记录"（当时 deploy() 其实恒定 INSERT 新行）；
@@ -2011,6 +2024,9 @@ export default {
   'execDetail.field.taskName': '任务名',
   'execDetail.field.trigger': '触发方式',
   'execDetail.field.executor': '执行节点',
+  // FEAT-22 配套观测：派发时刻解析的应用包版本（zip 渠道留痕；命中部署设备
+  // 时为方案 B 的当版）。
+  'execDetail.field.resolvedPackageVersion': '应用版本',
   'execDetail.field.taskVersion': '任务版本',
   'execDetail.field.retryCount': '重试次数',
   'execDetail.field.startTime': '开始时间',
@@ -2275,6 +2291,13 @@ export default {
   'taskForm.field.antiAffinityTags': '反亲和标签',
   'taskForm.field.antiAffinityTags.tooltip': '执行器拥有任一标签即排除；可与亲和标签同时使用。自动调度与广播均生效。指定执行器模式不使用此约束。',
   'taskForm.field.antiAffinityTags.placeholder': '选择反亲和标签（可选，排除关系）',
+  // FEAT-22 v2：任务级部署约束模式（null=跟随全局 EXECUTOR_DEPLOYMENT_POLICY）。
+  'taskForm.field.deploymentPolicy': '部署设备约束',
+  'taskForm.field.deploymentPolicy.tooltip':
+    '任务关联的应用已有部署记录时生效：「仅部署设备」把派发限定在部署过的设备上（都不可用时排队等待，不换机）；「部署设备优先」只影响排序，派不出去自动回落全机队；「跟随全局」按系统配置 EXECUTOR_DEPLOYMENT_POLICY 执行。指定执行器（Pin）模式不使用此约束。',
+  'taskForm.field.deploymentPolicy.followGlobal': '跟随全局配置',
+  'taskForm.field.deploymentPolicy.strict': '仅部署设备（排队不换机）',
+  'taskForm.field.deploymentPolicy.prefer': '部署设备优先（可回落）',
   'taskForm.alert.pinnedAffinity': '指定执行器模式不使用亲和/反亲和约束；配置会保留，切回自动调度、分组或广播后继续生效',
   'taskForm.alert.broadcastPin': '已切换到广播模式：此前选定的执行器将在提交时清空（互斥语义）',
   'taskForm.field.timeout': '超时时间',

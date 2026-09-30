@@ -156,6 +156,12 @@ export interface Task {
   executorAffinityTags?: string[] | null;
   /** NF-04: exclude executors carrying any of these tags. */
   executorAntiAffinityTags?: string[] | null;
+  /**
+   * FEAT-22 方案 A v2: 任务级部署约束模式（'strict'=部署设备集合硬约束，
+   * 集合不可用排队不换机；'prefer'=软偏好；null=跟随全局
+   * EXECUTOR_DEPLOYMENT_POLICY）。优先级：executorId pin > appName > 本约束。
+   */
+  deploymentPolicy?: "strict" | "prefer" | null;
   dependencies?: Record<string, string> | null;
   /** FEAT-06: 维护窗口（null/[] = 未配置；表单未填写时提交 null 以清空） */
   maintenanceWindows?: MaintenanceWindow[] | null;
@@ -219,6 +225,13 @@ export interface TaskExecution {
   taskVersion?: string | null;
   /** OBS-01: W3C trace-id（admin OTEL_ENABLED=true 时落库；null=未追踪） */
   traceId?: string | null;
+  /**
+   * FEAT-22 配套观测：派发时刻解析的应用包/版本（仅 zip 渠道；null=git/glue
+   * 渠道或旧数据）。任务恒跑应用「当前上传版本」，命中部署设备时按方案 B
+   * 跑该设备部署行记录的当版——本字段是「这次执行到底跑的哪版」的事实源。
+   */
+  resolvedPackageUrl?: string | null;
+  resolvedPackageVersion?: string | null;
   /**
    * 执行结果 jsonb 自由列（后端 task_executions.result）。python_task_multiversion
    * 起，失败执行会写入结构化解释器留痕 `{ interpreter: {requested, resolved,

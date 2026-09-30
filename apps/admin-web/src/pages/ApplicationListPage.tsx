@@ -420,10 +420,22 @@ export default function ApplicationListPage() {
     return false;
   };
 
+  // FEAT-22 配套 UX（生产反馈 2026-09-30）：快速部署默认值按应用形态判断。
+  // manifest 声明了 tasks 的应用是「任务型应用」——部署的真实意义是"把设备
+  // 绑给后续任务触发"（scheduled：只落盘不启动、部署行保持 running、调度
+  // 软偏好持续生效）。此前恒默认 once：once 部署跑完 5 秒即 stopped，用户
+  // 以为绑定已生效而实际调度面已与部署无关（本次生产预期差的直接诱因之一）。
+  // once 仍可显式选择；非任务型应用（无 manifest.tasks）保持 once 默认不变。
+  const defaultRunModeFor = (appId: string): 'once' | 'scheduled' => {
+    const app = apps.find((a) => a.id === appId);
+    const tasks = app?.manifest?.tasks;
+    return Array.isArray(tasks) && tasks.length > 0 ? 'scheduled' : 'once';
+  };
+
   const openQuickDeploy = async (appId: string) => {
     setQuickDeployApp(appId);
     quickDeployForm.resetFields();
-    quickDeployForm.setFieldsValue({ runMode: 'once' });
+    quickDeployForm.setFieldsValue({ runMode: defaultRunModeFor(appId) });
     try {
       const res = await executorsApi.list();
       setQuickDeployExecutors(res.map(e => ({ id: e.id, name: e.appName, address: e.address, status: e.status })) ?? []);
