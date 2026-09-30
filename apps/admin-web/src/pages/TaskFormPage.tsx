@@ -496,6 +496,9 @@ export default function TaskFormPage() {
           // otherwise the form submission would normalize absent values to null and
           // silently clear constraints that were never shown to the user.
           ...affinityFormValues(task),
+          // FEAT-22 v2: 任务级部署约束模式（'global' 哨兵=跟随全局，Select
+          // 需要非 null 的值才能显示选项文案；提交时归一为 null）。
+          deploymentPolicy: task.deploymentPolicy ?? 'global',
           params: task.params ?? {},
           // 告警配置（alarmEmail / alarmChannels）：两列是任务级失败通知的唯一
           // 来源（notification.service.notifyFailureWithConfig 直接读 task 实体
@@ -1649,6 +1652,29 @@ export default function TaskFormPage() {
                     disabled={executorMode === 'pinned'}
                     placeholder={t('taskForm.field.antiAffinityTags.placeholder')}
                     options={allTags.map(t => ({ value: t, label: <Tag>{t}</Tag> }))}
+                  />
+                </Form.Item>
+                {/* FEAT-22 v2：任务级部署约束模式——与亲和约束同款的全模式挂载
+                    + pinned 禁用（pin 语义就是"只在这一台跑"，部署约束在 pin 下
+                    不参与；禁用仅表意，值保留，切回后继续生效）。 */}
+                <Form.Item
+                  name="deploymentPolicy"
+                  label={t('taskForm.field.deploymentPolicy')}
+                  // 创建态默认「跟随全局」（编辑态由 setFieldsValue 覆盖）。
+                  initialValue="global"
+                  tooltip={{
+                    title: t('taskForm.field.deploymentPolicy.tooltip'),
+                    icon: <InfoCircleOutlined />,
+                  }}
+                >
+                  <Select
+                    allowClear={false}
+                    disabled={executorMode === 'pinned'}
+                    options={[
+                      { value: 'global', label: t('taskForm.field.deploymentPolicy.followGlobal') },
+                      { value: 'strict', label: t('taskForm.field.deploymentPolicy.strict') },
+                      { value: 'prefer', label: t('taskForm.field.deploymentPolicy.prefer') },
+                    ]}
                   />
                 </Form.Item>
                 {executorMode === 'pinned' && (

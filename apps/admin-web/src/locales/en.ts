@@ -1755,7 +1755,8 @@ export default {
   'appDeploy.col.actions': 'Actions',
   'appDeploy.runMode.once': 'Once',
   'appDeploy.runMode.daemon': 'Daemon',
-  'appDeploy.runMode.scheduled': 'Scheduled',
+  // Keep the same term as the deploy dialog (appDeploy.mode.scheduled).
+  'appDeploy.runMode.scheduled': 'Deploy only',
   'appDeploy.time.justNow': 'just now',
   'appDeploy.time.minutesAgo': '{{mins}} min ago',
   'appDeploy.time.hoursAgo': '{{hours}} hr ago',
@@ -1800,13 +1801,22 @@ export default {
   'appDeploy.placeholder.autoExecutor': 'Auto-select the most idle executor (recommended)',
   'appDeploy.mode.once': 'Run once',
   'appDeploy.mode.daemon': 'Daemon process',
-  'appDeploy.mode.scheduled': 'Scheduled task',
+  // FEAT-22 (prod feedback 2026-09-30): "Scheduled task" read as a trigger type
+  // and was dismissed by webhook/manual users. The real semantics: deploy only,
+  // no process; deployed devices get preferred when tasks fire (cron/manual/
+  // webhook/dependency).
+  'appDeploy.mode.scheduled': 'Deploy only (task-triggered)',
   'appDeploy.mode.hint':
-    'Run once: start the process, do not restart after exit. Daemon: auto-restart on abnormal exit (up to 10 attempts, backoff to 60s). Scheduled: deliver code only, no process — trigger it from Task Scheduling.',
+    'Run once: start the process immediately after deploy, done when it exits. Daemon: auto-restart on abnormal exit (up to 10 attempts, backoff to 60s). Deploy only (task-triggered): deliver code, no process — deployed devices are preferred when tasks fire.',
   'appDeploy.mode.hintDaemon':
     'Auto-restarts on abnormal exit (up to 10 attempts). A clean exit (code 0) is not restarted.',
   'appDeploy.mode.hintScheduled':
-    'Code is delivered but no process is started — create a task under Task Scheduling to run it.',
+    'Code is delivered but no process is started — the deployed device becomes the preferred target for task dispatch (trigger type is unrelated: cron, manual, webhook all work). Create a task under Task Scheduling to run it.',
+  // FEAT-22: once is the only mode whose deployment row goes stale right after
+  // it finishes — spell out that the record turns "stopped" and nothing stays
+  // bound, and point at the right mode.
+  'appDeploy.mode.hintOnce':
+    'The process runs once immediately after deploy; on a clean exit the deployment record becomes "stopped" — later task triggers will not go through this deployment and the device stays unbound. To prefer this device for future tasks, choose "Deploy only (task-triggered)".',
   // User-reported fix: the old copy claimed the record is reused, but the backend
   // User-reported: the hint contradicted the implementation. It first claimed the
   // record would be reused (when deploy() actually always INSERTed), then claimed a
@@ -1995,6 +2005,9 @@ export default {
   'execDetail.field.taskName': 'Task Name',
   'execDetail.field.trigger': 'Trigger',
   'execDetail.field.executor': 'Executor',
+  // FEAT-22: resolved app package version at dispatch time (zip channel;
+  // the deployment's version when version-follow applies).
+  'execDetail.field.resolvedPackageVersion': 'App Version',
   'execDetail.field.taskVersion': 'Task Version',
   'execDetail.field.retryCount': 'Retry Count',
   'execDetail.field.startTime': 'Start Time',
@@ -2260,6 +2273,14 @@ export default {
   'taskForm.field.antiAffinityTags': 'Anti-affinity Tags',
   'taskForm.field.antiAffinityTags.tooltip': 'An executor with any tag is excluded; can be combined with affinity tags. Effective in Auto Dispatch and Broadcast. Not used in Pin Executor mode.',
   'taskForm.field.antiAffinityTags.placeholder': 'Select anti-affinity tags (optional, exclusion)',
+  // FEAT-22 v2: task-level deployment dispatch policy (null = follow global
+  // EXECUTOR_DEPLOYMENT_POLICY).
+  'taskForm.field.deploymentPolicy': 'Deployment Device Constraint',
+  'taskForm.field.deploymentPolicy.tooltip':
+    "Effective when the bound application has deployment records: 'Deployed devices only' restricts dispatch to devices with explicit deployments (queued when none is available — never silently dispatched elsewhere); 'Deployed devices preferred' only reorders candidates and falls back to the fleet; 'Follow global' uses the system setting EXECUTOR_DEPLOYMENT_POLICY. Not used in Pin Executor mode.",
+  'taskForm.field.deploymentPolicy.followGlobal': 'Follow global setting',
+  'taskForm.field.deploymentPolicy.strict': 'Deployed devices only (queue, no fallback)',
+  'taskForm.field.deploymentPolicy.prefer': 'Deployed devices preferred (with fallback)',
   'taskForm.alert.pinnedAffinity': 'Affinity/anti-affinity constraints are not used in Pin Executor mode; the config is retained and takes effect again after switching back to Auto Dispatch, Group, or Broadcast',
   'taskForm.alert.broadcastPin': 'Switched to Broadcast mode: the previously selected executor will be cleared on submit (mutual exclusion)',
   'taskForm.field.timeout': 'Timeout',

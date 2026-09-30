@@ -5,7 +5,7 @@
  * 解释器留痕快照。纯展示组件：除 data 外零外部状态，解释器上下文与失败
  * 分类映射在组件内自行派生（提取自 data.result / data.failureReason）。
  */
-import { Card, Descriptions, Tag, Typography, Button, Space, Alert } from 'antd';
+import { Card, Descriptions, Tag, Typography, Button, Space, Alert, Tooltip } from 'antd';
 import { CopyOutlined } from '@ant-design/icons';
 import { Link } from 'react-router-dom';
 import { useMemo } from 'react';
@@ -114,6 +114,19 @@ export default function ExecutionInfoCard({ taskId, data }: {
         <Descriptions.Item label={t('execDetail.field.executor')}>
           {data?.executorAddress ? (
             <span style={{ fontFamily: 'monospace', fontSize: 12 }}>{data.executorAddress}</span>
+          ) : '-'}
+        </Descriptions.Item>
+        {/* FEAT-22 配套观测：派发时刻解析的应用包版本（仅 zip 渠道；null=
+            git/glue 渠道或旧数据）。任务恒跑应用「当前上传版本」，命中部署
+            设备时按方案 B 跑该设备部署行记录的当版——本项是「这次执行到底
+            跑的哪版」的展示位；hover 可见完整包地址供审计比对。 */}
+        <Descriptions.Item label={t('execDetail.field.resolvedPackageVersion')}>
+          {data?.resolvedPackageVersion ? (
+            <Tooltip title={data.resolvedPackageUrl || undefined}>
+              <span style={{ fontFamily: 'monospace', fontSize: 12 }}>
+                {data.resolvedPackageVersion}
+              </span>
+            </Tooltip>
           ) : '-'}
         </Descriptions.Item>
         <Descriptions.Item label={t('execDetail.field.taskVersion')}>{data?.taskVersion || '-'}</Descriptions.Item>

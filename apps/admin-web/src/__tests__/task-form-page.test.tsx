@@ -207,6 +207,27 @@ describe('buildExecutorPayload（提交 payload，N19 + R8/N28）', () => {
     expect(values.executorId).toBe(PIN_UUID);
     expect(values.executorGroup).toBe('g');
   });
+
+  // FEAT-22 v2：任务级部署约束模式的 payload 归一——'global' 哨兵（表单的
+  // 「跟随全局」选项）与 undefined（控件清空/未回填）都必须显式 null（PATCH
+  // 缺省=保留旧覆盖值，否则「界面显示跟随全局、后端仍按旧值派发」）；选定值
+  // 原样保留；pinned 模式同样保留不擦除。
+  it('deploymentPolicy：global/undefined 归一显式 null，选定值各模式保留', () => {
+    const cleared = buildExecutorPayload({ name: 't', deploymentPolicy: 'global' }, 'auto');
+    expect(cleared.deploymentPolicy).toBeNull();
+    const blank = buildExecutorPayload({ name: 't' }, 'auto');
+    expect(blank.deploymentPolicy).toBeNull();
+
+    const kept = buildExecutorPayload({ name: 't', deploymentPolicy: 'strict' }, 'group');
+    expect(kept.deploymentPolicy).toBe('strict');
+
+    const pinned = buildExecutorPayload(
+      { name: 't', executorId: PIN_UUID, deploymentPolicy: 'prefer' },
+      'pinned',
+    );
+    expect(pinned.executorId).toBe(PIN_UUID);
+    expect(pinned.deploymentPolicy).toBe('prefer');
+  });
 });
 
 describe('TaskFormPage 创建流程提交 payload 完整性（P0 回归，UI-06 单页语义）', () => {
