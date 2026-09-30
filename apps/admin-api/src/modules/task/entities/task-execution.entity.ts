@@ -238,6 +238,21 @@ export class TaskExecution {
    * 迁移见 migrations/1789900000003-AddExecutionTraceId.ts。
    */
   @Column({ type: "varchar", nullable: true }) traceId: string | null;
+  /**
+   * FEAT-22 方案 A v1 配套观测：派发时刻解析的应用包与版本（仅 zip 渠道，
+   * git/glue 渠道恒 NULL）。任务执行永远跑应用「当前上传版本」——dispatch
+   * 那一刻解析 applications.packageUrl（30s 正缓存）附加到下发载荷，执行器
+   * 每次现下载。执行行此前不记录"本次到底用的哪个包/哪个版本"，应用连续
+   * 上传多版后历史执行的版本不可回溯（「这台设备上次跑的是 v1 还是 v2」
+   * 只能靠猜）。NULL=非 zip 渠道 / 解析失败（失败另有 failureReason）。
+   * 迁移见 migrations/1790000000046-AddExecutionResolvedPackage.ts。
+   */
+  @Column({ type: "varchar", nullable: true }) resolvedPackageUrl:
+    | string
+    | null;
+  @Column({ type: "varchar", nullable: true }) resolvedPackageVersion:
+    | string
+    | null;
   @CreateDateColumn() createdAt: Date;
 
   /**

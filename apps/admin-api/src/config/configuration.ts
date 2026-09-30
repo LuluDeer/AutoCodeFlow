@@ -337,6 +337,36 @@ export default () => ({
      * 这正是用户预期。置 false 可一行回滚。
      */
     preferDeployedExecutor: process.env.EXECUTOR_PREFER_DEPLOYED !== "false",
+    /**
+     * FEAT-22 方案 A v1（生产反馈 2026-09-30：once 部署 5 秒失效，webhook 任务
+     * 漂移到非部署设备）：应用部署设备集合的派发约束模式。
+     *
+     * - `prefer`（默认）：ARCH-35 现行为——只有 `status='running'` 的部署行参与
+     *   稳定分区软偏好，派不出去自动降级全机队，零新增失败面。存量部署零行为
+     *   变化。
+     * - `strict`：任务关联应用存在「用户显式指定过设备」的部署行
+     *   （running/stopped/upgrading；failed 与在途 pending/deploying 不计入）
+     *   时，候选集**收窄为该集合**——绕开 SQL Top-K 直接按集合查 ONLINE 设备
+     *   （负载高的部署设备可能被 Top-K 截断挤掉，strict 不能容忍这个盲区），
+     *   集合内仍走既有 group/tags/解释器过滤 + 负载评分 + 原子占坑链。集合全部
+     *   不可派发（离线/满载/被过滤）→ 抛 DeploymentConstraintWaitError →
+     *   processor 置 WAITING 排队（不烧重试预算，10s 唤醒 sweep 重试），
+     *   **绝不静默换机**——这正是用户「部署到哪台就只在哪台跑」的直觉语义。
+     *
+     * 为什么默认 prefer 而非 strict：strict 对存量任务是有行为变化的硬约束
+     * （存在部署行即收窄），直接默认会大面积改变派发落点；且 strict 依赖
+     * 「删除部署行解除约束」的治理出口（DELETE /app-deployments/:id，仅终态行）
+     * 已就位但需运维知晓。灰度路径：单实例置 EXECUTOR_DEPLOYMENT_POLICY=strict
+     * 观测 dispatch.decision 的 deploymentConstraint 字段，再全量。
+     *
+     * 与 master 开关的关系：`preferDeployedExecutor=false` 时部署感知**整体
+     * 下线**（软偏好与 strict 约束都不生效），deploymentPolicy 只在 master 开
+     * 启时有意义。
+     */
+    deploymentPolicy:
+      process.env.EXECUTOR_DEPLOYMENT_POLICY === "strict"
+        ? "strict"
+        : "prefer",
     // ARCH-27: SSRF 豁免开关在此统一注册 —— 运行时消费方
     // （safe-http.util.assertSafeExecutorUrl）经 ConfigService 读取，
     // 不再直读 process.env。

@@ -432,6 +432,24 @@ describe("configuration (ARCH-27) newly registered config sections", () => {
     expect(loadConfig().executor.preferDeployedExecutor).toBe(true);
   });
 
+  // FEAT-22 方案 A v1（生产反馈 2026-09-30：once 部署 5 秒失效，webhook 任务
+  // 漂移到非部署设备）：部署设备集合的派发约束模式。默认必须是 **prefer**
+  // （存量零行为变化）；只有字面量 "strict" 才进入硬约束——约束模式改变派发
+  // 落点（存在部署行即收窄候选集 + 集合不可用排队不换机），必须显式选择，
+  // 任何其它值（含大小写不符、未设置）都回落 prefer，绝不误入。
+  it("FEAT-22: registers executor.deploymentPolicy (默认 prefer，仅 'strict' 生效)", () => {
+    delete process.env.EXECUTOR_DEPLOYMENT_POLICY;
+    expect(loadConfig().executor.deploymentPolicy).toBe("prefer");
+
+    process.env.EXECUTOR_DEPLOYMENT_POLICY = "strict";
+    expect(loadConfig().executor.deploymentPolicy).toBe("strict");
+
+    process.env.EXECUTOR_DEPLOYMENT_POLICY = "STRICT";
+    expect(loadConfig().executor.deploymentPolicy).toBe("prefer");
+    process.env.EXECUTOR_DEPLOYMENT_POLICY = "";
+    expect(loadConfig().executor.deploymentPolicy).toBe("prefer");
+  });
+
   it("registers app.trustProxy from TRUST_PROXY (default false)", () => {
     expect(loadConfig().app.trustProxy).toBe(false);
     process.env.TRUST_PROXY = "true";
