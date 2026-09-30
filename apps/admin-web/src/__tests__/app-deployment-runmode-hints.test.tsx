@@ -94,6 +94,34 @@ describe('AppDeploymentPage：部署模式的说明文案（生产反馈回归�
   });
 
   /**
+   * FEAT-22 配套 UX（生产反馈 2026-09-30，第二起 runMode 语义误读）：
+   * once 部署跑完即 stopped、对后续任务调度无作用——此前 once 是唯一没有
+   * 说明的模式，用户部署成功 5 秒后记录变已停止却以为绑定已生效。
+   *
+   * ① once 必须有自己的说明键（且说清"变已停止/不绑定/指向正确模式"）；
+   * ② scheduled 的命名不得再叫「定时任务/定时」——该名字让 webhook/手动
+   *    触发用户按触发方式理解而直接排除它。
+   */
+  it('once 有专属警示，且 scheduled 命名不再暗示与定时计划绑定', async () => {
+    const zh = (await import('../locales/zh')).default as Record<string, string>;
+    const en = (await import('../locales/en')).default as Record<string, string>;
+
+    for (const dict of [zh, en]) {
+      expect(dict['appDeploy.mode.hintOnce']).toBeTruthy();
+    }
+    // once 警示必须说清后果（部署记录变已停止）与出路（指向仅部署待触发）
+    expect(zh['appDeploy.mode.hintOnce']).toMatch(/已停止/);
+    expect(zh['appDeploy.mode.hintOnce']).toMatch(/仅部署/);
+    expect(en['appDeploy.mode.hintOnce']).toMatch(/stopped/i);
+    // scheduled 选项名：说「仅部署」语义，不再单叫「定时任务」（表格列的
+    // runMode.scheduled 同步改名，两处术语一致）。
+    expect(zh['appDeploy.mode.scheduled']).toMatch(/仅部署/);
+    expect(en['appDeploy.mode.scheduled']).toMatch(/deploy only/i);
+    expect(zh['appDeploy.runMode.scheduled']).toMatch(/仅部署/);
+    expect(en['appDeploy.runMode.scheduled']).toMatch(/deploy only/i);
+  });
+
+  /**
    * 源码守卫：三个模式的说明必须真的挂在 runMode 字段/按钮上。
    *
    * 只断言语言键存在是不够的——键可以存在却没有任何控件引用它（这正是
@@ -120,6 +148,8 @@ describe('AppDeploymentPage：部署模式的说明文案（生产反馈回归�
     // scheduled / daemon 各自的 Alert 说明（在共享组件里）
     expect(fieldsSrc).toMatch(/mode === 'scheduled'[\s\S]{0,300}appDeploy\.mode\.hintScheduled/);
     expect(fieldsSrc).toMatch(/mode === 'daemon'[\s\S]{0,300}appDeploy\.mode\.hintDaemon/);
+    // FEAT-22：once 的警示 Alert 也必须真的挂在组件里（三个模式全覆盖）。
+    expect(fieldsSrc).toMatch(/mode === 'once'[\s\S]{0,300}appDeploy\.mode\.hintOnce/);
     // 重新部署按钮的 tooltip 说明复用语义（仍在详情页源码里）
     expect(pageSrc).toMatch(/appDeploy\.redeploy\.reuseHint/);
   });

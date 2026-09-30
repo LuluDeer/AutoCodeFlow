@@ -40,6 +40,17 @@ export default function DeployModeFields({
           const mode = getFieldValue('runMode');
           return (
             <>
+              {/* FEAT-22 配套 UX（生产反馈 2026-09-30）：once 此前是唯一没有
+                  说明的模式——用户部署成功 5 秒后记录变 stopped，误以为"绑定
+                  设备已生效"。warning 级：这个误解正是本次生产预期差的诱因。 */}
+              {mode === 'once' && (
+                <Alert
+                  type="warning"
+                  showIcon
+                  style={{ marginBottom: 12 }}
+                  title={t('appDeploy.mode.hintOnce')}
+                />
+              )}
               {mode === 'daemon' && (
                 <>
                   <Alert
