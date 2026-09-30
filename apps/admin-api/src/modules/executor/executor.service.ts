@@ -15,7 +15,7 @@ import type { Queue } from "bullmq";
 import { randomBytes, timingSafeEqual, createHash } from "crypto";
 import * as bcrypt from "bcrypt";
 import { InjectRepository } from "@nestjs/typeorm";
-import { Repository, LessThan, In } from "typeorm";
+import { Repository, LessThan, In, Brackets } from "typeorm";
 import { Cron } from "@nestjs/schedule";
 import axios from "axios";
 import {
@@ -56,10 +56,25 @@ import {
 // ARCH-35 P1：部署归属**偏好**（稳定分区，非过滤）——判据与「为什么不能硬
 // 过滤」的完整论证见 util 头注（执行器侧任务执行不依赖本地部署，硬过滤会
 // 误伤全部未部署任务与 python 执行器）。
-import { partitionByDeploymentAffinity } from "./executor-deployment-affinity.util";
+// FEAT-22 方案 A v1：deploymentPolicy=strict 的**任务级显式硬约束**与偏好并存
+// ——只对「存在部署行」的任务收窄候选集（用户显式指定过设备），与 ARCH-35
+// 「无条件硬过滤误伤全员」的结论不冲突；strict 失败走 WAITING 排队不烧预算。
+import {
+  collectDeploymentExecutorKeys,
+  DEPLOYMENT_CONSTRAINT_STATUSES,
+  partitionByDeploymentAffinity,
+  pickDeploymentVersionForExecutor,
+} from "./executor-deployment-affinity.util";
+// FEAT-22 方案 B（版本跟随部署）：版本快照只读仓库（deployedVersion →
+// snapshot.packageUrl 解析）。与 AppDeployment 同款只加 Repository 不 import
+// ApplicationModule（避免模块环）。
+import { ApplicationVersion } from "../application/entities/application-version.entity";
 // MUTEX-01（应用互斥组）：占坑互斥错误（processor 分类链最前面识别并置
 // WAITING）；互斥组配置只读仓库（组内并发数）。
 import { MutexWaitError } from "../task/execution-mutex";
+// FEAT-22 方案 A v1：strict 部署约束的排队错误（processor 与 MutexWaitError
+// 同位识别，置 WAITING 不烧预算）。
+import { DeploymentConstraintWaitError } from "../task/execution-deployment-wait";
 import { MutexGroup } from "../application/entities/mutex-group.entity";
 // python_task_multiversion（WS2 · CONTRACT §1.2/§2.2/§3.1）：解释器缓存池
 // 匹配的唯一事实源（纯函数）。三处调度站点 + pinning 守卫 + 上报采纳共用，
@@ -261,7 +276,7 @@ export class ExecutorService implements OnModuleInit {
   private static readonly PACKAGE_URL_CACHE_TTL_MS = 30_000;
   private readonly packageUrlCache = new Map<
     string,
-    { packageUrl: string; cachedAt: number }
+    { packageUrl: string; packageVersion: string | null; cachedAt: number }
   >();
 
   /**
@@ -368,6 +383,15 @@ export class ExecutorService implements OnModuleInit {
     @Optional()
     @InjectRepository(MutexGroup)
     private readonly mutexGroupRepo: Repository<MutexGroup> | null = null,
+    // FEAT-22 方案 B（版本跟随部署）：`application_versions` 只读仓库——
+    // 派发命中部署设备时按 deployedVersion 取当版快照的 packageUrl。
+    // @Optional 同先例——存量单测装配未提供时为 null，版本跟随整段短路
+    // （派发一律用当前版，与未命中部署设备同路径）。**必须是最后一个位置
+    // 参数**（既有 spec 以位置参数直接装配，带默认值的尾参不破坏）。
+    @Optional()
+    @InjectRepository(ApplicationVersion)
+    private readonly applicationVersionRepo: Repository<ApplicationVersion> | null =
+      null,
   ) {
     this.protocol = this.configService.get<string>("app.protocol") || "http";
     // R-26（DEEP_REVIEW 0ef3bbe）: 关键 @Optional（事件总线 / 高危审计）缺失时
@@ -395,6 +419,19 @@ export class ExecutorService implements OnModuleInit {
       this.logger.warn(
         "R-26: AppDeployment 仓库未装配——ARCH-35 部署归属偏好将静默不生效" +
           "（任务可能被派到未部署该应用的执行器）",
+      );
+    }
+    // FEAT-22 方案 B（R-26 同款纪律）：版本跟随被期望生效（master 开关非
+    // false）却没有版本快照仓库时，派发会静默退化为「一律当前版」——用户
+    // 以「设备上是什么版本就跑什么版本」预期部署升级/回滚，实际不生效且无
+    // 报错。显式 warn；开关明确关闭时不告警（运维的有意选择）。
+    if (
+      !this.applicationVersionRepo &&
+      this.configService.get("executor.preferDeployedExecutor") !== false
+    ) {
+      this.logger.warn(
+        "R-26: ApplicationVersion 仓库未装配——FEAT-22 方案 B 版本跟随将不生效" +
+          "（派发一律使用应用当前版本）",
       );
     }
   }
@@ -2526,14 +2563,29 @@ export class ExecutorService implements OnModuleInit {
     }>;
     /**
      * ARCH-35 P1：部署归属偏好命中面。null = 偏好未适用（开关关 / 任务无
-     * applicationId / 仓库未装配 / 查询失败）。非 null 时 `preferred=0` 且
-     * `runningDeployments=0` 表示该应用没有运行中的部署。
+     * applicationId / 仓库未装配 / 查询失败 / deploymentPolicy=strict）。
+     * 非 null 时 `preferred=0` 且 `runningDeployments=0` 表示该应用没有运行
+     * 中的部署。
      */
     deploymentAffinity?: {
       preferred: number;
       matchedByExecutorId: number;
       matchedByAddressOnly: number;
       runningDeployments: number;
+    } | null;
+    /**
+     * FEAT-22 方案 A v1：strict 部署约束面。null = 非 strict（显式 null 与
+     * 缺字段可区分，同 deploymentAffinity 纪律）。setSize 含 stopped 行
+     * （once 部署跑完即 stopped，正是约束必须覆盖的场景）；onlineInSet 是
+     * 绕开 Top-K 直查的 ONLINE 命中数（过滤前）；过滤后剩余看 afterFilters。
+     * v2：source = 模式来源（task=任务级 deploymentPolicy 覆盖 / global=全局
+     * EXECUTOR_DEPLOYMENT_POLICY）。
+     */
+    deploymentConstraint?: {
+      mode: "strict";
+      source: "task" | "global";
+      setSize: number;
+      onlineInSet: number;
     } | null;
   }): void {
     const selectedScore =
@@ -2557,6 +2609,11 @@ export class ExecutorService implements OnModuleInit {
         // ARCH-35 P1：部署归属偏好命中面（见调用点与入参注释）。null 时
         // 显式输出 null 而非省略——「没这个字段」与「偏好未适用」必须可区分。
         deploymentAffinity: input.deploymentAffinity ?? null,
+        // FEAT-22：strict 部署约束面（null=非 strict）。判读：setSize>0 且
+        // onlineInSet=0 → 集合设备全离线；onlineInSet>0 且 afterFilters=0 →
+        // 集合设备被 group/tags/解释器过滤挡光；两者皆 >0 仍失败 → 占坑全落
+        // 空（满载/占坑竞态）。运维据此区分「约束把任务卡在哪一层」。
+        deploymentConstraint: input.deploymentConstraint ?? null,
       }),
     );
   }
@@ -2680,8 +2737,22 @@ export class ExecutorService implements OnModuleInit {
 
   async dispatch(task: Task, execution: TaskExecution) {
     let candidates: Executor[];
-    // E-2: 决策日志的候选池基数（pinned=1；fleet 查询=SQL Top-K 后的行数）。
+    // E-2: 决策日志的候选池基数（pinned=1；fleet 查询=SQL Top-K 后的行数；
+    // FEAT-22 strict=部署集合 ∩ ONLINE 的行数）。
     let dispatchPoolSize = 0;
+    // FEAT-22 方案 A v1：部署约束上下文——null=不适用（master 开关关 / 无
+    // applicationId / strict 下集合为空）；mode=strict 时候选池已在下方收窄为
+    // 部署集合。声明在 dispatch 作用域：占坑全落空的失败分支与决策日志都要读。
+    // v2：source 记录模式来源（任务级覆盖 / 全局配置），决策日志可回溯
+    // 「这次为什么按 strict 派」。
+    let deploymentCtx: {
+      mode: "prefer" | "strict";
+      source: "task" | "global";
+      rows: AppDeployment[];
+    } | null = null;
+    // strict 下解释器过滤的拒绝详情——中链不再立刻终态失败（见下方过滤链），
+    // 推迟到占坑全落空的统一 WAITING 出口时，用它保留诊断信息。
+    let strictFilterNote: string | null = null;
 
     if (task.executorId) {
       // R6: executor pinning — dispatch targets ONLY the pinned executor,
@@ -2728,18 +2799,32 @@ export class ExecutorService implements OnModuleInit {
         );
       }
     } else {
-      const all = await this.repo.find({
-        where: { status: ExecutorStatus.ONLINE },
-        // O-1（中台↔执行器深度审查）：SQL 级 Top-K——按 runningTaskCount 升序
-        // 取前 K，保证最空闲的一批必入候选池（旧 take 截断会静默漏掉排名 K+1
-        // 的负载最小执行器，万级机队下是容量盲区）。选优仍走下方复合评分。
-        order: { runningTaskCount: "ASC" },
-        // Bound the candidate pool for the weighted-score selection below.
-        // Score-and-pick-first needs only the top candidates, so a generous cap
-        // is enough. See selectLeastLoaded() for the matching rationale.
-        // F-07（本轮审计）: 上限提为可配（EXECUTOR_CANDIDATE_POOL_SIZE，默认 500）。
-        take: this.candidatePoolSize,
-      });
+      // FEAT-22 方案 A v1：先解析部署约束（prefer→running 行做软偏好判据；
+      // strict→「用户显式指定过」的部署集合做硬约束）。必须先于候选池查询：
+      // strict 要按集合直查设备。appName 点名不叠加约束——显式指定单台是更强
+      // 的用户意图（优先级 pin > appName > 部署约束 > 全机队，语义见
+      // configuration.ts deploymentPolicy 注）。
+      if (!task.executorAppName) {
+        deploymentCtx = await this.resolveDeploymentConstraintContext(task);
+      }
+      const all =
+        deploymentCtx?.mode === "strict"
+          ? // strict：绕开下方 fleet SQL Top-K——Top-K 按 runningTaskCount 升序
+            // 截断，负载高的部署设备可能根本不在候选池里，软偏好只是「池内
+            // 前置」（池外无从谈起），硬约束则不能容忍这个截断盲区。
+            await this.findOnlineExecutorsInDeploymentSet(deploymentCtx.rows)
+          : await this.repo.find({
+              where: { status: ExecutorStatus.ONLINE },
+              // O-1（中台↔执行器深度审查）：SQL 级 Top-K——按 runningTaskCount 升序
+              // 取前 K，保证最空闲的一批必入候选池（旧 take 截断会静默漏掉排名 K+1
+              // 的负载最小执行器，万级机队下是容量盲区）。选优仍走下方复合评分。
+              order: { runningTaskCount: "ASC" },
+              // Bound the candidate pool for the weighted-score selection below.
+              // Score-and-pick-first needs only the top candidates, so a generous cap
+              // is enough. See selectLeastLoaded() for the matching rationale.
+              // F-07（本轮审计）: 上限提为可配（EXECUTOR_CANDIDATE_POOL_SIZE，默认 500）。
+              take: this.candidatePoolSize,
+            });
       dispatchPoolSize = all.length;
 
       candidates = all;
@@ -2832,11 +2917,22 @@ export class ExecutorService implements OnModuleInit {
           task.runtimeVersion,
         );
         if (interpreterFiltered.message) {
-          this.failInterpreterUnavailable(interpreterFiltered.message);
+          if (deploymentCtx?.mode === "strict") {
+            // strict：集合内设备缺解释器不立刻终态失败（设备装上解释器后同一
+            // 执行可自愈，与「集合暂不可用 → WAITING 排队」同向）——推迟到占坑
+            // 全落空的统一 WAITING 出口，note 保留逐台 mismatch 诊断。
+            strictFilterNote = interpreterFiltered.message;
+          } else {
+            this.failInterpreterUnavailable(interpreterFiltered.message);
+          }
         }
         filtered = interpreterFiltered.kept;
 
-        if (filtered.length === 0) {
+        // strict：集合内全部被过滤也不在这里抛——空候选安全流过评分/占坑链
+        // （estimatedDurationsByExecutor 对空数组零查询返回空 Map，占坑循环
+        // 空转），由 !matched 的统一出口抛 DeploymentConstraintWaitError，
+        // 失败消息带上「集合 N 台/在线 M 台/过滤后 0 台」的完整口径。
+        if (filtered.length === 0 && deploymentCtx?.mode !== "strict") {
           throw new Error(
             "No online executors match the requested group/tags/runtime",
           );
@@ -2891,16 +2987,42 @@ export class ExecutorService implements OnModuleInit {
     // `scoredSnapshot`（上方）保持为**纯评分**前三名不变——决策日志里的 score
     // 必须始终是真实负载分，否则「为什么选这台」无法回溯。偏好命中面另记
     // `deploymentAffinity` 字段。
-    const deployments = await this.resolveRunningDeployments(task);
+    // 3b-ARCH-35 P1：部署归属**软偏好**（deploymentPolicy=prefer，现状不变）
+    // ——上下文已在候选池查询前解析（deploymentCtx），此处不再二次查库。
+    // 3b-FEAT-22：strict 模式**跳过**分区——候选集已经是部署集合本身（约束
+    // 收窄发生在池查询之前），分区只会把全部候选前置（无信息量），决策日志
+    // 改记 deploymentConstraint。
+    const preferRows =
+      deploymentCtx && deploymentCtx.mode === "prefer"
+        ? deploymentCtx.rows
+        : null;
     let deploymentAffinity: {
       preferred: number;
       matchedByExecutorId: number;
       matchedByAddressOnly: number;
       runningDeployments: number;
     } | null = null;
+    // FEAT-22：strict 约束的决策日志面（null=非 strict，与 deploymentAffinity
+    // 同款「显式 null 而非缺字段」纪律）。onlineInSet 取自 dispatchPoolSize
+    // （= 集合 ∩ ONLINE 直查行数，过滤前）；过滤后剩余即下方 afterFilters。
+    // v2：source = 模式来源（task=任务级覆盖 / global=全局配置）。
+    let deploymentConstraint: {
+      mode: "strict";
+      source: "task" | "global";
+      setSize: number;
+      onlineInSet: number;
+    } | null = null;
+    if (deploymentCtx?.mode === "strict") {
+      deploymentConstraint = {
+        mode: "strict",
+        source: deploymentCtx.source,
+        setSize: deploymentCtx.rows.length,
+        onlineInSet: dispatchPoolSize,
+      };
+    }
     let orderedCandidates = sorted;
-    if (deployments) {
-      const affinity = partitionByDeploymentAffinity(sorted, deployments);
+    if (preferRows) {
+      const affinity = partitionByDeploymentAffinity(sorted, preferRows);
       orderedCandidates = affinity.ordered;
       deploymentAffinity = {
         preferred: affinity.preferredCount,
@@ -2915,6 +3037,13 @@ export class ExecutorService implements OnModuleInit {
             `address 兜底 ${affinity.matchedByAddressOnly}），已前置优先占坑`,
         );
       }
+    }
+    if (deploymentConstraint) {
+      this.logger.log(
+        `FEAT-22: 任务 "${task.name}" 关联应用 ${task.applicationId} 启用部署约束` +
+          `（strict）：候选集收窄为已部署设备（集合 ${deploymentConstraint.setSize} 台，` +
+          `在线 ${deploymentConstraint.onlineInSet} 台），集合全部不可派发时排队等待、不换机`,
+      );
     }
 
     // QA-05/BUG-22：这里原先是「版本 CAS 占坑」——`.andWhere("version = :version")`
@@ -2962,6 +3091,19 @@ export class ExecutorService implements OnModuleInit {
           `任务 "${task.name}" 的所有候选设备上互斥组占用已满，执行进入排队等待`,
         );
       }
+      // FEAT-22 方案 A v1：strict 部署约束下集合全部不可派发 → DeploymentConstraintWaitError
+      // （processor 与 MutexWaitError 同位识别，置 WAITING 不烧重试预算，10s
+      // sweep 唤醒重试）。互斥分支优先：互斥排队有同组探针短路，唤醒更省。
+      if (deploymentCtx?.mode === "strict") {
+        throw new DeploymentConstraintWaitError(
+          `任务 "${task.name}" 的部署约束设备集合当前全部不可派发` +
+            `（集合 ${deploymentCtx.rows.length} 台，在线 ${dispatchPoolSize} 台，` +
+            `过滤后可用 ${candidates.length} 台` +
+            `${strictFilterNote ? `；解释器过滤：${strictFilterNote}` : ""}），` +
+            `执行进入排队等待、不换机。解除约束：删除该应用的部署记录` +
+            `（running 行先停止），或将 EXECUTOR_DEPLOYMENT_POLICY 切回 prefer`,
+        );
+      }
       throw new Error(
         "No available executor (all candidates are offline or at capacity)",
       );
@@ -2987,6 +3129,8 @@ export class ExecutorService implements OnModuleInit {
       // 后者 runningDeployments>0 而 preferred=0（部署那台不在候选池里，
       // 例如被 group/tags/runtime 过滤掉或已离线）。
       deploymentAffinity,
+      // FEAT-22：strict 部署约束面（null=非 strict，见方法注释的判读口径）。
+      deploymentConstraint,
     });
 
     this.logger.log(
@@ -3003,7 +3147,55 @@ export class ExecutorService implements OnModuleInit {
       // `packageUrl` 由 admin 解析后附加到**下发 task 对象**上（push/pull 两条
       // 传输分支共用同一份；解析失败在此抛出 → 走下方同一 catch 回滚占坑）。
       // 注意 `task` 本体是托管实体，故附加发生在**副本**上，绝不改持久化实体。
-      const dispatchTask = await this.resolveDispatchTask(task);
+      // FEAT-22 配套观测：解析到的版本落执行行留痕（null=非 zip 渠道）。
+      // 载荷契约只增 packageUrl（Task 类型不声明该字段，与既有注入方式一致），
+      // 类型面经窄化读取；非 zip 渠道 resolveDispatchTask 原样返回，值为 null。
+      const { task: dispatchTask, packageVersion } =
+        await this.resolveDispatchTask(task);
+      // FEAT-22 方案 B（版本跟随部署）：命中部署设备时改跑该设备部署行记录
+      // 的当版包——「指定机器 + 指定版本」闭环的后半段。仅 zip 渠道参与
+      // （git/glue 任务的代码来自仓库/脚本，部署版本无关；判据 = 解析副本
+      // 已带 packageUrl）且 deploymentCtx 存在（pin/appName/broadcast 版本
+      // 语义保持当前版，方法注释）。兜底见 resolveVersionFollowPackage：
+      // 任何解析不成立都回退当前版 + warn。
+      let effectiveTask = dispatchTask;
+      let effectiveVersion = packageVersion;
+      const currentPackageUrl = (dispatchTask as { packageUrl?: string })
+        .packageUrl;
+      if (
+        deploymentCtx &&
+        typeof currentPackageUrl === "string" &&
+        currentPackageUrl.length > 0
+      ) {
+        const follow = await this.resolveVersionFollowPackage(
+          task,
+          matched,
+          deploymentCtx.rows,
+        );
+        if (follow) {
+          // 载荷契约只增 packageUrl（Task 类型不声明，同 resolveDispatchTask
+          // 的注入方式）；版本跟随在解析副本上覆盖，绝不改持久化实体。
+          effectiveTask = {
+            ...dispatchTask,
+            packageUrl: follow.packageUrl,
+          } as typeof dispatchTask;
+          effectiveVersion = follow.version;
+          this.logger.log(
+            JSON.stringify({
+              event: "dispatch.versionFollow",
+              task: task.name,
+              executionId: execution.id,
+              executor: matched.address,
+              version: follow.version,
+              // 方案 B 生效的版本来源快照包（区别于应用当前版 packageUrl）。
+              packageUrl: follow.packageUrl,
+            }),
+          );
+        }
+      }
+      execution.resolvedPackageUrl =
+        (effectiveTask as { packageUrl?: string }).packageUrl ?? null;
+      execution.resolvedPackageVersion = effectiveVersion;
       // OBS-01: W3C traceparent（disabled 时零注入，语义为无 trace）。
       const traceHeaders: Record<string, string> = {};
       this.tracing?.injectContext(
@@ -3027,7 +3219,7 @@ export class ExecutorService implements OnModuleInit {
         );
         await this.pullService.enqueue(matched.id, {
           executionId: execution.id,
-          task: dispatchTask,
+          task: effectiveTask,
           params: dispatchParams,
           // SEC-02 续：secrets 单独下发一份供执行器按原名注入（纯增量字段，
           // 旧执行器忽略它，见 buildDispatchSecrets 的注释）。
@@ -3069,7 +3261,7 @@ export class ExecutorService implements OnModuleInit {
         url,
         {
           executionId: execution.id,
-          task: dispatchTask,
+          task: effectiveTask,
           params: dispatchParams,
           // SEC-02 续：secrets 单独下发一份供执行器按原名注入（纯增量字段）。
           secrets: dispatchSecrets,
@@ -3145,7 +3337,19 @@ export class ExecutorService implements OnModuleInit {
    *   消息明确。**不静默降级**：下发无 packageUrl 的 zip 任务会让执行器在运行时
    *   才炸，且分因落在执行器侧（PACKAGE_FETCH_FAILED），与真实原因不符。
    */
-  private async resolveDispatchTask<T extends Task>(task: T): Promise<T> {
+  /**
+   * zip 渠道任务的 packageUrl 解析（python_task_multiversion · CONTRACT §2.4）。
+   *
+   * FEAT-22 配套观测：返回值从「任务副本」扩展为「任务副本 + 解析到的应用版
+   * 本」——调用方把两者落执行行（resolvedPackageUrl/resolvedPackageVersion），
+   * 「这次执行跑的是哪版」从此可回溯（任务恒跑应用当前上传版本，此前执行行
+   * 不留痕，应用连续上传多版后版本不可追溯）。版本**不进派发载荷**（载荷契约
+   * 只增 packageUrl），仅落库。
+   */
+  private async resolveDispatchTask<T extends Task>(task: T): Promise<{
+    task: T;
+    packageVersion: string | null;
+  }> {
     // 并集语义（NFR-05）：codeSource 明确为 application_zip → zip 渠道；
     // codeSource 为 NULL（存量未回填）且 applicationId 非空 → zip 渠道兜底；
     // codeSource 明确为 git/glue → 非 zip 渠道，**即使 applicationId 残留也不进 zip**
@@ -3158,7 +3362,7 @@ export class ExecutorService implements OnModuleInit {
     const isZipChannel =
       task.codeSource === TaskCodeSource.APPLICATION_ZIP ||
       (task.codeSource == null && Boolean(task.applicationId));
-    if (!isZipChannel) return task;
+    if (!isZipChannel) return { task, packageVersion: null };
     if (!task.applicationId) {
       // codeSource=application_zip 但无 applicationId：WS1 写面已互斥校验
       // （CONTRACT §2.1「codeSource=application_zip 时 applicationId 必填」），
@@ -3181,14 +3385,17 @@ export class ExecutorService implements OnModuleInit {
         Date.now() - cached.cachedAt <
         ExecutorService.PACKAGE_URL_CACHE_TTL_MS
       ) {
-        return { ...task, packageUrl: cached.packageUrl };
+        return {
+          task: { ...task, packageUrl: cached.packageUrl },
+          packageVersion: cached.packageVersion,
+        };
       }
       // 惰性淘汰过期条目（positive-only：失败态从不入缓存，无需清理）。
       this.packageUrlCache.delete(task.applicationId);
     }
     const app = await this.applicationRepo.findOne({
       where: { id: task.applicationId },
-      select: { id: true, name: true, packageUrl: true },
+      select: { id: true, name: true, packageUrl: true, version: true },
     });
     if (!app) {
       throw new Error(
@@ -3202,59 +3409,220 @@ export class ExecutorService implements OnModuleInit {
           `application "${app.name}" (${app.id}) has no packageUrl configured`,
       );
     }
+    const packageVersion =
+      typeof app.version === "string" && app.version.length > 0
+        ? app.version
+        : null;
     this.packageUrlCache.set(task.applicationId, {
       packageUrl: app.packageUrl,
+      packageVersion,
       cachedAt: Date.now(),
     });
-    return { ...task, packageUrl: app.packageUrl };
+    return {
+      task: { ...task, packageUrl: app.packageUrl },
+      packageVersion,
+    };
   }
 
   /**
-   * ARCH-35 P1（生产事故 2026-09-23）：读取「该应用正跑在哪几台执行器上」。
+   * ARCH-35 P1（生产事故 2026-09-23）+ FEAT-22 方案 A v1/v2（生产反馈 2026-09-30）：
+   * 读取「该应用部署在哪些执行器上」，并给出本次派发的约束模式。
    *
    * 事故主因：`app_deployments` 行记了 `executorId`/`executorAddress`，但
    * manifest 驱动的任务自动注册不写 `task.executorId` → 任务恒走全机队分支 →
    * 纯按负载挑一台 → 部署在执行器 A 的应用，任务跑到了 B。选执行器时**全仓库
    * 没有一处**查过部署归属，用户的部署意图在调度面被静默丢弃。
    *
-   * 返回 `null` 表示「偏好不适用」（开关关 / 仓库未装配 / 任务无 applicationId）
-   * ——调用方据此**完全跳过**分区，顺序不变。返回数组（可能为空）表示「偏好
-   * 适用但无运行中部署」——分区同样退化为原序（util 的快速路径）。
+   * 模式解析（v2 优先级：任务级 deploymentPolicy > 全局 executor.deploymentPolicy）：
+   * - 任务 `deploymentPolicy='strict'` → strict（全局 prefer 下个别任务显式钉死）；
+   * - 任务 `deploymentPolicy='prefer'` → prefer（全局 strict 下个别任务显式退出）；
+   * - 任务为 null/undefined → 跟随全局（灰度期存量行的默认形态）。
+   * master 开关 `preferDeployedExecutor=false` 仍最先短路：部署感知整体下线，
+   * 任务级选择不越过运维级 kill-switch。
    *
-   * 查询失败**不抛**：偏好是 best-effort 的调度优化，绝不能因为一次读失败而
-   * 让任务派发失败（那是把「可能派得不理想」升级成「派不出去」）。降级为
-   * warn + 原序，与 `estimatedDurationsByExecutor` 的既有容错同款。
+   * - `prefer`：只查 `status=RUNNING` 行——软偏好的判据（现状，零行为变化）。
+   *   返回空数组仍是有效结果（「偏好适用但无运行中部署」，决策日志借此区分
+   *   「没部署」与「部署了但没命中候选」）。
+   * - `strict`：查「用户显式指定过设备」的行（running/stopped/upgrading，
+   *   口径见 util 的 DEPLOYMENT_CONSTRAINT_STATUSES；once 跑完即 stopped 正是
+   *   必须计入的场景）。**集合为空返回 null** = 约束不适用（应用从未部署，或
+   *   部署行已被删除——这正是 strict 的解除出口：删行即回全机队）。
+   *
+   * 返回 `null` 表示「部署感知不适用」（master 开关关 / 仓库未装配 / 任务无
+   * applicationId / strict 下集合为空）——调用方据此完全跳过偏好与约束。
+   *
+   * 查询失败**不抛**：prefer 模式下偏好是 best-effort 的调度优化，绝不能因为
+   * 一次读失败而让任务派发失败；strict 模式下读失败同样降级为「无约束、全机队」
+   * ——宁可不约束，不可派不出去（与 resolveTaskMutexGroupId 的降级口径一致），
+   * 但必须 warn 留痕（静默解除约束正是审计确认过的问题形态）。
    *
    * 为什么不缓存：事故场景正是「刚部署完 A → 立刻下发任务」，任何 TTL 缓存都会
    * 让用户在最该生效的时刻看到旧结论（仍然派给 B），修复感为零。查询命中
-   * `["applicationId","status"]` 复合索引，相对 dispatch 既有的多轮 DB 往返可忽略。
+   * `["applicationId","status"]` 复合索引（IN 多值走多次索引探查），相对
+   * dispatch 既有的多轮 DB 往返可忽略。
    */
-  private async resolveRunningDeployments(
-    task: Task,
-  ): Promise<AppDeployment[] | null> {
-    // 开关：默认开（见 configuration.ts 的论证——本特性不新增失败面）。
-    // 显式 `=== false` 判定：configService 在测试装配里可能返回 "http" 等
-    // 任意值，只有明确 false 才关，避免误关掉修复。
+  private async resolveDeploymentConstraintContext(task: Task): Promise<{
+    mode: "prefer" | "strict";
+    source: "task" | "global";
+    rows: AppDeployment[];
+  } | null> {
+    // master 开关：默认开。显式 `=== false` 判定：configService 在测试装配里
+    // 可能返回 "http" 等任意值，只有明确 false 才关，避免误关掉修复。
     if (this.configService.get("executor.preferDeployedExecutor") === false) {
       return null;
     }
     if (!this.appDeploymentRepo) return null;
     if (!task.applicationId) return null;
+    // v2：任务级覆盖——只有字面量才命中（与全局解析同款宽容判定：约束模式
+    // 必须显式选择，其余一切值都回落，永不误入）。
+    const taskPolicy = task.deploymentPolicy;
+    const strict =
+      taskPolicy === "strict"
+        ? true
+        : taskPolicy === "prefer"
+          ? false
+          : // 同款宽容判定：只有字面 "strict" 才进约束模式，其余一切值（含
+            // 测试装配的任意字符串）都按 prefer 走——永不误入硬约束。
+            this.configService.get("executor.deploymentPolicy") === "strict";
+    const source: "task" | "global" =
+      taskPolicy === "strict" || taskPolicy === "prefer" ? "task" : "global";
     try {
-      return await this.appDeploymentRepo.find({
-        where: {
-          applicationId: task.applicationId,
-          status: DeploymentStatus.RUNNING,
+      const rows = await this.appDeploymentRepo.find({
+        where: strict
+          ? {
+              applicationId: task.applicationId,
+              status: In([...DEPLOYMENT_CONSTRAINT_STATUSES]),
+            }
+          : {
+              applicationId: task.applicationId,
+              status: DeploymentStatus.RUNNING,
+            },
+        // 投影最小列：分区/集合键/版本跟随只需 id/address/status/
+        // deployedVersion/deployedAt 五个判据，避免拉回 env/rolloutMeta 等
+        // jsonb 大列（一次派发一次查询，热路径）。
+        select: {
+          executorId: true,
+          executorAddress: true,
+          status: true,
+          deployedVersion: true,
+          deployedAt: true,
         },
-        // 投影最小列：分区只需 id/address/status 三个判据，避免拉回
-        // env/rolloutMeta 等 jsonb 大列（一次派发一次查询，热路径）。
-        select: { executorId: true, executorAddress: true, status: true },
       });
+      if (strict && rows.length === 0) return null;
+      return { mode: strict ? "strict" : "prefer", source, rows };
     } catch (err) {
-      // best-effort：读失败不阻断派发（偏好缺失 ≠ 无法调度）。
+      // best-effort：读失败不阻断派发（约束缺失 ≠ 无法调度）。
       this.logger.warn(
-        `ARCH-35: 读取应用 ${task.applicationId} 的运行中部署失败，` +
-          `本次派发按纯负载择优：${err instanceof Error ? err.message : String(err)}`,
+        `ARCH-35/FEAT-22: 读取应用 ${task.applicationId} 的部署行失败，` +
+          `本次派发按纯负载择优（strict 约束本次不生效）：` +
+          `${err instanceof Error ? err.message : String(err)}`,
+      );
+      return null;
+    }
+  }
+
+  /**
+   * FEAT-22 方案 A v1：strict 约束的候选池——「部署集合 ∩ ONLINE」直查。
+   *
+   * 为什么绕开 fleet SQL Top-K（上方 else 分支的既有查询）：Top-K 按
+   * runningTaskCount 升序截断（take: candidatePoolSize），负载高的部署设备
+   * 可能被挤出候选池——软偏好只做「池内前置」，池外设备无从谈起（现状即存在
+   * 的静默失效面，机队越大越容易触发）；strict 的硬约束不能容忍这个盲区：
+   * 集合内设备必须全部可见，否则「只在部署设备上跑」会静默退化为「集合里恰好
+   * 进了池子的那几台」。
+   *
+   * 匹配键：id IN (...) OR address IN (...)（id 精确、address 兜底，语义与
+   * partitionByDeploymentAffinity 一致——覆盖存量行 executorId 为空、以及
+   * 设备删除重注册后 id 变了但地址没变的场景）。键集合由纯函数
+   * collectDeploymentExecutorKeys 提取（去重/去空白）。
+   */
+  private async findOnlineExecutorsInDeploymentSet(
+    rows: AppDeployment[],
+  ): Promise<Executor[]> {
+    const keys = collectDeploymentExecutorKeys(rows);
+    if (keys.ids.length === 0 && keys.addresses.length === 0) return [];
+    const list = await this.repo
+      .createQueryBuilder("executor")
+      .where("executor.status = :status", { status: ExecutorStatus.ONLINE })
+      .andWhere(
+        new Brackets((qb) => {
+          if (keys.ids.length > 0) {
+            qb.orWhere("executor.id IN (:...ids)", { ids: keys.ids });
+          }
+          if (keys.addresses.length > 0) {
+            qb.orWhere("executor.address IN (:...addrs)", {
+              addrs: keys.addresses,
+            });
+          }
+        }),
+      )
+      // 集合天然有界（部署行数 ≤ 设备数），take 只是防御上限——与 fleet
+      // Top-K 用同一个可配值，超界只可能出现在病态数据下。
+      .take(this.candidatePoolSize)
+      .getMany();
+    // 同一设备可能同时以 id 与 address 双命中（存量行无 id + 新行有 id 的
+    // 混合口径下，两行各提供一个键指向同一台）——按 id 去重，否则占坑循环
+    // 会对同一台白试一次。
+    const uniq = new Map<string, Executor>();
+    for (const e of list) uniq.set(e.id, e);
+    return [...uniq.values()];
+  }
+
+  /**
+   * FEAT-22 方案 B（版本跟随部署）：解析「命中部署设备应跑的版本包」。
+   *
+   * 语义：派发命中的执行器在该应用的部署集合内时，用部署行记录的
+   * deployedVersion 查 `application_versions.snapshot.packageUrl`，任务改跑
+   * **当版包**（设备上是什么版本就跑什么版本）——升级/回滚 = 对部署行操作，
+   * 之后该设备上的执行随之切换。未命中（prefer 降级到非部署设备）返回 null
+   * = 跑应用当前版本（现状不变）。「应用当前版本」自此只影响：未部署设备的
+   * 执行、新部署、显式升级动作。
+   *
+   * 兜底（回退当前版 + warn，绝不因版本跟随阻断派发）：部署行无版本痕迹
+   * （legacy 行）/ 版本行已被删 / snapshot 无 packageUrl（远程 URL 或脏数据）
+   * / 查询抛错 / 版本仓库未装配。数据基础已核实：旧版本 zip 仅随**应用删除**
+   * 清理（application.service.ts remove），版本升级不删包，且 rollback 链
+   * （upgradeWithSnapshot）本就依赖 snapshot.packageUrl 存活——方案 B 与回滚
+   * 共享同一保留语义。
+   *
+   * 为什么不加缓存：`application_versions` 有 (applicationId, version) 唯一
+   * 索引，单次索引查找（ARCH-35 对部署行查询的同款论证——TTL 缓存会让
+   * 「刚回滚完立刻派发」看到旧结论）。快照对给定版本不可变，查询结果恒定。
+   *
+   * 仅在 dispatch 单发路径调用；pin / appName / broadcast 路径不参与（显式
+   * 单台或扇出语义独立，版本语义保持当前版）。
+   */
+  private async resolveVersionFollowPackage(
+    task: Task,
+    matched: Executor,
+    rows: AppDeployment[],
+  ): Promise<{ version: string; packageUrl: string } | null> {
+    if (!task.applicationId) return null;
+    if (!this.applicationVersionRepo) return null;
+    const version = pickDeploymentVersionForExecutor(rows, {
+      id: matched.id,
+      address: matched.address,
+    });
+    if (!version) return null;
+    try {
+      const versionRow = await this.applicationVersionRepo.findOne({
+        where: { applicationId: task.applicationId, version },
+        select: { id: true, snapshot: true },
+      });
+      const packageUrl = versionRow?.snapshot?.packageUrl;
+      if (typeof packageUrl === "string" && packageUrl.length > 0) {
+        return { version, packageUrl };
+      }
+      this.logger.warn(
+        `FEAT-22 方案 B: 应用 ${task.applicationId} 版本 ${version} 的快照无 packageUrl` +
+          `（legacy 行或脏数据），执行 ${task.name} 回退当前版本派发`,
+      );
+      return null;
+    } catch (err) {
+      this.logger.warn(
+        `FEAT-22 方案 B: 读取应用 ${task.applicationId} 版本 ${version} 快照失败，` +
+          `执行 ${task.name} 回退当前版本派发：` +
+          `${err instanceof Error ? err.message : String(err)}`,
       );
       return null;
     }
@@ -3390,7 +3758,8 @@ export class ExecutorService implements OnModuleInit {
     // `packageUrl`。**在扇出之前**解析（一次查询服务全部目标，且解析失败时
     // 整个广播直接失败——`packageUrl` 是任务级属性，解析不到就没有任何一个
     // 目标能跑，部分成功只会留下"半数执行器白跑"的脏结果）。
-    const dispatchTask = await this.resolveDispatchTask(task);
+    // 广播不落执行行版本留痕（每台结果各异，语义归执行器侧上报）。
+    const { task: dispatchTask } = await this.resolveDispatchTask(task);
 
     const results = await Promise.allSettled(
       candidates.map(async (executor) => {
