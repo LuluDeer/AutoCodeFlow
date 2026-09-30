@@ -40,6 +40,20 @@ export interface BatchItemResult {
   error?: string;
 }
 
+// ── FEAT-21: 任务 webhook 管理读模型 ─────────────────────────────────────
+// secret 永不出现在 status 响应里；明文只在 enable/rotate 响应中出现一次。
+
+export interface TaskWebhookStatus {
+  enabled: boolean;
+  url: string;
+}
+
+export interface TaskWebhookSecretIssued {
+  url: string;
+  /** 明文密钥——仅本次响应可见，后端只存加密信封，关闭弹窗后不可再取。 */
+  secret: string;
+}
+
 /** 批量结果汇总，供 UI 如实呈现「N 成功 / M 失败」。 */
 export interface BatchOutcome {
   succeeded: number;
@@ -554,4 +568,15 @@ export const tasksApi = {
     signal
       ? client.get('/tasks/scheduler/stats', { signal }) as Promise<{ healthy: boolean; activeTimers: number; activeCronTasks: number; runningTaskCount: number; totalScheduledTasks: number; uptime: number }>
       : client.get('/tasks/scheduler/stats') as Promise<{ healthy: boolean; activeTimers: number; activeCronTasks: number; runningTaskCount: number; totalScheduledTasks: number; uptime: number }>,
+  // ── FEAT-21: 任务 webhook 管理（secret 永不回传；enable/rotate 一次性回显明文）──
+  webhookStatus: (id: string, signal?: AbortSignal) =>
+    signal
+      ? client.get(`/tasks/${id}/webhook`, { signal }) as Promise<TaskWebhookStatus>
+      : client.get(`/tasks/${id}/webhook`) as Promise<TaskWebhookStatus>,
+  webhookEnable: (id: string) =>
+    client.post(`/tasks/${id}/webhook/enable`) as Promise<TaskWebhookSecretIssued>,
+  webhookRotate: (id: string) =>
+    client.post(`/tasks/${id}/webhook/rotate`) as Promise<TaskWebhookSecretIssued>,
+  webhookDisable: (id: string) =>
+    client.post(`/tasks/${id}/webhook/disable`) as Promise<{ enabled: false }>,
 };

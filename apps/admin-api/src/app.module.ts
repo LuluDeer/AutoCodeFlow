@@ -188,6 +188,11 @@ import { RuntimeModule } from "./modules/runtime/runtime.module";
         THROTTLE_OPS_LIMIT: Joi.number().integer().min(1).default(30),
         THROTTLE_OPS_TTL: Joi.number().integer().min(1000).default(60000),
 
+        // FEAT-21: 任务 webhook 触发端独立档（与 config/throttle-profiles.ts
+        // WEBHOOK_THROTTLE 同值双轨——ARCH-27 豁免下的文档化注册）。
+        THROTTLE_WEBHOOK_LIMIT: Joi.number().integer().min(1).default(60),
+        THROTTLE_WEBHOOK_TTL: Joi.number().integer().min(1000).default(60000),
+
         // F-6: opt-in — set true ONLY behind a trusted reverse proxy that
         // overwrites X-Forwarded-For. Default false keeps req.ip equal to the
         // socket address so the throttler tracker cannot be spoofed via XFF.

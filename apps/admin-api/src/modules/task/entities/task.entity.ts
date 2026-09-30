@@ -252,6 +252,20 @@ export class Task {
   @Column({ type: "jsonb", nullable: true })
   secrets: Record<string, unknown> | null;
 
+  /**
+   * FEAT-21: 任务级 webhook 入站触发 secret（null = 未启用）。存储格式与
+   * secrets 同生命周期：配置 SEC_SECRETS_KEY 后为 `enc:v1:...` 信封，
+   * 未配置降级明文（读侧经 isEncryptedSecret 区分）。
+   * select:false——任何默认读面（findOne/find/列表/详情响应）都不带出；
+   * 仅 TaskWebhookService 的 trigger/管理路径显式 addSelect 加载。
+   * 明文永不回传：enable/rotate 响应一次性回显，其后只能轮换。
+   * 有意**不**动 TaskTriggerType PG enum：triggerType 表达调度配置
+   * （cron/fixed_rate/api/manual），webhook 使能状态用本列独立表达，
+   * 执行行 triggerType 记 "webhook"（TaskExecution.triggerType 为自由 varchar）。
+   */
+  @Column({ type: "varchar", nullable: true, select: false })
+  webhookSecret: string | null;
+
   @ManyToOne("Application", "tasks", { nullable: true, onDelete: "SET NULL" })
   @JoinColumn({ name: "applicationId" })
   application: { id: string; name: string; version: string } | null;

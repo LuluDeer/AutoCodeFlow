@@ -30,6 +30,7 @@ const { Text } = Typography;
 const TRIGGER_LABEL = (t: (k: string) => string): Record<string, string> => ({
   manual: t('execDetail.trigger.manual'), cron: t('execDetail.trigger.cron'), fixed_rate: t('execDetail.trigger.fixedRate'),
   dependency: t('execDetail.trigger.dependency'), misfire: t('execDetail.trigger.misfire'),
+  webhook: t('execDetail.trigger.webhook'), // FEAT-21
 });
 
 const FAILURE_REASON_MAP = (t: (k: string) => string): Record<string, { color: string; label: string; hint: string }> => ({

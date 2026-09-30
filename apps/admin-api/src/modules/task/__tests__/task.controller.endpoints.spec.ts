@@ -54,7 +54,8 @@ describe("TaskController — 主链路端点委托与审计（QA-02）", () => {
       updateGlue: jest.fn().mockResolvedValue({ id: "task-1" }),
     };
     const audit = { log: jest.fn().mockResolvedValue(undefined) };
-    const controller = new TaskController(taskService as any, audit as any);
+    const taskWebhookService = { getStatus: jest.fn(), enable: jest.fn(), rotate: jest.fn(), disable: jest.fn() } as any;
+    const controller = new TaskController(taskService as any, taskWebhookService as any, audit as any);
     return { controller, taskService, audit };
   };
 

@@ -11,6 +11,8 @@ import {
   UseGuards,
   Req,
   Res,
+  HttpCode,
+  HttpStatus,
 } from "@nestjs/common";
 import { Response } from "express";
 import {
@@ -30,6 +32,7 @@ import {
   isApiKeyUser,
 } from "../../common/interfaces/auth-user.interface";
 import { TaskService } from "./task.service";
+import { TaskWebhookService } from "./task-webhook.service";
 import { CreateTaskDto } from "./dto/create-task.dto";
 import { UpdateTaskDto } from "./dto/update-task.dto";
 import { TriggerTaskDto } from "./dto/trigger-task.dto";
@@ -76,6 +79,9 @@ function parseLevelParam(level?: string): LogLevel | undefined {
 export class TaskController {
   constructor(
     private readonly taskService: TaskService,
+    // FEAT-21: 任务 webhook 管理（enable/rotate/disable/status）——公开触发
+    // 端点本体在 TaskWebhookController（/webhooks/tasks/:taskId，@Public）。
+    private readonly taskWebhookService: TaskWebhookService,
     private readonly audit: AuditService,
   ) {}
 
@@ -643,6 +649,83 @@ export class TaskController {
       ip: req.ip,
     });
     return result;
+  }
+
+  // ── FEAT-21: 任务 webhook 管理 ──────────────────────────────────────────
+  // secret 永不回传：status 只给 enabled+url；明文仅在 enable/rotate 响应中
+  // 一次性回显（API Key create 的 plaintext-once 纪律）。权限与触发同口径
+  // （service 内 assertCanOperate：viewer 拒、TASK-SCOPE-01 owner 档生效）。
+
+  @Get(":id/webhook")
+  @ApiOperation({
+    summary: "Get task webhook status",
+    description: "Returns `{ enabled, url }`. The secret is never returned.",
+  })
+  @ApiResponse({ status: 200, description: "Webhook status" })
+  webhookStatus(@Param("id") id: string, @CurrentUser() user: AuthUser) {
+    return this.taskWebhookService.getStatus(id, user);
+  }
+
+  @WriteGuard("task", {
+    scope: "project-role",
+    reason:
+      "webhook 启用属触发面干预写面（与 trigger 同 assertCanOperate 口径），属主收紧待 ADR-013 产品拍板",
+  })
+  @Post(":id/webhook/enable")
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: "Enable the task webhook",
+    description:
+      "Issues a new webhook secret, returned ONCE in `secret`. Enabling an " +
+      "already-enabled task rotates the secret.",
+  })
+  @ApiResponse({ status: 200, description: "Webhook URL + one-time secret" })
+  webhookEnable(
+    @Param("id") id: string,
+    @CurrentUser() user: AuthUser,
+    @Req() req: Request,
+  ) {
+    return this.taskWebhookService.enable(id, user, req.ip);
+  }
+
+  @WriteGuard("task", {
+    scope: "project-role",
+    reason:
+      "webhook 密钥轮换属触发面干预写面（与 trigger 同 assertCanOperate 口径），属主收紧待 ADR-013 产品拍板",
+  })
+  @Post(":id/webhook/rotate")
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: "Rotate the task webhook secret",
+    description: "Old secret stops working immediately; new secret shown once.",
+  })
+  @ApiResponse({ status: 200, description: "Webhook URL + one-time secret" })
+  webhookRotate(
+    @Param("id") id: string,
+    @CurrentUser() user: AuthUser,
+    @Req() req: Request,
+  ) {
+    return this.taskWebhookService.rotate(id, user, req.ip);
+  }
+
+  @WriteGuard("task", {
+    scope: "project-role",
+    reason:
+      "webhook 停用属触发面干预写面（与 trigger 同 assertCanOperate 口径），属主收紧待 ADR-013 产品拍板",
+  })
+  @Post(":id/webhook/disable")
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: "Disable the task webhook",
+    description: "Clears the secret; signed calls start answering 401.",
+  })
+  @ApiResponse({ status: 200, description: "`{ enabled: false }`" })
+  webhookDisable(
+    @Param("id") id: string,
+    @CurrentUser() user: AuthUser,
+    @Req() req: Request,
+  ) {
+    return this.taskWebhookService.disable(id, user, req.ip);
   }
 
   @Get(":id/executions")

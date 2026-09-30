@@ -2,7 +2,7 @@ import { APP_GUARD } from "@nestjs/core";
 import { ThrottlerGuard } from "@nestjs/throttler";
 import { ExecutorAwareThrottlerGuard } from "../executor-aware-throttler.guard";
 import { ConfigService } from "@nestjs/config";
-import { AUTH_THROTTLE, OPS_THROTTLE } from "../../../config/throttle-profiles";
+import { AUTH_THROTTLE, OPS_THROTTLE, WEBHOOK_THROTTLE } from "../../../config/throttle-profiles";
 import { AppModule } from "../../../app.module";
 import { AuthController } from "../../../modules/auth/auth.controller";
 import { TaskController } from "../../../modules/task/task.controller";
@@ -10,6 +10,7 @@ import { TaskBatchController } from "../../../modules/task/task-batch.controller
 import { AppDeploymentController } from "../../../modules/application/app-deployment.controller";
 import { ApplicationController } from "../../../modules/application/application.controller";
 import { MetricsStreamController } from "../../../modules/metrics/metrics-stream.controller";
+import { TaskWebhookController } from "../../../modules/task/task-webhook.controller";
 
 /**
  * SEC-09: 分域档位元数据绑定 spec——断言各路由 @Throttle({ default: ... })
@@ -193,5 +194,14 @@ describe("SEC-09 分域档位元数据绑定", () => {
     };
     expect(optsOn.skipIf()).toBe(false);
     expect(optsOn.throttlers).toEqual([{ ttl: 60, limit: 60 }]);
+  });
+});
+
+describe("SEC-09 分域档位元数据绑定（FEAT-21 任务 webhook）", () => {
+  it("webhook 触发端 POST /webhooks/tasks/:taskId = WEBHOOK_THROTTLE（外部系统重试是正常流量，独立预算）", () => {
+    const { limit, ttl, skip } = meta(TaskWebhookController.prototype, "trigger");
+    expect(limit).toBe(WEBHOOK_THROTTLE.limit);
+    expect(ttl).toBe(WEBHOOK_THROTTLE.ttl);
+    expect(skip).toBeUndefined();
   });
 });

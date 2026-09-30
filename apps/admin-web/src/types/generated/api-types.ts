@@ -615,6 +615,86 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/tasks/{id}/webhook": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get task webhook status
+         * @description Returns `{ enabled, url }`. The secret is never returned.
+         */
+        get: operations["TaskController_webhookStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tasks/{id}/webhook/enable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Enable the task webhook
+         * @description Issues a new webhook secret, returned ONCE in `secret`. Enabling an already-enabled task rotates the secret.
+         */
+        post: operations["TaskController_webhookEnable"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tasks/{id}/webhook/rotate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Rotate the task webhook secret
+         * @description Old secret stops working immediately; new secret shown once.
+         */
+        post: operations["TaskController_webhookRotate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tasks/{id}/webhook/disable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Disable the task webhook
+         * @description Clears the secret; signed calls start answering 401.
+         */
+        post: operations["TaskController_webhookDisable"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/tasks/{id}/executions": {
         parameters: {
             query?: never;
@@ -953,6 +1033,26 @@ export interface paths {
          * @description PK-20 DEPRECATED: 改用 POST /api/tasks/batch/delete（同 body/响应/审计）。Delete multiple tasks. Partial failures do not affect other tasks.
          */
         post: operations["TaskBatchController_batchDelete"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/webhooks/tasks/{taskId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Trigger a task via inbound webhook
+         * @description Public machine endpoint. Requires X-AutoCodeFlow-Timestamp and X-Hub-Signature-256 headers; the signature is HMAC-SHA256 over `${timestamp}.${rawBody}` with the task's webhook secret (enable via POST /api/tasks/:id/webhook/enable). Body `{ params }` overrides the task's default params for this execution. Add `?wait=1&timeout=N` to park the request until the execution reaches a terminal state (N ≤ 300s; on timeout `completed:false` plus the latest snapshot). Unknown task / disabled webhook / bad signature all answer the same 401.
+         */
+        post: operations["TaskWebhookController_trigger"];
         delete?: never;
         options?: never;
         head?: never;
@@ -5743,6 +5843,86 @@ export interface operations {
             };
         };
     };
+    TaskController_webhookStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Webhook status */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    TaskController_webhookEnable: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Webhook URL + one-time secret */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    TaskController_webhookRotate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Webhook URL + one-time secret */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    TaskController_webhookDisable: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description `{ enabled: false }` */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     TaskController_executions: {
         parameters: {
             query?: {
@@ -6196,6 +6376,38 @@ export interface operations {
         };
         responses: {
             /** @description Batch delete results */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    TaskWebhookController_trigger: {
+        parameters: {
+            query?: {
+                /** @description '1'/'true' = 同步等待终态（缺省入队即返回） */
+                wait?: string;
+                /** @description wait 模式超时秒数（1-300，缺省 60） */
+                timeout?: string;
+            };
+            header: {
+                "x-hub-signature-256": string;
+                "x-autocodeflow-timestamp": string;
+            };
+            path: {
+                /** @description Task UUID */
+                taskId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TriggerTaskDto"];
+            };
+        };
+        responses: {
             200: {
                 headers: {
                     [name: string]: unknown;

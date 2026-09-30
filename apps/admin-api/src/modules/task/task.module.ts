@@ -3,6 +3,8 @@ import { TypeOrmModule } from "@nestjs/typeorm";
 import { BullModule } from "@nestjs/bullmq";
 import { TaskController } from "./task.controller";
 import { TaskBatchController } from "./task-batch.controller";
+import { TaskWebhookController } from "./task-webhook.controller";
+import { TaskWebhookService } from "./task-webhook.service";
 import { ExecutionCallbackController } from "./execution-callback.controller";
 import { ExecutionCallbackMetricsService } from "./execution-callback-metrics.service";
 import { TaskService } from "./task.service";
@@ -54,10 +56,14 @@ import { SecretsCryptoService } from "../../common/utils/secret-crypto.util.serv
   controllers: [
     TaskController,
     TaskBatchController,
+    // FEAT-21: 任务 webhook 入站触发（公开机器面，/webhooks/tasks/:taskId）
+    TaskWebhookController,
     ExecutionCallbackController,
   ],
   providers: [
     TaskService,
+    // FEAT-21: webhook 触发/管理服务（复用 TaskService.trigger 走 triggerType="webhook"）
+    TaskWebhookService,
     TaskProcessor,
     // SEC-02: secrets 加密服务（Key 生命周期：env SEC_SECRETS_KEY，未配置降级明文）
     SecretsCryptoService,

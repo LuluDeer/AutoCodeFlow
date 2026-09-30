@@ -16,6 +16,7 @@ import { useAuthStore } from '../store/auth';
 
 vi.mock('../api/tasks', () => ({
   tasksApi: {
+    webhookStatus: vi.fn().mockResolvedValue({ enabled: false, url: '' }),
     get: vi.fn(),
     executions: vi.fn(),
     stats: vi.fn(),

@@ -25,6 +25,7 @@ import type { Task, TaskExecution } from '../api/tasks';
 vi.mock('../api/auth', () => ({ authApi: { me: vi.fn() } }));
 vi.mock('../api/tasks', () => ({
   tasksApi: {
+    webhookStatus: vi.fn().mockResolvedValue({ enabled: false, url: '' }),
     list: vi.fn(),
     get: vi.fn(),
     executions: vi.fn(),

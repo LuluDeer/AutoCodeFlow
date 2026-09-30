@@ -35,6 +35,7 @@ import { TaskTemplateController } from "../../../modules/task-template/task-temp
 import { ExecutionCallbackController } from "../../../modules/task/execution-callback.controller";
 import { TaskBatchController } from "../../../modules/task/task-batch.controller";
 import { TaskController } from "../../../modules/task/task.controller";
+import { TaskWebhookController } from "../../../modules/task/task-webhook.controller";
 import { UsersController } from "../../../modules/users/users.controller";
 
 /**
@@ -81,6 +82,7 @@ const CONTROLLERS: ReadonlyArray<readonly [string, ControllerCtor]> = [
   ["ExecutionCallbackController", ExecutionCallbackController],
   ["TaskBatchController", TaskBatchController],
   ["TaskController", TaskController],
+  ["TaskWebhookController", TaskWebhookController],
   ["UsersController", UsersController],
 ];
 
@@ -322,6 +324,9 @@ describe("A2 写面守卫穷举扫描（write-guard-coverage）", () => {
         // 端点内以 validateTokenByAddress(address, token) 自证身份。
         "ExecutorController.reportCommandResult",
         "ExecutorPackageController.pushResult",
+        // FEAT-21：任务 webhook 入站触发——per-task secret HMAC（webhook-hmac.util），
+        // 与 applications/alerts webhook 同一安全范式。
+        "TaskWebhookController.trigger",
       ].sort(),
     );
   });
@@ -410,6 +415,11 @@ describe("A2 写面守卫穷举扫描（write-guard-coverage）", () => {
         "TaskController.pause",
         "TaskController.resume",
         "TaskController.trigger",
+        // FEAT-21：webhook 管理（enable/rotate/disable）——同 trigger 的 operate 口径
+        //（service 内 assertCanOperate；属主收紧随 ADR-013 一并拍板）。
+        "TaskController.webhookDisable",
+        "TaskController.webhookEnable",
+        "TaskController.webhookRotate",
       ].sort(),
     );
   });
