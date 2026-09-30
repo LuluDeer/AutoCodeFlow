@@ -45,6 +45,9 @@
     "vite-plugin-electron": "^1.1.2",
     "vite-plugin-electron-renderer": "^1.0.0"
   },
+  "overrides": {
+    "fast-uri": "^3.1.8"
+  },
   "homepage": "https://github.com/LuluDeer/AutoCodeFlow",
   "_comment_deps": "electron-store 11（2026-09 依赖审计二轮升级）：v9+ ESM-only，依赖 Electron 44 内置 Node 24 的同步 require(esm) 加载（已做运行时冒烟）；v10+ 移除 JSON schema，config-store.ts 的旧配置缺键补默认值改用 conf 仍支持的 defaults 选项承载（兼容红线不变），写时类型校验由 config-sanitize.ts 消毒层承接。其余：electron-log 5.4.4 / electron-updater 6.8.9 / electron-builder 26.15.3 / auto-launch 5.0.6 均为最新。"
 }

@@ -697,9 +697,7 @@ describe("TaskService (__tests__)", () => {
         andWhere: jest.fn().mockReturnThis(),
         setParameters: jest.fn().mockReturnThis(),
         getParameters: jest.fn().mockReturnValue({ lastStatus: "failed" }),
-        getQuery: jest
-          .fn()
-          .mockReturnValue("SELECT 1 FROM task_executions te"),
+        getQuery: jest.fn().mockReturnValue("SELECT 1 FROM task_executions te"),
       };
       execRepo.createQueryBuilder.mockImplementation((alias: string) =>
         alias === "te2" ? te2Qb : teQb,
@@ -789,10 +787,9 @@ describe("TaskService (__tests__)", () => {
       expect(taskQb.where).toHaveBeenCalledWith("task.status = :__status", {
         __status: "active",
       });
-      expect(taskQb.andWhere).toHaveBeenCalledWith(
-        "task.name ILIKE :__name",
-        { __name: "%备份%" },
-      );
+      expect(taskQb.andWhere).toHaveBeenCalledWith("task.name ILIKE :__name", {
+        __name: "%备份%",
+      });
       expect(taskQb.andWhere).toHaveBeenCalledWith(
         "task.runtime = :__runtime",
         { __runtime: "python" },
@@ -2899,8 +2896,13 @@ describe("TaskService (__tests__)", () => {
           { executionId: expect.any(String) },
           expect.objectContaining({ attempts: expect.any(Number) }),
         );
-        // NETOPT-1③: 依赖扫描只投影 id+dependencies（下游仅消费这两个字段）
-        expect(depQb.select).toHaveBeenCalledWith(["t.id", "t.dependencies"]);
+        // NETOPT-1③: 依赖扫描只投影 id+dependencies+params（FEAT-21 哨兵
+        // 注入读 params；checkDependencies 读 dependencies、claim/trigger/audit 读 id）
+        expect(depQb.select).toHaveBeenCalledWith([
+          "t.id",
+          "t.dependencies",
+          "t.params",
+        ]);
       });
 
       // NETOPT-3②: 扇出全部成功 → 在上游执行行落 depsFiredAt 完成标记

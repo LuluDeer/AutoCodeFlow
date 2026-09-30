@@ -24,6 +24,8 @@ export const TRIGGER_T_KEYS: Record<string, string> = {
   cron: 'taskList.trigger.cron',
   fixed_rate: 'taskList.trigger.fixed_rate',
   dependency: 'taskList.trigger.dependency',
+  // FEAT-21: TaskExecution.triggerType 的 webhook 值（执行详情/列表展示用）
+  webhook: 'taskList.trigger.webhook',
 };
 
 /** Tag 配色：与 TaskListPage 既有观感一致（提取时原样保留，不改视觉）。 */
@@ -32,6 +34,7 @@ export const TRIGGER_COLOR: Record<string, string> = {
   cron: 'blue',
   fixed_rate: 'geekblue',
   dependency: 'purple',
+  webhook: 'cyan',
 };
 
 /** 单条触发方式的展示文本：有标签用标签，未知值回退原始 token。 */
