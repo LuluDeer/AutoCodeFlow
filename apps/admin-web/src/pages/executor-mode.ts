@@ -91,6 +91,13 @@ export function buildExecutorPayload(
   payload.executorAntiAffinityTags = normalizeAffinityTags(
     payload.executorAntiAffinityTags,
   );
+  // FEAT-22 v2：任务级部署约束模式。表单用 'global' 哨兵表示「跟随全局」
+  // （antd Select 对 null 值不显示选项文案），提交时归一为显式 null；undefined
+  // （控件未回填）同样归一 null——PATCH 缺省=保留旧覆盖值，不显式发 null 会
+  // 「界面显示跟随全局、后端仍按旧覆盖值派发」。与亲和约束同款：pinned 模式
+  // 控件禁用但值保留，切回后继续生效。
+  payload.deploymentPolicy =
+    payload.deploymentPolicy === 'global' ? null : payload.deploymentPolicy ?? null;
   if (executorMode === 'broadcast') {
     payload.executeMode = 'broadcast';
     payload.executorId = null;

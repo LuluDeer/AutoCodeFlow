@@ -3702,6 +3702,11 @@ export interface components {
             secrets?: {
                 [key: string]: string;
             };
+            /**
+             * @description FEAT-22: task-level deployment dispatch policy override. 'strict' narrows candidates to the set of devices with explicit deployments of the bound application (running/stopped/upgrading); when none of them can take the execution it is queued as WAITING instead of silently dispatched elsewhere. 'prefer' keeps the ARCH-35 soft preference (deployed-and-running devices are tried first, falls back to the fleet). Omitted/null follows the global executor.deploymentPolicy (EXECUTOR_DEPLOYMENT_POLICY). Precedence: executorId pin > executorAppName > deployment constraint > fleet; the master switch executor.preferDeployedExecutor=false disables deployment awareness entirely. PATCH: omit = keep; explicit null = follow global.
+             * @enum {string|null}
+             */
+            deploymentPolicy?: "strict" | "prefer" | null;
             executorAppName?: string;
             executorGroup?: string;
             executorTags?: string[];
@@ -3788,6 +3793,11 @@ export interface components {
             secrets?: {
                 [key: string]: string;
             };
+            /**
+             * @description FEAT-22: task-level deployment dispatch policy override. 'strict' narrows candidates to the set of devices with explicit deployments of the bound application (running/stopped/upgrading); when none of them can take the execution it is queued as WAITING instead of silently dispatched elsewhere. 'prefer' keeps the ARCH-35 soft preference (deployed-and-running devices are tried first, falls back to the fleet). Omitted/null follows the global executor.deploymentPolicy (EXECUTOR_DEPLOYMENT_POLICY). Precedence: executorId pin > executorAppName > deployment constraint > fleet; the master switch executor.preferDeployedExecutor=false disables deployment awareness entirely. PATCH: omit = keep; explicit null = follow global.
+             * @enum {string|null}
+             */
+            deploymentPolicy?: "strict" | "prefer" | null;
             executorAppName?: string;
             executorGroup?: string;
             executorTags?: string[];
