@@ -148,10 +148,17 @@ const makeRepo = (overrides: Record<string, jest.Mock> = {}) => {
       where: jest.fn().mockReturnThis(),
       andWhere: jest.fn().mockReturnThis(),
       orderBy: jest.fn().mockReturnThis(),
+      // FIX-5.3: 排序补 id DESC 决胜键（getAllExecutions 链式 addOrderBy）。
+      addOrderBy: jest.fn().mockReturnThis(),
       select: jest.fn().mockReturnThis(),
+      // FIX-5.4: SSE flush 单轮 flush 行数上限（take(2000)）。
+      take: jest.fn().mockReturnThis(),
+      // FIX-5.1: getExecutionStats 的全量 GROUP BY status 计数（getRawMany）。
+      getRawMany: jest.fn().mockResolvedValue([]),
       // handleCallback / killExecution 的终态 UPDATE 现携带 RETURNING，
       // 需可链式；execute 下方回填 raw 以模拟 PG 的 RETURNING 行。
       returning: jest.fn().mockReturnThis(),
+      groupBy: jest.fn().mockReturnThis(),
       getMany: jest.fn().mockResolvedValue([]),
       getRawOne: jest.fn().mockResolvedValue({ maxNum: 0 }),
       update: jest.fn().mockReturnThis(),
@@ -375,12 +382,63 @@ describe("TaskService (__tests__)", () => {
     });
 
     it("throws on circular self-dependency", async () => {
+      // FIX-1.1: 写面先校验 value 是存在的任务 id（find 返回被依赖行），
+      // 自依赖（value=自身 id）由其后的环检测拦截。
+      taskRepo.find.mockResolvedValue([{ id: "task-a" }]);
       const dto = {
         id: "task-a",
         name: "cycle",
         dependencies: { dep1: "task-a" },
       } as any;
       await expect(service.create(dto)).rejects.toThrow("Circular dependency");
+    });
+
+    // FIX-1.1（依赖链契约）：value 必须是存在的任务 id——value 是环检测/
+    // 依赖满足/扇出匹配的语义位，悬垂 value 会让下游依赖链静默永不触发。
+    it("rejects a dependency value that is not an existing task id", async () => {
+      taskRepo.find.mockResolvedValue([]); // value 指向的任务不存在
+      const dto = {
+        name: "orphan-dep",
+        dependencies: { upstream: "missing-task-uuid" },
+      } as any;
+      await expect(service.create(dto)).rejects.toThrow(
+        "dependencies values must be existing task ids",
+      );
+      expect(taskRepo.save).not.toHaveBeenCalled();
+    });
+
+    it("create accepts dependencies whose values are existing task ids (fan-out contract)", async () => {
+      taskRepo.find.mockResolvedValue([{ id: "up-1" }]);
+      taskRepo.create.mockImplementation((t: any) => t);
+      taskRepo.save.mockImplementation((t: any) =>
+        Promise.resolve({ id: "1", ...t }),
+      );
+      const result = await service.create({
+        name: "downstream",
+        dependencies: { "upstream-name": "up-1" },
+      } as any);
+      // value=id 原样落库（key=显示名仅展示用途）
+      expect(result.dependencies).toEqual({ "upstream-name": "up-1" });
+      // 校验查询按 value 集合发起
+      const findArgs = taskRepo.find.mock.calls[0][0];
+      expect(findArgs.where.id).toEqual(
+        expect.objectContaining({ _value: ["up-1"] }),
+      );
+    });
+
+    it("update (PATCH) rejects a non-existent dependency value too (整体替换语义)", async () => {
+      taskRepo.findOne.mockResolvedValue({
+        id: "t1",
+        name: "t",
+        status: TaskStatus.ACTIVE,
+        executorId: null,
+        executeMode: "single",
+      });
+      taskRepo.find.mockResolvedValue([]); // PATCH 带的 value 不存在
+      await expect(
+        service.update("t1", { dependencies: { up: "ghost-uuid" } } as any),
+      ).rejects.toThrow("dependencies values must be existing task ids");
+      expect(taskRepo.save).not.toHaveBeenCalled();
     });
 
     // SEC-NEW-2 对齐：git 源在任务**写面**即校验（executor 派发侧只放行
@@ -673,6 +731,8 @@ describe("TaskService (__tests__)", () => {
         andWhere: jest.fn().mockReturnThis(),
         select: jest.fn().mockReturnThis(),
         orderBy: jest.fn().mockReturnThis(),
+        // FIX-5.3: id DESC 决胜键
+        addOrderBy: jest.fn().mockReturnThis(),
         skip: jest.fn().mockReturnThis(),
         take: jest.fn().mockReturnThis(),
         getManyAndCount: jest.fn().mockResolvedValue([[{ id: "t1" }], 1]),
@@ -747,6 +807,8 @@ describe("TaskService (__tests__)", () => {
         andWhere: jest.fn().mockReturnThis(),
         select: jest.fn().mockReturnThis(),
         orderBy: jest.fn().mockReturnThis(),
+        // FIX-5.3: id DESC 决胜键
+        addOrderBy: jest.fn().mockReturnThis(),
         skip: jest.fn().mockReturnThis(),
         take: jest.fn().mockReturnThis(),
         getManyAndCount: jest.fn().mockResolvedValue([[], 0]),
@@ -831,6 +893,69 @@ describe("TaskService (__tests__)", () => {
       await service.update("1", { name: "new" } as any);
       expect(schedulerService.stop).toHaveBeenCalledWith("1");
       expect(schedulerService.scheduleOne).toHaveBeenCalled();
+    });
+
+    // A4（第三轮审计·中）：乐观锁——expectedUpdatedAt 与行 updatedAt 不符
+    // 时 409（信息含「请刷新后重试」），且绝不写库；缺省时行为零变化。
+    it("A4: skips the optimistic-lock check when expectedUpdatedAt is absent (backward compat)", async () => {
+      const task = {
+        id: "1",
+        name: "old",
+        status: TaskStatus.ACTIVE,
+        updatedAt: new Date("2026-10-01T08:00:00.000Z"),
+      };
+      taskRepo.findOne.mockResolvedValue(task);
+      taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
+      await expect(
+        service.update("1", { name: "new" } as any),
+      ).resolves.toBeDefined();
+      expect(taskRepo.save).toHaveBeenCalled();
+    });
+
+    it("A4: succeeds when expectedUpdatedAt matches the row updatedAt", async () => {
+      const task = {
+        id: "1",
+        name: "old",
+        status: TaskStatus.ACTIVE,
+        updatedAt: new Date("2026-10-01T08:00:00.000Z"),
+      };
+      taskRepo.findOne.mockResolvedValue(task);
+      taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
+      await expect(
+        service.update("1", {
+          name: "new",
+          expectedUpdatedAt: "2026-10-01T08:00:00.000Z",
+        } as any),
+      ).resolves.toBeDefined();
+      // 检查字段消费即弃：不落实体、不进 save。
+      expect(taskRepo.save.mock.calls[0][0]).not.toHaveProperty(
+        "expectedUpdatedAt",
+      );
+    });
+
+    it("A4: throws ConflictException (请刷新后重试) and writes nothing on a stale expectedUpdatedAt", async () => {
+      const task = {
+        id: "1",
+        name: "old",
+        status: TaskStatus.ACTIVE,
+        updatedAt: new Date("2026-10-01T08:00:00.000Z"),
+      };
+      taskRepo.findOne.mockResolvedValue(task);
+      await expect(
+        service.update("1", {
+          name: "new",
+          expectedUpdatedAt: "2026-10-01T07:00:00.000Z",
+        } as any),
+      ).rejects.toThrow(/请刷新后重试/);
+      await expect(
+        service.update("1", {
+          name: "new",
+          expectedUpdatedAt: "2026-10-01T07:00:00.000Z",
+        } as any),
+      ).rejects.toThrow(ConflictException);
+      // 409 必须发生在任何写路径之前。
+      expect(taskRepo.save).not.toHaveBeenCalled();
+      expect(schedulerService.stop).not.toHaveBeenCalledWith("1");
     });
 
     it("stops scheduling for non-active tasks after update", async () => {
@@ -1287,6 +1412,7 @@ describe("TaskService (__tests__)", () => {
         "execute",
         { executionId: "exec-1" },
         // N2: enqueue options now always carry a normalized numeric priority
+        // A4: 再经方向换算（BullMQ 越小越先出队）——默认 NORMAL(2) → 3
         // CORE-02: delay 带 ±20% 抖动——断言落在 [4000, 6000] 区间
         {
           attempts: 3,
@@ -1294,7 +1420,7 @@ describe("TaskService (__tests__)", () => {
             type: "exponential",
             delay: expect.any(Number),
           },
-          priority: 2,
+          priority: 3,
         },
       );
       const opts = taskQueue.add.mock.calls[0][2];
@@ -1357,7 +1483,8 @@ describe("TaskService (__tests__)", () => {
       expect(taskQueue.add).toHaveBeenCalledWith(
         "execute",
         { executionId: "exec-1" },
-        expect.objectContaining({ priority: 2 }),
+        // A4: 'normal' 先归一化为 NORMAL(2)，再方向换算为 BullMQ 3。
+        expect.objectContaining({ priority: 3 }),
       );
       expect(
         typeof (taskQueue.add.mock.calls[0][2] as { priority: number })
@@ -1446,6 +1573,8 @@ describe("TaskService (__tests__)", () => {
         // PERF-03：getAllExecutions 现调用 .select(投影列)。
         select: jest.fn().mockReturnThis(),
         orderBy: jest.fn().mockReturnThis(),
+        // FIX-5.3: id DESC 决胜键
+        addOrderBy: jest.fn().mockReturnThis(),
         skip: jest.fn().mockReturnThis(),
         take: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
@@ -1477,6 +1606,8 @@ describe("TaskService (__tests__)", () => {
         // PERF-03：getAllExecutions 现调用 .select(投影列)，替身需支持链式。
         select: jest.fn().mockReturnThis(),
         orderBy: jest.fn().mockReturnThis(),
+        // FIX-5.3: id DESC 决胜键
+        addOrderBy: jest.fn().mockReturnThis(),
         skip: jest.fn().mockReturnThis(),
         take: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
@@ -1504,6 +1635,8 @@ describe("TaskService (__tests__)", () => {
         addSelect: jest.fn().mockReturnThis(),
         select: jest.fn().mockReturnThis(),
         orderBy: jest.fn().mockReturnThis(),
+        // FIX-5.3: id DESC 决胜键
+        addOrderBy: jest.fn().mockReturnThis(),
         skip: jest.fn().mockReturnThis(),
         take: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
@@ -1534,6 +1667,8 @@ describe("TaskService (__tests__)", () => {
         addSelect: jest.fn().mockReturnThis(),
         select: jest.fn().mockReturnThis(),
         orderBy: jest.fn().mockReturnThis(),
+        // FIX-5.3: id DESC 决胜键
+        addOrderBy: jest.fn().mockReturnThis(),
         skip: jest.fn().mockReturnThis(),
         take: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
@@ -1577,6 +1712,8 @@ describe("TaskService (__tests__)", () => {
         addSelect: jest.fn().mockReturnThis(),
         select: jest.fn().mockReturnThis(),
         orderBy: jest.fn().mockReturnThis(),
+        // FIX-5.3: id DESC 决胜键
+        addOrderBy: jest.fn().mockReturnThis(),
         skip: jest.fn().mockReturnThis(),
         take: jest.fn().mockReturnThis(),
         andWhere,
@@ -1651,6 +1788,8 @@ describe("TaskService (__tests__)", () => {
     it("accepts a dependency chain within the depth limit", async () => {
       // 链长 63 < 64，不应抛错（模拟 60 层足够验证，避免无谓的findOne次数）
       setupDeepChain(60);
+      // FIX-1.1: 写面先校验 value 是存在的任务 id（find 返回被依赖行）
+      taskRepo.find.mockResolvedValue([{ id: "task-1" }]);
       const dto = {
         // R6 后 create 会先按 id 查重（withDeleted），链 mock 只对
         // "task-*" 返回行——用 UUID 形态的新任务 id 表示"主键未被占用"
@@ -1666,6 +1805,8 @@ describe("TaskService (__tests__)", () => {
     it("rejects an over-deep dependency chain with 'dependency chain too deep'", async () => {
       // 链长 200 >> 64：必须在有限深度截断，防止 N+1 DoS
       setupDeepChain(200);
+      // FIX-1.1: value 存在性校验先行放行（find 返回被依赖行）
+      taskRepo.find.mockResolvedValue([{ id: "task-1" }]);
       const dto = {
         id: "task-0",
         name: "too-deep",
@@ -1683,6 +1824,10 @@ describe("TaskService (__tests__)", () => {
       taskRepo.findOne.mockResolvedValue({ id: "x", dependencies: {} });
       const dependencies: Record<string, string> = {};
       for (let i = 0; i < 100; i++) dependencies[`k${i}`] = `dep-task-${i}`;
+      // FIX-1.1: value 存在性校验按 In(values) 批查放行全部 100 个 id
+      taskRepo.find.mockResolvedValue(
+        Object.values(dependencies).map((id) => ({ id })),
+      );
       const dto = { id: "task-0", name: "too-wide", dependencies } as any;
       await expect(service.create(dto)).rejects.toThrow(
         "dependency chain too deep",
@@ -1699,6 +1844,8 @@ describe("TaskService (__tests__)", () => {
           return Promise.resolve({ id, dependencies: { dep: "task-b" } });
         return Promise.resolve(null);
       });
+      // FIX-1.1: value 存在性校验先行放行
+      taskRepo.find.mockResolvedValue([{ id: "task-b" }]);
       const dto = {
         id: "task-a",
         name: "cycle",
@@ -1817,6 +1964,8 @@ describe("TaskService (__tests__)", () => {
         andWhere: jest.fn().mockReturnThis(),
         orderBy: jest.fn().mockReturnThis(),
         select: jest.fn().mockReturnThis(),
+        // FIX-5.4: flush 链新增 take(2000) 单轮上限
+        take: jest.fn().mockReturnThis(),
         getMany: jest.fn().mockResolvedValue([]),
       } as any);
       const send = jest.fn();
@@ -1860,6 +2009,8 @@ describe("TaskService (__tests__)", () => {
         andWhere: jest.fn().mockReturnThis(),
         orderBy: jest.fn().mockReturnThis(),
         select: jest.fn().mockReturnThis(),
+        // FIX-5.4: flush 链新增 take(2000) 单轮上限
+        take: jest.fn().mockReturnThis(),
         getMany: jest.fn().mockResolvedValue([]),
       } as any);
     };
@@ -1917,6 +2068,8 @@ describe("TaskService (__tests__)", () => {
         andWhere: jest.fn().mockReturnThis(),
         orderBy: jest.fn().mockReturnThis(),
         select: jest.fn().mockReturnThis(),
+        // FIX-5.4: flush 链新增 take(2000) 单轮上限
+        take: jest.fn().mockReturnThis(),
         getMany: jest
           .fn()
           .mockResolvedValue([{ lineNumber: 0, content: "line0" }]),
@@ -2050,10 +2203,11 @@ describe("TaskService (__tests__)", () => {
         "execute",
         { executionId: "rb-exec" },
         // CORE-02: delay 带 ±20% 抖动——断言落在 [5600, 8400] 区间
+        // A4: 默认 NORMAL(2) 方向换算为 BullMQ 3
         {
           attempts: 2,
           backoff: { type: "exponential", delay: expect.any(Number) },
-          priority: 2,
+          priority: 3,
         },
       );
       const rollbackOpts = taskQueue.add.mock.calls[0][2];
@@ -2855,6 +3009,16 @@ describe("TaskService (__tests__)", () => {
           const impl = (execRepo.findOne as jest.Mock).getMockImplementation();
           const one = impl ? await impl(opts ?? {}) : null;
           return one == null ? [] : [one];
+        });
+        // NETOPT-4②: prevLastTriggerTime 循环外批读（taskRepo.find +
+        // In(...)）。按 where.id 形状分发——扇出路径仅此一处用 taskRepo.find，
+        // 回滚语义（下游原值）与旧 findOne mock 同源：downstreamTask 缺
+        // lastTriggerTime → 恢复 NULL。
+        taskRepo.find.mockImplementation(async (opts?: any) => {
+          if (opts?.where?.id !== undefined) {
+            return downstreamTask ? [downstreamTask as any] : [];
+          }
+          return [] as any;
         });
         if (downstreamTask) {
           taskRepo.findOne.mockResolvedValue(downstreamTask as any);
@@ -4185,6 +4349,50 @@ describe("TaskService (__tests__)", () => {
       expect(snapshot).not.toHaveProperty("secrets");
       expect(JSON.stringify(snapshot)).not.toContain("deadbeef");
     });
+
+    // A3（第二轮审计）：快照补键——dependencies / deploymentPolicy /
+    // executorAffinityTags / executorAntiAffinityTags / executorId /
+    // executorAppName / executorGroup / executorTags / projectId /
+    // alarmEmail / alarmChannels 均为用户可编辑列，此前漏键的双重后果：
+    // 改动在 compareVersions 里不可见（键集合派生自快照）+ 回滚不恢复
+    // （Object.assign 缺键保留现值）。
+    it("快照含依赖链/部署约束/执行器亲和/告警配置等 11 个补键（A3）", async () => {
+      const task = {
+        id: "t1",
+        name: "task",
+        dependencies: { "dep-a": "task-a-id" },
+        deploymentPolicy: "PINNED",
+        executorAffinityTags: ["gpu"],
+        executorAntiAffinityTags: ["spot"],
+        executorId: "exec-1",
+        executorAppName: "alpha",
+        executorGroup: "cn-east",
+        executorTags: ["docker"],
+        projectId: "proj-1",
+        alarmEmail: "ops@example.com",
+        alarmChannels: ["email", "feishu"],
+      };
+      taskRepo.findOne.mockResolvedValue(task);
+      versionRepo.find.mockResolvedValue([]);
+      versionRepo.save.mockImplementation((v: any) =>
+        Promise.resolve({ id: "v1", ...v }),
+      );
+
+      await service.saveVersion("t1", "user", "with-deploy-constraints");
+
+      const snapshot = versionRepo.create.mock.calls[0][0].snapshot;
+      expect(snapshot.dependencies).toEqual(task.dependencies);
+      expect(snapshot.deploymentPolicy).toBe("PINNED");
+      expect(snapshot.executorAffinityTags).toEqual(["gpu"]);
+      expect(snapshot.executorAntiAffinityTags).toEqual(["spot"]);
+      expect(snapshot.executorId).toBe("exec-1");
+      expect(snapshot.executorAppName).toBe("alpha");
+      expect(snapshot.executorGroup).toBe("cn-east");
+      expect(snapshot.executorTags).toEqual(["docker"]);
+      expect(snapshot.projectId).toBe("proj-1");
+      expect(snapshot.alarmEmail).toBe("ops@example.com");
+      expect(snapshot.alarmChannels).toEqual(["email", "feishu"]);
+    });
   });
 
   describe("rollbackToVersion", () => {
@@ -4218,6 +4426,55 @@ describe("TaskService (__tests__)", () => {
       await expect(
         service.rollbackToVersion("t1", "missing-v"),
       ).rejects.toThrow(NotFoundException);
+    });
+
+    // A3（第二轮审计）：端到端链路——改依赖链后 saveVersion 落新快照，
+    // compareVersions 能看到 dependencies 差异（旧实现永远"无差异"），
+    // rollbackToVersion 恢复旧依赖链。
+    it("依赖链改动在版本对比可见，回滚后恢复旧依赖链（A3）", async () => {
+      const oldSnapshot = { name: "n", dependencies: { "dep-a": "task-a" } };
+      // ① saveVersion：当前任务依赖链已改为 dep-b → 新快照必须带新链
+      taskRepo.findOne.mockResolvedValue({
+        id: "t1",
+        name: "n",
+        dependencies: { "dep-b": "task-b" },
+      });
+      versionRepo.find.mockResolvedValue([]);
+      versionRepo.save.mockImplementation((v: any) =>
+        Promise.resolve({ id: "v2", ...v }),
+      );
+      await service.saveVersion("t1", "user", "dep changed");
+      const newSnapshot = versionRepo.create.mock.calls[0][0].snapshot;
+      expect(newSnapshot.dependencies).toEqual({ "dep-b": "task-b" });
+
+      // ② compareVersions：依赖链差异可见
+      versionRepo.findOne
+        .mockResolvedValueOnce({
+          id: "v1",
+          version: "v1",
+          snapshot: oldSnapshot,
+        })
+        .mockResolvedValueOnce({ id: "v2", version: "v2", snapshot: newSnapshot });
+      const diff = await service.compareVersions("t1", "v1", "v2");
+      expect(diff.dependencies).toEqual({
+        old: { "dep-a": "task-a" },
+        new: { "dep-b": "task-b" },
+      });
+
+      // ③ rollbackToVersion：恢复旧依赖链
+      versionRepo.findOne.mockResolvedValueOnce({
+        id: "v1",
+        version: "v1",
+        snapshot: oldSnapshot,
+      });
+      taskRepo.findOne.mockResolvedValue({
+        id: "t1",
+        name: "n",
+        dependencies: { "dep-b": "task-b" },
+      });
+      taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
+      const rolled = await service.rollbackToVersion("t1", "v1");
+      expect(rolled.dependencies).toEqual({ "dep-a": "task-a" });
     });
   });
 
@@ -4297,6 +4554,35 @@ describe("TaskService (__tests__)", () => {
       const result = await service.killExecution("e2", ADMIN_USER);
       expect(exec.status).toBe(ExecutionStatus.KILLED);
       expect(result.success).toBe(true);
+    });
+
+    // 第二轮审计（A4 · 指标漏报）：手动终止此前不记录
+    // autoflow_execution_result_total（记录点只在回调 winner 路径，已下沉
+    // transitionToTerminal 统一入口）。kill 命中后 killed 计数 +1；已终态
+    // 再 kill（affected=0）不计数。
+    it("records killed in execution result metrics after a successful kill (A4)", async () => {
+      const exec = {
+        id: "e1",
+        status: ExecutionStatus.RUNNING,
+        startTime: new Date(Date.now() - 5000),
+      };
+      givenOwnedExecution(exec);
+      execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      await service.killExecution("e1", ADMIN_USER);
+      expect(
+        runtimeCount("autoflow_execution_result_total", { status: "killed" }),
+      ).toBe(1);
+    });
+
+    it("does not record killed metric when the kill hits no row (A4)", async () => {
+      const exec = { id: "e3", status: ExecutionStatus.SUCCESS };
+      givenOwnedExecution(exec);
+      await expect(
+        service.killExecution("e3", ADMIN_USER),
+      ).rejects.toThrow(BadRequestException);
+      expect(
+        runtimeCount("autoflow_execution_result_total", { status: "killed" }),
+      ).toBe(0);
     });
 
     it("throws NotFoundException when execution does not exist", async () => {
@@ -4572,6 +4858,22 @@ describe("TaskService (__tests__)", () => {
     });
   });
   describe("getExecutionStats", () => {
+    // FIX-5.1: 全量口径需要 GROUP BY status 计数（getRawMany）——替身按
+    // 「select/addSelect/where/groupBy/getRawMany」最小链式提供。
+    const mockStatusCounts = (
+      rows: Array<{ status: string; count: string }>,
+    ) => {
+      execRepo.createQueryBuilder = jest.fn(() =>
+        ({
+          select: jest.fn().mockReturnThis(),
+          addSelect: jest.fn().mockReturnThis(),
+          where: jest.fn().mockReturnThis(),
+          groupBy: jest.fn().mockReturnThis(),
+          getRawMany: jest.fn().mockResolvedValue(rows),
+        }) as any,
+      );
+    };
+
     it("computes successRate and avgDuration from recent executions", async () => {
       const executions = [
         { status: ExecutionStatus.SUCCESS, duration: 200 },
@@ -4580,17 +4882,62 @@ describe("TaskService (__tests__)", () => {
       ];
       execRepo.find.mockResolvedValue(executions);
       execRepo.count.mockResolvedValue(10);
+      // 全量口径：10 次中 5 成功、4 失败、1 超时（失败口径 = FAILED+TIMEOUT）
+      mockStatusCounts([
+        { status: "success", count: "5" },
+        { status: "failed", count: "4" },
+        { status: "timeout", count: "1" },
+      ]);
       const result = await service.getExecutionStats("t1");
-      expect(result.successRate).toBeCloseTo(66.7, 0);
+      // successRate 语义自 FIX-5.1 起为全量口径（5/10），近窗成功率单列
+      expect(result.successRate).toBe(50);
+      expect(result.recentSuccessRate).toBeCloseTo(66.7, 0);
+      expect(result.succeeded).toBe(5);
+      expect(result.failed).toBe(5); // failed 4 + timeout 1
       expect(result.avgDuration).toBe(300);
       expect(result.totalRuns).toBe(10);
+    });
+
+    it("FIX-5.2: recentExecutions 读投影排除 logs/aiAnalysis/result 大列", async () => {
+      execRepo.find.mockResolvedValue([]);
+      execRepo.count.mockResolvedValue(0);
+      mockStatusCounts([]);
+      await service.getExecutionStats("t1");
+      const findArgs = execRepo.find.mock.calls[0][0];
+      expect(findArgs.select).toBeDefined();
+      expect(findArgs.select).toHaveProperty("status");
+      expect(findArgs.select).toHaveProperty("duration");
+      expect(findArgs.select).not.toHaveProperty("logs");
+      expect(findArgs.select).not.toHaveProperty("aiAnalysis");
+      expect(findArgs.select).not.toHaveProperty("result");
+    });
+
+    it("FIX-5.1: successRate 用全量计数——近窗全成 + 历史失败时两口径分离", async () => {
+      execRepo.find.mockResolvedValue([
+        { status: ExecutionStatus.SUCCESS, duration: 100 },
+      ]);
+      execRepo.count.mockResolvedValue(10);
+      mockStatusCounts([
+        { status: "success", count: "6" },
+        { status: "failed", count: "4" },
+      ]);
+      const result = await service.getExecutionStats("t1");
+      // 旧实现（totalRuns×(1−rate) 派生失败数）会把这里算成「失败 0 次」
+      expect(result.successRate).toBe(60);
+      expect(result.recentSuccessRate).toBe(100);
+      expect(result.succeeded).toBe(6);
+      expect(result.failed).toBe(4);
     });
 
     it("returns zero successRate and avgDuration when no recent executions", async () => {
       execRepo.find.mockResolvedValue([]);
       execRepo.count.mockResolvedValue(0);
+      mockStatusCounts([]);
       const result = await service.getExecutionStats("t1");
       expect(result.successRate).toBe(0);
+      expect(result.recentSuccessRate).toBe(0);
+      expect(result.succeeded).toBe(0);
+      expect(result.failed).toBe(0);
       expect(result.avgDuration).toBe(0);
     });
   });
@@ -5626,6 +5973,8 @@ describe("TaskService — QA-02 phase 2 branch gaps", () => {
       // PERF-03：getAllExecutions 现调用 .select(投影列)。
       select: jest.fn().mockReturnThis(),
       orderBy: jest.fn().mockReturnThis(),
+      // FIX-5.3: id DESC 决胜键
+      addOrderBy: jest.fn().mockReturnThis(),
       skip: jest.fn().mockReturnThis(),
       take: jest.fn().mockReturnThis(),
       andWhere: jest.fn().mockReturnThis(),
@@ -5740,16 +6089,38 @@ describe("TaskService — QA-02 phase 2 branch gaps", () => {
   });
 
   describe("getExecutionStats — success-rate branches", () => {
+    // FIX-5.1: 全量口径的 GROUP BY status 计数替身（同主 describe）。
+    const mockStatusCounts = (
+      rows: Array<{ status: string; count: string }>,
+    ) => {
+      execRepo.createQueryBuilder = jest.fn(() =>
+        ({
+          select: jest.fn().mockReturnThis(),
+          addSelect: jest.fn().mockReturnThis(),
+          where: jest.fn().mockReturnThis(),
+          groupBy: jest.fn().mockReturnThis(),
+          getRawMany: jest.fn().mockResolvedValue(rows),
+        }) as any,
+      );
+    };
+
     it("reports 0% success rate and avg duration when no recent run succeeded", async () => {
       execRepo.find.mockResolvedValue([
         { id: "e1", status: ExecutionStatus.FAILED, duration: 250 },
         { id: "e2", status: ExecutionStatus.TIMEOUT, duration: 750 },
       ]);
       execRepo.count.mockResolvedValue(4);
+      mockStatusCounts([
+        { status: "failed", count: "3" },
+        { status: "timeout", count: "1" },
+      ]);
 
       const stats = await service.getExecutionStats("t1");
       expect(stats.totalRuns).toBe(4);
       expect(stats.successRate).toBe(0);
+      expect(stats.succeeded).toBe(0);
+      // 失败口径 = FAILED + TIMEOUT
+      expect(stats.failed).toBe(4);
       expect(stats.avgDuration).toBe(500); // round(250+750)/2
     });
 
@@ -5760,15 +6131,22 @@ describe("TaskService — QA-02 phase 2 branch gaps", () => {
         { id: "e3", status: ExecutionStatus.SUCCESS, duration: 300 },
       ]);
       execRepo.count.mockResolvedValue(3);
+      mockStatusCounts([
+        { status: "success", count: "2" },
+        { status: "failed", count: "1" },
+      ]);
 
       const stats = await service.getExecutionStats("t1");
       expect(stats.successRate).toBe(66.7); // round(2/3*1000)/10
+      expect(stats.succeeded).toBe(2);
+      expect(stats.failed).toBe(1);
       expect(stats.avgDuration).toBe(200);
     });
 
     it("reports 0% with zero avg when nothing ran", async () => {
       execRepo.find.mockResolvedValue([]);
       execRepo.count.mockResolvedValue(0);
+      mockStatusCounts([]);
 
       const stats = await service.getExecutionStats("t1");
       expect(stats.totalRuns).toBe(0);
@@ -5975,9 +6353,12 @@ describe("TaskService — QA-02 phase 2 branch gaps", () => {
       execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
 
       const result = await service.analyzeExecution("exec-1", ADMIN_USER);
+      // FIX-6.2: 第三参为结构化上下文（failureReason/exitCode/runbook）——
+      // exec 无 taskId → taskRow=null，三字段逐项退化为 null（旧行为兼容）。
       expect(aiService.analyzeFailure).toHaveBeenCalledWith(
         { name: "job", runtime: "unknown" },
         "boom\ntrace",
+        { failureReason: null, exitCode: null, runbook: null },
       );
       expect(result.aiAnalysis).toBe("AI: fix it");
     });
@@ -5991,6 +6372,7 @@ describe("TaskService — QA-02 phase 2 branch gaps", () => {
       expect(aiService.analyzeFailure).toHaveBeenCalledWith(
         expect.anything(),
         "(no logs)",
+        { failureReason: null, exitCode: null, runbook: null },
       );
     });
   });

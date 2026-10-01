@@ -53,15 +53,22 @@ export class AiAnalysisService {
    *
    * @param task minimal task identity for the prompt
    * @param logs raw execution logs (sanitization happens inside AiService)
+   * @param context FIX-6.2: 结构化失败上下文（failureReason/exitCode/runbook），
+   *        原样透传给 prompt——可选，缺省调用方零变化
    * @returns analysis text, or "" when the provider is disabled / unavailable
    */
   async analyzeFailure(
     task: Pick<{ name: string; runtime: string }, "name" | "runtime">,
     logs: string,
+    context?: {
+      failureReason?: string | null;
+      exitCode?: number | null;
+      runbook?: string | null;
+    },
   ): Promise<string> {
     for (let attempt = 0; attempt <= AI_ANALYSIS_RETRIES; attempt++) {
       try {
-        const analysis = await this.aiService.analyzeFailure(task, logs);
+        const analysis = await this.aiService.analyzeFailure(task, logs, context);
         if (analysis && analysis.length > 0) {
           recordRuntime("autoflow_ai_analysis_total", { result: "ok" });
           return analysis;

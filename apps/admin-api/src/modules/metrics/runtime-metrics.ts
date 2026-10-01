@@ -13,11 +13,20 @@ import { ExecutionStatus } from "../task/entities/task-execution.entity";
  * 交接（构造即安装为当前实例），不引入模块环。
  */
 
-/** autoflow_execution_result_total 的 status 标签全集（回调终态 UPDATE 命中后的最终状态） */
+/**
+ * autoflow_execution_result_total 的 status 标签全集。
+ *
+ * 第二轮审计（A4）：记录点已从「回调 winner」下沉到 transitionToTerminal
+ * 统一终态入口，因此标签全集 = 该入口可写出的全部终态——除回调三态外补
+ * KILLED（手动终止）与 CANCELLED（COVER_EARLY 新触发覆盖旧执行）。入队
+ * 补偿/执行器重启/watchdog 超时等服务端失败复用 FAILED，无需新标签。
+ */
 export const RUNTIME_EXECUTION_RESULT_LABELS = [
   ExecutionStatus.SUCCESS,
   ExecutionStatus.FAILED,
   ExecutionStatus.TIMEOUT,
+  ExecutionStatus.KILLED,
+  ExecutionStatus.CANCELLED,
 ] as const;
 
 /** autoflow_notification_delivery_total 的 channel 标签全集（与 NotificationService.sendToChannels 的渠道名一致；NF-05 起 feishu 加入） */
@@ -116,7 +125,7 @@ for (const channel of RUNTIME_NOTIFICATION_CHANNELS) {
 export const RUNTIME_COUNTERS: Record<RuntimeCounterName, RuntimeCounterSpec> =
   {
     autoflow_execution_result_total: {
-      help: "Execution terminal outcomes recorded by callback (unique-winner update only), by final status",
+      help: "Execution terminal outcomes recorded at the unified terminal-transition entry (unique-winner update only), by final status",
       labelNames: ["status"],
       labelValueSets: RUNTIME_EXECUTION_RESULT_LABELS.map((status) => ({
         status,

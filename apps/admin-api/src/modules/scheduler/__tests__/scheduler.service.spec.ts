@@ -8,6 +8,8 @@ import {
   TRIGGER_DEDUP_JITTER_BUFFER_MS,
   ACTIVE_TASK_PAGE_SIZE,
 } from "../scheduler.service";
+// A4: 入队 priority 断言需要与实现同一方向换算（util 映射表另有专属单测）。
+import { toBullPriority } from "../../../common/utils/task-priority.util";
 import { SchedulerMetricsService } from "../scheduler-metrics.service";
 import {
   Task,
@@ -800,6 +802,117 @@ describe("SchedulerService", () => {
       expect(dataSource.createQueryBuilder).not.toHaveBeenCalled();
       expect(queue.add).toHaveBeenCalled();
       expect(execRepo.save).not.toHaveBeenCalledWith(runningExec);
+      // A4: 该执行不是本次覆盖的赢家（RETURNING 0 行），不补 kill。
+      expect(executorService.notifyExecutorKill).not.toHaveBeenCalled();
+    });
+
+    // A4（第三轮审计·高）：RUNNING 的被覆盖执行在落 CANCELLED 终态后必须
+    // 补 best-effort kill 下发——否则原进程继续跑完，回调被终态门拒收，纯烧
+    // 算力且违背 runbook.cancelled 文案。WAITING（无进程可杀）不补。
+    it("A4: COVER_EARLY sends a best-effort kill to the executor for a covered RUNNING execution", async () => {
+      await makeLeader();
+      const lock = { release: jest.fn().mockResolvedValue(undefined) };
+      redisLockService.acquireLock.mockResolvedValue(lock);
+      const task = makeTask({ blockStrategy: BlockStrategy.COVER_EARLY });
+      taskRepo.findOne.mockResolvedValue(task);
+      const runningExec = {
+        id: "running-1",
+        status: ExecutionStatus.RUNNING,
+        executorAddress: "host:3002",
+        errorMessage: null,
+        endTime: null,
+      } as unknown as TaskExecution;
+      execRepo.findOne.mockResolvedValue(runningExec);
+      const newExec = { id: "exec-2" } as TaskExecution;
+      execRepo.create.mockReturnValue(newExec);
+      execRepo.save.mockResolvedValue(newExec);
+      execRepo.createQueryBuilder.mockReturnValue(
+        makeUpdateQb({
+          affected: 1,
+          raw: [{ id: "running-1", executorAddress: "host:3002" }],
+        }),
+      );
+
+      await service.enqueue(task, "cron");
+
+      expect(executorService.notifyExecutorKill).toHaveBeenCalledWith(
+        "running-1",
+        "host:3002",
+      );
+      // 终态照常落库、新触发照常入队——kill 只是补充动作。
+      const coverQb = execRepo.createQueryBuilder.mock.results[0].value;
+      expect(coverQb.set).toHaveBeenCalledWith(
+        expect.objectContaining({ status: ExecutionStatus.CANCELLED }),
+      );
+      expect(queue.add).toHaveBeenCalled();
+    });
+
+    it("A4: COVER_EARLY still cancels (and enqueues) when the kill notification throws", async () => {
+      await makeLeader();
+      const lock = { release: jest.fn().mockResolvedValue(undefined) };
+      redisLockService.acquireLock.mockResolvedValue(lock);
+      const task = makeTask({ blockStrategy: BlockStrategy.COVER_EARLY });
+      taskRepo.findOne.mockResolvedValue(task);
+      const runningExec = {
+        id: "running-1",
+        status: ExecutionStatus.RUNNING,
+        executorAddress: "host:3002",
+        errorMessage: null,
+        endTime: null,
+      } as unknown as TaskExecution;
+      execRepo.findOne.mockResolvedValue(runningExec);
+      const newExec = { id: "exec-2" } as TaskExecution;
+      execRepo.create.mockReturnValue(newExec);
+      execRepo.save.mockResolvedValue(newExec);
+      execRepo.createQueryBuilder.mockReturnValue(
+        makeUpdateQb({
+          affected: 1,
+          raw: [{ id: "running-1", executorAddress: "host:3002" }],
+        }),
+      );
+      executorService.notifyExecutorKill.mockRejectedValueOnce(
+        new Error("executor unreachable"),
+      );
+
+      await expect(service.enqueue(task, "cron")).resolves.not.toBeNull();
+
+      // 下发失败只 warn：终态跃迁已发生、新执行已入队（未被阻塞）。
+      expect(executorService.notifyExecutorKill).toHaveBeenCalledWith(
+        "running-1",
+        "host:3002",
+      );
+      expect(queue.add).toHaveBeenCalled();
+    });
+
+    it("A4: COVER_EARLY does not kill a covered WAITING execution (no process to kill)", async () => {
+      await makeLeader();
+      const lock = { release: jest.fn().mockResolvedValue(undefined) };
+      redisLockService.acquireLock.mockResolvedValue(lock);
+      const task = makeTask({ blockStrategy: BlockStrategy.COVER_EARLY });
+      taskRepo.findOne.mockResolvedValue(task);
+      const waitingExec = {
+        id: "waiting-1",
+        status: ExecutionStatus.WAITING,
+        executorAddress: null,
+        errorMessage: "waiting for mutex",
+        endTime: null,
+      } as unknown as TaskExecution;
+      execRepo.findOne.mockResolvedValue(waitingExec);
+      const newExec = { id: "exec-2" } as TaskExecution;
+      execRepo.create.mockReturnValue(newExec);
+      execRepo.save.mockResolvedValue(newExec);
+      execRepo.createQueryBuilder.mockReturnValue(
+        makeUpdateQb({
+          affected: 1,
+          raw: [{ id: "waiting-1", executorAddress: null }],
+        }),
+      );
+
+      await service.enqueue(task, "cron");
+
+      // WAITING 直接取消——无进程可杀，kill 通道不被触达。
+      expect(executorService.notifyExecutorKill).not.toHaveBeenCalled();
+      expect(queue.add).toHaveBeenCalled();
     });
 
     // FEAT-06: maintenance windows gate scheduled triggers before the dedup
@@ -1992,6 +2105,10 @@ describe("SchedulerService", () => {
      * BullMQ's priority option makes every scheduled enqueue fail with
      * "Priority should not be float" (80/80 in round-5 e2e). The enqueue
      * boundary must always hand BullMQ a number.
+     *
+     * A4（第三轮审计）: 归一化之后还要做**方向换算**——BullMQ 的 priority
+     * 数值越小越先出队（1=最高），而 DB/UI 语义 4=紧急。入队值恒为
+     * toBullPriority(归一化结果) = 5 - dbPriority（CRITICAL(4) → 1）。
      */
     const setupHappyPath = (task: Task) => {
       const lock = { release: jest.fn().mockResolvedValue(true) };
@@ -2024,7 +2141,7 @@ describe("SchedulerService", () => {
       ["unknown garbage → NORMAL fallback", "urgent", TaskPriority.NORMAL],
       ["boolean → NORMAL fallback", true, TaskPriority.NORMAL],
     ])(
-      "priority %s is enqueued as a number",
+      "priority %s is enqueued as a BullMQ-inverted number",
       async (_name: string, raw: unknown, expected: TaskPriority) => {
         await makeLeader();
         const task = makeTask({ priority: raw as unknown as TaskPriority });
@@ -2036,7 +2153,9 @@ describe("SchedulerService", () => {
         expect(queue.add).toHaveBeenCalledWith(
           "execute",
           { executionId: "exec-1" },
-          expect.objectContaining({ priority: expected }),
+          // A4: DB 优先级方向倒置——CRITICAL(4) 必须映射为 BullMQ 1（最先
+          // 出队）；这里对期望值做同一换算（util 本身的映射表有专属单测）。
+          expect.objectContaining({ priority: toBullPriority(expected) }),
         );
         expect(typeof queue.add.mock.calls[0][2].priority).toBe("number");
       },
@@ -2052,8 +2171,30 @@ describe("SchedulerService", () => {
       await service.enqueue(task, "fixed_rate");
 
       const opts = queue.add.mock.calls[0][2];
-      expect(opts.priority).toBe(TaskPriority.NORMAL);
+      // A4: fallback 是 NORMAL(2)，入队值再经方向换算 → BullMQ 3。
+      expect(opts.priority).toBe(toBullPriority(TaskPriority.NORMAL));
       expect(Number.isInteger(opts.priority)).toBe(true);
+    });
+
+    it("A4: inverts direction — DB CRITICAL(4) dequeues first as BullMQ 1, DB LOW(1) last as 4", async () => {
+      await makeLeader();
+      // 同一时刻入队 4 个不同优先级的触发，断言 BullMQ 收到的 priority 严格
+      // 单调：DB 优先级越高 → 数值越小（越先出队）。
+      const order: number[] = [];
+      for (const priority of [
+        TaskPriority.LOW,
+        TaskPriority.NORMAL,
+        TaskPriority.HIGH,
+        TaskPriority.CRITICAL,
+      ]) {
+        const task = makeTask({ priority });
+        setupHappyPath(task);
+        await service.enqueue(task, "cron");
+        order.push(
+          queue.add.mock.calls[queue.add.mock.calls.length - 1][2].priority,
+        );
+      }
+      expect(order).toEqual([4, 3, 2, 1]);
     });
   });
 
@@ -2208,12 +2349,34 @@ describe("SchedulerService", () => {
       ).toBe(59_500);
     });
 
-    it("fixed_rate 1s: buffer would dip below the floor → MIN_TTL applies", () => {
+    it("fixed_rate 1s: FIX-2.3 短周期档 → clamp(period×0.5, 200, MIN_TTL) = 500ms", () => {
+      // FIX-2.3：短周期（≤1.5s）下「周期 - 500ms 抖动缓冲」会被 MIN_TTL=1000ms
+      // 下限抵消（TTL==周期 → 相位陷阱回归）。改为按周期比例缩窗：1s 档
+      // TTL=500ms，严格小于周期，下一 tick 前锁必已过期。窗口缩短不引入重复
+      // 触发：定时器只注册在 Leader 上（同周期仅一次 tick），去重锁只需覆盖
+      // 同一次 tick 的跨实例重放（亚秒级），500ms 足够。
       const ttl = computeTriggerDedupTtlMs(
         makeTask({ triggerType: TaskTriggerType.FIXED_RATE, fixedRate: 1 }),
       );
-      expect(ttl).toBe(TRIGGER_DEDUP_MIN_TTL_MS);
+      expect(ttl).toBe(500);
+      expect(ttl).toBeLessThan(1_000); // 严格小于周期（相位安全）
       expect(TRIGGER_DEDUP_JITTER_BUFFER_MS).toBeGreaterThan(0);
+    });
+
+    it("fixed_rate 1.5s 短周期档边界 → 750ms（clamp 不触上下限）", () => {
+      expect(
+        computeTriggerDedupTtlMs(
+          makeTask({ triggerType: TaskTriggerType.FIXED_RATE, fixedRate: 1.5 }),
+        ),
+      ).toBe(750);
+    });
+
+    it("fixed_rate 2s（短周期档上界之外）→ 周期 - 抖动缓冲 = 1500ms", () => {
+      expect(
+        computeTriggerDedupTtlMs(
+          makeTask({ triggerType: TaskTriggerType.FIXED_RATE, fixedRate: 2 }),
+        ),
+      ).toBe(1_500);
     });
 
     it("cron → MIN_TTL lower bound", () => {

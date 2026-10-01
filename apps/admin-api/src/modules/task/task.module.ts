@@ -21,6 +21,12 @@ import { ExecutionReport } from "../metrics/entities/execution-report.entity";
 import { Project } from "../project/project.entity";
 import { LogRetentionCleanupService } from "./log-retention/log-retention-cleanup.service"; // Stream D/DB-002
 import { S3LogObjectRetentionService } from "./log-retention/s3-log-object-retention.service"; // WIKI-LOG-S3GC
+// FIX-4.2: webhook 同步等待的终态唤醒（Redis pub/sub，发布侧 task.service/
+// task.processor，订阅侧 task-webhook.service；轮询兜底仍保留）。
+import { ExecutionWakeService } from "./execution-wake.service";
+// FIX-3.1: 超时预警的每执行至多一次 SETNX 闸（TaskService 消费；与
+// scheduler.module 各自提供独立实例——RedisLockService 无共享状态）。
+import { RedisLockService } from "../../common/services/redis-lock.service";
 import { ExecutorModule } from "../executor/executor.module";
 import { AiModule } from "../ai/ai.module";
 import { NotificationModule } from "../notification/notification.module";
@@ -74,6 +80,10 @@ import { SecretsCryptoService } from "../../common/utils/secret-crypto.util.serv
     // N32: callback 401 分类计数（controller 埋点，MetricsModule 的
     // Prometheus 抓取端读取快照——单一实例经 exports 共享）。
     ExecutionCallbackMetricsService,
+    // FIX-4.2: 终态唤醒通道（webhook wait 事件化）。
+    ExecutionWakeService,
+    // FIX-3.1: 超时预警 SETNX 闸（TaskService 注入）。
+    RedisLockService,
   ],
   exports: [TaskService, ExecutionCallbackMetricsService, SecretsCryptoService],
 })

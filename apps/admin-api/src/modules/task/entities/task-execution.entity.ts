@@ -182,6 +182,15 @@ export interface ExecutionArtifact {
   ["executorAddress", "mutexGroupId"],
   { where: '"status" = \'running\' AND "mutexGroupId" IS NOT NULL' },
 )
+// A4（迁移 1790000000049）：执行历史确定性排序 (taskId, createdAt DESC, id
+// DESC)——createdAt 打平（批量触发/扇出常态）时以 id 作稳定 tiebreaker。
+// 注意：TypeORM IndexOptions 不支持列序声明，DESC/DESC 只落在迁移 DDL 里
+// （同 1790000000022 先例：实体声明记录列集，方向以迁移为准）。
+@Index("idx_task_executions_task_id_created_at_id", [
+  "taskId",
+  "createdAt",
+  "id",
+])
 export class TaskExecution {
   @PrimaryGeneratedColumn("uuid") id: string;
   @Column() taskId: string;

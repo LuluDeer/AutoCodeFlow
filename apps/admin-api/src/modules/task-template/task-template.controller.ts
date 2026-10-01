@@ -127,8 +127,12 @@ export class TaskTemplateController {
   instantiate(
     @Param("id", ParseUUIDPipe) id: string,
     @Body() body: Record<string, unknown>,
+    // 第二轮审计（A1）：实例化此前不注入请求方，TaskService.create 拿不到
+    // user → 落库 ownerUserId 恒 null，非 ADMIN 创建者对自己建的任务写面 403
+    // （assertCanWrite 对 NULL 属主仅放行 ADMIN）。与同文件 create 端点同款。
+    @CurrentUser() user: AuthUser,
   ) {
-    return this.svc.instantiate(id, body ?? {});
+    return this.svc.instantiate(id, body ?? {}, user);
   }
 
   @WriteGuard("task-template", { scope: "authenticated" })
