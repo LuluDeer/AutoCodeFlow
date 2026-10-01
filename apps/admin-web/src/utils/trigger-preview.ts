@@ -260,19 +260,46 @@ export function previewNeedsTimezoneWarning(timezone?: string | null): boolean {
 }
 
 /**
- * fixed_rate 预览：每 intervalSeconds 秒一次，下次触发=now+interval 链。
- * interval 非法（<1 或非有限数）返回 []。
+ * fixed_rate 预览：每 intervalSeconds 秒一次。
+ *
+ * FIX-FIXEDRATE-PREVIEW：真实调度按 **lastTriggerTime + k·interval** 的等差链
+ * 触发（锚点是上一次触发时刻），而不是「打开页面的此刻」。旧实现以 now 为锚
+ * （now + i·interval），每次打开预览都显示一串"整齐的"未来时刻，但与任务真实
+ * 相位无关——用户对着预览等触发，时刻永远对不上。因此：
+ *  - 传入 lastTriggerTime（任务详情/列表场景可得）时，按锚点链推算，跳过
+ *    已经过去的节拍（取严格晚于 now 的前 count 个）；
+ *  - 未传（新建表单预览——任务尚无历史触发）才退回 now 锚链，并在 UI 注明
+ *    「以下为按当前时刻的估算」。
+ * interval 非法（<1 或非有限数）返回 []；lastTriggerTime 非法/缺省按未传处理。
  */
 export function nextFixedRateFireTimes(
   intervalSeconds: number,
   count: number,
   now: Date = new Date(),
+  lastTriggerTime?: Date | string | number | null,
 ): Date[] {
   const s = Number(intervalSeconds);
   if (!Number.isFinite(s) || s < 1) return [];
+  const nowMs = now.getTime();
+  const intervalMs = s * 1000;
+
+  const anchor = lastTriggerTime != null ? new Date(lastTriggerTime).getTime() : NaN;
+  if (Number.isFinite(anchor)) {
+    // 锚点链：第 k 拍 = anchor + k·interval。取严格晚于 now 的前 count 拍；
+    // k 从 1 起（anchor 本身是"上次已触发"，不是下次）。
+    let k = Math.floor((nowMs - anchor) / intervalMs) + 1;
+    if (k < 1) k = 1;
+    const out: Date[] = [];
+    for (let i = 0; i < count; i++) {
+      out.push(new Date(anchor + intervalMs * (k + i)));
+    }
+    return out;
+  }
+
+  // 未传锚点（新建表单预览）：退回 now 锚链（旧行为，UI 需注明是估算）。
   const out: Date[] = [];
   for (let i = 1; i <= count; i++) {
-    out.push(new Date(now.getTime() + s * 1000 * i));
+    out.push(new Date(nowMs + intervalMs * i));
   }
   return out;
 }
@@ -297,6 +324,7 @@ export function nextRunAt(
     cronExpression?: string | null;
     fixedRate?: number | null;
     timezone?: string | null;
+    lastTriggerTime?: string | Date | null;
   },
   now: Date = new Date(),
 ): Date | null {
@@ -308,7 +336,9 @@ export function nextRunAt(
     return next ?? null;
   }
   if (task.triggerType === 'fixed_rate' && task.fixedRate) {
-    const [next] = nextFixedRateFireTimes(task.fixedRate, 1, now);
+    // FIX-FIXEDRATE-PREVIEW：真实相位锚在 lastTriggerTime（上一次触发时刻），
+    // 而非「此刻」——否则列表里的下次执行时刻永远对不上实际触发。
+    const [next] = nextFixedRateFireTimes(task.fixedRate, 1, now, task.lastTriggerTime);
     return next ?? null;
   }
   // manual / 依赖触发：没有可预测的下次时刻——返回 null 而不是编一个

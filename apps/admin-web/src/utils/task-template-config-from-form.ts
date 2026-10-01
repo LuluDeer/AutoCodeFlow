@@ -100,5 +100,13 @@ export function templateConfigFromFormValues(
   }
   put('runbook', values.runbook);
   if (typeof out.runbook === 'string' && out.runbook.length === 0) delete out.runbook;
+  // FIX-PREFILL-SYMMETRY：维护窗口随模板固化（FEAT-06，CreateTaskDto 已声明
+  // maintenanceWindows 且以 CreateTaskDto 语义复验——task-template-extract.ts
+  // 早期"调度侧窗口非任务形态"的排除注释对表单通路不再成立：表单通路就是
+  // 按任务形态存取的）。空数组归一为省略；行对象浅拷贝防共享引用。
+  const windows = values.maintenanceWindows;
+  if (Array.isArray(windows) && windows.length > 0) {
+    out.maintenanceWindows = (windows as Record<string, unknown>[]).map((w) => ({ ...w }));
+  }
   return out;
 }

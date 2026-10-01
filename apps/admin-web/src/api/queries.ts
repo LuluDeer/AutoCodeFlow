@@ -19,7 +19,7 @@
  */
 import { useQuery, type UseQueryResult, type QueryClient } from '@tanstack/react-query';
 import { metricsApi, type MetricsSummary, type DailyTrend } from './metrics';
-import { tasksApi, type Task, type TaskExecution, type PageResult } from './tasks';
+import { tasksApi, type Task, type TaskExecution, type TaskStats, type PageResult } from './tasks';
 import { executorsApi, type Executor, type ExecutorExecution, type ExecutorMetrics, type ExecutorRuntimeConfig } from './executors';
 import { artifactsApi, type ExecutionArtifact } from './artifacts';
 import { type ExecutionReportPayload, executionReportsApi } from './execution-reports';
@@ -232,13 +232,9 @@ export function useTaskDetail(id: string | undefined): UseQueryResult<Task> {
 }
 
 /** GET /tasks/:id/stats 任务统计卡（TaskDetailPage 60s 轮询语义由
- * refetchInterval 承担，SSE/写后 invalidate 优先）。 */
-export function useTaskStats(id: string | undefined): UseQueryResult<{
-  recentExecutions: TaskExecution[];
-  successRate: number;
-  avgDuration: number;
-  totalRuns: number;
-}> {
+ * refetchInterval 承担，SSE/写后 invalidate 优先）。形状 = TaskStats
+ * （FIX-5.1 统计口径收口：successRate/succeeded/failed 全量口径）。 */
+export function useTaskStats(id: string | undefined): UseQueryResult<TaskStats> {
   return useQuery({
     queryKey: queryKeys.tasks.stats(id ?? ''),
     queryFn: ({ signal }) => tasksApi.stats(id!, signal),
