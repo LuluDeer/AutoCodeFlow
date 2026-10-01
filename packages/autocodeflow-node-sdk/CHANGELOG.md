@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.0](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.5.3...v1.6.0) (2026-10-01)
+
+
+### Documentation
+
+* **sdk:** lockstep 组同步说明 ([a8b9348](https://github.com/LuluDeer/AutoCodeFlow/commit/a8b934887a048cde1160be82e9cd436cc42fbb6c))
+
 ## [1.5.3](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.5.2...v1.5.3) (2026-09-29)
 
 

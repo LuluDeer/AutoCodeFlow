@@ -2,6 +2,13 @@
 
 所有对外可见的变更记录在本文件。格式参照 Keep a Changelog；版本遵循语义化版本。
 
+## [0.2.1](https://github.com/LuluDeer/AutoCodeFlow/compare/v0.2.0...v0.2.1) (2026-10-01)
+
+
+### Bug Fixes
+
+* **db:** 收窄连接池默认值为 pool_size=2/overflow=0（深审 D1-P2-6） ([37fff76](https://github.com/LuluDeer/AutoCodeFlow/commit/37fff763349c8a8f02777edaedeeb299349ba90e))
+
 ## [0.2.0] - 2026-10-01
 
 ### 说明

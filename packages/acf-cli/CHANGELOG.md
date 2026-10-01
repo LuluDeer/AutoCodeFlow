@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.0](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.5.3...v1.6.0) (2026-10-01)
+
+
+### Features
+
+* **mcp-server,acf-cli:** SOP/Agent 工具面(sop_list/get/assignments_pending、agent_session_list/get、clarification_reply)+get_execution 剥离全量日志+z.enum 收紧+CLI sop/agent 命令与四条 --json 补面 ([ba74462](https://github.com/LuluDeer/AutoCodeFlow/commit/ba7446266b0bde70c2524188bce341483e90095f))
+
 ## [1.5.3](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.5.2...v1.5.3) (2026-09-29)
 
 
