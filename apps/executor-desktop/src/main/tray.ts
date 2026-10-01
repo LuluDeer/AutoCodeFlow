@@ -2,7 +2,7 @@ import { Tray, Menu, nativeImage, app } from 'electron';
 import * as path from 'path';
 import { ExecutorStatus } from './executor-process';
 import { agentActivityLabel, agentOutcomeLabel, type AgentStatusSnapshot } from './agent-status-view';
-import { TRAY_TEXTS, resolveTrayLocale, traySupportsClick, type TrayTexts } from './tray-texts';
+import { TRAY_TEXTS, resolveTrayLocale, traySupportsClick, type TrayLocale, type TrayTexts } from './tray-texts';
 import log from './logger';
 
 export class TrayManager {
@@ -27,9 +27,14 @@ export class TrayManager {
   onToggleAutoLaunch: ((enable: boolean) => Promise<void>) | null = null;
   getAutoLaunch: (() => boolean) | null = null;
 
-  /** 当前 locale 对应的文案表（B-7②：en* 英文，其余中文；重建菜单时实时取）。 */
-  private texts(): TrayTexts {
-    return TRAY_TEXTS[resolveTrayLocale(() => app.getLocale())];
+  /** 当前 locale（B-7②：en* 英文，其余中文；重建菜单时实时取）。 */
+  private locale(): TrayLocale {
+    return resolveTrayLocale(() => app.getLocale());
+  }
+
+  /** 当前 locale 对应的文案表（同一轮渲染共用一个 locale，杜绝混语）。 */
+  private texts(locale: TrayLocale = this.locale()): TrayTexts {
+    return TRAY_TEXTS[locale];
   }
 
   init(): void {
@@ -71,14 +76,18 @@ export class TrayManager {
   }
 
   private updateTooltip(): void {
-    const t = this.texts();
+    // NETOPT-DEBT：locale 一次判定全行共用——Agent 活动标签与 tooltip 其余段
+    // 必须同语言（双语收尾：agent-status-view 标签已入 tray-texts 双语表）。
+    const locale = this.locale();
+    const t = this.texts(locale);
     this.tray?.setToolTip(
-      `${t.tooltip[this.currentStatus]}${t.agentSuffix(agentActivityLabel(this.agentStatus))}`,
+      `${t.tooltip[this.currentStatus]}${t.agentSuffix(agentActivityLabel(this.agentStatus, locale))}`,
     );
   }
 
   rebuildMenu(): void {
-    const t = this.texts();
+    const locale = this.locale();
+    const t = this.texts(locale);
     const status = this.currentStatus;
     const isActive = status === 'online' || status === 'pending';
     const autoLaunchEnabled = this.getAutoLaunch?.() ?? false;
@@ -94,11 +103,11 @@ export class TrayManager {
             separator,
           ]),
       { label: `${t.statusPrefix}: ${t.statusLabel[status]}`, enabled: false },
-      { label: t.agentLine(agentActivityLabel(this.agentStatus)), enabled: false },
+      { label: t.agentLine(agentActivityLabel(this.agentStatus, locale)), enabled: false },
       {
         label: t.agentProcessedLine(
           this.agentStatus.processed,
-          agentOutcomeLabel(this.agentStatus.lastOutcome),
+          agentOutcomeLabel(this.agentStatus.lastOutcome, locale),
         ),
         enabled: false,
       },

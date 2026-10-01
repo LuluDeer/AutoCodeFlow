@@ -1113,11 +1113,13 @@ jobs:
         env:
           VITE_API_URL: http://localhost:3105
 
-  # ── 根级 43 例 Playwright e2e（全链真环境）──────────────────
+  # ── legacy 三份 Playwright e2e（全链真环境）──────────────────
   # admin-api(3105) + executor-node(8002 注册在线) + admin-web vite(5176)
-  # + 空库迁移链，跑根级 e2e-full.spec.js（登录/任务向导/pinned 全链/RBAC/
-  # 并发/中断/指标等 29 例 + 安全红线 14 例：SSRF 六出站点/RBAC 全端点/
-  # DEP-04 审批第二人规则）。编排收敛在 scripts/e2e-full.sh（CI 与本地
+  # + 空库迁移链，跑 apps/admin-web/e2e/legacy/ 三份 spec（e2e-full.spec.js：
+  # 登录/任务向导/pinned 全链/RBAC/并发/中断/指标等 29 例 + 安全红线 14 例：
+  # SSRF 六出站点/RBAC 全端点/DEP-04 审批第二人规则；NETOPT-DEBT 收编自仓库根，
+  # 由根级 playwright.e2e.config.js 精确圈定 legacy/ 目录，与 admin-web 权威
+  # e2e 套件互斥）。编排收敛在 scripts/e2e-full.sh（CI 与本地
   # 同一入口）；PG/Redis 由 services 提供后走 SKIP_DOCKER=1 分支复用。
   # 防抖要点（详见脚本头注）：每次全新库消除种子残留、登录/全局节流放大
   # 防级联 429（W-22 同根）、回调密钥两端显式同值、执行器注册 online 显式等待。

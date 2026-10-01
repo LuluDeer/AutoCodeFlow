@@ -68,6 +68,23 @@ function main(): void {
   assert.equal(zh.agentProcessedLine(3, '成功'), 'Agent 已处理 3 个指派；最近结果：成功');
   assert.equal(en.agentProcessedLine(3, 'ok'), 'Agent processed 3 assignments; last outcome: ok');
 
+  // ── NETOPT-DEBT 双语收尾：Agent 活动/结果标签入表（消费方 agent-status-view）──
+  // 键位对齐已由上方通用循环覆盖（agentActivity / agentOutcomes 是 Record 型字段），
+  // 这里钉住具体值，防止改值时把收尾前的中文残留回去。
+  assert.equal(zh.agentActivity.working, '正在处理指派');
+  assert.equal(zh.agentActivity.workingAfterStop, '正在处理当前指派（已停止接新单）');
+  assert.equal(zh.agentActivity.disabled, '未启用');
+  assert.equal(zh.agentActivity.awaitingConfig, '已启用，等待完成连接配置');
+  assert.equal(zh.agentActivity.polling, '已启用，正在轮询指派');
+  assert.equal(zh.agentOutcomes.none, '暂无');
+  assert.equal(zh.agentOutcomes.delivered, '候选应用已交付');
+  assert.equal(en.agentActivity.working, 'Working on an assignment');
+  assert.equal(en.agentActivity.disabled, 'Not enabled');
+  assert.equal(en.agentActivity.polling, 'Enabled, polling for assignments');
+  assert.equal(en.agentOutcomes.none, 'None yet');
+  assert.equal(en.agentOutcomes.delivered, 'Candidate app delivered');
+  assert.equal(en.agentOutcomes.permission_denied, 'Permission denied');
+
   console.log('tray-texts selftest: all assertions passed (bilingual table + locale/click rules)');
 }
 
