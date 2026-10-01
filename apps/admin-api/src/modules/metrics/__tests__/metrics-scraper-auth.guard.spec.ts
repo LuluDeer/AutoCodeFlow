@@ -28,6 +28,10 @@ const callsOf = (jwt: JwtAuthGuard) => (jwt.canActivate as unknown as jest.Mock)
 const makeConfig = (token?: string) =>
   ({ get: (key: string) => (key === "metricsScraperToken" ? token : undefined) }) as unknown as ConfigService;
 
+// 生产配置形状：值嵌在 database 节下（configuration.ts database.metricsScraperToken）。
+const makeNestedConfig = (token?: string) =>
+  ({ get: (key: string) => (key === "database.metricsScraperToken" ? token : undefined) }) as unknown as ConfigService;
+
 describe("MetricsScraperAuthGuard", () => {
   it("未设置 METRICS_SCRAPER_TOKEN → 全部落 JWT(行为与改造前一致)", async () => {
     const jwt = makeJwt(true);
@@ -92,3 +96,16 @@ describe("MetricsScraperAuthGuard", () => {
     expect(callsOf(jwt).calls.length).toBeGreaterThan(0);
   });
 });
+
+  it("生产配置形状(database.metricsScraperToken 嵌套)→ 命中放行(2026-10-01 chaos 实跑回归)", async () => {
+    const jwt = makeJwt(false);
+    const guard = new MetricsScraperAuthGuard(
+      new Reflector(),
+      makeNestedConfig("scraper-secret"),
+      jwt,
+    );
+    await expect(
+      guard.canActivate(makeCtx("Bearer scraper-secret") as never as ExecutionContext),
+    ).resolves.toBe(true);
+    expect(callsOf(jwt).calls.length).toBe(0);
+  });

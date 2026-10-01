@@ -418,3 +418,25 @@ turbo 同一任务集。**Windows 本机数据，CI 数据待 Linux 侧。**
 **未交付（如实）**：turbo 未进根 devDependencies（A.1 #3 实证与判据④互斥）；
 根 lockfile 保持 256B stub；CI 阻塞链路未使用 turbo（无收益，§6.3）；
 A/B 为 Windows 本机数据，**Linux/CI 侧复测待后续任务**。
+
+### A.6 Linux 侧复测（2026-10-01，交接任务③回填）
+
+Linux 本机（MS-7E44 / Ubuntu 24.04 / node v24.21.0 / npm 11.19.0，chaos 演练栈同机后台运行中，
+数据取两次中位；口径与 A.4 对齐——串行 = `npm run typecheck:all`，turbo = 显式任务清单
+`run typecheck:api … typecheck:web --no-daemon`）：
+
+| 方案 | Linux 本机 | 对比 Windows（A.4） |
+|---|---|---|
+| A：npm 串行 `typecheck:all` | 15.43s / 15.39s（中位 **15.4s**） | 54.6s |
+| B：turbo 并行 `--force --no-daemon` | **11.8s**（7/7 successful，0 cached） | 48.5s（−11.2%） |
+| B 相对 A | **−23.7%**（Win 侧 −11.2%，并行收益放大） | — |
+| B：turbo 热缓存 | 1.27s / 1.24s（7/7 cached，**−91.9%**） | 缓存命中 −68% |
+
+**运维发现（如实）**：turbo 2.11.6 的 `run` 不接受 `typecheck:*` 通配任务名
+（`Could not find task 'typecheck:*'`，exit 非 0）——并行跑必须显式列出 7 个任务名；
+`--no-daemon` 在 2.11.6 已是 deprecated no-op（daemon 在 3.0 移除，当前版本不再使用），
+按 Win 侧任务书要求保留该 flag 无副作用。冷/热缓存均 7/7 成功，无 OOM、无单包失败。
+
+**结论**：弱形态 turbo 在 Linux 侧收益成立且大于 Windows 侧（核越多并行收益越大），
+缓存收益（热跑 −91.9%）显著；与 §6.3 结论一致——CI 阻塞链路仍不接入（无收益），
+本机重复 lint/typecheck/build 场景收益真实。
