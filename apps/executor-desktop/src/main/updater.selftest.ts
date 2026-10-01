@@ -191,6 +191,26 @@ function main(): void {
     'D2-P2-4: updater.ts lost the http: generic-feed rejection branch',
   );
 
+  // ── 审计二轮 B-7①: 周期自检（结构守卫）────────────────────────
+  // updater.ts 拉不起 electron，行为锁放在 updater-runcheck.selftest.ts 的
+  // createPeriodicCheck 状态机用例；这里守卫接线本身不被静默拆除：
+  //   · 6h 周期常量存在；
+  //   · initUpdater 用周期调度器启动（首轮 delay + interval 重挂）；
+  //   · 旧「启动 30s 检查一次」的一次性 setTimeout 接线已移除。
+  assert.ok(
+    source.includes('UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000'),
+    'B-7①: updater.ts lost the 6h UPDATE_CHECK_INTERVAL_MS constant',
+  );
+  assert.ok(
+    source.includes('createPeriodicCheck') &&
+      source.includes('periodicCheck.start(UPDATE_CHECK_DELAY_MS, UPDATE_CHECK_INTERVAL_MS)'),
+    'B-7①: updater.ts must start the periodic check (delay + interval re-arm)',
+  );
+  assert.ok(
+    !source.includes('checkTimer = setTimeout'),
+    'B-7①: one-shot checkTimer wiring must stay removed',
+  );
+
   console.log('updater selftest: all assertions passed (pure segment in sync)');
 }
 

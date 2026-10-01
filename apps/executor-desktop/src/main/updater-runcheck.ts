@@ -104,3 +104,72 @@ export function createRunCheck(doCheck: () => Promise<void>): UpdaterCheckState 
     },
   };
 }
+
+/**
+ * 审计二轮 B-7①：周期检查调度器。
+ *
+ * 旧行为是 initUpdater 挂一个「启动 30s 后检查一次」的一次性 timer——之后
+ * updater 永不再自检，除非用户手动点检查。这里把「检查完成后重挂下一轮」的
+ * 调度抽成无 electron 依赖的纯状态机（同 createRunCheck 的可测性理由）：
+ *  - start(initialDelayMs, intervalMs)：首轮延迟 initialDelayMs，之后**每轮
+ *    检查完成（成功或失败）后**再挂 intervalMs——检查在飞时不叠加新 timer，
+ *    一轮结束后才排下一轮；
+ *  - run 与手动检查共用 runCheck 状态机（background 分支）：用户检查在飞时
+ *    本调度复用其 in-flight promise（不并发、不覆盖归因），等它结束后才重挂；
+ *  - run 的失败不终止周期（.catch 吞掉，调度只负责重挂）——离线/私服 404 是
+ *    常态噪音，不能让一次网络故障把自动更新静默打死；
+ *  - stop() 取消挂起的 timer（已进行中的检查不受影响）。
+ */
+export interface PeriodicCheck {
+  start(initialDelayMs: number, intervalMs: number): void;
+  stop(): void;
+}
+
+export function createPeriodicCheck(opts: {
+  /** 单次检查执行体（生产为 runCheck(false)，selftest 注入 fake）。 */
+  run: () => Promise<void>;
+  /** 定时器注入面（生产 setTimeout，selftest 用受控时钟）。 */
+  schedule: (fn: () => void, delayMs: number) => unknown;
+  /** 取消注入面（生产 clearTimeout）。 */
+  cancel: (handle: unknown) => void;
+}): PeriodicCheck {
+  let handle: unknown = null;
+  let intervalMs = 0;
+  let ticking = false;
+
+  const arm = (delayMs: number): void => {
+    if (handle !== null) {
+      opts.cancel(handle);
+      handle = null;
+    }
+    handle = opts.schedule(tick, delayMs);
+  };
+
+  const tick = (): void => {
+    handle = null;
+    if (ticking) return; // 理论不可达（在飞时不挂新 timer）——防御性兜底
+    ticking = true;
+    void opts
+      .run()
+      .catch(() => undefined)
+      .then(() => {
+        ticking = false;
+        // 检查完成后重挂（成功/失败同权）；stop() 之后 intervalMs 归零即停。
+        if (intervalMs > 0) arm(intervalMs);
+      });
+  };
+
+  return {
+    start(initialDelayMs, interval) {
+      intervalMs = interval;
+      arm(initialDelayMs);
+    },
+    stop() {
+      intervalMs = 0;
+      if (handle !== null) {
+        opts.cancel(handle);
+        handle = null;
+      }
+    },
+  };
+}

@@ -6,7 +6,7 @@
  * Run via: npm run test:main
  */
 import * as assert from 'node:assert';
-import { createRunCheck } from './updater-runcheck';
+import { createRunCheck, createPeriodicCheck } from './updater-runcheck';
 
 /** 可手动 resolve 的 fake 检查器（模拟 autoUpdater.checkForUpdates）。 */
 function makeFake() {
@@ -117,7 +117,69 @@ async function main(): Promise<void> {
     assert.equal(state.surfaceError, false, 'user check done → surface reset');
   }
 
-  console.log('updater-runcheck selftest: all assertions passed (state machine)');
+  // ── 5) 审计二轮 B-7①：周期调度器——检查完成后重挂，失败不终止周期 ──
+  {
+    const fake = makeFake();
+    const state = createRunCheck(() => fake.checkForUpdates());
+    // 受控时钟：记录 (fn, delay)，由测试手动触发
+    let timerFn: (() => void) | null = null;
+    let timerDelay = -1;
+    let cancelled = 0;
+    const periodic = createPeriodicCheck({
+      run: () => state.background(),
+      schedule: (fn, delayMs) => {
+        timerFn = fn;
+        timerDelay = delayMs;
+        return { id: 1 };
+      },
+      cancel: () => {
+        cancelled++;
+        timerFn = null;
+      },
+    });
+
+    periodic.start(30_000, 6 * 60 * 60 * 1000);
+    assert.equal(timerDelay, 30_000, 'first arm uses the initial delay');
+
+    // 触发首轮 tick：run 发起（1 次检查），完成后才重挂周期 timer
+    timerFn!();
+    assert.equal(fake.calls.length, 1, 'tick must run the check exactly once');
+    assert.equal(timerDelay, 30_000, 're-arm must not happen while the check is in flight');
+
+    fake.finish();
+    await tick();
+    await tick();
+    assert.equal(timerDelay, 6 * 60 * 60 * 1000, 're-arm uses the interval after the check completes');
+
+    // 检查失败（fake 直接 reject）：周期必须存活，仍要重挂
+    let released: (() => void) | null = null;
+    const failOnce = createPeriodicCheck({
+      run: () => new Promise<void>((_, reject) => {
+        released = () => reject(new Error('offline'));
+      }),
+      schedule: (fn, delayMs) => {
+        timerFn = fn;
+        timerDelay = delayMs;
+        return {};
+      },
+      cancel: () => {
+        timerFn = null;
+      },
+    });
+    failOnce.start(1, 60_000);
+    timerFn!();
+    released!();
+    await tick();
+    await tick();
+    assert.equal(timerDelay, 60_000, 'a failed check must not kill the periodic re-arm');
+
+    // stop()：取消挂起的 timer，之后不再重挂
+    periodic.stop();
+    assert.equal(cancelled, 1, 'stop must cancel the pending timer');
+    assert.equal(timerFn, null, 'stop must clear the pending tick');
+  }
+
+  console.log('updater-runcheck selftest: all assertions passed (state machine + periodic scheduler)');
 }
 
 void main();
