@@ -505,3 +505,102 @@ def test_lifespan_starts_and_stops_disk_cleanup(monkeypatch, work_root):
         asyncio.run(scenario())
     finally:
         execute_module.unregister_live_execution('exec-provider-check')
+
+
+# ---------------------------------------------------------------------------
+# A5（第四轮审计）：uv 下载缓存条目级治理（TTL + 可选体积上限 + live guard）
+# ---------------------------------------------------------------------------
+
+def test_cleanup_reclaims_stale_uv_cache_entries(work_root, monkeypatch, caplog):
+    """`.uv-cache` 按条目（命名空间下的 per-hash 子目录）粒度回收：过期条目
+    删除、新鲜条目保留，条目数计入 caches 桶，回收量落日志。"""
+    import logging
+
+    import maintenance
+
+    monkeypatch.setattr(settings, 'uv_cache_ttl_days', 7)
+    monkeypatch.setattr(settings, 'uv_cache_max_mb', 0)
+
+    stale = work_root / '.venvs' / '.uv-cache' / 'wheels-v4' / 'hash-old'
+    stale.mkdir(parents=True)
+    (stale / 'wheel.whl').write_text('w')
+    _age(stale)
+    fresh = work_root / '.venvs' / '.uv-cache' / 'wheels-v4' / 'hash-new'
+    fresh.mkdir(parents=True)
+
+    with caplog.at_level(logging.WARNING, logger='maintenance'):
+        counts = maintenance.cleanup_work_dir(ttl_days=7)
+
+    assert not stale.exists()
+    assert fresh.exists()
+    assert counts['caches'] == 1
+    assert any('uv cache governance reclaimed' in r.message for r in caplog.records)
+
+
+def test_cleanup_uv_cache_ttl_disabled_is_noop(work_root, monkeypatch):
+    """ttl=0 且 max_mb=0 → 双闸关闭，.uv-cache 原样保留（显式关闭治理面）。"""
+    import maintenance
+
+    monkeypatch.setattr(settings, 'uv_cache_ttl_days', 0)
+    monkeypatch.setattr(settings, 'uv_cache_max_mb', 0)
+
+    stale = work_root / '.venvs' / '.uv-cache' / 'wheels-v4' / 'hash-old'
+    stale.mkdir(parents=True)
+    _age(stale)
+
+    counts = maintenance.cleanup_work_dir(ttl_days=7)
+
+    assert stale.exists()
+    assert counts['caches'] == 0
+
+
+def test_cleanup_uv_cache_size_cap_reclaims_lru(work_root, monkeypatch):
+    """体积上限：超限时按条目 mtime 升序回收直到落回（TTL 关闭只验体积闸）。"""
+    import maintenance
+
+    monkeypatch.setattr(settings, 'uv_cache_ttl_days', 0)
+    monkeypatch.setattr(settings, 'uv_cache_max_mb', 1)  # 上限 1MB
+
+    cache = work_root / '.venvs' / '.uv-cache' / 'wheels-v4'
+    oldest = cache / 'hash-oldest'
+    oldest.mkdir(parents=True)
+    (oldest / 'w.whl').write_bytes(b'a' * (2 * 1024 * 1024))  # 2MB > 1MB
+    _age(oldest, days=2)
+    newest = cache / 'hash-newest'
+    newest.mkdir(parents=True)
+    (newest / 'w.whl').write_bytes(b'b' * (2 * 1024 * 1024))  # 2MB
+    _age(newest, days=0)
+
+    counts = maintenance.cleanup_work_dir(ttl_days=7)
+
+    assert not oldest.exists(), '最久未使用条目必须先被回收'
+    assert not newest.exists(), '总量仍超上限 → 新条目也被回收'
+    assert counts['caches'] == 2
+
+
+def test_cleanup_uv_cache_skipped_while_live_venv_task(work_root, monkeypatch):
+    """活跃 venv 任务可能在装依赖——live guard 期间整轮跳过 .uv-cache 治理。"""
+    import maintenance
+    from routers import execute as execute_module
+
+    monkeypatch.setattr(settings, 'uv_cache_ttl_days', 7)
+
+    stale = work_root / '.venvs' / '.uv-cache' / 'wheels-v4' / 'hash-old'
+    stale.mkdir(parents=True)
+    _age(stale)
+
+    venv_dir = work_root / '.venvs' / 'task-live'
+    venv_dir.mkdir(parents=True)
+    _age(venv_dir, days=30)
+
+    entry = execute_module.register_live_execution('exec-uv-live')
+    entry.task_id = 'task-live'
+    try:
+        maintenance.cleanup_work_dir(ttl_days=7)
+        assert stale.exists(), 'live venv 任务在装依赖时不得回收 uv 缓存'
+    finally:
+        execute_module.unregister_live_execution('exec-uv-live')
+
+    # 活跃任务结束后，下一轮清扫正常回收
+    maintenance.cleanup_work_dir(ttl_days=7)
+    assert not stale.exists()

@@ -620,6 +620,88 @@ def enforce_interpreter_pool_limits() -> dict:
     return counts
 
 
+def _reclaim_uv_cache(uv_cache_dir: Path) -> dict:
+    """A5（第四轮审计）：共享 uv 下载缓存的**条目级**治理（TTL + 可选体积上限）。
+
+    布局适配：`.uv-cache` 顶层是 uv 的命名空间目录（`wheels-v4/`、
+    `archive-v0/`、`sdists-v9/`…），任何写入都会刷新顶层自身 mtime——按顶层
+    判 TTL 永远打不中（旧实现的缺陷）。这里**一层展开**，真正的回收粒度是
+    命名空间下的 per-hash 子目录/文件；顶层普通文件同样入表。
+
+    闸门（均来自 settings，env 可调）：
+      * TTL：条目 mtime 超 ``uv_cache_ttl_days``（默认 30d；0=关闭）→ 回收；
+      * 体积：总量超 ``uv_cache_max_mb``（默认 0=不设）→ 按条目 mtime 升序
+        回收直到落回上限（与池红线的 LRU 语义一致）。
+
+    uv 对缺失条目自动重新下载，回收安全；调用方（cleanup_work_dir）保证活跃
+    venv 任务安装期间整轮跳过（live guard）。清理量（条目数 + 字节数）落日志。
+
+    返回 ``{'reclaimedEntries': int, 'reclaimedBytes': int}``（counts 形状
+    契约保持字节稳定——条目数并入 'caches' 桶，字节数走日志）。"""
+    result = {'reclaimedEntries': 0, 'reclaimedBytes': 0}
+    if not uv_cache_dir.is_dir():
+        return result
+    ttl_days = int(getattr(settings, 'uv_cache_ttl_days', 30) or 0)
+    max_bytes = max(0, int(getattr(settings, 'uv_cache_max_mb', 0) or 0)) * 1024 * 1024
+    if ttl_days <= 0 and max_bytes <= 0:
+        return result  # 双闸均关闭
+    cutoff = time.time() - ttl_days * 24 * 60 * 60
+
+    items: list[tuple[Path, int, float]] = []
+    try:
+        top_entries = list(uv_cache_dir.iterdir())
+    except OSError:
+        return result
+    for top in top_entries:
+        if top.is_dir():
+            try:
+                children = list(top.iterdir())
+            except OSError:
+                continue  # raced / unreadable — skip this namespace
+            for child in children:
+                try:
+                    st = child.stat()
+                except OSError:
+                    continue
+                size = _dir_size_bytes(child) if child.is_dir() else st.st_size
+                items.append((child, size, st.st_mtime))
+        else:
+            try:
+                st = top.stat()
+            except OSError:
+                continue
+            items.append((top, st.st_size, st.st_mtime))
+
+    total = sum(size for _p, size, _m in items)
+    survivors: list[tuple[Path, int, float]] = []
+    for path, size, mtime in items:
+        if ttl_days > 0 and mtime < cutoff:
+            if _remove_path(path):
+                result['reclaimedEntries'] += 1
+                result['reclaimedBytes'] += size
+                total = max(0, total - size)
+        else:
+            survivors.append((path, size, mtime))
+
+    if max_bytes > 0 and total > max_bytes:
+        for path, size, _mtime in sorted(survivors, key=lambda e: e[2]):
+            if total <= max_bytes:
+                break
+            if _remove_path(path):
+                result['reclaimedEntries'] += 1
+                result['reclaimedBytes'] += size
+                total = max(0, total - size)
+
+    if result['reclaimedEntries']:
+        logger.warning(
+            'uv cache governance reclaimed %d entr(ies) (%d bytes) under %s '
+            '(ttl=%sd, max_mb=%d)',
+            result['reclaimedEntries'], result['reclaimedBytes'], uv_cache_dir,
+            ttl_days, int(getattr(settings, 'uv_cache_max_mb', 0) or 0),
+        )
+    return result
+
+
 def cleanup_work_dir(ttl_days: int = None) -> dict:
     """Remove expired task workdirs, git caches and per-task venvs.
 
@@ -696,19 +778,18 @@ def cleanup_work_dir(ttl_days: int = None) -> dict:
     if count_key == 'venvs' and counts['venvs'] > 0:
         _invalidate_venv_deps_cache()
 
-    # P2: the shared uv package cache. ensure_venv points UV_CACHE_DIR at
-    # `<work_dir>/.venvs/.uv-cache` (venv_dir.parent / '.uv-cache'); it is shared
-    # by every requirements-bearing python task and previously accumulated with
-    # no explicit TTL governance. Reclaim it on the SAME TTL as .git_cache, but
-    # never while a live venv task may be installing into it. Folded into the
-    # 'caches' bucket so the cleanup_work_dir return shape stays byte-stable
-    # (existing tests assert the exact key set).
-    uv_cache_dir = base / '.venvs' / '.uv-cache'
+    # A5（第四轮审计）：共享 uv 下载缓存治理（`<work_dir>/.venvs/.uv-cache`，
+    # ensure_venv 把 UV_CACHE_DIR 指到这里）。旧实现只在缓存目录**自身** mtime
+    # 超 TTL 时整目录回收——任何安装都会刷新顶层 mtime，整目录门几乎永不触发，
+    # 缓存实际只增不删。现按条目（uv 布局：顶层是 `wheels-v4/`、`archive-v0/`
+    # 等命名空间目录，真正的条目是其下的 per-hash 子目录/文件——一层展开）粒度
+    # 治理：TTL（uv_cache_ttl_days，默认 30d，0=关闭）+ 可选体积上限
+    # （uv_cache_max_mb，超限按 mtime 升序回收）。uv 对缺失条目自动重下，回收
+    # 安全；活跃 venv 任务安装期间整轮跳过（live guard 沿用）。回收量落日志。
     if not live_venv_tasks:
         try:
-            if uv_cache_dir.is_dir() and uv_cache_dir.stat().st_mtime < cutoff:
-                if _remove_path(uv_cache_dir):
-                    counts['caches'] += 1
+            uv_counts = _reclaim_uv_cache(base / '.venvs' / '.uv-cache')
+            counts['caches'] += uv_counts['reclaimedEntries']
         except OSError:
             pass  # raced / unreadable — best-effort reclaim, never fatal
 

@@ -177,6 +177,17 @@ class Settings(BaseSettings):
     @classmethod
     def _validate_pypi_registry_url(cls, value: str) -> str:
         return validate_pypi_registry_url(value)
+
+    # DEEP-AUDIT B·2.2：可选**附加**索引（--extra-index-url）。语义与
+    # PYPI_REGISTRY_URL 的"替换默认索引"互补：私有源 + 官方源同时可见，缓解
+    # "私有源无上游、公共包必失败"的部署陷阱。校验规则与 PYPI_REGISTRY_URL
+    # 同源（http(s)、无凭据）；不设（默认 ''）行为与之前逐字节一致。
+    pypi_extra_index_url: str = ''
+
+    @field_validator('pypi_extra_index_url')
+    @classmethod
+    def _validate_pypi_extra_index_url(cls, value: str) -> str:
+        return validate_pypi_registry_url(value)
     # R4-C P2: when true, an executor without a configured token refuses
     # /api/* requests (503) instead of the dev-mode allow-all behavior.
     require_token: bool = False
@@ -201,6 +212,18 @@ class Settings(BaseSettings):
     # 拒新任务（429/503）。计量失败按"无压力"处理，不误拒任务。
     disk_warn_percent: int = 90
     disk_critical_percent: int = 95
+
+    # 第四轮审计（A5）: 共享 uv 下载缓存（`<work_dir>/.venvs/.uv-cache`）治理。
+    # 旧实现只在缓存目录**自身** mtime 超 disk_cleanup_ttl_days 时整目录回收
+    # ——任何安装都会刷新顶层 mtime，整目录门几乎永不触发，缓存实际只增不删。
+    # 现按条目（命名空间目录下的 per-hash 子目录/文件）粒度治理：
+    #   - uv_cache_ttl_days：条目 mtime 超过该天数即回收（默认 30d；0 = 关闭
+    #     TTL，只受体积上限约束）——与 node 侧 UV_CACHE_TTL_DAYS 同默认值；
+    #   - uv_cache_max_mb：体积上限（MB），超限时按条目 mtime 升序回收直到
+    #     落回上限（默认 0 = 不设体积上限）。uv 对缺失条目自动重新下载，回收
+    #     安全；活跃 venv 任务安装期间仍整轮跳过（live guard 保留）。
+    uv_cache_ttl_days: int = 30
+    uv_cache_max_mb: int = 0
 
     @field_validator('disk_warn_percent', 'disk_critical_percent')
     @classmethod

@@ -1496,6 +1496,129 @@ def test_ensure_venv_passes_isolated_env_and_explicit_registry(monkeypatch, tmp_
 
 
 # ---------------------------------------------------------------------------
+# DEEP-AUDIT B·2.2: extra index + 失败提示
+# ---------------------------------------------------------------------------
+
+def test_ensure_venv_appends_extra_index_url_when_configured(monkeypatch, tmp_path):
+    """PYPI_EXTRA_INDEX_URL 设置时以 --extra-index-url 追加（与 --index-url
+    并存）；不设则 argv 中不出现该选项（行为逐字节不变）。"""
+    from routers import execute as execute_module
+
+    monkeypatch.setattr(execute_module.settings, 'pypi_registry_url', 'https://registry.example/simple/')
+    monkeypatch.setattr(execute_module.settings, 'pypi_extra_index_url', 'https://pypi.example.org/simple/')
+
+    class FakeProc:
+        returncode = 0
+
+        async def communicate(self):
+            return b'', b''
+
+        def kill(self):
+            pass
+
+        async def wait(self):
+            return 0
+
+    calls = []
+
+    async def fake_exec(*args, **kwargs):
+        calls.append(args)
+        return FakeProc()
+
+    monkeypatch.setattr(execute_module.asyncio, 'create_subprocess_exec', fake_exec)
+    venv_dir = tmp_path / '.venvs' / 'task-extra'
+    asyncio.run(execute_module.ensure_venv(venv_dir, ['requests>=2']))
+
+    assert len(calls) == 2
+    pip_args = list(calls[1])
+    assert pip_args[pip_args.index('--index-url') + 1] == 'https://registry.example/simple/'
+    extra_idx = pip_args.index('--extra-index-url')
+    assert extra_idx > pip_args.index('--index-url')
+    assert pip_args[extra_idx + 1] == 'https://pypi.example.org/simple/'
+
+
+def test_ensure_venv_omits_extra_index_when_unset(monkeypatch, tmp_path):
+    from routers import execute as execute_module
+
+    monkeypatch.setattr(execute_module.settings, 'pypi_registry_url', 'https://registry.example/simple/')
+    monkeypatch.setattr(execute_module.settings, 'pypi_extra_index_url', '')
+
+    class FakeProc:
+        returncode = 0
+
+        async def communicate(self):
+            return b'', b''
+
+        def kill(self):
+            pass
+
+        async def wait(self):
+            return 0
+
+    calls = []
+
+    async def fake_exec(*args, **kwargs):
+        calls.append(args)
+        return FakeProc()
+
+    monkeypatch.setattr(execute_module.asyncio, 'create_subprocess_exec', fake_exec)
+    asyncio.run(execute_module.ensure_venv(tmp_path / '.venvs' / 'task-noextra', ['requests>=2']))
+
+    pip_args = list(calls[1])
+    assert '--extra-index-url' not in pip_args
+
+
+def test_pypi_index_hint_branches():
+    from routers.execute import _pypi_index_hint
+
+    # 无任何索引配置 → 空提示（uv 走默认 PyPI）
+    assert _pypi_index_hint('', '') == ''
+    # 仅附加索引（无私有源）→ 不出现"无上游"措辞
+    hint_extra_only = _pypi_index_hint('', 'https://pypi.example.org/simple/')
+    assert 'index-url=https://pypi.org/simple' in hint_extra_only
+    assert '无上游' not in hint_extra_only
+    # 仅私有源 → 提示"替换默认索引、无上游"与处置动作
+    hint_private = _pypi_index_hint('https://registry.example/simple/')
+    assert 'index-url=https://registry.example/simple/' in hint_private
+    assert '无上游' in hint_private
+    assert 'PYPI_EXTRA_INDEX_URL' in hint_private
+
+
+def test_ensure_venv_failure_message_carries_index_hint(monkeypatch, tmp_path):
+    """uv pip install 失败时, 报错必须带上实际 --index-url 与私有源无上游提示。"""
+    from routers import execute as execute_module
+
+    monkeypatch.setattr(execute_module.settings, 'pypi_registry_url', 'https://registry.example/simple/')
+    monkeypatch.setattr(execute_module.settings, 'pypi_extra_index_url', '')
+
+    class FakeProc:
+        def __init__(self, returncode):
+            self.returncode = returncode
+
+        async def communicate(self):
+            return b'no matching distribution', b''
+
+        def kill(self):
+            pass
+
+        async def wait(self):
+            return 0
+
+    async def fake_exec(*args, **kwargs):
+        # venv 阶段成功、pip install 阶段失败——隔离出 pip 的报错路径。
+        if 'venv' in list(args):
+            return FakeProc(0)
+        return FakeProc(1)
+
+    monkeypatch.setattr(execute_module.asyncio, 'create_subprocess_exec', fake_exec)
+    with pytest.raises(RuntimeError) as exc:
+        asyncio.run(execute_module.ensure_venv(tmp_path / '.venvs' / 'task-hint', ['no-such-pkg']))
+    assert 'uv pip install failed' in str(exc.value)
+    assert 'index-url=https://registry.example/simple/' in str(exc.value)
+    assert '无上游' in str(exc.value)
+
+
+# ---------------------------------------------------------------------------
 # R4-C P2: uv / venv hardening
 # ---------------------------------------------------------------------------
 
@@ -1689,7 +1812,9 @@ def test_ensure_venv_install_failure_message_truncated(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError) as exc:
         asyncio.run(execute_module.ensure_venv(venv_dir, ['requests>=2']))
     message = str(exc.value)
-    assert message.startswith('uv pip install failed:')
+    # DEEP-AUDIT B·2.2 后消息可能带 `（index-url=...; ...）` 索引提示段，
+    # 只断言前缀与截断契约本身，不锁提示段有无。
+    assert message.startswith('uv pip install failed')
     assert len(message) <= 4100
     assert 'truncated' in message
 
