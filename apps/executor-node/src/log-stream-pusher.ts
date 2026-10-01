@@ -18,6 +18,10 @@ export class LogStreamPusher {
   private readonly FLUSH_INTERVAL = 1000; // 1 second
   private readonly MAX_LINES_PER_CHUNK = 100;
   private readonly MAX_CHUNKS_IN_MEMORY = 10; // Backpressure limit
+  // 第四轮审计（A8）: 背压丢行的可观测性——每个执行限 1 条 warn（防风暴
+  // 刷屏：背压本身是持续状态，逐行 warn 反而淹没日志），进入背压状态置位，
+  // 成功清空缓冲后复位，允许后续再次丢行时再次告警一次。
+  private backpressureWarned = false;
   // 跨 chunk 的半行缓冲：子进程输出按任意字节边界分片，一行可能被劈成两个
   // chunk。不做缓冲就会把「一行」记成「两行」——行号与最终回调日志对不上。
   private partial = '';
@@ -41,6 +45,16 @@ export class LogStreamPusher {
       if (this.chunks.length > this.MAX_CHUNKS_IN_MEMORY) {
         const dropped = this.chunks.shift();
         if (dropped) {
+          // 第四轮审计（A8）: 丢行从 debug 升级为 warn（每执行限 1 条）。
+          // 被丢弃的行不会再出现在实时流里（执行结束的回调日志不受影响，
+          // 那走另一条持久化路径），属于「实时视图缺口」级别的信号，运维
+          // 需要从日志里看到它发生；限 1 条防背压风暴刷屏。
+          if (!this.backpressureWarned) {
+            this.backpressureWarned = true;
+            logger.warn(
+              `[LogStreamPusher] Backpressure: dropping buffered log lines for execution ${this.executionId} (admin API slower than producer; subsequent drops will not be logged again)`,
+            );
+          }
           logger.debug(`[LogStreamPusher] Dropped ${dropped.lines.length} lines due to backpressure for execution ${this.executionId}`);
         }
       }
@@ -93,14 +107,19 @@ export class LogStreamPusher {
 
     const chunksToFlush = this.chunks.splice(0, this.chunks.length);
 
+    let allPushed = true;
     for (const chunk of chunksToFlush) {
       try {
         await this.pushChunk(chunk);
       } catch (err) {
+        allPushed = false;
         logger.debug(`[LogStreamPusher] Failed to push chunk for execution ${this.executionId}: ${err}`);
         // Continue with next chunks despite failure
       }
     }
+    // 第四轮审计（A8）: 缓冲清空且全部推送成功 → 复位背压告警闸，让下一次
+    // 独立的背压事件仍能产出一条 warn（而非本执行终身静默）。
+    if (allPushed) this.backpressureWarned = false;
   }
 
   /**

@@ -8,6 +8,8 @@ import { executorStartedAt, executorStartupId } from './startup-identity';
 // ARCH-36（ADR-017 阶段 2）：设备指纹与 register 同源（同一 memo）。
 import { getDeviceFingerprint } from './device-identity';
 import { adoptExecutorTokenHash, unwrapAdminResponseData } from './admin-envelope';
+// A7（第四轮审计）：磁盘水位随心跳透出（admin 既有 diskUsage 列，免迁移）。
+import { diskUsagePercentOrNull } from './file-logger';
 
 // BUG-03: Use atomic operations to prevent race conditions in concurrent task counting
 // SharedArrayBuffer allows atomic operations across threads, but for single-process Node.js
@@ -286,6 +288,11 @@ async function sendHeartbeat() {
       // 回落到「按已占槽位显示」的旧口径，行为与引入前逐字节一致）。
       reservedSlots: collectReservedSlots(),
       deadLetterCount: deadLetterCountProvider(),
+      // A7（第四轮审计）：磁盘水位透出（0-100）。admin 侧 diskUsage 列既有
+      // 白名单采纳环直接落库，无需新迁移。三态纪律与 reservedSlots 同款：
+      // 计量失败返回 null → `?? undefined` → JSON 序列化丢键 =「未上报」
+      // （admin 保留 DB 旧值），不会把失败的计量伪装成「0% 无压力」。
+      diskUsage: diskUsagePercentOrNull() ?? undefined,
       // FR-13/FR-14（CONTRACT.md §2.3）：解释器缓存池清单。**始终发送该字段**
       // （哪怕为空数组）——`[]` 表示"已上报且池为空"，而字段缺席表示"旧执行器
       // 未上报"（admin 按 ["3.12"] 兜底）。本执行器是能上报的新版本，池为空是

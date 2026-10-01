@@ -157,7 +157,7 @@ describe('workDir hot-reload (E10: lazy logsDir)', () => {
         fs.mkdirSync(stale, { recursive: true });
         fs.writeFileSync(path.join(stale, 'x.log'), 'data');
       }
-      expect(fl.deleteOldLogs(7)).toBe(1);
+      expect(await fl.deleteOldLogs(7)).toBe(1);
       expect(fs.existsSync(path.join(newDir, 'logs', staleDate))).toBe(false);
       expect(fs.existsSync(path.join(oldDir, 'logs', staleDate))).toBe(true);
     } finally {
@@ -183,7 +183,7 @@ describe('cleanupWorkDir (disk reclamation)', () => {
     fl.stopLogWriter();
   });
 
-  it('removes expired task workdirs but protects infrastructure directories', () => {
+  it('removes expired task workdirs but protects infrastructure directories', async () => {
     const oldDate = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
     const oldExec = path.join(dir, 'exec-old-1');
     const freshExec = path.join(dir, 'exec-new-1');
@@ -198,7 +198,7 @@ describe('cleanupWorkDir (disk reclamation)', () => {
       fs.utimesSync(path.join(dir, name), oldDate, oldDate);
     }
 
-    const result = fl.cleanupWorkDir(7);
+    const result = await fl.cleanupWorkDir(7);
     expect(result.workDirs).toBe(1);
     expect(fs.existsSync(oldExec)).toBe(false);
     expect(fs.existsSync(freshExec)).toBe(true);
@@ -207,7 +207,7 @@ describe('cleanupWorkDir (disk reclamation)', () => {
     }
   });
 
-  it('removes stale .git_cache and .node_modules entries past the TTL', () => {
+  it('removes stale .git_cache and .node_modules entries past the TTL', async () => {
     const oldDate = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
     const cacheOld = path.join(dir, '.git_cache', 'repo-old');
     const cacheNew = path.join(dir, '.git_cache', 'repo-new');
@@ -218,14 +218,14 @@ describe('cleanupWorkDir (disk reclamation)', () => {
     fs.utimesSync(cacheOld, oldDate, oldDate);
     fs.utimesSync(nmOld, oldDate, oldDate);
 
-    const result = fl.cleanupWorkDir(7);
+    const result = await fl.cleanupWorkDir(7);
     expect(result.caches).toBe(2);
     expect(fs.existsSync(cacheOld)).toBe(false);
     expect(fs.existsSync(cacheNew)).toBe(true);
     expect(fs.existsSync(nmOld)).toBe(false);
   });
 
-  it('keeps only the newest .pkg-updates package files among expired ones', () => {
+  it('keeps only the newest .pkg-updates package files among expired ones', async () => {
     // cleanupWorkDir reads process.cwd() at call time — redirect it into the
     // per-test temp dir so the suite never touches (or races with leftovers
     // from previous runs in) the repository's real .pkg-updates directory.
@@ -243,7 +243,7 @@ describe('cleanupWorkDir (disk reclamation)', () => {
         fs.utimesSync(p, t, t);
       });
 
-      const result = fl.cleanupWorkDir(7);
+      const result = await fl.cleanupWorkDir(7);
       expect(result.packages).toBe(1); // beyond keepNewest=3 → oldest removed
       expect(fs.existsSync(path.join(base, 'pkg-d.zip'))).toBe(true);
       expect(fs.existsSync(path.join(base, 'pkg-c.zip'))).toBe(true);
@@ -253,7 +253,7 @@ describe('cleanupWorkDir (disk reclamation)', () => {
     }
   });
 
-  it('caps dead-letter callbacks at the retention count', () => {
+  it('caps dead-letter callbacks at the retention count', async () => {
     const deadDir = path.join(dir, 'callbacks', 'dead-letter');
     const oldDate = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
     fs.mkdirSync(deadDir, { recursive: true });
@@ -265,13 +265,13 @@ describe('cleanupWorkDir (disk reclamation)', () => {
       fs.utimesSync(p, t, t);
     }
 
-    const result = fl.cleanupWorkDir(7);
+    const result = await fl.cleanupWorkDir(7);
     expect(result.deadLetters).toBe(1); // MAX_DEAD_LETTER_FILES=50 → oldest dropped
     expect(fs.existsSync(path.join(deadDir, 'callback-50.json'))).toBe(false); // oldest
     expect(fs.existsSync(path.join(deadDir, 'callback-0.json'))).toBe(true);   // newest kept
   });
 
-  it('dead-letter sweep removes only files and leaves subdirectories untouched (E12)', () => {
+  it('dead-letter sweep removes only files and leaves subdirectories untouched (E12)', async () => {
     // filesOnly 语义（与 getDeadLetterCount 只数文件对称）：杂散子目录既不
     // 占用 keepNewest 名额，也不被递归删除。
     const deadDir = path.join(dir, 'callbacks', 'dead-letter');
@@ -288,7 +288,7 @@ describe('cleanupWorkDir (disk reclamation)', () => {
     fs.writeFileSync(path.join(strayDir, 'nested.json'), '[]');
     fs.utimesSync(strayDir, oldDate, oldDate);
 
-    const result = fl.cleanupWorkDir(7);
+    const result = await fl.cleanupWorkDir(7);
     expect(result.deadLetters).toBe(1); // only the oldest FILE dropped
     expect(fs.existsSync(path.join(deadDir, 'callback-50.json'))).toBe(false);
     expect(fs.existsSync(path.join(deadDir, 'callback-0.json'))).toBe(true);
@@ -296,7 +296,7 @@ describe('cleanupWorkDir (disk reclamation)', () => {
     expect(fs.existsSync(path.join(strayDir, 'nested.json'))).toBe(true); // not recursed
   });
 
-  it('reclaims orphan .meta files stranded by a failed dead-lettering unlink (E13)', () => {
+  it('reclaims orphan .meta files stranded by a failed dead-lettering unlink (E13)', async () => {
     const callbackDir = path.join(dir, 'callbacks');
     fs.mkdirSync(callbackDir, { recursive: true });
     const oldDate = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000); // > 24h
@@ -318,7 +318,7 @@ describe('cleanupWorkDir (disk reclamation)', () => {
     fs.writeFileSync(liveMeta, '{"retries":2}');
     fs.utimesSync(liveMeta, oldDate, oldDate);
 
-    const result = fl.cleanupWorkDir(7);
+    const result = await fl.cleanupWorkDir(7);
     expect(result.orphanMetaFiles).toBe(1);
     expect(fs.existsSync(orphanOld)).toBe(false);
     expect(fs.existsSync(orphanFresh)).toBe(true);  // inside the 24h grace window
@@ -326,7 +326,7 @@ describe('cleanupWorkDir (disk reclamation)', () => {
     expect(fs.existsSync(liveJson)).toBe(true);
   });
 
-  it('reclaims stale *.tmp files in callbacks/ and dead-letter/ past the orphan TTL (NETOPT-4)', () => {
+  it('reclaims stale *.tmp files in callbacks/ and dead-letter/ past the orphan TTL (NETOPT-4)', async () => {
     const callbackDir = path.join(dir, 'callbacks');
     const deadDir = path.join(callbackDir, 'dead-letter');
     fs.mkdirSync(deadDir, { recursive: true });
@@ -349,7 +349,7 @@ describe('cleanupWorkDir (disk reclamation)', () => {
     fs.writeFileSync(deadPayload, '[]');
     fs.utimesSync(staleSidecarTmp, oldDate, oldDate);
 
-    const result = fl.cleanupWorkDir(7);
+    const result = await fl.cleanupWorkDir(7);
     // 两个过龄 tmp 都被回收：顶层 payload tmp 走孤儿清扫（orphanMetaFiles），
     // 死信侧车 tmp 被 exclude 出 keepNewest 后由第 4 步 TTL 扫描回收（deadLetters）
     expect(result.orphanMetaFiles).toBe(1);
@@ -360,7 +360,7 @@ describe('cleanupWorkDir (disk reclamation)', () => {
     expect(fs.existsSync(deadPayload)).toBe(true);
   });
 
-  it('NETOPT-9-3: reclaims expired meta/*.json but never the meta dir or protected names', () => {
+  it('NETOPT-9-3: reclaims expired meta/*.json but never the meta dir or protected names', async () => {
     const metaDir = path.join(dir, 'meta');
     fs.mkdirSync(metaDir, { recursive: true });
     const oldDate = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000); // > 7d TTL
@@ -373,7 +373,7 @@ describe('cleanupWorkDir (disk reclamation)', () => {
     fs.utimesSync(staleMeta, oldDate, oldDate);
     fs.utimesSync(freshMeta, recentDate, recentDate);
 
-    const result = fl.cleanupWorkDir(7);
+    const result = await fl.cleanupWorkDir(7);
     expect(result.metaFiles).toBe(1);
     expect(fs.existsSync(staleMeta)).toBe(false);
     expect(fs.existsSync(freshMeta)).toBe(true);
@@ -381,7 +381,7 @@ describe('cleanupWorkDir (disk reclamation)', () => {
     expect(fs.existsSync(metaDir)).toBe(true);
   });
 
-  it('NETOPT-C P3: 活跃执行的 meta 文件不受 TTL 清扫（长跑任务 mtime 停在 running）', () => {
+  it('NETOPT-C P3: 活跃执行的 meta 文件不受 TTL 清扫（长跑任务 mtime 停在 running）', async () => {
     const metaDir = path.join(dir, 'meta');
     fs.mkdirSync(metaDir, { recursive: true });
     const oldDate = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
@@ -397,13 +397,13 @@ describe('cleanupWorkDir (disk reclamation)', () => {
       taskIds: new Set(),
     }));
 
-    const result = fl.cleanupWorkDir(7);
+    const result = await fl.cleanupWorkDir(7);
     expect(result.metaFiles).toBe(1);
     expect(fs.existsSync(staleMeta)).toBe(false);
     expect(fs.existsSync(liveMeta)).toBe(true); // 活跃保护
   });
 
-  it('NETOPT-C P3: 仍被 pin 的日志分片不被 deleteOldLogs 物理删除', () => {
+  it('NETOPT-C P3: 仍被 pin 的日志分片不被 deleteOldLogs 物理删除', async () => {
     const staleDate = '2020-01-01';
     const pinnedDir = path.join(dir, 'logs', staleDate);
     fs.mkdirSync(pinnedDir, { recursive: true });
@@ -412,11 +412,11 @@ describe('cleanupWorkDir (disk reclamation)', () => {
 
     fl.pinLogFilePath('exec-pinned', new Date('2020-01-01T00:00:00Z'));
 
-    expect(fl.deleteOldLogs(7)).toBe(0); // 目录被 pin 保护
+    expect(await fl.deleteOldLogs(7)).toBe(0); // 目录被 pin 保护
     expect(fs.existsSync(pinnedDir)).toBe(true);
 
     fl.unpinLogFilePath('exec-pinned');
-    expect(fl.deleteOldLogs(7)).toBe(1); // 解钉后正常回收
+    expect(await fl.deleteOldLogs(7)).toBe(1); // 解钉后正常回收
     expect(fs.existsSync(pinnedDir)).toBe(false);
   });
 
@@ -430,20 +430,59 @@ describe('cleanupWorkDir (disk reclamation)', () => {
     expect(fl.getDeadLetterCount()).toBe(1); // payload 计 1，侧车与 tmp 均不计
   });
 
-  it('startWorkDirCleanup performs an initial sweep', () => {
+  it('startWorkDirCleanup performs an initial sweep', async () => {
     const oldDate = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
     const oldExec = path.join(dir, 'exec-sweep');
     fs.mkdirSync(oldExec, { recursive: true });
     fs.utimesSync(oldExec, oldDate, oldDate);
 
     fl.startWorkDirCleanup(7);
+    // A6: sweep 异步化——初始清扫不再同步完成，让事件循环跑完清扫链再断言。
+    await new Promise((resolve) => setTimeout(resolve, 50));
     expect(fs.existsSync(oldExec)).toBe(false);
     // stopping twice is safe
     fl.stopWorkDirCleanup();
     fl.stopWorkDirCleanup();
   });
 
-  it('E-08: 活跃 execution 工作目录在 TTL 超期后仍被保留', () => {
+  it('A6: 清理执行不走同步 rmSync，且执行中事件循环保持响应（心跳不被阻塞）', async () => {
+    const oldDate = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
+    const oldExec = path.join(dir, 'exec-async-a6');
+    fs.mkdirSync(oldExec, { recursive: true });
+    fs.writeFileSync(path.join(oldExec, 'f.txt'), 'x');
+    // utimes 必须在写入之后：写文件会把目录 mtime 刷成 now。
+    fs.utimesSync(oldExec, oldDate, oldDate);
+
+    // 监视 fs.promises.rm：该目录的删除必须出现在异步删除路径上
+    // （fs 命名空间属性不可 redefine，无法直接 spy 同步 rmSync——但只要
+    // promises.rm 被调用了，就证明删除不再走同步 rmSync）。
+    const promiseRmSpy = jest.spyOn(fs.promises, 'rm');
+    let heartbeats = 0;
+    const heartbeat = setInterval(() => {
+      heartbeats++;
+    }, 1); // 模拟 1ms 心跳——清扫独占事件循环时它一拍都跑不上
+    try {
+      const result = await fl.cleanupWorkDir(7);
+      clearInterval(heartbeat);
+
+      expect(result.workDirs).toBe(1); // 清扫本身语义不变：过期目录已回收
+      expect(fs.existsSync(oldExec)).toBe(false);
+      // 关键断言：删除走了 fs.promises.rm（异步）——同步 rmSync 路径不再被
+      // 清扫使用（该目录的删除由 promises.rm 完成）。
+      expect(
+        promiseRmSpy.mock.calls.some(
+          ([target]) => String(target).includes('exec-async-a6'),
+        ),
+      ).toBe(true);
+      // 行为断言：清理执行期间心跳定时器仍持续获得调度（事件循环让路）
+      expect(heartbeats).toBeGreaterThan(0);
+    } finally {
+      clearInterval(heartbeat);
+      promiseRmSpy.mockRestore();
+    }
+  });
+
+  it('E-08: 活跃 execution 工作目录在 TTL 超期后仍被保留', async () => {
     const oldDate = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
     const liveExec = path.join(dir, 'exec-live');
     const deadExec = path.join(dir, 'exec-old');
@@ -458,13 +497,13 @@ describe('cleanupWorkDir (disk reclamation)', () => {
       taskIds: new Set(),
     }));
 
-    const result = fl.cleanupWorkDir(7);
+    const result = await fl.cleanupWorkDir(7);
     expect(result.workDirs).toBe(1); // 只删除 exec-old
     expect(fs.existsSync(liveExec)).toBe(true); // 活跃目录保护
     expect(fs.existsSync(deadExec)).toBe(false);
   });
 
-  it('E-08: liveness 未知（provider 抛错）时 fail-safe 不删任何东西', () => {
+  it('E-08: liveness 未知（provider 抛错）时 fail-safe 不删任何东西', async () => {
     const oldDate = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
     const oldExec = path.join(dir, 'exec-old');
     fs.mkdirSync(oldExec, { recursive: true });
@@ -478,7 +517,7 @@ describe('cleanupWorkDir (disk reclamation)', () => {
     // provider 抛错 -> liveness 未知 -> 删 Nothing（对照 python fail-safe）
     fl.registerActiveWorkdirProvider(() => { throw new Error('liveness probe down'); });
 
-    const result = fl.cleanupWorkDir(7);
+    const result = await fl.cleanupWorkDir(7);
     expect(result.workDirs).toBe(0);
     expect(result.caches).toBe(0);
     expect(fs.existsSync(oldExec)).toBe(true);
@@ -486,7 +525,7 @@ describe('cleanupWorkDir (disk reclamation)', () => {
     expect(fs.existsSync(path.join(dir, '.node_modules', 'repo-old'))).toBe(true);
   });
 
-  it('E-08: 活跃 task 的 .git_cache/.node_modules 分片不被删除', () => {
+  it('E-08: 活跃 task 的 .git_cache/.node_modules 分片不被删除', async () => {
     const oldDate = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
     const liveCache = path.join(dir, '.git_cache', 'repo-live');
     const liveNm = path.join(dir, '.node_modules', 'task-live');
@@ -502,7 +541,7 @@ describe('cleanupWorkDir (disk reclamation)', () => {
       taskIds: new Set(['repo-live', 'task-live']),
     }));
 
-    const result = fl.cleanupWorkDir(7);
+    const result = await fl.cleanupWorkDir(7);
     expect(result.caches).toBe(2); // 只删 repo-old + task-old
     expect(fs.existsSync(liveCache)).toBe(true); // 活跃分片保护
     expect(fs.existsSync(liveNm)).toBe(true);
@@ -593,7 +632,7 @@ describe('getDeadLetterCount (heartbeat backlog gauge)', () => {
 
   // A6: 侧车与 payload 一一对应。若侧车也占 keepNewest 名额，MAX_DEAD_LETTER_FILES
   // 的实际保留量会腰斩（50 个名额里一半是侧车）。
-  it('A6: 保留扫描里侧车不占 keepNewest 名额', () => {
+  it('A6: 保留扫描里侧车不占 keepNewest 名额', async () => {
     const deadDir = path.join(dir, 'callbacks', 'dead-letter');
     const oldDate = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
     fs.mkdirSync(deadDir, { recursive: true });
@@ -607,7 +646,7 @@ describe('getDeadLetterCount (heartbeat backlog gauge)', () => {
       }
     }
 
-    const result = fl.cleanupWorkDir(7);
+    const result = await fl.cleanupWorkDir(7);
     // 删除 = 超出 keepNewest 的 2 份 payload + 全部 52 个侧车。
     expect(result.deadLetters).toBe(54);
     // 关键判据：保留下来的 payload 仍是 MAX_DEAD_LETTER_FILES(50) 份，不是 25 份。
@@ -620,7 +659,7 @@ describe('getDeadLetterCount (heartbeat backlog gauge)', () => {
   // A6: 每份死信 payload 旁都有一个 .deadletter.json 侧车。指标含义是「积压了
   // 多少条没送出去的回调」，侧车不是回调——不排除就会凭空翻倍，而翻倍会掩盖
   // 对账的真实效果（对账删 payload 时连带删侧车，指标本该降一半）。
-  it('A6: 排除 .deadletter.json 侧车——一份死信只算一条积压', () => {
+  it('A6: 排除 .deadletter.json 侧车——一份死信只算一条积压', async () => {
     const deadDir = path.join(dir, 'callbacks', 'dead-letter');
     fs.mkdirSync(deadDir, { recursive: true });
     fs.writeFileSync(path.join(deadDir, 'a.json'), '[]');
