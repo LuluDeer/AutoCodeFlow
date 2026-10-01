@@ -142,6 +142,12 @@ apps/executor-desktop/resources/uv/
 
 dump.rdb
 
+# Redis 运行时数据目录：BullMQ 队列/锁/去重键的落盘快照（RDB）与 pid 文件
+# 属每主机运行时状态，不是仓库事实；入库会把某台机器的运行时快照共享出去
+# （还可能含任务参数等业务数据）。data/ 下当前跟踪的只有 data/redis/ 两个
+# 运行时文件，故精确忽略该子目录而非整个 data/。
+data/redis/
+
 # AI 助手工作区记忆（会话上下文/长期约定，本地留存，不入库）
 .workbuddy-ai/
 

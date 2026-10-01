@@ -38,6 +38,7 @@
     "test:qa05-callback-tier": "node scripts/qa05-callback-tier-selftest.mjs",
     "test:consumer-routes": "node scripts/check-consumer-routes.mjs --selftest && node scripts/check-consumer-routes.mjs",
     "test:deploy-script": "bash scripts/deploy.selftest.sh",
+    "test:env-drift": "node scripts/check-env-drift.mjs --selftest && node scripts/check-env-drift.mjs",
     "test:qwen": "node scripts/qwen-runtime-check.mjs && node scripts/ai-qwen-structural-check.mjs",
     "test:agent": "node scripts/agent-runtime-check.mjs && node scripts/agent-boundary-check.mjs && node scripts/agent-trigger-check.mjs",
     "test:sop": "node scripts/agent-sop-check.mjs",
