@@ -22,6 +22,7 @@ import {
   registerObservabilityTools,
   registerAuditTools,
   registerProjectTools,
+  registerSopTools,
 } from "./tools";
 
 // ---------------------------------------------------------------------------
@@ -39,6 +40,7 @@ registerExecutorTools(server, apiRequest);
 registerObservabilityTools(server, apiRequest);
 registerAuditTools(server, apiRequest);
 registerProjectTools(server, apiRequest);
+registerSopTools(server, apiRequest);
 
 // ---------------------------------------------------------------------------
 // CLI — argument handling for the bin entry (autocodeflow-mcp)

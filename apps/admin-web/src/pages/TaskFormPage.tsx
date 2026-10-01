@@ -53,7 +53,9 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useAuthStore, isAdminUser } from '../store/auth';
 import { configApi } from '../api/config';
 import { tasksApi } from '../api/tasks';
-import { queryKeys } from '../api/queries';
+// A4（第三轮审计）：保存成功后统一失效任务/执行/metrics 面（30s staleTime
+// 内跳转不再读旧数据；NETOPT-10-8 同型）。
+import { invalidateTaskData, queryKeys } from '../api/queries';
 import { executorsApi } from '../api/executors';
 import { applicationsApi } from '../api/applications';
 import { taskTemplatesApi } from '../api/task-templates';
@@ -63,6 +65,8 @@ import { getErrMsg, isFormValidationError, showApiError } from '../utils/error';
 import { templateConfigFromFormValues } from '../utils/task-template-config-from-form';
 import {
   templateConfigToFormValues,
+  templateDependencySnapshot,
+  templateExecutorMode,
   templateTriggerAndRuntime,
 } from './task-template-prefill';
 import { CronHelper } from '../components/CronHelper';
@@ -260,6 +264,10 @@ export default function TaskFormPage() {
   const depNameSnapshotRef = useRef<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [loadingTask, setLoadingTask] = useState(isEdit);
+  // A4（第三轮审计·中）：乐观锁——编辑态加载时的任务 updatedAt。提交时随
+  // expectedUpdatedAt 回传，服务端比对不符返回 409（另一标签页已抢先修改）。
+  // 仅编辑路径参与；null（加载失败/未加载）= 不带该字段 = 服务端跳过检查。
+  const [loadedUpdatedAt, setLoadedUpdatedAt] = useState<string | null>(null);
   // P1-4（UX 审计）：表单 dirty 守卫——用户改过且未保存时，拦截站内跳转与浏览器关闭。
   const [dirty, setDirty] = useState(false);
   // GLUE-DIRTY-01：Glue 脚本编辑器的未保存改动同样要拦——原先 dirty 只覆盖
@@ -478,6 +486,9 @@ export default function TaskFormPage() {
           // Select 显示占位符，而不是把 "null" 当值）
           projectId: task.projectId ?? undefined,
           triggerType: task.triggerType || 'manual',
+          // A4: 上一轮未结束时新触发的处置策略（null = 存量行未声明 → 后端
+          // 默认 serial；表单回填 serial 使控件显示与后端实际生效值一致）。
+          blockStrategy: task.blockStrategy ?? 'serial',
           cronExpression: task.cronExpression,
           timezone: task.timezone,
           fixedRate: task.fixedRate,
@@ -515,6 +526,8 @@ export default function TaskFormPage() {
           // FEAT-11: markdown 运行手册
           runbook: task.runbook ?? '',
         });
+        // A4（乐观锁）：记录读取时刻的版本戳，提交时回传 expectedUpdatedAt。
+        setLoadedUpdatedAt(task.updatedAt ?? null);
         // NF-02: 上游依赖回填（映射 → Select 值 + 名称快照供提交重建映射）
         const dep = dependenciesFormValues(task.dependencies);
         form.setFieldValue('upstreamDependencies', dep.selected);
@@ -558,6 +571,12 @@ export default function TaskFormPage() {
         const tplSource = deriveCodeSourceFromTask(tpl.config);
         setCodeSource(tplSource);
         previousCodeSourceRef.current = tplSource;
+        // FIX-PREFILL-SYMMETRY：执行器模式与依赖名称快照同样不在表单字段树里
+        // （executorMode 是组件 state；depNameSnapshotRef 供提交时重建依赖映射），
+        // 必须显式同步——否则模板钉好的执行器策略提交时被 buildExecutorPayload
+        // 按 auto 清掉、上游依赖映射的显示名 key 退化为 id（value=id 语义不丢）。
+        setExecutorMode(templateExecutorMode(tpl.config));
+        depNameSnapshotRef.current = templateDependencySnapshot(tpl.config);
       })
       .catch(() => message.warning(t('taskForm.load.templateFailed')));
     return () => {
@@ -791,7 +810,16 @@ export default function TaskFormPage() {
         ),
       );
       if (isEdit && editId) {
-        await tasksApi.update(editId, payload);
+        // A4（乐观锁）：带读取时刻的 updatedAt 做并发检查——服务端发现行已被
+        // 并发修改即 409（见下方 catch 的专门分支）。null = 未曾加载到版本戳
+        // （老接口/加载失败），不带该字段 = 服务端跳过检查，保持向后兼容。
+        await tasksApi.update(editId, {
+          ...payload,
+          expectedUpdatedAt: loadedUpdatedAt ?? undefined,
+        } as Parameters<typeof tasksApi.update>[1]);
+        // A4（第三轮审计）：失效任务/执行/metrics 面——30s staleTime 内跳转
+        // 到详情/列表时不再渲染过期数据。
+        await invalidateTaskData(queryClient);
         message.success(t('taskForm.submit.updated'));
         if (cronNormalizeNote) message.info(cronNormalizeNote);
         nav(`/tasks/${editId}`);
@@ -799,6 +827,7 @@ export default function TaskFormPage() {
         const created = await tasksApi.create(
           payload as components["schemas"]["CreateTaskDto"],
         );
+        await invalidateTaskData(queryClient);
         message.success(t('taskForm.submit.created'));
         if (cronNormalizeNote) message.info(cronNormalizeNote);
         setSavedRuntime(
@@ -810,6 +839,20 @@ export default function TaskFormPage() {
         setTimeout(() => scrollToSection(SECTION_IDS[4]), 50);
       }
     } catch (err: unknown) {
+      // A4（乐观锁冲突，409）：另一标签页/调用方已抢先修改同一任务——留在
+      // 表单页**不跳转**，给出「刷新后重试」的专门指引（比通用失败文案更可
+      // 操作：用户刷新表单即可拿到最新值再改）。状态码判定沿用 client.ts 的
+      // `__status` 打标约定（拦截器 reject 的是 response.data，原始
+      // response.status 已剥掉；旧路径兜底直传 axios error 的调用方）。
+      const conflictStatus =
+        err !== null && typeof err === 'object'
+          ? ((err as Record<string, unknown>)['__status'] ??
+            (err as { response?: { status?: unknown } })?.response?.status)
+          : undefined;
+      if (isEdit && conflictStatus === 409) {
+        message.error(t('taskForm.submit.conflict'), 6);
+        return;
+      }
       // client.ts 的错误拦截器 reject 的是**普通对象**（err.response?.data || err），
       // 不是 Error 实例——`err instanceof Error` 对后端 400 恒 false，于是
       // assertCodeSourceConsistent / assertRuntimeVersionValid 返回的可操作
@@ -1106,7 +1149,7 @@ export default function TaskFormPage() {
           <Form
             form={form}
             layout="vertical"
-            initialValues={{ triggerType: 'manual', runtime: 'python', timeout: 300, maxRetry: 3, retryDelay: 0, priority: 2, timeoutAction: 'kill' }}
+            initialValues={{ triggerType: 'manual', runtime: 'python', timeout: 300, maxRetry: 3, retryDelay: 0, priority: 2, timeoutAction: 'kill', blockStrategy: 'serial' }}
             onValuesChange={(changed) => {
               if (changed.triggerType) setTriggerType(changed.triggerType);
               // P1-4：用户手改即标记未保存（antd setFieldsValue 程序化回填不触发本回调）。
@@ -1259,6 +1302,13 @@ export default function TaskFormPage() {
                     applyCodeSourcePayload 的"自证"规则决定）。 */}
                 {codeSource === 'git' && (
                   <>
+                    {/* A8（第二轮审计）：凭据边界声明——派发链只支持匿名可达仓库
+                        （assertSafeGitRepoUrl 校验 https?://|git@|ssh:// 且执行器
+                        侧无凭据注入通道），私有仓库凭据不在平台管理范围内，先在
+                        表单里讲清楚，避免"任务建成了、派发才 401"的错位预期。 */}
+                    <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 8 }}>
+                      {t('taskForm.field.gitRepo.credentialHint')}
+                    </Typography.Paragraph>
                     <Form.Item
                       name="gitRepo"
                       label={t('taskForm.field.gitRepo')}
@@ -1375,6 +1425,24 @@ export default function TaskFormPage() {
                   </Radio.Group>
                 </Form.Item>
 
+                {/* A4（第三轮审计）：上一轮触发未结束时，新触发的处置策略。
+                    以前只有后端默认 serial 生效，表单不暴露；三个取值语义差异
+                    大（排队/丢弃/覆盖），用户需要可见、可选。取值与后端
+                    task.entity.ts BlockStrategy / api/tasks.ts 类型逐一对齐。 */}
+                <Form.Item
+                  name="blockStrategy"
+                  label={t('taskForm.field.blockStrategy')}
+                  extra={t('taskForm.field.blockStrategy.hint')}
+                >
+                  <Select
+                    options={[
+                      { value: 'serial', label: t('taskForm.field.blockStrategy.serial') },
+                      { value: 'discard', label: t('taskForm.field.blockStrategy.discard') },
+                      { value: 'cover_early', label: t('taskForm.field.blockStrategy.coverEarly') },
+                    ]}
+                  />
+                </Form.Item>
+
                 {triggerType === 'cron' && (
                   <Form.Item
                     name="cronExpression"
@@ -1456,32 +1524,45 @@ export default function TaskFormPage() {
                   {(fields, { add, remove }) => (
                     <>
                       {fields.map(field => (
-                        <Space key={field.key} style={{ display: 'flex', marginBottom: 8 }} align="baseline" wrap>
-                          <Form.Item
-                            name={[field.name, 'start']}
-                            noStyle
-                            rules={[
-                              { required: true, message: t('taskForm.window.startRequired') },
-                              { pattern: /^(\*|([0-5]?\d))(\/(\d+))? (\*|([01]?\d|2[0-3]))(\/(\d+))? (\*|([012]?\d|3[01]))(\/(\d+))? (\*|(1[0-2]|0?[1-9]))(\/(\d+))? (\*|[0-7])(\/(\d+))?$/, message: t('taskForm.window.cronFormat') },
-                              { validator: cronGateValidator(t) },
-                            ]}
-                          >
-                            <Input placeholder={t('taskForm.window.startPlaceholder')} style={{ width: 200, fontFamily: 'monospace' }} />
-                          </Form.Item>
-                          <Form.Item
-                            name={[field.name, 'end']}
-                            noStyle
-                            rules={[
-                              { required: true, message: t('taskForm.window.endRequired') },
-                              { pattern: /^(\*|([0-5]?\d))(\/(\d+))? (\*|([01]?\d|2[0-3]))(\/(\d+))? (\*|([012]?\d|3[01]))(\/(\d+))? (\*|(1[0-2]|0?[1-9]))(\/(\d+))? (\*|[0-7])(\/(\d+))?$/, message: t('taskForm.window.cronFormat') },
-                              { validator: cronGateValidator(t) },
-                            ]}
-                          >
-                            <Input placeholder={t('taskForm.window.endPlaceholder')} style={{ width: 200, fontFamily: 'monospace' }} />
-                          </Form.Item>
-                          <Form.Item name={[field.name, 'description']} noStyle>
-                            <Input placeholder={t('taskForm.window.descPlaceholder')} style={{ width: 160 }} />
-                          </Form.Item>
+                        // A4（第三轮审计）：固定 200px 的 start/end 双输入并排在
+                        // 375px 视口横向溢出——改 flex wrap 布局：窄屏按 flex-basis
+                        // 折行、条目可收缩（minWidth 0 + Input width 100%），
+                        // 宽屏仍一行三列，字段与校验语义不变。
+                        <div
+                          key={field.key}
+                          style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', marginBottom: 8 }}
+                        >
+                          <div style={{ flex: '1 1 180px', minWidth: 0 }}>
+                            <Form.Item
+                              name={[field.name, 'start']}
+                              noStyle
+                              rules={[
+                                { required: true, message: t('taskForm.window.startRequired') },
+                                { pattern: /^(\*|([0-5]?\d))(\/(\d+))? (\*|([01]?\d|2[0-3]))(\/(\d+))? (\*|([012]?\d|3[01]))(\/(\d+))? (\*|(1[0-2]|0?[1-9]))(\/(\d+))? (\*|[0-7])(\/(\d+))?$/, message: t('taskForm.window.cronFormat') },
+                                { validator: cronGateValidator(t) },
+                              ]}
+                            >
+                              <Input placeholder={t('taskForm.window.startPlaceholder')} style={{ width: '100%', fontFamily: 'monospace' }} />
+                            </Form.Item>
+                          </div>
+                          <div style={{ flex: '1 1 180px', minWidth: 0 }}>
+                            <Form.Item
+                              name={[field.name, 'end']}
+                              noStyle
+                              rules={[
+                                { required: true, message: t('taskForm.window.endRequired') },
+                                { pattern: /^(\*|([0-5]?\d))(\/(\d+))? (\*|([01]?\d|2[0-3]))(\/(\d+))? (\*|([012]?\d|3[01]))(\/(\d+))? (\*|(1[0-2]|0?[1-9]))(\/(\d+))? (\*|[0-7])(\/(\d+))?$/, message: t('taskForm.window.cronFormat') },
+                                { validator: cronGateValidator(t) },
+                              ]}
+                            >
+                              <Input placeholder={t('taskForm.window.endPlaceholder')} style={{ width: '100%', fontFamily: 'monospace' }} />
+                            </Form.Item>
+                          </div>
+                          <div style={{ flex: '1 1 140px', minWidth: 0 }}>
+                            <Form.Item name={[field.name, 'description']} noStyle>
+                              <Input placeholder={t('taskForm.window.descPlaceholder')} style={{ width: '100%' }} />
+                            </Form.Item>
+                          </div>
                           <Button
                             type="text"
                             danger
@@ -1489,7 +1570,7 @@ export default function TaskFormPage() {
                             aria-label={t('taskForm.window.deleteAria', { n: field.name + 1 })}
                             onClick={() => remove(field.name)}
                           />
-                        </Space>
+                        </div>
                       ))}
                       <Form.Item style={{ marginBottom: 0 }}>
                         <Button

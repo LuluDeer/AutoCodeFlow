@@ -15,9 +15,7 @@ import { MigrationInterface, QueryRunner } from "typeorm";
  *
  * 幂等：IF NOT EXISTS，重复执行与 revert 重放均无副作用。
  */
-export class AddExecutionResolvedPackage1790000000046
-  implements MigrationInterface
-{
+export class AddExecutionResolvedPackage1790000000046 implements MigrationInterface {
   name = "AddExecutionResolvedPackage1790000000046";
 
   public async up(queryRunner: QueryRunner): Promise<void> {

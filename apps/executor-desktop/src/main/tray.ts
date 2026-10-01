@@ -2,6 +2,7 @@ import { Tray, Menu, nativeImage, app } from 'electron';
 import * as path from 'path';
 import { ExecutorStatus } from './executor-process';
 import { agentActivityLabel, agentOutcomeLabel, type AgentStatusSnapshot } from './agent-status-view';
+import { TRAY_TEXTS, resolveTrayLocale, traySupportsClick, type TrayTexts } from './tray-texts';
 import log from './logger';
 
 export class TrayManager {
@@ -26,14 +27,23 @@ export class TrayManager {
   onToggleAutoLaunch: ((enable: boolean) => Promise<void>) | null = null;
   getAutoLaunch: (() => boolean) | null = null;
 
+  /** 当前 locale 对应的文案表（B-7②：en* 英文，其余中文；重建菜单时实时取）。 */
+  private texts(): TrayTexts {
+    return TRAY_TEXTS[resolveTrayLocale(() => app.getLocale())];
+  }
+
   init(): void {
     const icon = this.getIcon('stopped');
     this.tray = new Tray(icon);
     this.updateTooltip();
     this.rebuildMenu();
 
-    // 左键单击打开状态窗口
-    this.tray.on('click', () => this.onOpenStatus?.());
+    // B-7②：Linux 的 AppIndicator 不派发托盘 click 事件——「左键打开状态
+    // 窗口」只在支持 click 的平台接线；Linux 依赖菜单（rebuildMenu 把
+    // 「查看状态」固定在菜单顶部承接该职责）。
+    if (traySupportsClick(process.platform)) {
+      this.tray.on('click', () => this.onOpenStatus?.());
+    }
     log.info('Tray initialized');
   }
 
@@ -61,70 +71,76 @@ export class TrayManager {
   }
 
   private updateTooltip(): void {
-    const tooltips: Record<ExecutorStatus, string> = {
-      online:  'AutoCodeFlow Executor — 在线 ●',
-      offline: 'AutoCodeFlow Executor — 离线 ○',
-      pending: 'AutoCodeFlow Executor — 启动中 ◐',
-      stopped: 'AutoCodeFlow Executor — 已停止',
-    };
-    this.tray?.setToolTip(`${tooltips[this.currentStatus]}；Agent：${agentActivityLabel(this.agentStatus)}`);
+    const t = this.texts();
+    this.tray?.setToolTip(
+      `${t.tooltip[this.currentStatus]}${t.agentSuffix(agentActivityLabel(this.agentStatus))}`,
+    );
   }
 
   rebuildMenu(): void {
+    const t = this.texts();
     const status = this.currentStatus;
     const isActive = status === 'online' || status === 'pending';
     const autoLaunchEnabled = this.getAutoLaunch?.() ?? false;
+    const separator: Electron.MenuItemConstructorOptions = { type: 'separator' };
 
-    const statusLabel = {
-      online:  '● 在线',
-      offline: '○ 离线',
-      pending: '◐ 启动中...',
-      stopped: '— 已停止',
-    }[status];
-
-    const menu = Menu.buildFromTemplate([
-      { label: `状态: ${statusLabel}`, enabled: false },
-      { label: `Agent: ${agentActivityLabel(this.agentStatus)}`, enabled: false },
-      { label: `Agent 已处理 ${this.agentStatus.processed} 个指派；最近结果：${agentOutcomeLabel(this.agentStatus.lastOutcome)}`, enabled: false },
+    const template: Electron.MenuItemConstructorOptions[] = [
+      // B-7②：Linux AppIndicator 无 click 事件——菜单顶部固定「查看状态」，
+      // 承接其他平台左键单击打开状态窗口的职责。
+      ...(traySupportsClick(process.platform)
+        ? []
+        : [
+            { label: t.viewStatus, click: () => this.onOpenStatus?.() },
+            separator,
+          ]),
+      { label: `${t.statusPrefix}: ${t.statusLabel[status]}`, enabled: false },
+      { label: t.agentLine(agentActivityLabel(this.agentStatus)), enabled: false },
+      {
+        label: t.agentProcessedLine(
+          this.agentStatus.processed,
+          agentOutcomeLabel(this.agentStatus.lastOutcome),
+        ),
+        enabled: false,
+      },
       { type: 'separator' },
       {
-        label: '启动执行器',
+        label: t.startExecutor,
         enabled: !isActive,
         click: () => this.onStart?.(),
       },
       {
-        label: '停止执行器',
+        label: t.stopExecutor,
         enabled: isActive,
         click: () => this.onStop?.(),
       },
       { type: 'separator' },
       {
-        label: '查看状态...',
+        label: t.viewStatus,
         click: () => this.onOpenStatus?.(),
       },
       {
-        label: '打开配置...',
+        label: t.openConfig,
         click: () => this.onOpenConfig?.(),
       },
       {
-        label: '历史日志...',
+        label: t.openHistory,
         click: () => this.onOpenHistory?.(),
       },
       { type: 'separator' },
       {
-        label: '开机自启',
+        label: t.autoLaunch,
         type: 'checkbox',
         checked: autoLaunchEnabled,
         click: (item) => this.onToggleAutoLaunch?.(item.checked),
       },
       { type: 'separator' },
       {
-        label: '退出',
+        label: t.quit,
         click: () => app.quit(),
       },
-    ]);
+    ];
 
-    this.tray?.setContextMenu(menu);
+    this.tray?.setContextMenu(Menu.buildFromTemplate(template));
   }
 
   private getIcon(status: ExecutorStatus): Electron.NativeImage {

@@ -38,9 +38,7 @@ export const SSE_CONTENT_TYPE = "text/event-stream";
  * 的值；未设置（undefined）返回 false——交由调用方（默认 filter 的
  * compressible 判定 / 路径兜底）决定。
  */
-export function hasSseContentType(
-  res: Pick<Response, "getHeader">,
-): boolean {
+export function hasSseContentType(res: Pick<Response, "getHeader">): boolean {
   const contentType = res.getHeader("content-type");
   if (contentType === undefined || contentType === null) return false;
   const value = Array.isArray(contentType)

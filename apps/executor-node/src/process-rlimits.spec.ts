@@ -82,4 +82,28 @@ describeIfPosix("applyTaskRlimits POSIX wrapper", () => {
       else process.env.TASK_CPU_LIMIT_SECONDS = oldCpu;
     }
   });
+
+  it("A10: no ulimit -f by default (unset stays unset)", () => {
+    const oldFsize = process.env.TASK_FSIZE_LIMIT_MB;
+    delete process.env.TASK_FSIZE_LIMIT_MB;
+    try {
+      const r = wrap("node", ["glue.js"], 60);
+      expect(r.args[1]).not.toContain("ulimit -f");
+    } finally {
+      if (oldFsize === undefined) delete process.env.TASK_FSIZE_LIMIT_MB;
+      else process.env.TASK_FSIZE_LIMIT_MB = oldFsize;
+    }
+  });
+
+  it("A10: TASK_FSIZE_LIMIT_MB emits ulimit -f in 512-byte blocks (MB * 2048)", () => {
+    const oldFsize = process.env.TASK_FSIZE_LIMIT_MB;
+    process.env.TASK_FSIZE_LIMIT_MB = "4096";
+    try {
+      const r = wrap("node", ["glue.js"], 60);
+      expect(r.args[1]).toContain("ulimit -f 8388608"); // 4096MB = 4096 * 2048 块
+    } finally {
+      if (oldFsize === undefined) delete process.env.TASK_FSIZE_LIMIT_MB;
+      else process.env.TASK_FSIZE_LIMIT_MB = oldFsize;
+    }
+  });
 });

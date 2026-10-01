@@ -125,7 +125,8 @@ describe("SOP Agent capability lease at assignment and poll", () => {
     expect(h.assignments.save).toHaveBeenCalledTimes(1);
   });
 
-  it("delivers one assignment per poll and leaves the others unclaimed", async () => {
+  // 收尾提速：每轮投递上限 1→3。两张待领单同一轮全部下发。
+  it("delivers up to three assignments per poll (2 pending → both in one round)", async () => {
     const h = harness();
     h.rows.push(
       {
@@ -152,52 +153,73 @@ describe("SOP Agent capability lease at assignment and poll", () => {
       kind: string;
       assignmentId: string;
     }>;
-    expect(first.map((item) => item.assignmentId)).toEqual(["a1"]);
+    expect(first.map((item) => item.assignmentId)).toEqual(["a1", "a2"]);
     expect(h.rows[0].pulledAt).toBeInstanceOf(Date);
-    expect(h.rows[1].pulledAt).toBeNull();
+    expect(h.rows[1].pulledAt).toBeInstanceOf(Date);
     expect(h.clarifications.createQueryBuilder).not.toHaveBeenCalled();
 
+    // 全部领取后，后续 poll 无指派可投
     const second = (await h.service.pollPending({
       executorId: "e1",
     })) as Array<{ kind: string; assignmentId: string }>;
-    expect(second.map((item) => item.assignmentId)).toEqual(["a2"]);
-    expect(h.rows[1].pulledAt).toBeInstanceOf(Date);
+    expect(second).toEqual([]);
   });
 
-  it("requeues undelivered resend assignments for later polls", async () => {
+  it("caps delivery at three per poll and leaves the rest unclaimed", async () => {
     const h = harness();
-    h.rows.push(
-      {
-        id: "a1",
+    for (const id of ["a1", "a2", "a3", "a4"]) {
+      h.rows.push({
+        id,
         sopId: "sop-1",
         sopVersion: "1.0.0",
-        status: "in_progress",
-        pulledAt: new Date(),
+        status: "assigned",
+        pulledAt: null,
         maxRounds: 5,
         clarificationRound: 0,
-      },
-      {
-        id: "a2",
-        sopId: "sop-1",
-        sopVersion: "1.0.0",
-        status: "in_progress",
-        pulledAt: new Date(),
-        maxRounds: 5,
-        clarificationRound: 0,
-      },
-    );
+      });
+    }
 
+    const first = (await h.service.pollPending({ executorId: "e1" })) as Array<{
+      assignmentId: string;
+    }>;
+    expect(first.map((item) => item.assignmentId)).toEqual(["a1", "a2", "a3"]);
+    expect(h.rows[3].pulledAt).toBeNull(); // a4 留在队列
+
+    const second = (await h.service.pollPending({
+      executorId: "e1",
+    })) as Array<{
+      assignmentId: string;
+    }>;
+    expect(second.map((item) => item.assignmentId)).toEqual(["a4"]);
+    expect(h.rows[3].pulledAt).toBeInstanceOf(Date);
+  });
+
+  it("requeues undelivered resend assignments beyond the per-poll cap for later polls", async () => {
+    const h = harness();
+    for (const id of ["a1", "a2", "a3", "a4"]) {
+      h.rows.push({
+        id,
+        sopId: "sop-1",
+        sopVersion: "1.0.0",
+        status: "in_progress",
+        pulledAt: new Date(),
+        maxRounds: 5,
+        clarificationRound: 0,
+      });
+    }
+
+    // resendAll：超出本轮上限(3)的 a4 不投递且重新排队（pulledAt=null）
     const first = (await h.service.pollPending({
       executorId: "e1",
       resendAssignments: true,
     })) as Array<{ assignmentId: string }>;
-    expect(first.map((item) => item.assignmentId)).toEqual(["a1"]);
-    expect(h.rows[1].pulledAt).toBeNull();
+    expect(first.map((item) => item.assignmentId)).toEqual(["a1", "a2", "a3"]);
+    expect(h.rows[3].pulledAt).toBeNull();
 
     const second = (await h.service.pollPending({
       executorId: "e1",
     })) as Array<{ assignmentId: string }>;
-    expect(second.map((item) => item.assignmentId)).toEqual(["a2"]);
+    expect(second.map((item) => item.assignmentId)).toEqual(["a4"]);
   });
 
   it("claims one unpulled assignment once across concurrent polls", async () => {

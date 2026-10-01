@@ -6,6 +6,20 @@ import {
   transitionOneToTerminal,
   transitionToTerminal,
 } from "../execution-terminal";
+import {
+  getRuntimeCountersSnapshot,
+  resetRuntimeMetrics,
+} from "../../metrics/runtime-metrics-entry";
+import { RUNTIME_EXECUTION_RESULT_LABELS } from "../../metrics/runtime-metrics";
+
+/** 读取运行时计数（与 task.service.spec 的 runtimeCount 同款读取口径） */
+const runtimeCount = (
+  name: string,
+  labels: Record<string, string> = {},
+): number =>
+  getRuntimeCountersSnapshot()
+    .get(name as never)
+    ?.get(JSON.stringify(labels)) ?? 0;
 
 /**
  * A1（DEEP_REVIEW 0ef3bbe §七）：终态跃迁入口的行为契约。
@@ -244,5 +258,77 @@ describe("A1 执行终态跃迁（transitionToTerminal）", () => {
     });
     expect(manager.createQueryBuilder).toHaveBeenCalled();
     expect(calls.length).toBeGreaterThan(0);
+  });
+
+  // 第二轮审计（A4 · 指标漏报）：autoflow_execution_result_total 下沉到本
+  // 入口——kill/执行器重启/扫描回收/入队补偿等服务端终态也计数，且只按
+  // winner 行恰好计一次。
+  describe("A4: autoflow_execution_result_total 埋点", () => {
+    beforeEach(() => {
+      resetRuntimeMetrics();
+    });
+
+    it("kill（KILLED 终态跃迁命中）后 killed 计数 +1", async () => {
+      const { repo } = makeRepo({
+        raw: [{ id: "e1", executorAddress: "10.0.0.1:8002" }],
+        affected: 1,
+      });
+      await transitionToTerminal(repo as never, {
+        ids: ["e1"],
+        patch: { status: ExecutionStatus.KILLED },
+      });
+      expect(
+        runtimeCount("autoflow_execution_result_total", { status: "killed" }),
+      ).toBe(1);
+      // 其他 status 不被误计
+      expect(
+        runtimeCount("autoflow_execution_result_total", { status: "failed" }),
+      ).toBe(0);
+    });
+
+    it("affected=0（竞态已被并发路径终态化）不计数——winner 语义防双计", async () => {
+      const { repo } = makeRepo({ raw: [], affected: 0 });
+      await transitionToTerminal(repo as never, {
+        ids: ["e1"],
+        patch: { status: ExecutionStatus.FAILED },
+      });
+      expect(
+        runtimeCount("autoflow_execution_result_total", { status: "failed" }),
+      ).toBe(0);
+    });
+
+    it("批量跃迁按 winner 行数计数（2 行命中 = +2）", async () => {
+      const { repo } = makeRepo({
+        raw: [
+          { id: "e1", executorAddress: "a1" },
+          { id: "e2", executorAddress: "a2" },
+        ],
+        affected: 2,
+      });
+      await transitionToTerminal(repo as never, {
+        ids: ["e1", "e2"],
+        patch: { status: ExecutionStatus.FAILED },
+      });
+      expect(
+        runtimeCount("autoflow_execution_result_total", { status: "failed" }),
+      ).toBe(2);
+    });
+
+    it("部分命中且驱动不返回行（affected < ids.length）不编造计数", async () => {
+      const { repo } = makeRepo({ raw: [], affected: 1 });
+      await transitionToTerminal(repo as never, {
+        ids: ["e1", "e2", "e3"],
+        patch: { status: ExecutionStatus.SUCCESS },
+      });
+      expect(
+        runtimeCount("autoflow_execution_result_total", { status: "success" }),
+      ).toBe(0);
+    });
+
+    it("标签全集覆盖统一入口可写出的全部终态（含 killed/cancelled）", () => {
+      expect([...RUNTIME_EXECUTION_RESULT_LABELS].sort()).toEqual(
+        [...TERMINAL_EXECUTION_STATUSES].sort(),
+      );
+    });
   });
 });

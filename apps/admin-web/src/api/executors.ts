@@ -106,6 +106,23 @@ export interface Executor {
   }> | null;
 }
 
+/**
+ * DEEP-AUDIT B·1.1: GET /executors/:id/removal-impact 响应——删除影响面预览。
+ * pinnedTasks / appNameBoundTasks 的任务在执行器删除后派发即失败
+ * （"Pinned executor not found"，无重试），确认框必须如实展示。
+ */
+export interface ExecutorRemovalImpact {
+  appName: string;
+  address: string;
+  status: string;
+  /** task.executorId 显式钉定到本执行器的任务数 */
+  pinnedTasks: number;
+  /** task.executorAppName 按名字绑定到本执行器的任务数 */
+  appNameBoundTasks: number;
+  /** pull 模式待拉取队列深度（acf:pull:{id} 的 LLEN；push 恒为 0） */
+  pendingPullItems: number;
+}
+
 export interface ExecutorMetrics {
   executor: { id: string; address: string; status: string };
   sevenDayStats: {
@@ -127,6 +144,11 @@ export interface ExecutorMetrics {
     reservedSlots?: number | null;
     cpuUsage?: number;
     memUsage?: number;
+    /**
+     * DEEP-AUDIT B·1.5: pull 模式待拉取队列深度（acf:pull:{id} 的 LLEN）。
+     * push 执行器恒为 0；读不到（Redis 抖动）时后端也回 0。
+     */
+    pendingPullItems?: number;
   };
   /** FEAT-04: 最近 24h 资源趋势采样（15 分钟 AVG 桶，升序）；无数据为空数组 */
   history: ExecutorMetricsHistoryPoint[];
@@ -232,6 +254,14 @@ export const executorsApi = {
    */
   remove: (id: string, reason?: string) =>
     client.delete(`/executors/${id}`, reason ? { data: { reason } } : undefined) as Promise<void>,
+  /**
+   * DEEP-AUDIT B·1.1：删除影响面预览（ADMIN-only）。钉定/appName 绑定的
+   * 任务数在删除后会派发必失败，确认框如实展示；pull 队列深度一并回显。
+   */
+  removalImpact: (id: string, signal?: AbortSignal) =>
+    signal
+      ? client.get(`/executors/${id}/removal-impact`, { signal }) as Promise<ExecutorRemovalImpact>
+      : client.get(`/executors/${id}/removal-impact`) as Promise<ExecutorRemovalImpact>,
   reloadConfig: (id: string, data: {
     maxConcurrentTasks?: number;
     taskTimeoutSeconds?: number;

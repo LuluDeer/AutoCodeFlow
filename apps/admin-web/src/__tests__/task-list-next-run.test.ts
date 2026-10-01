@@ -52,6 +52,36 @@ describe('P1-1: nextRunAt（列表页「下次执行」的真实时刻）', () =
     expect(next!.getTime() - NOW.getTime()).toBe(300_000);
   });
 
+  // FIX-FIXEDRATE-PREVIEW：fixed_rate 真实相位锚在 lastTriggerTime——列表的
+  // 「下次执行」必须用锚点链，而不是"此刻+间隔"（后者每次刷新都漂移，永远
+  // 对不上实际触发）。
+  it('fixed_rate 任务：传 lastTriggerTime 时按锚点等差链推算', () => {
+    // 锚点 = NOW 前 200s，300s 一拍 → 错过 1 拍，下一拍 = NOW+100s。
+    const next = nextRunAt(
+      {
+        status: 'active',
+        triggerType: 'fixed_rate',
+        fixedRate: 300,
+        lastTriggerTime: new Date(NOW.getTime() - 200_000).toISOString(),
+      },
+      NOW,
+    );
+    expect(next!.getTime() - NOW.getTime()).toBe(100_000);
+  });
+
+  it('fixed_rate 任务：非法 lastTriggerTime 回退 now 锚链（不产生 NaN 时刻）', () => {
+    const next = nextRunAt(
+      {
+        status: 'active',
+        triggerType: 'fixed_rate',
+        fixedRate: 300,
+        lastTriggerTime: 'garbage',
+      },
+      NOW,
+    );
+    expect(next!.getTime() - NOW.getTime()).toBe(300_000);
+  });
+
   it('已暂停/失败的任务不调度 → null（不得显示一个不会发生的时刻）', () => {
     // 反证核心：若忽略 status，暂停的任务会显示一个"下次执行"时刻，
     // 而它永远不会发生——这正是让用户误以为"还在跑"的假象。

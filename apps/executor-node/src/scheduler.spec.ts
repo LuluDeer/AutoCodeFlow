@@ -81,6 +81,37 @@ describe('scheduler', () => {
     clearInterval(timer);
   });
 
+  it('A7: reports diskUsage in the heartbeat body; statfs failure omits the field', async () => {
+    jest.useFakeTimers();
+    const os = require('os');
+    const path = require('path');
+    const { startHeartbeat } = require('./scheduler');
+    const { config } = require('./config');
+
+    const timer = startHeartbeat();
+    const originalWorkDir = config.workDir;
+    try {
+      // 正常计量：workDir 指向真实存在的目录（statfs 可用）
+      config.workDir = os.tmpdir();
+      await jest.advanceTimersByTimeAsync(12_000);
+      expect(post.mock.calls.length).toBeGreaterThan(0);
+      const body = post.mock.calls.at(-1)![1];
+      expect(typeof body.diskUsage).toBe('number');
+      expect(body.diskUsage).toBeGreaterThanOrEqual(0);
+      expect(body.diskUsage).toBeLessThanOrEqual(100);
+
+      // 计量失败：workDir 不存在 → statfs ENOENT → null → `?? undefined`
+      // → JSON 序列化丢键 =「未上报」（admin 保留 DB 旧值，不会伪装成 0%）
+      config.workDir = path.join(os.tmpdir(), 'acf-no-such-workdir-a7');
+      await jest.advanceTimersByTimeAsync(12_000);
+      const failingBody = post.mock.calls.at(-1)![1];
+      expect(failingBody.diskUsage).toBeUndefined();
+    } finally {
+      config.workDir = originalWorkDir;
+      clearInterval(timer);
+    }
+  });
+
   it('reports registered running execution ids (E9-aligned cap) and dead-letter count in the heartbeat body', async () => {
     jest.useFakeTimers();
     const {

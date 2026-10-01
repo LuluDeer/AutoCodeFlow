@@ -112,7 +112,7 @@
 ### 并行协作纪律（常设规则，非一次性任务）
 
 1. 任何会话开始：`git pull --rebase` + `git status` + diff 盘点。
-2. 发现工作区有他人未提交改动：先判断归属（对照 AGENT_HANDOFF「本轮遗留」），不覆盖、不重做，续作或等其闭环。
+2. 发现工作区有他人未提交改动：先判断归属（对照 docs/AGENT_HANDOFF「本轮遗留」；该文件 2026-10-01 起在 docs/ 下），不覆盖、不重做，续作或等其闭环。
 3. executor-node 源码改动与 `resources/executor-node` bundle 重打必须**同 commit**（W-18 desktop-bundle-drift 守卫会拦，但教训要前置）。
 
 ---

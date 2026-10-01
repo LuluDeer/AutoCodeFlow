@@ -19,6 +19,7 @@
  */
 import { LogStreamPusher } from './log-stream-pusher';
 import { post } from './admin-client';
+import { logger } from './logger';
 
 jest.mock('./admin-client', () => ({
   post: jest.fn(),
@@ -151,5 +152,24 @@ describe('LogStreamPusher（RT-LOG 出站凭据 + 行切分）', () => {
     // 第一片（fromLine 0）已被丢弃。
     expect(bodies[0].fromLine).toBe(100);
     expect(bodies.reduce((n, b) => n + b.lines.length, 0)).toBe(901);
+  });
+
+  it('A8: 背压丢行 warn 恰好一次（每执行限 1 条防刷屏），全量推送成功后复位', async () => {
+    const pusher = new LogStreamPusher('exec-a8');
+
+    // 进入背压：只产出一条 warn（丢行升为可观测信号）
+    for (let i = 0; i < 1001; i++) pusher.addLine(`l${i}`);
+    const warnMock = logger.warn as unknown as jest.Mock;
+    expect(warnMock).toHaveBeenCalledTimes(1);
+    expect(String(warnMock.mock.calls[0][0])).toMatch(/Backpressure/);
+    // 持续丢行不刷屏（每执行限 1 条）
+    for (let i = 0; i < 500; i++) pusher.addLine(`m${i}`);
+    expect(warnMock).toHaveBeenCalledTimes(1);
+
+    // 全量推送成功 → 复位告警闸，下一次独立背压仍能告警一次
+    await pusher.finalFlush();
+    for (let i = 0; i < 1001; i++) pusher.addLine(`x${i}`);
+    expect(warnMock).toHaveBeenCalledTimes(2);
+    await pusher.finalFlush();
   });
 });

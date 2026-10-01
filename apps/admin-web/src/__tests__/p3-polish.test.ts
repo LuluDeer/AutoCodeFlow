@@ -50,25 +50,27 @@ if (!window.matchMedia) {
 
 // ── F-27 ────────────────────────────────────────────────
 describe('F-27 失败次数必须是整数', () => {
+  // FIX-5.1（统计口径收口）：后端直接回全量 failed 计数（= FAILED + TIMEOUT），
+  // 前端不再用 totalRuns × (1 − successRate/100) 派生——该派生把全量 totalRuns
+  // 与近窗 successRate 混算（历史 500 败 + 最近 20 全成 → 「失败 0 次」）。
   it.each([
-    [10, 85, 2], // 1.5 次 → 四舍五入 2（旧实现会渲染 "1.5"）
-    [10, 100, 0],
-    [3, 0, 3],
-    [0, 50, 0],
-    [7, 66.7, 2],
-  ])('totalRuns=%i successRate=%i → %i', (total, rate, expected) => {
-    expect(failedRunCount(total, rate)).toBe(expected);
+    [7, 7], // 后端权威计数直通
+    [0, 0],
+    [502, 502], // 历史 500 败 + 最近 20 全成 → 仍显示 502（旧派生会显示 0）
+    [2.4, 2], // 小数防御归一（理论上后端不会给）
+  ])('stats.failed=%f → %i', (failed, expected) => {
+    expect(failedRunCount({ failed })).toBe(expected);
   });
 
-  it('任意合法输入都返回整数', () => {
-    for (const rate of [0, 33.3, 66.7, 99.9, 100]) {
-      expect(Number.isInteger(failedRunCount(7, rate))).toBe(true);
-    }
+  it('缺失/非法输入不产生 NaN 且回 0', () => {
+    expect(failedRunCount({})).toBe(0);
+    expect(failedRunCount({ failed: null })).toBe(0);
+    expect(failedRunCount({ failed: Number.NaN })).toBe(0);
+    expect(failedRunCount({ failed: undefined })).toBe(0);
   });
 
-  it('非法输入不产生 NaN', () => {
-    expect(failedRunCount(Number.NaN, 50)).toBe(0);
-    expect(failedRunCount(10, Number.NaN)).toBe(0);
+  it('负值钳为 0（防御：口径异常不得渲染负数）', () => {
+    expect(failedRunCount({ failed: -3 })).toBe(0);
   });
 });
 

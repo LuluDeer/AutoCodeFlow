@@ -851,6 +851,10 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     // NETOPT-5①: 应用上下文透传（调用方 execution-events.listener 已持有
     // Task 实体，applicationId 可直接带来），供 scope=application 静默判定
     applicationId?: string,
+    // DEEP-AUDIT B·1.6: 汇总标题覆写（通知聚合窗到期时调用方传「任务失败
+    // 汇总」类标题，替代单次失败的 "Task failed:"）。缺省 undefined 时
+    // 标题与既有行为逐字节一致，存量调用方零影响。
+    titleOverride?: string,
   ) {
     const taskChannels =
       (alarmChannels?.map((c) => c.toLowerCase()) as AlertChannel[]) || [];
@@ -874,7 +878,7 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
       );
     }
     const payload: NotificationPayload = {
-      title: `Task failed: ${taskName}`,
+      title: titleOverride ?? `Task failed: ${taskName}`,
       content: `Execution ID: ${execId}\nError: ${error}${aiAnalysis ? `\n\nAI Analysis:\n${aiAnalysis}` : ""}${alarmEmail ? `\nRecipient: ${alarmEmail}` : ""}${runbook ? `\n\nRunbook:\n${runbook}` : ""}`,
       level: "error",
       // FEAT-10: template variables for channel-level content templates

@@ -3471,6 +3471,40 @@
         ]
       }
     },
+    "/executors/{id}/removal-impact": {
+      "get": {
+        "description": "Counts tasks pinning this executor via task.executorId / task.executorAppName (dispatch would fail after deletion) and the pending pull-queue depth.",
+        "operationId": "ExecutorController_removalImpact",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "description": "Executor ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Removal impact summary"
+          },
+          "404": {
+            "description": "Executor not found"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Preview what deleting this executor will break",
+        "tags": [
+          "Executors"
+        ]
+      }
+    },
     "/executors/{id}/executions": {
       "get": {
         "description": "Get all task execution records for a specific executor with pagination.",
@@ -5580,6 +5614,19 @@
             }
           },
           {
+            "name": "result",
+            "required": false,
+            "in": "query",
+            "description": "Filter by operation result",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "success",
+                "failure"
+              ]
+            }
+          },
+          {
             "name": "userId",
             "required": false,
             "in": "query",
@@ -5717,6 +5764,19 @@
             "description": "Filter by exact resource identifier (combine with resource)",
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "result",
+            "required": false,
+            "in": "query",
+            "description": "Filter by operation result",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "success",
+                "failure"
+              ]
             }
           },
           {
@@ -9038,12 +9098,12 @@
           },
           "dependencies": {
             "type": "object",
-            "description": "Upstream task dependency map: { taskId: taskName }",
+            "description": "Upstream task dependency map: { displayName: upstreamTaskId } — the VALUE is the upstream task id (all consumers — cycle detection, dependency satisfaction, fan-out matching — read values). Each value must be an existing task id; self-dependency and cycles are rejected at write time.",
             "additionalProperties": {
               "type": "string"
             },
             "example": {
-              "uuid-of-task-a": "task-a-name"
+              "task-a-name": "uuid-of-task-a"
             }
           },
           "entrypoint": {
@@ -9257,12 +9317,12 @@
           },
           "dependencies": {
             "type": "object",
-            "description": "Upstream task dependency map: { taskId: taskName }",
+            "description": "Upstream task dependency map: { displayName: upstreamTaskId } — the VALUE is the upstream task id (all consumers — cycle detection, dependency satisfaction, fan-out matching — read values). Each value must be an existing task id; self-dependency and cycles are rejected at write time.",
             "additionalProperties": {
               "type": "string"
             },
             "example": {
-              "uuid-of-task-a": "task-a-name"
+              "task-a-name": "uuid-of-task-a"
             }
           },
           "entrypoint": {
@@ -9417,6 +9477,11 @@
           "projectId": {
             "type": "string",
             "description": "Owning project. Omit/null = unassigned (counts toward the Default project view; existing behaviour). Setting it requires ADMIN or editor/admin of that project."
+          },
+          "expectedUpdatedAt": {
+            "type": "string",
+            "description": "乐观锁预期值：编辑前读取的任务 updatedAt（ISO 时间串）。传入即启用并发检查，不匹配返回 409；缺省跳过检查。",
+            "example": "2026-10-01T08:00:00.000Z"
           }
         }
       },

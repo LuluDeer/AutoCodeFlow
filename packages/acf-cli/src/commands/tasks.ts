@@ -95,11 +95,18 @@ export function tasksCommand(): Command {
   // acf task get <id>
   cmd.command('get <id>')
     .description('Show task details')
-    .action(async (id) => {
+    // 第四轮审计（--json 补面）：对齐 task list 的 ECO-02 CI 消费面
+    .option('--json', 'Emit raw JSON (CI-consumable, no table)')
+    .action(async (id, opts: { json?: boolean }) => {
       const spinner = ora('Fetching task…').start();
       try {
         const t = await get<Task>(`/tasks/${id}`);
         spinner.stop();
+        if (opts.json) {
+          // ECO-02: --json —— CI/脚本消费面（pretty print 便于人工核查）
+          console.log(JSON.stringify(t, null, 2));
+          return;
+        }
         console.log(chalk.bold('Task Details'));
         console.log('  ID      :', t.id);
         console.log('  Name    :', t.name);
@@ -137,11 +144,21 @@ export function tasksCommand(): Command {
     // per-trigger pin would be rejected with 400. Executor pinning IS
     // supported by the backend as a task-level field (tasks.executorId) — set
     // it via `acf task create/update --executor <id>`, not per run.
-    .action(async (id: string, opts: { wait?: boolean; waitTimeout?: number }) => {
+    // 第四轮审计（--json 补面）：trigger 响应（execution 对象）直出 JSON，
+    // CI 拿 executionId 做后续断言无需解析人读文本。
+    .option('--json', 'Emit raw JSON (CI-consumable, no table)')
+    .action(async (id: string, opts: { wait?: boolean; waitTimeout?: number; json?: boolean }) => {
       const spinner = ora('Triggering task…').start();
       try {
         const exec = await post<Execution>(`/tasks/${id}/trigger`);
-        spinner.succeed(`Execution started: ${exec.id}`);
+        if (opts.json) {
+          // ECO-02 同款：--json —— ora 默认写 stderr，stdout 仍是干净 JSON；
+          // --wait 语义不变（等终态 + 非零退出码逻辑照旧生效）。
+          spinner.stop();
+          console.log(JSON.stringify(exec, null, 2));
+        } else {
+          spinner.succeed(`Execution started: ${exec.id}`);
+        }
         if (opts.wait) {
           await pollExecution(exec.id, opts.waitTimeout);
         }
@@ -196,7 +213,9 @@ export function tasksCommand(): Command {
     .option('-f, --from-line <n>', 'Start line (0-based)', '0')
     .option('-n, --limit <n>', 'Max lines to fetch (max 2000)', '200')
     .option('--tail <n>', 'Show last N lines (overrides --from-line)')
-    .action(async (execId, opts) => {
+    // 第四轮审计（--json 补面）：行页对象（lines/totalLines/hasMore）直出 JSON
+    .option('--json', 'Emit raw JSON (CI-consumable, no table)')
+    .action(async (execId, opts: { fromLine: string; limit: string; tail?: string; json?: boolean }) => {
       const spinner = ora('Fetching logs…').start();
       try {
         if (opts.tail) {
@@ -211,6 +230,11 @@ export function tasksCommand(): Command {
             { fromLine: from, limit: tail },
           );
           spinner.stop();
+          if (opts.json) {
+            // ECO-02 同款：--json —— 附 fromLine 便于消费方续读
+            console.log(JSON.stringify({ ...data, fromLine: from }, null, 2));
+            return;
+          }
           for (const l of data.lines ?? []) console.log(l);
           console.log(chalk.gray(`\n(${data.lines?.length ?? 0}/${data.totalLines} lines — last ${tail})`));
         } else {
@@ -220,6 +244,10 @@ export function tasksCommand(): Command {
             { fromLine, limit: opts.limit },
           );
           spinner.stop();
+          if (opts.json) {
+            console.log(JSON.stringify(data, null, 2));
+            return;
+          }
           for (const l of data.lines ?? []) console.log(l);
           if (data.hasMore) {
             console.log(chalk.gray(`\n… hasMore — next: acf task logs ${execId} --from-line ${fromLine + (data.lines?.length ?? 0)}`));

@@ -1487,6 +1487,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/executors/{id}/removal-impact": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Preview what deleting this executor will break
+         * @description Counts tasks pinning this executor via task.executorId / task.executorAppName (dispatch would fail after deletion) and the pending pull-queue depth.
+         */
+        get: operations["ExecutorController_removalImpact"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/executors/{id}/executions": {
         parameters: {
             query?: never;
@@ -3656,9 +3676,9 @@ export interface components {
             /** @description Dependency specs installed by the executor before the task runs — pip requirements (python runtime, per-task uv venv) or npm packages (node runtime). Ignored by glue-script tasks. Example: ["requests>=2.31", "rich==13.7.1"] */
             requirements?: string[];
             /**
-             * @description Upstream task dependency map: { taskId: taskName }
+             * @description Upstream task dependency map: { displayName: upstreamTaskId } — the VALUE is the upstream task id (all consumers — cycle detection, dependency satisfaction, fan-out matching — read values). Each value must be an existing task id; self-dependency and cycles are rejected at write time.
              * @example {
-             *       "uuid-of-task-a": "task-a-name"
+             *       "task-a-name": "uuid-of-task-a"
              *     }
              */
             dependencies?: {
@@ -3747,9 +3767,9 @@ export interface components {
             /** @description Dependency specs installed by the executor before the task runs — pip requirements (python runtime, per-task uv venv) or npm packages (node runtime). Ignored by glue-script tasks. Example: ["requests>=2.31", "rich==13.7.1"] */
             requirements?: string[];
             /**
-             * @description Upstream task dependency map: { taskId: taskName }
+             * @description Upstream task dependency map: { displayName: upstreamTaskId } — the VALUE is the upstream task id (all consumers — cycle detection, dependency satisfaction, fan-out matching — read values). Each value must be an existing task id; self-dependency and cycles are rejected at write time.
              * @example {
-             *       "uuid-of-task-a": "task-a-name"
+             *       "task-a-name": "uuid-of-task-a"
              *     }
              */
             dependencies?: {
@@ -3819,6 +3839,11 @@ export interface components {
             runbook?: string;
             /** @description Owning project. Omit/null = unassigned (counts toward the Default project view; existing behaviour). Setting it requires ADMIN or editor/admin of that project. */
             projectId?: string;
+            /**
+             * @description 乐观锁预期值：编辑前读取的任务 updatedAt（ISO 时间串）。传入即启用并发检查，不匹配返回 409；缺省跳过检查。
+             * @example 2026-10-01T08:00:00.000Z
+             */
+            expectedUpdatedAt?: string;
         };
         TriggerTaskDto: {
             params?: Record<string, never>;
@@ -7129,6 +7154,34 @@ export interface operations {
             };
         };
     };
+    ExecutorController_removalImpact: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Executor ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removal impact summary */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Executor not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     ExecutorController_getExecutorExecutions: {
         parameters: {
             query?: {
@@ -8405,6 +8458,8 @@ export interface operations {
                 resource?: string;
                 /** @description Filter by exact resource identifier (combine with resource) */
                 resourceId?: string;
+                /** @description Filter by operation result */
+                result?: "success" | "failure";
                 /** @description Filter by operator user id */
                 userId?: number;
                 /** @description Filter by operator username */
@@ -8445,6 +8500,8 @@ export interface operations {
                 resource?: string;
                 /** @description Filter by exact resource identifier (combine with resource) */
                 resourceId?: string;
+                /** @description Filter by operation result */
+                result?: "success" | "failure";
                 /** @description Filter by operator user id */
                 userId?: number;
                 /** @description Filter by operator username */

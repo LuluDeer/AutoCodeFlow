@@ -36,6 +36,14 @@ export class NormalizeUploadedVersionStatus1790000000037 implements MigrationInt
   name = "NormalizeUploadedVersionStatus1790000000037";
 
   public async up(queryRunner: QueryRunner): Promise<void> {
+    // 第四轮审计（A1）: 全表 UPDATE 的 statement_timeout 守卫。连接池带
+    // 连接级 statement_timeout=30s（configuration.ts extra），极端大的
+    // application_versions 表上扫描可能超时。SET LOCAL 依赖本迁移运行在
+    // TypeORM 的 per-migration 事务内（migrationsTransactionMode="each"，
+    // 本迁移未声明 transaction=false）——SET LOCAL 在事务提交时自动回滚，
+    // 不污染池化连接；其余单表语句级迁移（按行 $1 参数循环的
+    // 1790000000008/48）每语句耗时亚秒，无需同款守卫。
+    await queryRunner.query(`SET LOCAL statement_timeout = 0`);
     await queryRunner.query(`
       UPDATE "application_versions"
       SET "status" = 'released'

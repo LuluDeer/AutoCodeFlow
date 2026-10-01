@@ -25,7 +25,8 @@ import { join } from "node:path";
 
 // __dirname = apps/admin-api/src/common/utils/__tests__ → 上溯 3 级 = src 根
 const SRC_ROOT = join(__dirname, "..", "..", "..");
-const GUARD_REL_PATH = "common/utils/__tests__/response-stream-error-listener.guard.spec.ts";
+const GUARD_REL_PATH =
+  "common/utils/__tests__/response-stream-error-listener.guard.spec.ts";
 
 /** 显式豁免名单（相对 src 根的 POSIX 风格路径），逐条注释理由。 */
 const ALLOWLIST = new Set<string>([

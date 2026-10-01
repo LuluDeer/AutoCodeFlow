@@ -5,7 +5,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
-import SsoCompletePage from '../pages/SsoCompletePage';
+import SsoCompletePage, { resolveErrorHint } from '../pages/SsoCompletePage';
 import { useAuthStore } from '../store/auth';
 import { authApi } from '../api/auth';
 
@@ -94,5 +94,48 @@ describe('SsoCompletePage（AUTH-04）', () => {
     window.location.hash = '#username=alice';
     renderPage();
     expect(await screen.findByText('回调参数缺失，请从登录页重新发起')).toBeTruthy();
+  });
+
+  // DEEP-AUDIT 收尾：IdP 侧错误（#error=idp_error:<原始码>）的映射三态
+  describe('idp_error 前缀错误映射', () => {
+    it('idp_error:access_denied → 「IdP 侧取消授权」指引', () => {
+      // 与 admin-api oidc.controller fail() 一致：码经 encodeURIComponent 入 fragment
+      window.location.hash = `#error=${encodeURIComponent('idp_error:access_denied')}`;
+      renderPage();
+      expect(screen.getByText(/您在身份提供方（IdP）侧取消了授权/)).toBeTruthy();
+    });
+
+    it('已知 IdP 码逐个命中映射（login_required / server_error / invalid_scope）', () => {
+      const cases: Array<[string, RegExp]> = [
+        ['login_required', /要求重新登录/],
+        ['server_error', /身份提供方内部错误/],
+        ['invalid_scope', /授权范围被身份提供方拒绝/],
+      ];
+      for (const [code, pattern] of cases) {
+        cleanup();
+        window.location.hash = `#error=${encodeURIComponent(`idp_error:${code}`)}`;
+        renderPage();
+        expect(screen.getByText(pattern)).toBeTruthy();
+      }
+    });
+
+    it('未知 IdP 码 → generic 兜底并附原始码', () => {
+      window.location.hash = `#error=${encodeURIComponent('idp_error:not_allowed_realm')}`;
+      renderPage();
+      expect(
+        screen.getByText(/单点登录失败（身份提供方返回：not_allowed_realm）/),
+      ).toBeTruthy();
+    });
+
+    it('resolveErrorHint 纯函数：平台稳定码/idp 前缀/未知码三分支', () => {
+      expect(resolveErrorHint('state_invalid').key).toBe('sso.error.state');
+      expect(resolveErrorHint('idp_error:consent_required').key).toBe(
+        'sso.error.idp.consentRequired',
+      );
+      const unknown = resolveErrorHint('idp_error:keycloak_weird');
+      expect(unknown.key).toBe('sso.error.idpUnknown');
+      expect(unknown.params).toEqual({ code: 'keycloak_weird' });
+      expect(resolveErrorHint('totally-unknown').key).toBe('sso.error.generic');
+    });
   });
 });

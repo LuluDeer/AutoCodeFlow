@@ -195,12 +195,45 @@ describe('nextCronFireTimes（未来 N 次推算）', () => {
 describe('nextFixedRateFireTimes（fixed_rate 链）', () => {
   const NOW = new Date(2026, 8, 8, 10, 30, 0, 0);
 
-  it('每 600 秒：now+600*i 链', () => {
+  it('每 600 秒：now+600*i 链（未传 lastTriggerTime——新建表单预览的估算语义）', () => {
     const times = nextFixedRateFireTimes(600, 3, NOW);
     expect(times).toHaveLength(3);
     expect(times[0].getTime() - NOW.getTime()).toBe(600_000);
     expect(times[1].getTime() - NOW.getTime()).toBe(1_200_000);
     expect(times[2].getTime() - NOW.getTime()).toBe(1_800_000);
+  });
+
+  // FIX-FIXEDRATE-PREVIEW：真实调度锚在 lastTriggerTime（上次触发时刻）的
+  // 等差链上——预览必须与任务真实相位一致，而不是"打开页面的此刻"。
+  it('传 lastTriggerTime：按锚点等差链推算（90s 相位保留，不再对齐 now）', () => {
+    // 锚点 = 10:28:45（NOW 前 75s）。90s 一拍：10:30:15 / 10:31:45 / 10:33:15。
+    const anchor = new Date(NOW.getTime() - 75_000);
+    const times = nextFixedRateFireTimes(90, 3, NOW, anchor);
+    expect(times[0].getTime()).toBe(anchor.getTime() + 90_000);
+    expect(times[1].getTime()).toBe(anchor.getTime() + 180_000);
+    expect(times[2].getTime()).toBe(anchor.getTime() + 270_000);
+  });
+
+  it('锚点落后多拍：跳过已过去/恰在 now 的节拍，取严格晚于 now 的前 count 拍', () => {
+    // 锚点 = NOW 前 1 小时，600s 一拍 → 第 6 拍恰在 NOW（已触发的当下不算
+    // "未来"），下一拍 = NOW+600s。
+    const anchor = new Date(NOW.getTime() - 3_600_000);
+    const times = nextFixedRateFireTimes(600, 2, NOW, anchor);
+    expect(times[0].getTime() - NOW.getTime()).toBe(600_000);
+    expect(times[1].getTime() - NOW.getTime()).toBe(1_200_000);
+  });
+
+  it('锚点恰在 now：下一拍 = now+interval（k 从 1 起，不含已触发的锚点本身）', () => {
+    const times = nextFixedRateFireTimes(120, 2, NOW, NOW);
+    expect(times[0].getTime() - NOW.getTime()).toBe(120_000);
+    expect(times[1].getTime() - NOW.getTime()).toBe(240_000);
+  });
+
+  it('非法 lastTriggerTime（null/乱串）按未传处理 → now 锚链', () => {
+    const times = nextFixedRateFireTimes(600, 1, NOW, null);
+    expect(times[0].getTime() - NOW.getTime()).toBe(600_000);
+    const bad = nextFixedRateFireTimes(600, 1, NOW, 'not-a-date');
+    expect(bad[0].getTime() - NOW.getTime()).toBe(600_000);
   });
 
   it('非法 interval（0/负数/NaN）返回 []', () => {

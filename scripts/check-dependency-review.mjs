@@ -55,13 +55,15 @@ export const EXEMPTIONS = [
     chain: 'admin-api minio@8.0.7 → stream-json@1.9.1',
     reason:
       'minio 8.x 钉 stream-json ^1.8；其 notification.js 硬依赖 `stream-json/jsonl/Parser.js`（v1 路径+大写 P）',
-    reviewBy: '2026-10-01',
+    reviewBy: '2026-12-30',
     // N-13 复查实测（2026-09-27，真实 MinIO）：**原计划的 override 强升不可行**——
     // stream-json@3 把文件改名为 src/jsonl/parser.js（小写）并加了 exports map，
     // minio 的 require("stream-json/jsonl/Parser.js") 直接 MODULE_NOT_FOUND；
     // 更严重的是 minio.js 第 32 行**无条件 eager require** notification.js，
     // 于是 `require('minio')` 本身即抛（不是只坏掉通知功能——整条 S3 日志链全废）。
     // 故到期动作=**不采用 override**，维持豁免并等待上游，或改用别的 S3 客户端。
+    // 2026-10-01 复审续期（+90d）：复核 minio@8.0.7 仍钉 ^1.8、stream-json@3
+    // 无兼容回迁迹象，override 结论维持；下轮关注 minio 大版本是否更换解析器。
     expiredAction: 'DO_NOT_OVERRIDE（N-13 实测会 break require("minio")）；续期豁免或换 S3 客户端',
     probe: 'stream-json',
   },

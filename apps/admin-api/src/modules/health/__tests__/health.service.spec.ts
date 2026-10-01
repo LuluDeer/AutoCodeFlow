@@ -40,6 +40,8 @@ const makeQueueMock = () => ({
   getJobs: jest.fn().mockResolvedValue([]),
   // NETOPT-5④: checkScheduler 改用 Redis 侧聚合的 getJobCounts（不再全量物化）
   getJobCounts: jest.fn().mockResolvedValue({ wait: 0, active: 1 }),
+  // A7（第二轮审计）：调度活性依据——BullMQ worker 在位数（Redis workers 集合）。
+  getWorkersCount: jest.fn().mockResolvedValue(1),
 });
 
 describe("HealthService", () => {
@@ -192,6 +194,17 @@ describe("HealthService", () => {
       expect(taskQueue.getJobCounts).toHaveBeenCalledWith("wait", "active");
       expect(result.status).toBe("healthy");
       expect(result.details).toContain("2 jobs");
+      // A7: details 如实标注语义边界——不含调度循环 tick 节奏测量
+      expect(result.details).toContain("tick cadence is not measured");
+    });
+
+    // A7（第二轮审计）：worker 全部掉线时不得再报 healthy（此前只读队列计数，
+    // Redis 可达就绿，而此刻入队执行永远不会被拾取）。
+    it("returns unhealthy when no BullMQ worker is connected (A7)", async () => {
+      taskQueue.getWorkersCount.mockResolvedValue(0);
+      const result = await service.checkScheduler();
+      expect(result.status).toBe("unhealthy");
+      expect(result.details).toContain("No BullMQ worker");
     });
 
     it("tolerates null count fields from BullMQ (redis-side aggregation)", async () => {
@@ -206,6 +219,13 @@ describe("HealthService", () => {
       const result = await service.checkScheduler();
       expect(result.status).toBe("unhealthy");
       expect(result.details).toContain("queue error");
+    });
+
+    it("returns unhealthy when getWorkersCount throws", async () => {
+      taskQueue.getWorkersCount.mockRejectedValue(new Error("workers error"));
+      const result = await service.checkScheduler();
+      expect(result.status).toBe("unhealthy");
+      expect(result.details).toContain("workers error");
     });
   });
 

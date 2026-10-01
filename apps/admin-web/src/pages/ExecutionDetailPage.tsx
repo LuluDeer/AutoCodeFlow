@@ -54,6 +54,9 @@ const TAB_KEY_DEFAULT = 'logs';
 const TAB_KEYS = ['logs', 'report', 'retry', 'context'] as const;
 type TabKey = (typeof TAB_KEYS)[number];
 
+/** RETRIGGER-TERMINAL：允许「重新触发」的失败类终态（failed/timeout/killed）。 */
+const RETRIGGERABLE_STATUSES = ['failed', 'timeout', 'killed'];
+
 function normalizeTabKey(raw: string | null): TabKey {
   return (TAB_KEYS as readonly string[]).includes(raw || '') ? (raw as TabKey) : TAB_KEY_DEFAULT;
 }
@@ -235,10 +238,19 @@ export default function ExecutionDetailPage() {
             {data?.status === 'running' && !streamStatus.disconnected && (
               <Badge status="processing" text={<Text type="secondary">{t('execDetail.liveUpdating')}</Text>} />
             )}
-            {(data?.status === 'running' || data?.status === 'pending') && (
+            {(data?.status === 'running' ||
+              data?.status === 'pending' ||
+              data?.status === 'waiting') && (
+              // KILL-WAITING：waiting（互斥排队）也是打开态——后端
+              // OPEN_EXECUTION_STATUSES（execution-terminal.ts, MUTEX-01）允许
+              // 把排队中的执行人工终态化；前端补上按钮，排队不再只能干等。
               <Popconfirm
                 title={t('execDetail.killConfirmTitle')}
-                description={t('execDetail.killConfirmDesc')}
+                description={
+                  data?.status === 'waiting'
+                    ? t('execDetail.killConfirmDescWaiting')
+                    : t('execDetail.killConfirmDesc')
+                }
                 onConfirm={handleKill}
                 okText={t('execDetail.killAction')} okButtonProps={{ danger: true }}
               >
@@ -251,11 +263,14 @@ export default function ExecutionDetailPage() {
                 </Button>
               </Popconfirm>
             )}
-            {data?.status === 'failed' && (
+            {RETRIGGERABLE_STATUSES.includes(data?.status ?? '') && (
+              // RETRIGGER-TERMINAL：超时/被终止的执行同样是"任务没跑成"，
+              // 重新触发按钮此前只对 failed 显示——用户在 timeout/killed 详情页
+              // 找不到重跑入口（只能回任务页手动触发）。
               <Button
                 icon={<RedoOutlined />}
                 type="primary"
-                danger
+                danger={data?.status === 'failed'}
                 loading={retrying}
                 onClick={openRetrigger}
               >
@@ -302,6 +317,17 @@ export default function ExecutionDetailPage() {
               {t('execDetail.reconnect')}
             </Button>
           }
+        />
+      )}
+
+      {/* KILL-WAITING：排队原因文案补「可终止」提示——waiting 执行只会显示
+          互斥排队徽标，用户不知道能主动终止。信息卡上方常驻一条说明。 */}
+      {data?.status === 'waiting' && (
+        <Alert
+          type="warning"
+          showIcon
+          title={t('execDetail.waitingNotice')}
+          style={{ marginBottom: 16 }}
         />
       )}
 
@@ -444,6 +470,30 @@ export default function ExecutionDetailPage() {
         okText={t('execDetail.retriggerConfirm.ok')}
       >
         <div style={{ marginBottom: 12 }}>{t('execDetail.retriggerConfirm.body')}</div>
+        {/* RETRIGGER-TERMINAL：重跑永远执行任务的「当前版本」，不是原执行的
+            版本快照——超时/killed 后先改了代码再重跑的场景里，这是用户最容易
+            误判的点（以为重跑的还是原来那份代码）。原执行版本取执行行的
+            taskVersion（派发时刻任务 currentVersion 快照）。 */}
+        {(taskData?.currentVersion || data?.taskVersion) && (
+          <div style={{ marginBottom: 12 }}>
+            <Text strong>
+              {t('execDetail.retriggerConfirm.version', {
+                current: taskData?.currentVersion ?? '—',
+                executed: data?.taskVersion ?? '—',
+              })}
+            </Text>
+            {taskData?.currentVersion &&
+              data?.taskVersion &&
+              taskData.currentVersion !== data.taskVersion && (
+                <Alert
+                  type="info"
+                  showIcon
+                  title={t('execDetail.retriggerConfirm.versionDiffers')}
+                  style={{ marginTop: 8 }}
+                />
+              )}
+          </div>
+        )}
         {retriggerThisParams ? (
           <>
             <Text strong>{t('execDetail.retriggerConfirm.thisParams')}</Text>

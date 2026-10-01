@@ -14,6 +14,8 @@ import {
   __resetTruncationWarnStateForTest,
 } from "../executor.service";
 import { ExecutorTokenCacheSyncService } from "../token-cache-sync.service";
+// DEEP-AUDIT B·1.1: removal-impact / cleanup 跳过判定接线（pull 队列 mock）
+import { ExecutorPullService } from "../executor-pull.service";
 import {
   Executor,
   ExecutorOfflineReason,
@@ -494,9 +496,11 @@ describe("ExecutorService (__tests__)", () => {
         { executionId: "retry-exec" },
         // CORE-02: recovery 重试 attempt=1（retryCount 0→1）、base 5s，
         // delay 带 ±20% 抖动——断言落在 [4000, 6000] 区间
+        // A4: 入队补齐 priority（task 无 priority 字段 → NORMAL 兜底 → 换算 3）
         {
           attempts: 2,
           backoff: { type: "exponential", delay: expect.any(Number) },
+          priority: 3,
         },
       );
       const retryOpts = taskQueue.add.mock.calls.find(
@@ -2441,7 +2445,25 @@ describe("ExecutorService (__tests__)", () => {
       expect(taskQueue.add).toHaveBeenCalledWith(
         "execute",
         { executionId: "retry-1" },
-        { attempts: 1, backoff: undefined },
+        // A4: 恢复重试入队补齐 priority（此前整项缺失）——mkTask 无 priority
+        // 字段，normalizeTaskPriority 兜底 NORMAL(2)，方向换算 → BullMQ 3。
+        { attempts: 1, backoff: undefined, priority: 3 },
+      );
+    });
+
+    it("A4: recovery retry carries the task priority, inverted for BullMQ", async () => {
+      execRepo.save.mockImplementation((e: any) =>
+        Promise.resolve(e.id ? e : { ...e, id: "retry-prio" }),
+      );
+      // DB 语义 4=紧急 → BullMQ 1（最先出队）；重试预算照常扣减。
+      await service.scheduleRetryAfterRecovery(
+        mkTask({ maxRetry: 3, retryDelay: 0, priority: 4 }),
+        mkFailedExec({ retryCount: 1 }),
+      );
+      expect(taskQueue.add).toHaveBeenCalledWith(
+        "execute",
+        { executionId: "retry-prio" },
+        { attempts: 1, backoff: undefined, priority: 1 },
       );
     });
 
@@ -2813,6 +2835,84 @@ describe("ExecutorService (__tests__)", () => {
       const result = await service.dispatch(task, execution);
       expect(result.success).toBe(true);
       expect(executorRepo.createQueryBuilder).toHaveBeenCalled();
+    });
+
+    // A4（第三轮审计·高）：派发体 task 不再整实体直传——只含白名单字段。
+    // 白名单推导（协议 TaskConfig ∪ 三端执行器读取面）见
+    // dispatch-task-payload.util.ts 头注；本用例钉住「多余列进不了载荷」。
+    it("A4: dispatch payload task contains only whitelisted fields (no internal columns)", async () => {
+      executorRepo.find.mockResolvedValue([executor]);
+      mockedAxios.post.mockResolvedValue({ data: { success: true } });
+      const fullTask = {
+        id: "task-1",
+        name: "test",
+        runtime: "node",
+        runtimeVersion: null,
+        entrypoint: "index.js",
+        timeout: 10,
+        requirements: null, // 协议明文要求执行器接受字面 null
+        gitRepo: null,
+        gitBranch: null,
+        gitCommit: null,
+        glueSource: null,
+        glueLanguage: null,
+        codeSource: null,
+        applicationId: null,
+        // —— 以下全部是白名单之外的字段，任何形态都不应出现在载荷里 ——
+        // SEC-02: buildDispatchParams 会解密 secrets 注入 env——这里用明文形态
+        // （enc:v1 前缀会触发「已加密但未配置密钥」的派发失败分支）。
+        secrets: { API_KEY: "plain-value" },
+        webhookSecret: "whsec_raw",
+        params: { a: 1 },
+        ownerUserId: 42,
+        alarmEmail: "ops@example.com",
+        maxRetry: 3,
+        retryDelay: 5,
+        blockStrategy: "serial",
+        misfireStrategy: "ignore",
+        priority: "critical",
+        status: "active",
+        triggerType: "manual",
+        createdAt: new Date("2026-01-01T00:00:00Z"),
+        updatedAt: new Date("2026-01-01T00:00:00Z"),
+      } as unknown as Task;
+      await service.dispatch(fullTask, execution);
+
+      expect(mockedAxios.post).toHaveBeenCalled();
+      const payload = mockedAxios.post.mock.calls[0][1] as {
+        task: Record<string, unknown>;
+      };
+      expect(Object.keys(payload.task).sort()).toEqual(
+        [
+          "applicationId",
+          "codeSource",
+          "entrypoint",
+          "gitBranch",
+          "gitCommit",
+          "gitRepo",
+          "glueLanguage",
+          "glueSource",
+          "id",
+          "name",
+          "requirements",
+          "runtime",
+          "runtimeVersion",
+          "timeout",
+        ].sort(),
+      );
+      // 白名单字段值逐字段透传（null 保留），非白名单字段一律不出现。
+      expect(payload.task).toMatchObject({
+        id: "task-1",
+        name: "test",
+        runtime: "node",
+        timeout: 10,
+        requirements: null,
+      });
+      expect(payload.task).not.toHaveProperty("secrets");
+      expect(payload.task).not.toHaveProperty("webhookSecret");
+      expect(payload.task).not.toHaveProperty("params");
+      expect(payload.task).not.toHaveProperty("ownerUserId");
+      expect(payload.task).not.toHaveProperty("priority");
     });
 
     it("decrements running count when dispatch HTTP call fails", async () => {
@@ -6554,7 +6654,10 @@ describe("FEAT-22 方案 A: dispatch 部署约束 strict 接线（ExecutorServic
           provide: SecretsCryptoService,
           useValue: new SecretsCryptoService({ get: () => "" } as any),
         },
-        { provide: getRepositoryToken(AppDeployment), useValue: appDeploymentRepo },
+        {
+          provide: getRepositoryToken(AppDeployment),
+          useValue: appDeploymentRepo,
+        },
       ],
     }).compile();
     return module.get(ExecutorService);
@@ -6887,9 +6990,11 @@ describe("FEAT-22 方案 B: dispatch 版本跟随部署接线（ExecutorService�
     } as never);
   };
 
-  const buildService = async (opts: {
-    withVersionRepo?: boolean;
-  } = {}): Promise<ExecutorService> => {
+  const buildService = async (
+    opts: {
+      withVersionRepo?: boolean;
+    } = {},
+  ): Promise<ExecutorService> => {
     const providers: any[] = [
       ExecutorService,
       { provide: getRepositoryToken(Executor), useValue: executorRepo },
@@ -6919,7 +7024,10 @@ describe("FEAT-22 方案 B: dispatch 版本跟随部署接线（ExecutorService�
         provide: SecretsCryptoService,
         useValue: new SecretsCryptoService({ get: () => "" } as any),
       },
-      { provide: getRepositoryToken(AppDeployment), useValue: appDeploymentRepo },
+      {
+        provide: getRepositoryToken(AppDeployment),
+        useValue: appDeploymentRepo,
+      },
       { provide: getRepositoryToken(Application), useValue: applicationRepo },
     ];
     if (opts.withVersionRepo !== false) {
@@ -6943,7 +7051,11 @@ describe("FEAT-22 方案 B: dispatch 版本跟随部署接线（ExecutorService�
       ...overrides,
     }) as unknown as Task;
 
-  const dispatchTask = (svc: ExecutorService, task: Task, exec?: TaskExecution) => {
+  const dispatchTask = (
+    svc: ExecutorService,
+    task: Task,
+    exec?: TaskExecution,
+  ) => {
     const execution = exec ?? ({ id: "exec-1", params: {} } as TaskExecution);
     return svc.dispatch(task, execution).then(() => execution);
   };
@@ -7081,9 +7193,9 @@ describe("FEAT-22 方案 B: dispatch 版本跟随部署接线（ExecutorService�
     await dispatchTask(svc, zipTask());
 
     expect(payloadOf()).toBe(CURRENT_PKG);
-    expect(warnSpy.mock.calls.some((c) => String(c[0]).includes("方案 B"))).toBe(
-      true,
-    );
+    expect(
+      warnSpy.mock.calls.some((c) => String(c[0]).includes("方案 B")),
+    ).toBe(true);
   });
 
   it("snapshot 无 packageUrl：回退当前版", async () => {
@@ -7564,4 +7676,210 @@ describe("ExecutorService — ARCH-36 deviceFingerprint 冲突/漂移接线", ()
   // ARCH-31 §3.7 收口：三张令牌派生缓存的跨实例驱逐广播。本实例 rotate/remove
   // 时 PUBLISH；远端实例的广播经 bindHandlers 回调逐出本地缓存；订阅（重）连
   // 的 flush 全量清空自愈漏消息。同步服务缺失 = 退化为既有 60s TTL（不劣化）。
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DEEP-AUDIT B·1.1：执行器删除影响面（removal-impact）与自动清理跳过
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("ExecutorService removal impact (B·1.1)", () => {
+  let service: ExecutorService;
+  // 外层 describe 的 repo 变量作用域不覆盖本块——本地声明同名替身。
+  let executorRepo: ReturnType<typeof makeRepo>;
+  let taskRepo: ReturnType<typeof makeRepo>;
+  let execRepo: ReturnType<typeof makeRepo>;
+  let metricsHistoryRepo: ReturnType<typeof makeRepo>;
+  let taskQueue: { add: jest.Mock };
+  let configService: jest.Mocked<Pick<ConfigService, "get">>;
+  let pullService: { clear: jest.Mock; depth: jest.Mock };
+  let audit: { log: jest.Mock };
+
+  beforeEach(async () => {
+    executorRepo = makeRepo();
+    taskRepo = makeRepo();
+    pullService = {
+      clear: jest.fn().mockResolvedValue(undefined),
+      depth: jest.fn().mockResolvedValue(0),
+    };
+    audit = { log: jest.fn().mockResolvedValue(undefined) };
+    taskQueue = { add: jest.fn().mockResolvedValue(undefined) };
+    configService = { get: jest.fn().mockReturnValue("http") };
+    metricsHistoryRepo = makeRepo();
+    execRepo = makeRepo();
+    const module = await Test.createTestingModule({
+      providers: [
+        ExecutorService,
+        { provide: getRepositoryToken(Executor), useValue: executorRepo },
+        { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
+        { provide: getRepositoryToken(Task), useValue: taskRepo },
+        {
+          provide: getRepositoryToken(ExecutorMetricsHistory),
+          useValue: metricsHistoryRepo,
+        },
+        { provide: getQueueToken("task-queue"), useValue: taskQueue },
+        { provide: ConfigService, useValue: configService },
+        {
+          provide: NotificationService,
+          useValue: {
+            notifyFailure: jest.fn(),
+            notifyFailureWithConfig: jest.fn(),
+            notifyExecutorOnline: jest.fn().mockResolvedValue(undefined),
+            notifyExecutorOffline: jest.fn().mockResolvedValue(undefined),
+            sendAll: jest.fn(),
+          },
+        },
+        {
+          provide: SystemConfigService,
+          useValue: {
+            findOne: jest.fn().mockRejectedValue(new Error("not found")),
+          },
+        },
+        {
+          provide: SecretsCryptoService,
+          useValue: new SecretsCryptoService({ get: () => "" } as any),
+        },
+        // B·1.1：pull 队列（clear/depth）与审计均接线上
+        { provide: ExecutorPullService, useValue: pullService },
+        { provide: AuditService, useValue: audit },
+      ],
+    }).compile();
+    service = module.get(ExecutorService);
+    jest.clearAllMocks();
+  });
+
+  it("describeRemovalImpact counts pinned + appName-bound tasks and pull depth", async () => {
+    executorRepo.findOne.mockResolvedValue({
+      id: "exec-1",
+      address: "10.0.0.5:8002",
+      appName: "exec-a",
+      status: ExecutorStatus.OFFLINE,
+    });
+    taskRepo.count
+      .mockResolvedValueOnce(3) // executorId pin
+      .mockResolvedValueOnce(2); // executorAppName binding
+    pullService.depth.mockResolvedValue(7);
+
+    const impact = await service.describeRemovalImpact("exec-1");
+
+    expect(impact).toEqual({
+      appName: "exec-a",
+      address: "10.0.0.5:8002",
+      status: ExecutorStatus.OFFLINE,
+      pinnedTasks: 3,
+      appNameBoundTasks: 2,
+      pendingPullItems: 7,
+    });
+    // 第一个 count 查 executorId 钉定，第二个查 executorAppName 绑定
+    // （count 实参带 where 包裹 + 排除软删除行 status: Not(DELETED)）。
+    expect(taskRepo.count.mock.calls[0][0]).toMatchObject({
+      where: { executorId: "exec-1" },
+    });
+    expect(taskRepo.count.mock.calls[1][0]).toMatchObject({
+      where: { executorAppName: "exec-a" },
+    });
+  });
+
+  it("describeRemovalImpact falls back to zero depth when the pull service is absent", async () => {
+    executorRepo.findOne.mockResolvedValue({
+      id: "exec-1",
+      address: "a",
+      appName: "a",
+      status: ExecutorStatus.ONLINE,
+    });
+    taskRepo.count.mockResolvedValue(0);
+    // 不接线 ExecutorPullService（@Optional → null）——depth 读不到按 0 呈现，
+    // 不阻断预览（管理台最差情形是少显示一列，绝不 500）。
+    const module = await Test.createTestingModule({
+      providers: [
+        ExecutorService,
+        { provide: getRepositoryToken(Executor), useValue: executorRepo },
+        { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
+        { provide: getRepositoryToken(Task), useValue: taskRepo },
+        {
+          provide: getRepositoryToken(ExecutorMetricsHistory),
+          useValue: metricsHistoryRepo,
+        },
+        { provide: getQueueToken("task-queue"), useValue: taskQueue },
+        { provide: ConfigService, useValue: configService },
+        { provide: NotificationService, useValue: { sendAll: jest.fn() } },
+        {
+          provide: SystemConfigService,
+          useValue: {
+            findOne: jest.fn().mockRejectedValue(new Error("not found")),
+          },
+        },
+        {
+          provide: SecretsCryptoService,
+          useValue: new SecretsCryptoService({ get: () => "" } as any),
+        },
+      ],
+    }).compile();
+    const bare = module.get(ExecutorService);
+    const impact = await bare.describeRemovalImpact("exec-1");
+    expect(impact.pendingPullItems).toBe(0);
+  });
+
+  it("removeById clears the pull queue alongside the token caches", async () => {
+    executorRepo.findOne.mockResolvedValue({
+      id: "exec-9",
+      address: "10.0.0.9:8002",
+      appName: "exec-9",
+    });
+    Object.assign(executorRepo, {
+      remove: jest.fn().mockResolvedValue(undefined),
+    });
+    await service.removeById("exec-9");
+    expect(pullService.clear).toHaveBeenCalledWith("exec-9");
+  });
+
+  it("cleanupOfflineExecutors skips executors that still have pinned tasks and audits the skip", async () => {
+    const staleNoPin = { id: "exec-free", address: "a:1", appName: "free" };
+    const stalePinned = {
+      id: "exec-pinned",
+      address: "b:2",
+      appName: "pinned",
+    };
+    executorRepo.find.mockResolvedValue([staleNoPin, stalePinned]);
+    Object.assign(executorRepo, {
+      delete: jest.fn().mockResolvedValue({ affected: 1 }),
+    });
+    // 分组查询：exec-pinned 仍有 2 个钉定任务。对既有 jest.fn 换实现（直改
+    // createQueryBuilder 属性会破坏 ReturnType<typeof makeRepo> 推导、ts-jest
+    // TS2322）——makeRepo 每次 createQueryBuilder() 新建 qb 实例，必须换实现
+    // 而不是预建一个实例去改它的 getRawMany。
+    (taskRepo.createQueryBuilder as unknown as jest.Mock).mockImplementation(
+      () => ({
+        select: jest.fn().mockReturnThis(),
+        addSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        groupBy: jest.fn().mockReturnThis(),
+        getRawMany: jest
+          .fn()
+          .mockResolvedValue([{ executorId: "exec-pinned", count: "2" }]),
+      }),
+    );
+
+    await service.cleanupOfflineExecutors();
+
+    // 只删无引用行——delete 入参是 { id: In([...]) }；本 TypeORM 版本的
+    // FindOperator 无 getValue()，集合在 _value。
+    const deleteMock = (executorRepo as unknown as { delete: jest.Mock })
+      .delete;
+    const deleteArg = deleteMock.mock.calls[0][0] as {
+      id: { _value: string[] };
+    };
+    expect(deleteArg.id._value).toEqual(["exec-free"]);
+    // 被跳过的行 warn + 审计留痕
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "executor.cleanup_skipped",
+        resourceId: "exec-pinned",
+        detail: expect.objectContaining({ pinnedTasks: 2 }),
+      }),
+    );
+    // 被删行的 pull 队列顺手清理
+    expect(pullService.clear).toHaveBeenCalledWith("exec-free");
+    expect(pullService.clear).not.toHaveBeenCalledWith("exec-pinned");
+  });
 });

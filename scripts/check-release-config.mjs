@@ -117,7 +117,13 @@ export function parseReleaseWorkflow(text) {
 export function checkReleaseConfig({ rpConfig, matrix, guardedDirs, versions, manifest }) {
   const problems = [];
 
-  const linked = new Set(rpConfig.plugins?.[0]?.components ?? []);
+  // 多 lockstep 组（2026-10：py-libs 四包以独立组纳管，版本独立于主组演进）。
+  // 任何带 components 数组的 plugin 都视作一个 linked-versions 组（不强校验
+  // type 字段，向后兼容 selftest 与旧配置的简写形态）。
+  const groups = (rpConfig.plugins ?? [])
+    .filter((p) => Array.isArray(p?.components) && p.components.length > 0)
+    .map((p) => ({ name: p.groupName ?? "(unnamed)", components: p.components }));
+  const linked = new Set(groups.flatMap((g) => g.components));
   const packages = rpConfig.packages ?? {};
   const components = Object.entries(packages).map(([dir, v]) => ({
     dir,
@@ -178,18 +184,20 @@ export function checkReleaseConfig({ rpConfig, matrix, guardedDirs, versions, ma
     }
   }
 
-  // ④ lockstep 组内版本必须已一致
-  const linkedVersions = components
-    .filter((c) => linked.has(c.component))
-    .map((c) => ({ component: c.component, version: versions[c.dir] }))
-    .filter((v) => v.version !== undefined);
-  const uniq = [...new Set(linkedVersions.map((v) => v.version))];
-  if (uniq.length > 1) {
-    problems.push(
-      `④ lockstep 组内版本不一致：`
-        + linkedVersions.map((v) => `${v.component}=${v.version}`).join(", ")
-        + `——version-guard 会在 tag 那一刻拦下发布`,
-    );
+  // ④ lockstep 组内版本必须已一致（按组独立比对，组间允许不同版本线）
+  for (const group of groups) {
+    const members = components
+      .filter((c) => group.components.includes(c.component))
+      .map((c) => ({ component: c.component, version: versions[c.dir] }))
+      .filter((v) => v.version !== undefined);
+    const uniq = [...new Set(members.map((v) => v.version))];
+    if (uniq.length > 1) {
+      problems.push(
+        `④ lockstep 组「${group.name}」内版本不一致：`
+          + members.map((v) => `${v.component}=${v.version}`).join(", ")
+          + `——version-guard 会在 tag 那一刻拦下发布`,
+      );
+    }
   }
 
   return problems;
@@ -265,6 +273,47 @@ export function selftest() {
     [
       "④ lockstep 版本不一致被抓",
       run({ versions: { "packages/one": "1.0.0", "packages/two": "1.0.1" } }),
+      1,
+    ],
+    [
+      // 多组（2026-10 py-libs 纳管形态）：组间版本不同但组内各自一致 → 放行
+      "④ 多 lockstep 组：组间版本不同、组内一致 → 0 条",
+      run({
+        rpConfig: {
+          plugins: [
+            { type: "linked-versions", groupName: "main", components: ["a"] },
+            { type: "linked-versions", groupName: "py-libs", components: ["b"] },
+          ],
+          packages: {
+            "packages/one": { component: "a" },
+            "packages/two": { component: "b" },
+          },
+        },
+        versions: { "packages/one": "1.5.3", "packages/two": "0.2.0" },
+      }),
+      0,
+    ],
+    [
+      "④ 多 lockstep 组：新组组内不一致仍被抓",
+      run({
+        rpConfig: {
+          plugins: [
+            { type: "linked-versions", groupName: "main", components: ["a"] },
+            { type: "linked-versions", groupName: "py-libs", components: ["b", "c"] },
+          ],
+          packages: {
+            "packages/one": { component: "a" },
+            "packages/two": { component: "b" },
+            "packages/three": { component: "c" },
+          },
+        },
+        versions: { "packages/one": "1.5.3", "packages/two": "0.2.0", "packages/three": "0.1.0" },
+        manifest: {
+          "packages/one": "1.5.3",
+          "packages/two": "0.2.0",
+          "packages/three": "0.1.0",
+        },
+      }),
       1,
     ],
     [

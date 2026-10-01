@@ -33,6 +33,8 @@ import { buildHelmetOptions } from "./common/utils/security-headers.util";
 import { sseAwareCompressionFilter } from "./common/utils/sse-compression.util";
 import { createUploadAuthMiddleware } from "./common/middleware/upload-auth.middleware";
 import { SystemConfigService } from "./modules/config/config.service";
+import { DataSource, DataSourceOptions } from "typeorm";
+import { runMigrationsWithAdvisoryLock } from "./common/utils/migration-runner.util";
 // import { TraceMiddleware } from "./common/middleware/trace.middleware";
 
 // OPS-06 / ARCH-008: graceful-shutdown state shared with the process-level
@@ -65,12 +67,65 @@ async function gracefulFatalShutdown(reason: unknown): Promise<void> {
   process.exit(1);
 }
 
+/**
+ * 第四轮审计（A2）: 生产迁移互斥——migrationsRun 自动迁移已关闭
+ * （configuration.ts），迁移改在 NestFactory.create **之前**执行：
+ *  - 顺序依据：旧 migrationsRun 在 TypeORM 模块初始化期跑迁移，早于其他
+ *    模块的 onModuleInit（users.service 初始管理员种子等 DB 写入）——本函数
+ *    置于 bootstrap 最前，保住「先迁移、后种子/调度」的既有时序契约；
+ *  - 互斥依据：pg_advisory_lock（固定常量键，migration-runner.util.ts）——
+ *    HA `--scale admin-api=2` 双副本同时 boot 时后到者轮询等待，先到者跑完
+ *    （其余副本 runMigrations 发现无 pending 即 no-op）；
+ *  - 形态依据：用**独立 bootstrap DataSource**（buildTypeOrmDataSourceOptions
+ *    同一构造）跑完即 destroy，随后 Nest app 再建自己的连接池——避免
+ *    「NestFactory.create 先完成全部模块初始化（含 DB 种子）再补迁移」的
+ *    时序倒挂；双重建连的成本是启动期一次额外的池初始化（毫秒级），可接受。
+ *  - development 沿用旧行为：不自动迁移（与旧 migrationsRun 条件逐字一致），
+ *    由开发者显式跑 npm run migration:run（migration-lock-cli.ts 同键带锁）。
+ */
+async function runBootstrapMigrations(): Promise<void> {
+  // configuration 也须动态 import：静态 import 会在顶部 loadEnvFile() 之前
+  // 求值其 production fail-fast 块（W-22 同款时序问题，见 importAppModule 注释）。
+  const configurationModule = await import("./config/configuration");
+  const cfg = configurationModule.default();
+  if (cfg.app.nodeEnv === "development") return;
+
+  const bootstrapDs = new DataSource(
+    // buildTypeOrmDataSourceOptions 的公开返回面刻意是 Record<string, unknown>
+    // （replication.slaves 字符串形态运行时合法但不在官方类型面，见
+    // configuration.ts 尾部收窄断言注释）——与 DataSourceOptions 无重叠，
+    // TS2352 下须经 unknown 中转；产物形状由 configuration.spec 钉住。
+    configurationModule.buildTypeOrmDataSourceOptions({
+      database: {
+        host: cfg.database.host,
+        port: cfg.database.port,
+        username: cfg.database.username,
+        password: cfg.database.password,
+        database: cfg.database.database,
+        poolSize: cfg.database.poolSize,
+        readReplicaUrl: cfg.database.readReplicaUrl,
+      },
+      app: { nodeEnv: cfg.app.nodeEnv },
+    }) as unknown as DataSourceOptions,
+  );
+  await bootstrapDs.initialize();
+  try {
+    await runMigrationsWithAdvisoryLock(bootstrapDs);
+  } finally {
+    await bootstrapDs.destroy().catch(() => undefined);
+  }
+}
+
 async function bootstrap() {
   // SEC-02 / ARCH-001 / ARCH-27: production CORS 白名单校验（显式配置、
   // 禁 localhost、合法 http(s) URL）已统一收编到 configuration.ts 的
   // fail-fast 块 —— 在 ConfigModule 初始化（NestFactory.create 内）抛出，
   // 仍早于 app.listen，bootstrap().catch 会以非零码退出。此处不再直读
   // process.env 重复实现同一校验。
+
+  // 第四轮审计（A2）: 先跑带 advisory lock 互斥的生产迁移，再创建 Nest 应用
+  // （时序/互斥/形态依据见 runBootstrapMigrations 头注）。
+  await runBootstrapMigrations();
 
   // W-22: dynamic require so app.module (and its controllers' @Throttle
   // decorators reading process.env at class-definition time) evaluates AFTER
@@ -84,6 +139,27 @@ async function bootstrap() {
   // （helmet/trust-proxy/CORS/swagger/port）全部改用 configuration.ts
   // 注册的配置节，不再直读 process.env。
   const configService = app.get(ConfigService);
+
+  // A4（第三轮审计·低）：THROTTLE_ENABLED=false 是全局旁路逃生门（app.module
+  // ThrottlerModule 的顶层 skipIf）——它关掉的**包括登录与任务 webhook 等敏感
+  // 面**的限流，不只是普通 API。误配（或忘配回 true）时攻击面直接暴露且无
+  // 任何日志线索，故启动时 loud warn：多行 + 显式警示语，让运维在启动日志里
+  // 一眼可见。skipIf 每请求重读 ConfigService，运行期改回 true 即生效（新请求），
+  // 本告警只陈述启动时刻的配置。
+  if (configService.get<boolean>("throttle.enabled") === false) {
+    Logger.warn(
+      "------------------------------------------------------------------",
+      "Bootstrap",
+    );
+    Logger.warn(
+      "[SECURITY] 限流已全域关闭（THROTTLE_ENABLED=false，含登录/webhook 等敏感面），仅限受控环境（本地调试/压测）使用！",
+      "Bootstrap",
+    );
+    Logger.warn(
+      "------------------------------------------------------------------",
+      "Bootstrap",
+    );
+  }
 
   // P2: the execution callback batch legitimately exceeds the 1 MB global
   // cap (100 items × up to 512 KB of logs each) — parse that route with a

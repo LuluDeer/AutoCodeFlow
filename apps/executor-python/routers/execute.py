@@ -481,6 +481,29 @@ def _validate_registry_url(value: str) -> str:
     return url
 
 
+def _pypi_index_hint(registry_url: str, extra_registry_url: str = '') -> str:
+    """DEEP-AUDIT B·2.2：依赖安装失败时把实际生效的索引配置带进报错。
+
+    PYPI_REGISTRY_URL 是**替换**默认索引（--index-url）而非附加；自建私有源
+    （registry-pypi）又没有上游代理——"私有源中不存在该包"是这条失败最常见的
+    根因，此前报错只有 "uv pip install failed: ..."，用户无从得知。此提示把
+    实际 --index-url（以及可选 --extra-index-url）与处置动作一并给出。
+    """
+    if not registry_url and not extra_registry_url:
+        # 未配置任何索引 → uv 走默认 PyPI，无私有源语义可提示。
+        return ''
+    if extra_registry_url:
+        return (
+            f' (index-url={registry_url or "https://pypi.org/simple"}, '
+            f'extra-index-url={extra_registry_url}; 若包确已发布到 PyPI 官方源仍失败, '
+            f'请检查索引可达性与包名/版本拼写)'
+        )
+    return (
+        f' (index-url={registry_url}; 该地址会替换默认 PyPI 索引且当前私有源无上游代理——'
+        f'若包来自 PyPI 官方源, 请先上传到私有源, 或配置 PYPI_EXTRA_INDEX_URL 追加官方索引)'
+    )
+
+
 # Dependency installers must not inherit the executor process environment. In
 # particular, pip/uv honor PIP_* / UV_* variables and user config files, which
 # can contain host credentials or redirect package downloads. Keep only the
@@ -2908,6 +2931,11 @@ async def ensure_venv(
     # Validate before spawning even the venv phase. This keeps malformed or
     # credential-bearing registry configuration out of every uv subprocess.
     registry_url = _validate_registry_url(settings.pypi_registry_url)
+    # DEEP-AUDIT B·2.2：可选附加索引（PYPI_EXTRA_INDEX_URL）——设置时以
+    # --extra-index-url 追加，让「私有源 + 官方源」同时可见（缓解私有源
+    # 无上游、公共包必失败的部署陷阱）。校验与 PYPI_REGISTRY_URL 同源；
+    # 不设（''）则下方 argv 与之前逐字节一致。
+    extra_registry_url = _validate_registry_url(settings.pypi_extra_index_url)
     install_env = _build_uv_env(venv_dir.parent / '.uv-cache')
     # W-02 follow-up (windows-findings): venv layout is platform-specific —
     # win32 uses Scripts\python.exe, POSIX uses bin/python. The old hardcoded
@@ -2980,10 +3008,25 @@ async def ensure_venv(
         # after startup; never put a credential-bearing URL into uv argv.
         if registry_url:
             install_args.extend(['--index-url', registry_url])
+        # DEEP-AUDIT B·2.2：可选附加索引——与 --index-url 并存（uv 会聚合两处
+        # 的发行版；版本选择规则 uv 内建：同版本多索引时按索引声明顺序优先）。
+        if extra_registry_url:
+            install_args.extend(['--extra-index-url', extra_registry_url])
         install_args.extend(requirements)
         code, out = await _run_uv(install_args, UV_PIP_TIMEOUT_SECONDS, env=install_env)
         if code != 0:
-            raise RuntimeError(f'uv pip install failed: {_truncate_error_message(out)}')
+            # DEEP-AUDIT B·2.2：失败信息带上实际生效的索引配置——此前只有
+            # "uv pip install failed: ..."，当私有源为「替换默认索引、无上游」
+            # 时，"私有源中不存在该包"这一最常见根因对用户完全不可见。
+            # 截断必须作用于**拼装后的最终消息**（前缀+索引提示+uv 输出）：
+            # 只截 out 会把提示段挤出 4096 DTO 预算，完整输出场景整条失败
+            # 回调会被 admin ParseArrayPipe 拒收（R4-C P2 同型回归）。
+            index_hint = _pypi_index_hint(registry_url, extra_registry_url)
+            raise RuntimeError(
+                _truncate_error_message(
+                    f'uv pip install failed{index_hint}: {out}'
+                )
+            )
 
     return python_bin
 

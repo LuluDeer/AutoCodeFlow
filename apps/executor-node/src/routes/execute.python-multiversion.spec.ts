@@ -156,6 +156,7 @@ import {
   listActiveVenvDirNames,
   mergeRequirements,
   parsePackageRequirements,
+  pypiIndexHint,
   venvDirName,
   venvPythonBin,
 } from './execute';
@@ -988,8 +989,34 @@ describe('declared runtimeVersion', () => {
     expect(calls.some(isUvVenvCall)).toBe(false);
   });
 
-  it('no-version + requirements → `uv venv --no-project` (argv unchanged, AC-10a)', async () => {
-    const venvDir = path.join(WORK_DIR, '.venvs', 'taskNV');
+  // DEEP-AUDIT B·2.2：可选附加索引——设置时以 --extra-index-url 追加（与
+  // --index-url 并存），不设则 argv 与之前逐字节一致。
+  it('appends --extra-index-url when PYPI_EXTRA_INDEX_URL is configured', async () => {
+    setConfig({ pypiRegistryUrl: 'https://pypi.internal/simple', pypiExtraIndexUrl: 'https://pypi.org/simple' });
+    const home = poolHome('3.12.13');
+    addPoolInterpreter('3.12.13');
+    const venvDir = path.join(WORK_DIR, '.venvs', 'taskR2');
+    addHealthyVenv(venvDir, home, '3.12.13');
+
+    const calls = installSpawnRecorder(uvResponder([]));
+    const { prepared } = await capturePrepared(
+      { id: 'taskR2', runtime: 'python', entrypoint: 'main.py', requirements: ['requests'] },
+      'exec-extra-registry',
+    );
+
+    expect(prepared.error).toBeUndefined();
+    const pipCall = calls.find(isUvPipCall);
+    expect(pipCall).toBeTruthy();
+    const idx = pipCall!.args.indexOf('--index-url');
+    const extraIdx = pipCall!.args.indexOf('--extra-index-url');
+    expect(idx).toBeGreaterThanOrEqual(0);
+    expect(pipCall!.args[idx + 1]).toBe('https://pypi.internal/simple');
+    expect(extraIdx).toBeGreaterThan(idx);
+    expect(pipCall!.args[extraIdx + 1]).toBe('https://pypi.org/simple');
+    setConfig({ pypiRegistryUrl: '', pypiExtraIndexUrl: '' });
+  });
+
+  it('no-version + requirements → `uv venv --no-project` (argv unchanged, AC-10a)', async () => {    const venvDir = path.join(WORK_DIR, '.venvs', 'taskNV');
     const calls = installSpawnRecorder(uvResponder([]));
 
     await capturePrepared(
@@ -1163,5 +1190,29 @@ describe('active venv protection for the TTL sweep', () => {
     expect(prepared.task.cmd).toBe(process.platform === 'win32' ? 'python.exe' : 'python3');
     // 无 venv 的执行不产生保护项（否则保护集会无意义地膨胀）。
     expect(listActiveVenvDirNames()).not.toContain('taskPlain');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// DEEP-AUDIT B·2.2：索引提示（与 python 执行器 _pypi_index_hint 同口径）
+// ---------------------------------------------------------------------------
+
+describe('pypiIndexHint (B·2.2 failure diagnostics)', () => {
+  it('returns an empty hint when no index is configured (default PyPI)', () => {
+    expect(pypiIndexHint('')).toBe('');
+    expect(pypiIndexHint('', '')).toBe('');
+  });
+
+  it('explains the replace-index/no-upstream semantics for a private-only registry', () => {
+    const hint = pypiIndexHint('https://pypi.internal/simple');
+    expect(hint).toContain('index-url=https://pypi.internal/simple');
+    expect(hint).toContain('PYPI_EXTRA_INDEX_URL');
+  });
+
+  it('lists both indexes when an extra index is configured', () => {
+    const hint = pypiIndexHint('https://pypi.internal/simple', 'https://pypi.org/simple');
+    expect(hint).toContain('index-url=https://pypi.internal/simple');
+    expect(hint).toContain('extra-index-url=https://pypi.org/simple');
+    expect(hint).not.toContain('无上游');
   });
 });

@@ -586,6 +586,13 @@ export class TaskProcessor extends WorkerHost {
             }`,
           );
         }
+        // FIX-4.2: 派发失败终态已落库 → 唤醒 webhook wait 等待方（best-effort，
+        // 与事件发布同属落库后的旁路副作用；轮询兜底仍在）。
+        try {
+          this.taskService.publishExecutionWake(exec.id);
+        } catch {
+          /* publishExecutionWake 内部已吞异常，此处再兜一道 */
+        }
       }
     }
   }

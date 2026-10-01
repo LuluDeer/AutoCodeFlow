@@ -67,6 +67,62 @@ function validateOptionalUrlSetting(value: string, settingName: string): string 
   }
 }
 
+/**
+ * 任务 Python 版本区间（CONTRACT.md §1.1）的解析（审计二轮 B-3：此前
+ * interpreters.ts 硬编码 '3.7'/'3.14'，admin 与 executor-python 都已支持
+ * PYTHON_RUNTIME_VERSION_MIN/MAX 同名 env，node 侧独缺）。
+ *
+ * 与 executor-python config.py 的差异：python 侧启动硬失败（min>max 抛
+ * ValueError），node 侧沿用本文件其它配置的「warn + 回落默认」姿态——
+ * executor-node 内嵌在 executor-desktop 里，一个 env 手滑不应让桌面执行器
+ * 起不来（任务仍有「无版本声明走系统 python3」的兼容路径）。
+ *
+ * 返回同时用于两个 getter：min≤max 是跨字段的成对校验，拆开各校各就管不住。
+ */
+const RUNTIME_VERSION_BOUND_PATTERN = /^\d+\.\d+$/;
+const RUNTIME_VERSION_DEFAULT_MIN = '3.7';
+const RUNTIME_VERSION_DEFAULT_MAX = '3.14';
+
+function runtimeVersionBoundKey(v: string): [number, number] {
+  const [major, minor] = v.split('.');
+  return [parseInt(major, 10), parseInt(minor, 10)];
+}
+
+function resolveRuntimeVersionRange(): { min: string; max: string } {
+  const rawMin = (process.env.PYTHON_RUNTIME_VERSION_MIN ?? '').trim();
+  const rawMax = (process.env.PYTHON_RUNTIME_VERSION_MAX ?? '').trim();
+  let min = RUNTIME_VERSION_DEFAULT_MIN;
+  let max = RUNTIME_VERSION_DEFAULT_MAX;
+  if (rawMin) {
+    if (RUNTIME_VERSION_BOUND_PATTERN.test(rawMin)) min = rawMin;
+    else {
+      logger.warn(
+        `PYTHON_RUNTIME_VERSION_MIN is invalid ("${rawMin}"; expected X.Y like 3.9) — ` +
+          `falling back to ${RUNTIME_VERSION_DEFAULT_MIN}`,
+      );
+    }
+  }
+  if (rawMax) {
+    if (RUNTIME_VERSION_BOUND_PATTERN.test(rawMax)) max = rawMax;
+    else {
+      logger.warn(
+        `PYTHON_RUNTIME_VERSION_MAX is invalid ("${rawMax}"; expected X.Y like 3.12) — ` +
+          `falling back to ${RUNTIME_VERSION_DEFAULT_MAX}`,
+      );
+    }
+  }
+  const a = runtimeVersionBoundKey(min);
+  const b = runtimeVersionBoundKey(max);
+  if (a[0] > b[0] || (a[0] === b[0] && a[1] > b[1])) {
+    logger.warn(
+      `PYTHON_RUNTIME_VERSION_MIN (${min}) must not be greater than PYTHON_RUNTIME_VERSION_MAX (${max}) — ` +
+        `falling back to defaults ${RUNTIME_VERSION_DEFAULT_MIN}~${RUNTIME_VERSION_DEFAULT_MAX}`,
+    );
+    return { min: RUNTIME_VERSION_DEFAULT_MIN, max: RUNTIME_VERSION_DEFAULT_MAX };
+  }
+  return { min, max };
+}
+
 const adminApiUrl = process.env.ADMIN_API_URL || 'http://admin-api:3105';
 const adminApiUrlInternal = process.env.ADMIN_API_URL_INTERNAL || adminApiUrl;
 const configuredAdminApiUrls = (process.env.ADMIN_API_URLS || '')
@@ -173,6 +229,25 @@ export const config = {
       'PYPI_REGISTRY_URL',
     );
   },
+  // DEEP-AUDIT B·2.2：可选附加索引（对齐 python 侧 PYPI_EXTRA_INDEX_URL）：
+  // 非空时以 `uv pip install --extra-index-url` 追加，让「私有源 + 官方源」
+  // 同时可见。校验与 PYPI_REGISTRY_URL 同源；不设行为逐字节不变。
+  get pypiExtraIndexUrl(): string {
+    return validateOptionalUrlSetting(
+      process.env.PYPI_EXTRA_INDEX_URL || '',
+      'PYPI_EXTRA_INDEX_URL',
+    );
+  },
+  // 任务 Python 版本区间（CONTRACT.md §1.1；审计二轮 B-3）：默认 3.7~3.14 与
+  // executor-python config.py 逐字对齐，可用 PYTHON_RUNTIME_VERSION_MIN/MAX
+  // 覆盖（admin 已支持同名键）。getter 而非常量：惰性读 env，与热重载一致。
+  // 非法值 / min>max 的处置见 resolveRuntimeVersionRange（warn + 回落默认）。
+  get runtimeVersionMin(): string {
+    return resolveRuntimeVersionRange().min;
+  },
+  get runtimeVersionMax(): string {
+    return resolveRuntimeVersionRange().max;
+  },
   // ---------------------------------------------------------------------
   // NFR-15/D12：解释器池体积红线（对齐 executor-python maintenance.
   // enforce_interpreter_pool_limits）。
@@ -194,6 +269,21 @@ export const config = {
     const raw = parseInt(process.env.INTERPRETER_TOTAL_GB || '', 10);
     if (!Number.isFinite(raw)) return 4;
     return Math.max(1, raw);
+  },
+  // 第四轮审计（A5）: 池内 uv 下载缓存（.cache / .uv-cache）TTL 治理——缓存
+  // 条目按 mtime 超过该天数即回收（默认 30d）。0 = 关闭 TTL（只受体积上限
+  // 约束）。与 python maintenance.reclaim_uv_cache 同默认值。
+  get uvCacheTtlDays(): number {
+    const raw = parseInt(process.env.UV_CACHE_TTL_DAYS || '30', 10);
+    if (!Number.isFinite(raw) || raw < 0) return 30;
+    return raw;
+  },
+  // A5: uv 缓存体积上限（MB）。0 = 不设体积上限（默认，仅 TTL 治理）；
+  // 配置后超限时按顶层条目 mtime 升序回收直到落回上限。
+  get uvCacheMaxMb(): number {
+    const raw = parseInt(process.env.UV_CACHE_MAX_MB || '0', 10);
+    if (!Number.isFinite(raw) || raw < 0) return 0;
+    return raw;
   },
   // 解释器下载全局有界并发（D13/NFR-16）：默认 2——不同版本并行下载、同一
   // 版本共享一次（per-version in-flight 去重）；1 = 旧版全局单队列。部署方
@@ -297,6 +387,15 @@ export const config = {
   // （任务超时本身会 kill，这里是防 timeout 未生效的第二道保险）。
   get taskCpuLimitSeconds(): number {
     const raw = parseInt(process.env.TASK_CPU_LIMIT_SECONDS || '0', 10);
+    if (!Number.isFinite(raw) || raw < 0) return 0;
+    return raw;
+  },
+  // 第四轮审计（A10）: 单文件写上限（ulimit -f，RLIMIT_FSIZE），与 python
+  // sandbox.py 的 RLIMIT_FSIZE（task_fsize_limit_mb）口径对齐。默认 0 =
+  // 不设（node 侧无历史默认值，保持既有行为零变化；python 默认 4096MB，
+  // 需要对齐的部署显式配同值即可）。
+  get taskFsizeLimitMb(): number {
+    const raw = parseInt(process.env.TASK_FSIZE_LIMIT_MB || '0', 10);
     if (!Number.isFinite(raw) || raw < 0) return 0;
     return raw;
   },

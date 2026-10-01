@@ -14,6 +14,9 @@ import '../i18n';
 import { monaco } from './monaco-setup';
 import { tasksApi } from '../api/tasks';
 import { showApiError } from '../utils/error';
+// PERF/UX（第四轮审计）：编辑器主题跟随全站明暗主题（theme/store.ts），
+// 不再硬编码 vs-dark——亮色主题下此前会出现「页面白、编辑器黑」的割裂。
+import { useThemeStore, selectResolvedTheme } from '../theme/store';
 
 // 就地启用本地 monaco（模块级一次性配置；后续 loader.init() 直接解析到该实例，
 // 不再发起任何 CDN 请求）。
@@ -39,6 +42,12 @@ interface GlueEditorProps {
 
 export default function GlueEditor({ taskId, initialSource, initialLanguage, taskRuntime, onDirtyChange }: GlueEditorProps) {
   const { t } = useTranslation();
+  // 第四轮审计：订阅推导后的实际主题（resolved），light→"vs"、dark→"vs-dark"
+  // （monaco 内置主题名；仓库无自定义 monaco 主题注册，tokens.ts 无既有映射可循）。
+  // store 变化触发重渲染 → theme prop 变化，@monaco-editor/react 内部会调
+  // monaco.editor.setTheme，切换即时生效，无需再手写 useEffect 监听。
+  const resolvedTheme = useThemeStore(selectResolvedTheme);
+  const monacoTheme = resolvedTheme === 'dark' ? 'vs-dark' : 'vs';
   const [source, setSource] = useState(initialSource || '');
   const [language, setLanguage] = useState(initialLanguage || taskRuntime || 'python');
   const [saving, setSaving] = useState(false);
@@ -165,7 +174,7 @@ echo '{"status": "ok", "message": "Task completed successfully"}'
         language={editorLang}
         value={source}
         onChange={(v) => { setSource(v || ''); markDirty(true); }}
-        theme="vs-dark"
+        theme={monacoTheme}
         options={{
           minimap: { enabled: false },
           fontSize: 14,

@@ -223,6 +223,7 @@ describe('「重新部署」提示文案与实现一致（两版错误文案都�
     expect(svc).toMatch(/if \(reusable\) \{/);
     expect(svc).toMatch(/const deployment = this\.repo\.create\(/);
     // 复用条件必须含 runMode（文案说"同模式才复用"）
-    expect(svc).toMatch(/runMode: dto\.runMode \?\? RunMode\.DAEMON/);
+    // 二轮修复(B·3.2):后端缺省从 DAEMON 对齐为 ONCE(与 Web 表单/18130d66 UX 语义一致)
+    expect(svc).toMatch(/runMode: dto\.runMode \?\? RunMode\.ONCE/);
   });
 });

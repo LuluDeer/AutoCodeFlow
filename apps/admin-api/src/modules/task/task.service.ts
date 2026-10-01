@@ -37,6 +37,7 @@ import type { Readable } from "node:stream";
 import {
   Task,
   TaskStatus,
+  TaskTriggerType,
   TaskRuntime,
   TaskCodeSource,
   ExecuteMode,
@@ -55,6 +56,8 @@ import {
 } from "./execution-terminal";
 // MUTEX-01：互斥组快照解析（执行创建时从 task→application 带下）。
 import { resolveTaskMutexGroupId } from "./execution-mutex";
+// A4: DB 优先级(4=紧急) → BullMQ 出队优先级(1=最高)的方向换算。
+import { toBullPriority } from "../../common/utils/task-priority.util";
 import { ExecutionLogLine } from "./entities/execution-log-line.entity";
 import { TaskVersion } from "./entities/task-version.entity";
 // python_task_multiversion（FR-19 / AC-19a）：zip 来源的 runtime 一致性校验
@@ -119,10 +122,27 @@ import { DEFAULT_PROJECT_ID, Project } from "../project/project.entity";
 // AUTH-02: 项目级角色（写面/执行类写面归属判定）
 import { ProjectAccessService } from "../project/project-access.service";
 // CORE-04: 超时策略归一化（DTO 边界之外的运行态兜底——编程式/旧数据形态）
+// FIX-3.1: timeoutWarnThresholdMs 首次接入运行期消费点（超时预警，见
+// maybeNotifyTimeoutWarning）。
 import {
   normalizeTimeoutAction,
   normalizeTimeoutWarnRatio,
+  timeoutWarnThresholdMs,
 } from "./timeout-policy.util";
+// FIX-4.2: 执行终态唤醒（Redis pub/sub）——webhook 同步等待的事件化通道。
+import { ExecutionWakeService } from "./execution-wake.service";
+// FIX-3.1: 超时预警的每执行至多一次 SETNX 闸（acquireLock 即 SET NX+TTL）。
+import { RedisLockService } from "../../common/services/redis-lock.service";
+/**
+ * FIX-3.1（ARCH-21 红线的**显式例外**）：NotificationService 重新进入本文件。
+ * ARCH-21 红线针对的是「终态事件 → 通知」主链解耦——该链路仍走事件总线
+ * （emitTerminalEvent → ExecutionEventsListener），未被破坏。本次新增的是
+ * 另一条独立旁路：运行中执行的超时预警（用户指令指定直调
+ * NotificationService.notifyTimeout 且不改其签名）。约束自我收紧为：
+ * 仅 maybeNotifyTimeoutWarning 一个调用点、fire-and-forget、任何失败吞掉、
+ * 不进入任何终态写路径。
+ */
+import { NotificationService } from "../notification/notification.service";
 // OBS-03: 日志行级别推断（纯函数）——写入落库 + S3 读取后过滤共用同一实现
 import { levelOfLine } from "./log-level.util";
 // CORE-02: 重试退避抖动——±20% 摊开同时刻重试，避免 thundering herd
@@ -794,6 +814,17 @@ export class TaskService {
     // R-28: 依赖触发系统动作审计（@Optional，先例 eventBus/projectAccess）。
     @Optional()
     private readonly audit: AuditService | null,
+    // FIX-3.1: 超时预警消费面（@Optional —— 既有单测按位置传参的装配缺省
+    // undefined 时预警静默跳过，主链零变化；生产装配 TaskModule providers /
+    // NotificationModule export 均已提供）。
+    @Optional()
+    private readonly redisLockService?: RedisLockService | null,
+    @Optional()
+    private readonly notificationService?: NotificationService | null,
+    // FIX-4.2: 终态唤醒发布侧（@Optional 同上；缺席时 webhook 等待退化为
+    // 纯退避轮询，行为与引入前等价）。
+    @Optional()
+    private readonly executionWakeService?: ExecutionWakeService | null,
   ) {
     // R-26（DEEP_REVIEW 0ef3bbe）: 关键 @Optional 依赖缺失时降级不可观测——
     // 事件总线/审计静默缺失会让终态事件不发、依赖触发审计不写。生产装配下这些
@@ -1034,9 +1065,19 @@ export class TaskService {
 
   async create(dto: CreateTaskDto, user?: { id: number } | null) {
     if (dto.dependencies && Object.keys(dto.dependencies).length > 0) {
+      // FIX-1.1（依赖链契约）：先校验 value 是真实存在的任务 id——value 是
+      // 扇出/环检测的**语义位**，坏 value 必须在写面 400，而不是落库后
+      // 让 checkDependencies 永远判不满足（旧契约 {taskId: name} 就是这么
+      // 静默失效的）。环/自依赖检测在其后（value=id 后既有代码自然生效）。
+      await this.assertDependencyValuesExist(dto.dependencies);
       await this.checkCircularDependency(dto.id, dto.dependencies);
     }
     const normalized = this.normalizeTaskDto(dto);
+    // FIX-1.3: triggerType 与触发配置配对校验（cron ⇒ cronExpression、
+    // fixed_rate ⇒ fixedRate≥1）。此前缺校验：API/MCP/自动注册路径可创建
+    // 「active 但永不触发」的任务且无任何告警（调度注册条件不满足即静默跳过，
+    // misfire 补偿又因 lastTriggerTime 恒空而永久失明）。
+    this.assertTriggerConfigConsistent(normalized);
     // python_task_multiversion（FR-06/FR-18/FR-19）：create 路径的终态就是
     // 请求体本身，直接校验。顺序刻意在归属/SSRF 守卫之后、落库之前——保证
     // 既有守卫的报错优先级与消息零变化（既有用例断言 file:// 被拒且不落库）。
@@ -1101,6 +1142,12 @@ export class TaskService {
     taskId: string,
     dependencies: Record<string, string>,
   ): Promise<void> {
+    // FIX-1.1：dependencies 契约 = Record<显示名快照, 上游任务id>——**value
+    // 才是依赖任务 id**（消费方：本环检测、checkDependencies、扇出匹配、
+    // 前端 dag-layout 全部读 value）。旧契约 {taskId: taskName}（value=名字）
+    // 使本方法 findOne({id: 名字}) 永远查不到 → 深层环静默放行；迁移
+    // 1790000000048 已翻转存量行，写入面另有 assertDependencyValuesExist
+    // 保证 value 是真实任务 id，本检测自那之后才真正生效。
     const visited = new Set<string>();
     const currentPath = new Set<string>();
 
@@ -1115,6 +1162,67 @@ export class TaskService {
     }
 
     await this.detectCycle(taskId, dependencyIds, visited, currentPath);
+  }
+
+  /**
+   * FIX-1.1（依赖链契约）：dependencies 映射的每个 **value** 必须是真实存在
+   * 的任务 id。value 是环检测/依赖满足/扇出匹配的语义位——存进一个名字或
+   * 悬垂 id，后果是下游依赖链**静默永不触发**（checkDependencies 判不满足、
+   * 扇出匹配不到完成的任务 id），用户无从察觉。写面即 400（列出坏 value），
+   * 前端 buildDependenciesPayload 已保证 value=id；本方法覆盖 API/MCP/脚本
+   * 等直连调用方。create 与 update（dependencies 为整体替换语义）共用。
+   */
+  private async assertDependencyValuesExist(
+    dependencies: Record<string, string>,
+  ): Promise<void> {
+    const values = [...new Set(Object.values(dependencies))];
+    if (values.length === 0) return;
+    const found = await this.taskRepo.find({
+      where: { id: In(values) },
+      select: { id: true },
+    });
+    const foundIds = new Set(found.map((t) => t.id));
+    const missing = values.filter((id) => !foundIds.has(id));
+    if (missing.length > 0) {
+      throw new BadRequestException(
+        `dependencies values must be existing task ids (value = upstream task id); not found: ${missing.join(", ")}`,
+      );
+    }
+  }
+
+  /**
+   * FIX-1.3: triggerType 与触发配置的**配对校验**（create=请求体终态；
+   * update=合并后实体终态，故缺省字段保留旧值后仍能判出不一致）。
+   *
+   *  - triggerType=cron ⇒ cronExpression 非空（非空值自身的合法性由 DTO
+   *    IsCron5Field / 调度注册同源校验把关，这里只拦「缺配置」）；
+   *  - triggerType=fixed_rate ⇒ fixedRate ≥ 1。
+   *
+   * 不校验的后果不是报错而是**静默失效**：调度注册条件不满足即不注册任何
+   * 定时器（scheduleOne），任务在 UI 显示「计划中」却永不触发，misfire
+   * 补偿也因 lastTriggerTime 恒空而永久失明——这比 400 糟糕得多。
+   */
+  private assertTriggerConfigConsistent(state: {
+    triggerType: TaskTriggerType;
+    cronExpression?: string | null;
+    fixedRate?: number | null;
+  }): void {
+    if (state.triggerType === TaskTriggerType.CRON) {
+      const expr = (state.cronExpression ?? "").trim();
+      if (!expr) {
+        throw new BadRequestException(
+          "triggerType=cron requires cronExpression (5-field cron) — a task without it would be scheduled as active but never fire",
+        );
+      }
+    }
+    if (state.triggerType === TaskTriggerType.FIXED_RATE) {
+      const rate = state.fixedRate;
+      if (typeof rate !== "number" || !Number.isFinite(rate) || rate < 1) {
+        throw new BadRequestException(
+          "triggerType=fixed_rate requires fixedRate >= 1 (seconds) — a task without it would be scheduled as active but never fire",
+        );
+      }
+    }
   }
 
   private async detectCycle(
@@ -1418,10 +1526,37 @@ export class TaskService {
     const t = await this.findByIdRaw(id);
     // NF-03: 写面属主守卫（ADMIN 全量/属主自己/无主仅 ADMIN）
     await this.assertCanWriteProjectAware(t, user);
+    // A4（第三轮审计·中）：乐观锁（可选）——DTO 显式带 expectedUpdatedAt 时
+    // 与库内行 updatedAt 比对，不符 → 409，防两个控制台标签页互踩写丢。
+    // **缺省（undefined/null）= 跳过检查**：MCP/CLI/SDK 等旧调用方零影响。
+    // 比较两侧同一 hydrated Date 的毫秒值（PG 微秒精度在 hydration 时截断，
+    // API 序列化与本次比对读的是同一形态，毫秒比较稳定）；不可解析的时间串
+    // 按「版本不符」处理（fail-closed，同样 409）。
+    if (dto.expectedUpdatedAt != null) {
+      const expectedMs = new Date(dto.expectedUpdatedAt).getTime();
+      if (
+        !Number.isFinite(expectedMs) ||
+        expectedMs !== t.updatedAt.getTime()
+      ) {
+        throw new ConflictException(
+          "任务已被其他修改抢先更新（数据版本不一致），请刷新后重试",
+        );
+      }
+    }
     const normalized = this.normalizeTaskDto(dto);
     // 同 create：PATCH 显式带 gitRepo 时即校验（缺省 = 保留旧值，不重复校验既有列）
     if (normalized.gitRepo) {
       await assertSafeGitRepoUrl(normalized.gitRepo);
+    }
+    // FIX-1.1: PATCH 的 dependencies 是整体替换语义（Object.assign 透传）——
+    // 本次请求显式带**非空映射**时按 create 同一契约校验 value（必须为存在的
+    // 任务 id）；显式 null / 缺省 = 清空/保留，无 value 可校验。
+    if (
+      normalized.dependencies &&
+      typeof normalized.dependencies === "object" &&
+      Object.keys(normalized.dependencies).length > 0
+    ) {
+      await this.assertDependencyValuesExist(normalized.dependencies);
     }
     // TASK-PROJ-01: 改变归属项目同样需要授权（缺省 = 保留旧归属，不重复校验）
     if (normalized.projectId !== undefined) {
@@ -1445,6 +1580,11 @@ export class TaskService {
             ) as Record<string, unknown>);
     }
     delete normalized.secrets;
+    // A4: expectedUpdatedAt 只服务并发检查（消费即弃，同 timeoutSeconds 模式）
+    // ——normalizeTaskDto 是 {...dto} 展开，不删会把检查字段一并 Object.assign
+    // 到实体上（非列属性污染实体，R-01 同型问题）。cast：normalizeTaskDto 的
+    // 泛型约束是 CreateTaskDto | UpdateTaskDto，仅后者声明了该字段。
+    delete (normalized as { expectedUpdatedAt?: unknown }).expectedUpdatedAt;
     // NF-04: 亲和/反亲和为可空列，PATCH null 清除语义直接依赖 Object.assign
     // 的透传（显式 null 覆盖旧数组 → 列落 NULL = 无约束）——normalizeTaskDto
     // 不触碰这两个键；undefined（缺省）不会出现在合并结果上，旧值自然保留。
@@ -1455,6 +1595,9 @@ export class TaskService {
     // "broadcast+已 pin" 非法状态（dispatchBroadcast 不读 executorId，pinning
     // 被静默丢弃）。save 前兜底，消息与 create 路径一致。
     this.assertPinBroadcastExclusive(updated.executorId, updated.executeMode);
+    // FIX-1.3: PATCH 配对校验看合并后实体态（R7/N17 先例）——增量只带
+    // triggerType 或只清 cronExpression 时，增量 DTO 看不到另一半。
+    this.assertTriggerConfigConsistent(updated);
     // python_task_multiversion（FR-06/FR-18/FR-19 + CONTRACT §2.1「PATCH 必须按
     // 合并后终态校验」）：同 R7/N17 先例——增量 DTO 看不到旧行的 runtime /
     // applicationId / codeSource，必须看 `updated`（合并态）才能正确判定
@@ -1632,7 +1775,8 @@ export class TaskService {
           // N2: unify with scheduler.enqueue — always pass a normalized numeric
           // priority (DB stores the PG string enum; a raw label must never
           // reach BullMQ, which rejects non-integer priorities).
-          priority: normalizeTaskPriority(task.priority),
+          // A4: 再经方向换算——BullMQ 数值越小越先出队，DB 4=紧急 → 1。
+          priority: toBullPriority(normalizeTaskPriority(task.priority)),
         },
       );
       endSpan?.();
@@ -1652,6 +1796,8 @@ export class TaskService {
         },
         from: [ExecutionStatus.PENDING],
       });
+      // FIX-4.2: 补偿终态已落库，同样唤醒 webhook wait 等待方。
+      this.publishExecutionWake(exec.id);
       this.logger.error(`Failed to enqueue execution ${exec.id}: ${message}`);
       throw new Error(`Failed to enqueue execution: ${message}`);
     }
@@ -1681,7 +1827,10 @@ export class TaskService {
       select: executionListSelectMap(this.execRepo),
       skip: (p.page - 1) * p.pageSize,
       take: p.pageSize,
-      order: { createdAt: "DESC" },
+      // FIX-5.3: id 决胜键——createdAt 非唯一（同刻批量提交/同任务并发行），
+      // 单键排序下 OFFSET 翻页会漏行/重行（与 scheduler stale sweep 翻页同
+      // 教训——该处已加决胜键，读端点此前未同步）。
+      order: { createdAt: "DESC", id: "DESC" },
     });
     return paginate(list, total, p.page, p.pageSize);
   }
@@ -1708,7 +1857,10 @@ export class TaskService {
     const qb = this.execRepo
       .createQueryBuilder("e")
       .select(executionListSelectColumnsAliased(this.execRepo))
+      // FIX-5.3: id 决胜键（同 getExecutions——createdAt 非唯一，OFFSET 翻页
+      // 无决胜键会漏行/重行）。
       .orderBy("e.createdAt", "DESC")
+      .addOrderBy("e.id", "DESC")
       .skip((p.page - 1) * p.pageSize)
       .take(p.pageSize);
 
@@ -1857,18 +2009,48 @@ export class TaskService {
   }
 
   async getExecutionStats(taskId: string) {
-    const recent = await this.execRepo.find({
-      where: { taskId },
-      order: { createdAt: "DESC" },
-      take: 20,
-    });
-    const total = await this.execRepo.count({ where: { taskId } });
-    const succeeded = recent.filter(
+    // FIX-5.1: 统计口径收口——此前 successRate 只按「最近 20 次」窗口计算，
+    // 而 totalRuns 是全量口径；前端 failedRunCount = totalRuns×(1−rate) 把
+    // 两个窗口混在一起派生「失败次数」（历史 500 败 + 最近 20 全成 → 显示
+    // 「失败 0 次」）。现后端以一条 GROUP BY 给出**全量**计数（succeeded/
+    // failed/successRate 全量口径），近窗成功率保留为 recentSuccessRate
+    // （窗口标注见前端卡片），前端不再自行派生失败数。
+    // FIX-5.2: recentExecutions 加读投影（复用列表读面排除 logs/aiAnalysis，
+    // 并追加排除 result——jsonb 大对象列：广播执行带 acceptedResults 数组、
+    // 解释器快照等，统计卡只消费 status/duration）。
+    const [recent, statusRows, total] = await Promise.all([
+      this.execRepo.find({
+        where: { taskId },
+        order: { createdAt: "DESC", id: "DESC" },
+        take: 20,
+        select: this.executionStatsSelect(),
+      }),
+      this.execRepo
+        .createQueryBuilder("e")
+        .select("e.status", "status")
+        .addSelect("COUNT(*)", "count")
+        .where("e.taskId = :taskId", { taskId })
+        .groupBy("e.status")
+        .getRawMany(),
+      this.execRepo.count({ where: { taskId } }),
+    ]);
+    const byStatus = new Map<string, number>(
+      statusRows.map((r) => [String(r.status), Number(r.count) || 0]),
+    );
+    const succeeded = byStatus.get(ExecutionStatus.SUCCESS) ?? 0;
+    // 失败口径 = FAILED + TIMEOUT（与失败类终态语义一致；killed/cancelled
+    // 是人工/调度动作，不计入任务自身的失败率）。
+    const failed =
+      (byStatus.get(ExecutionStatus.FAILED) ?? 0) +
+      (byStatus.get(ExecutionStatus.TIMEOUT) ?? 0);
+    const successRate =
+      total > 0 ? Math.round((succeeded / total) * 1000) / 10 : 0;
+    const recentSucceeded = recent.filter(
       (e) => e.status === ExecutionStatus.SUCCESS,
     ).length;
-    const successRate =
+    const recentSuccessRate =
       recent.length > 0
-        ? Math.round((succeeded / recent.length) * 1000) / 10
+        ? Math.round((recentSucceeded / recent.length) * 1000) / 10
         : 0;
     const durations = recent
       .filter((e) => e.duration != null)
@@ -1879,10 +2061,23 @@ export class TaskService {
         : 0;
     return {
       recentExecutions: recent,
+      // 近 20 次窗口口径（保留给趋势参考；字段名即窗口标注）。
+      recentSuccessRate,
+      // 全量口径（FIX-5.1 起为权威；successRate 语义自「近 20 次」切换为
+      // 全量——消费方 TaskDetailPage 同批更新）。
       successRate,
+      succeeded,
+      failed,
       avgDuration,
       totalRuns: total,
     };
+  }
+
+  /** FIX-5.2: 统计卡读投影 = 列表投影 − result（大对象 jsonb 列）。 */
+  private executionStatsSelect(): Record<string, true> {
+    const select = executionListSelectMap(this.execRepo);
+    delete select.result;
+    return select;
   }
 
   async getExecution(id: string, taskId?: string) {
@@ -1944,12 +2139,27 @@ export class TaskService {
     // Use errorMessage + logs as analysis input; fall back gracefully when logs are empty
     const logContent =
       [exec.errorMessage, exec.logs].filter(Boolean).join("\n") || "(no logs)";
-    const task = { name: exec.taskName, runtime: "unknown" };
+    // FIX-6.2: prompt 上下文补全——runtime 此前恒传 "unknown"（AI 拿不到真实
+    // 运行时，结论泛化）；现从任务行取真实 runtime，并带上平台已判定的
+    // failureReason / exitCode 与任务级 runbook（与通知链路同源）。任务行
+    // 不可得（软删/无 taskId）时逐字段退化为旧行为，端点语义零破坏。
+    const taskRow = exec.taskId
+      ? await this.taskRepo.findOne({ where: { id: exec.taskId } })
+      : null;
+    const task = {
+      name: taskRow?.name ?? exec.taskName ?? "unknown",
+      runtime: taskRow?.runtime ?? "unknown",
+    };
     // ARCH-30: 走服务化封装（重试 1 次 + 指标 + 永不抛错）；空串结果原样
     // 落库（前端按"无分析"降级渲染），与此前直调 AiService 的空串语义一致。
     exec.aiAnalysis = await this.aiAnalysisService.analyzeFailure(
       task,
       logContent,
+      {
+        failureReason: exec.failureReason ?? null,
+        exitCode: typeof exec.exitCode === "number" ? exec.exitCode : null,
+        runbook: taskRow?.runbook ?? null,
+      },
     );
     await this.execRepo.save(exec);
     return exec;
@@ -2044,6 +2254,9 @@ export class TaskService {
 
   private static readonly SSE_MAX_PER_EXECUTION_DEFAULT = 4;
   private static readonly SSE_MAX_GLOBAL_DEFAULT = 64;
+  // FIX-3.1: 超时预警 SETNX 闸的 TTL——远大于任何执行生命周期，锁不释放
+  // 即「每执行至多一次」的去重窗口（acf:timeout-warn:{executionId}）。
+  private static readonly TIMEOUT_WARN_LOCK_TTL_MS = 24 * 60 * 60 * 1000;
 
   private get sseMaxPerExecution(): number {
     const raw = this.configService.get<number | string>(
@@ -2128,6 +2341,8 @@ export class TaskService {
     let s3FetchFailed = false;
     const POLL_INTERVAL = 1000; // ms
     const MAX_RUNTIME = 30 * 60 * 1000; // 30 min safety cap
+    // FIX-5.4: DB 路径单轮 flush 的行数上限（与 REST /logs safeLimit 同值）。
+    const SSE_FLUSH_BATCH_LINES = 2000;
     // R-24（DEEP_REVIEW 0ef3bbe）: 空转退避——连续 N 次轮询无新日志后，
     // 指数增大查询间隔（上限 5s），有新数据立即恢复 1s 基线。64 并发流
     // 空转期从 128 QPS 底噪降至 ~12.8 QPS（5s 间隔）。最大 5s 保证新日志
@@ -2155,10 +2370,29 @@ export class TaskService {
       "cancelled",
     ] as string[];
 
+    // FIX-3.1: 预警判定的任务配置缓存（同一条流只查一次任务行——timeout
+    // 配置在单次执行生命周期内视为不变）。SSE 日志流轮询是 admin 内对
+    // 「执行进行中」的周期性观察点：非终态轮次按 elapsed ≥ 阈值判定，
+    // SETNX 闸保证每执行至多一次预警（见 maybeNotifyTimeoutWarning）。
+    let warnTaskCache: { taskId: string; task: Task | null } | null = null;
+
     const flush = async (): Promise<boolean> => {
       // Returns true when execution is terminal and no more lines pending
       const exec = await this.execRepo.findOne({ where: { id: execId } });
       if (!exec) return true;
+
+      // FIX-3.1: 超时预警观察点（终态轮次跳过——预警只对进行中的执行有意义）。
+      if (!TERMINAL_STATUSES.includes(exec.status) && exec.taskId) {
+        if (!warnTaskCache || warnTaskCache.taskId !== exec.taskId) {
+          warnTaskCache = {
+            taskId: exec.taskId,
+            task: await this.taskRepo.findOne({ where: { id: exec.taskId } }),
+          };
+        }
+        if (warnTaskCache.task) {
+          await this.maybeNotifyTimeoutWarning(exec, warnTaskCache.task);
+        }
+      }
 
       // LOG-02: S3 objects are uploaded once at callback time, so their lines
       // become readable only after the execution reaches a terminal state;
@@ -2201,6 +2435,11 @@ export class TaskService {
         .andWhere("l.lineNumber >= :from", { from: nextLine })
         .orderBy("l.lineNumber", "ASC")
         .select(["l.lineNumber", "l.content"])
+        // FIX-5.4: 单轮 flush 行数上限（与 REST 端点 safeLimit 同值）——
+        // 中途接入的观看者此前首轮会把「已产出的全部行」一次物化进内存并
+        // 写出（数万行级执行的内存/网络尖峰）；分批 flush 由外层 while 驱动
+        //（下一轮继续推进 nextLine），SSE 协议与行分割语义不变。
+        .take(SSE_FLUSH_BATCH_LINES)
         .getMany();
 
       for (const row of lines) {
@@ -2215,7 +2454,12 @@ export class TaskService {
         "killed",
         "cancelled",
       ] as string[];
-      return terminal.includes(exec.status);
+      // FIX-5.4: 「完成」= 已到终态 **且** 本轮未打满批——满批意味着可能还有
+      // 待发行，即使终态也要再 flush 一轮直到排空（否则上限引入后终态执行的
+      // 尾部日志会被截掉）。
+      return (
+        terminal.includes(exec.status) && lines.length < SSE_FLUSH_BATCH_LINES
+      );
     };
 
     // Poll until done or aborted
@@ -2324,7 +2568,8 @@ export class TaskService {
                 }
               : undefined,
           // N2: normalized numeric priority (see trigger()).
-          priority: normalizeTaskPriority(task.priority),
+          // A4: 再经方向换算——BullMQ 数值越小越先出队，DB 4=紧急 → 1。
+          priority: toBullPriority(normalizeTaskPriority(task.priority)),
         },
       );
     } catch (err: unknown) {
@@ -2341,6 +2586,8 @@ export class TaskService {
         },
         from: [ExecutionStatus.PENDING],
       });
+      // FIX-4.2: 补偿终态已落库，同样唤醒 webhook wait 等待方。
+      this.publishExecutionWake(exec.id);
       this.logger.error(`Failed to enqueue execution ${exec.id}: ${message}`);
       throw new Error(`Failed to enqueue execution: ${message}`);
     }
@@ -2463,17 +2710,34 @@ export class TaskService {
           ? await this.loadUpstreamContext(completedExecutionId)
           : null;
 
+      // NETOPT-4②（本轮）: prevLastTriggerTime 批读——旧实现进循环逐下游
+      // findOne，扇出 D 个下游就是 D 条点查；现循环外一条 In() 批量取回。
+      // 把读取提到循环外是安全的：rollbackDependencyClaim 的 CAS WHERE 钉住
+      // lastTriggerTime = 本次 claimedAt——批读与 claim 之间若有并发赢家推进
+      // 了 lastTriggerTime，本侧 claim 的 recency 条件（IS NULL OR < 窗口起点）
+      // 必然失败（跳过、不走回滚）；claim 成功后 trigger 失败时若又有人推进，
+      // 回滚 CAS 不命中自然 no-op。陈旧 prev 任何情形下都写不回去。
+      const prevLastTriggerTimeById = new Map(
+        dependentTasks.length
+          ? (
+              await this.taskRepo.find({
+                where: { id: In(dependentTasks.map((t) => t.id)) },
+                select: { id: true, lastTriggerTime: true },
+              })
+            ).map((row) => [row.id, row])
+          : [],
+      );
+
       for (const task of dependentTasks) {
         // Check if all dependencies are satisfied
         const canTrigger = await this.checkDependencies(task);
         if (!canTrigger) continue;
 
-        // NETOPT-3②: claim 前先读原 lastTriggerTime，trigger 失败时按它回滚
-        //（CAS 保护见 rollbackDependencyClaim）。
-        const prevLastTriggerTime = await this.taskRepo.findOne({
-          where: { id: task.id },
-          select: { id: true, lastTriggerTime: true },
-        });
+        // NETOPT-3②/4②: claim 前先读原 lastTriggerTime，trigger 失败时按它
+        // 回滚（CAS 保护见 rollbackDependencyClaim）——原值已循环外批读
+        //（NETOPT-4②）；行已删除时 get 不到 → 按 NULL 回滚（与旧 findOne
+        // 返回 undefined 的行为一致）。
+        const prevLastTriggerTime = prevLastTriggerTimeById.get(task.id);
         // R4-P3: short-window DB claim — exactly one concurrent fan-out wins.
         const claimedAt = await this.claimDependencyTrigger(task.id);
         if (!claimedAt) {
@@ -3035,6 +3299,116 @@ export class TaskService {
     );
   }
 
+  /**
+   * FIX-4.2: 执行终态唤醒的发布入口（webhook wait 事件化，见
+   * execution-wake.service.ts）。调用方契约：**终态已落库后**调用——唤醒即
+   * 意味着等待方复查 DB 一定可见终态。@Optional 装配缺席时 no-op；任何异常
+   * 吞掉（旁路增强，绝不影响主链——webhook 侧退避轮询兜底仍在）。
+   */
+  publishExecutionWake(executionId: string): void {
+    try {
+      this.executionWakeService?.publishTerminal(executionId);
+    } catch {
+      /* best-effort：唤醒失败由轮询兜底 */
+    }
+  }
+
+  /**
+   * FIX-3.1（timeout-policy.util ②「超时预警」的运行期消费点）：按
+   * elapsed ≥ timeout×ratio 判定并发送一次 WARNING 预警
+   * （NotificationService.notifyTimeout，签名未动）。
+   *
+   * 「每执行至多一次」由 Redis SETNX 闸保证（acquireLock 即 SET NX PX，
+   * key = acf:timeout-warn:{executionId}，TTL 24h 远大于任何执行生命周期、
+   * 锁不释放即去重窗口；renew:false——watchdog 会把一次性窗口续成永久锁，
+   * 参见 redis-lock.service High-5.1 注）。闸先行：未拿到闸的调用零额外
+   * 查询直接返回；Redis 不可用时预警静默跳过（旁路，无新失败面）。
+   *
+   * ARCH-21 红线的**显式例外**（与构造器注记同源）：本方法是
+   * NotificationService 在本文件的唯一调用点，fire-and-forget、任何失败
+   * 吞掉、不进入任何终态写路径——「终态事件 → 通知」主链仍走事件总线。
+   */
+  private async maybeNotifyTimeoutWarning(
+    exec: TaskExecution,
+    task: Task,
+  ): Promise<void> {
+    const lockService = this.redisLockService;
+    const notifyService = this.notificationService;
+    if (!lockService || !notifyService) return;
+    if (!exec.startTime) return;
+    const elapsedMs = Date.now() - new Date(exec.startTime).getTime();
+    const thresholdMs = timeoutWarnThresholdMs(
+      task.timeout,
+      task.timeoutWarnRatio,
+      elapsedMs,
+    );
+    // null = 未启用预警（ratio 缺失/非法）或未达阈值——下次观察点再判。
+    if (thresholdMs === null) return;
+    let lock: { release: () => Promise<boolean> } | null = null;
+    try {
+      lock = await lockService.acquireLock(
+        `acf:timeout-warn:${exec.id}`,
+        TaskService.TIMEOUT_WARN_LOCK_TTL_MS,
+        { renew: false },
+      );
+    } catch {
+      return;
+    }
+    if (!lock) return; // 已有实例为该执行发过预警
+    try {
+      await notifyService.notifyTimeout(
+        task.name,
+        exec.id,
+        Math.round(thresholdMs / 1000),
+        task.id,
+        // NETOPT-5①: applicationId 透传（scope=application 静默判定同源）。
+        task.applicationId ?? undefined,
+      );
+    } catch (err: unknown) {
+      this.logger.warn(
+        `FIX-3.1: timeout warn notification failed for execution ${exec.id}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+
+  /**
+   * FIX-7.1: 终态回调失败/超时分支的自动 AI 分析（脚本阶段失败）。
+   *
+   * - 输入与 analyzeExecution 同源：净化日志 + 平台已判定的 failureReason /
+   *   exitCode + 任务级 runbook（FIX-6.2 的结构化上下文，AI 结论与运维沉淀
+   *   对齐）；task 行不可得（无 taskId / 已删除）时跳过分析返回 ""。
+   * - fail-open 双保险：AiAnalysisService.analyzeFailure 内部永不抛错
+   *   （ARCH-30 契约），这里的 try/catch 兜住其外的任何意外——分析的任何
+   *   失败都只跳过分析，绝不阻塞终态落库（调用点在 transitionToTerminal 前）。
+   */
+  private async autoAnalyzeCallbackFailure(
+    task: Task | null,
+    cb: { logs?: string; exitCode?: number },
+    failureReason: ExecutionFailureReason,
+  ): Promise<string> {
+    if (!task) return "";
+    try {
+      return await this.aiAnalysisService.analyzeFailure(
+        { name: task.name, runtime: task.runtime },
+        cb.logs ?? "",
+        {
+          failureReason,
+          exitCode: typeof cb.exitCode === "number" ? cb.exitCode : null,
+          runbook: task.runbook ?? null,
+        },
+      );
+    } catch (err: unknown) {
+      this.logger.warn(
+        `FIX-7.1: auto analysis skipped (terminal state unaffected): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return "";
+    }
+  }
+
   private emitTerminalEvent(
     execution: TaskExecution,
     status: ExecutionStatus,
@@ -3250,6 +3624,15 @@ export class TaskService {
         // （success/failed），导致状态被篡改。RUNNING 但快照 executorAddress
         // 为 null 属 dispatch 落库窗口的合法场景（RETURNING 会取库中实际地址），
         // 不在此拒绝。
+        //
+        // 超时耦合注记（N-17）：这个「executorAddress 合法为 null」的窗口由
+        // 派发 HTTP 的客户端超时上界约束——executor.service.dispatch（及
+        // dispatchBroadcast）对执行器 accept 请求的超时为
+        // `((task.timeout || 300) + 10) * 1000` ms，即窗口长度与 task.timeout
+        // 成比例。正因长超时任务的派发窗口可以很长（HTTP 还没返回、executor
+        // 却可能已接单开跑），本守卫只拒 PENDING+null（确实尚未派发）、放行
+        // RUNNING+null——两者以「是否已开始执行」划界，而不是以地址是否已
+        // 落库划界。
         if (
           execution.status === ExecutionStatus.PENDING &&
           !execution.executorAddress
@@ -3338,6 +3721,30 @@ export class TaskService {
           patch.failureReason = failureReason;
           if (cb.errorMessage !== undefined) {
             patch.errorMessage = cb.errorMessage;
+          }
+          // FIX-7.1: 脚本阶段失败的自动 AI 分析——在终态转换**前**触发，
+          // 使分析结果同时进终态 patch（一次写库，与 processor 派发失败路径
+          // 的 exec.aiAnalysis 同列）与 execution.failed 事件载荷
+          // （emitTerminalEvent 读内存 execution.aiAnalysis → 订阅方拿到的
+          // 通知与 AI 分析同源）。复用同一开关面：AiAnalysisService
+          // fail-open（provider disabled / 内部重试耗尽返回 ""），任何失败
+          // 都只跳过分析、绝不阻塞终态落库。回调天然每执行恰一次（winner
+          // 语义），无 processor「仅最后一试」要防的重试刷屏问题。
+          const failureTask = execution.taskId
+            ? taskById
+              ? (taskById.get(execution.taskId) ?? null)
+              : await this.taskRepo.findOne({
+                  where: { id: execution.taskId },
+                })
+            : null;
+          const analysis = await this.autoAnalyzeCallbackFailure(
+            failureTask,
+            cb,
+            failureReason,
+          );
+          if (analysis) {
+            execution.aiAnalysis = analysis;
+            patch.aiAnalysis = analysis;
           }
         }
         // 改动2（可观测性补齐）：回调上报的原始退出码入库溯源（终态成败均
@@ -3437,14 +3844,18 @@ export class TaskService {
           continue;
         }
 
-        // 可观测性补齐：终态条件 UPDATE 命中（winner）——业务受理计数 +
-        // 按最终 status 记录执行结果（success/failed/timeout）。
+        // 可观测性补齐：终态条件 UPDATE 命中（winner）——业务受理计数。
+        // 第二轮审计（A4）：autoflow_execution_result_total 的记录点已下沉
+        // 到 transitionToTerminal 统一终态入口（execution-terminal.ts），
+        // 此处不再记录——避免与下沉后的入口双计；同时 kill / 执行器重启 /
+        // 扫描回收 / 入队补偿等服务端终态路径在同一入口获得计数。
         recordRuntime("autoflow_callback_business_total", {
           result: "accepted",
         });
-        recordRuntime("autoflow_execution_result_total", {
-          status: patch.status,
-        });
+
+        // FIX-4.2: 终态已落库（winner），best-effort 唤醒所有 webhook wait
+        // 等待方——发布点在提交之后，唤醒即意味着终态已可见。
+        this.publishExecutionWake(cb.executionId);
 
         // winner 行（RETURNING 结果）为权威：地址/日志持久化都以此为准。
         // A1: 形状归一化（数组/单对象/空 + 驱动不返回行时的快照兜底）已由
@@ -3662,6 +4073,26 @@ export class TaskService {
       // 对比两个版本却显示"无差异"，误导性极强（看起来像改动没生效）。
       maintenanceWindows: task.maintenanceWindows,
       runbook: task.runbook,
+      // 第二轮审计（A3 · 版本快照补键）：以下 11 个键全部是**用户可编辑**列
+      // （经 create-task.dto / update-task.dto 可写），此前不在快照键集内。
+      // 后果与上方 VER-DIFF-01 完全同型且 ×2：① compareVersions 的键集合
+      // 完全派生自快照，漏键 ⇒ 改了依赖链/部署约束/告警配置后版本对比
+      // 显示"无差异"；② rollbackToVersion 用 Object.assign（缺键保留现值）
+      // ⇒ 回滚到旧版本时这些字段静默保留新值——回滚依赖链的任务仍挂着
+      // 新依赖、告警配置悄悄漂移，版本回滚对这批字段集体失效。
+      // 键名与 create-task.dto.ts / update-task.dto.ts 字段一致；旧快照缺键
+      // 由 Object.assign 语义自然向后兼容（保留现值），无须迁移。
+      dependencies: task.dependencies,
+      deploymentPolicy: task.deploymentPolicy,
+      executorAffinityTags: task.executorAffinityTags,
+      executorAntiAffinityTags: task.executorAntiAffinityTags,
+      executorId: task.executorId,
+      executorAppName: task.executorAppName,
+      executorGroup: task.executorGroup,
+      executorTags: task.executorTags,
+      projectId: task.projectId,
+      alarmEmail: task.alarmEmail,
+      alarmChannels: task.alarmChannels,
       // 刻意**不**纳入 secrets：它虽是实体列，但 GET /tasks/:id/versions 与
       // compare 端点会把 snapshot 原样回传，而 secrets 的脱敏
       // （maskForResponse）只挂在 task 读路径上，不覆盖版本端点。放进来等于
@@ -3853,6 +4284,8 @@ export class TaskService {
     // emit 在通知执行器/释放槽位之前——事件即既成事实，后续步骤全是 best-effort
     // 副作用，任何失败都不回头改库（与 ARCH-21「落库后即 emit」时序契约一致）。
     this.emitKilledEvent(execution, duration, now);
+    // FIX-4.2: 终态唤醒（webhook wait 等待方；与 emit 同为落库后的旁路副作用）。
+    this.publishExecutionWake(execId);
 
     // 改动4: 优先用 RETURNING 的库中实际地址，快照作 fallback。
     // A1: raw 的形状归一化（数组/单对象/空）与「驱动命中但未返回行」的兜底

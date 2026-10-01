@@ -364,7 +364,14 @@ describe("pickDeploymentVersionForExecutor（FEAT-22 方案 B 版本跟随）", 
   it("按 executorId 命中，返回部署行的版本", () => {
     expect(
       pickDeploymentVersionForExecutor(
-        [{ executorId: "e-1", executorAddress: null, status: "running", deployedVersion: "1.2.0" }],
+        [
+          {
+            executorId: "e-1",
+            executorAddress: null,
+            status: "running",
+            deployedVersion: "1.2.0",
+          },
+        ],
         exec("e-1", "10.0.0.1:8002"),
       ),
     ).toBe("1.2.0");
@@ -373,7 +380,14 @@ describe("pickDeploymentVersionForExecutor（FEAT-22 方案 B 版本跟随）", 
   it("legacy 行无 executorId 时按 address 兜底命中", () => {
     expect(
       pickDeploymentVersionForExecutor(
-        [{ executorId: null, executorAddress: "10.0.0.1:8002", status: "running", deployedVersion: "0.9.0" }],
+        [
+          {
+            executorId: null,
+            executorAddress: "10.0.0.1:8002",
+            status: "running",
+            deployedVersion: "0.9.0",
+          },
+        ],
         exec("e-1", "10.0.0.1:8002"),
       ),
     ).toBe("0.9.0");
@@ -382,8 +396,18 @@ describe("pickDeploymentVersionForExecutor（FEAT-22 方案 B 版本跟随）", 
   it("同设备多行：running 行优先于 stopped 行（once + scheduled 并存）", () => {
     const version = pickDeploymentVersionForExecutor(
       [
-        { executorId: "e-1", executorAddress: "a1", status: "stopped", deployedVersion: "1.0.0" },
-        { executorId: "e-1", executorAddress: "a1", status: "running", deployedVersion: "2.0.0" },
+        {
+          executorId: "e-1",
+          executorAddress: "a1",
+          status: "stopped",
+          deployedVersion: "1.0.0",
+        },
+        {
+          executorId: "e-1",
+          executorAddress: "a1",
+          status: "running",
+          deployedVersion: "2.0.0",
+        },
       ],
       exec("e-1", "a1"),
     );
@@ -392,7 +416,14 @@ describe("pickDeploymentVersionForExecutor（FEAT-22 方案 B 版本跟随）", 
 
   it("全部 stopped（once 跑完）：仍取版本——strict 指定机器 + 指定版本闭环", () => {
     const version = pickDeploymentVersionForExecutor(
-      [{ executorId: "e-1", executorAddress: "a1", status: "stopped", deployedVersion: "1.0.0" }],
+      [
+        {
+          executorId: "e-1",
+          executorAddress: "a1",
+          status: "stopped",
+          deployedVersion: "1.0.0",
+        },
+      ],
       exec("e-1", "a1"),
     );
     expect(version).toBe("1.0.0");
@@ -401,8 +432,20 @@ describe("pickDeploymentVersionForExecutor（FEAT-22 方案 B 版本跟随）", 
   it("同状态并列取 deployedAt 最新", () => {
     const version = pickDeploymentVersionForExecutor(
       [
-        { executorId: "e-1", executorAddress: "a1", status: "running", deployedVersion: "1.0.0", deployedAt: "2026-09-30T10:00:00Z" },
-        { executorId: "e-1", executorAddress: "a1", status: "running", deployedVersion: "3.0.0", deployedAt: "2026-09-30T12:00:00Z" },
+        {
+          executorId: "e-1",
+          executorAddress: "a1",
+          status: "running",
+          deployedVersion: "1.0.0",
+          deployedAt: "2026-09-30T10:00:00Z",
+        },
+        {
+          executorId: "e-1",
+          executorAddress: "a1",
+          status: "running",
+          deployedVersion: "3.0.0",
+          deployedAt: "2026-09-30T12:00:00Z",
+        },
       ],
       exec("e-1", "a1"),
     );
@@ -412,8 +455,20 @@ describe("pickDeploymentVersionForExecutor（FEAT-22 方案 B 版本跟随）", 
   it("deployedAt 缺失视为最旧（Date 对象与 ISO 字符串均可解析）", () => {
     const version = pickDeploymentVersionForExecutor(
       [
-        { executorId: "e-1", executorAddress: "a1", status: "running", deployedVersion: "1.0.0", deployedAt: new Date("2026-09-30T08:00:00Z") },
-        { executorId: "e-1", executorAddress: "a1", status: "running", deployedVersion: "2.0.0", deployedAt: undefined },
+        {
+          executorId: "e-1",
+          executorAddress: "a1",
+          status: "running",
+          deployedVersion: "1.0.0",
+          deployedAt: new Date("2026-09-30T08:00:00Z"),
+        },
+        {
+          executorId: "e-1",
+          executorAddress: "a1",
+          status: "running",
+          deployedVersion: "2.0.0",
+          deployedAt: undefined,
+        },
       ],
       exec("e-1", "a1"),
     );
@@ -423,7 +478,14 @@ describe("pickDeploymentVersionForExecutor（FEAT-22 方案 B 版本跟随）", 
   it("命中行全部无版本（legacy null）→ 返回 null（调用方回退当前版）", () => {
     expect(
       pickDeploymentVersionForExecutor(
-        [{ executorId: "e-1", executorAddress: "a1", status: "running", deployedVersion: null }],
+        [
+          {
+            executorId: "e-1",
+            executorAddress: "a1",
+            status: "running",
+            deployedVersion: null,
+          },
+        ],
         exec("e-1", "a1"),
       ),
     ).toBeNull();
@@ -432,7 +494,14 @@ describe("pickDeploymentVersionForExecutor（FEAT-22 方案 B 版本跟随）", 
   it("设备未命中任何部署行 → 返回 null（prefer 降级到非部署设备跑当前版）", () => {
     expect(
       pickDeploymentVersionForExecutor(
-        [{ executorId: "e-2", executorAddress: "a2", status: "running", deployedVersion: "1.0.0" }],
+        [
+          {
+            executorId: "e-2",
+            executorAddress: "a2",
+            status: "running",
+            deployedVersion: "1.0.0",
+          },
+        ],
         exec("e-1", "a1"),
       ),
     ).toBeNull();
@@ -441,7 +510,14 @@ describe("pickDeploymentVersionForExecutor（FEAT-22 方案 B 版本跟随）", 
   it("空白版本串视为无版本", () => {
     expect(
       pickDeploymentVersionForExecutor(
-        [{ executorId: "e-1", executorAddress: "a1", status: "running", deployedVersion: "   " }],
+        [
+          {
+            executorId: "e-1",
+            executorAddress: "a1",
+            status: "running",
+            deployedVersion: "   ",
+          },
+        ],
         exec("e-1", "a1"),
       ),
     ).toBeNull();

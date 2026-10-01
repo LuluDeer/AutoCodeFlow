@@ -1394,3 +1394,210 @@ export function registerProjectTools(server: McpServer, call: ApiCall): void {
     },
   );
 }
+
+// ---------------------------------------------------------------------------
+// SOP / Agent sessions (P5/P6 admin-side minimal loop: browse SOPs, see
+// pending assignments + escalations, watch agent sessions, reply to
+// clarifications — all over the existing ADMIN-only sop/agent endpoints)
+// ---------------------------------------------------------------------------
+
+/** 非终态指派（「待办」口径）；completed/failed/cancelled 为终态不入列。 */
+export const SOP_PENDING_STATUSES = [
+  "assigned",
+  "in_progress",
+  "blocked",
+  "stalled",
+] as const;
+
+export function registerSopTools(server: McpServer, call: ApiCall): void {
+  // ---- sop_list -------------------------------------------------------------
+  server.tool(
+    "sop_list",
+    "List SOP definitions (versioned procedure documents: front-matter capabilities/acceptance + markdown body). Returns { items, total }.",
+    {
+      status: z
+        .string()
+        .optional()
+        .describe("Filter by SOP status (e.g. draft | published)"),
+      page: z
+        .number()
+        .int()
+        .min(1)
+        .default(1)
+        .describe("Page number (default 1)"),
+      pageSize: z
+        .number()
+        .int()
+        .min(1)
+        .max(100)
+        .default(20)
+        .describe("Items per page (default 20)"),
+    },
+    async ({ status, page, pageSize }) => {
+      const params = new URLSearchParams({
+        page: String(page),
+        pageSize: String(pageSize),
+        ...(status ? { status } : {}),
+      });
+      const data = await call<unknown>("GET", `/sop?${params}`);
+      return JSON_CONTENT(data);
+    },
+  );
+
+  // ---- sop_get --------------------------------------------------------------
+  server.tool(
+    "sop_get",
+    "Get one SOP by ID: metadata, current version, front-matter and markdown body. Use sop_list to resolve IDs.",
+    {
+      sopId: UUID_PATH_ID.describe("SOP ID (UUID)"),
+    },
+    async ({ sopId }) => {
+      const data = await call<unknown>("GET", `/sop/${sopId}`);
+      return JSON_CONTENT(data);
+    },
+  );
+
+  // ---- sop_assignments_pending ----------------------------------------------
+  // 两种读形态对齐既有端点：sopId → GET /sop/:id/assignments（客户端按非终态
+  // 过滤）；assignmentId → GET /sop/assignments/:id（含澄清对话全量，供
+  // sop_clarification_reply 拿 clarificationId）。
+  server.tool(
+    "sop_assignments_pending",
+    "Inspect pending SOP work. Pass sopId to list that SOP's non-terminal assignments (assigned/in_progress/blocked/stalled — completed/failed/cancelled are excluded), or pass assignmentId to fetch one assignment's full detail including its clarification conversation (the clarification ids feed sop_clarification_reply).",
+    {
+      sopId: UUID_PATH_ID.optional().describe(
+        "List non-terminal assignments of this SOP",
+      ),
+      assignmentId: UUID_PATH_ID.optional().describe(
+        "Return this assignment's full detail (includes clarifications)",
+      ),
+    },
+    async ({ sopId, assignmentId }) => {
+      if (assignmentId) {
+        const data = await call<unknown>(
+          "GET",
+          `/sop/assignments/${assignmentId}`,
+        );
+        return JSON_CONTENT(data);
+      }
+      if (sopId) {
+        const rows = await call<Array<{ status?: string }>>(
+          "GET",
+          `/sop/${sopId}/assignments`,
+        );
+        const items = (Array.isArray(rows) ? rows : []).filter((r) =>
+          (SOP_PENDING_STATUSES as readonly string[]).includes(r?.status ?? ""),
+        );
+        return JSON_CONTENT({
+          sopId,
+          pendingCount: items.length,
+          items,
+          note: "Terminal statuses (completed/failed/cancelled) are filtered out. Pass assignmentId to see one assignment's clarifications.",
+        });
+      }
+      return JSON_CONTENT({
+        error: "Provide sopId (list pending assignments) or assignmentId (full detail)",
+      });
+    },
+  );
+
+  // ---- agent_session_list ----------------------------------------------------
+  server.tool(
+    "agent_session_list",
+    "List agent sessions (ops_watch / incident / sop_authoring runs) newest first. Sessions in waiting_input are paused waiting on a human decision (approval or SOP clarification) — use agent_session_get for their reasoning steps and tool calls.",
+    {
+      kind: z
+        .string()
+        .optional()
+        .describe("Filter by kind: ops_watch | incident | sop_authoring"),
+      status: z
+        .string()
+        .optional()
+        .describe(
+          "Filter by status: pending | running | waiting_input | succeeded | failed | aborted",
+        ),
+      page: z
+        .number()
+        .int()
+        .min(1)
+        .default(1)
+        .describe("Page number (default 1)"),
+      pageSize: z
+        .number()
+        .int()
+        .min(1)
+        .max(100)
+        .default(20)
+        .describe("Items per page (default 20)"),
+    },
+    async ({ kind, status, page, pageSize }) => {
+      const params = new URLSearchParams({
+        page: String(page),
+        pageSize: String(pageSize),
+        ...(kind ? { kind } : {}),
+        ...(status ? { status } : {}),
+      });
+      const data = await call<unknown>("GET", `/agent/sessions?${params}`);
+      return JSON_CONTENT(data);
+    },
+  );
+
+  // ---- agent_session_get ------------------------------------------------------
+  server.tool(
+    "agent_session_get",
+    "Get one agent session with its full reasoning steps, tool calls and child sessions — the audit trail for what the agent did and why.",
+    {
+      sessionId: UUID_PATH_ID.describe("Agent session ID (UUID)"),
+    },
+    async ({ sessionId }) => {
+      const data = await call<unknown>("GET", `/agent/sessions/${sessionId}`);
+      return JSON_CONTENT(data);
+    },
+  );
+
+  // ---- sop_clarification_reply ------------------------------------------------
+  server.tool(
+    "sop_clarification_reply",
+    "Answer an escalated SOP clarification (human-in-the-loop). resolution=answered replies with text; resolution=sop_amended additionally ships an amended SOP (front-matter YAML / body markdown) that the executor continues against (contentHash rebases on the amended version). Find pending clarifications via sop_assignments_pending with assignmentId.",
+    {
+      assignmentId: UUID_PATH_ID.describe(
+        "SOP assignment that raised the clarification",
+      ),
+      clarificationId: UUID_PATH_ID.describe("Clarification to answer"),
+      resolution: z
+        .enum(["answered", "sop_amended"])
+        .describe("answered = text reply; sop_amended = reply + amended SOP"),
+      answer: z
+        .string()
+        .max(8000)
+        .describe("Reply text shown to the executor (max 8000 chars)"),
+      amendedFrontMatterYaml: z
+        .string()
+        .max(100_000)
+        .optional()
+        .describe("Amended front-matter YAML (sop_amended only)"),
+      amendedBodyMarkdown: z
+        .string()
+        .max(500_000)
+        .optional()
+        .describe("Amended markdown body (sop_amended only)"),
+      changelog: z
+        .string()
+        .max(2000)
+        .optional()
+        .describe("Short amendment changelog (max 2000 chars)"),
+    },
+    async ({ assignmentId, clarificationId, ...fields }) => {
+      // HumanReplyDto 白名单：未提供的修订字段不能带 undefined 键。
+      const body = Object.fromEntries(
+        Object.entries(fields).filter(([, v]) => v !== undefined),
+      );
+      const data = await call<unknown>(
+        "POST",
+        `/sop/assignments/${assignmentId}/clarifications/${clarificationId}/reply`,
+        body,
+      );
+      return JSON_CONTENT(data);
+    },
+  );
+}

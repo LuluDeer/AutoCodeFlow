@@ -395,6 +395,25 @@ export class ExecutorPullService {
     await client.del(this.commandQueueKey(executorId)).catch(() => undefined);
   }
 
+  /**
+   * DEEP-AUDIT B·1.5/B·1.1：待拉任务队列深度（`acf:pull:{id}` 的 LLEN）。
+   *
+   * 为什么值得单独读一次：此前"派了却没人取"只有两个观测点——入队日志的
+   * queueDepth 与执行器满载时的服务端 WARN，管理台看不到任何痕迹。把深度
+   * 透出到删除影响面预览（B·1.1）与执行器详情页（B·1.5「待拉取」徽标），
+   * 让队列积压一跳可查。失败按 0（未知）呈现：深度读不到绝不该阻断任何
+   * 调用方（预览/心跳/详情读面），TTL 丢弃语义兜底积压上限。
+   */
+  async depth(executorId: string): Promise<number> {
+    const client = this.ensureClient();
+    if (!client) return 0;
+    try {
+      return await client.llen(this.queueKey(executorId));
+    } catch {
+      return 0;
+    }
+  }
+
   async onModuleDestroy(): Promise<void> {
     if (this.client) {
       await this.client.quit().catch(() => undefined);

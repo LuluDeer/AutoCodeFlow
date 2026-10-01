@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import shutil
 import time
 import uuid
 import weakref
@@ -350,6 +351,22 @@ def _heartbeat_retry_exhausted(retry_state):
     return None
 
 
+def _disk_usage_percent() -> float | None:
+    """A7（第四轮审计）：work_dir 所在文件系统已用百分比（0-100）。
+
+    与 maintenance.disk_usage_percent 同口径（shutil.disk_usage 的 free——
+    非特权用户真实可写空间，node 侧 fs.statfs.f_bavail 对齐）。计量失败返回
+    **None**——心跳载荷据此**整个键缺席**（= 未上报，admin 保留 DB 旧值），
+    不会把一次失败的计量伪装成「0% 无压力」（与 deviceFingerprint 缺席语义同形）。"""
+    try:
+        usage = shutil.disk_usage(settings.work_dir)
+        if usage.total <= 0:
+            return None
+        return round((usage.total - usage.free) / usage.total * 100, 1)
+    except OSError:
+        return None
+
+
 def _heartbeat_payload(cpu: float, mem: float) -> dict:
     """心跳载荷（提为具名函数只为让 ARCH-36 的指纹键可**条件**加入）。
 
@@ -383,6 +400,10 @@ def _heartbeat_payload(cpu: float, mem: float) -> dict:
         # 三态纪律——`0` = 已上报且无预留，字段缺席 = 旧版执行器未上报（中台
         # 回落到「按已占槽位显示」的旧口径，行为与引入前逐字节一致）。
         'reservedSlots': get_pull_reserved_slots(),
+        # A7（第四轮审计）：磁盘水位透出。admin 侧 diskUsage 列既有白名单采纳
+        # 环直接落库，无需新迁移。计量失败整个键缺席（未上报语义），与
+        # deviceFingerprint 的条件加入模式一致。
+        **({'diskUsage': disk} if (disk := _disk_usage_percent()) is not None else {}),
         # E2: dead-letter backlog (node scheduler.ts sendHeartbeat sends
         # deadLetterCountProvider()). Always present, never omitted; the
         # provider serves a cached count so this never rescans the disk.

@@ -347,7 +347,15 @@ export class RegistryController {
         HttpStatus.BAD_REQUEST,
       );
     }
-    const uploadUrl = `${this.pypiUrl}/upload/`;
+    // A7-修复（DEEP-AUDIT B·2.1）：上传改打 **twine 兼容规范路 `POST /`**——
+    // 自建 registry-pypi 的路由是 `@app.post("/")`（`POST /upload` 只是别名，
+    // 且无尾斜杠）。此前打 `/upload/`（带尾斜杠）会被 Starlette 的
+    // redirect_slashes 回 307（保留方法的重定向），而下方原生 http.request
+    // 不跟随重定向、旧成功判据 `< 400` 又把 3xx 当成功——结果是「管理台报
+    // 上传成功、包实际从未落盘」的静默假成功（实测复现）。双保险：
+    // ① 规范路不存在尾斜杠重定向；② 成功判据收紧为 2xx（见下方 end 处理），
+    //   任何 3xx 都按 BAD_GATEWAY 显式失败。
+    const uploadUrl = `${this.pypiUrl.replace(/\/+$/, "")}/`;
     const auth = Buffer.from(`${this.pypiUser}:${this.pypiPass}`).toString(
       "base64",
     );
@@ -402,8 +410,21 @@ export class RegistryController {
             res.on("data", (c) => (body += c));
             res.on("end", () => {
               done(() => {
-                if ((res.statusCode ?? 500) < 400) {
+                // A7-修复（DEEP-AUDIT B·2.1）：成功判据收紧为 **2xx**。旧实现
+                // `< 400` 会把上游重定向（如 307）当成功——而本代理不跟随
+                // 重定向，POST 从未真正到达上传端点（2.1 假成功的根因之一）。
+                // 3xx 在此显式失败并附状态码，绝不静默吞掉。
+                const status = res.statusCode ?? 500;
+                if (status >= 200 && status < 300) {
                   resolve({ success: true });
+                } else if (status >= 300 && status < 400) {
+                  reject(
+                    new HttpException(
+                      `Upload failed: upstream redirected (HTTP ${status}) — ` +
+                        `the request never reached the upload endpoint`,
+                      HttpStatus.BAD_GATEWAY,
+                    ),
+                  );
                 } else {
                   reject(
                     new HttpException(

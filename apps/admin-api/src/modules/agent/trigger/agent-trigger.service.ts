@@ -56,6 +56,8 @@ export class AgentTriggerService implements OnModuleInit, OnModuleDestroy {
   private readonly onExecutionFailed = async (
     e: ExecutionTerminalEventPayload,
   ): Promise<void> => {
+    // 第四轮审计（A3）: viaRelay 载荷跳过（与 onExecutionKilled 同契约）。
+    if (e?.viaRelay) return;
     await this.handleEvent(
       DOMAIN_EVENTS.EXECUTION_FAILED,
       e.taskId ?? e.executionId,
@@ -68,6 +70,10 @@ export class AgentTriggerService implements OnModuleInit, OnModuleDestroy {
   ): Promise<void> => {
     // KILLED 是管理员动作的结果，价值低于自发失败——但仍可能暴露
     // 「批量异常终止」这类模式，故与 failed 同路（聚合阈值会把单次过滤掉）。
+    // 第四轮审计（A3）: viaRelay 载荷跳过——跨实例 relay 补发只服务读面
+    // （SSE），副作用（Agent 会话触发）已在起源实例执行，多副本下不跳过
+    // = 双倍事件计数，窗口阈值被虚假推高。
+    if (e?.viaRelay) return;
     await this.handleEvent(
       DOMAIN_EVENTS.EXECUTION_KILLED,
       e.taskId ?? e.executionId,

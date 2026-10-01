@@ -1,6 +1,6 @@
 {
-  "id": "private-registry-deps-demo",
   "name": "私服依赖示例（Python）",
+  "triggerType": "cron",
   "runtime": "python",
   "entrypoint": "examples/private-registry-deps/private_dep_task.py",
   "cronExpression": "0 0 3 * * *",

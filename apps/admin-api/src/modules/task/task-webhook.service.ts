@@ -3,6 +3,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
   UnauthorizedException,
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
@@ -23,6 +24,10 @@ import {
   type WebhookSignatureFailure,
 } from "../../common/utils/webhook-hmac.util";
 import { AuditService } from "../audit/audit.service";
+// FIX-4.2: webhook wait 的终态唤醒通道（Redis pub/sub；发布侧 task.service /
+// task.processor，见 execution-wake.service.ts）。@Optional——缺席时等待
+// 退化为纯退避轮询，行为与引入前等价。
+import { ExecutionWakeService } from "./execution-wake.service";
 
 /** 任务 webhook 密钥前缀（acf 前缀族；w=webhook，泄漏扫描可识别）。 */
 const WEBHOOK_SECRET_PREFIX = "acfw_";
@@ -30,8 +35,15 @@ const WEBHOOK_SECRET_PREFIX = "acfw_";
 /** 密钥熵：32 随机字节 hex（256-bit），与前缀合计 69 字符。 */
 const WEBHOOK_SECRET_RANDOM_BYTES = 32;
 
-/** 同步等待模式（?wait=1）的轮询间隔。 */
-const WAIT_POLL_INTERVAL_MS = 500;
+/**
+ * FIX-4.2: 同步等待模式（?wait=1）的兜底轮询间隔——1s 基线、指数退避至 5s。
+ * 唤醒事件到达时立即复查 DB（不等下一轮），轮询只兜「无事件」场景（等待方
+ * 首轮进入前终态已写、CANCELLED 等不发事件的路径、跨实例 pub/sub 抖动），
+ * 因此退避节流是安全的：有唤醒信号就不受间隔约束。
+ * （原实现固定 500ms 盲轮 DB：单个 300s 挂起请求最多打 ~600 次点查。）
+ */
+const WAIT_POLL_BASE_INTERVAL_MS = 1000;
+const WAIT_POLL_MAX_INTERVAL_MS = 5000;
 
 /** 同步等待模式允许的 timeout 上限（秒）——长任务必须走出站订阅回调，
  *  HTTP 连接与上游调用方（飞书自动化等）的超时都撑不住分钟级以上挂起。 */
@@ -99,6 +111,8 @@ export class TaskWebhookService {
     private readonly secretsCrypto: SecretsCryptoService,
     private readonly config: ConfigService,
     private readonly audit: AuditService,
+    @Optional()
+    private readonly wake?: ExecutionWakeService | null,
   ) {}
 
   /** 任务 webhook 的展示 URL（apiBaseUrl 未配置时退化为站内绝对路径）。 */
@@ -328,6 +342,13 @@ export class TaskWebhookService {
   /**
    * 同步等待执行到终态（或超时）。超时**不视为错误**：completed=false +
    * 最新快照，调用方改走 GET /tasks/:id/executions 轮询或出站订阅。
+   *
+   * FIX-4.2: 等待事件化——每轮挂起在 ExecutionWakeService.waitWakeup
+   * （Redis pub/sub 终态唤醒；发布点在终态落库之后，唤醒即意味着复查 DB
+   * 必可见终态）至多 waitMs：收到唤醒立即复查；超时未唤醒则按 1s→5s 退避
+   * 轮询兜底（覆盖 CANCELLED/KILLED 等不发唤醒的路径、pub/sub 抖动与
+   * 唤醒服务缺席）。wait 上限（WEBHOOK_WAIT_MAX_SECONDS）与安全防护
+   * （超时不视为错误、白名单视图）保持不变。
    */
   async waitForTerminal(
     executionId: string,
@@ -340,13 +361,22 @@ export class TaskWebhookService {
       Date.now() +
       Math.min(Math.max(timeoutSeconds, 1), WEBHOOK_WAIT_MAX_SECONDS) * 1000;
     const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    let pollWait = WAIT_POLL_BASE_INTERVAL_MS;
     let exec: TaskExecution | null = await this.pollView(executionId);
     while (
       exec &&
       !TERMINAL_EXECUTION_STATUSES.has(exec.status) &&
       Date.now() < deadline
     ) {
-      await sleep(WAIT_POLL_INTERVAL_MS);
+      // 挂起等待唤醒至多 waitMs（不超过 deadline）；唤醒服务缺席或超时
+      // 返回 false → 按退避节奏轮询兜底。
+      const waitMs = Math.max(1, Math.min(pollWait, deadline - Date.now()));
+      const woken = this.wake
+        ? await this.wake.waitWakeup(executionId, waitMs)
+        : await sleep(waitMs).then(() => false);
+      pollWait = woken
+        ? WAIT_POLL_BASE_INTERVAL_MS
+        : Math.min(pollWait * 2, WAIT_POLL_MAX_INTERVAL_MS);
       exec = await this.pollView(executionId);
     }
     const completed = !!exec && TERMINAL_EXECUTION_STATUSES.has(exec.status);

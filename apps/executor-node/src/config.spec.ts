@@ -413,3 +413,55 @@ describe('executor-node config interpreterDownloadTimeoutMs', () => {
     expect(c3.interpreterDownloadTimeoutMs).toBe(86_400_000);
   });
 });
+
+describe('executor-node config runtime version range (PYTHON_RUNTIME_VERSION_MIN/MAX, B-3)', () => {
+  const originalEnv = process.env;
+
+  beforeEach(() => {
+    jest.resetModules();
+    process.env = { ...originalEnv };
+    delete process.env.PYTHON_RUNTIME_VERSION_MIN;
+    delete process.env.PYTHON_RUNTIME_VERSION_MAX;
+  });
+
+  afterAll(() => {
+    process.env = originalEnv;
+  });
+
+  it('未配置时默认 3.7 ~ 3.14（CONTRACT.md §1.1，与 executor-python config.py 同源）', async () => {
+    const { config } = await import('./config');
+    expect(config.runtimeVersionMin).toBe('3.7');
+    expect(config.runtimeVersionMax).toBe('3.14');
+  });
+
+  it('合法覆盖值直接生效', async () => {
+    process.env.PYTHON_RUNTIME_VERSION_MIN = '3.9';
+    process.env.PYTHON_RUNTIME_VERSION_MAX = '3.13';
+    const { config } = await import('./config');
+    expect(config.runtimeVersionMin).toBe('3.9');
+    expect(config.runtimeVersionMax).toBe('3.13');
+  });
+
+  it('getter 惰性读 env（热重载：改 env 即生效）', async () => {
+    const { config } = await import('./config');
+    expect(config.runtimeVersionMin).toBe('3.7');
+    process.env.PYTHON_RUNTIME_VERSION_MIN = '3.8';
+    expect(config.runtimeVersionMin).toBe('3.8');
+  });
+
+  it('非法值 warn 后回落默认（不带补丁号、X.Y 格式硬校验）', async () => {
+    process.env.PYTHON_RUNTIME_VERSION_MIN = 'v3.9'; // 非 X.Y
+    process.env.PYTHON_RUNTIME_VERSION_MAX = '3.13.1'; // 带补丁号
+    const { config } = await import('./config');
+    expect(config.runtimeVersionMin).toBe('3.7');
+    expect(config.runtimeVersionMax).toBe('3.14');
+  });
+
+  it('min > max 成对校验失败 → 整体回落默认（python 侧是启动硬失败，node 侧降级）', async () => {
+    process.env.PYTHON_RUNTIME_VERSION_MIN = '3.13';
+    process.env.PYTHON_RUNTIME_VERSION_MAX = '3.9';
+    const { config } = await import('./config');
+    expect(config.runtimeVersionMin).toBe('3.7');
+    expect(config.runtimeVersionMax).toBe('3.14');
+  });
+});

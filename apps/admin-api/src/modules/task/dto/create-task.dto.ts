@@ -133,11 +133,22 @@ export class CreateTaskDto {
   @IsNotEmpty({ each: true })
   @IsOptional()
   requirements?: string[];
+  /**
+   * FIX-1.1（依赖链契约，2026-09-30 定死）：上游任务依赖映射 =
+   * **Record<显示名快照, 上游任务id>**——**value 才是依赖任务 id**。
+   * 消费方（环检测 checkCircularDependency、依赖满足 checkDependencies、
+   * 上游 SUCCESS 扇出 triggerDependentTasks、前端 dag-layout）全部读
+   * **value**；key 仅作展示别名。写面校验：每个 value 必须是存在的任务 id
+   * （assertDependencyValuesExist），自依赖/环由 checkCircularDependency
+   * 拦截（value=id 后既有代码生效）。存量 {uuid→name} 行由迁移
+   * 1790000000048 幂等翻转。
+   */
   @ApiPropertyOptional({
-    description: "Upstream task dependency map: { taskId: taskName }",
+    description:
+      "Upstream task dependency map: { displayName: upstreamTaskId } — the VALUE is the upstream task id (all consumers — cycle detection, dependency satisfaction, fan-out matching — read values). Each value must be an existing task id; self-dependency and cycles are rejected at write time.",
     type: "object",
     additionalProperties: { type: "string" },
-    example: { "uuid-of-task-a": "task-a-name" },
+    example: { "task-a-name": "uuid-of-task-a" },
   })
   @IsObject()
   @IsOptional()
