@@ -61,7 +61,9 @@ jest.mock("../../../common/utils/clamd-scan.util", () => {
   const actual = jest.requireActual("../../../common/utils/clamd-scan.util");
   return {
     ...actual,
-    scanBufferWithClamd: jest.fn(() => Promise.resolve({ ok: true })),
+    // DEEP-AUDIT B·3.3：上传扫描改走 INSTREAM 流式（不再整读 500 MB 进
+    // Buffer）——mock 同步换名；短路返回 ok 让上传路径继续测它真正关心的校验面。
+    scanStreamWithClamd: jest.fn(() => Promise.resolve({ ok: true })),
   };
 });
 
@@ -423,15 +425,42 @@ describe("ExecutorPackageService", () => {
   });
 
   describe("remove", () => {
-    it("should delete file from disk and remove from db", async () => {
+    it("DEEP-AUDIT B·3.2: removes the DB row first, then deletes the file", async () => {
       repo.findOne.mockResolvedValue(mockPkg);
       repo.remove.mockResolvedValue(mockPkg);
 
       await service.remove("pkg-001");
 
+      expect(repo.remove).toHaveBeenCalledWith(mockPkg);
       expect((fs.promises as any).unlink).toHaveBeenCalledWith(
         mockPkg.filePath,
       );
+      // 顺序：unlink 必须发生在 remove 之后（先删行后删文件）。
+      const removeOrder = (repo.remove as jest.Mock).mock
+        .invocationCallOrder[0];
+      const unlinkOrder = (fs.promises as any).unlink.mock
+        .invocationCallOrder[0];
+      expect(removeOrder).toBeLessThan(unlinkOrder);
+    });
+
+    it("DEEP-AUDIT B·3.2: keeps the file when the DB delete fails (no unlink)", async () => {
+      repo.findOne.mockResolvedValue(mockPkg);
+      repo.remove.mockRejectedValue(new Error("db down"));
+
+      await expect(service.remove("pkg-001")).rejects.toThrow("db down");
+
+      expect((fs.promises as any).unlink).not.toHaveBeenCalled();
+    });
+
+    it("DEEP-AUDIT B·3.2: logs an orphan warning when the file unlink fails after DB success", async () => {
+      repo.findOne.mockResolvedValue(mockPkg);
+      repo.remove.mockResolvedValue(mockPkg);
+      (fs.promises as any).unlink.mockRejectedValue(
+        new Error("EBUSY: resource busy"),
+      );
+
+      await expect(service.remove("pkg-001")).resolves.toBeUndefined();
+
       expect(repo.remove).toHaveBeenCalledWith(mockPkg);
     });
 
@@ -444,6 +473,76 @@ describe("ExecutorPackageService", () => {
 
       expect((fs.promises as any).unlink).not.toHaveBeenCalled();
       expect(repo.remove).toHaveBeenCalled();
+    });
+  });
+
+  describe("findLatest (DEEP-AUDIT B·3.1 semantic version max)", () => {
+    // 最小 queryBuilder 链桩：链式方法返回自身，getMany 吐出候选行。
+    const qbChain = (rows: ExecutorPackage[]) => {
+      const stub: any = {};
+      for (const m of ["where", "andWhere", "orderBy"]) {
+        stub[m] = jest.fn().mockReturnValue(stub);
+      }
+      stub.getMany = jest.fn().mockResolvedValue(rows);
+      stub.getOne = jest.fn().mockResolvedValue(rows[0] ?? null);
+      return stub;
+    };
+
+    const pkgOf = (
+      id: string,
+      version: string,
+      createdAt: string,
+    ): ExecutorPackage =>
+      ({
+        ...mockPkg,
+        id,
+        version,
+        createdAt: new Date(createdAt),
+      }) as any;
+
+    it("picks the highest semantic version, not the newest row", async () => {
+      const rows = [
+        pkgOf("old", "1.2.9", "2025-06-01"),
+        pkgOf("new", "1.2.10", "2025-01-01"), // 版本更高但创建更早
+      ];
+      repo.createQueryBuilder = jest.fn().mockReturnValue(qbChain(rows));
+
+      const latest = await service.findLatest("node", "linux");
+
+      expect(latest?.id).toBe("new");
+    });
+
+    it("falls back to createdAt order for equal versions (DESC, first wins)", async () => {
+      const rows = [
+        pkgOf("later-row", "1.2.9", "2025-06-01"),
+        pkgOf("earlier-row", "1.2.9", "2025-01-01"),
+      ];
+      repo.createQueryBuilder = jest.fn().mockReturnValue(qbChain(rows));
+
+      const latest = await service.findLatest("node");
+
+      expect(latest?.id).toBe("later-row");
+    });
+
+    it("falls back to createdAt order when versions are unparseable (NaN)", async () => {
+      const rows = [
+        pkgOf("junk-newer", "not-a-version", "2025-06-01"),
+        pkgOf("semver-older-row", "1.0.0", "2025-01-01"),
+      ];
+      repo.createQueryBuilder = jest.fn().mockReturnValue(qbChain(rows));
+
+      // "not-a-version" 解析失败 → NaN → 保持 createdAt 首行（junk-newer）。
+      const latest = await service.findLatest("node");
+
+      expect(latest?.id).toBe("junk-newer");
+    });
+
+    it("returns null when there are no ACTIVE candidates", async () => {
+      repo.createQueryBuilder = jest.fn().mockReturnValue(qbChain([]));
+
+      const latest = await service.findLatest("node");
+
+      expect(latest).toBeNull();
     });
   });
 
