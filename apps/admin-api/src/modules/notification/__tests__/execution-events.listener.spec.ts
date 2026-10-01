@@ -299,4 +299,105 @@ describe("ExecutionEventsListener (ARCH-21)", () => {
       );
     });
   });
+
+  describe("digest wiring (DEEP-AUDIT B·1.6: 失败聚合窗接入)", () => {
+    let digest: { recordFailure: jest.Mock };
+
+    const makeWithDigest = () => {
+      const realBus = new DomainEventBus();
+      const wired = new ExecutionEventsListener(
+        realBus,
+        notificationService as never,
+        auditService as never,
+        taskRepo as never,
+        digest as never,
+      );
+      wired.onModuleInit();
+      return wired;
+    };
+
+    beforeEach(() => {
+      digest = { recordFailure: jest.fn().mockResolvedValue("aggregated") };
+    });
+
+    it("decision=aggregated → digest swallows the notification (no direct send)", async () => {
+      const wired = makeWithDigest();
+      await wired.onExecutionFailed(event());
+      expect(digest.recordFailure).toHaveBeenCalledTimes(1);
+      expect(
+        notificationService.notifyFailureWithConfig,
+      ).not.toHaveBeenCalled();
+    });
+
+    it("decision=bypass → falls back to the existing direct send verbatim", async () => {
+      digest.recordFailure.mockResolvedValue("bypass");
+      const wired = makeWithDigest();
+      await wired.onExecutionFailed(event());
+      expect(notificationService.notifyFailureWithConfig).toHaveBeenCalledTimes(1);
+      const [name, id, error, , email] =
+        notificationService.notifyFailureWithConfig.mock.calls[0];
+      expect(name).toBe("nightly-etl");
+      expect(id).toBe("e1");
+      expect(error).toContain("script_error");
+    });
+
+    it("passes the alarm-context snapshot (task lookup result) into recordFailure", async () => {
+      taskRepo.findOne.mockResolvedValue({
+        id: "t1",
+        alarmEmail: "ops@example.com",
+        alarmChannels: ["email", "slack"],
+        runbook: "docs/runbook.md",
+        applicationId: "app-1",
+      });
+      const wired = makeWithDigest();
+      await wired.onExecutionFailed(event());
+      expect(digest.recordFailure).toHaveBeenCalledWith(
+        expect.objectContaining({
+          taskId: "t1",
+          taskName: "nightly-etl",
+          failureReason: "script_error",
+          executionId: "e1",
+          alarmEmail: "ops@example.com",
+          alarmChannels: ["email", "slack"],
+          runbook: "docs/runbook.md",
+          applicationId: "app-1",
+        }),
+      );
+    });
+
+    it("digest record rejects → direct send still happens (fail-open over digest)", async () => {
+      const warnSpy = jest
+        .spyOn(Logger.prototype, "warn")
+        .mockImplementation(() => {});
+      digest.recordFailure.mockRejectedValue(new Error("redis exploded"));
+      const wired = makeWithDigest();
+      await expect(wired.onExecutionFailed(event())).resolves.toBeUndefined();
+      expect(notificationService.notifyFailureWithConfig).toHaveBeenCalledTimes(1);
+      expect(auditService.log).not.toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+
+    it("no digest service at all (legacy test modules) → direct send unchanged", async () => {
+      const realBus = new DomainEventBus();
+      const wired = new ExecutionEventsListener(
+        realBus,
+        notificationService as never,
+        auditService as never,
+        taskRepo as never,
+      );
+      wired.onModuleInit();
+      await wired.onExecutionFailed(event());
+      expect(notificationService.notifyFailureWithConfig).toHaveBeenCalledTimes(1);
+    });
+
+    it("taskId=null events bypass aggregation (no task key) and send directly", async () => {
+      const wired = makeWithDigest();
+      digest.recordFailure.mockResolvedValue("bypass");
+      await wired.onExecutionFailed(event({ taskId: null }));
+      expect(digest.recordFailure).toHaveBeenCalledWith(
+        expect.objectContaining({ taskId: undefined }),
+      );
+      expect(notificationService.notifyFailureWithConfig).toHaveBeenCalledTimes(1);
+    });
+  });
 });
