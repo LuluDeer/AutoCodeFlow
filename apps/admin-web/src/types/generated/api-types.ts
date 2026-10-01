@@ -3847,6 +3847,8 @@ export interface components {
         };
         TriggerTaskDto: {
             params?: Record<string, never>;
+            /** @example 3 */
+            version?: number;
         };
         BatchTaskIdsDto: {
             /**

@@ -18,6 +18,9 @@ import {
 import { ExecutionLogLine } from "./entities/execution-log-line.entity";
 import { Task } from "./entities/task.entity";
 import { ExecutorService } from "../executor/executor.service";
+// 技术债 A 组（2026-10-01）·按原版本重放：钉定快照 → 派发体覆盖（纯函数，
+// 与派发体白名单同一文件保证不漂移；纯 util import 不引入模块环）。
+import { applyPinnedVersionSnapshot } from "../executor/dispatch-task-payload.util";
 // ARCH-30: AI 分析直调迁出——processor 经 AiAnalysisService 调用（封装
 // 重试 + autoflow_ai_analysis_total 指标 + fail-open 降级），不再直连 AiService。
 import { AiAnalysisService } from "../ai/ai-analysis.service";
@@ -78,8 +81,8 @@ export class TaskProcessor extends WorkerHost {
     return this.handle(job);
   }
 
-  async handle(job: Job<{ executionId: string }>) {
-    const { executionId } = job.data;
+  async handle(job: Job<{ executionId: string; pinnedVersionId?: string }>) {
+    const { executionId, pinnedVersionId } = job.data;
     const exec = await this.execRepo.findOne({ where: { id: executionId } });
     if (!exec) return;
 
@@ -163,12 +166,36 @@ export class TaskProcessor extends WorkerHost {
     let terminalPersisted = false;
 
     try {
+      // 技术债 A 组（2026-10-01）·按原版本重放：job 数据带 pinnedVersionId
+      // （trigger 钉定重放写入；BullMQ 重试复用同一 job 数据，故跨重试不丢）。
+      // 仅覆盖**派发载荷**的执行相关字段（见 applyPinnedVersionSnapshot）——
+      // 调度面（互斥/部署约束/executeMode/params/secrets）仍跟随任务当前配置，
+      // 库内任务行零写入。版本行不可删除（VER-DIFF-02 已移除删除面），此处
+      // 取不到属异常态（人工删行/down 迁移）：**fail-closed**——宁可执行
+      // 失败，也不静默改跑当前配置（那正是本功能要防的「以为重跑的是原版
+      // 代码」误判）。放在 claim 之后：抛出走下方既有派发失败链（终态 FAILED
+      // + 分类 + 事件），不留悬挂 PENDING 行。
+      let dispatchTask: Task = task;
+      if (pinnedVersionId) {
+        const pinned = await this.taskService
+          .getVersion(task.id, pinnedVersionId)
+          .catch(() => null);
+        if (!pinned) {
+          throw new Error(
+            `Pinned version ${pinnedVersionId} not found for task ${task.id}; refusing to dispatch with current config`,
+          );
+        }
+        dispatchTask = applyPinnedVersionSnapshot(
+          task,
+          pinned.snapshot as Record<string, unknown>,
+        );
+      }
       // Broadcast mode: dispatch to all online executors
       // Single mode: dispatch to the executor with lowest load
       const isBroadcast = task.executeMode === "broadcast";
       const rawResult = isBroadcast
-        ? await this.executorService.dispatchBroadcast(task, exec)
-        : await this.executorService.dispatch(task, exec);
+        ? await this.executorService.dispatchBroadcast(dispatchTask, exec)
+        : await this.executorService.dispatch(dispatchTask, exec);
       // E-P2-R5: executorAddress 不再在此处单独 update（不在事务内，与终态写
       // 之间存在 TOCTOU/非原子窗口）。它并入 finally 的 ownedPatch（下方已有
       // `exec.executorAddress !== undefined` 条件判断），与状态/结果同事务落库。

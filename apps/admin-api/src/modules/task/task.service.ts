@@ -359,6 +359,18 @@ function isUniqueViolation(err: unknown): boolean {
 }
 
 /**
+ * 技术债 A 组（2026-10-01）：从 23505 错误提取命中的**约束名**。TypeORM 的
+ * QueryFailedError 会把驱动错误的自有属性拷贝到自身（QueryFailedError.js 里
+ * ObjectUtils.assign(this, otherProperties)），pg 驱动错误自带 `constraint`
+ * 字段——据此区分「撞主键」与「撞业务唯一索引」，给并发窗口下的写面冲突
+ * 配上可读的 409 文案（而非笼统的 conflict）。
+ */
+function uniqueConstraintName(err: unknown): string | null {
+  if (!(err instanceof QueryFailedError)) return null;
+  return (err as QueryFailedError & { constraint?: string }).constraint ?? null;
+}
+
+/**
  * python_task_multiversion（WS1 · CONTRACT §2.5 / D14）：解释器不可获取的
  * 兜底分类判据（`inferFailureReason` 的**第一条**规则）。
  *
@@ -1128,6 +1140,14 @@ export class TaskService {
       return saved;
     } catch (err) {
       if (isUniqueViolation(err)) {
+        // 技术债 A 组（2026-10-01）：迁移 1790000000050 起 tasks.name 有唯一
+        // 索引 idx_tasks_name_unique——预检查窗口外的**并发同名创建**在此落网，
+        // 按约束名分流给可读文案（其余唯一冲突维持 R6 既有口径）。
+        if (uniqueConstraintName(err) === "idx_tasks_name_unique") {
+          throw new ConflictException(
+            `Task with name "${normalized.name}" already exists`,
+          );
+        }
         throw new ConflictException(
           normalized.id
             ? `Task with id "${normalized.id}" already exists`
@@ -1733,6 +1753,13 @@ export class TaskService {
     const task = await this.findOne(id);
     // AUTH-02: 执行类写面归属（viewer 只读；其余维持既有行为）
     await this.assertCanOperate(task, user);
+    // 技术债 A 组（2026-10-01）·按原版本重放：dto.version 指定以版本历史的
+    // v<N> 快照派发本次执行（钉定）。校验（存在且属于该任务）在此完成，
+    // 不存在 → 404；不传 version 时 pinnedVersion 为 null，后续路径零变化。
+    const pinnedVersion =
+      dto?.version != null
+        ? await this.resolvePinnedVersionForTrigger(task, dto.version)
+        : null;
     // OBS-01: 追踪开启时生成 trace 根，traceId 落库（null=追踪未开启）。
     const traceparent = this.tracing?.startTrace() ?? null;
     const traceId = this.tracing?.extractContext(traceparent) ?? null;
@@ -1749,7 +1776,10 @@ export class TaskService {
           params: dto.params ?? task.params,
           // R-28: 默认 manual；依赖触发方传入 "dependency"。
           triggerType: triggerTypeOverride ?? "manual",
-          taskVersion: task.currentVersion,
+          // 技术债 A 组：钉定重放时执行记录记**钉定版本号**（如 "v3"），
+          // 而非任务 currentVersion——详情页/版本对比据此可读出「这次跑的
+          // 是哪个版本的快照」。不钉定时维持原值。
+          taskVersion: pinnedVersion ? pinnedVersion.version : task.currentVersion,
           // MUTEX-01：互斥组快照（task→application；未挂组为 null）。
           mutexGroupId: await resolveTaskMutexGroupId(manager, task),
           traceId: this.tracing?.isValidTraceId(traceId) ? traceId : null,
@@ -1759,7 +1789,15 @@ export class TaskService {
     try {
       await this.taskQueue.add(
         "execute",
-        { executionId: exec.id },
+        // 技术债 A 组：钉定重放把版本行 id 随 job 数据透传 processor——
+        // processor 据此取快照覆盖**派发载荷**（applyPinnedVersionSnapshot），
+        // 任务当前配置零影响。只随 job 走、不落库；BullMQ 重试复用同一
+        // job 数据故钉定不丢；互斥唤醒/stale 恢复的重新入队走既有「当前
+        // 配置派发」语义（与所有执行行的恢复路径一致，见 processor 注释）。
+        // 不钉定时与旧载荷逐字节一致（既有用例断言精确匹配）。
+        pinnedVersion
+          ? { executionId: exec.id, pinnedVersionId: pinnedVersion.id }
+          : { executionId: exec.id },
         {
           // Bull requires attempts >= 1; guard against maxRetry=0
           attempts: Math.max(1, task.maxRetry ?? 1),
@@ -1803,6 +1841,28 @@ export class TaskService {
     }
     endSpan?.();
     return exec;
+  }
+
+  /**
+   * 技术债 A 组（2026-10-01）·按原版本重放：定位 (taskId, v<N>) 的版本
+   * 快照行。快照表按 taskId 过滤——「存在」与「属于该任务」一并校验，
+   * 不满足即 404（含数字越界/版本从未生成两种情形，不区分报错避免泄露
+   * 版本空间信息）。版本行不可删除（VER-DIFF-02 已移除删除面），job 数据
+   * 里只带版本行 id 是稳定引用。
+   */
+  private async resolvePinnedVersionForTrigger(
+    task: Task,
+    versionNumber: number,
+  ): Promise<TaskVersion> {
+    const row = await this.versionRepo.findOne({
+      where: { taskId: task.id, version: `v${versionNumber}` },
+    });
+    if (!row) {
+      throw new NotFoundException(
+        `Task version v${versionNumber} not found for task ${task.id}`,
+      );
+    }
+    return row;
   }
 
   async getExecutions(taskId: string, p: PaginationDto & { status?: string }) {

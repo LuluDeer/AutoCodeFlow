@@ -9490,6 +9490,11 @@
         "properties": {
           "params": {
             "type": "object"
+          },
+          "version": {
+            "type": "number",
+            "example": 3,
+            "minimum": 1
           }
         }
       },
