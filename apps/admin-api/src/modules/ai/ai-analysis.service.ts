@@ -68,7 +68,11 @@ export class AiAnalysisService {
   ): Promise<string> {
     for (let attempt = 0; attempt <= AI_ANALYSIS_RETRIES; attempt++) {
       try {
-        const analysis = await this.aiService.analyzeFailure(task, logs, context);
+        const analysis = await this.aiService.analyzeFailure(
+          task,
+          logs,
+          context,
+        );
         if (analysis && analysis.length > 0) {
           recordRuntime("autoflow_ai_analysis_total", { result: "ok" });
           return analysis;

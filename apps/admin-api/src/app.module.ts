@@ -44,7 +44,7 @@ import { RegistryModule } from "./modules/registry/registry.module";
 import { ArtifactsModule } from "./modules/artifacts/artifacts.module";
 // ARCH-21: 进程内领域事件总线（@Global 单例——emit 侧在 task 模块，
 // listener 侧在 notification 模块，FEAT-07 出站 webhook 届时直接订阅）。
-import { DomainEventModule } from "./common/services/domain-event-bus.service";
+import { DomainEventModule } from "./common/services/domain-event.module";
 // OBS-01: OpenTelemetry 追踪（@Global——埋点在 task/scheduler/executor/
 // execution-callback 多处；OTEL_ENABLED=false 时 TracingService 全短路）。
 import { TracingModule } from "./common/tracing/tracing.module";

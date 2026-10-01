@@ -203,7 +203,9 @@ export class RedisLockService implements OnModuleInit, OnModuleDestroy {
           this.logger.warn(
             `Lock watchdog for ${key} lost ownership during renewal (${consecutiveFailures}/${REDIS_LOCK_WATCHDOG_MAX_CONSECUTIVE_FAILURES})`,
           );
-          if (consecutiveFailures >= REDIS_LOCK_WATCHDOG_MAX_CONSECUTIVE_FAILURES) {
+          if (
+            consecutiveFailures >= REDIS_LOCK_WATCHDOG_MAX_CONSECUTIVE_FAILURES
+          ) {
             stopped = true;
             clearInterval(watchdog);
           }
@@ -213,7 +215,9 @@ export class RedisLockService implements OnModuleInit, OnModuleDestroy {
           this.logger.warn(
             `Lock watchdog for ${key} failed to renew (${consecutiveFailures}/${REDIS_LOCK_WATCHDOG_MAX_CONSECUTIVE_FAILURES}): ${err instanceof Error ? err.message : String(err)}`,
           );
-          if (consecutiveFailures >= REDIS_LOCK_WATCHDOG_MAX_CONSECUTIVE_FAILURES) {
+          if (
+            consecutiveFailures >= REDIS_LOCK_WATCHDOG_MAX_CONSECUTIVE_FAILURES
+          ) {
             stopped = true;
             clearInterval(watchdog);
             this.logger.error(

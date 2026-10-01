@@ -29,12 +29,7 @@
  * 汇总发送复用 notifyFailureWithConfig（告警渠道路由 + 静默规则 + 模板
  * 变量全同既有失败告警），仅以 titleOverride 区分"汇总"与"单次失败"。
  */
-import {
-  Injectable,
-  Logger,
-  OnModuleDestroy,
-  Optional,
-} from "@nestjs/common";
+import { Injectable, Logger, OnModuleDestroy, Optional } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import Redis from "ioredis";
 import { NotificationService } from "./notification.service";
@@ -303,7 +298,11 @@ export class NotificationDigestService implements OnModuleDestroy {
   ): DigestWindowState {
     let ctx: DigestWindowState["ctx"] = {};
     try {
-      const parsed = raw.ctx ? (JSON.parse(raw.ctx) as DigestWindowState["ctx"] & { taskName?: string }) : {};
+      const parsed = raw.ctx
+        ? (JSON.parse(raw.ctx) as DigestWindowState["ctx"] & {
+            taskName?: string;
+          })
+        : {};
       ctx = parsed;
     } catch {
       // 上下文损坏（不应发生）→ 退化为无路由信息，任务名用 taskId 兜底。

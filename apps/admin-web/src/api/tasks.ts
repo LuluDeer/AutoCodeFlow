@@ -443,10 +443,10 @@ async function listAllTasks(
   if (expectedTotalPages > TASK_LIST_MAX_PAGES) {
     // 第四轮审计：达上限**抛错而非静默截断**——DAG（useAllTasksForDag）走
     // 错误路径渲染错误态，绝不画缺边图；console.warn 留诊断痕迹，线上排障
-    // 不必复现即可在 DevTools 看到护栏触发。
+    // 不必复现即可在 DevTools 看到护栏触发。诊断文案复用与抛错同一条
+    // i18n 消息（单一事实源，i18n 守卫不认裸中文模板串）。
     console.warn(
-      `[tasks.listAll] total=${first.total} 需要 ${expectedTotalPages} 页，` +
-        `超过安全上限 ${TASK_LIST_MAX_PAGES} 页——拒绝全量拉取（DAG/依赖下拉将显示错误态而非缺边图）`,
+      `[tasks.listAll] ${i18n.t('taskList.tooManyPages', { total: first.total, pages: expectedTotalPages, max: TASK_LIST_MAX_PAGES })}`,
     );
     throw invalidTaskListResponse(
       i18n.t('taskList.tooManyPages', { total: first.total, pages: expectedTotalPages, max: TASK_LIST_MAX_PAGES }),

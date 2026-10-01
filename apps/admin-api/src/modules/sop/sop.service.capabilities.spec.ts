@@ -182,14 +182,12 @@ describe("SOP Agent capability lease at assignment and poll", () => {
     const first = (await h.service.pollPending({ executorId: "e1" })) as Array<{
       assignmentId: string;
     }>;
-    expect(first.map((item) => item.assignmentId)).toEqual([
-      "a1",
-      "a2",
-      "a3",
-    ]);
+    expect(first.map((item) => item.assignmentId)).toEqual(["a1", "a2", "a3"]);
     expect(h.rows[3].pulledAt).toBeNull(); // a4 留在队列
 
-    const second = (await h.service.pollPending({ executorId: "e1" })) as Array<{
+    const second = (await h.service.pollPending({
+      executorId: "e1",
+    })) as Array<{
       assignmentId: string;
     }>;
     expect(second.map((item) => item.assignmentId)).toEqual(["a4"]);
@@ -215,11 +213,7 @@ describe("SOP Agent capability lease at assignment and poll", () => {
       executorId: "e1",
       resendAssignments: true,
     })) as Array<{ assignmentId: string }>;
-    expect(first.map((item) => item.assignmentId)).toEqual([
-      "a1",
-      "a2",
-      "a3",
-    ]);
+    expect(first.map((item) => item.assignmentId)).toEqual(["a1", "a2", "a3"]);
     expect(h.rows[3].pulledAt).toBeNull();
 
     const second = (await h.service.pollPending({

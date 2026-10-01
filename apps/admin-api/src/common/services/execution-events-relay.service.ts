@@ -61,7 +61,9 @@ interface RelayEnvelope {
 }
 
 @Injectable()
-export class ExecutionEventsRelayService implements OnModuleInit, OnModuleDestroy {
+export class ExecutionEventsRelayService
+  implements OnModuleInit, OnModuleDestroy
+{
   private readonly logger = new Logger(ExecutionEventsRelayService.name);
   /** 本进程标识：只用于过滤自己广播的消息（随机即可，无需跨重启稳定）。 */
   private readonly instanceId = randomBytes(12).toString("hex");

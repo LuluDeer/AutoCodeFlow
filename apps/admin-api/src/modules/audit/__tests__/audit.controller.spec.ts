@@ -129,7 +129,11 @@ describe("AuditController", () => {
     // result 筛选透传（列表 + CSV 导出同滤，R4 P1-2 parity）。
     it("passes result filter to service", async () => {
       svc.findAll.mockResolvedValue({ data: [], total: 0 });
-      await controller.findAll({ page: 1, pageSize: 10, result: "failure" } as any);
+      await controller.findAll({
+        page: 1,
+        pageSize: 10,
+        result: "failure",
+      } as any);
       expect(svc.findAll).toHaveBeenCalledWith(
         expect.objectContaining({ result: "failure" }),
       );

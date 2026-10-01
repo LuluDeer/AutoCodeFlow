@@ -757,8 +757,7 @@ export class ApplicationService implements OnModuleInit {
       return {
         address,
         ok: false,
-        error:
-          r.reason instanceof Error ? r.reason.message : String(r.reason),
+        error: r.reason instanceof Error ? r.reason.message : String(r.reason),
       };
     });
     const failed = results.filter((r) => !r.ok);
@@ -768,7 +767,10 @@ export class ApplicationService implements OnModuleInit {
       total: results.length,
       succeeded: results.length - failed.length,
       failed: failed.length,
-      failedTargets: failed.map((f) => ({ address: f.address, error: f.error })),
+      failedTargets: failed.map((f) => ({
+        address: f.address,
+        error: f.error,
+      })),
     };
     await this.writeAudit({
       userId,
@@ -819,7 +821,8 @@ export class ApplicationService implements OnModuleInit {
     deploymentIds: string[],
   ): Promise<{ ok: boolean; error?: string }> {
     const executorService = this.executorService;
-    if (!executorService) return { ok: false, error: "ExecutorService unavailable" };
+    if (!executorService)
+      return { ok: false, error: "ExecutorService unavailable" };
 
     // ARCH-33: 先判一次传输方式——整批命令要么全走 pull，要么全走 push，
     // 不允许一台执行器上两条路径混发（否则 stop 走队列、uninstall 走 HTTP，

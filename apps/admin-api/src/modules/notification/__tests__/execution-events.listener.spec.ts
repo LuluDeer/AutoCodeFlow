@@ -333,8 +333,10 @@ describe("ExecutionEventsListener (ARCH-21)", () => {
       digest.recordFailure.mockResolvedValue("bypass");
       const wired = makeWithDigest();
       await wired.onExecutionFailed(event());
-      expect(notificationService.notifyFailureWithConfig).toHaveBeenCalledTimes(1);
-      const [name, id, error, , email] =
+      expect(notificationService.notifyFailureWithConfig).toHaveBeenCalledTimes(
+        1,
+      );
+      const [name, id, error, , _email] =
         notificationService.notifyFailureWithConfig.mock.calls[0];
       expect(name).toBe("nightly-etl");
       expect(id).toBe("e1");
@@ -372,7 +374,9 @@ describe("ExecutionEventsListener (ARCH-21)", () => {
       digest.recordFailure.mockRejectedValue(new Error("redis exploded"));
       const wired = makeWithDigest();
       await expect(wired.onExecutionFailed(event())).resolves.toBeUndefined();
-      expect(notificationService.notifyFailureWithConfig).toHaveBeenCalledTimes(1);
+      expect(notificationService.notifyFailureWithConfig).toHaveBeenCalledTimes(
+        1,
+      );
       expect(auditService.log).not.toHaveBeenCalled();
       warnSpy.mockRestore();
     });
@@ -387,7 +391,9 @@ describe("ExecutionEventsListener (ARCH-21)", () => {
       );
       wired.onModuleInit();
       await wired.onExecutionFailed(event());
-      expect(notificationService.notifyFailureWithConfig).toHaveBeenCalledTimes(1);
+      expect(notificationService.notifyFailureWithConfig).toHaveBeenCalledTimes(
+        1,
+      );
     });
 
     it("taskId=null events bypass aggregation (no task key) and send directly", async () => {
@@ -397,7 +403,9 @@ describe("ExecutionEventsListener (ARCH-21)", () => {
       expect(digest.recordFailure).toHaveBeenCalledWith(
         expect.objectContaining({ taskId: undefined }),
       );
-      expect(notificationService.notifyFailureWithConfig).toHaveBeenCalledTimes(1);
+      expect(notificationService.notifyFailureWithConfig).toHaveBeenCalledTimes(
+        1,
+      );
     });
   });
 });

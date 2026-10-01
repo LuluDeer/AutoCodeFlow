@@ -364,9 +364,7 @@ export default () => ({
      * 启时有意义。
      */
     deploymentPolicy:
-      process.env.EXECUTOR_DEPLOYMENT_POLICY === "strict"
-        ? "strict"
-        : "prefer",
+      process.env.EXECUTOR_DEPLOYMENT_POLICY === "strict" ? "strict" : "prefer",
     // ARCH-27: SSRF 豁免开关在此统一注册 —— 运行时消费方
     // （safe-http.util.assertSafeExecutorUrl）经 ConfigService 读取，
     // 不再直读 process.env。

@@ -1,4 +1,5 @@
 import { MigrationInterface, QueryRunner } from "typeorm";
+import { flipDependencyMap } from "../common/utils/task-dependency-flip.util";
 
 /**
  * FIX-1.1（依赖链契约翻转）：tasks.dependencies 的存量行从旧契约
@@ -35,39 +36,9 @@ import { MigrationInterface, QueryRunner } from "typeorm";
  * 不会比迁移前的静默失效更糟。
  */
 
-/** 任务主键为 uuid v4 形态（小写/大写均可）；宽松匹配 8-4-4-4-12 hex。 */
-const UUID_RE =
-  /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
-
-/**
- * 纯函数翻转单行 dependencies 映射（供迁移与单测共用——迁移内不做内联
- * SQL/DO 块，让翻转语义可被无 PG 的单测环境逐条验证）。
- *
- * @param deps 行内映射原值（假定来自 jsonb object；非对象由调用方过滤）
- * @param direction up=旧契约翻新（{uuid:name}→{name:uuid}）；
- *                 down=对称回翻（{name:uuid}→{uuid:name}）
- */
-export function flipDependencyMap(
-  deps: Record<string, string>,
-  direction: "up" | "down" = "up",
-): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const [key, value] of Object.entries(deps ?? {})) {
-    const needsFlip =
-      direction === "up"
-        ? UUID_RE.test(key) && !UUID_RE.test(value)
-        : !UUID_RE.test(key) && UUID_RE.test(value);
-    if (!needsFlip) {
-      out[key] = value;
-      continue;
-    }
-    // 翻转：key/value 互换。冲突降级——目标 key 已被先处理条目占用时，
-    // 展示别名让位，key 保留原 uuid（value 语义位不丢）。
-    const newKey = out[value] !== undefined ? key : value;
-    out[newKey] = key;
-  }
-  return out;
-}
+// 翻转语义抽至 common/utils/task-dependency-flip.util.ts（迁移文件内只能
+// 导出 MigrationInterface 类——TypeORM 把文件内所有导出当迁移候选并校验
+// 时间戳后缀，导出纯函数会让空库迁移链报 "Object migration name is wrong"）。
 
 export class FlipTaskDependencyMap1790000000048 implements MigrationInterface {
   name = "FlipTaskDependencyMap1790000000048";

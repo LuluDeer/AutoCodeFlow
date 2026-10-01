@@ -67,7 +67,10 @@ describe("buildDispatchTaskPayload（A4：派发体白名单）", () => {
   });
 
   it("显式传入 packageUrl 时注入该键（zip 渠道），空值不注入", () => {
-    const withUrl = buildDispatchTaskPayload(mkTask(), "https://registry/pkg.zip");
+    const withUrl = buildDispatchTaskPayload(
+      mkTask(),
+      "https://registry/pkg.zip",
+    );
     expect(withUrl.packageUrl).toBe("https://registry/pkg.zip");
     expect(Object.keys(withUrl)).toContain("packageUrl");
 
@@ -82,7 +85,9 @@ describe("buildDispatchTaskPayload（A4：派发体白名单）", () => {
     const snapshot = { ...task };
     buildDispatchTaskPayload(task, "https://registry/pkg.zip");
     expect(task).toEqual(snapshot);
-    expect((task as unknown as Record<string, unknown>).packageUrl).toBeUndefined();
+    expect(
+      (task as unknown as Record<string, unknown>).packageUrl,
+    ).toBeUndefined();
   });
 
   it("白名单覆盖三渠道判别字段（git/glue/zip）与通用面", () => {

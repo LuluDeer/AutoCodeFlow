@@ -6654,7 +6654,10 @@ describe("FEAT-22 方案 A: dispatch 部署约束 strict 接线（ExecutorServic
           provide: SecretsCryptoService,
           useValue: new SecretsCryptoService({ get: () => "" } as any),
         },
-        { provide: getRepositoryToken(AppDeployment), useValue: appDeploymentRepo },
+        {
+          provide: getRepositoryToken(AppDeployment),
+          useValue: appDeploymentRepo,
+        },
       ],
     }).compile();
     return module.get(ExecutorService);
@@ -6987,9 +6990,11 @@ describe("FEAT-22 方案 B: dispatch 版本跟随部署接线（ExecutorService�
     } as never);
   };
 
-  const buildService = async (opts: {
-    withVersionRepo?: boolean;
-  } = {}): Promise<ExecutorService> => {
+  const buildService = async (
+    opts: {
+      withVersionRepo?: boolean;
+    } = {},
+  ): Promise<ExecutorService> => {
     const providers: any[] = [
       ExecutorService,
       { provide: getRepositoryToken(Executor), useValue: executorRepo },
@@ -7019,7 +7024,10 @@ describe("FEAT-22 方案 B: dispatch 版本跟随部署接线（ExecutorService�
         provide: SecretsCryptoService,
         useValue: new SecretsCryptoService({ get: () => "" } as any),
       },
-      { provide: getRepositoryToken(AppDeployment), useValue: appDeploymentRepo },
+      {
+        provide: getRepositoryToken(AppDeployment),
+        useValue: appDeploymentRepo,
+      },
       { provide: getRepositoryToken(Application), useValue: applicationRepo },
     ];
     if (opts.withVersionRepo !== false) {
@@ -7043,7 +7051,11 @@ describe("FEAT-22 方案 B: dispatch 版本跟随部署接线（ExecutorService�
       ...overrides,
     }) as unknown as Task;
 
-  const dispatchTask = (svc: ExecutorService, task: Task, exec?: TaskExecution) => {
+  const dispatchTask = (
+    svc: ExecutorService,
+    task: Task,
+    exec?: TaskExecution,
+  ) => {
     const execution = exec ?? ({ id: "exec-1", params: {} } as TaskExecution);
     return svc.dispatch(task, execution).then(() => execution);
   };
@@ -7181,9 +7193,9 @@ describe("FEAT-22 方案 B: dispatch 版本跟随部署接线（ExecutorService�
     await dispatchTask(svc, zipTask());
 
     expect(payloadOf()).toBe(CURRENT_PKG);
-    expect(warnSpy.mock.calls.some((c) => String(c[0]).includes("方案 B"))).toBe(
-      true,
-    );
+    expect(
+      warnSpy.mock.calls.some((c) => String(c[0]).includes("方案 B")),
+    ).toBe(true);
   });
 
   it("snapshot 无 packageUrl：回退当前版", async () => {
@@ -7685,7 +7697,10 @@ describe("ExecutorService removal impact (B·1.1)", () => {
   beforeEach(async () => {
     executorRepo = makeRepo();
     taskRepo = makeRepo();
-    pullService = { clear: jest.fn().mockResolvedValue(undefined), depth: jest.fn().mockResolvedValue(0) };
+    pullService = {
+      clear: jest.fn().mockResolvedValue(undefined),
+      depth: jest.fn().mockResolvedValue(0),
+    };
     audit = { log: jest.fn().mockResolvedValue(undefined) };
     taskQueue = { add: jest.fn().mockResolvedValue(undefined) };
     configService = { get: jest.fn().mockReturnValue("http") };
@@ -7697,7 +7712,10 @@ describe("ExecutorService removal impact (B·1.1)", () => {
         { provide: getRepositoryToken(Executor), useValue: executorRepo },
         { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
         { provide: getRepositoryToken(Task), useValue: taskRepo },
-        { provide: getRepositoryToken(ExecutorMetricsHistory), useValue: metricsHistoryRepo },
+        {
+          provide: getRepositoryToken(ExecutorMetricsHistory),
+          useValue: metricsHistoryRepo,
+        },
         { provide: getQueueToken("task-queue"), useValue: taskQueue },
         { provide: ConfigService, useValue: configService },
         {
@@ -7710,8 +7728,16 @@ describe("ExecutorService removal impact (B·1.1)", () => {
             sendAll: jest.fn(),
           },
         },
-        { provide: SystemConfigService, useValue: { findOne: jest.fn().mockRejectedValue(new Error("not found")) } },
-        { provide: SecretsCryptoService, useValue: new SecretsCryptoService({ get: () => "" } as any) },
+        {
+          provide: SystemConfigService,
+          useValue: {
+            findOne: jest.fn().mockRejectedValue(new Error("not found")),
+          },
+        },
+        {
+          provide: SecretsCryptoService,
+          useValue: new SecretsCryptoService({ get: () => "" } as any),
+        },
         // B·1.1：pull 队列（clear/depth）与审计均接线上
         { provide: ExecutorPullService, useValue: pullService },
         { provide: AuditService, useValue: audit },
@@ -7754,7 +7780,12 @@ describe("ExecutorService removal impact (B·1.1)", () => {
   });
 
   it("describeRemovalImpact falls back to zero depth when the pull service is absent", async () => {
-    executorRepo.findOne.mockResolvedValue({ id: "exec-1", address: "a", appName: "a", status: ExecutorStatus.ONLINE });
+    executorRepo.findOne.mockResolvedValue({
+      id: "exec-1",
+      address: "a",
+      appName: "a",
+      status: ExecutorStatus.ONLINE,
+    });
     taskRepo.count.mockResolvedValue(0);
     // 不接线 ExecutorPullService（@Optional → null）——depth 读不到按 0 呈现，
     // 不阻断预览（管理台最差情形是少显示一列，绝不 500）。
@@ -7764,12 +7795,23 @@ describe("ExecutorService removal impact (B·1.1)", () => {
         { provide: getRepositoryToken(Executor), useValue: executorRepo },
         { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
         { provide: getRepositoryToken(Task), useValue: taskRepo },
-        { provide: getRepositoryToken(ExecutorMetricsHistory), useValue: metricsHistoryRepo },
+        {
+          provide: getRepositoryToken(ExecutorMetricsHistory),
+          useValue: metricsHistoryRepo,
+        },
         { provide: getQueueToken("task-queue"), useValue: taskQueue },
         { provide: ConfigService, useValue: configService },
         { provide: NotificationService, useValue: { sendAll: jest.fn() } },
-        { provide: SystemConfigService, useValue: { findOne: jest.fn().mockRejectedValue(new Error("not found")) } },
-        { provide: SecretsCryptoService, useValue: new SecretsCryptoService({ get: () => "" } as any) },
+        {
+          provide: SystemConfigService,
+          useValue: {
+            findOne: jest.fn().mockRejectedValue(new Error("not found")),
+          },
+        },
+        {
+          provide: SecretsCryptoService,
+          useValue: new SecretsCryptoService({ get: () => "" } as any),
+        },
       ],
     }).compile();
     const bare = module.get(ExecutorService);
@@ -7783,16 +7825,24 @@ describe("ExecutorService removal impact (B·1.1)", () => {
       address: "10.0.0.9:8002",
       appName: "exec-9",
     });
-    Object.assign(executorRepo, { remove: jest.fn().mockResolvedValue(undefined) });
+    Object.assign(executorRepo, {
+      remove: jest.fn().mockResolvedValue(undefined),
+    });
     await service.removeById("exec-9");
     expect(pullService.clear).toHaveBeenCalledWith("exec-9");
   });
 
   it("cleanupOfflineExecutors skips executors that still have pinned tasks and audits the skip", async () => {
     const staleNoPin = { id: "exec-free", address: "a:1", appName: "free" };
-    const stalePinned = { id: "exec-pinned", address: "b:2", appName: "pinned" };
+    const stalePinned = {
+      id: "exec-pinned",
+      address: "b:2",
+      appName: "pinned",
+    };
     executorRepo.find.mockResolvedValue([staleNoPin, stalePinned]);
-    Object.assign(executorRepo, { delete: jest.fn().mockResolvedValue({ affected: 1 }) });
+    Object.assign(executorRepo, {
+      delete: jest.fn().mockResolvedValue({ affected: 1 }),
+    });
     // 分组查询：exec-pinned 仍有 2 个钉定任务。对既有 jest.fn 换实现（直改
     // createQueryBuilder 属性会破坏 ReturnType<typeof makeRepo> 推导、ts-jest
     // TS2322）——makeRepo 每次 createQueryBuilder() 新建 qb 实例，必须换实现
@@ -7804,9 +7854,9 @@ describe("ExecutorService removal impact (B·1.1)", () => {
         where: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
         groupBy: jest.fn().mockReturnThis(),
-        getRawMany: jest.fn().mockResolvedValue([
-          { executorId: "exec-pinned", count: "2" },
-        ]),
+        getRawMany: jest
+          .fn()
+          .mockResolvedValue([{ executorId: "exec-pinned", count: "2" }]),
       }),
     );
 
@@ -7814,7 +7864,8 @@ describe("ExecutorService removal impact (B·1.1)", () => {
 
     // 只删无引用行——delete 入参是 { id: In([...]) }；本 TypeORM 版本的
     // FindOperator 无 getValue()，集合在 _value。
-    const deleteMock = (executorRepo as unknown as { delete: jest.Mock }).delete;
+    const deleteMock = (executorRepo as unknown as { delete: jest.Mock })
+      .delete;
     const deleteArg = deleteMock.mock.calls[0][0] as {
       id: { _value: string[] };
     };
@@ -7832,4 +7883,3 @@ describe("ExecutorService removal impact (B·1.1)", () => {
     expect(pullService.clear).not.toHaveBeenCalledWith("exec-pinned");
   });
 });
-

@@ -4454,7 +4454,11 @@ describe("TaskService (__tests__)", () => {
           version: "v1",
           snapshot: oldSnapshot,
         })
-        .mockResolvedValueOnce({ id: "v2", version: "v2", snapshot: newSnapshot });
+        .mockResolvedValueOnce({
+          id: "v2",
+          version: "v2",
+          snapshot: newSnapshot,
+        });
       const diff = await service.compareVersions("t1", "v1", "v2");
       expect(diff.dependencies).toEqual({
         old: { "dep-a": "task-a" },
@@ -4577,9 +4581,9 @@ describe("TaskService (__tests__)", () => {
     it("does not record killed metric when the kill hits no row (A4)", async () => {
       const exec = { id: "e3", status: ExecutionStatus.SUCCESS };
       givenOwnedExecution(exec);
-      await expect(
-        service.killExecution("e3", ADMIN_USER),
-      ).rejects.toThrow(BadRequestException);
+      await expect(service.killExecution("e3", ADMIN_USER)).rejects.toThrow(
+        BadRequestException,
+      );
       expect(
         runtimeCount("autoflow_execution_result_total", { status: "killed" }),
       ).toBe(0);
@@ -4863,14 +4867,15 @@ describe("TaskService (__tests__)", () => {
     const mockStatusCounts = (
       rows: Array<{ status: string; count: string }>,
     ) => {
-      execRepo.createQueryBuilder = jest.fn(() =>
-        ({
-          select: jest.fn().mockReturnThis(),
-          addSelect: jest.fn().mockReturnThis(),
-          where: jest.fn().mockReturnThis(),
-          groupBy: jest.fn().mockReturnThis(),
-          getRawMany: jest.fn().mockResolvedValue(rows),
-        }) as any,
+      execRepo.createQueryBuilder = jest.fn(
+        () =>
+          ({
+            select: jest.fn().mockReturnThis(),
+            addSelect: jest.fn().mockReturnThis(),
+            where: jest.fn().mockReturnThis(),
+            groupBy: jest.fn().mockReturnThis(),
+            getRawMany: jest.fn().mockResolvedValue(rows),
+          }) as any,
       );
     };
 
@@ -6093,14 +6098,15 @@ describe("TaskService — QA-02 phase 2 branch gaps", () => {
     const mockStatusCounts = (
       rows: Array<{ status: string; count: string }>,
     ) => {
-      execRepo.createQueryBuilder = jest.fn(() =>
-        ({
-          select: jest.fn().mockReturnThis(),
-          addSelect: jest.fn().mockReturnThis(),
-          where: jest.fn().mockReturnThis(),
-          groupBy: jest.fn().mockReturnThis(),
-          getRawMany: jest.fn().mockResolvedValue(rows),
-        }) as any,
+      execRepo.createQueryBuilder = jest.fn(
+        () =>
+          ({
+            select: jest.fn().mockReturnThis(),
+            addSelect: jest.fn().mockReturnThis(),
+            where: jest.fn().mockReturnThis(),
+            groupBy: jest.fn().mockReturnThis(),
+            getRawMany: jest.fn().mockResolvedValue(rows),
+          }) as any,
       );
     };
 

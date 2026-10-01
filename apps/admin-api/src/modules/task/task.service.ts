@@ -1534,7 +1534,10 @@ export class TaskService {
     // 按「版本不符」处理（fail-closed，同样 409）。
     if (dto.expectedUpdatedAt != null) {
       const expectedMs = new Date(dto.expectedUpdatedAt).getTime();
-      if (!Number.isFinite(expectedMs) || expectedMs !== t.updatedAt.getTime()) {
+      if (
+        !Number.isFinite(expectedMs) ||
+        expectedMs !== t.updatedAt.getTime()
+      ) {
         throw new ConflictException(
           "任务已被其他修改抢先更新（数据版本不一致），请刷新后重试",
         );
