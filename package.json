@@ -6,6 +6,7 @@
   "engines": {
     "node": ">=24"
   },
+  "packageManager": "npm@11.19.0",
   "scripts": {
     "test:api": "cd apps/admin-api && npm test",
     "test:node": "cd apps/executor-node && npx jest",
