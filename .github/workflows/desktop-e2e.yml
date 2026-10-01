@@ -59,7 +59,7 @@ jobs:
       - name: Install display & electron runtime deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends xvfb dbus
+          sudo apt-get install -y --no-install-recommends xvfb dbus openbox
           # gtk3/gbm/nss/alsa：electron 必需。t64 后缀是 24.04 包名；旧镜像回落无后缀
           sudo apt-get install -y --no-install-recommends libgtk-3-0t64 libasound2t64 \
             || sudo apt-get install -y --no-install-recommends libgtk-3-0 libasound2
@@ -84,9 +84,13 @@ jobs:
       # dbus-run-session：给 Electron 一个 session bus（托盘/通知的 DBus 面）；
       # xvfb-run -a：自动挑显示号。spec 内托盘用例在无托盘宿主时会按声明的
       # 理由降级 skip（见 e2e/n10-desktop.spec.js 用例 2 头注）。
+      # openbox：轻量窗口管理器。Electron 的 maximize/isMaximized 走 EWMH，
+      # 裸 Xvfb（无 WM）下 maximize() 是 no-op——最大化用例 3 次尝试确定性
+      # 失败（run 36902698760，10s 超窗 vs 本地同形态 3.9s 通过）。起 WM 后
+      # 最大化语义才真实可用。
       - name: Playwright _electron e2e (N-10, 3 cases)
         working-directory: apps/executor-desktop
-        run: dbus-run-session -- xvfb-run -a npx playwright test --config=e2e/playwright.config.js
+        run: dbus-run-session -- xvfb-run -a --server-args="-screen 0 1280x1024x24" bash -c 'openbox & sleep 2; npx playwright test --config=e2e/playwright.config.js'
 
       - name: Upload failure artifacts
         if: failure()
