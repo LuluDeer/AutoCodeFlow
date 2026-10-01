@@ -21,11 +21,11 @@
     "typecheck": "tsc --noEmit",
     "typeorm": "ts-node -r tsconfig-paths/register ./node_modules/typeorm/cli",
     "swagger:export": "npx --node-options=--experimental-vm-modules jest --config ./test/jest-e2e.json -t \"OpenAPI export\"",
-    "migration:run": "npm run typeorm -- migration:run -d src/data-source.ts",
-    "migration:revert": "npm run typeorm -- migration:revert -d src/data-source.ts",
+    "migration:run": "ts-node -r tsconfig-paths/register src/migration-lock-cli.ts up",
+    "migration:revert": "ts-node -r tsconfig-paths/register src/migration-lock-cli.ts down",
     "migration:generate": "npm run typeorm -- migration:generate -d src/data-source.ts",
-    "migration:run:prod": "typeorm migration:run -d dist/data-source.js",
-    "migration:revert:prod": "typeorm migration:revert -d dist/data-source.js"
+    "migration:run:prod": "node dist/migration-lock-cli.js up",
+    "migration:revert:prod": "node dist/migration-lock-cli.js down"
   },
   "dependencies": {
     "@nestjs/bullmq": "^12.0.0",

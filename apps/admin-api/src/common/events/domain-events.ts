@@ -128,4 +128,12 @@ export interface ExecutionTerminalEventPayload {
   durationMs?: number | null;
   /** 终态落库时刻（ISO）。 */
   finishedAt: string;
+  /**
+   * 第四轮审计（A3）: 跨实例 relay 补发标记——true 表示该载荷是从其他实例经
+   * Redis pub/sub 转发的（本实例并非回调处理方）。SSE 流照常转发；**产生副
+   * 作用的订阅方（通知/出站 webhook/Agent 触发）必须跳过**——起源实例已经
+   * 在本地 emit 时执行过同一副作用，不跳过 = 多副本下双倍告警/双份 outbox。
+   * PK-14：增量可选字段不升 major，忽略未知字段的旧消费方天然兼容。
+   */
+  viaRelay?: boolean;
 }

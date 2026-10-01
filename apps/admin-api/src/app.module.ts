@@ -593,14 +593,13 @@ import { RuntimeModule } from "./modules/runtime/runtime.module";
           // (maxRedirections only applies to Redis Cluster; this deployment
           // uses a standalone instance, so it is intentionally omitted.)
           maxRetriesPerRequest: null,
-          retryStrategy: (times: number) => {
-            if (times > 10) {
-              // Stop retrying after 10 attempts
-              return null;
-            }
-            // Exponential backoff: 100ms, 200ms, 400ms, etc.
-            return Math.min(times * 100, 3000);
-          },
+          // 第四轮审计（A4）: 重连策略**永不放弃**——旧实现 times>10 返回 null
+          // （ioredis 语义 = 停止重连、进入 end 终态），Redis 短暂重启/网络抖动
+          // 超过 ~55s（10 次退避累计）后 BullMQ 连接永久断死，队列静默停摆且
+          // 不会自愈（maxRetriesPerRequest:null 只保证请求挂起而非断连）。现恒
+          // 返回退避值（指数增长、封顶 3s），与 redis-lock.service.ts:44 的
+          // retryStrategy 语义对齐：Redis 恢复可达后连接自动重放并冲刷离线队列。
+          retryStrategy: (times: number) => Math.min(times * 100, 3000),
         });
 
         // Observable offline windows: warn when we drop offline, log recovery.

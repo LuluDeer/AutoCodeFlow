@@ -16,6 +16,9 @@
 import { Global, Injectable, Logger, Module } from "@nestjs/common";
 import { EventEmitter } from "node:events";
 import { DomainEventName } from "../events/domain-events";
+// 第四轮审计（A3）: 终态事件跨实例 relay——本模块同时提供进程内总线与
+// 跨实例广播（同一 @Global 模块装配，订阅方零改动）。
+import { ExecutionEventsRelayService } from "./execution-events-relay.service";
 
 /**
  * 监听器：同步/异步皆可，返回值被忽略（若返回 Promise 其 rejection 由总线
@@ -108,7 +111,7 @@ export class DomainEventBus {
 
 @Global()
 @Module({
-  providers: [DomainEventBus],
-  exports: [DomainEventBus],
+  providers: [DomainEventBus, ExecutionEventsRelayService],
+  exports: [DomainEventBus, ExecutionEventsRelayService],
 })
 export class DomainEventModule {}

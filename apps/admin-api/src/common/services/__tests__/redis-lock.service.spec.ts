@@ -174,8 +174,50 @@ describe("RedisLockService", () => {
       expect(m.eval).toHaveBeenCalledTimes(2);
     });
 
-    it("R4-P0: renew:false never starts the watchdog — the lock expires naturally (trigger-dedup behaviour)", async () => {
+    it("A9: a single failed renewal only warns — the watchdog keeps renewing on the next tick", async () => {
       jest.useFakeTimers();
+      m.set.mockResolvedValue("OK");
+      m.eval.mockResolvedValue(1);
+      // 单次抖动：续期 eval 一次失败（commandTimeout/瞬断）。
+      m.eval.mockRejectedValueOnce(new Error("command timeout"));
+
+      const lock = await service.acquireLock("lease-jitter", 9_000);
+      await jest.advanceTimersByTimeAsync(3_000); // 第一拍失败
+      expect(m.eval).toHaveBeenCalledTimes(1);
+
+      await jest.advanceTimersByTimeAsync(3_000); // 下一拍恢复续期（未停表）
+      expect(m.eval).toHaveBeenCalledTimes(2);
+
+      await jest.advanceTimersByTimeAsync(9_000); // 之后照常续期
+      expect(m.eval).toHaveBeenCalledTimes(5);
+      await lock!.release();
+    });
+
+    it("A9: stops the watchdog only after 3 consecutive renewal failures (constant)", async () => {
+      jest.useFakeTimers();
+      m.set.mockResolvedValue("OK");
+      m.eval
+        .mockRejectedValueOnce(new Error("redis down"))
+        .mockRejectedValueOnce(new Error("redis down"))
+        .mockRejectedValueOnce(new Error("redis down"))
+        // 停表后的 release 走 compare-and-delete：锁已不属于本持有方 → 0。
+        .mockResolvedValue(0);
+
+      const lock = await service.acquireLock("lease-outage", 9_000);
+      // 连续 3 个续期周期失败（= REDIS_LOCK_WATCHDOG_MAX_CONSECUTIVE_FAILURES）
+      await jest.advanceTimersByTimeAsync(9_000);
+      expect(m.eval).toHaveBeenCalledTimes(3);
+
+      // 停表：此后不再发续期 eval。
+      await jest.advanceTimersByTimeAsync(30_000);
+      expect(m.eval).toHaveBeenCalledTimes(3);
+
+      // release() 自身不受影响（compare-and-delete 仍执行）。
+      await lock!.release();
+      expect(m.eval).toHaveBeenCalledTimes(4);
+    });
+
+    it("R4-P0: renew:false never starts the watchdog — the lock expires naturally (trigger-dedup behaviour)", async () => {      jest.useFakeTimers();
       m.set.mockResolvedValue("OK");
       m.eval.mockResolvedValue(1);
 
