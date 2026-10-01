@@ -11,11 +11,67 @@
  *  - 本工厂只负责：建连、onopen 重置退避、断线退避重建（指数退避封顶）、
  *    具名/默认帧分发、close 时关流 + 清定时器。
  * 消费方只写「事件语义」（onMessage / events / onStatus），不再各自实现重连。
+ *
+ * NETOPT-DEBT：另维护一份模块级连接状态注册表（statusKey → 状态），供
+ * queries.ts 的函数式 refetchInterval 实现「SSE live 停轮询、断流恢复 30s
+ * 兜底」——见下方注册表段注记。
  */
 
 import { buildSseUrl, fetchSseTicket } from './sse';
 
 export type SseClientStatus = 'connecting' | 'live' | 'reconnecting';
+
+// ── 连接状态注册表（NETOPT-DEBT：SSE 条件轮询的事实源）────────────────────
+// 此前 queries.ts 的 30s 兜底轮询无条件恒转：SSE 活跃时全是空转请求。注册表
+// 按 statusKey（调用方传入，约定用流路径）记录每条流的生命周期状态，供
+// queries.ts 的函数式 refetchInterval 判断「流活着（live）就不轮询」。
+// 设计要点：
+//  - 键由使用方显式传入（CreateSseClientOptions.statusKey）；未传（旧调用方/
+//    EventSource 不可用降级）一律不登记——getSSEStatus 返回 undefined，消费方
+//    视为「无流可用」保持轮询（向后兼容，行为不变）；
+//  - close() 即删键（组件卸载清理登记，防泄漏）；断线走 'reconnecting'，
+//    不删键——轮询与退避重连并行，正是断流兜底想要的语义；
+//  - 注册表只反映「当前是否存在活跃连接生命周期」，不保存历史终态，因此
+//    无需 idle/disconnected 两值（缺省即代表两者）。
+const sseStatusRegistry = new Map<string, SseClientStatus>();
+
+type SseStatusListener = (s: SseClientStatus) => void;
+const sseStatusListeners = new Map<string, Set<SseStatusListener>>();
+
+/** 读取某条流（statusKey）当前状态；未登记（旧调用方）返回 undefined。 */
+export function getSSEStatus(key: string): SseClientStatus | undefined {
+  return sseStatusRegistry.get(key);
+}
+
+/**
+ * 订阅某条流的状态变化；返回退订函数（幂等）。
+ * 供需要响应式联动的地方使用（如把状态变化接到 refetch 触发面）。
+ */
+export function onSSEStatusChange(
+  key: string,
+  listener: SseStatusListener,
+): () => void {
+  let set = sseStatusListeners.get(key);
+  if (!set) {
+    set = new Set();
+    sseStatusListeners.set(key, set);
+  }
+  set.add(listener);
+  return () => {
+    const current = sseStatusListeners.get(key);
+    if (!current) return;
+    current.delete(listener);
+    if (current.size === 0) sseStatusListeners.delete(key);
+  };
+}
+
+/** 预定义 statusKey：hooks 传键、queries.ts 消费同键，防两处字符串漂移。 */
+export const SSE_STATUS_KEYS = {
+  /** GET /metrics/stream（useMetricsStream，Dashboard 汇总快照） */
+  metricsStream: 'metrics/stream',
+  /** GET /executions/stream（useExecutionsStream，执行终态事件） */
+  executionsStream: 'executions/stream',
+} as const;
 
 /**
  * 重连退避节奏：3s 起步，每次翻倍，封顶 30s。
@@ -47,6 +103,12 @@ export interface CreateSseClientOptions {
   events?: Record<string, (e: MessageEvent) => void>;
   /** 连接状态回调（connecting/live/reconnecting） */
   onStatus?: (s: SseClientStatus) => void;
+  /**
+   * 状态注册表键（如 '/metrics/stream'）。传入后本客户端的生命周期状态会
+   * 登记（getSSEStatus 可查、close 时移除）；不传则不登记（旧调用方行为
+   * 不变）。键常量用 SSE_STATUS_KEYS。
+   */
+  statusKey?: string;
   /** 断线是否自动退避重连，默认 true；false 时断线即停（交由轮询兜底） */
   reconnect?: boolean;
   /** 退避起步 ms（默认 3000） */
@@ -72,10 +134,25 @@ export function createSseClient(options: CreateSseClientOptions): SseClient {
     onMessage,
     events,
     onStatus,
+    statusKey,
     reconnect = true,
     base,
     cap,
   } = options;
+
+  // 状态登记统一出口：注册表 + 订阅者 + 调用方回调三同步。
+  // EventSource 不可用（jsdom/旧浏览器）的降级路径不经过它——SSE 根本没建，
+  // 不得登记任何状态（轮询兜底必须保持，见注册表设计注记）。
+  const setStatus = (s: SseClientStatus) => {
+    if (statusKey) {
+      sseStatusRegistry.set(statusKey, s);
+      const listeners = sseStatusListeners.get(statusKey);
+      if (listeners) {
+        for (const l of [...listeners]) l(s);
+      }
+    }
+    onStatus?.(s);
+  };
 
   if (typeof EventSource === 'undefined') {
     onStatus?.('connecting');
@@ -98,19 +175,19 @@ export function createSseClient(options: CreateSseClientOptions): SseClient {
   const scheduleReconnect = () => {
     if (closed) return;
     if (!reconnect) {
-      onStatus?.('reconnecting');
+      setStatus('reconnecting');
       return;
     }
     const delay = sseReconnectBackoffMs(attempt, base, cap);
     attempt += 1;
-    onStatus?.('reconnecting');
+    setStatus('reconnecting');
     clearTimer();
     timer = setTimeout(() => void connect(), delay);
   };
 
   const connect = async () => {
     if (closed) return;
-    onStatus?.(attempt === 0 ? 'connecting' : 'reconnecting');
+    setStatus(attempt === 0 ? 'connecting' : 'reconnecting');
 
     // A5：每次建流（含重连）都现换一枚 30s 票据——票据短效，不能复用旧值。
     let ticket: string;
@@ -128,7 +205,7 @@ export function createSseClient(options: CreateSseClientOptions): SseClient {
 
     es.onopen = () => {
       attempt = 0;
-      onStatus?.('live');
+      setStatus('live');
     };
 
     if (onMessage) {
@@ -155,6 +232,11 @@ export function createSseClient(options: CreateSseClientOptions): SseClient {
       clearTimer();
       es?.close();
       es = null;
+      // 组件卸载清理登记（防泄漏）：注册表删键 → getSSEStatus 回 undefined，
+      // 消费方（queries.ts 函数式 refetchInterval）自动恢复 30s 轮询兜底。
+      if (statusKey) {
+        sseStatusRegistry.delete(statusKey);
+      }
     },
   };
 }

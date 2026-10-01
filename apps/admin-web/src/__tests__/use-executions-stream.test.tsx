@@ -15,6 +15,7 @@ import {
   EXECUTION_TERMINAL_EVENTS,
 } from '../hooks/useExecutionsStream';
 import { queryKeys } from '../api/queries';
+import { getSSEStatus, SSE_STATUS_KEYS } from '../api/sse-client';
 import { useAuthStore } from '../store/auth';
 
 // A5：SSE 建流前先向后端换一枚 30s 短效票据（access token 不再进 URL）。
@@ -109,6 +110,25 @@ describe('useExecutionsStream 流行为', () => {
     expect(es.url).toContain('/executions/stream');
     expect(es.url).toContain('ticket=');
     expect(es.url).toContain(encodeURIComponent('test-token'));
+  });
+
+  it('NETOPT-DEBT：流状态接线进全局注册表（executionsStream 键），卸载移除', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { unmount } = render(
+      <QueryClientProvider client={qc}>
+        <StreamStatusProbe />
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(FakeEventSource.instances.length).toBe(1));
+    // 建流即登记（connecting），onopen 转 live——与 useMetricsStream 各占一键
+    expect(getSSEStatus(SSE_STATUS_KEYS.executionsStream)).toBe('connecting');
+    act(() => {
+      FakeEventSource.instances[0].onopen?.();
+    });
+    expect(getSSEStatus(SSE_STATUS_KEYS.executionsStream)).toBe('live');
+    unmount();
+    // 卸载清理登记（防泄漏）：键移除 → 条件轮询自动恢复 30s 兜底
+    expect(getSSEStatus(SSE_STATUS_KEYS.executionsStream)).toBeUndefined();
   });
 
   it('三个终态事件帧均触发 invalidate：列表+汇总缓存被标记 stale 并重取', async () => {
