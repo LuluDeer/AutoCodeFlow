@@ -167,7 +167,8 @@ test.describe('executor-desktop 冒烟（Playwright _electron）', () => {
       expect(initial.bounds.height).toBeLessThanOrEqual(initial.workArea.height);
 
       await status.getByRole('button', { name: '最大化窗口' }).click();
-      await expect(status.getByRole('button', { name: '还原窗口' })).toBeVisible();
+      // 最大化态经主进程 IPC 回流渲染层，慢 runner 上 5s 默认窗不够（CI 首跑实证）
+      await expect(status.getByRole('button', { name: '还原窗口' })).toBeVisible({ timeout: 10_000 });
       expect(await status.evaluate(() => window.electronAPI.getWindowState())).toEqual({ maximized: true });
       await status.getByRole('button', { name: '还原窗口' }).click();
       await expect(status.getByRole('button', { name: '最大化窗口' })).toBeVisible();
