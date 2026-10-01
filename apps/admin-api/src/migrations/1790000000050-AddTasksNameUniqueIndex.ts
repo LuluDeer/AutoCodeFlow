@@ -43,19 +43,21 @@ export class AddTasksNameUniqueIndex1790000000050 implements MigrationInterface 
 
   public async up(queryRunner: QueryRunner): Promise<void> {
     // 存量去重：每组同 name 仅保留最早一行（(createdAt, id) 决胜），其余
-    // 改名为 `name (uuid前8位)`——策略见类注释。
+    // 改名为 `name (uuid前8位)`——策略见类注释。substr 前必须 ::text：
+    // tasks.id 是 uuid 类型，PG 的 substr(varchar, int, int) 不接受 uuid
+    // 直传（function substr(uuid, ...) does not exist——空库真跑实测）。
     await queryRunner.query(`
       UPDATE "tasks" t
-      SET "name" = t."name" || ' (' || substr(t.id, 1, 8) || ')'
+      SET "name" = t."name" || ' (' || substr(t.id::text, 1, 8) || ')'
       FROM (
-        SELECT id,
+        SELECT id::text AS id_text,
                ROW_NUMBER() OVER (
                  PARTITION BY "name"
                  ORDER BY "createdAt" ASC, id ASC
                ) AS rn
         FROM "tasks"
       ) ranked
-      WHERE ranked.id = t.id AND ranked.rn > 1
+      WHERE ranked.id_text = t.id::text AND ranked.rn > 1
     `);
 
     await queryRunner.query(`

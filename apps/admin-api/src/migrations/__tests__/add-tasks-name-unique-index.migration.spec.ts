@@ -43,7 +43,7 @@ describe("AddTasksNameUniqueIndex1790000000050（技术债 A 组）", () => {
     expect(upPart).toContain("AS rn");
     expect(upPart).toContain("rn > 1");
     // 改名而非删行：保留全部行（软删除/执行历史以 taskId 关联，删行会悬挂）
-    expect(upPart).toContain("|| ' (' || substr(t.id, 1, 8) || ')'");
+    expect(upPart).toContain("|| ' (' || substr(t.id::text, 1, 8) || ')'");
     expect(upPart).not.toContain("DELETE");
   });
 
