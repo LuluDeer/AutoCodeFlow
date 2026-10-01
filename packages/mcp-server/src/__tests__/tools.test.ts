@@ -25,6 +25,8 @@ import {
   registerObservabilityTools,
   registerAuditTools,
   registerProjectTools,
+  registerSopTools,
+  SOP_PENDING_STATUSES,
   buildExecutionTimeline,
   TASK_TEMPLATES,
   ANALYZE_TIMEOUT_MS,
@@ -38,6 +40,7 @@ const registerFns = [
   registerObservabilityTools,
   registerAuditTools,
   registerProjectTools,
+  registerSopTools,
 ];
 
 function setup(): {
@@ -129,6 +132,13 @@ describe("tool registry surface", () => {
       "get_my_project_roles",
       // audit
       "list_audit_logs",
+      // SOP / agent sessions (P5/P6 admin-side minimal loop)
+      "sop_list",
+      "sop_get",
+      "sop_assignments_pending",
+      "agent_session_list",
+      "agent_session_get",
+      "sop_clarification_reply",
     ];
     expect([...tools.keys()].sort()).toEqual(expected.sort());
   });
@@ -1149,6 +1159,163 @@ describe("project tools (read-only)", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// SOP / agent sessions (P5/P6 admin-side minimal loop)
+// ---------------------------------------------------------------------------
+describe("sop_list", () => {
+  it("GETs /sop with page/pageSize and optional status", async () => {
+    await tools.get("sop_list")!.handler({
+      status: "published",
+      page: 2,
+      pageSize: 10,
+    });
+    const [method, path] = call.mock.calls[0];
+    expect(method).toBe("GET");
+    expect(path).toBe("/sop?page=2&pageSize=10&status=published");
+  });
+
+  it("omits the status filter when absent", async () => {
+    await tools.get("sop_list")!.handler({ page: 1, pageSize: 20 });
+    expect(call.mock.calls[0][1]).toBe("/sop?page=1&pageSize=20");
+  });
+});
+
+describe("sop_get", () => {
+  it("GETs /sop/:id", async () => {
+    await tools.get("sop_get")!.handler({
+      sopId: "550e8400-e29b-41d4-a716-446655440000",
+    });
+    const [method, path] = call.mock.calls[0];
+    expect(method).toBe("GET");
+    expect(path).toBe("/sop/550e8400-e29b-41d4-a716-446655440000");
+  });
+});
+
+describe("sop_assignments_pending", () => {
+  const SOP_ID = "550e8400-e29b-41d4-a716-446655440001";
+  const ASG_ID = "550e8400-e29b-41d4-a716-446655440002";
+
+  it("lists a SOP's assignments filtered to non-terminal statuses", async () => {
+    call.mockResolvedValueOnce([
+      { id: "a1", status: "assigned" },
+      { id: "a2", status: "in_progress" },
+      { id: "a3", status: "blocked" },
+      { id: "a4", status: "stalled" },
+      { id: "a5", status: "completed" },
+      { id: "a6", status: "failed" },
+      { id: "a7", status: "cancelled" },
+    ]);
+    const out = await tools.get("sop_assignments_pending")!.handler({
+      sopId: SOP_ID,
+    });
+    const [method, path] = call.mock.calls[0];
+    expect(method).toBe("GET");
+    expect(path).toBe(`/sop/${SOP_ID}/assignments`);
+    const payload = parse(out);
+    expect(payload.sopId).toBe(SOP_ID);
+    expect(payload.pendingCount).toBe(4);
+    expect(payload.items.map((r: { id: string }) => r.id)).toEqual([
+      "a1",
+      "a2",
+      "a3",
+      "a4",
+    ]);
+  });
+
+  it("SOP_PENDING_STATUSES excludes every terminal status", () => {
+    const terminals = ["completed", "failed", "cancelled"];
+    for (const t of terminals) {
+      expect(SOP_PENDING_STATUSES).not.toContain(t);
+    }
+  });
+
+  it("assignmentId form fetches the full detail (with clarifications)", async () => {
+    call.mockResolvedValueOnce({ assignment: { id: ASG_ID }, clarifications: [] });
+    const out = await tools.get("sop_assignments_pending")!.handler({
+      assignmentId: ASG_ID,
+    });
+    const [method, path] = call.mock.calls[0];
+    expect(method).toBe("GET");
+    expect(path).toBe(`/sop/assignments/${ASG_ID}`);
+    expect(parse(out).assignment.id).toBe(ASG_ID);
+  });
+
+  it("without either id returns a usage error and makes no HTTP call", async () => {
+    const out = await tools.get("sop_assignments_pending")!.handler({});
+    expect(call).not.toHaveBeenCalled();
+    expect(parse(out).error).toContain("sopId");
+  });
+});
+
+describe("agent_session_list / agent_session_get", () => {
+  it("agent_session_list GETs /agent/sessions with kind/status filters", async () => {
+    await tools.get("agent_session_list")!.handler({
+      kind: "incident",
+      status: "waiting_input",
+      page: 1,
+      pageSize: 20,
+    });
+    const [method, path] = call.mock.calls[0];
+    expect(method).toBe("GET");
+    expect(path).toBe("/agent/sessions?page=1&pageSize=20&kind=incident&status=waiting_input");
+  });
+
+  it("agent_session_list omits filters that were not provided", async () => {
+    await tools.get("agent_session_list")!.handler({ page: 1, pageSize: 20 });
+    expect(call.mock.calls[0][1]).toBe("/agent/sessions?page=1&pageSize=20");
+  });
+
+  it("agent_session_get GETs /agent/sessions/:id", async () => {
+    await tools.get("agent_session_get")!.handler({
+      sessionId: "550e8400-e29b-41d4-a716-446655440003",
+    });
+    const [method, path] = call.mock.calls[0];
+    expect(method).toBe("GET");
+    expect(path).toBe("/agent/sessions/550e8400-e29b-41d4-a716-446655440003");
+  });
+});
+
+describe("sop_clarification_reply", () => {
+  const ASG_ID = "550e8400-e29b-41d4-a716-446655440002";
+  const CLR_ID = "550e8400-e29b-41d4-a716-446655440004";
+
+  it("POSTs the reply route with resolution/answer and drops unset amendment fields", async () => {
+    const out = await tools.get("sop_clarification_reply")!.handler({
+      assignmentId: ASG_ID,
+      clarificationId: CLR_ID,
+      resolution: "answered",
+      answer: "在页面右上角",
+    });
+    const [method, path, body] = call.mock.calls[0];
+    expect(method).toBe("POST");
+    expect(path).toBe(
+      `/sop/assignments/${ASG_ID}/clarifications/${CLR_ID}/reply`,
+    );
+    expect(body).toEqual({ resolution: "answered", answer: "在页面右上角" });
+    expect(parse(out)).toEqual({ ok: true });
+  });
+
+  it("sop_amended carries the amended SOP fields when provided", async () => {
+    await tools.get("sop_clarification_reply")!.handler({
+      assignmentId: ASG_ID,
+      clarificationId: CLR_ID,
+      resolution: "sop_amended",
+      answer: "改为按新版执行",
+      amendedFrontMatterYaml: "capabilities: [gui]",
+      amendedBodyMarkdown: "# Revised",
+      changelog: "add gui",
+    });
+    const [, , body] = call.mock.calls[0];
+    expect(body).toEqual({
+      resolution: "sop_amended",
+      answer: "改为按新版执行",
+      amendedFrontMatterYaml: "capabilities: [gui]",
+      amendedBodyMarkdown: "# Revised",
+      changelog: "add gui",
+    });
+  });
+});
+
 // ────────────────────────────────────────────────────────────
 // D1-P2-2: path-interpolated id params must be UUID-validated at the input
 // schema layer (path-traversal guard). The fake-server harness stores the zod
@@ -1195,6 +1362,12 @@ describe("D1-P2-2 path id UUID validation", () => {
     ["get_executor_metrics", "executorId"],
     ["get_execution_timeline", "executionId"],
     ["get_project_members", "projectId"],
+    ["sop_get", "sopId"],
+    ["sop_assignments_pending", "sopId"],
+    ["sop_assignments_pending", "assignmentId"],
+    ["agent_session_get", "sessionId"],
+    ["sop_clarification_reply", "assignmentId"],
+    ["sop_clarification_reply", "clarificationId"],
   ];
 
   type ZodLike = { parse: (v: unknown) => unknown };
