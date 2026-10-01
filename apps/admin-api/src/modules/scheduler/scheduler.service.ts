@@ -228,10 +228,28 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
   // ---------------------------------------------------------------------------
 
   async onModuleInit() {
+    // boot 容错（第四轮 CI 教训）：api-types-drift 等「空库起 AppModule」的
+    // 场景（无迁移、无表）里，这三个启动步骤都会因表不存在而抛错并炸掉整个
+    // boot；生产里 DB/Redis 瞬时抖动同理。调度器的契约是「不因依赖故障而
+    // 整体停摆」（见上方注释）——启动步骤失败只 warn，等 cron tick 下一轮
+    // reload/补偿自然收敛。DB 正常时行为完全不变。
     await this.initLeaderElection();
-    await this.reload();
-    await this.checkMisfires();
-    await this.recoverStaleExecutions();
+    const bootSteps: Array<[string, () => Promise<void>]> = [
+      ["reload", () => this.reload()],
+      ["checkMisfires", () => this.checkMisfires()],
+      ["recoverStaleExecutions", () => this.recoverStaleExecutions()],
+    ];
+    for (const [name, run] of bootSteps) {
+      try {
+        await run();
+      } catch (err: unknown) {
+        this.logger.warn(
+          `scheduler boot step "${name}" failed (will retry on next tick): ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
   }
 
   /** TASK-006: 启动 Leader 竞选；结果落在 isLeader 上，供扫描型 tick 判断 */

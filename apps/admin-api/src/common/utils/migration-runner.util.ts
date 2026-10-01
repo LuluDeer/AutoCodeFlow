@@ -110,6 +110,22 @@ export async function runMigrationsWithAdvisoryLock(
     log(
       `Migration advisory lock acquired (key=${lockKey}) — running migrations (${mode})`,
     );
+    // no-op 可观测：CI 的幂等守卫（admin-api-migrations job）断言第二次
+    // migration:run 的输出含 "No migrations are pending"——旧 typeorm CLI
+    // 自带这句，1.x 的 runMigrations() 无 pending 时静默返回。用执行前后
+    // migrations 表行数对比判定（表不存在=-1，首跑场景必然有 pending，
+    // 不可能误打）。
+    const countMigrations = async (): Promise<number> => {
+      try {
+        const rows = (await lockRunner.query(
+          'SELECT count(*)::int AS n FROM "migrations"',
+        )) as Array<{ n?: number }>;
+        return Number(rows?.[0]?.n ?? -1);
+      } catch {
+        return -1;
+      }
+    };
+    const before = mode === "up" ? await countMigrations() : -1;
     try {
       if (mode === "down") {
         await dataSource.undoLastMigration();
@@ -117,6 +133,13 @@ export async function runMigrationsWithAdvisoryLock(
         await dataSource.runMigrations();
       }
     } finally {
+      if (
+        mode === "up" &&
+        before >= 0 &&
+        (await countMigrations()) === before
+      ) {
+        log("No migrations are pending");
+      }
       // finally 释放（见头注）：解锁失败必须 loud warn——池化连接归还后仍
       // 持锁会让其他副本永远等待，这是需要立刻人工介入的故障态。
       try {
