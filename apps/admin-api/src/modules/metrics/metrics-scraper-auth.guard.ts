@@ -4,6 +4,7 @@ import { Reflector } from "@nestjs/core";
 import { timingSafeEqual } from "node:crypto";
 import { IS_PUBLIC_KEY } from "../../common/decorators/public.decorator";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
+import { getEnvVar } from "../../config/env";
 
 /**
  * 全局 JwtAuthGuard（APP_GUARD）先于控制器守卫执行——/api/metrics 标记
@@ -13,7 +14,6 @@ import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
  * 令牌路径从未生效（Prometheus 配好 credentials_file 仍 401）。
  */
 class NonPublicReflector extends Reflector {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   getAllAndOverride(metadataKey: any, targets: any): any {
     if (metadataKey === IS_PUBLIC_KEY) return undefined;
     return super.getAllAndOverride(metadataKey, targets);
@@ -65,7 +65,7 @@ export class MetricsScraperAuthGuard extends JwtAuthGuard {
     const raw =
       configService?.get<string>("database.metricsScraperToken") ??
       configService?.get<string>("metricsScraperToken") ??
-      process.env.METRICS_SCRAPER_TOKEN;
+      getEnvVar("METRICS_SCRAPER_TOKEN");
     if (!configService) {
       this.logger.warn(
         "ConfigService unavailable in MetricsScraperAuthGuard — METRICS_SCRAPER_TOKEN read from process.env directly",

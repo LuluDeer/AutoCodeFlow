@@ -181,3 +181,6 @@ apps/executor-desktop/e2e/.ui-audit/
 # 注意：gitignore 里的 `%` 不是元字符，按字面匹配。
 apps/executor-python/%SystemDrive%/
 
+
+# chaos drill 隔离栈专用配置（不进仓库，见 docs/CHAOS-DRILL-REPORT-2026-10.md）
+config/monitoring/prometheus.chaos.yml
