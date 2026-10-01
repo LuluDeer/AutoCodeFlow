@@ -13,13 +13,13 @@ import {
   ApiOperation,
   ApiResponse,
 } from "@nestjs/swagger";
-import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
+import { MetricsScraperAuthGuard } from "./metrics-scraper-auth.guard";
 import { MetricsService } from "./metrics.service";
 import { PrometheusMetricsService } from "./prometheus-metrics.service";
 
 @ApiTags("metrics")
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard)
+@UseGuards(MetricsScraperAuthGuard)
 @Controller("metrics")
 export class MetricsController {
   constructor(

@@ -61,6 +61,9 @@ export default () => ({
     poolSize: parseInt(process.env.DB_POOL_SIZE || "20", 10),
     // ARCH-006: synchronize 不再依赖 NODE_ENV 推断，改为显式 DB_SYNCHRONIZE 开关
     // （Joi 默认 "false"）；生产环境强制 false 并 warn，见文件尾的 fail-fast 校验块。
+    // D 线可观测性:Prometheus 抓取令牌(可选)。设置后 /api/metrics 接受
+    // Bearer <METRICS_SCRAPER_TOKEN>(恒时比较),未设置仍走 JWT。
+    metricsScraperToken: process.env.METRICS_SCRAPER_TOKEN || undefined,
     synchronize:
       process.env.DB_SYNCHRONIZE === "true" &&
       process.env.NODE_ENV !== "production",
