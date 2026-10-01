@@ -1,0 +1,54 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "ui": "stream",
+  "tasks": {
+    "typecheck:api": { "inputs": ["apps/admin-api/**"] },
+    "typecheck:node": { "inputs": ["apps/executor-node/**"] },
+    "typecheck:cli": { "inputs": ["packages/acf-cli/**"] },
+    "typecheck:mcp": { "inputs": ["packages/mcp-server/**"] },
+    "typecheck:node-sdk": { "inputs": ["packages/autocodeflow-node-sdk/**"] },
+    "typecheck:desktop": { "inputs": ["apps/executor-desktop/**"] },
+    "typecheck:web": { "inputs": ["apps/admin-web/**"] },
+    "lint:api": { "inputs": ["apps/admin-api/**"] },
+    "lint:web": { "inputs": ["apps/admin-web/**"] },
+    "lint:node": { "inputs": ["apps/executor-node/**"] },
+    "build:web": {
+      "inputs": ["apps/admin-web/**"],
+      "outputs": ["apps/admin-web/dist/**"],
+      "env": ["VITE_API_URL"]
+    },
+    "build:node": {
+      "inputs": ["apps/executor-node/**"],
+      "outputs": ["apps/executor-node/dist/**"]
+    },
+    "build:cli": {
+      "inputs": ["packages/acf-cli/**"],
+      "outputs": ["packages/acf-cli/dist/**"]
+    },
+    "build:mcp": {
+      "inputs": ["packages/mcp-server/**"],
+      "outputs": ["packages/mcp-server/dist/**"]
+    },
+    "build:node-sdk": {
+      "inputs": ["packages/autocodeflow-node-sdk/**"],
+      "outputs": ["packages/autocodeflow-node-sdk/dist/**"]
+    },
+    "build:desktop": {
+      "inputs": ["apps/executor-desktop/**", "apps/executor-node/**"],
+      "outputs": [
+        "apps/executor-desktop/dist/**",
+        "apps/executor-desktop/resources/executor-node/**"
+      ]
+    },
+    "build:docs-site": {
+      "outputs": ["packages/docs-site/.vitepress/dist/**"]
+    },
+    "test:api": { "cache": false },
+    "test:node": { "cache": false },
+    "test:web": { "cache": false },
+    "test:cli": { "cache": false },
+    "test:mcp": { "cache": false },
+    "test:node-sdk": { "cache": false },
+    "test:desktop": { "cache": false }
+  }
+}

@@ -381,10 +381,29 @@ docker compose exec admin-api npm run migration:run
 2. 提交代码并确保测试通过：`npm run test`
 3. 提交 Pull Request，描述变更内容
 
-> **安装须知**：根目录 `package.json` 是零依赖的 workspace 占位入口，根目录
-> `npm install` / `npm ci` 是**空操作**（根 lock 只登记根包自身）——请进入
+> **安装须知**：根目录 `package.json` 是零依赖的命令入口（声明了 `packageManager`
+> 与 `turbo.json`，但**不承载任何依赖图**——根 lock 只登记根包自身，这是 ARCH-20
+> 的 no-hoisting 裁定，`scripts/check-no-hoisting.mjs` 在 CI 常设守卫）——请进入
 > `apps/*` 与 `packages/*` 各自目录分别 `npm install`。开发/编排入口见 `Makefile`
 > 与 `dev.sh`。
+>
+> **turbo（N-01 弱形态）**：根 `turbo.json` 把根级 `typecheck:* / lint:* / build:* /
+> test:*` 转发脚本编排成并行任务图，用于本机把原本 `typecheck:all` / `lint:all`
+> 一类串行链并行化。turbo 本体**不经根 `devDependencies` 安装**（那会让根
+> lockfile 承载依赖图、触发 no-hoisting 守卫，实测证据见
+> `docs/ARCH-28b-turbo-adoption.md` 附录 A），而是固定版本经 npx 调用：
+>
+> > ```bash
+> > # 全量类型检查并行化（对应原 npm run typecheck:all 的串行链）
+> > npx -y turbo@2.11.6 run typecheck:api typecheck:node typecheck:cli typecheck:mcp \
+> >   typecheck:node-sdk typecheck:desktop typecheck:web
+> > # 子集并行构建；lint / test 任务同理（test:* 任务已声明 cache:false）
+> > npx -y turbo@2.11.6 run build:web build:cli build:mcp
+> > ```
+>
+> Windows 上脚本化调用建议追加 `--no-daemon`（turbo 守护进程在异常退出后可能残留
+> `.turbo/` 状态拖慢后续调用）；任务缓存落在 `.turbo/`（已 gitignore）。CI 侧
+> 不使用 turbo（独立 runner 无本地缓存可复用，收益不成立，见 ARCH-28b §4.2/§6.3）。
 
 ## License
 

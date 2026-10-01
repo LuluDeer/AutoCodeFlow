@@ -1,6 +1,8 @@
 # ARCH-28b：turbo 增量接入实测报告（N-01）
 
 > 状态：**实测完成，结论=不接入多包模式；以「no-hoisting 守卫 + 缓存度量」交付。**
+> （2026-10-01 二轮更新：turbo 以「弱形态」接入落地——单包模式编排根脚本任务，
+> 根 manifest 不承载 turbo 依赖，附 Windows A/B 实测，见附录 A。）
 > 上游：`docs/arch-28-workspace-evaluation.md`（ARCH-28 评估报告，2026-09-10；§2 裁定
 > 「采纳 ③ turbo」，并明确「本轮不落 turbo 配置……应独立任务（建议 ARCH-28b）带 A/B 对比轮验证」）。
 > 本报告即该任务（N-01）的执行结果，§5 回填 ARCH-28 的时长对比基线。
@@ -298,3 +300,121 @@ turbo 的多包模式**同样要求根成为安装根**，因此它与 ARCH-20 �
 不是「可叠加」，而是**互斥**。
 
 ARCH-28 §5 预留的「CI 时长对比基线（供后续任务回填）」已在本报告 §5 回填。
+
+---
+
+## 附录 A（2026-10-01，N-01 二轮）：弱形态接入落地 + Windows A/B 实测
+
+> 本轮把 §1 的结论往前推了一步：多包模式仍然不接入（裁定不变），但 turbo 以
+> **「弱形态」**接入——**单包模式只编排根脚本任务**，各包依赖照旧独立安装。
+> 环境与本报告 §0 不同处：**Windows**（10.0.26200 x64，Git Bash）·
+> Node 24.21.0 · npm 11.19.0 · **turbo 2.11.6（latest stable，固定版本）**。
+> **全部数字为 Windows 本机数据，CI 数据待 Linux 侧**（Linux 侧预期哈希/启动
+> 开销更低、抖动更小，结论方向不变但数字会更好看）。
+
+### A.1 接入形态的实证链（为什么最终长这样）
+
+| # | 实测 | 结果 | 判定 |
+|---|---|---|---|
+| 1 | turbo 2.11.6 多包模式的前提（`workspaces` 字段 / `pnpm-workspace.yaml`） | §3 已证：8/8 子项目 `npm ci` exit 1 | 多包模式仍不可接入（裁定不变） |
+| 2 | 无 `packageManager` 字段直接 `turbo run` | exit 非零：`Could not resolve workspace. Missing devEngines.packageManager or legacy packageManager field` | 根 `package.json` 增加 `packageManager: "npm@11.19.0"`（诚实声明；no-hoisting 守卫判据③**明确允许** npm@ 形态） |
+| 3 | 根 `npm install --save-dev --save-exact turbo@2.11.6`（devDep 路线） | 根 lockfile 256B → **3576B**，packages 映射新增 **7 个非根条目**（`node_modules/turbo` + 6 个 `@turbo/<平台>` 可选二进制）；`check-no-hoisting.mjs` **exit 1**（判据④：「根已承载依赖图」） | **devDep 路线被否**：只要 turbo 进根 manifest，CI 守卫必红。已还原（lockfile 回 256B stub，守卫复绿） |
+| 4 | `turbo.json` + `npx -y turbo@2.11.6`（固定版本，不经根依赖安装） | 任务图正确解析、真实 run 成功、缓存生效；守卫 5 判据全绿；根 lockfile 保持 stub | **✅ 最终形态** |
+
+判据④的语义是「根 lockfile 不承载**任何**依赖图」——它是 no-hoisting 模型的
+结构性 Canary（根一旦变成安装根，无论装的是应用依赖还是工具，都是同一条回退
+路径的入口）。turbo-as-devDep 与它在结构上**互斥**，不存在「给 turbo 开豁免」
+的干净做法（豁免即承认根可以装东西，判据就失去了 Canary 价值）。故弱形态的
+turbo 供给方式 = **固定版本 npx 调用**（`npx -y turbo@2.11.6`，版本钉在用法
+文档与命令里，升级 = 全仓改一处版本号）。
+
+### A.2 turbo.json 任务图说明
+
+弱形态下 turbo 看到的唯一「包」是仓库根，任务名 = **根 package.json 的转发脚本名**
+（`cd <子项目> && <命令>`），因此任务图是「根脚本扇出」，不是多包图：
+
+- **typecheck（7 任务）**：`typecheck:api/node/cli/mcp/node-sdk/desktop/web`，
+  互相独立、并行执行。`inputs` 圈定到各自子项目目录（本仓无 `file:` 互相依赖、
+  无 hoist，子项目自包含——圈定让缓存哈希不被无关目录改动污染）。
+- **lint（3 任务）**：`lint:api/web/node`（与 `check-lint-gates.mjs` 的口径一致：
+  只有这三个 TS 子项目有 lint 入口）。
+- **build（7 任务）**：`build:web/node/cli/mcp/node-sdk/desktop/docs-site`，
+  `outputs` 按真实产物目录声明（admin-web `dist/**`、executor-node `dist/**`、
+  acf-cli/mcp-server/node-sdk `dist/**`、desktop `dist/**` +
+  `resources/executor-node/**`（ncc 内嵌 bundle）、docs-site `.vitepress/dist/**`）。
+  `build:web` 声明 `env: ["VITE_API_URL"]`（构建期注入，值参与哈希）；
+  `build:desktop` 的 `inputs` 额外含 `apps/executor-node/**`（bundle-executor.sh
+  会对 executor-node 全项目 ncc）。admin-api 无根级 build 转发（镜像内构建，
+  由 docker-multiarch-build 覆盖），不在图内。
+- **test（7 任务，仅 npm 子项目）**：`test:api/node/web/cli/mcp/node-sdk/desktop`，
+  一律 `"cache": false`（测试结果不缓存）；需要 PG/Redis 的任务在本地无服务时
+  由脚本自身失败，turbo 不提供服务管理。Python 包（executor-python、registry-pypi、
+  autoflow-sdk、autocodeflow-{http,ai,notify,db}）**不在 npm 任务面**（pytest），
+  排除在图外。
+- 用法（固定版本 npx 调用；Windows 脚本化建议加 `--no-daemon`，见 A.4）：
+
+  ```bash
+  # 全量类型检查并行化（对应原 npm run typecheck:all 的串行链）
+  npx -y turbo@2.11.6 run typecheck:api typecheck:node typecheck:cli typecheck:mcp \
+    typecheck:node-sdk typecheck:desktop typecheck:web --no-daemon
+  # 子集并行构建
+  npx -y turbo@2.11.6 run build:web build:cli build:mcp --no-daemon
+  ```
+
+### A.3 A/B 时长对比（同一任务集 = 全量 typecheck 7 任务）
+
+**协议**：两种方式各预热 1 轮（OS 文件缓存、npx 缓存、`tsc -b` 的 tsbuildinfo
+预热）后交替计时 3 轮；turbo 侧用 `--force`（跳过缓存读、全量真执行）保证与
+串行方式比的是**执行成本**；缓存命中单列。串行侧 = 现状
+`npm run typecheck:all`（7 段 `cd X && npx tsc` 经 npm 串行链）；并行侧 =
+turbo 同一任务集。**Windows 本机数据，CI 数据待 Linux 侧。**
+
+| 方式 | run 1 | run 2 | run 3 | 中位 | 对比 |
+|---|---|---|---|---|---|
+| A：npm 串行 `typecheck:all`（现状） | 55.6s | 54.6s | 51.0s | **54.6s** | 基线 |
+| B：turbo 并行（`--force --no-daemon`） | 51.3s | 48.5s | 44.4s | **48.5s** | **−11.2%** |
+| B′：turbo 缓存命中（同命令去 `--force`） | — | 17.4s | — | 17.4s | **−68%**（重复运行场景） |
+
+单任务执行成本（`--force --no-daemon` 逐个计时，各含 ~1.5-2s 的 npx+turbo 启动）：
+
+| 任务 | web | api | node | desktop | node-sdk | mcp | cli |
+|---|---|---|---|---|---|---|---|
+| 耗时 | 26.0s | 12.4s | 10.5s | 9.8s | 7.1s | 6.9s | 6.6s |
+
+**解读（收益上界为什么只有 ~11%）**：
+- 并行墙钟的下界 = 最慢单任务 `typecheck:web`（`tsc -b`，26.0s）——Amdahl
+  上界由它决定；7 个 tsc 并行再叠加 CPU/FS 争用与每任务启动开销，实际落在
+  44-51s。串行侧 54.6s 里 admin-web 一段就占约一半。
+- 缓存命中场景（改动未触及某任务的 `inputs` 圈定目录）收益最大：54.6s →
+  17.4s。`--no-daemon` 下 17.4s 的大头是**全图重新哈希**（Windows FS 慢）；
+  daemon 模式下哈希有守护进程缓存，单任务命中可低至 61ms——但 daemon 在
+  Windows 有可靠性代价（A.4）。
+- 结论：turbo 弱形态在本仓的收益是「本机重复跑 typecheck/lint/build 的并行化
+  + 缓存」，**不是** CI 收益（CI 独立 runner 无本地缓存可复用，§4.2/§6.3 裁定
+  不变：CI 阻塞链路不使用 turbo）。
+
+### A.4 Windows 侧运维发现（本轮实测的净新教训）
+
+- **turbo 守护进程的残留状态会把后续调用拖到分钟级**：一次 turbo 进程被强杀
+  后，`.turbo/` 里的守护进程状态残留，此后每次默认（daemon）调用要等连接超时
+  ——实测同一 7 任务 `--dry` 从「预期的秒级」劣化到 **5m31s**（`user/sys` 合计
+  <0.6s，全部在等待）。清掉 `.turbo/` 或改用 `--no-daemon` 后同一命令 **8.9s**。
+  故本仓约定：**脚本化/CI 形态一律 `--no-daemon`**；交互使用若遇到莫名分钟级
+  停顿，先 `rm -rf .turbo`。`.turbo/` 已在 `.gitignore`（ARCH-28b 首轮已加）。
+- turbo 2.11.6 在无 `packageManager` 字段时拒绝运行（见 A.1 #2）——根
+  `package.json` 因此新增 `packageManager: "npm@11.19.0"`。这是**诚实声明**
+  （本仓 8 套 lockfile 全部是 npm 产出），no-hoisting 守卫判据③明确放行 npm@。
+
+### A.5 本轮交付物
+
+| 文件 | 变更 |
+|---|---|
+| 根 `package.json` | 新增 `packageManager: "npm@11.19.0"`（turbo 运行前提；无新增依赖，根仍是零依赖入口） |
+| `turbo.json`（新增） | 弱形态任务管道：typecheck×7 / lint×3 / build×7 / test×7（cache:false），inputs/outputs/env 按子项目圈定 |
+| `README.md` 构建段 | 「根安装是空操作」表述更新为 turbo 弱形态现状 + 用法 |
+| `.github/workflows/ci.yml` | benchmark job 补 N-09 验收缺口（结果 artifact 入库 + `--threshold-ms` 阈值告警，非阻塞）；`check-migrations` job 接入 `check-alerts-rules` / `check-env-drift` 两道此前「写了但没接上」的守卫 |
+| 本附录 | 弱形态裁定 + A/B 数据 + Windows 运维发现 |
+
+**未交付（如实）**：turbo 未进根 devDependencies（A.1 #3 实证与判据④互斥）；
+根 lockfile 保持 256B stub；CI 阻塞链路未使用 turbo（无收益，§6.3）；
+A/B 为 Windows 本机数据，**Linux/CI 侧复测待后续任务**。
