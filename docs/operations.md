@@ -807,6 +807,48 @@ Grafana 中添加 Prometheus 数据源后导入 dashboard JSON；多实例部署
 
 任务执行失败时，系统会自动向已配置的渠道发送告警通知。
 
+### 告警规则与 Runbook（config/monitoring/alerts.yml）
+
+compose monitoring profile 的接线告警规则集在 `config/monitoring/alerts.yml`（prometheus.yml 的 `rule_files: /etc/prometheus/alerts.yml` 挂载，evaluation_interval 15s）。每条规则的表达式、`for` 时长与中文 annotations（summary/description 内嵌排查指引）以该文件为准；本节是运维侧速查表。
+
+规则集覆盖三个层次：**基础可达性**（InstanceDown / 指标抓取失联兜底）、**业务信号**（调度活性、执行结果、通知投递、AI 分析、SSE 槽位、agent 预算、回调认证、配置推送鉴权）、**容量水位**（executor 磁盘、PG 连接池、Redis 内存）。阈值均为低流量自部署场景的保守起点，建议上线观察两周基线后按 p99 的 2~3 倍回调。
+
+| 分组 | alert | severity | 触发条件（表达式要点） | 首响排查方向 |
+|------|-------|----------|------------------------|--------------|
+| 可达性 | `InstanceDown` | warning | `up == 0` 持续 5m（per-target） | 目标进程存活、容器网络 |
+| 可达性 | `AUTOFLOW_METRICS_TARGET_DOWN` | critical | `absent(autoflow_scheduler_ticks_total)` 持续 5m | admin-api 全体 target 失联：进程挂死 / 端点被关 / 抓取 401（JWT 过期坑，见上文「Prometheus 指标」） |
+| 调度 | `AUTOFLOW_SCHEDULER_DOWN` | critical | `sum(rate(autoflow_scheduler_ticks_total[10m])) == 0` 持续 5m | tick 仅 leader 递增，集群求和为 0 = 无实例在调度；查 leader 竞选、Redis（leader 锁）、DB |
+| 调度 | `AUTOFLOW_QUEUE_UNREADABLE` | critical | `autoflow_queue_up == 0` 持续 5m | Redis 断链：进程、密码同源、与 redis-exporter 的 redis_up 对照定位故障面 |
+| 调度 | `AUTOFLOW_QUEUE_BACKLOG` | warning | `waiting > 100` 持续 10m | 对比 active 曲线：高等待低活跃 = 消费端停摆；高等待高活跃 = 执行器容量不足 |
+| 调度 | `AUTOFLOW_SCHEDULER_TRIGGER_FAILURES` | warning | `failed` 触发 15m 内增长 | PG 触发领取异常：触发日志、连接池水位 |
+| 执行 | `AUTOFLOW_EXECUTION_FAILURE_RATE_HIGH` | warning | `failed+timeout` 速率 > 0.01/s（≈3 个/5 分钟）持续 10m | 按 failureReason 分组定位；单类任务失败查脚本，普遍失败查执行器资源/网络 |
+| 执行 | `AUTOFLOW_EXECUTION_FAILURE_STORM` | critical | `failed+timeout` 速率 > 0.05/s（≈15 个/5 分钟）持续 10m | 系统性故障口径：失败原因是否集中、执行器是否批量离线、最近发版是否回滚 |
+| 执行 | `AUTOFLOW_EXECUTION_KILLED_SPIKE` | warning | `killed` 15m 内 > 5 | killed 只来自人工 kill，成批出现 = 上游信号（自动化失控或批量止损），查操作来源 |
+| 通知 | `AUTOFLOW_NOTIFICATION_FAILURE_RATE_HIGH` | warning | 单渠道 `failure` 15m 内 > 3 | 渠道凭据失效 / 出网受限；管理台测试通知复现 |
+| 通知 | `AUTOFLOW_NOTIFICATION_FAILURE_STORM` | critical | 全渠道 `failure` 15m 内 > 10 | 多渠道齐挂 = admin-api 出网故障；恢复前告警外发静默，盯 Alertmanager UI |
+| AI | `AUTOFLOW_AI_ANALYSIS_CONTINUOUS_FAIL` | warning | 30m 内 `fail ≥ 3` 且 `ok == 0` | fail-open 生效中（分析缺失落库）：provider key/额度/网络；恢复后不自动补分析 |
+| SSE | `AUTOFLOW_SSE_STREAMS_REJECTED` | warning | 拒绝计数 10m 窗口增长持续 10m | 槽位饱和已发生（用户侧 503）：查前端连接泄漏，必要时调大 `SSE_MAX_STREAMS_GLOBAL` |
+| SSE | `AUTOFLOW_SSE_STREAM_CAPACITY_HIGH` | warning | `sum(active)/sum(limit) > 0.8` 持续 10m | 拒绝前的先行水位：定位长挂流页面 |
+| Agent | `AUTOFLOW_AGENT_BUDGET_EXCEEDED_SPIKE` | warning | 单 `reason` 30m 内 > 5 | 按 reason 分辨循环空转 / 模型变慢 / 预算失配；成本对账用 `autoflow_agent_tokens_total` |
+| Agent | `AUTOFLOW_AGENT_DENIED_SPIKE` | warning | 单 `reason` 15m 内 > 10 | 边界拦截突增 = 安全信号：越界尝试保留轨迹取证，或工具集配置漂移 |
+| 容量 | `AUTOFLOW_EXECUTOR_DISK_USAGE_HIGH` | warning | `> 85` 持续 10m（per-executor） | 清理任务产物 / 解释器缓存池（见上文「磁盘空间告警」） |
+| 容量 | `AUTOFLOW_EXECUTOR_DISK_USAGE_CRITICAL` | critical | `> 95` 持续 5m | 即将写满：立即清理或摘除节点，避免写入失败把执行打成 FAILED |
+| 容量 | `AUTOFLOW_DB_POOL_WAITING` | warning | `waiting_requests > 0` 持续 5m | 池饱和：利用率 active/max、慢查询、连接泄漏；评估 `DB_POOL_SIZE` |
+| Redis | `AUTOFLOW_REDIS_MEMORY_HIGH` | warning | `used/maxmemory > 0.9` 持续 10m | noeviction 防线：`redis-cli --bigkeys`、未设 TTL 集合，评估扩容 `--maxmemory` |
+| Redis | `AUTOFLOW_REDIS_MEMORY_CRITICAL` | critical | `used/maxmemory > 0.95` 持续 5m | 写入拒绝临界：BullMQ 入队 / leader 锁 / 心跳即将失败，立即清理或扩容 |
+| Redis | `AUTOFLOW_REDIS_UNREACHABLE` | critical | `redis_up == 0` 持续 2m | exporter 活着但连不上 Redis：密码轮换不同源、容器假死 |
+| 推送鉴权 | `AUTOFLOW_PUSH_AUTH_STILL_UNAUTHORIZED` | critical | `still_unauthorized` 15m 内增长 | 重签重试后仍 401 = token 顽固失配，rotate-token 重新下发 |
+| 回调认证 | `AUTOFLOW_CALLBACK_AUTH_EXPIRED_ELEVATED` | warning | `v1_expired` 速率 > 0.05/s 持续 15m | 宽松：多为超时后迟到的合法回调，核对 token TTL 与任务超时配置 |
+| 回调认证 | `AUTOFLOW_CALLBACK_AUTH_SIGNATURE_CRITICAL` | critical | `v1_bad_signature\|legacy_shared_invalid` > 0.01/s 持续 5m | 应≈0：secret 轮换不同步或伪造探测，安全口径取证 |
+| 回调认证 | `AUTOFLOW_CALLBACK_AUTH_MISUSE` | warning | 绑定/缺 token/缺地址合计 > 0.1/s 持续 10m | 集成配置错误：复用 token、漏 header，按执行器定位修正 |
+
+补充说明：
+
+- **Redis 内存告警的前提**：compose 已把 Redis 固定为 `--maxmemory 256mb --maxmemory-policy noeviction`——内存触顶后写入被 OOM 拒绝（BullMQ 入队、leader 锁、心跳全受损），因此用 `redis_memory_used_bytes / redis_memory_max_bytes` 比值告警（>0.9 warning / >0.95 critical）促扩容而非丢数据；表达式带 `redis_memory_max_bytes > 0` 守卫（未设 maxmemory 时不误报）。`redis_*` 系列由 monitoring profile 的 `redis-exporter` 服务（`oliver006/redis_exporter`，`REDIS_ADDR=redis:6379`，复用 `REDIS_PASSWORD`）暴露，prometheus.yml 已按 job `redis` 抓取。
+- **与 `docs/observability/alerting-rules.yml` 的关系**：那份是面向 `job=autoflow-admin-api` 抓取形态的文档版草稿（runbook 链接风格）；本文件是 compose 接线版。语义差异点：接线版 `AUTOFLOW_SCHEDULER_DOWN` 对全体实例求和（tick 仅 leader 递增，单实例 `rate==0` 会把 follower 误报成停摆）；接线版额外覆盖执行结果/通知/AI/SSE/agent/磁盘/Redis 内存/推送鉴权八组业务信号。
+- **变更守卫**：规则文件改动跑 `npm run test:alerts`（= `scripts/check-alerts-rules.mjs --selftest && …` 实扫：零依赖 YAML 解析 + 每规则必有 expr/for/severity/annotations + expr 指标名必须存在于 `apps/admin-api/src/modules/metrics/` 声明清单或 exporter 白名单，防止臆造指标名）。
+- **promtool**：本机未装 promtool，表达式语法守卫只到结构与指标名层面；上真机后建议在部署前补跑 `promtool check rules config/monitoring/alerts.yml`（或 `docker run --rm -v $PWD/config/monitoring/alerts.yml:/etc/prometheus/alerts.yml prom/prometheus:v2.53.0 promtool check rules /etc/prometheus/alerts.yml`）。
+
 ---
 
 ## 安全加固

@@ -1,8 +1,30 @@
 # Prometheus 告警规则（M-3，compose monitoring profile）
-# 最小集：目标实例不可达。可按需扩展（连接数/内存/队列积压等业务级告警）。
+#
+# 业务级规则集（可观测性纵深轮）：在 InstanceDown 基础上扩展为覆盖
+# 调度活性 / 执行结果 / 通知投递 / AI 分析 / SSE 槽位 / agent 预算 /
+# 容量水位（executor 磁盘、PG 连接池）/ Redis 内存（noeviction OOM 防线）/
+# 回调认证 / 配置推送鉴权的完整规则集。
+#
+# 纪律：
+#   · 每条 expr 引用的指标名均与源码逐一核对——admin-api 侧以
+#     apps/admin-api/src/modules/metrics/prometheus-metrics.service.ts 与
+#     runtime-metrics.ts 的声明为准（逐字清单见 docs/observability/README.md
+#     附录 A）；redis_* 以 oliver006/redis_exporter 暴露面为准。
+#   · 结构与指标名守卫：node scripts/check-alerts-rules.mjs（根 package.json
+#     的 test:alerts = --selftest + 实扫）。本机无 promtool，上真机后建议补跑
+#     `promtool check rules config/monitoring/alerts.yml`。
+#   · 与 docs/observability/alerting-rules.yml 的关系：那一份是面向
+#     job=autoflow-admin-api 抓取形态的文档版草稿；本文件是 compose
+#     monitoring profile 的接线版（prometheus.yml rule_files 挂载），
+#     语义冲突时以本文件为准（差异点：AUTOFLOW_SCHEDULER_DOWN 按集群求和，
+#     见该规则注释）。
+#   · 阈值均为保守起点（低流量自部署场景的绝对速率 + 现有 help 文案内嵌的
+#     建议值），上线后按两周基线（p99 的 2~3 倍）回调。
 groups:
   - name: autoflow
     rules:
+      # ── 基础可达性 ────────────────────────────────────────────────
+      # 目标实例不可达（per-target）。exporter/应用进程挂死、网络分区时触发。
       - alert: InstanceDown
         expr: up == 0
         for: 5m
@@ -10,4 +32,302 @@ groups:
           severity: warning
         annotations:
           summary: '{{ $labels.job }} / {{ $labels.instance }} is down'
-          description: 'Prometheus 已连续 5 分钟无法抓取 {{ $labels.instance }}（job={{ $labels.job }}）。'
+          description: 'Prometheus 已连续 5 分钟无法抓取 {{ $labels.instance }}（job={{ $labels.job }}）。先确认目标进程存活（docker compose ps）与容器网络，再查对应服务日志。'
+
+      # admin-api 应用指标抓取全失联（兜底 InstanceDown 的 per-target 视角）：
+      # 全部 admin-api target 都不再产出任何 autoflow_* series。注意
+      # /api/metrics 受 JWT 保护——若抓取持续 401（token 过期坑），本告警会
+      # 一直触发，这本身就是在暴露抓取配置缺陷。
+      - alert: AUTOFLOW_METRICS_TARGET_DOWN
+        expr: absent(autoflow_scheduler_ticks_total)
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'admin-api 指标抓取目标全部失联'
+          description: '所有 admin-api target 已 5 分钟未产出 autoflow_* series。排查：进程挂死（docker compose ps + admin-api 日志）；端点被 METRICS_PROMETHEUS_ENABLED=false 关闭；抓取 401（/api/metrics 需 Bearer JWT，按 docs/observability/README.md 第 1 节配反向代理注入或 credentials_file 刷新）。'
+
+      # ── 调度活性 ──────────────────────────────────────────────────
+      # 调度停摆（集群级）。tick 计数器仅 leader 实例递增（scheduler.service.ts
+      # 的 isLeader 门），单实例 rate==0 不能区分 follower 与真停摆——必须对
+      # 全体实例求和：和为 0 = 没有任何实例在执行调度扫描。抓取中断（series
+      # 消失）时表达式无样本而非 0，由 AUTOFLOW_METRICS_TARGET_DOWN 兜底。
+      - alert: AUTOFLOW_SCHEDULER_DOWN
+        expr: sum(rate(autoflow_scheduler_ticks_total[10m])) == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: '调度器停摆：无任何实例产生调度 tick'
+          description: '全体 admin-api 实例的调度扫描 tick 速率已为 0 持续 5 分钟，cron/依赖触发全部停摆。排查：各实例是否赢得 leader（日志「Scheduler leadership acquired」）；Redis 连通性（leader 锁 lock:scheduler:leader 依赖 Redis）；DB 可达性。恢复前积压任务由 AUTOFLOW_QUEUE_BACKLOG 伴生观察。'
+
+      # BullMQ 队列计数不可读（admin-api → Redis 断链）。注意 Redis 宕机时
+      # AUTOFLOW_SCHEDULER_DOWN（fail-open 降级后 tick 可能仍走）与本条
+      # 谁先触发取决于故障面，两条并存是预期。
+      - alert: AUTOFLOW_QUEUE_UNREADABLE
+        expr: autoflow_queue_up == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'BullMQ 队列计数不可读（Redis 断链）'
+          description: '{{ $labels.instance }} 已 5 分钟读不到队列深度（autoflow_queue_up=0）。排查：Redis 进程存活（docker compose ps redis）；admin-api 的 REDIS_HOST/REDIS_PASSWORD 与 compose 是否同源；redis-exporter 侧 redis_up 是否同时为 0（区分「Redis 挂」还是「admin-api 连不上」）。'
+
+      # 队列积压：waiting 深度持续超阈值（阈值 100 与指标 help 文案内嵌的
+      # AUTOFLOW_QUEUE_BACKLOG 建议一致）。waiting 高且 active 高 = 执行器
+      # 容量不足；waiting 高而 active≈0 = 消费端停摆（更危险）。
+      - alert: AUTOFLOW_QUEUE_BACKLOG
+        expr: autoflow_queue_depth{state="waiting"} > 100
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: '任务队列积压：waiting > 100 持续 10 分钟'
+          description: 'BullMQ waiting 深度 {{ $value }} 持续 10 分钟超过 100。排查：对比 active 曲线（GET /api/metrics/executors 看执行器在线数与占用槽位）；waiting 高 active 低 → 执行器离线/卡死，重启执行器；waiting 高 active 满 → 扩容执行器或错峰 cron。Redis 不可读时 depth 被置 0，不会误报本条（该场景由 AUTOFLOW_QUEUE_UNREADABLE 覆盖）。'
+
+      # cron 触发领取失败（DB claim 失败分类）。正常应≈0，出现即 PG 侧异常。
+      - alert: AUTOFLOW_SCHEDULER_TRIGGER_FAILURES
+        expr: sum(increase(autoflow_scheduler_triggers_total{result="failed"}[15m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: '调度触发领取失败增多'
+          description: '15 分钟内 cron 触发 result=failed 计数增长（{{ $value }}）。触发领取依赖 PG（db claim 窗口），排查：admin-api 日志的触发异常栈；PG 连通与连接池水位（伴生观察 AUTOFLOW_DB_POOL_WAITING）；失败触发的任务会在下个 tick 重试，确认最终入队。'
+
+      # ── 执行结果 ──────────────────────────────────────────────────
+      # 执行失败/超时速率超阈值。低流量自部署用绝对速率而非占比（占比在
+      # 个位数样本下无统计意义）：0.01/s ≈ 3 个/5 分钟。
+      - alert: AUTOFLOW_EXECUTION_FAILURE_RATE_HIGH
+        expr: sum(rate(autoflow_execution_result_total{status=~"failed|timeout"}[5m])) > 0.01
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: '执行失败/超时速率升高'
+          description: '5 分钟窗口内 failed+timeout 终态速率 {{ $value }}/s（≈3 个/5 分钟）持续 10 分钟。排查：管理台按 failureReason 分组看最近失败执行（failure_reason 与 stacktrace 列）；单类任务失败 → 查该任务脚本/依赖；普遍失败 → 查执行器资源（伴生 AUTOFLOW_EXECUTOR_DISK_USAGE_*）与网络出口。'
+
+      # 失败风暴（critical 档）：0.05/s ≈ 15 个/5 分钟，通常意味着系统性
+      # 故障（执行器批量掉线、依赖服务中断、坏版本全量铺开），而非零星失败。
+      - alert: AUTOFLOW_EXECUTION_FAILURE_STORM
+        expr: sum(rate(autoflow_execution_result_total{status=~"failed|timeout"}[5m])) > 0.05
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: '执行失败风暴：failed/timeout 速率过高'
+          description: '5 分钟窗口内 failed+timeout 终态速率 {{ $value }}/s（≈15 个/5 分钟）持续 10 分钟，疑似系统性故障。排查：失败执行的 failureReason 分布是否集中（单一下游依赖 → 优先熔断该依赖）；执行器是否批量离线（GET /api/metrics/executors）；最近是否发版/改配置（回滚边界见 docs/operations.md「升级 runbook」）。'
+
+      # 手动终止（killed）异常增多 = 上游信号：正常业务下 killed 应为零星
+      # 人工操作；短窗内成批 killed 通常是上游自动化失控（脚本循环 kill、
+      # 误触批量终止接口）或用户在批量止损。
+      - alert: AUTOFLOW_EXECUTION_KILLED_SPIKE
+        expr: sum(increase(autoflow_execution_result_total{status="killed"}[15m])) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: '手动终止（killed）风暴：15 分钟内超过 5 次'
+          description: '15 分钟内 killed 终态 {{ $value }} 个（阈值 5）。killed 只来自人工 kill 路径，成批出现 = 上游信号。排查：审计日志/操作记录确认 kill 来源（哪个用户/哪段自动化脚本）；若为误操作批量终止，评估是否需要重跑；若为主动止损，确认根因故障已另行告警。'
+
+      # ── 通知投递 ──────────────────────────────────────────────────
+      # 单渠道投递失败增多（per-channel 维度，保留 channel label）。
+      # 阈值 3/15 分钟：容忍单次网络毛刺，持续失败才告警。
+      - alert: AUTOFLOW_NOTIFICATION_FAILURE_RATE_HIGH
+        expr: sum by (channel) (increase(autoflow_notification_delivery_total{result="failure"}[15m])) > 3
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: '通知投递失败增多（channel={{ $labels.channel }}）'
+          description: '渠道 {{ $labels.channel }} 15 分钟内投递失败 {{ $value }} 次。排查：该渠道凭据/地址是否失效（企业微信/钉钉 webhook 过期、SMTP 口令轮换）；admin-api 出网是否受限（容器 DNS/代理）；管理台「设置 → 通知配置」发送测试通知复现。投递失败期间执行结果通知会丢失，恢复后需人工补发关键告警。'
+
+      # 投递风暴（critical 档）：全渠道合计失败 >10/15 分钟，通常意味着
+      # admin-api 出网中断或通知服务整体故障——此时「故障通知」本身送不出去，
+      # 属于可观测性静默风险，必须尽快恢复。
+      - alert: AUTOFLOW_NOTIFICATION_FAILURE_STORM
+        expr: sum(increase(autoflow_notification_delivery_total{result="failure"}[15m])) > 10
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: '通知投递风暴：全渠道失败过多'
+          description: '15 分钟内全渠道投递失败合计 {{ $value }} 次（阈值 10）。多渠道同时失败 → 大概率 admin-api 容器出网故障（DNS/防火墙/代理）而非单渠道配置问题。排查：容器内 curl 渠道 endpoint 连通性；通知服务异常日志。恢复前告警外发链路不可用，建议同步盯 Alertmanager UI。'
+
+      # ── AI 分析 ───────────────────────────────────────────────────
+      # AI 失败分析连续失败：fail = 重试耗尽后的 fail-open（分析缺失落库），
+      # skipped = provider 未配置/返回空（正常态，不参与本告警）。「连续」的
+      # 判据 = 30 分钟窗口内 fail ≥ 3 且 ok == 0（零成功），避免把偶发单次
+      # 失败放大成告警。
+      - alert: AUTOFLOW_AI_ANALYSIS_CONTINUOUS_FAIL
+        expr: sum(increase(autoflow_ai_analysis_total{result="fail"}[30m])) >= 3 and sum(increase(autoflow_ai_analysis_total{result="ok"}[30m])) == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'AI 失败分析连续失败（fail-open 生效中）'
+          description: '30 分钟内 AI 分析 fail ≥ {{ $value }} 次且零成功——重试已耗尽，失败执行将以无 AI 分析的状态落库。排查：AI provider 配置（API key/额度/网络出口）；AI_QWEN 相关环境变量是否漂移（scripts/check-env-drift.mjs）；admin-api 日志 ai-analysis 关键字看最后一次异常栈。恢复后历史失败执行不会自动补分析。'
+
+      # ── SSE 流槽位 ────────────────────────────────────────────────
+      # 流拒绝增长 = 槽位饱和的已发生信号（per-execution / global 并发上限
+      # 拒绝，超限抛 503）。阈值 >0 持续 10 分钟：单次毛刺不告警，持续拒绝
+      # 才告警。
+      - alert: AUTOFLOW_SSE_STREAMS_REJECTED
+        expr: increase(autoflow_sse_streams_rejected_total[10m]) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'SSE 日志流持续被并发上限拒绝'
+          description: '10 分钟窗口内 SSE 流拒绝 {{ $value }} 次且持续 10 分钟（用户侧表现为日志流 503）。排查：占用率水位（伴生观察 AUTOFLOW_SSE_STREAM_CAPACITY_HIGH）；打开日志流的页面是否泄漏连接（前端未关 EventSource）；确属并发增长 → 调大 SSE_MAX_STREAMS_GLOBAL（容量 = 实例数 × 上限，线性叠加）。'
+
+      # 槽位水位的先行指标（阈值 0.8 与指标 help 文案内嵌建议一致）：
+      # 拒绝发生前先看水位逼近上限。分母为各实例 limit 之和（多实例线性叠加）。
+      - alert: AUTOFLOW_SSE_STREAM_CAPACITY_HIGH
+        expr: sum(autoflow_sse_streams_active) / sum(autoflow_sse_streams_limit) > 0.8
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'SSE 日志流槽位占用率超 80%'
+          description: '全部实例 SSE 流占用率 {{ $value | humanizePercentage }} 持续 10 分钟（阈值 0.8）。排查：哪类页面在长挂日志流（按用户/任务定位）；是否有多标签页重复订阅；评估调大 SSE_MAX_STREAMS_GLOBAL 或引导用户关闭闲置流。水位触顶后新流将被拒（伴生 AUTOFLOW_SSE_STREAMS_REJECTED）。'
+
+      # ── Agent 运行时 ──────────────────────────────────────────────
+      # 预算触顶突增 = 防成本事故的双保险频繁起跳（max_steps/max_tokens/
+      # wall_clock/max_tool_calls 四类）。单次触顶是设计内行为，频繁触顶说明
+      # 有会话在循环空转或预算配置与实际负载失配。
+      - alert: AUTOFLOW_AGENT_BUDGET_EXCEEDED_SPIKE
+        expr: sum by (reason) (increase(autoflow_agent_budget_exceeded_total[30m])) > 5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Agent 预算触顶突增（reason={{ $labels.reason }}）'
+          description: '30 分钟内预算闸门触发 {{ $value }} 次（reason={{ $labels.reason }}，阈值 5）。排查：按 reason 分辨——max_tokens/max_tool_calls 频发 = 会话在循环重试或工具结果异常膨胀，查对应会话轨迹；wall_clock 频发 = 模型/网络变慢；确属正常大任务 → 调预算而非放任触顶（每次触顶都会终止会话）。令牌消耗对账用 autoflow_agent_tokens_total（provider/model/dimension 维度）。'
+
+      # 边界闸门拒绝突增（not_in_toolset/needs_approval/invalid_params/
+      # out_of_scope/rate_limited/circuit_open/hard_disabled 七类）= 安全信号：
+      # 正常低频，突增说明 Agent 在越界尝试、被 scope 卡住，或被外部注入诱导。
+      - alert: AUTOFLOW_AGENT_DENIED_SPIKE
+        expr: sum by (reason) (increase(autoflow_agent_denied_total[15m])) > 10
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Agent 边界拦截突增（reason={{ $labels.reason }}）'
+          description: '15 分钟内边界闸门拦截 {{ $value }} 次（reason={{ $labels.reason }}，阈值 10）。out_of_scope/needs_approval 突增 → 检查会话是否被诱导越权（安全事件口径，保留会话轨迹取证）；rate_limited/circuit_open 突增 → 下游工具过载或熔断打开；not_in_toolset 突增 → 工具集配置漂移。'
+
+      # ── 容量水位 ──────────────────────────────────────────────────
+      # executor 磁盘水位（per-executor，心跳上报的 0-100 百分数）。
+      # warning 85 / critical 95：留出处置窗口（清理任务产物/解释器缓存池，
+      # 见 docs/operations.md「磁盘空间告警」）。仅在线且上报 diskUsage 的
+      # 执行器有 series，旧版执行器缺席而非 0（不误报）。
+      - alert: AUTOFLOW_EXECUTOR_DISK_USAGE_HIGH
+        expr: autoflow_executor_disk_usage_percent > 85
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: '执行器磁盘水位超 85%（executor={{ $labels.executor }}）'
+          description: '执行器 {{ $labels.executor }} 磁盘占用 {{ $value }}% 持续 10 分钟。排查：登录该执行器定位大头（任务产物/日志/解释器缓存池，du 逐层）；清理策略见 docs/operations.md「磁盘空间告警」与「解释器缓存池运维」；若为业务增长 → 扩盘或下线该节点分流。'
+
+      - alert: AUTOFLOW_EXECUTOR_DISK_USAGE_CRITICAL
+        expr: autoflow_executor_disk_usage_percent > 95
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: '执行器磁盘水位超 95%（executor={{ $labels.executor }}）'
+          description: '执行器 {{ $labels.executor }} 磁盘占用 {{ $value }}% 持续 5 分钟，即将写满（新执行的日志/产物写入会失败）。立即处置：清理任务产物与旧日志，必要时 kill 该节点上的执行并摘除节点（避免写入失败把执行打成 FAILED，伴生 AUTOFLOW_EXECUTION_FAILURE_STORM）。'
+
+      # PG 连接池饱和（阈值与指标 help 文案内嵌建议一致）：waiting > 0 =
+      # 已有请求在排队等连接，持续 5 分钟即池容量不足或连接泄漏。
+      - alert: AUTOFLOW_DB_POOL_WAITING
+        expr: autoflow_db_pool_waiting_requests > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'PG 连接池饱和：存在排队等待请求'
+          description: '{{ $labels.instance }} 有 {{ $value }} 个请求排队等连接持续 5 分钟。排查：利用率 active/max（autoflow_db_pool_active_connections / max_connections，注意 max==0 表示池句柄不可读）；慢查询/pg_stat_activity 定位长事务；连接泄漏（未释放的 repo 调用）；确属并发增长 → 调大 DB_POOL_SIZE（默认 20，同步评估 PG max_connections 余量）。'
+
+      # ── Redis 内存（noeviction OOM 防线）──────────────────────────
+      # compose 已将 Redis 固定为 --maxmemory 256mb --maxmemory-policy
+      # noeviction：内存触顶后写入直接被拒（OOM command not allowed），BullMQ
+      # 入队/leader 锁/心跳全部受损——宁可告警扩容也不静默丢数据（见
+      # docker-compose.yml redis 服务注释）。比值 >0.9 warning / >0.95 critical；
+      # and redis_memory_max_bytes > 0 是「未设 maxmemory（值=0）不误报」的
+      # 前提守卫。redis_* 系列由 compose monitoring profile 的 redis-exporter
+      # 服务（oliver006/redis_exporter，REDIS_ADDR=redis:6379）暴露。
+      - alert: AUTOFLOW_REDIS_MEMORY_HIGH
+        expr: redis_memory_used_bytes / redis_memory_max_bytes > 0.9 and redis_memory_max_bytes > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Redis 内存水位超 90%（noeviction 防线）'
+          description: 'Redis 已用内存 / maxmemory = {{ $value | humanizePercentage }} 持续 10 分钟（当前 maxmemory 256mb）。排查：redis-cli --bigkeys 定位大 key；未设 TTL 的集合（BullMQ 完成任务默认会清理，检查是否被改动）；评估扩容 compose 的 --maxmemory（同步确认宿主内存余量）。触顶前处置，避免写入被 OOM 拒绝。'
+
+      - alert: AUTOFLOW_REDIS_MEMORY_CRITICAL
+        expr: redis_memory_used_bytes / redis_memory_max_bytes > 0.95 and redis_memory_max_bytes > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Redis 内存水位超 95%（写入拒绝临界）'
+          description: 'Redis 已用内存 / maxmemory = {{ $value | humanizePercentage }} 持续 5 分钟，noeviction 策略下即将/已经出现 OOM 写入拒绝（BullMQ 入队、leader 锁续期、执行器心跳都会开始失败）。立即处置：清理可丢数据（已完成任务的 job 数据），扩容 --maxmemory 并重建容器；确认 admin-api 侧 AUTOFLOW_QUEUE_UNREADABLE 是否伴生。'
+
+      # redis-exporter → Redis 探测失败（区别于 InstanceDown 的 exporter
+      # 进程不可达：exporter 活着但连不上 Redis——典型是密码轮换后
+      # REDIS_PASSWORD 不同源，或 Redis 容器假死）。
+      - alert: AUTOFLOW_REDIS_UNREACHABLE
+        expr: redis_up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'redis-exporter 连不上 Redis'
+          description: 'redis-exporter 已 2 分钟无法连通 redis:6379（redis_up=0）。排查：Redis 进程存活与健康检查（docker compose ps redis）；redis-exporter 的 REDIS_PASSWORD 与 redis 服务 --requirepass 是否同源（.env 单一来源）；容器网络（同在 autoflow-internal）。Redis 不可达会连锁触发 AUTOFLOW_QUEUE_UNREADABLE 与调度降级。'
+
+      # ── 配置推送鉴权（BUG-01）──────────────────────────────────────
+      # reload-config 推送遇 401 后重签重试仍失败（still_unauthorized）=
+      # 执行器与控制面 token 顽固失配，自愈路径已失效，需人工 rotate-token。
+      - alert: AUTOFLOW_PUSH_AUTH_STILL_UNAUTHORIZED
+        expr: sum(increase(autoflow_push_auth_retry_total{result="still_unauthorized"}[15m])) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: '配置推送重签后仍 401（执行器 token 顽固失配）'
+          description: '15 分钟内 still_unauthorized 计数增长（{{ $value }}）：reload-config 推送重签重试后仍被拒，执行器收不到配置更新。排查：该执行器的注册 token 是否过期/轮换（管理台执行器详情 rotate-token 重新下发）；执行器侧 token 文件权限；15 分钟内 reissued_success 与 still_unauthorized 的比值可判断失配范围（个别执行器 vs 全 fleet）。'
+
+      # ── 回调认证（与 docs/observability/alerting-rules.yml 语义一致）──
+      # 宽松级：v1_expired 可能只是「任务超时后迟到的合法回调」，阈值宽松。
+      - alert: AUTOFLOW_CALLBACK_AUTH_EXPIRED_ELEVATED
+        expr: sum by (job) (rate(autoflow_execution_callback_auth_total{result="v1_expired"}[5m])) > 0.05
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: '回调 token 过期占比升高'
+          description: 'v1_expired 速率 {{ $value }}/s 持续 15 分钟超阈值（≈3 次/分钟）。多为任务超时后执行端迟到的回调（合法但无效）；若伴生执行超时告警，核对 token TTL 与任务最长运行时间配置是否匹配。'
+
+      # 严格级：签名/共享 token 类异常正常应≈0，出现即 secret 漂移或伪造探测。
+      - alert: AUTOFLOW_CALLBACK_AUTH_SIGNATURE_CRITICAL
+        expr: sum by (job) (rate(autoflow_execution_callback_auth_total{result=~"v1_bad_signature|legacy_shared_invalid"}[5m])) > 0.01
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: '回调签名校验异常（疑似 secret 漂移或伪造）'
+          description: 'v1_bad_signature / legacy_shared_invalid 速率 {{ $value }}/s 持续 5 分钟（应≈0）。立即核对：① executor 与 admin-api 的 fleet/per-executor secret 是否轮换不同步（rotate 后未全量下发）；② 回调来源 IP 是否异常（安全事件口径，保留日志取证）；③ legacy 共享 token 客户端是否未迁移完。'
+
+      # 中间级：绑定/缺 token/缺地址 = 集成配置错误（复用 token、漏 header）。
+      - alert: AUTOFLOW_CALLBACK_AUTH_MISUSE
+        expr: sum by (job) (rate(autoflow_execution_callback_auth_total{result=~"v1_binding_mismatch|missing_token|bad_address"}[5m])) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: '回调凭证使用异常'
+          description: 'v1_binding_mismatch / missing_token / bad_address 合计速率 {{ $value }}/s 持续 10 分钟。常见原因：执行端复用其他 execution 的 token、未带 Authorization 头、legacy 回调缺 executorAddress。按 result 维度拆开定位到具体执行器后修正其集成配置。'
