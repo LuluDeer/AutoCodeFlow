@@ -6,6 +6,7 @@ import { TaskExecution } from "../task/entities/task-execution.entity";
 import { Executor } from "../executor/entities/executor.entity";
 import { ExecutionReport } from "./entities/execution-report.entity";
 import { MetricsService } from "./metrics.service";
+import { MetricsScraperAuthGuard } from "./metrics-scraper-auth.guard";
 import { PrometheusMetricsService } from "./prometheus-metrics.service";
 import { MetricsController } from "./metrics.controller";
 import { MetricsStreamController } from "./metrics-stream.controller";
@@ -34,6 +35,7 @@ import { TaskModule } from "../task/task.module";
   ],
   providers: [
     MetricsService,
+    MetricsScraperAuthGuard,
     PrometheusMetricsService,
     MetricsStreamSlotService,
   ],
