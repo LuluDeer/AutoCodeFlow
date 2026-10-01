@@ -58,6 +58,14 @@ import {
 } from "../../metrics/runtime-metrics-entry";
 
 jest.mock("axios");
+// N-14：闸门在 task.service.spec 内按用例打桩（默认 proceed 保持既有触发
+// 语义用例逐字节不变）；闸门自身语义由 block-strategy-gate.spec 全量覆盖。
+jest.mock("../block-strategy-gate", () => ({
+  applyBlockStrategyGate: jest.fn().mockResolvedValue("proceed"),
+  releaseExecutorSlotByAddress: jest.fn().mockResolvedValue(undefined),
+}));
+import { applyBlockStrategyGate } from "../block-strategy-gate";
+const mockedGate = applyBlockStrategyGate as unknown as jest.Mock;
 // SEC-SSRF-01: backfillFullLogsFromExecutor 现在会先过 assertSafeExecutorUrl。
 // 用例使用 fixture 地址（http://executor:3001）——真实守卫会对该主机做 DNS
 // 解析并失败，故按 executor.service.spec 的同款做法 stub 掉守卫，避免用例
@@ -1475,6 +1483,54 @@ describe("TaskService (__tests__)", () => {
       expect(taskQueue.add).toHaveBeenCalled();
     });
 
+    it("N-14: discard 闸门命中（同参在跑）→ 409 且不创建执行行", async () => {
+      const task = {
+        id: "1",
+        name: "test",
+        params: {},
+        blockStrategy: "discard",
+        status: TaskStatus.ACTIVE,
+      };
+      taskRepo.findOne.mockResolvedValue(task);
+      mockedGate.mockResolvedValueOnce("skip");
+      await expect(service.trigger("1", {})).rejects.toBeInstanceOf(
+        ConflictException,
+      );
+      expect(dataSource.transaction).not.toHaveBeenCalled();
+      expect(taskQueue.add).not.toHaveBeenCalled();
+    });
+
+    it("N-14: 闸门比较维度=生效参数（dto.params 覆盖后传入），hooks 带 kill/槽位出口", async () => {
+      const task = {
+        id: "1",
+        name: "test",
+        params: { orderId: "A" },
+        blockStrategy: "cover_early",
+        maxRetry: 1,
+        retryDelay: 0,
+        currentVersion: "v1",
+        status: TaskStatus.ACTIVE,
+      };
+      const exec = { id: "exec-9", status: ExecutionStatus.PENDING };
+      taskRepo.findOne.mockResolvedValue(task);
+      const managerCreate = jest.fn().mockReturnValue(exec);
+      dataSource.transaction.mockImplementation((fn: any) =>
+        fn({ create: managerCreate, save: jest.fn().mockResolvedValue(exec) }),
+      );
+      mockedGate.mockResolvedValueOnce("proceed");
+      await service.trigger("1", { params: { orderId: "B" } });
+      const lastGateCall =
+        mockedGate.mock.calls[mockedGate.mock.calls.length - 1];
+      const [calledTask, calledParams, , hooks] = lastGateCall;
+      // 异参触发：闸门拿到的是本次生效参数（B），任务维度带出 blockStrategy
+      expect(calledParams).toEqual({ orderId: "B" });
+      expect(calledTask.blockStrategy).toBe("cover_early");
+      expect(hooks.notifyKill).toBeInstanceOf(Function);
+      expect(hooks.releaseSlot).toBeInstanceOf(Function);
+      // 行 params 与闸门比较同源
+      expect(managerCreate.mock.calls[0][1].params).toEqual({ orderId: "B" });
+    });
+
     it("N2: normalizes a hydrated PG string priority before queue.add", async () => {
       // Real-world shape from round-5 e2e: TypeORM hydrates the PG enum as
       // the string label 'normal'; BullMQ rejects non-integer priorities.
@@ -1533,12 +1589,10 @@ describe("TaskService (__tests__)", () => {
       let created: Record<string, unknown> | null = null;
       dataSource.transaction.mockImplementation((fn: any) =>
         fn({
-          create: jest.fn(
-            (_cls: unknown, data: Record<string, unknown>) => {
-              created = data;
-              return exec;
-            },
-          ),
+          create: jest.fn((_cls: unknown, data: Record<string, unknown>) => {
+            created = data;
+            return exec;
+          }),
           save: jest.fn().mockResolvedValue(exec),
         }),
       );
@@ -3269,6 +3323,38 @@ describe("TaskService (__tests__)", () => {
           expect.stringContaining('"lastTriggerTime" = :claimedAt'),
           expect.objectContaining({ claimedAt: expect.any(Date) }),
         );
+        expect(depQb.set).toHaveBeenCalledWith({ lastTriggerTime: null });
+      });
+
+      it("N-14: discard 闸门拒绝下游触发 → claim 回滚但不计扇出失败（warn 降级 + 可重放）", async () => {
+        const exec = {
+          id: "e-dep-gate",
+          status: ExecutionStatus.RUNNING,
+          taskId: "t-upstream",
+          logs: "",
+        };
+        execRepo.findOne.mockResolvedValue(exec);
+        const depQb = setupDownstream(
+          {
+            id: "t-downstream",
+            dependencies: { up: "t-upstream" },
+            blockStrategy: "discard",
+          },
+          [{ taskId: "t-upstream", status: ExecutionStatus.SUCCESS }],
+        );
+        // 下一次闸门调用（下游触发）命中 discard → trigger 抛 409
+        mockedGate.mockResolvedValueOnce("skip");
+        execRepo.update = jest.fn().mockResolvedValue({ affected: 1 });
+
+        const result = await service.handleCallback([
+          { executionId: "e-dep-gate", status: "success" },
+        ]);
+
+        // 扇出主链无故障：回调 item 保持 success
+        expect(result[0].success).toBe(true);
+        // 有意的抑制不计扇出失败 → depsFiredAt 照常落标记
+        expect(execRepo.update).toHaveBeenCalled();
+        // claim 仍回滚（与失败路径一致，保住重放安全性）
         expect(depQb.set).toHaveBeenCalledWith({ lastTriggerTime: null });
       });
 

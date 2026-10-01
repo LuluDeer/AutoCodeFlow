@@ -16,6 +16,12 @@ export enum TaskStatus {
   PAUSED = "paused",
   DELETED = "deleted",
 }
+// N-14：阻塞策略在**触发层**判定「重复工作」，比较维度=任务+参数（params
+// 规范化等价，见 task/block-strategy-gate.ts）——同参才生效，异参放行并发。
+// 与互斥组（执行层「同设备×同组串行」）正交，两层都须通过。选型边界：
+// cover_early=强杀同参在跑执行后从头重做（无断点续接，受害者恒为同参执行，
+// 与重试同构）；serial=触发层不拦，串行由互斥组承担（不可中断任务选它）；
+// discard=同参在跑即放弃本轮（手动/API 409，调度面静默跳过）。
 export enum BlockStrategy {
   SERIAL = "serial",
   DISCARD = "discard",
