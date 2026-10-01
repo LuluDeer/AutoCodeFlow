@@ -132,3 +132,5 @@ async with AsyncHttpClient(base_url=...) as ahttp:
 
 - 发布流程与矩阵说明见
   [docs/sdk-guide.md「SDK 矩阵」](../../docs/sdk-guide.md)。
+
+> 版本随 autocodeflow lockstep 组同步发布(当前 1.6.0,与 mcp-server/acf-cli 同版)。
