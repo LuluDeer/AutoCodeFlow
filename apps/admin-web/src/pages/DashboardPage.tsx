@@ -32,7 +32,7 @@ import { CHART_COLORS, SEMANTIC_COLORS } from '../theme/tokens';
 import PageHeader from '../components/PageHeader';
 import PageSkeleton from '../components/PageSkeleton';
 import StateError from '../components/StateError';
-import KpiSparkline, { buildSparklineData, SPARKLINE_HEIGHT } from '../components/dashboard/KpiSparkline';
+import KpiSparkline, { buildSparklineData, recentDateKeys, SPARKLINE_HEIGHT } from '../components/dashboard/KpiSparkline';
 import FailureTopList from '../components/dashboard/FailureTopList';
 import ExecutorHeatBars from '../components/dashboard/ExecutorHeatBars';
 import SchedulerLatencyCard from '../components/dashboard/SchedulerLatencyCard';
@@ -74,6 +74,30 @@ export function streamStatusBadge(status: MetricsStreamStatus): { color: string;
     default:
       return { color: SEMANTIC_COLORS.neutral, labelKey: 'dashboard.stream.connecting' };
   }
+}
+
+/**
+ * A6（第二轮审计）：主趋势图序列构建——按「最近 days 天含今日」的完整日期轴
+ * 补零。getDailyTrend 只返回**有执行的日**的行，此前直接 map 渲染会在零执行
+ * 日出现断点（折线从上周五直接跳到今天，看起来像数据缺失而非「零执行」）。
+ * 思路与 KpiSparkline.buildSparklineData 同源（recentDateKeys 生成日期轴 +
+ * Map 查表补零）；纯函数导出供测试锚定。
+ */
+export function buildTrendData(
+  trend: { date: string; success: number; failed: number }[] | undefined,
+  days: number,
+): { date: string; success: number; failed: number }[] {
+  const byDate = new Map(
+    (trend ?? []).map(d => [String(d.date).slice(0, 10), d]),
+  );
+  return recentDateKeys(days).map(key => {
+    const row = byDate.get(key);
+    return {
+      date: key.slice(5),
+      success: row?.success ?? 0,
+      failed: row?.failed ?? 0,
+    };
+  });
 }
 
 export default function DashboardPage() {
@@ -141,11 +165,8 @@ export default function DashboardPage() {
   // I18N-DATAKEY-01：dataKey 用稳定英文键，展示名由 Area name 走 i18n——
   // 此前用中文「成功/失败」当 dataKey、靠 Legend formatter 映射，Tooltip
   // 仍是裸中文键，属权宜方案。
-  const trendData = (trend ?? []).map(d => ({
-    date: d.date.slice(5),
-    success: d.success,
-    failed: d.failed,
-  }));
+  // A6（第二轮审计）：趋势图按日期轴补零（见 buildTrendData 注释）。
+  const trendData = buildTrendData(trend, trendDays);
 
   // UI-04 ①：三张 KPI 卡各自的 sparkline 序列（补零 7 天窗，形状稳定）
   const runSpark = buildSparklineData(sparkTrend, 7);
