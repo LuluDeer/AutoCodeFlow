@@ -46,6 +46,9 @@ import { AuditService } from "../audit/audit.service";
 // 上传即产生版本：upload 路径落 application_versions 快照。@Optional 注入
 // （既有单测装配未提供 repo 时跳过快照，不阻断上传主链）。
 import { ApplicationVersion } from "./entities/application-version.entity";
+// DEEP-AUDIT B·4.3: 删除扇出失败附通知。@Optional 同 audit——存量 spec 未
+// 提供时降级为仅日志/审计，主链不因通知故障中断。
+import { NotificationService } from "../notification/notification.service";
 
 /**
  * R4: Promise wrapper around async child_process.spawn. Aggregates
@@ -162,6 +165,10 @@ export class ApplicationService implements OnModuleInit {
     @Optional()
     @InjectRepository(ApplicationVersion)
     private readonly versionRepo: Repository<ApplicationVersion> | null = null,
+    // DEEP-AUDIT B·4.3: 扇出失败通知（@Optional 同 audit——存量 spec 未提供
+    // 时降级为仅日志/审计）。
+    @Optional()
+    private readonly notificationService: NotificationService | null = null,
   ) {}
 
   private _taskService: import("../task/task.service").TaskService | null =
@@ -594,8 +601,17 @@ export class ApplicationService implements OnModuleInit {
         const result = await this._taskService.findAll({
           applicationId: id,
         } as never);
-        const items = (result?.items ?? result) as unknown[];
-        tasksLosingSource = Array.isArray(items) ? items.length : 0;
+        // DEEP-AUDIT B·4.1：读**分页 total** 而非 items.length——findAll 是
+        // 分页接口（缺省 pageSize=20），应用下任务超过一页时旧口径把影响面
+        // 截死在 20，确认框会少报（"3 个任务失去代码来源"实为 37 个）。
+        // total 缺席（旧返回形态/裸数组兼容）才回落 items.length。
+        const paginated = result as { total?: number; items?: unknown[] };
+        if (typeof paginated?.total === "number") {
+          tasksLosingSource = paginated.total;
+        } else {
+          const items = (paginated?.items ?? result) as unknown[];
+          tasksLosingSource = Array.isArray(items) ? items.length : 0;
+        }
       } catch (err: unknown) {
         this.logger.warn(
           `Removal impact: task count unavailable for application ${id}: ${
@@ -657,7 +673,14 @@ export class ApplicationService implements OnModuleInit {
     });
     // NETOPT-8③: DB 删除完成后 best-effort 并行扇出（先 stop 后 uninstall）。
     // 任何失败只 warn，绝不外抛——删除应用不得因执行器不可达而失败。
-    await this.fanOutAppRemovalToExecutors(app.id, deployments);
+    // DEEP-AUDIT B·4.3: 扇出不再"发完即忘"——成功/失败台数与失败目标落审计，
+    // 有失败时附一条告警通知（通知自身 fail-open，不影响删除主链）。
+    await this.fanOutAppRemovalToExecutors(
+      app.id,
+      app.name,
+      deployments,
+      user?.id,
+    );
   }
 
   /**
@@ -693,10 +716,17 @@ export class ApplicationService implements OnModuleInit {
   /**
    * NETOPT-8③: 对每台有部署的执行器（按地址去重）并行扇出清理通知。
    * Promise.allSettled + 单台内部全兜底 ⇒ 整体绝不外抛。
+   *
+   * DEEP-AUDIT B·4.3: 扇出结果**可观测**——旧实现 allSettled 后把 per-台
+   * 结果整体丢弃（单台内部又把失败吞成 warn 日志），管理台/审计里查无此败。
+   * 现在收集每台结果：整体成功/失败台数 + 失败目标明细落审计
+   * （action=application.remove.fanout），有失败再附一条告警通知。
    */
   private async fanOutAppRemovalToExecutors(
     appId: string,
+    appName: string,
     deployments: { id: string; executorAddress: string | null }[],
+    userId?: number,
   ): Promise<void> {
     const byAddress = new Map<string, string[]>();
     for (const d of deployments) {
@@ -712,11 +742,65 @@ export class ApplicationService implements OnModuleInit {
       );
       return;
     }
-    await Promise.allSettled(
-      [...byAddress.entries()].map(([address, deploymentIds]) =>
-        this.uninstallAppOnExecutor(appId, address, deploymentIds),
-      ),
+    const targets = [...byAddress.entries()];
+    const settled = await Promise.allSettled(
+      targets.map(async ([address, deploymentIds]) => ({
+        address,
+        ...(await this.uninstallAppOnExecutor(appId, address, deploymentIds)),
+      })),
     );
+    // allSettled 语义保持：单台 promise 本身 rejected（理论不可达，防御兜底）
+    // 也计为该台失败，不让防御路径把结果统计打穿。
+    const results = settled.map((r, i) => {
+      const address = targets[i][0];
+      if (r.status === "fulfilled") return r.value;
+      return {
+        address,
+        ok: false,
+        error:
+          r.reason instanceof Error ? r.reason.message : String(r.reason),
+      };
+    });
+    const failed = results.filter((r) => !r.ok);
+    const detail = {
+      appId,
+      appName,
+      total: results.length,
+      succeeded: results.length - failed.length,
+      failed: failed.length,
+      failedTargets: failed.map((f) => ({ address: f.address, error: f.error })),
+    };
+    await this.writeAudit({
+      userId,
+      action: "application.remove.fanout",
+      resourceId: appId,
+      detail,
+    });
+    if (failed.length === 0) return;
+    const targetSummary = failed
+      .map((f) => `${f.address}${f.error ? `（${f.error}）` : ""}`)
+      .join("; ");
+    this.logger.warn(
+      `应用 ${appName}(${appId}) 删除的执行器清理有 ${failed.length}/${results.length} 台失败: ${targetSummary}`,
+    );
+    if (this.notificationService) {
+      try {
+        await this.notificationService.sendAll({
+          title: `应用删除清理部分失败: ${appName}`,
+          content:
+            `应用 ${appName}(${appId}) 已删除，但其执行器清理扇出有 ` +
+            `${failed.length}/${results.length} 台失败。失败目标: ${targetSummary}。` +
+            `请登录管理台检查对应执行器上的残留部署（apps/${appId}）并手工清理。`,
+          level: "warning",
+        });
+      } catch (err: unknown) {
+        this.logger.warn(
+          `扇出失败通知发送异常（best-effort 忽略）: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
   }
 
   /**
@@ -733,9 +817,9 @@ export class ApplicationService implements OnModuleInit {
     appId: string,
     address: string,
     deploymentIds: string[],
-  ): Promise<void> {
+  ): Promise<{ ok: boolean; error?: string }> {
     const executorService = this.executorService;
-    if (!executorService) return;
+    if (!executorService) return { ok: false, error: "ExecutorService unavailable" };
 
     // ARCH-33: 先判一次传输方式——整批命令要么全走 pull，要么全走 push，
     // 不允许一台执行器上两条路径混发（否则 stop 走队列、uninstall 走 HTTP，
@@ -762,16 +846,20 @@ export class ApplicationService implements OnModuleInit {
           `NETOPT-8③/ARCH-33: 应用 ${appId} 的清理命令已入队（executor=${address}，` +
             `stop×${deploymentIds.length} + uninstall×1，pull 通道）`,
         );
+        return { ok: true };
       } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
         this.logger.warn(
-          `NETOPT-8③/ARCH-33: 清理命令入队失败（best-effort 继续），executor=${address}: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
+          `NETOPT-8③/ARCH-33: 清理命令入队失败（best-effort 继续），executor=${address}: ${msg}`,
         );
+        return { ok: false, error: msg };
       }
-      return;
     }
 
+    // DEEP-AUDIT B·4.3: 失败不再只留 warn 日志——逐台记录并回传给扇出层
+    // 聚合落审计（app-stop/app-uninstall 的 best-effort 语义不变：单条失败
+    // 继续走完剩余通知，绝不中断本轮清理）。
+    const errors: string[] = [];
     for (const deploymentId of deploymentIds) {
       try {
         const url = executorService.getExecutorUrl(address, "api/app-stop");
@@ -787,10 +875,10 @@ export class ApplicationService implements OnModuleInit {
           },
         );
       } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        errors.push(`app-stop(${deploymentId}): ${msg}`);
         this.logger.warn(
-          `NETOPT-8③: app-stop 通知失败（best-effort 继续），executor=${address} deployment=${deploymentId}: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
+          `NETOPT-8③: app-stop 通知失败（best-effort 继续），executor=${address} deployment=${deploymentId}: ${msg}`,
         );
       }
     }
@@ -808,12 +896,16 @@ export class ApplicationService implements OnModuleInit {
         },
       );
     } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      errors.push(`app-uninstall: ${msg}`);
       this.logger.warn(
-        `NETOPT-8③: app-uninstall 通知失败（旧版执行器可能不支持该端点，best-effort 忽略），executor=${address}: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
+        `NETOPT-8③: app-uninstall 通知失败（旧版执行器可能不支持该端点，best-effort 忽略），executor=${address}: ${msg}`,
       );
     }
+    if (errors.length > 0) {
+      return { ok: false, error: errors.join("; ") };
+    }
+    return { ok: true };
   }
 
   /** NETOPT-8③: executor 请求头（Bearer 共享令牌，DB-first 解析失败降级无头） */

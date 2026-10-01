@@ -62,6 +62,85 @@ const makeMulterFile = (
   }) as unknown as Express.Multer.File;
 
 describe("RegistryController upload proxy (S4 timeouts)", () => {
+  // DEEP-AUDIT B·2.1 回归桩：模拟自建 registry-pypi（FastAPI/Starlette）的
+  // redirect_slashes 行为——任何带尾斜杠的路径（且去掉尾斜杠后有路由）回 307，
+  // 无尾斜杠路径回 200。此前代理打 `/upload/` 且把 `<400` 当成功，307 被吞成
+  // 「上传成功」而包实际未落盘。
+  const makeStarletteLikeServer = (
+    seen: Array<{ method?: string; url?: string }>,
+  ): http.Server =>
+    http.createServer((req, res) => {
+      let body = "";
+      req.on("data", (c) => (body += c));
+      req.on("end", () => {
+        seen.push({ method: req.method, url: req.url });
+        res.setHeader("Connection", "close");
+        if (req.url && req.url.length > 1 && req.url.endsWith("/")) {
+          // Starlette redirect_slashes：保留方法的重定向（此处不跟随）
+          res.writeHead(307, { Location: req.url.replace(/\/+$/, "") });
+          res.end();
+          return;
+        }
+        res.writeHead(200, { "Content-Type": "text/plain" });
+        res.end("ok");
+      });
+    });
+
+  it("2.1: posts to the canonical POST / path (no trailing slash) and reports success only on 2xx", async () => {
+    const seen: Array<{ method?: string; url?: string }> = [];
+    const server = makeStarletteLikeServer(seen);
+    const destroyAll = trackSockets(server);
+    const port = await listen(server);
+    const controller = makeController({
+      PYPI_REGISTRY_URL: `http://127.0.0.1:${port}`,
+      REGISTRY_UPLOAD_TIMEOUT_MS: "3000",
+    });
+
+    await expect(
+      controller.uploadPypiPackage(
+        makeMulterFile(),
+        "pkg",
+        "1.0.0",
+        adminUser,
+        reqStub,
+      ),
+    ).resolves.toEqual({ success: true });
+
+    // 规范路：POST /，绝不能再出现带尾斜杠的 /upload/（会触发上游 307）
+    expect(seen).toEqual([{ method: "POST", url: "/" }]);
+
+    destroyAll();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  it("2.1: treats an upstream 3xx redirect as BAD_GATEWAY, never as success", async () => {
+    // 上游直接对任意路径回 307（模拟旧路由形态 /upload/ 与重定向语义并存）：
+    // 代理不跟随重定向，必须显式失败而不是把 3xx 报成 success。
+    const server = http.createServer((req, res) => {
+      res.writeHead(307, { Location: "/" });
+      res.end();
+    });
+    const destroyAll = trackSockets(server);
+    const port = await listen(server);
+    const controller = makeController({
+      PYPI_REGISTRY_URL: `http://127.0.0.1:${port}`,
+      REGISTRY_UPLOAD_TIMEOUT_MS: "3000",
+    });
+
+    await expect(
+      controller.uploadPypiPackage(
+        makeMulterFile(),
+        "pkg",
+        "1.0.0",
+        adminUser,
+        reqStub,
+      ),
+    ).rejects.toMatchObject({ status: HttpStatus.BAD_GATEWAY });
+
+    destroyAll();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
   it("fails with GATEWAY_TIMEOUT within the deadline when the backend hangs", async () => {
     // Upstream that accepts the POST and never responds — the hung-backend
     // scenario the proxy must survive instead of pinning the connection.

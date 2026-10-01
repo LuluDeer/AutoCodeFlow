@@ -334,6 +334,25 @@ describe("AppDeploymentService", () => {
       expect(executorService.findOne).toHaveBeenCalledWith("exec-1");
     });
 
+    // DEEP-AUDIT B·4.2：缺省 runMode 从 DAEMON 反转为 ONCE——调用方没说
+    // 怎么跑时绝不静默启动常驻进程（脚本/一次性任务会被 DAEMON 缺省变成
+    // 占着内存永不退出的守护进程）。显式传 runMode 的行为不受影响。
+    it("DEEP-AUDIT B·4.2: defaults runMode to ONCE when the caller omits it", async () => {
+      const saved = {
+        id: "deploy-once",
+        status: DeploymentStatus.PENDING,
+        executorAddress: mockExecutor.address,
+      };
+      repo.create.mockReturnValue(saved);
+      repo.save.mockResolvedValue(saved);
+
+      await service.deploy("app-1", { executorId: "exec-1" });
+
+      expect(repo.create).toHaveBeenCalledWith(
+        expect.objectContaining({ runMode: RunMode.ONCE }),
+      );
+    });
+
     it("throws BadRequestException when app already has an in-flight deployment", async () => {
       repo.findOne.mockResolvedValue({
         id: "deploy-existing",

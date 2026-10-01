@@ -269,6 +269,39 @@ describe("AuditService", () => {
         },
       );
     });
+
+    // result 筛选：绑定参数过滤（DTO IsIn 白名单兜非法值），findAll/exportCsv
+    // 共用 applyExtraFilters，一处实现两路同滤。
+    it("applies result filter as a bound equality", async () => {
+      const qbMock = {
+        orderBy: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        getManyAndCount: jest.fn().mockResolvedValue([[], 0]),
+      };
+      (repo as any).createQueryBuilder = jest.fn().mockReturnValue(qbMock);
+
+      await service.findAll({ result: "failure" });
+      expect(qbMock.andWhere).toHaveBeenCalledWith("log.result = :result", {
+        result: "failure",
+      });
+    });
+
+    it("does not add a result filter when absent", async () => {
+      const qbMock = {
+        orderBy: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        getManyAndCount: jest.fn().mockResolvedValue([[], 0]),
+      };
+      (repo as any).createQueryBuilder = jest.fn().mockReturnValue(qbMock);
+
+      await service.findAll({ username: "admin" });
+      const calls = qbMock.andWhere.mock.calls.map((c) => c[0]);
+      expect(calls).not.toContain("log.result = :result");
+    });
   });
 
   describe("exportCsv", () => {
@@ -459,6 +492,15 @@ describe("AuditService", () => {
       await service.exportCsv({ resourceId: "y".repeat(300) });
       expect(qb.andWhere).toHaveBeenCalledWith("log.resourceId = :resourceId", {
         resourceId: "y".repeat(100),
+      });
+    });
+
+    it("applies the same result filter as the list endpoint", async () => {
+      const qb = makeExportQb([]);
+      (repo as any).createQueryBuilder = jest.fn().mockReturnValue(qb);
+      await service.exportCsv({ result: "failure" });
+      expect(qb.andWhere).toHaveBeenCalledWith("log.result = :result", {
+        result: "failure",
       });
     });
   });

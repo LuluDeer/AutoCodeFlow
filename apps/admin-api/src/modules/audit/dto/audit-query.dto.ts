@@ -1,5 +1,5 @@
 import { ApiPropertyOptional } from "@nestjs/swagger";
-import { IsISO8601, IsInt, IsOptional, IsString } from "class-validator";
+import { IsISO8601, IsIn, IsInt, IsOptional, IsString } from "class-validator";
 import { Type } from "class-transformer";
 import { PaginationDto } from "../../../common/dto/pagination.dto";
 
@@ -39,6 +39,14 @@ export class AuditQueryDto extends PaginationDto {
   @IsOptional()
   @IsString()
   resourceId?: string;
+
+  @ApiPropertyOptional({
+    description: "Filter by operation result",
+    enum: ["success", "failure"],
+  })
+  @IsOptional()
+  @IsIn(["success", "failure"])
+  result?: "success" | "failure";
 
   @ApiPropertyOptional({
     description: "Filter by operator user id",
