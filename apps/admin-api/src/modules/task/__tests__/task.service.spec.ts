@@ -531,6 +531,25 @@ describe("TaskService (__tests__)", () => {
         ).rejects.toThrow(ConflictException);
       });
 
+      // 技术债 A 组（2026-10-01）：迁移 1790000000050 起 tasks.name 有唯一
+      // 索引——预检查窗口外的并发同名创建在 save 处撞 idx_tasks_name_unique，
+      // 23505 兜底按约束名分流为点名 409（而非笼统 conflict 文案）。
+      it("maps a PG 23505 on idx_tasks_name_unique (concurrent same-name create) to a name-specific ConflictException", async () => {
+        taskRepo.findOne.mockResolvedValue(null);
+        const driverErr = Object.assign(
+          new Error(
+            'duplicate key value violates unique constraint "idx_tasks_name_unique"',
+          ),
+          { code: "23505", constraint: "idx_tasks_name_unique" },
+        );
+        taskRepo.save.mockRejectedValue(
+          new QueryFailedError("INSERT INTO tasks ...", [], driverErr),
+        );
+        await expect(
+          service.create({ name: "dup-name", triggerType: "api" } as any),
+        ).rejects.toThrow('Task with name "dup-name" already exists');
+      });
+
       it("re-throws non-23505 driver errors unchanged", async () => {
         taskRepo.findOne.mockResolvedValue(null);
         const driverErr = Object.assign(new Error("invalid input syntax"), {
@@ -1490,6 +1509,105 @@ describe("TaskService (__tests__)", () => {
         typeof (taskQueue.add.mock.calls[0][2] as { priority: number })
           .priority,
       ).toBe("number");
+    });
+
+    // ── 技术债 A 组（2026-10-01）·按原版本重放 ────────────────────────────
+    it("REPLAY-PINNED: pins the requested version — exec.taskVersion records it and the job carries pinnedVersionId", async () => {
+      const task = {
+        id: "1",
+        name: "test",
+        params: {},
+        maxRetry: 1,
+        retryDelay: 0,
+        currentVersion: "v3",
+        status: TaskStatus.ACTIVE,
+      };
+      const exec = { id: "exec-1", status: ExecutionStatus.PENDING };
+      taskRepo.findOne.mockResolvedValue(task);
+      versionRepo.findOne.mockResolvedValue({
+        id: "ver-9",
+        taskId: "1",
+        version: "v2",
+        snapshot: { gitCommit: "abc123" },
+      });
+      let created: Record<string, unknown> | null = null;
+      dataSource.transaction.mockImplementation((fn: any) =>
+        fn({
+          create: jest.fn(
+            (_cls: unknown, data: Record<string, unknown>) => {
+              created = data;
+              return exec;
+            },
+          ),
+          save: jest.fn().mockResolvedValue(exec),
+        }),
+      );
+
+      await service.trigger("1", { version: 2 });
+
+      // 定位的是 (taskId, v2)——「存在」与「属于该任务」由 where 一并保证
+      expect(versionRepo.findOne).toHaveBeenCalledWith({
+        where: { taskId: "1", version: "v2" },
+      });
+      // 执行记录 taskVersion 记钉定版本号（非 currentVersion "v3"）
+      expect(created).not.toBeNull();
+      expect(created!["taskVersion"]).toBe("v2");
+      // job 数据携带版本行 id → processor 据此以快照覆盖派发载荷
+      expect(taskQueue.add).toHaveBeenCalledWith(
+        "execute",
+        { executionId: "exec-1", pinnedVersionId: "ver-9" },
+        expect.objectContaining({ attempts: 1 }),
+      );
+    });
+
+    it("REPLAY-PINNED: returns 404 when the pinned version does not exist (no execution row, no enqueue)", async () => {
+      const task = {
+        id: "1",
+        name: "test",
+        params: {},
+        maxRetry: 1,
+        retryDelay: 0,
+        currentVersion: "v3",
+        status: TaskStatus.ACTIVE,
+      };
+      taskRepo.findOne.mockResolvedValue(task);
+      versionRepo.findOne.mockResolvedValue(null);
+
+      await expect(
+        service.trigger("1", { version: 99 }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      // 校验前置于落库与入队——404 路径零副作用
+      expect(taskQueue.add).not.toHaveBeenCalled();
+    });
+
+    it("REPLAY-PINNED: keeps legacy behavior when version is omitted (no version lookup, exact legacy job payload)", async () => {
+      const task = {
+        id: "1",
+        name: "test",
+        params: {},
+        maxRetry: 1,
+        retryDelay: 0,
+        currentVersion: "v3",
+        status: TaskStatus.ACTIVE,
+      };
+      const exec = { id: "exec-1", status: ExecutionStatus.PENDING };
+      taskRepo.findOne.mockResolvedValue(task);
+      dataSource.transaction.mockImplementation((fn: any) =>
+        fn({
+          create: jest.fn().mockReturnValue(exec),
+          save: jest.fn().mockResolvedValue(exec),
+        }),
+      );
+
+      await service.trigger("1", {});
+
+      expect(versionRepo.findOne).not.toHaveBeenCalled();
+      // 载荷与旧实现逐字节一致（既有用例的精确匹配断言同样钉住这一形态）
+      expect(taskQueue.add).toHaveBeenCalledWith(
+        "execute",
+        { executionId: "exec-1" },
+        expect.objectContaining({ attempts: 1 }),
+      );
     });
   });
 

@@ -111,12 +111,14 @@ export class TaskTemplateService {
     delete overrides.templateId;
     const merged = expandTemplateConfigIntoTaskDto(tpl.config, overrides);
     const dto = await assertValidCreateTaskPayload(merged);
-    // A2（第二轮审计）：实例化防重。name 列无唯一约束，连续「一键实例化」
-    // 会产出任意多个同构任务（仅名字相同），且无任何拦截。落库前 best-effort
-    // 预检查：同 name 任务已存在即 409，错误信息含任务名（前端可直接展示）。
-    // 软删除行不拦（findOne 默认过滤 deleted）——回收站里的同名任务不挡新建。
-    // 并发窗口下仍可能双写（name 无唯一索引、无 23505 兜底，与 R6 预检查
-    // 同属尽力而为），可接受：该入口语义是「一键克隆」，本就不该并发连点。
+    // A2（第二轮审计）：实例化防重。落库前 best-effort 预检查：同 name 任务
+    // 已存在即 409，错误信息含任务名（前端可直接展示）。
+    // 软删除行不拦（findOne 默认过滤 deleted）——**语义变化（技术债 A 组
+    // 2026-10-01）**：迁移 1790000000050 起 tasks.name 有全局唯一索引（含
+    // 软删除行），回收站里的同名任务不再挡预检查，但并发窗口外的落库会撞
+    // idx_tasks_name_unique——TaskService.create 的 23505 兜底已按约束名转
+    // 409（「Task with name ... already exists」），防重从 best-effort 升级
+    // 为 DB 强保证；本预检查保留是为了拿更友好的中文文案。
     const duplicated = await this.taskRepo.findOne({
       where: { name: dto.name },
     });

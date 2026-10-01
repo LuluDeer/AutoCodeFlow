@@ -397,10 +397,12 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
   // "未找到 uv"这句致命文案必须挂在一个条件之后，绝不能是无条件 fallback。
   // 先去注释再判——否则本仓库解释该缺陷的中文注释会自我触发（与上方
   // split(':')[0] 的反证同一教训）。
+  // N-04：文案本体迁入 i18n.ts（cfg.py.uvMissing），页面只留键名——断言改为
+  // 钉「键引用仍是 uvStaticallyConfirmed 之后的条件分支」这一结构语义。
   const configNoCommentsUv = config
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/^\s*\/\/.*$/gm, '');
-  const missingMsg = '未找到 uv';
+  const missingMsg = 'cfg.py.uvMissing';
   const idx = configNoCommentsUv.indexOf(missingMsg);
   if (idx === -1) throw new Error('UX-DSK-UV: 缺失告警文案消失（应保留给真正的缺失场景）');
   const before = configNoCommentsUv.slice(Math.max(0, idx - 400), idx);
@@ -776,4 +778,33 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
   }
 }
 
-console.log('renderer selftest: design tokens, accessibility, contrast, focus, layout, spacing, IPC anchors, F-21/F-22/F-37, DSK-05, PERF-DSK-01, SEC-DSK-01, EXP-04/05/06/09, ErrorBoundary, NETOPT-7⑤⑥, tab roving+persist, app-management guards passed');
+// ── N-04：ConfigPage 渲染层双语（renderer i18n 表）守卫 ─────────────────
+// 与主进程 tray-texts.selftest 同意图：双语文案表键位对齐（两语言必须提供
+// 同一组键，防止只改一种语言造成静默缺键）。渲染层无 DOM 测试设施，故同
+// 既有守卫做静态源码自检：i18n.ts 采用「每行一条、4 空格缩进」的扁平键表
+// 是本断言的前提（改动排版需同步这里）。
+{
+  const i18nSrc = readFileSync(resolve(root, 'i18n.ts'), 'utf8');
+  const extractKeys = (blockSrc) => [...blockSrc.matchAll(/^    '([A-Za-z0-9.]+)':/gm)].map((m) => m[1]);
+  const zhStart = i18nSrc.indexOf('  zh: {');
+  const enStart = i18nSrc.indexOf('  en: {');
+  if (zhStart === -1 || enStart === -1) throw new Error('N-04：i18n.ts 缺少 zh/en 文案表');
+  const zhKeys = extractKeys(i18nSrc.slice(zhStart, enStart));
+  const enKeys = extractKeys(i18nSrc.slice(enStart));
+  if (zhKeys.length === 0 || enKeys.length === 0) throw new Error('N-04：i18n.ts 键提取为空（排版与断言前提不符？）');
+  if (zhKeys.join('\n') !== enKeys.join('\n')) {
+    const missingInEn = zhKeys.filter((k) => !enKeys.includes(k));
+    const missingInZh = enKeys.filter((k) => !zhKeys.includes(k));
+    throw new Error(`N-04：cfg 文案表键位不对齐——en 缺 ${JSON.stringify(missingInEn)}；zh 缺 ${JSON.stringify(missingInZh)}`);
+  }
+  // ConfigPage 必须接线双语表，且旧的硬编码锚串不再出现在页面源码里
+  // （锚串选自原字符串字面量、注释中不出现，避免误报）。
+  for (const anchor of ['createCfgTexts', 'resolveRendererLocale', "from '../i18n'"]) {
+    if (!config.includes(anchor)) throw new Error(`N-04：ConfigPage 未接双语表（缺 ${anchor}）`);
+  }
+  for (const stale of ['已发起检查。若有新版本', '保存失败：配置未被写入', '空白名单 = 禁止一切网页导航', '边界由平台代码强制']) {
+    if (config.includes(stale)) throw new Error(`N-04：ConfigPage 仍内联旧中文文案「${stale}」——应迁入 i18n.ts 的 cfg.* 键`);
+  }
+}
+
+console.log('renderer selftest: design tokens, accessibility, contrast, focus, layout, spacing, IPC anchors, F-21/F-22/F-37, DSK-05, PERF-DSK-01, SEC-DSK-01, EXP-04/05/06/09, ErrorBoundary, NETOPT-7⑤⑥, tab roving+persist, app-management, N-04 cfg bilingual parity guards passed');

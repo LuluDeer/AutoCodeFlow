@@ -3,6 +3,7 @@
 export default {
   // ── 公共 ──
   'common.copyFailed': '复制失败，请检查浏览器剪贴板权限',
+  'common.operateFailed': '操作失败',
   // ── HTTP 错误提示（axios 响应拦截器，非组件，直接经 i18n.t 读取）──
   'http.error.403': '没有操作权限',
   'http.error.404': '请求的资源不存在',
@@ -1995,6 +1996,9 @@ export default {
   'execDetail.retriggerConfirm.ok': '用本次参数重跑',
   'execDetail.retriggerConfirm.version': '将执行当前版本 {{current}}（原执行版本：{{executed}}）',
   'execDetail.retriggerConfirm.versionDiffers': '任务版本在原执行后已更新，重跑将使用当前版本的代码，而非原执行时的版本。',
+  'execDetail.retriggerConfirm.replayPinned': '按原版本重放（钉定 {{version}} 快照）',
+  'execDetail.retriggerConfirm.versionPinned': '将执行原版本 {{version}} 的快照（即原执行时的版本）',
+  'execDetail.retriggerConfirm.replayPinnedActive': '本次重跑按 {{version}} 的快照派发：代码来源、git 提交、入口、运行时版本与依赖清单均随该版本；不修改任务当前配置。',
   'execDetail.triggerFail': '触发失败',
   'execDetail.fullLogsNoRows': '全量日志端点未返回日志行',
   'execDetail.fullLogsLoaded': '已加载完整日志',

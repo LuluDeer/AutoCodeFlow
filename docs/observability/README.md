@@ -142,6 +142,17 @@ rule_files:
 | `AUTOFLOW_CALLBACK_AUTH_MISUSE` | warning | `v1_binding_mismatch\|missing_token\|bad_address` 合计 > 0.1/s（配置错误类） |
 | `AUTOFLOW_EXECUTOR_OFFLINE` | —（注释预留） | admin-api **无**执行器在线 Prometheus series（状态在 DB `Executor.status/lastHeartbeat`，仅 JSON 端点暴露）；建议走现有 notification 渠道（`apps/admin-api/src/modules/notification`），待未来补 gauge 后启用 |
 
+> **接线版告警规则（可观测性纵深轮）**：compose monitoring profile 实际挂载的规则文件是
+> `config/monitoring/alerts.yml`（prometheus.yml `rule_files: /etc/prometheus/alerts.yml`，
+> job 名 `admin-api`）——在上述 6 条的基础上扩展为 26 条业务级规则集（执行结果失败率/
+> killed 风暴/通知投递/AI 分析连续失败/SSE 槽位/agent 预算与边界拦截/executor 磁盘水位/
+> PG 连接池/Redis 内存 noeviction 防线/配置推送鉴权 + 本节回调认证三条的接线版）。
+> 语义差异点：接线版 `AUTOFLOW_SCHEDULER_DOWN` 用 `sum(rate(...)) == 0` 对全体实例求和
+> （tick 仅 leader 递增——本文件的单实例 `rate(...) == 0` 写法在多实例下会把 follower
+> 误报成停摆）；两处规则语义冲突时以接线版为准。运维侧速查表与 runbook 见
+> `docs/operations.md`「告警规则与 Runbook」；规则文件结构守卫：`npm run test:alerts`
+> （`scripts/check-alerts-rules.mjs`，指标名必须存在于 metrics 源码声明清单）。
+
 ## 3.5 Alertmanager → 平台通知渠道路由（OBS-02，第十六轮）
 
 第十六轮起，Alertmanager 的告警可以直接接入平台既有通知渠道（企业微信 /

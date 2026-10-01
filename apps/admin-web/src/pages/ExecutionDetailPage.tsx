@@ -1,4 +1,4 @@
-import { Tag, Typography, Button, Space, Badge, Alert, Popconfirm, Result, Tabs, theme, Modal, Card } from 'antd';
+import { Tag, Typography, Button, Space, Badge, Alert, Popconfirm, Result, Tabs, theme, Modal, Card, Checkbox } from 'antd';
 import { message } from '../utils/toast';
 import { ArrowLeftOutlined, SyncOutlined, RedoOutlined, StopOutlined, RobotOutlined, FieldTimeOutlined, AppstoreOutlined, BookOutlined } from '@ant-design/icons';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -71,6 +71,10 @@ export default function ExecutionDetailPage() {
   const [retrying, setRetrying] = useState(false);
   // P1-26：重新触发确认 Modal 可见性
   const [retriggerOpen, setRetriggerOpen] = useState(false);
+  // 技术债 A 组（2026-10-01）·按原版本重放：Modal 内复选框状态——勾选后
+  // trigger 携带 { version: 原执行的 taskVersion 数字 }，后端按该版本快照
+  // 派发本次执行（任务当前配置不受影响）。
+  const [replayPinned, setReplayPinned] = useState(false);
   const [killing, setKilling] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
   // REFACTOR-EXEC-03：SSE 生命周期由 ExecutionLogSection 上报（页头「实时更新」
@@ -155,11 +159,28 @@ export default function ExecutionDetailPage() {
   // P1-26（UX-AUDIT-2026-09-21）：「重新触发」此前静默丢弃本次执行参数
   // （trigger(taskId!) 不传第二参 params），且成功后立刻 nav() 离开现场。
   // 现：① 携带本次执行的 params 重跑；② 触发前 Modal 告知参数差异；③ 不再自动导航。
-  const openRetrigger = () => setRetriggerOpen(true);
+  // 技术债 A 组（2026-10-01）：新增「按原版本重放」——勾选时 trigger 带上
+  // 原执行的 taskVersion（"v3" → 3），后端钉定该版本快照派发。
+  const openRetrigger = () => {
+    setReplayPinned(false); // 每次打开确认框回到默认（不钉定），防上一次勾选残留
+    setRetriggerOpen(true);
+  };
+  // 原执行版本号（taskVersion 形如 "v3"；解析不出有效正整数则不提供钉定）。
+  const retriggerPinnedVersion = (() => {
+    const raw = data?.taskVersion?.replace(/^v/i, '');
+    const n = raw != null && raw !== '' ? Number.parseInt(raw, 10) : Number.NaN;
+    return Number.isInteger(n) && n >= 1 ? n : null;
+  })();
   const doRetrigger = async () => {
     setRetrying(true);
     try {
-      await tasksApi.trigger(taskId!, data?.params ?? undefined);
+      // 不钉定时保持旧两参调用形态（「不传 version 行为完全不变」落到调用
+      // 契约本身，既有两参断言用例不因尾部 undefined 而破）。
+      if (replayPinned && retriggerPinnedVersion != null) {
+        await tasksApi.trigger(taskId!, data?.params ?? undefined, retriggerPinnedVersion);
+      } else {
+        await tasksApi.trigger(taskId!, data?.params ?? undefined);
+      }
       message.success(t('execDetail.retriggered'));
       setRetriggerOpen(false);
     } catch (err: unknown) {
@@ -473,18 +494,26 @@ export default function ExecutionDetailPage() {
         {/* RETRIGGER-TERMINAL：重跑永远执行任务的「当前版本」，不是原执行的
             版本快照——超时/killed 后先改了代码再重跑的场景里，这是用户最容易
             误判的点（以为重跑的还是原来那份代码）。原执行版本取执行行的
-            taskVersion（派发时刻任务 currentVersion 快照）。 */}
+            taskVersion（派发时刻任务 currentVersion 快照）。技术债 A 组
+            （2026-10-01）：现提供「按原版本重放」显式选项——默认仍执行当前
+            版本，勾选复选框才钉定原版本快照（后端按快照覆盖派发载荷，
+            versionDiffers 提示随之隐藏避免自相矛盾）。 */}
         {(taskData?.currentVersion || data?.taskVersion) && (
           <div style={{ marginBottom: 12 }}>
             <Text strong>
-              {t('execDetail.retriggerConfirm.version', {
-                current: taskData?.currentVersion ?? '—',
-                executed: data?.taskVersion ?? '—',
-              })}
+              {replayPinned && retriggerPinnedVersion != null
+                ? t('execDetail.retriggerConfirm.versionPinned', {
+                    version: `v${retriggerPinnedVersion}`,
+                  })
+                : t('execDetail.retriggerConfirm.version', {
+                    current: taskData?.currentVersion ?? '—',
+                    executed: data?.taskVersion ?? '—',
+                  })}
             </Text>
             {taskData?.currentVersion &&
               data?.taskVersion &&
-              taskData.currentVersion !== data.taskVersion && (
+              taskData.currentVersion !== data.taskVersion &&
+              !replayPinned && (
                 <Alert
                   type="info"
                   showIcon
@@ -492,6 +521,32 @@ export default function ExecutionDetailPage() {
                   style={{ marginTop: 8 }}
                 />
               )}
+          </div>
+        )}
+        {/* 技术债 A 组（2026-10-01）·按原版本重放：原执行 taskVersion 可解析
+            为版本号时提供钉定选项；老数据无 taskVersion 不渲染，行为与旧版
+            完全一致。 */}
+        {retriggerPinnedVersion != null && (
+          <div style={{ marginBottom: 12 }}>
+            <Checkbox
+              data-testid="retrigger-replay-pinned"
+              checked={replayPinned}
+              onChange={(e) => setReplayPinned(e.target.checked)}
+            >
+              {t('execDetail.retriggerConfirm.replayPinned', {
+                version: `v${retriggerPinnedVersion}`,
+              })}
+            </Checkbox>
+            {replayPinned && (
+              <Alert
+                type="info"
+                showIcon
+                title={t('execDetail.retriggerConfirm.replayPinnedActive', {
+                  version: `v${retriggerPinnedVersion}`,
+                })}
+                style={{ marginTop: 8 }}
+              />
+            )}
           </div>
         )}
         {retriggerThisParams ? (

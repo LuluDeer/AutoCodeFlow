@@ -2,6 +2,7 @@
 // Missing keys fall back to zh via i18next fallbackLng.
 export default {
   'common.copyFailed': 'Copy failed — check clipboard permissions',
+  'common.operateFailed': 'Operation failed',
   // HTTP error toasts (axios response interceptor; resolved via i18n.t outside React)
   'http.error.403': 'You do not have permission to perform this action',
   'http.error.404': 'The requested resource was not found',
@@ -1975,6 +1976,9 @@ export default {
   'execDetail.retriggerConfirm.ok': 'Re-run with these parameters',
   'execDetail.retriggerConfirm.version': 'Will execute the current version {{current}} (original execution ran version {{executed}})',
   'execDetail.retriggerConfirm.versionDiffers': 'The task version has changed since the original execution; the re-run uses the current version, not the one originally executed.',
+  'execDetail.retriggerConfirm.replayPinned': 'Replay the original version (pin the {{version}} snapshot)',
+  'execDetail.retriggerConfirm.versionPinned': 'Will execute the {{version}} snapshot (the version originally executed)',
+  'execDetail.retriggerConfirm.replayPinnedActive': 'This re-run dispatches from the {{version}} snapshot: code source, git commit, entrypoint, runtime version and requirements all follow that version; the task\'s current configuration is untouched.',
   'execDetail.triggerFail': 'Failed to trigger',
   'execDetail.fullLogsNoRows': 'The full-log endpoint returned no log lines',
   'execDetail.fullLogsLoaded': 'Full logs loaded',

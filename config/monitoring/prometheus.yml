@@ -27,6 +27,13 @@ scrape_configs:
 
   - job_name: 'admin-api'
     metrics_path: /api/metrics
+    # 端点鉴权(类级 MetricsScraperAuthGuard):在 admin-api 侧设置
+    # METRICS_SCRAPER_TOKEN 后,取消下面 authorization 注释并用同值文件
+    # (挂载为 secret/卷,避免令牌进镜像层)。未设置令牌时本 job 需要另行
+    # 解决认证(反向代理注入),否则抓取 401 → AUTOFLOW_METRICS_TARGET_DOWN。
+    # authorization:
+    #   type: Bearer
+    #   credentials_file: /etc/prometheus/metrics-token
     static_configs:
       - targets: ['admin-api:3105']
         labels:

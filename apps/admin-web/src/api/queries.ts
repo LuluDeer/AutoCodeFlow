@@ -18,6 +18,7 @@
  * 导致 invalidate 时前后缀对不上。
  */
 import { useQuery, type UseQueryResult, type QueryClient } from '@tanstack/react-query';
+import { getSSEStatus, SSE_STATUS_KEYS } from './sse-client';
 import { metricsApi, type MetricsSummary, type DailyTrend } from './metrics';
 import { tasksApi, type Task, type TaskExecution, type TaskStats, type PageResult } from './tasks';
 import { executorsApi, type Executor, type ExecutorExecution, type ExecutorMetrics, type ExecutorRuntimeConfig } from './executors';
@@ -107,14 +108,34 @@ export const queryKeys = {
 
 // ── Dashboard 汇总 hooks（ARCH-26 示范页一：DashboardPage） ───────────────
 
+/**
+ * NETOPT-E P3-3 落地（SSE 条件轮询）：「SSE live → 不轮询；断流 → 30s 兜底」
+ * 的函数式 refetchInterval 工厂。
+ *
+ * 判定依据是 api/sse-client.ts 的连接状态注册表（流挂载时由
+ * useMetricsStream / useExecutionsStream 按 statusKey 登记，'live' ≙ 连接正常）：
+ *  - 流 live：推送本身就是新鲜度来源，30s 轮询是纯空转 → false 停掉；
+ *  - 流断线（connecting/reconnecting）：退避重连最长 30s 一跳，期间轮询
+ *    自动成为唯一新鲜度来源 → 30_000；
+ *  - key 未登记（流未挂载/旧调用方/EventSource 不可用降级）：视为无流可用，
+ *    返回 30_000 保持轮询——向后兼容，行为与改动前一致。
+ * TanStack 在每次 hook 渲染时重估 refetchInterval，而 SSE 状态变化会经
+ * useMetricsStream 等返回值触发页面重渲染，因此断线/恢复能在下一个渲染
+ * 周期内生效（无需额外接线）。
+ */
+export function sseFallbackRefetchInterval(sseKey: string): () => number | false {
+  return () => (getSSEStatus(sseKey) === 'live' ? false : 30_000);
+}
+
 /** GET /metrics/summary —— Dashboard KPI 四卡数据源。 */
 export function useMetricsSummary(): UseQueryResult<MetricsSummary> {
   return useQuery({
     queryKey: queryKeys.metrics.summary,
     queryFn: ({ signal }) => metricsApi.getSummary(signal),
-    // NETOPT-E P3-3: SSE 断流且无写操作时 KPI 停在最后一帧——30s 轮询兜底
-    // 与 useMetricsStream 注释"断线退化为自身请求节奏"对齐。
-    refetchInterval: 30_000,
+    // NETOPT-E P3-3: SSE 断流且无写操作时 KPI 停在最后一帧——metrics/stream
+    // 的 summary 快照与 useMetricsStream 共享缓存，live 时推送即新鲜度来源，
+    // 断流时 30s 轮询兜底（与"断线退化为自身请求节奏"的注释对齐）。
+    refetchInterval: sseFallbackRefetchInterval(SSE_STATUS_KEYS.metricsStream),
   });
 }
 
@@ -125,7 +146,9 @@ export function useMetricsTrend(days: number): UseQueryResult<DailyTrend[]> {
     queryFn: ({ signal }) => metricsApi.getDailyTrend(days, signal),
     // 趋势窗为历史统计，30s 全局 staleTime 之上再加 60s GC 防切换页签丢失
     gcTime: 60_000,
-    // NETOPT-E P3-3: 同上——SSE 断流兜底 30s 轮询。
+    // 恒定 30s 轮询：metrics/stream 快照只含 summary/executors/scheduler，
+    // **不含** trend——流 live 与否都与本查询无关，轮询是唯一新鲜度来源，
+    // 不能按 SSE 状态停（此前"SSE 断流兜底"的注释是错的，此处如实更正）。
     refetchInterval: 30_000,
   });
 }
@@ -135,7 +158,9 @@ export function useExecutorStats() {
   return useQuery({
     queryKey: queryKeys.metrics.executorStats,
     queryFn: ({ signal }) => metricsApi.getExecutorStats(signal),
-    refetchInterval: 30_000, // NETOPT-E P3-3: SSE 断流兜底
+    // NETOPT-DEBT: metrics/stream 的 executors 快照实时覆盖（useMetricsStream
+    // setQueryData 同 key）——live 停轮询，断流 30s 兜底。
+    refetchInterval: sseFallbackRefetchInterval(SSE_STATUS_KEYS.metricsStream),
   });
 }
 
@@ -144,7 +169,9 @@ export function useRecentFailures() {
   return useQuery({
     queryKey: queryKeys.metrics.recentFailures,
     queryFn: ({ signal }) => metricsApi.getRecentFailures(signal),
-    refetchInterval: 30_000, // NETOPT-E P3-3: SSE 断流兜底
+    // 恒定 30s 轮询：metrics/stream 快照不含 failures（同 useMetricsTrend），
+    // 轮询是唯一新鲜度来源，不能按 SSE 状态停（原"SSE 断流兜底"注释更正）。
+    refetchInterval: 30_000,
   });
 }
 
@@ -153,7 +180,9 @@ export function useSchedulerMetrics() {
   return useQuery({
     queryKey: queryKeys.metrics.scheduler,
     queryFn: ({ signal }) => metricsApi.getSchedulerMetrics(signal),
-    refetchInterval: 30_000, // NETOPT-E P3-3: SSE 断流兜底
+    // NETOPT-DEBT: metrics/stream 的 scheduler 快照实时覆盖——live 停轮询，
+    // 断流 30s 兜底。
+    refetchInterval: sseFallbackRefetchInterval(SSE_STATUS_KEYS.metricsStream),
   });
 }
 

@@ -121,6 +121,9 @@ export type TaskDeploymentPolicy = "strict" | "prefer";
 @Index(["status"])
 @Index(["applicationId"])
 @Index(["createdAt"])
+// 技术债 A 组（2026-10-01）：任务名全局唯一（迁移 1790000000050 建 DLL；
+// 声明必须显式命名并与迁移 DDL 逐项一致——check-index-drift 守卫比对）。
+@Index("idx_tasks_name_unique", ["name"], { unique: true })
 export class Task {
   @PrimaryGeneratedColumn("uuid") id: string;
   @Column() name: string;

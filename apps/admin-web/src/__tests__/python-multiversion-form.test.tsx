@@ -34,7 +34,7 @@ import {
   extractInterpreterContext,
   interpreterNeedsOfflinePrefill,
 } from '../pages/interpreter-context';
-import { FAILURE_RUNBOOK_ACTIONS, failureRunbookAction } from '../pages/failure-runbook';
+import { RUNBOOK_ACTION_T_KEY, failureRunbookAction } from '../pages/failure-runbook';
 import { RETRYABLE_ERROR_OPTIONS } from '../pages/retry-policy';
 import RuntimeVersionField, {
   RUNTIME_VERSION_SELECT_TESTID,
@@ -454,9 +454,10 @@ describe('interpreter_unavailable 三端对齐（runbook / retryable / 失败分
   it('failure-runbook 收录该键且动作非空（与 mcp RUNBOOK 键集对齐）', () => {
     // 刻意**不**硬编码键总数：断言的是"该键有内容且非 unknown 兜底"，
     // 未来继续扩分类时本用例无需改动（键集完整性由 execution-detail-ui05 锚定）。
-    expect(FAILURE_RUNBOOK_ACTIONS.interpreter_unavailable?.action.length).toBeGreaterThan(0);
-    expect(FAILURE_RUNBOOK_ACTIONS.interpreter_unavailable.action).not.toBe(
-      FAILURE_RUNBOOK_ACTIONS.unknown.action,
+    expect(RUNBOOK_ACTION_T_KEY.interpreter_unavailable).toBe('runbook.interpreterUnavailable');
+    expect(failureRunbookAction('interpreter_unavailable').action.length).toBeGreaterThan(0);
+    expect(failureRunbookAction('interpreter_unavailable').action).not.toBe(
+      failureRunbookAction('unknown').action,
     );
     // 传 t 时走 i18n key（RUNBOOK_ACTION_T_KEY 未导出，用恒等 t 间接钉死映射）
     const identity = (k: string) => k;
