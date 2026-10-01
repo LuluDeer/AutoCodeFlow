@@ -52,7 +52,20 @@ export class UsersService implements OnModuleInit {
    * users exist in the database yet.
    */
   async onModuleInit() {
-    const count = await this.usersRepository.count();
+    // boot 容错：空库场景（api-types-drift 的 export 等无迁移起 AppModule）
+    // 下 count() 会因 users 表不存在抛错并炸掉整个 boot。种子引导本就依赖
+    // DB 可用——失败只 warn，真实部署迁移后首 boot 会正常播种。
+    let count: number;
+    try {
+      count = await this.usersRepository.count();
+    } catch (err: unknown) {
+      this.logger.warn(
+        `initial-admin seed skipped (users table not ready): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return;
+    }
     if (count > 0) return;
 
     const password = this.configService.get<string>("initialAdmin.password");
