@@ -20,7 +20,7 @@ import { QueryClientContext } from '@tanstack/react-query';
 import { useContext, useEffect, useState } from 'react';
 
 import { getApiBaseUrl } from '../api/client';
-import { createSseClient, sseReconnectBackoffMs } from '../api/sse-client';
+import { createSseClient, sseReconnectBackoffMs, SSE_STATUS_KEYS } from '../api/sse-client';
 import { useAuthStore } from '../store/auth';
 import { invalidateExecutionData } from '../api/queries';
 
@@ -94,6 +94,9 @@ export function useExecutionsStream({
     const client = createSseClient({
       baseUrl: getApiBaseUrl(),
       path: '/executions/stream',
+      // NETOPT-DEBT：登记到全局状态注册表（与 useMetricsStream 各占一键）——
+      // 供执行面查询按流状态条件轮询；卸载时 close() 自动删键。
+      statusKey: SSE_STATUS_KEYS.executionsStream,
       onStatus: setStatus,
       events,
     });

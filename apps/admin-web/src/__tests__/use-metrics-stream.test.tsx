@@ -10,6 +10,7 @@ import { render, screen, cleanup, act, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useMetricsStream, reconnectBackoffMs } from '../hooks/useMetricsStream';
 import { queryKeys } from '../api/queries';
+import { getSSEStatus, SSE_STATUS_KEYS } from '../api/sse-client';
 import { useAuthStore } from '../store/auth';
 
 // A5：SSE 建流前先向后端换一枚 30s 短效票据（access token 不再进 URL）。
@@ -137,6 +138,25 @@ describe('useMetricsStream 流行为', () => {
       FakeEventSource.instances[0].onopen?.();
     });
     expect(screen.getByTestId('stream-status').textContent).toBe('live');
+  });
+
+  it('NETOPT-DEBT：流状态接线进全局注册表（metricsStream 键），卸载移除', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { unmount } = render(
+      <QueryClientProvider client={qc}>
+        <StreamStatusProbe />
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(FakeEventSource.instances.length).toBe(1));
+    // 建流即登记（connecting）——queries.ts 的 metrics 三处条件轮询据此停/启
+    expect(getSSEStatus(SSE_STATUS_KEYS.metricsStream)).toBe('connecting');
+    act(() => {
+      FakeEventSource.instances[0].onopen?.();
+    });
+    expect(getSSEStatus(SSE_STATUS_KEYS.metricsStream)).toBe('live');
+    unmount();
+    // 卸载清理登记（防泄漏）：键移除 → 条件轮询自动恢复 30s 兜底
+    expect(getSSEStatus(SSE_STATUS_KEYS.metricsStream)).toBeUndefined();
   });
 
   it('onerror 后按退避重建连接（同 hook 生命周期内第二个实例）', async () => {
