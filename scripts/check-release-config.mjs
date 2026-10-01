@@ -118,11 +118,23 @@ export function checkReleaseConfig({ rpConfig, matrix, guardedDirs, versions, ma
   const problems = [];
 
   // 多 lockstep 组（2026-10：py-libs 四包以独立组纳管，版本独立于主组演进）。
-  // 任何带 components 数组的 plugin 都视作一个 linked-versions 组（不强校验
-  // type 字段，向后兼容 selftest 与旧配置的简写形态）。
-  const groups = (rpConfig.plugins ?? [])
+  // 2026-10-01 修正：linked-versions 是 release-please 的**顶层配置键**，不是
+  // plugin——写成 plugins 数组里的 `{type:"linked-versions"}` 会被 app 静默
+  // 忽略（组内不联动：本轮实锤 mcp-server/acf-cli bump 到 1.6.0 而 node-sdk/
+  // autoflow-sdk 停留 1.5.3，DOC-09 与本守卫同炸）。守卫改读顶层键，plugins
+  // 里的旧形态视为无效配置照样报错（防止回归）。
+  const groups = (rpConfig["linked-versions"] ?? [])
     .filter((p) => Array.isArray(p?.components) && p.components.length > 0)
     .map((p) => ({ name: p.groupName ?? "(unnamed)", components: p.components }));
+  const legacyPluginGroups = (rpConfig.plugins ?? []).filter(
+    (p) => Array.isArray(p?.components) && p.components.length > 0,
+  );
+  for (const lg of legacyPluginGroups) {
+    problems.push(
+      `linked-versions 误写为 plugins 形态（groupName=${lg.groupName ?? "(unnamed)"}）`
+        + `——release-please 只认顶层 "linked-versions" 键，plugins 形态被静默忽略，lockstep 不生效`,
+    );
+  }
   const linked = new Set(groups.flatMap((g) => g.components));
   const packages = rpConfig.packages ?? {};
   const components = Object.entries(packages).map(([dir, v]) => ({
@@ -231,7 +243,7 @@ export function checkRepo(root = findRepoRoot()) {
 /** 自测：每个断言都带**反例**，证明守卫真的能发现问题（有牙）。 */
 export function selftest() {
   const baseRp = {
-    plugins: [{ components: ["a", "b"] }],
+    "linked-versions": [{ groupName: "main", components: ["a", "b"] }],
     packages: { "packages/one": { component: "a" }, "packages/two": { component: "b" } },
   };
   const baseMatrix = [
@@ -254,7 +266,7 @@ export function selftest() {
     ["基线全绿", run(), 0],
     [
       "① component 漏进 linked-versions 被抓",
-      run({ rpConfig: { ...baseRp, plugins: [{ components: ["a"] }] } }),
+      run({ rpConfig: { ...baseRp, "linked-versions": [{ groupName: "main", components: ["a"] }] } }),
       1,
     ],
     [
@@ -280,9 +292,9 @@ export function selftest() {
       "④ 多 lockstep 组：组间版本不同、组内一致 → 0 条",
       run({
         rpConfig: {
-          plugins: [
-            { type: "linked-versions", groupName: "main", components: ["a"] },
-            { type: "linked-versions", groupName: "py-libs", components: ["b"] },
+          "linked-versions": [
+            { groupName: "main", components: ["a"] },
+            { groupName: "py-libs", components: ["b"] },
           ],
           packages: {
             "packages/one": { component: "a" },
@@ -297,9 +309,9 @@ export function selftest() {
       "④ 多 lockstep 组：新组组内不一致仍被抓",
       run({
         rpConfig: {
-          plugins: [
-            { type: "linked-versions", groupName: "main", components: ["a"] },
-            { type: "linked-versions", groupName: "py-libs", components: ["b", "c"] },
+          "linked-versions": [
+            { groupName: "main", components: ["a"] },
+            { groupName: "py-libs", components: ["b", "c"] },
           ],
           packages: {
             "packages/one": { component: "a" },
