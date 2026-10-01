@@ -6,7 +6,13 @@
  * 展示与 DB 时间戳一致的验收契约在这里落地：缺省时刻渲染为 null，
  * 由 UI 层显示「—」。分段语义与 admin-api execution-timeline.util.ts
  * 及 mcp-server buildExecutionTimeline（ECO-03）三端对齐。
+ *
+ * N-04 收尾：阶段文案不再保留中文映射表（timeline.phase.* zh/en 双侧成对），
+ * t 可选——传参走调用方的 t，缺省回落 i18n 单例（非组件文件直引单例，
+ * 与 api/tasks.ts 同模式；测试环境默认 zh，输出与旧中文基线逐字一致）。
  */
+
+import i18n from '../i18n';
 
 export interface TimelineEntry {
   phase: "created" | "started" | "finished";
@@ -25,18 +31,15 @@ export interface TimelineSource {
   endTime?: string | null;
 }
 
-export const TIMELINE_PHASE_LABEL: Record<TimelineEntry["phase"], string> = {
-  created: '创建 (pending)',
-  started: '派发开始 (running)',
-  finished: '终态 (terminal)',
-};
-
-/** i18n 工厂：传 t 时输出走 key；缺省返回中文基线（execution-timeline.test.ts 锚定）。 */
-export function TIMELINE_PHASE_LABELS(t: (k: string) => string): Record<TimelineEntry["phase"], string> {
+/** 阶段文案工厂：传 t 时走调用方的 t；缺省回落 i18n 单例。 */
+export function TIMELINE_PHASE_LABELS(
+  t?: (k: string) => string,
+): Record<TimelineEntry["phase"], string> {
+  const T = t ?? ((k: string) => i18n.t(k));
   return {
-    created: t('timeline.phase.created'),
-    started: t('timeline.phase.started'),
-    finished: t('timeline.phase.finished'),
+    created: T('timeline.phase.created'),
+    started: T('timeline.phase.started'),
+    finished: T('timeline.phase.finished'),
   };
 }
 

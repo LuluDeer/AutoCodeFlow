@@ -2,6 +2,7 @@
 // Missing keys fall back to zh via i18next fallbackLng.
 export default {
   'common.copyFailed': 'Copy failed — check clipboard permissions',
+  'common.operateFailed': 'Operation failed',
   // HTTP error toasts (axios response interceptor; resolved via i18n.t outside React)
   'http.error.403': 'You do not have permission to perform this action',
   'http.error.404': 'The requested resource was not found',

@@ -1,13 +1,15 @@
 // TOAST-01：错误 toast 与全站同走 utils/toast 出口（App 实例优先，暗色主题
 // 下样式正确）；仅此一处 import，供 showApiError 使用。
 import { message } from './toast';
+// N-04：兜底文案走 i18n（defaultMsg 是 toast 直出用户面，不能内联中文）。
+import i18n from '../i18n';
 
 /**
  * Extract a human-readable message from an unknown catch value.
  * Handles Axios-style errors (err.response.data.message), plain Error,
  * and falls back to the provided defaultMsg.
  */
-export function getErrMsg(err: unknown, defaultMsg = '操作失败'): string {
+export function getErrMsg(err: unknown, defaultMsg = i18n.t('common.operateFailed')): string {
   if (err instanceof Error) {
     // Axios wraps the response on the Error object
     const axiosMsg = (err as unknown as { response?: { data?: { message?: string } } })

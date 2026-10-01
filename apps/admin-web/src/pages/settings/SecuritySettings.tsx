@@ -25,23 +25,25 @@ import StateError from '../../components/StateError';
 import { useAuthStore } from '../../store/auth';
 import { useTranslation } from 'react-i18next';
 // UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
-import '../../i18n';
+import i18n from '../../i18n';
 
 const { Text } = Typography;
 
 /** SEC-03: 把 User-Agent 缩短为可读的浏览器/设备摘要。
- *  t 可选：传参时走 i18n key（会话列表传 t）；缺省保持中文基线
- * （security-settings.test.tsx 锚定 summarizeUserAgent('curl…')==='API 客户端'）。 */
+ *  t 可选：传参时走调用方的 t（会话列表传 t）；缺省回落 i18n 单例（跟随当前
+ *  语言，测试环境默认 zh——security-settings.test.tsx 锚定
+ *  summarizeUserAgent('curl…')==='API 客户端' 仍成立）。 */
 export function summarizeUserAgent(ua: string | null, t?: (k: string) => string): string {
-  if (!ua) return t ? t('security.device.unknown') : '未知设备';
+  const T = t ?? ((k: string) => i18n.t(k));
+  if (!ua) return T('security.device.unknown');
   const browser =
     /Edg\//.test(ua) ? 'Edge'
     : /OPR\//.test(ua) ? 'Opera'
     : /Chrome\//.test(ua) ? 'Chrome'
     : /Safari\//.test(ua) && /Version\//.test(ua) ? 'Safari'
     : /Firefox\//.test(ua) ? 'Firefox'
-    : /curl|axios|node|python|Java/i.test(ua) ? (t ? t('security.device.api') : 'API 客户端')
-    : (t ? t('security.device.browser') : '浏览器');
+    : /curl|axios|node|python|Java/i.test(ua) ? T('security.device.api')
+    : T('security.device.browser');
   const os =
     /Windows/i.test(ua) ? 'Windows'
     : /Android/i.test(ua) ? 'Android'

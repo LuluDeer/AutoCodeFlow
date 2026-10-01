@@ -14,7 +14,8 @@
 import { useMemo } from 'react';
 import { Space, Tag, Typography } from 'antd';
 import { useTranslation } from 'react-i18next';
-import '../../i18n';
+// N-04：groupBuckets 缺省 label 直引 i18n 单例（非 t 参数路径，与 api/tasks.ts 同模式）
+import i18n from '../../i18n';
 
 export interface ExecutorGroupLike {
   id: string;
@@ -31,8 +32,13 @@ export interface GroupBucket {
 /** 聚合分组桶：未分组兜底 + 计数；未分组恒末位、其余按名称序。
  * 注意：排序用 code point 比较而非 localeCompare——中文 localeCompare 的 ICU
  * 排序在 Windows 本机与 Ubuntu CI 结果不同（拼音序 vs 其他），导致同一断言
- * 跨平台不稳定；code point 序确定且零依赖。 */
-export function groupBuckets<T extends ExecutorGroupLike>(executors: T[], ungroupedLabel = '未分组'): GroupBucket[] {
+ * 跨平台不稳定；code point 序确定且零依赖。
+ * N-04 收尾：缺省 label 回落 i18n 单例（groupFilter.ungrouped，zh/en 双侧成对），
+ * 不再内联中文——纯函数直调（测试）也跟随当前语言。 */
+export function groupBuckets<T extends ExecutorGroupLike>(
+  executors: T[],
+  ungroupedLabel = i18n.t('groupFilter.ungrouped'),
+): GroupBucket[] {
   const counts = new Map<string, number>();
   for (const ex of executors) {
     const key = ex.groupName?.trim() || '';

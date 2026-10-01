@@ -30,11 +30,12 @@ export interface FailureTopItem {
 }
 
 /** 按任务聚合失败记录：次数降序 → 最近失败时间降序；纯函数导出供测试。
- *  unknownError 为无错误原文时的兜底文案（由调用侧 t() 注入）。 */
+ *  unknownError 为无错误原文时的兜底文案（N-04 收尾：改为必传——唯一调用方
+ *  传 t('failureTop.unknown')，缺省中文兜底会绕过语言切换）。 */
 export function aggregateFailureTop(
   failures: { id: string; taskId: string; taskName: string; errorMessage: string; createdAt: string }[] | undefined,
-  topN = 5,
-  unknownError: string = '未知错误',
+  topN: number,
+  unknownError: string,
 ): FailureTopItem[] {
   const byTask = new Map<string, FailureTopItem>();
   for (const f of failures ?? []) {
