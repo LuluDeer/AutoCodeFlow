@@ -548,6 +548,15 @@ TTL），脚本内注释标注了断言窗口与实现常量的对应关系。
 > 恢复 10s）已真机跑通；场景 A 因本环境只能取到 R5 旧镜像（Redis 客户端坏）而失败，
 > 当前源码 `health` 端点恒返回 200-with-degraded（已核实），需在当前镜像上重跑。
 
+> **复跑任务书（2026-10）**：`docs/CHAOS-DRILL-REPORT-2026-10.md`。本轮（2026-09 下旬
+> 至 10-01）develop 合入了大量故障路径修复（空库 boot 容错、BullMQ retryStrategy、
+> SSE relay fail-open、失败通知聚合降级、killed 计数 + KILLED_SPIKE 告警、COVER_EARLY
+> 补 kill 下发、Leader watchdog 抖动容忍、心跳 diskUsage 两级告警、迁移 advisory-lock
+> 互斥），该任务书列出**七个必须注入验证的场景**（注入方法 / 预期观测点 / 通过判据
+> 逐项给全，附结果回填表）。全部场景需要 Docker/Linux 主场，Windows 侧无法执行；
+> 复跑时先原样跑一遍 `--scenario A,B` 作回归基线，③-⑦ 首轮手工注入、稳定后建议
+> 回填进 chaos-drill.sh 的场景框架。
+
 ### 前置条件
 
 - docker compose 完整栈在跑：admin-api(:3105)、redis、executor-node 至少各一

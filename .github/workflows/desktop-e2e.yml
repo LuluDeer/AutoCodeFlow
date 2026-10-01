@@ -1,0 +1,98 @@
+# ── N-10：executor-desktop Electron e2e（Playwright _electron 三例）────────
+# 独立于 ci.yml 的 desktop-e2e-smoke（windows-latest / PR+dispatch）：本文件是
+# **Linux 显示环境**的 e2e 链路——executor-desktop 主进程对 Linux 的适配面
+# （loadFile 路径、托盘 linux 分支、单实例锁文件位置）此前只有本机验证，
+# 没有 CI 兜底。
+#
+# 触发形态取舍（N-10 验收="3 例入 CI"，不要求进 PR 门）：
+#   - 只挂 workflow_dispatch + schedule（周一凌晨），不挂 pull_request。
+#     原因：Electron GUI 在全新 runner 上有显示层/冷启动 flake 面，且无头
+#     Linux 的托盘宿主（StatusNotifierWatcher）不可用时托盘用例降级 skip
+#     （spec 内 test.skip 有明确理由）——这形态不适合做 PR 必绿门。
+#     Windows 真托盘的硬断言由 ci.yml 的 desktop-e2e-smoke 承担，两者互补。
+#   - schedule 只在默认分支生效（GitHub 行为）：develop 合入 main 后本表才会
+#     周期跑；合入前用 workflow_dispatch 手动验证。
+#
+# Electron 安装注意：本 job **必须**下载 Electron 二进制（被测对象就是它），
+# 严禁设置 ELECTRON_SKIP_BINARY_DOWNLOAD；executor-desktop 的 postinstall
+# （electron-builder install-app-deps）在本包无原生依赖时近似 no-op，保留不动。
+# Playwright 不需要另装浏览器（_electron 直接驱动 Electron 二进制）。
+
+name: desktop-e2e
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 19 * * 0' # 每周一 03:00 UTC+8（周日 19:00 UTC），错开整点拥堵
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-e2e-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  linux-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # 无头环境强制软件渲染（与 ci.yml windows job 同一开关，electron 侧忽略
+      # 未知 env 无副作用）；LIBGL_ALWAYS_SOFTWARE 防 xvfb 下 GPU 探测卡死
+      ELECTRON_DISABLE_GPU: '1'
+      LIBGL_ALWAYS_SOFTWARE: '1'
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: 'npm'
+          # 本仓不 hoist（ARCH-20）：两包各自 npm ci，lockfile 都要进缓存键
+          cache-dependency-path: |
+            apps/executor-desktop/package-lock.json
+            apps/executor-node/package-lock.json
+
+      # Electron 44 运行时系统依赖。runner 预装了大部分 chrome 系库；这里显式
+      # 装齐 xvfb（显示）+ dbus（托盘/通知走 session bus）+ electron 必需的
+      # gtk3/gbm/nss/alsa。t64 后缀是 24.04 包名；旧镜像回落无后缀名。
+      - name: Install display & electron runtime deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb dbus
+          # gtk3/gbm/nss/alsa：electron 必需。t64 后缀是 24.04 包名；旧镜像回落无后缀
+          sudo apt-get install -y --no-install-recommends libgtk-3-0t64 libasound2t64 \
+            || sudo apt-get install -y --no-install-recommends libgtk-3-0 libasound2
+
+      - name: npm ci (executor-desktop)
+        working-directory: apps/executor-desktop
+        run: npm ci
+
+      # build:executor 的 ncc 打包需要 executor-node 依赖在位（ci.yml 同款注释）；
+      # e2e 三例不 spawn 执行器子进程，主进程 + 渲染层两个产物即可，不跑全量
+      # build（省 ncc 全项目类型检查的数分钟与一层面）。
+      - name: npm ci (executor-node)
+        working-directory: apps/executor-node
+        run: npm ci
+
+      - name: Build main + renderer
+        working-directory: apps/executor-desktop
+        run: |
+          npm run build:main
+          npm run build:renderer
+
+      # dbus-run-session：给 Electron 一个 session bus（托盘/通知的 DBus 面）；
+      # xvfb-run -a：自动挑显示号。spec 内托盘用例在无托盘宿主时会按声明的
+      # 理由降级 skip（见 e2e/n10-desktop.spec.js 用例 2 头注）。
+      - name: Playwright _electron e2e (N-10, 3 cases)
+        working-directory: apps/executor-desktop
+        run: dbus-run-session -- xvfb-run -a npx playwright test --config=e2e/playwright.config.js
+
+      - name: Upload failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: desktop-e2e-failures
+          path: apps/executor-desktop/test-results/
+          if-no-files-found: ignore
+          retention-days: 14
