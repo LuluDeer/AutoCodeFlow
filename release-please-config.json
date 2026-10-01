@@ -1,28 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
   "include-component-in-tag": false,
-  "plugins": [
-    {
-      "type": "linked-versions",
-      "groupName": "autocodeflow",
-      "components": [
-        "autocodeflow-sdk",
-        "autocodeflow-mcp-server",
-        "autocodeflow-cli",
-        "autoflow-sdk"
-      ]
-    },
-    {
-      "type": "linked-versions",
-      "groupName": "autocodeflow-py-libs",
-      "components": [
-        "autocodeflow-http",
-        "autocodeflow-ai",
-        "autocodeflow-db",
-        "autocodeflow-notify"
-      ]
-    }
-  ],
+  "plugins": [],
   "packages": {
     "packages/autocodeflow-node-sdk": {
       "release-type": "node",
@@ -78,5 +57,25 @@
         "autocodeflow_notify/__init__.py"
       ]
     }
-  }
+  },
+  "linked-versions": [
+    {
+      "groupName": "autocodeflow",
+      "components": [
+        "autocodeflow-sdk",
+        "autocodeflow-mcp-server",
+        "autocodeflow-cli",
+        "autoflow-sdk"
+      ]
+    },
+    {
+      "groupName": "autocodeflow-py-libs",
+      "components": [
+        "autocodeflow-http",
+        "autocodeflow-ai",
+        "autocodeflow-db",
+        "autocodeflow-notify"
+      ]
+    }
+  ]
 }
