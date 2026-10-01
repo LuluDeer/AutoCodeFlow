@@ -107,9 +107,12 @@ describe("AiAnalysisService (ARCH-30)", () => {
     await service.analyzeFailure({ name: "etl", runtime: "python" }, logs);
     // Sanitization stays AiService's responsibility (single-pass down the
     // existing path); the wrapper only orchestrates retry/metrics.
+    // FIX-6.2 后透传第三参 context(失败原因/退出码/runbook)——本用例未提供,
+    // 断言其原样为 undefined,即包装层不编造上下文。
     expect(aiService.analyzeFailure).toHaveBeenCalledWith(
       { name: "etl", runtime: "python" },
       logs,
+      undefined,
     );
   });
 

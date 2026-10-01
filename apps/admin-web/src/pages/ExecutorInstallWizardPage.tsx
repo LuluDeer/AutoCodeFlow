@@ -111,6 +111,25 @@ export function findNewlyOnlineExecutor<T extends { id: string; status: string }
   return executors.find((e) => e.status === 'online' && !knownIds.has(e.id)) ?? null;
 }
 
+/**
+ * DEEP-AUDIT B·1.2：把安装包平台名归类为一键脚本（curl|bash install.sh）的
+ * 支持面。install.sh 依赖 systemd 与 POSIX 路径，**仅支持 Linux**——非 Linux
+ * 环境（Windows 原生 / Git-Bash / macOS）一进来就 `exit 1` 并给手动部署指引。
+ * 向导此前无差别展示 curl|bash：windows/darwin 用户照抄得到一个**必然失败**
+ * 的命令。单独抽成纯函数便于单测钉住分支口径。
+ *
+ * @param platform 安装包平台名（如 linux_amd64 / darwin_arm64 / windows_amd64）
+ * @returns 'windows' | 'darwin' → 手动部署面板；'linux'/'unknown' → 一键脚本
+ *          （未选平台时无从判断，维持既有的一键脚本展示）。
+ */
+export function classifyOneClickPlatform(platform?: string): 'windows' | 'darwin' | 'linux' | 'unknown' {
+  if (!platform) return 'unknown';
+  if (platform.startsWith('windows')) return 'windows';
+  if (platform.startsWith('darwin')) return 'darwin';
+  if (platform.startsWith('linux')) return 'linux';
+  return 'unknown';
+}
+
 function formatBytes(bytes: number): string {
   if (!bytes) return '-';
   if (bytes < 1024) return `${bytes} B`;
@@ -194,7 +213,11 @@ export default function ExecutorInstallWizardPage() {
   const [sharedTokenVisible, setSharedTokenVisible] = useState(false);
 
   const POLL_INTERVAL_MS = 5000;
-  const POLL_TIMEOUT_MS = 60000;
+  // DEEP-AUDIT B·1.4：超时窗口 60s → 300s。安装远不止「解压 + 起进程」——
+  // artifact 下载（弱网数百 MB）、npm 依赖安装、systemd 注册与首次心跳回连
+  // 都可能超过 60s；旧窗口把正常安装中段误报成「检测超时」假失败（而真
+  // 失败本来就会在 300s 后仍无心跳，误报与漏报之间宁可多等）。
+  const POLL_TIMEOUT_MS = 300000;
   const [polling, setPolling] = useState(false);
   const [foundExecutor, setFoundExecutor] = useState<Executor | null>(null);
   const [pollTimedOut, setPollTimedOut] = useState(false);
@@ -401,6 +424,28 @@ export default function ExecutorInstallWizardPage() {
   };
 
   const adminApiUrl = window.location.origin;
+  // DEEP-AUDIT B·1.2：第 4 步按所选安装包平台分支——windows/darwin 没有
+  // curl|bash 一键脚本（install.sh 非 Linux 直接 exit 1），改展示桌面安装包
+  // 下载 + 手动部署指引；仅 linux 维持一键脚本。
+  const oneClickKind = classifyOneClickPlatform(selectedPackage?.platform ?? selectedPlatform);
+  const isManualPlatform = oneClickKind === 'windows' || oneClickKind === 'darwin';
+  // 桌面安装包下载（复用 ExecutorPackagesPage 同款 blob 下载——download 路由
+  // 在 JwtAuthGuard 后，<a href> 无法携带 Authorization）。
+  const [downloadingPackage, setDownloadingPackage] = useState(false);
+  const handleDownloadPackage = async () => {
+    if (!selectedPackage) return;
+    setDownloadingPackage(true);
+    try {
+      await executorPackagesApi.download(
+        selectedPackage.id,
+        `${selectedPackage.name}-${selectedPackage.version}`,
+      );
+    } catch (err: unknown) {
+      showApiError(err, t('execPkg.downloadFail'));
+    } finally {
+      setDownloadingPackage(false);
+    }
+  };
   // 环境变量参考块：键名必须与执行器**真正读取**的变量一致，否则用户照抄后
   // 静默落回默认值。此前末行是 `EXECUTOR_NAME`——该键在**全仓只有这一处**
   // 出现，两侧执行器读的都是 `APP_NAME`（executor-node/src/config.ts:68、
@@ -719,8 +764,9 @@ export default function ExecutorInstallWizardPage() {
         </Card>
       )}
 
-      {/* Step 3: 执行安装 */}
-      {currentStep === 3 && installCmd && (
+      {/* Step 3: 执行安装。selectedPackage 收窄非空——本步 B·1.2 手动平台分支
+          直读 selectedPackage 字段；到得了本步必然已在 Step1 选包落定。 */}
+      {currentStep === 3 && installCmd && selectedPackage && (
         <Card>
           <Title level={5} style={{ marginTop: 0 }}>{t('install.step4Title')}</Title>
           <Paragraph type="secondary">
@@ -737,6 +783,10 @@ export default function ExecutorInstallWizardPage() {
           />
 
           <Space orientation="vertical" style={{ width: '100%' }} size={20}>
+            {/* DEEP-AUDIT B·1.2：一键脚本（curl|bash install.sh）仅 Linux 可用——
+                windows/darwin 分支改为「桌面安装包 + 手动部署指引」，不再展示
+                一条在该平台必然 exit 1 的命令。 */}
+            {!isManualPlatform && (
             <div>
               <Space style={{ marginBottom: 8 }}>
                 <Text strong>{t('install.oneClickCmd')}</Text>
@@ -744,6 +794,69 @@ export default function ExecutorInstallWizardPage() {
               </Space>
               <CodeBlock code={installCmd.cmd} label={t('install.cmdLabel')} />
             </div>
+            )}
+
+            {isManualPlatform && (
+            <div>
+              <Alert
+                type="warning"
+                showIcon
+                style={{ marginBottom: 16 }}
+                title={t('install.manualPlatform.title', {
+                  platform: platformLabels[selectedPackage.platform] ?? selectedPackage.platform,
+                })}
+                description={t('install.manualPlatform.desc')}
+              />
+              <Card
+                size="small"
+                style={{ background: token.colorFillQuaternary, marginBottom: 16 }}
+                title={<Space><DesktopOutlined /><Text strong>{t('install.manualPlatform.pkgTitle')}</Text></Space>}
+              >
+                <Row gutter={16}>
+                  <Col span={8}>
+                    <Text type="secondary">{t('install.package')}</Text>
+                    <div><Text strong>{selectedPackage.name}</Text></div>
+                  </Col>
+                  <Col span={8}>
+                    <Text type="secondary">{t('install.version')}</Text>
+                    <div><Text strong>{selectedPackage.version}</Text></div>
+                  </Col>
+                  <Col span={8}>
+                    <Text type="secondary">{t('install.platformCol')}</Text>
+                    <div><Text strong>{platformLabels[selectedPackage.platform] ?? selectedPackage.platform}</Text></div>
+                  </Col>
+                  {selectedPackage.sha256 && (
+                    <Col span={24} style={{ marginTop: 8 }}>
+                      <Text type="secondary">{t('install.sha256')}</Text>
+                      <div>
+                        <Text code copyable style={{ fontSize: 12, wordBreak: 'break-all' }}>
+                          {selectedPackage.sha256}
+                        </Text>
+                      </div>
+                    </Col>
+                  )}
+                </Row>
+                <Button
+                  icon={<DownloadOutlined />}
+                  loading={downloadingPackage}
+                  style={{ marginTop: 12 }}
+                  onClick={handleDownloadPackage}
+                >
+                  {t('install.manualPlatform.download')}
+                </Button>
+              </Card>
+              <Text strong style={{ display: 'block', marginBottom: 8 }}>{t('install.manualPlatform.stepsTitle')}</Text>
+              <ol style={{ paddingLeft: 20, lineHeight: 2, margin: 0 }}>
+                <li>{t('install.manualPlatform.step1')}</li>
+                <li>{t('install.manualPlatform.step2')}</li>
+                <li>
+                  {oneClickKind === 'windows'
+                    ? t('install.manualPlatform.step3Win')
+                    : t('install.manualPlatform.step3Mac')}
+                </li>
+              </ol>
+            </div>
+            )}
 
             <div>
               <Text strong style={{ display: 'block', marginBottom: 8 }}>{t('install.envLabel')}</Text>

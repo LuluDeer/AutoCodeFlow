@@ -7,7 +7,7 @@ import { WarningOutlined, CopyOutlined, InfoCircleOutlined, ReloadOutlined, Dele
 // FEAT-04: 24h 资源趋势折线图（Tooltip 别名避开 antd Tooltip，DashboardPage 同法）
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartTooltip, Legend, ResponsiveContainer } from 'recharts';
 import { useQueryClient, useMutation } from '@tanstack/react-query';
-import { executorsApi, type ExecutorExecution } from '../api/executors';
+import { executorsApi, type ExecutorExecution, type ExecutorRemovalImpact } from '../api/executors';
 import {
   useExecutorDetail,
   useExecutorMetrics,
@@ -92,6 +92,10 @@ export default function ExecutorDetailPage() {
   // AUTH-05 交接：单台高危操作二次确认（受控 Modal，含可选 reason ≤200）
   const [rotateOpen, setRotateOpen] = useState(false);
   const [removeOpen, setRemoveOpen] = useState(false);
+  // DEEP-AUDIT B·1.1：删除影响面预览（打开确认框时拉取；失败降级为 null，
+  // 弹窗回落通用警示文案——拿不到影响面不该把删除入口整个堵死）。
+  const [removeImpact, setRemoveImpact] = useState<ExecutorRemovalImpact | null>(null);
+  const [removeImpactLoading, setRemoveImpactLoading] = useState(false);
   const [editForm] = Form.useForm();
   const [configForm] = Form.useForm();
   const [rotateForm] = Form.useForm();
@@ -359,7 +363,18 @@ export default function ExecutorDetailPage() {
               <Button
                 danger
                 icon={<DeleteOutlined />}
-                onClick={() => { removeForm.resetFields(); setRemoveOpen(true); }}
+                onClick={() => {
+                  removeForm.resetFields();
+                  setRemoveOpen(true);
+                  // DEEP-AUDIT B·1.1：打开确认框即拉取影响面——钉定/appName 绑定
+                  // 的任务数与 pull 队列深度一并回显，删除前用户看得见后果。
+                  setRemoveImpactLoading(true);
+                  executorsApi
+                    .removalImpact(id!)
+                    .then(setRemoveImpact)
+                    .catch(() => setRemoveImpact(null))
+                    .finally(() => setRemoveImpactLoading(false));
+                }}
               >{t('executorDetail.remove.delete')}</Button>
             </Tooltip>
           </Space>
@@ -371,22 +386,43 @@ export default function ExecutorDetailPage() {
           <Descriptions.Item label={t('executorDetail.field.appName')}>{executor.appName}</Descriptions.Item>
           <Descriptions.Item label={t('executorDetail.field.address')}>{executor.address}</Descriptions.Item>
           <Descriptions.Item label={t('executorDetail.field.status')}>
-            {/* P1-28：详情页此前 text={executor.status} 直接渲染裸枚举（online/offline），
-                与列表页同一概念两种措辞（列表页用 execList.status.online=在线）。
-                执行器状态只有 online/offline 两态（executor.entity.ts:15-16），
-                直接复用列表页 i18n 键。 */}
-            <Badge
-              status={isOnline ? 'success' : 'default'}
-              text={isOnline ? t('execList.status.online') : t('execList.status.offline')}
-            />
+            <Space wrap size={4}>
+              {/* P1-28：详情页此前 text={executor.status} 直接渲染裸枚举（online/offline），
+                  与列表页同一概念两种措辞（列表页用 execList.status.online=在线）。
+                  执行器状态只有 online/offline 两态（executor.entity.ts:15-16），
+                  直接复用列表页 i18n 键。 */}
+              <Badge
+                status={isOnline ? 'success' : 'default'}
+                text={isOnline ? t('execList.status.online') : t('execList.status.offline')}
+              />
+              {/* A7（第四轮审计）：磁盘水位徽标——复用 pendingPull 徽标样式，
+                  阈值与下方资源卡一致（warn 70 / critical 90，>=70 才高亮；
+                  未上报/低于阈值不打扰）。红色 = 临界水位（accept 阶段将拒新任务）。 */}
+              {typeof executor.diskUsage === 'number' && executor.diskUsage >= 70 && (
+                <Tooltip title={t('executorDetail.diskWatermark.tooltip', { percent: Math.round(executor.diskUsage) })}>
+                  <Tag color={executor.diskUsage >= 90 ? 'red' : 'orange'}>
+                    {t('executorDetail.diskWatermark.badge', { percent: Math.round(executor.diskUsage) })}
+                  </Tag>
+                </Tooltip>
+              )}
+            </Space>
           </Descriptions.Item>
           <Descriptions.Item label={t('executorDetail.field.type')}>{executor.type || '-'}</Descriptions.Item>
           <Descriptions.Item label={t('executorDetail.field.version')}>{executor.executorVersion || '-'}</Descriptions.Item>
           {/* UI-17/ARCH-32: 派发模式（pull = NAT 内零入站，长轮询取件） */}
           <Descriptions.Item label={t('executorDetail.field.dispatchMode')}>
-            {executor.dispatchMode === 'pull'
-              ? <Tag color="purple">{t('executorDetail.dispatchMode.pull')}</Tag>
-              : <Tag>{t('executorDetail.dispatchMode.push')}</Tag>}
+            <Space wrap size={4}>
+              {executor.dispatchMode === 'pull'
+                ? <Tag color="purple">{t('executorDetail.dispatchMode.pull')}</Tag>
+                : <Tag>{t('executorDetail.dispatchMode.push')}</Tag>}
+              {/* DEEP-AUDIT B·1.5：pull 队列积压徽标——「派了却没人取」此前只有
+                  服务端日志；深度 >0 时高亮（0/push 执行器不打扰，U16 死信同款纪律） */}
+              {(metrics?.current?.pendingPullItems ?? 0) > 0 && (
+                <Tooltip title={t('executorDetail.pendingPull.tooltip')}>
+                  <Tag color="orange">{t('executorDetail.pendingPull.badge', { count: metrics?.current?.pendingPullItems ?? 0 })}</Tag>
+                </Tooltip>
+              )}
+            </Space>
           </Descriptions.Item>
           <Descriptions.Item label={t('executorDetail.field.group')}>{executor.groupName || '-'}</Descriptions.Item>
           <Descriptions.Item label={t('executorDetail.field.tags')}>{executor.tags?.join(', ') || '-'}</Descriptions.Item>
@@ -782,10 +818,38 @@ export default function ExecutorDetailPage() {
           description={t('executorDetail.remove.desc')}
           style={{ marginBottom: 12 }}
         />
+        {/* DEEP-AUDIT B·1.1：影响面如实展示——钉定/appName 绑定的任务在删除后
+            派发即失败且无重试，用户必须在确认框里看到这个后果再决定。 */}
+        {removeImpact && (removeImpact.pinnedTasks > 0 || removeImpact.appNameBoundTasks > 0) && (
+          <Alert
+            type="error"
+            showIcon
+            title={t('executorDetail.remove.impactBoundTitle', {
+              pinned: removeImpact.pinnedTasks,
+              byName: removeImpact.appNameBoundTasks,
+            })}
+            description={t('executorDetail.remove.impactBoundDesc')}
+            style={{ marginBottom: 12 }}
+          />
+        )}
         <Descriptions size="small" column={1} style={{ marginBottom: 12 }}>
           <Descriptions.Item label={t('executorDetail.field.executor')}>{executor.appName}</Descriptions.Item>
           <Descriptions.Item label={t('executorDetail.field.address')}><Text code>{executor.address}</Text></Descriptions.Item>
-          <Descriptions.Item label={t('executorDetail.field.impact')}>{t('executorDetail.remove.impactValue')}</Descriptions.Item>
+          <Descriptions.Item label={t('executorDetail.field.impact')}>
+            {removeImpactLoading ? (
+              <Text type="secondary">{t('executorDetail.remove.impactLoading')}</Text>
+            ) : removeImpact ? (
+              <Text>
+                {t('executorDetail.remove.impactDetail', {
+                  pinned: removeImpact.pinnedTasks,
+                  byName: removeImpact.appNameBoundTasks,
+                  pull: removeImpact.pendingPullItems,
+                })}
+              </Text>
+            ) : (
+              <Text type="secondary">{t('executorDetail.remove.impactValue')}</Text>
+            )}
+          </Descriptions.Item>
         </Descriptions>
         <Form form={removeForm} layout="vertical" onFinish={(v: { reason?: string }) => removeExecutor(v.reason)}>
           <Form.Item

@@ -450,6 +450,36 @@ class TestHeartbeatReservedSlots:
         scheduler_module._pull_reserved_slots = 0
         scheduler_module.running_count = 0
 
+    @pytest.mark.asyncio
+    async def test_heartbeat_reports_disk_usage_when_measurable(self):
+        """A7（第四轮审计）：磁盘水位随心跳透出（admin 既有 diskUsage 列）。
+
+        计量成功 → 字段在（0-100）；计量失败（OSError/total<=0）→ 整个键
+        缺席 =「未上报」（admin 保留 DB 旧值），不得伪装成 0%。"""
+        import shutil
+
+        import scheduler as scheduler_module
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=create_mock_response(200))
+        with patch('scheduler.psutil.cpu_percent', return_value=1.0),              patch('scheduler.psutil.virtual_memory') as mem_mock,              patch.object(scheduler_module.shutil, 'disk_usage') as du_mock:
+            mem_mock.return_value = SimpleNamespace(percent=2.0)
+            du_mock.return_value = SimpleNamespace(
+                total=100.0, used=73.0, free=27.0)
+            await _send_heartbeat(mock_client, 'test-token')
+        body = mock_client.post.call_args.kwargs['json']
+        assert body['diskUsage'] == 73.0  # (total-free)/total = (100-27)/100
+
+        # 计量失败 → 键缺席（未上报语义，不是 0）
+        mock_client2 = AsyncMock()
+        mock_client2.post = AsyncMock(return_value=create_mock_response(200))
+        with patch('scheduler.psutil.cpu_percent', return_value=1.0),              patch('scheduler.psutil.virtual_memory') as mem_mock,              patch.object(scheduler_module.shutil, 'disk_usage',
+                          side_effect=OSError('statfs failed')):
+            mem_mock.return_value = SimpleNamespace(percent=2.0)
+            await _send_heartbeat(mock_client2, 'test-token')
+        body2 = mock_client2.post.call_args.kwargs['json']
+        assert 'diskUsage' not in body2
+
     def test_reservation_tracking_is_clamped_at_zero(self):
         """反证：预留计数是纯防御性的 0/1 量——重复撤销不得变成负数（负数上报会
         让中台算出比真值大的「实际运行数」，比误报不一致更糟）。"""

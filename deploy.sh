@@ -33,6 +33,9 @@ readonly SCRIPT_DIR ROOT_DIR
 readonly MANIFEST_FILE="$ROOT_DIR/.deploy-manifest.json"
 readonly MANIFEST_PREV="$ROOT_DIR/.deploy-manifest.prev.json"
 readonly DEPLOY_STATE_DIR="$ROOT_DIR/.deploy-state"
+# 迁移前备份的失败原因日志（审计二轮 B-1）。logs/ 已 gitignore；备份**成功**
+# 时会删除该文件，避免下次失败时误读到上一次的旧原因。
+readonly PG_BACKUP_ERR_LOG="$ROOT_DIR/logs/pg-backup-last-error.log"
 
 # 组件清单（源码模式下逐组件构建/启动）
 readonly NODE_COMPONENTS="admin-api admin-web executor-node"
@@ -653,7 +656,11 @@ infra_phase() {
     else
         if have docker; then
             log "  启动 PostgreSQL + Redis..."
-            run compose -f "$ROOT_DIR/infra/docker-compose.yml" up -d
+            # --env-file 必须显式指根 .env：compose 的 env 查找跟 project-directory
+            # （compose 文件所在目录 infra/，无 .env）走，缺了它 POSTGRES_PASSWORD
+            # 插值为空 → PG initdb 失败重启循环 → 宿主 5432 无监听 → 迁移前备份
+            # 连接被拒（2026-10-01 Linux staging 实跑实证）。
+            run compose --env-file "$ROOT_DIR/.env" -f "$ROOT_DIR/infra/docker-compose.yml" up -d
         else
             warn "Docker 不可用——跳过基础设施启动（请确保 PG/Redis 已在别处运行）"
         fi
@@ -666,16 +673,49 @@ infra_phase() {
 wait_for_postgres() {
     [ "$DRY_RUN" = true ] && { printf '%b\n' "  ${YELLOW}[dry-run]${NC} 等待 PostgreSQL 就绪"; return 0; }
     have docker || return 0
-    [ "$(env_get DB_HOST)" = "postgres" ] || [ -z "$(env_get DB_HOST)" ] || return 0
+    if [ "$(env_get DB_HOST)" != "postgres" ] && [ -n "$(env_get DB_HOST)" ]; then
+        # DB_HOST 指向宿主侧地址（如 localhost）且为 docker 模式：迁移前备份
+        # 走宿主端口映射（127.0.0.1:5432 的 docker-proxy），等待必须同路径。
+        # 原逻辑此分支直接 return 0 跳过等待——compose up -d 返回时新卷 initdb
+        # 往往未完成，备份恒撞 "server closed the connection unexpectedly"
+        # （2026-10-01 staging 实跑实证）。宿主侧 TCP 探测不会命中 initdb 引导
+        # 实例（它只监听容器内 Unix socket）。
+        [ "$MODE" = "docker" ] || return 0
+        local whost=""; local wport=""
+        whost="$(env_get DB_HOST)"
+        wport="$(env_get DB_PORT || echo 5432)"
+        log "  等待 PostgreSQL（宿主侧 ${whost}:${wport}）接受连接..."
+        local i=0 max=30
+        while [ "$i" -lt "$max" ]; do
+            if pg_isready -h "$whost" -p "$wport" >/dev/null 2>&1; then
+                ok "  PostgreSQL 已就绪（${i}s）"
+                return 0
+            fi
+            i=$((i + 1))
+            sleep 1
+        done
+        warn "  PostgreSQL 在 ${max}s 内未就绪——继续，但备份/迁移可能失败"
+        return 0
+    fi
 
     # 指数退避等待（替代 sleep 30 的硬等）
     log "  等待 PostgreSQL 接受连接..."
     local i=0 max=30
     while [ "$i" -lt "$max" ]; do
-        if compose -f "$ROOT_DIR/infra/docker-compose.yml" exec -T postgres \
-             pg_isready -U "$(env_get POSTGRES_USER || echo autoflow)" >/dev/null 2>&1; then
-            ok "  PostgreSQL 已就绪（${i}s）"
-            return 0
+        # -h 127.0.0.1 强制走 TCP：不带 -h 时 pg_isready 走 Unix socket，会命中
+        # initdb 引导实例（它只监听 Unix socket 且自称 ready）→ 假阳性放行 →
+        # 紧随的迁移前备份 pg_dump 走 TCP 报 "server closed the connection
+        # unexpectedly"（2026-10-01 staging 实跑实证）。TCP 探测到正式实例
+        # ready 才是真就绪。
+        if compose --env-file "$ROOT_DIR/.env" -f "$ROOT_DIR/infra/docker-compose.yml" exec -T postgres \
+             pg_isready -h 127.0.0.1 -U "$(env_get POSTGRES_USER || echo autoflow)" >/dev/null 2>&1; then
+            # 双确认：TCP 就绪后稳定 2s 复测一次才放行，防御其他启动竞态。
+            sleep 2
+            if compose --env-file "$ROOT_DIR/.env" -f "$ROOT_DIR/infra/docker-compose.yml" exec -T postgres \
+                 pg_isready -h 127.0.0.1 -U "$(env_get POSTGRES_USER || echo autoflow)" >/dev/null 2>&1; then
+                ok "  PostgreSQL 已就绪（${i}s）"
+                return 0
+            fi
         fi
         i=$((i + 1))
         sleep 1
@@ -687,6 +727,100 @@ wait_for_postgres() {
 # ⑥ 迁移 Migration
 # ══════════════════════════════════════════════════════════════════
 
+# 解析 .env 的数据库连接参数为「宿主机侧可达」的一组值（不 source .env，沿
+# env_get 逐键读取），结果写入全局 DBF_* 变量，供 pg_dump/psql/node 查询共用。
+#   · DB_HOST 是容器服务名（postgres）或为空 → 127.0.0.1：宿主机解析不了
+#     compose 服务名，infra compose 把 5432 绑在 127.0.0.1 上；
+#   · 密码 DB_PASSWORD / POSTGRES_PASSWORD 双兜底——.env 两套命名并存
+#     （compose 注入的是后者），而 pg-backup.sh / psql 只认 PG*。
+#   （审计二轮 B-1：旧迁移前备份默认必失败的根因正是这套命名断层——
+#   pg-backup.sh 强依赖的 PGHOST/PGUSER/PGPASSWORD/PGDATABASE 只在根 compose
+#   pg-backup 服务的 environment 里定义，deploy.sh 从不导出。）
+parse_db_conn() {
+    DBF_HOST="$(env_get DB_HOST)"
+    case "$DBF_HOST" in ""|postgres) DBF_HOST="127.0.0.1" ;; esac
+    DBF_PORT="$(env_get DB_PORT)";     [ -n "$DBF_PORT" ] || DBF_PORT=5432
+    DBF_USER="$(env_get DB_USERNAME)"; [ -n "$DBF_USER" ] || DBF_USER="$(env_get POSTGRES_USER)"
+    [ -n "$DBF_USER" ] || DBF_USER=autoflow
+    DBF_PASS="$(env_get DB_PASSWORD)"; [ -n "$DBF_PASS" ] || DBF_PASS="$(env_get POSTGRES_PASSWORD)"
+    DBF_NAME="$(env_get DB_DATABASE)"; [ -n "$DBF_NAME" ] || DBF_NAME=autoflow
+}
+
+# 空库探测：首次部署时库还没有任何表——空库 pg_dump 的 gzip 只有几百字节，
+# pg-backup.sh 的 NETOPT-4 防截断阈值（1KB）必判「可疑小文件」而失败；而空库
+# 本身也没有任何可备份内容。检测到空库就跳过备份，避免首次生产部署被自家
+# 守卫卡死。探测失败（psql 不可用/连不上/口令缺失）一律按非空处理——保守
+# 回落「照常备份」，让备份路径自己给出带日志的明确失败。
+db_is_empty() {
+    [ "$DRY_RUN" = true ] && return 1
+    local out
+    local count_sql="SELECT count(*) FROM information_schema.tables WHERE table_schema='public'"
+    local db_host; db_host="$(env_get DB_HOST)"
+    if [ "$MODE" = "docker" ] && { [ -z "$db_host" ] || [ "$db_host" = "postgres" ]; }; then
+        # 借 pg-backup 服务连库：镜像即 postgres:16-alpine，environment 已带全套
+        # PG*（PGHOST=postgres 指向主库）；compose run 会自动把 postgres 依赖
+        # 先拉起来——迁移阶段 ⑦ start 尚未执行，首次部署时主库容器还没起。
+        # 注意 --entrypoint 必须覆盖：服务默认 entrypoint 是起 crond 的脚本。
+        out="$(compose -f "$ROOT_DIR/docker-compose.yml" --profile backup \
+                  run --rm -T --entrypoint psql pg-backup -tAc "$count_sql" 2>/dev/null)" || return 1
+    else
+        have psql || return 1
+        parse_db_conn
+        [ -n "$DBF_PASS" ] || return 1
+        out="$(PGPASSWORD="$DBF_PASS" psql -h "$DBF_HOST" -p "$DBF_PORT" -U "$DBF_USER" -d "$DBF_NAME" -tAc "$count_sql" 2>/dev/null)" || return 1
+    fi
+    [ "$(printf '%s' "$out" | tr -d '[:space:]')" = "0" ]
+}
+
+# 组装并执行备份命令（pre_migration_backup 的内层）。docker 模式与 source 模式
+# 的分叉点；dry-run 只打印（口令以 ******** 掩码，不回显真实值）。
+run_pre_migration_backup_cmd() {
+    local db_host; db_host="$(env_get DB_HOST)"
+    if [ "$MODE" = "docker" ] && { [ -z "$db_host" ] || [ "$db_host" = "postgres" ]; }; then
+        # 与定时备份（profile backup）同一条服务定义：PG* 由 compose 注入、
+        # 产物进 backup_data 卷、BACKUP_RETENTION_DAYS 保留策略共用。不能裸
+        # `run pg-backup`——pg-backup-entrypoint.sh 无视参数起 crond 常驻，
+        # 必须覆盖 entrypoint 直跑备份脚本本体。
+        run compose -f "$ROOT_DIR/docker-compose.yml" --profile backup \
+                run --rm -T --entrypoint /bin/sh pg-backup /usr/local/bin/pg-backup.sh
+        return 0
+    fi
+    parse_db_conn
+    if [ -z "$DBF_PASS" ]; then
+        # 没有口令必然认证失败——提前给出可行动的提示，而不是让 pg_dump 报
+        # 一句 password authentication failed 让人猜
+        warn "  .env 缺 DB_PASSWORD/POSTGRES_PASSWORD——无法执行迁移前备份"
+        return 1
+    fi
+    if [ "$DRY_RUN" = true ]; then
+        run env PGHOST="$DBF_HOST" PGPORT="$DBF_PORT" PGUSER="$DBF_USER" \
+            PGPASSWORD='********' PGDATABASE="$DBF_NAME" \
+            BACKUP_DIR="$ROOT_DIR/logs/db-backups" bash "$ROOT_DIR/scripts/pg-backup.sh"
+        return 0
+    fi
+    run env PGHOST="$DBF_HOST" PGPORT="$DBF_PORT" PGUSER="$DBF_USER" PGPASSWORD="$DBF_PASS" \
+        PGDATABASE="$DBF_NAME" BACKUP_DIR="$ROOT_DIR/logs/db-backups" \
+        bash "$ROOT_DIR/scripts/pg-backup.sh"
+}
+
+# 迁移前备份（审计二轮 B-1）：失败输出完整落 ${PG_BACKUP_ERR_LOG}（旧实现
+# `2>/dev/null` 把 pg-backup.sh 的 `:?` 报错整个吞掉，失败时无从排查）；
+# 成功即删除该日志，避免下次失败时误读到上一次的旧原因。
+pre_migration_backup() {
+    if [ "$DRY_RUN" = true ]; then
+        run_pre_migration_backup_cmd
+        return 0
+    fi
+    mkdir -p "$ROOT_DIR/logs"
+    local rc=0
+    run_pre_migration_backup_cmd >"$PG_BACKUP_ERR_LOG" 2>&1 || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        [ -s "$PG_BACKUP_ERR_LOG" ] && tail -n 1 "$PG_BACKUP_ERR_LOG" >&2 || true
+        rm -f "$PG_BACKUP_ERR_LOG"
+    fi
+    return "$rc"
+}
+
 migration_phase() {
     log "⑥ 数据库迁移 Migration"
 
@@ -697,17 +831,22 @@ migration_phase() {
 
     # 迁移前强制备份（生产模式备份失败即中止——不带着未备份的库跑迁移）
     log "  迁移前备份数据库..."
-    if [ -f "$ROOT_DIR/scripts/pg-backup.sh" ]; then
-        if run bash "$ROOT_DIR/scripts/pg-backup.sh" 2>/dev/null; then
+    if [ ! -f "$ROOT_DIR/scripts/pg-backup.sh" ]; then
+        warn "  未找到 scripts/pg-backup.sh，跳过备份"
+    elif db_is_empty; then
+        ok "  数据库为空（首次部署，尚无迁移），无可备份内容——跳过"
+    else
+        if pre_migration_backup; then
             ok "  备份完成"
         else
+            # 失败原因完整落日志（不再是 2>/dev/null 的静默失败），现场同时
+            # 回显末尾几行，die/warn 里带日志路径
+            [ -s "$PG_BACKUP_ERR_LOG" ] && tail -n 20 "$PG_BACKUP_ERR_LOG" >&2 || true
             if [ "$ENV_NAME" = "production" ]; then
-                die "生产环境备份失败，已中止迁移（不带着未备份的库跑迁移）"
+                die "生产环境备份失败，已中止迁移（不带着未备份的库跑迁移）——原因见 $PG_BACKUP_ERR_LOG"
             fi
-            warn "  备份失败（非生产环境，继续）"
+            warn "  备份失败（非生产环境，继续）——原因见 $PG_BACKUP_ERR_LOG"
         fi
-    else
-        warn "  未找到 scripts/pg-backup.sh，跳过备份"
     fi
 
     if [ "$MODE" = "docker" ]; then
@@ -1057,6 +1196,30 @@ write_manifest_artifacts() {
     done
 }
 
+# 查询 typeorm 已执行迁移名称列表（回填 manifest.appliedMigrations，审计二轮
+# B-5——此前恒为 []，占位无信息量）。typeorm 默认迁移记录表名即 "migrations"
+# （admin-api data-source.ts 未改 migrationsTableName，同源）。输出一行 JSON
+# 数组；**尽力而为**：查不到（库不可达/表未建/docker 不可用/无 node）时输出
+# "[]" 并以 0 退出——回填失败绝不能反过来阻塞部署本身。
+collect_applied_migrations() {
+    # JS 只用双引号（外层 shell 双引号安全）；错误说明走 stderr，stdout 恒是
+    # 一个可解析的 JSON 数组。
+    local js='const {Client}=require("pg");const c=new Client({host:process.env.DB_HOST,port:Number(process.env.DB_PORT||5432),user:process.env.DB_USERNAME,password:process.env.DB_PASSWORD,database:process.env.DB_DATABASE});c.connect().then(()=>c.query("SELECT name FROM migrations ORDER BY id")).then((r)=>{console.log(JSON.stringify(r.rows.map((x)=>x.name)));process.exit(0)}).catch((e)=>{console.error("appliedMigrations query failed:",String(e&&e.message||e));console.log("[]");process.exit(0)});'
+    if [ "$MODE" = "docker" ]; then
+        # 与迁移（migration_phase 的 compose run admin-api）同一条连接路径：
+        # 容器 env 已带 DB_*（root compose admin-api environment）。
+        compose run --rm -T admin-api node -e "$js"
+        return 0
+    fi
+    parse_db_conn
+    (
+        cd "$ROOT_DIR/apps/admin-api" && DB_HOST="$DBF_HOST" DB_PORT="$DBF_PORT" \
+            DB_USERNAME="$DBF_USER" DB_PASSWORD="$DBF_PASS" DB_DATABASE="$DBF_NAME" \
+            node -e "$js"
+    )
+    return 0
+}
+
 write_manifest() {
     [ "$DRY_RUN" = true ] && return 0
 
@@ -1066,6 +1229,18 @@ write_manifest() {
     local git_commit="unknown"
     have git && git_commit="$(git -C "$ROOT_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 
+    # 从 typeorm 迁移记录表回填真实列表（尽力而为——查询失败保留 []）。
+    # 只在本次确实部署 admin-api 时查询：局部部署（--component executor-node）
+    # 不该为一份清单去拉起 admin-api 容器。
+    local migrations_json="[]"
+    if component_enabled admin-api; then
+        migrations_json="$(collect_applied_migrations || true)"
+        case "$migrations_json" in
+            \[*\]) : ;;                    # 形如 JSON 数组 → 采信
+            *)     migrations_json="[]" ;; # 查询失败/输出异常 → 保留空数组
+        esac
+    fi
+
     cat > "$MANIFEST_FILE" <<EOF
 {
   "mode": "$MODE",
@@ -1073,7 +1248,7 @@ write_manifest() {
   "deployedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
   "gitCommit": "$git_commit",
   "components": "$(resolve_components | tr ' ' ',')",
-  "appliedMigrations": []
+  "appliedMigrations": ${migrations_json}
 }
 EOF
     ok "部署清单已写入 .deploy-manifest.json"
@@ -1123,13 +1298,28 @@ EOF
     fi
 
     if [ "$prev_commit" != "unknown" ] && have git; then
+        # 审计二轮 B-5：checkout 旧 commit 必然产生 detached HEAD——回滚前先
+        # 记录当前分支名，回滚完成后落盘到状态文件，供下一次 deploy 启动时
+        # check_detached_head 提示「如何回到原分支」。当前本就处于 detached
+        # HEAD（连续回滚）时保留更早的状态文件，不覆盖。
+        local prev_branch
+        prev_branch="$(git -C "$ROOT_DIR" symbolic-ref --short HEAD 2>/dev/null || echo '')"
         log "  检出 $prev_commit ..."
         run bash -c "cd '$ROOT_DIR' && git checkout '$prev_commit'"
+        if [ "$DRY_RUN" != true ] && [ -n "$prev_branch" ]; then
+            mkdir -p "$DEPLOY_STATE_DIR"
+            printf '%s\n' "$prev_branch" > "$DEPLOY_STATE_DIR/detached-from-branch"
+        fi
         # 重新构建并启动
         BUILD=true build_phase
         start_phase
         verify_phase
         ok "已回滚到 $prev_commit"
+        if [ -n "$prev_branch" ]; then
+            warn "仓库现在处于 detached HEAD（commit ${prev_commit}）；回滚前分支为 ${prev_branch}，确认稳定后执行 git checkout $prev_branch 可切回"
+        else
+            warn "仓库现在处于 detached HEAD（commit ${prev_commit}）——本就未在任何分支上，未记录原分支"
+        fi
     else
         die "无法回滚：缺少有效的 git commit 记录，或 git 不可用"
     fi
@@ -1397,6 +1587,30 @@ cmd_restart() {
 # 主流程
 # ══════════════════════════════════════════════════════════════════
 
+# detached HEAD 检测（审计二轮 B-5）：rollback 的 `git checkout <commit>` 会把
+# 仓库留在 detached HEAD，下一次 deploy 若毫无感知，operator 会误以为部署的
+# 是分支最新代码。语义选择：**warn 并基于当前 commit 继续**，不自动切回分支——
+# 自动 checkout 会静默改写工作树内容（回滚是显式决策，回到分支也应当是）；
+# 这里只提示基于哪个 commit 继续、以及如何回到原分支（分支名由 rollback 记录
+# 在 $DEPLOY_STATE_DIR/detached-from-branch）。
+check_detached_head() {
+    have git || return 0
+    # 非 git 仓库 / 空仓库（无任何 commit）→ 无「detached」概念
+    git -C "$ROOT_DIR" rev-parse --verify --quiet HEAD >/dev/null 2>&1 || return 0
+    # symbolic-ref 成功 = 在分支上，正常
+    [ -n "$(git -C "$ROOT_DIR" symbolic-ref --short HEAD 2>/dev/null || echo '')" ] && return 0
+    local commit
+    commit="$(git -C "$ROOT_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+    local hint=""
+    local branch_file="$DEPLOY_STATE_DIR/detached-from-branch"
+    if [ -f "$branch_file" ]; then
+        local from_branch
+        from_branch="$(head -n1 "$branch_file" 2>/dev/null || echo '')"
+        [ -n "$from_branch" ] && hint="（回滚前分支: ${from_branch}，确认稳定后 git checkout $from_branch 可切回）"
+    fi
+    warn "仓库当前处于 detached HEAD（commit ${commit}，可能由 rollback 产生）——本次部署将基于该 commit 构建${hint}"
+}
+
 main() {
     parse_args "$@"
 
@@ -1409,6 +1623,9 @@ main() {
         restart)  cmd_restart "${SUBCOMMAND_ARGS[@]+"${SUBCOMMAND_ARGS[@]}"}"; exit $? ;;
         rollback) cmd_rollback; exit $? ;;
     esac
+
+    # 回滚遗留的 detached HEAD 必须在一切阶段之前提示（--skip-preflight 也拦不住它）
+    check_detached_head
 
     # 生产模式额外确认
     if [ "$ENV_NAME" = "production" ] && [ "$I_KNOW_ITS_PRODUCTION" = false ] && [ "$DRY_RUN" = false ]; then

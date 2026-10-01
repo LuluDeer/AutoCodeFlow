@@ -1,7 +1,7 @@
 import { app, BrowserWindow } from 'electron';
 import { autoUpdater } from 'electron-updater';
 import log from './logger';
-import { createRunCheck } from './updater-runcheck';
+import { createRunCheck, createPeriodicCheck } from './updater-runcheck';
 
 /**
  * DSK-03: 桌面自动更新（双源）。
@@ -25,6 +25,10 @@ import { createRunCheck } from './updater-runcheck';
 
 /** 启动后延迟检查的毫秒数。 */
 export const UPDATE_CHECK_DELAY_MS = 30_000;
+
+/** 审计二轮 B-7①：自动检查周期（6 小时）。旧实现只在启动 30s 后检查一次，
+ *  之后永不自检——长时间驻留的桌面端会一直停在旧版本，直到用户手动点检查。 */
+export const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 /** updater IPC 事件通道名（preload 侧同名暴露）。 */
 export const UPDATE_EVENTS = {
@@ -127,9 +131,6 @@ function resolveGenericFeedUrl(): string | null {
   }
 }
 
-/** 检查计时器（initUpdater 幂等用的句柄）。 */
-let checkTimer: NodeJS.Timeout | null = null;
-
 // NETOPT-C P3: updater:error 的显性化开关——用户主动检查 / 用户确认的下载
 // 才广播；后台定时检查保持静默（离线/私服 404 不打扰用户）。
 // NETOPT-D P3-1 / NETOPT-E P3-1 / NETOPT-E P2-4: runCheck 互斥 + 归因局部化
@@ -143,12 +144,30 @@ const runCheckState = createRunCheck(() =>
 );
 let downloading = false;
 
+// 审计二轮 B-7①：周期调度器——首轮延迟 UPDATE_CHECK_DELAY_MS，之后每轮检查
+// 完成后重挂 UPDATE_CHECK_INTERVAL_MS（调度状态机见 updater-runcheck.ts）。
+// 与手动检查的并发仍由 runCheckState 串行化：用户检查在飞时，周期 tick 复用
+// 其 in-flight promise，不叠加新 timer、不覆盖 error 归因。
+// unref：定时器不阻止进程退出（保持旧 checkTimer.unref() 的语义）。
+const periodicCheck = createPeriodicCheck({
+  run: () => runCheck(false),
+  schedule: (fn, ms) => {
+    const t = setTimeout(fn, ms);
+    t.unref();
+    return t;
+  },
+  cancel: (h) => clearTimeout(h as NodeJS.Timeout),
+});
+
+/** 周期调度已启动标志（initUpdater 幂等句柄）。 */
+let periodicStarted = false;
+
 /**
  * 初始化并启动延迟检查。仅生产环境调用（index.ts 里 app.isPackaged 守卫）。
- * 幂等：重复调用只挂一次 timer。
+ * 幂等：重复调用只启动一次周期调度。
  */
 export function initUpdater(): void {
-  if (checkTimer) return;
+  if (periodicStarted) return;
 
   autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = false;
@@ -219,10 +238,9 @@ export function initUpdater(): void {
     }
   });
 
-  checkTimer = setTimeout(() => {
-    void checkForUpdates();
-  }, UPDATE_CHECK_DELAY_MS);
-  checkTimer.unref();
+  // 首轮：启动 30s 后；之后每轮检查完成再重挂 6h 周期（createPeriodicCheck）。
+  periodicStarted = true;
+  periodicCheck.start(UPDATE_CHECK_DELAY_MS, UPDATE_CHECK_INTERVAL_MS);
 }
 
 /** 后台/静默检查：错误只落日志（NETOPT-C P3）。 */

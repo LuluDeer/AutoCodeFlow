@@ -1325,6 +1325,28 @@ export class ExecutorController {
     return this.svc.setOfflineById(id);
   }
 
+  /**
+   * DEEP-AUDIT B·1.1：执行器删除影响面预览（对齐应用域 GET /:id/removal-impact
+   * 先例）。ADMIN-only 与 DELETE 同权限面——能看影响面的人就是能删的人。
+   */
+  @ApiBearerAuth("JWT")
+  @UseGuards(JwtAuthGuard)
+  @Get(":id/removal-impact")
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({
+    summary: "Preview what deleting this executor will break",
+    description:
+      "Counts tasks pinning this executor via task.executorId / " +
+      "task.executorAppName (dispatch would fail after deletion) and the " +
+      "pending pull-queue depth.",
+  })
+  @ApiParam({ name: "id", description: "Executor ID" })
+  @ApiResponse({ status: 200, description: "Removal impact summary" })
+  @ApiResponse({ status: 404, description: "Executor not found" })
+  removalImpact(@Param("id") id: string) {
+    return this.svc.describeRemovalImpact(id);
+  }
+
   @ApiBearerAuth("JWT")
   @UseGuards(JwtAuthGuard)
   @Delete(":id")

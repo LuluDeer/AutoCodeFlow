@@ -95,7 +95,12 @@ services:
     restart: unless-stopped
     mem_limit: 256m
     cpus: '0.5'
-    command: redis-server --requirepass ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env} --maxmemory 256mb --maxmemory-policy allkeys-lru --appendonly yes
+    # BullMQ 硬性要求 noeviction：allkeys-lru 会在内存压力下静默驱逐队列任务/
+    # 分布式锁/去重键（jobs 完成事件、锁、stalled 检测全依赖 Redis 键存活），
+    # 表现为任务凭空消失且无报错。到达 maxmemory 后写入报错（OOM command not
+    # allowed）而非丢数据——应通过监控告警（redis-exporter 的
+    # redis_memory_used_bytes / redis_maxmemory 比值）及时扩容，而不是靠驱逐。
+    command: redis-server --requirepass ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env} --maxmemory 256mb --maxmemory-policy noeviction --appendonly yes
     volumes:
       - redis_data:/data
     healthcheck:
@@ -226,7 +231,9 @@ services:
       VITE_API_URL_INTERNAL: ${VITE_API_URL_INTERNAL:-http://localhost:3105}
       VITE_API_URL_EXTERNAL: ${VITE_API_URL_EXTERNAL:-}
     healthcheck:
-      test: ['CMD', 'wget', '-qO-', 'http://localhost/health']
+      # 同 verdaccio（R8）：nginx:alpine 的 busybox wget 把 localhost 解析到
+      # ::1，而 nginx 只监听 IPv4 → healthcheck 恒 connection refused。
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1/health']
       interval: 30s
       timeout: 10s
       retries: 3
@@ -322,7 +329,16 @@ services:
       # （failureReason=sandbox_unavailable），绝不静默降级为无沙箱运行。
       # 前置验证步骤见 docs/deployment.md「容器安全（SEC-07）」段。
       TASK_SANDBOX: 'bwrap'
+      # DEEP-AUDIT B·2.2：PYPI_REGISTRY_URL 是 **--index-url 语义（替换默认
+      # 索引）**，而非附加；registry-pypi 是纯文件仓、**无上游代理**——默认
+      # 值下任何未手动上传到私有源的包（含 PyPI 官方包）安装都会失败。若需
+      # 同时可见官方源，设 PYPI_EXTRA_INDEX_URL（以 --extra-index-url 追加），
+      # 或把本值显式置空（uv 回落默认 PyPI）。node 执行器的 PYTHON_REGISTRY_URL
+      # 同语义。
       PYPI_REGISTRY_URL: ${PYPI_REGISTRY_URL:-http://registry-pypi:8003/simple/}
+      # 可选：追加官方索引（--extra-index-url 语义），缓解「私有源无上游、
+      # 公共包必失败」；不设则行为不变。
+      PYPI_EXTRA_INDEX_URL: ${PYPI_EXTRA_INDEX_URL:-}
       # ── python_task_multiversion：解释器缓存池与多版本 ──────────────
       # 任务可声明 runtimeVersion（Python 主.次版本）按需获取解释器；不声明
       # 则沿用宿主解释器（存量语义逐字节不变）。
@@ -420,7 +436,10 @@ services:
       # 解释器池留足余量，比堆膨胀到 mem_limit 被 cgroup 杀掉更早、更可控。
       NODE_OPTIONS: '--max-old-space-size=1024'
       NPM_REGISTRY_URL: ${NPM_REGISTRY_URL:-http://registry-npm:4873}
+      # 与 executor-python 的 PYPI_REGISTRY_URL 同语义：--index-url 替换默认
+      # 索引、registry-pypi 无上游代理；可用 PYPI_EXTRA_INDEX_URL 追加官方索引。
       PYTHON_REGISTRY_URL: ${PYTHON_REGISTRY_URL:-http://registry-pypi:8003/simple/}
+      PYPI_EXTRA_INDEX_URL: ${PYPI_EXTRA_INDEX_URL:-}
       # ── python_task_multiversion：解释器缓存池（node 侧同构） ────────
       # executor-node 的 python 分支与 executor-python 对等（声明版本按需
       # 获取解释器）。uv 定位顺序：UV_BIN → PATH → desktop 内置（Electron
@@ -469,7 +488,9 @@ services:
       admin-api:
         condition: service_healthy
     healthcheck:
-      test: ['CMD', 'wget', '-qO-', 'http://localhost:8002/health']
+      # executor-node 显式绑 0.0.0.0（E-25，仅 IPv4），busybox wget 的 localhost
+      # 解析到 ::1 恒 connection refused（2026-10-01 staging 实跑实证）→ 127.0.0.1。
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:8002/health']
       interval: 30s
       timeout: 10s
       retries: 3

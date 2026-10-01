@@ -761,11 +761,17 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     // pushDeployToExecutor runs only from approve(); rejection/cancel
     // marks the row FAILED so the slot frees.
     if (app.approvalRequired) {
+      // DEEP-AUDIT B·4.2：缺省 runMode 改为 ONCE（三处同口径）。旧缺省
+      // DAEMON 意味着"调用方没说怎么跑"时后端替你启动一个**常驻进程**——
+      // 脚本/一次性任务形态的应用会被静默常驻（占内存、永不退出、重试
+      // 无限堆积）；ONCE 是"跑完即止"的保守缺省，显式想要常驻的调用方
+      // 一定会传 runMode。前端 18130d66 起按应用形态显式默认，该缺省只
+      // 兜住 API 直调/旧客户端路径。
       const request = this.repo.create({
         applicationId,
         executorId: executor.id,
         executorAddress: executor.address,
-        runMode: dto.runMode ?? RunMode.DAEMON,
+        runMode: dto.runMode ?? RunMode.ONCE,
         env: dto.env ?? app.env,
         startCommand: dto.startCommand ?? app.entrypoint ?? null,
         status: DeploymentStatus.PENDING,
@@ -822,14 +828,16 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
         applicationId,
         executorId: executor.id,
         status: In([DeploymentStatus.FAILED, DeploymentStatus.STOPPED]),
-        runMode: dto.runMode ?? RunMode.DAEMON,
+        // DEEP-AUDIT B·4.2：缺省 ONCE（同 deploy() 缺省口径，见上方总注）。
+        runMode: dto.runMode ?? RunMode.ONCE,
       },
       order: { updatedAt: "DESC" },
     });
 
     if (reusable) {
       reusable.executorAddress = executor.address;
-      reusable.runMode = dto.runMode ?? RunMode.DAEMON;
+      // DEEP-AUDIT B·4.2：缺省 ONCE（同上）。
+      reusable.runMode = dto.runMode ?? RunMode.ONCE;
       reusable.env = dto.env ?? app.env;
       reusable.startCommand = dto.startCommand ?? app.entrypoint ?? null;
       // 重置为在途态：心跳会把它收敛到 running/failed。
@@ -871,7 +879,9 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       applicationId,
       executorId: executor.id,
       executorAddress: executor.address,
-      runMode: dto.runMode ?? RunMode.DAEMON,
+      // DEEP-AUDIT B·4.2：缺省 ONCE（同 deploy() 缺省口径，见上方总注）——
+      // 未声明模式时绝不静默启动常驻进程。
+      runMode: dto.runMode ?? RunMode.ONCE,
       env: dto.env ?? app.env,
       startCommand: dto.startCommand ?? app.entrypoint ?? null,
       status: DeploymentStatus.PENDING,

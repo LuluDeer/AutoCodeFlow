@@ -72,4 +72,16 @@ describe("AuditQueryDto", () => {
     expect(result.resource).toBe("executor");
     expect(result.resourceId).toBe("e-1");
   });
+
+  // result 筛选（success/failure）：前端下拉 + CSV 导出同滤（R4 P1-2 parity）。
+  it("accepts result=success|failure", async () => {
+    expect((await validate({ result: "success" })).result).toBe("success");
+    expect((await validate({ result: "failure" })).result).toBe("failure");
+  });
+
+  it("rejects a result outside the success/failure whitelist", async () => {
+    await expect(validate({ result: "bogus" })).rejects.toThrow(
+      BadRequestException,
+    );
+  });
 });

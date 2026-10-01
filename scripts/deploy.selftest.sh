@@ -224,6 +224,44 @@ case "$(uname -s)" in
         ;;
 esac
 
+# ── 10. 迁移前备份 / detached HEAD（审计二轮 B-1/B-5）────────────
+printf '\n── 10. 迁移前备份 / detached HEAD ──\n'
+# B-1：迁移前备份必须走 compose pg-backup 服务（PG* 由 compose 注入）——旧实现
+# 宿主机直跑 pg-backup.sh，其强依赖的 PGHOST/PGUSER/PGPASSWORD/PGDATABASE 四个
+# 变量只在 compose 服务 environment 里定义，缺一即失败且 stderr 被 2>/dev/null
+# 吞掉 = 默认必失败的静默失败。dry-run 打印的命令里必须出现 pg-backup。
+out="$(bash "$DEPLOY" --dry-run --skip-preflight 2>&1 || true)"
+assert_contains "迁移前备份走 compose pg-backup 服务" "pg-backup" "$out"
+if printf '%s' "$out" | grep -F "pg-backup" | grep -qF "2>/dev/null"; then
+    fail "备份命令仍吞 stderr（2>/dev/null）"
+else
+    pass "备份命令不再吞 stderr"
+fi
+
+# B-5：rollback 遗留的 detached HEAD 必须在部署启动时告警（提示基于该 commit
+# 继续 + 如何切回）。构造一个独立 git 仓库并 detach——deploy.sh 以自身所在目录
+# 为 ROOT_DIR，所以要把脚本复制进去跑。
+tmp_git="$(mktemp -d)"
+cp "$DEPLOY" "$tmp_git/deploy.sh"
+cp "$ROOT_DIR/.env.example" "$tmp_git/.env.example" 2>/dev/null || true
+(
+    cd "$tmp_git" && git init -q \
+        && git -c user.email=selftest@acf -c user.name=selftest commit -q --allow-empty -m init \
+        && git checkout -q --detach HEAD
+) >/dev/null 2>&1
+out="$(cd "$tmp_git" && bash ./deploy.sh --dry-run --skip-preflight 2>&1 || true)"
+assert_contains "detached HEAD 启动告警" "detached HEAD" "$out"
+assert_contains "detached HEAD 提示基于该 commit 继续" "基于该 commit 构建" "$out"
+rm -rf "$tmp_git"
+
+# 反证：正常分支上不得出现该告警（真仓库自身即分支工作树）
+out="$(bash "$DEPLOY" --dry-run --skip-preflight 2>&1 || true)"
+if printf '%s' "$out" | grep -qF "detached HEAD"; then
+    fail "分支工作树上竟报 detached HEAD（反证失败）"
+else
+    pass "分支工作树无 detached HEAD 告警"
+fi
+
 # ── 汇总 ───────────────────────────────────────────────────────────
 printf '\n=== 结果: %d 通过, %d 失败 ===\n\n' "$PASSES" "$FAILURES"
 [ "$FAILURES" -eq 0 ] || exit 1

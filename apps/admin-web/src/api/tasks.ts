@@ -85,6 +85,13 @@ export interface Task {
   runtime: string;
   entrypoint: string;
   /**
+   * A4（第三轮审计）：上一轮触发未结束时新触发的处置策略（与后端
+   * task.entity.ts BlockStrategy 对齐）：serial=排队等待（默认）、
+   * discard=丢弃本轮触发、cover_early=取消旧执行改跑新触发。
+   * null = 存量行未声明（后端默认 serial）。
+   */
+  blockStrategy?: 'serial' | 'discard' | 'cover_early' | null;
+  /**
    * W-21: 依赖声明（后端 tasks.requirements jsonb）。python runtime 任务由
    * executor-python 装进 per-task uv venv；node runtime 由 executor-node 安装。
    * 仅 entrypoint 任务有意义，glue 脚本任务在执行器侧被清零。
@@ -170,6 +177,9 @@ export interface Task {
   gitRepo?: string | null;
   gitBranch?: string | null;
   gitCommit?: string | null;
+  /** RETRIGGER-TERMINAL: 任务当前版本（GET /tasks/:id 响应含该实体列；
+   * 执行行的 taskVersion 即派发时刻的本列快照，供重跑确认 Modal 对比）。 */
+  currentVersion?: string | null;
   glueSource?: string | null;
   glueLanguage?: string | null;
   /**
@@ -194,10 +204,11 @@ export interface Task {
 }
 
 // 与后端 ExecutionStatus 枚举对齐（apps/admin-api/src/modules/task/entities/task-execution.entity.ts），
-// 含 'killed' 手动终止终态。
+// 含 'killed' 手动终止终态、'waiting' 互斥/部署约束排队态（MUTEX-01，开放态可终止）。
 export type TaskExecutionStatus =
   | 'pending'
   | 'running'
+  | 'waiting'
   | 'success'
   | 'failed'
   | 'timeout'
@@ -262,6 +273,24 @@ export interface VersionDiff {
   [key: string]: { old: unknown; new: unknown };
 }
 
+/**
+ * GET /tasks/:id/stats 响应（FIX-5.1 统计口径收口）。
+ *
+ * - successRate / succeeded / failed / totalRuns：**全量**口径（后端 GROUP BY）。
+ *   failed = FAILED + TIMEOUT（killed/cancelled 是人工/调度动作，不计入失败率）。
+ * - recentSuccessRate：近 20 次窗口口径（字段名即窗口标注，趋势参考）。
+ * - recentExecutions：近 20 次读投影（列表投影 − result 大对象列）。
+ */
+export interface TaskStats {
+  recentExecutions: TaskExecution[];
+  successRate: number;
+  succeeded: number;
+  failed: number;
+  recentSuccessRate: number;
+  avgDuration: number;
+  totalRuns: number;
+}
+
 export interface PageResult<T> {
   items: T[];
   total: number;
@@ -301,11 +330,21 @@ export const TASK_LIST_PAGE_SIZE = 100;
 export const TASK_LIST_PAGE_CONCURRENCY = 3;
 
 /**
- * A task list of ten million records is already beyond what this page is able
- * to render/use. This cap is only a malformed-total guard; it does not reduce
- * the API's page size or affect normal large lists.
+ * listAll 分页拉取的安全页数上限（页大小 TASK_LIST_PAGE_SIZE=100 → 2000 条）。
+ *
+ * 第四轮审计收敛：此前 100_000 页（≈千万级任务）形同虚设——真到那个量级，
+ * 全量拉取要发几十万个请求早已拖垮浏览器，DAG/依赖下拉也根本渲染不动。
+ * 20 页与 usersApi.listAll 的 maxPages=20 默认值同口径。
+ *
+ * 达上限时**抛错而非静默截断**（调用方如 TaskDependencyGraph 的
+ * useAllTasksForDag 走错误路径渲染错误态，不会画出缺边 DAG），
+ * 并 console.warn 留诊断痕迹（见 listAllTasks）。
+ *
+ * 后端闭包/全量轻量端点（一次请求返回全量 id+name+dependencies）属未来项，
+ * 落地后此护栏可整体移除。仅防 total 畸形的守卫，不影响正常大列表的
+ * 常规分页读取。
  */
-export const TASK_LIST_MAX_PAGES = 100_000;
+export const TASK_LIST_MAX_PAGES = 20;
 
 /**
  * U2: GET /tasks/:id/executions/:execId/logs 响应形状
@@ -402,6 +441,13 @@ async function listAllTasks(
   }
   const expectedTotalPages = Math.ceil(first.total / TASK_LIST_PAGE_SIZE);
   if (expectedTotalPages > TASK_LIST_MAX_PAGES) {
+    // 第四轮审计：达上限**抛错而非静默截断**——DAG（useAllTasksForDag）走
+    // 错误路径渲染错误态，绝不画缺边图；console.warn 留诊断痕迹，线上排障
+    // 不必复现即可在 DevTools 看到护栏触发。诊断文案复用与抛错同一条
+    // i18n 消息（单一事实源，i18n 守卫不认裸中文模板串）。
+    console.warn(
+      `[tasks.listAll] ${i18n.t('taskList.tooManyPages', { total: first.total, pages: expectedTotalPages, max: TASK_LIST_MAX_PAGES })}`,
+    );
     throw invalidTaskListResponse(
       i18n.t('taskList.tooManyPages', { total: first.total, pages: expectedTotalPages, max: TASK_LIST_MAX_PAGES }),
     );
@@ -550,10 +596,13 @@ export const tasksApi = {
     client.post('/tasks/batch/resume', { taskIds }) as Promise<BatchItemResult[]>,
   batchDelete: (taskIds: string[]) =>
     client.post('/tasks/batch/delete', { taskIds }) as Promise<BatchItemResult[]>,
-  stats: (id: string, signal?: AbortSignal) =>
+  // FIX-5.1（统计口径收口）：后端以 GROUP BY 给出全量计数——successRate/
+  // succeeded/failed 全量口径（failed = FAILED + TIMEOUT），近窗成功率另给
+  // recentSuccessRate。前端不再用 totalRuns×(1−rate) 派生失败数。
+  stats: (id: string, signal?: AbortSignal): Promise<TaskStats> =>
     signal
-      ? client.get(`/tasks/${id}/stats`, { signal }) as Promise<{ recentExecutions: TaskExecution[]; successRate: number; avgDuration: number; totalRuns: number }>
-      : client.get(`/tasks/${id}/stats`) as Promise<{ recentExecutions: TaskExecution[]; successRate: number; avgDuration: number; totalRuns: number }>,
+      ? client.get(`/tasks/${id}/stats`, { signal }) as Promise<TaskStats>
+      : client.get(`/tasks/${id}/stats`) as Promise<TaskStats>,
   updateGlue: (id: string, source: string, language?: string) =>
     client.put(`/tasks/${id}/glue`, { source, language }),
   allExecutions: (

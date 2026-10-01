@@ -75,6 +75,8 @@ import { executorsCommand } from '../commands/executors.js';
 import { deployCommand } from '../commands/deploy.js';
 import { auditCommand } from '../commands/audit.js';
 import { loginCommand } from '../commands/login.js';
+import { sopCommand } from '../commands/sop.js';
+import { agentCommand } from '../commands/agent.js';
 
 const mockedGet = vi.mocked(get);
 const mockedPost = vi.mocked(post);
@@ -781,5 +783,203 @@ describe('acf --json outputs (ECO-02)', () => {
     }
     const line = logs.find((l) => l.startsWith('['));
     expect(JSON.parse(line as string)).toEqual([{ id: 'a-1', name: 'app', status: 'running' }]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 第四轮审计（--json 补面）：task get / task logs / task trigger / audit list
+// 补齐 ECO-02 的 CI 消费面（数据源已是结构化对象，pretty JSON 直出）。
+// ---------------------------------------------------------------------------
+describe('acf --json 补面（第四轮审计）', () => {
+  function captureStdout(): { logs: string[]; spy: ReturnType<typeof vi.spyOn> } {
+    const logs: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => { logs.push(a.join(' ')); });
+    return { logs, spy };
+  }
+
+  it('task get --json prints the task payload as JSON', async () => {
+    const task = { id: 't1', name: 'demo', runtime: 'python', status: 'active', cronExpression: '0 2 * * *' };
+    mockedGet.mockResolvedValueOnce(task);
+    const { logs, spy } = captureStdout();
+    try {
+      await run(tasksCommand(), 'task get t1 --json');
+    } finally {
+      spy.mockRestore();
+    }
+    expect(mockedGet).toHaveBeenCalledWith('/tasks/t1');
+    const line = logs.find((l) => l.startsWith('{'));
+    expect(line).toBeDefined();
+    expect(JSON.parse(line as string)).toEqual(task);
+  });
+
+  it('task logs --json prints the log page object (lines/totalLines/hasMore)', async () => {
+    const page = { lines: ['line-1', 'line-2'], totalLines: 2, hasMore: false };
+    mockedGet.mockResolvedValueOnce(page);
+    const { logs, spy } = captureStdout();
+    try {
+      await run(tasksCommand(), 'task logs x1 --json');
+    } finally {
+      spy.mockRestore();
+    }
+    const line = logs.find((l) => l.startsWith('{'));
+    expect(JSON.parse(line as string)).toEqual(page);
+  });
+
+  it('task logs --tail N --json attaches the computed fromLine', async () => {
+    mockedGet
+      .mockResolvedValueOnce({ totalLines: 10 })
+      .mockResolvedValueOnce({ lines: ['6', '7', '8', '9', '10'], totalLines: 10 });
+    const { logs, spy } = captureStdout();
+    try {
+      await run(tasksCommand(), 'task logs x1 --tail 5 --json');
+    } finally {
+      spy.mockRestore();
+    }
+    const line = logs.find((l) => l.startsWith('{'));
+    expect(JSON.parse(line as string)).toEqual({
+      lines: ['6', '7', '8', '9', '10'],
+      totalLines: 10,
+      fromLine: 5,
+    });
+  });
+
+  it('task trigger --json prints the created execution (stdout clean for CI)', async () => {
+    const exec = { id: 'x9', taskId: 't1', status: 'running', createdAt: '2026-01-01T00:00:00Z' };
+    mockedPost.mockResolvedValueOnce(exec);
+    const { logs, spy } = captureStdout();
+    try {
+      await run(tasksCommand(), 'task trigger t1 --json');
+    } finally {
+      spy.mockRestore();
+    }
+    expect(mockedPost).toHaveBeenCalledWith('/tasks/t1/trigger');
+    const line = logs.find((l) => l.startsWith('{'));
+    expect(JSON.parse(line as string)).toEqual(exec);
+  });
+
+  it('audit list --json prints the raw { data, total } envelope', async () => {
+    const envelope = {
+      data: [{ id: 7, username: 'admin', action: 'task.trigger', resource: 'task', result: 'success', createdAt: '2026-01-01T00:00:00Z' }],
+      total: 1,
+    };
+    mockedGet.mockResolvedValueOnce(envelope);
+    const { logs, spy } = captureStdout();
+    try {
+      await run(auditCommand(), 'audit list --json');
+    } finally {
+      spy.mockRestore();
+    }
+    const line = logs.find((l) => l.startsWith('{'));
+    expect(JSON.parse(line as string)).toEqual(envelope);
+  });
+
+  it('--json 选项确实注册在四条命令上（帮助文案对齐 task list）', () => {
+    const tasks = tasksCommand();
+    const audit = auditCommand();
+    const expected = 'Emit raw JSON (CI-consumable, no table)';
+    for (const name of ['get', 'logs', 'trigger']) {
+      const sub = tasks.commands.find((c) => c.name() === name);
+      expect(sub, `task ${name} 缺 --json`).toBeTruthy();
+      const opt = sub!.options.find((o) => o.long === '--json');
+      expect(opt?.description).toBe(expected);
+    }
+    const auditOpt = audit.commands.find((c) => c.name() === 'list')!.options.find((o) => o.long === '--json');
+    expect(auditOpt?.description).toBe(expected);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SOP / agent sessions (P5/P6 admin-side minimal loop)
+// ---------------------------------------------------------------------------
+describe('acf sop list', () => {
+  it('GETs /sop with page/pageSize and optional status', async () => {
+    mockedGet.mockResolvedValueOnce({
+      items: [
+        {
+          id: 's1',
+          slug: 'release-check',
+          title: 'Release checklist',
+          status: 'published',
+          currentVersion: '1.0.0',
+          updatedAt: '2026-01-01T00:00:00Z',
+        },
+      ],
+      total: 1,
+    });
+    await run(sopCommand(), 'sop list --status published --page 2 --page-size 10');
+    expect(mockedGet).toHaveBeenCalledWith('/sop', {
+      page: '2',
+      pageSize: '10',
+      status: 'published',
+    });
+  });
+
+  it('omits the status filter when not provided', async () => {
+    mockedGet.mockResolvedValueOnce({ items: [], total: 0 });
+    await run(sopCommand(), 'sop list');
+    expect(mockedGet).toHaveBeenCalledWith('/sop', {
+      page: '1',
+      pageSize: '20',
+      status: undefined,
+    });
+  });
+});
+
+describe('acf sop show', () => {
+  it('GETs /sop/:id', async () => {
+    mockedGet.mockResolvedValueOnce({
+      id: 's1',
+      slug: 'release-check',
+      title: 'Release checklist',
+      status: 'published',
+      currentVersion: '1.0.0',
+      updatedAt: '2026-01-01T00:00:00Z',
+      bodyMarkdown: '# Steps',
+    });
+    const logs: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => { logs.push(a.join(' ')); });
+    try {
+      await run(sopCommand(), 'sop show s1');
+    } finally {
+      spy.mockRestore();
+    }
+    expect(mockedGet).toHaveBeenCalledWith('/sop/s1');
+    expect(logs.some((l) => l.includes('Release checklist'))).toBe(true);
+    expect(logs.some((l) => l.includes('# Steps'))).toBe(true);
+  });
+});
+
+describe('acf agent sessions', () => {
+  it('GETs /agent/sessions with kind/status filters', async () => {
+    mockedGet.mockResolvedValueOnce({
+      items: [
+        {
+          id: 'as1',
+          kind: 'incident',
+          status: 'waiting_input',
+          title: 'executor-03 离线排查',
+          createdAt: '2026-01-01T00:00:00Z',
+        },
+      ],
+      total: 1,
+    });
+    await run(agentCommand(), 'agent sessions --kind incident --status waiting_input');
+    expect(mockedGet).toHaveBeenCalledWith('/agent/sessions', {
+      page: '1',
+      pageSize: '20',
+      kind: 'incident',
+      status: 'waiting_input',
+    });
+  });
+
+  it('omits filters that were not provided', async () => {
+    mockedGet.mockResolvedValueOnce({ items: [], total: 0 });
+    await run(agentCommand(), 'agent sessions');
+    expect(mockedGet).toHaveBeenCalledWith('/agent/sessions', {
+      page: '1',
+      pageSize: '20',
+      kind: undefined,
+      status: undefined,
+    });
   });
 });

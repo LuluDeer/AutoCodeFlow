@@ -12,8 +12,8 @@ AutoCodeFlow 是一个分布式任务调度与执行平台，支持动态脚本�
 - **应用分组** — 将任务归属到应用（Application），支持批量操作与权限隔离
 - **通知渠道** — 企业微信、钉钉、Slack Webhook、邮件（SMTP）
 - **AI 辅助** — 可选接入 OpenAI / Ollama，辅助编写脚本与失败分析
-- **MCP 集成** — 提供 MCP Server，AI Agent 可直接管理任务与执行
-- **CLI 工具** — `acf` 命令行工具，支持任务/执行器/应用的脚本化管理
+- **MCP 集成** — 提供 MCP Server，AI Agent 可直接管理任务与执行，并可查看 SOP 指派/澄清、回复人工澄清与跟踪 Agent 会话
+- **CLI 工具** — `acf` 命令行工具，支持任务/执行器/应用的脚本化管理（`acf sop list|show`、`acf agent sessions` 覆盖 SOP 与 Agent 会话查询）
 - **SDK 生态** — Python / Node.js SDK，提供任务上下文、HTTP 客户端、日志等能力
 - **监控告警** — Prometheus 指标端点；健康检查接口
 - **审计日志** — 所有执行记录可追溯，支持执行详情对比
@@ -101,6 +101,8 @@ docker compose logs -f admin-api
 | executor-desktop | 桌面应用托盘启动 |
 | npm registry | http://localhost:4873 |
 | PyPI registry | http://localhost:8003 |
+
+> **私有 PyPI 源语义（重要）**：`PYPI_REGISTRY_URL` 是 `--index-url`（**替换**默认索引）而非附加，且自建 registry-pypi **无上游代理**——默认部署下，任何未手动上传到私有源的包（含 PyPI 官方包）安装都会失败。如需同时可见官方源，设置 `PYPI_EXTRA_INDEX_URL`（以 `--extra-index-url` 追加，executor-node / executor-python 同构支持），或将 `PYPI_REGISTRY_URL` 显式置空回落官方源。npm 侧 Verdaccio 自带 npmjs 上游代理，无此限制。
 
 默认管理员账号由 `INITIAL_ADMIN_PASSWORD` 环境变量设置，首次登录后请立即修改密码。
 
@@ -228,7 +230,7 @@ acf app list
 
 ### MCP Server
 
-让 Claude Desktop、Cursor 等 AI Agent 直接管理 AutoCodeFlow 任务与执行。暴露 **43 个工具**，覆盖任务 CRUD 与版本管理、手动触发、执行分析与日志、终止/重试、应用与部署审批、执行器监控、审计日志、项目角色等（完整清单见下方 mcp-server README）。
+让 Claude Desktop、Cursor 等 AI Agent 直接管理 AutoCodeFlow 任务与执行。暴露 **49 个工具**，覆盖任务 CRUD 与版本管理、手动触发、执行分析与日志、终止/重试、应用与部署审批、执行器监控、审计日志、项目角色、SOP 指派与澄清回复、Agent 会话查看等（完整清单见下方 mcp-server README）。
 
 详见 [packages/mcp-server/README.md](packages/mcp-server/README.md)
 
@@ -378,6 +380,11 @@ docker compose exec admin-api npm run migration:run
 1. Fork 本仓库并创建功能分支：`git checkout -b feat/your-feature`
 2. 提交代码并确保测试通过：`npm run test`
 3. 提交 Pull Request，描述变更内容
+
+> **安装须知**：根目录 `package.json` 是零依赖的 workspace 占位入口，根目录
+> `npm install` / `npm ci` 是**空操作**（根 lock 只登记根包自身）——请进入
+> `apps/*` 与 `packages/*` 各自目录分别 `npm install`。开发/编排入口见 `Makefile`
+> 与 `dev.sh`。
 
 ## License
 

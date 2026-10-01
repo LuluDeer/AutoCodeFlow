@@ -7,6 +7,8 @@ set -euo pipefail
 # ⚠ O-5（维护提示）：本脚本与 dev.sh 功能重叠，Makefile 为唯一规范入口
 #   （make dev / make infra-up / ...）。本脚本保留为便捷封装，行为如有漂移
 #   以 Makefile 为准。
+# ⚠ 弃用提示（第四轮审计）：请改用 ./dev.sh（已收口为 Makefile 薄转发）；
+#   本脚本保留不删（历史 CI/文档仍引用），不再新增能力。
 
 # F-4: docker-compose v1 独立二进制 2023 年 EOL，现代 Docker 只带 `docker compose`
 # v2 插件——v2 优先探测，回退 v1（与 Makefile:9 / deploy.sh compose() 同一策略）。

@@ -25,6 +25,9 @@ import { FeishuChannel } from "./channels/feishu.channel";
 import { Task } from "../task/entities/task.entity";
 import { AuditModule } from "../audit/audit.module";
 import { ExecutionEventsListener } from "./execution-events.listener";
+// DEEP-AUDIT B·1.6: 失败通知聚合窗（Redis hash + TTL，跨实例唯一 flusher）。
+// AuditModule 供 flush/record 失败的 NOTIFICATION_FAILED 审计兜底（上面已引入）。
+import { NotificationDigestService } from "./notification-digest.service";
 
 @Module({
   imports: [
@@ -49,6 +52,7 @@ import { ExecutionEventsListener } from "./execution-events.listener";
     WebhookChannel,
     FeishuChannel,
     ExecutionEventsListener,
+    NotificationDigestService,
   ],
   exports: [
     NotificationService,

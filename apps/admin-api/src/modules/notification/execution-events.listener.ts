@@ -19,6 +19,7 @@ import {
   Logger,
   OnModuleDestroy,
   OnModuleInit,
+  Optional,
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
@@ -30,6 +31,12 @@ import {
 import { DomainEventBus } from "../../common/services/domain-event-bus.service";
 import { AuditService } from "../audit/audit.service";
 import { NotificationService } from "./notification.service";
+// DEEP-AUDIT B·1.6: 失败通知聚合窗——失败类终态先尝试入窗，窗到期发一条汇总，
+// 告警风暴（同任务高频失败）不再逐条轰炸全渠道。
+import {
+  DigestDecision,
+  NotificationDigestService,
+} from "./notification-digest.service";
 
 @Injectable()
 export class ExecutionEventsListener implements OnModuleInit, OnModuleDestroy {
@@ -41,6 +48,10 @@ export class ExecutionEventsListener implements OnModuleInit, OnModuleDestroy {
     private readonly auditService: AuditService,
     @InjectRepository(Task)
     private readonly taskRepo: Repository<Task>,
+    // @Optional：存量测试模块未装配 digest 时自动回退逐条直发（既有行为），
+    // 生产模块（notification.module.ts）始终提供。
+    @Optional()
+    private readonly digestService?: NotificationDigestService,
   ) {}
 
   onModuleInit(): void {
@@ -65,6 +76,10 @@ export class ExecutionEventsListener implements OnModuleInit, OnModuleDestroy {
   onExecutionFailed = async (
     event: ExecutionTerminalEventPayload,
   ): Promise<void> => {
+    // 第四轮审计（A3）: 跨实例 relay 补发的载荷跳过——告警副作用在起源实例
+    // 本地 emit 时已执行，多副本下不跳过 = 双倍通知（viaRelay 契约见
+    // execution-events-relay.service.ts / domain-events.ts）。
+    if (event?.viaRelay) return;
     const taskName = event.taskName ?? event.taskId ?? event.executionId;
     // 通知内容摘要：failureReason + errorMessage（缺省回退到回调日志头），
     // 控制在 500 字符内，避免把整段日志塞进告警。
@@ -80,6 +95,19 @@ export class ExecutionEventsListener implements OnModuleInit, OnModuleDestroy {
       const task = event.taskId
         ? await this.taskRepo.findOne({ where: { id: event.taskId } })
         : null;
+
+      // DEEP-AUDIT B·1.6: 先尝试入聚合窗（NOTIFICATION_FAILURE_DIGEST_MINUTES，
+      // 默认 10；0=关闭）。返回 aggregated 表示失败已入窗、汇总在窗到期时由
+      // digest 服务发出（本路径跳过逐条直发）；bypass/服务未装配/入窗过程任何
+      // 异常 → 回退逐条即时发送的既有行为（fail-open，绝不吞告警）。
+      const decision = await this.tryRecordDigest(
+        event,
+        taskName,
+        errorSummary,
+        task,
+      );
+      if (decision === "aggregated") return;
+
       await this.notificationService.notifyFailureWithConfig(
         taskName,
         event.executionId,
@@ -112,4 +140,39 @@ export class ExecutionEventsListener implements OnModuleInit, OnModuleDestroy {
       }
     }
   };
+
+  /**
+   * 失败入聚合窗。digest 服务未装配（@Optional 缺省）→ undefined → 直发；
+   * recordFailure 内部 fail-open（Redis 不可用等返回 bypass），这里再兜一层
+   * try/catch——digest 链路的任何意外都绝不阻断逐条直发的既有告警语义。
+   */
+  private tryRecordDigest(
+    event: ExecutionTerminalEventPayload,
+    taskName: string,
+    errorSummary: string,
+    task: Task | null,
+  ): Promise<DigestDecision | undefined> {
+    const digest = this.digestService;
+    if (!digest) return Promise.resolve(undefined);
+    return digest
+      .recordFailure({
+        taskId: event.taskId ?? undefined,
+        taskName,
+        failureReason: event.failureReason ?? "UNKNOWN",
+        errorSummary,
+        executionId: event.executionId,
+        alarmEmail: task?.alarmEmail,
+        alarmChannels: task?.alarmChannels,
+        runbook: task?.runbook,
+        applicationId: task?.applicationId ?? undefined,
+      })
+      .catch((err: unknown) => {
+        this.logger.warn(
+          `digest record rejected for execution ${event.executionId}（回退逐条发送）: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+        return undefined;
+      });
+  }
 }

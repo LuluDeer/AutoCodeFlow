@@ -13,9 +13,11 @@
  * 时序契约：调用方必须在 DB 终态落库（save/UPDATE 命中 winner）之后再 emit，
  * 事件即"已提交的既成事实"——listener 可放心按 id 回查。
  */
-import { Global, Injectable, Logger, Module } from "@nestjs/common";
+import { Injectable, Logger } from "@nestjs/common";
 import { EventEmitter } from "node:events";
 import { DomainEventName } from "../events/domain-events";
+// 第四轮审计（A3）: 终态事件跨实例 relay 见 execution-events-relay.service.ts；
+// @Global 模块装配已拆至 domain-event.module.ts（斩断 bus↔relay 循环 import）。
 
 /**
  * 监听器：同步/异步皆可，返回值被忽略（若返回 Promise 其 rejection 由总线
@@ -105,10 +107,3 @@ export class DomainEventBus {
     );
   }
 }
-
-@Global()
-@Module({
-  providers: [DomainEventBus],
-  exports: [DomainEventBus],
-})
-export class DomainEventModule {}

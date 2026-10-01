@@ -3,6 +3,10 @@ import {
   ExecutionStatus,
   TaskExecution,
 } from "./entities/task-execution.entity";
+// 第二轮审计（A4 · 指标漏报）：执行结果计数下沉到本统一终态入口。
+// runtime-metrics-entry 是模块级进程内计数表（运行时值导入，无模块环——
+// 与 agent 模块经 recordRuntime 埋点的既有先例同款）。
+import { recordRuntime } from "../metrics/runtime-metrics-entry";
 
 /**
  * A1（DEEP_REVIEW 0ef3bbe §七）：执行状态机收口——终态跃迁的单一入口。
@@ -182,6 +186,20 @@ export async function transitionToTerminal(
       id,
       executorAddress: readSnapshot(addressSnapshot, id),
     }));
+  }
+
+  // 第二轮审计（A4 · 指标漏报）：autoflow_execution_result_total 原先只在
+  // 回调 winner 路径（task.service.handleCallback）记录，手动终止（kill）、
+  // 执行器重启恢复、丢失执行/watchdog 扫描、入队失败补偿、COVER_EARLY 取消
+  // 等服务端终态全部漏计——结果分布指标系统性偏向「能自己跑完的执行」。
+  // 现下沉到本统一终态入口：按 patch.status 分类，且只对**真正发生跃迁的
+  // winner 行**计数（rows 即唯一 winner 语义；「命中但驱动未返回行」时造出
+  // 的兜底 rows 已由 affected === ids.length 证明全批通过门槛，同为 winner）。
+  // 非终态写路径（如 worker 的 RUNNING 持久化条件 UPDATE）不经本入口，天然
+  // 不会误计；回调路径的旧记录点已删除，重复回调（affected=0）也到不了这里
+  // ——恰好一次计数由 winner 语义保证。
+  for (let i = 0; i < rows.length; i++) {
+    recordRuntime("autoflow_execution_result_total", { status: patch.status });
   }
 
   return { rows, affected, transitioned: rows.length > 0 };

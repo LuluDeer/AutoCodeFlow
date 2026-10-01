@@ -148,7 +148,8 @@ sudo ./deploy.sh --mode source --env production --i-know-its-production
 ③ 依赖准备 Deps     源码模式：npm ci / uv venv（复用 Makefile 的 uv 优先策略）
 ④ 构建 Build        npm run build；写产物指纹供回滚
 ⑤ 基础设施 Infra    PostgreSQL + Redis（复用 infra/docker-compose.yml）
-⑥ 迁移 Migration    迁移前**强制备份**（复用 scripts/pg-backup.sh）
+⑥ 迁移 Migration    迁移前**强制备份**（复用 scripts/pg-backup.sh；失败原因
+                    落 logs/pg-backup-last-error.log，生产失败即中止）
 ⑦ 启动 Start  ★分叉  source=systemd + nginx / docker=compose up
 ⑧ 验证 Verify       指数退避轮询健康端点（替代旧的 sleep 30）
 ```
@@ -201,10 +202,15 @@ sudo ./deploy.sh --mode source --env production --i-know-its-production
 ./deploy.sh rollback
 ```
 
-每次部署写入 `.deploy-manifest.json`（含 git commit / 组件 / 时间），并保留上一份为
+每次部署写入 `.deploy-manifest.json`（含 git commit / 组件 / 时间 / **已执行迁移
+列表**——从 typeorm `migrations` 记录表尽力回填，查不到时为空数组），并保留上一份为
 `.deploy-manifest.prev.json`。回滚**默认只回滚代码，不回滚迁移**——这与
 `docs/rollback-semantics.md` 的既有语义一致（迁移单向，反向回滚会丢数据）。
 需回滚迁移时脚本会提示人工执行 `npm run migration:revert`。
+
+回滚会把仓库留在 **detached HEAD**：rollback 会记录原分支名（`.deploy-state/detached-from-branch`），
+回滚结束时提示切回命令；下一次 `deploy.sh` 启动检测到 detached HEAD 会告警并
+**基于该 commit 继续部署**（不自动切回分支——是否回到分支由 operator 决定）。
 
 ### 自检
 
@@ -576,6 +582,15 @@ docker compose logs pg-backup
   机同卷 = 单点失效，防勒索/误删场景必须异地）。
 - 文档级方案（宿主机 cron + pg_dump）仍有效，见 operations.md「数据备份与恢复」；
   容器方案更开箱即用。
+
+**deploy.sh 的迁移前备份**（⑥ Migration 阶段自动执行，与上面的定时备份共用
+pg-backup.sh）：docker 模式经 `docker compose run --rm pg-backup` 走同一条服务
+定义（PG 连接参数由 compose 注入、产物进 `backup_data` 卷）；source 模式在宿主
+机直跑 pg-backup.sh，连接参数由 deploy.sh 从 `.env` 解析后显式传入（`DB_PASSWORD`
+/`POSTGRES_PASSWORD` 双兜底），产物落 `logs/db-backups/`。备份失败的原因完整落
+`logs/pg-backup-last-error.log`（**不再静默吞 stderr**）——生产环境备份失败会
+中止迁移并在报错里带上该日志路径。空库（首次部署、尚无迁移）没有可备份内容，
+自动跳过备份而不算失败。
 
 ### 监控与告警（profile: monitoring，M-3/M-4）
 
@@ -1177,3 +1192,72 @@ docker compose -f docker-compose.yml -f docker-compose.ha.yml up -d --scale admi
 | 日志回填 | `GET api/logs/:id` 属**读**方向，单向 pull 通道载不了响应体——**明确不在本机制范围内**。NAT 执行器维持既有降级路径（终态回调携带日志尾部） |
 | 升级顺序 | 无约束：中台先升级 → 旧执行器回落 push（行为不变）；执行器先升级 → 上报 v2，旧中台忽略该字段（行为不变） |
 | 桌面端开关 | 设置页 → **网络 & 地址** → 「回连模式」。桌面的典型部署「公网中台 + 内网办公机」下办公机在 NAT 后没有可填的公网地址，push 必然超时——回连模式是该拓扑的唯一正解。落 `config-store.pullMode`，经 `buildExecutorChildEnv` 下发 `EXECUTOR_PULL_MODE=true`，保存即重启内核生效；缺省 `false`（旧配置文件由 schema default 补齐，升级后行为不变） |
+
+---
+
+## 应用部署亲和与派发策略 deploymentPolicy（ARCH-35 / FEAT-22）
+
+> 本节描述「任务应该派给哪台执行器」时**应用部署归属**的参与方式。单一事实源
+> 是 `apps/admin-api/src/modules/executor/executor-deployment-affinity.util.ts`
+> 与 `executor.service.ts` 的模式解析；本文与其实现同步（2026-10 快照）。
+
+### 背景
+
+任务执行不依赖执行器本地是否部署过该应用（git/glue/zip 各 codeSource 都由
+执行器自行拉取到 per-execution 临时目录），因此「部署在哪台」默认只是**调度
+偏好**而非硬过滤。但如果完全不感知部署归属，就会出现「应用只部署在执行器 A，
+任务却跑到执行器 B」的生产事故（2026-09-23，ARCH-35 的动因）。`deploymentPolicy`
+把「部署归属」以两档强度纳入派发。
+
+### 取值与层级
+
+| 层级 | 字段/变量 | 取值 | 说明 |
+|---|---|---|---|
+| 任务级 | `deploymentPolicy`（CreateTaskDto / PATCH） | `strict` / `prefer` / `null` | 省略或 `null` = 跟随全局；PATCH 省略 = 保留，显式 `null` = 回到跟随全局 |
+| 全局 | `EXECUTOR_DEPLOYMENT_POLICY`（admin-api 环境变量） | `prefer`（默认）/ `strict` | 见 configuration.ts 的 `deploymentPolicy` |
+| 总开关 | 执行器 `preferDeployedExecutor` | `true`（默认）/ `false` | `false` 时部署感知**整体下线**——软偏好与 strict 约束都不生效，`deploymentPolicy` 只在开关开启时有意义 |
+
+派发优先级链（从高到低）：`executorId` 钉死 > `executorAppName` >
+deployment 约束/偏好 > 全机队负载评分。deployment 感知**不改变**既有
+分组/标签/解释器过滤与 `loadScore` 评分，只调整候选集或候选顺序。
+
+### prefer（默认，软偏好）
+
+对**已按负载评分排好序**的候选列表做一次**稳定分区**：
+
+- 匹配键：该应用 `app_deployments` 中 `status=running` 的部署行，
+  `executorId` 精确命中优先，`executorAddress` 兜底（存量行无 id、设备重注册
+  id 变地址不变）。
+- 部署命中的候选整体前置，组内保持原评分顺序（最优负载仍是首选）；
+- 命中设备接不了（满载/离线/被过滤）→ 平滑降级回全机队按序占坑。
+- 注意：prefer **不绕开**全机队 Top-K 截断——负载高的部署设备可能根本不在
+  候选池里。不能容忍这个盲区的场景请用 strict。
+
+### strict（硬约束，排队不换机）
+
+任务关联应用存在「用户显式指定过设备」的部署行时，候选集**直接收窄**为这些
+设备（`id IN (...) OR address IN (...)` 的 ONLINE 查询，绕开 Top-K 截断盲区）：
+
+- 状态口径：`running` / `stopped`（once 跑完即 stopped，必须计入）/
+  `upgrading` 三态计入；`failed` / `pending` / `deploying` **不计入**；
+- 集合内仍走既有 group/tags/解释器过滤 + 负载评分 + 原子占坑链；
+- 集合内全部不可派发（离线/满载/被过滤）→ 抛 `DeploymentConstraintWaitError`
+  → 任务置 **WAITING 排队**（不烧重试预算，10s sweep 唤醒重试），
+  **绝不静默换机**——这正是「部署到哪台就只在哪台跑」的直觉语义；
+- 解除出口：删除部署行（`DELETE /app-deployments/:id`，仅终态行可删）。
+
+### 版本跟随（FEAT-22 方案 B）
+
+派发命中部署设备时，任务执行改用**该设备部署行记录的当版包**
+（`deployedVersion` → `application_versions.snapshot.packageUrl`，设备上是什么
+版本就跑什么版本），与 strict 组合即闭环「指定机器 + 指定版本」；未命中部署
+设备（含 prefer 降级回全机队的设备）跑应用**当前版本**。同一设备多行部署时：
+id/address 匹配 → running 行优先 → 同状态取 `deployedAt` 最新 → 无版本痕迹
+（legacy 行）回退当前版。
+
+### 灰度与可观测性
+
+strict 对存量任务是有行为变化的硬约束，建议灰度：单实例置
+`EXECUTOR_DEPLOYMENT_POLICY=strict`，观察 admin-api 日志 `dispatch.decision`
+中的 `deploymentConstraint` 字段（strict 候选集收窄取证）与 `source` 字段
+（`task` = 任务级覆盖 / `global` = 全局默认），确认派发落点符合预期后再全量。

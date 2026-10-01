@@ -13,17 +13,28 @@
  *    28px 统计值顶破卡片。
  *  jsdom 无布局引擎：断言「渲染产物」（类名/colSpan/属性）与 CSS 源文本，
  *  不假装能断言像素宽度；像素级验证由真实浏览器 375px 实测承担。
+ *
+ * 第二轮扩面：任务表单（TaskFormPage，sticky 提交条可达）/ 任务详情
+ * （TaskDetailPage）/ 应用详情（ApplicationDetailPage）三条 375px 走查
+ * （断言只锚定既有结构，不依赖任何正在开发中的新控件）。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, within, waitFor } from '@testing-library/react';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, createMemoryRouter, RouterProvider } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { cloneElement } from 'react';
 import { readFileSync } from 'node:fs';
 import DashboardPage from '../pages/DashboardPage';
 import ExecutionDetailPage, { UI09_DESCRIPTIONS_COLUMN } from '../pages/ExecutionDetailPage';
+import TaskFormPage from '../pages/TaskFormPage';
+import TaskDetailPage from '../pages/TaskDetailPage';
+import ApplicationDetailPage from '../pages/ApplicationDetailPage';
+import { useAuthStore } from '../store/auth';
 import { metricsApi } from '../api/metrics';
 import { tasksApi } from '../api/tasks';
+import { executorsApi } from '../api/executors';
+import { applicationsApi } from '../api/applications';
+import { projectsApi } from '../api/projects';
 
 vi.mock('../api/metrics', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/metrics')>();
@@ -40,8 +51,9 @@ vi.mock('../api/metrics', async (importOriginal) => {
 });
 const mockedMetrics = vi.mocked(metricsApi, true);
 
-// tasksApi 同时服务 DashboardPage（schedulerStats）与 ExecutionDetailPage
-// （execution/get/executions），一次 mock 覆盖两页用到的面。
+// tasksApi 同时服务 DashboardPage（schedulerStats）、ExecutionDetailPage
+// （execution/get/executions）、TaskDetailPage（get/stats/webhookStatus 等）
+// 与 ApplicationDetailPage（list），一次 mock 覆盖四页用到的面。
 vi.mock('../api/tasks', () => ({
   tasksApi: {
     schedulerStats: vi.fn(),
@@ -52,6 +64,18 @@ vi.mock('../api/tasks', () => ({
     killExecution: vi.fn(),
     trigger: vi.fn(),
     analyzeExecution: vi.fn(),
+    // —— 第二轮扩面新增覆盖面（既有用例不消费，纯补充）——
+    list: vi.fn(),
+    listAll: vi.fn(),
+    create: vi.fn(),
+    update: vi.fn(),
+    delete: vi.fn(),
+    pause: vi.fn(),
+    resume: vi.fn(),
+    stats: vi.fn(),
+    updateGlue: vi.fn(),
+    allExecutions: vi.fn(),
+    webhookStatus: vi.fn(),
   },
 }));
 const mockedTasks = vi.mocked(tasksApi, true);
@@ -61,6 +85,50 @@ vi.mock('../api/artifacts', () => ({
 }));
 vi.mock('../api/execution-reports', () => ({
   executionReportsApi: { report: vi.fn() },
+}));
+
+// —— 第二轮扩面：TaskFormPage / TaskDetailPage / ApplicationDetailPage 的
+//    数据面隔离（对齐 task-form-page.test / mobile-ui09.test 的 mock 口径）——
+vi.mock('../api/executors', () => ({
+  executorsApi: { list: vi.fn(), getGroups: vi.fn(), getTags: vi.fn() },
+}));
+vi.mock('../api/applications', () => ({
+  applicationsApi: {
+    list: vi.fn(),
+    get: vi.fn(),
+    update: vi.fn(),
+    getVersionHistory: vi.fn(),
+    rollback: vi.fn(),
+    getReleases: vi.fn(),
+    syncTasks: vi.fn(),
+    upgradeAll: vi.fn(),
+  },
+  deploymentsApi: {
+    list: vi.fn(),
+    get: vi.fn(),
+    deploy: vi.fn(),
+    approve: vi.fn(),
+    reject: vi.fn(),
+    cancel: vi.fn(),
+    stop: vi.fn(),
+    remove: vi.fn(),
+    upgrade: vi.fn(),
+  },
+}));
+vi.mock('../api/projects', () => ({ projectsApi: { list: vi.fn() } }));
+vi.mock('../api/task-templates', () => ({
+  taskTemplatesApi: { list: vi.fn(), get: vi.fn(), create: vi.fn(), remove: vi.fn(), instantiate: vi.fn() },
+}));
+vi.mock('../api/ai', () => ({
+  aiApi: { suggestSchedule: vi.fn(), analyzeApp: vi.fn() },
+}));
+// GlueEditor（monaco）重依赖裁剪——jsdom 缺 queryCommandSupported 等浏览器 API
+vi.mock('../components/GlueEditor', () => ({ default: () => <div data-testid="glue-editor" /> }));
+vi.mock('../components/TaskDependencyGraph', () => ({ default: () => <div data-testid="dep-graph" /> }));
+vi.mock('../components/ParamsEditor', () => ({ default: () => <div data-testid="params-editor" /> }));
+vi.mock('../components/ExecutionCompare', () => ({
+  COMPARE_MAX: 3,
+  ExecutionCompareModal: () => null,
 }));
 
 // recharts ResponsiveContainer 依赖布局测量（对齐 dashboard-ui04 先例：
@@ -218,12 +286,30 @@ beforeEach(() => {
     page: 1,
     pageSize: 100,
   } as never);
+  // —— 第二轮扩面页面的公共数据面（各 describe 可再覆盖）——
+  useAuthStore.setState({ user: { id: 1, username: 'alice', role: 'admin' } as never });
+  mockedTasks.stats.mockResolvedValue({
+    recentExecutions: [],
+    successRate: 0,
+    avgDuration: 0,
+    totalRuns: 0,
+  } as never);
+  mockedTasks.webhookStatus.mockResolvedValue({ enabled: false, url: '' } as never);
+  mockedTasks.listAll.mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 100 } as never);
+  mockedTasks.list.mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 20 } as never);
+  // TaskFormPage 的 run() helper 对请求立即 .then——三个候选源必须给默认值
+  vi.mocked(executorsApi.list).mockResolvedValue([] as never);
+  vi.mocked(executorsApi.getGroups).mockResolvedValue([] as never);
+  vi.mocked(executorsApi.getTags).mockResolvedValue([] as never);
+  vi.mocked(applicationsApi.list).mockResolvedValue([] as never);
+  vi.mocked(projectsApi.list).mockResolvedValue([] as never);
 });
 
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  useAuthStore.getState().logout();
 });
 
 describe('UI-09 DashboardPage 375px 产物', () => {
@@ -337,5 +423,88 @@ describe('UI-09 新增工具类样式源（index.css）', () => {
     // 既有规则回归守卫（只追加、不改动既有类与断点）
     expect(css).toContain('.ui09-hide-mobile');
     expect(css).toContain('.mobile-sider-open .ant-layout-sider');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 第二轮扩面：TaskFormPage / TaskDetailPage / ApplicationDetailPage 375px 走查
+//
+// 断言口径（与上文一致）：只锚定**既有**渲染产物（data-testid / 内联样式 /
+// 文本），不依赖任何正在开发中的新控件。TaskFormPage 消费 useBlocker——
+// 必须走 createMemoryRouter（数据路由），普通 MemoryRouter 下会抛
+// "useBlocker() may be used only in the context of a data router"。
+// ---------------------------------------------------------------------------
+
+function renderOnDataRouter(node: React.ReactElement, path: string) {
+  const router = createMemoryRouter(
+    [
+      { path: '/tasks/new', element: node },
+      { path: '/tasks/:id/edit', element: node },
+      { path: '/tasks/:id', element: node },
+      { path: '/applications/:id', element: node },
+    ],
+    { initialEntries: [path] },
+  );
+  return render(
+    <QueryClientProvider client={makeQueryClient()}>
+      <RouterProvider router={router} />
+    </QueryClientProvider>,
+  );
+}
+
+describe('UI-09 TaskFormPage 375px 产物', () => {
+  it('表单渲染 + sticky 提交条可达（提交按钮可见可点、锚点齐全）', async () => {
+    renderOnDataRouter(<TaskFormPage />, '/tasks/new');
+    // 数据面就绪：执行器/应用/项目候选任一返回即可（这里等待提交条出现）
+    const bar = await screen.findByTestId('task-form-submit-bar');
+    // sticky 提交条常驻视口底部——375px 长表单无需滚动到底即可达提交按钮
+    expect(bar.style.position).toBe('sticky');
+    // jsdom 把内联 bottom: 0 归一化为 '0px'
+    expect(['0', '0px']).toContain(bar.style.bottom);
+    // 提交按钮：admin 可见可点（i18n zh：taskForm.submit.create）
+    // （本套件未装 jest-dom：以「查询命中 + disabled 属性为 false」表达可见可点）
+    const submit = within(bar).getByRole('button', { name: /创建任务/ }) as HTMLButtonElement;
+    expect(submit).toBeTruthy();
+    expect(submit.disabled).toBe(false);
+    // 分区锚点齐全（移动端「锚点跳转」导航的挂载面）
+    expect(screen.getByTestId('section-basic')).toBeTruthy();
+    expect(screen.getByTestId('section-trigger')).toBeTruthy();
+  });
+});
+
+describe('UI-09 TaskDetailPage 375px 产物', () => {
+  it('页头（长任务名标题）与任务配置默认 Tab 渲染；状态行 Badge 渲染', async () => {
+    renderOnDataRouter(<TaskDetailPage />, '/tasks/t1');
+    // PageHeader 标题 = tasksApi.get 的任务名（复用本文件 LONG_NAME 夹具）
+    const header = await screen.findByTestId('page-header');
+    expect(header.textContent).toContain(LONG_NAME);
+    // 默认落在「任务配置」Tab（mobile-ui09 已覆盖其执行记录表格，此处不重复）
+    await screen.findByRole('tab', { name: /^任务配置$/ });
+    // 状态行（Badge + Tag 群，窄屏由 Space wrap 换行）正常挂载。
+    // 不查 .ant-space-wrap——antd 6.6.5 无该类名（本文件上方 Dashboard 用例
+    // 注释同源结论），以状态行可见产物 Badge/Tag 为准。
+    const statusRow = header.parentElement as HTMLElement;
+    expect(statusRow.querySelector('.ant-badge') ?? statusRow.querySelector('.ant-tag')).toBeTruthy();
+  });
+});
+
+describe('UI-09 ApplicationDetailPage 375px 产物', () => {
+  it('应用详情页头 + 五个 Tab 渲染（概览默认激活）', async () => {
+    vi.mocked(applicationsApi.get).mockResolvedValue({
+      id: 'app-1',
+      name: '演示应用',
+      description: '用于移动端走查',
+      status: 'active',
+    } as never);
+    vi.mocked(executorsApi.list).mockResolvedValue([] as never);
+    vi.mocked(projectsApi.list).mockResolvedValue([] as never);
+    renderOnDataRouter(<ApplicationDetailPage />, '/applications/app-1');
+    const header = await screen.findByTestId('page-header');
+    expect(header.textContent).toContain('演示应用');
+    // Tab 全集渲染（概览/部署/任务/版本/发布追溯），默认激活概览
+    const tabs = await screen.findAllByRole('tab');
+    expect(tabs.length).toBeGreaterThanOrEqual(5);
+    const activeTab = tabs.find((t) => t.getAttribute('aria-selected') === 'true');
+    expect(activeTab?.textContent).toContain('概览');
   });
 });

@@ -364,9 +364,7 @@ export default () => ({
      * 启时有意义。
      */
     deploymentPolicy:
-      process.env.EXECUTOR_DEPLOYMENT_POLICY === "strict"
-        ? "strict"
-        : "prefer",
+      process.env.EXECUTOR_DEPLOYMENT_POLICY === "strict" ? "strict" : "prefer",
     // ARCH-27: SSRF 豁免开关在此统一注册 —— 运行时消费方
     // （safe-http.util.assertSafeExecutorUrl）经 ConfigService 读取，
     // 不再直读 process.env。
@@ -501,6 +499,13 @@ export default () => ({
       10,
     ),
     silenceRefreshMs: parseInt(process.env.SILENCE_REFRESH_MS || "15000", 10),
+    // DEEP-AUDIT B·1.6: 失败通知聚合窗（分钟）——同 (taskId, failureReason)
+    // 的失败在窗内聚合，窗到期发一条汇总（次数/原因分布/任务名），同窗 ≥5 条
+    // 升级紧急措辞。0 = 关闭（回退逐条即时发送）。默认 10 分钟。
+    failureDigestMinutes: parseInt(
+      process.env.NOTIFICATION_FAILURE_DIGEST_MINUTES || "10",
+      10,
+    ),
   },
   // ARCH-27: 初次部署 admin 种子账号（users.service onModuleInit）。
   // 此前 users.service 直读 process.env（未注册，审计缺口）；现注册后经
@@ -649,7 +654,15 @@ export const buildTypeOrmDataSourceOptions = (config: {
   const common = {
     entities: [__dirname + "/../**/*.entity{.ts,.js}"],
     migrations: [__dirname + "/../migrations/*{.ts,.js}"],
-    migrationsRun: config.app.nodeEnv !== "development",
+    // 第四轮审计（A2）: 迁移互斥收口——migrationsRun 自动迁移没有任何跨实例
+    // 互斥，HA --scale admin-api=2 双副本同时 boot 会竞跑同一条 pending 迁移链
+    // （migrations 表 SELECT-then-INSERT 竞窗 + DDL 并发）。现恒为 false，迁移
+    // 改由 bootstrap（main.ts，生产/测试路径）在 NestFactory.create **之前**
+    // 以独立 bootstrap DataSource 显式执行，外层 pg_advisory_lock 互斥（见
+    // common/utils/migration-runner.util.ts；锁拿不到轮询等待，finally 释放）；
+    // CLI 路径走 migration-lock-cli.ts 同键包裹。development 沿用旧行为：
+    // 不自动迁移，靠 CLI 显式跑（main.ts 以同一 nodeEnv 条件门禁）。
+    migrationsRun: false,
     // 与 data-source.ts（CLI 迁移路径）同因：TypeORM 1.x 把迁移事务默认模式
     // 从 "each" 改成 "all"，且 "all" 下禁止迁移实例覆盖 transaction
     // （ForbiddenTransactionModeOverrideError）——1790000000022 的 CONCURRENTLY

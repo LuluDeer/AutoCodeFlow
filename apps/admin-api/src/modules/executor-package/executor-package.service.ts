@@ -27,8 +27,10 @@ import {
 import { createResponseReadStream } from "../../common/utils/response-stream.util";
 import {
   isFailedVerdict,
-  scanBufferWithClamd,
+  scanStreamWithClamd,
 } from "../../common/utils/clamd-scan.util";
+// DEEP-AUDIT B·3.1：「最新安装包」按语义化版本取最大（与执行器版本门禁同源）。
+import { compareDottedVersions } from "../executor/version-compare.util";
 import {
   ExecutorPackage,
   ExecutorPackageStatus,
@@ -260,8 +262,13 @@ export class ExecutorPackageService implements OnModuleInit {
 
         // SEC-05: optional clamd hook (same fail-closed policy as the
         // application upload path; CLAMD_ENABLED=false keeps it a no-op).
-        const verdict = await scanBufferWithClamd(
-          await fs.promises.readFile(tmpPath),
+        // DEEP-AUDIT B·3.3：改走 INSTREAM **流式**扫描——multer diskStorage
+        // 已把上传落在 tmpPath，再 readFile 进 Buffer 等于把 500 MB 包整个
+        // 搬进堆里，纯为扫描而生。scanStreamWithClamd（与 application
+        // 上传路径同款）按 4 字节长度前缀分块直灌 clamd，TCP 背压暂停源流，
+        // 堆占用 O(块) 而非 O(包)。verdict 契约不变（fail-closed，不抛）。
+        const verdict = await scanStreamWithClamd(
+          fs.createReadStream(tmpPath),
           {
             enabled: this.configService.get<boolean>("clamd.enabled") === true,
             host: this.configService.get<string>("clamd.host") || "127.0.0.1",
@@ -411,21 +418,31 @@ export class ExecutorPackageService implements OnModuleInit {
   async remove(id: string): Promise<void> {
     const pkg = await this.findOne(id);
 
+    // DEEP-AUDIT B·3.2：顺序反转——**先删行、后删文件**。旧顺序（先 unlink 后
+    // repo.remove）在 DB 删除失败时已经把包文件删了：行还在、文件没了，下载/
+    // 推送全部报错，且行无法重删（remove 幂等的是 unlink 不是 DB）。反转后：
+    //   · DB 失败 → 文件保留，接口把 DB 错误抛给调用方，行与文件状态一致，
+    //     重试删除即可收敛（孤儿文件最多多留一轮）；
+    //   · DB 成功后文件删除失败 → 仅记录 orphan 警告（行已不可见，磁盘孤儿
+    //     不影响任何功能，可由运维清理；同 checksum 重传会直接覆盖同路径）。
+    await this.repo.remove(pkg);
+    this.logger.log(
+      `Deleted executor package: ${pkg.name}@${pkg.version} [${id}]`,
+    );
+
     // R9: async unlink (no sync IO on the request path); best-effort — a
-    // failed deletion is logged and does not block DB deletion.
+    // failed deletion is logged and does not fail the request (the DB row is
+    // already gone; the on-disk orphan is invisible to any listing).
     if (pkg.filePath && fs.existsSync(pkg.filePath)) {
       try {
         await fs.promises.unlink(pkg.filePath);
         this.logger.log(`Deleted file from disk: ${pkg.filePath}`);
       } catch (err) {
-        this.logger.warn(`Failed to delete file ${pkg.filePath}: ${err}`);
+        this.logger.warn(
+          `Orphaned package file could not be deleted ${pkg.filePath}: ${err}`,
+        );
       }
     }
-
-    await this.repo.remove(pkg);
-    this.logger.log(
-      `Deleted executor package: ${pkg.name}@${pkg.version} [${id}]`,
-    );
   }
 
   /**
@@ -628,7 +645,12 @@ export class ExecutorPackageService implements OnModuleInit {
   }
 
   /**
-   * Find the latest ACTIVE package for the given type (and optional platform), ordered by creation time desc.
+   * Find the latest ACTIVE package for the given type (and optional platform).
+   *
+   * DEEP-AUDIT B·3.1：「最新」按**语义化版本**取最大（compareDottedVersions，
+   * 与执行器版本门禁 EXE-VER-1 同源），createdAt 仅作同版本/不可解析时的
+   * 决胜。旧实现只按 createdAt DESC 取首行——管理员重传旧版本包、或乱序
+   * 上传时，「最新安装包」会指向低版本，执行器装到旧包还自以为升级成功。
    */
   async findLatest(
     type: string,
@@ -638,10 +660,27 @@ export class ExecutorPackageService implements OnModuleInit {
       .createQueryBuilder("pkg")
       .where("pkg.status = :status", { status: ExecutorPackageStatus.ACTIVE })
       .andWhere("pkg.type = :type", { type })
+      // createdAt DESC 仍是本查询的兜底序：同版本或版本不可解析（NaN）时，
+      // 先见的行（更新创建）胜出——与旧实现口径兼容。
       .orderBy("pkg.createdAt", "DESC");
     if (platform) {
       qb.andWhere("pkg.platform = :platform", { platform });
     }
-    return qb.getOne();
+    const candidates = await qb.getMany();
+    // 版本比较在内存做（候选 = ACTIVE 包，管理员上传产物，量级有限）：DB 侧
+    // 语义化排序需按段拆分（split_part + 数值转换），可移植性差；且「解析
+    // 失败回落 createdAt 序」这一规则在 SQL 里无法表达。
+    let latest: ExecutorPackage | null = null;
+    for (const pkg of candidates) {
+      if (!latest) {
+        latest = pkg;
+        continue;
+      }
+      const cmp = compareDottedVersions(pkg.version, latest.version);
+      // NaN（任一侧无法解析）→ 保持 latest（createdAt 序在前的行优先）；
+      // cmp === 0（同版本）→ 同上，createdAt 决胜；cmp > 0 → 新版本胜出。
+      if (!Number.isNaN(cmp) && cmp > 0) latest = pkg;
+    }
+    return latest;
   }
 }

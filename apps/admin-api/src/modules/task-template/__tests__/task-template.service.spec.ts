@@ -13,6 +13,7 @@ import {
 import { TaskTemplateService } from "../task-template.service";
 import { TaskTemplate } from "../entities/task-template.entity";
 import { TaskService } from "../../task/task.service";
+import { Task } from "../../task/entities/task.entity";
 import { OFFICIAL_TASK_TEMPLATES } from "../task-template.constants";
 import { UserRole } from "../../users/entities/user.entity";
 
@@ -22,6 +23,11 @@ const makeRepo = () => ({
   create: jest.fn((d) => ({ id: "tpl-1", ...d })),
   save: jest.fn((e) => Promise.resolve(e)),
   delete: jest.fn().mockResolvedValue({ affected: 1 }),
+});
+
+// A2：Task repo 桩——默认「无同名任务」。
+const makeTaskRepo = () => ({
+  findOne: jest.fn().mockResolvedValue(null),
 });
 
 const official = (over: Partial<TaskTemplate> = {}): TaskTemplate => {
@@ -43,10 +49,12 @@ const official = (over: Partial<TaskTemplate> = {}): TaskTemplate => {
 describe("TaskTemplateService (CORE-03)", () => {
   let svc: TaskTemplateService;
   let repo: ReturnType<typeof makeRepo>;
+  let taskRepo: ReturnType<typeof makeTaskRepo>;
   let taskService: { create: jest.Mock };
 
   beforeEach(async () => {
     repo = makeRepo();
+    taskRepo = makeTaskRepo();
     taskService = {
       create: jest.fn((dto) => Promise.resolve({ id: "task-1", ...dto })),
     };
@@ -54,6 +62,7 @@ describe("TaskTemplateService (CORE-03)", () => {
       providers: [
         TaskTemplateService,
         { provide: getRepositoryToken(TaskTemplate), useValue: repo },
+        { provide: getRepositoryToken(Task), useValue: taskRepo },
         { provide: TaskService, useValue: taskService },
       ],
     }).compile();
@@ -267,5 +276,54 @@ describe("TaskTemplateService (CORE-03)", () => {
       NotFoundException,
     );
     expect(taskService.create).not.toHaveBeenCalled();
+  });
+
+  // A1（第二轮审计）：实例化必须透传请求方 → ownerUserId 落到创建者，
+  // 否则非 ADMIN 创建者对自己刚建的任务写面 403。
+  it("instantiate 透传 user 给 TaskService.create（owner 落创建者）", async () => {
+    repo.findOne.mockResolvedValue(official());
+    const alice = { id: 42, username: "alice", role: UserRole.USER };
+    await svc.instantiate("official-1", { name: "mine" }, alice);
+    expect(taskService.create).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "mine" }),
+      alice,
+    );
+  });
+
+  it("instantiate 不传 user 保持旧行为（create 收 undefined）", async () => {
+    repo.findOne.mockResolvedValue(official());
+    await svc.instantiate("official-1", { name: "anon" });
+    expect(taskService.create).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "anon" }),
+      undefined,
+    );
+  });
+
+  // A2（第二轮审计）：name 无唯一约束，连续实例化会产出同构任务 → 409 防重。
+  it("instantiate 同名任务已存在 → 409（错误信息含任务名，不建任务）", async () => {
+    repo.findOne.mockResolvedValue(official());
+    taskRepo.findOne.mockResolvedValue({ id: "dup-1", name: "prod-backup" });
+    await expect(
+      svc.instantiate("official-1", { name: "prod-backup" }),
+    ).rejects.toThrow(/prod-backup/);
+    await expect(
+      svc.instantiate("official-1", { name: "prod-backup" }),
+    ).rejects.toThrow(ConflictException);
+    expect(taskService.create).not.toHaveBeenCalled();
+  });
+
+  it("instantiate 同名查重按合并后 payload 的 name 发起", async () => {
+    repo.findOne.mockResolvedValue(official());
+    taskRepo.findOne.mockResolvedValue({ id: "dup-1", name: "prod-backup" });
+    await expect(
+      svc.instantiate("official-1", {
+        name: "prod-backup",
+        timeoutSeconds: 120,
+      }),
+    ).rejects.toThrow(ConflictException);
+    // 查重查询确实按合并后的任务名发起
+    expect(taskRepo.findOne).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { name: "prod-backup" } }),
+    );
   });
 });

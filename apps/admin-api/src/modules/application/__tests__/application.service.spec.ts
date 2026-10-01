@@ -15,6 +15,8 @@ import { UserRole } from "../../users/entities/user.entity";
 // NETOPT-8③: remove() 的执行器清理扇出（stop + uninstall）走 axios
 import { ExecutorService } from "../../executor/executor.service";
 import { AuditService } from "../../audit/audit.service";
+// DEEP-AUDIT B·4.3: 扇出失败通知的测试替身
+import { NotificationService } from "../../notification/notification.service";
 // ARCH-33（ADR-016）：控制面 pull 通道的测试替身（默认 push）
 import { controlPlaneMocks } from "../../../common/testing/control-plane-mocks";
 
@@ -1086,6 +1088,155 @@ describe("ApplicationService.remove — executor cleanup fanout (NETOPT-8③)", 
       service.remove("app-1", { id: 1, role: UserRole.ADMIN }),
     ).resolves.toBeUndefined();
     expect(mockedAxiosPost).not.toHaveBeenCalled();
+    expect(appRepo.remove).toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// DEEP-AUDIT B·4.3: 扇出清理结果**可观测**——per-台成功/失败聚合后落审计
+// （application.remove.fanout），有失败附一条告警通知；通知/审计故障均
+// fail-open，绝不影响删除主链。
+// ---------------------------------------------------------------------------
+describe("ApplicationService.remove — fanout audit + notify (DEEP-AUDIT B·4.3)", () => {
+  let service: ApplicationService;
+  let appRepo: ReturnType<typeof makeRepo>;
+  let deploymentRepo: { find: jest.Mock };
+  let executorService: {
+    getExecutorUrl: jest.Mock;
+    getSharedToken: jest.Mock;
+    resolveExecutorTransport: jest.Mock;
+    enqueueExecutorCommand: jest.Mock;
+  };
+  let audit: { log: jest.Mock };
+  let notifier: { sendAll: jest.Mock };
+  const mockedAxiosPost = (axios as unknown as { post: jest.Mock }).post;
+
+  const assemble = async (axiosImpl?: () => Promise<unknown>) => {
+    appRepo = makeRepo();
+    deploymentRepo = { find: jest.fn().mockResolvedValue([]) };
+    executorService = {
+      getExecutorUrl: jest.fn(
+        (addr: string, p: string) => `http://${addr}/${p}`,
+      ),
+      getSharedToken: jest.fn().mockResolvedValue("shared-token"),
+      ...controlPlaneMocks(),
+    };
+    audit = { log: jest.fn().mockResolvedValue(undefined) };
+    notifier = { sendAll: jest.fn().mockResolvedValue({}) };
+    mockedLookup.mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
+    mockedAxiosPost.mockReset();
+    if (axiosImpl) mockedAxiosPost.mockImplementation(axiosImpl);
+    else mockedAxiosPost.mockResolvedValue({ status: 200 });
+    const module = await Test.createTestingModule({
+      providers: [
+        ApplicationService,
+        { provide: getRepositoryToken(Application), useValue: appRepo },
+        {
+          provide: getRepositoryToken(AppDeployment),
+          useValue: deploymentRepo,
+        },
+        { provide: ExecutorService, useValue: executorService },
+        { provide: ModuleRef, useValue: { get: jest.fn() } },
+        {
+          provide: AiService,
+          useValue: { analyzeAppHealth: jest.fn().mockResolvedValue("") },
+        },
+        {
+          provide: AiAnalysisService,
+          useValue: { analyzeFailure: jest.fn().mockResolvedValue("") },
+        },
+        { provide: AuditService, useValue: audit },
+        { provide: NotificationService, useValue: notifier },
+      ],
+    }).compile();
+    service = module.get(ApplicationService);
+  };
+
+  const appRow = () =>
+    ({
+      id: "app-1",
+      name: "Demo",
+      ownerUserId: null,
+      packageUrl: null,
+    }) as Application;
+
+  it("全部成功：fanout 审计记录 succeeded 台数，不触发通知", async () => {
+    await assemble();
+    appRepo.findOne.mockResolvedValue(appRow());
+    deploymentRepo.find.mockResolvedValue([
+      { id: "dep-1", executorAddress: "exec-1:8100" },
+      { id: "dep-2", executorAddress: "exec-2:8100" },
+    ]);
+
+    await service.remove("app-1", { id: 1, role: UserRole.ADMIN });
+
+    const fanoutCall = audit.log.mock.calls.find(
+      (c) => c[0]?.action === "application.remove.fanout",
+    );
+    expect(fanoutCall).toBeDefined();
+    expect(fanoutCall[0].resourceId).toBe("app-1");
+    expect(fanoutCall[0].detail).toMatchObject({
+      appId: "app-1",
+      appName: "Demo",
+      total: 2,
+      succeeded: 2,
+      failed: 0,
+    });
+    expect(notifier.sendAll).not.toHaveBeenCalled();
+  });
+
+  it("部分失败：失败台数与失败目标落审计，并发送 warning 通知", async () => {
+    await assemble();
+    appRepo.findOne.mockResolvedValue(appRow());
+    deploymentRepo.find.mockResolvedValue([
+      { id: "dep-1", executorAddress: "exec-1:8100" },
+      { id: "dep-2", executorAddress: "exec-dead:8100" },
+    ]);
+    // exec-dead 不可达（stop 失败），exec-1 正常
+    mockedAxiosPost.mockImplementation(async (url: string) => {
+      if (String(url).includes("exec-dead")) {
+        throw new Error("connect timeout");
+      }
+      return { status: 200 };
+    });
+
+    await service.remove("app-1", { id: 1, role: UserRole.ADMIN });
+
+    const fanoutCall = audit.log.mock.calls.find(
+      (c) => c[0]?.action === "application.remove.fanout",
+    );
+    expect(fanoutCall).toBeDefined();
+    expect(fanoutCall[0].detail).toMatchObject({
+      total: 2,
+      succeeded: 1,
+      failed: 1,
+    });
+    expect(fanoutCall[0].detail.failedTargets).toEqual([
+      expect.objectContaining({ address: "exec-dead:8100" }),
+    ]);
+    expect(notifier.sendAll).toHaveBeenCalledTimes(1);
+    expect(notifier.sendAll.mock.calls[0][0]).toMatchObject({
+      level: "warning",
+      title: expect.stringContaining("Demo"),
+    });
+    expect(notifier.sendAll.mock.calls[0][0].content).toContain(
+      "exec-dead:8100",
+    );
+  });
+
+  it("通知/审计自身抛错不影响删除主链（fail-open）", async () => {
+    await assemble();
+    appRepo.findOne.mockResolvedValue(appRow());
+    deploymentRepo.find.mockResolvedValue([
+      { id: "dep-1", executorAddress: "exec-1:8100" },
+    ]);
+    audit.log.mockRejectedValue(new Error("audit db down"));
+    notifier.sendAll.mockRejectedValue(new Error("webhook down"));
+    mockedAxiosPost.mockRejectedValue(new Error("connect timeout"));
+
+    await expect(
+      service.remove("app-1", { id: 1, role: UserRole.ADMIN }),
+    ).resolves.toBeUndefined();
     expect(appRepo.remove).toHaveBeenCalled();
   });
 });

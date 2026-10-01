@@ -1090,6 +1090,59 @@ describe('git cache serialization', () => {
     expect(spawned[1][1][0]).toBe('clone');
     expect(spawned[2][1]).toContain('checkout');
   });
+
+  // O-13 parity（executor-python）：冷缓存是 --depth 1 浅克隆，checkout 非 tip
+  // ref（tag/非默认分支）会 miss——必须 unshallow 后重试一次而不是直接抛。
+  it('retries checkout after unshallow when the cold shallow cache misses the ref (O-13 parity)', async () => {
+    const spawned: string[][] = [];
+    // clone ok → checkout miss → fetch --unshallow ok → checkout retry ok
+    const statuses = [0, 1, 0, 0];
+    (mockCp.spawn as jest.Mock).mockImplementation((_cmd: string, args: string[]) => {
+      spawned.push(args);
+      const status = statuses.shift() ?? 0;
+      return {
+        stdout: { on: jest.fn() }, stderr: { on: jest.fn() },
+        on: jest.fn((event: string, cb: Function) => { if (event === 'close') setImmediate(() => cb(status)); }),
+        kill: jest.fn(), pid: 1,
+      };
+    });
+    // 冷缓存：HEAD 不存在（走 clone 分支），但 checkout miss 后 shallow 哨兵存在
+    (mockFs.existsSync as jest.Mock).mockImplementation((p: fs.PathLike) => String(p).endsWith('shallow'));
+
+    await expect(
+      gitCheckoutTo('https://example.com/repo.git', 'v1.2.3', '/tmp/test-workdir/exec-o13a'),
+    ).resolves.toBeUndefined();
+
+    expect(spawned.length).toBe(4);
+    expect(spawned[0][0]).toBe('clone');
+    expect(spawned[1]).toContain('checkout');
+    expect(spawned[2]).toEqual(expect.arrayContaining(['fetch', '--unshallow']));
+    expect(spawned[3]).toContain('checkout');
+  });
+
+  it('throws with the ref in the message when checkout misses even after unshallow (O-13 parity)', async () => {
+    const spawned: string[][] = [];
+    // clone ok → checkout miss → fetch --unshallow ok(仍可能拿不到该 ref) → checkout retry 仍 miss
+    const statuses = [0, 1, 0, 1];
+    (mockCp.spawn as jest.Mock).mockImplementation((_cmd: string, args: string[]) => {
+      spawned.push(args);
+      const status = statuses.shift() ?? 0;
+      return {
+        stdout: { on: jest.fn() }, stderr: { on: jest.fn() },
+        on: jest.fn((event: string, cb: Function) => { if (event === 'close') setImmediate(() => cb(status)); }),
+        kill: jest.fn(), pid: 1,
+      };
+    });
+    (mockFs.existsSync as jest.Mock).mockImplementation((p: fs.PathLike) => String(p).endsWith('shallow'));
+
+    await expect(
+      gitCheckoutTo('https://example.com/repo.git', 'v9.9.9', '/tmp/test-workdir/exec-o13b'),
+    ).rejects.toThrow(/git checkout failed \(ref: v9\.9\.9\)/);
+
+    // 二次仍失败：unshallow 重试只发生一次（4 个子进程，不无限重试）
+    expect(spawned.length).toBe(4);
+    expect(spawned[2]).toEqual(expect.arrayContaining(['fetch', '--unshallow']));
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1251,6 +1304,25 @@ describe('buildNpmRcContent (改动3)', () => {
   it('no token (undefined): no _authToken line', () => {
     const rc = buildNpmRcContent('http://verdaccio:4873/', undefined, ['@autoflow/core']);
     expect(rc).not.toContain('_authToken');
+  });
+
+  it('私服且无 token: logger.warn 提示配置 NPM_REGISTRY_TOKEN（匿名装私包必 401）', () => {
+    const { logger } = require('../logger');
+    logger.warn.mockClear();
+    buildNpmRcContent('http://verdaccio:4873/', undefined, ['@autoflow/core']);
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('NPM_REGISTRY_TOKEN'));
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('401'));
+    // 提示里只出现脱敏后的 registry，绝无 token 内容
+    expect(logger.warn).toHaveBeenCalledWith(expect.not.stringContaining('_authToken='));
+  });
+
+  it('配了 token 或非私服源: 不 warn', () => {
+    const { logger } = require('../logger');
+    logger.warn.mockClear();
+    buildNpmRcContent('http://verdaccio:4873/', 'tok', ['@autoflow/core']);
+    buildNpmRcContent('https://registry.npmjs.org/', undefined, ['left-pad']);
+    expect(logger.warn).not.toHaveBeenCalled();
   });
 
   it('all scoped-only packages: no global registry line', () => {

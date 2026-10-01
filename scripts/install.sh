@@ -64,7 +64,7 @@ fi
 
 # ── 参数校验 ──────────────────────────────────────────────────────────────────
 # 这些值会写入 .env（systemd EnvironmentFile）与 systemd unit，含换行/引号等字符
-# 可向其中注入伪造键值对（如改写 EXECUTOR_SECRET），故在任何写操作前做白名单校验。
+# 可向其中注入伪造键值对（如改写 EXECUTOR_SHARED_TOKEN），故在任何写操作前做白名单校验。
 die() { echo "错误：$1"; exit 1; }
 
 if [[ ! "$PORT" =~ ^[0-9]{1,5}$ ]] || (( 10#$PORT < 1 || 10#$PORT > 65535 )); then
@@ -285,7 +285,10 @@ PORT=${PORT}
 EXECUTOR_ADDRESS=${DETECTED_IP}:${PORT}
 EXECUTOR_ADDRESS_PUBLIC=${DETECTED_IP}:${PORT}
 ADMIN_API_URL=${ADMIN_API_URL_ESC}
-EXECUTOR_SECRET=${EXECUTOR_SECRET_ESC}
+# DEEP-AUDIT B·1.3：.env 键名统一为 EXECUTOR_SHARED_TOKEN——executor-node 侧
+# 双键兼容（EXECUTOR_SHARED_TOKEN || EXECUTOR_SECRET），executor-python 只认
+# SHARED；此前写 EXECUTOR_SECRET 会让 python 执行器拿不到共享令牌而 fail-closed。
+EXECUTOR_SHARED_TOKEN=${EXECUTOR_SECRET_ESC}
 WORK_DIR=${WORK_DIR_ESC}
 MAX_CONCURRENT_TASKS=10
 LOG_RETENTION_DAYS=7

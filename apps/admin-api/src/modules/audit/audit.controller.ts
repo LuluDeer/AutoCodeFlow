@@ -39,6 +39,7 @@ export class AuditController {
       startTime: query.startTime,
       endTime: query.endTime,
       userId: query.userId,
+      result: query.result,
     });
   }
 
@@ -58,6 +59,7 @@ export class AuditController {
       startTime: query.startTime,
       endTime: query.endTime,
       userId: query.userId,
+      result: query.result,
     });
     res!.setHeader("Content-Type", "text/csv; charset=utf-8");
     res!.setHeader(

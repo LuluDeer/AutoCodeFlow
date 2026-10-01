@@ -97,4 +97,4 @@ jobs:
       # ② 非规范 merge 标题触发 conventional 解析错误吞掉 feat 遍历；
       # ③ 非 bot 形态（head 分支）的 Release PR 不被状态机接纳。
       # **当前发布形态：Release PR（人工/状态机）合并 + 人工 tag 兜底**，
-      # 详见 docs/release-checklist.md「包发布」段与 AGENT_HANDOFF v1.3.0 段。
+      # 详见 docs/release-checklist.md「包发布」段与 docs/AGENT_HANDOFF.md v1.3.0 段。

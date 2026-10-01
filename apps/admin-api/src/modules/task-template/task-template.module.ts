@@ -1,6 +1,8 @@
 import { Module } from "@nestjs/common";
 import { TypeOrmModule } from "@nestjs/typeorm";
 import { TaskModule } from "../task/task.module";
+// A2（第二轮审计）：instantiate 同名任务查重需要 Task repo。
+import { Task } from "../task/entities/task.entity";
 import { TaskTemplate } from "./entities/task-template.entity";
 import { TaskTemplateService } from "./task-template.service";
 import { TaskTemplateController } from "./task-template.controller";
@@ -16,7 +18,11 @@ import { AuditModule } from "../audit/audit.module";
  * 故无循环。本模块除 TaskModule 外不依赖任何其他业务模块。
  */
 @Module({
-  imports: [TypeOrmModule.forFeature([TaskTemplate]), TaskModule, AuditModule],
+  imports: [
+    TypeOrmModule.forFeature([TaskTemplate, Task]),
+    TaskModule,
+    AuditModule,
+  ],
   controllers: [TaskTemplateController],
   providers: [TaskTemplateService],
   exports: [TaskTemplateService],

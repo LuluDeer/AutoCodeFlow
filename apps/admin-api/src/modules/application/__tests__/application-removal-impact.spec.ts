@@ -27,6 +27,8 @@ function makeService(
     app?: Record<string, unknown>;
     deployments?: unknown[];
     tasks?: unknown[];
+    /** DEEP-AUDIT B·4.1: 分页 total（缺省 = tasks.length）。 */
+    total?: number;
     taskService?: unknown;
   } = {},
 ) {
@@ -51,9 +53,11 @@ function makeService(
   (svc as unknown as { _taskService: unknown })._taskService =
     overrides.taskService === undefined
       ? {
-          findAll: jest
-            .fn()
-            .mockResolvedValue({ items: overrides.tasks ?? [] }),
+          findAll: jest.fn().mockResolvedValue({
+            items: overrides.tasks ?? [],
+            // DEEP-AUDIT B·4.1：findAll 是分页接口，total 才是全量口径。
+            total: overrides.total ?? (overrides.tasks ?? []).length,
+          }),
         }
       : overrides.taskService;
   return { svc, repo, deploymentRepo };
@@ -93,6 +97,33 @@ describe("P0-3: ApplicationService.describeRemovalImpact", () => {
 
     // 远程包不归本服务管——声称"会被删除"是误报，用户会据此做出错误判断
     expect(impact.packageFileWillBeDeleted).toBe(false);
+  });
+
+  it("DEEP-AUDIT B·4.1: 任务数读分页 total，不被缺省 pageSize=20 截死", async () => {
+    // 旧口径读 items.length：37 个任务的应用只报出 20（第一页大小），
+    // 确认框系统性少报影响面。total=37 但只带第一页 20 条 items。
+    const { svc } = makeService({
+      tasks: Array.from({ length: 20 }, (_, i) => ({ id: `t${i}` })),
+      total: 37,
+    });
+
+    const impact = await svc.describeRemovalImpact("app-1");
+
+    expect(impact.tasksLosingSource).toBe(37);
+  });
+
+  it("total 缺席（旧返回形态）回落 items.length，不破坏兼容", async () => {
+    const { svc } = makeService({
+      taskService: {
+        findAll: jest
+          .fn()
+          .mockResolvedValue({ items: [{ id: "t1" }, { id: "t2" }] }),
+      },
+    });
+
+    const impact = await svc.describeRemovalImpact("app-1");
+
+    expect(impact.tasksLosingSource).toBe(2);
   });
 
   it("任务数取不到时降级为 0，绝不因预览失败阻断删除路径", async () => {

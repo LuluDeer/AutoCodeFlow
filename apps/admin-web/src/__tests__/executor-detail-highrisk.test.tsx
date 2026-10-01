@@ -27,6 +27,12 @@ vi.mock('../api/executors', () => ({
     getExecutions: vi.fn(),
     rotateToken: vi.fn(),
     remove: vi.fn(),
+    // DEEP-AUDIT B·1.1：详情页删除入口打开时会拉取影响面预览。本 spec 契约
+    // 钉住的是**回退文案**（impactValue：「执行器记录删除，需重新注册…」），
+    // 故缺省让该请求失败走 catch → removeImpact=null → 回退渲染（见
+    // ExecutorDetailPage 删除 Modal 的 removeImpact 三分支）；成功加载影响面
+    // 的渲染（impactDetail/impactBoundTitle）由后续 spec 补钉。
+    removalImpact: vi.fn(),
   },
 }));
 const mockedApi = vi.mocked(executorsApi, true);
@@ -98,6 +104,9 @@ beforeEach(() => {
   mockedApi.get.mockResolvedValue(executorFixture);
   mockedApi.getMetrics.mockResolvedValue(emptyMetrics);
   mockedApi.getExecutions.mockResolvedValue({ total: 0, items: [] });
+  // 见上方 vi.mock 工厂注释：影响面拉取失败 → 删除 Modal 走 impactValue 回退
+  // 文案（本文件各删除用例断言的正是该文案）。页面侧 .catch 吞掉该错误。
+  mockedApi.removalImpact.mockRejectedValue(new Error('removal-impact unavailable'));
 });
 
 afterEach(() => {

@@ -17,6 +17,8 @@
     "src/main/updater.selftest.ts",
     "src/main/updater-runcheck.ts",
     "src/main/updater-runcheck.selftest.ts",
+    "src/main/tray-texts.ts",
+    "src/main/tray-texts.selftest.ts",
     "src/main/notifier-rules.ts",
     "src/main/notifier-rules.selftest.ts",
     "src/main/log-incremental.selftest.ts",

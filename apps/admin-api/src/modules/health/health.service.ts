@@ -347,9 +347,30 @@ export class HealthService {
       // 缺键时 BullMQ 返回 0，防 null 相加。
       const counts = await this.taskQueue.getJobCounts("wait", "active");
       const total = Number(counts?.wait ?? 0) + Number(counts?.active ?? 0);
+      // 第二轮审计（A7）：此前只读队列计数即报 healthy——只要 Redis 可达就绿，
+      // 不含任何调度活性依据（BullMQ worker 全部掉线时照样绿，而此刻入队的
+      // 执行永远不会被拾取）。最小可行修法：补 getWorkersCount——worker 注册
+      // 在 Redis 的 workers 集合，计数为 0 即为真实故障信号。
+      //
+      // 取舍（审计项要求注明）：调度循环的 tick 心跳（SchedulerMetricsService
+      // 的 lastTickAt）需要 HealthModule 引入 SchedulerModule 依赖 + tick 间隔
+      // 阈值配置，耦合与误报面都更大，本轮不取；worker 在位是零耦合、零新配置
+      // 的次强信号。残留边界在 details 如实标注：本检查语义是「队列可达性 +
+      // worker 在位」，**不含**调度循环 tick 节奏测量。
+      const workers = await this.taskQueue.getWorkersCount();
+      if (workers === 0) {
+        return {
+          status: "unhealthy",
+          details:
+            "No BullMQ worker is connected to task-queue; queued executions will never be picked up " +
+            `(wait=${counts?.wait ?? 0}, active=${counts?.active ?? 0})`,
+        };
+      }
       return {
         status: "healthy",
-        details: `Scheduler is running, ${total} jobs in queue`,
+        details:
+          `Scheduler queue reachable, ${workers} worker(s) connected, ${total} jobs in queue ` +
+          "(queue + worker reachability only; scheduler tick cadence is not measured here)",
       };
     } catch (error: unknown) {
       return {

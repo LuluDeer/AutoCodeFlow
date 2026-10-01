@@ -126,7 +126,7 @@ export function scanMigrationIndexesFromFiles(files, read = utf8) {
 
     // CREATE [UNIQUE] INDEX [IF NOT EXISTS] "name" ON "table" [USING x] ("col", ...)
     const createRe =
-      /CREATE\s+(UNIQUE\s+)?INDEX\s+(?:IF\s+NOT\s+EXISTS\s+)?"([^"]+)"\s+ON\s+"([^"]+)"(?:\s+USING\s+\w+)?\s*\(([^)]*)\)/gis;
+      /CREATE\s+(UNIQUE\s+)?INDEX\s+(?:CONCURRENTLY\s+)?(?:IF\s+NOT\s+EXISTS\s+)?"([^"]+)"\s+ON\s+"([^"]+)"(?:\s+USING\s+\w+)?\s*\(([^)]*)\)/gis;
     let m;
     while ((m = createRe.exec(src)) !== null) {
       const columns = [...m[4].matchAll(/"([^"]+)"/g)].map((x) => x[1]);

@@ -27,9 +27,31 @@ import { buildChildEnv } from './env-whitelist';
 /** 任务声明版本格式：`X.Y`（主.次，无补丁号）。 */
 export const RUNTIME_VERSION_PATTERN = /^\d+\.\d+$/;
 
-/** 可声明的版本区间（CONTRACT.md §1.1）。 */
+/**
+ * 可声明版本的**默认**区间（CONTRACT.md §1.1）。
+ *
+ * 审计二轮 B-3：此前这里是硬编码且是唯一事实源——admin 与 executor-python 都
+ * 支持 PYTHON_RUNTIME_VERSION_MIN/MAX 同名 env，node 侧独缺，改区间要重新编译。
+ * 现在真实区间来自 config.runtimeVersionMin/Max（读 env、min≤max 校验、非法值
+ * warn 回落到下面这对默认值）；导出常量保留为「未配置时的默认值」与测试锚点。
+ */
 export const RUNTIME_VERSION_MIN = '3.7';
 export const RUNTIME_VERSION_MAX = '3.14';
+
+/**
+ * 当前生效的可声明区间（每次调用实时读 config，热重载一致）。
+ * 防御：config 侧（config.ts getter）已做格式与 min≤max 校验并回落默认值，
+ * 但本模块不信任调用方注入的 config 形状（测试 mock / 未来重构都可能缺字段）
+ * ——缺值或非法值一律回落到上面的导出常量，绝不把 undefined 带进版本比较。
+ */
+function effectiveRuntimeVersionRange(): { min: string; max: string } {
+  const min = config.runtimeVersionMin;
+  const max = config.runtimeVersionMax;
+  return {
+    min: parseVersionKey(min ?? '') ? min : RUNTIME_VERSION_MIN,
+    max: parseVersionKey(max ?? '') ? max : RUNTIME_VERSION_MAX,
+  };
+}
 
 /**
  * 在线可下载下界。uv 0.8.17 实测只能下载 CPython 3.8~3.14（CONTRACT.md §0）：
@@ -236,13 +258,14 @@ export function normalizeRuntimeVersion(version: unknown): string {
   return version.trim();
 }
 
-/** 版本是否落在可声明区间内（`3.7` ~ `3.14`）。 */
+/** 版本是否落在可声明区间内（默认 `3.7` ~ `3.14`，可被 env 覆盖，见 config）。 */
 export function isSupportedVersion(version: string): boolean {
   const key = parseVersionKey(version);
   if (!key) return false;
+  const range = effectiveRuntimeVersionRange();
   return (
-    compareKey(key, parseVersionKey(RUNTIME_VERSION_MIN)!) >= 0 &&
-    compareKey(key, parseVersionKey(RUNTIME_VERSION_MAX)!) <= 0
+    compareKey(key, parseVersionKey(range.min)!) >= 0 &&
+    compareKey(key, parseVersionKey(range.max)!) <= 0
   );
 }
 
@@ -250,15 +273,15 @@ export function isSupportedVersion(version: string): boolean {
  * 该版本能否由 uv 在线下载。
  *
  * `< 3.8` → false（3.7 只能离线预填，见 ONLINE_DOWNLOAD_MIN 注释）。
- * `> 3.14` → false（uv 尚无该版本，装也装不到，提前给出明确原因比让 uv 报
- * 一个含糊的下载失败更有用）。
+ * `> 生效区间上界` → false（uv 尚无该版本，装也装不到，提前给出明确原因比让
+ * uv 报一个含糊的下载失败更有用）。
  */
 export function isOnlineDownloadable(version: string): boolean {
   const key = parseVersionKey(version);
   if (!key) return false;
   return (
     compareKey(key, parseVersionKey(ONLINE_DOWNLOAD_MIN)!) >= 0 &&
-    compareKey(key, parseVersionKey(RUNTIME_VERSION_MAX)!) <= 0
+    compareKey(key, parseVersionKey(effectiveRuntimeVersionRange().max)!) <= 0
   );
 }
 
@@ -595,20 +618,25 @@ export function invalidateCache(): void {
 //   3. 只碰解释器池（`cpython-*` 目录），绝不碰 venv/workdir（那是
 //      file-logger.cleanupWorkDir 的 TTL 清扫职责）。
 
-/** 递归目录字节数（不可读项按 0 计——计量失败不该中断清扫）。 */
-function dirSizeBytes(dir: string): number {
-  let total = 0;
+/** 递归目录字节数（不可读项按 0 计——计量失败不该中断清扫）。
+ *
+ * 第四轮审计（A6）: **异步实现**（fs.promises，libuv 线程池）。旧同步版
+ * （readdirSync + statSync 递归）在 GB 级池上整树走一遍会阻塞事件循环数百
+ * 毫秒到数秒——心跳 /health /pull 全部卡住。清扫是后台旁路，没有理由用
+ * 同步 IO（对齐 python 侧 to_thread 先例）。 */
+async function dirSizeBytesAsync(dir: string): Promise<number> {
   let entries: fs.Dirent[];
   try {
-    entries = fs.readdirSync(dir, { withFileTypes: true });
+    entries = await fs.promises.readdir(dir, { withFileTypes: true });
   } catch {
     return 0;
   }
+  let total = 0;
   for (const entry of entries) {
     const full = path.join(dir, entry.name);
     try {
-      if (entry.isDirectory()) total += dirSizeBytes(full);
-      else if (entry.isFile()) total += fs.statSync(full).size;
+      if (entry.isDirectory()) total += await dirSizeBytesAsync(full);
+      else if (entry.isFile()) total += (await fs.promises.stat(full)).size;
     } catch {
       /* raced / unreadable — count as 0 */
     }
@@ -639,27 +667,29 @@ interface PoolVersionEntry {
  * 一致）：池根下还可能有 uv 的 `.cache`（下载缓存），那不是"版本"，不在本治理
  * 范围（避免误删下载缓存）。
  */
-function poolVersionEntries(root: string): PoolVersionEntry[] {
-  let names: string[];
-  try {
-    names = fs.readdirSync(root);
-  } catch {
-    return [];
-  }
-  const out: PoolVersionEntry[] = [];
-  for (const name of names) {
-    if (!/^cpython-/.test(name)) continue;
-    const full = path.join(root, name);
-    let st: fs.Stats;
+function poolVersionEntries(root: string): Promise<PoolVersionEntry[]> {
+  return (async () => {
+    let names: string[];
     try {
-      st = fs.statSync(full);
+      names = await fs.promises.readdir(root);
     } catch {
-      continue;
+      return [];
     }
-    if (!st.isDirectory()) continue;
-    out.push({ name, path: full, size: dirSizeBytes(full), mtime: st.mtimeMs });
-  }
-  return out;
+    const out: PoolVersionEntry[] = [];
+    for (const name of names) {
+      if (!/^cpython-/.test(name)) continue;
+      const full = path.join(root, name);
+      let st: fs.Stats;
+      try {
+        st = await fs.promises.stat(full);
+      } catch {
+        continue;
+      }
+      if (!st.isDirectory()) continue;
+      out.push({ name, path: full, size: await dirSizeBytesAsync(full), mtime: st.mtimeMs });
+    }
+    return out;
+  })();
 }
 
 /** 读 `<venv>/pyvenv.cfg` 的 `home =` 值；缺失/损坏返回 null。 */
@@ -720,10 +750,14 @@ export interface InterpreterPoolReclaimResult {
  * 回收池内一个版本目录。**先做硬安全断言，再删。**
  *
  * 断言（任一不满足即拒绝删除）：目标必须严格位于池根之内、不得是池根本身。
- * 删除用 `fs.rmSync`（与 `removeCorruptEntries` 同一路径；python 侧优先
- * `uv python uninstall`，node 侧无对应簿记子命令，直接 rmtree）。
+ * 删除用 `fs.promises.rm`（A6 异步化——同 removeCorruptEntries 的语义，但
+ * 不阻塞事件循环；python 侧优先 `uv python uninstall`，node 侧无对应簿记
+ * 子命令，直接 rmtree）。
  */
-function reclaimInterpreterVersion(poolRootDir: string, target: string): boolean {
+async function reclaimInterpreterVersion(
+  poolRootDir: string,
+  target: string,
+): Promise<boolean> {
   if (!isInsidePool(target)) {
     logger.error(
       `Refusing to reclaim ${target}: it is not inside the interpreter pool ${poolRootDir}`,
@@ -731,7 +765,7 @@ function reclaimInterpreterVersion(poolRootDir: string, target: string): boolean
     return false;
   }
   try {
-    fs.rmSync(target, { recursive: true, force: true });
+    await fs.promises.rm(target, { recursive: true, force: true });
   } catch (err) {
     // best-effort：一次 EACCES 不该让红线失效（其余候选仍会被尝试）。
     logger.warn(
@@ -747,11 +781,11 @@ function reclaimInterpreterVersion(poolRootDir: string, target: string): boolean
  * 依赖检查是**否决权**：只要还有 venv 的 home 指向该目录（或其子目录），就绝不
  * 回收——宁可让池暂时超红线（响亮告警）也不能把用户的 venv 弄废。
  */
-function attemptReclaim(
+async function attemptReclaim(
   entry: PoolVersionEntry,
   dependencyHomes: Map<string, string[]>,
   reason: string,
-): [boolean, number] {
+): Promise<[boolean, number]> {
   const key = normalizePathKey(entry.path);
   const dependents: string[] = [...(dependencyHomes.get(key) ?? [])];
   for (const [homeKey, names] of dependencyHomes) {
@@ -771,8 +805,135 @@ function attemptReclaim(
     `Reclaiming interpreter ${entry.name} (${entry.size} bytes, last used ` +
       `${new Date(entry.mtime).toISOString()}, ${reason}) — no task venv depends on it`,
   );
-  reclaimInterpreterVersion(poolRoot(), entry.path);
+  await reclaimInterpreterVersion(poolRoot(), entry.path);
   return [true, entry.size];
+}
+
+/**
+ * 第四轮审计（A5）: 池内 uv 下载缓存治理（TTL + 可选体积上限）。
+ *
+ * ## 背景
+ * `uvChildEnv` 把 `UV_CACHE_DIR` 指到池根下的 `.cache`（下载的 wheel/索引
+ * 缓存），那是**可再生的**——但池体积红线（D12/NFR-15）只管 `cpython-*`
+ * 版本目录，`.cache` 从此只增不删：chatty 任务高频装依赖时下载缓存能无限
+ * 膨胀，把磁盘填满。python 侧 maintenance.py 已有同款治理，这里对齐。
+ *
+ * ## 规则（与既有池红线同轮执行——cleanupWorkDir → enforceInterpreterPoolLimits）
+ * - **TTL**：顶层条目 mtime 早于 `UV_CACHE_TTL_DAYS`（默认 30d，0=关闭）即
+ *   回收。uv 的缓存布局是 `.cache/<registry>/<hash>` 一类——顶层条目不可再生
+ *   风险为零（下次 `uv pip install` 会重新下载），按条目粒度回收即可。
+ * - **体积上限**：`UV_CACHE_MAX_MB`（默认 0=不设）。配置后按顶层条目
+ *   mtime **升序**回收直到总大小落回上限（与池红线的 LRU 语义一致）。
+ * - 清理量（条目数 + 字节数）落日志——运维需要从日志确认回收发生与量级。
+ */
+export interface UvCacheReclaimResult {
+  reclaimedEntries: number;
+  reclaimedBytes: number;
+  cacheBytes: number;
+}
+
+/** uv 缓存目录名（`.uv-cache` 是旧部署的历史位置，一并治理）。 */
+const UV_CACHE_DIR_NAMES = ['.cache', '.uv-cache'] as const;
+
+export async function reclaimUvCache(): Promise<UvCacheReclaimResult> {
+  const result: UvCacheReclaimResult = {
+    reclaimedEntries: 0,
+    reclaimedBytes: 0,
+    cacheBytes: 0,
+  };
+  const ttlDays = config.uvCacheTtlDays;
+  const maxBytes = config.uvCacheMaxMb * 1024 * 1024;
+  if (ttlDays <= 0 && maxBytes <= 0) return result; // 双闸均关闭
+
+  const root = poolRoot();
+  const cutoff = Date.now() - ttlDays * 24 * 60 * 60 * 1000;
+
+  for (const cacheName of UV_CACHE_DIR_NAMES) {
+    const cacheDir = path.join(root, cacheName);
+    let topEntries: fs.Dirent[];
+    try {
+      topEntries = await fs.promises.readdir(cacheDir, { withFileTypes: true });
+    } catch {
+      continue; // 缓存目录不存在（从未装过依赖）→ 无操作
+    }
+    // 条目快照。**一层展开**：uv 的 `.cache` 顶层是命名空间目录
+    // （`archive-v0/`、`wheels-v4/`、`sdists-v9/`…），任何写入都会刷新该目录
+    // 自身的 mtime——只按顶层判 TTL 永远打不中；真正的"缓存条目"是命名空间
+    // 下的 per-hash 子目录/文件，按它们回收才有效（uv 对缺失条目自动重下，
+    // 回收安全）。顶层普通文件同样入表。
+    const snapshot: Array<{ name: string; path: string; size: number; mtime: number }> = [];
+    const pushItem = async (full: string, name: string, isDir: boolean): Promise<void> => {
+      try {
+        const st = await fs.promises.stat(full);
+        snapshot.push({
+          name,
+          path: full,
+          size: isDir ? await dirSizeBytesAsync(full) : st.size,
+          mtime: st.mtimeMs,
+        });
+      } catch {
+        /* raced — skip */
+      }
+    };
+    for (const top of topEntries) {
+      const topPath = path.join(cacheDir, top.name);
+      if (top.isDirectory()) {
+        let children: fs.Dirent[];
+        try {
+          children = await fs.promises.readdir(topPath, { withFileTypes: true });
+        } catch {
+          continue;
+        }
+        for (const child of children) {
+          await pushItem(path.join(topPath, child.name), `${top.name}/${child.name}`, child.isDirectory());
+        }
+      } else {
+        await pushItem(topPath, top.name, false);
+      }
+    }
+    let totalBytes = snapshot.reduce((sum, e) => sum + e.size, 0);
+    result.cacheBytes += totalBytes;
+
+    const reclaim = async (item: { path: string; size: number }, reason: string) => {
+      if (!isInsidePool(item.path)) return; // 硬安全断言（与版本回收同款）
+      try {
+        await fs.promises.rm(item.path, { recursive: true, force: true });
+        result.reclaimedEntries++;
+        result.reclaimedBytes += item.size;
+        totalBytes = Math.max(0, totalBytes - item.size);
+      } catch (err) {
+        logger.warn(
+          `uv cache reclaim failed for ${item.path}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      void reason;
+    };
+
+    // 1) TTL 闸：过期条目逐个回收。
+    for (const item of snapshot) {
+      if (ttlDays > 0 && item.mtime < cutoff) {
+        await reclaim(item, `cache TTL ${ttlDays}d`);
+      }
+    }
+    // 2) 体积闸：按 mtime 升序回收直到落回上限（TTL 回收已释放的不重复计）。
+    if (maxBytes > 0 && totalBytes > maxBytes) {
+      const survivors = snapshot
+        .filter((e) => ttlDays <= 0 || e.mtime >= cutoff)
+        .sort((a, b) => a.mtime - b.mtime);
+      for (const item of survivors) {
+        if (totalBytes <= maxBytes) break;
+        await reclaim(item, 'cache over size limit');
+      }
+    }
+  }
+
+  if (result.reclaimedEntries > 0) {
+    logger.warn(
+      `uv cache governance reclaimed ${result.reclaimedEntries} entr(ies) ` +
+        `(${result.reclaimedBytes} bytes) under ${poolRoot()}/.cache (TTL=${ttlDays}d, max=${config.uvCacheMaxMb}MB)`,
+    );
+  }
+  return result;
 }
 
 /**
@@ -782,8 +943,11 @@ function attemptReclaim(
  * 目录 mtime 升序尝试回收，直到落回红线。回收后调用 `invalidateCache()` 让上报
  * 清单收敛。安全地从定时清扫（file-logger.cleanupWorkDir）调用；本函数自身
  * 不抛（内部已收敛），调用方仍可再包一层 try/catch。
+ *
+ * 第四轮审计（A6）: **全异步**——池计量（dirSizeBytesAsync）与删除
+ * （fs.promises.rm）都不再阻塞事件循环。A5: 与 uv 缓存治理同轮执行。
  */
-export function enforceInterpreterPoolLimits(): InterpreterPoolReclaimResult {
+export async function enforceInterpreterPoolLimits(): Promise<InterpreterPoolReclaimResult> {
   const counts: InterpreterPoolReclaimResult = {
     reclaimedVersions: 0,
     reclaimedBytes: 0,
@@ -794,7 +958,7 @@ export function enforceInterpreterPoolLimits(): InterpreterPoolReclaimResult {
   const root = poolRoot();
   let st: fs.Stats;
   try {
-    st = fs.statSync(root);
+    st = await fs.promises.stat(root);
   } catch {
     return counts; // 池不存在（从未下载）→ 无操作
   }
@@ -803,8 +967,11 @@ export function enforceInterpreterPoolLimits(): InterpreterPoolReclaimResult {
   const singleLimit = Math.max(1, config.interpreterSingleVersionMb) * 1024 * 1024;
   const totalLimit = Math.max(1, config.interpreterTotalGb) * 1024 * 1024 * 1024;
 
-  let entries = poolVersionEntries(root);
-  if (entries.length === 0) return counts;
+  let entries = await poolVersionEntries(root);
+  if (entries.length === 0) {
+    await reclaimUvCache();
+    return counts;
+  }
   let totalBytes = entries.reduce((sum, e) => sum + e.size, 0);
   counts.poolBytes = totalBytes;
   // 依赖快照只取一次：回收过程中 venv 集合不会变（本函数不碰 venv）。
@@ -819,7 +986,7 @@ export function enforceInterpreterPoolLimits(): InterpreterPoolReclaimResult {
         `Interpreter version ${entry.name} exceeds the per-version limit ` +
           `(${entry.size} bytes > ${singleLimit} bytes) (D12/NFR-15)`,
       );
-      const [reclaimed, freed] = attemptReclaim(entry, dependencyHomes, 'over per-version limit');
+      const [reclaimed, freed] = await attemptReclaim(entry, dependencyHomes, 'over per-version limit');
       if (reclaimed) {
         counts.reclaimedVersions++;
         counts.reclaimedBytes += freed;
@@ -846,7 +1013,7 @@ export function enforceInterpreterPoolLimits(): InterpreterPoolReclaimResult {
     );
     for (const entry of [...entries].sort((a, b) => a.mtime - b.mtime)) {
       if (totalBytes <= totalLimit) break;
-      const [reclaimed, freed] = attemptReclaim(entry, dependencyHomes, 'pool over total limit');
+      const [reclaimed, freed] = await attemptReclaim(entry, dependencyHomes, 'pool over total limit');
       if (reclaimed) {
         counts.reclaimedVersions++;
         counts.reclaimedBytes += freed;
@@ -875,6 +1042,15 @@ export function enforceInterpreterPoolLimits(): InterpreterPoolReclaimResult {
         `interpreters.invalidateCache failed after reclaim: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
+  }
+
+  // A5: uv 缓存治理与池红线同轮执行（同一把清扫定时器，一次"过期+过大+缓存"）。
+  try {
+    await reclaimUvCache();
+  } catch (err) {
+    logger.warn(
+      `uv cache governance failed (best-effort): ${err instanceof Error ? err.message : String(err)}`,
+    );
   }
   return counts;
 }
@@ -1152,10 +1328,11 @@ async function installVersion(
   if (afterQueue) return afterQueue;
 
   if (!isSupportedVersion(requested)) {
+    const range = effectiveRuntimeVersionRange();
     throw new InterpreterUnavailableError(
       requested,
       'not_downloadable',
-      `version is outside the supported range ${RUNTIME_VERSION_MIN}~${RUNTIME_VERSION_MAX}`,
+      `version is outside the supported range ${range.min}~${range.max}`,
     );
   }
 
@@ -1213,11 +1390,35 @@ async function installVersion(
         `download did not finish within ${timeoutMs}ms`,
       );
     }
-    const reason: InterpreterUnavailableReason = /mirror|Request failed|tcp connect|dns|timed? ?out/i.test(
-      detail,
-    )
-      ? 'mirror_unreachable'
-      : 'download_failed';
+    // 分因归类对齐 python 侧 interpreters._classify_install_failure（审计二轮
+    // B-4）：mirror_unreachable 有**非空前置**——只有显式配置了
+    // UV_PYTHON_INSTALL_MIRROR 时，网络类报错才细分为「镜像不可达」（D9/NFR-14
+    // 私有化模式最需要运维立刻分辨的一类失败）；未配置镜像时网络错误就是官方
+    // 源的网络故障，归入通用 download_failed——此前无前置，会把没配镜像的部署
+    // 误报成 mirror_unreachable，让人去排查一个根本不存在的镜像。
+    // 模式表为 python 侧正则与本文件历史 token（mirror / Request failed /
+    // tcp connect / dns）的超集；测试统一走小写化输入（与 python 侧 lowered 一致）。
+    const MIRROR_UNREACHABLE_PATTERN = new RegExp(
+      [
+        'mirror',
+        'request failed',
+        'tcp connect',
+        'connection refused',
+        'connection reset',
+        'failed to connect',
+        'dns',
+        'name or service not known',
+        'timed? ?out',
+        'network is unreachable',
+        'certificate',
+        'tls handshake',
+      ].join('|'),
+      'i',
+    );
+    const reason: InterpreterUnavailableReason =
+      config.uvPythonInstallMirror && MIRROR_UNREACHABLE_PATTERN.test(detail)
+        ? 'mirror_unreachable'
+        : 'download_failed';
     throw new InterpreterUnavailableError(requested, reason, detail);
   }
 

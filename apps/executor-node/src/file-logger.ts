@@ -155,13 +155,13 @@ export function clearLog(executionId: string): void {
   }
 }
 
-export function deleteOldLogs(retentionDays: number): number {
+export async function deleteOldLogs(retentionDays: number): Promise<number> {
   let deletedCount = 0;
   const cutoff = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
   const logsDir = getLogsDir();
 
   try {
-    const dateDirs = fs.readdirSync(logsDir);
+    const dateDirs = await fs.promises.readdir(logsDir);
     // NETOPT-C P3: 仍被 pin 的日志分片不得物理删除——超长任务（timeout=0）
     // 跨 retention 运行时起始分片会被整目录 rmSync，后续 append 因目录消失
     // ENOENT，磁盘历史静默丢失。
@@ -181,14 +181,15 @@ export function deleteOldLogs(retentionDays: number): number {
         logger.debug(`Skipping log directory with pinned active log: ${dateDir}`);
         continue;
       }
-      fs.rmSync(dirPath, { recursive: true, force: true });
+      // A6: 异步删除（fs.promises.rm）——整目录递归删是重 IO，不能压住事件循环。
+      await fs.promises.rm(dirPath, { recursive: true, force: true });
       deletedCount++;
       logger.debug(`Deleted old log directory: ${dateDir}`);
     }
   } catch (error: unknown) {
     logger.error(`Error deleting old logs: ${error instanceof Error ? error.message : String(error)}`);
   }
-  
+
   return deletedCount;
 }
 
@@ -198,18 +199,26 @@ export function startLogCleanup(retentionDays: number = 7): void {
   if (cleanupInterval) {
     clearInterval(cleanupInterval);
   }
-  
+
   logger.info(`Starting log cleanup thread (retention: ${retentionDays} days)`);
-  
+
+  // A6: 清扫全异步——interval 回调只负责触发，删除本身不阻塞事件循环。
   const cleanup = () => {
-    const deleted = deleteOldLogs(retentionDays);
-    if (deleted > 0) {
-      logger.info(`Cleaned up ${deleted} old log directories`);
-    }
+    void deleteOldLogs(retentionDays)
+      .then((deleted) => {
+        if (deleted > 0) {
+          logger.info(`Cleaned up ${deleted} old log directories`);
+        }
+      })
+      .catch((err: unknown) => {
+        logger.error(
+          `Log cleanup sweep failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
   };
-  
+
   cleanup();
-  
+
   cleanupInterval = setInterval(cleanup, 24 * 60 * 60 * 1000);
 }
 
@@ -260,6 +269,19 @@ export function diskUsagePercent(): number {
     return 0;
   }
 }
+
+/** A7（第四轮审计）：同 diskUsagePercent，但计量失败返回 **null**——心跳上报
+ *  用它区分「未上报」（字段缺席，admin 保留 DB 旧值）与「已上报 0%」。 */
+export function diskUsagePercentOrNull(): number | null {
+  try {
+    const st = fs.statfsSync(config.workDir);
+    if (!st.blocks || st.bsize <= 0) return null;
+    const used = st.blocks - st.bavail;
+    return Math.round((used / st.blocks) * 100);
+  } catch {
+    return null;
+  }
+}
 const PROTECTED_WORKDIR_NAMES = new Set([
   'logs', 'meta', 'callbacks', '.git_cache', '.node_modules', '.pkg-updates', 'apps',
   // WS5（python_task_multiversion）：`.venvs` 是**按任务复用的共享缓存**，不是
@@ -307,9 +329,16 @@ export function registerActiveWorkdirProvider(fn: () => ActiveWorkdirSet): void 
   activeWorkdirProvider = fn;
 }
 
-function removePath(target: string): boolean {
+/** A6: 让路原语——把长清扫切成片段，片段之间把事件循环还给心跳/pull 等常驻面。 */
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+/** A6（异步化）：`fs.promises.rm` 替代同步 rmSync——递归删整目录是重 IO，
+ * libuv 线程池执行，事件循环（心跳 /health、pull 长轮询）不再被卡住。 */
+async function removePath(target: string): Promise<boolean> {
   try {
-    fs.rmSync(target, { recursive: true, force: true });
+    await fs.promises.rm(target, { recursive: true, force: true });
     return true;
   } catch (error: unknown) {
     logger.warn(
@@ -324,7 +353,7 @@ function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function removeOlderThan(
+async function removeOlderThan(
   dir: string,
   cutoffMs: number,
   options: {
@@ -337,11 +366,11 @@ function removeOlderThan(
      *  用于活跃执行的 meta 文件保护（区别于 exclude 的"不占名额但照删"）。 */
     protected?: RegExp;
   } = {},
-): number {
+): Promise<number> {
   let deleted = 0;
   let entries: fs.Dirent[];
   try {
-    entries = fs.readdirSync(dir, { withFileTypes: true });
+    entries = await fs.promises.readdir(dir, { withFileTypes: true });
   } catch {
     return 0;
   }
@@ -361,8 +390,8 @@ function removeOlderThan(
     if (options.exclude && options.exclude.test(entry.name)) {
       const excludedPath = path.join(dir, entry.name);
       try {
-        if (fs.statSync(excludedPath).mtimeMs < cutoffMs) {
-          if (removePath(excludedPath)) deleted++;
+        if ((await fs.promises.stat(excludedPath)).mtimeMs < cutoffMs) {
+          if (await removePath(excludedPath)) deleted++;
         }
       } catch {
         /* raced — skip */
@@ -370,18 +399,23 @@ function removeOlderThan(
       continue;
     }
     try {
-      const stat = fs.statSync(path.join(dir, entry.name));
+      const stat = await fs.promises.stat(path.join(dir, entry.name));
       withMtime.push({ name: entry.name, isDir: entry.isDirectory(), mtime: stat.mtimeMs });
     } catch {
       /* raced with a concurrent delete — skip */
     }
   }
   withMtime.sort((a, b) => b.mtime - a.mtime);
-  withMtime.forEach((item, index) => {
-    if (item.mtime >= cutoffMs) return;
-    if (options.keepNewest !== undefined && index < options.keepNewest) return;
-    if (removePath(path.join(dir, item.name))) deleted++;
-  });
+  for (const [index, item] of withMtime.entries()) {
+    // 未过期（mtime 降序的前缀段）→ 保留，继续处理后续条目。
+    if (item.mtime >= cutoffMs) continue;
+    if (options.keepNewest !== undefined && index < options.keepNewest) continue;
+    if (await removePath(path.join(dir, item.name))) {
+      deleted++;
+      // A6: 分片让路——每删一个条目把事件循环还给常驻面（心跳/pull），再继续。
+      await yieldToEventLoop();
+    }
+  }
   return deleted;
 }
 
@@ -401,24 +435,24 @@ function removeOlderThan(
  *  rename 完成即消失，因此一个过龄 .tmp 必然是写盘中途崩溃/失败留下的孤儿
  *  （callbacks/ 顶层与 dead-letter/ 里的侧车 tmp 都算）。ORPHAN_META_TTL_MS
  *  的年龄门保护仍在写入中的活跃 tmp。 */
-function removeOrphanCallbackMetaFiles(callbackDir: string, nowMs: number): number {
+async function removeOrphanCallbackMetaFiles(callbackDir: string, nowMs: number): Promise<number> {
   let deleted = 0;
   const deadDir = path.join(callbackDir, 'dead-letter');
   /** 过龄 .tmp 回收（调用方已保证 entry.isFile() 且以 .tmp 结尾）。 */
-  const removeIfStaleTmp = (dir: string, name: string): void => {
+  const removeIfStaleTmp = async (dir: string, name: string): Promise<void> => {
     const tmpPath = path.join(dir, name);
     try {
-      const stat = fs.statSync(tmpPath);
+      const stat = await fs.promises.stat(tmpPath);
       if (nowMs - stat.mtimeMs < ORPHAN_META_TTL_MS) return;
     } catch {
       /* raced — skip */
       return;
     }
-    if (removePath(tmpPath)) deleted++;
+    if (await removePath(tmpPath)) deleted++;
   };
   let entries: fs.Dirent[];
   try {
-    entries = fs.readdirSync(callbackDir, { withFileTypes: true });
+    entries = await fs.promises.readdir(callbackDir, { withFileTypes: true });
   } catch {
     return 0;
   }
@@ -426,7 +460,7 @@ function removeOrphanCallbackMetaFiles(callbackDir: string, nowMs: number): numb
     if (!entry.isFile()) continue;
     // NETOPT-4: 残留 .tmp（写盘中途崩溃/失败）——超过孤儿 TTL 即回收
     if (entry.name.endsWith('.tmp')) {
-      removeIfStaleTmp(callbackDir, entry.name);
+      await removeIfStaleTmp(callbackDir, entry.name);
       continue;
     }
     if (!entry.name.endsWith('.meta')) continue;
@@ -435,34 +469,39 @@ function removeOrphanCallbackMetaFiles(callbackDir: string, nowMs: number): numb
     const jsonPath = metaPath.slice(0, -'.meta'.length);
     if (fs.existsSync(jsonPath)) continue; // still owned by a live callback file
     try {
-      const stat = fs.statSync(metaPath);
+      const stat = await fs.promises.stat(metaPath);
       if (nowMs - stat.mtimeMs < ORPHAN_META_TTL_MS) continue;
     } catch {
       /* raced — skip */
       continue;
     }
-    if (removePath(metaPath)) deleted++;
+    if (await removePath(metaPath)) deleted++;
   }
   // NETOPT-4: dead-letter/ 里的残留 .tmp（侧车原子写的中间态；payload 本体
   // 经 rename 进死信目录，不会在目录内产生 payload tmp）。
   let deadEntries: fs.Dirent[];
   try {
-    deadEntries = fs.readdirSync(deadDir, { withFileTypes: true });
+    deadEntries = await fs.promises.readdir(deadDir, { withFileTypes: true });
   } catch {
     deadEntries = []; /* dead-letter dir absent — nothing to sweep */
   }
   for (const entry of deadEntries) {
     if (!entry.isFile() || !entry.name.endsWith('.tmp')) continue;
-    removeIfStaleTmp(deadDir, entry.name);
+    await removeIfStaleTmp(deadDir, entry.name);
   }
   return deleted;
 }
 
 /** Remove expired task workdirs, stale caches, old packages and dead-letter
- *  overflow. Safe to run at startup and on an interval. */
-export function cleanupWorkDir(
+ *  overflow. Safe to run at startup and on an interval.
+ *
+ *  第四轮审计（A6）: **全异步 + 分片让路**——旧实现用 rmSync/全池 statSync
+ *  同步执行，GB 级垃圾回收时事件循环被卡数百 ms~数秒（心跳 /health、pull
+ *  长轮询全部停摆）。现全部 fs.promises，删除与分片之间 yieldToEventLoop()
+ *  让路；语义（保护集、keepNewest、TTL）逐字节不变。 */
+export async function cleanupWorkDir(
   ttlDays: number = CLEANUP_TTL_DAYS,
-): { workDirs: number; caches: number; packages: number; deadLetters: number; orphanMetaFiles: number; metaFiles: number } {
+): Promise<{ workDirs: number; caches: number; packages: number; deadLetters: number; orphanMetaFiles: number; metaFiles: number }> {
   const cutoff = Date.now() - ttlDays * 24 * 60 * 60 * 1000;
   let workDirs = 0;
   let caches = 0;
@@ -495,7 +534,7 @@ export function cleanupWorkDir(
 
   try {
     // 1. Task workdirs: any top-level entry that is not infrastructure.
-    const baseEntries = fs.readdirSync(config.workDir, { withFileTypes: true });
+    const baseEntries = await fs.promises.readdir(config.workDir, { withFileTypes: true });
     for (const entry of baseEntries) {
       if (PROTECTED_WORKDIR_NAMES.has(entry.name)) continue;
       // E-08: 跳过仍在运行（活跃）的 execution 工作目录——drain/关机期间其目录
@@ -503,9 +542,12 @@ export function cleanupWorkDir(
       if (activeExecIds.has(entry.name)) continue;
       const full = path.join(config.workDir, entry.name);
       try {
-        const stat = fs.statSync(full);
+        const stat = await fs.promises.stat(full);
         if (stat.mtimeMs < cutoff) {
-          if (removePath(full)) workDirs++;
+          if (await removePath(full)) {
+            workDirs++;
+            await yieldToEventLoop();
+          }
         }
       } catch { /* raced — skip */ }
     }
@@ -517,7 +559,7 @@ export function cleanupWorkDir(
       const cacheBase = path.join(config.workDir, cacheDirName);
       let subEntries: fs.Dirent[];
       try {
-        subEntries = fs.readdirSync(cacheBase, { withFileTypes: true });
+        subEntries = await fs.promises.readdir(cacheBase, { withFileTypes: true });
       } catch {
         continue;
       }
@@ -526,9 +568,12 @@ export function cleanupWorkDir(
         // E-08: 活跃分片保护——taskId 命中的 .git_cache/.node_modules 子目录保留。
         if (sub.isDirectory() && activeTaskIds.has(sub.name)) continue;
         try {
-          const stat = fs.statSync(subTarget);
+          const stat = await fs.promises.stat(subTarget);
           if (stat.mtimeMs < cutoff) {
-            if (removePath(subTarget)) caches++;
+            if (await removePath(subTarget)) {
+              caches++;
+              await yieldToEventLoop();
+            }
           }
         } catch { /* raced — skip */ }
       }
@@ -547,7 +592,7 @@ export function cleanupWorkDir(
       const venvBase = path.join(config.workDir, '.venvs');
       let venvEntries: fs.Dirent[];
       try {
-        venvEntries = fs.readdirSync(venvBase, { withFileTypes: true });
+        venvEntries = await fs.promises.readdir(venvBase, { withFileTypes: true });
       } catch {
         venvEntries = [];
       }
@@ -558,16 +603,19 @@ export function cleanupWorkDir(
         if (liveVenvNames.has(sub.name)) continue;
         const subTarget = path.join(venvBase, sub.name);
         try {
-          const stat = fs.statSync(subTarget);
+          const stat = await fs.promises.stat(subTarget);
           if (stat.mtimeMs < cutoff) {
-            if (removePath(subTarget)) caches++;
+            if (await removePath(subTarget)) {
+              caches++;
+              await yieldToEventLoop();
+            }
           }
         } catch { /* raced — skip */ }
       }
     }
 
     // 3. Downloaded packages: keep only the newest few regardless of age.
-    packages = removeOlderThan(path.join(process.cwd(), '.pkg-updates'), cutoff, {
+    packages = await removeOlderThan(path.join(process.cwd(), '.pkg-updates'), cutoff, {
       keepNewest: MAX_PKG_UPDATES,
     });
 
@@ -579,30 +627,30 @@ export function cleanupWorkDir(
     //    一半（每份死信 payload 旁恰好一个侧车）。
     //    NETOPT-4: exclude 追加 `*.tmp`——残留 tmp 不占保留名额，也不被
     //    getDeadLetterCount 计入积压；其按孤儿 TTL 的回收在步骤 5。
-    deadLetters = removeOlderThan(path.join(config.workDir, 'callbacks', 'dead-letter'), cutoff, {
+    deadLetters = await removeOlderThan(path.join(config.workDir, 'callbacks', 'dead-letter'), cutoff, {
       keepNewest: MAX_DEAD_LETTER_FILES,
       filesOnly: true,
       exclude: new RegExp(`${DEAD_LETTER_SIDECAR_EXCLUDE_RE.source}|\\.tmp$`),
     });
 
     // 5. E13: reclaim orphan `.meta` files stranded in the callbacks/ top level.
-    orphanMetaFiles = removeOrphanCallbackMetaFiles(
+    orphanMetaFiles = await removeOrphanCallbackMetaFiles(
       path.join(config.workDir, 'callbacks'),
       Date.now(),
     );
 
     // 6. NETOPT-9-3: meta/*.json — execution metadata written by execute.ts
-    //    writeExecMeta (one file per execution; the desktop history builder
-    //    and notifier read them). Nothing ever reclaimed them, so a
-    //    long-running executor accumulated them unboundedly, and past ~500
-    //    files the desktop notifier's slice(0,500) scan window could
-    //    permanently miss new-task terminal notifications. TTL aligns with
-    //    the logs; filesOnly mirrors the dead-letter sweep (only regular
-    //    files are reclaimed; the `meta` directory itself is protected by
-    //    PROTECTED_WORKDIR_NAMES so it is never swept as a workdir).
+    // writeExecMeta (one file per execution; the desktop history builder
+    // and notifier read them). Nothing ever reclaimed them, so a
+    // long-running executor accumulated them unboundedly, and past ~500
+    // files the desktop notifier's slice(0,500) scan window could
+    // permanently miss new-task terminal notifications. TTL aligns with
+    // the logs; filesOnly mirrors the dead-letter sweep (only regular
+    // files are reclaimed; the `meta` directory itself is protected by
+    // PROTECTED_WORKDIR_NAMES so it is never swept as a workdir).
     // NETOPT-C P3: 活跃执行的 meta 文件受保护——长跑任务（timeout=0）的 meta
     // mtime 停在 running 写入时刻，按 TTL 清扫会删掉仍在用的历史/通知数据。
-    metaFiles = removeOlderThan(path.join(config.workDir, 'meta'), cutoff, {
+    metaFiles = await removeOlderThan(path.join(config.workDir, 'meta'), cutoff, {
       filesOnly: true,
       protected:
         activeExecIds.size > 0
@@ -619,8 +667,10 @@ export function cleanupWorkDir(
   // 与 python maintenance.cleanup_work_dir 末尾调用 enforce_interpreter_pool_limits
   // 同构：放在同一轮里执行，一次定时任务同时管"过期"与"过大"。
   // 返回值不并入上面的计数对象（既有 test 逐键断言），回收结果走日志。
+  // A6: enforceInterpreterPoolLimits 已异步化（await——池计量/删除同样不再
+  // 阻塞事件循环）。
   try {
-    const poolResult = enforceInterpreterPoolLimits();
+    const poolResult = await enforceInterpreterPoolLimits();
     if (poolResult.reclaimedVersions > 0 || poolResult.overLimit > 0) {
       logger.warn(`Interpreter pool enforcement: ${JSON.stringify(poolResult)}`);
     }
@@ -678,34 +728,49 @@ let workdirCleanupInterval: NodeJS.Timeout | null = null;
 /** Run cleanup at startup and every CLEANUP_SWEEP_INTERVAL_HOURS. Shares the
  *  cadence/retention policy with the log cleanup (same TTL, logRetentionDays). */
 export function startWorkDirCleanup(ttlDays: number = CLEANUP_TTL_DAYS): void {
+  // A6: sweep 全异步——interval 回调 fire-and-forget，删除链路（含紧急二轮）
+  // 不再阻塞事件循环；串行防重入（上一轮未跑完不叠开新一轮）。
+  let sweeping = false;
   const sweep = () => {
-    const r = cleanupWorkDir(ttlDays);
-    const total = r.workDirs + r.caches + r.packages + r.deadLetters + r.orphanMetaFiles + r.metaFiles;
-    if (total > 0) {
-      logger.info(
-        `Workdir cleanup removed ${total} item(s): ${r.workDirs} workdir(s), ${r.caches} cache entr(ies), ${r.packages} package(s), ${r.deadLetters} dead-letter file(s), ${r.orphanMetaFiles} orphan meta file(s), ${r.metaFiles} meta file(s)`,
-      );
-    }
-    // P2：磁盘水位（TTL 基于 mtime，磁盘在 TTL 窗口内被撑满时无主动应对）。
-    // 告警水位 → 减半 TTL 立即再跑一轮紧急清理（回收刚生成的过期垃圾）；
-    // 临界水位 → 除紧急清理外，accept 阶段会拒新任务（execute.ts 同源读取）。
-    const usage = diskUsagePercent();
-    if (usage >= DISK_CRITICAL_PERCENT) {
-      logger.error(
-        `Disk usage critical (${usage}% >= ${DISK_CRITICAL_PERCENT}%) — new task accept will be refused; running emergency cleanup with reduced TTL`,
-      );
-      const emergency = cleanupWorkDir(Math.max(1, Math.floor(ttlDays / 2)));
-      const eTotal =
-        emergency.workDirs + emergency.caches + emergency.packages +
-        emergency.deadLetters + emergency.orphanMetaFiles + emergency.metaFiles;
-      if (eTotal > 0) {
-        logger.warn(`Emergency cleanup removed ${eTotal} item(s)`);
+    if (sweeping) return;
+    sweeping = true;
+    void (async () => {
+      const r = await cleanupWorkDir(ttlDays);
+      const total = r.workDirs + r.caches + r.packages + r.deadLetters + r.orphanMetaFiles + r.metaFiles;
+      if (total > 0) {
+        logger.info(
+          `Workdir cleanup removed ${total} item(s): ${r.workDirs} workdir(s), ${r.caches} cache entr(ies), ${r.packages} package(s), ${r.deadLetters} dead-letter file(s), ${r.orphanMetaFiles} orphan meta file(s), ${r.metaFiles} meta file(s)`,
+        );
       }
-    } else if (usage >= DISK_WARN_PERCENT) {
-      logger.warn(
-        `Disk usage high (${usage}% >= ${DISK_WARN_PERCENT}%) — consider raising log retention budget or adding storage`,
-      );
-    }
+      // P2：磁盘水位（TTL 基于 mtime，磁盘在 TTL 窗口内被撑满时无主动应对）。
+      // 告警水位 → 减半 TTL 立即再跑一轮紧急清理（回收刚生成的过期垃圾）；
+      // 临界水位 → 除紧急清理外，accept 阶段会拒新任务（execute.ts 同源读取）。
+      const usage = diskUsagePercent();
+      if (usage >= DISK_CRITICAL_PERCENT) {
+        logger.error(
+          `Disk usage critical (${usage}% >= ${DISK_CRITICAL_PERCENT}%) — new task accept will be refused; running emergency cleanup with reduced TTL`,
+        );
+        const emergency = await cleanupWorkDir(Math.max(1, Math.floor(ttlDays / 2)));
+        const eTotal =
+          emergency.workDirs + emergency.caches + emergency.packages +
+          emergency.deadLetters + emergency.orphanMetaFiles + emergency.metaFiles;
+        if (eTotal > 0) {
+          logger.warn(`Emergency cleanup removed ${eTotal} item(s)`);
+        }
+      } else if (usage >= DISK_WARN_PERCENT) {
+        logger.warn(
+          `Disk usage high (${usage}% >= ${DISK_WARN_PERCENT}%) — consider raising log retention budget or adding storage`,
+        );
+      }
+    })()
+      .catch((err: unknown) => {
+        logger.error(
+          `Workdir cleanup sweep failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      })
+      .finally(() => {
+        sweeping = false;
+      });
   };
 
   sweep();

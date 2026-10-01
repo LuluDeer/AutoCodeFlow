@@ -26,9 +26,7 @@ import type { Request, Response } from "express";
 function makeRes(headers: Record<string, string | string[]> = {}) {
   return {
     getHeader: (name: string) =>
-      headers[name.toLowerCase()] as ReturnType<
-        Response["getHeader"]
-      >,
+      headers[name.toLowerCase()] as ReturnType<Response["getHeader"]>,
   };
 }
 
@@ -39,7 +37,9 @@ function makeReq(path: string) {
 describe("P1-1a sse-compression.util — SSE 压缩豁免谓词", () => {
   describe("hasSseContentType（content-type 判定 = 根治项）", () => {
     it("text/event-stream → true（含带 charset 的完整串）", () => {
-      expect(hasSseContentType(makeRes({ "content-type": "text/event-stream" }))).toBe(true);
+      expect(
+        hasSseContentType(makeRes({ "content-type": "text/event-stream" })),
+      ).toBe(true);
       expect(
         hasSseContentType(
           makeRes({ "content-type": "text/event-stream; charset=utf-8" }),
@@ -91,7 +91,9 @@ describe("P1-1a sse-compression.util — SSE 压缩豁免谓词", () => {
     });
 
     it("logs/stream 路径 + content-type 尚未设置 → 仍 true（兜底生效）", () => {
-      expect(isSseResponse(makeReq("/api/x/logs/stream"), makeRes())).toBe(true);
+      expect(isSseResponse(makeReq("/api/x/logs/stream"), makeRes())).toBe(
+        true,
+      );
     });
 
     it("普通 json 响应 → false", () => {
@@ -119,9 +121,9 @@ describe("P1-1a sse-compression.util — SSE 压缩豁免谓词", () => {
       const res = makeRes({
         "content-type": "text/event-stream",
       }) as unknown as Response;
-      expect(sseAwareCompressionFilter(makeReq("/api/metrics/stream"), res)).toBe(
-        false,
-      );
+      expect(
+        sseAwareCompressionFilter(makeReq("/api/metrics/stream"), res),
+      ).toBe(false);
       expect(filterSpy).not.toHaveBeenCalled();
     });
 

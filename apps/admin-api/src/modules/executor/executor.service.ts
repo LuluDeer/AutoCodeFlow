@@ -15,7 +15,7 @@ import type { Queue } from "bullmq";
 import { randomBytes, timingSafeEqual, createHash } from "crypto";
 import * as bcrypt from "bcrypt";
 import { InjectRepository } from "@nestjs/typeorm";
-import { Repository, LessThan, In, Brackets } from "typeorm";
+import { Repository, LessThan, In, Not, Brackets } from "typeorm";
 import { Cron } from "@nestjs/schedule";
 import axios from "axios";
 import {
@@ -38,7 +38,18 @@ import {
   transitionToTerminal,
   TERMINAL_EXECUTION_STATUSES,
 } from "../task/execution-terminal";
-import { Task, TaskCodeSource } from "../task/entities/task.entity";
+import { Task, TaskCodeSource, TaskStatus } from "../task/entities/task.entity";
+// A4: DB 优先级(4=紧急) → BullMQ 出队优先级(1=最高)的方向换算——restart/stale
+// 恢复重试入队此前根本不带 priority，同样需要换算后补齐。
+import { toBullPriority } from "../../common/utils/task-priority.util";
+// normalizeTaskPriority：DB priority 列读回 PG label 字符串（'normal' 等），
+// 入队边界必须先归一化为 1..4 数字再换算（同 scheduler/task.service）。
+import { normalizeTaskPriority } from "../task/entities/task.entity";
+// A4（第三轮审计·高）：派发体 task 白名单挑选（整实体直传收口为显式白名单）。
+import {
+  buildDispatchTaskPayload,
+  DispatchTaskPayload,
+} from "./dispatch-task-payload.util";
 // python_task_multiversion（WS2 · CONTRACT §2.4/§3.1）：zip 渠道任务的
 // `packageUrl` 由 admin 在派发时解析后附加到下发 task 上（任务实体只有
 // `applicationId` 弱引用，执行器无法自行查库）。只加列/只读，不建关系，
@@ -390,8 +401,7 @@ export class ExecutorService implements OnModuleInit {
     // 参数**（既有 spec 以位置参数直接装配，带默认值的尾参不破坏）。
     @Optional()
     @InjectRepository(ApplicationVersion)
-    private readonly applicationVersionRepo: Repository<ApplicationVersion> | null =
-      null,
+    private readonly applicationVersionRepo: Repository<ApplicationVersion> | null = null,
   ) {
     this.protocol = this.configService.get<string>("app.protocol") || "http";
     // R-26（DEEP_REVIEW 0ef3bbe）: 关键 @Optional（事件总线 / 高危审计）缺失时
@@ -973,6 +983,11 @@ export class ExecutorService implements OnModuleInit {
                   delay: jitteredRetryDelayMs(task.retryDelay, nextRetryCount),
                 }
               : undefined,
+          // A4: 恢复重试此前漏传 priority（审计低项「restart 重试丢
+          // priority」）——重试 job 无优先级地混入队列，紧急任务的重试被任意
+          // 压后。与 trigger/rollback/scheduler.enqueue 同一口径：归一化 +
+          // 方向换算（DB 4=紧急 → BullMQ 1=最先出队）。
+          priority: toBullPriority(normalizeTaskPriority(task.priority)),
         },
       );
     } catch (err) {
@@ -3329,10 +3344,17 @@ export class ExecutorService implements OnModuleInit {
    * `applicationId` 非空（**并集**——存量 zip 任务在 WS1 回填 codeSource 之前
    * 就已存在，只认 codeSource 会让它们静默下发无 packageUrl 的任务）。
    *
+   * A4（第三轮审计·高）：返回的 task 恒为**白名单挑选副本**（不再整实体
+   * 直传）——此前非 zip 渠道返回原实体引用、zip 渠道返回 `{...task}` 整实体
+   * 展开，任务行的全部列（调度面/内部面字段）都被序列化进 HTTP 载荷与 Redis
+   * pull 队列。白名单 = 协议 TaskConfig 声明字段 ∪ 三端执行器实际读取字段
+   * （推导过程与逐字段论证见 dispatch-task-payload.util.ts 头注），webhookSecret
+   * 即便被 addSelect 带出也进不了载荷。
+   *
    * 返回值语义：
-   * - 非 zip 渠道 → 原对象**同一引用**返回（零拷贝、零行为变化）；
-   * - zip 渠道 → 返回 `{...task, packageUrl}` **新对象**（绝不改持久化实体：
-   *   `task` 是 TypeORM 托管行，写入非列字段会污染实体并可能被 save() 误判）；
+   * - 恒返回新对象（绝不改持久化实体：`task` 是 TypeORM 托管行，写入非列
+   *   字段会污染实体并可能被 save() 误判）；
+   * - zip 渠道副本额外带解析出的 `packageUrl`；
    * - 解析不到（repo 未装配 / 应用不存在 / `packageUrl` 为空）→ 抛错，派发失败，
    *   消息明确。**不静默降级**：下发无 packageUrl 的 zip 任务会让执行器在运行时
    *   才炸，且分因落在执行器侧（PACKAGE_FETCH_FAILED），与真实原因不符。
@@ -3346,8 +3368,8 @@ export class ExecutorService implements OnModuleInit {
    * 不留痕，应用连续上传多版后版本不可追溯）。版本**不进派发载荷**（载荷契约
    * 只增 packageUrl），仅落库。
    */
-  private async resolveDispatchTask<T extends Task>(task: T): Promise<{
-    task: T;
+  private async resolveDispatchTask(task: Task): Promise<{
+    task: DispatchTaskPayload;
     packageVersion: string | null;
   }> {
     // 并集语义（NFR-05）：codeSource 明确为 application_zip → zip 渠道；
@@ -3362,7 +3384,8 @@ export class ExecutorService implements OnModuleInit {
     const isZipChannel =
       task.codeSource === TaskCodeSource.APPLICATION_ZIP ||
       (task.codeSource == null && Boolean(task.applicationId));
-    if (!isZipChannel) return { task, packageVersion: null };
+    if (!isZipChannel)
+      return { task: buildDispatchTaskPayload(task), packageVersion: null };
     if (!task.applicationId) {
       // codeSource=application_zip 但无 applicationId：WS1 写面已互斥校验
       // （CONTRACT §2.1「codeSource=application_zip 时 applicationId 必填」），
@@ -3386,7 +3409,7 @@ export class ExecutorService implements OnModuleInit {
         ExecutorService.PACKAGE_URL_CACHE_TTL_MS
       ) {
         return {
-          task: { ...task, packageUrl: cached.packageUrl },
+          task: buildDispatchTaskPayload(task, cached.packageUrl),
           packageVersion: cached.packageVersion,
         };
       }
@@ -3419,7 +3442,7 @@ export class ExecutorService implements OnModuleInit {
       cachedAt: Date.now(),
     });
     return {
-      task: { ...task, packageUrl: app.packageUrl },
+      task: buildDispatchTaskPayload(task, app.packageUrl),
       packageVersion,
     };
   }
@@ -4301,19 +4324,84 @@ export class ExecutorService implements OnModuleInit {
     }
   }
 
-  /** Run hourly, clean up executor records offline for more than 7 days */
+  /** Run hourly, clean up executor records offline for more than 7 days.
+   *
+   * DEEP-AUDIT B·1.1：自动清理从「盲删」改为「有钉定任务则跳过」。旧行为对
+   * `task.executorId` 引用零感知——一台离线超 7 天但仍有钉定任务的执行器被
+   * 静默删除后，钉定任务派发即抛 "Pinned executor not found" 且无重试（UNKNOWN
+   * 分类），等于自动制造必失败任务。现在：仍被钉定的行跳过并 warn+审计，
+   * 让运维显式处理（解钉或换机）；无引用的行照旧清理并顺手清 pull 队列。
+   */
   @Cron("0 0 * * * *")
   async cleanupOfflineExecutors() {
     if (this.leaderGate && !this.leaderGate.isLeader) return;
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const stale = await this.repo.find({
+      where: {
+        status: ExecutorStatus.OFFLINE,
+        lastHeartbeat: LessThan(sevenDaysAgo),
+      },
+      select: { id: true, address: true, appName: true },
+    });
+    if (stale.length === 0) return;
+
+    // 一次分组查询拿全部"仍被钉定"的 executorId（避免逐行 count 的 N+1）。
+    const staleIds = stale.map((e) => e.id);
+    const pinnedRows = (await this.taskRepo
+      .createQueryBuilder("task")
+      .select("task.executorId", "executorId")
+      .addSelect("COUNT(*)", "count")
+      .where("task.executorId IN (:...ids)", { ids: staleIds })
+      .andWhere("task.status != :deleted", { deleted: TaskStatus.DELETED })
+      .groupBy("task.executorId")
+      .getRawMany()) as Array<{ executorId: string; count: string }>;
+    const pinnedCounts = new Map(
+      pinnedRows.map((r) => [r.executorId, Number(r.count)]),
+    );
+
+    const deletable = stale.filter((e) => (pinnedCounts.get(e.id) ?? 0) === 0);
+    const skipped = stale.filter((e) => (pinnedCounts.get(e.id) ?? 0) > 0);
+
+    // 跳过面必须可见：warn 日志 + 审计（fail-open，绝不影响主链）。
+    for (const exec of skipped) {
+      const count = pinnedCounts.get(exec.id) ?? 0;
+      this.logger.warn(
+        `Skipped auto-cleanup of executor ${exec.id} (${exec.address}): ` +
+          `${count} task(s) still pin it via task.executorId — unpin or retarget ` +
+          `them first, otherwise they would fail dispatch after deletion`,
+      );
+      try {
+        await this.audit?.log({
+          action: "executor.cleanup_skipped",
+          resource: "executor",
+          resourceId: exec.id,
+          detail: {
+            address: exec.address,
+            appName: exec.appName,
+            pinnedTasks: count,
+          },
+        });
+      } catch (err) {
+        this.logger.warn(
+          `audit write failed for executor.cleanup_skipped on ${exec.id}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+
+    if (deletable.length === 0) return;
     const result = await this.repo.delete({
-      status: ExecutorStatus.OFFLINE,
-      lastHeartbeat: LessThan(sevenDaysAgo),
+      id: In(deletable.map((e) => e.id)),
     });
     if (result.affected && result.affected > 0) {
       this.logger.log(
         `Cleaned up ${result.affected} offline executor(s) (>7 days)`,
       );
+      // 与手动删除同款卫生：清 pull 队列与派生缓存（best-effort）。
+      for (const exec of deletable) {
+        await this.pullService?.clear(exec.id).catch(() => undefined);
+        this.issuedTokenCache.delete(exec.address);
+        this.evictLocalTokenCaches(exec.address);
+      }
     }
   }
 
@@ -4462,10 +4550,90 @@ export class ExecutorService implements OnModuleInit {
     // 立刻忘记该地址的全部派生缓存。
     this.evictLocalTokenCaches(executor.address);
     this.broadcastTokenEviction(executor.address);
+    // DEEP-AUDIT B·1.1：删除行的同时清掉该执行器的 pull 任务/命令队列。
+    // 队列键是 executorId，行删除后同 id 重注册会拿到新 id——残留队列既
+    // 无人取件、也无人可见，只能等 TTL 静默过期；显式清掉让语义即时收敛。
+    // best-effort：Redis 抖动不阻断删除主链（TTL 丢弃语义兜底）。
+    await this.pullService?.clear(executor.id).catch(() => undefined);
     this.logger.log(`Executor ${id} (${executor.address}) removed by admin`);
     // AUTH-05: executor deletion is destructive — audit it (with the
     // admin-supplied reason when present). Best-effort, after the mutation.
     await this.auditHighRisk("executor.delete", executor, reason);
+  }
+
+  /**
+   * DEEP-AUDIT B·1.1：执行器删除影响面预览（对齐应用域 GET /:id/removal-impact
+   * 的先例）。旧实现删除（手动 removeById / 自动 cleanupOfflineExecutors）对
+   * `task.executorId / task.executorAppName` 的引用零感知——钉定任务在删除后
+   * 派发即抛 "Pinned executor not found" 且分类 UNKNOWN 无重试，等于**静默
+   * 制造必失败任务**。本端点让确认框能如实列出影响面；自动清理的跳过判定
+   * 也复用这里的口径（countPinnedTaskCount）。
+   */
+  async describeRemovalImpact(id: string): Promise<{
+    appName: string;
+    address: string;
+    status: string;
+    /** task.executorId 显式钉定（pin）到本执行器的任务数。 */
+    pinnedTasks: number;
+    /** task.executorAppName 按名字绑定到本执行器的任务数（dispatch 按
+     *  appName 精确匹配、不静默换机——绑定行同样会因删除而必失败）。 */
+    appNameBoundTasks: number;
+    /** pull 模式待拉取队列深度（acf:pull:{id} 的 LLEN；仅 pull 执行器非零）。 */
+    pendingPullItems: number;
+  }> {
+    const executor = await this.repo.findOne({ where: { id } });
+    if (!executor) throw new NotFoundException("Executor not found");
+    return {
+      appName: executor.appName,
+      address: executor.address,
+      status: executor.status,
+      pinnedTasks: await this.countTasksBoundToExecutor(executor),
+      appNameBoundTasks: await this.countTasksBoundByAppName(executor.appName),
+      // best-effort：Redis 不可用时按 0（未知）呈现，不阻断预览。注意 `?.`
+      // 会短路整条链（pullService 缺席时 catch/then 都不执行、表达式整体为
+      // undefined）——外层再 `?? 0` 归一，否则返回值违反本签名的 number。
+      pendingPullItems:
+        (await this.pullService?.depth(executor.id).catch(() => 0)) ?? 0,
+    };
+  }
+
+  /**
+   * DEEP-AUDIT B·1.1：钉定（task.executorId = 本执行器）的任务数。
+   * 排除软删除行；纯 count 查询，供删除预览与自动清理跳过判定共用同一口径。
+   */
+  private async countTasksBoundToExecutor(
+    executor: Pick<Executor, "id">,
+  ): Promise<number> {
+    try {
+      return await this.taskRepo.count({
+        where: {
+          executorId: executor.id,
+          status: Not(TaskStatus.DELETED),
+        },
+      });
+    } catch (err) {
+      this.logger.warn(
+        `Removal impact: pinned-task count unavailable for executor ${executor.id}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return 0;
+    }
+  }
+
+  /** DEEP-AUDIT B·1.1：task.executorAppName 按名字绑定到本执行器的任务数。 */
+  private async countTasksBoundByAppName(appName: string): Promise<number> {
+    try {
+      return await this.taskRepo.count({
+        where: {
+          executorAppName: appName,
+          status: Not(TaskStatus.DELETED),
+        },
+      });
+    } catch (err) {
+      this.logger.warn(
+        `Removal impact: appName-bound task count unavailable for "${appName}": ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return 0;
+    }
   }
 
   async validateExecutorToken(id: string, presented: string): Promise<boolean> {
@@ -4841,6 +5009,11 @@ export class ExecutorService implements OnModuleInit {
       reservedSlots: number | null;
       cpuUsage: number | null;
       memUsage: number | null;
+      /**
+       * DEEP-AUDIT B·1.5: pull 模式待拉取队列深度（acf:pull:{id} 的 LLEN）。
+       * push 执行器恒为 0;Redis 不可用时按 0(未知)呈现,不阻断详情读取。
+       */
+      pendingPullItems: number;
     };
     history: Array<{
       timestamp: string;
@@ -4902,6 +5075,12 @@ export class ExecutorService implements OnModuleInit {
         reservedSlots: executor.reservedSlots ?? null,
         cpuUsage: executor.cpuUsage,
         memUsage: executor.memUsage,
+        // DEEP-AUDIT B·1.5：pull 模式待拉取队列深度（acf:pull:{id} 的 LLEN）。
+        // 此前"派了却没人取"只有服务端日志，管理台看不到——push 执行器恒为 0。
+        pendingPullItems: await this.pullService
+          ?.depth(executor.id)
+          .catch(() => 0)
+          .then((n) => n ?? 0),
       },
       history: await this.getExecutorMetricsHistory(executor.address),
     };

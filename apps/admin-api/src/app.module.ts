@@ -44,7 +44,7 @@ import { RegistryModule } from "./modules/registry/registry.module";
 import { ArtifactsModule } from "./modules/artifacts/artifacts.module";
 // ARCH-21: 进程内领域事件总线（@Global 单例——emit 侧在 task 模块，
 // listener 侧在 notification 模块，FEAT-07 出站 webhook 届时直接订阅）。
-import { DomainEventModule } from "./common/services/domain-event-bus.service";
+import { DomainEventModule } from "./common/services/domain-event.module";
 // OBS-01: OpenTelemetry 追踪（@Global——埋点在 task/scheduler/executor/
 // execution-callback 多处；OTEL_ENABLED=false 时 TracingService 全短路）。
 import { TracingModule } from "./common/tracing/tracing.module";
@@ -593,14 +593,13 @@ import { RuntimeModule } from "./modules/runtime/runtime.module";
           // (maxRedirections only applies to Redis Cluster; this deployment
           // uses a standalone instance, so it is intentionally omitted.)
           maxRetriesPerRequest: null,
-          retryStrategy: (times: number) => {
-            if (times > 10) {
-              // Stop retrying after 10 attempts
-              return null;
-            }
-            // Exponential backoff: 100ms, 200ms, 400ms, etc.
-            return Math.min(times * 100, 3000);
-          },
+          // 第四轮审计（A4）: 重连策略**永不放弃**——旧实现 times>10 返回 null
+          // （ioredis 语义 = 停止重连、进入 end 终态），Redis 短暂重启/网络抖动
+          // 超过 ~55s（10 次退避累计）后 BullMQ 连接永久断死，队列静默停摆且
+          // 不会自愈（maxRetriesPerRequest:null 只保证请求挂起而非断连）。现恒
+          // 返回退避值（指数增长、封顶 3s），与 redis-lock.service.ts:44 的
+          // retryStrategy 语义对齐：Redis 恢复可达后连接自动重放并冲刷离线队列。
+          retryStrategy: (times: number) => Math.min(times * 100, 3000),
         });
 
         // Observable offline windows: warn when we drop offline, log recovery.
