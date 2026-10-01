@@ -39,7 +39,19 @@ export function auditCommand(): Command {
     .option('--end-time <iso>', 'Only entries created at/before this time (ISO 8601)')
     .option('-p, --page <n>', 'Page number', '1')
     .option('-n, --page-size <n>', 'Page size (max 100)', '20')
-    .action(async (opts) => {
+    // 第四轮审计（--json 补面）：对齐 task list 的 ECO-02 CI 消费面
+    .option('--json', 'Emit raw JSON (CI-consumable, no table)')
+    .action(async (opts: {
+      json?: boolean;
+      page?: string;
+      pageSize?: string;
+      action?: string;
+      resource?: string;
+      userId?: string;
+      username?: string;
+      startTime?: string;
+      endTime?: string;
+    }) => {
       const spinner = ora('Fetching audit logs…').start();
       try {
         // AuditQueryDto whitelist: action / resource / userId / username /
@@ -56,6 +68,12 @@ export function auditCommand(): Command {
           endTime: opts.endTime,
         });
         spinner.stop();
+        if (opts.json) {
+          // ECO-02 同款：--json —— 后端返回的信封（{ data, total }，旧后端可
+          // 能是裸数组）原样直出，不做任何字段裁剪。
+          console.log(JSON.stringify(data, null, 2));
+          return;
+        }
         const rows: AuditLog[] = Array.isArray(data) ? data : (data.data ?? []);
         const total = Array.isArray(data) ? rows.length : (data.total ?? rows.length);
         const table = new Table({

@@ -4,7 +4,7 @@ MCP (Model Context Protocol) server for AutoCodeFlow. Lets AI agents like Claude
 
 ## Tools exposed
 
-The server registers **43 tools** (see `src/tools.ts`), grouped below.
+The server registers **49 tools** (see `src/tools.ts`), grouped below.
 
 ### Tasks
 
@@ -88,6 +88,17 @@ The server registers **43 tools** (see `src/tools.ts`), grouped below.
 | `list_projects` | Projects visible to the current credential, each with `myRole` |
 | `get_project_members` | Members (userId + role) of one project |
 | `get_my_project_roles` | Caller's project memberships: `{ userId, isAdmin, memberships }` |
+
+### SOP & agent sessions
+
+| Tool | Description |
+|------|-------------|
+| `sop_list` | List SOP definitions (`{ items, total }`, optional status filter) |
+| `sop_get` | One SOP by ID: metadata, current version, front-matter and markdown body |
+| `sop_assignments_pending` | `sopId` → non-terminal assignments of that SOP; `assignmentId` → full detail incl. the clarification conversation |
+| `agent_session_list` | Agent sessions newest first (kind/status filters; `waiting_input` = paused on a human decision) |
+| `agent_session_get` | One agent session with its reasoning steps, tool calls and child sessions |
+| `sop_clarification_reply` | Answer an escalated clarification (`answered` text reply, or `sop_amended` with amended front-matter/body the executor continues against) |
 
 ## Setup
 

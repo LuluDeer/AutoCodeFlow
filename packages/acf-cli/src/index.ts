@@ -16,6 +16,8 @@
  *   acf exec tail <execId>
  *   acf task lint <file>
  *   acf audit list
+ *   acf sop list | show <sopId>
+ *   acf agent sessions
  *   acf config show
  */
 import { Command } from 'commander';
@@ -28,6 +30,8 @@ import { deployCommand } from './commands/deploy.js';
 import { auditCommand } from './commands/audit.js';
 import { execCommand } from './commands/exec.js';
 import { projectsCommand } from './commands/projects.js';
+import { sopCommand } from './commands/sop.js';
+import { agentCommand } from './commands/agent.js';
 import { showConfig, setApiUrl, setToken } from './config.js';
 // 版本号单一事实源：直接读 package.json，而不是硬编码字面量。
 //
@@ -68,6 +72,8 @@ program.addCommand(deployCommand());
 program.addCommand(auditCommand());
 program.addCommand(execCommand());
 program.addCommand(projectsCommand());
+program.addCommand(sopCommand());
+program.addCommand(agentCommand());
 
 // acf config show / set
 const configCmd = new Command('config').description('View or update CLI configuration');
