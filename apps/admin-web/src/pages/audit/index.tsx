@@ -117,8 +117,8 @@ export default function AuditLogPage() {
   const resultLabels = RESULT_LABELS(t);
   const [page, setPage] = useState(1);
   // AUTH-05: 新增 resourceId 精确筛选（与 resource 组成组合筛选）
-  const [filters, setFilters] = useState({ action: '', resource: '', resourceId: '', username: '', startTime: undefined as string | undefined, endTime: undefined as string | undefined });
-  const [pending, setPending] = useState({ action: '', resource: '', resourceId: '', username: '', startTime: undefined as string | undefined, endTime: undefined as string | undefined });
+  const [filters, setFilters] = useState({ action: '', resource: '', resourceId: '', username: '', result: '' as '' | 'success' | 'failure', startTime: undefined as string | undefined, endTime: undefined as string | undefined });
+  const [pending, setPending] = useState({ action: '', resource: '', resourceId: '', username: '', result: '' as '' | 'success' | 'failure', startTime: undefined as string | undefined, endTime: undefined as string | undefined });
   const [detailModal, setDetailModal] = useState<{ open: boolean; data?: Record<string, unknown> }>({ open: false });
 
   const { data, isLoading, error, refetch } = useQuery({
@@ -131,6 +131,7 @@ export default function AuditLogPage() {
       if (filters.resource) params.resource = filters.resource;
       if (filters.resourceId) params.resourceId = filters.resourceId;
       if (filters.username) params.username = filters.username;
+      if (filters.result) params.result = filters.result;
       if (filters.startTime) params.startTime = filters.startTime;
       if (filters.endTime) params.endTime = filters.endTime;
       const qs = new URLSearchParams(params).toString();
@@ -140,7 +141,7 @@ export default function AuditLogPage() {
 
   const handleSearch = () => { setPage(1); setFilters(pending); };
   const handleReset = () => {
-    const e = { action: '', resource: '', resourceId: '', username: '', startTime: undefined as string | undefined, endTime: undefined as string | undefined };
+    const e = { action: '', resource: '', resourceId: '', username: '', result: '' as '' | 'success' | 'failure', startTime: undefined as string | undefined, endTime: undefined as string | undefined };
     setPending(e); setFilters(e); setPage(1);
   };
 
@@ -150,7 +151,7 @@ export default function AuditLogPage() {
     { label: t('audit.range.30d'), value: [dayjs().subtract(30, 'day'), dayjs()] as [Dayjs, Dayjs] },
   ];
 
-  const hasFilters = !!(pending.action || pending.resource || pending.resourceId || pending.username || pending.startTime || pending.endTime);
+  const hasFilters = !!(pending.action || pending.resource || pending.resourceId || pending.username || pending.result || pending.startTime || pending.endTime);
 
   const columns = [
     { title: 'ID', dataIndex: 'id', width: 70 },
@@ -280,6 +281,17 @@ export default function AuditLogPage() {
           style={{ width: 160 }}
           allowClear
         />
+        {/* result 筛选（成功/失败），列表与 CSV 导出同滤 */}
+        <Select
+          placeholder={t('audit.filter.result')}
+          value={pending.result || undefined}
+          onChange={(v) => setPending((p) => ({ ...p, result: v ?? '' }))}
+          allowClear
+          style={{ width: 120 }}
+        >
+          <Option value="success">{resultLabels.success}</Option>
+          <Option value="failure">{resultLabels.failure}</Option>
+        </Select>
         <DatePicker.RangePicker
           presets={rangePresets}
           onChange={(dates) => {
