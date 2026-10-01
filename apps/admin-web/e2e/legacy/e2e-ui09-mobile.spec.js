@@ -1,9 +1,15 @@
 // UI-09 真机走查：375×812 视口下 Dashboard / 执行详情 无横向溢出、关键内容可达。
 //
-// ⚠ 已由 apps/admin-web/e2e/e2e-ui09-mobile.spec.js 接管（2026-10-01 存档注记，
-// 第四轮审计）：两份同名 spec 内容已漂移，权威版本在 apps/admin-web/e2e/ 下。
-// 本文件仅存档，供 scripts/e2e-full.sh 历史消费（CI e2e-full 仍指向根级路径，
-// 收编需改 CI 编排，变动面大，本轮不做）；请勿在本文件继续新增用例。
+// 收编注记（NETOPT-DEBT，d9c859e7，更正 2026-10-01 存档注记的失真叙述）：
+//  1. 本文件自仓库根等价迁入 apps/admin-web/e2e/legacy/（内容零变更；CJS require
+//     由 legacy/package.json 的 {"type":"commonjs"} 隔离）。早期注记写「CI 仍指向
+//     根级路径」已失真——根级 playwright.e2e.config.js 的 testDir 现精确圈定
+//     legacy/，CI e2e-full / e2e-full-windows 两个 job 跑的就是本文件，**是活跃
+//     跑面而非存档**。
+//  2. 与 apps/admin-web/e2e/e2e-ui09-mobile.spec.js（ESM 权威版，走 admin-web 的
+//     playwright.config.ts）同名不同源、口径互补：权威版覆盖 TaskFormPage 提交链路，
+//     本文件覆盖 Dashboard / 执行详情的 375px 溢出走查，二者不重复。
+//  3. 仍请勿在本文件继续新增用例（新面进权威套件）。
 //
 // 背景：UI-09 表格三页半场（3351eb9）+ Dashboard/ExecutionDetail 补齐半场（007）此前
 // 仅有 jsdom 断言，缺「真实浏览器 375px」走查；本 spec 挂在 e2e-full.sh 的同一栈上跑：

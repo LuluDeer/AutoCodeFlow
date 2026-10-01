@@ -170,7 +170,7 @@ const EXECUTOR_MODE_OPTIONS = (t: (k: string) => string) => [
   },
 ];
 
-// CORE-02/CORE-04/priority：外部工具文件的选项 label 为中文，这里按 value 映射翻译
+// CORE-02/CORE-04：外部工具文件只承载 value 契约，展示文案统一按 value 走 i18n
 const TIMEOUT_ACTION_LABELS = (t: (k: string) => string): Record<string, string> => ({
   kill: t('taskForm.timeoutAction.kill'),
   kill_retry: t('taskForm.timeoutAction.killRetry'),
@@ -1809,7 +1809,7 @@ export default function TaskFormPage() {
                 >
                   <Radio.Group optionType="button" buttonStyle="solid">
                     {TIMEOUT_ACTION_OPTIONS.map((o) => (
-                      <Radio.Button key={o.value} value={o.value}>{TIMEOUT_ACTION_LABELS(t)[o.value] ?? o.label}</Radio.Button>
+                      <Radio.Button key={o.value} value={o.value}>{TIMEOUT_ACTION_LABELS(t)[o.value]}</Radio.Button>
                     ))}
                   </Radio.Group>
                 </Form.Item>
@@ -1853,7 +1853,7 @@ export default function TaskFormPage() {
                 <Form.Item name="priority" label={<>{t('taskForm.field.priority')} <Text type="secondary" style={{ fontSize: 12 }}>{t('taskForm.field.priority.hint')}</Text></>}>
                   <Select
                     style={{ width: 200 }}
-                    options={TASK_PRIORITY_OPTIONS.map((o) => ({ value: o.value, label: PRIORITY_LABELS(t)[String(o.value)] ?? o.label }))}
+                    options={TASK_PRIORITY_OPTIONS.map((o) => ({ value: o.value, label: PRIORITY_LABELS(t)[String(o.value)] }))}
                   />
                 </Form.Item>
 

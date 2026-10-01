@@ -37,19 +37,49 @@ grep 口径把注释算进来，会把 0 处说成 350 处，直接误导迁移�
 命中基线 = 放行；不在基线 = 守卫失败。因此这个守卫拦的是**新增**硬编码，不会
 一上来就红一片然后被人关掉。
 
-### 当前基线里的 105 处是什么
+### N-04 完成态：基线从 61 收缩到 1（2026-10-01）
 
-均为经确认**有意保留**、或迁移价值低于风险的存量，主要三类：
+N-04 的验收目标是「**硬编码中文源码守卫零豁免**」。基线的历史峰值是 105 处，
+轮 28 清出两处死代码（`executor-mode.ts` 4 条、`api/event-subscriptions.ts`
+4 条）后降到 61；本轮把剩余 61 处逐条回读源码重审，**61 → 1**：
 
-1. **标签映射的 fallback**（`utils/priority.ts` 的低/普通/高/紧急、
-   `utils/cron-desc.ts` 的星期与「分钟前」、`pages/timeout-policy.ts` 等）。
-   这些映射表被调用点用 `t()` 覆盖渲染（如 `TaskFormPage.tsx` 的
-   `PRIORITY_LABELS(t)`），中文只是兜底值，不会直接上屏。
-2. **开发者向的内部不变量错误**（`api/tasks.ts` 的分页校验信息如
-   「请求第 N 页却返回第 M 页」）。这类串用于定位前后端契约违约，
-   面向排障者而非终端用户；翻译它们反而降低排障可读性。
-3. **`src/i18n/index.ts` 的语言名 `'中文'`**——语言切换器里该词以母语自称，
-   是所有语言下的正确显示（英文界面里也应是「中文」，不是「Chinese」）。
+- **60 处迁移**：它们全是「可选 t 参数的中文缺省值」惯用法（`describeCron(expr, t?)`
+  / `formatRelativeTime(v, t?)` / `priorityTag(v, t?)` / `failureRunbookAction(fr, t?)`
+  等）——屏上调用点全部传 `t`，中文只在直调（测试）与「调用方忘传 t」时出现。
+  迁移形态统一为**缺省回落 i18n 单例**（`const T = t ?? ((k) => i18n.t(k))`，
+  非组件文件直引单例，与 `api/tasks.ts` 的 N-04 先例同模式）：中文从源码消失、
+  直调路径跟随当前语言（测试环境默认 zh，旧锚定逐字不变）、忘传 t 的调用点
+  从「永远中文」变成「跟随用户语言」。三处连兜底一起清除：
+  `priorityTag`/`TIMEOUT_ACTION_OPTIONS` 的中文 `label` 字段删除（展示统一由
+  调用方按 value 走 i18n）、`aggregateFailureTop` 的 `unknownError` 改必传、
+  `failure-runbook.ts` 的 16 条中文映射表删除（文案唯一来源 = locales 的
+  `runbook.*`，键集注册表 `RUNBOOK_ACTION_T_KEY` 导出供测试锚定）。
+  顺带修一个真缺陷：`describeCron` 此前即便传 `t` 也用硬编码 `DOW_ZH` 拼星期，
+  英文界面会漏出「一、二、三」——现走 locales 既有而未接线的 `cron.desc.dow.*`
+  双语键（en 侧为 Sun/Mon/…）。
+- **1 处保留（零豁免不可达项）**：`i18n/index.ts` 的语言名 `'中文'`——语言
+  切换器里该词以母语自称，**所有语言下都应显示「中文」**（英文界面显示
+  "Chinese" 反而是错的）。它不是「待迁移」，是「迁移无意义」；守卫 AST 口径
+  无法表达「这串正确」，故留在基线并在此记录理由。这是基线里唯一不可清零项。
+
+zh/en 双侧 key 集合由 `__tests__/i18n-infra.test.tsx` 比对，`t()` 引用的 key
+真实性由 `i18n-source-guard.test.ts` 检查，本守卫拦新增硬编码——三者互补。
+
+### 守卫的边界（桌面端不在扫描范围）
+
+本守卫只扫 `apps/admin-web/src`。**executor-desktop 的渲染层是另一张地图**，
+守卫对其不可见，不要把「admin-web 守卫绿」误读为「桌面端已双语」：
+
+- 托盘/主进程文案已按 `TRAY_TEXTS` 双语常量表收口
+  （`apps/executor-desktop/src/main/tray-texts.ts`，含 agent-status-view）。
+- **ConfigPage**（设置页）已收编：文案在
+  `apps/executor-desktop/src/renderer/i18n.ts` 的 `CFG_TEXTS`（zh/en 扁平键表，
+  与托盘同范式；语言判定 `navigator.language` en* → en），键位对齐由
+  `renderer.selftest.mjs` 静态断言。
+- 其余 renderer 页面（AppsPage/StatusWindow/HistoryPage/Wizard 及 App.tsx、
+  UpdateBanner、ErrorBoundary 等组件）仍是硬编码中文（DESIGN-AUDIT-2026-09-22
+  记录约 5600 字），需另立任务逐页迁移（先抽外层 chrome，再逐页，照
+  ConfigPage 的 `cfg.*` 键表先例）。
 
 ### 新增条目要写理由
 

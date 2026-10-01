@@ -3,6 +3,7 @@
 export default {
   // ── 公共 ──
   'common.copyFailed': '复制失败，请检查浏览器剪贴板权限',
+  'common.operateFailed': '操作失败',
   // ── HTTP 错误提示（axios 响应拦截器，非组件，直接经 i18n.t 读取）──
   'http.error.403': '没有操作权限',
   'http.error.404': '请求的资源不存在',

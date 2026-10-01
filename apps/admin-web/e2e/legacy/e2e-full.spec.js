@@ -1,3 +1,8 @@
+// 收编注记（NETOPT-DEBT，d9c859e7）：本文件自仓库根等价迁入 apps/admin-web/e2e/legacy/
+// （内容零变更；legacy/package.json 以 {"type":"commonjs"} 隔离 CJS require——
+// admin-web 根 package.json 是 "type":"module"，无此作用域声明会被按 ESM 加载炸 require）。
+// CI 经 scripts/e2e-full.sh → 根级 playwright.e2e.config.js（testDir 精确圈定 legacy/）
+// 消费本文件，**是活跃跑面而非存档**；新增用例请进权威套件 apps/admin-web/e2e/*.spec.ts。
 // AutoCodeFlow 全场景 E2E 测试
 // 覆盖：登录、应用管理、任务调度、执行日志、运行机管理、并发状态、中断任务、仓库、通知、审计
 // 第八轮新增：RBAC 路由门控（/notifications 等）、settings AI Tab 非 admin 降级、

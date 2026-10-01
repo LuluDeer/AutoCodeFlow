@@ -6,7 +6,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildExecutionTimeline,
-  TIMELINE_PHASE_LABEL,
+  TIMELINE_PHASE_LABELS,
 } from '../utils/execution-timeline';
 
 describe('buildExecutionTimeline (admin-web)', () => {
@@ -50,8 +50,11 @@ describe('buildExecutionTimeline (admin-web)', () => {
   });
 
   it('exposes phase labels covering the pending→running→terminal chain', () => {
-    expect(TIMELINE_PHASE_LABEL.created).toContain('pending');
-    expect(TIMELINE_PHASE_LABEL.started).toContain('running');
-    expect(TIMELINE_PHASE_LABEL.finished).toContain('terminal');
+    // N-04：中文映射表已删，工厂缺省回落 i18n 单例（测试环境默认 zh），
+    // 断言语义不变——标签仍覆盖 pending/running/terminal 三段链。
+    const labels = TIMELINE_PHASE_LABELS();
+    expect(labels.created).toContain('pending');
+    expect(labels.started).toContain('running');
+    expect(labels.finished).toContain('terminal');
   });
 });

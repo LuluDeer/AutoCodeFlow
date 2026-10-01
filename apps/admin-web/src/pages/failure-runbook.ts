@@ -3,109 +3,82 @@
  * 同层次——独立成文件以满足 react-refresh 只导出组件的限制并便于单测）。
  *
  * 语义镜像自 packages/mcp-server/src/tools.ts 的 FAILURE_RUNBOOK
- * （python_task_multiversion 新增 interpreter_unavailable → 12 类失败分类 →
- * 建议首动作，ECO-03 三端对齐先例）：
- * 跨包 import 违反 workspace 边界（admin-web 不依赖 mcp-server），
- * 按纪律复制语义到 admin-web 侧并保持 12 键逐一对应；mcp 侧后续
+ * （ECO-03 三端对齐先例）：跨包 import 违反 workspace 边界（admin-web 不依赖
+ * mcp-server），按纪律复制语义到 admin-web 侧并保持键逐一对应；mcp 侧后续
  * 扩键时本表需人工同步（双端无共享包，属有意取舍）。
  *
  * 计数口径（改键集时勿照抄任务书，以代码为准）：本文件原名「BUG-10 十二类」，
- * 但实测 git HEAD 的两张映射表与 admin ExecutionFailureReason 枚举、
- * executor-protocol/protocol.json 的 failureReason.all **四处同为 11 项**
- * （含 unknown 兜底）——"十二类"是长期存在的注释笔误。加 interpreter_unavailable
- * 后现为 12 项。"13" 只出现在配套任务书里（其前提"12 键"与仓库实况不符），
- * 故本注释统一按 12 写，避免下一位读者再被错误基数误导。
+ * 历史上四处（本表/admin 枚举/protocol.json/mcp）曾同为 11 项、"十二类"是
+ * 注释笔误；其后 EXP-01（sandbox_unavailable）、P0-4（application_missing）、
+ * P0-8（never_dispatched）、python_task_multiversion（interpreter_unavailable）
+ * 相继扩键，现以 RUNBOOK_ACTION_T_KEY 的实际键数为准（当前 16，含 unknown 兜底）。
  *
  * 与页面既有 FAILURE_REASON_MAP（label/hint）职责区分：
  *  - FAILURE_REASON_MAP：分类的展示（Tag 颜色/中文名/一句话提示）；
- *  - FAILURE_RUNBOOK_ACTIONS：定位到修复动作（怎么做），供失败定位卡片。
+ *  - failureRunbookAction：定位到修复动作（怎么做），供失败定位卡片。
  */
 
-/** 单条建议动作：排障步骤（中文），runbook 键为任务可配置知识库指向 */
+/** 单条建议动作：排障步骤，runbook 键为任务可配置知识库指向 */
 export interface FailureRunbookEntry {
-  /** 建议动作（中文，镜像 mcp FAILURE_RUNBOOK 同键英文语义） */
+  /** 建议动作（文案本体在 locales 的 runbook.*，zh/en 双侧成对） */
   action: string;
 }
 
 /**
- * 失败分类 → 中文建议动作（BUG-10 分类 + python_task_multiversion 新增
- * interpreter_unavailable，共 12 项）。
- * 键集与 mcp-server FAILURE_RUNBOOK 完全一致（12 键，含 unknown 兜底）。
+ * 失败分类 → 建议动作（BUG-10 分类 + python_task_multiversion 新增
+ * interpreter_unavailable，共 16 项，含 unknown 兜底）。
+ * 键集与 mcp-server FAILURE_RUNBOOK 完全一致（16 键，含 unknown 兜底）。
+ *
+ * N-04 收尾：文案不再在本文件内联中文（此前 16 条中文 action 与 locales 的
+ * runbook.* 双份维护，且直调路径在英文界面会漏中文）——action 统一查
+ * RUNBOOK_ACTION_T_KEY → i18n（传 t 走调用方的 t，缺省回落 i18n 单例，
+ * 非组件文件直引单例与 api/tasks.ts 同模式；测试环境默认 zh）。
+ * 中文文案的唯一来源是 locales/{zh,en}.ts 的 runbook.* 键。
  */
-export const FAILURE_RUNBOOK_ACTIONS: Record<string, FailureRunbookEntry> = {
-  package_fetch_failed: {
-    action: '检查包地址/仓库可用性；requirements 指向私服时核对私服凭据与可达性。',
-  },
-  dependency_install_failed: {
-    action: '查看安装日志（pip/uv/npm）定位失败依赖，固定版本后重跑；离线执行器需可达的索引源。',
-  },
-  git_fetch_failed: {
-    action: '检查 gitRepo 地址、分支与凭据；私网 Git 需在执行器侧开启 EXECUTOR_ALLOW_PRIVATE_NETWORK。',
-  },
-  runtime_missing: {
-    action: '执行器缺少运行时（node/python/shell）——安装运行时或改派到支持该 runtime 的执行器。',
-  },
-  // EXP-01（本轮体验审查）：沙箱已配置但不可用。执行器 fail-closed 拒绝在无
-  // 沙箱下运行任务，故动作是「让沙箱可用或取消沙箱配置」——不是重试。
-  sandbox_unavailable: {
-    action: '执行器启用了 TASK_SANDBOX=bwrap 但沙箱不可用（bwrap 未安装 / 用户命名空间被禁 / 在 Windows 上启用）。安装 bubblewrap（apt install bubblewrap）后重启执行器，或取消 TASK_SANDBOX。执行器刻意拒绝在无沙箱下运行任务，重试无效。',
-  },
-  script_error: {
-    action: '阅读日志末尾首个堆栈帧附近的输出；可点击「AI 分析」生成根因报告。',
-  },
-  timeout: {
-    action: '调大 timeoutSeconds、拆分工作负载或排查阻塞 I/O；反复超时提示依赖挂起。',
-  },
-  executor_offline: {
-    action: '检查执行器连接与注册状态；离线期间的回调积压可查看死信队列（dead letters）。',
-  },
-  executor_restart: {
-    action: '瞬时中断——调度 sweep 已自动重新入队；观察重试链，重试成功则无需处理。',
-  },
-  stale_recovered: {
-    action: '执行器崩溃或失联——中台已终止并重新入队；检查执行器主机日志定位失联原因。',
-  },
-  killed: {
-    action: '执行被手动终止（或阻断策略 kill）。与操作者/审计日志核实操作来源。',
-  },
-  // P1-27（UX-AUDIT-2026-09-21）：cancelled 来自调度器 COVER_EARLY 自动覆盖
-  // （scheduler.service.ts:1065-1071 把 RUNNING 行 patch 成 CANCELLED，errorMessage
-  // = "Task was covered by new trigger"，**不落 failureReason**）。
-  // 与 killed 的关键区分：killed 是人工终止（task.service.ts:3381 同时写
-  // failureReason=KILLED）；cancelled 是"有更新的触发到达，旧执行被自动顶掉"。
-  // 文案必须让用户认出这是预期的自动覆盖、而非有人手动停了他的执行。
-  cancelled: {
-    action: '该执行被调度器自动取消：同一任务有更新的触发到达，按覆盖策略（COVER_EARLY）终止了本次执行以避免重复运行。这不是人工终止——人工终止会标记为「已终止」。若符合预期则无需处理；若不希望被自动覆盖，请把任务的阻断策略改为「排队等待」。',
-  },
-  // python_task_multiversion：解释器不可用 = 环境/配置类失败，
-  // 重试无益（故不在默认重试集内）——动作必须是"让运维改环境"而非"再跑一次"。
-  interpreter_unavailable: {
-    action: '确认执行器已安装 uv 且能访问 Python 下载源；声明 3.7 的任务无法在线获取，需部署方预填解释器缓存卷（或改声明 3.8+ 后重新触发）。系统刻意不回退宿主解释器。',
-  },
-  unknown: {
-    action: '无失败原因上报——阅读完整日志，并可用「AI 分析」生成根因报告。',
-  },
-  // P0-4（UX-AUDIT-2026-09-21）：引用的应用已被删除。动作必须指向"重建关联"而非
-  // "看日志"——这类失败连执行器都没碰到，日志里什么都没有。
-  application_missing: {
-    action: '该任务引用的应用已被删除，代码来源已断——任务会按计划继续调度但每次必然失败。请到任务表单重新指定代码来源（重新上传应用包 / 改选 Git 仓库或 Glue 脚本），或停用该任务。',
-  },
-  // P0-8（UX-AUDIT-2026-09-21）：从未被派发（队列侧超时丢弃 / 执行器一直未取件）。
-  // 与其它失败的关键区别：**没有任何日志可看**，因为它从未在任何机器上运行。
-  never_dispatched: {
-    action: '本次执行从未被派发到执行器（排队超时，或目标执行器一直未取件）。请检查目标执行器是否在线、是否被暂停、并发槽位是否长期占满；确认后重新触发即可。这条执行没有任何日志——不必在此查找根因。',
-  },
+
+import i18n from '../i18n';
+
+/** 失败分类注册表（键集与 mcp-server FAILURE_RUNBOOK 对齐，文案查 runbook.*）。
+ *  导出供测试锚定全量键集（execution-detail-ui05.test.tsx）。 */
+export const RUNBOOK_ACTION_T_KEY: Record<string, string> = {
+  package_fetch_failed: 'runbook.packageFetch',
+  dependency_install_failed: 'runbook.dependencyInstall',
+  git_fetch_failed: 'runbook.gitFetch',
+  runtime_missing: 'runbook.runtimeMissing',
+  // EXP-01（体验审查）：沙箱已配置但不可用——执行器 fail-closed 拒绝在无沙箱下
+  // 运行任务，动作是「让沙箱可用或取消配置」而非重试（重试无效）。
+  sandbox_unavailable: 'runbook.sandboxUnavailable',
+  script_error: 'runbook.scriptError',
+  timeout: 'runbook.timeout',
+  executor_offline: 'runbook.executorOffline',
+  executor_restart: 'runbook.executorRestart',
+  stale_recovered: 'runbook.staleRecovered',
+  killed: 'runbook.killed',
+  // P1-27：cancelled = 调度器 COVER_EARLY 自动覆盖（非人工终止），文案要让用户
+  // 认出这是预期行为；killed 才是人工终止（task.service.ts 同步写 failureReason）。
+  cancelled: 'runbook.cancelled',
+  // python_task_multiversion：解释器不可用 = 环境/配置类失败，重试无益
+  // （不在默认重试集内）——动作是「让运维改环境」而非「再跑一次」。
+  interpreter_unavailable: 'runbook.interpreterUnavailable',
+  unknown: 'runbook.unknown',
+  // ENG 审计 E-P2-F4：补两条此前漏掉的映射——传 t() 时这两类此前会 t(undefined)。
+  // P0-4：引用的应用已删除——动作指向「重建关联」而非「看日志」（无日志可看）。
+  application_missing: 'runbook.applicationMissing',
+  // P0-8：从未被派发（队列侧超时丢弃/执行器未取件）——从未在任何机器上运行，
+  // **没有任何日志**，不必引导用户去翻日志。
+  never_dispatched: 'runbook.neverDispatched',
 };
 
 /**
  * 取分类的建议动作；未收录键（后端扩枚举而前端未同步时）回退 unknown 兜底，
  * 保证卡片在任意 failureReason 值下都有可展示内容。
  *
- * t 可选：传参时 action 走 i18n key（执行详情页传 t）；缺省保持中文基线
- * （execution-detail-ui05.test.tsx 锚定 FAILURE_RUNBOOK_ACTIONS 逐键动作）。
+ * t 可选：传参时 action 走调用方的 t（执行详情页传 t）；缺省回落 i18n 单例
+ * （execution-detail-ui05.test.tsx 锚定全量键与 unknown 兜底）。
  *
  * status 可选（P1-27）：cancelled 由调度器自动覆盖产生，后端**不落 failureReason**
- * （见上方 cancelled 注释），仅靠 failureReason 会永远落到 unknown 兜底——
+ * （scheduler.service.ts:1065-1071 把 RUNNING 行 patch 成 CANCELLED，errorMessage
+ * = "Task was covered by new trigger"），仅靠 failureReason 会永远落到 unknown 兜底——
  * 故 status==='cancelled' 时按 status 命中 cancelled runbook，与人工 killed
  * （failureReason='killed'，仍走 failureReason 命中）明确区分。
  */
@@ -117,7 +90,7 @@ export function failureRunbookAction(
   // cancelled 必须按 status 命中（failureReason 恒空，见函数注释）
   if (status === 'cancelled') return resolveRunbook('cancelled', t);
   const category =
-    failureReason && FAILURE_RUNBOOK_ACTIONS[failureReason] ? failureReason : 'unknown';
+    failureReason && RUNBOOK_ACTION_T_KEY[failureReason] ? failureReason : 'unknown';
   return resolveRunbook(category, t);
 }
 
@@ -125,29 +98,9 @@ function resolveRunbook(
   category: string,
   t?: (k: string) => string,
 ): FailureRunbookEntry {
-  if (!t) return FAILURE_RUNBOOK_ACTIONS[category];
-  return { action: t(RUNBOOK_ACTION_T_KEY[category]) };
+  const T = t ?? ((k: string) => i18n.t(k));
+  return { action: T(RUNBOOK_ACTION_T_KEY[category] ?? RUNBOOK_ACTION_T_KEY.unknown) };
 }
-
-const RUNBOOK_ACTION_T_KEY: Record<string, string> = {
-  package_fetch_failed: 'runbook.packageFetch',
-  dependency_install_failed: 'runbook.dependencyInstall',
-  git_fetch_failed: 'runbook.gitFetch',
-  runtime_missing: 'runbook.runtimeMissing',
-  sandbox_unavailable: 'runbook.sandboxUnavailable',
-  script_error: 'runbook.scriptError',
-  timeout: 'runbook.timeout',
-  executor_offline: 'runbook.executorOffline',
-  executor_restart: 'runbook.executorRestart',
-  stale_recovered: 'runbook.staleRecovered',
-  killed: 'runbook.killed',
-  cancelled: 'runbook.cancelled',
-  interpreter_unavailable: 'runbook.interpreterUnavailable',
-  unknown: 'runbook.unknown',
-  // ENG 审计 E-P2-F4：补两条此前漏掉的映射——传 t() 时这两类此前会 t(undefined)。
-  application_missing: 'runbook.applicationMissing',
-  never_dispatched: 'runbook.neverDispatched',
-};
 
 /**
  * 失败定位卡片可见状态（P1-27 起含 killed/cancelled）。
