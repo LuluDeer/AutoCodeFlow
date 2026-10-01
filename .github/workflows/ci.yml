@@ -773,6 +773,20 @@ jobs:
         run: |
           node scripts/check-shell-multibyte-var.mjs --selftest
           node scripts/check-shell-multibyte-var.mjs
+      # 守卫接线（N-01 同批）：test:alerts 与 test:env-drift 在根 package.json 里
+      # 早已定义，却从未被任何 workflow 调用——同 E-41 的「写了但没接上」形态：
+      # 告警规则配置（config/monitoring/alerts.yml）的结构/指标名守卫与
+      # .env.example ↔ 三端 configuration 漂移守卫，只在有人记得本地手跑时才存在，
+      # 回归（如 alerts.yml 加了清单外指标、代码消费了未登记 env 键）CI 全绿放行。
+      # 两者均为零依赖 node 脚本，秒级，与上方守卫族同批执行。
+      - name: Alert rules guard
+        run: |
+          node scripts/check-alerts-rules.mjs --selftest
+          node scripts/check-alerts-rules.mjs
+      - name: Env drift guard (B-6)
+        run: |
+          node scripts/check-env-drift.mjs --selftest
+          node scripts/check-env-drift.mjs
 
   # ── A4（DEEP_REVIEW §七）：消费方路由面快照守卫（零依赖 node 脚本）──────
   # mcp-server 与 acf-cli 各自硬编码 70+ 条 admin-api 路由字符串，与 openapi
@@ -1113,11 +1127,13 @@ jobs:
         env:
           VITE_API_URL: http://localhost:3105
 
-  # ── 根级 43 例 Playwright e2e（全链真环境）──────────────────
+  # ── legacy 三份 Playwright e2e（全链真环境）──────────────────
   # admin-api(3105) + executor-node(8002 注册在线) + admin-web vite(5176)
-  # + 空库迁移链，跑根级 e2e-full.spec.js（登录/任务向导/pinned 全链/RBAC/
-  # 并发/中断/指标等 29 例 + 安全红线 14 例：SSRF 六出站点/RBAC 全端点/
-  # DEP-04 审批第二人规则）。编排收敛在 scripts/e2e-full.sh（CI 与本地
+  # + 空库迁移链，跑 apps/admin-web/e2e/legacy/ 三份 spec（e2e-full.spec.js：
+  # 登录/任务向导/pinned 全链/RBAC/并发/中断/指标等 29 例 + 安全红线 14 例：
+  # SSRF 六出站点/RBAC 全端点/DEP-04 审批第二人规则；NETOPT-DEBT 收编自仓库根，
+  # 由根级 playwright.e2e.config.js 精确圈定 legacy/ 目录，与 admin-web 权威
+  # e2e 套件互斥）。编排收敛在 scripts/e2e-full.sh（CI 与本地
   # 同一入口）；PG/Redis 由 services 提供后走 SKIP_DOCKER=1 分支复用。
   # 防抖要点（详见脚本头注）：每次全新库消除种子残留、登录/全局节流放大
   # 防级联 429（W-22 同根）、回调密钥两端显式同值、执行器注册 online 显式等待。
@@ -1709,13 +1725,39 @@ jobs:
       # 零依赖脚本（Node 原生 perf_hooks），无需 npm ci
       - name: Micro-benchmark selftest (logic gate — every push)
         run: node scripts/micro-benchmark.selftest.mjs
-      - name: Micro-benchmark thresholds (trend gate — schedule/manual only)
-        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+      # N-09 验收「基准入库」：每次运行留一份 JSON 结果（p50/p95/max/heapΔ）为
+      # artifact，跨 run 可比趋势。跑一次全场景 <1s，零依赖，不做任何门禁判定。
+      - name: Micro-benchmark run + results artifact (every event)
         run: |
-          node scripts/micro-benchmark.mjs --scenario all --json > /tmp/bench.json
+          node scripts/micro-benchmark.mjs --scenario all --json > micro-benchmark-results.json
           node -e "
-          const r = require('/tmp/bench.json');
+          const r = require('./micro-benchmark-results.json');
           const rows = Array.isArray(r) ? r : (r.results ?? []);
           console.log('benchmark results:');
           for (const b of rows) console.log('  ' + b.name + ' p95=' + b.p95Ms + 'ms');
           "
+      - name: Upload benchmark results artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: micro-benchmark-results
+          path: micro-benchmark-results.json
+          if-no-files-found: error
+          retention-days: 30
+      # N-09 验收「阈值告警」：--threshold-ms 按 p95 判定，超阈值脚本 exit 1。
+      # 告警形态刻意**非阻塞**（continue-on-error，step 显红但 job 保持绿）：
+      # ① GitHub 共享 runner 的性能抖动可达数倍，阈值取本机 p95（Windows 开发机
+      #    实测 2026-10：handle-callback 0.6-0.9 / store-log-lines 7.1-7.3 /
+      #    dispatch-decision 1.6 / load-score 1.5-1.6 ms）的约 10 倍宽松档
+      #    （8 / 60 / 15 / 15 ms），只拦数量级退化，不追精确水位；
+      # ② 命中阈值时以红 step 呈现（脚本原生 exit 1），人工复核
+      #    micro-benchmark-results artifact 与本机复测，但不让月度演练轮被
+      #    runner 抖动染红（假红的闸等于没有闸——红的是 step，不是 job）。
+      - name: Micro-benchmark threshold alarm (schedule/manual only, non-blocking)
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        continue-on-error: true
+        run: |
+          node scripts/micro-benchmark.mjs --scenario all \
+            --threshold-ms handle-callback=8 \
+            --threshold-ms store-log-lines=60 \
+            --threshold-ms dispatch-decision=15 \
+            --threshold-ms load-score=15

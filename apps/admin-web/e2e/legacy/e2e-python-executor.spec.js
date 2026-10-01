@@ -1,3 +1,8 @@
+// 收编注记（NETOPT-DEBT，d9c859e7）：本文件自仓库根等价迁入 apps/admin-web/e2e/legacy/
+// （内容零变更；legacy/package.json 以 {"type":"commonjs"} 隔离 CJS require）。
+// CI 经 scripts/e2e-full.sh → 根级 playwright.e2e.config.js（精确圈定 legacy/）消费，
+// 是活跃跑面而非存档；新增用例请进权威套件 apps/admin-web/e2e/*.spec.ts。
+//
 // E-18（DEEP_REVIEW 0ef3bbe）：executor-python 全链 e2e 覆盖
 // 此前 46 例 e2e 只注册 executor-node，python 执行器零端到端覆盖。
 // 本 spec 覆盖：注册→派发（glueSource python）→执行→回调→终态断言。

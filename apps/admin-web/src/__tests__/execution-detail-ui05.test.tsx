@@ -18,7 +18,7 @@ import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { tasksApi } from '../api/tasks';
 import { artifactsApi } from '../api/artifacts';
 import ExecutionDetailPage from '../pages/ExecutionDetailPage';
-import { failureRunbookAction, FAILURE_RUNBOOK_ACTIONS } from '../pages/failure-runbook';
+import { failureRunbookAction, RUNBOOK_ACTION_T_KEY } from '../pages/failure-runbook';
 import { buildLogSearchSegments, splitLineByKeyword } from '../utils/log-search';
 
 // 隔离 api 层（对齐既有 execution-detail-* 测试先例）。
@@ -246,22 +246,26 @@ describe('UI-05: 日志搜索高亮', () => {
 describe('UI-05: 纯函数（failure-runbook / log-search）', () => {
   it('failure-runbook 全量键完整（含解释器/沙箱不可用）且 unknown 兜底', () => {
     // 与 mcp-server FAILURE_RUNBOOK 键集对齐（BUG-10 分类 + python_task_multiversion
-    // 新增 interpreter_unavailable + EXP-01 新增 sandbox_unavailable）
+    // 新增 interpreter_unavailable + EXP-01 新增 sandbox_unavailable + P0-4/P0-8）。
+    // N-04：中文映射表已删、文案查 runbook.*——此处锚定注册表键集完整且逐键
+    // 解析为非空动作（缺省回落 i18n 单例，测试环境默认 zh）。
     const KEYS = [
       'package_fetch_failed', 'dependency_install_failed', 'git_fetch_failed',
       'runtime_missing', 'sandbox_unavailable', 'script_error', 'timeout',
       'executor_offline', 'executor_restart', 'stale_recovered', 'killed',
-      'cancelled',
-      'interpreter_unavailable', 'unknown',
+      'cancelled', 'interpreter_unavailable', 'unknown',
+      'application_missing', 'never_dispatched',
     ];
+    expect(Object.keys(RUNBOOK_ACTION_T_KEY).sort()).toEqual([...KEYS].sort());
     for (const k of KEYS) {
-      expect(FAILURE_RUNBOOK_ACTIONS[k]?.action.length).toBeGreaterThan(0);
-      expect(failureRunbookAction(k).action).toBe(FAILURE_RUNBOOK_ACTIONS[k].action);
+      expect(failureRunbookAction(k).action.length).toBeGreaterThan(0);
     }
-    // 未收录键 → unknown 兜底
-    expect(failureRunbookAction('mystery')).toBe(FAILURE_RUNBOOK_ACTIONS.unknown);
-    expect(failureRunbookAction(null).action).toBe(FAILURE_RUNBOOK_ACTIONS.unknown.action);
-    expect(failureRunbookAction(undefined).action).toBe(FAILURE_RUNBOOK_ACTIONS.unknown.action);
+    // 未收录键 → unknown 兜底（同一动作文案）
+    const unknownAction = failureRunbookAction('unknown').action;
+    expect(unknownAction.length).toBeGreaterThan(0);
+    expect(failureRunbookAction('mystery').action).toBe(unknownAction);
+    expect(failureRunbookAction(null).action).toBe(unknownAction);
+    expect(failureRunbookAction(undefined).action).toBe(unknownAction);
   });
 
   it('splitLineByKeyword：大小写不敏感切分 + 拼接保真 + 空词单块', () => {

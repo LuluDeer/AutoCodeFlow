@@ -20,7 +20,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   FAILURE_CARD_STATUSES,
-  FAILURE_RUNBOOK_ACTIONS,
+  RUNBOOK_ACTION_T_KEY,
   failureRunbookAction,
 } from '../pages/failure-runbook';
 
@@ -34,25 +34,28 @@ describe('P1-27: killed/cancelled 不再无解释', () => {
   });
 
   it('killed 既有动作文案非空（此前是死代码，现已可达）', () => {
-    expect(FAILURE_RUNBOOK_ACTIONS.killed.action.length).toBeGreaterThan(0);
-    expect(failureRunbookAction('killed').action).toBe(FAILURE_RUNBOOK_ACTIONS.killed.action);
+    // N-04：中文映射表已删、动作查 runbook.*（缺省回落 i18n 单例）；
+    // 键可达性改经注册表 + 动作非空锚定。
+    expect(RUNBOOK_ACTION_T_KEY.killed).toBe('runbook.killed');
+    expect(failureRunbookAction('killed').action.length).toBeGreaterThan(0);
   });
 
   it('cancelled 有 runbook 条目（旧实现表里没有这个键）', () => {
-    expect(FAILURE_RUNBOOK_ACTIONS.cancelled.action.length).toBeGreaterThan(0);
+    expect(RUNBOOK_ACTION_T_KEY.cancelled).toBe('runbook.cancelled');
+    expect(failureRunbookAction(null, undefined, 'cancelled').action.length).toBeGreaterThan(0);
   });
 
   it('cancelled 必须按 status 命中——failureReason 恒空，只传 failureReason 会落到 unknown', () => {
     // 后端 COVER_EARLY 只写 status=CANCELLED，不写 failureReason。
     // 不传 status：退化为 unknown（旧行为，证明 cancelled 此前不可达）。
-    expect(failureRunbookAction(null).action).toBe(FAILURE_RUNBOOK_ACTIONS.unknown.action);
+    expect(failureRunbookAction(null).action).toBe(failureRunbookAction('unknown').action);
     // 传 status='cancelled'：命中 cancelled 专属条目。
     expect(failureRunbookAction(null, undefined, 'cancelled').action).toBe(
-      FAILURE_RUNBOOK_ACTIONS.cancelled.action,
+      failureRunbookAction('cancelled').action,
     );
     // 顺带：人工终止走 failureReason='killed'，与 cancelled 互不串味。
     expect(failureRunbookAction('killed', undefined, 'killed').action).toBe(
-      FAILURE_RUNBOOK_ACTIONS.killed.action,
+      failureRunbookAction('killed').action,
     );
   });
 

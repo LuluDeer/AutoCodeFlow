@@ -80,3 +80,40 @@ export function buildDispatchTaskPayload(
   }
   return payload as DispatchTaskPayload;
 }
+
+/**
+ * 技术债 A 组（2026-10-01）·按原版本重放：把任务版本快照覆盖到派发用的
+ * task 形体上（不改库内任务行）。
+ *
+ * 语义对齐 rollbackToVersion 的既有解析（Object.assign(task, snapshot) 后走
+ * 正常派发链），但**只覆盖派发体白名单内的执行相关字段**，且仅当快照确有
+ * 该键（旧快照缺键保留现值，与 rollback 的 Object.assign 缺键语义一致）：
+ * - codeSource / gitRepo / gitBranch / gitCommit / glueSource / glueLanguage /
+ *   entrypoint / runtimeVersion / requirements / applicationId —— 三条代码
+ *   渠道（git / glue / zip）的解释字段；packageUrl 无快照键，仍由派发链按
+ *   覆盖后的 applicationId 解析（resolveDispatchTask 不变）；
+ * - id / name / runtime / timeout 也在快照与白名单交集内：id 恒同值，
+ *   name/runtime/timeout 属执行体形态——钉定重放跑的就是那一版的样子。
+ *
+ * 刻意**不**覆盖（调度面，跟随任务当前配置）：executorId/executorAppName/
+ * executorGroup/executorTags/affinity/deploymentPolicy 等不在派发体白名单内；
+ * params/secrets 亦由派发链从执行行与现任务取，快照不含 secrets（见
+ * saveVersion 快照键注释）。
+ *
+ * 纯函数：绝不读改入参实体，返回浅拷贝（processor 以覆盖后的副本传给
+ * dispatch，库内任务行零影响）。
+ */
+export function applyPinnedVersionSnapshot(
+  task: Task,
+  snapshot: Record<string, unknown>,
+): Task {
+  const overlaid: Record<string, unknown> = { ...task };
+  for (const field of DISPATCH_TASK_FIELD_WHITELIST) {
+    if (field in snapshot) {
+      overlaid[field] = snapshot[field];
+    }
+  }
+  // 同 buildDispatchTaskPayload：字段集由白名单常量静态保证，收口处一次
+  // 经 unknown 的 as 是安全的（与既有注释同一理由）。
+  return overlaid as unknown as Task;
+}

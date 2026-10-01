@@ -22,14 +22,15 @@ export const TIMEOUT_WARN_RATIO_MIN = 0;
 export const DEFAULT_TIMEOUT_ACTION: TimeoutAction = 'kill';
 
 /**
- * 三动作选项（label 与 TaskDetailPage/文档口径一致）。放在本文件而非
- * api/tasks.ts：组件级测试对 api 层整模块 vi.mock，选项随 mock 丢失会
- * 炸渲染；纯逻辑文件不在 mock 范围，选项永远可用。
+ * 三动作选项（N-04 收尾：不再内联中文 label——展示文案统一由调用方按 value
+ * 走 i18n，TaskFormPage 的 TIMEOUT_ACTION_LABELS(t) 承载 zh/en 双语）。
+ * 放在本文件而非 api/tasks.ts：组件级测试对 api 层整模块 vi.mock，选项随
+ * mock 丢失会炸渲染；纯逻辑文件不在 mock 范围，选项永远可用。
  */
-export const TIMEOUT_ACTION_OPTIONS: { value: TimeoutAction; label: string }[] = [
-  { value: 'kill', label: '终止（默认）' },
-  { value: 'kill_retry', label: '终止并重试' },
-  { value: 'notify_only', label: '仅通知' },
+export const TIMEOUT_ACTION_OPTIONS: { value: TimeoutAction }[] = [
+  { value: 'kill' },
+  { value: 'kill_retry' },
+  { value: 'notify_only' },
 ];
 
 export function applyTimeoutPolicyPayload(

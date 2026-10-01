@@ -15,7 +15,7 @@ import { QueryClientContext } from '@tanstack/react-query';
 import { useContext, useEffect, useState } from 'react';
 
 import { getApiBaseUrl } from '../api/client';
-import { createSseClient, sseReconnectBackoffMs } from '../api/sse-client';
+import { createSseClient, sseReconnectBackoffMs, SSE_STATUS_KEYS } from '../api/sse-client';
 import { useAuthStore } from '../store/auth';
 import { queryKeys } from '../api/queries';
 
@@ -59,6 +59,9 @@ export function useMetricsStream({ enabled = true }: UseMetricsStreamOptions = {
     const client = createSseClient({
       baseUrl: getApiBaseUrl(),
       path: '/metrics/stream',
+      // NETOPT-DEBT：登记到全局状态注册表——queries.ts 的 metrics summary/
+      // executorStats/scheduler 三处函数式 refetchInterval 据此「live 停轮询」。
+      statusKey: SSE_STATUS_KEYS.metricsStream,
       onStatus: setStatus,
       onMessage: (e) => {
         try {

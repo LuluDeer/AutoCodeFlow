@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # ═══════════════════════════════════════════════════════════════════════════
-# 根级 53 例 Playwright e2e 全链编排（CI 与本地同一入口）
+# legacy 三份 Playwright e2e 全链编排（CI 与本地同一入口）
 # （NETOPT-6⑦ 核对基线：48 例 test() 声明（编号 1-47 唯一 + E-3）+ 5 例
 #   条件 test.skip() 声明；用例数以 spec 内实际声明为准，增删用例须同步本行。）
 #
 # 链路：PG + Redis → admin-api(:3105) → executor-node(:8002 注册在线)
-#       → admin-web vite(:5176) → 根级 e2e-full.spec.js（53 例声明，chromium）
+#       → admin-web vite(:5176) → apps/admin-web/e2e/legacy/ 三份 spec
+#         （e2e-full.spec.js 53 例声明，chromium；NETOPT-DEBT 收编自仓库根，
+#         内容零变更，由根级 playwright.e2e.config.js 精确圈定 legacy/ 目录）
 #
 # E-45（DEEP_REVIEW 0ef3bbe）：新增 pull/token 轮换两例（NETOPT-6⑦ 重编号后
 # 为 46/47）——pull 模式协议面（register(pull)
@@ -61,7 +63,8 @@ PORT_WEB=5176
 PORT_EXECUTOR=8002
 # E-18（DEEP_REVIEW 0ef3bbe）：executor-python 并列端口（node=8002 已占）。
 # python 执行器此前零 e2e 覆盖——本步骤与 executor-node 并列启动，spec
-# e2e-python-executor.spec.js 覆盖注册→派发→执行→回调基本链路。
+# apps/admin-web/e2e/legacy/e2e-python-executor.spec.js 覆盖注册→派发→执行→
+# 回调基本链路（NETOPT-DEBT 收编自仓库根，内容零变更）。
 PORT_EXECUTOR_PYTHON=8003
 # Executor 任务工作目录：默认 POSIX /tmp；Windows runner 传 E2E_WORK_DIR=
 # C:/tmp/... （node 在 win32 把 "/tmp" 解析为当前盘根，故须给绝对盘符路径）。
@@ -426,7 +429,7 @@ PIDS+=($!)
 wait_http "http://localhost:$PORT_WEB/" 60 "admin-web" "$LOG_DIR/admin-web.log"
 echo "vite OK"
 
-echo "══ [6/6] Playwright 53 例声明（根级 spec + 根级 config）══"
+echo "══ [6/6] Playwright 53 例声明（legacy spec + 根级 config）══"
 cd apps/admin-web
 npx playwright install chromium >/dev/null 2>&1 || true
 set +e
