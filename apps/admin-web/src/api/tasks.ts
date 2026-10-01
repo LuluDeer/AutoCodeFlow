@@ -552,8 +552,14 @@ export const tasksApi = {
   update: (id: string, data: components["schemas"]["UpdateTaskDto"]) =>
     client.patch(`/tasks/${id}`, data) as Promise<Task>,
   delete: (id: string) => client.delete(`/tasks/${id}`),
-  trigger: (id: string, params?: Record<string, unknown>) =>
-    client.post(`/tasks/${id}/trigger`, { params }),
+  // 技术债 A 组（2026-10-01）·按原版本重放：version = 任务版本号 N（对应
+  // 快照 v<N>），仅重跑确认 Modal 勾选「按原版本重放」时携带；不传时与
+  // 既有载荷完全一致（行为不变）。
+  trigger: (id: string, params?: Record<string, unknown>, version?: number) =>
+    client.post(
+      `/tasks/${id}/trigger`,
+      version != null ? { params, version } : { params },
+    ),
   executions: (
     id: string,
     p?: { page?: number; pageSize?: number; status?: string },
