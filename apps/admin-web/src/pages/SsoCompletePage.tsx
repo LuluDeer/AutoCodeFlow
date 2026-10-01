@@ -17,6 +17,44 @@ const ERROR_HINTS: Record<string, string> = {
   missing: 'sso.error.missing',
 };
 
+/** 后端 OIDC 回调对 IdP 侧错误的重定向约定：#error=idp_error:<原始码>（oidc.controller.ts fail）。 */
+export const IDP_ERROR_PREFIX = 'idp_error:';
+
+/**
+ * 常见 OAuth2/OIDC IdP 错误码 → 指引文案。未列出的码（Keycloak/Okta 等私有码）
+ * 走 generic 兜底并附原始码，运维可据此检索 IdP 日志。
+ */
+const IDP_ERROR_HINTS: Record<string, string> = {
+  access_denied: 'sso.error.idp.accessDenied',
+  login_required: 'sso.error.idp.loginRequired',
+  interaction_required: 'sso.error.idp.interactionRequired',
+  consent_required: 'sso.error.idp.consentRequired',
+  invalid_scope: 'sso.error.idp.invalidScope',
+  server_error: 'sso.error.idp.serverError',
+  temporarily_unavailable: 'sso.error.idp.unavailable',
+};
+
+export interface ErrorHint {
+  key: string;
+  params?: Record<string, unknown>;
+}
+
+/**
+ * 稳定错误码 → i18n key。已知平台码直取；idp_error: 前缀提取原始 IdP 错误码
+ * 按常见码映射；未知码回退 generic 并把原始码作为插值参数透出。
+ */
+export function resolveErrorHint(errorCode: string): ErrorHint {
+  const stable = ERROR_HINTS[errorCode];
+  if (stable) return { key: stable };
+  if (errorCode.startsWith(IDP_ERROR_PREFIX)) {
+    const raw = errorCode.slice(IDP_ERROR_PREFIX.length).trim();
+    const mapped = raw ? IDP_ERROR_HINTS[raw] : undefined;
+    if (mapped) return { key: mapped };
+    if (raw) return { key: 'sso.error.idpUnknown', params: { code: raw } };
+  }
+  return { key: 'sso.error.generic' };
+}
+
 /**
  * AUTH-04：OIDC 回调落地页（/auth/sso/complete）。
  *
@@ -69,7 +107,8 @@ export default function SsoCompletePage() {
     nav('/dashboard', { replace: true });
   }, [nav, setAuth, t]);
 
-  const hint = error ? t(ERROR_HINTS[error] ?? 'sso.error.generic') : '';
+  const hintInfo = error ? resolveErrorHint(error) : null;
+  const hint = hintInfo ? t(hintInfo.key, hintInfo.params) : '';
   return (
     <div
       style={{
