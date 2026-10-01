@@ -18,8 +18,13 @@
 git clone https://github.com/your-org/AutoCodeFlow.git
 cd AutoCodeFlow
 
-# 初始化配置（直接用默认值即可体验）
+# 初始化配置
 cp .env.example .env
+# 必须先把 .env 中的 INITIAL_ADMIN_PASSWORD 改成你自己的强口令（>=8 字符）：
+# .env.example 的占位值 change_me_immediately 是弱口令，原样启动会被
+# admin-api 的启动校验（fail-fast）拒绝（compose 默认 NODE_ENV=production）。
+# 也可以用 `openssl rand -base64 18` 生成一个。
+vi .env   # 或任意编辑器
 
 # 一键启动
 docker compose up -d
@@ -42,7 +47,7 @@ docker compose ps
 | 字段 | 值 |
 |------|-----------|
 | 用户名 | `admin` |
-| 密码 | `.env` 文件中 `INITIAL_ADMIN_PASSWORD` 的值（默认 `Admin@123456`） |
+| 密码 | `.env` 文件中 `INITIAL_ADMIN_PASSWORD` 的值（第一步里你自己设置的强口令，系统没有默认口令） |
 
 登录后**立即到「系统 → 用户管理」，在对应用户行点击「重置密码」修改初始密码**。（W8 已移除「个人信息」死菜单项，此处原路径失效。）
 
@@ -53,8 +58,8 @@ docker compose ps
 如果只是想快速看到完整 UI 流程，可以跳过手工创建，直接注入一组演示任务：
 
 ```bash
-# 使用 .env 中的 INITIAL_ADMIN_PASSWORD；也可直接替换为你的管理员密码
-ACF_PASSWORD='Admin@123456' pnpm demo:seed
+# 使用你在 .env 中设置的 INITIAL_ADMIN_PASSWORD；也可直接替换为你的管理员密码
+ACF_PASSWORD='你的管理员密码' npm run demo:seed
 ```
 
 脚本会幂等创建 3 个 `demo-` 前缀任务：

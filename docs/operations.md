@@ -351,6 +351,14 @@ curl -fsSL http://your-admin-api-host:3105/api/executors/install.sh \
 > `scripts/bundle-executor-artifact.sh` 生成：dist + 生产 node_modules），
 > 下载失败时回退项目 checkout 本地复制（开发场景）。
 
+> **私服模式必须为执行器配置 `NPM_REGISTRY_TOKEN`**：registry-npm
+> （Verdaccio）对 `**` 与 `@autoflow/*` 的 access 均为 `$authenticated`，
+> 未配置该 token 的 executor-node 安装任务依赖（含 `@autoflow/*` 私包与经
+> 私服代理的公共包）会收到 401。独立部署执行器时在执行器进程环境中设置
+> `NPM_REGISTRY_TOKEN`（与 admin-api 侧同值，见 docs/deployment.md 环境变量
+> 表与 `.env.example`）；缺省时执行器会在安装前打 warn 日志、失败信息中
+> 附带该提示。
+
 ### 执行器负载均衡策略
 
 系统默认采用 **最空闲优先** 策略：

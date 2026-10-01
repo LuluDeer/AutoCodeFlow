@@ -1,6 +1,6 @@
 {
-  "id": "callback-report-demo",
   "name": "SDK 回调示例（Python）",
+  "triggerType": "cron",
   "runtime": "python",
   "entrypoint": "examples/callback-report/callback_report.py",
   "cronExpression": "0 0 12 * * *",
