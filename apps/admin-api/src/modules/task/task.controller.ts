@@ -619,6 +619,13 @@ export class TaskController {
       },
     },
   })
+  @ApiResponse({
+    // N-14：blockStrategy=discard 且存在同参数在跑/排队执行时拒绝触发
+    //（闸门比较维度=任务+参数，异参不受影响）。
+    status: 409,
+    description:
+      "Trigger rejected: an active execution with the same params already exists (blockStrategy=discard)",
+  })
   async trigger(
     @Param("id") id: string,
     @Body() dto: TriggerTaskDto,

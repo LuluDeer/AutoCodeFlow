@@ -16,7 +16,6 @@ import {
   Task,
   TaskStatus,
   TaskTriggerType,
-  BlockStrategy,
   MisfireStrategy,
   normalizeTaskPriority,
 } from "../task/entities/task.entity";
@@ -33,6 +32,11 @@ import {
 } from "../task/entities/task-execution.entity";
 // A1: 终态跃迁（条件 UPDATE + RETURNING + 驱动兜底）与开放态常量的单一事实源。
 import { transitionToTerminal } from "../task/execution-terminal";
+// N-14：blockStrategy 闸门单一事实源（与 TaskService.trigger 共享）
+import {
+  applyBlockStrategyGate,
+  releaseExecutorSlotByAddress,
+} from "../task/block-strategy-gate";
 // MUTEX-01：互斥组快照解析（执行入队时从 task→application 带下）。
 import { resolveTaskMutexGroupId } from "../task/execution-mutex";
 import { Executor, ExecutorStatus } from "../executor/entities/executor.entity";
@@ -939,13 +943,9 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async releaseExecutorSlot(address?: string | null): Promise<void> {
-    if (!address) return;
-    await this.dataSource
-      .createQueryBuilder()
-      .update("executors")
-      .set({ runningTaskCount: () => 'GREATEST("runningTaskCount" - 1, 0)' })
-      .where("address = :addr", { addr: address })
-      .execute();
+    // N-14：实现挪到 task/block-strategy-gate.ts（手动触发路径的 cover 同样
+    // 需要槽位冲销），此处保留薄委托以不动全部调用点。
+    await releaseExecutorSlotByAddress(this.dataSource, address);
   }
 
   /**
@@ -1240,108 +1240,28 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
         return null;
       }
 
-      // MUTEX-01：阻塞策略把互斥排队态计入「前一轮还没跑完」。WAITING 的执行
-      // 尚未在任何设备开跑，但对 DISCARD/COVER_EARLY 的用户语义而言它与
-      // RUNNING 等价（这一轮触发的就是上一次触发还没落地的结果）：
-      // - DISCARD：上一触发还在排队 → 本轮丢弃（否则唤醒后同任务并发跑）；
-      // - COVER_EARLY：覆盖（取消排队中的执行，新触发取而代之——排队中的
-      //   执行无 executorAddress，transitionToTerminal 释放槽位为 no-op）。
-      // PENDING 刻意不计入：队列积压（BullMQ backlog）是常态，计入了会改变
-      // 既有语义。
-      if (task.blockStrategy === BlockStrategy.DISCARD) {
-        const running = await this.execRepo.findOne({
-          where: {
-            taskId: task.id,
-            status: In([ExecutionStatus.RUNNING, ExecutionStatus.WAITING]),
-          },
-        });
-        if (running) {
-          this.logger.warn(
-            `Task "${task.name}" is ${running.status.toUpperCase()} (blockStrategy=DISCARD), skip trigger`,
-          );
-          this.schedulerMetrics.recordTriggerSkippedBlockStrategy();
-          return null;
-        }
-      }
-
-      if (task.blockStrategy === BlockStrategy.COVER_EARLY) {
-        const running = await this.execRepo.findOne({
-          where: {
-            taskId: task.id,
-            status: In([ExecutionStatus.RUNNING, ExecutionStatus.WAITING]),
-          },
-          order: { createdAt: "DESC" },
-        });
-        if (running) {
-          this.logger.warn(
-            `Task "${task.name}" is ${running.status.toUpperCase()} (blockStrategy=COVER_EARLY), cancelling running execution ${running.id}`,
-          );
-          // R4-P1: the previous blind save() could overwrite a SUCCESS that
-          // a concurrent callback had already committed (and double-release
-          // the executor slot, oversubscribing capacity).
-          // A1: 走统一入口——开放态门槛、RETURNING winner 判定、以及「驱动
-          // 命中但未返回行」的快照兜底，三件事现在都在 transitionToTerminal
-          // 里，本处不再手写（此前这三条里只有这里做对了兜底）。
-          const { rows: coveredRows } = await transitionToTerminal(
-            this.execRepo,
-            {
-              ids: [running.id],
-              patch: {
-                status: ExecutionStatus.CANCELLED,
-                errorMessage: "Task was covered by new trigger",
-                endTime: new Date(),
-              },
-              addressSnapshot: {
-                [running.id]: running.executorAddress ?? null,
-              },
-            },
-          );
-          if (coveredRows.length === 0) {
-            this.logger.warn(
-              `COVER_EARLY: execution ${running.id} already reached a terminal state (concurrent callback/kill), not covered`,
-            );
-          }
-          for (const row of coveredRows) {
-            await this.releaseExecutorSlot(row.executorAddress);
-            // A4（第三轮审计·高）：此前只翻转 DB 终态、不杀进程——RUNNING 的
-            // 被覆盖执行原进程会继续跑完再回调，回调被终态门拒收，白烧整机
-            // 算力且与「被覆盖即终止」的 runbook.cancelled 文案相悖。此处补
-            // best-effort kill 下发（复用 stale sweep 同一命令通道：push 执行
-            // 器直连 /kill-execution，pull 执行器走命令队列，见
-            // ExecutorService.notifyExecutorKill）。顺序刻意后置：先落
-            // CANCELLED 终态再通知执行器——若进程先死并回调 KILLED，本处的
-            // 覆盖跃迁会因终态门命中 0 行而误判「未覆盖」。
-            // - WAITING（排队未开跑）无进程可杀：executorAddress 恒空 +
-            //   status 门双重兜底，直接取消即可；
-            // - 下发失败仅 warn，绝不阻塞 CANCELLED 终态与新触发的执行
-            //  （notifyExecutorKill 契约本就不抛，这里再兜一层防实现漂移）。
-            if (
-              running.status === ExecutionStatus.RUNNING &&
-              row.executorAddress
-            ) {
-              try {
-                await this.executorService.notifyExecutorKill(
-                  row.id,
-                  row.executorAddress,
-                );
-                this.logger.warn(
-                  `COVER_EARLY: kill notified to executor ${row.executorAddress} for covered execution ${row.id}`,
-                );
-              } catch (err: unknown) {
-                this.logger.warn(
-                  `COVER_EARLY: kill notification failed for covered execution ${row.id} ` +
-                    `(executor ${row.executorAddress}): ${
-                      err instanceof Error ? err.message : String(err)
-                    } — CANCELLED terminal state is unaffected`,
-                );
-              }
-            }
-            this.logger.warn(
-              `COVER_EARLY: execution ${row.id} cancelled by new trigger`,
-            );
-          }
-        }
-      }
+      // N-14：blockStrategy 闸门抽到共享 util（task/block-strategy-gate.ts），
+      // 手动/API/依赖触发（TaskService.trigger）与调度路径同规则。比较维度=
+      // 「任务+参数」：仅同参在跑/排队才覆盖/丢弃，异参放行并发（发货程序按
+      // 订单传参场景）。调度触发恒用 task.params——对本路径行为不变（历史
+      // 执行行的 params 同源）。
+      // MUTEX-01 语义保留：WAITING（互斥/部署约束排队）计入「前一轮还没跑
+      // 完」；PENDING 刻意不计入（BullMQ backlog 是常态，计入会改变既有
+      // 语义）。与互斥组正交：闸门管触发层重复工作，互斥组管执行层串行。
+      const gateOutcome = await applyBlockStrategyGate(
+        taskRecord,
+        taskRecord.params,
+        this.execRepo,
+        {
+          warn: (message) => this.logger.warn(message),
+          releaseSlot: (address) => this.releaseExecutorSlot(address),
+          notifyKill: (executionId, address) =>
+            this.executorService.notifyExecutorKill(executionId, address),
+          onDiscardSkip: () =>
+            this.schedulerMetrics.recordTriggerSkippedBlockStrategy(),
+        },
+      );
+      if (gateOutcome === "skip") return null;
 
       const exec = await this.execRepo.save(
         this.execRepo.create({

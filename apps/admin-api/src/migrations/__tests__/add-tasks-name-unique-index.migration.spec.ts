@@ -11,7 +11,10 @@ import { AddTasksNameUniqueIndex1790000000050 } from "../1790000000050-AddTasksN
  */
 
 const MIGRATIONS_DIR = path.join(__dirname, "..");
-const FILE = path.join(MIGRATIONS_DIR, "1790000000050-AddTasksNameUniqueIndex.ts");
+const FILE = path.join(
+  MIGRATIONS_DIR,
+  "1790000000050-AddTasksNameUniqueIndex.ts",
+);
 
 describe("AddTasksNameUniqueIndex1790000000050（技术债 A 组）", () => {
   let sql: string;
@@ -64,9 +67,9 @@ describe("AddTasksNameUniqueIndex1790000000050（技术债 A 组）", () => {
       'CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS "idx_tasks_name_unique"',
     );
     expect(upPart).toContain('ON "tasks" ("name")');
-    expect(upPart.match(/CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS/g)?.length).toBe(
-      1,
-    );
+    expect(
+      upPart.match(/CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS/g)?.length,
+    ).toBe(1);
   });
 
   it("down：仅 DROP 唯一索引（幂等；被去重改名的行不可复原，不做数据逆操作）", () => {
