@@ -766,7 +766,7 @@ run_pre_migration_backup_cmd() {
         bash "$ROOT_DIR/scripts/pg-backup.sh"
 }
 
-# 迁移前备份（审计二轮 B-1）：失败输出完整落 $PG_BACKUP_ERR_LOG（旧实现
+# 迁移前备份（审计二轮 B-1）：失败输出完整落 ${PG_BACKUP_ERR_LOG}（旧实现
 # `2>/dev/null` 把 pg-backup.sh 的 `:?` 报错整个吞掉，失败时无从排查）；
 # 成功即删除该日志，避免下次失败时误读到上一次的旧原因。
 pre_migration_backup() {
@@ -1279,9 +1279,9 @@ EOF
         verify_phase
         ok "已回滚到 $prev_commit"
         if [ -n "$prev_branch" ]; then
-            warn "仓库现在处于 detached HEAD（commit $prev_commit）；回滚前分支为 $prev_branch，确认稳定后执行 git checkout $prev_branch 可切回"
+            warn "仓库现在处于 detached HEAD（commit ${prev_commit}）；回滚前分支为 ${prev_branch}，确认稳定后执行 git checkout $prev_branch 可切回"
         else
-            warn "仓库现在处于 detached HEAD（commit $prev_commit）——本就未在任何分支上，未记录原分支"
+            warn "仓库现在处于 detached HEAD（commit ${prev_commit}）——本就未在任何分支上，未记录原分支"
         fi
     else
         die "无法回滚：缺少有效的 git commit 记录，或 git 不可用"
@@ -1569,9 +1569,9 @@ check_detached_head() {
     if [ -f "$branch_file" ]; then
         local from_branch
         from_branch="$(head -n1 "$branch_file" 2>/dev/null || echo '')"
-        [ -n "$from_branch" ] && hint="（回滚前分支: $from_branch，确认稳定后 git checkout $from_branch 可切回）"
+        [ -n "$from_branch" ] && hint="（回滚前分支: ${from_branch}，确认稳定后 git checkout $from_branch 可切回）"
     fi
-    warn "仓库当前处于 detached HEAD（commit $commit，可能由 rollback 产生）——本次部署将基于该 commit 构建${hint}"
+    warn "仓库当前处于 detached HEAD（commit ${commit}，可能由 rollback 产生）——本次部署将基于该 commit 构建${hint}"
 }
 
 main() {
