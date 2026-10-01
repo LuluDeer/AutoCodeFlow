@@ -134,6 +134,13 @@ function quarantineBrokenCache(cacheDir: string): void {
   }
 }
 
+/** O-13 parity（executor-python）: `git clone --bare --depth 1` 会在 bare
+ *  git-dir 里留下 `shallow` 哨兵文件——这是「该缓存可能不含任意 ref」的廉价
+ *  探针（冷缓存首跑 checkout 非 tip ref 时据此触发 unshallow 重试）。 */
+function isShallowBareRepo(cacheDir: string): boolean {
+  return fs.existsSync(path.join(cacheDir, 'shallow'));
+}
+
 /**
  * Clone/fetch/checkout the specified ref to dest directory.
  * `signal` lets the execution kill endpoint abort a prepare-phase checkout
@@ -170,13 +177,30 @@ export async function gitCheckoutTo(
       }
     }
     fs.mkdirSync(dest, { recursive: true });
-    const r = await runCommand(
-      'git',
-      [`--git-dir=${cacheDir}`, `--work-tree=${dest}`, 'checkout', ref, '--', '.'],
-      { timeout: 30_000, signal },
-    );
+    // --work-tree + checkout exports files at the given ref to dest.
+    const checkoutArgs = [`--git-dir=${cacheDir}`, `--work-tree=${dest}`, 'checkout', ref, '--', '.'];
+    let r = await runCommand('git', checkoutArgs, { timeout: 30_000, signal });
     if (signal?.aborted) throw new ExecutionCancelledError(dest);
-    if (r.status !== 0) throw new Error(`git checkout failed: ${r.stderr.trim()}`);
+    if (r.status !== 0) {
+      // O-13 parity（executor-python execute.py 的 checkout miss 处理）：冷缓存
+      // 是 `--depth 1` 浅克隆，只含默认分支 tip——checkout 一个 tag/非默认分支/
+      // 深提交会 miss。此前 node 侧直接抛错 → 非 tip ref 冷缓存首跑必失败，
+      // 要等下一次部署把缓存暖热（走 fetch --all --unshallow 分支）才恢复。
+      // 与 python 侧同语义：缓存仍是 shallow 时 fetch --unshallow 加深一次
+      // （best-effort，失败也继续重试 checkout），重试仍失败才抛（错误信息含
+      // ref，便于区分「ref 真不存在」与「网络/缓存问题」）；缓存已是全量时
+      // 不重试——ref 缺失是真实错误，重试只会白等。
+      if (isShallowBareRepo(cacheDir)) {
+        logger.warn(
+          `[git] checkout ${ref} missed the shallow cache — fetching full history into ${cacheDir} and retrying once`,
+        );
+        await runCommand('git', ['-C', cacheDir, 'fetch', '--unshallow'], { timeout: 120_000, signal });
+        if (signal?.aborted) throw new ExecutionCancelledError(dest);
+        r = await runCommand('git', checkoutArgs, { timeout: 60_000, signal });
+        if (signal?.aborted) throw new ExecutionCancelledError(dest);
+      }
+    }
+    if (r.status !== 0) throw new Error(`git checkout failed (ref: ${ref}): ${r.stderr.trim()}`);
   });
 }
 
@@ -1045,7 +1069,7 @@ interface EnsureVenvOptions {
  *   - 有版本 → 先 `ensureVersion` 拿池内绝对路径，再
  *     `uv venv --python <abs> --no-project <dir>`。
  *   - 失败/超时一律清掉半成品 venv：否则 `exists()` 会让下次静默复用一个坏环境。
- *   - 依赖安装 `uv pip install --python <venvPython> [--index-url <url>] <reqs>`。
+ *   - 依赖安装 `uv pip install --python <venvPython> [--index-url <url>] [--extra-index-url <url>] <reqs>`。
  */
 async function ensurePythonVenv(opts: EnsureVenvOptions): Promise<string> {
   const { venvDir, venvPython, requirements, declaredVersion, logPrepare, signal, isAborted } = opts;
@@ -1054,6 +1078,10 @@ async function ensurePythonVenv(opts: EnsureVenvOptions): Promise<string> {
   // 校验失败在 config getter 里降级为 ''（官方源）并 warn，绝不把畸形 URL
   // 送进 uv argv。
   const registryUrl = config.pypiRegistryUrl;
+  // DEEP-AUDIT B·2.2：可选附加索引（PYPI_EXTRA_INDEX_URL）——设置时以
+  // --extra-index-url 追加，让「私有源 + 官方源」同时可见（缓解私有源
+  // 无上游、公共包必失败的部署陷阱）。不设则 argv 与之前逐字节一致。
+  const extraRegistryUrl = config.pypiExtraIndexUrl;
 
   if (fs.existsSync(venvDir)) {
     const problem = venvReuseProblem(venvDir, venvPython, declaredVersion);
@@ -1137,6 +1165,8 @@ async function ensurePythonVenv(opts: EnsureVenvOptions): Promise<string> {
     logPrepare(`Installing ${requirements.length} packages into ${venvDir}`);
     const installArgs = ['pip', 'install', '--python', venvPython];
     if (registryUrl) installArgs.push('--index-url', registryUrl);
+    // DEEP-AUDIT B·2.2：可选附加索引——与 --index-url 并存（uv 聚合两处发行版）。
+    if (extraRegistryUrl) installArgs.push('--extra-index-url', extraRegistryUrl);
     installArgs.push(...requirements);
     const installResult = await runCommand(uv, installArgs, {
       timeout: UV_PIP_TIMEOUT_MS,
@@ -1151,7 +1181,11 @@ async function ensurePythonVenv(opts: EnsureVenvOptions): Promise<string> {
     if (isAborted()) throw new ExecutionCancelledError('');
     if (installResult.status !== 0) {
       const detail = (installResult.stderr || installResult.stdout || '').trim();
-      throw new Error(`uv pip install failed: ${detail || 'unknown error'}`);
+      // DEEP-AUDIT B·2.2：失败信息带上实际生效的索引配置——PYPI_REGISTRY_URL
+      // 是「替换默认索引、私有源无上游」语义，"私有源中不存在该包"是这条失败
+      // 最常见的根因，此前报错对用户完全不可见（与 python 执行器同口径）。
+      const indexHint = pypiIndexHint(registryUrl, extraRegistryUrl);
+      throw new Error(`uv pip install failed${indexHint}: ${detail || 'unknown error'}`);
     }
   }
 
@@ -1164,6 +1198,33 @@ function removeVenvQuietly(venvDir: string): void {
   } catch {
     /* best effort — 清理失败不掩盖原始失败 */
   }
+}
+
+/**
+ * DEEP-AUDIT B·2.2：依赖安装失败时把实际生效的索引配置带进报错（与 python
+ * 执行器 `_pypi_index_hint` 同口径）。PYPI_REGISTRY_URL 是**替换**默认索引
+ * （--index-url）而非附加；自建私有源（registry-pypi）又没有上游代理——
+ * "私有源中不存在该包"是这条失败最常见的根因，此前报错让用户无从得知。
+ */
+export function pypiIndexHint(
+  registryUrl: string,
+  extraRegistryUrl?: string,
+): string {
+  if (!registryUrl && !extraRegistryUrl) {
+    // 未配置任何索引 → uv 走默认 PyPI，无私有源语义可提示。
+    return '';
+  }
+  if (extraRegistryUrl) {
+    return (
+      ` (index-url=${registryUrl || 'https://pypi.org/simple'}, ` +
+      `extra-index-url=${extraRegistryUrl}; 若包确已发布到 PyPI 官方源仍失败, ` +
+      `请检查索引可达性与包名/版本拼写)`
+    );
+  }
+  return (
+    ` (index-url=${registryUrl}; 该地址会替换默认 PyPI 索引且当前私有源无上游代理——` +
+    `若包来自 PyPI 官方源, 请先上传到私有源, 或配置 PYPI_EXTRA_INDEX_URL 追加官方索引)`
+  );
 }
 
 /** uv 二进制路径；不可用时给出可操作的指引（而非一个 spawn ENOENT）。 */
@@ -1635,7 +1696,12 @@ async function prepareExecution(
     if (entry.aborted) throw new ExecutionCancelledError(executionId);
     if (installResult.status !== 0) {
       const errMsg = installResult.stderr.trim() || 'npm install failed';
-      const message = `Dependency installation failed: ${errMsg}`;
+      let message = `Dependency installation failed: ${errMsg}`;
+      // 私服且未配 token 时，失败大概率是 401（registry-npm access=$authenticated）
+      // ——把修复指引直接带到任务可见的失败信息里，而不是只留在执行器日志。
+      if (!config.npmRegistryToken && config.npmRegistryUrl && isPrivateNpmRegistry(config.npmRegistryUrl)) {
+        message += '（提示：私有 npm 源需要 NPM_REGISTRY_TOKEN，否则依赖安装将 401）';
+      }
       logPrepare(message);
       throw new Error(message);
     }
@@ -1932,7 +1998,10 @@ const TOKEN_TTL_UNBOUNDED_SECONDS = 315_360_000;
  * - 含公共包 → 写全局 registry 行（私服作为缓存代理加速）；
  * - 两种 scope（@autoflow / @autocodeflow，命名三处漂移）都写 scoped 行；
  * - 配置了 token → 追加 `//<host:port>/:_authToken=`（http/https 均支持）。
- * token 绝不出现在返回值之外的任何地方（不打日志）。
+ * - 私服且无 token → logger.warn 一条明确指引（registry-npm 对 '**' 与
+ *   '@autoflow/*' 的 access 是 $authenticated，匿名装私包必 401），只提示、
+ *   不阻断（无法从 URL 可靠区分 Verdaccio 与其他 registry，误报的代价只是
+ *   一条日志）。token 绝不出现在返回值之外的任何地方（不打日志）。
  */
 export function buildNpmRcContent(
   registryUrl: string,
@@ -1952,8 +2021,28 @@ export function buildNpmRcContent(
   if (token) {
     const authLine = npmAuthUrlLine(registryUrl);
     if (authLine) lines.push(`${authLine}:_authToken=${token}`);
+  } else if (registryUrl && isPrivateNpmRegistry(registryUrl)) {
+    logger.warn(
+      '私有 npm 源需要 NPM_REGISTRY_TOKEN，否则依赖安装将 401 ' +
+        `(registry=${redactUrl(registryUrl)}，registry-npm 的 access 策略为 $authenticated)。` +
+        '请在执行器环境配置 NPM_REGISTRY_TOKEN 后重试。',
+    );
   }
   return lines.join('\n') + '\n';
+}
+
+/**
+ * 启发式判定 registry 是否为私有 npm 源（Verdaccio）：compose 内 registry-npm
+ * 固定 4873 端口（服务名 registry-npm），同源自定义域名部署也约定沿用 4873。
+ * 解析失败按非私服处理（不误报）。
+ */
+export function isPrivateNpmRegistry(registryUrl: string): boolean {
+  try {
+    const u = new URL(registryUrl);
+    return u.port === '4873' || u.hostname.startsWith('registry-npm');
+  } catch {
+    return false;
+  }
 }
 
 /** `https://host:port/base/` → `//host:port/base/`（npm auth 行键格式）。 */

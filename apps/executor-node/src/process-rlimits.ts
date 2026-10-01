@@ -9,6 +9,8 @@
  *
  *   - `ulimit -n NOFILE` → RLIMIT_NOFILE（软/硬同值）；
  *   - `ulimit -t CPU`    → RLIMIT_CPU（CPU 秒，任务超时的第二道保险）；
+ *   - `ulimit -f FSIZE`  → RLIMIT_FSIZE（512 字节块；A10 与 python
+ *     task_fsize_limit_mb 口径对齐，默认不设，TASK_FSIZE_LIMIT_MB 可调）；
  *   - `exec "$0" "$@"`  在 sh 内 exec 成任务本体——**pid 不变**（仍是 detached
  *     建立的进程组组长），killProcessTree 的 `-pid` 组杀语义不受影响；
  *   - 所有任务参数经位置参数 `$@` 透传，**没有任何任务字符串被拼进 shell
@@ -45,7 +47,7 @@ export function applyTaskRlimits(
   if (process.platform === 'win32') {
     if (!win32Noted) {
       logger.info(
-        'POSIX ulimit task caps (NOFILE/CPU) are not available on win32; ' +
+        'POSIX ulimit task caps (NOFILE/CPU/FSIZE) are not available on win32; ' +
           'skipping them for task children (POSIX containers are the ' +
           'production path, where the caps apply)',
       );
@@ -71,6 +73,16 @@ export function applyTaskRlimits(
   if (cpu > 0) {
     // ulimit -t 同时设软/硬；任务超时 kill 先到场，这里是防它失效的第二道保险。
     statements.push(`ulimit -t ${cpu} >/dev/null 2>&1`);
+  }
+
+  // 第四轮审计（A10）: 单文件写上限（RLIMIT_FSIZE），与 python sandbox.py
+  // 的 task_fsize_limit_mb 口径对齐。单位换算注意：POSIX `ulimit -f` 的操作数
+  // 是 **512 字节块**（dash/Debian sh 按 POSIX 执行），MB → 块 = MB * 2048。
+  // bash 在非 POSIX 模式下按 1024 字节块解释会导致上限翻倍（更宽松）——本包装
+  // 固定经 /bin/sh（生产镜像为 dash 系），属 best-effort 防护，量纲取保守 POSIX 值。
+  const fsizeMb = config.taskFsizeLimitMb;
+  if (fsizeMb > 0) {
+    statements.push(`ulimit -f ${fsizeMb * 2048} >/dev/null 2>&1`);
   }
 
   if (statements.length === 0) {

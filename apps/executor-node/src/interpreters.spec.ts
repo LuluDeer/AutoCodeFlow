@@ -11,6 +11,7 @@
 
 import path from 'path';
 import fs from 'fs';
+import * as os from 'os';
 
 jest.mock('./logger', () => ({
   logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
@@ -23,6 +24,13 @@ jest.mock('./config', () => ({
     uvPythonInstallMirror: '',
     interpreterDownloadTimeoutMs: 300_000,
     interpreterDownloadConcurrency: 2,
+    // B-3：版本区间改为经 config 读取（生产是读 env 的 getter）；本文件用
+    // 平面属性模拟，beforeEach 复位到默认区间。
+    runtimeVersionMin: '3.7',
+    runtimeVersionMax: '3.14',
+    // A5：uv 缓存治理默认值（reclaimUvCache 测试会在 beforeEach 覆盖）。
+    uvCacheTtlDays: 30,
+    uvCacheMaxMb: 0,
   },
 }));
 
@@ -40,6 +48,10 @@ const { config } = require('./config') as {
     uvPythonInstallMirror: string;
     interpreterDownloadTimeoutMs: number;
     interpreterDownloadConcurrency: number;
+    runtimeVersionMin: string;
+    runtimeVersionMax: string;
+    uvCacheTtlDays: number;
+    uvCacheMaxMb: number;
   };
 };
 
@@ -57,6 +69,7 @@ import {
   isSupportedVersion,
   normalizeRuntimeVersion,
   poolSummary,
+  reclaimUvCache,
   resolvePythonBin,
   resolveUvBin,
 } from './interpreters';
@@ -148,6 +161,8 @@ beforeEach(() => {
   config.uvBin = '';
   config.uvPythonInstallMirror = '';
   config.interpreterDownloadTimeoutMs = 300_000;
+  config.runtimeVersionMin = '3.7';
+  config.runtimeVersionMax = '3.14';
 
   jest.spyOn(fs, 'mkdirSync').mockReturnValue(undefined as never);
   jest.spyOn(fs, 'readdirSync').mockReturnValue([] as never);
@@ -222,6 +237,29 @@ describe('interpreters: supported range & online downloadability', () => {
 
   it.each(['3.6', '3.7', '3.15', 'garbage'])('%s is not online-downloadable', (v) => {
     expect(isOnlineDownloadable(v)).toBe(false);
+  });
+});
+
+describe('interpreters: effective range follows config (B-3, PYTHON_RUNTIME_VERSION_MIN/MAX)', () => {
+  afterEach(() => {
+    config.runtimeVersionMin = '3.7';
+    config.runtimeVersionMax = '3.14';
+  });
+
+  it('区间闸门按 config 的生效区间判定（env 覆盖经 config 落地）', () => {
+    config.runtimeVersionMin = '3.9';
+    config.runtimeVersionMax = '3.13';
+    expect(isSupportedVersion('3.8')).toBe(false);
+    expect(isSupportedVersion('3.9')).toBe(true);
+    expect(isSupportedVersion('3.13')).toBe(true);
+    expect(isSupportedVersion('3.14')).toBe(false);
+  });
+
+  it('在线可下载上界跟随生效上界（不在生效区间内 → not_downloadable 前置拦截）', () => {
+    config.runtimeVersionMin = '3.9';
+    config.runtimeVersionMax = '3.13';
+    expect(isOnlineDownloadable('3.14')).toBe(false);
+    expect(isOnlineDownloadable('3.9')).toBe(true);
   });
 });
 
@@ -862,13 +900,43 @@ describe('interpreters: ensureVersion', () => {
     expect(err.detail).toMatch(/something exploded/);
   });
 
-  it('network-ish failures are classified mirror_unreachable', async () => {
-    runCommand.mockImplementation(async (_cmd: string, args: string[]) => {
+  it('network-ish failures are classified mirror_unreachable — only when a mirror is configured (B-4)', async () => {
+    const failingInstall = async (_cmd: string, args: string[]) => {
       if (args[0] === '--version') return { status: 0, stdout: 'uv', stderr: '' };
       if (args[1] === 'list') return { status: 0, stdout: '[]', stderr: '' };
       return { status: 1, stdout: '', stderr: 'Caused by: tcp connect error' };
-    });
+    };
+    // 未配镜像（默认）：网络类错误就是官方源的网络故障——不得误报
+    // mirror_unreachable（让人去排查一个根本不存在的镜像），归 download_failed。
+    config.uvPythonInstallMirror = '';
+    runCommand.mockImplementation(failingInstall);
+    const noMirror: InterpreterUnavailableError = await ensureVersion('3.11').catch((e) => e);
+    expect(noMirror.reason).toBe('download_failed');
 
+    // 已配镜像 + 连接类报错 → mirror_unreachable
+    config.uvPythonInstallMirror = 'https://mirror.internal/pypi';
+    runCommand.mockImplementation(failingInstall);
+    const withMirror: InterpreterUnavailableError = await ensureVersion('3.11').catch((e) => e);
+    expect(withMirror.reason).toBe('mirror_unreachable');
+  });
+
+  it.each([
+    'connection refused',
+    'connection reset by peer',
+    'failed to connect to mirror.internal',
+    'dns error resolving mirror.internal',
+    'name or service not known',
+    'operation timed out',
+    'network is unreachable',
+    'certificate verify failed',
+    'tls handshake failure',
+  ])('configured mirror + %j → mirror_unreachable (pattern table aligned with python)', async (stderr) => {
+    config.uvPythonInstallMirror = 'https://mirror.internal/pypi';
+    runCommand.mockImplementation(async (_cmd: string, args: string[]) => {
+      if (args[0] === '--version') return { status: 0, stdout: 'uv', stderr: '' };
+      if (args[1] === 'list') return { status: 0, stdout: '[]', stderr: '' };
+      return { status: 1, stdout: '', stderr };
+    });
     const err: InterpreterUnavailableError = await ensureVersion('3.11').catch((e) => e);
     expect(err.reason).toBe('mirror_unreachable');
   });
@@ -1011,5 +1079,94 @@ describe('interpreters: concurrency (D13/NFR-16)', () => {
     expect(first).toBe(bin);
     expect(second).toBe(bin);
     expect(installCalls).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A5：池内 uv 下载缓存治理（TTL / 体积上限）
+// ---------------------------------------------------------------------------
+describe('interpreters: reclaimUvCache (A5 uv cache governance)', () => {
+  const { logger } = require('./logger') as { logger: { warn: jest.Mock } };
+  let tmp: string;
+  let oldInstallDir: string;
+  let oldTtl: number;
+  let oldMaxMb: number;
+
+  beforeEach(() => {
+    // 本文件的全局 beforeEach 会把 fs.* spy 成无操作的 mock（供池扫描用例用）；
+    // 本组用例要操作真实文件系统，先全部还原。
+    jest.restoreAllMocks();
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'acf-uv-cache-'));
+    oldInstallDir = config.uvPythonInstallDir;
+    oldTtl = config.uvCacheTtlDays;
+    oldMaxMb = config.uvCacheMaxMb;
+    config.uvPythonInstallDir = tmp;
+    config.uvCacheTtlDays = 30;
+    config.uvCacheMaxMb = 0;
+  });
+
+  afterEach(() => {
+    config.uvPythonInstallDir = oldInstallDir;
+    config.uvCacheTtlDays = oldTtl;
+    config.uvCacheMaxMb = oldMaxMb;
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  const makeCache = (): string => {
+    const cache = path.join(tmp, '.cache', 'registry');
+    fs.mkdirSync(cache, { recursive: true });
+    fs.writeFileSync(path.join(cache, 'old-wheel.bin'), 'o');
+    fs.writeFileSync(path.join(cache, 'new-wheel.bin'), 'n');
+    const oldDate = new Date(Date.now() - 40 * 24 * 60 * 60 * 1000);
+    fs.utimesSync(path.join(cache, 'old-wheel.bin'), oldDate, oldDate);
+    return cache;
+  };
+
+  it('reclaims top-level entries older than the TTL and keeps fresh ones', async () => {
+    makeCache();
+    const result = await reclaimUvCache();
+    expect(result.reclaimedEntries).toBe(1);
+    expect(fs.existsSync(path.join(tmp, '.cache', 'registry', 'old-wheel.bin'))).toBe(false);
+    expect(fs.existsSync(path.join(tmp, '.cache', 'registry', 'new-wheel.bin'))).toBe(true);
+    // 清理量落日志（运维可从日志确认回收发生与量级）
+    expect(logger.warn.mock.calls.some((c) => String(c[0]).includes('uv cache governance reclaimed'))).toBe(true);
+  });
+
+  it('is a no-op when both gates are disabled (ttl=0, maxMb=0)', async () => {
+    makeCache();
+    config.uvCacheTtlDays = 0;
+    const result = await reclaimUvCache();
+    expect(result.reclaimedEntries).toBe(0);
+    expect(fs.existsSync(path.join(tmp, '.cache', 'registry', 'old-wheel.bin'))).toBe(true);
+  });
+
+  it('size cap reclaims oldest-by-mtime entries until under the cap', async () => {
+    makeCache();
+    config.uvCacheTtlDays = 0; // 只用体积闸
+    // ≈0.1 字节（mock 是平面属性，绕过 env 解析）——两个 1 字节条目都超限
+    config.uvCacheMaxMb = 0.0000001;
+    const result = await reclaimUvCache();
+    // mtime 升序：old 先回收；回收后总量仍可能超限 → new 也回收
+    expect(result.reclaimedEntries).toBe(2);
+    expect(fs.existsSync(path.join(tmp, '.cache', 'registry', 'old-wheel.bin'))).toBe(false);
+    expect(fs.existsSync(path.join(tmp, '.cache', 'registry', 'new-wheel.bin'))).toBe(false);
+  });
+
+  it('also sweeps the legacy .uv-cache directory', async () => {
+    const legacy = path.join(tmp, '.uv-cache', 'registry');
+    fs.mkdirSync(legacy, { recursive: true });
+    const stale = path.join(legacy, 'stale.bin');
+    fs.writeFileSync(stale, 's');
+    const oldDate = new Date(Date.now() - 40 * 24 * 60 * 60 * 1000);
+    fs.utimesSync(stale, oldDate, oldDate);
+
+    const result = await reclaimUvCache();
+    expect(result.reclaimedEntries).toBe(1);
+    expect(fs.existsSync(stale)).toBe(false);
+  });
+
+  it('returns zero result silently when no cache directory exists', async () => {
+    const result = await reclaimUvCache();
+    expect(result).toEqual({ reclaimedEntries: 0, reclaimedBytes: 0, cacheBytes: 0 });
   });
 });
