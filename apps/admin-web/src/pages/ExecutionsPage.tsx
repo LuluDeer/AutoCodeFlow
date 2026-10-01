@@ -256,9 +256,15 @@ export default function ExecutionsPage() {
           >
             {t('execs.action.detail')}
           </Button>
-          {r.status === 'running' && (
+          {(r.status === 'running' || r.status === 'waiting') && (
+            // KILL-WAITING：互斥排队中的执行也走既有 killExecution——后端
+            // OPEN_EXECUTION_STATUSES 已把 WAITING 列为打开态（MUTEX-01），
+            // 前端此前只对 running 出按钮，排队中的执行只能等占用释放。
             <Popconfirm
               title={t('execs.killConfirm')}
+              description={
+                r.status === 'waiting' ? t('execs.killConfirmWaitingDesc') : undefined
+              }
               onConfirm={() => handleKill(r)}
               okText={t('execs.action.kill')} okButtonProps={{ danger: true }}
             >
@@ -390,9 +396,12 @@ export default function ExecutionsPage() {
                     </Typography.Paragraph>
                   )}
                   <div style={{ marginTop: 8, display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 4 }}>
-                    {r.status === 'running' && (
+                    {(r.status === 'running' || r.status === 'waiting') && (
                       <Popconfirm
                         title={t('execs.killConfirm')}
+                        description={
+                          r.status === 'waiting' ? t('execs.killConfirmWaitingDesc') : undefined
+                        }
                         onConfirm={() => handleKill(r)}
                         okText={t('execs.action.kill')} okButtonProps={{ danger: true }}
                       >

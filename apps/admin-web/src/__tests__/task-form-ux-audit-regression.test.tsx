@@ -237,8 +237,10 @@ describe('D3 「保存为模板」固化上游依赖（NF-02）', () => {
     const payload = vi.mocked(taskTemplatesApi.create).mock.calls[0][0];
     const config = payload.config as Record<string, unknown>;
     // 反证点：修复前 dependencies 恒为 undefined（表单载体键不在 DTO 里，
-    // 模板路径没走 applyDependenciesPayload 归一）
-    expect(config.dependencies).toEqual({ [UPSTREAM_ID]: 'upstream-job' });
+    // 模板路径没走 applyDependenciesPayload 归一）。
+    // 一轮修复(FIX-1.1)后契约=value=上游任务 id、key=显示名快照（与后端
+    // Object.values 消费/FlipTaskDependencyMap 迁移一致）。
+    expect(config.dependencies).toEqual({ 'upstream-job': UPSTREAM_ID });
     // 载体键绝不能进 config：CreateTaskDto 未声明，后端 forbidNonWhitelisted 会 400
     expect(Object.keys(config)).not.toContain('upstreamDependencies');
   }, 30_000);

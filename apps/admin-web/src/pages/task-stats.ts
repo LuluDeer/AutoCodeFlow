@@ -1,14 +1,16 @@
 /**
- * F-27（DEEP_REVIEW 0ef3bbe）：任务统计卡的派生指标（纯函数层，便于单测）。
+ * F-27（DEEP_REVIEW 0ef3bbe）+ FIX-5.1（统计口径收口）：任务统计卡失败次数。
  *
- * 后端 GET /tasks/:id/stats 只回 totalRuns 与 successRate（百分比，已四舍五入），
- * 失败次数需前端派生：totalRuns × (1 - successRate/100)。
- * 原实现直接 toFixed(1) 保留一位小数 → 出现「失败 1.4 次」的语义错误
- * （次数是离散量）。现统一 Math.round 归一为整数。
+ * 后端 GET /tasks/:id/stats 现以一条 GROUP BY 返回**全量**计数
+ * （successRate/succeeded/failed 均为全量口径；failed = FAILED + TIMEOUT，
+ * killed/cancelled 是人工/调度动作不计入任务自身失败率；近窗成功率保留为
+ * recentSuccessRate 供趋势参考）。前端不再用 totalRuns × (1 − successRate/100)
+ * 派生失败数——旧派生把「全量 totalRuns」与「近 20 次 successRate」两个窗口
+ * 混在一起（历史 500 败 + 最近 20 全成 → 显示「失败 0 次」），本函数现只做
+ * 后端权威计数的归一（缺失/非法回 0，整数化，钳非负）。
  */
-export function failedRunCount(totalRuns: number, successRate: number): number {
-  if (!Number.isFinite(totalRuns) || totalRuns <= 0) return 0;
-  // 成功率缺失/非法时不做猜测（否则会把"未知"渲染成"全部失败"）
-  if (!Number.isFinite(successRate)) return 0;
-  return Math.round(totalRuns * (1 - successRate / 100));
+export function failedRunCount(stats: { failed?: number | null }): number {
+  const failed = stats?.failed;
+  if (!Number.isFinite(failed as number)) return 0;
+  return Math.max(0, Math.round(failed as number));
 }
