@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, lazy, Suspense } from 'react';
 import { Card,
   Descriptions,
   Tag,
@@ -12,6 +12,7 @@ import { Card,
   Popconfirm,
   Tooltip,
   Modal,
+  Spin,
   Statistic,
   Row,
   Col,
@@ -19,6 +20,7 @@ import { Card,
   Alert,
   Result,
   Input,
+  Drawer,
   theme } from 'antd';
 import { message } from '../utils/toast';
 import {
@@ -28,12 +30,14 @@ import {
   PlayCircleOutlined, DeleteOutlined, ReloadOutlined, EditOutlined,
   EyeOutlined, ClockCircleOutlined, StopOutlined, RobotOutlined, CodeOutlined,
   CheckCircleOutlined, CloseCircleOutlined, FieldTimeOutlined, SaveOutlined,
-  SyncOutlined,
+  SyncOutlined, InfoCircleOutlined, HistoryOutlined,
 } from '@ant-design/icons';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { tasksApi, TaskExecution } from '../api/tasks';
 import type {
+  TaskVersion,
+  VersionDiff,
   TaskWebhookSecretIssued,
   TaskWebhookStatus,
 } from '../api/tasks';
@@ -64,7 +68,13 @@ import { deriveCodeSourceFromTask } from './executor-mode';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore, isAdminUser } from '../store/auth';
 import '../i18n';
-import GlueEditor from '../components/GlueEditor';
+// PERF（第四轮审计）：GlueEditor 拖带 monaco（约 2.5MB raw 的 lazy chunk）。
+// 此前静态 import 让详情页 route chunk 与 GlueEditor chunk 产生**静态边**——
+// 用户哪怕只看「任务配置」Tab，路由加载时也会整包预取编辑器。改 React.lazy：
+// antd Tabs 非激活面板不渲染，动态 import 只在用户切到「Glue 脚本」Tab 时才
+// 发起；Suspense 给 Spin 占位。monaco 不进首屏的构建面守卫见
+// __tests__/monaco-first-paint.perf01.test.ts（读 dist 产物断言）。
+const GlueEditor = lazy(() => import('../components/GlueEditor'));
 import TaskDependencyGraph from '../components/TaskDependencyGraph';
 import { priorityTag } from '../utils/priority';
 import ParamsEditor from '../components/ParamsEditor';
@@ -110,6 +120,17 @@ const CODE_SOURCE_T_KEY: Record<string, string> = {
   git: 'taskForm.field.codeSource.git',
   glue: 'taskForm.field.codeSource.glue',
   application_zip: 'taskForm.field.codeSource.applicationZip',
+};
+
+/**
+ * A5（第二轮审计）：版本 diff 单元格值渲染。快照值既有标量也有 jsonb 结构
+ * （dependencies / retryableErrors / alarmChannels…），标量原样、结构 JSON
+ * 序列化；undefined（旧快照缺键）显示 "-"。
+ */
+const formatDiffValue = (v: unknown): string => {
+  if (v === undefined) return '-';
+  if (typeof v === 'string') return v;
+  return JSON.stringify(v) ?? '-';
 };
 
 type BadgeStatus = 'success' | 'processing' | 'error' | 'default' | 'warning';
@@ -201,6 +222,20 @@ export default function TaskDetailPage() {
   // GLUE-DIRTY-01：Glue 脚本编辑器有未保存改动时拦截浏览器关闭/刷新——
   // 详情页没有表单 dirty 语义，beforeunload 是唯一守卫层。
   const [glueDirty, setGlueDirty] = useState(false);
+  // A5（第二轮审计）：版本历史 Drawer——后端 versions / rollbackToVersion /
+  // compareVersions 三端点此前前端零调用（功能空洞）。装配：
+  //   列表（版本号/时间/创建者）→ 勾选两个版本 compareVersions 出 diff 键值表
+  //   → 每行「回滚到此版本」带确认 Modal（说明覆盖影响）→ 成功后刷新任务+列表。
+  const [versionDrawerOpen, setVersionDrawerOpen] = useState(false);
+  const [versions, setVersions] = useState<TaskVersion[]>([]);
+  const [versionsLoading, setVersionsLoading] = useState(false);
+  // 最多勾两个：超出时保留最近两次勾选（rowSelection onChange 里裁剪）。
+  const [pickedVersionIds, setPickedVersionIds] = useState<string[]>([]);
+  const [versionDiff, setVersionDiff] = useState<VersionDiff | null>(null);
+  const [diffLoading, setDiffLoading] = useState(false);
+  // 回滚确认弹窗的目标版本（null = 关闭）。
+  const [rollbackTarget, setRollbackTarget] = useState<TaskVersion | null>(null);
+  const [rollingBack, setRollingBack] = useState(false);
 
   useEffect(() => {
     if (!glueDirty) return;
@@ -263,6 +298,65 @@ export default function TaskDetailPage() {
   const queryClient = useQueryClient();
   const refreshTask = () => void invalidateTaskData(queryClient);
   const refreshExecs = () => void invalidateTaskData(queryClient);
+
+  // ── A5（第二轮审计）：版本历史 ──────────────────────────────────────────
+  // 直接走 tasksApi + 本地 state（与上方 webhookStatus 同款模式）：queries.ts
+  // 未提供版本 hooks，且版本数据只在 Drawer 打开时需要。
+  const loadVersions = useCallback(() => {
+    if (!id) return;
+    setVersionsLoading(true);
+    tasksApi.versions(id)
+      .then(setVersions)
+      .catch((err: unknown) => {
+        setVersions([]);
+        showApiError(err, t('taskDetail.version.loadFail'));
+      })
+      .finally(() => setVersionsLoading(false));
+  }, [id, t]);
+
+  useEffect(() => {
+    if (versionDrawerOpen) {
+      // 每次打开重置上次会话的勾选与 diff，避免跨任务/跨会话串数据。
+      setPickedVersionIds([]);
+      setVersionDiff(null);
+      loadVersions();
+    }
+  }, [versionDrawerOpen, loadVersions]);
+
+  const handleCompareVersions = async () => {
+    if (!id || pickedVersionIds.length !== 2) return;
+    setDiffLoading(true);
+    try {
+      setVersionDiff(
+        await tasksApi.compareVersions(id, pickedVersionIds[0], pickedVersionIds[1]),
+      );
+    } catch (err: unknown) {
+      showApiError(err, t('taskDetail.version.diffFail'));
+    } finally {
+      setDiffLoading(false);
+    }
+  };
+
+  const handleRollbackConfirm = async () => {
+    if (!id || !rollbackTarget) return;
+    setRollingBack(true);
+    try {
+      await tasksApi.rollbackToVersion(id, rollbackTarget.id);
+      message.success(
+        t('taskDetail.version.rollbackSuccess', { version: rollbackTarget.version }),
+      );
+      setRollbackTarget(null);
+      setVersionDiff(null);
+      setPickedVersionIds([]);
+      // 回滚改写任务配置并追加新版本——任务面 + 版本列表双刷新。
+      refreshTask();
+      loadVersions();
+    } catch (err: unknown) {
+      showApiError(err, t('taskDetail.version.rollbackFail'));
+    } finally {
+      setRollingBack(false);
+    }
+  };
 
   const { data: schedulerStats } = useSchedulerStats();
 
@@ -432,6 +526,64 @@ export default function TaskDetailPage() {
   const isActive = task.status === 'active';
   const isPaused = task.status === 'paused';
 
+  // A5：版本历史 Drawer 的列表列（版本号/时间/创建者/操作）与 diff 键值行。
+  const versionColumns = [
+    {
+      title: t('taskDetail.version.col.version'),
+      dataIndex: 'version',
+      width: 130,
+      render: (v: string, r: TaskVersion) => (
+        <Space size={4}>
+          <Text code>{v}</Text>
+          {r.gitCommit && (
+            <Tooltip title={`${t('taskDetail.version.gitCommit')}: ${r.gitCommit}`}>
+              <Text type="secondary" style={{ fontSize: 11, fontFamily: 'monospace' }}>
+                {r.gitCommit.slice(0, 7)}
+              </Text>
+            </Tooltip>
+          )}
+        </Space>
+      ),
+    },
+    {
+      title: t('taskDetail.version.col.time'),
+      dataIndex: 'createdAt',
+      width: 150,
+      render: (v: string) => v ? (
+        <Tooltip title={formatDateTime(v)}>
+          <Text style={{ fontSize: 12 }}>{formatRelativeTime(v, t)}</Text>
+        </Tooltip>
+      ) : '-',
+    },
+    {
+      title: t('taskDetail.version.col.creator'),
+      dataIndex: 'createdBy',
+      width: 110,
+      ellipsis: true,
+      render: (v: string | null) => v || <Text type="secondary">-</Text>,
+    },
+    {
+      title: t('taskDetail.version.col.action'),
+      key: 'actions',
+      width: 150,
+      render: (_: unknown, r: TaskVersion) => (
+        <Tooltip title={isAdmin ? undefined : t('taskList.adminOnly')}>
+          <Button
+            size="small"
+            data-testid={`version-rollback-${r.version}`}
+            disabled={!isAdmin}
+            onClick={() => setRollbackTarget(r)}
+          >
+            {t('taskDetail.version.rollback')}
+          </Button>
+        </Tooltip>
+      ),
+    },
+  ];
+  const diffRows = versionDiff
+    ? Object.entries(versionDiff).map(([key, d]) => ({ key, old: d.old, new: d.new }))
+    : [];
+
   return (
     <div>
       <Space style={{ marginBottom: 16 }}>
@@ -464,6 +616,14 @@ export default function TaskDetailPage() {
               {t('taskDetail.saveAsTemplate')}
             </Button>
           </Tooltip>
+            {/* A5（第二轮审计）：版本历史入口（列表 / 两版对比 / 回滚） */}
+            <Button
+              icon={<HistoryOutlined />}
+              data-testid="version-history"
+              onClick={() => setVersionDrawerOpen(true)}
+            >
+              {t('taskDetail.version.title')}
+            </Button>
             <Tooltip title={isAdmin ? undefined : t('taskList.adminOnly')}><Button icon={<EditOutlined />} disabled={!isAdmin} onClick={handleEdit}>{t('taskDetail.edit')}</Button></Tooltip>
             <Popconfirm title={t('taskDetail.confirmDelete')} description={t('taskDetail.deleteForceTerminateDesc')} onConfirm={handleDelete} okText={t('taskDetail.delete')} okButtonProps={{ danger: true }}>
               <Tooltip title={isAdmin ? undefined : t('taskList.adminOnly')}><Button icon={<DeleteOutlined />} danger disabled={!isAdmin}>{t('taskDetail.delete')}</Button></Tooltip>
@@ -502,8 +662,19 @@ export default function TaskDetailPage() {
           </Col>
           <Col xs={12} sm={6}>
             <Card size="small">
+              {/* FIX-5.1（统计口径收口）：successRate 现为后端 GROUP BY 的**全量**
+              口径（旧实现是近 20 次窗口），与 totalRuns 同窗——卡片必须标注口径，
+              否则用户仍按「近 20 次」理解。最近 20 次成功率由 recentSuccessRate
+              提供，收进同一提示。 */}
               <Statistic
-                title={t('taskDetail.stats.successRate')}
+                title={(
+                  <Space size={4}>
+                    {t('taskDetail.stats.successRate')}
+                    <Tooltip title={t('taskDetail.stats.caliberHint', { recent: (taskStats.recentSuccessRate ?? 0).toFixed(1) })}>
+                      <InfoCircleOutlined style={{ color: token.colorTextSecondary }} />
+                    </Tooltip>
+                  </Space>
+                )}
                 value={(taskStats.successRate ?? 0).toFixed(1)}
                 suffix="%"
                 styles={{ content: { color: (taskStats.successRate ?? 0) >= 95 ? token.colorSuccess : (taskStats.successRate ?? 0) >= 80 ? token.colorWarning : token.colorError } }}
@@ -513,14 +684,14 @@ export default function TaskDetailPage() {
           </Col>
           <Col xs={12} sm={6}>
             <Card size="small">
+              {/* FIX-5.1：失败次数直接消费后端全量 failed 计数（= FAILED +
+              TIMEOUT），不再用 totalRuns × (1 − successRate/100) 派生——旧派生
+              把全量 totalRuns 与近窗 successRate 两个口径混算（历史 500 败 +
+              最近 20 全成 → 显示「失败 0 次」）。归一逻辑见 pages/task-stats.ts。 */}
               <Statistic
                 title={t('taskDetail.stats.failed')}
-                // F-27（DEEP_REVIEW 0ef3bbe）：失败次数必须是整数——原实现按
-                // totalRuns × (1 - successRate/100) 直接 toFixed(1)，成功率为
-                // 四舍五入值时会出现「失败 1.4 次」的语义错误。现走 pages/task-stats.ts
-                // 的 failedRunCount（Math.round 归一，纯函数已单测）。
-                value={failedRunCount(taskStats.totalRuns ?? 0, taskStats.successRate ?? 0)}
-                styles={taskStats.totalRuns > 0 && (taskStats.successRate ?? 0) < 100 ? { content: { color: token.colorError } } : undefined}
+                value={failedRunCount(taskStats)}
+                styles={failedRunCount(taskStats) > 0 ? { content: { color: token.colorError } } : undefined}
                 prefix={<CloseCircleOutlined />}
               />
             </Card>
@@ -767,13 +938,23 @@ export default function TaskDetailPage() {
                     />
                   ) : null;
                 })()}
-                <GlueEditor
-                  taskId={id!}
-                  initialSource={task.glueSource ?? undefined}
-                  initialLanguage={task.glueLanguage ?? undefined}
-                  taskRuntime={task.runtime}
-                  onDirtyChange={setGlueDirty}
-                />
+                {/* PERF（第四轮审计）：lazy chunk 下载/解析期间的占位（Spin），
+                    chunk 到位后编辑器整体挂载。 */}
+                <Suspense
+                  fallback={
+                    <div style={{ textAlign: 'center', padding: 48 }} data-testid="glue-editor-fallback">
+                      <Spin />
+                    </div>
+                  }
+                >
+                  <GlueEditor
+                    taskId={id!}
+                    initialSource={task.glueSource ?? undefined}
+                    initialLanguage={task.glueLanguage ?? undefined}
+                    taskRuntime={task.runtime}
+                    onDirtyChange={setGlueDirty}
+                  />
+                </Suspense>
               </Card>
             ),
           },
@@ -956,6 +1137,117 @@ export default function TaskDetailPage() {
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
           {t('taskDetail.tpl.note')}
         </Typography.Text>
+      </Modal>
+
+      {/* A5（第二轮审计）：版本历史 Drawer——版本列表（勾选两个可对比）+ diff
+          键值表 + 回滚确认弹窗（见下方 Modal）。刷新按钮复用 taskDetail.refresh。 */}
+      <Drawer
+        title={<Space><HistoryOutlined /> {t('taskDetail.version.title')}</Space>}
+        placement="right"
+        width={720}
+        open={versionDrawerOpen}
+        onClose={() => setVersionDrawerOpen(false)}
+        destroyOnHidden
+      >
+        <Space style={{ marginBottom: 12 }} wrap>
+          <Button size="small" icon={<ReloadOutlined />} loading={versionsLoading} onClick={loadVersions}>
+            {t('taskDetail.refresh')}
+          </Button>
+          <Tooltip title={pickedVersionIds.length === 2 ? undefined : t('taskDetail.version.compareHint')}>
+            <Button
+              size="small"
+              type="primary"
+              data-testid="version-compare"
+              disabled={pickedVersionIds.length !== 2}
+              loading={diffLoading}
+              onClick={handleCompareVersions}
+            >
+              {t('taskDetail.version.compare')}
+            </Button>
+          </Tooltip>
+        </Space>
+        {versionDiff && (
+          <Card
+            size="small"
+            title={t('taskDetail.version.diff.title')}
+            style={{ marginBottom: 16 }}
+            extra={
+              <Button type="text" size="small" onClick={() => setVersionDiff(null)} icon={<CloseCircleOutlined />} />
+            }
+          >
+            {diffRows.length === 0 ? (
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('taskDetail.version.diff.empty')} />
+            ) : (
+              <Table
+                rowKey="key"
+                size="small"
+                pagination={false}
+                dataSource={diffRows}
+                scroll={{ x: 560 }}
+                columns={[
+                  {
+                    title: t('taskDetail.version.diff.key'),
+                    dataIndex: 'key',
+                    width: 170,
+                    render: (k: string) => <Text code style={{ fontSize: 12 }}>{k}</Text>,
+                  },
+                  {
+                    title: t('taskDetail.version.diff.old'),
+                    dataIndex: 'old',
+                    render: (v: unknown) => (
+                      <Text type="danger" style={{ fontSize: 12, fontFamily: 'monospace', wordBreak: 'break-all' }}>
+                        {formatDiffValue(v)}
+                      </Text>
+                    ),
+                  },
+                  {
+                    title: t('taskDetail.version.diff.new'),
+                    dataIndex: 'new',
+                    render: (v: unknown) => (
+                      <Text style={{ fontSize: 12, fontFamily: 'monospace', wordBreak: 'break-all', color: token.colorSuccess }}>
+                        {formatDiffValue(v)}
+                      </Text>
+                    ),
+                  },
+                ]}
+              />
+            )}
+          </Card>
+        )}
+        <Table<TaskVersion>
+          rowKey="id"
+          size="small"
+          loading={versionsLoading}
+          dataSource={versions}
+          columns={versionColumns}
+          pagination={false}
+          rowSelection={{
+            selectedRowKeys: pickedVersionIds,
+            // 最多勾两个：超出时保留最近两次勾选（对比恰好取这两个）。
+            onChange: (keys) => setPickedVersionIds(keys.slice(-2).map(String)),
+          }}
+          locale={{
+            emptyText: (
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('taskDetail.version.empty')} />
+            ),
+          }}
+        />
+      </Drawer>
+
+      {/* A5：回滚确认弹窗——明确告知覆盖影响（当前配置被快照整体覆盖、追加新
+          版本记录、运行中执行不受影响），防误触。 */}
+      <Modal
+        title={t('taskDetail.version.rollbackTitle', { version: rollbackTarget?.version ?? '' })}
+        open={!!rollbackTarget}
+        onOk={handleRollbackConfirm}
+        okText={t('taskDetail.version.rollback')}
+        okButtonProps={{ danger: true, loading: rollingBack, 'data-testid': 'version-rollback-confirm' }}
+        cancelText={t('taskDetail.cancel')}
+        onCancel={() => setRollbackTarget(null)}
+        width={520}
+        destroyOnHidden
+      >
+        <Alert type="warning" showIcon title={t('taskDetail.version.rollbackDesc')} />
       </Modal>
     </div>
   );
