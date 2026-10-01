@@ -1,5 +1,10 @@
 // UI-09 真机走查：375×812 视口下 Dashboard / 执行详情 无横向溢出、关键内容可达。
 //
+// ⚠ 已由 apps/admin-web/e2e/e2e-ui09-mobile.spec.js 接管（2026-10-01 存档注记，
+// 第四轮审计）：两份同名 spec 内容已漂移，权威版本在 apps/admin-web/e2e/ 下。
+// 本文件仅存档，供 scripts/e2e-full.sh 历史消费（CI e2e-full 仍指向根级路径，
+// 收编需改 CI 编排，变动面大，本轮不做）；请勿在本文件继续新增用例。
+//
 // 背景：UI-09 表格三页半场（3351eb9）+ Dashboard/ExecutionDetail 补齐半场（007）此前
 // 仅有 jsdom 断言，缺「真实浏览器 375px」走查；本 spec 挂在 e2e-full.sh 的同一栈上跑：
 //   bash scripts/e2e-full.sh e2e-full.spec.js e2e-ui09-mobile.spec.js

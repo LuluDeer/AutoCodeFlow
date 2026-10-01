@@ -1,6 +1,6 @@
 {
-  "id": "callback-report-node-demo",
   "name": "SDK 回调示例（Node）",
+  "triggerType": "cron",
   "runtime": "node",
   "entrypoint": "examples/callback-report-node/callback_report.js",
   "cronExpression": "0 0 12 * * *",

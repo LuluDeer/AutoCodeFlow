@@ -6,7 +6,7 @@
 > 2. **开工**：`claimed → in_progress`；**完成**：`done` + 填 commit hash；**放弃/移交**：`unclaimed` 并清空 Owner（备注留交接说明）。
 > 3. **同一时刻一个任务只允许一个 Owner**；文件足迹重叠的任务不要同时开工。
 > 4. 开工前必跑 `git pull --rebase`（工作区干净时）+ `git status` 盘点他人未提交改动——**未提交改动归其作者会话，勿动勿提交**。
-> 5. 会话结束：done 的任务在 AGENT_HANDOFF.md「状态快照」记一笔，并提交本板的最终状态。
+> 5. 会话结束：done 的任务在 docs/AGENT_HANDOFF.md「状态快照」记一笔（2026-10-01 出库：原根路径 AGENT_HANDOFF.md 移入 docs/，git 只读面见第四轮审计），并提交本板的最终状态。
 >
 > 状态字典：`unclaimed`（待认领）/ `claimed`（已认领排队）/ `in_progress`（进行中）/ `done` / `blocked`（备注写原因）
 

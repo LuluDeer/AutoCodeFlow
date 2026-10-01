@@ -11,6 +11,16 @@
         "autocodeflow-cli",
         "autoflow-sdk"
       ]
+    },
+    {
+      "type": "linked-versions",
+      "groupName": "autocodeflow-py-libs",
+      "components": [
+        "autocodeflow-http",
+        "autocodeflow-ai",
+        "autocodeflow-db",
+        "autocodeflow-notify"
+      ]
     }
   ],
   "packages": {
@@ -39,6 +49,34 @@
     "packages/acf-cli": {
       "release-type": "node",
       "component": "autocodeflow-cli"
+    },
+    "packages/autocodeflow-http": {
+      "release-type": "python",
+      "component": "autocodeflow-http",
+      "extra-files": [
+        "autocodeflow_http/__init__.py"
+      ]
+    },
+    "packages/autocodeflow-ai": {
+      "release-type": "python",
+      "component": "autocodeflow-ai",
+      "extra-files": [
+        "autocodeflow_ai/__init__.py"
+      ]
+    },
+    "packages/autocodeflow-db": {
+      "release-type": "python",
+      "component": "autocodeflow-db",
+      "extra-files": [
+        "autocodeflow_db/__init__.py"
+      ]
+    },
+    "packages/autocodeflow-notify": {
+      "release-type": "python",
+      "component": "autocodeflow-notify",
+      "extra-files": [
+        "autocodeflow_notify/__init__.py"
+      ]
     }
   }
 }
