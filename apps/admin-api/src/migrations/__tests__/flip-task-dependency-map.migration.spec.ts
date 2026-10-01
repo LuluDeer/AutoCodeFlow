@@ -1,4 +1,5 @@
-import { FlipTaskDependencyMap1790000000048, flipDependencyMap } from "../1790000000048-FlipTaskDependencyMap";
+import { FlipTaskDependencyMap1790000000048 } from "../1790000000048-FlipTaskDependencyMap";
+import { flipDependencyMap } from "../../common/utils/task-dependency-flip.util";
 import type { QueryRunner } from "typeorm";
 
 /**
@@ -29,15 +30,16 @@ describe("flipDependencyMap（纯函数语义）", () => {
   });
 
   it("混合行：未翻转条目翻转、已翻转条目保留（逐条目判定，非整行）", () => {
-    expect(
-      flipDependencyMap({ [UUID_A]: "task-a", "task-b": UUID_B }),
-    ).toEqual({ "task-a": UUID_A, "task-b": UUID_B });
+    expect(flipDependencyMap({ [UUID_A]: "task-a", "task-b": UUID_B })).toEqual(
+      { "task-a": UUID_A, "task-b": UUID_B },
+    );
   });
 
   it("key 冲突（两个上游同名）→ 先到者保留显示名 key，后者降级 key=uuid（value 语义位不丢）", () => {
-    expect(
-      flipDependencyMap({ [UUID_A]: "dup", [UUID_B]: "dup" }),
-    ).toEqual({ dup: UUID_A, [UUID_B]: UUID_B });
+    expect(flipDependencyMap({ [UUID_A]: "dup", [UUID_B]: "dup" })).toEqual({
+      dup: UUID_A,
+      [UUID_B]: UUID_B,
+    });
   });
 
   it("降级条目（key=value=uuid）不再次命中判定", () => {

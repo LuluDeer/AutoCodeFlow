@@ -37,7 +37,12 @@ describe("TaskController trigger — NF-01 API-Key 主体分流与审计", () =>
       }),
     };
     const audit = { log: jest.fn().mockResolvedValue(undefined) };
-    const taskWebhookService = { getStatus: jest.fn(), enable: jest.fn(), rotate: jest.fn(), disable: jest.fn() } as any;
+    const taskWebhookService = {
+      getStatus: jest.fn(),
+      enable: jest.fn(),
+      rotate: jest.fn(),
+      disable: jest.fn(),
+    } as any;
     const controller = new TaskController(
       taskService as any,
       taskWebhookService as any,

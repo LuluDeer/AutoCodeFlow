@@ -66,7 +66,9 @@ class FakeRedis implements DigestRedisClient {
   }
 }
 
-const rec = (overrides: Partial<DigestFailureRecord> = {}): DigestFailureRecord => ({
+const rec = (
+  overrides: Partial<DigestFailureRecord> = {},
+): DigestFailureRecord => ({
   taskId: "t1",
   taskName: "nightly-etl",
   failureReason: "script_error",
@@ -91,7 +93,9 @@ describe("NotificationDigestService (DEEP-AUDIT B·1.6)", () => {
       notificationService as unknown as NotificationService,
       {
         get: (key: string) =>
-          key === "notification.failureDigestMinutes" ? digestMinutes : undefined,
+          key === "notification.failureDigestMinutes"
+            ? digestMinutes
+            : undefined,
       } as unknown as ConfigService,
       auditService as unknown as AuditService,
     );
@@ -117,7 +121,9 @@ describe("NotificationDigestService (DEEP-AUDIT B·1.6)", () => {
       await expect(service.recordFailure(rec())).resolves.toBe("bypass");
       expect(redis.store.size).toBe(0);
       // 关闭态下通知仍由调用方（listener）逐条直发——digest 自身不发。
-      expect(notificationService.notifyFailureWithConfig).not.toHaveBeenCalled();
+      expect(
+        notificationService.notifyFailureWithConfig,
+      ).not.toHaveBeenCalled();
     });
 
     it("non-numeric window config → treated as disabled", async () => {
@@ -127,9 +133,9 @@ describe("NotificationDigestService (DEEP-AUDIT B·1.6)", () => {
     });
 
     it("missing taskId → bypass (aggregation meaningless without a task key)", async () => {
-      await expect(service.recordFailure(rec({ taskId: undefined }))).resolves.toBe(
-        "bypass",
-      );
+      await expect(
+        service.recordFailure(rec({ taskId: undefined })),
+      ).resolves.toBe("bypass");
       expect(redis.store.size).toBe(0);
     });
 
@@ -146,10 +152,14 @@ describe("NotificationDigestService (DEEP-AUDIT B·1.6)", () => {
     it("records accumulate in one window keyed by taskId with per-reason counters", async () => {
       await expect(service.recordFailure(rec())).resolves.toBe("aggregated");
       await expect(
-        service.recordFailure(rec({ failureReason: "timeout", executionId: "e2" })),
+        service.recordFailure(
+          rec({ failureReason: "timeout", executionId: "e2" }),
+        ),
       ).resolves.toBe("aggregated");
       await expect(
-        service.recordFailure(rec({ failureReason: "script_error", executionId: "e3" })),
+        service.recordFailure(
+          rec({ failureReason: "script_error", executionId: "e3" }),
+        ),
       ).resolves.toBe("aggregated");
 
       const raw = await redis.hgetall(`${DIGEST_KEY_PREFIX}t1`);
@@ -162,7 +172,9 @@ describe("NotificationDigestService (DEEP-AUDIT B·1.6)", () => {
 
     it("flush sends exactly one summary via notifyFailureWithConfig with digest titleOverride", async () => {
       await service.recordFailure(rec());
-      await service.recordFailure(rec({ failureReason: "timeout", executionId: "e2" }));
+      await service.recordFailure(
+        rec({ failureReason: "timeout", executionId: "e2" }),
+      );
 
       const state: DigestWindowState | null = await service.flush("t1");
       expect(state).not.toBeNull();
@@ -173,9 +185,22 @@ describe("NotificationDigestService (DEEP-AUDIT B·1.6)", () => {
       expect(state!.ctx.alarmChannels).toEqual(["email"]);
       expect(state!.ctx.applicationId).toBe("app-1");
 
-      expect(notificationService.notifyFailureWithConfig).toHaveBeenCalledTimes(1);
-      const [name, execId, summary, ai, email, channels, wh, taskId, runbook, appId, title] =
-        notificationService.notifyFailureWithConfig.mock.calls[0];
+      expect(notificationService.notifyFailureWithConfig).toHaveBeenCalledTimes(
+        1,
+      );
+      const [
+        name,
+        execId,
+        summary,
+        ai,
+        email,
+        channels,
+        _wh,
+        taskId,
+        _runbook,
+        appId,
+        title,
+      ] = notificationService.notifyFailureWithConfig.mock.calls[0];
       expect(name).toBe("nightly-etl");
       expect(execId).toBe("e2"); // 最近一次失败的执行
       expect(summary).toContain("窗口内共失败 2 次");
@@ -193,7 +218,9 @@ describe("NotificationDigestService (DEEP-AUDIT B·1.6)", () => {
       await service.recordFailure(rec());
       await service.flush("t1");
       await expect(service.flush("t1")).resolves.toBeNull();
-      expect(notificationService.notifyFailureWithConfig).toHaveBeenCalledTimes(1);
+      expect(notificationService.notifyFailureWithConfig).toHaveBeenCalledTimes(
+        1,
+      );
     });
   });
 
@@ -204,8 +231,10 @@ describe("NotificationDigestService (DEEP-AUDIT B·1.6)", () => {
       }
       await service.flush("t1");
 
-      expect(notificationService.notifyFailureWithConfig).toHaveBeenCalledTimes(1);
-      const [ , , summary, , , , , , , , title] =
+      expect(notificationService.notifyFailureWithConfig).toHaveBeenCalledTimes(
+        1,
+      );
+      const [, , summary, , , , , , , , title] =
         notificationService.notifyFailureWithConfig.mock.calls[0];
       expect(title).toBe("【紧急】任务连续失败: nightly-etl");
       expect(summary).toContain("【紧急】");
@@ -217,7 +246,7 @@ describe("NotificationDigestService (DEEP-AUDIT B·1.6)", () => {
         await service.recordFailure(rec({ executionId: `e${i}` }));
       }
       await service.flush("t1");
-      const [ , , summary, , , , , , , , title] =
+      const [, , summary, , , , , , , , title] =
         notificationService.notifyFailureWithConfig.mock.calls[0];
       expect(title).toBe("任务失败汇总: nightly-etl");
       expect(summary).not.toContain("【紧急】");

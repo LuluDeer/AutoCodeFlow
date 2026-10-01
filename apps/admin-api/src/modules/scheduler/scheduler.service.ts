@@ -973,7 +973,10 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     const priorityByTask = new Map(
       // A4: 地图值直接换算为 BullMQ 出队优先级（DB 4=紧急 → BullMQ 1=最先
       // 出队）。任务行被并发删除时 .get() 仍回 undefined，沿用旧缺省行为。
-      tasks.map((t) => [t.id, toBullPriority(normalizeTaskPriority(t.priority))]),
+      tasks.map((t) => [
+        t.id,
+        toBullPriority(normalizeTaskPriority(t.priority)),
+      ]),
     );
 
     let woken = 0;

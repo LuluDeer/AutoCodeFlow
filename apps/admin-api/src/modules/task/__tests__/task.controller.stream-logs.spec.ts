@@ -17,8 +17,17 @@ describe("TaskController.streamLogs — SSE concurrency (TASK-008)", () => {
       streamExecutionLogs: jest.fn().mockResolvedValue(undefined),
     };
     const audit = { log: jest.fn().mockResolvedValue(undefined) };
-    const taskWebhookService = { getStatus: jest.fn(), enable: jest.fn(), rotate: jest.fn(), disable: jest.fn() } as any;
-    const controller = new TaskController(taskService as any, taskWebhookService as any, audit as any);
+    const taskWebhookService = {
+      getStatus: jest.fn(),
+      enable: jest.fn(),
+      rotate: jest.fn(),
+      disable: jest.fn(),
+    } as any;
+    const controller = new TaskController(
+      taskService as any,
+      taskWebhookService as any,
+      audit as any,
+    );
     const req: any = { on: jest.fn() };
     const res: any = {
       setHeader: jest.fn(),

@@ -78,12 +78,10 @@ describe("ExecutionEventsRelayService (A3 cross-instance terminal events)", () =
   const subscriber = () => RedisMock.mockInstances[0];
   const publisher = () => RedisMock.mockInstances[1];
 
-  const messageHandler = (): (channel: string, raw: string) => void => {
-    const call = subscriber()
-      .on.mock.calls.find(([event]) => event === "message") as unknown as [
-      string,
-      (channel: string, raw: string) => void,
-    ];
+  const messageHandler = (): ((channel: string, raw: string) => void) => {
+    const call = subscriber().on.mock.calls.find(
+      ([event]) => event === "message",
+    ) as unknown as [string, (channel: string, raw: string) => void];
     expect(call).toBeDefined();
     return call[1];
   };
@@ -118,7 +116,9 @@ describe("ExecutionEventsRelayService (A3 cross-instance terminal events)", () =
 
   it("c) 自身消息去重：广播回来不再补发（本地已派发过）", async () => {
     const seen: ExecutionTerminalEventPayload[] = [];
-    bus.on(DOMAIN_EVENTS.EXECUTION_FAILED, (p) => seen.push(p as ExecutionTerminalEventPayload));
+    bus.on(DOMAIN_EVENTS.EXECUTION_FAILED, (p) =>
+      seen.push(p as ExecutionTerminalEventPayload),
+    );
 
     bus.emit(DOMAIN_EVENTS.EXECUTION_FAILED, makePayload());
     await Promise.resolve();
@@ -133,7 +133,9 @@ describe("ExecutionEventsRelayService (A3 cross-instance terminal events)", () =
 
   it("d) 远端消息 → 本地总线补发（viaRelay=true），副作用订阅方可据此跳过", () => {
     const seen: ExecutionTerminalEventPayload[] = [];
-    bus.on(DOMAIN_EVENTS.EXECUTION_COMPLETED, (p) => seen.push(p as ExecutionTerminalEventPayload));
+    bus.on(DOMAIN_EVENTS.EXECUTION_COMPLETED, (p) =>
+      seen.push(p as ExecutionTerminalEventPayload),
+    );
 
     const remote = {
       instanceId: "other-instance",
@@ -189,7 +191,9 @@ describe("ExecutionEventsRelayService (A3 cross-instance terminal events)", () =
       new Error("redis down"),
     );
     const seen: ExecutionTerminalEventPayload[] = [];
-    bus.on(DOMAIN_EVENTS.EXECUTION_FAILED, (p) => seen.push(p as ExecutionTerminalEventPayload));
+    bus.on(DOMAIN_EVENTS.EXECUTION_FAILED, (p) =>
+      seen.push(p as ExecutionTerminalEventPayload),
+    );
 
     // 垃圾消息与非目标事件名：忽略
     expect(() =>

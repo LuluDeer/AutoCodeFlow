@@ -14,9 +14,7 @@ import { MigrationInterface, QueryRunner } from "typeorm";
  *
  * 幂等：IF NOT EXISTS，重复执行与 revert 重放均无副作用。
  */
-export class AddTaskDeploymentPolicy1790000000047
-  implements MigrationInterface
-{
+export class AddTaskDeploymentPolicy1790000000047 implements MigrationInterface {
   name = "AddTaskDeploymentPolicy1790000000047";
 
   public async up(queryRunner: QueryRunner): Promise<void> {

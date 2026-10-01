@@ -69,7 +69,7 @@ describe("TaskWebhookService.waitForTerminal — 终态唤醒事件化（FIX-4.2
     expect(result.completed).toBe(true);
     expect(result.execution?.status).toBe("success");
     // 只挂起了一次（首查非终态 → 唤醒 → 复查终态 → 退出）
-    expect((deps.execRepo.findOne).mock.calls.length).toBe(2);
+    expect(deps.execRepo.findOne.mock.calls.length).toBe(2);
   });
 
   it("唤醒后轮询间隔复位到基线（下一次挂起仍给满 1s 窗口）", async () => {
@@ -106,17 +106,19 @@ describe("TaskWebhookService.waitForTerminal — 终态唤醒事件化（FIX-4.2
     const deps = makeDeps();
     deps.execRepo.findOne.mockResolvedValue(makeExec("running"));
     // 微延迟模拟「真实挂起至超时」：即时返回会让 15s deadline 转出数万轮
-    const wake = makeWake(jest.fn(async () => {
-      await new Promise((r) => setTimeout(r, 2));
-      return false;
-    }));
+    const wake = makeWake(
+      jest.fn(async () => {
+        await new Promise((r) => setTimeout(r, 2));
+        return false;
+      }),
+    );
     const svc = build(deps, wake);
     const result = await svc.waitForTerminal("exec-1", 8);
     expect(result.completed).toBe(false);
-    const waitMsSeq = ((wake as unknown as { waitWakeup: jest.Mock })
-      .waitWakeup.mock.calls as unknown as [string, number][]).map(
-      (c) => c[1],
-    );
+    const waitMsSeq = (
+      (wake as unknown as { waitWakeup: jest.Mock }).waitWakeup.mock
+        .calls as unknown as [string, number][]
+    ).map((c) => c[1]);
     expect(waitMsSeq.length).toBeGreaterThanOrEqual(3);
     expect(waitMsSeq[0]).toBe(1000);
     expect(waitMsSeq[1]).toBe(2000);
@@ -130,10 +132,10 @@ describe("TaskWebhookService.waitForTerminal — 终态唤醒事件化（FIX-4.2
     const wake = makeWake(jest.fn(async () => false));
     const svc = build(deps, wake);
     await svc.waitForTerminal("exec-1", 1);
-    const waitMsSeq = ((wake as unknown as { waitWakeup: jest.Mock })
-      .waitWakeup.mock.calls as unknown as [string, number][]).map(
-      (c) => c[1],
-    );
+    const waitMsSeq = (
+      (wake as unknown as { waitWakeup: jest.Mock }).waitWakeup.mock
+        .calls as unknown as [string, number][]
+    ).map((c) => c[1]);
     for (const ms of waitMsSeq) expect(ms).toBeLessThanOrEqual(1000);
   }, 10_000);
 
@@ -144,7 +146,8 @@ describe("TaskWebhookService.waitForTerminal — 终态唤醒事件化（FIX-4.2
     const svc = build(deps, wake);
     const result = await svc.waitForTerminal("exec-1", 5);
     expect(result.completed).toBe(true);
-    expect((wake as unknown as { waitWakeup: jest.Mock }).waitWakeup).not
-      .toHaveBeenCalled();
+    expect(
+      (wake as unknown as { waitWakeup: jest.Mock }).waitWakeup,
+    ).not.toHaveBeenCalled();
   });
 });

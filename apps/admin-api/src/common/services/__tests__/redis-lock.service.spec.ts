@@ -217,7 +217,8 @@ describe("RedisLockService", () => {
       expect(m.eval).toHaveBeenCalledTimes(4);
     });
 
-    it("R4-P0: renew:false never starts the watchdog — the lock expires naturally (trigger-dedup behaviour)", async () => {      jest.useFakeTimers();
+    it("R4-P0: renew:false never starts the watchdog — the lock expires naturally (trigger-dedup behaviour)", async () => {
+      jest.useFakeTimers();
       m.set.mockResolvedValue("OK");
       m.eval.mockResolvedValue(1);
 

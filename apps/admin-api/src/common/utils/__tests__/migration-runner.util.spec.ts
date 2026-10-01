@@ -24,7 +24,8 @@ describe("runMigrationsWithAdvisoryLock (A2 migration mutex)", () => {
       query: jest.fn(async (sql: string, params?: unknown[]) => {
         if (sql.includes("pg_try_advisory_lock")) {
           events.push(`try_lock:${params?.[0]}`);
-          const result = lockResults[Math.min(lockIdx++, lockResults.length - 1)];
+          const result =
+            lockResults[Math.min(lockIdx++, lockResults.length - 1)];
           if (result instanceof Error) throw result;
           return [{ locked: result }];
         }
@@ -76,11 +77,7 @@ describe("runMigrationsWithAdvisoryLock (A2 migration mutex)", () => {
 
     expect(events.filter((e) => e.startsWith("try_lock")).length).toBe(3);
     expect(events).toEqual(
-      expect.arrayContaining([
-        "runMigrations",
-        "unlock",
-        "release",
-      ]),
+      expect.arrayContaining(["runMigrations", "unlock", "release"]),
     );
     expect(logs.join("\n")).toContain("another instance is migrating");
   });

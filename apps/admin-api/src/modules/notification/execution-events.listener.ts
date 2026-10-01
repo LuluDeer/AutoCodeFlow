@@ -100,7 +100,12 @@ export class ExecutionEventsListener implements OnModuleInit, OnModuleDestroy {
       // 默认 10；0=关闭）。返回 aggregated 表示失败已入窗、汇总在窗到期时由
       // digest 服务发出（本路径跳过逐条直发）；bypass/服务未装配/入窗过程任何
       // 异常 → 回退逐条即时发送的既有行为（fail-open，绝不吞告警）。
-      const decision = await this.tryRecordDigest(event, taskName, errorSummary, task);
+      const decision = await this.tryRecordDigest(
+        event,
+        taskName,
+        errorSummary,
+        task,
+      );
       if (decision === "aggregated") return;
 
       await this.notificationService.notifyFailureWithConfig(

@@ -401,8 +401,7 @@ export class ExecutorService implements OnModuleInit {
     // 参数**（既有 spec 以位置参数直接装配，带默认值的尾参不破坏）。
     @Optional()
     @InjectRepository(ApplicationVersion)
-    private readonly applicationVersionRepo: Repository<ApplicationVersion> | null =
-      null,
+    private readonly applicationVersionRepo: Repository<ApplicationVersion> | null = null,
   ) {
     this.protocol = this.configService.get<string>("app.protocol") || "http";
     // R-26（DEEP_REVIEW 0ef3bbe）: 关键 @Optional（事件总线 / 高危审计）缺失时
@@ -3385,7 +3384,8 @@ export class ExecutorService implements OnModuleInit {
     const isZipChannel =
       task.codeSource === TaskCodeSource.APPLICATION_ZIP ||
       (task.codeSource == null && Boolean(task.applicationId));
-    if (!isZipChannel) return { task: buildDispatchTaskPayload(task), packageVersion: null };
+    if (!isZipChannel)
+      return { task: buildDispatchTaskPayload(task), packageVersion: null };
     if (!task.applicationId) {
       // codeSource=application_zip 但无 applicationId：WS1 写面已互斥校验
       // （CONTRACT §2.1「codeSource=application_zip 时 applicationId 必填」），
@@ -4337,7 +4337,10 @@ export class ExecutorService implements OnModuleInit {
     if (this.leaderGate && !this.leaderGate.isLeader) return;
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     const stale = await this.repo.find({
-      where: { status: ExecutorStatus.OFFLINE, lastHeartbeat: LessThan(sevenDaysAgo) },
+      where: {
+        status: ExecutorStatus.OFFLINE,
+        lastHeartbeat: LessThan(sevenDaysAgo),
+      },
       select: { id: true, address: true, appName: true },
     });
     if (stale.length === 0) return;
@@ -4372,7 +4375,11 @@ export class ExecutorService implements OnModuleInit {
           action: "executor.cleanup_skipped",
           resource: "executor",
           resourceId: exec.id,
-          detail: { address: exec.address, appName: exec.appName, pinnedTasks: count },
+          detail: {
+            address: exec.address,
+            appName: exec.appName,
+            pinnedTasks: count,
+          },
         });
       } catch (err) {
         this.logger.warn(
@@ -4382,7 +4389,9 @@ export class ExecutorService implements OnModuleInit {
     }
 
     if (deletable.length === 0) return;
-    const result = await this.repo.delete({ id: In(deletable.map((e) => e.id)) });
+    const result = await this.repo.delete({
+      id: In(deletable.map((e) => e.id)),
+    });
     if (result.affected && result.affected > 0) {
       this.logger.log(
         `Cleaned up ${result.affected} offline executor(s) (>7 days)`,
@@ -4592,7 +4601,9 @@ export class ExecutorService implements OnModuleInit {
    * DEEP-AUDIT B·1.1：钉定（task.executorId = 本执行器）的任务数。
    * 排除软删除行；纯 count 查询，供删除预览与自动清理跳过判定共用同一口径。
    */
-  private async countTasksBoundToExecutor(executor: Pick<Executor, "id">): Promise<number> {
+  private async countTasksBoundToExecutor(
+    executor: Pick<Executor, "id">,
+  ): Promise<number> {
     try {
       return await this.taskRepo.count({
         where: {

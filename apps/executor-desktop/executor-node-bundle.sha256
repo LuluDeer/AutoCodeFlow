@@ -14,6 +14,7 @@
 # CI 的 desktop-bundle-drift job 离线 ncc 重打后比对 actual == expected，不一致即红。
 #
 # 变更记录：
+#   - b52c2702…：四轮审计修复 executor-node/src（unshallow 重试/区间 env 化/uv 缓存治理/sweep 异步化/心跳磁盘/rlimit -f/私服 token 指引/截断口径）后 ncc 0.45 重打；source-digest 同步 20eeafa4…。
 #   - c2110e77…：A2-B 前的基线。
 #   - 3dca07ba…：A3 完整形态——`routes/execute.ts` 的 `isSafeExecutionIdSegment`
 #     由模块私有改为 `export`（供 protocol-schemas.spec 与协议 pattern 做逐字符
@@ -391,5 +392,5 @@
 #     入口——桌面端三平台优雅停机（HTTP drain，宽限 8s→30s）的服务端半边。
 #     改动 main.ts 与 middleware/auth.ts 两文件，按 ADR-005 同 commit 重打回填
 #     （Windows node 24.21 本地重打，依赖 CI 权威复验）。
-source-digest: 93a300c38f9cc6943314f5d3b9fc47fab951b75e0977111c191eab6726d3386d
-533faef3405a50146f5a9c0ba9c668353e06491d072fb661a3796b5baf7d5d4c  index.js
+source-digest: 20eeafa43b651515bab004ddaa873dbb6fecff65a1edb34df405ce269926f457
+b52c27024a993e3666da9986827b4862446460b83f273bbda03013778a7dd340  index.js

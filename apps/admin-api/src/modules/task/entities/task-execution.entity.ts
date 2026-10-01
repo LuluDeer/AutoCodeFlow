@@ -257,11 +257,9 @@ export class TaskExecution {
    * 迁移见 migrations/1790000000046-AddExecutionResolvedPackage.ts。
    */
   @Column({ type: "varchar", nullable: true }) resolvedPackageUrl:
-    | string
-    | null;
+    string | null;
   @Column({ type: "varchar", nullable: true }) resolvedPackageVersion:
-    | string
-    | null;
+    string | null;
   @CreateDateColumn() createdAt: Date;
 
   /**

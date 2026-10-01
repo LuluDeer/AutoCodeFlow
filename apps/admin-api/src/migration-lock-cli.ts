@@ -15,8 +15,7 @@
 import { AppDataSource } from "./data-source";
 import { runMigrationsWithAdvisoryLock } from "./common/utils/migration-runner.util";
 
-const direction =
-  process.argv[2] === "down" ? "down" : ("up" as const);
+const direction = process.argv[2] === "down" ? "down" : ("up" as const);
 
 async function main(): Promise<void> {
   if (!AppDataSource.isInitialized) {

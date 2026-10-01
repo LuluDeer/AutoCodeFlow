@@ -24,9 +24,7 @@ describe("AddExecutionTaskCreatedAtIndex1790000000049（A4）", () => {
   });
 
   it("可被 TypeORM 解析（name/up/down 契约）", () => {
-    expect(migration.name).toBe(
-      "AddExecutionTaskCreatedAtIndex1790000000049",
-    );
+    expect(migration.name).toBe("AddExecutionTaskCreatedAtIndex1790000000049");
     expect(typeof migration.up).toBe("function");
     expect(typeof migration.down).toBe("function");
   });
@@ -38,7 +36,7 @@ describe("AddExecutionTaskCreatedAtIndex1790000000049（A4）", () => {
 
   it("up：CONCURRENTLY IF NOT EXISTS 建 (taskId, createdAt DESC, id DESC) 复合索引（幂等）", () => {
     const upPart = sql.split("public async down")[0];
-    expect(upPart).toContain('CREATE INDEX CONCURRENTLY IF NOT EXISTS');
+    expect(upPart).toContain("CREATE INDEX CONCURRENTLY IF NOT EXISTS");
     expect(upPart).toContain('"idx_task_executions_task_id_created_at_id"');
     expect(upPart).toContain(
       'ON "task_executions" ("taskId", "createdAt" DESC, "id" DESC)',
@@ -51,7 +49,7 @@ describe("AddExecutionTaskCreatedAtIndex1790000000049（A4）", () => {
       'DROP INDEX IF EXISTS "idx_task_executions_task_id_created_at_id"',
     );
     // 保守并存决策：旧索引不在本迁移的任何语句里（不被误删）。
-    expect(downPart).not.toContain("idx_task_executions_task_id_created_at\"");
+    expect(downPart).not.toContain('idx_task_executions_task_id_created_at"');
     expect(downPart).not.toMatch(
       /DROP INDEX[^;]*idx_task_executions_task_id_created_at"$/,
     );
