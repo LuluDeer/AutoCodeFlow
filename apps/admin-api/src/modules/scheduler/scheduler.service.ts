@@ -23,6 +23,9 @@ import {
 import { findActiveMaintenanceWindow } from "../task/maintenance-window.util";
 // CORE-02: 重试退避抖动——±20% 摊开同周期失败任务的的重试时刻
 import { jitteredRetryDelayMs } from "../task/retry-backoff.util";
+// A4: DB 优先级(4=紧急) → BullMQ 出队优先级(1=最高)的方向换算——此前入队
+// 直传 DB 原值，方向倒置（紧急任务反而最后出队）。
+import { toBullPriority } from "../../common/utils/task-priority.util";
 import {
   TaskExecution,
   ExecutionStatus,
@@ -87,6 +90,13 @@ export const TRIGGER_DEDUP_MIN_TTL_MS = 1_000;
 export const TRIGGER_DEDUP_JITTER_BUFFER_MS = 500;
 
 /**
+ * FIX-2.3: 短周期档上限（毫秒）。fixed_rate 周期 ≤ 此值时，「周期 - 抖动
+ * 缓冲」的既有公式会被 MIN_TTL 下限抵消（TTL==周期，相位陷阱回归），改用
+ * clamp(period×0.5, 200, 1000) 缩窗——详见 computeTriggerDedupTtlMs。
+ */
+export const TRIGGER_DEDUP_SHORT_PERIOD_MAX_MS = 1_500;
+
+/**
  * N5: stale 扫描的固定兜底窗口——timeout=0（不限时）任务的最短回收延迟。
  */
 export const STALE_SCAN_FALLBACK_MS = 60 * 60 * 1000;
@@ -129,8 +139,24 @@ export const STALE_LIVENESS_ABSOLUTE_TIMEOUT_MULTIPLIER = 6;
  */
 export function computeTriggerDedupTtlMs(task: Task): number {
   if (task.triggerType === TaskTriggerType.FIXED_RATE && task.fixedRate) {
+    const periodMs = task.fixedRate * 1000;
+    // FIX-2.3: 短周期档（≤1.5s）下「周期 - 抖动缓冲」会被 MIN_TTL=1000ms
+    // 抵消，TTL 重新等于周期——tick→acquireLock 的相位滞后 δ>0 时下一 tick
+    // 落入锁剩余窗口被 NX 拒绝，正是 N6 要消灭的跳周期（在 1s 档回归）。
+    // 短周期档改为按周期比例缩窗：TTL = clamp(period×0.5, 200, 1000)，保证
+    // TTL 严格小于周期（1s 档 → 500ms），下一 tick 前锁必已过期。窗口缩短
+    // 不引入重复触发：定时器只注册在 Leader 上，同周期内本就只有一次 tick，
+    // 去重锁只需覆盖「同一次 tick 的跨实例重放」（亚秒级），500ms 足够。
+    if (periodMs <= TRIGGER_DEDUP_SHORT_PERIOD_MAX_MS) {
+      // clamp(period×0.5, 200, 1000)：下限 200ms 保证极短周期仍有一个
+      // 可用的跨实例去重窗口；上限 = MIN_TTL（1s）。
+      return Math.min(
+        Math.max(Math.floor(periodMs / 2), 200),
+        TRIGGER_DEDUP_MIN_TTL_MS,
+      );
+    }
     return Math.max(
-      task.fixedRate * 1000 - TRIGGER_DEDUP_JITTER_BUFFER_MS,
+      periodMs - TRIGGER_DEDUP_JITTER_BUFFER_MS,
       TRIGGER_DEDUP_MIN_TTL_MS,
     );
   }
@@ -232,7 +258,8 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
           // 部署下 Leader failover 后，新 Leader 永远不会再做 misfire 补偿，
           // FIRE_ONCE 策略的错失触发就此静默丢失。晋升瞬间补跑一轮（此时
           // isLeader 已置位，门禁通过）；fire-and-forget，不阻塞竞选路径，
-          // 失败仅记日志——下一轮 cron tick 会再覆盖。
+          // 失败仅记日志——FIX-2.2 起本方法挂了 5 分钟级 @Cron，本轮失败由
+          // 下一轮周期 tick 覆盖，不再是「仅此一次」的孤注。
           void this.checkMisfires().catch((err: unknown) => {
             this.logger.warn(
               `Post-promotion misfire check failed: ${
@@ -376,7 +403,20 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  /** Detect misfires on startup and compensate according to policy */
+  /**
+   * Detect misfires on startup and compensate according to policy.
+   *
+   * FIX-2.2：此前本方法**只在启动与 Leader 晋升时**被调用（无 @Cron 装饰器，
+   * 旧注释声称的「下一轮 cron tick 会再覆盖」并不存在）——运行期一次补偿失败
+   * 即成孤注，FIRE_ONCE 的错失触发要等下次 failover 才有第二次机会。现挂
+   * 5 分钟级 @Cron 作为运行期兜底：扫描本身是 status 索引上的 keyset 分页读 +
+   * lastTriggerTime 内存判定，无写放大；真正的补偿入队仍受 enqueue 内
+   * 维护窗口/去重锁/DB claim/blockStrategy 全套闸门约束，且 Redis 锁
+   * `task:trigger:*`（TTL=触发周期）保证周期内至多一次触发——Leader 短暂
+   * 双活或 tick 与晋升钩子重叠时重复扫描是安全的（重复补偿会被去重吸收），
+   * 幂等成立。
+   */
+  @Cron("0 */5 * * * *")
   async checkMisfires() {
     // TASK-006: 扫描型 tick 仅 Leader 执行
     if (!this.isLeader) {
@@ -931,7 +971,9 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
       tasks.map((t) => [t.id, Math.max(1, t.maxRetry ?? 1)]),
     );
     const priorityByTask = new Map(
-      tasks.map((t) => [t.id, normalizeTaskPriority(t.priority)]),
+      // A4: 地图值直接换算为 BullMQ 出队优先级（DB 4=紧急 → BullMQ 1=最先
+      // 出队）。任务行被并发删除时 .get() 仍回 undefined，沿用旧缺省行为。
+      tasks.map((t) => [t.id, toBullPriority(normalizeTaskPriority(t.priority))]),
     );
 
     let woken = 0;
@@ -1240,6 +1282,39 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
           }
           for (const row of coveredRows) {
             await this.releaseExecutorSlot(row.executorAddress);
+            // A4（第三轮审计·高）：此前只翻转 DB 终态、不杀进程——RUNNING 的
+            // 被覆盖执行原进程会继续跑完再回调，回调被终态门拒收，白烧整机
+            // 算力且与「被覆盖即终止」的 runbook.cancelled 文案相悖。此处补
+            // best-effort kill 下发（复用 stale sweep 同一命令通道：push 执行
+            // 器直连 /kill-execution，pull 执行器走命令队列，见
+            // ExecutorService.notifyExecutorKill）。顺序刻意后置：先落
+            // CANCELLED 终态再通知执行器——若进程先死并回调 KILLED，本处的
+            // 覆盖跃迁会因终态门命中 0 行而误判「未覆盖」。
+            // - WAITING（排队未开跑）无进程可杀：executorAddress 恒空 +
+            //   status 门双重兜底，直接取消即可；
+            // - 下发失败仅 warn，绝不阻塞 CANCELLED 终态与新触发的执行
+            //  （notifyExecutorKill 契约本就不抛，这里再兜一层防实现漂移）。
+            if (
+              running.status === ExecutionStatus.RUNNING &&
+              row.executorAddress
+            ) {
+              try {
+                await this.executorService.notifyExecutorKill(
+                  row.id,
+                  row.executorAddress,
+                );
+                this.logger.warn(
+                  `COVER_EARLY: kill notified to executor ${row.executorAddress} for covered execution ${row.id}`,
+                );
+              } catch (err: unknown) {
+                this.logger.warn(
+                  `COVER_EARLY: kill notification failed for covered execution ${row.id} ` +
+                    `(executor ${row.executorAddress}): ${
+                      err instanceof Error ? err.message : String(err)
+                    } — CANCELLED terminal state is unaffected`,
+                );
+              }
+            }
             this.logger.warn(
               `COVER_EARLY: execution ${row.id} cancelled by new trigger`,
             );
@@ -1277,7 +1352,9 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
         // N2: DB 里 priority 是 PG 字符串枚举，TypeORM 读回 'normal' 等
         // label——原样传给 BullMQ 会被 lua 校验拒绝（"Priority should not
         // be float"），导致所有调度触发入队失败。入队边界强制归一化为数字。
-        priority: normalizeTaskPriority(task.priority),
+        // A4: 归一化后再做方向换算——BullMQ 数值越小越先出队，DB 4=紧急
+        // 必须映射为 BullMQ 1，否则紧急任务反而排最后。
+        priority: toBullPriority(normalizeTaskPriority(task.priority)),
       };
       try {
         // R-29（DEEP_REVIEW 0ef3bbe）: 入队载荷瘦身——只传 executionId。
@@ -1394,6 +1471,28 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     this.schedulingTasks.add(task.id);
     try {
       this.stop(task.id);
+
+      // FIX-1.3: active 任务缺触发配置的日志面暴露——写面配对校验
+      // （task.service.assertTriggerConfigConsistent）落地前创建的存量行、或
+      // 内部调用方绕过 DTO 的行，会走到这里**静默不注册任何定时器**：任务在
+      // UI 显示「计划中」却永不触发，misfire 补偿也因 lastTriggerTime 恒空而
+      // 失明。warn 让该配置缺陷每次 reload 都可见（reload 每分钟重扫）。
+      if (
+        task.triggerType === TaskTriggerType.CRON &&
+        !task.cronExpression?.trim()
+      ) {
+        this.logger.warn(
+          `Task "${task.name}" (${task.id}) is active with triggerType=cron but has no cronExpression — NOT scheduling, it will never fire`,
+        );
+      }
+      if (
+        task.triggerType === TaskTriggerType.FIXED_RATE &&
+        !(task.fixedRate && task.fixedRate >= 1)
+      ) {
+        this.logger.warn(
+          `Task "${task.name}" (${task.id}) is active with triggerType=fixed_rate but has no fixedRate — NOT scheduling, it will never fire`,
+        );
+      }
 
       if (task.triggerType === TaskTriggerType.FIXED_RATE && task.fixedRate) {
         const taskId = task.id;

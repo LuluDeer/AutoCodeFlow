@@ -115,15 +115,48 @@ export class AiService {
     );
   }
 
+  /**
+   * Analyze a failed execution. FIX-6.2：prompt 上下文扩充（可选参数，向后
+   * 兼容）——此前只有任务名 + runtime + 净化日志，AI 拿不到平台已判定的
+   * failureReason / exitCode，也看不到任务级 runbook（运维沉淀的排障知识，
+   * 通知链路一直在带、唯独 AI 不带），结论质量受损且可能与 runbook 冲突。
+   * 现把三者在 prompt 中显式注入（runbook 截 2000 字符防 prompt 膨胀；
+   * 其余长文本仍由 sanitizeLogs 收口）。日志净化/脱敏行为不变。
+   */
   async analyzeFailure(
     task: Pick<{ name: string; runtime: string }, "name" | "runtime">,
     logs: string,
+    context?: {
+      failureReason?: string | null;
+      exitCode?: number | null;
+      runbook?: string | null;
+    },
   ): Promise<string> {
     const provider = await this.getAiConfig("provider", "disabled");
     if (provider === "disabled") return "";
     const sanitized = this.sanitizeLogs(logs);
-    const prompt = `You are an automated task analysis assistant. Task "${task.name}" (runtime: ${task.runtime}) failed. Analyze the root cause and suggest a fix.\n\nError logs:\n${sanitized}\n\nRespond in this format:\n**Failure reason:** ...\n**Fix suggestion:** ...`;
-    return this.callProvider(prompt);
+    const runtime = task.runtime || "unknown";
+    const lines: string[] = [
+      `You are an automated task analysis assistant. Task "${task.name}" (runtime: ${runtime}) failed. Analyze the root cause and suggest a fix.`,
+    ];
+    if (context?.failureReason) {
+      lines.push(
+        `Failure classification (already determined by the platform): ${context.failureReason}`,
+      );
+    }
+    if (typeof context?.exitCode === "number") {
+      lines.push(`Process exit code: ${context.exitCode}`);
+    }
+    if (context?.runbook && context.runbook.trim()) {
+      lines.push(
+        `Task runbook (operator-maintained troubleshooting notes for this task):\n${context.runbook.slice(0, 2000)}`,
+      );
+    }
+    lines.push(`\nError logs:\n${sanitized}`);
+    lines.push(
+      `\nRespond in this format:\n**Failure reason:** ...\n**Fix suggestion:** ...`,
+    );
+    return this.callProvider(lines.join("\n"));
   }
 
   /**
