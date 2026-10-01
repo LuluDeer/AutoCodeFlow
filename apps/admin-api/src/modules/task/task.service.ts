@@ -56,6 +56,11 @@ import {
 } from "./execution-terminal";
 // MUTEX-01：互斥组快照解析（执行创建时从 task→application 带下）。
 import { resolveTaskMutexGroupId } from "./execution-mutex";
+// N-14：blockStrategy 闸门（与调度路径共享，比较维度=任务+参数）
+import {
+  applyBlockStrategyGate,
+  releaseExecutorSlotByAddress,
+} from "./block-strategy-gate";
 // A4: DB 优先级(4=紧急) → BullMQ 出队优先级(1=最高)的方向换算。
 import { toBullPriority } from "../../common/utils/task-priority.util";
 import { ExecutionLogLine } from "./entities/execution-log-line.entity";
@@ -1760,6 +1765,29 @@ export class TaskService {
       dto?.version != null
         ? await this.resolvePinnedVersionForTrigger(task, dto.version)
         : null;
+    // N-14：blockStrategy 闸门（与调度路径同规则，task/block-strategy-gate.ts）。
+    // 比较维度=「任务+参数」：仅同参在跑/排队才按策略生效，异参放行并发——
+    // 参数化任务（如发货程序按订单传参）的合法并发不受影响。在创建执行行
+    // 之前施加：discard 命中不落行（409）；cover_early 命中先取消同参执行
+    // （含 RUNNING 的 kill 下发与槽位冲销）再落新行。互斥组正交不受影响。
+    const effectiveParams = dto.params ?? task.params;
+    const gateOutcome = await applyBlockStrategyGate(
+      task,
+      effectiveParams,
+      this.execRepo,
+      {
+        warn: (message) => this.logger.warn(message),
+        releaseSlot: (address) =>
+          releaseExecutorSlotByAddress(this.dataSource, address),
+        notifyKill: (executionId, address) =>
+          this.executorService.notifyExecutorKill(executionId, address),
+      },
+    );
+    if (gateOutcome === "skip") {
+      throw new ConflictException(
+        `Task "${task.name}" already has an active execution with the same params (blockStrategy=discard) — trigger rejected`,
+      );
+    }
     // OBS-01: 追踪开启时生成 trace 根，traceId 落库（null=追踪未开启）。
     const traceparent = this.tracing?.startTrace() ?? null;
     const traceId = this.tracing?.extractContext(traceparent) ?? null;
@@ -1773,13 +1801,16 @@ export class TaskService {
           taskId: task.id,
           taskName: task.name,
           status: ExecutionStatus.PENDING,
-          params: dto.params ?? task.params,
+          // N-14：与闸门比较同源——行 params 即生效参数
+          params: effectiveParams,
           // R-28: 默认 manual；依赖触发方传入 "dependency"。
           triggerType: triggerTypeOverride ?? "manual",
           // 技术债 A 组：钉定重放时执行记录记**钉定版本号**（如 "v3"），
           // 而非任务 currentVersion——详情页/版本对比据此可读出「这次跑的
           // 是哪个版本的快照」。不钉定时维持原值。
-          taskVersion: pinnedVersion ? pinnedVersion.version : task.currentVersion,
+          taskVersion: pinnedVersion
+            ? pinnedVersion.version
+            : task.currentVersion,
           // MUTEX-01：互斥组快照（task→application；未挂组为 null）。
           mutexGroupId: await resolveTaskMutexGroupId(manager, task),
           traceId: this.tracing?.isValidTraceId(traceId) ? traceId : null,
@@ -2841,6 +2872,21 @@ export class TaskService {
         try {
           await this.trigger(task.id, triggerPayload, null, "dependency");
         } catch (triggerErr) {
+          // N-14：discard 闸门命中（同参在跑）= 有意的抑制而非链路故障——
+          // 与一般失败同走 claim 回滚（depsFiredAt 留 NULL 供重放，活跃执行
+          // 完成前的下一次完成会再扇出），但降级为 warn 且不计 fanoutFailed
+          // （扇出主链没有故障）。
+          if (triggerErr instanceof ConflictException) {
+            await this.rollbackDependencyClaim(
+              task.id,
+              claimedAt,
+              prevLastTriggerTime?.lastTriggerTime ?? null,
+            );
+            this.logger.warn(
+              `Dependency trigger for task ${task.id} rejected by blockStrategy=discard (same-params active run) — claim rolled back for replay`,
+            );
+            continue;
+          }
           // NETOPT-3②: trigger 失败 → 回滚 claim（缩小不可重试窗口）+ 部分
           // 失败标记（不落 depsFiredAt），并继续扇出其余下游（不改变回调
           // item 的 success 语义——终态已落定，扇出是旁路 best-effort）。

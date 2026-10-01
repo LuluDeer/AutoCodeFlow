@@ -5878,6 +5878,13 @@ export interface operations {
                     "application/json": unknown;
                 };
             };
+            /** @description Trigger rejected: an active execution with the same params already exists (blockStrategy=discard) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
     TaskController_webhookStatus: {

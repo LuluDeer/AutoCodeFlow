@@ -35,7 +35,8 @@ import { RedisLockService } from "../../../common/services/redis-lock.service";
 import { ExecutorService } from "../../executor/executor.service";
 
 const mockRepo = () => ({
-  find: jest.fn(),
+  // N-14：闸门（block-strategy-gate）用 find 拉在跑/排队执行，默认空=无阻塞
+  find: jest.fn().mockResolvedValue([]),
   findOne: jest.fn(),
   save: jest.fn(),
   create: jest.fn(),
@@ -711,8 +712,11 @@ describe("SchedulerService", () => {
         id: "running-1",
         status: ExecutionStatus.RUNNING,
         executorAddress: "host:3002",
+        // N-14：与任务默认 params 同参（闸门比较维度=任务+参数）
+        params: {},
       } as TaskExecution;
-      execRepo.findOne.mockResolvedValue(runningExec);
+      // N-14：闸门改用 find 拉同参在跑执行
+      execRepo.find.mockResolvedValue([runningExec]);
 
       const result = await service.enqueue(task, "cron");
       expect(result).toBeNull();
@@ -734,8 +738,9 @@ describe("SchedulerService", () => {
         executorAddress: "host:3002",
         errorMessage: null,
         endTime: null,
+        params: {},
       } as unknown as TaskExecution;
-      execRepo.findOne.mockResolvedValue(runningExec);
+      execRepo.find.mockResolvedValue([runningExec]);
       const newExec = { id: "exec-2" } as TaskExecution;
       execRepo.create.mockReturnValue(newExec);
       execRepo.save.mockResolvedValue(newExec);
@@ -785,8 +790,9 @@ describe("SchedulerService", () => {
         executorAddress: "host:3002",
         errorMessage: null,
         endTime: null,
+        params: {},
       } as unknown as TaskExecution;
-      execRepo.findOne.mockResolvedValue(runningExec);
+      execRepo.find.mockResolvedValue([runningExec]);
       const newExec = { id: "exec-2" } as TaskExecution;
       execRepo.create.mockReturnValue(newExec);
       execRepo.save.mockResolvedValue(newExec);
@@ -821,8 +827,9 @@ describe("SchedulerService", () => {
         executorAddress: "host:3002",
         errorMessage: null,
         endTime: null,
+        params: {},
       } as unknown as TaskExecution;
-      execRepo.findOne.mockResolvedValue(runningExec);
+      execRepo.find.mockResolvedValue([runningExec]);
       const newExec = { id: "exec-2" } as TaskExecution;
       execRepo.create.mockReturnValue(newExec);
       execRepo.save.mockResolvedValue(newExec);
@@ -859,8 +866,9 @@ describe("SchedulerService", () => {
         executorAddress: "host:3002",
         errorMessage: null,
         endTime: null,
+        params: {},
       } as unknown as TaskExecution;
-      execRepo.findOne.mockResolvedValue(runningExec);
+      execRepo.find.mockResolvedValue([runningExec]);
       const newExec = { id: "exec-2" } as TaskExecution;
       execRepo.create.mockReturnValue(newExec);
       execRepo.save.mockResolvedValue(newExec);
@@ -897,7 +905,8 @@ describe("SchedulerService", () => {
         errorMessage: "waiting for mutex",
         endTime: null,
       } as unknown as TaskExecution;
-      execRepo.findOne.mockResolvedValue(waitingExec);
+      // N-14：闸门改用 find 拉同参在跑执行（params 与任务默认同参）
+      execRepo.find.mockResolvedValue([{ ...waitingExec, params: {} }]);
       const newExec = { id: "exec-2" } as TaskExecution;
       execRepo.create.mockReturnValue(newExec);
       execRepo.save.mockResolvedValue(newExec);
@@ -2008,10 +2017,14 @@ describe("SchedulerService", () => {
       const discardTask = makeTask({ blockStrategy: BlockStrategy.DISCARD });
       redisLockService.acquireLock.mockResolvedValue(lock);
       taskRepo.findOne.mockResolvedValue(discardTask);
-      execRepo.findOne.mockResolvedValue({
-        id: "r1",
-        status: ExecutionStatus.RUNNING,
-      });
+      // N-14：闸门改用 find 拉同参在跑执行
+      execRepo.find.mockResolvedValue([
+        {
+          id: "r1",
+          status: ExecutionStatus.RUNNING,
+          params: {},
+        } as unknown as TaskExecution,
+      ]);
       await service.enqueue(discardTask, "cron");
       expect(metrics.snapshot.triggersSkippedBlockStrategy).toBe(1);
 

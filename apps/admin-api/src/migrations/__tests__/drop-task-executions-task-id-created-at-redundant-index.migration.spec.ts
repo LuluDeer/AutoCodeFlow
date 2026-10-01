@@ -20,7 +20,8 @@ describe("DropTaskExecutionsTaskIdCreatedAtRedundantIndex1790000000051（技术�
 
   beforeAll(() => {
     sql = fs.readFileSync(FILE, "utf8");
-    migration = new DropTaskExecutionsTaskIdCreatedAtRedundantIndex1790000000051();
+    migration =
+      new DropTaskExecutionsTaskIdCreatedAtRedundantIndex1790000000051();
   });
 
   it("可被 TypeORM 解析（name/up/down 契约）", () => {
@@ -43,9 +44,7 @@ describe("DropTaskExecutionsTaskIdCreatedAtRedundantIndex1790000000051（技术�
     );
     expect(upPart.match(/DROP INDEX CONCURRENTLY IF EXISTS/g)?.length).toBe(1);
     // 0049 的三列索引是覆盖者，必须保留
-    expect(upPart).not.toContain(
-      'idx_task_executions_task_id_created_at_id"',
-    );
+    expect(upPart).not.toContain('idx_task_executions_task_id_created_at_id"');
   });
 
   it("down：恢复两列索引原始形态（普通 CREATE INDEX，幂等）", () => {
@@ -71,9 +70,7 @@ describe("DropTaskExecutionsTaskIdCreatedAtRedundantIndex1790000000051（技术�
       "utf8",
     );
     // 三列覆盖索引仍在实体上
-    expect(entitySql).toContain(
-      '"idx_task_executions_task_id_created_at_id"',
-    );
+    expect(entitySql).toContain('"idx_task_executions_task_id_created_at_id"');
     // 旧两列索引不得有命名 @Index 声明（否则删后 check-index-drift 报漂移）
     expect(entitySql).not.toMatch(
       /@Index\(\s*"idx_task_executions_task_id_created_at"/,
