@@ -149,6 +149,7 @@ export class AuditService {
     startTime?: string;
     endTime?: string;
     userId?: number;
+    result?: "success" | "failure";
   }): Promise<string> {
     const { action, resource, userId } = options;
     const qb = this.repo
@@ -244,6 +245,7 @@ export class AuditService {
     startTime?: string;
     endTime?: string;
     userId?: number;
+    result?: "success" | "failure";
   }): Promise<{ data: AuditLog[]; total: number }> {
     const { page = 1, pageSize = 20, action, resource, userId } = options;
     const qb = this.repo
@@ -293,8 +295,18 @@ export class AuditService {
    */
   private applyExtraFilters(
     qb: import("typeorm").SelectQueryBuilder<AuditLog>,
-    options: { username?: string; startTime?: string; endTime?: string },
+    options: {
+      username?: string;
+      startTime?: string;
+      endTime?: string;
+      result?: "success" | "failure";
+    },
   ): void {
+    // result 筛选（success/failure）：两条查询路径共用本方法，CSV 导出与
+    // 列表页天然同滤（R4 P1-2 parity）。IsIn 白名单在 DTO 层兜住非法值。
+    if (options.result) {
+      qb.andWhere("log.result = :result", { result: options.result });
+    }
     if (options.username) {
       // API-09：转义 LIKE 元字符，使 `_` / `%` 按字面量匹配（见
       // escapeLikePattern 的注释——未转义时搜 `zhang_san` 会命中 `zhangXsan`）。

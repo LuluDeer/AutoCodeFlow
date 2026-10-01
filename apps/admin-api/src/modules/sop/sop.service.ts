@@ -71,8 +71,15 @@ import {
 const QUESTION_CONTEXT_MAX_BYTES = 16_000;
 /** 完成回报的 resultJson 大小上限。 */
 const RESULT_MAX_BYTES = 64_000;
-/** 单次 poll 的条目上限（指派恒 1；回复游标未推进时防重发塞爆响应）。 */
+/** 单次 poll 的条目上限（指派 + 回复；回复游标未推进时防重发塞爆响应）。 */
 const POLL_ITEMS_MAX = 20;
+/**
+ * 单次 poll 最多投递的指派条数（收尾提速：1→3）。旧值 1 意味着 N 张待领单要
+ * N 个 poll 周期才能全部下发（执行器 poll 间隔秒级，指派积压被拉长）；3 仍
+ * 保持"小步多轮"的并发形态（Host 逐单领取执行，不会一次灌入过多并行任务），
+ * 与澄清回复共享 POLL_ITEMS_MAX=20 的响应总闸。
+ */
+const POLL_ASSIGNMENTS_MAX = 3;
 
 /**
  * mediaRefs 只接受平台内路径——外网 URL 一律拒绝（11 §5.2 SSRF 转嫁）。
@@ -291,10 +298,11 @@ export class SopService {
    *
    * 指派条目只在**首次领取**时返回（pulledAt IS NULL），同时快照能力与
    * 权限档位——之后 SOP 通过 complete/progress 流转，不重复下发全量正文；
-   * 执行器重启丢状态时可带 `resendAssignments=true` 强制重发全部活跃单
-   * （未投递的旧单重新排队），或 `resendAssignments=[id]` 只重发指定单
-   * （P7d 崩溃恢复：host 本地日志里还有 running 阶段的指派时，只重领这一张，
-   * 不打扰其它单的游标状态）。
+   * 单轮最多投递 POLL_ASSIGNMENTS_MAX(3) 张（收尾提速，待领积压按 createdAt
+   * 升序逐轮消化）。执行器重启丢状态时可带 `resendAssignments=true` 强制重发
+   * 全部活跃单（未投递的旧单重新排队），或 `resendAssignments=[id]` 只重发
+   * 指定单（P7d 崩溃恢复：host 本地日志里还有 running 阶段的指派时，只重领
+   * 这一张，不打扰其它单的游标状态）。
    *
    * 澄清回复（P7d 双端 ACK）：`resolution` 已落定且晚于游标
    * `lastReplyDeliveredAt` 的行随 poll 投递。**投递不推游标**——执行器把
@@ -337,11 +345,13 @@ export class SopService {
         new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
     );
 
-    let assignmentSent = false;
+    // 收尾提速：每轮最多投递 POLL_ASSIGNMENTS_MAX(3) 张指派（仍按 createdAt
+    // 升序小步下发），超出部分留在队列里由后续 poll 逐轮送出。
+    let assignmentsSent = 0;
     for (const a of open) {
       const firstPull = a.pulledAt === null;
       const requested = firstPull || resendAll || resendIds.includes(a.id);
-      if (!assignmentSent && requested) {
+      if (assignmentsSent < POLL_ASSIGNMENTS_MAX && requested) {
         const payload = await this.assignmentPayload(a, capabilities);
         if (payload) {
           if (firstPull) {
@@ -357,13 +367,13 @@ export class SopService {
             if (claim.affected !== 1) continue;
           }
           items.push(payload);
-          assignmentSent = true;
+          assignmentsSent += 1;
           continue;
         }
       }
-      // resend 是一次性的。未在本轮投递的旧单重新排队，由后续普通 poll
-      // 逐个送出；否则 Host 只处理第一单，其余已领取单会永久丢失。
-      // 按 id 重发（崩溃恢复）是定向动作，不触碰其它单的排队状态。
+      // resend 是一次性的。未在本轮投递的旧单（超出每轮上限 / payload 构造
+      // 失败）重新排队，由后续普通 poll 逐个送出；否则 Host 侧这些已领取单
+      // 会永久丢失。按 id 重发（崩溃恢复）是定向动作，不触碰其它单的排队状态。
       if (resendAll && !firstPull) {
         await this.assignments.update({ id: a.id }, { pulledAt: null });
       }
