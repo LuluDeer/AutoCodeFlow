@@ -13,12 +13,17 @@ import {
   ApiOperation,
   ApiResponse,
 } from "@nestjs/swagger";
+import { Public } from "../../common/decorators/public.decorator";
 import { MetricsScraperAuthGuard } from "./metrics-scraper-auth.guard";
 import { MetricsService } from "./metrics.service";
 import { PrometheusMetricsService } from "./prometheus-metrics.service";
 
 @ApiTags("metrics")
 @ApiBearerAuth()
+// 全局 JwtAuthGuard（APP_GUARD）先于控制器守卫执行，必须 @Public 跳过它，
+// 认证完全交给 MetricsScraperAuthGuard（共享令牌命中放行；否则其内部回落
+// 走屏蔽 IS_PUBLIC 的真实 JWT 校验——未配置令牌时行为与改造前一致）。
+@Public()
 @UseGuards(MetricsScraperAuthGuard)
 @Controller("metrics")
 export class MetricsController {

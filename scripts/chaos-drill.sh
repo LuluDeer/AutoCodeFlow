@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env bash
+#!/usr/bin/env bash
 # ═══════════════════════════════════════════════════════════════════════════
 # QA-06 混沌/故障注入演练（docker compose 拓扑，覆盖计划四场景）
 #
@@ -18,6 +18,7 @@
 #   CHAOS_REDIS_CONTAINER / CHAOS_ADMIN_CONTAINER / CHAOS_ADMIN2_CONTAINER /
 #   CHAOS_EXECUTOR_CONTAINER 容器名覆盖（缺省按 compose label
 #                            com.docker.compose.service 自动发现）
+#   CHAOS_REDIS_PASSWORD     Redis requirepass（compose 形态恒开启；未设 = 无密码栈）
 #   CHAOS_PAUSE_SECONDS      场景 B 注入时长（默认 150）
 #   CHAOS_OFFLINE_THRESHOLD_SEC  判离线阈值（默认 90 =
 #                            EXECUTOR_HEARTBEAT_INTERVAL 30s ×
@@ -212,10 +213,16 @@ restore_containers() { # 只做逆操作还原，绝不 rm（对象是用户的 
   done
 }
 
+# redis-cli 认证参数：目标 Redis 开启 requirepass 时（compose 形态恒开启），
+# 裸 ping 返回 NOAUTH 无 PONG——场景 A 恢复断言假阴性（2026-10-01 Linux 实跑
+# 实证）。CHAOS_REDIS_PASSWORD 未设时不加 -a（无密码栈行为不变）。
+redis_auth_args=()
+[[ -n "${CHAOS_REDIS_PASSWORD:-}" ]] && redis_auth_args=(-a "$CHAOS_REDIS_PASSWORD")
+
 wait_redis_ping() { # <容器> <超时秒>
   local deadline=$(( SECONDS + $2 ))
   while (( SECONDS < deadline )); do
-    docker exec "$1" redis-cli ping 2>/dev/null | grep -q PONG && return 0
+    docker exec "$1" redis-cli "${redis_auth_args[@]}" ping 2>/dev/null | grep -q PONG && return 0
     sleep 2
   done
   return 1
@@ -223,7 +230,7 @@ wait_redis_ping() { # <容器> <超时秒>
 
 leader_lock_exists() { # rc0 = scheduler:leader 锁在 Redis 中存在
   [[ -n "$REDIS_C" ]] \
-    && docker exec "$REDIS_C" redis-cli --raw EXISTS "lock:scheduler:leader" 2>/dev/null \
+    && docker exec "$REDIS_C" redis-cli "${redis_auth_args[@]}" --raw EXISTS "lock:scheduler:leader" 2>/dev/null \
       | grep -q '^1$'
 }
 
@@ -460,7 +467,7 @@ scenario_c_body() {
   local lock_held=0
   if leader_lock_exists; then
     lock_held=1
-    log "[C] Leader 锁在 Redis（PTTL $(docker exec "$REDIS_C" redis-cli --raw PTTL lock:scheduler:leader 2>/dev/null || echo '?')ms）——重启后将断言锁接管"
+    log "[C] Leader 锁在 Redis（PTTL $(docker exec "$REDIS_C" redis-cli "${redis_auth_args[@]}" --raw PTTL lock:scheduler:leader 2>/dev/null || echo '?')ms）——重启后将断言锁接管"
   else
     warn "[C] Leader 锁不在 Redis（实例可能处于 fail-open 降级，锁不在 Redis 无从接管）——接管断言降级为观测项"
   fi
