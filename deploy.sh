@@ -656,7 +656,11 @@ infra_phase() {
     else
         if have docker; then
             log "  启动 PostgreSQL + Redis..."
-            run compose -f "$ROOT_DIR/infra/docker-compose.yml" up -d
+            # --env-file 必须显式指根 .env：compose 的 env 查找跟 project-directory
+            # （compose 文件所在目录 infra/，无 .env）走，缺了它 POSTGRES_PASSWORD
+            # 插值为空 → PG initdb 失败重启循环 → 宿主 5432 无监听 → 迁移前备份
+            # 连接被拒（2026-10-01 Linux staging 实跑实证）。
+            run compose --env-file "$ROOT_DIR/.env" -f "$ROOT_DIR/infra/docker-compose.yml" up -d
         else
             warn "Docker 不可用——跳过基础设施启动（请确保 PG/Redis 已在别处运行）"
         fi
@@ -669,16 +673,49 @@ infra_phase() {
 wait_for_postgres() {
     [ "$DRY_RUN" = true ] && { printf '%b\n' "  ${YELLOW}[dry-run]${NC} 等待 PostgreSQL 就绪"; return 0; }
     have docker || return 0
-    [ "$(env_get DB_HOST)" = "postgres" ] || [ -z "$(env_get DB_HOST)" ] || return 0
+    if [ "$(env_get DB_HOST)" != "postgres" ] && [ -n "$(env_get DB_HOST)" ]; then
+        # DB_HOST 指向宿主侧地址（如 localhost）且为 docker 模式：迁移前备份
+        # 走宿主端口映射（127.0.0.1:5432 的 docker-proxy），等待必须同路径。
+        # 原逻辑此分支直接 return 0 跳过等待——compose up -d 返回时新卷 initdb
+        # 往往未完成，备份恒撞 "server closed the connection unexpectedly"
+        # （2026-10-01 staging 实跑实证）。宿主侧 TCP 探测不会命中 initdb 引导
+        # 实例（它只监听容器内 Unix socket）。
+        [ "$MODE" = "docker" ] || return 0
+        local whost=""; local wport=""
+        whost="$(env_get DB_HOST)"
+        wport="$(env_get DB_PORT || echo 5432)"
+        log "  等待 PostgreSQL（宿主侧 ${whost}:${wport}）接受连接..."
+        local i=0 max=30
+        while [ "$i" -lt "$max" ]; do
+            if pg_isready -h "$whost" -p "$wport" >/dev/null 2>&1; then
+                ok "  PostgreSQL 已就绪（${i}s）"
+                return 0
+            fi
+            i=$((i + 1))
+            sleep 1
+        done
+        warn "  PostgreSQL 在 ${max}s 内未就绪——继续，但备份/迁移可能失败"
+        return 0
+    fi
 
     # 指数退避等待（替代 sleep 30 的硬等）
     log "  等待 PostgreSQL 接受连接..."
     local i=0 max=30
     while [ "$i" -lt "$max" ]; do
-        if compose -f "$ROOT_DIR/infra/docker-compose.yml" exec -T postgres \
-             pg_isready -U "$(env_get POSTGRES_USER || echo autoflow)" >/dev/null 2>&1; then
-            ok "  PostgreSQL 已就绪（${i}s）"
-            return 0
+        # -h 127.0.0.1 强制走 TCP：不带 -h 时 pg_isready 走 Unix socket，会命中
+        # initdb 引导实例（它只监听 Unix socket 且自称 ready）→ 假阳性放行 →
+        # 紧随的迁移前备份 pg_dump 走 TCP 报 "server closed the connection
+        # unexpectedly"（2026-10-01 staging 实跑实证）。TCP 探测到正式实例
+        # ready 才是真就绪。
+        if compose --env-file "$ROOT_DIR/.env" -f "$ROOT_DIR/infra/docker-compose.yml" exec -T postgres \
+             pg_isready -h 127.0.0.1 -U "$(env_get POSTGRES_USER || echo autoflow)" >/dev/null 2>&1; then
+            # 双确认：TCP 就绪后稳定 2s 复测一次才放行，防御其他启动竞态。
+            sleep 2
+            if compose --env-file "$ROOT_DIR/.env" -f "$ROOT_DIR/infra/docker-compose.yml" exec -T postgres \
+                 pg_isready -h 127.0.0.1 -U "$(env_get POSTGRES_USER || echo autoflow)" >/dev/null 2>&1; then
+                ok "  PostgreSQL 已就绪（${i}s）"
+                return 0
+            fi
         fi
         i=$((i + 1))
         sleep 1

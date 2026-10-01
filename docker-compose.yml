@@ -231,7 +231,9 @@ services:
       VITE_API_URL_INTERNAL: ${VITE_API_URL_INTERNAL:-http://localhost:3105}
       VITE_API_URL_EXTERNAL: ${VITE_API_URL_EXTERNAL:-}
     healthcheck:
-      test: ['CMD', 'wget', '-qO-', 'http://localhost/health']
+      # 同 verdaccio（R8）：nginx:alpine 的 busybox wget 把 localhost 解析到
+      # ::1，而 nginx 只监听 IPv4 → healthcheck 恒 connection refused。
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1/health']
       interval: 30s
       timeout: 10s
       retries: 3
@@ -486,7 +488,9 @@ services:
       admin-api:
         condition: service_healthy
     healthcheck:
-      test: ['CMD', 'wget', '-qO-', 'http://localhost:8002/health']
+      # executor-node 显式绑 0.0.0.0（E-25，仅 IPv4），busybox wget 的 localhost
+      # 解析到 ::1 恒 connection refused（2026-10-01 staging 实跑实证）→ 127.0.0.1。
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:8002/health']
       interval: 30s
       timeout: 10s
       retries: 3

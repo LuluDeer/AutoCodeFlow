@@ -21,9 +21,11 @@ FILE="${BACKUP_DIR}/db_${STAMP}.sql.gz"
 
 if pg_dump -h "${PGHOST}" -U "${PGUSER}" -d "${PGDATABASE}" | gzip > "${FILE}"; then
     # NETOPT-4：最小尺寸校验——pg_dump 自身「成功」但产出空/近空流（半写、
-    # 管道截断）时同样判失败，空 gzip 流也有 ~20 字节头，1KB 阈值足够安全。
+    # 管道截断）时同样判失败，空 gzip 流也有 ~20 字节头。256B 阈值：全新空库
+    # （迁移前备份的常态起点）dump 实测 397B（2026-10-01 staging 实跑），1KB
+    # 旧阈值会把合法空库备份误杀；任何真实业务库都远大于此。
     SIZE="$(wc -c < "${FILE}" | tr -d '[:space:]')"
-    if [ "${SIZE}" -lt 1024 ]; then
+    if [ "${SIZE}" -lt 256 ]; then
         rm -f "${FILE}"
         echo "$(date -Is) backup FAILED (suspiciously small: ${SIZE} bytes)" >&2
         exit 1
