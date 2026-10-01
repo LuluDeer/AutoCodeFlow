@@ -4,6 +4,10 @@
  *   npm run migration:run     — apply pending migrations in production
  *   npm run migration:revert  — undo last migration
  *   npm run migration:generate src/migrations/MyName — generate from entity diff
+ *
+ * 第四轮审计（A2）: run/revert 已改走 src/migration-lock-cli.ts（pg_advisory_lock
+ * 互斥包裹，与 boot 路径 main.ts 同键）——本文件仅保留 DataSource 定义供其
+ * 复用与 migration:generate 使用，勿再用 typeorm CLI -d 直指本文件跑 run/revert。
  */
 import { DataSource } from "typeorm";
 import * as dotenv from "dotenv";

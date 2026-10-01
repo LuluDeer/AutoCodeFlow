@@ -39,7 +39,9 @@ describe("buildTypeOrmDataSourceOptions (ARCH-24 read replica)", () => {
       username: "autoflow",
       password: "db-pass",
       database: "autocodeflow",
-      migrationsRun: true,
+      // 第四轮审计（A2）: 迁移互斥收口——migrationsRun 恒为 false，迁移由
+      // main.ts bootstrap / migration-lock-cli.ts 带 pg_advisory_lock 显式执行。
+      migrationsRun: false,
       synchronize: false,
       logging: false,
       extra: {
@@ -116,14 +118,19 @@ describe("buildTypeOrmDataSourceOptions (ARCH-24 read replica)", () => {
     expect(options.host).toBeUndefined();
     expect(options.port).toBeUndefined();
     // 同一配置对象里 replication 与顶层拆字段互斥：其余选项仍共享。
-    expect(options).toMatchObject({ type: "postgres", migrationsRun: true });
+    expect(options).toMatchObject({ type: "postgres", migrationsRun: false });
   });
 
-  it("b2) migrationsRun follows NODE_ENV semantics in both shapes (dev off)", () => {
+  it("b2) migrationsRun is always false in both shapes (A2: explicit advisory-locked migration path)", () => {
+    // 第四轮审计（A2）: 迁移不再随 NODE_ENV 自动跑——production/test 由
+    // main.ts bootstrap 显式带锁执行，development 走 CLI；两种形态下
+    // migrationsRun 都必须保持 false（自动迁移无跨实例互斥）。
+    const prod = buildTypeOrmDataSourceOptions({ ...baseConfig });
     const dev = buildTypeOrmDataSourceOptions({
       ...baseConfig,
       app: { nodeEnv: "development" },
     });
+    expect(prod.migrationsRun).toBe(false);
     expect(dev.migrationsRun).toBe(false);
   });
 });

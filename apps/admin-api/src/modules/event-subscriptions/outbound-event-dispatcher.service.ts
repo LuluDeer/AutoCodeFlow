@@ -187,6 +187,10 @@ export class OutboundEventDispatcher implements OnModuleInit, OnModuleDestroy {
     eventName: DomainEventName,
     raw: unknown,
   ): Promise<void> {
+    // 第四轮审计（A3）: 跨实例 relay 补发的载荷跳过——outbox 行与首投在起源
+    // 实例本地 emit 时已执行，多副本下不跳过 = 双份 webhook（viaRelay 契约见
+    // execution-events-relay.service.ts）。
+    if ((raw as { viaRelay?: boolean } | null)?.viaRelay) return;
     if (!(SUBSCRIBABLE_EVENTS as readonly string[]).includes(eventName)) return;
     const occurredAt = new Date().toISOString();
     const payload = buildEventPayload(

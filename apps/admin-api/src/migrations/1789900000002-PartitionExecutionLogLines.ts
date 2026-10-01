@@ -28,7 +28,9 @@ import {
  * - 状态 B：普通表存在（relkind='r'）→ 存量库在线搬迁，四步全在**事务外
  *   的守卫式 SQL** 中（本迁移声明 transaction = false 显式关闭 TypeORM
  *   默认的外层事务包裹——见类内声明；PG DDL 可回滚，但第 3 步
- *   INSERT..SELECT 大表耗时长——守卫式推进保证中断后重跑续行，不重复搬迁）：
+ *   INSERT..SELECT 大表耗时长——守卫式推进保证中断后重跑续行，不重复搬迁；
+ *   大表语句以 set_config(is_local=true) 在块内豁免 statement_timeout，
+ *   见 DO 块注释）：
  *   1. RENAME execution_log_lines → execution_log_lines_legacy（ACCESS
  *      EXCLUSIVE 瞬时持有，元数据操作，无数据拷贝）；
  *   2. 建分区父表 execution_log_lines（同列 + 联合 PK + 分区索引）——
@@ -83,6 +85,17 @@ export class PartitionExecutionLogLines1789900000002 implements MigrationInterfa
         v_relkind "char";
         v_legacy_exists boolean;
       BEGIN
+        -- 第四轮审计（A1）: 关闭本块内的 statement_timeout。连接池带连接级
+        -- statement_timeout=30s（configuration.ts extra.statement_timeout），
+        -- 步骤 3 的全表 INSERT..SELECT 在大存量库上远超 30s，会被反复杀掉
+        -- → boot 循环失败。选型：**块内 set_config(is_local=true)（= SET LOCAL
+        -- 语义）而非连接级 SET** —— 本迁移 transaction=false、外层无显式事务，
+        -- 连接级 SET 会污染池化连接且 TypeORM 归还连接不做 RESET（该池连接
+        -- 从此失去 30s 保护）；DO 块本身是单条语句的原子隐式事务，is_local=true
+        -- 恰好把豁免限定在块内、块提交时自动回滚，零泄漏。块外步骤（预建
+        -- 分区）是元数据级操作，保留 30s 保护无风险。
+        PERFORM set_config('statement_timeout', '0', true);
+
         SELECT c.relkind INTO v_relkind
           FROM pg_class c
           JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -203,6 +216,10 @@ export class PartitionExecutionLogLines1789900000002 implements MigrationInterfa
         v_relkind "char";
         v_legacy_exists boolean;
       BEGIN
+        -- 同 up()：down 的回流 INSERT..SELECT 同样远超 30s，豁免限定在块内
+        -- （is_local=true，DO 块提交即回滚）。
+        PERFORM set_config('statement_timeout', '0', true);
+
         SELECT c.relkind INTO v_relkind
           FROM pg_class c
           JOIN pg_namespace n ON n.oid = c.relnamespace
