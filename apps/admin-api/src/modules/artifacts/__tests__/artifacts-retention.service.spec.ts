@@ -153,4 +153,55 @@ describe("ArtifactsRetentionService (NETOPT-8⑦)", () => {
     expect(allIds).toHaveLength(2500);
     expect(new Set(allIds).size).toBe(2500);
   });
+
+  // A-10: 过期判据从「目录内最旧 mtime」改为「目录内最新 mtime」——长执行
+  // 的目录（旧文件先行过期、期间持续产出新产物）不再被连坐清除。
+  describe("A-10 判据改最新 mtime", () => {
+    const seedMixedDir = () => {
+      (mockFs.readdirSync as jest.Mock).mockImplementation((p: string) => {
+        if (p === ROOT) return ["exec-mixed"];
+        // exec-mixed 目录内有新旧两个产物文件
+        return ["step1-old.log", "step9-new.log"];
+      });
+      (mockFs.statSync as jest.Mock).mockImplementation((p: string) => {
+        if (String(p).endsWith("step1-old.log")) {
+          return { isDirectory: () => false, mtimeMs: 1_000 };
+        }
+        if (String(p).endsWith("step9-new.log")) {
+          return { isDirectory: () => false, mtimeMs: NOW_MS - 60_000 };
+        }
+        return { isDirectory: () => true, mtimeMs: 1_000 };
+      });
+    };
+
+    it("目录内新旧产物混合（新产物仍在保留期内）→ 整目录保留", async () => {
+      seedMixedDir();
+      const service = new ArtifactsRetentionService(makeConfig(), null, null);
+
+      // 最旧文件 mtime=1ms 早已过期，但最新文件距 now 仅 60s → 不删除
+      await expect(service.cleanupExpiredArtifacts(NOW)).resolves.toBe(0);
+      expect(mockFs.promises.rm).not.toHaveBeenCalled();
+    });
+
+    it("目录内全部产物（含最新）都早于保留期 → 仍照常过期删除", async () => {
+      seedMixedDir();
+      // 把保留期拉长到 30d 之外也无法挽救：把最新文件也调到过期
+      (mockFs.statSync as jest.Mock).mockImplementation((p: string) => {
+        if (String(p).endsWith("step1-old.log")) {
+          return { isDirectory: () => false, mtimeMs: 1_000 };
+        }
+        if (String(p).endsWith("step9-new.log")) {
+          return { isDirectory: () => false, mtimeMs: NOW_MS - 40 * 86_400_000 };
+        }
+        return { isDirectory: () => true, mtimeMs: 1_000 };
+      });
+      const service = new ArtifactsRetentionService(makeConfig(), null, null);
+
+      const removed = await service.cleanupExpiredArtifacts(NOW);
+      expect(removed).toBe(1);
+      expect(String(mockFs.promises.rm.mock.calls[0][0])).toContain(
+        "exec-mixed",
+      );
+    });
+  });
 });

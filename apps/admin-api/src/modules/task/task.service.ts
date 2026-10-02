@@ -157,7 +157,8 @@ export const TRIGGER_GATE_LOCK_TTL_MS = 5_000;
  * ARCH-21 红线针对的是「终态事件 → 通知」主链解耦——该链路仍走事件总线
  * （emitTerminalEvent → ExecutionEventsListener），未被破坏。本次新增的是
  * 另一条独立旁路：运行中执行的超时预警（用户指令指定直调
- * NotificationService.notifyTimeout 且不改其签名）。约束自我收紧为：
+ * NotificationService.notifyTimeout；A-11 起签名扩展了可选 alarmChannels
+ * 尾参用于与失败告警同源渠道路由，缺省行为不变）。约束自我收紧为：
  * 仅 maybeNotifyTimeoutWarning 一个调用点、fire-and-forget、任何失败吞掉、
  * 不进入任何终态写路径。
  */
@@ -3566,7 +3567,8 @@ export class TaskService {
   /**
    * FIX-3.1（timeout-policy.util ②「超时预警」的运行期消费点）：按
    * elapsed ≥ timeout×ratio 判定并发送一次 WARNING 预警
-   * （NotificationService.notifyTimeout，签名未动）。
+   * （NotificationService.notifyTimeout；A-11 起透传任务级 alarmChannels，
+   * 与失败告警 notifyFailureWithConfig 同源路由）。
    *
    * 「每执行至多一次」由 Redis SETNX 闸保证（acquireLock 即 SET NX PX，
    * key = acf:timeout-warn:{executionId}，TTL 24h 远大于任何执行生命周期、
@@ -3613,6 +3615,9 @@ export class TaskService {
         task.id,
         // NETOPT-5①: applicationId 透传（scope=application 静默判定同源）。
         task.applicationId ?? undefined,
+        // A-11: 超时预警与失败告警同源渠道路由——透传 task.alarmChannels
+        // （notifyFailureWithConfig 同款入口）；空/缺省回落全渠道（原行为）。
+        task.alarmChannels ?? undefined,
       );
     } catch (err: unknown) {
       this.logger.warn(

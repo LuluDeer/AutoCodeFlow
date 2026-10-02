@@ -979,3 +979,110 @@ describe("notification channels — allowPrivateNetwork option (R17)", () => {
     await expect(channel.send(payload)).resolves.toBe("blocked");
   });
 });
+
+// ────────────────────────────────────────────────────────────
+// A-6: IM markdown 注入防护——wecom/dingtalk/slack 拼进 markdown 的
+// title/content 必须先剥离链接语法字符（[ ] ( ) < >）与控制字符；
+// 普通文本与换行保留；email 纯文本不动。
+// ────────────────────────────────────────────────────────────
+describe("A-6: markdown 注入防护（wecom/dingtalk/slack 共用 escapeMarkdownText）", () => {
+  const injectionPayload = {
+    title: "[点我领奖](http://evil.example)",
+    content: "正常提示\n请看 [详情](http://phish.example) 与 <http://x|y>",
+  };
+
+  it("wecom：markdown.content 不再包含链接语法字符，普通文本与换行保留", async () => {
+    mockedAxios.post = jest.fn().mockResolvedValue({ status: 200 });
+    const channel = new WecomChannel(
+      makeConfig({ "notification.wecomWebhook": "https://qy.example.com/hook" }),
+      makeStore(),
+    );
+    await channel.send(injectionPayload);
+    const body = (mockedAxios.post as jest.Mock).mock.calls[0][1];
+    const content = body.markdown.content as string;
+    expect(content).not.toContain("[");
+    expect(content).not.toContain("]");
+    expect(content).not.toContain("(");
+    expect(content).not.toContain(")");
+    expect(content).not.toContain("<");
+    expect(content).not.toContain(">");
+    // 非敏感内容可读：标题保留 + 换行保留
+    expect(content).toContain("## 点我领奖http://evil.example");
+    expect(content).toContain("正常提示\n");
+  });
+
+  it("dingtalk：markdown.title/text 同样剥离链接语法字符", async () => {
+    mockedAxios.post = jest.fn().mockResolvedValue({ status: 200 });
+    const channel = new DingtalkChannel(
+      makeConfig({
+        "notification.dingtalkWebhook": "https://oapi.example.com/hook",
+      }),
+      makeStore(),
+    );
+    await channel.send(injectionPayload);
+    const body = (mockedAxios.post as jest.Mock).mock.calls[0][1];
+    expect(body.markdown.title as string).not.toMatch(/[[\]()<>]/);
+    expect(body.markdown.text as string).not.toMatch(/[[\]()<>]/);
+    expect(body.markdown.text).toContain("正常提示\n");
+  });
+
+  it("slack：mrkdwn section 与回退 text 剥离链接语法字符，header(plain_text) 原样", async () => {
+    mockedAxios.post = jest.fn().mockResolvedValue({ status: 200 });
+    const channel = new SlackChannel(
+      makeConfig({ "notification.slackWebhook": "https://hooks.example.com/x" }),
+      makeStore(),
+    );
+    await channel.send(injectionPayload);
+    const body = (mockedAxios.post as jest.Mock).mock.calls[0][1];
+    const section = body.blocks[1].text.text as string;
+    expect(section).not.toMatch(/[[\]()<>]/);
+    expect(body.text as string).not.toMatch(/[[\]()<>]/);
+    // header 是 plain_text 类型（无注入面），title 原样保留
+    expect(body.blocks[0].text.text).toBe(injectionPayload.title);
+  });
+
+  it("控制字符被剥离，\\t 与 \\n 保留", async () => {
+    mockedAxios.post = jest.fn().mockResolvedValue({ status: 200 });
+    const channel = new WecomChannel(
+      makeConfig({ "notification.wecomWebhook": "https://qy.example.com/hook" }),
+      makeStore(),
+    );
+    await channel.send({
+      title: "a\u0000b\u0007c",
+      content: "line1\tline2\nline3\u001b[31m",
+    });
+    const content = (mockedAxios.post as jest.Mock).mock.calls[0][1].markdown
+      .content as string;
+    expect(content).not.toContain("\u0000");
+    expect(content).not.toContain("\u0007");
+    expect(content).not.toContain("\u001b");
+    // "[31m" 的 "[" 与 "\u001b" 均被剥离（先剥链接语法、后剥控制字符）
+    expect(content).toContain("line1\tline2\nline331m");
+  });
+
+  it("email 为纯文本发送，不经 markdown 转义（普通文本原样）", async () => {
+    const sendMailMock = jest.fn().mockResolvedValue({ messageId: "1" });
+    const createTransportSpy = jest
+      .spyOn(nodemailer, "createTransport")
+      .mockReturnValue({ sendMail: sendMailMock } as any);
+    const channel = new EmailChannel(
+      makeConfig({
+        "notification.email.host": "smtp.example.com",
+        "notification.email.user": "u@example.com",
+        "notification.email.to": "to@example.com",
+      }),
+      makeStore(),
+    );
+    await channel.send({
+      title: "Title [with] (parens)",
+      content: "body with [link](http://x) kept",
+    });
+    expect(sendMailMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        subject: "Title [with] (parens)",
+        text: "body with [link](http://x) kept",
+      }),
+    );
+    createTransportSpy.mockRestore();
+  });
+});

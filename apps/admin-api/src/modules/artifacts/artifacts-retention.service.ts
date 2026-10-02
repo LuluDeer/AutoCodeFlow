@@ -16,7 +16,8 @@ import { LeaderGateService } from "../../common/leader-gate/leader-gate.service"
  *
  * 产物文件落在 `uploads/artifacts/<execId>/`。NETOPT-8⑦ 起磁盘与 DB 清单
  * **同步回收**：磁盘目录按 `LOG_RETENTION_DAYS`（configuration.logRetention.days，
- * 默认 30）删除"最旧文件 mtime 早于保留期"的产物子目录后，同一批 execId 的
+ * 默认 30）删除「目录内最新文件 mtime 早于保留期」（A-10：此前取最旧 mtime，
+ * 长执行的近期产物被连坐清除）的产物子目录后，同一批 execId 的
  * DB 清单列（task_executions.artifacts）同步置空——此前磁盘独立回收而清单列
  * 随执行行 90d 保留，30-90 天窗口内执行详情仍列产物但下载 404。
  *
@@ -92,8 +93,12 @@ export class ArtifactsRetentionService {
     for (const entry of entries) {
       const dir = path.join(root, entry);
       try {
-        const oldest = this.oldestMtimeMs(dir);
-        if (oldest !== null && oldest < cutoffMs) {
+        // A-10: 过期判据用目录内**最新** mtime——此前取最旧 mtime，长执行
+        // （运行数日，期间持续产出新产物）的目录因旧文件先行过期而被整目录
+        // 连坐清除，近期产物一并丢失。最新 mtime 早于保留期 ⟺ 整目录在保留
+        // 期内无任何更新，删除才安全。
+        const newest = this.newestMtimeMs(dir);
+        if (newest !== null && newest < cutoffMs) {
           await fs.promises.rm(dir, { recursive: true, force: true });
           removed++;
           removedExecIds.push(entry);
@@ -135,15 +140,19 @@ export class ArtifactsRetentionService {
     return removed;
   }
 
-  /** 目录内最旧文件 mtime（毫秒）；空目录/不可读回退目录自身 mtime。 */
-  private oldestMtimeMs(dir: string): number | null {
+  /**
+   * A-10: 目录内最新文件 mtime（毫秒）；空目录/不可读回退目录自身 mtime。
+   * 判据语义：目录内最近一次产物落盘时间早于保留期才过期——新旧产物混合的
+   * 目录因新产物而整体保留（此前取最旧 mtime 会把近期产物连坐清除）。
+   */
+  private newestMtimeMs(dir: string): number | null {
     const st = fs.statSync(dir);
     if (!st.isDirectory()) return null;
-    let oldest = st.mtimeMs;
+    let newest = st.mtimeMs;
     for (const f of fs.readdirSync(dir)) {
       const fst = fs.statSync(path.join(dir, f));
-      if (fst.mtimeMs < oldest) oldest = fst.mtimeMs;
+      if (fst.mtimeMs > newest) newest = fst.mtimeMs;
     }
-    return oldest;
+    return newest;
   }
 }
