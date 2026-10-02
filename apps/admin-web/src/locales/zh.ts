@@ -2315,11 +2315,14 @@ export default {
   'taskForm.field.applicationId.boundHint': '该应用是任务的部署绑定（非 zip 代码来源），代码来源切换不影响它。',
   'taskForm.field.triggerType': '触发方式',
   // A4（第三轮审计）：上一轮未结束时新触发的处置策略（blockStrategy 控件）
-  'taskForm.field.blockStrategy': '重复触发策略',
-  'taskForm.field.blockStrategy.hint': '上一轮触发尚未结束时，新触发的处置方式',
-  'taskForm.field.blockStrategy.serial': '排队等待（上一轮结束后再执行）',
-  'taskForm.field.blockStrategy.discard': '丢弃新触发（保留上一轮）',
-  'taskForm.field.blockStrategy.coverEarly': '取消上一轮并执行新触发',
+  // N-14：闸门比较维度=任务+参数——discard/cover_early 仅约束同参数触发，
+  // 异参（如按店铺/订单传参）总是并发放行；serial 触发层不拦（实现如此，
+  // 旧文案"排队等待"是空头承诺），串行/排队语义由互斥组（执行层）承担。
+  'taskForm.field.blockStrategy': '重复触发策略（同参数）',
+  'taskForm.field.blockStrategy.hint': '同一任务且相同参数的上一轮尚未结束时，新触发的处置方式；不同参数总是并发放行。需排队/串行请为应用挂互斥组',
+  'taskForm.field.blockStrategy.serial': '并发放行（不做拦截）',
+  'taskForm.field.blockStrategy.discard': '丢弃新触发（同参数在跑时）',
+  'taskForm.field.blockStrategy.coverEarly': '取消上一轮并执行新触发（同参数）',
   'taskForm.field.cron': 'Cron 表达式',
   'taskForm.field.cron.required': '请输入 Cron 表达式',
   'taskForm.field.cron.helper': '不会写？点击使用 Cron 辅助工具',
