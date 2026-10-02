@@ -17,6 +17,7 @@ import {
   LessThan,
   In,
   IsNull,
+  Raw,
   OptimisticLockVersionMismatchError,
 } from "typeorm";
 import axios from "axios";
@@ -121,6 +122,13 @@ const IN_FLIGHT_UNIQUE_INDEX = "uq_app_deployments_application_in_flight";
 export const RELEASES_DEFAULT_PAGE_SIZE = 50;
 export const RELEASES_MAX_PAGE_SIZE = 200;
 
+/** A-6：/releases 第 1 页 synthetic 聚合的部署行扫描限幅。此前整表 find
+ *  （无 take）——部署行随时间无限增长会把第一页 releases 拖成全表读。
+ *  分页流式聚合：页大小 1000，总扫描上限 5000 行（与 findAllByApp 的 O-6
+ *  读取面 cap 同一口径）；到达上限即停，聚合行以已扫描部分为准。 */
+export const RELEASES_SYNTHETIC_SCAN_PAGE_SIZE = 1000;
+export const RELEASES_SYNTHETIC_SCAN_MAX_ROWS = 5000;
+
 /**
  * stop() 未能把停机信号送达执行器时，写进 statusMessage 的前缀。
  *
@@ -133,6 +141,23 @@ export const RELEASES_MAX_PAGE_SIZE = 200;
  * 「这条部署当前状况」的既有通道，且会随列表轮询一起回传给用户。
  */
 export const STOP_NOT_DELIVERED_PREFIX = "[Stop not delivered] ";
+
+/**
+ * A-2①：部署命令入队 pull 执行器时写入 statusMessage 的前缀（后缀带
+ * commandId）。这条 statusMessage 是行上**已有的**命令痕迹——卡死扫描据此
+ * 识别「命令仍在 pull 队列未决」的行，把它们扫死阈值从 10min 放宽到命令 TTL：
+ * 执行器离线 >10min 时行不再被提前判 FAILED（in-flight 槽位不被释放），旧命令
+ * 也就不会在 TTL 内被重连的执行器消费出「同一执行器两个真实进程」。命令 TTL
+ * 过后执行器侧本就会按 issuedAt 丢弃载荷，此时再扫死是安全的。
+ * 改这里必须同步改 detectStuckDeployments 的豁免判定（跨端同文件契约）。
+ */
+export const PULL_QUEUED_MESSAGE_PREFIX =
+  "Deploy command queued for pull executor";
+
+/** A-2①：detectStuckDeployments 读取的命令 TTL（与 ExecutorPullService
+ *  commandTtlMs 同键同缺省——30min。两处读同一 ConfigService 键，调参一处生效）。 */
+export const DEPLOYMENT_CMD_TTL_MS_DEFAULT = 1_800_000;
+export const EXECUTOR_CMD_TTL_CONFIG_KEY = "executor.cmdTtlMs";
 
 /** DEP-01：统一列表的排序键（毫秒时间戳）：有部署取该版本最近一次部署完成时刻
  *  （deployedAt，缺则行 createdAt），无部署取版本行 createdAt。纯函数便于测试。 */
@@ -493,16 +518,28 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     // /versions 的 legacy fallback 同语义），否则补「有部署但版本不在快照表」
     // 的孤儿 deployedVersion。
     if (safePage === 1) {
-      const allDeployments = await this.repo.find({
-        where: { applicationId },
-        order: { createdAt: "DESC" },
-      });
+      // A-6: 整表 find 改为分页流式聚合——createdAt DESC 保证「每版本首见
+      // 即最新行」在流式累计下不变（后续页只给已有 key 加计数/补新 key），
+      // 响应形状与语义完全不变；页大小与总行数双限幅防全表拖库。
       const seen = new Map<string, { latest: AppDeployment; count: number }>();
-      for (const d of allDeployments) {
-        const key = d.deployedVersion ?? "__unknown__";
-        const cur = seen.get(key);
-        if (cur) cur.count += 1;
-        else seen.set(key, { latest: d, count: 1 });
+      for (
+        let skip = 0;
+        skip < RELEASES_SYNTHETIC_SCAN_MAX_ROWS;
+        skip += RELEASES_SYNTHETIC_SCAN_PAGE_SIZE
+      ) {
+        const rows = await this.repo.find({
+          where: { applicationId },
+          order: { createdAt: "DESC" },
+          skip,
+          take: RELEASES_SYNTHETIC_SCAN_PAGE_SIZE,
+        });
+        for (const d of rows) {
+          const key = d.deployedVersion ?? "__unknown__";
+          const cur = seen.get(key);
+          if (cur) cur.count += 1;
+          else seen.set(key, { latest: d, count: 1 });
+        }
+        if (rows.length < RELEASES_SYNTHETIC_SCAN_PAGE_SIZE) break;
       }
       const snapshotVersions = new Set(
         versions.length === 0
@@ -854,7 +891,13 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
 
       let reused: AppDeployment;
       try {
-        reused = await this.repo.save(reusable);
+        // A-3: 并发双击「重新部署」——两个请求都能通过上方的 reusable
+        // findOne，后写者在 @VersionColumn 上撞版本抛
+        // OptimisticLockVersionMismatchError。此前这里裸 save 未映射该错误
+        // → 500；收口到 saveWithOptimisticLock 与 stop/upgrade 同口径
+        // （版本冲突转 409 让客户端重载重试），唯一索引冲突分支保持不变
+        // （saveWithOptimisticLock 对其他错误原样上抛）。
+        reused = await this.saveWithOptimisticLock(reusable);
       } catch (err: unknown) {
         if (this.isInFlightUniqueViolation(err)) {
           throw new ConflictException(
@@ -1204,6 +1247,14 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     // must be the raw value, not the masked read surface.
     const app = await this.appService.findByIdRaw(deployment.applicationId);
 
+    // A-4: startCommand 是 deploy() 落库时的 entrypoint 快照——行复用升级
+    // 语义下推送载荷 entrypoint = startCommand || app.entrypoint 会被这份
+    // 陈旧快照压住（app.entrypoint 已随新版本变化，却永远推不出去）。升级链
+    // 的「本次目标 entrypoint」即当前 app.entrypoint，推送前同步改写；deploy()
+    // 的快照语义与载荷优先级保持不变（DeployModeFields 的按部署自定义
+    // startCommand 在 deploy() 时已落库，升级后行上记录的就是本次实际推送值）。
+    deployment.startCommand = app.entrypoint ?? deployment.startCommand ?? null;
+
     deployment.status = DeploymentStatus.UPGRADING;
     deployment.statusMessage = "Upgrade triggered";
     // FEAT-20: 升级动作落触发来源（upgrade 语义；不覆盖既有 operator 时
@@ -1405,8 +1456,21 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     // E-P1-R2：心跳走轻量条件 UPDATE，不经过 @VersionColumn save——每次心跳
     // 都 bump version 会与并发 stop/upgrade 的乐观锁互撞。仅写心跳相关标量列；
     // 内存对象已按 dto 就地更新，下游版本快照/事件/灰度钩子读到一致值。
-    await this.repo.update(
-      { id: deployment.id },
+    //
+    // A-2②：状态守卫——只有在途行（deploying/upgrading/running）允许被心跳
+    // 推进。此前无条件按 id 写，卡死扫描判 FAILED 的行会被迟到的 running 心跳
+    // 复活成 RUNNING（in-flight 槽位被占 + 版本快照 failed→released 反复翻转）；
+    // FAILED 只允许显式重试链（deploy 复用行）改写。UPGRADING 必须在集合内：
+    // R5 起升级全程保持 UPGRADING，执行器心跳是它到 RUNNING 的唯一出口。
+    const advanced = await this.repo.update(
+      {
+        id: deployment.id,
+        status: In([
+          DeploymentStatus.DEPLOYING,
+          DeploymentStatus.UPGRADING,
+          DeploymentStatus.RUNNING,
+        ]),
+      },
       {
         ...(dto.status && statusMap[dto.status]
           ? { status: statusMap[dto.status] }
@@ -1416,6 +1480,16 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
         lastHeartbeat: deployment.lastHeartbeat,
       },
     );
+    if (!advanced.affected) {
+      // 守卫未命中：行已是终态（或并发刚被收尾）——心跳不得推进任何状态、
+      // 不得翻转版本快照、不得触发完成事件/灰度钩子。
+      this.logger.warn(
+        `Heartbeat ignored for deployment ${deployment.id} ` +
+          `(row status=${deployment.status} is not in-flight) — terminal rows ` +
+          `are not advanced by heartbeats`,
+      );
+      return;
+    }
 
     if (deployment.status === DeploymentStatus.RUNNING) {
       await this.markVersionSnapshotStatus(deployment, "released");
@@ -1586,7 +1660,9 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       deployment.status = upgrade
         ? DeploymentStatus.UPGRADING
         : DeploymentStatus.DEPLOYING;
-      deployment.statusMessage = `Deploy command queued for pull executor (commandId=${routed.commandId})`;
+      // A-2①：statusMessage 记下 commandId（前缀常量供卡死扫描识别「命令
+      // 未决」行——见 PULL_QUEUED_MESSAGE_PREFIX 注释）。
+      deployment.statusMessage = `${PULL_QUEUED_MESSAGE_PREFIX} (commandId=${routed.commandId})`;
       deployment.deployedCommit = app.gitCommit || null;
       deployment.deployedVersion = app.version || null;
       deployment.deployedAt = new Date();
@@ -1870,7 +1946,15 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
    *  uq_app_deployments_application_in_flight and permanently 409s every
    *  future deployment of the application. The normal PENDING window is
    *  process-internal (auto-select + push retries ≈ <100s), so 5 minutes is
-   *  safely above any legitimate hold. */
+   *  safely above any legitimate hold.
+   *  A-1: 待审批行复用 status=PENDING 挂在途位（见 entity 注释）——审批可以
+   *  合法悬置超过 5min，不参与卡死判定（扫描 where / JS 过滤 / UPDATE 守卫
+   *  三层同口径排除 approvalStatus=pending_approval）。
+   *  A-2①: pull 入队后行恒 DEPLOYING 且离线执行器不产生心跳——行龄未超命令
+   *  TTL 的「commandId 未决」行（statusMessage 带 PULL_QUEUED_MESSAGE_PREFIX）
+   *  豁免扫描：否则执行器离线 >10min 时行被判 FAILED 并释放 in-flight 槽位，
+   *  旧命令在 TTL 内被重连的执行器消费 → 同一执行器两个真实进程。命令 TTL
+   *  过后执行器侧本就按 issuedAt 丢弃载荷，届时再扫死是安全的。 */
   @Cron("0 */2 * * * *")
   async detectStuckDeployments(): Promise<void> {
     // ARCH-31 §5: 多实例下仅 cron Leader 执行（详见 LeaderGateService）
@@ -1882,6 +1966,13 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
         {
           status: DeploymentStatus.PENDING,
           updatedAt: LessThan(fiveMinutesAgo),
+          // A-1: 待审批行（pending_approval）不扫死。Raw 而非 Not()——
+          // approvalStatus 可空，`!= 'pending_approval'` 对 NULL 行求值为
+          // NULL 会把普通行也一并排除。
+          approvalStatus: Raw(
+            (alias) => `(${alias} IS NULL OR ${alias} <> :pendingApproval)`,
+            { pendingApproval: DeploymentApprovalStatus.PENDING_APPROVAL },
+          ),
         },
         {
           status: DeploymentStatus.DEPLOYING,
@@ -1898,6 +1989,40 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     });
     if (stuck.length === 0) return;
 
+    // A-1（JS 侧防御性二次过滤，findInFlightRolloutRows 同款——仓储 mock /
+    // 副本读面可能不带 where 语义）+ A-2①（pull 未决命令豁免）。
+    // `||` 与 ExecutorPullService.commandTtlMs 同款（0/非法值回退缺省）。
+    const cmdTtlMs =
+      this.configService.get<number>(EXECUTOR_CMD_TTL_CONFIG_KEY) ||
+      DEPLOYMENT_CMD_TTL_MS_DEFAULT;
+    const now = Date.now();
+    const sweepable = stuck.filter((d) => {
+      if (
+        d.status === DeploymentStatus.PENDING &&
+        d.approvalStatus === DeploymentApprovalStatus.PENDING_APPROVAL
+      ) {
+        return false; // A-1: 待审批行永不扫死
+      }
+      if (
+        (d.status === DeploymentStatus.DEPLOYING ||
+          d.status === DeploymentStatus.UPGRADING) &&
+        (d.statusMessage ?? "").startsWith(PULL_QUEUED_MESSAGE_PREFIX) &&
+        d.updatedAt &&
+        now - new Date(d.updatedAt).getTime() < cmdTtlMs
+      ) {
+        // A-2①: 部署命令仍可能在 pull 队列里未决（行龄未超命令 TTL）——
+        // 此时判 FAILED 会释放 in-flight 槽位并放行新部署，与旧命令叠加成
+        // 双进程。豁免到 TTL 过后（届时命令已被执行器侧丢弃）。
+        this.logger.log(
+          `Stuck sweep: deployment ${d.id} still has an undelivered pull ` +
+            `command younger than the command TTL (${cmdTtlMs}ms) — exempt`,
+        );
+        return false;
+      }
+      return true;
+    });
+    if (sweepable.length === 0) return;
+
     const PENDING_MSG =
       "[System] Deployment stuck in PENDING (deploy push never started, " +
       "likely a restart between insert and push) — timed out after 5 minutes";
@@ -1905,47 +2030,71 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
 
     // O-5: two batched UPDATEs (message differs for PENDING vs DEPLOYING/
     // UPGRADING) instead of N per-row save() round-trips.
-    const pendingIds = stuck
+    const pendingIds = sweepable
       .filter((d) => d.status === DeploymentStatus.PENDING)
       .map((d) => d.id);
-    const otherIds = stuck
+    const otherIds = sweepable
       .filter((d) => d.status !== DeploymentStatus.PENDING)
       .map((d) => d.id);
+    // A-9: 只对条件 UPDATE **实际命中**的行做版本快照标记——SELECT 快照与
+    // UPDATE 之间被并发心跳推进到 RUNNING 的行 affected=0，其快照必须保持
+    // 原状（此前 for 循环对 stuck 全量 markVersionSnapshotStatus(failed)，
+    // 会把刚成功的部署快照误标 failed）。Postgres RETURNING 精确取回命中 id。
+    const affectedIds = new Set<string>();
+    const collectAffected = (result: {
+      raw?: unknown;
+      affected?: number | null;
+    }) => {
+      const rows = (result.raw ?? []) as Array<{ id?: string }>;
+      for (const row of rows) if (row?.id) affectedIds.add(row.id);
+    };
     if (pendingIds.length > 0) {
-      await this.repo
-        .createQueryBuilder()
-        .update(AppDeployment)
-        .set({ status: DeploymentStatus.FAILED, statusMessage: PENDING_MSG })
-        .where("id IN (:...ids)", { ids: pendingIds })
-        // E-P1-R3: must still require the source status to be PENDING. Between the
-        // SELECT snapshot and this UPDATE, a concurrent heartbeat/advance may have
-        // already moved a row PENDING->RUNNING. Blindly writing by id would clobber
-        // a just-succeeded heartbeat into FAILED; the guarded UPDATE makes such rows
-        // affected=0 so they are not overwritten.
-        .andWhere("status = :expectedStatus", {
-          expectedStatus: DeploymentStatus.PENDING,
-        })
-        .execute();
+      collectAffected(
+        await this.repo
+          .createQueryBuilder()
+          .update(AppDeployment)
+          .set({ status: DeploymentStatus.FAILED, statusMessage: PENDING_MSG })
+          .where("id IN (:...ids)", { ids: pendingIds })
+          // E-P1-R3: must still require the source status to be PENDING. Between the
+          // SELECT snapshot and this UPDATE, a concurrent heartbeat/advance may have
+          // already moved a row PENDING->RUNNING. Blindly writing by id would clobber
+          // a just-succeeded heartbeat into FAILED; the guarded UPDATE makes such rows
+          // affected=0 so they are not overwritten.
+          .andWhere("status = :expectedStatus", {
+            expectedStatus: DeploymentStatus.PENDING,
+          })
+          // A-1: 审批认领（approve→approved）与扫描 UPDATE 竞态时不得把已
+          // 认领的行盖回 FAILED——待审批态同被排除。
+          .andWhere("(approvalStatus IS NULL OR approvalStatus <> :pendingApproval)", {
+            pendingApproval: DeploymentApprovalStatus.PENDING_APPROVAL,
+          })
+          .returning("id")
+          .execute(),
+      );
     }
     if (otherIds.length > 0) {
-      await this.repo
-        .createQueryBuilder()
-        .update(AppDeployment)
-        .set({ status: DeploymentStatus.FAILED, statusMessage: TIMEOUT_MSG })
-        .where("id IN (:...ids)", { ids: otherIds })
-        // E-P1-R3: same as the pending branch -- a DEPLOYING/UPGRADING row already
-        // advanced to RUNNING by a concurrent heartbeat must not be swept back to
-        // FAILED (affected=0).
-        .andWhere("status IN (:...expectedStatuses)", {
-          expectedStatuses: [
-            DeploymentStatus.DEPLOYING,
-            DeploymentStatus.UPGRADING,
-          ],
-        })
-        .execute();
+      collectAffected(
+        await this.repo
+          .createQueryBuilder()
+          .update(AppDeployment)
+          .set({ status: DeploymentStatus.FAILED, statusMessage: TIMEOUT_MSG })
+          .where("id IN (:...ids)", { ids: otherIds })
+          // E-P1-R3: same as the pending branch -- a DEPLOYING/UPGRADING row already
+          // advanced to RUNNING by a concurrent heartbeat must not be swept back to
+          // FAILED (affected=0).
+          .andWhere("status IN (:...expectedStatuses)", {
+            expectedStatuses: [
+              DeploymentStatus.DEPLOYING,
+              DeploymentStatus.UPGRADING,
+            ],
+          })
+          .returning("id")
+          .execute(),
+      );
     }
 
-    for (const d of stuck) {
+    for (const d of sweepable) {
+      if (!affectedIds.has(d.id)) continue; // A-9: 未被本次 UPDATE 命中（并发已推进）→ 不动快照
       d.status = DeploymentStatus.FAILED;
       await this.markVersionSnapshotStatus(d, "failed");
       this.logger.warn(
@@ -2537,6 +2686,11 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     }
     if (typeof snapshot.entrypoint === "string")
       pushApp.entrypoint = snapshot.entrypoint;
+    // A-4: 同 upgrade()——回滚推送前把 startCommand 同步为本次目标（快照）
+    // entrypoint。否则推送载荷 entrypoint = startCommand || app.entrypoint
+    // 仍被部署时的陈旧快照压住，rollbackApplication / 本链恢复的 entrypoint
+    // 永远推不出去（回滚后推送载荷 entrypoint 必须等于快照值）。
+    deployment.startCommand = pushApp.entrypoint ?? deployment.startCommand ?? null;
     deployment.status = DeploymentStatus.UPGRADING;
     deployment.statusMessage = `Rolling back to ${version.version}`;
     // FEAT-20: 自动回滚痕迹（rollback 语义；operator 保留原行值——
