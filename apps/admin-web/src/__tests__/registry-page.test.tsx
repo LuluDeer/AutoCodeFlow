@@ -21,7 +21,6 @@ vi.mock('../api/registry', () => ({
     listPypiPackages: vi.fn(),
     listNpmPackages: vi.fn(),
     uploadPypiPackage: vi.fn(),
-    getPypiPackage: vi.fn(),
   },
 }));
 const mockedRegistry = vi.mocked(registryApi, true);

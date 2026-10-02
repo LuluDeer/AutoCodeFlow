@@ -91,6 +91,11 @@ function PypiTab() {
         <Text copyable code>
           {`pip config set global.index-url ${window.location.origin}/pypi/simple/`}
         </Text>
+        {/* B-1：/pypi/ 反代路由已补齐，但 registry-pypi 索引面 S9 起要求
+            Basic 认证——命令可用性依赖部署下发的凭据，必须随命令说明。 */}
+        <Paragraph style={{ margin: '8px 0 0' }}>
+          <Text type="secondary">{t('registry.pypiCredHint')}</Text>
+        </Paragraph>
       </Card>
 
       {/* UI-16：请求失败渲染 StateError 标准错误块（此前 api 层吞错，失败静默
@@ -138,10 +143,12 @@ function PypiTab() {
             valuePropName="fileList"
             getValueFromEvent={normFileList}
           >
+            {/* B-8：accept 与后端白名单（registry.controller ALLOWED_PYPI_EXTS：
+                .whl/.tar.gz/.zip）对齐——此前漏 .zip 且 .gz 覆盖面过宽 */}
             <Upload
               beforeUpload={() => false}
               maxCount={1}
-              accept=".whl,.tar.gz,.gz"
+              accept=".whl,.tar.gz,.zip"
             >
               <Button icon={<InboxOutlined />}>{t('registry.chooseFile')}</Button>
             </Upload>
@@ -208,6 +215,11 @@ function NpmTab() {
         <Text copyable code>
           {`npm config set registry ${window.location.origin}/npm/`}
         </Text>
+        {/* B-1：/npm/ 反代路由已补齐；registry-npm 对所有包要求 $authenticated
+            （config.yaml），登录/安装都依赖部署下发的账号，必须随命令说明。 */}
+        <Paragraph style={{ margin: '8px 0 0' }}>
+          <Text type="secondary">{t('registry.npmCredHint')}</Text>
+        </Paragraph>
       </Card>
 
       {/* UI-16：npm Tab 同 PyPI——请求失败渲染 StateError 标准错误块 */}
