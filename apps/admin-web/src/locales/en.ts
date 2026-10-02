@@ -545,6 +545,11 @@ export default {
   'registry.upload.adminOnly': 'Only admins can upload private packages (it affects dependency resolution for every task)',
   'registry.refresh': 'Refresh',
   'registry.pypiHint': 'Configure pip to use the private index:',
+  // B-1: /pypi/ and /npm/ reverse-proxy routes are now provided
+  // (apps/admin-web/nginx.conf); the private registries still require
+  // credentials, so the commands must carry the credential note.
+  'registry.pypiCredHint': 'This endpoint requires the private registry credentials issued with the deployment (REGISTRY_USER / REGISTRY_PASS); pip will prompt for them.',
+  'registry.npmCredHint': 'This endpoint requires authentication: run npm login with the deployed npm service account (NPM_REGISTRY_USER / NPM_REGISTRY_PASS) or a registered Verdaccio account.',
   'registry.pypiErrorTitle': 'Failed to load PyPI packages',
   'registry.pypiEmpty': 'No PyPI packages yet. Upload to add the first one.',
   'registry.pypiUploadTitle': 'Upload PyPI package',
@@ -569,7 +574,7 @@ export default {
   'registry.field.nameRequired': 'Please enter the package name',
   'registry.field.version': 'Version',
   'registry.field.versionRequired': 'Please enter a version',
-  'registry.field.file': 'Package file (.whl / .tar.gz)',
+  'registry.field.file': 'Package file (.whl / .tar.gz / .zip)',
   'registry.field.fileRequired': 'Please choose a file',
   'registry.chooseFile': 'Choose file',
   'registry.cancel': 'Cancel',
@@ -1846,6 +1851,7 @@ export default {
   'appDeploy.msg.upgradeStarted': 'Upgrade started; will finish automatically',
   'appDeploy.msg.upgradeFail': 'Upgrade failed',
   'appDeploy.msg.noRunningUpgrade': 'No running instances need upgrading',
+  'appDeploy.msg.upgradeAllBlocked': 'Rollout not started: {{reason}}',
   'appDeploy.msg.upgradeAllDone': 'Triggered upgrade for {{succeeded}}/{{total}} instances',
   'appDeploy.msg.upgradeAllFail': 'Batch upgrade failed',
   'appDeploy.col.executor': 'Executor',
