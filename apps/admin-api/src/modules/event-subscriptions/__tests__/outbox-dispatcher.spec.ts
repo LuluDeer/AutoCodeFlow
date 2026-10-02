@@ -18,16 +18,20 @@ import { DataSource } from "typeorm";
 import { EventSubscription } from "../entities/event-subscription.entity";
 import { EventOutboxDeadLetter } from "../entities/event-outbox-dead-letter.entity";
 import { EventOutbox } from "../entities/event-outbox.entity";
+import { EventSubscriptionDeadLetter } from "../entities/event-subscription-dead-letter.entity";
 import {
   OutboxDispatcher,
   OUTBOUND_DISPATCHER_TOKEN,
   OUTBOX_BATCH_SIZE,
+  OUTBOX_FAST_PATH_GRACE_MS,
   OUTBOX_LEASE_MS,
   OUTBOX_MAX_ROW_PROCESSING_MS,
   OUTBOX_SCAN_INTERVAL_MS,
+  SUBSCRIPTION_DEAD_LETTER_RETENTION_DAYS,
 } from "../outbox-dispatcher.service";
 import {
   MAX_OUTBOX_ATTEMPTS,
+  OUTBOUND_TIMEOUT_MS,
   outboxRetryDelayMs,
 } from "../event-subscription.util";
 
@@ -96,6 +100,15 @@ describe("FEAT-19 OutboxDispatcher", () => {
     find: jest.fn().mockResolvedValue([]),
     delete: jest.fn().mockResolvedValue({ affected: 1 }),
   };
+  // B-1: 订阅死信（event_subscription_dead_letters）repo 桩——retention 走
+  // QueryBuilder 分批 DELETE（同 cleanupDispatchedRows 形态），默认 affected=0。
+  const subDlRepoMock = {
+    createQueryBuilder: jest.fn(() => ({
+      delete: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      execute: jest.fn().mockResolvedValue({ affected: 0 }),
+    })),
+  };
   // deliverToSubscribers 的桩：默认成功；失败用例改 reject。
   const dispatcherMock = {
     // ARCH-31 #8：单次投递语义（重试/退避/死信归扫描器租约 + attempts 机制）
@@ -156,6 +169,10 @@ describe("FEAT-19 OutboxDispatcher", () => {
           provide: getRepositoryToken(EventOutboxDeadLetter),
           useValue: dlRepoMock,
         },
+        {
+          provide: getRepositoryToken(EventSubscriptionDeadLetter),
+          useValue: subDlRepoMock,
+        },
       ],
     }).compile();
     outbox = moduleRef.get(OutboxDispatcher);
@@ -198,6 +215,40 @@ describe("FEAT-19 OutboxDispatcher", () => {
       await expect(outbox.enqueue("execution.failed", {})).resolves.toBe(
         "row-1",
       );
+    });
+
+    // B-2: 入队即置快速路径宽限窗——此前 nextAttemptAt=null 使下一次 5s 扫描
+    // 即可 claim（< 10s 出站超时），markFastPathDelivered 遇活跃租约 no-op，
+    // 慢订阅被稳定双投。
+    it("入队行 nextAttemptAt = now + 15s 宽限（入队后 5s 内扫描不 claim）", async () => {
+      const before = Date.now();
+      await outbox.enqueue("execution.failed", { event: "execution.failed" });
+      const arg = outboxRepoMock.create.mock.calls[0][0] as EventOutbox;
+      expect(arg.nextAttemptAt).toBeInstanceOf(Date);
+      expect(arg.nextAttemptAt!.getTime()).toBeGreaterThanOrEqual(
+        before + OUTBOX_FAST_PATH_GRACE_MS - 50,
+      );
+      expect(arg.nextAttemptAt!.getTime()).toBeLessThanOrEqual(
+        Date.now() + OUTBOX_FAST_PATH_GRACE_MS,
+      );
+      // 宽限 > 扫描间隔：入队后第一轮扫描（5s 内）必然因 nextAttemptAt 未到期
+      // 而不 claim（claim SQL 谓词 "nextAttemptAt" IS NULL OR <= now，另测）。
+      expect(OUTBOX_FAST_PATH_GRACE_MS).toBeGreaterThan(
+        OUTBOX_SCAN_INTERVAL_MS,
+      );
+      // 宽限 > 单次出站超时：快速路径首投进行中（最坏 10s）也不会被扫描抢投。
+      expect(OUTBOX_FAST_PATH_GRACE_MS).toBeGreaterThanOrEqual(
+        OUTBOUND_TIMEOUT_MS + OUTBOX_SCAN_INTERVAL_MS,
+      );
+    });
+
+    it("claim SQL 只补宽限到期/无指针的行（宽限后可 claim）", async () => {
+      dataSourceMock.query.mockResolvedValueOnce([[], 0]);
+      await outbox.scanOnce();
+      const [sql] = dataSourceMock.query.mock.calls[0] as [string, unknown[]];
+      // 入队行带 nextAttemptAt=now+15s：在该谓词下 5s 扫描点不命中；
+      // 15s 宽限过后 nextAttemptAt <= now 命中，扫描接管重试（慢路径不变）。
+      expect(sql).toContain('"nextAttemptAt" IS NULL OR "nextAttemptAt" <= $1');
     });
   });
 
@@ -563,6 +614,83 @@ describe("FEAT-19 OutboxDispatcher", () => {
       expect(patch.nextAttemptAt).toBeNull();
     });
 
+    // B-9: 订阅侧死信必须在 guarded finalize 成功之后才写——终败时租约已被
+    // 他实例接管的情形下，本实例不得再写订阅死信（防与他实例重复落表）。
+    it("终败且 finalize 成功：订阅死信在事务提交之后落运维面（顺序：事务→死信）", async () => {
+      const row = makeRow({ attempts: MAX_OUTBOX_ATTEMPTS });
+      dataSourceMock.query.mockResolvedValueOnce([[row], 1]);
+      subRepoMock.find.mockResolvedValue([
+        { id: "s1", eventTypes: ["execution.failed"] },
+      ]);
+      dispatcherMock.deliverToSubscribers.mockRejectedValue(
+        new Error("still down"),
+      );
+      const order: string[] = [];
+      dataSourceMock.transaction.mockImplementationOnce(async (cb) => {
+        order.push("tx");
+        return cb({
+          getRepository: (entity: unknown) =>
+            entity === EventOutbox ? outboxRepoMock : dlRepoMock,
+        });
+      });
+      dispatcherMock.deadLetterToSubscribers.mockImplementationOnce(
+        async () => {
+          order.push("dl");
+          return { targetCount: 1, deadLetteredCount: 1 };
+        },
+      );
+      await outbox.scanOnce();
+      expect(order).toEqual(["tx", "dl"]);
+      expect(dispatcherMock.deadLetterToSubscribers).toHaveBeenCalledWith(
+        row.eventType,
+        row.payload,
+        expect.stringContaining("still down"),
+        MAX_OUTBOX_ATTEMPTS + 1,
+      );
+    });
+
+    it("B-9: 租约被他实例接管（finalize affected≠1）时不再写订阅死信", async () => {
+      const row = makeRow({
+        attempts: MAX_OUTBOX_ATTEMPTS,
+        leaseToken: "stale-token",
+      });
+      dataSourceMock.query.mockResolvedValueOnce([[row], 1]);
+      subRepoMock.find.mockResolvedValue([
+        { id: "s1", eventTypes: ["execution.failed"] },
+      ]);
+      dispatcherMock.deliverToSubscribers.mockRejectedValueOnce(
+        new Error("stale failure"),
+      );
+      outboxRepoMock.update.mockResolvedValueOnce({ affected: 0 });
+
+      await outbox.scanOnce();
+
+      expect(dataSourceMock.transaction).toHaveBeenCalledTimes(1);
+      // 关键断言：finalize 未命中 → 本实例整体放弃（接管者重走终败路径），
+      // 订阅侧死信零写入（旧实现此处已写 → 与接管者重复落表）。
+      expect(dispatcherMock.deadLetterToSubscribers).not.toHaveBeenCalled();
+      expect(outboxRepoMock.update).toHaveBeenCalledTimes(1);
+    });
+
+    it("B-9: finalize 抛 DB 错误时同样不写订阅死信（行保持可重试）", async () => {
+      const row = makeRow({
+        attempts: MAX_OUTBOX_ATTEMPTS,
+        leaseToken: "stale-token",
+      });
+      dataSourceMock.query.mockResolvedValueOnce([[row], 1]);
+      subRepoMock.find.mockResolvedValue([
+        { id: "s1", eventTypes: ["execution.failed"] },
+      ]);
+      dispatcherMock.deliverToSubscribers.mockRejectedValueOnce(
+        new Error("stale failure"),
+      );
+      outboxRepoMock.update.mockRejectedValueOnce(new Error("db gone"));
+
+      await outbox.scanOnce();
+
+      expect(dispatcherMock.deadLetterToSubscribers).not.toHaveBeenCalled();
+    });
+
     it("未到阈值：不落死信，只退避", async () => {
       const row = makeRow({ attempts: MAX_OUTBOX_ATTEMPTS - 1 });
       dataSourceMock.query.mockResolvedValueOnce([[row], 1]);
@@ -692,6 +820,10 @@ describe("FEAT-19 OutboxDispatcher", () => {
           {
             provide: getRepositoryToken(EventOutboxDeadLetter),
             useValue: dlRepoMock,
+          },
+          {
+            provide: getRepositoryToken(EventSubscriptionDeadLetter),
+            useValue: subDlRepoMock,
           },
         ],
       }).compile();
@@ -842,9 +974,11 @@ describe("FEAT-19 OutboxDispatcher", () => {
       await outbox.handleDailyRetention();
       expect(outboxRepoMock.createQueryBuilder).not.toHaveBeenCalled();
       expect(dlRepoMock.find).not.toHaveBeenCalled();
+      // B-1: 订阅死信段同样被 Leader 门禁拦住
+      expect(subDlRepoMock.createQueryBuilder).not.toHaveBeenCalled();
     });
 
-    it("cron 入口：Leader 执行两段清理，单段失败不外抛（下轮重试）", async () => {
+    it("cron 入口：Leader 执行三段清理，单段失败不外抛（下轮重试）", async () => {
       (
         outbox as unknown as { leaderGate: { isLeader: boolean } | null }
       ).leaderGate = { isLeader: true };
@@ -856,7 +990,86 @@ describe("FEAT-19 OutboxDispatcher", () => {
         }),
       );
       dlRepoMock.find.mockRejectedValue(new Error("db down"));
+      (subDlRepoMock.createQueryBuilder as jest.Mock).mockImplementation(
+        () => ({
+          delete: jest.fn().mockReturnThis(),
+          where: jest.fn().mockReturnThis(),
+          execute: jest.fn().mockRejectedValue(new Error("db down")),
+        }),
+      );
       await expect(outbox.handleDailyRetention()).resolves.toBeUndefined();
+    });
+
+    // ─── B-1: 订阅死信（event_subscription_dead_letters）retention ──────────
+    it("cleanupExpiredSubscriptionDeadLetters 只删早于 90d 的行（谓词 + cutoff）", async () => {
+      const now = new Date("2026-10-02T03:55:00.000Z");
+      (subDlRepoMock.createQueryBuilder as jest.Mock).mockImplementationOnce(
+        () => ({
+          delete: jest.fn().mockReturnThis(),
+          where: jest.fn().mockReturnThis(),
+          execute: jest.fn().mockResolvedValue({ affected: 4 }),
+        }),
+      );
+      const deleted = await outbox.cleanupExpiredSubscriptionDeadLetters(now);
+      expect(deleted).toBe(4);
+      const qb = subDlRepoMock.createQueryBuilder.mock.results[0].value as {
+        where: jest.Mock;
+      };
+      const [sql, params] = qb.where.mock.calls[0] as [
+        string,
+        { cutoff: Date; batchSize: number },
+      ];
+      // 超界删除：谓词只认 createdAt < cutoff（90d 前）
+      expect(sql).toContain('"createdAt" < :cutoff');
+      expect(sql).toContain('FROM "event_subscription_dead_letters"');
+      expect(sql).toContain("LIMIT :batchSize");
+      // 边界内保留：cutoff 精确等于 now - 90d（其内的死信/重放资产绝不在删除集）
+      expect(params.cutoff.getTime()).toBe(
+        now.getTime() - SUBSCRIPTION_DEAD_LETTER_RETENTION_DAYS * DAY,
+      );
+      expect(params.batchSize).toBe(5000);
+    });
+
+    it("B-1 retention 同样受 LOG-RETENTION-01 轮数上限保护（affected 恒满批时终止）", async () => {
+      const { LOG_RETENTION_MAX_DELETE_ROUNDS } =
+        await import("../../../common/utils/capped-batched-delete.util");
+      const { Logger } = await import("@nestjs/common");
+      (subDlRepoMock.createQueryBuilder as jest.Mock).mockImplementation(
+        () => ({
+          delete: jest.fn().mockReturnThis(),
+          where: jest.fn().mockReturnThis(),
+          execute: jest.fn().mockResolvedValue({ affected: 5000 }),
+        }),
+      );
+      const warnSpy = jest.spyOn(Logger.prototype, "warn");
+      try {
+        const deleted = await outbox.cleanupExpiredSubscriptionDeadLetters(
+          new Date(),
+        );
+        expect(subDlRepoMock.createQueryBuilder).toHaveBeenCalledTimes(
+          LOG_RETENTION_MAX_DELETE_ROUNDS,
+        );
+        expect(deleted).toBe(5000 * LOG_RETENTION_MAX_DELETE_ROUNDS);
+        expect(
+          warnSpy.mock.calls.some((c) => String(c[0]).includes("轮数上限")),
+        ).toBe(true);
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it("B-1 无过期行时单轮即止（affected < 批大小 → 不再开下一轮）", async () => {
+      (subDlRepoMock.createQueryBuilder as jest.Mock).mockImplementationOnce(
+        () => ({
+          delete: jest.fn().mockReturnThis(),
+          where: jest.fn().mockReturnThis(),
+          execute: jest.fn().mockResolvedValue({ affected: 1 }),
+        }),
+      );
+      expect(
+        await outbox.cleanupExpiredSubscriptionDeadLetters(new Date()),
+      ).toBe(1);
+      expect(subDlRepoMock.createQueryBuilder).toHaveBeenCalledTimes(1);
     });
   });
 });

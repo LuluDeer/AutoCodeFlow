@@ -26,6 +26,14 @@ import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { AuthUser } from "../../common/interfaces/auth-user.interface";
 import { EventSubscription } from "./entities/event-subscription.entity";
 import { EventSubscriptionDeadLetter } from "./entities/event-subscription-dead-letter.entity";
+// B-3: 契约空壳修复——响应改标带 @ApiProperty 的 DTO（实体只 emit
+// {type:'object',properties:{}}，前端生成 Record<string, never>）。
+import {
+  EventSubscriptionCreateResponseDto,
+  EventSubscriptionDeadLetterPageDto,
+  EventSubscriptionResponseDto,
+  ReplayDeadLetterResponseDto,
+} from "./dto/event-subscription-response.dto";
 import { EventSubscriptionService } from "./event-subscription.service";
 import { OutboundEventDispatcher } from "./outbound-event-dispatcher.service";
 import {
@@ -86,8 +94,10 @@ export class EventSubscriptionController {
   @ApiOperation({ summary: "List outbound event subscriptions" })
   @ApiResponse({
     status: 200,
-    description: "Subscription list",
-    type: [EventSubscription],
+    description:
+      "Subscription list (secret always masked as '******'; ADMIN sees all, " +
+      "users see their own plus system-level)",
+    type: [EventSubscriptionResponseDto],
   })
   list(@Req() req: Request & { user: AuthUser }): Promise<EventSubscription[]> {
     return this.svc.findAll(req.user);
@@ -105,7 +115,13 @@ export class EventSubscriptionController {
       "targets rejected). Omit `secret` to have one generated (returned once as " +
       "`generatedSecret`).",
   })
-  @ApiResponse({ status: 201, description: "Created subscription" })
+  @ApiResponse({
+    status: 201,
+    description:
+      "Created subscription (secret masked). generatedSecret present only when " +
+      "the server generated one — shown exactly once.",
+    type: EventSubscriptionCreateResponseDto,
+  })
   @ApiResponse({
     status: 400,
     description: "Invalid URL / event types / quota exceeded",
@@ -126,8 +142,8 @@ export class EventSubscriptionController {
   @ApiParam({ name: "id", description: "Subscription UUID" })
   @ApiResponse({
     status: 200,
-    description: "Updated subscription",
-    type: EventSubscription,
+    description: "Updated subscription (secret masked)",
+    type: EventSubscriptionResponseDto,
   })
   @ApiResponse({ status: 403, description: "Not the owner" })
   @ApiResponse({ status: 404, description: "Subscription not found" })
@@ -159,7 +175,11 @@ export class EventSubscriptionController {
     summary: "List dead letters (deliveries that failed all retry attempts)",
   })
   @ApiParam({ name: "id", description: "Subscription UUID" })
-  @ApiResponse({ status: 200, description: "Paged dead letters" })
+  @ApiResponse({
+    status: 200,
+    description: "Paged dead letters (newest first)",
+    type: EventSubscriptionDeadLetterPageDto,
+  })
   @ApiResponse({ status: 403, description: "Not the owner" })
   deadLetters(
     @Param("id", ParseUUIDPipe) id: string,
@@ -182,7 +202,9 @@ export class EventSubscriptionController {
   @ApiParam({ name: "dlId", description: "Dead letter UUID" })
   @ApiResponse({
     status: 200,
-    description: "Replayed (ok true/false with error)",
+    description:
+      "Replayed (ok true removes the dead letter; ok false keeps it with error)",
+    type: ReplayDeadLetterResponseDto,
   })
   @ApiResponse({ status: 403, description: "Not the owner" })
   @ApiResponse({

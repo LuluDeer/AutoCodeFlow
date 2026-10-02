@@ -1624,7 +1624,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Send notification from task code (SDK) */
+        /** Send notification from task code (SDK, admin only) */
         post: operations["NotificationConfigController_send"];
         delete?: never;
         options?: never;
@@ -3218,8 +3218,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * List execution artifacts (manifest)
-         * @description Returns the persisted artifact manifest reported by the executor's terminal callback. Requires an administrator JWT (global JwtAuthGuard).
+         * List execution artifacts (manifest, admin only)
+         * @description Returns the persisted artifact manifest reported by the executor's terminal callback. Requires an administrator JWT (global JwtAuthGuard + RolesGuard).
          */
         get: operations["ArtifactsController_list"];
         put?: never;
@@ -3238,7 +3238,7 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Download one execution artifact (streamed)
+         * Download one execution artifact (streamed, admin only)
          * @description Streams a stored artifact to an authenticated administrator. Enforces a bare-safe file-name (path-traversal guarded) and 404 when absent.
          */
         get: operations["ArtifactsController_download"];
@@ -4650,7 +4650,7 @@ export interface components {
              * @enum {string}
              */
             runMode: "once" | "daemon" | "scheduled";
-            /** @description Environment variable overrides */
+            /** @description Environment variable overrides (≤50 keys, each value ≤4096 bytes) */
             env?: Record<string, never>;
             /** @description Startup command override (leave empty to use manifest entrypoint) */
             startCommand?: string;
@@ -4669,6 +4669,7 @@ export interface components {
             status: "running" | "stopped" | "failed";
             /** @description Process PID */
             pid?: number;
+            /** @description Free-form progress message (max 2000 chars; lands in the statusMessage text column and the list read surface) */
             message?: string;
         };
         CreateMutexGroupDto: {
@@ -4794,7 +4795,54 @@ export interface components {
              */
             status?: "active" | "deprecated" | "uploading";
         };
-        TaskTemplate: Record<string, never>;
+        TaskTemplateResponseDto: {
+            /**
+             * Format: uuid
+             * @description Template UUID
+             */
+            id: string;
+            /**
+             * @description Stable unique key. Official templates use fixed keys (scheduled_backup / health_check / data_sync / log_cleanup / webhook_ping) aligned with the MCP TASK_TEMPLATES; custom keys are user-suggested.
+             * @example scheduled_backup
+             */
+            key: string;
+            /** @description Display name */
+            name: string;
+            /** @description Human description shown on template cards */
+            description?: string | null;
+            /** @description Coarse category tag (备份/巡检/同步/清理/通知…) rendered as a Tag */
+            category?: string | null;
+            /**
+             * @description Valid CreateTaskDto subset (no `name`; provided at instantiate time). Used as defaults when instantiating a task from this template.
+             * @example {
+             *       "triggerType": "cron",
+             *       "cronExpression": "0 2 * * *",
+             *       "runtime": "shell",
+             *       "entrypoint": "backup.sh",
+             *       "timeoutSeconds": 3600,
+             *       "maxRetry": 3,
+             *       "retryDelay": 60,
+             *       "blockStrategy": "discard"
+             *     }
+             */
+            config: {
+                [key: string]: unknown;
+            };
+            /** @description True for migration-seeded official presets (read-only, cannot be deleted) */
+            isOfficial: boolean;
+            /** @description Username of the creator (JWT username). null = legacy row / official seed; deletion of null-owner rows is ADMIN-only. */
+            createdBy?: string | null;
+            /**
+             * Format: date-time
+             * @description Creation time (ISO-8601)
+             */
+            createdAt: string;
+            /**
+             * Format: date-time
+             * @description Last update time (ISO-8601)
+             */
+            updatedAt: string;
+        };
         CreateTaskTemplateDto: {
             /**
              * @description 模板展示名
@@ -4837,7 +4885,79 @@ export interface components {
              */
             overlay?: Record<string, never>;
         };
-        EventSubscription: Record<string, never>;
+        InstantiateTaskResponseDto: {
+            /**
+             * Format: uuid
+             * @description Created task UUID
+             */
+            id: string;
+            /** @description Task name (from the overlay body; unique across tasks) */
+            name: string;
+            /**
+             * @description Lifecycle status of the created task
+             * @enum {string}
+             */
+            status: "active" | "paused" | "deleted";
+            /**
+             * @description Trigger type expanded from the template config / overlay
+             * @enum {string}
+             */
+            triggerType: "cron" | "fixed_rate" | "api" | "manual";
+            /**
+             * @description Runtime the executor will use
+             * @enum {string}
+             */
+            runtime: "python" | "node" | "shell";
+            /**
+             * Format: date-time
+             * @description Creation time (ISO-8601)
+             */
+            createdAt: string;
+        };
+        EventSubscriptionResponseDto: {
+            /**
+             * Format: uuid
+             * @description Subscription UUID
+             */
+            id: string;
+            /** @description Owner user id (integer). null = system-level subscription (ADMIN-managed, visible to every admin and to all users for troubleshooting reads). */
+            userId?: number | null;
+            /**
+             * @description Subscribed event names (stable catalog, append-only): execution.completed / execution.failed / executor.offline / deployment.completed
+             * @example [
+             *       "execution.failed"
+             *     ]
+             */
+            eventTypes: string[];
+            /** @description Callback URL (public http(s); SSRF deep-validated on write and re-checked before every outbound delivery) */
+            url: string;
+            /**
+             * @description HMAC signing secret — always the mask placeholder '******' on every read surface (plaintext returned once as generatedSecret on create only)
+             * @example ******
+             */
+            secret: string;
+            /** @description Whether delivery is enabled */
+            enabled: boolean;
+            /** @description Consecutive delivery failures (reset to 0 on any success) */
+            consecutiveFailures: number;
+            /**
+             * Format: date-time
+             * @description Timestamp of the most recent delivery failure; null = never failed
+             */
+            lastFailureAt?: string | null;
+            /** @description Most recent failure summary (truncated to 512; never contains secret/payload) */
+            lastFailureError?: string | null;
+            /**
+             * Format: date-time
+             * @description Creation time (ISO-8601)
+             */
+            createdAt: string;
+            /**
+             * Format: date-time
+             * @description Last update time (ISO-8601)
+             */
+            updatedAt: string;
+        };
         CreateEventSubscriptionDto: {
             /**
              * @description Callback URL (public http(s) endpoint; private networks rejected)
@@ -4854,6 +4974,12 @@ export interface components {
             /** @description HMAC signing secret. Omit to let the server generate a 32-byte hex secret (returned once in the create response, never shown again). */
             secret?: string;
         };
+        EventSubscriptionCreateResponseDto: {
+            /** @description Created subscription (secret masked) */
+            subscription: components["schemas"]["EventSubscriptionResponseDto"];
+            /** @description Server-generated 32-byte hex secret — returned exactly once, on this response only. Absent when the caller supplied their own secret. */
+            generatedSecret?: string;
+        };
         UpdateSubscriptionBody: {
             /** @description Enable/disable delivery */
             enabled?: boolean;
@@ -4863,6 +4989,45 @@ export interface components {
             eventTypes?: string[];
             /** @description Rotate the signing secret */
             secret?: string;
+        };
+        EventSubscriptionDeadLetterResponseDto: {
+            /**
+             * Format: uuid
+             * @description Dead letter UUID
+             */
+            id: string;
+            /**
+             * Format: uuid
+             * @description Owning subscription UUID
+             */
+            subscriptionId: string;
+            /** @description Event name that failed delivery (e.g. execution.failed) */
+            eventType: string;
+            /** @description Complete outbound envelope at send time (event/occurredAt/data) */
+            payload: {
+                [key: string]: unknown;
+            };
+            /** @description Last failure summary (truncated to 1024) */
+            error: string;
+            /** @description Actual delivery attempts (first attempt + outbox scanner retries, bounded by MAX_OUTBOX_ATTEMPTS) */
+            attempts: number;
+            /**
+             * Format: date-time
+             * @description When this dead letter was recorded (ISO-8601)
+             */
+            createdAt: string;
+        };
+        EventSubscriptionDeadLetterPageDto: {
+            /** @description Page of dead letters, newest first */
+            data: components["schemas"]["EventSubscriptionDeadLetterResponseDto"][];
+            /** @description Total matching rows before paging */
+            total: number;
+        };
+        ReplayDeadLetterResponseDto: {
+            /** @description Whether the single replay delivery succeeded */
+            ok: boolean;
+            /** @description Failure summary when ok=false (row is kept for another try) */
+            error?: string;
         };
         CreateApiKeyDto: Record<string, never>;
         ProjectViewDto: {
@@ -9748,6 +9913,13 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description Non-admin caller */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             /** @description Execution not found */
             404: {
                 headers: {
@@ -9778,6 +9950,13 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description Non-admin caller */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             /** @description Artifact not found */
             404: {
                 headers: {
@@ -9802,7 +9981,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["TaskTemplate"][];
+                    "application/json": components["schemas"]["TaskTemplateResponseDto"][];
                 };
             };
         };
@@ -9826,7 +10005,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["TaskTemplate"];
+                    "application/json": components["schemas"]["TaskTemplateResponseDto"];
                 };
             };
             /** @description Invalid config / key */
@@ -9863,7 +10042,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["TaskTemplate"];
+                    "application/json": components["schemas"]["TaskTemplateResponseDto"];
                 };
             };
             /** @description Template not found */
@@ -9927,12 +10106,14 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Created task */
+            /** @description Created task (minimal face: identity/status/trigger fields) */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["InstantiateTaskResponseDto"];
+                };
             };
             /** @description Missing name / invalid merged payload */
             400: {
@@ -9959,13 +10140,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Subscription list */
+            /** @description Subscription list (secret always masked as '******'; ADMIN sees all, users see their own plus system-level) */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["EventSubscription"][];
+                    "application/json": components["schemas"]["EventSubscriptionResponseDto"][];
                 };
             };
         };
@@ -9983,12 +10164,14 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Created subscription */
+            /** @description Created subscription (secret masked). generatedSecret present only when the server generated one — shown exactly once. */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["EventSubscriptionCreateResponseDto"];
+                };
             };
             /** @description Invalid URL / event types / quota exceeded */
             400: {
@@ -10043,13 +10226,13 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Updated subscription */
+            /** @description Updated subscription (secret masked) */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["EventSubscription"];
+                    "application/json": components["schemas"]["EventSubscriptionResponseDto"];
                 };
             };
             /** @description Not the owner */
@@ -10083,12 +10266,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Paged dead letters */
+            /** @description Paged dead letters (newest first) */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["EventSubscriptionDeadLetterPageDto"];
+                };
             };
             /** @description Not the owner */
             403: {
@@ -10113,12 +10298,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Replayed (ok true/false with error) */
+            /** @description Replayed (ok true removes the dead letter; ok false keeps it with error) */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ReplayDeadLetterResponseDto"];
+                };
             };
             /** @description Not the owner */
             403: {

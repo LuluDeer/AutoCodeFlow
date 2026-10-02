@@ -3796,7 +3796,7 @@
             "JWT": []
           }
         ],
-        "summary": "Send notification from task code (SDK)",
+        "summary": "Send notification from task code (SDK, admin only)",
         "tags": [
           "Notification Config"
         ]
@@ -7819,7 +7819,7 @@
     },
     "/tasks/executions/{execId}/artifacts": {
       "get": {
-        "description": "Returns the persisted artifact manifest reported by the executor's terminal callback. Requires an administrator JWT (global JwtAuthGuard).",
+        "description": "Returns the persisted artifact manifest reported by the executor's terminal callback. Requires an administrator JWT (global JwtAuthGuard + RolesGuard).",
         "operationId": "ArtifactsController_list",
         "parameters": [
           {
@@ -7836,6 +7836,9 @@
           "200": {
             "description": "Artifact manifest"
           },
+          "403": {
+            "description": "Non-admin caller"
+          },
           "404": {
             "description": "Execution not found"
           }
@@ -7845,7 +7848,7 @@
             "JWT": []
           }
         ],
-        "summary": "List execution artifacts (manifest)",
+        "summary": "List execution artifacts (manifest, admin only)",
         "tags": [
           "Execution Artifacts"
         ]
@@ -7879,6 +7882,9 @@
           "200": {
             "description": "File content"
           },
+          "403": {
+            "description": "Non-admin caller"
+          },
           "404": {
             "description": "Artifact not found"
           }
@@ -7888,7 +7894,7 @@
             "JWT": []
           }
         ],
-        "summary": "Download one execution artifact (streamed)",
+        "summary": "Download one execution artifact (streamed, admin only)",
         "tags": [
           "Execution Artifacts"
         ]
@@ -7907,7 +7913,7 @@
                 "schema": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/components/schemas/TaskTemplate"
+                    "$ref": "#/components/schemas/TaskTemplateResponseDto"
                   }
                 }
               }
@@ -7944,7 +7950,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TaskTemplate"
+                  "$ref": "#/components/schemas/TaskTemplateResponseDto"
                 }
               }
             }
@@ -7988,7 +7994,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TaskTemplate"
+                  "$ref": "#/components/schemas/TaskTemplateResponseDto"
                 }
               }
             }
@@ -8071,7 +8077,14 @@
         },
         "responses": {
           "201": {
-            "description": "Created task"
+            "description": "Created task (minimal face: identity/status/trigger fields)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InstantiateTaskResponseDto"
+                }
+              }
+            }
           },
           "400": {
             "description": "Missing name / invalid merged payload"
@@ -8097,13 +8110,13 @@
         "parameters": [],
         "responses": {
           "200": {
-            "description": "Subscription list",
+            "description": "Subscription list (secret always masked as '******'; ADMIN sees all, users see their own plus system-level)",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/components/schemas/EventSubscription"
+                    "$ref": "#/components/schemas/EventSubscriptionResponseDto"
                   }
                 }
               }
@@ -8136,7 +8149,14 @@
         },
         "responses": {
           "201": {
-            "description": "Created subscription"
+            "description": "Created subscription (secret masked). generatedSecret present only when the server generated one — shown exactly once.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventSubscriptionCreateResponseDto"
+                }
+              }
+            }
           },
           "400": {
             "description": "Invalid URL / event types / quota exceeded"
@@ -8179,11 +8199,11 @@
         },
         "responses": {
           "200": {
-            "description": "Updated subscription",
+            "description": "Updated subscription (secret masked)",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/EventSubscription"
+                  "$ref": "#/components/schemas/EventSubscriptionResponseDto"
                 }
               }
             }
@@ -8255,6 +8275,7 @@
             "required": false,
             "in": "query",
             "schema": {
+              "minimum": 1,
               "default": 1,
               "type": "number"
             }
@@ -8264,6 +8285,7 @@
             "required": false,
             "in": "query",
             "schema": {
+              "minimum": 1,
               "maximum": 100,
               "default": 20,
               "type": "number"
@@ -8272,7 +8294,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Paged dead letters"
+            "description": "Paged dead letters (newest first)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventSubscriptionDeadLetterPageDto"
+                }
+              }
+            }
           },
           "403": {
             "description": "Not the owner"
@@ -8315,7 +8344,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Replayed (ok true/false with error)"
+            "description": "Replayed (ok true removes the dead letter; ok false keeps it with error)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReplayDeadLetterResponseDto"
+                }
+              }
+            }
           },
           "403": {
             "description": "Not the owner"
@@ -11037,7 +11073,7 @@
           },
           "env": {
             "type": "object",
-            "description": "Environment variable overrides"
+            "description": "Environment variable overrides (≤50 keys, each value ≤4096 bytes)"
           },
           "startCommand": {
             "type": "string",
@@ -11076,7 +11112,8 @@
             "description": "Process PID"
           },
           "message": {
-            "type": "string"
+            "type": "string",
+            "description": "Free-form progress message (max 2000 chars; lands in the statusMessage text column and the list read surface)"
           }
         },
         "required": [
@@ -11357,9 +11394,80 @@
           }
         }
       },
-      "TaskTemplate": {
+      "TaskTemplateResponseDto": {
         "type": "object",
-        "properties": {}
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Template UUID",
+            "format": "uuid"
+          },
+          "key": {
+            "type": "string",
+            "description": "Stable unique key. Official templates use fixed keys (scheduled_backup / health_check / data_sync / log_cleanup / webhook_ping) aligned with the MCP TASK_TEMPLATES; custom keys are user-suggested.",
+            "example": "scheduled_backup"
+          },
+          "name": {
+            "type": "string",
+            "description": "Display name",
+            "maxLength": 128
+          },
+          "description": {
+            "type": "string",
+            "description": "Human description shown on template cards",
+            "nullable": true
+          },
+          "category": {
+            "type": "string",
+            "description": "Coarse category tag (备份/巡检/同步/清理/通知…) rendered as a Tag",
+            "nullable": true,
+            "maxLength": 32
+          },
+          "config": {
+            "type": "object",
+            "description": "Valid CreateTaskDto subset (no `name`; provided at instantiate time). Used as defaults when instantiating a task from this template.",
+            "additionalProperties": true,
+            "example": {
+              "triggerType": "cron",
+              "cronExpression": "0 2 * * *",
+              "runtime": "shell",
+              "entrypoint": "backup.sh",
+              "timeoutSeconds": 3600,
+              "maxRetry": 3,
+              "retryDelay": 60,
+              "blockStrategy": "discard"
+            }
+          },
+          "isOfficial": {
+            "type": "boolean",
+            "description": "True for migration-seeded official presets (read-only, cannot be deleted)"
+          },
+          "createdBy": {
+            "type": "string",
+            "description": "Username of the creator (JWT username). null = legacy row / official seed; deletion of null-owner rows is ADMIN-only.",
+            "nullable": true,
+            "maxLength": 100
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string",
+            "description": "Creation time (ISO-8601)"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string",
+            "description": "Last update time (ISO-8601)"
+          }
+        },
+        "required": [
+          "id",
+          "key",
+          "name",
+          "config",
+          "isOfficial",
+          "createdAt",
+          "updatedAt"
+        ]
       },
       "CreateTaskTemplateDto": {
         "type": "object",
@@ -11416,9 +11524,135 @@
           }
         }
       },
-      "EventSubscription": {
+      "InstantiateTaskResponseDto": {
         "type": "object",
-        "properties": {}
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Created task UUID",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string",
+            "description": "Task name (from the overlay body; unique across tasks)"
+          },
+          "status": {
+            "type": "string",
+            "description": "Lifecycle status of the created task",
+            "enum": [
+              "active",
+              "paused",
+              "deleted"
+            ]
+          },
+          "triggerType": {
+            "type": "string",
+            "description": "Trigger type expanded from the template config / overlay",
+            "enum": [
+              "cron",
+              "fixed_rate",
+              "api",
+              "manual"
+            ]
+          },
+          "runtime": {
+            "type": "string",
+            "description": "Runtime the executor will use",
+            "enum": [
+              "python",
+              "node",
+              "shell"
+            ]
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string",
+            "description": "Creation time (ISO-8601)"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "status",
+          "triggerType",
+          "runtime",
+          "createdAt"
+        ]
+      },
+      "EventSubscriptionResponseDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Subscription UUID",
+            "format": "uuid"
+          },
+          "userId": {
+            "type": "number",
+            "description": "Owner user id (integer). null = system-level subscription (ADMIN-managed, visible to every admin and to all users for troubleshooting reads).",
+            "nullable": true
+          },
+          "eventTypes": {
+            "type": "array",
+            "description": "Subscribed event names (stable catalog, append-only): execution.completed / execution.failed / executor.offline / deployment.completed",
+            "items": {
+              "type": "string"
+            },
+            "example": [
+              "execution.failed"
+            ]
+          },
+          "url": {
+            "type": "string",
+            "description": "Callback URL (public http(s); SSRF deep-validated on write and re-checked before every outbound delivery)",
+            "maxLength": 2048
+          },
+          "secret": {
+            "type": "string",
+            "description": "HMAC signing secret — always the mask placeholder '******' on every read surface (plaintext returned once as generatedSecret on create only)",
+            "example": "******"
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Whether delivery is enabled"
+          },
+          "consecutiveFailures": {
+            "type": "number",
+            "description": "Consecutive delivery failures (reset to 0 on any success)"
+          },
+          "lastFailureAt": {
+            "type": "string",
+            "description": "Timestamp of the most recent delivery failure; null = never failed",
+            "nullable": true,
+            "format": "date-time"
+          },
+          "lastFailureError": {
+            "type": "string",
+            "description": "Most recent failure summary (truncated to 512; never contains secret/payload)",
+            "nullable": true,
+            "maxLength": 512
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string",
+            "description": "Creation time (ISO-8601)"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string",
+            "description": "Last update time (ISO-8601)"
+          }
+        },
+        "required": [
+          "id",
+          "eventTypes",
+          "url",
+          "secret",
+          "enabled",
+          "consecutiveFailures",
+          "createdAt",
+          "updatedAt"
+        ]
       },
       "CreateEventSubscriptionDto": {
         "type": "object",
@@ -11454,6 +11688,27 @@
           "eventTypes"
         ]
       },
+      "EventSubscriptionCreateResponseDto": {
+        "type": "object",
+        "properties": {
+          "subscription": {
+            "description": "Created subscription (secret masked)",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/EventSubscriptionResponseDto"
+              }
+            ]
+          },
+          "generatedSecret": {
+            "type": "string",
+            "description": "Server-generated 32-byte hex secret — returned exactly once, on this response only. Absent when the caller supplied their own secret.",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        },
+        "required": [
+          "subscription"
+        ]
+      },
       "UpdateSubscriptionBody": {
         "type": "object",
         "properties": {
@@ -11477,6 +11732,91 @@
             "description": "Rotate the signing secret"
           }
         }
+      },
+      "EventSubscriptionDeadLetterResponseDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Dead letter UUID",
+            "format": "uuid"
+          },
+          "subscriptionId": {
+            "type": "string",
+            "description": "Owning subscription UUID",
+            "format": "uuid"
+          },
+          "eventType": {
+            "type": "string",
+            "description": "Event name that failed delivery (e.g. execution.failed)",
+            "maxLength": 64
+          },
+          "payload": {
+            "type": "object",
+            "description": "Complete outbound envelope at send time (event/occurredAt/data)",
+            "additionalProperties": true
+          },
+          "error": {
+            "type": "string",
+            "description": "Last failure summary (truncated to 1024)",
+            "maxLength": 1024
+          },
+          "attempts": {
+            "type": "number",
+            "description": "Actual delivery attempts (first attempt + outbox scanner retries, bounded by MAX_OUTBOX_ATTEMPTS)"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string",
+            "description": "When this dead letter was recorded (ISO-8601)"
+          }
+        },
+        "required": [
+          "id",
+          "subscriptionId",
+          "eventType",
+          "payload",
+          "error",
+          "attempts",
+          "createdAt"
+        ]
+      },
+      "EventSubscriptionDeadLetterPageDto": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "description": "Page of dead letters, newest first",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EventSubscriptionDeadLetterResponseDto"
+            }
+          },
+          "total": {
+            "type": "number",
+            "description": "Total matching rows before paging"
+          }
+        },
+        "required": [
+          "data",
+          "total"
+        ]
+      },
+      "ReplayDeadLetterResponseDto": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "description": "Whether the single replay delivery succeeded"
+          },
+          "error": {
+            "type": "string",
+            "description": "Failure summary when ok=false (row is kept for another try)",
+            "maxLength": 1024
+          }
+        },
+        "required": [
+          "ok"
+        ]
       },
       "CreateApiKeyDto": {
         "type": "object",
