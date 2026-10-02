@@ -27,6 +27,8 @@ import ViewToggle, { readViewMode, writeViewMode, type ExecutorViewMode } from '
 import GroupFilterBar from '../components/executor/GroupFilterBar';
 import ExecutorCardGrid from '../components/executor/ExecutorCardGrid';
 import BatchActionBar from '../components/executor/BatchActionBar';
+// B-13：卡片快捷按钮直达批量 confirm 流程（与批量操作条同一公共实现）
+import { confirmBatchReloadConfig, confirmBatchRotateToken, type BatchSummary } from '../components/executor/batchActions';
 import { useExecutorLive } from '../hooks/useExecutorLive';
 // P2-5：心跳三档着色与"长期离线"横幅阈值的共享口径（与后端判死同源）
 import {
@@ -115,6 +117,9 @@ export default function ExecutorListPage() {
   const effectiveViewMode: ExecutorViewMode = isMobile ? 'card' : viewMode;
   // UI-07 ③：批量选择（两视图共享选中集合）
   const [selectedRowKeys, setSelectedRowKeys] = useState<string[]>([]);
+  // B-13：rotate 成功台结果（明文 token 一次性展示）——从 BatchActionBar 上提：
+  // 卡片快捷按钮直达轮换时批量条未必挂载，结果弹窗必须由常驻的本页持有。
+  const [tokenResult, setTokenResult] = useState<BatchSummary | null>(null);
 
   // P3-11（executor lifecycle audit）：分组拉取失败不再让筛选器「静默消失」
   // ——旧实现只解构 data，错误时整个 Select 被移除且无任何提示。错误态原位
@@ -212,6 +217,8 @@ export default function ExecutorListPage() {
       key: 'status',
       // UI 打磨：90 内「版本漂移」等 4 字 Tag 逼近换行，行高抖动 → 110
       width: 110,
+      // B-14：状态列本地排序（前端行数据，online/offline 字典序）
+      sorter: (a: Executor, b: Executor) => a.status.localeCompare(b.status),
       render: (v: string, r: Executor) => (
         <Space orientation="vertical" size={0}>
           {/* 状态只有 online / offline 两态（executor.entity.ts:15-16）——原实现
@@ -305,6 +312,8 @@ export default function ExecutorListPage() {
       key: 'runningTaskCount',
       // TASKS-NOWRAP-01：100px——80px 会把「1/10任务」折成竖排三行
       width: 100,
+      // B-14：任务数列本地排序（旧快照 null/undefined 按 0 计）
+      sorter: (a: Executor, b: Executor) => (a.runningTaskCount ?? 0) - (b.runningTaskCount ?? 0),
       render: (_: unknown, r: Executor) => {
         const running = r.runningTaskCount ?? 0;
         const max = r.maxConcurrentTasks;
@@ -321,6 +330,9 @@ export default function ExecutorListPage() {
       dataIndex: 'lastHeartbeat',
       key: 'lastHeartbeat',
       width: 120,
+      // B-14：心跳列本地排序（无心跳按 0 = 最旧；新/旧快照 null 安全）
+      sorter: (a: Executor, b: Executor) =>
+        new Date(a.lastHeartbeat || 0).getTime() - new Date(b.lastHeartbeat || 0).getTime(),
       render: (v: string) => {
         if (!v) return '-';
         const hb = heartbeatLabel(t, v, token, heartbeatTimeoutMs);
@@ -472,6 +484,7 @@ export default function ExecutorListPage() {
         selected={selectedExecutors}
         isAdmin={isAdmin}
         onDone={() => setSelectedRowKeys([])}
+        onTokenSummary={setTokenResult}
       />
 
       {/* UI-16：列表请求失败不再只弹 toast —— 页内原位呈现错误块 + 重试入口
@@ -493,9 +506,22 @@ export default function ExecutorListPage() {
           onToggleSelect={toggleSelect}
           onOpenDetail={(id) => navigate(`/executors/${id}`)}
           isAdmin={isAdmin}
-          onReloadConfig={(ex) => setSelectedRowKeys([ex.id])}
-          onRotateToken={(ex) => setSelectedRowKeys([ex.id])}
+          // B-13：卡片快捷按钮直达批量 confirm 流程（此前仅 setSelectedRowKeys
+          // 弹批量条，要多跳一步）——单台集合走与批量按钮同一公共实现
+          onReloadConfig={(ex) => confirmBatchReloadConfig({ executors: [ex], t })}
+          onRotateToken={(ex) => confirmBatchRotateToken({ executors: [ex], t, onTokenSummary: setTokenResult })}
           staleTimeoutMs={heartbeatTimeoutMs}
+          // B-7：卡片空态动作与表格视图对齐——筛选无匹配给「清除筛选」，
+          // 机群确空给 ADMIN 安装入口
+          emptyExtra={
+            hasFilters ? (
+              <Button type="link" size="small" onClick={() => { setSearchText(''); setStatusFilter(undefined); setGroupFilter(undefined); }}>
+                {t('execList.clearFilters')}
+              </Button>
+            ) : isAdmin ? (
+              <Button type="primary" onClick={() => navigate('/executors/install')}>{t('execList.empty.installFirst')}</Button>
+            ) : undefined
+          }
         />
       ) : (
         <Table
@@ -513,7 +539,8 @@ export default function ExecutorListPage() {
           locale={{
             emptyText: hasFilters ? (
               <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('execList.empty.noMatch')}>
-                <Button type="link" size="small" onClick={() => { setSearchText(''); setStatusFilter(undefined); }}>
+                {/* B-7：与卡片空态同一复位口径（含分组筛选） */}
+                <Button type="link" size="small" onClick={() => { setSearchText(''); setStatusFilter(undefined); setGroupFilter(undefined); }}>
                   {t('execList.clearFilters')}
                 </Button>
               </Empty>
@@ -550,6 +577,35 @@ export default function ExecutorListPage() {
               {t('execList.installHint')}
             </Typography.Text>
           </Space>
+        )}
+      </Modal>
+
+      {/* B-13：批量/卡片直达轮换的 token 结果弹窗（一次性展示，由本页常驻持有
+          ——批量条在选中清空后卸载，不能承载它） */}
+      <Modal
+        title={t('batchAction.rotateResultTitle')}
+        open={tokenResult !== null}
+        width={640}
+        footer={<Button type="primary" onClick={() => setTokenResult(null)}>{t('batchAction.savedClose')}</Button>}
+        onCancel={() => setTokenResult(null)}
+      >
+        {tokenResult && (
+          <div style={{ maxHeight: 360, overflowY: 'auto' }}>
+            {tokenResult.outcomes.map((o) => (
+              <div key={o.executor.id} style={{ padding: '6px 0', borderBottom: `1px solid ${token.colorBorderSecondary}` }}>
+                <Space>
+                  <Typography.Text strong>{o.executor.appName}</Typography.Text>
+                  {o.ok ? (
+                    o.token
+                      ? <Typography.Text code copyable={{ text: o.token }} style={{ fontSize: 12 }}>{o.token.slice(0, 8)}…</Typography.Text>
+                      : <Typography.Text type="secondary">{t('batchAction.succeeded')}</Typography.Text>
+                  ) : (
+                    <Tag color="red">{t('batchAction.failedItem', { error: o.error })}</Tag>
+                  )}
+                </Space>
+              </div>
+            ))}
+          </div>
         )}
       </Modal>
     </div>

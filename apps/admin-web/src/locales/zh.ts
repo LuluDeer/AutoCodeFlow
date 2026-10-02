@@ -1346,8 +1346,11 @@ export default {
   'execPkg.action.push': '推送到调度机',
   'execPkg.action.deprecate': '弃用此包',
   'execPkg.action.activate': '激活此包',
+  // B-9：uploading 是后端真实枚举（executor-package.entity.ts），处理完成前不可弃用/激活（后端 400）
+  'execPkg.action.uploadingLockedTip': '上传中的包不可弃用或激活，请等待处理完成',
   'execPkg.status.active': '活跃',
   'execPkg.status.deprecated': '已弃用',
+  'execPkg.status.uploading': '上传中',
   'execPkg.status.deleted': '已删除',
   'execPkg.loadFail': '加载失败',
   'execPkg.operateFail': '操作失败',
@@ -1356,6 +1359,8 @@ export default {
   'execPkg.deleteConfirm': '确认删除',
   'execPkg.deleteConfirmDesc': '此操作不可撤销，确认删除此包？',
   'execPkg.delete': '删除',
+  // B-2：删除失败必须有反馈（此前 onOk 无 catch，失败零提示）
+  'execPkg.deleteFail': '删除失败',
   'execPkg.cancel': '取消',
   'execPkg.upload.title': '上传执行器包',
   'execPkg.upload.field.file': '包文件',
@@ -1373,6 +1378,8 @@ export default {
   'execPkg.upload.success': '上传成功',
   'execPkg.upload.fail': '上传失败',
   'execPkg.upload.extensionMismatch': '文件扩展名与所选包类型不匹配，请检查类型或更换文件',
+  // B-12：上传大小上限与后端 FileInterceptor limits（500 MB）对齐，超限前端先拦
+  'execPkg.upload.tooLarge': '文件超过大小上限（{{max}}），请压缩或拆分后再上传',
   'execPkg.push.titleWithPkg': '推送包到调度机 — {{name}}@{{version}}',
   'execPkg.push.title': '推送包',
   'execPkg.push.start': '开始推送',
@@ -1530,6 +1537,11 @@ export default {
   'executorDetail.editModal.maxConcurrent': '最大并发数',
   'executorDetail.config.title': '配置热更新',
   'executorDetail.config.pullDisabledTooltip': 'pull 模式执行器（NAT 内）不可入站推送配置；修改并发上限可随下一次拉取/心跳自动生效',
+  // B-1：空配置体推送二次确认（空白字段将重置为执行器默认值，必须明示）
+  'executorDetail.config.emptyPushConfirmTitle': '推送空配置？',
+  'executorDetail.config.emptyPushConfirmContent': '表单所有字段均为空：空配置体推送后，执行器将把空白字段重置为服务端默认配置（最大并发数/任务超时/心跳间隔等回到默认值）。确认继续？',
+  // B-5：pull 执行器 reload-config 后端返回 {queued:true}——如实提示「已入队」而非谎报成功
+  'executorDetail.config.queued': '配置更新已入队，将在执行器下次拉取（心跳）时生效',
   'executorDetail.field.dispatchMode': '派发模式',
   'executorDetail.dispatchMode.push': 'Push 推送',
   'executorDetail.dispatchMode.pull': 'Pull 回连',
@@ -2499,7 +2511,6 @@ export default {
   'execCard.hb.justNow': '刚刚',
   'execCard.hb.minAgo': '{{min}} 分钟前',
   'execCard.status.online': '在线',
-  'execCard.status.busy': '忙碌',
   'execCard.status.offline': '离线',
   'execCard.res.cpu': 'CPU',
   'execCard.res.mem': '内存',

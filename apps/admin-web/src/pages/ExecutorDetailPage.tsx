@@ -30,7 +30,7 @@ import { useAuthStore, isAdminUser } from '../store/auth';
 import { useThemeStore, selectResolvedTheme } from '../theme/store';
 import { CHART_COLORS } from '../theme/tokens';
 import PageSkeleton from '../components/PageSkeleton';
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 // UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
 import '../i18n';
@@ -118,6 +118,19 @@ export default function ExecutorDetailPage() {
   const [rotateForm] = Form.useForm();
   const [removeForm] = Form.useForm();
 
+  // B-6：同路由组件（/executors/:id）在 id 变化时**不重挂载**——上一个执行器
+  // 留下的弹窗开合、执行历史分页、删除影响面等局部状态会「跟人走」到下一个
+  // 执行器（读到的还是旧 id 拉的影响面/分页）。显式监听 id 变化整体重置。
+  useEffect(() => {
+    setExecPage(1);
+    setEditOpen(false);
+    setConfigOpen(false);
+    setRotateOpen(false);
+    setRemoveOpen(false);
+    setRemoveImpact(null);
+    setRemoveImpactLoading(false);
+  }, [id]);
+
   // FEAT-17: TanStack Query 改造——读侧三个 useRequest 换 queries.ts hooks
   // （metrics 30s 轮询由 refetchInterval 承担；分页参数进 queryKey）。
   const { data: executor, isLoading: loadingExecutor, error: executorError } = useExecutorDetail(id);
@@ -160,9 +173,37 @@ export default function ExecutorDetailPage() {
     mutationFn: (values: Record<string, unknown>) => executorsApi.reloadConfig(id!, values),
     // NETOPT-D P2-D4: 推送配置（maxConcurrentTasks/taskTimeout/heartbeatInterval）
     // 后执行器热更生效——此前漏失效，详情页无 refetchInterval，最长滞后 30s。
-    onSuccess: () => { message.success(t('executorDetail.configPushed')); setConfigOpen(false); refreshExecutor(); },
+    // B-5：pull 执行器（协议 ≥2，ADR-016 控制面走 pull 通道）后端返回
+    // {queued:true,commandId}——配置只是入队、下次拉取才生效，按响应体分支
+    // 如实提示，不与 push 的「已推送」混为一谈。
+    onSuccess: (res) => {
+      if (res && res.queued) {
+        message.success(t('executorDetail.config.queued'));
+      } else {
+        message.success(t('executorDetail.configPushed'));
+      }
+      setConfigOpen(false);
+      refreshExecutor();
+    },
   });
-  const reloadConfig = (values: Record<string, unknown>) => reloadConfigMut.mutate(values);
+  // B-1：onFinish 提交前检查空体——所有字段均未填时（此前打开即空表单且
+  // 直接 submit），一键推送空配置体会把执行器配置**静默重置**为服务端默认值
+  // （BatchActionBar 对该语义有明文记载）。有值提交维持原流程；空体必须先
+  // 二次确认，明示后果。
+  const reloadConfig = (values: Record<string, unknown>) => {
+    const hasAnyValue = Object.values(values).some((v) => v !== undefined && v !== null && v !== '');
+    if (!hasAnyValue) {
+      confirmModal.confirm({
+        title: t('executorDetail.config.emptyPushConfirmTitle'),
+        content: t('executorDetail.config.emptyPushConfirmContent'),
+        okText: t('executorDetail.confirm'),
+        cancelText: t('executorDetail.cancel'),
+        onOk: () => reloadConfigMut.mutate(values),
+      });
+      return;
+    }
+    reloadConfigMut.mutate(values);
+  };
   const reloading = reloadConfigMut.isPending;
 
   // AUTH-05 交接：轮换请求体携带可选 reason（≤200，审计 executor.rotate_token）
@@ -353,7 +394,18 @@ export default function ExecutorDetailPage() {
                   pull 执行器仍必须禁用——它们会**静默忽略** commands 字段，
                   比入站失败更危险（失败可见，静默不可见）。 */}
               <Tooltip title={isControlPlaneUnavailable(executor) ? t('executorDetail.config.pullDisabledTooltip') : undefined}>
-                <Button disabled={isControlPlaneUnavailable(executor)} onClick={() => setConfigOpen(true)}>{t('executorDetail.configHotReload')}</Button>
+                <Button
+                  disabled={isControlPlaneUnavailable(executor)}
+                  onClick={() => {
+                    // B-1：打开即回显已知值——maxConcurrentTasks 取当前 executor
+                    // 记录（后端 GET /:id 可得的唯一可回显配置项）；其余字段后端
+                    // 不下发，留空 = 保持执行器现有值（不再是无提示的整表空白）。
+                    // 先 reset 清掉上次会话遗留的半填字段，再回显。
+                    configForm.resetFields();
+                    configForm.setFieldsValue({ maxConcurrentTasks: executor.maxConcurrentTasks ?? undefined });
+                    setConfigOpen(true);
+                  }}
+                >{t('executorDetail.configHotReload')}</Button>
               </Tooltip>
             </Space.Compact>
             )}

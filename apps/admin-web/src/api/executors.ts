@@ -268,6 +268,12 @@ export const executorsApi = {
     signal
       ? client.get(`/executors/${id}/removal-impact`, { signal }) as Promise<ExecutorRemovalImpact>
       : client.get(`/executors/${id}/removal-impact`) as Promise<ExecutorRemovalImpact>,
+  /**
+   * B-5：pull 执行器（ADR-016 控制面走 pull 通道）的后端返回
+   * `{ queued: true, commandId }`（executor.controller.ts reload-config）——
+   * 配置只是**入队**，下次拉取/心跳才生效，不能与 push 的「已应用」混为一谈。
+   * push 路径返回执行器响应体（无 queued 字段）。
+   */
   reloadConfig: (id: string, data: {
     maxConcurrentTasks?: number;
     taskTimeoutSeconds?: number;
@@ -276,7 +282,7 @@ export const executorsApi = {
     adminApiUrlInternal?: string;
     adminApiUrlExternal?: string;
   }) =>
-    client.post(`/executors/${id}/reload-config`, data) as Promise<void>,
+    client.post(`/executors/${id}/reload-config`, data) as Promise<{ queued?: boolean; commandId?: string } | null | undefined>,
   setOffline: (id: string) =>
     client.post(`/executors/${id}/set-offline`) as Promise<Executor>,
   getExecutions: (id: string, params?: { page?: number; pageSize?: number }, signal?: AbortSignal) =>
