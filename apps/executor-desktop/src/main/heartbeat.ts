@@ -119,6 +119,29 @@ export class HeartbeatMonitor {
     }
   }
 
+  /**
+   * B-2：休眠唤醒后的迟滞锚点重置。
+   *
+   * 为什么需要：迟滞的两个判据——连续失败计数与「距上次成功 >90s」（
+   * advanceHeartbeatHysteresis 的 silentTooLong）——都锚在 lastSuccessAt 上。
+   * 机器休眠数小时后唤醒，lastSuccessAt 仍是**休眠前**的时刻，唤醒后的第一
+   * 轮探针只要失败（网络栈尚未就绪是常态）就立即满足 silentTooLong → 弹
+   * 「执行器离线」——典型的唤醒误报（全仓此前无任何 powerMonitor resume 处理）。
+   *
+   * 语义：两个通道都重置为「未判定」态（lastSuccessAt 清 null、失败计数清零）。
+   * 重置后首轮失败在 advanceHeartbeatHysteresis 里只推进计数（lastSuccessAt
+   * 为 null 时 silentTooLong 恒 false），连续 3 次失败才可能判死——即「跨
+   * resume 后首轮只计数不判死」。随后立即补探一轮，尽快重建真实锚点。
+   */
+  resetForResume(): void {
+    this.localHysteresis = initialHeartbeatHysteresisState();
+    this.adminHysteresis = initialHeartbeatHysteresisState();
+    // 未在运行（stop 后）时仅重置锚点即可，不需要也不应该发起探针。
+    if (this.timer !== null) {
+      this.check();
+    }
+  }
+
   private check(): void {
     // F-3: 双探针并行——本地存活 + 中台直达（AND：任一通道连续失败都判离线）。
     this.probe(`http://127.0.0.1:${this.port}/health/live`, 'local');

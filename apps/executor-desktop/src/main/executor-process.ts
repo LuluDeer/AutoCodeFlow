@@ -1,6 +1,5 @@
 import { ChildProcess, spawn } from 'child_process';
 import * as fs from 'fs';
-import * as http from 'http';
 import * as os from 'os';
 import * as path from 'path';
 import { app, BrowserWindow } from 'electron';
@@ -20,6 +19,13 @@ import {
   initialHeartbeatHysteresisState,
   type HeartbeatHysteresisState,
 } from './notifier-rules';
+// B-1②/B-9：启动期端口探测与 executor 健康面原语（纯 Node 模块，见该文件头注）。
+import {
+  isPortReachable,
+  probeHealthLive,
+  requestExecutorShutdown,
+  waitForPortFree,
+} from './port-probe';
 
 export type ExecutorStatus = 'stopped' | 'pending' | 'online' | 'offline';
 
@@ -67,6 +73,14 @@ export class ExecutorProcess {
   private onStatusChange: StatusChangeCallback | null = null;
   private currentStatus: ExecutorStatus = 'stopped';
   /**
+   * B-1②：启动期探测到目标端口已有**健康** executor 在听时的「复用」标记。
+   * 复用语义（最小实现）：跳过 spawn、仅挂健康轮询并标记 running——本会话
+   * 不持有子进程句柄，退出只走 HTTP 优雅停机（见 stop() 的 attach 分支）。
+   */
+  private attachedExisting = false;
+  /** B-13：部署成功的日志信号钩子（index.ts 接线到保留期清扫）。 */
+  onDeploySwitch: (() => void) | null = null;
+  /**
    * 最近一次 start() 下发给子进程的端口与共享令牌（仅主进程内存，与子进程 env
    * 同源）。stop() 的 HTTP 优雅停机通道凭此构造请求——必须用子进程**实际**拿到
    * 的值而不是当前配置：配置可能在启动后被改过但尚未重启。
@@ -93,6 +107,16 @@ export class ExecutorProcess {
    * 的 advanceHeartbeatHysteresis 注释（一天 86 次误报的修复）。
    */
   private heartbeatHysteresis: HeartbeatHysteresisState =
+    initialHeartbeatHysteresisState();
+  /**
+   * B-12：/health/live **liveness 通道**自己的迟滞状态。旧 catch 分支一次
+   * 探针失败（3s 超时窗口内的网络抖动/GC 停顿）就立刻 notifyStatus('offline')
+   * ——与 NETOPT-G P1-5 修掉的"单点心跳快照误报"同型，只是换了通道。
+   * 刻意不与 heartbeatHysteresis（admin 状态通道）共用同一份状态：两通道
+   * 合并计数会互相掩盖（同 heartbeat.ts F-3 分通道的理由），但**口径**一致：
+   * 连续 3 次失败、或距上次成功 >90s 才判离线。
+   */
+  private livenessHysteresis: HeartbeatHysteresisState =
     initialHeartbeatHysteresisState();
   /**
    * NETOPT-2⑦: 子进程输出按行缓冲（一个 data chunk ≠ 一行）。每次 start()
@@ -133,12 +157,61 @@ export class ExecutorProcess {
       log.warn('ExecutorProcess.start() called but process is already running');
       return;
     }
+    if (this.attachedExisting) {
+      log.warn('ExecutorProcess.start() called but an existing executor is already attached');
+      return;
+    }
     this.stopping = false;
+    this.attachedExisting = false;
     this.adminRegistration = 'unknown';
     // 记录下发给子进程的端口/令牌（stop 的 HTTP 优雅停机通道用，见字段注释）。
     this.childPort = config.executorPort;
     this.childSharedToken = resolveToken(config);
     this.notifyStatus('pending');
+
+    // ── B-1②：启动期端口占用检测（孤儿执行器处理）──────────────────
+    // 场景：主进程崩溃兜底退出/被强杀后，executor-node 子进程没有父亡联动
+    // （Job Object，记录为 N-06 不做），成孤儿继续占着端口接任务；桌面重启后
+    // 直接 spawn 会 EADDRINUSE——子进程秒退、只留一行日志，UI 毫无反馈。
+    // spawn 前先探测，三分支：
+    //   free     → 正常 spawn（下方主路径）；
+    //   healthy  → 有健康的 /health/live 在听 → 按最小语义「复用」：跳过 spawn、
+    //              挂健康轮询并标记 running（健康轮询会把状态翻成 online），
+    //              不再制造第二个绑不上端口的子进程；
+    //   occupied → 不健康（非 executor 或已僵死）：仅当 /api/shutdown（带共享
+    //              令牌）被受理——即确认监听者是持同一凭据的本执行器——才请它
+    //              退出并等端口释放；其余一律**不杀**（可能是用户的其它服务），
+    //              置 offline 并向调用方抛错（托盘/向导/设置页各自如实呈现）。
+    const startPort = config.executorPort;
+    if (await isPortReachable(startPort, 1_500)) {
+      if (await probeHealthLive(startPort, 3_000)) {
+        log.info(
+          `Port ${startPort} already served by a healthy executor; attaching without spawn (B-1 orphan reuse)`,
+        );
+        this.attachedExisting = true;
+        this.startHealthPoll(startPort);
+        return;
+      }
+      log.warn(
+        `Port ${startPort} is occupied by a non-healthy listener; requesting our executor (shared token) to shut down`,
+      );
+      const accepted = await requestExecutorShutdown(startPort, this.childSharedToken, 5_000);
+      if (accepted) {
+        const freed = await waitForPortFree(startPort, 10_000);
+        if (!freed) {
+          this.notifyStatus('offline');
+          throw new Error(
+            `端口 ${startPort} 上的旧执行器已收到停机请求，但 10 秒内仍未释放端口，本次启动已取消`,
+          );
+        }
+      } else {
+        this.notifyStatus('offline');
+        throw new Error(
+          `端口 ${startPort} 已被占用，且占用者不是本执行器的健康实例（已拒绝停机请求，不会强杀未知进程）。` +
+            '请确认该端口是否被其它程序占用，或先结束旧的执行器进程后再启动',
+        );
+      }
+    }
 
     const entryPath = this.getEntryPath();
     log.info(`Starting executor-node from: ${entryPath}`);
@@ -266,7 +339,24 @@ export class ExecutorProcess {
   }
 
   async stop(): Promise<void> {
-    if (!this.proc) return;
+    if (!this.proc) {
+      // B-1②：无子进程句柄——可能是 attach 模式（复用了既有监听者），也可能
+      // 本就没启动过。attach 模式下没有 kill 句柄，唯一停机通道是 HTTP 优雅
+      // 停机：只有持同一共享令牌的本执行器才会受理；外部进程拒绝时我们无法
+      // （也不该）强杀，仅解除关联并把状态如实置为 stopped。
+      this.stopHealthPoll();
+      if (this.attachedExisting) {
+        this.attachedExisting = false;
+        const accepted = await this.requestGracefulHttpShutdown();
+        if (accepted && this.childPort) {
+          await waitForPortFree(this.childPort, 10_000);
+        }
+      }
+      this.childPort = null;
+      this.childSharedToken = '';
+      this.notifyStatus('stopped');
+      return;
+    }
     this.stopping = true;
     // NETOPT-D P3-3: drain 期（上限 30s）health poll 仍跑会把 pending 翻回
     // online（/health/live 恒 200）——观感闪烁；先停 poll，代际守卫清在飞请求。
@@ -338,42 +428,10 @@ export class ExecutorProcess {
       // 被拒——不必发起，直接回落。
       return Promise.resolve(false);
     }
-    return new Promise((resolve) => {
-      const payload = Buffer.from('{}', 'utf-8');
-      const req = http.request(
-        {
-          hostname: '127.0.0.1',
-          port,
-          path: '/api/shutdown',
-          method: 'POST',
-          timeout: 3_000,
-          headers: {
-            'Content-Type': 'application/json',
-            'Content-Length': String(payload.length),
-            Authorization: `Bearer ${token}`,
-          },
-        },
-        (res) => {
-          res.resume();
-          const status = res.statusCode ?? 0;
-          const ok = status >= 200 && status < 300;
-          if (!ok) {
-            log.warn(`Graceful shutdown endpoint refused: HTTP ${status}`);
-          }
-          resolve(ok);
-        },
-      );
-      req.on('error', (err) => {
-        log.warn(`Graceful shutdown endpoint unreachable: ${err.message}`);
-        resolve(false);
-      });
-      req.on('timeout', () => {
-        req.destroy();
-        resolve(false);
-      });
-      req.write(payload);
-      req.end();
-    });
+    // B-1②：与启动期端口占用处理共用同一原语（port-probe.requestExecutorShutdown），
+    // 端点/鉴权/超时语义单一来源，避免两份 HTTP 拼装各自漂移。拒绝/不可达的
+    // 具体原因由 stop() 的 "HTTP graceful shutdown unavailable" 统一落日志。
+    return requestExecutorShutdown(port, token, 3_000);
   }
 
   /** win32: kill the executor and every descendant process tree. */
@@ -394,6 +452,9 @@ export class ExecutorProcess {
   }
 
   isRunning(): boolean {
+    // B-1②：attach 模式没有子进程句柄，但对用户语义就是"执行器在运行"
+    // （托盘/状态页据此显示停止按钮，config:save 的重启协商也应覆盖它）。
+    if (this.attachedExisting) return true;
     return this.proc !== null && this.proc.exitCode === null;
   }
 
@@ -543,6 +604,9 @@ export class ExecutorProcess {
   private startHealthPoll(port: number): void {
     this.stopHealthPoll();
     const gen = ++this.healthPollGen;
+    // B-12：每次 start 都是一轮新的 liveness 监控——上一次 start 留下的失败
+    // 计数/成功锚点不得带入（与 stopHealthPoll 的代际清场同语义）。
+    this.livenessHysteresis = initialHeartbeatHysteresisState();
     // Poll every 8 seconds; first check after 3s to allow executor to start
     let firstCheck = true;
     const check = async () => {
@@ -568,6 +632,11 @@ export class ExecutorProcess {
           req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
         });
         if (gen !== this.healthPollGen) return;
+        // B-12：liveness 成功即清零该通道失败计数（与 admin 通道的 applyAdminStatus
+        // 成功路径同口径——迟滞状态必须能在恢复时自愈，否则一次成功前的旧失败
+        // 会一直累积到下一轮抖动误判）。
+        const ok = advanceHeartbeatHysteresis(this.livenessHysteresis, 'ok', Date.now());
+        this.livenessHysteresis = ok.state;
         if (this.adminRegistration === 'failed') {
           // Process alive but admin registration/heartbeat is failing: the
           // tray must show offline until a success signal clears the flag.
@@ -579,8 +648,16 @@ export class ExecutorProcess {
         }
       } catch {
         if (gen !== this.healthPollGen) return;
-        // Only flip to offline if we were previously online/pending — ignore during initial startup grace
-        if (!firstCheck && (this.currentStatus === 'online' || this.currentStatus === 'pending')) {
+        // B-12：liveness 失败走与 admin 状态同一口径的迟滞（连续 3 次失败、
+        // 或距上次成功 >90s 才判离线），不再"一次探针失败立刻 offline"。
+        // 启动宽限（firstCheck）与"仅从 online/pending 翻转"的原语义保留。
+        const ev = advanceHeartbeatHysteresis(this.livenessHysteresis, 'failed', Date.now());
+        this.livenessHysteresis = ev.state;
+        if (
+          !firstCheck &&
+          ev.offline &&
+          (this.currentStatus === 'online' || this.currentStatus === 'pending')
+        ) {
           this.notifyStatus('offline');
         }
       }
@@ -602,6 +679,20 @@ export class ExecutorProcess {
       clearInterval(this.healthPollTimer);
       this.healthPollTimer = null;
     }
+  }
+
+  /**
+   * B-2：休眠唤醒后的迟滞锚点重置（与 HeartbeatMonitor.resetForResume 同期
+   * 由 index.ts 的 powerMonitor('resume') 调用）。
+   *
+   * applyAdminStatus（admin 状态通道）与 startHealthPoll 的 catch 分支
+   * （liveness 通道）都锚在 lastSuccessAt 上——机器休眠数小时后，旧锚点让
+   * 唤醒首轮失败立即满足 silentTooLong(>90s) 而误判离线。重置为「未判定」
+   * 态后，首轮失败只推进计数、不判死（见 notifier-rules 的判定口径）。
+   */
+  resetHysteresisForResume(): void {
+    this.heartbeatHysteresis = initialHeartbeatHysteresisState();
+    this.livenessHysteresis = initialHeartbeatHysteresisState();
   }
 
   /**
@@ -642,6 +733,14 @@ export class ExecutorProcess {
     }
   }
 
+  private broadcastLog(line: string): void {
+    BrowserWindow.getAllWindows().forEach((win) => {
+      if (!win.isDestroyed()) {
+        win.webContents.send('executor:log-line', line);
+      }
+    });
+  }
+
   /**
    * NETOPT-2⑦: 单行交付点（LineSplitter 的回调）。日志格式与旧实现逐字一致
    * （stdout → log.info `[executor] …`，stderr → log.warn `[executor:err] …`），
@@ -653,51 +752,38 @@ export class ExecutorProcess {
     } else {
       log.info(`[executor] ${line.trim()}`);
     }
-    this.handleChildOutput(line, isErr);
-  }
-
-  private broadcastLog(line: string): void {
-    BrowserWindow.getAllWindows().forEach((win) => {
-      if (!win.isDestroyed()) {
-        win.webContents.send('executor:log-line', line);
+    this.handleChildOutput(line);
+    // B-13：`[deploy] Current release for <app> now points to <key>` 是执行器
+    // 部署成功的日志信号（与 app-name-recovery 采集的是同一行）——桌面端没有
+    // 部署事件的直连通道，借这条日志触发保留期清扫（钩子由 index.ts 接线，
+    // sweep 自身有在飞守卫，重复行无害）。
+    if (!isErr && line.includes('now points to')) {
+      try {
+        this.onDeploySwitch?.();
+      } catch {
+        /* 清扫钩子绝不影响日志/状态主链 */
       }
-    });
+    }
   }
 
   /**
    * 6-1（audit-r4）：结构化解析子进程输出。
    *
    * executor-node 在 LOG_FORMAT=json 下输出单行 JSON 日志（logger.ts 的
-   * json 格式：timestamp/level/message + 元字段 + traceId）。旧实现只把
-   * 输出原样 pipe 进日志文件，错误分类完全依赖人工读文本。这里对 JSON 行
-   * 做无副作用解析：
-   *   - 解析成功 → 额外广播 `executor:log-structured` 结构化事件（渲染层可
-   *     按级别/字段渲染，设置页日志面无需再 regex 猜级别）；
-   *   - 解析失败（文本行/截断）→ 走既有文本通道，行为与旧版逐字节一致。
-   * 文本推断（inferStatusFromLog）不受影响——结构化通道只是加量，不改判据。
+   * json 格式：timestamp/level/message + 元字段 + traceId）。
+   * 文本推断（inferStatusFromLog）不受影响。
+   *
+   * B-6（审计三轮）：此前这里还会对 JSON 行**额外广播** `executor:log-structured`
+   * 到所有窗口——但 preload 从未暴露该通道、渲染层零消费，是纯耗 CPU/带宽的
+   * 死通道（每行日志一次 JSON.parse + 一次 webContents.send）。渲染层日志面
+   * （StatusWindow 的 normalizeLogLine）已从文本行解析出级别并精确着色，存在
+   * 等价数据源，故按"渲染已有等价日志源则删广播"的最小处置直接删除。
    */
-  private handleChildOutput(line: string, isErr: boolean): void {
+  private handleChildOutput(line: string): void {
     const trimmed = line.trim();
     if (trimmed) {
       this.broadcastLog(line);
       this.inferStatusFromLog(line);
-      if (trimmed.startsWith('{')) {
-        try {
-          const parsed = JSON.parse(trimmed) as Record<string, unknown>;
-          if (parsed && typeof parsed === 'object') {
-            BrowserWindow.getAllWindows().forEach((win) => {
-              if (!win.isDestroyed()) {
-                win.webContents.send('executor:log-structured', {
-                  ...parsed,
-                  channel: isErr ? 'stderr' : 'stdout',
-                });
-              }
-            });
-          }
-        } catch {
-          // 非 JSON（文本行/部分块）：走既有文本通道，行为不变。
-        }
-      }
     }
   }
 }

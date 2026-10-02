@@ -7,7 +7,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   saveAndCloseWizard: (cfg: Record<string, unknown>) =>
     ipcRenderer.invoke('config:save-and-close-wizard', cfg),
   testConnection: (url: string) => ipcRenderer.invoke('config:test-connection', url),
-  checkPort: (port: number) => ipcRenderer.invoke('config:check-port', port),
+  // B-8：host 透传——端口可用性检测必须按调用方表单的 executorHost 监听
+  // （与执行器实际 bind 的 host 同源），缺省仍回落 0.0.0.0（主进程归一化）。
+  checkPort: (port: number, host?: string) => ipcRenderer.invoke('config:check-port', port, host),
   // python_task_multiversion：设置页诊断——回报**实际生效**的 uv 与解释器池
   // （纯读、不 spawn 进程），让"配置没生效"这类问题当场可见。
   getPythonEnvStatus: () => ipcRenderer.invoke('config:python-env-status'),
