@@ -13,8 +13,8 @@
 | R2 | task/scheduler 域 | task module + block-strategy 闸门 + scheduler/cron/依赖/retry | R2-B | R2-fix-B | ✅ 完成（2026-10-02） |
 | R3 | auth/users/RBAC/项目域 | auth/api-keys/users/project + ADR-013 | R3-A | R3-fix-A | ✅ 完成（2026-10-02） |
 | R3 | SOP/Agent 协作域 | sop/agent/agent-collab 模块 + AgentSessionsPage/SopsPage | R3-B | R3-fix-B | ✅ 完成（2026-10-02） |
-| R4 | application/deployment/package 域 | application + executor-package + AppDeploymentPage | R4-A | — | 待开始 |
-| R4 | registry 域 | registry / registry-npm / registry-pypi + RegistryPage | R4-B | — | 待开始 |
+| R4 | application/deployment/package 域 | application + AppDeploymentPage | R4-A | R4-fix-A | ✅ 完成（2026-10-02） |
+| R4 | registry 域 | registry / registry-npm / registry-pypi + RegistryPage | R4-B | R4-fix-B | ✅ 完成（2026-10-02） |
 | R5 | executor-node 执行器侧 | callback/pull/zip-safety/interpreters/heartbeat 等 | R5-A | — | 待开始 |
 | R5 | executor-desktop 桌面端 | main/renderer/agent-host/config | R5-B | — | 待开始 |
 | R6 | 横切面 | notification/audit/artifacts/task-template/OpenAPI 契约/i18n | R6-A/B | — | 待开始 |
@@ -49,3 +49,12 @@
 - **R3 修复完成（2026-10-02）**：auth 侧 12/13——A-1 refreshToken 比对 sessionVersion（无 ver 存量令牌兼容放行，失配断链）；A-2 validate 回填 sid+接线 spec（revoke-others 保留当前会话）；A-3 OIDC 自动绑定收紧为「非 ADMIN+email_verified+email 一致」，ADMIN 仅预置 oidcSub；A-4 前端 refresh 前重读 localStorage+storage 事件跨 tab 同步；A-5 auth-cookie.util 死代码删除（F-06 文档漂移位置已列报告）；A-6 assertCanOperate 归一 principalId（id??userId，API-Key 不再旁路 owner scope，JWT 行为逐字节不变）；A-7 email 预检 409；A-8 删用户同事务清理 project_members；A-9 API Key 每用户 20 把上限（ConfigService 可覆盖）；A-10 吊销行 7 天清理（LeaderGate 代表性用例断言 1→2 同步更新）；A-11 clockTolerance 30s；A-13 SecuritySettings 自助改密表单；A-14 task:trigger 勾选透传。SOP/Agent 侧 12/12——B-1 澄清归属断言+dupe 限定 assignmentId；B-2 闸门对缺 resourceIdParam 判 DENY+slug 先解析再过闸；B-3 sop_reply_clarification 执行体入口校验会话归属；B-4 token 计数 Number 收敛防注入；B-5 resendAssignments 原样透传；B-6 stalled 复活路径；B-7 clarificationRound CAS（胜者才落行）；B-8 resume 拒 running+markRunning CAS+前端 resumable 排除；B-9 媒体上传 multer limits 对齐 100MB；B-10 会话域 retention cron（steps 90d/tool_calls 按 tier 30/180d，3 个可选 env 未入 Joi 走缺省回退，env-drift 守卫通过）；B-11 澄清游标下沉 SQL（最小步）；B-14 两页 15s 轮询+失焦暂停+amendedBodyMarkdown 域。
 - 暂缓记录：A-12 权限热路径缓存、B-11 payload 合并与 tick 放宽、B-12 审批闭环（feature 级）、B-13 复核退回通道。
 - 验证：admin-api jest 264 套件 4389 例全绿；admin-web vitest 184 文件 1394 例全绿；双端 tsc 零错误；env-drift 通过（199 键）；swagger:export + gen:api-types 再生成（users currentPassword 入契约）。
+
+### R4（2026-10-02，审计完成 → 修复中）
+
+- R4-A application/部署域 12 条：A-1 P1 卡死扫描误杀审批待办行（PENDING 复用挂审批位，5min 阈值强标 FAILED）；A-2 P1 pull 部署 10min 判 FAILED vs 命令 TTL 30min 不共刻度→槽位释放重复部署+心跳复活 FAILED 行；A-3 P2 redeploy 行复用 TOCTOU→乐观锁裸 500；A-4 P2 回滚/升级 entrypoint 被 startCommand 快照优先级吞掉；A-5 P2 应用删除不校验在途部署→孤儿进程+审批行静默级联；A-6 P2 getReleases 全量无界拉取；A-7 P2 同版本号重复上传钉旧包 URL+历史 zip 孤儿；A-8 P2 前端灰度被拒谎报成功（不读 ok/blockedReason）；A-9 P3 卡死扫描对未命中 id 误标快照；A-10 P3 全局审批待办有端点无 UI 入口（暂缓）；A-11 P3 部署 DTO 无尺寸闸；A-12 P3 applications findAll 无分页（暂缓）。
+- R4-B registry 域 11 条：B-1 P1 RegistryPage 安装命令指向 ${origin}/pypi/ 与 /npm/，两份 nginx 均无对应 location→200+index.html 静默失败；B-2 P2 compose ${VAR:-default} 使「置空回落官方源」契约失效；B-3 P2 列表代理吞上游错成空 200，前端 UI-16 错误态永不触发；B-4 P2 registry-pypi 无删除端点+索引双遍历；B-5 P2 getPypiPackage 坏契约潜伏代码；B-6 P3 413 在 body 收完后才生效；B-7 P3 multer memory storage 并发内存峰值（暂缓）；B-8 P3 accept 与后端白名单不一致；B-9 P3 索引锚点不解码 HTML 实体；B-10 P3 上游 409 压成 502；B-11 P3 npm auth token 无缓存。
+- 处置：R4-fix-A（A-1..9、A-11）+ R4-fix-B（B-1..6、B-8..11）并行派发；A-10、A-12、B-7 暂缓记录。
+- **R4 修复完成（2026-10-02）**：application 侧 10/11——A-1 审批待办三层排除（Raw 谓词+JS 防御+批量 UPDATE andWhere）；A-2 pull 豁免复用 statusMessage 前缀 commandId+行龄<cmdTtl 同刻度，心跳 UPDATE 加 In(deploying,upgrading,running) 守卫（含 UPGRADING 因升级全程保持该态、心跳是唯一出口）；A-4 选升级/回滚链同步改写 startCommand（前端确有按部署自定义入口，不反转载荷优先级）；A-6 分页流式聚合（页 1000/上限 5000）替代 SQL GROUP BY 保持响应形状；A-7 同号重传就地更新快照+无引用才 best-effort unlink（checksum/size 列缺记录）。registry 侧 10/11——B-1 选反代（registry 宿主端口 loopback-only，${origin} 是唯一局域网可达入口；补 /pypi/+/npm/+/packages/ 三个剥前缀块，PyPI 锚点是绝对路径 /packages 需同代）；B-2 compose ${VAR-default} 三族键+文档三方同步；B-4 registry-pypi 补 DELETE /admin/packages/{name}+索引单次遍历（ETag 逐字节不变）；B-6 ASGI Content-Length 预检中间件。
+- 暂缓记录：A-10 全局审批收件箱 UI、A-12 applications 分页、A-7 版本快照 checksum/size 列、B-7 multer 内存存储并发峰值、B-1 已知边界（verdaccio 上游包 tarball URL 子路径前缀需 url_prefix）。
+- 验证：admin-api 全量 4431 例全绿；admin-web 185 文件 1397 例；registry-pypi pytest 126 例；双端 tsc 零错误；compose-sandbox/env-drift/registry-npm selftest 全过。
