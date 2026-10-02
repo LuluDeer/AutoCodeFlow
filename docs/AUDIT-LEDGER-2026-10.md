@@ -11,8 +11,8 @@
 | R1 | admin-web Executor UI | ExecutorList/Detail/Wizard/Packages + api/executors.ts | R1-B | R1-fix | ✅ 完成（2026-10-02） |
 | R2 | metrics 域 | metrics module + scraper guard + 告警规则 + Dashboard 消费 | R2-A | R2-fix-A | ✅ 完成（2026-10-02） |
 | R2 | task/scheduler 域 | task module + block-strategy 闸门 + scheduler/cron/依赖/retry | R2-B | R2-fix-B | ✅ 完成（2026-10-02） |
-| R3 | auth/users/RBAC/项目域 | auth/api-keys/users/project + ADR-013 | R3-A | — | 待开始 |
-| R3 | SOP/Agent 协作域 | sop/agent/agent-collab 模块 + AgentSessionsPage/SopsPage | R3-B | — | 待开始 |
+| R3 | auth/users/RBAC/项目域 | auth/api-keys/users/project + ADR-013 | R3-A | R3-fix-A | ✅ 完成（2026-10-02） |
+| R3 | SOP/Agent 协作域 | sop/agent/agent-collab 模块 + AgentSessionsPage/SopsPage | R3-B | R3-fix-B | ✅ 完成（2026-10-02） |
 | R4 | application/deployment/package 域 | application + executor-package + AppDeploymentPage | R4-A | — | 待开始 |
 | R4 | registry 域 | registry / registry-npm / registry-pypi + RegistryPage | R4-B | — | 待开始 |
 | R5 | executor-node 执行器侧 | callback/pull/zip-safety/interpreters/heartbeat 等 | R5-A | — | 待开始 |
@@ -40,3 +40,12 @@
 - **R2 修复完成（2026-10-02）**：metrics 8/8——A-1 直方图改累计直写+中间桶断言锚定；A-3 查证结论：Prometheus static_configs 不做 DNS 展开（每抓取轮询解析到任一副本 IP），改 dns_sd_configs(type A)+relabel 补 service 标签，随 scale 自动伸缩；A-4 hook 经 events:{error} 接住降级帧→按失败段 refetch+「数据延迟」角标（useSyncExternalStore 独立暴露，不破坏 useExecutorLive 复用）；A-5 抓取令牌收窄为仅 GET /api/metrics。task/scheduler 11/11——B-1 misfire 阈值按 cron 周期推导（estimateCronPeriodMs+TTL 缓存）+FIRE_ONCE 补偿前落点校验双保险；B-3 依赖扇出改值投影表达式 GIN 索引（迁移 1790000000053，CONCURRENTLY）+@> 包含下推，迁移 spec 钉死索引/谓词对齐；B-4 唤醒 sweep keyset 分页（200×10 轮上限）；B-5 触发路径 per-(taskId+params) 5s Redis 门锁（fail-open，占用 409 同 discard 语义）；B-6 misfire 补偿前补依赖闸（dependency-gate.util 与 TaskService.checkDependencies 单一出处）+skipped 指标；B-7 终态回调守卫扩至 PENDING/WAITING 且未派发；B-8 维护窗口判定模块级有界缓存（键含分钟戳，DST 天然失效）；B-9 params 64KB 门统一三入口（params-size.constraint）；B-10 版本唯一冲突降级 warn；B-11 唤醒/claim 前 ACTIVE 闸（豁免 FAILED 保重试）。
 - 暂缓记录：A-6 时区三端口径（需时区政策拍板）、A-8 告警守卫盲区扩展、B-12 读面项目隔离（随 ADR-013）、B-13 keyset 分页重构、B-10 版本保留策略。
 - 验证：admin-api jest 259 套件 4314 例全绿；admin-web vitest 179 文件 1375 例全绿（含新增 use-metrics-stream 14 例）；双端 tsc 零错误；swagger:export + gen:api-types 已再生成，response-schema 守卫通过（61/218 无倒退）。
+
+### R3（2026-10-02，审计完成 → 修复中）
+
+- R3-A auth/users/RBAC/项目域 14 条：A-1 P1 改密后 refresh 链不断（refreshToken 不比对 sessionVersion）；A-2 P1 jwt.strategy validate 丢 sid→revoke-others 反杀当前设备；A-3 P1 OIDC username 撞名自动绑定可接管 admin；A-4 P2 多标签页 refresh 互踢（localStorage 不同步）；A-5 P2 auth-cookie.util 死代码假安心；A-6 P2 API-Key 主体绕过 owner scope；A-7 P2 自改 email 撞唯一索引裸 500；A-8 P2 删用户不清理 project_members；A-9 P3 API Key 无配额；A-10 P3 已吊销 refresh 行滞留 30 天；A-11 P3 JWT 无 clockTolerance；A-12 P3 权限热路径零缓存（暂缓）；A-13 P3 普通用户无自助改密 UI；A-14 P3 task:trigger scope 前端不可达。
+- R3-B SOP/Agent 协作域 14 条：B-1 P1 ingestClarification 无归属校验（跨执行器澄清注入+成本放大）；B-2 P1 boundary 对缺 resourceIdParam 放行，sop_get slug 绕过会话 scope；B-3 P1 sop_reply_clarification resourceKind=none 可越权改任意 SOP 并发版；B-4 P2 usage 数值模板拼 SQL（注入面）；B-5 P2 poll 丢 resendAssignments 数组形态；B-6 P2 stalled 僵尸态无复活路径；B-7 P2 clarificationRound 读改写无 CAS；B-8 P2 resume 允许 running 会话双跑；B-9 P2 媒体上传无 multer limits；B-10 P2 会话域 steps/tool_calls 无 retention；B-11 P2 poll 500ms tick N+1；B-12 P2 需审批工具闭环缺失（暂缓，feature 级）；B-13 P3 交付复核退回通道不存在（暂缓）；B-14 P3 前端两页无自动刷新+详情 N+1。
+- 处置：R3-fix-A（A-1..11、13、14）+ R3-fix-B（B-1..11、14 部分）并行派发；A-12、B-11 全量、B-12、B-13 暂缓记录。
+- **R3 修复完成（2026-10-02）**：auth 侧 12/13——A-1 refreshToken 比对 sessionVersion（无 ver 存量令牌兼容放行，失配断链）；A-2 validate 回填 sid+接线 spec（revoke-others 保留当前会话）；A-3 OIDC 自动绑定收紧为「非 ADMIN+email_verified+email 一致」，ADMIN 仅预置 oidcSub；A-4 前端 refresh 前重读 localStorage+storage 事件跨 tab 同步；A-5 auth-cookie.util 死代码删除（F-06 文档漂移位置已列报告）；A-6 assertCanOperate 归一 principalId（id??userId，API-Key 不再旁路 owner scope，JWT 行为逐字节不变）；A-7 email 预检 409；A-8 删用户同事务清理 project_members；A-9 API Key 每用户 20 把上限（ConfigService 可覆盖）；A-10 吊销行 7 天清理（LeaderGate 代表性用例断言 1→2 同步更新）；A-11 clockTolerance 30s；A-13 SecuritySettings 自助改密表单；A-14 task:trigger 勾选透传。SOP/Agent 侧 12/12——B-1 澄清归属断言+dupe 限定 assignmentId；B-2 闸门对缺 resourceIdParam 判 DENY+slug 先解析再过闸；B-3 sop_reply_clarification 执行体入口校验会话归属；B-4 token 计数 Number 收敛防注入；B-5 resendAssignments 原样透传；B-6 stalled 复活路径；B-7 clarificationRound CAS（胜者才落行）；B-8 resume 拒 running+markRunning CAS+前端 resumable 排除；B-9 媒体上传 multer limits 对齐 100MB；B-10 会话域 retention cron（steps 90d/tool_calls 按 tier 30/180d，3 个可选 env 未入 Joi 走缺省回退，env-drift 守卫通过）；B-11 澄清游标下沉 SQL（最小步）；B-14 两页 15s 轮询+失焦暂停+amendedBodyMarkdown 域。
+- 暂缓记录：A-12 权限热路径缓存、B-11 payload 合并与 tick 放宽、B-12 审批闭环（feature 级）、B-13 复核退回通道。
+- 验证：admin-api jest 264 套件 4389 例全绿；admin-web vitest 184 文件 1394 例全绿；双端 tsc 零错误；env-drift 通过（199 键）；swagger:export + gen:api-types 再生成（users currentPassword 入契约）。
