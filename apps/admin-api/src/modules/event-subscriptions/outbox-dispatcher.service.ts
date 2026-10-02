@@ -20,7 +20,8 @@
  * 设计要点：
  * - 派发实现复用 OutboundEventDispatcher.deliverOnce（同签名/同 SSRF 复核/
  *   同超时纪律），不复制第二份 HTTP 逻辑（P2 收敛纪律同 notifyExecutorKill）。
- * - 单行失败互相隔离（逐行 try/catch），扫描周期内一次最多取 50 行防抖。
+ * - 单行失败互相隔离（逐行 try/catch），扫描周期内一次最多取
+ *   OUTBOX_BATCH_SIZE（5）行防抖。
  * - 扫描自身抛错（DB 抖动）只记日志，不杀 interval——下个周期再试。
  * - EVENT_OUTBOX_ENABLED=false 时完全不落库不扫描（回退 FEAT-07 原行为）。
  * - 无订阅可投的行同样回写 dispatchedAt（事件对当前订阅集已"投递完毕"，
@@ -49,6 +50,9 @@ import { randomUUID } from "node:crypto";
 import { EventSubscription } from "./entities/event-subscription.entity";
 import { EventOutbox } from "./entities/event-outbox.entity";
 import { EventOutboxDeadLetter } from "./entities/event-outbox-dead-letter.entity";
+// B-1: 订阅死信（运维面）retention——此前 event_subscription_dead_letters
+// 终败每匹配订阅写一行（payload 完整 jsonb）而全仓零清理，永久堆积。
+import { EventSubscriptionDeadLetter } from "./entities/event-subscription-dead-letter.entity";
 // ARCH-31 §5: cron 维护任务统一 Leader 门禁（@Optional——既有单测装配 gate
 // 缺席 → null → 门禁不生效，先例同 log-retention-cleanup）。
 import { LeaderGateService } from "../../common/leader-gate/leader-gate.service";
@@ -86,6 +90,19 @@ export const OUTBOX_MAX_ROW_PROCESSING_MS = OUTBOUND_TIMEOUT_MS + 5_000;
 /** 单行租约的有效期；过期后其它实例可安全回收。 */
 export const OUTBOX_LEASE_MS = 60_000;
 
+/**
+ * B-2: 快速路径入队宽限窗（毫秒）。
+ *
+ * 此前入队行 nextAttemptAt=null → 下一次 5s 扫描即可 claim（扫描间隔 5s <
+ * 快速路径首投最坏 10s 超时），markFastPathDelivered 遇活跃租约 no-op——
+ * 快速路径仍在健康投递时行就被扫描抢走重投，慢订阅被**稳定双投**。
+ * 修法：入队即置 nextAttemptAt = now()+15s（> 10s 出站超时 + 收口余量）——
+ * 扫描只补「宽限窗过后仍未结清」的疑似已死行；快速路径全成功时
+ * markFastPathDelivered 在宽限窗内先行收口，重复投递收敛为零。
+ * 慢路径（扫描失败退避 outboxRetryDelayMs）语义不变。
+ */
+export const OUTBOX_FAST_PATH_GRACE_MS = 15_000;
+
 // ─── NETOPT-8②: 每日 retention ────────────────────────────────────────────
 /**
  * event_outbox（含 jsonb payload）此前只增不删：enqueue 每出站事件插一行、
@@ -99,6 +116,16 @@ export const OUTBOX_DISPATCHED_RETENTION_DAYS = 30;
 /** 死信保留期（天）：取更长期限 90d 保留 payload 供运维排查（无 replay 通路，
  *  与 event_subscription_dead_letters 的用户可重放语义不同，详见方法头注）。 */
 export const OUTBOX_DEAD_LETTER_RETENTION_DAYS = 90;
+/**
+ * B-1: 订阅死信（event_subscription_dead_letters）保留期（天）。
+ *
+ * 该表由 OutboundEventDispatcher.deadLetterToSubscribers 在行终败时**每匹配
+ * 订阅**写一行（payload 完整 jsonb + error/attempts），是死信列表 + 手动重放
+ * 的数据源——重放资产语义与 outbox 死信（纯归档）不同，但重放窗口不需要
+ * 无限期：与 outbox 死信对齐取 90d。分批 + LeaderGate 门禁与同文件
+ * handleDailyRetention 的既有两段一致（本服务是 retention 的统一落点）。
+ */
+export const SUBSCRIPTION_DEAD_LETTER_RETENTION_DAYS = 90;
 /** retention 分批大小（对齐 LOG_RETENTION_BATCH_SIZE） */
 export const OUTBOX_RETENTION_BATCH_SIZE = 5000;
 
@@ -185,6 +212,9 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
     private readonly subRepo: Repository<EventSubscription>,
     @InjectRepository(EventOutboxDeadLetter)
     private readonly outboxDeadLetterRepo: Repository<EventOutboxDeadLetter>,
+    // B-1: 订阅死信 retention 与 outbox 两段共用同一 cron/门禁/分批设施。
+    @InjectRepository(EventSubscriptionDeadLetter)
+    private readonly subscriptionDeadLetterRepo: Repository<EventSubscriptionDeadLetter>,
     // ARCH-31 §5: 多实例下 @Cron 仅 cron Leader 执行（@Global 恒提供；
     // @Optional 仅为既有单测装配兼容，先例同 log-retention-cleanup）。
     @Optional()
@@ -471,33 +501,13 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
       this.logger.warn(
         `Outbox row ${row.id} (${row.eventType}) dead-lettered after ${attempts} attempts: ${message}`,
       );
-      // ARCH-31 #8：终败死信同时落运维面（event_subscription_dead_letters，
-      // 死信列表 + 手动重放的数据源）。逐订阅 fail-open——单条失败不影响
-      // 其他订阅与行终态（独立 outbox 死信在下方事务里先行落库归档）。
-      if (dispatcher && targets && targets.length > 0) {
-        try {
-          const dl = await dispatcher.deadLetterToSubscribers(
-            row.eventType,
-            row.payload as never,
-            message,
-            attempts,
-          );
-          if (dl.deadLetteredCount < dl.targetCount) {
-            this.logger.warn(
-              `Terminal dead letters for row ${row.id}: ${dl.deadLetteredCount}/${dl.targetCount} persisted (operator surface incomplete)`,
-            );
-          }
-        } catch (err2: unknown) {
-          this.logger.error(
-            `Terminal dead-letter write failed for row ${row.id} (operator surface missed): ${
-              err2 instanceof Error ? err2.message : String(err2)
-            }`,
-          );
-        }
-      }
-      // Persist the independent outbox dead letter first. Only after that
-      // succeeds may the guarded source-row update make the event terminal.
-      // This intentionally leaves the row retryable when persistence fails.
+      // B-9: 先做「独立 outbox 死信落库 + guarded UPDATE 终态化」的原子事务，
+      // **成功后**才落订阅侧死信（event_subscription_dead_letters）。此前顺序
+      // 相反——终败先逐订阅写订阅死信、后才做 leaseToken 守卫 finalize：租约
+      // 已被他实例接管时（finalize affected≠1 → 本实例回滚），本实例写入的
+      // 订阅死信无法随之回滚，与他实例的写入重复落表。移到 finalize 之后，
+      // 租约失效即整体放弃（接管者按自己的派发结果重走本路径，死信不丢、
+      // 不重）。代价：订阅侧死信比行终态晚一步落库（同一请求窗内），可接受。
       try {
         await this.dataSource.transaction(async (manager) => {
           await manager.getRepository(EventOutboxDeadLetter).save(
@@ -542,6 +552,31 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
         );
         // The transaction rolls back both operations, leaving the source row
         // retryable and allowing a later scan to retry the dead-letter write.
+        return;
+      }
+      // finalize 成功（本实例确为租约持有者）后才落运维面死信。逐订阅
+      // fail-open——单条失败不影响其他订阅（此时行已终态，失败只损失运维
+      // 面完整性，按既有约定 WARN）。
+      if (dispatcher && targets && targets.length > 0) {
+        try {
+          const dl = await dispatcher.deadLetterToSubscribers(
+            row.eventType,
+            row.payload as never,
+            message,
+            attempts,
+          );
+          if (dl.deadLetteredCount < dl.targetCount) {
+            this.logger.warn(
+              `Terminal dead letters for row ${row.id}: ${dl.deadLetteredCount}/${dl.targetCount} persisted (operator surface incomplete)`,
+            );
+          }
+        } catch (err2: unknown) {
+          this.logger.error(
+            `Terminal dead-letter write failed for row ${row.id} (operator surface missed): ${
+              err2 instanceof Error ? err2.message : String(err2)
+            }`,
+          );
+        }
       }
       return;
     }
@@ -575,6 +610,13 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
    * OutboundEventDispatcher 的派发入口改为「写 outbox 行」后（FEAT-19 接线），
    * 本服务提供统一的落库入口供其调用：行落库成功才算事件"已接收"——
    * 进程重启后由扫描补投，不丢。
+   *
+   * B-2: 入队即置 nextAttemptAt = now()+OUTBOX_FAST_PATH_GRACE_MS（15s）——
+   * 快速路径首投（最坏 10s）+ markFastPathDelivered 收口都发生在该窗内，扫描
+   * 不会在投递进行中 claim 同一行（杜绝「收口遇活跃租约 no-op → 慢订阅稳定
+   * 双投」）。快速路径全败/部分败时行在宽限后被扫描接管重试（慢路径语义
+   * 不变——失败退避仍由 handleFailure 的 outboxRetryDelayMs 接管）。手动
+   * replay 走订阅死信面（deliverOnce 直投），不经本入口，不受影响。
    */
   async enqueue(
     eventType: string,
@@ -589,7 +631,9 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
           payload,
           dispatchedAt: null,
           attempts: 0,
-          nextAttemptAt: null,
+          // B-2: 快速路径宽限窗——见方法头注。NULL 意味着下一次 5s 扫描即可
+          // claim，与 10s 出站超时交叠出双投窗口。
+          nextAttemptAt: new Date(Date.now() + OUTBOX_FAST_PATH_GRACE_MS),
           leaseUntil: null,
           leaseToken: null,
           deadLettered: false,
@@ -655,6 +699,9 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
   /**
    * 每日 03:55 retention 清理；失败只记日志，等下一轮 cron 重试（与扫描
    * 互补：扫描管「未派发行的投递」，本任务管「终态行的堆积」）。
+   *
+   * B-1: 追加第三段——订阅死信（event_subscription_dead_letters）此前全仓
+   * 零清理。三段共用 LeaderGate 门禁与 cappedBatchedDelete 分批设施。
    */
   @Cron(OUTBOX_RETENTION_CRON)
   async handleDailyRetention(): Promise<void> {
@@ -684,6 +731,23 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
     } catch (err) {
       this.logger.error(
         `NETOPT-8②: outbox 死信 retention 清理失败: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+    // B-1: 订阅死信（运维面 + 手动重放数据源）——90d 后清理。重放通路存在
+    // 意味着行删除即资产灭失，但重放是「排障窗内的人工动作」，与 outbox 死信
+    // 同取 90d 检查窗（保留期是产品取舍：过长则 jsonb payload 无限堆积）。
+    try {
+      const subDeadDeleted = await this.cleanupExpiredSubscriptionDeadLetters();
+      if (subDeadDeleted > 0) {
+        this.logger.log(
+          `B-1: 清理 ${subDeadDeleted} 行超过 ${SUBSCRIPTION_DEAD_LETTER_RETENTION_DAYS} 天的订阅死信（event_subscription_dead_letters）`,
+        );
+      }
+    } catch (err) {
+      this.logger.error(
+        `B-1: 订阅死信 retention 清理失败: ${
           err instanceof Error ? err.message : String(err)
         }`,
       );
@@ -762,6 +826,45 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
             .delete({ id: In(victims.map((v) => v.outboxId)) });
         });
         return victims.length;
+      },
+    });
+  }
+
+  /**
+   * B-1: 清理超过保留期的 event_subscription_dead_letters 行，返回清理行数。
+   *
+   * 该表由 OutboundEventDispatcher.deadLetterToSubscribers 在 outbox 行终败时
+   * **每匹配订阅**写一行（payload 完整 jsonb，含签名字段原文），此前全仓
+   * 零 delete——永久堆积。本表无 FK 指向它、也无源行联动（独立于
+   * event_outbox），单表分批 DELETE 即可；谓词只认「createdAt < cutoff」，
+   * 边界内（90d 内）的死信绝不在删除集内（手动重放资产保留）。分批 DELETE
+   * + 轮数/墙钟双闸（LOG-RETENTION-01），now 可注入便于测试。
+   */
+  async cleanupExpiredSubscriptionDeadLetters(
+    now: Date = new Date(),
+  ): Promise<number> {
+    const cutoff = new Date(
+      now.getTime() - SUBSCRIPTION_DEAD_LETTER_RETENTION_DAYS * 86_400_000,
+    );
+    return cappedBatchedDelete({
+      batchSize: OUTBOX_RETENTION_BATCH_SIZE,
+      logLabel: "B-1 subscription dead-letter",
+      logger: this.logger,
+      executeBatch: async () => {
+        const result = await this.subscriptionDeadLetterRepo
+          .createQueryBuilder()
+          .delete()
+          .where(
+            `"id" IN (
+              SELECT "victim"."id" FROM "event_subscription_dead_letters" "victim"
+              WHERE "victim"."createdAt" < :cutoff
+              ORDER BY "victim"."id"
+              LIMIT :batchSize
+            )`,
+            { cutoff, batchSize: OUTBOX_RETENTION_BATCH_SIZE },
+          )
+          .execute();
+        return result.affected ?? 0;
       },
     });
   }

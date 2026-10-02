@@ -1,13 +1,20 @@
 import {
   Injectable,
+  Logger,
   NotFoundException,
   BadRequestException,
+  Optional,
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
+import { Cron } from "@nestjs/schedule";
 import { SystemConfig } from "./entities/system-config.entity";
 import { ConfigHistory } from "./entities/config-history.entity";
 import { UpsertConfigDto } from "./dto/upsert-config.dto";
+// B-10: config_history 只增不删——retention 复用 outbox 每日 retention 的
+// 公共设施（cappedBatchedDelete 分批 + LeaderGate 门禁，ARCH-31 §5 铁律）。
+import { LeaderGateService } from "../../common/leader-gate/leader-gate.service";
+import { cappedBatchedDelete } from "../../common/utils/capped-batched-delete.util";
 
 interface HistoryOptions {
   // PK-21（DEEP_REVIEW 0ef3bbe）：userId 对齐全库 integer 形态
@@ -16,13 +23,31 @@ interface HistoryOptions {
   ipAddress?: string;
 }
 
+/**
+ * B-10: 每键保留的最近历史条数。rollback 依赖历史行（oldValue/description/
+ * valueType/isSecret 快照），保 50 条让回滚在长活跃键上也始终可用；超出部分
+ * 每日清理（payload 为纯文本 old/new 值，长期堆积无审计收益——审计面在
+ * audit_logs，不在本表）。
+ */
+export const CONFIG_HISTORY_RETENTION_PER_KEY = 50;
+/** 每日 04:05 清理（6 段 cron；错开 03:30/03:35/03:40/03:45/03:55 的既有维护窗）。 */
+export const CONFIG_HISTORY_RETENTION_CRON = "0 5 4 * * *";
+/** retention 分批大小（对齐 OUTBOX_RETENTION_BATCH_SIZE / LOG_RETENTION_BATCH_SIZE）。 */
+export const CONFIG_HISTORY_RETENTION_BATCH_SIZE = 5000;
+
 @Injectable()
 export class SystemConfigService {
+  private readonly logger = new Logger(SystemConfigService.name);
+
   constructor(
     @InjectRepository(SystemConfig)
     private readonly repo: Repository<SystemConfig>,
     @InjectRepository(ConfigHistory)
     private readonly historyRepo: Repository<ConfigHistory>,
+    // B-10: @Cron 维护任务的多实例门禁（@Optional——既有单测装配 gate 缺席
+    // → null → 门禁不生效，先例同 outbox-dispatcher / log-retention-cleanup）。
+    @Optional()
+    private readonly leaderGate: LeaderGateService | null = null,
   ) {}
 
   // P3-1：SystemConfig 是极小配置表（个位数行），全表 find 无需分页——刻意保持现状。
@@ -388,6 +413,74 @@ export class SystemConfigService {
       })
       .orderBy("c.key", "ASC")
       .getMany();
+  }
+
+  // ─── B-10: config_history 每日 retention（@Cron Leader 门禁） ──────────────
+
+  /**
+   * 每日 04:05 清理；失败只记日志，等下一轮 cron 重试。upsert/rollback/remove
+   * 每次落一行历史（config_history 只增不删），本任务把每键超出保留数的旧行
+   * 分批清掉，rollback 依赖的最近 CONFIG_HISTORY_RETENTION_PER_KEY 条永不动。
+   */
+  @Cron(CONFIG_HISTORY_RETENTION_CRON)
+  async handleDailyHistoryRetention(): Promise<void> {
+    // ARCH-31 §5: 多实例下仅 cron Leader 执行
+    if (this.leaderGate && !this.leaderGate.isLeader) return;
+    try {
+      const deleted = await this.cleanupHistoryOverflow();
+      if (deleted > 0) {
+        this.logger.log(
+          `B-10: 清理 ${deleted} 行超出每键保留 ${CONFIG_HISTORY_RETENTION_PER_KEY} 条的 config_history 历史`,
+        );
+      }
+    } catch (err) {
+      this.logger.error(
+        `B-10: config_history retention 清理失败: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+
+  /**
+   * 清理每键超出「最近 N 条」的历史行，返回删除总行数。
+   *
+   * 窗口函数按 (configKey, createdAt DESC, id DESC) 编号——同刻并发写入由
+   * id 决胜，编号 ≤ N 的（每键最近 N 条，rollback 可用面）绝不在删除集内。
+   * 分批 DELETE + 轮数/墙钟双闸（LOG-RETENTION-01），单晚删不完的余量交下
+   * 一个 cron 周期（幂等）。
+   */
+  async cleanupHistoryOverflow(): Promise<number> {
+    return cappedBatchedDelete({
+      batchSize: CONFIG_HISTORY_RETENTION_BATCH_SIZE,
+      logLabel: "B-10 config-history",
+      logger: this.logger,
+      executeBatch: async () => {
+        const result = await this.historyRepo
+          .createQueryBuilder()
+          .delete()
+          .where(
+            `"id" IN (
+              SELECT "victim"."id" FROM (
+                SELECT "h"."id", ROW_NUMBER() OVER (
+                  PARTITION BY "h"."configKey"
+                  ORDER BY "h"."createdAt" DESC, "h"."id" DESC
+                ) AS "rn"
+                FROM "config_history" "h"
+              ) "victim"
+              WHERE "victim"."rn" > :keep
+              ORDER BY "victim"."id"
+              LIMIT :batchSize
+            )`,
+            {
+              keep: CONFIG_HISTORY_RETENTION_PER_KEY,
+              batchSize: CONFIG_HISTORY_RETENTION_BATCH_SIZE,
+            },
+          )
+          .execute();
+        return result.affected ?? 0;
+      },
+    });
   }
 }
 
