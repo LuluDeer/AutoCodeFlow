@@ -557,6 +557,10 @@ export default {
   'registry.upload.adminOnly': '上传私有依赖包仅管理员可用（会影响所有任务的依赖解析）',
   'registry.refresh': '刷新',
   'registry.pypiHint': '配置 pip 使用私有源：',
+  // B-1：/pypi/、/npm/ 反代路由已补齐（apps/admin-web/nginx.conf），但私有源
+  // 一律要求凭据——命令可用性依赖部署下发的账号，必须随命令一并说明。
+  'registry.pypiCredHint': '该地址需私有源凭据：使用部署下发的 REGISTRY_USER / REGISTRY_PASS（pip 安装时会提示输入账号密码）。',
+  'registry.npmCredHint': '该地址需认证：用部署下发的 npm 服务账号（NPM_REGISTRY_USER / NPM_REGISTRY_PASS）或 Verdaccio 注册账号执行 npm login。',
   'registry.pypiErrorTitle': 'PyPI 包列表加载失败',
   'registry.pypiEmpty': '暂无 PyPI 包，点击上传添加第一个包',
   'registry.pypiUploadTitle': '上传 PyPI 包',
@@ -581,7 +585,7 @@ export default {
   'registry.field.nameRequired': '请输入包名',
   'registry.field.version': '版本',
   'registry.field.versionRequired': '请输入版本号',
-  'registry.field.file': '包文件 (.whl / .tar.gz)',
+  'registry.field.file': '包文件 (.whl / .tar.gz / .zip)',
   'registry.field.fileRequired': '请选择文件',
   'registry.chooseFile': '选择文件',
   'registry.cancel': '取消',
@@ -1861,6 +1865,7 @@ export default {
   'appDeploy.msg.upgradeStarted': '升级已启动，稍后自动完成',
   'appDeploy.msg.upgradeFail': '升级失败',
   'appDeploy.msg.noRunningUpgrade': '当前没有运行中的实例需要升级',
+  'appDeploy.msg.upgradeAllBlocked': '灰度发布未启动：{{reason}}',
   'appDeploy.msg.upgradeAllDone': '已触发 {{succeeded}}/{{total}} 个实例升级',
   'appDeploy.msg.upgradeAllFail': '批量升级失败',
   'appDeploy.col.executor': '执行器',
