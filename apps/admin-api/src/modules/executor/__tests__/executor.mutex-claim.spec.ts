@@ -234,6 +234,80 @@ describe("ExecutorService mutex claim (MUTEX-01)", () => {
     ]);
   });
 
+  it("N-15 全局互斥：组行 FOR UPDATE 先于执行器行锁，占用判定不带设备条件", async () => {
+    mutexGroupRepo.findOne.mockResolvedValue({
+      id: "group-1",
+      name: "sso-site",
+      maxConcurrentPerDevice: 1,
+      scope: "global",
+    });
+    occupancyCount = 0;
+    const outcome = await (service as any).claimExecutorSlotForExecution(
+      candidate,
+      groupedExecution,
+    );
+
+    expect(outcome).toBe("claimed");
+    // ① 组行锁在执行器行锁之前（固定锁序 组→执行器，防死锁）
+    const lockIdx =
+      txQueries.map((q) => q.sql).indexOf("FOR UPDATE") === -1
+        ? txQueries.findIndex((q) => q.sql.includes("FOR UPDATE"))
+        : txQueries.findIndex((q) => q.sql.includes("FOR UPDATE"));
+    const groupLockIdx = txQueries.findIndex(
+      (q) => q.sql.includes('"mutex_groups"') && q.sql.includes("FOR UPDATE"),
+    );
+    const execLockIdx = txQueries.findIndex(
+      (q) => q.sql.includes('"executors"') && q.sql.includes("FOR UPDATE"),
+    );
+    expect(groupLockIdx).toBeGreaterThanOrEqual(0);
+    expect(execLockIdx).toBeGreaterThan(groupLockIdx);
+    expect(lockIdx).toBe(groupLockIdx);
+    // ② 组行锁参数 = 组 id
+    expect(txQueries[groupLockIdx].params).toEqual([
+      groupedExecution.mutexGroupId,
+    ]);
+    // ③ 占用判定不带设备条件（全局档：组内跨设备计数）
+    const occ = occupancyCountQuery()!;
+    expect(occ.sql).not.toContain('"executorAddress"');
+    expect(occ.params).toEqual([groupedExecution.mutexGroupId]);
+  });
+
+  it("N-15 全局互斥：组内占用已满（跨设备计数）→ mutex_full", async () => {
+    mutexGroupRepo.findOne.mockResolvedValue({
+      id: "group-1",
+      name: "sso-site",
+      maxConcurrentPerDevice: 1,
+      scope: "global",
+    });
+    occupancyCount = 1;
+    const outcome = await (service as any).claimExecutorSlotForExecution(
+      candidate,
+      groupedExecution,
+    );
+    expect(outcome).toBe("mutex_full");
+    expect(updates()).toHaveLength(0);
+  });
+
+  it("N-15 设备档（默认）：不发组行锁，占用判定带设备条件（存量行为回归锚）", async () => {
+    // beforeEach 的组桩无 scope 字段 → 设备档
+    occupancyCount = 0;
+    await (service as any).claimExecutorSlotForExecution(
+      candidate,
+      groupedExecution,
+    );
+    expect(
+      txQueries.some(
+        (q) => q.sql.includes('"mutex_groups"') && q.sql.includes("FOR UPDATE"),
+      ),
+    ).toBe(false);
+    const occ = occupancyCountQuery()!;
+    expect(occ.sql).toContain('"executorAddress"');
+    expect(occ.params).toEqual([
+      candidate.address,
+      groupedExecution.mutexGroupId,
+    ]);
+  });
+
   it("挂组执行：同设备同组占用已满 → mutex_full（不占坑、不落标记）", async () => {
     occupancyCount = 1; // >= maxConcurrentPerDevice(1)
     const outcome = await (service as any).claimExecutorSlotForExecution(

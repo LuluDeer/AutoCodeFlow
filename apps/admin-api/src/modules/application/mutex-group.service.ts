@@ -53,6 +53,8 @@ export class MutexGroupService {
     const group = this.repo.create({
       name,
       maxConcurrentPerDevice: dto.maxConcurrentPerDevice ?? 1,
+      // N-15：作用域默认 device（存量行为）
+      scope: dto.scope ?? "device",
       description: dto.description?.trim() || null,
     });
     try {
@@ -87,6 +89,11 @@ export class MutexGroupService {
     }
     if (dto.maxConcurrentPerDevice !== undefined) {
       group.maxConcurrentPerDevice = dto.maxConcurrentPerDevice;
+    }
+    // N-15：作用域可改（改 global 即时收紧派发，改回 device 释放跨设备约束；
+    // 在途 WAITING 由 sweep 重派自愈，无额外迁移动作）
+    if (dto.scope !== undefined) {
+      group.scope = dto.scope;
     }
     if (dto.description !== undefined) {
       group.description = dto.description?.trim() || null;

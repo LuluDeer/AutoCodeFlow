@@ -4674,6 +4674,12 @@ export interface components {
              * @default 1
              */
             maxConcurrentPerDevice: number;
+            /**
+             * @description 组作用域：device=单点互斥（每台设备同时最多 N 条，跨设备并发）；global=全局互斥（全平台同时最多 N 条，单点登录顶号类场景）。默认 device
+             * @default device
+             * @enum {string}
+             */
+            scope: "device" | "global";
             /** @description 组用途说明 */
             description?: string;
         };
@@ -4685,6 +4691,12 @@ export interface components {
              * @default 1
              */
             maxConcurrentPerDevice: number;
+            /**
+             * @description 组作用域：device=单点互斥（每台设备同时最多 N 条，跨设备并发）；global=全局互斥（全平台同时最多 N 条，单点登录顶号类场景）。默认 device
+             * @default device
+             * @enum {string}
+             */
+            scope: "device" | "global";
             /** @description 组用途说明 */
             description?: string;
         };

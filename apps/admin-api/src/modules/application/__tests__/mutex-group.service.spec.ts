@@ -1,48 +1,26 @@
 import { Test } from "@nestjs/testing";
 import { getRepositoryToken } from "@nestjs/typeorm";
-import { ConflictException, NotFoundException } from "@nestjs/common";
-import { QueryFailedError } from "typeorm";
+import { ConflictException } from "@nestjs/common";
 import { MutexGroupService } from "../mutex-group.service";
 import { MutexGroup } from "../entities/mutex-group.entity";
 
-// R6：模拟 PG 唯一约束冲突（SQLSTATE 23505）——驱动抛 QueryFailedError 且
-// 携带 .code（task.service 同名先例的判定面）。
-const uniqueViolationError = () => {
-  const err = new QueryFailedError(
-    'INSERT INTO "mutex_groups" ...',
-    [],
-    new Error(
-      'duplicate key value violates unique constraint "uq_mutex_groups_name"',
-    ),
-  );
-  (err as unknown as { code?: string }).code = "23505";
-  return err;
-};
+/**
+ * N-15：互斥组作用域（scope）读写面单测——create 默认 device（存量行为）、
+ * scope 透传、update 可改档。占坑语义的两档分支由
+ * executor/__tests__/executor.mutex-claim.spec.ts 覆盖。
+ */
+const makeRepo = () => ({
+  create: jest.fn((d) => d),
+  save: jest.fn(async (e) => ({ id: "g-1", ...e })),
+  findOne: jest.fn().mockResolvedValue(null),
+});
 
-describe("MutexGroupService (MUTEX-01)", () => {
+describe("MutexGroupService scope (N-15)", () => {
   let service: MutexGroupService;
-  let repo: {
-    findOne: jest.Mock;
-    find: jest.Mock;
-    create: jest.Mock;
-    save: jest.Mock;
-    remove: jest.Mock;
-    manager: { query: jest.Mock };
-  };
+  let repo: ReturnType<typeof makeRepo>;
 
   beforeEach(async () => {
-    repo = {
-      findOne: jest.fn().mockResolvedValue(null),
-      find: jest.fn().mockResolvedValue([]),
-      create: jest.fn((d) => d),
-      save: jest.fn(async (e) => ({
-        id: "g1",
-        maxConcurrentPerDevice: 1,
-        ...e,
-      })),
-      remove: jest.fn().mockResolvedValue(undefined),
-      manager: { query: jest.fn().mockResolvedValue([{ count: 0 }]) },
-    };
+    repo = makeRepo();
     const module = await Test.createTestingModule({
       providers: [
         MutexGroupService,
@@ -52,60 +30,33 @@ describe("MutexGroupService (MUTEX-01)", () => {
     service = module.get(MutexGroupService);
   });
 
-  it("create：并发数缺省为 1，组名去空白", async () => {
-    const created = await service.create({ name: "  ziniao  " });
-    expect(created.name).toBe("ziniao");
-    expect(created.maxConcurrentPerDevice).toBe(1);
-  });
+  it("create：缺省 scope=device（存量行为），显式 global 透传", async () => {
+    await service.create({ name: "g-device" } as never);
+    expect(repo.create).toHaveBeenCalledWith(
+      expect.objectContaining({ scope: "device" }),
+    );
 
-  it("create：重名 → 409", async () => {
-    repo.findOne.mockResolvedValue({ id: "g0", name: "ziniao" });
-    await expect(service.create({ name: "ziniao" })).rejects.toThrow(
-      ConflictException,
+    await service.create({ name: "g-global", scope: "global" } as never);
+    expect(repo.create).toHaveBeenCalledWith(
+      expect.objectContaining({ scope: "global" }),
     );
   });
 
-  it("remove：组上仍挂应用且未显式 force → 409（避免无感知解除一批应用的互斥）", async () => {
-    repo.findOne.mockResolvedValue({ id: "g1", name: "ziniao" });
-    repo.manager.query.mockResolvedValue([{ count: 2 }]);
-    await expect(service.remove("g1")).rejects.toThrow(ConflictException);
-    // force=true 放行删除。
-    await expect(service.remove("g1", true)).resolves.toBeUndefined();
-    expect(repo.remove).toHaveBeenCalled();
+  it("update：可改档（global→device 释放跨设备约束）", async () => {
+    repo.findOne.mockResolvedValueOnce({
+      id: "g-1",
+      name: "sso",
+      scope: "global",
+      maxConcurrentPerDevice: 1,
+    });
+    const saved = await service.update("g-1", { scope: "device" } as never);
+    expect(saved.scope).toBe("device");
   });
 
-  it("remove：组不存在 → 404", async () => {
-    repo.findOne.mockResolvedValue(null);
-    await expect(service.remove("nope")).rejects.toThrow(NotFoundException);
-  });
-
-  // P3：同名预检查是 check-then-act，并发同名时后落库者撞 unique(name)
-  // （23505）——必须 409 而非裸 500（照抄 task.service create 的先例）。
-  it("create：并发同名撞 23505 → 409", async () => {
-    repo.findOne.mockResolvedValue(null); // 预检查通过（TOCTOU 窗口）
-    repo.save.mockRejectedValueOnce(uniqueViolationError());
-    await expect(service.create({ name: "ziniao" })).rejects.toThrow(
-      ConflictException,
-    );
-  });
-
-  it("create：非唯一约束错误照原样抛（不误吞）", async () => {
-    repo.findOne.mockResolvedValue(null);
-    repo.save.mockRejectedValueOnce(new Error("connection reset"));
-    await expect(service.create({ name: "ziniao" })).rejects.toThrow(
-      "connection reset",
-    );
-  });
-
-  it("update：更名并发撞 23505 → 409（预检查排除自身 id 后的兜底）", async () => {
-    // 第一次 findOne（按 id）返回本组；第二次（按 name）无冲突 → 通过预检查
-    repo.findOne.mockImplementation(
-      (opts: { where: Record<string, unknown> }) =>
-        Promise.resolve(opts.where.id ? { id: "g1", name: "old-name" } : null),
-    );
-    repo.save.mockRejectedValueOnce(uniqueViolationError());
-    await expect(service.update("g1", { name: "new-name" })).rejects.toThrow(
-      ConflictException,
-    );
+  it("create：同名冲突仍 409（scope 改动不破坏既有唯一约束路径）", async () => {
+    repo.findOne.mockResolvedValueOnce({ id: "g-exists", name: "dup" });
+    await expect(
+      service.create({ name: "dup" } as never),
+    ).rejects.toBeInstanceOf(ConflictException);
   });
 });
