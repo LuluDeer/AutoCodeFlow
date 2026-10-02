@@ -478,3 +478,11 @@ export const EXECUTOR_VERSION = readPackageVersion();
  * PROTOCOL_CONTROL_PLANE_MIN 仍为 2，不改变任何既有分支。
  */
 export const PROTOCOL_VERSION = 4;
+
+/**
+ * A-6（P2）：express.json() 请求体上限。express 默认 100KB，而 admin 派发载荷
+ * 对 glueSource 没有长度上限——超过 100KB 的 glue 任务在 node 执行器上必然
+ * 413（python 执行器无此限，同一任务两端一收一拒）。对齐放宽到 2MB。
+ * 导出为常量以便测试锚定；main.ts 的 express.json({ limit }) 消费同一来源。
+ */
+export const JSON_BODY_LIMIT = '2mb';

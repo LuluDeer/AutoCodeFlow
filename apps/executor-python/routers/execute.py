@@ -17,7 +17,7 @@ import time
 import uuid
 import random
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -1025,7 +1025,13 @@ def _get_task_lock(task_id: str) -> asyncio.Lock:
     （这正是 _live_executions 注册表用 threading.Lock 的原因）。因此锁字典
     按当前运行循环分桶，循环切换时整体失效重建：生产环境只有一个循环，
     行为不变；测试环境每个循环拿到干净的一组锁。dict 读写全程无 await，
-    threading.Lock 保证跨线程安全——与注册表同一加锁模式。"""
+    threading.Lock 保证跨线程安全——与注册表同一加锁模式。
+
+    A-7（P3）：字典此前按 taskId 只增不减——每来一个新任务（executionId 派生
+    键）就永久留一把锁，长周期执行器内存无界爬升。现在用 _RecyclableTaskLock：
+    释放后空闲 TASK_LOCK_IDLE_RECYCLE_SECONDS 即从字典摘除（node
+    task-worker.ts 的 IDLE_RECYCLE_MS=5min 同款常量与「命中即取消回收」语义）；
+    二次校验保证绝不摘除在用/已换新的锁。"""
     global _task_locks, _task_locks_loop
     loop = asyncio.get_running_loop()
     with _task_locks_guard:
@@ -1034,9 +1040,57 @@ def _get_task_lock(task_id: str) -> asyncio.Lock:
             _task_locks_loop = loop
         lock = _task_locks.get(task_id)
         if lock is None:
-            lock = asyncio.Lock()
+            lock = _RecyclableTaskLock(task_id)
             _task_locks[task_id] = lock
         return lock
+
+
+# A-7：锁空闲回收窗口——与 node task-worker.ts IDLE_RECYCLE_MS (5 * 60_000ms)
+# 同值同语义。
+TASK_LOCK_IDLE_RECYCLE_SECONDS = 5 * 60
+
+
+class _RecyclableTaskLock(asyncio.Lock):
+    """E6 任务锁 + A-7 空闲回收：release 后空闲满 TASK_LOCK_IDLE_RECYCLE_SECONDS
+    即把自己从 _task_locks 摘除；再次 acquire 取消待执行的回收（node
+    TaskWorkerManager.getWorker「任何命中都视为活动」的同款语义）。"""
+
+    __slots__ = ('_task_id', '_recycle_handle')
+
+    def __init__(self, task_id: str):
+        super().__init__()
+        self._task_id = task_id
+        self._recycle_handle: asyncio.TimerHandle | None = None
+
+    async def acquire(self) -> None:  # type: ignore[override]
+        self._cancel_recycle()
+        return await super().acquire()
+
+    def release(self) -> None:
+        super().release()
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:  # pragma: no cover - 持锁者必在循环上，纯防御
+            return
+        self._cancel_recycle()
+        self._recycle_handle = loop.call_later(
+            TASK_LOCK_IDLE_RECYCLE_SECONDS, self._recycle_if_idle
+        )
+
+    def _cancel_recycle(self) -> None:
+        if self._recycle_handle is not None:
+            self._recycle_handle.cancel()
+            self._recycle_handle = None
+
+    def _recycle_if_idle(self) -> None:
+        self._recycle_handle = None
+        # 双保险：只摘「仍然是这一把、且未被持有」的锁——绝不触碰在用锁，
+        # 也绝不误删同 taskId 重建的新锁。
+        if self.locked():
+            return
+        with _task_locks_guard:
+            if _task_locks.get(self._task_id) is self:
+                _task_locks.pop(self._task_id, None)
 
 
 _task_locks: dict[str, asyncio.Lock] = {}
@@ -1287,6 +1341,45 @@ def _host_is_restricted(host: str) -> bool:
     return False
 
 
+def _serialize_param_value(v: Any) -> str:
+    """A-11（P3）：params→env 序列化两端统一为 JSON。
+
+    此前 python str(v) / node String(v) 对同一载荷产出不同字节（True vs
+    'true'、None vs 'null'、列表 "['a']" vs 'a'…），同任务脚本在两个执行器
+    读 AUTOFLOW_* 得到不同值。现统一 JSON：node JSON.stringify(v)、python
+    json.dumps(v, ensure_ascii=False, separators=(',', ':'))——
+    ensure_ascii=False 与 JSON.stringify 的原样 UTF-8 输出可比，紧凑分隔符
+    令对象/数组形态与 JSON.stringify 逐字节一致（契约向量见
+    packages/contract-fixtures/contract.json 的 executorEnvSerialization）。"""
+    return json.dumps(v, ensure_ascii=False, separators=(',', ':'))
+
+
+# A-5（P2）：prepare 阶段（git clone / zip 下载 / 解压 / uv venv / pip）此前对
+# kill 完全不感知——kill 端点只置 entry.cancelled，各阶段跑完才收敛（最长
+# ~10min）。_PrepareCancelled 是各检查点发现取消后的内部中断信号。
+class _PrepareCancelled(Exception):
+    """kill 已在 prepare 阶段下达（entry.cancelled）——检查点抛出以中断收敛。"""
+
+
+def _prepare_cancelled(entry: Optional['_LiveExecution']) -> bool:
+    """A-5 检查点判据：kill 已下达且尚未 spawn（proc 为 None）。"""
+    return entry is not None and entry.cancelled and entry.proc is None
+
+
+def _killed_prepare_result(started_at: float) -> dict:
+    """A-5：prepare 检查点命中取消后的返回值——与 run_task 既有 spawn 前
+    killed 早退同形。kill 端点（proc is None 分支）已推送 killed 回调并摘除
+    注册表，_run_and_callback 据 killed_callback_pushed 跳过二次回调；这里
+    只负责静默收敛、释放槽位。"""
+    return {
+        'success': False,
+        'logs': '',
+        'exitCode': None,
+        'errorMessage': 'Execution killed by admin request',
+        'durationMs': int((time.monotonic() - started_at) * 1000),
+    }
+
+
 def _assert_safe_package_url(url: str) -> str:
     """packageUrl 的 SSRF 闸（fail-closed），返回规范化后的 URL。
 
@@ -1372,7 +1465,13 @@ def _package_download_headers(url: str) -> dict[str, str]:
     return {'Authorization': f'Bearer {token}'}
 
 
-async def _download_package(url: str, dest: Path) -> int:
+# A-9（P3）：下载跟随重定向的上限——与 node lib/download.ts 的 maxRedirects=5
+# 同值同语义（初始请求 + 至多 5 跳，第 6 个重定向响应即报 too many redirects）。
+_DOWNLOAD_MAX_REDIRECTS = 5
+
+
+async def _download_package(url: str, dest: Path, *,
+                            should_cancel: Optional[Callable[[], bool]] = None) -> int:
     """流式下载 packageUrl 到 `dest`（工作目录内的临时文件）。
 
     NFR-04/NFR-09：SSRF 闸已在调用前过；这里负责 200MB 硬上限（边下边计数，
@@ -1380,7 +1479,16 @@ async def _download_package(url: str, dest: Path) -> int:
     `timeout=` 只约束单次操作（连接、相邻 chunk 间隔），外层 `asyncio.timeout`
     才是真正的**总预算**，包住建连 + 响应头 + 全部 chunk；以及错误消息里
     **只出现状态码**、绝不回显 URL 上的任何凭据。
-    """
+
+    A-9（P3）：此前 follow_redirects=False 钉死，3xx 一律 RuntimeError——admin
+    侧包 URL 落到带重定向的存储/CDN 时下载必败，而 node 执行器至多跟 5 跳。
+    现改为**手动受控跟随**（不用 httpx 内建 follow_redirects：它会把
+    Authorization 原样带给任意跳转目标）：至多 _DOWNLOAD_MAX_REDIRECTS 跳，
+    同 host 保留 Authorization、跨 host 剥离——与 node lib/download.ts 的
+    sendAuth 策略（nextUrl.hostname 比对）同语义。
+
+    A-5（P2）：`should_cancel` 非空时逐 chunk 检查，命中抛 _PrepareCancelled
+    （kill 不再把整个下载预算跑完才收敛）；半成品照常清理。"""
     headers = _package_download_headers(url)
     received = 0
     try:
@@ -1390,22 +1498,59 @@ async def _download_package(url: str, dest: Path) -> int:
         async with asyncio.timeout(ZIP_DOWNLOAD_TIMEOUT_SECONDS):
             async with httpx.AsyncClient(
                 timeout=ZIP_DOWNLOAD_TIMEOUT_SECONDS,
+                # 手动循环处理重定向（见 A-9 注释）：内建跟随会跨站透传 Bearer。
                 follow_redirects=False,
                 trust_env=False,
             ) as client:
-                async with client.stream('GET', url, headers=headers or None) as response:
-                    if response.status_code != 200:
-                        raise RuntimeError(
-                            f'package download failed with HTTP {response.status_code}'
-                        )
-                    with open(dest, 'wb') as handle:
-                        async for chunk in response.aiter_bytes():
-                            received += len(chunk)
-                            if received > ZIP_DOWNLOAD_MAX_BYTES:
+                current_url = url
+                current_headers = headers
+                # for/else：初始请求 + 至多 5 跳；第 6 个重定向响应走 else 报错。
+                for _hop in range(_DOWNLOAD_MAX_REDIRECTS + 1):
+                    async with client.stream(
+                        'GET', current_url, headers=current_headers or None
+                    ) as response:
+                        # 重定向判定与 httpx `is_redirect` 逐字同义（status ∈
+                        # {301,302,303,307,308} 且带 location）——按属性判定的
+                        # 形式对测试桩（_FakeStreamResponse）不友好，这里内联。
+                        if (response.status_code in (301, 302, 303, 307, 308)
+                                and 'location' in response.headers):
+                            location = response.headers.get('location', '')
+                            try:
+                                next_url = urljoin(current_url, location)
+                                _hostname = urlsplit(next_url).hostname
+                                _prev_hostname = urlsplit(current_url).hostname
+                            except ValueError:
                                 raise RuntimeError(
-                                    f'package exceeds the {ZIP_DOWNLOAD_MAX_BYTES} byte limit'
+                                    'package download failed: invalid redirect location'
                                 )
-                            handle.write(chunk)
+                            # node lib/download.ts 同语义：跨 host 剥离 Authorization
+                            # （共享令牌绝不泄漏给非 admin 目标），同 host 保留续传。
+                            if current_headers.get('Authorization') and (
+                                _hostname != _prev_hostname
+                            ):
+                                current_headers = {
+                                    k: v for k, v in current_headers.items()
+                                    if k.lower() != 'authorization'
+                                }
+                            current_url = next_url
+                            continue
+                        if response.status_code != 200:
+                            raise RuntimeError(
+                                f'package download failed with HTTP {response.status_code}'
+                            )
+                        with open(dest, 'wb') as handle:
+                            async for chunk in response.aiter_bytes():
+                                if should_cancel is not None and should_cancel():
+                                    raise _PrepareCancelled()
+                                received += len(chunk)
+                                if received > ZIP_DOWNLOAD_MAX_BYTES:
+                                    raise RuntimeError(
+                                        f'package exceeds the {ZIP_DOWNLOAD_MAX_BYTES} byte limit'
+                                    )
+                                handle.write(chunk)
+                        break
+                else:
+                    raise RuntimeError('package download failed: too many redirects')
     except (httpx.HTTPError, OSError, asyncio.TimeoutError) as exc:
         _remove_quietly(dest)
         raise RuntimeError(f'package download failed: {type(exc).__name__}') from exc
@@ -2905,6 +3050,7 @@ async def ensure_venv(
     requirements: list[str],
     *,
     python_version: str | None = None,
+    should_cancel: Optional[Callable[[], bool]] = None,
 ) -> Path:
     """Create/reuse a virtual environment with uv and install dependencies. Returns python executable path.
 
@@ -2915,6 +3061,10 @@ async def ensure_venv(
         （兼容红线 §4.1 / AC-10a：存量任务的 venv 创建行为零变化）。
       * 非空 → 先经 `interpreters.ensure_version()` 拿到**池内绝对路径**，再
         `uv venv --python <abs_path> --no-project <dir>`。
+
+    A-5（P2）：keyword-only `should_cancel`——kill 已下达时抛 _PrepareCancelled
+    中断收敛（入口、venv 建成后 / pip install 前各一个检查点；单次 uv 子进程
+    仍跑完自己的超时切片，不追求即时杀线程）。
 
     D8 硬约束：**venv 阶段绝不触发下载**。两道保障——
       1. 传给 uv 的是解析后的绝对路径，不是裸版本号（裸版本号会触发 uv 的
@@ -2937,6 +3087,11 @@ async def ensure_venv(
     # 不设（''）则下方 argv 与之前逐字节一致。
     extra_registry_url = _validate_registry_url(settings.pypi_extra_index_url)
     install_env = _build_uv_env(venv_dir.parent / '.uv-cache')
+
+    def _check_cancelled() -> None:
+        if should_cancel is not None and should_cancel():
+            raise _PrepareCancelled()
+
     # W-02 follow-up (windows-findings): venv layout is platform-specific —
     # win32 uses Scripts\python.exe, POSIX uses bin/python. The old hardcoded
     # bin/python made every requirements-bearing task fail on Windows.
@@ -2947,6 +3102,9 @@ async def ensure_venv(
     # 一个畸形值（"3.7.9"、"../x"、"--index-url"）在这里就终止，绝不进 argv。
     if python_version is not None and not RUNTIME_VERSION_PATTERN.fullmatch(str(python_version)):
         raise RuntimeError(f'Invalid runtimeVersion (expected X.Y): {python_version!r}')
+
+    # A-5 检查点：spawn uv 之前。
+    _check_cancelled()
 
     if venv_dir.exists():
         problem = _venv_reuse_problem(venv_dir, python_bin, python_version)
@@ -2996,6 +3154,9 @@ async def ensure_venv(
                 str(pool_python) if python_version is not None else None
             )
 
+    # A-5 检查点：venv 已建好、尚未 pip install——kill 命中即不再装依赖
+    # （半成品 venv 留给下次 _venv_reuse_problem 重建，无需特殊清理）。
+    _check_cancelled()
     if requirements:
         _validate_requirements(requirements)
         logger.info(f'Installing {len(requirements)} packages into {venv_dir}')
@@ -3144,10 +3305,18 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
 
         ref = git_commit if git_commit else git_branch
         _validate_git_ref(ref)
+        # A-5 检查点：git clone 走 run_in_executor 线程，不追求即时杀线程；
+        # 前后各查一次 cancelled，命中即不再进入/继续后续 prepare 阶段。
+        # 收敛延迟 = 一次 git_checkout_to 的剩余时长（线程内各 subprocess 带
+        # _git_clone_timeout()/60s/30s 超时切片）。
+        if _prepare_cancelled(entry):
+            return _killed_prepare_result(started_at)
         logger.info(f'Checking out {git_repo}@{ref} to {work_dir}')
         await asyncio.get_event_loop().run_in_executor(
             None, git_checkout_to, git_repo, ref, work_dir
         )
+        if _prepare_cancelled(entry):
+            return _killed_prepare_result(started_at)
 
     # Load manifest.yaml and merge with task (task fields take priority)
     manifest = load_manifest(work_dir)
@@ -3301,12 +3470,29 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
         safe_url = _assert_safe_package_url(str(package_url))
         # 下载到工作目录内的临时文件（不落内存：200MB 上限下内存驻留不可接受）。
         zip_path = work_dir / '.package.zip'
+        # A-5 检查点：下载/解压前各查一次；下载循环内逐 chunk 检查（发现即
+        # 中断，收敛延迟 = 一个 chunk 间隔）。_PrepareCancelled 由下方 except
+        # 转为 killed 早退；临时半成品由 _download_package 的清理分支删除。
+        if _prepare_cancelled(entry):
+            return _killed_prepare_result(started_at)
         try:
-            size = await _download_package(safe_url, zip_path)
+            size = await _download_package(
+                safe_url,
+                zip_path,
+                should_cancel=lambda: _prepare_cancelled(entry),
+            )
             logger.info(
                 'Downloaded package for execution %s (%d bytes)', req.executionId, size
             )
+            if _prepare_cancelled(entry):
+                return _killed_prepare_result(started_at)
             await asyncio.to_thread(_extract_package, zip_path, work_dir)
+            if _prepare_cancelled(entry):
+                return _killed_prepare_result(started_at)
+        except _PrepareCancelled:
+            # A-5：kill 在 zip 渠道 prepare 期间下达——静默收敛（killed 回调
+            # 已由 kill 端点推送，见 _killed_prepare_result 注释）。
+            return _killed_prepare_result(started_at)
         finally:
             # 包本身是中间产物：解压完即删，既省磁盘也让 TTL 清扫不必认识它。
             _remove_quietly(zip_path)
@@ -3381,7 +3567,11 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
     env['TASK_NAME'] = str(task.get('name') or '')
     if req.params:
         for k, v in req.params.items():
-            env[f'AUTOFLOW_{k.upper()}'] = str(v)
+            # A-11（P3）：与 node JSON.stringify 统一为 JSON 序列化——str(v) 对
+            # 布尔/空值/容器与 node 产出不同字节，同任务脚本在两个执行器读到
+            # 的 AUTOFLOW_* 不一致。向量钉在 contract-fixtures 的
+            # executorEnvSerialization 段。
+            env[f'AUTOFLOW_{k.upper()}'] = _serialize_param_value(v)
 
     # SEC-02 续（生产故障）：secrets 按**原名**额外注入一份（与 node 侧对等）。
     # 生产实证：配置 FEISHU_APP_ID 后脚本读裸名拿到空串，因为 secrets 此前与
@@ -3526,8 +3716,14 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
             # protects a live task's venv dir from the disk TTL sweep).
             try:
                 python_bin = await ensure_venv(
-                    venv_dir, requirements, python_version=runtime_version
+                    venv_dir, requirements, python_version=runtime_version,
+                    # A-5：kill 已下达时中断 venv/依赖安装，静默收敛。
+                    should_cancel=lambda: _prepare_cancelled(entry),
                 )
+            except _PrepareCancelled:
+                # A-5：kill 在 venv/依赖安装阶段下达——killed 回调已由 kill
+                # 端点推送（proc is None 分支），这里静默早退、释放槽位。
+                return _killed_prepare_result(started_at)
             except Exception as exc:  # noqa: BLE001 - 仅解释器类失败改写留痕
                 if not _is_interpreter_unavailable(exc):
                     raise
@@ -3682,26 +3878,42 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
                     pass
 
         stream_task = asyncio.ensure_future(_stream_to_file())
+        # A-1（P1）：超时对象必须覆盖**整个任务生命周期**，而不只是 stdout 流。
+        # 任务关掉自己的 stdout（os.close(1)，daemonize 自分离的常见动作）后流
+        # 立即 EOF，旧实现只 wait_for(流) 就提前返回，下面的 `await proc.wait()`
+        # 无超时——进程永不退出则槽位无限占用、entry 留 live 表（心跳
+        # runningExecutionIds 持续上报）、admin 的 stale sweep 被活性保护抑制，
+        # 即永久 RUNNING 僵尸。现在把 (stream, wait) 组合在同一截止时间下：
+        # 进程挂住仍会触发既有的 TimeoutError → 杀树分支。node 侧同场景由
+        # routes/execute.ts 的 setTimeout 兜底树杀覆盖，本修即两端对齐。
+        proc_wait_task = asyncio.ensure_future(proc.wait())
         try:
             # E-02: timeout=0（不限时）→ wait_for(None) 即无限等待——不设执
             # 行等待超时，TimeoutError 杀树分支对不限时任务不可达。
             await asyncio.wait_for(
-                asyncio.shield(stream_task),
+                asyncio.shield(asyncio.gather(stream_task, proc_wait_task)),
                 timeout=None if timeout == 0 else timeout,
             )
         except asyncio.TimeoutError:
             stream_task.cancel()
+            proc_wait_task.cancel()
             try:
                 # Let the streamer unwind so the log file is closed/flushed
                 # before the process group is killed.
-                await stream_task
+                await asyncio.gather(stream_task, proc_wait_task, return_exceptions=True)
             except BaseException:
                 pass
             # RT-LOG: Fire-and-forget final flush of log stream pusher on timeout
             if log_stream_pusher:
                 asyncio.create_task(log_stream_pusher.final_flush())
             raise
-        await proc.wait()
+        except BaseException:
+            # 流/等待其一抛出（如日志文件打不开、外层取消）——回收兄弟 waiter，
+            # 不把悬挂任务留给事件循环；进程本身的收尾仍走下方既有处理器。
+            proc_wait_task.cancel()
+            raise
+        # gather 完成 = 流结束且进程已退出（proc_wait_task 已取到 returncode），
+        # 旧实现此处还有一个无超时的 await proc.wait()，正是 A-1 的悬挂点。
 
         # RT-LOG: Fire-and-forget final flush of log stream pusher before building callback logs
         if log_stream_pusher:

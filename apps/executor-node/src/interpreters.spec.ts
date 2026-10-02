@@ -1170,3 +1170,68 @@ describe('interpreters: reclaimUvCache (A5 uv cache governance)', () => {
     expect(result).toEqual({ reclaimedEntries: 0, reclaimedBytes: 0, cacheBytes: 0 });
   });
 });
+
+// ---------------------------------------------------------------------------
+// A-8: 池根目录权限加固（python interpreters.py harden_pool_permissions 对齐）
+// ---------------------------------------------------------------------------
+
+describe('A-8 — hardenPoolPermissions (python harden_pool_permissions parity)', () => {
+  const { logger } = require('./logger') as { logger: { warn: jest.Mock } };
+  const { hardenPoolPermissions } = require('./interpreters') as {
+    hardenPoolPermissions: () => void;
+  };
+  const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+  const realGeteuid = (process as unknown as { geteuid?: () => number }).geteuid;
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+    if (platformDescriptor) Object.defineProperty(process, 'platform', platformDescriptor);
+    if (realGeteuid) {
+      (process as unknown as { geteuid: () => number }).geteuid = realGeteuid;
+    } else {
+      delete (process as unknown as { geteuid?: () => number }).geteuid;
+    }
+  });
+
+  it('chmods the pool root to 0o755 and warns when the owner is not the executor uid (POSIX)', () => {
+    Object.defineProperty(process, 'platform', { value: 'linux' });
+    (process as unknown as { geteuid: () => number }).geteuid = () => 1000;
+    const mkdir = jest.spyOn(fs, 'mkdirSync').mockImplementation((() => undefined) as any);
+    const chmod = jest.spyOn(fs, 'chmodSync').mockImplementation((() => undefined) as any);
+    jest.spyOn(fs, 'statSync').mockImplementation(
+      (() => ({ uid: 4242 })) as unknown as typeof fs.statSync,
+    );
+
+    hardenPoolPermissions();
+
+    expect(mkdir).toHaveBeenCalledWith(path.resolve('/pool-interpreters'), { recursive: true });
+    expect(chmod).toHaveBeenCalledWith(path.resolve('/pool-interpreters'), 0o755);
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('is owned by uid 4242'));
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('NOT writable by others'));
+  });
+
+  it('skips chmod/owner validation on win32 (same criterion as python)', () => {
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    const mkdir = jest.spyOn(fs, 'mkdirSync').mockImplementation((() => undefined) as any);
+    const chmod = jest.spyOn(fs, 'chmodSync').mockImplementation((() => undefined) as any);
+
+    hardenPoolPermissions();
+
+    expect(mkdir).toHaveBeenCalledWith(path.resolve('/pool-interpreters'), { recursive: true });
+    expect(chmod).not.toHaveBeenCalled();
+    expect(logger.warn).not.toHaveBeenCalledWith(expect.stringContaining('is owned by uid'));
+  });
+
+  it('chmod failure is a warning, never a throw (read-only volume posture)', () => {
+    Object.defineProperty(process, 'platform', { value: 'linux' });
+    jest.spyOn(fs, 'mkdirSync').mockImplementation((() => undefined) as any);
+    jest.spyOn(fs, 'chmodSync').mockImplementation(() => {
+      throw new Error('EACCES: permission denied');
+    });
+
+    expect(() => hardenPoolPermissions()).not.toThrow();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('cannot harden pool dir'),
+    );
+  });
+});

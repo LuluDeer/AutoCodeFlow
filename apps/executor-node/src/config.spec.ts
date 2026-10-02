@@ -465,3 +465,43 @@ describe('executor-node config runtime version range (PYTHON_RUNTIME_VERSION_MIN
     expect(config.runtimeVersionMax).toBe('3.14');
   });
 });
+
+// ---------------------------------------------------------------------------
+// A-6: express.json 请求体上限（python 执行器无 100KB 限制，两端对齐 2MB）
+// ---------------------------------------------------------------------------
+
+describe('A-6 — JSON_BODY_LIMIT (express.json body ceiling)', () => {
+  it('is 2mb (python parity: no 100KB glue ceiling on node)', async () => {
+    const { JSON_BODY_LIMIT } = await import('./config');
+    expect(JSON_BODY_LIMIT).toBe('2mb');
+  });
+
+  it('accepts a >100KB glue-size dispatch body and still rejects pathological ones', async () => {
+    // 功能锚点：main.ts 用同一常量装配 express.json({ limit })——用同款装配
+    // 方式验证 100KB~2MB 区间的载荷不再 413（express 默认上限的回归守卫），
+    // 超过上限仍 fail-closed。
+    const express = (await import('express')).default;
+    const request = (await import('supertest')).default;
+    const { JSON_BODY_LIMIT } = await import('./config');
+
+    const app = express();
+    app.use(express.json({ limit: JSON_BODY_LIMIT }));
+    app.post('/api/execute', (_req, res) => {
+      res.status(200).json({ status: 'accepted' });
+    });
+
+    // ~150KB 的 glueSource（> express 默认 100KB，< 2MB）
+    const glueSource = 'x'.repeat(150 * 1024);
+    await request(app)
+      .post('/api/execute')
+      .send({ executionId: 'exec-big-glue', task: { runtime: 'python' }, glueSource })
+      .expect(200);
+
+    // >2MB：fail-closed 413（PayloadTooLargeError）
+    const tooBig = 'x'.repeat(3 * 1024 * 1024);
+    await request(app)
+      .post('/api/execute')
+      .send({ executionId: 'exec-too-big', task: { runtime: 'python' }, glueSource: tooBig })
+      .expect(413);
+  });
+});

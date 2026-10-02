@@ -127,7 +127,7 @@ jest.mock('../task-worker', () => {
 // Imports
 // ---------------------------------------------------------------------------
 
-import { executeRouter, runTask, gitCheckoutTo, killRunningTaskProcesses, abortAllLiveExecutions, BoundedLogBuffer, resolveBwrapPath, buildTaskSandboxArgv, __resetBwrapPathCacheForTest } from './execute';
+import { executeRouter, runTask, gitCheckoutTo, killRunningTaskProcesses, abortAllLiveExecutions, BoundedLogBuffer, resolveBwrapPath, buildTaskSandboxArgv, __resetBwrapPathCacheForTest, SHELL_ENTRYPOINT_SAFE_RE } from './execute';
 import { buildNpmRcContent, executionExists, quoteShellArgForPlatform } from './execute';
 // A3（kill/logs 契约化）：kill 真实出参用生成的 schema 现校验
 import { KillResponseSchema } from '../generated/protocol.schemas';
@@ -2025,4 +2025,166 @@ describe('NETOPT-G P2-2: bwrap argv construction fail-closed branches', () => {
     expect(sep).toBeGreaterThan(-1);
     expect(a.slice(sep + 1)).toEqual(['python', 'main.py', '--flag']);
   });
+});
+
+// ---------------------------------------------------------------------------
+// A-2（P1）shell entrypoint 字符白名单（python _validate_shell_entrypoint 对齐）
+// ---------------------------------------------------------------------------
+
+describe('A-2 — shell entrypoint charset whitelist (python parity)', () => {
+  const realPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+  afterEach(() => {
+    if (realPlatform) {
+      Object.defineProperty(process, 'platform', realPlatform);
+    }
+  });
+
+  async function prepareShellTask(executionId: string, entrypoint: string) {
+    let prepared: { task: { cmd: string; args: string[] } } | undefined;
+    let error: Error | undefined;
+    (taskWorkerManager.execute as jest.Mock).mockImplementationOnce(
+      async (_tid: string, _eid: string, _task: any, _params: any, onComplete?: () => void,
+             runPrepared?: (assertNotCancelled: () => void) => Promise<{ task: any }>) => {
+        try {
+          prepared = await runPrepared!(() => undefined);
+        } catch (err) {
+          error = err as Error;
+        }
+        if (onComplete) onComplete();
+      },
+    );
+    const res = await request(appNoAuth).post('/api/execute').send({
+      executionId,
+      task: { id: 'shtask', runtime: 'shell', entrypoint },
+    });
+    expect(res.status).toBe(200);
+    await flushAsync();
+    return { prepared, error };
+  }
+
+  it.each([
+    'x.bat&calc',           // cmd.exe /c 引号剥离执行额外命令（NTFS 合法文件名）
+    'run.bat & calc',
+    'a.sh; rm -rf /',
+    'run.sh|tee /etc/passwd',
+    'run.sh`id`',
+    '$(id)',
+    "run.sh' && evil",
+    'run.bat\nnext',
+  ])('rejects the injection payload %j with the python-identical message', async (entrypoint) => {
+    const { error } = await prepareShellTask('exec-a2-bad', entrypoint);
+    expect(error).toBeDefined();
+    expect(error!.message).toBe(
+      'Refusing shell entrypoint with unsafe characters; allowed charset is [A-Za-z0-9._/ :\\-]',
+    );
+    // python 同款错误语义：走 prepare 失败回调路径
+    expect(pushCallback).toHaveBeenCalledWith(expect.objectContaining({
+      executionId: 'exec-a2-bad',
+      status: 'failed',
+      errorMessage: 'Refusing shell entrypoint with unsafe characters; allowed charset is [A-Za-z0-9._/ :\\-]',
+    }));
+  });
+
+  it.each([
+    'run.bat',
+    './scripts/deploy.sh',
+    'build task.cmd',
+  ])('lets the legitimate entrypoint %j through unchanged', async (entrypoint) => {
+    const { prepared, error } = await prepareShellTask('exec-a2-ok', entrypoint);
+    expect(error).toBeUndefined();
+    expect(prepared).toBeDefined();
+    if (process.platform === 'win32') {
+      expect(prepared!.task.cmd).toBe('cmd.exe');
+      expect(prepared!.task.args).toEqual(['/c', entrypoint]);
+    } else {
+      expect(prepared!.task.cmd).toBe('bash');
+      expect(prepared!.task.args).toEqual([entrypoint]);
+    }
+  });
+
+  it('exposes the python-identical charset as a module-level constant', () => {
+    // python _SHELL_ENTRYPOINT_SAFE_RE 同款（模块级导出，测试可断言）
+    expect(SHELL_ENTRYPOINT_SAFE_RE.test('run.bat')).toBe(true);
+    expect(SHELL_ENTRYPOINT_SAFE_RE.test('x.bat&calc')).toBe(false);
+    expect(SHELL_ENTRYPOINT_SAFE_RE.test('a b.c:d\\e/f')).toBe(true);
+    expect(SHELL_ENTRYPOINT_SAFE_RE.test('a|b')).toBe(false);
+  });
+
+  it('non-shell runtimes are unaffected by the whitelist', async () => {
+    // python/node runtime 走 argv 直传，无 shell 解析——同一载荷在 shell runtime
+    // 会被拒，在 python runtime 必须照常 prepare 通过（A-2 只影响 shell 分支）。
+    let prepared: { task: { runtime: string } } | undefined;
+    let error: Error | undefined;
+    (taskWorkerManager.execute as jest.Mock).mockImplementationOnce(
+      async (_tid: string, _eid: string, _task: any, _params: any, onComplete?: () => void,
+             runPrepared?: (assertNotCancelled: () => void) => Promise<{ task: any }>) => {
+        try {
+          prepared = await runPrepared!(() => undefined);
+        } catch (err) {
+          error = err as Error;
+        }
+        if (onComplete) onComplete();
+      },
+    );
+    const res = await request(appNoAuth).post('/api/execute').send({
+      executionId: 'exec-a2-skip',
+      task: { id: 'pytask', runtime: 'python', entrypoint: 'x.bat&calc' },
+    });
+    expect(res.status).toBe(200);
+    await flushAsync();
+    expect(error).toBeUndefined();
+    expect(prepared?.task.runtime).toBe('python');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A-11（P3）params→env 统一 JSON 序列化（python _serialize_param_value 对齐）
+// ---------------------------------------------------------------------------
+
+describe('A-11 — params are serialized to AUTOFLOW_* env as JSON (python parity)', () => {
+  async function prepareWithParams(executionId: string, params: Record<string, unknown>) {
+    let env: Record<string, string | undefined> = {};
+    (taskWorkerManager.execute as jest.Mock).mockImplementationOnce(
+      async (_tid: string, _eid: string, _task: any, _params: any, onComplete?: () => void,
+             runPrepared?: (assertNotCancelled: () => void) => Promise<{ task: any }>) => {
+        const p = await runPrepared!(() => undefined);
+        env = p.task.env;
+        if (onComplete) onComplete();
+      },
+    );
+    const res = await request(appNoAuth).post('/api/execute').send({
+      executionId,
+      task: { id: 'a11task', runtime: 'node', entrypoint: 'index.js' },
+      params,
+    });
+    expect(res.status).toBe(200);
+    await flushAsync();
+    return env;
+  }
+
+  it('produces JSON.stringify bytes for scalars, containers and unicode', async () => {
+    const env = await prepareWithParams('exec-a11-node', {
+      flag: true,
+      off: false,
+      count: 1,
+      ratio: 1.5,
+      nothing: null,
+      tags: ['a', 2],
+      nested: { b: true, a: 1 },
+      text: '中文',
+      old_str: 'hello',
+    });
+    expect(env.AUTOFLOW_FLAG).toBe('true');
+    expect(env.AUTOFLOW_OFF).toBe('false');
+    expect(env.AUTOFLOW_COUNT).toBe('1');
+    expect(env.AUTOFLOW_RATIO).toBe('1.5');
+    expect(env.AUTOFLOW_NOTHING).toBe('null');
+    expect(env.AUTOFLOW_TAGS).toBe('["a",2]');
+    expect(env.AUTOFLOW_NESTED).toBe('{"b":true,"a":1}');
+    expect(env.AUTOFLOW_TEXT).toBe('"中文"');
+    expect(env.AUTOFLOW_OLD_STR).toBe('"hello"');
+  });
+  // 契约向量（contract-fixtures/contract.json 的 executorEnvSerialization 段）
+  // 由 __tests__/executor-protocol-contract.spec.ts 用真实 fs 逐条断言（本 spec
+  // 的 fs 被整体 mock，读不了契约文件）；python 侧对应 test_audit_fixes.py。
 });

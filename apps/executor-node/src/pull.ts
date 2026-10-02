@@ -11,7 +11,6 @@ import {
 } from './routes/execute';
 import { pushCallback } from './callback';
 import {
-  ControlCommandResult,
   executeControlCommand,
   parseControlCommand,
 } from './commands';
@@ -146,14 +145,14 @@ export function resetPullReservedSlotsForTest(): number {
  *
  * 单条失败不中断整批：一条坏命令不该让同批的其余命令一起丢掉。
  *
- * 结果上报是 **best-effort**：上报失败只 warn。业务终态另有回调通道收敛
- * （deploy → /app-deployments/heartbeat；update-package → push-result），
- * 结果上报覆盖的是这两条之外没有回执通道的命令。
+ * A-10（P3）：结果**逐条立即**上报（python commands.py run_control_commands
+ * 同语义）。旧实现先整批执行完再统一回报——批内靠前的结果要陪跑整批（一条
+ * 命令最长 60s），批中途崩溃则已执行结果全部丢失。上报仍是 best-effort：
+ * 失败只 warn，不影响后续命令的执行与回报。
  */
 async function runControlCommands(rawCommands: unknown): Promise<void> {
   if (!Array.isArray(rawCommands) || rawCommands.length === 0) return;
 
-  const results: ControlCommandResult[] = [];
   for (const raw of rawCommands) {
     const cmd = parseControlCommand(raw);
     if (!cmd) {
@@ -162,10 +161,8 @@ async function runControlCommands(rawCommands: unknown): Promise<void> {
       logger.warn('[command] Discarded malformed control command from pull response');
       continue;
     }
-    results.push(await executeControlCommand(cmd));
-  }
-
-  for (const result of results) {
+    const result = await executeControlCommand(cmd);
+    // A-10: 执行完一条立即回报一条——不再攒整批。
     try {
       await post('/api/executors/command-result', {
         ...result,
