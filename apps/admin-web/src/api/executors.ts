@@ -20,6 +20,12 @@ export interface Executor {
   description?: string | null;
   maxConcurrentTasks?: number | null;
   /**
+   * N-02③（ADR-013 2026-10-02 温和下放）：执行器所属项目（null=平台级，
+   * 非 ADMIN 不可管理）。详情页据此 + 当前用户项目角色判定「编辑/配置热更」
+   * 入口可见性（rotate/set-offline/delete 恒 ADMIN）。
+   */
+  projectId?: string | null;
+  /**
    * CONSISTENCY-02: 执行器心跳上报的运行中 executionId 列表（≤10000，
    * MAX_RUNNING_EXECUTION_IDS，三端同值；旧注释误记 ≤200——python 侧曾按 200
    * 截断，已在 NETOPT-C P2-1 对齐为 10000）。

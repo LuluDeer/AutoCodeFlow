@@ -3127,7 +3127,7 @@
         ]
       },
       "patch": {
-        "description": "Update executor group, tags, description, and max concurrent tasks.",
+        "description": "Update executor group, tags, description, and max concurrent tasks. Requires ADMIN, or editor+ role on the executor's project.",
         "operationId": "ExecutorController_update",
         "parameters": [
           {
@@ -3162,6 +3162,9 @@
         "responses": {
           "200": {
             "description": "Updated successfully"
+          },
+          "403": {
+            "description": "Not ADMIN and no editor+ role on the executor's project"
           },
           "404": {
             "description": "Executor not found"
@@ -3225,7 +3228,7 @@
     },
     "/executors/{id}/reload-config": {
       "post": {
-        "description": "Dynamically update executor config without restart. Executor must be online.",
+        "description": "Dynamically update executor config without restart. Executor must be online. Requires ADMIN, or editor+ role on the executor's project.",
         "operationId": "ExecutorController_reloadConfig",
         "parameters": [
           {

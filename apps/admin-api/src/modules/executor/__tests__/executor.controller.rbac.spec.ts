@@ -11,6 +11,7 @@ import request from "supertest";
 import { ExecutorController } from "../executor.controller";
 import { ExecutorService } from "../executor.service";
 import { SystemConfigService } from "../../config/config.service";
+import { ProjectAccessService } from "../../project/project-access.service";
 import { RolesGuard } from "../../../common/guards/roles.guard";
 import { JwtAuthGuard } from "../../../common/guards/jwt-auth.guard";
 import { ROLES_KEY } from "../../../common/decorators/roles.decorator";
@@ -42,29 +43,43 @@ jest.mock("../../../common/utils/safe-http.util", () => ({
 }));
 
 /**
- * W2: executor management WRITE endpoints are ADMIN-only (same posture as
- * install-cmd DR-01). A plain logged-in user must never be able to rotate an
- * executor token (the response carries the plaintext token), force-offline or
- * delete an executor, or push a config hot-update.
+ * N-02③（ADR-013 2026-10-02 温和下放）后的 RBAC 姿态：
+ * - update / reloadConfig：**不再声明 @Roles**——判定下沉
+ *   assertCanManageMetadata（ADMIN 短路，否则所属项目 editor+；projectId=null
+ *   的平台级执行器仅 ADMIN）。
+ * - rotateToken / setOffline / removeExecutor：仍 @Roles(ADMIN)——令牌轮换、
+ *   强制下线、删除执行器是平台级敏感操作（响应含明文令牌）不下放。
  *
- * Matrix per route: unauthenticated → 401 (JwtAuthGuard), user → 403
- * (global RolesGuard, service untouched), admin → 2xx happy path.
+ * HTTP matrix per route: unauthenticated → 401 (JwtAuthGuard), 非授权 → 403
+ * （update/reloadConfig 由 controller 判定抛出，其余由全局 RolesGuard），
+ * admin → 2xx happy path。
  */
-describe("ExecutorController — W2 RBAC matrix for management write endpoints", () => {
-  const WRITE_ROUTES = [
-    "update",
-    "reloadConfig",
-    "rotateToken",
-    "setOffline",
-    "removeExecutor",
-  ] as const;
+const N02_OWNED_ROUTES = ["update", "reloadConfig"] as const;
+const ADMIN_ONLY_ROUTES = [
+  "rotateToken",
+  "setOffline",
+  "removeExecutor",
+] as const;
 
-  describe("RBAC metadata — every write handler declares ADMIN", () => {
-    it.each(WRITE_ROUTES)("%s is restricted to UserRole.ADMIN", (handler) => {
-      expect(
-        Reflect.getMetadata(ROLES_KEY, ExecutorController.prototype[handler]),
-      ).toEqual([UserRole.ADMIN]);
-    });
+describe("ExecutorController — W2 RBAC matrix for management write endpoints", () => {
+  describe("RBAC metadata — N-02③ split", () => {
+    it.each(ADMIN_ONLY_ROUTES)(
+      "%s is restricted to UserRole.ADMIN (not delegated)",
+      (handler) => {
+        expect(
+          Reflect.getMetadata(ROLES_KEY, ExecutorController.prototype[handler]),
+        ).toEqual([UserRole.ADMIN]);
+      },
+    );
+
+    it.each(N02_OWNED_ROUTES)(
+      "%s declares no @Roles — judgement lives in assertCanManageMetadata (N-02③)",
+      (handler) => {
+        expect(
+          Reflect.getMetadata(ROLES_KEY, ExecutorController.prototype[handler]),
+        ).toBeUndefined();
+      },
+    );
   });
 
   describe("HTTP authorization matrix (user 403 / anonymous 401 / admin 200)", () => {
@@ -79,6 +94,8 @@ describe("ExecutorController — W2 RBAC matrix for management write endpoints",
         executorStartupId: "startup-1",
         status: ExecutorStatus.ONLINE,
         type: ExecutorType.PYTHON,
+        // N-02③：null=平台级执行器（非 ADMIN 恒 403，且不得触发项目判定）。
+        projectId: null as string | null,
       }),
       issueToken: jest
         .fn()
@@ -108,23 +125,30 @@ describe("ExecutorController — W2 RBAC matrix for management write endpoints",
 
     // Mock only authentication; exercise the real global role guard and Nest
     // HTTP errors (same harness as the install-cmd DR-01 matrix spec).
+    // N-02③：user 带真实 id（controller 判定用它查项目角色）。
     const jwtGuard = {
       canActivate(context: ExecutionContext) {
         const req = context.switchToHttp().getRequest();
         const role = req.headers["x-test-role"];
         if (!role) throw new UnauthorizedException();
-        req.user = { role };
+        req.user = { id: 7, role };
         return true;
       },
     };
 
+    const projectAccess = {
+      hasProjectRole: jest.fn().mockResolvedValue(false),
+    };
+
     beforeEach(async () => {
+      projectAccess.hasProjectRole.mockReset().mockResolvedValue(false);
       const module = await Test.createTestingModule({
         controllers: [ExecutorController],
         providers: [
           { provide: ExecutorService, useValue: makeSvc() },
           { provide: ConfigService, useValue: {} },
           { provide: SystemConfigService, useValue: {} },
+          { provide: ProjectAccessService, useValue: projectAccess },
           { provide: APP_GUARD, useValue: jwtGuard },
           { provide: APP_GUARD, useClass: RolesGuard },
         ],
@@ -171,6 +195,97 @@ describe("ExecutorController — W2 RBAC matrix for management write endpoints",
         expect(svcOf().update).toHaveBeenCalledWith("e1", {
           groupName: "prod",
         });
+      });
+    });
+
+    // N-02③（ADR-013 2026-10-02 温和下放）：update / reloadConfig 对所属项目
+    // editor+ 放行。viewer 与非成员在判定路径同构（hasProjectRole=false，
+    // viewer rank < editor）——用一个 false 桩同时覆盖两态，PROJECT_ROLE_RANK
+    // 的档位语义由 project-access.service.spec 自身背书。
+    describe("N-02③ delegation matrix — project editor+ on executor's own project", () => {
+      const attachProject = async (projectId: string | null) => {
+        const svc = svcOf() as ReturnType<typeof makeSvc>;
+        svc.findOne.mockResolvedValue({
+          id: "e1",
+          address: "10.0.0.9:8001",
+          appName: "executor-node",
+          executorStartupId: "startup-1",
+          status: ExecutorStatus.ONLINE,
+          type: ExecutorType.PYTHON,
+          projectId,
+        });
+      };
+
+      it("PATCH: project editor → 200, judged with (projectId, editor)", async () => {
+        await attachProject("p1");
+        projectAccess.hasProjectRole.mockResolvedValue(true);
+        await request(app.getHttpServer())
+          .patch("/executors/e1")
+          .set("x-test-role", UserRole.USER)
+          .send({ groupName: "prod" })
+          .expect(200);
+        expect(projectAccess.hasProjectRole).toHaveBeenCalledWith(
+          7,
+          "p1",
+          "editor",
+        );
+        expect(svcOf().update).toHaveBeenCalledWith("e1", {
+          groupName: "prod",
+        });
+      });
+
+      it("PATCH: project member below editor (viewer) / non-member → 403, service untouched", async () => {
+        await attachProject("p1");
+        projectAccess.hasProjectRole.mockResolvedValue(false);
+        await request(app.getHttpServer())
+          .patch("/executors/e1")
+          .set("x-test-role", UserRole.USER)
+          .send({ groupName: "prod" })
+          .expect(403);
+        expect(svcOf().update).not.toHaveBeenCalled();
+      });
+
+      it("PATCH: projectId=null (platform-level) → 403 without consulting project roles (no DEFAULT_PROJECT_ID fallback)", async () => {
+        await attachProject(null);
+        await request(app.getHttpServer())
+          .patch("/executors/e1")
+          .set("x-test-role", UserRole.USER)
+          .send({ groupName: "prod" })
+          .expect(403);
+        expect(projectAccess.hasProjectRole).not.toHaveBeenCalled();
+        expect(svcOf().update).not.toHaveBeenCalled();
+      });
+
+      it("PATCH: admin short-circuits without project-role lookup", async () => {
+        await attachProject("p1");
+        await request(app.getHttpServer())
+          .patch("/executors/e1")
+          .set("x-test-role", UserRole.ADMIN)
+          .send({ groupName: "prod" })
+          .expect(200);
+        expect(projectAccess.hasProjectRole).not.toHaveBeenCalled();
+      });
+
+      it("reload-config: project editor → 201 with token issuance", async () => {
+        await attachProject("p1");
+        projectAccess.hasProjectRole.mockResolvedValue(true);
+        await request(app.getHttpServer())
+          .post("/executors/e1/reload-config")
+          .set("x-test-role", UserRole.USER)
+          .send({})
+          .expect(201);
+        expect(svcOf().issueToken).toHaveBeenCalled();
+      });
+
+      it("reload-config: non-member → 403, no token issuance / outbound push", async () => {
+        await attachProject("p1");
+        projectAccess.hasProjectRole.mockResolvedValue(false);
+        await request(app.getHttpServer())
+          .post("/executors/e1/reload-config")
+          .set("x-test-role", UserRole.USER)
+          .send({})
+          .expect(403);
+        expect(svcOf().issueToken).not.toHaveBeenCalled();
       });
     });
 
