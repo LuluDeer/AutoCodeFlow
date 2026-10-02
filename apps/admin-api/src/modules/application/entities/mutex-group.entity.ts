@@ -36,8 +36,20 @@ export class MutexGroup {
   /**
    * 同一台设备上该组允许的并发执行数（≥1，默认 1 = 组内串行）。
    * DB CHECK 兜底下界（迁移 1790000000044）；写面 DTO 再校验上界与取整。
+   * N-15：scope=global 时本列语义升级为「组内**全平台**并发数」（复用列，
+   * UI 文案随 scope 切换）。
    */
   @Column({ type: "int", default: 1 }) maxConcurrentPerDevice: number;
+
+  /**
+   * N-15：组作用域（迁移 1790000000052，CHECK 兜底 device/global）。
+   * - `device`（默认，存量行为不变）：同设备×同组串行，跨设备并发；
+   * - `global`：组内跨设备串行（全平台同时最多 N 条），占坑判定不带设备
+   *   条件，跨设备竞态由占坑事务内的 mutex_groups 行 FOR UPDATE 关闭
+   *   （锁序 组→执行器）。典型场景：单点登录的网站自动化（多设备登录
+   *   顶号，需全局串行且拒绝单钉设备防故障单点）。
+   */
+  @Column({ type: "varchar", default: "device" }) scope: "device" | "global";
 
   @Column({ type: "varchar", nullable: true }) description: string | null;
 
