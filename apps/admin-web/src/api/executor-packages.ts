@@ -92,10 +92,17 @@ export const executorPackagesApi = {
   push: (id: string, executorIds?: string[]) =>
     client.post(`/executor-packages/${id}/push`, { executorIds }) as Promise<PushResult[]>,
 
-  /** 上传新包 */
-  upload: (formData: FormData) =>
+  /**
+   * 上传新包。B-12：可选 onUploadProgress 透传 axios 上传进度事件，
+   * 页面据此渲染真实进度条（此前大文件上传期间零反馈）。
+   */
+  upload: (
+    formData: FormData,
+    onUploadProgress?: (progressEvent: { loaded: number; total?: number }) => void,
+  ) =>
     client.post('/executor-packages', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
+      onUploadProgress,
     }) as Promise<ExecutorPackage>,
 
   /**
@@ -132,7 +139,10 @@ export const executorPackagesApi = {
 
 // Named exports for convenience
 export const listPackages = (params?: ExecutorPackageListParams) => executorPackagesApi.list(params);
-export const uploadPackage = (formData: FormData) => executorPackagesApi.upload(formData);
+export const uploadPackage = (
+  formData: FormData,
+  onUploadProgress?: (progressEvent: { loaded: number; total?: number }) => void,
+) => executorPackagesApi.upload(formData, onUploadProgress);
 export const deletePackage = (id: string) => executorPackagesApi.remove(id);
 export const pushPackage = (id: string, executorIds?: string[]) => executorPackagesApi.push(id, executorIds);
 export const deprecatePackage = (id: string) => executorPackagesApi.deprecate(id);

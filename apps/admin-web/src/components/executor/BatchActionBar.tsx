@@ -2,262 +2,98 @@
  * UI-07 ③：批量操作条（ADMIN 门控对齐 W2 既有前端门控模式）。
  *
  * 两个 ADMIN-only 操作，均复用既有单台端点（POST /executors/:id/reload-config、
- * /executors/:id/rotate-token），Promise.allSettled 并行 + 逐台结果反馈：
+ * /executors/:id/rotate-token），并行 + 逐台结果反馈：
  * - 批量配置热更新：空配置体推送（执行器按服务端默认配置 reload——单台
  *   配置热更新表单的空表单等价语义），在线台才可执行；
  * - 批量 Token 轮换：高危——二次确认 Modal 列出受影响执行器并明示
  *   「执行器将短暂重新注册」；确认后并行执行，逐台新 token 收集展示一次。
  *
+ * B-13：confirm 弹窗 + 执行 + 汇总反馈的公共实现抽到 batchActions.tsx，
+ * 卡片视图快捷按钮（单台直达）与本条复用同一流程；本组件只保留操作条
+ * UI 与 loading 状态。rotate 成功台的 token 结果弹窗由父级
+ * （ExecutorListPage）持有渲染——批量条在选中清空后会卸载，不能承载它。
+ *
  * 门控语义：isAdmin=false 时本组件整体不渲染（由父级控制），组件内部仍
  * 保留 isAdmin 入参防御（测试断言门控用）。
  */
 import { useState } from 'react';
-import { Alert, Button, Modal, Space, Typography, Tag, theme } from 'antd';
-import { message } from '../../utils/toast';
-// MODAL-01：命令式 Modal.* 从 utils/modal 取（吃暗色主题 + i18n locale）；
-// 本文件的 <Modal> JSX 组件仍用上面 antd 的 Modal。
-import { Modal as confirmModal } from '../../utils/modal';
+import { Button, Space, Typography, theme } from 'antd';
 import { ControlOutlined, KeyOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import type { Executor } from '../../api/executors';
-import { executorsApi } from '../../api/executors';
-import { getErrMsg, showApiError } from '../../utils/error';
-// ARCH-33（ADR-016）：pull 控制面可用性判据（UI-18 判据的修订版）
-import { isControlPlaneUnavailable } from '../../utils/control-plane';
+import {
+  confirmBatchReloadConfig,
+  confirmBatchRotateToken,
+  type BatchSummary,
+} from './batchActions';
 import '../../i18n';
 
+// 向后兼容既有导入面（executor-ui07 等测试从本文件 import runBatch）
+export { runBatch } from './batchActions';
+export type { BatchOutcome, BatchSummary } from './batchActions';
+
 const { Text } = Typography;
-
-export interface BatchOutcome {
-  executor: Executor;
-  ok: boolean;
-  /** rotate 成功时的明文 token（Modal 一次性展示） */
-  token?: string;
-  error?: string;
-}
-
-export interface BatchSummary {
-  total: number;
-  succeeded: number;
-  failed: number;
-  outcomes: BatchOutcome[];
-}
-
-/** 并行执行单台操作并收集逐台结果（allSettled：单台失败不中断其余） */
-export async function runBatch(
-  executors: Executor[],
-  action: (ex: Executor) => Promise<{ token?: string }>,
-  fallbackMsg?: string,
-): Promise<BatchSummary> {
-  const settled = await Promise.allSettled(
-    executors.map(async (ex) => {
-      const res = await action(ex);
-      return { executor: ex, ok: true, token: res?.token } as BatchOutcome;
-    }),
-  );
-  const outcomes: BatchOutcome[] = settled.map((r, i) =>
-    r.status === 'fulfilled'
-      ? r.value
-      : {
-          executor: executors[i],
-          ok: false,
-          error: getErrMsg(r.reason, fallbackMsg),
-        },
-  );
-  return {
-    total: executors.length,
-    succeeded: outcomes.filter((o) => o.ok).length,
-    failed: outcomes.filter((o) => !o.ok).length,
-    outcomes,
-  };
-}
 
 interface BatchActionBarProps {
   selected: Executor[];
   isAdmin: boolean;
   onDone: () => void;
+  /** B-13：rotate 有成功台时回调（token 结果弹窗由父级渲染） */
+  onTokenSummary?: (summary: BatchSummary) => void;
 }
 
-export default function BatchActionBar({ selected, isAdmin, onDone }: BatchActionBarProps) {
+export default function BatchActionBar({ selected, isAdmin, onDone, onTokenSummary }: BatchActionBarProps) {
   const { t } = useTranslation();
   // F-15（DEEP_REVIEW 0ef3bbe）：浅填充/分隔线走 antd token，暗色主题自适应。
   const { token } = theme.useToken();
   const [batchLoading, setBatchLoading] = useState(false);
-  const [tokenResult, setTokenResult] = useState<BatchSummary | null>(null);
 
-  // 保留结果弹窗：轮换完成后 onDone 会清空选择（selected 变空会触发本组件
-  // 早退卸载），tokenResult 一次性展示不能跟着消失——故仅在「无结果待展示」
-  // 时早退。
-  if (tokenResult === null && (!isAdmin || selected.length === 0)) return null;
+  if (!isAdmin || selected.length === 0) return null;
 
   const online = selected.filter((ex) => ex.status === 'online');
 
-  const finish = (summary: BatchSummary, okText: string) => {
-    if (summary.failed === 0) {
-      message.success(t('batchAction.finish.success', { action: okText, ok: summary.succeeded, total: summary.total }));
-    } else if (summary.succeeded === 0) {
-      message.error(t('batchAction.finish.fail', { action: okText, error: summary.outcomes.find((o) => !o.ok)?.error ?? t('batchAction.allFail') }));
-    } else {
-      message.warning(t('batchAction.finish.partial', { action: okText, ok: summary.succeeded, fail: summary.failed }));
-      // 部分失败时逐台 error 反馈（成功台不重复打扰）
-      summary.outcomes.filter((o) => !o.ok).forEach((o) => {
-        message.error(t('batchAction.partFailItem', { name: o.executor.appName, error: o.error }));
-      });
-    }
-    setBatchLoading(false);
-    onDone();
-  };
-
-  const handleBatchReloadConfig = () => {
-    if (batchLoading || online.length === 0) {
-      message.warning(t('batchAction.noneOnline'));
-      return;
-    }
-    // UI-18 → ARCH-33（ADR-016）修订：原判据是「pull 模式必然失败」——那在
-    // ADR-015 只搬了任务派发时成立（reload-config 仍是入站 POST）。ADR-016 把
-    // 控制面也搬上 pull 通道后，**协议 >= 2 的 pull 执行器可以正常热更新**，
-    // 该判据对它已失效，继续禁用等于把新能力白做。
-    //
-    // 修订后的判据是「pull **且** 协议 < 2」：v2 之前的 pull 执行器会静默
-    // 忽略 commands 字段，中台却会误判投递成功——所以那批仍必须剔除，且不能
-    // 只靠「入站不可达」这个恰好成立的巧合。
-    const pushable = online.filter((ex) => !isControlPlaneUnavailable(ex));
-    const skippedPull = online.length - pushable.length;
-    if (pushable.length === 0) {
-      message.warning(t('batchAction.reloadPullOnly'));
-      return;
-    }
-    confirmModal.confirm({
-      title: t('batchAction.reloadConfirmTitle', { count: pushable.length }),
-      content: skippedPull > 0
-        ? `${t('batchAction.reloadConfirmContent')} ${t('batchAction.reloadSkipPull', { count: skippedPull })}`
-        : t('batchAction.reloadConfirmContent'),
-      okText: t('batchAction.confirmPush'),
-      cancelText: t('batchAction.cancel'),
-      onOk: async () => {
-        setBatchLoading(true);
-        try {
-          const summary = await runBatch(pushable, async (ex) => {
-            await executorsApi.reloadConfig(ex.id, {});
-            return {};
-          }, t('batchAction.operateFail'));
-          finish(summary, t('batchAction.batchReload'));
-        } catch (err) {
-          showApiError(err, t('batchAction.reloadFail'));
-          setBatchLoading(false);
-        }
-      },
-    });
-  };
-
-  const handleBatchRotateToken = () => {
-    if (batchLoading) return;
-    confirmModal.confirm({
-      title: t('batchAction.rotateConfirmTitle', { count: selected.length }),
-      width: 560,
-      content: (
-        <div>
-          <Alert
-            type="warning"
-            showIcon
-            title={t('batchAction.highrisk.title')}
-            description={t('batchAction.highrisk.desc')}
-            style={{ marginBottom: 12 }}
-          />
-          <div style={{ maxHeight: 200, overflowY: 'auto' }}>
-            {selected.map((ex) => (
-              <div key={ex.id} style={{ padding: '2px 0' }}>
-                <Text strong>{ex.appName}</Text>{' '}
-                <Text type="secondary" style={{ fontSize: 12 }}>{ex.address}</Text>{' '}
-                {ex.status !== 'online' && <Tag color="orange">{t('batchAction.offline')}</Tag>}
-              </div>
-            ))}
-          </div>
-        </div>
-      ),
-      okText: t('batchAction.confirmRotate'),
-      okButtonProps: { danger: true },
-      cancelText: t('batchAction.cancel'),
-      onOk: async () => {
-        setBatchLoading(true);
-        try {
-          const summary = await runBatch(selected, (ex) => executorsApi.rotateToken(ex.id), t('batchAction.operateFail'));
-          if (summary.succeeded > 0) {
-            // 新 token 一次性展示（关闭后不再显示——与单台轮换同语义）
-            setTokenResult(summary);
-          }
-          finish(summary, t('batchAction.batchRotate'));
-        } catch (err) {
-          showApiError(err, t('batchAction.rotateFail'));
-          setBatchLoading(false);
-        }
-      },
-    });
+  const shared = {
+    t,
+    onStart: () => setBatchLoading(true),
+    onSettle: () => setBatchLoading(false),
+    onTokenSummary,
+    onDone,
   };
 
   return (
-    <>
-      <Space
-        data-testid="executor-batch-bar"
-        size={8}
-        wrap
-        style={{ marginBottom: 12, padding: '6px 12px', background: token.colorFillQuaternary, borderRadius: 6 }}
+    <Space
+      data-testid="executor-batch-bar"
+      size={8}
+      wrap
+      style={{ marginBottom: 12, padding: '6px 12px', background: token.colorFillQuaternary, borderRadius: 6 }}
+    >
+      <Text type="secondary" style={{ fontSize: 12 }}>
+        {t('batchAction.selected', { count: selected.length })}
+      </Text>
+      <Button
+        size="small"
+        icon={<ControlOutlined />}
+        loading={batchLoading}
+        disabled={batchLoading || online.length === 0}
+        onClick={() => confirmBatchReloadConfig({ executors: online, ...shared })}
       >
-        <Text type="secondary" style={{ fontSize: 12 }}>
-          {t('batchAction.selected', { count: selected.length })}
+        {t('batchAction.batchReload')}
+      </Button>
+      <Button
+        size="small"
+        danger
+        icon={<KeyOutlined />}
+        loading={batchLoading}
+        disabled={batchLoading}
+        onClick={() => confirmBatchRotateToken({ executors: selected, ...shared })}
+      >
+        {t('batchAction.batchRotate')}
+      </Button>
+      {online.length < selected.length && (
+        <Text type="warning" style={{ fontSize: 12 }}>
+          {t('batchAction.onlineHint', { count: online.length })}
         </Text>
-        <Button
-          size="small"
-          icon={<ControlOutlined />}
-          loading={batchLoading}
-          disabled={batchLoading || online.length === 0}
-          onClick={handleBatchReloadConfig}
-        >
-          {t('batchAction.batchReload')}
-        </Button>
-        <Button
-          size="small"
-          danger
-          icon={<KeyOutlined />}
-          loading={batchLoading}
-          disabled={batchLoading}
-          onClick={handleBatchRotateToken}
-        >
-          {t('batchAction.batchRotate')}
-        </Button>
-        {online.length < selected.length && (
-          <Text type="warning" style={{ fontSize: 12 }}>
-            {t('batchAction.onlineHint', { count: online.length })}
-          </Text>
-        )}
-      </Space>
-
-      <Modal
-        title={t('batchAction.rotateResultTitle')}
-        open={tokenResult !== null}
-        width={640}
-        footer={<Button type="primary" onClick={() => setTokenResult(null)}>{t('batchAction.savedClose')}</Button>}
-        onCancel={() => setTokenResult(null)}
-      >
-        {tokenResult && (
-          <div style={{ maxHeight: 360, overflowY: 'auto' }}>
-            {tokenResult.outcomes.map((o) => (
-              <div key={o.executor.id} style={{ padding: '6px 0', borderBottom: `1px solid ${token.colorBorderSecondary}` }}>
-                <Space>
-                  <Text strong>{o.executor.appName}</Text>
-                  {o.ok ? (
-                    o.token
-                      ? <Text code copyable={{ text: o.token }} style={{ fontSize: 12 }}>{o.token.slice(0, 8)}…</Text>
-                      : <Text type="secondary">{t('batchAction.succeeded')}</Text>
-                  ) : (
-                    <Tag color="red">{t('batchAction.failedItem', { error: o.error })}</Tag>
-                  )}
-                </Space>
-              </div>
-            ))}
-          </div>
-        )}
-      </Modal>
-    </>
+      )}
+    </Space>
   );
 }

@@ -1333,8 +1333,11 @@ export default {
   'execPkg.action.push': 'Push to Scheduler',
   'execPkg.action.deprecate': 'Deprecate this package',
   'execPkg.action.activate': 'Activate this package',
+  // B-9: uploading is a real backend enum (executor-package.entity.ts); it cannot be deprecated/activated until processed (backend 400s)
+  'execPkg.action.uploadingLockedTip': 'A package that is still uploading cannot be deprecated or activated — wait for processing to finish',
   'execPkg.status.active': 'Active',
   'execPkg.status.deprecated': 'Deprecated',
+  'execPkg.status.uploading': 'Uploading',
   'execPkg.status.deleted': 'Deleted',
   'execPkg.loadFail': 'Failed to load',
   'execPkg.operateFail': 'Operation failed',
@@ -1343,6 +1346,8 @@ export default {
   'execPkg.deleteConfirm': 'Confirm Delete',
   'execPkg.deleteConfirmDesc': 'This action cannot be undone. Confirm deleting this package?',
   'execPkg.delete': 'Delete',
+  // B-2: delete failure must be visible (the old onOk had no catch and failed silently)
+  'execPkg.deleteFail': 'Delete failed',
   'execPkg.cancel': 'Cancel',
   'execPkg.upload.title': 'Upload Executor Package',
   'execPkg.upload.field.file': 'Package File',
@@ -1360,6 +1365,8 @@ export default {
   'execPkg.upload.success': 'Upload successful',
   'execPkg.upload.fail': 'Upload failed',
   'execPkg.upload.extensionMismatch': 'File extension does not match the selected package type — check the type or pick another file',
+  // B-12: size cap aligned with the backend FileInterceptor limits (500 MB); reject oversized files up front
+  'execPkg.upload.tooLarge': 'File exceeds the upload limit ({{max}}). Compress or split it before uploading',
   'execPkg.push.titleWithPkg': 'Push package to schedulers — {{name}}@{{version}}',
   'execPkg.push.title': 'Push Package',
   'execPkg.push.start': 'Start Push',
@@ -1515,6 +1522,11 @@ export default {
   'executorDetail.editModal.maxConcurrent': 'Max concurrent count',
   'executorDetail.config.title': 'Config hot reload',
   'executorDetail.config.pullDisabledTooltip': 'Pull-mode executors (NAT-bound) cannot receive inbound config pushes; maxConcurrent changes take effect via the next pull/heartbeat instead',
+  // B-1: double confirmation for pushing an empty config body (blank fields reset to executor defaults — must be stated)
+  'executorDetail.config.emptyPushConfirmTitle': 'Push empty config?',
+  'executorDetail.config.emptyPushConfirmContent': 'All form fields are empty: pushing an empty body resets blank fields to the server-side defaults (max concurrent tasks / task timeout / heartbeat interval return to defaults). Continue?',
+  // B-5: for pull executors reload-config returns {queued:true} — report "queued" honestly instead of claiming success
+  'executorDetail.config.queued': 'Config update queued; it applies on the executor\'s next pull (heartbeat)',
   'executorDetail.field.dispatchMode': 'Dispatch mode',
   'executorDetail.dispatchMode.push': 'Push',
   'executorDetail.dispatchMode.pull': 'Pull mode',
@@ -2481,7 +2493,6 @@ export default {
   'execCard.hb.justNow': 'Just now',
   'execCard.hb.minAgo': '{{min}} min ago',
   'execCard.status.online': 'Online',
-  'execCard.status.busy': 'Busy',
   'execCard.status.offline': 'Offline',
   'execCard.res.cpu': 'CPU',
   'execCard.res.mem': 'Memory',
