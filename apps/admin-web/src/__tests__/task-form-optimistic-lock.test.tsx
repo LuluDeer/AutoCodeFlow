@@ -171,7 +171,8 @@ describe('TaskFormPage：blockStrategy 控件（A4）', () => {
     renderPage();
     await submitEditForm();
     // 回填：Select 显示 discard 的中文 label
-    expect(await screen.findByText('丢弃新触发（保留上一轮）')).toBeTruthy();
+    // N-14：文案升级为同参维度（与 locales/zh.ts 同步）
+    expect(await screen.findByText('丢弃新触发（同参数在跑时）')).toBeTruthy();
     const payload = vi.mocked(tasksApi.update).mock.calls[0][1] as Record<string, unknown>;
     expect(payload.blockStrategy).toBe('discard');
   });

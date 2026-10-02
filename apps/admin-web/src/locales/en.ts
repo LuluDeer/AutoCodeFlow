@@ -2298,11 +2298,15 @@ export default {
   'taskForm.field.applicationId.boundHint': 'This application is the task deployment binding (not a zip code source); switching the code source does not affect it.',
   'taskForm.field.triggerType': 'Trigger Type',
   // A4 (third-round audit): what to do with a new trigger while the previous run is still active
-  'taskForm.field.blockStrategy': 'Duplicate Trigger Policy',
-  'taskForm.field.blockStrategy.hint': 'How a new trigger is handled while the previous run has not finished yet',
-  'taskForm.field.blockStrategy.serial': 'Queue and wait (run after the previous round finishes)',
-  'taskForm.field.blockStrategy.discard': 'Discard the new trigger (keep the previous round)',
-  'taskForm.field.blockStrategy.coverEarly': 'Cancel the previous run and start the new trigger',
+  // N-14: gate compares task+params — discard/cover_early only constrain
+  // same-params triggers; different params always run concurrently. serial
+  // does not block at the trigger layer (the old "Queue and wait" label was
+  // a false promise); queue/serial semantics live in mutex groups.
+  'taskForm.field.blockStrategy': 'Duplicate Trigger Policy (same params)',
+  'taskForm.field.blockStrategy.hint': 'How a new trigger is handled while a same-params run has not finished yet; different params always run concurrently. For queueing/serialization attach a mutex group to the application',
+  'taskForm.field.blockStrategy.serial': 'Allow concurrently (no blocking)',
+  'taskForm.field.blockStrategy.discard': 'Discard the new trigger (while a same-params run is active)',
+  'taskForm.field.blockStrategy.coverEarly': 'Cancel the previous run and start the new trigger (same params)',
   'taskForm.field.cron': 'Cron Expression',
   'taskForm.field.cron.required': 'Please enter a Cron expression',
   'taskForm.field.cron.helper': 'Not sure how? Click to use the Cron helper',
