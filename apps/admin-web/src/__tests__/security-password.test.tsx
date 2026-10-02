@@ -38,8 +38,13 @@ if (!window.matchMedia) {
   })) as unknown as typeof window.matchMedia;
 }
 
-// jsdom 不实现导航——用可写桩承接 window.location.href 赋值
-const locationStub = { href: 'http://localhost/security' };
+// jsdom 不实现导航——用可写桩承接 window.location.href 赋值。
+// 每个测试用独立实例：模块级共享桩会被前一用例遗留的异步流（antd message
+// 关闭定时器、storage 事件等在 CI 覆盖率慢跑下的晚到回调）跨用例污染，
+// CI 上以 1/千次量级偶发「失败路径 href 变成 /login」的假失败。
+function makeLocationStub() {
+  return { href: 'http://localhost/security' };
+}
 
 function renderCard() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -64,8 +69,11 @@ function fillAndSubmit(v: {
   fireEvent.click(screen.getByTestId('password-submit'));
 }
 
+let locationStub: { href: string };
+
 beforeEach(() => {
   vi.clearAllMocks();
+  locationStub = makeLocationStub();
   Object.defineProperty(window, 'location', { writable: true, value: locationStub });
   locationStub.href = 'http://localhost/security';
   useAuthStore.getState().logout();
