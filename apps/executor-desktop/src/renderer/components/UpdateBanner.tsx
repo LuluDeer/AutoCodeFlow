@@ -27,7 +27,7 @@ interface UpdateApi {
   checkForUpdate?: () => Promise<{ ok: boolean }>;
   downloadUpdate?: () => Promise<{ ok: boolean }>;
   installUpdate?: () => Promise<{ ok: boolean }>;
-  onUpdateAvailable?: (cb: (p: { version: string; current: string }) => void) => () => void;
+  onUpdateAvailable?: (cb: (p: { version: string; current: string; previouslyDownloaded?: boolean }) => void) => () => void;
   onUpdateProgress?: (cb: (p: { percent: number; transferred: number; total: number }) => void) => () => void;
   onUpdateDownloaded?: (cb: (p: { version: string }) => void) => () => void;
   onUpdateError?: (cb: (p: { message: string }) => void) => () => void;
@@ -52,6 +52,8 @@ export default function UpdateBanner() {
   const [error, setError] = useState('');
   const [transferred, setTransferred] = useState(0);
   const [total, setTotal] = useState(0);
+  // B-3②：主进程持久化标记命中（同一版本此前已下载完成、待装缓存仍有效）。
+  const [previouslyDownloaded, setPreviouslyDownloaded] = useState(false);
 
   // 订阅主进程更新事件。所有订阅走 onXxx 返回的取消函数，卸载时清理，
   // 避免开发模式热重载或窗口重建时监听器泄漏（重复注册会让一次事件多次 setState）。
@@ -62,6 +64,7 @@ export default function UpdateBanner() {
     if (typeof a.onUpdateAvailable === 'function') {
       offs.push(a.onUpdateAvailable((p) => {
         setVersion(p?.version || '');
+        setPreviouslyDownloaded(p?.previouslyDownloaded === true);
         setPhase('available');
         setError('');
       }));
@@ -159,7 +162,10 @@ export default function UpdateBanner() {
         <span className="update-banner-icon" aria-hidden="true"><Icon name="spark" /></span>
         <div className="update-banner-text">
           <strong>新版本 {version || ''} 已下载完成</strong>
-          <span>重启应用即可完成安装</span>
+          {/* B-3：文案改实。autoInstallOnAppQuit=false 下，直接关闭应用/托盘退出
+              **不会**自动安装，只有点「重启并安装」才真正升级——旧文案「重启应用
+              即可完成安装」误导用户关窗，结果新版本永远装不上、下次又得重来。 */}
+          <span>点击「重启并安装」立即升级（直接关闭应用不会自动安装）</span>
         </div>
         <div className="update-banner-actions">
           <button className="btn btn-sm btn-success" onClick={handleInstall} disabled={busy}>
@@ -199,7 +205,14 @@ export default function UpdateBanner() {
       <span className="update-banner-icon" aria-hidden="true"><Icon name="arrow-up" /></span>
       <div className="update-banner-text">
         <strong>发现新版本 {version || ''}</strong>
-        <span>当前版本已可升级</span>
+        {/* B-3②：主进程标记命中 = 该版本此前已下载完成、待装缓存仍在。
+            点「下载更新」时 electron-updater 会先校验并复用本地缓存（sha512
+            一致则不重新下载），完成后自动进入「重启并安装」。 */}
+        <span>
+          {previouslyDownloaded
+            ? '此前已下载完成，点击下载将复用本地缓存（无需重新下载）'
+            : '当前版本已可升级'}
+        </span>
       </div>
       <div className="update-banner-actions">
         <button className="btn btn-sm btn-primary" onClick={handleDownload} disabled={busy}>

@@ -234,7 +234,28 @@ function main(): void {
     }
   }
 
-  console.log('heartbeat selftest: all assertions passed (NaN port → no uncaught throw; admin probe URL sanitized; EXP-03 single start entrypoint)');
+  // ── 6. B-2：休眠唤醒——resetForResume 必须存在且被 index.ts 挂到
+  //     powerMonitor('resume') 上（行为锚见 main-index.selftest 的迟滞模拟）──
+  {
+    const hbSrc = fs.readFileSync(
+      path.join(__dirname, '..', 'src', 'main', 'heartbeat.ts'),
+      'utf-8',
+    );
+    assert.ok(
+      hbSrc.includes('resetForResume()'),
+      'B-2: HeartbeatMonitor 必须提供 resetForResume()（唤醒后重置迟滞锚点）',
+    );
+    const idxSrc = fs.readFileSync(
+      path.join(__dirname, '..', 'src', 'main', 'index.ts'),
+      'utf-8',
+    );
+    assert.ok(
+      /powerMonitor\.on\('resume'[\s\S]{0,400}heartbeat\.resetForResume\(\)/.test(idxSrc),
+      'B-2: index.ts 必须在 powerMonitor resume 时调用 heartbeat.resetForResume()',
+    );
+  }
+
+  console.log('heartbeat selftest: all assertions passed (NaN port → no uncaught throw; admin probe URL sanitized; EXP-03 single start entrypoint; B-2 resume reset wired)');
 }
 
 main();
