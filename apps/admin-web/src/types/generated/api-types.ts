@@ -3706,11 +3706,13 @@ export interface components {
             estimatedDurationSec?: number;
             retryableErrors?: string[];
             priority?: number;
+            /** @description Dispatch mode: single (pick the least-loaded eligible executor, default) or broadcast (fan out to every eligible online executor). Mutually exclusive with executorId pinning, and rejected with 400 when the bound application carries a mutex group (broadcast cannot honor in-group concurrency caps). */
             executeMode?: string;
             blockStrategy?: string;
             misfireStrategy?: string;
             alarmEmail?: string;
             alarmChannels?: string[];
+            /** @description Default task params; serialized size must not exceed 65536 bytes (same limit as the trigger/webhook face). */
             params?: Record<string, never>;
             /**
              * @description Task-level secrets (credential key/value pairs, stored encrypted at rest with AES-256-GCM when SEC_SECRETS_KEY is configured; plaintext fallback with a warning otherwise). Read paths are always masked with the literal ******. Dispatched both merged into params (AUTOFLOW_<KEY>, legacy channel) and as a separate payload field so the executor injects them under their ORIGINAL names (required by third-party SDKs that read canonical names). On PATCH the object is merged per key: an omitted key or a ****** leaf keeps the stored value, a null leaf deletes the key, any other value overwrites it; an explicit null for the whole field clears every secret.
@@ -3797,11 +3799,13 @@ export interface components {
             estimatedDurationSec?: number;
             retryableErrors?: string[];
             priority?: number;
+            /** @description Dispatch mode: single (pick the least-loaded eligible executor, default) or broadcast (fan out to every eligible online executor). Mutually exclusive with executorId pinning, and rejected with 400 when the bound application carries a mutex group (broadcast cannot honor in-group concurrency caps). */
             executeMode?: string;
             blockStrategy?: string;
             misfireStrategy?: string;
             alarmEmail?: string;
             alarmChannels?: string[];
+            /** @description Default task params; serialized size must not exceed 65536 bytes (same limit as the trigger/webhook face). */
             params?: Record<string, never>;
             /**
              * @description Task-level secrets (credential key/value pairs, stored encrypted at rest with AES-256-GCM when SEC_SECRETS_KEY is configured; plaintext fallback with a warning otherwise). Read paths are always masked with the literal ******. Dispatched both merged into params (AUTOFLOW_<KEY>, legacy channel) and as a separate payload field so the executor injects them under their ORIGINAL names (required by third-party SDKs that read canonical names). On PATCH the object is merged per key: an omitted key or a ****** leaf keeps the stored value, a null leaf deletes the key, any other value overwrites it; an explicit null for the whole field clears every secret.
@@ -3846,6 +3850,7 @@ export interface components {
             expectedUpdatedAt?: string;
         };
         TriggerTaskDto: {
+            /** @description Trigger params override; serialized size must not exceed 65536 bytes (same limit as the webhook face) */
             params?: Record<string, never>;
             /** @example 3 */
             version?: number;

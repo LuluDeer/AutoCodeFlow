@@ -9168,7 +9168,8 @@
             "type": "number"
           },
           "executeMode": {
-            "type": "string"
+            "type": "string",
+            "description": "Dispatch mode: single (pick the least-loaded eligible executor, default) or broadcast (fan out to every eligible online executor). Mutually exclusive with executorId pinning, and rejected with 400 when the bound application carries a mutex group (broadcast cannot honor in-group concurrency caps)."
           },
           "blockStrategy": {
             "type": "string"
@@ -9186,7 +9187,8 @@
             }
           },
           "params": {
-            "type": "object"
+            "type": "object",
+            "description": "Default task params; serialized size must not exceed 65536 bytes (same limit as the trigger/webhook face)."
           },
           "secrets": {
             "type": "object",
@@ -9387,7 +9389,8 @@
             "type": "number"
           },
           "executeMode": {
-            "type": "string"
+            "type": "string",
+            "description": "Dispatch mode: single (pick the least-loaded eligible executor, default) or broadcast (fan out to every eligible online executor). Mutually exclusive with executorId pinning, and rejected with 400 when the bound application carries a mutex group (broadcast cannot honor in-group concurrency caps)."
           },
           "blockStrategy": {
             "type": "string"
@@ -9405,7 +9408,8 @@
             }
           },
           "params": {
-            "type": "object"
+            "type": "object",
+            "description": "Default task params; serialized size must not exceed 65536 bytes (same limit as the trigger/webhook face)."
           },
           "secrets": {
             "type": "object",
@@ -9495,7 +9499,8 @@
         "type": "object",
         "properties": {
           "params": {
-            "type": "object"
+            "type": "object",
+            "description": "Trigger params override; serialized size must not exceed 65536 bytes (same limit as the webhook face)"
           },
           "version": {
             "type": "number",
