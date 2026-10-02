@@ -21,8 +21,9 @@ import tempfile
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, FileResponse, Response
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, Response
 import secrets
+import shutil
 
 app = FastAPI(title="AutoFlow PyPI Registry", version="1.0.0")
 
@@ -161,6 +162,42 @@ SIDECAR_SUFFIX = ".sha256"
 UPLOAD_SUFFIX = ".upload"
 _HEX64 = re.compile(r"[0-9a-f]{64}")
 
+# B-6（私有包仓库域审计）：413 预检余量——S10 的 50MB 上限此前在 handler 内
+# 逐块累加时才判，完整 multipart 已被 Starlette 收进 SpooledTemporaryFile
+# （超 1MB 部分落盘），慢客户端可先占满磁盘/带宽再被拒。按 Content-Length
+# 预检，超限直接 413 短路，不进入 multipart 解析。multipart 有 boundary 与
+# 表单字段（name/version）开销，给 64 KiB 余量避免边界误杀；无 Content-Length
+# （chunked）或头畸形时不预检，handler 内的流式累计闸（S10）仍是最终防线。
+CONTENT_LENGTH_MARGIN = 64 * 1024
+
+
+@app.middleware("http")
+async def content_length_precheck(request: Request, call_next):
+    """B-6: upload 路由的 Content-Length 预检（超限 413 短路）。
+
+    仅拦 POST/PUT 且路径命中上传面（/ 与 /upload——E-39 的单一实现 + 薄
+    alias）；其余请求原样放行。413 响应体形态与 FastAPI HTTPException 一致
+    （{"detail": ...}），客户端解析无需分支。
+    """
+    if request.method in ("POST", "PUT") and request.url.path in ("/", "/upload"):
+        raw = request.headers.get("content-length")
+        if raw is not None:
+            try:
+                length = int(raw)
+            except ValueError:
+                length = None  # 畸形头不预检，交给底层/流式闸处理
+            if length is not None and length > MAX_UPLOAD_BYTES + CONTENT_LENGTH_MARGIN:
+                return JSONResponse(
+                    status_code=413,
+                    content={
+                        "detail": (
+                            "Payload too large: request body exceeds the "
+                            f"{MAX_UPLOAD_BYTES} byte upload limit"
+                        )
+                    },
+                )
+    return await call_next(request)
+
 
 def sidecar_path(path: Path) -> Path:
     return path.with_name(path.name + SIDECAR_SUFFIX)
@@ -260,27 +297,46 @@ def _artifact_files(pkg_dir: Path) -> list[Path]:
         return []
 
 
-def _root_listing_state() -> tuple[str, float]:
-    """全量索引（/ 与 /simple/）的 (weak ETag, Last-Modified 秒)。
+def _scan_package_entries() -> list[tuple[str, float, float, int]]:
+    """B-4②: 根索引（/ 与 /simple/）的**单次遍历**扫描。
 
-    索引只在「包/制品 增删或替换」时变化；取相关条目的最大 mtime 与计数组合。
-    上传走 N30 os.link 不可覆盖（同 sha 幂等重传字节不变），故 mtime+计数足以
-    区分任何会让索引内容变化的操作。"""
-    dirs = _all_package_dirs()
-    latest = 0.0
-    file_count = 0
-    for d in dirs:
+    此前一次请求最多扫两到三遍盘：listing 一遍（iterdir + 每包 glob 计数）、
+    ETag/Last-Modified 状态再一遍（_root_listing_state 重复 iterdir + glob）。
+    现在一次扫描构建条目结构，listing / 计数 / 校验器三处消费同一份结果。
+    行为不变：条目按包名排序（继承 _all_package_dirs 的排序），四元组为
+    (包名, 目录 mtime, 目录+制品的最大 mtime, 非元数据文件数)。OSError 守卫
+    语义与 _all_package_dirs / _artifact_files 一致——枚举失败按空处理。
+    """
+    entries: list[tuple[str, float, float, int]] = []
+    for d in _all_package_dirs():
+        dir_mtime = 0.0
         try:
-            latest = max(latest, d.stat().st_mtime)
+            dir_mtime = d.stat().st_mtime
         except OSError:
             pass
+        latest = dir_mtime
+        file_count = 0
         for f in _artifact_files(d):
             file_count += 1
             try:
                 latest = max(latest, f.stat().st_mtime)
             except OSError:
                 pass
-    return f'W/"root-{int(latest)}-{len(dirs)}-{file_count}"', latest
+        entries.append((d.name, dir_mtime, latest, file_count))
+    return entries
+
+
+def _root_state_from_entries(
+    entries: list[tuple[str, float, float, int]],
+) -> tuple[str, float]:
+    """从单次扫描结果推导全量索引的 (weak ETag, Last-Modified 秒)。
+
+    ETag 组成与旧 _root_listing_state 逐字节一致：索引只在「包/制品 增删或
+    替换」时变化；上传走 N30 os.link 不可覆盖（同 sha 幂等重传字节不变），
+    故 mtime+计数足以区分任何会让索引内容变化的操作。"""
+    latest = max((e[2] for e in entries), default=0.0)
+    file_count = sum(e[3] for e in entries)
+    return f'W/"root-{int(latest)}-{len(entries)}-{file_count}"', latest
 
 
 def _package_listing_state(pkg_dir: Path) -> tuple[str, float]:
@@ -442,15 +498,12 @@ def _version_sort_key(v: str):
 def root_index(request: Request, _user: str = Depends(verify_auth)):
     """FEAT-12: 人类可读服务首页（HTML，需认证——与 S9 索引保护策略一致）。"""
     # D1-P2-4: 根/simple 索引此前裸用 PACKAGES_DIR.iterdir()——目录不可读/被删
-    # 时迭代直接 OSError 500。改用已带 OSError 守卫且排序的 _all_package_dirs()。
-    pkgs = [d.name for d in _all_package_dirs()]
-    total_files = sum(
-        1
-        for p in pkgs
-        for f in (PACKAGES_DIR / p).glob("*")
-        if f.is_file() and not is_meta_file(f.name)
-    )
-    etag, last_modified = _root_listing_state()
+    # 时迭代直接 OSError 500。改用已带 OSError 守卫且排序的 _all_package_dirs()
+    # （B-4②起经 _scan_package_entries 的单次遍历间接使用，守卫语义不变）。
+    entries = _scan_package_entries()
+    pkgs = [e[0] for e in entries]
+    total_files = sum(e[3] for e in entries)
+    etag, last_modified = _root_state_from_entries(entries)
     return _conditional_html_response(
         request, etag, last_modified, _render_root_index(pkgs, total_files))
 
@@ -458,14 +511,12 @@ def root_index(request: Request, _user: str = Depends(verify_auth)):
 @app.get("/simple/", response_class=HTMLResponse)
 def simple_index(request: Request, _user: str = Depends(verify_auth)):
     """PEP 503 root index (pip 消费入口)."""
-    # D1-P2-4: 根/simple 索引此前裸用 PACKAGES_DIR.iterdir()——目录不可读/被删
-    # 时迭代直接 OSError 500。改用已带 OSError 守卫且排序的 _all_package_dirs()。
-    pkgs = [d.name for d in _all_package_dirs()]
-    counts = [
-        sum(1 for f in (PACKAGES_DIR / p).glob("*") if f.is_file() and not is_meta_file(f.name))
-        for p in pkgs
-    ]
-    etag, last_modified = _root_listing_state()
+    # D1-P2-4: 守卫语义见 root_index 注释。B-4②：listing/计数/ETag 合并为
+    # 单次遍历（此前同一请求最多扫三遍盘），行为逐字节不变。
+    entries = _scan_package_entries()
+    pkgs = [e[0] for e in entries]
+    counts = [e[3] for e in entries]
+    etag, last_modified = _root_state_from_entries(entries)
     return _conditional_html_response(
         request, etag, last_modified, _render_simple_index(pkgs, counts, sum(counts)))
 
@@ -520,6 +571,36 @@ def download_package(package_name: str, filename: str, _user: str = Depends(veri
     if not f.exists() or not f.is_file():
         raise HTTPException(status_code=404, detail="File not found")
     return FileResponse(str(f))
+
+
+@app.delete("/admin/packages/{package_name}")
+def delete_package(package_name: str, _user: str = Depends(verify_auth)):
+    """B-4①: 制品生命周期管理面（最小面：**整包删除**）。
+
+    此前制品只进不出——无任何删除端点，pypi_data 卷无界增长，且误传的
+    恶意/错误包没有任何运维出口（只能进容器手动 rm，绕过索引一致性）。
+    本端点删整个包目录（制品 + .sha256 sidecar + 残留 .upload 临时文件）。
+
+    取舍：按版本删除刻意不做——PEP 440 版本解析、wheel/sdist 混合命名是
+    又一层契约面，最小可信面是「整包删除 + 重新上传」（409 闸允许同 sha
+    幂等重传）。认证复用 verify_auth——本服务只有一套 Basic 凭据
+    （REGISTRY_USER/PASS），具备上传权即具备删除权，与上传面同一信任级。
+
+    返回：204（删除成功，无响应体）/ 404（包不存在或包名不合法——与读取
+    路径同闸同语义，不泄露闸的存在）。
+    """
+    normalized = normalize(package_name)
+    # NETOPT-5⑥ 同款读取路径闸：归一化后仍带盘符/分隔符的名字按 404 处理。
+    if not is_safe_package_name(normalized):
+        raise HTTPException(status_code=404, detail="Package not found")
+    d = PACKAGES_DIR / normalized
+    if not d.exists() or not d.is_dir():
+        raise HTTPException(status_code=404, detail="Package not found")
+    # rmtree 的范围有界：包目录内只可能是上传流程落盘的制品/sidecar/临时
+    # 文件（PKG-DIR-01 保证目录名是包根下的单分量，N14 保证文件名无目录
+    # 分量，os.link 只在包目录内建链）。
+    shutil.rmtree(d)
+    return Response(status_code=204)
 
 
 @app.post("/")

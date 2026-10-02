@@ -1,4 +1,4 @@
-import { HttpStatus } from "@nestjs/common";
+import { HttpException, HttpStatus } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import * as http from "http";
 import * as net from "net";
@@ -351,7 +351,7 @@ describe("RegistryController npm package listing (S5 authenticated registry)", (
     ]);
   });
 
-  it("S5: keeps the previous anonymous behavior (empty list) when no credentials are configured", async () => {
+  it("B-3: surfaces the upstream 401 as BAD_GATEWAY when no credentials are configured（不再静默变空列表）", async () => {
     const controller = makeController({
       registry: {
         npm: {
@@ -368,10 +368,13 @@ describe("RegistryController npm package listing (S5 authenticated registry)", (
       error: jest.fn(),
     };
 
-    await expect(controller.listNpmPackages()).resolves.toEqual({
-      packages: [],
+    // B-3 前：匿名 401 被吞成 { packages: [] } 200，故障静默；现在按 502
+    // 透出（消息含上游状态码），前端 StateError 错误态得以触发。
+    await expect(controller.listNpmPackages()).rejects.toMatchObject({
+      status: HttpStatus.BAD_GATEWAY,
+      message: expect.stringContaining("401"),
     });
-    // anonymous 401 — and the miss is explained at debug level
+    // anonymous 401 — and the miss is still explained at debug level
     expect(seen).toEqual([
       { method: "GET", url: "/-/verdaccio/packages", authorization: "" },
     ]);
@@ -405,7 +408,7 @@ describe("RegistryController npm package listing (S5 authenticated registry)", (
     ]);
   });
 
-  it("S5: falls back to the empty-list behavior when the configured credentials are rejected", async () => {
+  it("B-3: surfaces the upstream 401 as BAD_GATEWAY when the configured credentials are rejected", async () => {
     const controller = makeController({
       registry: {
         npm: {
@@ -417,12 +420,347 @@ describe("RegistryController npm package listing (S5 authenticated registry)", (
       },
     });
 
-    await expect(controller.listNpmPackages()).resolves.toEqual({
-      packages: [],
+    await expect(controller.listNpmPackages()).rejects.toMatchObject({
+      status: HttpStatus.BAD_GATEWAY,
+      message: expect.stringContaining("401"),
     });
     expect(seen.map((r) => r.url)).toEqual([
       "/-/user/login",
       "/-/verdaccio/packages",
     ]);
+  });
+});
+
+describe("RegistryController list proxy error surfacing (B-3 / B-9)", () => {
+  /** Stand-in for the registry-pypi /simple/ index page. */
+  const makeSimpleIndexServer = (
+    status: number,
+    body: string,
+  ): http.Server =>
+    http.createServer((_req, res) => {
+      res.setHeader("Connection", "close");
+      res.writeHead(status, { "Content-Type": "text/html" });
+      res.end(body);
+    });
+
+  it("B-3: surfaces an upstream 5xx as BAD_GATEWAY（消息含上游状态码，不再是空列表 200）", async () => {
+    const server = makeSimpleIndexServer(503, "maintenance");
+    const destroyAll = trackSockets(server);
+    const port = await listen(server);
+    const controller = makeController({
+      PYPI_REGISTRY_URL: `http://127.0.0.1:${port}`,
+    });
+
+    await expect(controller.listPypiPackages()).rejects.toMatchObject({
+      status: HttpStatus.BAD_GATEWAY,
+      message: expect.stringContaining("503"),
+    });
+
+    destroyAll();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  it("B-3: an upstream 2xx with zero anchors is still a 200 empty list（失败与空态语义分离）", async () => {
+    const server = makeSimpleIndexServer(
+      200,
+      "<html><body><p>No packages published yet.</p></body></html>",
+    );
+    const destroyAll = trackSockets(server);
+    const port = await listen(server);
+    const controller = makeController({
+      PYPI_REGISTRY_URL: `http://127.0.0.1:${port}`,
+    });
+
+    await expect(controller.listPypiPackages()).resolves.toEqual({
+      packages: [],
+    });
+
+    destroyAll();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  it("B-3: the fetchText timeout marker (504) maps to GATEWAY_TIMEOUT", () => {
+    const controller = makeController({});
+    const fail = (
+      controller as unknown as {
+        throwUpstreamListFailure: (
+          upstream: string,
+          status: number,
+          text: string,
+        ) => never;
+      }
+    ).throwUpstreamListFailure.bind(controller) as (
+      upstream: string,
+      status: number,
+      text: string,
+    ) => never;
+
+    try {
+      fail("PyPI registry", HttpStatus.GATEWAY_TIMEOUT, "timeout");
+      throw new Error("expected throwUpstreamListFailure to throw");
+    } catch (e: unknown) {
+      expect(e).toBeInstanceOf(HttpException);
+      expect((e as HttpException).getStatus()).toBe(
+        HttpStatus.GATEWAY_TIMEOUT,
+      );
+    }
+  });
+
+  it("B-9: decodes HTML entities in index anchor text（a&amp;b → a&b，转义不再透出到列表）", async () => {
+    const server = makeSimpleIndexServer(
+      200,
+      "<html><body>" +
+        '<a href="/simple/a&amp;b/">a&amp;b</a>' +
+        '<a href="/simple/plain/">plain</a>' +
+        '<a href="/simple/esc/">&amp;lt;tag&amp;gt;</a>' +
+        "</body></html>",
+    );
+    const destroyAll = trackSockets(server);
+    const port = await listen(server);
+    const controller = makeController({
+      PYPI_REGISTRY_URL: `http://127.0.0.1:${port}`,
+    });
+
+    // `&amp;lt;` 只解码一轮得 `&lt;`（单次解码语义，不越界）。
+    await expect(controller.listPypiPackages()).resolves.toEqual({
+      packages: ["a&b", "plain", "&lt;tag&gt;"],
+    });
+
+    destroyAll();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  it("B-9: &amp; must be replaced last so double-escaped text survives one decode round", () => {
+    const controller = makeController({});
+    const decode = (
+      controller as unknown as {
+        decodeHtmlEntities: (s: string) => string;
+      }
+    ).decodeHtmlEntities;
+    expect(decode.call(controller, "a&amp;b")).toBe("a&b");
+    expect(decode.call(controller, "&amp;lt;")).toBe("&lt;");
+    expect(decode.call(controller, "plain")).toBe("plain");
+  });
+});
+
+describe("RegistryController upload status mapping (B-10)", () => {
+  const makeStatusServer = (status: number, body: string): http.Server =>
+    http.createServer((_req, res) => {
+      res.setHeader("Connection", "close");
+      res.writeHead(status, { "Content-Type": "application/json" });
+      res.end(body);
+    });
+
+  it("B-10: maps an upstream 409 (same filename, different sha256) to CONFLICT", async () => {
+    const server = makeStatusServer(
+      409,
+      '{"detail":"Artifact pkg-1.0.0.whl already exists with a different sha256"}',
+    );
+    const destroyAll = trackSockets(server);
+    const port = await listen(server);
+    const controller = makeController({
+      PYPI_REGISTRY_URL: `http://127.0.0.1:${port}`,
+      REGISTRY_UPLOAD_TIMEOUT_MS: "3000",
+    });
+
+    await expect(
+      controller.uploadPypiPackage(
+        makeMulterFile(),
+        "pkg",
+        "1.0.0",
+        adminUser,
+        reqStub,
+      ),
+    ).rejects.toMatchObject({
+      status: HttpStatus.CONFLICT,
+      message: expect.stringContaining("版本已存在或内容冲突"),
+    });
+
+    destroyAll();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  it("B-10: maps an upstream 413 (size cap) to PAYLOAD_TOO_LARGE", async () => {
+    const server = makeStatusServer(413, '{"detail":"Package too large"}');
+    const destroyAll = trackSockets(server);
+    const port = await listen(server);
+    const controller = makeController({
+      PYPI_REGISTRY_URL: `http://127.0.0.1:${port}`,
+      REGISTRY_UPLOAD_TIMEOUT_MS: "3000",
+    });
+
+    await expect(
+      controller.uploadPypiPackage(
+        makeMulterFile(),
+        "pkg",
+        "1.0.0",
+        adminUser,
+        reqStub,
+      ),
+    ).rejects.toMatchObject({ status: HttpStatus.PAYLOAD_TOO_LARGE });
+
+    destroyAll();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  it("B-10: keeps other upstream statuses as BAD_GATEWAY", async () => {
+    const server = makeStatusServer(500, "boom");
+    const destroyAll = trackSockets(server);
+    const port = await listen(server);
+    const controller = makeController({
+      PYPI_REGISTRY_URL: `http://127.0.0.1:${port}`,
+      REGISTRY_UPLOAD_TIMEOUT_MS: "3000",
+    });
+
+    await expect(
+      controller.uploadPypiPackage(
+        makeMulterFile(),
+        "pkg",
+        "1.0.0",
+        adminUser,
+        reqStub,
+      ),
+    ).rejects.toMatchObject({ status: HttpStatus.BAD_GATEWAY });
+
+    destroyAll();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+});
+
+describe("RegistryController npm login token cache (B-11)", () => {
+  let server: http.Server;
+  let destroyAll: () => void;
+  let port: number;
+  const seen: Array<{ method?: string; url?: string }> = [];
+
+  beforeAll(async () => {
+    // 独立的 Verdaccio 替身（与 S5 describe 同构）：svc2/svc2-pass 换
+    // svc2-token，包列表要求 Bearer。
+    server = http.createServer((req, res) => {
+      let body = "";
+      req.on("data", (c) => (body += c));
+      req.on("end", () => {
+        seen.push({ method: req.method, url: req.url });
+        res.setHeader("Connection", "close");
+        if (req.url === "/-/user/login") {
+          const creds = JSON.parse(body) as {
+            username?: string;
+            name?: string;
+            password?: string;
+          };
+          const user = creds.username ?? creds.name;
+          if (user === "svc2" && creds.password === "svc2-pass") {
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ token: "svc2-token" }));
+          } else {
+            res.writeHead(401);
+            res.end(JSON.stringify({ error: "bad credentials" }));
+          }
+          return;
+        }
+        if (req.url === "/-/verdaccio/packages") {
+          if (req.headers.authorization === "Bearer svc2-token") {
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify([{ name: "@autoflow/cached" }]));
+          } else {
+            res.writeHead(401);
+            res.end("unauthorized");
+          }
+          return;
+        }
+        res.writeHead(404);
+        res.end();
+      });
+    });
+    destroyAll = trackSockets(server);
+    port = await listen(server);
+  });
+
+  afterAll(async () => {
+    destroyAll();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  const makeCachedController = (): RegistryController =>
+    makeController({
+      registry: {
+        npm: {
+          url: `http://127.0.0.1:${port}`,
+          user: "svc2",
+          pass: "svc2-pass",
+          token: "",
+        },
+      },
+    });
+
+  const clearTokenCache = () => {
+    const statics = RegistryController as unknown as {
+      npmTokenCache: Map<string, unknown>;
+      npmLoginInflight: Map<string, unknown>;
+    };
+    statics.npmTokenCache.clear();
+    statics.npmLoginInflight.clear();
+  };
+
+  beforeEach(() => {
+    seen.length = 0;
+    // B-11：token 缓存是模块级静态态——用例间必须清空保证确定性。
+    clearTokenCache();
+  });
+
+  it("B-11: the second listing within the TTL does not hit /-/user/login again", async () => {
+    const controller = makeCachedController();
+
+    await expect(controller.listNpmPackages()).resolves.toEqual({
+      packages: [{ name: "@autoflow/cached" }],
+    });
+    await expect(controller.listNpmPackages()).resolves.toEqual({
+      packages: [{ name: "@autoflow/cached" }],
+    });
+
+    expect(seen.filter((r) => r.url === "/-/user/login")).toHaveLength(1);
+    expect(
+      seen.filter((r) => r.url === "/-/verdaccio/packages"),
+    ).toHaveLength(2);
+  });
+
+  it("B-11: concurrent listings share one in-flight login（单飞，不放大登录次数）", async () => {
+    const controller = makeCachedController();
+
+    await Promise.all([
+      controller.listNpmPackages(),
+      controller.listNpmPackages(),
+    ]);
+
+    expect(seen.filter((r) => r.url === "/-/user/login")).toHaveLength(1);
+    expect(
+      seen.filter((r) => r.url === "/-/verdaccio/packages"),
+    ).toHaveLength(2);
+  });
+
+  it("B-11: a different pass gets its own cache key（凭据轮换立即生效）", async () => {
+    const controller = makeCachedController();
+    await controller.listNpmPackages();
+    const loginsAfterFirst = seen.filter((r) => r.url === "/-/user/login")
+      .length;
+    expect(loginsAfterFirst).toBe(1);
+
+    const rotated = makeController({
+      registry: {
+        npm: {
+          url: `http://127.0.0.1:${port}`,
+          user: "svc2",
+          pass: "rotated-pass",
+          token: "",
+        },
+      },
+    });
+    // 轮换后的凭据登录会被 401 拒（替身只认 svc2-pass）→ B-3 语义 502。
+    // 关键断言：这次**必须**重新打 login（不读旧凭据的缓存项）——登录
+    // 计数从 1 涨到 2，而非复用旧 token 直接打包列表。
+    await expect(rotated.listNpmPackages()).rejects.toMatchObject({
+      status: HttpStatus.BAD_GATEWAY,
+    });
+    expect(seen.filter((r) => r.url === "/-/user/login")).toHaveLength(2);
   });
 });
