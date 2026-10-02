@@ -6,7 +6,6 @@ import {
   AGENT_TOOL_CALL_READ_RETENTION_DEFAULT_DAYS,
   AGENT_TOOL_CALL_WRITE_RETENTION_DEFAULT_DAYS,
 } from "../agent-session-retention.service";
-import { AGENT_TERMINAL_STATUSES } from "../entities/agent-session.entity";
 
 /** delete qb 链桩：捕获 where/andWhere 参数，execute 返回受控 affected。 */
 function deleteQb(affected = 3) {

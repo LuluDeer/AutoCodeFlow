@@ -44,7 +44,9 @@ describe("AddTasksDependenciesValuesGinIndex1790000000053（B-3）", () => {
   });
 
   it("可被 TypeORM 解析（name/up/down 契约）", () => {
-    expect(migration.name).toBe("AddTasksDependenciesValuesGinIndex1790000000053");
+    expect(migration.name).toBe(
+      "AddTasksDependenciesValuesGinIndex1790000000053",
+    );
     expect(typeof migration.up).toBe("function");
     expect(typeof migration.down).toBe("function");
   });

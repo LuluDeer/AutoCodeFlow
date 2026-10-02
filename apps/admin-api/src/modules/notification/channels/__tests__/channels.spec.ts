@@ -994,7 +994,9 @@ describe("A-6: markdown 注入防护（wecom/dingtalk/slack 共用 escapeMarkdow
   it("wecom：markdown.content 不再包含链接语法字符，普通文本与换行保留", async () => {
     mockedAxios.post = jest.fn().mockResolvedValue({ status: 200 });
     const channel = new WecomChannel(
-      makeConfig({ "notification.wecomWebhook": "https://qy.example.com/hook" }),
+      makeConfig({
+        "notification.wecomWebhook": "https://qy.example.com/hook",
+      }),
       makeStore(),
     );
     await channel.send(injectionPayload);
@@ -1029,7 +1031,9 @@ describe("A-6: markdown 注入防护（wecom/dingtalk/slack 共用 escapeMarkdow
   it("slack：mrkdwn section 与回退 text 剥离链接语法字符，header(plain_text) 原样", async () => {
     mockedAxios.post = jest.fn().mockResolvedValue({ status: 200 });
     const channel = new SlackChannel(
-      makeConfig({ "notification.slackWebhook": "https://hooks.example.com/x" }),
+      makeConfig({
+        "notification.slackWebhook": "https://hooks.example.com/x",
+      }),
       makeStore(),
     );
     await channel.send(injectionPayload);
@@ -1044,7 +1048,9 @@ describe("A-6: markdown 注入防护（wecom/dingtalk/slack 共用 escapeMarkdow
   it("控制字符被剥离，\\t 与 \\n 保留", async () => {
     mockedAxios.post = jest.fn().mockResolvedValue({ status: 200 });
     const channel = new WecomChannel(
-      makeConfig({ "notification.wecomWebhook": "https://qy.example.com/hook" }),
+      makeConfig({
+        "notification.wecomWebhook": "https://qy.example.com/hook",
+      }),
       makeStore(),
     );
     await channel.send({

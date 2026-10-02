@@ -41,11 +41,7 @@ describe("maintenance-window fire-scan cache (B-8)", () => {
 
   it("同一分钟内的重复判定命中缓存（零新增 formatToParts 调用）", () => {
     const now = new Date("2026-06-01T10:00:30.000Z");
-    findActiveMaintenanceWindow(
-      [...WINDOW],
-      now,
-      "Asia/Shanghai",
-    );
+    findActiveMaintenanceWindow([...WINDOW], now, "Asia/Shanghai");
     const callsAfterFirst = formatToPartsSpy.mock.calls.length;
     expect(callsAfterFirst).toBeGreaterThan(0);
 
@@ -73,14 +69,10 @@ describe("maintenance-window fire-scan cache (B-8)", () => {
       new Date(now.getTime() + 70_000),
       "Asia/Shanghai",
     );
-    expect(formatToPartsSpy.mock.calls.length).toBeGreaterThan(
-      callsAfterFirst,
-    );
+    expect(formatToPartsSpy.mock.calls.length).toBeGreaterThan(callsAfterFirst);
     // 结果等价于无缓存的直接实现（对下一分钟重新判定一次并比对）
     __resetFireScanCacheForTest();
-    expect(
-      nextMinute,
-    ).toEqual(
+    expect(nextMinute).toEqual(
       findActiveMaintenanceWindow(
         [...WINDOW],
         new Date(now.getTime() + 70_000),

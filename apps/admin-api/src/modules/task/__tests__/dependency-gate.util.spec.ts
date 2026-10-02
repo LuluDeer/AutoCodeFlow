@@ -40,18 +40,18 @@ describe("areDependenciesSatisfied (B-6 util)", () => {
     repo.find.mockResolvedValue([
       { taskId: "up-1", status: ExecutionStatus.FAILED },
     ]);
-    await expect(
-      areDependenciesSatisfied(repo, { a: "up-1" }),
-    ).resolves.toBe(false);
+    await expect(areDependenciesSatisfied(repo, { a: "up-1" })).resolves.toBe(
+      false,
+    );
   });
 
   it("依赖从未运行过（无执行行）→ 不满足", async () => {
     const repo = makeRepo();
     repo.find.mockResolvedValue([]);
     repo.findOne.mockResolvedValue(null);
-    await expect(
-      areDependenciesSatisfied(repo, { a: "up-1" }),
-    ).resolves.toBe(false);
+    await expect(areDependenciesSatisfied(repo, { a: "up-1" })).resolves.toBe(
+      false,
+    );
   });
 
   it("value 才是依赖任务 id（FIX-1.1 契约）：key 不参与判定", async () => {
@@ -60,7 +60,7 @@ describe("areDependenciesSatisfied (B-6 util)", () => {
       { taskId: "up-id", status: ExecutionStatus.SUCCESS },
     ]);
     await expect(
-      areDependenciesSatisfied(repo, { "显示名": "up-id" }),
+      areDependenciesSatisfied(repo, { 显示名: "up-id" }),
     ).resolves.toBe(true);
     // 查询按 value（up-id）而非 key 过滤（TypeORM In 包裹为 FindOperator）
     const findArg = repo.find.mock.calls[0][0] as {

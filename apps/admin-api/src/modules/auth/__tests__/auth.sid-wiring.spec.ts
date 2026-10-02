@@ -6,7 +6,6 @@ import { AuthService } from "../auth.service";
 import { AuthController } from "../auth.controller";
 import { UsersService } from "../../users/users.service";
 import { AuditService } from "../../audit/audit.service";
-import { RefreshToken } from "../entities/refresh-token.entity";
 
 /**
  * A-2（R3-A 审计）: sid 断链接线专项——真实 validate → controller → service
@@ -46,7 +45,10 @@ describe("A-2 sid 断链接线（validate → controller → service）", () => 
       }),
       bumpSessionVersion: jest.fn().mockResolvedValue(undefined),
     };
-    jwtService = { sign: jest.fn().mockReturnValue("signed"), verify: jest.fn() };
+    jwtService = {
+      sign: jest.fn().mockReturnValue("signed"),
+      verify: jest.fn(),
+    };
     configService = { get: jest.fn().mockReturnValue("secret") };
     refreshTokenRepo = {
       findOne: jest.fn(),
@@ -69,10 +71,9 @@ describe("A-2 sid 断链接线（validate → controller → service）", () => 
       // ARCH-31: cron Leader 门禁缺席 → null → 门禁不生效（单测装配先例）
       null,
     );
-    controller = new AuthController(
-      authService,
-      { log: jest.fn().mockResolvedValue(undefined) } as unknown as AuditService,
-    );
+    controller = new AuthController(authService, {
+      log: jest.fn().mockResolvedValue(undefined),
+    } as unknown as AuditService);
   });
 
   const makeReq = (user: unknown) =>
@@ -123,8 +124,24 @@ describe("A-2 sid 断链接线（validate → controller → service）", () => 
       ver: 0,
     });
     refreshTokenRepo.find.mockResolvedValue([
-      { id: 11, jti: OTHER_JTI, createdAt: new Date(), expiresAt: null, revoked: false, userAgent: null, ip: null },
-      { id: 12, jti: SESSION_JTI, createdAt: new Date(), expiresAt: null, revoked: false, userAgent: null, ip: null },
+      {
+        id: 11,
+        jti: OTHER_JTI,
+        createdAt: new Date(),
+        expiresAt: null,
+        revoked: false,
+        userAgent: null,
+        ip: null,
+      },
+      {
+        id: 12,
+        jti: SESSION_JTI,
+        createdAt: new Date(),
+        expiresAt: null,
+        revoked: false,
+        userAgent: null,
+        ip: null,
+      },
     ]);
 
     const rows = (await controller.listSessions(
@@ -145,7 +162,10 @@ describe("A-2 sid 断链接线（validate → controller → service）", () => 
     });
     expect((principal as { sid?: string }).sid).toBeUndefined();
 
-    await controller.revokeOtherSessions(principal as never, makeReq(principal));
+    await controller.revokeOtherSessions(
+      principal as never,
+      makeReq(principal),
+    );
 
     expect(refreshTokenRepo.update).toHaveBeenCalledWith(
       { userId: 1, revoked: false },

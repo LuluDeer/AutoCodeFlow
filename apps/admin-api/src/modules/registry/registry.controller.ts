@@ -269,13 +269,10 @@ export class RegistryController {
       );
       return undefined;
     }
-    RegistryController.npmTokenCache.set(
-      `${this.npmUrl}|${user}|${pass}`,
-      {
-        token: parsed.token,
-        expiresAt: Date.now() + RegistryController.NPM_TOKEN_TTL_MS,
-      },
-    );
+    RegistryController.npmTokenCache.set(`${this.npmUrl}|${user}|${pass}`, {
+      token: parsed.token,
+      expiresAt: Date.now() + RegistryController.NPM_TOKEN_TTL_MS,
+    });
     return `Bearer ${parsed.token}`;
   }
 

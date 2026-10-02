@@ -1418,7 +1418,9 @@ describe("NotificationService", () => {
 
     it("全部渠道失败 → 落一条 NOTIFICATION_FAILED 审计（含 per-channel results 摘要）", async () => {
       const auditLog = jest.fn().mockResolvedValue(undefined);
-      const { svc, email, slack } = await makeServiceWithAudit({ log: auditLog });
+      const { svc, email, slack } = await makeServiceWithAudit({
+        log: auditLog,
+      });
       const errSpy = jest
         .spyOn(Logger.prototype, "error")
         .mockImplementation(() => {});
@@ -1454,7 +1456,9 @@ describe("NotificationService", () => {
 
     it("部分失败不落审计（fail-open 语义不变，不放大审计噪声）", async () => {
       const auditLog = jest.fn().mockResolvedValue(undefined);
-      const { svc, email, slack } = await makeServiceWithAudit({ log: auditLog });
+      const { svc, email, slack } = await makeServiceWithAudit({
+        log: auditLog,
+      });
       const errSpy = jest
         .spyOn(Logger.prototype, "error")
         .mockImplementation(() => {});
@@ -1486,10 +1490,9 @@ describe("NotificationService", () => {
       email.send.mockRejectedValue(new Error("smtp down"));
 
       await expect(
-        svc.sendToChannels(
-          { title: "t", content: "c", level: "error" },
-          ["email" as any],
-        ),
+        svc.sendToChannels({ title: "t", content: "c", level: "error" }, [
+          "email" as any,
+        ]),
       ).resolves.toEqual({ email: "failed" });
       expect(auditLog).toHaveBeenCalledTimes(1);
       errSpy.mockRestore();
@@ -1498,14 +1501,16 @@ describe("NotificationService", () => {
 
     it("无渠道失败（含 skipped/blocked）不落审计", async () => {
       const auditLog = jest.fn().mockResolvedValue(undefined);
-      const { svc, email, slack } = await makeServiceWithAudit({ log: auditLog });
+      const { svc, email, slack } = await makeServiceWithAudit({
+        log: auditLog,
+      });
       email.send.mockResolvedValue("sent");
       slack.send.mockResolvedValue("skipped");
 
-      await svc.sendToChannels(
-        { title: "t", content: "c", level: "info" },
-        ["email" as any, "slack" as any],
-      );
+      await svc.sendToChannels({ title: "t", content: "c", level: "info" }, [
+        "email" as any,
+        "slack" as any,
+      ]);
       expect(auditLog).not.toHaveBeenCalled();
     });
   });
@@ -1536,7 +1541,9 @@ describe("NotificationService", () => {
       expect(sent.content).toContain("[REDACTED_HEX]");
       // 原文敏感片段不得出站
       expect(sent.content).not.toContain("sk-super-secret-value");
-      expect(sent.content).not.toContain("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9");
+      expect(sent.content).not.toContain(
+        "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
+      );
       expect(sent.content).not.toContain(
         "deadbeefcafebabe0123456789abcdefdeadbeefcafebabe0123456789abcdef",
       );

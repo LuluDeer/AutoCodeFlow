@@ -1473,10 +1473,8 @@ describe("ApplicationService — D3-B-P1-2 审计落证", () => {
         jest.restoreAllMocks();
       });
 
-      const LOCAL_URL_OLD =
-        "http://api.local/uploads/packages/Demo_111.zip";
-      const LOCAL_URL_NEW =
-        "http://api.local/uploads/packages/Demo_222.zip";
+      const LOCAL_URL_OLD = "http://api.local/uploads/packages/Demo_111.zip";
+      const LOCAL_URL_NEW = "http://api.local/uploads/packages/Demo_222.zip";
 
       const buildWithRefs = async (referencedCount: number) => {
         const versionRepo = {
@@ -1487,7 +1485,9 @@ describe("ApplicationService — D3-B-P1-2 审计落证", () => {
             status: "released",
             snapshot: { packageUrl: LOCAL_URL_OLD, entrypoint: "dist/main.js" },
           }),
-          save: jest.fn().mockImplementation((v: unknown) => Promise.resolve(v)),
+          save: jest
+            .fn()
+            .mockImplementation((v: unknown) => Promise.resolve(v)),
           create: jest.fn().mockImplementation((v: unknown) => v),
           createQueryBuilder: jest.fn(() => ({
             where: jest.fn().mockReturnThis(),
@@ -1549,7 +1549,9 @@ describe("ApplicationService — D3-B-P1-2 审计落证", () => {
             status: "released",
             snapshot: { packageUrl: "https://cdn.example.com/pkg.zip" },
           }),
-          save: jest.fn().mockImplementation((v: unknown) => Promise.resolve(v)),
+          save: jest
+            .fn()
+            .mockImplementation((v: unknown) => Promise.resolve(v)),
           create: jest.fn(),
           createQueryBuilder: jest.fn(),
         };
@@ -1559,7 +1561,10 @@ describe("ApplicationService — D3-B-P1-2 审计落证", () => {
         const svc = await buildWithVersionRepo(versionRepo);
 
         await svc.recordUploadVersion(
-          { ...app, packageUrl: "https://cdn.example.com/pkg-new.zip" } as unknown as Application,
+          {
+            ...app,
+            packageUrl: "https://cdn.example.com/pkg-new.zip",
+          } as unknown as Application,
           { id: 7 },
         );
 

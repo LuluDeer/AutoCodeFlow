@@ -1,9 +1,6 @@
 import { NotFoundException } from "@nestjs/common";
 
-import {
-  AgentSessionService,
-  safeTokenCount,
-} from "../agent-session.service";
+import { AgentSessionService, safeTokenCount } from "../agent-session.service";
 import { AGENT_TERMINAL_STATUSES } from "../../entities/agent-session.entity";
 
 /** TypeORM 惯用 fake：createQueryBuilder 链式桩。 */

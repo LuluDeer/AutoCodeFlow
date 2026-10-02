@@ -74,11 +74,7 @@ class FakeRedis implements DigestRedisClient {
 class FakeRedisWithEval extends FakeRedis {
   evalCalls = 0;
   /** 与服务的 TAKE_WINDOW_LUA 同语义：读全值 + 删键在同一原子单元内 */
-  async eval(
-    _script: string,
-    numKeys: number,
-    key: string,
-  ): Promise<string[]> {
+  async eval(_script: string, numKeys: number, key: string): Promise<string[]> {
     this.evalCalls += 1;
     expect(numKeys).toBe(1);
     const f = this.store.get(key);
@@ -341,9 +337,9 @@ describe("NotificationDigestService (DEEP-AUDIT B·1.6)", () => {
       expect(evalRedis.evalCalls).toBe(1);
       expect(state).not.toBeNull();
       expect(state!.count).toBe(1);
-      expect(
-        notificationService.notifyFailureWithConfig,
-      ).toHaveBeenCalledTimes(1);
+      expect(notificationService.notifyFailureWithConfig).toHaveBeenCalledTimes(
+        1,
+      );
       // 窗已删：二次 flush 拿到空集 → null
       await expect(evalService.flush("t1")).resolves.toBeNull();
     });
@@ -370,17 +366,19 @@ describe("NotificationDigestService (DEEP-AUDIT B·1.6)", () => {
       warnSpy.mockRestore();
 
       // 孤儿窗（无 start）存活：record 探测到缺失的 start 后接管 flush 责任
-      expect((evalService as unknown as { timers: Map<string, unknown> }).timers.has("t1")).toBe(
-        true,
-      );
+      expect(
+        (evalService as unknown as { timers: Map<string, unknown> }).timers.has(
+          "t1",
+        ),
+      ).toBe(true);
       // 窗到期 flush → 第二批失败被汇总（计数不丢）
       const state = await evalService.flush("t1");
       expect(state).not.toBeNull();
       expect(state!.count).toBe(1);
       expect(state!.lastExecutionId).toBe("e2");
-      expect(
-        notificationService.notifyFailureWithConfig,
-      ).toHaveBeenCalledTimes(2);
+      expect(notificationService.notifyFailureWithConfig).toHaveBeenCalledTimes(
+        2,
+      );
     });
 
     it("预置的孤儿存活窗（有 count/ctx、无 start）在下一次 record 时被接管", async () => {
@@ -395,7 +393,11 @@ describe("NotificationDigestService (DEEP-AUDIT B·1.6)", () => {
 
       await expect(service.recordFailure(rec())).resolves.toBe("aggregated");
       // 接管：flush 定时器已挂
-      expect((service as unknown as { timers: Map<string, unknown> }).timers.has("t1")).toBe(true);
+      expect(
+        (service as unknown as { timers: Map<string, unknown> }).timers.has(
+          "t1",
+        ),
+      ).toBe(true);
 
       // 到期 flush → 孤儿窗内容不丢
       const state = await service.flush("t1");

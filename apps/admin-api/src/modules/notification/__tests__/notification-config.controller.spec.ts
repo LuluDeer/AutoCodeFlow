@@ -510,7 +510,10 @@ describe("NotificationConfigController", () => {
     it("A-3: plain user is denied on send (RolesGuard → 403); admin passes", () => {
       expect(
         guard.canActivate(
-          ctxWith(NotificationConfigController.prototype["send"], UserRole.USER),
+          ctxWith(
+            NotificationConfigController.prototype["send"],
+            UserRole.USER,
+          ),
         ),
       ).toBe(false);
       expect(

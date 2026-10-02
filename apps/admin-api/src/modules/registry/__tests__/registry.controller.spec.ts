@@ -433,10 +433,7 @@ describe("RegistryController npm package listing (S5 authenticated registry)", (
 
 describe("RegistryController list proxy error surfacing (B-3 / B-9)", () => {
   /** Stand-in for the registry-pypi /simple/ index page. */
-  const makeSimpleIndexServer = (
-    status: number,
-    body: string,
-  ): http.Server =>
+  const makeSimpleIndexServer = (status: number, body: string): http.Server =>
     http.createServer((_req, res) => {
       res.setHeader("Connection", "close");
       res.writeHead(status, { "Content-Type": "text/html" });
@@ -500,9 +497,7 @@ describe("RegistryController list proxy error surfacing (B-3 / B-9)", () => {
       throw new Error("expected throwUpstreamListFailure to throw");
     } catch (e: unknown) {
       expect(e).toBeInstanceOf(HttpException);
-      expect((e as HttpException).getStatus()).toBe(
-        HttpStatus.GATEWAY_TIMEOUT,
-      );
+      expect((e as HttpException).getStatus()).toBe(HttpStatus.GATEWAY_TIMEOUT);
     }
   });
 
@@ -719,9 +714,9 @@ describe("RegistryController npm login token cache (B-11)", () => {
     });
 
     expect(seen.filter((r) => r.url === "/-/user/login")).toHaveLength(1);
-    expect(
-      seen.filter((r) => r.url === "/-/verdaccio/packages"),
-    ).toHaveLength(2);
+    expect(seen.filter((r) => r.url === "/-/verdaccio/packages")).toHaveLength(
+      2,
+    );
   });
 
   it("B-11: concurrent listings share one in-flight login（单飞，不放大登录次数）", async () => {
@@ -733,16 +728,17 @@ describe("RegistryController npm login token cache (B-11)", () => {
     ]);
 
     expect(seen.filter((r) => r.url === "/-/user/login")).toHaveLength(1);
-    expect(
-      seen.filter((r) => r.url === "/-/verdaccio/packages"),
-    ).toHaveLength(2);
+    expect(seen.filter((r) => r.url === "/-/verdaccio/packages")).toHaveLength(
+      2,
+    );
   });
 
   it("B-11: a different pass gets its own cache key（凭据轮换立即生效）", async () => {
     const controller = makeCachedController();
     await controller.listNpmPackages();
-    const loginsAfterFirst = seen.filter((r) => r.url === "/-/user/login")
-      .length;
+    const loginsAfterFirst = seen.filter(
+      (r) => r.url === "/-/user/login",
+    ).length;
     expect(loginsAfterFirst).toBe(1);
 
     const rotated = makeController({

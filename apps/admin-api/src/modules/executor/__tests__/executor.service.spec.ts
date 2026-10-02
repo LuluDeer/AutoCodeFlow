@@ -250,7 +250,9 @@ describe("ExecutorService (__tests__)", () => {
         const err = new QueryFailedError(
           "INSERT INTO executors ...",
           [] as unknown[],
-          new Error('duplicate key value violates unique constraint "uq_executors_address"'),
+          new Error(
+            'duplicate key value violates unique constraint "uq_executors_address"',
+          ),
         );
         (err as unknown as { code: string }).code = "23505";
         return err;
@@ -1699,9 +1701,7 @@ describe("ExecutorService (__tests__)", () => {
         async (bad, key) => {
           const executor = onlineExecutor();
           executorRepo.findOne.mockResolvedValue(executor);
-          executorRepo.save.mockImplementation((e: any) =>
-            Promise.resolve(e),
-          );
+          executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
           const warnSpy = jest.spyOn((service as any).logger, "warn");
           await service.heartbeat("127.0.0.1:3105", {
             [key]: bad as unknown as number,
@@ -2854,9 +2854,7 @@ describe("ExecutorService (__tests__)", () => {
         for (const valid of [1, 10_000]) {
           const executor = { id: "e1", maxConcurrentTasks: 4 };
           executorRepo.findOne.mockResolvedValue(executor);
-          executorRepo.save.mockImplementation((e: any) =>
-            Promise.resolve(e),
-          );
+          executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
           await service.update("e1", { maxConcurrentTasks: valid });
           expect(executor.maxConcurrentTasks).toBe(valid);
         }
@@ -2867,9 +2865,7 @@ describe("ExecutorService (__tests__)", () => {
         async (bad) => {
           const executor = { id: "e1", maxConcurrentTasks: 4 };
           executorRepo.findOne.mockResolvedValue(executor);
-          executorRepo.save.mockImplementation((e: any) =>
-            Promise.resolve(e),
-          );
+          executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
           await expect(
             service.update("e1", {
               maxConcurrentTasks: bad as unknown as number,
@@ -7938,7 +7934,9 @@ describe("ExecutorService audit fixes (A-4 / A-9 / A-11)", () => {
     (executorRepo.createQueryBuilder as jest.Mock).mock.results[0].value;
 
   /** Brackets 谓词是闭包对象——用记录型假 qb 展开其内部 SQL 片段。 */
-  const expandBrackets = (brackets: { whereFactory: (qb: never) => unknown }) => {
+  const expandBrackets = (brackets: {
+    whereFactory: (qb: never) => unknown;
+  }) => {
     const sqls: string[] = [];
     const fake: Record<string, unknown> = {};
     const record = (sql: unknown) => {
@@ -8035,9 +8033,7 @@ describe("ExecutorService audit fixes (A-4 / A-9 / A-11)", () => {
         bracketSqls.some((s: string) => s.includes("LIKE :fleetAffTag1")),
       ).toBe(true);
       expect(
-        bracketSqls.some((s: string) =>
-          s.includes("NOT LIKE :fleetAntiTag0"),
-        ),
+        bracketSqls.some((s: string) => s.includes("NOT LIKE :fleetAntiTag0")),
       ).toBe(true);
       expect(
         bracketSqls.some((s: string) => s.includes("executor.tags IS NULL")),
@@ -8164,7 +8160,11 @@ describe("ExecutorService audit fixes (A-4 / A-9 / A-11)", () => {
     it("大候选集（>100 地址）命中 5000 硬顶", async () => {
       executorRepo.find.mockResolvedValue(
         Array.from({ length: 150 }, (_, i) =>
-          mkFleetRow({ id: `e${i}`, address: `addr${i}:1`, runningTaskCount: 2 }),
+          mkFleetRow({
+            id: `e${i}`,
+            address: `addr${i}:1`,
+            runningTaskCount: 2,
+          }),
         ),
       );
       execRepo.find.mockResolvedValue([]);
@@ -8412,11 +8412,13 @@ describe("ExecutorService removal impact (B·1.1)", () => {
           where: jest.fn().mockReturnThis(),
           andWhere: jest.fn().mockReturnThis(),
           groupBy: jest.fn().mockReturnThis(),
-          getRawMany: jest.fn().mockResolvedValue(
-            isAppNameQuery
-              ? [{ executorAppName: "bound-by-name", count: "1" }]
-              : [],
-          ),
+          getRawMany: jest
+            .fn()
+            .mockResolvedValue(
+              isAppNameQuery
+                ? [{ executorAppName: "bound-by-name", count: "1" }]
+                : [],
+            ),
         };
       },
     );

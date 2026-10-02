@@ -19,7 +19,11 @@ import {
   MisfireStrategy,
   normalizeTaskPriority,
 } from "../task/entities/task.entity";
-import { findActiveMaintenanceWindow, lastWindowCronFireBefore, MAINTENANCE_WINDOW_LOOKBACK_MINUTES } from "../task/maintenance-window.util";
+import {
+  findActiveMaintenanceWindow,
+  lastWindowCronFireBefore,
+  MAINTENANCE_WINDOW_LOOKBACK_MINUTES,
+} from "../task/maintenance-window.util";
 // B-6: misfire 补偿入队前的依赖闸（与 TaskService.checkDependencies 同一实现）
 import { areDependenciesSatisfied } from "../task/dependency-gate.util";
 // CORE-02: 重试退避抖动——±20% 摊开同周期失败任务的的重试时刻
@@ -250,7 +254,10 @@ export function computeMisfireThresholdMs(task: Task): number {
   if (task.triggerType === TaskTriggerType.FIXED_RATE) {
     return (task.fixedRate || 60) * 2000;
   }
-  if (task.triggerType === TaskTriggerType.CRON && task.cronExpression?.trim()) {
+  if (
+    task.triggerType === TaskTriggerType.CRON &&
+    task.cronExpression?.trim()
+  ) {
     const periodMs = estimateCronPeriodMs(
       task.cronExpression.trim(),
       task.timezone?.trim() || undefined,

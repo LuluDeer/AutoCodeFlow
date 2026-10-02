@@ -195,10 +195,13 @@ export class AgentSessionService {
         waitingFor: null,
         ...((await this.needsStartedAt(id)) ? { startedAt: new Date() } : {}),
       })
-      .where("id = :id AND status <> 'running' AND status NOT IN (:...terminal)", {
-        id,
-        terminal: AGENT_TERMINAL_STATUSES,
-      })
+      .where(
+        "id = :id AND status <> 'running' AND status NOT IN (:...terminal)",
+        {
+          id,
+          terminal: AGENT_TERMINAL_STATUSES,
+        },
+      )
       .execute();
   }
 

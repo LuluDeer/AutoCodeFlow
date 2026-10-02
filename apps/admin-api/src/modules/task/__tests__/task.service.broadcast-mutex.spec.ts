@@ -234,10 +234,9 @@ describe("TaskService — A-1 broadcast × mutex group 写面互斥闸", () => {
         executeMode: ExecuteMode.BROADCAST,
       });
       taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
-      const result: any = await service.update(
-        "1",
-        { timeoutSeconds: 120 } as any,
-      );
+      const result: any = await service.update("1", {
+        timeoutSeconds: 120,
+      } as any);
       expect(result.timeout).toBe(120);
       expect(appRepo.findOne).not.toHaveBeenCalled();
       expect(taskRepo.save).toHaveBeenCalled();
@@ -253,10 +252,9 @@ describe("TaskService — A-1 broadcast × mutex group 写面互斥闸", () => {
       });
       appRepo.findOne.mockResolvedValue(appWithoutMutexGroup);
       taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
-      const result: any = await service.update(
-        "1",
-        { applicationId: "app-2" } as any,
-      );
+      const result: any = await service.update("1", {
+        applicationId: "app-2",
+      } as any);
       expect(result.applicationId).toBe("app-2");
       expect(taskRepo.save).toHaveBeenCalled();
     });

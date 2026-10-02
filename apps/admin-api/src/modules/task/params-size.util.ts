@@ -18,9 +18,7 @@ export const TASK_PARAMS_MAX_BYTES = 65_536;
  * params 序列化字节体积（utf8）。序列化失败（循环引用等）返回 null——
  * 调用方按「不可序列化 = 超限」处理。
  */
-export function taskParamsByteSize(
-  params: unknown,
-): number | null {
+export function taskParamsByteSize(params: unknown): number | null {
   try {
     return Buffer.byteLength(JSON.stringify(params) ?? "", "utf8");
   } catch {

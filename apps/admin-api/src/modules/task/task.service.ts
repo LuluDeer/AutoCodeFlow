@@ -984,10 +984,7 @@ export class TaskService {
     row: { ownerUserId: number | null; projectId?: string | null },
     // A-6（R3-A 审计）: 放宽入参形状——API-Key 主体（ApiKeyUser）只带
     // userId 不带 id/role，此前签名把它排除在属主判定之外。
-    user:
-      | { id?: number; userId?: number; role?: UserRole }
-      | null
-      | undefined,
+    user: { id?: number; userId?: number; role?: UserRole } | null | undefined,
   ): Promise<void> {
     // A2-B: 落 'operate' 证（区别于 'write'）——本方法只拒 viewer / 可选的属主
     // 校验，落同一种证据会让 project-role 端点冒充 ownership。

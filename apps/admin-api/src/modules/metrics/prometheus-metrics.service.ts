@@ -154,13 +154,13 @@ export class PrometheusMetricsService {
       labelNames: ["state"] as const,
       registers: [this.registry],
     });
-      // OBS-05（容量水位四件套）：PG 连接池水位——pg.Pool 实时计数
-      // （totalCount/idleCount/waitingCount 经 DataSource.driver.master 可达，
-      // 见 readPgPoolSnapshot 注释）。利用率 = active/max，waiting > 0 即饱和。
-      // A-9（审计 help 漂移）：help 内嵌的告警建议逐字对齐 alerts.yml——
-      // 利用率本身无独立告警规则，饱和告警是 waiting 侧的
-      // AUTOFLOW_DB_POOL_WAITING（> 0 sustained 5m）。
-      this.dbPoolMaxConnections = new Gauge({
+    // OBS-05（容量水位四件套）：PG 连接池水位——pg.Pool 实时计数
+    // （totalCount/idleCount/waitingCount 经 DataSource.driver.master 可达，
+    // 见 readPgPoolSnapshot 注释）。利用率 = active/max，waiting > 0 即饱和。
+    // A-9（审计 help 漂移）：help 内嵌的告警建议逐字对齐 alerts.yml——
+    // 利用率本身无独立告警规则，饱和告警是 waiting 侧的
+    // AUTOFLOW_DB_POOL_WAITING（> 0 sustained 5m）。
+    this.dbPoolMaxConnections = new Gauge({
       name: "autoflow_db_pool_max_connections",
       help: "Configured PostgreSQL connection pool capacity (pg Pool max, PERF-04 DB_POOL_SIZE) — denominator of the pool utilization water level; 0 when the pool handle is unreachable",
       registers: [this.registry],

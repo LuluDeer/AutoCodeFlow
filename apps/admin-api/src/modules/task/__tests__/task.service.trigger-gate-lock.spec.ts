@@ -86,7 +86,10 @@ describe("TaskService trigger gate lock (B-5: 闸门 TOCTOU)", () => {
 
   const setupTriggerPath = (task: Record<string, unknown>) => {
     taskRepo.findOne.mockResolvedValue(task);
-    const exec = { id: "exec-1", status: "pending" } as unknown as TaskExecution;
+    const exec = {
+      id: "exec-1",
+      status: "pending",
+    } as unknown as TaskExecution;
     dataSource.transaction.mockImplementation(async (fn: any) =>
       fn({
         create: jest.fn().mockReturnValue(exec),
@@ -131,7 +134,10 @@ describe("TaskService trigger gate lock (B-5: 闸门 TOCTOU)", () => {
         },
         { provide: AiService, useValue: { chat: jest.fn() } },
         { provide: AiAnalysisService, useValue: { analyzeFailure: jest.fn() } },
-        { provide: ConfigService, useValue: { get: jest.fn().mockReturnValue("") } },
+        {
+          provide: ConfigService,
+          useValue: { get: jest.fn().mockReturnValue("") },
+        },
         {
           provide: ExecutorService,
           useValue: { notifyExecutorKill: jest.fn() },
@@ -140,7 +146,10 @@ describe("TaskService trigger gate lock (B-5: 闸门 TOCTOU)", () => {
         { provide: AuditService, useValue: { log: jest.fn() } },
         // B-5: 被测协作面——真实锁服务替身
         { provide: RedisLockService, useValue: redisLockService },
-        { provide: SecretsCryptoService, useValue: new SecretsCryptoService({ get: () => "" } as any) },
+        {
+          provide: SecretsCryptoService,
+          useValue: new SecretsCryptoService({ get: () => "" } as any),
+        },
       ],
     }).compile();
 

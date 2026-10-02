@@ -53,7 +53,10 @@ describe("A-6 assertCanOperate — ApiKeyUser 按 key 属主参与 owner scope �
     const resolveRole = jest.fn();
     const svc = makeService("owner", resolveRole);
     await expect(
-      svc.assertCanOperate({ ownerUserId: 42, projectId: "p1" }, apiKeyUser(42)),
+      svc.assertCanOperate(
+        { ownerUserId: 42, projectId: "p1" },
+        apiKeyUser(42),
+      ),
     ).resolves.toBeUndefined();
     // 属主短路，不查项目角色
     expect(resolveRole).not.toHaveBeenCalled();
@@ -64,9 +67,9 @@ describe("A-6 assertCanOperate — ApiKeyUser 按 key 属主参与 owner scope �
       "owner",
       jest.fn().mockResolvedValue(null), // 非成员
     );
-    await expect(
-      svc.assertCanOperate(row, apiKeyUser(42)),
-    ).rejects.toThrow(/TASK_OPERATE_SCOPE=owner/);
+    await expect(svc.assertCanOperate(row, apiKeyUser(42))).rejects.toThrow(
+      /TASK_OPERATE_SCOPE=owner/,
+    );
   });
 
   it("owner 档：API-Key 属主在项目内为 editor → 经项目角色放行", async () => {
@@ -79,23 +82,17 @@ describe("A-6 assertCanOperate — ApiKeyUser 按 key 属主参与 owner scope �
   });
 
   it("owner 档：API-Key 属主在项目内为 viewer → 403（viewer 硬约束不因 key 放宽）", async () => {
-    const svc = makeService(
-      "owner",
-      jest.fn().mockResolvedValue("viewer"),
+    const svc = makeService("owner", jest.fn().mockResolvedValue("viewer"));
+    await expect(svc.assertCanOperate(row, apiKeyUser(42))).rejects.toThrow(
+      /TASK_OPERATE_SCOPE=owner/,
     );
-    await expect(
-      svc.assertCanOperate(row, apiKeyUser(42)),
-    ).rejects.toThrow(/TASK_OPERATE_SCOPE=owner/);
   });
 
   it("any 档：API-Key 按归一 id 参与项目角色 viewer 拒绝（放行兜底不再跳过 key 主体）", async () => {
-    const svc = makeService(
-      "any",
-      jest.fn().mockResolvedValue("viewer"),
+    const svc = makeService("any", jest.fn().mockResolvedValue("viewer"));
+    await expect(svc.assertCanOperate(row, apiKeyUser(42))).rejects.toThrow(
+      /viewer/,
     );
-    await expect(
-      svc.assertCanOperate(row, apiKeyUser(42)),
-    ).rejects.toThrow(/viewer/);
   });
 
   it("any 档：非成员 API-Key 维持放行（宽松档行为逐字节保留）", async () => {
@@ -108,16 +105,13 @@ describe("A-6 assertCanOperate — ApiKeyUser 按 key 属主参与 owner scope �
   it("回归：JWT 用户（id 形态）行为不变 —— 属主放行 / 非成员 403 / ADMIN 短路", async () => {
     const ownerSvc = makeService("owner", jest.fn());
     await expect(
-      ownerSvc.assertCanOperate(
-        { ownerUserId: 8, projectId: "p1" },
-        { id: 8, role: "user" } as never,
-      ),
+      ownerSvc.assertCanOperate({ ownerUserId: 8, projectId: "p1" }, {
+        id: 8,
+        role: "user",
+      } as never),
     ).resolves.toBeUndefined();
 
-    const noneSvc = makeService(
-      "owner",
-      jest.fn().mockResolvedValue(null),
-    );
+    const noneSvc = makeService("owner", jest.fn().mockResolvedValue(null));
     await expect(
       noneSvc.assertCanOperate(row, { id: 8, role: "user" } as never),
     ).rejects.toThrow(/TASK_OPERATE_SCOPE=owner/);

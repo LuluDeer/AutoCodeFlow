@@ -846,7 +846,9 @@ describe("ExecutorPackageService", () => {
     });
 
     it("A-7: bare addresses still get the http:// scheme prefix after cleaning", async () => {
-      const bare = [{ id: "b-1", address: "10.0.0.6:8002", status: "online" }] as any;
+      const bare = [
+        { id: "b-1", address: "10.0.0.6:8002", status: "online" },
+      ] as any;
       await service.pushToExecutors(mockPkg.id, undefined, bare, "db-token");
       expect(axios.post).toHaveBeenCalledWith(
         "http://10.0.0.6:8002/api/update-package",
@@ -860,8 +862,22 @@ describe("ExecutorPackageService", () => {
   // 事务 + FOR UPDATE 重读，纯函数承担追加/裁剪语义。
   describe("A-8: appendPushHistory (transactional re-read under lock)", () => {
     it("appendPushHistoryEntry appends, trims to 100, and tolerates null history", () => {
-      expect(appendPushHistoryEntry(null, { executorId: "e", status: "downloaded", version: "1", timestamp: "t" })).toHaveLength(1);
-      expect(appendPushHistoryEntry(undefined, { executorId: "e", status: "failed", version: "1", timestamp: "t" })).toHaveLength(1);
+      expect(
+        appendPushHistoryEntry(null, {
+          executorId: "e",
+          status: "downloaded",
+          version: "1",
+          timestamp: "t",
+        }),
+      ).toHaveLength(1);
+      expect(
+        appendPushHistoryEntry(undefined, {
+          executorId: "e",
+          status: "failed",
+          version: "1",
+          timestamp: "t",
+        }),
+      ).toHaveLength(1);
       const existing = Array.from({ length: 100 }, (_, i) => ({
         executorId: `e${i}`,
         status: "downloaded" as const,
@@ -884,11 +900,18 @@ describe("ExecutorPackageService", () => {
       const stored = {
         ...mockPkg,
         pushHistory: [
-          { executorId: "earlier", status: "downloaded", version: "1", timestamp: "t0" },
+          {
+            executorId: "earlier",
+            status: "downloaded",
+            version: "1",
+            timestamp: "t0",
+          },
         ],
       };
       const emFindOne = jest.fn().mockResolvedValue(stored);
-      const emSave = jest.fn().mockImplementation((e: unknown) => Promise.resolve(e));
+      const emSave = jest
+        .fn()
+        .mockImplementation((e: unknown) => Promise.resolve(e));
       (repo as unknown as { manager: unknown }).manager = {
         transaction: jest.fn(async (cb: (em: unknown) => Promise<void>) =>
           cb({ findOne: emFindOne, save: emSave }),
@@ -922,7 +945,9 @@ describe("ExecutorPackageService", () => {
 
     it("falls back to the locked row's version when the report omits it", async () => {
       const stored = { ...mockPkg, version: "9.9.9", pushHistory: [] };
-      const emSave = jest.fn().mockImplementation((e: unknown) => Promise.resolve(e));
+      const emSave = jest
+        .fn()
+        .mockImplementation((e: unknown) => Promise.resolve(e));
       (repo as unknown as { manager: unknown }).manager = {
         transaction: jest.fn(async (cb: (em: unknown) => Promise<void>) =>
           cb({

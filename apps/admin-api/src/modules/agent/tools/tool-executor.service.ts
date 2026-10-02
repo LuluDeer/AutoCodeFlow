@@ -1,9 +1,4 @@
-import {
-  Inject,
-  Injectable,
-  Logger,
-  forwardRef,
-} from "@nestjs/common";
+import { Inject, Injectable, Logger, forwardRef } from "@nestjs/common";
 import { createHash } from "node:crypto";
 import type { AgentSession } from "../entities/agent-session.entity";
 import { AgentSessionService } from "../runtime/agent-session.service";
@@ -296,7 +291,10 @@ export class ToolExecutorService implements AgentToolExecutor {
     if (!info) {
       return `sop_reply_clarification: 澄清 ${clarificationId} 不存在或归属不可追溯。`;
     }
-    if ((session.scopeJson as Record<string, unknown> | null)?.unrestricted === true) {
+    if (
+      (session.scopeJson as Record<string, unknown> | null)?.unrestricted ===
+      true
+    ) {
       return null;
     }
     if (info.reviewSessionId && info.reviewSessionId === session.id) {

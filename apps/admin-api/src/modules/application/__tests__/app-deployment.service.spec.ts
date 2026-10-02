@@ -2050,7 +2050,11 @@ describe("AppDeploymentService", () => {
       });
       versionRepo.find.mockResolvedValue([
         { version: "2.0.0", gitCommit: null, snapshot: {} },
-        { version: "1.0.0", gitCommit: null, snapshot: { entrypoint: "node dist/v1.js" } },
+        {
+          version: "1.0.0",
+          gitCommit: null,
+          snapshot: { entrypoint: "node dist/v1.js" },
+        },
       ]);
       appService.findByIdRaw.mockResolvedValue({
         ...mockApp,
@@ -2076,10 +2080,7 @@ describe("AppDeploymentService", () => {
         startCommand: "python custom.py",
       });
 
-      const created = repo.create.mock.calls[0][0] as Record<
-        string,
-        unknown
-      >;
+      const created = repo.create.mock.calls[0][0] as Record<string, unknown>;
       expect(created.startCommand).toBe("python custom.py");
 
       // 不传 startCommand → 快照当时 app.entrypoint

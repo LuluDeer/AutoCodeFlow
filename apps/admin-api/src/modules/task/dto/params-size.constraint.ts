@@ -23,9 +23,7 @@ import { TASK_PARAMS_MAX_BYTES, taskParamsByteSize } from "../params-size.util";
  * - 不可序列化（循环引用等）按超限拒绝——反正落不了库。
  */
 @ValidatorConstraint({ name: "taskParamsMaxBytes", async: false })
-export class TaskParamsMaxBytesConstraint
-  implements ValidatorConstraintInterface
-{
+export class TaskParamsMaxBytesConstraint implements ValidatorConstraintInterface {
   validate(value: unknown): boolean {
     if (value === null || value === undefined) return true;
     if (typeof value !== "object") return true; // 类型错误交给 @IsObject
