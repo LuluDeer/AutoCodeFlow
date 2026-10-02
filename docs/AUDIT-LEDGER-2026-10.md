@@ -15,8 +15,8 @@
 | R3 | SOP/Agent 协作域 | sop/agent/agent-collab 模块 + AgentSessionsPage/SopsPage | R3-B | R3-fix-B | ✅ 完成（2026-10-02） |
 | R4 | application/deployment/package 域 | application + AppDeploymentPage | R4-A | R4-fix-A | ✅ 完成（2026-10-02） |
 | R4 | registry 域 | registry / registry-npm / registry-pypi + RegistryPage | R4-B | R4-fix-B | ✅ 完成（2026-10-02） |
-| R5 | executor-node 执行器侧 | callback/pull/zip-safety/interpreters/heartbeat 等 | R5-A | — | 待开始 |
-| R5 | executor-desktop 桌面端 | main/renderer/agent-host/config | R5-B | — | 待开始 |
+| R5 | executor-node/python 执行器侧 | 领任务/装依赖/fork 执行/回调/崩溃恢复 | R5-A | R5-fix-A | ✅ 完成（2026-10-02） |
+| R5 | executor-desktop 桌面端 | main/renderer/agent-host/updater | R5-B | R5-fix-B | ✅ 完成（2026-10-02） |
 | R6 | 横切面 | notification/audit/artifacts/task-template/OpenAPI 契约/i18n | R6-A/B | — | 待开始 |
 
 ## 发现与处置记录
@@ -58,3 +58,12 @@
 - **R4 修复完成（2026-10-02）**：application 侧 10/11——A-1 审批待办三层排除（Raw 谓词+JS 防御+批量 UPDATE andWhere）；A-2 pull 豁免复用 statusMessage 前缀 commandId+行龄<cmdTtl 同刻度，心跳 UPDATE 加 In(deploying,upgrading,running) 守卫（含 UPGRADING 因升级全程保持该态、心跳是唯一出口）；A-4 选升级/回滚链同步改写 startCommand（前端确有按部署自定义入口，不反转载荷优先级）；A-6 分页流式聚合（页 1000/上限 5000）替代 SQL GROUP BY 保持响应形状；A-7 同号重传就地更新快照+无引用才 best-effort unlink（checksum/size 列缺记录）。registry 侧 10/11——B-1 选反代（registry 宿主端口 loopback-only，${origin} 是唯一局域网可达入口；补 /pypi/+/npm/+/packages/ 三个剥前缀块，PyPI 锚点是绝对路径 /packages 需同代）；B-2 compose ${VAR-default} 三族键+文档三方同步；B-4 registry-pypi 补 DELETE /admin/packages/{name}+索引单次遍历（ETag 逐字节不变）；B-6 ASGI Content-Length 预检中间件。
 - 暂缓记录：A-10 全局审批收件箱 UI、A-12 applications 分页、A-7 版本快照 checksum/size 列、B-7 multer 内存存储并发峰值、B-1 已知边界（verdaccio 上游包 tarball URL 子路径前缀需 url_prefix）。
 - 验证：admin-api 全量 4431 例全绿；admin-web 185 文件 1397 例；registry-pypi pytest 126 例；双端 tsc 零错误；compose-sandbox/env-drift/registry-npm selftest 全过。
+
+### R5（2026-10-02，审计完成 → 修复中）
+
+- R5-A executor-node/python 11 条：A-1 P1 python run_task 超时只包 stdout 流，proc.wait() 无超时→关 stdout 继续跑的任务成永久 RUNNING 僵尸（node 有 setTimeout 兜底树杀，同任务两端一端自愈一端僵死）；A-2 P1 node win32 shell entrypoint 缺 python 侧同形 charset 白名单（python 视为 P0 注入已封堵，两端结论相反）；A-3 P2 python pull 的 ExecuteRequest(**body) 在 try 外，载荷漂移吞错不补 failed 回调→admin 僵尸行；A-4 P2 node 磁盘日志无每文件上限（python 64MiB+截断标记）；A-5 P2 python prepare 阶段不可取消（git/uv/pip 线程跑完才收敛，node 全链 AbortController）；A-6 P2 node express.json 默认 100KB→超 100KB glue 派发 413（python 无此限）；A-7 P3 python _task_locks 只增不减（node 已有 IDLE_RECYCLE）；A-8 P3 node 解释器池无权限加固（python 0o755+owner）；A-9 P3 python 下载钉死不跟随重定向（node 至多 5 跳跨跳剥 Bearer）；A-10 P3 node 控制命令批先全跑完再上报（python 逐条）；A-11 P3 params 注 env 序列化两端不同（String/str vs JSON）。
+- R5-B executor-desktop 14 条：B-1 P1 主进程无 uncaughtException/unhandledRejection 兜底，定时器回调抛错即崩溃（托盘消失无自愈）且 executor-node 子进程成孤儿继续接任务；B-2 P2 休眠唤醒误报离线（lastSuccessAt 跨休眠陈旧，无 powerMonitor resume 处理）；B-3 P2 更新下载完成但不点「重启并安装」直接退出→不安装，横幅文案承诺与行为不符+pending 缓存反复下载；B-4 P2 三平台产物无代码签名（需证书，记录暂缓）；B-5 P3 agent-host 在主进程跑 CPU 重活（N-06 范畴，记录）；B-6 P3 executor:log-structured 死通道广播（preload 未暴露渲染零消费）；B-7 P3 单实例锁晚于 ConfigStore 构造；B-8 P3 端口检测 bind 0.0.0.0 与实际 executorHost 不一致；B-9 P3 向导完成后异步启动失败无显性反馈；B-10 P3 i18n 混语（Wizard/StatusWindow/History 硬编码中文，渐进项记录）；B-11 P3 向导步骤闸门弱（URL 非空即可下一步，token 无预检）；B-12 P3 /health/live 回退分支无迟滞（一次失败即 offline）；B-13 P3 releases 无自动保留期（版本目录无界）；B-14 P3 未完成向导时托盘入口拉起主窗口而非向导。
+- 处置：R5-fix-A（A-1..7、9..11；A-8 视改动面）+ R5-fix-B（B-1..3、6..9、11..14）并行派发；B-4（签名需证书）、B-5（N-06）、B-10（渐进）暂缓记录。
+- **R5 修复完成（2026-10-02）**：执行器侧 11/11——A-1 超时改单一 gather 截止时间覆盖 stream+proc.wait（timeout=0 不限时语义不变）；A-2 node 补逐字同形 SHELL_ENTRYPOINT_SAFE_RE（POSIX+win32，拒绝走既有 prepare 失败路径）；A-5 prepare 检查点取消（下载循环逐 chunk、git/uv/pip 段末收敛，最坏一段跑完即收敛）；A-9 保留 httpx follow_redirects=False+手动逐跳（同域留 Bearer/跨域剥离，内联 is_redirect 兼容测试桩）；A-11 两端统一 JSON 序列化（ensure_ascii=False+紧凑分隔符，contract-fixtures append-only 新增 executorEnvSerialization 10 条向量，两端测试对同组向量断言防再漂移）。桌面端 13/14——B-1 crash-guard（每次记录+dialog 一次+优雅停子进程 40s 硬超时，不自动 relaunch）+端口探测三分支（free spawn/healthy 复用 attach/occupied 仅共享令牌 /api/shutdown 受理才请退）；B-3 文案改实+downloaded 标记（复用 electron-updater 6.8.9 缓存校验，不绕过 sha512）；B-6 死通道删除（渲染已有等价文本行解析）；B-13 release 保留 5 个按 mtime 走 canDeleteRelease 闸门（部署日志 release 切换行触发，状态未知保守放弃）。
+- 暂缓记录：B-4 代码签名（需证书；建议 release CI 补 sha256 校验说明）、B-5 agent-host 拆子进程（N-06）、B-10 i18n 渐进、A-5 线程内即时杀（检查点收敛已足够）、B-1 Job Object 父亡联动（N-06）。
+- 验证：executor-node jest 992 例全绿（protocol-sync 生成零 diff）；executor-python pytest 1091 例；desktop test:main 28 selftest+renderer 守卫全过；双端 tsc 零错误；update-chain 守卫通过。
