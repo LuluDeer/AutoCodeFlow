@@ -210,7 +210,7 @@ def test_non_interpreter_prepare_failure_still_propagates(monkeypatch, tmp_path)
     _patch_env(monkeypatch, tmp_path)
     _capture_spawns(monkeypatch)
 
-    async def boom(venv_dir, requirements, *, python_version=None):
+    async def boom(venv_dir, requirements, *, python_version=None, **_kwargs):
         raise RuntimeError('uv pip install failed: no matching distribution')
 
     monkeypatch.setattr(execute_module, 'ensure_venv', boom)

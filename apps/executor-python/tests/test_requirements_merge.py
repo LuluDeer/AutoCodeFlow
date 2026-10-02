@@ -286,7 +286,7 @@ def test_package_and_task_requirements_are_merged_before_install(monkeypatch, tm
 
     captured = {}
 
-    async def fake_ensure_venv(venv_dir, requirements, *, python_version=None):
+    async def fake_ensure_venv(venv_dir, requirements, *, python_version=None, **_kwargs):
         captured['requirements'] = list(requirements)
         return venv_dir / ('Scripts' if sys.platform == 'win32' else 'bin') / 'python'
 
@@ -340,7 +340,7 @@ def test_package_only_requirements_still_creates_a_venv(monkeypatch, tmp_path):
     _capture_spawns(monkeypatch)
     captured = {}
 
-    async def fake_ensure_venv(venv_dir, requirements, *, python_version=None):
+    async def fake_ensure_venv(venv_dir, requirements, *, python_version=None, **_kwargs):
         captured['requirements'] = list(requirements)
         return venv_dir / 'bin' / 'python'
 

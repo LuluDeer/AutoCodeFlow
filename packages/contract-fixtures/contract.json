@@ -6,28 +6,64 @@
       "raw": {
         "code": 200,
         "message": "success",
-        "data": { "list": [], "total": 0 }
+        "data": {
+          "list": [],
+          "total": 0
+        }
       },
-      "unwrapped": { "list": [], "total": 0 }
+      "unwrapped": {
+        "list": [],
+        "total": 0
+      }
     },
     "arrayData": {
-      "raw": { "code": 201, "message": "success", "data": [1, 2, 3] },
-      "unwrapped": [1, 2, 3]
+      "raw": {
+        "code": 201,
+        "message": "success",
+        "data": [
+          1,
+          2,
+          3
+        ]
+      },
+      "unwrapped": [
+        1,
+        2,
+        3
+      ]
     },
     "nullData": {
-      "raw": { "code": 200, "message": "success", "data": null },
+      "raw": {
+        "code": 200,
+        "message": "success",
+        "data": null
+      },
       "unwrapped": null
     },
     "non200SuccessCode": {
-      "raw": { "code": 201, "message": "success", "data": { "created": true } },
-      "unwrapped": { "created": true },
+      "raw": {
+        "code": 201,
+        "message": "success",
+        "data": {
+          "created": true
+        }
+      },
+      "unwrapped": {
+        "created": true
+      },
       "$comment": "code mirrors HTTP status; 201 must unwrap exactly like 200"
     }
   },
   "passthrough": {
     "plainObject": {
-      "raw": { "data": "x", "extra": true },
-      "unwrapped": { "data": "x", "extra": true }
+      "raw": {
+        "data": "x",
+        "extra": true
+      },
+      "unwrapped": {
+        "data": "x",
+        "extra": true
+      }
     },
     "plainString": {
       "raw": "plain",
@@ -39,19 +75,53 @@
       "$comment": "no data key at all -> not an envelope"
     },
     "arrayBody": {
-      "raw": [1, 2],
-      "unwrapped": [1, 2],
+      "raw": [
+        1,
+        2
+      ],
+      "unwrapped": [
+        1,
+        2
+      ],
       "$comment": "arrays are never envelopes (node-sdk rule; py dict-guard equivalent)"
     },
     "stringCodeEnvelope": {
-      "raw": { "code": "200", "message": "x", "data": { "list": [], "total": 0 } },
-      "unwrapped": { "code": "200", "message": "x", "data": { "list": [], "total": 0 } },
+      "raw": {
+        "code": "200",
+        "message": "x",
+        "data": {
+          "list": [],
+          "total": 0
+        }
+      },
+      "unwrapped": {
+        "code": "200",
+        "message": "x",
+        "data": {
+          "list": [],
+          "total": 0
+        }
+      },
       "$comment": "PK-06 unification (2026-09-14, all four ends): the envelope code is always numeric (ResponseInterceptor statusCode ?? 200) — a STRING code is not an envelope. A payload carrying code+message+data with a string code is a business body and must pass through unchanged. Append-only vector pinning the unified 'data key present + numeric code' criterion"
     }
   },
   "statusRange": {
-    "success": [200, 201, 202, 204],
-    "failure": [400, 401, 403, 404, 409, 429, 500, 502],
+    "success": [
+      200,
+      201,
+      202,
+      204
+    ],
+    "failure": [
+      400,
+      401,
+      403,
+      404,
+      409,
+      429,
+      500,
+      502
+    ],
     "$comment": "anything in success[] must resolve; anything in failure[] must throw/inspect body — no status-specific bypass"
   },
   "errorBody": [
@@ -96,24 +166,39 @@
     },
     {
       "name": "no detail at all",
-      "raw": { "statusCode": 502 },
+      "raw": {
+        "statusCode": 502
+      },
       "detail": "",
       "$comment": "empty detail -> callers must keep raw status/text, never swallow"
     }
   ],
   "knownHeuristicEdge": {
     "name": "code+message+data on an entity payload (full envelope shape)",
-    "raw": { "code": 0, "message": "y", "data": "x", "extra": 1 },
+    "raw": {
+      "code": 0,
+      "message": "y",
+      "data": "x",
+      "extra": 1
+    },
     "unwrapped": "x",
     "$comment": "documented edge: a payload carrying the FULL envelope shape (code+message+data) is indistinguishable from an envelope and is unwrapped by every end — entities must never carry all three keys. Unified criterion since PK-06 (2026-09-14, all four ends): 'data key present + numeric code' (message no longer tested; string code passes through — see passthrough.stringCodeEnvelope); changing it is a breaking contract change"
   },
   "knownDivergence": {
     "name": "data+message WITHOUT code",
-    "raw": { "data": "x", "message": "y", "extra": 1 },
+    "raw": {
+      "data": "x",
+      "message": "y",
+      "extra": 1
+    },
     "cli_mcp_unwrapped": "x",
-    "node_py_unwrapped_preserved": { "data": "x", "message": "y", "extra": 1 },
+    "node_py_unwrapped_preserved": {
+      "data": "x",
+      "message": "y",
+      "extra": 1
+    },
     "$comment": "2026-09-14 (PK-06/PK-07 unification, all four ends): cli/mcp tightened to the numeric-code criterion (2026-09-13, WIKI-OPT-4) and node-sdk/py-sdk now match — the envelope test everywhere is 'data key present + code is a number', so this payload (no code key at all) is preserved unchanged by EVERY end. The cli_mcp_unwrapped key above is a historical archive of the pre-2026-09-13 loose heuristic and no longer describes any shipped client. Divergence is closed; see passthrough.stringCodeEnvelope for the pinned string-code vector"
-  }  ,
+  },
   "channelList": {
     "$comment": "A4 (DEEP_REVIEW 0ef3bbe): canonical set of notification channel ids. Source of truth in admin-api is the AlertChannel enum (apps/admin-api/src/modules/notification/notification.service.ts); the six channel classes under channels/*.channel.ts each declare their own \"name\" and admin-web's AlarmConfig carries yet another hand-written option list. Three independent copies drifted: feishu existed in the enum and in NotificationSettingsPage but was MISSING from AlarmConfig's selector (a real defect found while landing this section). This vector pins all copies to one set.",
     "channels": [
@@ -128,6 +213,56 @@
       "apps/admin-api/src/modules/notification/__tests__/channel-list-contract.spec.ts (AlertChannel enum + channel class names)",
       "apps/admin-web/src/__tests__/alarm-config-channels.test.tsx (AlarmConfig selector options)"
     ]
+  },
+  "executorEnvSerialization": {
+    "$comment": "A-11 (2026-10-02, executor-node + executor-python): task `params` values injected into the child env as AUTOFLOW_<KEY> must be serialized as JSON on BOTH executors — node JSON.stringify(v), python json.dumps(v, ensure_ascii=False, separators=(',', ':')) (ensure_ascii=False matches JSON.stringify's raw UTF-8 output; compact separators make objects/arrays byte-identical). Previously node String(v) / python str(v) produced different bytes for the same dispatch payload (True vs 'true', None vs 'null', \"['a']\" vs '[\"a\"]'), so the same task read different AUTOFLOW_* values per executor. Append-only vectors; each `env` value is the exact string both executors must produce.",
+    "vectors": [
+      {
+        "input": "hello",
+        "env": "\"hello\""
+      },
+      {
+        "input": 1,
+        "env": "1"
+      },
+      {
+        "input": 1.5,
+        "env": "1.5"
+      },
+      {
+        "input": true,
+        "env": "true"
+      },
+      {
+        "input": false,
+        "env": "false"
+      },
+      {
+        "input": null,
+        "env": "null"
+      },
+      {
+        "input": [
+          1,
+          "a"
+        ],
+        "env": "[1,\"a\"]"
+      },
+      {
+        "input": {
+          "b": true,
+          "a": 1
+        },
+        "env": "{\"b\":true,\"a\":1}"
+      },
+      {
+        "input": "中文",
+        "env": "\"中文\""
+      },
+      {
+        "input": "",
+        "env": "\"\""
+      }
+    ]
   }
-
 }
