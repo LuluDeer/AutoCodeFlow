@@ -18,8 +18,9 @@
  * - 窗口：`NOTIFICATION_FAILURE_DIGEST_MINUTES`（默认 10；0 = 关闭，回退
  *   逐条即时发送的既有行为）。
  * - 状态存 Redis（hash + TTL），跨实例一致：HSETNX start 恰有一个实例拿到
- *   开窗权并挂 flush 定时器；flush 读 HGETALL + DEL，拿到空集的并发 flush
- *   自然跳过（GETDEL 语义的手工版）。
+ *   开窗权并挂 flush 定时器；flush 走 Lua 原子取窗（HGETALL+DEL 单脚本，
+ *   GETDEL 语义——A-7），拿到空集的并发 flush 自然跳过；record 侧对「无
+ *   start 字段的孤儿存活窗」补接管 flush 定时器（并发交错的兜底）。
  * - fail-open 三层：Redis 不可用 / 记录失败 / flush 发送失败，一律降级为
  *   警告日志（flush 路径附 NOTIFICATION_FAILED 审计兜底），绝不影响任务
  *   主链，也绝不让窗口"吞掉"告警（record 失败时调用方回退逐条发送）。
@@ -86,6 +87,8 @@ export interface DigestRedisClient {
   hsetnx(key: string, field: string, value: string): Promise<number>;
   hincrby(key: string, field: string, increment: number): Promise<number>;
   hset(key: string, field: string, value: string): Promise<number>;
+  /** A-7: record 探测存活窗是否带 start 字段（孤儿窗接管判据）。 */
+  hget(key: string, field: string): Promise<string | null>;
   expire(key: string, seconds: number): Promise<number>;
   hgetall(key: string): Promise<Record<string, string>>;
   del(key: string): Promise<number>;
@@ -205,6 +208,19 @@ export class NotificationDigestService implements OnModuleDestroy {
       const opened = await client.hsetnx(key, "start", String(Date.now()));
       if (opened === 1) {
         this.scheduleFlush(rec.taskId, windowMs);
+      } else {
+        // A-7: hsetnx 返回 0 有两种可能——① 窗口正常存活（带 start，开窗
+        // 实例持有 flush 定时器）；② 本记录的 hsetnx 恰好排在上一窗 flush 的
+        // 删窗之前、而后续写入又落在删窗之后：键被重建为**无 start 的孤儿窗**，
+        // 无人挂 flush → 该批失败永不汇总（丢失路径）。探测 start 字段，缺失
+        // 即接管 flush 责任（多实例同抢 scheduleFlush 无害——幂等覆盖）。
+        const start = await client.hget(key, "start");
+        if (start === null || start === undefined) {
+          this.logger.warn(
+            `digest window for task ${rec.taskId} has no start field (orphan after a racing flush) — adopting flush duty`,
+          );
+          this.scheduleFlush(rec.taskId, windowMs);
+        }
       }
       // TTL 兜底：flush 丢失（实例崩溃）时残留窗最多活 2 个窗口期。
       await client.expire(key, Math.ceil((windowMs * 2) / 1000));
@@ -249,19 +265,60 @@ export class NotificationDigestService implements OnModuleDestroy {
   }
 
   /**
-   * 窗到期：读窗 → 删窗 → 发一条汇总。HGETALL+DEL 非原子，但 flush 定时器
-   * 仅存在于开窗实例，双 flush 只在多实例同时手工触发时理论可达——拿到空集
-   * 的一方自然跳过（最坏情况是两条并发都读到同一窗，重复一条汇总，可接受）。
+   * A-7: flush 的 Lua 原子取窗脚本——HGETALL 与 DEL 在同一原子单元内执行
+   * （GETDEL 语义的 hash 版）。修复此前 HGETALL+DEL 两步非原子：并发记录的
+   * 写入落在「读后删前」会随窗一起删掉（丢计数）、「删后写」则重建孤儿窗。
+   * ioredis 原生支持 EVAL；结构化测试替身无 eval 时回退两步（内存实现单线程
+   * 顺序执行，不复现生产并发面）。
+   */
+  private static readonly TAKE_WINDOW_LUA = `
+local v = redis.call('HGETALL', KEYS[1])
+redis.call('DEL', KEYS[1])
+return v`;
+
+  private async takeWindow(
+    client: DigestRedisClient,
+    key: string,
+  ): Promise<Record<string, string>> {
+    const evalFn = (
+      client as { eval?: (...args: unknown[]) => Promise<unknown> }
+    ).eval;
+    if (typeof evalFn === "function") {
+      const flat = (await evalFn.call(
+        client,
+        NotificationDigestService.TAKE_WINDOW_LUA,
+        1,
+        key,
+      )) as unknown;
+      const rec: Record<string, string> = {};
+      if (Array.isArray(flat)) {
+        // Lua HGETALL 返回扁平 [k1, v1, k2, v2, ...]
+        for (let i = 0; i + 1 < flat.length; i += 2) {
+          rec[String(flat[i])] = String(flat[i + 1]);
+        }
+      }
+      return rec;
+    }
+    // 测试替身回退：HGETALL + DEL 两步（语义等价，无生产并发面）
+    const raw = await client.hgetall(key);
+    if (raw && Object.keys(raw).length > 0) {
+      await client.del(key);
+    }
+    return raw ?? {};
+  }
+
+  /**
+   * 窗到期：原子取窗 → 发一条汇总。A-7 起读窗与删窗合并为单个 Lua 原子操作
+   * （takeWindow），并发 flush / 并发记录不再出现「读到旧值再删掉新写入」
+   * 的丢更新窗口；拿到空集的一方自然跳过（GETDEL 语义）。
    */
   async flush(taskId: string): Promise<DigestWindowState | null> {
     const key = `${DIGEST_KEY_PREFIX}${taskId}`;
     try {
       const client = this.rawClient();
       if (!client) return null;
-      const raw = await client.hgetall(key);
-      if (raw && Object.keys(raw).length > 0) {
-        await client.del(key);
-      } else {
+      const raw = await this.takeWindow(client, key);
+      if (!raw || Object.keys(raw).length === 0) {
         return null; // 空窗（被并发 flush 抢先）→ 静默跳过
       }
       const state = this.parseWindowState(taskId, raw);

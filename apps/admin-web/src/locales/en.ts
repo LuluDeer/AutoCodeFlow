@@ -656,6 +656,9 @@ export default {
   'audit.action.view': 'View',
   'audit.action.search': 'Search',
   'audit.action.reset': 'Reset',
+  // A-12: 审计 CSV 导出（后端 GET /audit/export 同滤，ADMIN-only）
+  'audit.action.export': 'Export CSV',
+  'audit.export.ok': 'Audit logs exported as CSV',
   'audit.filter.keyword': 'Action keyword',
   'audit.filter.operator': 'Operator',
   'audit.filter.resourceType': 'Resource type',

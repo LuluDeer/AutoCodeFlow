@@ -13,6 +13,8 @@ import {
   pinnedAxiosConfig,
 } from "../../../common/utils/safe-http.util";
 import { ChannelConfigStore } from "../channel-config.store";
+// A-6: markdown 注入防护（title/content 剥离链接语法字符后再拼 markdown）
+import { escapeMarkdownText } from "./markdown-escape.util";
 
 @Injectable()
 export class DingtalkChannel extends BaseChannel {
@@ -67,7 +69,11 @@ export class DingtalkChannel extends BaseChannel {
           url,
           {
             msgtype: "markdown",
-            markdown: { title: p.title, text: `## ${p.title}\n${p.content}` },
+            // A-6: title/content 先剥离 [ ] ( ) < > 与控制字符，防注入钓鱼链接
+            markdown: {
+              title: escapeMarkdownText(p.title),
+              text: `## ${escapeMarkdownText(p.title)}\n${escapeMarkdownText(p.content)}`,
+            },
           },
           // R3: maxRedirects=0 — refuse 3xx so the validated first hop
           // is the only hop applied.

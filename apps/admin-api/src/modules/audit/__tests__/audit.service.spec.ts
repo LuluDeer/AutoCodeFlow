@@ -6,6 +6,8 @@ import { AuditLog } from "../entities/audit-log.entity";
 
 const makeQb = () => ({
   orderBy: jest.fn().mockReturnThis(),
+  // A-8: findAll/exportCsv 补 id 次级排序键
+  addOrderBy: jest.fn().mockReturnThis(),
   andWhere: jest.fn().mockReturnThis(),
   skip: jest.fn().mockReturnThis(),
   take: jest.fn().mockReturnThis(),
@@ -48,6 +50,7 @@ describe("AuditService", () => {
       // createQueryBuilder is used internally; mock it
       const qbMock = {
         orderBy: jest.fn().mockReturnThis(),
+        addOrderBy: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
         skip: jest.fn().mockReturnThis(),
         take: jest.fn().mockReturnThis(),
@@ -63,6 +66,7 @@ describe("AuditService", () => {
     it("applies action filter", async () => {
       const qbMock = {
         orderBy: jest.fn().mockReturnThis(),
+        addOrderBy: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
         skip: jest.fn().mockReturnThis(),
         take: jest.fn().mockReturnThis(),
@@ -80,6 +84,7 @@ describe("AuditService", () => {
     it("applies userId filter", async () => {
       const qbMock = {
         orderBy: jest.fn().mockReturnThis(),
+        addOrderBy: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
         skip: jest.fn().mockReturnThis(),
         take: jest.fn().mockReturnThis(),
@@ -97,6 +102,7 @@ describe("AuditService", () => {
     it("applies username fuzzy filter", async () => {
       const qbMock = {
         orderBy: jest.fn().mockReturnThis(),
+        addOrderBy: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
         skip: jest.fn().mockReturnThis(),
         take: jest.fn().mockReturnThis(),
@@ -114,6 +120,7 @@ describe("AuditService", () => {
     it("applies startTime/endTime range filter", async () => {
       const qbMock = {
         orderBy: jest.fn().mockReturnThis(),
+        addOrderBy: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
         skip: jest.fn().mockReturnThis(),
         take: jest.fn().mockReturnThis(),
@@ -137,6 +144,7 @@ describe("AuditService", () => {
     it("does not add username/time filters when absent", async () => {
       const qbMock = {
         orderBy: jest.fn().mockReturnThis(),
+        addOrderBy: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
         skip: jest.fn().mockReturnThis(),
         take: jest.fn().mockReturnThis(),
@@ -162,6 +170,7 @@ describe("AuditService", () => {
     it("API-09: action 含特殊字符时不再 400，而是转义后按字面量绑定", async () => {
       const qbMock = {
         orderBy: jest.fn().mockReturnThis(),
+        addOrderBy: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
         skip: jest.fn().mockReturnThis(),
         take: jest.fn().mockReturnThis(),
@@ -180,6 +189,7 @@ describe("AuditService", () => {
     it("API-09: action 里的 LIKE 元字符被转义（%) 与 _ 按字面量匹配）", async () => {
       const qbMock = {
         orderBy: jest.fn().mockReturnThis(),
+        addOrderBy: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
         skip: jest.fn().mockReturnThis(),
         take: jest.fn().mockReturnThis(),
@@ -197,6 +207,7 @@ describe("AuditService", () => {
     it("caps pageSize at 100", async () => {
       const qbMock = {
         orderBy: jest.fn().mockReturnThis(),
+        addOrderBy: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
         skip: jest.fn().mockReturnThis(),
         take: jest.fn().mockReturnThis(),
@@ -213,6 +224,7 @@ describe("AuditService", () => {
     it("AUTH-05: applies exact resourceId filter", async () => {
       const qbMock = {
         orderBy: jest.fn().mockReturnThis(),
+        addOrderBy: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
         skip: jest.fn().mockReturnThis(),
         take: jest.fn().mockReturnThis(),
@@ -232,6 +244,7 @@ describe("AuditService", () => {
     it("AUTH-05: applies resource + resourceId as a combined pair filter", async () => {
       const qbMock = {
         orderBy: jest.fn().mockReturnThis(),
+        addOrderBy: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
         skip: jest.fn().mockReturnThis(),
         take: jest.fn().mockReturnThis(),
@@ -254,6 +267,7 @@ describe("AuditService", () => {
     it("AUTH-05: caps an oversized resourceId needle at 100 chars", async () => {
       const qbMock = {
         orderBy: jest.fn().mockReturnThis(),
+        addOrderBy: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
         skip: jest.fn().mockReturnThis(),
         take: jest.fn().mockReturnThis(),
@@ -275,6 +289,7 @@ describe("AuditService", () => {
     it("applies result filter as a bound equality", async () => {
       const qbMock = {
         orderBy: jest.fn().mockReturnThis(),
+        addOrderBy: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
         skip: jest.fn().mockReturnThis(),
         take: jest.fn().mockReturnThis(),
@@ -291,6 +306,7 @@ describe("AuditService", () => {
     it("does not add a result filter when absent", async () => {
       const qbMock = {
         orderBy: jest.fn().mockReturnThis(),
+        addOrderBy: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
         skip: jest.fn().mockReturnThis(),
         take: jest.fn().mockReturnThis(),
@@ -307,6 +323,8 @@ describe("AuditService", () => {
   describe("exportCsv", () => {
     const makeExportQb = (rows: any[] = []) => ({
       orderBy: jest.fn().mockReturnThis(),
+      // A-8: exportCsv 同样补 id 次级排序键
+      addOrderBy: jest.fn().mockReturnThis(),
       andWhere: jest.fn().mockReturnThis(),
       select: jest.fn().mockReturnThis(),
       addSelect: jest.fn().mockReturnThis(),
@@ -576,6 +594,89 @@ describe("AuditService", () => {
         { isLeader: false };
       await service.cleanupOldAuditLogs();
       expect(dataSource.transaction).not.toHaveBeenCalled();
+    });
+  });
+
+  // ─── A-8: 排序确定性——同事务批量写 createdAt 碰撞时补 id 次级键， ───
+  // ─── 防止翻页重复/丢行（findAll 与 exportCsv 两条路径同改）。      ───
+  describe("A-8 排序次级键", () => {
+    // 本地 helper（exportCsv describe 内的同名 helper 作用域不覆盖本组）
+    const makeExportQbLocal = () => ({
+      orderBy: jest.fn().mockReturnThis(),
+      addOrderBy: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      select: jest.fn().mockReturnThis(),
+      addSelect: jest.fn().mockReturnThis(),
+      limit: jest.fn().mockReturnThis(),
+      getRawMany: jest.fn().mockResolvedValue([]),
+    });
+
+    it("findAll 按 createdAt DESC + id DESC 双键排序", async () => {
+      const qbMock = {
+        orderBy: jest.fn().mockReturnThis(),
+        addOrderBy: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        getManyAndCount: jest.fn().mockResolvedValue([[], 0]),
+      };
+      (repo as any).createQueryBuilder = jest.fn().mockReturnValue(qbMock);
+
+      await service.findAll({});
+      expect(qbMock.orderBy).toHaveBeenCalledWith("log.createdAt", "DESC");
+      expect(qbMock.addOrderBy).toHaveBeenCalledWith("log.id", "DESC");
+    });
+
+    it("exportCsv 按 createdAt DESC + id DESC 双键排序", async () => {
+      const qb = makeExportQbLocal();
+      (repo as any).createQueryBuilder = jest.fn().mockReturnValue(qb);
+
+      await service.exportCsv({});
+      expect(qb.orderBy).toHaveBeenCalledWith("log.createdAt", "DESC");
+      expect(qb.addOrderBy).toHaveBeenCalledWith("log.id", "DESC");
+    });
+  });
+
+  // ─── A-9: CSV 导出达 10 000 行上限时在末尾追加截断注释行（有痕截断）。───
+  describe("A-9 CSV 截断有痕", () => {
+    const makeExportQb = (rows: any[]) => ({
+      orderBy: jest.fn().mockReturnThis(),
+      addOrderBy: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      select: jest.fn().mockReturnThis(),
+      addSelect: jest.fn().mockReturnThis(),
+      limit: jest.fn().mockReturnThis(),
+      getRawMany: jest.fn().mockResolvedValue(rows),
+    });
+    const capRows = (n: number) =>
+      Array.from({ length: n }, (_, i) => ({
+        id: String(i),
+        userId: 1,
+        username: "admin",
+        action: "task.create",
+        resource: "task",
+        resourceId: "t-1",
+        result: "success",
+        ip: "127.0.0.1",
+        createdAt: new Date("2024-01-01T00:00:00.000Z"),
+      }));
+
+    it("达上限（10000 行）时导出末尾出现截断注释行", async () => {
+      const qb = makeExportQb(capRows(10_000));
+      (repo as any).createQueryBuilder = jest.fn().mockReturnValue(qb);
+      const csv = await service.exportCsv({});
+      const lines = csv.split("\n");
+      expect(lines[lines.length - 1]).toBe("# truncated at 10000 rows");
+      // 注释行是纯文本（无逗号），不会被 RFC4180 引号包裹
+      expect(lines[lines.length - 1]).not.toContain('"');
+    });
+
+    it("未达上限（<10000 行）时无截断注释行", async () => {
+      const qb = makeExportQb(capRows(9_999));
+      (repo as any).createQueryBuilder = jest.fn().mockReturnValue(qb);
+      const csv = await service.exportCsv({});
+      expect(csv).not.toContain("# truncated at");
+      expect(csv.split("\n")).toHaveLength(10_000); // header + 9999
     });
   });
 });

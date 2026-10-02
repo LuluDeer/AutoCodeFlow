@@ -1,9 +1,13 @@
 import { useState } from 'react';
 import { Table, Select, Input, Button, Space, Tag, Typography, Tooltip, Modal, DatePicker, Empty, theme, Card } from 'antd';
-import { SearchOutlined, ReloadOutlined, EyeOutlined } from '@ant-design/icons';
+import { SearchOutlined, ReloadOutlined, EyeOutlined, DownloadOutlined } from '@ant-design/icons';
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { client } from '../../api/client';
+// A-12: 审计 CSV 导出（GET /audit/export，携带当前筛选，axios blob 下载）
+import { exportAuditCsv } from '../../api/audit';
+// TOAST-01：走 utils/toast 出口（App 实例优先，暗色主题下 toast 样式正确）
+import { message } from '../../utils/toast';
 // F-26（DEEP_REVIEW 0ef3bbe）：locale 单一来源，不再硬编码 zh-CN
 import { currentLocale } from '../../utils/locale';
 import dayjs, { type Dayjs } from 'dayjs';
@@ -143,6 +147,20 @@ export default function AuditLogPage() {
   const handleReset = () => {
     const e = { action: '', resource: '', resourceId: '', username: '', result: '' as '' | 'success' | 'failure', startTime: undefined as string | undefined, endTime: undefined as string | undefined };
     setPending(e); setFilters(e); setPage(1);
+  };
+
+  // A-12: 导出 CSV（携带当前已应用的 filters；失败 toast 由 client 拦截器统一弹）
+  const [exporting, setExporting] = useState(false);
+  const handleExport = async () => {
+    setExporting(true);
+    try {
+      await exportAuditCsv(filters);
+      message.success(t('audit.export.ok'));
+    } catch {
+      /* client 拦截器已弹错误 toast */
+    } finally {
+      setExporting(false);
+    }
   };
 
   const rangePresets = [
@@ -304,6 +322,8 @@ export default function AuditLogPage() {
         />
         <Button type="primary" icon={<SearchOutlined />} onClick={handleSearch}>{t('audit.action.search')}</Button>
         {hasFilters && <Button icon={<ReloadOutlined />} onClick={handleReset}>{t('audit.action.reset')}</Button>}
+        {/* A-12: 导出 CSV（后端 GET /audit/export 同滤，ADMIN-only） */}
+        <Button icon={<DownloadOutlined />} loading={exporting} onClick={handleExport}>{t('audit.action.export')}</Button>
       </Space>
       {/* UI-16：请求失败渲染页内错误态标准块（StateError，重试=refetch），
           此前失败静默表现为「暂无审计记录」空态——查询失败与确无记录两种语义分离 */}

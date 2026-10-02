@@ -668,6 +668,9 @@ export default {
   'audit.action.view': '查看',
   'audit.action.search': '搜索',
   'audit.action.reset': '重置',
+  // A-12: 审计 CSV 导出（后端 GET /audit/export 同滤，ADMIN-only）
+  'audit.action.export': '导出 CSV',
+  'audit.export.ok': '审计日志已导出为 CSV',
   'audit.filter.keyword': '操作关键词',
   'audit.filter.operator': '操作人',
   'audit.filter.resourceType': '资源类型',
