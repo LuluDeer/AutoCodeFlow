@@ -129,6 +129,10 @@ export default {
   'dashboard.stream.live': 'Live',
   'dashboard.stream.reconnecting': 'Reconnecting',
   'dashboard.stream.connecting': 'Connecting',
+  // A-4 (degraded-data black hole audit): header badge when the metrics/stream
+  // backend reports a degraded snapshot query (named error frame)
+  'dashboard.stream.degraded': 'Data delayed',
+  'dashboard.stream.degradedTooltip': 'Some stream queries degraded; data may be stale (a refetch was triggered). Values refresh on the next successful snapshot.',
   'dashboard.scheduler': 'Scheduler {{state}} · {{count}} tasks',
   'dashboard.scheduler.healthy': 'healthy',
   'dashboard.scheduler.unhealthy': 'unhealthy',

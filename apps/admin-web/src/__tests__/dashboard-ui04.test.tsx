@@ -99,10 +99,11 @@ const daysAgo = (n: number) => {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 };
 
+// A-10：/metrics/trend 响应新增 timeout 键（告警口径 failed|timeout）
 const trendFixture = [
-  { date: daysAgo(2), success: 5, failed: 1 },
-  { date: daysAgo(1), success: 8, failed: 0 },
-  { date: daysAgo(0), success: 3, failed: 2 },
+  { date: daysAgo(2), success: 5, failed: 1, timeout: 0 },
+  { date: daysAgo(1), success: 8, failed: 0, timeout: 0 },
+  { date: daysAgo(0), success: 3, failed: 2, timeout: 0 },
 ];
 
 const executorsFixture = [

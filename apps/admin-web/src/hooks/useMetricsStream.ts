@@ -12,7 +12,7 @@
  *   （staleTime 内不重取），断线时 hooks 自动退化为其自身的请求节奏。
  */
 import { QueryClientContext } from '@tanstack/react-query';
-import { useContext, useEffect, useState } from 'react';
+import { useContext, useEffect, useState, useSyncExternalStore } from 'react';
 
 import { getApiBaseUrl } from '../api/client';
 import { createSseClient, sseReconnectBackoffMs, SSE_STATUS_KEYS } from '../api/sse-client';
@@ -32,6 +32,43 @@ export interface MetricsStreamSnapshot {
 // F-08（DEEP_REVIEW 0ef3bbe）：退避逻辑已收敛到 api/sse-client.ts 的
 // sseReconnectBackoffMs；此处 re-export 仅保留既有测试锚定（原函数签名不变）。
 export const reconnectBackoffMs = sseReconnectBackoffMs;
+
+// ── A-4（审计降级黑洞）：查询降级面 ──────────────────────────────────────
+// 后端任一快照查询失败会发具名 error 帧（metrics-stream.controller.ts 的
+// send(payload, "error")），快照体也自带 errors 数组。此前 hook 只注册默认
+// onmessage——具名 error 帧在 EventSource 层被静默丢弃（sse-client 仅在有
+// events 映射时 addEventListener），叠加 queries.ts 的「live 停轮询」
+// （sseFallbackRefetchInterval），Dashboard 会无限陈旧还显示「实时」。
+// 降级标志以模块级最小 store 承载：useMetricsStream 保持既有 string 返回值
+// （useExecutorLive 等既有消费方不受扰），降级面经独立的
+// useMetricsStreamDegraded() 订阅（useSyncExternalStore）。
+let metricsStreamDegraded = false;
+const degradedListeners = new Set<() => void>();
+
+const setStreamDegraded = (v: boolean) => {
+  if (metricsStreamDegraded === v) return;
+  metricsStreamDegraded = v;
+  for (const l of [...degradedListeners]) l();
+};
+
+function subscribeStreamDegraded(listener: () => void): () => void {
+  degradedListeners.add(listener);
+  return () => {
+    degradedListeners.delete(listener);
+  };
+}
+
+/** A-4：Dashboard 降级角标数据源——最近一次 metrics/stream 快照是否查询降级 */
+export function useMetricsStreamDegraded(): boolean {
+  return useSyncExternalStore(subscribeStreamDegraded, () => metricsStreamDegraded);
+}
+
+/** A-4：metrics/stream 降级段名 → queryClient 缓存键（与 onMessage 写入面同源） */
+const STREAM_SEGMENT_QUERY_KEYS: Record<string, readonly unknown[]> = {
+  summary: queryKeys.metrics.summary,
+  executors: queryKeys.metrics.executorStats,
+  scheduler: queryKeys.metrics.scheduler,
+};
 
 interface UseMetricsStreamOptions {
   /** SSE 挂载开关（如登录后才连接）；默认 true */
@@ -66,6 +103,9 @@ export function useMetricsStream({ enabled = true }: UseMetricsStreamOptions = {
       onMessage: (e) => {
         try {
           const snap = JSON.parse(e.data) as MetricsStreamSnapshot;
+          // A-4：快照自带 errors 数组——以此同步降级标志（恢复即清除，
+          // 与具名 error 帧的置位形成对称闭环）。
+          setStreamDegraded(snap.errors.length > 0);
           if (snap.summary !== undefined && snap.summary !== null) {
             queryClient.setQueryData(queryKeys.metrics.summary, snap.summary);
           }
@@ -79,9 +119,36 @@ export function useMetricsStream({ enabled = true }: UseMetricsStreamOptions = {
           /* 忽略畸形帧（与日志流消费同策略） */
         }
       },
+      events: {
+        // A-4：具名 error 帧 = 本拍快照查询降级（失败段在紧随其后的快照体
+        // 中为 null、旧缓存保留）。置降级标志 + 对失败段各触发一次 refetch
+        // ——live 期间 refetchInterval=false（sseFallbackRefetchInterval），
+        // 不主动补拉的话失败段会陈旧到下一拍恢复为止。
+        error: (e) => {
+          setStreamDegraded(true);
+          let failed: string[] = [];
+          try {
+            const payload = JSON.parse(e.data) as { failed?: unknown };
+            if (Array.isArray(payload.failed)) {
+              failed = payload.failed.filter((s): s is string => typeof s === 'string');
+            }
+          } catch {
+            /* 畸形帧按整体降级处理（failed 保持空，仅置标志） */
+          }
+          for (const segment of failed) {
+            const key = STREAM_SEGMENT_QUERY_KEYS[segment];
+            if (key) void queryClient.refetchQueries({ queryKey: key });
+          }
+        },
+      },
     });
 
-    return () => client.close();
+    return () => {
+      client.close();
+      // A-4：连接生命周期结束（卸载/重挂载）→ 降级标志复位，避免残留的
+      // 「数据延迟」角标跨连接存留（重连后由第一拍快照重新置位）。
+      setStreamDegraded(false);
+    };
   }, [enabled, token, queryClient]);
 
   return status;
