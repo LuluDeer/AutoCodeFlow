@@ -8,13 +8,25 @@ import { MetricsScraperAuthGuard } from "../metrics-scraper-auth.guard";
 import configuration from "../../../config/configuration";
 
 /**
- * MetricsScraperAuthGuard 三态单测:未设置令牌=纯 JWT 回落、令牌命中=放行、
- * 令牌不匹配=回落 JWT(不比改造前更宽松)。JWT 侧以 stub canActivate 替身,
- * 只断言本守卫自身的分流逻辑(真 JWT 流程有 auth 域既有测试背书)。
+ * MetricsScraperAuthGuard 三态单测:未设置令牌=纯 JWT 回落、令牌命中=放行
+ * （A-5 收口后仅限抓取端点 GET /api/metrics）、令牌不匹配=回落 JWT(不比
+ * 改造前更宽松)。JWT 侧以 stub canActivate 替身,只断言本守卫自身的分流
+ * 逻辑(真 JWT 流程有 auth 域既有测试背书)。
  */
 
-const makeCtx = (authorization?: string): ExecutionContext => {
-  const req: Record<string, unknown> = { headers: {} };
+interface CtxOver {
+  method?: string;
+  path?: string;
+}
+
+const makeCtx = (authorization?: string, over: CtxOver = {}): ExecutionContext => {
+  const req: Record<string, unknown> = {
+    headers: {},
+    // 默认形态 = Prometheus 抓取请求（GET /api/metrics，全局前缀 api）
+    method: over.method ?? "GET",
+    path: over.path ?? "/api/metrics",
+    originalUrl: over.path ?? "/api/metrics",
+  };
   if (authorization !== undefined) req.headers = { authorization };
   return {
     switchToHttp: () => ({ getRequest: () => req }),
@@ -105,6 +117,100 @@ describe("MetricsScraperAuthGuard", () => {
       guard.canActivate(makeCtx("Bearer a-much-longer-token-value")),
     ).resolves.toBe(true);
     expect(callsOf(jwt).calls.length).toBeGreaterThan(0);
+  });
+
+  // ── A-5（审计抓取面过宽）：令牌命中仅限抓取端点 GET /api/metrics ──────
+
+  it("A-5: 令牌命中但目标是其余端点(/metrics/failures)→ 拒绝令牌路径并回落 JWT", async () => {
+    const jwt = makeJwt(false); // JWT 回落拒绝 → 整体 401
+    const guard = new MetricsScraperAuthGuard(
+      new Reflector(),
+      makeConfig("scraper-secret"),
+      jwt,
+    );
+    await expect(
+      guard.canActivate(
+        makeCtx("Bearer scraper-secret", { path: "/api/metrics/failures" }),
+      ),
+    ).resolves.toBe(false);
+    expect(callsOf(jwt).calls.length).toBe(1);
+  });
+
+  it("A-5: 令牌命中但目标是 /metrics/executors(内网地址)→ 同样回落 JWT", async () => {
+    const jwt = makeJwt(true);
+    const guard = new MetricsScraperAuthGuard(
+      new Reflector(),
+      makeConfig("scraper-secret"),
+      jwt,
+    );
+    await expect(
+      guard.canActivate(
+        makeCtx("Bearer scraper-secret", { path: "/api/metrics/executors" }),
+      ),
+    ).resolves.toBe(true); // true 来自 JWT（合法用户），非令牌
+    expect(callsOf(jwt).calls.length).toBe(1);
+  });
+
+  it("A-5: 前缀不可放行——令牌精确匹配 /api/metrics 前缀的其他子路径一律回落", async () => {
+    const jwt = makeJwt(false);
+    const guard = new MetricsScraperAuthGuard(
+      new Reflector(),
+      makeConfig("scraper-secret"),
+      jwt,
+    );
+    for (const path of [
+      "/api/metrics/summary",
+      "/api/metrics/trend",
+      "/api/metrics/scheduler",
+    ]) {
+      await expect(
+        guard.canActivate(makeCtx("Bearer scraper-secret", { path })),
+      ).resolves.toBe(false);
+    }
+    expect(callsOf(jwt).calls.length).toBe(3);
+  });
+
+  it("A-5: 令牌命中但方法非 GET → 回落 JWT", async () => {
+    const jwt = makeJwt(false);
+    const guard = new MetricsScraperAuthGuard(
+      new Reflector(),
+      makeConfig("scraper-secret"),
+      jwt,
+    );
+    await expect(
+      guard.canActivate(
+        makeCtx("Bearer scraper-secret", { method: "POST" }),
+      ),
+    ).resolves.toBe(false);
+    expect(callsOf(jwt).calls.length).toBe(1);
+  });
+
+  it("A-5: 抓取端点带尾斜杠(GET /api/metrics/)→ 令牌仍放行", async () => {
+    const jwt = makeJwt(false);
+    const guard = new MetricsScraperAuthGuard(
+      new Reflector(),
+      makeConfig("scraper-secret"),
+      jwt,
+    );
+    await expect(
+      guard.canActivate(makeCtx("Bearer scraper-secret", { path: "/api/metrics/" })),
+    ).resolves.toBe(true);
+    expect(callsOf(jwt).calls.length).toBe(0);
+  });
+
+  it("A-5: 未设置令牌时其余端点行为不变(直接走 JWT,无路径约束)", async () => {
+    const jwt = makeJwt(true);
+    const guard = new MetricsScraperAuthGuard(
+      new Reflector(),
+      makeConfig(undefined),
+      jwt,
+    );
+    await expect(
+      guard.canActivate(
+        makeCtx(undefined, { path: "/api/metrics/failures" }),
+      ),
+    ).resolves.toBe(true);
+    expect(callsOf(jwt).calls.length).toBe(1);
   });
 });
 
