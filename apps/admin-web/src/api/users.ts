@@ -21,6 +21,11 @@ export interface UpdateUserDto {
   email?: string;
   password?: string;
   role?: string;
+  /**
+   * A-13: 仅自改密码时携带——后端 controller 校验非管理员改密必须提供
+   * 当前密码（SEC-12），服务层在合并前剔除该字段（R19），不会落库/回显。
+   */
+  currentPassword?: string;
 }
 
 export const usersApi = {

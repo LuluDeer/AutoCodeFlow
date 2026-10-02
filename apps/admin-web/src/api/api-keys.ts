@@ -28,7 +28,13 @@ export const apiKeysApi = {
     signal
       ? client.get('/api-keys', { signal }) as Promise<ApiKeyView[]>
       : client.get('/api-keys') as Promise<ApiKeyView[]>,
-  create: (data: { name: string; scope: ApiKeyScope; expiresInDays?: number }) =>
+  create: (data: {
+    name: string;
+    scope: ApiKeyScope;
+    expiresInDays?: number;
+    /** A-14: NF-01 扩展域词表（空格分隔）——当前仅 task:trigger，随 scope=trigger 显式勾选透传。 */
+    scopes?: string;
+  }) =>
     client.post('/api-keys', data) as Promise<ApiKeyCreateResult>,
   revoke: (id: number) =>
     client.delete(`/api-keys/${id}`) as Promise<{ success: boolean; apiKey: ApiKeyView }>,

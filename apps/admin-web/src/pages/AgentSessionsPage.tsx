@@ -81,21 +81,33 @@ export default function AgentSessionsPage() {
   const [children, setChildren] = useState<AgentSession[]>([]);
   const [resuming, setResuming] = useState(false);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  // B-14：silent 轮询不闪 loading（对齐 SopsPage 同款处理）
+  const load = useCallback(async (opts?: { silent?: boolean }) => {
+    if (!opts?.silent) setLoading(true);
     try {
       const res = await agentApi.list({ kind: kindFilter, status: statusFilter, page, pageSize });
       setItems(res.items);
       setTotal(res.total);
     } catch {
-      message.error(t('agents.loadFailed'));
+      // B-14：后台轮询失败静默——连续弹 message 是噪音，列表保留旧数据
+      if (!opts?.silent) message.error(t('agents.loadFailed'));
     } finally {
-      setLoading(false);
+      if (!opts?.silent) setLoading(false);
     }
   }, [kindFilter, statusFilter, page, pageSize, t]);
 
   useEffect(() => {
     void load();
+  }, [load]);
+
+  // B-14：15s 轮询自动刷新（失焦暂停，回前台下一拍恢复——对齐
+  // ExecutionsPage 先例）。会话状态（running/waiting_input/终态）变化频繁，
+  // 人工不刷新就看不到挂起与预算触顶。
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (document.visibilityState === 'visible') void load({ silent: true });
+    }, 15_000);
+    return () => clearInterval(timer);
   }, [load]);
 
   useEffect(() => {
@@ -244,9 +256,10 @@ export default function AgentSessionsPage() {
     },
   ];
 
+  // B-8：running 不在可恢复集合——后端对 running 会话的 resume 返回 409
+  //（重复入队会产生双份推理循环副作用），前端同步隐藏入口。
   const resumable = detail !== null &&
-    !['succeeded', 'aborted'].includes(detail.status) &&
-    ['waiting_input', 'failed', 'budget_exceeded', 'pending', 'running'].includes(detail.status);
+    ['waiting_input', 'failed', 'budget_exceeded', 'pending'].includes(detail.status);
 
   return (
     <div>

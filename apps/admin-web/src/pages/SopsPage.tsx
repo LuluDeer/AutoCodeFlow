@@ -78,10 +78,11 @@ export default function SopsPage() {
   const [creatingDraft, setCreatingDraft] = useState(false);
   // P6 升级环收口：人工回复澄清（escalated_to_human / pending）
   const [replyTarget, setReplyTarget] = useState<{ assignmentId: string; clarificationId: string } | null>(null);
-  const [reply, setReply] = useState<{ resolution: 'answered' | 'sop_amended'; answer: string; amendedYaml: string }>({
+  const [reply, setReply] = useState<{ resolution: 'answered' | 'sop_amended'; answer: string; amendedYaml: string; amendedBody: string }>({
     resolution: 'answered',
     answer: '',
     amendedYaml: '',
+    amendedBody: '',
   });
   const [replying, setReplying] = useState(false);
   // 指派对话框（P5 核心动作此前无 UI 入口）：版本 + 租约内可接单执行器
@@ -92,21 +93,33 @@ export default function SopsPage() {
   // 指派媒体（截图/录屏——执行器回传的证据，此前在 UI 不可见）
   const [media, setMedia] = useState<Record<string, SopMedia[]>>({});
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  // B-14：silent 轮询不闪 loading（定时器每 15s 触发，spinner 抖动是纯噪音）
+  const load = useCallback(async (opts?: { silent?: boolean }) => {
+    if (!opts?.silent) setLoading(true);
     try {
       const res = await sopsApi.list({ page, pageSize });
       setItems(res.items);
       setTotal(res.total);
     } catch {
-      message.error(t('sops.loadFailed'));
+      // B-14：后台轮询失败静默——连续弹 message 是噪音，列表保留旧数据
+      if (!opts?.silent) message.error(t('sops.loadFailed'));
     } finally {
-      setLoading(false);
+      if (!opts?.silent) setLoading(false);
     }
   }, [page, pageSize, t]);
 
   useEffect(() => {
     void load();
+  }, [load]);
+
+  // B-14：15s 轮询自动刷新（失焦暂停，定时器保留、回前台下一拍恢复——
+  // 对齐 ExecutionsPage 15s 兜底轮询先例）。SOP 列表/工单状态是协作面的
+  // 只读投影，人工不刷新就看不到澄清升级与执行进展。
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (document.visibilityState === 'visible') void load({ silent: true });
+    }, 15_000);
+    return () => clearInterval(timer);
   }, [load]);
 
   // SOPS-RACE-01：openDetail 无取消机制，快速连点两行时旧详情的响应可晚于
@@ -195,7 +208,10 @@ export default function SopsPage() {
       await sopsApi.replyClarification(replyTarget.assignmentId, replyTarget.clarificationId, {
         resolution: reply.resolution,
         answer: reply.answer,
+        // B-14：修订正文（API 已支持 amendedBodyMarkdown——修订可以只改正文
+        // 不动 front-matter，此前表单只给了 YAML 入口）
         ...(reply.resolution === 'sop_amended' && reply.amendedYaml ? { amendedFrontMatterYaml: reply.amendedYaml } : {}),
+        ...(reply.resolution === 'sop_amended' && reply.amendedBody ? { amendedBodyMarkdown: reply.amendedBody } : {}),
       });
       message.success(t('sops.replyOk'));
       // 接管未送达（9.13 残差）：执行器已按升级收尾的指派不再消费答复——
@@ -434,7 +450,7 @@ export default function SopsPage() {
                                   <Button
                                     size="small"
                                     style={{ marginLeft: 8 }}
-                                    onClick={() => { setReplyTarget({ assignmentId: a.id, clarificationId: c.id }); setReply({ resolution: 'answered', answer: '', amendedYaml: '' }); }}
+                                    onClick={() => { setReplyTarget({ assignmentId: a.id, clarificationId: c.id }); setReply({ resolution: 'answered', answer: '', amendedYaml: '', amendedBody: '' }); }}
                                   >
                                     {t('sops.reply')}
                                   </Button>
@@ -542,12 +558,21 @@ export default function SopsPage() {
             onChange={(e) => setReply({ ...reply, answer: e.target.value })}
           />
           {reply.resolution === 'sop_amended' && (
-            <Input.TextArea
-              rows={8}
-              placeholder={t('sops.replyAmendedPlaceholder')}
-              value={reply.amendedYaml}
-              onChange={(e) => setReply({ ...reply, amendedYaml: e.target.value })}
-            />
+            <>
+              <Input.TextArea
+                rows={8}
+                placeholder={t('sops.replyAmendedPlaceholder')}
+                value={reply.amendedYaml}
+                onChange={(e) => setReply({ ...reply, amendedYaml: e.target.value })}
+              />
+              {/* B-14：修订正文入口——API 支持 amendedBodyMarkdown，修订可只改正文 */}
+              <Input.TextArea
+                rows={6}
+                placeholder={t('sops.replyBodyPlaceholder')}
+                value={reply.amendedBody}
+                onChange={(e) => setReply({ ...reply, amendedBody: e.target.value })}
+              />
+            </>
           )}
         </Space>
       </Modal>

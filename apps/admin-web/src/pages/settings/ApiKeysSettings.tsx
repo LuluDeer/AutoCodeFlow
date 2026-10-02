@@ -9,6 +9,7 @@ import { Card,
   Input,
   Select,
   InputNumber,
+  Checkbox,
   Typography,
   Alert,
   Popconfirm } from 'antd';
@@ -132,12 +133,23 @@ export default function ApiKeysSettings() {
     queryFn: ({ signal }) => apiKeysApi.list(signal),
   });
 
+  // A-14（R3-A 审计）: 表单值透传 task:trigger 附加勾选（scope=trigger 时展示）
   const createMut = useMutation({
-    mutationFn: (values: { name: string; scope: ApiKeyScope; expiresInDays?: number | null }) =>
+    mutationFn: (values: {
+      name: string;
+      scope: ApiKeyScope;
+      expiresInDays?: number | null;
+      taskTrigger?: boolean;
+    }) =>
       apiKeysApi.create({
         name: values.name,
         scope: values.scope,
         ...(values.expiresInDays ? { expiresInDays: values.expiresInDays } : {}),
+        // A-14: 仅在 scope=trigger 且显式勾选时透传扩展域——DTO 字段名 scopes
+        // （空格分隔词表）；未勾选不传，后端按 null 处理（零行为变化）。
+        ...(values.scope === 'trigger' && values.taskTrigger
+          ? { scopes: 'task:trigger' }
+          : {}),
       }),
     onSuccess: (result) => {
       // 创建成功：关闭表单，弹一次性明文回显
@@ -284,6 +296,28 @@ export default function ApiKeysSettings() {
                 { value: 'manage', label: t('apiKeys.scopeOption.manage') },
               ]}
             />
+          </Form.Item>
+          {/* A-14（R3-A 审计）: task:trigger 扩展域此前后端可达（NF-01）但前端
+              无入口——scope=trigger 时展示附加勾选，载荷透传 scopes='task:trigger'。
+              切走 scope 后条件渲染卸载，值由载荷构造侧按 scope 判断兜底。 */}
+          <Form.Item noStyle shouldUpdate={(prev, cur) => prev.scope !== cur.scope}>
+            {({ getFieldValue }) =>
+              getFieldValue('scope') === 'trigger' ? (
+                <>
+                  <Form.Item name="taskTrigger" valuePropName="checked" style={{ marginBottom: 4 }}>
+                    <Checkbox data-testid="apikey-task-trigger">
+                      {t('apiKeys.field.allowTaskTrigger')}
+                    </Checkbox>
+                  </Form.Item>
+                  <Typography.Text
+                    type="secondary"
+                    style={{ display: 'block', marginBottom: 16, fontSize: 12 }}
+                  >
+                    {t('apiKeys.field.allowTaskTriggerHint')}
+                  </Typography.Text>
+                </>
+              ) : null
+            }
           </Form.Item>
           <Form.Item
             name="expiresInDays"
