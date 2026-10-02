@@ -6,6 +6,7 @@ import { Card,
   Tag,
   Table,
   Alert,
+  Form,
   Typography,
   Popconfirm,
   Descriptions,
@@ -13,11 +14,13 @@ import { Card,
   theme } from 'antd';
 import { message } from '../../utils/toast';
 import {
-  SafetyOutlined, UserOutlined, DesktopOutlined, ReloadOutlined,
+  SafetyOutlined, UserOutlined, DesktopOutlined, ReloadOutlined, LockOutlined,
 } from '@ant-design/icons';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import type { ColumnsType } from 'antd/es/table';
 import { authApi, AuthSession } from '../../api/auth';
+// A-13: 自助改密走既有自改端点（PATCH /users/:id，载荷 password + currentPassword）
+import { usersApi } from '../../api/users';
 import { showApiError } from '../../utils/error';
 // F-26（DEEP_REVIEW 0ef3bbe）：locale 单一来源，不再硬编码 zh-CN
 import { currentLocale } from '../../utils/locale';
@@ -202,6 +205,115 @@ export function TotpCard() {
 }
 
 /**
+ * A-13（R3-A 审计）: 自助改密卡。普通用户此前只能靠管理员重置（或 UserManagementPage
+ * 的管理员视角），本卡把既有自改端点（PATCH /users/:id，载荷 password +
+ * currentPassword，普通用户改密必须携带 currentPassword）接到安全设置页。
+ * 改密成功后端会 bump 会话版本（在途 access/refresh 即刻失效）——前端随即
+ * 强制重新登录：清空本地凭据并跳 /login（与 401 过期链路同落点）。
+ * 校验规则与后端 UsersService.validatePasswordStrength 对齐（≥8 位、大写、
+ * 数字、特殊字符），前端先行拦截，后端校验仍是权威。
+ */
+interface PasswordFormValues {
+  currentPassword: string;
+  newPassword: string;
+  confirmPassword: string;
+}
+
+export function PasswordCard() {
+  const { t } = useTranslation();
+  const user = useAuthStore((s) => s.user);
+  const [form] = Form.useForm();
+  const [submitting, setSubmitting] = useState(false);
+
+  const onSubmit = async (values: PasswordFormValues) => {
+    if (!user?.id) return;
+    setSubmitting(true);
+    try {
+      await usersApi.update(user.id, {
+        password: values.newPassword,
+        currentPassword: values.currentPassword,
+      });
+      message.success(t('security.password.changed'), 4);
+      // 强制重新登录：本地凭据清空 + 短暂延迟让成功 toast 可见后跳登录页
+      useAuthStore.getState().logout();
+      setTimeout(() => {
+        window.location.href = '/login';
+      }, 1200);
+    } catch (err: unknown) {
+      // 400（当前密码错）/409（用户名/邮箱占用）等由 getErrMsg 透出后端文案
+      showApiError(err, t('security.password.changeFail'));
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Card
+      title={<Space><LockOutlined /> {t('security.password.title')}</Space>}
+      style={{ marginBottom: 16 }}
+    >
+      <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
+        {t('security.password.intro')}
+      </Text>
+      <Form
+        form={form}
+        layout="vertical"
+        style={{ maxWidth: 420 }}
+        onFinish={(v) => {
+          void onSubmit(v as PasswordFormValues);
+        }}
+      >
+        <Form.Item
+          name="currentPassword"
+          label={t('security.password.current')}
+          rules={[{ required: true, message: t('security.password.currentRequired') }]}
+        >
+          <Input.Password placeholder={t('security.password.currentPlaceholder')} />
+        </Form.Item>
+        <Form.Item
+          name="newPassword"
+          label={t('security.password.new')}
+          rules={[
+            { required: true, message: t('security.password.newRequired') },
+            { min: 8, message: t('security.password.rule.length') },
+            { pattern: /[A-Z]/, message: t('security.password.rule.uppercase') },
+            { pattern: /[0-9]/, message: t('security.password.rule.digit') },
+            { pattern: /[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?]/, message: t('security.password.rule.special') },
+          ]}
+        >
+          <Input.Password placeholder={t('security.password.newPlaceholder')} autoComplete="new-password" />
+        </Form.Item>
+        <Form.Item
+          name="confirmPassword"
+          label={t('security.password.confirm')}
+          dependencies={['newPassword']}
+          rules={[
+            { required: true, message: t('security.password.confirmRequired') },
+            ({ getFieldValue }) => ({
+              validator(_, value: string) {
+                if (!value || getFieldValue('newPassword') === value) {
+                  return Promise.resolve();
+                }
+                return Promise.reject(new Error(t('security.password.mismatch')));
+              },
+            }),
+          ]}
+        >
+          <Input.Password placeholder={t('security.password.confirmPlaceholder')} autoComplete="new-password" />
+        </Form.Item>
+        <Button
+          type="primary"
+          htmlType="submit"
+          loading={submitting}
+          data-testid="password-submit"
+        >
+          {t('security.password.submit')}
+        </Button>
+      </Form>
+    </Card>
+  );
+}
+
+/**
  * SEC-03: 会话列表（refresh token 吊销 UI 面，DR-04 撤销语义）。
  * 展示当前登录用户所有活跃会话，可吊销单条或一键吊销其他全部。
  */
@@ -353,6 +465,7 @@ export default function SecuritySettings() {
       <div style={{ marginBottom: 12 }}>
         <Text type="secondary">{t('security.title')}</Text>
       </div>
+      <PasswordCard />
       <TotpCard />
       <SessionsCard />
     </div>
