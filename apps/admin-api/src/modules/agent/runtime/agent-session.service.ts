@@ -28,6 +28,17 @@ import { recordRuntime } from "../../metrics/runtime-metrics-entry";
  * 收敛到一处，累加与写入在同一方法内，不会漂移。
  */
 
+/**
+ * B-4：token 计数收敛——上游（AI provider）返回的 usage 可能是字符串或
+ * 畸形值，进 SQL 表达式前必须收敛为有限正数，否则 `"totalTokensIn" + ${raw}`
+ * 是一个可注入面（raw = "1; DROP TABLE agent_sessions--"）。
+ * 非有限/非正数一律按 0 记。
+ */
+export function safeTokenCount(v: unknown): number {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
 /** 创建会话的输入。 */
 export interface CreateSessionInput {
   kind: AgentSessionKind;
@@ -173,6 +184,9 @@ export class AgentSessionService {
    * 「单会话 30 分钟上限」形同虚设。
    */
   async markRunning(id: string): Promise<void> {
+    // B-8：CAS 双保险——只有「非 running 且未终态」的会话能被置 running。
+    // ① 双 worker 领到同一会话（重复入队的残余窗口）时只有一方真正置态；
+    // ② 防住把终态会话拉回 running 的状态机倒退。
     await this.sessions
       .createQueryBuilder()
       .update(AgentSession)
@@ -181,7 +195,10 @@ export class AgentSessionService {
         waitingFor: null,
         ...((await this.needsStartedAt(id)) ? { startedAt: new Date() } : {}),
       })
-      .where("id = :id", { id })
+      .where("id = :id AND status <> 'running' AND status NOT IN (:...terminal)", {
+        id,
+        terminal: AGENT_TERMINAL_STATUSES,
+      })
       .execute();
   }
 
@@ -274,6 +291,9 @@ export class AgentSessionService {
     sessionId: string,
     input: AppendStepInput,
   ): Promise<AgentStep> {
+    // B-4：token 计数在进 SQL 表达式前收敛为有限正数（见 safeTokenCount）。
+    const tokensIn = safeTokenCount(input.tokensIn);
+    const tokensOut = safeTokenCount(input.tokensOut);
     return this.sessions.manager.transaction(async (em) => {
       const row = await em
         .createQueryBuilder(AgentStep, "s")
@@ -290,8 +310,8 @@ export class AgentSessionService {
         reasoning: input.reasoning ?? null,
         toolCallsJson: input.toolCallsJson ?? null,
         toolCallId: input.toolCallId ?? null,
-        tokensIn: input.tokensIn ?? 0,
-        tokensOut: input.tokensOut ?? 0,
+        tokensIn,
+        tokensOut,
         latencyMs: input.latencyMs ?? 0,
         provider: input.provider ?? null,
         model: input.model ?? null,
@@ -301,26 +321,28 @@ export class AgentSessionService {
 
       // 用量累加与 step 写入同事务——分开写会出现「步数涨了用量没涨」
       // 的窗口，而预算闸门正是读用量。这一步是闸门可靠性的基础。
+      // B-4：tokens 经 safeTokenCount 收敛后才是有限数——原样拼接上游
+      // 字符串可注入原生 SQL。
       await em
         .createQueryBuilder()
         .update(AgentSession)
         .set({
           totalSteps: () => '"totalSteps" + 1',
-          totalTokensIn: () => `"totalTokensIn" + ${input.tokensIn ?? 0}`,
-          totalTokensOut: () => `"totalTokensOut" + ${input.tokensOut ?? 0}`,
+          totalTokensIn: () => `"totalTokensIn" + ${tokensIn}`,
+          totalTokensOut: () => `"totalTokensOut" + ${tokensOut}`,
         })
         .where("id = :id", { id: sessionId })
         .execute();
 
       // 令牌指标（成本归因）
-      if ((input.tokensIn ?? 0) > 0) {
+      if (tokensIn > 0) {
         recordRuntime("autoflow_agent_tokens_total", {
           provider: input.provider ?? "unknown",
           model: input.model ?? "unknown",
           direction: "in",
         });
       }
-      if ((input.tokensOut ?? 0) > 0) {
+      if (tokensOut > 0) {
         recordRuntime("autoflow_agent_tokens_total", {
           provider: input.provider ?? "unknown",
           model: input.model ?? "unknown",

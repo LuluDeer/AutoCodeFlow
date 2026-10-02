@@ -917,6 +917,10 @@ export const AGENT_INTERNAL_TOOL_SPECS: readonly AgentToolSpec[] = [
       additionalProperties: false,
     },
     tier: "write",
+    // resourceKind=none：clarificationId 不是 scope 白名单的资源键，闸门的
+    // 交叉验证不适用。但回复权 = 修订权（sop_amended 自主发版）——归属校验
+    // 在工具执行体入口补齐（ToolExecutorService，B-3）：仅限本会话复核的
+    // 澄清，或澄清所属 SOP ∈ 会话 scope.sops 白名单。
     resourceKind: "none",
   },
 ];

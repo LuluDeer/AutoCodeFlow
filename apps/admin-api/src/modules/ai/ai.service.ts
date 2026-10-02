@@ -72,6 +72,16 @@ export interface MultimodalResponse {
 /** 媒体 URL 的允许协议（拒绝 file:// / data: 之外的怪协议）。 */
 const MEDIA_URL_RE = /^https?:\/\//i;
 
+/**
+ * B-4：上游 usage 收敛——provider 返回的 prompt_tokens/completion_tokens
+ * 可能是字符串甚至畸形值，原样透传会让下游（agent-session 的用量累加）
+ * 拿到非 number；收敛为有限非负数后再出本模块。
+ */
+export function usageCount(v: unknown): number {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
 @Injectable()
 export class AiService {
   private readonly logger = new Logger(AiService.name);
@@ -404,8 +414,10 @@ export class AiService {
       content: choice?.message?.content ?? "",
       toolCalls: choice?.message?.tool_calls ?? undefined,
       usage: {
-        tokensIn: usage.prompt_tokens ?? 0,
-        tokensOut: usage.completion_tokens ?? 0,
+        // B-4：usage 来自上游 HTTP 响应（不可信）——Number 强转 + 有限性
+        // 兜底后再出本模块，杜绝字符串/畸形值流入下游 SQL 拼接点。
+        tokensIn: usageCount(usage.prompt_tokens),
+        tokensOut: usageCount(usage.completion_tokens),
       },
       model,
     };

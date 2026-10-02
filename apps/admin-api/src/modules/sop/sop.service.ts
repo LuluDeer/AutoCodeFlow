@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   Logger,
@@ -327,10 +328,14 @@ export class SopService {
         )
       : [];
 
+    // B-6：stalled 纳入投递集合——停滞 ≠ 失联终结，执行器复活后经 poll 拿
+    // 澄清回复 / resend 重领即可恢复；排它会造出「心跳恢复也永远 stalled」
+    // 的僵尸单。终态（completed/failed/cancelled）依旧不出现在集合里。
     const activeStatuses: SopAssignment["status"][] = [
       "assigned",
       "in_progress",
       "blocked",
+      "stalled",
     ];
     const open = (
       await this.assignments.find({
@@ -396,12 +401,23 @@ export class SopService {
    * （contentHash 是它交付对账的锚，修订不送达 = 对账锚停留在旧版）。
    */
   private async pendingReplyItems(a: SopAssignment): Promise<unknown[]> {
-    const rows = await this.clarifications.find({
-      where: { assignmentId: a.id },
-    });
+    // B-11（最小步，游标下推）：澄清行含全量 question/answer 文本，长工单
+    // 每 tick 全量拉回再内存过滤是纯浪费——只把 resolution 已落定、晚于投递
+    // 游标的行拉回来。内存过滤保留作兜底（同语义），投递行为不变。
+    const qb = this.clarifications
+      .createQueryBuilder("c")
+      .where("c.assignmentId = :assignmentId", { assignmentId: a.id })
+      .andWhere("c.resolution IS NOT NULL");
+    if (a.lastReplyDeliveredAt) {
+      qb.andWhere("c.updatedAt > :cursor", {
+        cursor: a.lastReplyDeliveredAt,
+      });
+    }
+    const rows = await qb.orderBy("c.round", "ASC").getMany();
     const cursor = a.lastReplyDeliveredAt
       ? new Date(a.lastReplyDeliveredAt).getTime()
       : 0;
+    // 兜底过滤：与 SQL 条件同语义——游标推进的竞态窗口里多拉回的行不投递
     const pending = rows
       .filter(
         (r) =>
@@ -542,16 +558,32 @@ export class SopService {
    */
   async ingestClarification(input: {
     assignmentId: string;
+    executorId: string;
     clientClarificationId?: string;
     question: string;
     context?: Record<string, unknown> | null;
     mediaRefs?: SopClarificationMediaRef[];
     targetAgentSessionId?: string | null;
   }): Promise<{ clarification: SopClarification; escalated: boolean }> {
-    // 幂等：同 clientClarificationId 直接返回已有行
+    const a = await this.assignments.findOne({
+      where: { id: input.assignmentId },
+    });
+    if (!a) throw new NotFoundException(`指派 ${input.assignmentId} 不存在`);
+    // B-1：归属断言（与 completeAssignment 同一先例）。澄清通道是跨执行器
+    // 面——没有这道闸，任何 agent:sop 机器都能往别人工单塞澄清。
+    if (a.targetExecutorId !== input.executorId) {
+      throw new ForbiddenException("指派不属于该执行器");
+    }
+
+    // 幂等：同 clientClarificationId 且**同指派**直接返回已有行。查询限定
+    // 在本指派范围内（B-1：全局命中会把别的工单的 question/answer 明文整行
+    // 泄给未授权的调用方——跨执行器越权读），且命中前提是上面已过归属断言。
     if (input.clientClarificationId) {
       const dupe = await this.clarifications.findOne({
-        where: { clientClarificationId: input.clientClarificationId },
+        where: {
+          clientClarificationId: input.clientClarificationId,
+          assignmentId: a.id,
+        },
       });
       if (dupe)
         return {
@@ -559,11 +591,6 @@ export class SopService {
           escalated: dupe.resolution === "escalated_to_human",
         };
     }
-
-    const a = await this.assignments.findOne({
-      where: { id: input.assignmentId },
-    });
-    if (!a) throw new NotFoundException(`指派 ${input.assignmentId} 不存在`);
     if (["completed", "failed", "cancelled"].includes(a.status)) {
       throw new BadRequestException(`指派已是终态（${a.status}），不接受澄清`);
     }
@@ -574,32 +601,61 @@ export class SopService {
       this.checkJsonSize(input.context, QUESTION_CONTEXT_MAX_BYTES, "context");
     const mediaRefs = this.validateMediaRefs(input.mediaRefs ?? []);
 
-    // ── maxRounds 硬闸（04 §3.1：防两个 Agent 无限互相追问）──
-    if (a.clarificationRound >= a.maxRounds) {
-      const row = this.clarifications.create({
-        clientClarificationId: input.clientClarificationId ?? null,
-        assignmentId: a.id,
-        round: a.clarificationRound + 1,
-        question,
-        questionContextJson: input.context ?? null,
-        mediaRefsJson: mediaRefs,
-        resolution: "escalated_to_human",
-        answer: null,
-      });
-      const saved = await this.clarifications.save(row);
-      await this.assignments.update(
-        { id: a.id },
+    // ── maxRounds 硬闸 + 轮次推进 CAS（04 §3.1 + B-7）────────────────
+    // 读改写窗口：两个并发澄清都读到同一轮时，非 CAS 的写会让同轮起两条
+    // 复核会话、maxRounds 并发多放一轮。UPDATE ... WHERE clarificationRound
+    // = :read 只让一个胜者把轮次推进；败者重读重试（有限次），硬闸判定
+    // 随重读以最新轮次为准。
+    let snapshot = a;
+    let round = 0;
+    for (let retry = 0; ; retry++) {
+      if (snapshot.clarificationRound >= snapshot.maxRounds) {
+        const row = this.clarifications.create({
+          clientClarificationId: input.clientClarificationId ?? null,
+          assignmentId: a.id,
+          round: snapshot.clarificationRound + 1,
+          question,
+          questionContextJson: input.context ?? null,
+          mediaRefsJson: mediaRefs,
+          resolution: "escalated_to_human",
+          answer: null,
+        });
+        const saved = await this.clarifications.save(row);
+        await this.assignments.update(
+          { id: a.id },
+          {
+            status: "blocked",
+            targetAgentSessionId:
+              input.targetAgentSessionId ?? snapshot.targetAgentSessionId,
+          },
+        );
+        await this.notifyEscalation(a, saved, "maxRounds 触顶");
+        return { clarification: saved, escalated: true };
+      }
+
+      round = snapshot.clarificationRound + 1;
+      const claim = await this.assignments.update(
+        { id: a.id, clarificationRound: snapshot.clarificationRound },
         {
+          clarificationRound: round,
           status: "blocked",
           targetAgentSessionId:
-            input.targetAgentSessionId ?? a.targetAgentSessionId,
+            input.targetAgentSessionId ?? snapshot.targetAgentSessionId,
         },
       );
-      await this.notifyEscalation(a, saved, "maxRounds 触顶");
-      return { clarification: saved, escalated: true };
+      if (claim.affected === 1) break;
+      if (retry >= 2) {
+        throw new ConflictException(
+          "澄清轮次并发冲突（多次重试后仍失败），请稍后重试",
+        );
+      }
+      const fresh = await this.assignments.findOne({
+        where: { id: a.id },
+      });
+      if (!fresh)
+        throw new NotFoundException(`指派 ${input.assignmentId} 不存在`);
+      snapshot = fresh;
     }
-
-    const round = a.clarificationRound + 1;
     const row = this.clarifications.create({
       clientClarificationId: input.clientClarificationId ?? null,
       assignmentId: a.id,
@@ -645,15 +701,8 @@ export class SopService {
       { id: saved.id },
       { reviewSessionId: session.id },
     );
-    await this.assignments.update(
-      { id: a.id },
-      {
-        clarificationRound: round,
-        status: "blocked",
-        targetAgentSessionId:
-          input.targetAgentSessionId ?? a.targetAgentSessionId,
-      },
-    );
+    // 轮次/状态/targetAgentSessionId 已由上面的 CAS 一并落库（B-7），
+    // 这里不再重复写——重复写会重新打开「读改写」窗口。
 
     await this.agentQueue.add(
       "run",
@@ -758,6 +807,34 @@ export class SopService {
     return { ok: true, newSopVersion };
   }
 
+  /**
+   * 澄清行的归属投影（B-3，工具闸用）：`sop_reply_clarification` 在闸门里
+   * 标 resourceKind=none（无资源 id 参数可验），但回复权 = 修订权——
+   * sop_amended 会改写 SOP 工作副本并自主发版。工具执行体入口据此校验
+   * 「本会话即处理该澄清的复核会话，或澄清所属 SOP ∈ 会话 scope.sops」。
+   */
+  async getClarificationScopeInfo(
+    clarificationId: string,
+  ): Promise<{
+    assignmentId: string;
+    sopId: string;
+    reviewSessionId: string | null;
+  } | null> {
+    const row = await this.clarifications.findOne({
+      where: { id: clarificationId },
+    });
+    if (!row) return null;
+    const a = await this.assignments.findOne({
+      where: { id: row.assignmentId },
+    });
+    if (!a) return null;
+    return {
+      assignmentId: row.assignmentId,
+      sopId: a.sopId,
+      reviewSessionId: row.reviewSessionId,
+    };
+  }
+
   /** 进度心跳（幂等覆盖写——`(assignmentId, seq)` 语义简化为最新快照）。 */
   async recordProgress(input: {
     assignmentId: string;
@@ -777,7 +854,13 @@ export class SopService {
       {
         lastProgressAt: new Date(),
         progressJson: input.progressJson ?? a.progressJson,
-        status: a.status === "assigned" ? "in_progress" : a.status,
+        // B-6：stalled → in_progress——心跳即存活证据。停滞单不再因为扫描
+        // 置态就永久卡死：执行器复活后第一次心跳就把状态拉回执行态，
+        // 之后的失联扫描（只扫 assigned/in_progress）恢复对它的覆盖。
+        status:
+          a.status === "assigned" || a.status === "stalled"
+            ? "in_progress"
+            : a.status,
         ...(input.targetAgentSessionId
           ? { targetAgentSessionId: input.targetAgentSessionId }
           : {}),

@@ -656,6 +656,38 @@ describe("P1: qwen provider (multimodal)", () => {
     expect(capturedBody.max_tokens).not.toBe(500);
   });
 
+  it("B-4：上游 usage 不可信——字符串数字收敛、恶意串/畸形值兜底 0", async () => {
+    withQwenConfig();
+    const cases: Array<{
+      usage: Record<string, unknown>;
+      expectIn: number;
+      expectOut: number;
+    }> = [
+      // 字符串数字正常收敛入库
+      { usage: { prompt_tokens: "12", completion_tokens: "34" }, expectIn: 12, expectOut: 34 },
+      // 恶意串 / NaN / 负数 / 缺失 → 0，不把非 number 透传给下游
+      {
+        usage: {
+          prompt_tokens: "1; DROP TABLE agent_sessions--",
+          completion_tokens: NaN,
+        },
+        expectIn: 0,
+        expectOut: 0,
+      },
+      { usage: { prompt_tokens: -5 }, expectIn: 0, expectOut: 0 },
+      { usage: {}, expectIn: 0, expectOut: 0 },
+    ];
+    for (const c of cases) {
+      mockedAxios.post = jest.fn().mockResolvedValue({
+        data: { choices: [{ message: { content: "ok" } }], usage: c.usage },
+      });
+      const res = await service.chatMultimodal({
+        messages: [{ role: "user", content: "x" }],
+      });
+      expect(res.usage).toEqual({ tokensIn: c.expectIn, tokensOut: c.expectOut });
+    }
+  });
+
   it("多模态：content 数组（text + image_url）原样透传", async () => {
     withQwenConfig();
     let capturedBody: any = null;

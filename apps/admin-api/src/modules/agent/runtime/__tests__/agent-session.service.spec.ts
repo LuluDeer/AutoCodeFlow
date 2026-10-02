@@ -1,6 +1,9 @@
 import { NotFoundException } from "@nestjs/common";
 
-import { AgentSessionService } from "../agent-session.service";
+import {
+  AgentSessionService,
+  safeTokenCount,
+} from "../agent-session.service";
 import { AGENT_TERMINAL_STATUSES } from "../../entities/agent-session.entity";
 
 /** TypeORM 惯用 fake：createQueryBuilder 链式桩。 */
@@ -189,6 +192,15 @@ describe("AgentSessionService · 状态迁移（幂等语义）", () => {
     });
   });
 
+  it("markRunning：CAS where 排除 running 与全部终态（B-8 双保险）", async () => {
+    const h = harness({ id: "s-1", startedAt: null });
+    await h.svc.markRunning("s-1");
+    expect(h.sessionQb.where).toHaveBeenCalledWith(
+      "id = :id AND status <> 'running' AND status NOT IN (:...terminal)",
+      { id: "s-1", terminal: AGENT_TERMINAL_STATUSES },
+    );
+  });
+
   it("markWaiting：不设 finishedAt（非终态）", async () => {
     const h = harness();
     await h.svc.markWaiting("s-1", "clarification_reply");
@@ -280,6 +292,43 @@ describe("AgentSessionService · 步骤与用量（同事务收敛）", () => {
     const h = harness();
     const step = await h.svc.appendStep("s-1", { role: "user" });
     expect(step).toMatchObject({ tokensIn: 0, tokensOut: 0, latencyMs: 0 });
+  });
+
+  it("appendStep：字符串数字正常入库（Number 收敛），恶意串不破坏 SQL（B-4）", async () => {
+    const h = harness();
+    // 上游 usage 返回字符串数字——收敛后按数值拼接
+    await h.svc.appendStep("s-1", {
+      role: "assistant",
+      tokensIn: "12" as unknown as number,
+      tokensOut: "34" as unknown as number,
+    });
+    let setArg = h.emQb.set.mock.calls[0][0] as Record<string, () => string>;
+    expect(setArg.totalTokensIn()).toBe('"totalTokensIn" + 12');
+    expect(setArg.totalTokensOut()).toBe('"totalTokensOut" + 34');
+
+    // 恶意串 / NaN / 负数 → 0，SQL 表达式不被注入
+    for (const evil of ["1; DROP TABLE agent_sessions--", NaN, -5]) {
+      const hi = harness();
+      await hi.svc.appendStep("s-1", {
+        role: "assistant",
+        tokensIn: evil as unknown as number,
+        tokensOut: evil as unknown as number,
+      });
+      setArg = hi.emQb.set.mock.calls[0][0] as Record<string, () => string>;
+      expect(setArg.totalTokensIn()).toBe('"totalTokensIn" + 0');
+      expect(setArg.totalTokensOut()).toBe('"totalTokensOut" + 0');
+    }
+  });
+
+  it("safeTokenCount：收敛语义单测（有限正数保留，其余归 0）", () => {
+    expect(safeTokenCount(7)).toBe(7);
+    expect(safeTokenCount("42")).toBe(42);
+    expect(safeTokenCount(0)).toBe(0);
+    expect(safeTokenCount(undefined)).toBe(0);
+    expect(safeTokenCount(null)).toBe(0);
+    expect(safeTokenCount(-1)).toBe(0);
+    expect(safeTokenCount(Number.POSITIVE_INFINITY)).toBe(0);
+    expect(safeTokenCount("1; DROP TABLE agent_sessions--")).toBe(0);
   });
 
   it("recordToolCall：被拒/待审批的尝试同样落库 + 计数", async () => {

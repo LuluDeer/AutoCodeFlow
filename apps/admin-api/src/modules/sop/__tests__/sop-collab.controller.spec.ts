@@ -5,7 +5,8 @@ import {
   UnauthorizedException,
 } from "@nestjs/common";
 
-import { SopCollabController } from "../sop-collab.controller";
+import { SopCollabController, MEDIA_UPLOAD_LIMITS } from "../sop-collab.controller";
+import { MAX_AGENT_MEDIA_BYTES } from "../sop-media.service";
 
 /** 手工 fake 六个依赖（对照 sop.service.capabilities.spec 的 harness 风格）。 */
 function harness(opts?: {
@@ -162,6 +163,26 @@ describe("SopCollabController · poll（拉模式 + sopPolicy 下发）", () => 
     );
   });
 
+  // B-5：按 id 重发的数组形态必须到达 service——此前 `=== true` 把数组丢成
+  // false，P7d 崩溃恢复（host 带着本地日志里的 running 指派定向重领）收不到。
+  it("resendAssignments 数组形态透传到 service（定向崩溃恢复）", async () => {
+    const h = harness();
+    h.sops.pollPending.mockResolvedValueOnce([{ id: "asg-3" }]);
+    const out = await h.ctl.poll(
+      {
+        address: "x",
+        resendAssignments: ["asg-1", "asg-2", "", 42 as unknown as string],
+      } as never,
+      h.auth,
+    );
+    expect(out.items).toEqual([{ id: "asg-3" }]);
+    expect(h.sops.pollPending).toHaveBeenCalledWith(
+      expect.objectContaining({
+        resendAssignments: ["asg-1", "asg-2"],
+      }),
+    );
+  });
+
   it("sopPolicy 配置键为 null 时回退默认（形状校验在装配层 Joi，控制器 fail-open）", async () => {
     const h = harness({
       configValues: {
@@ -232,6 +253,10 @@ describe("SopCollabController · clarify / progress / complete / ack", () => {
       round: 1,
       escalated: false,
     });
+    // B-1：executorId 透传到 service——归属断言在服务层（与 complete 同一道闸）
+    expect(h.sops.ingestClarification).toHaveBeenCalledWith(
+      expect.objectContaining({ executorId: "exec-1", assignmentId: "a-1" }),
+    );
     await expect(
       h.ctl.clarify({ address: "x", question: "?" } as never, h.auth),
     ).rejects.toThrow(BadRequestException);
@@ -515,5 +540,12 @@ describe("SopCollabController · uploadMedia / uploadCandidatePackage（归属�
         h.auth,
       ),
     ).rejects.toThrow(BadRequestException);
+  });
+
+  // B-9：媒体上传的 multer 层 limits 与业务上限同源（100MB）——超大包在
+  // 拦截器即被拒，不再整包读入内存后才由 SopMediaService.save 判定。
+  it("uploadMedia 拦截器 limits 与 MAX_AGENT_MEDIA_BYTES 对齐（B-9）", () => {
+    expect(MEDIA_UPLOAD_LIMITS.fileSize).toBe(MAX_AGENT_MEDIA_BYTES);
+    expect(MEDIA_UPLOAD_LIMITS.fileSize).toBe(100 * 1024 * 1024);
   });
 });

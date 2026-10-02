@@ -12,6 +12,7 @@ import { AgentRuntimeService } from "./runtime/agent-runtime.service";
 import { AgentProcessor, AGENT_QUEUE_NAME } from "./runtime/agent.processor";
 import { AgentNotifyService } from "./runtime/agent-notify.service";
 import { AgentController } from "./agent.controller";
+import { AgentSessionRetentionService } from "./agent-session-retention.service";
 import { AgentBoundaryService } from "./boundary/agent-boundary.service";
 import { ToolExecutorService } from "./tools/tool-executor.service";
 import { AgentApiClient } from "./tools/agent-api.client";
@@ -76,6 +77,8 @@ import { AgentEventAggregator } from "./trigger/agent-event-aggregator.service";
     AgentEventAggregator,
     AgentTriggerService,
     AgentNotifyService,
+    // B-10：会话域 retention（终态 steps 90 天、tool_calls 按 tier 保留）
+    AgentSessionRetentionService,
   ],
   exports: [
     AgentSessionService,

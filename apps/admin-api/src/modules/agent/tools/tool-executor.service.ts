@@ -1,9 +1,15 @@
-import { Injectable, Logger } from "@nestjs/common";
+import {
+  Inject,
+  Injectable,
+  Logger,
+  forwardRef,
+} from "@nestjs/common";
 import { createHash } from "node:crypto";
 import type { AgentSession } from "../entities/agent-session.entity";
 import { AgentSessionService } from "../runtime/agent-session.service";
 import { AgentNotifyService } from "../runtime/agent-notify.service";
 import { AgentBoundaryService } from "../boundary/agent-boundary.service";
+import { SopService } from "../../sop/sop.service";
 import {
   AGENT_TOOL_SPECS,
   toolsForSessionKind,
@@ -50,6 +56,11 @@ export class ToolExecutorService implements AgentToolExecutor {
     private readonly sessions: AgentSessionService,
     private readonly api: AgentApiClient,
     private readonly notify: AgentNotifyService,
+    // forwardRef：agent.module ↔ sop.module 装配期环（与 ToolBinderService
+    // 同款）。B-2/B-3 的两道执行体入口校验需要读 SOP 侧数据（slug→id、
+    // 澄清归属投影）。
+    @Inject(forwardRef(() => SopService))
+    private readonly sops: SopService,
   ) {}
 
   /** 本次会话可用的工具（白名单过滤后的定义，喂给 LLM）。 */
@@ -105,6 +116,34 @@ export class ToolExecutorService implements AgentToolExecutor {
     // 该工具在本会话内的已调用次数（速率闸门的输入）
     const priorCalls = await this.countPriorCalls(session.id, toolName);
 
+    // ── B-2：sop_get 的 sopId/slug 二选一，闸门只认 id ────────────────
+    // slug 是名字不是 id，scope 白名单里是 SOP id——若闸门对「缺 id」放行，
+    // 传 {slug} 就能读任意 SOP。在执行体入口先解析成 id 再走闸，保持闸门
+    // 语义单一（有 id 且命中白名单）。slug 不存在时如实按调用失败回给模型。
+    if (
+      toolName === "sop_get" &&
+      args &&
+      !args.sopId &&
+      typeof args.slug === "string"
+    ) {
+      try {
+        const sop = await this.sops.getBySlug(args.slug);
+        args = { ...args, sopId: sop.id };
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        await this.sessions.recordToolCall({
+          sessionId: session.id,
+          stepId,
+          toolName,
+          tier: "read",
+          args: this.sanitizeArgs(args),
+          status: "error",
+          errorMessage: msg,
+        });
+        return { content: `【调用失败】${msg}`, truncated: false };
+      }
+    }
+
     // ── 闸门（唯一入口）──
     const verdict = this.boundary.check(session, toolName, args, priorCalls);
 
@@ -148,6 +187,28 @@ export class ToolExecutorService implements AgentToolExecutor {
 
     // ── 执行 ──
     const spec = verdict.spec;
+
+    // ── B-3：sop_reply_clarification 的归属校验 ──────────────────────
+    // 该工具在注册表标 resourceKind=none（无资源 id 参数可验），但回复权 =
+    // 修订权（sop_amended 会改写 SOP 工作副本并自主发 patch 版，绕过发布
+    // 审批红线）。执行体入口补一道闸：只允许本会话处理的复核澄清，或澄清
+    // 所属 SOP 在会话 scope 的 sops 白名单内。越权回复按 denied 落库。
+    if (spec.name === "sop_reply_clarification") {
+      const denyMsg = await this.checkClarificationReplyScope(session, args);
+      if (denyMsg) {
+        await this.sessions.recordToolCall({
+          sessionId: session.id,
+          stepId,
+          toolName,
+          tier: spec.tier,
+          args: this.sanitizeArgs(args),
+          status: "denied",
+          errorMessage: denyMsg,
+        });
+        return { content: `【调用被拒绝】${denyMsg}`, truncated: false };
+      }
+    }
+
     const started = Date.now();
     let result: ApiCallResult;
     try {
@@ -214,6 +275,44 @@ export class ToolExecutorService implements AgentToolExecutor {
   }
 
   // ── 内部 ────────────────────────────────────────────────────────
+
+  /**
+   * B-3：澄清回复的 scope 校验（sop_reply_clarification 专用）。
+   * 返回 null = 放行；返回字符串 = 拒绝理由。
+   *
+   * 判定顺序（与边界闸门的 scope 语义一致）：
+   *   ① unrestricted 会话（chat 管理员对话 = 管理员本人操作）放行；
+   *   ② 本会话就是处理该澄清的复核会话（reviewSessionId 相等）放行；
+   *   ③ 澄清所属 SOP 在会话 scope.sops 白名单内（交付复核会话的形态）放行；
+   *   ④ 其余一律拒——别人的复核会话/异 SOP 会话改写不了他人工单的 SOP。
+   */
+  private async checkClarificationReplyScope(
+    session: AgentSession,
+    args: Record<string, unknown> | null,
+  ): Promise<string | null> {
+    const clarificationId =
+      typeof args?.clarificationId === "string" ? args.clarificationId : "";
+    const info = await this.sops.getClarificationScopeInfo(clarificationId);
+    if (!info) {
+      return `sop_reply_clarification: 澄清 ${clarificationId} 不存在或归属不可追溯。`;
+    }
+    if ((session.scopeJson as Record<string, unknown> | null)?.unrestricted === true) {
+      return null;
+    }
+    if (info.reviewSessionId && info.reviewSessionId === session.id) {
+      return null;
+    }
+    const allowedSops = Array.isArray(
+      (session.scopeJson as Record<string, unknown> | null)?.sops,
+    )
+      ? ((session.scopeJson as Record<string, unknown>).sops as unknown[])
+      : [];
+    if (allowedSops.includes(info.sopId)) return null;
+    return (
+      `sop_reply_clarification: 澄清 ${clarificationId} 所属 SOP ${info.sopId} ` +
+      `不在本会话作用域内——只能回复本会话复核的澄清，或 scope.sops 白名单内 SOP 的澄清。`
+    );
+  }
 
   private specsForSession(session: AgentSession): AgentToolSpec[] {
     // 复用注册表的白名单判定——与闸门读**同一份**数据源，不会漂移。
