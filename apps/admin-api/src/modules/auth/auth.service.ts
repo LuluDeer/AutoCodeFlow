@@ -329,6 +329,16 @@ export class AuthService {
     // 401 here, never leak a 404 "User #N not found" via findById.
     const user = await this.usersService.findByIdOrNull(payload.sub);
     if (!user || !user.isActive) throw new UnauthorizedException();
+    // A-1（R3-A 审计）: refresh 链同样比对会话版本——改密 / 全量吊销语义
+    // （bumpSessionVersion）后，改密前签发的 refresh token 的 ver 快照与库中
+    // 当前值失配 → 401。轮换消费（上方原子 UPDATE）已先行吊销该 jti 且不再
+    // 签发新对（DR-07 fail-closed），被窃的 30 天 refresh 链就此断掉——此前
+    // 该链在改密后仍可无限续换新 access token。存量无 ver claim 的旧令牌
+    // 维持「到期自然失效」兼容语义（与 jwt.strategy 的 access 侧比对同形态），
+    // 正常未改密流程 ver 恒等，零影响。
+    if (payload.ver !== undefined && payload.ver !== user.sessionVersion) {
+      throw new UnauthorizedException("Session has been revoked");
+    }
     return this.generateTokens(user);
   }
 
@@ -477,8 +487,9 @@ export class AuthService {
       sub: user.id,
       username: user.username,
       // WIKI-AUTH-REVOC: 会话版本快照进 base payload——access/refresh 两类
-      // token 同点携带；access 侧 validate() 消费，refresh 侧仅随行不校验
-      // （refresh 校验走「吊销表 + 重新加载用户」，签发经本单点自然带新值）。
+      // token 同点携带；access 侧 validate() 消费，refresh 侧在
+      // refreshToken() 中比对（A-1：改密后旧 refresh 链 401——改密 bump 的
+      // 会话版本同时切断两个面），签发经本单点自然带最新值。
       ver: user.sessionVersion,
     };
 
@@ -535,5 +546,15 @@ export class AuthService {
     // ARCH-31 §5: 多实例下仅 cron Leader 执行（详见 LeaderGateService）
     if (this.leaderGate && !this.leaderGate.isLeader) return;
     await this.refreshTokenRepo.delete({ expiresAt: LessThan(new Date()) });
+    // A-10（R3-A 审计）: 已吊销行的凭据卫生——吊销即刻使 jti 失效（消费路径
+    // revoked=false 才放行），行本身只剩审计价值；此前只清 expiresAt<now，
+    // 被吊销但未到 30 天自然过期的行要滞留至多 30 天。现追加清理「吊销满
+    // 7 天」的行（createdAt 锚点，保留近一周的吊销痕迹供会话审计回溯）。
+    // 同一 cron 内顺序执行；两条件天然不重叠冲突（先清过期，再清吊销残留）。
+    const revokedCutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    await this.refreshTokenRepo.delete({
+      revoked: true,
+      createdAt: LessThan(revokedCutoff),
+    });
   }
 }

@@ -280,3 +280,76 @@ describe("jwt.strategy — validate 会话版本（WIKI-AUTH-REVOC）", () => {
     expect(usersService.findById).not.toHaveBeenCalled();
   });
 });
+
+// ─── A-2: sid 随 validate 返回值进入 req.user ──────────────────────────────
+// sidOf(req) 消费 (req.user)?.sid——validate 此前只 return user 实体（无 sid
+// 属性），/auth/sessions 的 current 标记恒空、revoke-others 恒退化为全量吊销。
+describe("jwt.strategy — validate 透传 sid（A-2）", () => {
+  const buildStrategy = () => {
+    const usersService = {
+      findById: jest.fn(),
+      findByIdOrNull: jest.fn(),
+    };
+    const configService = {
+      get: jest.fn().mockReturnValue("unit-test-secret"),
+    };
+    const strategy = new JwtStrategy(
+      configService as never,
+      usersService as never,
+    );
+    return { strategy, usersService };
+  };
+
+  const activeUser = {
+    id: 1,
+    username: "alice",
+    isActive: true,
+    sessionVersion: 2,
+  };
+
+  it("payload.sid → 返回主体带 sid（req.user.sid 生效）", async () => {
+    const { strategy, usersService } = buildStrategy();
+    usersService.findByIdOrNull.mockResolvedValue({ ...activeUser } as never);
+
+    const principal = await strategy.validate({
+      sub: 1,
+      username: "alice",
+      type: "access",
+      sid: "jti-session-1",
+      ver: 2,
+    });
+    expect(principal).toMatchObject({ id: 1, sid: "jti-session-1" });
+  });
+
+  it("无 sid claim（存量旧令牌 / sse_ticket）→ sid 为 undefined，其余校验不变", async () => {
+    const { strategy, usersService } = buildStrategy();
+    usersService.findByIdOrNull.mockResolvedValue({ ...activeUser } as never);
+
+    const principal = await strategy.validate({
+      sub: 1,
+      username: "alice",
+      type: "sse_ticket",
+      ver: 2,
+    });
+    expect(principal).toMatchObject({ id: 1 });
+    expect((principal as { sid?: string }).sid).toBeUndefined();
+  });
+});
+
+// ─── A-11: 时钟容差 ────────────────────────────────────────────────────────
+describe("jwt.strategy — clockTolerance（A-11）", () => {
+  it("30s 容差经 jsonWebTokenOptions 传入 passport-jwt（透传 jsonwebtoken.verify）", () => {
+    const usersService = { findByIdOrNull: jest.fn() };
+    const configService = {
+      get: jest.fn().mockReturnValue("unit-test-secret"),
+    };
+    const strategy = new JwtStrategy(
+      configService as never,
+      usersService as never,
+    );
+    // passport-jwt 把 jsonWebTokenOptions 并进 _verifOpts（assign 第一参）
+    const verifOpts = (strategy as unknown as { _verifOpts?: unknown })
+      ._verifOpts;
+    expect(verifOpts).toMatchObject({ clockTolerance: 30 });
+  });
+});

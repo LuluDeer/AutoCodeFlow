@@ -4,6 +4,7 @@ import { getRepositoryToken } from "@nestjs/typeorm";
 import { UsersService } from "../users.service";
 import { User, UserRole } from "../entities/user.entity";
 import { RefreshToken } from "../../auth/entities/refresh-token.entity";
+import { ProjectMember } from "../../project/entities/project-member.entity";
 import bcrypt from "bcrypt";
 
 jest.mock("bcrypt");
@@ -41,17 +42,25 @@ describe("UsersService", () => {
   let service: UsersService;
   let repo: ReturnType<typeof makeRepo>;
   let refreshRepo: ReturnType<typeof makeRepo>;
+  // A-8: 删用户事务内的 project_members 清理桩。
+  let memberRepo: ReturnType<typeof makeRepo>;
   // ARCH-27: initialAdmin 配置经 ConfigService 读取 —— spec 注入桩实现。
   let configService: { get: jest.Mock };
 
   beforeEach(async () => {
     repo = makeRepo();
     refreshRepo = makeRepo();
-    // R-14: 事务桩——把事务内 getRepository 映射到 User/RefreshToken 两个 mock。
+    memberRepo = makeRepo();
+    // R-14/A-8: 事务桩——把事务内 getRepository 映射到 User/RefreshToken/
+    // ProjectMember 三个 mock。
     repo.manager.transaction.mockImplementation(async (cb: any) =>
       cb({
         getRepository: (entity: unknown) =>
-          entity === RefreshToken ? refreshRepo : repo,
+          entity === RefreshToken
+            ? refreshRepo
+            : entity === ProjectMember
+              ? memberRepo
+              : repo,
       }),
     );
     configService = { get: jest.fn().mockReturnValue(undefined) };
@@ -452,7 +461,36 @@ describe("UsersService", () => {
       // 非管理员不查管理员集合（省一次带锁查询）
       expect(repo.createQueryBuilder).not.toHaveBeenCalled();
       expect(refreshRepo.delete).toHaveBeenCalledWith({ userId: 5 });
+      // A-8: project_members 行同事务清理（该列无 FK，残留即幽灵成员）
+      expect(memberRepo.delete).toHaveBeenCalledWith({ userId: 5 });
       expect(repo.remove).toHaveBeenCalled();
+    });
+
+    it("A-8: member rows are removed inside the same transaction as the user row", async () => {
+      repo.findOne.mockResolvedValue({
+        id: 5,
+        username: "bob",
+        role: UserRole.USER,
+      });
+      const order: string[] = [];
+      refreshRepo.delete.mockImplementation(async () => {
+        order.push("refresh");
+        return { affected: 1 };
+      });
+      memberRepo.delete.mockImplementation(async () => {
+        order.push("members");
+        return { affected: 2 };
+      });
+      repo.remove.mockImplementation(async () => {
+        order.push("user");
+        return { id: 5 };
+      });
+
+      await expect(service.remove(5, 1)).resolves.toEqual({ deleted: true });
+
+      // 三段写都在同一事务回调里完成；用户行删除收尾
+      expect(order).toEqual(["refresh", "members", "user"]);
+      expect(memberRepo.delete).toHaveBeenCalledTimes(1);
     });
 
     it("refuses to delete the last administrator (locked count)", async () => {

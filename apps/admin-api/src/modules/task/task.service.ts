@@ -981,16 +981,32 @@ export class TaskService {
    */
   async assertCanOperate(
     row: { ownerUserId: number | null; projectId?: string | null },
-    user: { id: number; role: UserRole } | null | undefined,
+    // A-6（R3-A 审计）: 放宽入参形状——API-Key 主体（ApiKeyUser）只带
+    // userId 不带 id/role，此前签名把它排除在属主判定之外。
+    user:
+      | { id?: number; userId?: number; role?: UserRole }
+      | null
+      | undefined,
   ): Promise<void> {
     // A2-B: 落 'operate' 证（区别于 'write'）——本方法只拒 viewer / 可选的属主
     // 校验，落同一种证据会让 project-role 端点冒充 ownership。
     recordOwnershipAssertion("task", "operate");
 
+    // A-6: 属主判定/放行兜底按 `id ?? userId` 归一主体 id——ApiKeyUser 只有
+    // userId，旧代码 `user?.id` 恒 undefined：owner 档属主分支被跳过、再经
+    // 下方放行兜底（!user?.id → return）直接放行，trigger/manage scope 的
+    // key 可无视 TASK_OPERATE_SCOPE=owner 触发任意任务。归一后 API-Key 按
+    // 其 key 属主 userId 参与属主/项目角色判定；JWT 用户（id 恒有值）行为
+    // 逐字节不变，user 为 null 的内部调用同样维持既有旁路。
+    const principalId = user?.id ?? user?.userId;
+
     // TASK-SCOPE-01: `owner` 档在既有 viewer 拒绝之上叠加属主判定。
     // 与 assertCanWriteProjectAware 同款姿态：先试属主/项目 editor，不通即拒。
-    if (this.isOperateScopeOwner() && user?.id) {
-      const allowed = await this.canOperateAsOwner(row, user);
+    if (this.isOperateScopeOwner() && principalId !== undefined) {
+      const allowed = await this.canOperateAsOwner(row, {
+        id: principalId,
+        role: user?.role,
+      });
       if (!allowed) {
         throw new ForbiddenException(
           "TASK_OPERATE_SCOPE=owner: triggering or changing schedule state requires " +
@@ -1000,10 +1016,10 @@ export class TaskService {
       return;
     }
 
-    if (!this.projectAccess || !user?.id) return;
-    if (user.role === UserRole.ADMIN) return;
+    if (!this.projectAccess || principalId === undefined) return;
+    if (user?.role === UserRole.ADMIN) return;
     const role = await this.projectAccess.resolveRole(
-      user.id,
+      principalId,
       row.projectId ?? null,
     );
     if (role === "viewer") {
@@ -1091,7 +1107,9 @@ export class TaskService {
    */
   private async canOperateAsOwner(
     row: { ownerUserId: number | null; projectId?: string | null },
-    user: { id: number; role: UserRole },
+    // A-6: role 可缺省——API-Key 主体没有 role（undefined ≠ ADMIN，
+    // 语义即「API-Key 不享有 ADMIN 短路」），属主/项目角色判定不受影响。
+    user: { id: number; role?: UserRole },
   ): Promise<boolean> {
     if (user.role === UserRole.ADMIN) return true;
     if (row.ownerUserId !== null && row.ownerUserId === user.id) return true;
