@@ -1382,7 +1382,7 @@ export interface paths {
         head?: never;
         /**
          * Update executor metadata
-         * @description Update executor group, tags, description, and max concurrent tasks.
+         * @description Update executor group, tags, description, and max concurrent tasks. Requires ADMIN, or editor+ role on the executor's project.
          */
         patch: operations["ExecutorController_update"];
         trace?: never;
@@ -1398,7 +1398,7 @@ export interface paths {
         put?: never;
         /**
          * Push config hot-update to executor
-         * @description Dynamically update executor config without restart. Executor must be online.
+         * @description Dynamically update executor config without restart. Executor must be online. Requires ADMIN, or editor+ role on the executor's project.
          */
         post: operations["ExecutorController_reloadConfig"];
         delete?: never;
@@ -6990,6 +6990,13 @@ export interface operations {
         responses: {
             /** @description Updated successfully */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not ADMIN and no editor+ role on the executor's project */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -256,21 +256,27 @@ describe("ExecutorController — F-2 heartbeat / F-7 register mass-assignment gu
   describe("F-2 family: PATCH :id metadata whitelist", () => {
     it("forwards only the four metadata fields to service.update", async () => {
       const update = jest.fn(async (id, data) => ({ id, ...data }));
-      const svc = { ...makeSvc(), update };
+      // N-02③：handler 先 findOne 取行做项目角色判定——makeSvc 的 findOne
+      // 桩（projectId=null，ADMIN 短路）保持 F-2 白名单断言聚焦不变。
+      const svc = { ...makeSvc(), update, findOne: jest.fn(async () => ({})) };
       const controller = new ExecutorController(
         svc as any,
         makeConfig(),
         {} as any,
       );
-      await controller.update("e1", {
-        groupName: "prod",
-        tags: ["a"],
-        description: "d",
-        maxConcurrentTasks: 4,
-        tokenHash: "$2b$12$attackerhash",
-        version: 99,
-        status: "offline",
-      } as any);
+      await controller.update(
+        "e1",
+        { role: "admin" } as any,
+        {
+          groupName: "prod",
+          tags: ["a"],
+          description: "d",
+          maxConcurrentTasks: 4,
+          tokenHash: "$2b$12$attackerhash",
+          version: 99,
+          status: "offline",
+        } as any,
+      );
       expect(update).toHaveBeenCalledWith("e1", {
         groupName: "prod",
         tags: ["a"],
@@ -314,7 +320,7 @@ describe("ExecutorController — F-2 heartbeat / F-7 register mass-assignment gu
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const axios = require("axios");
       await expect(
-        controller.reloadConfig("executor-1", {}),
+        controller.reloadConfig("executor-1", { role: "admin" } as any, {}),
       ).rejects.toBeInstanceOf(UnauthorizedException);
       // F-3: the guard must reject before ANY push carries the credential —
       // including the R11 401-retry push, which reuses the same guarded URL.
@@ -346,11 +352,11 @@ describe("ExecutorController — F-2 heartbeat / F-7 register mass-assignment gu
       axios.post.mockRejectedValueOnce(
         new Error("connect ECONNREFUSED 10.0.0.9:8000"),
       );
-      await expect(controller.reloadConfig("executor-1", {})).rejects.toThrow(
-        "Failed to reach executor",
-      );
       await expect(
-        controller.reloadConfig("executor-1", {}),
+        controller.reloadConfig("executor-1", { role: "admin" } as any, {}),
+      ).rejects.toThrow("Failed to reach executor");
+      await expect(
+        controller.reloadConfig("executor-1", { role: "admin" } as any, {}),
       ).rejects.not.toThrow(/ECONNREFUSED/);
     });
   });

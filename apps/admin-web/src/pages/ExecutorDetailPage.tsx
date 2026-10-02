@@ -6,8 +6,9 @@ import { Modal as confirmModal } from '../utils/modal';
 import { WarningOutlined, CopyOutlined, InfoCircleOutlined, ReloadOutlined, DeleteOutlined } from '@ant-design/icons';
 // FEAT-04: 24h 资源趋势折线图（Tooltip 别名避开 antd Tooltip，DashboardPage 同法）
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartTooltip, Legend, ResponsiveContainer } from 'recharts';
-import { useQueryClient, useMutation } from '@tanstack/react-query';
+import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
 import { executorsApi, type ExecutorExecution, type ExecutorRemovalImpact } from '../api/executors';
+import { projectsApi } from '../api/projects';
 import {
   useExecutorDetail,
   useExecutorMetrics,
@@ -29,7 +30,7 @@ import { useAuthStore, isAdminUser } from '../store/auth';
 import { useThemeStore, selectResolvedTheme } from '../theme/store';
 import { CHART_COLORS } from '../theme/tokens';
 import PageSkeleton from '../components/PageSkeleton';
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 // UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
 import '../i18n';
@@ -81,9 +82,25 @@ export default function ExecutorDetailPage() {
   const { token } = theme.useToken();
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  // W2 对齐：管理写操作（编辑/配置热更新/设置离线/轮换 Token）后端已收紧
-  // ADMIN-only，非 admin 隐藏入口，避免"可见但点击 403"（R5 门控模式）。
-  const isAdmin = isAdminUser(useAuthStore((s) => s.user));
+  // W2 对齐 → N-02③（ADR-013 2026-10-02 温和下放）：编辑/配置热更新对
+  // 「执行器所属项目 editor+」放行；设置离线/轮换 Token/删除仍 ADMIN-only。
+  // 非 admin 按项目角色判定入口可见性，避免"可见但点击 403"（R5 门控模式）。
+  const user = useAuthStore((s) => s.user);
+  const isAdmin = isAdminUser(user);
+  // N-02③：当前用户具备 editor+ 角色的项目集合（非成员/查询失败 = 空集，
+  // 保守方向：只会少显示入口，不会多显示）。
+  const { data: myRoles } = useQuery({
+    queryKey: ['projects', 'me', 'roles'],
+    queryFn: () => projectsApi.listMyRoles(),
+    staleTime: 60_000,
+  });
+  const editorPlusProjectIds = useMemo(() => {
+    const set = new Set<string>();
+    (myRoles?.memberships ?? []).forEach((m) => {
+      if (m.role === 'editor' || m.role === 'admin') set.add(m.projectId);
+    });
+    return set;
+  }, [myRoles]);
   // UI-02：资源趋势图双主题（网格线/轴文字）
   const isDark = useThemeStore(selectResolvedTheme) === 'dark';
   const [editOpen, setEditOpen] = useState(false);
@@ -104,6 +121,11 @@ export default function ExecutorDetailPage() {
   // FEAT-17: TanStack Query 改造——读侧三个 useRequest 换 queries.ts hooks
   // （metrics 30s 轮询由 refetchInterval 承担；分页参数进 queryKey）。
   const { data: executor, isLoading: loadingExecutor, error: executorError } = useExecutorDetail(id);
+  // N-02③：编辑/配置热更入口判定（projectId=null 的平台级执行器非 ADMIN 恒
+  // 不可见——与后端 assertCanManageMetadata 同语义）。
+  const canManageMetadata =
+    isAdmin ||
+    (!!executor?.projectId && editorPlusProjectIds.has(executor.projectId));
 
   const { data: metrics, isLoading: loadingMetrics } = useExecutorMetrics(id);
 
@@ -319,9 +341,10 @@ export default function ExecutorDetailPage() {
       <Card
         title={t('executorDetail.title')}
         extra={
-          isAdmin ? (
+          (canManageMetadata || isAdmin) ? (
           // UI 打磨：头部 5 个操作按钮窄屏收纳换行（wrap + 紧凑间距），不引入 Dropdown
           <Space wrap size={4}>
+            {canManageMetadata && (
             <Space.Compact>
               <Button onClick={() => { editForm.setFieldsValue(executorEditFormValues(executor)); setEditOpen(true); }}>{t('executorDetail.edit')}</Button>
               {/* UI-18 → ARCH-33（ADR-016）修订：判据由「pull 模式」改为
@@ -332,6 +355,10 @@ export default function ExecutorDetailPage() {
               <Tooltip title={isControlPlaneUnavailable(executor) ? t('executorDetail.config.pullDisabledTooltip') : undefined}>
                 <Button disabled={isControlPlaneUnavailable(executor)} onClick={() => setConfigOpen(true)}>{t('executorDetail.configHotReload')}</Button>
               </Tooltip>
+            </Space.Compact>
+            )}
+            {isAdmin && (
+            <Space.Compact>
               <Button
                 danger
                 disabled={!isOnline}
@@ -349,7 +376,11 @@ export default function ExecutorDetailPage() {
                 {t('executorDetail.offline.setOffline')}
               </Button>
             </Space.Compact>
-            {/* 常规操作与高危操作（轮换/删除）之间的视觉分组 */}
+            )}
+            {/* 常规操作与高危操作（轮换/删除）之间的视觉分组；N-02③ 后轮换/删除
+                仍 ADMIN-only（平台级敏感操作不下放） */}
+            {isAdmin && (
+            <>
             <Divider orientation="vertical" style={{ margin: 0 }} />
             <Tooltip title={t('executorDetail.rotate.oldTokenInvalidTip')}>
               <Button
@@ -377,6 +408,8 @@ export default function ExecutorDetailPage() {
                 }}
               >{t('executorDetail.remove.delete')}</Button>
             </Tooltip>
+            </>
+            )}
           </Space>
           ) : undefined
         }
