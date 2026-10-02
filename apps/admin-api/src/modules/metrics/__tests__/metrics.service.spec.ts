@@ -164,6 +164,32 @@ describe("MetricsService", () => {
       expect(result[0].failed).toBe(1);
     });
 
+    // A-10（审计趋势口径）：TIMEOUT 必须透出——告警口径为 failed|timeout
+    // （alerts.yml AUTOFLOW_EXECUTION_FAILURE_RATE_HIGH/_STORM 的
+    // status=~"failed|timeout"），趋势响应缺 timeout 键会让前端失败曲线
+    // 系统性低于告警口径。CANCELLED/KILLED 不在告警口径内，维持不透出。
+    it("exposes TIMEOUT counts per bucket (alert semantic failed|timeout, A-10)", async () => {
+      const day = new Date("2024-01-15T00:00:00.000Z");
+      const qb = makeQb({
+        getRawMany: jest.fn().mockResolvedValue([
+          { day, status: ExecutionStatus.SUCCESS, count: "3" },
+          { day, status: ExecutionStatus.FAILED, count: "1" },
+          { day, status: ExecutionStatus.TIMEOUT, count: "2" },
+          { day, status: ExecutionStatus.CANCELLED, count: "5" },
+          { day, status: ExecutionStatus.KILLED, count: "7" },
+        ]),
+      });
+      execRepo.createQueryBuilder.mockReturnValue(qb);
+      const result = await service.getDailyTrend(7);
+      expect(result).toHaveLength(1);
+      expect(result[0]).toEqual({
+        date: "2024-01-15",
+        success: 3,
+        failed: 1,
+        timeout: 2,
+      });
+    });
+
     it("should return empty array when no data", async () => {
       const qb = makeQb({ getRawMany: jest.fn().mockResolvedValue([]) });
       execRepo.createQueryBuilder.mockReturnValue(qb);

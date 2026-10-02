@@ -154,17 +154,23 @@ export class PrometheusMetricsService {
       labelNames: ["state"] as const,
       registers: [this.registry],
     });
-    // OBS-05（容量水位四件套）：PG 连接池水位——pg.Pool 实时计数
-    // （totalCount/idleCount/waitingCount 经 DataSource.driver.master 可达，
-    // 见 readPgPoolSnapshot 注释）。利用率 = active/max，waiting > 0 即饱和。
-    this.dbPoolMaxConnections = new Gauge({
+      // OBS-05（容量水位四件套）：PG 连接池水位——pg.Pool 实时计数
+      // （totalCount/idleCount/waitingCount 经 DataSource.driver.master 可达，
+      // 见 readPgPoolSnapshot 注释）。利用率 = active/max，waiting > 0 即饱和。
+      // A-9（审计 help 漂移）：help 内嵌的告警建议逐字对齐 alerts.yml——
+      // 利用率本身无独立告警规则，饱和告警是 waiting 侧的
+      // AUTOFLOW_DB_POOL_WAITING（> 0 sustained 5m）。
+      this.dbPoolMaxConnections = new Gauge({
       name: "autoflow_db_pool_max_connections",
       help: "Configured PostgreSQL connection pool capacity (pg Pool max, PERF-04 DB_POOL_SIZE) — denominator of the pool utilization water level; 0 when the pool handle is unreachable",
       registers: [this.registry],
     });
     this.dbPoolActiveConnections = new Gauge({
       name: "autoflow_db_pool_active_connections",
-      help: "PostgreSQL pool connections currently checked out (totalCount - idleCount) — pool utilization water level; alert when active/max > 0.8 sustained 5m",
+      // A-9：对齐 alerts.yml——利用率（active/max）无独立告警规则，饱和告警
+      // 走 AUTOFLOW_DB_POOL_WAITING（waiting > 0 sustained 5m）；旧 help 文案
+      // 声称的「alert when active/max > 0.8 sustained 5m」并无此规则。
+      help: "PostgreSQL pool connections currently checked out (totalCount - idleCount) — numerator of the pool utilization ratio (active/max); no standalone utilization rule (pool saturation is alerted by AUTOFLOW_DB_POOL_WAITING on waiting requests, > 0 sustained 5m)",
       registers: [this.registry],
     });
     this.dbPoolIdleConnections = new Gauge({
@@ -181,7 +187,11 @@ export class PrometheusMetricsService {
     // diskUsage（0-100 百分数）；旧版执行器未上报（null）不造 0，series 缺席。
     this.executorDiskUsagePercent = new Gauge({
       name: "autoflow_executor_disk_usage_percent",
-      help: "Executor disk usage percent reported by heartbeat (Executor.diskUsage; online executors that report it only, legacy ones absent) — disk water level per executor; alert when > 90 sustained 10m",
+      // A-9：对齐 alerts.yml 两档实际规则——AUTOFLOW_EXECUTOR_DISK_USAGE_HIGH
+      // （warning，> 85 sustained 10m）与 AUTOFLOW_EXECUTOR_DISK_USAGE_CRITICAL
+      // （critical，> 95 sustained 5m）；旧 help 文案的「> 90 sustained 10m」
+      // 与任何一档都对不上。
+      help: "Executor disk usage percent reported by heartbeat (Executor.diskUsage; online executors that report it only, legacy ones absent) — disk water level per executor; alert when > 85 sustained 10m (AUTOFLOW_EXECUTOR_DISK_USAGE_HIGH, warning) or > 95 sustained 5m (AUTOFLOW_EXECUTOR_DISK_USAGE_CRITICAL, critical)",
       labelNames: ["executor"] as const,
       registers: [this.registry],
     });
@@ -285,6 +295,14 @@ export class PrometheusMetricsService {
       { reason: "block_strategy" },
       s.triggersSkippedBlockStrategy,
     );
+    // A-2（审计 FEAT-06）：维护窗口跳过计数透出——快照已有该字段
+    // （triggersSkippedMaintenance），渲染缺失会让「已知标签组合全部显式
+    // inc(0)」的 series 稳定纪律出现缺口（该 reason 的 series 只会在首次
+    // 命中维护窗口时才出现，rate() 前无基线）。
+    this.triggersSkipped.inc(
+      { reason: "maintenance" },
+      s.triggersSkippedMaintenance,
+    );
 
     this.dependencyTriggers.reset();
     this.dependencyTriggers.inc(
@@ -341,17 +359,20 @@ export class PrometheusMetricsService {
     }
 
     // CORE-06：触发延迟直方图——le 累计桶 + sum/count（reset+inc 快照模式，
-    // counter 单调语义成立；+Inf 桶显式渲染保持 series 集合稳定）
+    // counter 单调语义成立；+Inf 桶显式渲染保持 series 集合稳定）。
+    // A-1（审计 CORE-06 渲染口径）：快照桶本身已是**累计**口径——快照侧
+    // recordTriggerLatency 对每个 clamped<=bound 的桶 +1（scheduler-metrics
+    // .service.ts）。Prometheus 的 *_bucket 是累积直方图，histogram_quantile/
+    // rate 直接消费各 le 的绝对值，故这里按绝对值直写 inc({le}, cum)，而非
+    // 相邻桶差分（差分写入边际值会违反 *_bucket 累计不变量，P50/P99 全错）。
+    // +Inf 桶 = 累计 count，与中间桶同口径。
     const lat = s.triggerLatencyBuckets ?? [];
     this.triggerLatencyBuckets.reset();
-    let prevCum = 0;
     for (let i = 0; i < TRIGGER_LATENCY_BUCKETS_MS.length; i++) {
-      const cum = lat[i] ?? 0;
       this.triggerLatencyBuckets.inc(
         { le: String(TRIGGER_LATENCY_BUCKETS_MS[i]) },
-        cum - prevCum,
+        lat[i] ?? 0,
       );
-      prevCum = cum;
     }
     this.triggerLatencyBuckets.inc({ le: "+Inf" }, s.triggerLatencyCount);
     this.triggerLatencySum.reset();

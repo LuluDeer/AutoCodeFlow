@@ -105,19 +105,28 @@ export class MetricsService {
       .orderBy("DATE_TRUNC('day', e.createdAt)", "ASC")
       .getRawMany();
 
-    // Aggregate into { date, success, failed } format
+    // Aggregate into { date, success, failed, timeout } format.
+    // A-10（审计趋势口径）：TIMEOUT 必须透出——alerts.yml 的执行失败告警
+    // （AUTOFLOW_EXECUTION_FAILURE_RATE_HIGH / _STORM）口径为
+    // status=~"failed|timeout"，前端失败曲线若不含 TIMEOUT 会系统性低于告警
+    // 口径（超时风暴时曲线平稳、告警齐鸣）。SQL 已按 status 分组（TIMEOUT 行
+    // 本就返回），此前只在前端聚合侧被丢弃；CANCELLED/KILLED 仍不在告警口径
+    // 内，维持丢弃。
     const map = new Map<
       string,
-      { date: string; success: number; failed: number }
+      { date: string; success: number; failed: number; timeout: number }
     >();
     for (const row of rows) {
       const date = new Date(row.day).toISOString().slice(0, 10);
-      if (!map.has(date)) map.set(date, { date, success: 0, failed: 0 });
+      if (!map.has(date))
+        map.set(date, { date, success: 0, failed: 0, timeout: 0 });
       const entry = map.get(date)!;
       if (row.status === ExecutionStatus.SUCCESS)
         entry.success += parseInt(row.count, 10);
       if (row.status === ExecutionStatus.FAILED)
         entry.failed += parseInt(row.count, 10);
+      if (row.status === ExecutionStatus.TIMEOUT)
+        entry.timeout += parseInt(row.count, 10);
     }
     return Array.from(map.values());
   }

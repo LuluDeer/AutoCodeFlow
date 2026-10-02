@@ -38,8 +38,11 @@ class NonPublicReflector extends Reflector {
  * - **未设置(默认)**:行为与改造前完全一致——走 JWT,抓取方自行解决认证
  *   (反向代理注入等,见 docs/observability README §1)。
  * - **设置后**:`Authorization: Bearer <METRICS_SCRAPER_TOKEN>` 恒时比较
- *   (timingSafeEqual,长度不等先短路)命中即放行;未命中回落 JWT 校验,
- *   失败仍 401——令牌错误不会比改造前更宽松。
+ *   (timingSafeEqual,长度不等先短路)命中,且仅当请求是抓取端点本身
+ *   (GET /api/metrics,Prometheus text exposition)时放行;其余 5 个端点
+ *   (summary/trend/executors/failures/scheduler——含执行器内网地址与失败
+ *   详情等业务读面)令牌不授予,回落 JWT 校验,失败仍 401——令牌错误不会
+ *   比改造前更宽松(A-5:令牌是最小抓取凭据,非万能读凭据)。
  * - 部署形态:prometheus.yml 的 admin-api job 用 `authorization:
  *   credentials_file` 指向同值文件(建议以 secret/挂载文件提供,不进镜像层);
  *   .env.example 有示例。
@@ -98,6 +101,9 @@ export class MetricsScraperAuthGuard extends JwtAuthGuard {
     }
     const request = context.switchToHttp().getRequest<{
       headers: Record<string, string | string[] | undefined>;
+      method?: string;
+      path?: string;
+      originalUrl?: string;
     }>();
     const header = request.headers?.authorization;
     const bearer =
@@ -105,9 +111,17 @@ export class MetricsScraperAuthGuard extends JwtAuthGuard {
         ? header.slice("Bearer ".length)
         : undefined;
     if (bearer && this.safeEqual(bearer, this.scraperToken)) {
-      return true;
-    }
-    if (bearer) {
+      // A-5（审计抓取面过宽）：令牌命中后只放行抓取端点本身（GET
+      // /api/metrics）——其余端点（/metrics/failures 失败详情、
+      // /metrics/executors 执行器内网地址等）不随令牌放行，回落 JWT：
+      // 带合法 JWT 的用户不受影响，纯令牌调用方拿到 401。
+      if (this.isScrapeEndpoint(request)) {
+        return true;
+      }
+      this.logger.warn(
+        "metrics scraper token used on a non-scrape endpoint — falling back to JWT auth",
+      );
+    } else if (bearer) {
       // 带了 Bearer 但不匹配:可能是令牌轮换失配——warn 一条便于对账,
       // 随后回落 JWT(可能是合法用户在浏览器里直接打开端点)。
       this.logger.warn(
@@ -119,6 +133,28 @@ export class MetricsScraperAuthGuard extends JwtAuthGuard {
     }
     return Boolean(await super.canActivate(context));
   }
+
+  /**
+   * A-5：令牌命中的放行范围判定——仅 GET <全局前缀>/metrics（抓取端点）。
+   * 以「精确路径（含尾斜杠形态）」收口而非前缀匹配，避免把
+   * /api/metrics/failures 一并放行；query 串不参与判定。path 缺失时
+   * 以 originalUrl 兜底（剥掉 query）。
+   */
+  private isScrapeEndpoint(request: {
+    method?: string;
+    path?: string;
+    originalUrl?: string;
+  }): boolean {
+    if ((request.method ?? "").toUpperCase() !== "GET") return false;
+    const raw = (request.path ?? request.originalUrl ?? "").split("?")[0];
+    return (
+      raw === MetricsScraperAuthGuard.SCRAPER_PATH ||
+      raw === `${MetricsScraperAuthGuard.SCRAPER_PATH}/`
+    );
+  }
+
+  /** 抓取端点精确路径（main.ts setGlobalPrefix("api") + @Controller("metrics")） */
+  private static readonly SCRAPER_PATH = "/api/metrics";
 
   /** 恒时比较:长度不等先短路(不泄漏长度差之外的任何信息)。 */
   private safeEqual(received: string, expected: string): boolean {
