@@ -17,7 +17,7 @@
 | R4 | registry 域 | registry / registry-npm / registry-pypi + RegistryPage | R4-B | R4-fix-B | ✅ 完成（2026-10-02） |
 | R5 | executor-node/python 执行器侧 | 领任务/装依赖/fork 执行/回调/崩溃恢复 | R5-A | R5-fix-A | ✅ 完成（2026-10-02） |
 | R5 | executor-desktop 桌面端 | main/renderer/agent-host/updater | R5-B | R5-fix-B | ✅ 完成（2026-10-02） |
-| R6 | 横切面 | notification/audit/artifacts/task-template/OpenAPI 契约/i18n | R6-A/B | — | 待开始 |
+| R6 | 横切面 | notification/audit/artifacts/task-template/OpenAPI 契约/i18n | R6-A/B | R6-fix | ✅ 完成（2026-10-02） |
 
 ## 发现与处置记录
 
@@ -67,3 +67,12 @@
 - **R5 修复完成（2026-10-02）**：执行器侧 11/11——A-1 超时改单一 gather 截止时间覆盖 stream+proc.wait（timeout=0 不限时语义不变）；A-2 node 补逐字同形 SHELL_ENTRYPOINT_SAFE_RE（POSIX+win32，拒绝走既有 prepare 失败路径）；A-5 prepare 检查点取消（下载循环逐 chunk、git/uv/pip 段末收敛，最坏一段跑完即收敛）；A-9 保留 httpx follow_redirects=False+手动逐跳（同域留 Bearer/跨域剥离，内联 is_redirect 兼容测试桩）；A-11 两端统一 JSON 序列化（ensure_ascii=False+紧凑分隔符，contract-fixtures append-only 新增 executorEnvSerialization 10 条向量，两端测试对同组向量断言防再漂移）。桌面端 13/14——B-1 crash-guard（每次记录+dialog 一次+优雅停子进程 40s 硬超时，不自动 relaunch）+端口探测三分支（free spawn/healthy 复用 attach/occupied 仅共享令牌 /api/shutdown 受理才请退）；B-3 文案改实+downloaded 标记（复用 electron-updater 6.8.9 缓存校验，不绕过 sha512）；B-6 死通道删除（渲染已有等价文本行解析）；B-13 release 保留 5 个按 mtime 走 canDeleteRelease 闸门（部署日志 release 切换行触发，状态未知保守放弃）。
 - 暂缓记录：B-4 代码签名（需证书；建议 release CI 补 sha256 校验说明）、B-5 agent-host 拆子进程（N-06）、B-10 i18n 渐进、A-5 线程内即时杀（检查点收敛已足够）、B-1 Job Object 父亡联动（N-06）。
 - 验证：executor-node jest 992 例全绿（protocol-sync 生成零 diff）；executor-python pytest 1091 例；desktop test:main 28 selftest+renderer 守卫全过；双端 tsc 零错误；update-chain 守卫通过。
+
+### R6（2026-10-02，审计完成 → 修复中）
+
+- R6-A 通知/审计/工件 12 条：A-1 P1 渠道投递失败是审计盲区（渠道捕获异常返回 failed 字符串不抛错，NOTIFICATION_FAILED 审计兜底永不触发，重试耗尽告警静默丢失）；A-2 P1 工件清单/下载无 @Roles 且无归属校验无审计落证（任意登录用户可下载任意执行产物）；A-3 P2 POST /notification/send 仅 authenticated 可向全渠道广播+借道外发（与同文件 testChannel 锁 ADMIN 自相矛盾）；A-4 P2 变更生效后裸 await audit.log，审计库故障返回 500 且审计行丢失；A-5 P2 通知正文泄露 secret 面（errorMessage/logs 原文出站未过脱敏）；A-6 P3 IM markdown 注入；A-7 P3 聚合窗两条丢失路径（HGETALL+DEL 非原子）；A-8 P3 审计排序缺次级 id 键；A-9 P3 CSV 导出 10k 静默截断无痕；A-10 P3 工件目录删除用最旧 mtime 判据+无磁盘熔断；A-11 P3 超时预警恒全渠道不走任务 alarmChannels；A-12 P3 CSV 导出端点前端无入口。
+- R6-B 模板/事件/契约/i18n 10 条：B-1 P2 订阅死信表零 retention 无界增长；B-2 P2 outbox 快速路径行入队即可被 claim（慢订阅必双投）；B-3 P2 TaskTemplate/EventSubscription 响应 schema 全空壳（baseline 5 条空壳全是本面）；B-4 P2 官方模板 config 与 DTO 演进漂移无守卫；B-5 P2 i18n 缺键无守卫（t() 字面量不校验存在性）；B-6 P3 instantiate 端点无一等消费方（三条模板→任务通路语义未单源）；B-7 P3 死信/批量注释停留在旧参数（3 次 vs 实际 20）；B-8 P3 分页参数 NaN 直通 500；B-9 P3 订阅侧死信写在租约守卫之前；B-10 P3 config_history 只增不删。
+- 处置：R6-fix-A（A-1..12，locales 独占）+ R6-fix-B（B-1..5、7..10；B-3 做 DTO 化+棘轮上探）并行派发；B-6 单源化（feature 级取舍）暂缓记录。
+- **R6 修复完成（2026-10-02/03）**：A 侧 12/12——A-1 全渠道失败落 NOTIFICATION_FAILED 审计（AuditService @Optional 降级兼容存量测试装配）；A-2 工件清单/下载 @Roles(ADMIN)+下载落 artifact.download 审计；A-3 send 端点收紧 ADMIN；A-5 出站脱敏抽 sanitize-notification-text.util（errorMessage/logs 同源正则）；A-6 markdown-escape.util 三 IM 渠道共用；A-7 flush 改 Lua 原子 GETDEL+无 start 字段存活窗补挂 flush。B 侧 10/10——B-1 订阅死信 retention 90d（cappedBatchedDelete+LeaderGate）；B-2 快速路径入队置 nextAttemptAt=now()+15s（OUTBOX_FAST_PATH_GRACE_MS>出站超时+余量）；B-3 TaskTemplateResponseDto/EventSubscriptionResponseDto 落地，response-schema 覆盖 61/218→70/218 棘轮推进，前端手写 interface 切生成类型；B-5 新增 i18n-key-check.mjs AST 守卫（2448 静态键 vs zh/en 2695 双语键集比对+动态键 25 文件登记+基线豁免），挂进 lint:i18n 链；B-9 deadLetterToSubscribers 移到 leaseToken 守卫 UPDATE 成功之后；B-10 config_history 保留期清理每键留 50 条。
+- 暂缓记录：B-6 instantiate 单源化（web 预填+MCP 直 POST 现状与建议已记录）、A-7 pipeline 化、A-10 磁盘总量熔断。
+- 验证：admin-api 全量 272 套件 4495 例全绿；admin-web 全量 185 文件 1399 例；双端 tsc 零错误；check:response-schema 70/218 无倒退；i18n 双守卫（硬编码扫描+缺键比对）通过。
