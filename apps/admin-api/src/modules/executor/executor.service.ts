@@ -2738,11 +2738,15 @@ export class ExecutorService implements OnModuleInit {
       //    idx_task_executions_group_occupancy 服务）；global 档=同组跨设备
       //    （组维度部分索引 idx_task_executions_group_occupancy_global 服务）。
       //    global 档 maxConcurrentPerDevice 语义升级为组内全平台并发数。
+      //    global 档必须排除执行自身行：本执行在 dispatch 前已被 claim 为
+      //    RUNNING（executorAddress 未落），不带设备条件的计数会把自己数进
+      //    去 → maxConcurrentPerDevice=1 时自己等自己（2026-10-02 双执行器
+      //    e2e 实证；设备档靠地址谓词天然自排除）。
       const occRows: Array<{ count: number }> = isGlobal
         ? await manager.query(
             `SELECT COUNT(*)::int AS count FROM "task_executions"
-             WHERE "mutexGroupId" = $1 AND "status" = 'running'`,
-            [execution.mutexGroupId],
+             WHERE "mutexGroupId" = $1 AND "status" = 'running' AND "id" <> $2`,
+            [execution.mutexGroupId, execution.id],
           )
         : await manager.query(
             `SELECT COUNT(*)::int AS count FROM "task_executions"
