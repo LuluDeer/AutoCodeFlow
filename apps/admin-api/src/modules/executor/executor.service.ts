@@ -2701,7 +2701,22 @@ export class ExecutorService implements OnModuleInit {
       return legacyClaim();
     }
 
+    // N-15：组作用域——device=单点互斥（同设备×同组，存量行为）；
+    // global=全局互斥（组内跨设备串行，单点登录顶号类场景）。
+    const isGlobal = group.scope === "global";
+
     return this.repo.manager.transaction(async (manager) => {
+      // 0) 全局档：组行锁先于执行器行锁（固定锁序 组→执行器 防死锁）。
+      //    跨设备派发的竞争者在组行锁上串行化——设备档靠同设备 executors 行
+      //    锁关闭竞态，全局档的竞争者派往不同设备、行锁互不相干，必须用组行
+      //    锁串行化，占用计数读到的才必含先到者已提交的标记。
+      if (isGlobal) {
+        await manager.query(
+          `SELECT "id" FROM "mutex_groups" WHERE "id" = $1 FOR UPDATE`,
+          [execution.mutexGroupId],
+        );
+      }
+
       // 1) 行锁串行化：同设备的并发派发在此排队，锁内读到的占用状态必含
       //    先到者已提交的标记（竞态关闭的关键，见方法头注）。
       const lockRows: Array<{
@@ -2719,13 +2734,21 @@ export class ExecutorService implements OnModuleInit {
       const maxConcurrent = row.maxConcurrentTasks ?? Infinity;
       if (row.runningTaskCount >= maxConcurrent) return "unavailable";
 
-      // 2) 组占用闸：同设备 × 同组、status='running' 的执行数（部分索引
-      //    idx_task_executions_group_occupancy 服务）。
-      const occRows: Array<{ count: number }> = await manager.query(
-        `SELECT COUNT(*)::int AS count FROM "task_executions"
-         WHERE "executorAddress" = $1 AND "mutexGroupId" = $2 AND "status" = 'running'`,
-        [row.address, execution.mutexGroupId],
-      );
+      // 2) 组占用闸：device 档=同设备 × 同组（部分索引
+      //    idx_task_executions_group_occupancy 服务）；global 档=同组跨设备
+      //    （组维度部分索引 idx_task_executions_group_occupancy_global 服务）。
+      //    global 档 maxConcurrentPerDevice 语义升级为组内全平台并发数。
+      const occRows: Array<{ count: number }> = isGlobal
+        ? await manager.query(
+            `SELECT COUNT(*)::int AS count FROM "task_executions"
+             WHERE "mutexGroupId" = $1 AND "status" = 'running'`,
+            [execution.mutexGroupId],
+          )
+        : await manager.query(
+            `SELECT COUNT(*)::int AS count FROM "task_executions"
+             WHERE "executorAddress" = $1 AND "mutexGroupId" = $2 AND "status" = 'running'`,
+            [row.address, execution.mutexGroupId],
+          );
       if ((occRows[0]?.count ?? 0) >= group.maxConcurrentPerDevice) {
         return "mutex_full";
       }
@@ -2743,8 +2766,8 @@ export class ExecutorService implements OnModuleInit {
         [candidate.id],
       );
       this.logger.debug(
-        `MUTEX-01: 执行 ${execution.id}（组 ${group.name}）占坑 ${row.address} ` +
-          `（组占用 ${occRows[0]?.count ?? 0}+1/${group.maxConcurrentPerDevice}）`,
+        `MUTEX-01: 执行 ${execution.id}（组 ${group.name}${isGlobal ? "，全局互斥" : ""}）占坑 ${row.address} ` +
+          `（组占用 ${occRows[0]?.count ?? 0}+1/${group.maxConcurrentPerDevice}${isGlobal ? "，全平台" : "/设备"}）`,
       );
       return "claimed";
     });

@@ -284,6 +284,8 @@ export default function ApplicationListPage() {
       const created = await mutexGroupsApi.create({
         name: values.name,
         maxConcurrentPerDevice: values.maxConcurrentPerDevice ?? 1,
+        // N-15：作用域（单点/全局互斥），默认 device
+        scope: values.scope ?? 'device',
         description: values.description,
       });
       setGroupModalOpen(false);
@@ -948,10 +950,17 @@ export default function ApplicationListPage() {
                   style={{ flex: 1 }}
                   options={mutexGroups.map((g) => ({
                     value: g.id,
-                    label: t('appList.field.mutexGroupOption', {
-                      name: g.name,
-                      max: g.maxConcurrentPerDevice,
-                    }),
+                    // N-15：全局组标注全平台并发语义，防用户按设备口径误解
+                    label:
+                      g.scope === 'global'
+                        ? t('appList.field.mutexGroupOptionGlobal', {
+                            name: g.name,
+                            max: g.maxConcurrentPerDevice,
+                          })
+                        : t('appList.field.mutexGroupOption', {
+                            name: g.name,
+                            max: g.maxConcurrentPerDevice,
+                          }),
                   }))}
                 />
               </Form.Item>
@@ -1000,6 +1009,25 @@ export default function ApplicationListPage() {
             }}
           >
             <InputNumber min={1} max={100} precision={0} style={{ width: 140 }} />
+          </Form.Item>
+          {/* N-15：组作用域——单点互斥（设备维度，存量）/ 全局互斥（跨设备串行） */}
+          <Form.Item
+            name="scope"
+            label={t('appList.mutexGroup.scope')}
+            initialValue="device"
+            tooltip={{
+              title: t('appList.mutexGroup.scopeTooltip'),
+              icon: <InfoCircleOutlined />,
+            }}
+          >
+            <Select style={{ width: 240 }}>
+              <Select.Option value="device">
+                {t('appList.mutexGroup.scopeDevice')}
+              </Select.Option>
+              <Select.Option value="global">
+                {t('appList.mutexGroup.scopeGlobal')}
+              </Select.Option>
+            </Select>
           </Form.Item>
           <Form.Item
             name="description"
