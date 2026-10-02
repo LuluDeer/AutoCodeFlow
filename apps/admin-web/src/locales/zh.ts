@@ -136,6 +136,9 @@ export default {
   'dashboard.stream.live': '实时',
   'dashboard.stream.reconnecting': '重连中',
   'dashboard.stream.connecting': '连接中',
+  // A-4（审计降级黑洞）：metrics/stream 后端查询降级（error 帧）时的页头角标
+  'dashboard.stream.degraded': '数据延迟',
+  'dashboard.stream.degradedTooltip': '汇总流部分查询降级，数据可能陈旧（已触发重新拉取）；以下一次成功快照为准',
   'dashboard.scheduler': '调度器 {{state}} · {{count}} 任务',
   'dashboard.scheduler.healthy': '健康',
   'dashboard.scheduler.unhealthy': '异常',

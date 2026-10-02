@@ -70,4 +70,23 @@ describe('buildTrendData（A6 趋势补零）', () => {
     const series = buildTrendData([{ date: todayKey(), success: 2, failed: 0 }], 14);
     expect(series).toHaveLength(14);
   });
+
+  // A-10（审计趋势口径）：TIMEOUT 并入失败曲线——告警口径为 failed|timeout
+  // （alerts.yml AUTOFLOW_EXECUTION_FAILURE_RATE_HIGH/_STORM 的
+  // status=~"failed|timeout"），此前超时被丢弃，超时风暴时失败曲线平稳而
+  // 告警齐鸣。
+  it('A-10：timeout 并入 failed 曲线（failed = failed + timeout）', () => {
+    const rows = [
+      { date: daysAgoKey(0), success: 3, failed: 1, timeout: 2 },
+      { date: daysAgoKey(1), success: 5, failed: 0, timeout: 4 },
+    ];
+    const series = buildTrendData(rows, 7);
+    expect(series[6]).toEqual({ date: todayKey().slice(5), success: 3, failed: 3 });
+    expect(series[5]).toEqual({ date: daysAgoKey(1).slice(5), success: 5, failed: 4 });
+  });
+
+  it('A-10：timeout 键缺省（旧载荷/快照转发）时不产生 NaN，按 0 处理', () => {
+    const series = buildTrendData([{ date: todayKey(), success: 3, failed: 1 }], 7);
+    expect(series[6]).toEqual({ date: todayKey().slice(5), success: 3, failed: 1 });
+  });
 });
