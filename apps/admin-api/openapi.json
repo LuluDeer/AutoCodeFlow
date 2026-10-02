@@ -11091,6 +11091,15 @@
             "maximum": 100,
             "default": 1
           },
+          "scope": {
+            "type": "string",
+            "description": "组作用域：device=单点互斥（每台设备同时最多 N 条，跨设备并发）；global=全局互斥（全平台同时最多 N 条，单点登录顶号类场景）。默认 device",
+            "enum": [
+              "device",
+              "global"
+            ],
+            "default": "device"
+          },
           "description": {
             "type": "string",
             "description": "组用途说明",
@@ -11115,6 +11124,15 @@
             "minimum": 1,
             "maximum": 100,
             "default": 1
+          },
+          "scope": {
+            "type": "string",
+            "description": "组作用域：device=单点互斥（每台设备同时最多 N 条，跨设备并发）；global=全局互斥（全平台同时最多 N 条，单点登录顶号类场景）。默认 device",
+            "enum": [
+              "device",
+              "global"
+            ],
+            "default": "device"
           },
           "description": {
             "type": "string",

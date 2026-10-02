@@ -14,6 +14,13 @@ export class MutexGroupResponseDto {
   @ApiProperty({ description: "同设备内允许的并发执行数（≥1）" })
   maxConcurrentPerDevice: number;
 
+  @ApiProperty({
+    description:
+      "组作用域：device=单点互斥（每台设备同时最多 N 条）；global=全局互斥（全平台同时最多 N 条）",
+    enum: ["device", "global"],
+  })
+  scope: "device" | "global";
+
   @ApiPropertyOptional({ description: "组用途说明", nullable: true })
   description: string | null;
 

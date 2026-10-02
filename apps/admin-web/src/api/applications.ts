@@ -21,11 +21,13 @@ export interface Application {
   updatedAt: string;
 }
 
-/** MUTEX-01: 应用互斥组——同设备×同组的执行并发上限（默认 1 = 组内串行）。 */
+/** MUTEX-01: 应用互斥组。N-15 scope——device=单点互斥（同设备×同组串行，
+ *  跨设备并发）；global=全局互斥（组内跨设备串行，全平台同时最多 N 条）。 */
 export interface MutexGroup {
   id: string;
   name: string;
   maxConcurrentPerDevice: number;
+  scope: 'device' | 'global';
   description?: string | null;
   createdAt: string;
   updatedAt: string;
@@ -206,10 +208,19 @@ export const applicationsApi = {
 /** MUTEX-01：互斥组配置管理（读面全登录用户，写面 ADMIN）。 */
 export const mutexGroupsApi = {
   list: () => client.get<MutexGroup[]>('/mutex-groups'),
-  create: (data: { name: string; maxConcurrentPerDevice?: number; description?: string }) =>
-    client.post<MutexGroup>('/mutex-groups', data),
-  update: (id: string, data: { name?: string; maxConcurrentPerDevice?: number; description?: string }) =>
-    client.put<MutexGroup>(`/mutex-groups/${id}`, data),
+  create: (data: {
+    name: string;
+    maxConcurrentPerDevice?: number;
+    // N-15：组作用域（单点/全局互斥）
+    scope?: 'device' | 'global';
+    description?: string;
+  }) => client.post<MutexGroup>('/mutex-groups', data),
+  update: (id: string, data: {
+    name?: string;
+    maxConcurrentPerDevice?: number;
+    scope?: 'device' | 'global';
+    description?: string;
+  }) => client.put<MutexGroup>(`/mutex-groups/${id}`, data),
   remove: (id: string, force = false) =>
     client.delete<{ ok: boolean }>(`/mutex-groups/${id}${force ? '?force=true' : ''}`),
 };
