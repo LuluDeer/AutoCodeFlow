@@ -11,7 +11,10 @@ import {
   ExecutionFailureReason,
 } from "../entities/task-execution.entity";
 import { ExecutionLogLine } from "../entities/execution-log-line.entity";
-import { Task } from "../entities/task.entity";
+import {
+  Task,
+  TaskStatus,
+} from "../entities/task.entity";
 import { ExecutorService } from "../../executor/executor.service";
 import { AiAnalysisService } from "../../ai/ai-analysis.service";
 import { NotificationService } from "../../notification/notification.service";
@@ -87,6 +90,8 @@ describe("TaskProcessor", () => {
     alarmEmail: undefined,
     alarmChannels: [],
     executeMode: "single",
+    // B-11: claim 前的任务状态闸——既有用例默认 ACTIVE（闸放行）。
+    status: TaskStatus.ACTIVE,
   } as unknown as Task;
   const exec = {
     id: "exec-1",
@@ -777,6 +782,76 @@ describe("TaskProcessor", () => {
 
     const live = await execRepo.findOne.mock.results[0].value;
     expect(live.status).toBe(ExecutionStatus.FAILED);
+  });
+
+  // ── B-11（调度域审计）：PAUSED/非 ACTIVE 任务的未派发排队执行不 claim ──
+  describe("B-11: non-ACTIVE task claim gate", () => {
+    it("PAUSED task's queued PENDING execution is not claimed nor dispatched", async () => {
+      taskRepo.findOne.mockResolvedValue({
+        ...task,
+        status: TaskStatus.PAUSED,
+      });
+      execRepo.findOne = jest
+        .fn()
+        .mockResolvedValue({ ...exec, status: ExecutionStatus.PENDING });
+
+      await processor.handle({ data: { executionId: "exec-1" } } as any);
+
+      // 不派发：executorService.dispatch 零调用；claim 的条件 UPDATE 也未发。
+      expect(executorService.dispatch).not.toHaveBeenCalled();
+      expect(execRepo.createQueryBuilder).not.toHaveBeenCalled();
+      // 行保持 PENDING（不写 RUNNING、不终态化）。
+      const live = await execRepo.findOne.mock.results[0].value;
+      expect(live.status).toBe(ExecutionStatus.PENDING);
+    });
+
+    it("PAUSED task's WAITING execution is not claimed (stale wake job is a no-op)", async () => {
+      taskRepo.findOne.mockResolvedValue({
+        ...task,
+        status: TaskStatus.PAUSED,
+      });
+      execRepo.findOne = jest
+        .fn()
+        .mockResolvedValue({ ...exec, status: ExecutionStatus.WAITING });
+
+      await processor.handle({ data: { executionId: "exec-1" } } as any);
+
+      expect(executorService.dispatch).not.toHaveBeenCalled();
+      const live = await execRepo.findOne.mock.results[0].value;
+      expect(live.status).toBe(ExecutionStatus.WAITING);
+    });
+
+    it("PAUSED task's FAILED execution is still claimable (retry budget preserved)", async () => {
+      taskRepo.findOne.mockResolvedValue({
+        ...task,
+        status: TaskStatus.PAUSED,
+      });
+      execRepo.findOne = jest
+        .fn()
+        .mockResolvedValue({ ...exec, status: ExecutionStatus.FAILED });
+      executorService.dispatch.mockResolvedValue({
+        status: "accepted",
+        executionId: "exec-1",
+        executorAddress: "127.0.0.1:3105",
+      });
+
+      await processor.handle({ data: { executionId: "exec-1" } } as any);
+
+      // 重试语义不受暂停影响：FAILED 行照常 claim 并派发。
+      expect(executorService.dispatch).toHaveBeenCalledTimes(1);
+    });
+
+    it("ACTIVE task's queued execution claims and dispatches normally (regression guard)", async () => {
+      executorService.dispatch.mockResolvedValue({
+        status: "accepted",
+        executionId: "exec-1",
+        executorAddress: "127.0.0.1:3105",
+      });
+
+      await processor.handle({ data: { executionId: "exec-1" } } as any);
+
+      expect(executorService.dispatch).toHaveBeenCalledTimes(1);
+    });
   });
 });
 

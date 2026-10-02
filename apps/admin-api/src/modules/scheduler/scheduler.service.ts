@@ -19,7 +19,9 @@ import {
   MisfireStrategy,
   normalizeTaskPriority,
 } from "../task/entities/task.entity";
-import { findActiveMaintenanceWindow } from "../task/maintenance-window.util";
+import { findActiveMaintenanceWindow, lastWindowCronFireBefore, MAINTENANCE_WINDOW_LOOKBACK_MINUTES } from "../task/maintenance-window.util";
+// B-6: misfire 补偿入队前的依赖闸（与 TaskService.checkDependencies 同一实现）
+import { areDependenciesSatisfied } from "../task/dependency-gate.util";
 // CORE-02: 重试退避抖动——±20% 摊开同周期失败任务的的重试时刻
 import { jitteredRetryDelayMs } from "../task/retry-backoff.util";
 // A4: DB 优先级(4=紧急) → BullMQ 出队优先级(1=最高)的方向换算——此前入队
@@ -109,6 +111,14 @@ export const STALE_SCAN_FALLBACK_MS = 60 * 60 * 1000;
 export const ACTIVE_TASK_PAGE_SIZE = 1000;
 
 /**
+ * B-4: 互斥唤醒 sweep 的分页参数。页大小沿用旧单页 take:200（行为兼容）；
+ * 轮数上限是防极端情形死循环的安全阀（每 tick 至多唤醒 200×10 条，上限内
+ * 未处理行交由下一 tick——10s 粒度的唤醒保证不变）。
+ */
+export const MUTEX_WAKE_PAGE_SIZE = 200;
+export const MUTEX_WAKE_MAX_ROUNDS = 10;
+
+/**
  * CONSISTENCY-02: 执行器活性探测的绝对兜底参数。当候选 stale 行所属执行器在线
  * 且心跳上报"仍在执行该 executionId"时，本轮跳过误判恢复；但该跳过不是无限的
  * ——一旦 stale 时长超过 max(6 × taskTimeout, ABSOLUTE_FLOOR_MS)，无视上报仍强制
@@ -168,6 +178,88 @@ export function computeTriggerDedupTtlMs(task: Task): number {
     return TRIGGER_DEDUP_MIN_TTL_MS;
   }
   return 5_000;
+}
+
+/**
+ * B-1: cron 周期估算（毫秒）。复用 maintenance-window.util 的
+ * lastWindowCronFireBefore（同一套 node-cron.validate 口径的解析器，时区
+ * 语义与调度注册一致）：取 now 的最近一次触达与它的上一次触达，两者间隔
+ * 即「期望触发周期」。解析失败 / 7 天回看内触达不足两次（周期超过 7 天的
+ * cron）返回 null——调用方回退保守阈值。
+ *
+ * 结果按 (表达式|时区) 缓存并带 TTL：周期估算只服务于 misfire 阈值这一
+ * 启发式（真闸是 B-1 的落点校验），10 分钟的陈旧窗口（跨 DST 时刻周期
+ * 漂移一档）无正确性影响；无 TTL 的话进程生命周期内一次性缓存会让 DST
+ * 前后的估算永久偏离。
+ */
+const CRON_PERIOD_ESTIMATE_TTL_MS = 10 * 60 * 1000;
+const CRON_PERIOD_ESTIMATE_CACHE = new Map<
+  string,
+  { value: number | null; at: number }
+>();
+const CRON_PERIOD_ESTIMATE_CACHE_MAX = 512;
+
+export function estimateCronPeriodMs(
+  expr: string,
+  timeZone?: string | null,
+  now: Date = new Date(),
+): number | null {
+  const key = `${expr}|${timeZone ?? ""}`;
+  const cached = CRON_PERIOD_ESTIMATE_CACHE.get(key);
+  if (cached && Date.now() - cached.at < CRON_PERIOD_ESTIMATE_TTL_MS) {
+    return cached.value;
+  }
+  const latest = lastWindowCronFireBefore(
+    expr,
+    now,
+    MAINTENANCE_WINDOW_LOOKBACK_MINUTES,
+    timeZone,
+  );
+  let value: number | null = null;
+  if (latest) {
+    const prev = lastWindowCronFireBefore(
+      expr,
+      // 严格早于 latest：回看窗口 7 天对周级 cron 足够（月级 cron 触达
+      // 不足两次 → null → 调用方回退保守阈值，方向安全）。
+      new Date(latest.getTime() - 1),
+      MAINTENANCE_WINDOW_LOOKBACK_MINUTES,
+      timeZone,
+    );
+    if (prev) value = latest.getTime() - prev.getTime();
+  }
+  if (CRON_PERIOD_ESTIMATE_CACHE.size >= CRON_PERIOD_ESTIMATE_CACHE_MAX) {
+    CRON_PERIOD_ESTIMATE_CACHE.clear();
+  }
+  CRON_PERIOD_ESTIMATE_CACHE.set(key, { value, at: Date.now() });
+  return value;
+}
+
+/**
+ * B-1: misfire 判定阈值 = 2 × 任务的真实触发周期。
+ *
+ * 旧实现对 cron 任务恒用 2min（只有 fixed_rate 用 2×fixedRate）——周期
+ * 大于 7min 的 cron（小时/日级）在健康状态下 gap 几乎恒超 2min，每轮
+ * 5 分钟级 checkMisfires 都误判 misfire：FIRE_ONCE 任务被 enqueue(task,
+ * "misfire") 在计划时刻外补偿入队（cron 去重锁 TTL 仅 1s 挡不住），任务
+ * 退化为高频触发；IGNORE 任务则每轮刷 warn。现在 cron 任务按其表达式的
+ * 真实周期推导阈值（周期估算见 estimateCronPeriodMs；解析失败回退旧的
+ * 2min 保守值）；fixed_rate 维持 2×fixedRate 既有语义。
+ * 导出仅供单元测试，视为模块内部函数。
+ */
+export function computeMisfireThresholdMs(task: Task): number {
+  if (task.triggerType === TaskTriggerType.FIXED_RATE) {
+    return (task.fixedRate || 60) * 2000;
+  }
+  if (task.triggerType === TaskTriggerType.CRON && task.cronExpression?.trim()) {
+    const periodMs = estimateCronPeriodMs(
+      task.cronExpression.trim(),
+      task.timezone?.trim() || undefined,
+    );
+    if (periodMs != null && Number.isFinite(periodMs) && periodMs > 0) {
+      return 2 * periodMs;
+    }
+  }
+  return 2 * 60 * 1000;
 }
 
 /**
@@ -426,6 +518,36 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
+   * B-1（双保险第二道）：cron 任务错失的调度点是否确实落在
+   * (lastTriggerTime, now] 内。
+   *
+   * 背景：misfire 补偿此前只看 gap 超阈——lastTriggerTime 可能被依赖扇出
+   * claim（TaskService.claimDependencyTrigger 复用同列）等**计划外**触发
+   * 推进，补偿入队发生在任意时刻而非 cron 的计划触达点。现在补偿前用
+   * lastWindowCronFireBefore 反查「now 之前最近一次计划触达」：该触达晚于
+   * lastTriggerTime 才是真错失（lastTriggerTime 未跟上计划进度）；反查
+   * 不到（表达式非法 / 触达超出 7 天回看）按「无法确认错失」处理——宁可
+   * 少补一次（下轮 tick 自然重查），不在计划外入队。扫描本身被 B-1 阈值
+   * 推导前置过滤（gap ≤ 2×周期不会走到这里），且回扫在最近触达处即停
+   * （分钟级 cron ≤ 几十步），开销可忽略。
+   */
+  private cronHasMissedFirePoint(
+    task: Task,
+    lastTriggerTime: Date,
+    now: Date,
+  ): boolean {
+    const expr = task.cronExpression?.trim();
+    if (!expr) return false; // 无法判定 → 不补偿（scheduleOne 对缺表达式任务本就拒绝注册）
+    const lastFire = lastWindowCronFireBefore(
+      expr,
+      now,
+      MAINTENANCE_WINDOW_LOOKBACK_MINUTES,
+      task.timezone?.trim() || undefined,
+    );
+    return lastFire != null && lastFire.getTime() > lastTriggerTime.getTime();
+  }
+
+  /**
    * Detect misfires on startup and compensate according to policy.
    *
    * FIX-2.2：此前本方法**只在启动与 Leader 晋升时**被调用（无 @Cron 装饰器，
@@ -437,6 +559,9 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
    * `task:trigger:*`（TTL=触发周期）保证周期内至多一次触发——Leader 短暂
    * 双活或 tick 与晋升钩子重叠时重复扫描是安全的（重复补偿会被去重吸收），
    * 幂等成立。
+   *
+   * B-1/B-6（调度域审计）：判定链升级为「gap 超阈（阈值=2×真实周期）→
+   * cron 落点校验 → 依赖闸 → FIRE_ONCE 补偿」，见各函数注释。
    */
   @Cron("0 */5 * * * *")
   async checkMisfires() {
@@ -466,12 +591,46 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
       for (const task of tasks) {
         if (!task.lastTriggerTime) continue;
         const gap = now - task.lastTriggerTime.getTime();
-        const threshold =
-          task.triggerType === TaskTriggerType.FIXED_RATE
-            ? (task.fixedRate || 60) * 2000
-            : 2 * 60 * 1000;
+        // B-1: 阈值按任务真实触发周期推导（cron 不再恒用 2min，长周期
+        // cron 不再被每轮 tick 误判；见 computeMisfireThresholdMs）。
+        const threshold = computeMisfireThresholdMs(task);
         if (gap > threshold) {
           if (task.misfireStrategy === MisfireStrategy.FIRE_ONCE) {
+            // B-1 落点校验：错失的计划触达点必须确实落在
+            // (lastTriggerTime, now] 内，才允许在计划外补偿入队。
+            if (
+              task.triggerType === TaskTriggerType.CRON &&
+              !this.cronHasMissedFirePoint(
+                task,
+                task.lastTriggerTime,
+                new Date(now),
+              )
+            ) {
+              this.logger.debug(
+                `Misfire window for "${task.name}" contains no scheduled cron fire point — not compensating`,
+              );
+              continue;
+            }
+            // B-6: 依赖任务补偿前补依赖闸——补偿路径经 enqueue 直接入队，
+            // 绕过 TaskService.trigger 的 checkDependencies；依赖未满足时
+            // （如上游刚失败）绝不强行触发。计入 skipped 指标 + debug 日志
+            // （不刷 warn 告警：依赖未满足是预期态，下轮 tick 再查）。
+            if (
+              task.dependencies &&
+              Object.keys(task.dependencies).length > 0
+            ) {
+              const satisfied = await areDependenciesSatisfied(
+                this.execRepo,
+                task.dependencies,
+              );
+              if (!satisfied) {
+                this.logger.debug(
+                  `Misfire compensation for "${task.name}" skipped: dependencies not satisfied`,
+                );
+                this.schedulerMetrics.recordMisfireSkippedDependencies();
+                continue;
+              }
+            }
             this.logger.warn(
               `Misfire detected for "${task.name}", firing once`,
             );
@@ -976,85 +1135,127 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
   @Cron(CronExpression.EVERY_10_SECONDS)
   async wakeMutexQueuedExecutions() {
     if (!this.isLeader) return;
-    const waiting = await this.execRepo.find({
-      where: { status: ExecutionStatus.WAITING },
-      order: { createdAt: "ASC" },
-      take: 200,
-    });
-    if (waiting.length === 0) return;
-
-    const taskIds = [...new Set(waiting.map((e) => e.taskId))];
-    const tasks = await this.taskRepo.findBy({ id: In(taskIds) });
-    const attemptsByTask = new Map(
-      tasks.map((t) => [t.id, Math.max(1, t.maxRetry ?? 1)]),
-    );
-    const priorityByTask = new Map(
-      // A4: 地图值直接换算为 BullMQ 出队优先级（DB 4=紧急 → BullMQ 1=最先
-      // 出队）。任务行被并发删除时 .get() 仍回 undefined，沿用旧缺省行为。
-      tasks.map((t) => [
-        t.id,
-        toBullPriority(normalizeTaskPriority(t.priority)),
-      ]),
-    );
-
+    // B-4（调度域审计）：分页循环——旧实现单次 take:200 无翻页，积压 > 200
+    // 且最早 200 条同属满组时（组内探针翻转后很快被 dispatch 失败退回
+    // WAITING，回到页首），第 201+ 条永远拿不到探针。改为 (createdAt,id)
+    // keyset 游标分页：每轮游标推进到本页最后一行（无论该行翻转与否——
+    // 翻转成功的行已离开 WAITING，被有意跳过的行见下方各自注释），直至取空
+    // 或到达安全轮数上限（防极端情形下的死循环；上限内的未处理行交由下一
+    // tick 继续，10s 粒度不丢唤醒保证）。翻页安全：翻转是条件 UPDATE 独占
+    // 唤醒权（幂等），重复处理同一行不会重复入队。
     let woken = 0;
-    // 同组短路：本轮已唤醒过探针的互斥组（组 id → 已探）。
-    const probedGroups = new Set<string>();
     let skippedSameGroup = 0;
-    for (const exec of waiting) {
-      if (exec.mutexGroupId) {
-        if (probedGroups.has(exec.mutexGroupId)) {
-          skippedSameGroup += 1;
+    // B-11: 非 ACTIVE（PAUSED）任务的排队执行被跳过的计数
+    let skippedNotActive = 0;
+    // 同组短路：本次 sweep（跨所有分页轮）已唤醒过探针的互斥组。
+    const probedGroups = new Set<string>();
+    let cursor: { createdAt: Date; id: string } | null = null;
+    for (let round = 0; round < MUTEX_WAKE_MAX_ROUNDS; round++) {
+      const pageQb = this.execRepo
+        .createQueryBuilder("e")
+        .where("e.status = :waiting", { waiting: ExecutionStatus.WAITING })
+        .orderBy("e.createdAt", "ASC")
+        .addOrderBy("e.id", "ASC")
+        .take(MUTEX_WAKE_PAGE_SIZE);
+      if (cursor) {
+        pageQb.andWhere(
+          "(e.createdAt > :cursorAt OR (e.createdAt = :cursorAt AND e.id > :cursorId))",
+          { cursorAt: cursor.createdAt, cursorId: cursor.id },
+        );
+      }
+      const waiting = await pageQb.getMany();
+      if (waiting.length === 0) break;
+
+      const taskIds = [...new Set(waiting.map((e) => e.taskId))];
+      const tasks = await this.taskRepo.findBy({ id: In(taskIds) });
+      // B-11: 任务行按 id 索引——唤醒前校验任务仍为 ACTIVE（PAUSED 跳过）。
+      const taskById = new Map(tasks.map((t) => [t.id, t] as const));
+      const attemptsByTask = new Map(
+        tasks.map((t) => [t.id, Math.max(1, t.maxRetry ?? 1)]),
+      );
+      const priorityByTask = new Map(
+        // A4: 地图值直接换算为 BullMQ 出队优先级（DB 4=紧急 → BullMQ 1=最先
+        // 出队）。任务行被并发删除时 .get() 仍回 undefined，沿用旧缺省行为。
+        tasks.map((t) => [
+          t.id,
+          toBullPriority(normalizeTaskPriority(t.priority)),
+        ]),
+      );
+
+      for (const exec of waiting) {
+        // B-11（调度域审计）：PAUSED（及一切非 ACTIVE）任务的排队执行不再
+        // 被唤醒派发——行保持 WAITING 不动，resume 落 ACTIVE 后由下一轮
+        // sweep 正常唤醒（resume 语义衔接）。任务行缺席（并发删除/软删）
+        // 维持旧行为照常唤醒：dispatch 阶段按 "Task not found" 收敛为
+        // FAILED，避免行永久悬挂。
+        const taskRow = taskById.get(exec.taskId);
+        if (taskRow && taskRow.status !== TaskStatus.ACTIVE) {
+          skippedNotActive += 1;
           continue;
         }
-        probedGroups.add(exec.mutexGroupId);
-      }
-      // 条件翻转独占唤醒权：同一执行不会被重复入队（sweep 重叠 / 与用户
-      // kill 竞态时，kill 赢家先把行终态化，本 UPDATE affected=0 跳过）。
-      // errorMessage（排队原因）一并清空——后续失败由各自路径写自己的原因。
-      const flipped = await this.execRepo
-        .createQueryBuilder()
-        .update(TaskExecution)
-        .set({ status: ExecutionStatus.PENDING, errorMessage: null })
-        .where("id = :id AND status = :waiting", {
-          id: exec.id,
-          waiting: ExecutionStatus.WAITING,
-        })
-        .execute();
-      if (!flipped.affected) continue;
-      try {
-        await this.queue.add(
-          "execute",
-          { executionId: exec.id },
-          {
-            attempts: attemptsByTask.get(exec.taskId) ?? 1,
-            priority: priorityByTask.get(exec.taskId),
-          },
-        );
-        woken += 1;
-      } catch (err: unknown) {
-        // 回滚为 WAITING：保住「排队等唤醒」的状态，下轮 sweep 再试。
-        await this.execRepo
+        // 同组短路：本次 sweep 已唤醒过探针的互斥组（组 id → 已探）。
+        if (exec.mutexGroupId) {
+          if (probedGroups.has(exec.mutexGroupId)) {
+            skippedSameGroup += 1;
+            continue;
+          }
+          probedGroups.add(exec.mutexGroupId);
+        }
+        // 条件翻转独占唤醒权：同一执行不会被重复入队（sweep 重叠 / 与用户
+        // kill 竞态时，kill 赢家先把行终态化，本 UPDATE affected=0 跳过）。
+        // errorMessage（排队原因）一并清空——后续失败由各自路径写自己的原因。
+        const flipped = await this.execRepo
           .createQueryBuilder()
           .update(TaskExecution)
-          .set({ status: ExecutionStatus.WAITING })
-          .where("id = :id AND status = :pending", {
+          .set({ status: ExecutionStatus.PENDING, errorMessage: null })
+          .where("id = :id AND status = :waiting", {
             id: exec.id,
-            pending: ExecutionStatus.PENDING,
+            waiting: ExecutionStatus.WAITING,
           })
           .execute();
-        this.logger.warn(
-          `MUTEX-01: wake re-enqueue failed for execution ${exec.id}: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
-        );
+        if (!flipped.affected) continue;
+        try {
+          await this.queue.add(
+            "execute",
+            { executionId: exec.id },
+            {
+              attempts: attemptsByTask.get(exec.taskId) ?? 1,
+              priority: priorityByTask.get(exec.taskId),
+            },
+          );
+          woken += 1;
+        } catch (err: unknown) {
+          // 回滚为 WAITING：保住「排队等唤醒」的状态，下轮 sweep 再试。
+          await this.execRepo
+            .createQueryBuilder()
+            .update(TaskExecution)
+            .set({ status: ExecutionStatus.WAITING })
+            .where("id = :id AND status = :pending", {
+              id: exec.id,
+              pending: ExecutionStatus.PENDING,
+            })
+            .execute();
+          this.logger.warn(
+            `MUTEX-01: wake re-enqueue failed for execution ${exec.id}: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        }
       }
+
+      // 游标推进到本页最后一行；本页不足页大小 = 已无更多 WAITING，收工。
+      const lastRow = waiting[waiting.length - 1];
+      cursor = { createdAt: lastRow.createdAt, id: lastRow.id };
+      if (waiting.length < MUTEX_WAKE_PAGE_SIZE) break;
     }
-    if (woken > 0 || skippedSameGroup > 0) {
+    if (woken > 0 || skippedSameGroup > 0 || skippedNotActive > 0) {
       this.logger.log(
-        `MUTEX-01: woke ${woken}/${waiting.length} mutex-queued execution(s) for re-dispatch` +
+        `MUTEX-01: woke ${woken} mutex-queued execution(s) for re-dispatch` +
           (skippedSameGroup > 0
-            ? ` (skipped ${skippedSameGroup} same-group candidate(s) this round — group probe already in flight)`
+            ? ` (skipped ${skippedSameGroup} same-group candidate(s) this sweep — group probe already in flight)`
+            : "") +
+          (skippedNotActive > 0
+            ? ` (skipped ${skippedNotActive} candidate(s) of non-active tasks — B-11)`
             : ""),
       );
     }
