@@ -4,6 +4,7 @@ import { AppDeploymentService } from "../app-deployment.service";
 import {
   releaseSortTimestampMs,
   RELEASES_MAX_PAGE_SIZE,
+  RELEASES_SYNTHETIC_SCAN_PAGE_SIZE,
 } from "../app-deployment.service";
 import {
   AppDeployment,
@@ -435,6 +436,58 @@ describe("AppDeploymentService.getReleases (DEP-01)", () => {
     const unknown = res.data.find((r) => r.version === null)!;
     expect(unknown.latestDeploymentId).toBe("d-unk");
     expect(unknown.triggerType).toBe("manual"); // deployedAt 已置位且非升级指纹
+  });
+
+  // ------------------------------------------------------------------
+  // A-6: synthetic 聚合分页限幅（整表 find → 分页流式聚合）
+  // ------------------------------------------------------------------
+
+  it("A-6: synthetic 扫描带 skip/take 分页跨页聚合，页短即停，计数/最新行不回归", async () => {
+    versionRepo.findAndCount.mockResolvedValue([[], 0]); // 无快照行 → 全部出 synthetic 行
+    versionRepo.find.mockResolvedValue([]);
+    const firstPage = Array.from(
+      { length: RELEASES_SYNTHETIC_SCAN_PAGE_SIZE },
+      (_, i) =>
+        deploymentRow(`d-${i}`, {
+          deployedVersion: "1.0.0",
+          status: DeploymentStatus.RUNNING,
+          createdAt: new Date(1_700_000_000_000 - i),
+        }),
+    );
+    const secondPage = [
+      deploymentRow("d-latest-2", {
+        deployedVersion: "2.0.0",
+        status: DeploymentStatus.FAILED,
+        createdAt: new Date(1_600_000_000_000),
+      }),
+    ];
+    deploymentRepo.find.mockImplementation(async (opts: any) => {
+      if (opts?.where?.id) return []; // source-deployment 查询
+      const skip = opts?.skip ?? 0;
+      if (skip === 0) return firstPage;
+      if (skip === RELEASES_SYNTHETIC_SCAN_PAGE_SIZE) return secondPage;
+      return [];
+    });
+
+    const res = await service.getReleases("app-1", 1, 50);
+
+    // 所有 synthetic 扫描调用都带 skip/take（限幅证据），且第二页不足一页即停
+    const scans = deploymentRepo.find.mock.calls
+      .map((c) => c[0] as Record<string, unknown>)
+      .filter((opts) => !(opts?.where as any)?.id);
+    expect(scans.length).toBe(2);
+    for (const s of scans) {
+      expect(s.take).toBe(RELEASES_SYNTHETIC_SCAN_PAGE_SIZE);
+      expect(typeof s.skip).toBe("number");
+    }
+    // 跨页计数与最新行语义不回归
+    const synthetic = res.data.filter((r) => r.synthetic);
+    expect(synthetic).toHaveLength(2);
+    const v1 = synthetic.find((r) => r.version === "1.0.0")!;
+    expect(v1.deploymentCount).toBe(RELEASES_SYNTHETIC_SCAN_PAGE_SIZE);
+    const v2 = synthetic.find((r) => r.version === "2.0.0")!;
+    expect(v2.latestDeploymentId).toBe("d-latest-2");
+    expect(v2.deploymentStatus).toBe(DeploymentStatus.FAILED);
   });
 
   // ------------------------------------------------------------------

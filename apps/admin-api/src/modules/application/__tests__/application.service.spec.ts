@@ -1,5 +1,6 @@
 import { Test } from "@nestjs/testing";
 import { getRepositoryToken } from "@nestjs/typeorm";
+import { ConflictException } from "@nestjs/common";
 import fs from "fs";
 import * as path from "path";
 import { ApplicationService } from "../application.service";
@@ -948,7 +949,7 @@ describe("ApplicationService", () => {
 describe("ApplicationService.remove — executor cleanup fanout (NETOPT-8③)", () => {
   let service: ApplicationService;
   let appRepo: ReturnType<typeof makeRepo>;
-  let deploymentRepo: { find: jest.Mock };
+  let deploymentRepo: { find: jest.Mock; findOne: jest.Mock };
   let executorService: {
     getExecutorUrl: jest.Mock;
     getSharedToken: jest.Mock;
@@ -960,7 +961,11 @@ describe("ApplicationService.remove — executor cleanup fanout (NETOPT-8③)", 
 
   beforeEach(async () => {
     appRepo = makeRepo();
-    deploymentRepo = { find: jest.fn().mockResolvedValue([]) };
+    // A-5: remove() 前置的在途校验也走 deploymentRepo.findOne（无在途行 → null）
+    deploymentRepo = {
+      find: jest.fn().mockResolvedValue([]),
+      findOne: jest.fn().mockResolvedValue(null),
+    };
     executorService = {
       getExecutorUrl: jest.fn(
         (addr: string, p: string) => `http://${addr}/${p}`,
@@ -1100,7 +1105,7 @@ describe("ApplicationService.remove — executor cleanup fanout (NETOPT-8③)", 
 describe("ApplicationService.remove — fanout audit + notify (DEEP-AUDIT B·4.3)", () => {
   let service: ApplicationService;
   let appRepo: ReturnType<typeof makeRepo>;
-  let deploymentRepo: { find: jest.Mock };
+  let deploymentRepo: { find: jest.Mock; findOne: jest.Mock };
   let executorService: {
     getExecutorUrl: jest.Mock;
     getSharedToken: jest.Mock;
@@ -1113,7 +1118,11 @@ describe("ApplicationService.remove — fanout audit + notify (DEEP-AUDIT B·4.3
 
   const assemble = async (axiosImpl?: () => Promise<unknown>) => {
     appRepo = makeRepo();
-    deploymentRepo = { find: jest.fn().mockResolvedValue([]) };
+    // A-5: remove() 前置的在途校验也走 deploymentRepo.findOne（无在途行 → null）
+    deploymentRepo = {
+      find: jest.fn().mockResolvedValue([]),
+      findOne: jest.fn().mockResolvedValue(null),
+    };
     executorService = {
       getExecutorUrl: jest.fn(
         (addr: string, p: string) => `http://${addr}/${p}`,
@@ -1451,6 +1460,217 @@ describe("ApplicationService — D3-B-P1-2 审计落证", () => {
       await expect(
         svc.recordUploadVersion(app, { id: 7 }),
       ).resolves.toBeUndefined();
+    });
+
+    // A-7①: 同版本号重传是文件替换——既有快照的 packageUrl 不再钉在首传的
+    // 旧 zip 上，而是就地更新到本次新文件；旧 zip 在无其他快照引用时被
+    // best-effort 清理（应用删除只 unlink 当前 packageUrl，历史快照钉住的
+    // 旧 zip 会永久成为孤儿）。
+    describe("A-7: 同版本重传更新快照 packageUrl + 清理无引用旧包", () => {
+      // unlink 间谍逐用例还原——否则下一个 spyOn 拿到同一 spy，历史调用
+      // 串场（「不清理」用例会看到上一用例的 unlink 记录）。
+      afterEach(() => {
+        jest.restoreAllMocks();
+      });
+
+      const LOCAL_URL_OLD =
+        "http://api.local/uploads/packages/Demo_111.zip";
+      const LOCAL_URL_NEW =
+        "http://api.local/uploads/packages/Demo_222.zip";
+
+      const buildWithRefs = async (referencedCount: number) => {
+        const versionRepo = {
+          findOne: jest.fn().mockResolvedValue({
+            id: "v-existing",
+            applicationId: "app-1",
+            version: "1.0.1",
+            status: "released",
+            snapshot: { packageUrl: LOCAL_URL_OLD, entrypoint: "dist/main.js" },
+          }),
+          save: jest.fn().mockImplementation((v: unknown) => Promise.resolve(v)),
+          create: jest.fn().mockImplementation((v: unknown) => v),
+          createQueryBuilder: jest.fn(() => ({
+            where: jest.fn().mockReturnThis(),
+            andWhere: jest.fn().mockReturnThis(),
+            getCount: jest.fn().mockResolvedValue(referencedCount),
+          })),
+        };
+        const unlinkSpy = jest
+          .spyOn(fs.promises, "unlink")
+          .mockResolvedValue(undefined);
+        const svc = await buildWithVersionRepo(versionRepo);
+        return { svc, versionRepo, unlinkSpy };
+      };
+
+      it("重传后既有快照的 packageUrl 更新为新文件（版本历史/回滚不再带回旧包）", async () => {
+        const { svc, versionRepo, unlinkSpy } = await buildWithRefs(0);
+        const newApp = {
+          ...app,
+          packageUrl: LOCAL_URL_NEW,
+        } as unknown as Application;
+
+        await svc.recordUploadVersion(newApp, { id: 7 });
+
+        expect(versionRepo.save).toHaveBeenCalledTimes(1);
+        const saved = versionRepo.save.mock.calls[0][0] as {
+          snapshot: Record<string, unknown>;
+          id: string;
+        };
+        expect(saved.id).toBe("v-existing");
+        expect(saved.snapshot.packageUrl).toBe(LOCAL_URL_NEW);
+        // 快照其余字段保持首传值（同版本号 = 同一次发布的文件替换）
+        expect(saved.snapshot.entrypoint).toBe("dist/main.js");
+        // 旧 zip 无其他引用 → 被清理
+        expect(unlinkSpy).toHaveBeenCalledWith(
+          expect.stringContaining("Demo_111.zip"),
+        );
+      });
+
+      it("旧 zip 仍被其他快照引用时不清理（宁留孤儿，不误删）", async () => {
+        const { svc, versionRepo, unlinkSpy } = await buildWithRefs(1);
+        const newApp = {
+          ...app,
+          packageUrl: LOCAL_URL_NEW,
+        } as unknown as Application;
+
+        await svc.recordUploadVersion(newApp, { id: 7 });
+
+        // 快照仍更新，但引用查询命中 → 不 unlink
+        expect(versionRepo.save).toHaveBeenCalledTimes(1);
+        expect(unlinkSpy).not.toHaveBeenCalled();
+      });
+
+      it("远程 URL（非本服务 uploads/packages）不尝试本地清理", async () => {
+        const versionRepo = {
+          findOne: jest.fn().mockResolvedValue({
+            id: "v-existing",
+            applicationId: "app-1",
+            version: "1.0.1",
+            status: "released",
+            snapshot: { packageUrl: "https://cdn.example.com/pkg.zip" },
+          }),
+          save: jest.fn().mockImplementation((v: unknown) => Promise.resolve(v)),
+          create: jest.fn(),
+          createQueryBuilder: jest.fn(),
+        };
+        const unlinkSpy = jest
+          .spyOn(fs.promises, "unlink")
+          .mockResolvedValue(undefined);
+        const svc = await buildWithVersionRepo(versionRepo);
+
+        await svc.recordUploadVersion(
+          { ...app, packageUrl: "https://cdn.example.com/pkg-new.zip" } as unknown as Application,
+          { id: 7 },
+        );
+
+        expect(versionRepo.save).toHaveBeenCalledTimes(1);
+        expect(unlinkSpy).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // A-5: 删除应用前校验在途部署——deploy() 推送是 fire-and-forget（重试约
+  // 90s），窗口内删掉应用会级联删行并让执行器跑起无 DB 行的孤儿进程；审批中
+  // 的行被静默级联删同样不可接受。存在在途行 → 409。
+  // -------------------------------------------------------------------------
+  describe("A-5: remove 校验在途部署", () => {
+    const admin = { id: 1, role: UserRole.ADMIN };
+
+    const buildWithDeploymentRepo = async (deploymentRepo: {
+      findOne: jest.Mock;
+      find: jest.Mock;
+    }) => {
+      const appRepo = makeRepo({
+        findOne: jest.fn().mockResolvedValue({
+          id: "app-1",
+          name: "Demo",
+          ownerUserId: 1,
+          packageUrl: null,
+        }),
+      });
+      const svc = new ApplicationService(
+        appRepo as never,
+        {} as never,
+        {} as never,
+        deploymentRepo as never,
+        null as never,
+      );
+      return { svc, appRepo };
+    };
+
+    it("存在在途部署行（PENDING/DEPLOYING/UPGRADING）→ 409，不删应用", async () => {
+      const deploymentRepo = {
+        findOne: jest.fn().mockResolvedValue({
+          id: "d-1",
+          status: "deploying",
+          approvalStatus: null,
+        }),
+        find: jest.fn().mockResolvedValue([]),
+      };
+      const { svc, appRepo } = await buildWithDeploymentRepo(deploymentRepo);
+
+      await expect(svc.remove("app-1", admin)).rejects.toMatchObject({
+        constructor: ConflictException,
+        status: 409,
+      });
+      expect(appRepo.remove).not.toHaveBeenCalled();
+      // 查询条件覆盖三类在途态与待审批两条 OR 分支
+      const where = deploymentRepo.findOne.mock.calls[0][0].where;
+      expect(where).toHaveLength(2);
+      expect(where[0].status.value).toEqual(
+        expect.arrayContaining(["pending", "deploying", "upgrading"]),
+      );
+      expect(where[1].approvalStatus).toBe("pending_approval");
+    });
+
+    it("待审批行（approvalStatus=pending_approval）→ 409", async () => {
+      const deploymentRepo = {
+        findOne: jest.fn().mockResolvedValue({
+          id: "d-approval",
+          status: "pending",
+          approvalStatus: "pending_approval",
+        }),
+        find: jest.fn().mockResolvedValue([]),
+      };
+      const { svc, appRepo } = await buildWithDeploymentRepo(deploymentRepo);
+
+      await expect(svc.remove("app-1", admin)).rejects.toBeInstanceOf(
+        ConflictException,
+      );
+      expect(appRepo.remove).not.toHaveBeenCalled();
+    });
+
+    it("全部终态 → 照常删除（不回归）", async () => {
+      const deploymentRepo = {
+        findOne: jest.fn().mockResolvedValue(null),
+        find: jest.fn().mockResolvedValue([]),
+      };
+      const { svc, appRepo } = await buildWithDeploymentRepo(deploymentRepo);
+
+      await expect(svc.remove("app-1", admin)).resolves.toBeUndefined();
+      expect(appRepo.remove).toHaveBeenCalledTimes(1);
+    });
+
+    it("deploymentRepo 未接线（既有单测装配）→ 跳过校验不阻断删除", async () => {
+      const appRepo = makeRepo({
+        findOne: jest.fn().mockResolvedValue({
+          id: "app-1",
+          name: "Demo",
+          ownerUserId: 1,
+          packageUrl: null,
+        }),
+      });
+      const svc = new ApplicationService(
+        appRepo as never,
+        {} as never,
+        {} as never,
+        null as never,
+        null as never,
+      );
+
+      await expect(svc.remove("app-1", admin)).resolves.toBeUndefined();
+      expect(appRepo.remove).toHaveBeenCalledTimes(1);
     });
   });
 });

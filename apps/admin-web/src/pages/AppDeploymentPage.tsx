@@ -393,7 +393,17 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
         applicationId,
         strategy === 'canary' ? { strategy: 'canary', percentage: 20 } : undefined,
       );
-      message.success(t('appDeploy.msg.upgradeAllDone', { succeeded: result.succeeded, total: result.total }));
+      // A-8：灰度被互斥拒绝（同应用已有在途批次等）时后端返回 200 + ok:false +
+      // rollout.blockedReason——旧实现不看 ok 恒报 success，用户以为灰度已启动。
+      // 按 ok 分支如实提示，blockedReason 拼进文案（后端原因带行数/持有者信息）。
+      if (result.ok === false) {
+        message.warning(
+          t('appDeploy.msg.upgradeAllBlocked', { reason: result.rollout?.blockedReason ?? '' }),
+          8,
+        );
+      } else {
+        message.success(t('appDeploy.msg.upgradeAllDone', { succeeded: result.succeeded, total: result.total }));
+      }
       scheduleDelayedRefresh(2000);
       setRolloutModalOpen(false);
     } catch (err: unknown) {
