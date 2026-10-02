@@ -1,0 +1,28 @@
+# Release Hygiene 审计（每周自动 + 手动 dispatch）。
+# 三条判据见 scripts/check-release-hygiene.md：Draft 遗留 / 同 tag 重复 /
+# Latest 竞争（非 prerelease 的 v* 对象）。违规即红，处置速查同文档。
+name: Release Hygiene Audit
+
+on:
+  schedule:
+    - cron: '23 21 * * 1' # 每周二 05:23 UTC+8，错开整点拥堵
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+
+      - name: Audit releases (drafts / tag duplicates / latest competition)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: node scripts/check-release-hygiene.mjs

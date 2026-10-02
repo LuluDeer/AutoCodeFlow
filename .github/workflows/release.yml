@@ -244,8 +244,33 @@ jobs:
   # 为什么 needs 只依赖 version-guard 而非 publish：保护桌面更新的窗口越短
   #   越好；且即使某个 publish 失败，latest 也必须已经被保护（否则存量用户
   #   立刻受影响）。故与 publish 并行，不等其结果。
-  demote-sdk-release:
+  # ── 发版卫生（N-15 后续）：确保 Release 对象存在 ──────────────────────
+  # 人工 tag 主路径没有 release PR，release-please 不会创建 Release 对象；
+  # 忘建的历史后果是 Draft 遗留（v1.1.x/v1.5.2 即案例）。本 job 幂等创建，
+  # 并按仓库惯例标 prerelease——退出 GitHub Latest 竞争，保护桌面自动更新
+  # 源（v1.5.1 实爆教训，与 demote-sdk-release 同语义）。
+  ensure-release:
     needs: version-guard
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Ensure GitHub Release object exists (prerelease, idempotent)
+        run: |
+          set -euo pipefail
+          tag="${{ github.ref_name }}"
+          if gh release view "$tag" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "::notice::Release $tag 已存在，跳过创建"
+            exit 0
+          fi
+          gh release create "$tag" --repo "${{ github.repository }}" \
+            --title "$tag" --generate-notes --prerelease
+          echo "::notice::Release $tag 已创建（prerelease）"
+
+  demote-sdk-release:
+    needs: [version-guard, ensure-release]
     runs-on: ubuntu-latest
     permissions:
       contents: write
