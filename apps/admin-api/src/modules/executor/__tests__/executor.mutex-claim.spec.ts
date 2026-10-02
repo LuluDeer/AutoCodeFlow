@@ -271,7 +271,10 @@ describe("ExecutorService mutex claim (MUTEX-01)", () => {
     const occ = occupancyCountQuery()!;
     expect(occ.sql).not.toContain('"executorAddress"');
     expect(occ.sql).toContain('"id" <> $2');
-    expect(occ.params).toEqual([groupedExecution.mutexGroupId, groupedExecution.id]);
+    expect(occ.params).toEqual([
+      groupedExecution.mutexGroupId,
+      groupedExecution.id,
+    ]);
   });
 
   it("N-15 全局互斥：组内占用已满（跨设备计数）→ mutex_full", async () => {
