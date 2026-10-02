@@ -1,4 +1,10 @@
-import { ExecutionContext, Injectable, Logger, Optional } from "@nestjs/common";
+import {
+  ExecutionContext,
+  Inject,
+  Injectable,
+  Logger,
+  Optional,
+} from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { Reflector } from "@nestjs/core";
 import { timingSafeEqual } from "node:crypto";
@@ -47,9 +53,17 @@ export class MetricsScraperAuthGuard extends JwtAuthGuard {
     // 保留注入位以兼容 DI/测试缝签名；基类改用屏蔽 IS_PUBLIC 的实例（见
     // NonPublicReflector），注入的 reflector 不再透传。
     _reflector: Reflector,
-    // @Optional:极简装配(旧 guard-only 测试/手工 TestingModule)可能不提供
-    // ConfigService——此时视为未配置令牌,走纯 JWT 路径(与改造前一致)。
+    // @Inject 必须显式声明（2026-10-02 根因收口）：Nest reflectConstructorParams
+    // 合并 self-declared deps 时用原型链敏感的 Reflect.getMetadata，会拾取基类
+    // JwtAuthGuard 构造器 index[1] 的 @Inject(API_KEY_AUTH_FACADE) 覆写掉本类
+    // index[1] 的类型推断 —— ConfigService 位被按 FACADE 字符串 token 解析失败，
+    // @Optional 吞成 undefined（2026-10-01 chaos 实跑"注入为 undefined"的根因，
+    // 主会话以 strict-clone 探针实证：Nest 报 "argument API_KEY_AUTH_FACADE at
+    // index [1]"）。本类自己的 @Inject(ConfigService) 在原型链上更派生，覆盖回
+    // 正确 token。Nest 侧上游问题（reflectOptionalParams 用 getOwnMetadata 而
+    // self-deps 未做同样限定）待报 issue。
     @Optional()
+    @Inject(ConfigService)
     configService: ConfigService | undefined,
     // 测试缝:注入 jwt 替身以断言分流(生产 DI 不提供,@Optional 保持可实例化)。
     @Optional()
@@ -57,11 +71,11 @@ export class MetricsScraperAuthGuard extends JwtAuthGuard {
   ) {
     super(new NonPublicReflector());
     // 生产配置形状里该值嵌在 database 节下（configuration.ts database.metricsScraperToken）；
-    // 顶层路径保留兼容平铺注册（旧测试缝/手工装配）。只读顶层会恒取不到 —— 抓取
-    // 令牌路径永不生效（2026-10-01 chaos 实跑实证：配了 credentials_file 仍 401）。
-    // process.env 兜底：chaos 实跑观测到 ConfigService 路径语义正确、env 在 PID1
-    // environ 中、工厂产物含键，但守卫运行时仍取不到 —— 兜底保证抓取认证可用，
-    // warn 用于暴露取值断点位置（勿删）。
+    // 顶层路径保留兼容平铺注册（旧测试缝/手工装配）。
+    // process.env 兜底仅服务极简装配（旧 guard-only 测试/手工 TestingModule 无
+    // ConfigModule）：@Optional 下 ConfigService 解析失败视为未配置令牌,走纯
+    // JWT 路径(与改造前一致)；生产 DI 正常注入后 warn 不应出现——出现即说明
+    // 装配面回归（如上游 Nest 行为变化），保留观测点。
     const raw =
       configService?.get<string>("database.metricsScraperToken") ??
       configService?.get<string>("metricsScraperToken") ??
