@@ -80,8 +80,13 @@ describe("ExecutorService python_task_multiversion（解释器缓存池 / packag
         set: jest.fn().mockReturnThis(),
         where: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
         addSelect: jest.fn().mockReturnThis(),
         getOne: jest.fn().mockResolvedValue(null),
+        // A-4: dispatch 的 fleet 查询在带 runtime 条件时改走 QueryBuilder——
+        // getMany 回落 find 的 fixture，本 spec 的派发用例语义不变。
+        getMany: jest.fn(() => executorRepo.find()),
         execute: updateExecute,
       })),
     };

@@ -179,6 +179,9 @@ describe("ExecutorController", () => {
       {
         headers: { Authorization: "Bearer second-token" },
         timeout: 10_000,
+        // A-3: 重签重试与首发请求同配置——SSRF 安全配置（maxRedirects: 0 +
+        // pinCfg）必须保留。本 spec 的守卫桩返回 pinned:false → pinCfg 为空。
+        maxRedirects: 0,
       },
     );
   });
@@ -437,6 +440,9 @@ describe("ExecutorController", () => {
         {
           headers: { Authorization: "Bearer second-token" },
           timeout: 10_000,
+          // A-3: 重签重试与首发请求同配置（maxRedirects: 0 + pinCfg；
+          // 本 spec 守卫桩 pinned:false → pinCfg 为空）。
+          maxRedirects: 0,
         },
       );
       expect(retryCount("reissued_success")).toBe(1);

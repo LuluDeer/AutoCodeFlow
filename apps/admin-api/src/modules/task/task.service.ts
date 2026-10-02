@@ -454,6 +454,43 @@ export class TaskService {
   }
 
   /**
+   * A-1（执行器域审计 P1）：broadcast 与互斥组互斥——写面直接 400 拒绝。
+   *
+   * 背景：互斥组挂在**应用**上（applications.mutexGroupId），执行行创建时经
+   * resolveTaskMutexGroupId 快照带下；dispatchBroadcast 派发时全程不调
+   * claimExecutorSlotForExecution 占坑闸，「broadcast + 应用挂互斥组」的任务
+   * 会静默绕过组内并发约束（同一秒 N 台全跑）。广播的语义就是"同时扇出全部
+   * 在线执行器"，与互斥"组内串行/限并发"在调度语义上不可调和（单执行行的
+   * 占用标记 executorAddress 无法表达 N 目标并发，强行占坑会破坏唤醒/释放
+   * 链路），故选择在**写面拒绝**而不是运行时半吊子执行：任务创建/编辑时
+   * 声明 broadcast 且其应用挂有互斥组 → 400。
+   *
+   * 判定对象是 applicationId 指向应用的当前组配置；应用不存在 → 无互斥组
+   * （与 resolveTaskMutexGroupId 的「组查不到 = 不参与互斥」同口径，应用的
+   * 存在性由 zip 渠道校验/派发链各自负责，不在此重复报错）。
+   */
+  private async assertBroadcastMutexCompatible(
+    executeMode: ExecuteMode | null | undefined,
+    applicationId: string | null | undefined,
+    context: string,
+  ): Promise<void> {
+    if (executeMode !== ExecuteMode.BROADCAST) return;
+    if (!applicationId) return;
+    const appRepo = this.dataSource.getRepository(Application);
+    const app = await appRepo
+      .findOne({
+        where: { id: applicationId },
+        select: { id: true, name: true, mutexGroupId: true },
+      })
+      .catch(() => null);
+    if (!app?.mutexGroupId) return;
+    throw new BadRequestException(
+      `executeMode=broadcast is incompatible with a mutex group: application "${app.name}" (${applicationId}) is bound to mutex group ${app.mutexGroupId}. ` +
+        `Broadcast fans out to every online executor simultaneously and cannot honor the group's concurrency cap — switch the task to executeMode=single, or remove the mutex group from the application (${context})`,
+    );
+  }
+
+  /**
    * python_task_multiversion（FR-06 / AC-06b / NFR-05）：`runtimeVersion`
    * 写面校验——**格式 + 区间 + runtime 一致性**。
    *
@@ -1110,6 +1147,13 @@ export class TaskService {
     });
     // TASK-PROJ-01: 归属项目校验（存在性 + 授权），见 assertCanAssignProject
     await this.assertCanAssignProject(normalized.projectId, user);
+    // A-1: create 的终态就是请求体——broadcast + 应用挂互斥组在写面直接 400
+    //（派发面 dispatchBroadcast 不执行互斥占坑，见方法头注）。
+    await this.assertBroadcastMutexCompatible(
+      normalized.executeMode,
+      normalized.applicationId,
+      "create",
+    );
     // SEC-NEW-2 对齐（W-21 后续）：git 源在**任务写面**即校验。executor 派发时只放行
     // https?://|git@|ssh:// 且拒绝 loopback/私有网段（execute.ts:363-376，python 侧对等）
     // ——此前 admin 不做同类校验，导致「任务创建成功、派发才 400」的两端不一致。
@@ -1620,6 +1664,18 @@ export class TaskService {
     // "broadcast+已 pin" 非法状态（dispatchBroadcast 不读 executorId，pinning
     // 被静默丢弃）。save 前兜底，消息与 create 路径一致。
     this.assertPinBroadcastExclusive(updated.executorId, updated.executeMode);
+    // A-1: PATCH 合并路径的 broadcast × 互斥组互斥校验——看合并后实体态
+    //（R7/N17 先例：增量 DTO 看不到另一半）。作用域门（NFR-05 先例）：只在
+    // 本次请求确实编辑了 executeMode / applicationId 时判定，存量历史行
+    //（写面门上线前创建）连改 timeout 都被拒会把合法 PATCH 一起挡死——
+    // 存量行由 dispatchBroadcast 的运行时 warn 兜底可观测。
+    if ("executeMode" in dto || "applicationId" in dto) {
+      await this.assertBroadcastMutexCompatible(
+        updated.executeMode,
+        updated.applicationId,
+        `task ${id}`,
+      );
+    }
     // FIX-1.3: PATCH 配对校验看合并后实体态（R7/N17 先例）——增量只带
     // triggerType 或只清 cronExpression 时，增量 DTO 看不到另一半。
     this.assertTriggerConfigConsistent(updated);

@@ -234,7 +234,15 @@ export class CreateTaskDto {
   @IsEnum(TaskPriority)
   @IsOptional()
   priority?: TaskPriority;
-  @ApiPropertyOptional()
+  /**
+   * A-1（执行器域审计）：broadcast 与互斥组互斥——绑定应用的
+   * applications.mutexGroupId 非空时，broadcast 任务在写面 400 拒绝
+   * （广播不执行互斥占坑，见 TaskService.assertBroadcastMutexCompatible）。
+   */
+  @ApiPropertyOptional({
+    description:
+      "Dispatch mode: single (pick the least-loaded eligible executor, default) or broadcast (fan out to every eligible online executor). Mutually exclusive with executorId pinning, and rejected with 400 when the bound application carries a mutex group (broadcast cannot honor in-group concurrency caps).",
+  })
   @IsEnum(ExecuteMode)
   @IsOptional()
   executeMode?: ExecuteMode;
