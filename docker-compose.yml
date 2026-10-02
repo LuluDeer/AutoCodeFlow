@@ -314,6 +314,8 @@ services:
       REQUIRE_TOKEN: 'true'
       EXECUTOR_ADDRESS: executor-python:8001
       EXECUTOR_ADDRESS_PUBLIC: ${EXECUTOR_PYTHON_PUBLIC_ADDRESS:-executor-python:8001}
+      # N-15：同 executor-node——包 URL 为内网 admin-api，放行拉取
+      EXECUTOR_ALLOW_PRIVATE_NETWORK: "true"
       ADMIN_API_URL: http://admin-api:3105
       ADMIN_API_URL_INTERNAL: ${ADMIN_API_URL_INTERNAL:-http://admin-api:3105}
       ADMIN_API_URL_EXTERNAL: ${ADMIN_API_URL_EXTERNAL:-}
@@ -423,6 +425,11 @@ services:
       REQUIRE_TOKEN: 'true'
       EXECUTOR_ADDRESS: executor-node:8002
       EXECUTOR_ADDRESS_PUBLIC: ${EXECUTOR_NODE_PUBLIC_ADDRESS:-executor-node:8002}
+      # N-15 实跑发现：应用包 packageUrl 缺省拼的就是内网 admin-api 地址（见
+      # admin-api API_BASE_URL 注释），执行器拉包会被自己的 ssrf-guard 以私网
+      # 地址拒掉 -> compose 形态应用包任务全军覆没。同网络内拉 admin-api 是设
+      # 计主路径（跨机执行器仍由根 .env 显式控制），此处显式放行。
+      EXECUTOR_ALLOW_PRIVATE_NETWORK: "true"
       ADMIN_API_URL: http://admin-api:3105
       ADMIN_API_URL_INTERNAL: ${ADMIN_API_URL_INTERNAL:-http://admin-api:3105}
       ADMIN_API_URL_EXTERNAL: ${ADMIN_API_URL_EXTERNAL:-}

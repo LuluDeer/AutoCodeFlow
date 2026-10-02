@@ -266,10 +266,12 @@ describe("ExecutorService mutex claim (MUTEX-01)", () => {
     expect(txQueries[groupLockIdx].params).toEqual([
       groupedExecution.mutexGroupId,
     ]);
-    // ③ 占用判定不带设备条件（全局档：组内跨设备计数）
+    // ③ 占用判定不带设备条件（全局档：组内跨设备计数），且排除执行自身行
+    //（dispatch 前本执行已 RUNNING、地址未落——不排除会自己等自己）
     const occ = occupancyCountQuery()!;
     expect(occ.sql).not.toContain('"executorAddress"');
-    expect(occ.params).toEqual([groupedExecution.mutexGroupId]);
+    expect(occ.sql).toContain('"id" <> $2');
+    expect(occ.params).toEqual([groupedExecution.mutexGroupId, groupedExecution.id]);
   });
 
   it("N-15 全局互斥：组内占用已满（跨设备计数）→ mutex_full", async () => {
