@@ -1,9 +1,6 @@
 import { plainToInstance } from "class-transformer";
 import { validate } from "class-validator";
-import {
-  TaskParamsMaxBytesConstraint,
-  TaskParamsMaxBytes,
-} from "../dto/params-size.constraint";
+import { TaskParamsMaxBytesConstraint } from "../dto/params-size.constraint";
 import { TASK_PARAMS_MAX_BYTES } from "../params-size.util";
 import { CreateTaskDto } from "../dto/create-task.dto";
 import { TriggerTaskDto } from "../dto/trigger-task.dto";
@@ -16,11 +13,6 @@ import { TriggerTaskDto } from "../dto/trigger-task.dto";
  * （CreateTaskDto.params，经 PartialType 同时约束 PATCH）完全无上限。三个
  * 入口现共用 TASK_PARAMS_MAX_BYTES 同一常量（params-size.util 单一出处）。
  */
-
-class WithParams {
-  @TaskParamsMaxBytes()
-  params?: Record<string, unknown>;
-}
 
 const bigObject = (bytes: number): Record<string, string> => {
   // 每个条目 ~1KB 的 JSON 文本；条目数按目标体积放大
@@ -57,9 +49,9 @@ describe("TaskParamsMaxBytes (B-9)", () => {
   });
 
   it("默认消息带共享上限口径（create/update/trigger/webhook 同门）", () => {
-    expect(constraint.defaultMessage({ property: "params" } as never)).toContain(
-      String(TASK_PARAMS_MAX_BYTES),
-    );
+    expect(
+      constraint.defaultMessage({ property: "params" } as never),
+    ).toContain(String(TASK_PARAMS_MAX_BYTES));
   });
 
   it("CreateTaskDto.params 超限 → 400（含 create 默认 params 面）", async () => {

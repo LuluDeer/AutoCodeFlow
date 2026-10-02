@@ -19,7 +19,10 @@ interface CtxOver {
   path?: string;
 }
 
-const makeCtx = (authorization?: string, over: CtxOver = {}): ExecutionContext => {
+const makeCtx = (
+  authorization?: string,
+  over: CtxOver = {},
+): ExecutionContext => {
   const req: Record<string, unknown> = {
     headers: {},
     // 默认形态 = Prometheus 抓取请求（GET /api/metrics，全局前缀 api）
@@ -178,9 +181,7 @@ describe("MetricsScraperAuthGuard", () => {
       jwt,
     );
     await expect(
-      guard.canActivate(
-        makeCtx("Bearer scraper-secret", { method: "POST" }),
-      ),
+      guard.canActivate(makeCtx("Bearer scraper-secret", { method: "POST" })),
     ).resolves.toBe(false);
     expect(callsOf(jwt).calls.length).toBe(1);
   });
@@ -193,7 +194,9 @@ describe("MetricsScraperAuthGuard", () => {
       jwt,
     );
     await expect(
-      guard.canActivate(makeCtx("Bearer scraper-secret", { path: "/api/metrics/" })),
+      guard.canActivate(
+        makeCtx("Bearer scraper-secret", { path: "/api/metrics/" }),
+      ),
     ).resolves.toBe(true);
     expect(callsOf(jwt).calls.length).toBe(0);
   });
@@ -206,9 +209,7 @@ describe("MetricsScraperAuthGuard", () => {
       jwt,
     );
     await expect(
-      guard.canActivate(
-        makeCtx(undefined, { path: "/api/metrics/failures" }),
-      ),
+      guard.canActivate(makeCtx(undefined, { path: "/api/metrics/failures" })),
     ).resolves.toBe(true);
     expect(callsOf(jwt).calls.length).toBe(1);
   });

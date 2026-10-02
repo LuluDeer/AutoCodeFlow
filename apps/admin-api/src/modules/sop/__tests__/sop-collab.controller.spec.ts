@@ -5,7 +5,10 @@ import {
   UnauthorizedException,
 } from "@nestjs/common";
 
-import { SopCollabController, MEDIA_UPLOAD_LIMITS } from "../sop-collab.controller";
+import {
+  SopCollabController,
+  MEDIA_UPLOAD_LIMITS,
+} from "../sop-collab.controller";
 import { MAX_AGENT_MEDIA_BYTES } from "../sop-media.service";
 
 /** 手工 fake 六个依赖（对照 sop.service.capabilities.spec 的 harness 风格）。 */

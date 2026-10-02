@@ -94,7 +94,10 @@ export class AgentSessionRetentionService {
   }> {
     const stepCutoff = this.cutoff(
       now,
-      this.resolveDays(ENV_STEP_RETENTION_DAYS, AGENT_STEP_RETENTION_DEFAULT_DAYS),
+      this.resolveDays(
+        ENV_STEP_RETENTION_DAYS,
+        AGENT_STEP_RETENTION_DEFAULT_DAYS,
+      ),
     );
     const readCutoff = this.cutoff(
       now,

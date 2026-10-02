@@ -51,10 +51,7 @@ function harness(assignment: Partial<AssignmentRow> = {}) {
       ) => {
         if (row.id !== where.id) return { affected: 0 };
         if (
-          Object.prototype.hasOwnProperty.call(
-            where,
-            "clarificationRound",
-          ) &&
+          Object.prototype.hasOwnProperty.call(where, "clarificationRound") &&
           row.clarificationRound !== where.clarificationRound
         ) {
           return { affected: 0 };
@@ -72,7 +69,10 @@ function harness(assignment: Partial<AssignmentRow> = {}) {
           Object.entries(where).every(([k, v]) => c[k] === v),
         ) ?? null,
     ),
-    create: jest.fn((v: unknown) => ({ id: `clr-${clarificationRows.length + 1}`, ...(v as object) })),
+    create: jest.fn((v: unknown) => ({
+      id: `clr-${clarificationRows.length + 1}`,
+      ...(v as object),
+    })),
     save: jest.fn(async (v: Record<string, unknown>) => {
       clarificationRows.push(v);
       return v;
@@ -161,7 +161,9 @@ describe("SOP ingestClarification · 归属断言（B-1）", () => {
     expect(out.clarification).not.toMatchObject({
       question: "受害工单的问题",
     });
-    expect((out.clarification as unknown as Record<string, unknown>).answer).toBeUndefined();
+    expect(
+      (out.clarification as unknown as Record<string, unknown>).answer,
+    ).toBeUndefined();
   });
 
   it("幂等重放（同指派同幂等键）仍返回已有行——不产生重复澄清", async () => {
@@ -205,9 +207,9 @@ describe("SOP ingestClarification · 轮次推进 CAS（B-7）", () => {
     const sessionRounds = h.createdSessions.map(
       (s) => (s.context as Record<string, unknown>).round,
     );
-    expect(sessionRounds.sort((x, y) => (x as number) - (y as number))).toEqual([
-      1, 2,
-    ]);
+    expect(sessionRounds.sort((x, y) => (x as number) - (y as number))).toEqual(
+      [1, 2],
+    );
   });
 
   it("CAS 失败重读后命中 maxRounds → 硬闸转人工，不超发复核会话", async () => {

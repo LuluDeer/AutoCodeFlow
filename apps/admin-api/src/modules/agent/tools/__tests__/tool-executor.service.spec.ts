@@ -40,7 +40,11 @@ function harness(opts?: {
     ),
     getClarificationScopeInfo: jest.fn(
       opts?.sops?.getClarificationScopeInfo ??
-        (async () => ({ assignmentId: "a1", sopId: "sop-1", reviewSessionId: null })),
+        (async () => ({
+          assignmentId: "a1",
+          sopId: "sop-1",
+          reviewSessionId: null,
+        })),
     ),
   };
   const checkSpy = jest.spyOn(boundary, "check");

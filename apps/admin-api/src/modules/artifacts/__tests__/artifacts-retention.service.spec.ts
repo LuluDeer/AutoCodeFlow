@@ -191,7 +191,10 @@ describe("ArtifactsRetentionService (NETOPT-8⑦)", () => {
           return { isDirectory: () => false, mtimeMs: 1_000 };
         }
         if (String(p).endsWith("step9-new.log")) {
-          return { isDirectory: () => false, mtimeMs: NOW_MS - 40 * 86_400_000 };
+          return {
+            isDirectory: () => false,
+            mtimeMs: NOW_MS - 40 * 86_400_000,
+          };
         }
         return { isDirectory: () => true, mtimeMs: 1_000 };
       });

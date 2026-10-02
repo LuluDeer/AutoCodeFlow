@@ -14,6 +14,7 @@
 # CI 的 desktop-bundle-drift job 离线 ncc 重打后比对 actual == expected，不一致即红。
 #
 # 变更记录：
+#   - 8f54f4c2…：R5 执行器侧审计修复（A-2 shell 白名单/A-4 日志封顶/A-6 body 2mb/A-8 解释器池加固/A-10 命令逐条上报/A-11 env JSON 序列化）后重打；source-digest 同步 8f54f4c2…。index.js 行先回填本机（Windows）重建值，F-19 字节闸以 CI Ubuntu 重建为权威——首跑后按 actual 回填。
 #   - b52c2702…：四轮审计修复 executor-node/src（unshallow 重试/区间 env 化/uv 缓存治理/sweep 异步化/心跳磁盘/rlimit -f/私服 token 指引/截断口径）后 ncc 0.45 重打；source-digest 同步 20eeafa4…。
 #   - c2110e77…：A2-B 前的基线。
 #   - 3dca07ba…：A3 完整形态——`routes/execute.ts` 的 `isSafeExecutionIdSegment`
@@ -392,5 +393,5 @@
 #     入口——桌面端三平台优雅停机（HTTP drain，宽限 8s→30s）的服务端半边。
 #     改动 main.ts 与 middleware/auth.ts 两文件，按 ADR-005 同 commit 重打回填
 #     （Windows node 24.21 本地重打，依赖 CI 权威复验）。
-source-digest: 20eeafa43b651515bab004ddaa873dbb6fecff65a1edb34df405ce269926f457
-b52c27024a993e3666da9986827b4862446460b83f273bbda03013778a7dd340  index.js
+source-digest: 8f54f4c2b0e2f675dda6e775110f11f69b830cab1677f153cf2e0dae7758a219
+8f54f4c2b0e2f675dda6e775110f11f69b830cab1677f153cf2e0dae7758a219  index.js

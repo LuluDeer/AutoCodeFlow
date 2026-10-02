@@ -262,7 +262,8 @@ export class CreateTaskDto {
     description:
       "Default task params; serialized size must not exceed 65536 bytes (same limit as the trigger/webhook face).",
   })
-  @IsObject() @IsOptional()
+  @IsObject()
+  @IsOptional()
   // B-9: 任务默认 params 此前无体积上限（仅 webhook 触发面 64KB）——统一
   // 同一常量；PartialType 令 UpdateTaskDto（PATCH）继承同一约束。
   @TaskParamsMaxBytes()

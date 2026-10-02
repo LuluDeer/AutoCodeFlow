@@ -191,7 +191,12 @@ describe("UsersController", () => {
 
     it("admin updating a user is not subject to the email self-check (A-7)", async () => {
       usersSvc.update.mockResolvedValue({ id: 5 });
-      await controller.update(5, { email: "x@x.io" } as any, adminUser, mockReq);
+      await controller.update(
+        5,
+        { email: "x@x.io" } as any,
+        adminUser,
+        mockReq,
+      );
       expect(usersSvc.findByEmail).not.toHaveBeenCalled();
     });
 

@@ -813,9 +813,7 @@ export class SopService {
    * sop_amended 会改写 SOP 工作副本并自主发版。工具执行体入口据此校验
    * 「本会话即处理该澄清的复核会话，或澄清所属 SOP ∈ 会话 scope.sops」。
    */
-  async getClarificationScopeInfo(
-    clarificationId: string,
-  ): Promise<{
+  async getClarificationScopeInfo(clarificationId: string): Promise<{
     assignmentId: string;
     sopId: string;
     reviewSessionId: string | null;

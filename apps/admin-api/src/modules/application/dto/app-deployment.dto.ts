@@ -25,9 +25,7 @@ export const DEPLOYMENT_ENV_MAX_KEYS = 50;
 export const DEPLOYMENT_ENV_VALUE_MAX_BYTES = 4096;
 
 @ValidatorConstraint({ name: "deploymentEnvSize", async: false })
-export class DeploymentEnvSizeConstraint
-  implements ValidatorConstraintInterface
-{
+export class DeploymentEnvSizeConstraint implements ValidatorConstraintInterface {
   // 非对象形态交给 @IsObject/@IsOptional 把关，本约束只管体积。
   validate(value: unknown): boolean {
     if (value === null || typeof value !== "object" || Array.isArray(value)) {
@@ -121,8 +119,9 @@ export class DeploymentHeartbeatDto {
   pid?: number;
 
   @ApiPropertyOptional({
-    description: "Free-form progress message (max 2000 chars; lands in the "
-      + "statusMessage text column and the list read surface)",
+    description:
+      "Free-form progress message (max 2000 chars; lands in the " +
+      "statusMessage text column and the list read surface)",
   })
   @IsString()
   // A-11: 异常执行器可以借 message 无限写 statusMessage（text 列）并随

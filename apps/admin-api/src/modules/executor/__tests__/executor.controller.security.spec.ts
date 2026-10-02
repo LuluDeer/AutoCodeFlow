@@ -410,7 +410,11 @@ describe("ExecutorController — F-2 heartbeat / F-7 register mass-assignment gu
       const [, , retryCfg] = axios.post.mock.calls[1] as [
         string,
         unknown,
-        { maxRedirects: number; headers: { Authorization: string }; httpAgent?: unknown },
+        {
+          maxRedirects: number;
+          headers: { Authorization: string };
+          httpAgent?: unknown;
+        },
       ];
       expect(retryCfg.maxRedirects).toBe(0);
       expect(retryCfg.httpAgent).toBeDefined();

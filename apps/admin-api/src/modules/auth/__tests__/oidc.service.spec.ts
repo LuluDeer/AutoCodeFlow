@@ -4,7 +4,11 @@
  * 身份定位三级（sub → username 绑定 → JIT 建号）与 completeLogin 集成链。
  */
 import { createSign, createHmac, generateKeyPairSync } from "node:crypto";
-import { UnauthorizedException, BadRequestException, ForbiddenException } from "@nestjs/common";
+import {
+  UnauthorizedException,
+  BadRequestException,
+  ForbiddenException,
+} from "@nestjs/common";
 import { OidcService, OIDC_STATE_COOKIE } from "../oidc.service";
 
 jest.mock("axios");
@@ -508,7 +512,11 @@ describe("OidcService — 自动绑定收紧（A-3）", () => {
     const { service, usersRepo } = makeService();
     mockCollision(usersRepo, hitByUsername());
     await expect(
-      service.resolveAndBindUser({ ...baseProfile, email: null, emailVerified: false }),
+      service.resolveAndBindUser({
+        ...baseProfile,
+        email: null,
+        emailVerified: false,
+      }),
     ).rejects.toBeInstanceOf(ForbiddenException);
     expect(usersRepo.save).not.toHaveBeenCalled();
   });

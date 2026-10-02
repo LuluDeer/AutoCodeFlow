@@ -375,8 +375,8 @@ describe("ExecutorService mutex claim (MUTEX-01)", () => {
         } as never,
       ),
     ).rejects.toThrow(
-        "No online executors match the requested group/tags/runtime",
-      );
+      "No online executors match the requested group/tags/runtime",
+    );
     expect(warnSpy).toHaveBeenCalledWith(
       expect.stringContaining("mutexGroupId=group-1"),
     );
@@ -399,8 +399,8 @@ describe("ExecutorService mutex claim (MUTEX-01)", () => {
         } as never,
       ),
     ).rejects.toThrow(
-        "No online executors match the requested group/tags/runtime",
-      );
+      "No online executors match the requested group/tags/runtime",
+    );
     expect(
       warnSpy.mock.calls.some((c) =>
         String(c[0]).includes("does not claim mutex slots"),

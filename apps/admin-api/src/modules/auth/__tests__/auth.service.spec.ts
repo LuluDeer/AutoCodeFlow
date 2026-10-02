@@ -573,9 +573,9 @@ describe("AuthService (__tests__)", () => {
         sessionVersion: 9, // 旧令牌无 ver，不做比对
       } as any);
 
-      await expect(service.refreshToken("legacy-refresh")).resolves.toHaveProperty(
-        "accessToken",
-      );
+      await expect(
+        service.refreshToken("legacy-refresh"),
+      ).resolves.toHaveProperty("accessToken");
     });
   });
 

@@ -15,7 +15,14 @@ import type { Queue } from "bullmq";
 import { randomBytes, timingSafeEqual, createHash } from "crypto";
 import * as bcrypt from "bcrypt";
 import { InjectRepository } from "@nestjs/typeorm";
-import { Repository, LessThan, In, Not, Brackets, QueryFailedError } from "typeorm";
+import {
+  Repository,
+  LessThan,
+  In,
+  Not,
+  Brackets,
+  QueryFailedError,
+} from "typeorm";
 import { Cron } from "@nestjs/schedule";
 import axios from "axios";
 import {
@@ -2249,7 +2256,7 @@ export class ExecutorService implements OnModuleInit {
    *   - 空/缺省 executorIds → status=ONLINE **全量**分页扫描（每页
    *     EXECUTOR_LIST_LIMIT，翻页到取尽为止）；
    *   - 显式 executorIds → 按 id 直查（≤ PushExecutorPackageDto 的 100 上限），
-     *     不做状态过滤——操作者明确点名，离线机的连接失败会在逐台结果里呈现。
+   *     不做状态过滤——操作者明确点名，离线机的连接失败会在逐台结果里呈现。
    */
   async findPushTargets(executorIds?: string[]): Promise<Executor[]> {
     if (executorIds && executorIds.length > 0) {
@@ -2355,9 +2362,7 @@ export class ExecutorService implements OnModuleInit {
       // 容量闸按无上限处理），保留既有 PATCH 语义；非法值 400 拒绝、不落库。
       if (
         data.maxConcurrentTasks !== null &&
-        !ExecutorService.isAdoptableMaxConcurrentTasks(
-          data.maxConcurrentTasks,
-        )
+        !ExecutorService.isAdoptableMaxConcurrentTasks(data.maxConcurrentTasks)
       ) {
         throw new BadRequestException(
           `maxConcurrentTasks must be an integer in 1..10000, or null to clear the cap (got ${String(data.maxConcurrentTasks)})`,
@@ -2910,10 +2915,10 @@ export class ExecutorService implements OnModuleInit {
   private async findFleetCandidates(task: Task): Promise<Executor[]> {
     const needsPushdown = Boolean(
       (task.executorTags && task.executorTags.length > 0) ||
-        (task.executorAffinityTags && task.executorAffinityTags.length > 0) ||
-        (task.executorAntiAffinityTags &&
-          task.executorAntiAffinityTags.length > 0) ||
-        task.runtime,
+      (task.executorAffinityTags && task.executorAffinityTags.length > 0) ||
+      (task.executorAntiAffinityTags &&
+        task.executorAntiAffinityTags.length > 0) ||
+      task.runtime,
     );
     if (!needsPushdown) {
       // 无可下推的子集/包含维度：保持原 repo.find 形态（等值条件并入 where
@@ -4628,7 +4633,9 @@ export class ExecutorService implements OnModuleInit {
             .where("task.executorAppName IN (:...names)", {
               names: staleAppNames,
             })
-            .andWhere("task.status != :deleted", { deleted: TaskStatus.DELETED })
+            .andWhere("task.status != :deleted", {
+              deleted: TaskStatus.DELETED,
+            })
             .groupBy("task.executorAppName")
             .getRawMany()) as Array<{ executorAppName: string; count: string }>)
         : [];

@@ -16,7 +16,9 @@ function harness(sessionRow: Partial<AgentSession> | null) {
     list: jest.fn(),
     budget: jest.fn(),
   };
-  const queue = { add: jest.fn(async () => undefined) } as unknown as Queue<unknown>;
+  const queue = {
+    add: jest.fn(async () => undefined),
+  } as unknown as Queue<unknown>;
   const ctl = new AgentController(
     sessions as never,
     { resolveBudget: jest.fn() } as never,
@@ -62,11 +64,7 @@ describe("AgentController · resume 状态防线（B-8）", () => {
   });
 
   it("failed/budget_exceeded/pending 仍放行入队（运行时的终态幂等闸兜底）", async () => {
-    for (const status of [
-      "failed",
-      "budget_exceeded",
-      "pending",
-    ] as const) {
+    for (const status of ["failed", "budget_exceeded", "pending"] as const) {
       const h = harness({ ...baseSession, status });
       await expect(h.ctl.resume("s-1")).resolves.toEqual({ ok: true });
       expect(h.queue.add).toHaveBeenCalledTimes(1);

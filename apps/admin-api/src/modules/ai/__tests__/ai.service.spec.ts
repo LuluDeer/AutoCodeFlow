@@ -664,7 +664,11 @@ describe("P1: qwen provider (multimodal)", () => {
       expectOut: number;
     }> = [
       // 字符串数字正常收敛入库
-      { usage: { prompt_tokens: "12", completion_tokens: "34" }, expectIn: 12, expectOut: 34 },
+      {
+        usage: { prompt_tokens: "12", completion_tokens: "34" },
+        expectIn: 12,
+        expectOut: 34,
+      },
       // 恶意串 / NaN / 负数 / 缺失 → 0，不把非 number 透传给下游
       {
         usage: {
@@ -684,7 +688,10 @@ describe("P1: qwen provider (multimodal)", () => {
       const res = await service.chatMultimodal({
         messages: [{ role: "user", content: "x" }],
       });
-      expect(res.usage).toEqual({ tokensIn: c.expectIn, tokensOut: c.expectOut });
+      expect(res.usage).toEqual({
+        tokensIn: c.expectIn,
+        tokensOut: c.expectOut,
+      });
     }
   });
 

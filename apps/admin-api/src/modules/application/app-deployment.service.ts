@@ -2065,9 +2065,12 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
           })
           // A-1: 审批认领（approve→approved）与扫描 UPDATE 竞态时不得把已
           // 认领的行盖回 FAILED——待审批态同被排除。
-          .andWhere("(approvalStatus IS NULL OR approvalStatus <> :pendingApproval)", {
-            pendingApproval: DeploymentApprovalStatus.PENDING_APPROVAL,
-          })
+          .andWhere(
+            "(approvalStatus IS NULL OR approvalStatus <> :pendingApproval)",
+            {
+              pendingApproval: DeploymentApprovalStatus.PENDING_APPROVAL,
+            },
+          )
           .returning("id")
           .execute(),
       );
@@ -2690,7 +2693,8 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     // entrypoint。否则推送载荷 entrypoint = startCommand || app.entrypoint
     // 仍被部署时的陈旧快照压住，rollbackApplication / 本链恢复的 entrypoint
     // 永远推不出去（回滚后推送载荷 entrypoint 必须等于快照值）。
-    deployment.startCommand = pushApp.entrypoint ?? deployment.startCommand ?? null;
+    deployment.startCommand =
+      pushApp.entrypoint ?? deployment.startCommand ?? null;
     deployment.status = DeploymentStatus.UPGRADING;
     deployment.statusMessage = `Rolling back to ${version.version}`;
     // FEAT-20: 自动回滚痕迹（rollback 语义；operator 保留原行值——

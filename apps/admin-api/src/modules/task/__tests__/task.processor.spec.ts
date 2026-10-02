@@ -11,10 +11,7 @@ import {
   ExecutionFailureReason,
 } from "../entities/task-execution.entity";
 import { ExecutionLogLine } from "../entities/execution-log-line.entity";
-import {
-  Task,
-  TaskStatus,
-} from "../entities/task.entity";
+import { Task, TaskStatus } from "../entities/task.entity";
 import { ExecutorService } from "../../executor/executor.service";
 import { AiAnalysisService } from "../../ai/ai-analysis.service";
 import { NotificationService } from "../../notification/notification.service";

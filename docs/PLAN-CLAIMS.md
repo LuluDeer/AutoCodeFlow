@@ -412,6 +412,7 @@
 | 1790000000050 | AddTasksNameUniqueIndex | 技术债 A 组·任务名唯一索引（tasks.name 无唯一约束，模板实例化/创建的防重只是 best-effort 预检查；存量重名组先按 (createdAt,id) 保留最早一行、其余改名 `name (uuid前8位)` 去重，再 CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS idx_tasks_name_unique ON tasks(name)——transaction=false 同 1790000000049 口径；写面 23505→409 对齐；实体命名 @Index 同批） |
 | 1790000000051 | DropTaskExecutionsTaskIdCreatedAtRedundantIndex | 技术债 A 组·冗余索引回收（idx_task_executions_task_id_created_at 被 1790000000049 的三列索引严格左前缀覆盖，DROP INDEX CONCURRENTLY IF EXISTS；transaction=false；down 恢复两列索引形态） |
 | 1790000000052 | AddMutexGroupScope | N-15 互斥组作用域（mutex_groups.scope device/global 默认 device + CHECK；全局占用部分索引 idx_task_executions_group_occupancy_global；down 逆序回收） |
+| 1790000000053 | AddTasksDependenciesValuesGinIndex | R2-B-3 依赖扇出索引下推（tasks.dependencies 值投影表达式 GIN：jsonb_path_query_array(dependencies,'$.keyvalue().value') jsonb_path_ops——契约 {显示名: 上游id} 键不可枚举，列级 @> 不可行；CREATE INDEX CONCURRENTLY transaction=false；down 逆序回收；迁移 spec 钉死索引与查询谓词对齐） |
 
 ## 变更日志
 

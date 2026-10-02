@@ -150,7 +150,9 @@ export class NotificationConfigController {
    */
   @Post("send")
   @Roles(UserRole.ADMIN)
-  @ApiOperation({ summary: "Send notification from task code (SDK, admin only)" })
+  @ApiOperation({
+    summary: "Send notification from task code (SDK, admin only)",
+  })
   @ApiResponse({
     status: 201,
     type: SendNotificationResultDto,

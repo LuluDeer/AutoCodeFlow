@@ -458,9 +458,7 @@ export class ExecutorPackageService implements OnModuleInit {
         lock: { mode: "pessimistic_write" },
       });
       if (!pkg) {
-        throw new NotFoundException(
-          `Executor package ${packageId} not found`,
-        );
+        throw new NotFoundException(`Executor package ${packageId} not found`);
       }
       pkg.pushHistory = appendPushHistoryEntry(pkg.pushHistory, {
         executorId: report.executorId ?? "unknown",

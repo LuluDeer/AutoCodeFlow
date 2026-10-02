@@ -90,8 +90,7 @@ function harness(required: string[] = []) {
             .filter((r) => !requireResolution || r.resolution !== null)
             .filter(
               (r) =>
-                !cursor ||
-                new Date(r.updatedAt).getTime() > cursor!.getTime(),
+                !cursor || new Date(r.updatedAt).getTime() > cursor!.getTime(),
             )
             .sort((x, y) => x.round - y.round),
         ),
@@ -468,8 +467,8 @@ describe("SOP clarification reply cursor pushdown (B-11)", () => {
     expect(items.map((i) => i.clarificationId)).toEqual(["clr-new"]);
 
     // 下推断言：qb 收到游标条件
-    const qbResults = (h.clarifications.createQueryBuilder as jest.Mock)
-      .mock.results;
+    const qbResults = (h.clarifications.createQueryBuilder as jest.Mock).mock
+      .results;
     const qbInstance = qbResults[qbResults.length - 1].value;
     expect(qbInstance.andWhere).toHaveBeenCalledWith(
       "c.updatedAt > :cursor",

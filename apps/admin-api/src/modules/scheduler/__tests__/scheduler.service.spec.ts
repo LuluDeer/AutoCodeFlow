@@ -739,9 +739,9 @@ describe("SchedulerService", () => {
 
       expect(queue.add).not.toHaveBeenCalled();
       // 跳过计入指标（B-6 skipped 计数器）
-      expect(metrics.snapshot.misfiresSkippedDependencies).toBeGreaterThanOrEqual(
-        1,
-      );
+      expect(
+        metrics.snapshot.misfiresSkippedDependencies,
+      ).toBeGreaterThanOrEqual(1);
     });
 
     it("B-6: dependency-gated task with all deps SUCCESS is still compensated", async () => {

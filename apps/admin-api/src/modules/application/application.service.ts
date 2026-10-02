@@ -476,7 +476,11 @@ export class ApplicationService implements OnModuleInit {
           typeof existing.snapshot.packageUrl === "string"
             ? existing.snapshot.packageUrl
             : null;
-        if (oldPackageUrl && app.packageUrl && oldPackageUrl !== app.packageUrl) {
+        if (
+          oldPackageUrl &&
+          app.packageUrl &&
+          oldPackageUrl !== app.packageUrl
+        ) {
           existing.snapshot = {
             ...existing.snapshot,
             packageUrl: app.packageUrl,
