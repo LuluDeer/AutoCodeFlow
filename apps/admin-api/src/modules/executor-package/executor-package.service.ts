@@ -82,6 +82,21 @@ export interface ExecutorPushResult {
   success: boolean;
 }
 
+/**
+ * A-8（执行器域审计 P3）：pushHistory 追加 + 上限裁剪的**纯函数**（单测锚点）。
+ * 追加到尾部、只保留最近 max（默认 100）条——与旧 controller 内联逻辑逐字节
+ * 等价（[...history, entry].slice(-100)），差异只在"基于哪一版行"：
+ * appendPushHistory 在事务锁内重读最新行后再走本函数。
+ */
+export function appendPushHistoryEntry(
+  history: ExecutorPackage["pushHistory"] | null | undefined,
+  entry: ExecutorPackage["pushHistory"][number],
+  max = 100,
+): ExecutorPackage["pushHistory"] {
+  const base = Array.isArray(history) ? history : [];
+  return [...base, entry].slice(-max);
+}
+
 @Injectable()
 export class ExecutorPackageService implements OnModuleInit {
   private readonly logger = new Logger(ExecutorPackageService.name);
@@ -415,6 +430,49 @@ export class ExecutorPackageService implements OnModuleInit {
     return saved;
   }
 
+  /**
+   * A-8（执行器域审计 P3）：push-result 回调的 pushHistory 持久化——**事务内
+   * FOR UPDATE（pessimistic_write）重读最新行后再追加写回**。
+   *
+   * 旧链路（controller: findOne → 拼数组 → svc.update 整行 save）是典型的
+   * 读改写竞态：一次广播 N 台执行器几乎同时回调，各自基于同一陈旧快照拼数组，
+   * 整行 save 后写者把先写者的记录整条抹掉（丢历史）。锁内重读让每次追加都
+   * 基于「含先到者记录」的最新行；上限 100 裁剪由纯函数 appendPushHistoryEntry
+   * 承担（语义与旧行为逐字节等价）。
+   *
+   * 版本缺省回填 `version ?? pkg.version` 保留旧语义，但基于**锁内最新行**取值。
+   * 包不存在 → NotFoundException（调用方 catch 后 warn，不阻断回调 ack）。
+   */
+  async appendPushHistory(
+    packageId: string,
+    report: {
+      executorId?: string;
+      status: "downloaded" | "failed";
+      version?: string;
+      error?: string;
+    },
+  ): Promise<void> {
+    await this.repo.manager.transaction(async (em) => {
+      const pkg = await em.findOne(ExecutorPackage, {
+        where: { id: packageId },
+        lock: { mode: "pessimistic_write" },
+      });
+      if (!pkg) {
+        throw new NotFoundException(
+          `Executor package ${packageId} not found`,
+        );
+      }
+      pkg.pushHistory = appendPushHistoryEntry(pkg.pushHistory, {
+        executorId: report.executorId ?? "unknown",
+        status: report.status,
+        version: report.version ?? pkg.version,
+        ...(report.error ? { error: report.error } : {}),
+        timestamp: new Date().toISOString(),
+      });
+      await em.save(pkg);
+    });
+  }
+
   async remove(id: string): Promise<void> {
     const pkg = await this.findOne(id);
 
@@ -581,9 +639,15 @@ export class ExecutorPackageService implements OnModuleInit {
             };
           }
         }
-        const url = executor.address.startsWith("http")
-          ? executor.address
-          : `http://${executor.address}`;
+        // A-7（执行器域审计 P3）：address 是执行器自报字段（register/heartbeat
+        // 上报），可能带 ?/#——与 ExecutorService.getExecutorUrl 的
+        // split(/[?#]/, 1) 清洗同款：否则拼出的 `${url}/api/update-package`
+        // 会把 /api/update-package 整体吞进 query/fragment，请求打到目标主机
+        // 的错误端点（getExecutorUrl 头注有实测案例）。
+        const sanitizedAddress = executor.address.split(/[?#]/, 1)[0];
+        const url = sanitizedAddress.startsWith("http")
+          ? sanitizedAddress
+          : `http://${sanitizedAddress}`;
         // F-3: push 出站与 dispatch 同策略过 SSRF 校验——被投毒的 address
         // （元数据/回环段）单独失败，不影响其余目标。
         // F-3 (SEC-NEW): pin to the validated IP (Host/SNI kept).

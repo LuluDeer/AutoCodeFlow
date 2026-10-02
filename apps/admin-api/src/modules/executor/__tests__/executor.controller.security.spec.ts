@@ -359,5 +359,62 @@ describe("ExecutorController — F-2 heartbeat / F-7 register mass-assignment gu
         controller.reloadConfig("executor-1", { role: "admin" } as any, {}),
       ).rejects.not.toThrow(/ECONNREFUSED/);
     });
+
+    // A-3（执行器域审计 P2）：401 重签重试必须与首次请求携带同一份安全配置
+    // ——maxRedirects: 0（首跳是唯一经 SSRF 校验的地址）+ pinnedAxiosConfig
+    // 展开（连接钉在已校验 IP 上）。此前重试丢了这两项：带 token 的重试可被
+    // 30x 重定向到任意地址、或经 DNS 重解析落到他人选定的 IP。
+    it("A-3: the 401 re-issue retry keeps maxRedirects:0 and the pinned agent", async () => {
+      const { assertAndPinExecutorUrl } =
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        require("../../../common/utils/safe-http.util") as {
+          assertAndPinExecutorUrl: jest.Mock;
+        };
+      // pinned:true → 真实 pinnedAxiosConfig 返回钉定 lookup 的 http agent。
+      assertAndPinExecutorUrl.mockResolvedValue({
+        url: new URL("http://10.0.0.9:8001/api/config/reload"),
+        pinnedIp: "10.0.0.9",
+        pinned: true,
+      });
+      const svc = makeSvc({
+        findOne: jest.fn().mockResolvedValue({
+          id: "executor-1",
+          address: "10.0.0.9:8001",
+          appName: "executor-node",
+          executorStartupId: "startup-1",
+          status: ExecutorStatus.ONLINE,
+          type: ExecutorType.PYTHON,
+        }),
+        getExecutorUrl: jest
+          .fn()
+          .mockReturnValue("http://10.0.0.9:8001/api/config/reload"),
+      });
+      const controller = new ExecutorController(
+        svc as any,
+        makeConfig(),
+        {} as any,
+      );
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const axios = require("axios");
+      axios.post.mockRejectedValueOnce({ response: { status: 401 } });
+      axios.post.mockResolvedValueOnce({ data: { ok: true } });
+
+      const result = await controller.reloadConfig(
+        "executor-1",
+        { role: "admin" } as any,
+        {},
+      );
+
+      expect(result).toEqual({ ok: true });
+      expect(axios.post).toHaveBeenCalledTimes(2);
+      const [, , retryCfg] = axios.post.mock.calls[1] as [
+        string,
+        unknown,
+        { maxRedirects: number; headers: { Authorization: string }; httpAgent?: unknown },
+      ];
+      expect(retryCfg.maxRedirects).toBe(0);
+      expect(retryCfg.httpAgent).toBeDefined();
+      expect(retryCfg.headers.Authorization).toBe("Bearer issued-token");
+    });
   });
 });

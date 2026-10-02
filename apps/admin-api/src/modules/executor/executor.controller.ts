@@ -1194,6 +1194,13 @@ export class ExecutorController {
         const resp = await axios.post(url, body, {
           headers: { Authorization: `Bearer ${retry.token}` },
           timeout: 10_000,
+          // A-3（执行器域审计 P2）：重试必须与首次请求（上方）携带同一份安全
+          // 配置——pinnedAxiosConfig 展开把连接钉在已校验 IP 上（防 DNS 重绑定
+          // 在重试路径复活），maxRedirects: 0 保证首跳是唯一经 SSRF 校验的
+          // 地址（R3 parity）。此前重试丢了这两项：带 token 的重试可能被 30x
+          // 重定向到任意地址、或经 DNS 重解析落与他人选定的 IP。
+          maxRedirects: 0,
+          ...pinCfg,
         });
         recordRuntime("autoflow_push_auth_retry_total", {
           result: "reissued_success",

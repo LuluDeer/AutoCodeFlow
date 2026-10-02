@@ -5,6 +5,7 @@ import {
   NotFoundException,
   ServiceUnavailableException,
   ForbiddenException,
+  BadRequestException,
   Logger,
   Provider,
 } from "@nestjs/common";
@@ -31,6 +32,7 @@ import {
 import axios from "axios";
 import { ConfigService } from "@nestjs/config";
 import bcrypt from "bcrypt";
+import { QueryFailedError } from "typeorm";
 import { NotificationService } from "../../notification/notification.service";
 import { SystemConfigService } from "../../config/config.service";
 // SEC-02: secrets 派发解密（测试默认降级明文，dispatch 载荷与既往一致）
@@ -74,25 +76,30 @@ jest.mock("../../../common/utils/safe-http.util", () => ({
 }));
 const mockedAxios = axios as jest.Mocked<typeof axios>;
 
-const makeRepo = (overrides: Partial<Record<string, jest.Mock>> = {}) => ({
-  findOne: jest.fn(),
-  find: jest.fn().mockResolvedValue([]),
-  findBy: jest.fn().mockResolvedValue([]),
-  create: jest.fn((d) => d),
-  save: jest.fn((e) => Promise.resolve(e)),
-  update: jest.fn().mockResolvedValue({ affected: 1 }),
-  increment: jest.fn().mockResolvedValue(undefined),
-  decrement: jest.fn().mockResolvedValue(undefined),
-  delete: jest.fn().mockResolvedValue({ affected: 1 }),
-  count: jest.fn().mockResolvedValue(0),
-  findAndCount: jest.fn().mockResolvedValue([[], 0]),
-  createQueryBuilder: jest.fn(() => ({
+const makeRepo = (overrides: Partial<Record<string, jest.Mock>> = {}) => {
+  const repo: Record<string, jest.Mock> = {
+    findOne: jest.fn(),
+    find: jest.fn().mockResolvedValue([]),
+    findBy: jest.fn().mockResolvedValue([]),
+    create: jest.fn((d) => d),
+    save: jest.fn((e) => Promise.resolve(e)),
+    update: jest.fn().mockResolvedValue({ affected: 1 }),
+    increment: jest.fn().mockResolvedValue(undefined),
+    decrement: jest.fn().mockResolvedValue(undefined),
+    delete: jest.fn().mockResolvedValue({ affected: 1 }),
+    count: jest.fn().mockResolvedValue(0),
+    findAndCount: jest.fn().mockResolvedValue([[], 0]),
+  };
+  repo.createQueryBuilder = jest.fn(() => ({
     update: jest.fn().mockReturnThis(),
     delete: jest.fn().mockReturnThis(),
     set: jest.fn().mockReturnThis(),
     leftJoin: jest.fn().mockReturnThis(),
     innerJoin: jest.fn().mockReturnThis(),
-    getMany: jest.fn().mockResolvedValue([]),
+    // A-4: dispatch 的 fleet 查询在带 tags/affinity/anti-affinity/runtime 条件时
+    // 改走 QueryBuilder（条件下推 SQL）。getMany 默认回落到 find 的 fixture——
+    // 既有按 find 打桩的派发用例里，SQL 收窄后的内存过滤链原样保留，行为不变。
+    getMany: jest.fn(() => repo.find()),
     getOne: jest.fn().mockResolvedValue(null),
     select: jest.fn().mockReturnThis(),
     addSelect: jest.fn().mockReturnThis(),
@@ -115,9 +122,9 @@ const makeRepo = (overrides: Partial<Record<string, jest.Mock>> = {}) => ({
     getRawOne: jest.fn().mockResolvedValue(null),
     getCount: jest.fn().mockResolvedValue(0),
     execute: jest.fn().mockResolvedValue({ affected: 1 }),
-  })),
-  ...overrides,
-});
+  }));
+  return { ...repo, ...overrides };
+};
 
 describe("ExecutorService (__tests__)", () => {
   let service: ExecutorService;
@@ -233,6 +240,66 @@ describe("ExecutorService (__tests__)", () => {
       });
       expect(executorRepo.save).toHaveBeenCalled();
       expect(result.status).toBe(ExecutorStatus.ONLINE);
+    });
+
+    // A-10（执行器域审计 P3）：并发首注册撞 uq_executors_address（23505）——
+    // check-then-act 的败者按地址重读后并入赢家的行走重注册分支，返回成功
+    // 而非 500；非唯一冲突错误照旧抛出。
+    describe("A-10: concurrent first registration on the unique address", () => {
+      const makeUniqueViolation = () => {
+        const err = new QueryFailedError(
+          "INSERT INTO executors ...",
+          [] as unknown[],
+          new Error('duplicate key value violates unique constraint "uq_executors_address"'),
+        );
+        (err as unknown as { code: string }).code = "23505";
+        return err;
+      };
+      const winnerRow = {
+        id: "e-winner",
+        appName: "e1",
+        address: "127.0.0.1:3105",
+        status: ExecutorStatus.ONLINE,
+      };
+
+      it("merges the loser into the winning row and succeeds (no 500)", async () => {
+        executorRepo.findOne
+          .mockResolvedValueOnce(null) // check-then-act 首查：行不存在
+          .mockResolvedValueOnce(winnerRow); // 23505 后按地址重读：赢家行
+        executorRepo.save
+          .mockRejectedValueOnce(makeUniqueViolation()) // insert 撞唯一约束
+          .mockImplementation((e: any) => Promise.resolve(e)); // 重注册 save
+
+        const result = await service.register({
+          appName: "e1",
+          address: "127.0.0.1:3105",
+        });
+
+        expect(result).toBe(winnerRow);
+        expect(executorRepo.save).toHaveBeenCalledTimes(2);
+        // 败者路径不重复发首注册在线通知（赢家已发）。
+        expect(
+          service["notificationService"].notifyExecutorOnline,
+        ).not.toHaveBeenCalled();
+      });
+
+      it("rethrows non-unique-constraint save failures unchanged", async () => {
+        executorRepo.findOne.mockResolvedValue(null);
+        executorRepo.save.mockRejectedValueOnce(new Error("db down"));
+        await expect(
+          service.register({ appName: "e1", address: "127.0.0.1:3105" }),
+        ).rejects.toThrow("db down");
+        expect(executorRepo.findOne).toHaveBeenCalledTimes(1);
+      });
+
+      it("rethrows the original error when the re-read finds no row", async () => {
+        executorRepo.findOne.mockResolvedValue(null);
+        executorRepo.save.mockRejectedValueOnce(makeUniqueViolation());
+        await expect(
+          service.register({ appName: "e1", address: "127.0.0.1:3105" }),
+        ).rejects.toBeInstanceOf(QueryFailedError);
+        expect(executorRepo.findOne).toHaveBeenCalledTimes(2);
+      });
     });
 
     it("updates existing executor to ONLINE on re-register", async () => {
@@ -1591,6 +1658,76 @@ describe("ExecutorService (__tests__)", () => {
       );
     });
 
+    // A-6（执行器域审计 P3）：cpuUsage/memUsage 是评分公式的直接输入
+    // （computeExecutorLoadScore 按 /100 归一）——越界/非有限值视同未上报
+    // （DB 值不动，与 E9 的 maxConcurrentTasks 采纳先例同策），合法值（含
+    // 边界 0/100、小数）照常采纳。
+    describe("A-6: cpu/mem percentage clamping", () => {
+      const onlineExecutor = () => ({
+        address: "127.0.0.1:3105",
+        status: ExecutorStatus.ONLINE,
+        cpuUsage: 20,
+        memUsage: 30,
+      });
+
+      it("adopts valid values including boundaries 0 and 100 and decimals", async () => {
+        const executor = onlineExecutor();
+        executorRepo.findOne.mockResolvedValue(executor);
+        executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+        await service.heartbeat("127.0.0.1:3105", {
+          cpuUsage: 0,
+          memUsage: 100,
+        });
+        expect(executor.cpuUsage).toBe(0);
+        expect(executor.memUsage).toBe(100);
+        await service.heartbeat("127.0.0.1:3105", {
+          cpuUsage: 12.5,
+          memUsage: 37.5,
+        });
+        expect(executor.cpuUsage).toBe(12.5);
+        expect(executor.memUsage).toBe(37.5);
+      });
+
+      it.each([
+        [-1, "cpuUsage"],
+        [100.5, "cpuUsage"],
+        [Number.NaN, "cpuUsage"],
+        [-0.1, "memUsage"],
+        [1e9, "memUsage"],
+      ])(
+        "treats out-of-range %p (%s) as not reported and keeps stored value",
+        async (bad, key) => {
+          const executor = onlineExecutor();
+          executorRepo.findOne.mockResolvedValue(executor);
+          executorRepo.save.mockImplementation((e: any) =>
+            Promise.resolve(e),
+          );
+          const warnSpy = jest.spyOn((service as any).logger, "warn");
+          await service.heartbeat("127.0.0.1:3105", {
+            [key]: bad as unknown as number,
+          } as any);
+          // 越界字段保持 DB 旧值（视同未上报），另一字段不受影响。
+          expect(executor[key]).toBe(key === "cpuUsage" ? 20 : 30);
+          expect(warnSpy).toHaveBeenCalledWith(
+            expect.stringContaining(`invalid ${key}=`),
+          );
+          warnSpy.mockRestore();
+        },
+      );
+
+      it("mixed heartbeat keeps the good metric while dropping the bad one", async () => {
+        const executor = onlineExecutor();
+        executorRepo.findOne.mockResolvedValue(executor);
+        executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+        await service.heartbeat("127.0.0.1:3105", {
+          cpuUsage: 44,
+          memUsage: 120,
+        });
+        expect(executor.cpuUsage).toBe(44);
+        expect(executor.memUsage).toBe(30);
+      });
+    });
+
     // U16: deadLetterCount 采纳——与 E9 maxConcurrentTasks 同模式的心跳白名单
     // + 取值域校验（非负整数 0..100000）；非法/缺失一律不改 DB 值。node 端
     // ab4971f 起上报、python 端 001 起上报，GET /executors(/:id) 随实体透出。
@@ -2708,6 +2845,50 @@ describe("ExecutorService (__tests__)", () => {
         service.update("missing", { groupName: "x" }),
       ).rejects.toThrow(NotFoundException);
     });
+
+    // A-5（执行器域审计 P3）：PATCH maxConcurrentTasks 必须过与 register/
+    // heartbeat 相同的 1..10000 整数闸（isAdoptableMaxConcurrentTasks 先例）
+    // ——非法值 400 拒绝、不落库；显式 null = 清除上限（既有 PATCH 语义）。
+    describe("A-5: maxConcurrentTasks validation", () => {
+      it("adopts a valid value (boundary 1 and 10000)", async () => {
+        for (const valid of [1, 10_000]) {
+          const executor = { id: "e1", maxConcurrentTasks: 4 };
+          executorRepo.findOne.mockResolvedValue(executor);
+          executorRepo.save.mockImplementation((e: any) =>
+            Promise.resolve(e),
+          );
+          await service.update("e1", { maxConcurrentTasks: valid });
+          expect(executor.maxConcurrentTasks).toBe(valid);
+        }
+      });
+
+      it.each([0, -3, 1.5, 10_001, Number.NaN])(
+        "rejects invalid value %p with 400 and never persists",
+        async (bad) => {
+          const executor = { id: "e1", maxConcurrentTasks: 4 };
+          executorRepo.findOne.mockResolvedValue(executor);
+          executorRepo.save.mockImplementation((e: any) =>
+            Promise.resolve(e),
+          );
+          await expect(
+            service.update("e1", {
+              maxConcurrentTasks: bad as unknown as number,
+            }),
+          ).rejects.toThrow(BadRequestException);
+          expect(executor.maxConcurrentTasks).toBe(4);
+          expect(executorRepo.save).not.toHaveBeenCalled();
+        },
+      );
+
+      it("explicit null clears the cap (PATCH semantics preserved)", async () => {
+        const executor = { id: "e1", maxConcurrentTasks: 4 };
+        executorRepo.findOne.mockResolvedValue(executor);
+        executorRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+        await service.update("e1", { maxConcurrentTasks: null });
+        expect(executor.maxConcurrentTasks).toBeNull();
+        expect(executorRepo.save).toHaveBeenCalled();
+      });
+    });
   });
 
   describe("getGroups", () => {
@@ -2921,7 +3102,9 @@ describe("ExecutorService (__tests__)", () => {
       await expect(service.dispatch(task, execution)).rejects.toThrow(
         "connection refused",
       );
-      expect(executorRepo.createQueryBuilder).toHaveBeenCalledTimes(2);
+      // A-4: task.runtime="node" → fleet 查询改走 QueryBuilder（条件下推），
+      // QB 总数 = fleet(1) + 乐观锁占坑(1) + 失败回滚(1) = 3。
+      expect(executorRepo.createQueryBuilder).toHaveBeenCalledTimes(3);
     });
 
     it("throws when no executor is available", async () => {
@@ -7679,6 +7862,324 @@ describe("ExecutorService — ARCH-36 deviceFingerprint 冲突/漂移接线", ()
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 执行器域审计：A-4（候选池条件下推 SQL）/ A-9（push 目标全量查询）/
+// A-11（估时热路径采样上界）
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("ExecutorService audit fixes (A-4 / A-9 / A-11)", () => {
+  let service: ExecutorService;
+  let executorRepo: ReturnType<typeof makeRepo>;
+  let execRepo: ReturnType<typeof makeRepo>;
+  let taskRepo: ReturnType<typeof makeRepo>;
+  let metricsHistoryRepo: ReturnType<typeof makeRepo>;
+  let taskQueue: { add: jest.Mock };
+  let configService: jest.Mocked<Pick<ConfigService, "get">>;
+  const execution = { id: "exec-1", params: {} } as unknown as TaskExecution;
+
+  const mkFleetRow = (over: Partial<Executor> = {}): Executor =>
+    ({
+      id: "e-" + Math.random().toString(36).slice(2, 8),
+      appName: "ex",
+      address: "127.0.0.1:3105",
+      status: ExecutorStatus.ONLINE,
+      runningTaskCount: 0,
+      version: 1,
+      ...over,
+    }) as Executor;
+
+  beforeEach(async () => {
+    executorRepo = makeRepo();
+    execRepo = makeRepo();
+    taskRepo = makeRepo();
+    metricsHistoryRepo = makeRepo();
+    taskQueue = { add: jest.fn().mockResolvedValue(undefined) };
+    configService = { get: jest.fn().mockReturnValue("http") };
+    const module = await Test.createTestingModule({
+      providers: [
+        ExecutorService,
+        { provide: getRepositoryToken(Executor), useValue: executorRepo },
+        { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
+        { provide: getRepositoryToken(Task), useValue: taskRepo },
+        {
+          provide: getRepositoryToken(ExecutorMetricsHistory),
+          useValue: metricsHistoryRepo,
+        },
+        { provide: getQueueToken("task-queue"), useValue: taskQueue },
+        { provide: ConfigService, useValue: configService },
+        {
+          provide: NotificationService,
+          useValue: {
+            notifyFailure: jest.fn(),
+            notifyFailureWithConfig: jest.fn(),
+            notifyExecutorOnline: jest.fn().mockResolvedValue(undefined),
+            notifyExecutorOffline: jest.fn().mockResolvedValue(undefined),
+            sendAll: jest.fn(),
+          },
+        },
+        {
+          provide: SystemConfigService,
+          useValue: {
+            findOne: jest.fn().mockRejectedValue(new Error("not found")),
+          },
+        },
+        {
+          provide: SecretsCryptoService,
+          useValue: new SecretsCryptoService({ get: () => "" } as any),
+        },
+      ],
+    }).compile();
+    service = module.get(ExecutorService);
+    jest.clearAllMocks();
+    mockedAxios.post.mockResolvedValue({ data: { ok: true } });
+  });
+
+  /** fleet 查询的 QB 实例是 dispatch 创建的第一个 QB。 */
+  const fleetQb = () =>
+    (executorRepo.createQueryBuilder as jest.Mock).mock.results[0].value;
+
+  /** Brackets 谓词是闭包对象——用记录型假 qb 展开其内部 SQL 片段。 */
+  const expandBrackets = (brackets: { whereFactory: (qb: never) => unknown }) => {
+    const sqls: string[] = [];
+    const fake: Record<string, unknown> = {};
+    const record = (sql: unknown) => {
+      // 嵌套 Brackets（反亲和外层的 orWhere(内层 Brackets)）递归展开。
+      if (sql && typeof sql === "object" && "whereFactory" in (sql as object)) {
+        sqls.push(...expandBrackets(sql as never));
+        return fake;
+      }
+      if (typeof sql === "string") sqls.push(sql);
+      return fake;
+    };
+    fake.where = record;
+    fake.orWhere = record;
+    fake.andWhere = record;
+    brackets.whereFactory(fake as never);
+    return sqls;
+  };
+
+  describe("A-4: fleet 候选池条件下推 SQL", () => {
+    it("组/标签条件下推：fleet 查询走 QB（带 groupName 等值 + tags LIKE），组内成员被选中", async () => {
+      // SQL 收窄模拟：getMany 回落 find fixture——"组外机队庞大"的行根本
+      // 不会进入候选池（生产 SQL 已按 groupName/tags 过滤后再 Top-K）。
+      executorRepo.find.mockResolvedValue([
+        mkFleetRow({
+          id: "e-in",
+          address: "in-group:1",
+          groupName: "prod",
+          tags: ["gpu"],
+        }),
+      ]);
+      await service.dispatch(
+        {
+          id: "t1",
+          name: "t",
+          timeout: 10,
+          executorGroup: "prod",
+          executorTags: ["gpu"],
+        } as unknown as Task,
+        execution,
+      );
+      // fleet 查询不再走无过滤的 repo.find——Top-K 截断与过滤同查询发生。
+      // （repo.find 唯一一次调用来自 QB getMany 回落 fixture 的替身机制，
+      // 形态为无参调用。）
+      const findCalls = executorRepo.find.mock.calls;
+      expect(findCalls).toHaveLength(1);
+      expect(findCalls[0]).toHaveLength(0);
+      const qb = fleetQb();
+      expect(qb.where.mock.calls[0][0]).toContain("executor.status = :status");
+      const andSqls = qb.andWhere.mock.calls.map((c: any[]) => String(c[0]));
+      expect(andSqls).toContain("executor.groupName = :fleetGroupName");
+      expect(andSqls).toContain(
+        "(',' || executor.tags || ',') LIKE :fleetReqTag0",
+      );
+      // Top-K 上限仍在（SQL 过滤后的池再截断）。
+      expect(qb.take).toHaveBeenCalledWith(500);
+      expect(mockedAxios.post.mock.calls[0][0]).toContain("in-group:1");
+    });
+
+    it("亲和/反亲和/运行时条件下推：OR 命中、排除语义与 capabilities 谓词同查询下推", async () => {
+      executorRepo.find.mockResolvedValue([
+        mkFleetRow({ id: "e-gpu", address: "gpu:1", tags: ["gpu"] }),
+      ]);
+      await service.dispatch(
+        {
+          id: "t1",
+          name: "t",
+          timeout: 10,
+          runtime: "python",
+          executorAffinityTags: ["gpu", "edge"],
+          executorAntiAffinityTags: ["windows"],
+        } as unknown as Task,
+        execution,
+      );
+      const andArgs = fleetQb().andWhere.mock.calls.map((c: any[]) => c[0]);
+      // 扁平谓词：runtime 的 capabilities 包含（空/NULL = 万能）。
+      const flatSqls = andArgs.filter((a: unknown) => typeof a === "string");
+      expect(
+        flatSqls.some((s: string) =>
+          s.includes("executor.capabilities = ''"),
+        ) && flatSqls.some((s: string) => s.includes(":fleetRuntime")),
+      ).toBe(true);
+      // Brackets 谓词：affinity（OR 命中）与 anti-affinity（NULL 放行 +
+      // NOT LIKE 排除）在闭包内部下推。
+      const bracketSqls = andArgs
+        .filter(
+          (a: unknown) =>
+            a && typeof a === "object" && "whereFactory" in (a as object),
+        )
+        .flatMap((a: any) => expandBrackets(a));
+      expect(
+        bracketSqls.some((s: string) => s.includes("LIKE :fleetAffTag0")),
+      ).toBe(true);
+      expect(
+        bracketSqls.some((s: string) => s.includes("LIKE :fleetAffTag1")),
+      ).toBe(true);
+      expect(
+        bracketSqls.some((s: string) =>
+          s.includes("NOT LIKE :fleetAntiTag0"),
+        ),
+      ).toBe(true);
+      expect(
+        bracketSqls.some((s: string) => s.includes("executor.tags IS NULL")),
+      ).toBe(true);
+      expect(mockedAxios.post.mock.calls[0][0]).toContain("gpu:1");
+    });
+
+    it("内存过滤链保留：QB 返回的超集命中（不满足 tags 子集）仍被剔除", async () => {
+      executorRepo.find.mockResolvedValue([
+        // tags 不含要求的 cuda——模拟 LIKE 通配符/超集命中的兜底场景
+        mkFleetRow({ id: "e-partial", address: "partial:1", tags: ["gpu"] }),
+      ]);
+      await expect(
+        service.dispatch(
+          {
+            id: "t1",
+            name: "t",
+            timeout: 10,
+            executorTags: ["gpu", "cuda"],
+          } as unknown as Task,
+          execution,
+        ),
+      ).rejects.toThrow(
+        "No online executors match the requested group/tags/runtime",
+      );
+      expect(mockedAxios.post).not.toHaveBeenCalled();
+    });
+
+    it("无 tags/affinity/runtime 条件时保持原 repo.find 形态（appName/group 等值并入 where）", async () => {
+      executorRepo.find.mockResolvedValue([]);
+      await expect(
+        service.dispatch(
+          { id: "t1", name: "t", timeout: 10 } as unknown as Task,
+          execution,
+        ),
+      ).rejects.toThrow(
+        "No online executors match the requested group/tags/runtime",
+      );
+      expect(executorRepo.find).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { status: ExecutorStatus.ONLINE },
+          order: { runningTaskCount: "ASC" },
+          take: expect.any(Number),
+        }),
+      );
+      executorRepo.find.mockClear();
+      executorRepo.find.mockResolvedValue([
+        mkFleetRow({ id: "e-a", address: "app-a:1", appName: "app-a" }),
+      ]);
+      await service.dispatch(
+        {
+          id: "t1",
+          name: "t",
+          timeout: 10,
+          executorAppName: "app-a",
+        } as unknown as Task,
+        execution,
+      );
+      expect(executorRepo.find).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            status: ExecutorStatus.ONLINE,
+            appName: "app-a",
+          },
+        }),
+      );
+      expect(mockedAxios.post.mock.calls[0][0]).toContain("app-a:1");
+    });
+  });
+
+  describe("A-9: findPushTargets（push 场景专用查询）", () => {
+    it("显式 executorIds 按 id 直查（不做状态过滤，操作者点名语义）", async () => {
+      const rows = [
+        { id: "a", status: ExecutorStatus.OFFLINE },
+        { id: "b", status: ExecutorStatus.ONLINE },
+      ] as unknown as Executor[];
+      executorRepo.find.mockResolvedValue(rows);
+      const result = await service.findPushTargets(["a", "b"]);
+      expect(result).toEqual(rows);
+      const arg = executorRepo.find.mock.calls[0][0] as {
+        where: { id: { _value: string[] } };
+      };
+      expect(arg.where.id._value).toEqual(["a", "b"]);
+    });
+
+    it("空 executorIds → status=ONLINE 全量分页扫描，翻页到取尽（>500 不漏机）", async () => {
+      const page1 = Array.from({ length: 500 }, (_, i) => ({
+        id: `p1-${i}`,
+      })) as unknown as Executor[];
+      const page2 = [{ id: "p2-0" }] as unknown as Executor[];
+      executorRepo.find
+        .mockResolvedValueOnce(page1)
+        .mockResolvedValueOnce(page2);
+      const result = await service.findPushTargets();
+      expect(result).toHaveLength(501);
+      expect(executorRepo.find).toHaveBeenCalledTimes(2);
+      const first = executorRepo.find.mock.calls[0][0] as {
+        where: { status: ExecutorStatus };
+        skip: number;
+        take: number;
+      };
+      expect(first.where.status).toBe(ExecutorStatus.ONLINE);
+      expect(first.skip).toBe(0);
+      const second = executorRepo.find.mock.calls[1][0] as { skip: number };
+      expect(second.skip).toBe(500);
+    });
+  });
+
+  describe("A-11: estimatedDurations 热路径采样上界", () => {
+    it("候选地址集的 RUNNING 读取带 take（1 地址 = 50）", async () => {
+      executorRepo.find.mockResolvedValue([
+        mkFleetRow({ id: "e1", address: "a:1", runningTaskCount: 3 }),
+      ]);
+      execRepo.find.mockResolvedValue([]);
+      await service.dispatch(
+        { id: "t1", name: "t", timeout: 10 } as unknown as Task,
+        execution,
+      );
+      expect(execRepo.find).toHaveBeenCalledWith(
+        expect.objectContaining({ take: 50 }),
+      );
+    });
+
+    it("大候选集（>100 地址）命中 5000 硬顶", async () => {
+      executorRepo.find.mockResolvedValue(
+        Array.from({ length: 150 }, (_, i) =>
+          mkFleetRow({ id: `e${i}`, address: `addr${i}:1`, runningTaskCount: 2 }),
+        ),
+      );
+      execRepo.find.mockResolvedValue([]);
+      await service.dispatch(
+        { id: "t1", name: "t", timeout: 10 } as unknown as Task,
+        execution,
+      );
+      expect(execRepo.find).toHaveBeenCalledWith(
+        expect.objectContaining({ take: 5000 }),
+      );
+    });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // DEEP-AUDIT B·1.1：执行器删除影响面（removal-impact）与自动清理跳过
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -7881,5 +8382,60 @@ describe("ExecutorService removal impact (B·1.1)", () => {
     // 被删行的 pull 队列顺手清理
     expect(pullService.clear).toHaveBeenCalledWith("exec-free");
     expect(pullService.clear).not.toHaveBeenCalledWith("exec-pinned");
+  });
+
+  // A-2（执行器域审计 P2）：跳过判定补 task.executorAppName 维度——与
+  // countTasksBoundByAppName（删除影响面预览）同口径。仅被 appName 绑定
+  // （无 executorId 钉定）的执行器此前会被自动删除，绑定任务派发即报
+  // "No available executor with appName ..."。
+  it("A-2: cleanupOfflineExecutors skips executors still bound via task.executorAppName", async () => {
+    const staleAppBound = {
+      id: "exec-appbound",
+      address: "c:3",
+      appName: "bound-by-name",
+    };
+    const staleFree = { id: "exec-free2", address: "d:4", appName: "free2" };
+    executorRepo.find.mockResolvedValue([staleAppBound, staleFree]);
+    Object.assign(executorRepo, {
+      delete: jest.fn().mockResolvedValue({ affected: 1 }),
+    });
+    // 分组分发：第一次 getRawMany = executorId 钉定查询（返回空，无钉定），
+    // 第二次 = appName 绑定查询（返回该机的绑定计数）——与生产实现的两次
+    // GROUP BY 查询顺序对应。
+    let call = 0;
+    (taskRepo.createQueryBuilder as unknown as jest.Mock).mockImplementation(
+      () => {
+        const isAppNameQuery = call++ === 1;
+        return {
+          select: jest.fn().mockReturnThis(),
+          addSelect: jest.fn().mockReturnThis(),
+          where: jest.fn().mockReturnThis(),
+          andWhere: jest.fn().mockReturnThis(),
+          groupBy: jest.fn().mockReturnThis(),
+          getRawMany: jest.fn().mockResolvedValue(
+            isAppNameQuery
+              ? [{ executorAppName: "bound-by-name", count: "1" }]
+              : [],
+          ),
+        };
+      },
+    );
+
+    await service.cleanupOfflineExecutors();
+
+    const deleteArg = (executorRepo as unknown as { delete: jest.Mock }).delete
+      .mock.calls[0][0] as { id: { _value: string[] } };
+    // appName 绑定的行被跳过，仅无引用行被删。
+    expect(deleteArg.id._value).toEqual(["exec-free2"]);
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "executor.cleanup_skipped",
+        resourceId: "exec-appbound",
+        detail: expect.objectContaining({
+          appNameBoundTasks: 1,
+          pinnedTasks: 0,
+        }),
+      }),
+    );
   });
 });
