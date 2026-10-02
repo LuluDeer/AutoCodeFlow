@@ -11,6 +11,14 @@ export interface AuthUser {
   email: string;
   role: UserRole;
   isActive: boolean;
+  /**
+   * A-2（R3-A 审计）: 会话 id —— 该 access token 所属登录会话的 refresh
+   * jti（签发侧 generateTokens 写入 sid claim，validate() 透传到 req.user）。
+   * 会话管理端点（listSessions / revokeOtherSessions）据此识别「当前设备」；
+   * sse_ticket 与存量无 sid claim 的旧令牌为 undefined（消费侧按 null 处理，
+   * fail-safe 语义不变）。
+   */
+  sid?: string;
 }
 
 /**

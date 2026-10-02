@@ -523,10 +523,96 @@ describe("AuthService (__tests__)", () => {
     });
   });
 
+  describe("refreshToken sessionVersion 比对（A-1）", () => {
+    // A-1（R3-A 审计）: 改密/全量吊销 bump sessionVersion 后，改密前签发的
+    // refresh token（ver 快照落后）不得再换出新 token——被窃 30 天链就此断掉。
+    const consumedPayload = {
+      sub: 1,
+      username: "admin",
+      type: "refresh",
+      jti: mockJti,
+    };
+
+    it("ver 快照与库中 sessionVersion 失配（改密后旧 refresh）→ 401 且该链已被消费", async () => {
+      jwtService.verify.mockReturnValue({ ...consumedPayload, ver: 0 } as any);
+      refreshTokenRepo.update.mockResolvedValue({ affected: 1 });
+      usersService.findByIdOrNull.mockResolvedValue({
+        ...mockUser,
+        sessionVersion: 1, // 改密后 bump 过
+      } as any);
+
+      await expect(service.refreshToken("stale-refresh")).rejects.toThrow(
+        new UnauthorizedException("Session has been revoked"),
+      );
+      // 轮换消费先行（DR-07 fail-closed）：该 jti 已被吊销，不再签发新对
+      expect(refreshTokenRepo.update).toHaveBeenCalledWith(
+        { jti: mockJti, revoked: false },
+        { revoked: true },
+      );
+      expect(jwtService.sign).not.toHaveBeenCalled();
+    });
+
+    it("ver 快照与库中 sessionVersion 一致（未改密）→ 正常轮换（回归）", async () => {
+      jwtService.verify.mockReturnValue({ ...consumedPayload, ver: 3 } as any);
+      refreshTokenRepo.update.mockResolvedValue({ affected: 1 });
+      usersService.findByIdOrNull.mockResolvedValue({
+        ...mockUser,
+        sessionVersion: 3,
+      } as any);
+
+      const result = await service.refreshToken("valid-refresh");
+      expect(result).toHaveProperty("accessToken");
+      expect(result).toHaveProperty("refreshToken");
+    });
+
+    it("存量无 ver claim 的旧 refresh token → 兼容放行（与 access 侧同形态）", async () => {
+      jwtService.verify.mockReturnValue(consumedPayload as any);
+      refreshTokenRepo.update.mockResolvedValue({ affected: 1 });
+      usersService.findByIdOrNull.mockResolvedValue({
+        ...mockUser,
+        sessionVersion: 9, // 旧令牌无 ver，不做比对
+      } as any);
+
+      await expect(service.refreshToken("legacy-refresh")).resolves.toHaveProperty(
+        "accessToken",
+      );
+    });
+  });
+
   describe("cleanupExpiredTokens", () => {
     it("deletes tokens with expiresAt in the past", async () => {
       await service.cleanupExpiredTokens();
       expect(refreshTokenRepo.delete).toHaveBeenCalled();
+    });
+
+    // A-10（R3-A 审计）: 吊销即刻失效但行本身此前只随 expiresAt 清理——
+    // 被吊销的行要滞留至多 30 天。追加「吊销满 7 天」清理（同一次 cron）。
+    it("A-10: 同一 cron 内追加清理 revoked=true 且 createdAt<now-7d 的行", async () => {
+      const before = Date.now();
+      await service.cleanupExpiredTokens();
+
+      const calls = refreshTokenRepo.delete.mock.calls as Array<
+        [Record<string, unknown>]
+      >;
+      expect(calls).toHaveLength(2);
+      const secondArg = calls[1][0];
+      expect(secondArg).toEqual({
+        revoked: true,
+        createdAt: expect.anything(),
+      });
+      // LessThan 传的是 TypeORM FindOperator，取其内部 value（Date）比对
+      const op = secondArg.createdAt as { value: unknown };
+      const cutoff = new Date(op.value as Date).getTime();
+      // 锚点是 createdAt（保留近一周吊销痕迹），容差 5s
+      expect(cutoff).toBeLessThanOrEqual(before - 7 * 86_400_000 + 5_000);
+      expect(cutoff).toBeGreaterThan(before - 7 * 86_400_000 - 60_000);
+    });
+
+    it("A-10: 第一段清理仍只按 expiresAt（回归）", async () => {
+      await service.cleanupExpiredTokens();
+      expect(refreshTokenRepo.delete).toHaveBeenNthCalledWith(1, {
+        expiresAt: expect.anything(),
+      });
     });
   });
 });

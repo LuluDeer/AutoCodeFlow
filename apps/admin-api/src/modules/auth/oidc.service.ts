@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
   Logger,
   UnauthorizedException,
@@ -69,6 +70,12 @@ export interface OidcProfile {
   sub: string;
   username: string;
   email: string | null;
+  /**
+   * A-3（R3-A 审计）: IdP 对 email 声明的核验状态（email_verified claim）。
+   * 自动绑定（username 撞名 → 首登绑 sub）只信任「已核验且与平台账号一致」
+   * 的 email——未核验/缺失的 claim 不足以证明 IdP 侧身份与平台账号同主。
+   */
+  emailVerified: boolean;
   /** 组声明归一（数组/单字符串 → string[]；用于 JIT 角色映射，R20）。 */
   groups: string[];
 }
@@ -420,6 +427,8 @@ export class OidcService {
       sub,
       username,
       email: typeof claims.email === "string" ? claims.email : null,
+      // A-3: email_verified 透传——resolveAndBindUser 的自动绑定闸消费
+      emailVerified: claims.email_verified === true,
       groups,
     };
   }
@@ -447,6 +456,15 @@ export class OidcService {
    * 身份定位三级：oidcSub 精确匹配 → username 声明匹配（首登绑定 sub）→
    * autoProvision 时 JIT 建号。任一命中账号 isActive=false 即拒。
    * autoProvision=false 且无匹配 → 403（不泄露「用户不存在」细节）。
+   *
+   * A-3（R3-A 审计）: ②级的自动绑定收紧。旧实现「username 命中且 oidcSub
+   * 为空就直接绑定签发令牌」——种子管理员 username 恒为 admin，IdP 侧注册
+   * preferred_username=admin 即可接管 ADMIN 账号。现要求自动绑定必须同时：
+   *   ① 目标账号非 ADMIN（ADMIN 只认管理员预置的 oidcSub，禁止任何形式的
+   *      自动绑定——IdP 声明再可信也不能给全局角色背书）；
+   *   ② email claim 存在且 email_verified=true 且与目标账号 email 完全一致
+   *      （未核验/缺失/不一致一律拒绝）。
+   * 不满足 → 403（日志含双方 username，不落 email/sub 等敏感值）。
    */
   async resolveAndBindUser(profile: OidcProfile): Promise<User> {
     // ① sub 稳定绑定
@@ -466,6 +484,23 @@ export class OidcService {
       if (!byUsername.isActive)
         throw new UnauthorizedException("Account is disabled");
       if (!byUsername.oidcSub) {
+        const emailTrusted =
+          !!profile.email &&
+          profile.emailVerified &&
+          profile.email === byUsername.email;
+        if (byUsername.role === UserRole.ADMIN || !emailTrusted) {
+          // 日志只落双方 username 与拒绝原因码（不落 email/sub 敏感值）
+          this.logger.warn(
+            `OIDC auto-bind denied: IdP username '${profile.username}' collides with platform account '${byUsername.username}' (reason: ${
+              byUsername.role === UserRole.ADMIN
+                ? "admin-account-requires-preprovisioned-oidcSub"
+                : "email-claim-missing-unverified-or-mismatched"
+            })`,
+          );
+          throw new ForbiddenException(
+            "OIDC identity cannot be automatically linked to this platform account",
+          );
+        }
         byUsername.oidcSub = profile.sub;
         await this.usersRepo.save(byUsername);
       } else {

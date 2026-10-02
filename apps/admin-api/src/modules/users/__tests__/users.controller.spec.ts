@@ -18,6 +18,7 @@ const mockUsersService = () => ({
   findByIdOrNull: jest.fn(),
   findByIdRaw: jest.fn(),
   findByUsername: jest.fn(),
+  findByEmail: jest.fn(),
   update: jest.fn(),
   remove: jest.fn(),
   recordLoginFailure: jest.fn(),
@@ -157,6 +158,41 @@ describe("UsersController", () => {
         mockReq,
       );
       expect(usersSvc.update).toHaveBeenCalled();
+    });
+
+    // ─── A-7（R3-A 审计）: 自改 email 唯一性预检（与 username 同形态）──────
+    it("non-admin cannot self-update to an occupied email (A-7)", async () => {
+      // 旧实现：自改 email 撞 user.email 唯一索引（23505）→ 裸 500；现前置校验 → 409。
+      usersSvc.findByEmail.mockResolvedValue({ id: 99, email: "taken@x.io" });
+      await expect(
+        controller.update(
+          2,
+          { email: "taken@x.io" } as any,
+          normalUser,
+          mockReq,
+        ),
+      ).rejects.toThrow(ConflictException);
+      expect(usersSvc.findByEmail).toHaveBeenCalledWith("taken@x.io");
+      expect(usersSvc.update).not.toHaveBeenCalled();
+    });
+
+    it("non-admin self-update to own current email is allowed (A-7)", async () => {
+      // findByEmail 命中的是自己 → existing.id === id → 放行。
+      usersSvc.findByEmail.mockResolvedValue({ id: 2, email: "bob@x.io" });
+      usersSvc.update.mockResolvedValue({ id: 2 });
+      await controller.update(
+        2,
+        { email: "bob@x.io" } as any,
+        normalUser,
+        mockReq,
+      );
+      expect(usersSvc.update).toHaveBeenCalled();
+    });
+
+    it("admin updating a user is not subject to the email self-check (A-7)", async () => {
+      usersSvc.update.mockResolvedValue({ id: 5 });
+      await controller.update(5, { email: "x@x.io" } as any, adminUser, mockReq);
+      expect(usersSvc.findByEmail).not.toHaveBeenCalled();
     });
 
     it("admin updating a user is not subject to self-check (E-P2-S4)", async () => {

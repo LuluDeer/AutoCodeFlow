@@ -129,6 +129,17 @@ export class UsersController {
       }
     }
 
+    // A-7（R3-A 审计）：自改 email 同形态预检——email 与 username 同为唯一列，
+    // 旧实现只预检 username，自改 email 撞 user.email 唯一索引（23505）同样
+    // 冒成裸 500。目标 email 已被他人占用 → 409（与 username 同文案形态）。
+    // 管理员改他人账号不在本分支（仍由服务层/DB 约束兜底）。
+    if (!isAdmin && dto.email) {
+      const existingEmail = await this.usersService.findByEmail(dto.email);
+      if (existingEmail && existingEmail.id !== id) {
+        throw new ConflictException("Email is already taken");
+      }
+    }
+
     // S12: non-admins must supply currentPassword when changing their password
     if (dto.password && !isAdmin) {
       const currentPassword: string | undefined = dto.currentPassword;

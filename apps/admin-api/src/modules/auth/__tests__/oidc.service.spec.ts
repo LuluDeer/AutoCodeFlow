@@ -4,7 +4,7 @@
  * 身份定位三级（sub → username 绑定 → JIT 建号）与 completeLogin 集成链。
  */
 import { createSign, createHmac, generateKeyPairSync } from "node:crypto";
-import { UnauthorizedException, BadRequestException } from "@nestjs/common";
+import { UnauthorizedException, BadRequestException, ForbiddenException } from "@nestjs/common";
 import { OidcService, OIDC_STATE_COOKIE } from "../oidc.service";
 
 jest.mock("axios");
@@ -112,6 +112,9 @@ function validClaims(overrides: Record<string, unknown> = {}) {
     nonce: "nonce-xyz",
     preferred_username: "alice",
     email: "alice@example.com",
+    // A-3: 默认已核验——自动绑定（username 撞名首登绑 sub）只信任
+    // email_verified=true 的 claim；未核验形态在 A-3 专项用例单独构造。
+    email_verified: true,
     ...overrides,
   };
 }
@@ -378,10 +381,14 @@ describe("OidcService — ID Token 验签矩阵（真 RS256）", () => {
 });
 
 describe("OidcService — 身份定位与 JIT 建号", () => {
+  // A-3: 自动绑定（username 撞名 → 首登绑 sub）只信任已核验且与账号一致的
+  // email——本 describe 的既有用例统一使用「email 已核验 + 账号 email 一致」
+  // 的可绑定形态；收紧面（无 email / 不一致 / ADMIN）在下方 A-3 专项 describe。
   const profile = {
     sub: "sub-abc-123",
     username: "alice",
     email: "alice@example.com",
+    emailVerified: true,
     groups: [],
   };
 
@@ -404,6 +411,7 @@ describe("OidcService — 身份定位与 JIT 建号", () => {
       .mockImplementationOnce(async () => ({
         id: 8,
         username: "alice",
+        email: "alice@example.com",
         isActive: true,
         oidcSub: null,
       }));
@@ -463,11 +471,141 @@ describe("OidcService — 身份定位与 JIT 建号", () => {
   });
 });
 
+// ─── A-3（R3-A 审计）: 自动绑定收紧 ─────────────────────────────────────────
+// 旧实现「username 命中且 oidcSub 为空 → 直接绑定签发该账号令牌」允许 IdP 侧
+// 注册 preferred_username=admin 即接管种子 ADMIN。收紧后：email claim 已核验
+// 且与目标账号一致才可绑；ADMIN 一律要求预置 oidcSub，禁止任何自动绑定。
+describe("OidcService — 自动绑定收紧（A-3）", () => {
+  const baseProfile = {
+    sub: "sub-abc-123",
+    username: "alice",
+    email: "alice@example.com",
+    emailVerified: true,
+    groups: [],
+  };
+
+  const hitByUsername = (over: Record<string, unknown> = {}) => ({
+    id: 1,
+    username: "alice",
+    email: "alice@example.com",
+    role: "user",
+    isActive: true,
+    oidcSub: null,
+    ...over,
+  });
+
+  // username 撞名路径：第一次 findOne（bySub）落空、第二次（byUsername）命中
+  const mockCollision = (
+    usersRepo: { findOne: jest.Mock },
+    account: Record<string, unknown>,
+  ) => {
+    usersRepo.findOne
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(account);
+  };
+
+  it("撞名 + 无 email claim（未核验）→ 403，不绑定不签发", async () => {
+    const { service, usersRepo } = makeService();
+    mockCollision(usersRepo, hitByUsername());
+    await expect(
+      service.resolveAndBindUser({ ...baseProfile, email: null, emailVerified: false }),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(usersRepo.save).not.toHaveBeenCalled();
+  });
+
+  it("撞名 + email claim 与账号 email 不一致 → 403", async () => {
+    const { service, usersRepo } = makeService();
+    mockCollision(usersRepo, hitByUsername({ email: "alice@corp.example" }));
+    await expect(
+      service.resolveAndBindUser(baseProfile),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(usersRepo.save).not.toHaveBeenCalled();
+  });
+
+  it("撞名 + email 已核验且一致 → 绑定成功（合法首登链路回归）", async () => {
+    const { service, usersRepo } = makeService();
+    mockCollision(usersRepo, hitByUsername());
+    const user = await service.resolveAndBindUser(baseProfile);
+    expect(user.id).toBe(1);
+    expect(usersRepo.save).toHaveBeenCalledWith(
+      expect.objectContaining({ oidcSub: "sub-abc-123" }),
+    );
+  });
+
+  it("ADMIN 目标账号（无预置 oidcSub）→ 403，即使 email 已核验且一致", async () => {
+    const { service, usersRepo } = makeService();
+    mockCollision(usersRepo, hitByUsername({ role: "admin" }));
+    await expect(
+      service.resolveAndBindUser(baseProfile),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(usersRepo.save).not.toHaveBeenCalled();
+  });
+
+  it("ADMIN 目标账号 + 预置 oidcSub → sub 精确命中直接放行（预置可登）", async () => {
+    const { service, usersRepo } = makeService();
+    usersRepo.findOne.mockResolvedValueOnce(
+      hitByUsername({ role: "admin", oidcSub: "sub-abc-123" }),
+    );
+    const user = await service.resolveAndBindUser(baseProfile);
+    expect(user.id).toBe(1);
+    // 精确绑定路径不做任何写面
+    expect(usersRepo.save).not.toHaveBeenCalled();
+  });
+
+  it("ADMIN 目标账号 + username 命中但已绑定其他 sub → 维持既有 401（不静默换绑）", async () => {
+    const { service, usersRepo } = makeService();
+    mockCollision(
+      usersRepo,
+      hitByUsername({ role: "admin", oidcSub: "other-sub" }),
+    );
+    // 既有的「声明冲突拒绝」语义对 ADMIN 同样成立——绝无静默换绑
+    await expect(
+      service.resolveAndBindUser(baseProfile),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+    expect(usersRepo.save).not.toHaveBeenCalled();
+  });
+
+  it("ADMIN 无预置 + 未核验 email → 拒绝原因码为 admin 专用（日志含双方 username）", async () => {
+    const { service, usersRepo } = makeService();
+    mockCollision(usersRepo, hitByUsername({ role: "admin", email: null }));
+    await expect(
+      service.resolveAndBindUser({ ...baseProfile, emailVerified: false }),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+});
+
+describe("OidcService — validateIdToken 提取 email_verified（A-3）", () => {
+  it("email_verified claim 透传进 profile（true / 缺失=false）", async () => {
+    const { service } = makeService();
+    await primeDiscovery(service);
+    mockedAxios.post.mockResolvedValue({ data: {} });
+
+    const verified = await service.validateIdToken(
+      signIdToken(validClaims()),
+      "nonce-xyz",
+    );
+    expect(verified.emailVerified).toBe(true);
+
+    const unverified = await service.validateIdToken(
+      signIdToken(validClaims({ email_verified: false })),
+      "nonce-xyz",
+    );
+    expect(unverified.emailVerified).toBe(false);
+
+    const missing = await service.validateIdToken(
+      signIdToken(validClaims({ email_verified: undefined })),
+      "nonce-xyz",
+    );
+    expect(missing.emailVerified).toBe(false);
+  });
+});
+
 describe("OidcService — 组→角色映射（R20，仅 JIT 建号时生效）", () => {
   const profile = (groups: string[]) => ({
     sub: "sub-new-1",
     username: "bob",
     email: null,
+    emailVerified: false,
     groups,
   });
 
@@ -544,11 +682,14 @@ describe("OidcService — completeLogin 集成链", () => {
     mockedAxios.post.mockResolvedValue({
       data: { id_token: signIdToken(validClaims({ nonce })) },
     });
-    // resolveAndBindUser：sub 未命中，username 命中并绑定
+    // resolveAndBindUser：sub 未命中，username 命中并绑定（A-3: email 已核验
+    // 且与账号一致才放行——validClaims 默认 email_verified=true，此处账号
+    // email 与 claim 对齐以满足绑定前提）
     usersRepo.findOne.mockReset();
     usersRepo.findOne.mockResolvedValueOnce(null).mockResolvedValueOnce({
       id: 8,
       username: "alice",
+      email: "alice@example.com",
       isActive: true,
       oidcSub: null,
     });
