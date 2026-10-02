@@ -8,6 +8,12 @@
 
 ## 状态快照
 
+- **本轮（2026-10-02 → metrics DI 根因收口 + N-02③ 温和下放实施 + Win 侧对账简报，develop 工作区）**：子代理平台全天复现 reasoning-level-missing，按既有降级纪律主会话直落。**改动尚未提交**（16 文件在工作区，等用户确认后一次 commit 推 develop）。
+  - **metrics 守卫 DI 之谜根因收口**（c900865e 遗留"成因待查"）：Nest `reflectConstructorParams` 合并 self-declared deps 用**原型链敏感**的 `Reflect.getMetadata`——基类 JwtAuthGuard 构造器 index[1] 的 `@Inject(API_KEY_AUTH_FACADE)` 沿原型链覆写子类 MetricsScraperAuthGuard index[1] 的 ConfigService 类型推断 → 按不存在 token 解析失败 → @Optional 吞成 undefined（strict-clone 探针实证 Nest 报 "argument API_KEY_AUTH_FACADE at index [1]"；TS 6 对 `ConfigService | undefined` 的元数据 emit 正确，嫌疑排除）。修复=守卫参数显式 `@Inject(ConfigService)`；DI 装配回归测试组入 spec（真装配断言 + 上游行为锁定）。**Nest 上游 issue 待报**（reflectOptionalParams 用 getOwnMetadata 而 self-deps 未做同样限定，同文件注释自相矛盾）。
+  - **N-02③ 产品拍板（AskUserQuestion 留痕）：温和下放并实施完毕**——executor.controller PATCH `:id` / reload-config 移除 @Roles(ADMIN)，判定下沉 assertCanManageMetadata（ADMIN 短路 + 项目 editor+；projectId=null 平台级执行器非 ADMIN 恒 403；@Optional 缺席退化仅 ADMIN fail-closed）；A2 声明 `@WriteGuard("executor",{scope:"ownership"})` + `executor:write` 落证 + 穷举守卫清单显式登记；rotate-token/set-offline/DELETE 与 executor-package 不动；admin-web 详情页按钮拆分（列表页批量入口维持 ADMIN）。**验收**：RBAC 矩阵 +6、admin-api 253 套件 4206 例绿（基线 4199 只增）、admin-web 176 套件 1346 例绿、双端 lint/tsc 绿、swagger/api-types 同批（纯描述 diff）。N-02 整条 **done 销账**（①②④ 轮 28 已复核兑现）。
+  - **N-05 前置拍板：暂缓**（DashScope 暂不开通；条目已注记，下轮候选顺位 N-06 > N-07/N-08）。
+  - **Win 侧对账简报落档 `docs/HANDOFF-2026-10-02.md`**（v1.7.0 发版对账 + N-14/N-15 + chaos 七场景 + 9 条真缺陷清单；npm 三包 1.7.0 registry 实测；PyPI 本机网络未复核如实注明）。上会话遗留"N-14 kill 链路未实测备注"**未找到**（穷尽 PLAN-CLAIMS/CHAOS/AGENT_HANDOFF/atlas；候选=场景③D3/场景⑤E3/QA-03 py trace 遗留），未强行改。
+
 - **本轮（2026-09-28 → 轮 30：executor-desktop 客户端 UI 全面深度优化，codex/executor-client-ui）**：用户在 codex 基线（`f45f1049`/`cdfbb247`/`b68afe5d` 已完成体系化重构与图标收口）之上，认为 zcode 接手那轮「很一般」，指定**均衡全面升维**（视觉精致 + 排版节奏 + 交互反馈三路并进），聚焦 `apps/executor-desktop` 渲染层。
   - **方法**：先通读 renderer 全部页面与 2289 行 app.css 建立问题台账，按自测守卫锚点安全增强；每步跑 `renderer.selftest` + `tsc --noEmit` + `vite build` 三件套，最后用 `e2e/screenshots.cjs` 真实启动应用逐页截图，并经两轮独立视觉评审迭代（第一轮抓出"大片死空/ID裸露/应用卡片无锚点/已停止态平淡"四处真实短板并逐条修复，第二轮确认升维）。
   - **视觉/排版升维**：
