@@ -7,7 +7,7 @@
  * 依赖扇出语义（上游全部 SUCCESS）兜底，无需前端排序保证。
  */
 import { useMemo, useState } from 'react';
-import { Button, Empty, Tag, Typography, Alert, theme } from 'antd';
+import { Button, Empty, Tag, Typography, Alert, Tooltip, theme } from 'antd';
 import { message } from '../utils/toast';
 import PageSkeleton from './PageSkeleton';
 import { useNavigate } from 'react-router-dom';
@@ -17,6 +17,11 @@ import '../i18n';
 import { tasksApi } from '../api/tasks';
 import { useAllTasksForDag } from '../api/queries';
 import { showApiError } from '../utils/error';
+// RBAC 对齐（排查清单 #5）：同宿主的 TaskDetailPage 页头「立即触发」是
+// P1-5 口径（写操作仅管理员可用，禁用 + Tooltip 提示）；本图的「触发整条链」
+// 走同一 batchTrigger 写面，此前却不设门控——非管理员在页头被禁用后仍可从
+// 依赖 Tab 绕过发起批量触发，同页两套口径。对齐为禁用 + 提示。
+import { useAuthStore, isAdminUser } from '../store/auth';
 import StateError from './StateError';
 import { buildDependencyGraph, type DagNode } from './dag-layout';
 
@@ -37,6 +42,8 @@ function statusColor(n: DagNode['status'], token: AntdToken): string {
 
 export default function TaskDependencyGraph({ taskId }: { taskId: string }) {
   const { t } = useTranslation();
+  // P1-5 口径对齐：链式触发 = 批量 trigger 写面，仅管理员可用（见上方 import 处注释）
+  const isAdmin = isAdminUser(useAuthStore((s) => s.user));
   // P2-3：节点状态复用共享词表（taskList.status.*），不再渲染裸枚举。
   const STATUS_LABEL: Record<string, string> = {
     active: t('taskList.status.active'),
@@ -114,16 +121,18 @@ export default function TaskDependencyGraph({ taskId }: { taskId: string }) {
         <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 12 }}>
           {t('depGraph.noDepsHint')}
         </Typography.Text>
-        {/* NF-02: 孤立任务也保留链式触发入口（=手动触发单任务） */}
-        <Button
-          data-testid="dag-trigger-chain"
-          icon={<ThunderboltOutlined />}
-          loading={chainTriggering}
-          disabled={chainTriggering}
-          onClick={handleTriggerChain}
-        >
-          {t('depGraph.triggerChain', { count: 1 })}
-        </Button>
+        {/* NF-02: 孤立任务也保留链式触发入口（=手动触发单任务）；RBAC 同页头 P1-5 口径 */}
+        <Tooltip title={isAdmin ? undefined : t('taskList.adminOnly')}>
+          <Button
+            data-testid="dag-trigger-chain"
+            icon={<ThunderboltOutlined />}
+            loading={chainTriggering}
+            disabled={chainTriggering || !isAdmin}
+            onClick={handleTriggerChain}
+          >
+            {t('depGraph.triggerChain', { count: 1 })}
+          </Button>
+        </Tooltip>
       </Empty>
     );
   }
@@ -167,17 +176,19 @@ export default function TaskDependencyGraph({ taskId }: { taskId: string }) {
           style={{ marginBottom: 12 }}
         />
       )}
-      {/* NF-02: 编排动作区——一键触发整条链（当前任务+全部上下游节点） */}
+      {/* NF-02: 编排动作区——一键触发整条链（当前任务+全部上下游节点）；RBAC 同页头 P1-5 口径 */}
       <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'flex-end' }}>
-        <Button
-          data-testid="dag-trigger-chain"
-          icon={<ThunderboltOutlined />}
-          loading={chainTriggering}
-          disabled={chainTriggering || chainTaskIds.length === 0}
-          onClick={handleTriggerChain}
-        >
-          {t('depGraph.triggerChain', { count: chainTaskIds.length })}
-        </Button>
+        <Tooltip title={isAdmin ? undefined : t('taskList.adminOnly')}>
+          <Button
+            data-testid="dag-trigger-chain"
+            icon={<ThunderboltOutlined />}
+            loading={chainTriggering}
+            disabled={chainTriggering || chainTaskIds.length === 0 || !isAdmin}
+            onClick={handleTriggerChain}
+          >
+            {t('depGraph.triggerChain', { count: chainTaskIds.length })}
+          </Button>
+        </Tooltip>
       </div>
       <div style={{ overflow: 'auto', border: `1px solid ${token.colorBorderSecondary}`, borderRadius: 8 }}>
         <div style={{ position: 'relative', width, height, minWidth: '100%' }}>

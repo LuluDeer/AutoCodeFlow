@@ -371,12 +371,19 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
   };
 
   const handleUpgrade = async (id: string) => {
+    // 排查清单 #2：升级按钮不走 Popconfirm、此前也无 in-flight 闸——快速双击会
+    // 连发两次 upgrade（第二发对已 upgrading 的行注定 409，弹一条干扰性报错）。
+    // 对齐同页 approve/cancel 的 actingId 纪律。
+    if (actingId) return;
+    setActingId(id);
     try {
       await deploymentsApi.upgrade(id);
       message.success(t('appDeploy.msg.upgradeStarted'));
       scheduleDelayedRefresh(2000);
     } catch (err: unknown) {
       showApiError(err, t('appDeploy.msg.upgradeFail'));
+    } finally {
+      setActingId(null);
     }
   };
 
@@ -589,7 +596,8 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
                 size="small"
                 icon={<ReloadOutlined />}
                 onClick={() => handleUpgrade(r.id)}
-                disabled={!isAdmin}
+                loading={actingId === r.id}
+                disabled={!isAdmin || actingId !== null}
               >
                 {t('appDeploy.action.upgrade')}
               </Button>

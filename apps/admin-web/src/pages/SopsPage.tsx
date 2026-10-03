@@ -5,7 +5,6 @@ import {
   Button,
   Drawer,
   Input,
-  message,
   Modal,
   Select,
   Space,
@@ -15,10 +14,14 @@ import {
   Tooltip,
   Typography,
 } from 'antd';
+// TOAST-01：与全站一致走 utils/toast 出口（App 实例优先，暗色主题下样式正确；
+// 此前直接用 antd message 是本文件的历史偏离）。
+import { message } from '../utils/toast';
 import { ReloadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 
 import PageHeader from '../components/PageHeader';
+import StateError from '../components/StateError';
 import { sopsApi } from '../api/sops';
 // SOPS-TIME-01：时间列统一走 formatDateTime（locale 感知 + 空值回退 '—'）
 import { formatDateTime } from '../utils/timeFormat';
@@ -94,15 +97,24 @@ export default function SopsPage() {
   const [media, setMedia] = useState<Record<string, SopMedia[]>>({});
 
   // B-14：silent 轮询不闪 loading（定时器每 15s 触发，spinner 抖动是纯噪音）
+  // UX-05（对齐 ExecutorPackagesPage/TaskTemplatesPage 先例）：首次/手动加载失败
+  // 必须落到页内错误块——此前只弹一条一闪而过的 toast，表格停在「暂无数据」
+  // 空态，把读取失败谎报成「还没有任何 SOP」。
+  const [loadError, setLoadError] = useState<unknown>(null);
   const load = useCallback(async (opts?: { silent?: boolean }) => {
     if (!opts?.silent) setLoading(true);
     try {
       const res = await sopsApi.list({ page, pageSize });
       setItems(res.items);
       setTotal(res.total);
-    } catch {
+      // 成功即清错误（后台静默拍自愈同效）
+      setLoadError(null);
+    } catch (err: unknown) {
       // B-14：后台轮询失败静默——连续弹 message 是噪音，列表保留旧数据
-      if (!opts?.silent) message.error(t('sops.loadFailed'));
+      if (!opts?.silent) {
+        setLoadError(err);
+        message.error(t('sops.loadFailed'));
+      }
     } finally {
       if (!opts?.silent) setLoading(false);
     }
@@ -249,13 +261,21 @@ export default function SopsPage() {
       message.warning(t('sops.slugInvalid'));
       return;
     }
+    // 排查清单 #3：DraftSopDto 的 title 只有 @IsString()+@MaxLength(255)——
+    // **空串也能过校验**，此前空标题草稿被静默创建，列表里只留一个空行。
+    // 前端先行拦截（trim 后必填），超长由输入框 maxLength 兜住。
+    const title = draft.title.trim();
+    if (!title) {
+      message.warning(t('sops.titleRequired'));
+      return;
+    }
     // 防重复提交：Modal okButton 走 confirmLoading，回调再挡一层（连点/回车）
     if (creatingDraft) return;
     setCreatingDraft(true);
     try {
       await sopsApi.draft({
         slug,
-        title: draft.title,
+        title,
         frontMatterYaml: draft.frontMatterYaml || undefined,
         bodyMarkdown: draft.bodyMarkdown || undefined,
       });
@@ -342,6 +362,16 @@ export default function SopsPage() {
           </Space>
         }
       />
+      {/* UX-05：首次/手动加载失败 → 页内错误块（重试=重新拉取），不再只靠
+          一条瞬时 toast + 空表误导。后台静默轮询失败不打扰（保留旧数据）。 */}
+      {loadError !== null && (
+        <StateError
+          error={loadError}
+          title={t('sops.loadFailed')}
+          onRetry={() => void load()}
+          style={{ marginBottom: 16 }}
+        />
+      )}
       <Table<Sop>
         rowKey="id"
         loading={loading}
@@ -349,6 +379,9 @@ export default function SopsPage() {
         dataSource={items}
         pagination={{ current: page, pageSize, total, showSizeChanger: true, onChange: (p, ps) => { setPage(p); setPageSize(ps); } }}
         size="middle"
+        // UX-05：加载失败时不再渲染「暂无数据」空态（上方 StateError 已如实呈现
+        // 失败原因与重试入口），避免把失败读成空列表（ExecutorPackagesPage 同款）
+        locale={loadError ? { emptyText: null } : undefined}
       />
 
       <Drawer
@@ -509,11 +542,15 @@ export default function SopsPage() {
           <Input
             placeholder="slug (daily-report)"
             value={draft.slug}
+            maxLength={128}
             onChange={(e) => setDraft({ ...draft, slug: e.target.value })}
           />
+          {/* maxLength 对齐 DraftSopDto @MaxLength(255)：超长输入在输入端截断，
+              不等后端 400（弹窗里无表单回显，400 只剩一条泛化 toast） */}
           <Input
             placeholder={t('sops.col.title')}
             value={draft.title}
+            maxLength={255}
             onChange={(e) => setDraft({ ...draft, title: e.target.value })}
           />
           <Input.TextArea
@@ -555,6 +592,9 @@ export default function SopsPage() {
             rows={5}
             placeholder={t('sops.replyPlaceholder')}
             value={reply.answer}
+            // maxLength 对齐 HumanReplyDto @MaxLength(8000)：答复正文在后端是
+            // 硬校验，超长提交只剩一条泛化失败 toast，用户长文当场丢失。
+            maxLength={8000}
             onChange={(e) => setReply({ ...reply, answer: e.target.value })}
           />
           {reply.resolution === 'sop_amended' && (

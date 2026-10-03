@@ -171,6 +171,12 @@ export default function TaskDetailPage() {
   const [webhookStatus, setWebhookStatus] = useState<TaskWebhookStatus | null>(null);
   const [issuedSecret, setIssuedSecret] = useState<TaskWebhookSecretIssued | null>(null);
 
+  // 防重复提交（排查清单 #2）：webhook 三个写操作此前无任何 in-flight 标记，
+  // 双击「启用/轮换」会连发两次请求——rotate 尤其有害：每次调用都吊销旧密钥并
+  // 签发新密钥，第一发的明文弹窗会被第二发覆盖，用户保存的密钥其实已失效。
+  // 互斥串行（任一在途即禁用全部三个按钮），与 killingId/togglingId 同款纪律。
+  const [webhookBusy, setWebhookBusy] = useState<null | 'enable' | 'rotate' | 'disable'>(null);
+
   const loadWebhookStatus = useCallback(() => {
     if (!id) return;
     tasksApi.webhookStatus(id)
@@ -183,32 +189,41 @@ export default function TaskDetailPage() {
   }, [loadWebhookStatus]);
 
   const handleWebhookEnable = async () => {
-    if (!id) return;
+    if (!id || webhookBusy) return;
+    setWebhookBusy('enable');
     try {
       setIssuedSecret(await tasksApi.webhookEnable(id));
       loadWebhookStatus();
     } catch (err) {
       showApiError(err, t('taskDetail.webhook.title'));
+    } finally {
+      setWebhookBusy(null);
     }
   };
 
   const handleWebhookRotate = async () => {
-    if (!id) return;
+    if (!id || webhookBusy) return;
+    setWebhookBusy('rotate');
     try {
       setIssuedSecret(await tasksApi.webhookRotate(id));
       loadWebhookStatus();
     } catch (err) {
       showApiError(err, t('taskDetail.webhook.title'));
+    } finally {
+      setWebhookBusy(null);
     }
   };
 
   const handleWebhookDisable = async () => {
-    if (!id) return;
+    if (!id || webhookBusy) return;
+    setWebhookBusy('disable');
     try {
       await tasksApi.webhookDisable(id);
       setWebhookStatus((prev) => (prev ? { ...prev, enabled: false } : prev));
     } catch (err) {
       showApiError(err, t('taskDetail.webhook.title'));
+    } finally {
+      setWebhookBusy(null);
     }
   };
   const [triggerParams, setTriggerParams] = useState<Record<string, string>>({});
@@ -454,7 +469,15 @@ export default function TaskDetailPage() {
       />
     );
   }
-  if (!task) return <Empty description={t('taskDetail.notFound')} />;
+  if (!task) {
+    // 排查清单 #4：任务不存在（id 非法/已在别处删除且查询被禁用）时不能只给一句
+    // Empty——补「回任务列表」出口，避免报错死胡同（上方 error 分支已有同款出口）。
+    return (
+      <Empty description={t('taskDetail.notFound')} style={{ padding: 80 }}>
+        <Button onClick={() => nav('/tasks')}>{t('taskDetail.backToList')}</Button>
+      </Empty>
+    );
+  }
 
   // UI-09：375px 可用性——关键列=状态/开始时间/错误/操作；触发/执行器/耗时为
   // 次要列窄屏收起（CSS 侧 .ui09-hide-mobile 双保险），scroll.x 横向滚动兜底。
@@ -894,10 +917,10 @@ export default function TaskDetailPage() {
                     </Typography.Paragraph>
                     <Space style={{ marginBottom: 8 }}>
                       <Popconfirm title={t('taskDetail.webhook.rotateConfirm')} onConfirm={handleWebhookRotate}>
-                        <Button size="small" icon={<SyncOutlined />} disabled={!isAdmin}>{t('taskDetail.webhook.rotate')}</Button>
+                        <Button size="small" icon={<SyncOutlined />} disabled={!isAdmin || webhookBusy !== null} loading={webhookBusy === 'rotate'}>{t('taskDetail.webhook.rotate')}</Button>
                       </Popconfirm>
                       <Popconfirm title={t('taskDetail.webhook.disableConfirm')} onConfirm={handleWebhookDisable}>
-                        <Button size="small" danger disabled={!isAdmin}>{t('taskDetail.webhook.disable')}</Button>
+                        <Button size="small" danger disabled={!isAdmin || webhookBusy !== null} loading={webhookBusy === 'disable'}>{t('taskDetail.webhook.disable')}</Button>
                       </Popconfirm>
                     </Space>
                     <Typography.Paragraph type="secondary" style={{ marginBottom: 0, fontSize: 12 }}>
@@ -906,7 +929,7 @@ export default function TaskDetailPage() {
                   </>
                 ) : (
                   <Tooltip title={isAdmin ? undefined : t('taskList.adminOnly')}>
-                    <Button size="small" type="primary" disabled={!isAdmin} onClick={handleWebhookEnable}>
+                    <Button size="small" type="primary" disabled={!isAdmin || webhookBusy !== null} loading={webhookBusy === 'enable'} onClick={handleWebhookEnable}>
                       {t('taskDetail.webhook.enable')}
                     </Button>
                   </Tooltip>

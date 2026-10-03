@@ -513,11 +513,14 @@ export default function ExecutorPackagesPage() {
             <Progress percent={uploadPercent} size="small" style={{ marginBottom: 8 }} />
           )}
           <Space style={{ display: 'flex' }} size="middle">
+            {/* maxLength 对齐后端 CreateExecutorPackageDto（name ≤255 / version ≤64）：
+                本表单随包上传大文件，超长值只在后端 400 才暴露——白等一次
+                数百 MB 上传；输入端截断即可 */}
             <Form.Item name="name" label={t('execPkg.upload.field.name')} rules={[{ required: true, message: t('execPkg.upload.field.nameRequired') }]} style={{ flex: 1 }}>
-              <Input placeholder="python-runner" />
+              <Input placeholder="python-runner" maxLength={255} />
             </Form.Item>
             <Form.Item name="version" label={t('execPkg.upload.field.version')} rules={[{ required: true, message: t('execPkg.upload.field.versionRequired') }]} style={{ flex: 1 }}>
-              <Input placeholder="1.0.0" />
+              <Input placeholder="1.0.0" maxLength={64} />
             </Form.Item>
           </Space>
           <Space style={{ display: 'flex' }} size="middle">
@@ -531,8 +534,9 @@ export default function ExecutorPackagesPage() {
               ]} />
             </Form.Item>
           </Space>
+          {/* maxLength 对齐后端 CreateExecutorPackageDto @MaxLength(1024) */}
           <Form.Item name="description" label={t('execPkg.upload.field.description')}>
-            <Input.TextArea rows={2} />
+            <Input.TextArea rows={2} maxLength={1024} />
           </Form.Item>
           <Form.Item style={{ marginBottom: 0, textAlign: 'right' }}>
             <Space>
