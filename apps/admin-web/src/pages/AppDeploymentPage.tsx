@@ -781,6 +781,13 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
             <Select
               placeholder={t('appDeploy.placeholder.autoExecutor')}
               allowClear
+              showSearch
+              /* 执行器随接入增长，纯下拉无法高效定位。选项 label 是
+                 ExecutorCard（ReactNode），默认按 value 过滤匹配不到；
+                 挂可搜索字符串字段（名称 + 地址，大小写不敏感）自写过滤。 */
+              filterOption={(input, option) =>
+                String(option?.searchText ?? '').toLowerCase().includes(input.toLowerCase())
+              }
               popupRender={(menu) => (
                 <>
                   {availableExecutors.length > 0 && (
@@ -793,7 +800,7 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
               )}
             >
               {availableExecutors.map(e => (
-                <Select.Option key={e.id} value={e.id}>
+                <Select.Option key={e.id} value={e.id} searchText={`${e.appName} ${e.address}`}>
                   <ExecutorCard executor={e} />
                 </Select.Option>
               ))}

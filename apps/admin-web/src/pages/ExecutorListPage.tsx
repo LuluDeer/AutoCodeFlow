@@ -458,6 +458,9 @@ export default function ExecutorListPage() {
           </Tooltip>
         ) : (groups ?? []).length > 0 && (
           <Select
+            showSearch
+            // 分组随执行器接入持续增长，键入过滤；label 即组名（大小写不敏感）
+            optionFilterProp="label"
             placeholder={t('execList.groupAll')}
             allowClear style={{ width: 130, maxWidth: '100%' }}
             value={groupFilter}

@@ -946,6 +946,10 @@ export default function ApplicationListPage() {
               >
                 <Select
                   allowClear
+                  showSearch
+                  // 互斥组随使用持续增长，纯下拉无法高效定位；label 含组名，
+                  // 按 label 大小写不敏感过滤
+                  optionFilterProp="label"
                   placeholder={t('appList.field.mutexGroupPlaceholder')}
                   style={{ flex: 1 }}
                   options={mutexGroups.map((g) => ({
@@ -1114,6 +1118,9 @@ export default function ApplicationListPage() {
             <Select
               placeholder={t('appList.deploy.executorPlaceholder')}
               allowClear
+              showSearch
+              // 执行器随接入增长，按名称/地址键入过滤（label 已含 "name (address)"）
+              optionFilterProp="label"
               options={quickDeployExecutors.map(e => ({ value: e.id, label: `${e.name} (${e.address})`, disabled: e.status !== 'online' }))}
               notFoundContent={t('appList.deploy.executorEmpty')}
             />
