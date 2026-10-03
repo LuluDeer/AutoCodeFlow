@@ -6,7 +6,8 @@ import axios from 'axios';
 import { spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
-import { get, post, patch, del, formatApiError, ANALYZE_TIMEOUT_MS } from '../client.js';
+import { get, post, patch, del, ANALYZE_TIMEOUT_MS } from '../client.js';
+import { emitError, emitUsageError, UsageError, interruptExit } from '../ui.js';
 
 interface Task {
   id: string;
@@ -86,9 +87,7 @@ export function tasksCommand(): Command {
         console.log(table.toString());
         console.log(chalk.gray(`Total: ${data.total}  page ${data.page}/${Math.ceil(data.total / data.pageSize)}`));
       } catch (e: unknown) {
-        spinner.fail('Failed to list tasks');
-        console.error(chalk.red(formatApiError(e)));
-        process.exit(1);
+        emitError('Failed to list tasks', e, { spinner });
       }
     });
 
@@ -114,9 +113,7 @@ export function tasksCommand(): Command {
         console.log('  Status  :', statusColor(t.status));
         console.log('  Cron    :', t.cronExpression ?? '-');
       } catch (e: unknown) {
-        spinner.fail('Failed');
-        console.error(chalk.red(formatApiError(e)));
-        process.exit(1);
+        emitError('Failed', e, { spinner });
       }
     });
 
@@ -163,9 +160,7 @@ export function tasksCommand(): Command {
           await pollExecution(exec.id, opts.waitTimeout);
         }
       } catch (e: unknown) {
-        spinner.fail('Failed to trigger');
-        console.error(chalk.red(formatApiError(e)));
-        process.exit(1);
+        emitError('Failed to trigger', e, { spinner });
       }
     });
 
@@ -173,7 +168,9 @@ export function tasksCommand(): Command {
   cmd.command('executions <id>')
     .description('List recent executions for a task')
     .option('-n, --limit <n>', 'Number of results', '10')
-    .action(async (id, opts) => {
+    // --json 补面（本轮 UX 统一）：对齐 task list 的 ECO-02 CI 消费面
+    .option('--json', 'Emit raw JSON (CI-consumable, no table)')
+    .action(async (id, opts: { limit?: string; json?: boolean }) => {
       const spinner = ora('Fetching executions…').start();
       try {
         // 后端 PaginationDto 只认 page/pageSize——不发送 `limit`，
@@ -183,6 +180,11 @@ export function tasksCommand(): Command {
           page: 1,
         });
         spinner.stop();
+        if (opts.json) {
+          // ECO-02 同款：列表/信封形态 → 单行紧凑 JSON（与 task list --json 一致）
+          console.log(JSON.stringify(data));
+          return;
+        }
         const table = new Table({
           // U11: exitCode column — distinguishes "failed by callback
           // report" (exit 0 / null) from "process died" (non-zero).
@@ -201,9 +203,7 @@ export function tasksCommand(): Command {
         }
         console.log(table.toString());
       } catch (e: unknown) {
-        spinner.fail('Failed');
-        console.error(chalk.red(formatApiError(e)));
-        process.exit(1);
+        emitError('Failed', e, { spinner });
       }
     });
 
@@ -256,9 +256,7 @@ export function tasksCommand(): Command {
           }
         }
       } catch (e: unknown) {
-        spinner.fail('Failed to fetch logs');
-        console.error(chalk.red(formatApiError(e)));
-        process.exit(1);
+        emitError('Failed to fetch logs', e, { spinner });
       }
     });
 
@@ -279,9 +277,7 @@ export function tasksCommand(): Command {
         console.log(chalk.bold('\nAI Analysis'));
         console.log(result.aiAnalysis || 'No analysis available (AI not configured).');
       } catch (e: unknown) {
-        spinner.fail('Analysis failed');
-        console.error(chalk.red(formatApiError(e)));
-        process.exit(1);
+        emitError('Analysis failed', e, { spinner });
       }
     });
 
@@ -304,41 +300,49 @@ export function tasksCommand(): Command {
         console.log('\nReasoning:');
         console.log(result.reasoning);
       } catch (e: unknown) {
-        spinner.fail('Failed');
-        console.error(chalk.red(formatApiError(e)));
-        process.exit(1);
+        emitError('Failed', e, { spinner });
       }
     });
 
   // acf task stats <id>
   cmd.command('stats <id>')
     .description('Show execution statistics for a task')
-    .action(async (id) => {
+    // --json 补面（本轮 UX 统一）：单对象形态 → pretty JSON（与 task get --json 一致）
+    .option('--json', 'Emit raw JSON (CI-consumable, no table)')
+    .action(async (id, opts: { json?: boolean }) => {
       const spinner = ora('Fetching stats…').start();
       try {
         const s = await get<{ successRate: number; avgDuration: number; totalRuns: number; recentExecutions: Execution[] }>(`/tasks/${id}/stats`);
         spinner.stop();
+        if (opts.json) {
+          console.log(JSON.stringify(s, null, 2));
+          return;
+        }
         console.log(chalk.bold('Execution Stats'));
         console.log(`  Success rate : ${chalk.green(s.successRate + '%')}`);
         console.log(`  Avg duration : ${s.avgDuration}ms`);
         console.log(`  Total runs   : ${s.totalRuns}`);
       } catch (e: unknown) {
-        spinner.fail('Failed');
-        console.error(chalk.red(formatApiError(e)));
-        process.exit(1);
+        emitError('Failed', e, { spinner });
       }
     });
 
   // acf task versions <id>
   cmd.command('versions <id>')
     .description('List historical versions of a task')
-    .action(async (id) => {
+    // --json 补面（本轮 UX 统一）：rollback/compare 前先拿 versionId 的脚本消费面
+    .option('--json', 'Emit raw JSON (CI-consumable, no table)')
+    .action(async (id, opts: { json?: boolean }) => {
       const spinner = ora('Fetching task versions…').start();
       try {
         const versions = await get<Array<{ id: string; version: string; gitCommit?: string; createdBy?: string; description?: string; createdAt: string }>>(
           `/tasks/${id}/versions`,
         );
         spinner.stop();
+        if (opts.json) {
+          console.log(JSON.stringify(versions, null, 2));
+          return;
+        }
         const table = new Table({
           head: ['Version', 'Commit', 'Created By', 'Created', 'Description'],
           colWidths: [12, 14, 16, 25, 30],
@@ -355,9 +359,7 @@ export function tasksCommand(): Command {
         }
         console.log(table.toString());
       } catch (e: unknown) {
-        spinner.fail('Failed to list versions');
-        console.error(chalk.red(formatApiError(e)));
-        process.exit(1);
+        emitError('Failed to list versions', e, { spinner });
       }
     });
 
@@ -372,22 +374,26 @@ export function tasksCommand(): Command {
         spinner.succeed(`Task rolled back: ${t.id}`);
         console.log(chalk.gray(`  name: ${t.name}  status: ${statusColor(t.status)}`));
       } catch (e: unknown) {
-        spinner.fail('Failed to roll back');
-        console.error(chalk.red(formatApiError(e)));
-        process.exit(1);
+        emitError('Failed to roll back', e, { spinner });
       }
     });
 
   // acf task compare <id> <versionId1> <versionId2>
   cmd.command('compare <id> <versionId1> <versionId2>')
     .description('Diff two task versions (shows fields whose values differ)')
-    .action(async (id, versionId1, versionId2) => {
+    // --json 补面（本轮 UX 统一）：diff 记录直出，脚本可断言具体字段
+    .option('--json', 'Emit raw JSON (CI-consumable, no table)')
+    .action(async (id, versionId1, versionId2, opts: { json?: boolean }) => {
       const spinner = ora('Comparing versions…').start();
       try {
         const diff = await get<Record<string, { old: unknown; new: unknown }>>(
           `/tasks/${id}/versions/${versionId1}/compare/${versionId2}`,
         );
         spinner.stop();
+        if (opts.json) {
+          console.log(JSON.stringify(diff ?? {}, null, 2));
+          return;
+        }
         const keys = Object.keys(diff ?? {});
         if (keys.length === 0) {
           console.log(chalk.green('No differences between the two versions.'));
@@ -408,9 +414,7 @@ export function tasksCommand(): Command {
         }
         console.log(table.toString());
       } catch (e: unknown) {
-        spinner.fail('Failed to compare versions');
-        console.error(chalk.red(formatApiError(e)));
-        process.exit(1);
+        emitError('Failed to compare versions', e, { spinner });
       }
     });
 
@@ -424,19 +428,27 @@ export function tasksCommand(): Command {
       const spinner = ora('Creating task…').start();
       try {
         const fs = await import('fs/promises');
-        const raw = opts.file
-          ? await fs.readFile(opts.file, 'utf-8')
-          : opts.json;
-        const body = JSON.parse(raw);
+        // 本地 payload 层错误（文件读不了/JSON 坏）= 用法错误（退出码 2），
+        // 与服务端拒绝（1）区分；口径与 apps.ts 的 loadJsonBody 一致。
+        let raw: string;
+        try {
+          raw = opts.file ? await fs.readFile(opts.file, 'utf-8') : opts.json;
+        } catch (err) {
+          throw new UsageError(`Cannot read payload file: ${opts.file} (${err instanceof Error ? err.message : String(err)})`);
+        }
+        let body: Record<string, unknown>;
+        try {
+          body = JSON.parse(raw) as Record<string, unknown>;
+        } catch (err) {
+          throw new UsageError(`Invalid JSON payload: ${err instanceof Error ? err.message : String(err)}`);
+        }
         // R7 (N20): 显式 --executor 覆盖/补写 body.executorId（pinning）。
         if (opts.executor) body.executorId = opts.executor;
         const t = await post<Task>('/tasks', body);
         spinner.succeed(`Task created: ${t.id}`);
         console.log(chalk.gray(`  name: ${t.name}  status: ${statusColor(t.status)}`));
       } catch (e: unknown) {
-        spinner.fail('Failed to create task');
-        console.error(chalk.red(formatApiError(e)));
-        process.exit(1);
+        emitError('Failed to create task', e, { spinner });
       }
     });
 
@@ -450,19 +462,27 @@ export function tasksCommand(): Command {
       const spinner = ora('Updating task…').start();
       try {
         const fs = await import('fs/promises');
-        const raw = opts.file
-          ? await fs.readFile(opts.file, 'utf-8')
-          : opts.json;
-        const body = JSON.parse(raw);
+        // 本地 payload 层错误（文件读不了/JSON 坏）= 用法错误（退出码 2），
+        // 与服务端拒绝（1）区分；口径与 apps.ts 的 loadJsonBody 一致。
+        let raw: string;
+        try {
+          raw = opts.file ? await fs.readFile(opts.file, 'utf-8') : opts.json;
+        } catch (err) {
+          throw new UsageError(`Cannot read payload file: ${opts.file} (${err instanceof Error ? err.message : String(err)})`);
+        }
+        let body: Record<string, unknown>;
+        try {
+          body = JSON.parse(raw) as Record<string, unknown>;
+        } catch (err) {
+          throw new UsageError(`Invalid JSON payload: ${err instanceof Error ? err.message : String(err)}`);
+        }
         // R7 (N20): 显式 --executor 覆盖/补写 body.executorId（pinning）。
         if (opts.executor) body.executorId = opts.executor;
         const t = await patch<Task>(`/tasks/${id}`, body);
         spinner.succeed(`Task updated: ${t.id}`);
         console.log(chalk.gray(`  name: ${t.name}  status: ${statusColor(t.status)}`));
       } catch (e: unknown) {
-        spinner.fail('Failed to update task');
-        console.error(chalk.red(formatApiError(e)));
-        process.exit(1);
+        emitError('Failed to update task', e, { spinner });
       }
     });
 
@@ -474,6 +494,9 @@ export function tasksCommand(): Command {
       if (!opts.yes) {
         const readline = await import('readline/promises');
         const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+        // raw 模式下 Ctrl+C 触发 rl 'SIGINT' 而非进程信号；无监听只会 pause，
+        // 确认提示处会假死。接住并走统一中断出口（130）。
+        rl.on('SIGINT', () => interruptExit());
         const answer = await rl.question(`Delete task ${id}? Running executions will be force-terminated. [y/N] `);
         rl.close();
         if (!/^y(es)?$/i.test(answer)) {
@@ -486,9 +509,7 @@ export function tasksCommand(): Command {
         await del(`/tasks/${id}`);
         spinner.succeed(`Task ${id} deleted`);
       } catch (e: unknown) {
-        spinner.fail('Failed to delete task');
-        console.error(chalk.red(formatApiError(e)));
-        process.exit(1);
+        emitError('Failed to delete task', e, { spinner });
       }
     });
 
@@ -502,9 +523,7 @@ export function tasksCommand(): Command {
         spinner.succeed(`Task ${id} paused`);
         console.log(chalk.gray(`  status: ${statusColor(t.status)}`));
       } catch (e: unknown) {
-        spinner.fail('Failed to pause task');
-        console.error(chalk.red(formatApiError(e)));
-        process.exit(1);
+        emitError('Failed to pause task', e, { spinner });
       }
     });
 
@@ -518,9 +537,7 @@ export function tasksCommand(): Command {
         spinner.succeed(`Task ${id} resumed`);
         console.log(chalk.gray(`  status: ${statusColor(t.status)}`));
       } catch (e: unknown) {
-        spinner.fail('Failed to resume task');
-        console.error(chalk.red(formatApiError(e)));
-        process.exit(1);
+        emitError('Failed to resume task', e, { spinner });
       }
     });
 
@@ -535,9 +552,7 @@ export function tasksCommand(): Command {
         );
         spinner.succeed(r.message || 'Execution cancelled');
       } catch (e: unknown) {
-        spinner.fail('Failed to cancel execution');
-        console.error(chalk.red(formatApiError(e)));
-        process.exit(1);
+        emitError('Failed to cancel execution', e, { spinner });
       }
     });
 
@@ -552,8 +567,8 @@ export function tasksCommand(): Command {
       try {
         source = fs.readFileSync(file, 'utf-8');
       } catch {
-        console.error(chalk.red(`Cannot read file: ${file}`));
-        process.exit(1);
+        // 本地参数/文件层错误 → 用法错误（退出码 2），与服务端拒绝（1）区分。
+        emitUsageError(`Cannot read file: ${file}`);
       }
       const ext = path.extname(file).toLowerCase();
       const lang =
@@ -566,8 +581,7 @@ export function tasksCommand(): Command {
               ? 'shell'
               : undefined);
       if (!lang) {
-        console.error(chalk.red(`Cannot infer language from extension "${ext}" — pass --language node|python|shell`));
-        process.exit(1);
+        emitUsageError(`Cannot infer language from extension "${ext}" — pass --language node|python|shell`);
       }
       const ok = (msg: string) => {
         console.log(chalk.green(`✔ ${file}: ${msg}`));
@@ -667,9 +681,9 @@ async function pollExecution(execId: string, waitTimeoutSeconds = 600): Promise<
       // 空转到 MAX_WAIT 并误报超时，掩盖真实错误；立即退出并透出后端消息。
       const status = axios.isAxiosError(e) ? e.response?.status : undefined;
       if (status && status >= 400 && status < 500 && status !== 429) {
-        spinner.fail('Waiting for execution failed');
-        console.error(chalk.red(formatApiError(e)));
-        process.exit(1);
+        // 统一错误出口：4xx 按类别映射退出码（401→3、其余→1），网络/5xx 继续
+        // 轮询（下方 transient 分支）。
+        emitError('Waiting for execution failed', e, { spinner });
       }
       // transient (network / 429 / 5xx), keep polling
     }

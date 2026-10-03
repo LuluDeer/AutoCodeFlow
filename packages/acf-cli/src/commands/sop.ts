@@ -2,7 +2,8 @@ import { Command } from 'commander';
 import Table from 'cli-table3';
 import chalk from 'chalk';
 import ora from 'ora';
-import { get, formatApiError } from '../client.js';
+import { get } from '../client.js';
+import { emitError } from '../ui.js';
 
 // Field names aligned with the Sop entity
 // (apps/admin-api/src/modules/sop/entities/sop.entity.ts);
@@ -25,7 +26,9 @@ export function sopCommand(): Command {
     .option('--status <status>', 'Filter by SOP status (draft | published | deprecated)')
     .option('-p, --page <n>', 'Page number', '1')
     .option('-n, --page-size <n>', 'Page size (max 100)', '20')
-    .action(async (opts) => {
+    // --json 补面（本轮 UX 统一）：对齐 audit list 的信封直出口径
+    .option('--json', 'Emit raw JSON (CI-consumable, no table)')
+    .action(async (opts: { status?: string; page?: string; pageSize?: string; json?: boolean }) => {
       const spinner = ora('Fetching SOPs…').start();
       try {
         const data = await get<{ items: Sop[]; total: number }>('/sop', {
@@ -34,6 +37,10 @@ export function sopCommand(): Command {
           status: opts.status,
         });
         spinner.stop();
+        if (opts.json) {
+          console.log(JSON.stringify(data));
+          return;
+        }
         const items = data.items ?? [];
         const table = new Table({
           head: ['Title', 'Slug', 'Status', 'Version', 'Updated'],
@@ -52,20 +59,24 @@ export function sopCommand(): Command {
         console.log(table.toString());
         console.log(chalk.gray(`Total: ${data.total ?? items.length}  page ${opts.page}`));
       } catch (e: unknown) {
-        spinner.fail('Failed to list SOPs');
-        console.error(chalk.red(formatApiError(e)));
-        process.exit(1);
+        emitError('Failed to list SOPs', e, { spinner });
       }
     });
 
   // acf sop show <id>
   cmd.command('show <sopId>')
     .description('Show one SOP: status, current version and markdown body')
-    .action(async (sopId: string) => {
+    // --json 补面（本轮 UX 统一）：单对象形态 → pretty JSON
+    .option('--json', 'Emit raw JSON (CI-consumable, no table)')
+    .action(async (sopId: string, opts: { json?: boolean }) => {
       const spinner = ora('Fetching SOP…').start();
       try {
         const s = await get<Sop & { bodyMarkdown?: string | null }>(`/sop/${sopId}`);
         spinner.stop();
+        if (opts.json) {
+          console.log(JSON.stringify(s, null, 2));
+          return;
+        }
         console.log(chalk.bold(s.title));
         console.log(chalk.gray(`slug: ${s.slug}  status: ${s.status}  version: ${s.currentVersion ?? '-'}  updated: ${s.updatedAt ?? '-'}`));
         if (s.bodyMarkdown) {
@@ -75,9 +86,7 @@ export function sopCommand(): Command {
           console.log(chalk.gray('(no body — the SOP has no published version yet)'));
         }
       } catch (e: unknown) {
-        spinner.fail('Failed to show SOP');
-        console.error(chalk.red(formatApiError(e)));
-        process.exit(1);
+        emitError('Failed to show SOP', e, { spinner });
       }
     });
 

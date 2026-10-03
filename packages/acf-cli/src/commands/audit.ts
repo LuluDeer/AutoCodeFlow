@@ -2,7 +2,8 @@ import { Command } from 'commander';
 import Table from 'cli-table3';
 import chalk from 'chalk';
 import ora from 'ora';
-import { get, formatApiError } from '../client.js';
+import { get } from '../client.js';
+import { emitError } from '../ui.js';
 
 // Field names aligned with the AuditLog entity
 // (apps/admin-api/src/modules/audit/entities/audit-log.entity.ts);
@@ -94,9 +95,7 @@ export function auditCommand(): Command {
         console.log(table.toString());
         console.log(chalk.gray(`Total: ${total}  page ${opts.page}`));
       } catch (e: unknown) {
-        spinner.fail('Failed to list audit logs');
-        console.error(chalk.red(formatApiError(e)));
-        process.exit(1);
+        emitError('Failed to list audit logs', e, { spinner });
       }
     });
 

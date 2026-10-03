@@ -1,7 +1,8 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import ora from 'ora';
-import { post, formatApiError } from '../client.js';
+import { post } from '../client.js';
+import { emitError } from '../ui.js';
 
 interface Deployment {
   id: string;
@@ -25,9 +26,7 @@ export function deployCommand(): Command {
         spinner.succeed(`Upgrade triggered for deployment ${deploymentId}`);
         console.log(chalk.gray(`  status: ${dep?.status ?? '-'}  executor: ${dep?.executorId ?? '-'}`));
       } catch (e: unknown) {
-        spinner.fail('Failed to trigger upgrade');
-        console.error(chalk.red(formatApiError(e)));
-        process.exit(1);
+        emitError('Failed to trigger upgrade', e, { spinner });
       }
     });
 
@@ -42,9 +41,7 @@ export function deployCommand(): Command {
         spinner.succeed(`Deployment ${deploymentId} stopped`);
         console.log(chalk.gray(`  status: ${dep?.status ?? '-'}`));
       } catch (e: unknown) {
-        spinner.fail('Failed to stop deployment');
-        console.error(chalk.red(formatApiError(e)));
-        process.exit(1);
+        emitError('Failed to stop deployment', e, { spinner });
       }
     });
 
