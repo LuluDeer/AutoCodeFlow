@@ -373,8 +373,21 @@ export default function ExecutorPackagesPage() {
     },
     { title: t('execPkg.col.version'), dataIndex: 'version', width: 100, render: (v: string) => <Tag color="blue">{v}</Tag> },
     { title: t('execPkg.col.type'), dataIndex: 'type', width: 90, render: (v: string) => <Tag>{runtimeLabel(v, t)}</Tag> },
-    { title: t('execPkg.col.platform'), dataIndex: 'platform', width: 90, render: (v?: string) => v ?? '-' },
-    { title: t('execPkg.col.size'), dataIndex: 'fileSize', width: 90, render: (v?: number) => fmtBytes(v) },
+    // UI-09 第三轮：平台/大小/上传者是次要列——窄屏（≤768px）由媒体查询隐藏
+    // （onHeaderCell/onCell 双端挂类，对齐 mobile-ui09 既有模式），
+    // 值班关键列（包名/版本/类型/状态/上传时间）+ 操作列 fixed right 保留。
+    {
+      title: t('execPkg.col.platform'), dataIndex: 'platform', width: 90,
+      onHeaderCell: () => ({ className: 'ui09-hide-mobile' }),
+      onCell: () => ({ className: 'ui09-hide-mobile' }),
+      render: (v?: string) => v ?? '-',
+    },
+    {
+      title: t('execPkg.col.size'), dataIndex: 'fileSize', width: 90,
+      onHeaderCell: () => ({ className: 'ui09-hide-mobile' }),
+      onCell: () => ({ className: 'ui09-hide-mobile' }),
+      render: (v?: number) => fmtBytes(v),
+    },
     {
       title: t('execPkg.col.status'), dataIndex: 'status', width: 100,
       render: (v: string) => {
@@ -386,17 +399,25 @@ export default function ExecutorPackagesPage() {
       title: t('execPkg.col.createdAt'), dataIndex: 'createdAt', width: 170,
       render: (v: string) => formatDateTime(v),
     },
-    { title: t('execPkg.col.uploadedBy'), dataIndex: 'uploadedBy', width: 100, render: (v?: string) => v ?? '-' },
+    {
+      title: t('execPkg.col.uploadedBy'), dataIndex: 'uploadedBy', width: 100,
+      onHeaderCell: () => ({ className: 'ui09-hide-mobile' }),
+      onCell: () => ({ className: 'ui09-hide-mobile' }),
+      render: (v?: string) => v ?? '-',
+    },
     {
       title: t('execPkg.col.actions'), key: 'actions', width: 160, align: 'center' as const, fixed: 'right' as const,
       render: (_: unknown, row: PkgRow) => (
+        // A11Y-ICON-01（对齐 TaskListPage 既有惯例）：纯图标按钮必须补
+        // aria-label——antd Tooltip 不自动注入 aria-label，读屏此前只能念出
+        // 图标自带的英文 aria-label（cloud-download/send/…）。
         <Space size="small">
           <Tooltip title={t('execPkg.action.download')}>
-            <Button size="small" icon={<CloudDownloadOutlined />}
+            <Button size="small" icon={<CloudDownloadOutlined />} aria-label={t('execPkg.action.download')}
               loading={downloadingId === row.id} onClick={() => handleDownload(row)} />
           </Tooltip>
           <Tooltip title={t('execPkg.action.push')}>
-            <Button size="small" icon={<SendOutlined />} type="primary"
+            <Button size="small" icon={<SendOutlined />} type="primary" aria-label={t('execPkg.action.push')}
               disabled={row.status !== 'active'} onClick={() => handleOpenPush(row)} />
           </Tooltip>
           {/* B-9：uploading 包的弃用/激活禁用（后端对非 active/deprecated 翻转会 400）；
@@ -408,12 +429,13 @@ export default function ExecutorPackagesPage() {
           }>
             <Button size="small"
               icon={row.status === 'active' ? <StopOutlined /> : <CheckCircleOutlined />}
+              aria-label={row.status === 'active' ? t('execPkg.action.deprecate') : t('execPkg.action.activate')}
               disabled={row.status === 'uploading'}
               loading={togglingId === row.id}
               onClick={() => handleStatusToggle(row)} />
           </Tooltip>
           <Tooltip title={t('execPkg.delete')}>
-            <Button size="small" danger icon={<DeleteOutlined />} onClick={() => handleDelete(row.id)} />
+            <Button size="small" danger icon={<DeleteOutlined />} aria-label={t('execPkg.delete')} onClick={() => handleDelete(row.id)} />
           </Tooltip>
         </Space>
       ),

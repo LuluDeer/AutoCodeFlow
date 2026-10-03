@@ -367,18 +367,41 @@ export default function ExecutorDetailPage() {
     }},
     { title: t('executorDetail.history.col.startTime'), dataIndex: 'startTime', key: 'startTime', width: 170, render: (v: string) => v ? formatDateTime(v) : '-' },
     // F-35（DEEP_REVIEW 0ef3bbe）：时长格式统一走 formatDurationShort（含小时档）
-    { title: t('executorDetail.history.col.duration'), dataIndex: 'duration', key: 'duration', width: 90, render: (v: number) => formatDurationShort(v) },
-    { title: t('executorDetail.history.col.exitCode'), dataIndex: 'exitCode', key: 'exitCode', width: 80, render: (v: number | null | undefined) => v != null ? <Text type={v !== 0 ? 'danger' : undefined} code>{v}</Text> : '-' },
+    // UI-09 第三轮：时长/退出码是次要列——窄屏（≤768px）由媒体查询隐藏
+    // （onHeaderCell/onCell 双端挂类，对齐 mobile-ui09 既有模式），
+    // 值班关键列（任务名/状态/开始时间/错误）+ scroll.x 横滚兜底保留。
+    {
+      title: t('executorDetail.history.col.duration'),
+      dataIndex: 'duration',
+      key: 'duration',
+      width: 90,
+      render: (v: number) => formatDurationShort(v),
+      onHeaderCell: () => ({ className: 'ui09-hide-mobile' }),
+      onCell: () => ({ className: 'ui09-hide-mobile' }),
+    },
+    {
+      title: t('executorDetail.history.col.exitCode'),
+      dataIndex: 'exitCode',
+      key: 'exitCode',
+      width: 80,
+      render: (v: number | null | undefined) => v != null ? <Text type={v !== 0 ? 'danger' : undefined} code>{v}</Text> : '-',
+      onHeaderCell: () => ({ className: 'ui09-hide-mobile' }),
+      onCell: () => ({ className: 'ui09-hide-mobile' }),
+    },
     { title: t('executorDetail.history.col.error'), dataIndex: 'errorMessage', key: 'errorMessage', ellipsis: true, minWidth: 175, render: (v: string) => v ? <Text type="danger" style={{ fontSize: 12 }}>{v}</Text> : '-' },
   ];
 
   return (
-    <div>
+    // UI-09 第三轮：页面根挂 ui09-exec-detail 作用域（与 ExecutionDetailPage
+    // 同源复用既有媒体查询规则：面包屑 li 允许收缩，本页无新增 CSS）。
+    <div className="ui09-exec-detail">
       <Breadcrumb
         style={{ marginBottom: 16 }}
         items={[
           { title: <Link to="/executors">{t('executorDetail.breadcrumb.list')}</Link> },
-          { title: executor.appName },
+          // UI-09 第二轮同款：超长不可断执行器名会撑破面包屑（li min-width:auto
+          // 不收缩），窄屏由 .ui09-crumb-ellipsis 收敛为省略号（title 保全文）
+          { title: <span className="ui09-crumb-ellipsis" title={executor.appName}>{executor.appName}</span> },
         ]}
       />
 
@@ -519,7 +542,7 @@ export default function ExecutorDetailPage() {
             <Tooltip title={heartbeatAbsolute}>
               {heartbeatStale ? (
                 <Text style={{ color: token.colorWarning }}>
-                  <WarningOutlined style={{ marginRight: 4 }} />
+                  <WarningOutlined aria-hidden="true" style={{ marginRight: 4 }} />
                   {heartbeatText}
                 </Text>
               ) : (
@@ -531,7 +554,7 @@ export default function ExecutorDetailPage() {
           <Descriptions.Item label={t('executorDetail.field.runningExecutions')}>
             {reportedIds === undefined || reportedIds === null ? (
               <Tooltip title={t('executorDetail.running.notReportedTip')}>
-                <Text type="secondary">{t('executorDetail.notReported')} <InfoCircleOutlined /></Text>
+                <Text type="secondary">{t('executorDetail.notReported')} <InfoCircleOutlined aria-hidden="true" /></Text>
               </Tooltip>
             ) : reportedCount === 0 ? (
               <Text type="secondary">{t('executorDetail.running.idle')}</Text>
@@ -543,7 +566,7 @@ export default function ExecutorDetailPage() {
                   ))}
                 </div>
               }>
-                <Text>{t('executorDetail.running.count', { count: reportedCount })} <InfoCircleOutlined /></Text>
+                <Text>{t('executorDetail.running.count', { count: reportedCount })} <InfoCircleOutlined aria-hidden="true" /></Text>
               </Tooltip>
             )}
           </Descriptions.Item>
@@ -551,15 +574,15 @@ export default function ExecutorDetailPage() {
           <Descriptions.Item label={t('executorDetail.field.deadLetter')}>
             {executor.deadLetterCount === undefined || executor.deadLetterCount === null ? (
               <Tooltip title={t('executorDetail.deadLetter.notReportedTip')}>
-                <Text type="secondary">{t('executorDetail.notReported')} <InfoCircleOutlined /></Text>
+                <Text type="secondary">{t('executorDetail.notReported')} <InfoCircleOutlined aria-hidden="true" /></Text>
               </Tooltip>
             ) : executor.deadLetterCount === 0 ? (
               <Text type="success">{t('executorDetail.deadLetter.none')}</Text>
             ) : (
               <Tooltip title={t('executorDetail.deadLetter.tip')}>
                 <Text type="warning">
-                  <WarningOutlined style={{ marginRight: 4 }} />
-                  {t('executorDetail.deadLetter.count', { count: executor.deadLetterCount })} <InfoCircleOutlined />
+                  <WarningOutlined aria-hidden="true" style={{ marginRight: 4 }} />
+                  {t('executorDetail.deadLetter.count', { count: executor.deadLetterCount })} <InfoCircleOutlined aria-hidden="true" />
                 </Text>
               </Tooltip>
             )}
@@ -574,18 +597,18 @@ export default function ExecutorDetailPage() {
           <Descriptions.Item
             label={
               <Tooltip title={t('executorDetail.interpreters.labelTip')}>
-                <span>{t('executorDetail.field.interpreters')} <InfoCircleOutlined /></span>
+                <span>{t('executorDetail.field.interpreters')} <InfoCircleOutlined aria-hidden="true" /></span>
               </Tooltip>
             }
           >
             {executor.interpreters === undefined || executor.interpreters === null ? (
               <Tooltip title={t('executorDetail.interpreters.notReportedTip')}>
-                <Text type="secondary">{t('executorDetail.notReported')} <InfoCircleOutlined /></Text>
+                <Text type="secondary">{t('executorDetail.notReported')} <InfoCircleOutlined aria-hidden="true" /></Text>
               </Tooltip>
             ) : executor.interpreters.length === 0 ? (
               <Tooltip title={t('executorDetail.interpreters.emptyTip')}>
                 <Text type="warning">
-                  <WarningOutlined style={{ marginRight: 4 }} />
+                  <WarningOutlined aria-hidden="true" style={{ marginRight: 4 }} />
                   {t('executorDetail.interpreters.empty')}
                 </Text>
               </Tooltip>
@@ -781,7 +804,7 @@ export default function ExecutorDetailPage() {
             {reservedSlots != null && reservedSlots > 0 && reservedSlots <= occupiedSlots && (
               <Tooltip title={t('executorDetail.reserved.tip')}>
                 <Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 8 }}>
-                  {t('executorDetail.reserved.note', { reserved: reservedSlots, occupied: occupiedSlots })} <InfoCircleOutlined />
+                  {t('executorDetail.reserved.note', { reserved: reservedSlots, occupied: occupiedSlots })} <InfoCircleOutlined aria-hidden="true" />
                 </Text>
               </Tooltip>
             )}

@@ -516,10 +516,14 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
         );
       },
     },
+    // UI-09 第三轮：运行模式是次要列——窄屏（≤768px）由媒体查询隐藏
+    // （onHeaderCell/onCell 双端挂类，对齐 mobile-ui09 既有模式）。
     {
       title: t('appDeploy.col.runMode'),
       dataIndex: 'runMode',
       width: 90,
+      onHeaderCell: () => ({ className: 'ui09-hide-mobile' }),
+      onCell: () => ({ className: 'ui09-hide-mobile' }),
       render: (v: string) => {
         const map: Record<string, { color: string; label: string }> = {
           once: { color: 'default', label: t('appDeploy.runMode.once') },
@@ -530,10 +534,14 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
         return <Tag color={cfg.color}>{cfg.label}</Tag>;
       },
     },
+    // UI-09 第三轮：部署时间是次要列（执行器列的相对时间已承担时效信息），
+    // 窄屏隐藏，同上双端挂类。
     {
       title: t('appDeploy.col.deployedAt'),
       dataIndex: 'deployedAt',
       width: 150,
+      onHeaderCell: () => ({ className: 'ui09-hide-mobile' }),
+      onCell: () => ({ className: 'ui09-hide-mobile' }),
       render: (v: string, r: AppDeployment) => {
         const d = v || r.createdAt;
         if (!d) return '-';
@@ -672,7 +680,10 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+      {/* UI-09 第三轮：标题行 + 操作行允许换行（flexWrap + gap）——375px 下
+          「部署实例/计数徽标」与「刷新/升级所有/新建部署」放不下一行，窄屏
+          操作行折到标题下方（对齐 PageHeader 的 flexWrap 惯例），桌面端不受影响。 */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 16 }}>
         <Space>
           <Text strong>{t('appDeploy.title')}</Text>
           {deployments.length > 0 && (
