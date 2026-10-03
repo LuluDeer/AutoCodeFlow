@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.1](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.7.0...v1.7.1) (2026-10-03)
+
+
+### Bug Fixes
+
+* **mcp-server:** UX 打磨 R12-M——49 工具面审计(描述漂移对齐上游契约/错误可自纠/截断如实告警/分页统一) ([9a28f21](https://github.com/LuluDeer/AutoCodeFlow/commit/9a28f21a1b0e85fc115a8e13682998c6e359c9b9))
+
 ## [1.6.0](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.5.3...v1.6.0) (2026-10-01)
 
 
