@@ -372,7 +372,13 @@ export default function ExecutionsPage() {
            任务名 / 触发·执行器 / 时间·耗时 / 错误 / 详情。 */
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {executions.length === 0 ? (
-            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('execs.empty')} />
+            /* 空态区分：筛选无匹配给「清除筛选」出口；真空态如实提示
+               （执行记录由任务触发产生，无直接创建入口可引导） */
+            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={hasFilters ? t('execs.empty.noMatch') : t('execs.empty')}>
+              {hasFilters && (
+                <Button type="link" size="small" onClick={clearFilters}>{t('execs.clearFilters')}</Button>
+              )}
+            </Empty>
           ) : (
             executions.map((r) => {
               const cfg = statusMap[r.status] || { badge: 'default' as BadgeStatus, label: r.status };
@@ -442,7 +448,15 @@ export default function ExecutionsPage() {
           showSizeChanger: true,
         }}
         locale={{
-          emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('execs.empty')} />,
+          // 空态区分（与移动端卡片同口径）：筛选无匹配 ≠ 从未有过执行——
+          // 前者给「清除筛选」出口，避免用户把筛选打空误读成"执行记录丢了"。
+          emptyText: (
+            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={hasFilters ? t('execs.empty.noMatch') : t('execs.empty')}>
+              {hasFilters && (
+                <Button type="link" size="small" onClick={clearFilters}>{t('execs.clearFilters')}</Button>
+              )}
+            </Empty>
+          ),
         }}
       />
       )}

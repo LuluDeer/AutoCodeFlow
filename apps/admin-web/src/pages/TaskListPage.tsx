@@ -203,7 +203,13 @@ export default function TaskListPage() {
   const handleBatchDelete = async () => {
     if (batchLoading) return;
     setBatchLoading(true);
-    try { reportBatch(await tasksApi.batchDelete(selectedRowKeys), 'taskList.batchDeleted'); }
+    try {
+      const results = await tasksApi.batchDelete(selectedRowKeys);
+      // 空页钳制：选中集恒为本页行（翻页/筛选即清空），整页行全部删除成功后
+      // 当前页会变空——与单删同口径回退一页；部分失败时页面仍有剩余行，不钳制。
+      clampPageAfterRemoval(summarizeBatch(results).succeeded);
+      reportBatch(results, 'taskList.batchDeleted');
+    }
     catch (err: unknown) { showApiError(err, t('taskList.batchDeleteFail')); }
     finally { setBatchLoading(false); }
   };
@@ -249,8 +255,17 @@ export default function TaskListPage() {
     finally { setTogglingId(null); }
   };
 
+  // 空页钳制（一致性）：服务端分页下删除当前页最后一条后，total 减小但本页的
+  // page 状态不变，请求仍打在第 N 页——antd 只在渲染层钳制分页器显示，表格主体
+  // 仍是第 N 页拉回的空列表，用户停在"看不见数据也不知道该翻回去"的空页。
+  // 本页只剩一条且不在第 1 页时，删除成功后回退一页（page-1 必然是满页，
+  // 因为服务端分页是稠密填充）。
+  const clampPageAfterRemoval = (removedCount: number) => {
+    if (removedCount >= tasks.length && page > 1) setPage(page - 1);
+  };
+
   const handleDelete = async (id: string) => {
-    try { await tasksApi.delete(id); message.success(t('taskList.deleted')); refresh(); }
+    try { await tasksApi.delete(id); message.success(t('taskList.deleted')); clampPageAfterRemoval(1); refresh(); }
     catch (err: unknown) { showApiError(err, t('taskList.deleteFail')); }
   };
 

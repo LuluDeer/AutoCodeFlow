@@ -10,11 +10,17 @@ import {
   Tabs,
   Tag,
   Typography,
+  Empty,
 } from 'antd';
 import { PlayCircleOutlined, ReloadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
+// URL-SYNC-01：筛选/分页同步 URL（对齐 TaskListPage/ExecutionsPage 先例）——
+// 刷新、后退、分享链接不丢状态。
+import { useSearchParams } from 'react-router-dom';
 
 import PageHeader from '../components/PageHeader';
+// UI-16：列表请求失败不再只弹 toast——页内原位错误块 + 重试入口
+import StateError from '../components/StateError';
 import { agentApi } from '../api/agent';
 // SOPS-TIME-01：startedAt 列与 SopsPage 同走 formatDateTime（locale 感知 + 空值 '—'）
 import { formatDateTime } from '../utils/timeFormat';
@@ -67,13 +73,25 @@ function usageOf(s: AgentSession, t: (k: string, v?: Record<string, unknown>) =>
 
 export default function AgentSessionsPage() {
   const { t } = useTranslation();
+  // URL-SYNC-01：筛选/分页以 URL 查询参数为初始源并回写；非法深链值
+  // （?page=abc、负数、浮点）回落默认值，不空屏不报错。
+  const [searchParams, setSearchParams] = useSearchParams();
   const [items, setItems] = useState<AgentSession[]>([]);
   const [total, setTotal] = useState(0);
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
-  const [kindFilter, setKindFilter] = useState<string | undefined>(undefined);
-  const [statusFilter, setStatusFilter] = useState<string | undefined>(undefined);
+  const [page, setPage] = useState(() => {
+    const p = Number(searchParams.get('page'));
+    return Number.isInteger(p) && p > 0 ? p : 1;
+  });
+  const [pageSize, setPageSize] = useState(() => {
+    const ps = Number(searchParams.get('pageSize'));
+    return Number.isInteger(ps) && ps > 0 ? ps : 20;
+  });
+  const [kindFilter, setKindFilter] = useState<string | undefined>(() => searchParams.get('kind') || undefined);
+  const [statusFilter, setStatusFilter] = useState<string | undefined>(() => searchParams.get('status') || undefined);
   const [loading, setLoading] = useState(false);
+  // UI-16：非静默加载（首屏/手动刷新/筛选变化）失败时记录错误并原位呈现；
+  // B-14 的静默轮询失败仍保持静默（列表保留旧数据，不弹错误块刷屏）。
+  const [loadError, setLoadError] = useState<unknown>(null);
   const [budget, setBudget] = useState<AgentBudget | null>(null);
   const [detail, setDetail] = useState<AgentSession | null>(null);
   const [steps, setSteps] = useState<AgentStep[]>([]);
@@ -83,18 +101,29 @@ export default function AgentSessionsPage() {
 
   // B-14：silent 轮询不闪 loading（对齐 SopsPage 同款处理）
   const load = useCallback(async (opts?: { silent?: boolean }) => {
-    if (!opts?.silent) setLoading(true);
+    if (!opts?.silent) { setLoading(true); setLoadError(null); }
     try {
       const res = await agentApi.list({ kind: kindFilter, status: statusFilter, page, pageSize });
       setItems(res.items);
       setTotal(res.total);
-    } catch {
-      // B-14：后台轮询失败静默——连续弹 message 是噪音，列表保留旧数据
-      if (!opts?.silent) message.error(t('agents.loadFailed'));
+    } catch (err: unknown) {
+      // B-14：后台轮询失败静默——连续弹 message 是噪音，列表保留旧数据。
+      // 非 silent（首屏/手动刷新）失败改为页内错误态（UI-16），不再只弹 toast。
+      if (!opts?.silent) setLoadError(err ?? new Error('load failed'));
     } finally {
       if (!opts?.silent) setLoading(false);
     }
-  }, [kindFilter, statusFilter, page, pageSize, t]);
+  }, [kindFilter, statusFilter, page, pageSize]);
+
+  // URL-SYNC-01：状态→URL 回写（replace 不制造历史记录；默认值不写入）
+  useEffect(() => {
+    const next = new URLSearchParams();
+    if (page !== 1) next.set('page', String(page));
+    if (pageSize !== 20) next.set('pageSize', String(pageSize));
+    if (kindFilter) next.set('kind', kindFilter);
+    if (statusFilter) next.set('status', statusFilter);
+    setSearchParams(next, { replace: true });
+  }, [page, pageSize, kindFilter, statusFilter, setSearchParams]);
 
   useEffect(() => {
     void load();
@@ -302,11 +331,37 @@ export default function AgentSessionsPage() {
           </Space>
         }
       />
+      {/* UI-16：非静默加载失败 → 页内原位错误块 + 重试（轮询失败仍静默，B-14 语义不变） */}
+      {loadError ? (
+        <StateError
+          error={loadError}
+          title={t('agents.loadFailed')}
+          onRetry={() => void load()}
+          style={{ marginBottom: 16 }}
+        />
+      ) : null}
       <Table<AgentSession>
         rowKey="id"
         loading={loading}
         columns={sessionColumns}
         dataSource={items}
+        locale={{
+          // 空态区分：筛选无匹配给「清除筛选」出口（避免用户以为会话真没了）；
+          // 真空态如实提示（会话由运行时产生，无人工入口可引导）。
+          emptyText: (kindFilter || statusFilter) ? (
+            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('agents.empty.noMatch')}>
+              <Button
+                type="link"
+                size="small"
+                onClick={() => { setKindFilter(undefined); setStatusFilter(undefined); setPage(1); }}
+              >
+                {t('agents.clearFilters')}
+              </Button>
+            </Empty>
+          ) : (
+            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('agents.empty')} />
+          ),
+        }}
         pagination={{ current: page, pageSize, total, showSizeChanger: true, onChange: (p, ps) => { setPage(p); setPageSize(ps); } }}
         size="middle"
       />

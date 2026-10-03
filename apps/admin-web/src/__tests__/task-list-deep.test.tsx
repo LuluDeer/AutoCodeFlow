@@ -80,13 +80,13 @@ const makeTask = (over: Partial<Task> = {}): Task => ({
   ...over,
 });
 
-function renderPage() {
+function renderPage(initialEntry = '/tasks') {
   // FEAT-17: TaskListPage 改用 TanStack Query——测试包 QueryClientProvider
   // （executions-page.test 先例，retry:false 防轮询重试噪音）
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
-      <MemoryRouter initialEntries={['/tasks']}>
+      <MemoryRouter initialEntries={[initialEntry]}>
         <Routes>
           <Route path="/tasks" element={<TaskListPage />} />
           <Route path="/tasks/new" element={<div>task-form-mock</div>} />
@@ -449,5 +449,56 @@ describe('遗留 P1-3：下次执行列在 tz 为空时附服务端时区注记'
     await waitFor(() =>
       expect(document.body.textContent).toContain('未指定时区'),
     );
+  });
+});
+
+// ─── UX 边界回归（本轮全站打磨）：删除后空页钳制 ──────────────────────────
+// 服务端分页下删除当前页最后一条后，page 状态不变 → 请求仍打在第 N 页返回空
+// 列表，用户停在空表空页。删除成功且整页行清空时应回退一页。
+describe('TaskListPage 删除后空页钳制（UX 边界）', () => {
+  // total=21、pageSize=20 → 第 2 页只有 1 条（参数签名兼容 tasksApi.list 可选 params）
+  const listPageOf = (params?: { page?: number }) =>
+    Promise.resolve(
+      params?.page === 2
+        ? { items: [makeTask({ id: 'task-last', name: '末页任务' })], total: 21, page: 2, pageSize: 20 }
+        : { items: [makeTask(), makeTask({ id: 'task-2', name: '巡检任务' })], total: 21, page: 1, pageSize: 20 },
+    );
+
+  it('单删第 2 页最后一条 → page 回退 1（list 以 page=1 重新拉取）', async () => {
+    mockedTasks.list.mockImplementation(listPageOf);
+    mockedTasks.delete.mockResolvedValue(undefined);
+    renderPage('/tasks?page=2');
+    await screen.findByText('末页任务');
+
+    const deleteBtn = Array.from(document.body.querySelectorAll('.ant-table-row button')).find(
+      (b) => b.querySelector('.anticon-delete'),
+    ) as HTMLButtonElement | undefined;
+    expect(deleteBtn).toBeTruthy();
+    fireEvent.click(deleteBtn!);
+    await confirmPopconfirm('确认删除此任务？');
+    await waitFor(() => expect(mockedTasks.delete).toHaveBeenCalledWith('task-last'));
+
+    await waitFor(() => {
+      const lastCall = mockedTasks.list.mock.calls[mockedTasks.list.mock.calls.length - 1]?.[0];
+      expect(lastCall?.page).toBe(1);
+    });
+  });
+
+  it('批量删除整页行（部分失败场景外）→ page 回退上一页', async () => {
+    mockedTasks.list.mockImplementation(listPageOf);
+    // 全成功：无 error 字段（真实契约 HTTP 200 + 逐项 {id, error?}）
+    mockedTasks.batchDelete.mockResolvedValue([{ id: 'task-last' }]);
+    renderPage('/tasks?page=2');
+    await screen.findByText('末页任务');
+
+    fireEvent.click(rowCheckbox(0));
+    fireEvent.click(findBtn(document.body, '批量删除')!);
+    await confirmPopconfirm('确认删除 1 个任务？正在执行中的运行将被强制终止。');
+    await waitFor(() => expect(mockedTasks.batchDelete).toHaveBeenCalledWith(['task-last']));
+
+    await waitFor(() => {
+      const lastCall = mockedTasks.list.mock.calls[mockedTasks.list.mock.calls.length - 1]?.[0];
+      expect(lastCall?.page).toBe(1);
+    });
   });
 });

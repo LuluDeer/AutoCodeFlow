@@ -161,6 +161,10 @@ export default function ApplicationListPage() {
   const [quickDeployExecutors, setQuickDeployExecutors] = useState<{id: string; name: string; address: string; status: string}[]>([]);
   const [quickDeployForm] = Form.useForm();
   const [quickDeploying, setQuickDeploying] = useState(false);
+  // 防重复提交：新建/编辑保存期间禁用确定按钮（upload/quickDeploy/group 弹窗
+  // 均有 confirmLoading 口径，唯独主编辑弹窗此前缺失——连点确定会对 create
+  // 发两次请求，第二次撞 name 唯一约束报错 toast）。
+  const [saving, setSaving] = useState(false);
   // F-2：整包 zip 上传期间禁用确定按钮并给 loading，避免重复点击触发多次上传
   //（与 ExecutorPackagesPage 的 uploading 模式对齐）。
   const [uploading, setUploading] = useState(false);
@@ -366,6 +370,7 @@ export default function ApplicationListPage() {
   const handleSubmit = async () => {
     try {
       const values = await form.validateFields();
+      setSaving(true);
       if (editingApp) {
         // name 为不可变标识：UpdateApplicationDto 未声明 name 字段，
         // 带上会被全局 ValidationPipe（forbidNonWhitelisted）以 400 拒绝
@@ -381,6 +386,8 @@ export default function ApplicationListPage() {
     } catch (err: unknown) {
       if (isFormValidationError(err)) return;
       showApiError(err, t('appList.saveFail'));
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -696,7 +703,12 @@ export default function ApplicationListPage() {
            （P1-13 语义） / 最后部署 / 操作（详情·部署·编辑·删除）。 */
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {filtered.length === 0 ? (
-            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={hasFilters ? t('appList.empty.noMatch') : t('appList.empty.none')} />
+            /* 空态区分（与桌面同口径）：筛选无匹配 vs 真空态给创建引导 */
+            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={hasFilters ? t('appList.empty.noMatch') : t('appList.empty.none')}>
+              {!hasFilters && isAdmin && (
+                <Button type="primary" onClick={handleCreate}>{t('appList.empty.createFirst')}</Button>
+              )}
+            </Empty>
           ) : (
             filtered.slice((mobilePage - 1) * MOBILE_PAGE_SIZE, mobilePage * MOBILE_PAGE_SIZE).map((record) => (
               <Card key={record.id} size="small">
@@ -775,7 +787,13 @@ export default function ApplicationListPage() {
               ? undefined
               : (hasFilters
                 ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('appList.empty.noMatch')} />
-                : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('appList.empty.none')} />)),
+                : (
+                  /* 真空态给「下一步动作」引导（对齐 TaskListPage empty.none CTA 口径）：
+                     机群上一个应用都没有时，创建/上传是唯一有意义的下一步 */
+                  <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('appList.empty.none')}>
+                    {isAdmin && <Button type="primary" onClick={handleCreate}>{t('appList.empty.createFirst')}</Button>}
+                  </Empty>
+                ))),
         }}
       />
       )}
@@ -786,6 +804,8 @@ export default function ApplicationListPage() {
         open={modalOpen}
         onOk={handleSubmit}
         onCancel={() => setModalOpen(false)}
+        // 防重复提交：保存请求飞行中确定按钮 loading+禁用
+        confirmLoading={saving}
         // forceRender：Form 随页面首帧挂载——handleEdit 可在弹窗动画开始前
         // 同步回填表单值（原本只靠 afterOpenChange 动画结束后回填，动画事件
         // 缺失的环境里表单会是空的）。

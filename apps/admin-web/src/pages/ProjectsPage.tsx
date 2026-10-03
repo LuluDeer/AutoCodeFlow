@@ -265,6 +265,17 @@ function MembersDrawer({ project, isAdmin, onClose }: MembersDrawerProps) {
           style={{ marginTop: 16 }}
           onFinish={(v) => addMutation.mutate(v)}
         >
+          {/* 候选用户清单拉取失败不再静默成空下拉——原位给出错误块 + 重试入口
+              （对齐上方 membersQuery 错误态口径）。否则管理员看到的是"没有可选
+              用户"，无从分辨是列表为空还是请求失败。 */}
+          {usersQuery.isError && (
+            <StateError
+              error={usersQuery.error}
+              title={t('projects.members.candidatesFail')}
+              onRetry={() => void usersQuery.refetch()}
+              style={{ marginBottom: 16 }}
+            />
+          )}
           <Form.Item
             name="userId"
             label={t('projects.members.userId')}
