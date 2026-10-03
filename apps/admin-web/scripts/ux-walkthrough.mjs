@@ -1,4 +1,4 @@
-// ux-walkthrough.mjs — 真实 Chromium 渲染走查(375/1280 双视口)
+// ux-walkthrough.mjs — 真实 Chromium 渲染走查(375/600/1280 视口 + 交互态 + 暗色)
 //
 // 背景:三轮移动端治理(R5/R6)与多轮 UX 修复全部基于 jsdom 断言,从未经过真实
 // 布局引擎。本脚本用 playwright-core(本目录 node_modules)直接驱动本机
@@ -6,9 +6,28 @@
 // 访问 router.tsx 全部页面:
 //   - 375×812:检测 document 横向溢出(scrollWidth > innerWidth+1)+ 找出超出
 //     视口最宽的元素(tag.class + 文本片段);
+//   - 600×900(第二轮):antd sm 区间(576–767)敏感带——useIsMobile 断点
+//     (max-width:768px)内、antd Grid sm 断点内,抽屉满宽/卡片列表形态下的
+//     静止态溢出检测,同 375 规则;
 //   - 1280×800:冒烟——只确认渲染无 JS 错误;
 //   - 全程收集 console error/warning(标注 i18next missing-key、React key/prop
 //     告警)、pageerror、以及 404 的 /api 请求(=夹具缺口,记录端点名)。
+//
+// 第二轮新增(三个盲区补齐):
+//   1. 600px 视口(上);
+//   2. 交互态:对 8 个主交互入口(抽屉/弹窗)在 375/600 下点击开启 → 检测
+//      容器自身横向溢出(scrollWidth vs clientWidth)+ 关闭按钮在视口内可点
+//      + 越界元素 → 截图(*-open.png)→ Escape 关闭;
+//   3. 暗色:addInitScript 预置 localStorage 'autoflow-theme'={"state":{"mode":
+//      "dark"},"version":0}(zustand persist 形状,store/theme.ts partialize
+//      只落 mode;THEME_INIT_SCRIPT 同键读取),重跑 375+1280 页面矩阵
+//      (截图 *-dark.png)+ 自动扫描白底残留块(backgroundColor≥245 的可见
+//      元素,仅辅助——结论以 report.md 人工目检小节为准)+ 交互态抽检。
+//   报告:report.md 保留首轮内容(原任务报告 = round-1 标题第 1 份拷贝;按
+//   标题第 2 次出现处截断,防每跑一次多累积一份再生 round-1 章节——历史实现
+//   按「# 第二轮」切分实测累积出 4 份重复),第二轮章节每次运行整体重写;
+//   人工目检小节从同目录 dark-notes.md 注入(存在才嵌入,避免两次运行间被
+//   重写抹掉)。
 //
 // 本机无 Docker / 无后端(PG/Redis 不存在),API 全部走 context.route('**/api/**')
 // 夹具供数,形状从 src/api/*.ts 的 TypeScript 接口逐字段推导。
@@ -20,7 +39,7 @@
 // `test-results/` 已覆盖该目录,不会入库)。
 
 import { chromium } from 'playwright-core';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -524,8 +543,31 @@ const PAGES = [
 
 const VIEWPORTS = [
   { w: 375, h: 812, label: 'mobile' },
+  // 第二轮:antd sm 区间(576–767)敏感带;900 高给抽屉内容留渲染空间
+  { w: 600, h: 900, label: 'sm-600' },
   { w: 1280, h: 800, label: 'desktop' },
 ];
+// 溢出检测执行宽度(≤600);1280 保持纯冒烟(向后兼容首轮语义)
+const OVERFLOW_W = (w) => w <= 600;
+
+// ── 交互态(第二轮):每页挑最主要的一个抽屉/弹窗入口。trigger 为 Playwright
+// 定位器:文案取自 zh locale(autoflow-lang=zh 基线),或页面自带
+// data-testid / aria-label。kind 决定开启等待选择器与容器类名。
+const INTERACTIONS = [
+  // 注意:antd Button 对纯两汉字文案自动插空格(textContent 实为「详 情」),
+  // :has-text("详情") 匹配不到 → 用 text=/详\s*情/ 容忍空白;带 icon 或
+  // ≥3 字的按钮无此问题(创建应用/上传新包 可直接 :has-text)。
+  { key: 'agent-sessions', path: '/agent-sessions', trigger: 'button >> text=/详\\s*情/', kind: 'drawer', desc: '会话详情抽屉' },
+  { key: 'sops', path: '/sops', trigger: 'button >> text=/详\\s*情/', kind: 'drawer', desc: 'SOP 详情抽屉' },
+  { key: 'projects', path: '/projects', trigger: 'button:has-text("成员")', kind: 'drawer', desc: '成员管理抽屉' },
+  { key: 'task-detail', path: '/tasks/t-1001', trigger: '[data-testid="version-history"]', kind: 'drawer', desc: '版本历史抽屉' },
+  { key: 'applications', path: '/applications', trigger: 'button:has-text("创建应用")', kind: 'modal', desc: '新建应用弹窗' },
+  { key: 'settings-config', path: '/settings?tab=config', trigger: 'button[aria-label*="变更历史"]', kind: 'modal', desc: '配置变更历史 Modal' },
+  { key: 'executor-packages', path: '/executor-packages', trigger: 'button:has-text("上传新包")', kind: 'modal', desc: '上传执行器包弹窗' },
+  { key: 'executor-detail', path: '/executors/ex-3001', trigger: 'button >> text=/编\\s*辑/', kind: 'modal', desc: '执行器编辑弹窗' },
+];
+// 暗色交互态抽检(不求全覆盖):详情抽屉 ×2 + 新建弹窗 ×1
+const DARK_INTERACTION_KEYS = ['task-detail', 'agent-sessions', 'applications'];
 
 // console 分类:i18next missing-key / React key|prop / 其他
 function classifyConsole(type, text) {
@@ -537,20 +579,23 @@ function classifyConsole(type, text) {
   return flags;
 }
 
-async function detectOverflow(page) {
-  return page.evaluate(() => {
+async function detectOverflow(page, rootSelector = null) {
+  return page.evaluate((rootSel) => {
     const vw = window.innerWidth;
     const doc = document.documentElement;
     const sw = Math.max(doc.scrollWidth, document.body ? document.body.scrollWidth : 0);
+    const rootEl = rootSel ? document.querySelector(rootSel) : (document.body || document.documentElement);
+    if (!rootEl) return { vw, scrollWidth: sw, overflow: sw > vw + 1, top: [] };
     const offenders = [];
-    for (const el of document.querySelectorAll('body *')) {
+    for (const el of rootEl.querySelectorAll('*')) {
       const r = el.getBoundingClientRect();
       if (r.width > 0 && r.right > vw + 1) {
         // 判定越界元素是否被「容器内横向滚动」收纳(移动端合规形态):
         // 沿祖先链找第一个 overflow-x:auto/scroll 且实际可滚的容器。
+        // 上限 25 层(与 probeOverlay 同理:Tabs+Spin 嵌套链实测可达 ~14 层)。
         let contained = false;
         let p = el.parentElement;
-        for (let i = 0; p && i < 10; i++) {
+        for (let i = 0; p && i < 25; i++) {
           const cs = getComputedStyle(p);
           const ox = cs.overflowX;
           if ((ox === 'auto' || ox === 'scroll') && p.scrollWidth > p.clientWidth + 1) {
@@ -581,10 +626,41 @@ async function detectOverflow(page) {
       if (top.length >= 3) break;
     }
     return { vw, scrollWidth: sw, overflow: sw > vw + 1, top };
+  }, rootSelector);
+}
+
+// 暗色白底残留自动扫描(辅助信号,非结论):data-theme=dark 下,可见且
+// backgroundColor ≥245 的元素(经典硬编码 #fff 残留)。只报面积 ≥40×14 的
+// 前几个,人工目检以 report.md「人工目检」小节为准。
+async function scanLightBlocks(page) {
+  return page.evaluate(() => {
+    if (document.documentElement.getAttribute('data-theme') !== 'dark') {
+      return [{ sel: '(data-theme≠dark,暗色未生效)', w: 0, h: 0, text: '' }];
+    }
+    const out = [];
+    for (const el of document.querySelectorAll('body *')) {
+      const cs = getComputedStyle(el);
+      const m = cs.backgroundColor.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/);
+      if (!m) continue;
+      const a = m[4] === undefined ? 1 : parseFloat(m[4]);
+      if (a < 0.5 || +m[1] < 245 || +m[2] < 245 || +m[3] < 245) continue;
+      const rect = el.getBoundingClientRect();
+      if (rect.width < 40 || rect.height < 14) continue;
+      const cls = typeof el.className === 'string' && el.className
+        ? el.className.trim().split(/\s+/).slice(0, 2).join('.') : '';
+      out.push({
+        sel: `${el.tagName.toLowerCase()}${cls ? `.${cls}` : ''}`,
+        w: Math.round(rect.width), h: Math.round(rect.height),
+        text: (el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 40),
+      });
+      if (out.length >= 5) break;
+    }
+    return out;
   });
 }
 
-async function visitPage(browser, pageDef, viewport) {
+async function visitPage(browser, pageDef, viewport, opts = {}) {
+  const dark = !!opts.dark;
   const context = await browser.newContext({ viewport: { width: viewport.w, height: viewport.h } });
   await context.route('**/api/**', apiHandler);
   if (pageDef.auth !== false) {
@@ -596,6 +672,13 @@ async function visitPage(browser, pageDef, viewport) {
     }, [JSON.stringify({ state: { token: 'mock-access-token', refreshToken: 'mock-refresh-token', user: USER }, version: 0 })]);
   } else {
     await context.addInitScript(() => localStorage.setItem('autoflow-lang', 'zh'));
+  }
+  // 第二轮:暗色主题——zustand persist(store/theme.ts)partialize 只落 mode,
+  // 确切形状 {"state":{"mode":"dark"},"version":0};THEME_INIT_SCRIPT(index.html
+  // 头部)同键读取,先于 React 生效,防首帧亮色闪白污染检测。
+  if (dark) {
+    await context.addInitScript(([theme]) => localStorage.setItem('autoflow-theme', theme),
+      [JSON.stringify({ state: { mode: 'dark' }, version: 0 })]);
   }
 
   const consoleMsgs = [];
@@ -629,7 +712,8 @@ async function visitPage(browser, pageDef, viewport) {
 
   let overflowInfo = null;
   let renderSmoke = null;
-  if (viewport.w === 375) {
+  let lightBlocks = [];
+  if (OVERFLOW_W(viewport.w)) {
     try { overflowInfo = await detectOverflow(page); } catch { /* 页面已崩则跳过 */ }
   }
   try {
@@ -637,10 +721,14 @@ async function visitPage(browser, pageDef, viewport) {
       title: document.title,
       bodyChars: document.body ? document.body.innerText.length : 0,
       hasViteErrorOverlay: !!document.querySelector('vite-error-overlay'),
+      dataTheme: document.documentElement.getAttribute('data-theme'),
     }));
-  } catch { renderSmoke = { title: '?', bodyChars: 0, hasViteErrorOverlay: false }; }
+  } catch { renderSmoke = { title: '?', bodyChars: 0, hasViteErrorOverlay: false, dataTheme: null }; }
+  if (dark) {
+    try { lightBlocks = await scanLightBlocks(page); } catch { /* 页面已崩则跳过 */ }
+  }
 
-  const shot = join(OUT_DIR, `${pageDef.key}-${viewport.w}.png`);
+  const shot = join(OUT_DIR, `${pageDef.key}-${viewport.w}${dark ? '-dark' : ''}.png`);
   try {
     await page.screenshot({ path: shot, fullPage: false });
   } catch (err) {
@@ -654,8 +742,8 @@ async function visitPage(browser, pageDef, viewport) {
   const notableWarns = consoleWarns.filter((c) => classifyConsole('warning', c.text).some((f) => f !== 'other'));
 
   return {
-    key: pageDef.key, path: pageDef.path, viewport: viewport.w,
-    gotoError, overflowInfo, renderSmoke, shot,
+    key: pageDef.key, path: pageDef.path, viewport: viewport.w, dark,
+    gotoError, overflowInfo, renderSmoke, shot, lightBlocks,
     errors: consoleErrors.map((c) => c.text),
     warnCount: consoleWarns.length,
     notableWarns: notableWarns.map((c) => ({ flags: classifyConsole('warning', c.text), text: c.text.slice(0, 200) })),
@@ -663,6 +751,237 @@ async function visitPage(browser, pageDef, viewport) {
     pageApi404,
     viteOverlay: renderSmoke.hasViteErrorOverlay,
     blank: renderSmoke.bodyChars < 40 && !gotoError,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 交互态(第二轮):抽屉/弹窗「开启态」检测
+// ─────────────────────────────────────────────────────────────────────────────
+
+// 开启态探针:容器自身横向溢出(scrollWidth vs clientWidth)+ 是否被推出视口
+// + 关闭按钮在视口内且可点(elementFromPoint 验证)+ 越界元素清单。
+async function probeOverlay(page) {
+  return page.evaluate(() => {
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const wrapper = document.querySelector('.ant-drawer-content-wrapper');
+    const modal = document.querySelector('.ant-modal');
+    const root = wrapper || modal;
+    if (!root) return { found: false };
+    const rect = root.getBoundingClientRect();
+    // 容器各层(壳 → content → body)的自身横向溢出。overflowX=auto/scroll 的
+    // body 是 antd 自建滚动容器(合规形态,归 innerScrollBody);overflowX=visible
+    // 的「scrollWidth>clientWidth」是真实外溢(归 shellOverflow,A 级)。
+    const shellOverflow = [];
+    const innerScrollBody = [];
+    for (const sel of wrapper
+      ? ['.ant-drawer-content-wrapper', '.ant-drawer-content', '.ant-drawer-body']
+      : ['.ant-modal', '.ant-modal-content', '.ant-modal-body']) {
+      const el = document.querySelector(sel);
+      if (!el || el.scrollWidth <= el.clientWidth + 1) continue;
+      const entry = { sel, scrollWidth: el.scrollWidth, clientWidth: el.clientWidth, overflowX: getComputedStyle(el).overflowX };
+      if (sel.endsWith('-body') && (entry.overflowX === 'auto' || entry.overflowX === 'scroll')) innerScrollBody.push(entry);
+      else shellOverflow.push(entry);
+    }
+    // 越界元素(相对视口右缘)——与静止态 detectOverflow 同款「容器内滚动
+    // 收纳」判定,但限定在 overlay 根内。例外:.ant-table-header 的
+    // overflowX=hidden 是 antd scroll.x 表头分体式渲染(列头 scrollLeft 由
+    // body 滚动事件同步),不能据此判「不可达」。
+    const offenders = [];
+    for (const el of root.querySelectorAll('*')) {
+      const r = el.getBoundingClientRect();
+      if (r.width > 0 && r.right > vw + 1) {
+        // 祖先链上限 25 层:overlay 内 Tabs+Spin 嵌套下,thead → .ant-drawer-body
+        // 实测 ~14 层,10 层上限会把「drawer body 滚动收纳」误判为不可达。
+        let contained = false;
+        let p = el.parentElement;
+        for (let i = 0; p && i < 25; i++) {
+          const cs = getComputedStyle(p);
+          const ox = cs.overflowX;
+          const scrollable = (ox === 'auto' || ox === 'scroll') && p.scrollWidth > p.clientWidth + 1;
+          const antdSyncedHeader = ox === 'hidden' && typeof p.className === 'string' && p.className.includes('ant-table-header');
+          if (scrollable || antdSyncedHeader) {
+            contained = true;
+            break;
+          }
+          p = p.parentElement;
+        }
+        const cls = typeof el.className === 'string' && el.className
+          ? el.className.trim().split(/\s+/).slice(0, 2).join('.') : '';
+        offenders.push({
+          w: Math.round(r.width),
+          over: Math.round(r.right - vw),
+          sel: `${el.tagName.toLowerCase()}${cls ? `.${cls}` : ''}`,
+          text: (el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 50),
+          contained,
+        });
+      }
+    }
+    offenders.sort((a, b) => b.w - a.w);
+    const seen = new Set();
+    const top = [];
+    for (const o of offenders) {
+      const k = `${o.sel}|${o.text}`;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      top.push(o);
+      if (top.length >= 3) break;
+    }
+    const close = document.querySelector('.ant-drawer-close, .ant-modal-close');
+    let closeInfo = null;
+    if (close) {
+      const cr = close.getBoundingClientRect();
+      const cx = cr.left + cr.width / 2;
+      const cy = cr.top + cr.height / 2;
+      const hit = document.elementFromPoint(cx, cy);
+      closeInfo = {
+        inViewport: cr.left >= -1 && cr.right <= vw + 1 && cr.top >= -1 && cr.bottom <= vh + 1,
+        clickable: !!hit && (hit === close || close.contains(hit)),
+        left: Math.round(cr.left), right: Math.round(cr.right),
+      };
+    }
+    const doc = document.documentElement;
+    const sw = Math.max(doc.scrollWidth, document.body ? document.body.scrollWidth : 0);
+    return {
+      found: true,
+      kind: wrapper ? 'drawer' : 'modal',
+      rect: { left: Math.round(rect.left), right: Math.round(rect.right), width: Math.round(rect.width) },
+      vw, docScrollW: sw, docOverflow: sw > vw + 1,
+      shellOverflow, innerScrollBody,
+      offenders: top,
+      close: closeInfo,
+    };
+  });
+}
+
+// 由单次探针结果生成 findings(A=溢出/不可用;info=合规形态留档)。
+// 独立成函数供「A 级复测消解」对两次探针复用(见 testInteraction)。
+function overlayFindings(probe) {
+  const out = [];
+  if (probe.rect.left < -1 || probe.rect.right > probe.vw + 1) {
+    out.push({ level: 'A', text: `${probe.kind} 容器被推出视口: rect ${probe.rect.left}..${probe.rect.right}(vw=${probe.vw},宽 ${probe.rect.width})` });
+  }
+  for (const o of probe.shellOverflow) {
+    out.push({ level: 'A', text: `${probe.kind} 容器自身横向溢出: ${o.sel} scrollWidth=${o.scrollWidth} > clientWidth=${o.clientWidth}(overflowX=${o.overflowX || '?'})` });
+  }
+  if (probe.docOverflow) {
+    out.push({ level: 'A', text: `开启态 document 横向溢出: scrollWidth=${probe.docScrollW} > vw=${probe.vw}` });
+  }
+  if (!probe.close) {
+    out.push({ level: 'A', text: '未找到关闭按钮(.ant-drawer-close / .ant-modal-close)' });
+  } else if (!probe.close.inViewport || !probe.close.clickable) {
+    out.push({ level: 'A', text: `关闭按钮不可用: inViewport=${probe.close.inViewport} clickable=${probe.close.clickable}(rect ${probe.close.left}..${probe.close.right})` });
+  }
+  for (const o of probe.offenders.filter((x) => !x.contained)) {
+    out.push({ level: 'A', text: `越界元素(未被滚动容器收纳): ${o.sel} w=${o.w} over=${o.over} "${o.text}"` });
+  }
+  for (const o of probe.offenders.filter((x) => x.contained).slice(0, 2)) {
+    out.push({ level: 'info', text: `越界元素(容器内滚动,合规): ${o.sel} w=${o.w} "${o.text}"` });
+  }
+  for (const b of probe.innerScrollBody) {
+    out.push({ level: 'info', text: `body 内滚动(合规形态): ${b.sel} scrollWidth=${b.scrollWidth} > clientWidth=${b.clientWidth}` });
+  }
+  return out;
+}
+
+async function testInteraction(browser, ix, viewport, opts = {}) {
+  const dark = !!opts.dark;
+  const context = await browser.newContext({ viewport: { width: viewport.w, height: viewport.h } });
+  await context.route('**/api/**', apiHandler);
+  await context.addInitScript(([auth]) => {
+    localStorage.setItem('autoflow-auth', auth);
+    localStorage.setItem('autoflow-lang', 'zh');
+  }, [JSON.stringify({ state: { token: 'mock-access-token', refreshToken: 'mock-refresh-token', user: USER }, version: 0 })]);
+  if (dark) {
+    await context.addInitScript(([theme]) => localStorage.setItem('autoflow-theme', theme),
+      [JSON.stringify({ state: { mode: 'dark' }, version: 0 })]);
+  }
+
+  const consoleMsgs = [];
+  const pageErrors = [];
+  const pageApi404 = [];
+  const page = await context.newPage();
+  page.on('console', (msg) => {
+    if (msg.type() === 'error' || msg.type() === 'warning') {
+      consoleMsgs.push({ type: msg.type(), text: msg.text().slice(0, 400) });
+    }
+  });
+  page.on('pageerror', (err) => pageErrors.push(String(err && err.stack || err).slice(0, 600)));
+  page.on('response', (resp) => {
+    try {
+      const u = new URL(resp.url());
+      if (u.pathname.startsWith('/api/') && resp.status() >= 400) {
+        pageApi404.push(`${resp.request().method()} ${u.pathname.replace(/^\/api/, '')} -> ${resp.status()}`);
+      }
+    } catch { /* ignore */ }
+  });
+
+  let findings = []; // { level: 'A'|'info', text } — A 级复测消解时可能整体重排(见下)
+  let probe = null;
+  let gotoError = null;
+  try {
+    await page.goto(BASE_URL + ix.path, { waitUntil: 'load', timeout: 45000 });
+    await page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => {});
+    await page.waitForTimeout(1200);
+  } catch (err) {
+    gotoError = String(err && err.message || err).slice(0, 300);
+    findings.push({ level: 'A', text: `goto 失败: ${gotoError}` });
+  }
+
+  if (!gotoError) {
+    try {
+      await page.click(ix.trigger, { timeout: 8000 });
+      await page.waitForSelector(ix.kind === 'drawer' ? '.ant-drawer-open' : '.ant-modal', { timeout: 8000 });
+      await page.waitForTimeout(1000); // 详情数据/表单渲染
+      probe = await probeOverlay(page);
+    } catch (err) {
+      findings.push({ level: 'A', text: `触发失败(trigger 点击或开启超时 8s): ${String(err && err.message || err).slice(0, 160)}` });
+    }
+  }
+  if (probe && probe.found) {
+    findings.push(...overlayFindings(probe));
+    // A 级复测消解:开启动画/详情渲染未稳时,单次探针可能捕到瞬时溢出
+    // (实测 run2 agent-sessions@375 首测 3 项 A 级、下一轮运行全部消失)。
+    // 凡首测存在 A 级,等 700ms 重测一次,以末次探针为准;首测有而复测无的
+    // A 级降级为 info 留档(不吞事实,标注为渲染时序竞态)。
+    const firstA = findings.filter((f) => f.level === 'A');
+    if (firstA.length) {
+      await page.waitForTimeout(700);
+      let probe2 = null;
+      try { probe2 = await probeOverlay(page); } catch { /* 复测失败则保留首测 */ }
+      if (probe2 && probe2.found) {
+        const second = overlayFindings(probe2);
+        const a2Texts = new Set(second.filter((f) => f.level === 'A').map((f) => f.text));
+        const vanished = firstA.filter((f) => !a2Texts.has(f.text));
+        findings = [
+          ...second,
+          ...findings.filter((f) => f.level === 'info'),
+          ...vanished.map((f) => ({ level: 'info', text: `瞬时 A 级发现(700ms 复测消失,判为渲染时序竞态): ${f.text}` })),
+        ];
+        probe = probe2;
+      }
+    }
+  } else if (!gotoError && findings.length === 0) {
+    findings.push({ level: 'A', text: '开启后未找到抽屉/弹窗容器(.ant-drawer-content-wrapper / .ant-modal)' });
+  }
+
+  const shot = join(OUT_DIR, `${ix.key}-${viewport.w}-open${dark ? '-dark' : ''}.png`);
+  try {
+    await page.screenshot({ path: shot, fullPage: false });
+  } catch (err) {
+    consoleMsgs.push({ type: 'error', text: `[screenshot failed] ${err.message}` });
+  }
+  // 收尾:Escape 关闭(不苛求,容器关闭态不在本轮范围)
+  await page.keyboard.press('Escape').catch(() => {});
+  await context.close();
+
+  const consoleErrors = consoleMsgs.filter((c) => c.type === 'error');
+  return {
+    key: ix.key, path: ix.path, desc: ix.desc, trigger: ix.trigger, kind: ix.kind,
+    viewport: viewport.w, dark, shot, probe, findings, gotoError,
+    errors: consoleErrors.map((c) => c.text),
+    pageErrors,
+    pageApi404,
   };
 }
 
@@ -684,18 +1003,51 @@ async function main() {
   }
 
   const results = [];
+  const ixResults = [];
   // coverage/gaps 以第一次运行为准累计;两次运行对比在 stdout 汇总
   for (const pageDef of PAGES) {
     for (const viewport of VIEWPORTS) {
       const r = await visitPage(browser, pageDef, viewport);
       results.push(r);
-      const flag = viewport.w === 375
+      const flag = OVERFLOW_W(viewport.w)
         ? (r.overflowInfo && r.overflowInfo.overflow ? 'OVERFLOW' : 'ok')
         : (r.errors.length || r.pageErrors.length ? 'JS-ERR' : 'ok');
       process.stdout.write(`[${r.key} @${viewport.w}] ${flag}` +
-        (viewport.w === 375 && r.overflowInfo && r.overflowInfo.overflow ? ` sw=${r.overflowInfo.scrollWidth}/${r.overflowInfo.vw}` : '') +
+        (OVERFLOW_W(viewport.w) && r.overflowInfo && r.overflowInfo.overflow ? ` sw=${r.overflowInfo.scrollWidth}/${r.overflowInfo.vw}` : '') +
         (r.blank ? ' BLANK' : '') + '\n');
     }
+  }
+
+  // ── 交互态:8 入口 × 375/600 开启态 ──
+  for (const ix of INTERACTIONS) {
+    for (const viewport of VIEWPORTS.filter((v) => OVERFLOW_W(v.w))) {
+      const r = await testInteraction(browser, ix, viewport);
+      ixResults.push(r);
+      const levelA = r.findings.filter((f) => f.level === 'A');
+      process.stdout.write(`[${r.key} @${viewport.w} open] ${levelA.length ? `FIND(${levelA.length})` : 'ok'}\n`);
+    }
+  }
+
+  // ── 暗色:页面矩阵 375+1280 ──
+  const darkResults = [];
+  const DARK_VIEWPORTS = VIEWPORTS.filter((v) => v.w !== 600);
+  for (const pageDef of PAGES) {
+    for (const viewport of DARK_VIEWPORTS) {
+      const r = await visitPage(browser, pageDef, viewport, { dark: true });
+      darkResults.push(r);
+      const lb = r.lightBlocks.length && !r.lightBlocks[0].sel.startsWith('(data-theme') ? r.lightBlocks.length : 0;
+      process.stdout.write(`[${r.key} @${viewport.w} dark] ${r.errors.length || r.pageErrors.length ? 'JS-ERR' : 'ok'}` +
+        (r.blank ? ' BLANK' : '') + (lb ? ` LIGHT-BLOCKS(${lb})` : '') + '\n');
+    }
+  }
+
+  // ── 暗色交互态抽检 ──
+  const darkIxResults = [];
+  for (const ix of INTERACTIONS.filter((x) => DARK_INTERACTION_KEYS.includes(x.key))) {
+    const r = await testInteraction(browser, ix, { w: 375, h: 812 }, { dark: true });
+    darkIxResults.push(r);
+    const levelA = r.findings.filter((f) => f.level === 'A');
+    process.stdout.write(`[${r.key} @375 open-dark] ${levelA.length ? `FIND(${levelA.length})` : 'ok'}\n`);
   }
 
   await browser.close();
@@ -706,18 +1058,18 @@ async function main() {
   lines.push('');
   lines.push(`- 运行时间:${runStartedAt}`);
   lines.push(`- 基址:${BASE_URL}(vite dev,端口 5176;API 经 Playwright route 拦截供数,无后端)`);
-  lines.push(`- 视口:375×812(溢出检测 + 截图)、1280×800(冒烟)`);
-  lines.push(`- 页面数:${PAGES.length} × 视口 2 = ${results.length} 次访问`);
+  lines.push(`- 视口:375×812 + 600×900(溢出检测 + 截图)、1280×800(冒烟)`);
+  lines.push(`- 页面数:${PAGES.length} × 视口 3 = ${results.length} 次访问`);
   lines.push(`- 登录态:addInitScript 注入 localStorage 'autoflow-auth'(role=admin,zustand persist 形状)`);
   lines.push(`- 截图目录:${OUT_DIR}`);
   lines.push('');
 
-  const overflowPages = results.filter((r) => r.viewport === 375 && r.overflowInfo && r.overflowInfo.overflow);
+  const overflowPages = results.filter((r) => OVERFLOW_W(r.viewport) && r.overflowInfo && r.overflowInfo.overflow);
   const errPages = results.filter((r) => r.errors.length || r.pageErrors.length);
   const blankPages = results.filter((r) => r.blank);
   lines.push(`## 总览`);
   lines.push('');
-  lines.push(`- 375px 横向溢出页:${overflowPages.length ? overflowPages.map((r) => `${r.key}(sw=${r.overflowInfo.scrollWidth})`).join(', ') : '无'}`);
+  lines.push(`- ≤600px 横向溢出页:${overflowPages.length ? overflowPages.map((r) => `${r.key}@${r.viewport}(sw=${r.overflowInfo.scrollWidth})`).join(', ') : '无'}`);
   lines.push(`- console 错误/pageerror 页:${errPages.length ? errPages.map((r) => `${r.key}@${r.viewport}`).join(', ') : '无'}`);
   lines.push(`- 疑似空白页(body<40 字符):${blankPages.length ? blankPages.map((r) => `${r.key}@${r.viewport}`).join(', ') : '无'}`);
   lines.push(`- 夹具缺口端点(404):${gaps.size ? [...gaps].join('; ') : '无'}`);
@@ -725,13 +1077,13 @@ async function main() {
 
   lines.push(`## 逐页明细`);
   lines.push('');
-  lines.push(`| 页面 | 视口 | 溢出 | 最宽越界元素(375) | console 错误 | 显著告警 | 缺口/异常 |`);
+  lines.push(`| 页面 | 视口 | 溢出 | 最宽越界元素(≤600) | console 错误 | 显著告警 | 缺口/异常 |`);
   lines.push(`|---|---|---|---|---|---|---|`);
   for (const r of results) {
-    const overflowCell = r.viewport === 375
+    const overflowCell = OVERFLOW_W(r.viewport)
       ? (r.overflowInfo ? (r.overflowInfo.overflow ? `是 (scrollWidth ${r.overflowInfo.scrollWidth} > ${r.overflowInfo.vw})` : '否') : 'n/a(页面异常)')
       : '—(冒烟)';
-    const offender = r.viewport === 375 && r.overflowInfo && r.overflowInfo.top.length
+    const offender = OVERFLOW_W(r.viewport) && r.overflowInfo && r.overflowInfo.top.length
       ? r.overflowInfo.top.slice(0, 3).map((o) => `${o.sel} w=${o.w} ${o.contained ? '(容器内滚动)' : '(非滚动容器)'} "${o.text}"`).join('<br>')
       : '—';
     const errCell = r.errors.length + r.pageErrors.length
@@ -772,10 +1124,151 @@ async function main() {
   lines.push(gaps.size ? [...gaps].sort().map((g) => `- ${g}`).join('\n') : '- 无');
   lines.push('');
 
+  // ── 第二轮:600px / 交互态 / 暗色 ──
+  const ixLevelA = ixResults.filter((r) => r.findings.some((f) => f.level === 'A'));
+  const darkErrPages = darkResults.filter((r) => r.errors.length || r.pageErrors.length);
+  const darkBlank = darkResults.filter((r) => r.blank);
+  const darkLightBlockPages = darkResults.filter((r) => r.lightBlocks.length && !r.lightBlocks[0].sel.startsWith('(data-theme'));
+  const darkThemeBroken = darkResults.filter((r) => r.renderSmoke.dataTheme !== 'dark');
+  const darkIxLevelA = darkIxResults.filter((r) => r.findings.some((f) => f.level === 'A'));
+
+  lines.push(`# 第二轮:600px / 交互态 / 暗色(真实 Chromium)`);
+  lines.push('');
+  lines.push(`- 运行时间:${runStartedAt}`);
+  lines.push(`- 盲区 1(600px):视口矩阵扩为 375/600/1280。600 = antd sm 区间(576–767)+ useIsMobile(max-width:768px)内,即「卡片列表/满宽抽屉」形态下的静止态溢出检测,规则同 375(scrollWidth > innerWidth+1)。`);
+  lines.push(`- 盲区 2(交互态):8 个主交互入口(抽屉/弹窗)× 375/600,点击开启 → 等待渲染 → 检测容器自身横向溢出(scrollWidth vs clientWidth)、是否被推出视口、关闭按钮在视口内可点(elementFromPoint)、越界元素 → 截图(*-open.png)→ Escape 关闭。每页只取最主要的一个入口。`);
+  lines.push(`- 盲区 3(暗色):addInitScript 预置 localStorage 'autoflow-theme'={"state":{"mode":"dark"},"version":0}(zustand persist 确切形状,store/theme.ts partialize 只落 mode;THEME_INIT_SCRIPT 同键先读),重跑 375+1280 页面矩阵(截图 *-dark.png)+ 白底残留自动扫描(辅助)+ 交互态抽检(task-detail/agent-sessions/applications @375)。`);
+  lines.push(`- 白底残留扫描说明:仅报告暗色下 backgroundColor≥(245,245,245) 的可见块(≥40×14,取前 5),属自动化辅助信号;结论以「人工目检」小节为准。`);
+  lines.push('');
+  lines.push(`## 总览(第二轮)`);
+  lines.push('');
+  lines.push(`- 600px 静止态溢出页:${overflowPages.filter((r) => r.viewport === 600).length ? overflowPages.filter((r) => r.viewport === 600).map((r) => `${r.key}(sw=${r.overflowInfo.scrollWidth})`).join(', ') : '无'}`);
+  lines.push(`- 交互态 A 级发现(溢出/不可用):${ixLevelA.length ? ixLevelA.map((r) => `${r.key}@${r.viewport}(${r.findings.filter((f) => f.level === 'A').length} 项)`).join(', ') : '无'}`);
+  lines.push(`- 暗色 console 错误/pageerror 页:${darkErrPages.length ? darkErrPages.map((r) => `${r.key}@${r.viewport}`).join(', ') : '无'}`);
+  lines.push(`- 暗色 data-theme 未生效页:${darkThemeBroken.length ? darkThemeBroken.map((r) => `${r.key}@${r.viewport}(data-theme=${r.renderSmoke.dataTheme})`).join(', ') : '无'}`);
+  lines.push(`- 暗色疑似空白页:${darkBlank.length ? darkBlank.map((r) => `${r.key}@${r.viewport}`).join(', ') : '无'}`);
+  lines.push(`- 暗色白底残留嫌疑页(自动扫描):${darkLightBlockPages.length ? darkLightBlockPages.map((r) => `${r.key}@${r.viewport}(${r.lightBlocks.length} 块)`).join(', ') : '无'}`);
+  lines.push(`- 暗色交互态抽检 A 级发现:${darkIxLevelA.length ? darkIxLevelA.map((r) => `${r.key}@${r.viewport}`).join(', ') : '无'}`);
+  lines.push(`- 夹具缺口端点(本轮 404):${gaps.size ? [...gaps].join('; ') : '无'}`);
+  lines.push('');
+
+  lines.push(`## 600px 逐页明细(静止态)`);
+  lines.push('');
+  lines.push(`| 页面 | 375 溢出 | 600 溢出 | 600 最宽越界元素 |`);
+  lines.push(`|---|---|---|---|`);
+  for (const pageDef of PAGES) {
+    const cell = (w) => {
+      const r = results.find((x) => x.key === pageDef.key && x.viewport === w);
+      if (!r) return 'n/a';
+      if (!r.overflowInfo) return r.gotoError ? `goto 异常` : 'n/a(页面异常)';
+      if (!r.overflowInfo.overflow) return '否';
+      return `是 (sw=${r.overflowInfo.scrollWidth})`;
+    };
+    const r600 = results.find((x) => x.key === pageDef.key && x.viewport === 600);
+    const off600 = r600 && r600.overflowInfo && r600.overflowInfo.top.length
+      ? r600.overflowInfo.top.slice(0, 3).map((o) => `${o.sel} w=${o.w} ${o.contained ? '(容器内滚动)' : '(非滚动容器)'} "${o.text}"`).join('<br>')
+      : '—';
+    lines.push(`| ${pageDef.key} (${pageDef.path}) | ${cell(375)} | ${cell(600)} | ${off600} |`);
+  }
+  lines.push('');
+
+  lines.push(`## 交互态开启态明细(375/600)`);
+  lines.push('');
+  lines.push(`| 页面 | 交互 | 视口 | 容器 | 容器几何 | 容器自身溢出 | 关闭按钮 | A 级发现 | 截图 |`);
+  lines.push(`|---|---|---|---|---|---|---|---|---|`);
+  for (const r of ixResults) {
+    const kindCell = r.probe && r.probe.found ? `${r.probe.kind} ${r.probe.rect.width}px` : (r.gotoError ? 'n/a(goto 异常)' : '未开启');
+    const geoCell = r.probe && r.probe.found ? `left=${r.probe.rect.left} right=${r.probe.rect.right}(vw=${r.probe.vw})` : '—';
+    const shellCell = r.probe && r.probe.found && r.probe.shellOverflow.length
+      ? r.probe.shellOverflow.map((o) => `${o.sel} sw=${o.scrollWidth}>cw=${o.clientWidth}`).join('<br>')
+      : (r.probe && r.probe.found ? '否' : '—');
+    const closeCell = r.probe && r.probe.close
+      ? (r.probe.close.inViewport && r.probe.close.clickable ? '在视口内可点' : `不可用(inViewport=${r.probe.close.inViewport},clickable=${r.probe.close.clickable})`)
+      : (r.probe && r.probe.found ? '未找到' : '—');
+    const findCell = r.findings.filter((f) => f.level === 'A').length
+      ? r.findings.filter((f) => f.level === 'A').map((f) => f.text.slice(0, 120)).join('<br>')
+      : (r.findings.length ? r.findings.map((f) => f.text.slice(0, 100)).join('<br>') : '无');
+    lines.push(`| ${r.key} (${r.desc}) | \`${r.trigger}\` | ${r.viewport} | ${kindCell} | ${geoCell} | ${shellCell} | ${closeCell} | ${findCell} | ${r.shot.split(/[\\/]/).pop()} |`);
+  }
+  lines.push('');
+  lines.push(`### 交互态 info 级(合规内滚动,留档)`);
+  lines.push('');
+  const ixInfo = ixResults.filter((r) => r.findings.some((f) => f.level === 'info'));
+  if (ixInfo.length) {
+    for (const r of ixInfo) {
+      for (const f of r.findings.filter((x) => x.level === 'info')) lines.push(`- ${r.key}@${r.viewport}: ${f.text}`);
+    }
+  } else {
+    lines.push('- 无');
+  }
+  lines.push('');
+
+  lines.push(`## 暗色逐页明细(375/1280)`);
+  lines.push('');
+  lines.push(`| 页面 | 视口 | data-theme | console 错误 | 空白 | 白底残留嫌疑(自动扫描) | 截图 |`);
+  lines.push(`|---|---|---|---|---|---|---|`);
+  for (const r of darkResults) {
+    const errCell = r.errors.length + r.pageErrors.length
+      ? `${r.errors.length} 错误${r.pageErrors.length ? ` +${r.pageErrors.length} pageerror` : ''}:${(r.errors[0] || r.pageErrors[0] || '').slice(0, 120)}`
+      : '0';
+    const lbCell = r.lightBlocks.length
+      ? (r.lightBlocks[0].sel.startsWith('(data-theme') ? '暗色未生效' : r.lightBlocks.map((b) => `${b.sel} ${b.w}×${b.h} "${b.text}"`).join('<br>'))
+      : '无';
+    lines.push(`| ${r.key} (${r.path}) | ${r.viewport} | ${r.renderSmoke.dataTheme ?? 'n/a'} | ${errCell} | ${r.blank ? '疑似空白' : '否'} | ${lbCell} | ${r.shot.split(/[\\/]/).pop()} |`);
+  }
+  lines.push('');
+
+  lines.push(`## 暗色交互态抽检(@375)`);
+  lines.push('');
+  lines.push(`| 页面 | 交互 | 容器 | A 级发现 | 截图 |`);
+  lines.push(`|---|---|---|---|---|`);
+  for (const r of darkIxResults) {
+    const kindCell = r.probe && r.probe.found ? `${r.probe.kind} ${r.probe.rect.width}px` : '未开启';
+    const findCell = r.findings.filter((f) => f.level === 'A').length
+      ? r.findings.filter((f) => f.level === 'A').map((f) => f.text.slice(0, 120)).join('<br>')
+      : '无';
+    lines.push(`| ${r.key} (${r.desc}) | ${kindCell} | ${findCell} | ${r.shot.split(/[\\/]/).pop()} |`);
+  }
+  lines.push('');
+
+  lines.push(`## 人工目检:暗色硬编码颜色嫌疑页`);
+  lines.push('');
+  const notesPath = join(OUT_DIR, 'dark-notes.md');
+  try {
+    const notes = readFileSync(notesPath, 'utf8').trim();
+    lines.push(notes);
+  } catch {
+    lines.push(`（待人工翻看 *-dark.png 后补充至 ${notesPath},脚本会在此处原样嵌入）`);
+  }
+  lines.push('');
+
   const report = lines.join('\n');
-  writeFileSync(join(OUT_DIR, 'report.md'), report, 'utf8');
+  // 保留首轮内容:「首轮」= 原任务(第一轮)报告全文,即 round-1 标题的第 1 份
+  // 拷贝。历史实现按「# 第二轮」标题切分,但本脚本每次运行都会再生一份同标题的
+  // round-1 章节(总览/逐页明细),按「# 第二轮」切分会把上一轮再生的 round-1
+  // 也当作首轮保留 → round-1 章节逐次累积(实测每跑一次多一份重复)。
+  // 改为按 round-1 标题第 2 次出现处截断:第 1 份=原任务产物原样保留,本脚本
+  // 再生的 round-1/round-2 每次整体重写 → 连续两次运行 diff 仅剩运行时间戳
+  // 与毫秒级告警/发现归属竞态。
+  let round1 = null;
+  try {
+    const prev = readFileSync(join(OUT_DIR, 'report.md'), 'utf8');
+    const prevLines = prev.split('\n');
+    const TITLE = '# Admin-Web UX 走查报告(真实 Chromium)';
+    const titleIdx = prevLines.reduce((acc, l, i) => (l.startsWith(TITLE) ? (acc.push(i), acc) : acc), []);
+    let cut;
+    if (titleIdx.length >= 2) {
+      cut = titleIdx[1]; // 第 2 份 round-1 起均为本脚本再生产物,整体重写
+    } else {
+      const m = prevLines.findIndex((l) => l.startsWith('# 第二轮:'));
+      cut = m >= 0 ? m : prevLines.length;
+    }
+    round1 = prevLines.slice(0, cut).join('\n').trimEnd() + '\n';
+  } catch { /* 首次运行无历史报告 */ }
+  const full = round1 ? round1 + '\n' + report : report;
+  writeFileSync(join(OUT_DIR, 'report.md'), full, 'utf8');
   process.stdout.write('\n' + report + '\n');
-  process.stdout.write(`\n[ux-walkthrough] report written to ${join(OUT_DIR, 'report.md')}\n`);
+  process.stdout.write(`\n[ux-walkthrough] report written to ${join(OUT_DIR, 'report.md')}${round1 ? ' (首轮内容已保留)' : ''}\n`);
 }
 
 main().catch((err) => {
