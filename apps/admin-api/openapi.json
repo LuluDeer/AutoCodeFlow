@@ -2998,6 +2998,27 @@
         ]
       }
     },
+    "/executors/picker": {
+      "get": {
+        "description": "Minimal read surface for executor picker dropdowns (deploy modals): id/appName/address/status/runningTaskCount/maxConcurrentTasks only, not the full entity projection of GET /executors. Capped at EXECUTOR_PICKER_LIMIT rows (createdAt DESC); when total > items.length the response carries truncated=true so the UI can warn explicitly — never silently truncated like the 500-capped full list.",
+        "operationId": "ExecutorController_findPickerOptions",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Executor picker options with explicit truncation flag"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "List executor picker options (lightweight)",
+        "tags": [
+          "Executors"
+        ]
+      }
+    },
     "/executors/install-cmd": {
       "get": {
         "description": "Returns the shell command to install and start the executor on the target machine.",
@@ -8481,17 +8502,31 @@
     "/projects": {
       "get": {
         "operationId": "ProjectsController_findAll",
-        "parameters": [],
+        "parameters": [
+          {
+            "name": "page",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "pageSize",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
-            "description": "ADMIN sees all; others see default project plus their memberships",
+            "description": "No page/pageSize query → full ProjectViewRow array (legacy shape). Either param present → paginated envelope (list/items/total/page/pageSize/totalPages) over the caller's visible projects",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/ProjectViewDto"
-                  }
+                  "$ref": "#/components/schemas/ProjectListPageDto"
                 }
               }
             }
@@ -11864,6 +11899,49 @@
           "name",
           "createdAt",
           "updatedAt"
+        ]
+      },
+      "ProjectListPageDto": {
+        "type": "object",
+        "properties": {
+          "list": {
+            "description": "Page rows (legacy alias of items)",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProjectViewDto"
+            }
+          },
+          "items": {
+            "description": "Page rows",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProjectViewDto"
+            }
+          },
+          "total": {
+            "type": "number",
+            "description": "Total visible projects"
+          },
+          "page": {
+            "type": "number",
+            "description": "Current page (1-based)"
+          },
+          "pageSize": {
+            "type": "number",
+            "description": "Page size (clamped to 1..100)"
+          },
+          "totalPages": {
+            "type": "number",
+            "description": "Total pages"
+          }
+        },
+        "required": [
+          "list",
+          "items",
+          "total",
+          "page",
+          "pageSize",
+          "totalPages"
         ]
       },
       "ProjectEntityDto": {
