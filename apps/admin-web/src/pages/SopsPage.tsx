@@ -25,6 +25,15 @@ import type { ColumnsType } from 'antd/es/table';
 
 import PageHeader from '../components/PageHeader';
 import StateError from '../components/StateError';
+// UX-06 第二扫：SOP 域裸枚举收敛到唯一事实源（状态/工单状态/澄清处置/附件类型）
+import {
+  SOP_ASSIGNMENT_STATUS_COLOR,
+  SOP_STATUS_COLOR,
+  sopAssignmentStatusLabel,
+  sopClarResolutionLabel,
+  sopMediaKindLabel,
+  sopStatusLabel,
+} from '../utils/sop-label';
 // UI-09 第三轮：≤768px 表格 → 卡片列表的结构级降级（对齐 TaskListPage/
 // ApplicationListPage 的 MOBILE-CARD-01 先例；断点与 index.css ui09 媒体查询同值）
 import { useIsMobile } from '../hooks/useIsMobile';
@@ -49,22 +58,15 @@ import type {
 
 const { Text, Paragraph } = Typography;
 
-function statusTag(status: Sop['status']) {
-  const color = status === 'published' ? 'green' : status === 'draft' ? 'gold' : 'default';
-  return <Tag color={color}>{status}</Tag>;
+function statusTag(status: Sop['status'], t: (key: string) => string) {
+  // UX-06 第二扫：不再裸渲染 {status}（draft/published/deprecated → sops.status.*）
+  const color = SOP_STATUS_COLOR[status] ?? 'default';
+  return <Tag color={color}>{sopStatusLabel(status, t)}</Tag>;
 }
 
-function assignmentStatusTag(status: SopAssignment['status']) {
-  const map: Record<SopAssignment['status'], string> = {
-    assigned: 'blue',
-    in_progress: 'processing',
-    blocked: 'orange',
-    completed: 'green',
-    failed: 'red',
-    cancelled: 'default',
-    stalled: 'volcano',
-  };
-  return <Tag color={map[status]}>{status}</Tag>;
+function assignmentStatusTag(status: SopAssignment['status'], t: (key: string) => string) {
+  // UX-06 第二扫：不再裸渲染 {status}（7 值工单状态机 → sops.assignmentStatus.*）
+  return <Tag color={SOP_ASSIGNMENT_STATUS_COLOR[status] ?? 'default'}>{sopAssignmentStatusLabel(status, t)}</Tag>;
 }
 
 /** 终态工单：可重派（换机重发），也不会再消费任何澄清答复。 */
@@ -301,7 +303,7 @@ export default function SopsPage() {
   const sopColumns: ColumnsType<Sop> = [
     { title: 'slug', dataIndex: 'slug', width: 200 },
     { title: t('sops.col.title'), dataIndex: 'title', ellipsis: true },
-    { title: t('sops.col.status'), dataIndex: 'status', width: 110, render: (s: Sop['status']) => statusTag(s) },
+    { title: t('sops.col.status'), dataIndex: 'status', width: 110, render: (s: Sop['status']) => statusTag(s, t) },
     { title: t('sops.col.version'), dataIndex: 'currentVersion', width: 100, render: (v: string | null) => v ?? '—' },
     { title: t('sops.col.updatedAt'), dataIndex: 'updatedAt', width: 170, render: (v: string) => formatDateTime(v) },
     {
@@ -326,7 +328,7 @@ export default function SopsPage() {
   const assignmentColumns: ColumnsType<SopAssignment> = [
     { title: 'id', dataIndex: 'id', width: 300, render: (v: string) => <Text copyable={{ text: v }}>{v.slice(0, 8)}…</Text> },
     { title: t('sops.col.version'), dataIndex: 'sopVersion', width: 90 },
-    { title: t('sops.col.status'), dataIndex: 'status', width: 120, render: (s: SopAssignment['status']) => assignmentStatusTag(s) },
+    { title: t('sops.col.status'), dataIndex: 'status', width: 120, render: (s: SopAssignment['status']) => assignmentStatusTag(s, t) },
     {
       title: t('sops.col.clarifications'),
       width: 120,
@@ -393,7 +395,7 @@ export default function SopsPage() {
             <Card key={sop.id} size="small">
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
                 <Text strong ellipsis style={{ flex: 1, minWidth: 0 }}>{sop.slug}</Text>
-                {statusTag(sop.status)}
+                {statusTag(sop.status, t)}
               </div>
               {sop.title && (
                 <div style={{ marginTop: 4, fontSize: 12, color: 'var(--chart-axis-text)' }}>{sop.title}</div>
@@ -517,7 +519,7 @@ export default function SopsPage() {
                             (clarifications[a.id] ?? []).map((c) => (
                               <div key={c.id} style={{ marginBottom: 12 }}>
                                 <Text strong>
-                                  #{c.round} · {c.resolution ?? 'pending'}
+                                  #{c.round} · {c.resolution ? sopClarResolutionLabel(c.resolution, t) : t('sops.clarResolution.pending')}
                                 </Text>
                                 {c.newSopVersion && <Tag style={{ marginLeft: 8 }}>→ {c.newSopVersion}</Tag>}
                                 {/* P7d 双端 ACK：回复经 poll 投递、执行器消费后确认；
@@ -558,7 +560,7 @@ export default function SopsPage() {
                                         style={{ marginRight: 8 }}
                                         onClick={() => void viewClarificationMedia(ref.url)}
                                       >
-                                        {t('sops.mediaView')} · {ref.kind}
+                                        {t('sops.mediaView')} · {sopMediaKindLabel(ref.kind, t)}
                                       </Button>
                                     ))}
                                   </Paragraph>

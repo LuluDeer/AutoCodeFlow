@@ -375,9 +375,9 @@ describe('UI-09 R3 SopsPage 375px 产物', () => {
     const cards = document.querySelectorAll('.ant-card');
     expect(cards.length).toBe(1);
     const card = cards[0] as HTMLElement;
-    // sops.statusTag 沿用既有原始 token 渲染（R3-F 只治理了 AgentSessions 裸枚举，
-    // sops 状态词条不在本轮范围）——锚定现状，避免误改语义
-    expect(card.textContent).toContain('published');
+    // UX-06 第二扫：statusTag 收敛到 utils/sop-label（published → sops.status.published
+    // 「已发布」），不再裸渲染后端 token——断言随词条更新
+    expect(card.textContent).toContain('已发布');
     expect(card.textContent).toContain('演示 SOP');
     expect(card.textContent).toContain('1.0.0');
   });

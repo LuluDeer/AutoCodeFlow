@@ -592,6 +592,7 @@ export default {
   'registry.chooseFile': '选择文件',
   'registry.cancel': '取消',
   'registry.uploadBtn': '上传',
+  // UI-09 第三轮：copyable 复制按钮的可访问名（icon-only，antd 以 tooltip 文本注入 aria-label）
 
   // ── 用户管理（UserManagementPage）──
   'users.title': '用户管理',
@@ -890,6 +891,7 @@ export default {
   'sysSettings.token.desc': '执行器连接调度中心时需携带此 Token。首次使用需先生成。',
   'sysSettings.token.copy': '复制',
   'sysSettings.token.copied': '已复制',
+  // UI-09 第三轮：Token 显隐切换 icon-only 按钮的可访问名（随状态区分）
   'sysSettings.token.regenerate': '重新生成 Token',
   'sysSettings.token.regenerateWarning': '重新生成后，所有执行器需要更新 Token 才能继续工作',
   'sysSettings.token.notGenerated': '尚未生成执行器 Token，请先生成后再安装执行器',
@@ -2914,6 +2916,24 @@ export default {
   'sops.mediaRefsLabel': '附件',
   // UI-09 第三轮：移动端卡片列表空态（桌面表格沿用 antd 默认「暂无数据」）
   'sops.empty': '暂无 SOP',
+  // UX-06 第二扫：SOP 域裸枚举词表（utils/sop-label.ts 消费；语义取自 admin-api sop 实体注释）
+  'sops.status.draft': '草稿',
+  'sops.status.published': '已发布',
+  'sops.status.deprecated': '已废弃',
+  'sops.assignmentStatus.assigned': '已派发',
+  'sops.assignmentStatus.inProgress': '执行中',
+  'sops.assignmentStatus.blocked': '等待澄清',
+  'sops.assignmentStatus.completed': '已完成',
+  'sops.assignmentStatus.failed': '已失败',
+  'sops.assignmentStatus.cancelled': '已取消',
+  'sops.assignmentStatus.stalled': '已停滞',
+  'sops.clarResolution.pending': '待复核',
+  'sops.clarResolution.answered': '已答复',
+  'sops.clarResolution.sopAmended': '已修订 SOP',
+  'sops.clarResolution.escalatedToHuman': '升级人工',
+  'sops.mediaKind.video': '录屏',
+  'sops.mediaKind.screenshot': '截图',
+  'sops.mediaKind.other': '其他',
 
   // ── P2 遗留补齐: Agent 会话查看面（AgentSessionsPage，全 ADMIN-only）──
   'nav.agents': 'Agent 会话',

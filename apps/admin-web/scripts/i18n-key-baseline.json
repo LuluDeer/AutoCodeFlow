@@ -26,6 +26,7 @@
     "utils/failure-reason-label.ts",
     "utils/priority.ts",
     "utils/runtime-label.ts",
+    "utils/sop-label.ts",
     "utils/timeFormat.ts",
     "utils/trigger-label.ts"
   ]
