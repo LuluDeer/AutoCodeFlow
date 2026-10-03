@@ -3,6 +3,8 @@ import { Table,
   Button,
   Input,
   Select,
+  Row,
+  Col,
   Space,
   Tag,
   Tooltip,
@@ -534,28 +536,40 @@ export default function ExecutorPackagesPage() {
           {uploading && (
             <Progress percent={uploadPercent} size="small" style={{ marginBottom: 8 }} />
           )}
-          <Space style={{ display: 'flex' }} size="middle">
-            {/* maxLength 对齐后端 CreateExecutorPackageDto（name ≤255 / version ≤64）：
-                本表单随包上传大文件，超长值只在后端 400 才暴露——白等一次
-                数百 MB 上传；输入端截断即可 */}
-            <Form.Item name="name" label={t('execPkg.upload.field.name')} rules={[{ required: true, message: t('execPkg.upload.field.nameRequired') }]} style={{ flex: 1 }}>
-              <Input placeholder="python-runner" maxLength={255} />
-            </Form.Item>
-            <Form.Item name="version" label={t('execPkg.upload.field.version')} rules={[{ required: true, message: t('execPkg.upload.field.versionRequired') }]} style={{ flex: 1 }}>
-              <Input placeholder="1.0.0" maxLength={64} />
-            </Form.Item>
-          </Space>
-          <Space style={{ display: 'flex' }} size="middle">
-            <Form.Item name="type" label={t('execPkg.upload.field.type')} initialValue="node" rules={[{ required: true }]} style={{ flex: 1 }}>
-              <Select options={[...PACKAGE_TYPES]} />
-            </Form.Item>
-            <Form.Item name="platform" label={t('execPkg.upload.field.platform')} initialValue="linux" rules={[{ required: true }]} style={{ flex: 1 }}>
-              <Select options={[
-                { value: 'linux', label: 'Linux' }, { value: 'windows', label: 'Windows' },
-                { value: 'macos', label: 'macOS' }, { value: 'all', label: t('execPkg.upload.platformAll') },
-              ]} />
-            </Form.Item>
-          </Space>
+          {/* R5 交接：双列行窄屏堆叠——Space flex 布局无断点，375px 弹窗下
+              每列仅 ~145px 偏紧；改 Row/Col xs=24 sm=12（对齐 ExecutorInstallWizardPage
+              响应式先例），gutter 响应式对象 xs=0/sm=16 使堆叠后与上下整行字段
+              （文件/描述）左缘对齐，sm+ 桌面 16px 间距不变。
+              maxLength 对齐后端 CreateExecutorPackageDto（name ≤255 / version ≤64）：
+              本表单随包上传大文件，超长值只在后端 400 才暴露——白等一次
+              数百 MB 上传；输入端截断即可 */}
+          <Row gutter={{ xs: 0, sm: 16 }}>
+            <Col xs={24} sm={12}>
+              <Form.Item name="name" label={t('execPkg.upload.field.name')} rules={[{ required: true, message: t('execPkg.upload.field.nameRequired') }]}>
+                <Input placeholder="python-runner" maxLength={255} />
+              </Form.Item>
+            </Col>
+            <Col xs={24} sm={12}>
+              <Form.Item name="version" label={t('execPkg.upload.field.version')} rules={[{ required: true, message: t('execPkg.upload.field.versionRequired') }]}>
+                <Input placeholder="1.0.0" maxLength={64} />
+              </Form.Item>
+            </Col>
+          </Row>
+          <Row gutter={{ xs: 0, sm: 16 }}>
+            <Col xs={24} sm={12}>
+              <Form.Item name="type" label={t('execPkg.upload.field.type')} initialValue="node" rules={[{ required: true }]}>
+                <Select options={[...PACKAGE_TYPES]} />
+              </Form.Item>
+            </Col>
+            <Col xs={24} sm={12}>
+              <Form.Item name="platform" label={t('execPkg.upload.field.platform')} initialValue="linux" rules={[{ required: true }]}>
+                <Select options={[
+                  { value: 'linux', label: 'Linux' }, { value: 'windows', label: 'Windows' },
+                  { value: 'macos', label: 'macOS' }, { value: 'all', label: t('execPkg.upload.platformAll') },
+                ]} />
+              </Form.Item>
+            </Col>
+          </Row>
           {/* maxLength 对齐后端 CreateExecutorPackageDto @MaxLength(1024) */}
           <Form.Item name="description" label={t('execPkg.upload.field.description')}>
             <Input.TextArea rows={2} maxLength={1024} />

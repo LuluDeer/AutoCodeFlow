@@ -301,7 +301,7 @@ export default function SopsPage() {
   }, [draft, creatingDraft, load, t]);
 
   const sopColumns: ColumnsType<Sop> = [
-    { title: 'slug', dataIndex: 'slug', width: 200 },
+    { title: t('sops.col.slug'), dataIndex: 'slug', width: 200 },
     { title: t('sops.col.title'), dataIndex: 'title', ellipsis: true },
     { title: t('sops.col.status'), dataIndex: 'status', width: 110, render: (s: Sop['status']) => statusTag(s, t) },
     { title: t('sops.col.version'), dataIndex: 'currentVersion', width: 100, render: (v: string | null) => v ?? '—' },
@@ -319,14 +319,14 @@ export default function SopsPage() {
 
   const versionColumns: ColumnsType<SopVersion> = [
     { title: t('sops.col.version'), dataIndex: 'version', width: 90 },
-    { title: 'contentHash', dataIndex: 'contentHash', width: 130, render: (h: string) => <Text copyable={{ text: h }}>{h.slice(0, 12)}…</Text> },
+    { title: t('sops.col.contentHash'), dataIndex: 'contentHash', width: 130, render: (h: string) => <Text copyable={{ text: h }}>{h.slice(0, 12)}…</Text> },
     { title: t('sops.col.publishedBy'), dataIndex: 'publishedBy', width: 160 },
     { title: t('sops.col.publishedAt'), dataIndex: 'publishedAt', width: 170, render: (v: string) => formatDateTime(v) },
-    { title: 'changelog', dataIndex: 'changelog', ellipsis: true },
+    { title: t('sops.col.changelog'), dataIndex: 'changelog', ellipsis: true },
   ];
 
   const assignmentColumns: ColumnsType<SopAssignment> = [
-    { title: 'id', dataIndex: 'id', width: 300, render: (v: string) => <Text copyable={{ text: v }}>{v.slice(0, 8)}…</Text> },
+    { title: t('sops.col.id'), dataIndex: 'id', width: 300, render: (v: string) => <Text copyable={{ text: v }}>{v.slice(0, 8)}…</Text> },
     { title: t('sops.col.version'), dataIndex: 'sopVersion', width: 90 },
     { title: t('sops.col.status'), dataIndex: 'status', width: 120, render: (s: SopAssignment['status']) => assignmentStatusTag(s, t) },
     {

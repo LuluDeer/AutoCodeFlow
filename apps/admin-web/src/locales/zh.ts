@@ -2889,6 +2889,11 @@ export default {
   'sops.col.publishedBy': '发布者',
   'sops.col.publishedAt': '发布时间',
   'sops.col.clarifications': '澄清轮次',
+  // R6-Enum 交接：技术标识符列题收词（此前裸串 'slug'/'id'/'contentHash'/'changelog'）
+  'sops.col.slug': 'Slug 标识',
+  'sops.col.id': 'ID',
+  'sops.col.contentHash': '内容哈希',
+  'sops.col.changelog': '变更说明',
   'sops.tab.contract': '契约与正文',
   'sops.tab.versions': '版本历史',
   'sops.tab.assignments': '指派与澄清',
