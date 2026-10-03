@@ -162,6 +162,9 @@ export default function ApplicationListPage() {
   // picker 超限状态（truncated=true 时非 null）——下拉内必须渲染显式告警，
   // 不许把截断后的候选集说成全量（复用 execList.truncated 文案）。
   const [quickDeployTruncated, setQuickDeployTruncated] = useState<{ total: number; limit: number } | null>(null);
+  // UI-16 口径：picker 拉取失败不再只弹一闪而过的 toast（下拉空态无出口）——
+  // 记录错误原位呈现「失败 + 重试」，用户可直接重试恢复，不必关窗重开。
+  const [quickDeployLoadError, setQuickDeployLoadError] = useState<unknown>(null);
   const [quickDeployForm] = Form.useForm();
   const [quickDeploying, setQuickDeploying] = useState(false);
   // 防重复提交：新建/编辑保存期间禁用确定按钮（upload/quickDeploy/group 弹窗
@@ -444,10 +447,10 @@ export default function ApplicationListPage() {
     return Array.isArray(tasks) && tasks.length > 0 ? 'scheduled' : 'once';
   };
 
-  const openQuickDeploy = async (appId: string) => {
-    setQuickDeployApp(appId);
-    quickDeployForm.resetFields();
-    quickDeployForm.setFieldsValue({ runMode: defaultRunModeFor(appId) });
+  // 执行器下拉数据源拉取（picker 轻读面）：openQuickDeploy 首拉与弹窗内「重试」
+  // 共用同一函数——重试即原位重新拉取，无需关闭弹窗重开。
+  const fetchQuickDeployExecutors = useCallback(async () => {
+    setQuickDeployLoadError(null);
     try {
       // 执行器下拉走 picker 轻读面（GET /executors/picker）：此前吃 list() 的
       // listLimit(500) 静默截断——执行器超限后按名称/地址搜索对第 501+ 台
@@ -455,11 +458,18 @@ export default function ApplicationListPage() {
       const res = await executorsApi.picker();
       setQuickDeployExecutors(res.items.map(e => ({ id: e.id, name: e.appName, address: e.address, status: e.status })) ?? []);
       setQuickDeployTruncated(res.truncated ? { total: res.total, limit: res.limit } : null);
-    } catch {
+    } catch (err: unknown) {
       setQuickDeployExecutors([]);
       setQuickDeployTruncated(null);
-      message.warning(t('appList.executorListFail'));
+      setQuickDeployLoadError(err);
     }
+  }, []);
+
+  const openQuickDeploy = async (appId: string) => {
+    setQuickDeployApp(appId);
+    quickDeployForm.resetFields();
+    quickDeployForm.setFieldsValue({ runMode: defaultRunModeFor(appId) });
+    await fetchQuickDeployExecutors();
   };
 
   const handleQuickDeploy = async () => {
@@ -1142,7 +1152,21 @@ export default function ApplicationListPage() {
         destroyOnHidden
       >
         <Form form={quickDeployForm} layout="vertical">
-          <Form.Item name="executorId" label={t('appList.deploy.executor')}>
+          {/* picker 拉取失败的原位错误态（UI-16 口径）：标题复用既有
+              appList.executorListFail 文案，StateError 自带「重试 + 复制」双动作
+              ——重试走 fetchQuickDeployExecutors 原位重新拉取，不必关窗重开。 */}
+          {quickDeployLoadError ? (
+            <StateError
+              error={quickDeployLoadError}
+              title={t('appList.executorListFail')}
+              onRetry={() => void fetchQuickDeployExecutors()}
+              style={{ padding: 12, marginBottom: 16 }}
+            />
+          ) : null}
+          <Form.Item
+            name="executorId"
+            label={t('appList.deploy.executor')}
+          >
             <Select
               placeholder={t('appList.deploy.executorPlaceholder')}
               allowClear
@@ -1150,7 +1174,8 @@ export default function ApplicationListPage() {
               // 执行器随接入增长，按名称/地址键入过滤（label 已含 "name (address)"）
               optionFilterProp="label"
               options={quickDeployExecutors.map(e => ({ value: e.id, label: `${e.name} (${e.address})`, disabled: e.status !== 'online' }))}
-              notFoundContent={t('appList.deploy.executorEmpty')}
+              // 失败时下拉空态不得谎报「无可用执行器」（执行器可能有，只是没拉到）
+              notFoundContent={quickDeployLoadError ? t('appList.executorListFail') : t('appList.deploy.executorEmpty')}
             />
           </Form.Item>
           {/* picker 超限的显式告警：候选只有前 limit 台，用户必须知情

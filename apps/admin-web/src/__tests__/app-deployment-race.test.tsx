@@ -55,7 +55,7 @@ const dep = (id: string, executorAddress: string) => ({
 
 beforeEach(() => {
   useAuthStore.setState({ user: { id: 1, username: 'root', role: 'admin' } });
-  vi.mocked(executorsApi.list).mockReset().mockResolvedValue([] as never);
+  // 页面已不请求 list()（R3-E 收口：名字解析吃 picker 行），list mock 随之退场
   vi.mocked(executorsApi.picker).mockReset().mockResolvedValue({ items: [], total: 0, truncated: false, limit: 2000 } as never);
   vi.mocked(deploymentsApi.list).mockReset();
 });

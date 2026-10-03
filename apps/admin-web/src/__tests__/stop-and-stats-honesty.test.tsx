@@ -177,7 +177,7 @@ describe('停止：未送达执行器时必须用 warning 如实告知', () => {
       user: { id: 1, username: 'admin', role: 'admin' } as never,
       token: 't',
     } as never);
-    (executorsApi.list as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    // 部署页已不请求 list()（R3-E 收口：名字解析吃 picker 行），list mock 随之退场
     (executorsApi.picker as ReturnType<typeof vi.fn>).mockResolvedValue({ items: [], total: 0, truncated: false, limit: 2000 });
   });
 
@@ -241,7 +241,6 @@ describe('应用列表统计：不得被默认分页静默截断', () => {
     (applicationsApi.list as ReturnType<typeof vi.fn>).mockResolvedValue([
       { id: 'app-1', name: '订单同步', version: '1.0.0', runtime: 'node' },
     ]);
-    (executorsApi.list as ReturnType<typeof vi.fn>).mockResolvedValue([]);
   });
 
   afterEach(() => {

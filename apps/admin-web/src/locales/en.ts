@@ -1557,6 +1557,8 @@ export default {
   'executorDetail.editModal.tagsPlaceholder': 'Type and press Enter to add',
   'executorDetail.editModal.description': 'Description',
   'executorDetail.editModal.maxConcurrent': 'Max concurrent count',
+  // PATCH semantics made explicit: clearing maxConcurrentTasks in the edit modal omits the key = server keeps the old value (blank does NOT mean unlimited)
+  'executorDetail.editModal.maxConcurrentKeepHint': 'Saving with this cleared keeps the current value {{value}} (blank does not mean unlimited)',
   'executorDetail.config.title': 'Config hot reload',
   'executorDetail.config.pullDisabledTooltip': 'Pull-mode executors (NAT-bound) cannot receive inbound config pushes; maxConcurrent changes take effect via the next pull/heartbeat instead',
   // B-1: double confirmation for pushing an empty config body (blank fields reset to executor defaults — must be stated)

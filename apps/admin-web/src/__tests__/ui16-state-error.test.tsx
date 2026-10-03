@@ -177,7 +177,6 @@ describe('UI-16 第二批：Executions / ExecutorList / UserManagement 页内错
 describe('UI-16 AppDeploymentPage 页内错误态', () => {
   it('部署列表加载失败：页内错误块 + 重试重新拉取', async () => {
     mockedDeployments.list.mockRejectedValueOnce(new Error('部署服务 500'));
-    mockedExecutors.list.mockRejectedValueOnce(new Error('部署服务 500'));
     render(<AppDeploymentPage applicationId="app-1" />);
 
     const alert = await screen.findByTestId('state-error');
@@ -188,7 +187,7 @@ describe('UI-16 AppDeploymentPage 页内错误态', () => {
     expect(alert).toBeTruthy();
 
     mockedDeployments.list.mockResolvedValueOnce({ data: [], total: 0 });
-    mockedExecutors.list.mockResolvedValueOnce([]);
+    // 部署页已不请求 list()（R3-E 收口：名字解析吃 picker 行），list mock 随之退场
     mockedExecutors.picker.mockResolvedValueOnce({
       items: [], total: 0, truncated: false, limit: 2000,
     });
@@ -200,7 +199,6 @@ describe('UI-16 AppDeploymentPage 页内错误态', () => {
 
   it('加载成功不渲染错误块', async () => {
     mockedDeployments.list.mockResolvedValue({ data: [], total: 0 });
-    mockedExecutors.list.mockResolvedValue([]);
     mockedExecutors.picker.mockResolvedValue({
       items: [], total: 0, truncated: false, limit: 2000,
     });

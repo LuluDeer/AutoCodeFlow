@@ -65,10 +65,7 @@ describe('AppDeploymentPage：部署模式的说明文案（生产反馈回归�
       token: 't',
     } as never);
     (deploymentsApi.list as ReturnType<typeof vi.fn>).mockResolvedValue([]);
-    (executorsApi.list as ReturnType<typeof vi.fn>).mockResolvedValue([
-      onlineExecutor,
-    ]);
-    // 下拉候选走 picker 轻读面（与 list 同一台在线机器，picker 行形）
+    // 下拉候选走 picker 轻读面（R3-E 收口后页面不再请求 list()，名字解析也吃 picker 行）
     (executorsApi.picker as ReturnType<typeof vi.fn>).mockResolvedValue({
       items: [{
         id: onlineExecutor.id,
