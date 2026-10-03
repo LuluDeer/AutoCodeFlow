@@ -593,6 +593,8 @@ export default {
   'registry.cancel': '取消',
   'registry.uploadBtn': '上传',
   // UI-09 第三轮：copyable 复制按钮的可访问名（icon-only，antd 以 tooltip 文本注入 aria-label）
+  'registry.copyCommand': '复制命令',
+  'registry.copied': '已复制',
 
   // ── 用户管理（UserManagementPage）──
   'users.title': '用户管理',
@@ -892,6 +894,8 @@ export default {
   'sysSettings.token.copy': '复制',
   'sysSettings.token.copied': '已复制',
   // UI-09 第三轮：Token 显隐切换 icon-only 按钮的可访问名（随状态区分）
+  'sysSettings.token.show': '显示 Token',
+  'sysSettings.token.hide': '隐藏 Token',
   'sysSettings.token.regenerate': '重新生成 Token',
   'sysSettings.token.regenerateWarning': '重新生成后，所有执行器需要更新 Token 才能继续工作',
   'sysSettings.token.notGenerated': '尚未生成执行器 Token，请先生成后再安装执行器',

@@ -63,7 +63,10 @@ function PypiTab() {
     {
       title: t('registry.col.install'), key: 'install', width: 300,
       render: (_: unknown, record: { name: string }) => (
-        <Text copyable={{ text: `pip install ${record.name} --index-url ${window.location.origin}/pypi/simple/` }}>
+        // UI-09 图标按钮 a11y：Typography copyable 的复制按钮是 icon-only——
+        // 显式 tooltips 兼作可访问名（antd 以 tooltip 文本注入 aria-label，
+        // 缺省回落 antd 内建 locale 不随页面语言保证一致）。
+        <Text copyable={{ text: `pip install ${record.name} --index-url ${window.location.origin}/pypi/simple/`, tooltips: [t('registry.copyCommand'), t('registry.copied')] }}>
           {/* UI 打磨：安装命令不可收缩的 code 文本——窄列内断行防溢出 */}
           <code style={{ wordBreak: 'break-all' }}>pip install {record.name}</code>
         </Text>
@@ -75,20 +78,20 @@ function PypiTab() {
     <div>
       <Space style={{ marginBottom: 16 }} wrap>
         {isAdmin ? (
-          <Button type="primary" icon={<UploadOutlined />} onClick={() => setUploadOpen(true)}>{t('registry.upload')}</Button>
+          <Button type="primary" icon={<UploadOutlined aria-hidden />} onClick={() => setUploadOpen(true)}>{t('registry.upload')}</Button>
         ) : (
           <Tooltip title={t('registry.upload.adminOnly')}>
-            <Button icon={<UploadOutlined />} disabled>{t('registry.upload')}</Button>
+            <Button icon={<UploadOutlined aria-hidden />} disabled>{t('registry.upload')}</Button>
           </Tooltip>
         )}
-        <Button icon={<ReloadOutlined />} onClick={() => void refresh()}>{t('registry.refresh')}</Button>
+        <Button icon={<ReloadOutlined aria-hidden />} onClick={() => void refresh()}>{t('registry.refresh')}</Button>
       </Space>
 
       <Card size="small" style={{ marginBottom: 16, background: token.colorSuccessBg, border: `1px solid ${token.colorSuccessBorder}` }}>
         <Paragraph style={{ margin: 0 }}>
           <Text strong>{t('registry.pypiHint')}</Text>
         </Paragraph>
-        <Text copyable code>
+        <Text copyable={{ tooltips: [t('registry.copyCommand'), t('registry.copied')] }} code>
           {`pip config set global.index-url ${window.location.origin}/pypi/simple/`}
         </Text>
         {/* B-1：/pypi/ 反代路由已补齐，但 registry-pypi 索引面 S9 起要求
@@ -150,7 +153,7 @@ function PypiTab() {
               maxCount={1}
               accept=".whl,.tar.gz,.zip"
             >
-              <Button icon={<InboxOutlined />}>{t('registry.chooseFile')}</Button>
+              <Button icon={<InboxOutlined aria-hidden />}>{t('registry.chooseFile')}</Button>
             </Upload>
           </Form.Item>
           <Form.Item style={{ marginBottom: 0, textAlign: 'right' }}>
@@ -179,11 +182,18 @@ function NpmTab() {
   const columns = [
     { title: t('registry.col.name'), dataIndex: 'name', key: 'name', render: (n: string) => <Text code>{n}</Text> },
     {
+      // UI-09 第三轮：最新版本/描述是次要列——窄屏（≤768px）由媒体查询隐藏
+      // （onHeaderCell/onCell 双端挂类，对齐 AppDeploymentPage 既有模式；断点与
+      // index.css ui09 媒体查询同值）。包名/安装命令（复制入口）保留。
       title: t('registry.col.latest'), dataIndex: 'latest', key: 'latest', width: 100,
+      onHeaderCell: () => ({ className: 'ui09-hide-mobile' }),
+      onCell: () => ({ className: 'ui09-hide-mobile' }),
       render: (v: string) => v ? <Tag color="blue">{v}</Tag> : <Text type="secondary">-</Text>,
     },
     {
       title: t('registry.col.desc'), dataIndex: 'description', key: 'description',
+      onHeaderCell: () => ({ className: 'ui09-hide-mobile' }),
+      onCell: () => ({ className: 'ui09-hide-mobile' }),
       // UI 打磨：npm 包描述常为长句——单行 ellipsis，tooltip 看全文
       ellipsis: { showTitle: false },
       render: (d: string) => d
@@ -193,7 +203,8 @@ function NpmTab() {
     {
       title: t('registry.col.install'), key: 'install', width: 300,
       render: (_: unknown, row: { name: string }) => (
-        <Text copyable={{ text: `npm install ${row.name}` }}>
+        // UI-09 图标按钮 a11y：显式 tooltips 兼作复制按钮可访问名（同 PyPI 列）
+        <Text copyable={{ text: `npm install ${row.name}`, tooltips: [t('registry.copyCommand'), t('registry.copied')] }}>
           {/* UI 打磨：安装命令不可收缩的 code 文本——窄列内断行防溢出 */}
           <code style={{ wordBreak: 'break-all' }}>npm install {row.name}</code>
         </Text>
@@ -204,15 +215,15 @@ function NpmTab() {
   return (
     <div>
       <Space style={{ marginBottom: 16 }} wrap>
-        <Button type="primary" icon={<CodeOutlined />} onClick={() => setPublishOpen(true)}>{t('registry.publish')}</Button>
-        <Button icon={<ReloadOutlined />} onClick={() => void refresh()}>{t('registry.refresh')}</Button>
+        <Button type="primary" icon={<CodeOutlined aria-hidden />} onClick={() => setPublishOpen(true)}>{t('registry.publish')}</Button>
+        <Button icon={<ReloadOutlined aria-hidden />} onClick={() => void refresh()}>{t('registry.refresh')}</Button>
       </Space>
 
       <Card size="small" style={{ marginBottom: 16, background: token.colorPrimaryBg, border: `1px solid ${token.colorPrimaryBorder}` }}>
         <Paragraph style={{ margin: 0 }}>
           <Text strong>{t('registry.npmHint')}</Text>
         </Paragraph>
-        <Text copyable code>
+        <Text copyable={{ tooltips: [t('registry.copyCommand'), t('registry.copied')] }} code>
           {`npm config set registry ${window.location.origin}/npm/`}
         </Text>
         {/* B-1：/npm/ 反代路由已补齐；registry-npm 对所有包要求 $authenticated
@@ -256,19 +267,19 @@ function NpmTab() {
         <Paragraph>
           <Text strong>{t('registry.npmStep1')}</Text>
           <br />
-          <Text copyable code>
+          <Text copyable={{ tooltips: [t('registry.copyCommand'), t('registry.copied')] }} code>
             {`npm config set registry ${window.location.origin}/npm/`}
           </Text>
         </Paragraph>
         <Paragraph>
           <Text strong>{t('registry.npmStep2')}</Text>
           <br />
-          <Text copyable code>npm login</Text>
+          <Text copyable={{ tooltips: [t('registry.copyCommand'), t('registry.copied')] }} code>npm login</Text>
         </Paragraph>
         <Paragraph>
           <Text strong>{t('registry.npmStep3')}</Text>
           <br />
-          <Text copyable code>npm publish</Text>
+          <Text copyable={{ tooltips: [t('registry.copyCommand'), t('registry.copied')] }} code>npm publish</Text>
         </Paragraph>
       </Modal>
     </div>

@@ -169,7 +169,7 @@ function ChannelTemplatePanel({
         <Space>
           <span>{t('notif.template.title')}</span>
           <Tooltip title={<TemplateVarsTooltip />}>
-            <InfoCircleOutlined />
+            <InfoCircleOutlined aria-hidden />
           </Tooltip>
         </Space>
       }
@@ -195,7 +195,7 @@ function ChannelTemplatePanel({
             <Space>
               {t('notif.template.titleLabel')}
               <Tooltip title={<TemplateVarsTooltip />}>
-                <InfoCircleOutlined />
+                <InfoCircleOutlined aria-hidden />
               </Tooltip>
             </Space>
           }
@@ -318,8 +318,8 @@ function ChannelConfigForm({
               <Alert
                 type={testResult.success ? 'success' : 'error'}
                 icon={testResult.success
-                  ? <CheckCircleFilled style={{ color: token.colorSuccess }} />
-                  : <CloseCircleFilled style={{ color: token.colorError }} />}
+                  ? <CheckCircleFilled aria-hidden style={{ color: token.colorSuccess }} />
+                  : <CloseCircleFilled aria-hidden style={{ color: token.colorError }} />}
                 showIcon
                 title={
                   testResult.success
@@ -446,13 +446,21 @@ function SilenceRulesPanel({ active }: { active: boolean }) {
     { title: t('notif.silence.col.channel'), dataIndex: 'channelType', width: 100,
       render: (v: string | null) => (v ? CHANNEL_LABELS(t)[v] ?? v : t('notif.silence.channel.all')) },
     { title: t('notif.silence.col.endTime'), dataIndex: 'endTime', width: 170, render: fmtEndTime },
-    { title: t('notif.silence.col.remaining'), dataIndex: 'endTime', width: 130,
+    {
+      // UI-09 第三轮：剩余时间/创建人是次要列——窄屏（≤768px）由媒体查询隐藏
+      // （onHeaderCell/onCell 双端挂类，对齐 AppDeploymentPage 既有模式；断点与
+      // index.css ui09 媒体查询同值）。维度/渠道/截止时间/说明/操作保留，scroll.x 兜底。
+      title: t('notif.silence.col.remaining'), dataIndex: 'endTime', width: 130,
+      onHeaderCell: () => ({ className: 'ui09-hide-mobile' }),
+      onCell: () => ({ className: 'ui09-hide-mobile' }),
       render: (v: string | null) => {
         const remain = fmtRemaining(v);
         if (remain) return remain;
         return v ? <Tag color="red">{t('notif.silence.expired')}</Tag> : <Typography.Text type="secondary">-</Typography.Text>;
       } },
     { title: t('notif.silence.col.createdBy'), dataIndex: 'createdBy', width: 100,
+      onHeaderCell: () => ({ className: 'ui09-hide-mobile' }),
+      onCell: () => ({ className: 'ui09-hide-mobile' }),
       render: (v: string | null) => v ?? '-' },
     { title: t('notif.silence.col.reason'), dataIndex: 'reason', ellipsis: true, minWidth: 100,
       render: (v: string | null) => v ?? '-' },
@@ -767,8 +775,8 @@ export default function NotificationSettingsPage() {
                 <Alert
                   type={globalTestResult.success ? 'success' : 'error'}
                   icon={globalTestResult.success
-                    ? <CheckCircleFilled style={{ color: token.colorSuccess }} />
-                    : <CloseCircleFilled style={{ color: token.colorError }} />}
+                    ? <CheckCircleFilled aria-hidden style={{ color: token.colorSuccess }} />
+                    : <CloseCircleFilled aria-hidden style={{ color: token.colorError }} />}
                   showIcon
                   title={
                     globalTestResult.success
