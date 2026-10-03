@@ -540,10 +540,20 @@ export default function ExecutorPackagesPage() {
               每列仅 ~145px 偏紧；改 Row/Col xs=24 sm=12（对齐 ExecutorInstallWizardPage
               响应式先例），gutter 响应式对象 xs=0/sm=16 使堆叠后与上下整行字段
               （文件/描述）左缘对齐，sm+ 桌面 16px 间距不变。
+              UX-WALK R9（走查 A 级 executor-packages@600，.ant-modal-body
+              scrollWidth 480 > 472）：归因是本 Row 的 gutter 负 margin 而非
+              上传控件内边距——antd 对 gutter 16 施加 margin-inline:-8px/
+              padding-inline:8px 补偿，弹窗 body 自身无内边距（v6 内边距在
+              .ant-modal-content）且 overflowX=visible，行盒右缘遂超出 body
+              恰 8px（实测把行 margin 归零后 sw 480→472，上传子树无越界）。
+              ux-gutter-flush（index.css ≥576px 媒体查询）把行盒钉回 body
+              边缘，字段几何（0..228 / 244..472）与钳制前逐像素一致；xs 断点
+              gutter=0 本无边距，规则不生效，375 不受影响（不走行内 style
+              长写覆写的原因见 index.css 该节注释）。
               maxLength 对齐后端 CreateExecutorPackageDto（name ≤255 / version ≤64）：
               本表单随包上传大文件，超长值只在后端 400 才暴露——白等一次
               数百 MB 上传；输入端截断即可 */}
-          <Row gutter={{ xs: 0, sm: 16 }}>
+          <Row gutter={{ xs: 0, sm: 16 }} className="ux-gutter-flush">
             <Col xs={24} sm={12}>
               <Form.Item name="name" label={t('execPkg.upload.field.name')} rules={[{ required: true, message: t('execPkg.upload.field.nameRequired') }]}>
                 <Input placeholder="python-runner" maxLength={255} />
@@ -555,7 +565,8 @@ export default function ExecutorPackagesPage() {
               </Form.Item>
             </Col>
           </Row>
-          <Row gutter={{ xs: 0, sm: 16 }}>
+          {/* 同上：双列行 no-bleed 覆写（机制见上一行注释） */}
+          <Row gutter={{ xs: 0, sm: 16 }} className="ux-gutter-flush">
             <Col xs={24} sm={12}>
               <Form.Item name="type" label={t('execPkg.upload.field.type')} initialValue="node" rules={[{ required: true }]}>
                 <Select options={[...PACKAGE_TYPES]} />
