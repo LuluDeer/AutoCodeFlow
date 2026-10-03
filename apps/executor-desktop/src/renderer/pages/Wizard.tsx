@@ -387,7 +387,9 @@ function StepExecutor({
           <div className="input-group">
             <input aria-label="监听端口"
               className={`input${portResult && !portResult.available ? ' error' : ''}`}
-              type="number" min={1024} max={65535}
+              // min 与本页校验口径（1–65535，见下方越界提示）及设置页
+              // EXECUTOR_PORT 区间对齐——原 min={1024} 与校验文案自相矛盾。
+              type="number" min={1} max={65535}
               value={form.executorPort}
               onChange={(e) => handlePortChange(parseInt(e.target.value, 10))}
             />

@@ -61,7 +61,9 @@ export default function App() {
 
   if (hash === 'wizard') {
     return (
-        <React.Suspense fallback={<div className="app-loading" role="status" aria-live="polite">Loading...</div>}>
+        // 中文占位：向导页整体是硬编码中文（i18n 渐进，见 DESIGN-AUDIT-2026-09-22），
+        // chunk 加载瞬间闪一句英文 Loading 会造成混语观感。
+        <React.Suspense fallback={<div className="app-loading" role="status" aria-live="polite">加载中...</div>}>
         <Wizard />
       </React.Suspense>
     );
