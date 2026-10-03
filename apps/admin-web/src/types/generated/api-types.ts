@@ -1299,6 +1299,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/executors/picker": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List executor picker options (lightweight)
+         * @description Minimal read surface for executor picker dropdowns (deploy modals): id/appName/address/status/runningTaskCount/maxConcurrentTasks only, not the full entity projection of GET /executors. Capped at EXECUTOR_PICKER_LIMIT rows (createdAt DESC); when total > items.length the response carries truncated=true so the UI can warn explicitly — never silently truncated like the 500-capped full list.
+         */
+        get: operations["ExecutorController_findPickerOptions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/executors/install-cmd": {
         parameters: {
             query?: never;
@@ -5053,6 +5073,20 @@ export interface components {
              */
             myRole?: "viewer" | "editor" | "admin" | null;
         };
+        ProjectListPageDto: {
+            /** @description Page rows (legacy alias of items) */
+            list: components["schemas"]["ProjectViewDto"][];
+            /** @description Page rows */
+            items: components["schemas"]["ProjectViewDto"][];
+            /** @description Total visible projects */
+            total: number;
+            /** @description Current page (1-based) */
+            page: number;
+            /** @description Page size (clamped to 1..100) */
+            pageSize: number;
+            /** @description Total pages */
+            totalPages: number;
+        };
         ProjectEntityDto: {
             /** @description Project id (uuid) */
             id: string;
@@ -6995,6 +7029,24 @@ export interface operations {
                 content: {
                     "application/json": unknown;
                 };
+            };
+        };
+    };
+    ExecutorController_findPickerOptions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Executor picker options with explicit truncation flag */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
@@ -10401,20 +10453,23 @@ export interface operations {
     };
     ProjectsController_findAll: {
         parameters: {
-            query?: never;
+            query: {
+                page: string;
+                pageSize: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description ADMIN sees all; others see default project plus their memberships */
+            /** @description No page/pageSize query → full ProjectViewRow array (legacy shape). Either param present → paginated envelope (list/items/total/page/pageSize/totalPages) over the caller's visible projects */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ProjectViewDto"][];
+                    "application/json": components["schemas"]["ProjectListPageDto"];
                 };
             };
         };
