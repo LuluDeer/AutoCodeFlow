@@ -2921,5 +2921,45 @@ export default {
   'agents.scopeLabel': 'Scope constraints (used by the boundary gate)',
   'agents.contextLabel': 'Session context',
   'agents.resultLabel': 'Final result',
+  // ── UX-06: AgentSessionsPage bare-enum governance (vocabulary: utils/agent-label.ts) ──
+  // Session statuses (state machine in admin-api agent-session.entity.ts)
+  'agents.status.pending': 'Pending',
+  'agents.status.running': 'Running',
+  'agents.status.waitingInput': 'Waiting for input',
+  'agents.status.succeeded': 'Succeeded',
+  'agents.status.failed': 'Failed',
+  'agents.status.aborted': 'Aborted',
+  'agents.status.budgetExceeded': 'Budget exceeded',
+  // Session kinds (decide the tool whitelist)
+  'agents.kind.opsWatch': 'Ops watch',
+  'agents.kind.incident': 'Incident',
+  'agents.kind.sopAuthoring': 'SOP authoring',
+  'agents.kind.sopReview': 'SOP review',
+  'agents.kind.appScaffold': 'App scaffold',
+  'agents.kind.chat': 'Chat',
+  // Tool call result statuses (boundary gate / circuit breaker / approval trail)
+  'agents.toolStatus.ok': 'OK',
+  'agents.toolStatus.denied': 'Denied',
+  'agents.toolStatus.awaitingApproval': 'Awaiting approval',
+  'agents.toolStatus.timeout': 'Timed out',
+  'agents.toolStatus.error': 'Error',
+  'agents.toolStatus.circuitOpen': 'Circuit open',
+  // Step roles (LLM message protocol)
+  'agents.role.system': 'System',
+  'agents.role.user': 'User',
+  'agents.role.assistant': 'Assistant',
+  'agents.role.tool': 'Tool',
+  // Tool risk tiers (drive approval & retention policy)
+  'agents.tier.read': 'Read',
+  'agents.tier.write': 'Write',
+  'agents.tier.dangerous': 'Dangerous',
+  // Column titles (were raw strings: 'kind'/'role'/'tok'/'ms'/'tier'/'args')
+  'agents.col.kind': 'Kind',
+  'agents.col.role': 'Role',
+  'agents.col.tok': 'Tokens (in/out)',
+  'agents.col.latency': 'Latency (ms)',
+  'agents.col.duration': 'Duration (ms)',
+  'agents.col.tier': 'Tier',
+  'agents.col.args': 'Arguments',
 } as const;
 

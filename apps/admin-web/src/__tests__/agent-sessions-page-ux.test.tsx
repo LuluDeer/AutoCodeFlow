@@ -132,7 +132,10 @@ describe('AgentSessionsPage URL 同步（URL-SYNC-01）', () => {
     await screen.findByText('session-s-run');
 
     fireEvent.mouseDown(screen.getByText('按类型筛选', { selector: '.ant-select-placeholder' }));
-    fireEvent.click(await screen.findByText('incident', { selector: '.ant-select-item-option-content' }));
+    // UX-06 后选项 label 走 agents.kind.* 词条（value 仍是后端 token 'incident'）
+    fireEvent.click(
+      await screen.findByText('事件处置', { selector: '.ant-select-item-option-content' }),
+    );
 
     await waitFor(() => {
       expect(lastSearch).toContain('kind=incident');

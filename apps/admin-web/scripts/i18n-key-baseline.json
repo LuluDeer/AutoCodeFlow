@@ -20,6 +20,7 @@
     "pages/failure-runbook.ts",
     "pages/settings/EventSubscriptionsSettings.tsx",
     "pages/settings/SecuritySettings.tsx",
+    "utils/agent-label.ts",
     "utils/cron-desc.ts",
     "utils/execution-timeline.ts",
     "utils/failure-reason-label.ts",
