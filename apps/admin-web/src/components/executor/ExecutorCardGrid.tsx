@@ -134,7 +134,9 @@ export interface ExecutorCardProps {
         </Space>
       }
       extra={
-        <Space size={4} wrap>
+        // 375px 走查：超长名称省略号紧贴「在线」徽标——卡头 title(flex:1) 与
+        // extra 之间无默认间距，补一档呼吸空隙（桌面卡片视图同款，仅间距）。
+        <Space size={4} wrap style={{ marginLeft: 12 }}>
           <Badge status={statusBadge(r.status)} text={statusText(t, r.status)} />
           {r.deadLetterCount != null && r.deadLetterCount > 0 && (
             <Tooltip title={t('execCard.deadLetterTip')}>

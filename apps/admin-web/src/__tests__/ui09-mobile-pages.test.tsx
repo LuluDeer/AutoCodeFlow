@@ -7,8 +7,9 @@
  *    Steps、重试链/产物是自绘 flex 与 List。故本页不存在「表格次要列 +
  *    scroll.x」可断言面（既有三页表格的同类断言在 mobile-ui09.test.tsx）。
  *    本页真实溢出点是：日志卡工具条顶出卡头、参数 Tag（antd Tag 默认
- *    nowrap）被长 URL 撑到上千像素、超长任务名面包屑不收缩、以及跨列
- *    Descriptions.Item 在 xs 单列时 span=3 超出列数。
+ *    nowrap）被长 URL 撑到上千像素、超长任务名面包屑不收缩（跨列
+ *    Descriptions.Item 的 span 超列告警已由 span="filled" 迁移收敛，
+ *    见 antd-deprecation-clean.test.tsx）。
  *  · DashboardPage 真实溢出点是 xs 两列并排（每卡内容宽 ~144px）时
  *    28px 统计值顶破卡片。
  *  jsdom 无布局引擎：断言「渲染产物」（类名/colSpan/属性）与 CSS 源文本，
