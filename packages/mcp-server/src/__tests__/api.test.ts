@@ -174,6 +174,18 @@ describe("apiRequest error extraction (N12)", () => {
     );
   });
 
+  // 404 也带下一步动作（对齐 401/403 的可恢复性口径）：id 已在 MCP 入站
+  // 做过 UUID 白名单校验，404 基本意味着资源不存在/被删——指引 agent 用
+  // 对应 list 工具重新解析 id，而不是盲目重试。
+  it("404: appends the resolve-id-via-list-tool next step", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(false, { code: 404, message: "Task not found" }, 404),
+    );
+    await expect(apiRequest("GET", "/tasks/missing")).rejects.toThrow(
+      /API error \(404\): Task not found — confirm the resource exists; resolve the ID with the matching list_\* tool/,
+    );
+  });
+
   it("400: joins class-validator message arrays", async () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse(

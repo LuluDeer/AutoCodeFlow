@@ -28,6 +28,18 @@ const JSON_CONTENT = (data: unknown) => ({
 });
 
 /**
+ * 错误面统一口径：HTTP 失败由 apiRequest 抛错、MCP SDK 转成
+ * isError:true + error.message；而「参数可解析但语义无效」的用法错误
+ * （未知模板/未知应用名/缺二选一 id）发生在 handler 内部——也必须带
+ * isError:true，否则 MCP 客户端会把失败当成功。结构化 JSON 负载保留
+ * （如 available 列表），让 agent 同时拿到失败信号与下一步可用的取值。
+ */
+const JSON_ERROR = (data: unknown) => ({
+  content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
+  isError: true as const,
+});
+
+/**
  * D1-P2-2: 路径插值 id 的入站白名单。后端 task/task-version/task-execution/
  * application/app-deployment/executor/project 主键均为 @PrimaryGeneratedColumn("uuid")。
  * 此前裸 z.string() 直接拼进 /tasks/:id 路径，畸形值（../、斜杠、编码穿越）可造成
@@ -116,7 +128,7 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
   // ---- list_tasks ----------------------------------------------------------
   server.tool(
     "list_tasks",
-    "List all tasks defined in AutoCodeFlow. Returns id, name, status, cron, and last execution info.",
+    "List tasks defined in AutoCodeFlow with optional status/name filtering. Returns the backend paginated envelope { list, items, total, page, pageSize, totalPages } (list and items carry the same rows); each row has id, name, status, trigger config (cron or fixed rate), and last trigger time.",
     {
       page: z
         .number()
@@ -222,7 +234,7 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
       runtime: z
         .string()
         .optional()
-        .describe("Runtime type, e.g. node | python | shell"),
+        .describe("Runtime type: node | python | shell (backend enum — other values are rejected with 400)"),
       entrypoint: z
         .string()
         .optional()
@@ -232,7 +244,9 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
         .int()
         .min(0)
         .optional()
-        .describe("Execution timeout in seconds"),
+        .describe(
+          "Execution timeout in seconds (0 = no limit; backend accepts 0-86400)",
+        ),
       maxRetry: z
         .number()
         .int()
@@ -332,19 +346,32 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
   );
 
   // ---- list_executions ------------------------------------------------------
+  // 分页参数与其余 list_* 工具统一口径（default 20 / max 100，对齐后端
+  // PageQueryDto 契约）；此前 default 10 / max 50 是无出处的独头部形状。
   server.tool(
     "list_executions",
-    "List recent task executions. Optionally filter by taskId and status.",
+    "List recent task executions (newest first). Optionally filter by taskId and status.",
     {
       taskId: UUID_PATH_ID.optional().describe("Filter by task ID"),
       status: z
         .string()
         .optional()
         .describe(
-          "Filter by status: pending | running | success | failed | timeout | killed | cancelled",
+          "Filter by status: pending | running | waiting | success | failed | timeout | killed | cancelled",
         ),
-      page: z.number().int().min(1).default(1),
-      pageSize: z.number().int().min(1).max(50).default(10),
+      page: z
+        .number()
+        .int()
+        .min(1)
+        .default(1)
+        .describe("Page number (default 1)"),
+      pageSize: z
+        .number()
+        .int()
+        .min(1)
+        .max(100)
+        .default(20)
+        .describe("Items per page, max 100 (default 20)"),
     },
     async ({ taskId, status, page, pageSize }) => {
       const params = new URLSearchParams({
@@ -362,17 +389,30 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
   );
 
   // ---- get_execution --------------------------------------------------------
+  // 大输出治理（对齐 admin-api PERF-03 的同一决策）：GET /tasks/executions/:id
+  // 的 compat alias 原样回传实体行，其中 logs 是 text 列、单条上限 512_000
+  // 字符——后端已把列表/详情/统计读面的日志全部迁到独立分页端点
+  // GET .../logs（本包的 get_execution_logs 工具）。这里如实剥离并在响应里
+  // 说明去向（而不是静默丢弃或把 512KB 塞进 agent 上下文）。
   server.tool(
     "get_execution",
-    "Get the details and logs of a specific execution by ID. Includes status, duration, output, logs, and AI analysis if available.",
+    "Get the details of a specific execution by ID: status, duration, result, runtime params, error info, and AI analysis if available. The full log payload is stripped from this response (single rows can reach 512 KB) — page through logs with get_execution_logs.",
     {
       executionId: UUID_PATH_ID.describe("Execution ID"),
     },
     async ({ executionId }) => {
-      const data = await call<unknown>(
+      const data = await call<Record<string, unknown>>(
         "GET",
         `/tasks/executions/${executionId}`,
       );
+      if (data && typeof data === "object" && "logs" in data) {
+        const { logs: _logs, ...rest } = data;
+        return JSON_CONTENT({
+          ...rest,
+          logsStripped: true,
+          note: "The full log payload was stripped from this response (it can reach 512 KB). Page through it with get_execution_logs (fromLine/limit).",
+        });
+      }
       return JSON_CONTENT(data);
     },
   );
@@ -383,7 +423,12 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
     "Trigger AI analysis on a failed execution. Returns the AI-generated root cause and fix suggestion.",
     {
       taskId: UUID_PATH_ID.describe("Task ID"),
-      executionId: UUID_PATH_ID.describe("Execution ID (must be a failed/timeout execution)"),
+      // 后端 analyzeExecution 不按 status 硬闸（任何执行都可分析），只是
+      // failed/timeout 之外的分析没有输入也没有意义——按「预期用途」表述，
+      // 不谎称前置校验。
+      executionId: UUID_PATH_ID.describe(
+        "Execution ID (intended for failed/timeout executions)",
+      ),
     },
     async ({ taskId, executionId }) => {
       const data = await call<unknown>(
@@ -568,7 +613,7 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
     async ({ template, name, description, overrides }) => {
       const tpl = TASK_TEMPLATES[template];
       if (!tpl) {
-        return JSON_CONTENT({
+        return JSON_ERROR({
           error: `Unknown template "${template}"`,
           available: Object.keys(TASK_TEMPLATES),
         });
@@ -657,7 +702,9 @@ export function registerApplicationTools(
       status: z
         .string()
         .optional()
-        .describe("Application status (ApplicationStatus enum value)"),
+        .describe(
+          "Application status: active | deploying | failed (ApplicationStatus enum)",
+        ),
       gitRepo: z.string().optional().describe("Git repository URL"),
       gitBranch: z.string().optional().describe("Git branch"),
       gitCommit: z.string().optional().describe("Git commit SHA"),
@@ -782,7 +829,7 @@ export function registerDeploymentTools(
       runMode: z
         .string()
         .optional()
-        .describe("Run mode override (see RunMode enum, e.g. daemon)"),
+        .describe("Run mode: once | daemon | scheduled (default daemon)"),
       env: z
         .record(z.string(), z.string())
         .optional()
@@ -836,7 +883,7 @@ export function registerDeploymentTools(
       runMode: z
         .string()
         .optional()
-        .describe("Run mode override (see RunMode enum, e.g. daemon)"),
+        .describe("Run mode: once | daemon | scheduled (default daemon)"),
       env: z
         .record(z.string(), z.string())
         .optional()
@@ -851,7 +898,7 @@ export function registerDeploymentTools(
       const rows = Array.isArray(apps) ? apps : (apps?.list ?? []);
       const app = rows.find((a) => a?.name === appName);
       if (!app?.id) {
-        return JSON_CONTENT({
+        return JSON_ERROR({
           error: `Application "${appName}" not found`,
           available: rows.map((a) => a?.name).filter(Boolean),
         });
@@ -1045,7 +1092,10 @@ export function registerExecutorTools(server: McpServer, call: ApiCall): void {
   // ---- get_executor_metrics -------------------------------------------------
   server.tool(
     "get_executor_metrics",
-    "Get performance metrics for a single executor: { executor, sevenDayStats (totalExecutions/successful/failed/successRate/averageDurationMs over the last 7 days), current (runningTaskCount/cpuUsage/memUsage) }. Backed by GET /executors/:id/metrics.",
+    // FEAT-04: 响应还带 history——最近 24h 的 executor_metrics_history 采样,
+    // 聚合为 15 分钟 AVG 桶（≤96 个点,升序;每点 {timestamp, cpuUsage,
+    // memUsage, runningTaskCount},无上报值的桶 cpu/mem 为 null）。
+    "Get performance metrics for a single executor: { executor, sevenDayStats (totalExecutions/successful/failed/successRate/averageDurationMs over the last 7 days), current (runningTaskCount/cpuUsage/memUsage), history (last 24h of resource samples in 15-minute average buckets, <=96 ascending points; empty when no samples) }. Backed by GET /executors/:id/metrics.",
     {
       executorId: UUID_PATH_ID.describe("Executor ID"),
     },
@@ -1495,26 +1545,31 @@ export function registerSopTools(server: McpServer, call: ApiCall): void {
           note: "Terminal statuses (completed/failed/cancelled) are filtered out. Pass assignmentId to see one assignment's clarifications.",
         });
       }
-      return JSON_CONTENT({
+      return JSON_ERROR({
         error: "Provide sopId (list pending assignments) or assignmentId (full detail)",
       });
     },
   );
 
   // ---- agent_session_list ----------------------------------------------------
+  // kind/status 取值枚举对齐后端 AGENT_SESSION_KINDS / AGENT_SESSION_STATUSES
+  // （此前漏了 sop_review / app_scaffold / chat 与 budget_exceeded——agent 传
+  // 后端合法的值会因描述漂移被劝退）。
   server.tool(
     "agent_session_list",
-    "List agent sessions (ops_watch / incident / sop_authoring runs) newest first. Sessions in waiting_input are paused waiting on a human decision (approval or SOP clarification) — use agent_session_get for their reasoning steps and tool calls.",
+    "List agent sessions (ops_watch / incident / sop_authoring / sop_review / app_scaffold / chat runs) newest first. Sessions in waiting_input are paused waiting on a human decision (approval or SOP clarification) — use agent_session_get for their reasoning steps and tool calls.",
     {
       kind: z
         .string()
         .optional()
-        .describe("Filter by kind: ops_watch | incident | sop_authoring"),
+        .describe(
+          "Filter by kind: ops_watch | incident | sop_authoring | sop_review | app_scaffold | chat",
+        ),
       status: z
         .string()
         .optional()
         .describe(
-          "Filter by status: pending | running | waiting_input | succeeded | failed | aborted",
+          "Filter by status: pending | running | waiting_input | succeeded | failed | aborted | budget_exceeded",
         ),
       page: z
         .number()
