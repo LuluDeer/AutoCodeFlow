@@ -1982,6 +1982,8 @@ export default {
   'templates.noDesc': '(No description)',
   'templates.deleted': 'Custom template deleted',
   'templates.deleteFail': 'Failed to delete template',
+  // UI-09 icon-button a11y: the card delete button is icon-only; this label feeds its aria-label/Tooltip
+  'templates.delete': 'Delete template',
   'templates.trigger.manual': 'Manual',
   'templates.trigger.cron': 'Cron scheduled',
   'templates.trigger.fixedRate': 'Fixed interval',
@@ -2830,6 +2832,8 @@ export default {
   'projects.role.editor': 'Editor',
   'projects.role.admin': 'Project admin',
   'projects.count': '{{count}} projects in total',
+  // UI-09 round 3: mobile card list empty state (the desktop table keeps antd's default "No data")
+  'projects.empty': 'No projects yet',
 
   // ── P5/P6: SOP management ──
   'sops.reply': 'Reply',
@@ -2891,6 +2895,8 @@ export default {
   'sops.mediaView': 'View',
   'sops.mediaViewFailed': 'Failed to open media',
   'sops.mediaRefsLabel': 'Attachments',
+  // UI-09 round 3: mobile card list empty state (the desktop table keeps antd's default "No data")
+  'sops.empty': 'No SOPs yet',
 
   // ── P2 leftover: Agent sessions view (AgentSessionsPage, ADMIN-only) ──
   'nav.agents': 'Agent sessions',
@@ -2901,8 +2907,8 @@ export default {
   'agents.resume': 'Resume',
   'agents.resumeOk': 'Re-enqueued (same re-entrant path as the first run)',
   'agents.resumeFailed': 'Resume failed (terminal sessions cannot be resumed; create a new session instead)',
-  'agents.usageSummary': '{steps} steps · {tokens} tokens · {tools} tool calls',
-  'agents.budgetLabel': 'Budget: {steps} steps / {tokens} tokens / {tools} tool calls',
+  'agents.usageSummary': '{{steps}} steps · {{tokens}} tokens · {{tools}} tool calls',
+  'agents.budgetLabel': 'Budget: {{steps}} steps / {{tokens}} tokens / {{tools}} tool calls',
   'agents.filter.kind': 'Filter by kind',
   'agents.filter.status': 'Filter by status',
   'agents.col.title': 'Session',
@@ -2913,9 +2919,9 @@ export default {
   'agents.col.content': 'Content',
   'agents.col.tool': 'Tool',
   'agents.col.error': 'Error',
-  'agents.tab.steps': 'Steps ({count})',
-  'agents.tab.tools': 'Tool calls ({count})',
-  'agents.tab.children': 'Child sessions ({count})',
+  'agents.tab.steps': 'Steps ({{count}})',
+  'agents.tab.tools': 'Tool calls ({{count}})',
+  'agents.tab.children': 'Child sessions ({{count}})',
   'agents.tab.meta': 'Context & result',
   'agents.childrenEmpty': 'No child sessions (clarification review / delivery verification sessions appear here)',
   'agents.empty': 'No agent sessions yet',

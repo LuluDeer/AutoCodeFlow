@@ -3,9 +3,12 @@ import { useTranslation } from 'react-i18next';
 import {
   Alert,
   Button,
+  Card,
   Drawer,
+  Empty,
   Input,
   Modal,
+  Pagination,
   Select,
   Space,
   Table,
@@ -22,6 +25,9 @@ import type { ColumnsType } from 'antd/es/table';
 
 import PageHeader from '../components/PageHeader';
 import StateError from '../components/StateError';
+// UI-09 第三轮：≤768px 表格 → 卡片列表的结构级降级（对齐 TaskListPage/
+// ApplicationListPage 的 MOBILE-CARD-01 先例；断点与 index.css ui09 媒体查询同值）
+import { useIsMobile } from '../hooks/useIsMobile';
 import { sopsApi } from '../api/sops';
 // SOPS-TIME-01：时间列统一走 formatDateTime（locale 感知 + 空值回退 '—'）
 import { formatDateTime } from '../utils/timeFormat';
@@ -66,6 +72,8 @@ const TERMINAL_ASSIGNMENT_STATUSES: SopAssignment['status'][] = ['failed', 'stal
 
 export default function SopsPage() {
   const { t } = useTranslation();
+  // UI-09 第三轮：≤768px 结构级降级开关（表格→卡片、抽屉满宽）
+  const isMobile = useIsMobile();
   const [items, setItems] = useState<Sop[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -353,7 +361,7 @@ export default function SopsPage() {
         description={t('sops.description')}
         extra={
           <Space>
-            <Button icon={<ReloadOutlined />} onClick={() => void load()}>
+            <Button icon={<ReloadOutlined aria-hidden />} onClick={() => void load()}>
               {t('sops.refresh')}
             </Button>
             <Button type="primary" onClick={() => setDraftOpen(true)}>
@@ -372,21 +380,65 @@ export default function SopsPage() {
           style={{ marginBottom: 16 }}
         />
       )}
-      <Table<Sop>
-        rowKey="id"
-        loading={loading}
-        columns={sopColumns}
-        dataSource={items}
-        pagination={{ current: page, pageSize, total, showSizeChanger: true, onChange: (p, ps) => { setPage(p); setPageSize(ps); } }}
-        size="middle"
-        // UX-05：加载失败时不再渲染「暂无数据」空态（上方 StateError 已如实呈现
-        // 失败原因与重试入口），避免把失败读成空列表（ExecutorPackagesPage 同款）
-        locale={loadError ? { emptyText: null } : undefined}
-      />
+      {/* UI-09 第三轮：≤768px 卡片列表（MOBILE-CARD-01 同款结构级降级）——
+          SOP 卡按首查信息组织：slug+状态 → 标题 → 版本/更新时间 → 操作；
+          桌面保留 6 列表格。加载失败时空态不渲染（StateError 已如实呈现，
+          与桌面 locale 口径一致），避免把失败读成空列表。 */}
+      {isMobile ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {!loadError && items.length === 0 && (
+            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('sops.empty')} />
+          )}
+          {items.map((sop) => (
+            <Card key={sop.id} size="small">
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
+                <Text strong ellipsis style={{ flex: 1, minWidth: 0 }}>{sop.slug}</Text>
+                {statusTag(sop.status)}
+              </div>
+              {sop.title && (
+                <div style={{ marginTop: 4, fontSize: 12, color: 'var(--chart-axis-text)' }}>{sop.title}</div>
+              )}
+              <div style={{ marginTop: 6, fontSize: 12, color: 'var(--chart-axis-text)' }}>
+                {t('sops.col.version')}：{sop.currentVersion ?? '—'} · {t('sops.col.updatedAt')}：{formatDateTime(sop.updatedAt)}
+              </div>
+              <div style={{ marginTop: 8 }}>
+                <Button size="small" onClick={() => void openDetail(sop)}>
+                  {t('sops.view')}
+                </Button>
+              </div>
+            </Card>
+          ))}
+          {items.length > 0 && (
+            <Pagination
+              size="small"
+              current={page}
+              pageSize={pageSize}
+              total={total}
+              showSizeChanger={false}
+              onChange={(p, ps) => { setPage(p); setPageSize(ps); }}
+              style={{ alignSelf: 'flex-end' }}
+            />
+          )}
+        </div>
+      ) : (
+        <Table<Sop>
+          rowKey="id"
+          loading={loading}
+          columns={sopColumns}
+          dataSource={items}
+          pagination={{ current: page, pageSize, total, showSizeChanger: true, onChange: (p, ps) => { setPage(p); setPageSize(ps); } }}
+          size="middle"
+          // UX-05：加载失败时不再渲染「暂无数据」空态（上方 StateError 已如实呈现
+          // 失败原因与重试入口），避免把失败读成空列表（ExecutorPackagesPage 同款）
+          locale={loadError ? { emptyText: null } : undefined}
+        />
+      )}
 
       <Drawer
         title={detail ? `${detail.slug} ${detail.currentVersion ?? ''}` : ''}
-        width={860}
+        // antd 6：width 已并入 size（number|string|'large'|'default'）——
+        // 窄屏 '100%' 满宽，桌面 860px 固定宽
+        size={isMobile ? '100%' : 860}
         open={detail !== null}
         onClose={() => setDetail(null)}
         destroyOnHidden

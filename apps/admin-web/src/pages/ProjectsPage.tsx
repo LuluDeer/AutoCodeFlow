@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
-  Button, Drawer, Form, Select, Space, Table, Tag, Typography, message,
+  Button, Card, Drawer, Empty, Form, Pagination, Select, Space, Table, Tag, Typography, message,
 } from 'antd';
 import { TeamOutlined, UserAddOutlined, DeleteOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -15,6 +15,9 @@ import { formatDateTime } from '../utils/timeFormat';
 import PageHeader from '../components/PageHeader';
 import PageSkeleton from '../components/PageSkeleton';
 import StateError from '../components/StateError';
+// UI-09 第三轮：≤768px 表格 → 卡片列表的结构级降级（对齐 TaskListPage/
+// ApplicationListPage 的 MOBILE-CARD-01 先例；断点与 index.css ui09 媒体查询同值）
+import { useIsMobile } from '../hooks/useIsMobile';
 import '../i18n';
 
 const { Text } = Typography;
@@ -44,6 +47,8 @@ function RoleTag({ role, t }: { role: ProjectRole | null; t: TFn }) {
 
 export default function ProjectsPage() {
   const { t } = useTranslation();
+  // UI-09 第三轮：≤768px 结构级降级开关（表格→卡片）
+  const isMobile = useIsMobile();
   const user = useAuthStore((s) => s.user);
   const isAdmin = isAdminUser(user);
 
@@ -121,7 +126,7 @@ export default function ProjectsPage() {
         render: (_: unknown, row: ProjectViewRow) => (
           <Button
             size="small"
-            icon={<TeamOutlined />}
+            icon={<TeamOutlined aria-hidden />}
             onClick={() => setMembersProject(row)}
           >
             {t('projects.members.view')}
@@ -152,27 +157,83 @@ export default function ProjectsPage() {
   return (
     <div>
       <PageHeader title={t('projects.title')} description={t('projects.description')} />
-      <Table
-        rowKey="id"
-        size="middle"
-        columns={columns}
-        dataSource={rows}
-        scroll={{ x: 880 }}
-        // UI 打磨：loading 直传 isFetching——翻页/重取期间表格有反馈，
-        // 首屏（无数据）仍走上方整页骨架
-        loading={projectsQuery.isFetching}
-        pagination={{
-          current: page,
-          pageSize,
-          total,
-          showSizeChanger: true,
-          showTotal: (count) => t('projects.count', { count }),
-          onChange: (p, ps) => {
-            setPage(p);
-            setPageSize(ps);
-          },
-        }}
-      />
+      {/* UI-09 第三轮：≤768px 卡片列表（MOBILE-CARD-01 同款结构级降级）——
+          项目卡按首查信息组织：名称+我的角色 → 描述 → 创建时间 → 成员入口；
+          桌面保留 5 列表格（fixed 操作列 + scroll.x）。服务端分页两侧共用
+          同一 state（URL-SYNC-01 回写不变）。 */}
+      {isMobile ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {rows.length === 0 ? (
+            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('projects.empty')} />
+          ) : (
+            rows.map((row) => (
+              <Card key={row.id} size="small">
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
+                  <Text strong ellipsis style={{ flex: 1, minWidth: 0 }}>{row.name}</Text>
+                  <RoleTag role={row.myRole} t={t} />
+                </div>
+                {row.description && (
+                  <Text
+                    type="secondary"
+                    style={{ display: 'block', marginTop: 4, fontSize: 12 }}
+                    ellipsis={{ tooltip: row.description }}
+                  >
+                    {row.description}
+                  </Text>
+                )}
+                <div style={{ marginTop: 6, fontSize: 12, color: 'var(--chart-axis-text)' }}>
+                  {t('projects.col.createdAt')}：{formatDateTime(row.createdAt)}
+                </div>
+                <div style={{ marginTop: 8 }}>
+                  <Button
+                    size="small"
+                    icon={<TeamOutlined aria-hidden />}
+                    onClick={() => setMembersProject(row)}
+                  >
+                    {t('projects.members.view')}
+                  </Button>
+                </div>
+              </Card>
+            ))
+          )}
+          {rows.length > 0 && (
+            <Pagination
+              size="small"
+              current={page}
+              pageSize={pageSize}
+              total={total}
+              showSizeChanger={false}
+              onChange={(p, ps) => {
+                setPage(p);
+                setPageSize(ps);
+              }}
+              style={{ alignSelf: 'flex-end' }}
+            />
+          )}
+        </div>
+      ) : (
+        <Table
+          rowKey="id"
+          size="middle"
+          columns={columns}
+          dataSource={rows}
+          scroll={{ x: 880 }}
+          // UI 打磨：loading 直传 isFetching——翻页/重取期间表格有反馈，
+          // 首屏（无数据）仍走上方整页骨架
+          loading={projectsQuery.isFetching}
+          pagination={{
+            current: page,
+            pageSize,
+            total,
+            showSizeChanger: true,
+            showTotal: (count) => t('projects.count', { count }),
+            onChange: (p, ps) => {
+              setPage(p);
+              setPageSize(ps);
+            },
+          }}
+        />
+      )}
       <MembersDrawer
         project={membersProject}
         isAdmin={isAdmin}
@@ -190,6 +251,8 @@ interface MembersDrawerProps {
 
 function MembersDrawer({ project, isAdmin, onClose }: MembersDrawerProps) {
   const { t } = useTranslation();
+  // UI-09 第三轮：成员抽屉窄屏满宽（桌面保留 size="large" 的 736px）
+  const isMobile = useIsMobile();
   const queryClient = useQueryClient();
   const [addForm] = Form.useForm<{ userId: number; role: ProjectRole }>();
   const [messageApi, contextHolder] = message.useMessage();
@@ -245,13 +308,15 @@ function MembersDrawer({ project, isAdmin, onClose }: MembersDrawerProps) {
   });
 
   return (
+    // antd 6：width 已并入 size（number|string|'large'|'default'）——
+    // 窄屏 '100%' 满宽，桌面保留 size="large"（736px）
     <Drawer
       title={
         project
           ? t('projects.members.title', { name: project.name })
           : t('projects.members.title', { name: '' })
       }
-      size="large"
+      size={isMobile ? '100%' : 'large'}
       open={open}      onClose={onClose}
       destroyOnHidden
     >
@@ -283,7 +348,7 @@ function MembersDrawer({ project, isAdmin, onClose }: MembersDrawerProps) {
                       <Button
                         danger
                         size="small"
-                        icon={<DeleteOutlined />}
+                        icon={<DeleteOutlined aria-hidden />}
                         loading={removeMutation.isPending && removeMutation.variables === row.userId}
                         onClick={() => removeMutation.mutate(row.userId)}
                       >
@@ -346,7 +411,7 @@ function MembersDrawer({ project, isAdmin, onClose }: MembersDrawerProps) {
           <Space>
             <Button
               type="primary"
-              icon={<UserAddOutlined />}
+              icon={<UserAddOutlined aria-hidden />}
               htmlType="submit"
               loading={addMutation.isPending}
             >

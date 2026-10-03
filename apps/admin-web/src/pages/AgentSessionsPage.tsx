@@ -2,15 +2,17 @@ import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   Button,
+  Card,
   Drawer,
+  Empty,
   message,
+  Pagination,
   Select,
   Space,
   Table,
   Tabs,
   Tag,
   Typography,
-  Empty,
 } from 'antd';
 import { PlayCircleOutlined, ReloadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
@@ -21,6 +23,9 @@ import { useSearchParams } from 'react-router-dom';
 import PageHeader from '../components/PageHeader';
 // UI-16：列表请求失败不再只弹 toast——页内原位错误块 + 重试入口
 import StateError from '../components/StateError';
+// UI-09 第三轮：≤768px 表格 → 卡片列表的结构级降级（对齐 TaskListPage/
+// ApplicationListPage 的 MOBILE-CARD-01 先例；断点与 index.css ui09 媒体查询同值）
+import { useIsMobile } from '../hooks/useIsMobile';
 import { agentApi } from '../api/agent';
 // SOPS-TIME-01：startedAt 列与 SopsPage 同走 formatDateTime（locale 感知 + 空值 '—'）
 import { formatDateTime } from '../utils/timeFormat';
@@ -84,6 +89,8 @@ function usageOf(s: AgentSession, t: (k: string, v?: Record<string, unknown>) =>
 
 export default function AgentSessionsPage() {
   const { t } = useTranslation();
+  // UI-09 第三轮：≤768px 结构级降级开关（表格→卡片、抽屉满宽、筛选堆叠）
+  const isMobile = useIsMobile();
   // URL-SYNC-01：筛选/分页以 URL 查询参数为初始源并回写；非法深链值
   // （?page=abc、负数、浮点）回落默认值，不空屏不报错。
   const [searchParams, setSearchParams] = useSearchParams();
@@ -323,47 +330,86 @@ export default function AgentSessionsPage() {
   const resumable = detail !== null &&
     ['waiting_input', 'failed', 'budget_exceeded', 'pending'].includes(detail.status);
 
+  // UI-09 第三轮：筛选/刷新/预算节点在桌面（页头 extra 一行）与移动端
+  //（页头下方纵向堆叠）两处复用——Select 窄屏放满整行，避免固定 160px
+  // 与长预算文案在 375px 视口里横向挤压。
+  const budgetNode = budget ? (
+    <Text type="secondary" style={isMobile ? { fontSize: 12 } : undefined}>
+      {t('agents.budgetLabel', {
+        steps: budget.maxSteps,
+        tokens: budget.maxTokens,
+        tools: budget.maxToolCalls,
+      })}
+    </Text>
+  ) : null;
+  const kindSelect = (
+    <Select
+      allowClear
+      placeholder={t('agents.filter.kind')}
+      style={{ width: isMobile ? '100%' : 160 }}
+      value={kindFilter}
+      onChange={v => { setKindFilter(v); setPage(1); }}
+      options={['ops_watch', 'incident', 'sop_authoring', 'sop_review', 'app_scaffold', 'chat'].map((k) => ({
+        value: k,
+        label: agentKindLabel(k, t),
+      }))}
+    />
+  );
+  const statusSelect = (
+    <Select
+      allowClear
+      placeholder={t('agents.filter.status')}
+      style={{ width: isMobile ? '100%' : 160 }}
+      value={statusFilter}
+      onChange={v => { setStatusFilter(v); setPage(1); }}
+      options={Object.keys(STATUS_COLORS).map((s) => ({ value: s, label: agentStatusLabel(s, t) }))}
+    />
+  );
+  // 图标按钮 a11y：图标随文字按钮（有可读文案），对读屏器纯装饰 → aria-hidden
+  const refreshButton = (
+    <Button icon={<ReloadOutlined aria-hidden />} onClick={() => void load()}>
+      {t('sops.refresh')}
+    </Button>
+  );
+  // 空态区分（桌面表格 locale 与移动端卡片空态同源）：筛选无匹配给
+  //「清除筛选」出口；真空态如实提示。
+  const emptyNode = (kindFilter || statusFilter) ? (
+    <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('agents.empty.noMatch')}>
+      <Button
+        type="link"
+        size="small"
+        onClick={() => { setKindFilter(undefined); setStatusFilter(undefined); setPage(1); }}
+      >
+        {t('agents.clearFilters')}
+      </Button>
+    </Empty>
+  ) : (
+    <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('agents.empty')} />
+  );
+
   return (
     <div>
       <PageHeader
         title={t('agents.title')}
         description={t('agents.description')}
-        extra={
+        extra={!isMobile ? (
           <Space>
-            {budget && (
-              <Text type="secondary">
-                {t('agents.budgetLabel', {
-                  steps: budget.maxSteps,
-                  tokens: budget.maxTokens,
-                  tools: budget.maxToolCalls,
-                })}
-              </Text>
-            )}
-            <Select
-              allowClear
-              placeholder={t('agents.filter.kind')}
-              style={{ width: 160 }}
-              value={kindFilter}
-              onChange={v => { setKindFilter(v); setPage(1); }}
-              options={['ops_watch', 'incident', 'sop_authoring', 'sop_review', 'app_scaffold', 'chat'].map((k) => ({
-                value: k,
-                label: agentKindLabel(k, t),
-              }))}
-            />
-            <Select
-              allowClear
-              placeholder={t('agents.filter.status')}
-              style={{ width: 160 }}
-              value={statusFilter}
-              onChange={v => { setStatusFilter(v); setPage(1); }}
-              options={Object.keys(STATUS_COLORS).map((s) => ({ value: s, label: agentStatusLabel(s, t) }))}
-            />
-            <Button icon={<ReloadOutlined />} onClick={() => void load()}>
-              {t('sops.refresh')}
-            </Button>
+            {budgetNode}
+            {kindSelect}
+            {statusSelect}
+            {refreshButton}
           </Space>
-        }
+        ) : undefined}
       />
+      {/* 移动端：页头操作行收进下方纵向堆叠的筛选栏（Select 各占满一行） */}
+      {isMobile && (
+        <div style={{ marginBottom: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {budgetNode}
+          {kindSelect}
+          {statusSelect}
+          <div>{refreshButton}</div>
+        </div>
+      )}
       {/* UI-16：非静默加载失败 → 页内原位错误块 + 重试（轮询失败仍静默，B-14 语义不变） */}
       {loadError ? (
         <StateError
@@ -373,35 +419,71 @@ export default function AgentSessionsPage() {
           style={{ marginBottom: 16 }}
         />
       ) : null}
-      <Table<AgentSession>
-        rowKey="id"
-        loading={loading}
-        columns={sessionColumns}
-        dataSource={items}
-        locale={{
-          // 空态区分：筛选无匹配给「清除筛选」出口（避免用户以为会话真没了）；
-          // 真空态如实提示（会话由运行时产生，无人工入口可引导）。
-          emptyText: (kindFilter || statusFilter) ? (
-            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('agents.empty.noMatch')}>
-              <Button
-                type="link"
-                size="small"
-                onClick={() => { setKindFilter(undefined); setStatusFilter(undefined); setPage(1); }}
-              >
-                {t('agents.clearFilters')}
-              </Button>
-            </Empty>
+      {/* UI-09 第三轮：≤768px 卡片列表（MOBILE-CARD-01 同款结构级降级）——
+          会话卡按首查信息组织：状态+标题 → 类型+触发来源 → 用量 → 开始时间 →
+          操作；桌面保留 6 列表格。 */}
+      {isMobile ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {items.length === 0 ? (
+            emptyNode
           ) : (
-            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('agents.empty')} />
-          ),
-        }}
-        pagination={{ current: page, pageSize, total, showSizeChanger: true, onChange: (p, ps) => { setPage(p); setPageSize(ps); } }}
-        size="middle"
-      />
+            items.map((s) => (
+              <Card key={s.id} size="small">
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
+                  <Text strong ellipsis style={{ flex: 1, minWidth: 0 }}>
+                    {s.title ?? agentKindLabel(s.kind, t)}
+                  </Text>
+                  {statusTag(s.status, t)}
+                </div>
+                <div style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                  <Tag style={{ marginInlineEnd: 0 }}>{agentKindLabel(s.kind, t)}</Tag>
+                  {s.triggerSource && <Tag style={{ marginInlineEnd: 0 }}>{s.triggerSource}</Tag>}
+                </div>
+                <div style={{ marginTop: 6, fontSize: 12, color: 'var(--chart-axis-text)' }}>{usageOf(s, t)}</div>
+                <div style={{ marginTop: 4, fontSize: 12, color: 'var(--chart-axis-text)' }}>
+                  {t('agents.col.startedAt')}：{formatDateTime(s.startedAt)}
+                </div>
+                <div style={{ marginTop: 8 }}>
+                  <Button size="small" onClick={() => void openDetail(s)}>
+                    {t('sops.view')}
+                  </Button>
+                </div>
+              </Card>
+            ))
+          )}
+          {items.length > 0 && (
+            <Pagination
+              size="small"
+              current={page}
+              pageSize={pageSize}
+              total={total}
+              showSizeChanger={false}
+              onChange={(p, ps) => { setPage(p); setPageSize(ps); }}
+              style={{ alignSelf: 'flex-end' }}
+            />
+          )}
+        </div>
+      ) : (
+        <Table<AgentSession>
+          rowKey="id"
+          loading={loading}
+          columns={sessionColumns}
+          dataSource={items}
+          locale={{
+            // 空态区分：筛选无匹配给「清除筛选」出口（避免用户以为会话真没了）；
+            // 真空态如实提示（会话由运行时产生，无人工入口可引导）。
+            emptyText: emptyNode,
+          }}
+          pagination={{ current: page, pageSize, total, showSizeChanger: true, onChange: (p, ps) => { setPage(p); setPageSize(ps); } }}
+          size="middle"
+        />
+      )}
 
       <Drawer
         title={detail ? (detail.title ?? `${agentKindLabel(detail.kind, t)} · ${detail.id.slice(0, 8)}`) : ''}
-        width={920}
+        // antd 6：width 已并入 size（number|string|'large'|'default'）——
+        // 窄屏 '100%' 满宽，桌面 920px 固定宽
+        size={isMobile ? '100%' : 920}
         open={detail !== null}
         onClose={() => setDetail(null)}
         destroyOnHidden
@@ -410,7 +492,7 @@ export default function AgentSessionsPage() {
             <Button
               type="primary"
               size="small"
-              icon={<PlayCircleOutlined />}
+              icon={<PlayCircleOutlined aria-hidden />}
               loading={resuming}
               onClick={() => void resume()}
             >
