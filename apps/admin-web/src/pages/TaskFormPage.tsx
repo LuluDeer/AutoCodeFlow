@@ -37,6 +37,7 @@ import { Card,
   Tag,
   Tooltip,
   Anchor,
+  Spin,
   theme,
   Modal,
   Grid } from 'antd';
@@ -48,7 +49,9 @@ import {
   InfoCircleOutlined, ClusterOutlined, RocketOutlined, ApartmentOutlined, PushpinOutlined,
   PlusOutlined, DeleteOutlined, ToolOutlined, LockOutlined, SaveOutlined,
 } from '@ant-design/icons';
-import { useNavigate, useSearchParams, useParams, useBlocker } from 'react-router-dom';
+// APP-SELECT-01：空应用引导需要站内跳转应用管理页（/applications，router.tsx）——
+// 用 Link 而非 nav() 按钮：中键/新标签页打开的浏览器默认行为免费获得。
+import { Link, useNavigate, useSearchParams, useParams, useBlocker } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { useAuthStore, isAdminUser } from '../store/auth';
 import { configApi } from '../api/config';
@@ -106,6 +109,8 @@ import TaskFormParamsSection from '../components/task-form/TaskFormParamsSection
 import TaskFormGlueSection from '../components/task-form/TaskFormGlueSection';
 import { useTranslation } from 'react-i18next';
 import '../i18n';
+// APP-SELECT-01：应用选项的 updatedAt 相对时间（跟随当前语言，测试环境 zh）。
+import { formatRelativeTime } from '../utils/timeFormat';
 import { LAYOUT_TOKENS } from '../theme/tokens';
 
 const { Text } = Typography;
@@ -121,6 +126,108 @@ const RUNTIME_OPTIONS = [
   { value: 'node', label: 'Node.js' },
   { value: 'shell', label: 'Shell' },
 ];
+
+// —— 可检索应用选择器（APP-SELECT-01）——————————————————————————————
+// zip 应用多起来后，「name 平铺 + 仅按名称过滤」的下拉不够用：搜不到描述/版本、
+// 看不出 runtime 是否与任务匹配、不知道应用整包是否就绪。两处应用 Select
+// （zip 必填载体 / 部署绑定）统一升级为富信息选项：
+//   · label = name + version + runtime Tag + updatedAt 相对时间（+ 描述截断）；
+//   · 过滤改走自定义 search 字符串（name+description+version）——antd 只对
+//     string label 提供默认过滤，ReactNode label 必须自带过滤字段；
+//   · title 显式回填 name：rc-select 只在 label 为字符串时才把 label 派生成
+//     原生 title 属性，ReactNode 下不回填 = 悬停提示消失；
+//   · 选中后选择框内只显示 name（optionLabelProp）——富信息只留在下拉里，
+//     不把表单行撑爆。
+// 状态语义来自后端 apps/admin-api application.service.ts（ApplicationStatus）：
+//   active    = 就绪（本地上传 / 上次 git 部署成功）——唯一「健康」态；
+//   deploying = git 部署进行中（带 gitRepo 创建即置此态，整包尚未产出）；
+//   failed    = 上次 git 部署失败（当前没有可用整包）。
+// zip 来源 = 执行器按 applicationId 下载应用整包，deploying/failed 都拿不到包，
+// 故 zip 分支禁用并显示原因；未知状态（未来枚举扩容）不臆造语义，保持可选。
+
+/** 应用选择器的读面形状。字段可缺省：api 读面未回传/测试桩只给部分字段时归 ''。 */
+interface AppOptionSource {
+  id: string;
+  name: string;
+  runtime: string;
+  version: string;
+  description: string;
+  status: string;
+  updatedAt: string;
+}
+
+/** zip 分支下不可选状态的展示配置（Tag 颜色对齐 ApplicationListPage 的 statusColors）。 */
+const APP_STATUS_UNAVAILABLE: Record<string, { color: string; tagKey: string; reasonKey: string }> = {
+  deploying: {
+    color: 'blue',
+    tagKey: 'taskForm.field.applicationId.statusTagDeploying',
+    reasonKey: 'taskForm.field.applicationId.statusDeployingUnavailable',
+  },
+  failed: {
+    color: 'red',
+    tagKey: 'taskForm.field.applicationId.statusTagFailed',
+    reasonKey: 'taskForm.field.applicationId.statusFailedUnavailable',
+  },
+};
+
+/**
+ * 构建单个应用选项。label 里的 name 独占一个 span：antd 选中回显走
+ * optionLabelProp="name"（纯字符串），但若有用例/浮层需要精确匹配应用名，
+ * 下拉项里的 name 文本节点也保持独立、不与版本/时间粘连。
+ */
+const buildAppSelectOption = (
+  a: AppOptionSource,
+  t: (k: string, opts?: Record<string, unknown>) => string,
+  opts: { /** zip 分支：按健康状态禁用 + runtime 与任务不一致时 Tag 变警示色 */ withHealth?: boolean; taskRuntime?: string },
+) => {
+  const unavailable = opts.withHealth ? APP_STATUS_UNAVAILABLE[a.status] : undefined;
+  // runtime 不匹配预判：与提交侧 zipRuntimeMismatch Alert 同一判据口径
+  // （两侧都有值才比），只是把「选完才报错」提前到「选择时就能看出」。
+  const runtimeMismatch =
+    !!opts.withHealth && !!a.runtime && !!opts.taskRuntime && a.runtime !== opts.taskRuntime;
+  return {
+    value: a.id,
+    // 选中后选择框内只显示应用名（见 optionLabelProp）
+    name: a.name,
+    title: a.name,
+    // 过滤字段：名称 + 描述 + 版本（预转小写，filterOption 里对输入侧同样小写化）
+    search: `${a.name} ${a.description ?? ''} ${a.version ?? ''}`.toLowerCase(),
+    disabled: !!unavailable,
+    label: (
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+        <span style={{ fontWeight: 500 }}>{a.name}</span>
+        {a.version ? <Text type="secondary" style={{ fontSize: 12 }}>v{a.version}</Text> : null}
+        {a.runtime ? (
+          <Tag color={runtimeMismatch ? 'orange' : undefined} style={{ marginInlineEnd: 0 }}>
+            {a.runtime}
+          </Tag>
+        ) : null}
+        {unavailable ? (
+          <Tag color={unavailable.color} style={{ marginInlineEnd: 0 }}>
+            {t(unavailable.tagKey)}
+          </Tag>
+        ) : null}
+        {a.updatedAt ? (
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            {formatRelativeTime(a.updatedAt, t)}
+          </Text>
+        ) : null}
+        {a.description ? (
+          <Text type="secondary" style={{ fontSize: 12, maxWidth: 320 }} ellipsis>
+            {a.description}
+          </Text>
+        ) : null}
+        {unavailable ? (
+          <Text type="secondary" style={{ fontSize: 12 }}>{t(unavailable.reasonKey)}</Text>
+        ) : null}
+      </span>
+    ),
+  };
+};
+
+/** 应用下拉过滤：命中 search 字符串（名称/描述/版本），大小写不敏感。 */
+const appSelectFilterOption = (input: string, opt?: { search?: string } | null) =>
+  (opt?.search ?? '').includes(input.trim().toLowerCase());
 
 /**
  * Cron 结构校验（前端即时反馈）：结构不可解析时在输入旁直接标红，不再等
@@ -250,8 +357,13 @@ export default function TaskFormPage() {
    * 应用 runtime 与任务 runtime 一致，表单需就地提示（服务端仍权威校验）。
    * runtime 可缺省：列表读面未回传时归 ''，deriveRuntimeMismatch 对空串不判定
    * （宁可不提示，也不拿未就绪的数据误报）。
+   * APP-SELECT-01：其余字段（version/description/status/updatedAt）供富信息
+   * 下拉选项使用；缺省归 ''，选项渲染按「有值才显示」处理。
    */
-  const [apps, setApps] = useState<{ id: string; name: string; runtime: string }[]>([]);
+  const [apps, setApps] = useState<AppOptionSource[]>([]);
+  // APP-SELECT-01：应用列表加载中（下拉 Spin 态）。失败也归 false——下拉退化为
+  // 空态引导，而不是永远转圈。
+  const [appsLoading, setAppsLoading] = useState(true);
   // TASK-PROJ-01: 归属项目候选（不选 = 未分配，归默认项目视图）
   const [projects, setProjects] = useState<{ id: string; name: string }[]>([]);
   // TASK-PROJ-01: Select 选项（含显式"未分配"语义：allowClear 即可，不额外造选项）
@@ -378,9 +490,23 @@ export default function TaskFormPage() {
         ),
       t('taskForm.load.executorsFail'),
     );
+    // APP-SELECT-01：成功/失败都要结束 loading（失败仅 warn，同下述项目列表的
+    // 降级哲学——下拉仍有空态引导可用）。finally 在 abort 后也触发，需防越界写入。
     run(
-      applicationsApi.list(controller.signal),
-      (data) => setApps(data.map((a) => ({ id: a.id, name: a.name, runtime: a.runtime ?? '' }))),
+      applicationsApi.list(controller.signal).finally(() => {
+        if (active && !controller.signal.aborted) setAppsLoading(false);
+      }),
+      (data) => setApps(
+        data.map((a) => ({
+          id: a.id,
+          name: a.name,
+          runtime: a.runtime ?? '',
+          version: a.version ?? '',
+          description: a.description ?? '',
+          status: a.status ?? '',
+          updatedAt: a.updatedAt ?? '',
+        })),
+      ),
       t('taskForm.load.appsFail'),
     );
     // TASK-PROJ-01: 归属项目候选。失败只 warn（不阻塞表单）——未分配仍是合法
@@ -972,6 +1098,44 @@ export default function TaskFormPage() {
   /** zip 来源未选应用（后端会 400，此处前置到提交前拦截并给出可读文案） */
   const zipApplicationMissing = codeSource === 'application_zip' && !applicationIdWatch;
 
+  // APP-SELECT-01：两处应用选择器的富信息选项。zip 分支带健康语义（不可选状态
+  // 禁用 + runtime 不匹配 Tag 变色），部署绑定分支不带——绑定关系与代码来源正交
+  // （deploying/failed 的应用同样存在合法的部署绑定），不在此扩大禁用面。
+  const zipAppOptions = useMemo(
+    () => apps.map((a) => buildAppSelectOption(a, t, { withHealth: true, taskRuntime: runtimeWatch })),
+    [apps, t, runtimeWatch],
+  );
+  const bindAppOptions = useMemo(
+    () => apps.map((a) => buildAppSelectOption(a, t, { withHealth: false })),
+    [apps, t],
+  );
+
+  /**
+   * APP-SELECT-01：应用下拉空态三分支。区分「没有应用」与「搜索无命中」——
+   * 两者用户要做的动作完全不同（去创建应用 vs 改关键词），混用一个
+   * "No data" 会把新用户卡死在空表单前。
+   */
+  const renderAppSelectNotFound = () => {
+    if (appsLoading) return <Spin size="small" />;
+    if (apps.length === 0) {
+      return (
+        <div style={{ padding: '8px 12px', maxWidth: 320 }} data-testid="app-select-empty-guide">
+          <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 4 }}>
+            {t('taskForm.field.applicationId.emptyHint')}
+          </Typography.Paragraph>
+          <Link to="/applications" style={{ fontSize: 12 }}>
+            {t('taskForm.field.applicationId.goManage')}
+          </Link>
+        </div>
+      );
+    }
+    return (
+      <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block', padding: '8px 12px' }}>
+        {t('taskForm.field.applicationId.noMatch')}
+      </Typography.Text>
+    );
+  };
+
   /**
    * G-1：把后端版本契约注入 executor-mode 的可注入配置。
    *
@@ -1327,20 +1491,24 @@ export default function TaskFormPage() {
                     互斥渲染，不会出现两个同名控件并存。 */}
                 {codeSource === 'application_zip' && (
                   <>
+                    {/* APP-SELECT-01：可检索应用选择器。计数放 extra——「共 N 个应用」
+                        让用户在应用多到需要搜索前就知道候选规模。 */}
                     <Form.Item
                       name="applicationId"
                       label={t('taskForm.field.applicationId.zipRequired')}
                       required
                       rules={[{ required: true, message: t('taskForm.field.codeSource.applicationRequired') }]}
                       tooltip={{ title: t('taskForm.field.applicationId.zipTooltip'), icon: <InfoCircleOutlined /> }}
+                      extra={t('taskForm.field.applicationId.zipAppCount', { n: apps.length })}
                     >
                       <Select
                         placeholder={t('taskForm.field.applicationId.zipPlaceholder')}
                         showSearch
-                        options={apps.map(a => ({ value: a.id, label: a.name }))}
-                        filterOption={(input, opt) =>
-                          (opt?.label as string)?.toLowerCase().includes(input.toLowerCase())
-                        }
+                        loading={appsLoading}
+                        optionLabelProp="name"
+                        options={zipAppOptions}
+                        filterOption={appSelectFilterOption}
+                        notFoundContent={renderAppSelectNotFound()}
                       />
                     </Form.Item>
                     {/* AC-19a：应用 runtime 必须与任务 runtime 一致。只在两侧都有
@@ -1392,14 +1560,17 @@ export default function TaskFormPage() {
                       ) : undefined
                     }
                   >
+                    {/* APP-SELECT-01：绑定分支同为富信息选项，但不带健康禁用——
+                        见上方 zipAppOptions/bindAppOptions 的注释。 */}
                     <Select
                       placeholder={t('taskForm.field.applicationId.placeholder')}
                       allowClear
                       showSearch
-                      options={apps.map(a => ({ value: a.id, label: a.name }))}
-                      filterOption={(input, opt) =>
-                        (opt?.label as string)?.toLowerCase().includes(input.toLowerCase())
-                      }
+                      loading={appsLoading}
+                      optionLabelProp="name"
+                      options={bindAppOptions}
+                      filterOption={appSelectFilterOption}
+                      notFoundContent={renderAppSelectNotFound()}
                     />
                   </Form.Item>
                 )}

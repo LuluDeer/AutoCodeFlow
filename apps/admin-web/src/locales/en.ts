@@ -2348,6 +2348,18 @@ export default {
   'taskForm.field.applicationId.zipTooltip': 'Required for the "Uploaded zip application" source: the executor downloads the full package from it (applicationId → packageUrl). The application runtime must match the task runtime.',
   'taskForm.field.applicationId.zipPlaceholder': 'Select the zip application to deploy',
   'taskForm.field.applicationId.boundHint': 'This application is the task deployment binding (not a zip code source); switching the code source does not affect it.',
+  // APP-SELECT-01: searchable application selector (shared by the zip-required
+  // carrier branch and the deployment-binding branch)
+  'taskForm.field.applicationId.zipAppCount': '{{n}} applications available',
+  'taskForm.field.applicationId.emptyHint': 'No applications yet. Create or upload one under "Applications" first, then come back here to select it.',
+  'taskForm.field.applicationId.goManage': 'Go to Applications',
+  'taskForm.field.applicationId.noMatch': 'No matching application: search by name, description, or version',
+  // Zip-branch health semantics: deploying = package not produced yet;
+  // failed = last deployment failed, no usable package.
+  'taskForm.field.applicationId.statusTagDeploying': 'Deploying',
+  'taskForm.field.applicationId.statusTagFailed': 'Deploy failed',
+  'taskForm.field.applicationId.statusDeployingUnavailable': 'Deployment in progress; package not ready yet, unavailable',
+  'taskForm.field.applicationId.statusFailedUnavailable': 'Last deployment failed; no usable package, unavailable',
   'taskForm.field.triggerType': 'Trigger Type',
   // A4 (third-round audit): what to do with a new trigger while the previous run is still active
   // N-14: gate compares task+params — discard/cover_early only constrain
