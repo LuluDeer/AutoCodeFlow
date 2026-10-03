@@ -81,6 +81,8 @@ import ParamsEditor from '../components/ParamsEditor';
 import ArtifactsList from '../components/ArtifactsList';
 import PageHeader from '../components/PageHeader';
 import PageSkeleton from '../components/PageSkeleton';
+// 版本历史抽屉窄屏满宽（R5-A 先例：AgentSessions/Projects 同款迁移）
+import { useIsMobile } from '../hooks/useIsMobile';
 
 const { Text } = Typography;
 
@@ -160,6 +162,8 @@ export default function TaskDetailPage() {
   const { token } = theme.useToken();
   const { id } = useParams<{ id: string }>();
   const nav = useNavigate();
+  // 版本历史抽屉：≤768px 满宽（桌面保持 720px 语义不变）
+  const isMobile = useIsMobile();
   const [execPage, setExecPage] = useState(1);
   const [aiModalOpen, setAiModalOpen] = useState(false);
   const [aiSuggestion, setAiSuggestion] = useState<ScheduleSuggestion | null>(null);
@@ -1167,7 +1171,9 @@ export default function TaskDetailPage() {
       <Drawer
         title={<Space><HistoryOutlined /> {t('taskDetail.version.title')}</Space>}
         placement="right"
-        width={720}
+        // antd 6：width 已并入 size（number|string|'large'|'default'）——
+        // 窄屏 '100%' 满宽，桌面 720px 固定宽（R5-A 先例同款迁移）
+        size={isMobile ? '100%' : 720}
         open={versionDrawerOpen}
         onClose={() => setVersionDrawerOpen(false)}
         destroyOnHidden

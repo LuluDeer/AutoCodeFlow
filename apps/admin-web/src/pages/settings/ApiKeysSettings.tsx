@@ -236,7 +236,19 @@ export default function ApiKeysSettings() {
 
   return (
     <Card
-      title={<Space><ApiOutlined aria-hidden />{t('apiKeys.title')}</Space>}
+      title={
+        // 375px 走查：长标题（「API Keys（限权机器凭证）」）此前被右侧「新建
+        // API Key」按钮硬截断且无省略号——antd 卡头自带的 ellipsis 只作用于
+        // 标题元素自身的文本，包一层 inline-flex Space 后失效。改 flex 容器
+        // + minWidth:0 链路让 Typography.Text ellipsis 真正生效（超长出
+        // 省略号，hover tooltip 保全文）。
+        <span style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+          <ApiOutlined aria-hidden style={{ flex: 'none' }} />
+          <Typography.Text ellipsis={{ tooltip: t('apiKeys.title') }} style={{ flex: 1, minWidth: 0 }}>
+            {t('apiKeys.title')}
+          </Typography.Text>
+        </span>
+      }
       extra={
         <Button type="primary" icon={<PlusOutlined aria-hidden />} onClick={() => setCreateOpen(true)} data-testid="apikey-create">
           {t('apiKeys.create')}

@@ -550,7 +550,11 @@ export default function ExecutorDetailPage() {
               )}
             </Tooltip>
           </Descriptions.Item>
-          <Descriptions.Item label={t('executorDetail.field.description')} span={2}>{executor.description || '-'}</Descriptions.Item>
+          {/* antd 6.6.5+：span="filled" 表达「填满当前行」——原写死 span={2} 在
+              xs 单列超出列数（命中 rc Descriptions「Sum of column span not match
+              column」告警）；filled 在 xs/sm/md 均与原渲染产物一致（md 下与
+              心跳项同行 1+2 填满、sm/xs 独占整行）。 */}
+          <Descriptions.Item label={t('executorDetail.field.description')} span="filled">{executor.description || '-'}</Descriptions.Item>
           <Descriptions.Item label={t('executorDetail.field.runningExecutions')}>
             {reportedIds === undefined || reportedIds === null ? (
               <Tooltip title={t('executorDetail.running.notReportedTip')}>
