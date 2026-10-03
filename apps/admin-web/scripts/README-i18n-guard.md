@@ -88,13 +88,14 @@ zh/en 双侧 key 集合由 `__tests__/i18n-infra.test.tsx` 比对，`t()` 引用
 `__tests__/i18n-infra.test.tsx` 会比对集合，`i18n-source-guard.test.ts` 会
 检查 `t()` 引用的 key 真实存在）。
 
-## 与既有两条 i18n 测试的分工
+## 与既有三条 i18n 守卫的分工
 
 | 守卫 | 拦什么 |
 |---|---|
 | `i18n-infra.test.tsx` | zh/en **key 集合不一致**（漏翻） |
-| `i18n-source-guard.test.ts` | `t()` 引用了**字典里不存在的 key**（界面渲染裸 key） |
+| `i18n-source-guard.test.ts` | `t()` 引用了**字典里不存在的 key**（界面渲染裸 key，vitest 侧） |
 | 本守卫（`i18n-scan.mjs --check`） | **新写的硬编码中文界面串**（漏迁移） |
+| `i18n-key-check.mjs`（B-5，挂 `lint:i18n` 链） | 缺键的**脚本级**守卫：区分 zh/en 单侧缺失与双侧缺失（双侧缺 = 渲染裸 key），动态键（`t(变量/模板串)`）按文件登记进 `i18n-key-baseline.json` 显式审计，基线陈旧条目（词条已补）点名要求删除 |
 
-三者互补，缺一不可：漏定义会让用户读到 `secretsEditor.alertTitle` 这种标识符
+四者互补，缺一不可：漏定义会让用户读到 `secretsEditor.alertTitle` 这种标识符
 （看起来像功能坏了），漏迁移则表现为中英混排。

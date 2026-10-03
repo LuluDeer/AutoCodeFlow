@@ -37,6 +37,8 @@ vi.mock('../client.js', () => ({
   del: vi.fn(),
   resetClient: vi.fn(),
   formatApiError: (e: unknown) => (e instanceof Error ? e.message : String(e)),
+  // ui.emitError 依赖 client 层的错误分类映射退出码;本文件只关心未知类(→1)。
+  classifyApiError: () => 'unknown',
 }));
 
 import { get, post } from '../client.js';

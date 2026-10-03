@@ -107,9 +107,44 @@ export function stopLogWriter(): void {
   }
 }
 
+// A-4（P2）python parity（routers/execute.py MAX_LOG_FILE_BYTES）：磁盘任务日志
+// 的每文件字节上限与**一次性截断标记**。此前 node appendLog 落盘链路无上限，
+// 高输出长跑任务可以把磁盘写满（python 侧 64MiB + 标记）。常量值与标记文案
+// 与 python 逐字对齐（admin LOG-01 回填/对账按同一形态识别）。
+export const MAX_LOG_FILE_BYTES = 64 * 1024 * 1024; // 67108864，python 同值
+export const LOG_FILE_TRUNCATION_MARKER = `\n...[file log truncated at ${MAX_LOG_FILE_BYTES} bytes]...\n`;
+
+// 每文件的「磁盘 + 缓冲」字节数追踪；首次 append 时 stat 一次现值（文件可能
+// 来自先前运行/同步写路径），此后按追加字节累加，避免逐条 statSync。
+const trackedLogSizes = new Map<string, number>();
+// 已写过截断标记的文件——标记只写一次（python file_truncated 同款单发语义）。
+const truncatedLogFiles = new Set<string>();
+
+function currentDiskSize(filePath: string): number {
+  try {
+    return fs.statSync(filePath).size;
+  } catch {
+    return 0;
+  }
+}
+
 export function appendLog(executionId: string, content: string): void {
   const filePath = pinnedLogPaths.get(executionId) ?? getLogFilePath(executionId);
+  let size = trackedLogSizes.get(filePath);
+  if (size === undefined) {
+    size = currentDiskSize(filePath);
+  }
   const pending = pendingWrites.get(filePath) ?? '';
+  // A-4: 上限已到（或已标记截断）——丢弃后续内容；标记只在越过上限后的第一
+  // 次 append 时写入一次（python：`elif not file_truncated: 写标记` 同款）。
+  if (truncatedLogFiles.has(filePath) || size >= MAX_LOG_FILE_BYTES) {
+    if (!truncatedLogFiles.has(filePath)) {
+      truncatedLogFiles.add(filePath);
+      pendingWrites.set(filePath, `${pending}${LOG_FILE_TRUNCATION_MARKER}`);
+      trackedLogSizes.set(filePath, size + Buffer.byteLength(LOG_FILE_TRUNCATION_MARKER));
+    }
+    return;
+  }
   let combined = `${pending}${content}\n`;
   // Drop the oldest buffered content if a pathological chunk burst outgrows
   // the buffer — memory safety wins over log completeness.
@@ -117,6 +152,8 @@ export function appendLog(executionId: string, content: string): void {
     combined = combined.slice(combined.length - MAX_BUFFERED_BYTES);
   }
   pendingWrites.set(filePath, combined);
+  // A-4: 记入本次追加的字节数（含 appendLog 固有的行尾换行）。
+  trackedLogSizes.set(filePath, size + Buffer.byteLength(content) + 1);
   scheduleFlush();
 }
 
@@ -125,6 +162,15 @@ export function appendLog(executionId: string, content: string): void {
 export function appendLogSync(executionId: string, content: string): void {
   const filePath = pinnedLogPaths.get(executionId) ?? getLogFilePath(executionId);
   fs.appendFileSync(filePath, content + '\n');
+  // A-4: 同步写绕过缓冲——作废缓存尺寸，让下一次 appendLog 重新 stat。
+  trackedLogSizes.delete(filePath);
+}
+
+/** A-4: 清空指定执行的日志时同步作废尺寸/截断追踪（clearLog + 重跑同一
+ *  executionId 的场景不携带上一轮的计数）。 */
+export function resetLogFileTrackingForTest(): void {
+  trackedLogSizes.clear();
+  truncatedLogFiles.clear();
 }
 
 export function readLog(executionId: string, fromLine: number = 0, maxLines: number = 1000): { lines: string[], totalLines: number } {
@@ -153,6 +199,9 @@ export function clearLog(executionId: string): void {
   if (fs.existsSync(filePath)) {
     fs.unlinkSync(filePath);
   }
+  // A-4: 文件已删——作废尺寸/截断追踪，避免按旧尺寸提前截断下一轮日志。
+  trackedLogSizes.delete(filePath);
+  truncatedLogFiles.delete(filePath);
 }
 
 export async function deleteOldLogs(retentionDays: number): Promise<number> {

@@ -19,6 +19,8 @@ import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import TaskListPage from '../pages/TaskListPage';
 import { tasksApi, type Task } from '../api/tasks';
+// UX-WALK 列宽契约：列题断言走 i18n 唯一事实源（TaskListPage 已副作用初始化）
+import i18n from '../i18n';
 
 vi.mock('../api/tasks', async () => {
   // summarizeBatch 必须一并暴露：它是 api/tasks 的具名导出，TaskListPage
@@ -80,13 +82,13 @@ const makeTask = (over: Partial<Task> = {}): Task => ({
   ...over,
 });
 
-function renderPage() {
+function renderPage(initialEntry = '/tasks') {
   // FEAT-17: TaskListPage 改用 TanStack Query——测试包 QueryClientProvider
   // （executions-page.test 先例，retry:false 防轮询重试噪音）
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
-      <MemoryRouter initialEntries={['/tasks']}>
+      <MemoryRouter initialEntries={[initialEntry]}>
         <Routes>
           <Route path="/tasks" element={<TaskListPage />} />
           <Route path="/tasks/new" element={<div>task-form-mock</div>} />
@@ -449,5 +451,104 @@ describe('遗留 P1-3：下次执行列在 tz 为空时附服务端时区注记'
     await waitFor(() =>
       expect(document.body.textContent).toContain('未指定时区'),
     );
+  });
+});
+
+// ─── UX 边界回归（本轮全站打磨）：删除后空页钳制 ──────────────────────────
+// 服务端分页下删除当前页最后一条后，page 状态不变 → 请求仍打在第 N 页返回空
+// 列表，用户停在空表空页。删除成功且整页行清空时应回退一页。
+describe('TaskListPage 删除后空页钳制（UX 边界）', () => {
+  // total=21、pageSize=20 → 第 2 页只有 1 条（参数签名兼容 tasksApi.list 可选 params）
+  const listPageOf = (params?: { page?: number }) =>
+    Promise.resolve(
+      params?.page === 2
+        ? { items: [makeTask({ id: 'task-last', name: '末页任务' })], total: 21, page: 2, pageSize: 20 }
+        : { items: [makeTask(), makeTask({ id: 'task-2', name: '巡检任务' })], total: 21, page: 1, pageSize: 20 },
+    );
+
+  it('单删第 2 页最后一条 → page 回退 1（list 以 page=1 重新拉取）', async () => {
+    mockedTasks.list.mockImplementation(listPageOf);
+    mockedTasks.delete.mockResolvedValue(undefined);
+    renderPage('/tasks?page=2');
+    await screen.findByText('末页任务');
+
+    const deleteBtn = Array.from(document.body.querySelectorAll('.ant-table-row button')).find(
+      (b) => b.querySelector('.anticon-delete'),
+    ) as HTMLButtonElement | undefined;
+    expect(deleteBtn).toBeTruthy();
+    fireEvent.click(deleteBtn!);
+    await confirmPopconfirm('确认删除此任务？');
+    await waitFor(() => expect(mockedTasks.delete).toHaveBeenCalledWith('task-last'));
+
+    await waitFor(() => {
+      const lastCall = mockedTasks.list.mock.calls[mockedTasks.list.mock.calls.length - 1]?.[0];
+      expect(lastCall?.page).toBe(1);
+    });
+  });
+
+  it('批量删除整页行（部分失败场景外）→ page 回退上一页', async () => {
+    mockedTasks.list.mockImplementation(listPageOf);
+    // 全成功：无 error 字段（真实契约 HTTP 200 + 逐项 {id, error?}）
+    mockedTasks.batchDelete.mockResolvedValue([{ id: 'task-last' }]);
+    renderPage('/tasks?page=2');
+    await screen.findByText('末页任务');
+
+    fireEvent.click(rowCheckbox(0));
+    fireEvent.click(findBtn(document.body, '批量删除')!);
+    await confirmPopconfirm('确认删除 1 个任务？正在执行中的运行将被强制终止。');
+    await waitFor(() => expect(mockedTasks.batchDelete).toHaveBeenCalledWith(['task-last']));
+
+    await waitFor(() => {
+      const lastCall = mockedTasks.list.mock.calls[mockedTasks.list.mock.calls.length - 1]?.[0];
+      expect(lastCall?.page).toBe(1);
+    });
+  });
+});
+
+// ─── UX-WALK 2026-10：列宽契约（1280 桌面首列可读性防回归）────────────────
+// jsdom 无布局引擎，钉「列配置声明」而非像素布局：
+//  · 除「任务名称」外每列（含勾选列）必须声明 width——antd v6 对无 width 列在
+//    table-layout:fixed 下平分剩余空间，声明缺失会直接挤扁名称列；
+//  · scroll.x（渲染为 <table style="width:…px">）≥ 已声明列宽合计 + 名称列下限 220。
+// 回归背景：P1-1/P1-2 增列（下次/上次执行）后固定列合计 1172 追平 scroll.x=1140，
+// 唯一无 width 的名称列被压到 ~1px，1280×800 桌面首列逐字竖排不可读。
+// 布局级验证已由走查脚本在真 Chromium 复测：1280 首列恢复可读、375 卡片化无溢出。
+describe('TaskListPage 列宽契约（UX-WALK 防回归）', () => {
+  const NAME_MIN_WIDTH = 220;
+  const parsePx = (v: string): number | null => {
+    const m = /^(\d+(?:\.\d+)?)px$/.exec(v.trim());
+    return m ? parseFloat(m[1]) : null;
+  };
+
+  it('勾选列 + 9 个固定列全部声明 width，唯一无宽度列是「任务名称」', async () => {
+    renderPage();
+    await screen.findByText('备份任务');
+    const table = document.querySelector('.ant-table table') as HTMLTableElement;
+    expect(table).toBeTruthy();
+    const ths = Array.from(table.querySelectorAll('thead th')) as HTMLElement[];
+    const cols = Array.from(table.querySelectorAll('colgroup col')) as HTMLElement[];
+    expect(ths.length).toBe(cols.length);
+    expect(ths.length).toBe(11); // 勾选 1 + 数据 10
+
+    const widthless = cols.filter((c) => parsePx(c.style.width) === null);
+    // 唯一无宽度列 = 名称列（吃剩余空间）；勾选列由 rowSelection.columnWidth 显式声明
+    expect(widthless.length).toBe(1);
+    const nameThIndex = ths.findIndex((th) => th.textContent === i18n.t('taskList.col.name'));
+    expect(nameThIndex).toBeGreaterThan(-1);
+    expect(cols.indexOf(widthless[0])).toBe(nameThIndex);
+  });
+
+  it('scroll.x ≥ 已声明列宽合计 + 名称列下限 220（新增/加宽列必须同步上调 scroll.x）', async () => {
+    renderPage();
+    await screen.findByText('备份任务');
+    const table = document.querySelector('.ant-table table') as HTMLTableElement;
+    const declared = Array.from(table.querySelectorAll('colgroup col'))
+      .map((c) => parsePx((c as HTMLElement).style.width))
+      .filter((w): w is number => w !== null);
+    const declaredSum = declared.reduce((a, b) => a + b, 0);
+    const scrollX = parsePx(table.style.width);
+    expect(scrollX).not.toBeNull();
+    // 低于该下限时 antd/CSS fixed 布局会把无宽度名称列压扁（回归形态：~1px）
+    expect(scrollX!).toBeGreaterThanOrEqual(declaredSum + NAME_MIN_WIDTH);
   });
 });

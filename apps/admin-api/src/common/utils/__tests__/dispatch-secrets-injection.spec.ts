@@ -126,12 +126,15 @@ describe("ExecutorService.dispatch — secrets 注入合并 (SEC-02)", () => {
       return { data: { ok: true } };
     });
 
-    // 占坑 UPDATE 成功
+    // 占坑 UPDATE 成功；同一 QB mock 兼载 findFleetCandidates 的 SELECT 链
     executorRepo.createQueryBuilder.mockReturnValue({
       update: jest.fn().mockReturnThis(),
       set: jest.fn().mockReturnThis(),
       where: jest.fn().mockReturnThis(),
       andWhere: jest.fn().mockReturnThis(),
+      orderBy: jest.fn().mockReturnThis(),
+      take: jest.fn().mockReturnThis(),
+      getMany: jest.fn().mockResolvedValue([makeExecutor()]),
       execute: jest.fn().mockResolvedValue({ affected: 1 }),
     });
     executorRepo.findOne.mockResolvedValue(makeExecutor());

@@ -271,7 +271,10 @@ describe("ExecutorService mutex claim (MUTEX-01)", () => {
     const occ = occupancyCountQuery()!;
     expect(occ.sql).not.toContain('"executorAddress"');
     expect(occ.sql).toContain('"id" <> $2');
-    expect(occ.params).toEqual([groupedExecution.mutexGroupId, groupedExecution.id]);
+    expect(occ.params).toEqual([
+      groupedExecution.mutexGroupId,
+      groupedExecution.id,
+    ]);
   });
 
   it("N-15 全局互斥：组内占用已满（跨设备计数）→ mutex_full", async () => {
@@ -354,5 +357,55 @@ describe("ExecutorService mutex claim (MUTEX-01)", () => {
   it("MutexWaitError 消息带 [mutex_wait] token（processor 分类链的识别锚点）", () => {
     const err = new MutexWaitError("等待同组执行释放");
     expect(err.message.startsWith("[mutex_wait]")).toBe(true);
+  });
+
+  // A-1（执行器域审计 P1）：广播不执行互斥占坑——挂组的**存量**广播任务在
+  // dispatchBroadcast 处必须留 warn（互斥未被强制执行，可观测），然后按广播
+  // 语义继续（写面已在 task.service 拒绝新建此类任务）。
+  it("A-1: dispatchBroadcast 对带 mutexGroupId 的执行记 warn 并按广播语义继续", async () => {
+    const warnSpy = jest.spyOn(service["logger"], "warn");
+    executorRepo.find.mockResolvedValue([]);
+    await expect(
+      service.dispatchBroadcast(
+        { id: "t1", name: "bc-task", timeout: 10 } as never,
+        {
+          id: "exec-uuid-2",
+          mutexGroupId: "group-1",
+          status: ExecutionStatus.RUNNING,
+        } as never,
+      ),
+    ).rejects.toThrow(
+      "No online executors match the requested group/tags/runtime",
+    );
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("mutexGroupId=group-1"),
+    );
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("does not claim mutex slots"),
+    );
+    warnSpy.mockRestore();
+  });
+
+  it("A-1: 无组的广播任务不触发互斥 warn（存量语义零变化）", async () => {
+    const warnSpy = jest.spyOn(service["logger"], "warn");
+    executorRepo.find.mockResolvedValue([]);
+    await expect(
+      service.dispatchBroadcast(
+        { id: "t1", name: "bc-task", timeout: 10 } as never,
+        {
+          id: "exec-uuid-3",
+          mutexGroupId: null,
+          status: ExecutionStatus.RUNNING,
+        } as never,
+      ),
+    ).rejects.toThrow(
+      "No online executors match the requested group/tags/runtime",
+    );
+    expect(
+      warnSpy.mock.calls.some((c) =>
+        String(c[0]).includes("does not claim mutex slots"),
+      ),
+    ).toBe(false);
+    warnSpy.mockRestore();
   });
 });

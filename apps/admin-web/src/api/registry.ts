@@ -1,15 +1,10 @@
 import { client } from './client';
 
-export interface PypiPackage {
-  name: string;
-  files: PypiFile[];
-}
-
-export interface PypiFile {
-  filename: string;
-  url: string;
-  sha256: string;
-}
+// B-5（私有包仓库域审计）：PypiPackage / PypiFile / getPypiPackage 已删除——
+// 该函数是坏契约的潜伏代码（裸 fetch 直连 registry-pypi:8003：不带凭据——
+// 索引面 S9 起要求 Basic、无 resp.ok 检查、name 未编码、catch 吞错返回 []），
+// 且全仓无页面调用。将来若需要包详情，走 admin-api 代理（同 listPypiPackages
+// 的先例），不要直连仓库端口。
 
 export interface NpmPackage {
   name: string;
@@ -28,26 +23,6 @@ export const registryApi = {
       ? await client.get('/registry/pypi/packages', { signal }) as { packages: string[] }
       : await client.get('/registry/pypi/packages') as { packages: string[] };
     return resp.packages ?? [];
-  },
-
-  // Get files for a PyPI package (direct link; same origin in prod behind nginx)
-  getPypiPackage: async (name: string): Promise<PypiFile[]> => {
-    const pypiUrl = (import.meta.env.VITE_PYPI_URL as string | undefined) || 'http://localhost:8003';
-    try {
-      const resp = await fetch(`${pypiUrl}/simple/${name}/`);
-      const html = await resp.text();
-      const doc = new DOMParser().parseFromString(html, 'text/html');
-      return Array.from(doc.querySelectorAll('a')).map(a => {
-        const href = a.getAttribute('href') ?? '';
-        return {
-          url: href.split('#')[0],
-          sha256: href.includes('#sha256=') ? href.split('#sha256=')[1] : '',
-          filename: a.textContent ?? '',
-        };
-      }).filter(f => f.filename);
-    } catch {
-      return [];
-    }
   },
 
   // Upload PyPI package through admin-api proxy

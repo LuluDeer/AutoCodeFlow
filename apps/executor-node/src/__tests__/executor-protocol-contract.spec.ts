@@ -79,3 +79,42 @@ describe('A3 执行器协议契约（executor-node 侧）', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// A-11（P3）：params→env 的 JSON 序列化契约向量。
+//
+// 向量钉在 packages/contract-fixtures/contract.json 的
+// executorEnvSerialization 段（append-only）：node JSON.stringify(v) 与 python
+// json.dumps(v, ensure_ascii=False, separators=(',', ':')) 必须对同一载荷产出
+// 逐字节相同的 AUTOFLOW_* env 值。python 侧的运行时注入断言见
+// apps/executor-python/tests/test_audit_fixes.py。
+// ---------------------------------------------------------------------------
+
+describe('A-11 — executorEnvSerialization contract vectors (contract-fixtures)', () => {
+  const CONTRACT_RELATIVE = path.join(
+    'packages',
+    'contract-fixtures',
+    'contract.json',
+  );
+
+  it('JSON.stringify matches every pinned env byte vector', () => {
+    let dir = __dirname;
+    let contractPath: string | null = null;
+    for (let i = 0; i < 12; i++) {
+      const candidate = path.join(dir, CONTRACT_RELATIVE);
+      if (existsSync(candidate)) {
+        contractPath = candidate;
+        break;
+      }
+      dir = path.dirname(dir);
+    }
+    expect(contractPath).not.toBeNull();
+    const contract = JSON.parse(readFileSync(contractPath!, 'utf-8'));
+    const vectors = contract.executorEnvSerialization?.vectors;
+    expect(Array.isArray(vectors)).toBe(true);
+    expect(vectors.length).toBeGreaterThan(0);
+    for (const vector of vectors) {
+      expect(JSON.stringify(vector.input)).toBe(vector.env);
+    }
+  });
+});

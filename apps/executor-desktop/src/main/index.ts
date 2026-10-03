@@ -1,4 +1,4 @@
-import { app, Menu } from 'electron';
+import { app, Menu, dialog, powerMonitor } from 'electron';
 import { ConfigStore } from './config-store';
 import { ExecutorProcess } from './executor-process';
 import { AgentHost } from './agent/agent-host';
@@ -8,10 +8,12 @@ import { agentHostIdentity as buildAgentHostIdentity, agentHostTransition } from
 import { HeartbeatMonitor } from './heartbeat';
 import { TrayManager } from './tray';
 import { WindowManager } from './window-manager';
-import { registerIpcHandlers, startHeartbeat } from './ipc-handlers';
+import { registerIpcHandlers, startHeartbeat, sweepReleasesWithCurrentConfig } from './ipc-handlers';
 import { getAutoLaunchEnabled, setAutoLaunchEnabled } from './autolaunch';
 import { initUpdater } from './updater';
 import { Notifier } from './notifier';
+import { createCrashGuard } from './crash-guard';
+import { resolveTrayLocale } from './tray-texts';
 import * as path from 'path';
 import log, { applyLogLevel, initLogCleanup } from './logger';
 
@@ -23,12 +25,42 @@ import log, { applyLogLevel, initLogCleanup } from './logger';
 // 必须在 app ready / 任何窗口创建前调用才生效。
 app.disableHardwareAcceleration();
 
-// 单例导出，供 ipc-handlers 等模块使用
 // QA-12：e2e 隔离通道——冒烟用例经 env 覆盖 userData 指向临时目录，
 // 绝不触碰开发者真实配置；未设置时行为与旧版逐字节一致。
 if (process.env.ELECTRON_USER_DATA_DIR) {
   app.setPath('userData', process.env.ELECTRON_USER_DATA_DIR);
 }
+
+// B-7：单实例锁必须**先于** ConfigStore 构造。旧实现先 new ConfigStore()
+// （内含 token 就地加密迁移等**写盘副作用**，且读的是即将被覆盖的 userData）
+// 再抢锁——第二实例会先跑一遍这些副作用、与第一实例竞争同一配置文件，然后
+// 才默默退出；锁抢不到的瞬间越早退出，竞态窗口越小。
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+  process.exit(0);
+}
+
+// before-quit 是同步事件，Electron 不等 async 回调。
+// 用 preventDefault 阻止退出，待 executor-node 子进程真正结束后再 quit。
+let isQuitting = false;
+
+// B-1①：主进程全局崩溃兜底。必须先于一切业务初始化注册，覆盖整个生命周期
+// （含 ConfigStore 构造）。决策语义见 crash-guard.ts 头注：记录（每次）+
+// dialog（一次，文案随 tray-texts 同款 locale 判定）+ 经既有 before-quit
+// 停机序优雅停掉 executor-node 后退出；已在退出流程中时交还给既有链，
+// 停机链挂死有 40s 硬超时兜底。全仓无 app.relaunch 先例，不做自动重启
+// （避免把一次性故障放大成重启风暴）。
+const crashGuard = createCrashGuard({
+  logError: (message) => log.error(message),
+  showErrorBox: (title, body) => dialog.showErrorBox(title, body),
+  locale: () => resolveTrayLocale(() => app.getLocale()),
+  isQuitting: () => isQuitting,
+  quitApp: () => app.quit(),
+  forceExit: (code) => process.exit(code),
+});
+process.on('uncaughtException', (err) => crashGuard.handle('uncaughtException', err));
+process.on('unhandledRejection', (reason) => crashGuard.handle('unhandledRejection', reason));
+
 export const configStore = new ConfigStore();
 // P3-1：logLevel 不再是死字段——启动即按已保存配置设置桌面端文件日志级别。
 applyLogLevel(configStore.get('logLevel'));
@@ -39,12 +71,6 @@ export const windowManager = new WindowManager();
 // DSK-04：系统通知（任务终态 / 执行器离线）
 export const notifier = new Notifier();
 
-// 单实例锁：第二个进程启动时聚焦已有窗口
-if (!app.requestSingleInstanceLock()) {
-  app.quit();
-  process.exit(0);
-}
-
 app.on('second-instance', () => {
   windowManager.focusOrOpenStatus();
 });
@@ -54,7 +80,8 @@ app.on('window-all-closed', () => undefined);
 
 // before-quit 是同步事件，Electron 不等 async 回调。
 // 用 preventDefault 阻止退出，待 executor-node 子进程真正结束后再 quit。
-let isQuitting = false;
+// （isQuitting 声明已上移到崩溃兜底之前——兜底的 isQuitting 判定要覆盖
+// before-quit 链本身，见文件顶部 B-1① 注释。）
 app.on('before-quit', (e) => {
   if (isQuitting) return; // 第二次进来直接放行
   e.preventDefault();
@@ -76,7 +103,15 @@ app.whenReady().then(async () => {
 
   // 注入托盘回调
   trayManager.onStart = async () => {
-    await executorProcess.start(configStore.getAll());
+    // B-1：start() 现在会因「端口被非本执行器占用」等启动期故障抛错——托盘
+    // 是无人值守的路径，绝不能把 rejection 漏给全局兜底（那会退出整个应用）。
+    // start() 已把状态置为 offline，这里只落日志并保住心跳不误启。
+    try {
+      await executorProcess.start(configStore.getAll());
+    } catch (err) {
+      log.error(`Executor start failed (tray): ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
     // F-3: 传入 adminApiUrl——HeartbeatMonitor 增加直达中台的 /api/health 探针，
     // 与本地 /health/live 做 AND 逻辑（executor-node 子进程活着但中台链路断开时
     // 桌面也能感知离线）。
@@ -90,7 +125,16 @@ app.whenReady().then(async () => {
     await executorProcess.stop();
   };
   trayManager.onOpenStatus = () => windowManager.focusOrOpenStatus();
-  trayManager.onOpenConfig = () => windowManager.openConfig();
+  // B-14：未完成向导时，「打开配置」此前会拉起主窗口的状态页——页面上只有
+  // 空状态与「未配置」的执行器，配置入口和用户意图错位。改为打开/聚焦向导，
+  // 与首次启动行为一致；已完成配置时保持原语义。
+  trayManager.onOpenConfig = () => {
+    if (!configStore.get('configured')) {
+      windowManager.openWizard();
+      return;
+    }
+    windowManager.openConfig();
+  };
   trayManager.onOpenHistory = () => windowManager.openHistory();
   trayManager.onToggleAutoLaunch = async (enable) => {
     // DEV-AUTOLAUNCH：setAutoLaunchEnabled 返回是否真正生效——开发模式拒绝
@@ -136,18 +180,50 @@ app.whenReady().then(async () => {
     log.info('updater: skipped in unpackaged dev run');
   }
 
+  // B-2：休眠唤醒——心跳迟滞的「距上次成功 >90s」判据锚在 lastSuccessAt 上，
+  // 跨休眠陈旧后，唤醒首轮探针失败即弹「执行器离线」（全仓此前无任何
+  // powerMonitor resume 处理）。唤醒时把 HeartbeatMonitor 双通道与
+  // ExecutorProcess 双通道（admin 状态 / liveness）的迟滞锚点全部重置为
+  // 「未判定」态并立即补探一轮——重置后首轮失败只推进计数，不再判死。
+  powerMonitor.on('resume', () => {
+    log.info('powerMonitor: resume — resetting offline hysteresis anchors (B-2)');
+    try {
+      heartbeat.resetForResume();
+      executorProcess.resetHysteresisForResume();
+    } catch (err) {
+      // 重置失败绝不能变成第二个崩溃源（兜底链上不叠新险）
+      log.warn(`resume reset failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  });
+
+  // B-13：启动后触发一次 releases 保留期清扫（另一次触发在部署成功的日志
+  // 钩子上，见下方 onDeploySwitch 接线）。清扫内部对执行器不可达/状态未知
+  // 一律保守跳过，且失败只落日志——绝不影响启动主链。
+  executorProcess.onDeploySwitch = () => {
+    void sweepReleasesWithCurrentConfig();
+  };
+  void sweepReleasesWithCurrentConfig();
+
   const cfg = configStore.getAll();
   if (!cfg.configured) {
     // 首次运行，打开配置向导
     windowManager.openWizard();
   } else if (cfg.autoStartExecutor) {
     // 已配置且设置了自动启动
-    await executorProcess.start(cfg);
+    // B-1：同托盘路径——启动期故障（端口被占等）必须在此接住，不能把
+    // rejection 漏给全局兜底（那会在开机自启场景直接退出应用）。
+    try {
+      await executorProcess.start(cfg);
+    } catch (err) {
+      log.error(`Executor auto-start failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
     // EXP-03（本轮体验审查）：此前写 `heartbeat.start(cfg.executorPort)`
     // ——漏了 adminApiUrl，于是**开机自启这条最常见的路径上**中台直达探针
     // 静默失效（VPN 断裂时托盘仍显示"在线"）。改走 ipc-handlers 的
     // startHeartbeat()，它是全仓唯一的心跳启动入口，端口与 adminApiUrl
     // 同源读取，不会再出现"某个调用点少传一个参数"。
+    // B-1：即便 start 失败也照常启动心跳探针——它对未监听端口只会累计
+    // 失败计数（迟滞口径下不会误报），等用户修好配置/端口后能自动恢复。
     startHeartbeat();
   }
 

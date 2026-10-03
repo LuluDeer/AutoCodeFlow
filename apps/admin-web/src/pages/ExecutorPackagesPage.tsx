@@ -3,6 +3,8 @@ import { Table,
   Button,
   Input,
   Select,
+  Row,
+  Col,
   Space,
   Tag,
   Tooltip,
@@ -14,6 +16,7 @@ import { Table,
   Typography,
   Badge,
   Card,
+  Progress,
   theme } from 'antd';
 import { message } from '../utils/toast';
 // MODAL-01：命令式 Modal.* 从 utils/modal 取（吃暗色主题 + i18n locale）；<Modal> JSX 仍用 antd。
@@ -40,6 +43,8 @@ import PageHeader from '../components/PageHeader';
 import PageSkeleton from '../components/PageSkeleton';
 import StateError from '../components/StateError';
 import { Empty as AntEmpty } from 'antd';
+// B-4：包名搜索防抖——复用既有 useDebounce hook（CommandPalette 同源）
+import { useDebounce } from '../hooks/useDebounce';
 // UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
 import '../i18n';
 
@@ -80,13 +85,22 @@ const PACKAGE_ACCEPT: Record<string, string> = {
 };
 const PACKAGE_ACCEPT_FALLBACK = '.zip,.tar.gz,.tgz,.whl';
 
+// B-12：上传大小上限——与后端 FileInterceptor limits 逐字节对齐
+// （apps/admin-api/src/modules/executor-package/executor-package.controller.ts:
+// `limits: { fileSize: 500 * 1024 * 1024 }`）。超限请求后端必然 413/400，
+// 前端先拦，避免用户白等一次大文件上传才发现被拒。
+const MAX_PACKAGE_SIZE_BYTES = 500 * 1024 * 1024;
+
 function extensionsFor(type: string | undefined): string {
   return (type && PACKAGE_ACCEPT[type]) || PACKAGE_ACCEPT_FALLBACK;
 }
 
+// B-9：补后端真实枚举 uploading（executor-package.entity.ts:19）——此前缺失，
+// 上传中的包被渲染成裸 token，状态筛选也筛不出「上传中」。
 const STATUS_TAG = (t: (k: string) => string): Record<string, { color: string; label: string }> => ({
   active: { color: 'green', label: t('execPkg.status.active') },
   deprecated: { color: 'orange', label: t('execPkg.status.deprecated') },
+  uploading: { color: 'blue', label: t('execPkg.status.uploading') },
   deleted: { color: 'red', label: t('execPkg.status.deleted') },
 });
 
@@ -107,6 +121,10 @@ export default function ExecutorPackagesPage() {
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<unknown>(null);
   const [search, setSearch] = useState('');
+  // B-4：search 直接进 load 的 useCallback 依赖 + useEffect [load]，此前每个
+  // 键入字符都触发一次全量请求。输入框仍绑定原始 search（即时回显），列表
+  // 查询读 300ms 防抖后的值（CommandPalette 同款纪律）。
+  const debouncedSearch = useDebounce(search, 300);
   const [typeFilter, setTypeFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [page, setPage] = useState(1);
@@ -118,6 +136,8 @@ export default function ExecutorPackagesPage() {
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploadForm] = Form.useForm();
   const [uploading, setUploading] = useState(false);
+  // B-12：上传进度百分比（axios onUploadProgress 驱动）
+  const [uploadPercent, setUploadPercent] = useState(0);
   // F-3：监听上传表单当前类型，据此收窄 Upload 的 accept 并做扩展名二次校验。
   const uploadType = Form.useWatch('type', uploadForm);
 
@@ -132,6 +152,9 @@ export default function ExecutorPackagesPage() {
   const [pushing, setPushing] = useState(false);
   const [pushResults, setPushResults] = useState<PushResult[] | null>(null);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
+  // B-3：弃用/激活行级 pending——此前快速双击连发两个请求（第二次对已翻转
+  // 的状态再翻转，后端 400/状态抖动）。与 downloadingId/pushing 同纪律。
+  const [togglingId, setTogglingId] = useState<string | null>(null);
 
   // P2-8：「推送全部」的唯一目标集合——推送范围/按钮禁用/计数文案三处共用。
   const onlineExecutors = executors.filter(e => e.status === 'online');
@@ -168,7 +191,7 @@ export default function ExecutorPackagesPage() {
     try {
       const res = await listPackages({
         page, pageSize: PAGE_SIZE,
-        name: search || undefined,
+        name: debouncedSearch || undefined,
         type: typeFilter || undefined,
         status: statusFilter || undefined,
       });
@@ -188,7 +211,7 @@ export default function ExecutorPackagesPage() {
     } finally {
       if (seq === loadSeq.current) setLoading(false);
     }
-  }, [page, search, typeFilter, statusFilter, t]);
+  }, [page, debouncedSearch, typeFilter, statusFilter, t]);
 
   useEffect(() => {
     load();
@@ -212,6 +235,8 @@ export default function ExecutorPackagesPage() {
       (values.file as { originFileObj?: File }[] | undefined)?.[0]?.originFileObj;
     if (!fileObj) { message.error(t('execPkg.upload.chooseFile')); return; }
     setUploading(true);
+    // B-12：上传进度归零后随 axios onUploadProgress 推进（大文件不再零反馈）
+    setUploadPercent(0);
     try {
       const fd = new FormData();
       fd.append('file', fileObj);
@@ -220,21 +245,29 @@ export default function ExecutorPackagesPage() {
       fd.append('type', values.type as string);
       fd.append('platform', values.platform as string);
       if (values.description) fd.append('description', values.description as string);
-      await uploadPackage(fd);
+      await uploadPackage(fd, (e) => {
+        if (e.total) setUploadPercent(Math.min(100, Math.round((e.loaded / e.total) * 100)));
+      });
       message.success(t('execPkg.upload.success'));
       setUploadOpen(false);
       uploadForm.resetFields();
       load();
-    } catch (err: unknown) { showApiError(err, t('execPkg.upload.fail')); } finally { setUploading(false); }
+    } catch (err: unknown) { showApiError(err, t('execPkg.upload.fail')); } finally { setUploading(false); setUploadPercent(0); }
   };
 
   // F-3：accept 只收窄系统选择器；拖拽/手动选「所有文件」仍可绕过，
   // beforeUpload 据当前类型做扩展名二次校验，不符则剔除并提示。
+  // B-12：同法做大小上限校验（与后端 FileInterceptor limits 对齐），
+  // 超限剔除并提示，不发起注定被 413/400 拒绝的请求。
   const beforePkgUpload = (file: File) => {
     const lower = file.name.toLowerCase();
     const allowed = extensionsFor(uploadType).split(',').map((s) => s.trim());
     if (!allowed.some((ext) => lower.endsWith(ext))) {
       message.error(t('execPkg.upload.extensionMismatch'));
+      return Upload.LIST_IGNORE;
+    }
+    if (file.size > MAX_PACKAGE_SIZE_BYTES) {
+      message.error(t('execPkg.upload.tooLarge', { max: `${MAX_PACKAGE_SIZE_BYTES / 1024 / 1024} MB` }));
       return Upload.LIST_IGNORE;
     }
     return false;
@@ -285,16 +318,31 @@ export default function ExecutorPackagesPage() {
       title: t('execPkg.deleteConfirm'),
       content: t('execPkg.deleteConfirmDesc'),
       okText: t('execPkg.delete'), okType: 'danger', cancelText: t('execPkg.cancel'),
-      onOk: async () => { await deletePackage(id); load(); },
+      // B-2：此前 onOk 仅 await deletePackage(id); load() 无 catch——失败零
+      // 反馈（对照 handleStatusToggle 的 showApiError）。失败时 rethrow 让
+      // antd 保持确认框打开（可重试/取消），错误经 showApiError 归一提示。
+      onOk: async () => {
+        try {
+          await deletePackage(id);
+          load();
+        } catch (err: unknown) {
+          showApiError(err, t('execPkg.deleteFail'));
+          throw err;
+        }
+      },
     });
   };
 
   const handleStatusToggle = async (pkg: PkgRow) => {
+    // B-3：行级 pending 防双击竞态——已有切换在途时忽略重复触发
+    if (togglingId) return;
+    setTogglingId(pkg.id);
     try {
       if (pkg.status === 'active') await deprecatePackage(pkg.id);
       else await activatePackage(pkg.id);
       load();
     } catch (err: unknown) { showApiError(err, t('execPkg.operateFail')); }
+    finally { setTogglingId(null); }
   };
 
   // download 路由在 JwtAuthGuard 后，<a href> 无法携带 Authorization（会 401），
@@ -327,8 +375,21 @@ export default function ExecutorPackagesPage() {
     },
     { title: t('execPkg.col.version'), dataIndex: 'version', width: 100, render: (v: string) => <Tag color="blue">{v}</Tag> },
     { title: t('execPkg.col.type'), dataIndex: 'type', width: 90, render: (v: string) => <Tag>{runtimeLabel(v, t)}</Tag> },
-    { title: t('execPkg.col.platform'), dataIndex: 'platform', width: 90, render: (v?: string) => v ?? '-' },
-    { title: t('execPkg.col.size'), dataIndex: 'fileSize', width: 90, render: (v?: number) => fmtBytes(v) },
+    // UI-09 第三轮：平台/大小/上传者是次要列——窄屏（≤768px）由媒体查询隐藏
+    // （onHeaderCell/onCell 双端挂类，对齐 mobile-ui09 既有模式），
+    // 值班关键列（包名/版本/类型/状态/上传时间）+ 操作列 fixed right 保留。
+    {
+      title: t('execPkg.col.platform'), dataIndex: 'platform', width: 90,
+      onHeaderCell: () => ({ className: 'ui09-hide-mobile' }),
+      onCell: () => ({ className: 'ui09-hide-mobile' }),
+      render: (v?: string) => v ?? '-',
+    },
+    {
+      title: t('execPkg.col.size'), dataIndex: 'fileSize', width: 90,
+      onHeaderCell: () => ({ className: 'ui09-hide-mobile' }),
+      onCell: () => ({ className: 'ui09-hide-mobile' }),
+      render: (v?: number) => fmtBytes(v),
+    },
     {
       title: t('execPkg.col.status'), dataIndex: 'status', width: 100,
       render: (v: string) => {
@@ -340,26 +401,43 @@ export default function ExecutorPackagesPage() {
       title: t('execPkg.col.createdAt'), dataIndex: 'createdAt', width: 170,
       render: (v: string) => formatDateTime(v),
     },
-    { title: t('execPkg.col.uploadedBy'), dataIndex: 'uploadedBy', width: 100, render: (v?: string) => v ?? '-' },
+    {
+      title: t('execPkg.col.uploadedBy'), dataIndex: 'uploadedBy', width: 100,
+      onHeaderCell: () => ({ className: 'ui09-hide-mobile' }),
+      onCell: () => ({ className: 'ui09-hide-mobile' }),
+      render: (v?: string) => v ?? '-',
+    },
     {
       title: t('execPkg.col.actions'), key: 'actions', width: 160, align: 'center' as const, fixed: 'right' as const,
       render: (_: unknown, row: PkgRow) => (
+        // A11Y-ICON-01（对齐 TaskListPage 既有惯例）：纯图标按钮必须补
+        // aria-label——antd Tooltip 不自动注入 aria-label，读屏此前只能念出
+        // 图标自带的英文 aria-label（cloud-download/send/…）。
         <Space size="small">
           <Tooltip title={t('execPkg.action.download')}>
-            <Button size="small" icon={<CloudDownloadOutlined />}
+            <Button size="small" icon={<CloudDownloadOutlined />} aria-label={t('execPkg.action.download')}
               loading={downloadingId === row.id} onClick={() => handleDownload(row)} />
           </Tooltip>
           <Tooltip title={t('execPkg.action.push')}>
-            <Button size="small" icon={<SendOutlined />} type="primary"
+            <Button size="small" icon={<SendOutlined />} type="primary" aria-label={t('execPkg.action.push')}
               disabled={row.status !== 'active'} onClick={() => handleOpenPush(row)} />
           </Tooltip>
-          <Tooltip title={row.status === 'active' ? t('execPkg.action.deprecate') : t('execPkg.action.activate')}>
+          {/* B-9：uploading 包的弃用/激活禁用（后端对非 active/deprecated 翻转会 400）；
+              B-3：行级 loading 防双击连发 */}
+          <Tooltip title={
+            row.status === 'uploading'
+              ? t('execPkg.action.uploadingLockedTip')
+              : row.status === 'active' ? t('execPkg.action.deprecate') : t('execPkg.action.activate')
+          }>
             <Button size="small"
               icon={row.status === 'active' ? <StopOutlined /> : <CheckCircleOutlined />}
+              aria-label={row.status === 'active' ? t('execPkg.action.deprecate') : t('execPkg.action.activate')}
+              disabled={row.status === 'uploading'}
+              loading={togglingId === row.id}
               onClick={() => handleStatusToggle(row)} />
           </Tooltip>
           <Tooltip title={t('execPkg.delete')}>
-            <Button size="small" danger icon={<DeleteOutlined />} onClick={() => handleDelete(row.id)} />
+            <Button size="small" danger icon={<DeleteOutlined />} aria-label={t('execPkg.delete')} onClick={() => handleDelete(row.id)} />
           </Tooltip>
         </Space>
       ),
@@ -388,7 +466,6 @@ export default function ExecutorPackagesPage() {
         <Input.Search
           placeholder={t('execPkg.searchPlaceholder')} value={search} allowClear style={{ width: 200 }}
           onChange={e => { setSearch(e.target.value); setPage(1); }}
-          onSearch={() => load()}
         />
         <Select
           placeholder={t('execPkg.filter.type')} value={typeFilter || undefined} allowClear style={{ width: 120 }}
@@ -398,7 +475,12 @@ export default function ExecutorPackagesPage() {
         <Select
           placeholder={t('execPkg.filter.status')} value={statusFilter || undefined} allowClear style={{ width: 120 }}
           onChange={v => { setStatusFilter(v ?? ''); setPage(1); }}
-          options={[{ value: 'active', label: t('execPkg.status.active') }, { value: 'deprecated', label: t('execPkg.status.deprecated') }]}
+          options={[
+            { value: 'active', label: t('execPkg.status.active') },
+            { value: 'deprecated', label: t('execPkg.status.deprecated') },
+            // B-9：状态筛选与后端枚举同步（uploading 可筛）
+            { value: 'uploading', label: t('execPkg.status.uploading') },
+          ]}
         />
         <Button icon={<ReloadOutlined />} onClick={load}>{t('execPkg.refresh')}</Button>
         <Text type="secondary">{t('execPkg.count', { count: total })}</Text>
@@ -450,27 +532,58 @@ export default function ExecutorPackagesPage() {
               <Button icon={<UploadOutlined />}>{t('execPkg.upload.chooseFileBtn')}</Button>
             </Upload>
           </Form.Item>
-          <Space style={{ display: 'flex' }} size="middle">
-            <Form.Item name="name" label={t('execPkg.upload.field.name')} rules={[{ required: true, message: t('execPkg.upload.field.nameRequired') }]} style={{ flex: 1 }}>
-              <Input placeholder="python-runner" />
-            </Form.Item>
-            <Form.Item name="version" label={t('execPkg.upload.field.version')} rules={[{ required: true, message: t('execPkg.upload.field.versionRequired') }]} style={{ flex: 1 }}>
-              <Input placeholder="1.0.0" />
-            </Form.Item>
-          </Space>
-          <Space style={{ display: 'flex' }} size="middle">
-            <Form.Item name="type" label={t('execPkg.upload.field.type')} initialValue="node" rules={[{ required: true }]} style={{ flex: 1 }}>
-              <Select options={[...PACKAGE_TYPES]} />
-            </Form.Item>
-            <Form.Item name="platform" label={t('execPkg.upload.field.platform')} initialValue="linux" rules={[{ required: true }]} style={{ flex: 1 }}>
-              <Select options={[
-                { value: 'linux', label: 'Linux' }, { value: 'windows', label: 'Windows' },
-                { value: 'macos', label: 'macOS' }, { value: 'all', label: t('execPkg.upload.platformAll') },
-              ]} />
-            </Form.Item>
-          </Space>
+          {/* B-12：上传进度条——axios onUploadProgress 驱动，上传中实时可见 */}
+          {uploading && (
+            <Progress percent={uploadPercent} size="small" style={{ marginBottom: 8 }} />
+          )}
+          {/* R5 交接：双列行窄屏堆叠——Space flex 布局无断点，375px 弹窗下
+              每列仅 ~145px 偏紧；改 Row/Col xs=24 sm=12（对齐 ExecutorInstallWizardPage
+              响应式先例），gutter 响应式对象 xs=0/sm=16 使堆叠后与上下整行字段
+              （文件/描述）左缘对齐，sm+ 桌面 16px 间距不变。
+              UX-WALK R9（走查 A 级 executor-packages@600，.ant-modal-body
+              scrollWidth 480 > 472）：归因是本 Row 的 gutter 负 margin 而非
+              上传控件内边距——antd 对 gutter 16 施加 margin-inline:-8px/
+              padding-inline:8px 补偿，弹窗 body 自身无内边距（v6 内边距在
+              .ant-modal-content）且 overflowX=visible，行盒右缘遂超出 body
+              恰 8px（实测把行 margin 归零后 sw 480→472，上传子树无越界）。
+              ux-gutter-flush（index.css ≥576px 媒体查询）把行盒钉回 body
+              边缘，字段几何（0..228 / 244..472）与钳制前逐像素一致；xs 断点
+              gutter=0 本无边距，规则不生效，375 不受影响（不走行内 style
+              长写覆写的原因见 index.css 该节注释）。
+              maxLength 对齐后端 CreateExecutorPackageDto（name ≤255 / version ≤64）：
+              本表单随包上传大文件，超长值只在后端 400 才暴露——白等一次
+              数百 MB 上传；输入端截断即可 */}
+          <Row gutter={{ xs: 0, sm: 16 }} className="ux-gutter-flush">
+            <Col xs={24} sm={12}>
+              <Form.Item name="name" label={t('execPkg.upload.field.name')} rules={[{ required: true, message: t('execPkg.upload.field.nameRequired') }]}>
+                <Input placeholder="python-runner" maxLength={255} />
+              </Form.Item>
+            </Col>
+            <Col xs={24} sm={12}>
+              <Form.Item name="version" label={t('execPkg.upload.field.version')} rules={[{ required: true, message: t('execPkg.upload.field.versionRequired') }]}>
+                <Input placeholder="1.0.0" maxLength={64} />
+              </Form.Item>
+            </Col>
+          </Row>
+          {/* 同上：双列行 no-bleed 覆写（机制见上一行注释） */}
+          <Row gutter={{ xs: 0, sm: 16 }} className="ux-gutter-flush">
+            <Col xs={24} sm={12}>
+              <Form.Item name="type" label={t('execPkg.upload.field.type')} initialValue="node" rules={[{ required: true }]}>
+                <Select options={[...PACKAGE_TYPES]} />
+              </Form.Item>
+            </Col>
+            <Col xs={24} sm={12}>
+              <Form.Item name="platform" label={t('execPkg.upload.field.platform')} initialValue="linux" rules={[{ required: true }]}>
+                <Select options={[
+                  { value: 'linux', label: 'Linux' }, { value: 'windows', label: 'Windows' },
+                  { value: 'macos', label: 'macOS' }, { value: 'all', label: t('execPkg.upload.platformAll') },
+                ]} />
+              </Form.Item>
+            </Col>
+          </Row>
+          {/* maxLength 对齐后端 CreateExecutorPackageDto @MaxLength(1024) */}
           <Form.Item name="description" label={t('execPkg.upload.field.description')}>
-            <Input.TextArea rows={2} />
+            <Input.TextArea rows={2} maxLength={1024} />
           </Form.Item>
           <Form.Item style={{ marginBottom: 0, textAlign: 'right' }}>
             <Space>

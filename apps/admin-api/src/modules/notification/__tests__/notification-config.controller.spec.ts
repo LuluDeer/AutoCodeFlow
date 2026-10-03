@@ -380,6 +380,52 @@ describe("NotificationConfigController", () => {
     });
   });
 
+  // A-4: 变更已生效后的审计写入必须 best-effort——审计库故障不允许让已经
+  // 生效的变更反向吃 500（对齐 task.service R-28 先例）。
+  describe("A-4 审计写入 best-effort（变更已生效后不因审计故障 500）", () => {
+    it("updateChannel：audit 拒绝仍返回结果（渠道变更已生效）", async () => {
+      auditLog.mockRejectedValue(new Error("audit db down"));
+      const warnSpy = jest
+        .spyOn(Logger.prototype, "warn")
+        .mockImplementation(() => {});
+      svc.updateChannel.mockReturnValue({ key: "slack", enabled: true });
+
+      await expect(
+        controller.updateChannel("slack", { enabled: true }, user),
+      ).resolves.toEqual({ key: "slack", enabled: true });
+      warnSpy.mockRestore();
+    });
+
+    it("createSilence：audit 拒绝仍返回已落库行", async () => {
+      auditLog.mockRejectedValue(new Error("audit db down"));
+      const warnSpy = jest
+        .spyOn(Logger.prototype, "warn")
+        .mockImplementation(() => {});
+      const row = { id: "sil-1", scope: "global" };
+      (silence.create as jest.Mock).mockResolvedValue(row);
+
+      await expect(
+        controller.createSilence({ scope: "global", durationMinutes: 60 }),
+      ).resolves.toBe(row);
+      warnSpy.mockRestore();
+    });
+
+    it("removeSilence：audit 拒绝仍返回删除结果（内存+DB 双删已生效）", async () => {
+      auditLog.mockRejectedValue(new Error("audit db down"));
+      const warnSpy = jest
+        .spyOn(Logger.prototype, "warn")
+        .mockImplementation(() => {});
+      (silence.remove as jest.Mock).mockResolvedValue(true);
+
+      await expect(controller.removeSilence("sil-uuid-1", user)).resolves.toBe(
+        true,
+      );
+      expect(notif.forgetSilence).toHaveBeenCalledWith("sil-uuid-1");
+      expect(silence.remove).toHaveBeenCalledWith("sil-uuid-1");
+      warnSpy.mockRestore();
+    });
+  });
+
   // N11: channel configs carry SMTP credentials — the global RolesGuard must
   // reject plain users (403) on the channels read/write surface.
   // R2: the two test endpoints are admin-only too — they trigger real
@@ -447,6 +493,37 @@ describe("NotificationConfigController", () => {
           ),
         ).toBe(true);
       }
+    });
+
+    // A-3: POST /notification/send 收紧为 ADMIN——原 scope:"authenticated"
+    // 让任意登录用户可向全部渠道广播任意内容并借 webhookUrl 外发，与
+    // testChannel/sendTest 锁 ADMIN 的理由矛盾。
+    it("A-3: send declares @Roles(ADMIN) metadata", () => {
+      expect(
+        Reflect.getMetadata(
+          ROLES_KEY,
+          NotificationConfigController.prototype["send"],
+        ),
+      ).toEqual([UserRole.ADMIN]);
+    });
+
+    it("A-3: plain user is denied on send (RolesGuard → 403); admin passes", () => {
+      expect(
+        guard.canActivate(
+          ctxWith(
+            NotificationConfigController.prototype["send"],
+            UserRole.USER,
+          ),
+        ),
+      ).toBe(false);
+      expect(
+        guard.canActivate(
+          ctxWith(
+            NotificationConfigController.prototype["send"],
+            UserRole.ADMIN,
+          ),
+        ),
+      ).toBe(true);
     });
   });
 });

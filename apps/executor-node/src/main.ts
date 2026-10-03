@@ -13,7 +13,7 @@ if (!globalThis.crypto) {
 }
 
 import express from 'express';
-import { config, EXECUTOR_VERSION, PROTOCOL_VERSION } from './config';
+import { config, EXECUTOR_VERSION, PROTOCOL_VERSION, JSON_BODY_LIMIT } from './config';
 import { logger } from './logger';
 import {
   executorStartedAt,
@@ -24,7 +24,7 @@ import {
   waitForRunningCountZero,
   ReportedInterpreter,
 } from './scheduler';
-import { interpretersForReport, resolveUvBin } from './interpreters';
+import { interpretersForReport, resolveUvBin, hardenPoolPermissions } from './interpreters';
 import {
   detectRuntimesOnHost,
   reportedExecutorType,
@@ -57,7 +57,9 @@ import { updatePackageRouter } from './routes/update-package';
 import { verifyToken, setOnTokenAcquired, matchesExecutorCredential } from './middleware/auth';
 
 const app = express();
-app.use(express.json());
+// A-6（P2）：默认 100KB 会把超长 glueSource 的派发在 node 执行器上必然 413
+// （python 无此限）——对齐放宽到 2MB（常量与语义见 config.ts JSON_BODY_LIMIT）。
+app.use(express.json({ limit: JSON_BODY_LIMIT }));
 
 app.use('/', healthRouter);
 app.use('/api', verifyToken, executeRouter);
@@ -396,6 +398,13 @@ const server = app.listen(config.port, config.bindAddress, async () => {
     // N41: token 恢复钩子先于首次注册挂载——启动期 admin 不可达时，register
     // 失败后由后续成功的 fetchToken 自动补注册（maybeReRegister 自带去重）。
     setOnTokenAcquired(maybeReRegister);
+    // A-8（P3）python parity：解释器缓存池权限加固（0o755 + owner 校验，
+    // 幂等；win32 只确保目录存在）——启动期显式执行一次，早于任何注册/心跳。
+    try {
+      hardenPoolPermissions();
+    } catch (err) {
+      logger.warn(`interpreter pool permission hardening failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
     // FR-13/FR-14：解释器清单的心跳 provider 在**首次注册之前**接好——这样首个
     // register 与首个 heartbeat 上报的是同一份快照，不会出现"注册说池为空、
     // 心跳说有 3.9"的自相矛盾窗口（对照 python main.py 的同序接线）。

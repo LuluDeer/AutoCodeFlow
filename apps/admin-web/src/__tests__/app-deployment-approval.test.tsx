@@ -24,7 +24,7 @@ vi.mock('../api/applications', () => ({
   applicationsApi: { upgradeAll: vi.fn() },
 }));
 vi.mock('../api/executors', () => ({
-  executorsApi: { list: vi.fn() },
+  executorsApi: { list: vi.fn(), picker: vi.fn() },
 }));
 
 // jsdom 缺失 antd 依赖的浏览器 API，先行补齐（对齐既有先例）
@@ -79,7 +79,8 @@ const mockList = (data: ReturnType<typeof dep>[], total = data.length) => {
 
 beforeEach(() => {
   useAuthStore.setState({ user: { id: 1, username: 'bob', role: 'admin' } });
-  vi.mocked(executorsApi.list).mockReset().mockResolvedValue([] as never);
+  // 页面已不请求 list()（R3-E 收口：名字解析吃 picker 行），list mock 随之退场
+  vi.mocked(executorsApi.picker).mockReset().mockResolvedValue({ items: [], total: 0, truncated: false, limit: 2000 } as never);
 });
 
 afterEach(() => {

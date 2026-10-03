@@ -5,10 +5,13 @@ import {
   IsArray,
   IsBoolean,
   IsIn,
+  IsInt,
   IsOptional,
   IsString,
   IsUrl,
+  Max,
   MaxLength,
+  Min,
   MinLength,
 } from "class-validator";
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
@@ -82,15 +85,25 @@ export class UpdateEventSubscriptionDto {
   secret?: string;
 }
 
-/** 死信列表分页（默认 20，上限 100——防大表拖库）。 */
+/**
+ * 死信列表分页（默认 20，上限 100——防大表拖库）。
+ * B-8: 此前仅 @Type+@IsOptional——`?page=abc` 经 @Type 转成 NaN 后直通
+ * service，`skip: NaN` 让 TypeORM 生成非法 SQL → 500。补 @IsInt/@Min/@Max
+ * 在校验层 400 拒收；上限对齐 service 的 clamp 值（limit ≤ 100、page ≥ 1）。
+ */
 export class ListDeadLettersQueryDto {
-  @ApiPropertyOptional({ default: 1 })
+  @ApiPropertyOptional({ default: 1, minimum: 1 })
   @Type(() => Number)
+  @IsInt()
+  @Min(1)
   @IsOptional()
   page?: number = 1;
 
-  @ApiPropertyOptional({ default: 20, maximum: 100 })
+  @ApiPropertyOptional({ default: 20, minimum: 1, maximum: 100 })
   @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
   @IsOptional()
   limit?: number = 20;
 }

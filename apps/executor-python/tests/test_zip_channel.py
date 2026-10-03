@@ -783,8 +783,11 @@ def test_download_carries_bearer_token_only_for_the_admin_host(monkeypatch, tmp_
     assert 'Authorization' not in third_party
 
 
-def test_download_follows_no_redirects(monkeypatch, tmp_path):
-    """redirect 会绕过首跳的 SSRF 判定与令牌剥离策略 → 一律不跟随。"""
+def test_download_keeps_httpx_auto_redirects_off(monkeypatch, tmp_path):
+    """A-9（P3）：httpx 级自动跟随保持关闭——重定向由 `_download_package` 的
+    手动受控循环处理（至多 5 跳、同 host 保留 Authorization、跨 host 剥离）。
+    首跳的 SSRF 判定不变；httpx 内建跟随会把 Authorization 原样带给任意跳转
+    目标，故此处断言它必须保持 False。"""
     captured = {}
 
     def factory(*args, **kwargs):

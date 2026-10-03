@@ -13,6 +13,12 @@ function harness(opts?: {
     args: Record<string, unknown>,
   ) => Promise<unknown>;
   toolCalls?: Array<{ toolName: string; status: string }>;
+  sops?: Partial<{
+    getBySlug: (slug: string) => Promise<unknown>;
+    getClarificationScopeInfo: (
+      id: string,
+    ) => Promise<Record<string, unknown> | null>;
+  }>;
 }) {
   const boundary = new AgentBoundaryService({
     get: () => undefined,
@@ -27,14 +33,29 @@ function harness(opts?: {
     ),
   };
   const notify = { approvalRequested: jest.fn(async () => undefined) };
+  // B-2/B-3：执行体入口的两道校验依赖 SopService（slug→id、澄清归属投影）
+  const sops = {
+    getBySlug: jest.fn(
+      opts?.sops?.getBySlug ?? (async () => ({ id: "sop-1" })),
+    ),
+    getClarificationScopeInfo: jest.fn(
+      opts?.sops?.getClarificationScopeInfo ??
+        (async () => ({
+          assignmentId: "a1",
+          sopId: "sop-1",
+          reviewSessionId: null,
+        })),
+    ),
+  };
   const checkSpy = jest.spyOn(boundary, "check");
   const svc = new ToolExecutorService(
     boundary,
     sessions as never,
     api as never,
     notify as never,
+    sops as never,
   );
-  return { svc, boundary, sessions, api, notify, checkSpy };
+  return { svc, boundary, sessions, api, notify, sops, checkSpy };
 }
 
 function session(patch: Partial<AgentSession> = {}): AgentSession {
@@ -259,5 +280,171 @@ describe("ToolExecutorService · 脱敏（凭据不落库）", () => {
     expect(recorded.args.note as string).not.toContain("hunter2");
     expect(recorded.args.note as string).toContain("[REDACTED_HEX]");
     expect(recorded.args.note as string).not.toContain("0123abcd0123abcd");
+  });
+});
+
+// B-2：sop_get 的 slug 路径在执行体入口先解析成 id 再走闸——闸门语义单一
+// （缺 id 不放行），slug 绕不过 scope 白名单。
+describe("ToolExecutorService · sop_get slug 归一（B-2）", () => {
+  const scopedSession = (sops: string[]) =>
+    session({ kind: "sop_review", scopeJson: { sops } } as never);
+
+  it("slug 解析出的 id 在白名单内 → 放行；闸门收到的是归一后的 id", async () => {
+    const h = harness({
+      sops: { getBySlug: async () => ({ id: "sop-2" }) },
+    });
+    const out = await h.svc.execute(
+      scopedSession(["sop-2"]),
+      call("sop_get", { slug: "my-sop" }),
+      null,
+    );
+    expect(JSON.parse(out.content)).toEqual({ ok: true });
+    expect(h.sops.getBySlug).toHaveBeenCalledWith("my-sop");
+    // 闸门看到的 args 已含归一后的 sopId
+    expect(h.checkSpy.mock.calls[0][2]).toMatchObject({ sopId: "sop-2" });
+    expect(h.api.invoke).toHaveBeenCalled();
+  });
+
+  it("slug 解析出的 id 不在白名单内 → 拒绝（slug 绕过被闸死）", async () => {
+    const h = harness({
+      sops: { getBySlug: async () => ({ id: "sop-OTHER" }) },
+    });
+    const out = await h.svc.execute(
+      scopedSession(["sop-2"]),
+      call("sop_get", { slug: "other-sop" }),
+      null,
+    );
+    expect(out.content).toContain("【调用被拒绝】");
+    expect(out.content).toContain("不在本会话作用域内");
+    expect(h.api.invoke).not.toHaveBeenCalled();
+    expect(h.sessions.recordToolCall).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "denied" }),
+    );
+  });
+
+  it("slug 不存在 → 按调用失败回给模型，不冒泡异常", async () => {
+    const h = harness({
+      sops: {
+        getBySlug: async () => {
+          throw new Error("SOP no-such 不存在");
+        },
+      },
+    });
+    const out = await h.svc.execute(
+      session({ kind: "chat" } as never),
+      call("sop_get", { slug: "no-such" }),
+      null,
+    );
+    expect(out.content).toContain("【调用失败】SOP no-such 不存在");
+    expect(h.sessions.recordToolCall).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "error" }),
+    );
+    expect(h.api.invoke).not.toHaveBeenCalled();
+  });
+
+  it("sopId 路径回归：带 sopId 时不查 slug，直接过闸", async () => {
+    const h = harness();
+    await h.svc.execute(
+      scopedSession(["sop-9"]),
+      call("sop_get", { sopId: "sop-9" }),
+      null,
+    );
+    expect(h.sops.getBySlug).not.toHaveBeenCalled();
+    expect(h.api.invoke).toHaveBeenCalled();
+  });
+});
+
+// B-3：sop_reply_clarification 的归属校验——回复权 = 修订权（可自主发版），
+// 只有「本会话复核的澄清」或「scope.sops 白名单内 SOP 的澄清」可回复。
+describe("ToolExecutorService · sop_reply_clarification 归属校验（B-3）", () => {
+  const reviewSession = (sops: string[]) =>
+    session({ kind: "sop_review", scopeJson: { sops } } as never);
+
+  it("他机复核会话对他人工单澄清回复 → denied，不执行", async () => {
+    const h = harness({
+      sops: {
+        getClarificationScopeInfo: async () => ({
+          assignmentId: "a-other",
+          sopId: "sop-OTHER",
+          reviewSessionId: "sess-elsewhere",
+        }),
+      },
+    });
+    const out = await h.svc.execute(
+      reviewSession(["sop-mine"]),
+      call("sop_reply_clarification", {
+        clarificationId: "clr-1",
+        resolution: "sop_amended",
+        answer: "我改一下别人的 SOP",
+      }),
+      null,
+    );
+    expect(out.content).toContain("【调用被拒绝】");
+    expect(out.content).toContain("不在本会话作用域内");
+    expect(h.api.invoke).not.toHaveBeenCalled();
+    expect(h.sessions.recordToolCall).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "denied", tier: "write" }),
+    );
+  });
+
+  it("本会话复核的澄清（reviewSessionId === session.id）→ 放行", async () => {
+    const h = harness({
+      sops: {
+        getClarificationScopeInfo: async () => ({
+          assignmentId: "a1",
+          sopId: "sop-1",
+          reviewSessionId: "s-1",
+        }),
+      },
+    });
+    await h.svc.execute(
+      reviewSession([]), // scope 里没有 SOP——靠 reviewSessionId 本人身份放行
+      call("sop_reply_clarification", {
+        clarificationId: "clr-1",
+        resolution: "answered",
+        answer: "重启浏览器",
+      }),
+      null,
+    );
+    expect(h.api.invoke).toHaveBeenCalled();
+  });
+
+  it("澄清所属 SOP 在 scope.sops 白名单内 → 放行（交付复核会话形态）", async () => {
+    const h = harness({
+      sops: {
+        getClarificationScopeInfo: async () => ({
+          assignmentId: "a1",
+          sopId: "sop-1",
+          reviewSessionId: "sess-elsewhere",
+        }),
+      },
+    });
+    await h.svc.execute(
+      reviewSession(["sop-1"]),
+      call("sop_reply_clarification", {
+        clarificationId: "clr-1",
+        resolution: "answered",
+        answer: "按验收项核对",
+      }),
+      null,
+    );
+    expect(h.api.invoke).toHaveBeenCalled();
+  });
+
+  it("澄清不存在/不可追溯 → denied", async () => {
+    const h = harness({
+      sops: { getClarificationScopeInfo: async () => null },
+    });
+    const out = await h.svc.execute(
+      reviewSession(["sop-1"]),
+      call("sop_reply_clarification", {
+        clarificationId: "clr-404",
+        resolution: "answered",
+        answer: "x",
+      }),
+      null,
+    );
+    expect(out.content).toContain("【调用被拒绝】");
+    expect(h.api.invoke).not.toHaveBeenCalled();
   });
 });

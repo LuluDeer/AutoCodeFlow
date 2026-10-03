@@ -10,6 +10,8 @@ vi.mock('../client.js', () => ({
   put: vi.fn(),
   del: vi.fn(),
   formatApiError: vi.fn((e: unknown) => String(e)),
+  // ui.emitError 依赖 client 层的错误分类映射退出码;本文件只关心未知类(→1)。
+  classifyApiError: vi.fn(() => 'unknown'),
 }));
 
 import { get } from '../client.js';
@@ -80,11 +82,17 @@ describe('acf project (AUTH-02-B)', () => {
     expect(mockedGet).toHaveBeenCalledWith('/projects/p1/members');
   });
 
-  it('请求失败：退出码置 1 并输出格式化错误', async () => {
+  it('请求失败：统一错误出口以退出码 1 结束并输出格式化错误', async () => {
     mockedGet.mockRejectedValue(new Error('HTTP 403'));
-    // 错误在 action 内消费（formatApiError + exitCode=1），parseAsync 不 reject
-    await run(['project', 'list']);
-    expect(process.exitCode).toBe(1);
-    process.exitCode = undefined;
+    // emitError 走 process.exit(1)（测试桩抛错），错误文案经 formatApiError 到 stderr
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      // vitest 默认把 process.exit 钉成「抛错」桩，报错文案带退出码：
+      // "process.exit unexpectedly called with \"1\" (...)" —— 断言码即断言文案
+      await expect(run(['project', 'list'])).rejects.toThrow(/process\.exit unexpectedly called with "1"/);
+      expect(errSpy.mock.calls.map((c) => c.join(' ')).join('\n')).toContain('HTTP 403');
+    } finally {
+      errSpy.mockRestore();
+    }
   });
 });

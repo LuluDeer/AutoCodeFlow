@@ -70,7 +70,9 @@ const FAILURE_REASON_MAP = (t: (k: string) => string): Record<string, { color: s
  *  历史注记：当年这么写是因为 `Descriptions.Item.span` 只接受 number，传响应式
  *  对象无效。**antd 6.6.5 起该限制已解除**——span 现支持
  *  `number | 'filled' | { [breakpoint]: number }`（见 antd/es/descriptions/Item.d.ts），
- *  故"整行"现可直接写 `span="filled"`（TaskDetailPage 的三个跨列项已按此迁移）。
+ *  故"整行"现可直接写 `span="filled"`（TaskDetailPage 的三个跨列项及本组件
+ *  解释器块的池清单/详情两项均已按此迁移；写死 span={UI09_DESCRIPTIONS_COLUMN.md}
+ *  会在 xs/sm 断点超出列数，命中「Sum of column span not match column」告警）。
  *  本组件维持"独立单列块"的形态**不是**因为 API 限制，而是布局选择：主网格
  *  是 9+ 项的密集三列，错误信息块语义上属于独立段落，拆开可避免主网格出现
  *  参差不齐的空行。改动此处前请一并更新 ui09-mobile-pages.test.tsx 的断言。 */
@@ -257,7 +259,7 @@ export default function ExecutionInfoCard({ taskId, data }: {
                 <Text type="secondary">{t('execDetail.interpreter.missing')}</Text>
               )}
             </Descriptions.Item>
-            <Descriptions.Item label={t('execDetail.interpreter.pool')} span={UI09_DESCRIPTIONS_COLUMN.md}>
+            <Descriptions.Item label={t('execDetail.interpreter.pool')} span="filled">
               {interpreterCtx.pool ? (
                 <Space orientation="vertical" size={2} style={{ width: '100%' }}>
                   <Text type="secondary" style={{ fontSize: 12 }}>
@@ -284,11 +286,14 @@ export default function ExecutionInfoCard({ taskId, data }: {
                 <Text type="secondary">{t('execDetail.interpreter.missing')}</Text>
               )}
             </Descriptions.Item>
-            {/* detail 常是部署指引原文（可能较长），独占整行并保留换行 */}
+            {/* detail 常是部署指引原文（可能较长），独占整行并保留换行。
+                span="filled"：原 span={UI09_DESCRIPTIONS_COLUMN.md} 写死 3，
+                在 xs(1 列)/sm(2 列) 超出列数命中「Sum of column span not match
+                column」告警；filled 各断点渲染产物一致且告警消除。 */}
             {interpreterCtx.detail && (
               <Descriptions.Item
                 label={t('execDetail.interpreter.detail')}
-                span={UI09_DESCRIPTIONS_COLUMN.md}
+                span="filled"
               >
                 <Text style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
                   {interpreterCtx.detail}

@@ -15,7 +15,14 @@ import type { Queue } from "bullmq";
 import { randomBytes, timingSafeEqual, createHash } from "crypto";
 import * as bcrypt from "bcrypt";
 import { InjectRepository } from "@nestjs/typeorm";
-import { Repository, LessThan, In, Not, Brackets } from "typeorm";
+import {
+  Repository,
+  LessThan,
+  In,
+  Not,
+  Brackets,
+  QueryFailedError,
+} from "typeorm";
 import { Cron } from "@nestjs/schedule";
 import axios from "axios";
 import {
@@ -189,6 +196,23 @@ export const TERMINAL_STATES_DEFAULT_LOOKBACK_MS = 24 * 60 * 60 * 1000;
  * 服务端分页（见 findAll 注释）。
  */
 export const EXECUTOR_LIST_LIMIT = 500;
+/**
+ * 执行器选择器（executor picker，GET /executors/picker）的硬上限。
+ *
+ * 为什么与 EXECUTOR_LIST_LIMIT 不是同一个值：findAll() 回**全列实体投影**
+ * （interpreters / runningExecutionIds ≤10000 条的数组列 / tags / 心跳元数据…），
+ * 单行重，500 是它的载荷护栏；picker 只回部署下拉（AppDeploymentPage 部署
+ * 模态 / ApplicationListPage 快速部署）实际消费的 6 个轻列（见
+ * findPickerOptions），单行轻一个数量级以上，2000 行的总载荷仍小于 findAll
+ * 的 500 行全列——上限据此放宽。
+ *
+ * 超限**绝不静默**：findPickerOptions() 以 `truncated: true` + 全量 `total`
+ * 显式上报，前端在选择器里展示「共 total 台，仅显示前 limit 台」告警（复用
+ * execList.truncated 文案）。选择器的搜索是前端对返回数组做的客户端过滤——
+ * 静默截断等于对被截掉的执行器假阴性（搜不到真实存在的机器），这正是本端点
+ * 要修的缺陷形态，故截断必须可见。
+ */
+export const EXECUTOR_PICKER_LIMIT = 2000;
 /** AgentHost 每 30 秒续报；两分钟无续报则撤去全部协作能力。 */
 export const AGENT_CAPABILITIES_LEASE_MS = 2 * 60 * 1000;
 const MAX_RUNNING_EXECUTION_IDS = 10_000; // NETOPT-C P2-1: 与 E9 maxConcurrentTasks 采纳上界一致
@@ -202,6 +226,25 @@ export function __resetTruncationWarnStateForTest(): void {
   lastTruncationWarn.clear();
 }
 const TRUNCATION_WARN_THROTTLE_MS = 60_000;
+
+/**
+ * A-10（执行器域审计 P3）：PG 唯一约束冲突判定（SQLSTATE 23505）。
+ * register 的「按地址 findOne → 无行则 insert」是 check-then-act——同地址并发
+ * 首注册时败者的 save 会撞 uq_executors_address 抛 QueryFailedError（驱动把
+ * SQLSTATE 放在 `code` 属性），此前未捕获直接 500。与 task.service 同名私有
+ * 函数同款实现（TypeORM 跨驱动：`code` 在 PG driver 上挂顶层，pg 误差在
+ * driverError 上也有副本，两处都查）。
+ */
+function isUniqueViolation(err: unknown): boolean {
+  const maybe = err as
+    | (QueryFailedError & { code?: string; driverError?: { code?: string } })
+    | undefined
+    | null;
+  return (
+    maybe instanceof QueryFailedError &&
+    (maybe.code === "23505" || maybe.driverError?.code === "23505")
+  );
+}
 
 @Injectable()
 export class ExecutorService implements OnModuleInit {
@@ -1445,18 +1488,35 @@ export class ExecutorService implements OnModuleInit {
         status: ExecutorStatus.ONLINE,
         lastHeartbeat: new Date(),
       } as Partial<Executor>);
-      const saved = await this.repo.save(e);
-      // E-03: send notification on first registration
-      if (isFirstTime) {
-        this.notificationService
-          .notifyExecutorOnline(data.appName, data.address)
-          .catch((err) =>
-            this.logger.warn(
-              `Failed to send executor online notification: ${err?.message}`,
-            ),
-          );
+      // A-10（执行器域审计 P3）：上面的「按地址 findOne → 无行则 insert」是
+      // check-then-act——同地址并发首注册时败者的 save 撞 uq_executors_address
+      // （23505），此前未捕获直接 500。现在：唯一冲突 → 按地址重读，把本次
+      // 上报并入赢家的行走下方既有重注册分支（良性竞态收敛为一次普通重注册）；
+      // 非 23505、或重读仍无行（赢家刚被删除等罕见竞态）→ 按原错误失败。
+      try {
+        const saved = await this.repo.save(e);
+        // E-03: send notification on first registration
+        if (isFirstTime) {
+          this.notificationService
+            .notifyExecutorOnline(data.appName, data.address)
+            .catch((err) =>
+              this.logger.warn(
+                `Failed to send executor online notification: ${err?.message}`,
+              ),
+            );
+        }
+        return saved;
+      } catch (err) {
+        if (!isUniqueViolation(err)) throw err;
+        this.logger.warn(
+          `Concurrent first registration lost the unique-address race for ${data.address}; merging this report into the winning row`,
+        );
+        const winner = await this.repo.findOne({
+          where: { address: data.address },
+        });
+        if (!winner) throw err;
+        e = winner;
       }
-      return saved;
     }
     // Update mutable fields on re-registration (whitelisted per-field only)
     if (data.type) e.type = data.type as ExecutorType;
@@ -2009,6 +2069,24 @@ export class ExecutorService implements OnModuleInit {
       );
       delete metricValues.deadLetterCount;
     }
+    // A-6（执行器域审计 P3）：cpuUsage/memUsage 是评分公式的直接输入
+    // （computeExecutorLoadScore 按 /100 归一到 [0,1]）——越界值会把评分推出
+    // 量纲（负值 → 负分，>100 → cpu/mem 项越过权重上限），且该输入每 30s 心跳
+    // 刷新一次。执行器自报面不可信：越界/非有限值视同**未上报**（删字段、
+    // DB 值不动），与上方 maxConcurrentTasks / runningTaskCount 的非法采纳
+    // 先例同策。
+    for (const pctKey of ["cpuUsage", "memUsage"] as const) {
+      const pctValue = metricValues[pctKey];
+      if (
+        pctValue !== undefined &&
+        (!Number.isFinite(pctValue) || pctValue < 0 || pctValue > 100)
+      ) {
+        this.logger.warn(
+          `Executor ${address} reported invalid ${pctKey}=${String(pctValue)} (expected a number in 0..100); treating as not reported`,
+        );
+        delete metricValues[pctKey];
+      }
+    }
     // metricsWhitelist 的键全部对应 Executor 的数值指标列（Pick<Executor, …>
     // 为纯上转型断言）——写入经由该视图而非 `(e as any)`，保持类型面精确；
     // 运行时行为与原逐键直写完全一致。
@@ -2185,6 +2263,106 @@ export class ExecutorService implements OnModuleInit {
   }
 
   /**
+   * 执行器选择器（GET /executors/picker）：部署模态 / 快速部署两个执行器
+   * 下拉的轻量数据源。
+   *
+   * 为什么不复用 findAll()：它回全列实体（含 runningExecutionIds ≤10000 条的
+   * 数组列、interpreters、tags…），且 take=EXECUTOR_LIST_LIMIT(500) 按
+   * createdAt DESC 静默截断——执行器总数超过 500 后，下拉对第 501+ 台执行器
+   * **假阴性**（用户搜不到一台真实存在的机器）。这里以 SQL select 收窄到两个
+   * 下拉实际消费的 6 列：
+   *   - id / appName / address / status：选项文案 + 在线态禁用（disabled）；
+   *   - runningTaskCount / maxConcurrentTasks：部署模态选项的负载进度条
+   *     （AppDeploymentPage 的 ExecutorCard）。
+   * 分组/标签/心跳时间等列表页字段下拉不消费，一并不回（载荷护栏与本仓库
+   * 「读面按消费方声明」的纪律一致）。
+   *
+   * 截断显式化：total 以独立 COUNT 取得；items 按 createdAt DESC 取前
+   * EXECUTOR_PICKER_LIMIT 行，`total > items.length` 时 `truncated: true`。
+   * 返回**不抛错**——超限时下拉仍有前 2000 台可用，但前端必须把 truncated
+   * 告警渲染出来（execList.truncated），不许把子集说成全量。
+   *
+   * RBAC 与 GET /executors 完全对齐（JwtAuthGuard、无 @Roles 收紧）：N11 复核
+   * 结论同样适用本端点——任务 CRUD 对普通用户开放，且本读面是 list 的**严格
+   * 子集**（不新增任何字段暴露），单独收紧既挡不住信息又会打断部署下拉。
+   */
+  async findPickerOptions(): Promise<{
+    items: Array<{
+      id: string;
+      appName: string;
+      address: string;
+      status: ExecutorStatus;
+      runningTaskCount: number;
+      maxConcurrentTasks: number | null;
+    }>;
+    total: number;
+    truncated: boolean;
+    limit: number;
+  }> {
+    const [total, rows] = await Promise.all([
+      this.repo.count(),
+      // select 收窄是载荷护栏的主体：runningExecutionIds（≤10000 条/行）等重列
+      // 不出库。列清单必须与上方返回类型逐一对应，多列即读面漂移。
+      this.repo.find({
+        order: { createdAt: "DESC" },
+        take: EXECUTOR_PICKER_LIMIT,
+        select: {
+          id: true,
+          appName: true,
+          address: true,
+          status: true,
+          runningTaskCount: true,
+          maxConcurrentTasks: true,
+        },
+      }),
+    ]);
+    return {
+      items: rows.map((e) => ({
+        id: e.id,
+        appName: e.appName,
+        address: e.address,
+        status: e.status,
+        runningTaskCount: e.runningTaskCount,
+        maxConcurrentTasks: e.maxConcurrentTasks,
+      })),
+      total,
+      truncated: total > rows.length,
+      limit: EXECUTOR_PICKER_LIMIT,
+    };
+  }
+
+  /**
+   * A-9（执行器域审计 P3）：push 场景专用的目标执行器查询——**不经** findAll()
+   * 的列表投影（take=500、createdAt DESC、无状态过滤）。
+   *
+   * 背景：executor-package 推送入口（空 executorIds = "推全部在线执行器"）
+   * 原先直接拿 findAll() 的行当目标——在线机队 > 500 时列表投影只回最新
+   * 500 行（老机器静默漏推），且包含离线行（对离线机产生一整片连接失败）。
+   *
+   *   - 空/缺省 executorIds → status=ONLINE **全量**分页扫描（每页
+   *     EXECUTOR_LIST_LIMIT，翻页到取尽为止）；
+   *   - 显式 executorIds → 按 id 直查（≤ PushExecutorPackageDto 的 100 上限），
+   *     不做状态过滤——操作者明确点名，离线机的连接失败会在逐台结果里呈现。
+   */
+  async findPushTargets(executorIds?: string[]): Promise<Executor[]> {
+    if (executorIds && executorIds.length > 0) {
+      return this.repo.find({ where: { id: In(executorIds) } });
+    }
+    const pageSize = EXECUTOR_LIST_LIMIT;
+    const all: Executor[] = [];
+    for (let skip = 0; ; skip += pageSize) {
+      const page = await this.repo.find({
+        where: { status: ExecutorStatus.ONLINE },
+        order: { createdAt: "DESC" },
+        skip,
+        take: pageSize,
+      });
+      all.push(...page);
+      if (page.length < pageSize) return all;
+    }
+  }
+
+  /**
    * Executor lifecycle audit（P2-5 / P3-9）：回传执行器面的**有效运行时参数**，
    * 供管理台与后端判定保持同源，消灭前端硬编码常量与后端配置漂移：
    *
@@ -2261,8 +2439,23 @@ export class ExecutorService implements OnModuleInit {
     if (data.groupName !== undefined) executor.groupName = data.groupName;
     if (data.tags !== undefined) executor.tags = data.tags;
     if (data.description !== undefined) executor.description = data.description;
-    if (data.maxConcurrentTasks !== undefined)
+    if (data.maxConcurrentTasks !== undefined) {
+      // A-5（执行器域审计 P3）：管理台 PATCH 的容量上限必须过与 register/
+      // heartbeat 相同的 1..10000 整数闸（isAdoptableMaxConcurrentTasks 先例）
+      // ——0/负数/超万/非整数落库会让 loadScore 变 Infinity、容量闸
+      // `runningTaskCount < max` 恒 false，该执行器被永久排除在派发之外
+      // （"注册成功、永远收不到一个任务"）。显式 null = 清除上限（列可空，
+      // 容量闸按无上限处理），保留既有 PATCH 语义；非法值 400 拒绝、不落库。
+      if (
+        data.maxConcurrentTasks !== null &&
+        !ExecutorService.isAdoptableMaxConcurrentTasks(data.maxConcurrentTasks)
+      ) {
+        throw new BadRequestException(
+          `maxConcurrentTasks must be an integer in 1..10000, or null to clear the cap (got ${String(data.maxConcurrentTasks)})`,
+        );
+      }
       executor.maxConcurrentTasks = data.maxConcurrentTasks;
+    }
     return this.repo.save(executor);
   }
 
@@ -2524,12 +2717,18 @@ export class ExecutorService implements OnModuleInit {
 
     try {
       const addresses = [...new Set(active.map((e) => e.address))];
+      // A-11（执行器域审计 P3）：热路径上界——此前对候选地址集**无 take** 全量
+      // 拉 RUNNING 行 + 大 In(ids) 二段查任务表，大机队高并发时每次派发都是
+      // 一次无界读。估时只服务于 longTaskPenalty（0.1 权重的次级评分信号），
+      // 每地址采样 50 行近似即可（无 order = 采样近随机，均值无偏）；总行数
+      // 另加 5000 硬顶防病态候选集。截断只损失样本量，评分语义近似保持。
       const running = await this.execRepo.find({
         where: {
           executorAddress: In(addresses),
           status: ExecutionStatus.RUNNING,
         },
         select: { executorAddress: true, taskId: true },
+        take: Math.min(addresses.length * 50, 5000),
       });
       if (running.length === 0) return new Map();
 
@@ -2777,6 +2976,115 @@ export class ExecutorService implements OnModuleInit {
     });
   }
 
+  /**
+   * A-4（执行器域审计 P2）：非 strict 派发的候选池查询——把任务的过滤条件
+   * 下推进 SQL，使 Top-K 截断发生在**过滤之后**。
+   *
+   * 背景：fleet 查询原先无条件按 runningTaskCount 升序取前 candidatePoolSize
+   * （默认 500）行，group/tags/affinity/runtime 过滤发生在 SQL 之后的内存里。
+   * 在线机队 > candidatePoolSize 时，组内/标签命中的执行器可能整体排在 K 名
+   * 之外，请求会误报 "No online executors match ..."（strict 部署约束早已为
+   * 同一原因绕开 Top-K，见 findOnlineExecutorsInDeploymentSet——本方法把同样
+   * 的正确性带给非 strict 的 fleet 查询）。
+   *
+   * 下推维度与 dispatch 内存过滤链的对应（内存链原样保留，SQL 只做池收窄）：
+   *   - executorAppName / executorGroup 等值 → FindOptionsWhere；
+   *   - executorTags（AND 子集）/ affinity（OR 命中）/ anti-affinity（排除）/
+   *     runtime（capabilities 包含，空 = 万能）→ QueryBuilder 谓词。tags /
+   *     capabilities 是 simple-array 列（逗号连接字符串），','||col||',' 后按
+   *     ',v,' 匹配保证整词命中；tag 里的 LIKE 通配符（%/_）只会让谓词更宽
+   *     （超集），由保留的内存过滤链兜住，不会放行不满足条件的执行器。
+   *   - 解释器缓存池匹配（interpreterSatisfies 的版本比较语义）无法下推，
+   *     保持内存过滤——大机队 + 声明 runtimeVersion 时仍存在截断盲区（已知
+   *     局限，如需覆盖须按解释器维度物化可下推的判据列）。
+   */
+  private async findFleetCandidates(task: Task): Promise<Executor[]> {
+    const needsPushdown = Boolean(
+      (task.executorTags && task.executorTags.length > 0) ||
+      (task.executorAffinityTags && task.executorAffinityTags.length > 0) ||
+      (task.executorAntiAffinityTags &&
+        task.executorAntiAffinityTags.length > 0) ||
+      task.runtime,
+    );
+    if (!needsPushdown) {
+      // 无可下推的子集/包含维度：保持原 repo.find 形态（等值条件并入 where
+      // ——appName/group 点名此前也依赖 Top-K 后的内存过滤，同样有截断盲区）。
+      return this.repo.find({
+        where: {
+          status: ExecutorStatus.ONLINE,
+          ...(task.executorAppName ? { appName: task.executorAppName } : {}),
+          ...(task.executorGroup ? { groupName: task.executorGroup } : {}),
+        },
+        order: { runningTaskCount: "ASC" },
+        take: this.candidatePoolSize,
+      });
+    }
+    const qb = this.repo
+      .createQueryBuilder("executor")
+      .where("executor.status = :status", { status: ExecutorStatus.ONLINE })
+      .orderBy("executor.runningTaskCount", "ASC")
+      .take(this.candidatePoolSize);
+    if (task.executorAppName) {
+      qb.andWhere("executor.appName = :fleetAppName", {
+        fleetAppName: task.executorAppName,
+      });
+    }
+    if (task.executorGroup) {
+      qb.andWhere("executor.groupName = :fleetGroupName", {
+        fleetGroupName: task.executorGroup,
+      });
+    }
+    // executorTags：AND 子集（内存链 2.2 同语义；NULL/缺 tags 不命中）。
+    (task.executorTags ?? []).forEach((tag, i) => {
+      qb.andWhere(`(',' || executor.tags || ',') LIKE :fleetReqTag${i}`, {
+        [`fleetReqTag${i}`]: `%,${tag},%`,
+      });
+    });
+    // affinity：OR 命中（内存链 2.2b 同语义；NULL tags 在 LIKE 之下自然不命中）。
+    if (task.executorAffinityTags && task.executorAffinityTags.length > 0) {
+      qb.andWhere(
+        new Brackets((b) => {
+          task.executorAffinityTags!.forEach((tag, i) => {
+            b.orWhere(`(',' || executor.tags || ',') LIKE :fleetAffTag${i}`, {
+              [`fleetAffTag${i}`]: `%,${tag},%`,
+            });
+          });
+        }),
+      );
+    }
+    // anti-affinity：排除语义（内存链 2.2b 同语义；NULL tags 无可排除，放行
+    // ——注意 OR 分支必须包住整组 NOT LIKE：NULL AND  anything = NULL 会把
+    // 无标签执行器误剔除）。
+    if (
+      task.executorAntiAffinityTags &&
+      task.executorAntiAffinityTags.length > 0
+    ) {
+      qb.andWhere(
+        new Brackets((b) => {
+          b.where("executor.tags IS NULL").orWhere(
+            new Brackets((b2) => {
+              task.executorAntiAffinityTags!.forEach((tag, i) => {
+                b2.andWhere(
+                  `(',' || executor.tags || ',') NOT LIKE :fleetAntiTag${i}`,
+                  { [`fleetAntiTag${i}`]: `%,${tag},%` },
+                );
+              });
+            }),
+          );
+        }),
+      );
+    }
+    // runtime：capabilities 包含（内存链 2.3 同语义——空/NULL = 万能）。
+    if (task.runtime) {
+      qb.andWhere(
+        "(executor.capabilities IS NULL OR executor.capabilities = '' " +
+          "OR (',' || executor.capabilities || ',') LIKE :fleetRuntime)",
+        { fleetRuntime: `%,${task.runtime},%` },
+      );
+    }
+    return qb.getMany();
+  }
+
   async dispatch(task: Task, execution: TaskExecution) {
     let candidates: Executor[];
     // E-2: 决策日志的候选池基数（pinned=1；fleet 查询=SQL Top-K 后的行数；
@@ -2855,18 +3163,9 @@ export class ExecutorService implements OnModuleInit {
             // 截断，负载高的部署设备可能根本不在候选池里，软偏好只是「池内
             // 前置」（池外无从谈起），硬约束则不能容忍这个截断盲区。
             await this.findOnlineExecutorsInDeploymentSet(deploymentCtx.rows)
-          : await this.repo.find({
-              where: { status: ExecutorStatus.ONLINE },
-              // O-1（中台↔执行器深度审查）：SQL 级 Top-K——按 runningTaskCount 升序
-              // 取前 K，保证最空闲的一批必入候选池（旧 take 截断会静默漏掉排名 K+1
-              // 的负载最小执行器，万级机队下是容量盲区）。选优仍走下方复合评分。
-              order: { runningTaskCount: "ASC" },
-              // Bound the candidate pool for the weighted-score selection below.
-              // Score-and-pick-first needs only the top candidates, so a generous cap
-              // is enough. See selectLeastLoaded() for the matching rationale.
-              // F-07（本轮审计）: 上限提为可配（EXECUTOR_CANDIDATE_POOL_SIZE，默认 500）。
-              take: this.candidatePoolSize,
-            });
+          : // A-4: 非 strict 候选池——过滤条件下推进 SQL（见 findFleetCandidates），
+            // Top-K 截断发生在过滤维度之后，不再误报 "No online executors match"。
+            await this.findFleetCandidates(task);
       dispatchPoolSize = all.length;
 
       candidates = all;
@@ -3692,6 +3991,18 @@ export class ExecutorService implements OnModuleInit {
     task: Task,
     execution: TaskExecution,
   ): Promise<any[]> {
+    // A-1（执行器域审计 P1）：广播不经过互斥占坑闸（claimExecutorSlotForExecution）
+    // ——挂互斥组的执行会静默绕过组内并发约束。写面已在任务 create/update 拒绝
+    // 「broadcast + 应用挂互斥组」组合（task.service.assertBroadcastMutexCompatible）；
+    // 此处对**存量**此类任务（写面门上线前创建，或应用后挂组）记 warn 保持现状：
+    // 广播语义是同刻扇出全部目标，而单执行行的占用标记 executorAddress 只能落
+    // 一个地址，强行逐目标占坑会互相覆盖标记、破坏互斥的唤醒/释放链路——
+    // 运行时补救不可靠，可观测（warn）+ 写面拒绝才是正确切面。
+    if (execution.mutexGroupId) {
+      this.logger.warn(
+        `A-1: broadcast task "${task.name}" (execution ${execution.id}) carries mutexGroupId=${execution.mutexGroupId} but broadcast dispatch does not claim mutex slots — mutual exclusion is NOT enforced on this fan-out; recreate the task with executeMode=single or unbind the mutex group`,
+      );
+    }
     const all = await this.repo.find({
       where: { status: ExecutorStatus.ONLINE },
       // O-1（中台↔执行器深度审查）：广播同样按 runningTaskCount 升序取 Top-K。
@@ -4358,6 +4669,10 @@ export class ExecutorService implements OnModuleInit {
    * 静默删除后，钉定任务派发即抛 "Pinned executor not found" 且无重试（UNKNOWN
    * 分类），等于自动制造必失败任务。现在：仍被钉定的行跳过并 warn+审计，
    * 让运维显式处理（解钉或换机）；无引用的行照旧清理并顺手清 pull 队列。
+   *
+   * A-2（执行器域审计 P2）：跳过判定补 `task.executorAppName` 名字绑定维度，
+   * 与删除影响面预览（countTasksBoundByAppName）同口径——appName 精确匹配
+   * 的绑定任务同样会因删除而必失败。
    */
   @Cron("0 0 * * * *")
   async cleanupOfflineExecutors() {
@@ -4386,15 +4701,47 @@ export class ExecutorService implements OnModuleInit {
       pinnedRows.map((r) => [r.executorId, Number(r.count)]),
     );
 
-    const deletable = stale.filter((e) => (pinnedCounts.get(e.id) ?? 0) === 0);
-    const skipped = stale.filter((e) => (pinnedCounts.get(e.id) ?? 0) > 0);
+    // A-2（执行器域审计 P2）：跳过判定补 executorAppName 维度——dispatch 的
+    // appName 精确匹配（不静默换机）与删除影响面预览（countTasksBoundByAppName）
+    // 都把 task.executorAppName 绑定计为破坏面，而此处此前只查 executorId 钉定：
+    // 一台离线超 7 天、被 appName 绑定但无钉定任务的执行器会被自动删除，绑定
+    // 任务派发即抛 "No available executor with appName ..."。分组查询与钉定
+    // 同型（避免 N+1）；口径与 countTasksBoundByAppName 一致（排除软删除行）。
+    const staleAppNames = [
+      ...new Set(stale.map((e) => e.appName).filter(Boolean)),
+    ];
+    const appNameBoundRows =
+      staleAppNames.length > 0
+        ? ((await this.taskRepo
+            .createQueryBuilder("task")
+            .select("task.executorAppName", "executorAppName")
+            .addSelect("COUNT(*)", "count")
+            .where("task.executorAppName IN (:...names)", {
+              names: staleAppNames,
+            })
+            .andWhere("task.status != :deleted", {
+              deleted: TaskStatus.DELETED,
+            })
+            .groupBy("task.executorAppName")
+            .getRawMany()) as Array<{ executorAppName: string; count: string }>)
+        : [];
+    const appNameBoundCounts = new Map(
+      appNameBoundRows.map((r) => [r.executorAppName, Number(r.count)]),
+    );
+
+    const boundRefCounts = (e: (typeof stale)[number]) =>
+      (pinnedCounts.get(e.id) ?? 0) + (appNameBoundCounts.get(e.appName) ?? 0);
+    const deletable = stale.filter((e) => boundRefCounts(e) === 0);
+    const skipped = stale.filter((e) => boundRefCounts(e) > 0);
 
     // 跳过面必须可见：warn 日志 + 审计（fail-open，绝不影响主链）。
     for (const exec of skipped) {
-      const count = pinnedCounts.get(exec.id) ?? 0;
+      const pinnedCount = pinnedCounts.get(exec.id) ?? 0;
+      const appNameBound = appNameBoundCounts.get(exec.appName) ?? 0;
       this.logger.warn(
         `Skipped auto-cleanup of executor ${exec.id} (${exec.address}): ` +
-          `${count} task(s) still pin it via task.executorId — unpin or retarget ` +
+          `${pinnedCount} task(s) still pin it via task.executorId and ` +
+          `${appNameBound} task(s) bind it via task.executorAppName — unpin/retarget ` +
           `them first, otherwise they would fail dispatch after deletion`,
       );
       try {
@@ -4405,7 +4752,8 @@ export class ExecutorService implements OnModuleInit {
           detail: {
             address: exec.address,
             appName: exec.appName,
-            pinnedTasks: count,
+            pinnedTasks: pinnedCount,
+            appNameBoundTasks: appNameBound,
           },
         });
       } catch (err) {

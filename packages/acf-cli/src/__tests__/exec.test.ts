@@ -299,7 +299,7 @@ describe('NETOPT-2②: SSE 断流（无 done 帧）不得静默 exit 0', () => {
     process.exitCode = undefined;
   });
 
-  it('断流未见过 done 帧 → stderr 提示中断且 exitCode=1', async () => {
+  it('断流未见过 done 帧 → stderr 提示中断且 exitCode=4(网络类失败)', async () => {
     const t = await startTail();
     try {
       // 一条普通日志帧（非 done），然后流直接 end
@@ -308,7 +308,7 @@ describe('NETOPT-2②: SSE 断流（无 done 帧）不得静默 exit 0', () => {
       await t.joinTail();
 
       expect(t.stderrChunks.join('')).toContain('interrupted before a done frame');
-      expect(process.exitCode).toBe(1);
+      expect(process.exitCode).toBe(4);
     } finally {
       t.restore();
     }
@@ -391,14 +391,14 @@ describe('D1-P2-3: SSE tail 空闲看门狗（60s 无数据帧）', () => {
     return { listeners, stderrChunks, errSpy };
   }
 
-  it('连续 60s 无数据帧 → stderr 提示并 exit(1)', async () => {
+  it('连续 60s 无数据帧 → stderr 提示并 exit(4)(网络类失败)', async () => {
     vi.useFakeTimers();
     const { listeners, stderrChunks, errSpy } = await bootSilentTail();
     try {
       expect(listeners['data']).toBeTruthy();
       // 快进 61s，全程无任何数据帧。
       await vi.advanceTimersByTimeAsync(61_000);
-      expect(exitSpy).toHaveBeenCalledWith(1);
+      expect(exitSpy).toHaveBeenCalledWith(4);
       expect(stderrChunks.join('')).toContain('no data frame for 60s');
     } finally {
       errSpy.mockRestore();

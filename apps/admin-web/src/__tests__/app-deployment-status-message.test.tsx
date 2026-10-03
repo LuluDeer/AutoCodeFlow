@@ -23,7 +23,7 @@ vi.mock('../api/applications', () => ({
   applicationsApi: { upgradeAll: vi.fn() },
 }));
 vi.mock('../api/executors', () => ({
-  executorsApi: { list: vi.fn() },
+  executorsApi: { list: vi.fn(), picker: vi.fn() },
 }));
 
 const g = globalThis as Record<string, unknown>;
@@ -77,7 +77,8 @@ const failedDeployment = {
 describe('P1-8 部署失败详情可展开 + 复制', () => {
   beforeEach(() => {
     useAuthStore.setState({ user: { id: 1, username: 'root', role: 'admin' } });
-    vi.mocked(executorsApi.list).mockReset().mockResolvedValue([] as never);
+    // 页面已不请求 list()（R3-E 收口：名字解析吃 picker 行），list mock 随之退场
+    vi.mocked(executorsApi.picker).mockReset().mockResolvedValue({ items: [], total: 0, truncated: false, limit: 2000 } as never);
     vi.mocked(deploymentsApi.list)
       .mockReset()
       .mockResolvedValue({ data: [failedDeployment], total: 1 } as never);

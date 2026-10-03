@@ -228,7 +228,8 @@ describe("LeaderGateService（ARCH-31 §5 cron 维护任务统一 Leader 门禁�
 
       await service.cleanupExpiredTokens();
 
-      expect(repo.delete).toHaveBeenCalledTimes(1);
+      // R3-A-10 起 cleanupExpiredTokens 含两段删除（过期 + 已吊销滞留）
+      expect(repo.delete).toHaveBeenCalledTimes(2);
     });
 
     it("gate 缺席（null，既有单测直接 new 装配）→ 门禁不生效，动作照常执行（锁既有行为）", async () => {
@@ -237,7 +238,8 @@ describe("LeaderGateService（ARCH-31 §5 cron 维护任务统一 Leader 门禁�
 
       await service.cleanupExpiredTokens();
 
-      expect(repo.delete).toHaveBeenCalledTimes(1);
+      // R3-A-10 起 cleanupExpiredTokens 含两段删除（过期 + 已吊销滞留）
+      expect(repo.delete).toHaveBeenCalledTimes(2);
     });
   });
 });

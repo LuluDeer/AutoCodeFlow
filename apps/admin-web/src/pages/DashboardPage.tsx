@@ -37,7 +37,7 @@ import FailureTopList from '../components/dashboard/FailureTopList';
 import ExecutorHeatBars from '../components/dashboard/ExecutorHeatBars';
 import SchedulerLatencyCard from '../components/dashboard/SchedulerLatencyCard';
 import DashboardEmptyGuide from '../components/dashboard/DashboardEmptyGuide';
-import { useMetricsStream, type MetricsStreamStatus } from '../hooks/useMetricsStream';
+import { useMetricsStream, useMetricsStreamDegraded, type MetricsStreamStatus } from '../hooks/useMetricsStream';
 // UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
 import '../i18n';
 
@@ -84,7 +84,7 @@ export function streamStatusBadge(status: MetricsStreamStatus): { color: string;
  * Map 查表补零）；纯函数导出供测试锚定。
  */
 export function buildTrendData(
-  trend: { date: string; success: number; failed: number }[] | undefined,
+  trend: { date: string; success: number; failed: number; timeout?: number }[] | undefined,
   days: number,
 ): { date: string; success: number; failed: number }[] {
   const byDate = new Map(
@@ -95,7 +95,11 @@ export function buildTrendData(
     return {
       date: key.slice(5),
       success: row?.success ?? 0,
-      failed: row?.failed ?? 0,
+      // A-10（审计趋势口径）：TIMEOUT 并入失败曲线——告警口径为
+      // failed|timeout（alerts.yml AUTOFLOW_EXECUTION_FAILURE_RATE_HIGH/
+      // _STORM 的 status=~"failed|timeout"），此前超时被丢弃，超时风暴时
+      // 失败曲线平稳而告警齐鸣。后端 /metrics/trend 已透出 timeout 键。
+      failed: (row?.failed ?? 0) + (row?.timeout ?? 0),
     };
   });
 }
@@ -111,6 +115,10 @@ export default function DashboardPage() {
   // 写入 queryClient 缓存（setQueryData），连接活跃时页面免轮询；断线自动退避
   // 重连，页头状态点实时提示。
   const streamStatus = useMetricsStream();
+  // A-4（审计降级黑洞）：SSE live 期间后端查询降级（具名 error 帧）时
+  // useMetricsStream 会触发失败段补拉并置降级标志——这里消费该标志，在页头
+  // 显示「数据延迟」角标，避免 live 状态点掩盖数据已陈旧的事实。
+  const streamDegraded = useMetricsStreamDegraded();
 
   // ARCH-26: TanStack Query 改造——六个 useRequest 轮询合并为 queries.ts 薄层
   // hooks（全局默认 staleTime 30s 保底新鲜度，切页 30s 内返回不再重复拉取；
@@ -190,6 +198,16 @@ export default function DashboardPage() {
                 data-testid="metrics-stream-status"
               />
             </Tooltip>
+            {/* A-4：查询降级角标——live 期间后端快照查询失败（数据陈旧已补拉） */}
+            {streamDegraded && (
+              <Tooltip title={t('dashboard.stream.degradedTooltip')}>
+                <Badge
+                  color={SEMANTIC_COLORS.warning}
+                  text={<Text type="warning" style={{ fontSize: 12 }}>{t('dashboard.stream.degraded')}</Text>}
+                  data-testid="metrics-stream-degraded"
+                />
+              </Tooltip>
+            )}
             {schedulerStats && (
               <Tag
                 icon={schedulerStats.healthy ? <CheckCircleOutlined /> : <WarningOutlined />}
@@ -198,7 +216,22 @@ export default function DashboardPage() {
                 {t('dashboard.scheduler', { state: t(schedulerStats.healthy ? 'dashboard.scheduler.healthy' : 'dashboard.scheduler.unhealthy'), count: schedulerStats.totalScheduledTasks })}
               </Tag>
             )}
-            <Button icon={<ReloadOutlined />} size="small" onClick={() => void refetchSummary()}>{t('dashboard.refresh')}</Button>
+            {/* 刷新按钮与下方 StateError 重试同口径：本页由 summary/trend/
+                executors/failures 四路查询喂饱，只 refetch summary 会造成
+                「点了刷新但趋势/执行器/失败榜还是旧数据」的假刷新
+                （SSE live 时 summary 自动推送，按钮更显多余）。 */}
+            <Button
+              icon={<ReloadOutlined />}
+              size="small"
+              onClick={() => {
+                void refetchSummary();
+                void refetchTrend();
+                void refetchExecutors();
+                void refetchFailures();
+              }}
+            >
+              {t('dashboard.refresh')}
+            </Button>
           </>
         }
       />

@@ -13,6 +13,11 @@ import { Repository, IsNull, Or, In } from "typeorm";
 import { Application, ApplicationStatus } from "./entities/application.entity";
 // NETOPT-8③: 删除应用时 best-effort 通知执行器清理 apps/<appId>
 import { AppDeployment } from "./entities/app-deployment.entity";
+// A-5: 删除应用前校验在途部署（status/审批状态枚举同源）
+import {
+  DeploymentStatus,
+  DeploymentApprovalStatus,
+} from "./entities/app-deployment.entity";
 import { UserRole } from "../users/entities/user.entity";
 import {
   CreateApplicationDto,
@@ -390,6 +395,39 @@ export class ApplicationService implements OnModuleInit {
   }
 
   /**
+   * A-7①: 旧包文件清理——仅当同应用下没有**其他**版本快照仍引用该 URL、
+   * 且该 URL 确为本服务 uploads/packages 下的本地文件时 unlink（best-effort，
+   * 失败只 warn）。引用查询失败按「有引用」处理：宁留孤儿文件，不误删可能
+   * 被回滚面引用的包。
+   */
+  private async unlinkSupersededPackage(
+    packageUrl: string,
+    appId: string,
+    excludeVersionId: string,
+  ): Promise<void> {
+    const versionRepo = this.versionRepo;
+    if (!versionRepo) return;
+    const filePath = this.resolveLocalPackagePath(packageUrl);
+    if (!filePath) return; // 远程/越界 URL 不归本服务清理
+    try {
+      const referenced = await versionRepo
+        .createQueryBuilder("v")
+        .where("v.applicationId = :appId", { appId })
+        .andWhere("v.id != :excludeVersionId", { excludeVersionId })
+        .andWhere("v.snapshot ->> 'packageUrl' = :url", { url: packageUrl })
+        .getCount();
+      if (referenced > 0) return;
+      await fs.promises.unlink(filePath);
+      this.logger.log(`Removed superseded package file: ${filePath}`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.warn(
+        `Failed to clean superseded package file ${filePath}: ${msg}`,
+      );
+    }
+  }
+
+  /**
    * 上传即产生版本（zip 上传路径）：把上传落地后的应用状态写入
    * application_versions，使「上传新包」也在版本历史/回滚中可见——此前只有
    * git 部署路径（AppDeploymentService.saveVersionSnapshot）落版本行，zip 上传
@@ -398,6 +436,14 @@ export class ApplicationService implements OnModuleInit {
    * sourceDeploymentId 置 null（区别于部署产生的版本行）。dedupe 键
    * (applicationId, version)：同一版本号重复上传视为同一次发布，避免唯一索引
    * 23505；best-effort——快照失败只 warn，绝不阻断上传主链。
+   *
+   * A-7①: 同版本号重传是**文件替换**——此前保留首个快照原样返回，快照
+   * packageUrl 永远钉在首传的旧 zip 上（controller 每次上传都落新文件名带
+   * Date.now() 的 zip），版本历史/回滚会带回旧包且无提示。现改为把既有快照的
+   * packageUrl 就地更新到本次新文件，并 best-effort 清理不再被任何快照引用的
+   * 旧 zip（应用删除只 unlink 当前 packageUrl，历史快照钉住的旧 zip 会永久
+   * 成为孤儿）。快照其余字段（entrypoint/env/manifest）保持首传值——同版本
+   * 号的语义就是同一次发布的文件替换。不做全量 GC 任务（记录在案）。
    *
    * status 取 **"released"**（不是 "uploaded"）：回滚面（本文件 rollbackApplication
    * 的 released 守卫、rollbackDeploymentToPrevious 的 released 过滤、前端
@@ -423,7 +469,32 @@ export class ApplicationService implements OnModuleInit {
           sourceDeploymentId: IsNull(),
         },
       });
-      if (existing) return;
+      if (existing) {
+        const oldPackageUrl =
+          existing.snapshot &&
+          typeof existing.snapshot === "object" &&
+          typeof existing.snapshot.packageUrl === "string"
+            ? existing.snapshot.packageUrl
+            : null;
+        if (
+          oldPackageUrl &&
+          app.packageUrl &&
+          oldPackageUrl !== app.packageUrl
+        ) {
+          existing.snapshot = {
+            ...existing.snapshot,
+            packageUrl: app.packageUrl,
+          };
+          await this.versionRepo.save(existing);
+          // 旧 zip 若已无其他快照引用则清理（best-effort，见 helper 注释）。
+          await this.unlinkSupersededPackage(
+            oldPackageUrl,
+            app.id,
+            existing.id,
+          );
+        }
+        return;
+      }
       await this.versionRepo.save(
         this.versionRepo.create({
           applicationId: app.id,
@@ -638,6 +709,12 @@ export class ApplicationService implements OnModuleInit {
     const app = await this.findById(id);
     // NF-03: 写面属主守卫（同 update）+ AUTH-02 项目角色放行
     await this.assertCanWriteProjectAware(app, user);
+    // A-5: 删除前校验在途部署——deploy() 的推送是 fire-and-forget（重试约
+    // 90s），窗口内删掉应用会把部署行级联删除，执行器随后跑起一个数据库里
+    // 已无行对应的孤儿进程；审批中的请求被静默级联删除同样是用户无从知晓的
+    // 丢动作。存在在途行（PENDING/DEPLOYING/UPGRADING 或待审批）时 409，
+    // 让用户先取消/等终态再删。
+    await this.assertNoInFlightDeployment(id, app.name);
     // NETOPT-8③: repo.remove 之前先取部署行——AppDeployment 对应用是
     // @ManyToOne(onDelete: CASCADE)，应用行一删部署行静默级联消失，此后
     // 既查不到执行器集合，/app-stop 通路也不可达。
@@ -689,6 +766,46 @@ export class ApplicationService implements OnModuleInit {
    * 拖太久）。
    */
   private static readonly EXECUTOR_REMOVAL_NOTIFY_TIMEOUT_MS = 5_000;
+
+  /**
+   * A-5: 删除应用前的在途部署校验。deploymentRepo 缺席（既有单测装配）时
+   * 跳过校验（删除主链不受影响）；查询本身无 try/catch——DB 故障与其他
+   * 删除路径的 DB 故障同一暴露面（500），不为安全闸做 fail-open。
+   */
+  private async assertNoInFlightDeployment(
+    appId: string,
+    appName: string,
+  ): Promise<void> {
+    if (!this.deploymentRepo) return;
+    const inFlight = await this.deploymentRepo.findOne({
+      where: [
+        {
+          applicationId: appId,
+          status: In([
+            DeploymentStatus.PENDING,
+            DeploymentStatus.DEPLOYING,
+            DeploymentStatus.UPGRADING,
+          ]),
+        },
+        // 待审批行复用 status=PENDING，已被上一分支覆盖；此处按审批状态
+        // 独立再拦一次（数据漂移容错——status 被人工改动过的行也出不去）。
+        {
+          applicationId: appId,
+          approvalStatus: DeploymentApprovalStatus.PENDING_APPROVAL,
+        },
+      ],
+    });
+    if (inFlight) {
+      throw new ConflictException(
+        `Application ${appName} still has an in-progress deployment ` +
+          `(id=${inFlight.id}, status=${inFlight.status}` +
+          (inFlight.approvalStatus
+            ? `, approval=${inFlight.approvalStatus}`
+            : "") +
+          `). Cancel it or wait for a terminal state before deleting the application.`,
+      );
+    }
+  }
 
   /**
    * NETOPT-8③: 取该应用的部署行（id + executorAddress 两列）。deploymentRepo

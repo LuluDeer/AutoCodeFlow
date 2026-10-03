@@ -29,6 +29,12 @@ import {
   renderTemplate,
   hasChannelTemplate,
 } from "../../common/utils/render-template.util";
+// A-1: 「全部渠道失败」的 NOTIFICATION_FAILED 审计兜底（渠道自身把异常吞成
+// "failed" 返回值，listener 的抛错兜底永远看不到渠道级故障——见 sendToChannels）。
+// @Optional 先例同 silenceStore：存量测试模块未装配 AuditModule 时降级为仅日志。
+import { AuditService } from "../audit/audit.service";
+// A-5: 出站正文脱敏（与 ai.service sanitizeLogs 同源正则，见 util 头注）
+import { sanitizeNotificationText } from "./sanitize-notification-text.util";
 
 /** NOTIF-003: 静默规则数量上限，防止通过 API 无限添加导致内存缓慢泄漏。 */
 export const MAX_ALERT_SILENCES = 1000;
@@ -134,6 +140,12 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     // 存量测试模块未提供时静默刷新周期回落默认值。
     @Optional()
     private readonly configService?: ConfigService,
+    // A-1: 渠道级故障的审计兜底（sendToChannels 全失败时落证）。@Optional
+    // 同上——NotificationModule 生产装配 imports AuditModule，存量测试模块
+    // 未提供时审计整体旁路（仅日志+指标，既有行为）。
+    @Optional()
+    @Inject(AuditService)
+    private readonly auditService?: AuditService,
   ) {}
 
   /**
@@ -346,7 +358,11 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     // falls back to the original fixed strings with a warn — a broken
     // template must never suppress or 500 a notification. Channels without
     // templates receive the payload unchanged (zero breakage).
-    const rendered = this.applyChannelTemplates(payload, channels);
+    // A-5: 出站脱敏单一收口点——errorSummary/日志原文里的 env 赋值、Bearer
+    // token、长 hex/base64 密钥进 IM/邮件前掩码（模板渲染副本在
+    // applyChannelTemplates 内同款处理）；普通文本逐字保留。
+    const base = this.sanitizeOutbound(payload);
+    const rendered = this.applyChannelTemplates(base, channels);
 
     const entries: Array<{
       name: string;
@@ -355,33 +371,33 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     if (channels.includes(AlertChannel.EMAIL))
       entries.push({
         name: "email",
-        promise: this.email.send(rendered.email ?? payload),
+        promise: this.email.send(rendered.email ?? base),
       });
     if (channels.includes(AlertChannel.SLACK))
       entries.push({
         name: "slack",
-        promise: this.slack.send(rendered.slack ?? payload),
+        promise: this.slack.send(rendered.slack ?? base),
       });
     if (channels.includes(AlertChannel.DINGTALK))
       entries.push({
         name: "dingtalk",
-        promise: this.dingtalk.send(rendered.dingtalk ?? payload),
+        promise: this.dingtalk.send(rendered.dingtalk ?? base),
       });
     if (channels.includes(AlertChannel.WECOM))
       entries.push({
         name: "wecom",
-        promise: this.wecom.send(rendered.wecom ?? payload),
+        promise: this.wecom.send(rendered.wecom ?? base),
       });
     if (channels.includes(AlertChannel.WEBHOOK))
       entries.push({
         name: "webhook",
-        promise: this.webhook.send(rendered.webhook ?? payload, webhookUrl),
+        promise: this.webhook.send(rendered.webhook ?? base, webhookUrl),
       });
     // NF-05: 飞书渠道扇出（与既有五渠道同语义——rendered 优先，缺省原 payload）
     if (channels.includes(AlertChannel.FEISHU))
       entries.push({
         name: "feishu",
-        promise: this.feishu.send(rendered.feishu ?? payload),
+        promise: this.feishu.send(rendered.feishu ?? base),
       });
 
     const results = await Promise.allSettled(entries.map((e) => e.promise));
@@ -427,7 +443,44 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
         `Notification failed on channel(s): ${failures.join("; ")} — continuing without interrupting main flow`,
       );
     }
+
+    // A-1: 「全部请求渠道都失败」时补 NOTIFICATION_FAILED 审计。渠道把异常
+    // 吞成 "failed" 返回值（wecom/dingtalk/slack/email 同型），此前只记日志
+    // +指标；listener 的 NOTIFICATION_FAILED 兜底只在 notify 链路**抛错**时
+    // 触发——渠道级故障（重试 3 次退避耗尽）永不落审计，告警静默丢失后运维
+    // 在审计面零痕迹可查。部分失败仍只走日志+指标（既有 fail-open 语义不变，
+    // 不放大审计噪声）。审计写失败自身 try/catch——兜底路径绝不允许二次炸
+    // 主链。不做死信表：重放依赖审计行 + 人工/上游重触发（记录在本注释）。
+    if (entries.length > 0 && failures.length === entries.length) {
+      try {
+        await this.auditService?.log({
+          action: "NOTIFICATION_FAILED",
+          resource: "notification_fanout",
+          detail: {
+            title: base.title,
+            level: base.level,
+            channels: entries.map((e) => e.name),
+            results: delivery,
+            failures,
+          },
+        });
+      } catch {
+        /* audit is best-effort */
+      }
+    }
     return delivery;
+  }
+
+  /**
+   * A-5: 出站载荷脱敏（title/content 同源掩码，vars 不出站无需处理）。
+   * sendToChannels 与 applyChannelTemplates 的渲染副本统一走这里。
+   */
+  private sanitizeOutbound(p: NotificationPayload): NotificationPayload {
+    return {
+      ...p,
+      title: sanitizeNotificationText(p.title),
+      content: sanitizeNotificationText(p.content),
+    };
   }
 
   /**
@@ -462,10 +515,15 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
         if (!hasChannelTemplate(config)) continue;
         const next: NotificationPayload = { ...payload };
         if (config!.titleTemplate) {
-          next.title = renderTemplate(config!.titleTemplate, payload.vars);
+          // A-5: 模板渲染副本同样出站脱敏（{{content}} 等变量可能夹带日志原文）
+          next.title = sanitizeNotificationText(
+            renderTemplate(config!.titleTemplate, payload.vars),
+          );
         }
         if (config!.contentTemplate) {
-          next.content = renderTemplate(config!.contentTemplate, payload.vars);
+          next.content = sanitizeNotificationText(
+            renderTemplate(config!.contentTemplate, payload.vars),
+          );
         }
         // 渲染后的渠道专属副本不再携带 vars（下游渠道不做二次渲染）
         delete next.vars;
@@ -790,13 +848,18 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     taskId?: string,
     // NETOPT-5①: 应用上下文透传，供 scope=application 静默判定
     applicationId?: string,
+    // A-11: 任务级告警渠道路由（与失败告警 notifyFailureWithConfig 同源）。
+    // 此前恒 sendAll 全渠道——配置了 alarmChannels 的任务超时时预警仍广播到
+    // 全局所有渠道，与失败告警的按任务路由不一致。缺省/空数组回落 sendAll
+    // （存量行为零漂移）。
+    alarmChannels?: string[],
   ) {
     if (this.isSilenced(taskId, AlertLevel.WARNING, applicationId)) {
       this.logger.debug(`Timeout alert silenced for task ${taskName}`);
       return;
     }
 
-    return this.sendAll({
+    const payload: NotificationPayload = {
       title: `Task timed out: ${taskName}`,
       content: `Execution ID: ${execId}\nTimeout: ${timeoutSec}s`,
       level: "warning",
@@ -809,7 +872,15 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
         failedReason: `timeout after ${timeoutSec}s`,
         level: "warning",
       },
-    });
+    };
+
+    if (alarmChannels && alarmChannels.length > 0) {
+      return this.sendToChannels(
+        payload,
+        alarmChannels.map((c) => c.toLowerCase()) as AlertChannel[],
+      );
+    }
+    return this.sendAll(payload);
   }
 
   async notifyExecutorOffline(executorName: string, address: string) {

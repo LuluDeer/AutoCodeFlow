@@ -31,10 +31,35 @@ scrape_configs:
     # METRICS_SCRAPER_TOKEN 后,取消下面 authorization 注释并用同值文件
     # (挂载为 secret/卷,避免令牌进镜像层)。未设置令牌时本 job 需要另行
     # 解决认证(反向代理注入),否则抓取 401 → AUTOFLOW_METRICS_TARGET_DOWN。
+    # 注:令牌命中的放行面经 A-5 收口为仅本端点(GET /api/metrics),
+    # /api/metrics/failures 等其余端点仍需用户 JWT。
     # authorization:
     #   type: Bearer
     #   credentials_file: /etc/prometheus/metrics-token
-    static_configs:
-      - targets: ['admin-api:3105']
-        labels:
-          service: admin-api
+    # A-7：显式抓取超时 8s（interval 15s 不变）——/api/metrics 的 render 是
+    # 同步 IO 链路（prom-client registry 文本渲染 + 队列深度 Redis 读 + 池水位
+    # PG 查询串行完成后才出响应），默认 10s 余量偏紧；超 8s 即按抓取失败
+    # （up=0）告警，好过无限挂起掩盖 render 卡死。
+    scrape_timeout: 8s
+    # A-3（审计 HA 抓取拓扑）：多副本抓取用 DNS 服务发现而非 static_configs。
+    # 依据（查证 Prometheus 官方配置文档）：static_configs 的 target 按字面
+    # 传递、不做「每条 A 记录各生成一个 target」的 DNS 展开——每次抓取由
+    # Prometheus 的解析器把 admin-api 解析到任一副本 IP（compose 服务名 =
+    # 多副本多条 A 记录轮询，见 docs/deployment.md「多副本（HA）部署」），
+    # target 恒为 1，另一副本的进程内计数器（tick/触发/延迟直方图均为
+    # per-process 快照）将永不入库且序列在两副本间跳变。dns_sd_configs
+    # （type A）才是官方语义：按 refresh_interval 周期再解析，**每条 A 记录
+    # 各生成一个 target**，随 --scale admin-api=N 自动伸缩；单副本仅一条
+    # A 记录 = 原直连语义，行为不变。instance 标签默认取 __address__
+    # （ip:port），副本间天然可区分（Docker 每副本独立容器 IP），无需额外
+    # relabel 改写。
+    dns_sd_configs:
+      - names: ['admin-api']
+        type: A
+        port: 3105
+        refresh_interval: 30s
+    # dns_sd_configs 无 static_configs 的 labels 字段，service 标签经
+    # relabel_configs 恒定补齐（与 postgres/redis 两个 job 的标签口径一致）。
+    relabel_configs:
+      - target_label: service
+        replacement: admin-api

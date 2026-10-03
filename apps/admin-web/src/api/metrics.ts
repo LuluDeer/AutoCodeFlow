@@ -14,6 +14,8 @@ export interface DailyTrend {
   date: string;
   success: number;
   failed: number;
+  /** A-10：超时计数（与 alerts.yml 告警口径 failed|timeout 对齐；Dashboard 失败曲线并入该值） */
+  timeout: number;
 }
 
 export interface ExecutorStat {

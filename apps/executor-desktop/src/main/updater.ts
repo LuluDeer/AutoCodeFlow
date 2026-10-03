@@ -2,6 +2,12 @@ import { app, BrowserWindow } from 'electron';
 import { autoUpdater } from 'electron-updater';
 import log from './logger';
 import { createRunCheck, createPeriodicCheck } from './updater-runcheck';
+// B-3②：已下载版本的持久化标记（纯 Node 模块，见该文件头注）。
+import {
+  isSameDownloadedVersion,
+  readDownloadedUpdateMarker,
+  writeDownloadedUpdateMarker,
+} from './update-marker';
 
 /**
  * DSK-03: 桌面自动更新（双源）。
@@ -195,9 +201,21 @@ export function initUpdater(): void {
       runCheckState.resetSurface();
       return;
     }
-    log.info(`updater: update available ${local} -> ${remote}`);
+    // B-3②：与持久化的「已下载」标记比对——同一版本此前下载过（用户上次
+    // 下载后直接关窗未装），告诉渲染层走"复用缓存"的展示形态。真正的缓存
+    // 复用与 sha512 校验由 electron-updater 的 DownloadedUpdateHelper 完成：
+    // 用户点下载时若缓存有效则**不会**重新下载（秒级哈希校验后直接进入
+    // update-downloaded），缓存失效时自动回落正常下载。
+    const previouslyDownloaded = isSameDownloadedVersion(
+      readDownloadedUpdateMarker(updateMarkerDir()),
+      remote,
+    );
+    log.info(
+      `updater: update available ${local} -> ${remote}` +
+        (previouslyDownloaded ? ' (previously downloaded, pending cache should be reused)' : ''),
+    );
     runCheckState.resetSurface();
-    broadcast(UPDATE_EVENTS.available, { version: remote, current: local });
+    broadcast(UPDATE_EVENTS.available, { version: remote, current: local, previouslyDownloaded });
   });
 
   autoUpdater.on('update-not-available', (info) => {
@@ -217,8 +235,16 @@ export function initUpdater(): void {
   });
 
   autoUpdater.on('update-downloaded', (info) => {
-    log.info(`updater: update downloaded (${String(info.version ?? 'unknown')})`);
-    broadcast(UPDATE_EVENTS.downloaded, { version: String(info.version ?? '') });
+    const version = String(info.version ?? '');
+    log.info(`updater: update downloaded (${version})`);
+    // B-3②：持久化「已下载」标记（版本号 + 时刻）。下次启动若同一版本仍在
+    // 待装，update-available 会带上 previouslyDownloaded 旗标，渲染层据此
+    // 告知用户"复用本地缓存，不再重复下载百 MB 安装包"。写失败只落日志，
+    // 绝不影响更新主链。
+    if (!writeDownloadedUpdateMarker(updateMarkerDir(), version, Date.now())) {
+      log.warn('updater: failed to persist the downloaded-update marker (non-fatal)');
+    }
+    broadcast(UPDATE_EVENTS.downloaded, { version });
   });
 
   autoUpdater.on('error', (err) => {
@@ -305,4 +331,9 @@ function broadcast(channel: string, payload: unknown): void {
       win.webContents.send(channel, payload);
     }
   }
+}
+
+/** B-3②：已下载标记的落盘目录（userData 根，与 config.json 同级）。 */
+function updateMarkerDir(): string {
+  return app.getPath('userData');
 }

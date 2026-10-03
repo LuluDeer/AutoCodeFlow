@@ -1,9 +1,9 @@
 {
   "$comment": "ARCH-23 / N-12 响应 schema 覆盖率棘轮基线。coveredKeys = 已验证有**实质** response schema 的 METHOD PATH CODE 条目（防倒退：删装饰器即红）；coveredCount = 覆盖总数下限（只增不减）。hollowKeys = 引用**空壳组件**（properties 为空的具名 schema）的响应——看着有 schema，前端却只生成 Record<string, never>。存量记此以允许历史遗留，**新增即红**。补齐装饰器后用 --update 上探。覆盖率低不是缺陷本身，但**倒退与空壳新增**是。",
-  "coveredCount": 61,
-  "totalCount": 208,
-  "pct": 29.3,
-  "hollowCount": 5,
+  "coveredCount": 70,
+  "totalCount": 218,
+  "pct": 32.1,
+  "hollowCount": 0,
   "coveredKeys": [
     "DELETE /config/{key} 200",
     "GET /applications 200",
@@ -16,6 +16,8 @@
     "GET /config/history/{key} 200",
     "GET /config/runtime-version 200",
     "GET /config/{key} 200",
+    "GET /event-subscriptions 200",
+    "GET /event-subscriptions/{id}/dead-letters 200",
     "GET /executor-packages 200",
     "GET /executor-packages/latest 200",
     "GET /executor-packages/{id} 200",
@@ -36,7 +38,10 @@
     "GET /projects/me/roles 200",
     "GET /projects/{id} 200",
     "GET /projects/{id}/members 200",
+    "GET /task-templates 200",
+    "GET /task-templates/{id} 200",
     "GET /tasks 200",
+    "PATCH /event-subscriptions/{id} 200",
     "PATCH /executor-packages/{id} 200",
     "PATCH /projects/{id} 200",
     "PATCH /projects/{id}/members/{userId} 200",
@@ -53,6 +58,8 @@
     "POST /config/batch 201",
     "POST /config/executor-shared-token/generate 201",
     "POST /config/history/{id}/rollback 201",
+    "POST /event-subscriptions 201",
+    "POST /event-subscriptions/{id}/dead-letters/{dlId}/replay 200",
     "POST /executions/callback 200",
     "POST /executions/{id}/logs 200",
     "POST /executors/offline 200",
@@ -62,16 +69,12 @@
     "POST /notification/send 201",
     "POST /projects 201",
     "POST /projects/{id}/members 201",
+    "POST /task-templates 201",
+    "POST /task-templates/{id}/instantiate 201",
     "POST /tasks 201",
     "POST /tasks/{id}/trigger 200",
     "PUT /applications/{id} 200",
     "PUT /config 200"
   ],
-  "hollowKeys": [
-    "GET /event-subscriptions 200",
-    "GET /task-templates 200",
-    "GET /task-templates/{id} 200",
-    "PATCH /event-subscriptions/{id} 200",
-    "POST /task-templates 201"
-  ]
+  "hollowKeys": []
 }

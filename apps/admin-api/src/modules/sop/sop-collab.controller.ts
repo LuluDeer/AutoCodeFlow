@@ -24,7 +24,7 @@ import { ExecutorPackageService } from "../executor-package/executor-package.ser
 import { PACKAGE_UPLOAD_TMP_DIR } from "../executor-package/executor-package.service";
 import { AiService, type MultimodalMessage } from "../ai/ai.service";
 import { SopService } from "./sop.service";
-import { SopMediaService } from "./sop-media.service";
+import { SopMediaService, MAX_AGENT_MEDIA_BYTES } from "./sop-media.service";
 import type { SopClarificationMediaRef } from "./entities/sop-clarification.entity";
 
 /**
@@ -49,6 +49,13 @@ import type { SopClarificationMediaRef } from "./entities/sop-clarification.enti
 /** 长轮询上限（与 pull 通道同款纪律：必须 < 反代 60s 读超时）。 */
 const POLL_MAX_WAIT_MS = 25_000;
 const POLL_TICK_MS = 500;
+
+/**
+ * B-9：媒体上传的 multer 层上限。100MB 的业务判定（SopMediaService.save）
+ * 在整包读入内存之后才发生——没有这道拦截器闸，超大 multipart 会先整包
+ * 进内存再被拒。与候选包端点的 500MB limits 同款先例。
+ */
+export const MEDIA_UPLOAD_LIMITS = { fileSize: MAX_AGENT_MEDIA_BYTES } as const;
 
 function bearer(auth: string | undefined): string {
   return auth?.startsWith("Bearer ") ? auth.slice(7) : (auth ?? "");
@@ -168,7 +175,16 @@ export class SopCollabController {
     for (;;) {
       const items = await this.sops.pollPending({
         executorId: executor.id,
-        resendAssignments: body.resendAssignments === true,
+        // B-5：按 id 重发的数组形态必须透传（DTO 声明支持、service 支持）——
+        // 此前 `=== true` 把数组丢成 false，P7d 崩溃恢复的定向重发永远收不到
+        resendAssignments:
+          body.resendAssignments === true
+            ? true
+            : Array.isArray(body.resendAssignments)
+              ? body.resendAssignments.filter(
+                  (x): x is string => typeof x === "string" && x.length > 0,
+                )
+              : false,
       });
       if (items.length > 0 || Date.now() - start >= deadline) {
         return { items, sopPolicy: this.sopPolicy() };
@@ -205,13 +221,18 @@ export class SopCollabController {
     @Body() body: AgentCollabClarificationDto,
     @Headers("authorization") auth: string,
   ) {
-    // 鉴权 + 能力闸（结果本体不入账——澄清归属由 assignmentId 决定）
-    await this.authenticateAgent(body?.address, auth);
+    // 鉴权 + 能力闸（结果本体不入账——澄清归属由 assignmentId 决定，
+    // 但归属断言需要 executor.id，B-1）
+    const executor = await this.authenticateAgent(body?.address, auth);
     if (!body.assignmentId || typeof body.question !== "string") {
       throw new BadRequestException("assignmentId 与 question 必填");
     }
     const { clarification, escalated } = await this.sops.ingestClarification({
       assignmentId: body.assignmentId,
+      // B-1：归属校验下沉到服务层（与 completeAssignment 同一道闸）——
+      // 澄清归属由 assignmentId 决定，但「该指派是否属于这台机器」必须在
+      // 落库前断言，否则任何 agent:sop 机器可对他人工单发起澄清。
+      executorId: executor.id,
       clientClarificationId: body.clientClarificationId,
       question: body.question,
       context: body.context ?? null,
@@ -369,7 +390,9 @@ export class SopCollabController {
    */
   @Post("assignments/:id/media")
   @HttpCode(HttpStatus.CREATED)
-  @UseInterceptors(FileInterceptor("file"))
+  // B-9：limits 在拦截器即生效——超过 100MB 的 multipart 在 multer 层被拒，
+  // 不再整包读入内存后才由业务判定拒绝。
+  @UseInterceptors(FileInterceptor("file", { limits: MEDIA_UPLOAD_LIMITS }))
   async uploadMedia(
     @Param("id") assignmentId: string,
     @Body() body: { address: string },

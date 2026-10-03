@@ -9,9 +9,11 @@ import {
 /**
  * FEAT-07: 出站派发终败死信。
  *
- * 一个订阅的一次事件派发，经最多 3 次指数退避重试仍失败（网络错误/5xx/
- * 超时）后整包落本表：payload 为发送时的完整 JSON 载荷（含签名字段原文），
- * error 为最后一次失败摘要（截 1024），attempts 为实际尝试次数。
+ * 一个订阅的一次事件派发，经 outbox 扫描器按租约 + attempts 机制跨进程退避
+ * 重试至 MAX_OUTBOX_ATTEMPTS（20 次，event-subscription.util.ts——ARCH-31 #8
+ * 收口后重试节奏的单一事实源）仍失败（网络错误/5xx/超时）后整包落本表：
+ * payload 为发送时的完整 JSON 载荷（含签名字段原文），error 为最后一次失败
+ * 摘要（截 1024），attempts 为实际尝试次数。
  * 查看：GET /event-subscriptions/:id/dead-letters（属主/ADMIN）。
  * 重放：POST /event-subscriptions/:id/dead-letters/:dlId/replay（以订阅当前
  * url/secret 重新签名派发一次，成功即删行；重放不自动重试）。

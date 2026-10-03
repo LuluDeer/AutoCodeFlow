@@ -36,6 +36,12 @@ describe('F-26 currentLocale（locale 单一来源）', () => {
     const iso = '2026-01-02T03:04:05Z';
     expect(formatDateTime(iso)).toBe(new Date(iso).toLocaleString('zh-CN'));
   });
+
+  it('切到 en → formatDateTime 输出跟随 en-US（不跟随浏览器 locale）', async () => {
+    await i18n.changeLanguage('en');
+    const iso = '2026-01-02T03:04:05Z';
+    expect(formatDateTime(iso)).toBe(new Date(iso).toLocaleString('en-US'));
+  });
 });
 
 describe('F-26 formatRelativeTime（合并后唯一实现）', () => {

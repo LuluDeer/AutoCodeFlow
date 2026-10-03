@@ -564,6 +564,7 @@ probing 探测通过前的已升级台，批次失败时 → rolled_back（自�
 | POST | `/executors/offline` | 否* | 执行器主动下线 |
 | GET | `/executors/:address/terminal-states` | 否* | **A6 死信对账（只读）**：返回该执行器上**已终态**的执行清单（`items[].{executionId,status,endedAt}` + `hasMore` + `serverTime`），按终态时间升序，供执行器核对本地回调死信目录。query：`since`（ISO-8601 水印，只回终态时间 `COALESCE(endTime, createdAt) >= since` 的行；缺省/非法回退 24h，最老钳到 30 天）、`limit`（1..2000，默认 500）。执行器据此分三层处置：命中清单→删死信；未命中且死信原因是重发预算耗尽→重新入队重发；未命中且是毒丸（超大/坏 JSON）或救回次数用尽→保留待人工。**严格只读**：不改执行行、不释放槽位、不写审计 |
 | GET | `/executors` | 是 | 查询执行器列表（含在线状态） |
+| GET | `/executors/picker` | 是 | **执行器选择器（轻量读面）**：部署模态/快速部署两个执行器下拉的专用数据源。只回下拉实际消费的 6 列（`items[].{id,appName,address,status,runningTaskCount,maxConcurrentTasks}`）+ `total`（全量行数，独立 COUNT）+ `truncated` + `limit`（`EXECUTOR_PICKER_LIMIT`=2000）。与 `GET /executors` 的区别：后者回全列实体投影（含 `runningExecutionIds`/`interpreters` 等重列）且 `take=500`（`EXECUTOR_LIST_LIMIT`）**静默截断**；picker 按 `createdAt DESC` 取前 2000 行，`total > items.length` 时 `truncated=true`——前端必须渲染「共 total 台，仅显示前 limit 台」显式告警（`execList.truncated`），**绝不静默截断**。RBAC 与 `GET /executors` 对齐（登录即可，无 `@Roles` 收紧；读面是 list 的严格子集） |
 | GET | `/executors/groups` | 是 | 执行器分组列表 |
 | GET | `/executors/tags` | 是 | 执行器标签列表 |
 | GET | `/executors/install-cmd` | 是 | 生成执行器一键安装命令（返回 `{ cmd, token, adminApiUrl }`；第六轮起 `cmd` 为 `curl -fsSL <API_BASE_URL>/api/executors/install.sh | bash -s -- --api-url ... --secret ...` 形式，脚本由后端承载；第七轮起服务端 `ADMIN_API_URL` 未配置时返回 **503**，不再生成裸机不可用的相对路径命令） |

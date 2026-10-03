@@ -13,6 +13,9 @@ import {
   pinnedAxiosConfig,
 } from "../../../common/utils/safe-http.util";
 import { ChannelConfigStore } from "../channel-config.store";
+// A-6: markdown 注入防护（mrkdwn section 剥离链接语法字符；header 是
+// plain_text 类型无注入面，不转义）
+import { escapeMarkdownText } from "./markdown-escape.util";
 
 @Injectable()
 export class SlackChannel extends BaseChannel {
@@ -64,12 +67,18 @@ export class SlackChannel extends BaseChannel {
         await axios.post(
           webhook,
           {
-            text: `*${p.title}*`,
+            // A-6: title 在 mrkdwn 回退文本中同样剥离结构字符
+            text: `*${escapeMarkdownText(p.title)}*`,
             blocks: [
               { type: "header", text: { type: "plain_text", text: p.title } },
               {
                 type: "section",
-                text: { type: "mrkdwn", text: p.content.slice(0, 3000) },
+                // A-6: mrkdwn section 剥离 [ ] ( ) < > 与控制字符（slack 链接
+                // 注入形态是 <url|text>），防告警正文被拼出钓鱼链接
+                text: {
+                  type: "mrkdwn",
+                  text: escapeMarkdownText(p.content.slice(0, 3000)),
+                },
               },
             ],
           },

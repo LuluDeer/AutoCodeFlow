@@ -1,3 +1,4 @@
+import type { components } from '../types/generated/api-types';
 import { client } from './client';
 
 /**
@@ -9,66 +10,38 @@ import { client } from './client';
  *  - 事件目录（稳定契约，只增不改）：execution.completed / execution.failed /
  *    executor.offline / deployment.completed。
  *
- * N-04：本常量原本是 `{value, label}` 形式且 label 为中文，但**没有任何消费方读过
- * label**——实测 `EventSubscriptionsSettings.tsx` 的两条渲染路径都按 value 走 i18n：
- *   · Select 选项：`t(eventTypeLabelKey(o.value))`（:397）
- *   · 列表/死信 Tag：`eventTypeLabel(v)` 在命中时返回 `found.value`（:81，返回的是
- *     **英文事件名**而非中文 label）
- * 即那 4 条中文 label 是死数据：既误导读者以为改这里能改文案，又让 i18n 守卫把
- * 4 个永不渲染的串记进基线、虚增待迁移量（与 `executor-mode.ts` 的 labels 同型，
- * 是 N-04 引入「基线陈旧」反向检查后暴露出的第二例）。
- * 改为纯 value 清单：语义与用法一致，且文案唯一来源收敛到 locales。
+ * B-3（契约空壳修复）：响应类型此前手写——后端 openapi 对实体只 emit 空壳
+ * schema，生成类型 Record<string, never> 不可用，手写与后端的漂移无检测。
+ * 响应 DTO（EventSubscriptionResponseDto 等）落地后直接取生成类型；字段名
+ * 逐一相同、无需映射。生成类型与手写版的唯一差异：lastFailureAt/lastFailureError/
+ * userId 为可选（`?:` + null）——后端 nullable 列的真实形态，消费方读法不变。
  */
-export const EVENT_TYPE_OPTIONS = [
-  { value: 'execution.completed' },
-  { value: 'execution.failed' },
-  { value: 'executor.offline' },
-  { value: 'deployment.completed' },
-] as const;
+export type EventSubscription =
+  components['schemas']['EventSubscriptionResponseDto'];
 
-export type EventSubscriptionEventType = (typeof EVENT_TYPE_OPTIONS)[number]['value'];
+/** 创建响应：subscription（已脱敏）+ 服务端代生成 secret 的一次性回显字段。 */
+export type EventSubscriptionCreateResult =
+  components['schemas']['EventSubscriptionCreateResponseDto'];
 
-export interface EventSubscription {
-  id: string;
-  /** 订阅事件类型（1-10 个，取值=事件目录） */
-  eventTypes: string[];
-  /** 推送目标 URL（公网 http(s)，服务端 SSRF 深校验） */
-  url: string;
-  /** 恒为 '******'（读面脱敏；服务端代生成时一次性回显在 generatedSecret） */
-  secret: string;
-  enabled: boolean;
-  /** 连续失败次数（成功派发即清零） */
-  consecutiveFailures: number;
-  /** 最近一次失败时刻；无失败 null */
-  lastFailureAt: string | null;
-  /** 最近一次失败摘要（截 512，不含 secret/payload 原文） */
-  lastFailureError: string | null;
-  /** 属主用户；系统级订阅 null */
-  userId: number | null;
-  createdAt: string;
-  updatedAt: string;
-}
+/** 一次事件派发对一个订阅终败的完整存档（死信列表行）。 */
+export type EventSubscriptionDeadLetter =
+  components['schemas']['EventSubscriptionDeadLetterResponseDto'];
 
-/** 创建响应：subscription + 服务端代生成 secret 的一次性回显字段 */
-export interface EventSubscriptionCreateResult {
-  subscription: EventSubscription;
-  generatedSecret?: string;
-}
+/** 死信分页包装（GET /event-subscriptions/{id}/dead-letters）。 */
+export type EventSubscriptionDeadLetterPage =
+  components['schemas']['EventSubscriptionDeadLetterPageDto'];
 
-export interface EventSubscriptionDeadLetter {
-  id: string;
-  subscriptionId: string;
-  /** 事件名 */
-  eventType: string;
-  /** 发送时完整 JSON 载荷（含签名字段原文） */
-  payload: Record<string, unknown>;
-  /** 末次失败摘要（截 1024） */
-  error: string;
-  /** 实际尝试次数（首次 + 2 重试） */
-  attempts: number;
-  createdAt: string;
-}
+/** 手动重放响应：成功 ok=true 且死信删除；失败 ok=false + error 且死信保留。 */
+export type ReplayDeadLetterResult =
+  components['schemas']['ReplayDeadLetterResponseDto'];
 
+/**
+ * 创建/更新请求体：保持手写（`eventTypes: string[]`）。后端生成层把
+ * eventTypes 收窄为事件目录的字面量联合（CreateEventSubscriptionDto），但
+ * 本页表单状态是 string[]（Ant Design Form 泛型），值域最终由后端
+ * @IsIn(SUBSCRIBABLE_EVENTS) 在 400 层把关——请求体不是空壳漂移的重灾区，
+ * 不强行切生成类型。
+ */
 export interface CreateEventSubscriptionDto {
   url: string;
   eventTypes: string[];
@@ -84,6 +57,24 @@ export interface UpdateEventSubscriptionDto {
   secret?: string;
 }
 
+// N-04：本常量原本是 `{value, label}` 形式且 label 为中文，但**没有任何消费方读过
+// label**——实测 `EventSubscriptionsSettings.tsx` 的两条渲染路径都按 value 走 i18n：
+//   · Select 选项：`t(eventTypeLabelKey(o.value))`（:397）
+//   · 列表/死信 Tag：`eventTypeLabel(v)` 在命中时返回 `found.value`（:81，返回的是
+//     **英文事件名**而非中文 label）
+// 即那 4 条中文 label 是死数据：既误导读者以为改这里能改文案，又让 i18n 守卫把
+// 4 个永不渲染的串记进基线、虚增待迁移量（与 `executor-mode.ts` 的 labels 同型，
+// 是 N-04 引入「基线陈旧」反向检查后暴露出的第二例）。
+// 改为纯 value 清单：语义与用法一致，且文案唯一来源收敛到 locales。
+export const EVENT_TYPE_OPTIONS = [
+  { value: 'execution.completed' },
+  { value: 'execution.failed' },
+  { value: 'executor.offline' },
+  { value: 'deployment.completed' },
+] as const;
+
+export type EventSubscriptionEventType = (typeof EVENT_TYPE_OPTIONS)[number]['value'];
+
 export const eventSubscriptionsApi = {
   list: (signal?: AbortSignal) =>
     signal
@@ -97,11 +88,11 @@ export const eventSubscriptionsApi = {
   /** 死信分页列表（page 默认 1，limit 默认 20、最大 100） */
   listDeadLetters: (id: string, page = 1, limit = 20, signal?: AbortSignal) =>
     signal
-      ? client.get<{ data: EventSubscriptionDeadLetter[]; total: number }>(
+      ? client.get<EventSubscriptionDeadLetterPage>(
           `/event-subscriptions/${id}/dead-letters`,
           { params: { page, limit }, signal },
         )
-      : client.get<{ data: EventSubscriptionDeadLetter[]; total: number }>(
+      : client.get<EventSubscriptionDeadLetterPage>(
           `/event-subscriptions/${id}/dead-letters`,
           { params: { page, limit } },
         ),
@@ -110,7 +101,7 @@ export const eventSubscriptionsApi = {
    * 成功 { ok: true } 且死信删除；失败 { ok: false, error } 且死信保留。
    */
   replayDeadLetter: (id: string, deadLetterId: string) =>
-    client.post<{ ok: boolean; error?: string }>(
+    client.post<ReplayDeadLetterResult>(
       `/event-subscriptions/${id}/dead-letters/${deadLetterId}/replay`,
     ),
 };

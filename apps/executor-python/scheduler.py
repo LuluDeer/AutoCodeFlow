@@ -569,6 +569,9 @@ async def pull_task() -> None:
         ExecuteRequest,
     )
     from auth import _unwrap_envelope
+    # A-3：载荷校验失败（ValidationError）必须与 ExecutionRejected 同语义
+    # 收敛（补发 failed 回调），故与 ExecuteRequest 一起在延迟段导入。
+    from pydantic import ValidationError
 
     while True:
         await asyncio.sleep(1)
@@ -638,7 +641,23 @@ async def pull_task() -> None:
             traceparent = task.get('traceparent')
             logger.info('Pulled execution %s from admin pull queue', execution_id)
             body = {k: v for k, v in task.items() if k != 'traceparent'}
-            req = ExecuteRequest(**body)
+            # A-3（P2）：ExecuteRequest 构造必须纳入自身的 try——此前它悬在
+            # 内层 try 之外，载荷漂移/畸形抛出的 ValidationError 被外层
+            # except 吞成 'Pull failed' warn，failed 回调不发，admin 侧留
+            # 僵尸 RUNNING 行。现与 node pull.ts 的 schema 400 → pushCallback
+            # failed 同语义：补发 failed 回调收敛（预留由 finally 释放）。
+            try:
+                req = ExecuteRequest(**body)
+            except ValidationError as e:
+                logger.warning(
+                    'Pulled execution %s rejected: payload validation failed: %s',
+                    execution_id, e,
+                )
+                await reject_pulled_execution(
+                    execution_id, f'payload validation failed: {e}',
+                    traceparent if isinstance(traceparent, str) else None,
+                )
+                continue
             try:
                 # E-01: 预留即正式占用——slot_pre_reserved 模式下 accept 不
                 # 再重复计数（详见 accept_execution 注释）。

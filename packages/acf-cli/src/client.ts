@@ -205,6 +205,35 @@ function detailFromData(data: unknown): string {
 }
 
 /**
+ * Error class taxonomy shared by the whole CLI. Classification is done ONCE,
+ * here at the HTTP-client layer (the only place that knows axios shapes), so
+ * the ten command files never re-implement it. `formatApiError` renders the
+ * human line; `classifyApiError` feeds the machine-facing exit code.
+ */
+export type ApiErrorClass = "auth" | "network" | "server" | "unknown";
+
+/**
+ * Classify any thrown error for exit-code mapping:
+ * - `auth`    → 401 (credentials missing/expired/invalid, refresh self-heal
+ *   already failed) — the user must re-run `acf login`;
+ * - `network` → axios error without an HTTP response (connection refused,
+ *   DNS, timeout) — the server was never reached;
+ * - `server`  → any other HTTP status (400/403/404/409/5xx) — the request
+ *   reached the API and was rejected; permission gaps (403) are a server-side
+ *   decision, not a local credential state, so they stay in this class;
+ * - `unknown` → non-axios errors (local file IO, JSON parsing, ...).
+ */
+export function classifyApiError(e: unknown): ApiErrorClass {
+  if (axios.isAxiosError(e)) {
+    const status = (e as AxiosError).response?.status;
+    if (!status) return "network";
+    if (status === 401) return "auth";
+    return "server";
+  }
+  return "unknown";
+}
+
+/**
  * Render any thrown error as a single readable line, distinguishing
  * 401 (not authenticated) from 403 (authenticated but not allowed) and
  * surfacing the backend message instead of axios' generic text.

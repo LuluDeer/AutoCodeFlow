@@ -29,6 +29,8 @@ export interface SchedulerMetricsSnapshot {
   triggersSkippedBlockStrategy: number;
   /** FEAT-06：命中任务级维护窗口被跳过的触发数 */
   triggersSkippedMaintenance: number;
+  /** B-6：misfire 补偿因依赖未满足被跳过数（依赖闸，非故障态） */
+  misfiresSkippedDependencies: number;
   triggersFailed: number;
   /** 依赖扇出触发计数（R4-P3 claim 赢家）与被去重跳过数 */
   dependencyTriggersClaimed: number;
@@ -72,6 +74,7 @@ export class SchedulerMetricsService {
   private triggersSkippedInactive = 0;
   private triggersSkippedBlockStrategy = 0;
   private triggersSkippedMaintenance = 0;
+  private misfiresSkippedDependencies = 0;
   private triggersFailed = 0;
   private dependencyTriggersClaimed = 0;
   private dependencyTriggersSkipped = 0;
@@ -120,6 +123,11 @@ export class SchedulerMetricsService {
     this.triggersSkippedMaintenance++;
   }
 
+  /** B-6: 记录一次 misfire 补偿因"依赖未满足"被跳过（预期态，非故障） */
+  recordMisfireSkippedDependencies(): void {
+    this.misfiresSkippedDependencies++;
+  }
+
   /** 记录一次触发失败（入队/补偿失败等） */
   recordTriggerFailed(): void {
     this.triggersFailed++;
@@ -160,6 +168,7 @@ export class SchedulerMetricsService {
       triggersSkippedInactive: this.triggersSkippedInactive,
       triggersSkippedBlockStrategy: this.triggersSkippedBlockStrategy,
       triggersSkippedMaintenance: this.triggersSkippedMaintenance,
+      misfiresSkippedDependencies: this.misfiresSkippedDependencies,
       triggersFailed: this.triggersFailed,
       dependencyTriggersClaimed: this.dependencyTriggersClaimed,
       dependencyTriggersSkipped: this.dependencyTriggersSkipped,

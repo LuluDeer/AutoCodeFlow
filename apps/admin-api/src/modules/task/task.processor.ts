@@ -16,7 +16,7 @@ import {
   transitionOneToTerminal,
 } from "./execution-terminal";
 import { ExecutionLogLine } from "./entities/execution-log-line.entity";
-import { Task } from "./entities/task.entity";
+import { Task, TaskStatus } from "./entities/task.entity";
 import { ExecutorService } from "../executor/executor.service";
 // 技术债 A 组（2026-10-01）·按原版本重放：钉定快照 → 派发体覆盖（纯函数，
 // 与派发体白名单同一文件保证不漂移；纯 util import 不引入模块环）。
@@ -136,6 +136,27 @@ export class TaskProcessor extends WorkerHost {
     // (SchedulerService.recoverStaleExecutions) — the two recovery paths keep
     // their separate responsibilities.
     const startTime = new Date();
+    // B-11（调度域审计）：非 ACTIVE（PAUSED/软删）任务的未派发排队执行
+    // （PENDING/WAITING）不 claim——PAUSED 任务的在途排队不再被唤醒派发
+    // （与 scheduler 唤醒 sweep 的 ACTIVE 闸同源，双保险）：
+    // - WAITING 行保持原状，resume 落 ACTIVE 后由唤醒 sweep 正常唤醒；
+    // - PENDING 行不被静默派发，由 stale PENDING sweep（never_dispatched）
+    //   兜底收敛，避免「暂停了任务、排队执行仍开跑」。
+    // FAILED 行刻意不受此门约束：BullMQ 重试与恢复重试（executor-restart /
+    // stale sweep / kill_retry）消费的是已发生失败的执行，不属于「新触发」，
+    // 任务暂停不应吞掉重试预算（重试照常派发）。
+    // 竞态注记：task 状态读自 claim 前快照，与 claim 之间存在 TOCTOU——
+    // 与唤醒 sweep 的闸门一致按「尽力拦截」处理，不为此加锁。
+    if (
+      task.status !== TaskStatus.ACTIVE &&
+      (exec.status === ExecutionStatus.PENDING ||
+        exec.status === ExecutionStatus.WAITING)
+    ) {
+      this.logger.warn(
+        `Execution ${executionId} of task ${task.id} (status=${task.status}) is queued but the task is not ACTIVE — skipping dispatch (B-11)`,
+      );
+      return;
+    }
     const claimed = await this.execRepo
       .createQueryBuilder()
       .update(TaskExecution)

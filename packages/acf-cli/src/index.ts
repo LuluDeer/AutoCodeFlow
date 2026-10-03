@@ -19,8 +19,13 @@
  *   acf sop list | show <sopId>
  *   acf agent sessions
  *   acf config show
+ *
+ * 退出码表（docs 详见 README.md「Exit codes」，单一事实源在 src/ui.ts 的
+ * EXIT_CODES）：0 成功；1 运行失败；2 用法/参数错误；3 认证失败；
+ * 4 网络失败；130 中断（SIGINT）。
  */
-import { Command } from 'commander';
+import { Command, CommanderError } from 'commander';
+import { pathToFileURL } from 'node:url';
 import chalk from 'chalk';
 import { loginCommand } from './commands/login.js';
 import { tasksCommand } from './commands/tasks.js';
@@ -33,6 +38,8 @@ import { projectsCommand } from './commands/projects.js';
 import { sopCommand } from './commands/sop.js';
 import { agentCommand } from './commands/agent.js';
 import { showConfig, setApiUrl, setToken } from './config.js';
+import { applyExamples } from './help.js';
+import { EXIT_CODES, interruptExit } from './ui.js';
 // 版本号单一事实源：直接读 package.json，而不是硬编码字面量。
 //
 // 原实现写死 `.version('1.0.0')`，而 package.json 是 `version-guard` 与
@@ -45,12 +52,18 @@ import { showConfig, setApiUrl, setToken } from './config.js';
 // 路径稳定）。本包为 ESM（type: module），JSON 导入须带 import attribute。
 import pkg from '../package.json' with { type: 'json' };
 
-const program = new Command();
+// 导出命令树供测试复用（结构守卫：每个叶子命令都必须有 Examples）。配合底部
+// 的 main-guard，import 本文件不会触发 parseAsync。
+export const program = new Command();
 
 program
   .name('acf')
   .description('AutoCodeFlow CLI — manage tasks, executions, applications and projects')
   .version(pkg.version);
+
+// ---------------------------------------------------------------------------
+// 解析期行为统一（全树，见下方 applyParseErrorBehavior 的说明）
+// ---------------------------------------------------------------------------
 
 // Global options that override stored config
 program
@@ -88,12 +101,64 @@ configCmd.command('set-token <token>').description('Set auth token directly').ac
 });
 program.addCommand(configCmd);
 
-// Better error display
-program.configureOutput({
-  outputError: (str, write) => write(chalk.red(str)),
-});
+// 集中式 help：把 help.ts 的 EXAMPLES 表按命令路径走树注入（每个命令至少一个
+// 示例；覆盖面由 ux-uniform.test.ts 用本树做结构守卫）。
+applyExamples(program);
 
-program.parseAsync(process.argv).catch((e: unknown) => {
-  console.error(chalk.red('Error:'), e instanceof Error ? e.message : String(e));
-  process.exit(1);
-});
+/**
+ * 解析期行为统一到整棵命令树：
+ * - exitOverride：解析错误不再让 commander 内部直接 process.exit(1)，而是抛
+ *   CommanderError 到 runCli 的 catch 统一映射退出码（--help/--version → 0，
+ *   其余 → 2 用法错误）。--version 的行为由 release-metadata.test.ts 真实
+ *   执行构建产物钉死，改动后跑全量测试即可发现回归。
+ * - showHelpAfterError：缺参/未知命令/未知选项时在 error 行之后打印**该命令
+ *   的完整 help**（含 Examples）——用户在报错现场就能拿到可操作的用法。
+ * - configureOutput：error 行染红。
+ *
+ * 为什么走树补设而不是只在 program 上设一次：commander 只在 addCommand 时把
+ * 这些设置拷贝给**直接子命令**（copyInheritedSettings），而孙子级（task get /
+ * config show 等）在各命令工厂函数里创建，早于 addCommand——实测它们拿不到
+ * exitOverride，深层缺参错误会绕过退出码映射直接 process.exit(1)，error 行也
+ * 不染红。在整棵树装配完成后逐命令补设是唯一覆盖全深度的方式。
+ */
+function applyParseErrorBehavior(cmd: Command): void {
+  cmd.exitOverride();
+  cmd.showHelpAfterError();
+  cmd.configureOutput({
+    outputError: (str, write) => write(chalk.red(str)),
+  });
+  for (const sub of cmd.commands) applyParseErrorBehavior(sub);
+}
+applyParseErrorBehavior(program);
+
+/**
+ * Map a commander parse outcome to the CLI exit code.
+ * `--help` / `--version` / `acf help <cmd>` 是用户主动要的正常出口 → 0；
+ * 其余解析错误（缺参/未知命令/未知选项/非法取值）= 用法错误 → 2。
+ */
+export function parseErrorExitCode(e: unknown): number {
+  if (e instanceof CommanderError) {
+    return e.exitCode === 0 ? EXIT_CODES.OK : EXIT_CODES.USAGE;
+  }
+  return EXIT_CODES.GENERIC;
+}
+
+// 仅当本文件是进程入口时才启动解析。测试需要 import 本文件复用**真实**命令树
+// （example 覆盖守卫不能靠复刻一份会漂移的镜像树），main-guard 让 import 无
+// 副作用；正常执行路径（node dist/index.js、tsx src/index.ts、npm bin）下
+// argv[1] 与本模块 URL 指向同一文件，守卫恒真。
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  // SIGINT 统一出口：Ctrl+C 补换行（spinner 帧不留半行）并以 128+SIGINT 惯例
+  // 码 130 退出。交互 readline 的 raw 模式不走进程信号，由各 prompt 内的
+  // rl.on('SIGINT') 接住后也汇入同一个 interruptExit。
+  process.on('SIGINT', () => interruptExit());
+  program.parseAsync(process.argv).catch((e: unknown) => {
+    if (e instanceof CommanderError) {
+      // error 行与 help 已由 commander 经 outputError/print 写出，这里只做
+      // 退出码映射，不重复打印。
+      process.exit(parseErrorExitCode(e));
+    }
+    console.error(chalk.red('Error:'), e instanceof Error ? e.message : String(e));
+    process.exit(EXIT_CODES.GENERIC);
+  });
+}

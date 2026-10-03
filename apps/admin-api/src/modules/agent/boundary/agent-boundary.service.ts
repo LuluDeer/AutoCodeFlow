@@ -350,7 +350,19 @@ export class AgentBoundaryService {
       );
     }
 
-    if (typeof targetId === "string" && !allowed.includes(targetId)) {
+    // B-2：绑定资源的工具必须携带目标 id——「未提供 id 直接放行」等于
+    // 白名单可以被参数缺省绕过（如 sop_get 只传 slug 时 targetId 缺失，
+    // 任意 SOP 都能读）。id 的归一（slug → id）是执行体入口的职责，
+    // 闸门语义保持单一：必须有 id，且 id 必须命中白名单。
+    if (typeof targetId !== "string") {
+      return this.deny(
+        "out_of_scope",
+        `${spec.name}: 缺少资源 id 参数 ${idParam ?? "(未声明)"}——` +
+          `绑定资源的工具必须显式指定目标 ${spec.resourceKind}。`,
+      );
+    }
+
+    if (!allowed.includes(targetId)) {
       return this.deny(
         "out_of_scope",
         `${spec.name}: 目标 ${spec.resourceKind} ${targetId} 不在本会话作用域内。`,

@@ -25,6 +25,8 @@ import { IsSecretKeyMapConstraint } from "./secret-key-map.constraint";
 import { IsCron5Field } from "./cron-expression.constraint";
 // P2（时区审计）：IANA 时区写面校验（与调度侧/窗口评估同一 Intl 探针）
 import { IsIanaTimezone } from "./timezone.constraint";
+// B-9: params 体积门（与 webhook/trigger 面同一常量，params-size.util 单一出处）
+import { TaskParamsMaxBytes } from "./params-size.constraint";
 import { MaintenanceWindowDto } from "./maintenance-window.dto";
 import {
   TaskStatus,
@@ -234,7 +236,15 @@ export class CreateTaskDto {
   @IsEnum(TaskPriority)
   @IsOptional()
   priority?: TaskPriority;
-  @ApiPropertyOptional()
+  /**
+   * A-1（执行器域审计）：broadcast 与互斥组互斥——绑定应用的
+   * applications.mutexGroupId 非空时，broadcast 任务在写面 400 拒绝
+   * （广播不执行互斥占坑，见 TaskService.assertBroadcastMutexCompatible）。
+   */
+  @ApiPropertyOptional({
+    description:
+      "Dispatch mode: single (pick the least-loaded eligible executor, default) or broadcast (fan out to every eligible online executor). Mutually exclusive with executorId pinning, and rejected with 400 when the bound application carries a mutex group (broadcast cannot honor in-group concurrency caps).",
+  })
   @IsEnum(ExecuteMode)
   @IsOptional()
   executeMode?: ExecuteMode;
@@ -248,7 +258,16 @@ export class CreateTaskDto {
   misfireStrategy?: MisfireStrategy;
   @ApiPropertyOptional() @IsEmail() @IsOptional() alarmEmail?: string;
   @ApiPropertyOptional() @IsArray() @IsOptional() alarmChannels?: string[];
-  @ApiPropertyOptional() @IsObject() @IsOptional() params?: Record<string, any>;
+  @ApiPropertyOptional({
+    description:
+      "Default task params; serialized size must not exceed 65536 bytes (same limit as the trigger/webhook face).",
+  })
+  @IsObject()
+  @IsOptional()
+  // B-9: 任务默认 params 此前无体积上限（仅 webhook 触发面 64KB）——统一
+  // 同一常量；PartialType 令 UpdateTaskDto（PATCH）继承同一约束。
+  @TaskParamsMaxBytes()
+  params?: Record<string, any>;
   /**
    * SEC-02: 任务级 secrets（凭据键值对，独立于 params 的普通运行参数）。
    * 服务端存储加密（AES-256-GCM，SEC_SECRETS_KEY；未配置降级明文并 warn），

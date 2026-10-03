@@ -1,4 +1,6 @@
 import { Test } from "@nestjs/testing";
+import { ConflictException } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
 import { getRepositoryToken } from "@nestjs/typeorm";
 import { ApiKeysService } from "../api-keys.service";
 import { AuditService } from "../../audit/audit.service";
@@ -16,6 +18,8 @@ const repoMock = () => ({
   find: jest.fn(async () => []),
   findOne: jest.fn(),
   update: jest.fn(async () => undefined),
+  // A-9: 配额闸按属主统计活跃 key（默认 0 = 未达上限）
+  count: jest.fn(async () => 0),
 });
 
 const auditMock = () => ({ log: jest.fn(async () => undefined) });
@@ -33,6 +37,7 @@ describe("AUTH-03 ApiKeysService", () => {
         ApiKeysService,
         { provide: getRepositoryToken(ApiKey), useValue: repo },
         { provide: AuditService, useValue: audit },
+        // A-9: ConfigService 缺席（@Optional）→ maxActiveKeysPerUser 回落常量
       ],
     }).compile();
     svc = moduleRef.get(ApiKeysService);
@@ -80,6 +85,56 @@ describe("AUTH-03 ApiKeysService", () => {
         scope: "readonly",
       });
       expect(plaintext).toMatch(/^acf_/);
+    });
+  });
+
+  // ─── A-9（R3-A 审计）: 每用户活跃 key 配额 ───────────────────────────────
+  describe("create — per-user active-key quota (A-9)", () => {
+    it("达到默认上限（20）→ 409 ConflictException，不落库不签发", async () => {
+      repo.count.mockResolvedValue(20);
+      await expect(
+        svc.create({ userId: 42, name: "one-too-many", scope: "readonly" }),
+      ).rejects.toBeInstanceOf(ConflictException);
+      expect(repo.save).not.toHaveBeenCalled();
+      expect(repo.create).not.toHaveBeenCalled();
+      expect(audit.log).not.toHaveBeenCalled();
+    });
+
+    it("未达上限 → 正常创建；计数口径为「属主 + 未吊销」", async () => {
+      repo.count.mockResolvedValue(19);
+      await expect(
+        svc.create({ userId: 42, name: "ok", scope: "readonly" }),
+      ).resolves.toHaveProperty("plaintext");
+      const countArg = (repo.count as jest.Mock).mock.calls[0][0] as {
+        where: Record<string, unknown>;
+      };
+      expect(countArg.where).toMatchObject({ userId: 42 });
+      // revokedAt: IsNull() —— 已吊销 key 不占配额
+      expect(
+        (countArg.where.revokedAt as { useParameter?: boolean }).useParameter,
+      ).toBe(false);
+    });
+
+    it("上限可经配置 apiKeys.maxActivePerUser 覆盖", async () => {
+      const configMock = { get: jest.fn().mockReturnValue(2) };
+      const moduleRef = await Test.createTestingModule({
+        providers: [
+          ApiKeysService,
+          { provide: getRepositoryToken(ApiKey), useValue: repo },
+          { provide: AuditService, useValue: audit },
+          { provide: ConfigService, useValue: configMock },
+        ],
+      }).compile();
+      const configured = moduleRef.get(ApiKeysService);
+
+      repo.count.mockResolvedValue(2);
+      await expect(
+        configured.create({ userId: 7, name: "third", scope: "readonly" }),
+      ).rejects.toBeInstanceOf(ConflictException);
+      repo.count.mockResolvedValue(1);
+      await expect(
+        configured.create({ userId: 7, name: "second", scope: "readonly" }),
+      ).resolves.toHaveProperty("plaintext");
     });
   });
 

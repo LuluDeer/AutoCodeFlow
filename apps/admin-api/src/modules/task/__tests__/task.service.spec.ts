@@ -3043,6 +3043,35 @@ describe("TaskService (__tests__)", () => {
         ).toBe(1);
       });
 
+      // B-7（调度域审计）：守卫扩展到 WAITING——排队（互斥/部署约束）执行
+      // 从未派发（executorAddress 恒 null），却同属打开态：旧守卫只挡
+      // PENDING，持共享执行器凭据者可把别家排队中的执行写成终态。
+      it("B-7: rejects terminal callback for a queued (WAITING) execution with no dispatched executor", async () => {
+        const exec = {
+          id: "e-waiting",
+          status: ExecutionStatus.WAITING,
+          executorAddress: null,
+          logs: "",
+        };
+        execRepo.findOne.mockResolvedValue(exec);
+        const result = await service.handleCallback([
+          {
+            executionId: "e-waiting",
+            status: "success",
+            executorAddress: "attacker:9999",
+          },
+        ]);
+        expect(result[0].success).toBe(false);
+        expect(result[0].error).toMatch(/not been dispatched yet/i);
+        // 行保持 WAITING（排队态不被写坏；resume/唤醒后可正常派发）
+        expect(exec.status).toBe(ExecutionStatus.WAITING);
+        expect(
+          runtimeCount("autoflow_callback_business_total", {
+            result: "not_dispatched",
+          }),
+        ).toBe(1);
+      });
+
       it("splits address mismatch vs missing callback address", async () => {
         const exec = {
           id: "e1",
@@ -3158,6 +3187,9 @@ describe("TaskService (__tests__)", () => {
           // glueSource/runbook/secrets 全实体物化进内存）
           select: jest.fn().mockReturnThis(),
           where: jest.fn().mockReturnThis(),
+          // B-3: containment 下推——扫描谓词带 andWhere 链（jsonb_typeof
+          // 守卫 + 值投影数组包含）
+          andWhere: jest.fn().mockReturnThis(),
           getMany: jest
             .fn()
             .mockResolvedValue(downstreamTask ? [downstreamTask] : []),
@@ -3239,6 +3271,15 @@ describe("TaskService (__tests__)", () => {
           "t.dependencies",
           "t.params",
         ]);
+        // B-3: 过滤下推 SQL——jsonb_typeof 守卫 + 值投影数组包含（吃迁移
+        // 1790000000053 的 GIN 索引），上游 id 作为探针参数传入。
+        expect(depQb.andWhere).toHaveBeenCalledWith(
+          "jsonb_typeof(t.dependencies) = 'object'",
+        );
+        expect(depQb.andWhere).toHaveBeenCalledWith(
+          expect.stringContaining("jsonb_path_query_array(t.dependencies"),
+          { depProbe: JSON.stringify(["t-upstream"]) },
+        );
       });
 
       // NETOPT-3②: 扇出全部成功 → 在上游执行行落 depsFiredAt 完成标记
@@ -3378,6 +3419,8 @@ describe("TaskService (__tests__)", () => {
         const depQb = {
           select: jest.fn().mockReturnThis(),
           where: jest.fn().mockReturnThis(),
+          // B-3: containment 下推——扫描谓词带 andWhere 链
+          andWhere: jest.fn().mockReturnThis(),
           getMany: jest.fn().mockResolvedValue([downstreamA, downstreamB]),
           update: jest.fn().mockReturnThis(),
           set: jest.fn().mockReturnThis(),
@@ -4506,6 +4549,39 @@ describe("TaskService (__tests__)", () => {
       );
     });
 
+    // B-10（调度域审计）：并发 PATCH 的 MAX+1 竞态使败者在任务已保存、调度
+    // 已重排后收到 23505 → 裸 500。快照少一条可接受（主流程已成功）——
+    // 降级 warn 返回 null，不回 500。
+    it("B-10: concurrent (taskId, version) unique violation degrades to warn + null, never a 500", async () => {
+      const task = { id: "t1", name: "task" };
+      taskRepo.findOne.mockResolvedValue(task);
+      versionRepo.find.mockResolvedValue([]);
+      const uniqueViolation = Object.assign(
+        new QueryFailedError(
+          "INSERT INTO task_versions",
+          [],
+          new Error("duplicate key value violates unique constraint"),
+        ),
+        { code: "23505", constraint: "ux_task_versions_taskId_version" },
+      );
+      versionRepo.save.mockRejectedValue(uniqueViolation);
+
+      await expect(service.saveVersion("t1", "user", "race")).resolves.toBe(
+        null,
+      );
+    });
+
+    it("B-10: non-unique-violation errors still propagate (only the race is swallowed)", async () => {
+      const task = { id: "t1", name: "task" };
+      taskRepo.findOne.mockResolvedValue(task);
+      versionRepo.find.mockResolvedValue([]);
+      versionRepo.save.mockRejectedValue(new Error("db connection lost"));
+
+      await expect(service.saveVersion("t1")).rejects.toThrow(
+        "db connection lost",
+      );
+    });
+
     /**
      * VER-DIFF-01（本轮审计）：快照此前漏了 maintenanceWindows / runbook
      * （两者都经 create-task.dto 用户可写）。因 compareVersions 的键集合完全
@@ -4623,6 +4699,57 @@ describe("TaskService (__tests__)", () => {
           }),
         }),
       );
+    });
+
+    // B-2（调度域审计）：回滚整体覆盖 triggerType/cronExpression/fixedRate
+    // 快照，必须与 update() 对齐重排调度——否则旧定时器按旧表达式继续触发。
+    it("B-2: reschedules an ACTIVE task after rollback (stop + scheduleOne, mirroring update())", async () => {
+      const version = {
+        id: "v1",
+        taskId: "t1",
+        version: "v1",
+        snapshot: {
+          triggerType: "fixed_rate",
+          fixedRate: 30,
+          cronExpression: null,
+        },
+      };
+      versionRepo.findOne.mockResolvedValue(version);
+      taskRepo.findOne.mockResolvedValue({
+        id: "t1",
+        status: TaskStatus.ACTIVE,
+        triggerType: "cron",
+        cronExpression: "0 * * * *",
+      });
+      taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
+      await service.rollbackToVersion("t1", "v1");
+      // 旧定时器先停，再按快照配置重建
+      expect(schedulerService.stop).toHaveBeenCalledWith("t1");
+      expect(schedulerService.scheduleOne).toHaveBeenCalledTimes(1);
+      const scheduled = schedulerService.scheduleOne.mock.calls[0][0] as Record<
+        string,
+        unknown
+      >;
+      expect(scheduled.triggerType).toBe("fixed_rate");
+      expect(scheduled.fixedRate).toBe(30);
+    });
+
+    it("B-2: non-ACTIVE task gets its stale timer stopped but is not re-registered", async () => {
+      const version = {
+        id: "v1",
+        taskId: "t1",
+        version: "v1",
+        snapshot: { name: "x" },
+      };
+      versionRepo.findOne.mockResolvedValue(version);
+      taskRepo.findOne.mockResolvedValue({
+        id: "t1",
+        status: TaskStatus.PAUSED,
+      });
+      taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
+      await service.rollbackToVersion("t1", "v1");
+      expect(schedulerService.stop).toHaveBeenCalledWith("t1");
+      expect(schedulerService.scheduleOne).not.toHaveBeenCalled();
     });
 
     it("throws NotFoundException when version not found", async () => {

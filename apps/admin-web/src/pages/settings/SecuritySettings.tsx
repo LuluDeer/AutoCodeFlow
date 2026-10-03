@@ -6,6 +6,7 @@ import { Card,
   Tag,
   Table,
   Alert,
+  Form,
   Typography,
   Popconfirm,
   Descriptions,
@@ -13,14 +14,16 @@ import { Card,
   theme } from 'antd';
 import { message } from '../../utils/toast';
 import {
-  SafetyOutlined, UserOutlined, DesktopOutlined, ReloadOutlined,
+  SafetyOutlined, UserOutlined, DesktopOutlined, ReloadOutlined, LockOutlined,
 } from '@ant-design/icons';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import type { ColumnsType } from 'antd/es/table';
 import { authApi, AuthSession } from '../../api/auth';
+// A-13: 自助改密走既有自改端点（PATCH /users/:id，载荷 password + currentPassword）
+import { usersApi } from '../../api/users';
 import { showApiError } from '../../utils/error';
-// F-26（DEEP_REVIEW 0ef3bbe）：locale 单一来源，不再硬编码 zh-CN
-import { currentLocale } from '../../utils/locale';
+// 时间展示统一走共享 formatDateTime（locale 跟随 i18n 而非浏览器，见 utils/timeFormat）
+import { formatDateTime } from '../../utils/timeFormat';
 import StateError from '../../components/StateError';
 import { useAuthStore } from '../../store/auth';
 import { useTranslation } from 'react-i18next';
@@ -114,7 +117,7 @@ export function TotpCard() {
 
   if (enabled) {
     return (
-      <Card title={<Space><SafetyOutlined /> {t('security.totp.title')}</Space>} style={{ marginBottom: 16 }}>
+      <Card title={<Space><SafetyOutlined aria-hidden /> {t('security.totp.title')}</Space>} style={{ marginBottom: 16 }}>
         <Alert
           type="success"
           showIcon
@@ -127,7 +130,8 @@ export function TotpCard() {
             placeholder={t('security.totp.disablePlaceholder')}
             value={disablePassword}
             onChange={(e) => setDisablePassword(e.target.value)}
-            style={{ width: 320 }}
+            // UI-09 第三轮：maxWidth 兜底——375px 卡片内宽 < 320 时收满容器不溢出（桌面仍 320）
+            style={{ width: 320, maxWidth: '100%' }}
             aria-label={t('security.totp.passwordLabel')}
           />
           <Popconfirm
@@ -150,7 +154,7 @@ export function TotpCard() {
   }
 
   return (
-    <Card title={<Space><SafetyOutlined /> {t('security.totp.title')}</Space>} style={{ marginBottom: 16 }}>
+    <Card title={<Space><SafetyOutlined aria-hidden /> {t('security.totp.title')}</Space>} style={{ marginBottom: 16 }}>
       <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
         {t('security.totp.intro')}
       </Text>
@@ -202,6 +206,115 @@ export function TotpCard() {
 }
 
 /**
+ * A-13（R3-A 审计）: 自助改密卡。普通用户此前只能靠管理员重置（或 UserManagementPage
+ * 的管理员视角），本卡把既有自改端点（PATCH /users/:id，载荷 password +
+ * currentPassword，普通用户改密必须携带 currentPassword）接到安全设置页。
+ * 改密成功后端会 bump 会话版本（在途 access/refresh 即刻失效）——前端随即
+ * 强制重新登录：清空本地凭据并跳 /login（与 401 过期链路同落点）。
+ * 校验规则与后端 UsersService.validatePasswordStrength 对齐（≥8 位、大写、
+ * 数字、特殊字符），前端先行拦截，后端校验仍是权威。
+ */
+interface PasswordFormValues {
+  currentPassword: string;
+  newPassword: string;
+  confirmPassword: string;
+}
+
+export function PasswordCard() {
+  const { t } = useTranslation();
+  const user = useAuthStore((s) => s.user);
+  const [form] = Form.useForm();
+  const [submitting, setSubmitting] = useState(false);
+
+  const onSubmit = async (values: PasswordFormValues) => {
+    if (!user?.id) return;
+    setSubmitting(true);
+    try {
+      await usersApi.update(user.id, {
+        password: values.newPassword,
+        currentPassword: values.currentPassword,
+      });
+      message.success(t('security.password.changed'), 4);
+      // 强制重新登录：本地凭据清空 + 短暂延迟让成功 toast 可见后跳登录页
+      useAuthStore.getState().logout();
+      setTimeout(() => {
+        window.location.href = '/login';
+      }, 1200);
+    } catch (err: unknown) {
+      // 400（当前密码错）/409（用户名/邮箱占用）等由 getErrMsg 透出后端文案
+      showApiError(err, t('security.password.changeFail'));
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Card
+      title={<Space><LockOutlined aria-hidden /> {t('security.password.title')}</Space>}
+      style={{ marginBottom: 16 }}
+    >
+      <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
+        {t('security.password.intro')}
+      </Text>
+      <Form
+        form={form}
+        layout="vertical"
+        style={{ maxWidth: 420 }}
+        onFinish={(v) => {
+          void onSubmit(v as PasswordFormValues);
+        }}
+      >
+        <Form.Item
+          name="currentPassword"
+          label={t('security.password.current')}
+          rules={[{ required: true, message: t('security.password.currentRequired') }]}
+        >
+          <Input.Password placeholder={t('security.password.currentPlaceholder')} />
+        </Form.Item>
+        <Form.Item
+          name="newPassword"
+          label={t('security.password.new')}
+          rules={[
+            { required: true, message: t('security.password.newRequired') },
+            { min: 8, message: t('security.password.rule.length') },
+            { pattern: /[A-Z]/, message: t('security.password.rule.uppercase') },
+            { pattern: /[0-9]/, message: t('security.password.rule.digit') },
+            { pattern: /[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?]/, message: t('security.password.rule.special') },
+          ]}
+        >
+          <Input.Password placeholder={t('security.password.newPlaceholder')} autoComplete="new-password" />
+        </Form.Item>
+        <Form.Item
+          name="confirmPassword"
+          label={t('security.password.confirm')}
+          dependencies={['newPassword']}
+          rules={[
+            { required: true, message: t('security.password.confirmRequired') },
+            ({ getFieldValue }) => ({
+              validator(_, value: string) {
+                if (!value || getFieldValue('newPassword') === value) {
+                  return Promise.resolve();
+                }
+                return Promise.reject(new Error(t('security.password.mismatch')));
+              },
+            }),
+          ]}
+        >
+          <Input.Password placeholder={t('security.password.confirmPlaceholder')} autoComplete="new-password" />
+        </Form.Item>
+        <Button
+          type="primary"
+          htmlType="submit"
+          loading={submitting}
+          data-testid="password-submit"
+        >
+          {t('security.password.submit')}
+        </Button>
+      </Form>
+    </Card>
+  );
+}
+
+/**
  * SEC-03: 会话列表（refresh token 吊销 UI 面，DR-04 撤销语义）。
  * 展示当前登录用户所有活跃会话，可吊销单条或一键吊销其他全部。
  */
@@ -244,21 +357,30 @@ export function SessionsCard() {
       title: t('security.session.col.device'), dataIndex: 'userAgent', minWidth: 240,
       render: (v: string | null) => (
         <Space size={6}>
-          <DesktopOutlined style={{ color: token.colorTextTertiary }} />
+          <DesktopOutlined aria-hidden style={{ color: token.colorTextTertiary }} />
           <span>{summarizeUserAgent(v, t)}</span>
         </Space>
       ),
     },
     {
+      // UI-09 第三轮：IP/是否当前是次要列——窄屏（≤768px）由媒体查询隐藏
+      // （onHeaderCell/onCell 双端挂类，对齐 AppDeploymentPage 既有模式；断点与
+      // index.css ui09 媒体查询同值）。「本机」标识已由操作列文字承担，设备/
+      // 登录时间/吊销操作保留，scroll.x 兜底。
       title: 'IP', dataIndex: 'ip', width: 140,
+      onHeaderCell: () => ({ className: 'ui09-hide-mobile' }),
+      onCell: () => ({ className: 'ui09-hide-mobile' }),
       render: (v: string | null) => v ?? <Text type="secondary">-</Text>,
     },
     {
       title: t('security.session.col.loginTime'), dataIndex: 'createdAt', width: 170,
-      render: (v: string) => (v ? new Date(v).toLocaleString(currentLocale()) : '-'),
+      // 占位符保持本表既有约定 '-'（与同表 IP 列一致），时间渲染走共享 formatDateTime
+      render: (v: string) => (v ? formatDateTime(v) : '-'),
     },
     {
       title: t('security.session.col.current'), dataIndex: 'current', width: 80,
+      onHeaderCell: () => ({ className: 'ui09-hide-mobile' }),
+      onCell: () => ({ className: 'ui09-hide-mobile' }),
       render: (v: boolean) => (v ? <Tag color="green">{t('security.session.currentTag')}</Tag> : <Tag>{t('security.session.otherTag')}</Tag>),
     },
     {
@@ -290,10 +412,11 @@ export function SessionsCard() {
 
   return (
     <Card
-      title={<Space><UserOutlined /> {t('security.session.title')}</Space>}
+      title={<Space><UserOutlined aria-hidden /> {t('security.session.title')}</Space>}
       extra={
-        <Space>
-          <Button icon={<ReloadOutlined />} size="small" loading={isFetching} onClick={() => refetch()}>{t('security.session.refresh')}</Button>
+        // UI-09 第三轮：窄屏下刷新/批量吊销两按钮换行，不与卡头标题挤压
+        <Space wrap>
+          <Button icon={<ReloadOutlined aria-hidden />} size="small" loading={isFetching} onClick={() => refetch()}>{t('security.session.refresh')}</Button>
           <Popconfirm
             title={t('security.session.revokeOthersConfirm')}
             description={t('security.session.revokeOthersConfirmDesc')}
@@ -353,6 +476,7 @@ export default function SecuritySettings() {
       <div style={{ marginBottom: 12 }}>
         <Text type="secondary">{t('security.title')}</Text>
       </div>
+      <PasswordCard />
       <TotpCard />
       <SessionsCard />
     </div>

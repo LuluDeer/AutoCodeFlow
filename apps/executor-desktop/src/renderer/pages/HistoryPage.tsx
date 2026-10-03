@@ -114,6 +114,11 @@ function LogViewer({ record, onClose }: { record: ExecRecord; onClose: () => voi
   // 不执行 → 永久「加载日志...」，且 1.5s/5s 轮询持续重抛 unhandled rejection。
   // 同仓 AppsPage.tsx 的 AppLogViewer 对同一 IPC 形态有 try/catch + error 态，照此对齐。
   const [error, setError] = useState<string | null>(null);
+  // 读取失败后的**原位重试**计数：失败时轮询已被终止（NETOPT-7⑥），原实现
+  // 只能靠「关闭查看器再重开」重建轮询——等于让用户拿着报错绕路。置为
+  // reloadKey 递增即可重建整条拉取链（effect 负责清空旧行、重挂 interval），
+  // 与 AppsPage 查看器「可点『实时』重试」的失败恢复口径对齐。
+  const [reloadKey, setReloadKey] = useState(0);
   const linesRef = useRef(0);
   const containerRef = useRef<HTMLDivElement>(null);
   const autoScroll = useRef(true);
@@ -160,7 +165,7 @@ function LogViewer({ record, onClose }: { record: ExecRecord; onClose: () => voi
     const interval = record.status === 'running' ? 1500 : 5000;
     timerRef.current = setInterval(fetchLog, interval);
     return () => { if (timerRef.current) clearInterval(timerRef.current); };
-  }, [record.executionId, record.status, fetchLog]);
+  }, [record.executionId, record.status, fetchLog, reloadKey]);
 
   useEffect(() => {
     if (autoScroll.current && containerRef.current) {
@@ -255,7 +260,12 @@ function LogViewer({ record, onClose }: { record: ExecRecord; onClose: () => voi
             setVisibleLogCount((count) => count + 350);
           }}>再显示更早的日志 · 剩余 {hiddenLogCount} 行</button>
         )}
-        {error && <span className="log-empty" role="alert"><Icon name="warning" className="icon-xs" /> 日志读取失败：{error}（轮询已停止；关闭后重新打开可重试）</span>}
+        {error && (
+          <span className="log-empty" role="alert">
+            <Icon name="warning" className="icon-xs" /> 日志读取失败：{error}（轮询已停止）
+            <button type="button" className="btn btn-sm" onClick={() => setReloadKey((k) => k + 1)}>重试</button>
+          </span>
+        )}
         {loading && lines.length === 0 && !error && <span className="log-empty">加载日志...</span>}
         {!loading && lines.length === 0 && !error && <span className="log-empty">暂无日志（日志文件可能尚未生成）</span>}
         {!loading && lines.length > 0 && visibleLines.length === 0 && <span className="log-empty">当前日志中没有匹配内容</span>}

@@ -36,6 +36,11 @@ import { TaskModule } from "../task/task.module";
 // AUTH-05: 高危操作（rotate-token / 删除执行器）审计留痕（AuditModule
 // export AuditService；@Optional 注入保证存量单测装配兼容）
 import { AuditModule } from "../audit/audit.module";
+// N-02③（ADR-013 2026-10-02 温和下放）：executor 元数据面写权限判定用
+// ProjectAccessService（ProjectsModule export）。controller 侧 @Optional+
+// fail-closed（缺席退化仅 ADMIN），但生产装配**必须**在本模块 imports 提供
+// 它——本 import 是温和下放生效的前提，禁止省略。
+import { ProjectsModule } from "../project/projects.module";
 
 @Module({
   imports: [
@@ -67,6 +72,8 @@ import { AuditModule } from "../audit/audit.module";
     forwardRef(() => TaskModule),
     // AUTH-05: AuditService（executor.rotate_token / executor.delete 审计）
     AuditModule,
+    // N-02③: ProjectAccessService（executor 元数据面项目角色判定，见上注）
+    ProjectsModule,
   ],
   // 注：原 InstallCmdController 与 ExecutorController 重复注册了
   // GET /executors/install-cmd（前者运行时不可达），已作为死代码删除，

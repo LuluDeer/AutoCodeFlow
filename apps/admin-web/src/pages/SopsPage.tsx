@@ -3,10 +3,12 @@ import { useTranslation } from 'react-i18next';
 import {
   Alert,
   Button,
+  Card,
   Drawer,
+  Empty,
   Input,
-  message,
   Modal,
+  Pagination,
   Select,
   Space,
   Table,
@@ -15,10 +17,26 @@ import {
   Tooltip,
   Typography,
 } from 'antd';
+// TOAST-01：与全站一致走 utils/toast 出口（App 实例优先，暗色主题下样式正确；
+// 此前直接用 antd message 是本文件的历史偏离）。
+import { message } from '../utils/toast';
 import { ReloadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 
 import PageHeader from '../components/PageHeader';
+import StateError from '../components/StateError';
+// UX-06 第二扫：SOP 域裸枚举收敛到唯一事实源（状态/工单状态/澄清处置/附件类型）
+import {
+  SOP_ASSIGNMENT_STATUS_COLOR,
+  SOP_STATUS_COLOR,
+  sopAssignmentStatusLabel,
+  sopClarResolutionLabel,
+  sopMediaKindLabel,
+  sopStatusLabel,
+} from '../utils/sop-label';
+// UI-09 第三轮：≤768px 表格 → 卡片列表的结构级降级（对齐 TaskListPage/
+// ApplicationListPage 的 MOBILE-CARD-01 先例；断点与 index.css ui09 媒体查询同值）
+import { useIsMobile } from '../hooks/useIsMobile';
 import { sopsApi } from '../api/sops';
 // SOPS-TIME-01：时间列统一走 formatDateTime（locale 感知 + 空值回退 '—'）
 import { formatDateTime } from '../utils/timeFormat';
@@ -40,22 +58,15 @@ import type {
 
 const { Text, Paragraph } = Typography;
 
-function statusTag(status: Sop['status']) {
-  const color = status === 'published' ? 'green' : status === 'draft' ? 'gold' : 'default';
-  return <Tag color={color}>{status}</Tag>;
+function statusTag(status: Sop['status'], t: (key: string) => string) {
+  // UX-06 第二扫：不再裸渲染 {status}（draft/published/deprecated → sops.status.*）
+  const color = SOP_STATUS_COLOR[status] ?? 'default';
+  return <Tag color={color}>{sopStatusLabel(status, t)}</Tag>;
 }
 
-function assignmentStatusTag(status: SopAssignment['status']) {
-  const map: Record<SopAssignment['status'], string> = {
-    assigned: 'blue',
-    in_progress: 'processing',
-    blocked: 'orange',
-    completed: 'green',
-    failed: 'red',
-    cancelled: 'default',
-    stalled: 'volcano',
-  };
-  return <Tag color={map[status]}>{status}</Tag>;
+function assignmentStatusTag(status: SopAssignment['status'], t: (key: string) => string) {
+  // UX-06 第二扫：不再裸渲染 {status}（7 值工单状态机 → sops.assignmentStatus.*）
+  return <Tag color={SOP_ASSIGNMENT_STATUS_COLOR[status] ?? 'default'}>{sopAssignmentStatusLabel(status, t)}</Tag>;
 }
 
 /** 终态工单：可重派（换机重发），也不会再消费任何澄清答复。 */
@@ -63,6 +74,8 @@ const TERMINAL_ASSIGNMENT_STATUSES: SopAssignment['status'][] = ['failed', 'stal
 
 export default function SopsPage() {
   const { t } = useTranslation();
+  // UI-09 第三轮：≤768px 结构级降级开关（表格→卡片、抽屉满宽）
+  const isMobile = useIsMobile();
   const [items, setItems] = useState<Sop[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -78,10 +91,11 @@ export default function SopsPage() {
   const [creatingDraft, setCreatingDraft] = useState(false);
   // P6 升级环收口：人工回复澄清（escalated_to_human / pending）
   const [replyTarget, setReplyTarget] = useState<{ assignmentId: string; clarificationId: string } | null>(null);
-  const [reply, setReply] = useState<{ resolution: 'answered' | 'sop_amended'; answer: string; amendedYaml: string }>({
+  const [reply, setReply] = useState<{ resolution: 'answered' | 'sop_amended'; answer: string; amendedYaml: string; amendedBody: string }>({
     resolution: 'answered',
     answer: '',
     amendedYaml: '',
+    amendedBody: '',
   });
   const [replying, setReplying] = useState(false);
   // 指派对话框（P5 核心动作此前无 UI 入口）：版本 + 租约内可接单执行器
@@ -92,21 +106,42 @@ export default function SopsPage() {
   // 指派媒体（截图/录屏——执行器回传的证据，此前在 UI 不可见）
   const [media, setMedia] = useState<Record<string, SopMedia[]>>({});
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  // B-14：silent 轮询不闪 loading（定时器每 15s 触发，spinner 抖动是纯噪音）
+  // UX-05（对齐 ExecutorPackagesPage/TaskTemplatesPage 先例）：首次/手动加载失败
+  // 必须落到页内错误块——此前只弹一条一闪而过的 toast，表格停在「暂无数据」
+  // 空态，把读取失败谎报成「还没有任何 SOP」。
+  const [loadError, setLoadError] = useState<unknown>(null);
+  const load = useCallback(async (opts?: { silent?: boolean }) => {
+    if (!opts?.silent) setLoading(true);
     try {
       const res = await sopsApi.list({ page, pageSize });
       setItems(res.items);
       setTotal(res.total);
-    } catch {
-      message.error(t('sops.loadFailed'));
+      // 成功即清错误（后台静默拍自愈同效）
+      setLoadError(null);
+    } catch (err: unknown) {
+      // B-14：后台轮询失败静默——连续弹 message 是噪音，列表保留旧数据
+      if (!opts?.silent) {
+        setLoadError(err);
+        message.error(t('sops.loadFailed'));
+      }
     } finally {
-      setLoading(false);
+      if (!opts?.silent) setLoading(false);
     }
   }, [page, pageSize, t]);
 
   useEffect(() => {
     void load();
+  }, [load]);
+
+  // B-14：15s 轮询自动刷新（失焦暂停，定时器保留、回前台下一拍恢复——
+  // 对齐 ExecutionsPage 15s 兜底轮询先例）。SOP 列表/工单状态是协作面的
+  // 只读投影，人工不刷新就看不到澄清升级与执行进展。
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (document.visibilityState === 'visible') void load({ silent: true });
+    }, 15_000);
+    return () => clearInterval(timer);
   }, [load]);
 
   // SOPS-RACE-01：openDetail 无取消机制，快速连点两行时旧详情的响应可晚于
@@ -195,7 +230,10 @@ export default function SopsPage() {
       await sopsApi.replyClarification(replyTarget.assignmentId, replyTarget.clarificationId, {
         resolution: reply.resolution,
         answer: reply.answer,
+        // B-14：修订正文（API 已支持 amendedBodyMarkdown——修订可以只改正文
+        // 不动 front-matter，此前表单只给了 YAML 入口）
         ...(reply.resolution === 'sop_amended' && reply.amendedYaml ? { amendedFrontMatterYaml: reply.amendedYaml } : {}),
+        ...(reply.resolution === 'sop_amended' && reply.amendedBody ? { amendedBodyMarkdown: reply.amendedBody } : {}),
       });
       message.success(t('sops.replyOk'));
       // 接管未送达（9.13 残差）：执行器已按升级收尾的指派不再消费答复——
@@ -233,13 +271,21 @@ export default function SopsPage() {
       message.warning(t('sops.slugInvalid'));
       return;
     }
+    // 排查清单 #3：DraftSopDto 的 title 只有 @IsString()+@MaxLength(255)——
+    // **空串也能过校验**，此前空标题草稿被静默创建，列表里只留一个空行。
+    // 前端先行拦截（trim 后必填），超长由输入框 maxLength 兜住。
+    const title = draft.title.trim();
+    if (!title) {
+      message.warning(t('sops.titleRequired'));
+      return;
+    }
     // 防重复提交：Modal okButton 走 confirmLoading，回调再挡一层（连点/回车）
     if (creatingDraft) return;
     setCreatingDraft(true);
     try {
       await sopsApi.draft({
         slug,
-        title: draft.title,
+        title,
         frontMatterYaml: draft.frontMatterYaml || undefined,
         bodyMarkdown: draft.bodyMarkdown || undefined,
       });
@@ -255,9 +301,9 @@ export default function SopsPage() {
   }, [draft, creatingDraft, load, t]);
 
   const sopColumns: ColumnsType<Sop> = [
-    { title: 'slug', dataIndex: 'slug', width: 200 },
+    { title: t('sops.col.slug'), dataIndex: 'slug', width: 200 },
     { title: t('sops.col.title'), dataIndex: 'title', ellipsis: true },
-    { title: t('sops.col.status'), dataIndex: 'status', width: 110, render: (s: Sop['status']) => statusTag(s) },
+    { title: t('sops.col.status'), dataIndex: 'status', width: 110, render: (s: Sop['status']) => statusTag(s, t) },
     { title: t('sops.col.version'), dataIndex: 'currentVersion', width: 100, render: (v: string | null) => v ?? '—' },
     { title: t('sops.col.updatedAt'), dataIndex: 'updatedAt', width: 170, render: (v: string) => formatDateTime(v) },
     {
@@ -273,16 +319,16 @@ export default function SopsPage() {
 
   const versionColumns: ColumnsType<SopVersion> = [
     { title: t('sops.col.version'), dataIndex: 'version', width: 90 },
-    { title: 'contentHash', dataIndex: 'contentHash', width: 130, render: (h: string) => <Text copyable={{ text: h }}>{h.slice(0, 12)}…</Text> },
+    { title: t('sops.col.contentHash'), dataIndex: 'contentHash', width: 130, render: (h: string) => <Text copyable={{ text: h }}>{h.slice(0, 12)}…</Text> },
     { title: t('sops.col.publishedBy'), dataIndex: 'publishedBy', width: 160 },
     { title: t('sops.col.publishedAt'), dataIndex: 'publishedAt', width: 170, render: (v: string) => formatDateTime(v) },
-    { title: 'changelog', dataIndex: 'changelog', ellipsis: true },
+    { title: t('sops.col.changelog'), dataIndex: 'changelog', ellipsis: true },
   ];
 
   const assignmentColumns: ColumnsType<SopAssignment> = [
-    { title: 'id', dataIndex: 'id', width: 300, render: (v: string) => <Text copyable={{ text: v }}>{v.slice(0, 8)}…</Text> },
+    { title: t('sops.col.id'), dataIndex: 'id', width: 300, render: (v: string) => <Text copyable={{ text: v }}>{v.slice(0, 8)}…</Text> },
     { title: t('sops.col.version'), dataIndex: 'sopVersion', width: 90 },
-    { title: t('sops.col.status'), dataIndex: 'status', width: 120, render: (s: SopAssignment['status']) => assignmentStatusTag(s) },
+    { title: t('sops.col.status'), dataIndex: 'status', width: 120, render: (s: SopAssignment['status']) => assignmentStatusTag(s, t) },
     {
       title: t('sops.col.clarifications'),
       width: 120,
@@ -317,7 +363,7 @@ export default function SopsPage() {
         description={t('sops.description')}
         extra={
           <Space>
-            <Button icon={<ReloadOutlined />} onClick={() => void load()}>
+            <Button icon={<ReloadOutlined aria-hidden />} onClick={() => void load()}>
               {t('sops.refresh')}
             </Button>
             <Button type="primary" onClick={() => setDraftOpen(true)}>
@@ -326,18 +372,75 @@ export default function SopsPage() {
           </Space>
         }
       />
-      <Table<Sop>
-        rowKey="id"
-        loading={loading}
-        columns={sopColumns}
-        dataSource={items}
-        pagination={{ current: page, pageSize, total, showSizeChanger: true, onChange: (p, ps) => { setPage(p); setPageSize(ps); } }}
-        size="middle"
-      />
+      {/* UX-05：首次/手动加载失败 → 页内错误块（重试=重新拉取），不再只靠
+          一条瞬时 toast + 空表误导。后台静默轮询失败不打扰（保留旧数据）。 */}
+      {loadError !== null && (
+        <StateError
+          error={loadError}
+          title={t('sops.loadFailed')}
+          onRetry={() => void load()}
+          style={{ marginBottom: 16 }}
+        />
+      )}
+      {/* UI-09 第三轮：≤768px 卡片列表（MOBILE-CARD-01 同款结构级降级）——
+          SOP 卡按首查信息组织：slug+状态 → 标题 → 版本/更新时间 → 操作；
+          桌面保留 6 列表格。加载失败时空态不渲染（StateError 已如实呈现，
+          与桌面 locale 口径一致），避免把失败读成空列表。 */}
+      {isMobile ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {!loadError && items.length === 0 && (
+            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('sops.empty')} />
+          )}
+          {items.map((sop) => (
+            <Card key={sop.id} size="small">
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
+                <Text strong ellipsis style={{ flex: 1, minWidth: 0 }}>{sop.slug}</Text>
+                {statusTag(sop.status, t)}
+              </div>
+              {sop.title && (
+                <div style={{ marginTop: 4, fontSize: 12, color: 'var(--chart-axis-text)' }}>{sop.title}</div>
+              )}
+              <div style={{ marginTop: 6, fontSize: 12, color: 'var(--chart-axis-text)' }}>
+                {t('sops.col.version')}：{sop.currentVersion ?? '—'} · {t('sops.col.updatedAt')}：{formatDateTime(sop.updatedAt)}
+              </div>
+              <div style={{ marginTop: 8 }}>
+                <Button size="small" onClick={() => void openDetail(sop)}>
+                  {t('sops.view')}
+                </Button>
+              </div>
+            </Card>
+          ))}
+          {items.length > 0 && (
+            <Pagination
+              size="small"
+              current={page}
+              pageSize={pageSize}
+              total={total}
+              showSizeChanger={false}
+              onChange={(p, ps) => { setPage(p); setPageSize(ps); }}
+              style={{ alignSelf: 'flex-end' }}
+            />
+          )}
+        </div>
+      ) : (
+        <Table<Sop>
+          rowKey="id"
+          loading={loading}
+          columns={sopColumns}
+          dataSource={items}
+          pagination={{ current: page, pageSize, total, showSizeChanger: true, onChange: (p, ps) => { setPage(p); setPageSize(ps); } }}
+          size="middle"
+          // UX-05：加载失败时不再渲染「暂无数据」空态（上方 StateError 已如实呈现
+          // 失败原因与重试入口），避免把失败读成空列表（ExecutorPackagesPage 同款）
+          locale={loadError ? { emptyText: null } : undefined}
+        />
+      )}
 
       <Drawer
         title={detail ? `${detail.slug} ${detail.currentVersion ?? ''}` : ''}
-        width={860}
+        // antd 6：width 已并入 size（number|string|'large'|'default'）——
+        // 窄屏 '100%' 满宽，桌面 860px 固定宽
+        size={isMobile ? '100%' : 860}
         open={detail !== null}
         onClose={() => setDetail(null)}
         destroyOnHidden
@@ -416,7 +519,7 @@ export default function SopsPage() {
                             (clarifications[a.id] ?? []).map((c) => (
                               <div key={c.id} style={{ marginBottom: 12 }}>
                                 <Text strong>
-                                  #{c.round} · {c.resolution ?? 'pending'}
+                                  #{c.round} · {c.resolution ? sopClarResolutionLabel(c.resolution, t) : t('sops.clarResolution.pending')}
                                 </Text>
                                 {c.newSopVersion && <Tag style={{ marginLeft: 8 }}>→ {c.newSopVersion}</Tag>}
                                 {/* P7d 双端 ACK：回复经 poll 投递、执行器消费后确认；
@@ -434,7 +537,7 @@ export default function SopsPage() {
                                   <Button
                                     size="small"
                                     style={{ marginLeft: 8 }}
-                                    onClick={() => { setReplyTarget({ assignmentId: a.id, clarificationId: c.id }); setReply({ resolution: 'answered', answer: '', amendedYaml: '' }); }}
+                                    onClick={() => { setReplyTarget({ assignmentId: a.id, clarificationId: c.id }); setReply({ resolution: 'answered', answer: '', amendedYaml: '', amendedBody: '' }); }}
                                   >
                                     {t('sops.reply')}
                                   </Button>
@@ -457,7 +560,7 @@ export default function SopsPage() {
                                         style={{ marginRight: 8 }}
                                         onClick={() => void viewClarificationMedia(ref.url)}
                                       >
-                                        {t('sops.mediaView')} · {ref.kind}
+                                        {t('sops.mediaView')} · {sopMediaKindLabel(ref.kind, t)}
                                       </Button>
                                     ))}
                                   </Paragraph>
@@ -493,11 +596,15 @@ export default function SopsPage() {
           <Input
             placeholder="slug (daily-report)"
             value={draft.slug}
+            maxLength={128}
             onChange={(e) => setDraft({ ...draft, slug: e.target.value })}
           />
+          {/* maxLength 对齐 DraftSopDto @MaxLength(255)：超长输入在输入端截断，
+              不等后端 400（弹窗里无表单回显，400 只剩一条泛化 toast） */}
           <Input
             placeholder={t('sops.col.title')}
             value={draft.title}
+            maxLength={255}
             onChange={(e) => setDraft({ ...draft, title: e.target.value })}
           />
           <Input.TextArea
@@ -539,15 +646,27 @@ export default function SopsPage() {
             rows={5}
             placeholder={t('sops.replyPlaceholder')}
             value={reply.answer}
+            // maxLength 对齐 HumanReplyDto @MaxLength(8000)：答复正文在后端是
+            // 硬校验，超长提交只剩一条泛化失败 toast，用户长文当场丢失。
+            maxLength={8000}
             onChange={(e) => setReply({ ...reply, answer: e.target.value })}
           />
           {reply.resolution === 'sop_amended' && (
-            <Input.TextArea
-              rows={8}
-              placeholder={t('sops.replyAmendedPlaceholder')}
-              value={reply.amendedYaml}
-              onChange={(e) => setReply({ ...reply, amendedYaml: e.target.value })}
-            />
+            <>
+              <Input.TextArea
+                rows={8}
+                placeholder={t('sops.replyAmendedPlaceholder')}
+                value={reply.amendedYaml}
+                onChange={(e) => setReply({ ...reply, amendedYaml: e.target.value })}
+              />
+              {/* B-14：修订正文入口——API 支持 amendedBodyMarkdown，修订可只改正文 */}
+              <Input.TextArea
+                rows={6}
+                placeholder={t('sops.replyBodyPlaceholder')}
+                value={reply.amendedBody}
+                onChange={(e) => setReply({ ...reply, amendedBody: e.target.value })}
+              />
+            </>
           )}
         </Space>
       </Modal>
@@ -567,6 +686,9 @@ export default function SopsPage() {
           )}
           <Select
             style={{ width: '100%' }}
+            showSearch
+            // 版本随 SOP 修订持续增长，键入过滤；label 含版本号与内容摘要
+            optionFilterProp="label"
             placeholder={t('sops.assignVersion')}
             value={assignForm.version || undefined}
             onChange={(v) => setAssignForm({ ...assignForm, version: v })}

@@ -32,7 +32,10 @@ export class ProjectsService {
     return this.repo.save(row);
   }
 
-  // P3-1：项目表为小表（组织级通常 < 百行），全表 find 无需分页——刻意保持现状。
+  // P3-1：项目表为小表（组织级通常 < 百行），服务层保持全表 find——**响应面**
+  // 的分页收敛在 controller（可选 page/pageSize 信封，不传参数仍全量数组）。
+  // 无界的是线上载荷而非这一次 DB 读；若未来项目数到达千级，再把切片下推
+  // 到 QueryBuilder skip/take（届时 page@Max(10000) 纪律已在 controller 备好）。
   async findAll(): Promise<Project[]> {
     return this.repo.find({ order: { createdAt: "ASC" } });
   }

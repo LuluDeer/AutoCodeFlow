@@ -102,7 +102,9 @@ docker compose logs -f admin-api
 | npm registry | http://localhost:4873 |
 | PyPI registry | http://localhost:8003 |
 
-> **私有 PyPI 源语义（重要）**：`PYPI_REGISTRY_URL` 是 `--index-url`（**替换**默认索引）而非附加，且自建 registry-pypi **无上游代理**——默认部署下，任何未手动上传到私有源的包（含 PyPI 官方包）安装都会失败。如需同时可见官方源，设置 `PYPI_EXTRA_INDEX_URL`（以 `--extra-index-url` 追加，executor-node / executor-python 同构支持），或将 `PYPI_REGISTRY_URL` 显式置空回落官方源。npm 侧 Verdaccio 自带 npmjs 上游代理，无此限制。
+> **私有包仓库反代路由（B-1）**：管理台所在站点（`http://localhost`，即 admin-web nginx）同步反代了两个私有仓库的客户端面——`/pypi/` → registry-pypi:8003（含 `/packages/` 制品下载）、`/npm/` → registry-npm:4873，`Authorization` 头端到端透传。管理台「包注册中心」页可复制的 `pip config set global.index-url <站点>/pypi/simple/`、`npm config set registry <站点>/npm/` 命令即依赖这些路由；两个仓库仍要求凭据（PyPI 索引面 Basic 认证、Verdaccio `$authenticated`），凭据为部署下发的 `REGISTRY_USER` / `REGISTRY_PASS` 与 npm 服务账号。仓库服务的宿主端口默认只绑 `127.0.0.1`（上表地址仅宿主机本机可达），局域网开发者请走反代路由或显式覆写端口映射。
+
+> **私有 PyPI 源语义（重要）**：`PYPI_REGISTRY_URL` 是 `--index-url`（**替换**默认索引）而非附加，且自建 registry-pypi **无上游代理**——默认部署下，任何未手动上传到私有源的包（含 PyPI 官方包）安装都会失败。如需同时可见官方源，设置 `PYPI_EXTRA_INDEX_URL`（以 `--extra-index-url` 追加，executor-node / executor-python 同构支持），或将 `PYPI_REGISTRY_URL` 显式置空回落官方源（B-2：compose 用 bash `${VAR-default}` 语义注入执行器——仅「未设置」才落到私有源默认值，显式置空对 uv/npm 生效；`NPM_REGISTRY_URL` / `PYTHON_REGISTRY_URL` 同族同语义）。npm 侧 Verdaccio 自带 npmjs 上游代理，无此限制。
 
 默认管理员账号由 `INITIAL_ADMIN_PASSWORD` 环境变量设置，首次登录后请立即修改密码。
 

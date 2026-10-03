@@ -9,6 +9,7 @@ import { Card,
   Input,
   Select,
   InputNumber,
+  Checkbox,
   Typography,
   Alert,
   Popconfirm } from 'antd';
@@ -79,7 +80,7 @@ function CreateResultModal(props: {
       onOk={props.onClose}
       onCancel={props.onClose}
       footer={[
-        <Button key="copy" icon={<CopyOutlined />} onClick={async () => {
+        <Button key="copy" icon={<CopyOutlined aria-hidden />} onClick={async () => {
           // UX-04（本轮体验审查）：此前是
           //   navigator.clipboard?.writeText(...); setCopied(true);
           // ——无 await、无 catch，**无条件**置「已复制」。非 HTTPS / iframe
@@ -101,7 +102,7 @@ function CreateResultModal(props: {
       <Alert
         type="warning"
         showIcon
-        icon={<WarningOutlined />}
+        icon={<WarningOutlined aria-hidden />}
         title={t('apiKeys.result.warnTitle')}
         description={t('apiKeys.result.warnDesc')}
         style={{ marginBottom: 16 }}
@@ -132,12 +133,23 @@ export default function ApiKeysSettings() {
     queryFn: ({ signal }) => apiKeysApi.list(signal),
   });
 
+  // A-14（R3-A 审计）: 表单值透传 task:trigger 附加勾选（scope=trigger 时展示）
   const createMut = useMutation({
-    mutationFn: (values: { name: string; scope: ApiKeyScope; expiresInDays?: number | null }) =>
+    mutationFn: (values: {
+      name: string;
+      scope: ApiKeyScope;
+      expiresInDays?: number | null;
+      taskTrigger?: boolean;
+    }) =>
       apiKeysApi.create({
         name: values.name,
         scope: values.scope,
         ...(values.expiresInDays ? { expiresInDays: values.expiresInDays } : {}),
+        // A-14: 仅在 scope=trigger 且显式勾选时透传扩展域——DTO 字段名 scopes
+        // （空格分隔词表）；未勾选不传，后端按 null 处理（零行为变化）。
+        ...(values.scope === 'trigger' && values.taskTrigger
+          ? { scopes: 'task:trigger' }
+          : {}),
       }),
     onSuccess: (result) => {
       // 创建成功：关闭表单，弹一次性明文回显
@@ -170,7 +182,12 @@ export default function ApiKeysSettings() {
   const columns: ColumnsType<ApiKeyView> = [
     { title: t('apiKeys.col.name'), dataIndex: 'name', key: 'name', ellipsis: true, minWidth: 160 },
     {
+      // UI-09 第三轮：前缀/最后使用是次要列——窄屏（≤768px）由媒体查询隐藏
+      // （onHeaderCell/onCell 双端挂类，对齐 AppDeploymentPage 既有模式；断点与
+      // index.css ui09 媒体查询同值）。名称/Scope/过期/状态/操作保留，scroll.x 兜底。
       title: t('apiKeys.col.keyPrefix'), dataIndex: 'keyPrefix', key: 'keyPrefix', width: 120, ellipsis: true,
+      onHeaderCell: () => ({ className: 'ui09-hide-mobile' }),
+      onCell: () => ({ className: 'ui09-hide-mobile' }),
       render: (v: string) => <Text code>{v}…</Text>,
     },
     {
@@ -183,6 +200,8 @@ export default function ApiKeysSettings() {
     },
     {
       title: t('apiKeys.col.lastUsed'), dataIndex: 'lastUsedAt', key: 'lastUsedAt', width: 170, ellipsis: true,
+      onHeaderCell: () => ({ className: 'ui09-hide-mobile' }),
+      onCell: () => ({ className: 'ui09-hide-mobile' }),
       render: (v: string | null) => formatDateTime(v),
     },
     {
@@ -217,9 +236,21 @@ export default function ApiKeysSettings() {
 
   return (
     <Card
-      title={<Space><ApiOutlined />{t('apiKeys.title')}</Space>}
+      title={
+        // 375px 走查：长标题（「API Keys（限权机器凭证）」）此前被右侧「新建
+        // API Key」按钮硬截断且无省略号——antd 卡头自带的 ellipsis 只作用于
+        // 标题元素自身的文本，包一层 inline-flex Space 后失效。改 flex 容器
+        // + minWidth:0 链路让 Typography.Text ellipsis 真正生效（超长出
+        // 省略号，hover tooltip 保全文）。
+        <span style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+          <ApiOutlined aria-hidden style={{ flex: 'none' }} />
+          <Typography.Text ellipsis={{ tooltip: t('apiKeys.title') }} style={{ flex: 1, minWidth: 0 }}>
+            {t('apiKeys.title')}
+          </Typography.Text>
+        </span>
+      }
       extra={
-        <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)} data-testid="apikey-create">
+        <Button type="primary" icon={<PlusOutlined aria-hidden />} onClick={() => setCreateOpen(true)} data-testid="apikey-create">
           {t('apiKeys.create')}
         </Button>
       }
@@ -284,6 +315,28 @@ export default function ApiKeysSettings() {
                 { value: 'manage', label: t('apiKeys.scopeOption.manage') },
               ]}
             />
+          </Form.Item>
+          {/* A-14（R3-A 审计）: task:trigger 扩展域此前后端可达（NF-01）但前端
+              无入口——scope=trigger 时展示附加勾选，载荷透传 scopes='task:trigger'。
+              切走 scope 后条件渲染卸载，值由载荷构造侧按 scope 判断兜底。 */}
+          <Form.Item noStyle shouldUpdate={(prev, cur) => prev.scope !== cur.scope}>
+            {({ getFieldValue }) =>
+              getFieldValue('scope') === 'trigger' ? (
+                <>
+                  <Form.Item name="taskTrigger" valuePropName="checked" style={{ marginBottom: 4 }}>
+                    <Checkbox data-testid="apikey-task-trigger">
+                      {t('apiKeys.field.allowTaskTrigger')}
+                    </Checkbox>
+                  </Form.Item>
+                  <Typography.Text
+                    type="secondary"
+                    style={{ display: 'block', marginBottom: 16, fontSize: 12 }}
+                  >
+                    {t('apiKeys.field.allowTaskTriggerHint')}
+                  </Typography.Text>
+                </>
+              ) : null
+            }
           </Form.Item>
           <Form.Item
             name="expiresInDays"

@@ -22,7 +22,7 @@ import axios from 'axios';
 import chalk from 'chalk';
 import { get, post } from '../client.js';
 import { getApiUrl } from '../config.js';
-import { formatApiError } from '../client.js';
+import { emitError, EXIT_CODES } from '../ui.js';
 
 const TERMINAL = new Set(['success', 'failed', 'timeout', 'killed', 'cancelled']);
 
@@ -188,7 +188,7 @@ export function execCommand(): Command {
                 `[tail] no data frame for ${IDLE_TIMEOUT_MS / 1000}s — the stream went silent; retry \`acf exec tail ${execId}\`.\n`,
               ),
             );
-            process.exit(1);
+            process.exit(EXIT_CODES.NETWORK);
           }, IDLE_TIMEOUT_MS);
           // unref：看门狗不得阻止进程在无其他活动句柄时退出（生产上流挂死
           // 不绑架退出；测试里不残留挂起定时器拖慢 vitest）。
@@ -224,7 +224,7 @@ export function execCommand(): Command {
                 '`.\n',
             ),
           );
-          process.exitCode = 1;
+          process.exitCode = EXIT_CODES.NETWORK;
         });
         stream.on('error', (err: Error) => {
           clearIdleTimer();
@@ -232,8 +232,7 @@ export function execCommand(): Command {
           process.exit(1);
         });
       } catch (e: unknown) {
-        console.error(chalk.red('✗ tail failed:'), formatApiError(e));
-        process.exit(1);
+        emitError('tail failed', e);
       }
     });
 

@@ -62,12 +62,41 @@ function harness(required: string[] = []) {
           Object.entries(where).every(([k, v]) => candidate[k] === v),
         ) ?? null,
     ),
-    createQueryBuilder: jest.fn(() => ({
-      where: jest.fn().mockReturnThis(),
-      andWhere: jest.fn().mockReturnThis(),
-      orderBy: jest.fn().mockReturnThis(),
-      getMany: jest.fn().mockResolvedValue([]),
-    })),
+    // B-11：pendingReplyItems 走 createQueryBuilder 下推游标条件——fake 按
+    // 服务层发送的 SQL 片段语义过滤（assignmentId 精确、resolution 非空、
+    // updatedAt 晚于游标），保证既有投递语义断言仍然成立。
+    createQueryBuilder: jest.fn(() => {
+      let assignmentId = "";
+      let requireResolution = false;
+      let cursor: Date | null = null;
+      const chain = {
+        where: jest.fn((sql: string, params?: Record<string, unknown>) => {
+          if (/c\.assignmentId = :assignmentId/.test(sql) && params) {
+            assignmentId = String(params.assignmentId);
+          }
+          return chain;
+        }),
+        andWhere: jest.fn((sql: string, params?: Record<string, unknown>) => {
+          if (/resolution IS NOT NULL/.test(sql)) requireResolution = true;
+          if (/updatedAt > :cursor/.test(sql) && params) {
+            cursor = new Date(params.cursor as unknown as string);
+          }
+          return chain;
+        }),
+        orderBy: jest.fn().mockReturnThis(),
+        getMany: jest.fn(async () =>
+          clarificationRows
+            .filter((r) => r.assignmentId === assignmentId)
+            .filter((r) => !requireResolution || r.resolution !== null)
+            .filter(
+              (r) =>
+                !cursor || new Date(r.updatedAt).getTime() > cursor!.getTime(),
+            )
+            .sort((x, y) => x.round - y.round),
+        ),
+      };
+      return chain;
+    }),
   };
   const executors = {
     getAgentCapabilities: jest.fn().mockResolvedValue(["agent:sop"]),
@@ -156,7 +185,8 @@ describe("SOP Agent capability lease at assignment and poll", () => {
     expect(first.map((item) => item.assignmentId)).toEqual(["a1", "a2"]);
     expect(h.rows[0].pulledAt).toBeInstanceOf(Date);
     expect(h.rows[1].pulledAt).toBeInstanceOf(Date);
-    expect(h.clarifications.createQueryBuilder).not.toHaveBeenCalled();
+    // B-11：澄清回复查询改走 createQueryBuilder（游标条件下推）
+    expect(h.clarifications.createQueryBuilder).toHaveBeenCalled();
 
     // 全部领取后，后续 poll 无指派可投
     const second = (await h.service.pollPending({
@@ -335,5 +365,114 @@ describe("SOP Agent capability lease at assignment and poll", () => {
       }),
     ).rejects.toThrow("不属于该执行器");
     expect(h.rows[0].lastReplyDeliveredAt).toBeNull();
+  });
+});
+
+// B-6：stalled 不是终局——心跳即存活证据，投递集合纳入 stalled 后
+// 执行器复活路径完整（progress → in_progress → 失联扫描重新覆盖）。
+describe("SOP stalled recovery (B-6)", () => {
+  it("recordProgress 把 stalled 复活为 in_progress 并刷新心跳", async () => {
+    const h = harness();
+    const stalledAt = new Date("2026-01-01T00:00:00.000Z");
+    h.rows.push({
+      id: "a1",
+      sopId: "sop-1",
+      sopVersion: "1.0.0",
+      status: "stalled",
+      pulledAt: new Date(),
+      targetExecutorId: "e1",
+      lastProgressAt: stalledAt,
+      maxRounds: 5,
+      clarificationRound: 0,
+    });
+
+    await h.service.recordProgress({
+      assignmentId: "a1",
+      executorId: "e1",
+      progressJson: { step: "retry" },
+    });
+
+    expect(h.rows[0].status).toBe("in_progress");
+    expect(h.rows[0].lastProgressAt).not.toBe(stalledAt);
+    expect(h.rows[0].progressJson).toEqual({ step: "retry" });
+  });
+
+  it("stalled 指派的澄清回复经 poll 投递（此前被 activeStatuses 排除）", async () => {
+    const h = harness();
+    h.rows.push({
+      id: "a1",
+      sopId: "sop-1",
+      sopVersion: "1.0.0",
+      status: "stalled",
+      pulledAt: new Date(),
+      targetExecutorId: "e1",
+      lastReplyDeliveredAt: null,
+    });
+    h.clarificationRows.push({
+      id: "clr-1",
+      assignmentId: "a1",
+      round: 1,
+      resolution: "answered",
+      answer: "已恢复，继续",
+      updatedAt: new Date("2026-01-02T00:00:00.000Z"),
+    });
+
+    const items = (await h.service.pollPending({
+      executorId: "e1",
+    })) as Array<{ kind: string; clarificationId: string }>;
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      kind: "clarification_reply",
+      clarificationId: "clr-1",
+    });
+  });
+});
+
+// B-11（最小步）：澄清投递游标条件下推 SQL，内存过滤保留兜底。
+describe("SOP clarification reply cursor pushdown (B-11)", () => {
+  it("游标存在时查询带上 updatedAt > cursor 条件；兜底过滤丢弃未过游标的行", async () => {
+    const h = harness();
+    h.rows.push({
+      id: "a1",
+      sopId: "sop-1",
+      sopVersion: "1.0.0",
+      status: "in_progress",
+      pulledAt: new Date(),
+      targetExecutorId: "e1",
+      lastReplyDeliveredAt: new Date("2026-01-02T00:00:00.000Z"),
+    });
+    // 这行 resolution 已落定但 updatedAt 早于游标——fake getMany 按游标
+    // 条件（SQL 语义）会滤掉它；再手工注入一条「漏网」行验证内存兜底。
+    h.clarificationRows.push({
+      id: "clr-old",
+      assignmentId: "a1",
+      round: 1,
+      resolution: "answered",
+      answer: "旧答复",
+      updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+    });
+    h.clarificationRows.push({
+      id: "clr-new",
+      assignmentId: "a1",
+      round: 2,
+      resolution: "sop_amended",
+      answer: "新答复",
+      updatedAt: new Date("2026-01-03T00:00:00.000Z"),
+    });
+
+    const items = (await h.service.pollPending({
+      executorId: "e1",
+    })) as Array<{ clarificationId: string }>;
+    // SQL 层（fake 按 SQL 语义）只回 clr-new；兜底过滤双保险
+    expect(items.map((i) => i.clarificationId)).toEqual(["clr-new"]);
+
+    // 下推断言：qb 收到游标条件
+    const qbResults = (h.clarifications.createQueryBuilder as jest.Mock).mock
+      .results;
+    const qbInstance = qbResults[qbResults.length - 1].value;
+    expect(qbInstance.andWhere).toHaveBeenCalledWith(
+      "c.updatedAt > :cursor",
+      expect.objectContaining({ cursor: expect.anything() }),
+    );
   });
 });

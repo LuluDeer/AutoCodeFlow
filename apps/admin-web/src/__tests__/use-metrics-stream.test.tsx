@@ -8,7 +8,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, act, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { useMetricsStream, reconnectBackoffMs } from '../hooks/useMetricsStream';
+import {
+  useMetricsStream,
+  useMetricsStreamDegraded,
+  reconnectBackoffMs,
+} from '../hooks/useMetricsStream';
 import { queryKeys } from '../api/queries';
 import { getSSEStatus, SSE_STATUS_KEYS } from '../api/sse-client';
 import { useAuthStore } from '../store/auth';
@@ -49,11 +53,21 @@ class FakeEventSource {
   onmessage: ((e: { data: string }) => void) | null = null;
   onerror: (() => void) | null = null;
   closed = false;
+  // A-4：捕获具名事件监听（sse-client 的 events 映射走 addEventListener）
+  private listeners = new Map<string, Array<(e: { data: string }) => void>>();
   constructor(url: string) {
     this.url = url;
     FakeEventSource.instances.push(this);
   }
-  addEventListener() {}
+  addEventListener(name: string, handler: (e: { data: string }) => void) {
+    const arr = this.listeners.get(name) ?? [];
+    arr.push(handler);
+    this.listeners.set(name, arr);
+  }
+  /** 测试侧手动派发具名事件帧（如 error） */
+  emit(name: string, event: { data: string }) {
+    for (const h of this.listeners.get(name) ?? []) h(event);
+  }
   close() {
     this.closed = true;
   }
@@ -231,10 +245,120 @@ describe('useMetricsStream 流行为', () => {
     ).not.toThrow();
     expect(qc.getQueryData(queryKeys.metrics.summary)).toBeUndefined();
   });
+
+  // ── A-4（审计降级黑洞）：具名 error 帧 = 后端快照查询降级 ────────────────
+
+  it('A-4：error 帧置降级标志并对失败段触发一次 refetch（live 停轮询下的补拉）', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const refetchSpy = vi.spyOn(qc, 'refetchQueries');
+    render(
+      <QueryClientProvider client={qc}>
+        <StreamDegradedProbe />
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(FakeEventSource.instances.length).toBe(1));
+    const es = FakeEventSource.instances[0];
+    expect(screen.getByTestId('stream-degraded').textContent).toBe('fresh');
+
+    act(() => {
+      es.emit('error', { data: JSON.stringify({ failed: ['summary'], at: 'now' }) });
+    });
+    expect(screen.getByTestId('stream-degraded').textContent).toBe('degraded');
+    expect(refetchSpy).toHaveBeenCalledWith({ queryKey: queryKeys.metrics.summary });
+
+    // 未列出的失败段不补拉（executors 不在 failed 数组）
+    refetchSpy.mockClear();
+    act(() => {
+      es.emit('error', { data: JSON.stringify({ failed: ['summary'], at: 'now' }) });
+    });
+    expect(refetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('A-4：快照 errors 数组同步降级标志——恢复（空数组）即清除', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <StreamDegradedProbe />
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(FakeEventSource.instances.length).toBe(1));
+    const es = FakeEventSource.instances[0];
+
+    act(() => {
+      es.onmessage?.({
+        data: JSON.stringify({ summary: null, executors: null, scheduler: null, errors: ['summary'] }),
+      });
+    });
+    expect(screen.getByTestId('stream-degraded').textContent).toBe('degraded');
+    // 降级拍不覆盖缓存（summary 为 null 不写入），旧值保留
+    expect(qc.getQueryData(queryKeys.metrics.summary)).toBeUndefined();
+
+    act(() => {
+      es.onmessage?.({
+        data: JSON.stringify({ summary: summaryPayload, executors: [], scheduler: {}, errors: [] }),
+      });
+    });
+    expect(screen.getByTestId('stream-degraded').textContent).toBe('fresh');
+    expect(qc.getQueryData(queryKeys.metrics.summary)).toEqual(summaryPayload);
+  });
+
+  it('A-4：畸形 error 帧按整体降级处理（置标志、不炸、不补拉）', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const refetchSpy = vi.spyOn(qc, 'refetchQueries');
+    render(
+      <QueryClientProvider client={qc}>
+        <StreamDegradedProbe />
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(FakeEventSource.instances.length).toBe(1));
+    const es = FakeEventSource.instances[0];
+    expect(() =>
+      act(() => {
+        es.emit('error', { data: 'not-json{{' });
+      }),
+    ).not.toThrow();
+    expect(screen.getByTestId('stream-degraded').textContent).toBe('degraded');
+    expect(refetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('A-4：卸载后降级标志复位（不跨连接残留）', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { unmount } = render(
+      <QueryClientProvider client={qc}>
+        <StreamDegradedProbe />
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(FakeEventSource.instances.length).toBe(1));
+    act(() => {
+      FakeEventSource.instances[0].emit('error', { data: JSON.stringify({ failed: ['summary'] }) });
+    });
+    expect(screen.getByTestId('stream-degraded').textContent).toBe('degraded');
+    unmount();
+    // 复位发生在 effect cleanup——下一次挂载（新渲染）读到 fresh
+    const qc2 = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc2}>
+        <StreamDegradedProbe />
+      </QueryClientProvider>,
+    );
+    expect(screen.getByTestId('stream-degraded').textContent).toBe('fresh');
+  });
 });
 
 /** 状态探针组件（hook 返回值直出，供状态断言） */
 function StreamStatusProbe() {
   const status = useMetricsStream();
   return <span data-testid="stream-status">{status}</span>;
+}
+
+/** A-4：连接状态 + 降级标志双面探针 */
+function StreamDegradedProbe() {
+  const status = useMetricsStream();
+  const degraded = useMetricsStreamDegraded();
+  return (
+    <>
+      <span data-testid="stream-status">{status}</span>
+      <span data-testid="stream-degraded">{degraded ? 'degraded' : 'fresh'}</span>
+    </>
+  );
 }

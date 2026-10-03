@@ -21,3 +21,18 @@ export function listLocalIPv4s(): string[] {
   }
   return ips;
 }
+
+/**
+ * B-8：端口可用性检测的监听 host 归一化。
+ *
+ * 背景：config:check-port 此前把检测 socket 固定绑在 0.0.0.0，而执行器实际
+ * 按 config.executorHost 绑（可配 127.0.0.1）——两者在特定环境（其它进程已
+ * 独占 127.0.0.1 的该端口、或组策略限制通配绑定）下判定会相反，「检测可用、
+ * 启动绑不上」或反之。修法：检测 host 必须与**将要 bind 的 host**同源（由
+ * 调用方传入其表单值），本函数只做兜底归一化：空/非字符串一律回落 0.0.0.0
+ * （与 config-store 的 executorHost 缺省一致），绝不抛（在 IPC 热路径上）。
+ */
+export function normalizeListenHost(host: unknown): string {
+  const h = typeof host === 'string' ? host.trim() : '';
+  return h || '0.0.0.0';
+}
