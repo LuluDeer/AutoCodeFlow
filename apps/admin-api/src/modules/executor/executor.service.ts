@@ -196,6 +196,23 @@ export const TERMINAL_STATES_DEFAULT_LOOKBACK_MS = 24 * 60 * 60 * 1000;
  * 服务端分页（见 findAll 注释）。
  */
 export const EXECUTOR_LIST_LIMIT = 500;
+/**
+ * 执行器选择器（executor picker，GET /executors/picker）的硬上限。
+ *
+ * 为什么与 EXECUTOR_LIST_LIMIT 不是同一个值：findAll() 回**全列实体投影**
+ * （interpreters / runningExecutionIds ≤10000 条的数组列 / tags / 心跳元数据…），
+ * 单行重，500 是它的载荷护栏；picker 只回部署下拉（AppDeploymentPage 部署
+ * 模态 / ApplicationListPage 快速部署）实际消费的 6 个轻列（见
+ * findPickerOptions），单行轻一个数量级以上，2000 行的总载荷仍小于 findAll
+ * 的 500 行全列——上限据此放宽。
+ *
+ * 超限**绝不静默**：findPickerOptions() 以 `truncated: true` + 全量 `total`
+ * 显式上报，前端在选择器里展示「共 total 台，仅显示前 limit 台」告警（复用
+ * execList.truncated 文案）。选择器的搜索是前端对返回数组做的客户端过滤——
+ * 静默截断等于对被截掉的执行器假阴性（搜不到真实存在的机器），这正是本端点
+ * 要修的缺陷形态，故截断必须可见。
+ */
+export const EXECUTOR_PICKER_LIMIT = 2000;
 /** AgentHost 每 30 秒续报；两分钟无续报则撤去全部协作能力。 */
 export const AGENT_CAPABILITIES_LEASE_MS = 2 * 60 * 1000;
 const MAX_RUNNING_EXECUTION_IDS = 10_000; // NETOPT-C P2-1: 与 E9 maxConcurrentTasks 采纳上界一致
@@ -2243,6 +2260,75 @@ export class ExecutorService implements OnModuleInit {
           versionCompliant: isVersionCompliant(e.executorVersion, minVersion),
         })),
       );
+  }
+
+  /**
+   * 执行器选择器（GET /executors/picker）：部署模态 / 快速部署两个执行器
+   * 下拉的轻量数据源。
+   *
+   * 为什么不复用 findAll()：它回全列实体（含 runningExecutionIds ≤10000 条的
+   * 数组列、interpreters、tags…），且 take=EXECUTOR_LIST_LIMIT(500) 按
+   * createdAt DESC 静默截断——执行器总数超过 500 后，下拉对第 501+ 台执行器
+   * **假阴性**（用户搜不到一台真实存在的机器）。这里以 SQL select 收窄到两个
+   * 下拉实际消费的 6 列：
+   *   - id / appName / address / status：选项文案 + 在线态禁用（disabled）；
+   *   - runningTaskCount / maxConcurrentTasks：部署模态选项的负载进度条
+   *     （AppDeploymentPage 的 ExecutorCard）。
+   * 分组/标签/心跳时间等列表页字段下拉不消费，一并不回（载荷护栏与本仓库
+   * 「读面按消费方声明」的纪律一致）。
+   *
+   * 截断显式化：total 以独立 COUNT 取得；items 按 createdAt DESC 取前
+   * EXECUTOR_PICKER_LIMIT 行，`total > items.length` 时 `truncated: true`。
+   * 返回**不抛错**——超限时下拉仍有前 2000 台可用，但前端必须把 truncated
+   * 告警渲染出来（execList.truncated），不许把子集说成全量。
+   *
+   * RBAC 与 GET /executors 完全对齐（JwtAuthGuard、无 @Roles 收紧）：N11 复核
+   * 结论同样适用本端点——任务 CRUD 对普通用户开放，且本读面是 list 的**严格
+   * 子集**（不新增任何字段暴露），单独收紧既挡不住信息又会打断部署下拉。
+   */
+  async findPickerOptions(): Promise<{
+    items: Array<{
+      id: string;
+      appName: string;
+      address: string;
+      status: ExecutorStatus;
+      runningTaskCount: number;
+      maxConcurrentTasks: number | null;
+    }>;
+    total: number;
+    truncated: boolean;
+    limit: number;
+  }> {
+    const [total, rows] = await Promise.all([
+      this.repo.count(),
+      // select 收窄是载荷护栏的主体：runningExecutionIds（≤10000 条/行）等重列
+      // 不出库。列清单必须与上方返回类型逐一对应，多列即读面漂移。
+      this.repo.find({
+        order: { createdAt: "DESC" },
+        take: EXECUTOR_PICKER_LIMIT,
+        select: {
+          id: true,
+          appName: true,
+          address: true,
+          status: true,
+          runningTaskCount: true,
+          maxConcurrentTasks: true,
+        },
+      }),
+    ]);
+    return {
+      items: rows.map((e) => ({
+        id: e.id,
+        appName: e.appName,
+        address: e.address,
+        status: e.status,
+        runningTaskCount: e.runningTaskCount,
+        maxConcurrentTasks: e.maxConcurrentTasks,
+      })),
+      total,
+      truncated: total > rows.length,
+      limit: EXECUTOR_PICKER_LIMIT,
+    };
   }
 
   /**

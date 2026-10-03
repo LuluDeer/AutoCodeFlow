@@ -18,7 +18,7 @@ vi.mock('../api/applications', () => ({
   applicationsApi: { upgradeAll: vi.fn() },
 }));
 vi.mock('../api/executors', () => ({
-  executorsApi: { list: vi.fn() },
+  executorsApi: { list: vi.fn(), picker: vi.fn() },
 }));
 
 // jsdom 缺失 antd 依赖的浏览器 API，先行补齐（对齐 app-deployment-race.test 先例）
@@ -63,6 +63,7 @@ const realSetInterval = globalThis.setInterval;
 beforeEach(() => {
   useAuthStore.setState({ user: { id: 1, username: 'root', role: 'admin' } });
   vi.mocked(executorsApi.list).mockReset().mockResolvedValue([] as never);
+  vi.mocked(executorsApi.picker).mockReset().mockResolvedValue({ items: [], total: 0, truncated: false, limit: 2000 } as never);
   vi.mocked(deploymentsApi.list)
     .mockReset()
     .mockResolvedValue({ data: [inProgressDeployment], total: 1 } as never);
@@ -92,9 +93,10 @@ describe('F-34 部署页轮询守卫', () => {
 
     render(<AppDeploymentPage applicationId="app-1" />);
 
-    // 首屏 fetchAll：部署列表 + 执行器清单各 1 次
+    // 首屏 fetchAll：部署列表 + 执行器清单（名字解析）+ 执行器 picker（下拉）各 1 次
     await waitFor(() => expect(deploymentsApi.list).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(executorsApi.list).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(executorsApi.picker).toHaveBeenCalledTimes(1));
     // 行状态为 deploying → 起 3s 轮询
     await waitFor(() => expect(pollers.length).toBe(1));
 
@@ -105,14 +107,16 @@ describe('F-34 部署页轮询守卫', () => {
     });
     expect(deploymentsApi.list).toHaveBeenCalledTimes(1);
     expect(executorsApi.list).toHaveBeenCalledTimes(1);
+    expect(executorsApi.picker).toHaveBeenCalledTimes(1);
 
-    // ② 回到可见：只补拉部署列表（执行器清单不再每拍全量拉取）
+    // ② 回到可见：只补拉部署列表（执行器清单与 picker 均不每拍重复拉取）
     setVisibility('visible');
     await act(async () => {
       pollers[0]();
     });
     await waitFor(() => expect(deploymentsApi.list).toHaveBeenCalledTimes(2));
     expect(executorsApi.list).toHaveBeenCalledTimes(1);
+    expect(executorsApi.picker).toHaveBeenCalledTimes(1);
   });
 
   it('无进行中部署时不建立轮询', async () => {

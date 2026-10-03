@@ -22,7 +22,7 @@ vi.mock('../api/applications', () => ({
   applicationsApi: { upgradeAll: vi.fn() },
 }));
 vi.mock('../api/executors', () => ({
-  executorsApi: { list: vi.fn() },
+  executorsApi: { list: vi.fn(), picker: vi.fn() },
 }));
 
 // jsdom 缺失 antd 依赖的浏览器 API，先行补齐（对齐 app-deployment-race.test 先例）
@@ -67,6 +67,7 @@ async function flush(ms = 0) {
 beforeEach(() => {
   useAuthStore.setState({ user: { id: 1, username: 'root', role: 'admin' } });
   vi.mocked(executorsApi.list).mockReset().mockResolvedValue([] as never);
+  vi.mocked(executorsApi.picker).mockReset().mockResolvedValue({ items: [], total: 0, truncated: false, limit: 2000 } as never);
   vi.mocked(deploymentsApi.upgrade).mockReset().mockResolvedValue(undefined as never);
   // deploymentsApi.list 的首参是可选的 applicationId（page/pageSize/approvalStatus
   // 均可省略），mock 实现必须接受同形签名——写成必填 `_appId: string` 会因

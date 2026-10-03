@@ -159,6 +159,9 @@ export default function ApplicationListPage() {
   const [runtimeFilter, setRuntimeFilter] = useState<string | undefined>();
   const [quickDeployApp, setQuickDeployApp] = useState<string | null>(null);
   const [quickDeployExecutors, setQuickDeployExecutors] = useState<{id: string; name: string; address: string; status: string}[]>([]);
+  // picker 超限状态（truncated=true 时非 null）——下拉内必须渲染显式告警，
+  // 不许把截断后的候选集说成全量（复用 execList.truncated 文案）。
+  const [quickDeployTruncated, setQuickDeployTruncated] = useState<{ total: number; limit: number } | null>(null);
   const [quickDeployForm] = Form.useForm();
   const [quickDeploying, setQuickDeploying] = useState(false);
   // 防重复提交：新建/编辑保存期间禁用确定按钮（upload/quickDeploy/group 弹窗
@@ -446,10 +449,15 @@ export default function ApplicationListPage() {
     quickDeployForm.resetFields();
     quickDeployForm.setFieldsValue({ runMode: defaultRunModeFor(appId) });
     try {
-      const res = await executorsApi.list();
-      setQuickDeployExecutors(res.map(e => ({ id: e.id, name: e.appName, address: e.address, status: e.status })) ?? []);
+      // 执行器下拉走 picker 轻读面（GET /executors/picker）：此前吃 list() 的
+      // listLimit(500) 静默截断——执行器超限后按名称/地址搜索对第 501+ 台
+      // 真实存在的执行器假阴性。picker 上限 2000，超限以 truncated 显式上报。
+      const res = await executorsApi.picker();
+      setQuickDeployExecutors(res.items.map(e => ({ id: e.id, name: e.appName, address: e.address, status: e.status })) ?? []);
+      setQuickDeployTruncated(res.truncated ? { total: res.total, limit: res.limit } : null);
     } catch {
       setQuickDeployExecutors([]);
+      setQuickDeployTruncated(null);
       message.warning(t('appList.executorListFail'));
     }
   };
@@ -1145,6 +1153,13 @@ export default function ApplicationListPage() {
               notFoundContent={t('appList.deploy.executorEmpty')}
             />
           </Form.Item>
+          {/* picker 超限的显式告警：候选只有前 limit 台，用户必须知情
+              （named Form.Item 只能单子节点，告警放 Form.Item 兄弟位） */}
+          {quickDeployTruncated && (
+            <Text type="warning" style={{ fontSize: 12, display: 'block', marginTop: -12, marginBottom: 16 }}>
+              {t('execList.truncated', { total: quickDeployTruncated.total, limit: quickDeployTruncated.limit })}
+            </Text>
+          )}
           {/* P1-15：runMode 字段 + 模式说明复用共享组件（旧实现此处无任何模式说明）。 */}
           <DeployModeFields buttonStyle="outline" />
         </Form>

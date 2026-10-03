@@ -50,7 +50,7 @@ vi.mock('../api/applications', () => ({
   applicationsApi: { upgradeAll: vi.fn() },
 }));
 vi.mock('../api/executors', () => ({
-  executorsApi: { list: vi.fn(), getGroups: vi.fn() },
+  executorsApi: { list: vi.fn(), picker: vi.fn(), getGroups: vi.fn() },
 }));
 vi.mock('../api/users', () => ({
   usersApi: {
@@ -189,6 +189,9 @@ describe('UI-16 AppDeploymentPage 页内错误态', () => {
 
     mockedDeployments.list.mockResolvedValueOnce({ data: [], total: 0 });
     mockedExecutors.list.mockResolvedValueOnce([]);
+    mockedExecutors.picker.mockResolvedValueOnce({
+      items: [], total: 0, truncated: false, limit: 2000,
+    });
     fireEvent.click(screen.getByRole('button', { name: /重试/ }));
 
     await waitFor(() => expect(mockedDeployments.list).toHaveBeenCalledTimes(2));
@@ -198,6 +201,9 @@ describe('UI-16 AppDeploymentPage 页内错误态', () => {
   it('加载成功不渲染错误块', async () => {
     mockedDeployments.list.mockResolvedValue({ data: [], total: 0 });
     mockedExecutors.list.mockResolvedValue([]);
+    mockedExecutors.picker.mockResolvedValue({
+      items: [], total: 0, truncated: false, limit: 2000,
+    });
     render(<AppDeploymentPage applicationId="app-1" />);
     await waitFor(() => expect(screen.getByText('该应用尚未部署')).toBeTruthy());
     expect(screen.queryByTestId('state-error')).toBeNull();

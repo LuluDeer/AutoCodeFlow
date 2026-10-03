@@ -43,7 +43,7 @@ vi.mock('../api/applications', () => ({
   applicationsApi: { list: vi.fn(), upgradeAll: vi.fn(), remove: vi.fn(), removalImpact: vi.fn() },
 }));
 vi.mock('../api/executors', () => ({
-  executorsApi: { list: vi.fn() },
+  executorsApi: { list: vi.fn(), picker: vi.fn() },
 }));
 // ApplicationListPage 用 useNavigate/Link；单测无 Router，按既有先例
 // （application-list-quick-deploy.test.tsx）mock 掉路由面。
@@ -178,6 +178,7 @@ describe('停止：未送达执行器时必须用 warning 如实告知', () => {
       token: 't',
     } as never);
     (executorsApi.list as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    (executorsApi.picker as ReturnType<typeof vi.fn>).mockResolvedValue({ items: [], total: 0, truncated: false, limit: 2000 });
   });
 
   afterEach(() => {

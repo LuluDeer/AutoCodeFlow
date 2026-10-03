@@ -30,7 +30,7 @@ vi.mock('../api/applications', () => ({
   applicationsApi: { upgradeAll: vi.fn() },
 }));
 vi.mock('../api/executors', () => ({
-  executorsApi: { list: vi.fn() },
+  executorsApi: { list: vi.fn(), picker: vi.fn() },
 }));
 
 const g = globalThis as Record<string, unknown>;
@@ -72,6 +72,7 @@ const mockList = (data: ReturnType<typeof dep>[], total = data.length) => {
 beforeEach(() => {
   useAuthStore.setState({ user: { id: 1, username: 'bob', role: 'admin' } });
   vi.mocked(executorsApi.list).mockReset().mockResolvedValue([] as never);
+  vi.mocked(executorsApi.picker).mockReset().mockResolvedValue({ items: [], total: 0, truncated: false, limit: 2000 } as never);
   vi.mocked(deploymentsApi.remove).mockReset().mockResolvedValue({ ok: true, deletedId: 'dep-1' } as never);
 });
 
