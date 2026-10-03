@@ -167,3 +167,34 @@ describe('ProjectsPage（AUTH-02 后续）', () => {
     );
   });
 });
+
+// ─── UX 边界回归（本轮全站打磨）：候选用户拉取失败不再静默成空下拉 ──────────
+describe('ProjectsPage 候选用户拉取失败（UX 边界）', () => {
+  it('ADMIN 打开成员抽屉、listAll 拒绝 → 原位 StateError + 重试；重试成功后可选拉回', async () => {
+    authState.user = { id: 1, role: 'admin' };
+    vi.mocked(usersApi.listAll)
+      .mockRejectedValueOnce(new Error('用户目录暂不可用'))
+      .mockResolvedValueOnce([
+        { id: 7, username: 'alice', email: 'a@x', role: 'user', createdAt: '', updatedAt: '' },
+      ]);
+    renderPage();
+    const memberButtons = await screen.findAllByRole('button', { name: /成员/ });
+    fireEvent.click(memberButtons[0]);
+
+    // 失败 → 页内错误块（标题 + 重试），而非"没有可选用户"的假象
+    expect(await screen.findByTestId('state-error')).toBeTruthy();
+    expect(screen.getByText('候选用户列表加载失败')).toBeTruthy();
+
+    fireEvent.click(screen.getByText('重试'));
+    await waitFor(() => {
+      expect(usersApi.listAll).toHaveBeenCalledTimes(2);
+    });
+    // 重试成功 → 错误块消失，下拉里出现候选用户
+    await waitFor(() => {
+      expect(screen.queryByTestId('state-error')).toBeNull();
+    });
+    // antd Select 选项仅在展开时渲染——打开下拉验证候选用户已拉回
+    fireEvent.mouseDown(screen.getByText('选择要添加的用户'));
+    expect(await screen.findByText('#7 alice', { selector: '.ant-select-item-option-content' })).toBeTruthy();
+  });
+});

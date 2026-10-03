@@ -425,3 +425,28 @@ describe('DashboardPage — UI-04 五项', () => {
     });
   });
 });
+
+// ─── UX 边界回归（本轮全站打磨）：刷新按钮全量 refetch ────────────────────
+describe('DashboardPage 刷新按钮全量 refetch（UX 边界）', () => {
+  it('点击页头「刷新」→ summary/trend/executors/failures 四路全部重新拉取', async () => {
+    mockAll();
+    renderPage();
+    // 失败榜与最近失败两卡都渲染「任务A」——用 findAllByText 等首屏数据
+    await screen.findAllByText('任务A');
+
+    const calls = {
+      summary: mockedMetrics.getSummary.mock.calls.length,
+      trend: mockedMetrics.getDailyTrend.mock.calls.length,
+      executors: mockedMetrics.getExecutorStats.mock.calls.length,
+      failures: mockedMetrics.getRecentFailures.mock.calls.length,
+    };
+    fireEvent.click(screen.getByRole('button', { name: /刷新/ }));
+
+    await waitFor(() => {
+      expect(mockedMetrics.getSummary.mock.calls.length).toBeGreaterThan(calls.summary);
+      expect(mockedMetrics.getDailyTrend.mock.calls.length).toBeGreaterThan(calls.trend);
+      expect(mockedMetrics.getExecutorStats.mock.calls.length).toBeGreaterThan(calls.executors);
+      expect(mockedMetrics.getRecentFailures.mock.calls.length).toBeGreaterThan(calls.failures);
+    });
+  });
+});

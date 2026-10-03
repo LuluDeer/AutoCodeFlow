@@ -6,6 +6,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, waitFor, act } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import '../i18n';
 import AgentSessionsPage from '../pages/AgentSessionsPage';
 import { agentApi } from '../api/agent';
@@ -53,6 +54,15 @@ if (!window.matchMedia) {
 }
 
 const realSetInterval = globalThis.setInterval;
+
+/** URL-SYNC-01：页面消费 useSearchParams——渲染需包 Router 上下文 */
+function renderPage() {
+  return render(
+    <MemoryRouter>
+      <AgentSessionsPage />
+    </MemoryRouter>,
+  );
+}
 
 function setVisibility(state: 'visible' | 'hidden') {
   Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => state });
@@ -120,7 +130,7 @@ describe('B-14 AgentSessionsPage 15s 轮询', () => {
       return realSetInterval(fn as never, delay as never) as never;
     }) as never);
 
-    render(<AgentSessionsPage />);
+    renderPage();
     await waitFor(() => expect(agentApi.list).toHaveBeenCalledTimes(1));
 
     await act(async () => {
@@ -138,7 +148,7 @@ describe('B-14 AgentSessionsPage 15s 轮询', () => {
 
 describe('B-8 resumable 集合排除 running', () => {
   it('running 会话详情不出现「恢复」按钮；waiting_input 出现', async () => {
-    render(<AgentSessionsPage />);
+    renderPage();
     await screen.findByText('session-s-run');
 
     // 行内「详 情」按钮进详情（antd 两字按钮插空格）；行本身不可点

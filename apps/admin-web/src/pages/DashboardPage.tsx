@@ -216,7 +216,22 @@ export default function DashboardPage() {
                 {t('dashboard.scheduler', { state: t(schedulerStats.healthy ? 'dashboard.scheduler.healthy' : 'dashboard.scheduler.unhealthy'), count: schedulerStats.totalScheduledTasks })}
               </Tag>
             )}
-            <Button icon={<ReloadOutlined />} size="small" onClick={() => void refetchSummary()}>{t('dashboard.refresh')}</Button>
+            {/* 刷新按钮与下方 StateError 重试同口径：本页由 summary/trend/
+                executors/failures 四路查询喂饱，只 refetch summary 会造成
+                「点了刷新但趋势/执行器/失败榜还是旧数据」的假刷新
+                （SSE live 时 summary 自动推送，按钮更显多余）。 */}
+            <Button
+              icon={<ReloadOutlined />}
+              size="small"
+              onClick={() => {
+                void refetchSummary();
+                void refetchTrend();
+                void refetchExecutors();
+                void refetchFailures();
+              }}
+            >
+              {t('dashboard.refresh')}
+            </Button>
           </>
         }
       />
