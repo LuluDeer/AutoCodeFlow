@@ -582,6 +582,8 @@ export default {
   'registry.cancel': 'Cancel',
   'registry.uploadBtn': 'Upload',
   // UI-09 R3: accessible name for icon-only copy buttons (antd injects tooltip text as aria-label)
+  'registry.copyCommand': 'Copy command',
+  'registry.copied': 'Copied',
 
   'users.title': 'User management',
   'users.description': 'Accounts, roles and password management (admin only).',
@@ -879,6 +881,8 @@ export default {
   'sysSettings.token.desc': 'Executors must carry this Token to connect to the scheduler. Generate it first before first use.',
   'sysSettings.token.copy': 'Copy',
   // UI-09 R3: accessible name for the icon-only token visibility toggle (state-aware)
+  'sysSettings.token.show': 'Show token',
+  'sysSettings.token.hide': 'Hide token',
   'sysSettings.token.copied': 'Copied',
   'sysSettings.token.regenerate': 'Regenerate Token',
   'sysSettings.token.regenerateWarning': 'After regeneration, all executors must update their Token to keep working',

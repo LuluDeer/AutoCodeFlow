@@ -217,9 +217,17 @@ function DeadLetterSection({ subscriptions }: { subscriptions: EventSubscription
       ),
     },
     { title: t('eventSub.deadLetter.col.error'), dataIndex: 'error', ellipsis: true, minWidth: 160 },
-    { title: t('eventSub.deadLetter.col.attempts'), dataIndex: 'attempts', width: 90 },
+    {
+      // UI-09 第三轮：尝试次数/时间是次要列——窄屏隐藏（双端挂类，同上；
+      // 事件/载荷/错误/重放操作保留，scroll.x 兜底）。
+      title: t('eventSub.deadLetter.col.attempts'), dataIndex: 'attempts', width: 90,
+      onHeaderCell: () => ({ className: 'ui09-hide-mobile' }),
+      onCell: () => ({ className: 'ui09-hide-mobile' }),
+    },
     {
       title: t('eventSub.deadLetter.col.time'), dataIndex: 'createdAt', width: 160,
+      onHeaderCell: () => ({ className: 'ui09-hide-mobile' }),
+      onCell: () => ({ className: 'ui09-hide-mobile' }),
       render: (v: string) => (v ? formatDateTime(v) : '-'),
     },
     {
@@ -227,7 +235,7 @@ function DeadLetterSection({ subscriptions }: { subscriptions: EventSubscription
       render: (_: unknown, record: EventSubscriptionDeadLetter) => (
         <Button
           size="small"
-          icon={<ThunderboltOutlined />}
+          icon={<ThunderboltOutlined aria-hidden />}
           data-testid={`dead-letter-replay-${record.id}`}
           loading={replayingId === record.id}
           onClick={() => expandedId && handleReplay(expandedId, record)}
@@ -497,6 +505,11 @@ export default function EventSubscriptionsSettings() {
     },
     {
       title: t('eventSub.col.deliveryStatus'), key: 'stats', width: 140,
+      // UI-09 第三轮：投递状态是次要列——窄屏（≤768px）由媒体查询隐藏
+      // （onHeaderCell/onCell 双端挂类，对齐 AppDeploymentPage 既有模式；断点与
+      // index.css ui09 媒体查询同值）。事件类型/URL/开关/操作保留。
+      onHeaderCell: () => ({ className: 'ui09-hide-mobile' }),
+      onCell: () => ({ className: 'ui09-hide-mobile' }),
         render: (_: unknown, record: EventSubscription) => {
           const s = subscriptionFailureStats(record, t);
           return (
@@ -512,7 +525,7 @@ export default function EventSubscriptionsSettings() {
         <Space size={4}>
           <Button
             size="small"
-            icon={<EditOutlined />}
+            icon={<EditOutlined aria-hidden />}
             data-testid={`sub-edit-${record.id}`}
             onClick={() => { setEditing(record); setFormOpen(true); }}
           >
@@ -525,7 +538,7 @@ export default function EventSubscriptionsSettings() {
             okButtonProps={{ danger: true }}
             onConfirm={() => removeMut.mutate(record.id)}
           >
-            <Button size="small" danger icon={<DeleteOutlined />} data-testid={`sub-delete-${record.id}`} aria-label={t('eventSub.deleteAria')} />
+            <Button size="small" danger icon={<DeleteOutlined aria-hidden />} data-testid={`sub-delete-${record.id}`} aria-label={t('eventSub.deleteAria')} />
           </Popconfirm>
         </Space>
       ),
@@ -534,13 +547,13 @@ export default function EventSubscriptionsSettings() {
 
   return (
     <Card
-      title={<Space><BellOutlined /> {t('eventSub.title')}</Space>}
+      title={<Space><BellOutlined aria-hidden /> {t('eventSub.title')}</Space>}
       extra={
         // SUB-SCOPE-01：非管理员不渲染「新建」入口（后端 403），改为说明性提示。
         isAdmin ? (
           <Button
             type="primary"
-            icon={<PlusOutlined />}
+            icon={<PlusOutlined aria-hidden />}
             onClick={() => { setEditing(null); setFormOpen(true); }}
             data-testid="sub-create"
           >
@@ -548,7 +561,7 @@ export default function EventSubscriptionsSettings() {
           </Button>
         ) : (
           <Tooltip title={t('eventSub.createAdminOnly')}>
-            <Button type="primary" icon={<PlusOutlined />} disabled data-testid="sub-create-disabled">
+            <Button type="primary" icon={<PlusOutlined aria-hidden />} disabled data-testid="sub-create-disabled">
               {t('eventSub.create')}
             </Button>
           </Tooltip>

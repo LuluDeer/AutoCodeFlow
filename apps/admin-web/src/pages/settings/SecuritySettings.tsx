@@ -117,7 +117,7 @@ export function TotpCard() {
 
   if (enabled) {
     return (
-      <Card title={<Space><SafetyOutlined /> {t('security.totp.title')}</Space>} style={{ marginBottom: 16 }}>
+      <Card title={<Space><SafetyOutlined aria-hidden /> {t('security.totp.title')}</Space>} style={{ marginBottom: 16 }}>
         <Alert
           type="success"
           showIcon
@@ -130,7 +130,8 @@ export function TotpCard() {
             placeholder={t('security.totp.disablePlaceholder')}
             value={disablePassword}
             onChange={(e) => setDisablePassword(e.target.value)}
-            style={{ width: 320 }}
+            // UI-09 第三轮：maxWidth 兜底——375px 卡片内宽 < 320 时收满容器不溢出（桌面仍 320）
+            style={{ width: 320, maxWidth: '100%' }}
             aria-label={t('security.totp.passwordLabel')}
           />
           <Popconfirm
@@ -153,7 +154,7 @@ export function TotpCard() {
   }
 
   return (
-    <Card title={<Space><SafetyOutlined /> {t('security.totp.title')}</Space>} style={{ marginBottom: 16 }}>
+    <Card title={<Space><SafetyOutlined aria-hidden /> {t('security.totp.title')}</Space>} style={{ marginBottom: 16 }}>
       <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
         {t('security.totp.intro')}
       </Text>
@@ -248,7 +249,7 @@ export function PasswordCard() {
 
   return (
     <Card
-      title={<Space><LockOutlined /> {t('security.password.title')}</Space>}
+      title={<Space><LockOutlined aria-hidden /> {t('security.password.title')}</Space>}
       style={{ marginBottom: 16 }}
     >
       <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
@@ -356,13 +357,19 @@ export function SessionsCard() {
       title: t('security.session.col.device'), dataIndex: 'userAgent', minWidth: 240,
       render: (v: string | null) => (
         <Space size={6}>
-          <DesktopOutlined style={{ color: token.colorTextTertiary }} />
+          <DesktopOutlined aria-hidden style={{ color: token.colorTextTertiary }} />
           <span>{summarizeUserAgent(v, t)}</span>
         </Space>
       ),
     },
     {
+      // UI-09 第三轮：IP/是否当前是次要列——窄屏（≤768px）由媒体查询隐藏
+      // （onHeaderCell/onCell 双端挂类，对齐 AppDeploymentPage 既有模式；断点与
+      // index.css ui09 媒体查询同值）。「本机」标识已由操作列文字承担，设备/
+      // 登录时间/吊销操作保留，scroll.x 兜底。
       title: 'IP', dataIndex: 'ip', width: 140,
+      onHeaderCell: () => ({ className: 'ui09-hide-mobile' }),
+      onCell: () => ({ className: 'ui09-hide-mobile' }),
       render: (v: string | null) => v ?? <Text type="secondary">-</Text>,
     },
     {
@@ -371,6 +378,8 @@ export function SessionsCard() {
     },
     {
       title: t('security.session.col.current'), dataIndex: 'current', width: 80,
+      onHeaderCell: () => ({ className: 'ui09-hide-mobile' }),
+      onCell: () => ({ className: 'ui09-hide-mobile' }),
       render: (v: boolean) => (v ? <Tag color="green">{t('security.session.currentTag')}</Tag> : <Tag>{t('security.session.otherTag')}</Tag>),
     },
     {
@@ -402,10 +411,11 @@ export function SessionsCard() {
 
   return (
     <Card
-      title={<Space><UserOutlined /> {t('security.session.title')}</Space>}
+      title={<Space><UserOutlined aria-hidden /> {t('security.session.title')}</Space>}
       extra={
-        <Space>
-          <Button icon={<ReloadOutlined />} size="small" loading={isFetching} onClick={() => refetch()}>{t('security.session.refresh')}</Button>
+        // UI-09 第三轮：窄屏下刷新/批量吊销两按钮换行，不与卡头标题挤压
+        <Space wrap>
+          <Button icon={<ReloadOutlined aria-hidden />} size="small" loading={isFetching} onClick={() => refetch()}>{t('security.session.refresh')}</Button>
           <Popconfirm
             title={t('security.session.revokeOthersConfirm')}
             description={t('security.session.revokeOthersConfirmDesc')}

@@ -80,7 +80,7 @@ function CreateResultModal(props: {
       onOk={props.onClose}
       onCancel={props.onClose}
       footer={[
-        <Button key="copy" icon={<CopyOutlined />} onClick={async () => {
+        <Button key="copy" icon={<CopyOutlined aria-hidden />} onClick={async () => {
           // UX-04（本轮体验审查）：此前是
           //   navigator.clipboard?.writeText(...); setCopied(true);
           // ——无 await、无 catch，**无条件**置「已复制」。非 HTTPS / iframe
@@ -102,7 +102,7 @@ function CreateResultModal(props: {
       <Alert
         type="warning"
         showIcon
-        icon={<WarningOutlined />}
+        icon={<WarningOutlined aria-hidden />}
         title={t('apiKeys.result.warnTitle')}
         description={t('apiKeys.result.warnDesc')}
         style={{ marginBottom: 16 }}
@@ -182,7 +182,12 @@ export default function ApiKeysSettings() {
   const columns: ColumnsType<ApiKeyView> = [
     { title: t('apiKeys.col.name'), dataIndex: 'name', key: 'name', ellipsis: true, minWidth: 160 },
     {
+      // UI-09 第三轮：前缀/最后使用是次要列——窄屏（≤768px）由媒体查询隐藏
+      // （onHeaderCell/onCell 双端挂类，对齐 AppDeploymentPage 既有模式；断点与
+      // index.css ui09 媒体查询同值）。名称/Scope/过期/状态/操作保留，scroll.x 兜底。
       title: t('apiKeys.col.keyPrefix'), dataIndex: 'keyPrefix', key: 'keyPrefix', width: 120, ellipsis: true,
+      onHeaderCell: () => ({ className: 'ui09-hide-mobile' }),
+      onCell: () => ({ className: 'ui09-hide-mobile' }),
       render: (v: string) => <Text code>{v}…</Text>,
     },
     {
@@ -195,6 +200,8 @@ export default function ApiKeysSettings() {
     },
     {
       title: t('apiKeys.col.lastUsed'), dataIndex: 'lastUsedAt', key: 'lastUsedAt', width: 170, ellipsis: true,
+      onHeaderCell: () => ({ className: 'ui09-hide-mobile' }),
+      onCell: () => ({ className: 'ui09-hide-mobile' }),
       render: (v: string | null) => formatDateTime(v),
     },
     {
@@ -229,9 +236,9 @@ export default function ApiKeysSettings() {
 
   return (
     <Card
-      title={<Space><ApiOutlined />{t('apiKeys.title')}</Space>}
+      title={<Space><ApiOutlined aria-hidden />{t('apiKeys.title')}</Space>}
       extra={
-        <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)} data-testid="apikey-create">
+        <Button type="primary" icon={<PlusOutlined aria-hidden />} onClick={() => setCreateOpen(true)} data-testid="apikey-create">
           {t('apiKeys.create')}
         </Button>
       }
