@@ -221,6 +221,39 @@ export interface ExecutorRuntimeConfig {
   executorTotal: number;
 }
 
+/**
+ * GET /executors/picker 单行读面——执行器选择器下拉（AppDeploymentPage 部署
+ * 模态 / ApplicationListPage 快速部署）实际消费的最小字段集，与后端
+ * findPickerOptions 的 select 列一一对应：
+ *   - id/appName/address/status：选项文案 + 在线态禁用（disabled）；
+ *   - runningTaskCount/maxConcurrentTasks：部署模态选项的负载进度条。
+ * 列表页的分组/标签/心跳/解释器等重字段**有意不在读面**——picker 存在的意义
+ * 就是绕开 GET /executors 的全列投影 + listLimit(500) 静默截断。
+ */
+export interface ExecutorPickerItem {
+  id: string;
+  appName: string;
+  address: string;
+  status: string;
+  runningTaskCount: number;
+  maxConcurrentTasks?: number | null;
+}
+
+/**
+ * GET /executors/picker 响应。truncated=true 表示执行器全量数超过后端
+ * picker 上限、items 只含最近 limit 台——UI **必须**把该状态渲染成显式告警
+ * （复用 execList.truncated 文案），绝不静默截断。
+ */
+export interface ExecutorPickerResult {
+  items: ExecutorPickerItem[];
+  /** 执行器全量行数；truncated 时 > items.length。 */
+  total: number;
+  /** true = items 被上限截断（显式告警，不许静默）。 */
+  truncated: boolean;
+  /** 后端 picker 上限（EXECUTOR_PICKER_LIMIT）。 */
+  limit: number;
+}
+
 export const executorsApi = {
   getSharedToken: () =>
     client.get('/config/executor-shared-token') as Promise<SharedTokenResult>,
@@ -230,6 +263,16 @@ export const executorsApi = {
     signal
       ? client.get('/executors', { signal }) as Promise<Executor[]>
       : client.get('/executors') as Promise<Executor[]>,
+  /**
+   * GET /executors/picker：执行器选择器的轻量数据源（6 列读面 + 显式截断旗标）。
+   * 供 AppDeploymentPage 部署模态 / ApplicationListPage 快速部署两个下拉使用
+   * ——它们此前吃 list() 的 500 上限静默截断，执行器超限后搜索对真实存在的
+   * 执行器假阴性。固定段路由（服务端声明在 :id 参数路由之前）。
+   */
+  picker: (signal?: AbortSignal) =>
+    signal
+      ? client.get('/executors/picker', { signal }) as Promise<ExecutorPickerResult>
+      : client.get('/executors/picker') as Promise<ExecutorPickerResult>,
   get: (id: string, signal?: AbortSignal) =>
     signal
       ? client.get(`/executors/${id}`, { signal }) as Promise<Executor>

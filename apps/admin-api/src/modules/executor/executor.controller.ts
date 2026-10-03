@@ -812,6 +812,31 @@ export class ExecutorController {
 
   @ApiBearerAuth("JWT")
   @UseGuards(JwtAuthGuard)
+  // 路由声明顺序：固定段必须位于 @Get(":id")（line ~943）之前，否则被参数
+  // 路由吞掉（与 runtime-config/groups/tags 同理）。
+  @Get("picker")
+  // RBAC 与 GET /executors 对齐（N11 复核结论同样适用）：任务 CRUD 对普通
+  // 用户开放，且 picker 读面是 list 的严格子集——不放宽，也不额外收紧。
+  @ApiOperation({
+    summary: "List executor picker options (lightweight)",
+    description:
+      "Minimal read surface for executor picker dropdowns (deploy modals): " +
+      "id/appName/address/status/runningTaskCount/maxConcurrentTasks only, " +
+      "not the full entity projection of GET /executors. Capped at " +
+      "EXECUTOR_PICKER_LIMIT rows (createdAt DESC); when total > items.length " +
+      "the response carries truncated=true so the UI can warn explicitly — " +
+      "never silently truncated like the 500-capped full list.",
+  })
+  @ApiResponse({
+    status: 200,
+    description: "Executor picker options with explicit truncation flag",
+  })
+  findPickerOptions() {
+    return this.svc.findPickerOptions();
+  }
+
+  @ApiBearerAuth("JWT")
+  @UseGuards(JwtAuthGuard)
   @Get("install-cmd")
   // DR-01: the command contains the shared machine credential, not just a URL.
   @Roles(UserRole.ADMIN)

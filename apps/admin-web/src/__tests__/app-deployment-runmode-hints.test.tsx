@@ -22,7 +22,7 @@ vi.mock('../api/applications', () => ({
   applicationsApi: { upgradeAll: vi.fn() },
 }));
 vi.mock('../api/executors', () => ({
-  executorsApi: { list: vi.fn() },
+  executorsApi: { list: vi.fn(), picker: vi.fn() },
 }));
 
 const g = globalThis as Record<string, unknown>;
@@ -68,6 +68,20 @@ describe('AppDeploymentPage：部署模式的说明文案（生产反馈回归�
     (executorsApi.list as ReturnType<typeof vi.fn>).mockResolvedValue([
       onlineExecutor,
     ]);
+    // 下拉候选走 picker 轻读面（与 list 同一台在线机器，picker 行形）
+    (executorsApi.picker as ReturnType<typeof vi.fn>).mockResolvedValue({
+      items: [{
+        id: onlineExecutor.id,
+        appName: onlineExecutor.name,
+        address: onlineExecutor.address,
+        status: onlineExecutor.status,
+        runningTaskCount: 0,
+        maxConcurrentTasks: null,
+      }],
+      total: 1,
+      truncated: false,
+      limit: 2000,
+    });
   });
 
   afterEach(() => {

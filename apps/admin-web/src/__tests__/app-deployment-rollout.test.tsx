@@ -22,7 +22,7 @@ vi.mock('../api/applications', () => ({
   applicationsApi: { upgradeAll: vi.fn().mockResolvedValue({ ok: true, total: 1, succeeded: 1, failed: 0 }) },
 }));
 vi.mock('../api/executors', () => ({
-  executorsApi: { list: vi.fn() },
+  executorsApi: { list: vi.fn(), picker: vi.fn() },
 }));
 
 const g = globalThis as Record<string, unknown>;
@@ -52,6 +52,7 @@ describe('P1-9 灰度发布入口', () => {
   beforeEach(() => {
     useAuthStore.setState({ user: { id: 1, username: 'root', role: 'admin' } });
     vi.mocked(executorsApi.list).mockReset().mockResolvedValue([] as never);
+    vi.mocked(executorsApi.picker).mockReset().mockResolvedValue({ items: [], total: 0, truncated: false, limit: 2000 } as never);
     vi.mocked(deploymentsApi.list)
       .mockReset()
       .mockResolvedValue({ data: [runningDeployment], total: 1 } as never);

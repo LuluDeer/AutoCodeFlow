@@ -26,7 +26,7 @@ import {
 import { deploymentsApi, AppDeployment, applicationsApi } from '../api/applications';
 import { formatRelativeTime } from '../utils/timeFormat';
 import DeployModeFields from '../components/DeployModeFields';
-import { executorsApi, Executor } from '../api/executors';
+import { executorsApi, Executor, ExecutorPickerItem } from '../api/executors';
 import { useExecutorNames } from '../hooks/useExecutorNames';
 import { isStopNotDelivered } from '../utils/backend-contracts';
 import { isFormValidationError, showApiError } from '../utils/error';
@@ -68,7 +68,7 @@ const ROLLOUT_CONFIG: Record<string, { color: string; label: (t: (k: string) => 
   rolled_back: { color: 'volcano', label: (t) => t('appDeploy.rollout.state.rolledBack') },
 };
 
-function ExecutorCard({ executor }: { executor: Executor }) {
+function ExecutorCard({ executor }: { executor: ExecutorPickerItem }) {
   const { t } = useTranslation();
   // F-15（DEEP_REVIEW 0ef3bbe）：次要文字/用量色走 antd token，暗色主题自适应。
   const { token } = theme.useToken();
@@ -158,6 +158,14 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [executors, setExecutors] = useState<Executor[]>([]);
+  // 执行器选择器数据源（GET /executors/picker 轻读面，6 列）：部署下拉候选与
+  // 占用判断只消费这些字段。此前下拉直接吃 list() 全列投影——它有 listLimit(500)
+  // **静默**截断，执行器超限后下拉对第 501+ 台真实存在的执行器假阴性（搜不到）。
+  // picker 上限 2000 且超限以 truncated=true 显式上报。executors（list 全列）
+  // 保留：仅服务于 useExecutorNames 的部署行可读名解析，与下拉各司其职。
+  const [pickerExecutors, setPickerExecutors] = useState<ExecutorPickerItem[]>([]);
+  // picker 超限状态（truncated=true 时非 null）——下拉内必须渲染显式告警。
+  const [pickerTruncated, setPickerTruncated] = useState<{ total: number; limit: number } | null>(null);
   const [loading, setLoading] = useState(false);
   // UI-16：列表加载失败的错误态（页内呈现 + 重试入口，替代纯 toast）
   const [loadError, setLoadError] = useState<unknown>(null);
@@ -211,14 +219,19 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
     const seq = ++fetchSeq.current;
     setLoading(true);
     try {
-      const [deps, execs] = await Promise.all([
+      // 执行器侧两路请求各司其职：list() 全列供 useExecutorNames 解析部署行
+      // 可读名；picker() 轻读面供部署下拉（不受 list 的 500 静默截断影响）。
+      const [deps, execs, picker] = await Promise.all([
         deploymentsApi.list(applicationId, page),
         executorsApi.list(),
+        executorsApi.picker(),
       ]);
       if (seq !== fetchSeq.current) return; // 已有更新的请求/卸载，丢弃过期响应
       setDeployments(deps.data);
       setTotal(deps.total);
       setExecutors(execs);
+      setPickerExecutors(picker.items);
+      setPickerTruncated(picker.truncated ? { total: picker.total, limit: picker.limit } : null);
       // UI-16：加载成功后清除上一次的页内错误态
       setLoadError(null);
     } catch (err: unknown) {
@@ -420,7 +433,8 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
     }
   };
 
-  const onlineExecutors = executors.filter(e => e.status === 'online');
+  // 下拉候选走 picker 轻读面（executors/list 全列仅供 useExecutorNames 名字解析）
+  const onlineExecutors = pickerExecutors.filter(e => e.status === 'online');
   // DEP-04：待审批行数（审批待办 Alert 与状态徽标共用同一口径）
   const pendingApprovalCount = deployments.filter(
     d => d.approvalStatus === 'pending_approval',
@@ -801,6 +815,16 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
                   {availableExecutors.length > 0 && (
                     <div style={{ padding: '8px 12px', borderBottom: `1px solid ${token.colorBorderSecondary}` }}>
                       <Text type="secondary" style={{ fontSize: 12 }}>{t('appDeploy.executor.availableHeader', { count: availableExecutors.length })}</Text>
+                    </div>
+                  )}
+                  {/* picker 超限的显式告警（复用执行器列表页的截断文案）：
+                      搜索/候选只覆盖前 limit 台，必须让用户知道总数不止这些，
+                      不许静默截断。 */}
+                  {pickerTruncated && (
+                    <div style={{ padding: '8px 12px', borderBottom: `1px solid ${token.colorBorderSecondary}` }}>
+                      <Text type="warning" style={{ fontSize: 12 }}>
+                        {t('execList.truncated', { total: pickerTruncated.total, limit: pickerTruncated.limit })}
+                      </Text>
                     </div>
                   )}
                   {menu}

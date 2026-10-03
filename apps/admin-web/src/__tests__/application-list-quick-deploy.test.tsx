@@ -50,7 +50,7 @@ vi.mock('../api/applications', () => ({
   },
 }));
 vi.mock('../api/executors', () => ({
-  executorsApi: { list: vi.fn() },
+  executorsApi: { list: vi.fn(), picker: vi.fn() },
 }));
 
 vi.mock('react-router-dom', () => ({
@@ -119,6 +119,7 @@ beforeEach(() => {
   vi.mocked(applicationsApi.list).mockResolvedValue([APP] as never);
   vi.mocked(deploymentsApi.list).mockResolvedValue({ data: [], total: 0 } as never);
   vi.mocked(executorsApi.list).mockResolvedValue([] as never);
+  vi.mocked(executorsApi.picker).mockResolvedValue({ items: [], total: 0, truncated: false, limit: 2000 } as never);
 });
 
 afterEach(() => cleanup());
@@ -156,16 +157,25 @@ describe('P0-2: 列表页快速部署的成功提示必须与真实派发状态�
 });
 
 /**
- * UX（Select 键入搜索）：执行器数量随接入增长，快速部署的执行器下拉
- * 必须支持键入过滤，且按**地址**（label = "name (address)" 的次要字段）
- * 也能命中——若实现回退成默认按 value 过滤，此用例会红。
+ * UX（Select 键入搜索）+ PICKER（执行器选择器数据源）：执行器数量随接入增长，
+ * 快速部署的执行器下拉必须支持键入过滤，且按**地址**（label = "name (address)"
+ * 的次要字段）也能命中——若实现回退成默认按 value 过滤，此用例会红。
+ *
+ * 数据源回归：下拉候选必须来自 GET /executors/picker（轻读面 + 显式截断旗标），
+ * 而非 GET /executors 的 listLimit(500) 静默截断列表——若实现回退吃 list()，
+ * 下方 picker items 不会出现在选项里，此用例立即变红。
  */
-describe('快速部署执行器下拉支持键入搜索', () => {
-  it('showSearch 开启，且按地址过滤能命中唯一执行器', async () => {
-    vi.mocked(executorsApi.list).mockResolvedValue([
-      { id: 'ex-1', appName: 'edge-a', address: '10.0.0.1', status: 'online' },
-      { id: 'ex-2', appName: 'edge-b', address: '10.0.0.2', status: 'online' },
-    ] as never);
+describe('快速部署执行器下拉支持键入搜索（数据源 = /executors/picker）', () => {
+  it('showSearch 开启，按地址过滤能命中唯一执行器，且选项来自 picker.items', async () => {
+    vi.mocked(executorsApi.picker).mockResolvedValue({
+      items: [
+        { id: 'ex-1', appName: 'edge-a', address: '10.0.0.1', status: 'online', runningTaskCount: 0, maxConcurrentTasks: null },
+        { id: 'ex-2', appName: 'edge-b', address: '10.0.0.2', status: 'online', runningTaskCount: 0, maxConcurrentTasks: null },
+      ],
+      total: 2,
+      truncated: false,
+      limit: 2000,
+    } as never);
 
     renderPage();
     await waitFor(() => expect(screen.getByText('refund-sync')).toBeTruthy());
@@ -187,6 +197,67 @@ describe('快速部署执行器下拉支持键入搜索', () => {
       const opts = [...document.querySelectorAll<HTMLElement>('.ant-select-item-option')];
       expect(opts).toHaveLength(1);
       expect(opts[0].textContent).toContain('edge-b');
+    });
+    // 数据源钉死：本用例的候选只挂在 picker 上——list 返回空数组，
+    // 若实现回退吃 list()，下拉将空无一物。
+    expect(executorsApi.picker).toHaveBeenCalled();
+    expect(executorsApi.list).not.toHaveBeenCalled();
+  });
+
+  it('picker 超限（truncated=true）：下拉下方必须出现显式截断告警，不许静默', async () => {
+    vi.mocked(executorsApi.picker).mockResolvedValue({
+      items: [
+        { id: 'ex-1', appName: 'edge-a', address: '10.0.0.1', status: 'online', runningTaskCount: 0, maxConcurrentTasks: null },
+      ],
+      total: 2500,
+      truncated: true,
+      limit: 2000,
+    } as never);
+
+    renderPage();
+    await waitFor(() => expect(screen.getByText('refund-sync')).toBeTruthy());
+    fireEvent.click(screen.getByText(/新建部署|Deploy/).closest('button')!);
+
+    const modal = await waitFor(() => {
+      const el = screen.getByText(/快速新建部署|Quick new deployment/).closest('.ant-modal');
+      expect(el).toBeTruthy();
+      return el as HTMLElement;
+    });
+    // 复用 execList.truncated 文案：总数与上限都必须如实出现
+    await waitFor(() => {
+      expect(modal.textContent).toContain('2500');
+      expect(modal.textContent).toContain('2000');
+    });
+  });
+
+  it('离线执行器禁用（既有过滤行为保留），在线可选', async () => {
+    vi.mocked(executorsApi.picker).mockResolvedValue({
+      items: [
+        { id: 'ex-1', appName: 'edge-a', address: '10.0.0.1', status: 'online', runningTaskCount: 0, maxConcurrentTasks: null },
+        { id: 'ex-3', appName: 'edge-off', address: '10.0.0.3', status: 'offline', runningTaskCount: 0, maxConcurrentTasks: null },
+      ],
+      total: 2,
+      truncated: false,
+      limit: 2000,
+    } as never);
+
+    renderPage();
+    await waitFor(() => expect(screen.getByText('refund-sync')).toBeTruthy());
+    fireEvent.click(screen.getByText(/新建部署|Deploy/).closest('button')!);
+
+    const modal = await waitFor(() => {
+      const el = screen.getByText(/快速新建部署|Quick new deployment/).closest('.ant-modal');
+      expect(el).toBeTruthy();
+      return el as HTMLElement;
+    });
+    fireEvent.mouseDown(modal.querySelector<HTMLInputElement>('.ant-select-show-search input')!);
+    await waitFor(() => {
+      const opts = [...document.querySelectorAll<HTMLElement>('.ant-select-item-option')];
+      expect(opts).toHaveLength(2);
+      const off = opts.find((o) => o.textContent?.includes('edge-off'));
+      const on = opts.find((o) => o.textContent?.includes('edge-a'));
+      expect(off?.getAttribute('aria-disabled')).toBe('true');
+      expect(on?.getAttribute('aria-disabled')).toBe('false');
     });
   });
 });
