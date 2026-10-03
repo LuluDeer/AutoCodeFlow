@@ -581,6 +581,7 @@ export default {
   'registry.chooseFile': 'Choose file',
   'registry.cancel': 'Cancel',
   'registry.uploadBtn': 'Upload',
+  // UI-09 R3: accessible name for icon-only copy buttons (antd injects tooltip text as aria-label)
 
   'users.title': 'User management',
   'users.description': 'Accounts, roles and password management (admin only).',
@@ -877,6 +878,7 @@ export default {
   'sysSettings.token.loadFail': 'Failed to load executor shared Token',
   'sysSettings.token.desc': 'Executors must carry this Token to connect to the scheduler. Generate it first before first use.',
   'sysSettings.token.copy': 'Copy',
+  // UI-09 R3: accessible name for the icon-only token visibility toggle (state-aware)
   'sysSettings.token.copied': 'Copied',
   'sysSettings.token.regenerate': 'Regenerate Token',
   'sysSettings.token.regenerateWarning': 'After regeneration, all executors must update their Token to keep working',
@@ -2897,6 +2899,24 @@ export default {
   'sops.mediaRefsLabel': 'Attachments',
   // UI-09 round 3: mobile card list empty state (the desktop table keeps antd's default "No data")
   'sops.empty': 'No SOPs yet',
+  // UX-06 second sweep: SOP-domain enum vocab (consumed by utils/sop-label.ts; semantics from the admin-api sop entity comments)
+  'sops.status.draft': 'Draft',
+  'sops.status.published': 'Published',
+  'sops.status.deprecated': 'Deprecated',
+  'sops.assignmentStatus.assigned': 'Assigned',
+  'sops.assignmentStatus.inProgress': 'In progress',
+  'sops.assignmentStatus.blocked': 'Awaiting clarification',
+  'sops.assignmentStatus.completed': 'Completed',
+  'sops.assignmentStatus.failed': 'Failed',
+  'sops.assignmentStatus.cancelled': 'Cancelled',
+  'sops.assignmentStatus.stalled': 'Stalled',
+  'sops.clarResolution.pending': 'Pending review',
+  'sops.clarResolution.answered': 'Answered',
+  'sops.clarResolution.sopAmended': 'SOP amended',
+  'sops.clarResolution.escalatedToHuman': 'Escalated to human',
+  'sops.mediaKind.video': 'Recording',
+  'sops.mediaKind.screenshot': 'Screenshot',
+  'sops.mediaKind.other': 'Other',
 
   // ── P2 leftover: Agent sessions view (AgentSessionsPage, ADMIN-only) ──
   'nav.agents': 'Agent sessions',
