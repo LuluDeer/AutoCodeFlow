@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.8.0](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.7.0...v1.8.0) (2026-10-04)
+
+### Features
+
+* **acf-cli:** UX 打磨 R12-C——终端 UX 统一(help示例/分类退出码/统一错误出口/config损坏恢复/Ctrl+C假死) ([5330549](https://github.com/LuluDeer/AutoCodeFlow/commit/5330549fae0b369eb683c801a918529b93d919e4))
+
+
 ## [1.6.0](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.5.3...v1.6.0) (2026-10-01)
 
 
