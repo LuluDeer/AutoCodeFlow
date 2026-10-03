@@ -26,7 +26,7 @@ The server registers **49 tools** (see `src/tools.ts`), grouped below.
 | Tool | Description |
 |------|-------------|
 | `list_executions` | Recent executions, filterable by task/status |
-| `get_execution` | Full execution details including logs and AI analysis |
+| `get_execution` | Execution details (status, duration, result, params, error info, AI analysis). The 512 KB-capped log payload is stripped — page through logs with `get_execution_logs` |
 | `get_execution_logs` | Paginated execution logs (`fromLine` + `limit`) |
 | `kill_execution` | Force-cancel a running/pending execution (task-scoped route) |
 | `retry_execution` | Re-run a past execution via the manual-trigger path (fresh run, runtime params replayed, overridable) |
@@ -136,4 +136,4 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 | `AUTOCODEFLOW_API_TOKEN` | — | JWT token (required). The server exits on startup if this is missing, because every tool call would be rejected. |
 | `AUTOCODEFLOW_API_REFRESH_TOKEN` | — | Optional refresh token. When set, a 401 from non-`/auth/*` API calls triggers one in-memory refresh and replays the original request once; rotated refresh tokens are kept only for the process lifetime. |
 
-> All 43 tools share these 3 variables — no tool requires additional environment configuration. Permission-sensitive tools (e.g. `approve_deployment` / `reject_deployment` / `list_pending_approvals`, ADMIN-only) are enforced server-side by the roles in the JWT passed via `AUTOCODEFLOW_API_TOKEN`.
+> All 49 tools share these 3 variables — no tool requires additional environment configuration. Permission-sensitive tools (e.g. `approve_deployment` / `reject_deployment` / `list_pending_approvals`, ADMIN-only) are enforced server-side by the roles in the JWT passed via `AUTOCODEFLOW_API_TOKEN`.
