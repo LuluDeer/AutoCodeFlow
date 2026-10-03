@@ -435,7 +435,11 @@ function SystemConfigTab() {
   const cols: ColumnsType<SystemConfig> = [
     { title: t('sysSettings.config.col.key'), dataIndex: 'key', width: 220, ellipsis: true,
       render: (v: string) => <Text code style={{ fontSize: 12 }}>{v}</Text> },
-    { title: t('sysSettings.config.col.value'), dataIndex: 'value', ellipsis: true,
+    // UX-WALK 2026-10：值列声明 width——它和说明列本是全表唯二无宽度列，整表又无
+    // scroll.x，375px 下表格按 min-content(~520px) 溢出且被祖先 overflow:hidden 裁剪、
+    // 无滚动条，值列不可达。声明 width 后配合下方 scroll.x（键220+值180+类型80+
+    // 标签100+操作120=700 + 说明列弹性下限 120 = 820），窄屏走 antd 自建横滚容器。
+    { title: t('sysSettings.config.col.value'), dataIndex: 'value', width: 180, ellipsis: true,
       render: (v: string, r: SystemConfig) => r.isSecret
         ? <Text type="secondary">••••••</Text>
         : (v ?? <Text type="secondary">-</Text>) },
@@ -503,6 +507,13 @@ function SystemConfigTab() {
           columns={cols}
           size="small"
           pagination={{ pageSize: 20, showTotal: (n) => t('sysSettings.config.count', { count: n }) }}
+          // UX-WALK 2026-10：此前无 scroll 属性——375px 下表格按定宽列 min-content
+          // （~520px）溢出，祖先链全 overflow:visible 被外层 hidden 裁剪且无滚动条，
+          // 值/类型/标签/说明列移动端不可达。补 scroll.x 走 antd 自建横滚容器
+          // （对齐全站其他表与本页 HistoryModal scroll.x=640 先例；R7-F 的
+          // ui09-hide-mobile 列级隐藏不受影响）。820 = 定宽列 700 + 说明列弹性下限 120，
+          // 新增/加宽定宽列时同步上调（ui09-mobile-round3-admin 契约测试钉住）。
+          scroll={{ x: 820 }}
         />
       )}
       {editTarget != null && (

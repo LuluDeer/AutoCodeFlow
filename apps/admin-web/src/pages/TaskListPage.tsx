@@ -140,8 +140,11 @@ export default function TaskListPage() {
     setSelectedRowKeys([]);
   }, [page, pageSize, statusFilter, triggerFilter, lastStatusFilter, debouncedSearch]);
 
+  // UX-WALK 2026-10：显式声明勾选列宽（antd v6 默认不给 width）——否则勾选列与
+  // 名称列同为无宽度列，在 table-layout:fixed 下平分剩余空间，名称列吃不满下限 220。
   const rowSelection = {
     selectedRowKeys,
+    columnWidth: 32,
     onChange: (keys: React.Key[]) => setSelectedRowKeys(keys as string[]),
   };
 
@@ -790,9 +793,14 @@ export default function TaskListPage() {
         dataSource={tasks}
         loading={loading}
         // UI-09：次要列窄屏收起（CSS 媒体查询 .ui09-hide-mobile）+ scroll.x 横向滚动兜底
-        // UI 打磨：scroll.x 与列宽合计对齐（固定列 940 + 勾选 32 + 名称弹性最小 ~168），
-        // 原 760 < 合计 890 形同虚设，窄容器挤压的是唯一无宽度的名称列
-        scroll={{ x: 1140 }}
+        // UX-WALK 2026-10 回归修复：scroll.x 必须 ≥ 固定列宽合计（含勾选 32）+ 名称列
+        // 弹性下限 220。此前 P1-1/P1-2 增列（下次/上次执行）后固定列合计已达 1172
+        // （status90/trigger100/priority80/schedule190/nextRun170/lastRun150/runtime80/
+        // enabled70/actions210 + 勾选32），追平旧 scroll.x=1140 → antd 宽度填充
+        // （@rc-component/table useWidthColumns）把唯一无 width 的名称列压到 ~1px，
+        // 1280×800 桌面首列逐字竖排不可读。新增/加宽固定列时必须同步上调 scroll.x
+        // （task-list-deep 列宽契约测试钉住）。
+        scroll={{ x: 1392 }}
         pagination={{
           total,
           current: page,

@@ -19,6 +19,8 @@ import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import TaskListPage from '../pages/TaskListPage';
 import { tasksApi, type Task } from '../api/tasks';
+// UX-WALK 列宽契约：列题断言走 i18n 唯一事实源（TaskListPage 已副作用初始化）
+import i18n from '../i18n';
 
 vi.mock('../api/tasks', async () => {
   // summarizeBatch 必须一并暴露：它是 api/tasks 的具名导出，TaskListPage
@@ -500,5 +502,53 @@ describe('TaskListPage 删除后空页钳制（UX 边界）', () => {
       const lastCall = mockedTasks.list.mock.calls[mockedTasks.list.mock.calls.length - 1]?.[0];
       expect(lastCall?.page).toBe(1);
     });
+  });
+});
+
+// ─── UX-WALK 2026-10：列宽契约（1280 桌面首列可读性防回归）────────────────
+// jsdom 无布局引擎，钉「列配置声明」而非像素布局：
+//  · 除「任务名称」外每列（含勾选列）必须声明 width——antd v6 对无 width 列在
+//    table-layout:fixed 下平分剩余空间，声明缺失会直接挤扁名称列；
+//  · scroll.x（渲染为 <table style="width:…px">）≥ 已声明列宽合计 + 名称列下限 220。
+// 回归背景：P1-1/P1-2 增列（下次/上次执行）后固定列合计 1172 追平 scroll.x=1140，
+// 唯一无 width 的名称列被压到 ~1px，1280×800 桌面首列逐字竖排不可读。
+// 布局级验证已由走查脚本在真 Chromium 复测：1280 首列恢复可读、375 卡片化无溢出。
+describe('TaskListPage 列宽契约（UX-WALK 防回归）', () => {
+  const NAME_MIN_WIDTH = 220;
+  const parsePx = (v: string): number | null => {
+    const m = /^(\d+(?:\.\d+)?)px$/.exec(v.trim());
+    return m ? parseFloat(m[1]) : null;
+  };
+
+  it('勾选列 + 9 个固定列全部声明 width，唯一无宽度列是「任务名称」', async () => {
+    renderPage();
+    await screen.findByText('备份任务');
+    const table = document.querySelector('.ant-table table') as HTMLTableElement;
+    expect(table).toBeTruthy();
+    const ths = Array.from(table.querySelectorAll('thead th')) as HTMLElement[];
+    const cols = Array.from(table.querySelectorAll('colgroup col')) as HTMLElement[];
+    expect(ths.length).toBe(cols.length);
+    expect(ths.length).toBe(11); // 勾选 1 + 数据 10
+
+    const widthless = cols.filter((c) => parsePx(c.style.width) === null);
+    // 唯一无宽度列 = 名称列（吃剩余空间）；勾选列由 rowSelection.columnWidth 显式声明
+    expect(widthless.length).toBe(1);
+    const nameThIndex = ths.findIndex((th) => th.textContent === i18n.t('taskList.col.name'));
+    expect(nameThIndex).toBeGreaterThan(-1);
+    expect(cols.indexOf(widthless[0])).toBe(nameThIndex);
+  });
+
+  it('scroll.x ≥ 已声明列宽合计 + 名称列下限 220（新增/加宽列必须同步上调 scroll.x）', async () => {
+    renderPage();
+    await screen.findByText('备份任务');
+    const table = document.querySelector('.ant-table table') as HTMLTableElement;
+    const declared = Array.from(table.querySelectorAll('colgroup col'))
+      .map((c) => parsePx((c as HTMLElement).style.width))
+      .filter((w): w is number => w !== null);
+    const declaredSum = declared.reduce((a, b) => a + b, 0);
+    const scrollX = parsePx(table.style.width);
+    expect(scrollX).not.toBeNull();
+    // 低于该下限时 antd/CSS fixed 布局会把无宽度名称列压扁（回归形态：~1px）
+    expect(scrollX!).toBeGreaterThanOrEqual(declaredSum + NAME_MIN_WIDTH);
   });
 });

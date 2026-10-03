@@ -42,6 +42,8 @@ import { client } from '../api/client';
 import { useAuthStore } from '../store/auth';
 
 import '../i18n';
+// UX-WALK scroll.x 契约：列题断言走 i18n 唯一事实源（上方 import 已初始化）
+import i18n from '../i18n';
 
 // ───────────────────────── API mock ─────────────────────────
 vi.mock('../api/config', () => ({
@@ -263,6 +265,36 @@ describe('UI-09 R3 settings 系统配置 375px 产物', () => {
     expect(th.length).toBe(3);
     // 双端挂类：数据行单元格同步（2 行 × 3 列）
     expect(document.querySelectorAll('td.ui09-hide-mobile').length).toBe(6);
+  });
+
+  // UX-WALK 2026-10 防回归：此前配置表无 scroll 属性——375px 下按定宽列
+  // min-content(~520px) 溢出且被祖先 overflow:hidden 裁剪、无滚动条，值列不可达。
+  // 修复：值列声明 width 180 + scroll.x 820（antd 自建横滚容器，对齐全站先例）。
+  // jsdom 无布局引擎，钉「配置声明」；像素级由真 Chromium 375 走查复测承担。
+  it('移动端：配置表声明 scroll.x=820 横滚，值列有 width（375px 可达）', async () => {
+    renderPage(<SettingsPage />, '/settings?tab=config');
+    expect(await screen.findByText('runtime.mode')).toBeTruthy();
+    const table = document.querySelector('.ant-table table') as HTMLTableElement;
+    expect(table).toBeTruthy();
+    // scroll.x 落为 <table> 内联宽度 → 横滚容器存在，窄屏不再依赖祖先 overflow
+    // （820 = 定宽列 220+180+80+100+120=700 + 说明列弹性下限 120）
+    expect(table.style.width).toBe('820px');
+    const ths = Array.from(table.querySelectorAll('thead th')) as HTMLElement[];
+    const cols = Array.from(table.querySelectorAll('colgroup col')) as HTMLElement[];
+    expect(ths.length).toBe(cols.length);
+
+    // 值列必须声明 width ≥180——它曾是全表唯二无宽度列，被挤压即重蹈裁剪覆辙
+    const valueThIndex = ths.findIndex((th) => th.textContent === i18n.t('sysSettings.config.col.value'));
+    expect(valueThIndex).toBeGreaterThan(-1);
+    expect(parseFloat(cols[valueThIndex].style.width)).toBeGreaterThanOrEqual(180);
+
+    // 唯一无宽度列 = 说明列（吃剩余空间），且 scroll.x 为其保底 ≥120
+    const widthless = cols.filter((c) => !/^[\d.]+px$/.test(c.style.width.trim()));
+    expect(widthless.length).toBe(1);
+    const descThIndex = ths.findIndex((th) => th.textContent === i18n.t('sysSettings.config.col.desc'));
+    expect(descThIndex).toBeGreaterThan(-1);
+    expect(cols.indexOf(widthless[0])).toBe(descThIndex);
+    expect(parseFloat(table.style.width)).toBeGreaterThanOrEqual(700 + 120);
   });
 
   it('valueType 枚举标签：已知值渲染 i18n 词条（json→JSON），未知值回退原始 token', async () => {
