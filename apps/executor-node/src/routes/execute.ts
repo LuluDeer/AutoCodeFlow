@@ -1794,7 +1794,15 @@ async function prepareExecution(
 
   if (params) {
     for (const [k, v] of Object.entries(params)) {
-      env[`AUTOFLOW_${k.toUpperCase()}`] = String(v);
+      // A-11（P3）python parity（_serialize_param_value）：params→env 统一 JSON
+      // 序列化——String(v) 与 python str(v) 对布尔/空值/容器产出不同字节，同
+      // 任务脚本在两个执行器读 AUTOFLOW_* 得到不同值。python 侧用
+      // json.dumps(v, ensure_ascii=False, separators=(',', ':'))，与本处
+      // JSON.stringify 逐字节可比（契约向量：contract-fixtures 的
+      // executorEnvSerialization 段）。undefined 只在进程内直调可能出现（JSON
+      // 载荷不可携带），兜底回 String(v)。
+      const serialized = JSON.stringify(v);
+      env[`AUTOFLOW_${k.toUpperCase()}`] = serialized === undefined ? String(v) : serialized;
     }
   }
 
@@ -1955,6 +1963,18 @@ async function prepareExecution(
     cmd = pythonBinFromVenv || resolvedInterpreter || (process.platform === 'win32' ? 'python.exe' : 'python3');
     args = [actualEntrypoint];
   } else if (actualRuntime === 'shell') {
+    // A-2（P1）R4-C P0 parity with executor-python _validate_shell_entrypoint
+    // （_SHELL_ENTRYPOINT_SAFE_RE，逐字同形 charset）：shell entrypoint 直接来自
+    // 任务参数。win32 下 spawn('cmd.exe', ['/c', entrypoint]) 之前只有 workdir
+    // 包含性检查——NTFS 合法文件名 `x.bat&calc` 经 cmd.exe /c 的引号剥离会执行
+    // 额外命令；python 侧 400 拒绝而 node 放行，同一载荷两端结论相反。现按
+    // python 同款白名单拒绝（错误语义走 node 既有 prepare 失败路径 → failed
+    // 回调）；非 shell runtime 不受影响（argv 数组直传，无 shell 解析）。
+    if (!SHELL_ENTRYPOINT_SAFE_RE.test(actualEntrypoint)) {
+      throw new Error(
+        'Refusing shell entrypoint with unsafe characters; allowed charset is [A-Za-z0-9._/ :\\-]',
+      );
+    }
     if (process.platform === 'win32') {
       cmd = 'cmd.exe';
       args = ['/c', actualEntrypoint];
@@ -1990,6 +2010,12 @@ async function prepareExecution(
 // timeout=0（不限时）任务的回调 token 必须有数字 TTL——取 10 年上限
 // （86400s/天 × 3650）。admin 侧僵尸回收对该类任务本就有 1h 兜底窗口。
 const TOKEN_TTL_UNBOUNDED_SECONDS = 315_360_000;
+
+// A-2（P1）R4-C P0：shell runtime entrypoint 的安全字符白名单——与
+// executor-python 的 _SHELL_ENTRYPOINT_SAFE_RE 逐字同形
+//（`[A-Za-z0-9._/ :\\-]`，不含 ; & | ` $ ( ) < > " ' # 换行等 shell 元字符）。
+// 导出以便测试与后续复用（python 侧同为模块级常量）。
+export const SHELL_ENTRYPOINT_SAFE_RE = /^[A-Za-z0-9._/ :\\-]+$/;
 
 /**
  * 任务 .npmrc 内容（改动3）：

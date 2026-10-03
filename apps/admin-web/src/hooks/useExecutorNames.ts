@@ -19,11 +19,27 @@ import { executorsApi, Executor } from '../api/executors';
  * `address` 匹配。**都匹配不到时返回 null**，由调用方如实只显示地址——
  * 绝不编造名字（把地址当名字、或显示"未知执行器"都会误导排查）。
  */
+/**
+ * 本 hook 实际消费的执行器行结构子集——建立索引只读 `id` / `appName` /
+ * `address` 三个字段（见下方 index 构建），任何含这三列的行都可用。
+ *
+ * R3-E 遗留收口：`AppDeploymentPage` 的下拉/占用判断已整体改吃
+ * `GET /executors/picker` 的轻读面（`ExecutorPickerItem`，6 列），若本 hook
+ * 仍要求完整 `Executor` 类型，该页就得为名字解析**再拉一次全列 list()**——
+ * 首屏 list+picker 双请求。参数放宽为该子集后，调用方直接传 picker 行即可
+ * （`Executor` 全列行显然也满足该子集，`ApplicationDetailPage` 的自拉路径不受影响）。
+ */
+export interface ExecutorNameSourceItem {
+  id?: string;
+  appName?: string;
+  address?: string;
+}
+
 export interface ExecutorNameIndex {
   /** 解析出可读名；解析不到返回 null（调用方应回落显示地址）。 */
   nameOf: (deployment: { executorId?: string | null; executorAddress?: string | null }) => string | null;
   /** 清单本身，供调用方复用（避免二次请求）。 */
-  executors: Executor[];
+  executors: ExecutorNameSourceItem[];
   loading: boolean;
 }
 
@@ -32,10 +48,11 @@ export interface ExecutorNameIndex {
  *
  * ## 为什么要支持「传入清单」
  *
- * `AppDeploymentPage` 本来就会 `GET /executors`（下拉候选 + 占用判断，见
- * fetchAll）。若本 hook 再自拉一次，同一页面会重复请求同一端点——而且会破坏
- * 该页既有的性能契约（F-34：执行器清单**只在首屏拉一次**，秒级轮询拍不重复
- * 拉取；已有测试 `app-deployment-polling.test.tsx` 断言 list 恰好被调用 1 次）。
+ * `AppDeploymentPage` 本来就会拉执行器清单（部署下拉候选 + 占用判断，见
+ * fetchAll，R3-E 起数据源是 picker() 轻读面）。若本 hook 再自拉一次，同一页面
+ * 会重复请求——而且会破坏该页既有的性能契约（F-34：执行器清单**只在首屏拉
+ * 一次**，秒级轮询拍不重复拉取；已有测试 `app-deployment-polling.test.tsx`
+ * 断言轮询拍不重拉）。
  *
  * 故：**传入 `source` 时直接用，不发请求**；不传（`undefined`）才自拉——
  * 供没有现成清单的页面（如 ApplicationDetailPage 的两个表）使用。
@@ -46,7 +63,7 @@ export interface ExecutorNameIndex {
  * 拉取失败**不抛出**：名字只是锦上添花，不该让整个部署表/版本表因此报错。
  * 失败时 nameOf 恒返回 null，页面照常显示地址（与改动前的行为一致）。
  */
-export function useExecutorNames(source?: Executor[]): ExecutorNameIndex {
+export function useExecutorNames(source?: ExecutorNameSourceItem[]): ExecutorNameIndex {
   const [fetched, setFetched] = useState<Executor[]>([]);
   const [loading, setLoading] = useState(false);
   // 调用方提供了清单（含空数组）→ 完全以它为准，绝不重复请求。

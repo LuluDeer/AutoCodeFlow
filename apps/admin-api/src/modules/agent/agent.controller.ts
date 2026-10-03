@@ -1,5 +1,6 @@
 import {
   Body,
+  ConflictException,
   Controller,
   Get,
   Param,
@@ -160,6 +161,15 @@ export class AgentController {
         ok: false,
         reason: `会话已处于终态（${session.status}），请新建会话重跑`,
       };
+    }
+
+    // B-8：running 会话拒绝再入队——下面的 jobId 带 Date.now() 会绕过
+    // BullMQ 去重，双 worker 同时跑同一会话 = 双 LLM 循环、副作用双份。
+    // 409 让前端如实提示（resumable 列表同步排除 running）。
+    if (session.status === "running") {
+      throw new ConflictException(
+        "会话仍在运行中——重复入队会产生双份推理循环副作用，无需恢复",
+      );
     }
 
     await this.queue.add(

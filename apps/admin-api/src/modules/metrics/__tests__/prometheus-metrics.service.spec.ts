@@ -73,6 +73,7 @@ describe("PrometheusMetricsService (R7 prom-client exposition)", () => {
     m.recordTriggerSkippedDbClaim();
     m.recordTriggerSkippedInactive();
     m.recordTriggerSkippedBlockStrategy();
+    m.recordTriggerSkippedMaintenance();
     m.recordTriggerFailed();
     m.recordTriggerFailed();
     m.recordDependencyTriggerClaimed();
@@ -104,7 +105,9 @@ describe("PrometheusMetricsService (R7 prom-client exposition)", () => {
     );
   });
 
-  it("splits the four trigger skip reasons into label series", async () => {
+  // A-2（审计 FEAT-06）：五个 skip reason 全部透出——含维护窗口
+  // （triggersSkippedMaintenance），此前渲染缺失该 reason。
+  it("splits the five trigger skip reasons into label series", async () => {
     const svc = makeService();
     feedAllCounters(schedulerMetrics);
 
@@ -122,6 +125,25 @@ describe("PrometheusMetricsService (R7 prom-client exposition)", () => {
     expect(text).toContain(
       'autoflow_scheduler_triggers_skipped_total{reason="block_strategy"} 1',
     );
+    expect(text).toContain(
+      'autoflow_scheduler_triggers_skipped_total{reason="maintenance"} 1',
+    );
+  });
+
+  it("keeps all five trigger skip reason series present with 0 baselines (series-set stability)", async () => {
+    const svc = makeService();
+    const text = await svc.render();
+    for (const reason of [
+      "lock_held",
+      "db_claim",
+      "inactive",
+      "block_strategy",
+      "maintenance",
+    ]) {
+      expect(text).toContain(
+        `autoflow_scheduler_triggers_skipped_total{reason="${reason}"} 0`,
+      );
+    }
   });
 
   // N32 (round-9): callback 401 分类观测 series——对齐既有 reset+inc 快照模式。
@@ -504,6 +526,62 @@ describe("trigger latency histogram (CORE-06)", () => {
       `autoflow_scheduler_trigger_latency_ms_bucket{le="+Inf"} 2`,
     );
     expect(out).toContain("autoflow_scheduler_trigger_latency_ms_count 2");
+  });
+
+  // A-1（审计 CORE-06 渲染口径）：*_bucket 必须是**累计**计数（Prometheus
+  // 累积直方图不变量，histogram_quantile/rate 直接消费各 le 的绝对值）。
+  // 30ms + 4000ms 两样本下：le=100 应为 1（含 30ms）、le=5000 应为 2（全部）。
+  // 旧实现逐桶 inc(cum-prevCum) 写边际值——le=50/le=5000 恰好边际=累计属巧合
+  // 路径，中间桶（如 le=100）全错。
+  it("writes cumulative counts per le bucket, not per-bucket deltas (A-1)", async () => {
+    const { svc, schedulerMetrics } = makeServiceWithMetrics();
+    schedulerMetrics.recordTriggerLatency(30);
+    schedulerMetrics.recordTriggerLatency(4000);
+
+    const out = await svc.render();
+    // 全边界逐一锚定：le 单调不减、末桶（5000）= +Inf = count
+    const expected: Array<[string, number]> = [
+      ["10", 0],
+      ["50", 1],
+      ["100", 1],
+      ["250", 1],
+      ["500", 1],
+      ["1000", 1],
+      ["2500", 1],
+      ["5000", 2],
+    ];
+    for (const [le, value] of expected) {
+      expect(out).toContain(
+        `autoflow_scheduler_trigger_latency_ms_bucket{le="${le}"} ${value}`,
+      );
+    }
+    expect(out).toContain(
+      `autoflow_scheduler_trigger_latency_ms_bucket{le="+Inf"} 2`,
+    );
+    expect(out).toContain("autoflow_scheduler_trigger_latency_ms_count 2");
+  });
+
+  it("keeps buckets monotonic across scrapes when later samples fall into smaller buckets (A-1)", async () => {
+    const { svc, schedulerMetrics } = makeServiceWithMetrics();
+    schedulerMetrics.recordTriggerLatency(4000);
+    const first = await svc.render();
+    expect(first).toContain(
+      `autoflow_scheduler_trigger_latency_ms_bucket{le="5000"} 1`,
+    );
+
+    schedulerMetrics.recordTriggerLatency(30);
+    const second = await svc.render();
+    // 新样本落入更小的桶：累计口径下大桶计数不变、小桶递增——
+    // 边际值写入会让 le=5000 出现 0（回退），违反 counter 单调不变量。
+    expect(second).toContain(
+      `autoflow_scheduler_trigger_latency_ms_bucket{le="5000"} 2`,
+    );
+    expect(second).toContain(
+      `autoflow_scheduler_trigger_latency_ms_bucket{le="50"} 1`,
+    );
+    expect(second).toContain(
+      `autoflow_scheduler_trigger_latency_ms_bucket{le="+Inf"} 2`,
+    );
   });
 });
 

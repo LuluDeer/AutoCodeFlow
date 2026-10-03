@@ -119,6 +119,22 @@ AUTH-01 落地了 Project 实体与 `tasks/applications.projectId`，但**没有
 > - **「admin-web 权限门控 UI」→ 已兑现**（`ProjectsPage.tsx` 用 `isAdminUser` 门控
 >   操作区、成员管理 Drawer ADMIN 增删改 / 普通用户只读）。
 
+> **2026-10-02 更新（N-02③ 产品拍板：温和下放，折中档）**：上段「项目内
+> executor/package 角色细分」经产品拍板，取**温和下放**形态：
+>
+> - **下放给项目 editor/admin**（经 `ProjectAccessService` 项目角色判定，
+>   `executor.projectId` 接线）：PATCH `:id`（元数据修改）、POST
+>   `:id/reload-config`（配置热更）——项目成员对自己项目的执行器可做日常运维；
+> - **保留 ADMIN 独占**（不下放）：`POST :id/rotate-token`（令牌轮换）、
+>   POST `:id/set-offline`（强制下线）、DELETE `:id`（删除执行器）——三者是
+>   平台级敏感操作（令牌与执行器生命周期影响共享基础设施，不只本项目）；
+> - `executor-package` 面维持类级 `@Roles(ADMIN)` 不动（包分发是全局资产，
+>   本拍板不涉及）；
+> - ADMIN 主体短路放行不变；非成员 / viewer 语义与 §2 一致（viewer 恒拒写）。
+>
+> 升级影响：这是**放权**变更（新增可操作席位），无既有行为收紧；CHANGELOG
+> 显著位 + 升级说明随实施同批。实施落账见 PLAN-CLAIMS N-02。
+
 ### 6. 读面过滤（2026-09-13 追加裁定：AUTH-02 后续）
 
 `GET /projects` 从「全员可读全量列表」收紧为按主体过滤：

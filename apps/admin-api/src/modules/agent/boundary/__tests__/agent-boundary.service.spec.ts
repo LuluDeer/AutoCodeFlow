@@ -217,6 +217,61 @@ describe("AgentBoundaryService · ④ 资源范围（scope 交叉验证）", () 
       svc.check(s, "get_application", { applicationId: "app-A" }, 0),
     ).toMatchObject({ kind: "ALLOW" });
   });
+
+  // B-2：绑定资源的工具「未提供 id」不能放行——否则白名单可被参数缺省绕过
+  // （sop_get 的 sopId/slug 二选一，传 {slug} 时 targetId 缺失即可读任意 SOP；
+  //  slug → id 的归一在执行体入口做，闸门语义保持单一）。
+  describe("B-2 · 缺 id 的绑定资源调用拒绝", () => {
+    const sopSession = () =>
+      session({
+        kind: "sop_review",
+        scopeJson: { sops: ["sop-1"] },
+      } as never);
+
+    it("sop_get 缺 sopId（如只传 slug 形态的 args）→ out_of_scope", () => {
+      const { svc } = harness();
+      expect(svc.check(sopSession(), "sop_get", {}, 0)).toMatchObject({
+        kind: "DENY",
+        reason: "out_of_scope",
+      });
+    });
+
+    it("id 路径回归：白名单内的 sopId 放行，白名单外的拒绝", () => {
+      const { svc } = harness();
+      expect(
+        svc.check(sopSession(), "sop_get", { sopId: "sop-1" }, 0),
+      ).toMatchObject({ kind: "ALLOW" });
+      expect(
+        svc.check(sopSession(), "sop_get", { sopId: "sop-2" }, 0),
+      ).toMatchObject({ kind: "DENY", reason: "out_of_scope" });
+    });
+
+    it("白名单空时同样拒绝（原语义不变，错误信息为「未授权」而非「缺 id」）", () => {
+      const { svc } = harness();
+      const v = svc.check(
+        session({ kind: "sop_review", scopeJson: {} } as never),
+        "sop_get",
+        {},
+        0,
+      );
+      expect(v).toMatchObject({ kind: "DENY", reason: "out_of_scope" });
+      expect((v as { message: string }).message).toContain("未授权任何 sop");
+    });
+
+    it("unrestricted=true 的会话不受缺 id 影响（chat 管理员语义不变）", () => {
+      const { svc } = harness();
+      const v = svc.check(
+        session({
+          kind: "sop_review",
+          scopeJson: { unrestricted: true },
+        } as never),
+        "sop_get",
+        {},
+        0,
+      );
+      expect(v).toMatchObject({ kind: "ALLOW" });
+    });
+  });
 });
 
 describe("AgentBoundaryService · ⑤ 速率与熔断（进程内记账）", () => {

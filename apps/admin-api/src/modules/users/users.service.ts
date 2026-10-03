@@ -12,6 +12,8 @@ import { ConfigService } from "@nestjs/config";
 import * as bcrypt from "bcrypt";
 import { User, UserRole } from "./entities/user.entity";
 import { RefreshToken } from "../auth/entities/refresh-token.entity";
+// A-8: 删除用户时同事务清理其 project_members 行（该列无 FK，残留即幽灵成员）。
+import { ProjectMember } from "../project/entities/project-member.entity";
 import { CreateUserDto } from "./dto/create-user.dto";
 import { UpdateUserDto } from "./dto/update-user.dto";
 import { ListUsersDto } from "./dto/list-users.dto";
@@ -199,6 +201,15 @@ export class UsersService implements OnModuleInit {
     return this.usersRepository.findOne({ where: { username } });
   }
 
+  /**
+   * A-7（R3-A 审计）: 自改 email 的唯一性预检取数（与 findByUsername 同形态）
+   * ——users.controller 自改分支据此把「email 已被他人占用」前置成 409，
+   * 而不是让 user.email 唯一索引的 23505 冒成裸 500。
+   */
+  async findByEmail(email: string) {
+    return this.usersRepository.findOne({ where: { email } });
+  }
+
   async update(id: number, updateUserDto: UpdateUserDto) {
     const user = await this.findById(id);
     // R19: currentPassword is a verification-only field (checked in the
@@ -267,6 +278,8 @@ export class UsersService implements OnModuleInit {
    *  - **回收 refresh_tokens**：R-04 已让删除后的 refresh 路径 401
    *    （findByIdOrNull 缺行即拒），此处清行属凭据卫生——不把长期有效的孤儿
    *    令牌行留在库里（也避免会话列表/清理任务扫到悬空 userId）。
+   *  - **清理 project_members**（A-8）：成员表 userId 无 FK，残留行会造成
+   *    幽灵成员（面板显示已删用户、resolveRole 命中已删 id），同事务清行。
    *
    * 并发：判定与删除在同一事务内，且对管理员行集合 `SELECT ... FOR UPDATE`，
    * 两个并发请求同时删掉仅剩的两名管理员时后到者会在锁上等待并看到 count=1
@@ -295,6 +308,11 @@ export class UsersService implements OnModuleInit {
         }
       }
       await manager.getRepository(RefreshToken).delete({ userId: id });
+      // A-8（R3-A 审计）: project_members.userId 无 FK——用户删除后残留成员行
+      // 会造成「幽灵成员」：成员面板显示已删用户、resolveRole 仍命中已删 id
+      // 参与项目角色判定。同事务清理（与 refresh_tokens 回收同点），删除失败
+      // 一并回滚，不产生半清理状态。
+      await manager.getRepository(ProjectMember).delete({ userId: id });
       await users.remove(target);
       return { deleted: true };
     });

@@ -256,21 +256,27 @@ describe("ExecutorController — F-2 heartbeat / F-7 register mass-assignment gu
   describe("F-2 family: PATCH :id metadata whitelist", () => {
     it("forwards only the four metadata fields to service.update", async () => {
       const update = jest.fn(async (id, data) => ({ id, ...data }));
-      const svc = { ...makeSvc(), update };
+      // N-02③：handler 先 findOne 取行做项目角色判定——makeSvc 的 findOne
+      // 桩（projectId=null，ADMIN 短路）保持 F-2 白名单断言聚焦不变。
+      const svc = { ...makeSvc(), update, findOne: jest.fn(async () => ({})) };
       const controller = new ExecutorController(
         svc as any,
         makeConfig(),
         {} as any,
       );
-      await controller.update("e1", {
-        groupName: "prod",
-        tags: ["a"],
-        description: "d",
-        maxConcurrentTasks: 4,
-        tokenHash: "$2b$12$attackerhash",
-        version: 99,
-        status: "offline",
-      } as any);
+      await controller.update(
+        "e1",
+        { role: "admin" } as any,
+        {
+          groupName: "prod",
+          tags: ["a"],
+          description: "d",
+          maxConcurrentTasks: 4,
+          tokenHash: "$2b$12$attackerhash",
+          version: 99,
+          status: "offline",
+        } as any,
+      );
       expect(update).toHaveBeenCalledWith("e1", {
         groupName: "prod",
         tags: ["a"],
@@ -314,7 +320,7 @@ describe("ExecutorController — F-2 heartbeat / F-7 register mass-assignment gu
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const axios = require("axios");
       await expect(
-        controller.reloadConfig("executor-1", {}),
+        controller.reloadConfig("executor-1", { role: "admin" } as any, {}),
       ).rejects.toBeInstanceOf(UnauthorizedException);
       // F-3: the guard must reject before ANY push carries the credential —
       // including the R11 401-retry push, which reuses the same guarded URL.
@@ -346,12 +352,73 @@ describe("ExecutorController — F-2 heartbeat / F-7 register mass-assignment gu
       axios.post.mockRejectedValueOnce(
         new Error("connect ECONNREFUSED 10.0.0.9:8000"),
       );
-      await expect(controller.reloadConfig("executor-1", {})).rejects.toThrow(
-        "Failed to reach executor",
-      );
       await expect(
-        controller.reloadConfig("executor-1", {}),
+        controller.reloadConfig("executor-1", { role: "admin" } as any, {}),
+      ).rejects.toThrow("Failed to reach executor");
+      await expect(
+        controller.reloadConfig("executor-1", { role: "admin" } as any, {}),
       ).rejects.not.toThrow(/ECONNREFUSED/);
+    });
+
+    // A-3（执行器域审计 P2）：401 重签重试必须与首次请求携带同一份安全配置
+    // ——maxRedirects: 0（首跳是唯一经 SSRF 校验的地址）+ pinnedAxiosConfig
+    // 展开（连接钉在已校验 IP 上）。此前重试丢了这两项：带 token 的重试可被
+    // 30x 重定向到任意地址、或经 DNS 重解析落到他人选定的 IP。
+    it("A-3: the 401 re-issue retry keeps maxRedirects:0 and the pinned agent", async () => {
+      const { assertAndPinExecutorUrl } =
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        require("../../../common/utils/safe-http.util") as {
+          assertAndPinExecutorUrl: jest.Mock;
+        };
+      // pinned:true → 真实 pinnedAxiosConfig 返回钉定 lookup 的 http agent。
+      assertAndPinExecutorUrl.mockResolvedValue({
+        url: new URL("http://10.0.0.9:8001/api/config/reload"),
+        pinnedIp: "10.0.0.9",
+        pinned: true,
+      });
+      const svc = makeSvc({
+        findOne: jest.fn().mockResolvedValue({
+          id: "executor-1",
+          address: "10.0.0.9:8001",
+          appName: "executor-node",
+          executorStartupId: "startup-1",
+          status: ExecutorStatus.ONLINE,
+          type: ExecutorType.PYTHON,
+        }),
+        getExecutorUrl: jest
+          .fn()
+          .mockReturnValue("http://10.0.0.9:8001/api/config/reload"),
+      });
+      const controller = new ExecutorController(
+        svc as any,
+        makeConfig(),
+        {} as any,
+      );
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const axios = require("axios");
+      axios.post.mockRejectedValueOnce({ response: { status: 401 } });
+      axios.post.mockResolvedValueOnce({ data: { ok: true } });
+
+      const result = await controller.reloadConfig(
+        "executor-1",
+        { role: "admin" } as any,
+        {},
+      );
+
+      expect(result).toEqual({ ok: true });
+      expect(axios.post).toHaveBeenCalledTimes(2);
+      const [, , retryCfg] = axios.post.mock.calls[1] as [
+        string,
+        unknown,
+        {
+          maxRedirects: number;
+          headers: { Authorization: string };
+          httpAgent?: unknown;
+        },
+      ];
+      expect(retryCfg.maxRedirects).toBe(0);
+      expect(retryCfg.httpAgent).toBeDefined();
+      expect(retryCfg.headers.Authorization).toBe("Bearer issued-token");
     });
   });
 });

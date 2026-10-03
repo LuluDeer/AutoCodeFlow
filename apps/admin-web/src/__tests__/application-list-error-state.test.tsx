@@ -15,7 +15,7 @@ vi.mock('../api/applications', () => ({
   deploymentsApi: { list: vi.fn(), deploy: vi.fn() },
 }));
 vi.mock('../api/executors', () => ({
-  executorsApi: { list: vi.fn() },
+  executorsApi: { list: vi.fn(), picker: vi.fn() },
 }));
 
 // jsdom 缺失 antd 依赖的浏览器 API，先行补齐（对齐既有先例）
@@ -50,6 +50,7 @@ beforeEach(() => {
   });
   vi.mocked(applicationsApi.list).mockReset();
   vi.mocked(executorsApi.list).mockReset().mockResolvedValue([] as never);
+  vi.mocked(executorsApi.picker).mockReset().mockResolvedValue({ items: [], total: 0, truncated: false, limit: 2000 } as never);
   useAuthStore.setState({ user: { id: 1, username: 'admin', role: 'admin' } as never });
 });
 

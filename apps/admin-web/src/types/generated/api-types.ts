@@ -1299,6 +1299,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/executors/picker": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List executor picker options (lightweight)
+         * @description Minimal read surface for executor picker dropdowns (deploy modals): id/appName/address/status/runningTaskCount/maxConcurrentTasks only, not the full entity projection of GET /executors. Capped at EXECUTOR_PICKER_LIMIT rows (createdAt DESC); when total > items.length the response carries truncated=true so the UI can warn explicitly — never silently truncated like the 500-capped full list.
+         */
+        get: operations["ExecutorController_findPickerOptions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/executors/install-cmd": {
         parameters: {
             query?: never;
@@ -1382,7 +1402,7 @@ export interface paths {
         head?: never;
         /**
          * Update executor metadata
-         * @description Update executor group, tags, description, and max concurrent tasks.
+         * @description Update executor group, tags, description, and max concurrent tasks. Requires ADMIN, or editor+ role on the executor's project.
          */
         patch: operations["ExecutorController_update"];
         trace?: never;
@@ -1398,7 +1418,7 @@ export interface paths {
         put?: never;
         /**
          * Push config hot-update to executor
-         * @description Dynamically update executor config without restart. Executor must be online.
+         * @description Dynamically update executor config without restart. Executor must be online. Requires ADMIN, or editor+ role on the executor's project.
          */
         post: operations["ExecutorController_reloadConfig"];
         delete?: never;
@@ -1624,7 +1644,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Send notification from task code (SDK) */
+        /** Send notification from task code (SDK, admin only) */
         post: operations["NotificationConfigController_send"];
         delete?: never;
         options?: never;
@@ -3218,8 +3238,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * List execution artifacts (manifest)
-         * @description Returns the persisted artifact manifest reported by the executor's terminal callback. Requires an administrator JWT (global JwtAuthGuard).
+         * List execution artifacts (manifest, admin only)
+         * @description Returns the persisted artifact manifest reported by the executor's terminal callback. Requires an administrator JWT (global JwtAuthGuard + RolesGuard).
          */
         get: operations["ArtifactsController_list"];
         put?: never;
@@ -3238,7 +3258,7 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Download one execution artifact (streamed)
+         * Download one execution artifact (streamed, admin only)
          * @description Streams a stored artifact to an authenticated administrator. Enforces a bare-safe file-name (path-traversal guarded) and 404 when absent.
          */
         get: operations["ArtifactsController_download"];
@@ -3706,11 +3726,13 @@ export interface components {
             estimatedDurationSec?: number;
             retryableErrors?: string[];
             priority?: number;
+            /** @description Dispatch mode: single (pick the least-loaded eligible executor, default) or broadcast (fan out to every eligible online executor). Mutually exclusive with executorId pinning, and rejected with 400 when the bound application carries a mutex group (broadcast cannot honor in-group concurrency caps). */
             executeMode?: string;
             blockStrategy?: string;
             misfireStrategy?: string;
             alarmEmail?: string;
             alarmChannels?: string[];
+            /** @description Default task params; serialized size must not exceed 65536 bytes (same limit as the trigger/webhook face). */
             params?: Record<string, never>;
             /**
              * @description Task-level secrets (credential key/value pairs, stored encrypted at rest with AES-256-GCM when SEC_SECRETS_KEY is configured; plaintext fallback with a warning otherwise). Read paths are always masked with the literal ******. Dispatched both merged into params (AUTOFLOW_<KEY>, legacy channel) and as a separate payload field so the executor injects them under their ORIGINAL names (required by third-party SDKs that read canonical names). On PATCH the object is merged per key: an omitted key or a ****** leaf keeps the stored value, a null leaf deletes the key, any other value overwrites it; an explicit null for the whole field clears every secret.
@@ -3797,11 +3819,13 @@ export interface components {
             estimatedDurationSec?: number;
             retryableErrors?: string[];
             priority?: number;
+            /** @description Dispatch mode: single (pick the least-loaded eligible executor, default) or broadcast (fan out to every eligible online executor). Mutually exclusive with executorId pinning, and rejected with 400 when the bound application carries a mutex group (broadcast cannot honor in-group concurrency caps). */
             executeMode?: string;
             blockStrategy?: string;
             misfireStrategy?: string;
             alarmEmail?: string;
             alarmChannels?: string[];
+            /** @description Default task params; serialized size must not exceed 65536 bytes (same limit as the trigger/webhook face). */
             params?: Record<string, never>;
             /**
              * @description Task-level secrets (credential key/value pairs, stored encrypted at rest with AES-256-GCM when SEC_SECRETS_KEY is configured; plaintext fallback with a warning otherwise). Read paths are always masked with the literal ******. Dispatched both merged into params (AUTOFLOW_<KEY>, legacy channel) and as a separate payload field so the executor injects them under their ORIGINAL names (required by third-party SDKs that read canonical names). On PATCH the object is merged per key: an omitted key or a ****** leaf keeps the stored value, a null leaf deletes the key, any other value overwrites it; an explicit null for the whole field clears every secret.
@@ -3846,6 +3870,7 @@ export interface components {
             expectedUpdatedAt?: string;
         };
         TriggerTaskDto: {
+            /** @description Trigger params override; serialized size must not exceed 65536 bytes (same limit as the webhook face) */
             params?: Record<string, never>;
             /** @example 3 */
             version?: number;
@@ -4645,7 +4670,7 @@ export interface components {
              * @enum {string}
              */
             runMode: "once" | "daemon" | "scheduled";
-            /** @description Environment variable overrides */
+            /** @description Environment variable overrides (≤50 keys, each value ≤4096 bytes) */
             env?: Record<string, never>;
             /** @description Startup command override (leave empty to use manifest entrypoint) */
             startCommand?: string;
@@ -4664,6 +4689,7 @@ export interface components {
             status: "running" | "stopped" | "failed";
             /** @description Process PID */
             pid?: number;
+            /** @description Free-form progress message (max 2000 chars; lands in the statusMessage text column and the list read surface) */
             message?: string;
         };
         CreateMutexGroupDto: {
@@ -4789,7 +4815,54 @@ export interface components {
              */
             status?: "active" | "deprecated" | "uploading";
         };
-        TaskTemplate: Record<string, never>;
+        TaskTemplateResponseDto: {
+            /**
+             * Format: uuid
+             * @description Template UUID
+             */
+            id: string;
+            /**
+             * @description Stable unique key. Official templates use fixed keys (scheduled_backup / health_check / data_sync / log_cleanup / webhook_ping) aligned with the MCP TASK_TEMPLATES; custom keys are user-suggested.
+             * @example scheduled_backup
+             */
+            key: string;
+            /** @description Display name */
+            name: string;
+            /** @description Human description shown on template cards */
+            description?: string | null;
+            /** @description Coarse category tag (备份/巡检/同步/清理/通知…) rendered as a Tag */
+            category?: string | null;
+            /**
+             * @description Valid CreateTaskDto subset (no `name`; provided at instantiate time). Used as defaults when instantiating a task from this template.
+             * @example {
+             *       "triggerType": "cron",
+             *       "cronExpression": "0 2 * * *",
+             *       "runtime": "shell",
+             *       "entrypoint": "backup.sh",
+             *       "timeoutSeconds": 3600,
+             *       "maxRetry": 3,
+             *       "retryDelay": 60,
+             *       "blockStrategy": "discard"
+             *     }
+             */
+            config: {
+                [key: string]: unknown;
+            };
+            /** @description True for migration-seeded official presets (read-only, cannot be deleted) */
+            isOfficial: boolean;
+            /** @description Username of the creator (JWT username). null = legacy row / official seed; deletion of null-owner rows is ADMIN-only. */
+            createdBy?: string | null;
+            /**
+             * Format: date-time
+             * @description Creation time (ISO-8601)
+             */
+            createdAt: string;
+            /**
+             * Format: date-time
+             * @description Last update time (ISO-8601)
+             */
+            updatedAt: string;
+        };
         CreateTaskTemplateDto: {
             /**
              * @description 模板展示名
@@ -4832,7 +4905,79 @@ export interface components {
              */
             overlay?: Record<string, never>;
         };
-        EventSubscription: Record<string, never>;
+        InstantiateTaskResponseDto: {
+            /**
+             * Format: uuid
+             * @description Created task UUID
+             */
+            id: string;
+            /** @description Task name (from the overlay body; unique across tasks) */
+            name: string;
+            /**
+             * @description Lifecycle status of the created task
+             * @enum {string}
+             */
+            status: "active" | "paused" | "deleted";
+            /**
+             * @description Trigger type expanded from the template config / overlay
+             * @enum {string}
+             */
+            triggerType: "cron" | "fixed_rate" | "api" | "manual";
+            /**
+             * @description Runtime the executor will use
+             * @enum {string}
+             */
+            runtime: "python" | "node" | "shell";
+            /**
+             * Format: date-time
+             * @description Creation time (ISO-8601)
+             */
+            createdAt: string;
+        };
+        EventSubscriptionResponseDto: {
+            /**
+             * Format: uuid
+             * @description Subscription UUID
+             */
+            id: string;
+            /** @description Owner user id (integer). null = system-level subscription (ADMIN-managed, visible to every admin and to all users for troubleshooting reads). */
+            userId?: number | null;
+            /**
+             * @description Subscribed event names (stable catalog, append-only): execution.completed / execution.failed / executor.offline / deployment.completed
+             * @example [
+             *       "execution.failed"
+             *     ]
+             */
+            eventTypes: string[];
+            /** @description Callback URL (public http(s); SSRF deep-validated on write and re-checked before every outbound delivery) */
+            url: string;
+            /**
+             * @description HMAC signing secret — always the mask placeholder '******' on every read surface (plaintext returned once as generatedSecret on create only)
+             * @example ******
+             */
+            secret: string;
+            /** @description Whether delivery is enabled */
+            enabled: boolean;
+            /** @description Consecutive delivery failures (reset to 0 on any success) */
+            consecutiveFailures: number;
+            /**
+             * Format: date-time
+             * @description Timestamp of the most recent delivery failure; null = never failed
+             */
+            lastFailureAt?: string | null;
+            /** @description Most recent failure summary (truncated to 512; never contains secret/payload) */
+            lastFailureError?: string | null;
+            /**
+             * Format: date-time
+             * @description Creation time (ISO-8601)
+             */
+            createdAt: string;
+            /**
+             * Format: date-time
+             * @description Last update time (ISO-8601)
+             */
+            updatedAt: string;
+        };
         CreateEventSubscriptionDto: {
             /**
              * @description Callback URL (public http(s) endpoint; private networks rejected)
@@ -4849,6 +4994,12 @@ export interface components {
             /** @description HMAC signing secret. Omit to let the server generate a 32-byte hex secret (returned once in the create response, never shown again). */
             secret?: string;
         };
+        EventSubscriptionCreateResponseDto: {
+            /** @description Created subscription (secret masked) */
+            subscription: components["schemas"]["EventSubscriptionResponseDto"];
+            /** @description Server-generated 32-byte hex secret — returned exactly once, on this response only. Absent when the caller supplied their own secret. */
+            generatedSecret?: string;
+        };
         UpdateSubscriptionBody: {
             /** @description Enable/disable delivery */
             enabled?: boolean;
@@ -4858,6 +5009,45 @@ export interface components {
             eventTypes?: string[];
             /** @description Rotate the signing secret */
             secret?: string;
+        };
+        EventSubscriptionDeadLetterResponseDto: {
+            /**
+             * Format: uuid
+             * @description Dead letter UUID
+             */
+            id: string;
+            /**
+             * Format: uuid
+             * @description Owning subscription UUID
+             */
+            subscriptionId: string;
+            /** @description Event name that failed delivery (e.g. execution.failed) */
+            eventType: string;
+            /** @description Complete outbound envelope at send time (event/occurredAt/data) */
+            payload: {
+                [key: string]: unknown;
+            };
+            /** @description Last failure summary (truncated to 1024) */
+            error: string;
+            /** @description Actual delivery attempts (first attempt + outbox scanner retries, bounded by MAX_OUTBOX_ATTEMPTS) */
+            attempts: number;
+            /**
+             * Format: date-time
+             * @description When this dead letter was recorded (ISO-8601)
+             */
+            createdAt: string;
+        };
+        EventSubscriptionDeadLetterPageDto: {
+            /** @description Page of dead letters, newest first */
+            data: components["schemas"]["EventSubscriptionDeadLetterResponseDto"][];
+            /** @description Total matching rows before paging */
+            total: number;
+        };
+        ReplayDeadLetterResponseDto: {
+            /** @description Whether the single replay delivery succeeded */
+            ok: boolean;
+            /** @description Failure summary when ok=false (row is kept for another try) */
+            error?: string;
         };
         CreateApiKeyDto: Record<string, never>;
         ProjectViewDto: {
@@ -4882,6 +5072,20 @@ export interface components {
              * @enum {string|null}
              */
             myRole?: "viewer" | "editor" | "admin" | null;
+        };
+        ProjectListPageDto: {
+            /** @description Page rows (legacy alias of items) */
+            list: components["schemas"]["ProjectViewDto"][];
+            /** @description Page rows */
+            items: components["schemas"]["ProjectViewDto"][];
+            /** @description Total visible projects */
+            total: number;
+            /** @description Current page (1-based) */
+            page: number;
+            /** @description Page size (clamped to 1..100) */
+            pageSize: number;
+            /** @description Total pages */
+            totalPages: number;
         };
         ProjectEntityDto: {
             /** @description Project id (uuid) */
@@ -6828,6 +7032,24 @@ export interface operations {
             };
         };
     };
+    ExecutorController_findPickerOptions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Executor picker options with explicit truncation flag */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     ExecutorController_getInstallCmd: {
         parameters: {
             query?: never;
@@ -6990,6 +7212,13 @@ export interface operations {
         responses: {
             /** @description Updated successfully */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not ADMIN and no editor+ role on the executor's project */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -9736,6 +9965,13 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description Non-admin caller */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             /** @description Execution not found */
             404: {
                 headers: {
@@ -9766,6 +10002,13 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description Non-admin caller */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             /** @description Artifact not found */
             404: {
                 headers: {
@@ -9790,7 +10033,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["TaskTemplate"][];
+                    "application/json": components["schemas"]["TaskTemplateResponseDto"][];
                 };
             };
         };
@@ -9814,7 +10057,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["TaskTemplate"];
+                    "application/json": components["schemas"]["TaskTemplateResponseDto"];
                 };
             };
             /** @description Invalid config / key */
@@ -9851,7 +10094,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["TaskTemplate"];
+                    "application/json": components["schemas"]["TaskTemplateResponseDto"];
                 };
             };
             /** @description Template not found */
@@ -9915,12 +10158,14 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Created task */
+            /** @description Created task (minimal face: identity/status/trigger fields) */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["InstantiateTaskResponseDto"];
+                };
             };
             /** @description Missing name / invalid merged payload */
             400: {
@@ -9947,13 +10192,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Subscription list */
+            /** @description Subscription list (secret always masked as '******'; ADMIN sees all, users see their own plus system-level) */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["EventSubscription"][];
+                    "application/json": components["schemas"]["EventSubscriptionResponseDto"][];
                 };
             };
         };
@@ -9971,12 +10216,14 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Created subscription */
+            /** @description Created subscription (secret masked). generatedSecret present only when the server generated one — shown exactly once. */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["EventSubscriptionCreateResponseDto"];
+                };
             };
             /** @description Invalid URL / event types / quota exceeded */
             400: {
@@ -10031,13 +10278,13 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Updated subscription */
+            /** @description Updated subscription (secret masked) */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["EventSubscription"];
+                    "application/json": components["schemas"]["EventSubscriptionResponseDto"];
                 };
             };
             /** @description Not the owner */
@@ -10071,12 +10318,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Paged dead letters */
+            /** @description Paged dead letters (newest first) */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["EventSubscriptionDeadLetterPageDto"];
+                };
             };
             /** @description Not the owner */
             403: {
@@ -10101,12 +10350,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Replayed (ok true/false with error) */
+            /** @description Replayed (ok true removes the dead letter; ok false keeps it with error) */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ReplayDeadLetterResponseDto"];
+                };
             };
             /** @description Not the owner */
             403: {
@@ -10202,20 +10453,23 @@ export interface operations {
     };
     ProjectsController_findAll: {
         parameters: {
-            query?: never;
+            query: {
+                page: string;
+                pageSize: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description ADMIN sees all; others see default project plus their memberships */
+            /** @description No page/pageSize query → full ProjectViewRow array (legacy shape). Either param present → paginated envelope (list/items/total/page/pageSize/totalPages) over the caller's visible projects */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ProjectViewDto"][];
+                    "application/json": components["schemas"]["ProjectListPageDto"];
                 };
             };
         };

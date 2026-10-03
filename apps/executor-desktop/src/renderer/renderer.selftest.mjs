@@ -807,4 +807,125 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
   }
 }
 
-console.log('renderer selftest: design tokens, accessibility, contrast, focus, layout, spacing, IPC anchors, F-21/F-22/F-37, DSK-05, PERF-DSK-01, SEC-DSK-01, EXP-04/05/06/09, ErrorBoundary, NETOPT-7⑤⑥, tab roving+persist, app-management, N-04 cfg bilingual parity guards passed');
+// ── 审计三轮：B-3 / B-6 / B-8 / B-9 / B-11 渲染侧守卫 ─────────────────
+{
+  const execRaw = readFileSync(resolve(root, '..', 'main', 'executor-process.ts'), 'utf8');
+  // 去注释后判——B-6 的说明注释里会引用被删的通道名（自我触发教训同上）。
+  const stripComments = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  const execSrc = stripComments(execRaw);
+  const preloadSrc = stripComments(readFileSync(resolve(root, '..', 'preload', 'index.ts'), 'utf8'));
+  const wizardNoCommentsForAudit = wizard
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '');
+
+  // B-3①：downloaded 态文案必须改实——autoInstallOnAppQuit=false 下直接关窗
+  // 不会自动安装，旧文案「重启应用即可完成安装」误导用户（更新永远装不上）。
+  if (banner.includes('重启应用即可完成安装')) {
+    throw new Error('B-3: UpdateBanner 仍在使用误导性文案「重启应用即可完成安装」');
+  }
+  if (!banner.includes('直接关闭应用不会自动安装')) {
+    throw new Error('B-3: UpdateBanner downloaded 态必须如实说明「直接关闭应用不会自动安装」');
+  }
+  // B-3②：主进程持久化标记命中时（previouslyDownloaded），界面必须告知
+  // 「复用本地缓存」而不是暗示要重新下载。
+  if (!banner.includes('previouslyDownloaded === true') || !banner.includes('复用本地缓存')) {
+    throw new Error('B-3: UpdateBanner 未消费 previouslyDownloaded 旗标（缓存复用提示缺失）');
+  }
+  if (!updaterSrc.includes('previouslyDownloaded')) {
+    throw new Error('B-3: updater.ts 的 available 广播未带 previouslyDownloaded 旗标');
+  }
+
+  // B-6：executor:log-structured 死通道必须删除（主进程不再广播、preload
+  // 不暴露；渲染层日志级别已有 normalizeLogLine 文本解析等价源）。
+  if (execSrc.includes('executor:log-structured') || preloadSrc.includes('log-structured')) {
+    throw new Error('B-6: executor:log-structured 死通道仍在（每行日志一次 JSON.parse + 广播，无人消费）');
+  }
+  if (!execSrc.includes("send('executor:log-line'") || !preloadSrc.includes("'executor:log-line'")) {
+    throw new Error('B-6: executor:log-line 文本通道不得被连带删除（渲染层唯一实时日志源）');
+  }
+
+  // B-8：端口检测的监听 host 必须与向导实际保存的 executorHost 同源。
+  if (!preloadSrc.includes('checkPort: (port: number, host?: string)')) {
+    throw new Error('B-8: preload 未透传 checkPort 的 host 参数');
+  }
+  if (!wizardNoCommentsForAudit.includes("checkPort(form.executorPort, '0.0.0.0')")) {
+    throw new Error('B-8: Wizard 未把表单 executorHost 传给端口检测（与实际 bind 脱钩）');
+  }
+
+  // B-9：主进程启动判定失败时向导必须保持打开并页内展示（error 字段）。
+  if (!wizard.includes('r.error') || !wizardNoCommentsForAudit.includes('setFinishError(r.error)')) {
+    throw new Error('B-9: Wizard 未处理 saveAndCloseWizard 返回的 error（启动失败将无人可见）');
+  }
+  if (!ipcHandlers.includes('{ ok: true, error: startError }')) {
+    throw new Error('B-9: 主进程向导保存面未返回启动判定错误（error 字段缺失）');
+  }
+
+  // B-11：连接闸门——测试通过才直接放行；未通过时必须先给一次性页内确认。
+  if (!wizardNoCommentsForAudit.includes('confirmSkip') || !wizard.includes('handleNext')) {
+    throw new Error('B-11: Wizard 第 2 步缺少未测试通过的一次性确认闸门');
+  }
+  if (!wizardNoCommentsForAudit.includes('testResult?.ok === true')) {
+    throw new Error('B-11: Wizard 下一步放行条件必须锚定连接测试结果');
+  }
+  if (!wizard.includes('尚未通过连接测试')) {
+    throw new Error('B-11: 跳过测试的确认提示缺失');
+  }
+}
+
+// ── UX 走查（对齐 admin-web 十轮方法论）回归守卫 ───────────────────────
+// 本轮桌面端渲染层首次按 admin-web 同标准扫描，以下钉死本轮修复不回退。
+{
+  const statusPage = pages[3];
+
+  // ① 未知 status 不得渲染成空白：主进程 executor:status 以裸字符串下发，
+  //    STATUS_LABEL/STATUS_BADGE 是封闭表——已知值查表、未知值原样透出
+  //    （对齐 HistoryPage.statusBadge 的「未知」回退与 agentOutcomeLabel 透传）。
+  if (!statusPage.includes('STATUS_LABEL[status] ?? status')) {
+    throw new Error('UX走查①: StatusWindow 状态大字缺少未知值回退（新状态枚举会渲染成空白）');
+  }
+  if (!statusPage.includes("STATUS_BADGE[status] ?? 'badge-stopped'")) {
+    throw new Error('UX走查①: 状态徽章缺少未知值回退（className 会出现字面 undefined）');
+  }
+
+  // ② Agent 卡片读取失败时不得谎报「已处理 0 个指派」——未知显示 —。
+  if (statusPage.includes('agentStatus?.processed ?? 0')) {
+    throw new Error('UX走查②: Agent 卡片在状态读取失败时谎报「已处理 0 个指派」');
+  }
+  if (!statusPage.includes("agentStatus?.processed ?? '—'")) {
+    throw new Error('UX走查②: Agent 卡片「已处理」缺少 — 空态（应与「最近结果：—」同口径）');
+  }
+
+  // ③ ConfigPage 的 lastOutcome 是英文枚举（delivered/deliver_failed/…），
+  //    必须走 main/agent-status-view 的 agentOutcomeLabel 双语查表（表外透传），
+  //    不得裸枚举直出——状态页早已映射，此处曾各自为政。
+  if (!config.includes("from '../../main/agent-status-view'") || !config.includes('agentOutcomeLabel(')) {
+    throw new Error('UX走查③: ConfigPage 的 Agent 最近结果未走 agentOutcomeLabel 查表（裸枚举直出）');
+  }
+  if (/lastOutcomeFmt',\s*agentStatus\.lastOutcome\)/.test(config.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, ''))) {
+    throw new Error('UX走查③: ConfigPage 仍将 lastOutcome 裸枚举直接插入文案');
+  }
+
+  // ④ HistoryPage 日志读取失败必须有原位重试（轮询已终止，不能只让用户
+  //    关闭重开）——reloadKey 驱动拉取链整体重建。
+  if (!history.includes('reloadKey') || !history.includes("onClick={() => setReloadKey((k) => k + 1)}")) {
+    throw new Error('UX走查④: HistoryPage 日志查看器失败态缺少原位重试按钮');
+  }
+  if (!/record\.executionId, record\.status, fetchLog, reloadKey\]/.test(history)) {
+    throw new Error('UX走查④: reloadKey 未接入拉取 effect（重试不会重建轮询）');
+  }
+
+  // ⑤ 向导 Suspense 占位不得闪英文 Loading（向导页整体硬编码中文）。
+  if (/>Loading...</.test(app) || /fallback=\{<div className="app-loading"[^>]*>Loading...</.test(app)) {
+    throw new Error('UX走查⑤: Wizard 加载占位仍是英文 Loading（与向导中文界面混语）');
+  }
+  if (!app.includes('>加载中...</div>')) {
+    throw new Error('UX走查⑤: Wizard 加载占位中文文案缺失');
+  }
+
+  // ⑥ 向导端口输入的 min 必须与本页校验口径（1–65535）一致。
+  if (!/type="number" min=\{1\} max=\{65535\}/.test(wizard.replace(/\s+/g, ' '))) {
+    throw new Error('UX走查⑥: Wizard 端口输入 min/max 与校验口径 1–65535 不一致');
+  }
+}
+
+console.log('renderer selftest: design tokens, accessibility, contrast, focus, layout, spacing, IPC anchors, F-21/F-22/F-37, DSK-05, PERF-DSK-01, SEC-DSK-01, EXP-04/05/06/09, ErrorBoundary, NETOPT-7⑤⑥, tab roving+persist, app-management, N-04 cfg bilingual parity, audit B-3/B-6/B-8/B-9/B-11, UX-walkthrough ①-⑥ guards passed');

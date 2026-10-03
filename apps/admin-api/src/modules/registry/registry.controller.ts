@@ -10,6 +10,10 @@ import {
   HttpException,
   HttpStatus,
   Req,
+  BadGatewayException,
+  GatewayTimeoutException,
+  ConflictException,
+  PayloadTooLargeException,
 } from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
 import { ConfigService } from "@nestjs/config";
@@ -165,7 +169,7 @@ export class RegistryController {
    * package list would always be empty. When a service account is configured,
    * exchange it for a bearer token first (PUT /-/user/login), or use a
    * pre-issued NPM_REGISTRY_TOKEN directly. Without credentials the previous
-   * anonymous behavior is kept (401 → empty list); the cause is logged at
+   * anonymous behavior is kept (401 → 502，见 B-3)；the cause is logged at
    * debug level so misconfiguration is discoverable.
    */
   private async resolveNpmAuthHeader(): Promise<string | undefined> {
@@ -177,11 +181,66 @@ export class RegistryController {
     if (!user || !pass) {
       this.logger.debug(
         "NPM registry credentials are not configured (NPM_REGISTRY_TOKEN or NPM_REGISTRY_USER/NPM_REGISTRY_PASS); " +
-          "the authenticated-only registry will answer 401 and the package list stays empty",
+          "the authenticated-only registry will answer 401 and the package list fails with 502 (B-3)",
       );
       return undefined;
     }
 
+    return this.loginForToken(user, pass);
+  }
+
+  // B-11：Verdaccio 登录换 token 的模块级缓存。此前每次列表请求都打一次
+  // PUT /-/user/login——前端 TanStack Query 轮询 × 多副本实例 = 持续的登录
+  // 风暴（每次都算一次密码校验/htpasswd 哈希）。缓存 token 5 分钟（TTL 内
+  // 直接复用），并发请求共享同一 in-flight 登录（单飞，不放大）。
+  // 缓存键含 URL+凭据：不同凭据天然隔离，凭据轮换立即生效（换 key）；
+  // 登录失败**不**缓存（失败后下一次列表照旧重试，与旧行为一致）。
+  private static readonly NPM_TOKEN_TTL_MS = 5 * 60 * 1000;
+  private static readonly npmTokenCache = new Map<
+    string,
+    { token: string; expiresAt: number }
+  >();
+  private static readonly npmLoginInflight = new Map<
+    string,
+    Promise<string | undefined>
+  >();
+
+  /** S5 登录换 token（B-11 起带 TTL 缓存 + 并发单飞），返回完整 Bearer 头。 */
+  private async loginForToken(
+    user: string,
+    pass: string,
+  ): Promise<string | undefined> {
+    // pass 进缓存键（凭据轮换立即换 key，不读旧 token）；内存态与
+    // ConfigService 持有凭据同级别，无新增暴露面。
+    const cacheKey = `${this.npmUrl}|${user}|${pass}`;
+
+    const cached = RegistryController.npmTokenCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      return `Bearer ${cached.token}`;
+    }
+
+    // 并发单飞：同 key 的并发调用共享同一次登录（否则缓存未落定前 N 个
+    // 并发列表仍会打出 N 次 login，单飞后只打 1 次）。
+    const existing = RegistryController.npmLoginInflight.get(cacheKey);
+    if (existing) return existing;
+
+    const inflight = this.performNpmLogin(user, pass);
+    RegistryController.npmLoginInflight.set(cacheKey, inflight);
+    try {
+      return await inflight;
+    } finally {
+      // 仅当仍指向本次飞行时清理（防御：避免误删后来者的 in-flight）。
+      if (RegistryController.npmLoginInflight.get(cacheKey) === inflight) {
+        RegistryController.npmLoginInflight.delete(cacheKey);
+      }
+    }
+  }
+
+  /** 实际的 PUT /-/user/login 往返（无缓存逻辑，供 loginForToken 单飞使用）。 */
+  private async performNpmLogin(
+    user: string,
+    pass: string,
+  ): Promise<string | undefined> {
     const loginResp = await this.fetchText(
       `${this.npmUrl}/-/user/login`,
       undefined,
@@ -210,7 +269,30 @@ export class RegistryController {
       );
       return undefined;
     }
+    RegistryController.npmTokenCache.set(`${this.npmUrl}|${user}|${pass}`, {
+      token: parsed.token,
+      expiresAt: Date.now() + RegistryController.NPM_TOKEN_TTL_MS,
+    });
     return `Bearer ${parsed.token}`;
+  }
+
+  /**
+   * B-9：解码索引页锚点文本里的 HTML 实体。registry-pypi 渲染索引时对包名
+   * 做了 html.escape（`a&b` 落页为 `a&amp;b`），此前直接取锚点文本会把转义
+   * 后的名字当包名透出——列表显示 `a&amp;b`，复制出的 pip 安装命令随之错误。
+   * Node 无内置 HTML 解码器，按 html.escape 的输出集做轻量反向替换（顺序
+   * 关键：`&amp;` 必须最后替换，保证 `&amp;lt;` 只解码一轮得 `&lt;`，不越过
+   * 单次解码语义）。覆盖 python html.escape 产物的五个实体 + 常见数字变体。
+   */
+  private decodeHtmlEntities(text: string): string {
+    return text
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&quot;/g, '"')
+      .replace(/&#x27;/g, "'")
+      .replace(/&#39;/g, "'")
+      .replace(/&apos;/g, "'")
+      .replace(/&amp;/g, "&");
   }
 
   /** Parse PyPI simple index HTML → list of package names */
@@ -220,31 +302,49 @@ export class RegistryController {
     const matches = html.matchAll(/<a[\s\S]*?>([^<]+)<\/a>/gi);
     const names: string[] = [];
     for (const m of matches) {
-      const name = m[1].trim();
+      // B-9：锚点文本先去空白再实体解码（上游渲染层转义的逆操作）。
+      const name = this.decodeHtmlEntities(m[1].trim());
       if (name) names.push(name);
     }
     return names;
   }
 
+  /**
+   * B-3：列表代理的统一失败透出。此前上游非 2xx/超时被吞成
+   * `{ packages: [] }` 的 200——前端 StateError（错误态已就绪）永远不触发，
+   * 故障静默表现为「暂无包」。现在：上游非 2xx → 502（消息含上游状态码与
+   * 响应摘要），上游超时（fetchText 统一以 504 标记）→ 504；空列表（上游
+   * 2xx 且无锚点）仍是 200，失败与空态语义分离。
+   */
+  private throwUpstreamListFailure(
+    upstream: string,
+    status: number,
+    text: string,
+  ): never {
+    if (status === HttpStatus.GATEWAY_TIMEOUT) {
+      throw new GatewayTimeoutException(`${upstream} request timed out`);
+    }
+    throw new BadGatewayException(
+      `${upstream} returned HTTP ${status}: ${text.slice(0, 200)}`,
+    );
+  }
+
   @Get("pypi/packages")
   async listPypiPackages(): Promise<{ packages: string[] }> {
     const url = `${this.pypiUrl}/simple/`;
-    try {
-      const resp = await this.fetchText(url, {
-        user: this.pypiUser,
-        pass: this.pypiPass,
-      });
-      if (!resp.ok) {
-        this.logger.warn(
-          `PyPI registry returned ${resp.status}: ${resp.text.slice(0, 200)}`,
-        );
-        return { packages: [] };
-      }
-      return { packages: this.parsePypiIndex(resp.text) };
-    } catch (e: unknown) {
-      this.logger.error("Failed to fetch PyPI packages", e);
-      return { packages: [] };
+    const resp = await this.fetchText(url, {
+      user: this.pypiUser,
+      pass: this.pypiPass,
+    });
+    // B-3：成功判据收紧为 2xx（与上传代理同口径，3xx/4xx/5xx 一律透出），
+    // 不再 catch 吞错——网络错误经 fetchText 以 status 500 兜底，同样走 502。
+    if (resp.status < 200 || resp.status >= 300) {
+      this.logger.warn(
+        `PyPI registry returned ${resp.status}: ${resp.text.slice(0, 200)}`,
+      );
+      this.throwUpstreamListFailure("PyPI registry", resp.status, resp.text);
     }
+    return { packages: this.parsePypiIndex(resp.text) };
   }
 
   @Get("npm/packages")
@@ -252,27 +352,32 @@ export class RegistryController {
     packages: Array<{ name: string; latest?: string; description?: string }>;
   }> {
     const url = `${this.npmUrl}/-/verdaccio/packages`;
-    try {
-      // S5: authenticate first when a service account is configured — the
-      // registry requires $authenticated access for every package pattern.
-      const authHeader = await this.resolveNpmAuthHeader();
-      const resp = await this.fetchText(
-        url,
-        undefined,
-        authHeader ? { headers: { Authorization: authHeader } } : undefined,
+    // S5: authenticate first when a service account is configured — the
+    // registry requires $authenticated access for every package pattern.
+    const authHeader = await this.resolveNpmAuthHeader();
+    const resp = await this.fetchText(
+      url,
+      undefined,
+      authHeader ? { headers: { Authorization: authHeader } } : undefined,
+    );
+    if (resp.status < 200 || resp.status >= 300) {
+      // B-3：同 PyPI——401（凭据缺失/被拒）不再静默变空列表，按 502 透出；
+      // 凭据缺失的原因已在 resolveNpmAuthHeader 里 debug 级留痕。
+      this.logger.warn(
+        `npm registry returned ${resp.status}: ${resp.text.slice(0, 200)}`,
       );
-      if (!resp.ok) {
-        this.logger.warn(
-          `npm registry returned ${resp.status}: ${resp.text.slice(0, 200)}`,
-        );
-        return { packages: [] };
-      }
-      const data = JSON.parse(resp.text);
-      return { packages: Array.isArray(data) ? data : [] };
-    } catch (e: unknown) {
-      this.logger.error("Failed to fetch npm packages", e);
-      return { packages: [] };
+      this.throwUpstreamListFailure("npm registry", resp.status, resp.text);
     }
+    let data: unknown;
+    try {
+      data = JSON.parse(resp.text);
+    } catch {
+      // B-3：上游回了 2xx 但不是 JSON（如代理层回 HTML）也是上游故障。
+      throw new BadGatewayException(
+        `npm registry returned a non-JSON body: ${resp.text.slice(0, 200)}`,
+      );
+    }
+    return { packages: Array.isArray(data) ? data : [] };
   }
 
   /** Allowed PyPI package extensions */
@@ -423,6 +528,23 @@ export class RegistryController {
                       `Upload failed: upstream redirected (HTTP ${status}) — ` +
                         `the request never reached the upload endpoint`,
                       HttpStatus.BAD_GATEWAY,
+                    ),
+                  );
+                } else if (status === HttpStatus.CONFLICT) {
+                  // B-10：上游 409 = registry-pypi 的防覆盖闸（同 filename
+                  // 不同 sha256，N21/N30）——此前压成 502，运维无法区分
+                  // 「上游故障」与「发布冲突」。按语义透传为 409。
+                  reject(
+                    new ConflictException(
+                      "版本已存在或内容冲突（同 filename 不同 sha256，禁止覆盖已发布制品）: " +
+                        body.slice(0, 200),
+                    ),
+                  );
+                } else if (status === HttpStatus.PAYLOAD_TOO_LARGE) {
+                  // B-10：上游 413（registry-pypi S10 体积上限）同理透传。
+                  reject(
+                    new PayloadTooLargeException(
+                      `Package too large: ${body.slice(0, 200)}`,
                     ),
                   );
                 } else {

@@ -52,6 +52,8 @@ vi.mock('../client.js', () => ({
   del: vi.fn(),
   resetClient: vi.fn(),
   formatApiError: (e: unknown) => String(e),
+  // ui.emitError 依赖 client 层的错误分类映射退出码；本文件只关心未知类（→1）。
+  classifyApiError: () => 'unknown',
   // NETOPT-6④：analyze/suggest 命令透传给 post 的 per-call 预算常量
   ANALYZE_TIMEOUT_MS: 120_000,
 }));
@@ -135,9 +137,10 @@ describe('acf app update', () => {
 
   it('rejects a payload containing name before hitting the API (UpdateApplicationDto has no name)', async () => {
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    // 本地 payload 语义错误 = UsageError → 用法错误退出码 2（与服务端拒绝 1 区分）
     await expect(
       run(appsCommand(), 'app update a1 --json {"name":"new-name","version":"2"}'),
-    ).rejects.toThrow(/process\.exit\(1\)/);
+    ).rejects.toThrow(/process\.exit\(2\)/);
     expect(mockedPut).not.toHaveBeenCalled();
     // The failure message must explain the renaming limitation, not a raw 400.
     const output = errSpy.mock.calls.map((c) => c.join(' ')).join('\n');
@@ -981,5 +984,124 @@ describe('acf agent sessions', () => {
       kind: undefined,
       status: undefined,
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// --json 补面（本轮 UX 统一）：把 ECO-02 的 CI 消费面对齐到其余只读命令。
+// 口径：列表/信封形态 → 单行紧凑 JSON.stringify(data)；单对象/数组详情形态 →
+// pretty(2)。与既有 --json 命令的两种形态保持同构，不产生第三种不一致。
+// ---------------------------------------------------------------------------
+describe('acf --json 补面（本轮 UX 统一）', () => {
+  async function jsonOut(runFn: () => Promise<void>): Promise<string> {
+    const out: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation(((...a: unknown[]) => {
+      out.push(a.map((x) => String(x)).join(' '));
+    }) as never);
+    try {
+      await runFn();
+    } finally {
+      spy.mockRestore();
+    }
+    return out.join('\n');
+  }
+
+  it('task executions --json prints the { list, total } envelope as a single line', async () => {
+    const payload = { list: [{ id: 'e1', taskId: 't1', status: 'failed', createdAt: '2026-01-01T00:00:00Z' }], total: 1 };
+    mockedGet.mockResolvedValueOnce(payload);
+    const line = await jsonOut(() => run(tasksCommand(), 'task executions t1 --json'));
+    expect(line).toBe(JSON.stringify(payload));
+  });
+
+  it('task versions --json prints the version array pretty-printed', async () => {
+    const payload = [{ id: 'v1', version: '1.0.0', createdAt: '2026-01-01T00:00:00Z' }];
+    mockedGet.mockResolvedValueOnce(payload);
+    const out = await jsonOut(() => run(tasksCommand(), 'task versions t1 --json'));
+    expect(JSON.parse(out)).toEqual(payload);
+  });
+
+  it('task stats --json prints the stats object pretty-printed', async () => {
+    const payload = { successRate: 92.5, avgDuration: 1200, totalRuns: 40, recentExecutions: [] };
+    mockedGet.mockResolvedValueOnce(payload);
+    const out = await jsonOut(() => run(tasksCommand(), 'task stats t1 --json'));
+    expect(JSON.parse(out)).toMatchObject({ successRate: 92.5, totalRuns: 40 });
+  });
+
+  it('task compare --json prints the raw diff record pretty-printed', async () => {
+    const payload = { cron: { old: '0 2 * * *', new: '0 3 * * *' } };
+    mockedGet.mockResolvedValueOnce(payload);
+    const out = await jsonOut(() => run(tasksCommand(), 'task compare t1 v1 v2 --json'));
+    expect(JSON.parse(out)).toEqual(payload);
+  });
+
+  it('app get --json prints the application object pretty-printed', async () => {
+    const payload = { id: 'a1', name: 'demo', status: 'active' };
+    mockedGet.mockResolvedValueOnce(payload);
+    const out = await jsonOut(() => run(appsCommand(), 'app get a1 --json'));
+    expect(JSON.parse(out)).toEqual(payload);
+  });
+
+  it('app deployments --json prints the { data, total } envelope as a single line', async () => {
+    const payload = { data: [{ id: 'd1', applicationId: 'a1', status: 'running' }], total: 1 };
+    mockedGet.mockResolvedValueOnce(payload);
+    const line = await jsonOut(() => run(appsCommand(), 'app deployments --json'));
+    expect(line).toBe(JSON.stringify(payload));
+  });
+
+  it('app versions --json prints the version array pretty-printed', async () => {
+    const payload = [{ id: 'v1', version: '2.0.0' }];
+    mockedGet.mockResolvedValueOnce(payload);
+    const out = await jsonOut(() => run(appsCommand(), 'app versions a1 --json'));
+    expect(JSON.parse(out)).toEqual(payload);
+  });
+
+  it('executor get --json prints the executor object pretty-printed', async () => {
+    const payload = { id: 'e1', appName: 'executor-node', status: 'online' };
+    mockedGet.mockResolvedValueOnce(payload);
+    const out = await jsonOut(() => run(executorsCommand(), 'executor get e1 --json'));
+    expect(JSON.parse(out)).toEqual(payload);
+  });
+
+  it('sop list --json prints the { items, total } envelope as a single line', async () => {
+    const payload = { items: [{ id: 's1', slug: 'release-check', title: 'Release checklist', status: 'published' }], total: 1 };
+    mockedGet.mockResolvedValueOnce(payload);
+    const line = await jsonOut(() => run(sopCommand(), 'sop list --json'));
+    expect(line).toBe(JSON.stringify(payload));
+  });
+
+  it('sop show --json prints the SOP (including bodyMarkdown) pretty-printed', async () => {
+    const payload = { id: 's1', slug: 'release-check', title: 'Release checklist', status: 'published', bodyMarkdown: '# Steps' };
+    mockedGet.mockResolvedValueOnce(payload);
+    const out = await jsonOut(() => run(sopCommand(), 'sop show s1 --json'));
+    expect(JSON.parse(out)).toEqual(payload);
+  });
+
+  it('agent sessions --json prints the raw envelope as a single line', async () => {
+    const payload = { items: [{ id: 'as1', kind: 'incident', status: 'waiting_input' }], total: 1 };
+    mockedGet.mockResolvedValueOnce(payload);
+    const line = await jsonOut(() => run(agentCommand(), 'agent sessions --json'));
+    expect(line).toBe(JSON.stringify(payload));
+  });
+
+  it('--json 选项确实注册在所有补面命令上（防手滑漏注册）', async () => {
+    type CmdFactory = () => import('commander').Command;
+    const cases: Array<[CmdFactory, string]> = [
+      [tasksCommand, 'executions'],
+      [tasksCommand, 'stats'],
+      [tasksCommand, 'versions'],
+      [tasksCommand, 'compare'],
+      [appsCommand, 'get'],
+      [appsCommand, 'deployments'],
+      [appsCommand, 'versions'],
+      [executorsCommand, 'get'],
+      [sopCommand, 'list'],
+      [sopCommand, 'show'],
+      [agentCommand, 'sessions'],
+    ];
+    for (const [factory, name] of cases) {
+      const sub = factory().commands.find((c) => c.name() === name);
+      expect(sub, `${factory} ${name} 缺 --json`).toBeTruthy();
+      expect(sub!.options.find((o) => o.long === '--json'), `${factory} ${name} 缺 --json`).toBeTruthy();
+    }
   });
 });

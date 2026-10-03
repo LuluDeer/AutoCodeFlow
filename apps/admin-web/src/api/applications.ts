@@ -176,7 +176,15 @@ export const applicationsApi = {
     id: string,
     rollout?: { strategy: 'full' | 'canary'; percentage?: number },
   ) =>
-    client.post<{ ok: boolean; total: number; succeeded: number; failed: number }>(
+    // A-8：canary 被互斥拒绝时后端返回 200 + ok:false + rollout.blockedReason
+    // （非 HTTP 错误），前端必须读这两个字段才不会把「未启动」当成「已成功」。
+    client.post<{
+      ok: boolean;
+      total: number;
+      succeeded: number;
+      failed: number;
+      rollout?: { batchId: string; blockedReason?: string };
+    }>(
       `/applications/${id}/upgrade-all`,
       rollout ? { rollout } : {},
     ),

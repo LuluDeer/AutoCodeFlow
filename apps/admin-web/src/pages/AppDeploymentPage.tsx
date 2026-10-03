@@ -24,9 +24,9 @@ import {
   CopyOutlined,
 } from '@ant-design/icons';
 import { deploymentsApi, AppDeployment, applicationsApi } from '../api/applications';
-import { formatRelativeTime } from '../utils/timeFormat';
+import { formatDateTime, formatRelativeTime } from '../utils/timeFormat';
 import DeployModeFields from '../components/DeployModeFields';
-import { executorsApi, Executor } from '../api/executors';
+import { executorsApi, ExecutorPickerItem } from '../api/executors';
 import { useExecutorNames } from '../hooks/useExecutorNames';
 import { isStopNotDelivered } from '../utils/backend-contracts';
 import { isFormValidationError, showApiError } from '../utils/error';
@@ -34,8 +34,6 @@ import { isFormValidationError, showApiError } from '../utils/error';
 // 降级 execCommand，并按返回值如实提示——此前 navigator.clipboard 静默 catch，
 // 失败零反馈，排障者点了复制却粘出空串）。
 import { copyText } from '../utils/clipboard';
-// F-26（DEEP_REVIEW 0ef3bbe）：locale 单一来源，不再硬编码 zh-CN
-import { currentLocale } from '../utils/locale';
 import { useTranslation } from 'react-i18next';
 import '../i18n';
 import StateError from '../components/StateError';
@@ -68,7 +66,7 @@ const ROLLOUT_CONFIG: Record<string, { color: string; label: (t: (k: string) => 
   rolled_back: { color: 'volcano', label: (t) => t('appDeploy.rollout.state.rolledBack') },
 };
 
-function ExecutorCard({ executor }: { executor: Executor }) {
+function ExecutorCard({ executor }: { executor: ExecutorPickerItem }) {
   const { t } = useTranslation();
   // F-15（DEEP_REVIEW 0ef3bbe）：次要文字/用量色走 antd token，暗色主题自适应。
   const { token } = theme.useToken();
@@ -157,7 +155,15 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
   const [deployments, setDeployments] = useState<AppDeployment[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
-  const [executors, setExecutors] = useState<Executor[]>([]);
+  // 执行器选择器数据源（GET /executors/picker 轻读面，6 列）：部署下拉候选、
+  // 占用判断与 useExecutorNames 部署行可读名解析只消费这些字段。此前下拉直接
+  // 吃 list() 全列投影——它有 listLimit(500) **静默**截断，执行器超限后下拉对
+  // 第 501+ 台真实存在的执行器假阴性（搜不到）。picker 上限 2000 且超限以
+  // truncated=true 显式上报。R3-E 遗留收口：useExecutorNames 参数放宽为
+  // {id,appName,address} 子集后，本页**不再拉 list() 全列**——首屏双请求归一。
+  const [pickerExecutors, setPickerExecutors] = useState<ExecutorPickerItem[]>([]);
+  // picker 超限状态（truncated=true 时非 null）——下拉内必须渲染显式告警。
+  const [pickerTruncated, setPickerTruncated] = useState<{ total: number; limit: number } | null>(null);
   const [loading, setLoading] = useState(false);
   // UI-16：列表加载失败的错误态（页内呈现 + 重试入口，替代纯 toast）
   const [loadError, setLoadError] = useState<unknown>(null);
@@ -179,10 +185,11 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
   const [actingId, setActingId] = useState<string | null>(null);
 
   // 用户报障（中台「执行器」列只有 IP:端口）：执行器可读名解析。
-  // **复用 fetchAll 已拉的 executors state**（不传参即自拉——这里必须传，
+  // **复用 fetchAll 已拉的 pickerExecutors**（不传参即自拉——这里必须传，
   // 否则同一页面会重复请求 /executors，破坏 F-34 的「首屏拉一次、轮询拍不重拉」
-  // 契约，app-deployment-polling.test.tsx 会立即变红）。
-  const { nameOf } = useExecutorNames(executors);
+  // 契约，app-deployment-polling.test.tsx 会立即变红）。picker 行满足
+  // useExecutorNames 的 {id,appName,address} 结构子集，无需另拉 list 全列。
+  const { nameOf } = useExecutorNames(pickerExecutors);
 
   // W7 竞态守卫：fetchAll 无取消机制，翻页/轮询并发时旧响应可覆盖新页数据。
   // 每次调用自增 fetchSeq，仅最后一次请求允许 setState；cleanup（卸载或翻页）
@@ -211,14 +218,17 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
     const seq = ++fetchSeq.current;
     setLoading(true);
     try {
-      const [deps, execs] = await Promise.all([
+      // 执行器侧只走 picker() 轻读面：部署下拉候选、占用判断与 useExecutorNames
+      // 的部署行可读名解析都吃这份 6 列数据（list() 全列已不再请求）。
+      const [deps, picker] = await Promise.all([
         deploymentsApi.list(applicationId, page),
-        executorsApi.list(),
+        executorsApi.picker(),
       ]);
       if (seq !== fetchSeq.current) return; // 已有更新的请求/卸载，丢弃过期响应
       setDeployments(deps.data);
       setTotal(deps.total);
-      setExecutors(execs);
+      setPickerExecutors(picker.items);
+      setPickerTruncated(picker.truncated ? { total: picker.total, limit: picker.limit } : null);
       // UI-16：加载成功后清除上一次的页内错误态
       setLoadError(null);
     } catch (err: unknown) {
@@ -371,12 +381,19 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
   };
 
   const handleUpgrade = async (id: string) => {
+    // 排查清单 #2：升级按钮不走 Popconfirm、此前也无 in-flight 闸——快速双击会
+    // 连发两次 upgrade（第二发对已 upgrading 的行注定 409，弹一条干扰性报错）。
+    // 对齐同页 approve/cancel 的 actingId 纪律。
+    if (actingId) return;
+    setActingId(id);
     try {
       await deploymentsApi.upgrade(id);
       message.success(t('appDeploy.msg.upgradeStarted'));
       scheduleDelayedRefresh(2000);
     } catch (err: unknown) {
       showApiError(err, t('appDeploy.msg.upgradeFail'));
+    } finally {
+      setActingId(null);
     }
   };
 
@@ -393,7 +410,17 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
         applicationId,
         strategy === 'canary' ? { strategy: 'canary', percentage: 20 } : undefined,
       );
-      message.success(t('appDeploy.msg.upgradeAllDone', { succeeded: result.succeeded, total: result.total }));
+      // A-8：灰度被互斥拒绝（同应用已有在途批次等）时后端返回 200 + ok:false +
+      // rollout.blockedReason——旧实现不看 ok 恒报 success，用户以为灰度已启动。
+      // 按 ok 分支如实提示，blockedReason 拼进文案（后端原因带行数/持有者信息）。
+      if (result.ok === false) {
+        message.warning(
+          t('appDeploy.msg.upgradeAllBlocked', { reason: result.rollout?.blockedReason ?? '' }),
+          8,
+        );
+      } else {
+        message.success(t('appDeploy.msg.upgradeAllDone', { succeeded: result.succeeded, total: result.total }));
+      }
       scheduleDelayedRefresh(2000);
       setRolloutModalOpen(false);
     } catch (err: unknown) {
@@ -403,7 +430,8 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
     }
   };
 
-  const onlineExecutors = executors.filter(e => e.status === 'online');
+  // 下拉候选走 picker 轻读面（部署下拉、占用判断与名字解析共用同一份数据）
+  const onlineExecutors = pickerExecutors.filter(e => e.status === 'online');
   // DEP-04：待审批行数（审批待办 Alert 与状态徽标共用同一口径）
   const pendingApprovalCount = deployments.filter(
     d => d.approvalStatus === 'pending_approval',
@@ -486,10 +514,14 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
         );
       },
     },
+    // UI-09 第三轮：运行模式是次要列——窄屏（≤768px）由媒体查询隐藏
+    // （onHeaderCell/onCell 双端挂类，对齐 mobile-ui09 既有模式）。
     {
       title: t('appDeploy.col.runMode'),
       dataIndex: 'runMode',
       width: 90,
+      onHeaderCell: () => ({ className: 'ui09-hide-mobile' }),
+      onCell: () => ({ className: 'ui09-hide-mobile' }),
       render: (v: string) => {
         const map: Record<string, { color: string; label: string }> = {
           once: { color: 'default', label: t('appDeploy.runMode.once') },
@@ -500,18 +532,23 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
         return <Tag color={cfg.color}>{cfg.label}</Tag>;
       },
     },
+    // UI-09 第三轮：部署时间是次要列（执行器列的相对时间已承担时效信息），
+    // 窄屏隐藏，同上双端挂类。
     {
       title: t('appDeploy.col.deployedAt'),
       dataIndex: 'deployedAt',
       width: 150,
+      onHeaderCell: () => ({ className: 'ui09-hide-mobile' }),
+      onCell: () => ({ className: 'ui09-hide-mobile' }),
       render: (v: string, r: AppDeployment) => {
         const d = v || r.createdAt;
         if (!d) return '-';
         // P2-9：旧实现手搓了一套相对时间（mins<1/<60 两档），与仓库共享
         // formatRelativeTime（含天/月档、统一 i18n 键 time.relative.*）不一致。
-        // 改用共享工具，Tooltip 仍保留绝对时间。
+        // 改用共享工具，Tooltip 仍保留绝对时间（统一走 formatDateTime——
+        // locale 跟随 i18n 而非浏览器，源码守卫禁裸调 toLocaleString）。
         return (
-          <Tooltip title={new Date(d).toLocaleString(currentLocale())}>
+          <Tooltip title={formatDateTime(d)}>
             <Text type="secondary" style={{ fontSize: 12 }}>{formatRelativeTime(d, t)}</Text>
           </Tooltip>
         );
@@ -579,7 +616,8 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
                 size="small"
                 icon={<ReloadOutlined />}
                 onClick={() => handleUpgrade(r.id)}
-                disabled={!isAdmin}
+                loading={actingId === r.id}
+                disabled={!isAdmin || actingId !== null}
               >
                 {t('appDeploy.action.upgrade')}
               </Button>
@@ -641,7 +679,10 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+      {/* UI-09 第三轮：标题行 + 操作行允许换行（flexWrap + gap）——375px 下
+          「部署实例/计数徽标」与「刷新/升级所有/新建部署」放不下一行，窄屏
+          操作行折到标题下方（对齐 PageHeader 的 flexWrap 惯例），桌面端不受影响。 */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 16 }}>
         <Space>
           <Text strong>{t('appDeploy.title')}</Text>
           {deployments.length > 0 && (
@@ -771,6 +812,13 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
             <Select
               placeholder={t('appDeploy.placeholder.autoExecutor')}
               allowClear
+              showSearch
+              /* 执行器随接入增长，纯下拉无法高效定位。选项 label 是
+                 ExecutorCard（ReactNode），默认按 value 过滤匹配不到；
+                 挂可搜索字符串字段（名称 + 地址，大小写不敏感）自写过滤。 */
+              filterOption={(input, option) =>
+                String(option?.searchText ?? '').toLowerCase().includes(input.toLowerCase())
+              }
               popupRender={(menu) => (
                 <>
                   {availableExecutors.length > 0 && (
@@ -778,12 +826,22 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
                       <Text type="secondary" style={{ fontSize: 12 }}>{t('appDeploy.executor.availableHeader', { count: availableExecutors.length })}</Text>
                     </div>
                   )}
+                  {/* picker 超限的显式告警（复用执行器列表页的截断文案）：
+                      搜索/候选只覆盖前 limit 台，必须让用户知道总数不止这些，
+                      不许静默截断。 */}
+                  {pickerTruncated && (
+                    <div style={{ padding: '8px 12px', borderBottom: `1px solid ${token.colorBorderSecondary}` }}>
+                      <Text type="warning" style={{ fontSize: 12 }}>
+                        {t('execList.truncated', { total: pickerTruncated.total, limit: pickerTruncated.limit })}
+                      </Text>
+                    </div>
+                  )}
                   {menu}
                 </>
               )}
             >
               {availableExecutors.map(e => (
-                <Select.Option key={e.id} value={e.id}>
+                <Select.Option key={e.id} value={e.id} searchText={`${e.appName} ${e.address}`}>
                   <ExecutorCard executor={e} />
                 </Select.Option>
               ))}

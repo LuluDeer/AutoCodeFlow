@@ -7,6 +7,7 @@ import {
   Body,
   Param,
   UseGuards,
+  Logger,
 } from "@nestjs/common";
 import {
   ApiTags,
@@ -34,7 +35,6 @@ import {
 // PK-19: createSilence 请求体 Swagger 文档 DTO（运行时 @Body() 仍为内联对象类型）。
 import { CreateSilenceDto } from "./dto/create-silence.dto";
 import { NotificationPayload } from "./channels/base.channel";
-import { WriteGuard } from "../../common/decorators/write-guard.decorator";
 // D3-B-P2-2: 渠道/静默增删审计落证。
 import { AuditService } from "../audit/audit.service";
 
@@ -43,6 +43,8 @@ import { AuditService } from "../audit/audit.service";
 @UseGuards(JwtAuthGuard)
 @Controller("notification")
 export class NotificationConfigController {
+  private readonly logger = new Logger(NotificationConfigController.name);
+
   constructor(
     private readonly configService: NotificationConfigService,
     private readonly notificationService: NotificationService,
@@ -71,13 +73,23 @@ export class NotificationConfigController {
   ) {
     const result = this.configService.updateChannel(key, body);
     // D3-B-P2-2: 渠道配置变更落证（不落 config 明文——仅 key/enabled 差量）。
-    await this.audit.log({
-      username: user.username,
-      action: "notification.channel.update",
-      resource: "notification_channel",
-      resourceId: key,
-      detail: { enabledChanged: body.enabled !== undefined },
-    });
+    // A-4: 变更已生效后才写审计——审计库故障时 best-effort 吞掉（对齐
+    // task.service R-28 先例），不再让已生效的配置变更反向吃 500。
+    try {
+      await this.audit.log({
+        username: user.username,
+        action: "notification.channel.update",
+        resource: "notification_channel",
+        resourceId: key,
+        detail: { enabledChanged: body.enabled !== undefined },
+      });
+    } catch (err: unknown) {
+      this.logger.warn(
+        `notification channel audit write failed for ${key} (best-effort, ignored): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
     return result;
   }
 
@@ -119,12 +131,16 @@ export class NotificationConfigController {
 
   /**
    * N22: task-side notification reporting endpoint consumed by the
-   * autocodeflow-notify SDK (POST /api/notification/send). Guard posture
-   * matches the other send surface in this controller (testChannel /
-   * sendTest): JwtAuthGuard login state, no extra @Roles. Payload is
-   * converted to NotificationPayload and routed through
-   * NotificationService.sendAll / sendToChannels, which keep the NOTIF-002
-   * sanitized digest logging (raw content never hits the log).
+   * autocodeflow-notify SDK (POST /api/notification/send).
+   *
+   * A-3: 收紧为 ADMIN-only。原 `@WriteGuard(scope:"authenticated")` 让任意
+   * 登录用户可向全部渠道广播任意内容、并可携带 webhookUrl 借道外发——与同
+   * 文件 testChannel/sendTest 锁 ADMIN 的理由（触发真实外发 + 泄露渠道投递
+   * 结果）完全一致，"authenticated" 的登记是错误档位。任务侧 SDK 的通知仍
+   * 走 notifyFailure/notifySuccess/notifyTimeout 的服务内路径，不依赖本
+   * HTTP 端点。Payload is converted to NotificationPayload and routed
+   * through NotificationService.sendAll / sendToChannels, which keep the
+   * NOTIF-002 sanitized digest logging (raw content never hits the log).
    *
    * V2 (round-7): the response body carries the per-channel delivery results
    * (`sent`/`blocked`/`failed`/`skipped`). The HTTP status stays 2xx even
@@ -132,9 +148,11 @@ export class NotificationConfigController {
    * callback — but the caller is no longer blind to SSRF blocks or send
    * errors that used to be visible only in server logs.
    */
-  @WriteGuard("notification", { scope: "authenticated" })
   @Post("send")
-  @ApiOperation({ summary: "Send notification from task code (SDK)" })
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({
+    summary: "Send notification from task code (SDK, admin only)",
+  })
   @ApiResponse({
     status: 201,
     type: SendNotificationResultDto,
@@ -202,13 +220,22 @@ export class NotificationConfigController {
     // ARCH-31: 同步进 NotificationService 的内存热路径——此前只落 DB，
     // isSilenced 看不到本规则（要等进程重启回灌才生效）。
     this.notificationService.adoptPersistedSilence(row);
-    // D3-B-P2-2: 静默规则创建落证。
-    await this.audit.log({
-      action: "notification.silence.create",
-      resource: "notification_silence",
-      resourceId: row.id,
-      detail: { scope: body.scope },
-    });
+    // D3-B-P2-2: 静默规则创建落证。A-4: 静默已落库+已 adopt（变更已生效），
+    // 审计写失败 best-effort（对齐 R-28），不再反向 500。
+    try {
+      await this.audit.log({
+        action: "notification.silence.create",
+        resource: "notification_silence",
+        resourceId: row.id,
+        detail: { scope: body.scope },
+      });
+    } catch (err: unknown) {
+      this.logger.warn(
+        `notification silence audit write failed for ${row.id} (best-effort, ignored): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
     return row;
   }
 
@@ -220,13 +247,22 @@ export class NotificationConfigController {
     // silenceService 负责——forgetSilence 只清内存，避免重复删库）。
     this.notificationService.forgetSilence(id);
     const removed = await this.silenceService.remove(id);
-    // D3-B-P2-2: 静默规则删除落证。
-    await this.audit.log({
-      username: user.username,
-      action: "notification.silence.delete",
-      resource: "notification_silence",
-      resourceId: id,
-    });
+    // D3-B-P2-2: 静默规则删除落证。A-4: 内存+DB 双删已生效，审计写失败
+    // best-effort（对齐 R-28），不再反向 500。
+    try {
+      await this.audit.log({
+        username: user.username,
+        action: "notification.silence.delete",
+        resource: "notification_silence",
+        resourceId: id,
+      });
+    } catch (err: unknown) {
+      this.logger.warn(
+        `notification silence delete audit write failed for ${id} (best-effort, ignored): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
     return removed;
   }
 }

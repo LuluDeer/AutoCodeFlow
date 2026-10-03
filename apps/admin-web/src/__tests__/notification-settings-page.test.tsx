@@ -349,3 +349,27 @@ renderPage();
     expect(link.getAttribute('href')).toBe('/tasks');
   });
 });
+
+// ─── 本轮 UX 打磨回归：渠道启停 Switch 防连点（在途互斥，防 PATCH 乱序）───
+describe('渠道启停防连点', () => {
+  it('PATCH 在途期间连点：两次点击只发一次 PATCH', async () => {
+    // definite assignment：resolve 函数在 mockImplementation 同步闭包内赋值（TS 闭包赋值不改窄化，? 调用会报 never）
+    let resolvePatch!: () => void;
+    mockedClient.patch.mockImplementation(
+      () => new Promise((resolve) => { resolvePatch = () => resolve(channelsFixture[0]); }) as never,
+    );
+    renderPage();
+    await screen.findByText('启用此通知渠道：');
+
+    const switches = document.querySelectorAll('button.ant-switch');
+    expect(switches.length).toBeGreaterThanOrEqual(1);
+    fireEvent.click(switches[0]);
+    await waitFor(() => expect(mockedClient.patch).toHaveBeenCalledTimes(1));
+
+    // 在途期间 handler 互斥（switch loading），第二次点击不再发 PATCH
+    fireEvent.click(switches[0]);
+    expect(mockedClient.patch).toHaveBeenCalledTimes(1);
+
+    resolvePatch();
+  });
+});

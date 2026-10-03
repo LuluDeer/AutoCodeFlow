@@ -337,7 +337,13 @@ services:
       # 同时可见官方源，设 PYPI_EXTRA_INDEX_URL（以 --extra-index-url 追加），
       # 或把本值显式置空（uv 回落默认 PyPI）。node 执行器的 PYTHON_REGISTRY_URL
       # 同语义。
-      PYPI_REGISTRY_URL: ${PYPI_REGISTRY_URL:-http://registry-pypi:8003/simple/}
+      # B-2（私有包仓库域审计）：显式置空回落官方源的契约必须真的成立——
+      # 旧写法 `${VAR:-default}` 对「未设置」与「空串」都取默认值，README
+      # 与 .env.example 承诺的「留空使用官方源」从不生效。改用 `${VAR-default}`
+      # （bash 去 default 语义）：**仅未设置**才落到私有源默认，显式置空
+      # （空串）原样传给执行器——执行器侧 `process.env.X || ''` 把空串当
+      # 「未配置」，回落官方源。三键同族同语义，须一起改。
+      PYPI_REGISTRY_URL: ${PYPI_REGISTRY_URL-http://registry-pypi:8003/simple/}
       # 可选：追加官方索引（--extra-index-url 语义），缓解「私有源无上游、
       # 公共包必失败」；不设则行为不变。
       PYPI_EXTRA_INDEX_URL: ${PYPI_EXTRA_INDEX_URL:-}
@@ -442,10 +448,12 @@ services:
       # 解释器池清单/心跳/回调聚合等仍有内存峰值；1024MB 堆给任务子进程与
       # 解释器池留足余量，比堆膨胀到 mem_limit 被 cgroup 杀掉更早、更可控。
       NODE_OPTIONS: '--max-old-space-size=1024'
-      NPM_REGISTRY_URL: ${NPM_REGISTRY_URL:-http://registry-npm:4873}
+      # B-2：同 PYPI_REGISTRY_URL 的 `${VAR-default}` 语义——显式置空回落
+      # npmjs.com 官方源（执行器侧空串=未配置），仅未设置才取私有源默认。
+      NPM_REGISTRY_URL: ${NPM_REGISTRY_URL-http://registry-npm:4873}
       # 与 executor-python 的 PYPI_REGISTRY_URL 同语义：--index-url 替换默认
       # 索引、registry-pypi 无上游代理；可用 PYPI_EXTRA_INDEX_URL 追加官方索引。
-      PYTHON_REGISTRY_URL: ${PYTHON_REGISTRY_URL:-http://registry-pypi:8003/simple/}
+      PYTHON_REGISTRY_URL: ${PYTHON_REGISTRY_URL-http://registry-pypi:8003/simple/}
       PYPI_EXTRA_INDEX_URL: ${PYPI_EXTRA_INDEX_URL:-}
       # ── python_task_multiversion：解释器缓存池（node 侧同构） ────────
       # executor-node 的 python 分支与 executor-python 对等（声明版本按需

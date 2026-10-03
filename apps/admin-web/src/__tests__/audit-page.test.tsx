@@ -18,6 +18,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import AuditLogPage from '../pages/audit';
 import { client } from '../api/client';
+import { message } from '../utils/toast';
 
 vi.mock('../api/client', () => ({
   client: { get: vi.fn(), post: vi.fn(), patch: vi.fn(), delete: vi.fn() },
@@ -277,5 +278,92 @@ describe('AuditLogPage 空态（QA-03 / UI-08）', () => {
     mockedClient.get.mockResolvedValue({ data: [], total: 0 } as never);
     renderPage();
     expect(await screen.findByText('暂无审计记录')).toBeTruthy();
+  });
+});
+
+// ─── A-12: 导出 CSV 入口（GET /audit/export 携带当前 filters，ADMIN-only）───
+describe('A-12 审计 CSV 导出', () => {
+  const g = globalThis as Record<string, unknown>;
+  let origCreateObjectURL: unknown;
+  let origRevokeObjectURL: unknown;
+
+  beforeEach(() => {
+    origCreateObjectURL = g.URL && (g.URL as Record<string, unknown>).createObjectURL;
+    origRevokeObjectURL = g.URL && (g.URL as Record<string, unknown>).revokeObjectURL;
+    (URL as unknown as Record<string, unknown>).createObjectURL = vi.fn(() => 'blob:mock-audit-export');
+    (URL as unknown as Record<string, unknown>).revokeObjectURL = vi.fn();
+  });
+
+  afterEach(() => {
+    if (origCreateObjectURL === undefined) {
+      delete (URL as unknown as Record<string, unknown>).createObjectURL;
+    } else {
+      (URL as unknown as Record<string, unknown>).createObjectURL = origCreateObjectURL;
+    }
+    if (origRevokeObjectURL === undefined) {
+      delete (URL as unknown as Record<string, unknown>).revokeObjectURL;
+    } else {
+      (URL as unknown as Record<string, unknown>).revokeObjectURL = origRevokeObjectURL;
+    }
+  });
+
+  const lastExportQuery = (): string => {
+    const calls = mockedClient.get.mock.calls.filter(([url]) =>
+      String(url).startsWith('/audit/export'),
+    );
+    return String(calls[calls.length - 1]?.[0] ?? '');
+  };
+
+  it('点击「导出CSV」→ 请求 /audit/export 携带当前筛选参数并提示成功', async () => {
+    const successSpy = vi.spyOn(message, 'success').mockImplementation((() => undefined) as never);
+    renderPage();
+    await screen.findByText('创建任务');
+
+    // 应用一个筛选（action=task），导出应携带同一筛选
+    fireEvent.change(screen.getByPlaceholderText('操作关键词'), { target: { value: 'task' } });
+    fireEvent.click(findBtn(document.body, '搜索')!);
+    await waitFor(() => {
+      expect(lastAuditQuery()).toContain('action=task');
+    });
+
+    mockedClient.get.mockImplementation((async (url: unknown) => {
+      if (String(url).startsWith('/audit/export')) {
+        return new Blob(['id,action\n1,task.create'], { type: 'text/csv' });
+      }
+      return { data: [makeLog({})], total: 1 };
+    }) as never);
+
+    fireEvent.click(findBtn(document.body, '导出CSV')!);
+
+    await waitFor(() => {
+      expect(lastExportQuery()).toContain('/audit/export?action=task');
+    });
+    // 列表请求参数（page/pageSize）不应混进导出请求
+    expect(lastExportQuery()).not.toContain('page=');
+    expect(successSpy).toHaveBeenCalledTimes(1);
+    // blob 下载触发（objectURL 建立并回收）
+    expect(URL.createObjectURL).toHaveBeenCalled();
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:mock-audit-export');
+    successSpy.mockRestore();
+  });
+
+  it('导出请求在无筛选时仅携带空查询串', async () => {
+    const successSpy = vi.spyOn(message, 'success').mockImplementation((() => undefined) as never);
+    renderPage();
+    await screen.findByText('创建任务');
+
+    mockedClient.get.mockImplementation((async (url: unknown) => {
+      if (String(url).startsWith('/audit/export')) {
+        return new Blob(['id\n'], { type: 'text/csv' });
+      }
+      return { data: [makeLog({})], total: 1 };
+    }) as never);
+
+    fireEvent.click(findBtn(document.body, '导出CSV')!);
+
+    await waitFor(() => {
+      expect(lastExportQuery()).toBe('/audit/export');
+    });
+    successSpy.mockRestore();
   });
 });

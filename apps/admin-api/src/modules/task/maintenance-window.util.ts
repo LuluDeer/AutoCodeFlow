@@ -273,10 +273,38 @@ export function isValidTimeZone(timeZone: string): boolean {
 }
 
 /**
+ * B-8（调度域审计）：最近触达扫描的结果缓存。
+ *
+ * 背景：lastWindowCronFireBefore 逐分钟回扫至多 lookback 步，每步一次
+ * Intl.formatToParts（分区路径）。配置了「窗口 + 时区」的任务在每次调度
+ * 触发（enqueue）都会做 2×(≤10081) 次判定——同一名词在同一分钟内的答案
+ * 是恒定的（函数先把 before 截断到壁钟分钟），重复扫描纯属 CPU 浪费：
+ * 短周期任务集群下这是调度热路径的实测热点。
+ *
+ * 键 = 表达式|回看上限|时区|分钟时间戳（epoch 分钟截断）：两条扫描路径
+ * （本地 / 分区）对同一 epoch 分钟的输入产出恒同——本地路径用服务器本地
+ * 壁钟字段（epoch 分钟 → 本地字段是确定性映射）；分区路径按 instant 回扫
+ * （DST 歧义壁钟分钟对应两个 instant，但「回扫起点同一 epoch 分钟」时
+ * 逐 instant 匹配的序列完全一致，返回值确定）。键含分钟戳 ⇒ 跨分钟 /
+ * 跨日 / DST 切换天然失效，无陈旧命中。
+ *
+ * 淘汰：容量上限后整体清空（与上方 PARSE_CACHE / ZONE_FORMATTER_CACHE
+ * 同款策略，避免 LRU 链的额外复杂度）。分钟戳单调推进 ⇒ 被清掉的只是
+ * 上一分钟的条目，重新扫描一次即可回填。
+ */
+const FIRE_SCAN_CACHE = new Map<string, Date | null>();
+const FIRE_SCAN_CACHE_MAX = 2048;
+
+export function __resetFireScanCacheForTest(): void {
+  FIRE_SCAN_CACHE.clear();
+}
+
+/**
  * expr 在 (before - lookbackMinutes, before] 内的最近一次触达时刻
  * （分钟粒度，秒截断）。找不到（含表达式非法）返回 null。
  * 逐分钟回扫：单次 ≤ lookback 步 × 5 个 Set 命中测试，常量级开销，
- * 仅在任务配置了维护窗口时才会走到。
+ * 仅在任务配置了维护窗口时才会走到；同一（表达式, 分钟）的重复判定
+ * 由 FIRE_SCAN_CACHE 直接命中（B-8）。
  *
  * timeZone（任务自身 task.timezone，IANA 名）：传入时按该分区壁钟评估
  * （instant 逐分钟回扫 + formatToParts 提取，DST 语义见文件头注）；未传/
@@ -291,6 +319,12 @@ export function lastWindowCronFireBefore(
 ): Date | null {
   const parsed = parseWindowCron(expr);
   if (!parsed) return null;
+  // B-8: 先查缓存（键含分钟截断戳——见上方块注的等价性论证）。
+  const minuteTs = Math.floor(before.getTime() / 60_000);
+  const cacheKey = `${expr}|${lookbackMinutes}|${timeZone ?? ""}|${minuteTs}`;
+  if (FIRE_SCAN_CACHE.has(cacheKey)) {
+    return FIRE_SCAN_CACHE.get(cacheKey) ?? null;
+  }
   const zoneFmt = timeZone ? getZoneFormatter(timeZone) : null;
   const t =
     zoneFmt != null
@@ -310,9 +344,20 @@ export function lastWindowCronFireBefore(
     const hit = zoneFmt
       ? cronMatchesWallClock(parsed, zoneWallClockAt(t, zoneFmt))
       : cronMatchesWallClock(parsed, localWallClockAt(t));
-    if (hit) return new Date(t.getTime());
+    if (hit) {
+      const result = new Date(t.getTime());
+      if (FIRE_SCAN_CACHE.size >= FIRE_SCAN_CACHE_MAX) {
+        FIRE_SCAN_CACHE.clear();
+      }
+      FIRE_SCAN_CACHE.set(cacheKey, result);
+      return result;
+    }
     t.setTime(t.getTime() - 60_000);
   }
+  if (FIRE_SCAN_CACHE.size >= FIRE_SCAN_CACHE_MAX) {
+    FIRE_SCAN_CACHE.clear();
+  }
+  FIRE_SCAN_CACHE.set(cacheKey, null);
   return null;
 }
 

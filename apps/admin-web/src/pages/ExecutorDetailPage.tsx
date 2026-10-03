@@ -6,8 +6,9 @@ import { Modal as confirmModal } from '../utils/modal';
 import { WarningOutlined, CopyOutlined, InfoCircleOutlined, ReloadOutlined, DeleteOutlined } from '@ant-design/icons';
 // FEAT-04: 24h 资源趋势折线图（Tooltip 别名避开 antd Tooltip，DashboardPage 同法）
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartTooltip, Legend, ResponsiveContainer } from 'recharts';
-import { useQueryClient, useMutation } from '@tanstack/react-query';
+import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
 import { executorsApi, type ExecutorExecution, type ExecutorRemovalImpact } from '../api/executors';
+import { projectsApi } from '../api/projects';
 import {
   useExecutorDetail,
   useExecutorMetrics,
@@ -29,7 +30,7 @@ import { useAuthStore, isAdminUser } from '../store/auth';
 import { useThemeStore, selectResolvedTheme } from '../theme/store';
 import { CHART_COLORS } from '../theme/tokens';
 import PageSkeleton from '../components/PageSkeleton';
-import { useState } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 // UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
 import '../i18n';
@@ -70,9 +71,13 @@ function trendTooltipLabel(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
   const sameDay = d.toDateString() === new Date().toDateString();
+  // 豁免说明（时间格式收敛 2026-10-03）：同日分支刻意保留 toLocaleTimeString——
+  // 这是「仅时刻」（HH:MM:SS）形态，共享设施没有对应函数，改用 formatDateTime
+  // 会把 tooltip 变成带日期的完整时间，改变展示语义；跨日分支已收敛 formatDateTime。
+  // 源码守卫（time-format-source-guard.test.ts）只禁 toLocaleString/toLocaleDateString。
   return sameDay
     ? d.toLocaleTimeString(currentLocale(), { hour12: false })
-    : d.toLocaleString(currentLocale(), { hour12: false });
+    : formatDateTime(d);
 }
 
 export default function ExecutorDetailPage() {
@@ -81,9 +86,25 @@ export default function ExecutorDetailPage() {
   const { token } = theme.useToken();
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  // W2 对齐：管理写操作（编辑/配置热更新/设置离线/轮换 Token）后端已收紧
-  // ADMIN-only，非 admin 隐藏入口，避免"可见但点击 403"（R5 门控模式）。
-  const isAdmin = isAdminUser(useAuthStore((s) => s.user));
+  // W2 对齐 → N-02③（ADR-013 2026-10-02 温和下放）：编辑/配置热更新对
+  // 「执行器所属项目 editor+」放行；设置离线/轮换 Token/删除仍 ADMIN-only。
+  // 非 admin 按项目角色判定入口可见性，避免"可见但点击 403"（R5 门控模式）。
+  const user = useAuthStore((s) => s.user);
+  const isAdmin = isAdminUser(user);
+  // N-02③：当前用户具备 editor+ 角色的项目集合（非成员/查询失败 = 空集，
+  // 保守方向：只会少显示入口，不会多显示）。
+  const { data: myRoles } = useQuery({
+    queryKey: ['projects', 'me', 'roles'],
+    queryFn: () => projectsApi.listMyRoles(),
+    staleTime: 60_000,
+  });
+  const editorPlusProjectIds = useMemo(() => {
+    const set = new Set<string>();
+    (myRoles?.memberships ?? []).forEach((m) => {
+      if (m.role === 'editor' || m.role === 'admin') set.add(m.projectId);
+    });
+    return set;
+  }, [myRoles]);
   // UI-02：资源趋势图双主题（网格线/轴文字）
   const isDark = useThemeStore(selectResolvedTheme) === 'dark';
   const [editOpen, setEditOpen] = useState(false);
@@ -100,10 +121,31 @@ export default function ExecutorDetailPage() {
   const [configForm] = Form.useForm();
   const [rotateForm] = Form.useForm();
   const [removeForm] = Form.useForm();
+  // 编辑弹窗「最大并发数」的实时值（仅编辑弹窗消费；配置热更弹窗是另一套
+  // 语义——留空提交=重置为服务端默认值，见 B-1，不加本提示）。
+  const editMaxConcurrentWatch = Form.useWatch('maxConcurrentTasks', editForm);
+
+  // B-6：同路由组件（/executors/:id）在 id 变化时**不重挂载**——上一个执行器
+  // 留下的弹窗开合、执行历史分页、删除影响面等局部状态会「跟人走」到下一个
+  // 执行器（读到的还是旧 id 拉的影响面/分页）。显式监听 id 变化整体重置。
+  useEffect(() => {
+    setExecPage(1);
+    setEditOpen(false);
+    setConfigOpen(false);
+    setRotateOpen(false);
+    setRemoveOpen(false);
+    setRemoveImpact(null);
+    setRemoveImpactLoading(false);
+  }, [id]);
 
   // FEAT-17: TanStack Query 改造——读侧三个 useRequest 换 queries.ts hooks
   // （metrics 30s 轮询由 refetchInterval 承担；分页参数进 queryKey）。
   const { data: executor, isLoading: loadingExecutor, error: executorError } = useExecutorDetail(id);
+  // N-02③：编辑/配置热更入口判定（projectId=null 的平台级执行器非 ADMIN 恒
+  // 不可见——与后端 assertCanManageMetadata 同语义）。
+  const canManageMetadata =
+    isAdmin ||
+    (!!executor?.projectId && editorPlusProjectIds.has(executor.projectId));
 
   const { data: metrics, isLoading: loadingMetrics } = useExecutorMetrics(id);
 
@@ -138,9 +180,37 @@ export default function ExecutorDetailPage() {
     mutationFn: (values: Record<string, unknown>) => executorsApi.reloadConfig(id!, values),
     // NETOPT-D P2-D4: 推送配置（maxConcurrentTasks/taskTimeout/heartbeatInterval）
     // 后执行器热更生效——此前漏失效，详情页无 refetchInterval，最长滞后 30s。
-    onSuccess: () => { message.success(t('executorDetail.configPushed')); setConfigOpen(false); refreshExecutor(); },
+    // B-5：pull 执行器（协议 ≥2，ADR-016 控制面走 pull 通道）后端返回
+    // {queued:true,commandId}——配置只是入队、下次拉取才生效，按响应体分支
+    // 如实提示，不与 push 的「已推送」混为一谈。
+    onSuccess: (res) => {
+      if (res && res.queued) {
+        message.success(t('executorDetail.config.queued'));
+      } else {
+        message.success(t('executorDetail.configPushed'));
+      }
+      setConfigOpen(false);
+      refreshExecutor();
+    },
   });
-  const reloadConfig = (values: Record<string, unknown>) => reloadConfigMut.mutate(values);
+  // B-1：onFinish 提交前检查空体——所有字段均未填时（此前打开即空表单且
+  // 直接 submit），一键推送空配置体会把执行器配置**静默重置**为服务端默认值
+  // （BatchActionBar 对该语义有明文记载）。有值提交维持原流程；空体必须先
+  // 二次确认，明示后果。
+  const reloadConfig = (values: Record<string, unknown>) => {
+    const hasAnyValue = Object.values(values).some((v) => v !== undefined && v !== null && v !== '');
+    if (!hasAnyValue) {
+      confirmModal.confirm({
+        title: t('executorDetail.config.emptyPushConfirmTitle'),
+        content: t('executorDetail.config.emptyPushConfirmContent'),
+        okText: t('executorDetail.confirm'),
+        cancelText: t('executorDetail.cancel'),
+        onOk: () => reloadConfigMut.mutate(values),
+      });
+      return;
+    }
+    reloadConfigMut.mutate(values);
+  };
   const reloading = reloadConfigMut.isPending;
 
   // AUTH-05 交接：轮换请求体携带可选 reason（≤200，审计 executor.rotate_token）
@@ -301,27 +371,51 @@ export default function ExecutorDetailPage() {
     }},
     { title: t('executorDetail.history.col.startTime'), dataIndex: 'startTime', key: 'startTime', width: 170, render: (v: string) => v ? formatDateTime(v) : '-' },
     // F-35（DEEP_REVIEW 0ef3bbe）：时长格式统一走 formatDurationShort（含小时档）
-    { title: t('executorDetail.history.col.duration'), dataIndex: 'duration', key: 'duration', width: 90, render: (v: number) => formatDurationShort(v) },
-    { title: t('executorDetail.history.col.exitCode'), dataIndex: 'exitCode', key: 'exitCode', width: 80, render: (v: number | null | undefined) => v != null ? <Text type={v !== 0 ? 'danger' : undefined} code>{v}</Text> : '-' },
+    // UI-09 第三轮：时长/退出码是次要列——窄屏（≤768px）由媒体查询隐藏
+    // （onHeaderCell/onCell 双端挂类，对齐 mobile-ui09 既有模式），
+    // 值班关键列（任务名/状态/开始时间/错误）+ scroll.x 横滚兜底保留。
+    {
+      title: t('executorDetail.history.col.duration'),
+      dataIndex: 'duration',
+      key: 'duration',
+      width: 90,
+      render: (v: number) => formatDurationShort(v),
+      onHeaderCell: () => ({ className: 'ui09-hide-mobile' }),
+      onCell: () => ({ className: 'ui09-hide-mobile' }),
+    },
+    {
+      title: t('executorDetail.history.col.exitCode'),
+      dataIndex: 'exitCode',
+      key: 'exitCode',
+      width: 80,
+      render: (v: number | null | undefined) => v != null ? <Text type={v !== 0 ? 'danger' : undefined} code>{v}</Text> : '-',
+      onHeaderCell: () => ({ className: 'ui09-hide-mobile' }),
+      onCell: () => ({ className: 'ui09-hide-mobile' }),
+    },
     { title: t('executorDetail.history.col.error'), dataIndex: 'errorMessage', key: 'errorMessage', ellipsis: true, minWidth: 175, render: (v: string) => v ? <Text type="danger" style={{ fontSize: 12 }}>{v}</Text> : '-' },
   ];
 
   return (
-    <div>
+    // UI-09 第三轮：页面根挂 ui09-exec-detail 作用域（与 ExecutionDetailPage
+    // 同源复用既有媒体查询规则：面包屑 li 允许收缩，本页无新增 CSS）。
+    <div className="ui09-exec-detail">
       <Breadcrumb
         style={{ marginBottom: 16 }}
         items={[
           { title: <Link to="/executors">{t('executorDetail.breadcrumb.list')}</Link> },
-          { title: executor.appName },
+          // UI-09 第二轮同款：超长不可断执行器名会撑破面包屑（li min-width:auto
+          // 不收缩），窄屏由 .ui09-crumb-ellipsis 收敛为省略号（title 保全文）
+          { title: <span className="ui09-crumb-ellipsis" title={executor.appName}>{executor.appName}</span> },
         ]}
       />
 
       <Card
         title={t('executorDetail.title')}
         extra={
-          isAdmin ? (
+          (canManageMetadata || isAdmin) ? (
           // UI 打磨：头部 5 个操作按钮窄屏收纳换行（wrap + 紧凑间距），不引入 Dropdown
           <Space wrap size={4}>
+            {canManageMetadata && (
             <Space.Compact>
               <Button onClick={() => { editForm.setFieldsValue(executorEditFormValues(executor)); setEditOpen(true); }}>{t('executorDetail.edit')}</Button>
               {/* UI-18 → ARCH-33（ADR-016）修订：判据由「pull 模式」改为
@@ -330,8 +424,23 @@ export default function ExecutorDetailPage() {
                   pull 执行器仍必须禁用——它们会**静默忽略** commands 字段，
                   比入站失败更危险（失败可见，静默不可见）。 */}
               <Tooltip title={isControlPlaneUnavailable(executor) ? t('executorDetail.config.pullDisabledTooltip') : undefined}>
-                <Button disabled={isControlPlaneUnavailable(executor)} onClick={() => setConfigOpen(true)}>{t('executorDetail.configHotReload')}</Button>
+                <Button
+                  disabled={isControlPlaneUnavailable(executor)}
+                  onClick={() => {
+                    // B-1：打开即回显已知值——maxConcurrentTasks 取当前 executor
+                    // 记录（后端 GET /:id 可得的唯一可回显配置项）；其余字段后端
+                    // 不下发，留空 = 保持执行器现有值（不再是无提示的整表空白）。
+                    // 先 reset 清掉上次会话遗留的半填字段，再回显。
+                    configForm.resetFields();
+                    configForm.setFieldsValue({ maxConcurrentTasks: executor.maxConcurrentTasks ?? undefined });
+                    setConfigOpen(true);
+                  }}
+                >{t('executorDetail.configHotReload')}</Button>
               </Tooltip>
+            </Space.Compact>
+            )}
+            {isAdmin && (
+            <Space.Compact>
               <Button
                 danger
                 disabled={!isOnline}
@@ -349,7 +458,11 @@ export default function ExecutorDetailPage() {
                 {t('executorDetail.offline.setOffline')}
               </Button>
             </Space.Compact>
-            {/* 常规操作与高危操作（轮换/删除）之间的视觉分组 */}
+            )}
+            {/* 常规操作与高危操作（轮换/删除）之间的视觉分组；N-02③ 后轮换/删除
+                仍 ADMIN-only（平台级敏感操作不下放） */}
+            {isAdmin && (
+            <>
             <Divider orientation="vertical" style={{ margin: 0 }} />
             <Tooltip title={t('executorDetail.rotate.oldTokenInvalidTip')}>
               <Button
@@ -377,6 +490,8 @@ export default function ExecutorDetailPage() {
                 }}
               >{t('executorDetail.remove.delete')}</Button>
             </Tooltip>
+            </>
+            )}
           </Space>
           ) : undefined
         }
@@ -431,7 +546,7 @@ export default function ExecutorDetailPage() {
             <Tooltip title={heartbeatAbsolute}>
               {heartbeatStale ? (
                 <Text style={{ color: token.colorWarning }}>
-                  <WarningOutlined style={{ marginRight: 4 }} />
+                  <WarningOutlined aria-hidden="true" style={{ marginRight: 4 }} />
                   {heartbeatText}
                 </Text>
               ) : (
@@ -439,11 +554,15 @@ export default function ExecutorDetailPage() {
               )}
             </Tooltip>
           </Descriptions.Item>
-          <Descriptions.Item label={t('executorDetail.field.description')} span={2}>{executor.description || '-'}</Descriptions.Item>
+          {/* antd 6.6.5+：span="filled" 表达「填满当前行」——原写死 span={2} 在
+              xs 单列超出列数（命中 rc Descriptions「Sum of column span not match
+              column」告警）；filled 在 xs/sm/md 均与原渲染产物一致（md 下与
+              心跳项同行 1+2 填满、sm/xs 独占整行）。 */}
+          <Descriptions.Item label={t('executorDetail.field.description')} span="filled">{executor.description || '-'}</Descriptions.Item>
           <Descriptions.Item label={t('executorDetail.field.runningExecutions')}>
             {reportedIds === undefined || reportedIds === null ? (
               <Tooltip title={t('executorDetail.running.notReportedTip')}>
-                <Text type="secondary">{t('executorDetail.notReported')} <InfoCircleOutlined /></Text>
+                <Text type="secondary">{t('executorDetail.notReported')} <InfoCircleOutlined aria-hidden="true" /></Text>
               </Tooltip>
             ) : reportedCount === 0 ? (
               <Text type="secondary">{t('executorDetail.running.idle')}</Text>
@@ -455,7 +574,7 @@ export default function ExecutorDetailPage() {
                   ))}
                 </div>
               }>
-                <Text>{t('executorDetail.running.count', { count: reportedCount })} <InfoCircleOutlined /></Text>
+                <Text>{t('executorDetail.running.count', { count: reportedCount })} <InfoCircleOutlined aria-hidden="true" /></Text>
               </Tooltip>
             )}
           </Descriptions.Item>
@@ -463,15 +582,15 @@ export default function ExecutorDetailPage() {
           <Descriptions.Item label={t('executorDetail.field.deadLetter')}>
             {executor.deadLetterCount === undefined || executor.deadLetterCount === null ? (
               <Tooltip title={t('executorDetail.deadLetter.notReportedTip')}>
-                <Text type="secondary">{t('executorDetail.notReported')} <InfoCircleOutlined /></Text>
+                <Text type="secondary">{t('executorDetail.notReported')} <InfoCircleOutlined aria-hidden="true" /></Text>
               </Tooltip>
             ) : executor.deadLetterCount === 0 ? (
               <Text type="success">{t('executorDetail.deadLetter.none')}</Text>
             ) : (
               <Tooltip title={t('executorDetail.deadLetter.tip')}>
                 <Text type="warning">
-                  <WarningOutlined style={{ marginRight: 4 }} />
-                  {t('executorDetail.deadLetter.count', { count: executor.deadLetterCount })} <InfoCircleOutlined />
+                  <WarningOutlined aria-hidden="true" style={{ marginRight: 4 }} />
+                  {t('executorDetail.deadLetter.count', { count: executor.deadLetterCount })} <InfoCircleOutlined aria-hidden="true" />
                 </Text>
               </Tooltip>
             )}
@@ -486,18 +605,18 @@ export default function ExecutorDetailPage() {
           <Descriptions.Item
             label={
               <Tooltip title={t('executorDetail.interpreters.labelTip')}>
-                <span>{t('executorDetail.field.interpreters')} <InfoCircleOutlined /></span>
+                <span>{t('executorDetail.field.interpreters')} <InfoCircleOutlined aria-hidden="true" /></span>
               </Tooltip>
             }
           >
             {executor.interpreters === undefined || executor.interpreters === null ? (
               <Tooltip title={t('executorDetail.interpreters.notReportedTip')}>
-                <Text type="secondary">{t('executorDetail.notReported')} <InfoCircleOutlined /></Text>
+                <Text type="secondary">{t('executorDetail.notReported')} <InfoCircleOutlined aria-hidden="true" /></Text>
               </Tooltip>
             ) : executor.interpreters.length === 0 ? (
               <Tooltip title={t('executorDetail.interpreters.emptyTip')}>
                 <Text type="warning">
-                  <WarningOutlined style={{ marginRight: 4 }} />
+                  <WarningOutlined aria-hidden="true" style={{ marginRight: 4 }} />
                   {t('executorDetail.interpreters.empty')}
                 </Text>
               </Tooltip>
@@ -693,7 +812,7 @@ export default function ExecutorDetailPage() {
             {reservedSlots != null && reservedSlots > 0 && reservedSlots <= occupiedSlots && (
               <Tooltip title={t('executorDetail.reserved.tip')}>
                 <Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 8 }}>
-                  {t('executorDetail.reserved.note', { reserved: reservedSlots, occupied: occupiedSlots })} <InfoCircleOutlined />
+                  {t('executorDetail.reserved.note', { reserved: reservedSlots, occupied: occupiedSlots })} <InfoCircleOutlined aria-hidden="true" />
                 </Text>
               </Tooltip>
             )}
@@ -740,7 +859,22 @@ export default function ExecutorDetailPage() {
           <Form.Item name="groupName" label={t('executorDetail.editModal.groupName')}><Input /></Form.Item>
           <Form.Item name="tags" label={t('executorDetail.editModal.tags')} tooltip={t('executorDetail.editModal.tagsTip')}><Select mode="tags" tokenSeparators={[',', ' ']} placeholder={t('executorDetail.editModal.tagsPlaceholder')} /></Form.Item>
           <Form.Item name="description" label={t('executorDetail.editModal.description')}><Input.TextArea /></Form.Item>
-          <Form.Item name="maxConcurrentTasks" label={t('executorDetail.editModal.maxConcurrent')}><InputNumber min={1} /></Form.Item>
+          <Form.Item
+            name="maxConcurrentTasks"
+            label={t('executorDetail.editModal.maxConcurrent')}
+            extra={
+              /* 显性化 PATCH 语义：清空该字段提交时，请求体省略 maxConcurrentTasks
+                 键 = 服务端保留旧值——用户极易误读为「清空 = 不限制」。仅当原值
+                 非空且当前输入为空时提示（原值本就为空则清空无歧义，不打扰）。
+                 语义本身不改（改 PATCH 有破坏风险），只把后果说清楚。 */
+              executor.maxConcurrentTasks != null &&
+              (editMaxConcurrentWatch == null || editMaxConcurrentWatch === '')
+                ? t('executorDetail.editModal.maxConcurrentKeepHint', { value: executor.maxConcurrentTasks })
+                : undefined
+            }
+          >
+            <InputNumber min={1} />
+          </Form.Item>
         </Form>
       </Modal>
 

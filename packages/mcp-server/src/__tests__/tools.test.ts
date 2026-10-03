@@ -8,7 +8,11 @@ import type { z } from "zod";
 
 type ToolHandler = (
   args: Record<string, unknown>,
-) => Promise<{ content: Array<{ type: string; text: string }> }>;
+) => Promise<{
+  content: Array<{ type: string; text: string }>;
+  /** 用法错误（handler 内部判定）现在与抛错路径同形：isError:true。 */
+  isError?: boolean;
+}>;
 
 interface RegisteredTool {
   name: string;
@@ -151,6 +155,44 @@ describe("tool registry surface", () => {
     expect(tools.get("list_tasks")!.schema).not.toHaveProperty("keyword");
     expect(tools.get("list_tasks")!.schema).toHaveProperty("name");
   });
+
+  // 描述是 agent 的选型/传参依据——每个注册工具必须有非空描述（最低保障）。
+  it("every tool declares a non-empty description", () => {
+    for (const t of tools.values()) {
+      expect(t.description.trim().length, t.name).toBeGreaterThan(0);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 错误响应形状（UX 轮）：用法错误与 HTTP 抛错同形——isError:true + JSON 负载
+// ---------------------------------------------------------------------------
+describe("error response shape (isError on usage errors)", () => {
+  it("create_task_from_template marks an unknown template as an error but keeps the available list", async () => {
+    const r = await tools
+      .get("create_task_from_template")!
+      .handler({ template: "nope", name: "x" });
+    expect(r.isError).toBe(true);
+    expect(parse(r).error).toMatch(/Unknown template/);
+    expect(parse(r).available).toContain("data_sync");
+    expect(call).not.toHaveBeenCalled();
+  });
+
+  it("deploy_app marks an unknown application name as an error but keeps the available list", async () => {
+    call.mockResolvedValueOnce([{ id: "a2", name: "other" }]);
+    const r = await tools.get("deploy_app")!.handler({ appName: "nope" });
+    expect(r.isError).toBe(true);
+    expect(parse(r).error).toMatch(/Application "nope" not found/);
+    expect(parse(r).available).toEqual(["other"]);
+    expect(call).toHaveBeenCalledTimes(1); // only the GET /applications lookup
+  });
+
+  it("sop_assignments_pending marks the missing-both-ids usage error", async () => {
+    const r = await tools.get("sop_assignments_pending")!.handler({});
+    expect(r.isError).toBe(true);
+    expect(parse(r).error).toContain("sopId");
+    expect(call).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -279,6 +321,45 @@ describe("execution tools", () => {
   it("get_execution GETs /tasks/executions/:id", async () => {
     await tools.get("get_execution")!.handler({ executionId: "e1" });
     expect(call).toHaveBeenCalledWith("GET", "/tasks/executions/e1");
+  });
+
+  // 大输出治理（对齐 admin-api PERF-03）：compat alias 原样回传实体行，
+  // logs 列单条上限 512_000 字符——工具层如实剥离并说明去向。
+  it("get_execution strips the 512KB-capped logs column and points at get_execution_logs", async () => {
+    call.mockResolvedValueOnce({
+      id: "e1",
+      status: "failed",
+      aiAnalysis: "check network",
+      params: { url: "http://x" },
+      logs: "x".repeat(600_000),
+    });
+    const out = parse(
+      await tools.get("get_execution")!.handler({ executionId: "e1" }),
+    );
+    expect(out.logs).toBeUndefined();
+    expect(out.logsStripped).toBe(true);
+    expect(out.note).toMatch(/get_execution_logs/);
+    // 其余字段原样保留——剥离只针对 logs 一列。
+    expect(out.status).toBe("failed");
+    expect(out.aiAnalysis).toBe("check network");
+    expect(out.params).toEqual({ url: "http://x" });
+  });
+
+  it("get_execution passes the payload through unchanged when there is no logs column", async () => {
+    call.mockResolvedValueOnce({ id: "e2", status: "pending" });
+    const out = parse(
+      await tools.get("get_execution")!.handler({ executionId: "e2" }),
+    );
+    expect(out).toEqual({ id: "e2", status: "pending" });
+  });
+
+  it("list_executions pagination matches the shared list_* shape (default 20, max 100)", () => {
+    type ZodLike = { parse: (v: unknown) => unknown };
+    const s = tools.get("list_executions")!.schema as Record<string, ZodLike>;
+    expect(s.page.parse(undefined)).toBe(1);
+    expect(s.pageSize.parse(undefined)).toBe(20);
+    expect(() => s.pageSize.parse(100)).not.toThrow();
+    expect(() => s.pageSize.parse(101)).toThrow();
   });
 
   it("get_execution_logs GETs /tasks/executions/:id/logs with fromLine/limit", async () => {

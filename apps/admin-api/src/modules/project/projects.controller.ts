@@ -10,6 +10,7 @@ import {
   ParseUUIDPipe,
   Patch,
   Post,
+  Query,
   Req,
   UseGuards,
 } from "@nestjs/common";
@@ -19,10 +20,10 @@ import { Request } from "express";
 // 用专用响应 DTO（实体无 @ApiProperty 会 emit 空壳 schema → PK-15 闸红）。
 import { ApiOperation, ApiResponse } from "@nestjs/swagger";
 import {
-  ProjectViewDto,
   ProjectEntityDto,
   ProjectMemberViewDto,
   MyProjectRolesDto,
+  ProjectListPageDto,
 } from "./dto/project-response.dto";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { RolesGuard } from "../../common/guards/roles.guard";
@@ -43,6 +44,28 @@ import type { ProjectRole } from "./entities/project-member.entity";
 import type { ProjectMemberView } from "./project-access.service";
 // D3-B-P1-1: 项目/成员写路由审计落证（与 task.controller 落证同构）。
 import { AuditService } from "../audit/audit.service";
+// 分页信封：与 tasks/users 列表同款形状（list/items 双键为 R-21 遗留，不动）。
+import { paginate } from "../../common/dto/pagination.dto";
+import type { ProjectListPageDto as ProjectListPageShape } from "./dto/project-response.dto";
+
+/**
+ * 解析单个分页查询参数；非法/未传一律返回 undefined（调用方按缺省处理）。
+ *
+ * 取「安全回落」而不是 400：对齐前端深链非法值回落默认的既有口径
+ * （R2-C URL-SYNC-01，UserManagementPage/AgentSessionsPage 先例——非法值
+ * 在前端就被拦下，能到达这里的非法串只可能来自手工构造的请求，回落比
+ * 400 对老消费方更友好）。上限对齐 PageQueryDto 纪律：page 1..10000、
+ * pageSize 1..100（NETOPT-3④ 的深 OFFSET 防护在内存切片下不构成风险，
+ * 保持同参数只为未来下推 DB 时不遗忘）；pageSize 超限**钳制**到 100
+ * （与 agent-session/sop 服务端钳制同款，拒绝是另一条破坏性路径）。
+ */
+function parsePaging(raw: string | undefined, max: number): number | undefined {
+  if (raw === undefined || raw === "") return undefined;
+  const n = Number(raw);
+  // 非整数/负数/NaN 均视同未传；合法但超上限的钳到 max
+  if (!Number.isInteger(n) || n < 1) return undefined;
+  return Math.min(max, n);
+}
 
 /**
  * 实体行 → 列表视图（附当前主体的成员角色）。纯函数，供 findAll 拼装。
@@ -89,18 +112,32 @@ export class ProjectsController {
    * 「只增放行不收紧」原则约束的是写面判定；读面过滤是第十三轮「下轮建议④」
    * 钦点的 AUTH-02 收尾项。仓库内无其他消费方（admin-web/CLI/MCP 此前
    * 均未调用 /projects），无兼容性破坏面。
+   *
+   * R3 分页（向后兼容双形态）：
+   * - **不传 page/pageSize**：返回全量数组——老消费方（acf-cli projects list、
+   *   mcp-server 项目只读工具、admin-web TaskFormPage 项目选择器）按数组
+   *   解析，零改动；
+   * - **任一传入**：返回分页信封（`paginate()` 形状，与 tasks/users 一致）。
+   *   切片在**已过滤后的可见集**上做（先按主体过滤、后切片——total 必须是
+   *   「该主体可见总数」，否则分页器会数出别的租户的项目）。切片留在内存
+   *   而非下推 DB：服务层 findAll 保持小表全读（P3-1），无界的是**响应载荷**
+   *   ——那正是本轮要收敛的对象。
    */
   @Get()
   @ApiOperation({ summary: "List projects visible to the caller" })
   @ApiResponse({
     status: 200,
     description:
-      "ADMIN sees all; others see default project plus their memberships",
-    type: [ProjectViewDto],
+      "No page/pageSize query → full ProjectViewRow array (legacy shape). " +
+      "Either param present → paginated envelope (list/items/total/page/" +
+      "pageSize/totalPages) over the caller's visible projects",
+    type: ProjectListPageDto,
   })
   async findAll(
     @CurrentUser() user: { id: number; role: UserRole } | undefined,
-  ): Promise<ProjectViewRow[]> {
+    @Query("page") page?: string,
+    @Query("pageSize") pageSize?: string,
+  ): Promise<ProjectViewRow[] | ProjectListPageShape> {
     const [projects, memberships] = await Promise.all([
       this.service.findAll(),
       user?.id
@@ -111,12 +148,27 @@ export class ProjectsController {
       memberships.map((m) => [m.projectId, m.role]),
     );
     const isAdmin = user?.role === UserRole.ADMIN;
-    return projects
+    const visible = projects
       .filter(
         (p) =>
           isAdmin || p.id === DEFAULT_PROJECT_ID || roleByProject.has(p.id),
       )
       .map((p) => toProjectView(p, roleByProject.get(p.id) ?? null));
+
+    // 双形态分水岭：两个参数都缺席（含都非法）= 旧全量数组契约
+    const parsedPage = parsePaging(page, 10000);
+    const parsedPageSize = parsePaging(pageSize, 100);
+    if (parsedPage === undefined && parsedPageSize === undefined) {
+      return visible;
+    }
+    const finalPage = parsedPage ?? 1;
+    const finalPageSize = parsedPageSize ?? 20;
+    return paginate(
+      visible.slice((finalPage - 1) * finalPageSize, finalPage * finalPageSize),
+      visible.length,
+      finalPage,
+      finalPageSize,
+    );
   }
 
   @Get(":id")

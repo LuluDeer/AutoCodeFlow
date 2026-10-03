@@ -38,7 +38,7 @@ import { priorityTag } from '../utils/priority';
 import { runtimeLabel } from '../utils/runtime-label';
 // P1-1/P1-2（UX-AUDIT-2026-09-21）：列表页显示真实的「下次执行」与「上次执行」
 import { nextRunAt, formatFireTime, previewNeedsTimezoneWarning } from '../utils/trigger-preview';
-import { formatRelativeTime } from '../utils/timeFormat';
+import { formatDateTime, formatRelativeTime } from '../utils/timeFormat';
 // CRON-DESC-01：Cron 表达式的人类可读描述（超出子集回退 null，只显示原表达式）
 import { describeCron } from '../utils/cron-desc';
 // MOBILE-CARD-01：≤768px 表格 → 卡片列表（结构级降级）
@@ -140,8 +140,11 @@ export default function TaskListPage() {
     setSelectedRowKeys([]);
   }, [page, pageSize, statusFilter, triggerFilter, lastStatusFilter, debouncedSearch]);
 
+  // UX-WALK 2026-10：显式声明勾选列宽（antd v6 默认不给 width）——否则勾选列与
+  // 名称列同为无宽度列，在 table-layout:fixed 下平分剩余空间，名称列吃不满下限 220。
   const rowSelection = {
     selectedRowKeys,
+    columnWidth: 32,
     onChange: (keys: React.Key[]) => setSelectedRowKeys(keys as string[]),
   };
 
@@ -203,7 +206,13 @@ export default function TaskListPage() {
   const handleBatchDelete = async () => {
     if (batchLoading) return;
     setBatchLoading(true);
-    try { reportBatch(await tasksApi.batchDelete(selectedRowKeys), 'taskList.batchDeleted'); }
+    try {
+      const results = await tasksApi.batchDelete(selectedRowKeys);
+      // 空页钳制：选中集恒为本页行（翻页/筛选即清空），整页行全部删除成功后
+      // 当前页会变空——与单删同口径回退一页；部分失败时页面仍有剩余行，不钳制。
+      clampPageAfterRemoval(summarizeBatch(results).succeeded);
+      reportBatch(results, 'taskList.batchDeleted');
+    }
     catch (err: unknown) { showApiError(err, t('taskList.batchDeleteFail')); }
     finally { setBatchLoading(false); }
   };
@@ -249,8 +258,17 @@ export default function TaskListPage() {
     finally { setTogglingId(null); }
   };
 
+  // 空页钳制（一致性）：服务端分页下删除当前页最后一条后，total 减小但本页的
+  // page 状态不变，请求仍打在第 N 页——antd 只在渲染层钳制分页器显示，表格主体
+  // 仍是第 N 页拉回的空列表，用户停在"看不见数据也不知道该翻回去"的空页。
+  // 本页只剩一条且不在第 1 页时，删除成功后回退一页（page-1 必然是满页，
+  // 因为服务端分页是稠密填充）。
+  const clampPageAfterRemoval = (removedCount: number) => {
+    if (removedCount >= tasks.length && page > 1) setPage(page - 1);
+  };
+
   const handleDelete = async (id: string) => {
-    try { await tasksApi.delete(id); message.success(t('taskList.deleted')); refresh(); }
+    try { await tasksApi.delete(id); message.success(t('taskList.deleted')); clampPageAfterRemoval(1); refresh(); }
     catch (err: unknown) { showApiError(err, t('taskList.deleteFail')); }
   };
 
@@ -467,8 +485,11 @@ export default function TaskListPage() {
             </Tooltip>
           );
         }
+        // 此前是不带 locale 的裸 toLocaleString()——跟随**浏览器** locale，
+        // 英文浏览器跑中文界面时显示 MM/DD/YYYY，与界面语言割裂。统一走
+        // formatDateTime（locale 跟随 i18n），与相对时间文案同源。
         return (
-          <Tooltip title={new Date(r.lastTriggerTime).toLocaleString()}>
+          <Tooltip title={formatDateTime(r.lastTriggerTime)}>
             <Text style={{ fontSize: 12 }}>{formatRelativeTime(r.lastTriggerTime, t)}</Text>
           </Tooltip>
         );
@@ -775,9 +796,14 @@ export default function TaskListPage() {
         dataSource={tasks}
         loading={loading}
         // UI-09：次要列窄屏收起（CSS 媒体查询 .ui09-hide-mobile）+ scroll.x 横向滚动兜底
-        // UI 打磨：scroll.x 与列宽合计对齐（固定列 940 + 勾选 32 + 名称弹性最小 ~168），
-        // 原 760 < 合计 890 形同虚设，窄容器挤压的是唯一无宽度的名称列
-        scroll={{ x: 1140 }}
+        // UX-WALK 2026-10 回归修复：scroll.x 必须 ≥ 固定列宽合计（含勾选 32）+ 名称列
+        // 弹性下限 220。此前 P1-1/P1-2 增列（下次/上次执行）后固定列合计已达 1172
+        // （status90/trigger100/priority80/schedule190/nextRun170/lastRun150/runtime80/
+        // enabled70/actions210 + 勾选32），追平旧 scroll.x=1140 → antd 宽度填充
+        // （@rc-component/table useWidthColumns）把唯一无 width 的名称列压到 ~1px，
+        // 1280×800 桌面首列逐字竖排不可读。新增/加宽固定列时必须同步上调 scroll.x
+        // （task-list-deep 列宽契约测试钉住）。
+        scroll={{ x: 1392 }}
         pagination={{
           total,
           current: page,

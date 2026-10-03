@@ -1,6 +1,12 @@
-import { Injectable, Logger } from "@nestjs/common";
+import {
+  Injectable,
+  Logger,
+  Optional,
+  ConflictException,
+} from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
 import { InjectRepository } from "@nestjs/typeorm";
-import { Repository } from "typeorm";
+import { IsNull, Repository } from "typeorm";
 import {
   ApiKey,
   ApiKeyScope,
@@ -38,6 +44,14 @@ export interface ApiKeyView {
 const LAST_USED_THROTTLE_MS = 60_000;
 
 /**
+ * A-9（R3-A 审计）: 每用户活跃（未吊销）API Key 的默认上限。key 本体是
+ * sha256 哈希行，无界签发虽不直接泄露凭据，但会让「凭据卫生」失去抓手
+ * （遗忘/遗留 key 永久有效）。运维可经配置节 apiKeys.maxActivePerUser 覆盖；
+ * 未配置（含既有单测裸装配不提供 ConfigService）回落本常量。
+ */
+const MAX_ACTIVE_KEYS_PER_USER = 20;
+
+/**
  * AUTH-03: CRUD + authentication lookup for limited API Keys.
  *
  * Management endpoints are JWT-only (guard enforces); this service is also
@@ -53,7 +67,21 @@ export class ApiKeysService {
     @InjectRepository(ApiKey)
     private readonly repo: Repository<ApiKey>,
     private readonly auditService: AuditService,
+    // A-9: @Optional —— 既有单测直接 new/Test 装配只给 repo+audit，ConfigService
+    // 缺席时 maxActiveKeysPerUser() 回落常量（先例同 auth.service 的 LeaderGate）。
+    @Optional()
+    private readonly configService?: ConfigService | null,
   ) {}
+
+  /** A-9: 生效的每用户活跃 key 上限（配置优先，无配置回落常量）。 */
+  private maxActiveKeysPerUser(): number {
+    const configured = this.configService?.get<number>(
+      "apiKeys.maxActivePerUser",
+    );
+    return configured && configured > 0
+      ? Math.floor(configured)
+      : MAX_ACTIVE_KEYS_PER_USER;
+  }
 
   // ─── Management (JWT-only surface) ──────────────────────────────────────
 
@@ -61,6 +89,18 @@ export class ApiKeysService {
   async create(
     input: CreateApiKeyInput,
   ): Promise<{ apiKey: ApiKeyView; plaintext: string }> {
+    // A-9: 配额闸——按属主 userId 统计活跃（未吊销）key，超限 409。判定与
+    // 写入非同一原子操作（无「计数」唯一约束可用），极端并发下可能短暂超额，
+    // 属可接受的软限（审计面记录每次创建，可事后清理）。
+    const activeCount = await this.repo.count({
+      where: { userId: input.userId, revokedAt: IsNull() },
+    });
+    const maxKeys = this.maxActiveKeysPerUser();
+    if (activeCount >= maxKeys) {
+      throw new ConflictException(
+        `API Key quota reached (${maxKeys} active keys per user); revoke unused keys first`,
+      );
+    }
     const { plaintext, keyPrefix, keyHash } = generateApiKey();
     let expiresAt: Date | null = null;
     if (input.expiresInDays && input.expiresInDays > 0) {

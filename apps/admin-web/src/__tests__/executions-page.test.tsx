@@ -390,3 +390,26 @@ describe('ExecutionsPage 多选对比（QA-03 / FEAT-03 回归）', () => {
     });
   });
 });
+
+// ─── UX 边界回归（本轮全站打磨）：筛选空态区分 ────────────────────────────
+describe('ExecutionsPage 筛选空态区分（UX 边界）', () => {
+  it('筛选无匹配 → noMatch 文案 + 清除筛选出口；点击后复位为真空态文案', async () => {
+    mockedTasks.allExecutions.mockResolvedValue(pageFixture([]));
+    renderPage();
+    await screen.findByText('暂无执行记录');
+
+    // 筛选「失败」且结果为空 → 「没有匹配的执行记录」（区别于从未有过执行）
+    fireEvent.mouseDown(screen.getByText('全部状态'));
+    fireEvent.click(await screen.findByText('失败', { selector: '.ant-select-item-option-content' }));
+    expect(await screen.findByText('没有匹配的执行记录')).toBeTruthy();
+    expect(findBtn(document.body, '清除筛选')).toBeTruthy();
+
+    // 清除筛选 → status 复位 + 真空态文案回归
+    fireEvent.click(findBtn(document.body, '清除筛选')!);
+    await waitFor(() => {
+      const lastCall = mockedTasks.allExecutions.mock.calls[mockedTasks.allExecutions.mock.calls.length - 1]?.[0];
+      expect(lastCall?.status).toBeUndefined();
+    });
+    await screen.findByText('暂无执行记录');
+  });
+});

@@ -8,6 +8,8 @@ import {
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { ExecutorPackageService } from "../executor-package.service";
+// A-8: pushHistory 追加/裁剪的纯函数（合并语义单测锚点）。
+import { appendPushHistoryEntry } from "../executor-package.service";
 import {
   ExecutorPackage,
   ExecutorPackageStatus,
@@ -605,7 +607,8 @@ describe("ExecutorPackageService", () => {
       service = new ExecutorPackageService(repo, config as any);
       controller = new ExecutorPackageController(
         service,
-        { findAll: jest.fn().mockResolvedValue(targets) } as any,
+        // A-9: push 控制器改走 findPushTargets（push 场景专用查询）。
+        { findPushTargets: jest.fn().mockResolvedValue(targets) } as any,
         config as any,
         systemConfig as any,
       );
@@ -810,6 +813,173 @@ describe("ExecutorPackageService", () => {
           success: true,
         },
       ]);
+    });
+
+    // A-7（执行器域审计 P3）：address 是执行器自报字段，可能带 ?/# ——拼
+    // `${url}/api/update-package` 前必须与 ExecutorService.getExecutorUrl 同款
+    // 清洗（split(/[?#]/, 1)），否则路径整体被吞进 query/fragment，请求打到
+    // 目标主机的错误端点。
+    it("A-7: strips ?/# from self-reported addresses before appending /api/update-package", async () => {
+      const poisoned = [
+        {
+          id: "p-1",
+          address: "http://10.0.0.5:8002?next=http://evil#frag",
+          status: "online",
+        },
+      ] as any;
+      const results = await service.pushToExecutors(
+        mockPkg.id,
+        undefined,
+        poisoned,
+        "db-token",
+      );
+      expect(results[0].success).toBe(true);
+      expect(axios.post).toHaveBeenCalledWith(
+        "http://10.0.0.5:8002/api/update-package",
+        expect.anything(),
+        expect.anything(),
+      );
+      // SSRF 守卫也拿到清洗后的地址（不带 query/fragment）。
+      expect(assertAndPinExecutorUrl).toHaveBeenCalledWith(
+        "http://10.0.0.5:8002",
+      );
+    });
+
+    it("A-7: bare addresses still get the http:// scheme prefix after cleaning", async () => {
+      const bare = [
+        { id: "b-1", address: "10.0.0.6:8002", status: "online" },
+      ] as any;
+      await service.pushToExecutors(mockPkg.id, undefined, bare, "db-token");
+      expect(axios.post).toHaveBeenCalledWith(
+        "http://10.0.0.6:8002/api/update-package",
+        expect.anything(),
+        expect.anything(),
+      );
+    });
+  });
+
+  // A-8（执行器域审计 P3）：push-result 回调的读改写竞态——追加历史下沉到
+  // 事务 + FOR UPDATE 重读，纯函数承担追加/裁剪语义。
+  describe("A-8: appendPushHistory (transactional re-read under lock)", () => {
+    it("appendPushHistoryEntry appends, trims to 100, and tolerates null history", () => {
+      expect(
+        appendPushHistoryEntry(null, {
+          executorId: "e",
+          status: "downloaded",
+          version: "1",
+          timestamp: "t",
+        }),
+      ).toHaveLength(1);
+      expect(
+        appendPushHistoryEntry(undefined, {
+          executorId: "e",
+          status: "failed",
+          version: "1",
+          timestamp: "t",
+        }),
+      ).toHaveLength(1);
+      const existing = Array.from({ length: 100 }, (_, i) => ({
+        executorId: `e${i}`,
+        status: "downloaded" as const,
+        version: "1",
+        timestamp: String(i),
+      }));
+      const entry = {
+        executorId: "new",
+        status: "downloaded" as const,
+        version: "2",
+        timestamp: "now",
+      };
+      const out = appendPushHistoryEntry(existing, entry);
+      expect(out).toHaveLength(100);
+      expect(out[0].executorId).toBe("e1"); // 最老的一条被裁掉
+      expect(out[99]).toEqual(entry);
+    });
+
+    it("re-reads the package under pessimistic_write and appends onto the latest row", async () => {
+      const stored = {
+        ...mockPkg,
+        pushHistory: [
+          {
+            executorId: "earlier",
+            status: "downloaded",
+            version: "1",
+            timestamp: "t0",
+          },
+        ],
+      };
+      const emFindOne = jest.fn().mockResolvedValue(stored);
+      const emSave = jest
+        .fn()
+        .mockImplementation((e: unknown) => Promise.resolve(e));
+      (repo as unknown as { manager: unknown }).manager = {
+        transaction: jest.fn(async (cb: (em: unknown) => Promise<void>) =>
+          cb({ findOne: emFindOne, save: emSave }),
+        ),
+      };
+      // 并发语义模拟：第二个回调进来时 emFindOne 返回"已被第一个回调追加过"的行
+      //（真实 DB 由 FOR UPDATE 保证读到已提交的追加），追加仍基于最新行不覆盖。
+      await service.appendPushHistory(mockPkg.id, {
+        executorId: "exec-1",
+        status: "downloaded",
+        version: "2.0.0",
+      });
+      // 锁内重读：where 指定包 id + pessimistic_write 锁。
+      expect(emFindOne).toHaveBeenCalledWith(
+        ExecutorPackage,
+        expect.objectContaining({
+          where: { id: mockPkg.id },
+          lock: { mode: "pessimistic_write" },
+        }),
+      );
+      // 追加基于最新行（earlier 保留），且整行 save。
+      expect(stored.pushHistory).toHaveLength(2);
+      expect(stored.pushHistory[0].executorId).toBe("earlier");
+      expect(stored.pushHistory[1]).toMatchObject({
+        executorId: "exec-1",
+        status: "downloaded",
+        version: "2.0.0",
+      });
+      expect(emSave).toHaveBeenCalledWith(stored);
+    });
+
+    it("falls back to the locked row's version when the report omits it", async () => {
+      const stored = { ...mockPkg, version: "9.9.9", pushHistory: [] };
+      const emSave = jest
+        .fn()
+        .mockImplementation((e: unknown) => Promise.resolve(e));
+      (repo as unknown as { manager: unknown }).manager = {
+        transaction: jest.fn(async (cb: (em: unknown) => Promise<void>) =>
+          cb({
+            findOne: jest.fn().mockResolvedValue(stored),
+            save: emSave,
+          }),
+        ),
+      };
+      await service.appendPushHistory(mockPkg.id, {
+        status: "failed",
+        error: "download timeout",
+      });
+      expect(stored.pushHistory[0]).toMatchObject({
+        executorId: "unknown",
+        status: "failed",
+        version: "9.9.9",
+        error: "download timeout",
+      });
+    });
+
+    it("throws NotFoundException when the package row is gone", async () => {
+      (repo as unknown as { manager: unknown }).manager = {
+        transaction: jest.fn(async (cb: (em: unknown) => Promise<void>) =>
+          cb({
+            findOne: jest.fn().mockResolvedValue(null),
+            save: jest.fn(),
+          }),
+        ),
+      };
+      await expect(
+        service.appendPushHistory("missing-id", { status: "downloaded" }),
+      ).rejects.toThrow(NotFoundException);
     });
   });
 

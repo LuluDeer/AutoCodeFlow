@@ -56,6 +56,7 @@
     "lint:api": "cd apps/admin-api && npx eslint src",
     "lint:web": "cd apps/admin-web && npm run lint",
     "lint:node": "cd apps/executor-node && npx eslint src --ext .ts",
+    "lint:i18n": "cd apps/admin-web && npm run lint:i18n",
     "lint:all": "npm run lint:api && npm run lint:web && npm run lint:node",
     "check:lint-gates": "node scripts/check-lint-gates.mjs",
     "check:no-hoisting": "node scripts/check-no-hoisting.mjs",

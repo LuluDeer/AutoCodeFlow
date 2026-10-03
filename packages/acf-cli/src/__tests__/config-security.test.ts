@@ -95,6 +95,34 @@ describe('acf-cli config at-rest hardening (SEC-NEW-4)', () => {
     expect(raw).toMatchObject({ token: 'jwt-1', refreshToken: 'r-1' });
   });
 
+  it('损坏的配置文件：告警 + 坏内容备份到 *.corrupt + 以默认配置继续（不裸堆栈）', async () => {
+    // UX 打磨（本轮）：此前坏 JSON 会让 conf 在模块加载时抛裸 SyntaxError 堆栈。
+    // 现在的契约：stderr 出现可操作告警（含 acf login 指引），坏内容保留在
+    // <path>.corrupt 供手工找回，CLI 用默认配置继续可用。
+    const corrupt = '{ broken json!!';
+    fs.writeFileSync(path.join(dir, 'config.json'), corrupt, { mode: 0o600 });
+    const errSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    const cfg = await loadConfig();
+
+    try {
+      // 默认配置继续可用（不是 500 崩溃路径）
+      expect(cfg.getApiUrl()).toBe('http://localhost:3105');
+      expect(cfg.getToken()).toBe('');
+      // 坏内容留证：.corrupt 备份存在且逐字节等于原内容
+      const backupPath = `${cfg.getConfigPath()}.corrupt`;
+      expect(fs.existsSync(backupPath)).toBe(true);
+      expect(fs.readFileSync(backupPath, 'utf8')).toBe(corrupt);
+      // 告警可操作：指出损坏 + 指路 acf login
+      const warn = errSpy.mock.calls.map((c) => String(c[0])).join('');
+      expect(warn).toContain('corrupted');
+      expect(warn).toContain('acf login');
+      expect(warn).toContain(backupPath);
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+
   it('clearAuth empties both tokens but keeps apiUrl', async () => {
     const cfg = await loadConfig();
     cfg.setApiUrl('http://keep');

@@ -420,19 +420,17 @@ export class ExecutorPackageController {
       }`,
     );
     // Persist push history to package.pushHistory
+    // A-8（执行器域审计 P3）：读改写竞态修复——追加历史下沉到服务的
+    // appendPushHistory：事务内 FOR UPDATE 重读最新行再追加写回，多执行器
+    // 并发回调不再互相覆盖（旧 findOne→拼数组→整行 save 的链路里，两个并发
+    // 回调各自基于陈旧快照 save，后写者把先写者的记录整条抹掉）。
     try {
-      const pkg = await this.svc.findOne(packageId);
-      const entry = {
-        executorId: executorId ?? "unknown",
+      await this.svc.appendPushHistory(packageId, {
+        executorId,
         status,
-        version: version ?? pkg.version,
-        ...(error ? { error } : {}),
-        timestamp: new Date().toISOString(),
-      };
-      const history = Array.isArray(pkg.pushHistory) ? pkg.pushHistory : [];
-      // Keep only the most recent 100 records
-      const trimmed = [...history, entry].slice(-100);
-      await this.svc.update(packageId, { pushHistory: trimmed } as any);
+        version,
+        error,
+      });
     } catch (e: unknown) {
       this.logger.warn(
         `Failed to persist push history: ${e instanceof Error ? e.message : String(e)}`,
@@ -465,7 +463,12 @@ export class ExecutorPackageController {
   ): Promise<
     { executorId: string; address: string; success: boolean; error?: string }[]
   > {
-    const executors = await this.executorService.findAll();
+    // A-9（执行器域审计 P3）：push 场景专用目标查询（findPushTargets）——
+    // 空 executorIds = 全部 ONLINE 全量分页扫描，不再经 findAll() 的列表投影
+    //（take=500 最新行、含离线行）：在线机队 > 500 时老机器被静默漏推。
+    const executors = await this.executorService.findPushTargets(
+      body?.executorIds,
+    );
     const sharedToken =
       (await getExecutorSharedToken(
         this.configService,

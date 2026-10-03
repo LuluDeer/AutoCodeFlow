@@ -54,6 +54,25 @@ import '../../i18n';
 const { Text } = Typography;
 
 /**
+ * UI-09 第三轮：valueType 是闭集枚举（src/api/config.ts SystemConfig.valueType
+ * DTO：'string' | 'number' | 'boolean' | 'json'），配置列表此前 `<Tag>{v}</Tag>`
+ * 裸渲染后端 token。对齐 utils/agent-label.ts 哲学：已知值走 i18n（复用
+ * EditModal 下拉同源的 sysSettings.config.type.* 词条），未知值回退**原始
+ * token**——后端新增取值而本表未跟时露出可搜索的后端值，而不是渲染成 i18n 键名。
+ */
+const VALUE_TYPE_T_KEYS: Record<string, string> = {
+  string: 'sysSettings.config.type.string',
+  number: 'sysSettings.config.type.number',
+  boolean: 'sysSettings.config.type.boolean',
+  json: 'sysSettings.config.type.json',
+};
+
+function valueTypeLabel(v: string, t: (k: string) => string): string {
+  const key = VALUE_TYPE_T_KEYS[v];
+  return key ? t(key) : v;
+}
+
+/**
  * R5 RBAC（按第四轮收紧矩阵）：
  * - 执行器共享 Token 读/生成、系统配置写（增删改）、回滚 → 后端 @Roles(ADMIN)；
  *   普通用户不可见或按钮禁用（不做无谓的 403 请求）。
@@ -106,7 +125,7 @@ function TokenSection() {
 
   if (!isAdmin) {
     return (
-      <Card title={<Space><KeyOutlined /> {t('sysSettings.token.cardTitle')}</Space>} style={{ marginBottom: 16 }}>
+      <Card title={<Space><KeyOutlined aria-hidden /> {t('sysSettings.token.cardTitle')}</Space>} style={{ marginBottom: 16 }}>
         <Alert
           type="info"
           title={t('sysSettings.token.adminOnly')}
@@ -125,7 +144,7 @@ function TokenSection() {
   // UI-16：Token 读请求失败 → 页内错误块（重试=refetch）；此前失败只会停在一个空 Spin
   if (tokenError) {
     return (
-      <Card title={<Space><KeyOutlined /> {t('sysSettings.token.cardTitle')}</Space>} style={{ marginBottom: 16 }}>
+      <Card title={<Space><KeyOutlined aria-hidden /> {t('sysSettings.token.cardTitle')}</Space>} style={{ marginBottom: 16 }}>
         <StateError
           error={tokenError}
           title={t('sysSettings.token.loadFail')}
@@ -139,7 +158,7 @@ function TokenSection() {
   const hasToken = tokenResult?.hasToken ?? false;
 
   return (
-    <Card title={<Space><KeyOutlined /> {t('sysSettings.token.cardTitle')}</Space>} style={{ marginBottom: 16 }}>
+    <Card title={<Space><KeyOutlined aria-hidden /> {t('sysSettings.token.cardTitle')}</Space>} style={{ marginBottom: 16 }}>
       <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
         {t('sysSettings.token.desc')}
       </Text>
@@ -154,13 +173,16 @@ function TokenSection() {
               value={tokenVisible ? (token || '') : '•'.repeat(40)}
               style={{ flex: 1, minWidth: 180, width: 'auto', fontFamily: 'monospace', fontSize: 13 }}
             />
+            {/* UI-09 图标按钮 a11y：显隐切换是 icon-only——antd Tooltip 不自动注入
+                aria-label，显式补可访问名（随状态区分显示/隐藏）；图标纯装饰。 */}
             <Button
-              icon={tokenVisible ? <EyeInvisibleOutlined /> : <EyeOutlined />}
+              icon={tokenVisible ? <EyeInvisibleOutlined aria-hidden /> : <EyeOutlined aria-hidden />}
+              aria-label={tokenVisible ? t('sysSettings.token.hide') : t('sysSettings.token.show')}
               onClick={() => setTokenVisible(v => !v)}
             />
             {tokenVisible && (
               <Button
-                icon={<CopyOutlined />}
+                icon={<CopyOutlined aria-hidden />}
                 onClick={async () => {
                   // F-18（DEEP_REVIEW 0ef3bbe）：补错误处理——失败不弹成功提示。
                   const ok = await copyText(token || '');
@@ -191,7 +213,7 @@ function TokenSection() {
           <Tooltip title={isAdmin ? undefined : t('sysSettings.token.genAdminOnly')}>
             <Button
               type="primary"
-              icon={<KeyOutlined />}
+              icon={<KeyOutlined aria-hidden />}
               loading={generating}
               onClick={handleGenerate}
               disabled={!isAdmin}
@@ -324,8 +346,15 @@ function HistoryModal({ configKey, onClose }: { configKey: string; onClose: () =
     { title: t('sysSettings.history.col.action'), dataIndex: 'action', width: 70,
       render: (v: ConfigHistory['action']) => v === 'create' ? t('sysSettings.history.action.create')
         : v === 'delete' ? t('sysSettings.history.action.delete') : v === 'rollback' ? t('sysSettings.history.action.rollback') : t('sysSettings.history.action.update') },
-    { title: t('sysSettings.history.col.old'), dataIndex: 'oldValue', ellipsis: true, minWidth: 110, render: (v: string) => v ?? <Text type="secondary">-</Text> },
-    { title: t('sysSettings.history.col.new'), dataIndex: 'newValue', ellipsis: true, minWidth: 110, render: (v: string) => v ?? <Text type="secondary">-</Text> },
+    // UI-09：新旧值为次要列——窄屏（≤768px，与 index.css 媒体查询同断点）列级隐藏
+    // （onHeaderCell/onCell 双端挂类，模式对齐 AppDeploymentPage）；桌面不动，
+    // Modal 全局 max-width + scroll.x 640 横滚兜底语义保留。
+    { title: t('sysSettings.history.col.old'), dataIndex: 'oldValue', ellipsis: true, minWidth: 110,
+      onHeaderCell: () => ({ className: 'ui09-hide-mobile' }), onCell: () => ({ className: 'ui09-hide-mobile' }),
+      render: (v: string) => v ?? <Text type="secondary">-</Text> },
+    { title: t('sysSettings.history.col.new'), dataIndex: 'newValue', ellipsis: true, minWidth: 110,
+      onHeaderCell: () => ({ className: 'ui09-hide-mobile' }), onCell: () => ({ className: 'ui09-hide-mobile' }),
+      render: (v: string) => v ?? <Text type="secondary">-</Text> },
     { title: '', width: 80,
       render: (_: unknown, row: ConfigHistory) => {
         if (!isAdmin) return null;
@@ -406,28 +435,41 @@ function SystemConfigTab() {
   const cols: ColumnsType<SystemConfig> = [
     { title: t('sysSettings.config.col.key'), dataIndex: 'key', width: 220, ellipsis: true,
       render: (v: string) => <Text code style={{ fontSize: 12 }}>{v}</Text> },
-    { title: t('sysSettings.config.col.value'), dataIndex: 'value', ellipsis: true,
+    // UX-WALK 2026-10：值列声明 width——它和说明列本是全表唯二无宽度列，整表又无
+    // scroll.x，375px 下表格按 min-content(~520px) 溢出且被祖先 overflow:hidden 裁剪、
+    // 无滚动条，值列不可达。声明 width 后配合下方 scroll.x（键220+值180+类型80+
+    // 标签100+操作120=700 + 说明列弹性下限 120 = 820），窄屏走 antd 自建横滚容器。
+    { title: t('sysSettings.config.col.value'), dataIndex: 'value', width: 180, ellipsis: true,
       render: (v: string, r: SystemConfig) => r.isSecret
         ? <Text type="secondary">••••••</Text>
         : (v ?? <Text type="secondary">-</Text>) },
+    // UI-09 第三轮：类型/标签/说明是次要列——窄屏（≤768px）由媒体查询隐藏
+    // （onHeaderCell/onCell 双端挂类，对齐 AppDeploymentPage 既有模式；断点与
+    // index.css ui09 媒体查询同值）。键/值/操作三列承载值班首查信息，保留。
     { title: t('sysSettings.config.col.type'), dataIndex: 'valueType', width: 80,
-      render: (v: string) => <Tag>{v}</Tag> },
+      onHeaderCell: () => ({ className: 'ui09-hide-mobile' }),
+      onCell: () => ({ className: 'ui09-hide-mobile' }),
+      render: (v: string) => <Tag>{valueTypeLabel(v, t)}</Tag> },
     { title: t('sysSettings.config.col.tag'), dataIndex: 'tag', width: 100,
+      onHeaderCell: () => ({ className: 'ui09-hide-mobile' }),
+      onCell: () => ({ className: 'ui09-hide-mobile' }),
       render: (v: string) => v ? <Tag color="blue">{v}</Tag> : null },
     { title: t('sysSettings.config.col.desc'), dataIndex: 'description', ellipsis: true,
+      onHeaderCell: () => ({ className: 'ui09-hide-mobile' }),
+      onCell: () => ({ className: 'ui09-hide-mobile' }),
       render: (v: string) => v ? <Text type="secondary" style={{ fontSize: 12 }}>{v}</Text> : null },
     { title: '', width: 120,
       render: (_: unknown, row: SystemConfig) => (
         <Space size={4}>
           <Tooltip title={isAdmin ? t('sysSettings.config.edit') : t('sysSettings.config.editAdminOnly')}>
-            <Button size="small" icon={<EditOutlined />} onClick={() => setEditTarget(row)} disabled={!isAdmin} aria-label={t('sysSettings.config.editAria')} />
+            <Button size="small" icon={<EditOutlined aria-hidden />} onClick={() => setEditTarget(row)} disabled={!isAdmin} aria-label={t('sysSettings.config.editAria')} />
           </Tooltip>
           <Tooltip title={t('sysSettings.history.tooltip')}>
-            <Button size="small" icon={<HistoryOutlined />} onClick={() => setHistoryKey(row.key)} aria-label={t('sysSettings.history.aria')} />
+            <Button size="small" icon={<HistoryOutlined aria-hidden />} onClick={() => setHistoryKey(row.key)} aria-label={t('sysSettings.history.aria')} />
           </Tooltip>
           <Popconfirm title={t('sysSettings.config.deleteConfirm')} onConfirm={() => remove(row.key)} okText={t('sysSettings.config.delete')} okButtonProps={{ danger: true }} disabled={!isAdmin}>
             <Tooltip title={isAdmin ? t('sysSettings.config.delete') : t('sysSettings.config.deleteAdminOnly')}>
-              <Button size="small" danger icon={<DeleteOutlined />} disabled={!isAdmin} aria-label={t('sysSettings.config.deleteAria')} />
+              <Button size="small" danger icon={<DeleteOutlined aria-hidden />} disabled={!isAdmin} aria-label={t('sysSettings.config.deleteAria')} />
             </Tooltip>
           </Popconfirm>
         </Space>
@@ -438,12 +480,13 @@ function SystemConfigTab() {
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12 }}>
+      {/* UI-09 第三轮：操作行 flexWrap——375px 下说明文字与两按钮换行不溢出（桌面单行不受影响） */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
         <Text type="secondary">{t('sysSettings.config.desc')}</Text>
         <Space>
-          <Button icon={<ReloadOutlined />} onClick={() => refetch()}>{t('sysSettings.refresh')}</Button>
+          <Button icon={<ReloadOutlined aria-hidden />} onClick={() => refetch()}>{t('sysSettings.refresh')}</Button>
           <Tooltip title={isAdmin ? undefined : t('sysSettings.config.addAdminOnly')}>
-            <Button type="primary" icon={<PlusOutlined />} onClick={() => setEditTarget('new')} disabled={!isAdmin}>
+            <Button type="primary" icon={<PlusOutlined aria-hidden />} onClick={() => setEditTarget('new')} disabled={!isAdmin}>
               {t('sysSettings.config.add')}
             </Button>
           </Tooltip>
@@ -464,6 +507,13 @@ function SystemConfigTab() {
           columns={cols}
           size="small"
           pagination={{ pageSize: 20, showTotal: (n) => t('sysSettings.config.count', { count: n }) }}
+          // UX-WALK 2026-10：此前无 scroll 属性——375px 下表格按定宽列 min-content
+          // （~520px）溢出，祖先链全 overflow:visible 被外层 hidden 裁剪且无滚动条，
+          // 值/类型/标签/说明列移动端不可达。补 scroll.x 走 antd 自建横滚容器
+          // （对齐全站其他表与本页 HistoryModal scroll.x=640 先例；R7-F 的
+          // ui09-hide-mobile 列级隐藏不受影响）。820 = 定宽列 700 + 说明列弹性下限 120，
+          // 新增/加宽定宽列时同步上调（ui09-mobile-round3-admin 契约测试钉住）。
+          scroll={{ x: 820 }}
         />
       )}
       {editTarget != null && (
@@ -693,7 +743,7 @@ function AiConfigTab() {
               <Button type="primary" loading={saving} onClick={handleSave}>{t('sysSettings.ai.save')}</Button>
               {provider !== 'disabled' && (
                 <Button
-                  icon={<ThunderboltOutlined />}
+                  icon={<ThunderboltOutlined aria-hidden />}
                   loading={testing}
                   onClick={() => { setTestResult(null); test(); }}
                 >
@@ -742,11 +792,11 @@ export default function SettingsPage() {
   const tabs = [
     // R4 收紧矩阵：共享 Token 读/生成 ADMIN-only，非管理员直接不渲染该 Tab
     ...(isAdmin
-      ? [{ key: 'token', label: <Space><KeyOutlined />{t('sysSettings.tab.token')}</Space>, children: <TokenSection /> }]
+      ? [{ key: 'token', label: <Space><KeyOutlined aria-hidden />{t('sysSettings.tab.token')}</Space>, children: <TokenSection /> }]
       : []),
     {
       key: 'ai',
-      label: <Space><RobotOutlined />{t('sysSettings.tab.ai')}</Space>,
+      label: <Space><RobotOutlined aria-hidden />{t('sysSettings.tab.ai')}</Space>,
       children: <AiConfigTab />,
     },
     {
@@ -758,21 +808,21 @@ export default function SettingsPage() {
     // 置于末位 Tab：不改变既有 Tab 排序/默认激活行为（settings.ai 等既有测试依赖）
     {
       key: 'security',
-      label: <Space><SafetyCertificateOutlined />{t('sysSettings.tab.security')}</Space>,
+      label: <Space><SafetyCertificateOutlined aria-hidden />{t('sysSettings.tab.security')}</Space>,
       children: <SecuritySettings />,
     },
     // AUTH-03: 限权 API Key 管理（CI/CD 机器认证）——所有登录用户管理本人 Key；
     // 放在安全设置之后，不改变既有 Tab 默认激活行为
     {
       key: 'api-keys',
-      label: <Space><ApiOutlined />{t('sysSettings.tab.apikeys')}</Space>,
+      label: <Space><ApiOutlined aria-hidden />{t('sysSettings.tab.apikeys')}</Space>,
       children: <ApiKeysSettings />,
     },
     // FEAT-15: 事件订阅（webhook 出站 + 死信 replay）——ADMIN 看全部、普通用户
     // 看自己的 + 系统级（后端读面语义），置于末位不改变既有 Tab 默认激活行为
     {
       key: 'event-subscriptions',
-      label: <Space><BellOutlined />{t('sysSettings.tab.events')}</Space>,
+      label: <Space><BellOutlined aria-hidden />{t('sysSettings.tab.events')}</Space>,
       children: <EventSubscriptionsSettings />,
     },
   ];

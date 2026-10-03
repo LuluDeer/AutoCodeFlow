@@ -612,3 +612,77 @@ describe('pull loop start/stop (E-07)', () => {
     expect(postMock.mock.calls.length).toBe(callsAfterStart); // 停机后不再领取
   });
 });
+
+// ---------------------------------------------------------------------------
+// A-10: 命令结果逐条立即上报（python commands.py run_control_commands 对齐）
+// ---------------------------------------------------------------------------
+
+describe('pull control commands — A-10 per-command immediate reporting', () => {
+  let pullOnce: () => Promise<void>;
+  let resetConfigPullThrottleForTest: () => void;
+
+  const commandResponse = (commands: unknown[], task: unknown = null) => ({
+    data: {
+      code: 0,
+      message: 'ok',
+      data: { task, commands, configVersion: undefined },
+    },
+  });
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    Atomics.store(ledger, 0, 0);
+    adminPostMock.mockResolvedValue({ data: {} });
+    ({ pullOnce, resetConfigPullThrottleForTest } = require('./pull'));
+    resetConfigPullThrottleForTest();
+    executeControlCommand.mockImplementation(async (cmd: { commandId: string; type: string }) => ({
+      commandId: cmd.commandId,
+      type: cmd.type,
+      ok: true,
+      status: 200,
+      durationMs: 5,
+    }));
+  });
+
+  it('reports each result before executing the next command (no end-of-batch lag)', async () => {
+    postMock.mockResolvedValueOnce(commandResponse([
+      { commandId: 'c1', type: 'app-stop', payload: {} },
+      { commandId: 'c2', type: 'app-stop', payload: {} },
+      { commandId: 'c3', type: 'app-stop', payload: {} },
+    ]));
+    const order: string[] = [];
+    adminPostMock.mockImplementation(async (url: string, body: { commandId: string }) => {
+      if (url === '/api/executors/command-result') order.push(`report:${body.commandId}`);
+      return { data: {} };
+    });
+    executeControlCommand.mockImplementation(async (cmd: { commandId: string }) => {
+      order.push(`exec:${cmd.commandId}`);
+      return { commandId: cmd.commandId, type: 'app-stop', ok: true, durationMs: 1 };
+    });
+
+    await pullOnce();
+
+    // 逐条 exec → report 交错，而不是 exec,exec,exec → report,report,report
+    expect(order).toEqual(['exec:c1', 'report:c1', 'exec:c2', 'report:c2', 'exec:c3', 'report:c3']);
+  });
+
+  it('a failed report does not block the rest of the batch', async () => {
+    postMock.mockResolvedValueOnce(commandResponse([
+      { commandId: 'c1', type: 'app-stop', payload: {} },
+      { commandId: 'c2', type: 'app-uninstall', payload: {} },
+    ]));
+    const reported: string[] = [];
+    adminPostMock.mockImplementation(async (url: string, body: { commandId: string }) => {
+      if (url !== '/api/executors/command-result') return { data: {} };
+      if (body.commandId === 'c1') throw new Error('admin down');
+      reported.push(body.commandId);
+      return { data: {} };
+    });
+
+    await pullOnce();
+
+    // c1 上报失败只 warn；c2 照常执行并上报
+    expect(executeControlCommand).toHaveBeenCalledTimes(2);
+    expect(reported).toEqual(['c2']);
+  });
+});

@@ -70,6 +70,9 @@ const makeRepo = (overrides: Partial<Record<string, jest.Mock>> = {}) => ({
     where: jest.fn().mockReturnThis(),
     // E-P1-R3: sweep UPDATE 现在追加 andWhere 状态守卫，mock 链需补齐该方法。
     andWhere: jest.fn().mockReturnThis(),
+    // A-9: sweep UPDATE 以 RETURNING 取回实际命中的 id（默认无 raw ——
+    // 模拟「行已被并发推进，affected=0」的保守形态）。
+    returning: jest.fn().mockReturnThis(),
     execute: jest.fn().mockResolvedValue({ affected: 1 }),
   })),
   ...overrides,
@@ -645,6 +648,33 @@ describe("AppDeploymentService", () => {
         });
         repo.save.mockRejectedValue(
           makeUniqueViolation("uq_app_deployments_application_in_flight"),
+        );
+
+        await expect(
+          service.deploy("app-1", {
+            executorId: "exec-1",
+            runMode: RunMode.DAEMON,
+          }),
+        ).rejects.toMatchObject({
+          constructor: ConflictException,
+          status: 409,
+        });
+      });
+
+      // A-3: 并发双击「重新部署」——两个请求都通过 reusable findOne，后写者
+      // 在 @VersionColumn 上撞版本抛 OptimisticLockVersionMismatchError。此前
+      // 复用路径裸 save 未映射该错误 → 500；与 stop/upgrade 同口径转 409。
+      it("A-3: 并发双击复用行撞乐观锁版本 → 409（不再 500）", async () => {
+        guardThenReusable({
+          id: "deploy-existing",
+          applicationId: "app-1",
+          executorId: "exec-1",
+          executorAddress: "203.0.113.10:3001",
+          status: DeploymentStatus.FAILED,
+          runMode: RunMode.DAEMON,
+        });
+        repo.save.mockRejectedValue(
+          new OptimisticLockVersionMismatchError("app_deployments", 1, 2),
         );
 
         await expect(
@@ -1341,6 +1371,17 @@ describe("AppDeploymentService", () => {
       repo.find.mockResolvedValue([stuckDeployment]);
       versionRepo.findOne.mockResolvedValue(versionSnapshot);
       versionRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      // A-9: RETURNING 取回本次 UPDATE 实际命中的 id——只有命中行才做快照标记。
+      repo.createQueryBuilder.mockImplementationOnce(() => ({
+        update: jest.fn().mockReturnThis(),
+        set: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        returning: jest.fn().mockReturnThis(),
+        execute: jest
+          .fn()
+          .mockResolvedValue({ affected: 1, raw: [{ id: "deploy-1" }] }),
+      }));
 
       await service.detectStuckDeployments();
 
@@ -1475,6 +1516,161 @@ describe("AppDeploymentService", () => {
       );
     });
 
+    // A-1: 待审批行复用 status=PENDING 挂在途位（entity 注释），审批悬置可以
+    // 合法超过 5min——不得被本 cron 强标 FAILED（否则审批收件箱还有待办，状态
+    // 列却谎报失败）。
+    it("A-1: a pending-approval row hanging for 10 minutes is NOT swept", async () => {
+      const pendingApprovalRow = {
+        id: "deploy-approval",
+        applicationId: "app-1",
+        status: DeploymentStatus.PENDING,
+        approvalStatus: "pending_approval",
+        statusMessage: "Awaiting deployment approval",
+        deployedVersion: null,
+        deployedCommit: null,
+        updatedAt: new Date(Date.now() - 10 * 60 * 1000),
+      };
+      repo.find.mockResolvedValue([pendingApprovalRow]);
+
+      await service.detectStuckDeployments();
+
+      // 不发起任何 UPDATE（行留在 PENDING 等审批动作收口）
+      expect(repo.createQueryBuilder).not.toHaveBeenCalled();
+      expect(versionRepo.save).not.toHaveBeenCalled();
+    });
+
+    // A-1: 扫描 where 与批量 UPDATE 守卫两侧都要排除 pending_approval——
+    // where 侧用 Raw（兼容 approvalStatus IS NULL 的普通行），UPDATE 侧补
+    // andWhere 防 SELECT/UPDATE 之间被并发认领的行被盖写。
+    it("A-1: the PENDING scan where and the guarded UPDATE both exclude pending_approval", async () => {
+      repo.find.mockResolvedValue([]);
+
+      await service.detectStuckDeployments();
+
+      const arg = repo.find.mock.calls[0][0];
+      const where = arg.where as Array<Record<string, unknown>>;
+      const pendingBranch = where.find(
+        (w) => w.status === DeploymentStatus.PENDING,
+      );
+      expect(pendingBranch).toBeDefined();
+      // Raw FindOperator（而非 Not()——Not 会连 NULL 行一起排除）
+      const op = pendingBranch!.approvalStatus as { type: string };
+      expect(op.type).toBe("raw");
+
+      // UPDATE 守卫侧
+      const pendingRow = {
+        id: "d-pending",
+        applicationId: "app-1",
+        status: DeploymentStatus.PENDING,
+        approvalStatus: null,
+        statusMessage: null,
+        deployedVersion: null,
+        deployedCommit: null,
+      };
+      repo.find.mockResolvedValue([pendingRow]);
+      await service.detectStuckDeployments();
+      const qb = repo.createQueryBuilder.mock.results[0].value;
+      expect(qb.andWhere).toHaveBeenCalledWith(
+        "(approvalStatus IS NULL OR approvalStatus <> :pendingApproval)",
+        { pendingApproval: "pending_approval" },
+      );
+    });
+
+    // A-2①: pull 入队后行恒 DEPLOYING 且离线执行器不产生心跳——statusMessage
+    // 带 PULL_QUEUED_MESSAGE_PREFIX 且行龄未超命令 TTL 的行豁免扫描，否则行被
+    // 提前判 FAILED 并释放 in-flight 槽位，旧命令 TTL 内被重连执行器消费 →
+    // 同一执行器两个真实进程。
+    it("A-2①: a pull-queued DEPLOYING row younger than the command TTL is exempt from the sweep", async () => {
+      const queuedRow = {
+        id: "deploy-pull",
+        applicationId: "app-1",
+        status: DeploymentStatus.DEPLOYING,
+        // 12 分钟未动：按 10min 判据本应扫死，但命令 TTL（默认 30min）未到
+        updatedAt: new Date(Date.now() - 12 * 60 * 1000),
+        statusMessage:
+          "Deploy command queued for pull executor (commandId=cmd-1)",
+        deployedVersion: null,
+        deployedCommit: null,
+      };
+      repo.find.mockResolvedValue([queuedRow]);
+
+      await service.detectStuckDeployments();
+
+      expect(repo.createQueryBuilder).not.toHaveBeenCalled();
+      expect(versionRepo.save).not.toHaveBeenCalled();
+    });
+
+    it("A-2①: a pull-queued row past the command TTL is swept (the command is dropped by the pull side by then)", async () => {
+      const queuedRow = {
+        id: "deploy-pull-stale",
+        applicationId: "app-1",
+        status: DeploymentStatus.DEPLOYING,
+        updatedAt: new Date(Date.now() - 31 * 60 * 1000),
+        statusMessage:
+          "Deploy command queued for pull executor (commandId=cmd-1)",
+        deployedVersion: null,
+        deployedCommit: null,
+      };
+      repo.find.mockResolvedValue([queuedRow]);
+
+      await service.detectStuckDeployments();
+
+      expect(repo.createQueryBuilder).toHaveBeenCalledTimes(1);
+      const qb = repo.createQueryBuilder.mock.results[0].value;
+      expect(qb.where).toHaveBeenCalledWith("id IN (:...ids)", {
+        ids: ["deploy-pull-stale"],
+      });
+    });
+
+    // A-2①: 命令已被消费（push 路径文案/心跳覆盖了 statusMessage）的行不受
+    // 豁免影响，仍按 10min 正常扫死。
+    it("A-2①: a DEPLOYING row without the pull-queued marker keeps the 10min threshold", async () => {
+      const pushedRow = {
+        id: "deploy-push",
+        applicationId: "app-1",
+        status: DeploymentStatus.DEPLOYING,
+        updatedAt: new Date(Date.now() - 11 * 60 * 1000),
+        statusMessage: "Deploy command sent to executor",
+        deployedVersion: null,
+        deployedCommit: null,
+      };
+      repo.find.mockResolvedValue([pushedRow]);
+
+      await service.detectStuckDeployments();
+
+      expect(repo.createQueryBuilder).toHaveBeenCalledTimes(1);
+    });
+
+    // A-9: 条件 UPDATE 的状态守卫使并发已推进到 RUNNING 的行 affected=0
+    // （RETURNING 无该行）——其版本快照不得被误标 failed。
+    it("A-9: rows not hit by the guarded UPDATE keep their version snapshot status", async () => {
+      const advancedRow = {
+        id: "deploy-advanced",
+        applicationId: "app-1",
+        status: DeploymentStatus.DEPLOYING,
+        statusMessage: null,
+        deployedVersion: "1.0.0",
+        deployedCommit: "abc123",
+      };
+      const snapshot = {
+        id: "version-1",
+        applicationId: "app-1",
+        version: "1.0.0",
+        gitCommit: "abc123",
+        sourceDeploymentId: "deploy-advanced",
+        status: "released",
+      };
+      repo.find.mockResolvedValue([advancedRow]);
+      versionRepo.findOne.mockResolvedValue(snapshot);
+
+      await service.detectStuckDeployments();
+
+      // 默认 qb mock 的 execute 返回 { affected: 1 }（无 raw）→ 无命中 id
+      expect(repo.createQueryBuilder).toHaveBeenCalledTimes(1);
+      expect(versionRepo.save).not.toHaveBeenCalled();
+      expect(snapshot.status).toBe("released");
+    });
+
     it("R6: an upgraded legacy deployment (old createdAt, fresh updatedAt) is not in the stuck set", async () => {
       // Simulates exactly the DB behavior the new predicate produces: the
       // row's createdAt is old but updatedAt was refreshed by the
@@ -1519,13 +1715,23 @@ describe("AppDeploymentService", () => {
       // E-P1-R2：心跳走条件 UPDATE，不再走 save（不 bump version）。
       expect(repo.save).not.toHaveBeenCalled();
       expect(repo.update).toHaveBeenCalledWith(
-        { id: "deploy-1" },
+        expect.objectContaining({ id: "deploy-1" }),
         expect.objectContaining({
           status: DeploymentStatus.RUNNING,
           pid: 5678,
           statusMessage: "up and running",
           lastHeartbeat: expect.any(Date),
         }),
+      );
+      // A-2②：UPDATE 带状态守卫——只有在途行（deploying/upgrading/running）
+      // 允许被心跳推进。
+      const where = repo.update.mock.calls[0][0] as Record<string, any>;
+      expect(where.status.value).toEqual(
+        expect.arrayContaining([
+          DeploymentStatus.DEPLOYING,
+          DeploymentStatus.UPGRADING,
+          DeploymentStatus.RUNNING,
+        ]),
       );
     });
 
@@ -1695,6 +1901,193 @@ describe("AppDeploymentService", () => {
       });
       expect(versionRepo.findOne).toHaveBeenCalledTimes(1);
       expect(versionRepo.save).not.toHaveBeenCalled();
+    });
+
+    // A-2②: 状态守卫——FAILED 行不被心跳复活成 RUNNING（此前会把卡死扫描
+    // 判失败的行翻回来：in-flight 槽位被占、版本快照 failed→released 反复
+    // 翻转）。FAILED 只允许显式重试链（deploy 复用行）改写。
+    it("A-2②: a heartbeat reporting running does NOT resurrect a FAILED row", async () => {
+      const deployment = {
+        id: "deploy-failed",
+        applicationId: "app-1",
+        status: DeploymentStatus.FAILED,
+        deployedVersion: "1.0.0",
+        deployedCommit: "abc123",
+        pid: null,
+        statusMessage: "stuck in PENDING — timed out",
+        lastHeartbeat: null,
+      };
+      repo.findOne.mockResolvedValue(deployment);
+      // 守卫 UPDATE：FAILED 不在允许集合内 → affected=0
+      repo.update.mockResolvedValue({ affected: 0 });
+      const bus = { emit: jest.fn() };
+      (service as unknown as { eventBus: unknown }).eventBus = bus;
+
+      await service.handleHeartbeat({
+        deploymentId: "deploy-failed",
+        status: "running",
+        pid: 999,
+        message: "ghost process alive",
+      });
+
+      // 条件 UPDATE 仍带状态守卫发出（DB 侧最终裁决）
+      expect(repo.update).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "deploy-failed" }),
+        expect.objectContaining({ status: DeploymentStatus.RUNNING }),
+      );
+      // 但 affected=0 → 不翻快照、不发完成事件、不推灰度钩子
+      // （内存对象按既有语义已就地映射上报态——DB 行才是事实源，守卫挡住了
+      // 全部落库面与下游钩子）。
+      expect(versionRepo.findOne).not.toHaveBeenCalled();
+      expect(versionRepo.save).not.toHaveBeenCalled();
+      expect(bus.emit).not.toHaveBeenCalled();
+    });
+
+    it("A-2②: a heartbeat on a STOPPED row writes nothing", async () => {
+      const deployment = {
+        id: "deploy-stopped",
+        applicationId: "app-1",
+        status: DeploymentStatus.STOPPED,
+        deployedVersion: "1.0.0",
+        deployedCommit: "abc123",
+        pid: null,
+        statusMessage: null,
+        lastHeartbeat: null,
+      };
+      repo.findOne.mockResolvedValue(deployment);
+      repo.update.mockResolvedValue({ affected: 0 });
+
+      await service.handleHeartbeat({
+        deploymentId: "deploy-stopped",
+        status: "running",
+      });
+
+      expect(repo.update).toHaveBeenCalledTimes(1);
+      expect(versionRepo.findOne).not.toHaveBeenCalled();
+      expect(versionRepo.save).not.toHaveBeenCalled();
+    });
+
+    // A-2②: UPGRADING 行必须仍在守卫集合内——R5 起升级全程保持 UPGRADING，
+    // 执行器心跳是它到 RUNNING 的唯一出口。
+    it("A-2②: an UPGRADING row still advances to RUNNING via heartbeat", async () => {
+      const deployment = {
+        id: "deploy-upgrading",
+        applicationId: "app-1",
+        status: DeploymentStatus.UPGRADING,
+        deployedVersion: "2.0.0",
+        deployedCommit: "def456",
+        pid: null,
+        statusMessage: "Pulling latest commit...",
+        lastHeartbeat: null,
+      };
+      repo.findOne.mockResolvedValue(deployment);
+      repo.update.mockResolvedValue({ affected: 1 });
+      versionRepo.findOne.mockResolvedValue({ id: "v-2", status: "deploying" });
+
+      await service.handleHeartbeat({
+        deploymentId: "deploy-upgrading",
+        status: "running",
+      });
+
+      expect(repo.update).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "deploy-upgrading" }),
+        expect.objectContaining({ status: DeploymentStatus.RUNNING }),
+      );
+      expect(versionRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "v-2", status: "released" }),
+      );
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // A-4: entrypoint 快照压制——deploy() 恒把 startCommand 写成部署当时的
+  // app.entrypoint，行复用升级/回滚语义下推送载荷 entrypoint =
+  // startCommand || app.entrypoint 会被这份陈旧快照压住。升级/回滚两链推送前
+  // 把 startCommand 同步为本次目标 entrypoint（deploy 快照语义与载荷优先级
+  // 保持不变——DeployModeFields 允许按部署自定义 startCommand）。
+  // -------------------------------------------------------------------------
+  describe("A-4: 升级/回滚链 startCommand 同步", () => {
+    const flushPush = async () => {
+      for (let i = 0; i < 8; i++) await new Promise((r) => setImmediate(r));
+    };
+
+    it("upgrade：推送载荷 entrypoint=当前 app.entrypoint（陈旧快照不再压住）", async () => {
+      repo.findOne.mockResolvedValue({
+        id: "deploy-1",
+        applicationId: "app-1",
+        status: DeploymentStatus.RUNNING,
+        startCommand: "node dist/old.js",
+        executorAddress: "93.184.216.34:3001",
+      });
+      // app.entrypoint 已随新版本变化
+      appService.findByIdRaw.mockResolvedValue({
+        ...mockApp,
+        entrypoint: "node dist/new.js",
+      } as unknown as import("../entities/application.entity").Application);
+      mockAxiosPost.mockResolvedValue({ data: {} });
+
+      await service.upgrade("deploy-1");
+      await flushPush(); // push 是 fire-and-forget
+
+      expect(mockAxiosPost).toHaveBeenCalledTimes(1);
+      const payload = mockAxiosPost.mock.calls[0][1] as Record<string, unknown>;
+      expect(payload.entrypoint).toBe("node dist/new.js");
+      // 行上 startCommand 也同步改写（落库，不止内存）
+      const savedWithSync = repo.save.mock.calls
+        .map((c) => c[0] as Record<string, unknown>)
+        .find((e) => e.startCommand === "node dist/new.js");
+      expect(savedWithSync).toBeTruthy();
+    });
+
+    it("回滚：推送载荷 entrypoint=快照值（rollbackDeploymentToPrevious 链）", async () => {
+      repo.findOne.mockResolvedValue({
+        id: "deploy-1",
+        applicationId: "app-1",
+        status: DeploymentStatus.RUNNING,
+        startCommand: "node dist/v2.js",
+        deployedVersion: "2.0.0",
+        executorAddress: "93.184.216.34:3001",
+      });
+      versionRepo.find.mockResolvedValue([
+        { version: "2.0.0", gitCommit: null, snapshot: {} },
+        {
+          version: "1.0.0",
+          gitCommit: null,
+          snapshot: { entrypoint: "node dist/v1.js" },
+        },
+      ]);
+      appService.findByIdRaw.mockResolvedValue({
+        ...mockApp,
+        entrypoint: "node dist/v2.js",
+      } as unknown as import("../entities/application.entity").Application);
+      mockAxiosPost.mockResolvedValue({ data: {} });
+
+      // 该链内 pushDeployToExecutor 是 await 的——无需 flush
+      await service.rollbackDeploymentToPrevious("deploy-1");
+
+      expect(mockAxiosPost).toHaveBeenCalledTimes(1);
+      const payload = mockAxiosPost.mock.calls[0][1] as Record<string, unknown>;
+      expect(payload.entrypoint).toBe("node dist/v1.js");
+    });
+
+    it("deploy：仍按快照语义写 startCommand（dto 覆盖优先，本次自定义不受影响）", async () => {
+      repo.findOne.mockResolvedValue(null); // 无在途行、无复用行
+      repo.create.mockReturnValue({ id: "deploy-new" });
+      repo.save.mockResolvedValue({ id: "deploy-new" });
+
+      await service.deploy("app-1", {
+        executorId: "exec-1",
+        startCommand: "python custom.py",
+      });
+
+      const created = repo.create.mock.calls[0][0] as Record<string, unknown>;
+      expect(created.startCommand).toBe("python custom.py");
+
+      // 不传 startCommand → 快照当时 app.entrypoint
+      repo.create.mockClear();
+      await service.deploy("app-1", { executorId: "exec-1" });
+      const created2 = repo.create.mock.calls[0][0] as Record<string, unknown>;
+      expect(created2.startCommand).toBe(mockApp.entrypoint);
     });
   });
 });

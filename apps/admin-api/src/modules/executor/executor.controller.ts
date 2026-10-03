@@ -17,6 +17,7 @@ import {
   HttpStatus,
   Res,
   NotFoundException,
+  ForbiddenException,
   Logger,
   Optional,
   Inject,
@@ -38,6 +39,12 @@ import { ConfigService } from "@nestjs/config";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { Public } from "../../common/decorators/public.decorator";
 import { Roles } from "../../common/decorators/roles.decorator";
+import { CurrentUser } from "../../common/decorators/current-user.decorator";
+import { AuthUser } from "../../common/interfaces/auth-user.interface";
+import { ProjectAccessService } from "../project/project-access.service";
+// A2/A2-B：写端点授权形态声明 + 运行时证据落证（ownership scope 强制要求）。
+// WriteGuard 装饰器本文件已 import（register 的 token 形态在用）。
+import { recordOwnershipAssertion } from "../../common/guards/ownership-assertion.store";
 import { ExecutorService } from "./executor.service";
 import { UserRole } from "../users/entities/user.entity";
 import { INSTALL_SCRIPT } from "./install-script.content";
@@ -126,7 +133,44 @@ export class ExecutorController {
     @Optional()
     @Inject(ExecutorPullService)
     private readonly pullService: ExecutorPullService | null = null,
+    // N-02③（ADR-013 2026-10-02 温和下放）：项目角色判定。@Optional + 缺席
+    // 退化「仅 ADMIN」（assertCanManageMetadata fail-closed：projectAccess 为
+    // null 时非 ADMIN 恒 403——与 application.service 先例同型，且比下放更严，
+    // 不存在"缺席=全放行"的软失败面）。生产装配由 executor.module 的
+    // ProjectsModule import 提供。置尾：存量四参手工构造（…, pullService）
+    // 位次不破。
+    @Optional()
+    private readonly projectAccess: ProjectAccessService | null = null,
   ) {}
+
+  /**
+   * N-02③（ADR-013 2026-10-02 温和下放）：元数据面写权限判定——ADMIN 短路；
+   * 否则须为该执行器所属项目的 editor 及以上。projectId 为 null 的执行器
+   * （存量/平台级）维持仅 ADMIN（不进 hasProjectRole：resolveRole 对 null
+   * 会落 DEFAULT_PROJECT_ID，语义不同）。viewer/非成员 403；projectAccess
+   * 缺席（极简装配）退化为仅 ADMIN——fail-closed。
+   */
+  private async assertCanManageMetadata(
+    executor: { projectId?: string | null },
+    user: AuthUser | undefined,
+  ): Promise<void> {
+    if (user?.role === UserRole.ADMIN) {
+      recordOwnershipAssertion("executor", "write");
+      return;
+    }
+    const projectId = executor.projectId ?? null;
+    const allowed =
+      !!user?.id &&
+      !!projectId &&
+      !!this.projectAccess &&
+      (await this.projectAccess.hasProjectRole(user.id, projectId, "editor"));
+    if (!allowed) {
+      throw new ForbiddenException(
+        "Executor management requires ADMIN, or editor (and above) role on the project this executor belongs to",
+      );
+    }
+    recordOwnershipAssertion("executor", "write");
+  }
 
   @Public()
   @WriteGuard("executor", {
@@ -768,6 +812,31 @@ export class ExecutorController {
 
   @ApiBearerAuth("JWT")
   @UseGuards(JwtAuthGuard)
+  // 路由声明顺序：固定段必须位于 @Get(":id")（line ~943）之前，否则被参数
+  // 路由吞掉（与 runtime-config/groups/tags 同理）。
+  @Get("picker")
+  // RBAC 与 GET /executors 对齐（N11 复核结论同样适用）：任务 CRUD 对普通
+  // 用户开放，且 picker 读面是 list 的严格子集——不放宽，也不额外收紧。
+  @ApiOperation({
+    summary: "List executor picker options (lightweight)",
+    description:
+      "Minimal read surface for executor picker dropdowns (deploy modals): " +
+      "id/appName/address/status/runningTaskCount/maxConcurrentTasks only, " +
+      "not the full entity projection of GET /executors. Capped at " +
+      "EXECUTOR_PICKER_LIMIT rows (createdAt DESC); when total > items.length " +
+      "the response carries truncated=true so the UI can warn explicitly — " +
+      "never silently truncated like the 500-capped full list.",
+  })
+  @ApiResponse({
+    status: 200,
+    description: "Executor picker options with explicit truncation flag",
+  })
+  findPickerOptions() {
+    return this.svc.findPickerOptions();
+  }
+
+  @ApiBearerAuth("JWT")
+  @UseGuards(JwtAuthGuard)
   @Get("install-cmd")
   // DR-01: the command contains the shared machine credential, not just a URL.
   @Roles(UserRole.ADMIN)
@@ -912,13 +981,15 @@ export class ExecutorController {
   @ApiBearerAuth("JWT")
   @UseGuards(JwtAuthGuard)
   @Patch(":id")
-  // W2: executor management writes are ADMIN-only (same posture as
-  // install-cmd DR-01) — the global RolesGuard enforces the metadata.
-  @Roles(UserRole.ADMIN)
+  // N-02③（ADR-013 2026-10-02 温和下放）：ADMIN 或所属项目 editor+ 可改元
+  // 数据——RolesGuard 元数据退场，判定下沉 assertCanManageMetadata（rotate-
+  // token / set-offline / DELETE 仍 @Roles(ADMIN) 不变）。授权形态按 A2 纪律
+  // 显式声明为 ownership（write 证据由 assertCanManageMetadata 落证）。
+  @WriteGuard("executor", { scope: "ownership" })
   @ApiOperation({
     summary: "Update executor metadata",
     description:
-      "Update executor group, tags, description, and max concurrent tasks.",
+      "Update executor group, tags, description, and max concurrent tasks. Requires ADMIN, or editor+ role on the executor's project.",
   })
   @ApiParam({ name: "id", description: "Executor ID" })
   @ApiResponse({ status: 200, description: "Updated successfully" })
@@ -934,8 +1005,13 @@ export class ExecutorController {
     },
   })
   @ApiResponse({ status: 404, description: "Executor not found" })
-  update(
+  @ApiResponse({
+    status: 403,
+    description: "Not ADMIN and no editor+ role on the executor's project",
+  })
+  async update(
     @Param("id") id: string,
+    @CurrentUser() user: AuthUser,
     @Body()
     body: {
       groupName?: string | null;
@@ -947,6 +1023,8 @@ export class ExecutorController {
     // F-2 family: pick only the metadata fields — the inline type does not
     // strip extra runtime properties, and service.update must never receive
     // arbitrary entity columns (tokenHash, version, status, ...) from the wire.
+    const executor = await this.svc.findOne(id);
+    await this.assertCanManageMetadata(executor, user);
     return this.svc.update(id, {
       groupName: body.groupName,
       tags: body.tags,
@@ -958,12 +1036,15 @@ export class ExecutorController {
   @ApiBearerAuth("JWT")
   @UseGuards(JwtAuthGuard)
   @Post(":id/reload-config")
-  // W2: ADMIN-only config hot-update push (carries the executor token).
-  @Roles(UserRole.ADMIN)
+  // N-02③（ADR-013 2026-10-02 温和下放）：ADMIN 或所属项目 editor+ 可推配置
+  // 热更（载荷携带执行器令牌，但 push 载荷不新增暴露面——token 经 issueToken
+  // 幂等重发，非轮换）——RolesGuard 元数据退场，判定下沉
+  // assertCanManageMetadata（rotate-token / set-offline / DELETE 仍 @Roles(ADMIN)）。
+  @WriteGuard("executor", { scope: "ownership" })
   @ApiOperation({
     summary: "Push config hot-update to executor",
     description:
-      "Dynamically update executor config without restart. Executor must be online.",
+      "Dynamically update executor config without restart. Executor must be online. Requires ADMIN, or editor+ role on the executor's project.",
   })
   @ApiParam({ name: "id", description: "Executor ID" })
   @ApiBody({
@@ -1040,6 +1121,7 @@ export class ExecutorController {
    */
   async reloadConfig(
     @Param("id") id: string,
+    @CurrentUser() user: AuthUser,
     @Body()
     body: {
       maxConcurrentTasks?: number;
@@ -1051,6 +1133,8 @@ export class ExecutorController {
     },
   ) {
     const executor = await this.svc.findOne(id);
+    // 权限判定先于状态检查：未授权者不应借 503/502 探测执行器在线状态。
+    await this.assertCanManageMetadata(executor, user);
     if (executor.status !== "online") {
       // 不能用 401 表达「执行器离线」——admin-web 的 axios 拦截器把任何 401
       // 当成**会话失效**：先试刷新令牌，失败即 logout() + 跳登录页（见
@@ -1135,6 +1219,13 @@ export class ExecutorController {
         const resp = await axios.post(url, body, {
           headers: { Authorization: `Bearer ${retry.token}` },
           timeout: 10_000,
+          // A-3（执行器域审计 P2）：重试必须与首次请求（上方）携带同一份安全
+          // 配置——pinnedAxiosConfig 展开把连接钉在已校验 IP 上（防 DNS 重绑定
+          // 在重试路径复活），maxRedirects: 0 保证首跳是唯一经 SSRF 校验的
+          // 地址（R3 parity）。此前重试丢了这两项：带 token 的重试可能被 30x
+          // 重定向到任意地址、或经 DNS 重解析落与他人选定的 IP。
+          maxRedirects: 0,
+          ...pinCfg,
         });
         recordRuntime("autoflow_push_auth_retry_total", {
           result: "reissued_success",

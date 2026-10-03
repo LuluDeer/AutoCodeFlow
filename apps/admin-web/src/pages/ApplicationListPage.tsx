@@ -7,6 +7,8 @@ import { Table,
   Form,
   Input,
   Select,
+  Row,
+  Col,
   Upload,
   Typography,
   Tooltip,
@@ -159,8 +161,18 @@ export default function ApplicationListPage() {
   const [runtimeFilter, setRuntimeFilter] = useState<string | undefined>();
   const [quickDeployApp, setQuickDeployApp] = useState<string | null>(null);
   const [quickDeployExecutors, setQuickDeployExecutors] = useState<{id: string; name: string; address: string; status: string}[]>([]);
+  // picker 超限状态（truncated=true 时非 null）——下拉内必须渲染显式告警，
+  // 不许把截断后的候选集说成全量（复用 execList.truncated 文案）。
+  const [quickDeployTruncated, setQuickDeployTruncated] = useState<{ total: number; limit: number } | null>(null);
+  // UI-16 口径：picker 拉取失败不再只弹一闪而过的 toast（下拉空态无出口）——
+  // 记录错误原位呈现「失败 + 重试」，用户可直接重试恢复，不必关窗重开。
+  const [quickDeployLoadError, setQuickDeployLoadError] = useState<unknown>(null);
   const [quickDeployForm] = Form.useForm();
   const [quickDeploying, setQuickDeploying] = useState(false);
+  // 防重复提交：新建/编辑保存期间禁用确定按钮（upload/quickDeploy/group 弹窗
+  // 均有 confirmLoading 口径，唯独主编辑弹窗此前缺失——连点确定会对 create
+  // 发两次请求，第二次撞 name 唯一约束报错 toast）。
+  const [saving, setSaving] = useState(false);
   // F-2：整包 zip 上传期间禁用确定按钮并给 loading，避免重复点击触发多次上传
   //（与 ExecutorPackagesPage 的 uploading 模式对齐）。
   const [uploading, setUploading] = useState(false);
@@ -366,6 +378,7 @@ export default function ApplicationListPage() {
   const handleSubmit = async () => {
     try {
       const values = await form.validateFields();
+      setSaving(true);
       if (editingApp) {
         // name 为不可变标识：UpdateApplicationDto 未声明 name 字段，
         // 带上会被全局 ValidationPipe（forbidNonWhitelisted）以 400 拒绝
@@ -381,6 +394,8 @@ export default function ApplicationListPage() {
     } catch (err: unknown) {
       if (isFormValidationError(err)) return;
       showApiError(err, t('appList.saveFail'));
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -434,17 +449,29 @@ export default function ApplicationListPage() {
     return Array.isArray(tasks) && tasks.length > 0 ? 'scheduled' : 'once';
   };
 
+  // 执行器下拉数据源拉取（picker 轻读面）：openQuickDeploy 首拉与弹窗内「重试」
+  // 共用同一函数——重试即原位重新拉取，无需关闭弹窗重开。
+  const fetchQuickDeployExecutors = useCallback(async () => {
+    setQuickDeployLoadError(null);
+    try {
+      // 执行器下拉走 picker 轻读面（GET /executors/picker）：此前吃 list() 的
+      // listLimit(500) 静默截断——执行器超限后按名称/地址搜索对第 501+ 台
+      // 真实存在的执行器假阴性。picker 上限 2000，超限以 truncated 显式上报。
+      const res = await executorsApi.picker();
+      setQuickDeployExecutors(res.items.map(e => ({ id: e.id, name: e.appName, address: e.address, status: e.status })) ?? []);
+      setQuickDeployTruncated(res.truncated ? { total: res.total, limit: res.limit } : null);
+    } catch (err: unknown) {
+      setQuickDeployExecutors([]);
+      setQuickDeployTruncated(null);
+      setQuickDeployLoadError(err);
+    }
+  }, []);
+
   const openQuickDeploy = async (appId: string) => {
     setQuickDeployApp(appId);
     quickDeployForm.resetFields();
     quickDeployForm.setFieldsValue({ runMode: defaultRunModeFor(appId) });
-    try {
-      const res = await executorsApi.list();
-      setQuickDeployExecutors(res.map(e => ({ id: e.id, name: e.appName, address: e.address, status: e.status })) ?? []);
-    } catch {
-      setQuickDeployExecutors([]);
-      message.warning(t('appList.executorListFail'));
-    }
+    await fetchQuickDeployExecutors();
   };
 
   const handleQuickDeploy = async () => {
@@ -696,7 +723,12 @@ export default function ApplicationListPage() {
            （P1-13 语义） / 最后部署 / 操作（详情·部署·编辑·删除）。 */
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {filtered.length === 0 ? (
-            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={hasFilters ? t('appList.empty.noMatch') : t('appList.empty.none')} />
+            /* 空态区分（与桌面同口径）：筛选无匹配 vs 真空态给创建引导 */
+            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={hasFilters ? t('appList.empty.noMatch') : t('appList.empty.none')}>
+              {!hasFilters && isAdmin && (
+                <Button type="primary" onClick={handleCreate}>{t('appList.empty.createFirst')}</Button>
+              )}
+            </Empty>
           ) : (
             filtered.slice((mobilePage - 1) * MOBILE_PAGE_SIZE, mobilePage * MOBILE_PAGE_SIZE).map((record) => (
               <Card key={record.id} size="small">
@@ -775,7 +807,13 @@ export default function ApplicationListPage() {
               ? undefined
               : (hasFilters
                 ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('appList.empty.noMatch')} />
-                : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('appList.empty.none')} />)),
+                : (
+                  /* 真空态给「下一步动作」引导（对齐 TaskListPage empty.none CTA 口径）：
+                     机群上一个应用都没有时，创建/上传是唯一有意义的下一步 */
+                  <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('appList.empty.none')}>
+                    {isAdmin && <Button type="primary" onClick={handleCreate}>{t('appList.empty.createFirst')}</Button>}
+                  </Empty>
+                ))),
         }}
       />
       )}
@@ -786,6 +824,8 @@ export default function ApplicationListPage() {
         open={modalOpen}
         onOk={handleSubmit}
         onCancel={() => setModalOpen(false)}
+        // 防重复提交：保存请求飞行中确定按钮 loading+禁用
+        confirmLoading={saving}
         // forceRender：Form 随页面首帧挂载——handleEdit 可在弹窗动画开始前
         // 同步回填表单值（原本只靠 afterOpenChange 动画结束后回填，动画事件
         // 缺失的环境里表单会是空的）。
@@ -841,30 +881,46 @@ export default function ApplicationListPage() {
             <Input.TextArea rows={2} placeholder={t('appList.field.descPlaceholder')} />
           </Form.Item>
 
-          <Space style={{ display: 'flex' }} size="middle">
-            <Form.Item
-              name="version"
-              label={t('appList.field.version')}
-              rules={[{ required: true, message: t('appList.field.versionRequired') }]}
-              tooltip={{
-                title: t('appList.field.versionTooltip'),
-                icon: <InfoCircleOutlined />,
-              }}
-            >
-              <Input placeholder="1.0.0" style={{ width: 160 }} />
-            </Form.Item>
-            <Form.Item
-              name="runtime"
-              label={t('appList.field.runtime')}
-              rules={[{ required: true, message: t('appList.field.runtimeRequired') }]}
-              tooltip={{
-                title: t('appList.field.runtimeTooltip'),
-                icon: <InfoCircleOutlined />,
-              }}
-            >
-              <Select options={runtimeOptions} style={{ width: 140 }} />
-            </Form.Item>
-          </Space>
+          {/* UX-WALK R9（走查 A 级 applications@375）：双列行窄屏堆叠——原 Space
+              flex（无断点）+ 固定宽（160/140）在 375px 弹窗 body 311px 下
+              160+16+140=316 已溢出，Git 行 200+16+200=416 更甚（.ant-modal-body
+              scrollWidth 416 > 311，Git Commit 输入框出血到弹窗右缘）。
+              改 Row/Col xs=24 sm=12（对齐 30236f5a ExecutorPackagesPage 先例），
+              固定宽移除改半列填充：桌面 sm+ 双列结构/16px 间距/左右缘对齐基线
+              不变，375 单列全宽堆叠（与 name/desc/gitRepo 等整行字段一致）。
+              ux-gutter-flush（index.css ≥576px 媒体查询）：抵消 gutter 的
+              ∓8px 负 margin 与内边距补偿，行盒恰好钉在 body 边缘——顺带消除
+              executor-packages@600 同款 8px scrollable overflow；<576px
+              gutter=0 本就无边距，规则不生效（不走行内 style 长写覆写的
+              原因见 index.css 该节注释）。 */}
+          <Row gutter={{ xs: 0, sm: 16 }} className="ux-gutter-flush">
+            <Col xs={24} sm={12}>
+              <Form.Item
+                name="version"
+                label={t('appList.field.version')}
+                rules={[{ required: true, message: t('appList.field.versionRequired') }]}
+                tooltip={{
+                  title: t('appList.field.versionTooltip'),
+                  icon: <InfoCircleOutlined />,
+                }}
+              >
+                <Input placeholder="1.0.0" />
+              </Form.Item>
+            </Col>
+            <Col xs={24} sm={12}>
+              <Form.Item
+                name="runtime"
+                label={t('appList.field.runtime')}
+                rules={[{ required: true, message: t('appList.field.runtimeRequired') }]}
+                tooltip={{
+                  title: t('appList.field.runtimeTooltip'),
+                  icon: <InfoCircleOutlined />,
+                }}
+              >
+                <Select options={runtimeOptions} />
+              </Form.Item>
+            </Col>
+          </Row>
 
           <Form.Item
             name="gitRepo"
@@ -883,28 +939,35 @@ export default function ApplicationListPage() {
             <Input placeholder="https://github.com/user/repo.git" />
           </Form.Item>
 
-          <Space style={{ display: 'flex' }} size="middle">
-            <Form.Item
-              name="gitBranch"
-              label={t('appList.field.gitBranch')}
-              tooltip={{
-                title: t('appList.field.gitBranchTooltip'),
-                icon: <InfoCircleOutlined />,
-              }}
-            >
-              <Input placeholder="main" style={{ width: 200 }} />
-            </Form.Item>
-            <Form.Item
-              name="gitCommit"
-              label={t('appList.field.gitCommit')}
-              tooltip={{
-                title: t('appList.field.gitCommitTooltip'),
-                icon: <InfoCircleOutlined />,
-              }}
-            >
-              <Input placeholder="HEAD" style={{ width: 200 }} />
-            </Form.Item>
-          </Space>
+          {/* UX-WALK R9：Git 分支/Git Commit 双列行——本弹窗 375px 溢出的主因
+              （200+16+200=416 > 311），同上改 Row/Col 响应式半列 +
+              ux-gutter-flush no-bleed（机制见上一行注释）。 */}
+          <Row gutter={{ xs: 0, sm: 16 }} className="ux-gutter-flush">
+            <Col xs={24} sm={12}>
+              <Form.Item
+                name="gitBranch"
+                label={t('appList.field.gitBranch')}
+                tooltip={{
+                  title: t('appList.field.gitBranchTooltip'),
+                  icon: <InfoCircleOutlined />,
+                }}
+              >
+                <Input placeholder="main" />
+              </Form.Item>
+            </Col>
+            <Col xs={24} sm={12}>
+              <Form.Item
+                name="gitCommit"
+                label={t('appList.field.gitCommit')}
+                tooltip={{
+                  title: t('appList.field.gitCommitTooltip'),
+                  icon: <InfoCircleOutlined />,
+                }}
+              >
+                <Input placeholder="HEAD" />
+              </Form.Item>
+            </Col>
+          </Row>
 
           <Form.Item
             name="entrypoint"
@@ -946,6 +1009,10 @@ export default function ApplicationListPage() {
               >
                 <Select
                   allowClear
+                  showSearch
+                  // 互斥组随使用持续增长，纯下拉无法高效定位；label 含组名，
+                  // 按 label 大小写不敏感过滤
+                  optionFilterProp="label"
                   placeholder={t('appList.field.mutexGroupPlaceholder')}
                   style={{ flex: 1 }}
                   options={mutexGroups.map((g) => ({
@@ -1110,14 +1177,39 @@ export default function ApplicationListPage() {
         destroyOnHidden
       >
         <Form form={quickDeployForm} layout="vertical">
-          <Form.Item name="executorId" label={t('appList.deploy.executor')}>
+          {/* picker 拉取失败的原位错误态（UI-16 口径）：标题复用既有
+              appList.executorListFail 文案，StateError 自带「重试 + 复制」双动作
+              ——重试走 fetchQuickDeployExecutors 原位重新拉取，不必关窗重开。 */}
+          {quickDeployLoadError ? (
+            <StateError
+              error={quickDeployLoadError}
+              title={t('appList.executorListFail')}
+              onRetry={() => void fetchQuickDeployExecutors()}
+              style={{ padding: 12, marginBottom: 16 }}
+            />
+          ) : null}
+          <Form.Item
+            name="executorId"
+            label={t('appList.deploy.executor')}
+          >
             <Select
               placeholder={t('appList.deploy.executorPlaceholder')}
               allowClear
+              showSearch
+              // 执行器随接入增长，按名称/地址键入过滤（label 已含 "name (address)"）
+              optionFilterProp="label"
               options={quickDeployExecutors.map(e => ({ value: e.id, label: `${e.name} (${e.address})`, disabled: e.status !== 'online' }))}
-              notFoundContent={t('appList.deploy.executorEmpty')}
+              // 失败时下拉空态不得谎报「无可用执行器」（执行器可能有，只是没拉到）
+              notFoundContent={quickDeployLoadError ? t('appList.executorListFail') : t('appList.deploy.executorEmpty')}
             />
           </Form.Item>
+          {/* picker 超限的显式告警：候选只有前 limit 台，用户必须知情
+              （named Form.Item 只能单子节点，告警放 Form.Item 兄弟位） */}
+          {quickDeployTruncated && (
+            <Text type="warning" style={{ fontSize: 12, display: 'block', marginTop: -12, marginBottom: 16 }}>
+              {t('execList.truncated', { total: quickDeployTruncated.total, limit: quickDeployTruncated.limit })}
+            </Text>
+          )}
           {/* P1-15：runMode 字段 + 模式说明复用共享组件（旧实现此处无任何模式说明）。 */}
           <DeployModeFields buttonStyle="outline" />
         </Form>

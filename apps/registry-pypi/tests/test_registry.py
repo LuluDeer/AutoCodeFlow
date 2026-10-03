@@ -639,10 +639,13 @@ class TestUploadSizeLimit:
                     files={"content": ("big-pkg-1.0.whl", payload,
                                        "application/octet-stream")})
         # No published artifact, no sidecar, no .upload temp leftover.
+        # B-6：Content-Length 预检短路后**连包目录都不会创建**（此前 handler
+        # 内 pkg_dir 先建目录、流式累计才触发 413）——目录可能不存在，存在则
+        # 必须为空；用 glob（对不存在目录返回空）而非 iterdir。
         pkg = tmp_packages_dir / "big-pkg"
         assert not (pkg / "big-pkg-1.0.whl").exists()
         assert not (pkg / "big-pkg-1.0.whl.sha256").exists()
-        leftovers = [f.name for f in pkg.iterdir()
+        leftovers = [f.name for f in pkg.glob("*")
                      if f.name.endswith(".upload")]
         assert leftovers == []
         assert list(pkg.glob("*")) == [], \
@@ -1147,3 +1150,174 @@ class TestAllPackageDirsGuard:
         for path in ("/", "/simple/"):
             resp = client.get(path, auth=AUTH)
             assert resp.status_code == 200, f"{path} must not 500 on broken enumeration"
+
+
+# ---------------------------------------------------------------------------
+# B-4②: 根索引（/ 与 /simple/）单次遍历扫描——listing / 计数 / 校验器三处
+# 消费同一份 _scan_package_entries() 结果（此前同一请求最多扫两三遍盘）。
+# ---------------------------------------------------------------------------
+
+
+class TestScanPackageEntries:
+    def test_scan_sorted_with_file_counts(self, tmp_packages_dir, monkeypatch):
+        import main as app_module
+        monkeypatch.setattr(app_module, "PACKAGES_DIR", tmp_packages_dir)
+        (tmp_packages_dir / "b-pkg").mkdir()
+        (tmp_packages_dir / "a-pkg").mkdir()
+        (tmp_packages_dir / "a-pkg" / "a-1.0.whl").write_bytes(b"x")
+        (tmp_packages_dir / "a-pkg" / "a-1.0.whl.sha256").write_text("0" * 64)
+        (tmp_packages_dir / "a-pkg" / "a-1.1.whl.upload").write_text("in-flight")
+        entries = app_module._scan_package_entries()
+        assert [e[0] for e in entries] == ["a-pkg", "b-pkg"]
+        # sidecar / .upload 不计入（is_meta_file 语义保持）
+        assert entries[0][3] == 1
+        assert entries[1][3] == 0
+
+    def test_root_state_composition_unchanged(self, tmp_packages_dir, monkeypatch):
+        """ETag 组成与旧 _root_listing_state 一致：root-{int(latest)}-{dirs}-{files}，
+        latest 取目录与制品 mtime 的最大值。"""
+        import main as app_module
+        monkeypatch.setattr(app_module, "PACKAGES_DIR", tmp_packages_dir)
+        (tmp_packages_dir / "pkg").mkdir()
+        (tmp_packages_dir / "pkg" / "p-1.0.whl").write_bytes(b"y")
+        entries = app_module._scan_package_entries()
+        etag, latest = app_module._root_state_from_entries(entries)
+        dir_mtime = (tmp_packages_dir / "pkg").stat().st_mtime
+        file_mtime = (tmp_packages_dir / "pkg" / "p-1.0.whl").stat().st_mtime
+        assert etag == f'W/"root-{int(max(dir_mtime, file_mtime))}-1-1"'
+        assert int(latest) == int(max(dir_mtime, file_mtime))
+
+    def test_empty_root_uses_zero_latest(self, tmp_packages_dir, monkeypatch):
+        """空仓回归：无包时 latest=0（max 的 default 分支），ETag 为 root-0-0-0。"""
+        import main as app_module
+        monkeypatch.setattr(app_module, "PACKAGES_DIR", tmp_packages_dir)
+        etag, latest = app_module._root_state_from_entries(
+            app_module._scan_package_entries())
+        assert etag == 'W/"root-0-0-0"'
+        assert latest == 0.0
+
+
+# ---------------------------------------------------------------------------
+# B-4①: DELETE /admin/packages/{name} —— 制品生命周期最小管理面（整包删除）。
+# ---------------------------------------------------------------------------
+
+
+class TestPackageDeletion:
+    @staticmethod
+    def _upload(client, name="del-pkg", filename="del-pkg-1.0.0.whl"):
+        return client.post("/", auth=AUTH,
+                           data={"name": name, "version": "1.0.0"},
+                           files={"content": (filename, b"delete me",
+                                              "application/octet-stream")})
+
+    def test_delete_returns_204_and_removes_artifacts_and_sidecar(self, client, tmp_packages_dir):
+        import hashlib
+        assert self._upload(client).status_code == 200
+        resp = client.delete("/admin/packages/del-pkg", auth=AUTH)
+        assert resp.status_code == 204
+        assert resp.content == b""
+        # 包目录整体移除：制品、sha256 sidecar 与任何残留一并消失
+        assert not (tmp_packages_dir / "del-pkg").exists()
+        assert not (tmp_packages_dir / "del-pkg" / "del-pkg-1.0.0.whl.sha256").exists()
+
+    def test_delete_requires_auth(self, client):
+        assert self._upload(client).status_code == 200
+        resp = client.delete("/admin/packages/del-pkg")
+        assert resp.status_code == 401
+        # 未删成：索引面仍在
+        assert client.get("/simple/del-pkg/", auth=AUTH).status_code == 200
+
+    def test_delete_missing_package_returns_404(self, client):
+        resp = client.delete("/admin/packages/nonexistent", auth=AUTH)
+        assert resp.status_code == 404
+
+    def test_delete_unsafe_name_returns_404(self, client):
+        # NETOPT-5⑥ 同闸同语义：非法名 404，不泄露闸的存在
+        assert client.delete("/admin/packages/C:foo", auth=AUTH).status_code == 404
+
+    def test_deleted_package_disappears_from_indexes(self, client):
+        self._upload(client)
+        for path in ("/", "/simple/"):
+            assert "del-pkg" in client.get(path, auth=AUTH).text
+        assert client.delete("/admin/packages/del-pkg", auth=AUTH).status_code == 204
+        for path in ("/", "/simple/"):
+            assert "del-pkg" not in client.get(path, auth=AUTH).text
+        assert client.get("/simple/del-pkg/", auth=AUTH).status_code == 404
+
+    def test_index_validators_change_after_deletion(self, client):
+        """O-26 语义回归：删除改变 ETag——缓存端不会拿到陈旧索引。"""
+        self._upload(client)
+        before = client.get("/simple/", auth=AUTH).headers["etag"]
+        assert client.delete("/admin/packages/del-pkg", auth=AUTH).status_code == 204
+        after = client.get("/simple/", auth=AUTH).headers["etag"]
+        assert before != after
+
+    def test_delete_then_reupload_same_name_succeeds(self, client, tmp_packages_dir):
+        """生命周期闭环：删除释放包名后可重新上传（409 闸只挡未删除的覆盖）。"""
+        payload = b"v1 bytes"
+        assert client.post("/", auth=AUTH, data={"name": "cycle-pkg", "version": "1.0"},
+                           files={"content": ("cycle-pkg-1.0.whl", payload,
+                                              "application/octet-stream")}).status_code == 200
+        assert client.delete("/admin/packages/cycle-pkg", auth=AUTH).status_code == 204
+        resp = client.post("/", auth=AUTH, data={"name": "cycle-pkg", "version": "2.0"},
+                           files={"content": ("cycle-pkg-2.0.whl", payload,
+                                              "application/octet-stream")})
+        assert resp.status_code == 200
+        assert (tmp_packages_dir / "cycle-pkg" / "cycle-pkg-2.0.whl").is_file()
+
+    def test_delete_normalizes_name(self, client, tmp_packages_dir):
+        # My_Pkg → my-pkg 归一化删除，与上传/索引侧同语义
+        assert client.post("/", auth=AUTH, data={"name": "My_Pkg", "version": "1.0"},
+                           files={"content": ("my-pkg-1.0.whl", b"x",
+                                              "application/octet-stream")}).status_code == 200
+        assert client.delete("/admin/packages/My_Pkg", auth=AUTH).status_code == 204
+        assert not (tmp_packages_dir / "my-pkg").exists()
+
+
+# ---------------------------------------------------------------------------
+# B-6: upload 面的 Content-Length 预检中间件——超限 413 短路，不进入
+# multipart 解析（此前 50MB 上限要等 handler 逐块累加才判）。
+# ---------------------------------------------------------------------------
+
+
+class TestContentLengthPrecheck:
+    OVERSIZED = str(999 * 1024 * 1024)
+
+    def test_oversized_content_length_short_circuits_413(self, client, tmp_packages_dir):
+        resp = client.post("/", auth=AUTH,
+                           headers={"content-length": self.OVERSIZED},
+                           data={"name": "big-cl", "version": "1.0"},
+                           files={"content": ("big-cl-1.0.whl", b"tiny",
+                                              "application/octet-stream")})
+        assert resp.status_code == 413
+        assert "limit" in resp.json()["detail"]
+        # 短路意味着没有进入 multipart 解析：不产生任何包目录/临时文件
+        assert not (tmp_packages_dir / "big-cl").exists()
+        assert list(tmp_packages_dir.glob("*")) == []
+
+    def test_alias_endpoint_gets_the_same_precheck(self, client):
+        # /upload 是薄 alias（E-39），预检必须同覆盖
+        resp = client.post("/upload", auth=AUTH,
+                           headers={"content-length": self.OVERSIZED},
+                           data={"name": "big-cl", "version": "1.0"},
+                           files={"content": ("big-cl-1.0.whl", b"tiny",
+                                              "application/octet-stream")})
+        assert resp.status_code == 413
+
+    def test_precheck_is_scoped_to_upload_routes(self, client, tmp_packages_dir):
+        """预检只拦上传面（POST|PUT 的 / 与 /upload）；索引面同头照常 200。"""
+        pkg = tmp_packages_dir / "scoped"
+        pkg.mkdir()
+        (pkg / "scoped-1.0.0.whl").write_bytes(b"x")
+        resp = client.get("/simple/scoped/", auth=AUTH,
+                          headers={"content-length": self.OVERSIZED})
+        assert resp.status_code == 200
+
+    def test_malformed_content_length_falls_through(self, client, tmp_packages_dir):
+        """畸形 Content-Length 不预检（交给底层/流式闸），不 500。"""
+        pkg = tmp_packages_dir / "weird-cl"
+        pkg.mkdir()
+        (pkg / "weird-cl-1.0.0.whl").write_bytes(b"x")
+        resp = client.get("/simple/weird-cl/", auth=AUTH,
+                          headers={"content-length": "not-a-number"})
+        assert resp.status_code == 200

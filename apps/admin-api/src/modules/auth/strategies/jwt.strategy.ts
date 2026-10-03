@@ -95,6 +95,12 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     super({
       jwtFromRequest: extractJwtFromRequest,
       ignoreExpiration: false,
+      // A-11（R3-A 审计）: 30s 时钟容差——多实例/反代链路上验证方与签发方
+      // 时钟毫秒级漂移时，刚签发的令牌可能被 exp/nbf 判定误拒；OIDC 侧已有
+      // 60s skew 先例（oidc.service CLOCK_SKEW_SECONDS）。容忍窗远小于 15min
+      // 令牌寿命，不构成可利用的提前生效面。passport-jwt 经 jsonWebTokenOptions
+      // 原样透传给 jsonwebtoken.verify（@types 未平铺 clockTolerance 顶层键）。
+      jsonWebTokenOptions: { clockTolerance: 30 },
       secretOrKey: configService.get<string>("jwt.secret"),
     });
   }
@@ -122,6 +128,13 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     if (payload.ver !== undefined && payload.ver !== user.sessionVersion) {
       throw new UnauthorizedException("Session has been revoked");
     }
-    return user;
+    // A-2（R3-A 审计）: sid 随 validate 返回值进入 req.user——此前只 return
+    // user（User 实体，无 sid 属性），auth.controller 的 sidOf(req) 恒 null：
+    // GET /auth/sessions 的 current 标记永远落空，POST
+    // /auth/sessions/revoke-others 恒退化为 revokeAllForUser（把当前设备一并
+    // 登出）。sid 即该会话 refresh token 的 jti（签发侧 generateTokens 写入），
+    // 非敏感（不泄露凭据本体），随实体一同挂在 req.user 上。sse_ticket 无
+    // sid claim（票据只在三条 stream 路径被读），undefined 照旧回落 null。
+    return Object.assign(user, { sid: payload.sid });
   }
 }

@@ -120,7 +120,7 @@ def test_task_key_is_the_single_source_for_lock_venv_and_protection(monkeypatch,
 
     venv_dirs = []
 
-    async def fake_ensure_venv(venv_dir, requirements, *, python_version=None):
+    async def fake_ensure_venv(venv_dir, requirements, *, python_version=None, **_kwargs):
         venv_dirs.append((venv_dir, python_version))
         raise RuntimeError('stop here: key resolution verified')
 

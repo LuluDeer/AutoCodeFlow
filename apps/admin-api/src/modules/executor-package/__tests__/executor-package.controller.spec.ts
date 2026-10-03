@@ -65,6 +65,9 @@ describe("ExecutorPackageController download HTTP contract", () => {
     configService: config,
     logger: { log: jest.fn(), warn: jest.fn() },
     pushToExecutors: ExecutorPackageService.prototype.pushToExecutors,
+    // A-8: push-result 回调的 pushHistory 持久化下沉到服务的追加方法
+    //（事务 + FOR UPDATE 重读），控制器不再自行 findOne→拼数组→整行 save。
+    appendPushHistory: jest.fn().mockResolvedValue(undefined),
   };
   const streamPayload = () => ({
     stream: Readable.from([buffer]),
@@ -82,11 +85,10 @@ describe("ExecutorPackageController download HTTP contract", () => {
         {
           provide: ExecutorService,
           useValue: {
-            findAll: jest.fn().mockResolvedValue([
-              // P2-8（executor lifecycle audit）：空名单推送只取 ONLINE 行，
-              // 夹具必须带 status——真实 findAll() 返回的实体必有该列（非
-              // nullable）。此前夹具省了它，于是这条契约测试在"按状态过滤"
-              // 落地后会因"没有在线执行器"而失败。
+            // A-9: push 控制器改走 findPushTargets（push 场景专用查询，
+            // 空 executorIds = ONLINE 全量分页扫描，不经 findAll 列表投影）。
+            // 夹具必须带 status——真实查询按 ONLINE 过滤。
+            findPushTargets: jest.fn().mockResolvedValue([
               {
                 id: "exec-1",
                 address: "http://executor:8002",
@@ -205,16 +207,32 @@ describe("ExecutorPackageController download HTTP contract", () => {
         .send(payload)
         .expect(200);
       expect(response.body).toEqual({ ok: true });
-      expect(service.update).toHaveBeenCalledWith(
+      // A-8: 持久化下沉为 appendPushHistory（事务内 FOR UPDATE 重读最新行再
+      // 追加）——回调请求体原样透传，version 缺省回填由服务侧基于锁内行处理。
+      expect(service.appendPushHistory).toHaveBeenCalledWith(
         id,
         expect.objectContaining({
-          pushHistory: [
-            expect.objectContaining({
-              executorId: "exec-1",
-              status: "downloaded",
-              version: "2.0.0",
-            }),
-          ],
+          executorId: "exec-1",
+          status: "downloaded",
+          version: "2.0.0",
+        }),
+      );
+    });
+
+    it("accepts a report without version/error (service fills the defaults)", async () => {
+      const response = await request(app.getHttpServer())
+        .post(pushPath)
+        .set("Authorization", "Bearer db-token")
+        .send({ packageId: id, executorId: "exec-1", status: "failed" })
+        .expect(200);
+      expect(response.body).toEqual({ ok: true });
+      expect(service.appendPushHistory).toHaveBeenCalledWith(
+        id,
+        expect.objectContaining({
+          executorId: "exec-1",
+          status: "failed",
+          version: undefined,
+          error: undefined,
         }),
       );
     });
@@ -226,7 +244,7 @@ describe("ExecutorPackageController download HTTP contract", () => {
         .send(payload)
         .expect(401);
       expect(response.body.message).toBe("Invalid executor token");
-      expect(service.update).not.toHaveBeenCalled();
+      expect(service.appendPushHistory).not.toHaveBeenCalled();
     });
 
     it("rejects a missing authorization header with 401", async () => {
@@ -235,7 +253,7 @@ describe("ExecutorPackageController download HTTP contract", () => {
         .send(payload)
         .expect(401);
       expect(response.body.message).toBe("Invalid executor token");
-      expect(service.update).not.toHaveBeenCalled();
+      expect(service.appendPushHistory).not.toHaveBeenCalled();
     });
   });
 

@@ -101,7 +101,9 @@ describe("ExecutorController", () => {
       adminApiUrlExternal: "https://admin.example.com/api",
     };
 
-    await expect(controller.reloadConfig("executor-1", body)).resolves.toEqual({
+    await expect(
+      controller.reloadConfig("executor-1", { role: "admin" } as any, body),
+    ).resolves.toEqual({
       success: true,
     });
     expect(svc.findOne).toHaveBeenCalledWith("executor-1");
@@ -164,7 +166,9 @@ describe("ExecutorController", () => {
       .mockRejectedValueOnce(unauthorized)
       .mockResolvedValueOnce({ data: { success: true } });
 
-    await expect(controller.reloadConfig("executor-1", {})).resolves.toEqual({
+    await expect(
+      controller.reloadConfig("executor-1", { role: "admin" } as any, {}),
+    ).resolves.toEqual({
       success: true,
     });
     expect(svc.issueToken).toHaveBeenCalledTimes(2);
@@ -175,6 +179,9 @@ describe("ExecutorController", () => {
       {
         headers: { Authorization: "Bearer second-token" },
         timeout: 10_000,
+        // A-3: 重签重试与首发请求同配置——SSRF 安全配置（maxRedirects: 0 +
+        // pinCfg）必须保留。本 spec 的守卫桩返回 pinned:false → pinCfg 为空。
+        maxRedirects: 0,
       },
     );
   });
@@ -214,7 +221,9 @@ describe("ExecutorController", () => {
     // 体验审查（本轮）：类型由 UnauthorizedException 改为 BadGatewayException
     // ——这里的 401 来自**执行器拒收我们的推送**，不是管理员会话失效。回 401
     // 会让 admin-web 拦截器 logout() + 跳登录页（见下方专项 describe）。
-    const err = await controller.reloadConfig("executor-1", {}).catch((e) => e);
+    const err = await controller
+      .reloadConfig("executor-1", { role: "admin" } as any, {})
+      .catch((e) => e);
     expect(err).toBeInstanceOf(BadGatewayException);
     expect(err.getStatus()).toBe(502);
     expect(err.message).toContain(
@@ -254,9 +263,9 @@ describe("ExecutorController", () => {
       new Error("connect ECONNREFUSED 10.0.0.9:8001"),
     );
 
-    await expect(controller.reloadConfig("executor-1", {})).rejects.toThrow(
-      "Failed to reach executor",
-    );
+    await expect(
+      controller.reloadConfig("executor-1", { role: "admin" } as any, {}),
+    ).rejects.toThrow("Failed to reach executor");
     expect(mockedAxios.post).toHaveBeenCalledTimes(1);
     expect(svc.issueToken).toHaveBeenCalledTimes(1);
   });
@@ -302,7 +311,7 @@ describe("ExecutorController", () => {
       );
 
       const err = await controller
-        .reloadConfig("executor-1", {})
+        .reloadConfig("executor-1", { role: "admin" } as any, {})
         .catch((e) => e);
       expect(err).toBeInstanceOf(ServiceUnavailableException);
       expect(err.getStatus()).toBe(503);
@@ -325,7 +334,7 @@ describe("ExecutorController", () => {
       );
 
       const err = await controller
-        .reloadConfig("executor-1", {})
+        .reloadConfig("executor-1", { role: "admin" } as any, {})
         .catch((e) => e);
       expect(err).toBeInstanceOf(ServiceUnavailableException);
       expect(err.getStatus()).toBe(503);
@@ -349,7 +358,7 @@ describe("ExecutorController", () => {
       );
 
       const err = await controller
-        .reloadConfig("executor-1", {})
+        .reloadConfig("executor-1", { role: "admin" } as any, {})
         .catch((e) => e);
       expect(err).toBeInstanceOf(BadGatewayException);
       expect(err.getStatus()).toBe(502);
@@ -418,7 +427,9 @@ describe("ExecutorController", () => {
         .mockRejectedValueOnce(unauthorized())
         .mockResolvedValueOnce({ data: { success: true } });
 
-      await expect(controller.reloadConfig("executor-1", {})).resolves.toEqual({
+      await expect(
+        controller.reloadConfig("executor-1", { role: "admin" } as any, {}),
+      ).resolves.toEqual({
         success: true,
       });
       // 首发 + 重签共两次签发，重试请求携带重签 token
@@ -429,6 +440,9 @@ describe("ExecutorController", () => {
         {
           headers: { Authorization: "Bearer second-token" },
           timeout: 10_000,
+          // A-3: 重签重试与首发请求同配置（maxRedirects: 0 + pinCfg；
+          // 本 spec 守卫桩 pinned:false → pinCfg 为空）。
+          maxRedirects: 0,
         },
       );
       expect(retryCount("reissued_success")).toBe(1);
@@ -455,7 +469,7 @@ describe("ExecutorController", () => {
       mockedAxios.post.mockRejectedValue(unauthorized());
 
       const err = await controller
-        .reloadConfig("executor-1", {})
+        .reloadConfig("executor-1", { role: "admin" } as any, {})
         .catch((e) => e);
       // 体验审查：502（BadGateway），不是 401——避免前端把它当会话失效登出。
       expect(err).toBeInstanceOf(BadGatewayException);
@@ -487,9 +501,9 @@ describe("ExecutorController", () => {
       );
       mockedAxios.post.mockRejectedValue(new Error("connect ECONNREFUSED"));
 
-      await expect(controller.reloadConfig("executor-1", {})).rejects.toThrow(
-        "Failed to reach executor",
-      );
+      await expect(
+        controller.reloadConfig("executor-1", { role: "admin" } as any, {}),
+      ).rejects.toThrow("Failed to reach executor");
       expect(svc.issueToken).toHaveBeenCalledTimes(1);
       expect(mockedAxios.post).toHaveBeenCalledTimes(1);
       expect(retryCount("reissued_success")).toBe(0);
@@ -514,7 +528,9 @@ describe("ExecutorController", () => {
       );
       mockedAxios.post.mockResolvedValue({ data: { success: true } });
 
-      await expect(controller.reloadConfig("executor-1", {})).resolves.toEqual({
+      await expect(
+        controller.reloadConfig("executor-1", { role: "admin" } as any, {}),
+      ).resolves.toEqual({
         success: true,
       });
       expect(svc.issueToken).toHaveBeenCalledTimes(1);
@@ -542,7 +558,7 @@ describe("ExecutorController", () => {
       mockedAxios.post.mockRejectedValue(unauthorized());
 
       await expect(
-        controller.reloadConfig("executor-1", {}),
+        controller.reloadConfig("executor-1", { role: "admin" } as any, {}),
       ).rejects.toBeInstanceOf(BadGatewayException);
       expect(mockedAxios.post).toHaveBeenCalledTimes(2);
       expect(svc.issueToken).toHaveBeenCalledTimes(2);
@@ -571,7 +587,11 @@ describe("ExecutorController", () => {
       mockedAxios.post
         .mockRejectedValueOnce(unauthorized())
         .mockResolvedValueOnce({ data: { success: true } });
-      await controllerA.reloadConfig("executor-1", {});
+      await controllerA.reloadConfig(
+        "executor-1",
+        { role: "admin" } as any,
+        {},
+      );
       expect(retryCount("reissued_success")).toBe(1);
 
       // 分支 b：首发 401 → 重试 401（另一控制器实例，同一模块级计数表）
@@ -591,7 +611,7 @@ describe("ExecutorController", () => {
       );
       mockedAxios.post.mockRejectedValue(unauthorized());
       await expect(
-        controllerB.reloadConfig("executor-1", {}),
+        controllerB.reloadConfig("executor-1", { role: "admin" } as any, {}),
       ).rejects.toBeInstanceOf(BadGatewayException);
       expect(retryCount("reissued_success")).toBe(1);
       expect(retryCount("still_unauthorized")).toBe(1);
@@ -600,7 +620,11 @@ describe("ExecutorController", () => {
       mockedAxios.post
         .mockRejectedValueOnce(unauthorized())
         .mockResolvedValueOnce({ data: { success: true } });
-      await controllerB.reloadConfig("executor-1", {});
+      await controllerB.reloadConfig(
+        "executor-1",
+        { role: "admin" } as any,
+        {},
+      );
       expect(retryCount("reissued_success")).toBe(2);
       expect(retryCount("still_unauthorized")).toBe(1);
     });
@@ -626,7 +650,7 @@ describe("ExecutorController", () => {
     );
 
     await expect(
-      controller.reloadConfig("executor-1", {}),
+      controller.reloadConfig("executor-1", { role: "admin" } as any, {}),
     ).rejects.toBeInstanceOf(ServiceUnavailableException);
     expect(svc.issueToken).not.toHaveBeenCalled();
     expect(svc.rotateToken).not.toHaveBeenCalled();

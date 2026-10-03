@@ -124,7 +124,9 @@ export async function apiRequest<T>(
  * Extract the human-readable message from an error body — admin-api errors
  * arrive as `{ code, message, data }` envelopes or NestJS
  * `{ statusCode, message, error }` objects, and class-validator sends
- * `message` as a string[]. Mirrors the CLI's formatApiError copy (N12).
+ * `message` as a string[]. Mirrors the CLI's formatApiError copy (N12)
+ * except 404, which carries an MCP-specific next-step hint (agents resolve
+ * ids via list_* tools; the CLI prints human-facing hints instead).
  */
 function extractDetail(text: string): string {
   try {
@@ -155,6 +157,13 @@ function buildHttpError(method: string, path: string, status: number, text: stri
     case 403:
       return new Error(
         `Forbidden (403): ${detail} — your account is not allowed to perform this operation (some endpoints require the ADMIN role)`,
+      );
+    case 404:
+      // 404 也给下一步动作（对齐 401/403 的可恢复性口径）：id 已是 UUID 白名单
+      // 校验过的，404 基本意味着「id 对但资源不存在/被删」或「拿错了 id 类型」
+      // ——指引 agent 用对应 list 工具重新解析 id。
+      return new Error(
+        `API error (404): ${detail} — confirm the resource exists; resolve the ID with the matching list_* tool and retry`,
       );
     default:
       return new Error(`API error (${status}): ${detail}`);

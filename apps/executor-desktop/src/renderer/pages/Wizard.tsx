@@ -4,8 +4,12 @@ import Icon from '../components/Icon';
 declare const window: Window & {
   electronAPI: {
     testConnection: (url: string) => Promise<{ ok: boolean; message: string }>;
+    // B-9：主进程保留启动判定结果——error 非空表示"配置已保存但执行器未起来/
+    // 注册预检未通过"，向导窗口保持打开、页内展示。
     saveAndCloseWizard: (cfg: Record<string, unknown>) => Promise<{ ok: boolean; error?: string }>;
-    checkPort: (port: number) => Promise<{ available: boolean; message: string }>;
+    // B-8：host 透传——端口检测的监听 host 与向导实际保存的 executorHost
+    // 同源（本向导固定保存 0.0.0.0，见 finish()）。
+    checkPort: (port: number, host?: string) => Promise<{ available: boolean; message: string }>;
     getLocalIPs: () => Promise<string[]>;
     closeWindow: () => void;
   };
@@ -83,9 +87,13 @@ export default function Wizard() {
         workDir: '',
         logLevel: 'info',
       });
-      // 主进程已关闭向导窗口；只有失败时才需要回到 UI 反馈
+      // B-9：主进程只在启动判定**通过**后才关窗——失败（含注册预检未通过）
+      // 时向导保持打开，错误在这里落到页内错误条，用户可返回上一步修改后
+      // 重试，或直接关窗稍后处理（配置已保存）。
       if (r && r.ok === false) {
         setFinishError(r.error || '保存失败');
+      } else if (r && r.error) {
+        setFinishError(r.error);
       }
     } catch (err) {
       // 原实现未包 try——reject 会让 saving 永久为 true，向导卡在"保存中"
@@ -217,6 +225,25 @@ function StepConnect({
   onBack: () => void;
   onNext: () => void;
 }) {
+  // B-11：连接闸门——「测试连接」通过才直接放行；未通过（或还没测）时点
+  // 「下一步」给**一次性页内确认**（不用 window.confirm：无边框窗口下会阻塞
+  // 渲染进程且样式不可控，与 AppsPage 的页内确认条同一取舍）。修改地址或
+  // 重新发起测试都会撤销该确认。
+  const [confirmSkip, setConfirmSkip] = useState(false);
+  const testedOk = testResult?.ok === true;
+
+  function handleNext() {
+    if (testedOk) {
+      onNext();
+      return;
+    }
+    if (!confirmSkip) {
+      setConfirmSkip(true);
+      return;
+    }
+    onNext();
+  }
+
   return (
     <>
       <div className="wizard-title">连接服务端</div>
@@ -229,10 +256,10 @@ function StepConnect({
               className={`input${testResult && !testResult.ok ? ' error' : ''}`}
               placeholder="http://192.168.1.10:3001"
               value={url}
-              onChange={(e) => onUrlChange(e.target.value)}
+              onChange={(e) => { onUrlChange(e.target.value); setConfirmSkip(false); }}
               onKeyDown={(e) => e.key === 'Enter' && url && onTest()}
             />
-            <button className="btn wizard-inline-button" onClick={onTest} disabled={!url || testing}>
+            <button className="btn wizard-inline-button" onClick={() => { onTest(); setConfirmSkip(false); }} disabled={!url || testing}>
               {testing ? '测试中...' : '测试'}
             </button>
           </div>
@@ -242,11 +269,20 @@ function StepConnect({
               <Icon name={testResult.ok ? 'check' : 'close'} className="icon-xs" /> {testResult.message}
             </div>
           )}
+          {confirmSkip && !testedOk && (
+            <div className="test-result fail" role="alert">
+              <Icon name="warning" className="icon-xs" /> 尚未通过连接测试，继续可能无法注册。
+              <button type="button" className="btn btn-sm" onClick={onTest} disabled={!url || testing}>再测一次</button>
+              <button type="button" className="btn btn-sm" onClick={onNext}>仍要继续</button>
+            </div>
+          )}
         </div>
       </div>
       <div className="wizard-actions">
         <button className="btn" onClick={onBack}><Icon name="chevron-right" className="icon-xs icon-flip-h" /> 返回</button>
-        <button className="btn btn-primary" onClick={onNext} disabled={!url}>下一步 <Icon name="chevron-right" className="icon-xs" /></button>
+        <button className="btn btn-primary" onClick={handleNext} disabled={!url || testing}>
+          下一步 <Icon name="chevron-right" className="icon-xs" />
+        </button>
       </div>
     </>
   );
@@ -283,7 +319,10 @@ function StepExecutor({
     setCheckingPort(true);
     setPortResult(null);
     try {
-      setPortResult(await window.electronAPI.checkPort(form.executorPort));
+      // B-8：传本向导将保存的 executorHost（见 finish() 固定 0.0.0.0）——
+      // 检测的监听 host 与执行器实际 bind 的 host 同源，不再依赖主进程的
+      // 固定 0.0.0.0。
+      setPortResult(await window.electronAPI.checkPort(form.executorPort, '0.0.0.0'));
     } catch (err) {
       setPortResult({ available: false, message: err instanceof Error ? err.message : String(err) });
     } finally {
@@ -348,7 +387,9 @@ function StepExecutor({
           <div className="input-group">
             <input aria-label="监听端口"
               className={`input${portResult && !portResult.available ? ' error' : ''}`}
-              type="number" min={1024} max={65535}
+              // min 与本页校验口径（1–65535，见下方越界提示）及设置页
+              // EXECUTOR_PORT 区间对齐——原 min={1024} 与校验文案自相矛盾。
+              type="number" min={1} max={65535}
               value={form.executorPort}
               onChange={(e) => handlePortChange(parseInt(e.target.value, 10))}
             />
@@ -475,7 +516,7 @@ function StepFinish({
         </div>
       </div>
       {error && (
-        <div className="wizard-error" role="alert"><Icon name="warning" className="icon-xs" /> 保存失败：{error}</div>
+        <div className="wizard-error" role="alert"><Icon name="warning" className="icon-xs" /> {error}</div>
       )}
       <div className="wizard-actions">
         <button className="btn" onClick={onBack} disabled={saving}><Icon name="chevron-right" className="icon-xs icon-flip-h" /> 返回</button>

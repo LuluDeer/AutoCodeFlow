@@ -17,6 +17,8 @@ import { FeishuChannel } from "../channels/feishu.channel";
 import { NotificationSilenceService } from "../notification-silence.service";
 // FEAT-10: 渠道级模板渲染的读取源注入桩
 import { ChannelConfigStore } from "../channel-config.store";
+// A-1: 「全部渠道失败」审计兜底的注入桩
+import { AuditService } from "../../audit/audit.service";
 // 可观测性补齐轮：投递结果计数模块级快照（埋点断言入口）
 import {
   getRuntimeCountersSnapshot,
@@ -1382,6 +1384,235 @@ describe("NotificationService", () => {
       const ids = svc.getSilences().map((s) => s.id);
       expect(ids).toContain(localId);
       expect(ids).toContain("db-x");
+    });
+  });
+
+  // ============================================================================
+  // A-1: 渠道故障审计盲区。渠道把异常吞成 "failed" 返回值，listener 的
+  // NOTIFICATION_FAILED 兜底只在 notify 链路抛错时触发——渠道级故障（重试
+  // 耗尽）此前永不落审计。修复后：全部请求渠道失败 → 落一条含 per-channel
+  // 结果摘要的审计；部分失败仍只走日志+指标；审计写失败自身吞掉。
+  // ============================================================================
+  describe("sendToChannels — 全部渠道失败的 NOTIFICATION_FAILED 审计兜底 (A-1)", () => {
+    /** 编译独立模块并返回（service, email 桩, slack 桩, audit 桩）——
+     *  渠道桩必须取自新模块（外层 describe 的桩属于另一个实例）。 */
+    const makeServiceWithAudit = async (audit: unknown) => {
+      const module = await Test.createTestingModule({
+        providers: [
+          NotificationService,
+          { provide: WecomChannel, useFactory: mockChannel },
+          { provide: DingtalkChannel, useFactory: mockChannel },
+          { provide: EmailChannel, useFactory: mockChannel },
+          { provide: SlackChannel, useFactory: mockChannel },
+          { provide: WebhookChannel, useFactory: mockChannel },
+          { provide: FeishuChannel, useFactory: mockChannel },
+          { provide: AuditService, useValue: audit },
+        ],
+      }).compile();
+      return {
+        svc: module.get(NotificationService),
+        email: module.get(EmailChannel) as { send: jest.Mock },
+        slack: module.get(SlackChannel) as { send: jest.Mock },
+      };
+    };
+
+    it("全部渠道失败 → 落一条 NOTIFICATION_FAILED 审计（含 per-channel results 摘要）", async () => {
+      const auditLog = jest.fn().mockResolvedValue(undefined);
+      const { svc, email, slack } = await makeServiceWithAudit({
+        log: auditLog,
+      });
+      const errSpy = jest
+        .spyOn(Logger.prototype, "error")
+        .mockImplementation(() => {});
+      const warnSpy = jest
+        .spyOn(Logger.prototype, "warn")
+        .mockImplementation(() => {});
+      email.send.mockRejectedValue(new Error("smtp down"));
+      slack.send.mockRejectedValue(new Error("hook down"));
+
+      await svc.sendToChannels(
+        { title: "Task failed: t", content: "boom", level: "error" },
+        ["email" as any, "slack" as any],
+      );
+
+      expect(auditLog).toHaveBeenCalledTimes(1);
+      expect(auditLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "NOTIFICATION_FAILED",
+          resource: "notification_fanout",
+          detail: expect.objectContaining({
+            channels: ["email", "slack"],
+            results: { email: "failed", slack: "failed" },
+            failures: expect.arrayContaining([
+              expect.stringContaining("smtp down"),
+              expect.stringContaining("hook down"),
+            ]),
+          }),
+        }),
+      );
+      errSpy.mockRestore();
+      warnSpy.mockRestore();
+    });
+
+    it("部分失败不落审计（fail-open 语义不变，不放大审计噪声）", async () => {
+      const auditLog = jest.fn().mockResolvedValue(undefined);
+      const { svc, email, slack } = await makeServiceWithAudit({
+        log: auditLog,
+      });
+      const errSpy = jest
+        .spyOn(Logger.prototype, "error")
+        .mockImplementation(() => {});
+      const warnSpy = jest
+        .spyOn(Logger.prototype, "warn")
+        .mockImplementation(() => {});
+      email.send.mockResolvedValue("sent");
+      slack.send.mockRejectedValue(new Error("hook down"));
+
+      const results = await svc.sendToChannels(
+        { title: "t", content: "c", level: "error" },
+        ["email" as any, "slack" as any],
+      );
+      expect(results).toEqual({ email: "sent", slack: "failed" });
+      expect(auditLog).not.toHaveBeenCalled();
+      errSpy.mockRestore();
+      warnSpy.mockRestore();
+    });
+
+    it("审计写失败自身吞掉（兜底路径不二次炸主链）", async () => {
+      const auditLog = jest.fn().mockRejectedValue(new Error("audit db down"));
+      const { svc, email } = await makeServiceWithAudit({ log: auditLog });
+      const errSpy = jest
+        .spyOn(Logger.prototype, "error")
+        .mockImplementation(() => {});
+      const warnSpy = jest
+        .spyOn(Logger.prototype, "warn")
+        .mockImplementation(() => {});
+      email.send.mockRejectedValue(new Error("smtp down"));
+
+      await expect(
+        svc.sendToChannels({ title: "t", content: "c", level: "error" }, [
+          "email" as any,
+        ]),
+      ).resolves.toEqual({ email: "failed" });
+      expect(auditLog).toHaveBeenCalledTimes(1);
+      errSpy.mockRestore();
+      warnSpy.mockRestore();
+    });
+
+    it("无渠道失败（含 skipped/blocked）不落审计", async () => {
+      const auditLog = jest.fn().mockResolvedValue(undefined);
+      const { svc, email, slack } = await makeServiceWithAudit({
+        log: auditLog,
+      });
+      email.send.mockResolvedValue("sent");
+      slack.send.mockResolvedValue("skipped");
+
+      await svc.sendToChannels({ title: "t", content: "c", level: "info" }, [
+        "email" as any,
+        "slack" as any,
+      ]);
+      expect(auditLog).not.toHaveBeenCalled();
+    });
+  });
+
+  // ============================================================================
+  // A-5: 出站正文脱敏——errorSummary/日志原文里的 env 赋值、Bearer token、
+  // 长 hex/base64 密钥进渠道前掩码；普通错误文本逐字保留。
+  // ============================================================================
+  describe("sendToChannels — 出站正文脱敏 (A-5)", () => {
+    it("token 样本在渠道收到的 payload 里被掩码", async () => {
+      email.send.mockResolvedValue("sent");
+      await service.sendToChannels(
+        {
+          title: "Task failed: t",
+          content:
+            "Error: API_SECRET_KEY=sk-super-secret-value\n" +
+            "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.sig\n" +
+            "key=deadbeefcafebabe0123456789abcdefdeadbeefcafebabe0123456789abcdef",
+          level: "error",
+        },
+        ["email" as any],
+      );
+
+      const sent = email.send.mock.calls[0][0];
+      expect(sent.title).toBe("Task failed: t");
+      expect(sent.content).toContain("API_SECRET_KEY=[REDACTED]");
+      expect(sent.content).toContain("Bearer [REDACTED]");
+      expect(sent.content).toContain("[REDACTED_HEX]");
+      // 原文敏感片段不得出站
+      expect(sent.content).not.toContain("sk-super-secret-value");
+      expect(sent.content).not.toContain(
+        "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
+      );
+      expect(sent.content).not.toContain(
+        "deadbeefcafebabe0123456789abcdefdeadbeefcafebabe0123456789abcdef",
+      );
+    });
+
+    it("普通错误文本原样保留（可读性不变）", async () => {
+      email.send.mockResolvedValue("sent");
+      await service.sendToChannels(
+        {
+          title: "Task failed: nightly-etl",
+          content: "script_error: Traceback\ndivide by zero",
+          level: "error",
+        },
+        ["email" as any],
+      );
+      const sent = email.send.mock.calls[0][0];
+      expect(sent.title).toBe("Task failed: nightly-etl");
+      expect(sent.content).toBe("script_error: Traceback\ndivide by zero");
+    });
+
+    it("notifyFailure 携带 errorMessage/logs 原文时同样被渠道收口脱敏", async () => {
+      email.send.mockResolvedValue("sent");
+      await service.notifyFailure(
+        "t",
+        "exec-1",
+        "DB_PASSWORD=hunter2secret leaked",
+        "",
+        "t1",
+      );
+      const sent = email.send.mock.calls[0][0];
+      expect(sent.content).toContain("DB_PASSWORD=[REDACTED]");
+      expect(sent.content).not.toContain("hunter2secret");
+    });
+  });
+
+  // ============================================================================
+  // A-11: notifyTimeout 的任务级渠道路由——透传 alarmChannels 时与失败告警
+  // 同源走 sendToChannels；空/缺省回落 sendAll 全渠道（存量行为零漂移）。
+  // ============================================================================
+  describe("notifyTimeout — alarmChannels 路由 (A-11)", () => {
+    it("透传 alarmChannels 时按任务渠道扇出（大小写归一，与 notifyFailureWithConfig 同款）", async () => {
+      const sendToChannels = jest
+        .spyOn(service, "sendToChannels")
+        .mockResolvedValue({});
+      await service.notifyTimeout("job", "exec-1", 300, "t1", undefined, [
+        "Email",
+        "SLACK",
+      ]);
+      expect(sendToChannels).toHaveBeenCalledWith(
+        expect.objectContaining({
+          title: "Task timed out: job",
+          level: "warning",
+        }),
+        ["email", "slack"],
+      );
+      sendToChannels.mockRestore();
+    });
+
+    it("alarmChannels 为空数组/缺省时回落 sendAll 全渠道", async () => {
+      const sendAll = jest.spyOn(service, "sendAll").mockResolvedValue({});
+      const sendToChannels = jest.spyOn(service, "sendToChannels");
+
+      await service.notifyTimeout("job", "exec-1", 300, "t1", undefined, []);
+      await service.notifyTimeout("job", "exec-1", 300, "t1");
+
+      expect(sendAll).toHaveBeenCalledTimes(2);
+      expect(sendToChannels).not.toHaveBeenCalled();
+      sendAll.mockRestore();
+      sendToChannels.mockRestore();
     });
   });
 });

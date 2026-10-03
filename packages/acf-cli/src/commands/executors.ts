@@ -2,7 +2,8 @@ import { Command } from 'commander';
 import Table from 'cli-table3';
 import chalk from 'chalk';
 import ora from 'ora';
-import { get, post, formatApiError } from '../client.js';
+import { get, post } from '../client.js';
+import { emitError } from '../ui.js';
 
 // Field names aligned with the Executor entity
 // (apps/admin-api/src/modules/executor/entities/executor.entity.ts)
@@ -95,20 +96,24 @@ export function executorsCommand(): Command {
         }
         console.log(table.toString());
       } catch (e: unknown) {
-        spinner.fail('Failed');
-        console.error(chalk.red(formatApiError(e)));
-        process.exit(1);
+        emitError('Failed to list executors', e, { spinner });
       }
     });
 
   // acf executor get <id>
   cmd.command('get <id>')
     .description('Show details of a single executor (config, status, metrics)')
-    .action(async (id) => {
+    // --json 补面（本轮 UX 统一）：单对象形态 → pretty JSON
+    .option('--json', 'Emit raw JSON (CI-consumable, no table)')
+    .action(async (id, opts: { json?: boolean }) => {
       const spinner = ora('Fetching executor…').start();
       try {
         const e = await get<Executor>(`/executors/${id}`);
         spinner.stop();
+        if (opts.json) {
+          console.log(JSON.stringify(e, null, 2));
+          return;
+        }
         console.log(chalk.bold('Executor Details'));
         console.log('  ID                :', e.id);
         console.log('  App Name          :', e.appName ?? '-');
@@ -128,9 +133,7 @@ export function executorsCommand(): Command {
         console.log('  Memory            :', pct(e.memUsage));
         console.log('  Last Heartbeat    :', e.lastHeartbeat ? `${new Date(e.lastHeartbeat).toLocaleString()} (${heartbeatAge(e.lastHeartbeat)})` : '-');
       } catch (e: unknown) {
-        spinner.fail('Failed');
-        console.error(chalk.red(formatApiError(e)));
-        process.exit(1);
+        emitError('Failed to fetch executor', e, { spinner });
       }
     });
 
@@ -175,9 +178,7 @@ export function executorsCommand(): Command {
         console.log(chalk.bold('New token (shown only once — store it now):'));
         console.log(chalk.green(r?.token ?? ''));
       } catch (e: unknown) {
-        spinner.fail('Failed to rotate token');
-        console.error(chalk.red(formatApiError(e)));
-        process.exit(1);
+        emitError('Failed to rotate token', e, { spinner });
       }
     });
 
@@ -195,9 +196,7 @@ export function executorsCommand(): Command {
         spinner.succeed(`Executor ${id} marked offline`);
         console.log(chalk.gray(`  status: ${e?.status ?? 'offline'}  address: ${e?.address ?? '-'}`));
       } catch (e: unknown) {
-        spinner.fail('Failed to mark executor offline');
-        console.error(chalk.red(formatApiError(e)));
-        process.exit(1);
+        emitError('Failed to mark executor offline', e, { spinner });
       }
     });
 

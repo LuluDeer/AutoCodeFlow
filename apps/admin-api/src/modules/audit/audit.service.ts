@@ -22,6 +22,9 @@ const AUDIT_GUARD_BYPASS_SQL = `SET LOCAL app.bypass_audit_guard = 'on'`;
 /** NETOPT-1②: retention 分批大小（对齐 executor.service R-09 metrics 模式）。 */
 const AUDIT_RETENTION_BATCH_SIZE = 5000;
 
+/** A-9: CSV 导出行上限（达上限即追加截断注释行，保持「有痕截断」）。 */
+const AUDIT_EXPORT_ROW_CAP = 10_000;
+
 /**
  * API-09（本轮体验审查）：把用户输入安全地放进 **ILIKE 模式串**。
  *
@@ -154,7 +157,10 @@ export class AuditService {
     const { action, resource, userId } = options;
     const qb = this.repo
       .createQueryBuilder("log")
-      .orderBy("log.createdAt", "DESC");
+      // A-8: 同事务批量写的时间戳常碰撞（PG 默认微秒精度下同批行同值），
+      // 仅按 createdAt 排序翻页会重复/丢行——补 id 次级键保证全序（findAll 同改）。
+      .orderBy("log.createdAt", "DESC")
+      .addOrderBy("log.id", "DESC");
 
     if (action) {
       // API-09：放宽原来的 `^[a-zA-Z0-9_.\-\s]+$` 白名单（那会让中文 / `:` / `/`
@@ -189,7 +195,7 @@ export class AuditService {
       .addSelect("log.result", "result")
       .addSelect("log.ip", "ip")
       .addSelect("log.createdAt", "createdAt")
-      .limit(10_000)
+      .limit(AUDIT_EXPORT_ROW_CAP)
       .getRawMany();
 
     // S8: CSV formula injection. Spreadsheet apps (Excel, LibreOffice,
@@ -232,7 +238,14 @@ export class AuditService {
         .map(escape)
         .join(","),
     );
-    return [header, ...lines].join("\n");
+    // A-9: 达到行上限时在导出末尾追加注释行——「no pagination cap」的承诺
+    // 以「有痕截断」兑现：打开 CSV 的运维能看见截断发生，而不是把 10 000 行
+    // 误当全量。`#` 前缀不在 S8 公式字符集内，表格软件按文本/注释处理。
+    const truncatedMarker =
+      rows.length >= AUDIT_EXPORT_ROW_CAP
+        ? [`# truncated at ${AUDIT_EXPORT_ROW_CAP} rows`]
+        : [];
+    return [header, ...lines, ...truncatedMarker].join("\n");
   }
 
   async findAll(options: {
@@ -250,7 +263,10 @@ export class AuditService {
     const { page = 1, pageSize = 20, action, resource, userId } = options;
     const qb = this.repo
       .createQueryBuilder("log")
-      .orderBy("log.createdAt", "DESC");
+      // A-8: createdAt 同值碰撞（同事务批量写）下仅按时间排序会让翻页重复/
+      // 丢行——补 id 次级键保证确定性全序（exportCsv 同改）。
+      .orderBy("log.createdAt", "DESC")
+      .addOrderBy("log.id", "DESC");
 
     // API-09（本轮体验审查）：放宽 SEC-03 的白名单。
     //

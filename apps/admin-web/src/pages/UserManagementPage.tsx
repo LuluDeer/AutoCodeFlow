@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { Table,
   Button,
   Space,
@@ -25,9 +25,12 @@ import {
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { usersApi, type User, type CreateUserDto, type UpdateUserDto } from '../api/users';
 import { isFormValidationError, showApiError } from '../utils/error';
-// F-26（DEEP_REVIEW 0ef3bbe）：locale 单一来源，不再硬编码 zh-CN
-import { currentLocale } from '../utils/locale';
+// 时间展示统一走共享 formatDateTime（locale 跟随 i18n 而非浏览器，见 utils/timeFormat）
+import { formatDateTime } from '../utils/timeFormat';
 import { useTranslation } from 'react-i18next';
+// URL-SYNC-01：搜索/分页状态同步 URL（对齐 TaskListPage/ExecutionsPage 先例）——
+// 刷新、后退、分享链接不再丢状态。
+import { useSearchParams } from 'react-router-dom';
 import PageHeader from '../components/PageHeader';
 import StateError from '../components/StateError';
 import PageSkeleton from '../components/PageSkeleton';
@@ -57,11 +60,21 @@ interface UserWithActive extends User {
 export default function UserManagementPage() {
   const queryClient = useQueryClient();
   const { t } = useTranslation();
+  // URL-SYNC-01：筛选/分页以 URL 查询参数为初始源并回写
+  const [searchParams, setSearchParams] = useSearchParams();
   // F-15（DEEP_REVIEW 0ef3bbe）：占位次要色走 antd token，暗色主题自适应。
   const { token } = theme.useToken();
-  const [searchText, setSearchText] = useState('');
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
+  const [searchText, setSearchText] = useState(() => searchParams.get('q') || '');
+  // URL-SYNC-01：page/pageSize 以 URL 为初始源；非法深链值（?page=abc、负数）
+  // 回落默认值，不空屏不报错。
+  const [page, setPage] = useState(() => {
+    const p = Number(searchParams.get('page'));
+    return Number.isInteger(p) && p > 0 ? p : 1;
+  });
+  const [pageSize, setPageSize] = useState(() => {
+    const ps = Number(searchParams.get('pageSize'));
+    return Number.isInteger(ps) && ps > 0 ? ps : 20;
+  });
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [editing, setEditing] = useState<UserWithActive | null>(null);
   const [createForm] = Form.useForm();
@@ -84,6 +97,15 @@ export default function UserManagementPage() {
 
   const users: UserWithActive[] = data?.list ?? [];
   const total: number = data?.total ?? 0;
+
+  // URL-SYNC-01：状态→URL 回写（replace 不制造历史记录；默认值不写入保持 URL 干净）
+  useEffect(() => {
+    const next = new URLSearchParams();
+    if (page !== 1) next.set('page', String(page));
+    if (pageSize !== 20) next.set('pageSize', String(pageSize));
+    if (debouncedSearch) next.set('q', debouncedSearch);
+    setSearchParams(next, { replace: true });
+  }, [page, pageSize, debouncedSearch, setSearchParams]);
 
   // Reset to page 1 when search text changes（后端按新 search 重新分页）
   const handleSearch = (val: string) => { setSearchText(val); setPage(1); };
@@ -119,6 +141,10 @@ export default function UserManagementPage() {
     mutationFn: (id: number) => usersApi.remove(id),
     onSuccess: () => {
       message.success(t('users.deleted'));
+      // 空页钳制（一致性）：服务端分页下删除当前页最后一条后 page 状态不变，
+      // 请求仍打在第 N 页返回空列表——antd 只钳制分页器显示，表格主体仍是空页。
+      // 本页只剩一条且不在第 1 页时回退一页（page-1 必然是满页）。
+      if (users.length === 1 && page > 1) setPage(page - 1);
       queryClient.invalidateQueries({ queryKey: ['users'] });
     },
     onError: (err: unknown) => {
@@ -256,10 +282,9 @@ export default function UserManagementPage() {
       dataIndex: 'createdAt',
       key: 'createdAt',
       width: 180,
-      render: (v: string) =>
-        v
-          ? new Date(v).toLocaleString(currentLocale(), { hour12: false })
-          : '—',
+      // 空/非法值由 formatDateTime 统一兜底为 '—'（原 hour12:false 收敛进共享
+      // 设施后，en 界面回到 en-US 惯用的 12 小时 AM/PM 排版，与其它已统一页面一致）
+      render: (v: string) => formatDateTime(v),
     },
     {
       title: t('users.col.actions'),
@@ -294,11 +319,15 @@ export default function UserManagementPage() {
             cancelText={t('users.cancel')}
             okButtonProps={{ danger: true }}
           >
+            {/* 防重复提交+在途反馈：删除请求飞行中该行按钮置 loading（antd loading
+                同时禁用点击），避免连点触发第二次 remove（第二次必然 404 报错噪音）。
+                口径对齐 ProjectsPage 成员移除按钮（mutation.variables 精确到行）。 */}
             <Button
               type="link"
               size="small"
               danger
               icon={<DeleteOutlined />}
+              loading={deleteMutation.isPending && deleteMutation.variables === record.id}
             >
               {t('users.action.delete')}
             </Button>
@@ -370,7 +399,7 @@ export default function UserManagementPage() {
                       {record.email || '—'}
                     </div>
                     <div style={{ marginTop: 4, fontSize: 12, color: 'var(--chart-axis-text)' }}>
-                      {t('users.col.createdAt')}：{record.createdAt ? new Date(record.createdAt).toLocaleString(currentLocale(), { hour12: false }) : '—'}
+                      {t('users.col.createdAt')}：{formatDateTime(record.createdAt)}
                     </div>
                     <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
                       <Button type="link" size="small" icon={<EditOutlined />} onClick={() => openEdit(record)}>
@@ -387,7 +416,9 @@ export default function UserManagementPage() {
                         cancelText={t('users.cancel')}
                         okButtonProps={{ danger: true }}
                       >
-                        <Button type="link" size="small" danger icon={<DeleteOutlined />}>
+                        {/* 同桌面口径：删除在途该行按钮 loading（防重复提交） */}
+                        <Button type="link" size="small" danger icon={<DeleteOutlined />}
+                          loading={deleteMutation.isPending && deleteMutation.variables === record.id}>
                           {t('users.action.delete')}
                         </Button>
                       </Popconfirm>

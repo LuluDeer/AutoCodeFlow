@@ -33,6 +33,7 @@ import { InjectQueue } from "@nestjs/bullmq";
 import { Queue } from "bullmq";
 import { ConfigService } from "@nestjs/config";
 import { createInterface } from "node:readline";
+import { createHash } from "node:crypto";
 import type { Readable } from "node:stream";
 import {
   Task,
@@ -41,6 +42,7 @@ import {
   TaskRuntime,
   TaskCodeSource,
   ExecuteMode,
+  BlockStrategy,
   normalizeTaskPriority,
 } from "./entities/task.entity";
 import { UserRole } from "../users/entities/user.entity";
@@ -59,6 +61,7 @@ import { resolveTaskMutexGroupId } from "./execution-mutex";
 // N-14：blockStrategy 闸门（与调度路径共享，比较维度=任务+参数）
 import {
   applyBlockStrategyGate,
+  canonicalizeParams,
   releaseExecutorSlotByAddress,
 } from "./block-strategy-gate";
 // A4: DB 优先级(4=紧急) → BullMQ 出队优先级(1=最高)的方向换算。
@@ -137,13 +140,25 @@ import {
 // FIX-4.2: 执行终态唤醒（Redis pub/sub）——webhook 同步等待的事件化通道。
 import { ExecutionWakeService } from "./execution-wake.service";
 // FIX-3.1: 超时预警的每执行至多一次 SETNX 闸（acquireLock 即 SET NX+TTL）。
-import { RedisLockService } from "../../common/services/redis-lock.service";
+import {
+  RedisLockService,
+  // B-5: 闸门 TOCTOU 锁（Lock 仅为类型引用）
+  Lock,
+} from "../../common/services/redis-lock.service";
+
+/**
+ * B-5（调度域审计）：触发闸门 TOCTOU 锁的 TTL（毫秒）。持锁窗口只需覆盖
+ * 「闸门检查 + 执行行落库」——秒级即可；进程崩溃时锁随 TTL 自然过期，不
+ * 会像去重锁那样刻意滞留。
+ */
+export const TRIGGER_GATE_LOCK_TTL_MS = 5_000;
 /**
  * FIX-3.1（ARCH-21 红线的**显式例外**）：NotificationService 重新进入本文件。
  * ARCH-21 红线针对的是「终态事件 → 通知」主链解耦——该链路仍走事件总线
  * （emitTerminalEvent → ExecutionEventsListener），未被破坏。本次新增的是
  * 另一条独立旁路：运行中执行的超时预警（用户指令指定直调
- * NotificationService.notifyTimeout 且不改其签名）。约束自我收紧为：
+ * NotificationService.notifyTimeout；A-11 起签名扩展了可选 alarmChannels
+ * 尾参用于与失败告警同源渠道路由，缺省行为不变）。约束自我收紧为：
  * 仅 maybeNotifyTimeoutWarning 一个调用点、fire-and-forget、任何失败吞掉、
  * 不进入任何终态写路径。
  */
@@ -181,15 +196,6 @@ const LOG_TRUNCATION_MARKER = /\[\s*(?:logs\s+)?truncated\b/i;
 export const MAX_DEPENDENCY_DEPTH = 64;
 
 /**
- * R4-P3: checkDependencies 单次扫描的执行行数上限。原实现无 take，
- * 会把依赖任务的全量历史拉进内存；加上限后内存有界。
- * 权衡：DESC 排序下"每个依赖的最新一次执行"几乎总落在最近 N 行内；
- * 极端场景（某个高频依赖把其余依赖的最新行挤出窗口）由下方的按依赖
- * 定向兜底查询（findLatestExecutionPerDependency）补齐，判定语义不变。
- */
-export const MAX_DEPENDENCY_EXECUTION_SCAN = 500;
-
-/**
  * F-03（本轮审计）: findAll 的排序字段白名单。
  *
  * 只放行 **Task 实体真实存在的可排序列**（逐一核对 task.entity.ts 列清单）——
@@ -223,6 +229,14 @@ type TaskSortKey = (typeof TASK_SORT_WHITELIST)[number];
  */
 export const DEPENDENCY_TRIGGER_CLAIM_WINDOW_MS = 10_000;
 
+// B-6: 依赖满足判定/扫描上限迁至 dependency-gate.util（scheduler misfire
+// 补偿闸共用）；此处保留 re-export 维持既有 import 面（task.service.spec 等）。
+import {
+  areDependenciesSatisfied,
+  MAX_DEPENDENCY_EXECUTION_SCAN,
+} from "./dependency-gate.util";
+export { MAX_DEPENDENCY_EXECUTION_SCAN };
+
 /**
  * FEAT-21: 依赖触发链的上游结果透传（opt-in）。
  *
@@ -233,7 +247,10 @@ export const DEPENDENCY_TRIGGER_CLAIM_WINDOW_MS = 10_000;
  * 归 null）的字符串在触发时被替换。未声明哨兵的下游行为逐字节不变——
  * 不注入即不走 dto.params 覆盖语义，仍用任务默认 params。
  */
-export const TASK_PARAMS_MAX_BYTES = 65_536;
+// B-9: TASK_PARAMS_MAX_BYTES 迁至 params-size.util（DTO 校验器共用，避免
+// DTO → service 模块环）；此处 re-export 维持既有 import 面（task-webhook 等）。
+import { TASK_PARAMS_MAX_BYTES } from "./params-size.util";
+export { TASK_PARAMS_MAX_BYTES };
 
 export const UPSTREAM_SENTINEL = "$upstream";
 
@@ -451,6 +468,43 @@ export class TaskService {
         "executorId (pinned executor) is mutually exclusive with executeMode=broadcast",
       );
     }
+  }
+
+  /**
+   * A-1（执行器域审计 P1）：broadcast 与互斥组互斥——写面直接 400 拒绝。
+   *
+   * 背景：互斥组挂在**应用**上（applications.mutexGroupId），执行行创建时经
+   * resolveTaskMutexGroupId 快照带下；dispatchBroadcast 派发时全程不调
+   * claimExecutorSlotForExecution 占坑闸，「broadcast + 应用挂互斥组」的任务
+   * 会静默绕过组内并发约束（同一秒 N 台全跑）。广播的语义就是"同时扇出全部
+   * 在线执行器"，与互斥"组内串行/限并发"在调度语义上不可调和（单执行行的
+   * 占用标记 executorAddress 无法表达 N 目标并发，强行占坑会破坏唤醒/释放
+   * 链路），故选择在**写面拒绝**而不是运行时半吊子执行：任务创建/编辑时
+   * 声明 broadcast 且其应用挂有互斥组 → 400。
+   *
+   * 判定对象是 applicationId 指向应用的当前组配置；应用不存在 → 无互斥组
+   * （与 resolveTaskMutexGroupId 的「组查不到 = 不参与互斥」同口径，应用的
+   * 存在性由 zip 渠道校验/派发链各自负责，不在此重复报错）。
+   */
+  private async assertBroadcastMutexCompatible(
+    executeMode: ExecuteMode | null | undefined,
+    applicationId: string | null | undefined,
+    context: string,
+  ): Promise<void> {
+    if (executeMode !== ExecuteMode.BROADCAST) return;
+    if (!applicationId) return;
+    const appRepo = this.dataSource.getRepository(Application);
+    const app = await appRepo
+      .findOne({
+        where: { id: applicationId },
+        select: { id: true, name: true, mutexGroupId: true },
+      })
+      .catch(() => null);
+    if (!app?.mutexGroupId) return;
+    throw new BadRequestException(
+      `executeMode=broadcast is incompatible with a mutex group: application "${app.name}" (${applicationId}) is bound to mutex group ${app.mutexGroupId}. ` +
+        `Broadcast fans out to every online executor simultaneously and cannot honor the group's concurrency cap — switch the task to executeMode=single, or remove the mutex group from the application (${context})`,
+    );
   }
 
   /**
@@ -928,16 +982,29 @@ export class TaskService {
    */
   async assertCanOperate(
     row: { ownerUserId: number | null; projectId?: string | null },
-    user: { id: number; role: UserRole } | null | undefined,
+    // A-6（R3-A 审计）: 放宽入参形状——API-Key 主体（ApiKeyUser）只带
+    // userId 不带 id/role，此前签名把它排除在属主判定之外。
+    user: { id?: number; userId?: number; role?: UserRole } | null | undefined,
   ): Promise<void> {
     // A2-B: 落 'operate' 证（区别于 'write'）——本方法只拒 viewer / 可选的属主
     // 校验，落同一种证据会让 project-role 端点冒充 ownership。
     recordOwnershipAssertion("task", "operate");
 
+    // A-6: 属主判定/放行兜底按 `id ?? userId` 归一主体 id——ApiKeyUser 只有
+    // userId，旧代码 `user?.id` 恒 undefined：owner 档属主分支被跳过、再经
+    // 下方放行兜底（!user?.id → return）直接放行，trigger/manage scope 的
+    // key 可无视 TASK_OPERATE_SCOPE=owner 触发任意任务。归一后 API-Key 按
+    // 其 key 属主 userId 参与属主/项目角色判定；JWT 用户（id 恒有值）行为
+    // 逐字节不变，user 为 null 的内部调用同样维持既有旁路。
+    const principalId = user?.id ?? user?.userId;
+
     // TASK-SCOPE-01: `owner` 档在既有 viewer 拒绝之上叠加属主判定。
     // 与 assertCanWriteProjectAware 同款姿态：先试属主/项目 editor，不通即拒。
-    if (this.isOperateScopeOwner() && user?.id) {
-      const allowed = await this.canOperateAsOwner(row, user);
+    if (this.isOperateScopeOwner() && principalId !== undefined) {
+      const allowed = await this.canOperateAsOwner(row, {
+        id: principalId,
+        role: user?.role,
+      });
       if (!allowed) {
         throw new ForbiddenException(
           "TASK_OPERATE_SCOPE=owner: triggering or changing schedule state requires " +
@@ -947,10 +1014,10 @@ export class TaskService {
       return;
     }
 
-    if (!this.projectAccess || !user?.id) return;
-    if (user.role === UserRole.ADMIN) return;
+    if (!this.projectAccess || principalId === undefined) return;
+    if (user?.role === UserRole.ADMIN) return;
     const role = await this.projectAccess.resolveRole(
-      user.id,
+      principalId,
       row.projectId ?? null,
     );
     if (role === "viewer") {
@@ -1038,7 +1105,9 @@ export class TaskService {
    */
   private async canOperateAsOwner(
     row: { ownerUserId: number | null; projectId?: string | null },
-    user: { id: number; role: UserRole },
+    // A-6: role 可缺省——API-Key 主体没有 role（undefined ≠ ADMIN，
+    // 语义即「API-Key 不享有 ADMIN 短路」），属主/项目角色判定不受影响。
+    user: { id: number; role?: UserRole },
   ): Promise<boolean> {
     if (user.role === UserRole.ADMIN) return true;
     if (row.ownerUserId !== null && row.ownerUserId === user.id) return true;
@@ -1110,6 +1179,13 @@ export class TaskService {
     });
     // TASK-PROJ-01: 归属项目校验（存在性 + 授权），见 assertCanAssignProject
     await this.assertCanAssignProject(normalized.projectId, user);
+    // A-1: create 的终态就是请求体——broadcast + 应用挂互斥组在写面直接 400
+    //（派发面 dispatchBroadcast 不执行互斥占坑，见方法头注）。
+    await this.assertBroadcastMutexCompatible(
+      normalized.executeMode,
+      normalized.applicationId,
+      "create",
+    );
     // SEC-NEW-2 对齐（W-21 后续）：git 源在**任务写面**即校验。executor 派发时只放行
     // https?://|git@|ssh:// 且拒绝 loopback/私有网段（execute.ts:363-376，python 侧对等）
     // ——此前 admin 不做同类校验，导致「任务创建成功、派发才 400」的两端不一致。
@@ -1620,6 +1696,18 @@ export class TaskService {
     // "broadcast+已 pin" 非法状态（dispatchBroadcast 不读 executorId，pinning
     // 被静默丢弃）。save 前兜底，消息与 create 路径一致。
     this.assertPinBroadcastExclusive(updated.executorId, updated.executeMode);
+    // A-1: PATCH 合并路径的 broadcast × 互斥组互斥校验——看合并后实体态
+    //（R7/N17 先例：增量 DTO 看不到另一半）。作用域门（NFR-05 先例）：只在
+    // 本次请求确实编辑了 executeMode / applicationId 时判定，存量历史行
+    //（写面门上线前创建）连改 timeout 都被拒会把合法 PATCH 一起挡死——
+    // 存量行由 dispatchBroadcast 的运行时 warn 兜底可观测。
+    if ("executeMode" in dto || "applicationId" in dto) {
+      await this.assertBroadcastMutexCompatible(
+        updated.executeMode,
+        updated.applicationId,
+        `task ${id}`,
+      );
+    }
     // FIX-1.3: PATCH 配对校验看合并后实体态（R7/N17 先例）——增量只带
     // triggerType 或只清 cronExpression 时，增量 DTO 看不到另一半。
     this.assertTriggerConfigConsistent(updated);
@@ -1771,52 +1859,73 @@ export class TaskService {
     // 之前施加：discard 命中不落行（409）；cover_early 命中先取消同参执行
     // （含 RUNNING 的 kill 下发与槽位冲销）再落新行。互斥组正交不受影响。
     const effectiveParams = dto.params ?? task.params;
-    const gateOutcome = await applyBlockStrategyGate(
+    // B-5（调度域审计）：闸门 TOCTOU 收口——检查+落行套 per-(任务+参数)
+    // 短 Redis 锁（语义与取舍见 acquireTriggerGateLockOrThrow 注释）。
+    const gateLock = await this.acquireTriggerGateLockOrThrow(
       task,
       effectiveParams,
-      this.execRepo,
-      {
-        warn: (message) => this.logger.warn(message),
-        releaseSlot: (address) =>
-          releaseExecutorSlotByAddress(this.dataSource, address),
-        notifyKill: (executionId, address) =>
-          this.executorService.notifyExecutorKill(executionId, address),
-      },
     );
-    if (gateOutcome === "skip") {
-      throw new ConflictException(
-        `Task "${task.name}" already has an active execution with the same params (blockStrategy=discard) — trigger rejected`,
+    let exec: TaskExecution;
+    let endSpan: ((error?: string) => void) | undefined;
+    try {
+      const gateOutcome = await applyBlockStrategyGate(
+        task,
+        effectiveParams,
+        this.execRepo,
+        {
+          warn: (message) => this.logger.warn(message),
+          releaseSlot: (address) =>
+            releaseExecutorSlotByAddress(this.dataSource, address),
+          notifyKill: (executionId, address) =>
+            this.executorService.notifyExecutorKill(executionId, address),
+        },
       );
+      if (gateOutcome === "skip") {
+        throw new ConflictException(
+          `Task "${task.name}" already has an active execution with the same params (blockStrategy=discard) — trigger rejected`,
+        );
+      }
+      // OBS-01: 追踪开启时生成 trace 根，traceId 落库（null=追踪未开启）。
+      const traceparent = this.tracing?.startTrace() ?? null;
+      const traceId = this.tracing?.extractContext(traceparent) ?? null;
+      endSpan = this.tracing?.startSpan(traceId, "task.trigger", {
+        taskId: task.id,
+        taskName: task.name,
+      });
+      exec = await this.dataSource.transaction(async (manager) => {
+        return manager.save(
+          manager.create(TaskExecution, {
+            taskId: task.id,
+            taskName: task.name,
+            status: ExecutionStatus.PENDING,
+            // N-14：与闸门比较同源——行 params 即生效参数
+            params: effectiveParams,
+            // R-28: 默认 manual；依赖触发方传入 "dependency"。
+            triggerType: triggerTypeOverride ?? "manual",
+            // 技术债 A 组：钉定重放时执行记录记**钉定版本号**（如 "v3"），
+            // 而非任务 currentVersion——详情页/版本对比据此可读出「这次跑的
+            // 是哪个版本的快照」。不钉定时维持原值。
+            taskVersion: pinnedVersion
+              ? pinnedVersion.version
+              : task.currentVersion,
+            // MUTEX-01：互斥组快照（task→application；未挂组为 null）。
+            mutexGroupId: await resolveTaskMutexGroupId(manager, task),
+            traceId: this.tracing?.isValidTraceId(traceId) ? traceId : null,
+          }),
+        );
+      });
+    } finally {
+      // B-5: 持锁窗口覆盖「闸门检查 + 执行行落库」，落行完成即释放——后续
+      // queue.add 是幂等性无关的旁路（行已存在，闸门对 PENDING 本就不计）。
+      // 释放失败仅吞掉：锁有 TTL 兜底（秒级），不阻断触发主链。
+      if (gateLock) {
+        try {
+          await gateLock.release();
+        } catch {
+          /* TTL 兜底，忽略 */
+        }
+      }
     }
-    // OBS-01: 追踪开启时生成 trace 根，traceId 落库（null=追踪未开启）。
-    const traceparent = this.tracing?.startTrace() ?? null;
-    const traceId = this.tracing?.extractContext(traceparent) ?? null;
-    const endSpan = this.tracing?.startSpan(traceId, "task.trigger", {
-      taskId: task.id,
-      taskName: task.name,
-    });
-    const exec = await this.dataSource.transaction(async (manager) => {
-      return manager.save(
-        manager.create(TaskExecution, {
-          taskId: task.id,
-          taskName: task.name,
-          status: ExecutionStatus.PENDING,
-          // N-14：与闸门比较同源——行 params 即生效参数
-          params: effectiveParams,
-          // R-28: 默认 manual；依赖触发方传入 "dependency"。
-          triggerType: triggerTypeOverride ?? "manual",
-          // 技术债 A 组：钉定重放时执行记录记**钉定版本号**（如 "v3"），
-          // 而非任务 currentVersion——详情页/版本对比据此可读出「这次跑的
-          // 是哪个版本的快照」。不钉定时维持原值。
-          taskVersion: pinnedVersion
-            ? pinnedVersion.version
-            : task.currentVersion,
-          // MUTEX-01：互斥组快照（task→application；未挂组为 null）。
-          mutexGroupId: await resolveTaskMutexGroupId(manager, task),
-          traceId: this.tracing?.isValidTraceId(traceId) ? traceId : null,
-        }),
-      );
-    });
     try {
       await this.taskQueue.add(
         "execute",
@@ -1872,6 +1981,63 @@ export class TaskService {
     }
     endSpan?.();
     return exec;
+  }
+
+  /**
+   * B-5（调度域审计）：blockStrategy 闸门的 TOCTOU 收口——触发路径套
+   * per-(taskId + canonicalParams) 短 Redis 锁。
+   *
+   * 背景：闸门是 find（在跑/排队执行）→ 判定 → 落行的三步**非原子**操作。
+   * 手动/API/webhook 并发同参触发时，双方都可能读到「无在跑」而双双放行：
+   * discard 语义下落两行重复执行；cover_early 语义下两方各自「取消同参在跑」
+   * ——先落终态者赢，后到者 cover 落空仍照样落新行 → 同参双重派发。调度
+   * 路径无此洞：enqueue 的 task:trigger 去重锁（不释放、TTL=去重窗）天然
+   * 把同任务触发串行化。
+   *
+   * 语义取舍：
+   * - 持锁窗口覆盖「闸门检查 + 执行行落库」（trigger 主链内 try/finally），
+   *   锁被占用 = 同参并发触发在途 → 与 discard 命中同语义拒绝（手动/API 面
+   *   409；webhook / 依赖触发同走本方法受益）。已持锁方正常放行。
+   * - Redis 故障 fail-open（与仓库既有纪律一致）：acquireLock 抛错仅 warn
+   *   并退回既有非原子行为——绝不因 Redis 停摆阻断触发。
+   * - SERIAL 不取锁：闸门对 SERIAL 本就直通（触发层不拦，串行由互斥组
+   *   执行层承担），无需串行化检查窗口。
+   * - redisLockService 为 null（@Optional 装配缺席的存量单测/降级装配）
+   *   同样 fail-open。
+   *
+   * @returns 取到的锁（调用方负责在落行后 release）；null = 无需锁 / fail-open
+   * @throws ConflictException 同参触发锁被占用（并发去重语义）
+   */
+  private async acquireTriggerGateLockOrThrow(
+    task: Pick<Task, "id" | "name" | "blockStrategy">,
+    effectiveParams: Record<string, unknown> | null | undefined,
+  ): Promise<Lock | null> {
+    if (task.blockStrategy === BlockStrategy.SERIAL || !this.redisLockService) {
+      return null;
+    }
+    // 锁 key 含参数规范化摘要（与闸门同参判定同源），异参触发互不阻塞。
+    const key = `task:trigger-gate:${task.id}:${createHash("sha256")
+      .update(canonicalizeParams(effectiveParams))
+      .digest("hex")
+      .slice(0, 24)}`;
+    let lock: Lock | null = null;
+    try {
+      lock = await this.redisLockService.acquireLock(
+        key,
+        TRIGGER_GATE_LOCK_TTL_MS,
+      );
+    } catch (err: unknown) {
+      this.logger.warn(
+        `Trigger gate lock unavailable for task "${task.name}" (${err instanceof Error ? err.message : String(err)}); proceeding without trigger serialization (fail-open)`,
+      );
+      return null;
+    }
+    if (!lock) {
+      throw new ConflictException(
+        `Task "${task.name}" already has a concurrent trigger with the same params in flight — trigger rejected, retry shortly`,
+      );
+    }
+    return lock;
   }
 
   /**
@@ -2771,22 +2937,39 @@ export class TaskService {
   ) {
     let fanoutFailed = false;
     try {
-      // Find all tasks that have any dependencies set, then filter in-process.
-      // Using application-layer filtering avoids JSONB-specific SQL that breaks
-      // on non-PostgreSQL engines and is simpler to reason about.
-      // NETOPT-1③: 投影最小化——下游只消费 task.id、task.dependencies 与
-      // task.params（FEAT-21 哨兵注入读 params；checkDependencies 读
-      // dependencies、claim/trigger/audit 读 id）。全实体物化会把
-      // glueSource(text)/runbook(text)/secrets(jsonb 密文) 逐列拉进内存，
-      // 而 SUCCESS 回调唯一赢家分支每次都要跑这一扫。
-      const allTasksWithDeps = await this.taskRepo
+      // Find tasks that list completedTaskId as one of their dependency values.
+      //
+      // B-3（调度域审计）：旧实现对 `dependencies IS NOT NULL` 的全部任务做
+      // 无 take 全表拉取后内存过滤——每次 SUCCESS 回调唯一赢家分支都要把
+      // 全量有依赖的任务行物化进内存，行数随业务线性增长。现改为 JSONB
+      // containment 谓词把过滤下推到 SQL，吃迁移
+      // 1790000000053（idx_tasks_dependencies_values_gin，表达式
+      // jsonb_path_query_array(dependencies,'$.keyvalue().value') 上的 GIN
+      // jsonb_path_ops 索引）：
+      // - dependencies 契约 = {显示名: 上游任务id}（FIX-1.1 / 迁移 0048），
+      //   **value 才是依赖任务 id**；「任一 value == completedTaskId」对
+      //   object 形态没有直接的列级 @> 形态（键未知），故用 IMMUTABLE 表达式
+      //   （PG13+ 起 jsonb_path_query_array 非 _tz 变体为 IMMUTABLE）把 values
+      //   投影成数组后做数组包含 `@> '["<id>"]'`——索引表达式与谓词左操作数
+      //   逐字对齐（对齐关系由迁移 spec 断言，漂移即红）。
+      // - 内存过滤保留为兜底（下方 filter）：谓词与索引漂移 / 脏形态行时
+      //   行为与旧实现一致，不因优化引入漏扇出。
+      // - jsonb_typeof 守卫把数组/标量等脏形态挡在 jsonpath 之外。
+      const depProbe = JSON.stringify([completedTaskId]);
+      const candidateTasks = await this.taskRepo
         .createQueryBuilder("t")
         .select(["t.id", "t.dependencies", "t.params"])
         .where("t.dependencies IS NOT NULL")
+        .andWhere("jsonb_typeof(t.dependencies) = 'object'")
+        .andWhere(
+          "jsonb_path_query_array(t.dependencies, '$.keyvalue().value') @> CAST(:depProbe AS jsonb)",
+          { depProbe },
+        )
         .getMany();
 
       // Keep only tasks that list completedTaskId as one of their dependency values
-      const dependentTasks = allTasksWithDeps.filter(
+      // （B-3: 内存兜底过滤，语义与旧实现逐字节一致）
+      const dependentTasks = candidateTasks.filter(
         (t) =>
           t.dependencies &&
           Object.values(t.dependencies).includes(completedTaskId),
@@ -3030,52 +3213,11 @@ export class TaskService {
 
   /**
    * Check if all dependencies of a task have completed successfully.
-   * R4-P3: 主查询补 take 上限（MAX_DEPENDENCY_EXECUTION_SCAN）避免把依赖
-   * 任务的全量历史拉进内存；若某依赖的最新执行被截断挤出窗口，用按依赖
-   * 的定向查询（隐式 LIMIT 1）兜底，保证判定不被截断破坏。
+   * B-6: 判定体抽至 dependency-gate.util（scheduler 的 misfire 补偿闸共用
+   * 同一实现，两处永不漂移）；本方法保留为扇出路径的语义入口。
    */
   private async checkDependencies(task: Task): Promise<boolean> {
-    if (!task.dependencies || Object.keys(task.dependencies).length === 0) {
-      return true;
-    }
-
-    const dependencyIds = Object.values(task.dependencies);
-    if (dependencyIds.length === 0) return true;
-
-    const recentExecutions = await this.execRepo.find({
-      where: { taskId: In(dependencyIds as string[]) },
-      order: { createdAt: "DESC" },
-      take: MAX_DEPENDENCY_EXECUTION_SCAN,
-    });
-
-    // Group by taskId and get the most recent execution for each
-    const latestByTask = new Map<string, TaskExecution>();
-    for (const exec of recentExecutions) {
-      if (!latestByTask.has(exec.taskId)) {
-        latestByTask.set(exec.taskId, exec);
-      }
-    }
-
-    // Check if all dependencies have successful executions
-    for (const depId of dependencyIds) {
-      let latestExec = latestByTask.get(depId as string);
-      if (!latestExec) {
-        // take 截断兜底：该依赖有历史但未落在本窗口内（或从未运行过），
-        // 定向补查一次；仍为空则视作依赖未满足（保持原语义）。
-        latestExec = await this.execRepo.findOne({
-          where: { taskId: depId as string },
-          order: { createdAt: "DESC" },
-        });
-        if (latestExec) {
-          latestByTask.set(depId as string, latestExec);
-        }
-      }
-      if (!latestExec || latestExec.status !== ExecutionStatus.SUCCESS) {
-        return false;
-      }
-    }
-
-    return true;
+    return areDependenciesSatisfied(this.execRepo, task.dependencies);
   }
 
   /**
@@ -3422,7 +3564,8 @@ export class TaskService {
   /**
    * FIX-3.1（timeout-policy.util ②「超时预警」的运行期消费点）：按
    * elapsed ≥ timeout×ratio 判定并发送一次 WARNING 预警
-   * （NotificationService.notifyTimeout，签名未动）。
+   * （NotificationService.notifyTimeout；A-11 起透传任务级 alarmChannels，
+   * 与失败告警 notifyFailureWithConfig 同源路由）。
    *
    * 「每执行至多一次」由 Redis SETNX 闸保证（acquireLock 即 SET NX PX，
    * key = acf:timeout-warn:{executionId}，TTL 24h 远大于任何执行生命周期、
@@ -3469,6 +3612,9 @@ export class TaskService {
         task.id,
         // NETOPT-5①: applicationId 透传（scope=application 静默判定同源）。
         task.applicationId ?? undefined,
+        // A-11: 超时预警与失败告警同源渠道路由——透传 task.alarmChannels
+        // （notifyFailureWithConfig 同款入口）；空/缺省回落全渠道（原行为）。
+        task.alarmChannels ?? undefined,
       );
     } catch (err: unknown) {
       this.logger.warn(
@@ -3731,24 +3877,34 @@ export class TaskService {
         // 为 null 属 dispatch 落库窗口的合法场景（RETURNING 会取库中实际地址），
         // 不在此拒绝。
         //
+        // B-7（调度域审计）：守卫扩展到 WAITING。WAITING（互斥/部署约束
+        // 排队）从未派发——executorAddress 恒为 null，却同属打开态：旧守卫
+        // 只挡 PENDING，持共享执行器凭据者可把**别家排队中**的执行写成终态
+        // （排队执行凭空"成功/失败"，唤醒后又被 dispatch 二次覆盖）。终态
+        // 回调只可能来自真实派发，而派发必先经 processor claim（WAITING→
+        // RUNNING）——WAITING 行不存在合法的终态回调来源；人工终止/覆盖走
+        // killExecution / COVER_EARLY（transitionToTerminal 直写，不经本
+        // HTTP 回调面）。
+        //
         // 超时耦合注记（N-17）：这个「executorAddress 合法为 null」的窗口由
         // 派发 HTTP 的客户端超时上界约束——executor.service.dispatch（及
         // dispatchBroadcast）对执行器 accept 请求的超时为
         // `((task.timeout || 300) + 10) * 1000` ms，即窗口长度与 task.timeout
         // 成比例。正因长超时任务的派发窗口可以很长（HTTP 还没返回、executor
-        // 却可能已接单开跑），本守卫只拒 PENDING+null（确实尚未派发）、放行
-        // RUNNING+null——两者以「是否已开始执行」划界，而不是以地址是否已
-        // 落库划界。
+        // 却可能已接单开跑），本守卫只拒「确实尚未派发」的 PENDING/WAITING、
+        // 放行 RUNNING+null——两者以「是否已开始执行」划界，而不是以地址是否
+        // 已落库划界。
         if (
-          execution.status === ExecutionStatus.PENDING &&
+          (execution.status === ExecutionStatus.PENDING ||
+            execution.status === ExecutionStatus.WAITING) &&
           !execution.executorAddress
         ) {
           recordRuntime("autoflow_callback_business_total", {
             result: "not_dispatched",
           });
           this.logger.warn(
-            `R-16: Rejected terminal callback for execution ${cb.executionId} ` +
-              `which has not been dispatched yet (executorAddress is null).`,
+            `R-16/B-7: Rejected terminal callback for execution ${cb.executionId} ` +
+              `in status ${execution.status} which has not been dispatched yet (executorAddress is null).`,
           );
           results.push({
             executionId: cb.executionId,
@@ -4100,7 +4256,7 @@ export class TaskService {
     createdBy?: string,
     description?: string,
     taskSnapshot?: Task,
-  ): Promise<TaskVersion> {
+  ): Promise<TaskVersion | null> {
     const task =
       taskSnapshot ?? (await this.taskRepo.findOne({ where: { id: taskId } }));
     if (!task) {
@@ -4206,16 +4362,33 @@ export class TaskService {
       // 回滚不受影响：rollbackToVersion 用 Object.assign，快照缺键即保留原值。
     };
 
-    return this.versionRepo.save(
-      this.versionRepo.create({
-        taskId,
-        version,
-        gitCommit: task.gitCommit,
-        snapshot,
-        createdBy,
-        description,
-      }),
-    );
+    // B-10（调度域审计）：并发 PATCH 的 MAX+1 竞态——两个并发保存各自算出
+    // 同一个 v<N>，迁移 1790000000021 的 (taskId, version) 唯一索引让败者的
+    // INSERT 撞 23505。此时任务行已保存、调度已重排（调用方的 save 都已成
+    // 功），把快照插入失败裸抛成 500 会让一次已成功的编辑收到错误响应。
+    // 版本快照少一条属可接受损失（主流程已成功；R1 先例：executor.service
+    // register 对同型竞态同样降级），识别 23505 后 warn 并返回 null，不回
+    // 500。版本保留策略（挤出一类）另行处理，不在本修复范围。
+    try {
+      return await this.versionRepo.save(
+        this.versionRepo.create({
+          taskId,
+          version,
+          gitCommit: task.gitCommit,
+          snapshot,
+          createdBy,
+          description,
+        }),
+      );
+    } catch (err: unknown) {
+      if (isUniqueViolation(err)) {
+        this.logger.warn(
+          `saveVersion: concurrent version snapshot insert for task ${taskId} lost the race (unique violation on (taskId, version)) — skipping this snapshot, main flow unaffected`,
+        );
+        return null;
+      }
+      throw err;
+    }
   }
 
   async getVersions(taskId: string): Promise<TaskVersion[]> {
@@ -4259,6 +4432,14 @@ export class TaskService {
 
     const saved = await this.taskRepo.save(task);
     await this.saveVersion(saved.id, undefined, undefined, saved);
+    // B-2（调度域审计）：回滚整体覆盖含 triggerType/cronExpression/fixedRate
+    // 的快照——若不重排调度，已注册的定时器仍按**旧表达式**继续触发（reload
+    // 只为「未注册」的任务建定时器，感知不到已注册任务的配置变化）。与
+    // update() 对齐：先停旧定时器，ACTIVE 任务再按新配置重建。
+    this.schedulerService.stop(taskId);
+    if (saved.status === TaskStatus.ACTIVE) {
+      await this.schedulerService.scheduleOne(saved);
+    }
     return saved;
   }
 

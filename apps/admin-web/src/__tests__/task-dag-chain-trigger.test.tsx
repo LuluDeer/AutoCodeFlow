@@ -8,6 +8,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import TaskDependencyGraph from '../components/TaskDependencyGraph';
+import { useAuthStore } from '../store/auth';
 import { tasksApi, type Task } from '../api/tasks';
 
 vi.mock('../api/tasks', async (importOriginal) => {
@@ -26,6 +27,9 @@ function task(id: string, name = id, deps?: Record<string, string>): Partial<Tas
 
 describe('TaskDependencyGraph 编排动作区（NF-02 触发整条链）', () => {
   beforeEach(() => {
+    // RBAC（P1-5 口径对齐）：链式触发 = trigger 写面，默认以管理员身份驱动
+    // 既有交互断言；非管理员禁用行为见下方独立用例。
+    useAuthStore.setState({ user: { id: 1, username: 'root', role: 'admin' } });
     vi.mocked(tasksApi.list).mockReset();
     vi.mocked(tasksApi.listAll).mockReset().mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 100 } as never);
     vi.mocked(tasksApi.batchTrigger).mockReset();
@@ -137,5 +141,31 @@ describe('TaskDependencyGraph 编排动作区（NF-02 触发整条链）', () =>
 
     expect(await screen.findByText('任务不存在或已删除，无法构建依赖图')).toBeTruthy();
     expect(screen.queryByTestId('state-error')).toBeNull();
+  });
+
+  // RBAC（P1-5 口径对齐）：非管理员「链式触发」入口禁用——同页头「立即触发」
+  // 按钮同为 admin-only，不得从依赖 Tab 绕过。（Tooltip 提示悬停才挂载，不在断言面）
+  it('非管理员：链式触发按钮禁用且不发出 batchTrigger', async () => {
+    useAuthStore.setState({ user: { id: 2, username: 'dev', role: 'user' } });
+    vi.mocked(tasksApi.listAll).mockResolvedValue({
+      items: [task('solo', '单任务')],
+      total: 1,
+      page: 1,
+      pageSize: 100,
+    } as never);
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <MemoryRouter>
+        <TaskDependencyGraph taskId="solo" />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    const btn = await screen.findByTestId('dag-trigger-chain');
+    expect((btn as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(btn);
+    // 留出事件循环，确认未发起写请求
+    await waitFor(() => expect(btn.isConnected).toBe(true));
+    expect(tasksApi.batchTrigger).not.toHaveBeenCalled();
   });
 });

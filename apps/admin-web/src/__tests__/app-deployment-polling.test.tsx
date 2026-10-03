@@ -2,8 +2,9 @@
  * F-34（DEEP_REVIEW 0ef3bbe）回归：AppDeploymentPage 的 3s 轮询
  *  ① 标签页不可见时跳过本拍请求（对齐 ExecutionsPage 15s 兜底轮询的
  *     document.visibilityState 守卫，定时器保留、回前台下一拍恢复）；
- *  ② 轮询拍只拉**部署列表**，不再每拍全量 GET /executors（执行器清单在
- *     秒级窗口内几乎不变）。
+ *  ② 轮询拍只拉**部署列表**——执行器 picker（下拉候选/占用判断/名字解析的
+ *     统一数据源）在秒级窗口内几乎不变，不得每拍重复拉取；R3-E 遗留收口后
+ *     全列 list() 更是**恒零调用**（名字解析吃 picker 行）。
  * 采用「捕获 3000ms 定时器回调后手动触发」的方式，避免假定时器与 antd 渲染互扰。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -18,7 +19,7 @@ vi.mock('../api/applications', () => ({
   applicationsApi: { upgradeAll: vi.fn() },
 }));
 vi.mock('../api/executors', () => ({
-  executorsApi: { list: vi.fn() },
+  executorsApi: { list: vi.fn(), picker: vi.fn() },
 }));
 
 // jsdom 缺失 antd 依赖的浏览器 API，先行补齐（对齐 app-deployment-race.test 先例）
@@ -62,7 +63,11 @@ const realSetInterval = globalThis.setInterval;
 
 beforeEach(() => {
   useAuthStore.setState({ user: { id: 1, username: 'root', role: 'admin' } });
-  vi.mocked(executorsApi.list).mockReset().mockResolvedValue([] as never);
+  // R3-E 收口后页面不再请求 list()（名字解析吃 picker 行）——mock 工厂保留
+  // list: vi.fn() 仅为「list 不再被请求」断言可用；此处不给实现，若实现回归
+  // 调 list() 将 resolve undefined，页面数据流立刻崩，双重变红。
+  vi.mocked(executorsApi.list).mockReset();
+  vi.mocked(executorsApi.picker).mockReset().mockResolvedValue({ items: [], total: 0, truncated: false, limit: 2000 } as never);
   vi.mocked(deploymentsApi.list)
     .mockReset()
     .mockResolvedValue({ data: [inProgressDeployment], total: 1 } as never);
@@ -92,9 +97,11 @@ describe('F-34 部署页轮询守卫', () => {
 
     render(<AppDeploymentPage applicationId="app-1" />);
 
-    // 首屏 fetchAll：部署列表 + 执行器清单各 1 次
+    // 首屏 fetchAll：部署列表 + 执行器 picker 各 1 次；list()（全列）已彻底
+    // 退场——名字解析吃 picker 行后不得再请求（R3-E 遗留收口的防回归断言）。
     await waitFor(() => expect(deploymentsApi.list).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(executorsApi.list).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(executorsApi.picker).toHaveBeenCalledTimes(1));
+    expect(executorsApi.list).not.toHaveBeenCalled();
     // 行状态为 deploying → 起 3s 轮询
     await waitFor(() => expect(pollers.length).toBe(1));
 
@@ -104,15 +111,17 @@ describe('F-34 部署页轮询守卫', () => {
       pollers[0]();
     });
     expect(deploymentsApi.list).toHaveBeenCalledTimes(1);
-    expect(executorsApi.list).toHaveBeenCalledTimes(1);
+    expect(executorsApi.list).not.toHaveBeenCalled();
+    expect(executorsApi.picker).toHaveBeenCalledTimes(1);
 
-    // ② 回到可见：只补拉部署列表（执行器清单不再每拍全量拉取）
+    // ② 回到可见：只补拉部署列表（picker 不每拍重复拉取，list 恒零调用）
     setVisibility('visible');
     await act(async () => {
       pollers[0]();
     });
     await waitFor(() => expect(deploymentsApi.list).toHaveBeenCalledTimes(2));
-    expect(executorsApi.list).toHaveBeenCalledTimes(1);
+    expect(executorsApi.list).not.toHaveBeenCalled();
+    expect(executorsApi.picker).toHaveBeenCalledTimes(1);
   });
 
   it('无进行中部署时不建立轮询', async () => {

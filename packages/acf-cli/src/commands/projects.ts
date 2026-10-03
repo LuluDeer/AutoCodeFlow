@@ -2,7 +2,8 @@ import { Command } from 'commander';
 import Table from 'cli-table3';
 import chalk from 'chalk';
 import ora from 'ora';
-import { get, formatApiError } from '../client.js';
+import { get } from '../client.js';
+import { emitError } from '../ui.js';
 
 /** 与后端 ProjectViewRow 对齐（AUTH-02-B 读面过滤视图）。 */
 interface ProjectRow {
@@ -69,9 +70,7 @@ export function projectsCommand(): Command {
         }
         console.log(table.toString());
       } catch (e: unknown) {
-        spinner.stop();
-        console.error(chalk.red(formatApiError(e)));
-        process.exitCode = 1;
+        emitError('Failed to list projects', e, { spinner });
       }
     });
 
@@ -100,9 +99,7 @@ export function projectsCommand(): Command {
         }
         console.log(table.toString());
       } catch (e: unknown) {
-        spinner.stop();
-        console.error(chalk.red(formatApiError(e)));
-        process.exitCode = 1;
+        emitError('Failed to list members', e, { spinner });
       }
     });
 

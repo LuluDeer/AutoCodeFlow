@@ -19,6 +19,12 @@ import { TaskTemplateService } from "./task-template.service";
 import { CreateTaskTemplateDto } from "./dto/create-task-template.dto";
 // PK-19: instantiate 覆盖体 Swagger 文档 DTO（运行时 @Body() 仍为 Record<string, unknown>）。
 import { InstantiateTaskOverlayDto } from "./dto/instantiate-task-overlay.dto";
+// B-3: 契约空壳修复——响应改标带 @ApiProperty 的 DTO（实体只 emit
+// {type:'object',properties:{}}，前端生成 Record<string, never>）。
+import {
+  InstantiateTaskResponseDto,
+  TaskTemplateResponseDto,
+} from "./dto/task-template-response.dto";
 import { TaskTemplate } from "./entities/task-template.entity";
 import { WriteGuard } from "../../common/decorators/write-guard.decorator";
 import { CurrentUser } from "../../common/decorators/current-user.decorator";
@@ -59,7 +65,7 @@ export class TaskTemplateController {
   @ApiResponse({
     status: 200,
     description: "Template list",
-    type: [TaskTemplate],
+    type: [TaskTemplateResponseDto],
   })
   list(): Promise<TaskTemplate[]> {
     return this.svc.findAll();
@@ -72,7 +78,11 @@ export class TaskTemplateController {
       "Used by the create-task form to prefetch a template's `config` for prefilling.",
   })
   @ApiParam({ name: "id", description: "Template UUID" })
-  @ApiResponse({ status: 200, description: "Template", type: TaskTemplate })
+  @ApiResponse({
+    status: 200,
+    description: "Template",
+    type: TaskTemplateResponseDto,
+  })
   @ApiResponse({ status: 404, description: "Template not found" })
   one(@Param("id", ParseUUIDPipe) id: string): Promise<TaskTemplate> {
     return this.svc.findOne(id);
@@ -89,7 +99,7 @@ export class TaskTemplateController {
   @ApiResponse({
     status: 201,
     description: "Created custom template",
-    type: TaskTemplate,
+    type: TaskTemplateResponseDto,
   })
   @ApiResponse({ status: 400, description: "Invalid config / key" })
   @ApiResponse({ status: 409, description: "Template key already exists" })
@@ -111,7 +121,12 @@ export class TaskTemplateController {
       "validated against CreateTaskDto and created via the standard task path.",
   })
   @ApiParam({ name: "id", description: "Template UUID" })
-  @ApiResponse({ status: 201, description: "Created task" })
+  // B-3: instantiate 201 契约最小面（此前零 schema——前端只能手写或丢弃类型）。
+  @ApiResponse({
+    status: 201,
+    description: "Created task (minimal face: identity/status/trigger fields)",
+    type: InstantiateTaskResponseDto,
+  })
   @ApiResponse({
     status: 400,
     description: "Missing name / invalid merged payload",

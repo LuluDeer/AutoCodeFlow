@@ -346,6 +346,11 @@ describe("A2 写面守卫穷举扫描（write-guard-coverage）", () => {
         "EventSubscriptionController.remove",
         "EventSubscriptionController.replay",
         "EventSubscriptionController.update",
+        // N-02③（ADR-013 2026-10-02 温和下放）：元数据面写权限下沉
+        // ExecutorController.assertCanManageMetadata（ADMIN 短路 + 所属项目
+        // editor+，落证 'executor:write'）——取代原 @Roles(ADMIN) 声明。
+        "ExecutorController.reloadConfig",
+        "ExecutorController.update",
         "TaskBatchController.batchDelete",
         "TaskController.analyzeExecution",
         "TaskController.batchDelete",

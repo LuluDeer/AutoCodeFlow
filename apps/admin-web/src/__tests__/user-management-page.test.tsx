@@ -16,6 +16,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MemoryRouter } from 'react-router-dom';
 import UserManagementPage from '../pages/UserManagementPage';
 import { usersApi } from '../api/users';
 import type { User } from '../api/users';
@@ -68,11 +69,14 @@ const usersFixture = [
   makeUser({ id: 3, username: 'carol', email: '', role: 'user', isActive: false }),
 ];
 
-function renderPage() {
+function renderPage(initialEntry = '/users') {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
+    // URL-SYNC-01：页面读/写 useSearchParams——包 MemoryRouter 提供路由上下文
     <QueryClientProvider client={qc}>
-      <UserManagementPage />
+      <MemoryRouter initialEntries={[initialEntry]}>
+        <UserManagementPage />
+      </MemoryRouter>
     </QueryClientProvider>,
   );
 }
@@ -304,5 +308,40 @@ describe('UserManagementPage 重置密码（QA-03）', () => {
       expect(mockedUsers.update).toHaveBeenCalledWith(1, { password: 'NewPass1!' });
     });
     expect(await screen.findByText('密码已重置')).toBeTruthy();
+  });
+});
+
+// ─── UX 边界回归（本轮全站打磨）───────────────────────────────────────────
+describe('UserManagementPage 空页钳制与 URL 同步（UX 边界）', () => {
+  it('删除某页最后一条 → page 状态回退上一页，list 以 page-1 重新拉取', async () => {
+    // 41 个用户、pageSize 20 → 第 3 页只有 1 条；删除后第 3 页消失，
+    // 若不回退页码，受控分页仍按 page=3 拉取 → 空表空页。
+    const pool = Array.from({ length: 20 }, (_, i) => makeUser({ id: i + 10, username: `user${i}` }));
+    mockedUsers.list.mockImplementation((page) =>
+      Promise.resolve(
+        page === 3
+          ? { list: [makeUser({ id: 99, username: 'zoe' })], total: 41, page: 3, pageSize: 20 }
+          : { list: pool, total: 41, page: page ?? 1, pageSize: 20 },
+      ),
+    );
+    mockedUsers.remove.mockResolvedValue({ deleted: true } as never);
+    renderPage('/users?page=3');
+    await screen.findByText('zoe');
+
+    const row = screen.getByText('zoe').closest('tr') as HTMLElement;
+    fireEvent.click(findBtn(row, '删除')!);
+    await confirmPopconfirm('确认删除');
+    await waitFor(() => expect(mockedUsers.remove).toHaveBeenCalledWith(99));
+
+    await waitFor(() => {
+      expect(mockedUsers.list).toHaveBeenCalledWith(2, 20, expect.anything(), undefined);
+    });
+  });
+
+  it('URL-SYNC-01：page/q 深链初始化 list 参数（刷新/分享不丢状态）', async () => {
+    renderPage('/users?page=2&q=bob');
+    await waitFor(() => {
+      expect(mockedUsers.list).toHaveBeenCalledWith(2, 20, expect.anything(), 'bob');
+    });
   });
 });

@@ -246,8 +246,11 @@ describe('UI-09 三页表格移动端产物', () => {
     await screen.findAllByText(/备份\s*任务/);
     const style = tableScrollStyle();
     expect(style).toBeTruthy();
-    // UI 打磨：scroll.x 与列宽合计校准（固定列 940 + 勾选 + 弹性名称列最小宽）
-    expect(Number.parseFloat(style!.width)).toBe(1140);
+    // UX-WALK 2026-10：scroll.x 必须 ≥ 固定列宽合计（status90/trigger100/priority80/
+    // schedule190/nextRun170/lastRun150/runtime80/enabled70/actions210 + 勾选32 = 1172）
+    // + 名称列弹性下限 220 → 1392。旧值 1140 已被增列追平，名称列被压到 ~1px
+    // （1280×800 首列逐字竖排不可读——UX 走查回归，task-list-deep 另钉算术契约）
+    expect(Number.parseFloat(style!.width)).toBe(1392);
     const classes = cellClassSet();
     expect(classes.has('ui09-hide-mobile')).toBe(true);
   });

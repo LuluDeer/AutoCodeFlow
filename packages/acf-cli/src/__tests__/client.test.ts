@@ -64,6 +64,7 @@ import {
   unwrap,
   resetClient,
   formatApiError,
+  classifyApiError,
   ANALYZE_TIMEOUT_MS,
 } from "../client.js";
 import contract from "../../../contract-fixtures/contract.json" with { type: "json" };
@@ -88,6 +89,30 @@ function getOnRejected(): (err: unknown) => Promise<unknown> {
   expect(typeof onRejected).toBe("function");
   return onRejected as (err: unknown) => Promise<unknown>;
 }
+
+// ---------------------------------------------------------------------------
+// classifyApiError（本轮 UX 统一）：退出码分类在 client 层做一次。
+// 401→auth(3)、无 response→network(4)、其余 HTTP→server(1)、非 axios→unknown(1)。
+// 判据与 formatApiError 同源（axios 形状），此处钉的是分类本身而非文案。
+// ---------------------------------------------------------------------------
+describe("classifyApiError", () => {
+  it("401 → auth（凭据失效，须重新 acf login）", () => {
+    expect(classifyApiError({ isAxiosError: true, response: { status: 401 } })).toBe("auth");
+  });
+
+  it("无 response（连接拒绝 / DNS / 超时）→ network", () => {
+    expect(classifyApiError({ isAxiosError: true })).toBe("network");
+  });
+
+  it.each([400, 403, 404, 409, 429, 500])("HTTP %i → server", (status) => {
+    expect(classifyApiError({ isAxiosError: true, response: { status } })).toBe("server");
+  });
+
+  it("非 axios 错误 → unknown（本地文件 IO / JSON 解析等）", () => {
+    expect(classifyApiError(new Error("local"))).toBe("unknown");
+    expect(classifyApiError("string error")).toBe("unknown");
+  });
+});
 
 describe("unwrap", () => {
   it("strips the { code, message, data } envelope", () => {

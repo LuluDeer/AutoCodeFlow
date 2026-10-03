@@ -4,9 +4,11 @@ import { getQueueToken } from "@nestjs/bullmq";
 import {
   SchedulerService,
   computeTriggerDedupTtlMs,
+  computeMisfireThresholdMs,
   TRIGGER_DEDUP_MIN_TTL_MS,
   TRIGGER_DEDUP_JITTER_BUFFER_MS,
   ACTIVE_TASK_PAGE_SIZE,
+  MUTEX_WAKE_PAGE_SIZE,
 } from "../scheduler.service";
 // A4: 入队 priority 断言需要与实现同一方向换算（util 映射表另有专属单测）。
 import { toBullPriority } from "../../../common/utils/task-priority.util";
@@ -627,6 +629,203 @@ describe("SchedulerService", () => {
       };
       expect(secondArgs.order).toEqual({ id: "ASC" });
       expect(secondArgs.take).toBe(ACTIVE_TASK_PAGE_SIZE);
+    });
+
+    // ── B-1：misfire 阈值按真实周期推导——小时级 cron 不再每 5min tick 误判 ──
+    it("B-1: hourly cron with a recent (10min-old) lastTriggerTime is NOT treated as misfired", async () => {
+      await makeLeader();
+      taskRepo.find.mockClear();
+      const task = makeTask({
+        triggerType: TaskTriggerType.CRON,
+        cronExpression: "0 * * * *", // 小时级
+        misfireStrategy: MisfireStrategy.FIRE_ONCE,
+        lastTriggerTime: new Date(Date.now() - 10 * 60 * 1000), // 10min 前
+      });
+      taskRepo.find.mockResolvedValue([task]);
+
+      await service.checkMisfires();
+
+      // 旧实现阈值恒 2min → gap=10min 误判补偿入队；新阈值 = 2×1h。
+      expect(queue.add).not.toHaveBeenCalled();
+    });
+
+    it("B-1: hourly cron past 2×period IS compensated (real misfire)", async () => {
+      await makeLeader();
+      taskRepo.find.mockClear();
+      const task = makeTask({
+        triggerType: TaskTriggerType.CRON,
+        cronExpression: "0 * * * *",
+        misfireStrategy: MisfireStrategy.FIRE_ONCE,
+        lastTriggerTime: new Date(Date.now() - 3 * 60 * 60 * 1000), // 3h 前
+      });
+      taskRepo.find.mockResolvedValue([task]);
+      const lock = { release: jest.fn().mockResolvedValue(undefined) };
+      redisLockService.acquireLock.mockResolvedValue(lock);
+      taskRepo.findOne.mockResolvedValue(task);
+      const exec = {
+        id: "exec-1",
+        status: ExecutionStatus.PENDING,
+      } as TaskExecution;
+      execRepo.create.mockReturnValue(exec);
+      execRepo.save.mockResolvedValue(exec);
+
+      await service.checkMisfires();
+
+      expect(queue.add).toHaveBeenCalledTimes(1);
+    });
+
+    it("B-1: compensation is withheld when no scheduled cron fire point falls inside (lastTriggerTime, now]", async () => {
+      await makeLeader();
+      taskRepo.find.mockClear();
+      // lastTriggerTime 在计划触达点之后 30s（本次触发已入队、lastTriggerTime
+      // 已推进），但任务配置无法触达的垃圾表达式 → 最近触达反查不到 →
+      // 「无法确认错失」→ 不在计划外补偿入队。
+      const task = makeTask({
+        triggerType: TaskTriggerType.CRON,
+        cronExpression: "not-a-cron",
+        misfireStrategy: MisfireStrategy.FIRE_ONCE,
+        lastTriggerTime: new Date(Date.now() - 10 * 60 * 1000),
+      });
+      taskRepo.find.mockResolvedValue([task]);
+
+      await service.checkMisfires();
+
+      expect(queue.add).not.toHaveBeenCalled();
+    });
+
+    it("B-1: fixed_rate threshold semantics unchanged (2×fixedRate)", async () => {
+      await makeLeader();
+      taskRepo.find.mockClear();
+      const task = makeTask({
+        triggerType: TaskTriggerType.FIXED_RATE,
+        fixedRate: 60,
+        misfireStrategy: MisfireStrategy.FIRE_ONCE,
+        lastTriggerTime: new Date(Date.now() - 3 * 60 * 1000), // 3min 前：>2min 阈值
+      });
+      taskRepo.find.mockResolvedValue([task]);
+      const lock = { release: jest.fn().mockResolvedValue(undefined) };
+      redisLockService.acquireLock.mockResolvedValue(lock);
+      taskRepo.findOne.mockResolvedValue(task);
+      const exec = {
+        id: "exec-1",
+        status: ExecutionStatus.PENDING,
+      } as TaskExecution;
+      execRepo.create.mockReturnValue(exec);
+      execRepo.save.mockResolvedValue(exec);
+
+      await service.checkMisfires();
+
+      expect(queue.add).toHaveBeenCalledTimes(1);
+    });
+
+    // ── B-6：misfire 补偿对依赖任务补依赖闸 ──
+    it("B-6: dependency-gated task whose deps are unsatisfied is NOT compensated via misfire", async () => {
+      await makeLeader();
+      taskRepo.find.mockClear();
+      const task = makeTask({
+        triggerType: TaskTriggerType.FIXED_RATE,
+        fixedRate: 60,
+        misfireStrategy: MisfireStrategy.FIRE_ONCE,
+        lastTriggerTime: new Date(Date.now() - 10 * 60 * 1000),
+        dependencies: { upstream: "task-upstream" },
+      });
+      taskRepo.find.mockResolvedValue([task]);
+      // 依赖闸：上游最新执行 FAILED → 不满足
+      execRepo.find.mockResolvedValue([
+        { taskId: "task-upstream", status: ExecutionStatus.FAILED },
+      ]);
+
+      await service.checkMisfires();
+
+      expect(queue.add).not.toHaveBeenCalled();
+      // 跳过计入指标（B-6 skipped 计数器）
+      expect(
+        metrics.snapshot.misfiresSkippedDependencies,
+      ).toBeGreaterThanOrEqual(1);
+    });
+
+    it("B-6: dependency-gated task with all deps SUCCESS is still compensated", async () => {
+      await makeLeader();
+      taskRepo.find.mockClear();
+      const task = makeTask({
+        triggerType: TaskTriggerType.FIXED_RATE,
+        fixedRate: 60,
+        misfireStrategy: MisfireStrategy.FIRE_ONCE,
+        lastTriggerTime: new Date(Date.now() - 10 * 60 * 1000),
+        dependencies: { upstream: "task-upstream" },
+      });
+      taskRepo.find.mockResolvedValue([task]);
+      execRepo.find.mockResolvedValue([
+        { taskId: "task-upstream", status: ExecutionStatus.SUCCESS },
+      ]);
+      const lock = { release: jest.fn().mockResolvedValue(undefined) };
+      redisLockService.acquireLock.mockResolvedValue(lock);
+      taskRepo.findOne.mockResolvedValue(task);
+      const exec = {
+        id: "exec-1",
+        status: ExecutionStatus.PENDING,
+      } as TaskExecution;
+      execRepo.create.mockReturnValue(exec);
+      execRepo.save.mockResolvedValue(exec);
+
+      await service.checkMisfires();
+
+      expect(queue.add).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // ── B-1：misfire 阈值推导纯函数 ─────────────────────────────────────────
+  describe("computeMisfireThresholdMs / estimateCronPeriodMs (B-1)", () => {
+    it("fixed_rate keeps the legacy 2×fixedRate threshold", () => {
+      const task = makeTask({
+        triggerType: TaskTriggerType.FIXED_RATE,
+        fixedRate: 30,
+      });
+      expect(computeMisfireThresholdMs(task)).toBe(60_000);
+    });
+
+    it("cron threshold is derived from the expression's real period (hourly → 2h)", () => {
+      const task = makeTask({
+        triggerType: TaskTriggerType.CRON,
+        cronExpression: "0 * * * *",
+      });
+      expect(computeMisfireThresholdMs(task)).toBe(2 * 60 * 60 * 1000);
+    });
+
+    it("cron threshold scales with a 5-minute expression (→ 10min)", () => {
+      const task = makeTask({
+        triggerType: TaskTriggerType.CRON,
+        cronExpression: "*/5 * * * *",
+      });
+      expect(computeMisfireThresholdMs(task)).toBe(10 * 60 * 1000);
+    });
+
+    it("unparseable cron falls back to the legacy 2min conservative threshold", () => {
+      const task = makeTask({
+        triggerType: TaskTriggerType.CRON,
+        cronExpression: "definitely-not-a-cron",
+      });
+      expect(computeMisfireThresholdMs(task)).toBe(2 * 60 * 1000);
+    });
+
+    it("non-scheduled trigger types fall back to the legacy 2min threshold", () => {
+      const task = makeTask({
+        triggerType: TaskTriggerType.CRON,
+        cronExpression: null as unknown as string,
+      });
+      expect(computeMisfireThresholdMs(task)).toBe(2 * 60 * 1000);
+    });
+
+    it("estimateCronPeriodMs measures consecutive fire intervals (daily → 24h)", () => {
+      const period = computeMisfireThresholdMs(
+        makeTask({
+          triggerType: TaskTriggerType.CRON,
+          cronExpression: "30 2 * * *",
+        }),
+      );
+      // 阈值 = 2×周期 → 周期应落在 24h±小时级（跨午夜/夏令时容忍）
+      expect(period).toBeGreaterThan(2 * 23 * 60 * 60 * 1000);
+      expect(period).toBeLessThanOrEqual(2 * 25 * 60 * 60 * 1000);
     });
   });
 
@@ -2495,35 +2694,54 @@ describe("SchedulerService", () => {
       id: "exec-wait-1",
       taskId: "task-1",
       status: ExecutionStatus.WAITING,
+      createdAt: new Date("2026-01-01T00:00:00Z"),
       errorMessage: "排队原因",
     } as unknown as TaskExecution;
 
-    const makeFlipQb = (affected: number) => ({
-      update: jest.fn().mockReturnThis(),
-      set: jest.fn().mockReturnThis(),
-      where: jest.fn().mockReturnThis(),
-      execute: jest.fn().mockResolvedValue({ affected }),
-    });
+    // B-4: sweep 读页与翻转更新都走 execRepo.createQueryBuilder——同一 mock
+    // 同时承载 getMany（读页）与 update/set/where/execute（条件翻转）。
+    const makeSweepQb = (opts: {
+      waiting: TaskExecution[];
+      flipAffected?: number;
+    }) => {
+      const qb: Record<string, jest.Mock> = {
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        addOrderBy: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        getMany: jest.fn().mockResolvedValue(opts.waiting),
+        update: jest.fn().mockReturnThis(),
+        set: jest.fn().mockReturnThis(),
+        execute: jest
+          .fn()
+          .mockResolvedValue({ affected: opts.flipAffected ?? 1 }),
+      };
+      return qb;
+    };
 
     it("非 Leader 直接跳过（多实例下仅 Leader 唤醒）", async () => {
       await service.wakeMutexQueuedExecutions();
-      expect(execRepo.find).not.toHaveBeenCalled();
+      expect(execRepo.createQueryBuilder).not.toHaveBeenCalled();
     });
 
     it("Leader：WAITING 行被条件翻转回 PENDING 并按任务预算重新入队", async () => {
       await makeLeader();
-      execRepo.find.mockResolvedValue([waitingExec]);
+      const sweepQb = makeSweepQb({ waiting: [waitingExec] });
+      execRepo.createQueryBuilder.mockReturnValue(sweepQb);
       taskRepo.findBy.mockResolvedValue([makeTask({ maxRetry: 3 })]);
-      const flipQb = makeFlipQb(1);
-      execRepo.createQueryBuilder.mockReturnValue(flipQb);
 
       await service.wakeMutexQueuedExecutions();
 
-      expect(execRepo.find).toHaveBeenCalledWith(
-        expect.objectContaining({ where: { status: ExecutionStatus.WAITING } }),
+      // 读页谓词：WAITING 等值 + (createdAt,id) keyset 排序（B-4 分页形态）。
+      expect(sweepQb.where).toHaveBeenCalledWith(
+        "e.status = :waiting",
+        expect.objectContaining({ waiting: ExecutionStatus.WAITING }),
       );
+      expect(sweepQb.orderBy).toHaveBeenCalledWith("e.createdAt", "ASC");
+      expect(sweepQb.addOrderBy).toHaveBeenCalledWith("e.id", "ASC");
       // 条件翻转独占唤醒权：WAITING → PENDING，且清空排队原因。
-      expect(flipQb.set).toHaveBeenCalledWith(
+      expect(sweepQb.set).toHaveBeenCalledWith(
         expect.objectContaining({
           status: ExecutionStatus.PENDING,
           errorMessage: null,
@@ -2539,9 +2757,12 @@ describe("SchedulerService", () => {
 
     it("翻转落空（并发 kill / 重复唤醒）→ 不入队", async () => {
       await makeLeader();
-      execRepo.find.mockResolvedValue([waitingExec]);
+      const sweepQb = makeSweepQb({
+        waiting: [waitingExec],
+        flipAffected: 0,
+      });
+      execRepo.createQueryBuilder.mockReturnValue(sweepQb);
       taskRepo.findBy.mockResolvedValue([makeTask()]);
-      execRepo.createQueryBuilder.mockReturnValue(makeFlipQb(0));
 
       await service.wakeMutexQueuedExecutions();
 
@@ -2550,9 +2771,9 @@ describe("SchedulerService", () => {
 
     it("入队失败 → 回滚为 WAITING，等待下轮 sweep 再试", async () => {
       await makeLeader();
-      execRepo.find.mockResolvedValue([waitingExec]);
+      const sweepQb = makeSweepQb({ waiting: [waitingExec] });
+      execRepo.createQueryBuilder.mockReturnValue(sweepQb);
       taskRepo.findBy.mockResolvedValue([makeTask()]);
-      execRepo.createQueryBuilder.mockReturnValue(makeFlipQb(1));
       queue.add.mockRejectedValueOnce(new Error("redis down"));
 
       await service.wakeMutexQueuedExecutions();
@@ -2578,17 +2799,20 @@ describe("SchedulerService", () => {
           id,
           taskId: "task-1",
           status: ExecutionStatus.WAITING,
+          createdAt: new Date("2026-01-01T00:00:00Z"),
           mutexGroupId: groupId,
         }) as unknown as TaskExecution;
       // createdAt ASC：g-A 的两条在前，g-B 一条，无组一条
-      execRepo.find.mockResolvedValue([
-        makeWaiting("exec-gA-1", "group-A"),
-        makeWaiting("exec-gA-2", "group-A"),
-        makeWaiting("exec-gB-1", "group-B"),
-        makeWaiting("exec-none", null),
-      ]);
+      const sweepQb = makeSweepQb({
+        waiting: [
+          makeWaiting("exec-gA-1", "group-A"),
+          makeWaiting("exec-gA-2", "group-A"),
+          makeWaiting("exec-gB-1", "group-B"),
+          makeWaiting("exec-none", null),
+        ],
+      });
+      execRepo.createQueryBuilder.mockReturnValue(sweepQb);
       taskRepo.findBy.mockResolvedValue([makeTask()]);
-      execRepo.createQueryBuilder.mockReturnValue(makeFlipQb(1));
 
       await service.wakeMutexQueuedExecutions();
 
@@ -2598,6 +2822,121 @@ describe("SchedulerService", () => {
       // 组 A 只唤醒探针（最早一条），组 B 与无组候选照常唤醒
       expect(enqueuedIds).toEqual(["exec-gA-1", "exec-gB-1", "exec-none"]);
       expect(enqueuedIds).not.toContain("exec-gA-2");
+    });
+
+    // ── B-4：分页唤醒——满页后游标推进，第 201+ 条不再饿死 ──
+    it("B-4: 满页后 keyset 游标推进翻页，后续页的 WAITING 行也被唤醒", async () => {
+      await makeLeader();
+      const makeWaiting = (id: string) =>
+        ({
+          id,
+          taskId: "task-1",
+          status: ExecutionStatus.WAITING,
+          createdAt: new Date("2026-01-01T00:00:00Z"),
+        }) as unknown as TaskExecution;
+      const pageOne = Array.from({ length: MUTEX_WAKE_PAGE_SIZE }, (_, i) =>
+        makeWaiting(`exec-p1-${i}`),
+      );
+      const pageTwo = [makeWaiting("exec-p2-first")];
+      let page = 0;
+      const sweepQb = {
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        addOrderBy: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        getMany: jest.fn().mockImplementation(async () => {
+          page += 1;
+          return page === 1 ? pageOne : pageTwo;
+        }),
+        update: jest.fn().mockReturnThis(),
+        set: jest.fn().mockReturnThis(),
+        execute: jest.fn().mockResolvedValue({ affected: 1 }),
+      };
+      execRepo.createQueryBuilder.mockReturnValue(sweepQb);
+      taskRepo.findBy.mockResolvedValue([makeTask()]);
+
+      await service.wakeMutexQueuedExecutions();
+
+      // 第二页被读取（旧实现单页 take:200 到此为止）
+      expect(sweepQb.getMany).toHaveBeenCalledTimes(2);
+      // 第二页请求带游标条件（本页最后一行的 (createdAt, id)）
+      expect(sweepQb.andWhere).toHaveBeenCalledWith(
+        expect.stringContaining("e.createdAt > :cursorAt"),
+        expect.objectContaining({ cursorId: "exec-p1-199" }),
+      );
+      const enqueuedIds = queue.add.mock.calls.map(
+        (c: any[]) => (c[1] as { executionId: string }).executionId,
+      );
+      expect(enqueuedIds).toContain("exec-p2-first");
+      expect(enqueuedIds).toHaveLength(MUTEX_WAKE_PAGE_SIZE + 1);
+    });
+
+    it("B-4: 不足满页即收工（不空转第二轮）", async () => {
+      await makeLeader();
+      const sweepQb = makeSweepQb({ waiting: [waitingExec] });
+      execRepo.createQueryBuilder.mockReturnValue(sweepQb);
+      taskRepo.findBy.mockResolvedValue([makeTask()]);
+
+      await service.wakeMutexQueuedExecutions();
+
+      expect(sweepQb.getMany).toHaveBeenCalledTimes(1);
+    });
+
+    // ── B-11：非 ACTIVE（PAUSED）任务的排队执行不唤醒，行保持 WAITING ──
+    it("B-11: PAUSED 任务的 WAITING 行跳过不动，行保持 WAITING", async () => {
+      await makeLeader();
+      const pausedExec = {
+        id: "exec-paused",
+        taskId: "task-paused",
+        status: ExecutionStatus.WAITING,
+        createdAt: new Date("2026-01-01T00:00:00Z"),
+      } as unknown as TaskExecution;
+      const activeExec = {
+        id: "exec-active",
+        taskId: "task-active",
+        status: ExecutionStatus.WAITING,
+        createdAt: new Date("2026-01-01T00:00:01Z"),
+      } as unknown as TaskExecution;
+      const sweepQb = makeSweepQb({ waiting: [pausedExec, activeExec] });
+      execRepo.createQueryBuilder.mockReturnValue(sweepQb);
+      taskRepo.findBy.mockResolvedValue([
+        makeTask({ id: "task-paused", status: TaskStatus.PAUSED }),
+        makeTask({ id: "task-active" }),
+      ]);
+
+      await service.wakeMutexQueuedExecutions();
+
+      const enqueuedIds = queue.add.mock.calls.map(
+        (c: any[]) => (c[1] as { executionId: string }).executionId,
+      );
+      expect(enqueuedIds).toEqual(["exec-active"]);
+      // PAUSED 行未被翻转（翻转 UPDATE 只发生一次——ACTIVE 行那次）。
+      expect(sweepQb.update).toHaveBeenCalledTimes(1);
+    });
+
+    it("B-11: resume 后任务回到 ACTIVE，其 WAITING 行恢复被正常唤醒", async () => {
+      await makeLeader();
+      const sweepQb = makeSweepQb({
+        waiting: [
+          {
+            id: "exec-resumable",
+            taskId: "task-1",
+            status: ExecutionStatus.WAITING,
+            createdAt: new Date("2026-01-01T00:00:00Z"),
+          } as unknown as TaskExecution,
+        ],
+      });
+      execRepo.createQueryBuilder.mockReturnValue(sweepQb);
+      taskRepo.findBy.mockResolvedValue([makeTask()]); // ACTIVE
+
+      await service.wakeMutexQueuedExecutions();
+
+      expect(queue.add).toHaveBeenCalledWith(
+        "execute",
+        { executionId: "exec-resumable" },
+        expect.anything(),
+      );
     });
   });
 });

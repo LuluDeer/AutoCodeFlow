@@ -1,6 +1,6 @@
 import { NotFoundException } from "@nestjs/common";
 
-import { AgentSessionService } from "../agent-session.service";
+import { AgentSessionService, safeTokenCount } from "../agent-session.service";
 import { AGENT_TERMINAL_STATUSES } from "../../entities/agent-session.entity";
 
 /** TypeORM 惯用 fake：createQueryBuilder 链式桩。 */
@@ -160,6 +160,29 @@ describe("AgentSessionService · 创建与查询", () => {
     expect(h.listQb.andWhere).not.toHaveBeenCalled();
   });
 
+  it("list：NaN/Infinity page/pageSize 安全回落默认 1/20（穿透钳制会炸 500）", async () => {
+    // HTTP 层 parseInt("abc")=NaN 会穿透 Math.max/Math.min（Math.max(1,NaN)=NaN），
+    // NaN 直达 skip/take——必须视同未传回落默认，而不是让 Prisma/TypeORM 500，
+    // 也不是 400（对齐前端「深链非法值回落默认」契约）。
+    for (const evil of [
+      NaN,
+      Number.POSITIVE_INFINITY,
+      Number.NEGATIVE_INFINITY,
+    ]) {
+      const h = harness();
+      await h.svc.list({ page: evil, pageSize: evil });
+      expect(h.listQb.skip).toHaveBeenCalledWith(0);
+      expect(h.listQb.take).toHaveBeenCalledWith(20);
+    }
+  });
+
+  it("list：合法 page/pageSize 不受 NaN 守卫影响（原值照用）", async () => {
+    const h = harness();
+    await h.svc.list({ page: 2, pageSize: 50 });
+    expect(h.listQb.skip).toHaveBeenCalledWith(50);
+    expect(h.listQb.take).toHaveBeenCalledWith(50);
+  });
+
   it("findChildren / listSteps / listToolCalls 透传排序读取", async () => {
     const h = harness();
     await expect(h.svc.findChildren("p-1")).resolves.toEqual([
@@ -187,6 +210,15 @@ describe("AgentSessionService · 状态迁移（幂等语义）", () => {
       status: "running",
       waitingFor: null,
     });
+  });
+
+  it("markRunning：CAS where 排除 running 与全部终态（B-8 双保险）", async () => {
+    const h = harness({ id: "s-1", startedAt: null });
+    await h.svc.markRunning("s-1");
+    expect(h.sessionQb.where).toHaveBeenCalledWith(
+      "id = :id AND status <> 'running' AND status NOT IN (:...terminal)",
+      { id: "s-1", terminal: AGENT_TERMINAL_STATUSES },
+    );
   });
 
   it("markWaiting：不设 finishedAt（非终态）", async () => {
@@ -280,6 +312,43 @@ describe("AgentSessionService · 步骤与用量（同事务收敛）", () => {
     const h = harness();
     const step = await h.svc.appendStep("s-1", { role: "user" });
     expect(step).toMatchObject({ tokensIn: 0, tokensOut: 0, latencyMs: 0 });
+  });
+
+  it("appendStep：字符串数字正常入库（Number 收敛），恶意串不破坏 SQL（B-4）", async () => {
+    const h = harness();
+    // 上游 usage 返回字符串数字——收敛后按数值拼接
+    await h.svc.appendStep("s-1", {
+      role: "assistant",
+      tokensIn: "12" as unknown as number,
+      tokensOut: "34" as unknown as number,
+    });
+    let setArg = h.emQb.set.mock.calls[0][0] as Record<string, () => string>;
+    expect(setArg.totalTokensIn()).toBe('"totalTokensIn" + 12');
+    expect(setArg.totalTokensOut()).toBe('"totalTokensOut" + 34');
+
+    // 恶意串 / NaN / 负数 → 0，SQL 表达式不被注入
+    for (const evil of ["1; DROP TABLE agent_sessions--", NaN, -5]) {
+      const hi = harness();
+      await hi.svc.appendStep("s-1", {
+        role: "assistant",
+        tokensIn: evil as unknown as number,
+        tokensOut: evil as unknown as number,
+      });
+      setArg = hi.emQb.set.mock.calls[0][0] as Record<string, () => string>;
+      expect(setArg.totalTokensIn()).toBe('"totalTokensIn" + 0');
+      expect(setArg.totalTokensOut()).toBe('"totalTokensOut" + 0');
+    }
+  });
+
+  it("safeTokenCount：收敛语义单测（有限正数保留，其余归 0）", () => {
+    expect(safeTokenCount(7)).toBe(7);
+    expect(safeTokenCount("42")).toBe(42);
+    expect(safeTokenCount(0)).toBe(0);
+    expect(safeTokenCount(undefined)).toBe(0);
+    expect(safeTokenCount(null)).toBe(0);
+    expect(safeTokenCount(-1)).toBe(0);
+    expect(safeTokenCount(Number.POSITIVE_INFINITY)).toBe(0);
+    expect(safeTokenCount("1; DROP TABLE agent_sessions--")).toBe(0);
   });
 
   it("recordToolCall：被拒/待审批的尝试同样落库 + 计数", async () => {

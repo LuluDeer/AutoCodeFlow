@@ -326,6 +326,52 @@ function poolRoot(): string {
 }
 
 /**
+ * A-8（P3）python parity（interpreters.py harden_pool_permissions，B-4
+ * SEC-NEW）：收紧解释器缓存池根目录权限 + 校验 owner。
+ *
+ * 只允许执行器用户可写（0o755），同机其他进程/容器不得向池内注入伪造的
+ * `cpython-<ver>-…` 目录（那会让所有使用该版本的任务跑在攻击者提供的解释器
+ * 上）。与 python 同判据：Windows 的 fs.chmodSync 只映射只读位、uid 无意义，
+ * 故 win32 只确保目录存在、跳过 chmod/owner 校验；chmod/stat 失败不阻断
+ * （记录 warning，只读卷场景由部署方保证）。
+ *
+ * 调用点：main.ts 启动期一次 + 在线下载成功后（installPythonViaUv）——与
+ * python 的启动期 + discover_installed 幂等重入姿态一致。
+ */
+export function hardenPoolPermissions(): void {
+  const root = poolRoot();
+  try {
+    fs.mkdirSync(root, { recursive: true });
+  } catch (err) {
+    logger.warn(
+      `interpreters: cannot create pool dir ${root}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+    return;
+  }
+  if (process.platform === 'win32') {
+    return;
+  }
+  try {
+    fs.chmodSync(root, 0o755);
+    const st = fs.statSync(root);
+    if (typeof process.geteuid === 'function' && st.uid !== process.geteuid()) {
+      logger.warn(
+        `interpreters: pool dir ${root} is owned by uid ${st.uid} (executor runs as ${process.geteuid()}); ` +
+          'ensure the owner is trusted and the dir is NOT writable by others (B-4)',
+      );
+    }
+  } catch (err) {
+    logger.warn(
+      `interpreters: cannot harden pool dir ${root} permissions: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
+}
+
+/**
  * 2-2（audit-r4）：把 realpathSync 的结果归一化为「可跨表示去重」的规范键。
  *
  * Windows 上 `fs.realpathSync` 对长路径返回 `\\?\` 扩展前缀、对 UNC 返回
@@ -1424,7 +1470,10 @@ async function installVersion(
 
   // 后置校验：uv 返回 0 不等于池里就有可用的解释器（磁盘满、解压半途失败等
   // 都可能留下一个"装了一半"的目录）。必须实测路径存在 + 主次版本相符。
+  // A-8：下载落盘会新建目录条目——成功后重新加固池根（幂等，POSIX chmod+
+  // owner 校验；win32 无操作），与启动期同一姿态。
   invalidateCache();
+  hardenPoolPermissions();
   const discovered = await discoverInstalled({ force: true, signal });
   const hit = resolvePythonBin(requested);
   const matching = discovered.filter(

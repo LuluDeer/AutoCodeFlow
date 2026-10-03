@@ -9,7 +9,11 @@ import {
 } from '../number-input';
 // N-04：渲染层双语——文案本体在 ../i18n.ts 的 CFG_TEXTS（zh/en 扁平键表，
 // 与托盘 tray-texts 同范式）；语言判定 navigator.language en* → en，其余 zh。
-import { createCfgTexts, resolveRendererLocale } from '../i18n';
+import { createCfgTexts, resolveRendererLocale, type RendererLocale } from '../i18n';
+// Agent 最近结果（lastOutcome）是英文枚举（delivered / deliver_failed / …），
+// 与状态页共用 main/agent-status-view 的查表映射——已知值出双语标签、表外
+// 未知值原样透出。不在设置页再写一份裸枚举直出。
+import { agentOutcomeLabel } from '../../main/agent-status-view';
 
 declare const window: Window & {
   electronAPI: {
@@ -92,7 +96,8 @@ function parseListText(value: string): string[] {
 export default function ConfigPage() {
   // N-04：整页共用一个 locale 的文案函数（同 tray「同一轮渲染锁同语言」，
   // 杜绝混语；渲染层无热切语言入口，重挂载时按 navigator.language 重取）。
-  const t = createCfgTexts(resolveRendererLocale(() => navigator.language));
+  const locale: RendererLocale = resolveRendererLocale(() => navigator.language);
+  const t = createCfgTexts(locale);
   const [form, setForm] = useState<Record<string, unknown>>({});
   const [savedForm, setSavedForm] = useState<Record<string, unknown>>({});
   const [allowedAppsText, setAllowedAppsText] = useState('');
@@ -676,7 +681,7 @@ export default function ConfigPage() {
                       : agentStatus.enabled
                         ? t('cfg.agent.statusEnabled', agentStatus.processed)
                         : t('cfg.agent.statusDisabled')}
-                    {agentStatus.lastOutcome ? t('cfg.agent.lastOutcomeFmt', agentStatus.lastOutcome) : ''}
+                    {agentStatus.lastOutcome ? t('cfg.agent.lastOutcomeFmt', agentOutcomeLabel(agentStatus.lastOutcome, locale)) : ''}
                     {agentStatus.lastEffectiveProfile ? t('cfg.agent.lastProfileFmt', agentStatus.lastEffectiveProfile) : ''}
                   </span>
                 </div>

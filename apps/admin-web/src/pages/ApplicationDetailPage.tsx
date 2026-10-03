@@ -184,10 +184,17 @@ function OverviewTab({ app }: { app: Application }) {
             <Tag color={STATUS_COLORS[app.status] || 'default'}>{STATUS_LABELS(t)[app.status] || app.status}</Tag>
           </Descriptions.Item>
           {app.description && (
-            <Descriptions.Item label={t('appDetail.field.description')} span={3}>{app.description}</Descriptions.Item>
+            // antd 6.6.5+：span="filled" 表达「独占整行」——原 span={3} 在
+            // xs(1 列)/sm(2 列) 断点超出列数，命中 rc Descriptions 的
+            // 「Sum of column span not match column」告警，且 sm 下描述会被
+            // 钳制挤压进「状态」同行半格。filled 在各断点均填满当前行，
+            // 渲染产物与 md 语义一致。
+            <Descriptions.Item label={t('appDetail.field.description')} span="filled">{app.description}</Descriptions.Item>
           )}
           {app.gitRepo && (
-            <Descriptions.Item label={t('appDetail.field.gitRepo')} span={2}>
+            // 断点 span（antd 6.6.5+）：sm 及以上占 2/3（与分支同行），xs 收敛
+            // 为 1——原写死 span={2} 在 xs 单列超出列数触发同款告警。
+            <Descriptions.Item label={t('appDetail.field.gitRepo')} span={{ sm: 2 }}>
               <Space style={{ maxWidth: '100%' }} size={4}>
                 <GithubOutlined style={{ flex: 'none' }} />
                 <Text copyable={{ text: app.gitRepo }} ellipsis style={{ maxWidth: '100%' }}>
@@ -220,32 +227,45 @@ function OverviewTab({ app }: { app: Application }) {
         </Descriptions>
 
         {app.env && Object.keys(app.env).length > 0 && (
-          <Collapse ghost style={{ marginTop: 12 }}>
-            <Collapse.Panel header={t('appDetail.env', { count: Object.keys(app.env).length })} key="env">
-              <Descriptions bordered size="small" column={1}>
-                {Object.entries(app.env).map(([k, v]) => (
-                  <Descriptions.Item key={k} label={<Text code>{k}</Text>}>{v}</Descriptions.Item>
-                ))}
-              </Descriptions>
-            </Collapse.Panel>
-          </Collapse>
+          // antd 6：Collapse 子元素式（Collapse.Panel）已弃用，迁 items API
+          //（header→label，渲染产物一致）
+          <Collapse
+            ghost
+            style={{ marginTop: 12 }}
+            items={[{
+              key: 'env',
+              label: t('appDetail.env', { count: Object.keys(app.env).length }),
+              children: (
+                <Descriptions bordered size="small" column={1}>
+                  {Object.entries(app.env).map(([k, v]) => (
+                    <Descriptions.Item key={k} label={<Text code>{k}</Text>}>{v}</Descriptions.Item>
+                  ))}
+                </Descriptions>
+              ),
+            }]}
+          />
         )}
       </Card>
 
       {app.manifest && (
         <Card title={t('appDetail.manifest')}>
-          <Collapse ghost>
-            <Collapse.Panel header={t('appDetail.viewDetail')} key="manifest">
-              <pre style={{
-                // UI-02：清单 pre 块双主题（同 SSE 日志区变量）
-                background: 'var(--log-bg)', color: 'var(--log-text)', padding: 16,
-                borderRadius: 8, maxHeight: 300, overflow: 'auto', fontSize: 13,
-                fontFamily: 'var(--font-mono)',
-              }}>
-                {JSON.stringify(app.manifest, null, 2)}
-              </pre>
-            </Collapse.Panel>
-          </Collapse>
+          <Collapse
+            ghost
+            items={[{
+              key: 'manifest',
+              label: t('appDetail.viewDetail'),
+              children: (
+                <pre style={{
+                  // UI-02：清单 pre 块双主题（同 SSE 日志区变量）
+                  background: 'var(--log-bg)', color: 'var(--log-text)', padding: 16,
+                  borderRadius: 8, maxHeight: 300, overflow: 'auto', fontSize: 13,
+                  fontFamily: 'var(--font-mono)',
+                }}>
+                  {JSON.stringify(app.manifest, null, 2)}
+                </pre>
+              ),
+            }]}
+          />
         </Card>
       )}
     </Space>
@@ -421,7 +441,11 @@ function SettingsTab({ app, onUpdated }: { app: Application; onUpdated: (a: Appl
       onUpdated(updated);
     } catch (err: unknown) {
       if (isFormValidationError(err)) return;
-      message.error(t('appDetail.settings.saveFail'));
+      // 排查清单 #2/#4 对齐（ExecutorDetailPage UX-11 同款先例）：此前直接
+      // message.error(通用文案)——一是因为绕过 showApiError 的 __toastedByClient
+      // 去重，与 client.ts 拦截器的全局 toast 连弹两条；二是把后端给出的具体
+      // 拒因（如版本号冲突 409）吞成一句"保存失败"。
+      showApiError(err, t('appDetail.settings.saveFail'));
     } finally { setSaving(false); }
   };
 

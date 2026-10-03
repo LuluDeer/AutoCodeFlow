@@ -40,8 +40,14 @@ import {
 // 已注入 Electron 上下文的包装函数，而不是直接调 uv-paths 的纯函数。
 import { resolveBundledUvPath, resolveInterpretersDir } from './executor-process';
 import { classifyUvResolution } from './uv-paths';
-import { listLocalIPv4s } from './network-util';
+import { listLocalIPv4s, normalizeListenHost } from './network-util';
 import { sanitizeConfigInput } from './config-sanitize';
+// B-9/B-11：向导完成面的启动结果反馈——健康等待与注册预检（纯 Node 原语）。
+import { fetchAdminRegistration, waitForExecutorHealthy } from './port-probe';
+// UX-DSK-PORT：向导预检用的端口归一化（与 HeartbeatMonitor 同一实现）。
+import { normalizeHeartbeatPort } from './heartbeat';
+// B-13：releases 保留期自动清扫（纯 Node 模块，决策在 release-retention.ts）。
+import { sweepAppReleases } from './release-retention';
 import log, { applyLogLevel } from './logger';
 
 /**
@@ -421,19 +427,42 @@ export function registerIpcHandlers(): void {
         configStore.save({ autoStart: false });
       }
     }
-    windowManager.closeWizard();
-    windowManager.openStatus();
+    // B-9：start() 是"同步必成功"的假象——spawn 成功不等于执行器能起来
+    // （端口被占/秒退/注册被拒都只落日志），而旧实现**先关窗再启动**，向导
+    // 已关、错误无人看见。现在先等启动判定（首个健康信号，至多
+    // WIZARD_START_HEALTH_TIMEOUT_MS），失败时**保持向导打开**并把错误经
+    // 返回结构的 error 字段带回页内展示；成功才关窗开状态页。
+    // B-11：判定里带注册预检——/health/admin-status 明确报 registration
+    // failed（典型：密钥与平台 EXECUTOR_SECRET 不一致）时也回流导页内报错，
+    // 不再让用户带着坏 Token 完成配置。
+    let startError: string | null = null;
     if (safeCfg.autoStartExecutor === true) {
-      await executorProcess.start(configStore.getAll());
-      // 用**已消毒落盘**的端口，而不是渲染层原始值（NaN 端口会让心跳抛
-      // ERR_INVALID_URL，见 heartbeat.normalizeHeartbeatPort 注释）。
-      // EXP-03：改走 startHeartbeat()——它读的是同一处已消毒配置，并额外带上
-      // adminApiUrl 以启用中台直达探针。
-      startHeartbeat();
+      try {
+        await executorProcess.start(configStore.getAll());
+        // 用**已消毒落盘**的端口，而不是渲染层原始值（NaN 端口会让心跳抛
+        // ERR_INVALID_URL，见 heartbeat.normalizeHeartbeatPort 注释）。
+        // EXP-03：改走 startHeartbeat()——它读的是同一处已消毒配置，并额外带上
+        // adminApiUrl 以启用中台直达探针。
+        startHeartbeat();
+        startError = await waitForWizardStartVerdict();
+      } catch (err: any) {
+        // 启动失败（端口被非本执行器占用等）：心跳必须保持停止，避免对
+        // 一个未运行的执行器报 online。
+        heartbeat.stop();
+        startError = err?.message ?? String(err);
+      }
     }
     trayManager.rebuildMenu();
     // DSK-04：向导可能首设 workDir / notifyEnabled——同步通知器
     syncNotifierWithConfig();
+    if (startError) {
+      log.warn(`Wizard start verification failed: ${startError}`);
+      // 配置本身已落盘成功（configured=true），用户可在向导内修改后重试，
+      // 或直接关窗稍后在设置页/托盘处理。
+      return { ok: true, error: startError };
+    }
+    windowManager.closeWizard();
+    windowManager.openStatus();
     return { ok: true };
   });
 
@@ -534,8 +563,12 @@ export function registerIpcHandlers(): void {
     };
   });
 
-  ipcMain.handle('config:check-port', async (_event, port: number) => {
-    return checkPortAvailable(port);
+  ipcMain.handle('config:check-port', async (_event, port: number, host?: string) => {
+    // B-8：检测监听 host 必须与执行器**实际 bind** 的 executorHost 同源
+    // （此前固定 0.0.0.0，与可配 127.0.0.1 的真实 bind 判定相反的场景见
+    // normalizeListenHost 注释）。host 由渲染层按其表单值传入；缺省回落
+    // 0.0.0.0（与 config-store 的 executorHost 缺省一致）。
+    return checkPortAvailable(port, normalizeListenHost(host));
   });
 
   // ── 执行器控制 ────────────────────────────────────────
@@ -971,7 +1004,7 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('network:local-ips', () => listLocalIPv4s());
 }
 
-function checkPortAvailable(port: number): Promise<{ available: boolean; message: string }> {
+function checkPortAvailable(port: number, host: string = '0.0.0.0'): Promise<{ available: boolean; message: string }> {
   return new Promise((resolve) => {
     const server = net.createServer();
     server.once('error', (err: any) => {
@@ -985,7 +1018,8 @@ function checkPortAvailable(port: number): Promise<{ available: boolean; message
       server.close();
       resolve({ available: true, message: `端口 ${port} 可用` });
     });
-    server.listen(port, '0.0.0.0');
+    // B-8：按调用方的表单 executorHost 监听检测（不再固定 0.0.0.0）。
+    server.listen(port, host);
   });
 }
 
@@ -1173,4 +1207,84 @@ function testAdminApiConnection(url: string): Promise<{ ok: boolean; message: st
       resolve({ ok: false, message: `无效的 URL: ${err.message}` });
     }
   });
+}
+
+/**
+ * B-9/B-11：向导完成后的启动判定——等待"首个健康信号"，并做一次带共享令牌
+ * 语义的注册预检。返回 null = 判定通过；字符串 = 回流导页内展示的错误。
+ *
+ * 判定口径：
+ *  1) 本地 /health/live 至多等 WIZARD_START_HEALTH_TIMEOUT_MS（8s）——子进程
+ *     秒退/端口被占时探针永远不会 200，超时即报"未通过健康检查"；
+ *  2) 健康后再读一次 /health/admin-status：registration/heartbeatStatus 明确
+ *     为 failed（executor-node 已被中台拒绝注册——典型是密钥不一致）时报错。
+ *     'unknown'（旧 bundle 无该端点 / 中台尚未应答）不报错——预检只在拿到
+ *     **确定性失败**时拦截，绝不因"暂时没消息"误伤慢启动的部署。
+ */
+const WIZARD_START_HEALTH_TIMEOUT_MS = 8_000;
+
+async function waitForWizardStartVerdict(): Promise<string | null> {
+  const port = normalizeHeartbeatPort(configStore.get('executorPort'));
+  const healthy = await waitForExecutorHealthy(port, WIZARD_START_HEALTH_TIMEOUT_MS);
+  if (!healthy) {
+    return (
+      `执行器在 ${Math.round(WIZARD_START_HEALTH_TIMEOUT_MS / 1000)} 秒内未通过本地健康检查（端口 ${port}）。` +
+      '请检查端口是否被占用、工作目录是否可写；配置已保存，可稍后在状态页查看日志并手动启动'
+    );
+  }
+  const registration = await fetchAdminRegistration(port, 5_000);
+  if (registration === 'failed') {
+    return (
+      '执行器已启动，但注册预检未通过：中台拒绝了注册（常见原因：执行器密钥与平台 EXECUTOR_SECRET 不一致，' +
+      '或平台地址不可达）。配置已保存，请修改后重试'
+    );
+  }
+  return null;
+}
+
+/**
+ * B-13：releases 保留期清扫的当前配置版入口（index.ts 启动后与部署成功的
+ * 日志钩子都会调用）。在飞守卫避免部署日志连发行触发并发清扫；执行器不可达
+ * /状态未知时 sweepAppReleases 内部保守放弃，失败只落日志——绝不影响主链。
+ */
+let sweepInFlight = false;
+
+export async function sweepReleasesWithCurrentConfig(): Promise<void> {
+  if (sweepInFlight) return;
+  sweepInFlight = true;
+  try {
+    const workDir = configStore.get('workDir') as string | undefined;
+    if (!workDir) return;
+    const outcome = await sweepAppReleases({
+      workDir,
+      fetchRunningDeploymentIds: async () => {
+        // 与 apps:delete-release 同一真值源：/api/app-status 的
+        // `{deploymentId: {running}}` 视图；拿不到应答返回 null = 状态未知。
+        const res = await postToLocalExecutor('/api/app-status', {}, 5_000, 'GET');
+        if (!res.reached || !res.ok) return null;
+        const table = (res.body ?? {}) as Record<string, { running?: boolean }>;
+        return new Set(
+          Object.entries(table)
+            .filter(([, v]) => v?.running === true)
+            .map(([id]) => id),
+        );
+      },
+    });
+    const deleted = outcome.apps.flatMap((a) => a.deleted);
+    for (const a of outcome.apps) {
+      for (const skipped of a.skipped) {
+        log.info(`release retention: kept ${a.appId}/${skipped}`);
+      }
+    }
+    if (deleted.length > 0) {
+      log.info(`release retention: removed ${deleted.length} old release(s): ${deleted.join(', ')}`);
+    }
+    for (const err of outcome.errors) {
+      log.warn(`release retention: ${err}`);
+    }
+  } catch (err) {
+    log.warn(`release retention sweep failed: ${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    sweepInFlight = false;
+  }
 }

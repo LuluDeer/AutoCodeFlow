@@ -679,3 +679,71 @@ describe('diskUsagePercent (P2 disk watermark)', () => {
     expect(usage).toBeLessThanOrEqual(100);
   });
 });
+
+// ---------------------------------------------------------------------------
+// A-4: 每文件磁盘日志上限 + 一次性截断标记（python MAX_LOG_FILE_BYTES 对齐）
+// ---------------------------------------------------------------------------
+
+describe('A-4 — per-file disk log cap (python MAX_LOG_FILE_BYTES parity)', () => {
+  let dir: string;
+  let fl: FileLoggerModule;
+
+  beforeEach(() => {
+    jest.useFakeTimers({ now: FIXED_NOW });
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'acf-a4-logcap-'));
+    fl = loadModule(dir);
+  });
+
+  afterEach(() => {
+    fl.stopLogWriter();
+    jest.useRealTimers();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('stops writing past 64MiB and appends the python-identical marker exactly once', async () => {
+    // 1MiB/条：第 65 条越过 64MiB 上限，第 66 条触发一次性标记；期间定期
+    // flush 让缓冲（8MiB）不截尾，磁盘文件按真实尺寸增长。
+    const chunk = 'x'.repeat(1024 * 1024);
+    for (let i = 0; i < 70; i++) {
+      fl.appendLog('exec-a4-cap', chunk);
+      if (i % 4 === 3) await fl.flushLogs();
+    }
+    await fl.flushLogs();
+
+    const filePath = expectedLogPath(dir, 'exec-a4-cap');
+    const size1 = fs.statSync(filePath).size;
+    // 上限语义：越界前完整写入（允许最后一条越过 + 标记本身的字节）
+    expect(size1).toBeGreaterThan(fl.MAX_LOG_FILE_BYTES);
+    expect(size1).toBeLessThanOrEqual(fl.MAX_LOG_FILE_BYTES + 2 * 1024 * 1024);
+
+    const content = fs.readFileSync(filePath, 'utf-8');
+    // 标记与 python `f'\n...[file log truncated at {MAX_LOG_FILE_BYTES} bytes]...\n'`
+    // 逐字节同形
+    expect(content).toContain(`\n...[file log truncated at ${fl.MAX_LOG_FILE_BYTES} bytes]...\n`);
+    expect(content.match(/\.\.\.\[file log truncated at/g)).toHaveLength(1);
+
+    // 封顶后继续 append 不再增长文件
+    fl.appendLog('exec-a4-cap', 'after-cap-1');
+    fl.appendLog('exec-a4-cap', 'after-cap-2');
+    await fl.flushLogs();
+    expect(fs.statSync(filePath).size).toBe(size1);
+  });
+
+  it('keeps tracking honest across appendLogSync and clearLog', async () => {
+    // 同步写路径绕过缓冲——追加后缓存必须作废，否则按旧尺寸提前截断
+    fl.appendLogSync('exec-a4-sync', 'sync-line');
+    fl.appendLog('exec-a4-sync', 'buffered-line');
+    await fl.flushLogs();
+    const filePath = expectedLogPath(dir, 'exec-a4-sync');
+    const content = fs.readFileSync(filePath, 'utf-8');
+    expect(content).toContain('sync-line');
+    expect(content).toContain('buffered-line');
+    expect(content).not.toContain('file log truncated');
+
+    // clearLog 后新一轮日志不受上一轮计数影响
+    fl.clearLog('exec-a4-sync');
+    fl.appendLog('exec-a4-sync', 'fresh-line');
+    await fl.flushLogs();
+    expect(fs.readFileSync(expectedLogPath(dir, 'exec-a4-sync'), 'utf-8')).toBe('fresh-line\n');
+  });
+});
