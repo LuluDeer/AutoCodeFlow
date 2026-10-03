@@ -154,3 +154,39 @@ describe('P0-2: 列表页快速部署的成功提示必须与真实派发状态�
     expect(mockInfo).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * UX（Select 键入搜索）：执行器数量随接入增长，快速部署的执行器下拉
+ * 必须支持键入过滤，且按**地址**（label = "name (address)" 的次要字段）
+ * 也能命中——若实现回退成默认按 value 过滤，此用例会红。
+ */
+describe('快速部署执行器下拉支持键入搜索', () => {
+  it('showSearch 开启，且按地址过滤能命中唯一执行器', async () => {
+    vi.mocked(executorsApi.list).mockResolvedValue([
+      { id: 'ex-1', appName: 'edge-a', address: '10.0.0.1', status: 'online' },
+      { id: 'ex-2', appName: 'edge-b', address: '10.0.0.2', status: 'online' },
+    ] as never);
+
+    renderPage();
+    await waitFor(() => expect(screen.getByText('refund-sync')).toBeTruthy());
+    fireEvent.click(screen.getByText(/新建部署|Deploy/).closest('button')!);
+
+    // 页面里还有分页 pageSize 切换器等自带 showSearch 的 Select，故必须
+    // 先按标题圈定「快速新建部署」弹窗，再在其中找执行器下拉。
+    const modal = await waitFor(() => {
+      const el = screen.getByText(/快速新建部署|Quick new deployment/).closest('.ant-modal');
+      expect(el).toBeTruthy();
+      return el as HTMLElement;
+    });
+    const combo = modal.querySelector<HTMLInputElement>('.ant-select-show-search input');
+    expect(combo).toBeTruthy();
+
+    fireEvent.mouseDown(combo!);
+    fireEvent.change(combo!, { target: { value: '10.0.0.2' } });
+    await waitFor(() => {
+      const opts = [...document.querySelectorAll<HTMLElement>('.ant-select-item-option')];
+      expect(opts).toHaveLength(1);
+      expect(opts[0].textContent).toContain('edge-b');
+    });
+  });
+});

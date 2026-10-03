@@ -592,6 +592,9 @@ export default function SopsPage() {
           )}
           <Select
             style={{ width: '100%' }}
+            showSearch
+            // 版本随 SOP 修订持续增长，键入过滤；label 含版本号与内容摘要
+            optionFilterProp="label"
             placeholder={t('sops.assignVersion')}
             value={assignForm.version || undefined}
             onChange={(v) => setAssignForm({ ...assignForm, version: v })}
