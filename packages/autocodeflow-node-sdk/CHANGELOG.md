@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.8.0](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.7.0...v1.8.0) (2026-10-04)
+
+### 版本对齐
+
+* 随 lockstep 组(acf-cli 1.8.0 feat 驱动 minor)同步 bump,本包无代码变更
+
+
 ## [1.6.0](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.5.3...v1.6.0) (2026-10-01)
 
 
