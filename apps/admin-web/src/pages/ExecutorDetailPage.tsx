@@ -117,6 +117,9 @@ export default function ExecutorDetailPage() {
   const [configForm] = Form.useForm();
   const [rotateForm] = Form.useForm();
   const [removeForm] = Form.useForm();
+  // 编辑弹窗「最大并发数」的实时值（仅编辑弹窗消费；配置热更弹窗是另一套
+  // 语义——留空提交=重置为服务端默认值，见 B-1，不加本提示）。
+  const editMaxConcurrentWatch = Form.useWatch('maxConcurrentTasks', editForm);
 
   // B-6：同路由组件（/executors/:id）在 id 变化时**不重挂载**——上一个执行器
   // 留下的弹窗开合、执行历史分页、删除影响面等局部状态会「跟人走」到下一个
@@ -825,7 +828,22 @@ export default function ExecutorDetailPage() {
           <Form.Item name="groupName" label={t('executorDetail.editModal.groupName')}><Input /></Form.Item>
           <Form.Item name="tags" label={t('executorDetail.editModal.tags')} tooltip={t('executorDetail.editModal.tagsTip')}><Select mode="tags" tokenSeparators={[',', ' ']} placeholder={t('executorDetail.editModal.tagsPlaceholder')} /></Form.Item>
           <Form.Item name="description" label={t('executorDetail.editModal.description')}><Input.TextArea /></Form.Item>
-          <Form.Item name="maxConcurrentTasks" label={t('executorDetail.editModal.maxConcurrent')}><InputNumber min={1} /></Form.Item>
+          <Form.Item
+            name="maxConcurrentTasks"
+            label={t('executorDetail.editModal.maxConcurrent')}
+            extra={
+              /* 显性化 PATCH 语义：清空该字段提交时，请求体省略 maxConcurrentTasks
+                 键 = 服务端保留旧值——用户极易误读为「清空 = 不限制」。仅当原值
+                 非空且当前输入为空时提示（原值本就为空则清空无歧义，不打扰）。
+                 语义本身不改（改 PATCH 有破坏风险），只把后果说清楚。 */
+              executor.maxConcurrentTasks != null &&
+              (editMaxConcurrentWatch == null || editMaxConcurrentWatch === '')
+                ? t('executorDetail.editModal.maxConcurrentKeepHint', { value: executor.maxConcurrentTasks })
+                : undefined
+            }
+          >
+            <InputNumber min={1} />
+          </Form.Item>
         </Form>
       </Modal>
 

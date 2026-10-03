@@ -26,7 +26,7 @@ import {
 import { deploymentsApi, AppDeployment, applicationsApi } from '../api/applications';
 import { formatRelativeTime } from '../utils/timeFormat';
 import DeployModeFields from '../components/DeployModeFields';
-import { executorsApi, Executor, ExecutorPickerItem } from '../api/executors';
+import { executorsApi, ExecutorPickerItem } from '../api/executors';
 import { useExecutorNames } from '../hooks/useExecutorNames';
 import { isStopNotDelivered } from '../utils/backend-contracts';
 import { isFormValidationError, showApiError } from '../utils/error';
@@ -157,12 +157,12 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
   const [deployments, setDeployments] = useState<AppDeployment[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
-  const [executors, setExecutors] = useState<Executor[]>([]);
-  // 执行器选择器数据源（GET /executors/picker 轻读面，6 列）：部署下拉候选与
-  // 占用判断只消费这些字段。此前下拉直接吃 list() 全列投影——它有 listLimit(500)
-  // **静默**截断，执行器超限后下拉对第 501+ 台真实存在的执行器假阴性（搜不到）。
-  // picker 上限 2000 且超限以 truncated=true 显式上报。executors（list 全列）
-  // 保留：仅服务于 useExecutorNames 的部署行可读名解析，与下拉各司其职。
+  // 执行器选择器数据源（GET /executors/picker 轻读面，6 列）：部署下拉候选、
+  // 占用判断与 useExecutorNames 部署行可读名解析只消费这些字段。此前下拉直接
+  // 吃 list() 全列投影——它有 listLimit(500) **静默**截断，执行器超限后下拉对
+  // 第 501+ 台真实存在的执行器假阴性（搜不到）。picker 上限 2000 且超限以
+  // truncated=true 显式上报。R3-E 遗留收口：useExecutorNames 参数放宽为
+  // {id,appName,address} 子集后，本页**不再拉 list() 全列**——首屏双请求归一。
   const [pickerExecutors, setPickerExecutors] = useState<ExecutorPickerItem[]>([]);
   // picker 超限状态（truncated=true 时非 null）——下拉内必须渲染显式告警。
   const [pickerTruncated, setPickerTruncated] = useState<{ total: number; limit: number } | null>(null);
@@ -187,10 +187,11 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
   const [actingId, setActingId] = useState<string | null>(null);
 
   // 用户报障（中台「执行器」列只有 IP:端口）：执行器可读名解析。
-  // **复用 fetchAll 已拉的 executors state**（不传参即自拉——这里必须传，
+  // **复用 fetchAll 已拉的 pickerExecutors**（不传参即自拉——这里必须传，
   // 否则同一页面会重复请求 /executors，破坏 F-34 的「首屏拉一次、轮询拍不重拉」
-  // 契约，app-deployment-polling.test.tsx 会立即变红）。
-  const { nameOf } = useExecutorNames(executors);
+  // 契约，app-deployment-polling.test.tsx 会立即变红）。picker 行满足
+  // useExecutorNames 的 {id,appName,address} 结构子集，无需另拉 list 全列。
+  const { nameOf } = useExecutorNames(pickerExecutors);
 
   // W7 竞态守卫：fetchAll 无取消机制，翻页/轮询并发时旧响应可覆盖新页数据。
   // 每次调用自增 fetchSeq，仅最后一次请求允许 setState；cleanup（卸载或翻页）
@@ -219,17 +220,15 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
     const seq = ++fetchSeq.current;
     setLoading(true);
     try {
-      // 执行器侧两路请求各司其职：list() 全列供 useExecutorNames 解析部署行
-      // 可读名；picker() 轻读面供部署下拉（不受 list 的 500 静默截断影响）。
-      const [deps, execs, picker] = await Promise.all([
+      // 执行器侧只走 picker() 轻读面：部署下拉候选、占用判断与 useExecutorNames
+      // 的部署行可读名解析都吃这份 6 列数据（list() 全列已不再请求）。
+      const [deps, picker] = await Promise.all([
         deploymentsApi.list(applicationId, page),
-        executorsApi.list(),
         executorsApi.picker(),
       ]);
       if (seq !== fetchSeq.current) return; // 已有更新的请求/卸载，丢弃过期响应
       setDeployments(deps.data);
       setTotal(deps.total);
-      setExecutors(execs);
       setPickerExecutors(picker.items);
       setPickerTruncated(picker.truncated ? { total: picker.total, limit: picker.limit } : null);
       // UI-16：加载成功后清除上一次的页内错误态
@@ -433,7 +432,7 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
     }
   };
 
-  // 下拉候选走 picker 轻读面（executors/list 全列仅供 useExecutorNames 名字解析）
+  // 下拉候选走 picker 轻读面（部署下拉、占用判断与名字解析共用同一份数据）
   const onlineExecutors = pickerExecutors.filter(e => e.status === 'online');
   // DEP-04：待审批行数（审批待办 Alert 与状态徽标共用同一口径）
   const pendingApprovalCount = deployments.filter(

@@ -60,8 +60,10 @@ const pickerItem = (id: string, over: Record<string, unknown> = {}) => ({
 
 beforeEach(() => {
   useAuthStore.setState({ user: { id: 1, username: 'root', role: 'admin' } });
-  // list 返回空：名字解析数据源刻意留空，候选若来自 list() 本文件全红
-  vi.mocked(executorsApi.list).mockReset().mockResolvedValue([] as never);
+  // R3-E 收口后页面不再请求 list()（名字解析吃 picker 行）——mock 工厂保留
+  // list: vi.fn() 供下方「list 恒零调用」断言；不给实现，实现若回归调用将
+  // resolve undefined 使页面数据流崩红，双重防线。
+  vi.mocked(executorsApi.list).mockReset();
   vi.mocked(executorsApi.picker).mockReset().mockResolvedValue({
     items: [], total: 0, truncated: false, limit: 2000,
   } as never);
@@ -115,6 +117,9 @@ describe('部署模态执行器下拉：数据源 = GET /executors/picker', () =
       expect(text).toContain('机器-1');
       expect(text).toContain('机器-2');
     });
+    // 全列 list() 已彻底退场（名字解析同样吃 picker 行）——实现若回归拉 list
+    // 即变红（R3-E 遗留收口：首屏不再有 list+picker 双请求）。
+    expect(executorsApi.list).not.toHaveBeenCalled();
   });
 
   it('既有过滤保留：离线不可选；被活动部署占用的执行器从候选整体剔除', async () => {

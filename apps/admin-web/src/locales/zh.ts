@@ -1570,6 +1570,8 @@ export default {
   'executorDetail.editModal.tagsPlaceholder': '输入后回车添加',
   'executorDetail.editModal.description': '描述',
   'executorDetail.editModal.maxConcurrent': '最大并发数',
+  // PATCH 语义显性化：编辑弹窗清空最大并发数提交时省略该键 = 服务端保留旧值（留空≠不限制）
+  'executorDetail.editModal.maxConcurrentKeepHint': '清空保存将保留当前值 {{value}}（留空≠不限制）',
   'executorDetail.config.title': '配置热更新',
   'executorDetail.config.pullDisabledTooltip': 'pull 模式执行器（NAT 内）不可入站推送配置；修改并发上限可随下一次拉取/心跳自动生效',
   // B-1：空配置体推送二次确认（空白字段将重置为执行器默认值，必须明示）
