@@ -2365,6 +2365,16 @@ export default {
   'taskForm.field.applicationId.zipTooltip': '「上传的 zip 应用」来源下必填：执行器据此下载整包（applicationId → packageUrl）。应用 runtime 必须与任务 runtime 一致。',
   'taskForm.field.applicationId.zipPlaceholder': '选择要部署的 zip 应用',
   'taskForm.field.applicationId.boundHint': '该应用是任务的部署绑定（非 zip 代码来源），代码来源切换不影响它。',
+  // APP-SELECT-01：可检索应用选择器（zip 必填载体 / 部署绑定两分支共用）
+  'taskForm.field.applicationId.zipAppCount': '共 {{n}} 个应用',
+  'taskForm.field.applicationId.emptyHint': '暂无应用。先到「应用管理」创建或上传应用，再回到这里选择。',
+  'taskForm.field.applicationId.goManage': '前往应用管理',
+  'taskForm.field.applicationId.noMatch': '没有匹配的应用：支持按名称、描述、版本搜索',
+  // zip 分支健康语义：deploying=整包尚未产出；failed=上次部署失败没有可用整包
+  'taskForm.field.applicationId.statusTagDeploying': '部署中',
+  'taskForm.field.applicationId.statusTagFailed': '部署失败',
+  'taskForm.field.applicationId.statusDeployingUnavailable': '部署进行中，整包尚未就绪，暂不可选',
+  'taskForm.field.applicationId.statusFailedUnavailable': '上次部署失败，当前没有可用的整包，暂不可选',
   'taskForm.field.triggerType': '触发方式',
   // A4（第三轮审计）：上一轮未结束时新触发的处置策略（blockStrategy 控件）
   // N-14：闸门比较维度=任务+参数——discard/cover_early 仅约束同参数触发，
