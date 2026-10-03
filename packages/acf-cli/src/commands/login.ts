@@ -1,12 +1,16 @@
 import { Command } from 'commander';
 import * as readline from 'readline';
-import { post, formatApiError } from '../client.js';
+import { post, resetClient } from '../client.js';
 import { setApiUrl, setToken, setRefreshToken, showConfig } from '../config.js';
-import { resetClient } from '../client.js';
+import { emitError, interruptExit } from '../ui.js';
 import chalk from 'chalk';
 
 function prompt(question: string): Promise<string> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  // readline 终端模式（raw mode）下 Ctrl+C 不产生进程级 SIGINT 信号，而是触发
+  // rl 的 'SIGINT' 事件；若无监听，readline 只是 pause，login 会假死不退。
+  // 这里显式接住，与全局中断出口同码（130）。
+  rl.on('SIGINT', () => interruptExit());
   return new Promise((resolve) => rl.question(question, (ans) => { rl.close(); resolve(ans); }));
 }
 
@@ -14,21 +18,28 @@ function prompt(question: string): Promise<string> {
 // 用 readline 的 _writeToOutput 覆盖把回显吞掉——这是 Node 生态隐藏密码的标准做法，
 // 不引入额外依赖。TTY 非交互（CI/管道）时退化为普通 question（无回显需求，因为
 // 此时密码应来自 --password 或 ACF_PASSWORD env，而非人工键入）。
+//
+// UX 打磨（本轮）：遮蔽逻辑抽成独立函数并导出——「密码不回显」是安全语义，
+// 值得一个函数级不回显断言（ux-uniform.test.ts），内联在闭包里则测不到。
+export function maskEcho(rl: readline.Interface, isTTY: boolean = process.stdin.isTTY === true): void {
+  if (!isTTY) return;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const rlAny = rl as any;
+  const out: NodeJS.WriteStream = rlAny.output;
+  rlAny._writeToOutput = (str: string) => {
+    // 只回显提示符的换行，不回显键入字符；退格/回车照常处理。
+    if (str === '\n') out.write('\n');
+    else if (str === '\r') out.write('\n');
+    else out.write('');
+    return '';
+  };
+}
+
 function hiddenPrompt(question: string): Promise<string> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  if (process.stdin.isTTY) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const rlAny = rl as any;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const out: NodeJS.WriteStream = rlAny.output;
-    rlAny._writeToOutput = (str: string) => {
-      // 只回显提示符的换行，不回显键入字符；退格/回车照常处理。
-      if (str === '\n') out.write('\n');
-      else if (str === '\r') out.write('\n');
-      else out.write('');
-      return '';
-    };
-  }
+  // 同上：raw 模式 Ctrl+C 显式接住，避免密码输入中 Ctrl+C 假死。
+  rl.on('SIGINT', () => interruptExit());
+  maskEcho(rl);
   return new Promise((resolve) =>
     rl.question(question, (ans) => {
       rl.close();
@@ -83,8 +94,9 @@ export function loginCommand(): Command {
         console.log(chalk.green('✔ Logged in successfully'));
         showConfig();
       } catch (e: unknown) {
-        console.error(chalk.red('✗ Login failed:'), formatApiError(e));
-        process.exit(1);
+        // 统一错误出口：401（密码错/token 失效）→ 退出码 3，网络不通 → 4，
+        // 其余 → 1（见 ui.ts 的 EXIT_CODES 表）。
+        emitError('Login failed', e);
       }
     });
   return cmd;

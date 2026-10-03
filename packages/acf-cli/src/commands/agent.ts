@@ -2,7 +2,8 @@ import { Command } from 'commander';
 import Table from 'cli-table3';
 import chalk from 'chalk';
 import ora from 'ora';
-import { get, formatApiError } from '../client.js';
+import { get } from '../client.js';
+import { emitError } from '../ui.js';
 
 // Field names aligned with the AgentSession entity
 // (apps/admin-api/src/modules/agent/entities/agent-session.entity.ts).
@@ -25,7 +26,9 @@ export function agentCommand(): Command {
     .option('--status <status>', 'Filter by status (pending | running | waiting_input | succeeded | failed | aborted)')
     .option('-p, --page <n>', 'Page number', '1')
     .option('-n, --page-size <n>', 'Page size (max 100)', '20')
-    .action(async (opts) => {
+    // --json 补面（本轮 UX 统一）：对齐 audit list 的信封直出口径
+    .option('--json', 'Emit raw JSON (CI-consumable, no table)')
+    .action(async (opts: { kind?: string; status?: string; page?: string; pageSize?: string; json?: boolean }) => {
       const spinner = ora('Fetching agent sessions…').start();
       try {
         const data = await get<{ items?: AgentSession[]; data?: AgentSession[]; total?: number }>(
@@ -38,6 +41,10 @@ export function agentCommand(): Command {
           },
         );
         spinner.stop();
+        if (opts.json) {
+          console.log(JSON.stringify(data));
+          return;
+        }
         const items = data.items ?? data.data ?? [];
         const table = new Table({
           head: ['Time', 'Kind', 'Status', 'Title', 'ID'],
@@ -58,9 +65,7 @@ export function agentCommand(): Command {
           chalk.gray(`Total: ${data.total ?? items.length}  page ${opts.page}`),
         );
       } catch (e: unknown) {
-        spinner.fail('Failed to list agent sessions');
-        console.error(chalk.red(formatApiError(e)));
-        process.exit(1);
+        emitError('Failed to list agent sessions', e, { spinner });
       }
     });
 

@@ -2,7 +2,8 @@ import { Command } from 'commander';
 import Table from 'cli-table3';
 import chalk from 'chalk';
 import ora from 'ora';
-import { get, post, put, del, formatApiError, ANALYZE_TIMEOUT_MS } from '../client.js';
+import { get, post, put, del, ANALYZE_TIMEOUT_MS } from '../client.js';
+import { emitError, UsageError, interruptExit } from '../ui.js';
 
 interface Application {
   id: string;
@@ -37,14 +38,21 @@ function statusColor(s: string): string {
 /** Load a JSON payload from --file (preferred) or --json. */
 async function loadJsonBody(json?: string, file?: string): Promise<unknown> {
   const fs = await import('fs/promises');
-  const raw = file ? await fs.readFile(file, 'utf-8') : json;
+  // 本地 payload 层错误（文件读不了/JSON 坏）= 用法错误（退出码 2），与
+  // 服务端拒绝（1）区分；tasks.ts 的 create/update 同口径。
+  let raw: string;
+  try {
+    raw = file ? await fs.readFile(file, 'utf-8') : (json as string);
+  } catch (err) {
+    throw new UsageError(`Cannot read payload file: ${file} (${err instanceof Error ? err.message : String(err)})`);
+  }
   if (raw === undefined) {
-    throw new Error('Missing JSON payload (provide --json or --file)');
+    throw new UsageError('Missing JSON payload (provide --json or --file)');
   }
   try {
     return JSON.parse(raw);
   } catch (e: unknown) {
-    throw new Error(`Invalid JSON payload: ${e instanceof Error ? e.message : String(e)}`);
+    throw new UsageError(`Invalid JSON payload: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
 
@@ -83,20 +91,24 @@ export function appsCommand(): Command {
         }
         console.log(table.toString());
       } catch (e: unknown) {
-        spinner.fail('Failed to list applications');
-        console.error(chalk.red(formatApiError(e)));
-        process.exit(1);
+        emitError('Failed to list applications', e, { spinner });
       }
     });
 
   // acf app get <id>
   cmd.command('get <id>')
     .description('Show application details')
-    .action(async (id) => {
+    // --json 补面（本轮 UX 统一）：单对象形态 → pretty JSON
+    .option('--json', 'Emit raw JSON (CI-consumable, no table)')
+    .action(async (id, opts: { json?: boolean }) => {
       const spinner = ora('Fetching application…').start();
       try {
         const a = await get<Application>(`/applications/${id}`);
         spinner.stop();
+        if (opts.json) {
+          console.log(JSON.stringify(a, null, 2));
+          return;
+        }
         console.log(chalk.bold('Application Details'));
         console.log('  ID          :', a.id);
         console.log('  Name        :', a.name);
@@ -110,9 +122,7 @@ export function appsCommand(): Command {
         console.log('  Package URL :', a.packageUrl ?? '-');
         console.log('  Description :', a.description ?? '-');
       } catch (e: unknown) {
-        spinner.fail('Failed');
-        console.error(chalk.red(formatApiError(e)));
-        process.exit(1);
+        emitError('Failed', e, { spinner });
       }
     });
 
@@ -129,9 +139,7 @@ export function appsCommand(): Command {
         spinner.succeed(`Application created: ${a.id}`);
         console.log(chalk.gray(`  name: ${a.name}  version: ${a.version ?? '-'}  status: ${statusColor(a.status)}`));
       } catch (e: unknown) {
-        spinner.fail('Failed to create application');
-        console.error(chalk.red(formatApiError(e)));
-        process.exit(1);
+        emitError('Failed to create application', e, { spinner });
       }
     });
 
@@ -152,7 +160,8 @@ export function appsCommand(): Command {
         // API would answer 400 "property name should not exist". Fail early
         // with an actionable message instead.
         if (body && typeof body === 'object' && 'name' in body) {
-          throw new Error(
+          // 本地 payload 语义错误 = 用法错误（退出码 2），不必等服务端 400。
+          throw new UsageError(
             'Application update does not support renaming: the backend UpdateApplicationDto has no `name` field. ' +
               'Remove "name" from the payload.',
           );
@@ -161,9 +170,7 @@ export function appsCommand(): Command {
         spinner.succeed(`Application updated: ${a.id}`);
         console.log(chalk.gray(`  name: ${a.name}  version: ${a.version ?? '-'}  status: ${statusColor(a.status)}`));
       } catch (e: unknown) {
-        spinner.fail('Failed to update application');
-        console.error(chalk.red(formatApiError(e)));
-        process.exit(1);
+        emitError('Failed to update application', e, { spinner });
       }
     });
 
@@ -175,6 +182,9 @@ export function appsCommand(): Command {
       if (!opts.yes) {
         const readline = await import('readline/promises');
         const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+        // raw 模式下 Ctrl+C 触发 rl 'SIGINT' 而非进程信号；无监听只会 pause，
+        // 确认提示处会假死。接住并走统一中断出口（130）。
+        rl.on('SIGINT', () => interruptExit());
         const answer = await rl.question(`Delete application ${id}? [y/N] `);
         rl.close();
         if (!/^y(es)?$/i.test(answer)) {
@@ -187,9 +197,7 @@ export function appsCommand(): Command {
         await del(`/applications/${id}`);
         spinner.succeed(`Application ${id} deleted`);
       } catch (e: unknown) {
-        spinner.fail('Failed to delete application');
-        console.error(chalk.red(formatApiError(e)));
-        process.exit(1);
+        emitError('Failed to delete application', e, { spinner });
       }
     });
 
@@ -219,9 +227,7 @@ export function appsCommand(): Command {
         console.log();
         console.log(result.analysis);
       } catch (e: unknown) {
-        spinner.fail('Analysis failed');
-        console.error(chalk.red(formatApiError(e)));
-        process.exit(1);
+        emitError('Analysis failed', e, { spinner });
       }
     });
 
@@ -246,9 +252,7 @@ export function appsCommand(): Command {
         spinner.succeed('Deployment triggered');
         console.log(chalk.gray(`  deployment: ${dep?.id ?? '-'}  status: ${dep?.status ?? '-'}  executor: ${dep?.executorId ?? 'auto'}`));
       } catch (e: unknown) {
-        spinner.fail('Deployment failed');
-        console.error(chalk.red(formatApiError(e)));
-        process.exit(1);
+        emitError('Deployment failed', e, { spinner });
       }
     });
 
@@ -257,7 +261,9 @@ export function appsCommand(): Command {
     .description('List deployments (optionally filtered by application)')
     .option('-p, --page <n>', 'Page number', '1')
     .option('-n, --page-size <n>', 'Page size', '20')
-    .action(async (appId, opts) => {
+    // --json 补面（本轮 UX 统一）：列表/信封形态 → 单行紧凑 JSON
+    .option('--json', 'Emit raw JSON (CI-consumable, no table)')
+    .action(async (appId, opts: { page?: string; pageSize?: string; json?: boolean }) => {
       const spinner = ora('Fetching deployments…').start();
       try {
         // app-deployment.service.findAll returns `{ data, total }`
@@ -267,6 +273,10 @@ export function appsCommand(): Command {
           pageSize: opts.pageSize,
         });
         spinner.stop();
+        if (opts.json) {
+          console.log(JSON.stringify(data));
+          return;
+        }
         const list: Deployment[] = Array.isArray(data) ? data : (data.data ?? data.list ?? []);
         const table = new Table({
           head: ['Deployment', 'App', 'Executor', 'Status', 'RunMode'],
@@ -284,16 +294,16 @@ export function appsCommand(): Command {
         }
         console.log(table.toString());
       } catch (e: unknown) {
-        spinner.fail('Failed to list deployments');
-        console.error(chalk.red(formatApiError(e)));
-        process.exit(1);
+        emitError('Failed to list deployments', e, { spinner });
       }
     });
 
   // acf app versions <id>
   cmd.command('versions <id>')
     .description('Show application version history')
-    .action(async (id) => {
+    // --json 补面（本轮 UX 统一）：数组形态 → pretty JSON
+    .option('--json', 'Emit raw JSON (CI-consumable, no table)')
+    .action(async (id, opts: { json?: boolean }) => {
       const spinner = ora('Fetching version history…').start();
       try {
         // getVersionHistory returns `commit` / `deployedAt` (no gitCommit / changeNote)
@@ -301,6 +311,10 @@ export function appsCommand(): Command {
           Array<{ id: string; version: string; commit?: string; deployedAt?: string; createdAt?: string; status?: string }>
         >(`/applications/${id}/versions`);
         spinner.stop();
+        if (opts.json) {
+          console.log(JSON.stringify(versions, null, 2));
+          return;
+        }
         const table = new Table({
           head: ['Version', 'Commit', 'Deployed', 'Status'],
           colWidths: [12, 14, 25, 12],
@@ -316,9 +330,7 @@ export function appsCommand(): Command {
         }
         console.log(table.toString());
       } catch (e: unknown) {
-        spinner.fail('Failed to list versions');
-        console.error(chalk.red(formatApiError(e)));
-        process.exit(1);
+        emitError('Failed to list versions', e, { spinner });
       }
     });
 

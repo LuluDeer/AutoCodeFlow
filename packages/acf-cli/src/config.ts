@@ -17,6 +17,7 @@
  */
 import Conf from 'conf';
 import * as fs from 'fs';
+import chalk from 'chalk';
 
 interface AcfConfig {
   apiUrl: string;
@@ -41,6 +42,14 @@ const configDir = process.env.ACF_CONFIG_DIR;
  * contention in tests, read-only mounts) the constructor can throw. Fall back to
  * a mode-less store rather than crashing the CLI — `hardenConfigPermissions()`
  * repairs the on-disk mode separately when the platform allows it.
+ *
+ * UX 打磨（本轮）：mode-less 兜底仍失败时只有两种现实解释——
+ *  1. 配置文件损坏（conf 构造时反序列化，坏 JSON 直接抛裸 SyntaxError 堆栈，
+ *     用户看不到任何可操作指引）；
+ *  2. 存储位置读写不了（只读挂载等）。
+ * 借 `deserialize` 钩子在 conf 抛出前把坏内容留证：确属损坏则备份坏内容、
+ * 告警并携默认配置继续 CLI（凭据可从备份手工找回，或 acf login 重登）；
+ * 否则抛出带指引的错误，替代 conf 内部堆栈。
  */
 function createStore(): Conf<AcfConfig> {
   const base = {
@@ -59,10 +68,72 @@ function createStore(): Conf<AcfConfig> {
       refreshToken: '',
     },
   };
+  // conf 用 clearInvalidConfig 兜损坏时会「静默」返回空对象并在构造期把坏文件
+  // 覆写成 defaults——凭据无提示丢失。因此不用它做常规路径，只在已留证坏内容
+  // 之后的恢复存储上启用（那时覆写无妨，坏内容已在内存里）。
+  let corruptRaw: string | null = null;
+  const withDeserialize = {
+    ...base,
+    deserialize: (value: string): AcfConfig => {
+      try {
+        return JSON.parse(value) as AcfConfig;
+      } catch {
+        corruptRaw = value;
+        throw new SyntaxError('config file is not valid JSON');
+      }
+    },
+  };
   try {
-    return new Conf<AcfConfig>({ ...base, configFileMode: CONFIG_FILE_MODE });
+    return new Conf<AcfConfig>({ ...withDeserialize, configFileMode: CONFIG_FILE_MODE });
   } catch {
-    return new Conf<AcfConfig>(base);
+    try {
+      return new Conf<AcfConfig>(withDeserialize);
+    } catch {
+      if (corruptRaw === null) {
+        // 反序列化没被触发 → 不是坏 JSON，而是存储位置本身读写不了。
+        throw new Error(
+          'Cannot initialize the CLI config store (permission or IO problem). ' +
+            'Set ACF_CONFIG_DIR to a writable directory and retry.',
+        );
+      }
+      // 损坏恢复：坏内容已留证；此时 conf 的常规构造必然再抛，改用
+      // clearInvalidConfig 让这次构造成功（原文件被覆写也无妨），随后把
+      // 留证内容写到 <path>.corrupt，用户随时可手工找回旧凭据。
+      try {
+        const recovered = new Conf<AcfConfig>({
+          ...withDeserialize,
+          configFileMode: CONFIG_FILE_MODE,
+          clearInvalidConfig: true,
+        });
+        const backupPath = `${recovered.path}.corrupt`;
+        try {
+          fs.writeFileSync(backupPath, corruptRaw, { mode: CONFIG_FILE_MODE });
+          process.stderr.write(
+            chalk.yellow(
+              `⚠ Config file is corrupted: ${recovered.path}\n` +
+                '  (invalid JSON — the CLI cannot read its own credentials from it.)\n' +
+                `  The previous content was preserved at ${backupPath}; inspect it if you need the old credentials.\n` +
+                '  Continuing with default settings. Run "acf login" to sign in again.\n',
+            ),
+          );
+        } catch {
+          process.stderr.write(
+            chalk.yellow(
+              `⚠ Config file is corrupted: ${recovered.path} (invalid JSON), and the backup could not be written.\n` +
+                '  Continuing with default settings. Run "acf login" to sign in again.\n',
+            ),
+          );
+        }
+        return recovered;
+      } catch (err) {
+        // 连恢复存储都建不出来（目录读写不了）：给出可操作指引而非裸堆栈。
+        throw new Error(
+          'Cannot initialize the CLI config store (permission or IO problem). ' +
+            `Underlying error: ${err instanceof Error ? err.message : String(err)}. ` +
+            'Set ACF_CONFIG_DIR to a writable directory and retry.',
+        );
+      }
+    }
   }
 }
 
