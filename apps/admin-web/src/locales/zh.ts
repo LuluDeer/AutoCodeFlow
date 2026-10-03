@@ -2002,6 +2002,8 @@ export default {
   'templates.noDesc': '（无描述）',
   'templates.deleted': '已删除自定义模板',
   'templates.deleteFail': '删除失败',
+  // UI-09 图标按钮 a11y：卡片删除按钮是 icon-only，aria-label/Tooltip 用此词条
+  'templates.delete': '删除模板',
   'templates.trigger.manual': '手动',
   'templates.trigger.cron': 'Cron 定时',
   'templates.trigger.fixedRate': '固定间隔',
@@ -2847,6 +2849,8 @@ export default {
   'projects.role.editor': '编辑者',
   'projects.role.admin': '项目管理员',
   'projects.count': '共 {{count}} 个项目',
+  // UI-09 第三轮：移动端卡片列表空态（桌面表格沿用 antd 默认「暂无数据」）
+  'projects.empty': '暂无项目',
 
   // ── P5/P6: SOP 管理 ──
   'sops.reply': '回复',
@@ -2908,6 +2912,8 @@ export default {
   'sops.mediaView': '查看',
   'sops.mediaViewFailed': '媒体打开失败',
   'sops.mediaRefsLabel': '附件',
+  // UI-09 第三轮：移动端卡片列表空态（桌面表格沿用 antd 默认「暂无数据」）
+  'sops.empty': '暂无 SOP',
 
   // ── P2 遗留补齐: Agent 会话查看面（AgentSessionsPage，全 ADMIN-only）──
   'nav.agents': 'Agent 会话',
@@ -2918,8 +2924,8 @@ export default {
   'agents.resume': '恢复',
   'agents.resumeOk': '已重新入队（走与首次运行同一条可重入链路）',
   'agents.resumeFailed': '恢复失败（终态会话不可恢复，请新建会话重跑）',
-  'agents.usageSummary': '{steps} 步 · {tokens} 令牌 · {tools} 工具调用',
-  'agents.budgetLabel': '预算：{steps} 步 / {tokens} 令牌 / {tools} 工具调用',
+  'agents.usageSummary': '{{steps}} 步 · {{tokens}} 令牌 · {{tools}} 工具调用',
+  'agents.budgetLabel': '预算：{{steps}} 步 / {{tokens}} 令牌 / {{tools}} 工具调用',
   'agents.filter.kind': '按类型筛选',
   'agents.filter.status': '按状态筛选',
   'agents.col.title': '会话',
@@ -2930,9 +2936,9 @@ export default {
   'agents.col.content': '内容',
   'agents.col.tool': '工具',
   'agents.col.error': '异常',
-  'agents.tab.steps': '推理步骤（{count}）',
-  'agents.tab.tools': '工具调用（{count}）',
-  'agents.tab.children': '子会话（{count}）',
+  'agents.tab.steps': '推理步骤（{{count}}）',
+  'agents.tab.tools': '工具调用（{{count}}）',
+  'agents.tab.children': '子会话（{{count}}）',
   'agents.tab.meta': '上下文与结论',
   'agents.childrenEmpty': '无子会话（澄清复核/交付复核会作为子会话出现在这里）',
   'agents.empty': '暂无 Agent 会话',

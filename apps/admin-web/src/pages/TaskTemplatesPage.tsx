@@ -8,6 +8,7 @@ import { Card,
   Button,
   Empty,
   Popconfirm,
+  Tooltip,
   theme } from 'antd';
 import { message } from '../utils/toast';
 import {
@@ -162,7 +163,8 @@ export default function TaskTemplatesPage() {
                 // UI 打磨：模板名过长时（title 为 Space 节点，antd 默认省略号
                 // 不生效）用 Text ellipsis+tooltip 收口，卡片等高避免换行锯齿
                 <Space style={{ maxWidth: '100%' }} size={6}>
-                  <FileTextOutlined style={{ color: token.colorPrimary, flexShrink: 0 }} />
+                  {/* 图标按钮 a11y：随文字的装饰图标对读屏器隐藏（aria-hidden） */}
+                  <FileTextOutlined aria-hidden style={{ color: token.colorPrimary, flexShrink: 0 }} />
                   <Text ellipsis={{ tooltip: tpl.name }} style={{ maxWidth: '100%' }}>{tpl.name}</Text>
                 </Space>
               }
@@ -173,7 +175,7 @@ export default function TaskTemplatesPage() {
               }
               actions={[
                 <Button
-                  key="use" type="link" size="small" icon={<CopyOutlined />}
+                  key="use" type="link" size="small" icon={<CopyOutlined aria-hidden />}
                   onClick={() => handleUse(tpl)}
                 >
                   {t('templates.use')}
@@ -184,8 +186,17 @@ export default function TaskTemplatesPage() {
                     okButtonProps={{ danger: true }}
                     onConfirm={() => handleDelete(tpl.id)}
                   >
-                    <Button type="text" size="small" danger icon={<DeleteOutlined />}
-                      loading={deletingId === tpl.id} />
+                    {/* UI-09 图标按钮 a11y：删除按钮是 icon-only——antd 不会把
+                        Tooltip 转成 aria-label，必须显式补 aria-label（可访问名
+                        不再依赖图标的 aria-label="delete"）；图标本身纯装饰。 */}
+                    <Tooltip title={t('templates.delete')}>
+                      <Button
+                        type="text" size="small" danger
+                        icon={<DeleteOutlined aria-hidden />}
+                        aria-label={t('templates.delete')}
+                        loading={deletingId === tpl.id}
+                      />
+                    </Tooltip>
                   </Popconfirm>
                 ),
               ].filter(Boolean)}
@@ -201,12 +212,12 @@ export default function TaskTemplatesPage() {
                     {categoryLabel(tpl.category, t)}
                   </Tag>
                 )}
-                <Tag icon={<ApiOutlined />}>{TRIGGER_LABEL(t)[tpl.config.triggerType as string] ?? (tpl.config.triggerType ?? '—')}</Tag>
-                {tpl.config.runtime ? <Tag icon={<CodeOutlined />}>{String(tpl.config.runtime)}</Tag> : null}
+                <Tag icon={<ApiOutlined aria-hidden />}>{TRIGGER_LABEL(t)[tpl.config.triggerType as string] ?? (tpl.config.triggerType ?? '—')}</Tag>
+                {tpl.config.runtime ? <Tag icon={<CodeOutlined aria-hidden />}>{String(tpl.config.runtime)}</Tag> : null}
               </Space>
               <div>
                 <Text type="secondary" style={{ fontSize: 12 }}>
-                  <FieldTimeOutlined /> {configSummary(tpl.config, t) || '—'}
+                  <FieldTimeOutlined aria-hidden /> {configSummary(tpl.config, t) || '—'}
                 </Text>
               </div>
             </Card>

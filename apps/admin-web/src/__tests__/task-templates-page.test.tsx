@@ -120,7 +120,9 @@ describe('TaskTemplatesPage（CORE-03）', () => {
     await screen.findByText('定时备份');
     // 官方卡片 2 个 actions 槽（使用/删除），自定义卡片删除按钮存在——但官方只有一个删除入口不存在。
     // 官方模板卡片：无删除 Popconfirm 触发按钮（danger 删除图标按钮仅自定义有）。
-    const delButtons = screen.getAllByRole('button', { name: 'delete' });
+    // UI-09 图标按钮 a11y：icon-only 删除按钮显式补 aria-label（templates.delete），
+    // 可访问名不再依赖图标的 aria-label="delete"。
+    const delButtons = screen.getAllByRole('button', { name: '删除模板' });
     expect(delButtons.length).toBe(1);
   });
 
