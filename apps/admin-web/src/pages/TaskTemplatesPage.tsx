@@ -18,6 +18,7 @@ import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { taskTemplatesApi, TaskTemplate } from '../api/task-templates';
 import { useTaskTemplates } from '../api/queries';
+import { showApiError } from '../utils/error';
 import PageHeader from '../components/PageHeader';
 import PageSkeleton from '../components/PageSkeleton';
 import StateError from '../components/StateError';
@@ -103,8 +104,11 @@ export default function TaskTemplatesPage() {
       await taskTemplatesApi.remove(id);
       message.success(t('templates.deleted'));
       refresh();
-    } catch {
-      message.error(t('templates.deleteFail'));
+    } catch (err: unknown) {
+      // DUP-TOAST 对齐：client.ts 拦截器已对 HTTP 失败弹过全局 toast，此前这里
+      // 再补一条通用「删除失败」形成双报错，且把后端具体拒因（如官方模板 403）
+      // 吞掉。走 showApiError 去重并透出后端文案。
+      showApiError(err, t('templates.deleteFail'));
     } finally {
       setDeletingId(null);
     }

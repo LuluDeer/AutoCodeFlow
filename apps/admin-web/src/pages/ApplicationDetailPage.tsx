@@ -421,7 +421,11 @@ function SettingsTab({ app, onUpdated }: { app: Application; onUpdated: (a: Appl
       onUpdated(updated);
     } catch (err: unknown) {
       if (isFormValidationError(err)) return;
-      message.error(t('appDetail.settings.saveFail'));
+      // 排查清单 #2/#4 对齐（ExecutorDetailPage UX-11 同款先例）：此前直接
+      // message.error(通用文案)——一是因为绕过 showApiError 的 __toastedByClient
+      // 去重，与 client.ts 拦截器的全局 toast 连弹两条；二是把后端给出的具体
+      // 拒因（如版本号冲突 409）吞成一句"保存失败"。
+      showApiError(err, t('appDetail.settings.saveFail'));
     } finally { setSaving(false); }
   };
 

@@ -120,3 +120,29 @@ describe('AppDeploymentPage 翻页竞态（W7）', () => {
     expect(() => resolveList()).not.toThrow();
   });
 });
+
+// ─── 本轮 UX 打磨回归：升级按钮防重复提交（actingId 闸，与 approve/cancel 同款）───
+describe('AppDeploymentPage 升级防重复提交', () => {
+  it('升级在途期间再点不连发：两次点击只发一次 upgrade', async () => {
+    vi.mocked(deploymentsApi.list).mockReset().mockResolvedValue({ data: [dep('d1', '10.0.0.1')], total: 1 } as never);
+    // definite assignment：resolve 函数在 mockImplementation 同步闭包内赋值（TS 闭包赋值不改窄化，? 调用会报 never）
+    let resolveUpgrade!: () => void;
+    vi.mocked(deploymentsApi.upgrade).mockReset().mockImplementation(
+      () => new Promise((resolve) => { resolveUpgrade = () => resolve(undefined); }) as never,
+    );
+
+    renderPage();
+    await screen.findByText('10.0.0.1');
+
+    const upgradeBtn = screen.getByText('升级');
+    fireEvent.click(upgradeBtn);
+    await waitFor(() => expect(deploymentsApi.upgrade).toHaveBeenCalledTimes(1));
+
+    // 在途期间按钮禁用（互斥），再点不再发出第二次请求
+    expect((upgradeBtn.closest('button') as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(upgradeBtn);
+    expect(deploymentsApi.upgrade).toHaveBeenCalledTimes(1);
+
+    resolveUpgrade();
+  });
+});

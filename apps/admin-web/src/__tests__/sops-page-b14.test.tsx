@@ -6,7 +6,7 @@
  *     此前表单只给了 front-matter YAML 入口。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, cleanup, fireEvent, waitFor, act } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent, waitFor, act, within } from '@testing-library/react';
 import '../i18n';
 import SopsPage from '../pages/SopsPage';
 import { sopsApi } from '../api/sops';
@@ -219,5 +219,42 @@ describe('B-14 SopsPage 回复表单 bodyMarkdown', () => {
       resolution: 'answered',
       answer: '直接答复内容',
     });
+  });
+});
+
+// ─── 本轮 UX 打磨回归：首载失败错误态 + 新建草稿标题必填 ───────────────────
+describe('SopsPage UX 边界（首载失败态 / 草稿标题必填）', () => {
+  it('首次加载失败 → 页内 StateError + 重试成功后恢复，不再落「暂无数据」空表', async () => {
+    vi.mocked(sopsApi.list)
+      .mockReset()
+      .mockRejectedValueOnce(new Error('network down'))
+      .mockResolvedValue({ items: [sop], total: 1 } as never);
+
+    render(<SopsPage />);
+
+    // 失败如实呈现（StateError），而非空表把失败谎报成「没有 SOP」
+    expect(await screen.findByTestId('state-error')).toBeTruthy();
+
+    // 重试成功 → 错误块消失、数据正常渲染
+    fireEvent.click(within(screen.getByTestId('state-error')).getByText('重试'));
+    await screen.findByText('Demo SOP');
+    expect(screen.queryByTestId('state-error')).toBeNull();
+  });
+
+  it('新建草稿：标题为空时先行拦截，不发 draft 请求（后端 title 无 @IsNotEmpty）', async () => {
+    render(<SopsPage />);
+    await screen.findByText('Demo SOP');
+
+    // 打开新建草稿弹窗
+    fireEvent.click(screen.getByText('新建草稿'));
+    await waitFor(() => expect(screen.getByText('保存草稿')).toBeTruthy());
+
+    // 只填 slug（合法格式，通过 slug 校验），标题留空
+    const slugInput = document.querySelector('.ant-modal input') as HTMLInputElement;
+    fireEvent.change(slugInput, { target: { value: 'demo-sop' } });
+
+    fireEvent.click(screen.getByText('保存草稿'));
+    await waitFor(() => expect(screen.getByText('请填写标题')).toBeTruthy());
+    expect(sopsApi.draft).not.toHaveBeenCalled();
   });
 });

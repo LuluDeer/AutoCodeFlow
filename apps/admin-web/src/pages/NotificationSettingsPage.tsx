@@ -603,13 +603,21 @@ export default function NotificationSettingsPage() {
     sendTestMut.mutate(data);
   const sending = sendTestMut.isPending;
 
+  // 排查清单 #2：渠道启停 Switch 此前无 in-flight 标记——受控 Switch 在 PATCH
+  // 在途期间仍可连点，连点的两次 PATCH 乱序返回时最终状态可能与视觉相反
+  // （对齐 EventSubscriptionsSettings 的 Switch loading 先例）。
+  const [togglingChannel, setTogglingChannel] = useState<string | null>(null);
   const handleEnableChange = async (enabled: boolean) => {
+    if (togglingChannel) return;
+    setTogglingChannel(activeTab);
     try {
       await notificationApi.updateChannel(activeTab, { enabled });
     } catch (err: unknown) {
       // UI-15：渠道启停失败反馈（此前失败静默，Switch 视觉状态与后端不一致且无提示）
       showApiError(err, t('notif.channel.updateFail'));
       return;
+    } finally {
+      setTogglingChannel(null);
     }
     refresh();
     message.success(
@@ -634,7 +642,12 @@ export default function NotificationSettingsPage() {
       <div>
         <Space style={{ marginBottom: 16 }}>
           <Text>{t('notif.channel.enablePrompt')}</Text>
-          <Switch checked={c.enabled} onChange={handleEnableChange} />
+          <Switch
+            checked={c.enabled}
+            loading={togglingChannel === c.key}
+            disabled={togglingChannel !== null && togglingChannel !== c.key}
+            onChange={handleEnableChange}
+          />
         </Space>
         <Divider />
         {c.enabled ? (
