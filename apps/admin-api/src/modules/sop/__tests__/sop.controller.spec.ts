@@ -19,9 +19,13 @@
  *  ⑤ 查询参数是**字符串**（HTTP 层），必须转成数字后才交给 service——直接把
  *     字符串喂进分页会让 `(page-1)*pageSize` 变成字符串拼接。
  */
-import { ForbiddenException, ValidationPipe, BadRequestException } from "@nestjs/common";
+import {
+  ForbiddenException,
+  ValidationPipe,
+  BadRequestException,
+} from "@nestjs/common";
 
-import { SopController, DraftSopDto } from "../sop.controller";
+import { SopController, DraftSopDto, UpdateSopDto } from "../sop.controller";
 
 type Any = Record<string, any>;
 
@@ -388,5 +392,37 @@ describe("DraftSopDto —— title 空串/纯空白防线（对齐前端 c5c46a5
     await expect(validate({ slug: "daily-report" })).rejects.toThrow(
       BadRequestException,
     );
+  });
+});
+
+describe("UpdateSopDto —— PATCH title 空值防线（对齐 DraftSopDto 67ddaa9e）", () => {
+  // 与 main.ts 全局管道同参：whitelist + transform + forbidNonWhitelisted
+  const pipe = new ValidationPipe({
+    whitelist: true,
+    transform: true,
+    forbidNonWhitelisted: true,
+  });
+
+  function validate(value: object): Promise<UpdateSopDto> {
+    return pipe.transform(value, {
+      type: "body",
+      metatype: UpdateSopDto,
+    }) as Promise<UpdateSopDto>;
+  }
+
+  it("title 缺省 → 放行（PATCH 不传 = 沿用原值，可选语义不得误伤）", async () => {
+    const dto = await validate({ bodyMarkdown: "# 正文" });
+    expect(dto.title).toBeUndefined();
+    expect(dto.bodyMarkdown).toBe("# 正文");
+  });
+
+  it("显式空串 title → 400（DraftSopDto 已设防，PATCH 直调不得绕过）", async () => {
+    await expect(validate({ title: "" })).rejects.toThrow(BadRequestException);
+  });
+
+  it("显式纯空白 title → 400（IsNotEmpty 只挡空串，\\S 补住纯空白）", async () => {
+    for (const t of ["   ", "\t\n"]) {
+      await expect(validate({ title: t })).rejects.toThrow(BadRequestException);
+    }
   });
 });

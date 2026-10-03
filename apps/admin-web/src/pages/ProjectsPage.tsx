@@ -1,10 +1,11 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Button, Drawer, Form, Select, Space, Table, Tag, Typography, message,
 } from 'antd';
 import { TeamOutlined, UserAddOutlined, DeleteOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
+import { useSearchParams } from 'react-router-dom';
 import { projectsApi, type ProjectRole, type ProjectViewRow } from '../api/projects';
 import { queryKeys } from '../api/queries';
 import { usersApi } from '../api/users';
@@ -48,11 +49,36 @@ export default function ProjectsPage() {
 
   const [membersProject, setMembersProject] = useState<ProjectViewRow | null>(null);
 
-  // 列表：后端已按主体过滤，前端零额外处理
-  const projectsQuery = useQuery({
-    queryKey: queryKeys.projects.list,
-    queryFn: ({ signal }) => projectsApi.list(signal),
+  // URL-SYNC-01：page/pageSize 以 URL 为初始源并回写（对齐 UserManagementPage/
+  // AgentSessionsPage 先例）；非法深链值（?page=abc、负数、浮点、pageSize>100）
+  // 回落默认值，不空屏不报错。上限 100 与后端钳制纪律一致。
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [page, setPage] = useState(() => {
+    const p = Number(searchParams.get('page'));
+    return Number.isInteger(p) && p > 0 ? p : 1;
   });
+  const [pageSize, setPageSize] = useState(() => {
+    const ps = Number(searchParams.get('pageSize'));
+    return Number.isInteger(ps) && ps > 0 && ps <= 100 ? ps : 20;
+  });
+
+  // 列表：后端已按主体过滤，前端零额外处理；R3 起走服务端分页（信封形状，
+  // list/items 双键取 list）。queryKey 带上 page/pageSize——翻页各自缓存；
+  // 成员变更的失效走 queryKeys.projects.list 前缀（v5 前缀语义覆盖全部分页键）。
+  const projectsQuery = useQuery({
+    queryKey: [...queryKeys.projects.list, page, pageSize],
+    queryFn: ({ signal }) => projectsApi.listPaged(page, pageSize, signal),
+  });
+  const rows: ProjectViewRow[] = projectsQuery.data?.list ?? [];
+  const total: number = projectsQuery.data?.total ?? 0;
+
+  // URL-SYNC-01：状态→URL 回写（replace 不制造历史记录；默认值不写入保持 URL 干净）
+  useEffect(() => {
+    const next = new URLSearchParams();
+    if (page !== 1) next.set('page', String(page));
+    if (pageSize !== 20) next.set('pageSize', String(pageSize));
+    setSearchParams(next, { replace: true });
+  }, [page, pageSize, setSearchParams]);
 
   const columns = useMemo(
     () => [
@@ -130,9 +156,22 @@ export default function ProjectsPage() {
         rowKey="id"
         size="middle"
         columns={columns}
-        dataSource={projectsQuery.data ?? []}
+        dataSource={rows}
         scroll={{ x: 880 }}
-        pagination={false}
+        // UI 打磨：loading 直传 isFetching——翻页/重取期间表格有反馈，
+        // 首屏（无数据）仍走上方整页骨架
+        loading={projectsQuery.isFetching}
+        pagination={{
+          current: page,
+          pageSize,
+          total,
+          showSizeChanger: true,
+          showTotal: (count) => t('projects.count', { count }),
+          onChange: (p, ps) => {
+            setPage(p);
+            setPageSize(ps);
+          },
+        }}
       />
       <MembersDrawer
         project={membersProject}

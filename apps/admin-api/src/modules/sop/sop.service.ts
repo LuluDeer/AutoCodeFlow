@@ -1183,8 +1183,24 @@ export class SopService {
     page?: number;
     pageSize?: number;
   }): Promise<{ items: Sop[]; total: number }> {
-    const page = Math.max(1, options.page ?? 1);
-    const pageSize = Math.min(100, Math.max(1, options.pageSize ?? 20));
+    // NaN 守卫（与 agent-session list 同款，R3 后端遗留）：controller 的
+    // Number("abc")=NaN 会穿透 Math.max/Math.min 钳制直达 skip/take 炸 500。
+    // 非有限数视同未传、回落 1/20（对齐「非法深链安全回落」契约，不 400）。
+    const rawPage = options.page;
+    const rawPageSize = options.pageSize;
+    const page = Math.max(
+      1,
+      typeof rawPage === "number" && Number.isFinite(rawPage) ? rawPage : 1,
+    );
+    const pageSize = Math.min(
+      100,
+      Math.max(
+        1,
+        typeof rawPageSize === "number" && Number.isFinite(rawPageSize)
+          ? rawPageSize
+          : 20,
+      ),
+    );
     const qb = this.sops.createQueryBuilder("s");
     if (options.status)
       qb.andWhere("s.status = :status", { status: options.status });

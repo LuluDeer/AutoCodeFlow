@@ -2846,6 +2846,7 @@ export default {
   'projects.role.viewer': '只读',
   'projects.role.editor': '编辑者',
   'projects.role.admin': '项目管理员',
+  'projects.count': '共 {{count}} 个项目',
 
   // ── P5/P6: SOP 管理 ──
   'sops.reply': '回复',
