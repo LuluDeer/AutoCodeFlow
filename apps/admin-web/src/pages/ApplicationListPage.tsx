@@ -7,6 +7,8 @@ import { Table,
   Form,
   Input,
   Select,
+  Row,
+  Col,
   Upload,
   Typography,
   Tooltip,
@@ -879,30 +881,46 @@ export default function ApplicationListPage() {
             <Input.TextArea rows={2} placeholder={t('appList.field.descPlaceholder')} />
           </Form.Item>
 
-          <Space style={{ display: 'flex' }} size="middle">
-            <Form.Item
-              name="version"
-              label={t('appList.field.version')}
-              rules={[{ required: true, message: t('appList.field.versionRequired') }]}
-              tooltip={{
-                title: t('appList.field.versionTooltip'),
-                icon: <InfoCircleOutlined />,
-              }}
-            >
-              <Input placeholder="1.0.0" style={{ width: 160 }} />
-            </Form.Item>
-            <Form.Item
-              name="runtime"
-              label={t('appList.field.runtime')}
-              rules={[{ required: true, message: t('appList.field.runtimeRequired') }]}
-              tooltip={{
-                title: t('appList.field.runtimeTooltip'),
-                icon: <InfoCircleOutlined />,
-              }}
-            >
-              <Select options={runtimeOptions} style={{ width: 140 }} />
-            </Form.Item>
-          </Space>
+          {/* UX-WALK R9（走查 A 级 applications@375）：双列行窄屏堆叠——原 Space
+              flex（无断点）+ 固定宽（160/140）在 375px 弹窗 body 311px 下
+              160+16+140=316 已溢出，Git 行 200+16+200=416 更甚（.ant-modal-body
+              scrollWidth 416 > 311，Git Commit 输入框出血到弹窗右缘）。
+              改 Row/Col xs=24 sm=12（对齐 30236f5a ExecutorPackagesPage 先例），
+              固定宽移除改半列填充：桌面 sm+ 双列结构/16px 间距/左右缘对齐基线
+              不变，375 单列全宽堆叠（与 name/desc/gitRepo 等整行字段一致）。
+              ux-gutter-flush（index.css ≥576px 媒体查询）：抵消 gutter 的
+              ∓8px 负 margin 与内边距补偿，行盒恰好钉在 body 边缘——顺带消除
+              executor-packages@600 同款 8px scrollable overflow；<576px
+              gutter=0 本就无边距，规则不生效（不走行内 style 长写覆写的
+              原因见 index.css 该节注释）。 */}
+          <Row gutter={{ xs: 0, sm: 16 }} className="ux-gutter-flush">
+            <Col xs={24} sm={12}>
+              <Form.Item
+                name="version"
+                label={t('appList.field.version')}
+                rules={[{ required: true, message: t('appList.field.versionRequired') }]}
+                tooltip={{
+                  title: t('appList.field.versionTooltip'),
+                  icon: <InfoCircleOutlined />,
+                }}
+              >
+                <Input placeholder="1.0.0" />
+              </Form.Item>
+            </Col>
+            <Col xs={24} sm={12}>
+              <Form.Item
+                name="runtime"
+                label={t('appList.field.runtime')}
+                rules={[{ required: true, message: t('appList.field.runtimeRequired') }]}
+                tooltip={{
+                  title: t('appList.field.runtimeTooltip'),
+                  icon: <InfoCircleOutlined />,
+                }}
+              >
+                <Select options={runtimeOptions} />
+              </Form.Item>
+            </Col>
+          </Row>
 
           <Form.Item
             name="gitRepo"
@@ -921,28 +939,35 @@ export default function ApplicationListPage() {
             <Input placeholder="https://github.com/user/repo.git" />
           </Form.Item>
 
-          <Space style={{ display: 'flex' }} size="middle">
-            <Form.Item
-              name="gitBranch"
-              label={t('appList.field.gitBranch')}
-              tooltip={{
-                title: t('appList.field.gitBranchTooltip'),
-                icon: <InfoCircleOutlined />,
-              }}
-            >
-              <Input placeholder="main" style={{ width: 200 }} />
-            </Form.Item>
-            <Form.Item
-              name="gitCommit"
-              label={t('appList.field.gitCommit')}
-              tooltip={{
-                title: t('appList.field.gitCommitTooltip'),
-                icon: <InfoCircleOutlined />,
-              }}
-            >
-              <Input placeholder="HEAD" style={{ width: 200 }} />
-            </Form.Item>
-          </Space>
+          {/* UX-WALK R9：Git 分支/Git Commit 双列行——本弹窗 375px 溢出的主因
+              （200+16+200=416 > 311），同上改 Row/Col 响应式半列 +
+              ux-gutter-flush no-bleed（机制见上一行注释）。 */}
+          <Row gutter={{ xs: 0, sm: 16 }} className="ux-gutter-flush">
+            <Col xs={24} sm={12}>
+              <Form.Item
+                name="gitBranch"
+                label={t('appList.field.gitBranch')}
+                tooltip={{
+                  title: t('appList.field.gitBranchTooltip'),
+                  icon: <InfoCircleOutlined />,
+                }}
+              >
+                <Input placeholder="main" />
+              </Form.Item>
+            </Col>
+            <Col xs={24} sm={12}>
+              <Form.Item
+                name="gitCommit"
+                label={t('appList.field.gitCommit')}
+                tooltip={{
+                  title: t('appList.field.gitCommitTooltip'),
+                  icon: <InfoCircleOutlined />,
+                }}
+              >
+                <Input placeholder="HEAD" />
+              </Form.Item>
+            </Col>
+          </Row>
 
           <Form.Item
             name="entrypoint"

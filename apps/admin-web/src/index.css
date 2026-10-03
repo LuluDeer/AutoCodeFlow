@@ -382,3 +382,33 @@ html[data-theme='dark'] mark.log-search-hit {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ==========================================================================
+   UX-WALK R9（真 Chromium 走查 A 级防回归）：弹窗内半列行 no-bleed。
+   30236f5a 起 ApplicationListPage / ExecutorPackagesPage 弹窗表单用
+   Row gutter={{xs:0,sm:16}} + Col xs=24 sm=12 做窄屏堆叠；antd 对 sm+ 的
+   gutter 施加 Row margin-inline:-8px / Col padding-inline:8px 补偿——弹窗
+   body 自身无内边距（v6 内边距在 .ant-modal-content）且 overflowX=visible，
+   行盒右缘超出 body 恰 8px（实测 executor-packages@600 body scrollWidth
+   480>472，A 级）。本规则把行盒钳回 body 边缘并重列首/末列内边距，字段
+   几何（0..228 / 244..472）与钳制前逐像素一致；<576px gutter=0 本无边距，
+   规则不生效（375 堆叠不受影响）。
+   !important 覆盖 antd 行内样式是本文件既定惯例（见 UI-09 节）；不走 React
+   style 长写属性（paddingInlineStart/End）覆写，是因为与 antd 的
+   padding-inline 简写混写后，useBreakpoint 首帧 screens=null 会先按「全断点
+   命中」渲染 gutter=16 再回落，简写属性被移除时触发 React「Removing a style
+   property during rerender」开发告警（dev server 下污染页面 console）。
+   守卫：application-list-ux-regression / ui09-mobile-round3-exec 断言
+   .ux-gutter-flush 挂行；scripts/ux-walkthrough.mjs 真浏览器实测兜底。
+   ========================================================================== */
+@media (min-width: 576px) {
+  .ux-gutter-flush.ant-row {
+    margin-inline: 0 !important;
+  }
+  .ux-gutter-flush.ant-row > .ant-col:first-child {
+    padding-inline-start: 0 !important;
+  }
+  .ux-gutter-flush.ant-row > .ant-col:last-child {
+    padding-inline-end: 0 !important;
+  }
+}

@@ -145,3 +145,49 @@ describe('ApplicationListPage 新建弹窗防重复提交（UX 边界）', () =>
     });
   });
 });
+
+/**
+ * UX-WALK R9 走查 A 级防回归（applications@375）：新建/编辑弹窗的「版本/运行时」
+ * 「Git 分支/Git Commit」原为 Space flex（无断点）+ 固定像素宽（160/140、200/200），
+ * 375px 弹窗 body 311px 下 160+16+140=316、200+16+200=416 直接溢出（真实
+ * Chromium 实测 .ant-modal-body scrollWidth 416 > 311，Git Commit 输入框出血）。
+ * 修复：Row gutter {xs:0,sm:16} + Col xs=24 sm=12（对齐 30236f5a ExecutorPackagesPage
+ * 上传弹窗先例），固定宽移除改半列填充——375 单列全宽堆叠、sm+ 双列；
+ * 行挂 .ux-gutter-flush（index.css ≥576px 媒体查询）钳制 gutter 负 margin 的
+ * 8px scrollable overflow（executor-packages@600 同款 A 级），机制见该节注释。
+ *
+ * jsdom 无布局引擎，按 ui09 系列口径断言「渲染产物」：半列行挂 .ux-gutter-flush
+ * 作用域类 + Row/Col 响应式类名 + 输入不再携带固定像素宽（任一回退，
+ * 375 溢出即复现）。
+ */
+describe('ApplicationListPage 新建弹窗双列行响应式（UX-WALK R9 防回归）', () => {
+  it('版本/运行时、Git 分支/Git Commit 渲染为 ux-gutter-flush 半列行，输入无固定像素宽', async () => {
+    renderPage();
+    await screen.findByText(/暂无应用/);
+    fireEvent.click(findBtn(document.body, '创建应用')!);
+    await screen.findByPlaceholderText('my-autocodeflow-app');
+
+    const modal = document.body.querySelector('.ant-modal') as HTMLElement;
+    expect(modal).toBeTruthy();
+    // 恰好两条「半列行」Row（Form.Item 自身渲染 .ant-row.ant-form-item-row，排除）
+    const pairRows = (Array.from(modal.querySelectorAll('.ant-row')) as HTMLElement[])
+      .filter((r) => !r.className.includes('ant-form-item-row'));
+    expect(pairRows.length).toBe(2);
+    for (const row of pairRows) {
+      // no-bleed 作用域类：index.css ≥576px 钳制行盒（margin-inline:0 +
+      // 首/末列内边距重列），字段几何不变
+      expect(row.className).toContain('ux-gutter-flush');
+      // 每行两个 Col，均带 xs=24（<576 单列堆叠）/ sm=12（sm+ 桌面半列）响应式类
+      const cols = (Array.from(row.children) as HTMLElement[])
+        .filter((c) => c.className.includes('ant-col-xs-24') && c.className.includes('ant-col-sm-12'));
+      expect(cols.length).toBe(2);
+    }
+    // 半列行内输入不再携带固定像素宽（width:160/140/200/200 是 375 溢出根源；
+    // 375 堆叠后由 Col 全宽承载，与 name/desc/gitRepo 等整行字段一致）
+    for (const ph of ['1.0.0', 'main', 'HEAD']) {
+      const input = modal.querySelector(`input[placeholder="${ph}"]`) as HTMLInputElement | null;
+      expect(input).toBeTruthy();
+      expect(input!.style.width).toBe('');
+    }
+  });
+});

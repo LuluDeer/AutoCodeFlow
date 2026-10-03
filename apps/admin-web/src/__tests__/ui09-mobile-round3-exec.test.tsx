@@ -22,7 +22,7 @@
  *    补 aria-hidden。AppDeploymentPage 所有按钮均带文字，无图标按钮。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, cleanup } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { cloneElement } from 'react';
@@ -378,6 +378,47 @@ describe('UI-09 第三轮 ExecutorPackagesPage 375px 产物', () => {
     expect(deleteBtns.length).toBe(2);
     for (const btn of deleteBtns) {
       expect(btn.getAttribute('aria-label')).toBe('删除');
+    }
+  });
+
+  /**
+   * UX-WALK R9 走查 A 级防回归（executor-packages@600）：上传弹窗两条半列行
+   * （30236f5a 引入的 Row gutter {xs:0,sm:16}）在 sm+ 被 antd 施加
+   * margin-inline:-8px / padding-inline:8px 补偿——弹窗 body 自身无内边距
+   * （v6 内边距在 .ant-modal-content）且 overflowX=visible，行盒右缘超出
+   * body 恰 8px（真实 Chromium 实测 .ant-modal-body scrollWidth 480 > 472；
+   * 与上传控件内边距无关——Upload 子树无越界元素，Dragger 归因系误判）。
+   * 修复：行挂 .ux-gutter-flush（index.css ≥576px 媒体查询，!important 压过
+   * antd 行内样式的既定惯例）把行盒钉回 body 边缘，字段几何逐像素不变；
+   * <576px gutter=0 本无边距，规则不生效（375 不受影响）。不走行内 style
+   * 长写覆写的原因（React 简写/长写混写开发告警）见 index.css 该节注释。
+   *
+   * jsdom 无布局引擎，按 ui09 系列口径断言「渲染产物」：半列行挂
+   * .ux-gutter-flush 作用域类 + Col xs=24/sm=12 响应式类。
+   */
+  it('上传弹窗半列行挂 ux-gutter-flush no-bleed（gutter 负 margin 是 600px body 8px 出血根源）', async () => {
+    renderWithProviders(<ExecutorPackagesPage />);
+    await screen.findByText('python-runner');
+    fireEvent.click(screen.getByText('上传新包'));
+    await screen.findByPlaceholderText('python-runner');
+
+    const modal = document.body.querySelector('.ant-modal') as HTMLElement;
+    expect(modal).toBeTruthy();
+    // 恰好两条「半列行」Row（Form.Item 自身渲染 .ant-row.ant-form-item-row，排除）
+    const pairRows = (Array.from(modal.querySelectorAll('.ant-row')) as HTMLElement[])
+      .filter((r) => !r.className.includes('ant-form-item-row'));
+    expect(pairRows.length).toBe(2);
+    for (const row of pairRows) {
+      // no-bleed 作用域类：index.css ≥576px 钳制行盒（margin-inline:0 +
+      // 首/末列内边距重列），字段几何不变
+      expect(row.className).toContain('ux-gutter-flush');
+      const cols = Array.from(row.children) as HTMLElement[];
+      expect(cols.length).toBe(2);
+      // 响应式半列：<576 堆叠（xs=24）、sm+ 双列（sm=12）
+      expect(cols[0].className).toContain('ant-col-xs-24');
+      expect(cols[0].className).toContain('ant-col-sm-12');
+      expect(cols[1].className).toContain('ant-col-xs-24');
+      expect(cols[1].className).toContain('ant-col-sm-12');
     }
   });
 });
