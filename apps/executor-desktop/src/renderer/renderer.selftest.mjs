@@ -872,4 +872,60 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
   }
 }
 
-console.log('renderer selftest: design tokens, accessibility, contrast, focus, layout, spacing, IPC anchors, F-21/F-22/F-37, DSK-05, PERF-DSK-01, SEC-DSK-01, EXP-04/05/06/09, ErrorBoundary, NETOPT-7⑤⑥, tab roving+persist, app-management, N-04 cfg bilingual parity, audit B-3/B-6/B-8/B-9/B-11 guards passed');
+// ── UX 走查（对齐 admin-web 十轮方法论）回归守卫 ───────────────────────
+// 本轮桌面端渲染层首次按 admin-web 同标准扫描，以下钉死本轮修复不回退。
+{
+  const statusPage = pages[3];
+
+  // ① 未知 status 不得渲染成空白：主进程 executor:status 以裸字符串下发，
+  //    STATUS_LABEL/STATUS_BADGE 是封闭表——已知值查表、未知值原样透出
+  //    （对齐 HistoryPage.statusBadge 的「未知」回退与 agentOutcomeLabel 透传）。
+  if (!statusPage.includes('STATUS_LABEL[status] ?? status')) {
+    throw new Error('UX走查①: StatusWindow 状态大字缺少未知值回退（新状态枚举会渲染成空白）');
+  }
+  if (!statusPage.includes("STATUS_BADGE[status] ?? 'badge-stopped'")) {
+    throw new Error('UX走查①: 状态徽章缺少未知值回退（className 会出现字面 undefined）');
+  }
+
+  // ② Agent 卡片读取失败时不得谎报「已处理 0 个指派」——未知显示 —。
+  if (statusPage.includes('agentStatus?.processed ?? 0')) {
+    throw new Error('UX走查②: Agent 卡片在状态读取失败时谎报「已处理 0 个指派」');
+  }
+  if (!statusPage.includes("agentStatus?.processed ?? '—'")) {
+    throw new Error('UX走查②: Agent 卡片「已处理」缺少 — 空态（应与「最近结果：—」同口径）');
+  }
+
+  // ③ ConfigPage 的 lastOutcome 是英文枚举（delivered/deliver_failed/…），
+  //    必须走 main/agent-status-view 的 agentOutcomeLabel 双语查表（表外透传），
+  //    不得裸枚举直出——状态页早已映射，此处曾各自为政。
+  if (!config.includes("from '../../main/agent-status-view'") || !config.includes('agentOutcomeLabel(')) {
+    throw new Error('UX走查③: ConfigPage 的 Agent 最近结果未走 agentOutcomeLabel 查表（裸枚举直出）');
+  }
+  if (/lastOutcomeFmt',\s*agentStatus\.lastOutcome\)/.test(config.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, ''))) {
+    throw new Error('UX走查③: ConfigPage 仍将 lastOutcome 裸枚举直接插入文案');
+  }
+
+  // ④ HistoryPage 日志读取失败必须有原位重试（轮询已终止，不能只让用户
+  //    关闭重开）——reloadKey 驱动拉取链整体重建。
+  if (!history.includes('reloadKey') || !history.includes("onClick={() => setReloadKey((k) => k + 1)}")) {
+    throw new Error('UX走查④: HistoryPage 日志查看器失败态缺少原位重试按钮');
+  }
+  if (!/record\.executionId, record\.status, fetchLog, reloadKey\]/.test(history)) {
+    throw new Error('UX走查④: reloadKey 未接入拉取 effect（重试不会重建轮询）');
+  }
+
+  // ⑤ 向导 Suspense 占位不得闪英文 Loading（向导页整体硬编码中文）。
+  if (/>Loading...</.test(app) || /fallback=\{<div className="app-loading"[^>]*>Loading...</.test(app)) {
+    throw new Error('UX走查⑤: Wizard 加载占位仍是英文 Loading（与向导中文界面混语）');
+  }
+  if (!app.includes('>加载中...</div>')) {
+    throw new Error('UX走查⑤: Wizard 加载占位中文文案缺失');
+  }
+
+  // ⑥ 向导端口输入的 min 必须与本页校验口径（1–65535）一致。
+  if (!/type="number" min=\{1\} max=\{65535\}/.test(wizard.replace(/\s+/g, ' '))) {
+    throw new Error('UX走查⑥: Wizard 端口输入 min/max 与校验口径 1–65535 不一致');
+  }
+}
+
+console.log('renderer selftest: design tokens, accessibility, contrast, focus, layout, spacing, IPC anchors, F-21/F-22/F-37, DSK-05, PERF-DSK-01, SEC-DSK-01, EXP-04/05/06/09, ErrorBoundary, NETOPT-7⑤⑥, tab roving+persist, app-management, N-04 cfg bilingual parity, audit B-3/B-6/B-8/B-9/B-11, UX-walkthrough ①-⑥ guards passed');

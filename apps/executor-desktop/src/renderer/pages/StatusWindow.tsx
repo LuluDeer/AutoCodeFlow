@@ -620,9 +620,13 @@ export default function StatusWindow({ active }: { active: boolean }) {
   const addr = String(config.executorAddressPublic || '');
   const name = String(config.executorName || 'Executor');
   const apiUrl = String(config.adminApiUrl || '—');
+  // status 经 IPC 以裸字符串到达（snapshot.status as Status 只是断言）：主进程
+  // 未来新增状态（或异常值）时不得让状态大字渲染成空白——已知值查表、未知值
+  // 原样透出（与 HistoryPage.statusBadge 的「未知」回退、agentOutcomeLabel 的
+  // 表外透传同口径）。
   const statusLabel = !statusLoaded ? '正在读取状态' : status === 'pending' && pendingAction === 'stop'
     ? '正在停止'
-    : STATUS_LABEL[status];
+    : (STATUS_LABEL[status] ?? status);
   const statusDescription = status === 'offline' && running
     ? '本地进程仍在运行，但与平台的心跳连接中断。请检查网络或连接设置。'
     : status === 'pending' && pendingAction === 'stop'
@@ -646,7 +650,7 @@ export default function StatusWindow({ active }: { active: boolean }) {
             <div className="hero-eyebrow">执行器状态 <span aria-hidden="true">/</span> {name}</div>
             <div className="hero-status-row">
               <h1 className="hero-name" aria-live="polite">{statusLabel}</h1>
-              {running && <span className={`badge ${STATUS_BADGE[status]}`}>{statusLabel}</span>}
+              {running && <span className={`badge ${STATUS_BADGE[status] ?? 'badge-stopped'}`}>{statusLabel}</span>}
             </div>
             <p className="hero-status-text">{statusDescription}</p>
             {actionError && <div className="hero-error" role="alert">{actionError}</div>}
@@ -699,7 +703,9 @@ export default function StatusWindow({ active }: { active: boolean }) {
               </div>
             </div>
             <div className="overview-agent-meta">
-              <span>已处理 {agentStatus?.processed ?? 0} 个指派</span>
+              {/* 状态读取失败（agentStatus 为 null）时不得谎报「已处理 0 个」——
+                  未知就显示 —，与下方「最近结果：—」同一空态口径。 */}
+              <span>已处理 {agentStatus?.processed ?? '—'} 个指派</span>
               <span>最近结果：{agentStatus ? agentOutcomeLabel(agentStatus.lastOutcome) : '—'}</span>
               {agentStatus?.lastEffectiveProfile && <span>上次生效档位：{agentStatus.lastEffectiveProfile}</span>}
             </div>
