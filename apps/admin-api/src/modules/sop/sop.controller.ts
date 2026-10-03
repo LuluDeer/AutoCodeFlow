@@ -20,6 +20,7 @@ import {
 } from "@nestjs/swagger";
 import {
   IsIn,
+  IsNotEmpty,
   IsOptional,
   IsString,
   IsUUID,
@@ -43,7 +44,7 @@ import { ExecutorService } from "../executor/executor.service";
  * Agent 侧的同名能力走工具面（sop_publish 需审批，澄清小版本修订自主）。
  */
 
-class DraftSopDto {
+export class DraftSopDto {
   @ApiProperty({ example: "daily-report" })
   @IsString()
   @Matches(/^[a-z0-9][a-z0-9-]{0,127}$/, {
@@ -53,6 +54,12 @@ class DraftSopDto {
 
   @ApiProperty()
   @IsString()
+  // 前端（c5c46a58）已拦截空标题草稿，但 API 直调仍可绕过——服务端必须
+  // 同样设防：title 是 SOP 的展示主键，空串/纯空白草稿没有存在价值。
+  @IsNotEmpty()
+  // IsNotEmpty 只挡 ""，纯空白（"   "）会被它放行——这里补一条
+  // 「至少含一个非空白字符」，两者都不改写入值（trim 是另一个话题）。
+  @Matches(/\S/, { message: "title 不能为空或纯空白" })
   @MaxLength(255)
   title: string;
 

@@ -2938,5 +2938,45 @@ export default {
   'agents.scopeLabel': '作用域约束（边界闸门的越界判定依据）',
   'agents.contextLabel': '会话上下文',
   'agents.resultLabel': '终态结论',
+  // ── UX-06：AgentSessionsPage 裸枚举治理（词表见 utils/agent-label.ts）──
+  // 会话状态（状态机见 admin-api agent-session.entity.ts）
+  'agents.status.pending': '排队中',
+  'agents.status.running': '运行中',
+  'agents.status.waitingInput': '等待外部输入',
+  'agents.status.succeeded': '已成功',
+  'agents.status.failed': '已失败',
+  'agents.status.aborted': '已中止',
+  'agents.status.budgetExceeded': '预算超限',
+  // 会话类型（决定可用工具集白名单）
+  'agents.kind.opsWatch': '运维值守',
+  'agents.kind.incident': '事件处置',
+  'agents.kind.sopAuthoring': 'SOP 起草',
+  'agents.kind.sopReview': 'SOP 复核',
+  'agents.kind.appScaffold': '应用脚手架',
+  'agents.kind.chat': '人工对话',
+  // 工具调用结果状态（边界闸门/熔断/审批留痕）
+  'agents.toolStatus.ok': '成功',
+  'agents.toolStatus.denied': '已拒绝',
+  'agents.toolStatus.awaitingApproval': '待审批',
+  'agents.toolStatus.timeout': '已超时',
+  'agents.toolStatus.error': '出错',
+  'agents.toolStatus.circuitOpen': '已熔断',
+  // 推理步骤角色（LLM 消息协议）
+  'agents.role.system': '系统',
+  'agents.role.user': '用户',
+  'agents.role.assistant': '助手',
+  'agents.role.tool': '工具',
+  // 工具风险层级（决定审批与保留策略）
+  'agents.tier.read': '只读',
+  'agents.tier.write': '写入',
+  'agents.tier.dangerous': '危险',
+  // 列题（原 'kind'/'role'/'tok'/'ms'/'tier'/'args' 原始串）
+  'agents.col.kind': '类型',
+  'agents.col.role': '角色',
+  'agents.col.tok': '令牌 (入/出)',
+  'agents.col.latency': '耗时 (ms)',
+  'agents.col.duration': '耗时 (ms)',
+  'agents.col.tier': '权限层级',
+  'agents.col.args': '入参',
 } as const;
 

@@ -19,9 +19,9 @@
  *  ⑤ 查询参数是**字符串**（HTTP 层），必须转成数字后才交给 service——直接把
  *     字符串喂进分页会让 `(page-1)*pageSize` 变成字符串拼接。
  */
-import { ForbiddenException } from "@nestjs/common";
+import { ForbiddenException, ValidationPipe, BadRequestException } from "@nestjs/common";
 
-import { SopController } from "../sop.controller";
+import { SopController, DraftSopDto } from "../sop.controller";
 
 type Any = Record<string, any>;
 
@@ -345,5 +345,48 @@ describe("SopController —— 媒体下载响应头", () => {
     const res = fakeRes();
     await h.controller.downloadMedia("m-2", res as never);
     expect(res.headers["Content-Type"]).toBe("application/octet-stream");
+  });
+});
+
+describe("DraftSopDto —— title 空串/纯空白防线（对齐前端 c5c46a58）", () => {
+  // 与 main.ts 全局管道同参：whitelist + transform + forbidNonWhitelisted
+  const pipe = new ValidationPipe({
+    whitelist: true,
+    transform: true,
+    forbidNonWhitelisted: true,
+  });
+
+  function validate(value: object): Promise<DraftSopDto> {
+    return pipe.transform(value, {
+      type: "body",
+      metatype: DraftSopDto,
+    }) as Promise<DraftSopDto>;
+  }
+
+  const validDraft = { slug: "daily-report", title: "日报" };
+
+  it("合法 title → 放行", async () => {
+    const dto = await validate(validDraft);
+    expect(dto.title).toBe("日报");
+  });
+
+  it("空串 title → 400（API 直调不得绕过前端拦截）", async () => {
+    await expect(validate({ ...validDraft, title: "" })).rejects.toThrow(
+      BadRequestException,
+    );
+  });
+
+  it("纯空白 title → 400（IsNotEmpty 只挡空串，\S 补住纯空白）", async () => {
+    for (const t of ["   ", "\t\n"]) {
+      await expect(validate({ ...validDraft, title: t })).rejects.toThrow(
+        BadRequestException,
+      );
+    }
+  });
+
+  it("title 缺失 → 400（IsString 失败，不得静默成 undefined）", async () => {
+    await expect(validate({ slug: "daily-report" })).rejects.toThrow(
+      BadRequestException,
+    );
   });
 });

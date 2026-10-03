@@ -24,6 +24,14 @@ import StateError from '../components/StateError';
 import { agentApi } from '../api/agent';
 // SOPS-TIME-01：startedAt 列与 SopsPage 同走 formatDateTime（locale 感知 + 空值 '—'）
 import { formatDateTime } from '../utils/timeFormat';
+// UX-06：裸枚举收敛到共享词表（status/kind/工具状态/角色/层级 唯一事实源）
+import {
+  agentKindLabel,
+  agentStatusLabel,
+  agentStepRoleLabel,
+  agentToolStatusLabel,
+  agentToolTierLabel,
+} from '../utils/agent-label';
 import type {
   AgentBudget,
   AgentSession,
@@ -59,8 +67,11 @@ const TOOL_STATUS_COLORS: Record<string, string> = {
   awaiting_approval: 'orange',
 };
 
-function statusTag(status: string) {
-  return <Tag color={STATUS_COLORS[status] ?? 'default'}>{status}</Tag>;
+// UX-06：状态 Tag 走共享词表（未知值回退原始 token，保留可诊断信息）
+function statusTag(status: string, t: (k: string, v?: Record<string, unknown>) => string) {
+  return (
+    <Tag color={STATUS_COLORS[status] ?? 'default'}>{agentStatusLabel(status, t)}</Tag>
+  );
 }
 
 function usageOf(s: AgentSession, t: (k: string, v?: Record<string, unknown>) => string): string {
@@ -183,12 +194,17 @@ export default function AgentSessionsPage() {
       ellipsis: true,
       render: (_, s) => (
         <Space size={4}>
-          {statusTag(s.status)}
-          <Text strong>{s.title ?? s.kind}</Text>
+          {statusTag(s.status, t)}
+          <Text strong>{s.title ?? agentKindLabel(s.kind, t)}</Text>
         </Space>
       ),
     },
-    { title: 'kind', dataIndex: 'kind', width: 130 },
+    {
+      title: t('agents.col.kind'),
+      dataIndex: 'kind',
+      width: 130,
+      render: (v: string) => agentKindLabel(v, t),
+    },
     {
       title: t('agents.col.trigger'),
       dataIndex: 'triggerSource',
@@ -210,7 +226,12 @@ export default function AgentSessionsPage() {
 
   const stepColumns: ColumnsType<AgentStep> = [
     { title: '#', dataIndex: 'seq', width: 56 },
-    { title: 'role', dataIndex: 'role', width: 90 },
+    {
+      title: t('agents.col.role'),
+      dataIndex: 'role',
+      width: 90,
+      render: (v: string) => agentStepRoleLabel(v, t),
+    },
     {
       title: t('agents.col.content'),
       ellipsis: true,
@@ -223,8 +244,8 @@ export default function AgentSessionsPage() {
       width: 150,
       render: (_, s) => (s.model ? `${s.provider ?? ''}/${s.model}` : '—'),
     },
-    { title: 'tok', width: 90, render: (_, s) => `${s.tokensIn}/${s.tokensOut}` },
-    { title: 'ms', dataIndex: 'latencyMs', width: 80 },
+    { title: t('agents.col.tok'), width: 90, render: (_, s) => `${s.tokensIn}/${s.tokensOut}` },
+    { title: t('agents.col.latency'), dataIndex: 'latencyMs', width: 80 },
   ];
 
   const toolColumns: ColumnsType<AgentToolCall> = [
@@ -234,14 +255,21 @@ export default function AgentSessionsPage() {
       width: 180,
       render: (v: string, c) => (
         <Space size={4}>
-          <Tag color={TOOL_STATUS_COLORS[c.status] ?? 'default'}>{c.status}</Tag>
+          <Tag color={TOOL_STATUS_COLORS[c.status] ?? 'default'}>
+            {agentToolStatusLabel(c.status, t)}
+          </Tag>
           <Text style={{ fontSize: 12 }}>{v}</Text>
         </Space>
       ),
     },
-    { title: 'tier', dataIndex: 'tier', width: 90 },
     {
-      title: 'args',
+      title: t('agents.col.tier'),
+      dataIndex: 'tier',
+      width: 90,
+      render: (v: string) => agentToolTierLabel(v, t),
+    },
+    {
+      title: t('agents.col.args'),
       ellipsis: true,
       render: (_, c) => (
         <Text style={{ fontSize: 12 }} type="secondary">
@@ -249,7 +277,7 @@ export default function AgentSessionsPage() {
         </Text>
       ),
     },
-    { title: 'ms', dataIndex: 'durationMs', width: 80 },
+    { title: t('agents.col.duration'), dataIndex: 'durationMs', width: 80 },
     {
       title: t('agents.col.error'),
       ellipsis: true,
@@ -267,12 +295,17 @@ export default function AgentSessionsPage() {
       title: t('agents.col.title'),
       render: (_, s) => (
         <Space size={4}>
-          {statusTag(s.status)}
-          <Text strong>{s.title ?? s.kind}</Text>
+          {statusTag(s.status, t)}
+          <Text strong>{s.title ?? agentKindLabel(s.kind, t)}</Text>
         </Space>
       ),
     },
-    { title: 'kind', dataIndex: 'kind', width: 120 },
+    {
+      title: t('agents.col.kind'),
+      dataIndex: 'kind',
+      width: 120,
+      render: (v: string) => agentKindLabel(v, t),
+    },
     { title: t('agents.col.usage'), width: 200, render: (_, s) => usageOf(s, t) },
     {
       title: t('sops.col.actions'),
@@ -314,7 +347,7 @@ export default function AgentSessionsPage() {
               onChange={v => { setKindFilter(v); setPage(1); }}
               options={['ops_watch', 'incident', 'sop_authoring', 'sop_review', 'app_scaffold', 'chat'].map((k) => ({
                 value: k,
-                label: k,
+                label: agentKindLabel(k, t),
               }))}
             />
             <Select
@@ -323,7 +356,7 @@ export default function AgentSessionsPage() {
               style={{ width: 160 }}
               value={statusFilter}
               onChange={v => { setStatusFilter(v); setPage(1); }}
-              options={Object.keys(STATUS_COLORS).map((s) => ({ value: s, label: s }))}
+              options={Object.keys(STATUS_COLORS).map((s) => ({ value: s, label: agentStatusLabel(s, t) }))}
             />
             <Button icon={<ReloadOutlined />} onClick={() => void load()}>
               {t('sops.refresh')}
@@ -367,7 +400,7 @@ export default function AgentSessionsPage() {
       />
 
       <Drawer
-        title={detail ? (detail.title ?? `${detail.kind} · ${detail.id.slice(0, 8)}`) : ''}
+        title={detail ? (detail.title ?? `${agentKindLabel(detail.kind, t)} · ${detail.id.slice(0, 8)}`) : ''}
         width={920}
         open={detail !== null}
         onClose={() => setDetail(null)}
@@ -390,8 +423,8 @@ export default function AgentSessionsPage() {
           <>
             <Paragraph>
               <Space size={8} wrap>
-                {statusTag(detail.status)}
-                <Tag>{detail.kind}</Tag>
+                {statusTag(detail.status, t)}
+                <Tag>{agentKindLabel(detail.kind, t)}</Tag>
                 <Tag>{detail.triggerSource}</Tag>
                 <Text type="secondary">{usageOf(detail, t)}</Text>
               </Space>
