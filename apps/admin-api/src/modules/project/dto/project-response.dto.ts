@@ -65,6 +65,37 @@ export class ProjectEntityDto {
   updatedAt: Date;
 }
 
+/**
+ * GET /projects 分页信封（**仅当**请求携带 page/pageSize 时返回）。
+ *
+ * 形状对齐 common/dto/pagination.dto.ts 的 `paginate()`（与 tasks/users 列表
+ * 同款，含 R-21 遗留的 list/items 双键——收敛单键是跨包破坏面，另轮处理）。
+ * 不传分页参数时该端点仍返回**全量数组**（旧契约，acf-cli/mcp-server/项目
+ * 选择器按数组解析，零改动）——双形态在 controller 注释里说明。
+ */
+export class ProjectListPageDto {
+  @ApiProperty({
+    description: "Page rows (legacy alias of items)",
+    type: [ProjectViewDto],
+  })
+  list: ProjectViewDto[];
+
+  @ApiProperty({ description: "Page rows", type: [ProjectViewDto] })
+  items: ProjectViewDto[];
+
+  @ApiProperty({ description: "Total visible projects" })
+  total: number;
+
+  @ApiProperty({ description: "Current page (1-based)" })
+  page: number;
+
+  @ApiProperty({ description: "Page size (clamped to 1..100)" })
+  pageSize: number;
+
+  @ApiProperty({ description: "Total pages" })
+  totalPages: number;
+}
+
 /** GET /projects/:id/members 的单行（ProjectMemberView 的可生成版本）。 */
 export class ProjectMemberViewDto {
   @ApiProperty({ description: "Membership row id (uuid)" })

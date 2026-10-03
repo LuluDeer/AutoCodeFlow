@@ -138,8 +138,27 @@ export class AgentSessionService {
     page?: number;
     pageSize?: number;
   }): Promise<{ items: AgentSession[]; total: number }> {
-    const page = Math.max(1, options.page ?? 1);
-    const pageSize = Math.min(100, Math.max(1, options.pageSize ?? 20));
+    // NaN 守卫（R3 后端遗留）：HTTP 层 parseInt("abc")=NaN 会穿透下面的
+    // Math.max/Math.min 钳制（Math.max(1, NaN)=NaN），NaN 直达 skip/take
+    // 炸 500。与前端深链非法值回落默认的既有口径（R2-C URL-SYNC-01）对齐：
+    // 非有限数（NaN/±Infinity）一律视同未传、回落 1/20，而不是 400——
+    // 400 会改变「非法深链安全回落」契约。钳制本身维持原状（page≥1、
+    // pageSize∈[1,100]）。
+    const rawPage = options.page;
+    const rawPageSize = options.pageSize;
+    const page = Math.max(
+      1,
+      typeof rawPage === "number" && Number.isFinite(rawPage) ? rawPage : 1,
+    );
+    const pageSize = Math.min(
+      100,
+      Math.max(
+        1,
+        typeof rawPageSize === "number" && Number.isFinite(rawPageSize)
+          ? rawPageSize
+          : 20,
+      ),
+    );
 
     const qb = this.sessions.createQueryBuilder("s");
     if (options.kind) qb.andWhere("s.kind = :kind", { kind: options.kind });

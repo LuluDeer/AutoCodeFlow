@@ -3,6 +3,7 @@ import { ProjectsController } from "../projects.controller";
 import { DEFAULT_PROJECT_ID } from "../project.entity";
 import { UserRole } from "../../users/entities/user.entity";
 import { AuditService } from "../../audit/audit.service";
+import type { ProjectViewRow } from "../project.dto";
 
 /**
  * AUTH-02：项目成员端点的 RBAC 姿态与默认项目特例。
@@ -215,7 +216,7 @@ describe("ProjectsController（AUTH-02 成员面）", () => {
       },
     ]);
 
-    const rows = await controller.findAll(admin);
+    const rows = (await controller.findAll(admin)) as ProjectViewRow[];
     expect(rows.map((r) => r.id)).toEqual([DEFAULT_PROJECT_ID, "p1", "p2"]);
     expect(rows.find((r) => r.id === "p1")?.myRole).toBe("viewer");
     expect(rows.find((r) => r.id === "p2")?.myRole).toBeNull();
@@ -230,7 +231,7 @@ describe("ProjectsController（AUTH-02 成员面）", () => {
     ]);
     access.listRolesForUser.mockResolvedValue([]);
 
-    const rows = await controller.findAll(user);
+    const rows = (await controller.findAll(user)) as ProjectViewRow[];
     expect(rows.map((r) => r.id)).toEqual([DEFAULT_PROJECT_ID]);
     expect(rows[0].myRole).toBeNull();
   });
@@ -252,7 +253,7 @@ describe("ProjectsController（AUTH-02 成员面）", () => {
       },
     ]);
 
-    const rows = await controller.findAll(user);
+    const rows = (await controller.findAll(user)) as ProjectViewRow[];
     expect(rows.map((r) => r.id)).toEqual([DEFAULT_PROJECT_ID, "p2"]);
     expect(rows.find((r) => r.id === "p2")?.myRole).toBe("editor");
     expect(rows.find((r) => r.id === DEFAULT_PROJECT_ID)?.myRole).toBeNull();
@@ -265,7 +266,102 @@ describe("ProjectsController（AUTH-02 成员面）", () => {
       proj("p1", "Alpha"),
     ]);
 
-    const rows = await controller.findAll(undefined);
+    const rows = (await controller.findAll(undefined)) as ProjectViewRow[];
     expect(rows.map((r) => r.id)).toEqual([DEFAULT_PROJECT_ID]);
+  });
+
+  // ---------------------------------------------------------------------
+  // R3：可选服务端分页（向后兼容双形态）。
+  // ---------------------------------------------------------------------
+
+  it("findAll：不传 page/pageSize → 全量数组（旧契约，acf-cli/mcp-server/项目选择器零改动）", async () => {
+    const { controller, service } = makeController();
+    service.findAll.mockResolvedValue([
+      proj(DEFAULT_PROJECT_ID, "Default"),
+      proj("p1", "Alpha"),
+    ]);
+
+    const rows = await controller.findAll(admin);
+    expect(Array.isArray(rows)).toBe(true);
+    expect((rows as ProjectViewRow[]).map((r) => r.id)).toEqual([
+      DEFAULT_PROJECT_ID,
+      "p1",
+    ]);
+  });
+
+  it("findAll：传 page/pageSize → 分页信封（切片在可见集上，total=该主体可见总数）", async () => {
+    const { controller, service, access } = makeController();
+    service.findAll.mockResolvedValue([
+      proj(DEFAULT_PROJECT_ID, "Default"),
+      proj("p1", "Alpha"),
+      proj("p2", "Beta"),
+    ]);
+    // 普通用户只可见 Default ∪ p2——分页必须作用在**可见集**上，
+    // total 若数上不可见项目，分页器就会数出别的租户的项目。
+    access.listRolesForUser.mockResolvedValue([
+      {
+        id: "m2",
+        projectId: "p2",
+        userId: 7,
+        role: "editor",
+        createdAt: new Date(),
+      },
+    ]);
+
+    const page1 = (await controller.findAll(user, "1", "1")) as {
+      list: ProjectViewRow[];
+      items: ProjectViewRow[];
+      total: number;
+      page: number;
+      pageSize: number;
+      totalPages: number;
+    };
+    expect(page1.items.map((r) => r.id)).toEqual([DEFAULT_PROJECT_ID]);
+    expect(page1.list).toEqual(page1.items);
+    expect(page1.total).toBe(2);
+    expect(page1.page).toBe(1);
+    expect(page1.pageSize).toBe(1);
+    expect(page1.totalPages).toBe(2);
+
+    const page2 = (await controller.findAll(user, "2", "1")) as {
+      items: ProjectViewRow[];
+    };
+    expect(page2.items.map((r) => r.id)).toEqual(["p2"]);
+    expect(page2.items[0].myRole).toBe("editor");
+  });
+
+  it("findAll：pageSize 超上限钳制到 100、page 超上限钳制到 10000（对齐 PageQueryDto 纪律）", async () => {
+    const { controller, service } = makeController();
+    service.findAll.mockResolvedValue([proj(DEFAULT_PROJECT_ID, "Default")]);
+
+    const out = (await controller.findAll(admin, "3", "500")) as {
+      page: number;
+      pageSize: number;
+      items: ProjectViewRow[];
+    };
+    expect(out.page).toBe(3);
+    expect(out.pageSize).toBe(100);
+    // 越界页在内存切片下安全返回空页（不会 500）
+    expect(out.items).toEqual([]);
+  });
+
+  it("findAll：非法分页参数（NaN/负数/非整数/空串）视同未传 → 维持旧全量数组契约", async () => {
+    const { controller, service } = makeController();
+    service.findAll.mockResolvedValue([
+      proj(DEFAULT_PROJECT_ID, "Default"),
+      proj("p1", "Alpha"),
+    ]);
+
+    for (const evil of ["abc", "-1", "2.5", "0", ""]) {
+      const rows = await controller.findAll(admin, evil, evil);
+      expect(Array.isArray(rows)).toBe(true);
+    }
+    // 一个合法一个非法：合法者生效、非法者回落缺省（信封形态）
+    const mixed = (await controller.findAll(admin, "abc", "1")) as {
+      page: number;
+      pageSize: number;
+    };
+    expect(mixed.page).toBe(1);
+    expect(mixed.pageSize).toBe(1);
   });
 });

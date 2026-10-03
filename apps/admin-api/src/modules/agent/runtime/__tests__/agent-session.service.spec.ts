@@ -160,6 +160,29 @@ describe("AgentSessionService · 创建与查询", () => {
     expect(h.listQb.andWhere).not.toHaveBeenCalled();
   });
 
+  it("list：NaN/Infinity page/pageSize 安全回落默认 1/20（穿透钳制会炸 500）", async () => {
+    // HTTP 层 parseInt("abc")=NaN 会穿透 Math.max/Math.min（Math.max(1,NaN)=NaN），
+    // NaN 直达 skip/take——必须视同未传回落默认，而不是让 Prisma/TypeORM 500，
+    // 也不是 400（对齐前端「深链非法值回落默认」契约）。
+    for (const evil of [
+      NaN,
+      Number.POSITIVE_INFINITY,
+      Number.NEGATIVE_INFINITY,
+    ]) {
+      const h = harness();
+      await h.svc.list({ page: evil, pageSize: evil });
+      expect(h.listQb.skip).toHaveBeenCalledWith(0);
+      expect(h.listQb.take).toHaveBeenCalledWith(20);
+    }
+  });
+
+  it("list：合法 page/pageSize 不受 NaN 守卫影响（原值照用）", async () => {
+    const h = harness();
+    await h.svc.list({ page: 2, pageSize: 50 });
+    expect(h.listQb.skip).toHaveBeenCalledWith(50);
+    expect(h.listQb.take).toHaveBeenCalledWith(50);
+  });
+
   it("findChildren / listSteps / listToolCalls 透传排序读取", async () => {
     const h = harness();
     await expect(h.svc.findChildren("p-1")).resolves.toEqual([

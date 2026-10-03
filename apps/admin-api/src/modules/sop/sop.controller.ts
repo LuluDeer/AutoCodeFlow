@@ -80,10 +80,18 @@ export class DraftSopDto {
   applicationId?: string;
 }
 
-class UpdateSopDto {
+export class UpdateSopDto {
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
+  // 与 DraftSopDto.title 同等设防（67ddaa9e 只补了 POST 路径）：PATCH 显式
+  // 传 ""/"   " 同样能把标题改成空。@IsOptional 保证缺省（undefined）跳过
+  // 全部校验——「不传 = 沿用原值」的 PATCH 语义不受影响，只有**显式**传
+  // 空值才被 400。
+  @IsNotEmpty({ message: "title 不能为空" })
+  // IsNotEmpty 只挡 ""，纯空白（"   "）会被它放行——补「至少含一个非空白
+  // 字符」，两者都不改写入值（trim 是另一个话题）。
+  @Matches(/\S/, { message: "title 不能为空或纯空白" })
   @MaxLength(255)
   title?: string;
 

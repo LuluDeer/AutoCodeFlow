@@ -2829,6 +2829,7 @@ export default {
   'projects.role.viewer': 'Viewer',
   'projects.role.editor': 'Editor',
   'projects.role.admin': 'Project admin',
+  'projects.count': '{{count}} projects in total',
 
   // ── P5/P6: SOP management ──
   'sops.reply': 'Reply',

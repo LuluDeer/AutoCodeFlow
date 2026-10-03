@@ -1,9 +1,11 @@
 /**
  * AUTH-02 后续：ProjectsPage 渲染回归（列表/我的角色徽标/成员抽屉门控/错误态）。
+ * R3 追加：服务端分页（信封 mock）+ URL-SYNC-01（深链初始源/状态回写/默认值不写入）。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MemoryRouter, RouterProvider, createMemoryRouter } from 'react-router-dom';
 import ProjectsPage from '../pages/ProjectsPage';
 import { projectsApi, type ProjectViewRow } from '../api/projects';
 import { usersApi } from '../api/users';
@@ -18,6 +20,7 @@ vi.mock('../store/auth', () => ({
 vi.mock('../api/projects', () => ({
   projectsApi: {
     list: vi.fn(),
+    listPaged: vi.fn(),
     getMembers: vi.fn(),
     addMember: vi.fn(),
     updateMember: vi.fn(),
@@ -63,16 +66,34 @@ function makeProject(overrides: Partial<ProjectViewRow> = {}): ProjectViewRow {
   };
 }
 
-const renderPage = () =>
+/** 后端分页信封（paginate() 形状；list/items 双键是 R-21 遗留）。 */
+function makePage(
+  rows: ProjectViewRow[],
+  opts: { total?: number; page?: number; pageSize?: number } = {},
+) {
+  const { total = rows.length, page = 1, pageSize = 20 } = opts;
+  return {
+    list: rows,
+    items: rows,
+    total,
+    page,
+    pageSize,
+    totalPages: Math.ceil(total / pageSize),
+  };
+}
+
+const renderPage = (initialEntry = '/projects') =>
   render(
-    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-      <ProjectsPage />
-    </QueryClientProvider>,
+    <MemoryRouter initialEntries={[initialEntry]}>
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <ProjectsPage />
+      </QueryClientProvider>
+    </MemoryRouter>,
   );
 
 beforeEach(() => {
   authState.user = null;
-  vi.mocked(projectsApi.list).mockReset().mockResolvedValue([
+  const rows = [
     makeProject(),
     makeProject({
       id: 'aaaa0000-0000-4000-8000-000000000002',
@@ -80,7 +101,10 @@ beforeEach(() => {
       description: null,
       myRole: 'editor',
     }),
-  ]);
+  ];
+  vi.mocked(projectsApi.listPaged)
+    .mockReset()
+    .mockResolvedValue(makePage(rows));
   vi.mocked(projectsApi.getMembers).mockReset().mockResolvedValue([
     {
       id: 'm1',
@@ -129,7 +153,7 @@ describe('ProjectsPage（AUTH-02 后续）', () => {
   });
 
   it('列表加载失败 → StateError 页内错误块（带重试）', async () => {
-    vi.mocked(projectsApi.list).mockReset().mockRejectedValue(new Error('boom'));
+    vi.mocked(projectsApi.listPaged).mockReset().mockRejectedValue(new Error('boom'));
     renderPage();
 
     // UI-16 约定：StateError 标题 + 重试按钮
@@ -145,9 +169,11 @@ describe('ProjectsPage（AUTH-02 后续）', () => {
     vi.mocked(projectsApi.removeMember).mockReset().mockResolvedValue(undefined as never);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(
-      <QueryClientProvider client={queryClient}>
-        <ProjectsPage />
-      </QueryClientProvider>,
+      <MemoryRouter initialEntries={['/projects']}>
+        <QueryClientProvider client={queryClient}>
+          <ProjectsPage />
+        </QueryClientProvider>
+      </MemoryRouter>,
     );
     const memberButtons = await screen.findAllByRole('button', { name: /成员/ });
     fireEvent.click(memberButtons[0]);
@@ -196,5 +222,67 @@ describe('ProjectsPage 候选用户拉取失败（UX 边界）', () => {
     // antd Select 选项仅在展开时渲染——打开下拉验证候选用户已拉回
     fireEvent.mouseDown(screen.getByText('选择要添加的用户'));
     expect(await screen.findByText('#7 alice', { selector: '.ant-select-item-option-content' })).toBeTruthy();
+  });
+});
+
+// ─── R3：服务端分页 + URL-SYNC-01（对齐 UserManagementPage/AgentSessionsPage 先例）───
+describe('ProjectsPage 服务端分页（R3）', () => {
+  /** 独立 router 渲染：可断言 createMemoryRouter 的最终 URL 状态。 */
+  function renderWithRouter(initialEntry = '/projects') {
+    const router = createMemoryRouter(
+      [{ path: '/projects', element: <ProjectsPage /> }],
+      { initialEntries: [initialEntry] },
+    );
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <RouterProvider router={router} />
+      </QueryClientProvider>,
+    );
+    return router;
+  }
+
+  it('翻页触发新请求（page=2 进入 listPaged），URL 回写 page、默认值不写入', async () => {
+    vi.mocked(projectsApi.listPaged).mockReset().mockResolvedValue(
+      // total=25、pageSize=20 → 两页，分页器才渲染第 2 页按钮
+      makePage([makeProject()], { total: 25 }),
+    );
+    const router = renderWithRouter();
+    expect(await screen.findByText('Default')).toBeTruthy();
+
+    // 默认值（page=1/pageSize=20）不写入 URL，保持 URL 干净
+    expect(router.state.location.search).toBe('');
+
+    // antd 分页器第 2 页按钮；total=3/pageSize=20 → 两页
+    // （对齐 app-deployment-race 先例：antd v6 分页项用 selector 点击）
+    fireEvent.click(
+      document.querySelector('.ant-pagination-item[title="2"]') as HTMLElement,
+    );
+    await waitFor(() =>
+      expect(projectsApi.listPaged).toHaveBeenLastCalledWith(2, 20, expect.anything()),
+    );
+    // 状态→URL 回写：非默认 page 落 URL
+    await waitFor(() => expect(router.state.location.search).toBe('?page=2'));
+  });
+
+  it('深链 ?page=2 以 URL 为初始源（非法深链 ?page=abc 回落默认 1 并洗净 URL）', async () => {
+    renderWithRouter('/projects?page=2');
+    await screen.findByText('Default');
+    await waitFor(() =>
+      expect(projectsApi.listPaged).toHaveBeenLastCalledWith(2, 20, expect.anything()),
+    );
+    cleanup();
+
+    // abc 非整数、999 超 100 上限 → 双双回落默认 1/20；回落后默认值不留在 URL
+    renderWithRouter('/projects?page=abc&pageSize=999');
+    await screen.findByText('Default');
+    await waitFor(() =>
+      expect(projectsApi.listPaged).toHaveBeenLastCalledWith(1, 20, expect.anything()),
+    );
+  });
+
+  it('深链 ?page=abc：URL 被回写洗净（默认值不写入，与 AgentSessionsPage 同口径）', async () => {
+    const router = renderWithRouter('/projects?page=abc');
+    await screen.findByText('Default');
+    await waitFor(() => expect(router.state.location.search).toBe(''));
   });
 });

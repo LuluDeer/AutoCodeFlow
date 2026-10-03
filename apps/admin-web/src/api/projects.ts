@@ -31,11 +31,34 @@ export interface MyProjectRoles {
   memberships: ProjectMemberRow[];
 }
 
+/**
+ * GET /projects 分页信封（仅 listPaged 使用）。
+ * 形状与后端 `paginate()`（tasks/users 列表同款）逐字段对齐：
+ * list/items 双键是后端 R-21 遗留，前端只消费 `list`。
+ */
+export interface ProjectListPage {
+  list: ProjectViewRow[];
+  items: ProjectViewRow[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+}
+
 export const projectsApi = {
+  /** 全量数组（旧契约）：TaskFormPage 项目选择器等消费方，勿改。 */
   list: (signal?: AbortSignal) =>
     signal
       ? client.get('/projects', { signal }) as Promise<ProjectViewRow[]>
       : client.get('/projects') as Promise<ProjectViewRow[]>,
+  /**
+   * 服务端分页（仅 ProjectsPage 使用）：传 page/pageSize → 后端返回分页信封。
+   * 后端钳制 page≥1、pageSize≤100（非法值回落缺省，不 400）。
+   */
+  listPaged: (page: number, pageSize: number, signal?: AbortSignal) =>
+    signal
+      ? client.get<ProjectListPage>('/projects', { params: { page, pageSize }, signal })
+      : client.get<ProjectListPage>('/projects', { params: { page, pageSize } }),
   getMembers: (projectId: string, signal?: AbortSignal) =>
     signal
       ? client.get(`/projects/${projectId}/members`, { signal }) as Promise<ProjectMemberRow[]>

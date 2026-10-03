@@ -130,6 +130,26 @@ describe("SopService 读面（sop_list / sop_get / 审计取数路径）", () =>
     expect(r2.items).toHaveLength(1);
   });
 
+  it('list NaN 守卫：page/pageSize 非有限数（controller Number("abc")=NaN）回落默认 1/20 而非炸 500', async () => {
+    const h = harness();
+    h.sopRows.push(
+      ...Array.from({ length: 3 }, (_, i) => ({
+        id: `s${i}`,
+        slug: `s${i}`,
+        title: `T${i}`,
+        status: "draft",
+        updatedAt: new Date(2026, 0, i + 1),
+      })),
+    );
+    // NaN 穿透 Math.max/Math.min（Math.max(1,NaN)=NaN）会直达 skip/take；
+    // 守卫后视同未传——合法行数全量可见、不抛错不 400。
+    for (const evil of [NaN, Number.POSITIVE_INFINITY]) {
+      const r = await h.service.list({ page: evil, pageSize: evil });
+      expect(r.total).toBe(3);
+      expect(r.items).toHaveLength(3);
+    }
+  });
+
   it("list 按 status 过滤（下推给 SQL，不在内存过滤）", async () => {
     const h = harness();
     h.sopRows.push(
