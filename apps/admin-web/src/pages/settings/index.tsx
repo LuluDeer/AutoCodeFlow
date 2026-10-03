@@ -346,8 +346,15 @@ function HistoryModal({ configKey, onClose }: { configKey: string; onClose: () =
     { title: t('sysSettings.history.col.action'), dataIndex: 'action', width: 70,
       render: (v: ConfigHistory['action']) => v === 'create' ? t('sysSettings.history.action.create')
         : v === 'delete' ? t('sysSettings.history.action.delete') : v === 'rollback' ? t('sysSettings.history.action.rollback') : t('sysSettings.history.action.update') },
-    { title: t('sysSettings.history.col.old'), dataIndex: 'oldValue', ellipsis: true, minWidth: 110, render: (v: string) => v ?? <Text type="secondary">-</Text> },
-    { title: t('sysSettings.history.col.new'), dataIndex: 'newValue', ellipsis: true, minWidth: 110, render: (v: string) => v ?? <Text type="secondary">-</Text> },
+    // UI-09：新旧值为次要列——窄屏（≤768px，与 index.css 媒体查询同断点）列级隐藏
+    // （onHeaderCell/onCell 双端挂类，模式对齐 AppDeploymentPage）；桌面不动，
+    // Modal 全局 max-width + scroll.x 640 横滚兜底语义保留。
+    { title: t('sysSettings.history.col.old'), dataIndex: 'oldValue', ellipsis: true, minWidth: 110,
+      onHeaderCell: () => ({ className: 'ui09-hide-mobile' }), onCell: () => ({ className: 'ui09-hide-mobile' }),
+      render: (v: string) => v ?? <Text type="secondary">-</Text> },
+    { title: t('sysSettings.history.col.new'), dataIndex: 'newValue', ellipsis: true, minWidth: 110,
+      onHeaderCell: () => ({ className: 'ui09-hide-mobile' }), onCell: () => ({ className: 'ui09-hide-mobile' }),
+      render: (v: string) => v ?? <Text type="secondary">-</Text> },
     { title: '', width: 80,
       render: (_: unknown, row: ConfigHistory) => {
         if (!isAdmin) return null;

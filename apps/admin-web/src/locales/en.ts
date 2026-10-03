@@ -2872,6 +2872,11 @@ export default {
   'sops.col.publishedBy': 'Published by',
   'sops.col.publishedAt': 'Published at',
   'sops.col.clarifications': 'Clarifications',
+  // R6-Enum handoff: technical identifier column titles (previously raw strings)
+  'sops.col.slug': 'Slug',
+  'sops.col.id': 'ID',
+  'sops.col.contentHash': 'Content hash',
+  'sops.col.changelog': 'Changelog',
   'sops.tab.contract': 'Contract & body',
   'sops.tab.versions': 'Versions',
   'sops.tab.assignments': 'Assignments & clarifications',
