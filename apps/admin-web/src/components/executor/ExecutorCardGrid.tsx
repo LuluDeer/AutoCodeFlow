@@ -20,8 +20,8 @@ import {
 import { useTranslation } from 'react-i18next';
 import type { ReactNode } from 'react';
 import type { Executor } from '../../api/executors';
-// F-26（DEEP_REVIEW 0ef3bbe）：locale 单一来源，不再硬编码 zh-CN
-import { currentLocale } from '../../utils/locale';
+// 时间展示统一走共享 formatDateTime（locale 跟随 i18n 而非浏览器，见 utils/timeFormat）
+import { formatDateTime } from '../../utils/timeFormat';
 // P2-5（executor lifecycle audit）：心跳着色阈值与后端判死阈值同源
 import { heartbeatFreshness } from '../../utils/executorLiveness';
 // ARCH-33（ADR-016）：pull 控制面可用性判据（与详情页/批量条同源）
@@ -46,7 +46,7 @@ function heartbeatLabel(
   if (freshness === 'recent') {
     return { color: token.colorWarning, text: t('execCard.hb.minAgo', { min: Math.floor(diffMs / 60000) }) };
   }
-  return { color: token.colorError, text: new Date(lastHeartbeat).toLocaleString(currentLocale()) };
+  return { color: token.colorError, text: formatDateTime(lastHeartbeat) };
 }
 
 // B-8：删除 status==='busy' 死分支——执行器状态只有 online/offline 两态
@@ -191,7 +191,7 @@ export interface ExecutorCardProps {
         }}
       >
         {hb ? (
-          <Tooltip title={new Date(r.lastHeartbeat).toLocaleString(currentLocale())}>
+          <Tooltip title={formatDateTime(r.lastHeartbeat)}>
             <Space size={4}>
               <ClockCircleOutlined style={{ color: hb.color }} />
               <Text style={{ color: hb.color, fontSize: 12 }}>{hb.text}</Text>

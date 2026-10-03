@@ -17,8 +17,8 @@ import { useExecutorsList, useExecutorGroups, useExecutorRuntimeConfig } from '.
 // MOBILE-CARD-01：≤768px 强制卡片视图（表格在 375px 不可用，见组件注释）
 import { useIsMobile } from '../hooks/useIsMobile';
 import { client } from '../api/client';
-// F-26（DEEP_REVIEW 0ef3bbe）：locale 单一来源，不再硬编码 zh-CN
-import { currentLocale } from '../utils/locale';
+// 时间展示统一走共享 formatDateTime（locale 跟随 i18n 而非浏览器，见 utils/timeFormat）
+import { formatDateTime } from '../utils/timeFormat';
 import { useAuthStore } from '../store/auth';
 import PageHeader from '../components/PageHeader';
 import StateError from '../components/StateError';
@@ -56,7 +56,7 @@ function heartbeatLabel(
   if (freshness === 'recent') {
     return { color: token.colorWarning, text: t('execList.hb.minAgo', { min: Math.floor(diffMs / 60000) }) };
   }
-  return { color: token.colorError, text: new Date(lastHeartbeat).toLocaleString(currentLocale()) };
+  return { color: token.colorError, text: formatDateTime(lastHeartbeat) };
 }
 
 export default function ExecutorListPage() {
@@ -337,7 +337,7 @@ export default function ExecutorListPage() {
         if (!v) return '-';
         const hb = heartbeatLabel(t, v, token, heartbeatTimeoutMs);
         return (
-          <Tooltip title={new Date(v).toLocaleString(currentLocale())}>
+          <Tooltip title={formatDateTime(v)}>
             <Space size={4}>
               <ClockCircleOutlined style={{ color: hb.color }} />
               <Typography.Text style={{ color: hb.color, fontSize: 12 }}>{hb.text}</Typography.Text>

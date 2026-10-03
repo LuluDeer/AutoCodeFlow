@@ -184,6 +184,10 @@ const Clock = memo(function Clock({
     const timer = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(timer);
   }, []);
+  // 豁免说明（时间格式收敛 2026-10-03）：表头实时挂钟刻意不走 utils/timeFormat——
+  // 它是每秒刷新的紧凑展示（时:分 + 「x月x日 周x」），需要自定义 Intl 选项，
+  // formatDateTime/formatDate 的完整时间戳形态不适用。locale 仍取自 i18n.language
+  // （与 currentLocale() 同源），不跟随浏览器默认。
   const locale = i18n.language || 'zh-CN';
   const timeStr = now.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' });
   const dateStr = now.toLocaleDateString(locale, { month: 'long', day: 'numeric', weekday: 'short' });

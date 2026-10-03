@@ -71,9 +71,13 @@ function trendTooltipLabel(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
   const sameDay = d.toDateString() === new Date().toDateString();
+  // 豁免说明（时间格式收敛 2026-10-03）：同日分支刻意保留 toLocaleTimeString——
+  // 这是「仅时刻」（HH:MM:SS）形态，共享设施没有对应函数，改用 formatDateTime
+  // 会把 tooltip 变成带日期的完整时间，改变展示语义；跨日分支已收敛 formatDateTime。
+  // 源码守卫（time-format-source-guard.test.ts）只禁 toLocaleString/toLocaleDateString。
   return sameDay
     ? d.toLocaleTimeString(currentLocale(), { hour12: false })
-    : d.toLocaleString(currentLocale(), { hour12: false });
+    : formatDateTime(d);
 }
 
 export default function ExecutorDetailPage() {
