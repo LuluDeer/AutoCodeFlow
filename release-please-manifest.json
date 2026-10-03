@@ -1,8 +1,8 @@
 {
-  "packages/mcp-server": "1.7.0",
-  "packages/autoflow-sdk": "1.7.0",
-  "packages/acf-cli": "1.7.0",
-  "packages/autocodeflow-node-sdk": "1.7.0",
+  "packages/mcp-server": "1.8.0",
+  "packages/autoflow-sdk": "1.8.0",
+  "packages/acf-cli": "1.8.0",
+  "packages/autocodeflow-node-sdk": "1.8.0",
   "packages/autocodeflow-http": "0.2.2",
   "packages/autocodeflow-ai": "0.2.2",
   "packages/autocodeflow-db": "0.2.2",
