@@ -79,6 +79,17 @@ export function formatDurationShort(ms: number | null | undefined): string {
   return `${hours}h${restMinutes}m`;
 }
 
+/**
+ * 绝对时间（原始时区按 ISO 语义解析，输出本地时区）→ 完整日期时间，
+ * locale 跟随**应用语言**（currentLocale()：zh→zh-CN，en→en-US），不跟随浏览器
+ * locale——裸调 toLocaleString() 在英文浏览器跑中文界面时会渲染成 MM/DD/YYYY，
+ * 与界面语言割裂。空/非法值统一兜底 FALLBACK。
+ *
+ * 本文件是 src/utils 之外唯一的时间格式化出口：src/pages 与 src/components
+ * 禁止裸调 toLocaleString/toLocaleDateString（源码守卫
+ * __tests__/time-format-source-guard.test.ts）；「仅时刻」形态（趋势图同日
+ * tooltip、挂钟）为数不多的就地豁免，理由见各调用点注释。
+ */
 export function formatDateTime(value: TimeInput): string {
   const date = toDate(value);
   return date ? date.toLocaleString(currentLocale()) : FALLBACK;

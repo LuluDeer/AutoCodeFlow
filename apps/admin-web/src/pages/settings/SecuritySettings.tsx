@@ -22,8 +22,8 @@ import { authApi, AuthSession } from '../../api/auth';
 // A-13: 自助改密走既有自改端点（PATCH /users/:id，载荷 password + currentPassword）
 import { usersApi } from '../../api/users';
 import { showApiError } from '../../utils/error';
-// F-26（DEEP_REVIEW 0ef3bbe）：locale 单一来源，不再硬编码 zh-CN
-import { currentLocale } from '../../utils/locale';
+// 时间展示统一走共享 formatDateTime（locale 跟随 i18n 而非浏览器，见 utils/timeFormat）
+import { formatDateTime } from '../../utils/timeFormat';
 import StateError from '../../components/StateError';
 import { useAuthStore } from '../../store/auth';
 import { useTranslation } from 'react-i18next';
@@ -374,7 +374,8 @@ export function SessionsCard() {
     },
     {
       title: t('security.session.col.loginTime'), dataIndex: 'createdAt', width: 170,
-      render: (v: string) => (v ? new Date(v).toLocaleString(currentLocale()) : '-'),
+      // 占位符保持本表既有约定 '-'（与同表 IP 列一致），时间渲染走共享 formatDateTime
+      render: (v: string) => (v ? formatDateTime(v) : '-'),
     },
     {
       title: t('security.session.col.current'), dataIndex: 'current', width: 80,

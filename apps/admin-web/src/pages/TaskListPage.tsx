@@ -38,7 +38,7 @@ import { priorityTag } from '../utils/priority';
 import { runtimeLabel } from '../utils/runtime-label';
 // P1-1/P1-2（UX-AUDIT-2026-09-21）：列表页显示真实的「下次执行」与「上次执行」
 import { nextRunAt, formatFireTime, previewNeedsTimezoneWarning } from '../utils/trigger-preview';
-import { formatRelativeTime } from '../utils/timeFormat';
+import { formatDateTime, formatRelativeTime } from '../utils/timeFormat';
 // CRON-DESC-01：Cron 表达式的人类可读描述（超出子集回退 null，只显示原表达式）
 import { describeCron } from '../utils/cron-desc';
 // MOBILE-CARD-01：≤768px 表格 → 卡片列表（结构级降级）
@@ -485,8 +485,11 @@ export default function TaskListPage() {
             </Tooltip>
           );
         }
+        // 此前是不带 locale 的裸 toLocaleString()——跟随**浏览器** locale，
+        // 英文浏览器跑中文界面时显示 MM/DD/YYYY，与界面语言割裂。统一走
+        // formatDateTime（locale 跟随 i18n），与相对时间文案同源。
         return (
-          <Tooltip title={new Date(r.lastTriggerTime).toLocaleString()}>
+          <Tooltip title={formatDateTime(r.lastTriggerTime)}>
             <Text style={{ fontSize: 12 }}>{formatRelativeTime(r.lastTriggerTime, t)}</Text>
           </Tooltip>
         );

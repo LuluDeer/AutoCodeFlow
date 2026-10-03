@@ -25,8 +25,8 @@ import {
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { usersApi, type User, type CreateUserDto, type UpdateUserDto } from '../api/users';
 import { isFormValidationError, showApiError } from '../utils/error';
-// F-26（DEEP_REVIEW 0ef3bbe）：locale 单一来源，不再硬编码 zh-CN
-import { currentLocale } from '../utils/locale';
+// 时间展示统一走共享 formatDateTime（locale 跟随 i18n 而非浏览器，见 utils/timeFormat）
+import { formatDateTime } from '../utils/timeFormat';
 import { useTranslation } from 'react-i18next';
 // URL-SYNC-01：搜索/分页状态同步 URL（对齐 TaskListPage/ExecutionsPage 先例）——
 // 刷新、后退、分享链接不再丢状态。
@@ -282,10 +282,9 @@ export default function UserManagementPage() {
       dataIndex: 'createdAt',
       key: 'createdAt',
       width: 180,
-      render: (v: string) =>
-        v
-          ? new Date(v).toLocaleString(currentLocale(), { hour12: false })
-          : '—',
+      // 空/非法值由 formatDateTime 统一兜底为 '—'（原 hour12:false 收敛进共享
+      // 设施后，en 界面回到 en-US 惯用的 12 小时 AM/PM 排版，与其它已统一页面一致）
+      render: (v: string) => formatDateTime(v),
     },
     {
       title: t('users.col.actions'),
@@ -400,7 +399,7 @@ export default function UserManagementPage() {
                       {record.email || '—'}
                     </div>
                     <div style={{ marginTop: 4, fontSize: 12, color: 'var(--chart-axis-text)' }}>
-                      {t('users.col.createdAt')}：{record.createdAt ? new Date(record.createdAt).toLocaleString(currentLocale(), { hour12: false }) : '—'}
+                      {t('users.col.createdAt')}：{formatDateTime(record.createdAt)}
                     </div>
                     <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
                       <Button type="link" size="small" icon={<EditOutlined />} onClick={() => openEdit(record)}>

@@ -8,8 +8,8 @@ import { client } from '../../api/client';
 import { exportAuditCsv } from '../../api/audit';
 // TOAST-01：走 utils/toast 出口（App 实例优先，暗色主题下 toast 样式正确）
 import { message } from '../../utils/toast';
-// F-26（DEEP_REVIEW 0ef3bbe）：locale 单一来源，不再硬编码 zh-CN
-import { currentLocale } from '../../utils/locale';
+// 时间展示统一走共享 formatDateTime（locale 跟随 i18n 而非浏览器，见 utils/timeFormat）
+import { formatDateTime } from '../../utils/timeFormat';
 import dayjs, { type Dayjs } from 'dayjs';
 import { useTranslation } from 'react-i18next';
 import PageHeader from '../../components/PageHeader';
@@ -251,7 +251,7 @@ export default function AuditLogPage() {
       title: t('audit.col.time'),
       dataIndex: 'createdAt',
       width: 180,
-      render: (v: string) => new Date(v).toLocaleString(currentLocale()),
+      render: (v: string) => formatDateTime(v),
     },
   ];
 
@@ -373,7 +373,7 @@ export default function AuditLogPage() {
                   </div>
                   <div style={{ marginTop: 6, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                      {new Date(r.createdAt).toLocaleString(currentLocale())}
+                      {formatDateTime(r.createdAt)}
                     </Typography.Text>
                     {r.detail && Object.keys(r.detail).length > 0 && (
                       <Button

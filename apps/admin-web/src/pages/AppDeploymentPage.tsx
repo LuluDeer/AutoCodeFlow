@@ -24,7 +24,7 @@ import {
   CopyOutlined,
 } from '@ant-design/icons';
 import { deploymentsApi, AppDeployment, applicationsApi } from '../api/applications';
-import { formatRelativeTime } from '../utils/timeFormat';
+import { formatDateTime, formatRelativeTime } from '../utils/timeFormat';
 import DeployModeFields from '../components/DeployModeFields';
 import { executorsApi, ExecutorPickerItem } from '../api/executors';
 import { useExecutorNames } from '../hooks/useExecutorNames';
@@ -34,8 +34,6 @@ import { isFormValidationError, showApiError } from '../utils/error';
 // 降级 execCommand，并按返回值如实提示——此前 navigator.clipboard 静默 catch，
 // 失败零反馈，排障者点了复制却粘出空串）。
 import { copyText } from '../utils/clipboard';
-// F-26（DEEP_REVIEW 0ef3bbe）：locale 单一来源，不再硬编码 zh-CN
-import { currentLocale } from '../utils/locale';
 import { useTranslation } from 'react-i18next';
 import '../i18n';
 import StateError from '../components/StateError';
@@ -547,9 +545,10 @@ export default function AppDeploymentPage({ applicationId }: { applicationId: st
         if (!d) return '-';
         // P2-9：旧实现手搓了一套相对时间（mins<1/<60 两档），与仓库共享
         // formatRelativeTime（含天/月档、统一 i18n 键 time.relative.*）不一致。
-        // 改用共享工具，Tooltip 仍保留绝对时间。
+        // 改用共享工具，Tooltip 仍保留绝对时间（统一走 formatDateTime——
+        // locale 跟随 i18n 而非浏览器，源码守卫禁裸调 toLocaleString）。
         return (
-          <Tooltip title={new Date(d).toLocaleString(currentLocale())}>
+          <Tooltip title={formatDateTime(d)}>
             <Text type="secondary" style={{ fontSize: 12 }}>{formatRelativeTime(d, t)}</Text>
           </Tooltip>
         );
