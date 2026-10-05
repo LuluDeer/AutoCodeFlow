@@ -3,12 +3,35 @@
 > 形态：项目总监编排 + 每轮 ≤2 subagent 并行 + 文件所有权互斥 + 轮间编排者复验门禁。
 > 同源纪律见 UX-UPGRADE-2026-10-05-STATE.md 头部。基线：develop @ c46d88c6。
 
+## 战役二（同日续推：协议生态 + 末层 + UX 拓展）
+
+| 轮 | 内容 | 提交 |
+|----|------|------|
+| R8 | 协议 SSOT 补全：ExecutionCallback/CallbackArtifact 收编 protocol.json（双端分歧如实收编零语义改动），双生成器接线为唯一入队口 warn-only 对账闸，补 secrets 16 条运行时语义向量/LogsResponse unicode·CRLF·空行样本/回调 6 valid·12 invalid/日志切分 6 条字节级向量；bundle 重打回填；PROTOCOL_VERSION 不 bump（纯增量登记） | 01137b88 |
+| R8 | 末层审计（acf-cli/mcp-server/双 SDK/deploy 面）：P1=CLI login 不支持 TOTP（TOTP 用户完全无法用 CLI）；P2=CLI/MCP 双缺任务导入导出、批量面、api-keys、应用包上传、灰度发布；P3=level 过滤、模板绕开 CORE-03、webhook CLI、deploy.sh health 陷阱等 8 项；compose 52 变量确认零残留漂移 | — |
+| R9 | acf-cli 能力包：login TOTP 二段验证（--code 供 CI）/task export\|import（逐字透传）/task batch 四动作（部分失败 exit 1）/apikey create\|list\|revoke/set-token 安全提示，32 新用例，ux-uniform 叶子 44→50；mcp-server：export_task/import_task/get_execution_logs level 过滤/create_task_from_template 改走 CORE-03（删本地硬编码副本）+list_task_templates，49→52 工具 | b90d2d6a / b4f06ca7 |
+| R10 | deploy.sh：health 补 executor-python 探测并设退出码（可作 CI 闸）/logs 组件白名单/**verify_phase python 探测改真实存在的 /health（旧 /health/live 恒 45s 超时白等）**，selftest 34→47；admin-web：useGlobalHotkeys（? 速查/g+键五路跳转，输入态/弹层全护栏）+ShortcutHelpModal+TaskListPage 列设置（localStorage 隐藏集，列宽契约不动），25 新用例 | b99fbe3e / ee50b673 |
+
+战役二门禁：check:desktop-bundle-drift 绿（c6f06940…）；check-failure-reasons 绿（15/12）；acf-cli vitest 212 绿+mcp vitest 152 绿+双 typecheck；deploy selftest 47/47；admin-web vitest 199 文件/1553 用例绿。
+
+## 战役二遗留（下轮候选）
+
+1. **应用包上传 CLI**（`acf app upload`）与**灰度发布 CLI**（`acf app upgrade-all --strategy canary`）——P2 审计项，M 工作量，本轮未排。
+2. **webhook 管理/glue 热更新 CLI 面**（P3/S）与 **DEP-04 审批 CLI**（P3/S，MCP 已闭环）。
+3. **`--json` 语义冲突**（task create 的 --json=载荷 vs 全局输出 JSON）——破坏性需 deprecation 周期。
+4. **python win32 内存上限**（Job Object，L）或文档化登记。
+5. **desktop getHistory 推送化**（'history:changed' 替代双页 10s 轮询，M，收益中低）。
+6. **openapi.json 重导出**（战役一遗留，需 DB+Redis 环境；导出后必须 `check-openapi-response-schema.mjs --update` 刷基线）。
+7. CLI TOTP 交互路径（TTY 真人输码）建议一次手工 smoke（vitest 无法驱动）。
+
+## 战役一（上午轮次）
+
 ## 战役范围
 
 以点带面四层推进：admin-web 前端 → executor-desktop → admin-api 服务端 → 双执行器/协议生态。
 每轮先审计（只读 Explore）后实施（general-purpose），实施 agent 自跑门禁，编排者复验后提交。
 
-## 轮次与提交
+## 战役一轮次与提交
 
 | 轮 | 内容 | 提交 |
 |----|------|------|
