@@ -58,6 +58,12 @@ CLI 的非零退出码按失败类别区分，脚本/CI 可以只按码分支处
   推荐，不落盘）；`--api-url` / `--token` 可单次覆盖。
 - `acf login` 的密码输入不回显；`--password` 参数已标记 deprecated（会进
   shell history），CI 请用 `ACF_PASSWORD`。
+- 已启用 TOTP（两步验证）的账号：`acf login` 会在密码后提示输入 6 位动态码；
+  CI/非交互场景用 `acf login --user <name> --code <6位码>` 提供（stdin 非交互
+  且缺 `--code` 时会报可操作的用法错误，退出码 2）。
+- `acf apikey`（AUTH-03）：为 CI/CD 创建限权 API Key（`readonly` / `trigger` /
+  `manage`）。明文（`acf_<64 hex>`）仅在 `acf apikey create` 时回显**一次**，
+  此后只能 `acf apikey list`（脱敏）/ `acf apikey revoke <id>`。
 - Access token 过期时自动用 refresh token 换发并重放一次；刷新失败才要求
   重新登录（此时退出码为 3）。
 

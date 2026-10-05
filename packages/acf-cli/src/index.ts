@@ -3,9 +3,10 @@
  * ACF CLI — AutoCodeFlow command-line interface
  *
  * Usage:
- *   acf login
+ *   acf login                       # TOTP accounts: add --code <6 digits> (or prompt)
  *   acf task list
  *   acf task trigger <id> --wait
+ *   acf task export <id> [-o file] | import <file> | batch <trigger|pause|resume|delete> --ids id1,id2
  *   acf task versions <id> | compare <id> <v1> <v2> | rollback <id> --version <vid>
  *   acf task analyze <taskId> <execId>
  *   acf task suggest-schedule <id>
@@ -18,6 +19,8 @@
  *   acf audit list
  *   acf sop list | show <sopId>
  *   acf agent sessions
+ *   acf apikey create --name <name> --scope <readonly|trigger|manage> [--expires <days>]
+ *   acf apikey list | revoke <id>
  *   acf config show
  *
  * 退出码表（docs 详见 README.md「Exit codes」，单一事实源在 src/ui.ts 的
@@ -37,6 +40,7 @@ import { execCommand } from './commands/exec.js';
 import { projectsCommand } from './commands/projects.js';
 import { sopCommand } from './commands/sop.js';
 import { agentCommand } from './commands/agent.js';
+import { apikeysCommand } from './commands/apikeys.js';
 import { showConfig, setApiUrl, setToken } from './config.js';
 import { applyExamples } from './help.js';
 import { EXIT_CODES, interruptExit } from './ui.js';
@@ -87,6 +91,7 @@ program.addCommand(execCommand());
 program.addCommand(projectsCommand());
 program.addCommand(sopCommand());
 program.addCommand(agentCommand());
+program.addCommand(apikeysCommand());
 
 // acf config show / set
 const configCmd = new Command('config').description('View or update CLI configuration');
@@ -98,6 +103,14 @@ configCmd.command('set-url <url>').description('Set API base URL').action((url) 
 configCmd.command('set-token <token>').description('Set auth token directly').action((token) => {
   setToken(token);
   console.log(chalk.green('✔ Token saved'));
+  // 安全提示（与 login 的 --password 告警同风格）：命令行明文 token 会留在
+  // shell history 与进程列表里；login（交互隐藏输入 + 落 0600 配置文件）或
+  // ACF_TOKEN 环境变量（不进 argv）是更安全的通路。
+  process.stderr.write(
+    chalk.yellow(
+      '⚠ A token passed on the command line can leak into shell history and the process list — prefer `acf login` or the ACF_TOKEN environment variable.\n',
+    ),
+  );
 });
 program.addCommand(configCmd);
 

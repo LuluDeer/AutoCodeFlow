@@ -23,6 +23,7 @@ export const EXAMPLES: Record<string, string[]> = {
     'acf login',
     'acf login --url https://acf.example.com --user admin',
     'ACF_PASSWORD=... acf login --user admin   # CI: password via env, not argv',
+    'acf login --user admin --code 123456   # TOTP-enabled account (second factor)',
   ],
   'task list': [
     'acf task list --status active --page 1',
@@ -56,6 +57,18 @@ export const EXAMPLES: Record<string, string[]> = {
   'task delete': ['acf task delete <taskId> -y'],
   'task pause': ['acf task pause <taskId>'],
   'task resume': ['acf task resume <taskId>'],
+  'task export': [
+    'acf task export <taskId>',
+    'acf task export <taskId> -o task.json   # payload is accepted verbatim by: acf task import task.json',
+  ],
+  'task import': [
+    'acf task import task.json',
+    'cat task.json | acf task import -   # "-" reads stdin; the new task starts paused',
+  ],
+  'task batch': [
+    'acf task batch trigger --ids id1,id2,id3',
+    'acf task batch pause <id1> <id2>',
+  ],
   'task kill': ['acf task kill <taskId> <execId>'],
   'task lint': [
     'acf task lint glue.js',
@@ -97,6 +110,12 @@ export const EXAMPLES: Record<string, string[]> = {
     'acf agent sessions --status waiting_input',
     'acf agent sessions --json',
   ],
+  'apikey create': [
+    'acf apikey create --name ci-deploy --scope trigger',
+    'acf apikey create --name nightly --scope readonly --expires 90   # plaintext is echoed ONCE',
+  ],
+  'apikey list': ['acf apikey list', 'acf apikey list --json'],
+  'apikey revoke': ['acf apikey revoke 3'],
   'config show': ['acf config show'],
   'config set-url': ['acf config set-url http://localhost:3105'],
   'config set-token': ['acf config set-token <token>   # prefer: acf login'],

@@ -40,6 +40,44 @@ interface PaginatedTasks {
   pageSize: number;
 }
 
+// E-1 任务定义导出物（GET /tasks/:id/export 的原始 JSON 体，不经 envelope）。
+// schemaVersion 钉 "1"；导出物即 POST /tasks/import 的请求体，两端口径对称。
+interface TaskExportPayload {
+  schemaVersion: string;
+  exportedAt?: string;
+  task: Record<string, unknown>;
+}
+
+// POST /tasks/import 响应（envelope data）。
+interface TaskImportResult {
+  taskId: string;
+  name: string;
+  warnings?: string[];
+}
+
+/**
+ * E-1：`acf task import -` 的 stdin 读取。"-" 是 CI/管道惯例；stdin 是 TTY
+ * 时（用户忘了给文件、手敲 `-`）拒绝而不是挂死等待 EOF。流参数可注入——
+ * 单测用 PassThrough 驱动，不碰真实 stdin。
+ */
+export function readStdin(stream: NodeJS.ReadableStream = process.stdin): Promise<string> {
+  return new Promise((resolve, reject) => {
+    if ((stream as NodeJS.ReadStream).isTTY) {
+      reject(new UsageError('stdin is a TTY — pipe the payload (cat payload.json | acf task import -) or pass a file path'));
+      return;
+    }
+    let data = '';
+    stream.setEncoding('utf-8');
+    stream.on('data', (chunk: string) => {
+      data += chunk;
+    });
+    stream.on('end', () => resolve(data));
+    stream.on('error', (err: unknown) => {
+      reject(new UsageError(`Cannot read stdin: ${err instanceof Error ? err.message : String(err)}`));
+    });
+  });
+}
+
 function statusColor(s: string): string {
   if (s === 'success') return chalk.green(s);
   if (s === 'failed' || s === 'timeout' || s === 'killed') return chalk.red(s);
@@ -538,6 +576,131 @@ export function tasksCommand(): Command {
         console.log(chalk.gray(`  status: ${statusColor(t.status)}`));
       } catch (e: unknown) {
         emitError('Failed to resume task', e, { spinner });
+      }
+    });
+
+  // E-1: acf task export <id> [-o file] —— 导出任务定义为 JSON（导出物即
+  // POST /tasks/import 的请求体，两端口径完全对称，CLI 不做任何本地变换）。
+  // 服务端不经统一 envelope 包裹（@Res() 直写 attachment），client 的 unwrap
+  // 判据（数值 code）不会命中，这里拿到的就是原始 { schemaVersion, exportedAt, task }。
+  cmd.command('export <id>')
+    .description('Export a task definition as JSON (the payload is accepted verbatim by `acf task import`; secrets are never part of it)')
+    .option('-o, --output <file>', 'Write the JSON payload to a file instead of stdout')
+    .action(async (id: string, opts: { output?: string }) => {
+      const spinner = ora('Exporting task…').start();
+      try {
+        const payload = await get<TaskExportPayload>(`/tasks/${id}/export`);
+        if (opts.output) {
+          try {
+            await fs.promises.writeFile(opts.output, JSON.stringify(payload, null, 2) + '\n', 'utf-8');
+          } catch (err) {
+            // 本地文件层错误 = 用法错误（退出码 2），与服务端拒绝（1）区分。
+            throw new UsageError(
+              `Cannot write export file: ${opts.output} (${err instanceof Error ? err.message : String(err)})`,
+            );
+          }
+          spinner.succeed(`Task exported to ${opts.output}`);
+        } else {
+          spinner.stop();
+          console.log(JSON.stringify(payload, null, 2));
+        }
+      } catch (e: unknown) {
+        emitError('Failed to export task', e, { spinner });
+      }
+    });
+
+  // E-1: acf task import <file> —— 从导出物创建任务（"-" 读 stdin）。
+  // 请求体 = 导出物原样回放（JSON.parse 后交由 axios 序列化，键序/键值不变）；
+  // 重名自动加后缀不覆盖、secrets 键整体忽略（warnings 常驻重配提示）均为服务端语义。
+  cmd.command('import <file>')
+    .description('Create a task from an export payload ("-" reads stdin). The new task starts paused; reconfigure secrets afterwards (SEC-02: they are never transferred)')
+    .action(async (file: string) => {
+      const spinner = ora('Importing task…').start();
+      try {
+        let raw: string;
+        try {
+          raw = file === '-' ? await readStdin() : await fs.promises.readFile(file, 'utf-8');
+        } catch (err) {
+          // 本地 payload 层错误（文件读不了/stdin 不可用）= 用法错误（退出码 2）。
+          throw new UsageError(
+            `Cannot read payload ${file === '-' ? 'from stdin' : `file: ${file}`} (${err instanceof Error ? err.message : String(err)})`,
+          );
+        }
+        let body: unknown;
+        try {
+          body = JSON.parse(raw);
+        } catch (err) {
+          throw new UsageError(`Invalid JSON payload: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        const result = await post<TaskImportResult>('/tasks/import', body);
+        spinner.stop();
+        spinner.succeed(`Task imported: ${result.taskId}`);
+        console.log(chalk.gray(`  name: ${result.name}  status: paused`));
+        for (const w of result.warnings ?? []) {
+          console.log(chalk.yellow(`  ⚠ ${w}`));
+        }
+      } catch (e: unknown) {
+        emitError('Failed to import task', e, { spinner });
+      }
+    });
+
+  // 批量面：POST /tasks/batch/{trigger|pause|resume|delete}，body = { taskIds }。
+  // 服务端逐个执行、部分失败不影响其他任务（失败项以 { id, error } 回传，恒 200）。
+  cmd.command('batch <action> [ids...]')
+    .description('Batch trigger/pause/resume/delete tasks (partial failures do not affect the other tasks)')
+    .option('--ids <ids>', 'Comma-separated task IDs (merged with any positional ids, deduplicated)')
+    .option('--json', 'Emit raw JSON (CI-consumable: the raw per-task result array)')
+    .action(async (action: string, ids: string[], opts: { ids?: string; json?: boolean }) => {
+      const ACTIONS = ['trigger', 'pause', 'resume', 'delete'] as const;
+      if (!(ACTIONS as readonly string[]).includes(action)) {
+        emitUsageError(`Unknown batch action "${action}" — expected one of: ${ACTIONS.join(' | ')}`);
+      }
+      const fromFlag = (opts.ids ?? '')
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
+      // 服务端硬契约（BatchTaskIdsDto）：1..500 个 uuid，单请求上限 500。
+      const taskIds = [...new Set([...(ids ?? []), ...fromFlag])];
+      if (taskIds.length === 0) {
+        emitUsageError('No task IDs given — pass them as arguments or via --ids id1,id2,id3');
+      }
+      if (taskIds.length > 500) {
+        emitUsageError(`Batch is limited to 500 task IDs per request (got ${taskIds.length})`);
+      }
+      const spinner = ora(`Batch ${action} (${taskIds.length} task(s))…`).start();
+      try {
+        // Promise.all 保序：results[i] 对应 taskIds[i]（失败项为 { id, error }）。
+        const results = await post<Array<Record<string, unknown> | undefined>>(
+          `/tasks/batch/${action}`,
+          { taskIds },
+        );
+        spinner.stop();
+        if (opts.json) {
+          console.log(JSON.stringify(results ?? []));
+          return;
+        }
+        let failed = 0;
+        (results ?? []).forEach((r, i) => {
+          const tid = taskIds[i] ?? String(i);
+          if (r && typeof r === 'object' && 'error' in r) {
+            failed++;
+            console.log(chalk.red(`✗ ${tid}: ${String((r as { error: unknown }).error)}`));
+          } else {
+            console.log(chalk.green(`✔ ${tid}`));
+          }
+        });
+        if (failed > 0) {
+          // 部分失败：服务端仍是 200，但 CLI 要让 CI 看得见（对齐 CLI-EXIT-01
+          // 的「--wait 失败终态 → 非零退出码」语义）。退出码 1 = 服务端拒绝类。
+          console.error(
+            chalk.red(`Batch ${action} finished with ${failed} failure(s) out of ${taskIds.length} task(s).`),
+          );
+          process.exitCode = 1;
+        } else {
+          console.log(chalk.green(`Batch ${action}: ${taskIds.length}/${taskIds.length} succeeded`));
+        }
+      } catch (e: unknown) {
+        emitError(`Failed to batch ${action}`, e, { spinner });
       }
     });
 
