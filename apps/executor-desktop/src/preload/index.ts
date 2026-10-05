@@ -14,6 +14,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // （纯读、不 spawn 进程），让"配置没生效"这类问题当场可见。
   getPythonEnvStatus: () => ipcRenderer.invoke('config:python-env-status'),
 
+  // 配置导出 / 导入（拓展包）：主进程 saveDialog/openDialog + 文件读写都在
+  // 主进程侧完成，渲染层只传回结果。导出内容是 getAllMasked() 的掩码配置
+  // （token 不落明文）；导入走 config:save 同一条消毒+保存链路。
+  exportConfig: () => ipcRenderer.invoke('config:export'),
+  importConfig: () => ipcRenderer.invoke('config:import'),
+
   // Agent 托管状态（P7b，只读）——设置页 Agent 组的状态行；旧版 preload
   // 未暴露时渲染层容错降级为不显示（同 getAutoLaunch 先例）。
   getAgentStatus: () => ipcRenderer.invoke('agent:get-status'),
@@ -54,6 +60,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   revealExecLog: (executionId: string) =>
     ipcRenderer.invoke('history:reveal-log', executionId),
   openTaskLogFolder: () => ipcRenderer.invoke('history:open-log-folder'),
+  // 拓展包：导出某次执行的日志文件（主进程 copyFile 到用户选择的路径；
+  // 大文件返回 tooLarge，由 UI 引导走「打开日志文件夹」手动复制）。
+  exportExecLog: (executionId: string) =>
+    ipcRenderer.invoke('history:export-log', executionId),
 
   // 当天日志（主进程日志，用于主窗口启动时加载历史）——此前 StatusWindow
   // 误用 window.electronAPI.invoke('logs:getToday')，而 preload 从未暴露 invoke，

@@ -47,7 +47,9 @@ export type IconName =
   | 'stop'
   | 'eye'
   | 'eye-off'
-  | 'clock';
+  | 'clock'
+  | 'download'
+  | 'upload';
 
 const PATHS: Record<IconName, React.ReactNode> = {
   search: (
@@ -221,6 +223,21 @@ const PATHS: Record<IconName, React.ReactNode> = {
     <>
       <circle cx="12" cy="12" r="8.5" />
       <path d="M12 7v5.2l3.2 2" />
+    </>
+  ),
+  // 拓展包：配置导出/导入与日志导出按钮用（与既有 1.8 线宽同风格）
+  download: (
+    <>
+      <path d="M12 4v10.5" />
+      <path d="m6.8 10.8 5.2 5.2 5.2-5.2" />
+      <path d="M4.5 19.5h15" />
+    </>
+  ),
+  upload: (
+    <>
+      <path d="M12 15.5V5" />
+      <path d="M6.8 9.2 12 4l5.2 5.2" />
+      <path d="M4.5 19.5h15" />
     </>
   ),
 };

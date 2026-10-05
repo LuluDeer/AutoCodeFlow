@@ -91,6 +91,15 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'cfg.footer.diffAria': '配置更改清单',
     'cfg.footer.valueEmpty': '（空）',
     'cfg.footer.valueMasked': '已修改（内容隐藏）',
+    // ── 配置导出 / 导入（拓展包：配置备份）──
+    'cfg.io.export': '导出配置',
+    'cfg.io.import': '导入配置',
+    'cfg.io.exporting': '导出中...',
+    'cfg.io.importing': '导入中...',
+    'cfg.io.exportFailed': '导出失败',
+    'cfg.io.exportDone': (p) => `配置已导出到 ${p}（执行器密钥以掩码导出）`,
+    'cfg.io.importDone': '配置已导入并保存生效。',
+    'cfg.io.importFailed': (err) => `导入失败：${err}`,
     // ── 渐进披露（R3 D-03：长 hint / 多段 banner 折叠后的 summary 文案）──
     'cfg.details.label': '详情',
     'cfg.details.readBg': '阅读背景',
@@ -242,6 +251,9 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'cfg.about.title': '关于与更新',
     'cfg.about.subtitle': '日志级别、自启行为、系统通知与版本更新',
     'cfg.about.groupUpdate': '版本更新',
+    // 拓展包：配置备份（导出/导入），与「检查更新」同栏收拢的低频运维项
+    'cfg.about.groupBackup': '配置备份',
+    'cfg.about.backupHint': '导出完整配置（执行器密钥以掩码导出，不落明文），可在其他机器「导入配置」恢复。',
     'cfg.gen.groupLog': '日志',
     'cfg.gen.nameLabel': '执行器名称',
     'cfg.gen.nameHint': '在管理平台中显示的唯一名称，建议使用机器名或角色命名',
@@ -464,6 +476,11 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'history.notice.cleared': '历史记录已清除',
     'history.notice.clearFail': '清除历史记录失败',
     'history.unsupported': '当前版本不支持读取历史记录',
+    // ── 查看器「导出日志」（拓展包：把该次执行的日志文件另存到本地）──
+    'history.exportLog': '导出日志',
+    'history.exportLogTitle': '把该次执行的日志文件另存到指定位置',
+    'history.exportLogDone': (p) => `日志已导出到 ${p}`,
+    'history.exportLogFail': (err) => `导出日志失败：${err}`,
     // ── 应用页（i18n 二期）──
     'apps.title': '本地应用',
     'apps.meta': (a, r) => `${a} 个应用 · ${r} 个版本`,
@@ -687,6 +704,15 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'cfg.footer.diffAria': 'Configuration change list',
     'cfg.footer.valueEmpty': '(empty)',
     'cfg.footer.valueMasked': 'changed (hidden)',
+    // ── Config export / import (extension pack: config backup) ──
+    'cfg.io.export': 'Export configuration',
+    'cfg.io.import': 'Import configuration',
+    'cfg.io.exporting': 'Exporting...',
+    'cfg.io.importing': 'Importing...',
+    'cfg.io.exportFailed': 'Export failed',
+    'cfg.io.exportDone': (p) => `Configuration exported to ${p} (the executor secret is masked)`,
+    'cfg.io.importDone': 'Configuration imported and applied.',
+    'cfg.io.importFailed': (err) => `Import failed: ${err}`,
     // ── Progressive disclosure (R3 D-03: collapsed hint/banner summaries) ──
     'cfg.details.label': 'Details',
     'cfg.details.readBg': 'Read background',
@@ -838,6 +864,10 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'cfg.about.title': 'About & updates',
     'cfg.about.subtitle': 'Log level, startup behavior, system notifications and updates',
     'cfg.about.groupUpdate': 'Updates',
+    // Extension pack: config backup (export/import), a low-frequency ops item
+    // grouped with "Check for updates"
+    'cfg.about.groupBackup': 'Config backup',
+    'cfg.about.backupHint': "Export the full configuration (the executor secret is masked, never written in plaintext); import it on another machine to restore.",
     'cfg.gen.groupLog': 'Logging',
     'cfg.gen.nameLabel': 'Executor name',
     'cfg.gen.nameHint': 'Unique name shown in the admin platform; use the machine name or a role-based name',
@@ -1056,6 +1086,11 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'history.notice.cleared': 'History cleared',
     'history.notice.clearFail': 'Failed to clear history',
     'history.unsupported': 'This version cannot read run history',
+    // ── Viewer "Export log" (extension pack: save this run's log file locally) ──
+    'history.exportLog': 'Export log',
+    'history.exportLogTitle': "Save this run's log file to a chosen location",
+    'history.exportLogDone': (p) => `Log exported to ${p}`,
+    'history.exportLogFail': (err) => `Failed to export the log: ${err}`,
     // ── Apps page (i18n phase 2) ──
     'apps.title': 'Local apps',
     'apps.meta': (a, r) => `${a} apps · ${r} versions`,

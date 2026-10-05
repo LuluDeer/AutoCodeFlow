@@ -488,6 +488,14 @@
   animation: fadeIn var(--anim-in);
 }
 
+/* 拓展包：正向反馈变体（历史查看器「导出日志」成功）——同一行位，配色换绿。
+   缺省（无 is-ok）保持红色 = 失败/警示语义，既有调用方不受影响。 */
+.log-fs-notice.is-ok {
+  border-bottom-color: var(--green-border);
+  background: var(--green-bg);
+  color: var(--green);
+}
+
 .log-fs-body { flex: 1; display: flex; min-height: 0; overflow: hidden; }
 .log-fs-content { flex: 1; border-radius: 0; padding: 12px 16px; border: none; }
 

@@ -1008,4 +1008,54 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
   }
 }
 
-console.log('renderer selftest: design tokens, accessibility, contrast, focus, layout, spacing, IPC anchors, F-21/F-22/F-37, DSK-05, PERF-DSK-01, SEC-DSK-01, EXP-04/05/06/09, ErrorBoundary, NETOPT-7⑤⑥, tab roving+persist, app-management, N-04 renderer bilingual parity (all migrated pages/components), audit B-3/B-6/B-8/B-9/B-11, UX-walkthrough ①-⑥ guards passed');
+// ── 拓展包：配置导入/导出 + 执行日志导出（接线锚点）────────────────────
+// main 侧行为（掩码契约/导入消毒/200MB 阈值）由 export-flows.selftest.ts
+// 钉住；这里钉渲染层与 preload 的接线——任一锚点被拆除，功能即静默断链
+// （DSK-05 同款守卫哲学：通道完整但零调用 = 用户永远点不到）。
+{
+  const preloadSrcExport = readFileSync(resolve(root, '..', 'preload', 'index.ts'), 'utf8');
+  // 三条新 IPC：main handler 与 preload 通道必须成对在位
+  for (const ch of ['config:export', 'config:import', 'history:export-log']) {
+    if (!ipcHandlers.includes(`ipcMain.handle('${ch}'`)) {
+      throw new Error(`拓展包：缺少 ${ch} 主进程 handler`);
+    }
+    if (!preloadSrcExport.includes(ch)) {
+      throw new Error(`拓展包：preload 未暴露 ${ch}`);
+    }
+  }
+  // 导出必须取掩码读面（token 不落明文——真值源不得换成 getAll()）
+  {
+    const start = ipcHandlers.indexOf("ipcMain.handle('config:export'");
+    const rest = ipcHandlers.slice(start);
+    const block = rest.slice(0, rest.indexOf('ipcMain.handle(', 1));
+    if (!block.includes('getAllMasked()') || !block.includes('buildConfigExportPayload(')) {
+      throw new Error('拓展包：config:export 必须导出 getAllMasked() 并过导出守卫');
+    }
+  }
+  // 导入必须走既有消毒通道（不得自建第二套消毒语义）
+  {
+    const start = ipcHandlers.indexOf("ipcMain.handle('config:import'");
+    const rest = ipcHandlers.slice(start);
+    const block = rest.slice(0, rest.indexOf('ipcMain.handle(', 1));
+    if (!block.includes('parseImportedConfig(') || !block.includes('sanitizeConfigInput(')) {
+      throw new Error('拓展包：config:import 必须经 parseImportedConfig + sanitizeConfigInput');
+    }
+  }
+  // 渲染层接线：设置页导出/导入按钮、历史查看器导出动作
+  if (!config.includes('exportConfig') || !config.includes('importConfig')) {
+    throw new Error('拓展包：ConfigPage 缺少配置导出/导入按钮接线');
+  }
+  if (!history.includes('exportExecLog')) {
+    throw new Error('拓展包：HistoryPage 查看器缺少「导出日志」接线');
+  }
+  // 失败必须页内可见（桌面端无 toast 体系）
+  if (!config.includes('cfg.io.importFailed') || !history.includes('history.exportLogFail')) {
+    throw new Error('拓展包：导出/导入失败的页内反馈缺失');
+  }
+  // 成功行与错误行样式必须在位
+  if (!css.includes('.log-fs-notice') || !css.includes('.log-fs-notice.is-ok')) {
+    throw new Error('拓展包：查看器导出反馈样式缺失');
+  }
+}
+
+console.log('renderer selftest: design tokens, accessibility, contrast, focus, layout, spacing, IPC anchors, F-21/F-22/F-37, DSK-05, PERF-DSK-01, SEC-DSK-01, EXP-04/05/06/09, ErrorBoundary, NETOPT-7⑤⑥, tab roving+persist, app-management, N-04 renderer bilingual parity (all migrated pages/components), audit B-3/B-6/B-8/B-9/B-11, UX-walkthrough ①-⑥, export/import extension pack guards passed');

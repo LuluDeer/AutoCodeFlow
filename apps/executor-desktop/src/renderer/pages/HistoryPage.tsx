@@ -18,6 +18,10 @@ declare const window: Window & {
     writeClipboardText: (text: string) => Promise<{ ok: boolean }>;
     revealExecLog: (executionId: string) => Promise<{ ok: boolean; path?: string; error?: string }>;
     openTaskLogFolder: () => Promise<{ ok: boolean; path?: string; error?: string }>;
+    // 拓展包：导出某次执行的日志文件（主进程 copyFile 到用户选择的路径）。
+    exportExecLog: (executionId: string) => Promise<{
+      ok: boolean; canceled?: boolean; path?: string; tooLarge?: boolean; error?: string;
+    }>;
   };
 };
 
@@ -267,6 +271,36 @@ function ExecutionLogOverlay({ record, onClose, nav, onRevealLog }: {
     [lines],
   );
 
+  // ── 拓展包：查看器「导出日志」───────────────────────────────────────
+  // 主进程把该次执行的日志文件 copyFile 到用户选择的路径（原文件不动）；
+  // 大文件返回 tooLarge（error 文案已含"打开日志文件夹手动复制"的出路）。
+  // 结果经共享查看器的 notice 行呈现（6s 自动消退，与列表页 notice 同口径）。
+  const [exportState, setExportState] = useState<'idle' | 'busy'>('idle');
+  const [exportMsg, setExportMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
+  useEffect(() => {
+    if (!exportMsg) return;
+    const timer = setTimeout(() => setExportMsg(null), 6000);
+    return () => clearTimeout(timer);
+  }, [exportMsg]);
+
+  async function handleExportLog() {
+    if (exportState === 'busy') return;
+    setExportState('busy');
+    try {
+      const res = await window.electronAPI.exportExecLog(record.executionId);
+      if (res.canceled) return;
+      if (res.ok === true && res.path) {
+        setExportMsg({ kind: 'ok', text: t('history.exportLogDone', res.path) });
+      } else {
+        setExportMsg({ kind: 'err', text: t('history.exportLogFail', res.error ?? '') });
+      }
+    } catch (err) {
+      setExportMsg({ kind: 'err', text: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setExportState('idle');
+    }
+  }
+
   return (
     <LogViewer
       title={(
@@ -286,6 +320,26 @@ function ExecutionLogOverlay({ record, onClose, nav, onRevealLog }: {
       // running 轮询有到达感：新行 2s 绿底淡出（M-01 补齐，三查看器口径一致）
       arriveAnimation
       onOpenFile={onRevealLog}
+      // 拓展包：工具行「导出日志」+ 结果 notice（共享查看器的轻量通知位）
+      extraTools={
+        <button
+          type="button"
+          className="btn btn-sm"
+          onClick={() => void handleExportLog()}
+          disabled={exportState === 'busy'}
+          title={t('history.exportLogTitle')}
+        ><Icon name="download" /> {t('history.exportLog')}</button>
+      }
+      notice={exportMsg ? (
+        <span
+          className={exportMsg.kind === 'ok' ? 'is-ok' : undefined}
+          role={exportMsg.kind === 'ok' ? 'status' : 'alert'}
+        >
+          {exportMsg.kind === 'ok' ? <Icon name="check" className="icon-xs" /> : <Icon name="warning" className="icon-xs" />}
+          {' '}
+          {exportMsg.text}
+        </span>
+      ) : undefined}
       navTools={nav && nav.count > 1 ? (
         <>
           <button

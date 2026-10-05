@@ -28,6 +28,15 @@ declare const window: Window & {
     setAutoLaunch: (enable: boolean) => Promise<{ ok: boolean }>;
     checkForUpdate: () => Promise<{ ok: boolean }>;
     getPythonEnvStatus?: () => Promise<PythonEnvStatus>;
+    // 拓展包：配置导出/导入（主进程 saveDialog/openDialog + 读写，渲染层只收结果）
+    exportConfig: () => Promise<{ ok: boolean; canceled?: boolean; path?: string; error?: string }>;
+    importConfig: () => Promise<{
+      ok: boolean;
+      canceled?: boolean;
+      reloadError?: string;
+      restartDeferred?: boolean;
+      error?: string;
+    }>;
   };
 };
 
@@ -192,6 +201,14 @@ export default function ConfigPage() {
   // 呈现（updater 事件是主进程广播，与触发点解耦）；这里只反馈"已发起"。
   const [checking, setChecking] = useState(false);
   const [checkMsg, setCheckMsg] = useState<string | null>(null);
+  // 拓展包：配置导出/导入（配置备份）。in-flight 用 kind 区分两个按钮的
+  // loading 形态；结果走 ioMsg 行（kind=ok → status，err → alert），复用
+  // 连接测试同款 test-result 排版——桌面端无 toast 体系，反馈必须页内可见。
+  const [ioBusy, setIoBusy] = useState<'export' | 'import' | null>(null);
+  const [ioMsg, setIoMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
+  const ioSupported =
+    typeof window.electronAPI.exportConfig === 'function' &&
+    typeof window.electronAPI.importConfig === 'function';
   // V4-4（X-02）：改动清单显隐。清单内容由 form/savedForm 派生（useMemo）。
   const [showDiff, setShowDiff] = useState(false);
   const changedEntries = useMemo(
@@ -399,6 +416,73 @@ export default function ConfigPage() {
     } finally {
       setChecking(false);
       setTimeout(() => setCheckMsg(null), 6000);
+    }
+  }
+
+  // ── 拓展包：配置导出 / 导入（配置备份）─────────────────────────────
+  // 导出：主进程 saveDialog + 写入 getAllMasked() 的掩码配置，渲染层只呈现
+  // 结果路径（用户取消 = 无声返回，不弹"失败"）。
+  // 导入：主进程 openDialog → parseImportedConfig（白名单 + 掩码/空 token
+  // 剥离）→ sanitizeConfigInput → save 同一条保存链路；成功后重新 getConfig()
+  // 刷新渲染层配置态（表单/草稿/诊断与已落盘值对齐）。
+  async function exportConfig() {
+    if (ioBusy !== null) return;
+    setIoBusy('export');
+    setIoMsg(null);
+    try {
+      const r = await window.electronAPI.exportConfig();
+      if (r.canceled) return;
+      if (!r || r.ok !== true) {
+        // 主进程写文件失败的 error 已是人话，原样呈现；缺失时退回通用文案。
+        setIoMsg({ kind: 'err', text: r?.error ?? t('cfg.io.exportFailed') });
+      } else {
+        setIoMsg({ kind: 'ok', text: t('cfg.io.exportDone', r.path ?? '') });
+      }
+    } catch (err) {
+      setIoMsg({ kind: 'err', text: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setIoBusy(null);
+    }
+  }
+
+  async function importConfig() {
+    if (ioBusy !== null) return;
+    setIoBusy('import');
+    setIoMsg(null);
+    try {
+      const r = await window.electronAPI.importConfig();
+      if (r.canceled) return;
+      if (!r || r.ok !== true) {
+        // 坏 JSON / 消毒拒绝 / 载荷被主进程拒绝——主进程的 error 原样带出
+        //（它已是人话），没有 error 时退回通用失败文案。
+        setIoMsg({ kind: 'err', text: r?.error ? t('cfg.io.importFailed', r.error) : t('cfg.error.saveRejected') });
+        return;
+      }
+      // 成功后刷新渲染层配置态：重读掩码配置并复位表单与草稿（allowedApps/
+      // Domains 的 textarea 草稿是独立 state，必须一并复位）。重读失败不
+      // 掩盖导入成功——落盘已生效，只提示导入完成。
+      try {
+        const cfg = await window.electronAPI.getConfig();
+        setForm(cfg);
+        setSavedForm(cfg);
+        setAllowedAppsText(listText(cfg.agentAllowedApps));
+        setAllowedDomainsText(listText(cfg.agentAllowedDomains));
+        setTestResult(null);
+      } catch {
+        /* 掩码配置重读失败：保持既有显示，导入结果照常呈现 */
+      }
+      // 导入可能改了 uv 组——诊断块反映的是已保存配置，立即重取（EXP-06 同语义）。
+      refreshPyEnv();
+      if (r.reloadError) {
+        // 与 save() 同款如实呈现：配置已落盘，但执行器热重载失败（停止态）。
+        setIoMsg({ kind: 'err', text: t('cfg.error.reloadFailed', r.reloadError) });
+      } else {
+        setIoMsg({ kind: 'ok', text: t('cfg.io.importDone') });
+      }
+    } catch (err) {
+      setIoMsg({ kind: 'err', text: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setIoBusy(null);
     }
   }
 
@@ -1049,6 +1133,48 @@ export default function ConfigPage() {
                       </button>
                     </div>
                     {checkMsg && <span className="cfg-hint" role="status">{checkMsg}</span>}
+                  </div>
+                </div>
+
+                {/* 拓展包：配置备份（导出/导入）。与「检查更新」同栏收拢的低频
+                    运维项；导出走主进程 saveDialog（掩码配置，token 不落明文），
+                    导入成功后由 importConfig() 重读配置刷新整页表单。 */}
+                <div className="cfg-group">
+                  <div className="cfg-group-title">{t('cfg.about.groupBackup')}</div>
+                  <div className="cfg-field">
+                    <div className="cfg-row">
+                      <button
+                        type="button"
+                        className="btn"
+                        onClick={() => void exportConfig()}
+                        disabled={ioBusy !== null || !ioSupported}
+                        title={!ioSupported ? t('cfg.gen.unsupported') : undefined}
+                      >
+                        {ioBusy === 'export'
+                          ? <><Icon name="refresh" className="icon-spin" /> {t('cfg.io.exporting')}</>
+                          : <><Icon name="download" /> {t('cfg.io.export')}</>}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn"
+                        onClick={() => void importConfig()}
+                        disabled={ioBusy !== null || !ioSupported}
+                        title={!ioSupported ? t('cfg.gen.unsupported') : undefined}
+                      >
+                        {ioBusy === 'import'
+                          ? <><Icon name="refresh" className="icon-spin" /> {t('cfg.io.importing')}</>
+                          : <><Icon name="upload" /> {t('cfg.io.import')}</>}
+                      </button>
+                    </div>
+                    <span className="cfg-hint">{t('cfg.about.backupHint')}</span>
+                    {ioMsg && (
+                      <div
+                        className={ioMsg.kind === 'ok' ? 'test-result ok' : 'test-result fail'}
+                        role={ioMsg.kind === 'ok' ? 'status' : 'alert'}
+                      >
+                        <Icon name={ioMsg.kind === 'ok' ? 'check' : 'warning'} className="icon-xs" /> {ioMsg.text}
+                      </div>
+                    )}
                   </div>
                 </div>
               </aside>

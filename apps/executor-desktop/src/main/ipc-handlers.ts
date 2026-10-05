@@ -42,6 +42,18 @@ import { resolveBundledUvPath, resolveInterpretersDir } from './executor-process
 import { classifyUvResolution } from './uv-paths';
 import { listLocalIPv4s, normalizeListenHost } from './network-util';
 import { sanitizeConfigInput } from './config-sanitize';
+// 拓展包「配置导入/导出 + 执行日志导出」：纯函数层（文件名/导入解析/掩码
+// 契约/大小阈值）抽离自 ipc-handlers——本文件顶层 import electron，裸 node
+// 加载即崩，行为回归闸由 export-flows.selftest.ts 直接驱动该模块。
+import {
+  CONFIG_IMPORT_MAX_BYTES,
+  LOG_EXPORT_MAX_BYTES,
+  buildConfigExportPayload,
+  configExportFileName,
+  execLogExportFileName,
+  logExportTooLarge,
+  parseImportedConfig,
+} from './export-flows';
 // B-9/B-11：向导完成面的启动结果反馈——健康等待与注册预检（纯 Node 原语）。
 import { fetchAdminRegistration, waitForExecutorHealthy } from './port-probe';
 // UX-DSK-PORT：向导预检用的端口归一化（与 HeartbeatMonitor 同一实现）。
@@ -343,6 +355,68 @@ export function readLastLines(
   }
 }
 
+/**
+ * 配置写入后的共同收尾——config:save 与 config:import（拓展包）共用同一实现。
+ * 两处各写一遍必然漂移（EXP-03 同教训），因此热同步与"是否需要重启执行器"
+ * 的全部副作用收敛在这里；调用方只负责把补丁交给 ConfigStore.save。
+ *
+ * 返回值供 UI 如实呈现（配置本身均已落盘成功）：
+ *  · reloadError：执行器热重载失败——它已停留在停止态；
+ *  · restartDeferred：用户选择暂不重启——下次启动执行器时生效。
+ */
+async function finalizeConfigSave(
+  configBefore: AppConfig,
+): Promise<{ reloadError?: string; restartDeferred?: boolean }> {
+  // P3-1：logLevel 不再是死字段——保存后立即作用于桌面端自身的文件日志。
+  applyLogLevel(configStore.get('logLevel'));
+  log.info('Config saved via IPC');
+  trayManager.rebuildMenu();
+  // DSK-04：通知开关 / workDir 可能被改——热同步通知器（开关 + meta 轮询目录）
+  syncNotifierWithConfig();
+  // P7b：agentEnabled / 档位 / 中台地址可能被改——热同步 Agent 托管
+  // （内部自行读最新配置，启停轮询不销毁 host；失败仅记日志不阻塞保存）
+  syncAgentHostWithConfig();
+  // 如果执行器正在运行：只有"必须重启子进程才生效"的字段（workDir、端口、
+  // token、adminApiUrl、并发数、uv 组等）变化时才热重载——旧实现只要在跑
+  // 就无条件 stop+start，改一个通知开关也会杀掉正在运行的任务。
+  // 注意：配置本身已落盘成功，但"热重载"是用户可感知的副作用——若重启
+  // 失败（端口被占 / token 失效等），执行器会停留在停止态。原实现只写日志
+  // 却仍返回 ok:true，渲染层于是显示"已保存，配置已生效"，而执行器其实已经
+  // 死了且无任何提示。现改为把 reload 结果一并回传，让 UI 如实呈现。
+  let reloadError: string | null = null;
+  let restartSkipped = false;
+  if (executorProcess.isRunning()) {
+    if (!restartRequiredFieldsChanged(configBefore, configStore.getAll())) {
+      log.info(
+        'Config saved; no restart-required fields changed — executor left running',
+      );
+    } else if (await confirmExecutorRestart()) {
+      try {
+        heartbeat.stop();
+        await executorProcess.stop();
+        await executorProcess.start(configStore.getAll());
+        // EXP-03（本轮体验审查）：改走 startHeartbeat()，把 adminApiUrl 一并传入。
+        startHeartbeat();
+        log.info('Executor reloaded with new config');
+      } catch (err: any) {
+        reloadError = err?.message ?? String(err);
+        log.error('Failed to reload executor after config save:', reloadError);
+        // 重启失败时心跳必须保持停止，避免对一个未运行的执行器报 online
+        heartbeat.stop();
+      }
+    } else {
+      // 用户选择暂不重启：配置已落盘，下次启动执行器时生效。
+      restartSkipped = true;
+      log.info(
+        'Config saved; executor restart deferred by user — takes effect on next start',
+      );
+    }
+  }
+  if (reloadError) return { reloadError };
+  if (restartSkipped) return { restartDeferred: true };
+  return {};
+}
+
 export function registerIpcHandlers(): void {
   // ── 剪贴板 ────────────────────────────────────────────
   // 复制统一走主进程 Electron clipboard：sandboxed renderer 的
@@ -382,53 +456,11 @@ export function registerIpcHandlers(): void {
     // "保存失败"，用户无从判断哪些存了。消毒后再写：非法值回落默认，
     // 越界值钳制，保存必定完整成功。
     configStore.save(sanitizeConfigInput(cfg));
-    // P3-1：logLevel 不再是死字段——保存后立即作用于桌面端自身的文件日志。
-    applyLogLevel(configStore.get('logLevel'));
-    log.info('Config saved via IPC');
-    trayManager.rebuildMenu();
-    // DSK-04：通知开关 / workDir 可能被改——热同步通知器（开关 + meta 轮询目录）
-    syncNotifierWithConfig();
-    // P7b：agentEnabled / 档位 / 中台地址可能被改——热同步 Agent 托管
-    // （内部自行读最新配置，启停轮询不销毁 host；失败仅记日志不阻塞保存）
-    syncAgentHostWithConfig();
-    // 如果执行器正在运行：只有"必须重启子进程才生效"的字段（workDir、端口、
-    // token、adminApiUrl、并发数、uv 组等）变化时才热重载——旧实现只要在跑
-    // 就无条件 stop+start，改一个通知开关也会杀掉正在运行的任务。
-    // 注意：配置本身已落盘成功，但"热重载"是用户可感知的副作用——若重启
-    // 失败（端口被占 / token 失效等），执行器会停留在停止态。原实现只写日志
-    // 却仍返回 ok:true，渲染层于是显示"已保存，配置已生效"，而执行器其实已经
-    // 死了且无任何提示。现改为把 reload 结果一并回传，让 UI 如实呈现。
-    let reloadError: string | null = null;
-    let restartSkipped = false;
-    if (executorProcess.isRunning()) {
-      if (!restartRequiredFieldsChanged(configBefore, configStore.getAll())) {
-        log.info(
-          'Config saved; no restart-required fields changed — executor left running',
-        );
-      } else if (await confirmExecutorRestart()) {
-        try {
-          heartbeat.stop();
-          await executorProcess.stop();
-          await executorProcess.start(configStore.getAll());
-          // EXP-03（本轮体验审查）：改走 startHeartbeat()，把 adminApiUrl 一并传入。
-          startHeartbeat();
-          log.info('Executor reloaded with new config');
-        } catch (err: any) {
-          reloadError = err?.message ?? String(err);
-          log.error('Failed to reload executor after config save:', reloadError);
-          // 重启失败时心跳必须保持停止，避免对一个未运行的执行器报 online
-          heartbeat.stop();
-        }
-      } else {
-        // 用户选择暂不重启：配置已落盘，下次启动执行器时生效。
-        restartSkipped = true;
-        log.info(
-          'Config saved; executor restart deferred by user — takes effect on next start',
-        );
-      }
-    }
-    if (reloadError) return { ok: true, reloadError };
-    if (restartSkipped) return { ok: true, restartDeferred: true };
+    // 热同步 / 重启征询等收尾与 config:import 共用同一实现（见
+    // finalizeConfigSave 注——两处各写一遍必然漂移）。
+    const outcome = await finalizeConfigSave(configBefore);
+    if (outcome.reloadError) return { ok: true, reloadError: outcome.reloadError };
+    if (outcome.restartDeferred) return { ok: true, restartDeferred: true };
     return { ok: true };
   });
 
@@ -491,6 +523,66 @@ export function registerIpcHandlers(): void {
     windowManager.closeWizard();
     windowManager.openStatus();
     return { ok: true };
+  });
+
+  // ── 配置导出 / 导入（审计确认的低成本高价值项）────────────────────────
+  // 导出**只**取 getAllMasked()：token 以掩码哨兵 `******` 落盘、绝不落明文
+  // （SEC-NEW-1 同一姿态），buildConfigExportPayload 在运行时把"喂进明文"
+  // 的调用侧 bug 当场炸出来。导入是任意外部内容，与渲染层表单不同：
+  // parseImportedConfig 先做形状校验 + 白名单过滤 + 掩码/空 token 剥离，
+  // 再走与「保存配置」完全同一条 sanitizeConfigInput → save 链路。
+  ipcMain.handle('config:export', async () => {
+    const result = await dialog.showSaveDialog({
+      title: '导出配置（执行器密钥以掩码导出）',
+      defaultPath: path.join(app.getPath('downloads'), configExportFileName(new Date())),
+      filters: [{ name: 'JSON', extensions: ['json'] }],
+    });
+    if (result.canceled || !result.filePath) return { ok: false, canceled: true };
+    try {
+      const payload = buildConfigExportPayload(configStore.getAllMasked());
+      await fs.promises.writeFile(result.filePath, `${JSON.stringify(payload, null, 2)}\n`, 'utf-8');
+      log.info(`config exported to ${result.filePath}`);
+      return { ok: true, path: result.filePath };
+    } catch (err: any) {
+      log.warn(`config export failed: ${err?.message ?? err}`);
+      return { ok: false, error: err?.message ?? String(err) };
+    }
+  });
+
+  ipcMain.handle('config:import', async () => {
+    const result = await dialog.showOpenDialog({
+      title: '导入配置',
+      filters: [{ name: 'JSON', extensions: ['json'] }],
+      properties: ['openFile'],
+    });
+    if (result.canceled || result.filePaths.length === 0) return { ok: false, canceled: true };
+    const filePath = result.filePaths[0];
+    try {
+      // 配置是 KB 级 JSON；超限几乎必然是拿错了文件，不值得整读进内存。
+      const stat = await fs.promises.stat(filePath);
+      if (stat.size > CONFIG_IMPORT_MAX_BYTES) {
+        return { ok: false, error: `配置文件过大（${stat.size} 字节），不是有效的配置导出文件` };
+      }
+      // 坏 JSON 在这里抛出，由下方 catch 统一转成用户可见错误。
+      const raw = JSON.parse(await fs.promises.readFile(filePath, 'utf-8'));
+      const parsed = parseImportedConfig(raw);
+      if (!parsed.ok) return { ok: false, error: parsed.error };
+      const configBefore = configStore.getAll();
+      // 与「保存配置」同链路：既有消毒通道 → ConfigStore.save（掩码/空
+      // token 已在 parseImportedConfig 剥离；真实 token 经 save 的加密分支
+      // 落盘）；热同步/重启征询走共享的 finalizeConfigSave。
+      configStore.save(sanitizeConfigInput(parsed.payload));
+      log.info(`config imported from ${filePath}`);
+      const outcome = await finalizeConfigSave(configBefore);
+      if (outcome.reloadError) return { ok: true, reloadError: outcome.reloadError };
+      if (outcome.restartDeferred) return { ok: true, restartDeferred: true };
+      return { ok: true };
+    } catch (err: any) {
+      // 坏 JSON / 读文件失败 / 存储写入异常——错误必须可见地回流渲染层
+      // （ConfigPage 的 ioMsg 错误行），绝不静默。
+      log.warn(`config import failed: ${err?.message ?? err}`);
+      return { ok: false, error: err?.message ?? String(err) };
+    }
   });
 
   ipcMain.handle('config:test-connection', async (_event, url: string) => {
@@ -756,6 +848,56 @@ export function registerIpcHandlers(): void {
   // V4 审计 P2：实现抽到模块级 openTaskLogFolder()——托盘「打开日志文件夹」
   // 与本 handler 共用同一实现（托盘侧经回调注入，见 tray.ts / index.ts）。
   ipcMain.handle('history:open-log-folder', () => openTaskLogFolder());
+
+  // 拓展包：历史页查看器「导出日志」——把该次执行的日志文件 copyFile 到用户
+  // 选择的路径（原文件不动）。文件解析复用 resolveExecutionLogFile（R13
+  // 白名单 + 域校验的唯一真值源，与 log:read / reveal-log 同一实现）。大文件
+  // （>200MB）不做主进程复制：一次数百 MB 的 copyFile 会长时间占住主进程
+  // （同时承载 UI）且无进度反馈，改为引导用户走「打开日志文件夹」手动复制。
+  ipcMain.handle('history:export-log', async (_event, executionId: string) => {
+    const target = resolveExecutionLogFile(executionId);
+    if (!target) {
+      // 与 history:reveal-log 同款双分支错误：id 非法 vs 日志已被保留期清理，
+      // 两者的下一步动作完全不同。
+      return {
+        ok: false,
+        error: isValidExecutionId(executionId)
+          ? '该次执行的日志文件已不存在（可能已被保留期清理）'
+          : '执行 ID 非法',
+      };
+    }
+    let sizeBytes: number;
+    try {
+      sizeBytes = (await fs.promises.stat(target)).size;
+    } catch (err: any) {
+      return { ok: false, error: err?.message ?? String(err) };
+    }
+    if (logExportTooLarge(sizeBytes)) {
+      return {
+        ok: false,
+        tooLarge: true,
+        sizeBytes,
+        error: `日志文件超过 ${Math.round(LOG_EXPORT_MAX_BYTES / 1024 / 1024)} MB，请通过「日志目录」打开文件夹手动复制`,
+      };
+    }
+    const result = await dialog.showSaveDialog({
+      title: '导出执行日志',
+      defaultPath: path.join(app.getPath('downloads'), execLogExportFileName(executionId, new Date())),
+      filters: [
+        { name: '日志文件', extensions: ['log', 'txt'] },
+        { name: '所有文件', extensions: ['*'] },
+      ],
+    });
+    if (result.canceled || !result.filePath) return { ok: false, canceled: true };
+    try {
+      await fs.promises.copyFile(target, result.filePath);
+      log.info(`exec log exported: ${executionId} -> ${result.filePath}`);
+      return { ok: true, path: result.filePath };
+    } catch (err: any) {
+      log.warn(`exec log export failed: ${err?.message ?? err}`);
+      return { ok: false, error: err?.message ?? String(err) };
+    }
+  });
 
   // ── 日志文件管理 ───────────────────────────────────────
   // 列出过往日志文件（桌面端自身日志 + 任务日志）
