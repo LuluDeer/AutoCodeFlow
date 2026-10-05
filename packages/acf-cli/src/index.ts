@@ -11,7 +11,12 @@
  *   acf task analyze <taskId> <execId>
  *   acf task suggest-schedule <id>
  *   acf app list | create | update <id> | delete <id>
+ *   acf app upload <pkg.zip> --name <name>
+ *   acf app upgrade-all <appId> [--strategy canary --percentage N]
  *   acf app analyze <id>
+ *   acf task webhook <enable|rotate|disable|status> <taskId>
+ *   acf task glue <taskId> -f <file>
+ *   acf approval list | approve <id> --note … | reject <id> | cancel <id>
  *   acf deploy upgrade <deploymentId> | stop <deploymentId>
  *   acf executor list | get <id> | rotate <name|id> | offline <name|id>
  *   acf exec tail <execId>
@@ -41,6 +46,7 @@ import { projectsCommand } from './commands/projects.js';
 import { sopCommand } from './commands/sop.js';
 import { agentCommand } from './commands/agent.js';
 import { apikeysCommand } from './commands/apikeys.js';
+import { approvalCommand } from './commands/approval.js';
 import { showConfig, setApiUrl, setToken } from './config.js';
 import { applyExamples } from './help.js';
 import { EXIT_CODES, interruptExit } from './ui.js';
@@ -92,6 +98,7 @@ program.addCommand(projectsCommand());
 program.addCommand(sopCommand());
 program.addCommand(agentCommand());
 program.addCommand(apikeysCommand());
+program.addCommand(approvalCommand());
 
 // acf config show / set
 const configCmd = new Command('config').description('View or update CLI configuration');

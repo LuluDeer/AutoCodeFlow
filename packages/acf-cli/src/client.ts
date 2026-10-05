@@ -23,6 +23,15 @@ let _client: AxiosInstance | null = null;
  */
 export const ANALYZE_TIMEOUT_MS = 120_000;
 
+/**
+ * P2：`acf app upload` 的 per-call 超时预算。
+ *
+ * 应用包上限 200 MB（服务端 multer 硬限），实例默认 30s 在普通带宽上结构性
+ * 不够——几 MB/s 的链路传 200MB 远超 30s，包还没传完 CLI 已放弃。给 300s
+ * （axios per-request timeout 覆盖实例默认，其余端点维持 30s）。
+ */
+export const UPLOAD_TIMEOUT_MS = 300_000;
+
 /** base URL without trailing slashes（/auth/refresh 直连拼接用） */
 function baseUrl(): string {
   return getApiUrl().replace(/\/+$/, "");

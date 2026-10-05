@@ -105,10 +105,11 @@ describe('help 覆盖守卫（集中式 EXAMPLES × 真实命令树）', () => {
   });
 
   it('命令树规模护栏：叶子命令数量符合预期（防止守卫意外失效/空转）', () => {
-    // 50 个叶子 = login(1)+task(21)+app(9)+executor(4)+deploy(2)+audit(1)
-    //            +exec(1)+project(2)+sop(2)+agent(1)+apikey(3)+config(3)
+    // 58 个叶子 = login(1)+task(23,含 webhook/glue)+app(11,含 upload/upgrade-all)
+    //            +executor(4)+deploy(2)+audit(1)+exec(1)+project(2)+sop(2)+agent(1)
+    //            +apikey(3)+approval(4)+config(3)
     const leaves = leafCommands(program);
-    expect(leaves.length).toBe(50);
+    expect(leaves.length).toBe(58);
   });
 });
 

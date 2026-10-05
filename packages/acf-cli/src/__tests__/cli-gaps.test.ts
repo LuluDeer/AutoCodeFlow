@@ -76,6 +76,7 @@ vi.mock('../client.js', () => ({
   formatApiError: (e: unknown) => (e instanceof Error ? e.message : String(e)),
   classifyApiError: () => classifyState.value,
   ANALYZE_TIMEOUT_MS: 120_000,
+  UPLOAD_TIMEOUT_MS: 300_000,
 }));
 
 vi.mock('../config.js', () => ({
@@ -89,15 +90,18 @@ vi.mock('../config.js', () => ({
   showConfig: vi.fn(),
 }));
 
-import { get, post, del } from '../client.js';
+import { get, post, put, del, UPLOAD_TIMEOUT_MS } from '../client.js';
 import { loginCommand, resolveTotpCode } from '../commands/login.js';
 import { tasksCommand, readStdin } from '../commands/tasks.js';
 import { apikeysCommand } from '../commands/apikeys.js';
+import { appsCommand } from '../commands/apps.js';
+import { approvalCommand } from '../commands/approval.js';
 // index.ts 有 main-guard：import 只构建命令树，不触发 parseAsync（用于 set-token）。
 import { program } from '../index.js';
 
 const mockedGet = vi.mocked(get);
 const mockedPost = vi.mocked(post);
+const mockedPut = vi.mocked(put);
 const mockedDel = vi.mocked(del);
 
 async function run(cmd: { parseAsync?: unknown }, args: string): Promise<void> {
@@ -511,6 +515,506 @@ describe('acf apikey', () => {
     await expect(run(apikeysCommand(), 'apikey revoke abc')).rejects.toThrow(/process\.exit\(2\)/);
     expect(err.join('\n')).toContain('acf apikey list');
     expect(mockedDel).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P2: acf app upload —— POST /applications/upload（multipart/form-data，按名称
+// upsert）。DTO 白名单：file/name 必填、runtime/version 可选；ZIP 魔数/大小/
+// zip-bomb 校验是服务端职责（CLI 只做扩展名/可读性预检，退出码 2）。
+// ---------------------------------------------------------------------------
+describe('acf app upload', () => {
+  const zipBytes = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 1, 2, 3, 4]);
+  const appRow = {
+    id: 'app-uuid-1',
+    name: 'my-app',
+    version: '1.2.0',
+    status: 'running',
+    packageUrl: 'http://api/uploads/packages/my-app_123.zip',
+  };
+
+  function writeZip(): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'acf-cli-upload-'));
+    const file = path.join(dir, 'app.zip');
+    fs.writeFileSync(file, zipBytes);
+    return file;
+  }
+
+  it('multipart 形状：POST /applications/upload 携带 FormData（file/name/runtime/version）+ 300s 上传超时预算', async () => {
+    const file = writeZip();
+    try {
+      const logs = captureStdout();
+      mockedPost.mockResolvedValueOnce(appRow);
+      await run(appsCommand(), `app upload ${file} --name my-app --runtime python --version 1.2.0`);
+      expect(mockedPost).toHaveBeenCalledTimes(1);
+      const [p, body, timeout] = mockedPost.mock.calls[0];
+      expect(p).toBe('/applications/upload');
+      expect(timeout).toBe(UPLOAD_TIMEOUT_MS);
+      const form = body as FormData;
+      expect(form).toBeInstanceOf(FormData);
+      expect(form.get('name')).toBe('my-app');
+      expect(form.get('runtime')).toBe('python');
+      expect(form.get('version')).toBe('1.2.0');
+      // file 字段：文件名取自磁盘路径，字节逐位等于源文件（Buffer→Blob 构造）。
+      const entry = form.get('file');
+      expect(entry).toBeTruthy();
+      const f = entry as File;
+      expect(f.name).toBe('app.zip');
+      const uploaded = new Uint8Array(await f.arrayBuffer());
+      expect(Array.from(uploaded)).toEqual(Array.from(zipBytes));
+      // 人读输出：succeed 行走 spinner；灰字明细行走 stdout
+      expect(lastSpinner().succeed).toHaveBeenCalledWith(expect.stringContaining('Package uploaded: my-app'));
+      expect(logs.join('\n')).toContain('id: app-uuid-1');
+      expect(logs.join('\n')).toContain('version: 1.2.0');
+      expect(logs.join('\n')).toContain('packageUrl');
+    } finally {
+      fs.rmSync(path.dirname(file), { recursive: true, force: true });
+    }
+  });
+
+  it('可选字段缺省时不发送（forbidNonWhitelisted 白名单：只 append 给出的字段）', async () => {
+    const file = writeZip();
+    try {
+      mockedPost.mockResolvedValueOnce(appRow);
+      captureStdout();
+      await run(appsCommand(), `app upload ${file} --name my-app`);
+      const form = mockedPost.mock.calls[0][1] as FormData;
+      expect(form.get('runtime')).toBeNull();
+      expect(form.get('version')).toBeNull();
+    } finally {
+      fs.rmSync(path.dirname(file), { recursive: true, force: true });
+    }
+  });
+
+  it('--json 直出应用对象（pretty JSON）', async () => {
+    const file = writeZip();
+    try {
+      mockedPost.mockResolvedValueOnce(appRow);
+      const logs = captureStdout();
+      await run(appsCommand(), `app upload ${file} --name my-app --json`);
+      const line = logs.join('\n');
+      expect(JSON.parse(line)).toEqual(appRow);
+      expect(line).toContain('packageUrl');
+    } finally {
+      fs.rmSync(path.dirname(file), { recursive: true, force: true });
+    }
+  });
+
+  it('非 .zip 扩展名 → 用法错误（码 2），请求不发出', async () => {
+    const err = captureStderr();
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'acf-cli-upload-'));
+    const file = path.join(dir, 'app.tar');
+    fs.writeFileSync(file, zipBytes);
+    try {
+      await expect(run(appsCommand(), `app upload ${file} --name my-app`)).rejects.toThrow(/process\.exit\(2\)/);
+      expect(err.join('\n')).toContain('.zip');
+      expect(mockedPost).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('包文件读不了 → 用法错误（码 2）而非裸堆栈', async () => {
+    const err = captureStderr();
+    await expect(run(appsCommand(), 'app upload /nonexistent/pkg.zip --name my-app')).rejects.toThrow(
+      /process\.exit\(2\)/,
+    );
+    expect(err.join('\n')).toContain('Cannot read package file');
+    expect(mockedPost).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P2: acf app upgrade-all —— POST /applications/:id/upgrade-all（DEP-02 灰度）。
+// 契约：body 全可选，缺省（不传 body）= all 全量、既有语义逐字节保持；canary
+// body={rollout:{strategy:'canary',percentage?}}（1-100，服务端缺省 50）。
+// UpgradeAllDto 白名单只有 rollout —— 无 per-call 版本覆盖（不存在 --version）。
+// ---------------------------------------------------------------------------
+describe('acf app upgrade-all', () => {
+  it('缺省（无 flags）→ 不传 body（既有全量语义逐字节保持），输出成功/失败计数', async () => {
+    const logs = captureStdout();
+    mockedPost.mockResolvedValueOnce({ ok: true, total: 2, succeeded: 2, failed: 0 });
+    await run(appsCommand(), 'app upgrade-all app1');
+    expect(mockedPost).toHaveBeenCalledWith('/applications/app1/upgrade-all', undefined);
+    expect(lastSpinner().succeed).toHaveBeenCalledWith(
+      expect.stringContaining('2/2 deployment(s) accepted, 0 failed'),
+    );
+    expect(process.exitCode === undefined || process.exitCode === 0).toBe(true);
+  });
+
+  it('--strategy canary → body {rollout:{strategy:"canary"}}；--percentage 30 → percentage:30；文案明示受理≠完成', async () => {
+    const logs = captureStdout();
+    mockedPost.mockResolvedValueOnce({
+      ok: true,
+      total: 4,
+      succeeded: 1,
+      failed: 0,
+      rollout: { batchId: 'batch-1', strategy: 'canary', canaryIds: ['d1'], promotedIds: [] },
+    });
+    await run(appsCommand(), 'app upgrade-all app1 --strategy canary --percentage 30');
+    expect(mockedPost).toHaveBeenCalledWith('/applications/app1/upgrade-all', {
+      rollout: { strategy: 'canary', percentage: 30 },
+    });
+    expect(lastSpinner().succeed).toHaveBeenCalledWith(
+      expect.stringContaining('Canary batch accepted: first batch 1/4'),
+    );
+    const out = logs.join('\n');
+    expect(out).toContain('batch-1');
+    // DEP-02 核心语义：批次异步推进，受理 ≠ 完成
+    expect(out).toMatch(/asynchronously|not completion/i);
+  });
+
+  it('all 模式部分失败（failed>0）→ exitCode 1，提示 acf app deployments', async () => {
+    const err = captureStderr();
+    captureStdout();
+    mockedPost.mockResolvedValueOnce({ ok: true, total: 3, succeeded: 2, failed: 1 });
+    await run(appsCommand(), 'app upgrade-all app1');
+    expect(lastSpinner().succeed).toHaveBeenCalledWith(expect.stringContaining('2/3'));
+    expect(err.join('\n')).toContain('acf app deployments app1');
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('canary 受理被拒（ok:false + blockedReason）→ exitCode 1，透出拒绝原因', async () => {
+    const err = captureStderr();
+    mockedPost.mockResolvedValueOnce({
+      ok: false,
+      total: 4,
+      succeeded: 0,
+      failed: 0,
+      rollout: { batchId: 'b', strategy: 'canary', canaryIds: [], promotedIds: [], blockedReason: 'another rollout batch is in flight' },
+    });
+    await run(appsCommand(), 'app upgrade-all app1 --strategy canary');
+    expect(err.join('\n')).toContain('another rollout batch is in flight');
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('--percentage 缺省 all 策略 → 用法错误（码 2），请求不发出', async () => {
+    const err = captureStderr();
+    await expect(run(appsCommand(), 'app upgrade-all app1 --percentage 30')).rejects.toThrow(/process\.exit\(2\)/);
+    expect(err.join('\n')).toContain('canary');
+    expect(mockedPost).not.toHaveBeenCalled();
+  });
+
+  it('未知 strategy → 用法错误（码 2）；--percentage 越界（0/101/abc）→ 解析错误，请求均不发出', async () => {
+    const err = captureStderr();
+    await expect(run(appsCommand(), 'app upgrade-all app1 --strategy bluegreen')).rejects.toThrow(
+      /process\.exit\(2\)/,
+    );
+    expect(err.join('\n')).toContain('all | canary');
+    expect(mockedPost).not.toHaveBeenCalled();
+
+    const errSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      for (const bad of ['0', '101', 'abc']) {
+        await expect(
+          run(appsCommand(), `app upgrade-all app1 --strategy canary --percentage ${bad}`),
+        ).rejects.toThrow();
+        expect(errSpy.mock.calls.map((c) => String(c[0])).join('')).toContain('1 and 100');
+      }
+    } finally {
+      errSpy.mockRestore();
+    }
+    expect(mockedPost).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P3: acf task webhook —— enable/rotate（{url,secret} 一次性回显）/ disable /
+// status（GET，{enabled,url}，secret 永不回传）。口径同 apikey create 的
+// plaintext：一次性值必须带 only-once 告警。
+// ---------------------------------------------------------------------------
+describe('acf task webhook', () => {
+  it('enable → POST /tasks/:id/webhook/enable，url+secret 输出 + only-once 告警', async () => {
+    const logs = captureStdout();
+    mockedPost.mockResolvedValueOnce({ url: 'http://api/webhooks/tasks/t1', secret: 'whsec_abc' });
+    await run(tasksCommand(), 'task webhook enable t1');
+    expect(mockedPost).toHaveBeenCalledWith('/tasks/t1/webhook/enable');
+    expect(lastSpinner().succeed).toHaveBeenCalledWith('Task webhook enabled');
+    const out = logs.join('\n');
+    expect(out).toContain('http://api/webhooks/tasks/t1');
+    expect(out).toContain('whsec_abc');
+    expect(out).toContain('only once');
+    // 触发方式提示（HMAC 签名纪律）随一次性输出给出
+    expect(out).toContain('X-Hub-Signature-256');
+  });
+
+  it('rotate → /rotate 端点，文案明示旧密钥立即失效', async () => {
+    const logs = captureStdout();
+    mockedPost.mockResolvedValueOnce({ url: 'http://api/webhooks/tasks/t1', secret: 'whsec_new' });
+    await run(tasksCommand(), 'task webhook rotate t1');
+    expect(mockedPost).toHaveBeenCalledWith('/tasks/t1/webhook/rotate');
+    expect(lastSpinner().succeed).toHaveBeenCalledWith(
+      expect.stringContaining('old secret stopped working immediately'),
+    );
+    const out = logs.join('\n');
+    expect(out).toContain('whsec_new');
+  });
+
+  it('disable → /disable；status → GET /tasks/:id/webhook（{enabled,url}，无 secret 概念）', async () => {
+    captureStdout();
+    mockedPost.mockResolvedValueOnce({ enabled: false });
+    await run(tasksCommand(), 'task webhook disable t1');
+    expect(mockedPost).toHaveBeenCalledWith('/tasks/t1/webhook/disable');
+    expect(lastSpinner().succeed).toHaveBeenCalledWith(expect.stringContaining('disabled'));
+    expect(lastSpinner().succeed).toHaveBeenCalledWith(expect.stringContaining('401'));
+
+    mockedGet.mockResolvedValueOnce({ enabled: true, url: 'http://api/webhooks/tasks/t1' });
+    const logs2 = captureStdout();
+    await run(tasksCommand(), 'task webhook status t1');
+    expect(mockedGet).toHaveBeenCalledWith('/tasks/t1/webhook');
+    const out = logs2.join('\n');
+    expect(out).toContain('http://api/webhooks/tasks/t1');
+    expect(out).toContain('never returned');
+    expect(out).not.toContain('Secret :');
+  });
+
+  it('--json 直出（enable 含一次性 secret）', async () => {
+    mockedPost.mockResolvedValueOnce({ url: 'http://api/webhooks/tasks/t1', secret: 'whsec_json' });
+    const logs = captureStdout();
+    await run(tasksCommand(), 'task webhook enable t1 --json');
+    const line = logs.find((l) => l.startsWith('{'));
+    expect(JSON.parse(line as string)).toEqual({ url: 'http://api/webhooks/tasks/t1', secret: 'whsec_json' });
+  });
+
+  it('未知 action → 用法错误（码 2），请求不发出', async () => {
+    const err = captureStderr();
+    await expect(run(tasksCommand(), 'task webhook frobnicate t1')).rejects.toThrow(/process\.exit\(2\)/);
+    expect(err.join('\n')).toContain('enable | rotate | disable | status');
+    expect(mockedPost).not.toHaveBeenCalled();
+    expect(mockedGet).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P3: acf task glue —— PUT /tasks/:id/glue（{source, language}）。语言推断按
+// 扩展名：.js/.mjs/.cjs → javascript（执行器运行时白名单，发 "node" 会被执行器
+// 抛 Unsupported glue language）；stdin 无扩展名可推断 → 必须 --language。
+// ---------------------------------------------------------------------------
+describe('acf task glue', () => {
+  function writeScript(name: string, content: string): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'acf-cli-glue-'));
+    const file = path.join(dir, name);
+    fs.writeFileSync(file, content, 'utf-8');
+    return file;
+  }
+
+  it('-f glue.py → PUT /tasks/:id/glue body={source,language:"python"}', async () => {
+    const file = writeScript('job.py', 'print(1)\n');
+    try {
+      const logs = captureStdout();
+      mockedPut.mockResolvedValueOnce({ id: 't1', name: 'Nightly', status: 'active' });
+      await run(tasksCommand(), `task glue t1 -f ${file}`);
+      expect(mockedPut).toHaveBeenCalledWith('/tasks/t1/glue', { source: 'print(1)\n', language: 'python' });
+      // succeed 行走 spinner；灰字明细行（language/bytes）走 stdout
+      expect(lastSpinner().succeed).toHaveBeenCalledWith(expect.stringContaining('Glue script updated: t1'));
+      const out = logs.join('\n');
+      expect(out).toContain('language: python');
+      expect(out).toContain('bytes: 9');
+    } finally {
+      fs.rmSync(path.dirname(file), { recursive: true, force: true });
+    }
+  });
+
+  it('.js 扩展名推断为 javascript（不是 node —— 执行器白名单回归锁）', async () => {
+    const file = writeScript('job.js', 'console.log(1);');
+    try {
+      mockedPut.mockResolvedValueOnce({ id: 't1', name: 'Nightly', status: 'active' });
+      captureStdout();
+      await run(tasksCommand(), `task glue t1 -f ${file}`);
+      expect(mockedPut).toHaveBeenCalledWith('/tasks/t1/glue', { source: 'console.log(1);', language: 'javascript' });
+    } finally {
+      fs.rmSync(path.dirname(file), { recursive: true, force: true });
+    }
+  });
+
+  it('--stdin + --language python：stdin 读取，显式语言优先', async () => {
+    const logs = captureStdout();
+    mockedPut.mockResolvedValueOnce({ id: 't1', name: 'Nightly', status: 'active' });
+    const realStdin = process.stdin;
+    const fake = new PassThrough();
+    Object.defineProperty(process, 'stdin', { value: fake, configurable: true });
+    try {
+      const pending = run(tasksCommand(), 'task glue t1 --stdin --language python');
+      fake.write('print("hi")');
+      fake.end();
+      await pending;
+      expect(mockedPut).toHaveBeenCalledWith('/tasks/t1/glue', { source: 'print("hi")', language: 'python' });
+      expect(lastSpinner().succeed).toHaveBeenCalledWith(expect.stringContaining('Glue script updated: t1'));
+    } finally {
+      Object.defineProperty(process, 'stdin', { value: realStdin, configurable: true });
+    }
+  });
+
+  it('"-" 与 --stdin 同义（都走 readStdin，约定对齐 acf task import）', async () => {
+    mockedPut.mockResolvedValueOnce({ id: 't1', name: 'N', status: 'active' });
+    captureStdout();
+    const realStdin = process.stdin;
+    const fake = new PassThrough();
+    Object.defineProperty(process, 'stdin', { value: fake, configurable: true });
+    try {
+      const pending = run(tasksCommand(), 'task glue t1 -f - --language shell');
+      fake.write('echo hi');
+      fake.end();
+      await pending;
+      expect(mockedPut).toHaveBeenCalledWith('/tasks/t1/glue', { source: 'echo hi', language: 'shell' });
+    } finally {
+      Object.defineProperty(process, 'stdin', { value: realStdin, configurable: true });
+    }
+  });
+
+  it('stdin 缺 --language、未知扩展名、未知 --language（含 "node"）→ 用法错误（码 2），请求不发出', async () => {
+    const err = captureStderr();
+    const realStdin = process.stdin;
+    try {
+      // 每次注入独立的 PassThrough——流 end 之后再挂监听不会再触发，复用会挂死。
+      const fake1 = new PassThrough();
+      Object.defineProperty(process, 'stdin', { value: fake1, configurable: true });
+      const pending1 = run(tasksCommand(), 'task glue t1 --stdin');
+      fake1.write('print(1)');
+      fake1.end();
+      await expect(pending1).rejects.toThrow(/process\.exit\(2\)/);
+      expect(err.join('\n')).toContain('--language');
+      expect(mockedPut).not.toHaveBeenCalled();
+
+      const bad = writeScript('job.lua', 'print(1)');
+      try {
+        await expect(run(tasksCommand(), `task glue t1 -f ${bad}`)).rejects.toThrow(/process\.exit\(2\)/);
+        expect(err.join('\n')).toContain('.lua');
+      } finally {
+        fs.rmSync(path.dirname(bad), { recursive: true, force: true });
+      }
+      expect(mockedPut).not.toHaveBeenCalled();
+
+      const fake2 = new PassThrough();
+      Object.defineProperty(process, 'stdin', { value: fake2, configurable: true });
+      const pending2 = run(tasksCommand(), 'task glue t1 --stdin --language node');
+      fake2.write('console.log(1)');
+      fake2.end();
+      await expect(pending2).rejects.toThrow(/process\.exit\(2\)/);
+      expect(err.join('\n')).toContain('python | javascript | shell');
+      expect(mockedPut).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(process, 'stdin', { value: realStdin, configurable: true });
+    }
+  });
+
+  it('空/纯空白脚本 → 用法错误（码 2，与服务端 P0 防线同判）；文件读不了 → 码 2', async () => {
+    const err = captureStderr();
+    const file = writeScript('empty.py', '   \n  ');
+    try {
+      await expect(run(tasksCommand(), `task glue t1 -f ${file}`)).rejects.toThrow(/process\.exit\(2\)/);
+      expect(err.join('\n')).toContain('empty glue script');
+      expect(mockedPut).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(path.dirname(file), { recursive: true, force: true });
+    }
+
+    await expect(run(tasksCommand(), 'task glue t1 -f /nonexistent/glue.js')).rejects.toThrow(/process\.exit\(2\)/);
+    expect(err.join('\n')).toContain('Cannot read script');
+    expect(mockedPut).not.toHaveBeenCalled();
+  });
+
+  it('--stdin 与 -f 互斥；两者皆缺 → 用法错误（码 2）', async () => {
+    const err = captureStderr();
+    await expect(run(tasksCommand(), 'task glue t1 --stdin -f x.py')).rejects.toThrow(/process\.exit\(2\)/);
+    await expect(run(tasksCommand(), 'task glue t1')).rejects.toThrow(/process\.exit\(2\)/);
+    expect(err.join('\n')).toContain('mutually exclusive');
+    expect(err.join('\n')).toContain('acf task lint');
+    expect(mockedPut).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P3: acf approval（DEP-04）。list：pending → GET /app-deployments/approvals/pending
+//（ADMIN 待办队列），approved/rejected/cancelled → GET /app-deployments
+// ?approvalStatus=…；approve/reject：POST …/approval/{approve|reject}，--note 映射
+// 契约字段 reason（≤200）；cancel：POST …/approval/cancel 无 body。
+// ---------------------------------------------------------------------------
+describe('acf approval', () => {
+  const rows = [
+    { id: 'dep-uuid-1', applicationId: 'app-1', status: 'pending_approval', approvalMeta: { requestedBy: '7' } },
+    { id: 'dep-uuid-2', applicationId: 'app-2', status: 'pending_approval', approvalMeta: null },
+  ];
+
+  it('list 缺省 → GET /app-deployments/approvals/pending（page/pageSize 透传）', async () => {
+    mockedGet.mockResolvedValueOnce({ data: rows, total: 2 });
+    const logs = captureStdout();
+    await run(approvalCommand(), 'approval list');
+    expect(mockedGet).toHaveBeenCalledWith('/app-deployments/approvals/pending', { page: '1', pageSize: '20' });
+    expect(logs.join('\n')).toContain('table(2)');
+  });
+
+  it('list --status rejected → GET /app-deployments?approvalStatus=rejected；--application → applicationId 过滤', async () => {
+    mockedGet.mockResolvedValueOnce({ data: [], total: 0 });
+    captureStdout();
+    await run(approvalCommand(), 'approval list --status rejected --application app-9 -p 2 -n 50');
+    expect(mockedGet).toHaveBeenCalledWith('/app-deployments', {
+      page: '2',
+      pageSize: '50',
+      applicationId: 'app-9',
+      approvalStatus: 'rejected',
+    });
+  });
+
+  it('list --json 直出原始信封；未知 --status → 用法错误（码 2）', async () => {
+    mockedGet.mockResolvedValueOnce({ data: rows, total: 2 });
+    const logs = captureStdout();
+    await run(approvalCommand(), 'approval list --json');
+    const line = logs.find((l) => l.startsWith('{'));
+    expect(JSON.parse(line as string)).toEqual({ data: rows, total: 2 });
+
+    const err = captureStderr();
+    await expect(run(approvalCommand(), 'approval list --status frobnicate')).rejects.toThrow(/process\.exit\(2\)/);
+    expect(err.join('\n')).toContain('pending | approved | rejected | cancelled');
+    expect(mockedGet).toHaveBeenCalledTimes(1); // 上面 --json 那一次
+  });
+
+  it('approve --note → POST /approval/approve body={reason}（--note 透传映射）；输出派发提示', async () => {
+    const logs = captureStdout();
+    mockedPost.mockResolvedValueOnce({ id: 'dep-uuid-1', status: 'pending', approvalStatus: 'approved' });
+    // 注：run() 助手按空格切参，--note 取值用单 token。
+    await run(approvalCommand(), 'approval approve dep-uuid-1 --note changeWindowApproved');
+    expect(mockedPost).toHaveBeenCalledWith('/app-deployments/dep-uuid-1/approval/approve', {
+      reason: 'changeWindowApproved',
+    });
+    expect(lastSpinner().succeed).toHaveBeenCalledWith(
+      expect.stringContaining('Deployment approved — dispatching to the executor'),
+    );
+    expect(logs.join('\n')).toContain('approval: approved');
+  });
+
+  it('approve 无 --note → 不发 body；reject --note → POST /approval/reject body={reason}，文案明示不派发', async () => {
+    captureStdout();
+    mockedPost
+      .mockResolvedValueOnce({ id: 'dep-uuid-1', status: 'pending', approvalStatus: 'approved' })
+      .mockResolvedValueOnce({ id: 'dep-uuid-2', status: 'failed', approvalStatus: 'rejected' });
+    await run(approvalCommand(), 'approval approve dep-uuid-1');
+    expect(mockedPost).toHaveBeenCalledWith('/app-deployments/dep-uuid-1/approval/approve', undefined);
+    await run(approvalCommand(), 'approval reject dep-uuid-2 --note wrongVersion');
+    expect(mockedPost).toHaveBeenCalledWith('/app-deployments/dep-uuid-2/approval/reject', { reason: 'wrongVersion' });
+    expect(lastSpinner().succeed).toHaveBeenCalledWith(
+      expect.stringContaining('nothing will be dispatched'),
+    );
+  });
+
+  it('cancel → POST /approval/cancel 无 body，行落 FAILED 文案', async () => {
+    const logs = captureStdout();
+    mockedPost.mockResolvedValueOnce({ id: 'dep-uuid-1', status: 'failed', approvalStatus: 'cancelled' });
+    await run(approvalCommand(), 'approval cancel dep-uuid-1');
+    expect(mockedPost).toHaveBeenCalledWith('/app-deployments/dep-uuid-1/approval/cancel');
+    expect(lastSpinner().succeed).toHaveBeenCalledWith(
+      expect.stringContaining('Pending deployment request cancelled (row lands FAILED)'),
+    );
+    expect(logs.join('\n')).toContain('status: failed');
+  });
+
+  it('--note >200 字符 → 用法错误（码 2，与服务端 reason 上限同判），请求不发出', async () => {
+    const err = captureStderr();
+    await expect(run(approvalCommand(), `approval approve d1 --note ${'x'.repeat(201)}`)).rejects.toThrow(
+      /process\.exit\(2\)/,
+    );
+    expect(err.join('\n')).toContain('200');
+    expect(mockedPost).not.toHaveBeenCalled();
   });
 });
 

@@ -44,6 +44,9 @@ CLI 的非零退出码按失败类别区分，脚本/CI 可以只按码分支处
   `task compare`、`task logs`、`task trigger`、`app get`、`app versions`、
   `executor get`、`sop show`、`project list`、`project members`）→
   pretty(2) JSON。
+- 部分写面命令同样支持 `--json`（响应对象直出）：`app upload`、
+  `app upgrade-all`、`task webhook`、`task export`、`task batch`、
+  `apikey create`。
 
 `--json` 不裁剪字段：后端返回什么就输出什么，消费方按 `--help` 示例里的
 形状断言即可。
@@ -66,6 +69,25 @@ CLI 的非零退出码按失败类别区分，脚本/CI 可以只按码分支处
   此后只能 `acf apikey list`（脱敏）/ `acf apikey revoke <id>`。
 - Access token 过期时自动用 refresh token 换发并重放一次；刷新失败才要求
   重新登录（此时退出码为 3）。
+
+## 应用包上传 / 灰度升级 / 审批 / webhook / glue
+
+- `acf app upload <pkg.zip> --name <name>`：multipart 上传应用包（按名称
+  upsert；`.zip` 扩展名/魔数/zip-bomb 校验在服务端）。`--runtime` / `--version`
+  可选；大包上传走独立 300s 超时预算。
+- `acf app upgrade-all <appId>`：对全部 RUNNING 部署触发滚动升级（缺省 = 全量，
+  既有语义）。`--strategy canary --percentage N`（int 1-100，缺省 50）走灰度：
+  首批心跳确认 → 健康探测 → 自动提升其余台。**批次由服务端异步推进，受理 ≠
+  完成**——进度看 admin 中台（部署行 `rolloutState`）或 `acf app deployments`。
+- `acf approval list | approve <id> --note … | reject <id> | cancel <id>`：
+  DEP-04 审批流。第二人规则在服务端强制（审批者 ≠ 提交者，否则 403）；
+  撤回自己的请求用 `cancel`；`--note`（≤200 字符）映射契约字段 `reason`。
+- `acf task webhook enable|rotate|disable|status <taskId>`：任务级入站 webhook
+  （HMAC）。secret 仅在 enable/rotate 响应中回显**一次**；`status` 查看 URL
+  不动密钥；`disable` 后签名请求即刻 401。
+- `acf task glue <taskId> -f glue.js`（或 `--stdin`）：在线更新 GLUE 脚本。
+  语言按扩展名推断（`.js/.mjs/.cjs` → `javascript`），或 `--language
+  python|javascript|shell` 显式指定（执行器运行时白名单）；空脚本本地即拒。
 
 ## 开发
 

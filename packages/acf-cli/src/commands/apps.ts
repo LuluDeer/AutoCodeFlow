@@ -1,9 +1,10 @@
-import { Command } from 'commander';
+import { Command, InvalidArgumentError } from 'commander';
 import Table from 'cli-table3';
 import chalk from 'chalk';
 import ora from 'ora';
-import { get, post, put, del, ANALYZE_TIMEOUT_MS } from '../client.js';
-import { emitError, UsageError, interruptExit } from '../ui.js';
+import * as path from 'path';
+import { get, post, put, del, ANALYZE_TIMEOUT_MS, UPLOAD_TIMEOUT_MS } from '../client.js';
+import { emitError, emitUsageError, UsageError, interruptExit } from '../ui.js';
 
 interface Application {
   id: string;
@@ -25,6 +26,26 @@ interface Deployment {
   executorId?: string;
   status: string;
   runMode?: string;
+}
+
+/**
+ * P2：POST /applications/:id/upgrade-all 响应（app-deployment.service
+ * .upgradeAllWithRollout）。all 模式恒 ok:true + succeeded/failed 计数；
+ * canary 额外带 rollout 批次信息；ARCH-31 同应用在途批次互斥时
+ * ok:false + rollout.blockedReason（业务拒绝，HTTP 仍是 2xx）。
+ */
+interface UpgradeAllResult {
+  ok: boolean;
+  total: number;
+  succeeded: number;
+  failed: number;
+  rollout?: {
+    batchId: string;
+    strategy: string;
+    canaryIds: string[];
+    promotedIds: string[];
+    blockedReason?: string;
+  };
 }
 
 function statusColor(s: string): string {
@@ -143,6 +164,64 @@ export function appsCommand(): Command {
       }
     });
 
+  // P2: acf app upload <zip> —— POST /applications/upload（multipart/form-data，
+  // 按名称 upsert：应用已存在只更新 packageUrl（可选 runtime/version），不存在
+  // 则创建）。入参白名单以服务端 UploadApplicationDto 为准：file/name 必填、
+  // runtime/version 可选——forbidNonWhitelisted 下多一个字段都 400，故可选字段
+  // 只在用户给出时才 append。zip 魔数/大小/zip 炸弹校验是服务端职责（400/503
+  // 契约语义），CLI 不复刻，只做廉价的扩展名/可读性预检（退出码 2，请求不发）。
+  cmd.command('upload <zip>')
+    .description(
+      'Upload an application package (.zip, max 200 MB) and upsert it by name: an existing app only gets its packageUrl (and runtime/version) updated, a new one is created. ZIP magic/size/zip-bomb checks are server-side',
+    )
+    .requiredOption('--name <name>', 'Application name (1-100 chars) — the upsert key')
+    .option('--runtime <runtime>', 'Runtime type (max 50 chars; a NEW app defaults to python when omitted)')
+    .option('--version <version>', 'Version to record for this upload (e.g. 1.2.0); omit to keep the current version')
+    .option('--json', 'Emit raw JSON (CI-consumable)')
+    .action(async (zip: string, opts: { name: string; runtime?: string; version?: string; json?: boolean }) => {
+      const spinner = ora('Uploading package…').start();
+      try {
+        if (!/\.zip$/i.test(zip)) {
+          throw new UsageError(`Only .zip packages are accepted (got "${zip}") — the server validates both extension and ZIP magic`);
+        }
+        const fsPromises = await import('fs/promises');
+        let buf: Buffer;
+        try {
+          buf = await fsPromises.readFile(zip);
+        } catch (err) {
+          // 本地文件层错误 = 用法错误（退出码 2），与服务端拒绝（1）区分；
+          // 口径与 loadJsonBody / task import 一致。
+          throw new UsageError(`Cannot read package file: ${zip} (${err instanceof Error ? err.message : String(err)})`);
+        }
+        // Node 内置 FormData/Blob（undici，Node >=18 全局可用）：axios 1.x 识别
+        // spec FormData 后自动补 multipart boundary 与 Content-Type，无需引入
+        // form-data 依赖。字段名 file/name/runtime/version 是服务端 multer +
+        // DTO 白名单；不手动设 Content-Type（会把 boundary 写死）。
+        const form = new FormData();
+        form.append('file', new Blob([buf], { type: 'application/zip' }), path.basename(zip));
+        form.append('name', opts.name);
+        if (opts.runtime) form.append('runtime', opts.runtime);
+        if (opts.version) form.append('version', opts.version);
+        // NETOPT-6④ 同款思路：200MB 上限下实例默认 30s 结构性不够，用
+        // UPLOAD_TIMEOUT_MS（300s）per-call 覆盖。
+        const a = await post<Application>('/applications/upload', form, UPLOAD_TIMEOUT_MS);
+        spinner.stop();
+        if (opts.json) {
+          // ECO-02：单对象形态 → pretty JSON
+          console.log(JSON.stringify(a, null, 2));
+          return;
+        }
+        spinner.succeed(`Package uploaded: ${a.name}`);
+        console.log(
+          chalk.gray(
+            `  id: ${a.id}  version: ${a.version ?? '-'}  status: ${statusColor(a.status)}  packageUrl: ${a.packageUrl ?? '-'}`,
+          ),
+        );
+      } catch (e: unknown) {
+        emitError('Failed to upload package', e, { spinner });
+      }
+    });
+
   // acf app update <id>
   cmd.command('update <id>')
     .description(
@@ -253,6 +332,101 @@ export function appsCommand(): Command {
         console.log(chalk.gray(`  deployment: ${dep?.id ?? '-'}  status: ${dep?.status ?? '-'}  executor: ${dep?.executorId ?? 'auto'}`));
       } catch (e: unknown) {
         emitError('Deployment failed', e, { spinner });
+      }
+    });
+
+  // P2: acf app upgrade-all <appId> —— POST /applications/:id/upgrade-all（DEP-02
+  // 灰度）。契约：请求体全可选，缺省（不传 body）= all 全量升级，既有语义逐字节
+  // 保持；canary 传 { rollout: { strategy: 'canary', percentage? } }。注意
+  // UpgradeAllDto 只认 rollout —— 没有 per-call 版本覆盖（升级目标恒为应用当前
+  // 版本），发送未声明字段会被 forbidNonWhitelisted 400，故本命令不提供
+  // --version。批次由服务端异步推进（心跳确认 → 健康探测 → 提升），受理 ≠ 完成。
+  cmd.command('upgrade-all <appId>')
+    .description(
+      "Trigger a rolling upgrade of all RUNNING deployments to the application's current version. Default = full upgrade (pre-DEP-02 semantics, no body). Canary batches advance asynchronously on the server — acceptance is not completion",
+    )
+    .option('--strategy <strategy>', 'Rollout strategy: all (default) | canary (first batch → heartbeat confirm → health probe → auto-promote the rest, DEP-02)')
+    .option(
+      '--percentage <n>',
+      'Canary first-batch percentage, int 1-100 (default 50 — first batch = ceil(N × p%), at least 1)',
+      (v: string) => {
+        const n = Number.parseInt(v, 10);
+        if (!Number.isInteger(n) || n < 1 || n > 100) {
+          throw new InvalidArgumentError('must be an integer between 1 and 100');
+        }
+        return n;
+      },
+    )
+    .option('--json', 'Emit raw JSON (CI-consumable)')
+    .action(async (appId: string, opts: { strategy?: string; percentage?: number; json?: boolean }) => {
+      const strategy = opts.strategy ?? 'all';
+      if (strategy !== 'all' && strategy !== 'canary') {
+        emitUsageError(`Unknown rollout strategy "${strategy}" — expected one of: all | canary`);
+      }
+      if (opts.percentage !== undefined && strategy !== 'canary') {
+        emitUsageError('--percentage only applies to --strategy canary (the full-upgrade path never reads it)');
+      }
+      const spinner = ora('Triggering upgrade…').start();
+      try {
+        // all：不传 body —— 与既有全量升级语义逐字节一致；canary：rollout
+        // 白名单体，percentage 仅在给出时携带（服务端缺省 50）。
+        const body =
+          strategy === 'canary'
+            ? {
+                rollout: {
+                  strategy,
+                  ...(opts.percentage !== undefined ? { percentage: opts.percentage } : {}),
+                },
+              }
+            : undefined;
+        const r = await post<UpgradeAllResult>(`/applications/${appId}/upgrade-all`, body);
+        spinner.stop();
+        if (opts.json) {
+          // ECO-02：响应对象直出（含 rollout 批次信息），退出码语义与下面的人读
+          // 路径一致（受理被拒/批次失败 → 1）。
+          console.log(JSON.stringify(r, null, 2));
+          if (r.ok === false || (r.failed ?? 0) > 0) process.exitCode = 1;
+          return;
+        }
+        if (r.ok === false) {
+          // 受理被拒（ARCH-31 在途批次互斥 / canary 首批失败 ok=false,failed=1）：
+          // HTTP 仍是 2xx，但 CLI 要让 CI 看得见（对齐 task batch 部分失败语义）。
+          spinner.fail('Upgrade batch not started');
+          console.error(
+            chalk.red(
+              `  ${r.rollout?.blockedReason ?? `first canary batch failed (${r.failed}/${r.total}) — see rolloutMeta on the app's deployments for the reason`}`,
+            ),
+          );
+          process.exitCode = 1;
+          return;
+        }
+        if (strategy === 'canary') {
+          spinner.succeed(`Canary batch accepted: first batch ${r.succeeded}/${r.total} deployment(s)`);
+          console.log(chalk.gray(`  batchId: ${r.rollout?.batchId ?? '-'}  strategy: ${r.rollout?.strategy ?? strategy}`));
+          if (r.rollout?.canaryIds?.length) {
+            console.log(chalk.gray(`  canary: ${r.rollout.canaryIds.map((x) => x.slice(0, 12)).join(', ')}`));
+          }
+          if (r.rollout?.promotedIds?.length) {
+            console.log(chalk.gray(`  promoted so far: ${r.rollout.promotedIds.length}`));
+          }
+          console.log(
+            chalk.yellow(
+              `  ⚠ Accepted is not finished — the batch advances asynchronously (heartbeat confirm → health probe → promote). Follow progress in the admin console or: acf app deployments ${appId}`,
+            ),
+          );
+        } else {
+          spinner.succeed(`Upgrade triggered: ${r.succeeded}/${r.total} deployment(s) accepted, ${r.failed} failed`);
+          if ((r.failed ?? 0) > 0) {
+            console.error(
+              chalk.red(
+                `  ${r.failed} deployment(s) failed to accept the upgrade — inspect with: acf app deployments ${appId}`,
+              ),
+            );
+            process.exitCode = 1;
+          }
+        }
+      } catch (e: unknown) {
+        emitError('Failed to trigger upgrade-all', e, { spinner });
       }
     });
 

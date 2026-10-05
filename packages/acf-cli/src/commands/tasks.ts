@@ -6,7 +6,7 @@ import axios from 'axios';
 import { spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
-import { get, post, patch, del, ANALYZE_TIMEOUT_MS } from '../client.js';
+import { get, post, put, patch, del, ANALYZE_TIMEOUT_MS } from '../client.js';
 import { emitError, emitUsageError, UsageError, interruptExit } from '../ui.js';
 
 interface Task {
@@ -54,6 +54,22 @@ interface TaskImportResult {
   name: string;
   warnings?: string[];
 }
+
+// P3 glue：执行器侧运行时白名单（executor-node execute.ts 的 glueLanguage 分支
+// —— javascript/python/shell，另有 glue_node 等旧别名）。注意 node 脚本的合法
+// 值是 `javascript`：发 `node` 执行器会在运行时抛 "Unsupported glue language"，
+// 与 acf task lint 的本地推断值（node|python|shell）刻意不同——lint 只做本地
+// new Function 编译，glue 的 language 要落库给执行器消费。
+const GLUE_LANGUAGES = ['python', 'javascript', 'shell'] as const;
+
+const GLUE_EXT_LANG: Record<string, string> = {
+  '.py': 'python',
+  '.js': 'javascript',
+  '.mjs': 'javascript',
+  '.cjs': 'javascript',
+  '.sh': 'shell',
+  '.bash': 'shell',
+};
 
 /**
  * E-1：`acf task import -` 的 stdin 读取。"-" 是 CI/管道惯例；stdin 是 TTY
@@ -716,6 +732,141 @@ export function tasksCommand(): Command {
         spinner.succeed(r.message || 'Execution cancelled');
       } catch (e: unknown) {
         emitError('Failed to cancel execution', e, { spinner });
+      }
+    });
+
+  // P3: acf task webhook <enable|rotate|disable|status> <taskId>（FEAT-21 任务级
+  // 入站 webhook）。契约：enable/rotate 响应 { url, secret }——secret 明文仅在
+  // 该响应出现一次，服务端只存加密信封，输出必须带一次性提示（口径同 apikey
+  // create 的 plaintext）；enable 对已启用任务等价轮换；disable 清空密钥、签名
+  // 请求即刻 401；status（GET）只回 { enabled, url }，secret 永不回传——查看
+  // URL 而不必轮换密钥的通路。
+  cmd.command('webhook <action> <taskId>')
+    .description(
+      'Manage the task inbound webhook (HMAC-signed). enable/rotate print the secret exactly once; status shows the URL without touching the secret; disable makes signed calls answer 401 immediately',
+    )
+    .option('--json', 'Emit raw JSON (CI-consumable; includes the one-time secret for enable/rotate)')
+    .action(async (action: string, taskId: string, opts: { json?: boolean }) => {
+      const ACTIONS = ['enable', 'rotate', 'disable', 'status'] as const;
+      if (!(ACTIONS as readonly string[]).includes(action)) {
+        emitUsageError(`Unknown webhook action "${action}" — expected one of: ${ACTIONS.join(' | ')}`);
+      }
+      const spinner = ora(`Task webhook ${action}…`).start();
+      try {
+        if (action === 'status') {
+          const s = await get<{ enabled: boolean; url: string }>(`/tasks/${taskId}/webhook`);
+          spinner.stop();
+          if (opts.json) {
+            console.log(JSON.stringify(s));
+            return;
+          }
+          console.log(chalk.bold('Task Webhook'));
+          console.log('  Enabled:', s.enabled ? chalk.green('yes') : chalk.red('no'));
+          console.log('  URL    :', s.url);
+          console.log(chalk.gray('  (the secret is never returned by status — run rotate to reissue one)'));
+          return;
+        }
+        if (action === 'disable') {
+          const r = await post<{ enabled: false }>(`/tasks/${taskId}/webhook/disable`);
+          spinner.stop();
+          if (opts.json) {
+            console.log(JSON.stringify(r));
+            return;
+          }
+          spinner.succeed('Task webhook disabled — signed calls now answer 401');
+          return;
+        }
+        // enable | rotate：{ url, secret } 一次性回显
+        const r = await post<{ url: string; secret: string }>(`/tasks/${taskId}/webhook/${action}`);
+        spinner.stop();
+        if (opts.json) {
+          console.log(JSON.stringify(r));
+          return;
+        }
+        spinner.succeed(
+          action === 'enable'
+            ? 'Task webhook enabled'
+            : 'Task webhook secret rotated — the old secret stopped working immediately',
+        );
+        console.log('  URL    :', r.url);
+        console.log('  Secret :', chalk.bold(r.secret));
+        console.log(
+          chalk.yellow(
+            '  ⚠ The secret is shown only once — store it now (CI secret store / env file). It cannot be retrieved again; rotate to reissue.',
+          ),
+        );
+        console.log(
+          chalk.gray(
+            '  Trigger: POST the URL with X-AutoCodeFlow-Timestamp and X-Hub-Signature-256: sha256=<hex of HMAC_SHA256(secret, "<timestamp>.<rawBody>")>',
+          ),
+        );
+      } catch (e: unknown) {
+        emitError(`Failed to ${action} task webhook`, e, { spinner });
+      }
+    });
+
+  // P3: acf task glue <taskId> -f <file> | --stdin —— PUT /tasks/:id/glue
+  //（{ source, language? }）。语言按扩展名推断或 --language 显式指定（白名单
+  // 见 GLUE_LANGUAGES）；空/纯空白脚本服务端 400（会让任务静默改跑 entrypoint
+  // 的自相矛盾态），CLI 本地同判提前拒绝。语法可先用 acf task lint 本地预检。
+  cmd.command('glue <taskId>')
+    .description(
+      'Update the GLUE script inline (online code edit). Language is inferred from the file extension (.js/.mjs/.cjs → javascript, .py → python, .sh/.bash → shell) or forced with --language python|javascript|shell',
+    )
+    .option('-f, --file <path>', 'Read the script from a file; "-" reads stdin (same convention as acf task import)')
+    .option('--stdin', 'Read the script from stdin (equivalent to -f -)')
+    .option('--language <lang>', 'Language: python | javascript | shell (the executor rejects anything else at run time)')
+    .action(async (taskId: string, opts: { file?: string; stdin?: boolean; language?: string }) => {
+      if (opts.stdin && opts.file) {
+        emitUsageError('--stdin and -f/--file are mutually exclusive');
+      }
+      if (!opts.stdin && !opts.file) {
+        emitUsageError('Nothing to upload — pass -f <file> (or --stdin). Preview syntax locally first with: acf task lint <file>');
+      }
+      const fromStdin = opts.stdin || opts.file === '-';
+      const spinner = ora('Updating glue script…').start();
+      try {
+        let source: string;
+        try {
+          source = fromStdin ? await readStdin() : await fs.promises.readFile(opts.file as string, 'utf-8');
+        } catch (err) {
+          // 本地 payload 层错误（文件读不了/stdin 不可用）= 用法错误（退出码 2）。
+          throw new UsageError(
+            `Cannot read script ${fromStdin ? 'from stdin' : `file: ${opts.file}`} (${err instanceof Error ? err.message : String(err)})`,
+          );
+        }
+        if (!source.trim()) {
+          // 与服务端 P0 防线同判（service 层拒绝空脚本，语义同一条消息）。
+          throw new UsageError(
+            'Refusing to upload an empty glue script — the server would reject it (the task would silently fall back to its entrypoint)',
+          );
+        }
+        let language: string | undefined;
+        if (opts.language) {
+          if (!(GLUE_LANGUAGES as readonly string[]).includes(opts.language)) {
+            throw new UsageError(
+              `Unknown glue language "${opts.language}" — expected one of: ${GLUE_LANGUAGES.join(' | ')} (the executor rejects other values at run time)`,
+            );
+          }
+          language = opts.language;
+        } else if (fromStdin) {
+          throw new UsageError('Cannot infer the glue language from stdin — pass --language python|javascript|shell');
+        } else {
+          const ext = path.extname(opts.file as string).toLowerCase();
+          language = GLUE_EXT_LANG[ext];
+          if (!language) {
+            throw new UsageError(
+              `Cannot infer the glue language from extension "${ext}" (${opts.file}) — pass --language python|javascript|shell`,
+            );
+          }
+        }
+        const t = await put<Task>(`/tasks/${taskId}/glue`, { source, language });
+        spinner.succeed(`Glue script updated: ${t.id}`);
+        console.log(
+          chalk.gray(`  name: ${t.name}  language: ${language}  bytes: ${Buffer.byteLength(source, 'utf-8')}`),
+        );
+      } catch (e: unknown) {
+        emitError('Failed to update glue script', e, { spinner });
       }
     });
 

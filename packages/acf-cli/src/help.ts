@@ -70,6 +70,16 @@ export const EXAMPLES: Record<string, string[]> = {
     'acf task batch pause <id1> <id2>',
   ],
   'task kill': ['acf task kill <taskId> <execId>'],
+  'task webhook': [
+    'acf task webhook enable <taskId>   # prints the webhook URL + secret ONCE',
+    'acf task webhook rotate <taskId>   # old secret dies immediately, new one printed once',
+    'acf task webhook status <taskId>   # url + enabled, without touching the secret',
+    'acf task webhook disable <taskId>',
+  ],
+  'task glue': [
+    'acf task glue <taskId> -f glue.js   # language inferred from the extension (.js → javascript)',
+    'cat glue.py | acf task glue <taskId> --stdin --language python',
+  ],
   'task lint': [
     'acf task lint glue.js',
     'acf task lint script.py --language python',
@@ -89,6 +99,14 @@ export const EXAMPLES: Record<string, string[]> = {
   ],
   'app deployments': ['acf app deployments <appId> -n 50 --json'],
   'app versions': ['acf app versions <appId> --json'],
+  'app upload': [
+    'acf app upload ./dist/app.zip --name my-app',
+    'acf app upload ./dist/app.zip --name my-app --runtime python --version 1.2.0 --json',
+  ],
+  'app upgrade-all': [
+    'acf app upgrade-all <appId>   # full rolling upgrade (default, no body)',
+    'acf app upgrade-all <appId> --strategy canary --percentage 20   # canary first, auto-promote after probe',
+  ],
   'executor list': ['acf executor list', 'acf executor list --json'],
   'executor get': ['acf executor get <executorId> --json'],
   'executor rotate': [
@@ -116,6 +134,15 @@ export const EXAMPLES: Record<string, string[]> = {
   ],
   'apikey list': ['acf apikey list', 'acf apikey list --json'],
   'apikey revoke': ['acf apikey revoke 3'],
+  'approval list': [
+    'acf approval list   # pending queue (default)',
+    'acf approval list --status rejected --json',
+  ],
+  'approval approve': [
+    'acf approval approve <deploymentId> --note "change window approved"   # second person: approver ≠ requester',
+  ],
+  'approval reject': ['acf approval reject <deploymentId> --note "wrong version"'],
+  'approval cancel': ['acf approval cancel <deploymentId>   # withdraw your own pending request'],
   'config show': ['acf config show'],
   'config set-url': ['acf config set-url http://localhost:3105'],
   'config set-token': ['acf config set-token <token>   # prefer: acf login'],
