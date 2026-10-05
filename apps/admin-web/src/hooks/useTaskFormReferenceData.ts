@@ -6,10 +6,15 @@
  * 清单、应用候选（APP-SELECT-01 富信息选项的读面）、归属项目（TASK-PROJ-01）、
  * 上游依赖候选（NF-02，含名称快照 depNameSnapshotRef 供提交时重建映射）。
  *
- * `?applicationId=`（应用详情页「用此应用建任务」入口）的表单回填也在本
- * effect 内（原样保留）；codeSource 是页面自持 state，经
- * onApplicationIdParamApplied 回调由父级同步（回调必须用 useCallback 固定
- * 引用，effect 依赖数组与原实现等价，不会引发额外重拉）。
+ * `?applicationId=`（应用详情页「用此应用建任务」）的表单回填**不在本 effect
+ * 内**——原实现把它放在这里（依赖含 t），语言切换重拉参照数据时会连带
+ * `form.setFieldValue('applicationId', appId)`，把用户已改的应用绑定静默冲回
+ * URL 参数值（BUGFIX，见 TaskFormPage 的独立预填 effect：只挂载时/创建态且
+ * 表单未脏时生效）。codeSource 是页面自持 state，由父级在新 effect 内经
+ * handleApplicationIdParam 同步。
+ *
+ * 语言切换重拉参照数据本身可接受（选项/警示文案需重译），且本 effect 只
+ * set 选项列表 state、**不写任何表单字段**——重拉不会覆盖用户已修改的表单值。
  *
  * 失败降级哲学原样保留：参照数据各自独立 warn，不阻塞表单（下拉退化为
  * 空态引导 / 未分配仍是合法取值）。
@@ -73,16 +78,8 @@ export interface TaskFormReferenceData {
 
 export function useTaskFormReferenceData({
   form,
-  appId,
-  editId,
-  onApplicationIdParamApplied,
 }: {
   form: FormInstance;
-  /** URL ?applicationId=（应用详情页「用此应用建任务」入口） */
-  appId: string | null;
-  editId?: string;
-  /** `?applicationId=` 命中且**创建态**时由父级切换代码来源到 application_zip */
-  onApplicationIdParamApplied: () => void;
 }): TaskFormReferenceData {
   const { t } = useTranslation();
   const [groups, setGroups] = useState<string[]>([]);
@@ -182,24 +179,19 @@ export function useTaskFormReferenceData({
           message.warning(t('taskForm.load.tasksFail'));
         }
       });
-    // python_task_multiversion：`?applicationId=` 是应用详情页的「用此应用建任务」
-    // 入口，语义就是"以该应用整包为代码来源"，故同时把来源切到 application_zip
-    // （否则用户看到的是 git 来源，提交时 applicationId 会被普通绑定语义悄悄留下）。
-    // 仅创建态显式覆盖：编辑态的 `?applicationId=` 不改变任务原有来源声明。
-    if (appId) {
-      form.setFieldValue('applicationId', appId);
-      if (!editId) {
-        onApplicationIdParamApplied();
-      }
-    }
+    // BUGFIX（P1）：`?applicationId=` 的表单回填与代码来源切换已上移至
+    // TaskFormPage 的独立 effect（带 once-ref 与 dirty 守卫）——原先放在本
+    // effect 内，t 引用变化触发重拉时会连带给 form.setFieldValue，把用户已改
+    // 的应用绑定/代码来源冲回 URL 参数语义。
 
     return () => {
       active = false;
       controller.abort();
     };
-    // 依赖与原实现（[appId, editId, form, t]）等价：onApplicationIdParamApplied
-    // 由父级 useCallback 固定引用，不构成额外触发源。
-  }, [appId, editId, form, t, onApplicationIdParamApplied]);
+    // 依赖与原实现等价（原 [appId, editId, form, t, onApplicationIdParamApplied]
+    // 中 appId/editId/回调仅服务于已上移的回填）：重跑时机 = 挂载 / 语言切换
+    // （重拉参照数据可接受，见头注释——不写表单字段）。
+  }, [form, t]);
 
   return { groups, allTags, executors, apps, appsLoading, projectOptions, taskOptions, depNameSnapshotRef };
 }

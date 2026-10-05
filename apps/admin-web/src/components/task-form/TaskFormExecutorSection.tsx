@@ -181,7 +181,7 @@ export default function TaskFormExecutorSection({
                 mode="multiple"
                 placeholder={t('taskForm.field.executorTags.placeholder')}
                 allowClear
-                options={allTags.map(t => ({ value: t, label: <Tag>{t}</Tag> }))}
+                options={allTags.map(tag => ({ value: tag, label: <Tag>{tag}</Tag> }))}
               />
             </Form.Item>
           </>
@@ -206,7 +206,7 @@ export default function TaskFormExecutorSection({
             allowClear
             disabled={executorMode === 'pinned'}
             placeholder={t('taskForm.field.affinityTags.placeholder')}
-            options={allTags.map(t => ({ value: t, label: <Tag>{t}</Tag> }))}
+            options={allTags.map(tag => ({ value: tag, label: <Tag>{tag}</Tag> }))}
           />
         </Form.Item>
         <Form.Item
@@ -222,7 +222,7 @@ export default function TaskFormExecutorSection({
             allowClear
             disabled={executorMode === 'pinned'}
             placeholder={t('taskForm.field.antiAffinityTags.placeholder')}
-            options={allTags.map(t => ({ value: t, label: <Tag>{t}</Tag> }))}
+            options={allTags.map(tag => ({ value: tag, label: <Tag>{tag}</Tag> }))}
           />
         </Form.Item>
         {/* FEAT-22 v2：任务级部署约束模式——与亲和约束同款的全模式挂载

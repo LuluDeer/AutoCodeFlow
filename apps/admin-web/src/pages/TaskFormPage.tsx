@@ -87,8 +87,12 @@ import TaskFormTemplateModal, {
 // REFACTOR-TASKFORM-11：锚点条 + 校验播报区（页框架 JSX 原样迁出）
 import TaskFormNavRail from '../components/task-form/TaskFormNavRail';
 // REFACTOR-TASKFORM-07：参照数据加载 hook（执行器分组/标签/清单、应用、项目、
-// 依赖候选 + ?applicationId= 回填；失败降级哲学见其头注释）
+// 依赖候选；失败降级哲学见其头注释；?applicationId= 回填在本页独立 effect，
+// 见 BUGFIX 注释）
 import { useTaskFormReferenceData } from '../hooks/useTaskFormReferenceData';
+// BUGFIX（P3，commit 7d66a9b0 清单）：创建成功滚 Glue 的等待渲染就绪工具
+// （rAF 两连 + 存在性轮询，替代 setTimeout(50) 魔法延时）。
+import { scrollToSectionWhenReady } from '../utils/scroll-when-ready';
 import { useTranslation } from 'react-i18next';
 import '../i18n';
 
@@ -97,6 +101,12 @@ const SECTION_IDS = ['sec-basic', 'sec-trigger', 'sec-executor', 'sec-params', '
 
 export default function TaskFormPage() {
   const { t } = useTranslation();
+  // BUGFIX（P1，commit 7d66a9b0 清单）：语言切换时 t 引用变化，曾令把 t 列入
+  // 依赖的数据回填 effect（编辑态任务加载 / 模板预填）整组重跑——整表重回填 +
+  // setDirty(false) 会冲掉用户未保存的修改。这两个 effect 以任务/模板 id 为键
+  // 只跑一次（t 已移出依赖数组），失败文案经 tRef 取**调用当时**的语言。
+  const tRef = useRef(t);
+  tRef.current = t;
   const nav = useNavigate();
   // P1-5：任务写操作仅管理员可用。
   const isAdmin = isAdminUser(useAuthStore((s) => s.user));
@@ -199,18 +209,49 @@ export default function TaskFormPage() {
   const { token } = theme.useToken();
 
   // python_task_multiversion：`?applicationId=` 创建态语义 = 以该应用整包为
-  // 代码来源（数据回填在 useTaskFormReferenceData 内，原样保留）。codeSource
-  // 是本页自持 state，经此回调同步；useCallback 固定引用保证 effect 依赖与
-  // 原实现等价（不构成额外触发源）。
+  // 代码来源。表单回填与来源切换的触发时机由下方独立预填 effect 决定（BUGFIX：
+  // 原在参照数据 effect 内、随语言切换重跑会冲掉用户已改的绑定）；codeSource
+  // 是本页自持 state，经此回调同步；useCallback 固定引用保持稳定依赖。
   const handleApplicationIdParam = useCallback(() => {
     setCodeSource('application_zip');
     previousCodeSourceRef.current = 'application_zip';
   }, []);
 
-  // 参照数据：分组/标签/执行器/应用/项目/依赖候选 + ?applicationId= 表单回填。
+  // 参照数据：分组/标签/执行器/应用/项目/依赖候选。`?applicationId=` 的表单
+  // 回填在下方独立 effect（原在参照 hook 内，见 BUGFIX 注释）。
   const {
     groups, allTags, executors, apps, appsLoading, projectOptions, taskOptions, depNameSnapshotRef,
-  } = useTaskFormReferenceData({ form, appId, editId, onApplicationIdParamApplied: handleApplicationIdParam });
+  } = useTaskFormReferenceData({ form });
+
+  /**
+   * BUGFIX（P1，commit 7d66a9b0 清单）：`?applicationId=`（应用详情页「用此
+   * 应用建任务」入口）的表单回填。
+   *
+   * 原实现在参照数据加载 effect 内（依赖含 t），语言切换重拉参照数据时会把
+   * form.setFieldValue('applicationId', appId) 一并重放——用户已改绑其他应用
+   * 或清空绑定的修改被 URL 参数静默冲回。现拆为独立 effect，语义：
+   *   - 首次挂载：命中即预填（编辑态只回填字段不切来源，创建态同时把代码
+   *     来源切到 application_zip——handleApplicationIdParam 语义原样保留）；
+   *   - 后续重跑（仅 appId 参数变化 / dirty 翻转会触发）：只在**创建态且表单
+   *     未脏**时生效；表单已脏（用户已动过表单）一律忽略，原实现无「忽略时」
+   *     的外显提示，维持无提示；
+   *   - 同一 appId 只应用一次（appliedAppIdRef）：dirty 翻转引发的重跑不得
+   *     重复回写（否则用户改绑后的每次置脏都会把值冲回去）。
+   */
+  const appliedAppIdRef = useRef<string | null>(null);
+  const appIdFirstRunRef = useRef(true);
+  useEffect(() => {
+    const isFirstRun = appIdFirstRunRef.current;
+    appIdFirstRunRef.current = false;
+    if (!appId) return;
+    if (appliedAppIdRef.current === appId) return;
+    if (!isFirstRun && (isEdit || dirty)) return;
+    appliedAppIdRef.current = appId;
+    form.setFieldValue('applicationId', appId);
+    if (!isEdit) {
+      handleApplicationIdParam();
+    }
+  }, [appId, dirty, isEdit, form, handleApplicationIdParam]);
 
   // Load existing task data when in edit mode
   useEffect(() => {
@@ -256,7 +297,7 @@ export default function TaskFormPage() {
         depNameSnapshotRef.current = dep.nameSnapshot;
       })
       .catch(() => {
-        if (active && !controller.signal.aborted) message.error(t('taskForm.load.taskFailed'));
+        if (active && !controller.signal.aborted) message.error(tRef.current('taskForm.load.taskFailed'));
       })
       .finally(() => {
         if (active && !controller.signal.aborted) { setLoadingTask(false); setDirty(false); }
@@ -266,9 +307,12 @@ export default function TaskFormPage() {
       active = false;
       controller.abort();
     };
+    // BUGFIX（P1）：依赖以 editId（taskId）为键——t 已移出（原实现在列，语言
+    // 切换会重跑本 effect：整表重回填 + setDirty(false) 冲掉未保存修改，任务
+    // 也被重复拉取）。失败文案经 tRef 取当前语言，不构成依赖。
     // depNameSnapshotRef 来自 useTaskFormReferenceData（useRef，恒稳定）——
-    // 列入依赖仅为 lint 自证，不构成额外触发源；触发时机与原实现一致。
-  }, [editId, form, t, depNameSnapshotRef]);
+    // 列入依赖仅为 lint 自证，不构成额外触发源。
+  }, [editId, form, depNameSnapshotRef]);
 
   // CORE-03：创建态带 ?templateId= 时拉取模板，config 预填表单（显式字段仍可改；
   // name 一律由用户填写——模板 name 常含中文，不满足任务名 [a-z0-9_-] 约束）。
@@ -302,11 +346,14 @@ export default function TaskFormPage() {
         setExecutorMode(templateExecutorMode(tpl.config));
         depNameSnapshotRef.current = templateDependencySnapshot(tpl.config);
       })
-      .catch(() => message.warning(t('taskForm.load.templateFailed')));
+      .catch(() => message.warning(tRef.current('taskForm.load.templateFailed')));
     return () => {
       cancelled = true;
     };
-  }, [templateId, isEdit, form, t, depNameSnapshotRef]);
+    // BUGFIX（P1）：t 已移出依赖（同编辑回填 effect——语言切换重跑会整表重回填
+    // 并 setDirty(false)，冲掉用户未保存的修改）；以 templateId 变化为键，
+    // 失败文案经 tRef 取当前语言。
+  }, [templateId, isEdit, form, depNameSnapshotRef]);
 
   // P0（UX-AUDIT-2026-09-21 §P0-5）：切换代码来源前的损失预告——判定与确认
   // 弹窗交互原样迁出至 useCodeSourceSwitchGuard（判据复用 applyCodeSourcePayload，
@@ -516,8 +563,11 @@ export default function TaskFormPage() {
         );
         setCreatedTaskId(created.id);
         setDirty(false);
-        // 创建成功后滚到 Glue 区块（原 step3 语义：创建后进入 Glue 编排）
-        setTimeout(() => scrollToSection(SECTION_IDS[4]), 50);
+        // 创建成功后滚到 Glue 区块（原 step3 语义：创建后进入 Glue 编排）。
+        // BUGFIX（P3，commit 7d66a9b0 清单）：原 setTimeout(50) 是「赌渲染在
+        // 50ms 内完成」的魔法延时——改为 rAF 两连等渲染提交 + 目标存在性轮询
+        // （有界），见 utils/scroll-when-ready。
+        scrollToSectionWhenReady(SECTION_IDS[4]);
       }
     } catch (err: unknown) {
       // A4（乐观锁冲突，409）：另一标签页/调用方已抢先修改同一任务——留在
@@ -564,7 +614,10 @@ export default function TaskFormPage() {
       await form.validateFields();
     } catch (err: unknown) {
       if (isFormValidationError(err)) return;
-      // UX-11：同 openSaveAsTemplate——统一走 getErrMsg（见上方注释）。
+      // UX-11（与上方 handleSubmit 的 catch 同一审查结论）：不手写
+      // `err instanceof Error` 判定——client.ts 的拦截器 reject 的是普通对象，
+      // instanceof 对其恒 false，可操作的文案会被泛化错误串吞掉。showApiError
+      // 内部经 getErrMsg 归一「普通对象 / Error 实例」两种形态后再呈现。
       showApiError(err, t('taskForm.validate.fail'));
       return;
     }
