@@ -7,14 +7,10 @@ import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import '../i18n';
 import type { RetryChainLink } from '../pages/retry-chain';
+// P3 审计：执行状态 → Tag color 映射收敛到单一事实源（原本地 RETRY_STATUS_COLOR 迁出）
+import { EXECUTION_TAG_COLOR } from '../utils/status-color';
 
 const { Text } = Typography;
-
-// UI-05: 重试链状态 Tag（随重试链 Card 迁入重试 Tab，渲染逻辑与 CORE-02 一致）
-const RETRY_STATUS_COLOR: Record<string, string> = {
-  pending: 'default', running: 'processing', success: 'green',
-  failed: 'red', timeout: 'orange', killed: 'volcano', cancelled: 'default',
-};
 
 const TRIGGER_LABEL = (t: (k: string) => string): Record<string, string> => ({
   manual: t('execDetail.trigger.manual'), cron: t('execDetail.trigger.cron'), fixed_rate: t('execDetail.trigger.fixedRate'),
@@ -84,7 +80,7 @@ export default function ExecutionRetryChain({ taskId, data, taskMaxRetry, retryC
                 flexWrap: 'wrap',
               }}
             >
-              <Tag color={RETRY_STATUS_COLOR[link.status] || 'default'}>{t('execDetail.retry.attempt', { n: link.retryCount })}</Tag>
+              <Tag color={EXECUTION_TAG_COLOR[link.status] || 'default'}>{t('execDetail.retry.attempt', { n: link.retryCount })}</Tag>
               {link.execId === data?.id ? (
                 <Text strong>{t('execDetail.retry.currentExec')}</Text>
               ) : (

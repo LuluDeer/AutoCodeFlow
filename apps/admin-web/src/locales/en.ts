@@ -1246,6 +1246,8 @@ export default {
   'taskDetail.version.diff.old': 'Old Value',
   'taskDetail.version.diff.new': 'New Value',
   'taskDetail.version.diff.empty': 'No differences between the two versions',
+  // A11Y-ICON-01: accessible name for the icon-only "collapse diff" button (no Tooltip wrapper)
+  'taskDetail.version.diff.close': 'Collapse version diff',
   'taskDetail.version.empty': 'No version records yet',
   'taskDetail.version.loadFail': 'Failed to load versions',
   'taskDetail.version.rollback': 'Roll back to this version',
@@ -2748,6 +2750,8 @@ export default {
   'paramsEditor.keyPlaceholder': 'Param name',
   'paramsEditor.valuePlaceholder': 'Default value',
   'paramsEditor.add': 'Add parameter',
+  // A11Y-ICON-01: accessible name for the icon-only per-row delete button (no Tooltip wrapper)
+  'paramsEditor.remove': 'Remove this parameter',
   'paramsEditor.tooltip': 'At run time, tasks can read these parameters via the env var AUTOFLOW_<KEY>; they can also be overridden on trigger',
 
   // SEC-02 follow-up (production incident): credentials editor copy.

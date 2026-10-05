@@ -26,13 +26,6 @@ export const SOP_STATUS_T_KEYS: Record<string, string> = {
   deprecated: 'sops.status.deprecated',
 };
 
-/** Tag 配色：与 SopsPage 既有观感一致（提取时原样保留，不改视觉）。 */
-export const SOP_STATUS_COLOR: Record<string, string> = {
-  draft: 'gold',
-  published: 'green',
-  deprecated: 'default',
-};
-
 /** SopAssignment.status 的已知取值（工单状态机，见 sop-assignment.entity.ts）。 */
 export const SOP_ASSIGNMENT_STATUS_T_KEYS: Record<string, string> = {
   assigned: 'sops.assignmentStatus.assigned',
@@ -42,17 +35,6 @@ export const SOP_ASSIGNMENT_STATUS_T_KEYS: Record<string, string> = {
   failed: 'sops.assignmentStatus.failed',
   cancelled: 'sops.assignmentStatus.cancelled',
   stalled: 'sops.assignmentStatus.stalled',
-};
-
-/** Tag 配色：与 SopsPage 既有观感一致（提取时原样保留，不改视觉）。 */
-export const SOP_ASSIGNMENT_STATUS_COLOR: Record<string, string> = {
-  assigned: 'blue',
-  in_progress: 'processing',
-  blocked: 'orange',
-  completed: 'green',
-  failed: 'red',
-  cancelled: 'default',
-  stalled: 'volcano',
 };
 
 /**

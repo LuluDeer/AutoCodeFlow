@@ -59,6 +59,8 @@ import { runtimeLabel } from '../utils/runtime-label';
 import { formatDateTime, formatDuration, formatRelativeTime } from '../utils/timeFormat';
 // CRON-DESC-01：Cron 表达式的人类可读描述（utils/cron-desc.ts）
 import { describeCron } from '../utils/cron-desc';
+// P3 审计：执行状态 → Badge status 映射收敛到单一事实源（原本地 STATUS_COLOR 迁出）
+import { EXECUTION_BADGE_STATUS } from '../utils/status-color';
 // F-27（DEEP_REVIEW 0ef3bbe）：失败次数派生（纯函数，保证整数）
 import { failedRunCount } from './task-stats';
 // CORE-03 收尾：保存为自定义模板的 config 白名单抽取
@@ -67,6 +69,10 @@ import { extractTemplateConfigFromTask } from '../utils/task-template-extract';
 import { deriveCodeSourceFromTask } from './executor-mode';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore, isAdminUser } from '../store/auth';
+// UI-09 第三轮：≤768px 结构级降级（版本历史抽屉满宽；R5-A 先例：AgentSessions/
+// Projects 同款迁移）——A11Y-DRAWER-01：抽屉焦点管理同在此接入
+import { useIsMobile } from '../hooks/useIsMobile';
+import { useDrawerA11y } from '../hooks/useDrawerA11y';
 import '../i18n';
 // PERF（第四轮审计）：GlueEditor 拖带 monaco（约 2.5MB raw 的 lazy chunk）。
 // 此前静态 import 让详情页 route chunk 与 GlueEditor chunk 产生**静态边**——
@@ -81,9 +87,6 @@ import ParamsEditor from '../components/ParamsEditor';
 import ArtifactsList from '../components/ArtifactsList';
 import PageHeader from '../components/PageHeader';
 import PageSkeleton from '../components/PageSkeleton';
-// 版本历史抽屉窄屏满宽（R5-A 先例：AgentSessions/Projects 同款迁移）
-import { useIsMobile } from '../hooks/useIsMobile';
-
 const { Text } = Typography;
 
 /**
@@ -135,11 +138,6 @@ const formatDiffValue = (v: unknown): string => {
   return JSON.stringify(v) ?? '-';
 };
 
-type BadgeStatus = 'success' | 'processing' | 'error' | 'default' | 'warning';
-const STATUS_COLOR: Record<string, BadgeStatus> = {
-  pending: 'default', running: 'processing', success: 'success',
-  failed: 'error', timeout: 'warning', killed: 'error', cancelled: 'default',
-};
 const STATUS_LABEL = (t: (k: string) => string): Record<string, string> => ({
   pending: t('taskDetail.status.pending'), running: t('taskDetail.status.running'), success: t('taskDetail.status.success'),
   failed: t('taskDetail.status.failed'), timeout: t('taskDetail.status.timeout'), killed: t('taskDetail.status.killed'), cancelled: t('taskDetail.status.cancelled'),
@@ -164,6 +162,8 @@ export default function TaskDetailPage() {
   const nav = useNavigate();
   // 版本历史抽屉：≤768px 满宽（桌面保持 720px 语义不变）
   const isMobile = useIsMobile();
+  // A11Y-DRAWER-01：版本抽屉焦点管理（开→聚焦首个可交互元素；关→归还触发按钮）
+  const drawerA11y = useDrawerA11y();
   const [execPage, setExecPage] = useState(1);
   const [aiModalOpen, setAiModalOpen] = useState(false);
   const [aiSuggestion, setAiSuggestion] = useState<ScheduleSuggestion | null>(null);
@@ -492,7 +492,7 @@ export default function TaskDetailPage() {
   const execColumns = [
     {
       title: t('taskDetail.col.status'), dataIndex: 'status', width: 90,
-      render: (s: string) => <Badge status={STATUS_COLOR[s] ?? 'default'} text={statusLabels[s] || s} />,
+      render: (s: string) => <Badge status={EXECUTION_BADGE_STATUS[s] ?? 'default'} text={statusLabels[s] || s} />,
     },
     {
       title: t('taskDetail.col.trigger'), dataIndex: 'triggerType', width: 80,
@@ -538,7 +538,8 @@ export default function TaskDetailPage() {
               okText={t('taskDetail.kill')} okButtonProps={{ danger: true }}
             >
               <Tooltip title={t('taskDetail.kill')}>
-                <Button type="text" size="small" danger icon={<StopOutlined />}
+                {/* A11Y-ICON-01：纯图标按钮补 aria-label（与 Tooltip 同键，读屏可播报） */}
+                <Button type="text" size="small" danger icon={<StopOutlined />} aria-label={t('taskDetail.kill')}
                   loading={killingId === r.id} />
               </Tooltip>
             </Popconfirm>
@@ -1176,8 +1177,11 @@ export default function TaskDetailPage() {
         size={isMobile ? '100%' : 720}
         open={versionDrawerOpen}
         onClose={() => setVersionDrawerOpen(false)}
+        afterOpenChange={drawerA11y.afterOpenChange}
         destroyOnHidden
       >
+        {/* A11Y-DRAWER-01：内容包一层 ref 定位容器——焦点首站查询收窄到本抽屉 */}
+        <div ref={drawerA11y.contentRef}>
         <Space style={{ marginBottom: 12 }} wrap>
           <Button size="small" icon={<ReloadOutlined />} loading={versionsLoading} onClick={loadVersions}>
             {t('taskDetail.refresh')}
@@ -1201,7 +1205,13 @@ export default function TaskDetailPage() {
             title={t('taskDetail.version.diff.title')}
             style={{ marginBottom: 16 }}
             extra={
-              <Button type="text" size="small" onClick={() => setVersionDiff(null)} icon={<CloseCircleOutlined />} />
+              // A11Y-ICON-01：纯图标「收起差异」按钮补可访问名（无 Tooltip 包裹，
+              // 此前对读屏器完全匿名）
+              <Button
+                type="text" size="small" icon={<CloseCircleOutlined />}
+                aria-label={t('taskDetail.version.diff.close')}
+                onClick={() => setVersionDiff(null)}
+              />
             }
           >
             {diffRows.length === 0 ? (
@@ -1261,6 +1271,7 @@ export default function TaskDetailPage() {
             ),
           }}
         />
+        </div>
       </Drawer>
 
       {/* A5：回滚确认弹窗——明确告知覆盖影响（当前配置被快照整体覆盖、追加新

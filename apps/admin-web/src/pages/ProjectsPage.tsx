@@ -18,6 +18,8 @@ import StateError from '../components/StateError';
 // UI-09 第三轮：≤768px 表格 → 卡片列表的结构级降级（对齐 TaskListPage/
 // ApplicationListPage 的 MOBILE-CARD-01 先例；断点与 index.css ui09 媒体查询同值）
 import { useIsMobile } from '../hooks/useIsMobile';
+// A11Y-DRAWER-01：成员抽屉焦点管理（开→聚焦首个可交互元素；关→归还触发按钮）
+import { useDrawerA11y } from '../hooks/useDrawerA11y';
 import '../i18n';
 
 const { Text } = Typography;
@@ -253,6 +255,8 @@ function MembersDrawer({ project, isAdmin, onClose }: MembersDrawerProps) {
   const { t } = useTranslation();
   // UI-09 第三轮：成员抽屉窄屏满宽（桌面保留 size="large" 的 736px）
   const isMobile = useIsMobile();
+  // A11Y-DRAWER-01：抽屉焦点管理（开→聚焦首个可交互元素；关→归还触发按钮）
+  const drawerA11y = useDrawerA11y();
   const queryClient = useQueryClient();
   const [addForm] = Form.useForm<{ userId: number; role: ProjectRole }>();
   const [messageApi, contextHolder] = message.useMessage();
@@ -318,8 +322,11 @@ function MembersDrawer({ project, isAdmin, onClose }: MembersDrawerProps) {
       }
       size={isMobile ? '100%' : 'large'}
       open={open}      onClose={onClose}
+      afterOpenChange={drawerA11y.afterOpenChange}
       destroyOnHidden
     >
+      {/* A11Y-DRAWER-01：内容包一层 ref 定位容器——焦点首站查询收窄到本抽屉 */}
+      <div ref={drawerA11y.contentRef}>
       {contextHolder}
       {membersQuery.error ? (
         <StateError error={membersQuery.error} onRetry={() => void membersQuery.refetch()} />
@@ -420,6 +427,7 @@ function MembersDrawer({ project, isAdmin, onClose }: MembersDrawerProps) {
           </Space>
         </Form>
       )}
+      </div>
     </Drawer>
   );
 }

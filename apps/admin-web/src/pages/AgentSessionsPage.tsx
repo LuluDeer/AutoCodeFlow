@@ -26,6 +26,8 @@ import StateError from '../components/StateError';
 // UI-09 第三轮：≤768px 表格 → 卡片列表的结构级降级（对齐 TaskListPage/
 // ApplicationListPage 的 MOBILE-CARD-01 先例；断点与 index.css ui09 媒体查询同值）
 import { useIsMobile } from '../hooks/useIsMobile';
+// A11Y-DRAWER-01：Drawer 打开后焦点移入内容、关闭归还触发按钮
+import { useDrawerA11y } from '../hooks/useDrawerA11y';
 import { agentApi } from '../api/agent';
 // SOPS-TIME-01：startedAt 列与 SopsPage 同走 formatDateTime（locale 感知 + 空值 '—'）
 import { formatDateTime } from '../utils/timeFormat';
@@ -37,6 +39,8 @@ import {
   agentToolStatusLabel,
   agentToolTierLabel,
 } from '../utils/agent-label';
+// P3 审计：Agent 会话/工具状态 → Tag color 映射收敛到单一事实源
+import { AGENT_SESSION_STATUS_COLOR, AGENT_TOOL_STATUS_COLOR } from '../utils/status-color';
 import type {
   AgentBudget,
   AgentSession,
@@ -54,28 +58,10 @@ import type {
 
 const { Text, Paragraph } = Typography;
 
-const STATUS_COLORS: Record<string, string> = {
-  pending: 'default',
-  running: 'processing',
-  waiting_input: 'orange',
-  succeeded: 'green',
-  failed: 'red',
-  aborted: 'default',
-  budget_exceeded: 'volcano',
-};
-
-const TOOL_STATUS_COLORS: Record<string, string> = {
-  ok: 'green',
-  denied: 'red',
-  error: 'red',
-  circuit_open: 'volcano',
-  awaiting_approval: 'orange',
-};
-
 // UX-06：状态 Tag 走共享词表（未知值回退原始 token，保留可诊断信息）
 function statusTag(status: string, t: (k: string, v?: Record<string, unknown>) => string) {
   return (
-    <Tag color={STATUS_COLORS[status] ?? 'default'}>{agentStatusLabel(status, t)}</Tag>
+    <Tag color={AGENT_SESSION_STATUS_COLOR[status] ?? 'default'}>{agentStatusLabel(status, t)}</Tag>
   );
 }
 
@@ -91,6 +77,8 @@ export default function AgentSessionsPage() {
   const { t } = useTranslation();
   // UI-09 第三轮：≤768px 结构级降级开关（表格→卡片、抽屉满宽、筛选堆叠）
   const isMobile = useIsMobile();
+  // A11Y-DRAWER-01：会话详情抽屉焦点管理（开→聚焦首个可交互元素；关→归还触发按钮）
+  const drawerA11y = useDrawerA11y();
   // URL-SYNC-01：筛选/分页以 URL 查询参数为初始源并回写；非法深链值
   // （?page=abc、负数、浮点）回落默认值，不空屏不报错。
   const [searchParams, setSearchParams] = useSearchParams();
@@ -262,7 +250,7 @@ export default function AgentSessionsPage() {
       width: 180,
       render: (v: string, c) => (
         <Space size={4}>
-          <Tag color={TOOL_STATUS_COLORS[c.status] ?? 'default'}>
+          <Tag color={AGENT_TOOL_STATUS_COLOR[c.status] ?? 'default'}>
             {agentToolStatusLabel(c.status, t)}
           </Tag>
           <Text style={{ fontSize: 12 }}>{v}</Text>
@@ -362,7 +350,7 @@ export default function AgentSessionsPage() {
       style={{ width: isMobile ? '100%' : 160 }}
       value={statusFilter}
       onChange={v => { setStatusFilter(v); setPage(1); }}
-      options={Object.keys(STATUS_COLORS).map((s) => ({ value: s, label: agentStatusLabel(s, t) }))}
+      options={Object.keys(AGENT_SESSION_STATUS_COLOR).map((s) => ({ value: s, label: agentStatusLabel(s, t) }))}
     />
   );
   // 图标按钮 a11y：图标随文字按钮（有可读文案），对读屏器纯装饰 → aria-hidden
@@ -486,6 +474,7 @@ export default function AgentSessionsPage() {
         size={isMobile ? '100%' : 920}
         open={detail !== null}
         onClose={() => setDetail(null)}
+        afterOpenChange={drawerA11y.afterOpenChange}
         destroyOnHidden
         extra={
           resumable ? (
@@ -501,8 +490,10 @@ export default function AgentSessionsPage() {
           ) : null
         }
       >
-        {detail && (
-          <>
+        {/* A11Y-DRAWER-01：内容包一层 ref 定位容器——焦点首站查询收窄到本抽屉 */}
+        <div ref={drawerA11y.contentRef}>
+          {detail && (
+            <>
             <Paragraph>
               <Space size={8} wrap>
                 {statusTag(detail.status, t)}
@@ -602,8 +593,9 @@ export default function AgentSessionsPage() {
                 },
               ]}
             />
-          </>
-        )}
+            </>
+          )}
+        </div>
       </Drawer>
     </div>
   );

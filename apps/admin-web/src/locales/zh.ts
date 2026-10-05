@@ -1257,6 +1257,8 @@ export default {
   'taskDetail.version.diff.old': '旧值',
   'taskDetail.version.diff.new': '新值',
   'taskDetail.version.diff.empty': '两个版本配置无差异',
+  // A11Y-ICON-01：纯图标「收起差异」按钮的可访问名（该按钮无 Tooltip 包裹）
+  'taskDetail.version.diff.close': '收起版本差异',
   'taskDetail.version.empty': '暂无版本记录',
   'taskDetail.version.loadFail': '版本列表加载失败',
   'taskDetail.version.rollback': '回滚到此版本',
@@ -2762,6 +2764,8 @@ export default {
   'paramsEditor.keyPlaceholder': '参数名',
   'paramsEditor.valuePlaceholder': '默认值',
   'paramsEditor.add': '添加参数',
+  // A11Y-ICON-01：纯图标删除按钮的可访问名（每行一个，无 Tooltip 包裹）
+  'paramsEditor.remove': '删除该参数',
   'paramsEditor.tooltip': '任务运行时可通过环境变量 AUTOFLOW_<KEY> 读取这些参数，触发时也可以覆盖',
 
   // SEC-02 续（生产故障）：凭据编辑器。此前这些键**整体缺失**，界面直接渲染

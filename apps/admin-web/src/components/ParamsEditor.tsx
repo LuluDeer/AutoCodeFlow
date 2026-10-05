@@ -103,11 +103,13 @@ export default function ParamsEditor({ value, onChange }: ParamsEditorProps) {
             onChange={e => update(idx, 'value', e.target.value)}
             style={{ flex: '1 1 180px', minWidth: 0 }}
           />
+          {/* A11Y-ICON-01：纯图标删除按钮无 Tooltip 包裹，此前对读屏器完全匿名 */}
           <Button
             type="text"
             danger
             size="small"
             icon={<DeleteOutlined />}
+            aria-label={t('paramsEditor.remove')}
             onClick={() => remove(idx)}
           />
         </div>

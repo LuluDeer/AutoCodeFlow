@@ -29,16 +29,18 @@ import PageSkeleton from '../components/PageSkeleton';
 import StateError from '../components/StateError';
 // UX-06 第二扫：SOP 域裸枚举收敛到唯一事实源（状态/工单状态/澄清处置/附件类型）
 import {
-  SOP_ASSIGNMENT_STATUS_COLOR,
-  SOP_STATUS_COLOR,
   sopAssignmentStatusLabel,
   sopClarResolutionLabel,
   sopMediaKindLabel,
   sopStatusLabel,
 } from '../utils/sop-label';
+// P3 审计：SOP 状态/工单状态 → Tag color 映射收敛到 utils/status-color 单一事实源
+import { SOP_ASSIGNMENT_STATUS_COLOR, SOP_STATUS_COLOR } from '../utils/status-color';
 // UI-09 第三轮：≤768px 表格 → 卡片列表的结构级降级（对齐 TaskListPage/
 // ApplicationListPage 的 MOBILE-CARD-01 先例；断点与 index.css ui09 媒体查询同值）
 import { useIsMobile } from '../hooks/useIsMobile';
+// A11Y-DRAWER-01：SOP 详情抽屉焦点管理（开→聚焦首个可交互元素；关→归还触发按钮）
+import { useDrawerA11y } from '../hooks/useDrawerA11y';
 import { sopsApi } from '../api/sops';
 // SOPS-TIME-01：时间列统一走 formatDateTime（locale 感知 + 空值回退 '—'）
 import { formatDateTime } from '../utils/timeFormat';
@@ -83,6 +85,8 @@ export default function SopsPage() {
   const { t } = useTranslation();
   // UI-09 第三轮：≤768px 结构级降级开关（表格→卡片、抽屉满宽）
   const isMobile = useIsMobile();
+  // A11Y-DRAWER-01：详情抽屉焦点管理（开→聚焦首个可交互元素；关→归还触发按钮）
+  const drawerA11y = useDrawerA11y();
   const [items, setItems] = useState<Sop[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -455,8 +459,11 @@ export default function SopsPage() {
         size={isMobile ? '100%' : 860}
         open={detail !== null}
         onClose={() => setDetail(null)}
+        afterOpenChange={drawerA11y.afterOpenChange}
         destroyOnHidden
       >
+        {/* A11Y-DRAWER-01：内容包一层 ref 定位容器——焦点首站查询收窄到本抽屉 */}
+        <div ref={drawerA11y.contentRef}>
         {detail && (
           <Tabs
             items={[
@@ -593,6 +600,7 @@ export default function SopsPage() {
             ]}
           />
         )}
+        </div>
       </Drawer>
 
       <Modal

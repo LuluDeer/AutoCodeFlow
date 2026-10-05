@@ -44,6 +44,8 @@ import { triggerLabel, releaseStatusLabel, TRIGGER_COLOR } from '../utils/trigge
 import { runtimeLabel } from '../utils/runtime-label';
 // D-P2-09：时间格式化统一走共享 formatDateTime（与全站同源）。
 import { formatDateTime } from '../utils/timeFormat';
+// P3 审计：应用/发布部署状态 → Tag color 映射收敛到单一事实源
+import { APPLICATION_STATUS_COLOR, RELEASE_DEPLOY_STATUS_COLOR } from '../utils/status-color';
 import { useAuthStore, isAdminUser } from '../store/auth';
 import PageHeader from '../components/PageHeader';
 import PageSkeleton from '../components/PageSkeleton';
@@ -156,9 +158,6 @@ function AiAnalysisTab({ appId }: { appId: string }) {
 
 const { Text } = Typography;
 
-const STATUS_COLORS: Record<string, string> = {
-  active: 'green', deploying: 'blue', failed: 'red',
-};
 const STATUS_LABELS = (t: (k: string) => string): Record<string, string> => ({
   active: t('appDetail.status.active'), deploying: t('appDetail.status.deploying'), failed: t('appDetail.status.failed'),
 });
@@ -181,7 +180,7 @@ function OverviewTab({ app }: { app: Application }) {
           <Descriptions.Item label={t('appDetail.field.version')}><Tag color="blue">{app.version}</Tag></Descriptions.Item>
           <Descriptions.Item label={t('appDetail.field.runtime')}><Tag>{runtimeLabel(app.runtime, t)}</Tag></Descriptions.Item>
           <Descriptions.Item label={t('appDetail.field.status')}>
-            <Tag color={STATUS_COLORS[app.status] || 'default'}>{STATUS_LABELS(t)[app.status] || app.status}</Tag>
+            <Tag color={APPLICATION_STATUS_COLOR[app.status] || 'default'}>{STATUS_LABELS(t)[app.status] || app.status}</Tag>
           </Descriptions.Item>
           {app.description && (
             // antd 6.6.5+：span="filled" 表达「独占整行」——原 span={3} 在
@@ -652,9 +651,6 @@ function VersionHistoryTab({ app, onAppReload }: { app: Application; onAppReload
 }
 
 // ─── Releases（DEP-01 统一发布追溯）───────────────────────────────────────────
-const RELEASE_DEPLOY_STATUS_COLORS: Record<string, string> = {
-  running: 'green', stopped: 'default', failed: 'red', deploying: 'blue', upgrading: 'blue', pending: 'default',
-};
 const RELEASE_DEPLOY_STATUS_LABELS = (t: (k: string) => string): Record<string, string> => ({
   pending: t('appDetail.releases.status.pending'), deploying: t('appDetail.releases.status.deploying'), running: t('appDetail.releases.status.running'), stopped: t('appDetail.releases.status.stopped'), failed: t('appDetail.releases.status.failed'), upgrading: t('appDetail.releases.status.upgrading'),
 });
@@ -716,7 +712,7 @@ function ReleasesTab({ app }: { app: Application }) {
       title: t('appDetail.releases.col.deployStatus'), dataIndex: 'deploymentStatus', width: 100,
       render: (v: string | null) =>
         v ? (
-          <Tag color={RELEASE_DEPLOY_STATUS_COLORS[v] || 'default'}>
+          <Tag color={RELEASE_DEPLOY_STATUS_COLOR[v] || 'default'}>
             {RELEASE_DEPLOY_STATUS_LABELS(t)[v] || v}
           </Tag>
         ) : (
