@@ -353,6 +353,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/tasks/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Import a task definition (JSON export payload)
+         * @description E-1: create a task from a GET /tasks/:id/export payload. Validation is the full POST /tasks create chain. Name conflicts are NEVER overwritten: ' (imported)' is appended, then ' (imported) 2', ' (imported) 3', ... until an available name is found. Secrets are never part of the transfer (SEC-02 red line): a carried secrets key is ignored and the imported task starts WITHOUT secrets — warnings always includes the reconfigure hint. The new task starts paused.
+         */
+        post: operations["TaskController_importDefinition"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/tasks/batch/trigger": {
         parameters: {
             query?: never;
@@ -573,6 +593,26 @@ export interface paths {
          * @description Update task configuration. Note: running tasks are not immediately affected.
          */
         patch: operations["TaskController_update"];
+        trace?: never;
+    };
+    "/tasks/{id}/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Export task definition as a downloadable JSON file
+         * @description E-1: returns the task definition snapshot (name/description/runtime + interpreter version/glue script/params/timeout & retry/dependencies/deployment constraints/maintenance windows/trigger config/git source/application & project keys) as an attachment with schemaVersion "1" and exportedAt. SEC-02 red line: secrets are NEVER part of the export (the whole key is stripped — values and key names alike). The payload is accepted verbatim by POST /tasks/import. Read permission matches GET /tasks/:id.
+         */
+        get: operations["TaskController_exportDefinition"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/tasks/{id}/glue": {
@@ -3771,6 +3811,123 @@ export interface components {
             /** @description Owning project. Omit/null = unassigned (counts toward the Default project view; existing behaviour). Setting it requires ADMIN or editor/admin of that project. */
             projectId?: string;
         };
+        ImportTaskDto: {
+            /**
+             * @description Export schema version this API accepts
+             * @example 1
+             * @enum {string}
+             */
+            schemaVersion: "1";
+            /** @description exportedAt of the source export (informational) */
+            exportedAt?: string;
+            /** @description Task definition. Secrets are never part of a definition transfer: a carried secrets key is ignored (with a warning) and the imported task starts without secrets. */
+            task: components["schemas"]["CreateTaskDto"];
+        };
+        TaskImportResultDto: {
+            /** @description Newly created task id */
+            taskId: string;
+            /** @description Final task name (suffix " (imported)" / " (imported) N" appended on conflicts) */
+            name: string;
+            /** @description Always contains the reconfigure-secrets hint (SEC-02 red line); may contain additional notes (e.g. an ignored secrets key). */
+            warnings: string[];
+        };
+        TaskDefinitionDto: {
+            /**
+             * @description Task name
+             * @example Nightly DB sync
+             */
+            name: string;
+            description?: string;
+            /** @enum {string} */
+            triggerType: "cron" | "fixed_rate" | "api" | "manual";
+            /** @description 5-field cron (triggerType=cron) */
+            cronExpression?: string;
+            /** @description IANA timezone, e.g. Asia/Shanghai */
+            timezone?: string;
+            /** @description Fixed-rate interval seconds */
+            fixedRate?: number;
+            /** @enum {string} */
+            runtime?: "python" | "node" | "shell";
+            /** @description Interpreter version "major.minor" (python runtime) */
+            runtimeVersion?: string;
+            /** @description Executor-side dependency specs (pip/npm) */
+            requirements?: string[];
+            /** @description Upstream task dependency map: { displayName: upstreamTaskId } */
+            dependencies?: {
+                [key: string]: string;
+            };
+            entrypoint?: string;
+            gitRepo?: string;
+            gitBranch?: string;
+            gitCommit?: string;
+            currentVersion?: string;
+            /** @description Timeout seconds (0 = no limit) */
+            timeout?: number;
+            /** @description Timeout action: kill / kill_retry / notify_only */
+            timeoutAction?: string;
+            /** @description Timeout warning ratio 0-90 */
+            timeoutWarnRatio?: number;
+            /** @description Estimated duration seconds */
+            estimatedDurationSec?: number;
+            maxRetry?: number;
+            retryDelay?: number;
+            /** @description Retryable error whitelist */
+            retryableErrors?: string[];
+            /** @description low/normal/high/critical */
+            priority?: Record<string, never>;
+            /** @enum {string} */
+            executeMode?: "single" | "broadcast";
+            /** @enum {string} */
+            blockStrategy?: "serial" | "discard" | "cover_early";
+            /** @enum {string} */
+            misfireStrategy?: "ignore" | "fire_once";
+            alarmEmail?: string;
+            alarmChannels?: string[];
+            /** @description Default task params */
+            params?: {
+                [key: string]: unknown;
+            };
+            /**
+             * @description Deployment dispatch policy override
+             * @enum {string|null}
+             */
+            deploymentPolicy?: "strict" | "prefer" | null;
+            /** @description Pinned executor id */
+            executorId?: string;
+            executorAppName?: string;
+            executorGroup?: string;
+            executorTags?: string[];
+            executorAffinityTags?: string[];
+            executorAntiAffinityTags?: string[];
+            /** @description GLUE script source */
+            glueSource?: string;
+            glueLanguage?: string;
+            /** @description Bound application id */
+            applicationId?: string;
+            /** @enum {string} */
+            codeSource?: "git" | "glue" | "application_zip";
+            /** @description Task-level maintenance windows */
+            maintenanceWindows?: components["schemas"]["MaintenanceWindowDto"][] | null;
+            /** @description Markdown runbook */
+            runbook?: string;
+            /** @description Owning project id */
+            projectId?: string;
+        };
+        TaskExportPayloadDto: {
+            /**
+             * @description Export schema version (currently 1)
+             * @example 1
+             * @enum {string}
+             */
+            schemaVersion: "1";
+            /**
+             * Format: date-time
+             * @description ISO-8601 timestamp when the export was produced
+             */
+            exportedAt: string;
+            /** @description Task definition snapshot keys. Secrets are NEVER included (SEC-02 red line: the whole key is stripped, values and key alike). */
+            task: components["schemas"]["TaskDefinitionDto"];
+        };
         UpdateTaskDto: {
             id?: string;
             name?: string;
@@ -3933,7 +4090,7 @@ export interface components {
              */
             fromLine: number;
             /**
-             * @description Array of log line strings
+             * @description Array of log line strings (max 2000 lines, 512 KB per line)
              * @example [
              *       "Starting task...",
              *       "Step 1 complete"
@@ -5721,6 +5878,51 @@ export interface operations {
             };
         };
     };
+    TaskController_importDefinition: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ImportTaskDto"];
+            };
+        };
+        responses: {
+            /** @description Task imported (paused). warnings always includes the reconfigure-secrets hint. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskImportResultDto"];
+                };
+            };
+            /** @description Invalid payload (missing required keys, oversized params, unknown fields — global whitelist, invalid cron/timezone/enum, ...) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The payload assigns a project the caller may not write (ADMIN or project editor/admin required) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description All name candidates conflict with existing tasks (or another unique conflict) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     TaskController_batchTrigger: {
         parameters: {
             query?: never;
@@ -6024,6 +6226,36 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Task not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    TaskController_exportDefinition: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Task ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Task definition export payload (same shape as the POST /tasks/import body) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskExportPayloadDto"];
+                };
             };
             /** @description Task not found */
             404: {

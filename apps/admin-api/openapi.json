@@ -833,6 +833,53 @@
         ]
       }
     },
+    "/tasks/import": {
+      "post": {
+        "description": "E-1: create a task from a GET /tasks/:id/export payload. Validation is the full POST /tasks create chain. Name conflicts are NEVER overwritten: ' (imported)' is appended, then ' (imported) 2', ' (imported) 3', ... until an available name is found. Secrets are never part of the transfer (SEC-02 red line): a carried secrets key is ignored and the imported task starts WITHOUT secrets — warnings always includes the reconfigure hint. The new task starts paused.",
+        "operationId": "TaskController_importDefinition",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportTaskDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Task imported (paused). warnings always includes the reconfigure-secrets hint.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskImportResultDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid payload (missing required keys, oversized params, unknown fields — global whitelist, invalid cron/timezone/enum, ...)"
+          },
+          "403": {
+            "description": "The payload assigns a project the caller may not write (ADMIN or project editor/admin required)"
+          },
+          "409": {
+            "description": "All name candidates conflict with existing tasks (or another unique conflict)"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Import a task definition (JSON export payload)",
+        "tags": [
+          "Task Management"
+        ]
+      }
+    },
     "/tasks/batch/trigger": {
       "post": {
         "description": "Trigger multiple tasks. Partial failures do not affect other tasks.",
@@ -1383,6 +1430,47 @@
           }
         ],
         "summary": "Delete task",
+        "tags": [
+          "Task Management"
+        ]
+      }
+    },
+    "/tasks/{id}/export": {
+      "get": {
+        "description": "E-1: returns the task definition snapshot (name/description/runtime + interpreter version/glue script/params/timeout & retry/dependencies/deployment constraints/maintenance windows/trigger config/git source/application & project keys) as an attachment with schemaVersion \"1\" and exportedAt. SEC-02 red line: secrets are NEVER part of the export (the whole key is stripped — values and key names alike). The payload is accepted verbatim by POST /tasks/import. Read permission matches GET /tasks/:id.",
+        "operationId": "TaskController_exportDefinition",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "description": "Task ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Task definition export payload (same shape as the POST /tasks/import body)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskExportPayloadDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Task not found"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "Export task definition as a downloadable JSON file",
         "tags": [
           "Task Management"
         ]
@@ -9344,6 +9432,311 @@
           "triggerType"
         ]
       },
+      "ImportTaskDto": {
+        "type": "object",
+        "properties": {
+          "schemaVersion": {
+            "type": "string",
+            "enum": [
+              "1"
+            ],
+            "description": "Export schema version this API accepts",
+            "example": "1"
+          },
+          "exportedAt": {
+            "type": "string",
+            "description": "exportedAt of the source export (informational)"
+          },
+          "task": {
+            "description": "Task definition. Secrets are never part of a definition transfer: a carried secrets key is ignored (with a warning) and the imported task starts without secrets.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/CreateTaskDto"
+              }
+            ]
+          }
+        },
+        "required": [
+          "schemaVersion",
+          "task"
+        ]
+      },
+      "TaskImportResultDto": {
+        "type": "object",
+        "properties": {
+          "taskId": {
+            "type": "string",
+            "description": "Newly created task id"
+          },
+          "name": {
+            "type": "string",
+            "description": "Final task name (suffix \" (imported)\" / \" (imported) N\" appended on conflicts)"
+          },
+          "warnings": {
+            "description": "Always contains the reconfigure-secrets hint (SEC-02 red line); may contain additional notes (e.g. an ignored secrets key).",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "taskId",
+          "name",
+          "warnings"
+        ]
+      },
+      "TaskDefinitionDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Task name",
+            "example": "Nightly DB sync"
+          },
+          "description": {
+            "type": "string"
+          },
+          "triggerType": {
+            "type": "string",
+            "enum": [
+              "cron",
+              "fixed_rate",
+              "api",
+              "manual"
+            ]
+          },
+          "cronExpression": {
+            "type": "string",
+            "description": "5-field cron (triggerType=cron)"
+          },
+          "timezone": {
+            "type": "string",
+            "description": "IANA timezone, e.g. Asia/Shanghai"
+          },
+          "fixedRate": {
+            "type": "number",
+            "description": "Fixed-rate interval seconds"
+          },
+          "runtime": {
+            "type": "string",
+            "enum": [
+              "python",
+              "node",
+              "shell"
+            ]
+          },
+          "runtimeVersion": {
+            "type": "string",
+            "description": "Interpreter version \"major.minor\" (python runtime)"
+          },
+          "requirements": {
+            "description": "Executor-side dependency specs (pip/npm)",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "dependencies": {
+            "type": "object",
+            "description": "Upstream task dependency map: { displayName: upstreamTaskId }",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "entrypoint": {
+            "type": "string"
+          },
+          "gitRepo": {
+            "type": "string"
+          },
+          "gitBranch": {
+            "type": "string"
+          },
+          "gitCommit": {
+            "type": "string"
+          },
+          "currentVersion": {
+            "type": "string"
+          },
+          "timeout": {
+            "type": "number",
+            "description": "Timeout seconds (0 = no limit)"
+          },
+          "timeoutAction": {
+            "type": "string",
+            "description": "Timeout action: kill / kill_retry / notify_only"
+          },
+          "timeoutWarnRatio": {
+            "type": "number",
+            "description": "Timeout warning ratio 0-90"
+          },
+          "estimatedDurationSec": {
+            "type": "number",
+            "description": "Estimated duration seconds"
+          },
+          "maxRetry": {
+            "type": "number"
+          },
+          "retryDelay": {
+            "type": "number"
+          },
+          "retryableErrors": {
+            "description": "Retryable error whitelist",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "priority": {
+            "type": "object",
+            "description": "low/normal/high/critical"
+          },
+          "executeMode": {
+            "type": "string",
+            "enum": [
+              "single",
+              "broadcast"
+            ]
+          },
+          "blockStrategy": {
+            "type": "string",
+            "enum": [
+              "serial",
+              "discard",
+              "cover_early"
+            ]
+          },
+          "misfireStrategy": {
+            "type": "string",
+            "enum": [
+              "ignore",
+              "fire_once"
+            ]
+          },
+          "alarmEmail": {
+            "type": "string"
+          },
+          "alarmChannels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "params": {
+            "type": "object",
+            "description": "Default task params",
+            "additionalProperties": true
+          },
+          "deploymentPolicy": {
+            "type": "string",
+            "description": "Deployment dispatch policy override",
+            "enum": [
+              "strict",
+              "prefer"
+            ],
+            "nullable": true
+          },
+          "executorId": {
+            "type": "string",
+            "description": "Pinned executor id"
+          },
+          "executorAppName": {
+            "type": "string"
+          },
+          "executorGroup": {
+            "type": "string"
+          },
+          "executorTags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "executorAffinityTags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "executorAntiAffinityTags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "glueSource": {
+            "type": "string",
+            "description": "GLUE script source"
+          },
+          "glueLanguage": {
+            "type": "string"
+          },
+          "applicationId": {
+            "type": "string",
+            "description": "Bound application id"
+          },
+          "codeSource": {
+            "type": "string",
+            "enum": [
+              "git",
+              "glue",
+              "application_zip"
+            ]
+          },
+          "maintenanceWindows": {
+            "description": "Task-level maintenance windows",
+            "nullable": true,
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MaintenanceWindowDto"
+            }
+          },
+          "runbook": {
+            "type": "string",
+            "description": "Markdown runbook"
+          },
+          "projectId": {
+            "type": "string",
+            "description": "Owning project id"
+          }
+        },
+        "required": [
+          "name",
+          "triggerType"
+        ]
+      },
+      "TaskExportPayloadDto": {
+        "type": "object",
+        "properties": {
+          "schemaVersion": {
+            "type": "string",
+            "enum": [
+              "1"
+            ],
+            "description": "Export schema version (currently 1)",
+            "example": "1"
+          },
+          "exportedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "ISO-8601 timestamp when the export was produced"
+          },
+          "task": {
+            "description": "Task definition snapshot keys. Secrets are NEVER included (SEC-02 red line: the whole key is stripped, values and key alike).",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/TaskDefinitionDto"
+              }
+            ]
+          }
+        },
+        "required": [
+          "schemaVersion",
+          "exportedAt",
+          "task"
+        ]
+      },
       "UpdateTaskDto": {
         "type": "object",
         "properties": {
@@ -9705,7 +10098,7 @@
             "example": 0
           },
           "lines": {
-            "description": "Array of log line strings",
+            "description": "Array of log line strings (max 2000 lines, 512 KB per line)",
             "example": [
               "Starting task...",
               "Step 1 complete"

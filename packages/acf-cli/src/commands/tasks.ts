@@ -776,8 +776,14 @@ export function tasksCommand(): Command {
           spinner.succeed('Task webhook disabled — signed calls now answer 401');
           return;
         }
-        // enable | rotate：{ url, secret } 一次性回显
-        const r = await post<{ url: string; secret: string }>(`/tasks/${taskId}/webhook/${action}`);
+        // enable | rotate：{ url, secret } 一次性回显。路径必须显式——服务端
+        // 是三条字面量路由（enable/rotate/disable），动态模板虽运行时可达，
+        // 但 consumer-routes 守卫的静态对账无法把两段参数模板对上 openapi。
+        const actionPath =
+          action === 'enable'
+            ? `/tasks/${taskId}/webhook/enable`
+            : `/tasks/${taskId}/webhook/rotate`;
+        const r = await post<{ url: string; secret: string }>(actionPath);
         spinner.stop();
         if (opts.json) {
           console.log(JSON.stringify(r));
