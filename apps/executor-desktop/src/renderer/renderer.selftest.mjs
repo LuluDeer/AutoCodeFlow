@@ -2,21 +2,26 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 const root = resolve(import.meta.dirname);
-const css = readFileSync(resolve(root, 'styles/app.css'), 'utf8');
+// 样式已拆分为四文件（tokens → base → components → pages，与 main.tsx 的
+// import 顺序一致）；拼接后作为整体 css 参与下方全部断言。
+const css = ['tokens.css', 'base.css', 'components.css', 'pages.css']
+  .map((file) => readFileSync(resolve(root, 'styles', file), 'utf8'))
+  .join('\n');
 const app = readFileSync(resolve(root, 'App.tsx'), 'utf8');
 const pages = ['AppsPage.tsx', 'ConfigPage.tsx', 'HistoryPage.tsx', 'StatusWindow.tsx', 'Wizard.tsx']
   .map((file) => readFileSync(resolve(root, 'pages', file), 'utf8'));
 
 const requiredTokens = [
-  '--color-primary: #0f172a',
-  '--color-accent: #22c55e',
-  '--color-background: #020617',
-  '--color-foreground: #f8fafc',
+  // 2026-10 明亮专业风基线（用户选定）：品牌锚点由深色午夜蓝翻转为浅色系，
+  // 主 CTA 绿锚定 green-700 #15803d（白字 4.6:1 过 AA，见 MASTER.md DOC-01）。
+  '--color-primary: #15803d',
+  '--color-accent: #15803d',
+  '--color-background: #f5f6f8',
+  '--color-foreground: #1a2230',
   '--space-md: 16px',
-  // 阴影 token 在本次体系化重构中被细化为「多层、同色相、逐级抬升」的午夜蓝
-  // 阶梯（更深、更通透的双层阴影）。断言意图是「多层阴影 token 必须存在且被
-  // --shadow 引用」，具体值由设计系统决定，这里对齐到实际实现。
-  '--shadow-md: 0 4px 10px -2px rgb(0 0 0 / 0.35), 0 2px 4px -2px rgb(0 0 0 / 0.20)',
+  // 阴影 token 在明亮风基线下为「低透明度、大模糊」的柔和双层投影。断言意图
+  // 是「多层阴影 token 必须存在且被 --shadow 引用」，具体值由设计系统决定。
+  '--shadow-md: 0 2px 6px -1px rgb(16 24 40 / 0.08), 0 1px 3px rgb(16 24 40 / 0.05)',
   // 标题改用正文无衬线：Fira Code 等宽字体不含中文字形，中文标题回落会显糙，
   // 大号标题用 sans 更稳。--font-heading 仍作为独立 token 保留。
   '--font-heading: var(--font-body)',
@@ -40,13 +45,12 @@ if (!app.includes('role="tablist"') || !app.includes('role="tab"') || !app.inclu
 if (!css.includes('.btn-primary') || !css.includes('.btn-success') || !css.includes('.btn-danger')) {
   throw new Error('button variant styles are missing');
 }
-// 按钮前景色必须与各自底色形成高对比（深色底 → 浅字 / 亮色底 → 深字）。
-// 断言意图是"对比度合规"，不是"必须用某个具体变量"：早期实现统一用
-// var(--color-primary)，样式打磨后改成按底色微调的硬编码值（绿底 #052e12、
-// 红底 #fff）。原断言钉死旧变量，导致本测试在 main 上长期为红。
+// 按钮前景色必须与各自底色形成高对比（深色底 → 浅字）。明亮风基线下
+// 主 CTA 为 green-700 #15803d 实底 + 白字（4.6:1 过 WCAG AA，MASTER.md
+// DOC-01 结论）；红底 #dc2626 + 白字同为 AA。断言意图是"对比度合规"。
 const btnForegrounds = [
-  { cls: 'btn-primary', want: '#052e12' },
-  { cls: 'btn-success', want: '#052e12' },
+  { cls: 'btn-primary', want: '#ffffff' },
+  { cls: 'btn-success', want: '#ffffff' },
   { cls: 'btn-danger', want: '#fff' },
 ];
 for (const { cls, want } of btnForegrounds) {
@@ -86,7 +90,8 @@ if (!history.includes('aria-expanded={isOpen}') || !history.includes('aria-contr
 // 记录本身早已全量可得，但页面只能罗列——任务跑多后无法定位某次失败。
 // 守卫保证：搜索框与状态过滤必须在位、必须基于过滤后集合分组、且
 // 「过滤后为空」与「完全没有记录」的空态文案必须可区分。
-if (!history.includes('history-search-input') || !history.includes('aria-label="搜索执行记录"')) {
+// V4 后续优化（6）i18n 二期：aria 标签迁入双语表，锚点改为键接线。
+if (!history.includes('history-search-input') || !history.includes("t('history.searchAria')")) {
   throw new Error('History 搜索框缺失或未标注无障碍名');
 }
 if (!history.includes("aria-pressed={statusFilter === value}")) {
@@ -95,8 +100,12 @@ if (!history.includes("aria-pressed={statusFilter === value}")) {
 if (!history.includes('for (const rec of filtered)')) {
   throw new Error('History 分组必须基于过滤后的集合（否则过滤不生效）');
 }
-if (!history.includes('没有符合当前筛选条件的记录。')) {
-  throw new Error('History 必须区分"过滤后为空"与"无任何记录"两种空态');
+// V4 后续优化（6）i18n 二期：文案迁入双语表后，锚点改为「键接线 + zh 值」双端。
+if (!history.includes("t('history.empty.filteredBody')")) {
+  throw new Error('History 必须区分"过滤后为空"与"无任何记录"两种空态（键接线丢失）');
+}
+if (!readFileSync(resolve(root, 'i18n.ts'), 'utf8').includes("'history.empty.filteredBody': '没有符合当前筛选条件的记录。'")) {
+  throw new Error('History 空态 zh 文案必须保持「没有符合当前筛选条件的记录。」');
 }
 if (!css.includes('.history-search-input') || !css.includes('.history-chip')) {
   throw new Error('History 过滤/搜索样式缺失');
@@ -584,8 +593,10 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
 // + error 态）对齐：失败可见 + 终止无限轮询 + loading 必须复位。
 {
   const historyPage = pages[2];
-  const logViewerIdx = historyPage.indexOf('function LogViewer');
-  if (logViewerIdx === -1) throw new Error('NETOPT-7⑥: 找不到 LogViewer');
+  // v3 日志工作台第二步：HistoryPage 的查看器改名 ExecutionLogOverlay（UI 迁入
+  // 共享 components/LogViewer，页面侧只留数据链路），守卫锚点同步更新。
+  const logViewerIdx = historyPage.indexOf('function ExecutionLogOverlay');
+  if (logViewerIdx === -1) throw new Error('NETOPT-7⑥: 找不到 ExecutionLogOverlay');
   const start = historyPage.indexOf('const fetchLog = useCallback');
   if (start === -1) throw new Error('NETOPT-7⑥: 找不到 LogViewer.fetchLog');
   // 块边界：fetchLog 函数体不可能跨到其后第一个 useEffect 之后
@@ -605,9 +616,13 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
   if (!block.includes('clearInterval(timerRef.current)')) {
     throw new Error('NETOPT-7⑥: 失败分支未终止轮询——会反复重试重抛');
   }
-  // 错误必须渲染为页内可见（role="alert"）
-  if (!/role="alert"/.test(historyPage.slice(logViewerIdx))) {
-    throw new Error('NETOPT-7⑥: 日志读取错误行缺 role="alert" —— 失败对用户不可见');
+  // 错误必须渲染为页内可见（role="alert"）：错误行由共享 components/LogViewer
+  // 渲染（.log-error role="alert"），页面侧必须把 error 态传给查看器。
+  if (!historyPage.slice(logViewerIdx).includes('error={')) {
+    throw new Error('NETOPT-7⑥: HistoryPage 未把 error 态传给共享查看器 —— 失败对用户不可见');
+  }
+  if (!/role="alert"/.test(readFileSync(resolve(root, 'components', 'LogViewer.tsx'), 'utf8'))) {
+    throw new Error('NETOPT-7⑥: 共享 LogViewer 错误行缺 role="alert" —— 失败对用户不可见');
   }
 }
 
@@ -701,8 +716,12 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
     throw new Error('报障回归：应用名回落到 appId（UUID）——用户看不出是哪个应用');
   }
   // 无名时必须如实显示「未知应用名」+ 短 ID 供比对
-  if (!appsPage.includes('未知应用名')) {
-    throw new Error('报障回归：旧部署无 app.json 时未如实显示「未知应用名」');
+  // （V4 后续优化（6）i18n 二期：文案迁双语表，锚点改「键接线 + zh 值」双端）
+  if (!appsPage.includes("t('apps.unknownName')")) {
+    throw new Error('报障回归：旧部署无 app.json 时未如实显示「未知应用名」（键接线丢失）');
+  }
+  if (!readFileSync(resolve(root, 'i18n.ts'), 'utf8').includes("'apps.unknownName': '未知应用名'")) {
+    throw new Error('报障回归：apps.unknownName zh 文案必须保持「未知应用名」');
   }
   if (!appsPage.includes('appName: string | null')) {
     throw new Error('报障回归：appName 类型退回非空 string（无法区分"没记录过名字"）');
@@ -722,9 +741,13 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
   // 删除必须二次确认——这是不可撤销的破坏性操作。
   // （UI 接手轮）原生 window.confirm 在无边框窗口下会阻塞渲染进程且样式不可控
   // （HistoryPage 清除历史早已因此改为页内确认），应用页对齐为页内确认条
-  // pendingConfirm + role="alertdialog"；守卫同步钉住页内确认态存在。
-  if (!appsPage.includes('pendingConfirm') || !appsPage.includes('role="alertdialog"')) {
+  // pendingConfirm；V4-4 起确认条本体收口到共享 components/ConfirmBar
+  // （role="alertdialog" 随组件走），守卫同步钉住「页面接线 + 组件语义」两端。
+  if (!appsPage.includes('pendingConfirm') || !appsPage.includes('<ConfirmBar')) {
     throw new Error('报障回归：删除/卸载缺少页内二次确认（不可撤销操作不得直接执行）');
+  }
+  if (!readFileSync(resolve(root, 'components', 'ConfirmBar.tsx'), 'utf8').includes('role="alertdialog"')) {
+    throw new Error('报障回归：共享 ConfirmBar 缺少 role="alertdialog" 语义');
   }
   if (/window\.confirm\(/.test(appsPage)) {
     throw new Error('UI 回归：应用页仍在使用原生 confirm 弹窗（无边框窗口下不可靠，须走页内确认条）');
@@ -867,8 +890,12 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
   if (!wizardNoCommentsForAudit.includes('testResult?.ok === true')) {
     throw new Error('B-11: Wizard 下一步放行条件必须锚定连接测试结果');
   }
-  if (!wizard.includes('尚未通过连接测试')) {
-    throw new Error('B-11: 跳过测试的确认提示缺失');
+  // V4 后续优化（6）i18n 二期：文案迁双语表，锚点改「键接线 + zh 值」双端。
+  if (!wizard.includes("t('wizard.connect.skipWarning')")) {
+    throw new Error('B-11: 跳过测试的确认提示缺失（键接线丢失）');
+  }
+  if (!readFileSync(resolve(root, 'i18n.ts'), 'utf8').includes("'wizard.connect.skipWarning': '尚未通过连接测试，继续可能无法注册。'")) {
+    throw new Error('B-11: wizard.connect.skipWarning zh 文案必须保持原值');
   }
 }
 
@@ -907,19 +934,28 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
 
   // ④ HistoryPage 日志读取失败必须有原位重试（轮询已终止，不能只让用户
   //    关闭重开）——reloadKey 驱动拉取链整体重建。
-  if (!history.includes('reloadKey') || !history.includes("onClick={() => setReloadKey((k) => k + 1)}")) {
+  // v3 迁移后「重试」钮本体在共享 LogViewer（onRetry），页面侧经 onRetry 重建拉取链。
+  if (!history.includes('reloadKey') || !history.includes("onRetry={() => setReloadKey((k) => k + 1)}")) {
     throw new Error('UX走查④: HistoryPage 日志查看器失败态缺少原位重试按钮');
   }
   if (!/record\.executionId, record\.status, fetchLog, reloadKey\]/.test(history)) {
     throw new Error('UX走查④: reloadKey 未接入拉取 effect（重试不会重建轮询）');
   }
 
-  // ⑤ 向导 Suspense 占位不得闪英文 Loading（向导页整体硬编码中文）。
+  // ⑤ 向导 Suspense 占位不得闪英文 Loading。V4-5 起占位文案走 shell.loading
+  //    双语键（i18n.ts），守卫同步钉「接线 + zh 值」两端——zh 值必须保持
+  //    「加载中...」，否则 en 环境的混语问题会以反向复辟。
   if (/>Loading...</.test(app) || /fallback=\{<div className="app-loading"[^>]*>Loading...</.test(app)) {
     throw new Error('UX走查⑤: Wizard 加载占位仍是英文 Loading（与向导中文界面混语）');
   }
-  if (!app.includes('>加载中...</div>')) {
-    throw new Error('UX走查⑤: Wizard 加载占位中文文案缺失');
+  if (!app.includes("shellT('shell.loading')")) {
+    throw new Error('UX走查⑤: Wizard 加载占位未接 shell.loading 双语键');
+  }
+  {
+    const i18nSrcForLoading = readFileSync(resolve(root, 'i18n.ts'), 'utf8');
+    if (!i18nSrcForLoading.includes("'shell.loading': '加载中...'")) {
+      throw new Error('UX走查⑤: shell.loading 的 zh 值必须保持「加载中...」');
+    }
   }
 
   // ⑥ 向导端口输入的 min 必须与本页校验口径（1–65535）一致。

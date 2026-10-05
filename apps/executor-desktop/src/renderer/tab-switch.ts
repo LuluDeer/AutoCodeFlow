@@ -29,14 +29,21 @@ export const TAB_SWITCH_EVENT = 'acf:switch-tab';
 
 export type SwitchableTab = 'status' | 'config' | 'history' | 'apps';
 
+/** 切到历史页时可附带的状态过滤（V4 后续优化：最近失败入口直达失败记录）。 */
+export type HistoryStatusFilter = 'success' | 'failed' | 'running';
+
 /**
  * 请求切换到某个 Tab。
  *
+ * historyStatusFilter 可选：仅对 history Tab 有意义，随事件带出（detail 为
+ * 对象形态；纯字符串形态保留向后兼容——App/页面侧两种都认）。
+ *
  * 静默失败：事件无人监听（如单页测试渲染）时不该抛错打断用户操作。
  */
-export function requestTabSwitch(tab: SwitchableTab): void {
+export function requestTabSwitch(tab: SwitchableTab, historyStatusFilter?: HistoryStatusFilter): void {
   try {
-    window.dispatchEvent(new CustomEvent(TAB_SWITCH_EVENT, { detail: tab }));
+    const detail = historyStatusFilter ? { tab, historyStatusFilter } : tab;
+    window.dispatchEvent(new CustomEvent(TAB_SWITCH_EVENT, { detail }));
   } catch {
     /* CustomEvent 不可用（极端环境）：忽略，不阻断调用方 */
   }

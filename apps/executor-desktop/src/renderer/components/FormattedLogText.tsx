@@ -11,15 +11,34 @@ import React from 'react';
 const STRUCTURED_LINE_RE =
   /^\[(\d{2}:\d{2}:\d{2}(?:\.\d+)?)\](?: \[(DEBUG|INFO|WARN|ERROR)\])? (.*)$/s;
 
-export default function FormattedLogText({ text }: { text: string }) {
+// trace 段位于拆出的 msg 起始处：`[23fb6898] Sending heartbeat`（normalizeLogLine
+// 已把完整 UUID 截短为 8 位短 id）。非结构化行没有 msg 段，不参与 trace 合并。
+const TRACE_PREFIX_RE = /^\[([0-9a-f]{8})\] /i;
+
+/**
+ * 抽取规范化日志行的 trace 短 id（如 `23fb6898`）。
+ * 仅结构化行参与（A-03 trace 合并是渲染层能力，不改写入 state 的行文本）；
+ * 非结构化行 / 无 trace 行返回 null，渲染保持原样。
+ */
+export function extractLineTrace(text: string): string | null {
+  const m = STRUCTURED_LINE_RE.exec(text);
+  if (!m) return null;
+  const t = TRACE_PREFIX_RE.exec(m[3]);
+  return t ? t[1] : null;
+}
+
+export default function FormattedLogText({ text, hideTrace }: { text: string; hideTrace?: boolean }) {
   const m = STRUCTURED_LINE_RE.exec(text);
   if (!m) return <>{text}</>;
   const [, clock, level, rest] = m;
+  // hideTrace（trace 合并块内行）：剥离 msg 开头的 trace 段再渲染；
+  // 无 trace 前缀时 replace 原样返回，行为与不加 prop 完全一致。
+  const msg = hideTrace ? rest.replace(TRACE_PREFIX_RE, '') : rest;
   return (
     <>
       <span className="ll-time">{clock}</span>
       {level && <span className={`ll-level ll-${level.toLowerCase()}`}>{level}</span>}
-      <span className="ll-msg">{rest}</span>
+      <span className="ll-msg">{msg}</span>
     </>
   );
 }
