@@ -204,11 +204,15 @@ jobs:
         working-directory: apps/admin-api
       # coverageThreshold 已按第七轮实测水位取地板（stmts 68 / branch 58 /
       # funcs 56 / lines 69），防倒退用；覆盖率抬升后应同步上调。
-      # --maxWorkers=2：本日套件增重后（4567 例）覆盖率插桩 × 默认 workers
-      # 在 runner 上峰值内存触顶（exit 134 SIGABRT，run 37345065125 实证）——
-      # workers 是插桩内存的乘数，砍半即远离 OOM；30min 超时余量充足。
-      - run: npm test -- --coverage --maxWorkers=2
+      # --maxWorkers=2 + 4GB worker 堆顶 + 闲置回收：套件增重后（4567 例）
+      # 覆盖率插桩 × 默认 workers 峰值内存先触 runner 总量（exit 134，
+      # run 37345065125），砍 workers 后单 worker 又触 Node 默认 ~2GB 堆顶
+      # （Jest worker OOM，run 37349952892）——两者需同调。--experimental-vm-modules
+      # 从 npm test 的 --node-options 搬到 env（ESM-1），避开与 NODE_OPTIONS 的合并歧义。
+      - run: npx jest --coverage --maxWorkers=2 --workerIdleMemoryLimit=1536MB
         working-directory: apps/admin-api
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096 --experimental-vm-modules
 
   # 迁移链 + e2e 保持单一串行 job（并行时 admin seed 存在 users_email_key 竞态）。
   admin-api-e2e:
