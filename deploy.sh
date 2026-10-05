@@ -107,7 +107,7 @@ AutoCodeFlow 一键部署脚本（源码 / Docker 双模）
   doctor                  只诊断不部署（检查环境、配置、服务状态）
   status                  查看各组件运行状态
   health                  深度健康检查（含 DB/Redis/执行器连通性）
-  logs <component>        查看日志（源码=journalctl，docker=compose logs）
+  logs <component>        查看日志（admin-api|admin-web|executor-node|executor-python|all）
   restart <component>     重启单个组件
   rollback                回滚到上一版本（仅代码，迁移需人工确认）
   help                    显示本帮助
@@ -607,6 +607,15 @@ component_enabled() {
         [ "$c" = "$target" ] && return 0
     done
     return 1
+}
+
+# 组件封闭枚举（restart / logs 共用，审计修复：logs 此前无白名单，任意串直透
+# compose/journalctl）。与 executor-node commands.ts 同姿态：不接受任意服务名。
+known_component() {
+    case "$1" in
+        admin-api|admin-web|executor-node|executor-python|all) return 0 ;;
+        *) return 1 ;;
+    esac
 }
 
 # ══════════════════════════════════════════════════════════════════
@@ -1130,7 +1139,9 @@ verify_phase() {
         wait_http "http://127.0.0.1:$PORT_EXECUTOR_NODE/health/live" "executor-node" 45 || true
     fi
     if component_enabled executor-python; then
-        wait_http "http://127.0.0.1:$PORT_EXECUTOR_PYTHON/health/live" "executor-python" 45 || true
+        # python 执行器只有 /health 与 /health/ready（routers/health.py:45/133），
+        # 没有 /health/live——旧值恒 45s 超时白等（|| true 吞掉不阻断但拖慢部署）。
+        wait_http "http://127.0.0.1:$PORT_EXECUTOR_PYTHON/health" "executor-python" 45 || true
     fi
     if component_enabled admin-web; then
         wait_http "http://127.0.0.1:$PORT_ADMIN_WEB/" "admin-web" 30 || true
@@ -1530,29 +1541,77 @@ cmd_status() {
     printf '\n'
 }
 
+# health_probe <label> <url> —— 打印一行人类可读的探测结果；返回 0=2xx，1=异常。
+# 供 cmd_health 逐项调用并汇总 fails（审计修复：health 此前不设退出码，CI/Agent
+# 无法做闸门）。风格与既有探测一致（✔ 正常 / ✘ HTTP <code>）。
+health_probe() {
+    local label="$1" code
+    code="$(http_code "$2")"
+    if [ "${code:0:1}" = "2" ]; then
+        printf '  %-24s %s\n' "$label" '✔ 正常'
+        return 0
+    fi
+    printf '  %-24s %s\n' "$label" "✘ HTTP $code"
+    return 1
+}
+
 cmd_health() {
     log "深度健康检查"
     printf '\n'
-    local code
+    local fails=0
 
-    code="$(http_code "http://127.0.0.1:$PORT_ADMIN_API/api/health/live")"
-    printf '  %-24s %s\n' "admin-api live" "$( [ "${code:0:1}" = "2" ] && echo '✔ 正常' || echo "✘ HTTP $code" )"
+    # admin-api 是网关，无条件探测；两个执行器仅在选定组件内探测
+    # （--component 圈定时不多报未部署组件，与 verify_phase 同语义）。
+    if ! health_probe "admin-api live" "http://127.0.0.1:$PORT_ADMIN_API/api/health/live"; then fails=$((fails + 1)); fi
+    if ! health_probe "admin-api ready" "http://127.0.0.1:$PORT_ADMIN_API/api/health/ready"; then fails=$((fails + 1)); fi
 
-    code="$(http_code "http://127.0.0.1:$PORT_ADMIN_API/api/health/ready")"
-    printf '  %-24s %s\n' "admin-api ready" "$( [ "${code:0:1}" = "2" ] && echo '✔ 正常' || echo "✘ HTTP $code" )"
+    if component_enabled executor-node; then
+        if ! health_probe "executor-node" "http://127.0.0.1:$PORT_EXECUTOR_NODE/health"; then fails=$((fails + 1)); fi
+    fi
+    # 审计修复：executor-python 此前漏探测。python 执行器只有 /health
+    # （apps/executor-python/routers/health.py:45，无 /health/live），与
+    # cmd_status 打印的端点、docker-compose healthcheck 一致。
+    if component_enabled executor-python; then
+        if ! health_probe "executor-python" "http://127.0.0.1:$PORT_EXECUTOR_PYTHON/health"; then fails=$((fails + 1)); fi
+    fi
 
-    code="$(http_code "http://127.0.0.1:$PORT_EXECUTOR_NODE/health")"
-    printf '  %-24s %s\n' "executor-node" "$( [ "${code:0:1}" = "2" ] && echo '✔ 正常' || echo "✘ HTTP $code" )"
+    printf '\n  hint: 执行器在线数请查管理后台「执行器」页，或 GET /api/executors\n'
 
-    printf '\n  hint: 执行器在线数请查管理后台「执行器」页，或 GET /api/executors\n\n'
+    # 汇总退出码（结构化语义在 doctor --json，不在此混用）
+    if [ "$fails" -eq 0 ]; then
+        printf '\n  结果: 全部正常\n\n'
+        return 0
+    fi
+    printf '\n  结果: %d 项异常（非零退出码，供 CI/Agent 作部署闸门）\n\n' "$fails"
+    return 1
 }
 
 cmd_logs() {
     local component="${1:-admin-api}"
+
+    # 封闭枚举——审计修复：此前任意串直透 compose/journalctl（与 cmd_restart
+    # 同姿态，共用 known_component）。未知组件报可用清单并以非零退出。
+    known_component "$component" || \
+        die "未知组件: ${component}（可用: admin-api|admin-web|executor-node|executor-python|all）"
+
     if [ "$MODE" = "docker" ]; then
-        compose logs -f --tail=100 "$component"
+        if [ "$component" = "all" ]; then
+            compose logs -f --tail=100
+        else
+            compose logs -f --tail=100 "$component"
+        fi
     else
-        journalctl -u "${SYSTEMD_PREFIX}-${component}" -f -n 100
+        if [ "$component" = "all" ]; then
+            # 聚合全部 systemd unit（admin-web=nginx 无 unit，对齐 restart all 的跳过语义）
+            local units=() c
+            for c in $NODE_COMPONENTS $PYTHON_COMPONENTS; do
+                [ "$c" = "admin-web" ] && continue
+                units+=("-u" "${SYSTEMD_PREFIX}-${c}")
+            done
+            journalctl "${units[@]}" -f -n 100
+        else
+            journalctl -u "${SYSTEMD_PREFIX}-${component}" -f -n 100
+        fi
     fi
 }
 
@@ -1561,10 +1620,8 @@ cmd_restart() {
     [ -z "$component" ] && die "用法: ./deploy.sh restart <component>"
 
     # 封闭枚举——不接受任意服务名（与 executor-node commands.ts 同姿态）
-    case "$component" in
-        admin-api|admin-web|executor-node|executor-python|all) ;;
-        *) die "未知组件: ${component}（可用: admin-api|admin-web|executor-node|executor-python|all）" ;;
-    esac
+    known_component "$component" || \
+        die "未知组件: ${component}（可用: admin-api|admin-web|executor-node|executor-python|all）"
 
     log "重启 $component"
     if [ "$MODE" = "docker" ]; then

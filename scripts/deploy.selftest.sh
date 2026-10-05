@@ -7,7 +7,8 @@
 # 本自检走「只测纯判定逻辑 + dry-run 路径」的路线：
 #   · 参数解析与校验（非法值必须拒绝，且不能静默回落）
 #   · doctor --json 的结构契约（中台 Agent 消费它）
-#   · 封闭枚举（restart 不接受任意服务名）
+#   · 封闭枚举（restart/logs 不接受任意服务名）
+#   · health 退出码闸门（逐项探测含 executor-python，异常汇总 exit 1）
 #   · 向后兼容（默认 docker；旧参数仍生效）
 #
 # 用法: bash scripts/deploy.selftest.sh
@@ -88,7 +89,7 @@ assert_contains "默认模式为 docker" "模式: docker" "$out"
 out="$(bash "$DEPLOY" --env staging --dry-run --skip-preflight 2>&1)"
 assert_contains "旧 --env 参数生效" "环境: staging" "$out"
 
-# ── 5. 封闭枚举（restart 不接受任意服务名）───────────────────────
+# ── 5. 封闭枚举（restart/logs 不接受任意服务名）───────────────────
 printf '\n── 5. 封闭枚举 ──\n'
 out="$(bash "$DEPLOY" restart evil-service 2>&1)"
 assert_contains "restart 拒绝任意服务名" "未知组件" "$out"
@@ -96,6 +97,13 @@ out="$(bash "$DEPLOY" restart ../../etc/passwd 2>&1)"
 assert_contains "restart 拒绝路径穿越" "未知组件" "$out"
 out="$(bash "$DEPLOY" restart 2>&1)"
 assert_contains "restart 缺参数给用法" "用法" "$out"
+
+# 审计修复：logs 此前无白名单，任意串直透 compose/journalctl
+out="$(bash "$DEPLOY" logs evil-service 2>&1)"
+assert_contains "logs 拒绝任意服务名" "未知组件" "$out"
+out="$(bash "$DEPLOY" logs ../../etc/passwd 2>&1)"
+assert_contains "logs 拒绝路径穿越" "未知组件" "$out"
+assert_exit "logs 未知组件非零退出" 1 bash "$DEPLOY" logs evil-service
 
 # ── 6. doctor --json 结构契约 ─────────────────────────────────────
 printf '\n── 6. doctor --json 结构契约 ──\n'
@@ -261,6 +269,106 @@ if printf '%s' "$out" | grep -qF "detached HEAD"; then
 else
     pass "分支工作树无 detached HEAD 告警"
 fi
+
+# ── 11. health 闸门 / logs 透传（桩 curl/docker/journalctl，不打真实服务）──
+# 覆盖边界：真实 HTTP 探测与真实 compose/journalctl 不在此范围（需真部署）；
+# 这里以 PATH 前置的桩命令验证 deploy.sh 的判定与拼装逻辑：探测覆盖面、
+# 失败汇总退出码、枚举内组件的透传形态。
+printf '\n── 11. health 闸门 / logs 透传 ──\n'
+stub_bin="$(mktemp -d)"
+
+# 桩 curl：按 URL 输出模拟的 -w '%{http_code}' 结果（http_code 只消费 stdout，
+# 退出码已被调用方 `|| true` 吞掉）。executor-python 实际只有 /health 路由。
+cat > "$stub_bin/curl" <<'STUB'
+#!/usr/bin/env bash
+url="${!#}"
+case "$url" in
+    */api/health/live)  echo 200 ;;
+    */api/health/ready) echo 200 ;;
+    *:8002/health)      echo 200 ;;
+    *:8001/health)      echo "${STUB_PY_HEALTH:-200}" ;;
+    *)                  echo 500 ;;
+esac
+exit 0
+STUB
+chmod +x "$stub_bin/curl"
+
+rc=0
+out="$(PATH="$stub_bin:$PATH" bash "$DEPLOY" health 2>&1)" || rc=$?
+assert_contains "health 探测覆盖 executor-python" "executor-python" "$out"
+assert_contains "health 探测覆盖 executor-node" "executor-node" "$out"
+if [ "$rc" -eq 0 ]; then
+    pass "health 全部 2xx → exit 0"
+else
+    fail "health 全部 2xx 应 exit 0（实际 exit=$rc）"
+fi
+
+rc=0
+out="$(PATH="$stub_bin:$PATH" STUB_PY_HEALTH=500 bash "$DEPLOY" health 2>&1)" || rc=$?
+assert_contains "health 异常项人类可读（✘ HTTP 500）" "HTTP 500" "$out"
+if [ "$rc" -eq 1 ]; then
+    pass "health 有异常 → exit 1（CI/Agent 闸门）"
+else
+    fail "health 有异常应 exit 1（实际 exit=$rc）"
+fi
+
+# 桩 docker：记录调用参数（含 `compose version` 探测），模拟 v2 插件路径。
+# 日志路径经环境变量传入（桩是独立进程，selftest 的变量对它不可见）。
+cat > "$stub_bin/docker" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${STUB_DOCKER_LOG:-/dev/null}"
+exit 0
+STUB
+chmod +x "$stub_bin/docker"
+
+rm -f "$stub_bin/docker-calls.log"
+STUB_DOCKER_LOG="$stub_bin/docker-calls.log" PATH="$stub_bin:$PATH" \
+    bash "$DEPLOY" logs admin-api >/dev/null 2>&1 || true
+assert_contains "logs admin-api 原样透传 compose" "logs -f --tail=100 admin-api" \
+    "$(cat "$stub_bin/docker-calls.log" 2>/dev/null || echo '')"
+
+rm -f "$stub_bin/docker-calls.log"
+STUB_DOCKER_LOG="$stub_bin/docker-calls.log" PATH="$stub_bin:$PATH" \
+    bash "$DEPLOY" logs all >/dev/null 2>&1 || true
+out="$(tail -n1 "$stub_bin/docker-calls.log" 2>/dev/null || echo '')"
+if printf '%s' "$out" | grep -qF 'logs -f --tail=100'; then
+    pass "logs all 透传为不过滤的 compose logs（不带服务名）"
+else
+    fail "logs all 应透传 compose logs（实际: $out）"
+fi
+
+# 桩 journalctl：源码模式 logs all 聚合全部执行器 unit（admin-web=nginx 无 unit）。
+# 注：子命令调用不解析 --mode（parse_args 只在首参识别子命令），source 分支
+# 经 CLI 不可达（restart 的 source 分支同）——用白盒驱动测：拷贝 deploy.sh、
+# 摘掉末尾 main "$@"（防误触发真实部署）、改为直接调 cmd_logs。
+cat > "$stub_bin/journalctl" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${STUB_JOURNALCTL_LOG:-/dev/null}"
+exit 0
+STUB
+chmod +x "$stub_bin/journalctl"
+
+tmp_logs="$(mktemp -d)"
+grep -v '^main "\$@"$' "$DEPLOY" > "$tmp_logs/deploy.sh"
+if grep -q '^main "\$@"' "$tmp_logs/deploy.sh"; then
+    fail "logs 源码分支白盒驱动未挂载（deploy.sh 末尾格式漂移，需修 selftest）"
+else
+    bash -n "$tmp_logs/deploy.sh" || fail "白盒拷贝语法损坏"
+    printf '\nMODE="source"\ncmd_logs all\n' >> "$tmp_logs/deploy.sh"
+    STUB_JOURNALCTL_LOG="$stub_bin/journalctl-calls.log" PATH="$stub_bin:$PATH" \
+        bash "$tmp_logs/deploy.sh" >/dev/null 2>&1 || true
+    out="$(cat "$stub_bin/journalctl-calls.log" 2>/dev/null || echo '')"
+    assert_contains "source logs all 聚合 admin-api unit" "-u acf-admin-api" "$out"
+    assert_contains "source logs all 聚合 executor-python unit" "-u acf-executor-python" "$out"
+    if printf '%s' "$out" | grep -qF "acf-admin-web"; then
+        fail "source logs all 不应含 admin-web（无 systemd unit，对齐 restart all 跳过语义）"
+    else
+        pass "source logs all 跳过 admin-web"
+    fi
+fi
+rm -rf "$tmp_logs"
+
+rm -rf "$stub_bin"
 
 # ── 汇总 ───────────────────────────────────────────────────────────
 printf '\n=== 结果: %d 通过, %d 失败 ===\n\n' "$PASSES" "$FAILURES"
