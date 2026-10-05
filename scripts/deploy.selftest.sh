@@ -300,7 +300,7 @@ assert_contains "health 探测覆盖 executor-node" "executor-node" "$out"
 if [ "$rc" -eq 0 ]; then
     pass "health 全部 2xx → exit 0"
 else
-    fail "health 全部 2xx 应 exit 0（实际 exit=$rc）"
+    fail "health 全部 2xx 应 exit 0（实际 exit=${rc}）"
 fi
 
 rc=0
@@ -309,7 +309,7 @@ assert_contains "health 异常项人类可读（✘ HTTP 500）" "HTTP 500" "$ou
 if [ "$rc" -eq 1 ]; then
     pass "health 有异常 → exit 1（CI/Agent 闸门）"
 else
-    fail "health 有异常应 exit 1（实际 exit=$rc）"
+    fail "health 有异常应 exit 1（实际 exit=${rc}）"
 fi
 
 # 桩 docker：记录调用参数（含 `compose version` 探测），模拟 v2 插件路径。
@@ -334,7 +334,7 @@ out="$(tail -n1 "$stub_bin/docker-calls.log" 2>/dev/null || echo '')"
 if printf '%s' "$out" | grep -qF 'logs -f --tail=100'; then
     pass "logs all 透传为不过滤的 compose logs（不带服务名）"
 else
-    fail "logs all 应透传 compose logs（实际: $out）"
+    fail "logs all 应透传 compose logs（实际: ${out}）"
 fi
 
 # 桩 journalctl：源码模式 logs all 聚合全部执行器 unit（admin-web=nginx 无 unit）。
