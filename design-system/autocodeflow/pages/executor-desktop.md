@@ -94,7 +94,10 @@
   全局受 `prefers-reduced-motion` 收口。
 - **顶栏（V4-1）**：`.topbar` 单行（≥900px：brand + tabs + 窗控同排，48px）；
   <900px 折行回两行。拖拽区 = brand 与 tabs 容器空白；双击空白最大化
-  （命中按钮不触发）。
+  （命中按钮不触发）。**拖拽区内的一切可交互元素必须显式
+  `-webkit-app-region: no-drag`**（`.tab`、`.titlebar-btn` 均有）——否则真实
+  鼠标点击被窗口拖拽吞掉；Playwright 合成点击不经过 OS 的 app-region 命中
+  测试，此类缺陷 e2e 抓不到，改动后必须真机验证。
 
 ## 6. 组件清单（已实装，简表）
 
