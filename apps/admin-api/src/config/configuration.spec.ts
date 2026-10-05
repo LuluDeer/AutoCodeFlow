@@ -505,4 +505,42 @@ describe("configuration (ARCH-27) newly registered config sections", () => {
     process.env.EXECUTIONS_STREAM_IDLE_PING_MS = "45000";
     expect(loadConfig().executionsStream.idlePingMs).toBe(45000);
   });
+
+  // ── 本轮审计收口（F-1 / F-5b / F-6）─────────────────────────────────────
+  it("F-1: registers scheduler.reconcileEvery from SCHEDULER_RECONCILE_EVERY (default 5)", () => {
+    delete process.env.SCHEDULER_RECONCILE_EVERY;
+    expect(loadConfig().scheduler.reconcileEvery).toBe(5);
+    process.env.SCHEDULER_RECONCILE_EVERY = "10";
+    expect(loadConfig().scheduler.reconcileEvery).toBe(10);
+  });
+
+  it("F-1: scheduler.reconcileEvery 非法值回退 5（消费侧自愈路径不做关闭语义）", () => {
+    for (const bad of ["0", "-3", "abc"]) {
+      process.env.SCHEDULER_RECONCILE_EVERY = bad;
+      expect(loadConfig().scheduler.reconcileEvery).toBe(5);
+    }
+  });
+
+  it("F-5b: registers agent.mediaRetentionDays from AGENT_MEDIA_RETENTION_DAYS (default 7)", () => {
+    delete process.env.AGENT_MEDIA_RETENTION_DAYS;
+    expect(loadConfig().agent.mediaRetentionDays).toBe(7);
+    process.env.AGENT_MEDIA_RETENTION_DAYS = "14";
+    expect(loadConfig().agent.mediaRetentionDays).toBe(14);
+  });
+
+  it("F-5b: agent.mediaRetentionDays 非法值回退 7（与消费方旧运行时回退一致）", () => {
+    for (const bad of ["0", "-3", "abc"]) {
+      process.env.AGENT_MEDIA_RETENTION_DAYS = bad;
+      expect(loadConfig().agent.mediaRetentionDays).toBe(7);
+    }
+  });
+
+  it("F-6: registers ai.openaiMaxTokens from OPENAI_MAX_TOKENS (default 500 = 旧硬编码)", () => {
+    delete process.env.OPENAI_MAX_TOKENS;
+    expect(loadConfig().ai.openaiMaxTokens).toBe(500);
+    process.env.OPENAI_MAX_TOKENS = "2048";
+    expect(loadConfig().ai.openaiMaxTokens).toBe(2048);
+    process.env.OPENAI_MAX_TOKENS = "abc";
+    expect(loadConfig().ai.openaiMaxTokens).toBe(500);
+  });
 });

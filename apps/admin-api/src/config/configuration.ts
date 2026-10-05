@@ -207,6 +207,12 @@ export default () => ({
     provider: process.env.AI_PROVIDER || "disabled", // disabled | openai | ollama | qwen
     openaiApiKey: process.env.OPENAI_API_KEY || "",
     openaiModel: process.env.OPENAI_MODEL || "gpt-4o-mini",
+    // F-6（审计）: openai 分支 max_tokens 提为可配（此前硬编码 500）。
+    // 默认 500 零行为漂移——500 是给失败日志分析定的省成本档；更大的
+    // 输出预算按部署调 OPENAI_MAX_TOKENS。DB 系统配置（ai.openaiMaxTokens）
+    // 可进一步覆盖 env，解析兜底在 AiService（与 qwenMaxTokens 同款）。
+    openaiMaxTokens:
+      parseInt(process.env.OPENAI_MAX_TOKENS || "500", 10) || 500,
     ollamaHost: process.env.OLLAMA_HOST || "http://localhost:11434",
     ollamaModel: process.env.OLLAMA_MODEL || "llama3",
     // P1（agent-and-deployment）: Qwen / DashScope 多模态（文本 + 图片 + 视频理解）。
@@ -279,6 +285,14 @@ export default () => ({
         ),
       },
     },
+    // F-5b（ARCH-27 收口）: Agent 媒体（截图/录屏）保留天数——此前 Joi 已
+    // 注册但本文件未映射，消费方（sop/agent-media-retention.service）裸读
+    // "AGENT_MEDIA_RETENTION_DAYS" 绕过配置中心。默认 7（roadmap §11 决策值）；
+    // 非法值回退 7，与消费方旧运行时回退逐字节一致。
+    mediaRetentionDays: (() => {
+      const n = parseInt(process.env.AGENT_MEDIA_RETENTION_DAYS || "7", 10);
+      return Number.isFinite(n) && n > 0 ? n : 7;
+    })(),
   },
   // ARCH-31（2026-09-13）: 事件订阅 webhook 出站私网豁免（订阅创建/更新校验
   // 与 outbox 派发前复核共用此开关）。默认 false 零行为变化。
@@ -398,6 +412,14 @@ export default () => ({
   scheduler: {
     staleRecoveryRetryEnabled:
       process.env.STALE_RECOVERY_RETRY_ENABLED !== "false",
+    // F-1（HA 审计）: 注册指纹对账周期——reload tick 每 N 轮做一次 DB 触发
+    // 配置与本地注册表的指纹比对，漂移者重排（LB 把任务写请求打到 follower
+    // 时，Leader 上的旧表达式定时器由对账自愈）。默认 5；0/负数/非整数在本
+    // 层即回退默认值（对账是自愈路径，配置坏了不做「关闭」语义）。
+    reconcileEvery: (() => {
+      const n = parseInt(process.env.SCHEDULER_RECONCILE_EVERY || "5", 10);
+      return Number.isInteger(n) && n > 0 ? n : 5;
+    })(),
   },
   // FEAT-19: 出站 webhook 跨进程 outbox 开关（eventOutbox.enabled 节）。
   // true（默认）时 OutboundEventDispatcher 派发入口同步落 event_outbox 行，

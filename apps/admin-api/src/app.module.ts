@@ -233,6 +233,10 @@ import { RuntimeModule } from "./modules/runtime/runtime.module";
           .default("disabled"),
         OPENAI_API_KEY: Joi.string().allow("").optional(),
         OPENAI_MODEL: Joi.string().default("gpt-4o-mini"),
+        // F-6（审计）: openai 分支 max_tokens 可配（configuration.ts
+        // ai.openaiMaxTokens 消费；DB 系统配置可进一步覆盖）。默认 500 与
+        // 旧硬编码一致（失败日志分析的省成本档），零行为漂移。
+        OPENAI_MAX_TOKENS: Joi.number().integer().min(1).default(500),
         OLLAMA_HOST: Joi.string().uri().default("http://localhost:11434"),
         OLLAMA_MODEL: Joi.string().default("llama3"),
         // P1（agent-and-deployment）: Qwen / DashScope 多模态。
@@ -244,8 +248,9 @@ import { RuntimeModule } from "./modules/runtime/runtime.module";
           .uri()
           .default("https://dashscope.aliyuncs.com/compatible-mode/v1"),
         QWEN_MODEL: Joi.string().default("qwen-vl-max"),
-        // 多模态输出上限：**独立于** openai 分支硬编码的 max_tokens=500
-        // （那个是给失败日志分析用的，刻意省成本；多模态推理 500 远不够）。
+        // 多模态输出上限：**独立于** openai 分支的 max_tokens（默认 500，
+        // OPENAI_MAX_TOKENS 可调；那个是给失败日志分析用的省成本档，多模态
+        // 推理 500 远不够）。
         QWEN_MAX_TOKENS: Joi.number().integer().min(1).default(4096),
         // 视频理解延迟显著高于纯文本（上传 + 推理数十秒），故超时默认 2 分钟。
         QWEN_TIMEOUT_MS: Joi.number().integer().min(1000).default(120000),
@@ -382,6 +387,12 @@ import { RuntimeModule } from "./modules/runtime/runtime.module";
         STALE_RECOVERY_RETRY_ENABLED: Joi.string()
           .valid("true", "false")
           .default("true"),
+
+        // F-1（HA 审计）: 注册指纹对账周期——reload tick 每 N 轮做一次 DB
+        // 触发配置 vs 本地注册表的指纹比对，漂移任务重排（LB 把任务写请求
+        // 打到 follower 时 Leader 的旧表达式定时器由对账自愈）。
+        // configuration.ts scheduler.reconcileEvery 消费；默认 5。
+        SCHEDULER_RECONCILE_EVERY: Joi.number().integer().min(1).default(5),
 
         // S5: optional Verdaccio service account for the admin-api registry
         // proxy (npm package listing against registry-npm, which requires

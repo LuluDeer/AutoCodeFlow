@@ -6,7 +6,15 @@ import {
   Optional,
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { DataSource, In, LessThan, MoreThan, Repository } from "typeorm";
+import {
+  And,
+  DataSource,
+  Equal,
+  In,
+  LessThan,
+  MoreThan,
+  Repository,
+} from "typeorm";
 import { InjectQueue } from "@nestjs/bullmq";
 import { Queue } from "bullmq";
 import { ConfigService } from "@nestjs/config";
@@ -113,6 +121,44 @@ export const STALE_SCAN_FALLBACK_MS = 60 * 60 * 1000;
 
 /** E-P1-R1/E-P2-R3: active-task keyset 分页页大小（按 id 升序推进）。 */
 export const ACTIVE_TASK_PAGE_SIZE = 1000;
+
+/**
+ * F-1（HA 审计）：注册指纹对账周期——reload tick 每 N 轮做一次「DB 触发配置
+ * vs 本地注册表」的指纹比对（N 可配 SCHEDULER_RECONCILE_EVERY，默认 5）。
+ *
+ * 背景：多实例部署下 task.service 的 update/pause/resume/rollback/维护窗口
+ * 都是 stop+scheduleOne——LB 把写请求打到 follower 时 follower 只 stop 本地
+ * （本就没有注册）且 scheduleOne 对非 Leader 早退，真正注册在 Leader 上的
+ * 旧表达式定时器要等任务停用/重启用才能刷新。指纹对账让 Leader 在 N 轮内
+ * 自愈：DB 侧表达式/周期/时区已改而本地注册仍是旧值的任务被逐个重排。
+ */
+export const SCHEDULER_RECONCILE_EVERY = 5;
+
+/**
+ * F-1: 任务触发配置的注册指纹（纯函数，便于单测）。
+ *
+ * 指纹 = `${triggerType}|${cron}|${fixedRate}|${timezone}`，cron/fixedRate
+ * 仅在各自的 triggerType 下取值（与 scheduleOne 的注册分支同构——triggerType
+ * 改变时指纹必然改变，即使 cron 字段残留旧值）；cron 与 timezone 做 trim
+ * 归一（scheduleOne 的注册语义同样容忍首尾空白）。
+ */
+export function taskTriggerFingerprint(task: {
+  triggerType: TaskTriggerType;
+  cronExpression?: string | null;
+  fixedRate?: number | null;
+  timezone?: string | null;
+}): string {
+  const cron =
+    task.triggerType === TaskTriggerType.CRON
+      ? (task.cronExpression?.trim() ?? "")
+      : "";
+  const fixedRate =
+    task.triggerType === TaskTriggerType.FIXED_RATE
+      ? (task.fixedRate ?? "")
+      : "";
+  const timezone = task.timezone?.trim() || "";
+  return `${task.triggerType}|${cron}|${fixedRate}|${timezone}`;
+}
 
 /**
  * B-4: 互斥唤醒 sweep 的分页参数。页大小沿用旧单页 take:200（行为兼容）；
@@ -289,6 +335,12 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
   private runningTasks = new Map<string, boolean>();
   // Prevent reload() and scheduleOne() from registering the same task concurrently.
   private schedulingTasks = new Set<string>();
+  // F-1: 本地注册指纹表——scheduleOne 注册时记录该次注册所依据的触发配置
+  // 指纹，reload 的对账轮把它与 DB 侧指纹比对，漂移者重排。stop 时同步删除
+  // （与 timers/cronTasks 的清理语义一致，防 inactive 任务残留泄漏）。
+  private registeredFingerprints = new Map<string, string>();
+  // F-1: reload tick 计数（仅 Leader 走到 reloadActiveTasks，故只在 Leader 侧推进）
+  private reloadTickCount = 0;
 
   // TASK-006: Leader Election 状态
   private leaderLock: Lock | null = null;
@@ -714,23 +766,50 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     const STALE_SWEEP_PAGE = 1000;
     const STALE_SWEEP_MAX = 20_000;
     const runningExecs: TaskExecution[] = [];
-    let pageOffset = 0;
+    // F-2（调度域审计）: 旧实现 order {startTime,id} + skip 翻页仍是 offset
+    // 分页——本 sweep 自己把恢复行移出 RUNNING 谓词（并发回调/恢复竞态同理），
+    // 谓词命中集一变，skip 便会跳过尚未扫描的行（offset 分页经典漏扫）。改
+    // (startTime,id) keyset 游标（范式先例：同文件 wakeMutexQueuedExecutions）
+    // ——游标推进到本页最后一行，与行状态翻转无关，翻多少页都不漏行。
+    let staleCursor: { startTime: Date; id: string } | null = null;
     while (runningExecs.length < STALE_SWEEP_MAX) {
+      const baseWhere = {
+        status: ExecutionStatus.RUNNING,
+        startTime: LessThan(initialCutoff),
+      };
+      // 游标条件 `(startTime,id) > (cursor.startTime, cursor.id)`（字典序）
+      // 在 find 的 OR 数组形态下展开为两个分支：startTime 更晚，或 startTime
+      // 相等且 id 更大。被恢复行离开谓词不影响游标推进。
       const page = await this.execRepo.find({
-        where: {
-          status: ExecutionStatus.RUNNING,
-          startTime: LessThan(initialCutoff),
-        },
-        // NETOPT-E P3-2: startTime 非唯一（同秒批量提交/同任务并发行），
-        // offset 分页无决胜键会在翻页时漏行/重行（不稳定排序下 skip 漂移）。
-        // 加 id 决胜键使排序完全确定。
+        where: staleCursor
+          ? [
+              {
+                ...baseWhere,
+                startTime: And(
+                  LessThan(initialCutoff),
+                  MoreThan(staleCursor.startTime),
+                ),
+              },
+              {
+                status: ExecutionStatus.RUNNING,
+                startTime: Equal(staleCursor.startTime),
+                id: MoreThan(staleCursor.id),
+              },
+            ]
+          : baseWhere,
         order: { startTime: "ASC", id: "ASC" },
         take: STALE_SWEEP_PAGE,
-        skip: pageOffset,
       });
+      if (page.length === 0) break;
       runningExecs.push(...page);
+      // 游标推进到本页最后一行（其 startTime 由 where 谓词保证非空；防御性
+      // 回落 createdAt——只影响不可能经本扫描出现的 NULL startTime 行）。
+      const lastRow = page[page.length - 1];
+      staleCursor = {
+        startTime: lastRow.startTime ?? lastRow.createdAt,
+        id: lastRow.id,
+      };
       if (page.length < STALE_SWEEP_PAGE) break;
-      pageOffset += page.length;
     }
 
     // Get all unique taskIds and fetch their timeouts
@@ -1312,6 +1391,14 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
 
   /** reload 的实际扫描体（抽出以便 tick 计时只包住扫描工作本身） */
   private async reloadActiveTasks(): Promise<void> {
+    // F-1（HA 审计）：每 N 轮（scheduler.reconcileEvery，默认 5）做一次注册
+    // 指纹对账。非对账轮保持 id-only 轻扫描；对账轮只是把**既有** keyset
+    // 扫描的 select 加宽 4 个触发配置列——不新增 DB 查询次数，指纹构建与
+    // 比对纯内存，漂移者的重排每轮至多一次（In 一批取整行后逐个 scheduleOne）。
+    const reconcileEvery = this.resolveReconcileEvery();
+    const reconcileRound =
+      reconcileEvery > 0 && ++this.reloadTickCount % reconcileEvery === 0;
+    const dbFingerprints = reconcileRound ? new Map<string, string>() : null;
     // O-4 修正：活跃集合的 id-only 扫描**仍必须收齐全部 active id**——一旦截断，
     // 超过上限的已注册任务会因不在 activeIds 里被下方的清理循环误 stop，调度静默
     // 丢失。E-P1-R1：把单次无界 find 改为按 id 升序 keyset 分页循环拉全量——
@@ -1325,12 +1412,24 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
       if (idCursor) where.id = MoreThan(idCursor);
       const rows = await this.taskRepo.find({
         where,
-        select: { id: true },
+        select: dbFingerprints
+          ? {
+              id: true,
+              triggerType: true,
+              cronExpression: true,
+              fixedRate: true,
+              timezone: true,
+            }
+          : { id: true },
         order: { id: "ASC" },
         take: ACTIVE_TASK_PAGE_SIZE,
       });
       if (rows.length === 0) break;
-      activeIds.push(...rows.map((t) => t.id));
+      for (const row of rows) {
+        activeIds.push(row.id);
+        // F-1: 对账轮顺手构建 DB 侧指纹（同一批行，无额外查询）。
+        dbFingerprints?.set(row.id, taskTriggerFingerprint(row));
+      }
       if (rows.length < ACTIVE_TASK_PAGE_SIZE) break;
       idCursor = rows[rows.length - 1].id;
     }
@@ -1353,13 +1452,70 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     const missingIds = activeIds.filter(
       (id) => !this.timers.has(id) && !this.cronTasks.has(id),
     );
-    if (missingIds.length === 0) return;
+    if (missingIds.length === 0) {
+      // F-1: 无缺失注册时也要走对账轮（漂移的恰恰是「已注册但配置已改」的任务）。
+      if (dbFingerprints) {
+        await this.reconcileTriggerFingerprints(dbFingerprints);
+      }
+      return;
+    }
     const tasks = await this.taskRepo.find({
       where: { id: In(missingIds) },
     });
     for (const task of tasks) {
       await this.scheduleOne(task);
     }
+    // F-1: 对账轮——本 tick 刚补注册的任务指纹已在 scheduleOne 里同步到
+    // DB 值，比对天然通过；比对只可能命中「DB 配置已改而本地注册是旧的」。
+    if (dbFingerprints) {
+      await this.reconcileTriggerFingerprints(dbFingerprints);
+    }
+  }
+
+  /**
+   * F-1（HA 审计）：注册指纹对账。DB 侧指纹（reloadActiveTasks 对账轮随 id
+   * 扫描构建）与本地注册指纹逐任务比对，漂移者逐个 scheduleOne 重排
+   * （scheduleOne 内部先 stop 旧注册再按新配置注册）。
+   *
+   * 跳过规则：
+   * - 本地未注册（timers/cronTasks 均无）的任务不进对账——它们归 missingIds
+   *   路径补注册（注册失败如非法 cron 的，下一轮 reload 仍走 missing 重试）；
+   * - 指纹比对在内存完成，漂移者的整行重取按 In 一批（每轮对账至多一次）。
+   *
+   * 边界：对账只发生在 Leader（reloadActiveTasks 的唯一调用方 reload 有
+   * isLeader 门）；scheduleOne 内部的 isLeader 门沿用现有逻辑——与对账
+   * 之间 demote 的竞态下 scheduleOne 会自跳过，新 Leader 的 reload 会重建。
+   */
+  private async reconcileTriggerFingerprints(
+    dbFingerprints: Map<string, string>,
+  ): Promise<void> {
+    const drifted: string[] = [];
+    for (const [id, fp] of dbFingerprints) {
+      if (!this.timers.has(id) && !this.cronTasks.has(id)) continue;
+      if (this.registeredFingerprints.get(id) !== fp) drifted.push(id);
+    }
+    if (drifted.length === 0) return;
+    this.logger.log(
+      `Trigger fingerprint reconciliation: ${drifted.length} task(s) drifted from the local registry — re-scheduling`,
+    );
+    const driftedTasks = await this.taskRepo.find({
+      where: { id: In(drifted) },
+    });
+    for (const task of driftedTasks) {
+      await this.scheduleOne(task);
+    }
+  }
+
+  /**
+   * F-1: 对账周期 N 的解析（scheduler.reconcileEvery，env
+   * SCHEDULER_RECONCILE_EVERY，默认 5）。非法/缺省回退默认值——对账是
+   * 自愈路径，配置坏了宁可多做也不能关掉（0/负数/非整数一律回退）。
+   */
+  private resolveReconcileEvery(): number {
+    const raw = this.configService.get<number>("scheduler.reconcileEvery");
+    return typeof raw === "number" && Number.isInteger(raw) && raw > 0
+      ? raw
+      : SCHEDULER_RECONCILE_EVERY;
   }
 
   async enqueue(
@@ -1519,7 +1675,10 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
           status: ExecutionStatus.FAILED,
           endTime: new Date(),
           errorMessage: `Failed to enqueue execution: ${message}`,
-          failureReason: ExecutionFailureReason.UNKNOWN,
+          // F-3（调度域审计）: 补偿行从未进入队列派发（queue.add 抛错），
+          // 与同 sweep 的 PENDING 桶（P0-8 决策）统一写 NEVER_DISPATCHED
+          // ——此前写泛化 UNKNOWN，用户被「未知原因」引向根本不存在的执行日志。
+          failureReason: ExecutionFailureReason.NEVER_DISPATCHED,
         });
         this.logger.error(`Failed to enqueue execution ${exec.id}: ${message}`);
         // R4-§5.5: 已创建 PENDING 行但入队失败（含补偿路径）计为触发失败
@@ -1603,6 +1762,9 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     }
 
     this.runningTasks.delete(taskId);
+    // F-1: 注册指纹随注册本体一并清理（保持「timers/cronTasks 有 ⇒ 指纹有」
+    // 的不变式，防 inactive 任务在指纹表残留泄漏）。
+    this.registeredFingerprints.delete(taskId);
   }
 
   /** Register scheduling for a single task; call after TaskService update to avoid waiting for the next reload */
@@ -1620,6 +1782,11 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     this.schedulingTasks.add(task.id);
     try {
       this.stop(task.id);
+      // F-1: 记录本次注册依据的触发配置指纹（对账轮据此与 DB 侧比对）。
+      // 放在 stop 之后（stop 会清指纹）且与注册本体同步——即使后续因非法
+      // cron 等原因未注册成功，指纹也只是「无注册的孤儿」，对账轮按
+      // 「本地未注册」跳过，missingIds 路径下一轮会重试注册。
+      this.registeredFingerprints.set(task.id, taskTriggerFingerprint(task));
 
       // FIX-1.3: active 任务缺触发配置的日志面暴露——写面配对校验
       // （task.service.assertTriggerConfigConsistent）落地前创建的存量行、或

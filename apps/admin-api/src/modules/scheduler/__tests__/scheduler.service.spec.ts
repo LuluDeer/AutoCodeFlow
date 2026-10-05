@@ -5,6 +5,8 @@ import {
   SchedulerService,
   computeTriggerDedupTtlMs,
   computeMisfireThresholdMs,
+  taskTriggerFingerprint,
+  SCHEDULER_RECONCILE_EVERY,
   TRIGGER_DEDUP_MIN_TTL_MS,
   TRIGGER_DEDUP_JITTER_BUFFER_MS,
   ACTIVE_TASK_PAGE_SIZE,
@@ -1170,6 +1172,38 @@ describe("SchedulerService", () => {
       expect(queue.add).toHaveBeenCalled();
       expect(metrics.snapshot.triggersSkippedMaintenance).toBe(0);
     });
+
+    it("F-3: 入队失败补偿把 PENDING 行置为 NEVER_DISPATCHED（对齐 P0-8 从未派发语义），不再是 UNKNOWN", async () => {
+      await makeLeader();
+      const lock = { release: jest.fn().mockResolvedValue(undefined) };
+      redisLockService.acquireLock.mockResolvedValue(lock);
+      const task = makeTask();
+      taskRepo.findOne.mockResolvedValue(task);
+      const exec = {
+        id: "exec-comp",
+        status: ExecutionStatus.PENDING,
+      } as TaskExecution;
+      execRepo.create.mockReturnValue(exec);
+      execRepo.save.mockResolvedValue(exec);
+      queue.add.mockRejectedValueOnce(new Error("broker down"));
+      execRepo.update.mockResolvedValue({ affected: 1 });
+
+      await service.enqueue(task, "cron");
+
+      // 补偿行从未被派发（queue.add 抛错）——失败原因必须与同 sweep 的
+      // PENDING 桶一致（NEVER_DISPATCHED），把排查方向指向「没进队列」
+      // 而不是「未知原因、去查不存在的执行日志」。
+      expect(execRepo.update).toHaveBeenCalledWith(
+        "exec-comp",
+        expect.objectContaining({
+          status: ExecutionStatus.FAILED,
+          endTime: expect.any(Date),
+          errorMessage: expect.stringContaining("Failed to enqueue execution"),
+          failureReason: ExecutionFailureReason.NEVER_DISPATCHED,
+        }),
+      );
+      expect(metrics.snapshot.triggersFailed).toBe(1);
+    });
   });
 
   describe("reload", () => {
@@ -1300,6 +1334,226 @@ describe("SchedulerService", () => {
     });
   });
 
+  // ── F-1（HA 审计）：注册指纹对账 ────────────────────────────────────────
+  // 场景：多实例部署下 task.service 的 update/pause/resume 都是 stop+scheduleOne
+  // ——LB 把写请求打到 follower 时 follower 不注册任何定时器，Leader 上的旧
+  // 表达式定时器要靠 reload 的指纹对账自愈。
+  describe("F-1: trigger fingerprint reconciliation (reloadActiveTasks)", () => {
+    /** 让每轮 reload 都是对账轮（reconcileEvery=1），便于测试驱动。 */
+    const reconcileEveryRound = () =>
+      configService.get.mockImplementation((key: string) =>
+        key === "scheduler.reconcileEvery" ? 1 : undefined,
+      );
+
+    it("SCHEDULER_RECONCILE_EVERY 默认 5", () => {
+      expect(SCHEDULER_RECONCILE_EVERY).toBe(5);
+    });
+
+    it("非法 reconcileEvery（0/负数/非整数）回退默认 5——对账是自愈路径，无关闭语义", () => {
+      for (const bad of [0, -1, 2.5, NaN, undefined, null, "x"]) {
+        configService.get.mockReturnValue(bad as any);
+        expect((service as any).resolveReconcileEvery()).toBe(
+          SCHEDULER_RECONCILE_EVERY,
+        );
+      }
+      configService.get.mockReturnValue(3);
+      expect((service as any).resolveReconcileEvery()).toBe(3);
+    });
+
+    it("DB 表达式已改而本地注册是旧的：第 N 轮（默认 5）reload 后按新表达式重排，未到轮次不重排", async () => {
+      await makeLeader();
+      const oldTask = makeTask({
+        id: "task-1",
+        triggerType: TaskTriggerType.CRON,
+        cronExpression: "0 * * * *",
+      });
+      const drifted = { ...oldTask, cronExpression: "30 * * * *" };
+      // tick 1：id 扫描 + In 补拉都返回旧表达式（正常注册）
+      taskRepo.find
+        .mockResolvedValueOnce([oldTask])
+        .mockResolvedValueOnce([oldTask]);
+      // 之后的 DB 读一律返回已改表达式
+      taskRepo.find.mockResolvedValue([drifted]);
+      await service.reload();
+      expect(service.getStats().activeCronTasks).toBe(1);
+
+      const scheduleSpy = jest.spyOn(nodeCron, "schedule");
+      const scheduleOneSpy = jest.spyOn(service, "scheduleOne");
+      // tick 2..4：未到对账轮——即使 DB 已漂移也不动本地注册
+      for (let tick = 2; tick <= 4; tick++) {
+        await service.reload();
+      }
+      expect(scheduleOneSpy).not.toHaveBeenCalled();
+      expect(scheduleSpy).not.toHaveBeenCalled();
+
+      // tick 5（N % 5 === 0）：对账轮 → 漂移任务按新表达式重排
+      await service.reload();
+      expect(scheduleOneSpy).toHaveBeenCalledTimes(1);
+      expect(scheduleOneSpy.mock.calls[0][0].cronExpression).toBe("30 * * * *");
+      expect(scheduleSpy).toHaveBeenCalledWith(
+        "30 * * * *",
+        expect.any(Function),
+        undefined,
+      );
+      scheduleSpy.mockRestore();
+    });
+
+    it("对账只重排漂移任务：未漂移任务不被多余 scheduleOne，且指纹收敛后不再重排", async () => {
+      await makeLeader();
+      reconcileEveryRound();
+      const stable = makeTask({
+        id: "task-stable",
+        triggerType: TaskTriggerType.CRON,
+        cronExpression: "0 * * * *",
+      });
+      const drift = makeTask({
+        id: "task-drift",
+        triggerType: TaskTriggerType.CRON,
+        cronExpression: "0 * * * *",
+      });
+      taskRepo.find
+        .mockResolvedValueOnce([stable, drift])
+        .mockResolvedValueOnce([stable, drift]);
+      await service.reload(); // 双任务按旧表达式注册
+
+      const scheduleOneSpy = jest.spyOn(service, "scheduleOne");
+      scheduleOneSpy.mockClear();
+      // DB：stable 不变；drift 的表达式被改。id 扫描（where 含 status）返回
+      // 全量行；对账的 In 整行重取（where 只有 id）只回漂移任务。
+      const driftedRow = { ...drift, cronExpression: "15 */2 * * *" };
+      taskRepo.find.mockImplementation(async (opts: any) =>
+        opts?.where?.status ? [stable, driftedRow] : [driftedRow],
+      );
+
+      await service.reload();
+      expect(scheduleOneSpy).toHaveBeenCalledTimes(1);
+      expect(scheduleOneSpy.mock.calls[0][0].id).toBe("task-drift");
+      // 两个任务都保持注册（drift 换了新表达式）
+      expect(service.getStats().activeCronTasks).toBe(2);
+
+      // 指纹已随 scheduleOne 同步到 DB 值——下一轮（同为对账轮）不再重排。
+      await service.reload();
+      expect(scheduleOneSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it("triggerType 漂移（cron → fixed_rate）同样被对账重排", async () => {
+      await makeLeader();
+      reconcileEveryRound();
+      const oldTask = makeTask({
+        id: "task-1",
+        triggerType: TaskTriggerType.CRON,
+        cronExpression: "0 * * * *",
+      });
+      taskRepo.find
+        .mockResolvedValueOnce([oldTask])
+        .mockResolvedValueOnce([oldTask]);
+      await service.reload();
+      expect(service.getStats().activeCronTasks).toBe(1);
+
+      const asFixedRate = {
+        ...oldTask,
+        triggerType: TaskTriggerType.FIXED_RATE,
+        cronExpression: null,
+        fixedRate: 120,
+      };
+      taskRepo.find.mockResolvedValue([asFixedRate]);
+      await service.reload();
+
+      // 旧 cron 注册被 stop，新 fixed_rate timer 注册
+      expect(service.getStats().activeCronTasks).toBe(0);
+      expect(service.getStats().activeTimers).toBe(1);
+    });
+
+    it("对账轮的 id 扫描 select 加宽触发配置列；非对账轮保持 id-only（无额外 DB 查询）", async () => {
+      await makeLeader();
+      reconcileEveryRound();
+      taskRepo.find.mockResolvedValue([]);
+      await service.reload();
+      // 只看 reload 的 id 扫描调用（Leader 晋升钩子的 checkMisfires find
+      // 不带 select，且本用例不关心它）。
+      const idScans = () =>
+        taskRepo.find.mock.calls.filter((c: any) => "select" in (c[0] ?? {}));
+      expect(idScans().length).toBeGreaterThanOrEqual(1);
+      expect(idScans()[0][0].select).toEqual({
+        id: true,
+        triggerType: true,
+        cronExpression: true,
+        fixedRate: true,
+        timezone: true,
+      });
+
+      // 恢复默认 N=5：下一 tick 不是对账轮（2 % 5 ≠ 0）→ 回到 id-only 轻扫描
+      configService.get.mockReturnValue(undefined);
+      await service.reload();
+      expect(idScans().length).toBe(2);
+      expect(idScans()[1][0].select).toEqual({ id: true });
+    });
+  });
+
+  describe("taskTriggerFingerprint (F-1)", () => {
+    it("同配置同指纹；cron/fixedRate/timezone/triggerType 任一变化即漂移", () => {
+      const base = {
+        triggerType: TaskTriggerType.CRON,
+        cronExpression: "0 * * * *",
+        timezone: "Asia/Shanghai",
+      };
+      expect(taskTriggerFingerprint(base)).toBe(
+        "cron|0 * * * *||Asia/Shanghai",
+      );
+      expect(
+        taskTriggerFingerprint({ ...base, cronExpression: "30 * * * *" }),
+      ).not.toBe(taskTriggerFingerprint(base));
+      expect(taskTriggerFingerprint({ ...base, timezone: "UTC" })).not.toBe(
+        taskTriggerFingerprint(base),
+      );
+      expect(
+        taskTriggerFingerprint({
+          triggerType: TaskTriggerType.FIXED_RATE,
+          fixedRate: 60,
+        }),
+      ).not.toBe(taskTriggerFingerprint(base));
+    });
+
+    it("cron/timezone trim 归一；triggerType 分支隔离（注册分支同构）", () => {
+      expect(
+        taskTriggerFingerprint({
+          triggerType: TaskTriggerType.CRON,
+          cronExpression: "  0 * * * *  ",
+        }),
+      ).toBe(
+        taskTriggerFingerprint({
+          triggerType: TaskTriggerType.CRON,
+          cronExpression: "0 * * * *",
+        }),
+      );
+      // fixed_rate 行残留的 cron 字段不参与指纹（scheduleOne 只看 fixedRate）
+      expect(
+        taskTriggerFingerprint({
+          triggerType: TaskTriggerType.FIXED_RATE,
+          fixedRate: 30,
+          cronExpression: "0 * * * *",
+        }),
+      ).toBe(
+        taskTriggerFingerprint({
+          triggerType: TaskTriggerType.FIXED_RATE,
+          fixedRate: 30,
+          cronExpression: null,
+        }),
+      );
+      expect(
+        taskTriggerFingerprint({
+          triggerType: TaskTriggerType.FIXED_RATE,
+          fixedRate: 30,
+        }),
+      ).not.toBe(
+        taskTriggerFingerprint({
+          triggerType: TaskTriggerType.FIXED_RATE,
+          fixedRate: 60,
+        }),
+      );
+    });
+  });
+
   describe("recoverStaleExecutions (TASK-004 batch update)", () => {
     it("recovers stale RUNNING executions with a single transactional batch UPDATE", async () => {
       await makeLeader();
@@ -1337,16 +1591,18 @@ describe("SchedulerService", () => {
       expect(dataSource.createQueryBuilder).toHaveBeenCalledTimes(1);
     });
 
-    it("pages the RUNNING stale scan with a deterministic id tie-breaker and offset progression (NETOPT-F P2-5)", async () => {
-      // 生产已改 order {startTime,id} + take/skip 分页循环（NETOPT-D P3-5/E P3-2），
-      // 但现有用例全 mock 单行——把 id 决胜键/分页 loop 改回单页 find 全绿。
-      // 钉：满页 1000 → 空页终止，首参 order/take/skip=0，第二页 skip=1000。
+    it("pages the RUNNING stale scan with a (startTime,id) keyset cursor instead of offset skip (F-2)", async () => {
+      // F-2: 旧实现 order {startTime,id} + skip 翻页——本 sweep 自己会把恢复行
+      // 移出 RUNNING 谓词（并发回调同理），谓词命中集一变 skip 就漏行。改
+      // keyset 游标后：首参 order/take 不变、无 skip；第二页 where 携带
+      // (startTime,id) > 第一页最后一行 的 OR 双分支游标。
       await makeLeader();
+      const base = Date.now() - 2 * 60 * 60 * 1000;
       const staleRows = Array.from({ length: 1000 }, (_, i) => ({
         id: `exec-page-${i}`,
         taskId: "task-1",
         status: ExecutionStatus.RUNNING,
-        startTime: new Date(Date.now() - 2 * 60 * 60 * 1000),
+        startTime: new Date(base + i),
         executorAddress: "host:3002",
         errorMessage: null,
         endTime: null,
@@ -1369,10 +1625,115 @@ describe("SchedulerService", () => {
       const firstCall = execRepo.find.mock.calls[0][0];
       expect(firstCall.order).toEqual({ startTime: "ASC", id: "ASC" });
       expect(firstCall.take).toBe(1000);
-      expect(firstCall.skip).toBe(0);
+      // 首页无游标、无 skip：谓词就是 status+startTime<cutoff 平面对象。
+      expect(firstCall.skip).toBeUndefined();
+      expect(firstCall.where.status).toBe(ExecutionStatus.RUNNING);
+      expect(firstCall.where.startTime.type).toBe("lessThan");
       const secondCall = execRepo.find.mock.calls[1][0];
       expect(secondCall.take).toBe(1000);
-      expect(secondCall.skip).toBe(1000);
+      expect(secondCall.skip).toBeUndefined();
+      // 翻页游标 = 第一页最后一行的 (startTime, id)，OR 数组双分支展开。
+      const lastRow = staleRows[staleRows.length - 1];
+      expect(Array.isArray(secondCall.where)).toBe(true);
+      const [branch1, branch2] = secondCall.where;
+      expect(branch2.status).toBe(ExecutionStatus.RUNNING);
+      expect(branch2.startTime.type).toBe("equal");
+      expect(branch2.startTime.value).toEqual(lastRow.startTime);
+      expect(branch2.id.type).toBe("moreThan");
+      expect(branch2.id.value).toBe(lastRow.id);
+      // 分支 1：startTime < cutoff 且 > 游标（And 复合，覆盖游标之后的短页）。
+      expect(branch1.startTime.type).toBe("and");
+      const andOps = branch1.startTime.value;
+      expect(andOps.map((op: any) => op.type)).toEqual([
+        "lessThan",
+        "moreThan",
+      ]);
+      expect(andOps[1].value).toEqual(lastRow.startTime);
+    });
+
+    it("F-2: rows leaving the RUNNING predicate after page 1 no longer cause skipped rows", async () => {
+      // 漏扫回归：内存"DB"实现 find 的 where 谓词（含 keyset 游标 OR 双分支）。
+      // 1500 行 RUNNING，第一页 1000 行被取走后立即被并发恢复（离开谓词）——
+      // 旧 skip 翻页会在位移后的命中集上跳过第 1001..1500 行；keyset 游标按
+      // (startTime,id) 字典序推进，与行翻转无关，第二轮必须扫到剩余 500 行。
+      await makeLeader();
+      const base = Date.now() - 3 * 60 * 60 * 1000;
+      const total = 1500;
+      const allRows = Array.from({ length: total }, (_, i) => ({
+        id: `exec-f2-${String(i).padStart(5, "0")}`,
+        taskId: "task-1",
+        status: ExecutionStatus.RUNNING,
+        startTime: new Date(base + i * 1000),
+        executorAddress: "host:3002",
+        errorMessage: null,
+        endTime: null,
+      }));
+      const store = allRows.map((r) => ({ ...r }));
+      const matchesOp = (op: any, v: Date): boolean => {
+        switch (op?.type) {
+          case "lessThan":
+            return v < op.value;
+          case "moreThan":
+            return v > op.value;
+          case "equal":
+            return v.getTime() === new Date(op.value).getTime();
+          case "and":
+            return (op.value as any[]).every((child) => matchesOp(child, v));
+          default:
+            throw new Error(`unexpected operator: ${op?.type}`);
+        }
+      };
+      let runningPages = 0;
+      const scannedIds = new Set<string>();
+      execRepo.find.mockImplementation(async (opts: any) => {
+        const conditions = Array.isArray(opts?.where)
+          ? opts.where
+          : [opts?.where];
+        // PENDING scan（status=PENDING 平面对象）恒空。
+        if (
+          !conditions.some((c: any) => c?.status === ExecutionStatus.RUNNING)
+        ) {
+          return [];
+        }
+        runningPages += 1;
+        const page = store
+          .filter(
+            (r) =>
+              r.status === ExecutionStatus.RUNNING &&
+              conditions.some((c: any) =>
+                Object.entries(c).every(([k, op]) =>
+                  k === "status" ? r.status === op : matchesOp(op, r[k]),
+                ),
+              ),
+          )
+          .sort(
+            (a, b) =>
+              a.startTime.getTime() - b.startTime.getTime() ||
+              (a.id < b.id ? -1 : 1),
+          )
+          .slice(0, opts.take);
+        for (const row of page) {
+          scannedIds.add(row.id);
+          // 第一页取走后模拟并发恢复：这 1000 行离开 RUNNING 谓词。
+          if (runningPages === 1) row.status = ExecutionStatus.FAILED;
+        }
+        return page;
+      });
+      taskRepo.find.mockResolvedValue([]); // N5 cutoff probe
+      taskRepo.findBy.mockResolvedValue([]); // 无任务超时 → recovered 桶
+      dataSource.transaction.mockImplementation(async (fn: any) =>
+        fn({
+          createQueryBuilder: () => makeUpdateQb({ affected: 0, raw: [] }),
+        }),
+      );
+
+      await service.recoverStaleExecutions();
+
+      // 恰好两次 RUNNING 翻页（1000 + 500 短页），PENDING 扫描不算。
+      expect(runningPages).toBe(2);
+      // 全量 1500 行都必须被扫描过——旧 skip 翻页只扫得到第一页 1000 行。
+      expect(scannedIds.size).toBe(total);
+      for (const row of allRows) expect(scannedIds.has(row.id)).toBe(true);
     });
 
     it("issues a single RUNNING scan page when the first page is short (NETOPT-F P2-5)", async () => {
@@ -1421,12 +1782,17 @@ describe("SchedulerService", () => {
       await service.recoverStaleExecutions();
 
       expect(execRepo.find).toHaveBeenCalledTimes(2);
-      expect(execRepo.find.mock.calls[0][0].skip).toBe(0);
+      // F-2: 首页谓词为平面对象（无游标分支）、无 skip。
+      const firstCall = execRepo.find.mock.calls[0][0];
+      expect(firstCall.skip).toBeUndefined();
+      expect(Array.isArray(firstCall.where)).toBe(false);
+      expect(firstCall.where.status).toBe(ExecutionStatus.RUNNING);
     });
 
     it("stops the RUNNING scan at the 20000 cap (NETOPT-F P2-5)", async () => {
       // while (runningExecs.length < 20000)：每页满 1000 → 恰 20 页后停，
-      // 不得无限翻页；末页 skip=19000。极端膨胀目录一次物化受封顶约束。
+      // 不得无限翻页；F-2 起翻页走 keyset 游标（后续页 where 携带游标分支，
+      // 无 skip）——极端膨胀目录一次物化受封顶约束。
       await makeLeader();
       const fullPage = Array.from({ length: 1000 }, (_, i) => ({
         id: `exec-cap-${i}`,
@@ -1438,7 +1804,14 @@ describe("SchedulerService", () => {
         endTime: null,
       }));
       execRepo.find.mockImplementation(async (opts: any) => {
-        if (opts?.where?.status === ExecutionStatus.RUNNING) return fullPage;
+        const conditions = Array.isArray(opts?.where)
+          ? opts.where
+          : [opts?.where];
+        if (
+          conditions.some((c: any) => c?.status === ExecutionStatus.RUNNING)
+        ) {
+          return fullPage;
+        }
         return []; // PENDING scan
       });
       taskRepo.find.mockResolvedValue([]);
@@ -1451,12 +1824,28 @@ describe("SchedulerService", () => {
 
       await service.recoverStaleExecutions();
 
-      const runningCalls = execRepo.find.mock.calls.filter(
-        (c) => c[0]?.where?.status === ExecutionStatus.RUNNING,
-      );
+      const runningCalls = execRepo.find.mock.calls.filter((c) => {
+        const conditions = Array.isArray(c[0]?.where)
+          ? c[0].where
+          : [c[0]?.where];
+        return conditions.some(
+          (cond: any) => cond?.status === ExecutionStatus.RUNNING,
+        );
+      });
       expect(runningCalls.length).toBe(20);
-      expect(runningCalls[19][0].skip).toBe(19_000);
-      expect(runningCalls[19][0].take).toBe(1000);
+      // 首页无游标；第 2..20 页 where 是 keyset 游标 OR 双分支，游标值 = 满页
+      // 最后一行（mock 恒回同一页，游标推进值相同）。
+      expect(runningCalls[0][0].skip).toBeUndefined();
+      expect(Array.isArray(runningCalls[0][0].where)).toBe(false);
+      const lastRow = fullPage[fullPage.length - 1];
+      for (let i = 1; i < runningCalls.length; i++) {
+        expect(runningCalls[i][0].skip).toBeUndefined();
+        expect(runningCalls[i][0].take).toBe(1000);
+        expect(Array.isArray(runningCalls[i][0].where)).toBe(true);
+        const branch2 = runningCalls[i][0].where[1];
+        expect(branch2.startTime.value).toEqual(lastRow.startTime);
+        expect(branch2.id.value).toBe(lastRow.id);
+      }
     });
 
     it("uses per-task timeout bucket with TIMEOUT failure reason in batch UPDATE", async () => {

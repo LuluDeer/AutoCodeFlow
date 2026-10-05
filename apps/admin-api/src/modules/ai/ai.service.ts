@@ -466,6 +466,19 @@ export class AiService {
     return Number.isFinite(n) && n > 0 ? n : 120000;
   }
 
+  /**
+   * F-6（审计）: openai 分支 max_tokens 提为可配（此前硬编码 500）。
+   * 默认 500 与旧硬编码逐字节一致（失败日志分析的省成本档，零行为漂移）；
+   * env 走 configuration.ts 的 ai.openaiMaxTokens（OPENAI_MAX_TOKENS），
+   * DB 系统配置（ai.openaiMaxTokens）可进一步覆盖——与 qwenMaxTokens 同款
+   * 双轨与解析兜底（非法值回退默认 500）。
+   */
+  private async getOpenAiMaxTokens(): Promise<number> {
+    const raw = await this.getAiConfig("openaiMaxTokens", "500");
+    const n = parseInt(raw, 10);
+    return Number.isFinite(n) && n > 0 ? n : 500;
+  }
+
   private async callOpenAI(prompt: string) {
     const model = await this.getAiConfig("openaiModel", "gpt-4o-mini");
     const apiKey = await this.getAiConfig("openaiApiKey", "");
@@ -486,13 +499,15 @@ export class AiService {
         this.config.get<boolean>("ai.allowPrivateNetwork") === true,
     });
     const pinCfg = pinnedAxiosConfig(pinned);
+    // F-6: max_tokens 来自 ai.openaiMaxTokens（默认 500 = 旧硬编码）。
+    const maxTokens = await this.getOpenAiMaxTokens();
     // 原始 baseUrl 原样拼路径（new URL 归一化会改字节形态）；pin 由 agent.lookup 完成。
     const r = await axios.post(
       `${baseUrl}/chat/completions`,
       {
         model,
         messages: [{ role: "user", content: prompt }],
-        max_tokens: 500,
+        max_tokens: maxTokens,
       },
       {
         headers: { Authorization: `Bearer ${apiKey}` },

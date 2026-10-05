@@ -28,7 +28,8 @@ import { LeaderGateService } from "../../common/leader-gate/leader-gate.service"
  *   的僵尸行）；
  * · best-effort：单目录失败只记日志跳过，绝不阻断其余目录；删除幂等。
  * · 保留期：`AGENT_MEDIA_RETENTION_DAYS`（默认 7，roadmap §11 决策值；
- *   ARCH-27——运行时读取经 ConfigService，键在 app.module Joi 注册）。
+ *   ARCH-27——经 configuration.ts 的 agent.mediaRetentionDays 收口后读取，
+ *   键在 app.module Joi 注册）。
  */
 @Injectable()
 export class AgentMediaRetentionService {
@@ -44,10 +45,12 @@ export class AgentMediaRetentionService {
   ) {}
 
   private resolveRetentionDays(): number {
-    const raw = this.config.get<string | number>("AGENT_MEDIA_RETENTION_DAYS");
-    if (raw === undefined || raw === null || raw === "") return 7;
-    const n = typeof raw === "number" ? raw : parseInt(raw, 10);
-    return Number.isFinite(n) && n > 0 ? n : 7;
+    // F-5b（ARCH-27 收口）: 此前裸读 env 键 "AGENT_MEDIA_RETENTION_DAYS"
+    // 绕过配置中心（typo 静默回退且 configuration.ts 未映射）。现读收口后的
+    // agent.mediaRetentionDays（configuration.ts 含默认 7 与非法值回退），
+    // 此处仅保留一层防御性兜底（ConfigService 缺席该节的单测装配）。
+    const raw = this.config.get<number>("agent.mediaRetentionDays");
+    return typeof raw === "number" && Number.isFinite(raw) && raw > 0 ? raw : 7;
   }
 
   @Cron("0 15 3 * * *")

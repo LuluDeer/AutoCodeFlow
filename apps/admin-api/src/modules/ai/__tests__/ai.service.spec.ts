@@ -901,3 +901,82 @@ describe("P1: qwen provider (multimodal)", () => {
     expect(JSON.stringify(cfg)).not.toContain("sk-test-qwen");
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════
+// F-6（审计）: openai 分支 max_tokens 提为可配（ai.openaiMaxTokens）。
+// 此前 callOpenAI 硬编码 500——失败日志分析的省成本档被焊死，部署方无法
+// 按模型/场景调大。默认 500 与旧硬编码逐字节一致（零行为漂移）。
+// ═══════════════════════════════════════════════════════════════════
+describe("F-6: openai max_tokens 可配（ai.openaiMaxTokens）", () => {
+  let service: AiService;
+  let systemConfig: { findOne: jest.Mock };
+  let configService: { get: jest.Mock };
+  let capturedBody: any = null;
+
+  /** env 兜底轨的值表（未命中值表的键回落 openai 默认桩/调用方默认）。 */
+  const withEnv = (values: Record<string, unknown> = {}) => {
+    configService.get.mockImplementation((key: string, def?: unknown) => {
+      if (key in values) return values[key];
+      if (key === "ai.provider") return "openai";
+      if (key === "ai.openaiModel") return "gpt-4o-mini";
+      if (key === "ai.openaiApiKey") return "sk-test";
+      return def;
+    });
+  };
+
+  beforeEach(async () => {
+    systemConfig = { findOne: jest.fn().mockResolvedValue(null) };
+    configService = { get: jest.fn() };
+    capturedBody = null;
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        AiService,
+        { provide: ConfigService, useValue: configService },
+        { provide: SystemConfigService, useValue: systemConfig },
+      ],
+    }).compile();
+
+    service = module.get<AiService>(AiService);
+    // configuration.ts 会把 OPENAI_MAX_TOKENS 映射到 ai.openaiMaxTokens
+    // （缺省无该键 → getAiConfig 回落调用方默认 "500"）。
+    withEnv();
+    mockedAxios.post = jest.fn().mockImplementation((_u, body) => {
+      capturedBody = body;
+      return Promise.resolve({
+        data: { choices: [{ message: { content: "ok" } }] },
+      });
+    });
+  });
+
+  afterEach(() => jest.clearAllMocks());
+
+  it("默认 max_tokens=500（零行为漂移）", async () => {
+    await service.analyzeFailure({ name: "t", runtime: "node" }, "err");
+    expect(capturedBody.max_tokens).toBe(500);
+  });
+
+  it("env/配置面覆盖生效（ai.openaiMaxTokens=2048）", async () => {
+    withEnv({ "ai.openaiMaxTokens": 2048 });
+    await service.analyzeFailure({ name: "t", runtime: "node" }, "err");
+    expect(capturedBody.max_tokens).toBe(2048);
+  });
+
+  it("DB 系统配置优先于 env（getAiConfig 双轨同款）", async () => {
+    withEnv({ "ai.openaiMaxTokens": 2048 });
+    systemConfig.findOne.mockImplementation(async (key: string) =>
+      key === "ai.openaiMaxTokens" ? { value: "8192" } : null,
+    );
+    await service.analyzeFailure({ name: "t", runtime: "node" }, "err");
+    expect(capturedBody.max_tokens).toBe(8192);
+  });
+
+  it("非法值（0/负数/非数字）回退默认 500", async () => {
+    for (const bad of ["0", "-3", "abc"]) {
+      capturedBody = null;
+      withEnv({ "ai.openaiMaxTokens": bad });
+      await service.analyzeFailure({ name: "t", runtime: "node" }, "err");
+      expect(capturedBody.max_tokens).toBe(500);
+    }
+  });
+});
