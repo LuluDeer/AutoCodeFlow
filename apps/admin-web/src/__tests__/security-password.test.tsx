@@ -80,8 +80,21 @@ beforeEach(() => {
   useAuthStore.getState().setAuth('tok', 'rfsh', { id: 7, username: 'alice' });
 });
 
-afterEach(() => {
+afterEach(async () => {
   useAuthStore.getState().logout();
+  // 换丢弃桩再排水：晚到续体（成功路径 SecuritySettings 的 /login 跳转挂在
+  // promise 链上，覆盖率慢跑下可跨用例才执行）动态解引用 window.location——
+  // beforeEach 的新桩防不住这类跨用例晚到写，CI 上 1/千次量级偶发
+  // 「失败路径 href 变成 /login」假失败（run 37337887781 实证）。此处先让
+  // 全部挂起的续体落进丢弃桩再进入下一用例。
+  Object.defineProperty(window, 'location', {
+    writable: true,
+    value: { href: 'about:discarded-after-unmount' },
+  });
+  for (let i = 0; i < 5; i++) {
+    await Promise.resolve();
+  }
+  await new Promise((resolve) => setTimeout(resolve, 0));
 });
 
 describe('A-13 自助改密卡（PasswordCard）', () => {
