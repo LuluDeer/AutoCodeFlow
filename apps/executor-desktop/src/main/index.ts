@@ -136,6 +136,8 @@ app.whenReady().then(async () => {
     windowManager.openConfig();
   };
   trayManager.onOpenHistory = () => windowManager.openHistory();
+  // V4-4：托盘菜单补齐第四 Tab（X-04）
+  trayManager.onOpenApps = () => windowManager.openApps();
   trayManager.onToggleAutoLaunch = async (enable) => {
     // DEV-AUTOLAUNCH：setAutoLaunchEnabled 返回是否真正生效——开发模式拒绝
     // 写入且返回 false，此时**不能**把 autoStart 存成 true，否则托盘/设置页
@@ -161,9 +163,11 @@ app.whenReady().then(async () => {
   // 初始化托盘
   trayManager.init();
 
-  // DSK-04：系统通知初始化——开关读配置；点击通知聚焦状态窗口；
-  // 轮询 workDir/meta 捕获任务终态（executor-node writeExecMeta 落盘）。
+  // DSK-04：系统通知初始化——开关读配置；点击通知按类型路由（C-03：任务
+  // 终态通知开历史窗、离线等状态通知聚焦状态窗）；轮询 workDir/meta 捕获
+  // 任务终态（executor-node writeExecMeta 落盘）。
   notifier.onOpenStatusCallback = () => windowManager.focusOrOpenStatus();
+  notifier.onOpenHistoryCallback = () => windowManager.openHistory();
   notifier.setEnabled(configStore.get('notifyEnabled'));
   const workDir = configStore.get('workDir');
   notifier.startMetaPolling(workDir ? path.join(workDir, 'meta') : null);
