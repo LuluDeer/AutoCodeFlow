@@ -3,6 +3,12 @@
 # 适用对象：apps/admin-api GET /api/metrics（Prometheus text exposition）。
 # series 名与 label 已与源码逐字核对（见 docs/observability/README.md 附录 A）。
 #
+# 阅读版声明（审计批次 A）：本文件是 README §3 的教学/阅读载体；compose
+# monitoring profile 实际挂载并生效的规则是 config/monitoring/alerts.yml
+# （26 条接线版）——语义、阈值、规则集冲突时一律以接线版为准。本文件受
+# `npm run test:alerts` 的轻量对账（存在性 + 指标名与源码清单一致），不要求
+# 与接线版规则集全等。
+#
 # OBS-02（第十六轮）：本文件各规则的 `runbook` annotation 是面向 Grafana
 # UI 的相对路径链接。若告警经 Alertmanager 路由到平台通知渠道
 # （POST /api/alerts/webhook，配置样例见 README §3.5），消息中的 runbook

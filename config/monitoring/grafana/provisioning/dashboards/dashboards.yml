@@ -1,0 +1,28 @@
+# Grafana dashboard provisioning provider（审计批次 A）
+#
+# 与同目录 datasources.yml 同口径：compose monitoring profile 启动即自动注册
+# 仓库 dashboard（docs/observability/grafana-dashboard.json 由 docker-compose
+# 的 grafana 服务直挂到 options.path 指向的目录），不再依赖人工导入。
+#
+# allowUiUpdates: false —— GitOps 口径：文件即真相，UI 上禁止改 provisioned
+# 看板，避免「容器卷里改过的 dashboard」与仓库漂移。要改看板就改仓库 JSON，
+# `docker compose --profile monitoring up -d` 重建容器后生效（Grafana 也会
+# 按 updateIntervalSeconds 周期复查挂载文件，原地编辑同 inode 时 30s 内生效；
+# git pull 换 inode 的场景以容器重建为准，语义确定）。
+#
+# uid 固定 autoflow-obs-v1：若此前人工导入过同 uid 看板，provisioning 会在
+# 首轮同步接管该 uid（人工副本被仓库版本覆盖）——与 README 原「重复导入覆盖」
+# 约定一致。
+apiVersion: 1
+
+providers:
+  - name: autoflow-obs
+    orgId: 1
+    folder: ''
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: false
+    options:
+      path: /etc/grafana/provisioning/dashboards/autoflow
+      foldersFromFilesStructure: false

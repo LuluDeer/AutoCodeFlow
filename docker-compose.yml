@@ -700,6 +700,13 @@ services:
       GF_USERS_ALLOW_SIGN_UP: 'false'
     volumes:
       - ./config/monitoring/grafana/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+      # 审计批次 A：dashboard 自动 provisioning（原为人工导入，README §2）。
+      # provider 声明 + 仓库 dashboard 原件直挂（单一事实源，不做副本防漂移）；
+      # provider 的 options.path 指向 /etc/grafana/provisioning/dashboards/
+      # autoflow/ 子目录（Grafana 只把 provisioning 顶层的 *.yml 当 provider
+      # 配置，JSON 放子目录互不干扰）。
+      - ./config/monitoring/grafana/provisioning/dashboards/dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml:ro
+      - ./docs/observability/grafana-dashboard.json:/etc/grafana/provisioning/dashboards/autoflow/grafana-dashboard.json:ro
       - grafana_data:/var/lib/grafana
     ports:
       - '127.0.0.1:3000:3000'

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// 告警规则结构守卫（可观测性纵深轮）：config/monitoring/alerts.yml
+// 告警/看板同源守卫（可观测性纵深轮）：config/monitoring/alerts.yml +
+// docs/observability/grafana-dashboard.json + docs/observability/alerting-rules.yml
 //
 // alerts.yml 是 compose monitoring profile 的接线告警面（prometheus.yml
 // rule_files 挂载），但本机没有 promtool——一条 expr 拼错、一个指标名臆造、
@@ -20,6 +21,17 @@
 //   · 探针自检：清单里必须仍能找到两个已知核心指标，两个源文件若被改名/
 //     拆分导致清单空转，守卫立即失败而不是静默放行。
 //
+// 审计批次 A 扩展：dashboard 与阅读版告警同入守卫面。
+//   · docs/observability/grafana-dashboard.json：全部面板 target expr +
+//     Prometheus 类型模板变量的取数定义走同一份 extractMetricNames/指标清单
+//     ——metrics 模块改名时 alerts 会红、dashboard 会静默坏图，这里补齐
+//     后者（报错带面板标题，坏图可直查）；
+//   · docs/observability/alerting-rules.yml 是「阅读版」告警（README §3 的
+//     教学载体，块标量/`>-` 写法不在受限解析器射程内），只做轻量对账：
+//     文件存在、至少含一条 alert、注释剥离后引用的每个 autoflow_* 指标名
+//     都在清单内（runbook 注释里的 `#锚点` 同名串不算指标）。语义一致性
+//     仍以 alerts.yml 为准（文件头已声明），此处不要求规则集全等。
+//
 // 退出码：0 = 全绿；1 = 解析失败 / 结构违规 / 指标名不在清单。
 //
 // 用法：node scripts/check-alerts-rules.mjs [--selftest]
@@ -31,6 +43,8 @@ import { join } from "node:path";
 
 const ROOT = join(import.meta.dirname, "..");
 const ALERTS_FILE = "config/monitoring/alerts.yml";
+const DASHBOARD_FILE = "docs/observability/grafana-dashboard.json";
+const READING_RULES_FILE = "docs/observability/alerting-rules.yml";
 
 // ── 指标清单源（声明处单文件；metrics 模块重构时同步登记）──────────────────
 // prometheus-metrics.service.ts：scheduler/queue/池水位/磁盘/回调认证等
@@ -54,6 +68,35 @@ const INFRA_METRICS = new Map([
   [
     "redis_memory_max_bytes",
     "oliver006/redis_exporter：maxmemory 配置字节数（0 = 未设上限）",
+  ],
+  // prom-client ^15.1.3 collectDefaultMetrics 默认指标（dashboard 进程资源
+  // 面板引用；名称已逐字核对 apps/admin-api/node_modules/prom-client/lib/
+  // metrics/ 的 processCpuTotal.js / osMemoryHeap(Linux).js /
+  // heapSizeAndUsed.js / eventLoopLag.js metricNames。只登记实扫用到的 6 个，
+  // 需要其余默认指标（nodejs_gc_duration_seconds 等）再按此口径补）。
+  [
+    "process_cpu_seconds_total",
+    "prom-client collectDefaultMetrics：process+system CPU 累计秒（processCpuTotal.js）",
+  ],
+  [
+    "process_resident_memory_bytes",
+    "prom-client collectDefaultMetrics：RSS 字节（osMemoryHeapLinux.js）",
+  ],
+  [
+    "nodejs_heap_size_total_bytes",
+    "prom-client collectDefaultMetrics：V8 堆容量（heapSizeAndUsed.js）",
+  ],
+  [
+    "nodejs_heap_size_used_bytes",
+    "prom-client collectDefaultMetrics：V8 堆已用（heapSizeAndUsed.js）",
+  ],
+  [
+    "nodejs_eventloop_lag_seconds",
+    "prom-client collectDefaultMetrics：事件循环延迟最近采样（eventLoopLag.js）",
+  ],
+  [
+    "nodejs_eventloop_lag_p99_seconds",
+    "prom-client collectDefaultMetrics：事件循环延迟 p99（eventLoopLag.js）",
   ],
 ]);
 
@@ -290,6 +333,9 @@ const PROMQL_STOPWORDS = new Set([
   "executor",
   "le",
   "name",
+  // Grafana 模板函数（dashboard 变量定义 label_values(metric, label)）：
+  // 只在 dashboard 校验面出现，挂进同一停用词表避免两套口径。
+  "label_values",
 ]);
 
 export function extractMetricNames(expr) {
@@ -297,7 +343,15 @@ export function extractMetricNames(expr) {
     .replace(/'[^']*'/g, " ")
     .replace(/"[^"]*"/g, " ")
     .replace(/\{[^}]*\}/g, " ")
-    .replace(/\[[^\]]*\]/g, " ");
+    .replace(/\[[^\]]*\]/g, " ")
+    // 数字字面量（含科学计数 1e-9）：先剥掉，否则 e 被当成标识符提出
+    // （dashboard avg 面板 clamp_min(..., 1e-9) 实测踩中）。边界条件保证不
+    // 误伤标识符内的数字段（nodejs_eventloop_lag_p99_seconds 的 "99"——
+    // 前后任一侧贴着指标字符集即不剥离）；指标名不可能以数字开头。
+    .replace(
+      /(^|[^A-Za-z0-9_:])\d*\.?\d+(?:[eE][+-]?\d+)?(?![A-Za-z0-9_:])/g,
+      "$1 ",
+    );
   const identifiers = stripped.match(/[A-Za-z_:][A-Za-z0-9_:]*/g) ?? [];
   return [
     ...new Set(identifiers.filter((id) => !PROMQL_STOPWORDS.has(id))),
@@ -384,6 +438,98 @@ export function validateAlertsDocument(doc, { metricNames }) {
   return errors;
 }
 
+// ── dashboard 校验（审计批次 A）─────────────────────────────────────────────
+// 面板 target expr + Prometheus 类型模板变量定义 → 同一份指标清单。row 面板
+// 本身无 expr，但其嵌套 panels 要下钻；报错一律带面板标题（坏图直查）。
+export function validateDashboardDocument(doc, { metricNames }) {
+  const errors = [];
+  if (!doc || typeof doc !== "object" || Array.isArray(doc)) {
+    return ["根节点必须是对象（Grafana dashboard JSON）"];
+  }
+  if (!Array.isArray(doc.panels) || doc.panels.length === 0) {
+    return ["panels 必须是非空列表（dashboard 被清空 = 守卫先红）"];
+  }
+  const checkExpr = (expr, where) => {
+    for (const metric of extractMetricNames(expr)) {
+      if (!metricNames.has(metric)) {
+        errors.push(
+          `${where}: 表达式引用了清单外的指标 "${metric}"（metrics 模块改名了吗？面板会静默坏图；新指标先在 METRIC_SOURCES 或 INFRA_METRICS 登记）`,
+        );
+      }
+    }
+  };
+  const walkPanels = (panels) => {
+    for (const panel of panels) {
+      if (!panel || typeof panel !== "object") {
+        errors.push(`dashboard 含非法面板项（${JSON.stringify(panel ?? null)}）`);
+        continue;
+      }
+      const title =
+        typeof panel.title === "string" && panel.title !== ""
+          ? panel.title
+          : `#${errors.length}(无标题)`;
+      if (panel.type === "row") {
+        if (Array.isArray(panel.panels)) walkPanels(panel.panels);
+        continue;
+      }
+      for (const [ti, target] of (panel.targets ?? []).entries()) {
+        if (target && typeof target.expr === "string") {
+          checkExpr(target.expr, `dashboard[${title}].targets[${ti}]`);
+        }
+      }
+    }
+  };
+  walkPanels(doc.panels);
+  // 模板变量：只扫 Prometheus 取数型（type=query）——datasource 型变量的
+  // query 是数据源类型名（"prometheus"），不是指标，不能进清单比对。
+  for (const variable of doc.templating?.list ?? []) {
+    if (!variable || variable.type !== "query") continue;
+    const name = typeof variable.name === "string" ? variable.name : "?";
+    const exprs = [];
+    if (typeof variable.definition === "string") exprs.push(variable.definition);
+    if (typeof variable.query === "string") exprs.push(variable.query);
+    else if (variable.query && typeof variable.query.query === "string") {
+      exprs.push(variable.query.query);
+    }
+    for (const expr of exprs) {
+      checkExpr(expr, `dashboard[变量 ${name}]`);
+    }
+  }
+  return errors;
+}
+
+// ── 阅读版告警轻量对账（审计批次 A）─────────────────────────────────────────
+// alerting-rules.yml 大量使用块标量（expr: | / description: >-），不在受限
+// 解析器射程内，也不必为阅读版实现完整 YAML——只做两件事：
+//   ① 存在性：注释剥离后至少还有一条 `- alert:`（文件被清空/误删即红）；
+//   ② 指标名对账：剥注释行（含块标量内的 PromQL `#` 注释行）后出现的每个
+//      autoflow_* 字面量必须在清单内。runbook annotation 的 URL 锚点
+//      （README.md#autoflow_scheduler_down）与指标同名，按前导 `#` 排除。
+// 语义一致性（阈值/for/severity）不在对账范围——以接线版 alerts.yml 为准。
+export function validateReadingRulesText(text, { metricNames }) {
+  const errors = [];
+  if (typeof text !== "string" || text.trim() === "") {
+    return ["文件为空"];
+  }
+  const code = text
+    .split(/\r?\n/)
+    .filter((line) => !/^\s*#/.test(line))
+    .join("\n");
+  const alertCount = (code.match(/^\s*-\s+alert:\s*\S+/gm) ?? []).length;
+  if (alertCount === 0) {
+    return ["未找到任何 `- alert:` 条目（阅读版告警被清空？）"];
+  }
+  for (const match of code.matchAll(/autoflow_[a-z0-9_]+/g)) {
+    if (match.index > 0 && code[match.index - 1] === "#") continue; // URL 锚点
+    if (!metricNames.has(match[0])) {
+      errors.push(
+        `阅读版告警引用了清单外的指标 "${match[0]}"（与源码 metrics 清单对不上；阅读版也要能对图索骥）`,
+      );
+    }
+  }
+  return errors;
+}
+
 // ── 实扫 ────────────────────────────────────────────────────────────────────
 // 探针：两个源文件若被改名/拆分导致清单空转，这里先炸，不给静默放行的机会。
 const INVENTORY_PROBES = [
@@ -392,13 +538,10 @@ const INVENTORY_PROBES = [
 ];
 
 function scanReal() {
-  let doc;
-  try {
-    doc = parseYamlSubset(readFileSync(join(ROOT, ALERTS_FILE), "utf8"));
-  } catch (err) {
-    console.error(`✗ ${ALERTS_FILE} 解析失败：${err.message}`);
-    return 1;
-  }
+  // 三个受卫面彼此独立：一处解析失败不挡其余两处的对账，最后统一判退出码。
+  const failures = [];
+
+  // ① 指标清单（共享）
   const sourceTexts = [];
   for (const rel of METRIC_SOURCES) {
     try {
@@ -417,19 +560,74 @@ function scanReal() {
       return 1;
     }
   }
-  const errors = validateAlertsDocument(doc, { metricNames: inventory });
-  if (errors.length > 0) {
-    console.error(`✗ ${ALERTS_FILE}：${errors.length} 处违规`);
-    for (const error of errors) console.error(`  - ${error}`);
+
+  // ② 接线版 alerts.yml：结构 + 指标名
+  let doc;
+  try {
+    doc = parseYamlSubset(readFileSync(join(ROOT, ALERTS_FILE), "utf8"));
+  } catch (err) {
+    failures.push(`${ALERTS_FILE} 解析失败：${err.message}`);
+    doc = null;
+  }
+  let ruleCount = 0;
+  if (doc) {
+    const errors = validateAlertsDocument(doc, { metricNames: inventory });
+    if (errors.length > 0) {
+      failures.push(`${ALERTS_FILE}：${errors.length} 处违规\n  - ${errors.join("\n  - ")}`);
+    } else {
+      ruleCount = doc.groups.reduce(
+        (n, group) => n + (Array.isArray(group?.rules) ? group.rules.length : 0),
+        0,
+      );
+      console.log(
+        `✓ ${ALERTS_FILE}：${doc.groups.length} 个 group / ${ruleCount} 条规则全部通过结构与指标名守卫`,
+      );
+    }
+  }
+
+  // ③ dashboard：面板 expr + 模板变量 → 同一清单（审计批次 A）
+  let dashboard;
+  try {
+    dashboard = JSON.parse(readFileSync(join(ROOT, DASHBOARD_FILE), "utf8"));
+  } catch (err) {
+    failures.push(`${DASHBOARD_FILE} 解析失败：${err.message}`);
+    dashboard = null;
+  }
+  if (dashboard) {
+    const errors = validateDashboardDocument(dashboard, { metricNames: inventory });
+    if (errors.length > 0) {
+      failures.push(`${DASHBOARD_FILE}：${errors.length} 处违规\n  - ${errors.join("\n  - ")}`);
+    } else {
+      console.log(
+        `✓ ${DASHBOARD_FILE}：面板与模板变量引用的指标全部在清单内（指标清单 ${inventory.size} 个）`,
+      );
+    }
+  }
+
+  // ④ 阅读版 alerting-rules.yml：存在性 + 指标名对账（审计批次 A）
+  let readingRules;
+  try {
+    readingRules = readFileSync(join(ROOT, READING_RULES_FILE), "utf8");
+  } catch {
+    failures.push(`${READING_RULES_FILE} 不可读（阅读版告警被移走/改名了吗？）`);
+    readingRules = null;
+  }
+  if (readingRules !== null) {
+    const errors = validateReadingRulesText(readingRules, { metricNames: inventory });
+    if (errors.length > 0) {
+      failures.push(`${READING_RULES_FILE}：${errors.length} 处违规\n  - ${errors.join("\n  - ")}`);
+    } else {
+      console.log(
+        `✓ ${READING_RULES_FILE}：存在且引用指标与清单对账通过（语义以 alerts.yml 为准）`,
+      );
+    }
+  }
+
+  if (failures.length > 0) {
+    for (const failure of failures) console.error(`✗ ${failure}`);
     return 1;
   }
-  const ruleCount = doc.groups.reduce(
-    (n, group) => n + (Array.isArray(group?.rules) ? group.rules.length : 0),
-    0,
-  );
-  console.log(
-    `✓ ${ALERTS_FILE}：${doc.groups.length} 个 group / ${ruleCount} 条规则全部通过结构与指标名守卫（指标清单 ${inventory.size} 个）`,
-  );
+  console.log(`✓ 告警/看板同源守卫全绿（指标清单 ${inventory.size} 个，含 INFRA 白名单）`);
   return 0;
 }
 
@@ -574,11 +772,155 @@ function runSelftest() {
       failed = true;
     }
   }
+  // 审计批次 A：dashboard 校验与阅读版对账的正反例（同一套判据语义）。
+  const dashboardChecks = [
+    {
+      name: "dashboard 好样例（面板 expr + query 变量均在清单）应零报错",
+      doc: {
+        panels: [
+          { type: "row", title: "row", panels: [] },
+          {
+            title: "面板一",
+            targets: [{ expr: "sum(rate(autoflow_queue_up[$__rate_interval]))" }],
+          },
+          { title: "进程资源", targets: [{ expr: "process_cpu_seconds_total" }] },
+        ],
+        templating: {
+          list: [
+            { type: "datasource", name: "datasource", query: "prometheus" },
+            {
+              type: "query",
+              name: "instance",
+              definition: "label_values(autoflow_queue_up, instance)",
+              query: { query: "label_values(autoflow_queue_up, instance)" },
+            },
+          ],
+        },
+      },
+      sources: ['const x = "autoflow_queue_up";'],
+      expected: [],
+    },
+    {
+      name: "dashboard 面板臆造指标应被拦截且报错带面板标题",
+      doc: { panels: [{ title: "坏板", targets: [{ expr: "autoflow_never_declared_total" }] }] },
+      sources: [],
+      expected: ["坏板", "清单外的指标"],
+    },
+    {
+      name: "dashboard 模板变量臆造指标应被拦截且报错带变量名",
+      doc: {
+        panels: [{ title: "p", targets: [] }],
+        templating: {
+          list: [
+            { type: "query", name: "inst", definition: "label_values(autoflow_variable_ghost, instance)" },
+          ],
+        },
+      },
+      sources: [],
+      expected: ["变量 inst", "清单外的指标"],
+    },
+    {
+      name: "dashboard 空 panels 应被拦截",
+      doc: { panels: [] },
+      sources: [],
+      expected: ["panels 必须是非空列表"],
+    },
+    {
+      name: "科学计数 1e-9 不得提取出假指标 e",
+      doc: {
+        panels: [
+          {
+            title: "avg",
+            targets: [
+              {
+                expr:
+                  "rate(autoflow_queue_up[5m]) / clamp_min(rate(autoflow_scheduler_ticks_total[5m]), 1e-9)",
+              },
+            ],
+          },
+        ],
+      },
+      sources: ['const x = "autoflow_queue_up";', 'const y = "autoflow_scheduler_ticks_total";'],
+      expected: [],
+    },
+  ];
+  for (const check of dashboardChecks) {
+    const errors = validateDashboardDocument(check.doc, {
+      metricNames: buildMetricInventory(check.sources),
+    });
+    const missing = check.expected.filter(
+      (keyword) => !errors.some((error) => error.includes(keyword)),
+    );
+    if (check.expected.length === 0 && errors.length > 0) {
+      console.error(`✗ selftest「${check.name}」出现意外报错：\n  - ${errors.join("\n  - ")}`);
+      failed = true;
+    } else if (missing.length > 0) {
+      console.error(
+        `✗ selftest「${check.name}」未命中预期关键词 ${JSON.stringify(missing)}；实际报错：\n  - ${errors.join("\n  - ") || "（无）"}`,
+      );
+      failed = true;
+    }
+  }
+  const readingChecks = [
+    {
+      name: "阅读版好样例应零报错（runbook 锚点不算指标、块标量 expr 可对账）",
+      text: [
+        "# 头注释：README.md#autoflow_anything_only_in_comment",
+        "groups:",
+        "  - name: g",
+        "    rules:",
+        "      - alert: A_DOWN",
+        "        expr: |",
+        "          autoflow_queue_up == 0",
+        "        annotations:",
+        '          runbook: "docs/observability/README.md#autoflow_never_a_metric"',
+      ].join("\n"),
+      sources: ['const x = "autoflow_queue_up";'],
+      expected: [],
+    },
+    {
+      name: "阅读版臆造指标应被拦截",
+      text: ["groups:", "  - name: g", "    rules:", "      - alert: A_DOWN", "        expr: autoflow_ghost_metric_total > 0"].join("\n"),
+      sources: [],
+      expected: ["清单外的指标"],
+    },
+    {
+      name: "阅读版全被注释（无 alert 条目）应被拦截",
+      text: "# - alert: GONE\n#   expr: autoflow_queue_up == 0",
+      sources: [],
+      expected: ["未找到任何"],
+    },
+    {
+      name: "阅读版为空应被拦截",
+      text: "",
+      sources: [],
+      expected: ["文件为空"],
+    },
+  ];
+  for (const check of readingChecks) {
+    const errors = validateReadingRulesText(check.text, {
+      metricNames: buildMetricInventory(check.sources),
+    });
+    const missing = check.expected.filter(
+      (keyword) => !errors.some((error) => error.includes(keyword)),
+    );
+    if (check.expected.length === 0 && errors.length > 0) {
+      console.error(`✗ selftest「${check.name}」出现意外报错：\n  - ${errors.join("\n  - ")}`);
+      failed = true;
+    } else if (missing.length > 0) {
+      console.error(
+        `✗ selftest「${check.name}」未命中预期关键词 ${JSON.stringify(missing)}；实际报错：\n  - ${errors.join("\n  - ") || "（无）"}`,
+      );
+      failed = true;
+    }
+  }
   if (failed) {
     console.error("✗ check-alerts-rules selftest 未全绿");
     return 1;
   }
-  console.log(`✓ check-alerts-rules selftest 全绿（${SELFTEST_FIXTURES.length} 个 fixture + ${unit.length} 个提取断言）`);
+  console.log(
+    `✓ check-alerts-rules selftest 全绿（${SELFTEST_FIXTURES.length} 个 alerts fixture + ${unit.length} 个提取断言 + ${dashboardChecks.length} 个 dashboard fixture + ${readingChecks.length} 个阅读版 fixture）`,
+  );
   return 0;
 }
 

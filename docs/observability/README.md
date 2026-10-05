@@ -4,8 +4,8 @@ admin-api 的 Prometheus 指标（`GET /api/metrics`）配套的 Grafana 面板�
 
 | 文件 | 内容 |
 | --- | --- |
-| `grafana-dashboard.json` | 可导入的 Grafana dashboard（schemaVersion 39，uid `autoflow-obs-v1`）：调度健康 / 回调认证 / 进程资源 / 容量水位（OBS-05）/ 调度延迟（CORE-06） 五组共 17 个数据面板 |
-| `alerting-rules.yml` | Prometheus rule 文件：6 条启用告警 + 1 条注释预留（ExecutorOffline） |
+| `grafana-dashboard.json` | Grafana dashboard（schemaVersion 39，uid `autoflow-obs-v1`）：调度健康 / 回调认证 / 进程资源 / 容量水位（OBS-05）/ 调度延迟（CORE-06） 五组共 17 个数据面板；compose monitoring profile 已自动 provisioning（§2），面板 PromQL 受 `npm run test:alerts` 同源守卫 |
+| `alerting-rules.yml` | 阅读版 Prometheus rule 文件（6 条启用告警 + 1 条注释预留 ExecutorOffline）：教学/调优思路载体，生效规则以 `config/monitoring/alerts.yml` 为准；受 `test:alerts` 存在性与指标名对账 |
 | `README.md` | 本文件：抓取配置、导入/挂载步骤、指标字典、series 核对清单 |
 
 指标事实来源（唯一注册处）：
@@ -93,14 +93,28 @@ curl -fsS -X POST http://prometheus:9090/-/reload     # 需 --web.enable-lifecyc
 > `instance` label 由 Prometheus 注入；`job` 固定为 `autoflow-admin-api`
 > （告警规则按此 job 聚合，改名需同步 `alerting-rules.yml`）。
 
-## 2. Grafana dashboard 导入
+## 2. Grafana dashboard 加载（自动 provisioning，审计批次 A 起）
 
-要求 Grafana ≥ 11（schemaVersion 39；Grafana 10.x 导入会提示版本较新，多数
-面板仍可用）。步骤：Dashboards → **Import** → Upload JSON / 粘贴文件内容 →
-在「数据源」下拉选择 Prometheus 数据源 → Import。
+**自动 provisioning 已启用，仓库 dashboard 变更随部署生效**：compose
+monitoring profile 的 grafana 服务把 provider 声明
+（`config/monitoring/grafana/provisioning/dashboards/dashboards.yml`）与本
+目录 `grafana-dashboard.json` 原件分别挂载到容器
+`/etc/grafana/provisioning/dashboards/`（JSON 放其 `autoflow/` 子目录，
+provider 的 `options.path` 指向该子目录）。`docker compose --profile
+monitoring up -d` 启动即注册，无需手工导入；容器重建时确定生效（git pull
+换 inode 的 bind-mount 场景以重建为准），原地同 inode 编辑另有
+`updateIntervalSeconds: 30` 轮询兜底。看板在 UI 上只读
+（`allowUiUpdates: false`，文件即真相，防止容器卷内改动与仓库漂移）。
 
-- uid 固定为 `autoflow-obs-v1`：重复导入会**覆盖**同名 dashboard（适合 GitOps
-  式更新；如需并存请先改 uid）。
+要求 Grafana ≥ 11（schemaVersion 39；Grafana 10.x 加载会提示版本较新，多数
+面板仍可用）。
+
+- uid 固定为 `autoflow-obs-v1`：provisioning 按 uid 同步，此前人工导入过的
+  同 uid 看板会在首轮同步被仓库版本接管（原「重复导入覆盖」约定的延续；
+  如需并存请先改 uid）。
+- 手工导入（备用路径，仅用于不跑本仓 compose 的自带 Grafana）：Dashboards
+  → **Import** → Upload JSON / 粘贴文件内容 → 在「数据源」下拉选择
+  Prometheus 数据源 → Import。
 - 顶部变量：`datasource`（数据源选择器）、`instance`（多选 + All，取自
   `label_values(autoflow_queue_up, instance)`，所有面板按其过滤）。
 - 面板分组：
@@ -152,6 +166,8 @@ rule_files:
 > 误报成停摆）；两处规则语义冲突时以接线版为准。运维侧速查表与 runbook 见
 > `docs/operations.md`「告警规则与 Runbook」；规则文件结构守卫：`npm run test:alerts`
 > （`scripts/check-alerts-rules.mjs`，指标名必须存在于 metrics 源码声明清单）。
+> 审计批次 A 起，同一守卫也扫 dashboard 面板/模板变量的 PromQL 指标名，并对本
+> 文件做存在性与指标名对账（语义仍以接线版 alerts.yml 为准）。
 
 ## 3.5 Alertmanager → 平台通知渠道路由（OBS-02，第十六轮）
 
