@@ -4,7 +4,7 @@ MCP (Model Context Protocol) server for AutoCodeFlow. Lets AI agents like Claude
 
 ## Tools exposed
 
-The server registers **49 tools** (see `src/tools.ts`), grouped below.
+The server registers **52 tools** (see `src/tools.ts`), grouped below.
 
 ### Tasks
 
@@ -12,7 +12,10 @@ The server registers **49 tools** (see `src/tools.ts`), grouped below.
 |------|-------------|
 | `list_tasks` | List all tasks with optional filtering (page / pageSize / status / name) |
 | `get_task` | Get full task details (script source, cron, timeout, dependencies) |
-| `create_task_from_template` | Create a runnable task from built-in templates (scheduled_backup / health_check / data_sync / log_cleanup / webhook_ping), field-level overrides allowed |
+| `list_task_templates` | List task templates usable with `create_task_from_template` (official presets first, custom templates after; each row: id / key / config / isOfficial) |
+| `create_task_from_template` | Create a runnable task from a template via the server-side instantiate endpoint — template key (`scheduled_backup` / `health_check` / `data_sync` / `log_cleanup` / `webhook_ping`) or uuid, field-level overrides allowed |
+| `export_task` | Export a task definition as a portable JSON payload (`schemaVersion` / `exportedAt` / `task`). Secrets are never included (SEC-02); save the JSON text yourself or pass it verbatim to `import_task` |
+| `import_task` | Create a task from an `export_task` payload (JSON text or object). Name conflicts get an `' (imported)'` suffix instead of overwriting; returns `{ taskId, name, warnings }` — the new task starts paused and without secrets |
 | `update_task` | Update a task via PATCH; supports executor pinning (`executorId`, mutually exclusive with `executeMode="broadcast"`) and clearing the pin with `null` |
 | `trigger_task` | Manually run a task, returns execution ID |
 | `pause_task` | Pause a task — stops scheduled triggers (in-progress executions unaffected) |
@@ -27,7 +30,7 @@ The server registers **49 tools** (see `src/tools.ts`), grouped below.
 |------|-------------|
 | `list_executions` | Recent executions, filterable by task/status |
 | `get_execution` | Execution details (status, duration, result, params, error info, AI analysis). The 512 KB-capped log payload is stripped — page through logs with `get_execution_logs` |
-| `get_execution_logs` | Paginated execution logs (`fromLine` + `limit`) |
+| `get_execution_logs` | Paginated execution logs (`fromLine` + `limit`, optional `level` filter: ERROR / WARN / INFO / DEBUG — with `level`, `fromLine` pages the filtered sequence) |
 | `kill_execution` | Force-cancel a running/pending execution (task-scoped route) |
 | `retry_execution` | Re-run a past execution via the manual-trigger path (fresh run, runtime params replayed, overridable) |
 | `analyze_execution` | Trigger AI root-cause analysis on a failed execution |
@@ -136,4 +139,4 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 | `AUTOCODEFLOW_API_TOKEN` | — | JWT token (required). The server exits on startup if this is missing, because every tool call would be rejected. |
 | `AUTOCODEFLOW_API_REFRESH_TOKEN` | — | Optional refresh token. When set, a 401 from non-`/auth/*` API calls triggers one in-memory refresh and replays the original request once; rotated refresh tokens are kept only for the process lifetime. |
 
-> All 49 tools share these 3 variables — no tool requires additional environment configuration. Permission-sensitive tools (e.g. `approve_deployment` / `reject_deployment` / `list_pending_approvals`, ADMIN-only) are enforced server-side by the roles in the JWT passed via `AUTOCODEFLOW_API_TOKEN`.
+> All 52 tools share these 3 variables — no tool requires additional environment configuration. Permission-sensitive tools (e.g. `approve_deployment` / `reject_deployment` / `list_pending_approvals`, ADMIN-only) are enforced server-side by the roles in the JWT passed via `AUTOCODEFLOW_API_TOKEN`.

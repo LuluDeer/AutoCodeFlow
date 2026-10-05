@@ -48,78 +48,16 @@ const JSON_ERROR = (data: unknown) => ({
 const UUID_PATH_ID = z.string().uuid();
 
 // ---------------------------------------------------------------------------
-// Task templates (ECO-03: create_task_from_template)
+// Task templates (CORE-03: list_task_templates / create_task_from_template)
 // ---------------------------------------------------------------------------
-/** Task field payloads must stay within CreateTaskDto (forbidNonWhitelisted
- * would 400 on stray fields). Templates omit name — supplied per call. */
-export const TASK_TEMPLATES: Record<
-  string,
-  { description: string; config: Record<string, unknown> }
-> = {
-  scheduled_backup: {
-    description:
-      "Periodic backup job: runs on a cron schedule with retries on transient failure",
-    config: {
-      triggerType: "cron",
-      cronExpression: "0 2 * * *",
-      runtime: "shell",
-      entrypoint: "backup.sh",
-      timeoutSeconds: 3600,
-      maxRetry: 3,
-      retryDelay: 60,
-      blockStrategy: "discard",
-    },
-  },
-  health_check: {
-    description:
-      "Endpoint/service health probe every minute, low timeout, no retry (fail fast)",
-    config: {
-      triggerType: "fixed_rate",
-      fixedRate: 60,
-      runtime: "shell",
-      entrypoint: "check.sh",
-      timeoutSeconds: 30,
-      maxRetry: 0,
-    },
-  },
-  data_sync: {
-    description:
-      "Data sync pipeline: longer timeout, serial execution (no overlap), retries with backoff",
-    config: {
-      triggerType: "fixed_rate",
-      fixedRate: 1800,
-      runtime: "python",
-      entrypoint: "sync.py",
-      timeoutSeconds: 7200,
-      maxRetry: 2,
-      retryDelay: 300,
-      blockStrategy: "discard",
-    },
-  },
-  log_cleanup: {
-    description:
-      "Daily housekeeping: prune old files/logs on the executor host",
-    config: {
-      triggerType: "cron",
-      cronExpression: "30 3 * * *",
-      runtime: "shell",
-      entrypoint: "cleanup.sh",
-      timeoutSeconds: 600,
-      maxRetry: 1,
-    },
-  },
-  webhook_ping: {
-    description:
-      "Manual/API-triggered outbound webhook notifier (typically chained as a downstream dependency)",
-    config: {
-      triggerType: "manual",
-      runtime: "node",
-      entrypoint: "ping.js",
-      timeoutSeconds: 60,
-      maxRetry: 1,
-    },
-  },
-};
+// The historical hardcoded TASK_TEMPLATES copy was removed: the admin-api
+// seeds the SAME five official keys (scheduled_backup / health_check /
+// data_sync / log_cleanup / webhook_ping) with the same config values
+// (apps/admin-api/src/modules/task-template/task-template.constants.ts pins
+// that alignment). Templates are now resolved server-side via
+// GET /task-templates and instantiated via POST /task-templates/:id/instantiate
+// so custom templates are usable too and the two template sources cannot
+// drift. The historical `template` input keys keep resolving (by `key`).
 
 // ---------------------------------------------------------------------------
 // Tasks
@@ -473,9 +411,14 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
   );
 
   // ---- get_execution_logs --------------------------------------------------
+  // OBS-03: `level` filters at the SQL layer (strict uppercase enum, WARNING
+  // is already normalized to WARN server-side at write time). With a level
+  // set, fromLine becomes an offset into the FILTERED sequence and
+  // totalLines/hasMore count only matching rows (unknown-level rows are
+  // excluded); without it, behavior is unchanged (physical line cursor).
   server.tool(
     "get_execution_logs",
-    "Fetch paginated execution logs for a given execution ID. Use fromLine + limit to page through large outputs.",
+    "Fetch paginated execution logs for a given execution ID. Use fromLine + limit to page through large outputs, and the optional level filter (ERROR/WARN/INFO/DEBUG) to cut the noise.",
     {
       executionId: UUID_PATH_ID.describe("Execution ID"),
       fromLine: z
@@ -491,11 +434,18 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
         .max(2000)
         .default(500)
         .describe("Lines to return (max 2000, default 500)"),
+      level: z
+        .enum(["ERROR", "WARN", "INFO", "DEBUG"])
+        .optional()
+        .describe(
+          "Filter by inferred log level (exact uppercase enum). When set, fromLine becomes an offset into the filtered sequence and totalLines/hasMore count only matching rows; rows with no inferable level are excluded. Omit to keep the legacy physical-line paging behavior",
+        ),
     },
-    async ({ executionId, fromLine, limit }) => {
+    async ({ executionId, fromLine, limit, level }) => {
       const params = new URLSearchParams({
         fromLine: String(fromLine),
         limit: String(limit),
+        ...(level ? { level } : {}),
       });
       const data = await call<unknown>(
         "GET",
@@ -588,43 +538,134 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
     },
   );
 
-  // ---- create_task_from_template ---------------------------------------------
+  // ---- export_task / import_task (E-1) ---------------------------------------
+  // Cross-environment task-definition transfer. The export payload IS the
+  // import body (two endpoints are symmetric per docs/api-reference.md), so
+  // export_task returns the payload VERBATIM — wrapping it in extra keys
+  // (note/links/…) would break the round-trip because POST /tasks/import
+  // runs with forbidNonWhitelisted (unknown keys → 400). The "save the file
+  // yourself" hint lives in the description: MCP tool outputs are agent
+  // context, not a file-write surface.
+  server.tool(
+    "export_task",
+    "Export a task definition as a portable JSON payload ({ schemaVersion: \"1\", exportedAt, task }) for cross-environment transfer. Secrets are NEVER part of the export (SEC-02 red line). The returned JSON text is the verbatim POST /tasks/import body: save it to a file yourself (MCP tool output is not written to disk), or pass it straight back to import_task.",
+    {
+      taskId: UUID_PATH_ID.describe("Task ID to export"),
+    },
+    async ({ taskId }) => {
+      const data = await call<unknown>("GET", `/tasks/${taskId}/export`);
+      return JSON_CONTENT(data);
+    },
+  );
+
+  server.tool(
+    "import_task",
+    "Create a task from an export_task payload (POST /tasks/import). Name conflicts are never overwritten — an ' (imported)' suffix (then 2, 3, …) is appended; the new task starts paused and without secrets, so review the response's warnings before running it. Accepts the export JSON text verbatim or the equivalent object.",
+    {
+      payload: z
+        .union([z.string(), z.record(z.string(), z.unknown())])
+        .describe(
+          'Export payload produced by export_task: pass the JSON text verbatim, or the equivalent object with "schemaVersion" and "task" keys',
+        ),
+    },
+    async ({ payload }) => {
+      let body: unknown;
+      if (typeof payload === "string") {
+        try {
+          body = JSON.parse(payload);
+        } catch (err) {
+          return JSON_ERROR({
+            error: `payload is not valid JSON (${
+              err instanceof Error ? err.message : String(err)
+            }) — pass the export_task output verbatim`,
+          });
+        }
+      } else {
+        body = payload;
+      }
+      // Light pre-flight guard: the backend would 400 anyway, but catching
+      // the common "passed only the task object" mistake locally avoids a
+      // network round trip and points straight at the fix.
+      if (
+        !body ||
+        typeof body !== "object" ||
+        Array.isArray(body) ||
+        !("task" in body) ||
+        !("schemaVersion" in body)
+      ) {
+        return JSON_ERROR({
+          error:
+            'Invalid export payload: expected an object with "schemaVersion" and "task" keys — pass the verbatim export_task output (JSON text or object)',
+        });
+      }
+      const data = await call<unknown>("POST", "/tasks/import", body);
+      return JSON_CONTENT(data);
+    },
+  );
+
+  // ---- list_task_templates (CORE-03) -----------------------------------------
+  server.tool(
+    "list_task_templates",
+    "List task templates available for create_task_from_template (GET /task-templates): official presets (scheduled_backup, health_check, data_sync, log_cleanup, webhook_ping) come first, custom templates follow. Each row has id (uuid), key (stable identifier), name, description, category, config (CreateTaskDto defaults without name) and isOfficial.",
+    {},
+    async () => {
+      const data = await call<unknown>("GET", "/task-templates");
+      return JSON_CONTENT(data);
+    },
+  );
+
+  // ---- create_task_from_template (CORE-03) -----------------------------------
+  // Reworked from expanding a hardcoded local TASK_TEMPLATES copy onto
+  // POST /tasks to the server-side template endpoints: the template is
+  // resolved via GET /task-templates (by `key` — the historical input — or
+  // by uuid) and created via POST /task-templates/:id/instantiate, so
+  // server-defined templates (official + custom) are authoritative and the
+  // local copy can no longer drift. Precedence kept from the old tool:
+  // name > overrides > explicit description > template description.
   server.tool(
     "create_task_from_template",
-    "Create a runnable task from one of the built-in templates (scheduled_backup, health_check, data_sync, log_cleanup, webhook_ping). Template defaults (trigger, runtime, timeout, retry policy) can be overridden per field; name is always required. Returns the created task — trigger it with trigger_task.",
+    "Create a runnable task from a task template (server-side POST /task-templates/:id/instantiate — the template config expands as defaults, the overrides win per field; name is always required). Pass template as its key (official presets: scheduled_backup | health_check | data_sync | log_cleanup | webhook_ping) or its uuid — browse all templates including custom ones with list_task_templates. Returns the created task — trigger it with trigger_task.",
     {
       template: z
         .string()
         .describe(
-          "Template key: scheduled_backup | health_check | data_sync | log_cleanup | webhook_ping",
+          "Template key or uuid (resolve with list_task_templates; official keys: scheduled_backup | health_check | data_sync | log_cleanup | webhook_ping)",
         ),
       name: z.string().describe("Unique task name for the new task"),
       description: z
         .string()
         .optional()
-        .describe("Task description (defaults to the template blurb)"),
+        .describe("Task description (defaults to the template's description)"),
       overrides: z
         .record(z.string(), z.unknown())
         .optional()
         .describe(
-          "Field overrides applied on top of the template (any CreateTaskDto field, e.g. cronExpression, fixedRate, timeoutSeconds, params, requirements, executorGroup)",
+          "Field overrides applied on top of the template config (any CreateTaskDto field, e.g. cronExpression, fixedRate, timeoutSeconds, params, executorGroup)",
         ),
     },
     async ({ template, name, description, overrides }) => {
-      const tpl = TASK_TEMPLATES[template];
-      if (!tpl) {
+      const rows = await call<
+        Array<{ id?: string; key?: string; description?: string | null }>
+      >("GET", "/task-templates");
+      const list = Array.isArray(rows) ? rows : [];
+      const tpl = list.find((r) => r?.key === template || r?.id === template);
+      if (!tpl?.id) {
         return JSON_ERROR({
-          error: `Unknown template "${template}"`,
-          available: Object.keys(TASK_TEMPLATES),
+          error: `Unknown template "${template}" — list the available template keys/uuids with list_task_templates`,
+          available: list.map((r) => r?.key).filter(Boolean),
         });
       }
       const body = {
-        ...tpl.config,
-        ...(description ? { description } : { description: tpl.description }),
+        ...(tpl.description ? { description: tpl.description } : {}),
+        ...(description ? { description } : {}),
         ...(overrides ?? {}),
         name,
       };
-      const data = await call<unknown>("POST", "/tasks", body);
+      const data = await call<unknown>(
+        "POST",
+        `/task-templates/${tpl.id}/instantiate`,
+        body,
+      );
       return JSON_CONTENT(data);
     },
   );

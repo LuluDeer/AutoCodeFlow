@@ -32,7 +32,6 @@ import {
   registerSopTools,
   SOP_PENDING_STATUSES,
   buildExecutionTimeline,
-  TASK_TEMPLATES,
   ANALYZE_TIMEOUT_MS,
 } from "../tools";
 
@@ -103,6 +102,11 @@ describe("tool registry surface", () => {
       "retry_execution",
       "pause_task",
       "resume_task",
+      // E-1: task definition export/import
+      "export_task",
+      "import_task",
+      // CORE-03: server-side task templates
+      "list_task_templates",
       "create_task_from_template",
       // applications
       "list_applications",
@@ -168,14 +172,19 @@ describe("tool registry surface", () => {
 // 错误响应形状（UX 轮）：用法错误与 HTTP 抛错同形——isError:true + JSON 负载
 // ---------------------------------------------------------------------------
 describe("error response shape (isError on usage errors)", () => {
-  it("create_task_from_template marks an unknown template as an error but keeps the available list", async () => {
+  it("create_task_from_template marks an unknown template as an error, keeps the available keys and points at list_task_templates", async () => {
+    call.mockResolvedValueOnce([
+      { id: "tpl-1", key: "scheduled_backup" },
+      { id: "tpl-2", key: "data_sync" },
+    ]);
     const r = await tools
       .get("create_task_from_template")!
       .handler({ template: "nope", name: "x" });
     expect(r.isError).toBe(true);
     expect(parse(r).error).toMatch(/Unknown template/);
+    expect(parse(r).error).toMatch(/list_task_templates/);
     expect(parse(r).available).toContain("data_sync");
-    expect(call).not.toHaveBeenCalled();
+    expect(call).toHaveBeenCalledTimes(1); // only the GET /task-templates lookup
   });
 
   it("deploy_app marks an unknown application name as an error but keeps the available list", async () => {
@@ -370,6 +379,44 @@ describe("execution tools", () => {
       "GET",
       "/tasks/executions/e1/logs?fromLine=5&limit=100",
     );
+  });
+
+  // OBS-03: level 过滤透传（服务端 SQL 层等值下推；不传时行为不变）
+  it("get_execution_logs passes the level filter through when provided", async () => {
+    await tools
+      .get("get_execution_logs")!
+      .handler({ executionId: "e1", fromLine: 0, limit: 500, level: "ERROR" });
+    expect(call).toHaveBeenCalledWith(
+      "GET",
+      "/tasks/executions/e1/logs?fromLine=0&limit=500&level=ERROR",
+    );
+  });
+
+  it("get_execution_logs omits the level param when absent (legacy physical-line paging)", async () => {
+    await tools
+      .get("get_execution_logs")!
+      .handler({ executionId: "e2", fromLine: 3, limit: 50 });
+    expect(call).toHaveBeenCalledWith(
+      "GET",
+      "/tasks/executions/e2/logs?fromLine=3&limit=50",
+    );
+  });
+
+  it("get_execution_logs level is a strict uppercase enum (no client-side normalization)", () => {
+    type ZodLike = { parse: (v: unknown) => unknown };
+    const s = tools.get("get_execution_logs")!.schema as Record<
+      string,
+      ZodLike
+    >;
+    for (const ok of ["ERROR", "WARN", "INFO", "DEBUG"]) {
+      expect(() => s.level.parse(ok), ok).not.toThrow();
+    }
+    expect(() => s.level.parse(undefined)).not.toThrow();
+    // 服务端写入时才做 WARNING→WARN 归一化；查询参数是严格大写枚举，
+    // 小写/别名/未知值必须在 MCP 入站校验层即拒（防脏值下发）。
+    for (const bad of ["error", "warning", "TRACE", ""]) {
+      expect(() => s.level.parse(bad), bad).toThrow();
+    }
   });
 
   it("kill_execution POSTs the task-scoped kill route", async () => {
@@ -1144,12 +1191,143 @@ describe("trigger_task error passthrough (NF-06)", () => {
   });
 });
 
-describe("create_task_from_template", () => {
-  it("POSTs /tasks with template config + description default + name", async () => {
-    await tools
-      .get("create_task_from_template")!
-      .handler({ template: "scheduled_backup", name: "nightly-db" });
-    expect(call).toHaveBeenCalledWith("POST", "/tasks", {
+// ---------------------------------------------------------------------------
+// E-1: task definition export/import
+// ---------------------------------------------------------------------------
+describe("export_task", () => {
+  it("GETs /tasks/:id/export and returns the payload verbatim (round-trippable into import_task)", async () => {
+    const payload = {
+      schemaVersion: "1",
+      exportedAt: "2026-10-05T00:00:00.000Z",
+      task: {
+        name: "Nightly sync",
+        triggerType: "cron",
+        cronExpression: "0 2 * * *",
+        runtime: "python",
+      },
+    };
+    call.mockResolvedValueOnce(payload);
+    const out = parse(await tools.get("export_task")!.handler({ taskId: "t1" }));
+    expect(call).toHaveBeenCalledWith("GET", "/tasks/t1/export");
+    // 导出物必须逐字透传：POST /tasks/import 开 forbidNonWhitelisted，
+    // 工具面若在此加包装键（note/hint 等）会让回灌 import 直接 400。
+    expect(out).toEqual(payload);
+    expect(Object.keys(out)).toEqual(["schemaVersion", "exportedAt", "task"]);
+  });
+
+  it("bubbles the 404 task-not-found message verbatim", async () => {
+    call.mockRejectedValueOnce(new Error("API error (404): Task not found"));
+    await expect(
+      tools.get("export_task")!.handler({ taskId: "missing" }),
+    ).rejects.toThrow(/API error \(404\): Task not found/);
+  });
+});
+
+describe("import_task", () => {
+  const PAYLOAD = {
+    schemaVersion: "1",
+    exportedAt: "2026-10-05T00:00:00.000Z",
+    task: { name: "Nightly sync", triggerType: "cron", runtime: "python" },
+  };
+  const RESULT = {
+    taskId: "t-new",
+    name: "Nightly sync (imported)",
+    warnings: [
+      "Task secrets are never part of the export/import payload (SEC-02 red line) — the imported task has NO secrets configured; reconfigure them via PATCH /tasks/:id before running it.",
+    ],
+  };
+
+  it("accepts the export_task JSON text verbatim, POSTs the parsed payload and passes taskId/warnings through", async () => {
+    call.mockResolvedValueOnce(RESULT);
+    const out = parse(
+      await tools
+        .get("import_task")!
+        .handler({ payload: JSON.stringify(PAYLOAD) }),
+    );
+    expect(call).toHaveBeenCalledWith("POST", "/tasks/import", PAYLOAD);
+    expect(out.taskId).toBe("t-new");
+    expect(out.name).toBe("Nightly sync (imported)");
+    expect(out.warnings).toHaveLength(1);
+  });
+
+  it("accepts the equivalent structured object as-is (no re-keying)", async () => {
+    call.mockResolvedValueOnce(RESULT);
+    await tools.get("import_task")!.handler({ payload: PAYLOAD });
+    expect(call).toHaveBeenCalledWith("POST", "/tasks/import", PAYLOAD);
+  });
+
+  it("marks a non-JSON string as a usage error without a network call", async () => {
+    const r = await tools
+      .get("import_task")!
+      .handler({ payload: "{not json" });
+    expect(r.isError).toBe(true);
+    expect(parse(r).error).toMatch(/not valid JSON/);
+    expect(call).not.toHaveBeenCalled();
+  });
+
+  it("marks a payload missing the schemaVersion/task keys as a usage error without a network call", async () => {
+    // 裸 task 对象是最常见的误用（直接把 POST /tasks 的 body 当导入物传回）。
+    const r = await tools
+      .get("import_task")!
+      .handler({ payload: { task: { name: "x" } } });
+    expect(r.isError).toBe(true);
+    expect(parse(r).error).toMatch(/schemaVersion/);
+    expect(call).not.toHaveBeenCalled();
+
+    const r2 = await tools
+      .get("import_task")!
+      .handler({ payload: { schemaVersion: "1" } });
+    expect(r2.isError).toBe(true);
+    expect(parse(r2).error).toMatch(/task/);
+    expect(call).not.toHaveBeenCalled();
+  });
+
+  it("bubbles upstream 400/409 messages verbatim (invalid payload / all name candidates conflict)", async () => {
+    call.mockRejectedValueOnce(
+      new Error("API error (400): property task.name must not be empty"),
+    );
+    await expect(
+      tools
+        .get("import_task")!
+        .handler({ payload: JSON.stringify({ schemaVersion: "1", task: {} }) }),
+    ).rejects.toThrow(/API error \(400\)/);
+    call.mockRejectedValueOnce(
+      new Error("API error (409): all name candidates conflict"),
+    );
+    await expect(
+      tools.get("import_task")!.handler({ payload: PAYLOAD }),
+    ).rejects.toThrow(/API error \(409\)/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CORE-03: server-side task templates
+// ---------------------------------------------------------------------------
+describe("list_task_templates", () => {
+  it("GETs /task-templates and passes the list through", async () => {
+    const rows = [
+      {
+        id: "550e8400-e29b-41d4-a716-446655440010",
+        key: "scheduled_backup",
+        name: "定时备份",
+        config: { triggerType: "cron" },
+        isOfficial: true,
+      },
+    ];
+    call.mockResolvedValueOnce(rows);
+    const out = parse(await tools.get("list_task_templates")!.handler({}));
+    expect(call).toHaveBeenCalledWith("GET", "/task-templates");
+    expect(out).toEqual(rows);
+  });
+});
+
+describe("create_task_from_template (CORE-03 server-side instantiate)", () => {
+  const OFFICIAL_ROW = {
+    id: "550e8400-e29b-41d4-a716-446655440010",
+    key: "scheduled_backup",
+    name: "定时备份",
+    description: "周期性备份任务：Cron 定时触发（默认每天 02:00）。",
+    config: {
       triggerType: "cron",
       cronExpression: "0 2 * * *",
       runtime: "shell",
@@ -1158,35 +1336,120 @@ describe("create_task_from_template", () => {
       maxRetry: 3,
       retryDelay: 60,
       blockStrategy: "discard",
-      description: TASK_TEMPLATES.scheduled_backup.description,
+    },
+    isOfficial: true,
+  };
+
+  it("resolves the template key via GET /task-templates and POSTs :id/instantiate with name + template description default", async () => {
+    call.mockResolvedValueOnce([OFFICIAL_ROW]);
+    call.mockResolvedValueOnce({
+      id: "t9",
       name: "nightly-db",
+      status: "paused",
+      triggerType: "cron",
+      runtime: "shell",
+    });
+    const out = parse(
+      await tools
+        .get("create_task_from_template")!
+        .handler({ template: "scheduled_backup", name: "nightly-db" }),
+    );
+    expect(call).toHaveBeenNthCalledWith(1, "GET", "/task-templates");
+    expect(call).toHaveBeenNthCalledWith(
+      2,
+      "POST",
+      `/task-templates/${OFFICIAL_ROW.id}/instantiate`,
+      // 模板 config 不再由客户端展开（config 是服务端默认值）；
+      // description 缺省沿用模板 blurb，name 兜底必带。
+      { description: OFFICIAL_ROW.description, name: "nightly-db" },
+    );
+    expect(out).toEqual({
+      id: "t9",
+      name: "nightly-db",
+      status: "paused",
+      triggerType: "cron",
+      runtime: "shell",
     });
   });
 
-  it("applies overrides last and allows an explicit description", async () => {
-    await tools.get("create_task_from_template")!.handler({
-      template: "health_check",
-      name: "probe-api",
-      description: "probe /healthz",
-      overrides: { fixedRate: 30, params: { url: "http://x" } },
-    });
-    const [, , body] = call.mock.calls[0];
-    expect(body.fixedRate).toBe(30);
-    expect(body.params).toEqual({ url: "http://x" });
-    expect(body.timeoutSeconds).toBe(30);
-    expect(body.description).toBe("probe /healthz");
-    expect(body.name).toBe("probe-api");
+  it("accepts a template uuid as well as a key", async () => {
+    call.mockResolvedValueOnce([OFFICIAL_ROW]);
+    call.mockResolvedValueOnce({ id: "t10", name: "by-uuid" });
+    await tools
+      .get("create_task_from_template")!
+      .handler({ template: OFFICIAL_ROW.id, name: "by-uuid" });
+    expect(call).toHaveBeenNthCalledWith(
+      2,
+      "POST",
+      `/task-templates/${OFFICIAL_ROW.id}/instantiate`,
+      { description: OFFICIAL_ROW.description, name: "by-uuid" },
+    );
   });
 
-  it("returns the available template keys on an unknown template (no HTTP call)", async () => {
+  it("applies overrides on top of the template defaults and keeps name > overrides > explicit description > template blurb precedence", async () => {
+    call.mockResolvedValueOnce([OFFICIAL_ROW]);
+    call.mockResolvedValueOnce({ id: "t11", name: "weekly-backup" });
+    await tools
+      .get("create_task_from_template")!
+      .handler({
+        template: "scheduled_backup",
+        name: "weekly-backup",
+        description: "weekly variant",
+        overrides: {
+          cronExpression: "0 4 * * 1",
+          description: "override wins",
+          params: { db: "primary" },
+        },
+      });
+    expect(call).toHaveBeenNthCalledWith(
+      2,
+      "POST",
+      `/task-templates/${OFFICIAL_ROW.id}/instantiate`,
+      {
+        // 显式 description 压过模板 blurb，但 overrides.description 最后落
+        // （与旧本地展开工具的优先级一致）；其余 override 原样透传。
+        description: "override wins",
+        cronExpression: "0 4 * * 1",
+        params: { db: "primary" },
+        name: "weekly-backup",
+      },
+    );
+  });
+
+  it("omits the description key when the template has none and the caller passes none", async () => {
+    call.mockResolvedValueOnce([{ id: "tpl-2", key: "data_sync", description: null }]);
+    call.mockResolvedValueOnce({ id: "t12", name: "sync" });
+    await tools
+      .get("create_task_from_template")!
+      .handler({ template: "data_sync", name: "sync" });
+    const [, , body] = call.mock.calls[1];
+    expect("description" in (body as object)).toBe(false);
+    expect(body).toEqual({ name: "sync" });
+  });
+
+  it("returns the available keys with a list_task_templates hint on an unknown template (no instantiate call)", async () => {
+    call.mockResolvedValueOnce([
+      { id: "tpl-1", key: "scheduled_backup" },
+      { id: "tpl-2", key: "webhook_ping" },
+    ]);
     const out = parse(
       await tools
         .get("create_task_from_template")!
         .handler({ template: "nope", name: "x" }),
     );
-    expect(call).not.toHaveBeenCalled();
-    expect(out.error).toMatch(/Unknown template/);
-    expect(out.available).toContain("data_sync");
+    expect(call).toHaveBeenCalledTimes(1); // only the GET /task-templates lookup
+    expect(out.error).toMatch(/Unknown template "nope"/);
+    expect(out.error).toMatch(/list_task_templates/);
+    expect(out.available).toEqual(["scheduled_backup", "webhook_ping"]);
+  });
+
+  it("bubbles a GET /task-templates failure verbatim (older admin-api without CORE-03)", async () => {
+    call.mockRejectedValueOnce(new Error("API error (404): Cannot GET /task-templates"));
+    await expect(
+      tools
+        .get("create_task_from_template")!
+        .handler({ template: "scheduled_backup", name: "x" }),
+    ).rejects.toThrow(/API error \(404\)/);
   });
 });
 
