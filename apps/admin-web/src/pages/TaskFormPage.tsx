@@ -1,57 +1,38 @@
-import { useState, useEffect, useMemo, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import {
   deriveExecutorMode,
   buildExecutorPayload,
-  affinityFormValues,
   applyRequirementsPayload,
   // python_task_multiversion（FR-06/FR-18）：runtimeVersion 声明 + codeSource 互斥
   applyRuntimeVersionPayload,
   applyCodeSourcePayload,
-  // P0-5（UX 审计）：切换代码来源前的损失预告（与提交路径同源判定）
-  codeSourceSwitchLosses,
   // SEC-02 续（生产故障）：凭据的掩码闸门（提交前过滤 ******，防掩码落库）
   applySecretsPayload,
   deriveCodeSourceFromTask,
-  deriveRuntimeMismatch,
   normalizeRuntimeVersion,
   interpreterFleetAdvisory,
   runtimeVersionIsOfflineTier,
   configureRuntimeVersionConfig,
   type CodeSource,
-  type ExecutorInterpreterCapability,
 } from './executor-mode';
 // PK-02（DEEP_REVIEW 0ef3bbe）：create/update 改用生成的 DTO 类型，
 // payload 由 apply* 链组装后类型收窄为 Record<string, unknown>，调用点显式断言。
 import type { components } from '../types/generated/api-types';
-import { Card,
-  Form,
-  Input,
-  Select,
+import { Form,
   Button,
   Space,
   Typography,
-  InputNumber,
-  Radio,
-  Alert,
-  Divider,
-  Tag,
   Tooltip,
-  Anchor,
-  Spin,
   theme,
-  Modal,
-  Grid } from 'antd';
+  Modal } from 'antd';
 import { message } from '../utils/toast';
 // MODAL-01：命令式 Modal.* 从 utils/modal 取（吃暗色主题 + i18n locale）；<Modal> JSX 仍用 antd。
 import { Modal as confirmModal } from '../utils/modal';
 import {
-  ThunderboltOutlined, ArrowLeftOutlined,
-  InfoCircleOutlined, ClusterOutlined, RocketOutlined, ApartmentOutlined, PushpinOutlined,
-  PlusOutlined, DeleteOutlined, ToolOutlined, LockOutlined, SaveOutlined,
+  ThunderboltOutlined, ArrowLeftOutlined, SaveOutlined,
 } from '@ant-design/icons';
-// APP-SELECT-01：空应用引导需要站内跳转应用管理页（/applications，router.tsx）——
-// 用 Link 而非 nav() 按钮：中键/新标签页打开的浏览器默认行为免费获得。
-import { Link, useNavigate, useSearchParams, useParams, useBlocker } from 'react-router-dom';
+// （APP-SELECT-01 的 Link/空态引导随应用选择器一起迁入 TaskFormBasicSection。）
+import { useNavigate, useSearchParams, useParams, useBlocker } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { useAuthStore, isAdminUser } from '../store/auth';
 import { configApi } from '../api/config';
@@ -59,13 +40,8 @@ import { tasksApi } from '../api/tasks';
 // A4（第三轮审计）：保存成功后统一失效任务/执行/metrics 面（30s staleTime
 // 内跳转不再读旧数据；NETOPT-10-8 同型）。
 import { invalidateTaskData, queryKeys } from '../api/queries';
-import { executorsApi } from '../api/executors';
-import { applicationsApi } from '../api/applications';
 import { taskTemplatesApi } from '../api/task-templates';
-// TASK-PROJ-01: 归属项目候选（任务可归入某项目；不选 = 未分配）
-import { projectsApi } from '../api/projects';
 import { getErrMsg, isFormValidationError, showApiError } from '../utils/error';
-import { templateConfigFromFormValues } from '../utils/task-template-config-from-form';
 import {
   templateConfigToFormValues,
   templateDependencySnapshot,
@@ -73,246 +49,48 @@ import {
   templateTriggerAndRuntime,
 } from './task-template-prefill';
 import { CronHelper } from '../components/CronHelper';
-import { TASK_PRIORITY_OPTIONS, toPriorityValue } from '../utils/priority';
-import AlarmConfig from '../components/AlarmConfig';
 import PageSkeleton from '../components/PageSkeleton';
-import TriggerPreview from '../components/task-form/TriggerPreview';
-import { parseCronExpression, suggestCronStepRewrite } from '../utils/trigger-preview';
-// python_task_multiversion（FR-06/AC-06a/AC-06b）：Python 版本组合框。
-// 独立成组件的原因见其头注释（useWatch 必须在无条件渲染的组件内，否则
-// TaskFormPage 的 loadingTask 早退会让 hook 数随分支变化）。
-import RuntimeVersionField from '../components/task-form/RuntimeVersionField';
+import { suggestCronStepRewrite } from '../utils/trigger-preview';
+// python_task_multiversion（FR-06）：RuntimeVersionField 随基本分区迁入
+// TaskFormBasicSection（编辑态早退与 hook 数的说明见该组件头注释）。
 import {
   applyMaintenanceWindowsPayload,
-  MAINTENANCE_WINDOWS_MAX,
 } from './maintenance-windows';
 import {
   applyTimeoutPolicyPayload,
-  timeoutPolicyFormValues,
-  TIMEOUT_WARN_RATIO_MAX,
-  TIMEOUT_ACTION_OPTIONS,
 } from './timeout-policy';
 import {
   applyRetryableErrorsPayload,
-  retryableErrorsFormValues,
-  RETRYABLE_ERROR_OPTIONS,
 } from './retry-policy';
 import {
   applyDependenciesPayload,
   dependenciesFormValues,
 } from './task-dependencies';
-// F-28（DEEP_REVIEW 0ef3bbe）：fixed_rate 输入框的分钟/秒换算纯逻辑层
-import { fixedRateToMinutesLabel, parseFixedRateSeconds } from './fixed-rate';
+// REFACTOR-TASKFORM-08/09/10：编辑态回填载荷、代码来源切换守卫、存模板 config
+// 组装——均为原样迁出的纯函数/hook（语义见各自头注释，提交链路不变）。
+import { buildEditFormValues } from './task-form-edit-hydration';
+import { useCodeSourceSwitchGuard } from './task-form-code-source';
+import { buildTemplateConfigPayload } from './task-form-template-payload';
 import PageHeader from '../components/PageHeader';
 // REFACTOR-TASKFORM-01/02：参数与 Glue 分区展示组件（原内联 JSX 原样迁出）
 import TaskFormParamsSection from '../components/task-form/TaskFormParamsSection';
 import TaskFormGlueSection from '../components/task-form/TaskFormGlueSection';
+// REFACTOR-TASKFORM-03/04/05：基本/触发/执行器三分区（原内联 JSX 原样迁出，
+// 受控 props 下传：状态提升仍保留在本页，提交链路不受影响）
+import TaskFormBasicSection from '../components/task-form/TaskFormBasicSection';
+import TaskFormTriggerSection from '../components/task-form/TaskFormTriggerSection';
+import TaskFormExecutorSection from '../components/task-form/TaskFormExecutorSection';
+// REFACTOR-TASKFORM-06：「保存为模板」弹窗（tplForm 与元信息校验随之迁出）
+import TaskFormTemplateModal, {
+  type TaskFormTemplateMeta,
+} from '../components/task-form/TaskFormTemplateModal';
+// REFACTOR-TASKFORM-11：锚点条 + 校验播报区（页框架 JSX 原样迁出）
+import TaskFormNavRail from '../components/task-form/TaskFormNavRail';
+// REFACTOR-TASKFORM-07：参照数据加载 hook（执行器分组/标签/清单、应用、项目、
+// 依赖候选 + ?applicationId= 回填；失败降级哲学见其头注释）
+import { useTaskFormReferenceData } from '../hooks/useTaskFormReferenceData';
 import { useTranslation } from 'react-i18next';
 import '../i18n';
-// APP-SELECT-01：应用选项的 updatedAt 相对时间（跟随当前语言，测试环境 zh）。
-import { formatRelativeTime } from '../utils/timeFormat';
-import { LAYOUT_TOKENS } from '../theme/tokens';
-
-const { Text } = Typography;
-
-const TRIGGER_OPTIONS = (t: (k: string) => string) => [
-  { value: 'manual', label: t('taskForm.trigger.manual'), desc: t('taskForm.trigger.manualDesc') },
-  { value: 'cron', label: t('taskForm.trigger.cron'), desc: t('taskForm.trigger.cronDesc') },
-  { value: 'fixed_rate', label: t('taskForm.trigger.fixedRate'), desc: t('taskForm.trigger.fixedRateDesc') },
-];
-
-const RUNTIME_OPTIONS = [
-  { value: 'python', label: 'Python' },
-  { value: 'node', label: 'Node.js' },
-  { value: 'shell', label: 'Shell' },
-];
-
-// —— 可检索应用选择器（APP-SELECT-01）——————————————————————————————
-// zip 应用多起来后，「name 平铺 + 仅按名称过滤」的下拉不够用：搜不到描述/版本、
-// 看不出 runtime 是否与任务匹配、不知道应用整包是否就绪。两处应用 Select
-// （zip 必填载体 / 部署绑定）统一升级为富信息选项：
-//   · label = name + version + runtime Tag + updatedAt 相对时间（+ 描述截断）；
-//   · 过滤改走自定义 search 字符串（name+description+version）——antd 只对
-//     string label 提供默认过滤，ReactNode label 必须自带过滤字段；
-//   · title 显式回填 name：rc-select 只在 label 为字符串时才把 label 派生成
-//     原生 title 属性，ReactNode 下不回填 = 悬停提示消失；
-//   · 选中后选择框内只显示 name（optionLabelProp）——富信息只留在下拉里，
-//     不把表单行撑爆。
-// 状态语义来自后端 apps/admin-api application.service.ts（ApplicationStatus）：
-//   active    = 就绪（本地上传 / 上次 git 部署成功）——唯一「健康」态；
-//   deploying = git 部署进行中（带 gitRepo 创建即置此态，整包尚未产出）；
-//   failed    = 上次 git 部署失败（当前没有可用整包）。
-// zip 来源 = 执行器按 applicationId 下载应用整包，deploying/failed 都拿不到包，
-// 故 zip 分支禁用并显示原因；未知状态（未来枚举扩容）不臆造语义，保持可选。
-
-/** 应用选择器的读面形状。字段可缺省：api 读面未回传/测试桩只给部分字段时归 ''。 */
-interface AppOptionSource {
-  id: string;
-  name: string;
-  runtime: string;
-  version: string;
-  description: string;
-  status: string;
-  updatedAt: string;
-}
-
-/** zip 分支下不可选状态的展示配置（Tag 颜色对齐 ApplicationListPage 的 statusColors）。 */
-const APP_STATUS_UNAVAILABLE: Record<string, { color: string; tagKey: string; reasonKey: string }> = {
-  deploying: {
-    color: 'blue',
-    tagKey: 'taskForm.field.applicationId.statusTagDeploying',
-    reasonKey: 'taskForm.field.applicationId.statusDeployingUnavailable',
-  },
-  failed: {
-    color: 'red',
-    tagKey: 'taskForm.field.applicationId.statusTagFailed',
-    reasonKey: 'taskForm.field.applicationId.statusFailedUnavailable',
-  },
-};
-
-/**
- * 构建单个应用选项。label 里的 name 独占一个 span：antd 选中回显走
- * optionLabelProp="name"（纯字符串），但若有用例/浮层需要精确匹配应用名，
- * 下拉项里的 name 文本节点也保持独立、不与版本/时间粘连。
- */
-const buildAppSelectOption = (
-  a: AppOptionSource,
-  t: (k: string, opts?: Record<string, unknown>) => string,
-  opts: { /** zip 分支：按健康状态禁用 + runtime 与任务不一致时 Tag 变警示色 */ withHealth?: boolean; taskRuntime?: string },
-) => {
-  const unavailable = opts.withHealth ? APP_STATUS_UNAVAILABLE[a.status] : undefined;
-  // runtime 不匹配预判：与提交侧 zipRuntimeMismatch Alert 同一判据口径
-  // （两侧都有值才比），只是把「选完才报错」提前到「选择时就能看出」。
-  const runtimeMismatch =
-    !!opts.withHealth && !!a.runtime && !!opts.taskRuntime && a.runtime !== opts.taskRuntime;
-  return {
-    value: a.id,
-    // 选中后选择框内只显示应用名（见 optionLabelProp）
-    name: a.name,
-    title: a.name,
-    // 过滤字段：名称 + 描述 + 版本（预转小写，filterOption 里对输入侧同样小写化）
-    search: `${a.name} ${a.description ?? ''} ${a.version ?? ''}`.toLowerCase(),
-    disabled: !!unavailable,
-    label: (
-      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-        <span style={{ fontWeight: 500 }}>{a.name}</span>
-        {a.version ? <Text type="secondary" style={{ fontSize: 12 }}>v{a.version}</Text> : null}
-        {a.runtime ? (
-          <Tag color={runtimeMismatch ? 'orange' : undefined} style={{ marginInlineEnd: 0 }}>
-            {a.runtime}
-          </Tag>
-        ) : null}
-        {unavailable ? (
-          <Tag color={unavailable.color} style={{ marginInlineEnd: 0 }}>
-            {t(unavailable.tagKey)}
-          </Tag>
-        ) : null}
-        {a.updatedAt ? (
-          <Text type="secondary" style={{ fontSize: 12 }}>
-            {formatRelativeTime(a.updatedAt, t)}
-          </Text>
-        ) : null}
-        {a.description ? (
-          <Text type="secondary" style={{ fontSize: 12, maxWidth: 320 }} ellipsis>
-            {a.description}
-          </Text>
-        ) : null}
-        {unavailable ? (
-          <Text type="secondary" style={{ fontSize: 12 }}>{t(unavailable.reasonKey)}</Text>
-        ) : null}
-      </span>
-    ),
-  };
-};
-
-/** 应用下拉过滤：命中 search 字符串（名称/描述/版本），大小写不敏感。 */
-const appSelectFilterOption = (input: string, opt?: { search?: string } | null) =>
-  (opt?.search ?? '').includes(input.trim().toLowerCase());
-
-/**
- * Cron 结构校验（前端即时反馈）：结构不可解析时在输入旁直接标红，不再等
- * 提交后的笼统 400。裸 `n/step`（如 `12/20`）**放行**——后端写边界会做等价
- * 规范化（POSIX n/step ≡ n-max/step，admin-api cron-normalize.util），提交
- * 时 handleSubmit 也前置同一规范化并 toast 告知实际存储形态，故这里无需
- * （也不应）拦截。
- * （admin-web 不引 node-cron，判定复用预览器 parseCronExpression。）
- * 主 cron 与维护窗口 start/end 三个字段共用。
- */
-const cronGateValidator =
-  (t: (k: string, opts?: Record<string, unknown>) => string) =>
-  (_rule: unknown, value: string | undefined) => {
-    const v = (value ?? '').trim();
-    if (!v) return Promise.resolve(); // 空值交给 required 规则
-    if (!parseCronExpression(v)) {
-      return Promise.reject(new Error(t('taskForm.field.cron.invalid')));
-    }
-    return Promise.resolve();
-  };
-
-// Executor dispatch modes exposed to the user
-const EXECUTOR_MODE_OPTIONS = (t: (k: string) => string) => [
-  {
-    value: 'auto',
-    label: t('taskForm.executor.auto'),
-    desc: t('taskForm.executor.autoDesc'),
-    icon: <ClusterOutlined />,
-  },
-  {
-    value: 'group',
-    label: t('taskForm.executor.group'),
-    desc: t('taskForm.executor.groupDesc'),
-    icon: <ApartmentOutlined />,
-  },
-  {
-    value: 'pinned',
-    label: t('taskForm.executor.pinned'),
-    desc: t('taskForm.executor.pinnedDesc'),
-    icon: <PushpinOutlined />,
-  },
-  {
-    value: 'broadcast',
-    label: t('taskForm.executor.broadcast'),
-    desc: t('taskForm.executor.broadcastDesc'),
-    icon: <RocketOutlined />,
-  },
-];
-
-// CORE-02/CORE-04：外部工具文件只承载 value 契约，展示文案统一按 value 走 i18n
-const TIMEOUT_ACTION_LABELS = (t: (k: string) => string): Record<string, string> => ({
-  kill: t('taskForm.timeoutAction.kill'),
-  kill_retry: t('taskForm.timeoutAction.killRetry'),
-  notify_only: t('taskForm.timeoutAction.notifyOnly'),
-});
-
-const PRIORITY_LABELS = (t: (k: string) => string): Record<string, string> => ({
-  1: t('taskForm.priority.low'),
-  2: t('taskForm.priority.normal'),
-  3: t('taskForm.priority.high'),
-  4: t('taskForm.priority.critical'),
-});
-
-// python_task_multiversion（FR-18/AC-17b）：代码来源三选一 → 表单控件。
-// 与 executor-mode.CodeSource 一一对应；desc 说明「该来源下代码从哪来」，
-// 因为这三个选项对用户而言差别只在"执行器去哪拿代码"。
-const CODE_SOURCE_OPTIONS = (
-  t: (k: string) => string,
-): { value: CodeSource; label: string; desc: string }[] => [
-  {
-    value: 'git',
-    label: t('taskForm.field.codeSource.git'),
-    desc: t('taskForm.field.codeSource.gitDesc'),
-  },
-  {
-    value: 'application_zip',
-    label: t('taskForm.field.codeSource.applicationZip'),
-    desc: t('taskForm.field.codeSource.applicationZipDesc'),
-  },
-  {
-    value: 'glue',
-    label: t('taskForm.field.codeSource.glue'),
-    desc: t('taskForm.field.codeSource.glueDesc'),
-  },
-];
 
 // UI-06: 单页分区锚点。全部 Form.Item 同时挂载，锚点条只负责滚动定位。
 const SECTION_IDS = ['sec-basic', 'sec-trigger', 'sec-executor', 'sec-params', 'sec-glue'] as const;
@@ -341,39 +119,6 @@ export default function TaskFormPage() {
   // UI-12：校验失败的读屏播报（antd message 是浮层，读屏不会回读）
   const [validationAnnouncement, setValidationAnnouncement] = useState('');
   const [executorMode, setExecutorMode] = useState<'auto' | 'group' | 'pinned' | 'broadcast'>('auto');
-  const [groups, setGroups] = useState<string[]>([]);
-  const [allTags, setAllTags] = useState<string[]>([]);
-  const [executors, setExecutors] = useState<{
-    id: string;
-    appName: string;
-    address: string;
-    status: string;
-    // python_task_multiversion（P2-4）：缓存池清单供版本能力咨询使用。
-    // null = 旧执行器未上报（与 [] 池空是相反两态，判据在 executor-mode）。
-    interpreters?: ExecutorInterpreterCapability[] | null;
-  }[]>([]);
-  /**
-   * python_task_multiversion（AC-19a）：候选应用带 **runtime**——zip 来源要求
-   * 应用 runtime 与任务 runtime 一致，表单需就地提示（服务端仍权威校验）。
-   * runtime 可缺省：列表读面未回传时归 ''，deriveRuntimeMismatch 对空串不判定
-   * （宁可不提示，也不拿未就绪的数据误报）。
-   * APP-SELECT-01：其余字段（version/description/status/updatedAt）供富信息
-   * 下拉选项使用；缺省归 ''，选项渲染按「有值才显示」处理。
-   */
-  const [apps, setApps] = useState<AppOptionSource[]>([]);
-  // APP-SELECT-01：应用列表加载中（下拉 Spin 态）。失败也归 false——下拉退化为
-  // 空态引导，而不是永远转圈。
-  const [appsLoading, setAppsLoading] = useState(true);
-  // TASK-PROJ-01: 归属项目候选（不选 = 未分配，归默认项目视图）
-  const [projects, setProjects] = useState<{ id: string; name: string }[]>([]);
-  // TASK-PROJ-01: Select 选项（含显式"未分配"语义：allowClear 即可，不额外造选项）
-  const projectOptions = useMemo(
-    () => projects.map((p) => ({ value: p.id, label: p.name })),
-    [projects],
-  );
-  // NF-02: 上游依赖选择——候选任务列表 + 名称快照（提交时重建 dependencies 映射）
-  const [taskOptions, setTaskOptions] = useState<{ id: string; name: string }[]>([]);
-  const depNameSnapshotRef = useRef<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [loadingTask, setLoadingTask] = useState(isEdit);
   // A4（第三轮审计·中）：乐观锁——编辑态加载时的任务 updatedAt。提交时随
@@ -443,121 +188,29 @@ export default function TaskFormPage() {
   // FEAT-13：「保存为模板」弹窗（表单校验通过后把当前值固化为自定义模板）
   const [tplModalOpen, setTplModalOpen] = useState(false);
   const [tplSaving, setTplSaving] = useState(false);
-  const [tplForm] = Form.useForm<{ name: string; description?: string; category?: string }>();
 
-  // UI-06 ③：pinning/broadcast 互斥（N17 语义前置到输入期）。触发方式/时区
-  // 经 Form.useWatch 订阅供预览组件消费（保持 render 同步且不整表单重渲）。
-  const cronExpression = Form.useWatch('cronExpression', form);
-  const fixedRateWatch = Form.useWatch('fixedRate', form);
-  const timezoneWatch = Form.useWatch('timezone', form);
-  // python_task_multiversion：zip 来源的运行时一致性提示需要实时读取两处值——
-  // runtime 来自字段树（useWatch），applicationId 也走 useWatch 以便在**选中的
-  // 应用**里查 runtime。二者都是无条件 hook 调用。
+  // python_task_multiversion：zip 来源的运行时一致性提示需要实时读取 runtime
+  // （fleetOfflineWillFail 的离线层判定）；applicationId 走 useWatch 以便在
+  // 提交前判定「zip 来源未选应用」（zipApplicationMissing）。二者都是无条件
+  // hook 调用；分区渲染各自需要的字段订阅已随分区下沉（TaskFormBasicSection /
+  // TaskFormTriggerSection 内 useWatch）。
   const runtimeWatch = Form.useWatch('runtime', form);
   const applicationIdWatch = Form.useWatch('applicationId', form);
   const { token } = theme.useToken();
-  // G-4：锚点条显隐改由 antd Grid 断点决定（lg 及以上才显示），
-  // 不再用内联 display:none 硬编码（会覆盖外部 CSS 媒体查询）。
-  const screens = Grid.useBreakpoint();
 
-  useEffect(() => {
-    let active = true;
-    const controller = new AbortController();
-    const run = <T,>(request: Promise<T>, onSuccess: (data: T) => void, warning: string) => {
-      request
-        .then((data) => {
-          if (active && !controller.signal.aborted) onSuccess(data);
-        })
-        .catch(() => {
-          if (active && !controller.signal.aborted) message.warning(warning);
-        });
-    };
+  // python_task_multiversion：`?applicationId=` 创建态语义 = 以该应用整包为
+  // 代码来源（数据回填在 useTaskFormReferenceData 内，原样保留）。codeSource
+  // 是本页自持 state，经此回调同步；useCallback 固定引用保证 effect 依赖与
+  // 原实现等价（不构成额外触发源）。
+  const handleApplicationIdParam = useCallback(() => {
+    setCodeSource('application_zip');
+    previousCodeSourceRef.current = 'application_zip';
+  }, []);
 
-    run(executorsApi.getGroups(controller.signal), setGroups, t('taskForm.load.groupFail'));
-    run(executorsApi.getTags(controller.signal), setAllTags, t('taskForm.load.tagsFail'));
-    run(
-      executorsApi.list(controller.signal),
-      (data) =>
-        setExecutors(
-          data.map((e) => ({
-            id: e.id as string,
-            appName: e.appName as string,
-            address: e.address as string,
-            status: e.status as string,
-            // P2-4：透传缓存池清单（后端 findAll 一直返回，此前读模型没接）。
-            interpreters: e.interpreters ?? null,
-          })),
-        ),
-      t('taskForm.load.executorsFail'),
-    );
-    // APP-SELECT-01：成功/失败都要结束 loading（失败仅 warn，同下述项目列表的
-    // 降级哲学——下拉仍有空态引导可用）。finally 在 abort 后也触发，需防越界写入。
-    run(
-      applicationsApi.list(controller.signal).finally(() => {
-        if (active && !controller.signal.aborted) setAppsLoading(false);
-      }),
-      (data) => setApps(
-        data.map((a) => ({
-          id: a.id,
-          name: a.name,
-          runtime: a.runtime ?? '',
-          version: a.version ?? '',
-          description: a.description ?? '',
-          status: a.status ?? '',
-          updatedAt: a.updatedAt ?? '',
-        })),
-      ),
-      t('taskForm.load.appsFail'),
-    );
-    // TASK-PROJ-01: 归属项目候选。失败只 warn（不阻塞表单）——未分配仍是合法
-    // 取值，故取不到列表时退回"仅能选未分配"，而不是让整个表单不可用。
-    run(
-      projectsApi.list(),
-      (data) => setProjects(data.map((p) => ({ id: p.id, name: p.name }))),
-      t('taskForm.load.projectsFail'),
-    );
-    // NF-02: 上游依赖候选（分页拉全，取 id+name；编辑态在任务加载后过滤自身）
-    tasksApi
-      .listAll({}, controller.signal)
-      .then((data) => {
-        if (active && !controller.signal.aborted) {
-          const opts = data.items.map((t) => ({ id: t.id, name: t.name }));
-          setTaskOptions(opts);
-          // NF-02：名称快照顺带按候选列表播种。此前 depNameSnapshot 只在**编辑
-          // 态**由 task.dependencies 填充，创建态恒为 {}——于是创建态提交的
-          // dependencies 映射退化为 `{ id: id }`（buildDependenciesPayload 的
-          // 兜底分支）。依赖名虽只用于展示，但"存为模板/克隆"等通路依赖它还原
-          // 编排关系的可读形态；播种后创建态也能带上真实任务名。
-          // 不覆盖已有键（编辑态回填的任务自带映射是权威值）。
-          for (const o of opts) {
-            if (!depNameSnapshotRef.current[o.id]) {
-              depNameSnapshotRef.current[o.id] = o.name;
-            }
-          }
-        }
-      })
-      .catch(() => {
-        if (active && !controller.signal.aborted) {
-          message.warning(t('taskForm.load.tasksFail'));
-        }
-      });
-    // python_task_multiversion：`?applicationId=` 是应用详情页的「用此应用建任务」
-    // 入口，语义就是"以该应用整包为代码来源"，故同时把来源切到 application_zip
-    // （否则用户看到的是 git 来源，提交时 applicationId 会被普通绑定语义悄悄留下）。
-    // 仅创建态显式覆盖：编辑态的 `?applicationId=` 不改变任务原有来源声明。
-    if (appId) {
-      form.setFieldValue('applicationId', appId);
-      if (!editId) {
-        setCodeSource('application_zip');
-        previousCodeSourceRef.current = 'application_zip';
-      }
-    }
-
-    return () => {
-      active = false;
-      controller.abort();
-    };
-  }, [appId, editId, form, t]);
+  // 参照数据：分组/标签/执行器/应用/项目/依赖候选 + ?applicationId= 表单回填。
+  const {
+    groups, allTags, executors, apps, appsLoading, projectOptions, taskOptions, depNameSnapshotRef,
+  } = useTaskFormReferenceData({ form, appId, editId, onApplicationIdParamApplied: handleApplicationIdParam });
 
   // Load existing task data when in edit mode
   useEffect(() => {
@@ -592,66 +245,9 @@ export default function TaskFormPage() {
         // 漏回填 = 打开编辑页看到空白脚本，一保存即清空用户代码）。
         setGlueSource(task.glueSource ?? undefined);
         setGlueLanguage(task.glueLanguage ?? undefined);
-        form.setFieldsValue({
-          name: task.name,
-          description: task.description,
-          runtime: task.runtime,
-          entrypoint: task.entrypoint,
-          requirements: task.requirements ?? [],
-          applicationId: task.applicationId,
-          // python_task_multiversion（FR-18）：git 来源两字段与 glueSource 必须
-          // 挂载并回填——applyCodeSourcePayload 的"自证"判定读的就是载荷里的这两
-          // 个键（glue 分支靠 glueSource 非空才敢声明 codeSource='glue'）。不回填
-          // 会让编辑态保存把这些值判成"未提供"从而清掉代码来源声明。
-          // glueSource 的唯一写方是 GlueEditor（tasksApi.updateGlue），此处写回
-          // 原值是幂等 no-op；空值归一 undefined 以免提交空串。
-          gitRepo: task.gitRepo ?? undefined,
-          gitBranch: task.gitBranch ?? undefined,
-          glueSource: task.glueSource ?? undefined,
-          // TASK-PROJ-01: 编辑态回填归属项目（null = 未分配 → undefined 让
-          // Select 显示占位符，而不是把 "null" 当值）
-          projectId: task.projectId ?? undefined,
-          triggerType: task.triggerType || 'manual',
-          // A4: 上一轮未结束时新触发的处置策略（null = 存量行未声明 → 后端
-          // 默认 serial；表单回填 serial 使控件显示与后端实际生效值一致）。
-          blockStrategy: task.blockStrategy ?? 'serial',
-          cronExpression: task.cronExpression,
-          timezone: task.timezone,
-          fixedRate: task.fixedRate,
-          priority: toPriorityValue(task.priority),
-          timeout: task.timeoutSeconds ?? task.timeout ?? 300,
-          // CORE-04: 超时策略（timeoutAction 缺省 kill；预警阈值空态 undefined）
-          ...timeoutPolicyFormValues(task),
-          maxRetry: task.maxRetry ?? 3,
-          retryDelay: task.retryDelay ?? 0,
-          // CORE-02: 可重试错误类型白名单（null/缺省 → 空数组占位=全部可重试）
-          ...retryableErrorsFormValues(task),
-          executorId: task.executorId ?? undefined,
-          executorGroup: task.executorGroup,
-          executorTags: task.executorTags,
-          // NF-04: affinity constraints must be mounted and hydrated in edit mode;
-          // otherwise the form submission would normalize absent values to null and
-          // silently clear constraints that were never shown to the user.
-          ...affinityFormValues(task),
-          // FEAT-22 v2: 任务级部署约束模式（'global' 哨兵=跟随全局，Select
-          // 需要非 null 的值才能显示选项文案；提交时归一为 null）。
-          deploymentPolicy: task.deploymentPolicy ?? 'global',
-          params: task.params ?? {},
-          // 告警配置（alarmEmail / alarmChannels）：两列是任务级失败通知的唯一
-          // 来源（notification.service.notifyFailureWithConfig 直接读 task 实体
-          // 的这两列）。此前编辑态**完全没有回填**——前端 Task 接口连字段都没
-          // 声明，于是打开已有任务的编辑页时两项恒显示空态；用户只是改个超时
-          // 就保存，也会把已配好的接收人与渠道清掉（"界面看着是空的、保存即
-          // 删库"）。空态刻意回 undefined 而非 []：undefined 不进请求体，PATCH
-          // 缺省=保留旧值，与"用户没碰过这个控件"同义；真正的清空由 Select 的
-          // allowClear 产出 []，提交侧原样发送即清除。
-          alarmEmail: task.alarmEmail ?? undefined,
-          alarmChannels: Array.isArray(task.alarmChannels) ? task.alarmChannels : undefined,
-          // FEAT-06: 维护窗口（null/缺省 → 空数组占位，添加行即编辑）
-          maintenanceWindows: (task.maintenanceWindows ?? []).map((w) => ({ ...w })),
-          // FEAT-11: markdown 运行手册
-          runbook: task.runbook ?? '',
-        });
+        // 字段树回填载荷原样迁出至 task-form-edit-hydration.buildEditFormValues
+        // （每个键的挂载/空态语义见该模块逐键注释）。
+        form.setFieldsValue(buildEditFormValues(task));
         // A4（乐观锁）：记录读取时刻的版本戳，提交时回传 expectedUpdatedAt。
         setLoadedUpdatedAt(task.updatedAt ?? null);
         // NF-02: 上游依赖回填（映射 → Select 值 + 名称快照供提交重建映射）
@@ -670,7 +266,9 @@ export default function TaskFormPage() {
       active = false;
       controller.abort();
     };
-  }, [editId, form, t]);
+    // depNameSnapshotRef 来自 useTaskFormReferenceData（useRef，恒稳定）——
+    // 列入依赖仅为 lint 自证，不构成额外触发源；触发时机与原实现一致。
+  }, [editId, form, t, depNameSnapshotRef]);
 
   // CORE-03：创建态带 ?templateId= 时拉取模板，config 预填表单（显式字段仍可改；
   // name 一律由用户填写——模板 name 常含中文，不满足任务名 [a-z0-9_-] 约束）。
@@ -708,55 +306,12 @@ export default function TaskFormPage() {
     return () => {
       cancelled = true;
     };
-  }, [templateId, isEdit, form, t]);
+  }, [templateId, isEdit, form, t, depNameSnapshotRef]);
 
-  /**
-   * P0（UX-AUDIT-2026-09-21 §P0-5）：切换代码来源前告知将被清空的字段。
-   *
-   * `applyCodeSourcePayload` 会把不适用字段置为**显式 null**（必须如此：PATCH 是
-   * Object.assign 语义，不发 null 会保留旧值、任务静默带两个冲突来源），而对应
-   * 的输入框是条件渲染的——用户一改单选，gitRepo/gitBranch 的框立刻从 DOM 消失。
-   * 两条叠加的后果：误点一下「Glue 脚本」，gitRepo/gitBranch 就没了，用户既看不到
-   * 被清的内容、也收不到提示，切回来只能凭记忆重填。属误操作不可逆。
-   *
-   * 判据走纯函数 `codeSourceSwitchLosses`（复用 applyCodeSourcePayload，避免
-   * 弹窗承诺与实际清空漂移）；**全空时不打扰**——新建任务来回点不该弹确认。
-   */
-  const handleCodeSourceChange = (next: CodeSource) => {
-    if (next === codeSource) return;
-    const losses = codeSourceSwitchLosses(form.getFieldsValue(true), next, codeSource);
-    if (losses.length === 0) {
-      setCodeSource(next);
-      return;
-    }
-    // 只列真正有值的字段，点名到值——用户才能判断"这就是我要的那份配置"
-    confirmModal.confirm({
-      title: t('taskForm.codeSource.switch.title'),
-      content: (
-        <div>
-          <p style={{ marginBottom: 8 }}>{t('taskForm.codeSource.switch.intro')}</p>
-          <ul style={{ margin: 0, paddingLeft: 20 }}>
-            {losses.map((l) => (
-              <li key={l.field}>
-                {l.field === 'gitRepo'
-                  ? t('taskForm.field.gitRepo')
-                  : l.field === 'gitBranch'
-                    ? t('taskForm.field.gitBranch')
-                    : l.field === 'glueSource'
-                      ? t('taskForm.section.glueTitle')
-                      : t('taskForm.field.applicationId')}
-                ：<Text code>{l.scriptLength != null ? t('taskForm.codeSource.switch.scriptLoss', { n: l.scriptLength }) : l.value}</Text>
-              </li>
-            ))}
-          </ul>
-        </div>
-      ),
-      okText: t('taskForm.codeSource.switch.ok'),
-      cancelText: t('taskForm.codeSource.switch.cancel'),
-      okButtonProps: { danger: true },
-      onOk: () => setCodeSource(next),
-    });
-  };
+  // P0（UX-AUDIT-2026-09-21 §P0-5）：切换代码来源前的损失预告——判定与确认
+  // 弹窗交互原样迁出至 useCodeSourceSwitchGuard（判据复用 applyCodeSourcePayload，
+  // 与提交路径同源）。codeSource 的持有方与消费方（提交链路）仍在本页。
+  const handleCodeSourceChange = useCodeSourceSwitchGuard(form, codeSource, setCodeSource);
 
   // F-04（DEEP_REVIEW @0ef3bbe）：AI 建议 Cron 应用——编辑态必须等任务回填
   // 完成后再覆盖 cronExpression，否则任务加载 effect 会用库内旧值盖掉建议值；
@@ -1019,48 +574,30 @@ export default function TaskFormPage() {
     setTplModalOpen(true);
   };
 
-  const handleSaveAsTemplate = async () => {
-    let meta: { name: string; description?: string; category?: string };
-    try {
-      meta = await tplForm.validateFields();
-    } catch (err: unknown) {
-      if (isFormValidationError(err)) return;
-      showApiError(err, t('taskForm.tpl.saveFail'));
-      return;
-    }
+  // FEAT-13：模板元信息校验已在 TaskFormTemplateModal 内完成（原
+  // handleSaveAsTemplate 的 validateFields 前半段随之迁出），此处承接校验通过
+  // 后的载荷组装与请求——链路与原先逐字一致（saving 状态仍在元信息校验通过
+  // 后才置位；模板保存失败不影响表单数据）。
+  const handleTemplateConfirm = async (meta: TaskFormTemplateMeta) => {
     const values = form.getFieldsValue(true);
     setTplSaving(true);
-    // python_task_multiversion（FR-06 / FR-18）：`runtimeVersion` 与 `codeSource`
-    // **不在表单字段树里**（前者由 RuntimeVersionField 自持 state，后者由
-    // CodeSource 选择器自持 state），因此 `values` 上读不到它们——必须像提交路径
-    // 那样经 applyRuntimeVersionPayload / applyCodeSourcePayload 归一后显式注入，
-    // 否则模板会静默丢掉"Python 版本钉定"与"代码来源"这两个用户显式做过的选择。
-    //
-    // 复用提交路径的同一组纯函数（而不是在这里另写一遍判定），是为了让模板里
-    // 存下的 codeSource 与真实提交时的取值**逐字一致**：两者都遵循同一条
-    // "载荷自证才声明"规则（见 executor-mode.ts），否则从模板建出的任务会因
-    // 声明漂移被后端 400。
-    const tplValues = applyCodeSourcePayload(
-      applyRuntimeVersionPayload(values, runtimeVersion),
+    // 载荷组装原样迁出至 task-form-template-payload.buildTemplateConfigPayload：
+    // FR-06/FR-18（runtimeVersion/codeSource 不在字段树，须显式注入且与提交路径
+    // 逐字一致）与 NF-02（上游依赖归一 + 载体键删除）的语义见该模块头注释。
+    const config = buildTemplateConfigPayload({
+      values,
+      runtimeVersion,
       codeSource,
-      previousCodeSourceRef.current,
-    );
-    // NF-02：上游依赖必须与提交路径同样归一后再固化。`dependencies` 不在表单
-    // 字段树里（表单载体是 `upstreamDependencies`，DTO 未声明该键），直接拿
-    // values 会让"存模板"静默丢掉用户选好的依赖链——从模板建出的任务没有上游
-    // 编排关系，而用户在模板里看到的参数却都在，属最易被误判为"模板功能正常"
-    // 的丢字段。applyDependenciesPayload 同时完成映射重建与载体键删除，与提交
-    // 路径逐字一致（载体键不删会让后端 forbidNonWhitelisted 判 400）。
-    const tplPayload = applyDependenciesPayload(tplValues, depNameSnapshotRef.current);
+      previousCodeSource: previousCodeSourceRef.current,
+      executorMode,
+      depNameSnapshot: depNameSnapshotRef.current,
+    });
     try {
       await taskTemplatesApi.create({
         name: meta.name.trim(),
         description: meta.description?.trim() || undefined,
         category: meta.category?.trim() || undefined,
-        config: templateConfigFromFormValues(
-          tplPayload,
-          buildExecutorPayload(tplPayload, executorMode),
-        ),
+        config,
       });
       message.success(t('taskForm.tpl.saved', { name: meta.name.trim() }));
       setTplModalOpen(false);
@@ -1080,61 +617,8 @@ export default function TaskFormPage() {
 
   const glueTaskId = createdTaskId || (isEdit ? editId : null);
 
-  /**
-   * python_task_multiversion（AC-19a/FR-19）：zip 来源的 runtime 一致性。
-   * 只在 application_zip 来源下判定——其余来源下 applicationId 可能只是**部署
-   * 绑定**（部署清单自动注册的任务就是 applicationId + glueSource 并存，后端
-   * NFR-05 明确放行），对绑定关系报"运行时不一致"是纯粹的误报噪声。
-   * 应用无 runtime / 尚未选应用 / 列表未加载 → deriveRuntimeMismatch 返回
-   * null（不判定），交给服务端权威校验。
-   */
-  const zipRuntimeMismatch = useMemo(() => {
-    if (codeSource !== 'application_zip') return null;
-    const app = apps.find((a) => a.id === applicationIdWatch);
-    if (!app) return null;
-    return deriveRuntimeMismatch(runtimeWatch, app.runtime);
-  }, [codeSource, apps, applicationIdWatch, runtimeWatch]);
-
   /** zip 来源未选应用（后端会 400，此处前置到提交前拦截并给出可读文案） */
   const zipApplicationMissing = codeSource === 'application_zip' && !applicationIdWatch;
-
-  // APP-SELECT-01：两处应用选择器的富信息选项。zip 分支带健康语义（不可选状态
-  // 禁用 + runtime 不匹配 Tag 变色），部署绑定分支不带——绑定关系与代码来源正交
-  // （deploying/failed 的应用同样存在合法的部署绑定），不在此扩大禁用面。
-  const zipAppOptions = useMemo(
-    () => apps.map((a) => buildAppSelectOption(a, t, { withHealth: true, taskRuntime: runtimeWatch })),
-    [apps, t, runtimeWatch],
-  );
-  const bindAppOptions = useMemo(
-    () => apps.map((a) => buildAppSelectOption(a, t, { withHealth: false })),
-    [apps, t],
-  );
-
-  /**
-   * APP-SELECT-01：应用下拉空态三分支。区分「没有应用」与「搜索无命中」——
-   * 两者用户要做的动作完全不同（去创建应用 vs 改关键词），混用一个
-   * "No data" 会把新用户卡死在空表单前。
-   */
-  const renderAppSelectNotFound = () => {
-    if (appsLoading) return <Spin size="small" />;
-    if (apps.length === 0) {
-      return (
-        <div style={{ padding: '8px 12px', maxWidth: 320 }} data-testid="app-select-empty-guide">
-          <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 4 }}>
-            {t('taskForm.field.applicationId.emptyHint')}
-          </Typography.Paragraph>
-          <Link to="/applications" style={{ fontSize: 12 }}>
-            {t('taskForm.field.applicationId.goManage')}
-          </Link>
-        </div>
-      );
-    }
-    return (
-      <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block', padding: '8px 12px' }}>
-        {t('taskForm.field.applicationId.noMatch')}
-      </Typography.Text>
-    );
-  };
 
   /**
    * G-1：把后端版本契约注入 executor-mode 的可注入配置。
@@ -1219,14 +703,6 @@ export default function TaskFormPage() {
     return <PageSkeleton variant="table" rows={6} style={{ padding: 24 }} />;
   }
 
-  // UI-06 ③：互斥禁用态。broadcast 下 pinned 选择器禁用；pinned 下广播项禁用。
-  // 数据层互斥由 deriveExecutorMode/buildExecutorPayload 保证（N17/N28），
-  // 这里把冲突挡在输入期，不再等提交报错。
-  const broadcastDisabledByPin = executorMode === 'pinned';
-  const pinDisabledByBroadcast = executorMode === 'broadcast';
-
-  const sectionTitleStyle = { margin: '0 0 4px' };
-
   return (
     // FORM-WIDTH-01（修订）：内容列的 1080px 上限**当前生效**，见下方内容列
     // （`maxWidth: 1080`）与 `top: 88` 锚点条的说明。
@@ -1263,46 +739,13 @@ export default function TaskFormPage() {
           alignItems: 'flex-start',
         }}
       >
-        {/* 左侧锚点条（jsdom 无布局，Anchor 原生滚动监听依赖 getBoundingClientRect——
-            测试环境只断言锚点渲染与点击可滚，不测监听） */}
-        <nav
-          data-testid="task-form-anchor"
-          aria-label={t('taskForm.anchorAria')}
-          style={{
-            width: 160,
-            flexShrink: 0,
-            position: 'sticky',
-            top: LAYOUT_TOKENS.anchorScrollOffset,
-            // G-4：宽屏（≥lg）显示锚点条，窄屏隐藏。断点逻辑内联自洽，
-            // 不再与外部 CSS 争夺 display 优先级（此前硬编码 none 会覆盖任何媒体查询）。
-            display: screens.lg ? 'block' : 'none',
-          }}
-          className="task-form-anchor-rail"
-        >
-          <Anchor
-            affix={false}
-            items={anchorItems}
-            onClick={(e) => {
-              e.preventDefault();
-            }}
-          />
-        </nav>
-        {/* UI-12：校验失败播报通道（视觉隐藏；视觉反馈由 message + 锚点滚动承担） */}
-        <div
-          role="status"
-          aria-live="polite"
-          data-testid="task-form-validation-announcement"
-          style={{
-            position: 'absolute',
-            width: 1,
-            height: 1,
-            overflow: 'hidden',
-            clip: 'rect(0 0 0 0)',
-            whiteSpace: 'nowrap',
-          }}
-        >
-          {validationAnnouncement}
-        </div>
+        {/* 页框架（REFACTOR-TASKFORM-11 原样迁出）：左侧锚点条（UI-06 具名
+            navigation + G-4 断点显隐）与 UI-12 校验失败播报区（role="status"）。
+            jsdom 无布局——测试只断言锚点渲染与点击可滚，不测监听。 */}
+        <TaskFormNavRail
+          anchorItems={anchorItems}
+          announcement={validationAnnouncement}
+        />
 
         {/* FORM-WIDTH-01：内容列限宽 1080px——此前输入框在 1536px+ 视口下全宽
             拉伸（单行输入近 1500px），可读性与扫视效率差。锚点条不受影响；
@@ -1320,742 +763,40 @@ export default function TaskFormPage() {
               setDirty(true);
             }}
           >
-            {/* 分区一：基本配置（原 step 0） */}
-            <div id={SECTION_IDS[0]} data-testid="section-basic" role="region" aria-label={t('taskForm.section.basic')} style={{ scrollMarginTop: LAYOUT_TOKENS.anchorScrollOffset }}>
-              <Typography.Title level={5} style={sectionTitleStyle}>{t('taskForm.section.basic')}</Typography.Title>
-              <Card style={{ marginBottom: 20 }}>
-                <Form.Item
-                  name="name"
-                  label={t('taskForm.field.name')}
-                  rules={[
-                    { required: true, message: t('taskForm.field.name.required') },
-                    // 字符白名单只在**新建**时校验：编辑态名字是 disabled 的不可变
-                    // 标识（不进 update 载荷），存量任务名若含非 ASCII 字符，对
-                    // 禁用字段套白名单会把每一次编辑保存都拦死，用户却无从修复
-                    // （同款先例：ApplicationListPage，1a4d3758）。
-                    ...(!isEdit
-                      ? [{ pattern: /^[a-zA-Z0-9_-]+$/, message: t('taskForm.field.name.pattern') }]
-                      : []),
-                  ]}
-                  tooltip={{ title: isEdit ? t('taskForm.field.name.tooltipEdit') : t('taskForm.field.name.tooltip'), icon: <InfoCircleOutlined /> }}
-                >
-                  <Input placeholder="daily-report" disabled={isEdit} />
-                </Form.Item>
+            {/* 分区一：基本配置（原 step 0）——REFACTOR-TASKFORM-03 迁至
+                TaskFormBasicSection（仍在 <Form> 上下文内，字段路径不变） */}
+            <TaskFormBasicSection
+              form={form}
+              isEdit={isEdit}
+              codeSource={codeSource}
+              onCodeSourceChange={handleCodeSourceChange}
+              runtimeVersion={runtimeVersion}
+              onRuntimeVersionChange={setRuntimeVersion}
+              apps={apps}
+              appsLoading={appsLoading}
+              projectOptions={projectOptions}
+              interpreterFleet={interpreterFleet}
+            />
 
-                <Form.Item name="description" label={t('taskForm.field.description.optional')}>
-                  <Input placeholder={t('taskForm.field.description.placeholder')} />
-                </Form.Item>
+            {/* 分区二：触发与告警（原 step 1 上半 + step 2 告警/runbook/参数）——
+                REFACTOR-TASKFORM-04 迁至 TaskFormTriggerSection */}
+            <TaskFormTriggerSection
+              form={form}
+              triggerType={triggerType}
+              onOpenCronHelper={() => setShowCronHelper(true)}
+            />
 
-                {/* TASK-PROJ-01：归属项目。
-                    此前 tasks.projectId 无任何写入入口（迁移 1790000000008 的注释
-                    即写明「新建任务在 DTO 未接 projectId 前一律落 NULL」），导致
-                    「项目隔离」对所有新任务都塌缩到默认项目视图、形同虚设。
-                    不选 = 未分配（归默认项目视图），与既有行为一致。
-                    后端仅 ADMIN 或该项目的 editor/admin 可设置，故非管理员看到
-                    的选项受限（后端仍会兜底校验）。 */}
-                <Form.Item
-                  name="projectId"
-                  label={t('taskForm.field.projectId')}
-                  tooltip={{ title: t('taskForm.field.projectId.tooltip'), icon: <InfoCircleOutlined /> }}
-                >
-                  <Select
-                    allowClear
-                    placeholder={t('taskForm.field.projectId.placeholder')}
-                    options={projectOptions}
-                    data-testid="task-project-select"
-                  />
-                </Form.Item>
-
-                <Form.Item
-                  name="runtime"
-                  label={t('taskForm.field.runtime')}
-                  rules={[{ required: true, message: t('taskForm.field.runtime.required') }]}
-                  tooltip={{ title: t('taskForm.field.runtime.tooltip'), icon: <InfoCircleOutlined /> }}
-                >
-                  <Radio.Group optionType="button" buttonStyle="solid">
-                    {RUNTIME_OPTIONS.map(o => (
-                      <Radio.Button key={o.value} value={o.value}>{o.label}</Radio.Button>
-                    ))}
-                  </Radio.Group>
-                </Form.Item>
-
-                <Form.Item
-                  name="entrypoint"
-                  label={t('taskForm.field.entrypoint')}
-                  rules={[{ required: true, message: t('taskForm.field.entrypoint.required') }]}
-                  tooltip={{ title: t('taskForm.field.entrypoint.tooltip'), icon: <InfoCircleOutlined /> }}
-                >
-                  <Input placeholder="tasks/main.py" />
-                </Form.Item>
-
-                {/* python_task_multiversion（FR-06/AC-06a/AC-06b）：Python 版本声明。
-                    RuntimeVersionField 内部以 Form.useWatch('runtime') 自我门控，
-                    非 python 时返回 null——确保 node/shell 任务不会声明版本
-                    （后端 NG-02 会拒绝），同时 hook 调用保持无条件。 */}
-                <RuntimeVersionField
-                  form={form}
-                  value={runtimeVersion}
-                  onChange={setRuntimeVersion}
-                />
-
-                {/* P2-4：舰队能力咨询（非阻断，见 interpreterFleetAdvisory 头注）。
-                    只在 python + 已声明版本 + 在线舰队无一台满足时出现。 */}
-                {runtimeWatch === 'python' && interpreterFleet === 'unsatisfied' && (
-                  <Alert
-                    type="warning"
-                    showIcon
-                    data-testid="runtime-version-capability-advisory"
-                    style={{ marginBottom: 16 }}
-                    title={t('taskForm.field.runtimeVersion.capabilityAdvisoryTitle', {
-                      version: runtimeVersion ?? '-',
-                    })}
-                    description={t('taskForm.field.runtimeVersion.capabilityAdvisoryDesc')}
-                  />
-                )}
-
-                {/* W-21: 依赖声明。python 任务由 executor-python 装进 per-task uv
-                    venv，node 任务由 executor-node 安装；glue 脚本任务不生效。 */}
-                <Form.Item
-                  name="requirements"
-                  label={t('taskForm.field.requirements')}
-                  tooltip={{
-                    title:
-                      t('taskForm.field.requirements.tooltip'),
-                    icon: <InfoCircleOutlined />,
-                  }}
-                >
-                  <Select
-                    mode="tags"
-                    placeholder={t('taskForm.field.requirements.placeholder')}
-                    open={false}
-                    suffixIcon={null}
-                    tokenSeparators={[]}
-                  />
-                </Form.Item>
-
-                {/* python_task_multiversion（FR-18/AC-17b）：代码来源三选一。
-                    选谁决定下面显示哪些输入；提交侧由 applyCodeSourcePayload 把
-                    不适用字段统一发**显式 null**（PATCH 是 Object.assign 语义，
-                    省略字段会保留旧值 → 任务静默带两个冲突来源）。 */}
-                <Form.Item
-                  label={t('taskForm.field.codeSource')}
-                  required
-                  tooltip={{ title: t('taskForm.field.codeSource.tooltip'), icon: <InfoCircleOutlined /> }}
-                >
-                  <Radio.Group
-                    value={codeSource}
-                    onChange={(e) => handleCodeSourceChange(e.target.value as CodeSource)}
-                    data-testid="code-source-select"
-                  >
-                    <Space orientation="vertical" style={{ width: '100%' }}>
-                      {CODE_SOURCE_OPTIONS(t).map((o) => (
-                        <Radio key={o.value} value={o.value} data-testid={`code-source-${o.value}`}>
-                          <Space>
-                            <span style={{ fontWeight: 500 }}>{o.label}</span>
-                            <Text type="secondary" style={{ fontSize: 12 }}>{o.desc}</Text>
-                          </Space>
-                        </Radio>
-                      ))}
-                    </Space>
-                  </Radio.Group>
-                </Form.Item>
-
-                {/* git 来源：仓库地址 + 分支。两者都可留空——存量任务与部署清单
-                    自动注册的任务都没有 gitRepo，NFR-05 要求零破坏（后端只在
-                    codeSource='git' 显式声明时才强制其非空，而声明与否由
-                    applyCodeSourcePayload 的"自证"规则决定）。 */}
-                {codeSource === 'git' && (
-                  <>
-                    {/* A8（第二轮审计）：凭据边界声明——派发链只支持匿名可达仓库
-                        （assertSafeGitRepoUrl 校验 https?://|git@|ssh:// 且执行器
-                        侧无凭据注入通道），私有仓库凭据不在平台管理范围内，先在
-                        表单里讲清楚，避免"任务建成了、派发才 401"的错位预期。 */}
-                    <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 8 }}>
-                      {t('taskForm.field.gitRepo.credentialHint')}
-                    </Typography.Paragraph>
-                    <Form.Item
-                      name="gitRepo"
-                      label={t('taskForm.field.gitRepo')}
-                      tooltip={{ title: t('taskForm.field.gitRepo.tooltip'), icon: <InfoCircleOutlined /> }}
-                    >
-                      <Input placeholder={t('taskForm.field.gitRepo.placeholder')} />
-                    </Form.Item>
-                    <Form.Item name="gitBranch" label={t('taskForm.field.gitBranch')}>
-                      <Input placeholder={t('taskForm.field.gitBranch.placeholder')} />
-                    </Form.Item>
-                  </>
-                )}
-
-                {/* application_zip 来源：applicationId 在此是**代码来源载体**（必填）。
-                    与下面 glue 分支的同一控件共用 name="applicationId"——两条分支
-                    互斥渲染，不会出现两个同名控件并存。 */}
-                {codeSource === 'application_zip' && (
-                  <>
-                    {/* APP-SELECT-01：可检索应用选择器。计数放 extra——「共 N 个应用」
-                        让用户在应用多到需要搜索前就知道候选规模。 */}
-                    <Form.Item
-                      name="applicationId"
-                      label={t('taskForm.field.applicationId.zipRequired')}
-                      required
-                      rules={[{ required: true, message: t('taskForm.field.codeSource.applicationRequired') }]}
-                      tooltip={{ title: t('taskForm.field.applicationId.zipTooltip'), icon: <InfoCircleOutlined /> }}
-                      extra={t('taskForm.field.applicationId.zipAppCount', { n: apps.length })}
-                    >
-                      <Select
-                        placeholder={t('taskForm.field.applicationId.zipPlaceholder')}
-                        showSearch
-                        loading={appsLoading}
-                        optionLabelProp="name"
-                        options={zipAppOptions}
-                        filterOption={appSelectFilterOption}
-                        notFoundContent={renderAppSelectNotFound()}
-                      />
-                    </Form.Item>
-                    {/* AC-19a：应用 runtime 必须与任务 runtime 一致。只在两侧都有
-                        值时才判定（deriveRuntimeMismatch 对缺失返回 null），避免
-                        应用列表未就绪/应用无 runtime 时误报。 */}
-                    {zipRuntimeMismatch && (
-                      <Alert
-                        type="error"
-                        showIcon
-                        data-testid="code-source-runtime-mismatch"
-                        title={t('taskForm.field.codeSource.runtimeMismatch', {
-                          task: runtimeWatch ?? '-',
-                          app: apps.find(a => a.id === applicationIdWatch)?.runtime ?? '-',
-                        })}
-                        style={{ marginBottom: 16 }}
-                      />
-                    )}
-                  </>
-                )}
-
-                {/* glue 来源：本表单没有脚本输入框（GlueEditor 在独立区块写
-                    glueSource 并同时声明 codeSource='glue'）。此处只说明去哪编辑，
-                    避免用户以为"选了 glue 却没地方写脚本"。 */}
-                {codeSource === 'glue' && (
-                  <Alert
-                    type="info"
-                    showIcon
-                    data-testid="code-source-glue-hint"
-                    title={t('taskForm.field.codeSource.glueHint')}
-                    style={{ marginBottom: 16 }}
-                  />
-                )}
-
-                {/* 部署绑定（非 zip 来源）：applicationId 在 git/glue 来源下仍有
-                    意义——它是「任务 ↔ 应用」的部署绑定关系，与代码来源正交
-                    （部署清单自动注册的任务即 applicationId + glueSource 并存，
-                    后端 NFR-05 明确放行）。故此处必须保留一个入口，否则用户在
-                    git 来源下根本无法查看/修改该绑定。 */}
-                {codeSource !== 'application_zip' && (
-                  <Form.Item
-                    name="applicationId"
-                    label={t('taskForm.field.applicationId')}
-                    tooltip={{ title: t('taskForm.field.applicationId.tooltip'), icon: <InfoCircleOutlined /> }}
-                    extra={
-                      applicationIdWatch ? (
-                        <Text type="secondary" style={{ fontSize: 12 }}>
-                          {t('taskForm.field.applicationId.boundHint')}
-                        </Text>
-                      ) : undefined
-                    }
-                  >
-                    {/* APP-SELECT-01：绑定分支同为富信息选项，但不带健康禁用——
-                        见上方 zipAppOptions/bindAppOptions 的注释。 */}
-                    <Select
-                      placeholder={t('taskForm.field.applicationId.placeholder')}
-                      allowClear
-                      showSearch
-                      loading={appsLoading}
-                      optionLabelProp="name"
-                      options={bindAppOptions}
-                      filterOption={appSelectFilterOption}
-                      notFoundContent={renderAppSelectNotFound()}
-                    />
-                  </Form.Item>
-                )}
-              </Card>
-            </div>
-
-            {/* 分区二：触发与告警（原 step 1 上半 + step 2 告警/runbook/参数） */}
-            <div id={SECTION_IDS[1]} data-testid="section-trigger" role="region" aria-label={t('taskForm.section.trigger')} style={{ scrollMarginTop: LAYOUT_TOKENS.anchorScrollOffset }}>
-              <Typography.Title level={5} style={sectionTitleStyle}>{t('taskForm.section.trigger')}</Typography.Title>
-              <Card style={{ marginBottom: 20 }}>
-                <Form.Item name="triggerType" label={t('taskForm.field.triggerType')}>
-                  <Radio.Group>
-                    <Space orientation="vertical">
-                      {TRIGGER_OPTIONS(t).map(o => (
-                        <Radio key={o.value} value={o.value}>
-                          <Space>
-                            <span style={{ fontWeight: 500 }}>{o.label}</span>
-                            <Text type="secondary" style={{ fontSize: 12 }}>{o.desc}</Text>
-                          </Space>
-                        </Radio>
-                      ))}
-                    </Space>
-                  </Radio.Group>
-                </Form.Item>
-
-                {/* A4（第三轮审计）：上一轮触发未结束时，新触发的处置策略。
-                    以前只有后端默认 serial 生效，表单不暴露；三个取值语义差异
-                    大（排队/丢弃/覆盖），用户需要可见、可选。取值与后端
-                    task.entity.ts BlockStrategy / api/tasks.ts 类型逐一对齐。 */}
-                <Form.Item
-                  name="blockStrategy"
-                  label={t('taskForm.field.blockStrategy')}
-                  extra={t('taskForm.field.blockStrategy.hint')}
-                >
-                  <Select
-                    options={[
-                      { value: 'serial', label: t('taskForm.field.blockStrategy.serial') },
-                      { value: 'discard', label: t('taskForm.field.blockStrategy.discard') },
-                      { value: 'cover_early', label: t('taskForm.field.blockStrategy.coverEarly') },
-                    ]}
-                  />
-                </Form.Item>
-
-                {triggerType === 'cron' && (
-                  <Form.Item
-                    name="cronExpression"
-                    label={t('taskForm.field.cron')}
-                    rules={[
-                      { required: true, message: t('taskForm.field.cron.required') },
-                      { validator: cronGateValidator(t) },
-                    ]}
-                    extra={
-                      <Button type="link" size="small" onClick={() => setShowCronHelper(true)}>
-                        {t('taskForm.field.cron.helper')}
-                      </Button>
-                    }
-                  >
-                    <Input placeholder={t('taskForm.field.cron.placeholder')} style={{ fontFamily: 'monospace' }} />
-                  </Form.Item>
-                )}
-
-                {triggerType === 'cron' && (
-                  <Form.Item
-                    name="timezone"
-                    label={t('taskForm.field.timezone')}
-                    tooltip={{ title: t('taskForm.field.timezone.tooltip'), icon: <InfoCircleOutlined /> }}
-                  >
-                    <Input placeholder="Asia/Shanghai" />
-                  </Form.Item>
-                )}
-
-                {triggerType === 'fixed_rate' && (
-                  <Form.Item
-                    name="fixedRate"
-                    label={t('taskForm.field.fixedRate')}
-                    rules={[{ required: true, message: t('taskForm.field.fixedRate.required') }]}
-                  >
-                    <InputNumber<number>
-                      min={60}
-                      step={60}
-                      style={{ width: 200 }}
-                      formatter={v => v ? t('taskForm.field.fixedRate.minutes', { n: fixedRateToMinutesLabel(Number(v)) }) : ''}
-                      // F-28（DEEP_REVIEW 0ef3bbe）：原 parser 用 t('taskForm.field.fixedRate.minuteUnit')
-                      // 的**翻译文本**做 String.replace 反解数字——文案一变（如英文 "minutes"）或
-                      // 语序变化即解析成 NaN，属"解析依赖 i18n 文案"的坏味道。现改走
-                      // pages/fixed-rate.ts 的与语言无关数字抽取（纯函数，已单测）。
-                      //
-                      // 本轮审计修复：额外把**当前表单值**传给 parser。输入框以分钟呈现
-                      // 而表单值单位是秒，非 60 整数倍的值（90s/45s）向下取整后展示为
-                      // 「1 分钟」；仅 parser(text) 会把展示文本回读成 60s，用户聚焦后
-                      // 失焦（未改一个字符）就把 90s 静默改成 60s。传当前值后 parser 能
-                      // 判定"是否跨分钟"——未改则原样保留精确秒值。
-                      parser={(v) => parseFixedRateSeconds(v, form.getFieldValue('fixedRate'))}
-                      placeholder={t('taskForm.field.fixedRate.placeholder')}
-                    />
-                  </Form.Item>
-                )}
-
-                {/* UI-06 ②：触发预览（cron/fixed_rate 未来 5 次，timezone 感知；
-                    manual 不渲染）。纯展示，不影响校验/提交。 */}
-                {(triggerType === 'cron' || triggerType === 'fixed_rate') && (
-                  <TriggerPreview
-                    triggerType={triggerType}
-                    cronExpression={cronExpression}
-                    fixedRate={fixedRateWatch}
-                    timezone={timezoneWatch}
-                  />
-                )}
-
-                {/* FEAT-06: 任务级维护窗口——发布冻结期跳过计划触发（手动触发不受限） */}
-                <Divider style={{ margin: '16px 0' }} />
-                <div style={{ marginBottom: 8 }}>
-                  <Space size={4}>
-                    <ToolOutlined />
-                    <Typography.Text strong>{t('taskForm.window.title')}</Typography.Text>
-                    <Tooltip title={t('taskForm.window.tooltip')}>
-                      <InfoCircleOutlined style={{ color: token.colorPrimary }} />
-                    </Tooltip>
-                  </Space>
-                </div>
-                <Form.List name="maintenanceWindows">
-                  {(fields, { add, remove }) => (
-                    <>
-                      {fields.map(field => (
-                        // A4（第三轮审计）：固定 200px 的 start/end 双输入并排在
-                        // 375px 视口横向溢出——改 flex wrap 布局：窄屏按 flex-basis
-                        // 折行、条目可收缩（minWidth 0 + Input width 100%），
-                        // 宽屏仍一行三列，字段与校验语义不变。
-                        <div
-                          key={field.key}
-                          style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', marginBottom: 8 }}
-                        >
-                          <div style={{ flex: '1 1 180px', minWidth: 0 }}>
-                            <Form.Item
-                              name={[field.name, 'start']}
-                              noStyle
-                              rules={[
-                                { required: true, message: t('taskForm.window.startRequired') },
-                                { pattern: /^(\*|([0-5]?\d))(\/(\d+))? (\*|([01]?\d|2[0-3]))(\/(\d+))? (\*|([012]?\d|3[01]))(\/(\d+))? (\*|(1[0-2]|0?[1-9]))(\/(\d+))? (\*|[0-7])(\/(\d+))?$/, message: t('taskForm.window.cronFormat') },
-                                { validator: cronGateValidator(t) },
-                              ]}
-                            >
-                              <Input placeholder={t('taskForm.window.startPlaceholder')} style={{ width: '100%', fontFamily: 'monospace' }} />
-                            </Form.Item>
-                          </div>
-                          <div style={{ flex: '1 1 180px', minWidth: 0 }}>
-                            <Form.Item
-                              name={[field.name, 'end']}
-                              noStyle
-                              rules={[
-                                { required: true, message: t('taskForm.window.endRequired') },
-                                { pattern: /^(\*|([0-5]?\d))(\/(\d+))? (\*|([01]?\d|2[0-3]))(\/(\d+))? (\*|([012]?\d|3[01]))(\/(\d+))? (\*|(1[0-2]|0?[1-9]))(\/(\d+))? (\*|[0-7])(\/(\d+))?$/, message: t('taskForm.window.cronFormat') },
-                                { validator: cronGateValidator(t) },
-                              ]}
-                            >
-                              <Input placeholder={t('taskForm.window.endPlaceholder')} style={{ width: '100%', fontFamily: 'monospace' }} />
-                            </Form.Item>
-                          </div>
-                          <div style={{ flex: '1 1 140px', minWidth: 0 }}>
-                            <Form.Item name={[field.name, 'description']} noStyle>
-                              <Input placeholder={t('taskForm.window.descPlaceholder')} style={{ width: '100%' }} />
-                            </Form.Item>
-                          </div>
-                          <Button
-                            type="text"
-                            danger
-                            icon={<DeleteOutlined />}
-                            aria-label={t('taskForm.window.deleteAria', { n: field.name + 1 })}
-                            onClick={() => remove(field.name)}
-                          />
-                        </div>
-                      ))}
-                      <Form.Item style={{ marginBottom: 0 }}>
-                        <Button
-                          type="dashed"
-                          icon={<PlusOutlined />}
-                          onClick={() => add()}
-                          disabled={fields.length >= MAINTENANCE_WINDOWS_MAX}
-                        >
-                          {t('taskForm.window.add')}（{fields.length}/{MAINTENANCE_WINDOWS_MAX}）
-                        </Button>
-                      </Form.Item>
-                    </>
-                  )}
-                </Form.List>
-
-                <Divider style={{ margin: '20px 0 16px' }} />
-                <div style={{ marginBottom: 8 }}>
-                  <Typography.Text strong>{t('taskForm.alarm.title')}</Typography.Text>
-                </div>
-                <AlarmConfig />
-
-                <Divider style={{ margin: '20px 0 16px' }} />
-                <div style={{ marginBottom: 8 }}>
-                  <Typography.Text strong>{t('taskForm.runbook.title')}</Typography.Text>
-                </div>
-                <Form.Item
-                  name="runbook"
-                  label={t('taskForm.runbook.label')}
-                  tooltip={{ title: t('taskForm.runbook.tooltip'), icon: <InfoCircleOutlined /> }}
-                >
-                  <Input.TextArea
-                    rows={6}
-                    placeholder={t('taskForm.runbook.placeholder')}
-                  />
-                </Form.Item>
-              </Card>
-            </div>
-
-            {/* 分区三：执行器策略与超时重试（原 step 1 下半） */}
-            <div id={SECTION_IDS[2]} data-testid="section-executor" role="region" aria-label={t('taskForm.section.executor')} style={{ scrollMarginTop: LAYOUT_TOKENS.anchorScrollOffset }}>
-              <Typography.Title level={5} style={sectionTitleStyle}>{t('taskForm.section.executor')}</Typography.Title>
-              <Card style={{ marginBottom: 20 }}>
-                <Form.Item
-                  label={
-                    <Space size={4}>
-                      <span>{t('taskForm.executor.strategy')}</span>
-                      {(broadcastDisabledByPin || pinDisabledByBroadcast) && (
-                        <Tooltip title={t('taskForm.executor.mutexTooltip')}>
-                          <LockOutlined style={{ color: token.colorWarning }} data-testid="executor-mutex-lock" />
-                        </Tooltip>
-                      )}
-                    </Space>
-                  }
-                  required
-                  tooltip={{ title: t('taskForm.executor.strategyTooltip'), icon: <InfoCircleOutlined /> }}
-                >
-                  <Radio.Group
-                    value={executorMode}
-                    onChange={e => setExecutorMode(e.target.value)}
-                    style={{ width: '100%' }}
-                  >
-                    <Space orientation="vertical" style={{ width: '100%' }}>
-                      {EXECUTOR_MODE_OPTIONS(t).map(o => (
-                        <Radio
-                          key={o.value}
-                          value={o.value}
-                          disabled={o.value === 'broadcast' && broadcastDisabledByPin}
-                          style={{
-                            border: `1px solid ${executorMode === o.value ? token.colorPrimary : token.colorBorder}`,
-                            borderRadius: 8,
-                            padding: '10px 14px',
-                            width: '100%',
-                            background: executorMode === o.value ? token.colorPrimaryBg : token.colorBgContainer,
-                            transition: 'all 0.2s',
-                          }}
-                        >
-                          <Space>
-                            {o.icon}
-                            <span style={{ fontWeight: 500 }}>{o.label}</span>
-                            <Text type="secondary" style={{ fontSize: 12 }}>
-                              {o.value === 'broadcast' && broadcastDisabledByPin
-                                ? t('taskForm.executor.broadcastBlocked')
-                                : o.desc}
-                            </Text>
-                          </Space>
-                        </Radio>
-                      ))}
-                    </Space>
-                  </Radio.Group>
-                </Form.Item>
-
-                {executorMode === 'pinned' && (
-                  <Form.Item name="executorId" label={t('taskForm.field.executorId')} required
-                    rules={[{ required: true, message: t('taskForm.field.executorId.required') }]}
-                    tooltip={{ title: t('taskForm.field.executorId.tooltip'), icon: <InfoCircleOutlined /> }}>
-                    <Select
-                      placeholder={t('taskForm.field.executorId.placeholder')}
-                      showSearch
-                      optionFilterProp="label"
-                      options={executors.map(e => ({
-                        value: e.id,
-                        label: `${e.appName}  (${e.address})${e.status === 'online' ? '' : ` ${t('taskForm.executor.offline')}`}`,
-                      }))}
-                    />
-                  </Form.Item>
-                )}
-
-                {executorMode === 'group' && (
-                  <>
-                    <Form.Item name="executorGroup" label={t('taskForm.field.executorGroup')}
-                      tooltip={{ title: t('taskForm.field.executorGroup.tooltip'), icon: <InfoCircleOutlined /> }}>
-                      <Select placeholder={t('taskForm.field.executorGroup.placeholder')} allowClear
-                        options={groups.map(g => ({ value: g, label: g }))} />
-                    </Form.Item>
-                    <Form.Item name="executorTags" label={t('taskForm.field.executorTags')}
-                      tooltip={{ title: t('taskForm.field.executorTags.tooltip'), icon: <InfoCircleOutlined /> }}>
-                      <Select
-                        mode="multiple"
-                        placeholder={t('taskForm.field.executorTags.placeholder')}
-                        allowClear
-                        options={allTags.map(t => ({ value: t, label: <Tag>{t}</Tag> }))}
-                      />
-                    </Form.Item>
-                  </>
-                )}
-
-                {/* NF-04: affinity constraints are orthogonal to auto/group/broadcast
-                    and remain mounted in every mode so edit/save cannot clear a
-                    value merely because a mode-specific branch is not visible.
-                    Pinned dispatch bypasses all tag filters, so these controls are
-                    disabled there while their stored values are retained for a
-                    later switch back to a filtering mode. */}
-                <Form.Item
-                  name="executorAffinityTags"
-                  label={t('taskForm.field.affinityTags')}
-                  tooltip={{
-                    title: t('taskForm.field.affinityTags.tooltip'),
-                    icon: <InfoCircleOutlined />,
-                  }}
-                >
-                  <Select
-                    mode="multiple"
-                    allowClear
-                    disabled={executorMode === 'pinned'}
-                    placeholder={t('taskForm.field.affinityTags.placeholder')}
-                    options={allTags.map(t => ({ value: t, label: <Tag>{t}</Tag> }))}
-                  />
-                </Form.Item>
-                <Form.Item
-                  name="executorAntiAffinityTags"
-                  label={t('taskForm.field.antiAffinityTags')}
-                  tooltip={{
-                    title: t('taskForm.field.antiAffinityTags.tooltip'),
-                    icon: <InfoCircleOutlined />,
-                  }}
-                >
-                  <Select
-                    mode="multiple"
-                    allowClear
-                    disabled={executorMode === 'pinned'}
-                    placeholder={t('taskForm.field.antiAffinityTags.placeholder')}
-                    options={allTags.map(t => ({ value: t, label: <Tag>{t}</Tag> }))}
-                  />
-                </Form.Item>
-                {/* FEAT-22 v2：任务级部署约束模式——与亲和约束同款的全模式挂载
-                    + pinned 禁用（pin 语义就是"只在这一台跑"，部署约束在 pin 下
-                    不参与；禁用仅表意，值保留，切回后继续生效）。 */}
-                <Form.Item
-                  name="deploymentPolicy"
-                  label={t('taskForm.field.deploymentPolicy')}
-                  // 创建态默认「跟随全局」（编辑态由 setFieldsValue 覆盖）。
-                  initialValue="global"
-                  tooltip={{
-                    title: t('taskForm.field.deploymentPolicy.tooltip'),
-                    icon: <InfoCircleOutlined />,
-                  }}
-                >
-                  <Select
-                    allowClear={false}
-                    disabled={executorMode === 'pinned'}
-                    options={[
-                      { value: 'global', label: t('taskForm.field.deploymentPolicy.followGlobal') },
-                      { value: 'strict', label: t('taskForm.field.deploymentPolicy.strict') },
-                      { value: 'prefer', label: t('taskForm.field.deploymentPolicy.prefer') },
-                    ]}
-                  />
-                </Form.Item>
-                {executorMode === 'pinned' && (
-                  <Alert
-                    type="info"
-                    showIcon
-                    title={t('taskForm.alert.pinnedAffinity')}
-                    data-testid="pinned-affinity-disabled"
-                    style={{ marginBottom: 16 }}
-                  />
-                )}
-
-                {pinDisabledByBroadcast && (
-                  <Alert
-                    type="warning"
-                    showIcon
-                    data-testid="broadcast-pin-cleared"
-                    title={t('taskForm.alert.broadcastPin')}
-                    style={{ marginBottom: 16 }}
-                  />
-                )}
-
-                <Divider style={{ margin: '16px 0' }} />
-
-                <Form.Item name="timeout" label={<>{t('taskForm.field.timeout')} <Text type="secondary" style={{ fontSize: 12 }}>{t('taskForm.field.timeout.unit')}</Text></>} tooltip={{ title: t('taskForm.field.timeout.tooltip'), icon: <InfoCircleOutlined /> }}>
-                  {/*
-                    P0（UX-AUDIT-2026-09-21 §P0-6）：下限必须是 0（= 不限时）。
-
-                    后端 CreateTaskDto 是 `@Min(0)` 且描述明写 "0 = no limit"，
-                    timeout-policy.util 也以 `timeoutSec <= 0` 判"不限时"。此前
-                    前端写 min={10}，而编辑态回填是 `task.timeoutSeconds ?? task.timeout`
-                    ——存量 timeout=0（不限时）的任务打开编辑页显示 0，antd 在失焦时
-                    按 min 钳到 **10**：一个原本不限时的长任务被无声改成 10 秒超时，
-                    保存后执行必被杀。反向地，用户也无法表达"不限时"。
-                  */}
-                  <InputNumber min={0} max={86400} style={{ width: 160 }} placeholder="300" />
-                </Form.Item>
-
-                {/* CORE-04: 超时策略分级——超时后动作三选一。kill 为既有树杀
-                    语义；kill_retry 超时终态后按任务重试预算 re-enqueue 一次；
-                    notify_only 仅保证超时告警（执行器自身硬超时仍在，进程仍会
-                    被执行器杀掉——并非"永不超时"）。 */}
-                <Form.Item
-                  name="timeoutAction"
-                  label={<>{t('taskForm.field.timeoutAction')} <Text type="secondary" style={{ fontSize: 12 }}>{t('taskForm.field.timeoutAction.hint')}</Text></>}
-                  // 缺省 kill 由 Form.initialValues 统一提供，与同组 timeout/maxRetry/
-                  // retryDelay/priority 一致。此处再声明 initialValue 会与之冲突
-                  // （antd 告警：Form already set 'initialValues' with path
-                  // 'timeoutAction'），两值相同故语义不变，仅为消除冗余声明。
-                  tooltip={{ title: t('taskForm.field.timeoutAction.tooltip'), icon: <InfoCircleOutlined /> }}
-                >
-                  <Radio.Group optionType="button" buttonStyle="solid">
-                    {TIMEOUT_ACTION_OPTIONS.map((o) => (
-                      <Radio.Button key={o.value} value={o.value}>{TIMEOUT_ACTION_LABELS(t)[o.value]}</Radio.Button>
-                    ))}
-                  </Radio.Group>
-                </Form.Item>
-
-                {/* CORE-04: 超时预警——运行时长达到 超时时间×阈值% 时发一次
-                    WARNING 通知（每个执行至多一次）。留空 = 不启用。 */}
-                <Form.Item
-                  name="timeoutWarnRatio"
-                  label={<>{t('taskForm.field.timeoutWarnRatio')} <Text type="secondary" style={{ fontSize: 12 }}>{t('taskForm.field.timeoutWarnRatio.hint')}</Text></>}
-                  tooltip={{ title: t('taskForm.field.timeoutWarnRatio.tooltip'), icon: <InfoCircleOutlined /> }}
-                >
-                  <InputNumber min={0} max={TIMEOUT_WARN_RATIO_MAX} style={{ width: 160 }} placeholder={t('taskForm.field.timeoutWarnRatio.placeholder')} />
-                </Form.Item>
-
-                <Form.Item name="maxRetry" label={<>{t('taskForm.field.maxRetry')} <Text type="secondary" style={{ fontSize: 12 }}>{t('taskForm.field.maxRetry.hint')}</Text></>}>
-                  <InputNumber min={0} max={10} style={{ width: 120 }} />
-                </Form.Item>
-
-                <Form.Item name="retryDelay" label={<>{t('taskForm.field.retryDelay')} <Text type="secondary" style={{ fontSize: 12 }}>{t('taskForm.field.retryDelay.hint')}</Text></>}>
-                  <InputNumber min={0} style={{ width: 160 }} />
-                </Form.Item>
-
-                {/* CORE-02: 可重试错误类型白名单——留空 = 全部可重试（既有语义）；
-                    勾选后仅白名单内的失败（错误消息子串或失败分类，大小写不敏感）
-                    会重试。timeout 类失败另有防双派发守卫，永不自动重试。 */}
-                <Form.Item
-                  name="retryableErrors"
-                  label={<>{t('taskForm.field.retryableErrors')} <Text type="secondary" style={{ fontSize: 12 }}>{t('taskForm.field.retryableErrors.hint')}</Text></>}
-                  tooltip={{ title: t('taskForm.field.retryableErrors.tooltip'), icon: <InfoCircleOutlined /> }}
-                >
-                  <Select
-                    mode="multiple"
-                    allowClear
-                    placeholder={t('taskForm.field.retryableErrors.placeholder')}
-                    // P3-2：选项只携带 i18n 键，标签在此统一 t() 解析——
-                    // 不再有硬编码中文兜底，英文界面不可能再漏出中文选项。
-                    options={RETRYABLE_ERROR_OPTIONS.map((o) => ({ value: o.value, label: t(o.labelKey) }))}
-                  />
-                </Form.Item>
-
-                <Form.Item name="priority" label={<>{t('taskForm.field.priority')} <Text type="secondary" style={{ fontSize: 12 }}>{t('taskForm.field.priority.hint')}</Text></>}>
-                  <Select
-                    style={{ width: 200 }}
-                    options={TASK_PRIORITY_OPTIONS.map((o) => ({ value: o.value, label: PRIORITY_LABELS(t)[String(o.value)] }))}
-                  />
-                </Form.Item>
-
-                {/* NF-02: 上游依赖（编排）。后端 tasks.dependencies jsonb =
-                    Record<taskId, taskName>；上游全部最近执行 SUCCESS 时由
-                    admin-api 自动扇出触发本任务（triggerDependentTasks，
-                    环检测/深度上限在 create/update 侧强制）。 */}
-                <Form.Item
-                  name="upstreamDependencies"
-                  label={t('taskForm.field.upstreamDependencies')}
-                  tooltip={{
-                    title:
-                      t('taskForm.field.upstreamDependencies.tooltip'),
-                    icon: <InfoCircleOutlined />,
-                  }}
-                >
-                  <Select
-                    mode="multiple"
-                    showSearch
-                    allowClear
-                    placeholder={t('taskForm.field.upstreamDependencies.placeholder')}
-                    options={taskOptions
-                      .filter((t) => t.id !== editId)
-                      .map((t) => ({ value: t.id, label: t.name }))}
-                    filterOption={(input, opt) =>
-                      (opt?.label as string)?.toLowerCase().includes(input.toLowerCase())
-                    }
-                  />
-                </Form.Item>
-              </Card>
-            </div>
+            {/* 分区三：执行器策略与超时重试（原 step 1 下半）——
+                REFACTOR-TASKFORM-05 迁至 TaskFormExecutorSection */}
+            <TaskFormExecutorSection
+              executorMode={executorMode}
+              onExecutorModeChange={setExecutorMode}
+              executors={executors}
+              groups={groups}
+              allTags={allTags}
+              taskOptions={taskOptions}
+              editId={editId}
+            />
 
             {/* 分区四：参数配置（原 step 2 上半）
                 REFACTOR-TASKFORM-01：区块展示迁至 TaskFormParamsSection（仍在
@@ -2122,37 +863,15 @@ export default function TaskFormPage() {
 
       {/* FEAT-13：保存为自定义模板弹窗——config 由 templateConfigFromFormValues
           白名单抽取（CreateTaskDto 子集，后端 forbidNonWhitelisted 校验），
-          此处只填模板元信息（name/描述/分类）。 */}
-      <Modal
-        title={<Space><SaveOutlined /> {t('taskForm.tpl.modalTitle')}</Space>}
+          此处只填模板元信息（name/描述/分类）。
+          REFACTOR-TASKFORM-06：Modal 本体迁至 TaskFormTemplateModal（tplForm 与
+          元信息校验随之迁出；载荷组装/请求仍在本页）。 */}
+      <TaskFormTemplateModal
         open={tplModalOpen}
+        saving={tplSaving}
         onCancel={() => setTplModalOpen(false)}
-        onOk={handleSaveAsTemplate}
-        okText={t('taskForm.tpl.save')}
-        okButtonProps={{ loading: tplSaving, 'data-testid': 'tpl-save-confirm' }}
-        cancelText={t('taskForm.tpl.cancel')}
-        width={520}
-        destroyOnHidden
-      >
-        <Form form={tplForm} layout="vertical">
-          <Form.Item
-            name="name"
-            label={t('taskForm.tpl.name')}
-            rules={[{ required: true, whitespace: true, message: t('taskForm.tpl.name.required') }]}
-          >
-            <Input placeholder={t('taskForm.tpl.name.placeholder')} maxLength={128} data-testid="tpl-name-input" />
-          </Form.Item>
-          <Form.Item name="description" label={t('taskForm.tpl.description')}>
-            <Input.TextArea rows={2} placeholder={t('taskForm.tpl.description.placeholder')} maxLength={500} data-testid="tpl-desc-input" />
-          </Form.Item>
-          <Form.Item name="category" label={t('taskForm.tpl.category')}>
-            <Input placeholder={t('taskForm.tpl.category.placeholder')} maxLength={32} data-testid="tpl-category-input" />
-          </Form.Item>
-        </Form>
-        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          {t('taskForm.tpl.hint')}
-        </Typography.Text>
-      </Modal>
+        onConfirm={handleTemplateConfirm}
+      />
       {/* P1-4：未保存守卫——用户在表单有改动时点页头返回/面包屑/浏览器关闭，拦截并二次确认。 */}
       <Modal
         open={navigationBlocker.state === 'blocked'}
