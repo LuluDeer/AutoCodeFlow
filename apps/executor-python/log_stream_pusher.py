@@ -32,6 +32,11 @@ class LogStreamPusher:
         # 两个 chunk。不做缓冲就会把「一行」记成「两行」——行号与最终回调日志
         # 对不上，且空行会被整批丢弃。
         self._partial = ''
+        # P3（executor 一致性审计，对齐 node log-stream-pusher.ts A8）: 背压
+        # 丢行的可观测性——每个执行限 1 条 warn（防风暴刷屏：背压本身是持续
+        # 状态，逐行 warn 反而淹没日志），进入背压状态置位，成功清空缓冲后
+        # 复位，允许后续再次丢行时再次告警一次。
+        self._backpressure_warned = False
 
     async def add_line(self, content: str) -> int:
         """Add a line to the buffer. Returns the line number assigned to this line."""
@@ -47,6 +52,17 @@ class LogStreamPusher:
                 # Backpressure: drop oldest chunks if we exceed memory limit
                 if len(self.chunks) > self.max_chunks_in_memory:
                     dropped = self.chunks.pop(0)
+                    # P3（A8 对齐 node）: 丢行从 debug 升级为 warn（每执行限
+                    # 1 条）。被丢弃的行不会再出现在实时流里（执行结束的回调
+                    # 日志不受影响，那走另一条持久化路径），属于「实时视图
+                    # 缺口」级别的信号，运维需要从日志里看到它发生。
+                    if not self._backpressure_warned:
+                        self._backpressure_warned = True
+                        logger.warning(
+                            f"[LogStreamPusher] Backpressure: dropping buffered log lines for execution "
+                            f"{self.execution_id} (admin API slower than producer; subsequent drops "
+                            f"will not be logged again)"
+                        )
                     logger.debug(
                         f"[LogStreamPusher] Dropped {len(dropped['lines'])} lines due to backpressure "
                         f"for execution {self.execution_id}"
@@ -106,14 +122,20 @@ class LogStreamPusher:
                 chunks_to_flush = self.chunks[:]
                 self.chunks.clear()
 
+            all_pushed = True
             for chunk in chunks_to_flush:
                 try:
                     await self._push_chunk(chunk)
                 except Exception as err:
+                    all_pushed = False
                     logger.debug(
                         f"[LogStreamPusher] Failed to push chunk for execution {self.execution_id}: {err}"
                     )
                     # Continue with next chunks despite failure
+            # P3（A8 对齐 node）: 缓冲清空且全部推送成功 → 复位背压告警闸，
+            # 让下一次独立的背压事件仍能产出一条 warn（而非本执行终身静默）。
+            if all_pushed:
+                self._backpressure_warned = False
 
     async def flush(self) -> None:
         """Cancel any pending timer, then drain every buffered line."""

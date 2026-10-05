@@ -127,7 +127,7 @@ jest.mock('../task-worker', () => {
 // Imports
 // ---------------------------------------------------------------------------
 
-import { executeRouter, runTask, gitCheckoutTo, killRunningTaskProcesses, abortAllLiveExecutions, BoundedLogBuffer, resolveBwrapPath, buildTaskSandboxArgv, __resetBwrapPathCacheForTest, SHELL_ENTRYPOINT_SAFE_RE } from './execute';
+import { executeRouter, runTask, gitCheckoutTo, killRunningTaskProcesses, abortAllLiveExecutions, BoundedLogBuffer, resolveBwrapPath, buildTaskSandboxArgv, __resetBwrapPathCacheForTest, SHELL_ENTRYPOINT_SAFE_RE, resolveTaskTimeoutRaw } from './execute';
 import { buildNpmRcContent, executionExists, quoteShellArgForPlatform } from './execute';
 // A3（kill/logs 契约化）：kill 真实出参用生成的 schema 现校验
 import { KillResponseSchema } from '../generated/protocol.schemas';
@@ -526,6 +526,20 @@ describe('BoundedLogBuffer', () => {
     expect(s.startsWith('aaaa')).toBe(true);
     expect(s.endsWith('cccc')).toBe(true);
     expect(s).toContain('truncated in memory');
+  });
+
+  it('truncation marker matches admin LOG_TRUNCATION_MARKER (P3 双端一致性)', () => {
+    // admin task.service.ts: LOG_TRUNCATION_MARKER = /\[\s*(?:logs\s+)?truncated\b/i
+    // 旧文案 "[log output truncated ...]" 不匹配该正则——同一份截断日志在
+    // admin 侧 node 执行器不被识别为截断（python 侧 "[logs truncated in
+    // memory ...]" 命中）。此处钉住正则兼容，防文案再度漂移。
+    const buf = new BoundedLogBuffer();
+    buf.append('a'.repeat(600_000));
+    buf.append('b'.repeat(600_000));
+    const s = buf.toString();
+    expect(s).toMatch(/\[\s*(?:logs\s+)?truncated\b/i);
+    expect(s).toContain('logs truncated in memory');
+    expect(s).not.toContain('log output truncated');
   });
 
   it('returns the exact content when under the cap', () => {
@@ -1643,6 +1657,202 @@ describe('timeout semantics (改动4)', () => {
     expect(Number.isFinite(exp)).toBe(true);
     expect(exp).toBeGreaterThan(now + 315_360_000 - 7200);
     expect(exp).toBeLessThan(now + 315_360_000 + 7200);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P2（双端一致性）：timeoutSeconds ?? timeout_seconds ?? timeout 三键别名解析
+// （executor-python `_resolve_task_timeout` 同构）。此前只读 task.timeout——
+// admin 若以 timeoutSeconds（协议首键）派发，python 执行器按声明超时跑、
+// node 执行器静默回落 300s 默认。
+// ---------------------------------------------------------------------------
+
+describe('timeout alias parsing (P2 双端一致性)', () => {
+  it('resolveTaskTimeoutRaw resolves the three keys in protocol order', () => {
+    expect(resolveTaskTimeoutRaw({ timeoutSeconds: 5, timeout_seconds: 6, timeout: 7 })).toBe(5);
+    expect(resolveTaskTimeoutRaw({ timeoutSeconds: null, timeout_seconds: 6, timeout: 7 })).toBe(6);
+    expect(resolveTaskTimeoutRaw({ timeoutSeconds: null, timeout_seconds: null, timeout: 7 })).toBe(7);
+    expect(resolveTaskTimeoutRaw({})).toBeUndefined();
+    expect(resolveTaskTimeoutRaw({ timeoutSeconds: null, timeout_seconds: null, timeout: null })).toBeNull();
+    expect(resolveTaskTimeoutRaw(null)).toBeUndefined();
+    expect(resolveTaskTimeoutRaw(undefined)).toBeUndefined();
+    // 0 能穿过（显式不限时）——or-链会把 0 当 falsy 吞掉
+    expect(resolveTaskTimeoutRaw({ timeoutSeconds: 0 })).toBe(0);
+  });
+
+  it('accept + prepare resolve timeoutSeconds (camelCase alias) end-to-end', async () => {
+    (mockCp.spawn as jest.Mock).mockReturnValue(okSpawn());
+    let preparedTask: any;
+    (taskWorkerManager.execute as jest.Mock).mockImplementationOnce(
+      async (_tid: string, _eid: string, _task: any, _params: any, onComplete?: () => void, runPrepared?: any) => {
+        if (runPrepared) {
+          preparedTask = (await runPrepared(() => undefined)).task;
+        }
+        if (onComplete) onComplete();
+      },
+    );
+    const res = await request(appNoAuth).post('/api/execute').send({
+      executionId: 'exec-alias-camel',
+      task: { runtime: 'node', entrypoint: 'index.js', timeoutSeconds: 90 },
+    });
+    expect(res.status).toBe(200);
+    await flushAsync();
+    expect(preparedTask.timeout).toBe(90);
+  });
+
+  it('accept + prepare resolve timeout_seconds (snake_case alias) end-to-end', async () => {
+    (mockCp.spawn as jest.Mock).mockReturnValue(okSpawn());
+    let preparedTask: any;
+    (taskWorkerManager.execute as jest.Mock).mockImplementationOnce(
+      async (_tid: string, _eid: string, _task: any, _params: any, onComplete?: () => void, runPrepared?: any) => {
+        if (runPrepared) {
+          preparedTask = (await runPrepared(() => undefined)).task;
+        }
+        if (onComplete) onComplete();
+      },
+    );
+    const res = await request(appNoAuth).post('/api/execute').send({
+      executionId: 'exec-alias-snake',
+      task: { runtime: 'node', entrypoint: 'index.js', timeout_seconds: 45 },
+    });
+    expect(res.status).toBe(200);
+    await flushAsync();
+    expect(preparedTask.timeout).toBe(45);
+  });
+
+  it('timeoutSeconds wins over timeout when both are present', async () => {
+    (mockCp.spawn as jest.Mock).mockReturnValue(okSpawn());
+    let preparedTask: any;
+    (taskWorkerManager.execute as jest.Mock).mockImplementationOnce(
+      async (_tid: string, _eid: string, _task: any, _params: any, onComplete?: () => void, runPrepared?: any) => {
+        if (runPrepared) {
+          preparedTask = (await runPrepared(() => undefined)).task;
+        }
+        if (onComplete) onComplete();
+      },
+    );
+    const res = await request(appNoAuth).post('/api/execute').send({
+      executionId: 'exec-alias-precedence',
+      task: { runtime: 'node', entrypoint: 'index.js', timeout: 120, timeoutSeconds: 55 },
+    });
+    expect(res.status).toBe(200);
+    await flushAsync();
+    expect(preparedTask.timeout).toBe(55);
+  });
+
+  it('timeoutSeconds=0 means unbounded (no or-chain falsy swallow)', async () => {
+    (mockCp.spawn as jest.Mock).mockReturnValue(okSpawn());
+    let preparedTask: any;
+    (taskWorkerManager.execute as jest.Mock).mockImplementationOnce(
+      async (_tid: string, _eid: string, _task: any, _params: any, onComplete?: () => void, runPrepared?: any) => {
+        if (runPrepared) {
+          preparedTask = (await runPrepared(() => undefined)).task;
+        }
+        if (onComplete) onComplete();
+      },
+    );
+    const res = await request(appNoAuth).post('/api/execute').send({
+      executionId: 'exec-alias-zero',
+      task: { runtime: 'node', entrypoint: 'index.js', timeoutSeconds: 0 },
+    });
+    expect(res.status).toBe(200);
+    await flushAsync();
+    expect(preparedTask.timeout).toBe(Infinity);
+  });
+
+  it('negative/oversized values via alias keys still hit the existing 400 gate', async () => {
+    // timeout_seconds 在协议 schema 里无边界（timeoutSeconds/timeout 有
+    // 0..86400），这两个 400 只能来自 accept 的手检闸——证明别名键真的
+    // 流经了既有校验（修前 timeout_seconds 直接被无视、任务照跑）。
+    const resNeg = await request(appNoAuth).post('/api/execute').send({
+      executionId: 'exec-alias-neg',
+      task: { runtime: 'node', entrypoint: 'index.js', timeout_seconds: -5 },
+    });
+    expect(resNeg.status).toBe(400);
+    expect(resNeg.body.error).toMatch(/Invalid task timeout: -5/);
+
+    const resBig = await request(appNoAuth).post('/api/execute').send({
+      executionId: 'exec-alias-big',
+      task: { runtime: 'node', entrypoint: 'index.js', timeoutSeconds: 86_401 },
+    });
+    expect(resBig.status).toBe(400);
+    expect(resBig.body.error).toMatch(/Invalid task timeout/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P2（双端一致性）：运行期失败的 failureReason 细分类。
+// python `_run_and_callback` 对 run_task 失败结果调 `_refine_failure_reason`
+// （BUG-10 运行期分支）；node 此前只在 prepare 阶段分类，bwrap fail-closed
+// （buildTaskSandboxArgv 在 spawn 前抛错）等运行期失败从不携带 failureReason。
+// ---------------------------------------------------------------------------
+
+describe('run-phase failureReason classification (P2 双端一致性)', () => {
+  it('spawn ENOENT failure callback carries failureReason=runtime_missing', async () => {
+    // 与真实 ENOENT 语义同形：stdio 管道已建（data 监听已挂）、pid 已分配，
+    // 随后 ChildProcess 发 'error'（W-24 注释所述半开 stdio 场景）。
+    const errProc = new EventEmitter() as EventEmitter & {
+      stdout: EventEmitter; stderr: EventEmitter; pid: number; kill: jest.Mock;
+    };
+    errProc.stdout = new EventEmitter();
+    errProc.stderr = new EventEmitter();
+    errProc.pid = 4244;
+    errProc.kill = jest.fn();
+    (mockCp.spawn as jest.Mock).mockReturnValue(errProc);
+
+    const promise = runTask(
+      { id: 't', name: 't', cmd: 'node', args: ['x.js'], workDir: '/tmp/test-workdir', env: {}, timeout: 30 },
+      {},
+      'exec-enoent-reason',
+    );
+    await flushAsync();
+    errProc.emit('error', Object.assign(new Error('spawn node ENOENT'), { code: 'ENOENT' }));
+    await promise;
+
+    const failCall = (pushCallback as jest.Mock).mock.calls
+      .map(c => c[0])
+      .find(p => p.status === 'failed');
+    expect(failCall).toBeTruthy();
+    expect(failCall.errorMessage).toMatch(/spawn node ENOENT/);
+    expect(failCall.failureReason).toBe('runtime_missing');
+  });
+
+  it('bwrap fail-closed rejection carries failureReason=sandbox_unavailable', async () => {
+    testConfig.taskSandbox = 'bwrap';
+    try {
+      (mockCp.spawn as jest.Mock).mockReturnValue(okSpawn());
+      await runTask(
+        { id: 't', name: 't', cmd: 'node', args: ['x.js'], workDir: '/tmp/test-workdir', env: {}, timeout: 30 },
+        {},
+        'exec-bwrap-reason',
+      );
+      const failCall = (pushCallback as jest.Mock).mock.calls
+        .map(c => c[0])
+        .find(p => p.status === 'failed');
+      expect(failCall).toBeTruthy();
+      // win32 → 平台拒绝；POSIX（spawnSync 被 automock）→ bwrap 二进制缺失。
+      // 两条 fail-closed 文本都必须归 sandbox_unavailable。
+      expect(failCall.errorMessage).toMatch(/TASK_SANDBOX=bwrap/);
+      expect(failCall.failureReason).toBe('sandbox_unavailable');
+    } finally {
+      testConfig.taskSandbox = '';
+      __resetBwrapPathCacheForTest();
+    }
+  });
+
+  it('exit-code failures stay free of failureReason (unclassified → admin fallback, payload shape unchanged)', async () => {
+    (mockCp.spawn as jest.Mock).mockReturnValue(okSpawn(1));
+    await runTask(
+      { id: 't', name: 't', cmd: 'node', args: ['x.js'], workDir: '/tmp/test-workdir', env: {}, timeout: 30 },
+      {},
+      'exec-exit1-reason',
+    );
+    const failCall = (pushCallback as jest.Mock).mock.calls
+      .map(c => c[0])
+      .find(p => p.status === 'failed');
+    expect(failCall).toBeTruthy();
+    expect(failCall.errorMessage).toMatch(/Process exited with code 1/);
+    expect(failCall.failureReason).toBeUndefined();
   });
 });
 

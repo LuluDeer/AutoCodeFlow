@@ -439,6 +439,27 @@ export interface AcceptExecutionOptions {
   slotPreReserved?: boolean;
 }
 
+/**
+ * E-02（P2 双端一致性）：任务超时字段的三键别名解析——与 executor-python
+ * `_resolve_task_timeout`（routers/execute.py）同构：``timeoutSeconds ??
+ * timeout_seconds ?? timeout``，逐键 null 判空而非 or-链（0 = 显式不限时，
+ * or-链会把 0 当 falsy 吞掉；同一载荷此前在 python 侧按 timeoutSeconds 生效、
+ * 在 node 侧被整体忽略回落 300s 默认——双端行为必须一致）。
+ *
+ * 返回解析出的原始值（number | null | undefined），调用方接既有语义：
+ * 全部缺省 → 回落 config.taskTimeoutSeconds；0 → 不限时；负数/越界/非数值
+ * → 既有的 400 校验闸（协议 schema 对 timeoutSeconds/timeout 已有
+ * 0..86400 边界，timeout_seconds 无边界，故三键都必须过同一道闸）。
+ * 导出供测试固化解析顺序。
+ */
+export function resolveTaskTimeoutRaw(
+  task: Record<string, unknown> | null | undefined,
+): unknown {
+  if (task === null || typeof task !== 'object') return undefined;
+  const rec = task as Record<string, unknown>;
+  return rec.timeoutSeconds ?? rec.timeout_seconds ?? rec.timeout;
+}
+
 export function acceptExecution(
   body: ExecuteRequest,
   traceparent?: string,
@@ -594,7 +615,11 @@ export function acceptExecution(
     }
     // timeout=0 表示不限时（admin 侧 task.entity/scheduler 语义，改动4）——
     // 仅 null/undefined 才回退默认值；越界与非数值保持原 400 语义。
-    const rawTimeout = body.task.timeout;
+    // P2（双端一致性）：三键别名解析 timeoutSeconds ?? timeout_seconds ??
+    // timeout（resolveTaskTimeoutRaw），与 python `_resolve_task_timeout`
+    // 同构——此前只读 task.timeout，admin 若以 camelCase/别名键派发，python
+    // 执行器按声明超时跑、node 执行器却回落默认 300s。
+    const rawTimeout = resolveTaskTimeoutRaw(body.task as Record<string, unknown>);
     const timeout = rawTimeout === 0 ? 0 : (rawTimeout as number) || config.taskTimeoutSeconds;
     if (timeout !== 0 && (!Number.isFinite(timeout) || timeout < 1 || timeout > 86_400)) {
       return reject(400, `Invalid task timeout: ${timeout} (expected 0 (unbounded) or 1..86400 seconds)`);
@@ -745,7 +770,30 @@ export function prepareFailureReason(message: string): CallbackFailureReason {
   if (/packageUrl|Package download failed|Unsafe or invalid package archive/i.test(message)) {
     return 'package_fetch_failed';
   }
+  // P2（双端一致性）：沙箱配置启用但不可用（bwrap 缺失 / 宿主拒绝用户命名
+  // 空间 / 平台不支持）→ sandbox_unavailable。python `_refine_failure_reason`
+  // 末段同款规则（routers/execute.py，SEC-NEW F-1）——同一份失败文本在两个
+  // 执行器上必须归入同一 failureReason，admin 才能区分「任务代码问题」与
+  // 「执行器沙箱配置问题」。放在兜底 unknown 之前、所有具体 prepare 阶段
+  // 规则之后（与 python 的规则次序一致）。
+  if (/task_sandbox|\bsandbox\b|\bbwrap\b/i.test(message)) {
+    return 'sandbox_unavailable';
+  }
   return 'unknown';
+}
+
+/**
+ * P2（双端一致性）：运行期失败回调的 failureReason 附件——分类命中才携带，
+ * 不命中（'unknown'）不设字段。python `_run_and_callback` 的运行期分支同款
+ * 纪律（`_refine_failure_reason` 返回 None 即不设 reason，admin
+ * inferFailureReason 兜底）；node 的 prepareFailureReason 以 'unknown' 兜底
+ * 是给 prepare 阶段用的，两个调用方不能共用同一种"总是返回值"的形状。
+ */
+function withClassifiedFailureReason(
+  message: string,
+): { failureReason: CallbackFailureReason } | Record<string, never> {
+  const reason = prepareFailureReason(message);
+  return reason === 'unknown' ? {} : { failureReason: reason };
 }
 
 // ---------------------------------------------------------------------------
@@ -1531,7 +1579,10 @@ async function prepareExecution(
   const runtime = (task.runtime as string) || 'node';
   const entrypoint = (task.entrypoint as string) || 'index.js';
   // 改动4：timeout=0 = 不限时（不设 kill 定时器）；null/undefined 才用默认。
-  const rawTimeout = task.timeout;
+  // P2（双端一致性）：三键别名解析（resolveTaskTimeoutRaw）与 accept 侧同一
+  // 语义——manifest 合并后的 task 也要走 timeoutSeconds ?? timeout_seconds ??
+  // timeout（python 侧 run_task 对合并后的 task 调 _resolve_task_timeout）。
+  const rawTimeout = resolveTaskTimeoutRaw(task);
   const timeout = rawTimeout === 0 ? 0 : (rawTimeout as number) || config.taskTimeoutSeconds;
   // Bounded timeout: a negative value fires setTimeout immediately (instant
   // task kill) and an unbounded one arms a near-permanent timer.
@@ -2302,7 +2353,12 @@ export class BoundedLogBuffer {
   toString(): string {
     if (this.tail.length === 0) return this.head;
     if (!this.truncated) return this.head + this.tail;
-    const marker = `\n... [log output truncated in memory, ${this.total} chars total, full output on disk] ...\n`;
+    // P3（双端一致性）：marker 文案必须能被 admin 的 LOG_TRUNCATION_MARKER
+    // （/\[\s*(?:logs\s+)?truncated\b/i，task.service.ts）命中——旧文案
+    // "[log output truncated ...]" 以 "log output" 开头，正则不匹配，导致
+    // 同一份截断日志在 admin 侧 node 执行器不被识别为截断（python 侧
+    // "[logs truncated in memory ...]" 命中）。信息量保持不变，仅词序对齐。
+    const marker = `\n... [logs truncated in memory, ${this.total} chars total, full output on disk] ...\n`;
     return `${this.head}${marker}${this.tail}`;
   }
 }
@@ -2443,6 +2499,14 @@ async function runTaskInner(task: any, params: Record<string, any>, executionId:
       logs: truncateCallbackLogs(logs),
       errorMessage: truncateCallbackErrorMessage(killed ? 'Task process tree killed by admin request' : message),
       ...(killed ? { failureReason: 'killed' as CallbackFailureReason } : {}),
+      // P2（双端一致性）：运行期失败细分类。python `_run_and_callback` 对
+      // run_task 的失败结果调 `_refine_failure_reason`（BUG-10 运行期分支），
+      // node 此前只在 prepare 阶段分类——bwrap fail-closed（buildTaskSandboxArgv
+      // 抛错，发生在本阶段 spawn 前）等运行期失败从不携带 failureReason，
+      // 而 python 侧同一载荷会带 sandbox_unavailable。与 python 同款纪律：
+      // 分类器不命中（'unknown'）时**不设**字段交给 admin inferFailureReason
+      // 兜底——超时/内存超限/退出码等既有载荷形状零变化。
+      ...(!killed ? withClassifiedFailureReason(message) : {}),
       durationMs: Date.now() - startTime,
       // NETOPT-D P3-3: 同成功路径——停机时跳过 artifacts 收集，防 flush 窗口
       // 被 gather 消耗导致终态回调丢失。

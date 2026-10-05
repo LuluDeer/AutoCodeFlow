@@ -617,6 +617,14 @@ MAX_LOG_MEMORY_CHARS = 10_000_000            # ~10 MB of accumulated task output
 MAX_LOG_FILE_BYTES = 64 * 1024 * 1024        # disk log ceiling
 _LOG_FLUSH_EVERY_LINES = 64                  # batch file writes; don't flush per line
 
+# P1（executor 一致性审计）：任务子进程 stdout 流的单行上限。asyncio 缺省
+# limit=64KB——单行超限时 StreamReader.readline 抛 ValueError，该异常旧实现
+# 会以"意外错误"漏出且**不杀进程**，子进程带着活槽位继续跑（僵尸 RUNNING）。
+# 上限对齐 executor-node BoundedLogBuffer 的内存保留语义（LOG_HEAD_LIMIT +
+# LOG_TAIL_LIMIT = 500_000 + 500_000）：单行到这个量级仍能被回调日志路径完整
+# 保留；更长的单行按"流不可信"处理——失败载荷 + 树杀收尸（见 except 分支）。
+MAX_STREAM_LINE_BYTES = 1_000_000
+
 # R4-C P2: callback payload guards (admin DTO: errorMessage MaxLength 4096,
 # logs MaxLength 512_000 — the 10k log truncation below covers logs).
 MAX_ERROR_MESSAGE_CHARS = 4000
@@ -1834,6 +1842,17 @@ def accept_execution(
     仅保留防御性复查：账本被异常推高到超过上限（竞态残余/外部计数污染）时
     仍以 429 拒绝，让 pull 循环走「释放预留 + 不回调 failed」的防御分支；
     正常路径预留后 running_count ≤ max，该检查必然通过。"""
+    # P2（executor 一致性审计）：停机排水守卫——对齐 node acceptExecution 首行
+    # 的 isExecutorShuttingDown 检查（routes/execute.ts，NETOPT-9-1）：关机中
+    # 以 503 'Executor is shutting down' 拒绝新领取。必须先于一切容量账本
+    # 操作：排水窗口内 keep-alive 连接上在途的领取否则会以 200 领到任务，
+    # 宽限到期即被 SIGKILL——终态回调丢失、admin 留僵尸 RUNNING 行。
+    # main 不能在本模块顶层导入（main → routers.execute 顶层依赖会成环），
+    # 与 sandbox._get_settings 同款延迟导入。
+    from main import is_shutting_down
+
+    if is_shutting_down():
+        raise ExecutionRejected(503, 'Executor is shutting down')
     if slot_pre_reserved:
         # E-01 预留模式的防御性复查（不再是 add-then-check 的常规预检）。
         if sched.get_running_count() > settings.max_concurrent_tasks:
@@ -2947,20 +2966,27 @@ async def _run_uv(args: list[str], timeout_seconds: float, *, env: dict[str, str
 
     R4-C P2: plain `asyncio.wait_for(proc.communicate(), ...)` leaves the uv
     process running as an orphan when it times out — kill it explicitly first.
+    P3（executor 一致性审计）：超时收尾从 ``proc.kill()``（只杀直接子进程）
+    升级为 ``_kill_process_tree``——uv 会再 spawn 自己的子进程（python 下载、
+    解包等），直接 kill 留下孤儿树。对齐 node run-command.ts 超时走
+    killProcessTree 的做法。前提：子进程必须自带进程组（POSIX
+    preexec_fn=os.setsid，与任务子进程同款），否则 killpg 会命中执行器自己
+    所在的进程组；win32 无所谓——taskkill /T 按 pid 树走，不依赖进程组。
     """
+    spawn_kwargs: dict = {}
+    if sys.platform != 'win32':
+        spawn_kwargs = {'preexec_fn': os.setsid}
     proc = await asyncio.create_subprocess_exec(
         *args,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
         env=env,
+        **spawn_kwargs,
     )
     try:
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
     except asyncio.TimeoutError:
-        try:
-            proc.kill()
-        except ProcessLookupError:
-            pass
+        await _kill_process_tree(proc)
         try:
             await proc.wait()
         except Exception:
@@ -3798,6 +3824,12 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
             stderr=asyncio.subprocess.STDOUT,
             cwd=str(work_dir),
             env=env,
+            # P1: raise the per-line StreamReader cap off the 64KB asyncio
+            # default (MAX_STREAM_LINE_BYTES — node BoundedLogBuffer aligned);
+            # an over-limit single line raises ValueError in the stream reader
+            # and MUST take the child down instead of leaking a live process
+            # with a slot (see the except Exception / finally corpse sweep).
+            limit=MAX_STREAM_LINE_BYTES,
             # W-02: setsid on POSIX, process-group flag on win32;
             # SEC-NEW (B-1): 同一 preexec 阶段叠加 RLIMIT_*。
             **_spawn_kwargs_for_platform(rlimit_fn),
@@ -3973,6 +4005,18 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
         # RT-LOG: Fire-and-forget final flush of log stream pusher on general exception
         if 'log_stream_pusher' in locals() and log_stream_pusher:
             asyncio.create_task(log_stream_pusher.final_flush())
+        # P1（executor 一致性审计）：意外异常路径的进程树收尸。典型场景——
+        # 单行 stdout 超过 StreamReader limit 抛 ValueError：旧实现只返回失败
+        # 载荷，子进程仍活着且占着 live 槽位（心跳持续上报、admin 留僵尸
+        # RUNNING）。任何走到这里的异常若进程尚未退出，先整树杀掉再回报。
+        # 'proc' in locals() = spawn 已发生（此前异常时未绑定）；returncode
+        # 非 None = 已正常退出（成功/超时路径），跳过避免多余 taskkill。
+        if 'proc' in locals() and proc.returncode is None:
+            await _kill_process_tree(proc)
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=5)
+            except Exception:
+                pass
         return {
             'success': False,
             'logs': '',
@@ -3981,6 +4025,16 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
             'durationMs': int((time.monotonic() - started_at) * 1000),
         }
     finally:
+        # P1（executor 一致性审计）：兜底进程树收尸——覆盖除上方 except 之外
+        # 的所有异常路径（如外层 CancelledError：停机/杀端点取消 worker 时，
+        # 刚 spawn 的子进程不能变成无人认领的孤儿）。正常成功/超时路径进程
+        # 已退出（returncode 非 None）→ 此处是零开销 no-op；与 except 分支的
+        # 树杀幂等（同一检查条件，杀过必已 reap）。
+        if 'proc' in locals() and proc.returncode is None:
+            try:
+                await _kill_process_tree(proc)
+            except Exception:
+                pass
         # E4/E5: the child is dead or was never spawned — drop the process
         # handle so kill/shutdown never tree-kills a reaped or absent proc.
         # Registry removal itself stays with _run_and_callback (terminal

@@ -120,3 +120,57 @@ describe('prepareFailureReason — interpreter_unavailable (WS5)', () => {
     );
   });
 });
+
+/**
+ * P2（双端一致性）：sandbox_unavailable 分因。
+ *
+ * python `_refine_failure_reason`（routers/execute.py，SEC-NEW F-1）对
+ * `task_sandbox|sandbox|bwrap` 文本归 sandbox_unavailable；node 的
+ * buildTaskSandboxArgv（TASK_SANDBOX=bwrap fail-closed）抛的是同类文本，
+ * 但本分类器此前没有这条规则——同一份失败在两个执行器上分因不同。
+ * 用例文本取自两侧 fail-closed 报错的**真实原文**。
+ */
+describe('prepareFailureReason — sandbox_unavailable (P2 parity)', () => {
+  it("classifies node's own fail-closed error texts verbatim", () => {
+    expect(
+      prepareFailureReason(
+        'TASK_SANDBOX=bwrap is configured but the bwrap binary is not on PATH; ' +
+          'install bubblewrap or unset TASK_SANDBOX (fail-closed, no sandbox downgrade)',
+      ),
+    ).toBe('sandbox_unavailable');
+    expect(
+      prepareFailureReason(
+        'TASK_SANDBOX=bwrap is not supported on Windows; unset TASK_SANDBOX to run tasks unsandboxed',
+      ),
+    ).toBe('sandbox_unavailable');
+  });
+
+  it("classifies python's SandboxUnavailable message shapes the same way", () => {
+    // 同一失败换到 python 执行器会归 sandbox_unavailable（sandbox.py
+    // build_sandbox_cmd 原文）——node 分类必须给出同一结论。
+    expect(
+      prepareFailureReason(
+        'TASK_SANDBOX=bwrap is not supported on Windows; unset TASK_SANDBOX ' +
+          'or run the executor on Linux with bubblewrap installed',
+      ),
+    ).toBe('sandbox_unavailable');
+    expect(
+      prepareFailureReason(
+        'TASK_SANDBOX=bwrap is configured but the bwrap binary is not on PATH; ' +
+          'install bubblewrap (apt install bubblewrap / apk add bubblewrap) or ' +
+          'unset TASK_SANDBOX — refusing to run the task unsandboxed',
+      ),
+    ).toBe('sandbox_unavailable');
+  });
+
+  it('does not steal earlier classifications that merely mention the word', () => {
+    expect(prepareFailureReason('git clone failed: sandbox image outdated')).toBe(
+      'git_fetch_failed',
+    );
+    expect(
+      prepareFailureReason(
+        'uv venv failed: error: No interpreter found for Python 3.7; bwrap also missing',
+      ),
+    ).toBe('interpreter_unavailable');
+  });
+});

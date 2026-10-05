@@ -1629,6 +1629,12 @@ class _FakeUvProc:
         self._output = output
         self._hang = hang
         self.killed = False
+        # P3: 超时收尾升级为 _kill_process_tree——它要求进程句柄带 pid。
+        # 取超出任何真实 pid_max 的值：POSIX 上 os.getpgid 必抛
+        # ProcessLookupError（绝无误杀无关进程组的风险），回退到
+        # proc.kill()（正是本断言追踪的调用）；win32 上 taskkill 走被
+        # monkeypatch 的 fake_exec（返回本假件），随后同样落到 proc.kill()。
+        self.pid = 999_999_999
 
     async def communicate(self):
         # simulate uv creating a half-built venv before (possibly) hanging

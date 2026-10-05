@@ -393,5 +393,15 @@
 #     入口——桌面端三平台优雅停机（HTTP drain，宽限 8s→30s）的服务端半边。
 #     改动 main.ts 与 middleware/auth.ts 两文件，按 ADR-005 同 commit 重打回填
 #     （Windows node 24.21 本地重打，依赖 CI 权威复验）。
-source-digest: 8f54f4c2b0e2f675dda6e775110f11f69b830cab1677f153cf2e0dae7758a219
-925d455876ca8a1104c3f62828b41ad462ad80e81e3eb67d856c7075b6fc11af  index.js
+# 2026-10-05（R5 执行器双端一致性批次）：execute.ts 三处——timeoutSeconds 别名
+#   解析（timeoutSeconds ?? timeout_seconds ?? timeout，对齐 python 侧既有语义，
+#   协议 canonical 字段的派发方不再被 node 静默回落执行器默认超时）、
+#   prepareFailureReason 补 sandbox_unavailable 规则 + runTaskInner catch 补
+#   withClassifiedFailureReason（spawn 期 bwrap/ENOENT 失败不再报 unknown，
+#   对齐 python BUG-10 语义）、BoundedLogBuffer 截断 marker 改为
+#   "[logs truncated in memory, ...]"（对齐 admin LOG_TRUNCATION_MARKER 正则）。
+#   桌面端内嵌执行器若漏打，桌面任务在协议 canonical 超时字段/沙箱失败归因/
+#   admin 截断标记识别三面上仍是旧行为。按 ADR-005 同 commit 重打回填：
+#   本机(Windows) node 24 ncc 0.45 产出（2600kB → 4078kB 量级，4173887 bytes）。
+source-digest: e9742d8d75976ee7df06786242279aad2ef9fd6bad43384b93960d5002779f12
+1dc06f87d698d16730a5ee7315bb3c375fdc4cbf53c485cc1697325f186a3a29  index.js
