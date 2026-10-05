@@ -204,7 +204,10 @@ jobs:
         working-directory: apps/admin-api
       # coverageThreshold 已按第七轮实测水位取地板（stmts 68 / branch 58 /
       # funcs 56 / lines 69），防倒退用；覆盖率抬升后应同步上调。
-      - run: npm test -- --coverage
+      # --maxWorkers=2：本日套件增重后（4567 例）覆盖率插桩 × 默认 workers
+      # 在 runner 上峰值内存触顶（exit 134 SIGABRT，run 37345065125 实证）——
+      # workers 是插桩内存的乘数，砍半即远离 OOM；30min 超时余量充足。
+      - run: npm test -- --coverage --maxWorkers=2
         working-directory: apps/admin-api
 
   # 迁移链 + e2e 保持单一串行 job（并行时 admin seed 存在 users_email_key 竞态）。

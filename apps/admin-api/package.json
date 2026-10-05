@@ -95,6 +95,8 @@
     "typescript-eslint": "^8.70.1"
   },
   "jest": {
+    "_comment-forceExit": "R14-fix（run 37345065125 shard-1 实证）：全部 69 套件/1726 例 111s 全绿后，jest 因残留异步句柄拒绝退出，空挂 27min 被 job 超时击杀（30min 烧在空等上）。与 test/jest-e2e.json 的 forceExit 同源同裁决：BullMQ worker/ioredis/TypeORM 连接池的残余句柄收尾是概率性竞态（Windows 本机不复现，Linux CI 偶发），句柄泄漏本体由 onModuleDestroy 体系治理，CI 语境下 forceExit 不影响断言正确性。",
+    "forceExit": true,
     "moduleFileExtensions": [
       "js",
       "json",
