@@ -297,7 +297,11 @@ export function readLastLines(
     const buf = Buffer.allocUnsafe(length);
     const read = fs.readSync(fd, buf, 0, length, start);
     const text = buf.subarray(0, read).toString('utf-8');
-    const lines = text.split('\n');
+    // CRLF 剥离：Windows 落盘是 \r\n，按 \n 切分后每行残留尾部 \r。
+    // 渲染层 normalizeLogLine 的 OUTER_LOG_RE 以 (.*)$ 收尾，而 JS 的 . 不匹配
+    // \r，$ 又锚定串尾——残留 \r 会让正则对整行失配，历史日志全部退化为
+    // 关键词猜测的原始双时间戳显示（2026-10-04 截图打样时发现的真回归）。
+    const lines = text.split('\n').map((line) => (line.endsWith('\r') ? line.slice(0, -1) : line));
     // 窗口起点不在行首时，首元素是被截断的半行——丢弃。
     if (start > 0) {
       const boundary = Buffer.allocUnsafe(1);
