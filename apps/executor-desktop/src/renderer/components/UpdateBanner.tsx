@@ -1,5 +1,9 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import Icon from './Icon';
+// i18n 二期收尾：更新横幅全部文案入双语表（zh 值与原硬编码逐字一致）。
+import { createCfgTexts, resolveRendererLocale } from '../i18n';
+
+const t = createCfgTexts(resolveRendererLocale(() => navigator.language));
 
 /**
  * DSK-05：桌面自动更新的渲染层出口。
@@ -91,7 +95,7 @@ export default function UpdateBanner() {
       // 主进程对离线/404 是静默的（只落日志）；这里仅当用户已主动发起
       // 下载/安装时才把错误显性化，避免后台检查失败打扰用户。
       offs.push(a.onUpdateError((p) => {
-        setError(p?.message || '更新失败');
+        setError(p?.message || t('update.failed'));
         setPhase('error');
       }));
     }
@@ -147,12 +151,12 @@ export default function UpdateBanner() {
       <div className="update-banner update-banner-error" role="alert">
         <span className="update-banner-icon" aria-hidden="true"><Icon name="warning" /></span>
         <div className="update-banner-text">
-          <strong>更新失败</strong>
+          <strong>{t('update.failed')}</strong>
           <span>{error}</span>
         </div>
         <div className="update-banner-actions">
           <button className="btn btn-sm" onClick={handleRetry} disabled={busy}>
-            {busy ? '检查中…' : '重试'}
+            {busy ? t('update.checking') : t('ui.retry')}
           </button>
         </div>
       </div>
@@ -164,15 +168,15 @@ export default function UpdateBanner() {
       <div className="update-banner update-banner-ready" role="status" aria-live="polite">
         <span className="update-banner-icon" aria-hidden="true"><Icon name="spark" /></span>
         <div className="update-banner-text">
-          <strong>新版本 {version || ''} 已下载完成</strong>
+          <strong>{t('update.downloadedTitle', version || '')}</strong>
           {/* B-3：文案改实。autoInstallOnAppQuit=false 下，直接关闭应用/托盘退出
               **不会**自动安装，只有点「重启并安装」才真正升级——旧文案「重启应用
               即可完成安装」误导用户关窗，结果新版本永远装不上、下次又得重来。 */}
-          <span>点击「重启并安装」立即升级（直接关闭应用不会自动安装）</span>
+          <span>{t('update.downloadedHint')}</span>
         </div>
         <div className="update-banner-actions">
           <button className="btn btn-sm btn-success" onClick={handleInstall} disabled={busy}>
-            {busy ? '安装中…' : <><Icon name="refresh" /> 重启并安装</>}
+            {busy ? t('update.installing') : <><Icon name="refresh" /> {t('update.install')}</>}
           </button>
         </div>
       </div>
@@ -185,7 +189,7 @@ export default function UpdateBanner() {
       <div className="update-banner update-banner-downloading" role="status" aria-live="polite">
         <span className="update-banner-icon" aria-hidden="true"><Icon name="arrow-down" /></span>
         <div className="update-banner-text">
-          <strong>正在下载新版本 {version || ''}（{pct}%）</strong>
+          <strong>{t('update.downloadingTitle', version || '', pct)}</strong>
           {total > 0 && (
             <span>{formatBytes(transferred)} / {formatBytes(total)}</span>
           )}
@@ -195,7 +199,7 @@ export default function UpdateBanner() {
             className="update-progress"
             value={pct}
             max={100}
-            aria-label={`更新下载进度 ${pct}%`}
+            aria-label={t('update.progressAria', pct)}
           />
         </div>
       </div>
@@ -207,19 +211,19 @@ export default function UpdateBanner() {
     <div className="update-banner update-banner-available" role="status" aria-live="polite">
       <span className="update-banner-icon" aria-hidden="true"><Icon name="arrow-up" /></span>
       <div className="update-banner-text">
-        <strong>发现新版本 {version || ''}</strong>
+        <strong>{t('update.availableTitle', version || '')}</strong>
         {/* B-3②：主进程标记命中 = 该版本此前已下载完成、待装缓存仍在。
             点「下载更新」时 electron-updater 会先校验并复用本地缓存（sha512
             一致则不重新下载），完成后自动进入「重启并安装」。 */}
         <span>
           {previouslyDownloaded
-            ? '此前已下载完成，点击下载将复用本地缓存（无需重新下载）'
-            : '当前版本已可升级'}
+            ? t('update.availableCachedHint')
+            : t('update.availableHint')}
         </span>
       </div>
       <div className="update-banner-actions">
         <button className="btn btn-sm btn-primary" onClick={handleDownload} disabled={busy}>
-          {busy ? '下载中…' : '下载更新'}
+          {busy ? t('update.downloading') : t('update.download')}
         </button>
       </div>
     </div>

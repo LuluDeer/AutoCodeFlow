@@ -542,7 +542,7 @@ function StepFinish({
           </div>
           <div className="confirm-row">
             <span className="confirm-key">{t('wizard.finish.keyPublic')}</span>
-            <span className="confirm-val">{form.executorAddressPublic || `（自动）:${form.executorPort}`}</span>
+            <span className="confirm-val">{form.executorAddressPublic || t('ui.publicAuto', form.executorPort)}</span>
           </div>
         </div>
 

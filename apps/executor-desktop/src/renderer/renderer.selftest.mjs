@@ -649,8 +649,9 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
   if (!boundary.includes('window.location.reload()')) {
     throw new Error('NETOPT-6⑥: 「重载渲染层」按钮必须真正调用 window.location.reload()');
   }
-  if (!boundary.includes('重载渲染层')) {
-    throw new Error('NETOPT-6⑥: 重载动作缺中文可读标签');
+  // i18n 二期收尾：重载动作文案走双语表（errorBoundary.reload，zh「重载渲染层」）。
+  if (!boundary.includes("t('errorBoundary.reload')")) {
+    throw new Error('NETOPT-6⑥: 重载动作文案必须走双语表（errorBoundary.reload）');
   }
   // 入口接线：createRoot(...).render 的最外层必须是 <ErrorBoundary> 包 <App />。
   // 精确断言形态——只 import 不使用、或包在 App 内部都算断链。
@@ -801,14 +802,21 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
   }
 }
 
-// ── N-04：ConfigPage 渲染层双语（renderer i18n 表）守卫 ─────────────────
+// ── N-04：renderer 双语（i18n 表）守卫（i18n 二期收尾泛化版）─────────────
 // 与主进程 tray-texts.selftest 同意图：双语文案表键位对齐（两语言必须提供
 // 同一组键，防止只改一种语言造成静默缺键）。渲染层无 DOM 测试设施，故同
 // 既有守卫做静态源码自检：i18n.ts 采用「每行一条、4 空格缩进」的扁平键表
 // 是本断言的前提（改动排版需同步这里）。
+// 二期收尾泛化：①全表键位对齐之上补「zh/en 每条值非空」；②原 ConfigPage
+// 单页接线断言扩为全部迁移页 + 渲染层组件（Wizard/History/Apps/Status/
+// UpdateBanner/ErrorBoundary）——接线必须走 createCfgTexts，且旧的硬编码
+// 锚串不再出现在源码里（锚串选自原字符串字面量、注释中不出现的形态，
+// 含反引号/引号/属性名等代码特征，避免与说明注释误撞）。
 {
   const i18nSrc = readFileSync(resolve(root, 'i18n.ts'), 'utf8');
   const extractKeys = (blockSrc) => [...blockSrc.matchAll(/^    '([A-Za-z0-9.]+)':/gm)].map((m) => m[1]);
+  // 值提取：捕获「键': 值,」整行（值 = 逗号前的全部内容，字符串或单行函数）
+  const extractEntries = (blockSrc) => [...blockSrc.matchAll(/^    '([A-Za-z0-9.]+)': (.+),$/gm)].map((m) => [m[1], m[2]]);
   const zhStart = i18nSrc.indexOf('  zh: {');
   const enStart = i18nSrc.indexOf('  en: {');
   if (zhStart === -1 || enStart === -1) throw new Error('N-04：i18n.ts 缺少 zh/en 文案表');
@@ -820,13 +828,40 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
     const missingInZh = enKeys.filter((k) => !zhKeys.includes(k));
     throw new Error(`N-04：cfg 文案表键位不对齐——en 缺 ${JSON.stringify(missingInEn)}；zh 缺 ${JSON.stringify(missingInZh)}`);
   }
-  // ConfigPage 必须接线双语表，且旧的硬编码锚串不再出现在页面源码里
-  // （锚串选自原字符串字面量、注释中不出现，避免误报）。
-  for (const anchor of ['createCfgTexts', 'resolveRendererLocale', "from '../i18n'"]) {
-    if (!config.includes(anchor)) throw new Error(`N-04：ConfigPage 未接双语表（缺 ${anchor}）`);
+  // 值非空：字符串条目不得为空串（引号内可有空白但去空白后必须有内容）；
+  // 函数条目（插值）行整体非空即视为有值。
+  const isEmptyValue = (v) => {
+    const s = v.trim();
+    const quoted = s.match(/^(['"])([\s\S]*)\1$/);
+    return quoted ? quoted[2].trim() === '' : s === '';
+  };
+  for (const [lang, blockSrc] of [['zh', i18nSrc.slice(zhStart, enStart)], ['en', i18nSrc.slice(enStart)]]) {
+    const entries = extractEntries(blockSrc);
+    if (entries.length !== zhKeys.length) {
+      throw new Error(`N-04：${lang} 表条目行数（${entries.length}）与键数（${zhKeys.length}）不一致——存在非单行条目？排版与断言前提不符`);
+    }
+    for (const [key, value] of entries) {
+      if (isEmptyValue(value)) throw new Error(`N-04：${lang} 表键 ${key} 值为空（双语齐平要求两语言都有非空文案）`);
+    }
   }
-  for (const stale of ['已发起检查。若有新版本', '保存失败：配置未被写入', '空白名单 = 禁止一切网页导航', '边界由平台代码强制']) {
-    if (config.includes(stale)) throw new Error(`N-04：ConfigPage 仍内联旧中文文案「${stale}」——应迁入 i18n.ts 的 cfg.* 键`);
+  // 各迁移页/组件必须接线双语表，且旧的硬编码锚串不再出现在源码里。
+  const wiredPages = [
+    ['pages/ConfigPage.tsx', ['已发起检查。若有新版本', '保存失败：配置未被写入', '空白名单 = 禁止一切网页导航', '边界由平台代码强制', "= '详情'"]],
+    ['pages/Wizard.tsx', ['（自动）:']],
+    ['pages/HistoryPage.tsx', ['正在加载历史记录', '`退出码 ']],
+    ['pages/AppsPage.tsx', ['正在读取本地应用', '打开目录失败：', '当前版本未知', '`当前 v${']],
+    ['pages/StatusWindow.tsx', ["'未命名任务'", 'aria-label="执行器状态"', 'title="查看历史执行记录"', '查看更早日志（共 ', '（自动）:']],
+    ['components/UpdateBanner.tsx', ['更新失败', '检查中…', '新版本 {version', '点击「重启并安装」立即升级', '安装中…', '/> 重启并安装', '正在下载新版本', '更新下载进度', '此前已下载完成，点击下载将复用本地缓存', '当前版本已可升级', '下载中…', "'下载更新'"]],
+    ['components/ErrorBoundary.tsx', ['渲染层遇到错误', '界面已停止工作', '重载渲染层']],
+  ];
+  for (const [rel, staleAnchors] of wiredPages) {
+    const src = rel === 'pages/ConfigPage.tsx' ? config : readFileSync(resolve(root, rel), 'utf8');
+    for (const anchor of ['createCfgTexts', 'resolveRendererLocale', "from '../i18n'"]) {
+      if (!src.includes(anchor)) throw new Error(`N-04：${rel} 未接双语表（缺 ${anchor}）`);
+    }
+    for (const stale of staleAnchors) {
+      if (src.includes(stale)) throw new Error(`N-04：${rel} 仍内联旧中文文案「${stale}」——应迁入 i18n.ts 对应键`);
+    }
   }
 }
 
@@ -843,16 +878,25 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
 
   // B-3①：downloaded 态文案必须改实——autoInstallOnAppQuit=false 下直接关窗
   // 不会自动安装，旧文案「重启应用即可完成安装」误导用户（更新永远装不上）。
+  // i18n 二期收尾：文案本体迁入 i18n.ts（update.downloadedHint），页面侧改查
+  // 键接线、i18n.ts 侧断言 zh 值仍含关键事实（防迁移时悄悄改弱文案）。
+  const i18nTexts = readFileSync(resolve(root, 'i18n.ts'), 'utf8');
   if (banner.includes('重启应用即可完成安装')) {
     throw new Error('B-3: UpdateBanner 仍在使用误导性文案「重启应用即可完成安装」');
   }
-  if (!banner.includes('直接关闭应用不会自动安装')) {
-    throw new Error('B-3: UpdateBanner downloaded 态必须如实说明「直接关闭应用不会自动安装」');
+  if (!banner.includes("t('update.downloadedHint')")) {
+    throw new Error('B-3: UpdateBanner downloaded 态未接双语表（update.downloadedHint）');
+  }
+  if (!i18nTexts.includes('直接关闭应用不会自动安装')) {
+    throw new Error('B-3: update.downloadedHint 必须如实说明「直接关闭应用不会自动安装」');
   }
   // B-3②：主进程持久化标记命中时（previouslyDownloaded），界面必须告知
   // 「复用本地缓存」而不是暗示要重新下载。
-  if (!banner.includes('previouslyDownloaded === true') || !banner.includes('复用本地缓存')) {
+  if (!banner.includes('previouslyDownloaded === true') || !banner.includes("t('update.availableCachedHint')")) {
     throw new Error('B-3: UpdateBanner 未消费 previouslyDownloaded 旗标（缓存复用提示缺失）');
+  }
+  if (!i18nTexts.includes('复用本地缓存')) {
+    throw new Error('B-3: update.availableCachedHint 必须说明「复用本地缓存」');
   }
   if (!updaterSrc.includes('previouslyDownloaded')) {
     throw new Error('B-3: updater.ts 的 available 广播未带 previouslyDownloaded 旗标');
@@ -964,4 +1008,4 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
   }
 }
 
-console.log('renderer selftest: design tokens, accessibility, contrast, focus, layout, spacing, IPC anchors, F-21/F-22/F-37, DSK-05, PERF-DSK-01, SEC-DSK-01, EXP-04/05/06/09, ErrorBoundary, NETOPT-7⑤⑥, tab roving+persist, app-management, N-04 cfg bilingual parity, audit B-3/B-6/B-8/B-9/B-11, UX-walkthrough ①-⑥ guards passed');
+console.log('renderer selftest: design tokens, accessibility, contrast, focus, layout, spacing, IPC anchors, F-21/F-22/F-37, DSK-05, PERF-DSK-01, SEC-DSK-01, EXP-04/05/06/09, ErrorBoundary, NETOPT-7⑤⑥, tab roving+persist, app-management, N-04 renderer bilingual parity (all migrated pages/components), audit B-3/B-6/B-8/B-9/B-11, UX-walkthrough ①-⑥ guards passed');

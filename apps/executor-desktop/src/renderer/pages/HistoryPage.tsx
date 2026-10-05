@@ -674,7 +674,7 @@ export default function HistoryPage({ active }: { active: boolean }) {
       )}
 
       {loading && records.length === 0 ? (
-        <div className="history-groups" aria-label="正在加载历史记录">
+        <div className="history-groups" aria-label={t('history.loadingAria')}>
           {Array.from({ length: 3 }, (_, i) => (
             <div key={i} className="skeleton skeleton-group">
               <div className="skeleton-row">
@@ -753,7 +753,7 @@ export default function HistoryPage({ active }: { active: boolean }) {
                   {!isOpen && failCount > 0 && (() => {
                     const lastFail = group.runs.find((r) => r.status === 'failed');
                     const msg = lastFail?.errorMessage
-                      || (lastFail?.exitCode !== undefined ? `退出码 ${lastFail.exitCode}` : '');
+                      || (lastFail?.exitCode !== undefined ? t('history.run.exitCode', lastFail.exitCode) : '');
                     return msg ? (
                       <div className="history-group-err" title={lastFail?.errorMessage || msg}>
                         <Icon name="warning" className="icon-xs" />

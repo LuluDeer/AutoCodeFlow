@@ -15,10 +15,12 @@
  * agentLine/agentProcessedLine 形态）；缺键回退键名本身（与 i18next 缺键
  * 行为一致，肉眼可见、不炸渲染——selftest 键位对齐保证正常情况下到不了）。
  *
- * 覆盖口径：ConfigPage.tsx 全部渲染层文案（标签/aria/placeholder/错误行/
- * 诊断块/确认弹层），不含注释。其余 renderer 页面（AppsPage/StatusWindow/
- * HistoryPage/Wizard）仍是硬编码中文，见 DESIGN-AUDIT-2026-09-22 的
- * renderer i18n 建议，逐页迁移时把文案搬进本表。
+ * 覆盖口径（i18n 二期收尾）：renderer 全部渲染层文案——ConfigPage（cfg.*）/
+ * 跨页壳与向导（shell.* / wizard.*）/ 状态页（status.*）/ 历史页
+ * （history.*）/ 应用页（apps.*）/ 日志查看器（logviewer.*）/ 更新横幅
+ * （update.*）/ 错误边界（errorBoundary.*）/ 跨页共享（ui.*）。各迁移页
+ * 源码不再残留硬编码中文渲染串（注释与 console/log 不在迁移口径），
+ * renderer.selftest.mjs 的 N-04 守卫据此做全表键位对齐 + 非空 + 各页接线断言。
  */
 export type RendererLocale = 'en' | 'zh';
 
@@ -296,6 +298,8 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'ui.refresh': '刷新',
     'ui.open': '打开',
     'ui.knowGotIt': '知道了',
+    // 对外地址缺省回退（StatusWindow 连接卡 / Wizard 确认页共用；zh 与原硬编码逐字一致）
+    'ui.publicAuto': (port) => `（自动）:${port}`,
     'logviewer.searchAria': '搜索运行日志',
     'logviewer.searchPlaceholder': '搜索日志... (Ctrl+F)',
     'logviewer.noResult': '无结果',
@@ -346,10 +350,14 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'status.reading': '正在读取状态',
     'status.stopping': '正在停止',
     'status.eyebrow': '执行器状态',
+    // 状态卡整卡 aria（i18n 二期收尾；zh 与原硬编码逐字一致）
+    'status.heroAria': '执行器状态',
     'status.trayTip': '执行器已常驻托盘——关闭窗口不会退出，右键托盘图标可随时回到这里或退出应用。',
     'status.logTitle': '运行日志',
     'status.logRows': (n) => `${n} 行`,
     'status.bufferNote': '更早记录请打开日志文件',
+    // 预览置顶时的「查看更早」胶囊（C-06；zh 与原硬编码逐字一致）
+    'status.olderLogs': (n) => `查看更早日志（共 ${n} 行）`,
     'status.clearDisplayTitle': '仅清空当前窗口显示，不删除日志文件',
     'status.clearDisplay': '清空显示',
     'status.checkConnection': '检查连接设置',
@@ -425,6 +433,8 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'history.searchPlaceholder': '搜索任务、执行 ID 或错误信息...',
     'history.searchAria': '搜索执行记录',
     'history.filterAria': '按状态过滤',
+    // 首载骨架屏 aria（i18n 二期收尾；zh 与原硬编码逐字一致）
+    'history.loadingAria': '正在加载历史记录',
     'history.chip.all': (n) => `全部 ${n}`,
     'history.chip.success': (n) => `成功 ${n}`,
     'history.chip.failed': (n) => `失败 ${n}`,
@@ -460,6 +470,8 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'apps.metaRunning': (n) => ` · ${n} 个运行中`,
     'apps.searchPlaceholder': '搜索应用名、版本或部署 ID',
     'apps.searchAria': '搜索应用名、版本或部署 ID',
+    // 首载骨架屏 aria（i18n 二期收尾；zh 与原硬编码逐字一致）
+    'apps.loadingAria': '正在读取本地应用',
     'apps.clearSearch': '清除搜索',
     'apps.filtersAria': '应用筛选',
     'apps.filterUnnamed': '名称未知',
@@ -482,6 +494,9 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'apps.nameUnknownTitle': (id) => `该应用未在本机登记名称（旧部署）· 应用 ID：${id}`,
     'apps.unknownName': '未知应用名',
     'apps.noCurrent': '无当前版本',
+    // 折叠态当前版本徽章（B-07；zh 与原硬编码逐字一致）
+    'apps.currentVersionBadge': (v) => `当前 v${v}`,
+    'apps.currentVersionUnknown': '当前版本未知',
     'apps.lastDeployed': (t2) => `最近部署 ${t2}`,
     'apps.scheduledTitle': '定时/触发模式应用：无常驻进程与 app.log，执行日志在「历史」页',
     'apps.scheduled': '定时',
@@ -535,6 +550,9 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'apps.notice.uninstallFail': '卸载失败',
     'apps.viewer.loadFail': (msg) => `读取日志失败：${msg}（自动刷新已停止，可点「实时」重试）`,
     'apps.openDeployDir': '打开部署目录',
+    // 查看器行内「打开部署目录」失败的 folderNote（注意：zh 是「目录」，
+    // 与列表层 apps.notice.openFolderFail 的「文件夹」是两处原文，不得共用）
+    'apps.viewer.folderOpenFail': (r) => `打开目录失败：${r}`,
     'apps.autoRefreshOffTitle': '关闭自动刷新',
     'apps.autoRefreshOnTitle': '开启自动刷新（2s）',
     'apps.live': '实时',
@@ -606,6 +624,25 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'wizard.finish.aftercare3': '「历史」页按执行 ID 查看每次任务日志',
     'wizard.finish.launching': '启动中...',
     'wizard.finish.done': '完成并启动',
+    // ── 更新横幅（i18n 二期收尾：components/UpdateBanner.tsx；zh 值与迁移前
+    //    硬编码逐字一致，含「检查中…」的省略号与原文标点全半角）──
+    'update.failed': '更新失败',
+    'update.checking': '检查中…',
+    'update.downloadedTitle': (v) => `新版本 ${v} 已下载完成`,
+    'update.downloadedHint': '点击「重启并安装」立即升级（直接关闭应用不会自动安装）',
+    'update.installing': '安装中…',
+    'update.install': '重启并安装',
+    'update.downloadingTitle': (v, pct) => `正在下载新版本 ${v}（${pct}%）`,
+    'update.progressAria': (pct) => `更新下载进度 ${pct}%`,
+    'update.availableTitle': (v) => `发现新版本 ${v}`,
+    'update.availableCachedHint': '此前已下载完成，点击下载将复用本地缓存（无需重新下载）',
+    'update.availableHint': '当前版本已可升级',
+    'update.downloading': '下载中…',
+    'update.download': '下载更新',
+    // ── 错误边界（i18n 二期收尾：components/ErrorBoundary.tsx 兜底 UI）──
+    'errorBoundary.title': '渲染层遇到错误',
+    'errorBoundary.hint': '界面已停止工作。点击下方按钮重载渲染层；若反复出现，请重启应用并附上错误摘要反馈。',
+    'errorBoundary.reload': '重载渲染层',
   },
   en: {
     // ── Common ──
@@ -857,6 +894,7 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'ui.refresh': 'Refresh',
     'ui.open': 'Open',
     'ui.knowGotIt': 'Got it',
+    'ui.publicAuto': (port) => `(auto):${port}`,
     'logviewer.searchAria': 'Search run logs',
     'logviewer.searchPlaceholder': 'Search logs... (Ctrl+F)',
     'logviewer.noResult': 'No results',
@@ -907,10 +945,12 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'status.reading': 'Reading status',
     'status.stopping': 'Stopping',
     'status.eyebrow': 'Executor status',
+    'status.heroAria': 'Executor status',
     'status.trayTip': 'The executor stays in the system tray — closing the window will not quit it. Right-click the tray icon to come back here or quit the app.',
     'status.logTitle': 'Run logs',
     'status.logRows': (n) => `${n} lines`,
     'status.bufferNote': 'Open the log file for earlier records',
+    'status.olderLogs': (n) => `View earlier logs (${n} lines in total)`,
     'status.clearDisplayTitle': 'Clears the current display only; log files are kept',
     'status.clearDisplay': 'Clear display',
     'status.checkConnection': 'Check connection settings',
@@ -986,6 +1026,7 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'history.searchPlaceholder': 'Search tasks, execution IDs or errors...',
     'history.searchAria': 'Search runs',
     'history.filterAria': 'Filter by status',
+    'history.loadingAria': 'Loading run history',
     'history.chip.all': (n) => `All ${n}`,
     'history.chip.success': (n) => `Success ${n}`,
     'history.chip.failed': (n) => `Failed ${n}`,
@@ -1021,6 +1062,7 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'apps.metaRunning': (n) => ` · ${n} running`,
     'apps.searchPlaceholder': 'Search apps, versions or deployment IDs',
     'apps.searchAria': 'Search apps, versions or deployment IDs',
+    'apps.loadingAria': 'Reading local apps',
     'apps.clearSearch': 'Clear search',
     'apps.filtersAria': 'Filter apps',
     'apps.filterUnnamed': 'Unnamed',
@@ -1043,6 +1085,8 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'apps.nameUnknownTitle': (id) => `This app has no locally recorded name (legacy deployment) · App ID: ${id}`,
     'apps.unknownName': 'Unknown app',
     'apps.noCurrent': 'No current version',
+    'apps.currentVersionBadge': (v) => `Current v${v}`,
+    'apps.currentVersionUnknown': 'Current version unknown',
     'apps.lastDeployed': (t2) => `Last deployed ${t2}`,
     'apps.scheduledTitle': 'Scheduled/triggered app: no resident process or app.log; run logs are on the History page',
     'apps.scheduled': 'Scheduled',
@@ -1096,6 +1140,7 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'apps.notice.uninstallFail': 'Uninstall failed',
     'apps.viewer.loadFail': (msg) => `Failed to read the log: ${msg} (auto-refresh stopped; click "Live" to retry)`,
     'apps.openDeployDir': 'Open deployment folder',
+    'apps.viewer.folderOpenFail': (r) => `Failed to open the folder: ${r}`,
     'apps.autoRefreshOffTitle': 'Turn off auto-refresh',
     'apps.autoRefreshOnTitle': 'Turn on auto-refresh (2s)',
     'apps.live': 'Live',
@@ -1167,5 +1212,23 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'wizard.finish.aftercare3': 'The History page shows each task run by execution ID',
     'wizard.finish.launching': 'Starting...',
     'wizard.finish.done': 'Finish and start',
+    // ── Update banner (components/UpdateBanner.tsx) ──
+    'update.failed': 'Update failed',
+    'update.checking': 'Checking...',
+    'update.downloadedTitle': (v) => `New version ${v} downloaded`,
+    'update.downloadedHint': 'Click "Restart and install" to upgrade now; closing the app will not install it automatically',
+    'update.installing': 'Installing...',
+    'update.install': 'Restart and install',
+    'update.downloadingTitle': (v, pct) => `Downloading new version ${v} (${pct}%)`,
+    'update.progressAria': (pct) => `Update download progress ${pct}%`,
+    'update.availableTitle': (v) => `New version ${v} available`,
+    'update.availableCachedHint': 'Previously downloaded; clicking Download will reuse the local cache (no need to re-download)',
+    'update.availableHint': 'The current version can be upgraded',
+    'update.downloading': 'Downloading...',
+    'update.download': 'Download update',
+    // ── Error boundary (components/ErrorBoundary.tsx fallback UI) ──
+    'errorBoundary.title': 'The renderer hit an error',
+    'errorBoundary.hint': 'The interface has stopped working. Click the button below to reload the renderer; if this keeps happening, restart the app and report the error summary.',
+    'errorBoundary.reload': 'Reload renderer',
   },
 };

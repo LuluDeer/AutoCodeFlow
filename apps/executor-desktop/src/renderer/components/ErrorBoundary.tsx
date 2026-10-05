@@ -1,4 +1,10 @@
 import React from 'react';
+// i18n 二期收尾：兜底 UI 文案入双语表（zh 值与原硬编码逐字一致）。
+// i18n.ts 为纯常量模块，静态 import 不会引入新的失败面（若它求值失败，
+// 本模块同样未定义，边界本就无从兜底——不改变既有语义）。
+import { createCfgTexts, resolveRendererLocale } from '../i18n';
+
+const t = createCfgTexts(resolveRendererLocale(() => navigator.language));
 
 /**
  * NETOPT-6⑥：渲染层唯一的全局错误边界。
@@ -45,13 +51,13 @@ class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundarySta
     if (error) {
       return (
         <div className="error-boundary" role="alert">
-          <h1 className="error-boundary-title">渲染层遇到错误</h1>
+          <h1 className="error-boundary-title">{t('errorBoundary.title')}</h1>
           <p className="error-boundary-summary">{error.message || String(error)}</p>
           <p className="error-boundary-hint">
-            界面已停止工作。点击下方按钮重载渲染层；若反复出现，请重启应用并附上错误摘要反馈。
+            {t('errorBoundary.hint')}
           </p>
           <button className="btn btn-primary" onClick={this.handleReload}>
-            重载渲染层
+            {t('errorBoundary.reload')}
           </button>
         </div>
       );

@@ -138,9 +138,9 @@ function AppLogScreen({ entry, onClose }: { entry: AppEntry; onClose: () => void
     setFolderNote(null);
     try {
       const res = await window.electronAPI.openReleaseFolder(entry.appId, entry.releaseKey);
-      if (!res.ok) setFolderNote(`打开目录失败：${res.error ?? '未知原因'}`);
+      if (!res.ok) setFolderNote(t('apps.viewer.folderOpenFail', res.error ?? t('apps.unknownReason')));
     } catch (err) {
-      setFolderNote(`打开目录失败：${err instanceof Error ? err.message : String(err)}`);
+      setFolderNote(t('apps.viewer.folderOpenFail', err instanceof Error ? err.message : String(err)));
     }
   }
 
@@ -569,7 +569,7 @@ export default function AppsPage() {
       )}
 
       {loading && apps.length === 0 && !error && (
-        <div className="apps-list" aria-label="正在读取本地应用">
+        <div className="apps-list" aria-label={t('apps.loadingAria')}>
           {Array.from({ length: 4 }, (_, i) => (
             <div key={i} className="skeleton skeleton-group">
               <div className="skeleton-line w-45" />
@@ -651,7 +651,7 @@ export default function AppsPage() {
                         保留「无当前版本」口径。 */}
                     {current && (
                       <span className="app-badge app-badge-current">
-                        {current.version ? `当前 v${current.version}` : '当前版本未知'}
+                        {current.version ? t('apps.currentVersionBadge', current.version) : t('apps.currentVersionUnknown')}
                       </span>
                     )}
                   </span>

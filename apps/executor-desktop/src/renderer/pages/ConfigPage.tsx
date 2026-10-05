@@ -64,10 +64,11 @@ function Toggle({ id, label, checked, onChange }: {
 // R3 D-03：配置页渐进披露——超过一行半的长 hint 与多段拼贴 banner 默认收起，
 // 点开 summary 才展开，把「留空即用」的用户与排障文档解耦。原生
 // <details>/<summary>：零 JS、无内联事件（CSP 安全），summary 天然可聚焦、
-// Enter/Space 可切换（键盘可达）。label 由调用方传 i18n 键值（双语），
-// 默认「详情」仅作 zh 兜底；展开内容复用 .cfg-hint 的 11px/text3 排版。
-function HintDetails({ label = '详情', children }: {
-  label?: string;
+// Enter/Space 可切换（键盘可达）。label 由调用方传 i18n 键值（双语，i18n 二期
+// 收尾后必传——不再留 zh 硬编码兜底默认值）；展开内容复用 .cfg-hint 的
+// 11px/text3 排版。
+function HintDetails({ label, children }: {
+  label: string;
   children: React.ReactNode;
 }) {
   return (

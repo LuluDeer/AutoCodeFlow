@@ -325,7 +325,7 @@ function summarizeToday(records: TodaySummaryRecord[]): TodaySummary | null {
       // running 明细按全量收集（不限今天）；缺 id 的异常记录用下标兜底键。
       summary.runningTasks.push({
         id: record.executionId || `idx-${summary.runningTasks.length}`,
-        name: record.taskName || '未命名任务',
+        name: record.taskName || t('status.unnamedTask'),
         since: started ? record.startTime : null,
       });
     }
@@ -701,7 +701,7 @@ export default function StatusWindow({ active }: { active: boolean }) {
           </div>
         )}
 
-        <section className={`hero-card hero-${status}`} aria-label="执行器状态">
+        <section className={`hero-card hero-${status}`} aria-label={t('status.heroAria')}>
           <div className="hero-glyph" aria-hidden="true">
             <Icon name={status === 'online' ? 'activity' : status === 'offline' ? 'warning' : 'server'} />
             <span className={`hero-indicator-dot${status === 'pending' ? ' is-pending' : ''}`} />
@@ -770,7 +770,7 @@ export default function StatusWindow({ active }: { active: boolean }) {
             type="button"
             className="today-summary"
             onClick={() => requestTabSwitch('history')}
-            title="查看历史执行记录"
+            title={t('status.viewHistory')}
           >
             {todaySummary.total === 0 ? (
               <span>{t('status.todayNone')}</span>
@@ -855,7 +855,7 @@ export default function StatusWindow({ active }: { active: boolean }) {
               {hasHiddenPreview && <div className="log-preview-fade" aria-hidden="true" />}
               {hasHiddenPreview && previewAtTop && (
                 <button className="log-new-pill" onClick={() => openLogViewer()}>
-                  查看更早日志（共 {logs.length} 行）
+                  {t('status.olderLogs', logs.length)}
                 </button>
               )}
             </div>
@@ -873,7 +873,7 @@ export default function StatusWindow({ active }: { active: boolean }) {
               </div>
               <div className="overview-row">
                 <span className="overview-label"><Icon name="link" className="overview-label-icon" />{t('status.publicLabel')}</span>
-                <CopyValue value={addr || `（自动）:${port}`} />
+                <CopyValue value={addr || t('ui.publicAuto', port)} />
               </div>
             </section>
             {agentStatus && !agentStatus.enabled ? (
