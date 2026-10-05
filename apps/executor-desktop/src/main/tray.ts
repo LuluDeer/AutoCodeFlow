@@ -1,5 +1,6 @@
 import { Tray, Menu, nativeImage, app } from 'electron';
 import * as path from 'path';
+import { existsSync } from 'fs';
 import { ExecutorStatus } from './executor-process';
 import { agentActivityLabel, agentOutcomeLabel, type AgentStatusSnapshot } from './agent-status-view';
 import { TRAY_TEXTS, resolveTrayLocale, traySupportsClick, type TrayLocale, type TrayTexts } from './tray-texts';
@@ -24,6 +25,7 @@ export class TrayManager {
   onOpenStatus: (() => void) | null = null;
   onOpenConfig: (() => void) | null = null;
   onOpenHistory: (() => void) | null = null;
+  onOpenApps: (() => void) | null = null;
   onToggleAutoLaunch: ((enable: boolean) => Promise<void>) | null = null;
   getAutoLaunch: (() => boolean) | null = null;
 
@@ -135,6 +137,10 @@ export class TrayManager {
         label: t.openHistory,
         click: () => this.onOpenHistory?.(),
       },
+      {
+        label: t.openApps,
+        click: () => this.onOpenApps?.(),
+      },
       { type: 'separator' },
       {
         label: t.autoLaunch,
@@ -159,12 +165,29 @@ export class TrayManager {
       pending: 'tray-pending@2x.png',
       stopped: 'tray-offline@2x.png',
     };
-    const iconDir = app.isPackaged
-      ? path.join(process.resourcesPath, 'assets')
-      : path.join(app.getAppPath(), 'assets');
-    const iconPath = path.join(iconDir, iconMap[status]);
+    // 托盘图标目录双路径探测（对齐 window-manager QA-12 先例），三种形态：
+    //   1) 打包：tray-*.png 经 electron-builder extraResources 落在
+    //      <install>/resources/assets，用 process.resourcesPath 拼；
+    //   2) 正常 dev（npm run dev / electron .）：getAppPath()=应用根，
+    //      取 <appRoot>/assets；
+    //   3) 裸 electron 直跑 dist/main/index.js（playwright _electron.launch /
+    //      e2e）：getAppPath()===__dirname（dist/main），候选 1 会解析成
+    //      dist/main/assets（不存在，QA-12 同源问题）——候选 2 用 __dirname
+    //      上两级（=应用根；打包态则落在 resources/，同样正确）补位。
+    // 按顺序取第一个「图标文件确实存在」的目录；都找不到时落回首选候选，
+    // 交给下方 isEmpty 兜底（createEmpty + log.warn）。
+    const iconFile = iconMap[status];
+    const candidateDirs = [
+      app.isPackaged
+        ? path.join(process.resourcesPath, 'assets')
+        : path.join(app.getAppPath(), 'assets'),
+      path.join(__dirname, '../../assets'),
+    ];
+    const iconDir = candidateDirs.find((dir) => existsSync(path.join(dir, iconFile)))
+      ?? candidateDirs[0];
+    const iconPath = path.join(iconDir, iconFile);
     const img = nativeImage.createFromPath(iconPath);
-    // 回退：图标文件不存在时用空图标避免崩溃
+    // 回退：所有候选目录都没有该图标文件时用空图标避免崩溃
     if (img.isEmpty()) {
       log.warn(`Tray icon not found: ${iconPath}`);
       return nativeImage.createEmpty();

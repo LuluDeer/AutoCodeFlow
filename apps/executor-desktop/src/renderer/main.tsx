@@ -2,7 +2,10 @@ import React from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App';
 import ErrorBoundary from './components/ErrorBoundary';
-import './styles/app.css';
+import './styles/tokens.css';
+import './styles/base.css';
+import './styles/components.css';
+import './styles/pages.css';
 
 const container = document.getElementById('root')!;
 // NETOPT-6⑥：渲染树最外层包全局 ErrorBoundary——任一组件渲染期抛错时

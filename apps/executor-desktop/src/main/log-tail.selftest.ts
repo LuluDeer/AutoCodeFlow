@@ -42,7 +42,10 @@ function readLastLines(
     const buf = Buffer.allocUnsafe(length);
     const read = fs.readSync(fd, buf, 0, length, start);
     const text = buf.subarray(0, read).toString('utf-8');
-    const lines = text.split('\n');
+    // CRLF 剥离（2026-10-04）：Windows 落盘 \r\n 按 \n 切分后每行残留尾部 \r，
+    // 渲染层 OUTER_LOG_RE 的 (.*)$ 因 . 不匹配 \r 而整行失配——历史日志退化
+    // 为原始双时间戳显示。这是对旧实现语义的一次「刻意偏离」，场景 8 钉死。
+    const lines = text.split('\n').map((line) => (line.endsWith('\r') ? line.slice(0, -1) : line));
     // 窗口起点不在行首时，首元素是被截断的半行——丢弃。
     if (start > 0) {
       const boundary = Buffer.allocUnsafe(1);
@@ -165,6 +168,18 @@ try {
     assert.strictEqual(tail[8], '任务日志第 49 行——执行器输出✓', '末行内容错位');
     assert.strictEqual(tail[9], '', '尾随空元素语义与旧实现不一致');
   }
+  // 场景 8：CRLF 行尾（Windows 真实落盘形态）——尾部 \r 必须剥离。
+  // 回归背景：残留 \r 使渲染层 normalizeLogLine 的 (.*)$ 正则整行失配，
+  // 历史日志全部退化为关键词猜测的原始双时间戳显示。
+  {
+    const f = path.join(dir, 'crlf.log');
+    fs.writeFileSync(f, '[2026-10-04 10:00:00.000] [info]  App ready\r\n[2026-10-04 10:00:01.000] [warn]  slow op\r\n');
+    assert.deepStrictEqual(
+      readLastLines(f),
+      ['[2026-10-04 10:00:00.000] [info]  App ready', '[2026-10-04 10:00:01.000] [warn]  slow op', ''],
+      'CRLF 行尾的 \\r 残留必须剥离（否则渲染层规范化正则失配）',
+    );
+  }
 } finally {
   fs.rmSync(dir, { recursive: true, force: true });
 }
@@ -190,4 +205,4 @@ const handlerBody = ipcSource.slice(startIdx, nextIdx);
 assert.ok(!handlerBody.includes('readFileSync'), 'SYNC: logs:getToday 仍有整读残留（NETOPT-2⑥ 性能回归）');
 assert.ok(handlerBody.includes('readLastLines'), 'SYNC: logs:getToday 未调用 readLastLines');
 
-console.log('log-tail selftest: all assertions passed (7 scenarios + sync guard)');
+console.log('log-tail selftest: all assertions passed (8 scenarios + sync guard)');

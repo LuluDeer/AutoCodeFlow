@@ -30,7 +30,7 @@ const DEP_A1 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const DEP_A2 = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const APP_B = '22222222-2222-4222-8222-222222222222';
 
-function main(): void {
+async function main(): Promise<void> {
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'acf-appinv-'));
   const appsDir = path.join(workDir, 'apps');
 
@@ -68,7 +68,7 @@ function main(): void {
     // ── 应用 B：目录存在但没有任何 release（部署失败在解压阶段）────────
     fs.mkdirSync(path.join(appsDir, APP_B), { recursive: true });
 
-    const entries = listDeployedApps(workDir);
+    const entries = await listDeployedApps(workDir);
 
     // 1) 绝不把 releases/tmp/current 当部署列出来（原缺陷的假条目）。
     for (const bogus of ['releases', 'tmp', 'current']) {
@@ -163,7 +163,7 @@ function main(): void {
     const dirA3 = path.join(aReleases, keyA3);
     fs.mkdirSync(dirA3, { recursive: true });
     fs.writeFileSync(path.join(dirA3, 'app.log.1'), 'rotated output\n');
-    const rotated = listDeployedApps(workDir).find((e) => e.releaseKey === keyA3)!;
+    const rotated = (await listDeployedApps(workDir)).find((e) => e.releaseKey === keyA3)!;
     assert.strictEqual(
       rotated.hasLog,
       true,
@@ -172,7 +172,7 @@ function main(): void {
     assert.strictEqual(rotated.logPath, path.join(dirA3, 'app.log.1'));
     // 无任何日志的 release 仍须如实为 false（反证：不能因为放宽就恒真）。
     fs.mkdirSync(path.join(aReleases, `1.0.3-${DEP_A2}`), { recursive: true });
-    const noLog = listDeployedApps(workDir).find((e) => e.releaseKey === `1.0.3-${DEP_A2}`)!;
+    const noLog = (await listDeployedApps(workDir)).find((e) => e.releaseKey === `1.0.3-${DEP_A2}`)!;
     assert.strictEqual(noLog.hasLog, false, '一份日志都没有时必须如实为 false');
     assert.strictEqual(noLog.logPath, '');
 
@@ -202,9 +202,9 @@ function main(): void {
     assert.strictEqual(bEntries[0].deployedAt, null, '无 release 占位行 deployedAt 为 null');
 
     // ── 边界：无 workDir / 无 apps 目录 → 空列表（不是异常） ───────────
-    assert.deepStrictEqual(listDeployedApps(undefined), []);
+    assert.deepStrictEqual(await listDeployedApps(undefined), []);
     assert.deepStrictEqual(
-      listDeployedApps(path.join(workDir, 'no-such-dir')),
+      await listDeployedApps(path.join(workDir, 'no-such-dir')),
       [],
     );
 

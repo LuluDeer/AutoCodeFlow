@@ -123,7 +123,7 @@ function analyzePage(win, pageName, elements) {
     log('\n=== 状态页 ===');
     const statusIssues = await analyzePage(status, '状态', [
       { sel: '.hero-card', label: '状态横幅' },
-      { sel: '.overview-grid', label: '概览双卡' },
+      { sel: '.status-body', label: '主体双栏' },
       { sel: '.log-section', label: '日志区' },
       { sel: '.log-viewer', label: '日志查看器' },
     ]);
@@ -132,12 +132,12 @@ function analyzePage(win, pageName, elements) {
     // 各元素间距测量
     const statusGaps = await status.evaluate(() => {
       const hero = document.querySelector('.hero-card');
-      const overview = document.querySelector('.overview-grid');
+      const body = document.querySelector('.status-body');
       const logSec = document.querySelector('.log-section');
-      if (!hero || !overview || !logSec) return null;
+      if (!hero || !body || !logSec) return null;
       return {
-        heroToOverview: Math.round(overview.getBoundingClientRect().top - hero.getBoundingClientRect().bottom),
-        overviewToLog: Math.round(logSec.getBoundingClientRect().top - overview.getBoundingClientRect().bottom),
+        heroToOverview: Math.round(body.getBoundingClientRect().top - hero.getBoundingClientRect().bottom),
+        overviewToLog: Math.round(logSec.getBoundingClientRect().top - body.getBoundingClientRect().top),
       };
     });
     log(`  状态横幅 -> 概览卡: ${statusGaps.heroToOverview}px`);

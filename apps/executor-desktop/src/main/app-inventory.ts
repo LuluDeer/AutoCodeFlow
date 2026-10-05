@@ -1,4 +1,5 @@
 import fs from 'fs';
+import fsp from 'fs/promises';
 import path from 'path';
 
 /**
@@ -84,10 +85,14 @@ interface AppMeta {
 /**
  * 读 app.json。缺失/损坏一律返回 null——**不猜**，由调用方如实呈现
  * （旧部署没有这份文件，不能因此让整个列表报错）。
+ *
+ * V4 后续优化（1）：全模块 fs.promises 化——本扫描由 AppsPage 每 10s 轮询，
+ * 同步 readdir/stat 在 release 多时阻塞 Electron 主线程（对齐 notifier
+ * NETOPT-E 先例：轮询接口不做同步 I/O）。
  */
-function readAppMeta(appRoot: string): AppMeta | null {
+async function readAppMeta(appRoot: string): Promise<AppMeta | null> {
   try {
-    const raw = fs.readFileSync(path.join(appRoot, 'app.json'), 'utf-8');
+    const raw = await fsp.readFile(path.join(appRoot, 'app.json'), 'utf-8');
     const parsed: unknown = JSON.parse(raw);
     return parsed && typeof parsed === 'object' ? (parsed as AppMeta) : null;
   } catch {
@@ -169,13 +174,13 @@ export function splitReleaseKey(releaseKey: string): {
 }
 
 /** current 是指向 releases/<releaseKey> 的软链/junction；读出它的 basename。 */
-function readCurrentReleaseKey(currentLink: string): string | null {
+async function readCurrentReleaseKey(currentLink: string): Promise<string | null> {
   try {
-    if (!fs.existsSync(currentLink)) return null;
-    const target = fs.realpathSync(currentLink);
+    await fsp.access(currentLink);
+    const target = await fsp.realpath(currentLink);
     return path.basename(target);
   } catch {
-    // 悬空链（目标已被删）——不作数，其余 release 照常列出。
+    // 悬空链（目标已被删）/不可读——不作数，其余 release 照常列出。
     return null;
   }
 }
@@ -192,11 +197,12 @@ function readCurrentReleaseKey(currentLink: string): string | null {
 const APP_LOG_CANDIDATES = ['app.log', 'app.log.1', 'app.log.2', 'app.log.3'];
 
 /** 返回最新一份存在的应用日志路径；一份都没有时返回空串。 */
-function resolveAppLogPath(deployDir: string): string {
+async function resolveAppLogPath(deployDir: string): Promise<string> {
   for (const name of APP_LOG_CANDIDATES) {
     const candidate = path.join(deployDir, name);
     try {
-      if (fs.statSync(candidate).isFile()) return candidate;
+      const st = await fsp.stat(candidate);
+      if (st.isFile()) return candidate;
     } catch {
       // 不存在/不可读：试下一份
     }
@@ -207,31 +213,33 @@ function resolveAppLogPath(deployDir: string): string {
 /**
  * 列出本地所有已部署应用（每个 release 一行）。
  *
+ * V4 后续优化（1）：全异步（fs/promises）——调用方（apps:list IPC）每 10s 被
+ * AppsPage 轮询，同步版本在 release 多时阻塞主线程。并发粒度按应用串行、
+ * 应用内 release 并行 stat（readdir 结果先取齐再排序，语义与同步版一致）。
+ *
  * 容错策略与既有 listApps 一致：单条目 stat/readdir 失败只跳过该条目
  * （并发删除等正常目录竞争），但**目录级**失败（apps/ 不可读等）向上抛，
  * 由渲染层显示错误条，而不是冒充「暂无已部署应用」。
  */
-export function listDeployedApps(workDir: string | undefined): AppReleaseEntry[] {
+export async function listDeployedApps(workDir: string | undefined): Promise<AppReleaseEntry[]> {
   if (!workDir) return [];
   const appsDir = path.join(workDir, 'apps');
   if (!fs.existsSync(appsDir)) return [];
 
   const result: AppReleaseEntry[] = [];
-  const appIds = fs.readdirSync(appsDir).filter((d: string) => {
-    try {
-      return fs.statSync(path.join(appsDir, d)).isDirectory();
-    } catch {
-      return false;
-    }
-  });
+  // apps/ 目录级失败向上抛（不 catch）——与同步版语义一致。
+  const appDirents = await fsp.readdir(appsDir, { withFileTypes: true });
+  const appIds = appDirents.filter((d) => d.isDirectory()).map((d) => d.name);
 
   for (const appId of appIds) {
     const appRoot = path.join(appsDir, appId);
     const releasesDir = path.join(appRoot, 'releases');
-    const currentKey = readCurrentReleaseKey(path.join(appRoot, 'current'));
     // app.json 由 executor-node 在部署成功时落盘（跨 release 稳定）。
     // 旧部署没有该文件 → appName 为 null，由调用方（日志回溯 + UI 回落）处理。
-    const meta = readAppMeta(appRoot);
+    const [currentKey, meta] = await Promise.all([
+      readCurrentReleaseKey(path.join(appRoot, 'current')),
+      readAppMeta(appRoot),
+    ]);
     const appName =
       typeof meta?.appName === 'string' && meta.appName.trim()
         ? meta.appName
@@ -243,30 +251,24 @@ export function listDeployedApps(workDir: string | undefined): AppReleaseEntry[]
 
     // releases/ 尚不存在（部署进行中/从未成功发布）也要列出应用——
     // 否则「刚点部署、正在解压」这段时间应用在整个页面里凭空消失。
-    let releaseKeys: string[] = [];
+    let releaseKeys: Array<{ name: string; mtime: number }> = [];
     if (fs.existsSync(releasesDir)) {
       try {
-        releaseKeys = fs
-          .readdirSync(releasesDir)
-          .filter((d: string) => {
-            try {
-              return fs.statSync(path.join(releasesDir, d)).isDirectory();
-            } catch {
-              return false;
-            }
-          })
-          // 最近发布的排前面（releaseKey 前缀是版本号，字典序不可靠——
-          // 用目录 mtime 倒序，与 executor 侧 pruneOldReleases 同一判据）。
-          .sort((a: string, b: string) => {
-            const mt = (n: string) => {
+        const dirents = await fsp.readdir(releasesDir, { withFileTypes: true });
+        // 最近发布的排前面（releaseKey 前缀是版本号，字典序不可靠——
+        // 用目录 mtime 倒序，与 executor 侧 pruneOldReleases 同一判据）。
+        releaseKeys = (await Promise.all(
+          dirents
+            .filter((d) => d.isDirectory())
+            .map(async (d) => {
               try {
-                return fs.statSync(path.join(releasesDir, n)).mtimeMs;
+                const st = await fsp.stat(path.join(releasesDir, d.name));
+                return { name: d.name, mtime: st.mtimeMs };
               } catch {
-                return 0;
+                return { name: d.name, mtime: 0 };
               }
-            };
-            return mt(b) - mt(a);
-          });
+            }),
+        )).sort((a, b) => b.mtime - a.mtime);
       } catch {
         continue; // 单应用 releases 读失败：跳过该应用，不影响其余
       }
@@ -291,18 +293,13 @@ export function listDeployedApps(workDir: string | undefined): AppReleaseEntry[]
       continue;
     }
 
-    for (const releaseKey of releaseKeys) {
+    for (const { name: releaseKey, mtime } of releaseKeys) {
       const deployDir = path.join(releasesDir, releaseKey);
-      const logPath = resolveAppLogPath(deployDir);
+      const logPath = await resolveAppLogPath(deployDir);
       const { version, deploymentId } = splitReleaseKey(releaseKey);
       // mtime 即部署完成时间（executor 侧 pruneOldReleases 同一判据）——
-      // 同一版本号多次部署时，UI 靠它把行区分开。stat 失败给 null，不影响列出。
-      let deployedAt: number | null = null;
-      try {
-        deployedAt = fs.statSync(deployDir).mtimeMs;
-      } catch {
-        deployedAt = null;
-      }
+      // 同一版本号多次部署时，UI 靠它把行区分开。stat 失败（mtime=0）给 null。
+      const deployedAt: number | null = mtime > 0 ? mtime : null;
       result.push({
         appId,
         appName,

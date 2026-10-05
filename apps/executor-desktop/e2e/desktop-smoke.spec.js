@@ -180,6 +180,12 @@ test.describe('executor-desktop 冒烟（Playwright _electron）', () => {
       }, { width: targetWidth, height: targetHeight });
       const closed = status.waitForEvent('close');
       await status.getByRole('button', { name: '关闭窗口' }).click();
+      // C-04（v3 R4 落地，本用例此前未随门禁运行）：首次关闭被一次性托盘驻留
+      // 气泡拦截——点「知道了」才真正关窗。气泡文案经 V4-5 迁入 shell 双语键，
+      // zh 值与硬编码期逐字一致。
+      await expect(status.getByText('窗口会关闭，但应用驻留系统托盘，执行器继续运行。')).toBeVisible();
+      // 状态页首启还有托盘常驻提示条（D-01）也带「知道了」——锚定 close-tip 气泡作用域
+      await status.locator('.close-tip').getByRole('button', { name: '知道了' }).click();
       await closed;
       const saved = JSON.parse(fs.readFileSync(path.join(userData, 'status-window.json'), 'utf8'));
       expect(saved).toMatchObject({ width: targetWidth, height: targetHeight, maximized: false });

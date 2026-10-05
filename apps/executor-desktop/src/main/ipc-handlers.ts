@@ -297,7 +297,11 @@ export function readLastLines(
     const buf = Buffer.allocUnsafe(length);
     const read = fs.readSync(fd, buf, 0, length, start);
     const text = buf.subarray(0, read).toString('utf-8');
-    const lines = text.split('\n');
+    // CRLF 剥离：Windows 落盘是 \r\n，按 \n 切分后每行残留尾部 \r。
+    // 渲染层 normalizeLogLine 的 OUTER_LOG_RE 以 (.*)$ 收尾，而 JS 的 . 不匹配
+    // \r，$ 又锚定串尾——残留 \r 会让正则对整行失配，历史日志全部退化为
+    // 关键词猜测的原始双时间戳显示（2026-10-04 截图打样时发现的真回归）。
+    const lines = text.split('\n').map((line) => (line.endsWith('\r') ? line.slice(0, -1) : line));
     // 窗口起点不在行首时，首元素是被截断的半行——丢弃。
     if (start > 0) {
       const boundary = Buffer.allocUnsafe(1);
@@ -820,11 +824,13 @@ export function registerIpcHandlers(): void {
   // 原实现按后者逐层下钻，于是把 releases/tmp/current 当成「部署」列出（假
   // 条目、版本号丢失），且真实 app.log 永不匹配 → 每行都显示「无日志」。
   // 解析逻辑收敛到 app-inventory.ts（纯函数，可被 selftest 直接覆盖）。
-  ipcMain.handle('apps:list', () => {
+  // V4 后续优化（1）：扫描全异步化（fs/promises）——AppsPage 每 10s 轮询本
+  // handler，同步 readdir/stat 在 release 多时阻塞主线程（NETOPT-E 同教训）。
+  ipcMain.handle('apps:list', async () => {
     const workDir = configStore.get('workDir') as string | undefined;
     // D 修正：目录级失败向上抛出（IPC reject → 渲染层错误条），不冒充
     // 「暂无已部署应用」；单条目 stat 失败仍只跳过该条目（正常目录竞争）。
-    const entries = listDeployedApps(workDir);
+    const entries = await listDeployedApps(workDir);
     // 用户报障（看不出是哪个应用）：app.json 是权威来源，但旧部署没有它。
     // 用执行器日志里的 releaseKey→appName 映射补齐（只读、带签名缓存，
     // 不覆盖 app.json 已有的值）。回溯不到就保持 null，由 UI 如实显示。

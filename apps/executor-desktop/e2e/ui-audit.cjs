@@ -254,7 +254,7 @@ function parseRgb(str) {
     await status.getByRole('tab', { name: '配置' }).click();
     await status.waitForTimeout(300);
     await auditCurrent(status, '配置-连接');
-    for (const name of ['网络地址', 'Python 运行环境', 'Agent（实验性）', '基本设置']) {
+    for (const name of ['网络地址', 'Python 运行环境', 'Agent（实验性）', '关于与更新']) {
       await status.getByRole('button', { name }).click();
       await status.waitForTimeout(250);
       await auditCurrent(status, '配置-' + name);

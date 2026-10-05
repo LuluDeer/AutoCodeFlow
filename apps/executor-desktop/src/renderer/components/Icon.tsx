@@ -20,6 +20,7 @@ export type IconName =
   | 'warning'
   | 'check'
   | 'check-circle'
+  | 'copy'
   | 'chevron-right'
   | 'chevron-down'
   | 'arrow-up'
@@ -39,19 +40,14 @@ export type IconName =
   | 'monitor'
   | 'zap'
   | 'spark'
-  | 'copy'
   | 'box'
   | 'activity'
-  | 'cpu'
   | 'server'
   | 'play'
   | 'stop'
   | 'eye'
   | 'eye-off'
-  | 'info'
-  | 'download'
-  | 'clock'
-  | 'layout';
+  | 'clock';
 
 const PATHS: Record<IconName, React.ReactNode> = {
   search: (
@@ -78,6 +74,12 @@ const PATHS: Record<IconName, React.ReactNode> = {
     </>
   ),
   check: <path d="m5 12.5 4.5 4.5L19 7.5" />,
+  copy: (
+    <>
+      <rect x="9" y="9" width="11" height="11" rx="2" />
+      <path d="M5 15H4.5A1.5 1.5 0 0 1 3 13.5v-9A1.5 1.5 0 0 1 4.5 3h9A1.5 1.5 0 0 1 15 4.5V5" />
+    </>
+  ),
   'check-circle': (
     <>
       <circle cx="12" cy="12" r="8.5" />
@@ -182,12 +184,6 @@ const PATHS: Record<IconName, React.ReactNode> = {
   ),
   zap: <path d="M13 3 5.5 13.5H11L10.5 21 18 10.5h-5.5Z" />,
   spark: <path d="m12 4 1.9 5.4L19.5 11l-5.6 1.6L12 18l-1.9-5.4L4.5 11l5.6-1.6Z" />,
-  copy: (
-    <>
-      <rect x="8.5" y="8.5" width="11.5" height="11.5" rx="1.5" />
-      <path d="M4.5 15.5V6A1.5 1.5 0 0 1 6 4.5h9.5" />
-    </>
-  ),
   box: (
     <>
       <path d="M12 3.2 20 7.6v8.8L12 20.8 4 16.4V7.6Z" />
@@ -197,13 +193,6 @@ const PATHS: Record<IconName, React.ReactNode> = {
   activity: (
     <>
       <path d="M3.5 12h3.6l2.4-6 4.6 12 2.4-6h4" />
-    </>
-  ),
-  cpu: (
-    <>
-      <rect x="6.5" y="6.5" width="11" height="11" rx="1.5" />
-      <rect x="10" y="10" width="4" height="4" rx="0.5" />
-      <path d="M9 3.5v3M15 3.5v3M9 17.5v3M15 17.5v3M3.5 9h3M3.5 15h3M17.5 9h3M17.5 15h3" />
     </>
   ),
   server: (
@@ -228,29 +217,10 @@ const PATHS: Record<IconName, React.ReactNode> = {
       <path d="M9.5 9.7a2.8 2.8 0 0 0 4 4" />
     </>
   ),
-  info: (
-    <>
-      <circle cx="12" cy="12" r="8.5" />
-      <path d="M12 11.2v5M12 7.8h.01" />
-    </>
-  ),
-  download: (
-    <>
-      <path d="M12 4.5V15" />
-      <path d="m7 10.5 5 5 5-5" />
-      <path d="M4.5 19.5h15" />
-    </>
-  ),
   clock: (
     <>
       <circle cx="12" cy="12" r="8.5" />
       <path d="M12 7v5.2l3.2 2" />
-    </>
-  ),
-  layout: (
-    <>
-      <rect x="4" y="4" width="16" height="16" rx="1.5" />
-      <path d="M4 9.5h16M9.5 20V9.5" />
     </>
   ),
 };

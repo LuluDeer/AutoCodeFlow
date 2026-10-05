@@ -1,0 +1,748 @@
+/* ============================================================================
+ * AutoCodeFlow Executor Desktop — 通用组件层（components）
+ * ----------------------------------------------------------------------------
+ * 跨页面复用的组件样式：按钮、输入/表单、测试与保存反馈、徽章、复制字段、
+ * 信息条、骨架屏、通用日志查看器、开关、更新横幅、错误边界、图标。
+ * 由原 app.css 机械拆分而来。
+ * ========================================================================== */
+
+/* ==========================================================================
+ * 按钮
+ *  绿色（primary/success）只用于主 CTA 与正向动作；中性动作走默认描边钮；
+ *  危险走红色；幽灵图标钮用于行内紧凑操作。
+ * ========================================================================== */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface-0);
+  color: var(--text);
+  cursor: pointer;
+  font-size: var(--fs-base);
+  font-weight: 500;
+  line-height: 1.4;
+  white-space: nowrap;
+  user-select: none;
+  box-shadow: var(--shadow-xs);
+  transition: background var(--transition-fast), border-color var(--transition-fast),
+    box-shadow var(--transition-fast), transform var(--transition-fast);
+}
+.btn:hover { background: #f8f9fb; border-color: var(--border-light); }
+.btn:active { transform: translateY(0.5px); background: var(--surface-2); }
+/* disabled 一律灰底灰字诚实降级，不用 opacity——透明度会把实底主钮沤成灰绿 */
+.btn:disabled {
+  background: var(--surface-2);
+  color: var(--text3);
+  border-color: var(--border);
+  box-shadow: none;
+  transform: none;
+  cursor: not-allowed;
+  opacity: 1;
+}
+
+/* 主 CTA：green-700 实底 + 白字（4.6:1 过 AA，见 MASTER.md DOC-01）。
+   明亮风不叠渐变与彩色投影，靠实底与字重承载分量。 */
+.btn-primary,
+.btn-success {
+  background: #15803d;
+  border-color: transparent;
+  color: #ffffff;
+  font-weight: 600;
+  box-shadow: var(--shadow-sm);
+}
+.btn-primary:hover,
+.btn-success:hover {
+  background: #166531;
+  border-color: transparent;
+}
+.btn-primary:active,
+.btn-success:active { background: #14532d; }
+.btn-primary:disabled,
+.btn-success:disabled {
+  background: var(--surface-2);
+  color: var(--text3);
+  border-color: var(--border);
+  box-shadow: none;
+}
+
+.btn-danger {
+  background: #dc2626;
+  border-color: transparent;
+  color: #fff;
+  font-weight: 600;
+  box-shadow: var(--shadow-sm);
+}
+.btn-danger:hover { background: #b91c1c; border-color: transparent; }
+.btn-danger:disabled {
+  background: var(--surface-2);
+  color: var(--text3);
+  border-color: var(--border);
+  box-shadow: none;
+}
+
+.btn-danger-ghost {
+  background: transparent;
+  color: var(--red-text);
+  border: 1px solid var(--red-border);
+  box-shadow: none;
+}
+.btn-danger-ghost:hover { background: var(--red-bg); color: var(--red-hover); }
+
+.btn-outline-danger {
+  color: var(--red-text);
+  border-color: var(--red-border);
+  background: var(--red-bg);
+  box-shadow: none;
+}
+.btn-outline-danger:hover { color: var(--red-hover); border-color: var(--red); background: rgb(220 38 38 / 0.14); }
+.btn-danger-ghost:disabled,
+.btn-outline-danger:disabled {
+  background: var(--surface-2);
+  color: var(--text3);
+  border-color: var(--border);
+  box-shadow: none;
+}
+
+/* 实底深色钮（primary/success/danger）上，绿色 outline 会隐入同色底：
+   focus-visible 改「外环 accent + 2px 白色内衬」双层环，保证键盘焦点可见 */
+.btn-primary:focus-visible,
+.btn-success:focus-visible,
+.btn-danger:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 2px var(--surface-0), var(--shadow-sm);
+}
+
+.btn-sm { padding: 5px 11px; font-size: var(--fs-sm); border-radius: var(--radius-sm); }
+.btn-lg { padding: 10px 22px; font-size: var(--fs-md); border-radius: var(--radius-md); }
+
+/* 行内图标按钮（打开目录 / 删除）：固定尺寸幽灵钮，避免与文字钮抢空间抖动 */
+.app-icon-button {
+  width: 30px;
+  min-width: 30px;
+  height: 30px;
+  padding: 0 !important;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.app-icon-button .icon { width: 15px; height: 15px; }
+
+/* ==========================================================================
+ * 输入框 / 表单
+ * ========================================================================== */
+.input {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--input-bg);
+  color: var(--text);
+  font-size: var(--fs-base);
+  outline: none;
+  transition: border-color var(--transition-fast), background var(--transition-fast),
+    box-shadow var(--transition-fast);
+}
+.input::placeholder { color: var(--text3); }
+.input:hover { border-color: var(--border-light); background: var(--input-bg-hover); }
+.input:focus {
+  border-color: var(--green);
+  background: var(--input-bg);
+  box-shadow: 0 0 0 3px var(--accent-muted);
+}
+.input.error { border-color: var(--red); box-shadow: 0 0 0 3px var(--red-bg); }
+.input:disabled { background: var(--surface-1); color: var(--text3); cursor: not-allowed; }
+/* 下拉控件：自定义箭头，避免系统默认亮块 */
+select.input {
+  cursor: pointer;
+  appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--text3) 50%),
+    linear-gradient(135deg, var(--text3) 50%, transparent 50%);
+  background-position: calc(100% - 16px) 55%, calc(100% - 11px) 55%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  padding-right: 30px;
+}
+
+.input-group { display: flex; gap: 6px; align-items: center; }
+.input-group .input { flex: 1; min-width: 0; }
+
+.label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text2);
+  margin-bottom: 6px;
+  letter-spacing: -0.01em;
+}
+
+.field { display: flex; flex-direction: column; margin-bottom: 20px; }
+.field:last-child { margin-bottom: 0; }
+
+.hint {
+  font-size: 11px;
+  color: var(--text3);
+  margin-top: 6px;
+  line-height: 1.6;
+}
+
+/* ── 测试 / 保存结果行 ──────────────────────────────────────────────── */
+.test-result {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 8px;
+  padding: 7px 12px;
+  border-radius: var(--radius);
+  font-size: 12px;
+  font-weight: 500;
+  animation: fadeIn var(--anim-in);
+}
+.test-result.ok   { background: var(--green-bg); color: var(--accent); border: 1px solid var(--green-border); }
+.test-result.fail { background: var(--red-bg); color: var(--red-text); border: 1px solid var(--red-border); }
+
+.saved-toast {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+  animation: fadeIn var(--anim-in);
+}
+
+/* ==========================================================================
+ * Collapsible 结构级展开/收起（V4-5 M-02 重启：E-01 的高度过渡）
+ * 内容**常驻挂载** + grid-template-rows 0fr→1fr 过渡，容器高度不再瞬跳；
+ * 收起态 inert（不可聚焦/不进读屏树）+ aria-hidden。reduced-motion 由
+ * base.css 全局收口自动生效。页面级 tab 常驻架构（F-21）不触碰。
+ * ========================================================================== */
+.collapsible {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 220ms var(--ease-out);
+}
+.collapsible[data-open='true'] { grid-template-rows: 1fr; }
+.collapsible-inner { overflow: hidden; min-height: 0; }
+
+/* ==========================================================================
+ * ConfirmBar 页内二次确认条（components/ConfirmBar.tsx，V4-4 X-01 收口）
+ * 此前五处（清历史/停机/卸载/删版本/保存影响）各写一套，现统一：
+ * danger=红（破坏性）/ impact=琥珀（高影响非破坏），主钮右置 + autoFocus。
+ * ========================================================================== */
+.confirm-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  flex-shrink: 0;
+  padding: 11px 14px;
+  border: 1px solid var(--red-border);
+  border-radius: var(--radius-lg);
+  background: var(--red-bg);
+  animation: fadeIn var(--anim-in);
+}
+.confirm-bar-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.confirm-bar-text strong { color: var(--text); font-size: 13px; }
+.confirm-bar-text span { color: var(--text2); font-size: 11.5px; line-height: 1.55; }
+.confirm-bar-actions { display: flex; gap: 6px; flex-wrap: wrap; flex-shrink: 0; }
+/* impact 变体：嵌在配置页 footer 上方，通栏无圆角（与保存栏贴合） */
+.confirm-bar-impact {
+  border-color: var(--yellow-border);
+  border-width: 1px 0;
+  border-radius: 0;
+  background: var(--yellow-bg);
+  padding: 12px 36px;
+}
+.confirm-bar-impact .confirm-bar-text strong { color: var(--yellow-hover); }
+
+/* ==========================================================================
+ * 徽章（状态药丸，带状态点）
+ * ========================================================================== */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px 3px 9px;
+  min-height: 24px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  line-height: 1.5;
+  /* 状态类切换（badge-pending→badge-success 等）时颜色平滑翻转（E-05 收口） */
+  transition: background var(--transition-fast), color var(--transition-fast),
+    border-color var(--transition-fast);
+}
+.badge::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.badge-success { background: var(--green-bg); color: var(--accent); border: 1px solid var(--green-border); }
+.badge-success::before { background: var(--green); }
+.badge-blue { background: var(--blue-bg); color: var(--blue-text); border: 1px solid var(--blue-border); }
+.badge-blue::before { background: var(--blue); }
+/* 运行中徽标有"呼吸"动效，与停止态（静态）区分 */
+.badge-pending { background: var(--yellow-bg); color: var(--yellow-text); border: 1px solid var(--yellow-border); }
+.badge-pending::before { background: var(--yellow); animation: pulse 1.2s infinite; }
+/* 失败/离线危险徽标：HistoryPage 与 StatusWindow 均引用 badge-error，
+   此前 CSS 缺失该类导致失败态一直退化为裸文本（2026-10 审计补齐） */
+.badge-error { background: var(--red-bg); color: var(--red-text); border: 1px solid var(--red-border); }
+.badge-error::before { background: var(--red); }
+.badge-offline { background: var(--surface-2); color: var(--text3); border: 1px solid var(--border-strong); }
+.badge-offline::before { background: var(--text4); }
+.badge-stopped { background: var(--surface-2); color: var(--text3); border: 1px solid var(--border-light); }
+.badge-stopped::before { background: var(--text3); }
+
+/* ==========================================================================
+ * 复制字段
+ * ========================================================================== */
+.copy-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.copy-val {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.copy-val-plain { font-family: inherit; }
+.copy-btn {
+  flex-shrink: 0;
+  padding: 4px 10px;
+  min-height: 24px;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-1);
+  color: var(--text3);
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast),
+    border-color var(--transition-fast);
+}
+.copy-btn:hover { background: var(--surface-2); color: var(--text); }
+.copy-btn.copied { color: var(--accent); border-color: var(--green-border); background: var(--green-bg); }
+.copy-btn.copy-failed { color: var(--red-text); border-color: var(--red-border); background: var(--red-bg); }
+
+/* ==========================================================================
+ * 通用信息条 / 提示
+ *  info-banner 默认中性提示；.warn 为琥珀警示；.danger 为红色。
+ * ========================================================================== */
+.info-banner {
+  display: flex;
+  gap: 10px;
+  padding: 11px 14px;
+  margin-bottom: 24px;
+  border-radius: var(--radius-lg);
+  background: var(--blue-bg);
+  border: 1px solid var(--blue-border);
+  color: var(--text2);
+  font-size: 12px;
+  line-height: 1.65;
+}
+.info-banner.warn { background: var(--yellow-bg); border-color: var(--yellow-border); color: var(--yellow-text); }
+.info-banner.danger { background: var(--red-bg); border-color: var(--red-border); color: var(--red-text); }
+.info-banner-icon { flex: none; display: inline-flex; margin-top: 1px; color: var(--blue-text); }
+.info-banner.warn .info-banner-icon { color: var(--yellow-hover); }
+.info-banner.danger .info-banner-icon { color: var(--red-hover); }
+.info-banner-icon .icon { width: 15px; height: 15px; }
+.info-banner strong { color: var(--text); font-weight: 650; }
+.info-banner.warn strong { color: var(--yellow-hover); }
+.info-banner code {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  background: rgb(15 23 42 / 0.05);
+  padding: 1px 5px;
+  border-radius: 4px;
+  color: var(--text2);
+}
+
+/* ==========================================================================
+ * 骨架屏（初次加载，替代纯文本“加载中”，减少感知等待与跳动）
+ * ========================================================================== */
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+.skeleton::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgb(255 255 255 / 0.65), transparent);
+  animation: shimmer 1.4s infinite;
+}
+.skeleton-group { padding: 14px 16px; }
+.skeleton-row { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
+.skeleton-line { height: 12px; border-radius: 5px; background: var(--surface-3); }
+.skeleton-line.w-70 { width: 70%; }
+.skeleton-line.w-45 { width: 45%; }
+.skeleton-line.w-30 { width: 30%; }
+.ml-auto { margin-left: auto; }
+
+.log-severity {
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  cursor: pointer;
+  padding: 2px 8px;
+  min-height: 24px;
+  display: inline-flex;
+  align-items: center;
+  font-size: var(--fs-xs);
+  font-weight: 500;
+}
+.log-severity.warn { color: var(--yellow-text); background: var(--yellow-bg); border-color: var(--yellow-border); }
+.log-severity.error { color: var(--red-text); background: var(--red-bg); border-color: var(--red-border); }
+.log-severity:hover { filter: brightness(0.96); }
+
+/* ── 日志查看器（通用）──────────────────────────────────────────────── */
+.log-viewer {
+  background: var(--log-bg);
+  color: #2b3444;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.75;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: auto;
+  flex: 1;
+  min-height: 0;
+  white-space: pre;
+  word-break: normal;
+}
+.log-viewer.wrap { white-space: pre-wrap; overflow-wrap: anywhere; }
+.log-viewer:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* 单条日志行（position:relative 供 V4-2 行内工具 hover 浮现定位） */
+.log-line { display: block; position: relative; min-height: 0; padding: 0 2px; border-radius: 3px; }
+.log-line:hover { background: rgb(15 23 42 / 0.045); }
+.log-line.error { color: var(--red-text); }
+.log-line.warn { color: var(--yellow-text); }
+
+/* 行内工具（V4-2，hover 浮现）：复制此行 / 打开文件（仅 warn/error 行）。
+   absolute 定位贴行右侧——flex 行与 block 行的宽度都是滚动容器行宽，
+   长行横向滚动时工具钮仍停在可视右缘 */
+.log-line-tools {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  gap: 2px;
+  padding: 1px 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-0);
+  box-shadow: var(--shadow-xs);
+  z-index: 2;
+}
+.log-line-tool {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 20px;
+  border: none;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text3);
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+.log-line-tool:hover { color: var(--text); background: var(--surface-2); }
+.log-line-tool.is-ok { color: var(--accent); }
+.log-line-tool.is-err { color: var(--red-text); }
+.log-line-tool .icon { width: 12px; height: 12px; }
+
+/* 全屏查看器：行号列（多日志场景下引用与定位）。
+   用 flex 而非 grid——行内正文是 FormattedLogText 的多个内联 span，
+   grid 会把它们当独立格子逐个换行 */
+.log-fs-content .log-line {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+.log-fs-content .log-line-no {
+  flex: 0 0 56px;
+  color: var(--text3);
+  text-align: right;
+  user-select: none;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 结构化日志（StatusWindow 规范化后的行）：时间 / 级别 / 正文 分段着色 */
+.ll-time {
+  display: inline-block;
+  color: var(--text3);
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+  margin-right: 2px;
+}
+.ll-level {
+  display: inline-block;
+  min-width: 36px;
+  margin: 0 6px 0 4px;
+  padding: 0 5px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  text-align: center;
+  letter-spacing: 0.03em;
+  user-select: none;
+}
+.ll-debug { color: var(--text3); background: rgb(15 23 42 / 0.05); }
+/* V4-2（V-04 级别降噪）：INFO 是多数派——去底色徽章降级为弱灰文字，
+   级别列的视觉权重第一次与发生频率成正比（WARN/ERROR 保留浅底徽章） */
+.ll-info { color: var(--text3); background: transparent; }
+.ll-warn { color: var(--yellow-text); background: var(--yellow-bg); }
+.ll-error { color: var(--red-text); background: var(--red-bg); }
+.ll-msg { color: inherit; }
+.log-line.error .ll-msg { color: var(--red-text); }
+.log-line.warn .ll-msg { color: var(--yellow-text); }
+
+.log-empty {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text3);
+  font-size: var(--fs-sm);
+}
+.log-empty .icon { width: 15px; height: 15px; }
+/* 空日志态：在查看器内居中呈现，替代"左上角一行小字"的未完成感 */
+.log-viewer:has(> .log-empty) {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.log-files-empty { color: var(--text3); font-size: 12px; padding: var(--space-sm) 0; }
+.log-files-error { color: var(--red-text); font-size: 11px; padding: 0 2px 8px; word-break: break-word; }
+
+/* 日志读取失败块（Apps 查看器） */
+.log-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 9px 13px;
+  margin-bottom: 8px;
+  border: 1px solid var(--red-border);
+  border-radius: var(--radius);
+  background: var(--red-bg);
+  color: var(--red-text);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.log-error .icon { margin-top: 2px; }
+
+/* 搜索命中标记 */
+.log-mark {
+  background: #fde68a;
+  color: #78350f;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+.log-line.log-highlight { background: var(--blue-bg); box-shadow: inset 2px 0 0 var(--blue); }
+
+/* “加载更早”按钮 */
+.log-load-older {
+  display: block;
+  width: 100%;
+  padding: 8px;
+  margin-bottom: 8px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-1);
+  color: var(--text2);
+  font: inherit;
+  cursor: pointer;
+  transition: color var(--transition-fast), border-color var(--transition-fast);
+}
+.log-load-older:hover { color: var(--accent); border-color: var(--accent-border); }
+
+/* ── Toggle 开关 ────────────────────────────────────────────────────── */
+.toggle { position: relative; display: inline-block; width: 42px; height: 24px; flex-shrink: 0; cursor: pointer; }
+.toggle input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.toggle-track {
+  position: absolute;
+  inset: 0;
+  border-radius: 12px;
+  background: var(--surface-3);
+  transition: background var(--transition-normal);
+}
+.toggle input:checked ~ .toggle-track { background: var(--green); }
+.toggle-thumb {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgb(16 24 40 / 0.2);
+  transition: transform var(--transition-normal);
+  pointer-events: none;
+}
+.toggle input:checked ~ .toggle-track .toggle-thumb { transform: translateX(18px); }
+.toggle:focus-within { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 12px; }
+.toggle input:focus-visible + .toggle-track { box-shadow: 0 0 0 3px rgb(34 197 94 / 0.25); }
+
+/* 不支持标签 */
+.unsupported-label { color: var(--text3); font-size: 12px; }
+
+/* ==========================================================================
+ * Update Banner
+ * ========================================================================== */
+.update-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  flex-shrink: 0;
+  padding: 13px 16px;
+  margin-bottom: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--surface-1);
+  animation: fadeIn var(--anim-in);
+}
+.update-banner-icon { display: inline-flex; align-items: center; flex: none; color: var(--accent); }
+.update-banner-icon .icon { width: 19px; height: 19px; }
+.update-banner-text { display: flex; flex: 1; flex-direction: column; gap: 2px; min-width: 0; }
+.update-banner-text strong { font-size: 13px; color: var(--text); }
+.update-banner-text span { font-size: 11.5px; color: var(--text3); }
+.update-banner-actions { display: flex; gap: var(--space-sm); flex: none; }
+
+.update-banner-available,
+.update-banner-ready { border-color: var(--green-border); background: var(--green-bg); }
+.update-banner-downloading { border-color: var(--border-strong); }
+.update-banner-error { border-color: var(--red-border); background: var(--red-bg); }
+.update-banner-error .update-banner-icon { color: var(--red); }
+
+.update-banner-progress { flex: none; width: 170px; }
+.update-progress {
+  width: 100%;
+  height: 6px;
+  appearance: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--surface-3);
+  overflow: hidden;
+}
+.update-progress::-webkit-progress-bar { background: var(--surface-3); }
+.update-progress::-webkit-progress-value { background: var(--green); border-radius: var(--radius-sm); }
+.update-progress::-moz-progress-bar { background: var(--accent); }
+
+/* ==========================================================================
+ * Error Boundary（渲染树崩溃兜底）
+ * ========================================================================== */
+.error-boundary {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 13px;
+  min-height: 100vh;
+  padding: 28px;
+  background: var(--bg);
+  color: var(--text);
+}
+.error-boundary-title { font-size: 17px; font-weight: 700; color: var(--red-text); }
+.error-boundary-summary {
+  padding: 9px 13px;
+  border: 1px solid var(--red-border);
+  border-radius: var(--radius);
+  background: var(--red-bg);
+  font-size: 12px;
+  word-break: break-word;
+}
+.error-boundary-hint { font-size: 12px; color: var(--text3); line-height: 1.6; }
+
+/* ==========================================================================
+ * 图标（components/Icon.tsx）
+ * ========================================================================== */
+.icon { width: 14px; height: 14px; flex: none; }
+.icon-xs { width: 12px; height: 12px; }
+.btn .icon { width: 13px; height: 13px; }
+.btn-lg .icon { width: 14px; height: 14px; }
+.icon-flip-h { transform: scaleX(-1); }
+
+/* ==========================================================================
+ * PageHeader（统一页头，components/PageHeader.tsx）
+ * 图标 20px + 标题 --fs-xl(20px)/700 + 次级信息 text3 + 右侧动作区。
+ * 收口历史/应用/配置三页标题规格（2026-10 审计 A-01：页面标题四页四套）；
+ * 状态页 hero 的「状态变体」由后续阶段接入。
+ * ========================================================================== */
+.page-header { display: flex; align-items: center; gap: 12px; min-width: 0; flex-shrink: 0; }
+.page-header-icon { display: inline-flex; width: 20px; height: 20px; color: var(--text3); flex: none; }
+.page-header-icon .icon { width: 20px; height: 20px; }
+.page-header-title { font-size: var(--fs-xl); font-weight: 700; color: var(--text); letter-spacing: -0.02em; margin: 0; white-space: nowrap; }
+.page-header-meta { color: var(--text3); font-size: var(--fs-sm); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.page-header-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-left: auto; flex: none; }
+
+/* ── 日志工作台 v3（共享查看器新能力，A-03 / E-02）─────────────────── */
+/* A-03 trace 合并：块首微型标签（10px 等宽 text3），块内行不再重复渲染该段 */
+.ll-trace-chip {
+  flex: none;
+  margin-right: -5px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text3);
+  letter-spacing: 0.02em;
+}
+/* trace 块：左侧 2px 竖线缩进；border 占用原 padding 的左 2px，正文起点与普通行对齐 */
+.log-line.log-trace-block {
+  border-left: 2px solid var(--border-strong);
+  padding-left: 0;
+}
+/* E-02 到达动效：新行 2s 绿底淡出（keyframes 见 base.css；reduced-motion 全局收口） */
+.log-line-arrive { animation: lineArrive 2s ease-out; }
+
+/* 跟随暂停期间新行到达 / 预览到顶的顶部胶囊（与 .log-load-older 同款克制风） */
+.log-new-pill {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 6;
+  padding: 4px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--surface-1);
+  color: var(--text2);
+  font-size: 11px;
+  font-family: var(--font-body);
+  white-space: nowrap;
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+  animation: fadeIn var(--anim-in);
+  transition: color var(--transition-fast), border-color var(--transition-fast);
+}
+.log-new-pill:hover { color: var(--accent); border-color: var(--accent-border); }
+
+/* 查看器错误行（历史/应用页）：错误文案占满、重试钮右置 */
+.log-error-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.log-error .btn { flex-shrink: 0; }
+
+/* ── 清扫记录（死样式零引用删除；一行一条：日期 + 类名 + 证据）──────────
+ * 2026-10-05 .badge-compact —— 全量类名扫描（378 类 vs src/renderer + e2e
+ *   共 117 文本文件）零引用，状态徽章无一使用 compact 变体。
+ * 2026-10-05 .skeleton-bar / .skeleton-dot —— 零引用：骨架屏加载态仅用
+ *   skeleton / skeleton-group / skeleton-row / skeleton-line（+ w-45/w-70/w-30）。
+ * 动态生成保留（文本级 grep 命中 0，但非死样式）：.ll-debug/.ll-info/.ll-warn/
+ *   .ll-error 由 FormattedLogText 的 `ll-${level.toLowerCase()}` 拼接生成，
+ *   级别串来自日志行解析（INFO/WARN/ERROR/DEBUG）。
+ * ---------------------------------------------------------------------- */

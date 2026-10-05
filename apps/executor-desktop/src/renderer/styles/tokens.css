@@ -1,0 +1,223 @@
+/* ============================================================================
+ * AutoCodeFlow Executor Desktop — 全局样式
+ * ----------------------------------------------------------------------------
+ * 设计语言：「明亮专业风」——浅灰画布 + 白色卡片 + 柔和阴影 + 克制的品牌绿，
+ * 工具型桌面应用的清晰与克制优先于装饰。
+ * 基线约定（2026-10 打样，状态窗先行，其余页面随令牌翻转后逐页重排）：
+ *   1) 层级靠「灰底白卡 + 发丝描边 + 浅阴影」表达，不用发光与渐变堆砌；
+ *   2) 字号阶梯 11/12/13/14/16/20/24（--fs-*），新样式一律用阶梯取值；
+ *   3) 间距节奏走 --space-*（新增数字刻度 4/8/12/16/24/32），禁止随手写 px；
+ *   4) 品牌绿 #15803d 只用于主 CTA 文字底与正向状态（白字 4.6:1 过 AA，
+ *      对齐 design-system/autocodeflow/MASTER.md 的 DOC-01 结论）；
+ *   5) 窗口底色必须与主进程 BrowserWindow backgroundColor (#f5f6f8) 对齐，
+ *      否则 Windows 部分机器 frameless 窗口会出现底色割裂/闪色。
+ * 类名与各页 TSX 严格对应。
+ * 原单文件 app.css 已机械拆分为四个样式文件（纯搬移、零视觉变化），
+ * main.tsx 按序 import：tokens（设计令牌，本文件）→ base（基础与骨架）→
+ * components（通用组件）→ pages（页面专属与响应式），级联语义保持不变。
+ * ========================================================================== */
+
+/* ── 品牌字体（V4-1 V-01 终结项）────────────────────────────────────
+   Fira Sans / Fira Code latin 子集 woff2 随渲染层打包（vite 处理 url() →
+   dist/renderer/assets，file:// 同源，font-src 'self' 直接合法），中文仍走
+   --font-body 的系统回落链（Segoe UI / 雅黑）。许可 SIL OFL（fonts/LICENSE.txt）。
+   加载失败静默回落系统字体，不阻塞首绘（swap）。 */
+@font-face {
+  font-family: 'Fira Sans';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('../fonts/fira-sans-400.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Fira Sans';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('../fonts/fira-sans-600.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Fira Sans';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('../fonts/fira-sans-700.woff2') format('woff2');
+}
+/* Fira Code：Google Fonts 以可变字体单文件覆盖 400–500，两条 @font-face
+   指向同一文件即可按字重取值。 */
+@font-face {
+  font-family: 'Fira Code';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('../fonts/fira-code-var.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Fira Code';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('../fonts/fira-code-var.woff2') format('woff2');
+}
+
+:root {
+  /* 让原生控件（下拉、滚动条、搜索清除按钮）跟随浅色主题渲染。 */
+  color-scheme: light;
+
+  /* ── 品牌锚点（与 design-system/autocodeflow/MASTER.md 对齐）────────── */
+  --color-primary: #15803d;
+  --color-on-primary: #ffffff;
+  --color-secondary: #eef1f5;
+  --color-accent: #15803d;
+  --color-background: #f5f6f8;
+  --color-foreground: #1a2230;
+  --color-muted: #eef1f5;
+  --color-border: #e3e7ee;
+  --color-destructive: #dc2626;
+  --color-ring: #15803d;
+
+  /* ── 表面层级（浅色系：画布灰 → 白卡，elevation 靠白与阴影表达）────── */
+  --bg: #f5f6f8;                  /* 应用底色 / 画布 */
+  --surface-0: #ffffff;           /* 卡片、面板、日志内衬底 */
+  --surface-1: #ffffff;           /* 同上（旧类名沿用）*/
+  --surface-2: #f0f2f6;           /* hover、次级抬升 */
+  --surface-3: #e8ebf1;           /* active、分段控件选中 */
+  --input-bg: #ffffff;            /* 输入框 */
+  --input-bg-hover: #fcfcfd;
+
+  /* 语义别名（组件选择器保持可读） */
+  --bg2: var(--surface-1);
+  --bg3: var(--surface-2);
+  --bg4: var(--surface-3);
+  --bg-glass: rgb(255 255 255 / 0.85);
+
+  /* ── 描边 ─────────────────────────────────────────────────────────── */
+  --border: #e6e9ef;                       /* 发丝线 */
+  --border-strong: #d4d9e2;                /* 强描边（输入框、分段控件） */
+  --border2: var(--border-strong);
+  --border-light: #d9dee6;
+  --border-focus: rgb(21 128 61 / 0.45);
+
+  /* ── 文本 ─────────────────────────────────────────────────────────── */
+  --text: #1a2230;
+  --text2: #414c5e;
+  /* 次级文本：灰画布上也要过 WCAG AA（4.78:1）；2026-10 审计由 #66738a 加深 */
+  --text3: #616e83;
+  /* 仅作装饰性填充（状态点/图标），不用于正文——2.58:1 远低于 AA；
+     10px 承载语义的小字禁用本值，用 --text3 */
+  --text4: #98a2b3;
+
+  /* ── 日志内衬（页面白卡之上的浅灰终端区）────────────────────────── */
+  --log-bg: #f7f8fa;
+
+  /* ── 状态色 + 低饱和底 / 描边（浅色系：深字浅底，保证 AA 对比）───── */
+  --accent: #15803d;
+  --accent-hover: #166531;
+  --accent-muted: rgb(22 163 74 / 0.10);
+  --accent-border: rgb(22 163 74 / 0.35);
+
+  --green: #16a34a;
+  --green-bg: rgb(22 163 74 / 0.10);
+  --green-border: rgb(22 163 74 / 0.35);
+
+  --red: #dc2626;
+  --red-hover: #b91c1c;
+  --red-bg: rgb(220 38 38 / 0.08);
+  --red-border: rgb(220 38 38 / 0.30);
+  --red-text: #b91c1c;
+
+  --yellow: #d97706;
+  --yellow-hover: #b45309;
+  --yellow-bg: rgb(217 119 6 / 0.10);
+  --yellow-border: rgb(217 119 6 / 0.32);
+  --yellow-text: #b45309;
+
+  --blue: #2563eb;
+  --blue-bg: rgb(37 99 235 / 0.08);
+  --blue-border: rgb(37 99 235 / 0.30);
+  --blue-text: #1d4ed8;
+
+  --purple: #9333ea;
+  --purple-bg: rgb(147 51 234 / 0.08);
+  --purple-border: rgb(147 51 234 / 0.30);
+  --purple-text: #7e22ce;
+
+  /* ── 字体 ───────────────────────────────────────────────────────────
+     Fira Sans / Fira Code 是品牌字体，但安装包未内嵌且 CSP 禁止在线字体，
+     Windows 默认也未安装——必须给出可靠的系统字体回落（Segoe UI / 微软雅黑
+     用于界面与中文，Cascadia/Consolas 用于代码），否则中文走通用字体显糙。 */
+  --font-body: 'Fira Sans', 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont,
+    'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: 'Cascadia Code', 'Fira Code', ui-monospace, SFMono-Regular,
+    'JetBrains Mono', Menlo, Consolas, 'Courier New', monospace;
+  --font-heading: var(--font-body);
+
+  /* ── 间距 ───────────────────────────────────────────────────────────
+     数字刻度是唯一事实源（新样式一律用 --space-N）；下方命名别名仅为
+     兼容存量选择器，两者同值映射，不得再新增别名。 */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 16px;
+  --space-lg: 24px;
+  --space-xl: 32px;
+  --space-2xl: 48px;
+  --space-3xl: 64px;
+
+  /* ── 字号阶梯（唯一允许的字号取值；新样式禁止裸 px 字号）──────────── */
+  --fs-xs: 11px;    /* 徽章、眉题、辅助元数据 */
+  --fs-sm: 12px;    /* 标签、提示、次级信息 */
+  --fs-base: 13px;  /* 正文、按钮、输入框 */
+  --fs-md: 14px;    /* 卡片值、强调正文 */
+  --fs-lg: 16px;    /* 区块标题 */
+  --fs-xl: 20px;    /* 页面标题 */
+  --fs-2xl: 24px;   /* 状态大字 */
+
+  /* ── 圆角 ─────────────────────────────────────────────────────────── */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius: 8px;
+  --radius-md: 10px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-2xl: 20px;
+
+  /* ── 阴影（浅色系：低透明度、大模糊的柔和投影，逐级抬升）──────────── */
+  --shadow-xs: 0 1px 2px rgb(16 24 40 / 0.05);
+  --shadow-sm: 0 1px 2px rgb(16 24 40 / 0.05), 0 1px 3px rgb(16 24 40 / 0.07);
+  --shadow-md: 0 2px 6px -1px rgb(16 24 40 / 0.08), 0 1px 3px rgb(16 24 40 / 0.05);
+  --shadow-lg: 0 12px 24px -6px rgb(16 24 40 / 0.12), 0 4px 10px -4px rgb(16 24 40 / 0.05);
+  --shadow-xl: 0 24px 48px -12px rgb(16 24 40 / 0.18), 0 8px 16px -8px rgb(16 24 40 / 0.08);
+  --shadow: var(--shadow-md);
+  --shadow-window: 0 24px 64px rgb(16 24 40 / 0.16), 0 8px 24px rgb(16 24 40 / 0.08);
+  --shadow-accent: var(--shadow-sm);
+
+  /* ── 动效 ─────────────────────────────────────────────────────────── */
+  --transition-fast: 130ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-normal: 200ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-slow: 320ms cubic-bezier(0.4, 0, 0.2, 1);
+  /* v2 动效曲线：入场/位移用 decel（先快后缓，自然减速落定）；
+     颜色状态过渡沿用上方 standard 贝塞尔。全局受 prefers-reduced-motion 收口。 */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  /* 入场/浮现类动画统一时长曲线（R5 动效收口）：fadeIn 系浮现引用一律写
+     `animation: fadeIn var(--anim-in)`，不再散布 160/180/200ms ease 混用；
+     面板/浮层/展开类（panelIn/overlayIn/runsIn/slideUp）保持 220-240ms，
+     曲线统一 var(--ease-out)。 */
+  --anim-in: 200ms var(--ease-out);
+
+  /* 兼容历史 / 日志面的别名 */
+  --text-1: var(--text);
+  --text-2: var(--text2);
+  --text-3: var(--text3);
+  --text-muted: var(--text3);
+  --surface-hover: var(--surface-2);
+  --color-success: var(--accent);
+  --color-danger: var(--red);
+}

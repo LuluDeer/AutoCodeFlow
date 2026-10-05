@@ -156,8 +156,8 @@ export class WindowManager {
       // WIN-DISPLAY (1.4.3 Hotfix / N47): transparent+frameless 窗口在部分
       // Windows 机器上整窗复合失败（窗口 show() 了但屏幕上看不到——首个
       // 发布的 Windows 安装包被真用户报告的致命问题）。改实心背景色渲染，
-      // backgroundColor 与 app.css 的 --bg (#020617) 对齐，UI 视觉不变。
-      backgroundColor: '#020617',
+      // backgroundColor 与 app.css 的 --bg (#f5f6f8，明亮风基线) 对齐，UI 视觉不变。
+      backgroundColor: '#f5f6f8',
       webPreferences: sharedWebPreferences(),
     });
 
@@ -200,7 +200,8 @@ export class WindowManager {
       resizable: true,
       // WIN-DISPLAY (1.4.3 Hotfix / N47): 同 wizard——去掉 transparent，
       // 改实心 backgroundColor，避免 Windows 部分机器透明窗口整窗不可见。
-      backgroundColor: '#020617',
+      // #f5f6f8 与 app.css 的 --bg（明亮风基线）对齐。
+      backgroundColor: '#f5f6f8',
       // BUG-12: single hardened webPreferences source for every window.
       // sandbox defaults on (Electron ≥20), which also blocks the preload
       // from pulling full Node modules into the renderer bridge.
@@ -240,6 +241,19 @@ export class WindowManager {
       win.once('ready-to-show', () => win.webContents.send('switch-tab', 'history'));
     } else {
       win.webContents.send('switch-tab', 'history');
+    }
+  }
+
+  /** V4-4：托盘菜单补齐第四 Tab（与 openConfig/openHistory 同形态）。 */
+  openApps(): void {
+    const isNew = !this.statusWindow || this.statusWindow.isDestroyed();
+    this.focusOrOpenStatus();
+    const win = this.statusWindow;
+    if (!win) return;
+    if (isNew) {
+      win.once('ready-to-show', () => win.webContents.send('switch-tab', 'apps'));
+    } else {
+      win.webContents.send('switch-tab', 'apps');
     }
   }
 

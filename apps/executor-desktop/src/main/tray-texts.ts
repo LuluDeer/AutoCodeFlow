@@ -61,6 +61,8 @@ export interface TrayTexts {
   viewStatus: string;
   openConfig: string;
   openHistory: string;
+  /** V4-4：托盘菜单补齐第四 Tab（X-04 顺带项：菜单原只覆盖 3/4） */
+  openApps: string;
   autoLaunch: string;
   quit: string;
 }
@@ -107,6 +109,7 @@ export const TRAY_TEXTS: Record<TrayLocale, TrayTexts> = {
     viewStatus: '查看状态...',
     openConfig: '打开配置...',
     openHistory: '历史日志...',
+    openApps: '打开应用...',
     autoLaunch: '开机自启',
     quit: '退出',
   },
@@ -151,6 +154,7 @@ export const TRAY_TEXTS: Record<TrayLocale, TrayTexts> = {
     viewStatus: 'View Status...',
     openConfig: 'Open Settings...',
     openHistory: 'History Logs...',
+    openApps: 'Open Apps...',
     autoLaunch: 'Launch at Login',
     quit: 'Quit',
   },
