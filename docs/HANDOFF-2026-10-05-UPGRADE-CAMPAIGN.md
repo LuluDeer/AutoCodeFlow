@@ -1,9 +1,10 @@
-# AutoCodeFlow 交接简报（Windows 侧 → Linux 侧，2026-10-05 晚）
+# AutoCodeFlow 交接简报（Windows 侧 → Linux 侧，2026-10-05 晚 / CI 收绿补记）
 
-> 来源：Windows 侧编排 agent（项目总监多轮战役，13 轮 / 22 提交，见
+> 来源：Windows 侧编排 agent（项目总监多轮战役，13 轮战役 + CI 收绿 4 commit，见
 > [PROGRESS-2026-10-05-upgrade-campaign.md](./PROGRESS-2026-10-05-upgrade-campaign.md)）。
 > 性质：**交接**——接手前需要知道的事实、平台相关注意项与验证清单。
-> 全部在 develop 推进（c46d88c6..a54369e1），未动 main；工作区干净。
+> 全部在 develop 推进（c46d88c6..82cb2dac），未动 main；工作区干净；**develop CI 全绿**
+> （run 37341838327）。
 
 ## 一、本日落地面速览（细节以 PROGRESS 台账为准）
 
@@ -40,10 +41,19 @@
    desktop-bundle-drift 红**，从该 job 日志取 actual 回填
    `apps/executor-desktop/executor-node-bundle.sha256` 末行（语义闸①不依赖平台，
    不应红）。
-2. **openapi.json 重导出（建议 Linux 侧第一件事）**：任务 export/import 两端点的
-   注解已齐，但 `swagger:export` 需要 DB+Redis 在跑（Windows 本机 Redis 关闭未能
-   导出）。导出后**必须** `node scripts/check-openapi-response-schema.mjs --update`
-   刷基线（覆盖 70→72），否则该 CI job 会因新端点缺基线报红。
+2. **openapi.json 已重导出（本已完成，勿重复）**：任务 export/import 端点已入
+   openapi.json（5969565d，Windows 侧经 WSL PG16+Redis7 复现 CI 环境跑
+   `swagger:export`），api-types.ts 已同步，响应 schema 棘轮基线已上探 70→72
+   （a91e9a78），consumer-routes 守卫全命中（CLI webhook 改显式路径）。CI 的
+   api-types-drift / consumer-routes / response-schema 三闸在 run 37341838327
+   全绿。Linux 侧无需再做；下次 API 契约变更后照常 `swagger:export` +
+   `gen:api-types` + `check-openapi-response-schema.mjs --update` 三件套同 commit。
+3. **CI 收绿过程记录（接手者知悉）**：首轮 CI 暴露三连红（openapi 漂移/
+   consumer-routes/棘轮基线）——都是「新端点未同步产物」的既定流程缺口，非代码
+   缺陷；第二轮暴露 security-password 一处 1/千次量级既有 flaky（跨用例晚到
+   `window.location` 写，afterEach 丢弃桩+微任务排水根治，82cb2dac）；第三轮
+   暴露 deploy.selftest 三处 `$rc` 紧跟全角括号（macOS bash 3.2 陷阱，守卫
+   `--fix` 修掉）。均已在 develop 收绿。
 3. **ci.yml 新增内容**：gates job 加 2 个零依赖守卫 step；selftests 串跑加
    `test:control-plane-pull`（自建两端+自拉 PG16/Redis7，预估 +3-5min，job 超时
    45min 余量充足；若 runner 上 flaky，先降级回包内 `--dry-run` 形态并在台账记录）。
@@ -69,15 +79,15 @@ npm run test:api && npm run test:node && npm run test:python && npm run test:web
 npm run test:cli && npm run test:mcp && npm run test:desktop
 npm run typecheck:all
 npm run check:desktop-bundle-drift && npm run check:env-drift
-npm run test:alerts && npm run test:deploy-script
+# openapi 三件套仅在下次契约变更后需要；本地无 docker 时可走 WSL PG16+Redis7
 cd packages/docs-site && node scripts/sync-check.mjs
-# 然后做 §二.2 的 openapi 重导出 + --update
+# §二.2 的 openapi 重导出已完成，无需重复；下次契约变更后再走三件套
 # 有真机时：CLI login TOTP 交互路径手工 smoke 一轮（vitest 驱动不了 TTY）
 ```
 
 ## 四、已知遗留（优先级序，详见 PROGRESS 台账「遗留」节）
 
-1. openapi.json 重导出+基线刷新（见上，唯一需要环境条件的事）。
+1. ~~openapi.json 重导出+基线刷新~~（已完成，5969565d/a91e9a78）。
 2. 升级灰度的「指定版本」语义：UpgradeAllDto 不收 version（CLI help 已注明取舍）；
    要做需服务端先立 DTO 任务。
 3. python win32 内存上限（Job Object，L）或文档化登记。
