@@ -242,6 +242,11 @@ textarea:focus-visible,
   user-select: none;
   transition: color var(--transition-fast), background var(--transition-fast),
     border-color var(--transition-fast);
+  /* V4 顶栏合并 hotfix：祖先 .topbar/.topbar-tabs 是拖拽区（app-region: drag），
+     tab 按钮必须显式 no-drag，否则真实鼠标点击被窗口拖拽吞掉（窗控钮早有
+     同款规则；e2e 合成点击不经过 OS 的 app-region 命中测试，抓不到此类缺陷，
+     只能真机验证）。tab 之间的 4px 间隙仍是拖拽区（双击可最大化）。 */
+  -webkit-app-region: no-drag;
 }
 .tab:hover { color: var(--text2); background: var(--surface-2); }
 .tab.active {

@@ -439,3 +439,15 @@ V4 终验后按「还能优化什么」评估出 8 项，全部实施完成：
 **过程修复一处自伤**：HistoryPage 新过滤器监听引用 `TAB_SWITCH_EVENT` 未导入
 （vite 无类型检查、build 不报），渲染树被 ErrorBoundary 兜底成兜底页——
 probe 脚本抓到 console.error 后补导入；e2e 全绿确认恢复。
+
+### 8.1 Hotfix（2026-10-05，真机反馈）：顶栏合并后 Tab 无法点击
+
+- **根因**：V4-1 顶栏合并把 `.topbar`/`.topbar-tabs` 设为 `-webkit-app-region:
+  drag` 拖拽区，但 `.tab` 按钮没有显式 `no-drag`——真实鼠标点击被窗口拖拽
+  行为吞掉（`.titlebar-btn`/`.wizard-close-btn` 早有同款规则所以正常）。
+- **为什么门禁没拦住**：Playwright 合成点击派发 DOM 事件，不经过 OS 层的
+  app-region 命中测试——**凡涉及拖拽区的交互缺陷 e2e 结构性不可见**，必须
+  真机验证。此教训已写入 design-system/pages/executor-desktop.md §5。
+- **修复**：`.tab { -webkit-app-region: no-drag }`（base.css，附注释）；全仓
+  拖拽区（3 处）内可交互元素已逐一排查，无同类遗漏。Tab 之间 4px 间隙仍是
+  拖拽区（双击可最大化），拖拽语义不变。
