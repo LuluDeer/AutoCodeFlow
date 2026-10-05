@@ -10,6 +10,8 @@ import {
   DEAD_LETTER_SIDECAR_SUFFIX,
   deadLetterPayloadName,
 } from './dead-letter-sidecar';
+// 本轮协议 SSOT 补全：回调载荷的协议闸由 protocol.json 生成（勿手改产物）。
+import { CallbackPayloadSchema } from './generated/protocol.schemas';
 
 /**
  * NETOPT-4：回调落盘原子化——先写 `<目标>.tmp` 再 renameSync 到位。
@@ -214,8 +216,34 @@ function executorAddressHeaderFor(): Record<string, string> {
   return address ? { 'x-executor-address': address } : {};
 }
 
+/**
+ * 本轮协议 SSOT 补全（descriptive / warn-only）：pushCallback 是全部回调载荷
+ * 的唯一入队口（execute.ts / task-worker.ts / pull.ts 的 8 个构造点都经过它）。
+ * 载荷形状由 `packages/executor-protocol/protocol.json` 的 CallbackPayload 生成
+ * 闸校验——此前形状只靠 CallbackRequest 手写 interface 与 python 五处手拼 dict
+ * 的注释互指维持。additionalProperties:false（strictObject）让「新增回调字段
+ * 必须先落 protocol.json 再落实现」成为自动红线。
+ *
+ * 为什么是 warn 而不是拦截：回调是 admin 得知终态、释放执行器槽位的**唯一**
+ * 通道，校验失败时丢弃载荷等于永久丢失真实执行结果——只记 warn，载荷照发，
+ * 线上语义逐字节不变。反证有牙：callback.spec.ts 的对账用例断言漂移载荷必 warn。
+ */
+function warnIfCallbackPayloadDrifted(request: CallbackRequest): void {
+  const parsed = CallbackPayloadSchema.safeParse(request);
+  if (!parsed.success) {
+    const issues = parsed.error.issues
+      .map(i => `${i.path.length ? i.path.join('.') : '(root)'}: ${i.message}`)
+      .join('; ');
+    logger.warn(
+      `Callback payload drifted from protocol.json CallbackPayload (sent anyway): ${issues}` +
+        ' — update packages/executor-protocol/protocol.json first when adding/changing callback fields',
+    );
+  }
+}
+
 export function pushCallback(request: CallbackRequest): void {
   const callbackRequest = withExecutorAddress(request);
+  warnIfCallbackPayloadDrifted(callbackRequest);
   const existingIndex = callbackQueue.findIndex(r => r.executionId === request.executionId);
   if (existingIndex !== -1) {
     callbackQueue[existingIndex] = callbackRequest;

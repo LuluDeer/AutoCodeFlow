@@ -403,5 +403,12 @@
 #   桌面端内嵌执行器若漏打，桌面任务在协议 canonical 超时字段/沙箱失败归因/
 #   admin 截断标记识别三面上仍是旧行为。按 ADR-005 同 commit 重打回填：
 #   本机(Windows) node 24 ncc 0.45 产出（2600kB → 4078kB 量级，4173887 bytes）。
-source-digest: e9742d8d75976ee7df06786242279aad2ef9fd6bad43384b93960d5002779f12
-1dc06f87d698d16730a5ee7315bb3c375fdc4cbf53c485cc1697325f186a3a29  index.js
+# 2026-10-05（协议 SSOT 补全：执行器→admin 回调载荷进 protocol.json）：
+#   · callback.ts 新增 warnIfCallbackPayloadDrifted —— pushCallback（全部回调
+#     构造点的唯一入队口）用生成的 CallbackPayloadSchema（strictObject）做
+#     warn-only 对账：新增回调字段必须先落 protocol.json 再落实现，否则对账
+#     warn（callback.spec.ts 反证用例钉住）。载荷照发，线上语义零变化。
+#   按 ADR-005 同 commit 重打回填：本机(Windows) node 24 ncc 0.45 产出
+#   （4173887 → 4176817 bytes），同目录重复构建两次逐字节一致。
+source-digest: c6f06940ed4397702ee2426a7010c68120bae8159261d3c0d4b11faa8314a6f3
+fae0a47641f82c1cfa0a183f340a7d804aba200c625883f7ccddacddffa9e45a  index.js

@@ -102,3 +102,25 @@ export const CommandResultSchema = z.looseObject({
   "address": z.string().optional(),
 });
 export type CommandResult = z.infer<typeof CommandResultSchema>;
+
+export const CallbackArtifactSchema = z.strictObject({
+  "name": z.string().regex(new RegExp("^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$")),
+  "size": z.number().int().min(0),
+  "sha256": z.string().regex(new RegExp("^[0-9a-fA-F]{64}$")),
+});
+export type CallbackArtifact = z.infer<typeof CallbackArtifactSchema>;
+
+export const CallbackPayloadSchema = z.strictObject({
+  "executionId": z.string().regex(new RegExp("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")),
+  "status": z.enum(["success", "failed"]),
+  "executorAddress": z.string().optional(),
+  "exitCode": z.number().int().nullable().optional(),
+  "logs": z.string().nullable().optional(),
+  "errorMessage": z.string().nullable().optional(),
+  "failureReason": z.enum(["package_fetch_failed", "dependency_install_failed", "git_fetch_failed", "runtime_missing", "interpreter_unavailable", "sandbox_unavailable", "killed", "timeout", "executor_offline", "executor_restart", "script_error", "unknown"]).optional(),
+  "durationMs": z.number().int().min(0).optional(),
+  "artifacts": z.array(CallbackArtifactSchema).optional(),
+  "result": z.record(z.string(), z.unknown()).optional(),
+  "traceparent": z.string().optional(),
+});
+export type CallbackPayload = z.infer<typeof CallbackPayloadSchema>;

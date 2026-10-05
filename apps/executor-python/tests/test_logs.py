@@ -156,3 +156,57 @@ def test_logs_strips_crlf_like_the_previous_splitlines(auth_client, tmp_path, mo
     body = response.json()
     assert body['lines'] == ['a', 'b', 'c']
     assert body['totalLines'] == 3
+
+
+# ---------------------------------------------------------------------------
+# A-LOG（本轮协议补全）：行切分语义的共享契约向量（contract-fixtures）
+# ---------------------------------------------------------------------------
+
+
+def _find_contract() -> 'object':
+    """向上找到仓库根的 packages/contract-fixtures/contract.json。"""
+    import json
+    import pathlib
+
+    here = pathlib.Path(__file__).resolve()
+    for parent in here.parents:
+        candidate = parent / 'packages' / 'contract-fixtures' / 'contract.json'
+        if candidate.exists():
+            return json.loads(candidate.read_text(encoding='utf-8'))
+    raise AssertionError('packages/contract-fixtures/contract.json not found')
+
+
+def test_log_line_splitting_contract_vectors(auth_client, tmp_path, monkeypatch):
+    """contract-fixtures 的 executorLogLineSplitting 向量逐条过**真实路由**：
+    同一段原始字节必须产出与 node pageLogLines 逐行相同的 lines[]（CRLF 剥行尾、
+    unicode 原样、空行保留、空文件零行、末行无换行符照常成行）。"""
+    import json as _json
+
+    contract = _find_contract()
+    section = contract['executorLogLineSplitting']
+    vectors = section['vectors']
+    assert len(vectors) >= 5
+    assert any(v['input'] == '' for v in vectors), '空输出样本缺失（反永真守卫）'
+
+    for vec in vectors:
+        from config import settings
+
+        monkeypatch.setattr(settings, 'work_dir', str(tmp_path))
+        execution_id = f"exec-log-{abs(hash(vec['name'])) % 100000}"
+        execution_dir = tmp_path / execution_id
+        execution_dir.mkdir(parents=True)
+        (execution_dir / f'{execution_id}.log').write_bytes(
+            vec['input'].encode('utf-8')
+        )
+
+        response = auth_client.get(f'/api/logs/{execution_id}')
+        assert response.status_code == 200, vec['name']
+        body = _json.loads(response.content)
+        expected = vec['lines']
+        assert body['lines'] == expected, (
+            f"log-splitting 向量「{vec['name']}」漂移：python 切行 "
+            f"{body['lines']!r} != 契约 {expected!r}（node 侧同文件断言见 "
+            f"apps/executor-node/src/__tests__/executor-protocol-contract.spec.ts）"
+        )
+        assert body['totalLines'] == len(expected)
+        assert body['hasMore'] is False

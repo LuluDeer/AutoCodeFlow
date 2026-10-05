@@ -77,6 +77,40 @@ describe('callbacks', () => {
     expect(cb.getPendingCallbackCount()).toBe(1);
   });
 
+  it('warns (but still enqueues) when a payload drifts from protocol.json CallbackPayload', () => {
+    // 本轮协议 SSOT 补全：pushCallback 的对账闸（warn-only，载荷照发）。反证
+    // 有牙：删掉 callback.ts 的 warnIfCallbackPayloadDrifted 调用，本用例即红。
+    const loggerMock = jest.requireMock('./logger') as {
+      logger: { warn: jest.Mock };
+    };
+
+    // 合法载荷（真实构造点形态）：零协议 warn
+    cb.pushCallback({ executionId: 'exec-ok', status: 'success' });
+    expect(loggerMock.logger.warn).not.toHaveBeenCalled();
+
+    // 漂移一：status 不是终态二值（回调通道只承载终态）
+    cb.pushCallback({
+      executionId: 'exec-drift-1',
+      status: 'running',
+    } as unknown as CallbackRequest);
+    // 漂移二：未知顶层键（CallbackPayload 是 strictObject——新增字段必须先落
+    // protocol.json 再落实现，否则本闸当场红）
+    cb.pushCallback({
+      executionId: 'exec-drift-2',
+      status: 'failed',
+      newTopLevelKey: 1,
+    } as unknown as CallbackRequest);
+
+    const drifted = loggerMock.logger.warn.mock.calls
+      .map(c => String(c[0]))
+      .filter(c => c.includes('CallbackPayload'));
+    expect(drifted.length).toBe(2);
+    expect(drifted[0]).toContain('status');
+    expect(drifted[1]).toContain('newTopLevelKey');
+    // warn-only：载荷照常入队（回调是终态唯一通道，绝不因对账失败丢弃）
+    expect(cb.getPendingCallbackCount()).toBe(3);
+  });
+
   it('overwrites duplicate executionId instead of adding a second entry', () => {
     cb.pushCallback({ executionId: 'exec-1', status: 'success' });
     cb.pushCallback({ executionId: 'exec-1', status: 'failed', errorMessage: 'err' });

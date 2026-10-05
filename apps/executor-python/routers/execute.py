@@ -46,6 +46,7 @@ from pydantic import ValidationError
 from generated.protocol_schemas import (
     ExecuteRequest as ProtocolExecuteRequest,
     KillResponse as ProtocolKillResponse,
+    CallbackPayload as ProtocolCallbackPayload,
 )
 # RT-LOG: Import log stream pusher for real-time log streaming
 try:
@@ -2023,10 +2024,36 @@ _live_callback_queue: list[dict] = []
 _live_callback_lock = threading.Lock()
 
 
+def _validate_callback_payload(payload: dict) -> None:
+    """协议 SSOT 对账闸（本轮协议补全，descriptive / warn-only）。
+
+    终态回调载荷（POST /executions/callback 的数组单条）由
+    `packages/executor-protocol/protocol.json` 的 CallbackPayload 生成物校验。
+    本文件此前有**五处**手拼 payload 字面量（_run_and_callback 主路径/异常路径、
+    _push_killed_callback、fail_prepare_stage_executions_on_shutdown、
+    reject_pulled_execution），字段形状/nullable 全靠注释互指——schema 闸
+    （forbid 额外键 + 类型/枚举）让「新增字段先落协议再落实现」变成自动红线。
+
+    为什么是 warn 而不是拦截：回调是终态的**唯一**结果通道，校验失败时把载荷
+    扔掉等于把真实执行结果永久丢失（admin 侧另有 @IsIn/DTO 闸兜底）——对账
+    失败只记 warn，载荷照发，线上语义逐字节不变。
+    """
+    try:
+        ProtocolCallbackPayload.model_validate(payload)
+    except ValidationError as exc:
+        logger.warning(
+            'Callback payload drifted from protocol.json CallbackPayload '
+            '(sent anyway): %s — update packages/executor-protocol/protocol.json '
+            'first when adding/changing callback fields',
+            exc,
+        )
+
+
 def enqueue_callback(payload: dict) -> None:
     """Enqueue a terminal callback for batched delivery (node pushCallback
     parity). De-dupes by executionId: a later terminal result for the same
     execution supersedes an earlier queued one."""
+    _validate_callback_payload(payload)
     execution_id = payload.get('executionId')
     with _live_callback_lock:
         if execution_id:

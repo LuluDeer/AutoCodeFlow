@@ -83,10 +83,13 @@ def test_invalid_vector_is_rejected_with_400(vector, idle_executor):
     # 会在更外层先拒掉其中一部分（422），那就测不到 accept_execution 自己的闸门。
     # 而 pull 路径与未来的模型演进都可能绕开外层——闸门必须在**它自己那一层**成立。
     payload = dict(vector['payload'])
+    # secrets 必须随行（SEC-02 续）：协议补 secrets 向量后，`secrets-not-object`
+    # 这条只能在闸门层被拒——外层反序列化模型会先 422 掉它，那不是本组要测的层。
     req = execute_module.ExecuteRequest.model_construct(
         executionId=payload.get('executionId'),
         task=payload.get('task'),
         params=payload.get('params'),
+        secrets=payload.get('secrets'),
     )
     with pytest.raises(ExecutionRejected) as excinfo:
         execute_module.accept_execution(req)

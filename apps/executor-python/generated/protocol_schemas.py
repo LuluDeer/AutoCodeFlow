@@ -105,3 +105,25 @@ class CommandResult(BaseModel):
     error: str | None = Field(default=None)
     durationMs: int | None = Field(ge=0, default=None)
     address: str | None = Field(default=None)
+
+
+class CallbackArtifact(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    name: str = Field(pattern="^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$")
+    size: int = Field(ge=0)
+    sha256: str = Field(pattern="^[0-9a-fA-F]{64}$")
+
+
+class CallbackPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    executionId: str = Field(pattern="^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+    status: Literal["success", "failed"]
+    executorAddress: str | None = Field(default=None)
+    exitCode: int | None = Field(default=None)
+    logs: str | None = Field(default=None)
+    errorMessage: str | None = Field(default=None)
+    failureReason: Literal["package_fetch_failed", "dependency_install_failed", "git_fetch_failed", "runtime_missing", "interpreter_unavailable", "sandbox_unavailable", "killed", "timeout", "executor_offline", "executor_restart", "script_error", "unknown"] | None = Field(default=None)
+    durationMs: int | None = Field(ge=0, default=None)
+    artifacts: list[CallbackArtifact] | None = Field(default=None)
+    result: dict[str, Any] | None = Field(default=None)
+    traceparent: str | None = Field(default=None)

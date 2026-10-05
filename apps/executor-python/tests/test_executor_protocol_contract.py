@@ -9,6 +9,8 @@
 import json
 import pathlib
 
+import pytest
+
 from routers import execute as execute_module
 from routers import health as health_module
 
@@ -232,3 +234,170 @@ def test_sandbox_failure_is_classified_as_sandbox_unavailable():
         )
         == 'sandbox_unavailable'
     )
+
+
+# ---------------------------------------------------------------------------
+# CallbackPayload（本轮协议 SSOT 补全）：执行器→admin 回调载荷的 schema 对账
+# ---------------------------------------------------------------------------
+
+
+def test_callback_payload_failure_reason_enum_matches_executor_reportable():
+    """schema 的 failureReason 枚举必须与 failureReason.executorReportable 逐值同集。
+
+    枚举是**独立的一份字面量**（受控子集无法 $ref 非对象值），两处各写一份就会
+    漂移——admin 新增可上报取值时只改 failureReason 段、漏改 schema 枚举，闸门
+    就比契约松。本断言把两份钉在一起。
+    """
+    from generated.protocol_schemas import CallbackPayload as ProtocolCallbackPayload
+    from pydantic import ValidationError
+
+    schema_enum = set(
+        PROTOCOL['schemas']['CallbackPayload']['properties']['failureReason']['enum']
+    )
+    reportable = set(PROTOCOL['failureReason']['executorReportable'])
+
+    assert schema_enum == reportable, (
+        'schemas.CallbackPayload.failureReason 枚举与 failureReason.executorReportable '
+        f'漂移：schema 独有 {sorted(schema_enum - reportable)}，'
+        f'契约独有 {sorted(reportable - schema_enum)}'
+    )
+
+    # 反永真：枚举非空，且 admin 内部专用取值确实不在其中
+    assert schema_enum
+    assert not schema_enum & set(PROTOCOL['failureReason']['adminInternalOnly'])
+
+
+def test_callback_payload_every_reportable_reason_passes_schema():
+    """**全部 failureReason 枚举分支抽样**：12 个可上报取值逐个过生成的
+    CallbackPayload（含 python 实际产出的每个分支：_refine_failure_reason 的
+    六类 + killed/unknown 等），adminInternalOnly 的每个取值都被拒。"""
+    from generated.protocol_schemas import CallbackPayload as ProtocolCallbackPayload
+    from pydantic import ValidationError
+
+    for reason in PROTOCOL['failureReason']['executorReportable']:
+        ProtocolCallbackPayload.model_validate(
+            {'executionId': 'exec-cb-enum', 'status': 'failed', 'failureReason': reason}
+        )
+
+    for reason in PROTOCOL['failureReason']['adminInternalOnly']:
+        with pytest.raises(ValidationError):
+            ProtocolCallbackPayload.model_validate(
+                {'executionId': 'exec-cb-enum', 'status': 'failed', 'failureReason': reason}
+            )
+
+
+def test_callback_payload_python_wire_payloads_conform():
+    """python 侧五处手拼载荷的**真实形态**（含显式 null / 字段省略分歧）逐一过
+    生成的 CallbackPayload——形状漂移（加键/改 nullable）立即红。"""
+    from generated.protocol_schemas import CallbackPayload as ProtocolCallbackPayload
+
+    # _run_and_callback 主路径（成功：errorMessage/exitCode 显式 null 是 python
+    # 真实线上形态；node 同场景省略键——分歧点如实收编进 schema 的 nullable）
+    ProtocolCallbackPayload.model_validate({
+        'executionId': 'exec-cb-1',
+        'status': 'success',
+        'exitCode': 0,
+        'logs': 'done',
+        'errorMessage': None,
+        'durationMs': 1234,
+        'executorAddress': '10.0.0.5:9100',
+    })
+    # _run_and_callback 运行期失败（exitCode=null + result 结构化明细 + artifacts）
+    ProtocolCallbackPayload.model_validate({
+        'executionId': 'exec-cb-2',
+        'status': 'failed',
+        'exitCode': None,
+        'logs': '',
+        'errorMessage': 'uv venv failed: No interpreter found for Python 3.7',
+        'failureReason': 'interpreter_unavailable',
+        'durationMs': 5000,
+        'executorAddress': '10.0.0.5:9100',
+        'result': {'interpreter': {'requested': '3.7', 'resolved': None, 'pool': []}},
+        'artifacts': [{'name': 'report.txt', 'size': 3, 'sha256': 'a' * 64}],
+        'traceparent': '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01',
+    })
+    # _push_killed_callback / reject_pulled_execution（v1 token 路径无
+    # executorAddress——与 node withExecutorAddress 恒带的分歧点，optional 收编）
+    ProtocolCallbackPayload.model_validate({
+        'executionId': 'exec-cb-3',
+        'status': 'failed',
+        'errorMessage': 'Execution killed by admin request',
+        'failureReason': 'killed',
+    })
+    # fail_prepare_stage_executions_on_shutdown（不设 failureReason）
+    ProtocolCallbackPayload.model_validate({
+        'executionId': 'exec-cb-4',
+        'status': 'failed',
+        'errorMessage': 'Executor is shutting down before this execution started',
+        'executorAddress': '10.0.0.5:9100',
+    })
+
+
+def test_enqueue_callback_warns_on_protocol_drift(monkeypatch):
+    """enqueue_callback 的 SSOT 对账闸有牙：漂移载荷必 warn（载荷照发），合法
+    载荷不 warn。反证有牙：删掉 _validate_callback_payload 的调用，本用例即红。"""
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        execute_module.logger, 'warning', lambda msg, *a, **k: warnings.append(str(msg) % a if a else str(msg))
+    )
+
+    execute_module._live_callback_queue.clear()
+    try:
+        # 合法载荷（真实主路径形态）：零 warn
+        execute_module.enqueue_callback({
+            'executionId': 'exec-cb-ok',
+            'status': 'failed',
+            'errorMessage': 'x',
+        })
+        assert not [w for w in warnings if 'CallbackPayload' in w]
+
+        # 漂移载荷：status 不是终态二值（回调通道只承载终态）→ 必 warn
+        execute_module.enqueue_callback({
+            'executionId': 'exec-cb-drift',
+            'status': 'running',
+        })
+        drift = [w for w in warnings if 'CallbackPayload' in w]
+        assert drift, '漂移载荷未触发 SSOT 对账 warn——闸门失效'
+        assert 'status' in drift[0]
+
+        # 漂移载荷：未知顶层键（CallbackPayload 是 forbid 额外键）→ 必 warn
+        warnings.clear()
+        execute_module.enqueue_callback({
+            'executionId': 'exec-cb-drift-2',
+            'status': 'failed',
+            'newTopLevelKey': 1,
+        })
+        assert [w for w in warnings if 'CallbackPayload' in w]
+    finally:
+        execute_module._live_callback_queue.clear()
+
+
+# ---------------------------------------------------------------------------
+# secrets（SEC-02 续）：键名白名单/保留名拒绝的运行时语义向量
+# ---------------------------------------------------------------------------
+
+
+def test_secrets_contract_vectors_match_runtime():
+    """顶层 secrets 段的向量逐条对真实实现断言（secret_env.is_injectable_secret_name）。
+
+    键名规则**不在** schemas.ExecuteRequest 里闸（非法键的线上语义是静默跳过并
+    warn，收进 schema 会把跳过改成 400）——这里是该规则唯一的共享闸。
+    """
+    from secret_env import is_injectable_secret_name
+
+    section = PROTOCOL['secrets']
+    assert section['onInvalidKey'] == 'skip-and-warn'
+    assert section['injection'] == 'original-name'
+
+    vectors = section['vectors']
+    # 反永真：向量面非空，且合法/非法两侧都有样本
+    assert len(vectors) >= 8
+    assert any(v['injectable'] for v in vectors)
+    assert any(not v['injectable'] for v in vectors)
+
+    for vec in vectors:
+        actual = is_injectable_secret_name(vec['key'])
+        assert actual is vec['injectable'], (
+            f"secrets 向量「{vec['name']}」（key={vec['key']!r}）期望 "
+            f"injectable={vec['injectable']}，实际 {actual}——python 侧键名闸与协议漂移"
+        )

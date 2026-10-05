@@ -36,6 +36,7 @@ vectors = json.loads((pathlib.Path(__file__).parents[2] / "contract-fixtures" / 
 | mcp-server | `packages/mcp-server/src/__tests__/api.test.ts`（同上） |
 | autocodeflow-node-sdk | `packages/autocodeflow-node-sdk/src/__tests__/contract.test.ts` |
 | autoflow-sdk | `packages/autoflow-sdk/tests/test_contract.py` |
+| executor-node / executor-python（A-11 env 序列化 + A-LOG 日志行切分） | `apps/executor-node/src/__tests__/executor-protocol-contract.spec.ts`；`apps/executor-python/tests/test_audit_fixes.py`（A-11）、`apps/executor-python/tests/test_logs.py`（A-LOG） |
 
 ## 修改纪律
 

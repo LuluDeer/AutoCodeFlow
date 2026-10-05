@@ -264,5 +264,43 @@
         "env": "\"\""
       }
     ]
+  },
+  "executorLogLineSplitting": {
+    "$comment": "A-LOG (2026-10-05, executor-node + executor-python): GET /logs/{executionId} 的行切分语义——同一段日志**原始字节**必须在两端产出逐行相同的 lines[]。node pageLogLines (routes/logs.ts, readline) 与 python get_execution_logs (routers/logs.py, 文本模式逐行迭代 + rstrip('\\r\\n')) 必须对同一文件给出同一分页。共同语义：按 '\\n' 切行并剥行尾 '\\r\\n'（CRLF 输出与 LF 输出同判）；空行是合法行（保留）；文件末尾无换行符时最后一行照常成行；空文件零行。⚠️ 已知边界（刻意不入向量）：行中间的孤立 '\\r'（旧 Mac 风格）python 的 universal-newlines 文本模式会切分、node readline 保留在行内容里——真实日志由执行器 file-logger 以 '\\n' 写出、Windows 任务输出的 '\\r\\n' 两侧同剥，该形态不可达，收进向量反而要改一端运行时。协议层的响应形状（{lines,totalLines,hasMore}）另见 executor-protocol/protocol.json 的 LogsResponse schemaVectors——两份各管一层。Append-only vectors；每条 `lines` 是两端实现必须产出的精确行数组。",
+    "vectors": [
+      {
+        "name": "lf-terminated",
+        "input": "a\nb\n",
+        "lines": ["a", "b"]
+      },
+      {
+        "name": "crlf-terminated",
+        "input": "a\r\nb\r\n",
+        "lines": ["a", "b"],
+        "$comment": "Windows 任务输出恒为 CRLF——行尾 \\r\\n 必须被剥成与 LF 相同的内容，否则同一任务在两端的日志页逐字节不同。"
+      },
+      {
+        "name": "crlf-mixed-empty-lines",
+        "input": "a\r\n\r\nb\r\n",
+        "lines": ["a", "", "b"]
+      },
+      {
+        "name": "unicode-raw-utf8",
+        "input": "中文\r\nlog-αβγ\n",
+        "lines": ["中文", "log-αβγ"],
+        "$comment": "与 executorEnvSerialization 的中文先例同源：两端都按 UTF-8 解码（python errors='replace'），非 ASCII 行内容不得变形。"
+      },
+      {
+        "name": "final-line-without-newline",
+        "input": "a\nb",
+        "lines": ["a", "b"]
+      },
+      {
+        "name": "empty-output",
+        "input": "",
+        "lines": [],
+        "$comment": "空文件 → lines:[] 且 totalLines:0（readline 无 line 事件 / 文本迭代零轮）——admin 回填分页以此为终止条件。"
+      }
+    ]
   }
 }

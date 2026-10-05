@@ -22,7 +22,8 @@ traceparent）、回调载荷（failureReason 枚举 / 日志截断 / artifacts�
 | `readiness` | `/health/ready` 的**状态码与 body 形状**（`ready`→200 / `not_ready`→503，body 扁平、不得有 `detail` 包裹，`reason` 非空） | admin-api `health.controller/health.service`；executor-node `routes/health.ts`；executor-python `routers/health.py` |
 | `timeout` | 任务超时解析语义（`0` = 显式不限时；`1..86400` 有界；越界/负值拒绝；缺省回落执行器默认） | admin-api `create-task.dto` 语义；executor-node `routes/execute.ts`；executor-python `routers/execute.py` |
 | `failureReason` | 枚举全集（以 admin `ExecutionFailureReason` 为准）与**执行器可上报子集**（全集减去 admin 内部专用的 `stale_recovered`） | admin-api `dto/execution-callback.dto.ts` 的 `@IsIn`；executor-node `callback.ts` 的 `CallbackFailureReason`；executor-python 回调载荷 |
-| `schemas` | **A3 完整形态**：`ExecuteRequest` / `TaskConfig` / `ConfigReloadRequest` / `ConfigReloadResponse` / `HealthReadyResponse` 的 JSON Schema（2020-12 受控子集） | 由生成器产出两侧 schema，见下 |
+| `secrets` | 任务级 secrets 的**键名规则**：白名单正则 + 保留名/前缀拒绝的**运行时语义向量**（非法键的线上语义是「静默跳过并 warn」，不是 400——故刻意不进 schema 闸） | executor-node `secret-env.ts` `isInjectableSecretName`；executor-python `secret_env.py` `is_injectable_secret_name`；admin-api 侧另有 DTO 层校验 |
+| `schemas` | **A3 完整形态**：`ExecuteRequest` / `TaskConfig` / `ConfigReloadRequest` / `ConfigReloadResponse` / `HealthReadyResponse` / `KillResponse` / `LogsResponse` / `ControlCommand` / `CommandResult` / `CallbackArtifact` / `CallbackPayload` 的 JSON Schema（2020-12 受控子集） | 由生成器产出两侧 schema，见下 |
 | `schemaVectors` | 上表每个 schema 的 valid / invalid 样本（invalid 附 `expectErrorPath`） | 三端加载同一份断言 |
 
 ## 消费方式
@@ -177,6 +178,15 @@ schema 再 `$ref`。
   / `evolutionRules`）。执行器在 register（及心跳）上报 `protocolVersion`；中台按
   兼容矩阵分支（低于下限只 warn + 兜底，不拒绝注册）。详见本文件下方「修改纪律」
   与 `versioning` 段注释。
+- **协议 SSOT 补全（2026-10-05）：执行器→admin 回调载荷已 schema 化**——
+  `CallbackPayload`（POST /executions/callback 的数组单条，admin `CallbackItemDto`
+  的发送端子集）与 `CallbackArtifact` 进 `schemas` 段，纯描述性收编（双端实际
+  发送的交集 + 明确 optional，逐字段不改线上语义）。接线是 **warn-only 对账闸**：
+  node `pushCallback` / python `enqueue_callback`（两侧全部构造点的唯一入队口）
+  用生成 schema 校验自己的出参，漂移只 warn 不拦截——回调是终态唯一通道，
+  对账失败绝不丢载荷；strict/forbid 让「新增回调字段必须先落本文件再落实现」
+  成为该端自己的对账测试红线。`secrets` 键名规则同批补盲区（顶层 `secrets`
+  段运行时语义向量，双端契约测试对真实实现逐条断言）。
 
 ## 修改纪律
 

@@ -11,6 +11,8 @@ import {
   LogsResponseSchema,
   ControlCommandSchema,
   CommandResultSchema,
+  CallbackArtifactSchema,
+  CallbackPayloadSchema,
 } from "./generated/protocol.schemas";
 
 const PROTOCOL_RELATIVE = path.join(
@@ -63,6 +65,10 @@ const SCHEMAS: Record<string, { safeParse: (v: unknown) => { success: boolean; e
   // ARCH-33（ADR-016）：控制面 pull 通道的命令与结果上报形状
   ControlCommand: ControlCommandSchema,
   CommandResult: CommandResultSchema,
+  // 本轮协议 SSOT 补全：执行器→admin 回调载荷（POST /executions/callback 单条）
+  // 与其随附产物清单条目
+  CallbackArtifact: CallbackArtifactSchema,
+  CallbackPayload: CallbackPayloadSchema,
 };
 
 interface InvalidVector {
