@@ -79,6 +79,16 @@ import { Application } from "../application/entities/application.entity";
 import { CreateTaskDto } from "./dto/create-task.dto";
 import { UpdateTaskDto } from "./dto/update-task.dto";
 import { TriggerTaskDto } from "./dto/trigger-task.dto";
+// E-1: 任务定义导入/导出（纯函数层：白名单装配/映射/重名后缀推导）
+import {
+  buildTaskExportResult,
+  importNameCandidate,
+  mapExportToCreateDto,
+  TASK_IMPORT_MAX_NAME_CONFLICTS,
+  type TaskExportResult,
+  type TaskImportResult,
+} from "./task-definition.util";
+import { ImportTaskDto } from "./dto/task-definition-import.dto";
 // cron 写边界规范化：裸 n/step（POSIX 语义）等价改写为调度器可注册的规范式
 import { normalizeCron5Field } from "./cron-normalize.util";
 import { PaginationDto, paginate } from "../../common/dto/pagination.dto";
@@ -1236,6 +1246,61 @@ export class TaskService {
         );
       }
       throw err;
+    }
+  }
+
+  // ── E-1: 任务定义导入/导出 ──────────────────────────────────────────────
+  // 纯逻辑在 task-definition.util.ts（白名单装配/映射/后缀推导，可独立单测）；
+  // 本服务层只负责取数、复用 create 链路与重名冲突重试。
+
+  /**
+   * E-1: 任务定义导出——返回可下载 JSON 的 payload 与文件名。
+   *
+   * 取数走既有脱敏读路径 findOne（secrets 先被掩码）+ 导出白名单整键剔除
+   * + assertNoSecretMaterial 运行时不变量（/secret/i 键名命中即 fail-closed）
+   * ——三层防线保证 SEC-02 红线：secrets 值与键名 alike 绝不出现在导出物中。
+   * 权限语义与 GET /tasks/:id 读面完全一致（控制器类级 JwtAuthGuard）。
+   */
+  async exportDefinition(id: string): Promise<TaskExportResult> {
+    const task = await this.findOne(id);
+    return buildTaskExportResult(task);
+  }
+
+  /**
+   * E-1: 任务定义导入——导出物映射回 CreateTaskDto 后复用 create 链路
+   * （DTO 校验在 HTTP 边界由 ImportTaskDto→CreateTaskDto 嵌套完成，normalize/
+   * 触发配置配对/代码来源互斥/归属校验等由 create 全量执行）。
+   *
+   * 名称冲突策略：**绝不覆盖同名任务**。create 只在名称唯一索引
+   * （idx_tasks_name_unique）上抛 ConflictException——本导入映射剔除了 id，
+   * 不存在 id 冲突面，故捕获 ConflictException 即可断定为重名，按
+   * importNameCandidate 追加 ` (imported)` / ` (imported) N` 后缀重试
+   * （预检查+重试双保险：预检查不做，重试天然覆盖并发窗口；上限
+   * TASK_IMPORT_MAX_NAME_CONFLICTS 次后放弃 409）。
+   *
+   * secrets 红线对称语义：导入物携带的 secrets 键被映射整体忽略（绝不落库），
+   * 导入任务 secrets 为空；响应 warnings 常驻"需重新配置"提示。
+   */
+  async importDefinition(
+    payload: ImportTaskDto,
+    user?: { id: number; role?: UserRole } | null,
+  ): Promise<TaskImportResult> {
+    const { dto, warnings } = mapExportToCreateDto(payload);
+    let name = dto.name;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const created = await this.create({ ...dto, name }, user);
+        return { taskId: created.id, name: created.name, warnings };
+      } catch (err) {
+        if (
+          err instanceof ConflictException &&
+          attempt < TASK_IMPORT_MAX_NAME_CONFLICTS
+        ) {
+          name = importNameCandidate(dto.name, attempt + 1);
+          continue;
+        }
+        throw err;
+      }
     }
   }
 

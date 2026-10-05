@@ -408,7 +408,9 @@ probing 探测通过前的已升级台，批次失败时 → rolled_back（自�
 |------|------|:--------:|------|
 | GET | `/tasks` | 是 | 分页查询任务列表，支持 status/name/runtime 过滤 |
 | POST | `/tasks` | 是 | 创建任务 |
+| POST | `/tasks/import` | 是 | 导入任务定义（E-1，复用创建校验链；重名自动加后缀不覆盖；见下） |
 | GET | `/tasks/:id` | 是 | 获取任务详情 |
+| GET | `/tasks/:id/export` | 是 | 导出任务定义为可下载 JSON（E-1，attachment；见下） |
 | PATCH | `/tasks/:id` | 是 | 更新任务配置 |
 | DELETE | `/tasks/:id` | 是 | 删除任务（运行中执行将被强制终止） |
 
@@ -471,6 +473,60 @@ probing 探测通过前的已升级台，批次失败时 → rolled_back（自�
 | GET | `/tasks/:id/versions/:v1/compare/:v2` | 是 | 两个版本的 diff |
 | POST | `/tasks/:id/versions/:versionId/rollback` | 是 | 回滚任务配置到指定历史版本 |
 | POST | `/tasks/:id/rollback` | 是 | Git 类型任务回滚到指定 commit |
+
+**任务定义导入/导出（E-1，本轮新增）：**
+
+任务定义的跨环境迁移通道。导出物即导入请求体，两端口径完全对称。
+
+**GET `/tasks/:id/export`** —— 导出任务定义为可下载 JSON：
+
+- 响应为 `application/json` **attachment**（`Content-Disposition: attachment; filename="task-<slug>.json"`），不经统一响应 envelope 包裹。
+- 权限沿用 `GET /tasks/:id` 读面（JWT；AUTH-02 项目隔离同语义）。任务不存在 → `404`。
+- 响应体形状（`schemaVersion` 钉 `"1"`，`exportedAt` 为 ISO-8601）：
+
+```json
+{
+  "schemaVersion": "1",
+  "exportedAt": "2026-10-05T00:00:00.000Z",
+  "task": {
+    "name": "Nightly sync",
+    "triggerType": "cron",
+    "cronExpression": "0 2 * * *",
+    "runtime": "python",
+    "runtimeVersion": "3.12",
+    "params": { "db": "primary" },
+    "dependencies": { "上游任务名": "task-uuid" },
+    "maintenanceWindows": [{ "start": "30 2 * * *", "end": "0 4 * * *" }],
+    "...": "全部用户可编辑定义键（= 版本快照键集合 − id）"
+  }
+}
+```
+
+- ⚠️ **secrets 红线（SEC-02）：secrets 绝不出现在导出物中——键与值 alike 整键剔除**。`secrets` / `webhookSecret` 键名（含嵌套形态）均不在导出物任何位置；实现为三层防线：① 显式白名单装配（secret 类键根本不在集合内）；② 运行时不变量 `assertNoSecretMaterial`（导出前递归扫描，任何 `/secret/i` 键名命中即 fail-closed `409`，宁可炸导出也不泄密）；③ 取数走 `GET /tasks/:id` 同一脱敏读路径（值先被掩码）。同理不含 `id` / `status` / `ownerUserId` / 时间戳等身份、运行态与审计列。
+
+**POST `/tasks/import`** —— 从导出物创建任务：
+
+- 请求体 = 导出物原样回放（`{ schemaVersion: "1", task: {...} }`，`exportedAt` 可选且须为 ISO-8601）。`task` 复用 **POST /tasks 的全量创建校验链**（`CreateTaskDto` 嵌套校验：cron/时区/枚举/params 体积/secrets 键名等与创建完全同源；全局 ValidationPipe whitelist + forbidNonWhitelisted 把未知键打成 `400`）。`schemaVersion` 只接受 `"1"`（`400`）。
+- **重名策略：绝不覆盖同名任务**。名称冲突自动加后缀重试：`原名 (imported)` → `原名 (imported) 2` → `原名 (imported) 3` → …（上限 20 个候选，全部冲突 → `409`），不存在同名覆盖/更新语义。
+- ⚠️ **secrets 红线对称语义**：导入物携带的 `secrets` 键被**整体忽略（绝不落库）**；导入任务 secrets 为空，响应 `warnings` **常驻**「需重新配置 secrets」提示；若导入物显式携带了 `secrets` 键，追加一条「该键已忽略」提示。
+- 权限沿用 POST /tasks 创建面（登录 + 既有写守卫与归属校验）；`projectId` 指向无权写的项目 → `403`，项目不存在 → `400`（与创建同语义）。
+- 成功 `201`（任务创建后为 **paused** 态，与 POST /tasks 一致）：
+
+```json
+{
+  "code": 201,
+  "message": "success",
+  "data": {
+    "taskId": "新任务 uuid",
+    "name": "Nightly sync (imported)",
+    "warnings": [
+      "Task secrets are never part of the export/import payload (SEC-02 red line) — the imported task has NO secrets configured; reconfigure them via PATCH /tasks/:id before running it."
+    ]
+  }
+}
+```
+
+- 错误码：`400` 非法载荷（缺 `task.name` / 超长 params / 未知键 / 非法 cron·时区·枚举 / `schemaVersion` 非 `"1"` 等）；`403` 无权写指定项目；`409` 全部候选名冲突。
 
 **创建/更新任务策略字段：**
 

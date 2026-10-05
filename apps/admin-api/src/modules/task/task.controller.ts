@@ -20,6 +20,8 @@ import {
   ApiOperation,
   ApiBearerAuth,
   ApiResponse,
+  ApiCreatedResponse,
+  ApiOkResponse,
   ApiParam,
   ApiQuery,
   ApiBody,
@@ -39,6 +41,12 @@ import { TriggerTaskDto } from "./dto/trigger-task.dto";
 import { RollbackTaskDto } from "./dto/rollback-task.dto";
 import { BatchTaskIdsDto } from "./dto/batch-task.dto";
 import { ListTasksQueryDto } from "./dto/list-tasks-query.dto";
+// E-1: 任务定义导入/导出（契约 DTO 与运行时请求体）
+import { TaskExportPayloadDto } from "./dto/task-definition-export.dto";
+import {
+  ImportTaskDto,
+  TaskImportResultDto,
+} from "./dto/task-definition-import.dto";
 // P2-18: lastStatus @ApiQuery 的值域（与 TaskExecution.status 列共用口径）
 import { ExecutionStatus } from "./entities/task-execution.entity";
 import {
@@ -123,6 +131,62 @@ export class TaskController {
       action: "task.create",
       resource: "task",
       resourceId: result.id,
+      ip: req.ip,
+    });
+    return result;
+  }
+
+  // ── E-1: 任务定义导入/导出 ──────────────────────────────────────────────
+  // 权限口径不新增语义：导出沿用任务读面（类级 JwtAuthGuard，同 GET /tasks/:id）；
+  // 导入沿用任务创建面（WriteGuard authenticated + service.create 内既有校验
+  // 链，与 POST /tasks 完全同档）。secrets 红线见 docs/api-reference.md 任务节。
+  @WriteGuard("task", { scope: "authenticated" })
+  @Post("import")
+  @ApiOperation({
+    summary: "Import a task definition (JSON export payload)",
+    description:
+      "E-1: create a task from a GET /tasks/:id/export payload. Validation " +
+      "is the full POST /tasks create chain. Name conflicts are NEVER " +
+      "overwritten: ' (imported)' is appended, then ' (imported) 2', " +
+      "' (imported) 3', ... until an available name is found. Secrets are " +
+      "never part of the transfer (SEC-02 red line): a carried secrets key " +
+      "is ignored and the imported task starts WITHOUT secrets — warnings " +
+      "always includes the reconfigure hint. The new task starts paused.",
+  })
+  @ApiBody({ type: ImportTaskDto })
+  @ApiCreatedResponse({
+    type: TaskImportResultDto,
+    description:
+      "Task imported (paused). warnings always includes the reconfigure-secrets hint.",
+  })
+  @ApiResponse({
+    status: 400,
+    description:
+      "Invalid payload (missing required keys, oversized params, unknown fields — global whitelist, invalid cron/timezone/enum, ...)",
+  })
+  @ApiResponse({
+    status: 403,
+    description:
+      "The payload assigns a project the caller may not write (ADMIN or project editor/admin required)",
+  })
+  @ApiResponse({
+    status: 409,
+    description:
+      "All name candidates conflict with existing tasks (or another unique conflict)",
+  })
+  async importDefinition(
+    @Body() dto: ImportTaskDto,
+    @CurrentUser() user: AuthUser,
+    @Req() req: Request,
+  ) {
+    const result = await this.taskService.importDefinition(dto, user);
+    await this.audit.log({
+      userId: user?.id,
+      username: user?.username,
+      action: "task.import",
+      resource: "task",
+      resourceId: result.taskId,
+      detail: { name: result.name },
       ip: req.ip,
     });
     return result;
@@ -490,6 +554,38 @@ export class TaskController {
   @ApiResponse({ status: 404, description: "Task not found" })
   findOne(@Param("id") id: string) {
     return this.taskService.findOne(id);
+  }
+
+  // E-1: 任务定义导出——读面权限同 GET /tasks/:id（类级 JwtAuthGuard），
+  // 走 @Res() library mode 直写附件（同 audit export 先例，绕过响应 envelope）。
+  @Get(":id/export")
+  @ApiOperation({
+    summary: "Export task definition as a downloadable JSON file",
+    description:
+      "E-1: returns the task definition snapshot (name/description/runtime " +
+      "+ interpreter version/glue script/params/timeout & retry/dependencies/" +
+      "deployment constraints/maintenance windows/trigger config/git source/" +
+      'application & project keys) as an attachment with schemaVersion "1" ' +
+      "and exportedAt. SEC-02 red line: secrets are NEVER part of the export " +
+      "(the whole key is stripped — values and key names alike). The payload " +
+      "is accepted verbatim by POST /tasks/import. Read permission matches " +
+      "GET /tasks/:id.",
+  })
+  @ApiParam({ name: "id", description: "Task ID" })
+  @ApiOkResponse({
+    type: TaskExportPayloadDto,
+    description:
+      "Task definition export payload (same shape as the POST /tasks/import body)",
+  })
+  @ApiResponse({ status: 404, description: "Task not found" })
+  async exportDefinition(
+    @Param("id") id: string,
+    @Res() res: Response,
+  ): Promise<void> {
+    const { filename, payload } = await this.taskService.exportDefinition(id);
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.send(JSON.stringify(payload, null, 2));
   }
 
   @WriteGuard("task", { scope: "ownership" })
