@@ -175,6 +175,9 @@ apps/executor-desktop/normalize-out.txt
 # e2e UI 审计产物（.ui-audit/audit-report.txt 等，本地巡检输出，不入库）
 apps/executor-desktop/e2e/.ui-audit/
 
+# e2e 布局分析产物（full-layout-analysis.cjs 的 OUT 目录，本地巡检输出，不入库）
+apps/executor-desktop/e2e/.layout-analysis/
+
 # Windows 环境变量展开残留：某次测试把未展开的 `%SystemDrive%` 当路径用，
 # 于是在 apps/executor-python/ 下生成了一个名为 `%SystemDrive%` 的目录，
 # 里面是 Windows 缓存 .db（3 个文件约 0.9MB）。**不是源码**，不入库。

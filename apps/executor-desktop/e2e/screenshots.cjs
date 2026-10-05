@@ -33,11 +33,62 @@ function mkWorkDir() {
   fs.mkdirSync(relA2, { recursive: true });
   fs.writeFileSync(path.join(appA, 'app.json'), JSON.stringify({ appName: '数据同步机器人', runMode: 'daemon' }));
   fs.writeFileSync(path.join(relA2, 'app.json'), JSON.stringify({ appName: '数据同步机器人', runMode: 'daemon' }));
+  fs.symlinkSync(relA2, path.join(appA, 'current'), 'junction'); // current 软链：让库存截图覆盖「当前版本徽章」分支
   fs.writeFileSync(path.join(relA2, 'app.log'), Array.from({ length: 40 }, (_, i) => `2026-09-28T0${i % 10}:12:${String(i).padStart(2, '0')}.000Z [INFO] [23fb6898-e228-4ca2-8ed4-956758b5d2f0] sync batch #${i} done`).join('\n'));
   // 应用 B：旧部署无 app.json（名称未知）、scheduled 模式无日志
   const appB = path.join(root, 'apps', 'b1b2c3d4-0000-4000-8000-000000000002');
   const relB1 = path.join(appB, 'releases', '0.9.0-4fb1b2c3-0000-4000-8000-00000000000c');
   fs.mkdirSync(relB1, { recursive: true });
+
+  // ── 规模压测夹具（长期使用审计）：多应用/多版本/长名称/无名应用 ──
+  const hex = (n) => `0000${n.toString(16)}`.slice(-4);
+  const moreNames = [
+    '报表生成器', '客户数据每日清洗入库（含异常重试队列）', '夜间全量索引重建',
+    '财务凭证同步', '邮件通知派发', '数据库备份校验', '舆情监控采集',
+    '合同归档 OCR', '风控指标计算', '渠道对账机器人',
+  ];
+  moreNames.forEach((name, j) => {
+    const appId = `c${hex(j + 1)}b2c3d4-0000-4000-8000-${hex(j + 1)}0000000003`;
+    const appDir = path.join(root, 'apps', appId);
+    const relCount = j % 3 === 0 ? 3 : j % 2 === 0 ? 2 : 1;
+    for (let r = 0; r < relCount; r++) {
+      const rel = path.join(appDir, 'releases', `1.${r}.0-5fb1b2c3-0000-4000-8000-${hex(j * 10 + r)}000000000d`);
+      fs.mkdirSync(rel, { recursive: true });
+      if (r === relCount - 1) fs.writeFileSync(path.join(rel, 'app.json'), JSON.stringify({ appName: name, runMode: 'daemon' }));
+    }
+    fs.writeFileSync(path.join(appDir, 'app.json'), JSON.stringify({ appName: name, runMode: 'daemon' }));
+  });
+  // 无名应用 ×3（无 app.json）
+  for (let j = 0; j < 3; j++) {
+    const appId = `d${hex(j + 1)}b2c3d4-0000-4000-8000-${hex(j + 1)}0000000004`;
+    const rel = path.join(root, 'apps', appId, 'releases', `0.8.0-6fb1b2c3-0000-4000-8000-${hex(j + 1)}000000000e`);
+    fs.mkdirSync(rel, { recursive: true });
+  }
+
+  // 执行记录：5 条脚本锚点记录 + 25 条压测记录（9 个任务、混合状态、含超长任务名与错误信息）
+  const stressTasks = [
+    '渠道对账机器人', '客户数据每日清洗入库（含异常重试队列）', '夜间全量索引重建',
+    '财务凭证同步', '邮件通知派发', '数据库备份校验', '舆情监控采集',
+  ];
+  const uuid = (n) => `${hex(n)}f0a2b3-c7d8-4e5f-9a01-23456789${hex(n + 9)}ab`;
+  for (let i = 0; i < 25; i++) {
+    const taskName = stressTasks[i % stressTasks.length];
+    const start = now - (i + 1) * 37 * MIN;
+    const running = i % 13 === 5;
+    const failed = !running && i % 6 === 2;
+    records.push({
+      executionId: uuid(i + 20),
+      taskId: `t-${2000 + (i % stressTasks.length)}`,
+      taskName,
+      startTime: start,
+      ...(running ? {} : { endTime: start + 4 * MIN }),
+      status: running ? 'running' : failed ? 'failed' : 'success',
+      exitCode: failed ? 1 : 0,
+      ...(failed ? { errorMessage: 'python: No module named pandas（解释器 3.11 准备失败：下载超时，重试 3 次仍未恢复）' } : {}),
+    });
+  }
+  // 追加的记录统一落盘（前 5 条重写同内容，无害）
+  records.forEach((r, i) => fs.writeFileSync(path.join(metaDir, `meta-${String(i).padStart(4, '0')}.json`), JSON.stringify(r)));
   return root;
 }
 
@@ -50,6 +101,47 @@ function mkWorkDir() {
   }
   const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'acf-shots-user-'));
   const workDir = mkWorkDir();
+
+  // 预写「今天的执行器日志」让状态窗截图贴近真实运行密度：electron-log 包裹
+  // winston 行的双重时间戳 + [executor]/[executor:err] 段 + CRLF 行尾（Windows
+  // 真实落盘形态），含 warn/error 级别以驱动级别芯片与告警计数。
+  // 若不预写，日志区只有应用自身几行启动日志，排版评估会基于失真的空态。
+  {
+    const logDir = path.join(userData, 'logs');
+    fs.mkdirSync(logDir, { recursive: true });
+    const now = Date.now();
+    const pad = (n, w = 2) => String(n).padStart(w, '0');
+    const fmtLocal = (t) => {
+      const d = new Date(t);
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`;
+    };
+    const trace = '23fb6898-e228-4ca2-8ed4-956758b5d2f0';
+    const infos = [
+      'Sending heartbeat',
+      'Heartbeat succeeded',
+      'Polling assignments: none pending',
+      'Task t-1002 heartbeat acknowledged',
+      'Agent idle: waiting for next assignment window',
+    ];
+    const lines = [];
+    for (let i = 400; i >= 1; i--) {
+      const t = now - i * 47_000;
+      const iso = new Date(t).toISOString();
+      if (i % 19 === 0) {
+        lines.push(`[${fmtLocal(t)}] [error] [executor:err] ${iso} [ERROR] [${trace}] Task t-1001 exited with code 1: python: No module named pandas`);
+      } else if (i % 7 === 0) {
+        lines.push(`[${fmtLocal(t)}] [warn]  [executor] ${iso} [WARN] [${trace}] Heartbeat latency high: 4.2s (threshold 3s)`);
+      } else {
+        lines.push(`[${fmtLocal(t)}] [info]  [executor] ${iso} [INFO] [${trace}] ${infos[i % infos.length]}`);
+      }
+    }
+    // electron-log 落盘为 CRLF（Windows）——保持与生产一致，顺带钉住
+    // readLastLines 的 CRLF 剥离路径。
+    const day = new Date(now);
+    const logName = `executor-${day.getFullYear()}-${pad(day.getMonth() + 1)}-${pad(day.getDate())}.log`;
+    fs.writeFileSync(path.join(logDir, logName), lines.join('\r\n') + '\r\n');
+  }
+
   const app = await electron.launch({
     executablePath: ELECTRON_BIN,
     args: [APP_ENTRY],
@@ -65,6 +157,10 @@ function mkWorkDir() {
     await wizard.waitForLoadState('domcontentloaded');
     await wizard.getByText('欢迎使用').first().waitFor({ timeout: 20000 });
     await shot(wizard, '01-wizard');
+    // 第 2 步（连接服务端）：验证步骤进度指引「第 X / 4 步」与表单态
+    await wizard.getByRole('button', { name: /开始配置/ }).click();
+    await wizard.getByText('连接服务端').first().waitFor({ timeout: 10000 });
+    await shot(wizard, '01b-wizard-connect');
 
     const cfg = await wizard.evaluate(() => window.electronAPI.getConfig());
     const statusReady = app.waitForEvent('window');
@@ -84,7 +180,7 @@ function mkWorkDir() {
     // 配置页 5 个分区
     await status.getByRole('tab', { name: '配置' }).click();
     await shot(status, '04-config-connection');
-    for (const [name, file] of [['网络地址', '05-config-network'], ['Python 运行环境', '06-config-python'], ['Agent（实验性）', '07-config-agent'], ['基本设置', '08-config-general']]) {
+    for (const [name, file] of [['网络地址', '05-config-network'], ['Python 运行环境', '06-config-python'], ['Agent（实验性）', '07-config-agent'], ['关于与更新', '08-config-about']]) {
       await status.getByRole('button', { name }).click();
       await shot(status, file);
     }
@@ -93,7 +189,10 @@ function mkWorkDir() {
     await status.getByRole('tab', { name: '历史' }).click();
     await status.getByText('历史执行记录').first().waitFor({ timeout: 15000 });
     await shot(status, '09-history');
-    await status.getByText('每日报表生成与汇总推送').first().waitFor({ timeout: 10000 });
+    // V4-3 起状态页右栏「最近失败」卡也含任务名文本（面板常驻挂载，hidden 下
+    // getByText 仍命中）——历史页断言锚定 #history-panel 作用域，避免歧义命中
+    // 隐藏面板里的同名文本（getByRole 无此问题：display:none 不进无障碍树）。
+    await status.locator('#history-panel').getByText('每日报表生成与汇总推送').first().waitFor({ timeout: 10000 });
     await shot(status, '10-history-expanded');
     // 单条执行日志浮层
     await status.getByRole('button', { name: '查看日志' }).first().click();
@@ -121,6 +220,21 @@ function mkWorkDir() {
     // 名称未知的应用
     await status.getByRole('button', { name: /未知应用名/ }).first().click();
     await shot(status, '16-apps-unknown');
+
+    // ── 窄窗口通道（长期使用审计）：800×720 接近最小窗口，验证响应式与密度 ──
+    await app.evaluate(({ BrowserWindow }, size) => {
+      BrowserWindow.getAllWindows()
+        .filter((w) => w.isVisible())
+        .forEach((w) => w.setSize(size.w, size.h));
+    }, { w: 800, h: 720 });
+    await shot(status, '20-n-apps');
+    await status.getByRole('tab', { name: '状态监控' }).click();
+    await shot(status, '21-n-status');
+    await status.getByRole('tab', { name: '配置' }).click();
+    await shot(status, '22-n-config');
+    await status.getByRole('tab', { name: '历史' }).click();
+    await status.getByText('历史执行记录').first().waitFor({ timeout: 15000 });
+    await shot(status, '23-n-history');
 
     console.log('DONE');
   } finally {
