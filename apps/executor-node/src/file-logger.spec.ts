@@ -448,10 +448,19 @@ describe('cleanupWorkDir (disk reclamation)', () => {
   it('A6: 清理执行不走同步 rmSync，且执行中事件循环保持响应（心跳不被阻塞）', async () => {
     const oldDate = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
     const oldExec = path.join(dir, 'exec-async-a6');
-    fs.mkdirSync(oldExec, { recursive: true });
-    fs.writeFileSync(path.join(oldExec, 'f.txt'), 'x');
-    // utimes 必须在写入之后：写文件会把目录 mtime 刷成 now。
-    fs.utimesSync(oldExec, oldDate, oldDate);
+    // 60 个过期目录拉长异步清理链：单目录在快盘上 <1ms 就清完，1ms 心跳
+    // 可能一拍都没获得调度就 clearInterval——「太快」与「事件循环被独占」
+    // 在 heartbeats=0 上不可区分，CI（run 37343428723）因此偶发假失败。
+    // 多目录让清理跨越多个 loop 迭代，心跳断言才有判别力。
+    const bulkDirs = Array.from({ length: 60 }, (_, i) =>
+      path.join(dir, `exec-async-a6-bulk-${i}`),
+    );
+    for (const d of [oldExec, ...bulkDirs]) {
+      fs.mkdirSync(d, { recursive: true });
+      fs.writeFileSync(path.join(d, 'f.txt'), 'x');
+      // utimes 必须在写入之后：写文件会把目录 mtime 刷成 now。
+      fs.utimesSync(d, oldDate, oldDate);
+    }
 
     // 监视 fs.promises.rm：该目录的删除必须出现在异步删除路径上
     // （fs 命名空间属性不可 redefine，无法直接 spy 同步 rmSync——但只要
@@ -465,7 +474,7 @@ describe('cleanupWorkDir (disk reclamation)', () => {
       const result = await fl.cleanupWorkDir(7);
       clearInterval(heartbeat);
 
-      expect(result.workDirs).toBe(1); // 清扫本身语义不变：过期目录已回收
+      expect(result.workDirs).toBe(1 + bulkDirs.length); // 清扫本身语义不变：过期目录已回收
       expect(fs.existsSync(oldExec)).toBe(false);
       // 关键断言：删除走了 fs.promises.rm（异步）——同步 rmSync 路径不再被
       // 清扫使用（该目录的删除由 promises.rm 完成）。
