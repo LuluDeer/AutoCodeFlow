@@ -1,10 +1,10 @@
 # AutoCodeFlow 交接简报（Windows 侧 → Linux 侧，2026-10-05 晚 / CI 收绿补记）
 
-> 来源：Windows 侧编排 agent（项目总监多轮战役，13 轮战役 + CI 收绿 4 commit，见
+> 来源：Windows 侧编排 agent（项目总监多轮战役 + 推送后 5 轮 CI 收绿，见
 > [PROGRESS-2026-10-05-upgrade-campaign.md](./PROGRESS-2026-10-05-upgrade-campaign.md)）。
 > 性质：**交接**——接手前需要知道的事实、平台相关注意项与验证清单。
-> 全部在 develop 推进（c46d88c6..82cb2dac），未动 main；工作区干净；**develop CI 全绿**
-> （run 37341838327）。
+> 全部在 develop 推进（c46d88c6..7ae2e6e3），未动 main；工作区干净；**develop CI 全绿**
+> （run 37359231922，60+ job）。
 
 ## 一、本日落地面速览（细节以 PROGRESS 台账为准）
 
@@ -48,26 +48,42 @@
    api-types-drift / consumer-routes / response-schema 三闸在 run 37341838327
    全绿。Linux 侧无需再做；下次 API 契约变更后照常 `swagger:export` +
    `gen:api-types` + `check-openapi-response-schema.mjs --update` 三件套同 commit。
-3. **CI 收绿过程记录（接手者知悉）**：首轮 CI 暴露三连红（openapi 漂移/
-   consumer-routes/棘轮基线）——都是「新端点未同步产物」的既定流程缺口，非代码
-   缺陷；第二轮暴露 security-password 一处 1/千次量级既有 flaky（跨用例晚到
-   `window.location` 写，afterEach 丢弃桩+微任务排水根治，82cb2dac）；第三轮
-   暴露 deploy.selftest 三处 `$rc` 紧跟全角括号（macOS bash 3.2 陷阱，守卫
-   `--fix` 修掉）。均已在 develop 收绿。
-3. **ci.yml 新增内容**：gates job 加 2 个零依赖守卫 step；selftests 串跑加
+3. **CI 收绿战报（推送后 5 轮盯到全绿，HEAD=7ae2e6e3，run 37359231922）**：
+   - 轮 1：openapi 漂移 + consumer-routes + 棘轮基线三连红 → 5969565d（WSL
+     PG16+Redis7 复现 CI 环境跑 swagger:export/gen:api-types + CLI webhook 改
+     显式路径）与 a91e9a78（棘轮基线 70→72；deploy.selftest 三处 `$rc` 紧跟
+     全角括号改 `${rc}`——macOS bash 3.2 非 UTF-8 locale 陷阱，守卫 `--fix` 产出）。
+   - 轮 2：admin-web security-password 一例 1/千次量级既有 flaky 首曝（跨用例
+     晚到 window.location 写）→ 82cb2dac（首版微任务排水，未根治）。
+   - 轮 3：executor-node A6 心跳判别力假失败（单目录清理 <1ms 完成，1ms 心跳
+     一拍未调度即 clearInterval——「太快」与「被独占」不可判别）→ f43fb11a
+     （造 60 个过期目录拉长异步清理链）。
+   - 轮 4：admin-api-coverage exit 134（OOM）→ 8bd470de coverage 步骤加
+     `--maxWorkers=2`（本地 maxWorkers=2 全量 4567 绿验证）；同 run 发现
+     **shard-1 全绿 111s 后 jest 句柄不退出空挂 27min 被超时击杀** → 单测 jest
+     配置加 `forceExit: true`（与 e2e 配置同源同裁决，注释见 package.json）。
+   - 轮 5：coverage 二红——单 worker 触 Node 默认 ~2GB 堆顶（Jest worker OOM）
+     → 6e358ced worker 堆顶 4GB + `--workerIdleMemoryLimit=1536MB`，ESM flag
+     从 `--node-options` 迁 env 避开合并歧义；同 run security-password flake
+     二次实曝 → 真因=组件成功路径的 **1200ms 真实 setTimeout 跳转**
+     （微任务排水拦不住，isolate:false 同 worker 共享 globalThis）→ 7ae2e6e3
+     afterEach 真等 1300ms 让残留定时器在丢弃桩上放完。
+4. **ci.yml 新增内容**：gates job 加 2 个零依赖守卫 step；selftests 串跑加
    `test:control-plane-pull`（自建两端+自拉 PG16/Redis7，预估 +3-5min，job 超时
    45min 余量充足；若 runner 上 flaky，先降级回包内 `--dry-run` 形态并在台账记录）。
-4. **deploy.sh health 语义变化**：现在有失败会 **exit 1**（此前恒 0）——任何把
+   **coverage job 内存参数已调**（maxWorkers=2 + 堆顶 4GB + 闲置回收，见战报轮
+   4/5）——套件再增重时优先调这三值而非回退。
+5. **deploy.sh health 语义变化**：现在有失败会 **exit 1**（此前恒 0）——任何把
    `deploy.sh health` 当「恒成功」消费的自动化（cron/Agent）需要知晓。
-5. **check-alerts-rules 扩面**：现在 dashboard JSON 的 PromQL 也进守卫（同 42 指标
+6. **check-alerts-rules 扩面**：现在 dashboard JSON 的 PromQL 也进守卫（同 42 指标
    清单）；改 metrics 名时 alerts 与 dashboard 会一起红，这是有意行为。
-6. **grafana provisioning 已启用**（allowUiUpdates:false）：dashboard 以仓库 JSON
+7. **grafana provisioning 已启用**（allowUiUpdates:false）：dashboard 以仓库 JSON
    为准，UI 手改会被接管；compose 单文件 bind mount 在 git pull 换 inode 后需容器
    重建（README 已注明）。
-7. **新 env 键**：`.env.example` 补了 14 键（含 SCHEDULER_RECONCILE_EVERY、
+8. **新 env 键**：`.env.example` 补了 14 键（含 SCHEDULER_RECONCILE_EVERY、
    OPENAI_MAX_TOKENS、REDIS_HOST/PORT 等），`check-env-drift` 绿；部署侧无需动作，
    但 doctor/compose 模板若有自己的键清单可对一下。
-8. **执行器 node 失败分类新增来源**：runTaskInner catch 现在会给 spawn 期失败
+9. **执行器 node 失败分类新增来源**：runTaskInner catch 现在会给 spawn 期失败
    （ENOENT→runtime_missing、bwrap→sandbox_unavailable）带 failureReason——admin
    侧若有按该字段聚合的告警，计数口径会多出这两类（BUG-10 对齐的正向副作用）。
 
