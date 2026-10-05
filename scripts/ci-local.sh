@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 # =============================================================================
-# ci-local.sh — 本地一条命令等价跑 .github/workflows/ci.yml 的全部 CI job
+# ci-local.sh — 本地一条命令复刻 ci.yml 的主要测试 job（⚠️ 非 ci.yml 全部 job）
+#
+# 覆盖面 = 12 个单测/e2e/audit 等价 job（映射见下表）。已知不覆盖（只在
+# ci.yml 真跑）：静态守卫族（check-migrations 门禁 job 及各 guard step）、
+# lockfile-integrity、secret-scan、consumer-routes、executor-protocol-drift、
+# selftests（arch31/pull/control-plane-pull 等行为自检）、docs-site-build、
+# api-types-drift、benchmark、desktop-bundle-drift、docker 镜像构建闸、
+# windows/mac 侧 job 与桌面打包/e2e。
 #
 # 背景（R8）：GitHub push 暂无凭证，远端 CI 无法真跑；本脚本在本地复刻每个
 # job 的步骤与 env，保证 push 解锁前主干质量门禁不失效。
@@ -55,7 +62,7 @@ for arg in "$@"; do
     --skip-e2e)   SKIP_E2E=1 ;;
     --skip-audit) SKIP_AUDIT=1 ;;
     --py-deps)    PY_DEPS=1 ;;
-    -h|--help)    sed -n '2,45p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help)    sed -n '2,51p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "未知参数: ${arg}（支持 --skip-e2e --skip-audit --py-deps）"; exit 2 ;;
   esac
 done

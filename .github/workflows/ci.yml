@@ -787,6 +787,22 @@ jobs:
         run: |
           node scripts/check-env-drift.mjs --selftest
           node scripts/check-env-drift.mjs
+      # ── DEEP-AUDIT D2-P1-1：compose 部署路径 bwrap 启用守卫（批次 B 补挂）──
+      # test:compose-sandbox 在根 package.json 里早已定义，却从未被任何 workflow
+      # 调用（同 E-41 的「写了但没接上」形态）。纯静态读取（docker-compose.yml
+      # 的 executor-python environment 结构解析 + docs/deployment.md 安全承诺
+      # 是否保留），不需要 docker / npm ci，零依赖秒级，与上方守卫族同批执行。
+      - name: Compose sandbox guard (DEEP-AUDIT D2-P1-1)
+        run: |
+          node scripts/check-compose-sandbox.mjs --selftest
+          node scripts/check-compose-sandbox.mjs
+      # ── E-P2-P6：install.sh artifact sha256 校验回归自检（批次 B 补挂）────
+      # 与上方 install-script-sync 闸互补：sync 闸管「install.sh ↔ content.ts
+      # 单一事实源」，本自检管「install.sh 的 X-SHA256 校验块没被误删/改坏」
+      # （bash -n 语法 + 静态标记断言 + 合成响应头的三态行为回放）。纯静态
+      # 自检，无需网络与 admin-api；bash 在 ubuntu runner 原生可用。
+      - name: install.sh artifact sha256 selftest (E-P2-P6)
+        run: bash scripts/install-artifact-sha256.selftest.sh
 
   # ── A4（DEEP_REVIEW §七）：消费方路由面快照守卫（零依赖 node 脚本）──────
   # mcp-server 与 acf-cli 各自硬编码 70+ 条 admin-api 路由字符串，与 openapi
@@ -842,12 +858,13 @@ jobs:
 
   # ── E-13：行为自检脚本进 CI（此前 10 个自检脚本只靠本地手跑）──────
   # HA compose（docker-compose.ha.yml）、ARCH-31 多实例/outbox、pull 派发、
-  # 回调分层（QA-05）、OIDC SSO、nginx SSE、npm registry 配置——这些行为
-  # 保证此前从未在任何 workflow 中运行。脚本自带环境分级：runner 有 docker
-  # 时真跑全链（admin-api/executor-node 由脚本内部 npx tsc 自建、PG 用脚本
-  # 自拉容器），无 docker/psql 时显式 skip 退出 0（不虚报）。
+  # 控制面 pull 通道（ARCH-33）、回调分层（QA-05）、OIDC SSO、nginx SSE、
+  # npm registry 配置——这些行为保证此前从未在任何 workflow 中运行。脚本自带
+  # 环境分级：runner 有 docker 时真跑全链（admin-api/executor-node 由脚本内部
+  # npx tsc 自建、PG 用脚本自拉容器），无 docker/psql 时显式 skip 退出 0（不虚报）。
   # 依赖注记：arch31-outbox 自检从 apps/admin-api require('pg')，docker 路径
-  # 会自建 admin-api/executor-node——故先装两处依赖。
+  # 会自建 admin-api/executor-node——故先装两处依赖。control-plane-pull 同型
+  # （脚本内 npx tsc 自建两端 + 自拉 PG/Redis 容器），复用同一份依赖安装。
   selftests:
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -873,6 +890,7 @@ jobs:
           npm run test:arch31-outbox-dup
           npm run test:arch31-rollout
           npm run test:pull-dispatch
+          npm run test:control-plane-pull
           npm run test:qa05-callback-tier
           npm run test:oidc-sso
           npm run test:nginx-sse

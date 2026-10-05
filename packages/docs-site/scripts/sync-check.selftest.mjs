@@ -53,6 +53,7 @@ const V = "2.3.4";
 const baseline = {
   "packages/autocodeflow-node-sdk/package.json": JSON.stringify({ name: "x", version: V }),
   "packages/mcp-server/package.json": JSON.stringify({ name: "m", version: V }),
+  "packages/acf-cli/package.json": JSON.stringify({ name: "c", version: V }),
   "packages/autoflow-sdk/pyproject.toml": `version = "${V}"\n`,
   "packages/autoflow-sdk/autoflow_sdk/__init__.py": `__version__ = "${V}"\n`,
   "packages/autocodeflow-node-sdk/src/context.ts":
@@ -100,7 +101,8 @@ VALID_FAILURE_REASONS = frozenset({
 | \`TASK_ID\` | a | b |
 | \`AUTOFLOW_CALLBACK_TOKEN\` | a | b |
 `,
-  "packages/docs-site/release.md": `| \`@autocodeflow/sdk\` | npm | **${V}** | src |`,
+  "packages/docs-site/release.md": `| \`@autocodeflow/sdk\` | npm | **${V}** | src |
+| \`@autocodeflow/cli\` | npm（原 acf-cli） | **${V}**<!-- x-release-please-version --> | packages/acf-cli/package.json |`,
   "packages/docs-site/index.md": "查看 2 项逐项对照",
   "packages/docs-site/README.md": "能力矩阵（ECO-01）2 项",
   "packages/docs-site/capability-matrix.md": `| **http: 默认超时** | x | y |
@@ -149,6 +151,48 @@ VALID_FAILURE_REASONS = frozenset({
   const results = mod.runAllChecks();
   const ver = results.find((r) => r.name === "lockstep 版本号");
   assert("版本漂移：站点页面旧版本号被拦截", ver.errors.some((e) => e.includes("sdk-node.md") && e.includes("0.0.1")));
+  cleanup();
+}
+
+// ── 用例 2c：acf-cli manifest 漂移（第四个 lockstep 包）→ 版本面红 ───────
+{
+  const files = {
+    ...baseline,
+    "packages/acf-cli/package.json": JSON.stringify({ name: "c", version: "9.9.9" }),
+  };
+  const { mod, cleanup } = await loadSandbox(files);
+  const results = mod.runAllChecks();
+  const ver = results.find((r) => r.name === "lockstep 版本号");
+  assert("版本漂移：acf-cli manifest 与其余 lockstep 包不一致被拦截",
+    ver.errors.some((e) => e.includes("acf-cli") && e.includes("9.9.9")));
+  cleanup();
+}
+{
+  // release.md 的 acf-cli 标记行版本落后于 manifest → 标记行扫描必须拦
+  const files = {
+    ...baseline,
+    "packages/docs-site/release.md": baseline["packages/docs-site/release.md"].replace(
+      `**${V}**<!-- x-release-please-version -->`,
+      "**0.0.2**<!-- x-release-please-version -->"
+    ),
+  };
+  const { mod, cleanup } = await loadSandbox(files);
+  const results = mod.runAllChecks();
+  const ver = results.find((r) => r.name === "lockstep 版本号");
+  assert("版本漂移：acf-cli 标记行旧版本号被拦截", ver.errors.some((e) => e.includes("0.0.2")));
+  cleanup();
+}
+{
+  // acf-cli 标记行被整个删掉 → 「标记行不得删」检查必须拦（1.5.3 盲区不回潮）
+  const files = {
+    ...baseline,
+    "packages/docs-site/release.md": "| `@autocodeflow/sdk` | npm | **2.3.4** | src |",
+  };
+  const { mod, cleanup } = await loadSandbox(files);
+  const results = mod.runAllChecks();
+  const ver = results.find((r) => r.name === "lockstep 版本号");
+  assert("版本漂移：acf-cli 标记行被删被拦截",
+    ver.errors.some((e) => e.includes("acf-cli") && e.includes("标记行")));
   cleanup();
 }
 

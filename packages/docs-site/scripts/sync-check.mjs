@@ -27,12 +27,13 @@ function readSite(rel) {
   return readFileSync(join(SITE, rel), "utf8");
 }
 
-// ── 判据 ①：lockstep 版本号（三包 manifest + py __version__ 为事实源）────
+// ── 判据 ①：lockstep 版本号（四包 manifest + py __version__ 为事实源）────
 // 站点所有页面出现的「当前版本」必须与事实源一致；事实源自身不一致也红。
 export function checkVersions() {
   const errors = [];
   const nodePkg = JSON.parse(readRepo("packages/autocodeflow-node-sdk/package.json"));
   const mcpPkg = JSON.parse(readRepo("packages/mcp-server/package.json"));
+  const cliPkg = JSON.parse(readRepo("packages/acf-cli/package.json"));
   const pyproject = readRepo("packages/autoflow-sdk/pyproject.toml");
   const pyInit = readRepo("packages/autoflow-sdk/autoflow_sdk/__init__.py");
   const m = /^version\s*=\s*"([^"]+)"/m.exec(pyproject);
@@ -42,6 +43,7 @@ export function checkVersions() {
   const sources = [
     ["packages/autocodeflow-node-sdk/package.json", nodePkg.version],
     ["packages/mcp-server/package.json", mcpPkg.version],
+    ["packages/acf-cli/package.json", cliPkg.version],
     ["packages/autoflow-sdk/pyproject.toml", pyVersion],
     ["packages/autoflow-sdk/autoflow_sdk/__init__.py", pyInitVersion],
   ];
@@ -88,6 +90,19 @@ export function checkVersions() {
         errors.push(`${page}：版本声明 ${v} ≠ 事实源 ${version}（lockstep 漂移）`);
       }
     }
+  }
+  // acf-cli（@autocodeflow/cli）的版本号曾写在**无标记**的散文里（「当前包内
+  // version 1.5.3」），而其 manifest 已到 1.8.0——既有的三种措辞正则都扫不到
+  // 它，是本轮实证的校验盲区。锁法与上三包对齐：release.md 保留一行 acf-cli 的
+  // `x-release-please-version` 标记行（版本值由上方标记行扫描与事实源比对），
+  // 本检查钉住「标记行不得被删」——删行即红，盲区不得回潮。
+  const cliMarkerLine = readSite("release.md")
+    .split(/\r?\n/)
+    .find((l) => l.includes("acf-cli") && l.includes("x-release-please-version"));
+  if (!cliMarkerLine) {
+    errors.push(
+      "release.md 缺少 acf-cli（@autocodeflow/cli）的 x-release-please-version 标记行——第四个 lockstep 包的版本声明必须带标记锁位"
+    );
   }
   return { errors, version };
 }
