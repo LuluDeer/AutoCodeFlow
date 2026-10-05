@@ -85,6 +85,13 @@ function main(): void {
   assert.equal(en.agentOutcomes.delivered, 'Candidate app delivered');
   assert.equal(en.agentOutcomes.permission_denied, 'Permission denied');
 
+  // ── V4 审计 P2：托盘菜单拓展两个新项（checkUpdate / openLogFolder）──
+  // e2e n10 用例2 按label 逐项匹配真实 Menu，这里逐字节钉值与其同源。
+  assert.equal(zh.checkUpdate, '检查更新...', 'zh.checkUpdate（托盘 e2e 按 label 匹配）');
+  assert.equal(zh.openLogFolder, '打开日志文件夹', 'zh.openLogFolder');
+  assert.equal(en.checkUpdate, 'Check for Updates...', 'en.checkUpdate');
+  assert.equal(en.openLogFolder, 'Open Log Folder', 'en.openLogFolder');
+
   console.log('tray-texts selftest: all assertions passed (bilingual table + locale/click rules)');
 }
 

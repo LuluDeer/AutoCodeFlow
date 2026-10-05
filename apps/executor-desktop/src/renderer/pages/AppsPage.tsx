@@ -191,10 +191,25 @@ function AppLogScreen({ entry, onClose }: { entry: AppEntry; onClose: () => void
       if (timerRef.current) clearInterval(timerRef.current);
       return;
     }
+    // 隐藏页轮询门控：Tab 常驻挂载（App.tsx），应用 Tab 隐藏/窗口最小化时
+    // 查看器仍每 2s 拉增量。沿用本页列表轮询的 active() + MutationObserver
+    // 门控（见 refresh 的 useEffect）：隐藏期间暂停拉取，恢复可见立即补拉
+    // 一次（增量 fromLine 语义不变，隐藏期间的行一次性并入）。读取失败仍
+    // 停轮询（fetchLogs → setAutoRefresh(false)），「实时」钮恢复。
+    const panel = document.getElementById('apps-panel');
+    const active = () => !document.hidden && !panel?.hidden;
     timerRef.current = setInterval(() => {
-      fetchLogs(totalLinesRef.current);
+      if (active()) fetchLogs(totalLinesRef.current);
     }, 2000);
-    return () => { if (timerRef.current) clearInterval(timerRef.current); };
+    const kick = () => { if (active()) fetchLogs(totalLinesRef.current); };
+    const observer = panel ? new MutationObserver(kick) : null;
+    if (panel) observer?.observe(panel, { attributes: true, attributeFilter: ['hidden'] });
+    document.addEventListener('visibilitychange', kick);
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+      observer?.disconnect();
+      document.removeEventListener('visibilitychange', kick);
+    };
   }, [autoRefresh, fetchLogs]);
 
   return (

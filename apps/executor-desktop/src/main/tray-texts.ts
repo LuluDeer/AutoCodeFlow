@@ -63,6 +63,10 @@ export interface TrayTexts {
   openHistory: string;
   /** V4-4：托盘菜单补齐第四 Tab（X-04 顺带项：菜单原只覆盖 3/4） */
   openApps: string;
+  /** V4 审计 P2：托盘「检查更新」（用户主动检查，与设置页同链路）。 */
+  checkUpdate: string;
+  /** V4 审计 P2：托盘「打开日志文件夹」（任务日志目录直达入口）。 */
+  openLogFolder: string;
   autoLaunch: string;
   quit: string;
 }
@@ -110,6 +114,8 @@ export const TRAY_TEXTS: Record<TrayLocale, TrayTexts> = {
     openConfig: '打开配置...',
     openHistory: '历史日志...',
     openApps: '打开应用...',
+    checkUpdate: '检查更新...',
+    openLogFolder: '打开日志文件夹',
     autoLaunch: '开机自启',
     quit: '退出',
   },
@@ -155,6 +161,8 @@ export const TRAY_TEXTS: Record<TrayLocale, TrayTexts> = {
     openConfig: 'Open Settings...',
     openHistory: 'History Logs...',
     openApps: 'Open Apps...',
+    checkUpdate: 'Check for Updates...',
+    openLogFolder: 'Open Log Folder',
     autoLaunch: 'Launch at Login',
     quit: 'Quit',
   },

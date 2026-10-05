@@ -175,6 +175,11 @@ export class HeartbeatMonitor {
   }
 
   private recordSuccess(channel: 'local' | 'admin'): void {
+    // stop 竞态守卫（B6）：stop() 后**在飞**探针的回调仍会到达（http.get
+    // 不随 stop() 取消）。timer===null 即「监视已停止」——此后推进迟滞/
+    // emit 都是把已停止监视器的状态泄漏给托盘/通知面（停止后突然 emit
+    // online 会把托盘从「已停止」翻回「在线」），一律丢弃。
+    if (this.timer === null) return;
     // 同一份迟滞判定：成功即清零该通道计数并锚定本次成功时刻（90s 静默判死
     // 的基准点）。
     const ev = advanceHeartbeatHysteresis(
@@ -195,6 +200,12 @@ export class HeartbeatMonitor {
   }
 
   private recordFailure(channel: 'local' | 'admin', reason: string): void {
+    // stop 竞态守卫（B6）：已 2 次失败后用户手动停止执行器时，在飞的第 3 次
+    // 失败回调可在 stop() 之后到达——无守卫时它会把迟滞推过阈值并 emit
+    // ('offline')，notifier 误弹「执行器离线」（执行器是被用户主动停掉的，
+    // 不是离线）。timer===null 即停止标记：探针回调一律丢弃，不再推进迟滞、
+    // 不再 emit。行为面用例见 heartbeat.selftest.ts「stop 后在飞失败」。
+    if (this.timer === null) return;
     const ev = advanceHeartbeatHysteresis(
       channel === 'local' ? this.localHysteresis : this.adminHysteresis,
       'failed',

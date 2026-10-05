@@ -110,8 +110,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // DSK-05：autoDownload=false 下的显式下载入口（用户点「下载」后调用）
   downloadUpdate: () => ipcRenderer.invoke('updater:download'),
   installUpdate: () => ipcRenderer.invoke('updater:install'),
-  onUpdateAvailable: (cb: (payload: { version: string; current: string }) => void) => {
-    const handler = (_: Electron.IpcRendererEvent, payload: { version: string; current: string }) => cb(payload);
+  // B-3②：previouslyDownloaded——main 侧 update-available 实发（同一版本此前
+  // 已下载过、待装缓存应复用），渲染层 UpdateBanner 据此切换展示形态；此前
+  // 本契约漏了该字段，渲染层只能各自补声明（类型漂移）。
+  onUpdateAvailable: (cb: (payload: { version: string; current: string; previouslyDownloaded: boolean }) => void) => {
+    const handler = (_: Electron.IpcRendererEvent, payload: { version: string; current: string; previouslyDownloaded: boolean }) => cb(payload);
     ipcRenderer.on('updater:available', handler);
     return () => ipcRenderer.removeListener('updater:available', handler);
   },

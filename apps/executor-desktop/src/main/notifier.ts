@@ -164,6 +164,23 @@ export class Notifier {
     this.lastExecutorStatus = status;
   }
 
+  /**
+   * V4 审计 P2：更新可用通知。updater 的 update-available 此前只广播给**已
+   * 打开**的窗口（updater.ts broadcast）——托盘应用常态是状态窗关着，用户
+   * 永远看不到「有新版本」。updater 经 setUpdateAvailableNotifier 注入本方法
+   * （回调注入，不引 updater → notifier 的模块依赖，对齐 onOpenStatusCallback
+   * 形态；同版本 6h 周期检查的去重在 updater 侧做）。
+   * 安全口径（notifier-rules.ts 头注红线不变）：body 只带版本号——updater 在
+   * 调用前已用 isNewerVersion 校验（semver 正则字符集），不含路径/报文/token；
+   * 文案与 UpdateBanner 的 available 态同口径。点击路由 status → 聚焦状态窗。
+   */
+  notifyUpdate(version: string, previouslyDownloaded: boolean): void {
+    const body = previouslyDownloaded
+      ? `新版本 ${version} 此前已下载完成，可在状态页直接安装（复用本地缓存）`
+      : `新版本 ${version} 已可升级，可在状态页下载安装`;
+    this.notify('发现新版本', body, 'status');
+  }
+
   /** 单轮扫描 meta 目录：读终态 → 规则判断 → 通知。所有异常静默（通知
    *  是锦上添花，绝不因它打扰主流程）。 */
   private async scanMetaDir(): Promise<void> {

@@ -26,8 +26,42 @@ export class TrayManager {
   onOpenConfig: (() => void) | null = null;
   onOpenHistory: (() => void) | null = null;
   onOpenApps: (() => void) | null = null;
+  // V4 审计 P2：托盘菜单拓展——「检查更新」（updater 用户主动检查链路）与
+  // 「打开日志文件夹」（ipc-handlers openTaskLogFolder，与 history:open-log-folder
+  // 同一实现）；逻辑在各自模块，这里只注入回调。
+  onCheckForUpdate: (() => Promise<void> | void) | null = null;
+  onOpenLogFolder: (() => Promise<void> | void) | null = null;
   onToggleAutoLaunch: ((enable: boolean) => Promise<void>) | null = null;
   getAutoLaunch: (() => boolean) | null = null;
+
+  // V4 审计 P3：启停项在飞互斥——托盘菜单可快速连点，而 start/stop 是秒级
+  // 异步动作（spawn/kill 子进程 + 40s 停机超时链），重复触发会叠加竞态
+  // （快速双击 = 两次 start()）。在飞期间忽略新点击；菜单项 enabled 由
+  // rebuildMenu 按 currentStatus 刷新，是另一道兜底。只在点击回调入口做
+  // 互斥，不动 menu 重建路径（保守口径，见清单约束）。
+  private startStopInFlight = false;
+
+  /** B7：start/stop 点击入口的在飞互斥（回调自身吞错落日志，见 index.ts）。 */
+  private runStartStop(kind: 'start' | 'stop'): void {
+    if (this.startStopInFlight) return;
+    const cb = kind === 'start' ? this.onStart : this.onStop;
+    if (!cb) return;
+    this.startStopInFlight = true;
+    try {
+      const result = cb();
+      if (result instanceof Promise) {
+        // 同步抛出 / Promise reject 都不得悬挂互斥标志（catch 先行，避免
+        // unhandled rejection 漏给全局兜底——那会退出整个应用）。
+        void result
+          .catch(() => undefined)
+          .finally(() => { this.startStopInFlight = false; });
+      } else {
+        this.startStopInFlight = false;
+      }
+    } catch {
+      this.startStopInFlight = false;
+    }
+  }
 
   /** 当前 locale（B-7②：en* 英文，其余中文；重建菜单时实时取）。 */
   private locale(): TrayLocale {
@@ -117,12 +151,12 @@ export class TrayManager {
       {
         label: t.startExecutor,
         enabled: !isActive,
-        click: () => this.onStart?.(),
+        click: () => this.runStartStop('start'),
       },
       {
         label: t.stopExecutor,
         enabled: isActive,
-        click: () => this.onStop?.(),
+        click: () => this.runStartStop('stop'),
       },
       { type: 'separator' },
       {
@@ -140,6 +174,18 @@ export class TrayManager {
       {
         label: t.openApps,
         click: () => this.onOpenApps?.(),
+      },
+      { type: 'separator' },
+      {
+        // V4 审计 P2：与设置页「检查更新」同一条用户主动检查链路（错误经
+        // updater:error 广播显性化；dev 未打包时静默 no-op）。
+        label: t.checkUpdate,
+        click: () => this.onCheckForUpdate?.(),
+      },
+      {
+        // V4 审计 P2：任务日志目录直达入口（托盘态不必先开窗再进历史页）。
+        label: t.openLogFolder,
+        click: () => this.onOpenLogFolder?.(),
       },
       { type: 'separator' },
       {

@@ -150,6 +150,22 @@ const runCheckState = createRunCheck(() =>
 );
 let downloading = false;
 
+// V4 审计 P2：update-available 的系统通知出口。broadcast 只覆盖**已打开**的
+// 窗口——托盘应用常态是状态窗关着，用户永远看不到「有新版本」。回调由
+// index.ts 注入 notifier.notifyUpdate（与 tray.ts 的回调注入同形态，避免
+// updater → notifier 的模块依赖；未注入时行为与旧版逐字节一致，只广播）。
+let updateAvailableNotifier: ((version: string, previouslyDownloaded: boolean) => void) | null = null;
+/** 同版本去重：6h 周期检查会对同一远端版本反复触发 update-available，
+ *  系统通知不该每 6h 重复轰炸（渲染层横幅仍每次广播、状态自恢复）。 */
+let lastNotifiedUpdateVersion: string | null = null;
+
+/** index.ts 接线：注入「更新可用 → 系统通知」回调（notifier.notifyUpdate）。 */
+export function setUpdateAvailableNotifier(
+  cb: ((version: string, previouslyDownloaded: boolean) => void) | null,
+): void {
+  updateAvailableNotifier = cb;
+}
+
 // 审计二轮 B-7①：周期调度器——首轮延迟 UPDATE_CHECK_DELAY_MS，之后每轮检查
 // 完成后重挂 UPDATE_CHECK_INTERVAL_MS（调度状态机见 updater-runcheck.ts）。
 // 与手动检查的并发仍由 runCheckState 串行化：用户检查在飞时，周期 tick 复用
@@ -216,6 +232,13 @@ export function initUpdater(): void {
     );
     runCheckState.resetSurface();
     broadcast(UPDATE_EVENTS.available, { version: remote, current: local, previouslyDownloaded });
+    // V4 审计 P2：广播之外补一条系统通知（状态窗关闭时横幅无人看见）。
+    // 同版本只通知一次（6h 周期检查会重复触发 update-available）；新版本号
+    // 到达即再通知。remote 已过 isNewerVersion（semver 字符集），进通知安全。
+    if (updateAvailableNotifier && remote !== lastNotifiedUpdateVersion) {
+      lastNotifiedUpdateVersion = remote;
+      updateAvailableNotifier(remote, previouslyDownloaded);
+    }
   });
 
   autoUpdater.on('update-not-available', (info) => {

@@ -27,7 +27,10 @@ interface UpdateApi {
   checkForUpdate?: () => Promise<{ ok: boolean }>;
   downloadUpdate?: () => Promise<{ ok: boolean }>;
   installUpdate?: () => Promise<{ ok: boolean }>;
-  onUpdateAvailable?: (cb: (p: { version: string; current: string; previouslyDownloaded?: boolean }) => void) => () => void;
+  // payload 类型与 preload 契约（src/preload/index.ts onUpdateAvailable）一致：
+  // previouslyDownloaded 已入契约（B-3②），此处不再需要本地补宽可选字段；
+  // 方法保持可选是「electronAPI 缺失时防御性降级」的既有口径。
+  onUpdateAvailable?: (cb: (p: { version: string; current: string; previouslyDownloaded: boolean }) => void) => () => void;
   onUpdateProgress?: (cb: (p: { percent: number; transferred: number; total: number }) => void) => () => void;
   onUpdateDownloaded?: (cb: (p: { version: string }) => void) => () => void;
   onUpdateError?: (cb: (p: { message: string }) => void) => () => void;

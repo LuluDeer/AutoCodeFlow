@@ -39,6 +39,7 @@
     "src/main/uv-wiring.selftest.ts",
     "src/main/config-sanitize.ts",
     "src/main/config-sanitize.selftest.ts",
+    "src/main/heartbeat.ts",
     "src/main/heartbeat.selftest.ts",
     "src/main/log-read-date-scan.selftest.ts",
     "src/main/meta-files.ts",

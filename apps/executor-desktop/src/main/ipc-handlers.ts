@@ -99,6 +99,29 @@ export function startHeartbeat(): void {
 }
 
 /**
+ * 打开任务日志所在的**日期分片目录**（用户常要一次看当天所有执行）。
+ * V4 审计 P2：自 history:open-log-folder handler 抽出的模块级实现——托盘
+ * 「打开日志文件夹」与本 IPC 共用同一逻辑（托盘侧经 TrayManager 回调注入）。
+ * 打开**今天**的分片；没有今天的就退回 logs 根（今天还没跑过任务）。
+ */
+export async function openTaskLogFolder(): Promise<{ ok: boolean; path?: string; error?: string }> {
+  const workDir = configStore.get('workDir') as string | undefined;
+  if (!workDir) return { ok: false, error: '未配置工作目录' };
+  const logsBase = path.join(workDir, 'logs');
+  const check = checkPathWithinDomains(logsBase, getAllowedLogDomains());
+  if (!check.ok) return { ok: false, error: check.error };
+  if (!fs.existsSync(logsBase)) {
+    return { ok: false, error: '日志目录尚不存在（还没有执行过任务）' };
+  }
+  const now = new Date();
+  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  const todayDir = path.join(logsBase, today);
+  const target = fs.existsSync(todayDir) ? todayDir : logsBase;
+  const err = await shell.openPath(target);
+  return { ok: !err, path: target, error: err || undefined };
+}
+
+/**
  * 会真正进入 executor-node 子进程的配置字段——executor-process.start() 组装
  * 子进程 env 的全部输入（APP_NAME、PORT、BIND_ADDRESS、EXECUTOR_ADDRESS、
  * EXECUTOR_ADDRESS_PUBLIC、ADMIN_API_URL、WORK_DIR、MAX_CONCURRENT_TASKS、
@@ -730,23 +753,9 @@ export function registerIpcHandlers(): void {
   });
 
   // 打开任务日志所在的**日期分片目录**（用户常要一次看当天所有执行）。
-  ipcMain.handle('history:open-log-folder', async () => {
-    const workDir = configStore.get('workDir') as string | undefined;
-    if (!workDir) return { ok: false, error: '未配置工作目录' };
-    const logsBase = path.join(workDir, 'logs');
-    const check = checkPathWithinDomains(logsBase, getAllowedLogDomains());
-    if (!check.ok) return { ok: false, error: check.error };
-    if (!fs.existsSync(logsBase)) {
-      return { ok: false, error: '日志目录尚不存在（还没有执行过任务）' };
-    }
-    // 打开**今天**的分片；没有今天的就退回 logs 根（今天还没跑过任务）。
-    const now = new Date();
-    const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-    const todayDir = path.join(logsBase, today);
-    const target = fs.existsSync(todayDir) ? todayDir : logsBase;
-    const err = await shell.openPath(target);
-    return { ok: !err, path: target, error: err || undefined };
-  });
+  // V4 审计 P2：实现抽到模块级 openTaskLogFolder()——托盘「打开日志文件夹」
+  // 与本 handler 共用同一实现（托盘侧经回调注入，见 tray.ts / index.ts）。
+  ipcMain.handle('history:open-log-folder', () => openTaskLogFolder());
 
   // ── 日志文件管理 ───────────────────────────────────────
   // 列出过往日志文件（桌面端自身日志 + 任务日志）

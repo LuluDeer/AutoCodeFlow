@@ -193,6 +193,9 @@ function ExecutionLogOverlay({ record, onClose, nav, onRevealLog }: {
   const linesRef = useRef(0);
   const inFlight = useRef(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // NETOPT-7⑥ 的轮询停止标记：fetchLog 失败后置位，轮询与隐藏门控的补拉
+  // kick 一并静默；「重试」（reloadKey）重建拉取链时复位。
+  const pollStoppedRef = useRef(false);
 
   const fetchLog = useCallback(async () => {
     if (inFlight.current) return;
@@ -214,7 +217,9 @@ function ExecutionLogOverlay({ record, onClose, nav, onRevealLog }: {
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       // 终止轮询：文件已被 TTL 清理/通道异常时，1.5s/5s 重试只会反复失败。
-      // 用户点「重试」（reloadKey）即重新拉取。
+      // 置停止标记（隐藏门控的补拉 kick 同样被拦），用户点「重试」
+      // （reloadKey）即重新拉取。
+      pollStoppedRef.current = true;
       if (timerRef.current) {
         clearInterval(timerRef.current);
         timerRef.current = null;
@@ -225,15 +230,35 @@ function ExecutionLogOverlay({ record, onClose, nav, onRevealLog }: {
     }
   }, [record.executionId]);
 
+  // 初始加载 / 原位重试：整链重建（旧行清空、水位归零、恢复轮询资格）。
   useEffect(() => {
     linesRef.current = 0;
+    pollStoppedRef.current = false;
     setLines([]);
     setLoading(true);
     fetchLog();
-    // poll every 1.5s while running, every 5s otherwise
+  }, [record.executionId, record.status, fetchLog, reloadKey]);
+
+  // poll every 1.5s while running, every 5s otherwise —— 隐藏页轮询门控：
+  // Tab 常驻挂载（App.tsx），历史 Tab 隐藏/窗口最小化时查看器仍在后台拉增量。
+  // 沿用仓内 AppsPage.tsx 列表轮询的 active() + MutationObserver 门控
+  // （panel.hidden + visibilitychange）：隐藏期间暂停，恢复可见立即补拉一次
+  // （增量 fromLine 语义不变，隐藏期间的行一次性并入）。
+  useEffect(() => {
+    const panel = document.getElementById('history-panel');
+    const active = () => !document.hidden && !panel?.hidden;
+    const poll = () => { if (active() && !pollStoppedRef.current) fetchLog(); };
     const interval = record.status === 'running' ? 1500 : 5000;
-    timerRef.current = setInterval(fetchLog, interval);
-    return () => { if (timerRef.current) clearInterval(timerRef.current); };
+    timerRef.current = setInterval(poll, interval);
+    const observer = panel ? new MutationObserver(poll) : null;
+    if (panel) observer?.observe(panel, { attributes: true, attributeFilter: ['hidden'] });
+    document.addEventListener('visibilitychange', poll);
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+      timerRef.current = null;
+      observer?.disconnect();
+      document.removeEventListener('visibilitychange', poll);
+    };
   }, [record.executionId, record.status, fetchLog, reloadKey]);
 
   // 行级别在数据侧判定一次，渲染层（共享查看器）只按 level 过滤/着色。

@@ -195,7 +195,90 @@ function main(): void {
     );
   }
 
-  console.log('main-index selftest: all assertions passed (B-1 wiring, B-2 resume+hysteresis behavior, B-6 dead channel, B-7 lock order, B-12 liveness hysteresis, B-14 tray wizard, start-path rejections)');
+  // ── V4 审计（P2/P3）：更新通知 / 托盘菜单拓展 / 启停互斥接线锚点 ──
+  // 与本文件既有守卫同哲学：index.ts/tray.ts/updater.ts 顶层拉 electron，
+  // 行为面不可在裸 node 直接驱动，这里钉死"修复必须存在的接线锚点"。
+  {
+    // V4-P2：updater available → 系统通知（广播只达已开窗口，状态窗关闭时
+    // 用户永远看不到「有新版本」——必须补 notifier.notifyUpdate 注入链）。
+    const notifierSrc = read('notifier.ts');
+    const updaterSrc = read('updater.ts');
+    assert.ok(
+      notifierSrc.includes('notifyUpdate(') && notifierSrc.includes("this.notify('发现新版本'"),
+      'V4-P2: notifier 必须提供 notifyUpdate()（复用 notify()，点击路由 status）',
+    );
+    assert.ok(
+      updaterSrc.includes('setUpdateAvailableNotifier') &&
+        updaterSrc.includes('updateAvailableNotifier(remote, previouslyDownloaded)'),
+      'V4-P2: updater 的 update-available 分支必须调用注入的更新通知回调',
+    );
+    assert.ok(
+      indexCode.includes('setUpdateAvailableNotifier('),
+      'V4-P2: index.ts 必须把 notifier.notifyUpdate 注入 updater',
+    );
+
+    // V4-P2：托盘「检查更新 / 打开日志文件夹」——回调注入面 + index.ts 接线
+    // （检查走 checkForUpdatesUserInitiated；日志目录与 history:open-log-folder
+    // 共用 ipc-handlers.openTaskLogFolder 同一实现）。
+    const traySrc = read('tray.ts');
+    const trayCode = traySrc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+    assert.ok(
+      trayCode.includes('t.checkUpdate') && trayCode.includes('t.openLogFolder'),
+      'V4-P2: 托盘菜单必须包含 检查更新 / 打开日志文件夹 两个新项',
+    );
+    assert.ok(
+      trayCode.includes('onCheckForUpdate') && trayCode.includes('onOpenLogFolder'),
+      'V4-P2: TrayManager 必须提供新菜单项的回调注入面（onCheckForUpdate/onOpenLogFolder）',
+    );
+    assert.ok(
+      indexCode.includes('trayManager.onCheckForUpdate') &&
+        indexCode.includes('trayManager.onOpenLogFolder') &&
+        indexCode.includes('checkForUpdatesUserInitiated') &&
+        indexCode.includes('openTaskLogFolder'),
+      'V4-P2: index.ts 必须接线托盘 检查更新（用户主动检查）/ 打开日志文件夹（openTaskLogFolder）',
+    );
+
+    // V4-P3：托盘启停项在飞互斥（快速双击不得重复触发 start/stop）——
+    // 点击必须经 runStartStop 入口，不得直连 onStart/onStop。
+    const methodBody = (code: string, marker: string): string => {
+      const start = code.indexOf(marker);
+      assert.ok(start >= 0, `V4-P3: tray.ts 找不到 ${marker}`);
+      const rest = code.slice(start);
+      const nextPrivate = rest.indexOf('\n  private ', 10);
+      return nextPrivate === -1 ? rest : rest.slice(0, nextPrivate);
+    };
+    assert.ok(
+      trayCode.includes('runStartStop(') && trayCode.includes('startStopInFlight'),
+      'V4-P3: 托盘启停点击入口必须有在飞互斥标志（startStopInFlight）',
+    );
+    assert.ok(
+      trayCode.includes("click: () => this.runStartStop('start')") &&
+        trayCode.includes("click: () => this.runStartStop('stop')") &&
+        !trayCode.includes('click: () => this.onStart?.()') &&
+        !trayCode.includes('click: () => this.onStop?.()'),
+      'V4-P3: 启停菜单项必须经 runStartStop 入口（不得直连回调）',
+    );
+    const mutexBody = methodBody(trayCode, 'private runStartStop(');
+    assert.ok(
+      mutexBody.includes('if (this.startStopInFlight) return;') &&
+        mutexBody.includes('this.startStopInFlight = true') &&
+        mutexBody.includes('this.startStopInFlight = false'),
+      'V4-P3: runStartStop 必须先查在飞标志、发起前置位、同步/异步路径都必然复位',
+    );
+
+    // V4-P3：heartbeat 在飞失败守卫（行为面用例在 heartbeat.selftest 第 7 节，
+    // 这里钉实现锚点：recordSuccess/recordFailure 入口必须判 stop 标记）。
+    const hbCode = read('heartbeat.ts').replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+    for (const fn of ['private recordSuccess(', 'private recordFailure(']) {
+      const body = methodBody(hbCode, fn);
+      assert.ok(
+        /if\s*\(this\.timer\s*===\s*null\)\s*return;/.test(body),
+        `V4-P3: heartbeat ${fn.replace('private ', '').replace('(', '')} 入口必须丢弃 stop() 后到达的在飞探针回调（timer===null 守卫）`,
+      );
+    }
+  }
+
+  console.log('main-index selftest: all assertions passed (B-1 wiring, B-2 resume+hysteresis behavior, B-6 dead channel, B-7 lock order, B-12 liveness hysteresis, B-14 tray wizard, start-path rejections, V4 update-notify/tray-extension/start-stop-mutex/heartbeat-stop-guard anchors)');
 }
 
 main();

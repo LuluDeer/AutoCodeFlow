@@ -17,13 +17,20 @@
  * 本测试用**真实的 http 模块**证明两件事：
  *   1. 未消毒的 NaN 端口确实会让 http.get 同步抛出（反证有牙）；
  *   2. 消毒后的回调不会抛，且端口落在合法区间。
- * 由于 heartbeat.ts 顶层 import electron-log（裸 node 下加载即崩），这里采用
- * 与 updater.selftest.ts 相同的副本 + SYNC 守卫形态。
+ * 由于 heartbeat.ts 顶层 import electron-log（裸 node 下加载即崩），第 1-6 节
+ * 采用与 updater.selftest.ts 相同的副本 + SYNC 守卫形态。V4 审计 B6 起新增
+ * 第 7 节**行为面**用例：electron-log 消音（token-crypto.selftest 同款 stub）
+ * 后直接加载真实 HeartbeatMonitor，以本地 http 靶机驱动真实探针竞态。
  */
 import * as assert from 'node:assert';
 import * as fs from 'node:fs';
 import * as http from 'node:http';
+import * as net from 'node:net';
 import * as path from 'node:path';
+// 第 7 节（B6 stop 竞态行为面）：直接驱动**真实** HeartbeatMonitor——
+// heartbeat.ts 顶层 import electron-log，裸 node 下先消音（stubElectronLog，
+// token-crypto.selftest 同款）再加载即可。
+import { HeartbeatMonitor } from './heartbeat';
 
 // ── SYNC：与 src/main/heartbeat.ts 的 normalizeHeartbeatPort 等价实现 ──
 const DEFAULT_PORT = 8002;
@@ -258,4 +265,82 @@ function main(): void {
   console.log('heartbeat selftest: all assertions passed (NaN port → no uncaught throw; admin probe URL sanitized; EXP-03 single start entrypoint; B-2 resume reset wired)');
 }
 
+// ── 7. B6（V4 审计）：stop() 后在飞探针的失败回调不得 emit offline ────────
+//
+// 故障现场：迟滞阈值 3 连失败下，已 2 次失败后用户手动停止执行器
+// （heartbeat.stop()），在飞的第 3 次失败回调晚于 stop() 到达——旧实现照常
+// 推进迟滞并 emit('offline')，notifier.ts 据此误弹「执行器离线」（执行器是
+// 被用户停掉的，不是离线）。修复：recordFailure/recordSuccess 入口判
+// `this.timer === null`（stop 标记），在飞回调一律丢弃。
+//
+// 行为面用例：真实 HeartbeatMonitor + 本地 http 靶机（500 快速回报 → 每轮
+// check 恰好一次失败），双场景对照：
+//   A（无 stop）：3 连失败 → 恰 emit 一次 offline（证明阈值与探针管线活着）；
+//   B（第 3 次失败前 stop）：绝不 emit offline（旧实现此处为 ['offline']）。
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+function stubElectronLog(): void {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const electronLog = require('electron-log') as { transports?: any; default?: any };
+  const lg = electronLog.default ?? electronLog;
+  lg.transports.file.resolvePathFn = () => '/tmp/acf-heartbeat-selftest-unused.log';
+  lg.transports.file.level = false;
+  lg.transports.console.level = false;
+}
+
+async function stopRaceScenario(): Promise<void> {
+  stubElectronLog();
+  const server = http.createServer((_req, res) => {
+    res.statusCode = 500;
+    res.end('heartbeat selftest: always unhealthy');
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = (server.address() as net.AddressInfo).port;
+  // check() 是 private——行为面只经 start()/stop() 与真实探针管线，手动驱动
+  // 一轮 check 等价于间隔定时器到期（10s 间隔在用例窗口内不会到期）。
+  const driveCheck = (m: HeartbeatMonitor): void => {
+    (m as unknown as { check(): void }).check();
+  };
+
+  const runScenario = async (stopBeforeThird: boolean): Promise<string[]> => {
+    const events: string[] = [];
+    const monitor = new HeartbeatMonitor();
+    monitor.setCallback((status) => events.push(status));
+    monitor.start(port);
+    try {
+      await sleep(2000); // immediate check（start+1.5s）已触发并记录失败 #1
+      driveCheck(monitor); // 失败 #2（回环 500 亚毫秒即回）
+      await sleep(150);
+      if (stopBeforeThird) monitor.stop();
+      driveCheck(monitor); // 失败 #3：B 场景下在飞回调晚于 stop() 到达
+      await sleep(150);
+      await sleep(100); // 余量：确认没有隐藏探针把事件再翻起来
+    } finally {
+      monitor.stop();
+    }
+    return events;
+  };
+
+  const withOffline = await runScenario(false);
+  assert.deepEqual(
+    withOffline,
+    ['offline'],
+    `对照组：3 连失败必须恰 emit 一次 offline，实际 ${JSON.stringify(withOffline)}`,
+  );
+  const withoutOffline = await runScenario(true);
+  assert.deepEqual(
+    withoutOffline,
+    [],
+    `修复目标：stop 后在飞失败不得 emit offline，实际 ${JSON.stringify(withoutOffline)}`,
+  );
+  server.close();
+  console.log('heartbeat selftest: stop-race case passed (in-flight failure after stop() is dropped, no offline emit)');
+}
+
+// 同步断言组（第 1-6 节）先行；第 7 节是真实探针的异步行为面用例（需要
+// 事件循环与本地 http 靶机），失败经 catch 罪证落 stderr 并以非零码退出。
 main();
+stopRaceScenario().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

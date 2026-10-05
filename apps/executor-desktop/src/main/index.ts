@@ -8,9 +8,9 @@ import { agentHostIdentity as buildAgentHostIdentity, agentHostTransition } from
 import { HeartbeatMonitor } from './heartbeat';
 import { TrayManager } from './tray';
 import { WindowManager } from './window-manager';
-import { registerIpcHandlers, startHeartbeat, sweepReleasesWithCurrentConfig } from './ipc-handlers';
+import { registerIpcHandlers, startHeartbeat, sweepReleasesWithCurrentConfig, openTaskLogFolder } from './ipc-handlers';
 import { getAutoLaunchEnabled, setAutoLaunchEnabled } from './autolaunch';
-import { initUpdater } from './updater';
+import { initUpdater, setUpdateAvailableNotifier, checkForUpdatesUserInitiated } from './updater';
 import { Notifier } from './notifier';
 import { createCrashGuard } from './crash-guard';
 import { resolveTrayLocale } from './tray-texts';
@@ -138,6 +138,16 @@ app.whenReady().then(async () => {
   trayManager.onOpenHistory = () => windowManager.openHistory();
   // V4-4：托盘菜单补齐第四 Tab（X-04）
   trayManager.onOpenApps = () => windowManager.openApps();
+  // V4 审计 P2：托盘菜单拓展——「检查更新」走用户主动检查链路（与设置页
+  // 按钮同口径：错误经 updater:error 广播显性化，dev 未打包时静默 no-op）；
+  // 「打开日志文件夹」与 IPC history:open-log-folder 共用同一实现，托盘态
+  // 无 UI 可承载失败反馈，只落日志。
+  trayManager.onCheckForUpdate = () => { void checkForUpdatesUserInitiated(); };
+  trayManager.onOpenLogFolder = () => {
+    void openTaskLogFolder().then((res) => {
+      if (!res.ok) log.warn(`tray: open log folder failed: ${res.error ?? 'unknown'}`);
+    });
+  };
   trayManager.onToggleAutoLaunch = async (enable) => {
     // DEV-AUTOLAUNCH：setAutoLaunchEnabled 返回是否真正生效——开发模式拒绝
     // 写入且返回 false，此时**不能**把 autoStart 存成 true，否则托盘/设置页
@@ -168,6 +178,11 @@ app.whenReady().then(async () => {
   // 任务终态（executor-node writeExecMeta 落盘）。
   notifier.onOpenStatusCallback = () => windowManager.focusOrOpenStatus();
   notifier.onOpenHistoryCallback = () => windowManager.openHistory();
+  // V4 审计 P2：更新可用 → 系统通知。updater 的 update-available 广播只达
+  // 已打开的窗口，状态窗关着时用户永远看不到；经回调注入补一条系统通知
+  // （同版本去重在 updater 侧，见 updater.ts lastNotifiedUpdateVersion）。
+  setUpdateAvailableNotifier((version, previouslyDownloaded) =>
+    notifier.notifyUpdate(version, previouslyDownloaded));
   notifier.setEnabled(configStore.get('notifyEnabled'));
   const workDir = configStore.get('workDir');
   notifier.startMetaPolling(workDir ? path.join(workDir, 'meta') : null);
