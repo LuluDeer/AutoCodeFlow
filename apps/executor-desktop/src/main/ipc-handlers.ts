@@ -824,11 +824,13 @@ export function registerIpcHandlers(): void {
   // 原实现按后者逐层下钻，于是把 releases/tmp/current 当成「部署」列出（假
   // 条目、版本号丢失），且真实 app.log 永不匹配 → 每行都显示「无日志」。
   // 解析逻辑收敛到 app-inventory.ts（纯函数，可被 selftest 直接覆盖）。
-  ipcMain.handle('apps:list', () => {
+  // V4 后续优化（1）：扫描全异步化（fs/promises）——AppsPage 每 10s 轮询本
+  // handler，同步 readdir/stat 在 release 多时阻塞主线程（NETOPT-E 同教训）。
+  ipcMain.handle('apps:list', async () => {
     const workDir = configStore.get('workDir') as string | undefined;
     // D 修正：目录级失败向上抛出（IPC reject → 渲染层错误条），不冒充
     // 「暂无已部署应用」；单条目 stat 失败仍只跳过该条目（正常目录竞争）。
-    const entries = listDeployedApps(workDir);
+    const entries = await listDeployedApps(workDir);
     // 用户报障（看不出是哪个应用）：app.json 是权威来源，但旧部署没有它。
     // 用执行器日志里的 releaseKey→appName 映射补齐（只读、带签名缓存，
     // 不覆盖 app.json 已有的值）。回溯不到就保持 null，由 UI 如实显示。
