@@ -3,6 +3,32 @@
 > 形态：项目总监编排 + 每轮 ≤2 subagent 并行 + 文件所有权互斥 + 轮间编排者复验门禁。
 > 同源纪律见 UX-UPGRADE-2026-10-05-STATE.md 头部。基线：develop @ c46d88c6。
 
+## 战役三（同日三续：能力补全 + 维护性 + 治理面）
+
+| 轮 | 内容 | 提交 |
+|----|------|------|
+| R11 | acf-cli 剩余五组命令：app upload（multipart/300s 预算）/app upgrade-all 灰度（canary 1-100，缺省零 body 全量语义逐字节保持）/task webhook 四动作/task glue 热更新（js→javascript 推断对齐执行器白名单）/approval 四子命令（DEP-04），30 新用例，叶子护栏 50→58；admin-web TaskFormPage 拆分 2170→889 行（11 新文件，机器级行为保持：键集/testid/aria diff 为空），顺带记录 4 个既有疑似 bug | 44667f91 / 7d66a9b0 |
+| R12 | 第四批审计（infra/scripts/examples/docs-site/CI）：7 发现 0 P0/P1；admin-web 既有 bug 四连修——**语言切换重灌编辑态可冲掉未保存修改（P1，修前三断言面实测全红）**/t 遮蔽/setTimeout(50) 魔法延时/注释自引 | 82966e19 |
+| R13 | 观测栈：同源守卫三面化（alerts+dashboard PromQL+阅读版走同一指标清单，修提取器数字字面量负例）/grafana 看板自动 provisioning；治理：compose-sandbox+install-sha256 进 CI gates、control-plane-pull 进 selftests、docs-site 版本漂移 1.5.3→1.8.0+sync-check 纳入 acf-cli、删 2 死脚本、scripts.md 32→78 | cf284212 / 5d507426 |
+
+战役三门禁：acf-cli vitest 243 绿+双 typecheck；admin-web vitest 201 文件/1561 用例绿+lint/i18n/build 绿；test:alerts 三面全绿；docs-site sync-check 七面无 drift；ci.yml yaml 解析通过（36 jobs）。
+
+## 全天总结（三战役 13 轮 / 22 提交）
+
+覆盖八层：admin-web UI/UX→desktop→admin-api→双执行器→协议 SSOT→CLI/MCP/SDK→部署面→可观测性/CI 治理。
+新增测试 250+（admin-api 4567 / admin-web 1561 / CLI 243 / MCP 152 / python cov 93.9% / node 1045+）。
+关键真 bug 修复：HA 触发配置漂移不生效（F-1）、py 超长行僵尸槽位、CLI TOTP 登录死角、语言切换冲掉未保存修改、deploy.sh python 探测 45s 白等。
+
+## 战役三遗留（下轮候选）
+
+1. **openapi.json 重导出**（需 DB+Redis 环境；导出后必须 `check-openapi-response-schema.mjs --update`，否则 CI drift 红）——战役一遗留，仍是首项。
+2. **升级灰度的 --version 语义**：UpgradeAllDto 不收 version（CLI 已在 help 注明）；若产品需要「指定版本灰度」，服务端先立 DTO 任务。
+3. **python win32 内存上限**（Job Object，L）或文档化登记。
+4. **desktop getHistory 推送化**（M，收益中低）。
+5. **CLI TOTP 交互路径**一次真机 smoke（vitest 无法驱动 TTY）。
+6. docs/observability/alerting-rules.yml 阅读版若要语义级对账需升级解析器（现只做存在性+指标名）。
+7. `--json` 语义冲突（task create 的 --json=载荷 vs 全局输出 JSON）——破坏性需 deprecation 周期。
+
 ## 战役二（同日续推：协议生态 + 末层 + UX 拓展）
 
 | 轮 | 内容 | 提交 |
