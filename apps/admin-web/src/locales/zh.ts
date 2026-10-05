@@ -308,6 +308,9 @@ export default {
   'taskList.action.trigger': '立即执行',
   'taskList.action.delete': '删除',
   'taskList.adminOnly': '仅管理员可操作',  'taskList.deleteConfirm': '确认删除此任务？',
+  // COLSET-01：列设置入口（低频列收纳——显隐过滤，列定义/列宽不动）
+  'taskList.columnSettings': '列设置',
+  'taskList.columnSettings.desc': '勾选要显示的列（仅记忆在本机浏览器）',
   'taskList.deleteForceTerminateDesc': '正在执行中的运行将被强制终止。',
   'taskList.ok': '删除',
 
@@ -2718,6 +2721,19 @@ export default {
   'palette.hint.enter': 'Enter 跳转',
   'palette.hint.esc': 'Esc 关闭',
   'palette.hint.inlineActions': '任务行可悬停/键盘直达快捷动作',
+
+  // HOTKEY-01：全站快捷键（g 前缀跳转 + ? 速查 Modal；⌘K 提示按平台动态取值）
+  'hotkeys.title': '快捷键',
+  'hotkeys.aria.list': '可用快捷键列表',
+  'hotkeys.group.global': '全局',
+  'hotkeys.group.goto': '页面跳转（先按 g，1 秒内按第二个键）',
+  'hotkeys.palette': '全局搜索 / 命令面板',
+  'hotkeys.help': '打开快捷键速查',
+  'hotkeys.goto.dashboard': '跳转仪表盘',
+  'hotkeys.goto.tasks': '跳转任务列表',
+  'hotkeys.goto.executors': '跳转执行器',
+  'hotkeys.goto.executions': '跳转执行记录',
+  'hotkeys.goto.applications': '跳转应用',
 
   'cronHelper.title': 'Cron 表达式辅助',
   'cronHelper.cancel': '取消',

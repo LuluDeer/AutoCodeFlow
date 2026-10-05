@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, memo, type ReactNode } from 'react';
+import { useState, useEffect, useRef, useCallback, memo, type ReactNode } from 'react';
 import { Layout, Menu, Avatar, Dropdown, Typography, Space, theme, Button, Breadcrumb, Tooltip } from 'antd';
 import { message } from '../utils/toast';
 import {
@@ -32,6 +32,9 @@ import { getErrMsg } from '../utils/error';
 import { authApi } from '../api/auth';
 import { logoutRemote } from '../api/logout';
 import CommandPalette from '../components/CommandPalette';
+// HOTKEY-01：全站快捷键（g 前缀跳转 + ? 速查 Modal）——在本壳层挂载一次
+import useGlobalHotkeys from '../hooks/useGlobalHotkeys';
+import ShortcutHelpModal from '../components/ShortcutHelpModal';
 import { isMacPlatform, searchShortcutHint } from './shortcut-hint';
 import { useThemeStore } from '../theme/store';
 // D-P2-16（设计审计）：品牌渐变唯一事实源（Logo / 用户头像共用）
@@ -238,6 +241,12 @@ export default function MainLayout() {
   };
   // FEAT-09: 全局命令面板（⌘K / Ctrl+K 唤起，头部搜索按钮同快捷键行为）
   const [paletteOpen, setPaletteOpen] = useState(false);
+  // HOTKEY-01：快捷键速查 Modal（? / Shift+/ 唤起，Esc 关闭）
+  const [helpOpen, setHelpOpen] = useState(false);
+  const handleToggleHelp = useCallback(() => setHelpOpen((v) => !v), []);
+  // ⌘K 面板 / 速查 Modal 任一打开中：g 序列与 ? 一律忽略（hook 内另有输入态/弹层护栏）
+  const isOverlayOpen = useCallback(() => paletteOpen || helpOpen, [paletteOpen, helpOpen]);
+  useGlobalHotkeys({ onToggleHelp: handleToggleHelp, isOverlayOpen });
   const { token } = theme.useToken();
   // UI-02：主题三态——mode 为用户意愿（按钮图标/文案随态变化）
   const themeMode = useThemeStore((s) => s.mode);
@@ -711,6 +720,9 @@ export default function MainLayout() {
 
       {/* FEAT-09: 全局命令面板——⌘K/Ctrl+K 或头部搜索按钮唤起 */}
       <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} />
+
+      {/* HOTKEY-01：快捷键速查 Modal——? / Shift+/ 唤起，Esc 关闭 */}
+      <ShortcutHelpModal open={helpOpen} onOpenChange={setHelpOpen} />
 
       {/* UI-09：移动端抽屉遮罩（≤768px 且抽屉展开时显示，点击收起）
           UI-12：原为裸 div + onClick（键盘不可达），改为原生 button——可聚焦、

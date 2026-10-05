@@ -14,13 +14,15 @@ import { Table,
   Modal,
   Form,
   Alert,
+  Popover,
+  Checkbox,
   theme,
   Card } from 'antd';
 import { message } from '../utils/toast';
 import {
   PlusOutlined, SearchOutlined, FilterOutlined, ThunderboltOutlined,
   CopyOutlined, DeleteOutlined, EyeOutlined, EditOutlined,
-  CheckSquareOutlined, FileTextOutlined,
+  CheckSquareOutlined, FileTextOutlined, ColumnWidthOutlined,
 } from '@ant-design/icons';
 // PK-02（DEEP_REVIEW 0ef3bbe）：clone payload 经 Object.keys 删除 undefined 后
 // 类型变宽，create 调用点显式断言为生成的 CreateTaskDto。
@@ -43,6 +45,13 @@ import { formatDateTime, formatRelativeTime } from '../utils/timeFormat';
 import { describeCron } from '../utils/cron-desc';
 // MOBILE-CARD-01：≤768px 表格 → 卡片列表（结构级降级）
 import { useIsMobile } from '../hooks/useIsMobile';
+// COLSET-01：列显隐偏好（localStorage 持久化；只过滤显隐，列定义/列宽不动）
+import {
+  TASK_LIST_COLUMN_KEYS,
+  readHiddenColumns,
+  writeHiddenColumns,
+  type TaskColumnKey,
+} from '../utils/taskColumns';
 import ParamsEditor from '../components/ParamsEditor';
 import PageHeader from '../components/PageHeader';
 // UI-08：首屏数据未达时以 Skeleton 替代表格 Spin（ApplicationListPage 同款）
@@ -74,6 +83,20 @@ const TRIGGER_COLOR: Record<string, string> = {
   manual: 'default', cron: 'blue', fixed_rate: 'geekblue', dependency: 'purple',
 };
 
+// COLSET-01：列键 → i18n 键（复用既有 taskList.col.* 词条，标签与表头一致）
+const COLUMN_LABEL_KEY: Record<TaskColumnKey, string> = {
+  name: 'taskList.col.name',
+  status: 'taskList.col.status',
+  trigger: 'taskList.col.trigger',
+  priority: 'taskList.col.priority',
+  schedule: 'taskList.col.schedule',
+  nextRun: 'taskList.col.nextRun',
+  lastRun: 'taskList.col.lastRun',
+  runtime: 'taskList.col.runtime',
+  toggle: 'taskList.col.enabled',
+  actions: 'taskList.col.actions',
+};
+
 export default function TaskListPage() {
   const nav = useNavigate();
   // MOBILE-CARD-01：≤768px 表格 → 卡片列表
@@ -98,6 +121,8 @@ export default function TaskListPage() {
   const [triggering, setTriggering] = useState(false);
   const [togglingId, setTogglingId] = useState<string | null>(null);
   const [batchLoading, setBatchLoading] = useState(false);
+  // COLSET-01：隐藏列集合（缺省空 = 全显，与既有渲染零行为差异；只过滤显隐不动列定义）
+  const [hiddenColumns, setHiddenColumns] = useState<TaskColumnKey[]>(() => readHiddenColumns());
 
   const [page, setPage] = useState(() => {
     const p = Number(searchParams.get('page'));
@@ -377,6 +402,8 @@ export default function TaskListPage() {
     },
     {
       title: t('taskList.col.status'),
+      // COLSET-01：显式 key（原仅 dataIndex）——列显隐过滤按 key 匹配，渲染不变
+      key: 'status',
       dataIndex: 'status',
       width: 90,
       render: (s: string) => {
@@ -386,6 +413,7 @@ export default function TaskListPage() {
     },
     {
       title: t('taskList.col.trigger'),
+      key: 'trigger',
       dataIndex: 'triggerType',
       width: 100,
       ...hideOnMobile,
@@ -504,6 +532,7 @@ export default function TaskListPage() {
     },
     {
       title: t('taskList.col.runtime'),
+      key: 'runtime',
       dataIndex: 'runtime',
       width: 80,
       ...hideOnMobile,
@@ -573,6 +602,22 @@ export default function TaskListPage() {
       ),
     },
   ];
+
+  // COLSET-01：显隐过滤——缺省（无隐藏列）直接复用原 columns 数组，零行为差异；
+  // 列宽/scroll.x 契约（task-list-deep 钉住）不受影响：隐藏只会减少已声明列宽合计。
+  // （columns 本就随 t() 每次渲染重建，无需 useMemo。）
+  const visibleColumns =
+    hiddenColumns.length === 0
+      ? columns
+      : columns.filter((c) => !hiddenColumns.includes(String(c.key) as TaskColumnKey));
+  const visibleColumnKeys = TASK_LIST_COLUMN_KEYS.filter((k) => !hiddenColumns.includes(k));
+  /** 勾选变化 → 反推隐藏集合并持久化（全部勾选 = 全显 = 存量默认行为） */
+  const handleColumnVisibilityChange = (checked: TaskColumnKey[]) => {
+    const checkedSet = new Set(checked);
+    const next = TASK_LIST_COLUMN_KEYS.filter((k) => !checkedSet.has(k));
+    setHiddenColumns(next);
+    writeHiddenColumns(next);
+  };
 
   return (
     <div>
@@ -654,6 +699,36 @@ export default function TaskListPage() {
           <Text type="secondary" style={{ fontSize: 13 }}>
             {t('taskList.count', { count: total })}
           </Text>
+        )}
+        {/* COLSET-01：列设置入口——Popover 内 Checkbox.Group 收纳低频列显隐。
+            移动端卡片视图无列概念，不渲染该入口。最后一个可见列不可取消勾选
+            （避免全部隐藏后的空表死面）。 */}
+        {!isMobile && (
+          <Popover
+            trigger="click"
+            placement="bottomRight"
+            content={
+              <div style={{ maxWidth: 240 }}>
+                <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 8 }}>
+                  {t('taskList.columnSettings.desc')}
+                </Text>
+                <Checkbox.Group
+                  className="tasklist-column-options"
+                  value={visibleColumnKeys}
+                  onChange={(vals) => handleColumnVisibilityChange(vals as TaskColumnKey[])}
+                  options={TASK_LIST_COLUMN_KEYS.map((k) => ({
+                    value: k,
+                    label: t(COLUMN_LABEL_KEY[k]),
+                    disabled: visibleColumnKeys.length === 1 && visibleColumnKeys[0] === k,
+                  }))}
+                />
+              </div>
+            }
+          >
+            <Button icon={<ColumnWidthOutlined />} data-testid="tasklist-column-settings">
+              {t('taskList.columnSettings')}
+            </Button>
+          </Popover>
         )}
       </Space>
 
@@ -799,7 +874,7 @@ export default function TaskListPage() {
       <Table
         rowKey="id"
         rowSelection={rowSelection}
-        columns={columns}
+        columns={visibleColumns}
         dataSource={tasks}
         loading={loading}
         // UI-09：次要列窄屏收起（CSS 媒体查询 .ui09-hide-mobile）+ scroll.x 横向滚动兜底

@@ -302,6 +302,10 @@ export default {
   'taskList.action.trigger': 'Run now',
   'taskList.action.delete': 'Delete',
   'taskList.adminOnly': 'Admin only',  'taskList.deleteConfirm': 'Delete this task?',
+  // COLSET-01: column settings entry (hide low-frequency columns — visibility
+  // filter only; column definitions/widths untouched)
+  'taskList.columnSettings': 'Columns',
+  'taskList.columnSettings.desc': 'Check the columns to show (remembered in this browser only)',
   'taskList.deleteForceTerminateDesc': 'Running executions will be forcefully terminated.',
   'taskList.ok': 'Delete',
 
@@ -2704,6 +2708,20 @@ export default {
   'palette.hint.enter': 'Enter to open',
   'palette.hint.esc': 'Esc to close',
   'palette.hint.inlineActions': 'Hover or use keyboard on task rows for quick actions',
+
+  // HOTKEY-01: global hotkeys (g-prefix navigation + ? cheat sheet modal; the
+  // ⌘K hint is resolved per platform)
+  'hotkeys.title': 'Keyboard shortcuts',
+  'hotkeys.aria.list': 'Available keyboard shortcuts',
+  'hotkeys.group.global': 'Global',
+  'hotkeys.group.goto': 'Go to page (press g, then the second key within 1s)',
+  'hotkeys.palette': 'Global search / command palette',
+  'hotkeys.help': 'Open shortcut cheat sheet',
+  'hotkeys.goto.dashboard': 'Go to dashboard',
+  'hotkeys.goto.tasks': 'Go to task list',
+  'hotkeys.goto.executors': 'Go to executors',
+  'hotkeys.goto.executions': 'Go to executions',
+  'hotkeys.goto.applications': 'Go to applications',
 
   'cronHelper.title': 'Cron expression helper',
   'cronHelper.cancel': 'Cancel',
