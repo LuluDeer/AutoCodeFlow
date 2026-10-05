@@ -82,19 +82,17 @@ beforeEach(() => {
 
 afterEach(async () => {
   useAuthStore.getState().logout();
-  // 换丢弃桩再排水：晚到续体（成功路径 SecuritySettings 的 /login 跳转挂在
-  // promise 链上，覆盖率慢跑下可跨用例才执行）动态解引用 window.location——
-  // beforeEach 的新桩防不住这类跨用例晚到写，CI 上 1/千次量级偶发
-  // 「失败路径 href 变成 /login」假失败（run 37337887781 实证）。此处先让
-  // 全部挂起的续体落进丢弃桩再进入下一用例。
+  // 换丢弃桩再排水 1.3s：成功用例的 /login 跳转挂在组件里一个 **1200ms 真实
+  // setTimeout** 上（SecuritySettings onSubmit；vitest isolate:false 下同
+  // worker 共享 globalThis，跨用例必中）。微任务排水拦不住真实定时器——
+  // 它会在下一用例中途才写入其 location 桩（1/千次量级 CI 假失败，
+  // run 37337887781 / 37356139895 两次实证）。真等 1300ms 让它在本用例的
+  // 丢弃桩上放完，一劳永逸。
   Object.defineProperty(window, 'location', {
     writable: true,
     value: { href: 'about:discarded-after-unmount' },
   });
-  for (let i = 0; i < 5; i++) {
-    await Promise.resolve();
-  }
-  await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise((resolve) => setTimeout(resolve, 1300));
 });
 
 describe('A-13 自助改密卡（PasswordCard）', () => {
