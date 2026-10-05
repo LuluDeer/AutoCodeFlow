@@ -24,6 +24,8 @@ import { ReloadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 
 import PageHeader from '../components/PageHeader';
+// UI-08：首屏数据未达时以 Skeleton 替代表格 Spin（ApplicationListPage 同款）
+import PageSkeleton from '../components/PageSkeleton';
 import StateError from '../components/StateError';
 // UX-06 第二扫：SOP 域裸枚举收敛到唯一事实源（状态/工单状态/澄清处置/附件类型）
 import {
@@ -57,6 +59,11 @@ import type {
  */
 
 const { Text, Paragraph } = Typography;
+
+/** UI-08：首屏 Skeleton 渲染判据——初次加载（无数据）且未出错时以骨架屏替代表格 Spin */
+function shouldShowSkeleton(loading: boolean, error: unknown, count: number): boolean {
+  return loading && count === 0 && !error;
+}
 
 function statusTag(status: Sop['status'], t: (key: string) => string) {
   // UX-06 第二扫：不再裸渲染 {status}（draft/published/deprecated → sops.status.*）
@@ -432,7 +439,12 @@ export default function SopsPage() {
           size="middle"
           // UX-05：加载失败时不再渲染「暂无数据」空态（上方 StateError 已如实呈现
           // 失败原因与重试入口），避免把失败读成空列表（ExecutorPackagesPage 同款）
-          locale={loadError ? { emptyText: null } : undefined}
+          // UI-08：首屏（无数据未出错）以骨架屏替代 Spin；翻页/刷新仍走表格 loading。
+          locale={loadError
+            ? { emptyText: null }
+            : (shouldShowSkeleton(loading, loadError, items.length)
+              ? { emptyText: <PageSkeleton variant="table" /> }
+              : undefined)}
         />
       )}
 

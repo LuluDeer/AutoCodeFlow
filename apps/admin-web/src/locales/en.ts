@@ -308,6 +308,9 @@ export default {
   'execs.title': 'Execution history',
   'execs.description': 'All task execution history',
   'execs.refresh': 'Refresh',
+  // Audit P2: current-page CSV export for execution history (PageHeader extra)
+  'execs.exportCsv': 'Export CSV',
+  'execs.exportCsvSuccess': 'Exported {{count}} executions of the current page',
   'execs.kill.success': 'Termination signal sent',
   'execs.kill.fail': 'Terminate failed',
   'execs.compare': 'Compare ({{count}})',

@@ -14,7 +14,7 @@ import { Table,
 import { message } from '../utils/toast';
 import {
   SearchOutlined, FilterOutlined, ReloadOutlined, EyeOutlined, StopOutlined,
-  SwapOutlined,
+  SwapOutlined, DownloadOutlined,
 } from '@ant-design/icons';
 import type { Dayjs } from 'dayjs';
 
@@ -30,6 +30,8 @@ import { useDebounce } from '../hooks/useDebounce';
 import { formatDateTime, formatDuration, formatRelativeTime } from '../utils/timeFormat';
 import { ExecutionCompareModal, COMPARE_MAX } from '../components/ExecutionCompare';
 import PageHeader from '../components/PageHeader';
+// UI-08：首屏数据未达时以 Skeleton 替代表格 Spin（ApplicationListPage 同款）
+import PageSkeleton from '../components/PageSkeleton';
 import StateError from '../components/StateError';
 // MOBILE-CARD-01：≤768px 时表格 → 卡片列表（结构级降级，CSS 做不到）
 import { useIsMobile } from '../hooks/useIsMobile';
@@ -43,6 +45,11 @@ import '../i18n';
 const { Text } = Typography;
 const { RangePicker } = DatePicker;
 
+/** UI-08：首屏 Skeleton 渲染判据——初次加载（无数据）且未出错时以骨架屏替代表格 Spin */
+function shouldShowSkeleton(loading: boolean, error: unknown, count: number): boolean {
+  return loading && count === 0 && !error;
+}
+
 type BadgeStatus = 'success' | 'processing' | 'error' | 'default' | 'warning';
 const STATUS_MAP = (t: (k: string) => string): Record<string, { badge: BadgeStatus; label: string }> => ({
   pending:   { badge: 'default',    label: t('execs.status.pending') },
@@ -54,6 +61,46 @@ const STATUS_MAP = (t: (k: string) => string): Record<string, { badge: BadgeStat
   killed:    { badge: 'error',      label: t('execs.status.killed') },
   cancelled: { badge: 'default',    label: t('execs.status.cancelled') },
 });
+
+/** CSV 单元格转义：逗号/引号/换行任一出现即整体加引号，内部引号翻倍（RFC 4180）。 */
+function csvCell(value: string | number | null | undefined): string {
+  const s = value == null ? '' : String(value);
+  return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+/**
+ * 审计 P2：执行记录 CSV 导出（纯客户端）。仅导出当前筛选结果的**当前页**——
+ * 与服务端分页语义一致，全量导出需要后端流式端点，此处不做。列取值与上方
+ * Table columns 同源（同 dataIndex、同格式化函数 statusMap/triggerLabel/
+ * formatDateTime/formatDuration），避免两处口径漂移；时间列导出可读的
+ * 完整时刻（formatDateTime）而非表格里的相对时间。首行 BOM 保证 Excel
+ * 以 UTF-8 解码中文不乱码。
+ */
+function buildExecutionsCsv(rows: TaskExecution[], t: (k: string) => string): string {
+  const statusMap = STATUS_MAP(t);
+  const header = [
+    t('execs.col.task'),
+    t('execs.col.status'),
+    t('execs.col.trigger'),
+    t('execs.col.executor'),
+    t('execs.col.startTime'),
+    t('execs.col.duration'),
+    t('execs.col.error'),
+  ];
+  const lines = [header.map(csvCell).join(',')];
+  for (const r of rows) {
+    lines.push([
+      r.taskName || r.taskId,
+      statusMap[r.status]?.label ?? r.status,
+      triggerLabel(r.triggerType, t),
+      r.executorAddress ?? '',
+      r.startTime ? formatDateTime(r.startTime) : '',
+      r.duration != null ? formatDuration(r.duration, t) : '',
+      r.errorMessage ?? '',
+    ].map(csvCell).join(','));
+  }
+  return `\ufeff${lines.join('\r\n')}`;
+}
 
 export default function ExecutionsPage() {
   const nav = useNavigate();
@@ -160,6 +207,19 @@ export default function ExecutionsPage() {
     setExecutorFilter('');
     setTimeRange(null);
     setPage(1);
+  };
+
+  // 审计 P2：导出当前页 CSV——Blob + 临时 <a download> 触发下载。审计页 A-12
+  // 走后端导出端点，本页数据已在客户端，无需再过网络；文件名带页码与日期便于归档。
+  const handleExportCsv = () => {
+    const blob = new Blob([buildExecutionsCsv(executions, t)], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `executions-page${page}-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    message.success(t('execs.exportCsvSuccess', { count: executions.length }));
   };
 
   // UI-09：375px 可用性——关键列=任务/状态/开始时间/错误/操作（值班首查项），
@@ -288,7 +348,19 @@ export default function ExecutionsPage() {
       <PageHeader
         title={t('execs.title')}
         description={t('execs.description')}
-        extra={<Button icon={<ReloadOutlined />} onClick={() => void refetch()}>{t('execs.refresh')}</Button>}
+        extra={
+          <>
+            {/* 审计 P2：导出当前筛选结果的当前页为 CSV（空页禁用，无可导内容） */}
+            <Button
+              icon={<DownloadOutlined />}
+              disabled={executions.length === 0}
+              onClick={handleExportCsv}
+            >
+              {t('execs.exportCsv')}
+            </Button>
+            <Button icon={<ReloadOutlined />} onClick={() => void refetch()}>{t('execs.refresh')}</Button>
+          </>
+        }
       />
 
       {/* UI-09：筛选区 wrap 堆叠（Space wrap 已有），输入/选择窄屏自适应宽度 */}
@@ -450,7 +522,10 @@ export default function ExecutionsPage() {
         locale={{
           // 空态区分（与移动端卡片同口径）：筛选无匹配 ≠ 从未有过执行——
           // 前者给「清除筛选」出口，避免用户把筛选打空误读成"执行记录丢了"。
-          emptyText: (
+          // UI-08：首屏（无数据未出错）以骨架屏替代 Spin；翻页/刷新仍走表格 loading。
+          emptyText: shouldShowSkeleton(loading, error, executions.length) ? (
+            <PageSkeleton variant="table" />
+          ) : (
             <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={hasFilters ? t('execs.empty.noMatch') : t('execs.empty')}>
               {hasFilters && (
                 <Button type="link" size="small" onClick={clearFilters}>{t('execs.clearFilters')}</Button>

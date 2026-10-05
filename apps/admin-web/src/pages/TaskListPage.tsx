@@ -45,11 +45,18 @@ import { describeCron } from '../utils/cron-desc';
 import { useIsMobile } from '../hooks/useIsMobile';
 import ParamsEditor from '../components/ParamsEditor';
 import PageHeader from '../components/PageHeader';
+// UI-08：首屏数据未达时以 Skeleton 替代表格 Spin（ApplicationListPage 同款）
+import PageSkeleton from '../components/PageSkeleton';
 import StateError from '../components/StateError';
 // UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
 import '../i18n';
 
 const { Text } = Typography;
+
+/** UI-08：首屏 Skeleton 渲染判据——初次加载（无数据）且未出错时以骨架屏替代表格 Spin */
+function shouldShowSkeleton(loading: boolean, error: unknown, count: number): boolean {
+  return loading && count === 0 && !error;
+}
 
 type BadgeStatus = 'success' | 'processing' | 'error' | 'default' | 'warning';
 const STATUS_CONFIG = (t: (k: string) => string): Record<string, { badge: BadgeStatus; label: string; color: string }> => ({
@@ -813,13 +820,16 @@ export default function TaskListPage() {
           showSizeChanger: true,
         }}
         locale={{
-          emptyText: hasFilters
-            ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('taskList.empty.noMatch')} />
-            : (
-              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('taskList.empty.none')}>
-                <Button type="primary" onClick={() => nav('/tasks/new')}>{t('taskList.empty.createFirst')}</Button>
-              </Empty>
-            ),
+          // UI-08：首屏（无数据未出错）以骨架屏替代 Spin；翻页/刷新仍走表格 loading
+          emptyText: shouldShowSkeleton(loading, error, tasks.length)
+            ? <PageSkeleton variant="table" />
+            : (hasFilters
+              ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('taskList.empty.noMatch')} />
+              : (
+                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('taskList.empty.none')}>
+                  <Button type="primary" onClick={() => nav('/tasks/new')}>{t('taskList.empty.createFirst')}</Button>
+                </Empty>
+              )),
         }}
       />
       )}

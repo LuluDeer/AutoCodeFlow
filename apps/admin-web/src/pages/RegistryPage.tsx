@@ -10,6 +10,8 @@ import { showApiError } from '../utils/error';
 import { normFileList } from '../utils/upload';
 import { useTranslation } from 'react-i18next';
 import PageHeader from '../components/PageHeader';
+// UI-08：首屏数据未达时以 Skeleton 替代空白（ApplicationListPage 同款纪律）
+import PageSkeleton from '../components/PageSkeleton';
 // A7：上传面已收敛为 ADMIN（后端 @Roles(ADMIN)）——前端同步隐藏入口，避免普通
 // 用户点一个必然 403 的按钮（与 AppDeploymentPage 的 admin-only 操作同款处理）。
 import { useAuthStore } from '../store/auth';
@@ -111,6 +113,8 @@ function PypiTab() {
           style={{ marginBottom: 16 }}
         />
       )}
+      {/* UI-08：首屏骨架屏——此前首拉期间空态/表格两条件块都不渲染，Tab 内容一片空白 */}
+      {loading && !error && packages.length === 0 && <PageSkeleton variant="table" />}
       {!loading && !error && packages.length === 0 && (
         <Empty description={t('registry.pypiEmpty')} />
       )}
@@ -242,6 +246,8 @@ function NpmTab() {
           style={{ marginBottom: 16 }}
         />
       )}
+      {/* UI-08：首屏骨架屏——此前首拉期间空态/表格两条件块都不渲染，Tab 内容一片空白 */}
+      {loading && !error && packages.length === 0 && <PageSkeleton variant="table" />}
       {!loading && !error && packages.length === 0 && (
         <Empty description={t('registry.npmEmpty')} />
       )}

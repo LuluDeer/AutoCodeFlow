@@ -1,9 +1,9 @@
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import { Card, Descriptions, Table, Badge, Button, Modal, Form, Input, InputNumber, Select, Statistic, Row, Col, Progress, Typography, Breadcrumb, Empty, Tooltip, Space, Alert, Result, Tag, theme, Divider } from 'antd';
+import { Card, Descriptions, Table, Badge, Button, Modal, Form, Input, InputNumber, Select, Statistic, Row, Col, Progress, Typography, Empty, Tooltip, Space, Alert, Result, Tag, theme, Divider } from 'antd';
 import { message } from '../utils/toast';
 // MODAL-01：命令式 Modal.* 从 utils/modal 取（吃暗色主题 + i18n locale）；<Modal> JSX 仍用 antd。
 import { Modal as confirmModal } from '../utils/modal';
-import { WarningOutlined, CopyOutlined, InfoCircleOutlined, ReloadOutlined, DeleteOutlined } from '@ant-design/icons';
+import { WarningOutlined, CopyOutlined, InfoCircleOutlined, ReloadOutlined, DeleteOutlined, ArrowLeftOutlined } from '@ant-design/icons';
 // FEAT-04: 24h 资源趋势折线图（Tooltip 别名避开 antd Tooltip，DashboardPage 同法）
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartTooltip, Legend, ResponsiveContainer } from 'recharts';
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
@@ -29,6 +29,7 @@ import { executorEditFormValues, pickExecutorEditPayload, type ExecutorEditValue
 import { useAuthStore, isAdminUser } from '../store/auth';
 import { useThemeStore, selectResolvedTheme } from '../theme/store';
 import { CHART_COLORS } from '../theme/tokens';
+import PageHeader from '../components/PageHeader';
 import PageSkeleton from '../components/PageSkeleton';
 import { useState, useMemo, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -399,20 +400,28 @@ export default function ExecutorDetailPage() {
     // UI-09 第三轮：页面根挂 ui09-exec-detail 作用域（与 ExecutionDetailPage
     // 同源复用既有媒体查询规则：面包屑 li 允许收缩，本页无新增 CSS）。
     <div className="ui09-exec-detail">
-      <Breadcrumb
-        style={{ marginBottom: 16 }}
-        items={[
-          { title: <Link to="/executors">{t('executorDetail.breadcrumb.list')}</Link> },
+      {/* UI-03：页头标准化（原裸 Breadcrumb 与 Card title/操作区收口进 PageHeader，
+          对齐 ExecutionDetailPage/ApplicationDetailPage 详情页形态：面包屑声明层级、
+          描述行承载实体名、返回与管理操作进 extra。按钮组自 Card extra 原样迁移，
+          可见性判定（N-02③/AUTH-05）与各提示语义不变。） */}
+      <PageHeader
+        title={t('executorDetail.title')}
+        description={
+          <span className="ui09-pageheader-description" title={executor.appName}>
+            {executor.appName}
+          </span>
+        }
+        breadcrumb={[
+          { title: t('executorDetail.breadcrumb.list'), to: '/executors' },
           // UI-09 第二轮同款：超长不可断执行器名会撑破面包屑（li min-width:auto
           // 不收缩），窄屏由 .ui09-crumb-ellipsis 收敛为省略号（title 保全文）
           { title: <span className="ui09-crumb-ellipsis" title={executor.appName}>{executor.appName}</span> },
+          { title: t('executorDetail.title') },
         ]}
-      />
-
-      <Card
-        title={t('executorDetail.title')}
         extra={
-          (canManageMetadata || isAdmin) ? (
+          <>
+            <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/executors')}>{t('executorDetail.backToList')}</Button>
+            {(canManageMetadata || isAdmin) ? (
           // UI 打磨：头部 5 个操作按钮窄屏收纳换行（wrap + 紧凑间距），不引入 Dropdown
           <Space wrap size={4}>
             {canManageMetadata && (
@@ -493,10 +502,13 @@ export default function ExecutorDetailPage() {
             </>
             )}
           </Space>
-          ) : undefined
+            ) : undefined}
+          </>
         }
-      >
-        {/* UI 打磨：列数随断点收敛（全站 Descriptions 惯例），窄屏不再三列挤压 */}
+      />
+
+      {/* UI 打磨：列数随断点收敛（全站 Descriptions 惯例），窄屏不再三列挤压 */}
+      <Card>
         <Descriptions column={{ xs: 1, sm: 2, md: 3 }}>
           <Descriptions.Item label={t('executorDetail.field.appName')}>{executor.appName}</Descriptions.Item>
           <Descriptions.Item label={t('executorDetail.field.address')}>{executor.address}</Descriptions.Item>

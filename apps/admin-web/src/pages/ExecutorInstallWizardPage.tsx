@@ -36,6 +36,11 @@ import { useNavigate } from 'react-router-dom';
 import { executorPackagesApi, ExecutorPackage } from '../api/executor-packages';
 import { executorsApi, Executor, InstallCmdResult } from '../api/executors';
 import { showApiError } from '../utils/error';
+// 审计 P3：字节→人类可读大小收敛到唯一实现（原文件内私有 formatBytes 已删——
+// 与 utils/artifactSize 的差异仅两处边界：0 值显示 '0 B'（原 '-'）、≥1GB 显示
+// GB 档（原恒折算 MB），对正常非零包体积展示无回归，GB 档反而修正了
+// 1.5GB 显示成 1536.0 MB 的问题）。
+import { formatArtifactSize } from '../utils/artifactSize';
 import { copyText } from '../utils/clipboard';
 import { useTranslation, Trans } from 'react-i18next';
 // UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
@@ -128,13 +133,6 @@ export function classifyOneClickPlatform(platform?: string): 'windows' | 'darwin
   if (platform.startsWith('darwin')) return 'darwin';
   if (platform.startsWith('linux')) return 'linux';
   return 'unknown';
-}
-
-function formatBytes(bytes: number): string {
-  if (!bytes) return '-';
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 const CODE_BLOCK_STYLE: React.CSSProperties = {
@@ -608,7 +606,7 @@ export default function ExecutorInstallWizardPage() {
                   </Col>
                   <Col span={8}>
                     <Text type="secondary">{t('install.fileSize')}</Text>
-                    <div><Text strong>{formatBytes(matchedPackage.fileSize)}</Text></div>
+                    <div><Text strong>{formatArtifactSize(matchedPackage.fileSize)}</Text></div>
                   </Col>
                   <Col span={8}>
                     <Text type="secondary">{t('install.downloadCount')}</Text>

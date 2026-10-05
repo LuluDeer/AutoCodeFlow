@@ -315,6 +315,9 @@ export default {
   'execs.title': '执行记录',
   'execs.description': '全部任务执行历史',
   'execs.refresh': '刷新',
+  // 审计 P2：执行记录当前页 CSV 导出（PageHeader 操作区）
+  'execs.exportCsv': '导出 CSV',
+  'execs.exportCsvSuccess': '已导出当前页 {{count}} 条执行记录',
   'execs.kill.success': '已发送终止信号',
   'execs.kill.fail': '终止失败',
   'execs.compare': '对比 ({{count}})',

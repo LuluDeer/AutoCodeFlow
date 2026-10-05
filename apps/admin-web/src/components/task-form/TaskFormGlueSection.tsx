@@ -5,11 +5,17 @@
  * 显示锁定提示）——taskId 来自 createdTaskId（创建成功后设置）或编辑态的
  * editId，由父页传入。
  */
-import { Alert, Card, Button, Space, Typography, Divider } from 'antd';
+import { lazy, Suspense } from 'react';
+import { Alert, Card, Button, Space, Typography, Divider, Spin } from 'antd';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import '../../i18n';
-import GlueEditor from '../GlueEditor';
+// PERF（对齐 TaskDetailPage 既有先例）：GlueEditor 拖带 monaco（约 2.5MB 的
+// lazy chunk）。此前静态 import 让任务表单路由 chunk 与 GlueEditor chunk 产生
+// **静态边**——创建态在提交成功前（glueTaskId 为空）本来就不渲染编辑器，路由
+// 加载时却要整包预取 monaco。改 React.lazy：动态 import 只在真正渲染编辑器时
+// 才发起；Suspense 给 Spin 占位（TaskDetailPage 同款 fallback）。
+const GlueEditor = lazy(() => import('../GlueEditor'));
 import { LAYOUT_TOKENS } from '../../theme/tokens';
 
 const { Text } = Typography;
@@ -44,15 +50,23 @@ export default function TaskFormGlueSection({ glueTaskId, isEdit, createdTaskId,
               style={{ marginBottom: 20 }}
             />
           )}
-          <GlueEditor
-            taskId={glueTaskId}
-            // P0-1：回填已有脚本与语言。漏传 → 编辑器空白 + 一次保存即清空
-            // 用户代码（后端 updateGlue 无校验、空串照收，见审计报告 §P0-1）。
-            initialSource={glueSource}
-            initialLanguage={glueLanguage}
-            taskRuntime={savedRuntime}
-            onDirtyChange={onGlueDirtyChange}
-          />
+          <Suspense
+            fallback={
+              <div style={{ textAlign: 'center', padding: 48 }} data-testid="glue-editor-fallback">
+                <Spin />
+              </div>
+            }
+          >
+            <GlueEditor
+              taskId={glueTaskId}
+              // P0-1：回填已有脚本与语言。漏传 → 编辑器空白 + 一次保存即清空
+              // 用户代码（后端 updateGlue 无校验、空串照收，见审计报告 §P0-1）。
+              initialSource={glueSource}
+              initialLanguage={glueLanguage}
+              taskRuntime={savedRuntime}
+              onDirtyChange={onGlueDirtyChange}
+            />
+          </Suspense>
           <Divider />
           <Space>
             <Button type="primary" onClick={() => nav(`/tasks/${glueTaskId}`)}>{t('taskForm.glue.done')}</Button>
