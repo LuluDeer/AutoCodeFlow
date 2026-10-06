@@ -27,6 +27,8 @@ import {
   ApiConsumes,
   ApiBody,
   ApiResponse,
+  ApiOkResponse,
+  ApiCreatedResponse,
 } from "@nestjs/swagger";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { Public } from "../../common/decorators/public.decorator";
@@ -41,6 +43,19 @@ import { AppDeploymentService } from "./app-deployment.service";
 // Record<string, never>，且会被 CI 的 PK-15 空 schema 闸打红（本仓实测踩过）。
 // DTO 显式声明字段并**排除 webhookSecret**（select:false 的 HMAC 密钥）。
 import { ApplicationResponseDto } from "./dto/application-response.dto";
+// ARCH-23 / N-12（2026-10-07 批）：Application Management 其余端点契约。
+import {
+  AppHealthAnalysisResponseDto,
+  AppReleasesResponseDto,
+  ApplicationVersionHistoryRowDto,
+  ReleaseWebhookResponseDto,
+  RemovalImpactResponseDto,
+  SyncTasksResponseDto,
+} from "./dto/application-response.dto";
+import {
+  ApplicationRollbackResponseDto,
+  UpgradeAllResponseDto,
+} from "./dto/app-deployment-response.dto";
 import { DeploymentTriggerType } from "./entities/app-deployment.entity";
 import {
   CreateApplicationDto,
@@ -203,6 +218,7 @@ export class ApplicationController {
   @ApiOperation({
     summary: "Preview what deleting this application will destroy",
   })
+  @ApiOkResponse({ type: RemovalImpactResponseDto })
   removalImpact(@Param("id") id: string) {
     return this.svc.describeRemovalImpact(id);
   }
@@ -210,6 +226,11 @@ export class ApplicationController {
   @Delete(":id")
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Delete application" })
+  // N-12: service 返回 void → envelope data 为 null，契约如实声明可空。
+  @ApiOkResponse({
+    description: "Removed; envelope data is null",
+    schema: { nullable: true },
+  })
   remove(@Param("id") id: string, @CurrentUser() user: AuthUser) {
     return this.svc.remove(id, user);
   }
@@ -218,6 +239,8 @@ export class ApplicationController {
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Upload application package (zip)" })
   @ApiConsumes("multipart/form-data")
+  // N-12: upsert 后的应用行（create/update 同一读面）。
+  @ApiCreatedResponse({ type: ApplicationResponseDto })
   @ApiBody({
     schema: {
       type: "object",
@@ -507,6 +530,7 @@ export class ApplicationController {
     description:
       "Receive version release notification and update app version. If triggerDeploy=true, trigger rolling upgrade on all RUNNING deployments. This route is public for CI/CD callers, and matching applications must have webhookSecret configured. Callers must include X-AutoCodeFlow-Timestamp and X-Hub-Signature-256 headers. The signature is HMAC-SHA256 over `${timestamp}.${rawBody}`.",
   })
+  @ApiCreatedResponse({ type: ReleaseWebhookResponseDto })
   async webhook(
     @Body() dto: AppReleaseWebhookDto,
     @Headers("x-hub-signature-256") signature?: string,
@@ -600,6 +624,7 @@ export class ApplicationController {
     description:
       "Return persisted application version snapshots, falling back to deployment records for legacy data.",
   })
+  @ApiOkResponse({ type: [ApplicationVersionHistoryRowDto] })
   async getVersionHistory(@Param("id") id: string) {
     await this.svc.findById(id);
     return this.deploymentSvc.getVersionHistory(id);
@@ -618,6 +643,11 @@ export class ApplicationController {
       "List unified releases (version × latest deployment) for an application",
     description:
       "统一发布追溯视图：按版本聚合部署信息，分页默认 50、上限 200。",
+  })
+  @ApiOkResponse({
+    type: AppReleasesResponseDto,
+    description:
+      "裸四键信封（data/total/page/pageSize），非 paginate() 双键形态",
   })
   listReleases(@Param("id") id: string, @Query() query: ListReleasesQueryDto) {
     return this.deploymentSvc.getReleases(
@@ -640,6 +670,8 @@ export class ApplicationController {
       "任一失败暂停批次并对已升级台自动回滚。批次为进程内状态，" +
       "admin-api 重启即暂停（行级 rolloutState=failed）。",
   })
+  // POST 无 @HttpCode → 实际 201（历史直觉 200 是漂移，按实际落契约）。
+  @ApiCreatedResponse({ type: UpgradeAllResponseDto })
   async upgradeAll(
     @Param("id") id: string,
     @Body() dto: UpgradeAllDto,
@@ -664,6 +696,7 @@ export class ApplicationController {
     summary: "Sync task registration from manifest.json",
     description: "Parse app manifest.json and auto-register task definitions",
   })
+  @ApiCreatedResponse({ type: SyncTasksResponseDto })
   async syncTasks(@Param("id") id: string) {
     const count = await this.svc.syncTasksFromManifest(id);
     return { ok: true, registeredCount: count };
@@ -676,6 +709,7 @@ export class ApplicationController {
     description:
       "Aggregate execution stats across all tasks in this app and run AI health assessment",
   })
+  @ApiCreatedResponse({ type: AppHealthAnalysisResponseDto })
   async analyzeHealth(@Param("id") id: string) {
     return this.svc.analyzeHealth(id);
   }
@@ -689,6 +723,7 @@ export class ApplicationController {
     description:
       "Restore app fields from a version snapshot or legacy deployment record, then trigger running instances to upgrade",
   })
+  @ApiCreatedResponse({ type: ApplicationRollbackResponseDto })
   async rollback(
     @Param("id") appId: string,
     @Param("deploymentId") deploymentId: string,

@@ -5654,6 +5654,15 @@ export interface components {
             /** @description HMAC-SHA256 secret for webhook signature verification. Set to empty string to disable. */
             webhookSecret?: string;
         };
+        RemovalImpactResponseDto: {
+            applicationName: string;
+            /** @description Tasks losing their code source (ALL-RUN total, not page-truncated — DEEP-AUDIT B·4.1) */
+            tasksLosingSource: number;
+            /** @description Deployments removed by cascade */
+            deploymentCount: number;
+            /** @description Whether the uploaded package file on disk is deleted */
+            packageFileWillBeDeleted: boolean;
+        };
         AppReleaseWebhookDto: {
             /** @description Application name */
             appName: string;
@@ -5669,9 +5678,219 @@ export interface components {
              */
             triggerDeploy: boolean;
         };
+        ReleaseWebhookResponseDto: {
+            /** @enum {boolean} */
+            ok: true;
+            updatedApp: components["schemas"]["ApplicationResponseDto"];
+            /** @description Count of RUNNING deployments upgraded when triggerDeploy=true; 0 otherwise */
+            triggeredDeployments: number;
+        };
+        ApplicationVersionHistoryRowDto: {
+            /**
+             * Format: uuid
+             * @description application_versions.id; null = legacy deployment-derived row
+             */
+            id: string | null;
+            /**
+             * Format: uuid
+             * @description Legacy rows carry the deployment id
+             */
+            deploymentId: string | null;
+            /** Format: uuid */
+            sourceDeploymentId: string | null;
+            /** @description Legacy rows fall back to '__unknown__' bucket key */
+            version: string | null;
+            commit: string | null;
+            /** @description Snapshot status or legacy deployment status */
+            status: string;
+            /**
+             * Format: date-time
+             * @description Snapshot rows use the version creation time
+             */
+            deployedAt: string | null;
+            /** Format: date-time */
+            createdAt: string | null;
+            /** @description Legacy rows carry the deployment's executor; snapshot rows leave null */
+            executorAddress: string | null;
+            /** @description Deploy count for this version (same-version multi-instance rolls count individually) */
+            deployCount: number;
+            /** @description Masked version snapshot (read surface); null on legacy rows */
+            snapshot: {
+                [key: string]: unknown;
+            } | null;
+        };
+        AppReleaseRowDto: {
+            /**
+             * Format: uuid
+             * @description application_versions.id; null = pure deployment history (no snapshot row)
+             */
+            id: string | null;
+            version: string | null;
+            /** @description Snapshot packageUrl (deploy-time value — does NOT fall back to the app's current URL) */
+            packageUrl: string | null;
+            gitCommit: string | null;
+            /** @description Most recent deployment completion (ISO string — this view stringifies) */
+            deployedAt: string | null;
+            /** Format: uuid */
+            latestDeploymentId: string | null;
+            /** @enum {string|null} */
+            deploymentStatus: "pending" | "deploying" | "running" | "stopped" | "failed" | "upgrading" | null;
+            /** @description Deploy count for this version */
+            deploymentCount: number;
+            executorAddress: string | null;
+            /** @enum {string|null} */
+            runMode: "once" | "daemon" | "scheduled" | null;
+            /**
+             * @description Persisted column first, legacy rows derive (unknown when undecidable)
+             * @enum {string|null}
+             */
+            triggerType: "manual" | "upgrade" | "rollback" | "approval" | "unknown" | null;
+            /** @description Deployments.operator, falling back to versions.createdBy */
+            operator: string | null;
+            /** @enum {string} */
+            operatorSource: "deployments.operator" | "application_versions.createdBy";
+            /** @description Why operator is null when it is (RELEASE_OPERATOR_MISSING_REASON) */
+            operatorMissingReason: string;
+        };
+        AppReleasesResponseDto: {
+            data: components["schemas"]["AppReleaseRowDto"][];
+            total: number;
+            page: number;
+            /** @description Default 50, capped 200 */
+            pageSize: number;
+        };
         RolloutStrategyDto: Record<string, never>;
         UpgradeAllDto: {
             rollout?: components["schemas"]["RolloutStrategyDto"];
+        };
+        UpgradeAllResponseDto: {
+            /** @description false = canary batch rejected (ARCH-31 in-flight mutual exclusion) or all failed */
+            ok: boolean;
+            /** @description Running deployments at trigger time */
+            total: number;
+            succeeded: number;
+            failed: number;
+            /** @description Present when a canary batch was actually started (or blocked) */
+            rollout?: {
+                batchId?: string;
+                /** @enum {string} */
+                strategy?: "canary" | "all";
+                canaryIds?: string[];
+                promotedIds?: string[];
+                /** @description ARCH-31: in-flight batch on the same app (cross-instance mutual exclusion, not an exception) */
+                blockedReason?: string;
+            };
+        };
+        SyncTasksResponseDto: {
+            /** @enum {boolean} */
+            ok: true;
+            /** @description Task definitions registered by this sync */
+            registeredCount: number;
+        };
+        AppHealthAnalysisResponseDto: {
+            /** Format: uuid */
+            appId: string;
+            appName: string;
+            /** @description AI assessment text (empty string = AI unavailable, fail-open) */
+            analysis: string;
+            stats?: {
+                totalTasks: number;
+                avgSuccessRate: number;
+                avgDuration: number;
+                criticalTasks: string[];
+            };
+        };
+        ApplicationRollbackResponseDto: {
+            ok: boolean;
+            total: number;
+            succeeded: number;
+            failed: number;
+            /** @description Spread of the triggered upgrade-all batch receipt */
+            rollout?: components["schemas"]["UpgradeAllResponseDto"];
+            /** @description Version the app was rolled back to (deployedVersion for legacy path) */
+            rolledBackTo: string;
+            /**
+             * Format: uuid
+             * @description application_versions.id when the snapshot path was taken; null = legacy deployment-row path
+             */
+            versionId: string | null;
+            /** @description Only on the legacy path (always false there — R16) */
+            packageUrlRestored?: boolean;
+            /** @description The restored application row (masked) */
+            updatedApp: components["schemas"]["ApplicationResponseDto"];
+        };
+        AppDeploymentResponseDto: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            applicationId: string;
+            /** @description Parent application (masked read surface — env secrets are '***') */
+            application?: components["schemas"]["ApplicationResponseDto"];
+            /** @description Executor address the app runs on */
+            executorAddress: string;
+            /** Format: uuid */
+            executorId: string | null;
+            /** @enum {string} */
+            status: "pending" | "deploying" | "running" | "stopped" | "failed" | "upgrading";
+            /** @enum {string} */
+            runMode: "once" | "daemon" | "scheduled";
+            /** @description Git commit when deployed from git source */
+            deployedCommit: string | null;
+            /** @description Version actually deployed (upgrade/rollback rewrites it) */
+            deployedVersion: string | null;
+            /** @description Launch command snapshot (rollback/upgrade may rewrite it) */
+            startCommand: string | null;
+            /** @description Deploy-time env snapshot, MASKED on every read surface (QA1) */
+            env: {
+                [key: string]: string;
+            } | null;
+            /** @description App process pid on the executor (heartbeat-maintained) */
+            pid: number | null;
+            /**
+             * Format: date-time
+             * @description Last executor heartbeat for this deployment
+             */
+            lastHeartbeat: string | null;
+            /** @description Last state transition message (stall/dup-deploy guards write here) */
+            statusMessage: string | null;
+            /**
+             * Format: date-time
+             * @description Most recent deployment completion time
+             */
+            deployedAt: string | null;
+            /**
+             * @description Canary rollout phase (DEP-02); null = not part of a batch
+             * @enum {string|null}
+             */
+            rolloutState: "pending" | "probing" | "promoted" | "failed" | "rolled_back" | null;
+            /** @description Canary batch metadata (batchId/canaryIds/leasedBy...) */
+            rolloutMeta: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * @description DEP-04 second-person approval state; null = approval not required
+             * @enum {string|null}
+             */
+            approvalStatus: "pending_approval" | "approved" | "rejected" | null;
+            /** @description Approval trail (actor/reason/timestamps) */
+            approvalMeta: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * @description Trigger semantics (FEAT-20 persisted column); null = legacy row
+             * @enum {string|null}
+             */
+            triggerType: "manual" | "upgrade" | "rollback" | "approval" | null;
+            /** @description JWT username of the operator (FEAT-20) */
+            operator: string | null;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        PaginatedAppDeploymentsDto: {
+            data: components["schemas"]["AppDeploymentResponseDto"][];
+            total: number;
         };
         CreateDeploymentDto: {
             /** @description Executor ID (leave empty to auto-select the online executor with lowest load) */
@@ -5690,6 +5909,12 @@ export interface components {
             /** @description Optional decision reason (≤200 chars), recorded in audit */
             reason?: string;
         };
+        DeploymentRemoveResponseDto: {
+            /** @enum {boolean} */
+            ok: true;
+            /** @description The removed deployment id */
+            deletedId: string;
+        };
         DeploymentHeartbeatDto: {
             /** @description Deployment ID */
             deploymentId: string;
@@ -5702,6 +5927,33 @@ export interface components {
             pid?: number;
             /** @description Free-form progress message (max 2000 chars; lands in the statusMessage text column and the list read surface) */
             message?: string;
+        };
+        MutexGroupResponseDto: {
+            /** @description 组 id (uuid) */
+            id: string;
+            /** @description 组名（唯一） */
+            name: string;
+            /** @description 同设备内允许的并发执行数（≥1） */
+            maxConcurrentPerDevice: number;
+            /**
+             * @description 组作用域：device=单点互斥（每台设备同时最多 N 条）；global=全局互斥（全平台同时最多 N 条）
+             * @enum {string}
+             */
+            scope: "device" | "global";
+            /** @description 组用途说明 */
+            description?: string | null;
+            /** @description 当前挂在该组上的应用数 */
+            applicationCount?: number;
+            /**
+             * Format: date-time
+             * @description 创建时间
+             */
+            createdAt: string;
+            /**
+             * Format: date-time
+             * @description 更新时间
+             */
+            updatedAt: string;
         };
         CreateMutexGroupDto: {
             /** @description 互斥组名（唯一），如 ziniao-browser */
@@ -10256,11 +10508,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description Removed; envelope data is null */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": unknown;
+                };
             };
         };
     };
@@ -10279,7 +10534,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["RemovalImpactResponseDto"];
+                };
             };
         };
     };
@@ -10305,7 +10562,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ApplicationResponseDto"];
+                };
             };
         };
     };
@@ -10329,7 +10588,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ReleaseWebhookResponseDto"];
+                };
             };
         };
     };
@@ -10348,7 +10609,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ApplicationVersionHistoryRowDto"][];
+                };
             };
         };
     };
@@ -10366,11 +10629,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description 裸四键信封（data/total/page/pageSize），非 paginate() 双键形态 */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["AppReleasesResponseDto"];
+                };
             };
         };
     };
@@ -10393,7 +10659,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["UpgradeAllResponseDto"];
+                };
             };
         };
     };
@@ -10412,7 +10680,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["SyncTasksResponseDto"];
+                };
             };
         };
     };
@@ -10431,7 +10701,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["AppHealthAnalysisResponseDto"];
+                };
             };
         };
     };
@@ -10451,7 +10723,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ApplicationRollbackResponseDto"];
+                };
             };
         };
     };
@@ -10475,7 +10749,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["PaginatedAppDeploymentsDto"];
+                };
             };
         };
     };
@@ -10494,7 +10770,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["AppDeploymentResponseDto"];
+                };
             };
         };
     };
@@ -10513,7 +10791,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["DeploymentRemoveResponseDto"];
+                };
             };
         };
     };
@@ -10532,11 +10812,14 @@ export interface operations {
             };
         };
         responses: {
+            /** @description Masked deployment row (approval-required apps return the pending_approval request row) */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["AppDeploymentResponseDto"];
+                };
             };
         };
     };
@@ -10560,7 +10843,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["PaginatedAppDeploymentsDto"];
+                };
             };
         };
     };
@@ -10579,11 +10864,14 @@ export interface operations {
             };
         };
         responses: {
+            /** @description Approved and dispatched row */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["AppDeploymentResponseDto"];
+                };
             };
         };
     };
@@ -10602,11 +10890,14 @@ export interface operations {
             };
         };
         responses: {
+            /** @description Rejected row */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["AppDeploymentResponseDto"];
+                };
             };
         };
     };
@@ -10621,11 +10912,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description Cancelled row */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["AppDeploymentResponseDto"];
+                };
             };
         };
     };
@@ -10640,11 +10934,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description Row in upgrading state */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["AppDeploymentResponseDto"];
+                };
             };
         };
     };
@@ -10659,11 +10956,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description Stopped row */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["AppDeploymentResponseDto"];
+                };
             };
         };
     };
@@ -10683,11 +10983,14 @@ export interface operations {
             };
         };
         responses: {
+            /** @description Status recorded; envelope data is null */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": unknown;
+                };
             };
         };
     };
@@ -10704,7 +11007,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["MutexGroupResponseDto"][];
+                };
             };
         };
     };
@@ -10725,7 +11030,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["MutexGroupResponseDto"];
+                };
             };
         };
     };
@@ -10748,7 +11055,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["MutexGroupResponseDto"];
+                };
             };
         };
     };
@@ -10770,7 +11079,12 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": {
+                        /** @enum {boolean} */
+                        ok: true;
+                    };
+                };
             };
         };
     };

@@ -13,6 +13,8 @@ import {
 import {
   ApiBearerAuth,
   ApiOperation,
+  ApiOkResponse,
+  ApiCreatedResponse,
   ApiQuery,
   ApiTags,
 } from "@nestjs/swagger";
@@ -38,6 +40,7 @@ export class MutexGroupController {
   @ApiOperation({
     summary: "List mutex groups (for app form dropdown & admin)",
   })
+  @ApiOkResponse({ type: [MutexGroupResponseDto] })
   async findAll(): Promise<MutexGroupResponseDto[]> {
     return this.mutexGroupService.findAll();
   }
@@ -45,6 +48,7 @@ export class MutexGroupController {
   @Post()
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Create a mutex group" })
+  @ApiCreatedResponse({ type: MutexGroupResponseDto })
   async create(
     @Body() dto: CreateMutexGroupDto,
   ): Promise<MutexGroupResponseDto> {
@@ -56,6 +60,7 @@ export class MutexGroupController {
   @ApiOperation({
     summary: "Update a mutex group (name / maxConcurrentPerDevice)",
   })
+  @ApiOkResponse({ type: MutexGroupResponseDto })
   async update(
     @Param("id", ParseUUIDPipe) id: string,
     @Body() dto: UpdateMutexGroupDto,
@@ -73,6 +78,13 @@ export class MutexGroupController {
     required: false,
     type: Boolean,
     description: "组上仍挂应用时需显式 force=true 才允许删除",
+  })
+  @ApiOkResponse({
+    schema: {
+      type: "object",
+      properties: { ok: { type: "boolean", enum: [true] } },
+      required: ["ok"],
+    },
   })
   async remove(
     @Param("id", ParseUUIDPipe) id: string,

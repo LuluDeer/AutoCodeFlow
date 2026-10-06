@@ -6865,7 +6865,14 @@
         ],
         "responses": {
           "200": {
-            "description": ""
+            "description": "Removed; envelope data is null",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "nullable": true
+                }
+              }
+            }
           }
         },
         "security": [
@@ -6894,7 +6901,14 @@
         ],
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RemovalImpactResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -6940,7 +6954,14 @@
         },
         "responses": {
           "201": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApplicationResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -6988,7 +7009,14 @@
         },
         "responses": {
           "201": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReleaseWebhookResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -7018,7 +7046,17 @@
         ],
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ApplicationVersionHistoryRowDto"
+                  }
+                }
+              }
+            }
           }
         },
         "security": [
@@ -7067,7 +7105,14 @@
         ],
         "responses": {
           "200": {
-            "description": ""
+            "description": "裸四键信封（data/total/page/pageSize），非 paginate() 双键形态",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppReleasesResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -7107,7 +7152,14 @@
         },
         "responses": {
           "201": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpgradeAllResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -7137,7 +7189,14 @@
         ],
         "responses": {
           "201": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SyncTasksResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -7167,7 +7226,14 @@
         ],
         "responses": {
           "201": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppHealthAnalysisResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -7205,7 +7271,14 @@
         ],
         "responses": {
           "201": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApplicationRollbackResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -7269,7 +7342,14 @@
         ],
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaginatedAppDeploymentsDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -7298,7 +7378,14 @@
         ],
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppDeploymentResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -7326,7 +7413,14 @@
         ],
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeploymentRemoveResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -7365,7 +7459,14 @@
         },
         "responses": {
           "201": {
-            "description": ""
+            "description": "Masked deployment row (approval-required apps return the pending_approval request row)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppDeploymentResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -7429,7 +7530,14 @@
         ],
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaginatedAppDeploymentsDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -7468,7 +7576,14 @@
         },
         "responses": {
           "201": {
-            "description": ""
+            "description": "Approved and dispatched row",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppDeploymentResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -7507,7 +7622,14 @@
         },
         "responses": {
           "201": {
-            "description": ""
+            "description": "Rejected row",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppDeploymentResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -7536,7 +7658,14 @@
         ],
         "responses": {
           "201": {
-            "description": ""
+            "description": "Cancelled row",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppDeploymentResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -7565,7 +7694,14 @@
         ],
         "responses": {
           "201": {
-            "description": ""
+            "description": "Row in upgrading state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppDeploymentResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -7594,7 +7730,14 @@
         ],
         "responses": {
           "201": {
-            "description": ""
+            "description": "Stopped row",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppDeploymentResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -7634,7 +7777,14 @@
         },
         "responses": {
           "201": {
-            "description": ""
+            "description": "Status recorded; envelope data is null",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "nullable": true
+                }
+              }
+            }
           }
         },
         "security": [
@@ -7654,7 +7804,17 @@
         "parameters": [],
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/MutexGroupResponseDto"
+                  }
+                }
+              }
+            }
           }
         },
         "security": [
@@ -7682,7 +7842,14 @@
         },
         "responses": {
           "201": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MutexGroupResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -7721,7 +7888,14 @@
         },
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MutexGroupResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -7757,7 +7931,25 @@
         ],
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    }
+                  },
+                  "required": [
+                    "ok"
+                  ]
+                }
+              }
+            }
           }
         },
         "security": [
@@ -14451,6 +14643,32 @@
           }
         }
       },
+      "RemovalImpactResponseDto": {
+        "type": "object",
+        "properties": {
+          "applicationName": {
+            "type": "string"
+          },
+          "tasksLosingSource": {
+            "type": "number",
+            "description": "Tasks losing their code source (ALL-RUN total, not page-truncated — DEEP-AUDIT B·4.1)"
+          },
+          "deploymentCount": {
+            "type": "number",
+            "description": "Deployments removed by cascade"
+          },
+          "packageFileWillBeDeleted": {
+            "type": "boolean",
+            "description": "Whether the uploaded package file on disk is deleted"
+          }
+        },
+        "required": [
+          "applicationName",
+          "tasksLosingSource",
+          "deploymentCount",
+          "packageFileWillBeDeleted"
+        ]
+      },
       "AppReleaseWebhookDto": {
         "type": "object",
         "properties": {
@@ -14481,6 +14699,237 @@
           "version"
         ]
       },
+      "ReleaseWebhookResponseDto": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "updatedApp": {
+            "$ref": "#/components/schemas/ApplicationResponseDto"
+          },
+          "triggeredDeployments": {
+            "type": "number",
+            "description": "Count of RUNNING deployments upgraded when triggerDeploy=true; 0 otherwise"
+          }
+        },
+        "required": [
+          "ok",
+          "updatedApp",
+          "triggeredDeployments"
+        ]
+      },
+      "ApplicationVersionHistoryRowDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "application_versions.id; null = legacy deployment-derived row",
+            "nullable": true,
+            "format": "uuid"
+          },
+          "deploymentId": {
+            "type": "string",
+            "description": "Legacy rows carry the deployment id",
+            "nullable": true,
+            "format": "uuid"
+          },
+          "sourceDeploymentId": {
+            "type": "string",
+            "nullable": true,
+            "format": "uuid"
+          },
+          "version": {
+            "type": "string",
+            "description": "Legacy rows fall back to '__unknown__' bucket key",
+            "nullable": true
+          },
+          "commit": {
+            "type": "string",
+            "nullable": true
+          },
+          "status": {
+            "type": "string",
+            "description": "Snapshot status or legacy deployment status"
+          },
+          "deployedAt": {
+            "format": "date-time",
+            "type": "string",
+            "description": "Snapshot rows use the version creation time",
+            "nullable": true
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string",
+            "nullable": true
+          },
+          "executorAddress": {
+            "type": "string",
+            "description": "Legacy rows carry the deployment's executor; snapshot rows leave null",
+            "nullable": true
+          },
+          "deployCount": {
+            "type": "number",
+            "description": "Deploy count for this version (same-version multi-instance rolls count individually)"
+          },
+          "snapshot": {
+            "type": "object",
+            "description": "Masked version snapshot (read surface); null on legacy rows",
+            "nullable": true,
+            "additionalProperties": true
+          }
+        },
+        "required": [
+          "id",
+          "deploymentId",
+          "sourceDeploymentId",
+          "version",
+          "commit",
+          "status",
+          "deployedAt",
+          "createdAt",
+          "executorAddress",
+          "deployCount",
+          "snapshot"
+        ]
+      },
+      "AppReleaseRowDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "application_versions.id; null = pure deployment history (no snapshot row)",
+            "nullable": true,
+            "format": "uuid"
+          },
+          "version": {
+            "type": "string",
+            "nullable": true
+          },
+          "packageUrl": {
+            "type": "string",
+            "description": "Snapshot packageUrl (deploy-time value — does NOT fall back to the app's current URL)",
+            "nullable": true
+          },
+          "gitCommit": {
+            "type": "string",
+            "nullable": true
+          },
+          "deployedAt": {
+            "type": "string",
+            "description": "Most recent deployment completion (ISO string — this view stringifies)",
+            "nullable": true
+          },
+          "latestDeploymentId": {
+            "type": "string",
+            "nullable": true,
+            "format": "uuid"
+          },
+          "deploymentStatus": {
+            "type": "string",
+            "nullable": true,
+            "enum": [
+              "pending",
+              "deploying",
+              "running",
+              "stopped",
+              "failed",
+              "upgrading"
+            ]
+          },
+          "deploymentCount": {
+            "type": "number",
+            "description": "Deploy count for this version"
+          },
+          "executorAddress": {
+            "type": "string",
+            "nullable": true
+          },
+          "runMode": {
+            "type": "string",
+            "nullable": true,
+            "enum": [
+              "once",
+              "daemon",
+              "scheduled"
+            ]
+          },
+          "triggerType": {
+            "type": "string",
+            "description": "Persisted column first, legacy rows derive (unknown when undecidable)",
+            "nullable": true,
+            "enum": [
+              "manual",
+              "upgrade",
+              "rollback",
+              "approval",
+              "unknown"
+            ]
+          },
+          "operator": {
+            "type": "string",
+            "description": "Deployments.operator, falling back to versions.createdBy",
+            "nullable": true
+          },
+          "operatorSource": {
+            "type": "string",
+            "enum": [
+              "deployments.operator",
+              "application_versions.createdBy"
+            ]
+          },
+          "operatorMissingReason": {
+            "type": "string",
+            "description": "Why operator is null when it is (RELEASE_OPERATOR_MISSING_REASON)"
+          }
+        },
+        "required": [
+          "id",
+          "version",
+          "packageUrl",
+          "gitCommit",
+          "deployedAt",
+          "latestDeploymentId",
+          "deploymentStatus",
+          "deploymentCount",
+          "executorAddress",
+          "runMode",
+          "triggerType",
+          "operator",
+          "operatorSource",
+          "operatorMissingReason"
+        ]
+      },
+      "AppReleasesResponseDto": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AppReleaseRowDto"
+            }
+          },
+          "total": {
+            "type": "number"
+          },
+          "page": {
+            "type": "number"
+          },
+          "pageSize": {
+            "type": "number",
+            "description": "Default 50, capped 200"
+          }
+        },
+        "required": [
+          "data",
+          "total",
+          "page",
+          "pageSize"
+        ]
+      },
       "RolloutStrategyDto": {
         "type": "object",
         "properties": {}
@@ -14492,6 +14941,381 @@
             "$ref": "#/components/schemas/RolloutStrategyDto"
           }
         }
+      },
+      "UpgradeAllResponseDto": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "description": "false = canary batch rejected (ARCH-31 in-flight mutual exclusion) or all failed"
+          },
+          "total": {
+            "type": "number",
+            "description": "Running deployments at trigger time"
+          },
+          "succeeded": {
+            "type": "number"
+          },
+          "failed": {
+            "type": "number"
+          },
+          "rollout": {
+            "type": "object",
+            "description": "Present when a canary batch was actually started (or blocked)",
+            "properties": {
+              "batchId": {
+                "type": "string"
+              },
+              "strategy": {
+                "type": "string",
+                "enum": [
+                  "canary",
+                  "all"
+                ]
+              },
+              "canaryIds": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "promotedIds": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "blockedReason": {
+                "type": "string",
+                "description": "ARCH-31: in-flight batch on the same app (cross-instance mutual exclusion, not an exception)"
+              }
+            }
+          }
+        },
+        "required": [
+          "ok",
+          "total",
+          "succeeded",
+          "failed"
+        ]
+      },
+      "SyncTasksResponseDto": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "registeredCount": {
+            "type": "number",
+            "description": "Task definitions registered by this sync"
+          }
+        },
+        "required": [
+          "ok",
+          "registeredCount"
+        ]
+      },
+      "AppHealthAnalysisResponseDto": {
+        "type": "object",
+        "properties": {
+          "appId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "appName": {
+            "type": "string"
+          },
+          "analysis": {
+            "type": "string",
+            "description": "AI assessment text (empty string = AI unavailable, fail-open)"
+          },
+          "stats": {
+            "type": "object",
+            "properties": {
+              "totalTasks": {
+                "type": "number"
+              },
+              "avgSuccessRate": {
+                "type": "number"
+              },
+              "avgDuration": {
+                "type": "number"
+              },
+              "criticalTasks": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "totalTasks",
+              "avgSuccessRate",
+              "avgDuration",
+              "criticalTasks"
+            ]
+          }
+        },
+        "required": [
+          "appId",
+          "appName",
+          "analysis"
+        ]
+      },
+      "ApplicationRollbackResponseDto": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "total": {
+            "type": "number"
+          },
+          "succeeded": {
+            "type": "number"
+          },
+          "failed": {
+            "type": "number"
+          },
+          "rollout": {
+            "description": "Spread of the triggered upgrade-all batch receipt",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/UpgradeAllResponseDto"
+              }
+            ]
+          },
+          "rolledBackTo": {
+            "type": "string",
+            "description": "Version the app was rolled back to (deployedVersion for legacy path)"
+          },
+          "versionId": {
+            "type": "string",
+            "description": "application_versions.id when the snapshot path was taken; null = legacy deployment-row path",
+            "nullable": true,
+            "format": "uuid"
+          },
+          "packageUrlRestored": {
+            "type": "boolean",
+            "description": "Only on the legacy path (always false there — R16)"
+          },
+          "updatedApp": {
+            "description": "The restored application row (masked)",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ApplicationResponseDto"
+              }
+            ]
+          }
+        },
+        "required": [
+          "ok",
+          "total",
+          "succeeded",
+          "failed",
+          "rolledBackTo",
+          "versionId",
+          "updatedApp"
+        ]
+      },
+      "AppDeploymentResponseDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "applicationId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "application": {
+            "description": "Parent application (masked read surface — env secrets are '***')",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ApplicationResponseDto"
+              }
+            ]
+          },
+          "executorAddress": {
+            "type": "string",
+            "description": "Executor address the app runs on"
+          },
+          "executorId": {
+            "type": "string",
+            "nullable": true,
+            "format": "uuid"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "deploying",
+              "running",
+              "stopped",
+              "failed",
+              "upgrading"
+            ]
+          },
+          "runMode": {
+            "type": "string",
+            "enum": [
+              "once",
+              "daemon",
+              "scheduled"
+            ]
+          },
+          "deployedCommit": {
+            "type": "string",
+            "description": "Git commit when deployed from git source",
+            "nullable": true
+          },
+          "deployedVersion": {
+            "type": "string",
+            "description": "Version actually deployed (upgrade/rollback rewrites it)",
+            "nullable": true
+          },
+          "startCommand": {
+            "type": "string",
+            "description": "Launch command snapshot (rollback/upgrade may rewrite it)",
+            "nullable": true
+          },
+          "env": {
+            "type": "object",
+            "description": "Deploy-time env snapshot, MASKED on every read surface (QA1)",
+            "nullable": true,
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "pid": {
+            "type": "number",
+            "description": "App process pid on the executor (heartbeat-maintained)",
+            "nullable": true
+          },
+          "lastHeartbeat": {
+            "format": "date-time",
+            "type": "string",
+            "description": "Last executor heartbeat for this deployment",
+            "nullable": true
+          },
+          "statusMessage": {
+            "type": "string",
+            "description": "Last state transition message (stall/dup-deploy guards write here)",
+            "nullable": true
+          },
+          "deployedAt": {
+            "format": "date-time",
+            "type": "string",
+            "description": "Most recent deployment completion time",
+            "nullable": true
+          },
+          "rolloutState": {
+            "type": "string",
+            "description": "Canary rollout phase (DEP-02); null = not part of a batch",
+            "nullable": true,
+            "enum": [
+              "pending",
+              "probing",
+              "promoted",
+              "failed",
+              "rolled_back"
+            ]
+          },
+          "rolloutMeta": {
+            "type": "object",
+            "description": "Canary batch metadata (batchId/canaryIds/leasedBy...)",
+            "nullable": true,
+            "additionalProperties": true
+          },
+          "approvalStatus": {
+            "type": "string",
+            "description": "DEP-04 second-person approval state; null = approval not required",
+            "nullable": true,
+            "enum": [
+              "pending_approval",
+              "approved",
+              "rejected"
+            ]
+          },
+          "approvalMeta": {
+            "type": "object",
+            "description": "Approval trail (actor/reason/timestamps)",
+            "nullable": true,
+            "additionalProperties": true
+          },
+          "triggerType": {
+            "type": "string",
+            "description": "Trigger semantics (FEAT-20 persisted column); null = legacy row",
+            "nullable": true,
+            "enum": [
+              "manual",
+              "upgrade",
+              "rollback",
+              "approval"
+            ]
+          },
+          "operator": {
+            "type": "string",
+            "description": "JWT username of the operator (FEAT-20)",
+            "nullable": true
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "applicationId",
+          "executorAddress",
+          "executorId",
+          "status",
+          "runMode",
+          "deployedCommit",
+          "deployedVersion",
+          "startCommand",
+          "env",
+          "pid",
+          "lastHeartbeat",
+          "statusMessage",
+          "deployedAt",
+          "rolloutState",
+          "rolloutMeta",
+          "approvalStatus",
+          "approvalMeta",
+          "triggerType",
+          "operator",
+          "createdAt",
+          "updatedAt"
+        ]
+      },
+      "PaginatedAppDeploymentsDto": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AppDeploymentResponseDto"
+            }
+          },
+          "total": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "data",
+          "total"
+        ]
       },
       "CreateDeploymentDto": {
         "type": "object",
@@ -14529,6 +15353,25 @@
           }
         }
       },
+      "DeploymentRemoveResponseDto": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "deletedId": {
+            "type": "string",
+            "description": "The removed deployment id"
+          }
+        },
+        "required": [
+          "ok",
+          "deletedId"
+        ]
+      },
       "DeploymentHeartbeatDto": {
         "type": "object",
         "properties": {
@@ -14557,6 +15400,58 @@
         "required": [
           "deploymentId",
           "status"
+        ]
+      },
+      "MutexGroupResponseDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "组 id (uuid)"
+          },
+          "name": {
+            "type": "string",
+            "description": "组名（唯一）"
+          },
+          "maxConcurrentPerDevice": {
+            "type": "number",
+            "description": "同设备内允许的并发执行数（≥1）"
+          },
+          "scope": {
+            "type": "string",
+            "description": "组作用域：device=单点互斥（每台设备同时最多 N 条）；global=全局互斥（全平台同时最多 N 条）",
+            "enum": [
+              "device",
+              "global"
+            ]
+          },
+          "description": {
+            "type": "string",
+            "description": "组用途说明",
+            "nullable": true
+          },
+          "applicationCount": {
+            "type": "number",
+            "description": "当前挂在该组上的应用数"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string",
+            "description": "创建时间"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string",
+            "description": "更新时间"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "maxConcurrentPerDevice",
+          "scope",
+          "createdAt",
+          "updatedAt"
         ]
       },
       "CreateMutexGroupDto": {

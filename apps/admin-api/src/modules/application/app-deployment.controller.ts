@@ -11,7 +11,13 @@ import {
   UnauthorizedException,
   ParseUUIDPipe,
 } from "@nestjs/common";
-import { ApiTags, ApiOperation, ApiBearerAuth } from "@nestjs/swagger";
+import {
+  ApiTags,
+  ApiOperation,
+  ApiBearerAuth,
+  ApiOkResponse,
+  ApiCreatedResponse,
+} from "@nestjs/swagger";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { Public } from "../../common/decorators/public.decorator";
 import { Roles } from "../../common/decorators/roles.decorator";
@@ -20,6 +26,12 @@ import { UserRole } from "../users/entities/user.entity";
 import { AppDeploymentService } from "./app-deployment.service";
 import { DeploymentTriggerType } from "./entities/app-deployment.entity";
 import { ExecutorService } from "../executor/executor.service";
+// ARCH-23 / N-12（2026-10-07 批）：App Deployment 域响应契约（11 端点此前 0 覆盖）。
+import {
+  AppDeploymentResponseDto,
+  DeploymentRemoveResponseDto,
+  PaginatedAppDeploymentsDto,
+} from "./dto/app-deployment-response.dto";
 import { ApiHeader } from "@nestjs/swagger";
 import {
   CreateDeploymentDto,
@@ -80,6 +92,8 @@ export class AppDeploymentController {
 
   @Get()
   @ApiOperation({ summary: "List deployments" })
+  // N-12: 裸 {data,total} 分页（无页元数据），行 env/嵌套 application.env 掩码。
+  @ApiOkResponse({ type: PaginatedAppDeploymentsDto })
   findAll(@Query() query: ListDeploymentsQueryDto) {
     return this.svc.findAll(
       query.applicationId,
@@ -91,6 +105,7 @@ export class AppDeploymentController {
 
   @Get(":id")
   @ApiOperation({ summary: "Get deployment details" })
+  @ApiOkResponse({ type: AppDeploymentResponseDto })
   findById(@Param("id") id: string) {
     return this.svc.findById(id);
   }
@@ -105,6 +120,12 @@ export class AppDeploymentController {
   @Post("applications/:appId/deploy")
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Assign application to executor" })
+  // POST 无 @HttpCode → 实际 201（下同：approve/reject/cancel/upgrade/stop）。
+  @ApiCreatedResponse({
+    type: AppDeploymentResponseDto,
+    description:
+      "Masked deployment row (approval-required apps return the pending_approval request row)",
+  })
   deploy(
     @Param("appId") appId: string,
     @Body() dto: CreateDeploymentDto,
@@ -134,6 +155,7 @@ export class AppDeploymentController {
   @Get("approvals/pending")
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "List deployments awaiting approval" })
+  @ApiOkResponse({ type: PaginatedAppDeploymentsDto })
   listPendingApprovals(@Query() query: ListDeploymentsQueryDto) {
     return this.svc.findAll(
       query.applicationId,
@@ -148,6 +170,10 @@ export class AppDeploymentController {
   @Post(":id/approval/approve")
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Approve a pending deployment (second person)" })
+  @ApiCreatedResponse({
+    type: AppDeploymentResponseDto,
+    description: "Approved and dispatched row",
+  })
   approve(
     @Param("id", ParseUUIDPipe) id: string,
     @Body() dto: ApprovalActionDto,
@@ -172,6 +198,10 @@ export class AppDeploymentController {
   @Post(":id/approval/reject")
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Reject a pending deployment (second person)" })
+  @ApiCreatedResponse({
+    type: AppDeploymentResponseDto,
+    description: "Rejected row",
+  })
   reject(
     @Param("id", ParseUUIDPipe) id: string,
     @Body() dto: ApprovalActionDto,
@@ -191,6 +221,10 @@ export class AppDeploymentController {
   @ApiOperation({
     summary: "Cancel own pending deployment request (requester only)",
   })
+  @ApiCreatedResponse({
+    type: AppDeploymentResponseDto,
+    description: "Cancelled row",
+  })
   cancel(
     @Param("id", ParseUUIDPipe) id: string,
     @CurrentUser() user: { id: number; username: string },
@@ -206,6 +240,10 @@ export class AppDeploymentController {
   @Post(":id/upgrade")
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Trigger overlay upgrade" })
+  @ApiCreatedResponse({
+    type: AppDeploymentResponseDto,
+    description: "Row in upgrading state",
+  })
   upgrade(
     @Param("id") id: string,
     @CurrentUser() user: { id: number; username: string },
@@ -227,6 +265,10 @@ export class AppDeploymentController {
   @Post(":id/stop")
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Stop running deployment" })
+  @ApiCreatedResponse({
+    type: AppDeploymentResponseDto,
+    description: "Stopped row",
+  })
   stop(@Param("id") id: string) {
     return this.svc.stop(id);
   }
@@ -249,6 +291,7 @@ export class AppDeploymentController {
       "pending-approval deployments are refused with 409 — stop a running one first, " +
       "and use reject/cancel for an approval-pending one.",
   })
+  @ApiOkResponse({ type: DeploymentRemoveResponseDto })
   remove(
     @Param("id", ParseUUIDPipe) id: string,
     @CurrentUser() user: { id: number; username: string },
@@ -277,6 +320,11 @@ export class AppDeploymentController {
     name: "x-executor-token",
     required: true,
     description: "Executor token (per-executor or shared)",
+  })
+  // POST 无 @HttpCode → 实际 201；handleHeartbeat 返回 void → envelope data null。
+  @ApiCreatedResponse({
+    description: "Status recorded; envelope data is null",
+    schema: { nullable: true },
   })
   async heartbeat(
     @Body() dto: DeploymentHeartbeatDto,
