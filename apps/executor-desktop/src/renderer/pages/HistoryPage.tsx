@@ -452,8 +452,18 @@ export default function HistoryPage({ active }: { active: boolean }) {
   useEffect(() => {
     if (!active) return;
     void load(false);
-    const t = setInterval(() => { if (!document.hidden) void load(true); }, 10000);
-    return () => clearInterval(t);
+    // getHistory 推送化（战役遗留 #4）：主进程 meta 目录变更哨广播
+    // history:changed → 后台刷新一次（10s 轮询退役）。推送事件本身低频且已
+    // debounce，隐藏页也刷——保持数据新鲜；60s 低频兜底仅在可见时跑（fs.watch
+    // 失灵的最后一张网，对齐推送前的 document.hidden 门控）。旧 preload 缺
+    // 通道时整体退化为纯兜底轮询（typeof 守卫，EXP-09 口径）。
+    const electronAPI = (window as any).electronAPI;
+    const offChanged =
+      typeof electronAPI?.onHistoryChanged === 'function'
+        ? electronAPI.onHistoryChanged(() => { void load(true); })
+        : null;
+    const t = setInterval(() => { if (!document.hidden) void load(true); }, 60_000);
+    return () => { clearInterval(t); offChanged?.(); };
   }, [active, load]);
 
   // V4-4（X-05）：Ctrl+F 聚焦搜索框（查看器打开时归查看器的同键处理）

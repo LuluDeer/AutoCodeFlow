@@ -52,6 +52,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // 历史记录 & 日志文件读取
   getHistory: () => ipcRenderer.invoke('history:get'),
+  // getHistory 推送化：meta 目录变更哨（主进程 fs.watch+debounce）→ 单向
+  // 推送「有变化」，页面据此刷新一次；10s 轮询退役（60s 兜底保留）。
+  onHistoryChanged: (cb: () => void) => {
+    const handler = () => cb();
+    ipcRenderer.on('history:changed', handler);
+    return () => ipcRenderer.removeListener('history:changed', handler);
+  },
   clearHistory: () => ipcRenderer.invoke('history:clear'),
   readLog: (executionId: string, fromLine?: number) =>
     ipcRenderer.invoke('log:read', executionId, fromLine ?? 0),

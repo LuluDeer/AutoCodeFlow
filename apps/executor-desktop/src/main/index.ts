@@ -1,4 +1,4 @@
-import { app, Menu, dialog, powerMonitor } from 'electron';
+import { app, BrowserWindow, Menu, dialog, powerMonitor } from 'electron';
 import { ConfigStore } from './config-store';
 import { ExecutorProcess } from './executor-process';
 import { AgentWorkerHandle } from './agent-worker-process';
@@ -16,6 +16,7 @@ import { registerIpcHandlers, startHeartbeat, sweepReleasesWithCurrentConfig, op
 import { getAutoLaunchEnabled, setAutoLaunchEnabled } from './autolaunch';
 import { initUpdater, setUpdateAvailableNotifier, checkForUpdatesUserInitiated } from './updater';
 import { Notifier } from './notifier';
+import { HistoryWatcher, metaDirFor } from './history-watcher';
 import { createCrashGuard } from './crash-guard';
 import { resolveTrayLocale } from './tray-texts';
 import * as path from 'path';
@@ -75,6 +76,20 @@ export const windowManager = new WindowManager();
 // DSK-04：系统通知（任务终态 / 执行器离线）
 export const notifier = new Notifier();
 
+// getHistory 推送化（战役遗留 #4）：meta 目录（executor-node 子进程写）的
+// 文件变更哨。fs.watch + debounce → 广播 history:changed，历史页/状态页据此
+// 刷新（10s 轮询退役，60s 兜底轮询保留为 fs.watch 失灵的最后一张网）。
+// 生命周期与 notifier.startMetaPolling 同轨：启动 + config:save 热同步两处
+// re-arm（syncNotifierWithConfig）。
+function broadcastHistoryChanged(): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) {
+      win.webContents.send('history:changed');
+    }
+  }
+}
+export const historyWatcher = new HistoryWatcher({ onChange: broadcastHistoryChanged });
+
 app.on('second-instance', () => {
   windowManager.focusOrOpenStatus();
 });
@@ -92,6 +107,7 @@ app.on('before-quit', (e) => {
   isQuitting = true;
   log.info('App quitting, stopping executor and heartbeat...');
   heartbeat.stop();
+  historyWatcher.stop();
   // N-06①：agent worker 硬杀——中断的指派由 journal running 阶段恢复
   //（与崩溃恢复同语义），绝不阻塞退出链。
   agentHost?.kill();
@@ -193,6 +209,7 @@ app.whenReady().then(async () => {
   notifier.setEnabled(configStore.get('notifyEnabled'));
   const workDir = configStore.get('workDir');
   notifier.startMetaPolling(workDir ? path.join(workDir, 'meta') : null);
+  historyWatcher.start(metaDirFor(workDir));
 
   // 注册所有 IPC handlers
   registerIpcHandlers();
@@ -268,6 +285,7 @@ export function syncNotifierWithConfig(): void {
   notifier.setEnabled(configStore.get('notifyEnabled'));
   const workDir = configStore.get('workDir');
   notifier.startMetaPolling(workDir ? path.join(workDir, 'meta') : null);
+  historyWatcher.start(metaDirFor(workDir));
 }
 
 // ── P7b：Agent 托管接线（agent-collab 轮询循环）────────────────────────

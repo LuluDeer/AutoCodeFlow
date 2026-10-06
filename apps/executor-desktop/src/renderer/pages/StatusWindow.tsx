@@ -507,26 +507,32 @@ export default function StatusWindow({ active }: { active: boolean }) {
   }, [logs, active]);
 
   // B-02：今日概览数据。active 变 true 时拉一次（含从配置页保存后切回的刷新）。
-  // V4 后续优化（7）：轮询口径与历史页统一为 10s——同一份 getHistory 两个页面
-  // 各自消费，频率一致才能避免「活动条 9 次 / 历史页 10 次」的短暂数字漂移；
-  // 单次 IPC 是读内存 meta 列表，10s 频率无压力。
-  // 旧版 preload 缺 getHistory 通道时整条不渲染（typeof 守卫对齐 EXP-09 口径）；
+  // getHistory 推送化（战役遗留 #4）：主进程 meta 目录变更哨广播
+  // history:changed → 页面刷新一次；旧 10s 轮询退役，60s 低频兜底保留为
+  // fs.watch 失灵（网络盘/句柄静默死亡）的最后一张网。
+  // 旧版 preload 缺通道时整体退化为纯兜底轮询（typeof 守卫对齐 EXP-09 口径）；
   // IPC reject 静默置 null，不谎报「今日暂无执行记录」。
   // R4（C-01）：records 存入 allRecords 供停止确认复用，概览改由它派生——
   // 同一 effect、同一份数据，不额外增加 IPC。
   useEffect(() => {
     if (!active) return;
-    const getHistory = window.electronAPI.getHistory;
+    const electronAPI = (window as any).electronAPI;
+    const getHistory = electronAPI?.getHistory;
     if (typeof getHistory !== 'function') return;
     let cancelled = false;
     const refresh = () => {
       getHistory()
-        .then((records) => { if (!cancelled) setAllRecords(records); })
+        .then((records: TodaySummaryRecord[]) => { if (!cancelled) setAllRecords(records); })
         .catch(() => { if (!cancelled) setAllRecords(null); });
     };
     refresh();
-    const timer = setInterval(refresh, 10_000);
-    return () => { cancelled = true; clearInterval(timer); };
+    // 推送订阅：取消函数必须在卸载时调用（否则窗口重建会累积监听器）
+    const offChanged =
+      typeof electronAPI?.onHistoryChanged === 'function'
+        ? electronAPI.onHistoryChanged(() => refresh())
+        : null;
+    const timer = setInterval(refresh, 60_000);
+    return () => { cancelled = true; clearInterval(timer); offChanged?.(); };
   }, [active]);
 
   // F-22（DEEP_REVIEW 0ef3bbe）：启动/停止 IPC 包 try/finally，reject 时按钮 disabled

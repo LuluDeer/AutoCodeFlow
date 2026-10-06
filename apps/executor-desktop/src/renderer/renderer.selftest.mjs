@@ -626,6 +626,27 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
   }
 }
 
+// ── getHistory 推送化（战役遗留 #4）：推送订阅 + 轮询退役守卫 ──────────
+// 主进程 meta 变更哨广播 history:changed，两页订阅刷新；10s 轮询退役、60s
+// 兜底保留。四断言：preload 暴露通道 / 两页都订阅 / 订阅可取消 / 10s 轮询
+// 不再存在于任一页（防止后续改动把高频轮询悄悄加回来）。
+{
+  if (!preloadSrc.includes("onHistoryChanged") || !preloadSrc.includes("ipcRenderer.on('history:changed'")) {
+    throw new Error('推送化: preload 未暴露 onHistoryChanged/history:changed 通道');
+  }
+  for (const [name, src] of [['StatusWindow', statusWindow], ['HistoryPage', pages[2]]]) {
+    if (!src.includes('onHistoryChanged')) {
+      throw new Error(`推送化: ${name} 未订阅 onHistoryChanged——推送链路断在该页`);
+    }
+    if (!/offChanged\?\.\(\)/.test(src)) {
+      throw new Error(`推送化: ${name} 的 onHistoryChanged 订阅未在清理函数中取消（会累积监听器）`);
+    }
+    if (/setInterval\([^)]*,\s*10_?000\)/.test(src) || /setInterval\([^)]*,\s*10000\)/.test(src)) {
+      throw new Error(`推送化: ${name} 残留 10s 高频轮询——推送化后应为 60s 兜底`);
+    }
+  }
+}
+
 // ── NETOPT-6⑥：渲染树必须有全局 ErrorBoundary 兜底 ─────────────────
 // 背景：main.tsx 此前直接 render(<App />)，全 renderer 零边界——任一组件
 // 渲染期抛错（EXP-09 记录过该事故形态：preload 缺方法同步抛 → 整树卸载
