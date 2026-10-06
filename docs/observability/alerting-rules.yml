@@ -3,11 +3,13 @@
 # 适用对象：apps/admin-api GET /api/metrics（Prometheus text exposition）。
 # series 名与 label 已与源码逐字核对（见 docs/observability/README.md 附录 A）。
 #
-# 阅读版声明（审计批次 A）：本文件是 README §3 的教学/阅读载体；compose
-# monitoring profile 实际挂载并生效的规则是 config/monitoring/alerts.yml
-# （26 条接线版）——语义、阈值、规则集冲突时一律以接线版为准。本文件受
-# `npm run test:alerts` 的轻量对账（存在性 + 指标名与源码清单一致），不要求
-# 与接线版规则集全等。
+# 阅读版声明（审计批次 A 轻量对账 → 2026-10-07 语义级对账）：本文件是
+# README §3 的教学/阅读载体；compose monitoring profile 实际挂载并生效的
+# 规则是 config/monitoring/alerts.yml（26 条接线版）——本文件受
+# `npm run test:alerts` 三层对账：存在性 + 指标名与源码清单一致 +
+# **语义级对账**（每条告警的 for/severity/expr 空白归一后必须与接线版同名
+# 规则逐字一致；规则集允许子集，不要求全等）。接线版演进（如多实例矩阵轮
+# 的 expr 重写）必须同步本文件，教学载体教的永远是真实生效的语义。
 #
 # OBS-02（第十六轮）：本文件各规则的 `runbook` annotation 是面向 Grafana
 # UI 的相对路径链接。若告警经 Alertmanager 路由到平台通知渠道
@@ -30,38 +32,41 @@
 groups:
   - name: autoflow-scheduler
     rules:
-      # 调度器停摆：queue_up==0（Redis 不可读，队列计数拿不到）或
-      # ticks rate 5 分钟为 0（调度循环不再产生 tick）。
+      # 调度器停摆（集群级，2026-10-07 与接线版对齐）：tick 计数器仅 leader
+      # 实例递增（scheduler.service.ts 的 isLeader 门）——单实例 rate==0 不能
+      # 区分 follower 与真停摆（多实例矩阵轮的接线版结论），必须对全体实例
+      # 求和：和为 0 = 没有任何实例在执行调度扫描。10m 回看窗容忍 leader
+      # 换届的短暂空档。
       # 调优思路：
-      # - ticks 正常速率 ≈ 1/扫描间隔（如 15s 间隔 → ~0.067/s）。若扫描
-      #   间隔被调大，请同步放宽 `rate(...[5m]) == 0` 的回看窗口。
+      # - ticks 正常速率 ≈ 1/扫描间隔（如 15s 间隔 → ~0.067/s，仅 leader 有
+      #   样本）。若扫描间隔被调大，请同步放宽 `rate(...[10m]) == 0` 的回看
+      #   窗口。
       # - 进程重启瞬间 counter 归零，rate() 能处理 reset 不会误判；但抓取
       #   中断（target down）会让表达式无样本而非 0——target 失联由下方
       #   AUTOFLOW_METRICS_TARGET_DOWN 兜底。
-      # - queue_up==0 单独出现更可能是 Redis 故障而非调度器死亡，两个条件
-      #   合并为一条 critical 便于值班第一时间区分（看 description 哪支触发）。
+      # - Redis 不可读（queue_up==0）在接线版是**独立告警**
+      #   AUTOFLOW_QUEUE_UNREADABLE（fail-open 降级后 tick 可能仍走，两条
+      #   并存是预期）——本条只管调度活性。
       - alert: AUTOFLOW_SCHEDULER_DOWN
-        expr: |
-          (autoflow_queue_up == 0)
-          or
-          (rate(autoflow_scheduler_ticks_total[5m]) == 0)
+        expr: sum(rate(autoflow_scheduler_ticks_total[10m])) == 0
         for: 5m
         labels:
           severity: critical
           team: platform
         annotations:
-          summary: "调度器停摆：{{ $labels.instance }}"
+          summary: "调度器停摆：无任何实例产生调度 tick"
           description: >-
-            持续 5 分钟满足：autoflow_queue_up == 0（Redis 不可读，BullMQ
-            队列计数失败）或 rate(autoflow_scheduler_ticks_total[5m]) == 0
-            （本进程未再执行调度扫描 tick）。检查 admin-api 进程存活、
-            Redis 连通性、调度循环异常日志；恢复前 cron/依赖触发均会积压。
+            全体 admin-api 实例的调度扫描 tick 速率已为 0 持续 5 分钟，cron
+            与依赖触发全部停摆。检查各实例是否赢得 leader（isLeader 门，只有
+            leader 递增 ticks）、Redis 连通性（leader 锁依赖 Redis）、调度
+            循环异常日志；恢复前积压任务由 AUTOFLOW_QUEUE_BACKLOG 伴生观察。
           runbook: "docs/observability/README.md#autoflow_scheduler_down"
 
-      # 兜底：抓取目标失联（series 消失 ≠ 值为 0，上面的 ==0 表达式在无样本
-      # 时不触发，必须用 absent 补位）。
+      # 兜底：抓取目标失联（series 消失 ≠ 值为 0，==0 类表达式在无样本时不
+      # 触发，必须用 absent 补位）。absent 挂在调度 tick 上（每 leader 一
+      # 个活跃 series，接线版口径）。
       - alert: AUTOFLOW_METRICS_TARGET_DOWN
-        expr: absent(autoflow_queue_up)
+        expr: absent(autoflow_scheduler_ticks_total)
         for: 5m
         labels:
           severity: critical
@@ -70,7 +75,8 @@ groups:
           summary: "admin-api metrics 抓取目标全部失联"
           description: >-
             所有 autoflow-admin-api target 均已 5 分钟未上报
-            autoflow_queue_up series。可能：进程挂死、/api/metrics 被
+            autoflow_scheduler_ticks_total series（leader 实例每扫描间隔
+            +1）。可能：进程挂死、/api/metrics 被
             METRICS_PROMETHEUS_ENABLED=false 关闭、JWT bearer 过期导致
             抓取 401（见 README 抓取配置的 token 过期坑）。
           runbook: "docs/observability/README.md#抓取鉴权坑bearer-jwt"

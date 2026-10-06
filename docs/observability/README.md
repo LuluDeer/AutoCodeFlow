@@ -5,7 +5,7 @@ admin-api 的 Prometheus 指标（`GET /api/metrics`）配套的 Grafana 面板�
 | 文件 | 内容 |
 | --- | --- |
 | `grafana-dashboard.json` | Grafana dashboard（schemaVersion 39，uid `autoflow-obs-v1`）：调度健康 / 回调认证 / 进程资源 / 容量水位（OBS-05）/ 调度延迟（CORE-06） 五组共 17 个数据面板；compose monitoring profile 已自动 provisioning（§2），面板 PromQL 受 `npm run test:alerts` 同源守卫 |
-| `alerting-rules.yml` | 阅读版 Prometheus rule 文件（6 条启用告警 + 1 条注释预留 ExecutorOffline）：教学/调优思路载体，生效规则以 `config/monitoring/alerts.yml` 为准；受 `test:alerts` 存在性与指标名对账 |
+| `alerting-rules.yml` | 阅读版 Prometheus rule 文件（6 条启用告警 + 1 条注释预留 ExecutorOffline）：教学/调优思路载体，生效规则以 `config/monitoring/alerts.yml` 为准；受 `test:alerts` 三层对账（存在性 + 指标名 + 语义级：for/severity/expr 空白归一与接线版同名规则逐字一致，2026-10-07 升级） |
 | `README.md` | 本文件：抓取配置、导入/挂载步骤、指标字典、series 核对清单 |
 
 指标事实来源（唯一注册处）：

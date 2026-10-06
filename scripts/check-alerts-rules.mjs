@@ -27,10 +27,11 @@
 //     ——metrics 模块改名时 alerts 会红、dashboard 会静默坏图，这里补齐
 //     后者（报错带面板标题，坏图可直查）；
 //   · docs/observability/alerting-rules.yml 是「阅读版」告警（README §3 的
-//     教学载体，块标量/`>-` 写法不在受限解析器射程内），只做轻量对账：
-//     文件存在、至少含一条 alert、注释剥离后引用的每个 autoflow_* 指标名
-//     都在清单内（runbook 注释里的 `#锚点` 同名串不算指标）。语义一致性
-//     仍以 alerts.yml 为准（文件头已声明），此处不要求规则集全等。
+//     教学载体，块标量/`>-` 写法不在受限解析器射程内），做三层对账：存在性 +
+//     指标名对账（runbook 注释里的 `#锚点` 同名串不算指标）+ 语义级对账
+//     （2026-10-07 升级：每条告警的 for/severity/expr 空白归一后必须与接线
+//     版同名规则一致——教学载体教的必须是真实生效的语义；规则集允许子集，
+//     不要求全等；接线版自身未过守卫时语义层自动跳过，不叠加噪声）。
 //
 // 退出码：0 = 全绿；1 = 解析失败 / 结构违规 / 指标名不在清单。
 //
@@ -498,15 +499,94 @@ export function validateDashboardDocument(doc, { metricNames }) {
   return errors;
 }
 
-// ── 阅读版告警轻量对账（审计批次 A）─────────────────────────────────────────
+// ── 阅读版告警对账（审计批次 A 轻量版 → 2026-10-07 语义级升级）─────────────
 // alerting-rules.yml 大量使用块标量（expr: | / description: >-），不在受限
-// 解析器射程内，也不必为阅读版实现完整 YAML——只做两件事：
+// 解析器射程内，也不必为阅读版实现完整 YAML——分层对账：
 //   ① 存在性：注释剥离后至少还有一条 `- alert:`（文件被清空/误删即红）；
 //   ② 指标名对账：剥注释行（含块标量内的 PromQL `#` 注释行）后出现的每个
 //      autoflow_* 字面量必须在清单内。runbook annotation 的 URL 锚点
 //      （README.md#autoflow_scheduler_down）与指标同名，按前导 `#` 排除。
-// 语义一致性（阈值/for/severity）不在对账范围——以接线版 alerts.yml 为准。
-export function validateReadingRulesText(text, { metricNames }) {
+//   ③ 语义级对账（2026-10-07 升级，战役遗留 #6）：wiringRules（接线版解析
+//      出的规则数组）在位时，阅读版每条告警必须与同名接线规则在
+//      for / labels.severity / expr（空白归一后）三项上逐字一致——教学载体
+//      教的必须是**真实生效的语义**。实扫曾借此抓出两条真漂移：阅读版
+//      SCHEDULER_DOWN 仍是单实例 expr（接线版已是多实例 sum 形态）、
+//      METRICS_TARGET_DOWN 的 absent 指标不同（见该文件 2026-10-07 修正注）。
+//      规则集不要求全等（阅读版允许子集）；接线版解析失败时 ③ 自动跳过
+//      （退回 ①②，不给「对账缺席=放行」以外的口子——接线版自身的红已独立上报）。
+export function normalizeExpr(expr) {
+  return String(expr ?? "").replace(/\s+/g, " ").trim();
+}
+
+/** 阅读版规则提取器：块标量感知的受限遍历（非完整 YAML）。 */
+export function extractReadingRules(text) {
+  const lines = String(text ?? "")
+    .split(/\r?\n/)
+    .filter((line) => !/^\s*#/.test(line));
+  const rules = [];
+  let current = null;
+  let blockState = null; // { indent, parts } — expr 块标量收集态
+  const unquote = (v) => {
+    const s = String(v ?? "").trim();
+    if (
+      (s.startsWith("'") && s.endsWith("'") && s.length >= 2) ||
+      (s.startsWith('"') && s.endsWith('"') && s.length >= 2)
+    ) {
+      return s.slice(1, -1);
+    }
+    return s;
+  };
+  const ALERT_RE = /^(\s*)-\s+alert:\s*(\S+)/;
+  const EXPR_RE = /^(\s*)expr:\s*(.*)$/;
+  const FOR_RE = /^\s+for:\s*(\S+)/;
+  const SEVERITY_RE = /^\s+severity:\s*(\S+)/;
+  for (const line of lines) {
+    if (blockState) {
+      // 块标量内容行：比 expr: 键更深缩进即收；退回同深/更浅缩进 = 块结束
+      const indent = line.length - line.trimStart().length;
+      if (line.trim() !== "" && indent > blockState.indent) {
+        blockState.parts.push(line.trim());
+        continue;
+      }
+      current.expr = blockState.parts.join(" ");
+      blockState = null;
+      // 不 continue——当前行可能是下一条 alert，落到下方判据
+    }
+    const alertMatch = line.match(ALERT_RE);
+    if (alertMatch) {
+      current = { alert: alertMatch[2], expr: null, for: null, severity: null };
+      rules.push(current);
+      continue;
+    }
+    if (!current) continue;
+    const exprMatch = line.match(EXPR_RE);
+    if (exprMatch && current.expr === null) {
+      const value = exprMatch[2].trim();
+      if (/^[|>][+-]?$/.test(value)) {
+        // 块标量：后续更深缩进行收集为单行（> 折叠语义在 PromQL 空白归一下等价）
+        blockState = { indent: exprMatch[1].length, parts: [] };
+      } else if (value !== "") {
+        current.expr = unquote(value);
+      }
+      continue;
+    }
+    const forMatch = line.match(FOR_RE);
+    if (forMatch && current.for === null) {
+      current.for = unquote(forMatch[1]);
+      continue;
+    }
+    const sevMatch = line.match(SEVERITY_RE);
+    if (sevMatch && current.severity === null) {
+      current.severity = unquote(sevMatch[1]);
+    }
+  }
+  if (blockState && current) {
+    current.expr = blockState.parts.join(" ");
+  }
+  return rules;
+}
+
+export function validateReadingRulesText(text, { metricNames, wiringRules }) {
   const errors = [];
   if (typeof text !== "string" || text.trim() === "") {
     return ["文件为空"];
@@ -525,6 +605,39 @@ export function validateReadingRulesText(text, { metricNames }) {
       errors.push(
         `阅读版告警引用了清单外的指标 "${match[0]}"（与源码 metrics 清单对不上；阅读版也要能对图索骥）`,
       );
+    }
+  }
+  // ③ 语义级对账（wiringRules 在位才启用；接线版解析失败=null 时退回轻量对账）
+  if (Array.isArray(wiringRules) && wiringRules.length > 0) {
+    const byName = new Map(wiringRules.map((r) => [r.alert, r]));
+    for (const rule of extractReadingRules(text)) {
+      const wiring = byName.get(rule.alert);
+      if (!wiring) {
+        errors.push(
+          `阅读版告警 "${rule.alert}" 在接线版 ${ALERTS_FILE} 中不存在（接线版改名/删除后阅读版必须同步——教学载体教的必须是真实生效的告警）`,
+        );
+        continue;
+      }
+      const norm = (v) => (v === null || v === undefined ? "" : String(v).trim());
+      if (norm(rule.for) !== norm(wiring.for)) {
+        errors.push(
+          `阅读版告警 "${rule.alert}" 的 for 与接线版不一致：阅读版 ${JSON.stringify(rule.for)} vs 接线版 ${JSON.stringify(wiring.for ?? null)}`,
+        );
+      }
+      if (norm(rule.severity) !== norm(wiring.severity)) {
+        errors.push(
+          `阅读版告警 "${rule.alert}" 的 severity 与接线版不一致：阅读版 ${JSON.stringify(rule.severity)} vs 接线版 ${JSON.stringify(wiring.severity ?? null)}`,
+        );
+      }
+      if (rule.expr !== null && wiring.expr !== undefined) {
+        const a = normalizeExpr(rule.expr);
+        const b = normalizeExpr(wiring.expr);
+        if (a !== b) {
+          errors.push(
+            `阅读版告警 "${rule.alert}" 的 expr 与接线版语义不一致（空白归一后仍不同）：阅读版 "${a.slice(0, 120)}" vs 接线版 "${b.slice(0, 120)}"`,
+          );
+        }
+      }
     }
   }
   return errors;
@@ -570,11 +683,23 @@ function scanReal() {
     doc = null;
   }
   let ruleCount = 0;
+  // 语义级对账的数据源：接线版规则的 (alert, expr, for, severity) 四元组。
+  // 仅在接线版自身守卫通过时构建——接线版红时语义对账退回轻量模式（它自己的
+  // 违规已在上报队列里，不叠加噪声）。
+  let wiringRules = null;
   if (doc) {
     const errors = validateAlertsDocument(doc, { metricNames: inventory });
     if (errors.length > 0) {
       failures.push(`${ALERTS_FILE}：${errors.length} 处违规\n  - ${errors.join("\n  - ")}`);
     } else {
+      wiringRules = (doc.groups ?? []).flatMap((group) =>
+        (Array.isArray(group?.rules) ? group.rules : []).map((rule) => ({
+          alert: rule?.alert,
+          expr: rule?.expr,
+          for: rule?.for ?? null,
+          severity: rule?.labels?.severity ?? null,
+        })),
+      );
       ruleCount = doc.groups.reduce(
         (n, group) => n + (Array.isArray(group?.rules) ? group.rules.length : 0),
         0,
@@ -613,12 +738,15 @@ function scanReal() {
     readingRules = null;
   }
   if (readingRules !== null) {
-    const errors = validateReadingRulesText(readingRules, { metricNames: inventory });
+    const errors = validateReadingRulesText(readingRules, {
+      metricNames: inventory,
+      wiringRules,
+    });
     if (errors.length > 0) {
       failures.push(`${READING_RULES_FILE}：${errors.length} 处违规\n  - ${errors.join("\n  - ")}`);
     } else {
       console.log(
-        `✓ ${READING_RULES_FILE}：存在且引用指标与清单对账通过（语义以 alerts.yml 为准）`,
+        `✓ ${READING_RULES_FILE}：指标名对账通过 + ${wiringRules ? `语义级对账通过（for/severity/expr 归一，对 ${wiringRules.length} 条接线规则）` : "语义对账跳过（接线版未过守卫）"}`,
       );
     }
   }
@@ -896,10 +1024,66 @@ function runSelftest() {
       sources: [],
       expected: ["文件为空"],
     },
+    // ── 语义级对账（2026-10-07 升级）：wiringRules 在位时的正反例 ──
+    {
+      name: "语义对账好样例应零报错（块标量 expr 空白归一后与接线版一致）",
+      text: [
+        "groups:",
+        "  - name: g",
+        "    rules:",
+        "      - alert: A_DOWN",
+        "        expr: |",
+        "          (autoflow_queue_up == 0)",
+        "          or",
+        "          (rate(autoflow_scheduler_ticks_total[5m]) == 0)",
+        "        for: 5m",
+        "        labels:",
+        "          severity: critical",
+      ].join("\n"),
+      sources: ['const x = "autoflow_queue_up";', 'const y = "autoflow_scheduler_ticks_total";'],
+      wiringRules: [
+        {
+          alert: "A_DOWN",
+          expr: "(autoflow_queue_up == 0) or\n  (rate(autoflow_scheduler_ticks_total[5m]) == 0)",
+          for: "5m",
+          severity: "critical",
+        },
+      ],
+      expected: [],
+    },
+    {
+      name: "语义对账：阅读版告警不在接线版应被拦截",
+      text: "groups:\n  - name: g\n    rules:\n      - alert: GHOST_ALERT\n        expr: autoflow_queue_up == 0\n        for: 5m\n        labels:\n          severity: critical",
+      sources: ['const x = "autoflow_queue_up";'],
+      wiringRules: [{ alert: "OTHER", expr: "up", for: "5m", severity: "warning" }],
+      expected: ["在接线版"],
+    },
+    {
+      name: "语义对账：for 漂移应被拦截",
+      text: "groups:\n  - name: g\n    rules:\n      - alert: A_DOWN\n        expr: autoflow_queue_up == 0\n        for: 10m\n        labels:\n          severity: critical",
+      sources: ['const x = "autoflow_queue_up";'],
+      wiringRules: [{ alert: "A_DOWN", expr: "autoflow_queue_up == 0", for: "5m", severity: "critical" }],
+      expected: ["for 与接线版不一致"],
+    },
+    {
+      name: "语义对账：severity 漂移应被拦截",
+      text: "groups:\n  - name: g\n    rules:\n      - alert: A_DOWN\n        expr: autoflow_queue_up == 0\n        for: 5m\n        labels:\n          severity: warning",
+      sources: ['const x = "autoflow_queue_up";'],
+      wiringRules: [{ alert: "A_DOWN", expr: "autoflow_queue_up == 0", for: "5m", severity: "critical" }],
+      expected: ["severity 与接线版不一致"],
+    },
+    {
+      name: "语义对账：expr 漂移应被拦截（实扫抓出的单实例→多实例形态）",
+      text: "groups:\n  - name: g\n    rules:\n      - alert: A_DOWN\n        expr: rate(autoflow_scheduler_ticks_total[5m]) == 0\n        for: 5m\n        labels:\n          severity: critical",
+      sources: ['const x = "autoflow_scheduler_ticks_total";'],
+      wiringRules: [{ alert: "A_DOWN", expr: "sum(rate(autoflow_scheduler_ticks_total[10m])) == 0", for: "5m", severity: "critical" }],
+      expected: ["expr 与接线版语义不一致"],
+    },
   ];
   for (const check of readingChecks) {
     const errors = validateReadingRulesText(check.text, {
       metricNames: buildMetricInventory(check.sources),
+      wiringRules: check.wiringRules ?? null,
     });
     const missing = check.expected.filter(
       (keyword) => !errors.some((error) => error.includes(keyword)),
