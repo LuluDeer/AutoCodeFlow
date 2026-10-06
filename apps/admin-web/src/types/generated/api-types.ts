@@ -3704,6 +3704,353 @@ export interface components {
              */
             role: "admin" | "user";
         };
+        TaskResponseDto: {
+            /** Format: uuid */
+            id: string;
+            /** @description Task name (globally unique) */
+            name: string;
+            /** @description Task description */
+            description: string | null;
+            /**
+             * @description deleted rows are never returned (soft-delete)
+             * @enum {string}
+             */
+            status: "active" | "paused" | "deleted";
+            /** @enum {string} */
+            triggerType: "cron" | "fixed_rate" | "api" | "manual";
+            /** @description 5-field cron expression (cron tasks) */
+            cronExpression: string | null;
+            /** @description IANA timezone for cron evaluation */
+            timezone: string | null;
+            /** @description Fixed-rate interval in ms (fixed_rate tasks) */
+            fixedRate: number | null;
+            /** @enum {string} */
+            runtime: "python" | "node" | "shell";
+            /** @description Declared interpreter version (multiversion WS1) */
+            runtimeVersion: string | null;
+            /** @description Dependency specs installed by the executor before running (packaged tasks) */
+            dependencies: {
+                [key: string]: string;
+            } | null;
+            /** @description Entry file inside the package */
+            entrypoint: string | null;
+            /** @description Python/node dependency list (uv pip install / npm install) */
+            requirements: string[] | null;
+            /** @description Git repo URL (git-source tasks) */
+            gitRepo: string | null;
+            gitBranch: string | null;
+            /** @description Currently checked-out commit */
+            gitCommit: string | null;
+            /** @description Latest config-snapshot version label */
+            currentVersion: string | null;
+            /** @description Execution timeout in seconds (0 = unlimited) */
+            timeout: number;
+            /** @description Retry budget for failed dispatch/execution */
+            maxRetry: number;
+            /** @description Delay between retries in seconds */
+            retryDelay: number;
+            /** @description Case-insensitive substrings of failure eligible for retry; null/empty = retry every failure */
+            retryableErrors: string[] | null;
+            /** @enum {string} */
+            blockStrategy: "serial" | "discard" | "cover_early";
+            /** @enum {string} */
+            misfireStrategy: "ignore" | "fire_once";
+            /**
+             * @description Stored (and returned) as the PG enum label; numeric input is normalized on write
+             * @enum {string}
+             */
+            priority: "low" | "normal" | "high" | "critical";
+            /** @enum {string} */
+            executeMode: "single" | "broadcast";
+            /**
+             * Format: date-time
+             * @description Last time the scheduler enqueued this task
+             */
+            lastTriggerTime: string | null;
+            alarmEmail: string | null;
+            /** @description Alarm channel names for failure/timeout alerts */
+            alarmChannels: string[] | null;
+            /** @description Default run parameters (plain runtime params, no credentials) */
+            params: {
+                [key: string]: unknown;
+            } | null;
+            /** @description Pin to an executor app by name */
+            executorAppName: string | null;
+            /**
+             * Format: uuid
+             * @description Application (zip package) this task runs from
+             */
+            applicationId: string | null;
+            /**
+             * @description Explicit code-source channel (null = legacy row, union semantics apply on read)
+             * @enum {string}
+             */
+            codeSource: "git" | "glue" | "application_zip" | null;
+            /**
+             * Format: uuid
+             * @description Owning project (null = unassigned/default-project view)
+             */
+            projectId: string | null;
+            /** @description Project relation — NOT loaded by current read paths (plain repo reads never join it) */
+            project?: {
+                /** Format: uuid */
+                id?: string;
+                name?: string;
+            } | null;
+            /** @description Creator user id (null = unowned legacy row; guards treat as admin-only) */
+            ownerUserId: number | null;
+            /** @description Task secrets, ALWAYS masked: leaf values are '******' (SEC-02); plaintext never leaves the server */
+            secrets: {
+                [key: string]: string;
+            } | null;
+            /** @description Executor group filter (AND with tags) */
+            executorGroup: string | null;
+            /** @description Required executor tags (AND subset semantics) */
+            executorTags: string[] | null;
+            /** @description Affinity tags — ANY match keeps the executor in candidates (OR) */
+            executorAffinityTags: string[] | null;
+            /** @description Anti-affinity tags — ANY match excludes the executor */
+            executorAntiAffinityTags: string[] | null;
+            /**
+             * @description Task-level deployment constraint; null = follow global executor.deploymentPolicy
+             * @enum {string}
+             */
+            deploymentPolicy: "strict" | "prefer" | null;
+            /**
+             * Format: uuid
+             * @description Pinned executor id (exclusive with broadcast; no fallback to fleet)
+             */
+            executorId: string | null;
+            /** @description Inline GLUE script source (admin-editable) */
+            glueSource: string | null;
+            /** @description GLUE language: python/javascript/shell */
+            glueLanguage: string | null;
+            /** @description Maintenance windows: 5-field cron start/end pairs, half-open [start, end) */
+            maintenanceWindows: {
+                start: string;
+                end: string;
+                description?: string;
+            }[] | null;
+            /** @description Markdown runbook shown on failure + consumed by alert routing */
+            runbook: string | null;
+            /** @description Post-timeout action (kill default; kill_retry re-enqueues once; notify_only skips admin-side kill) */
+            timeoutAction: string | null;
+            /** @description Timeout WARNING notification threshold as % of timeout (0-90, null = off) */
+            timeoutWarnRatio: number | null;
+            /** @description Expected duration in seconds (load-score input; 0/null = unknown) */
+            estimatedDurationSec: number | null;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+            /**
+             * Format: date-time
+             * @description Soft-delete column (filtered out of all reads)
+             */
+            deletedAt: string | null;
+        };
+        TaskExecutionResponseDto: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            taskId: string;
+            /** @description Task name snapshot at dispatch time */
+            taskName: string;
+            /** @enum {string} */
+            status: "pending" | "running" | "waiting" | "success" | "failed" | "timeout" | "killed" | "cancelled";
+            /** @description Task relation — NOT loaded by current read paths */
+            task?: {
+                [key: string]: unknown;
+            } | null;
+            /** @description Executor address the execution was dispatched to */
+            executorAddress: string | null;
+            /** @description Accumulated log text (single-execution reads only — list reads exclude it) */
+            logs: string | null;
+            /** @description 'db' or object-store marker for the log backend */
+            logStorage: string | null;
+            /** @description Object key when logs live in S3/MinIO */
+            logObjectKey: string | null;
+            /** @description Structured result payload returned by the task */
+            result: {
+                [key: string]: unknown;
+            } | null;
+            /** @description Merged run parameters actually dispatched */
+            params: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Format: date-time
+             * @description First dispatch/arrival on the executor
+             */
+            startTime: string | null;
+            /** Format: date-time */
+            endTime: string | null;
+            /** @description wall-clock ms (endTime - startTime) */
+            duration: number | null;
+            /** @description Retry budget consumed so far */
+            retryCount: number;
+            errorMessage: string | null;
+            /**
+             * @description Classified failure token (executor-reportable subset + admin-internal tokens)
+             * @enum {string}
+             */
+            failureReason: "package_fetch_failed" | "script_error" | "timeout" | "executor_offline" | "executor_restart" | "stale_recovered" | "dependency_install_failed" | "git_fetch_failed" | "runtime_missing" | "interpreter_unavailable" | "sandbox_unavailable" | "killed" | "unknown" | "application_missing" | "never_dispatched" | null;
+            /** @description Process exit code when the executor surfaced one */
+            exitCode: number | null;
+            /** @description AI failure analysis text (empty string = no analysis) */
+            aiAnalysis: string | null;
+            /** @description Artifacts uploaded by the execution */
+            artifacts: {
+                name: string;
+                size: number;
+                sha256: string;
+            }[] | null;
+            /** @description manual/cron/webhook/api/dependency — how this run was triggered */
+            triggerType: string | null;
+            /** @description Pinned config-snapshot version this run replayed */
+            taskVersion: string | null;
+            /** @description W3C trace-id propagated through dispatch */
+            traceId: string | null;
+            /** @description Resolved package URL for packaged runs */
+            resolvedPackageUrl: string | null;
+            /** @description Resolved package version for packaged runs */
+            resolvedPackageVersion: string | null;
+            /** Format: date-time */
+            createdAt: string;
+            /**
+             * Format: date-time
+             * @description When the dependency gate fired this execution
+             */
+            depsFiredAt: string | null;
+            /**
+             * Format: uuid
+             * @description Mutex group the execution is queued/running under
+             */
+            mutexGroupId: string | null;
+            /** @description Optimistic-lock version column */
+            version: number;
+        };
+        ExecutionListItemDto: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            taskId: string;
+            /** @description Task name snapshot at dispatch time */
+            taskName: string;
+            /** @enum {string} */
+            status: "pending" | "running" | "waiting" | "success" | "failed" | "timeout" | "killed" | "cancelled";
+            /** @description Task relation — NOT loaded by current read paths */
+            task?: {
+                [key: string]: unknown;
+            } | null;
+            /** @description Executor address the execution was dispatched to */
+            executorAddress: string | null;
+            /** @description Excluded from list/stats reads (PERF-03) — fetch via the logs endpoints */
+            logs?: string | null;
+            /** @description 'db' or object-store marker for the log backend */
+            logStorage: string | null;
+            /** @description Object key when logs live in S3/MinIO */
+            logObjectKey: string | null;
+            /** @description List reads return it; stats recentExecutions exclude this column entirely */
+            result?: {
+                [key: string]: unknown;
+            } | null;
+            /** @description Merged run parameters actually dispatched */
+            params: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Format: date-time
+             * @description First dispatch/arrival on the executor
+             */
+            startTime: string | null;
+            /** Format: date-time */
+            endTime: string | null;
+            /** @description wall-clock ms (endTime - startTime) */
+            duration: number | null;
+            /** @description Retry budget consumed so far */
+            retryCount: number;
+            errorMessage: string | null;
+            /**
+             * @description Classified failure token (executor-reportable subset + admin-internal tokens)
+             * @enum {string}
+             */
+            failureReason: "package_fetch_failed" | "script_error" | "timeout" | "executor_offline" | "executor_restart" | "stale_recovered" | "dependency_install_failed" | "git_fetch_failed" | "runtime_missing" | "interpreter_unavailable" | "sandbox_unavailable" | "killed" | "unknown" | "application_missing" | "never_dispatched" | null;
+            /** @description Process exit code when the executor surfaced one */
+            exitCode: number | null;
+            /** @description Excluded from list/stats reads (PERF-03) */
+            aiAnalysis?: string | null;
+            /** @description Artifacts uploaded by the execution */
+            artifacts: {
+                name: string;
+                size: number;
+                sha256: string;
+            }[] | null;
+            /** @description manual/cron/webhook/api/dependency — how this run was triggered */
+            triggerType: string | null;
+            /** @description Pinned config-snapshot version this run replayed */
+            taskVersion: string | null;
+            /** @description W3C trace-id propagated through dispatch */
+            traceId: string | null;
+            /** @description Resolved package URL for packaged runs */
+            resolvedPackageUrl: string | null;
+            /** @description Resolved package version for packaged runs */
+            resolvedPackageVersion: string | null;
+            /** Format: date-time */
+            createdAt: string;
+            /**
+             * Format: date-time
+             * @description When the dependency gate fired this execution
+             */
+            depsFiredAt: string | null;
+            /**
+             * Format: uuid
+             * @description Mutex group the execution is queued/running under
+             */
+            mutexGroupId: string | null;
+            /** @description Optimistic-lock version column */
+            version: number;
+        };
+        BatchErrorItemDto: {
+            /** @description The requested task id */
+            id: string;
+            /** @description err.message — partial-failure marker */
+            error: string;
+        };
+        VersionDiffEntryDto: {
+            /** @description Value in version1 (any JSON) */
+            old: Record<string, never>;
+            /** @description Value in version2 (any JSON) */
+            new: Record<string, never>;
+        };
+        ExecutionTimelineEntryDto: {
+            /** @enum {string} */
+            phase: "created" | "started" | "finished";
+            /** @description ISO timestamp, null when the phase never happened */
+            at: string | null;
+            /** @description e.g. 'trigger=manual' */
+            detail?: string;
+        };
+        ExecutionReportSummaryDto: {
+            id: number;
+            /**
+             * Format: date-time
+             * @description DATE column — the aggregate's day
+             */
+            triggerDay: string;
+            runningCount: number;
+            successCount: number;
+            failCount: number;
+            timeoutCount: number;
+            cancelledCount: number;
+            avgDurationMs: number;
+            maxDurationMs: number;
+            minDurationMs: number;
+            /** Format: date-time */
+            updateTime: string;
+            /** Format: date-time */
+            createdAt: string;
+        };
         MaintenanceWindowDto: {
             /**
              * @description 窗口开启 Cron（5 字段：分 时 日 月 周）
@@ -3830,6 +4177,66 @@ export interface components {
             name: string;
             /** @description Always contains the reconfigure-secrets hint (SEC-02 red line); may contain additional notes (e.g. an ignored secrets key). */
             warnings: string[];
+        };
+        PaginatedTaskListDto: {
+            list: components["schemas"]["TaskResponseDto"][];
+            items: components["schemas"]["TaskResponseDto"][];
+            total: number;
+            page: number;
+            pageSize: number;
+            totalPages: number;
+        };
+        PaginatedExecutionListDto: {
+            list: components["schemas"]["ExecutionListItemDto"][];
+            items: components["schemas"]["ExecutionListItemDto"][];
+            total: number;
+            page: number;
+            pageSize: number;
+            totalPages: number;
+        };
+        ExecutionLogsPageResponseDto: {
+            /** @description Raw log lines from fromLine (level filter applies when given) */
+            lines: string[];
+            /** @description True total count of the (filtered) line set */
+            totalLines: number;
+            /** @description fromLine + lines.length < totalLines */
+            hasMore: boolean;
+        };
+        SchedulerStatsResponseDto: {
+            healthy: boolean;
+            /** @description LeaderGate: only the leader schedules */
+            isLeader: boolean;
+            activeTimers: number;
+            activeCronTasks: number;
+            runningTaskCount: number;
+            totalScheduledTasks: number;
+            /** @description process.uptime() seconds */
+            uptime: number;
+        };
+        ExecutionStatsResponseDto: {
+            /** @description Last 20 executions (list projection minus result) */
+            recentExecutions: components["schemas"]["ExecutionListItemDto"][];
+            /** @description Success % over the last-20 window (reference only) */
+            recentSuccessRate: number;
+            /** @description Success % over ALL runs (authoritative since FIX-5.1) */
+            successRate: number;
+            /** @description All-time SUCCESS count */
+            succeeded: number;
+            /** @description All-time FAILED + TIMEOUT count (killed/cancelled not counted) */
+            failed: number;
+            /** @description Mean duration ms over the recent window (0 when none) */
+            avgDuration: number;
+            totalRuns: number;
+        };
+        SuggestScheduleResponseDto: {
+            /** Format: uuid */
+            taskId: string;
+            currentCron: string | null;
+            /** @description Recommended 5-field cron expression */
+            suggestedCron: string;
+            reasoning: string;
+            /** @description True when the LLM path failed and a heuristic suggestion was returned */
+            fallback?: boolean;
         };
         TaskDefinitionDto: {
             /**
@@ -4026,11 +4433,61 @@ export interface components {
              */
             expectedUpdatedAt?: string;
         };
+        DeleteTaskResponseDto: {
+            deleted: boolean;
+        };
         TriggerTaskDto: {
             /** @description Trigger params override; serialized size must not exceed 65536 bytes (same limit as the webhook face) */
             params?: Record<string, never>;
             /** @example 3 */
             version?: number;
+        };
+        WebhookStatusResponseDto: {
+            enabled: boolean;
+            /** @description Signed inbound trigger URL */
+            url: string;
+        };
+        WebhookSecretResponseDto: {
+            url: string;
+            /** @description Plaintext secret shown ONCE; rotate to re-issue */
+            secret: string;
+        };
+        WebhookDisableResponseDto: {
+            enabled: boolean;
+        };
+        ExecutionReportResponseDto: {
+            execution: components["schemas"]["TaskExecutionResponseDto"];
+            timeline: components["schemas"]["ExecutionTimelineEntryDto"][];
+            /** @description Same-day aggregate row; null when none exists (normal state, frontend degrades) */
+            report: components["schemas"]["ExecutionReportSummaryDto"] | null;
+        };
+        GitRollbackResponseDto: {
+            execution: components["schemas"]["TaskExecutionResponseDto"];
+            /** @description Commit the repo was on before rollback */
+            rolledBackFrom: string | null;
+            /** @description Commit rolled back to */
+            rolledBackTo: string;
+        };
+        TaskVersionDto: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            taskId: string;
+            /** @description Human label like 'v3' */
+            version: string;
+            gitCommit: string | null;
+            /** @description Full task config snapshot (feeds rollbackToVersion) */
+            snapshot: {
+                [key: string]: unknown;
+            };
+            createdBy: string | null;
+            description: string | null;
+            /** Format: date-time */
+            createdAt: string;
+        };
+        KillExecutionResponseDto: {
+            success: boolean;
+            message: string;
         };
         BatchTaskIdsDto: {
             /**
@@ -5843,13 +6300,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Task list */
+            /** @description Paginated list (list/items double key, R-21). Default projection = full entity with secrets masked; ?fields= shrinks items (F-10). */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["PaginatedTaskListDto"];
                 };
             };
         };
@@ -5867,13 +6324,13 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Task created successfully */
+            /** @description Task created successfully (starts paused) */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["TaskResponseDto"];
                 };
             };
         };
@@ -5937,12 +6394,14 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Batch trigger results */
-            200: {
+            /** @description Per-task trigger results (success item = full execution; failure item = {id, error}) */
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": (components["schemas"]["TaskExecutionResponseDto"] | components["schemas"]["BatchErrorItemDto"])[];
+                };
             };
         };
     };
@@ -5960,12 +6419,14 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Batch pause results */
-            200: {
+            /** @description Per-task pause results (success item = full task; failure item = {id, error}) */
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": (components["schemas"]["TaskResponseDto"] | components["schemas"]["BatchErrorItemDto"])[];
+                };
             };
         };
     };
@@ -5983,12 +6444,14 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Batch resume results */
-            200: {
+            /** @description Per-task resume results (success item = full task; failure item = {id, error}) */
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": (components["schemas"]["TaskResponseDto"] | components["schemas"]["BatchErrorItemDto"])[];
+                };
             };
         };
     };
@@ -6006,12 +6469,14 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Batch delete results */
-            200: {
+            /** @description Per-task delete results (success item = {deleted: true}; failure item = {id, error}) */
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": (components["schemas"]["DeleteTaskResponseDto"] | components["schemas"]["BatchErrorItemDto"])[];
+                };
             };
         };
     };
@@ -6043,11 +6508,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description Global execution records (heavy text columns excluded) */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["PaginatedExecutionListDto"];
+                };
             };
         };
     };
@@ -6074,7 +6542,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ExecutionLogsPageResponseDto"];
+                };
             };
         };
     };
@@ -6094,7 +6564,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["TaskExecutionResponseDto"];
+                };
             };
         };
     };
@@ -6111,7 +6583,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["SchedulerStatsResponseDto"];
+                };
             };
         };
     };
@@ -6127,11 +6601,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description successRate/succeeded/failed are ALL-RUN figures since FIX-5.1; recentSuccessRate keeps the last-20 window */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ExecutionStatsResponseDto"];
+                };
             };
         };
     };
@@ -6147,11 +6624,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description AI recommendation; fallback=true marks the heuristic path */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["SuggestScheduleResponseDto"];
+                };
             };
         };
     };
@@ -6167,6 +6647,15 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description Full task entity with secrets masked */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskResponseDto"];
+                };
+            };
             /** @description Task not found */
             404: {
                 headers: {
@@ -6188,12 +6677,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Deleted successfully */
+            /** @description Soft-deleted (status=deleted + deletedAt) */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["DeleteTaskResponseDto"];
+                };
             };
             /** @description Task not found */
             404: {
@@ -6220,12 +6711,14 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Updated successfully */
+            /** @description Updated successfully (secrets masked) */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["TaskResponseDto"];
+                };
             };
             /** @description Task not found */
             404: {
@@ -6290,7 +6783,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["TaskResponseDto"];
+                };
             };
             /** @description Task not found */
             404: {
@@ -6317,13 +6812,13 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Trigger successful */
-            200: {
+            /** @description Execution row created and enqueued */
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["TaskExecutionResponseDto"];
                 };
             };
             /** @description Trigger rejected: an active execution with the same params already exists (blockStrategy=discard) */
@@ -6346,12 +6841,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Webhook status */
+            /** @description Webhook status (secret never returned) */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["WebhookStatusResponseDto"];
+                };
             };
         };
     };
@@ -6371,7 +6868,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["WebhookSecretResponseDto"];
+                };
             };
         };
     };
@@ -6391,7 +6890,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["WebhookSecretResponseDto"];
+                };
             };
         };
     };
@@ -6411,7 +6912,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["WebhookDisableResponseDto"];
+                };
             };
         };
     };
@@ -6439,11 +6942,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description Execution history (heavy text columns excluded) */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["PaginatedExecutionListDto"];
+                };
             };
         };
     };
@@ -6461,6 +6967,15 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description Full execution row (includes logs/aiAnalysis) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskExecutionResponseDto"];
+                };
+            };
             /** @description Execution record not found */
             404: {
                 headers: {
@@ -6484,6 +6999,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExecutionReportResponseDto"];
+                };
+            };
             /** @description Execution record not found */
             404: {
                 headers: {
@@ -6518,7 +7041,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ExecutionLogsPageResponseDto"];
+                };
             };
         };
     };
@@ -6561,6 +7086,15 @@ export interface operations {
             };
         };
         responses: {
+            /** @description New execution dispatched at the target commit (POST default 201) */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GitRollbackResponseDto"];
+                };
+            };
             /** @description Rollback not supported for non-Git tasks */
             400: {
                 headers: {
@@ -6589,12 +7123,14 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Rollback successful */
-            200: {
+            /** @description Task config rolled back to the snapshot (POST default 201) */
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["TaskResponseDto"];
+                };
             };
             /** @description Task or version not found */
             404: {
@@ -6617,11 +7153,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description Most recent 100 snapshots */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["TaskVersionDto"][];
+                };
             };
         };
     };
@@ -6641,12 +7180,16 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Version diff */
+            /** @description Keyed diff — only changed fields, each {old, new} */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": {
+                        [key: string]: components["schemas"]["VersionDiffEntryDto"];
+                    };
+                };
             };
             /** @description Task or version not found */
             404: {
@@ -6669,12 +7212,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Paused successfully */
-            200: {
+            /** @description Paused (POST default 201) */
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["TaskResponseDto"];
+                };
             };
             /** @description Task is already paused */
             400: {
@@ -6704,12 +7249,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Resumed successfully */
-            200: {
+            /** @description Resumed (POST default 201) */
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["TaskResponseDto"];
+                };
             };
             /** @description Task is already running */
             400: {
@@ -6741,12 +7288,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description AI analysis result */
-            200: {
+            /** @description Updated execution with aiAnalysis persisted (POST default 201) */
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["TaskExecutionResponseDto"];
+                };
             };
         };
     };
@@ -6764,12 +7313,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Cancelled successfully */
-            200: {
+            /** @description Cancelled (POST default 201) */
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["KillExecutionResponseDto"];
+                };
             };
             /** @description Execution is not in a cancellable state */
             400: {

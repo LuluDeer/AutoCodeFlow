@@ -681,23 +681,11 @@
         },
         "responses": {
           "201": {
-            "description": "Task created successfully",
+            "description": "Task created successfully (starts paused)",
             "content": {
               "application/json": {
                 "schema": {
-                  "example": {
-                    "code": 200,
-                    "message": "success",
-                    "data": {
-                      "id": "task-uuid",
-                      "name": "Data sync task",
-                      "description": "Sync database data at midnight daily",
-                      "type": "cron",
-                      "schedule": "0 0 * * *",
-                      "status": "paused",
-                      "createdAt": "2024-01-01T12:00:00Z"
-                    }
-                  }
+                  "$ref": "#/components/schemas/TaskResponseDto"
                 }
               }
             }
@@ -803,20 +791,11 @@
         ],
         "responses": {
           "200": {
-            "description": "Task list",
+            "description": "Paginated list (list/items double key, R-21). Default projection = full entity with secrets masked; ?fields= shrinks items (F-10).",
             "content": {
               "application/json": {
                 "schema": {
-                  "example": {
-                    "code": 200,
-                    "message": "success",
-                    "data": {
-                      "items": [],
-                      "total": 10,
-                      "page": 1,
-                      "limit": 20
-                    }
-                  }
+                  "$ref": "#/components/schemas/PaginatedTaskListDto"
                 }
               }
             }
@@ -903,8 +882,25 @@
           }
         },
         "responses": {
-          "200": {
-            "description": "Batch trigger results"
+          "201": {
+            "description": "Per-task trigger results (success item = full execution; failure item = {id, error})",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "oneOf": [
+                      {
+                        "$ref": "#/components/schemas/TaskExecutionResponseDto"
+                      },
+                      {
+                        "$ref": "#/components/schemas/BatchErrorItemDto"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
           }
         },
         "security": [
@@ -941,8 +937,25 @@
           }
         },
         "responses": {
-          "200": {
-            "description": "Batch pause results"
+          "201": {
+            "description": "Per-task pause results (success item = full task; failure item = {id, error})",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "oneOf": [
+                      {
+                        "$ref": "#/components/schemas/TaskResponseDto"
+                      },
+                      {
+                        "$ref": "#/components/schemas/BatchErrorItemDto"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
           }
         },
         "security": [
@@ -979,8 +992,25 @@
           }
         },
         "responses": {
-          "200": {
-            "description": "Batch resume results"
+          "201": {
+            "description": "Per-task resume results (success item = full task; failure item = {id, error})",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "oneOf": [
+                      {
+                        "$ref": "#/components/schemas/TaskResponseDto"
+                      },
+                      {
+                        "$ref": "#/components/schemas/BatchErrorItemDto"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
           }
         },
         "security": [
@@ -1017,8 +1047,25 @@
           }
         },
         "responses": {
-          "200": {
-            "description": "Batch delete results"
+          "201": {
+            "description": "Per-task delete results (success item = {deleted: true}; failure item = {id, error})",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "oneOf": [
+                      {
+                        "$ref": "#/components/schemas/DeleteTaskResponseDto"
+                      },
+                      {
+                        "$ref": "#/components/schemas/BatchErrorItemDto"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
           }
         },
         "security": [
@@ -1139,7 +1186,14 @@
         ],
         "responses": {
           "200": {
-            "description": ""
+            "description": "Global execution records (heavy text columns excluded)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaginatedExecutionListDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -1203,7 +1257,14 @@
         ],
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecutionLogsPageResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -1234,7 +1295,14 @@
         ],
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskExecutionResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -1254,7 +1322,14 @@
         "parameters": [],
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SchedulerStatsResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -1285,7 +1360,14 @@
         ],
         "responses": {
           "200": {
-            "description": ""
+            "description": "successRate/succeeded/failed are ALL-RUN figures since FIX-5.1; recentSuccessRate keeps the last-20 window",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecutionStatsResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -1316,7 +1398,14 @@
         ],
         "responses": {
           "201": {
-            "description": ""
+            "description": "AI recommendation; fallback=true marks the heuristic path",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuggestScheduleResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -1346,6 +1435,16 @@
           }
         ],
         "responses": {
+          "200": {
+            "description": "Full task entity with secrets masked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskResponseDto"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Task not found"
           }
@@ -1386,7 +1485,14 @@
         },
         "responses": {
           "200": {
-            "description": "Updated successfully"
+            "description": "Updated successfully (secrets masked)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskResponseDto"
+                }
+              }
+            }
           },
           "404": {
             "description": "Task not found"
@@ -1418,7 +1524,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Deleted successfully"
+            "description": "Soft-deleted (status=deleted + deletedAt)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteTaskResponseDto"
+                }
+              }
+            }
           },
           "404": {
             "description": "Task not found"
@@ -1511,7 +1624,14 @@
         },
         "responses": {
           "200": {
-            "description": "Script updated"
+            "description": "Script updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskResponseDto"
+                }
+              }
+            }
           },
           "404": {
             "description": "Task not found"
@@ -1554,20 +1674,12 @@
           }
         },
         "responses": {
-          "200": {
-            "description": "Trigger successful",
+          "201": {
+            "description": "Execution row created and enqueued",
             "content": {
               "application/json": {
                 "schema": {
-                  "example": {
-                    "code": 200,
-                    "message": "success",
-                    "data": {
-                      "taskId": "task-uuid",
-                      "executionId": "exec-uuid",
-                      "status": "pending"
-                    }
-                  }
+                  "$ref": "#/components/schemas/TaskExecutionResponseDto"
                 }
               }
             }
@@ -1603,7 +1715,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Webhook status"
+            "description": "Webhook status (secret never returned)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookStatusResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -1633,7 +1752,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Webhook URL + one-time secret"
+            "description": "Webhook URL + one-time secret",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookSecretResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -1663,7 +1789,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Webhook URL + one-time secret"
+            "description": "Webhook URL + one-time secret",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookSecretResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -1693,7 +1826,14 @@
         ],
         "responses": {
           "200": {
-            "description": "`{ enabled: false }`"
+            "description": "`{ enabled: false }`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookDisableResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -1787,7 +1927,14 @@
         ],
         "responses": {
           "200": {
-            "description": ""
+            "description": "Execution history (heavy text columns excluded)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaginatedExecutionListDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -1826,6 +1973,16 @@
           }
         ],
         "responses": {
+          "200": {
+            "description": "Full execution row (includes logs/aiAnalysis)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskExecutionResponseDto"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Execution record not found"
           }
@@ -1866,6 +2023,16 @@
           }
         ],
         "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecutionReportResponseDto"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Execution record not found"
           }
@@ -1940,7 +2107,14 @@
         ],
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecutionLogsPageResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -2024,6 +2198,16 @@
           }
         },
         "responses": {
+          "201": {
+            "description": "New execution dispatched at the target commit (POST default 201)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GitRollbackResponseDto"
+                }
+              }
+            }
+          },
           "400": {
             "description": "Rollback not supported for non-Git tasks"
           }
@@ -2075,8 +2259,15 @@
           }
         },
         "responses": {
-          "200": {
-            "description": "Rollback successful"
+          "201": {
+            "description": "Task config rolled back to the snapshot (POST default 201)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskResponseDto"
+                }
+              }
+            }
           },
           "404": {
             "description": "Task or version not found"
@@ -2110,7 +2301,17 @@
         ],
         "responses": {
           "200": {
-            "description": ""
+            "description": "Most recent 100 snapshots",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TaskVersionDto"
+                  }
+                }
+              }
+            }
           }
         },
         "security": [
@@ -2159,7 +2360,17 @@
         ],
         "responses": {
           "200": {
-            "description": "Version diff"
+            "description": "Keyed diff — only changed fields, each {old, new}",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "$ref": "#/components/schemas/VersionDiffEntryDto"
+                  }
+                }
+              }
+            }
           },
           "404": {
             "description": "Task or version not found"
@@ -2192,8 +2403,15 @@
           }
         ],
         "responses": {
-          "200": {
-            "description": "Paused successfully"
+          "201": {
+            "description": "Paused (POST default 201)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskResponseDto"
+                }
+              }
+            }
           },
           "400": {
             "description": "Task is already paused"
@@ -2229,8 +2447,15 @@
           }
         ],
         "responses": {
-          "200": {
-            "description": "Resumed successfully"
+          "201": {
+            "description": "Resumed (POST default 201)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskResponseDto"
+                }
+              }
+            }
           },
           "400": {
             "description": "Task is already running"
@@ -2275,8 +2500,15 @@
           }
         ],
         "responses": {
-          "200": {
-            "description": "AI analysis result"
+          "201": {
+            "description": "Updated execution with aiAnalysis persisted (POST default 201)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskExecutionResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -2315,8 +2547,15 @@
           }
         ],
         "responses": {
-          "200": {
-            "description": "Cancelled successfully"
+          "201": {
+            "description": "Cancelled (POST default 201)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KillExecutionResponseDto"
+                }
+              }
+            }
           },
           "400": {
             "description": "Execution is not in a cancellable state"
@@ -9188,6 +9427,966 @@
           }
         }
       },
+      "TaskResponseDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string",
+            "description": "Task name (globally unique)"
+          },
+          "description": {
+            "type": "string",
+            "description": "Task description",
+            "nullable": true
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "paused",
+              "deleted"
+            ],
+            "description": "deleted rows are never returned (soft-delete)"
+          },
+          "triggerType": {
+            "type": "string",
+            "enum": [
+              "cron",
+              "fixed_rate",
+              "api",
+              "manual"
+            ]
+          },
+          "cronExpression": {
+            "type": "string",
+            "description": "5-field cron expression (cron tasks)",
+            "nullable": true
+          },
+          "timezone": {
+            "type": "string",
+            "description": "IANA timezone for cron evaluation",
+            "nullable": true
+          },
+          "fixedRate": {
+            "type": "number",
+            "description": "Fixed-rate interval in ms (fixed_rate tasks)",
+            "nullable": true
+          },
+          "runtime": {
+            "type": "string",
+            "enum": [
+              "python",
+              "node",
+              "shell"
+            ]
+          },
+          "runtimeVersion": {
+            "type": "string",
+            "description": "Declared interpreter version (multiversion WS1)",
+            "nullable": true
+          },
+          "dependencies": {
+            "type": "object",
+            "description": "Dependency specs installed by the executor before running (packaged tasks)",
+            "nullable": true,
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "entrypoint": {
+            "type": "string",
+            "description": "Entry file inside the package",
+            "nullable": true
+          },
+          "requirements": {
+            "description": "Python/node dependency list (uv pip install / npm install)",
+            "nullable": true,
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "gitRepo": {
+            "type": "string",
+            "description": "Git repo URL (git-source tasks)",
+            "nullable": true
+          },
+          "gitBranch": {
+            "type": "string",
+            "nullable": true
+          },
+          "gitCommit": {
+            "type": "string",
+            "description": "Currently checked-out commit",
+            "nullable": true
+          },
+          "currentVersion": {
+            "type": "string",
+            "description": "Latest config-snapshot version label",
+            "nullable": true
+          },
+          "timeout": {
+            "type": "number",
+            "description": "Execution timeout in seconds (0 = unlimited)"
+          },
+          "maxRetry": {
+            "type": "number",
+            "description": "Retry budget for failed dispatch/execution"
+          },
+          "retryDelay": {
+            "type": "number",
+            "description": "Delay between retries in seconds"
+          },
+          "retryableErrors": {
+            "description": "Case-insensitive substrings of failure eligible for retry; null/empty = retry every failure",
+            "nullable": true,
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "blockStrategy": {
+            "type": "string",
+            "enum": [
+              "serial",
+              "discard",
+              "cover_early"
+            ]
+          },
+          "misfireStrategy": {
+            "type": "string",
+            "enum": [
+              "ignore",
+              "fire_once"
+            ]
+          },
+          "priority": {
+            "type": "string",
+            "description": "Stored (and returned) as the PG enum label; numeric input is normalized on write",
+            "enum": [
+              "low",
+              "normal",
+              "high",
+              "critical"
+            ]
+          },
+          "executeMode": {
+            "type": "string",
+            "enum": [
+              "single",
+              "broadcast"
+            ]
+          },
+          "lastTriggerTime": {
+            "format": "date-time",
+            "type": "string",
+            "description": "Last time the scheduler enqueued this task",
+            "nullable": true
+          },
+          "alarmEmail": {
+            "type": "string",
+            "nullable": true
+          },
+          "alarmChannels": {
+            "description": "Alarm channel names for failure/timeout alerts",
+            "nullable": true,
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "params": {
+            "type": "object",
+            "description": "Default run parameters (plain runtime params, no credentials)",
+            "nullable": true,
+            "additionalProperties": true
+          },
+          "executorAppName": {
+            "type": "string",
+            "description": "Pin to an executor app by name",
+            "nullable": true
+          },
+          "applicationId": {
+            "type": "string",
+            "description": "Application (zip package) this task runs from",
+            "nullable": true,
+            "format": "uuid"
+          },
+          "codeSource": {
+            "type": "string",
+            "description": "Explicit code-source channel (null = legacy row, union semantics apply on read)",
+            "enum": [
+              "git",
+              "glue",
+              "application_zip",
+              null
+            ]
+          },
+          "projectId": {
+            "type": "string",
+            "description": "Owning project (null = unassigned/default-project view)",
+            "nullable": true,
+            "format": "uuid"
+          },
+          "project": {
+            "type": "object",
+            "description": "Project relation — NOT loaded by current read paths (plain repo reads never join it)",
+            "nullable": true,
+            "properties": {
+              "id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "name": {
+                "type": "string"
+              }
+            }
+          },
+          "ownerUserId": {
+            "type": "number",
+            "description": "Creator user id (null = unowned legacy row; guards treat as admin-only)",
+            "nullable": true
+          },
+          "secrets": {
+            "type": "object",
+            "description": "Task secrets, ALWAYS masked: leaf values are '******' (SEC-02); plaintext never leaves the server",
+            "nullable": true,
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "executorGroup": {
+            "type": "string",
+            "description": "Executor group filter (AND with tags)",
+            "nullable": true
+          },
+          "executorTags": {
+            "description": "Required executor tags (AND subset semantics)",
+            "nullable": true,
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "executorAffinityTags": {
+            "description": "Affinity tags — ANY match keeps the executor in candidates (OR)",
+            "nullable": true,
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "executorAntiAffinityTags": {
+            "description": "Anti-affinity tags — ANY match excludes the executor",
+            "nullable": true,
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "deploymentPolicy": {
+            "type": "string",
+            "description": "Task-level deployment constraint; null = follow global executor.deploymentPolicy",
+            "enum": [
+              "strict",
+              "prefer",
+              null
+            ]
+          },
+          "executorId": {
+            "type": "string",
+            "description": "Pinned executor id (exclusive with broadcast; no fallback to fleet)",
+            "nullable": true,
+            "format": "uuid"
+          },
+          "glueSource": {
+            "type": "string",
+            "description": "Inline GLUE script source (admin-editable)",
+            "nullable": true
+          },
+          "glueLanguage": {
+            "type": "string",
+            "description": "GLUE language: python/javascript/shell",
+            "nullable": true
+          },
+          "maintenanceWindows": {
+            "type": "array",
+            "description": "Maintenance windows: 5-field cron start/end pairs, half-open [start, end)",
+            "nullable": true,
+            "items": {
+              "type": "object",
+              "properties": {
+                "start": {
+                  "type": "string"
+                },
+                "end": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "start",
+                "end"
+              ]
+            }
+          },
+          "runbook": {
+            "type": "string",
+            "description": "Markdown runbook shown on failure + consumed by alert routing",
+            "nullable": true
+          },
+          "timeoutAction": {
+            "type": "string",
+            "description": "Post-timeout action (kill default; kill_retry re-enqueues once; notify_only skips admin-side kill)",
+            "nullable": true
+          },
+          "timeoutWarnRatio": {
+            "type": "number",
+            "description": "Timeout WARNING notification threshold as % of timeout (0-90, null = off)",
+            "nullable": true
+          },
+          "estimatedDurationSec": {
+            "type": "number",
+            "description": "Expected duration in seconds (load-score input; 0/null = unknown)",
+            "nullable": true
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "deletedAt": {
+            "format": "date-time",
+            "type": "string",
+            "description": "Soft-delete column (filtered out of all reads)",
+            "nullable": true
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "description",
+          "status",
+          "triggerType",
+          "cronExpression",
+          "timezone",
+          "fixedRate",
+          "runtime",
+          "runtimeVersion",
+          "dependencies",
+          "entrypoint",
+          "requirements",
+          "gitRepo",
+          "gitBranch",
+          "gitCommit",
+          "currentVersion",
+          "timeout",
+          "maxRetry",
+          "retryDelay",
+          "retryableErrors",
+          "blockStrategy",
+          "misfireStrategy",
+          "priority",
+          "executeMode",
+          "lastTriggerTime",
+          "alarmEmail",
+          "alarmChannels",
+          "params",
+          "executorAppName",
+          "applicationId",
+          "codeSource",
+          "projectId",
+          "ownerUserId",
+          "secrets",
+          "executorGroup",
+          "executorTags",
+          "executorAffinityTags",
+          "executorAntiAffinityTags",
+          "deploymentPolicy",
+          "executorId",
+          "glueSource",
+          "glueLanguage",
+          "maintenanceWindows",
+          "runbook",
+          "timeoutAction",
+          "timeoutWarnRatio",
+          "estimatedDurationSec",
+          "createdAt",
+          "updatedAt",
+          "deletedAt"
+        ]
+      },
+      "TaskExecutionResponseDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "taskId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "taskName": {
+            "type": "string",
+            "description": "Task name snapshot at dispatch time"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "running",
+              "waiting",
+              "success",
+              "failed",
+              "timeout",
+              "killed",
+              "cancelled"
+            ]
+          },
+          "task": {
+            "type": "object",
+            "description": "Task relation — NOT loaded by current read paths",
+            "nullable": true,
+            "additionalProperties": true
+          },
+          "executorAddress": {
+            "type": "string",
+            "description": "Executor address the execution was dispatched to",
+            "nullable": true
+          },
+          "logs": {
+            "type": "string",
+            "description": "Accumulated log text (single-execution reads only — list reads exclude it)",
+            "nullable": true
+          },
+          "logStorage": {
+            "type": "string",
+            "description": "'db' or object-store marker for the log backend",
+            "nullable": true
+          },
+          "logObjectKey": {
+            "type": "string",
+            "description": "Object key when logs live in S3/MinIO",
+            "nullable": true
+          },
+          "result": {
+            "type": "object",
+            "description": "Structured result payload returned by the task",
+            "nullable": true,
+            "additionalProperties": true
+          },
+          "params": {
+            "type": "object",
+            "description": "Merged run parameters actually dispatched",
+            "nullable": true,
+            "additionalProperties": true
+          },
+          "startTime": {
+            "format": "date-time",
+            "type": "string",
+            "description": "First dispatch/arrival on the executor",
+            "nullable": true
+          },
+          "endTime": {
+            "format": "date-time",
+            "type": "string",
+            "nullable": true
+          },
+          "duration": {
+            "type": "number",
+            "description": "wall-clock ms (endTime - startTime)",
+            "nullable": true
+          },
+          "retryCount": {
+            "type": "number",
+            "description": "Retry budget consumed so far"
+          },
+          "errorMessage": {
+            "type": "string",
+            "nullable": true
+          },
+          "failureReason": {
+            "type": "string",
+            "description": "Classified failure token (executor-reportable subset + admin-internal tokens)",
+            "enum": [
+              "package_fetch_failed",
+              "script_error",
+              "timeout",
+              "executor_offline",
+              "executor_restart",
+              "stale_recovered",
+              "dependency_install_failed",
+              "git_fetch_failed",
+              "runtime_missing",
+              "interpreter_unavailable",
+              "sandbox_unavailable",
+              "killed",
+              "unknown",
+              "application_missing",
+              "never_dispatched",
+              null
+            ]
+          },
+          "exitCode": {
+            "type": "number",
+            "description": "Process exit code when the executor surfaced one",
+            "nullable": true
+          },
+          "aiAnalysis": {
+            "type": "string",
+            "description": "AI failure analysis text (empty string = no analysis)",
+            "nullable": true
+          },
+          "artifacts": {
+            "type": "array",
+            "description": "Artifacts uploaded by the execution",
+            "nullable": true,
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "size": {
+                  "type": "number"
+                },
+                "sha256": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name",
+                "size",
+                "sha256"
+              ]
+            }
+          },
+          "triggerType": {
+            "type": "string",
+            "description": "manual/cron/webhook/api/dependency — how this run was triggered",
+            "nullable": true
+          },
+          "taskVersion": {
+            "type": "string",
+            "description": "Pinned config-snapshot version this run replayed",
+            "nullable": true
+          },
+          "traceId": {
+            "type": "string",
+            "description": "W3C trace-id propagated through dispatch",
+            "nullable": true
+          },
+          "resolvedPackageUrl": {
+            "type": "string",
+            "description": "Resolved package URL for packaged runs",
+            "nullable": true
+          },
+          "resolvedPackageVersion": {
+            "type": "string",
+            "description": "Resolved package version for packaged runs",
+            "nullable": true
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "depsFiredAt": {
+            "format": "date-time",
+            "type": "string",
+            "description": "When the dependency gate fired this execution",
+            "nullable": true
+          },
+          "mutexGroupId": {
+            "type": "string",
+            "description": "Mutex group the execution is queued/running under",
+            "nullable": true,
+            "format": "uuid"
+          },
+          "version": {
+            "type": "number",
+            "description": "Optimistic-lock version column"
+          }
+        },
+        "required": [
+          "id",
+          "taskId",
+          "taskName",
+          "status",
+          "executorAddress",
+          "logs",
+          "logStorage",
+          "logObjectKey",
+          "result",
+          "params",
+          "startTime",
+          "endTime",
+          "duration",
+          "retryCount",
+          "errorMessage",
+          "failureReason",
+          "exitCode",
+          "aiAnalysis",
+          "artifacts",
+          "triggerType",
+          "taskVersion",
+          "traceId",
+          "resolvedPackageUrl",
+          "resolvedPackageVersion",
+          "createdAt",
+          "depsFiredAt",
+          "mutexGroupId",
+          "version"
+        ]
+      },
+      "ExecutionListItemDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "taskId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "taskName": {
+            "type": "string",
+            "description": "Task name snapshot at dispatch time"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "running",
+              "waiting",
+              "success",
+              "failed",
+              "timeout",
+              "killed",
+              "cancelled"
+            ]
+          },
+          "task": {
+            "type": "object",
+            "description": "Task relation — NOT loaded by current read paths",
+            "nullable": true,
+            "additionalProperties": true
+          },
+          "executorAddress": {
+            "type": "string",
+            "description": "Executor address the execution was dispatched to",
+            "nullable": true
+          },
+          "logs": {
+            "type": "string",
+            "description": "Excluded from list/stats reads (PERF-03) — fetch via the logs endpoints",
+            "nullable": true
+          },
+          "logStorage": {
+            "type": "string",
+            "description": "'db' or object-store marker for the log backend",
+            "nullable": true
+          },
+          "logObjectKey": {
+            "type": "string",
+            "description": "Object key when logs live in S3/MinIO",
+            "nullable": true
+          },
+          "result": {
+            "type": "object",
+            "description": "List reads return it; stats recentExecutions exclude this column entirely",
+            "nullable": true,
+            "additionalProperties": true
+          },
+          "params": {
+            "type": "object",
+            "description": "Merged run parameters actually dispatched",
+            "nullable": true,
+            "additionalProperties": true
+          },
+          "startTime": {
+            "format": "date-time",
+            "type": "string",
+            "description": "First dispatch/arrival on the executor",
+            "nullable": true
+          },
+          "endTime": {
+            "format": "date-time",
+            "type": "string",
+            "nullable": true
+          },
+          "duration": {
+            "type": "number",
+            "description": "wall-clock ms (endTime - startTime)",
+            "nullable": true
+          },
+          "retryCount": {
+            "type": "number",
+            "description": "Retry budget consumed so far"
+          },
+          "errorMessage": {
+            "type": "string",
+            "nullable": true
+          },
+          "failureReason": {
+            "type": "string",
+            "description": "Classified failure token (executor-reportable subset + admin-internal tokens)",
+            "enum": [
+              "package_fetch_failed",
+              "script_error",
+              "timeout",
+              "executor_offline",
+              "executor_restart",
+              "stale_recovered",
+              "dependency_install_failed",
+              "git_fetch_failed",
+              "runtime_missing",
+              "interpreter_unavailable",
+              "sandbox_unavailable",
+              "killed",
+              "unknown",
+              "application_missing",
+              "never_dispatched",
+              null
+            ]
+          },
+          "exitCode": {
+            "type": "number",
+            "description": "Process exit code when the executor surfaced one",
+            "nullable": true
+          },
+          "aiAnalysis": {
+            "type": "string",
+            "description": "Excluded from list/stats reads (PERF-03)",
+            "nullable": true
+          },
+          "artifacts": {
+            "type": "array",
+            "description": "Artifacts uploaded by the execution",
+            "nullable": true,
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "size": {
+                  "type": "number"
+                },
+                "sha256": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name",
+                "size",
+                "sha256"
+              ]
+            }
+          },
+          "triggerType": {
+            "type": "string",
+            "description": "manual/cron/webhook/api/dependency — how this run was triggered",
+            "nullable": true
+          },
+          "taskVersion": {
+            "type": "string",
+            "description": "Pinned config-snapshot version this run replayed",
+            "nullable": true
+          },
+          "traceId": {
+            "type": "string",
+            "description": "W3C trace-id propagated through dispatch",
+            "nullable": true
+          },
+          "resolvedPackageUrl": {
+            "type": "string",
+            "description": "Resolved package URL for packaged runs",
+            "nullable": true
+          },
+          "resolvedPackageVersion": {
+            "type": "string",
+            "description": "Resolved package version for packaged runs",
+            "nullable": true
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "depsFiredAt": {
+            "format": "date-time",
+            "type": "string",
+            "description": "When the dependency gate fired this execution",
+            "nullable": true
+          },
+          "mutexGroupId": {
+            "type": "string",
+            "description": "Mutex group the execution is queued/running under",
+            "nullable": true,
+            "format": "uuid"
+          },
+          "version": {
+            "type": "number",
+            "description": "Optimistic-lock version column"
+          }
+        },
+        "required": [
+          "id",
+          "taskId",
+          "taskName",
+          "status",
+          "executorAddress",
+          "logStorage",
+          "logObjectKey",
+          "params",
+          "startTime",
+          "endTime",
+          "duration",
+          "retryCount",
+          "errorMessage",
+          "failureReason",
+          "exitCode",
+          "artifacts",
+          "triggerType",
+          "taskVersion",
+          "traceId",
+          "resolvedPackageUrl",
+          "resolvedPackageVersion",
+          "createdAt",
+          "depsFiredAt",
+          "mutexGroupId",
+          "version"
+        ]
+      },
+      "BatchErrorItemDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The requested task id"
+          },
+          "error": {
+            "type": "string",
+            "description": "err.message — partial-failure marker"
+          }
+        },
+        "required": [
+          "id",
+          "error"
+        ]
+      },
+      "VersionDiffEntryDto": {
+        "type": "object",
+        "properties": {
+          "old": {
+            "type": "object",
+            "description": "Value in version1 (any JSON)"
+          },
+          "new": {
+            "type": "object",
+            "description": "Value in version2 (any JSON)"
+          }
+        },
+        "required": [
+          "old",
+          "new"
+        ]
+      },
+      "ExecutionTimelineEntryDto": {
+        "type": "object",
+        "properties": {
+          "phase": {
+            "type": "string",
+            "enum": [
+              "created",
+              "started",
+              "finished"
+            ]
+          },
+          "at": {
+            "type": "string",
+            "description": "ISO timestamp, null when the phase never happened",
+            "nullable": true
+          },
+          "detail": {
+            "type": "string",
+            "description": "e.g. 'trigger=manual'"
+          }
+        },
+        "required": [
+          "phase",
+          "at"
+        ]
+      },
+      "ExecutionReportSummaryDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "number"
+          },
+          "triggerDay": {
+            "format": "date-time",
+            "type": "string",
+            "description": "DATE column — the aggregate's day"
+          },
+          "runningCount": {
+            "type": "number"
+          },
+          "successCount": {
+            "type": "number"
+          },
+          "failCount": {
+            "type": "number"
+          },
+          "timeoutCount": {
+            "type": "number"
+          },
+          "cancelledCount": {
+            "type": "number"
+          },
+          "avgDurationMs": {
+            "type": "number"
+          },
+          "maxDurationMs": {
+            "type": "number"
+          },
+          "minDurationMs": {
+            "type": "number"
+          },
+          "updateTime": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "triggerDay",
+          "runningCount",
+          "successCount",
+          "failCount",
+          "timeoutCount",
+          "cancelledCount",
+          "avgDurationMs",
+          "maxDurationMs",
+          "minDurationMs",
+          "updateTime",
+          "createdAt"
+        ]
+      },
       "MaintenanceWindowDto": {
         "type": "object",
         "properties": {
@@ -9484,6 +10683,216 @@
           "taskId",
           "name",
           "warnings"
+        ]
+      },
+      "PaginatedTaskListDto": {
+        "type": "object",
+        "properties": {
+          "list": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TaskResponseDto"
+            }
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TaskResponseDto"
+            }
+          },
+          "total": {
+            "type": "number"
+          },
+          "page": {
+            "type": "number"
+          },
+          "pageSize": {
+            "type": "number"
+          },
+          "totalPages": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "list",
+          "items",
+          "total",
+          "page",
+          "pageSize",
+          "totalPages"
+        ]
+      },
+      "PaginatedExecutionListDto": {
+        "type": "object",
+        "properties": {
+          "list": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ExecutionListItemDto"
+            }
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ExecutionListItemDto"
+            }
+          },
+          "total": {
+            "type": "number"
+          },
+          "page": {
+            "type": "number"
+          },
+          "pageSize": {
+            "type": "number"
+          },
+          "totalPages": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "list",
+          "items",
+          "total",
+          "page",
+          "pageSize",
+          "totalPages"
+        ]
+      },
+      "ExecutionLogsPageResponseDto": {
+        "type": "object",
+        "properties": {
+          "lines": {
+            "description": "Raw log lines from fromLine (level filter applies when given)",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "totalLines": {
+            "type": "number",
+            "description": "True total count of the (filtered) line set"
+          },
+          "hasMore": {
+            "type": "boolean",
+            "description": "fromLine + lines.length < totalLines"
+          }
+        },
+        "required": [
+          "lines",
+          "totalLines",
+          "hasMore"
+        ]
+      },
+      "SchedulerStatsResponseDto": {
+        "type": "object",
+        "properties": {
+          "healthy": {
+            "type": "boolean"
+          },
+          "isLeader": {
+            "type": "boolean",
+            "description": "LeaderGate: only the leader schedules"
+          },
+          "activeTimers": {
+            "type": "number"
+          },
+          "activeCronTasks": {
+            "type": "number"
+          },
+          "runningTaskCount": {
+            "type": "number"
+          },
+          "totalScheduledTasks": {
+            "type": "number"
+          },
+          "uptime": {
+            "type": "number",
+            "description": "process.uptime() seconds"
+          }
+        },
+        "required": [
+          "healthy",
+          "isLeader",
+          "activeTimers",
+          "activeCronTasks",
+          "runningTaskCount",
+          "totalScheduledTasks",
+          "uptime"
+        ]
+      },
+      "ExecutionStatsResponseDto": {
+        "type": "object",
+        "properties": {
+          "recentExecutions": {
+            "description": "Last 20 executions (list projection minus result)",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ExecutionListItemDto"
+            }
+          },
+          "recentSuccessRate": {
+            "type": "number",
+            "description": "Success % over the last-20 window (reference only)"
+          },
+          "successRate": {
+            "type": "number",
+            "description": "Success % over ALL runs (authoritative since FIX-5.1)"
+          },
+          "succeeded": {
+            "type": "number",
+            "description": "All-time SUCCESS count"
+          },
+          "failed": {
+            "type": "number",
+            "description": "All-time FAILED + TIMEOUT count (killed/cancelled not counted)"
+          },
+          "avgDuration": {
+            "type": "number",
+            "description": "Mean duration ms over the recent window (0 when none)"
+          },
+          "totalRuns": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "recentExecutions",
+          "recentSuccessRate",
+          "successRate",
+          "succeeded",
+          "failed",
+          "avgDuration",
+          "totalRuns"
+        ]
+      },
+      "SuggestScheduleResponseDto": {
+        "type": "object",
+        "properties": {
+          "taskId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "currentCron": {
+            "type": "string",
+            "nullable": true
+          },
+          "suggestedCron": {
+            "type": "string",
+            "description": "Recommended 5-field cron expression"
+          },
+          "reasoning": {
+            "type": "string"
+          },
+          "fallback": {
+            "type": "boolean",
+            "description": "True when the LLM path failed and a heuristic suggestion was returned"
+          }
+        },
+        "required": [
+          "taskId",
+          "currentCron",
+          "suggestedCron",
+          "reasoning"
         ]
       },
       "TaskDefinitionDto": {
@@ -9959,6 +11368,17 @@
           }
         }
       },
+      "DeleteTaskResponseDto": {
+        "type": "object",
+        "properties": {
+          "deleted": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "deleted"
+        ]
+      },
       "TriggerTaskDto": {
         "type": "object",
         "properties": {
@@ -9972,6 +11392,163 @@
             "minimum": 1
           }
         }
+      },
+      "WebhookStatusResponseDto": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "url": {
+            "type": "string",
+            "description": "Signed inbound trigger URL"
+          }
+        },
+        "required": [
+          "enabled",
+          "url"
+        ]
+      },
+      "WebhookSecretResponseDto": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string"
+          },
+          "secret": {
+            "type": "string",
+            "description": "Plaintext secret shown ONCE; rotate to re-issue"
+          }
+        },
+        "required": [
+          "url",
+          "secret"
+        ]
+      },
+      "WebhookDisableResponseDto": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled"
+        ]
+      },
+      "ExecutionReportResponseDto": {
+        "type": "object",
+        "properties": {
+          "execution": {
+            "$ref": "#/components/schemas/TaskExecutionResponseDto"
+          },
+          "timeline": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ExecutionTimelineEntryDto"
+            }
+          },
+          "report": {
+            "description": "Same-day aggregate row; null when none exists (normal state, frontend degrades)",
+            "nullable": true,
+            "type": "object",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ExecutionReportSummaryDto"
+              }
+            ]
+          }
+        },
+        "required": [
+          "execution",
+          "timeline",
+          "report"
+        ]
+      },
+      "GitRollbackResponseDto": {
+        "type": "object",
+        "properties": {
+          "execution": {
+            "$ref": "#/components/schemas/TaskExecutionResponseDto"
+          },
+          "rolledBackFrom": {
+            "type": "string",
+            "description": "Commit the repo was on before rollback",
+            "nullable": true
+          },
+          "rolledBackTo": {
+            "type": "string",
+            "description": "Commit rolled back to"
+          }
+        },
+        "required": [
+          "execution",
+          "rolledBackFrom",
+          "rolledBackTo"
+        ]
+      },
+      "TaskVersionDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "taskId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "version": {
+            "type": "string",
+            "description": "Human label like 'v3'"
+          },
+          "gitCommit": {
+            "type": "string",
+            "nullable": true
+          },
+          "snapshot": {
+            "type": "object",
+            "description": "Full task config snapshot (feeds rollbackToVersion)",
+            "additionalProperties": true
+          },
+          "createdBy": {
+            "type": "string",
+            "nullable": true
+          },
+          "description": {
+            "type": "string",
+            "nullable": true
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "taskId",
+          "version",
+          "gitCommit",
+          "snapshot",
+          "createdBy",
+          "description",
+          "createdAt"
+        ]
+      },
+      "KillExecutionResponseDto": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "success",
+          "message"
+        ]
       },
       "BatchTaskIdsDto": {
         "type": "object",

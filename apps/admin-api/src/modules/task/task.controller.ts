@@ -22,6 +22,7 @@ import {
   ApiResponse,
   ApiCreatedResponse,
   ApiOkResponse,
+  ApiExtraModels,
   ApiParam,
   ApiQuery,
   ApiBody,
@@ -47,6 +48,35 @@ import {
   ImportTaskDto,
   TaskImportResultDto,
 } from "./dto/task-definition-import.dto";
+// ARCH-23 / N-12: 任务域响应契约 DTO——把 31 个此前"只有 description 没有
+// schema"的 2xx 补成具名 schema（前端 gen:api-types 的瓶颈在后端注解覆盖）。
+// 注意 POST 端点无 @HttpCode 的实际状态是 201（历史声明 200 是漂移，本批按
+// 实际状态落契约）；字段与 service 返回逐一对齐的口径见 task-response.dto.ts 头注。
+import {
+  BatchErrorItemDto,
+  batchArrayOf,
+  DeleteTaskResponseDto,
+  ExecutionListItemDto,
+  ExecutionLogsPageResponseDto,
+  ExecutionReportResponseDto,
+  ExecutionStatsResponseDto,
+  ExecutionTimelineEntryDto,
+  ExecutionReportSummaryDto,
+  GitRollbackResponseDto,
+  KillExecutionResponseDto,
+  PaginatedExecutionListDto,
+  PaginatedTaskListDto,
+  SchedulerStatsResponseDto,
+  SuggestScheduleResponseDto,
+  TaskExecutionResponseDto,
+  TaskResponseDto,
+  TaskVersionDto,
+  VersionDiffEntryDto,
+  VersionDiffResponseSchema,
+  WebhookDisableResponseDto,
+  WebhookSecretResponseDto,
+  WebhookStatusResponseDto,
+} from "./dto/task-response.dto";
 // P2-18: lastStatus @ApiQuery 的值域（与 TaskExecution.status 列共用口径）
 import { ExecutionStatus } from "./entities/task-execution.entity";
 import {
@@ -82,6 +112,17 @@ function parseLevelParam(level?: string): LogLevel | undefined {
 
 @ApiTags("Task Management")
 @ApiBearerAuth("JWT")
+// ApiExtraModels：batchArrayOf / VersionDiffResponseSchema 走 getSchemaPath
+// 裸 $ref，引用的类不会被 type 直引路径自动注册，必须在此显式登记。
+@ApiExtraModels(
+  TaskResponseDto,
+  TaskExecutionResponseDto,
+  ExecutionListItemDto,
+  BatchErrorItemDto,
+  VersionDiffEntryDto,
+  ExecutionTimelineEntryDto,
+  ExecutionReportSummaryDto,
+)
 @UseGuards(JwtAuthGuard)
 @Controller("tasks")
 export class TaskController {
@@ -100,24 +141,9 @@ export class TaskController {
     description:
       "Create a new automation task. Supports cron, webhook, and event trigger modes. Tasks start in paused state.",
   })
-  @ApiResponse({
-    status: 201,
-    description: "Task created successfully",
-    schema: {
-      example: {
-        code: 200,
-        message: "success",
-        data: {
-          id: "task-uuid",
-          name: "Data sync task",
-          description: "Sync database data at midnight daily",
-          type: "cron",
-          schedule: "0 0 * * *",
-          status: "paused",
-          createdAt: "2024-01-01T12:00:00Z",
-        },
-      },
-    },
+  @ApiCreatedResponse({
+    type: TaskResponseDto,
+    description: "Task created successfully (starts paused)",
   })
   async create(
     @Body() dto: CreateTaskDto,
@@ -245,21 +271,10 @@ export class TaskController {
       "Only whitelisted lightweight columns are selected — params/secrets/" +
       "glueSource and other heavy columns are skipped. Illegal fields → 400.",
   })
-  @ApiResponse({
-    status: 200,
-    description: "Task list",
-    schema: {
-      example: {
-        code: 200,
-        message: "success",
-        data: {
-          items: [],
-          total: 10,
-          page: 1,
-          limit: 20,
-        },
-      },
-    },
+  @ApiOkResponse({
+    type: PaginatedTaskListDto,
+    description:
+      "Paginated list (list/items double key, R-21). Default projection = full entity with secrets masked; ?fields= shrinks items (F-10).",
   })
   findAll(@Query() p: ListTasksQueryDto) {
     return this.taskService.findAll(p);
@@ -282,7 +297,11 @@ export class TaskController {
     description:
       "Trigger multiple tasks. Partial failures do not affect other tasks.",
   })
-  @ApiResponse({ status: 200, description: "Batch trigger results" })
+  @ApiCreatedResponse({
+    description:
+      "Per-task trigger results (success item = full execution; failure item = {id, error})",
+    schema: batchArrayOf(TaskExecutionResponseDto),
+  })
   @ApiBody({
     description: "Batch trigger parameters",
     schema: {
@@ -329,7 +348,11 @@ export class TaskController {
     description:
       "Pause multiple tasks. Partial failures do not affect other tasks.",
   })
-  @ApiResponse({ status: 200, description: "Batch pause results" })
+  @ApiCreatedResponse({
+    description:
+      "Per-task pause results (success item = full task; failure item = {id, error})",
+    schema: batchArrayOf(TaskResponseDto),
+  })
   @ApiBody({
     description: "Batch pause parameters",
     schema: {
@@ -374,7 +397,11 @@ export class TaskController {
     description:
       "Resume multiple tasks. Partial failures do not affect other tasks.",
   })
-  @ApiResponse({ status: 200, description: "Batch resume results" })
+  @ApiCreatedResponse({
+    description:
+      "Per-task resume results (success item = full task; failure item = {id, error})",
+    schema: batchArrayOf(TaskResponseDto),
+  })
   @ApiBody({
     description: "Batch resume parameters",
     schema: {
@@ -415,7 +442,11 @@ export class TaskController {
     description:
       "Delete multiple tasks. Partial failures do not affect other tasks.",
   })
-  @ApiResponse({ status: 200, description: "Batch delete results" })
+  @ApiCreatedResponse({
+    description:
+      "Per-task delete results (success item = {deleted: true}; failure item = {id, error})",
+    schema: batchArrayOf(DeleteTaskResponseDto),
+  })
   @ApiBody({
     description: "Batch delete parameters",
     schema: {
@@ -459,6 +490,10 @@ export class TaskController {
   @ApiQuery({ name: "executorAddress", required: false })
   @ApiQuery({ name: "startTime", required: false })
   @ApiQuery({ name: "endTime", required: false })
+  @ApiOkResponse({
+    type: PaginatedExecutionListDto,
+    description: "Global execution records (heavy text columns excluded)",
+  })
   allExecutions(@Query() p: AllExecutionsQueryDto) {
     return this.taskService.getAllExecutions(p);
   }
@@ -488,6 +523,7 @@ export class TaskController {
     description:
       "Filter by inferred log level (SQL-level); unknown-level (NULL) rows excluded. With level, fromLine is an offset into the filtered sequence and totalLines is the filtered count.",
   })
+  @ApiOkResponse({ type: ExecutionLogsPageResponseDto })
   executionLogsByExecId(
     @Param("execId") execId: string,
     @Query() query: ExecutionLogsQueryDto,
@@ -507,12 +543,14 @@ export class TaskController {
       "Compat alias of GET /tasks/:id/executions/:execId — resolves the execution by its own ID without knowing the task ID. Used by acf-cli and mcp-server.",
   })
   @ApiParam({ name: "execId", description: "Execution record ID" })
+  @ApiOkResponse({ type: TaskExecutionResponseDto })
   executionByExecId(@Param("execId") execId: string) {
     return this.taskService.getExecution(execId);
   }
 
   @Get("scheduler/stats")
   @ApiOperation({ summary: "Scheduler status" })
+  @ApiOkResponse({ type: SchedulerStatsResponseDto })
   async schedulerStats() {
     return this.taskService.getSchedulerStats();
   }
@@ -524,6 +562,11 @@ export class TaskController {
       "Get execution statistics for a task: success rate, average duration, and last 20 executions.",
   })
   @ApiParam({ name: "id", description: "Task ID" })
+  @ApiOkResponse({
+    type: ExecutionStatsResponseDto,
+    description:
+      "successRate/succeeded/failed are ALL-RUN figures since FIX-5.1; recentSuccessRate keeps the last-20 window",
+  })
   getStats(@Param("id") id: string) {
     return this.taskService.getExecutionStats(id);
   }
@@ -537,6 +580,10 @@ export class TaskController {
   })
   @ApiParam({ name: "id", description: "Task ID" })
   // A2-B: 透传 user——本端点声明 scope='ownership'，属主校验现由 service 执行。
+  @ApiCreatedResponse({
+    type: SuggestScheduleResponseDto,
+    description: "AI recommendation; fallback=true marks the heuristic path",
+  })
   async suggestSchedule(
     @Param("id") id: string,
     @CurrentUser() user: AuthUser,
@@ -551,6 +598,10 @@ export class TaskController {
       "Get detailed info for a single task including config, status, and execution stats.",
   })
   @ApiParam({ name: "id", description: "Task ID" })
+  @ApiOkResponse({
+    type: TaskResponseDto,
+    description: "Full task entity with secrets masked",
+  })
   @ApiResponse({ status: 404, description: "Task not found" })
   findOne(@Param("id") id: string) {
     return this.taskService.findOne(id);
@@ -596,7 +647,10 @@ export class TaskController {
       "Update task configuration. Note: running tasks are not immediately affected.",
   })
   @ApiParam({ name: "id", description: "Task ID" })
-  @ApiResponse({ status: 200, description: "Updated successfully" })
+  @ApiOkResponse({
+    type: TaskResponseDto,
+    description: "Updated successfully (secrets masked)",
+  })
   @ApiResponse({ status: 404, description: "Task not found" })
   async update(
     @Param("id") id: string,
@@ -624,7 +678,7 @@ export class TaskController {
       "Update the GLUE script source code for online editing of execution logic.",
   })
   @ApiParam({ name: "id", description: "Task ID" })
-  @ApiResponse({ status: 200, description: "Script updated" })
+  @ApiOkResponse({ type: TaskResponseDto, description: "Script updated" })
   @ApiResponse({ status: 404, description: "Task not found" })
   @ApiBody({
     schema: {
@@ -664,7 +718,10 @@ export class TaskController {
       "Delete task. Running executions will be forcefully terminated.",
   })
   @ApiParam({ name: "id", description: "Task ID" })
-  @ApiResponse({ status: 200, description: "Deleted successfully" })
+  @ApiOkResponse({
+    type: DeleteTaskResponseDto,
+    description: "Soft-deleted (status=deleted + deletedAt)",
+  })
   @ApiResponse({ status: 404, description: "Task not found" })
   async remove(
     @Param("id") id: string,
@@ -700,20 +757,11 @@ export class TaskController {
       "响应契约与 JWT 面完全一致。",
   })
   @ApiParam({ name: "id", description: "Task ID" })
-  @ApiResponse({
-    status: 200,
-    description: "Trigger successful",
-    schema: {
-      example: {
-        code: 200,
-        message: "success",
-        data: {
-          taskId: "task-uuid",
-          executionId: "exec-uuid",
-          status: "pending",
-        },
-      },
-    },
+  // N-12: 实际返回完整 execution 行（201，POST 无 @HttpCode）——历史 inline
+  // 示例 {taskId, executionId, status} 是旧契约漂移，按现行为落 schema。
+  @ApiCreatedResponse({
+    type: TaskExecutionResponseDto,
+    description: "Execution row created and enqueued",
   })
   @ApiResponse({
     // N-14：blockStrategy=discard 且存在同参数在跑/排队执行时拒绝触发
@@ -764,7 +812,10 @@ export class TaskController {
     summary: "Get task webhook status",
     description: "Returns `{ enabled, url }`. The secret is never returned.",
   })
-  @ApiResponse({ status: 200, description: "Webhook status" })
+  @ApiOkResponse({
+    type: WebhookStatusResponseDto,
+    description: "Webhook status (secret never returned)",
+  })
   webhookStatus(@Param("id") id: string, @CurrentUser() user: AuthUser) {
     return this.taskWebhookService.getStatus(id, user);
   }
@@ -782,7 +833,10 @@ export class TaskController {
       "Issues a new webhook secret, returned ONCE in `secret`. Enabling an " +
       "already-enabled task rotates the secret.",
   })
-  @ApiResponse({ status: 200, description: "Webhook URL + one-time secret" })
+  @ApiOkResponse({
+    type: WebhookSecretResponseDto,
+    description: "Webhook URL + one-time secret",
+  })
   webhookEnable(
     @Param("id") id: string,
     @CurrentUser() user: AuthUser,
@@ -802,7 +856,10 @@ export class TaskController {
     summary: "Rotate the task webhook secret",
     description: "Old secret stops working immediately; new secret shown once.",
   })
-  @ApiResponse({ status: 200, description: "Webhook URL + one-time secret" })
+  @ApiOkResponse({
+    type: WebhookSecretResponseDto,
+    description: "Webhook URL + one-time secret",
+  })
   webhookRotate(
     @Param("id") id: string,
     @CurrentUser() user: AuthUser,
@@ -822,7 +879,10 @@ export class TaskController {
     summary: "Disable the task webhook",
     description: "Clears the secret; signed calls start answering 401.",
   })
-  @ApiResponse({ status: 200, description: "`{ enabled: false }`" })
+  @ApiOkResponse({
+    type: WebhookDisableResponseDto,
+    description: "`{ enabled: false }`",
+  })
   webhookDisable(
     @Param("id") id: string,
     @CurrentUser() user: AuthUser,
@@ -844,6 +904,10 @@ export class TaskController {
     required: false,
     description: "Filter by execution status",
   })
+  @ApiOkResponse({
+    type: PaginatedExecutionListDto,
+    description: "Execution history (heavy text columns excluded)",
+  })
   executions(@Param("id") id: string, @Query() p: TaskExecutionsQueryDto) {
     return this.taskService.getExecutions(id, p);
   }
@@ -856,6 +920,10 @@ export class TaskController {
   })
   @ApiParam({ name: "id", description: "Task ID" })
   @ApiParam({ name: "execId", description: "Execution record ID" })
+  @ApiOkResponse({
+    type: TaskExecutionResponseDto,
+    description: "Full execution row (includes logs/aiAnalysis)",
+  })
   @ApiResponse({ status: 404, description: "Execution record not found" })
   execution(@Param("id") id: string, @Param("execId") execId: string) {
     return this.taskService.getExecution(execId, id);
@@ -869,6 +937,7 @@ export class TaskController {
   })
   @ApiParam({ name: "id", description: "Task ID" })
   @ApiParam({ name: "execId", description: "Execution record ID" })
+  @ApiOkResponse({ type: ExecutionReportResponseDto })
   @ApiResponse({ status: 404, description: "Execution record not found" })
   executionReport(@Param("id") id: string, @Param("execId") execId: string) {
     return this.taskService.getExecutionReport(execId, id);
@@ -899,6 +968,7 @@ export class TaskController {
     description:
       "Filter by inferred log level (SQL-level); unknown-level (NULL) rows excluded. With level, fromLine is an offset into the filtered sequence and totalLines is the filtered count.",
   })
+  @ApiOkResponse({ type: ExecutionLogsPageResponseDto })
   async executionLogs(
     @Param("id") id: string,
     @Param("execId") execId: string,
@@ -1016,6 +1086,11 @@ export class TaskController {
       },
     },
   })
+  @ApiCreatedResponse({
+    type: GitRollbackResponseDto,
+    description:
+      "New execution dispatched at the target commit (POST default 201)",
+  })
   @ApiResponse({
     status: 400,
     description: "Rollback not supported for non-Git tasks",
@@ -1056,7 +1131,10 @@ export class TaskController {
   })
   @ApiParam({ name: "id", description: "Task ID" })
   @ApiParam({ name: "versionId", description: "Version ID" })
-  @ApiResponse({ status: 200, description: "Rollback successful" })
+  @ApiCreatedResponse({
+    type: TaskResponseDto,
+    description: "Task config rolled back to the snapshot (POST default 201)",
+  })
   @ApiResponse({ status: 404, description: "Task or version not found" })
   // PK-19（DEEP_REVIEW 0ef3bbe）: 本端点无请求体（回滚目标即 :versionId 路径参
   // 数）——显式 @ApiBody({ required: false }) 在 openapi 中钉住"无 body"语义，
@@ -1096,6 +1174,10 @@ export class TaskController {
     description: "Get task historical version list.",
   })
   @ApiParam({ name: "id", description: "Task ID" })
+  @ApiOkResponse({
+    type: [TaskVersionDto],
+    description: "Most recent 100 snapshots",
+  })
   getVersions(@Param("id") id: string) {
     return this.taskService.getVersions(id);
   }
@@ -1108,7 +1190,10 @@ export class TaskController {
   @ApiParam({ name: "id", description: "Task ID" })
   @ApiParam({ name: "versionId1", description: "Version ID 1" })
   @ApiParam({ name: "versionId2", description: "Version ID 2" })
-  @ApiResponse({ status: 200, description: "Version diff" })
+  @ApiOkResponse({
+    description: "Keyed diff — only changed fields, each {old, new}",
+    schema: VersionDiffResponseSchema,
+  })
   @ApiResponse({ status: 404, description: "Task or version not found" })
   async compareVersions(
     @Param("id") id: string,
@@ -1132,7 +1217,10 @@ export class TaskController {
       "Pause task scheduled execution. In-progress executions are not affected.",
   })
   @ApiParam({ name: "id", description: "Task ID" })
-  @ApiResponse({ status: 200, description: "Paused successfully" })
+  @ApiCreatedResponse({
+    type: TaskResponseDto,
+    description: "Paused (POST default 201)",
+  })
   @ApiResponse({ status: 400, description: "Task is already paused" })
   @ApiResponse({ status: 404, description: "Task not found" })
   async pause(
@@ -1165,7 +1253,10 @@ export class TaskController {
     description: "Resume task scheduled execution.",
   })
   @ApiParam({ name: "id", description: "Task ID" })
-  @ApiResponse({ status: 200, description: "Resumed successfully" })
+  @ApiCreatedResponse({
+    type: TaskResponseDto,
+    description: "Resumed (POST default 201)",
+  })
   @ApiResponse({ status: 400, description: "Task is already running" })
   @ApiResponse({ status: 404, description: "Task not found" })
   async resume(
@@ -1194,7 +1285,11 @@ export class TaskController {
   })
   @ApiParam({ name: "id", description: "Task ID" })
   @ApiParam({ name: "execId", description: "Execution record ID" })
-  @ApiResponse({ status: 200, description: "AI analysis result" })
+  @ApiCreatedResponse({
+    type: TaskExecutionResponseDto,
+    description:
+      "Updated execution with aiAnalysis persisted (POST default 201)",
+  })
   async analyzeExecution(
     @Param("id") id: string,
     @Param("execId") execId: string,
@@ -1225,7 +1320,10 @@ export class TaskController {
   })
   @ApiParam({ name: "id", description: "Task ID" })
   @ApiParam({ name: "execId", description: "Execution record ID" })
-  @ApiResponse({ status: 200, description: "Cancelled successfully" })
+  @ApiCreatedResponse({
+    type: KillExecutionResponseDto,
+    description: "Cancelled (POST default 201)",
+  })
   @ApiResponse({
     status: 400,
     description: "Execution is not in a cancellable state",
