@@ -4927,6 +4927,127 @@ export interface components {
             alerts?: components["schemas"]["AlertmanagerAlertDto"][];
         };
         SaveAiConfigDto: Record<string, never>;
+        AgentSessionDto: {
+            /** Format: uuid */
+            id: string;
+            /** @enum {string} */
+            kind: "ops_watch" | "incident" | "sop_authoring" | "sop_review" | "app_scaffold" | "chat";
+            /** @enum {string} */
+            status: "pending" | "running" | "waiting_input" | "succeeded" | "failed" | "aborted" | "budget_exceeded";
+            title: string | null;
+            /** @description 'user:<id>' / 'cron:<name>' / 'event:<type>' */
+            triggerSource: string;
+            /**
+             * Format: uuid
+             * @description Sub-session lineage (sop_review sessions chain here)
+             */
+            parentSessionId: string | null;
+            /** @description Session goal/context object */
+            contextJson: {
+                [key: string]: unknown;
+            } | null;
+            /** @description Resource scope constraint (03 §5.3); empty = no resource access */
+            scopeJson: {
+                [key: string]: unknown;
+            } | null;
+            /** @description Budget snapshot taken at enqueue (audit sees what was allowed THEN) */
+            budgetJson: {
+                maxSteps?: number;
+                maxTokens?: number;
+                wallClockMs?: number;
+                maxToolCalls?: number;
+            } | null;
+            /** @description Final structured result on success */
+            resultJson: {
+                [key: string]: unknown;
+            } | null;
+            /** @description LLM-written closing summary */
+            summary: string | null;
+            errorMessage: string | null;
+            totalSteps: number;
+            totalTokensIn: number;
+            totalTokensOut: number;
+            totalToolCalls: number;
+            /** @description What the session is waiting on (approval / clarification / ...) */
+            waitingFor: string | null;
+            /** Format: date-time */
+            startedAt: string | null;
+            /** Format: date-time */
+            finishedAt: string | null;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        AgentSessionListResponseDto: {
+            items: components["schemas"]["AgentSessionDto"][];
+            total: number;
+        };
+        AgentStepDto: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            sessionId: string;
+            /** @description 1-based sequence within the session */
+            seq: number;
+            /** @enum {string} */
+            role: "system" | "user" | "assistant" | "tool";
+            content: string | null;
+            /** @description Provider reasoning channel when surfaced */
+            reasoning: string | null;
+            /** @description Assistant tool-call requests verbatim */
+            toolCallsJson: {
+                [key: string]: unknown;
+            }[] | null;
+            toolCallId: string | null;
+            tokensIn: number;
+            tokensOut: number;
+            latencyMs: number;
+            provider: string | null;
+            model: string | null;
+            /** @description Compacted step summary (retention tiering) */
+            summary: string | null;
+            /** Format: date-time */
+            createdAt: string;
+        };
+        AgentToolCallDto: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            sessionId: string;
+            /** Format: uuid */
+            stepId: string | null;
+            toolName: string;
+            /** @enum {string} */
+            tier: "read" | "write" | "dangerous";
+            argsJson: {
+                [key: string]: unknown;
+            } | null;
+            /** @description Truncated by the per-call size cap when resultTruncated */
+            resultJson: {
+                [key: string]: unknown;
+            } | null;
+            resultTruncated: boolean;
+            /** @enum {string} */
+            status: "ok" | "denied" | "awaiting_approval" | "timeout" | "error" | "circuit_open";
+            errorMessage: string | null;
+            /**
+             * Format: uuid
+             * @description Approval record for awaiting_approval / granted flows
+             */
+            approvalId: string | null;
+            durationMs: number;
+            /** Format: date-time */
+            createdAt: string;
+        };
+        AgentSessionDetailResponseDto: {
+            session: components["schemas"]["AgentSessionDto"];
+            /** @description Reasoning trace by seq */
+            steps: components["schemas"]["AgentStepDto"][];
+            toolCalls: components["schemas"]["AgentToolCallDto"][];
+            /** @description Sub-sessions (parentSessionId = this) */
+            children: components["schemas"]["AgentSessionDto"][];
+        };
         CreateAgentSessionDto: {
             /** @enum {string} */
             kind: "ops_watch" | "incident" | "sop_authoring" | "sop_review" | "app_scaffold" | "chat";
@@ -4935,6 +5056,188 @@ export interface components {
                 [key: string]: unknown;
             };
         };
+        AgentSessionCreateResponseDto: {
+            /** Format: uuid */
+            id: string;
+            /** @description Always 'pending' at creation */
+            status: string;
+        };
+        AgentSessionResumeResponseDto: {
+            /** @description false = terminal session, create a new one instead */
+            ok: boolean;
+            /** @description Present when ok=false */
+            reason?: string;
+        };
+        AgentBudgetResponseDto: {
+            maxSteps: number;
+            maxTokens: number;
+            wallClockMs: number;
+            maxToolCalls: number;
+        };
+        SopResponseDto: {
+            /** Format: uuid */
+            id: string;
+            /** @description 1..128 [a-z0-9-], globally unique */
+            slug: string;
+            title: string;
+            /** @description Latest published version label, null = never published */
+            currentVersion: string | null;
+            /** @enum {string} */
+            status: "draft" | "published" | "deprecated";
+            /**
+             * Format: uuid
+             * @description App zip the SOP runs against
+             */
+            applicationId: string | null;
+            /** @description Parsed front-matter (capabilities/permission profile source of truth) */
+            frontMatterJson: {
+                [key: string]: unknown;
+            } | null;
+            bodyMarkdown: string | null;
+            /** @description 'user:<id>' or 'agent:<sessionId>' */
+            createdBy: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        SopVersionDto: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            sopId: string;
+            /** @description e.g. '1.2.3' */
+            version: string;
+            frontMatterJson: {
+                [key: string]: unknown;
+            };
+            bodyMarkdown: string;
+            changelog: string | null;
+            /** @description sha over front-matter + body; the delivery reconciliation anchor */
+            contentHash: string;
+            publishedBy: string;
+            /** Format: date-time */
+            publishedAt: string;
+            /** Format: date-time */
+            createdAt: string;
+        };
+        SopAssignmentDto: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            sopId: string;
+            /** @description Pinned SOP version for this assignment */
+            sopVersion: string;
+            /** Format: uuid */
+            targetExecutorId: string | null;
+            /** @description Chat/agent session driving the assignment */
+            targetAgentSessionId: string | null;
+            /** @enum {string} */
+            status: "assigned" | "in_progress" | "blocked" | "completed" | "failed" | "cancelled" | "stalled";
+            /** @description Current clarification round (0-based counter) */
+            clarificationRound: number;
+            maxRounds: number;
+            /** @description Executor-reported delivery result */
+            resultJson: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Format: uuid
+             * @description sop_review chat session handling clarifications
+             */
+            parentSessionId: string | null;
+            /**
+             * Format: date-time
+             * @description First successful poll claim
+             */
+            pulledAt: string | null;
+            /**
+             * Format: date-time
+             * @description Last progress heartbeat (stall detection input)
+             */
+            lastProgressAt: string | null;
+            progressJson: {
+                [key: string]: unknown;
+            } | null;
+            /** @description Delivery attempts of the final report (complete idempotency key) */
+            attempt: number;
+            /**
+             * Format: date-time
+             * @description Last clarification-reply push (at-least-once cursor)
+             */
+            lastReplyDeliveredAt: string | null;
+            /** @description agentCapabilities snapshot at pull time */
+            capabilitySnapshotJson: {
+                [key: string]: unknown;
+            } | null;
+            /** @description Permission profile in force at pull */
+            permissionProfileAtPull: string | null;
+            assignedBy: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        SopListResponseDto: {
+            items: components["schemas"]["SopResponseDto"][];
+            total: number;
+        };
+        SopClarificationDto: {
+            /** @description Executor-generated idempotency key (dedupe on retry) */
+            clientClarificationId: string | null;
+            /** Format: uuid */
+            assignmentId: string;
+            round: number;
+            /** @description Untrusted executor statement — sanitized at ingest */
+            question: string;
+            questionContextJson: {
+                [key: string]: unknown;
+            } | null;
+            answer: string | null;
+            /** @enum {string|null} */
+            resolution: "answered" | "sop_amended" | "escalated_to_human" | null;
+            /** @description Set on sop_amended replies */
+            newSopVersion: string | null;
+            /** @description Screenshot/recording references (platform paths only) */
+            mediaRefsJson: unknown[] | null;
+            /**
+             * Format: uuid
+             * @description sop_review session that answered it
+             */
+            reviewSessionId: string | null;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        SopAssignmentDetailResponseDto: {
+            assignment: components["schemas"]["SopAssignmentDto"];
+            clarifications: components["schemas"]["SopClarificationDto"][];
+        };
+        AgentMediaDto: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            assignmentId: string;
+            name: string;
+            mime: string | null;
+            sizeBytes: number;
+            /** @description 'executor:<id>' or 'user:<id>' */
+            uploadedBy: string;
+            /** Format: date-time */
+            createdAt: string;
+        };
+        SopCapableExecutorDto: {
+            /** Format: uuid */
+            id: string;
+            appName: string;
+            address: string;
+            status: string;
+            /** Format: date-time */
+            lastHeartbeat: string | null;
+            /** @description Lease-declared capability domains (short-lived lease, not a snapshot) */
+            agentCapabilities: string[];
+        };
         HumanReplyDto: {
             /** @enum {string} */
             resolution: "answered" | "sop_amended";
@@ -4942,6 +5245,12 @@ export interface components {
             amendedFrontMatterYaml?: string;
             amendedBodyMarkdown?: string;
             changelog?: string;
+        };
+        ClarificationReplyResponseDto: {
+            /** @description Always true on success (failures are 4xx) */
+            ok: boolean;
+            /** @description Set when resolution=sop_amended (publish produced a new immutable version) */
+            newSopVersion?: string;
         };
         DraftSopDto: {
             /** @example daily-report */
@@ -4960,6 +5269,10 @@ export interface components {
             bump?: "patch" | "minor" | "major";
             changelog?: string;
         };
+        SopPublishResponseDto: {
+            sop: components["schemas"]["SopResponseDto"];
+            version: components["schemas"]["SopVersionDto"];
+        };
         AssignSopDto: {
             /** @description 指派的具体版本；缺省 = currentVersion */
             version?: string;
@@ -4968,6 +5281,41 @@ export interface components {
             /** @description 按地址指派（executorId 缺省时的替代形态） */
             executorAddress?: string;
         };
+        CollabAssignmentItemDto: {
+            /** @enum {string} */
+            kind: "assignment";
+            /** Format: uuid */
+            assignmentId: string;
+            /** @description Full SOP snapshot (reconciliation anchor = contentHash) */
+            sop?: {
+                slug: string;
+                title: string;
+                version: string;
+                contentHash: string;
+                frontMatter: {
+                    [key: string]: unknown;
+                };
+                bodyMarkdown: string;
+            };
+            maxRounds: number;
+            clarificationRound: number;
+        };
+        CollabClarificationReplyItemDto: {
+            /** @enum {string} */
+            kind: "clarification_reply";
+            /** Format: uuid */
+            assignmentId: string;
+            /** Format: uuid */
+            clarificationId: string;
+            clientClarificationId: string | null;
+            round: number;
+            /** @enum {string} */
+            resolution: "answered" | "sop_amended" | "escalated_to_human";
+            answer: string | null;
+            newSopVersion: string | null;
+            /** @description Only on sop_amended — the amended SOP payload for continued execution */
+            newSop?: components["schemas"]["CollabAssignmentItemDto"];
+        };
         AgentCollabPollDto: {
             /** @example office-pc-07:8002 */
             address: string;
@@ -4975,6 +5323,16 @@ export interface components {
             waitMs?: number;
             resendAssignments?: boolean | string[];
             inflight?: string[];
+        };
+        CollabPollResponseDto: {
+            /** @description Mixed items: assignments (first pull / resend) and clarification replies */
+            items: (components["schemas"]["CollabAssignmentItemDto"] | components["schemas"]["CollabClarificationReplyItemDto"])[];
+            /** @description Enterprise policy pushed EVERY poll (executor local config cannot override) */
+            sopPolicy?: {
+                /** @example standard */
+                permissionPolicy: string;
+                allowedProfiles: string[];
+            };
         };
         AgentCollabCapabilityDto: {
             address: string;
@@ -4995,6 +5353,13 @@ export interface components {
             mediaRefs?: Record<string, never>[];
             targetAgentSessionId?: string;
         };
+        CollabClarifyResponseDto: {
+            /** @description clientClarificationId when provided, else the row id */
+            clarificationId: string;
+            round: number;
+            /** @description true = maxRounds exhausted, escalated to human notifications (no sop_review session will start) */
+            escalated: boolean;
+        };
         AgentCollabProgressDto: {
             address: string;
             progressJson?: {
@@ -5011,10 +5376,42 @@ export interface components {
             };
             attempt?: number;
         };
+        CollabCompleteResponseDto: {
+            /** @description false = duplicate attempt / idempotent replay ignored */
+            accepted: boolean;
+        };
         AgentCollabAckReplyDto: {
             address: string;
             /** Format: uuid */
             clarificationId: string;
+        };
+        CollabLlmRelayResponseDto: {
+            /** @description Empty string when the provider is disabled/unavailable (fail-open, executor degrades) */
+            content: string;
+            /** @description Tool round-trips are NOT exposed to executors (null) */
+            toolCalls: string[] | null;
+            usage?: {
+                tokensIn: number;
+                tokensOut: number;
+            };
+            model: string;
+        };
+        CollabMediaUploadResponseDto: {
+            /** Format: uuid */
+            id: string;
+            name: string;
+            mime: string | null;
+            sizeBytes: number;
+            /** @description Platform path /api/agent-collab/media/<id> — the ONLY valid mediaRefs form */
+            mediaPath: string;
+        };
+        CollabCandidatePackageResponseDto: {
+            /** Format: uuid */
+            packageId: string;
+            /** @description 'sop-<slug>' */
+            name: string;
+            /** @description SOP version + agent build metadata (idempotent re-delivery) */
+            version: string;
         };
         SystemConfigResponseDto: {
             /** @description Config row id (serial) */
@@ -8524,7 +8921,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["AgentSessionListResponseDto"];
+                };
             };
         };
     };
@@ -8545,7 +8944,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["AgentSessionCreateResponseDto"];
+                };
             };
         };
     };
@@ -8564,7 +8965,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["AgentSessionDetailResponseDto"];
+                };
             };
         };
     };
@@ -8583,7 +8986,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["AgentSessionResumeResponseDto"];
+                };
             };
         };
     };
@@ -8600,7 +9005,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["AgentBudgetResponseDto"];
+                };
             };
         };
     };
@@ -8621,7 +9028,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["SopListResponseDto"];
+                };
             };
         };
     };
@@ -8642,7 +9051,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["SopResponseDto"];
+                };
             };
         };
     };
@@ -8661,7 +9072,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["SopAssignmentDetailResponseDto"];
+                };
             };
         };
     };
@@ -8680,7 +9093,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": string;
+                };
             };
         };
     };
@@ -8699,7 +9114,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["AgentMediaDto"][];
+                };
             };
         };
     };
@@ -8712,11 +9129,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description 空列表 = 没有任何机器开着 Agent（指派对话框据此渲染，而非 assign 报错兜圈） */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["SopCapableExecutorDto"][];
+                };
             };
         };
     };
@@ -8740,7 +9160,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ClarificationReplyResponseDto"];
+                };
             };
         };
     };
@@ -8759,7 +9181,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["SopResponseDto"];
+                };
             };
         };
     };
@@ -8778,11 +9202,14 @@ export interface operations {
             };
         };
         responses: {
+            /** @description 编辑后的工作副本（published 行的 currentVersion 不变） */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["SopResponseDto"];
+                };
             };
         };
     };
@@ -8801,11 +9228,14 @@ export interface operations {
             };
         };
         responses: {
+            /** @description 内容与当前版本完全一致 → 400（修订必须真的改了什么） */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["SopPublishResponseDto"];
+                };
             };
         };
     };
@@ -8828,7 +9258,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["SopAssignmentDto"];
+                };
             };
         };
     };
@@ -8847,7 +9279,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["SopVersionDto"][];
+                };
             };
         };
     };
@@ -8862,11 +9296,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description 最近 100 条，createdAt 降序 */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["SopAssignmentDto"][];
+                };
             };
         };
     };
@@ -8889,7 +9326,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["CollabPollResponseDto"];
+                };
             };
         };
     };
@@ -8912,7 +9351,12 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": {
+                        /** @enum {boolean} */
+                        ok: true;
+                    };
+                };
             };
         };
     };
@@ -8935,7 +9379,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["CollabClarifyResponseDto"];
+                };
             };
         };
     };
@@ -8960,7 +9406,12 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": {
+                        /** @enum {boolean} */
+                        ok: true;
+                    };
+                };
             };
         };
     };
@@ -8985,7 +9436,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["CollabCompleteResponseDto"];
+                };
             };
         };
     };
@@ -9010,7 +9463,12 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": {
+                        /** @enum {boolean} */
+                        ok: true;
+                    };
+                };
             };
         };
     };
@@ -9029,7 +9487,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["CollabLlmRelayResponseDto"];
+                };
             };
         };
     };
@@ -9050,7 +9510,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["CollabMediaUploadResponseDto"];
+                };
             };
         };
     };
@@ -9071,7 +9533,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["CollabCandidatePackageResponseDto"];
+                };
             };
         };
     };

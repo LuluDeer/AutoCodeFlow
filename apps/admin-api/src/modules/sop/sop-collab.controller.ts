@@ -16,7 +16,13 @@ import {
 import { FileInterceptor } from "@nestjs/platform-express";
 import { diskStorage } from "multer";
 import { ConfigService } from "@nestjs/config";
-import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
+import {
+  ApiProperty,
+  ApiPropertyOptional,
+  ApiOkResponse,
+  ApiCreatedResponse,
+  ApiExtraModels,
+} from "@nestjs/swagger";
 
 import { Public } from "../../common/decorators/public.decorator";
 import { ExecutorService } from "../executor/executor.service";
@@ -26,6 +32,17 @@ import { AiService, type MultimodalMessage } from "../ai/ai.service";
 import { SopService } from "./sop.service";
 import { SopMediaService, MAX_AGENT_MEDIA_BYTES } from "./sop-media.service";
 import type { SopClarificationMediaRef } from "./entities/sop-clarification.entity";
+// ARCH-23 / N-12: Agent 协作面响应契约（与 sop 管理面共用 dto 文件）。
+import {
+  CollabAssignmentItemDto,
+  CollabCandidatePackageResponseDto,
+  CollabClarificationReplyItemDto,
+  CollabClarifyResponseDto,
+  CollabCompleteResponseDto,
+  CollabLlmRelayResponseDto,
+  CollabMediaUploadResponseDto,
+  CollabPollResponseDto,
+} from "./dto/sop-response.dto";
 
 /**
  * P6（agent-and-deployment）：Agent 协作 API（设计文档 11）——执行器 Agent
@@ -142,6 +159,8 @@ class AgentCollabAckReplyDto {
 
 // @Public() + 手工机器鉴权：执行器面（非用户 JWT 面）
 @Public()
+// poll 的混合 items 走 getSchemaPath 裸 $ref，两个 item 类必须显式登记。
+@ApiExtraModels(CollabAssignmentItemDto, CollabClarificationReplyItemDto)
 @Controller("agent-collab")
 export class SopCollabController {
   constructor(
@@ -160,6 +179,8 @@ export class SopCollabController {
    */
   @Post("poll")
   @HttpCode(HttpStatus.OK)
+  // N-12: items 是 assignment 与 clarification_reply 的混合数组（oneOf）。
+  @ApiOkResponse({ type: CollabPollResponseDto })
   async poll(
     @Body() body: AgentCollabPollDto,
     @Headers("authorization") auth: string,
@@ -196,6 +217,13 @@ export class SopCollabController {
   /** 上报能力清单（覆盖式）。接 SOP 派发的机器在此声明 `agent:sop`。 */
   @Post("capability")
   @HttpCode(HttpStatus.OK)
+  @ApiOkResponse({
+    schema: {
+      type: "object",
+      properties: { ok: { type: "boolean", enum: [true] } },
+      required: ["ok"],
+    },
+  })
   async capability(
     @Body() body: AgentCollabCapabilityDto,
     @Headers("authorization") auth: string,
@@ -217,6 +245,7 @@ export class SopCollabController {
   /** 发起澄清（P6 核心：执行器 Agent 回问）。 */
   @Post("clarifications")
   @HttpCode(HttpStatus.OK)
+  @ApiOkResponse({ type: CollabClarifyResponseDto })
   async clarify(
     @Body() body: AgentCollabClarificationDto,
     @Headers("authorization") auth: string,
@@ -250,6 +279,13 @@ export class SopCollabController {
   /** 进度心跳（存活信号，卡死判定依据）。 */
   @Post("assignments/:id/progress")
   @HttpCode(HttpStatus.OK)
+  @ApiOkResponse({
+    schema: {
+      type: "object",
+      properties: { ok: { type: "boolean", enum: [true] } },
+      required: ["ok"],
+    },
+  })
   async progress(
     @Param("id") assignmentId: string,
     @Body() body: AgentCollabProgressDto,
@@ -268,6 +304,7 @@ export class SopCollabController {
   /** 回报完成（幂等键 attempt）。验收判定是中台 Agent 的职责，这里只落账。 */
   @Post("assignments/:id/complete")
   @HttpCode(HttpStatus.OK)
+  @ApiOkResponse({ type: CollabCompleteResponseDto })
   async complete(
     @Param("id") assignmentId: string,
     @Body() body: AgentCollabCompleteDto,
@@ -294,6 +331,13 @@ export class SopCollabController {
    */
   @Post("assignments/:id/clarifications/ack")
   @HttpCode(HttpStatus.OK)
+  @ApiOkResponse({
+    schema: {
+      type: "object",
+      properties: { ok: { type: "boolean", enum: [true] } },
+      required: ["ok"],
+    },
+  })
   async ackClarificationReply(
     @Param("id") assignmentId: string,
     @Body() body: AgentCollabAckReplyDto,
@@ -328,6 +372,7 @@ export class SopCollabController {
    */
   @Post("llm")
   @HttpCode(HttpStatus.OK)
+  @ApiOkResponse({ type: CollabLlmRelayResponseDto })
   async llmRelay(
     @Body()
     body: {
@@ -390,6 +435,7 @@ export class SopCollabController {
    */
   @Post("assignments/:id/media")
   @HttpCode(HttpStatus.CREATED)
+  @ApiCreatedResponse({ type: CollabMediaUploadResponseDto })
   // B-9：limits 在拦截器即生效——超过 100MB 的 multipart 在 multer 层被拒，
   // 不再整包读入内存后才由业务判定拒绝。
   @UseInterceptors(FileInterceptor("file", { limits: MEDIA_UPLOAD_LIMITS }))
@@ -433,6 +479,7 @@ export class SopCollabController {
    */
   @Post("assignments/:id/candidate-package")
   @HttpCode(HttpStatus.CREATED)
+  @ApiCreatedResponse({ type: CollabCandidatePackageResponseDto })
   @UseInterceptors(
     FileInterceptor("file", {
       storage: diskStorage({ destination: PACKAGE_UPLOAD_TMP_DIR }),

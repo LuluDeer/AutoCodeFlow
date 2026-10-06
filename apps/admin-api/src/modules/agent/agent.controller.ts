@@ -14,6 +14,8 @@ import {
   ApiBearerAuth,
   ApiProperty,
   ApiPropertyOptional,
+  ApiOkResponse,
+  ApiCreatedResponse,
 } from "@nestjs/swagger";
 import { InjectQueue } from "@nestjs/bullmq";
 import type { Queue } from "bullmq";
@@ -34,6 +36,14 @@ import {
   IsString,
   MaxLength,
 } from "class-validator";
+// ARCH-23 / N-12: Agent HTTP 面响应契约。
+import {
+  AgentBudgetResponseDto,
+  AgentSessionCreateResponseDto,
+  AgentSessionDetailResponseDto,
+  AgentSessionListResponseDto,
+  AgentSessionResumeResponseDto,
+} from "./dto/agent-response.dto";
 
 export class CreateAgentSessionDto {
   @ApiProperty({ enum: AGENT_SESSION_KINDS as unknown as string[] })
@@ -85,6 +95,8 @@ export class AgentController {
 
   @Get("sessions")
   @ApiOperation({ summary: "List agent sessions (newest first)" })
+  // N-12: 裸分页 {items,total}（与 /sop 同形态，无页元数据）。
+  @ApiOkResponse({ type: AgentSessionListResponseDto })
   async list(
     @Query("kind") kind?: AgentSessionKind,
     @Query("status") status?: string,
@@ -102,6 +114,7 @@ export class AgentController {
 
   @Get("sessions/:id")
   @ApiOperation({ summary: "Get an agent session with its steps" })
+  @ApiOkResponse({ type: AgentSessionDetailResponseDto })
   async detail(@Param("id") id: string) {
     const session = await this.sessions.requireById(id);
     const [steps, toolCalls, children] = await Promise.all([
@@ -116,6 +129,8 @@ export class AgentController {
   @ApiOperation({
     summary: "Create an agent session and enqueue it for execution",
   })
+  // POST 无 @HttpCode → 实际 201。
+  @ApiCreatedResponse({ type: AgentSessionCreateResponseDto })
   async create(@Body() dto: CreateAgentSessionDto) {
     const session = await this.sessions.create({
       kind: dto.kind,
@@ -151,6 +166,8 @@ export class AgentController {
    */
   @Post("sessions/:id/resume")
   @ApiOperation({ summary: "Resume a paused/failed agent session" })
+  // 终态会话 soft-fail {ok:false,reason}（200）；running 才 409（B-8）。
+  @ApiCreatedResponse({ type: AgentSessionResumeResponseDto })
   async resume(@Param("id") id: string) {
     const session = await this.sessions.requireById(id);
 
@@ -183,6 +200,7 @@ export class AgentController {
   /** 当前生效的预算（供设置页展示与运维核对）。 */
   @Get("budget")
   @ApiOperation({ summary: "Get effective agent budget settings" })
+  @ApiOkResponse({ type: AgentBudgetResponseDto })
   budgetInfo() {
     return this.budget.resolveBudget();
   }

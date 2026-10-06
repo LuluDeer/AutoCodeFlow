@@ -17,6 +17,9 @@ import {
   ApiOperation,
   ApiProperty,
   ApiPropertyOptional,
+  ApiOkResponse,
+  ApiCreatedResponse,
+  ApiExtraModels,
 } from "@nestjs/swagger";
 import {
   IsIn,
@@ -35,6 +38,18 @@ import { UserRole } from "../users/entities/user.entity";
 import { SopService } from "./sop.service";
 import { SopMediaService } from "./sop-media.service";
 import { ExecutorService } from "../executor/executor.service";
+// ARCH-23 / N-12: SOP 域响应契约（sop + SopCollab 两 tag 共用本文件）。
+import {
+  AgentMediaDto,
+  ClarificationReplyResponseDto,
+  SopAssignmentDetailResponseDto,
+  SopAssignmentDto,
+  SopCapableExecutorDto,
+  SopListResponseDto,
+  SopPublishResponseDto,
+  SopResponseDto,
+  SopVersionDto,
+} from "./dto/sop-response.dto";
 
 /**
  * P5：SOP 管理面（ADMIN-only）。
@@ -173,6 +188,9 @@ class HumanReplyDto {
 
 @ApiTags("sop")
 @ApiBearerAuth()
+// SopVersionDto/SopAssignmentDto/SopClarificationDto 经 detail 响应 DTO 的
+// type 直引自动注册；显式列出仅为可读性（openapi 产物不受影响）。
+@ApiExtraModels(SopResponseDto, SopVersionDto, SopAssignmentDto)
 @UseGuards(JwtAuthGuard)
 @Roles(UserRole.ADMIN)
 @Controller("sop")
@@ -185,6 +203,9 @@ export class SopController {
 
   @Get()
   @ApiOperation({ summary: "SOP 列表（可按 status 过滤）" })
+  // N-12: 裸分页 {items,total}——无 page/pageSize/totalPages 元数据（与
+  // tasks 的 paginate() 双键信封不同源），契约如实钉住。
+  @ApiOkResponse({ type: SopListResponseDto })
   async list(
     @Query("status") status?: string,
     @Query("page") page?: string,
@@ -199,6 +220,7 @@ export class SopController {
 
   @Get("assignments/:assignmentId")
   @ApiOperation({ summary: "指派详情（含澄清对话全量）" })
+  @ApiOkResponse({ type: SopAssignmentDetailResponseDto })
   async assignment(@Param("assignmentId") id: string) {
     return this.sops.getAssignment(id);
   }
@@ -210,6 +232,8 @@ export class SopController {
    */
   @Get("media/:mediaId")
   @ApiOperation({ summary: "下载执行器回传的媒体（截图/录屏）" })
+  // @Res() 直写二进制流（绕过 envelope）——契约按 binary 字符串声明。
+  @ApiOkResponse({ schema: { type: "string", format: "binary" } })
   async downloadMedia(
     @Param("mediaId") mediaId: string,
     @Res() res: import("express").Response,
@@ -227,6 +251,7 @@ export class SopController {
 
   @Get("assignments/:assignmentId/media")
   @ApiOperation({ summary: "指派的媒体清单" })
+  @ApiOkResponse({ type: [AgentMediaDto] })
   async mediaList(@Param("assignmentId") assignmentId: string) {
     return this.media.listByAssignment(assignmentId);
   }
@@ -239,6 +264,11 @@ export class SopController {
    */
   @Get("assignable-executors")
   @ApiOperation({ summary: "当前租约内可接 SOP 指派的执行器（agent:sop）" })
+  @ApiOkResponse({
+    type: [SopCapableExecutorDto],
+    description:
+      "空列表 = 没有任何机器开着 Agent（指派对话框据此渲染，而非 assign 报错兜圈）",
+  })
   async assignableExecutors() {
     return this.executors.listSopCapableExecutors();
   }
@@ -251,6 +281,8 @@ export class SopController {
    */
   @Post("assignments/:assignmentId/clarifications/:clarificationId/reply")
   @ApiOperation({ summary: "人工回复一条澄清（升级转人工后的答复入口）" })
+  // POST 无 @HttpCode → 实际 201（历史直觉 200 是漂移，按实际落契约）。
+  @ApiCreatedResponse({ type: ClarificationReplyResponseDto })
   async humanReply(
     @Param("assignmentId") assignmentId: string,
     @Param("clarificationId") clarificationId: string,
@@ -275,12 +307,14 @@ export class SopController {
 
   @Get(":id")
   @ApiOperation({ summary: "SOP 详情" })
+  @ApiOkResponse({ type: SopResponseDto })
   async detail(@Param("id") id: string) {
     return this.sops.getSop(id);
   }
 
   @Post()
   @ApiOperation({ summary: "起草 SOP（draft 态；slug 重复则覆盖草稿）" })
+  @ApiCreatedResponse({ type: SopResponseDto })
   async draft(@Body() dto: DraftSopDto, @CurrentUser() user: { id: string }) {
     return this.sops.draft({
       slug: dto.slug,
@@ -296,6 +330,10 @@ export class SopController {
   @ApiOperation({
     summary: "编辑工作副本（published 态也可编辑——真身在不可变版本快照）",
   })
+  @ApiOkResponse({
+    type: SopResponseDto,
+    description: "编辑后的工作副本（published 行的 currentVersion 不变）",
+  })
   async update(@Param("id") id: string, @Body() dto: UpdateSopDto) {
     const sop = await this.sops.getSop(id);
     return this.sops.draft({
@@ -309,6 +347,10 @@ export class SopController {
 
   @Post(":id/publish")
   @ApiOperation({ summary: "发布（严格校验 + 不可变版本快照 + contentHash）" })
+  @ApiCreatedResponse({
+    type: SopPublishResponseDto,
+    description: "内容与当前版本完全一致 → 400（修订必须真的改了什么）",
+  })
   async publish(
     @Param("id") id: string,
     @Body() dto: PublishSopDto,
@@ -326,6 +368,7 @@ export class SopController {
   @ApiOperation({
     summary: "指派给执行器（executorId 或 executorAddress 二选一）",
   })
+  @ApiCreatedResponse({ type: SopAssignmentDto })
   async assign(
     @Param("id") id: string,
     @Body() dto: AssignSopDto,
@@ -353,12 +396,17 @@ export class SopController {
 
   @Get(":id/versions")
   @ApiOperation({ summary: "版本历史（不可变快照列表）" })
+  @ApiOkResponse({ type: [SopVersionDto] })
   async versions(@Param("id") id: string) {
     return this.sops.listVersions(id);
   }
 
   @Get(":id/assignments")
   @ApiOperation({ summary: "指派记录" })
+  @ApiOkResponse({
+    type: [SopAssignmentDto],
+    description: "最近 100 条，createdAt 降序",
+  })
   async assignments(@Param("id") id: string) {
     return this.sops.listAssignments(id);
   }

@@ -4379,7 +4379,14 @@
         ],
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentSessionListResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4407,7 +4414,14 @@
         },
         "responses": {
           "201": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentSessionCreateResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4436,7 +4450,14 @@
         ],
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentSessionDetailResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4465,7 +4486,14 @@
         ],
         "responses": {
           "201": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentSessionResumeResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4485,7 +4513,14 @@
         "parameters": [],
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentBudgetResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4530,7 +4565,14 @@
         ],
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SopListResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4558,7 +4600,14 @@
         },
         "responses": {
           "201": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SopResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4587,7 +4636,14 @@
         ],
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SopAssignmentDetailResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4616,7 +4672,15 @@
         ],
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4645,7 +4709,17 @@
         ],
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AgentMediaDto"
+                  }
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4665,7 +4739,17 @@
         "parameters": [],
         "responses": {
           "200": {
-            "description": ""
+            "description": "空列表 = 没有任何机器开着 Agent（指派对话框据此渲染，而非 assign 报错兜圈）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SopCapableExecutorDto"
+                  }
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4712,7 +4796,14 @@
         },
         "responses": {
           "201": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClarificationReplyResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4741,7 +4832,14 @@
         ],
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SopResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4778,7 +4876,14 @@
         },
         "responses": {
           "200": {
-            "description": ""
+            "description": "编辑后的工作副本（published 行的 currentVersion 不变）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SopResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4817,7 +4922,14 @@
         },
         "responses": {
           "201": {
-            "description": ""
+            "description": "内容与当前版本完全一致 → 400（修订必须真的改了什么）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SopPublishResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4856,7 +4968,14 @@
         },
         "responses": {
           "201": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SopAssignmentDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4885,7 +5004,17 @@
         ],
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SopVersionDto"
+                  }
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4914,7 +5043,17 @@
         ],
         "responses": {
           "200": {
-            "description": ""
+            "description": "最近 100 条，createdAt 降序",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SopAssignmentDto"
+                  }
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4953,7 +5092,14 @@
         },
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CollabPollResponseDto"
+                }
+              }
+            }
           }
         },
         "tags": [
@@ -4986,7 +5132,25 @@
         },
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    }
+                  },
+                  "required": [
+                    "ok"
+                  ]
+                }
+              }
+            }
           }
         },
         "tags": [
@@ -5019,7 +5183,14 @@
         },
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CollabClarifyResponseDto"
+                }
+              }
+            }
           }
         },
         "tags": [
@@ -5060,7 +5231,25 @@
         },
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    }
+                  },
+                  "required": [
+                    "ok"
+                  ]
+                }
+              }
+            }
           }
         },
         "tags": [
@@ -5101,7 +5290,14 @@
         },
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CollabCompleteResponseDto"
+                }
+              }
+            }
           }
         },
         "tags": [
@@ -5142,7 +5338,25 @@
         },
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    }
+                  },
+                  "required": [
+                    "ok"
+                  ]
+                }
+              }
+            }
           }
         },
         "tags": [
@@ -5165,7 +5379,14 @@
         ],
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CollabLlmRelayResponseDto"
+                }
+              }
+            }
           }
         },
         "tags": [
@@ -5196,7 +5417,14 @@
         ],
         "responses": {
           "201": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CollabMediaUploadResponseDto"
+                }
+              }
+            }
           }
         },
         "tags": [
@@ -5227,7 +5455,14 @@
         ],
         "responses": {
           "201": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CollabCandidatePackageResponseDto"
+                }
+              }
+            }
           }
         },
         "tags": [
@@ -12249,6 +12484,385 @@
         "type": "object",
         "properties": {}
       },
+      "AgentSessionDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "ops_watch",
+              "incident",
+              "sop_authoring",
+              "sop_review",
+              "app_scaffold",
+              "chat"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "running",
+              "waiting_input",
+              "succeeded",
+              "failed",
+              "aborted",
+              "budget_exceeded"
+            ]
+          },
+          "title": {
+            "type": "string",
+            "nullable": true
+          },
+          "triggerSource": {
+            "type": "string",
+            "description": "'user:<id>' / 'cron:<name>' / 'event:<type>'"
+          },
+          "parentSessionId": {
+            "type": "string",
+            "description": "Sub-session lineage (sop_review sessions chain here)",
+            "nullable": true,
+            "format": "uuid"
+          },
+          "contextJson": {
+            "type": "object",
+            "description": "Session goal/context object",
+            "nullable": true,
+            "additionalProperties": true
+          },
+          "scopeJson": {
+            "type": "object",
+            "description": "Resource scope constraint (03 §5.3); empty = no resource access",
+            "nullable": true,
+            "additionalProperties": true
+          },
+          "budgetJson": {
+            "type": "object",
+            "description": "Budget snapshot taken at enqueue (audit sees what was allowed THEN)",
+            "nullable": true,
+            "properties": {
+              "maxSteps": {
+                "type": "number"
+              },
+              "maxTokens": {
+                "type": "number"
+              },
+              "wallClockMs": {
+                "type": "number"
+              },
+              "maxToolCalls": {
+                "type": "number"
+              }
+            }
+          },
+          "resultJson": {
+            "type": "object",
+            "description": "Final structured result on success",
+            "nullable": true,
+            "additionalProperties": true
+          },
+          "summary": {
+            "type": "string",
+            "description": "LLM-written closing summary",
+            "nullable": true
+          },
+          "errorMessage": {
+            "type": "string",
+            "nullable": true
+          },
+          "totalSteps": {
+            "type": "number"
+          },
+          "totalTokensIn": {
+            "type": "number"
+          },
+          "totalTokensOut": {
+            "type": "number"
+          },
+          "totalToolCalls": {
+            "type": "number"
+          },
+          "waitingFor": {
+            "type": "string",
+            "description": "What the session is waiting on (approval / clarification / ...)",
+            "nullable": true
+          },
+          "startedAt": {
+            "format": "date-time",
+            "type": "string",
+            "nullable": true
+          },
+          "finishedAt": {
+            "format": "date-time",
+            "type": "string",
+            "nullable": true
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "status",
+          "title",
+          "triggerSource",
+          "parentSessionId",
+          "contextJson",
+          "scopeJson",
+          "budgetJson",
+          "resultJson",
+          "summary",
+          "errorMessage",
+          "totalSteps",
+          "totalTokensIn",
+          "totalTokensOut",
+          "totalToolCalls",
+          "waitingFor",
+          "startedAt",
+          "finishedAt",
+          "createdAt",
+          "updatedAt"
+        ]
+      },
+      "AgentSessionListResponseDto": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentSessionDto"
+            }
+          },
+          "total": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "items",
+          "total"
+        ]
+      },
+      "AgentStepDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "sessionId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "seq": {
+            "type": "number",
+            "description": "1-based sequence within the session"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "system",
+              "user",
+              "assistant",
+              "tool"
+            ]
+          },
+          "content": {
+            "type": "string",
+            "nullable": true
+          },
+          "reasoning": {
+            "type": "string",
+            "description": "Provider reasoning channel when surfaced",
+            "nullable": true
+          },
+          "toolCallsJson": {
+            "type": "array",
+            "description": "Assistant tool-call requests verbatim",
+            "nullable": true,
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "toolCallId": {
+            "type": "string",
+            "nullable": true
+          },
+          "tokensIn": {
+            "type": "number"
+          },
+          "tokensOut": {
+            "type": "number"
+          },
+          "latencyMs": {
+            "type": "number"
+          },
+          "provider": {
+            "type": "string",
+            "nullable": true
+          },
+          "model": {
+            "type": "string",
+            "nullable": true
+          },
+          "summary": {
+            "type": "string",
+            "description": "Compacted step summary (retention tiering)",
+            "nullable": true
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "sessionId",
+          "seq",
+          "role",
+          "content",
+          "reasoning",
+          "toolCallsJson",
+          "toolCallId",
+          "tokensIn",
+          "tokensOut",
+          "latencyMs",
+          "provider",
+          "model",
+          "summary",
+          "createdAt"
+        ]
+      },
+      "AgentToolCallDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "sessionId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "stepId": {
+            "type": "string",
+            "nullable": true,
+            "format": "uuid"
+          },
+          "toolName": {
+            "type": "string"
+          },
+          "tier": {
+            "type": "string",
+            "enum": [
+              "read",
+              "write",
+              "dangerous"
+            ]
+          },
+          "argsJson": {
+            "type": "object",
+            "nullable": true,
+            "additionalProperties": true
+          },
+          "resultJson": {
+            "type": "object",
+            "description": "Truncated by the per-call size cap when resultTruncated",
+            "nullable": true,
+            "additionalProperties": true
+          },
+          "resultTruncated": {
+            "type": "boolean"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "denied",
+              "awaiting_approval",
+              "timeout",
+              "error",
+              "circuit_open"
+            ]
+          },
+          "errorMessage": {
+            "type": "string",
+            "nullable": true
+          },
+          "approvalId": {
+            "type": "string",
+            "description": "Approval record for awaiting_approval / granted flows",
+            "nullable": true,
+            "format": "uuid"
+          },
+          "durationMs": {
+            "type": "number"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "sessionId",
+          "stepId",
+          "toolName",
+          "tier",
+          "argsJson",
+          "resultJson",
+          "resultTruncated",
+          "status",
+          "errorMessage",
+          "approvalId",
+          "durationMs",
+          "createdAt"
+        ]
+      },
+      "AgentSessionDetailResponseDto": {
+        "type": "object",
+        "properties": {
+          "session": {
+            "$ref": "#/components/schemas/AgentSessionDto"
+          },
+          "steps": {
+            "description": "Reasoning trace by seq",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentStepDto"
+            }
+          },
+          "toolCalls": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentToolCallDto"
+            }
+          },
+          "children": {
+            "description": "Sub-sessions (parentSessionId = this)",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentSessionDto"
+            }
+          }
+        },
+        "required": [
+          "session",
+          "steps",
+          "toolCalls",
+          "children"
+        ]
+      },
       "CreateAgentSessionDto": {
         "type": "object",
         "properties": {
@@ -12273,6 +12887,507 @@
         },
         "required": [
           "kind"
+        ]
+      },
+      "AgentSessionCreateResponseDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "status": {
+            "type": "string",
+            "description": "Always 'pending' at creation"
+          }
+        },
+        "required": [
+          "id",
+          "status"
+        ]
+      },
+      "AgentSessionResumeResponseDto": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "description": "false = terminal session, create a new one instead"
+          },
+          "reason": {
+            "type": "string",
+            "description": "Present when ok=false"
+          }
+        },
+        "required": [
+          "ok"
+        ]
+      },
+      "AgentBudgetResponseDto": {
+        "type": "object",
+        "properties": {
+          "maxSteps": {
+            "type": "number"
+          },
+          "maxTokens": {
+            "type": "number"
+          },
+          "wallClockMs": {
+            "type": "number"
+          },
+          "maxToolCalls": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "maxSteps",
+          "maxTokens",
+          "wallClockMs",
+          "maxToolCalls"
+        ]
+      },
+      "SopResponseDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "slug": {
+            "type": "string",
+            "description": "1..128 [a-z0-9-], globally unique"
+          },
+          "title": {
+            "type": "string"
+          },
+          "currentVersion": {
+            "type": "string",
+            "description": "Latest published version label, null = never published",
+            "nullable": true
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "draft",
+              "published",
+              "deprecated"
+            ]
+          },
+          "applicationId": {
+            "type": "string",
+            "description": "App zip the SOP runs against",
+            "nullable": true,
+            "format": "uuid"
+          },
+          "frontMatterJson": {
+            "type": "object",
+            "description": "Parsed front-matter (capabilities/permission profile source of truth)",
+            "nullable": true,
+            "additionalProperties": true
+          },
+          "bodyMarkdown": {
+            "type": "string",
+            "nullable": true
+          },
+          "createdBy": {
+            "type": "string",
+            "description": "'user:<id>' or 'agent:<sessionId>'"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "slug",
+          "title",
+          "currentVersion",
+          "status",
+          "applicationId",
+          "frontMatterJson",
+          "bodyMarkdown",
+          "createdBy",
+          "createdAt",
+          "updatedAt"
+        ]
+      },
+      "SopVersionDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "sopId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "version": {
+            "type": "string",
+            "description": "e.g. '1.2.3'"
+          },
+          "frontMatterJson": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "bodyMarkdown": {
+            "type": "string"
+          },
+          "changelog": {
+            "type": "string",
+            "nullable": true
+          },
+          "contentHash": {
+            "type": "string",
+            "description": "sha over front-matter + body; the delivery reconciliation anchor"
+          },
+          "publishedBy": {
+            "type": "string"
+          },
+          "publishedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "sopId",
+          "version",
+          "frontMatterJson",
+          "bodyMarkdown",
+          "changelog",
+          "contentHash",
+          "publishedBy",
+          "publishedAt",
+          "createdAt"
+        ]
+      },
+      "SopAssignmentDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "sopId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "sopVersion": {
+            "type": "string",
+            "description": "Pinned SOP version for this assignment"
+          },
+          "targetExecutorId": {
+            "type": "string",
+            "nullable": true,
+            "format": "uuid"
+          },
+          "targetAgentSessionId": {
+            "type": "string",
+            "description": "Chat/agent session driving the assignment",
+            "nullable": true
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "assigned",
+              "in_progress",
+              "blocked",
+              "completed",
+              "failed",
+              "cancelled",
+              "stalled"
+            ]
+          },
+          "clarificationRound": {
+            "type": "number",
+            "description": "Current clarification round (0-based counter)"
+          },
+          "maxRounds": {
+            "type": "number"
+          },
+          "resultJson": {
+            "type": "object",
+            "description": "Executor-reported delivery result",
+            "nullable": true,
+            "additionalProperties": true
+          },
+          "parentSessionId": {
+            "type": "string",
+            "description": "sop_review chat session handling clarifications",
+            "nullable": true,
+            "format": "uuid"
+          },
+          "pulledAt": {
+            "format": "date-time",
+            "type": "string",
+            "description": "First successful poll claim",
+            "nullable": true
+          },
+          "lastProgressAt": {
+            "format": "date-time",
+            "type": "string",
+            "description": "Last progress heartbeat (stall detection input)",
+            "nullable": true
+          },
+          "progressJson": {
+            "type": "object",
+            "additionalProperties": true,
+            "nullable": true
+          },
+          "attempt": {
+            "type": "number",
+            "description": "Delivery attempts of the final report (complete idempotency key)"
+          },
+          "lastReplyDeliveredAt": {
+            "format": "date-time",
+            "type": "string",
+            "description": "Last clarification-reply push (at-least-once cursor)",
+            "nullable": true
+          },
+          "capabilitySnapshotJson": {
+            "type": "object",
+            "description": "agentCapabilities snapshot at pull time",
+            "nullable": true,
+            "additionalProperties": true
+          },
+          "permissionProfileAtPull": {
+            "type": "string",
+            "description": "Permission profile in force at pull",
+            "nullable": true
+          },
+          "assignedBy": {
+            "type": "string"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "sopId",
+          "sopVersion",
+          "targetExecutorId",
+          "targetAgentSessionId",
+          "status",
+          "clarificationRound",
+          "maxRounds",
+          "resultJson",
+          "parentSessionId",
+          "pulledAt",
+          "lastProgressAt",
+          "progressJson",
+          "attempt",
+          "lastReplyDeliveredAt",
+          "capabilitySnapshotJson",
+          "permissionProfileAtPull",
+          "assignedBy",
+          "createdAt",
+          "updatedAt"
+        ]
+      },
+      "SopListResponseDto": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SopResponseDto"
+            }
+          },
+          "total": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "items",
+          "total"
+        ]
+      },
+      "SopClarificationDto": {
+        "type": "object",
+        "properties": {
+          "clientClarificationId": {
+            "type": "string",
+            "description": "Executor-generated idempotency key (dedupe on retry)",
+            "nullable": true
+          },
+          "assignmentId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "round": {
+            "type": "number"
+          },
+          "question": {
+            "type": "string",
+            "description": "Untrusted executor statement — sanitized at ingest"
+          },
+          "questionContextJson": {
+            "type": "object",
+            "nullable": true,
+            "additionalProperties": true
+          },
+          "answer": {
+            "type": "string",
+            "nullable": true
+          },
+          "resolution": {
+            "type": "string",
+            "enum": [
+              "answered",
+              "sop_amended",
+              "escalated_to_human"
+            ],
+            "nullable": true
+          },
+          "newSopVersion": {
+            "type": "string",
+            "description": "Set on sop_amended replies",
+            "nullable": true
+          },
+          "mediaRefsJson": {
+            "type": "array",
+            "description": "Screenshot/recording references (platform paths only)",
+            "nullable": true
+          },
+          "reviewSessionId": {
+            "type": "string",
+            "description": "sop_review session that answered it",
+            "nullable": true,
+            "format": "uuid"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "clientClarificationId",
+          "assignmentId",
+          "round",
+          "question",
+          "questionContextJson",
+          "answer",
+          "resolution",
+          "newSopVersion",
+          "mediaRefsJson",
+          "reviewSessionId",
+          "createdAt",
+          "updatedAt"
+        ]
+      },
+      "SopAssignmentDetailResponseDto": {
+        "type": "object",
+        "properties": {
+          "assignment": {
+            "$ref": "#/components/schemas/SopAssignmentDto"
+          },
+          "clarifications": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SopClarificationDto"
+            }
+          }
+        },
+        "required": [
+          "assignment",
+          "clarifications"
+        ]
+      },
+      "AgentMediaDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "assignmentId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "mime": {
+            "type": "string",
+            "nullable": true
+          },
+          "sizeBytes": {
+            "type": "number"
+          },
+          "uploadedBy": {
+            "type": "string",
+            "description": "'executor:<id>' or 'user:<id>'"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "assignmentId",
+          "name",
+          "mime",
+          "sizeBytes",
+          "uploadedBy",
+          "createdAt"
+        ]
+      },
+      "SopCapableExecutorDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "appName": {
+            "type": "string"
+          },
+          "address": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "lastHeartbeat": {
+            "format": "date-time",
+            "type": "string",
+            "nullable": true
+          },
+          "agentCapabilities": {
+            "description": "Lease-declared capability domains (short-lived lease, not a snapshot)",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "id",
+          "appName",
+          "address",
+          "status",
+          "lastHeartbeat",
+          "agentCapabilities"
         ]
       },
       "HumanReplyDto": {
@@ -12301,6 +13416,22 @@
         "required": [
           "resolution",
           "answer"
+        ]
+      },
+      "ClarificationReplyResponseDto": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "description": "Always true on success (failures are 4xx)"
+          },
+          "newSopVersion": {
+            "type": "string",
+            "description": "Set when resolution=sop_amended (publish produced a new immutable version)"
+          }
+        },
+        "required": [
+          "ok"
         ]
       },
       "DraftSopDto": {
@@ -12355,6 +13486,21 @@
           }
         }
       },
+      "SopPublishResponseDto": {
+        "type": "object",
+        "properties": {
+          "sop": {
+            "$ref": "#/components/schemas/SopResponseDto"
+          },
+          "version": {
+            "$ref": "#/components/schemas/SopVersionDto"
+          }
+        },
+        "required": [
+          "sop",
+          "version"
+        ]
+      },
       "AssignSopDto": {
         "type": "object",
         "properties": {
@@ -12371,6 +13517,126 @@
             "description": "按地址指派（executorId 缺省时的替代形态）"
           }
         }
+      },
+      "CollabAssignmentItemDto": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "assignment"
+            ]
+          },
+          "assignmentId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "sop": {
+            "type": "object",
+            "description": "Full SOP snapshot (reconciliation anchor = contentHash)",
+            "properties": {
+              "slug": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              },
+              "contentHash": {
+                "type": "string"
+              },
+              "frontMatter": {
+                "type": "object",
+                "additionalProperties": true
+              },
+              "bodyMarkdown": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "slug",
+              "title",
+              "version",
+              "contentHash",
+              "frontMatter",
+              "bodyMarkdown"
+            ]
+          },
+          "maxRounds": {
+            "type": "number"
+          },
+          "clarificationRound": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "kind",
+          "assignmentId",
+          "maxRounds",
+          "clarificationRound"
+        ]
+      },
+      "CollabClarificationReplyItemDto": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "clarification_reply"
+            ]
+          },
+          "assignmentId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "clarificationId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "clientClarificationId": {
+            "type": "string",
+            "nullable": true
+          },
+          "round": {
+            "type": "number"
+          },
+          "resolution": {
+            "type": "string",
+            "enum": [
+              "answered",
+              "sop_amended",
+              "escalated_to_human"
+            ]
+          },
+          "answer": {
+            "type": "string",
+            "nullable": true
+          },
+          "newSopVersion": {
+            "type": "string",
+            "nullable": true
+          },
+          "newSop": {
+            "description": "Only on sop_amended — the amended SOP payload for continued execution",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/CollabAssignmentItemDto"
+              }
+            ]
+          }
+        },
+        "required": [
+          "kind",
+          "assignmentId",
+          "clarificationId",
+          "clientClarificationId",
+          "round",
+          "resolution",
+          "answer",
+          "newSopVersion"
+        ]
       },
       "AgentCollabPollDto": {
         "type": "object",
@@ -12405,6 +13671,48 @@
         },
         "required": [
           "address"
+        ]
+      },
+      "CollabPollResponseDto": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "description": "Mixed items: assignments (first pull / resend) and clarification replies",
+            "items": {
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/CollabAssignmentItemDto"
+                },
+                {
+                  "$ref": "#/components/schemas/CollabClarificationReplyItemDto"
+                }
+              ]
+            }
+          },
+          "sopPolicy": {
+            "type": "object",
+            "description": "Enterprise policy pushed EVERY poll (executor local config cannot override)",
+            "properties": {
+              "permissionPolicy": {
+                "type": "string",
+                "example": "standard"
+              },
+              "allowedProfiles": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "permissionPolicy",
+              "allowedProfiles"
+            ]
+          }
+        },
+        "required": [
+          "items"
         ]
       },
       "AgentCollabCapabilityDto": {
@@ -12466,6 +13774,27 @@
           "question"
         ]
       },
+      "CollabClarifyResponseDto": {
+        "type": "object",
+        "properties": {
+          "clarificationId": {
+            "type": "string",
+            "description": "clientClarificationId when provided, else the row id"
+          },
+          "round": {
+            "type": "number"
+          },
+          "escalated": {
+            "type": "boolean",
+            "description": "true = maxRounds exhausted, escalated to human notifications (no sop_review session will start)"
+          }
+        },
+        "required": [
+          "clarificationId",
+          "round",
+          "escalated"
+        ]
+      },
       "AgentCollabProgressDto": {
         "type": "object",
         "properties": {
@@ -12510,6 +13839,18 @@
           "status"
         ]
       },
+      "CollabCompleteResponseDto": {
+        "type": "object",
+        "properties": {
+          "accepted": {
+            "type": "boolean",
+            "description": "false = duplicate attempt / idempotent replay ignored"
+          }
+        },
+        "required": [
+          "accepted"
+        ]
+      },
       "AgentCollabAckReplyDto": {
         "type": "object",
         "properties": {
@@ -12524,6 +13865,98 @@
         "required": [
           "address",
           "clarificationId"
+        ]
+      },
+      "CollabLlmRelayResponseDto": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "type": "string",
+            "description": "Empty string when the provider is disabled/unavailable (fail-open, executor degrades)"
+          },
+          "toolCalls": {
+            "description": "Tool round-trips are NOT exposed to executors (null)",
+            "nullable": true,
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "usage": {
+            "type": "object",
+            "properties": {
+              "tokensIn": {
+                "type": "number"
+              },
+              "tokensOut": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "tokensIn",
+              "tokensOut"
+            ]
+          },
+          "model": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "content",
+          "toolCalls",
+          "model"
+        ]
+      },
+      "CollabMediaUploadResponseDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "mime": {
+            "type": "string",
+            "nullable": true
+          },
+          "sizeBytes": {
+            "type": "number"
+          },
+          "mediaPath": {
+            "type": "string",
+            "description": "Platform path /api/agent-collab/media/<id> — the ONLY valid mediaRefs form"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "mime",
+          "sizeBytes",
+          "mediaPath"
+        ]
+      },
+      "CollabCandidatePackageResponseDto": {
+        "type": "object",
+        "properties": {
+          "packageId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string",
+            "description": "'sop-<slug>'"
+          },
+          "version": {
+            "type": "string",
+            "description": "SOP version + agent build metadata (idempotent re-delivery)"
+          }
+        },
+        "required": [
+          "packageId",
+          "name",
+          "version"
         ]
       },
       "SystemConfigResponseDto": {
