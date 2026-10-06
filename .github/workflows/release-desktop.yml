@@ -137,6 +137,11 @@ jobs:
           ACF_BUNDLE_UV: '1'
           ACF_UV_REQUIRED: '1'
           ACF_UV_VERSION: '0.8.17'
+          # N-06②：Agent 浏览器能力随包分发。同 uv 的 REQUIRED 硬闸（缺浏览器
+          # 的包用户侧无任何可诊断信号）；只装 chromium-headless-shell（本仓唯一
+          # launch 点是 headless:true），离线构建可用 ACF_PLAYWRIGHT_SOURCE。
+          ACF_BUNDLE_PLAYWRIGHT: '1'
+          ACF_PLAYWRIGHT_REQUIRED: '1'
         run: npm run ${{ matrix.script }} -- --publish never
 
       - name: Verify embedded executor bundle present
@@ -146,6 +151,23 @@ jobs:
           test -f apps/executor-desktop/resources/executor-node/index.js \
             || { echo "::error::executor-node bundle missing — installer 会缺少执行器内核"; exit 1; }
           echo "executor bundle present: $(wc -c < apps/executor-desktop/resources/executor-node/index.js) bytes"
+
+      # N-06：agent-worker 与随包浏览器在出包前的 staged 校验（extraResources
+      # 深度解包对账 uv 一节已有先例；worker/browsers 走轻量形态——worker bundle
+      # 的字节一致性由 CI 的 desktop-bundle-drift job 离线重打比对，此处防的是
+      # "源目录被构建流程清掉/漏 staging"这类出包前事故）。
+      - name: Verify agent worker and browsers staged
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd apps/executor-desktop
+          test -f resources/agent-worker/dist/index.js \
+            || { echo "::error::agent-worker bundle missing — installer 会缺少 Agent 托管子进程"; exit 1; }
+          test -f resources/agent-worker/browsers.json \
+            || { echo "::error::agent-worker/browsers.json missing — playwright packageRoot 契约文件缺失"; exit 1; }
+          ls -d resources/playwright/chromium_headless_shell-* >/dev/null 2>&1 \
+            || { echo "::error::resources/playwright 无 chromium_headless_shell-* — 浏览器能力会整体降级且无诊断信号"; exit 1; }
+          echo "agent-worker bundle: $(wc -c < resources/agent-worker/dist/index.js) bytes; browsers: $(ls resources/playwright)"
 
       # 打包前校验"资源目录里有 uv"还不够——真正决定用户体验的是**安装包内**
       # 有没有 uv。electron-builder 的 extraResources 过滤规则写错时，源目录

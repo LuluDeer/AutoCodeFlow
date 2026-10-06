@@ -1,8 +1,12 @@
 import { app, Menu, dialog, powerMonitor } from 'electron';
 import { ConfigStore } from './config-store';
 import { ExecutorProcess } from './executor-process';
-import { AgentHost } from './agent/agent-host';
-import { CollabClient } from './agent/collab-client';
+import { AgentWorkerHandle } from './agent-worker-process';
+import {
+  buildAgentWorkerSpawnEnv,
+  resolveAgentWorkerEntry,
+} from './agent-worker-paths';
+import type { AgentHostConfig } from './agent/agent-host';
 import type { AgentStatusSnapshot } from './agent-status-view';
 import { agentHostIdentity as buildAgentHostIdentity, agentHostTransition } from './agent-host-lifecycle';
 import { HeartbeatMonitor } from './heartbeat';
@@ -88,6 +92,9 @@ app.on('before-quit', (e) => {
   isQuitting = true;
   log.info('App quitting, stopping executor and heartbeat...');
   heartbeat.stop();
+  // N-06①：agent worker 硬杀——中断的指派由 journal running 阶段恢复
+  //（与崩溃恢复同语义），绝不阻塞退出链。
+  agentHost?.kill();
   executorProcess.stop().finally(() => {
     app.quit(); // 子进程已退出，真正退出
   });
@@ -264,9 +271,11 @@ export function syncNotifierWithConfig(): void {
 }
 
 // ── P7b：Agent 托管接线（agent-collab 轮询循环）────────────────────────
+// N-06①：托管本体已拆为独立子进程（07 §4.2 完整形态，见 agent-worker/）。
+// 本文件保留：轮询定时器驱动 tick、配置热同步推送、身份状态机与托盘快照。
 
 const AGENT_POLL_INTERVAL_MS = 30_000;
-let agentHost: AgentHost | null = null;
+let agentHost: AgentWorkerHandle | null = null;
 let agentHostIdentity: string | null = null;
 let agentHostReady: Promise<void> = Promise.resolve();
 let agentTickPromise: Promise<unknown> | null = null;
@@ -282,8 +291,31 @@ function configuredAgentIdentity(cfg: ReturnType<typeof configStore.getAll>): st
   });
 }
 
-function queueAgentWithdrawal(host: AgentHost): void {
-  agentHostReady = agentHostReady.then(() => host.withdrawCapabilities()).catch((err) => {
+/**
+ * worker 的托管配置快照。等效旧 AgentHostDeps.getConfig 的实时读数——
+ * 身份失配（workDir/地址/token 变更后未重建）一律视为关闭，防旧 worker
+ * 用旧身份继续收单。executorToken 在这里解密为明文（CollabClient 的
+ * Bearer，ADR-012 信封不落协议面之外）。
+ */
+function buildAgentHostConfig(cfg: ReturnType<typeof configStore.getAll>, boundIdentity: string | null): AgentHostConfig {
+  return {
+    agentEnabled: cfg.agentEnabled === true && boundIdentity !== null && configuredAgentIdentity(cfg) === boundIdentity,
+    adminApiUrl: cfg.adminApiUrl,
+    executorToken: configStore.getDecryptedToken(),
+    agent: {
+      preset: cfg.agentPermissionProfile,
+      codeExecution: cfg.agentCodeExecution,
+      sandboxBackend: cfg.agentSandboxBackend,
+      hostAccess: cfg.agentHostAccess,
+      taskExecution: cfg.agentTaskExecution,
+      allowedApps: cfg.agentAllowedApps,
+      allowedDomains: cfg.agentAllowedDomains,
+    },
+  };
+}
+
+function queueAgentWithdrawal(host: AgentWorkerHandle): void {
+  agentHostReady = agentHostReady.then(() => host.disableAndStopAfterWork()).catch((err) => {
     log.warn(`[agent-host] capability withdrawal failed: ${err instanceof Error ? err.message : String(err)}`);
   });
 }
@@ -304,34 +336,31 @@ export function syncAgentHostWithConfig(): void {
       }
       if (!agentHost) {
         const boundIdentity = identity;
-        agentHost = new AgentHost({
+        const pathInput = {
+          isPackaged: app.isPackaged,
+          resourcesPath: process.resourcesPath,
+          appPath: app.getAppPath(),
+        };
+        const handle = new AgentWorkerHandle({
           address: cfg.executorAddressPublic || `${cfg.executorHost}:${cfg.executorPort}`,
           workDir: cfg.workDir,
-          getConfig: () => {
-            const c = configStore.getAll();
-            return {
-              agentEnabled: c.agentEnabled === true && configuredAgentIdentity(c) === boundIdentity,
-              adminApiUrl: c.adminApiUrl,
-              executorToken: c.executorToken,
-              agent: {
-                preset: c.agentPermissionProfile,
-                codeExecution: c.agentCodeExecution,
-                sandboxBackend: c.agentSandboxBackend,
-                hostAccess: c.agentHostAccess,
-                taskExecution: c.agentTaskExecution,
-                allowedApps: c.agentAllowedApps,
-                allowedDomains: c.agentAllowedDomains,
-              },
-            };
-          },
-          client: new CollabClient({
-            baseUrl: cfg.adminApiUrl,
-            // token 经 getDecryptedToken 现取——ADR-012 的加密信封不落明文
-            token: configStore.getDecryptedToken(),
-          }),
+          config: buildAgentHostConfig(cfg, boundIdentity),
+          entryPath: resolveAgentWorkerEntry(pathInput),
+          spawnEnv: buildAgentWorkerSpawnEnv(pathInput),
+          log,
+          onStats: () => refreshTrayAgentStatus(),
         });
+        // spawn 不 await：worker 起不来不影响桌面主链，tick 自愈会重试
+        handle.start().catch((err) => {
+          log.warn(`[agent-host] worker spawn failed: ${err instanceof Error ? err.message : String(err)}`);
+        });
+        agentHost = handle;
         agentHostIdentity = identity;
-        log.info('[agent-host] created (agentEnabled=true)');
+        log.info('[agent-host] worker created (agentEnabled=true)');
+      } else {
+        // 同身份热更新：把最新配置快照推给 worker（档位/开关即时生效，
+        // 等效旧 getConfig 的实时读数语义）
+        agentHost.refreshConfig(buildAgentHostConfig(cfg, agentHostIdentity));
       }
       if (!agentTimer) {
         // host.tick 内部恒 0 等待：轮询节奏由本定时器驱动；处理指派是

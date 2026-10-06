@@ -1,0 +1,19 @@
+# N-06①：executor-desktop 内嵌 agent-worker（esbuild bundle）的期望 SHA-256。
+#
+# 口径同 executor-node-bundle.sha256（产物不入库，仓库只跟踪本清单）：
+#   · source-digest 行：bundle 输入源码（apps/executor-desktop/src/agent-worker/**
+#     含 electron-stub 包 + apps/executor-desktop/src/main/agent/**）的语义摘要，
+#     与构建路径/打包器版本无关，本地可复现（check-desktop-bundle-drift.mjs）。
+#   · 末行字节哈希：resources/agent-worker/dist/index.js 的 sha256——CI
+#     desktop-bundle-drift job 离线 esbuild 重打后比对 actual == expected。
+#     esbuild 对同输入同版本字节确定（--no-cache 语义天然成立）。
+#
+# 维护规则：改了 worker 输入源码后同 commit 重打回填——
+#   1. cd apps/executor-desktop && npm run build:agent-worker
+#   2. node scripts/check-desktop-bundle-drift.mjs --print   # 取 agent-worker 段
+#   3. sha256sum resources/agent-worker/dist/index.js       # 末行字节哈希
+#
+# 变更记录：
+#   - N-06 首版基线：worker 拆分 + playwright 分发接线（host=esbuild 7101KB）。
+source-digest: c6d8cd4fd9ef3f42bcbb61bf32ced11a97cff2b4c5c07a40503dc385da8edad7
+70426e3e5352a329f1a14f00673bec214e2b550751d82a9480a7c45e910f2958  dist/index.js

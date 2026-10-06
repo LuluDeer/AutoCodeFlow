@@ -8,6 +8,11 @@
 
 ## 状态快照
 
+- **本轮（2026-10-06 → 接手 Win 侧交接 + N-06 打包接线双项完成，Linux 侧 develop）**：
+  - **接手验证**：拉取 c46d88c6..555bd81d（Win 侧升级战役 + 5 轮 CI 收绿）；按 HANDOFF-2026-10-05 §三清单本机全绿——test:api 4567 / node 1056（13 skip）/ web / cli / mcp / desktop / typecheck / bundle-drift / docs-sync 全 PASS；仅 2 个本机环境项：python 套件 `python`→`python3` 别名缺失（CLI 名问题非代码）+ test_sandbox 两个 rlimit 预存红（2026-09-26 已登记）；`check:env-drift` 脚本名已改 `test:env-drift`（交接文档口径过期，新名绿）。
+  - **N-06 done（打包接线双项，07 §4.2 完整形态）**：① AgentHost+CollabClient 整体拆入 `src/agent-worker/main.ts` 独立子进程（esbuild 单文件 bundle + ELECTRON_RUN_AS_NODE + stdio JSON 行协议），主进程只留定时器/配置热同步/身份状态机/托盘快照；worker 崩溃 tick 自愈、身份替换 disableAndStopAfterWork、退出硬杀（journal 恢复兜底）。② 打包态 Playwright：esbuild 内联 playwright-core（electron 启动器链 alias 到 stub 包，防 223MB electron 资产入包；ncc 0.45 实测做不到故换 bundler），browsers.json/package.json 走 packageRoot 契约，Chromium 经 ACF_BUNDLE_PLAYWRIGHT 发布门只装 headless-shell（266MB；`ACF_PLAYWRIGHT_REQUIRED=1` 硬闸）。守卫三层：agent-worker-bundle.sha256 双闸（语义+CI 重打字节）入 desktop-bundle-drift job、check-desktop-agent-packaging.mjs 18 锚点、test:main 真 bundle 冒烟。**验收**：本机 AppImage 1.7.1 解包——包内 electron 跑包内 worker ready 探针 PASS + 包内浏览器 launch PASS；test:main 全绿（41 selftest）。**踩坑**：ncc externals 不拦 node_modules 深层 require；esbuild alias 须包目录；spawnSync env 必须嵌 `env:` 键（自检抓到）。**遗留**：win/mac 包内解包对账未做（staged 校验已上）；N-05 仍暂缓，下轮候选顺位不变。
+  - **子代理平台 note**：Explore 子代理启动仍报 reasoning-level-missing，按降级纪律主会话直落（与 2026-10-02 同型，第三次复现）。
+
 - **本轮（2026-10-02 → metrics DI 根因收口 + N-02③ 温和下放实施 + Win 侧对账简报，develop 工作区）**：子代理平台全天复现 reasoning-level-missing，按既有降级纪律主会话直落。**改动尚未提交**（16 文件在工作区，等用户确认后一次 commit 推 develop）。
   - **metrics 守卫 DI 之谜根因收口**（c900865e 遗留"成因待查"）：Nest `reflectConstructorParams` 合并 self-declared deps 用**原型链敏感**的 `Reflect.getMetadata`——基类 JwtAuthGuard 构造器 index[1] 的 `@Inject(API_KEY_AUTH_FACADE)` 沿原型链覆写子类 MetricsScraperAuthGuard index[1] 的 ConfigService 类型推断 → 按不存在 token 解析失败 → @Optional 吞成 undefined（strict-clone 探针实证 Nest 报 "argument API_KEY_AUTH_FACADE at index [1]"；TS 6 对 `ConfigService | undefined` 的元数据 emit 正确，嫌疑排除）。修复=守卫参数显式 `@Inject(ConfigService)`；DI 装配回归测试组入 spec（真装配断言 + 上游行为锁定）。**Nest 上游 issue 待报**（reflectOptionalParams 用 getOwnMetadata 而 self-deps 未做同样限定，同文件注释自相矛盾）。
   - **N-02③ 产品拍板（AskUserQuestion 留痕）：温和下放并实施完毕**——executor.controller PATCH `:id` / reload-config 移除 @Roles(ADMIN)，判定下沉 assertCanManageMetadata（ADMIN 短路 + 项目 editor+；projectId=null 平台级执行器非 ADMIN 恒 403；@Optional 缺席退化仅 ADMIN fail-closed）；A2 声明 `@WriteGuard("executor",{scope:"ownership"})` + `executor:write` 落证 + 穷举守卫清单显式登记；rotate-token/set-offline/DELETE 与 executor-package 不动；admin-web 详情页按钮拆分（列表页批量入口维持 ADMIN）。**验收**：RBAC 矩阵 +6、admin-api 253 套件 4206 例绿（基线 4199 只增）、admin-web 176 套件 1346 例绿、双端 lint/tsc 绿、swagger/api-types 同批（纯描述 diff）。N-02 整条 **done 销账**（①②④ 轮 28 已复核兑现）。
@@ -35,7 +40,7 @@
 
 ---
 
-更新时间：2026-09-27（轮 27 三项清偿 + 轮 28 N-04/N-02 + 轮 29 N-12/N-09/N-11/N-10；详情见状态快照首三条）
+更新时间：2026-10-06（N-06 打包接线双项 done；详情见状态快照首条）
 当前分支：`develop`
 
 ## 状态快照（历史）

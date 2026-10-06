@@ -82,7 +82,13 @@
     "src/main/agent/gui-x11.selftest.ts",
     "src/main/agent/zip-writer.ts",
     "src/main/agent/package-candidate.ts",
-    "src/main/agent/package-candidate.selftest.ts"
+    "src/main/agent/package-candidate.selftest.ts",
+    "src/main/agent-worker-paths.ts",
+    "src/main/agent-worker-paths.selftest.ts",
+    "src/main/agent-worker-protocol.ts",
+    "src/main/agent-worker-protocol.selftest.ts",
+    "src/main/agent-worker-process.ts",
+    "src/main/agent-worker-process.selftest.ts"
   ],
   "exclude": []
 }

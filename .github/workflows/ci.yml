@@ -1037,9 +1037,16 @@ jobs:
         run: |
           ../executor-desktop/node_modules/.bin/ncc build src/main.ts \
             -o ../executor-desktop/resources/executor-node --source-map --no-cache
+      # N-06①：agent-worker bundle 同口径离线重打（esbuild 对同输入同版本字节
+      # 确定，与 ncc 的字节闸同判据；只打 worker 不下载浏览器——资源目录按
+      # .gitignore 出库，重打产物即被字节闸消费）。
+      - name: Rebuild agent-worker bundle (same command as scripts/bundle-agent-worker.cjs)
+        working-directory: apps/executor-desktop
+        run: node scripts/bundle-agent-worker.cjs
       - name: Semantic drift guard — executor-node/src digest must match manifest (F-19 / ADR-005)
         # 本地即可复现的语义闸（与构建路径/ncc 版本无关），先跑——它红了就是真漂移，
-        # 且失败信息直接给出回填命令，不必等下面的字节闸。
+        # 且失败信息直接给出回填命令，不必等下面的字节闸。N-06 起同时覆盖
+        # agent-worker 段（同脚本双段输出）。
         run: |
           cd "$GITHUB_WORKSPACE"
           node scripts/check-desktop-bundle-drift.mjs --selftest
@@ -1056,6 +1063,14 @@ jobs:
           cd "$GITHUB_WORKSPACE"
           node scripts/check-desktop-update-chain.mjs --selftest
           node scripts/check-desktop-update-chain.mjs
+      # N-06：agent-worker / 打包态 Playwright 的跨文件配置一致性守卫
+      # （esbuild 脚本 / builder extraResources / 发布门 / 路径解析 / 漂移清单
+      # 七处锚点，改一处忘其余即红）。
+      - name: Agent packaging consistency guard (N-06)
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          node scripts/check-desktop-agent-packaging.mjs --selftest
+          node scripts/check-desktop-agent-packaging.mjs
       - name: Drift guard — rebuilt bundle sha256 must match committed manifest (F-19)
         run: |
           cd "$GITHUB_WORKSPACE"
@@ -1076,6 +1091,24 @@ jobs:
             exit 1
           fi
           echo "::notice::bundle sha256 matches manifest — executor-node source ↔ desktop embedded bundle in sync."
+      # N-06①：agent-worker bundle 字节闸（同 F-19 判据，esbuild 重打比对）。
+      - name: Drift guard — agent-worker bundle sha256 must match committed manifest (N-06)
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          BUNDLE="apps/executor-desktop/resources/agent-worker/dist/index.js"
+          MANIFEST="apps/executor-desktop/agent-worker-bundle.sha256"
+          ACTUAL="$(sha256sum "$BUNDLE" | awk '{print $1}')"
+          EXPECTED="$(grep -v '^#' "$MANIFEST" | grep -oE '^[0-9a-f]{64}' | tail -n1)"
+          echo "actual=$ACTUAL expected=$EXPECTED"
+          if [ -z "$EXPECTED" ]; then
+            echo "::error::$MANIFEST 里取不到末行字节哈希（应形如 '<64位hex>  dist/index.js'）"
+            exit 1
+          fi
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "::error::agent-worker bundle drift — run 'npm run build:agent-worker' in apps/executor-desktop and commit refreshed apps/executor-desktop/agent-worker-bundle.sha256 (N-06)."
+            exit 1
+          fi
+          echo "::notice::agent-worker sha256 matches manifest — worker source ↔ bundle in sync."
 
   # ── Windows 兼容基线（R15-3.5 / windows-findings）──────────────
   # R13 全轮在 Windows 复跑并逐条平台化断言后固化的绿灯集合：

@@ -139,6 +139,13 @@ apps/executor-desktop/resources/executor-node/
 # 不入库，随安装包一起出。注意此前只忽略了 executor-node/，uv 目录是**裸的**
 # ——一旦有人跑过打包，59MB 二进制会被 git add 吞进仓库。
 apps/executor-desktop/resources/uv/
+# N-06①：agent-worker bundle 同 executor-node 口径——产物不入库，仓库只
+# 跟踪 agent-worker-bundle.sha256 期望清单（CI desktop-bundle-drift 离线
+# esbuild 重打比对字节；本地 build:agent-worker 生成）。
+apps/executor-desktop/resources/agent-worker/
+# N-06②：随包 Playwright 浏览器（266MB 级，发布期由 bundle-agent-worker.cjs
+# 的 ACF_BUNDLE_PLAYWRIGHT=1 下载）。
+apps/executor-desktop/resources/playwright/
 
 dump.rdb
 
@@ -187,3 +194,4 @@ apps/executor-python/%SystemDrive%/
 
 # chaos drill 隔离栈专用配置（不进仓库，见 docs/CHAOS-DRILL-REPORT-2026-10.md）
 config/monitoring/prometheus.chaos.yml
+apps/executor-desktop/resources/playwright/

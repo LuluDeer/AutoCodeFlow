@@ -28,6 +28,33 @@ extraResources:
     to: uv/
     filter:
       - "**/*"
+  # N-06①：Agent 托管子进程（07 §4.2「独立子进程」形态）。agent/ 目录零
+  # electron 依赖，worker 由主进程以 process.execPath + ELECTRON_RUN_AS_NODE=1
+  # spawn——**必须经 extraResources 出 asar**（ELECTRON_RUN_AS_NODE 模式下
+  # Node 的 fs/module 解析读不了 asar）。落点与 src/main/agent-worker-paths.ts
+  # 的解析约定一致：**打包态查 `<resourcesPath>/agent-worker/dist/index.js`**；
+  # 旁路的 package.json / browsers.json 是 playwright-core 的运行时 packageRoot
+  # 契约文件（bundle 内动态 require(__dirname/../browsers.json)，打包器打不进），
+  # 由 scripts/bundle-agent-worker.cjs 复制与自检。worker bundle 入库（同
+  # executor-node），字节闸见 scripts/check-desktop-bundle-drift.mjs 的
+  # agent-worker 段。
+  - from: resources/agent-worker/
+    to: agent-worker/
+    filter:
+      - "**/*"
+  # N-06②：Agent 浏览器能力（Playwright Chromium）随包分发。**发布包必须
+  # 非空**（release-desktop.yml 用 ACF_BUNDLE_PLAYWRIGHT=1 +
+  # ACF_PLAYWRIGHT_REQUIRED=1 产出；未打进时 worker 能力上报如实不含
+  # browser——不是残包，是能力降级，与 uv 的语义区分见各自 REQUIRED 注释）。
+  # 目录布局须为 playwright 的 registry 形态（chromium-<rev>/...），构建期由
+  # playwright 同版本 CLI 下载（revision 与 bundle 内联的 playwright-core
+  # 严格对齐）；运行时 worker 经 PLAYWRIGHT_BROWSERS_PATH 指到
+  # `<resourcesPath>/playwright`（src/main/agent-worker-paths.ts）。
+  # 本地不开启时目录为空，filter 匹配不到文件即静默跳过，不影响出包。
+  - from: resources/playwright/
+    to: playwright/
+    filter:
+      - "**/*"
   - from: assets/
     to: assets/
     filter:

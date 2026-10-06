@@ -39,32 +39,47 @@ import { createHash } from "node:crypto";
 const SRC_DIR = "apps/executor-node/src";
 const MANIFEST = "apps/executor-desktop/executor-node-bundle.sha256";
 
-/** bundle 输入 = src 下所有 .ts，排除测试文件（实测不进 ncc 产物）。 */
+// N-06①：agent-worker bundle 的第二段闸（同判据，输入面不同）。
+// worker 的 bundle 输入 = src/agent-worker/**（esbuild 入口 + electron-stub
+// 包，stub 内容内联进产物，改动必须重打）+ src/main/agent/**（AgentHost 及
+// 其执行层——worker 的全部业务代码）。manifest 为 agent-worker-bundle.sha256。
+export const AGENT_WORKER_SRC_DIRS = [
+  "apps/executor-desktop/src/agent-worker",
+  "apps/executor-desktop/src/main/agent",
+];
+export const AGENT_WORKER_MANIFEST = "apps/executor-desktop/agent-worker-bundle.sha256";
+
+/** bundle 输入 = src 下所有 .ts（executor-node 面）/ .ts+.cjs（agent-worker 面，
+ * stub 的 index.cjs 会内联进产物），排除测试文件（实测不进产物）。 */
 export function isBundleInput(name) {
-  return (
-    name.endsWith(".ts") &&
+  const isTs = name.endsWith(".ts") &&
     !name.endsWith(".spec.ts") &&
     !name.endsWith(".test.ts") &&
-    !name.endsWith(".d.ts")
-  );
+    !name.endsWith(".d.ts");
+  const isWorkerCjs = name.endsWith(".cjs") &&
+    !name.endsWith(".selftest.cjs");
+  return isTs || isWorkerCjs;
 }
 
 /** 递归列出 bundle 输入文件（仓库相对路径，POSIX 分隔符，已排序）。 */
-export function listBundleInputs(srcDir = SRC_DIR) {
+export function listBundleInputs(srcDirs = [SRC_DIR]) {
+  const dirs = Array.isArray(srcDirs) ? srcDirs : [srcDirs];
   const out = [];
-  if (!existsSync(srcDir)) return out;
-  const walk = (dir) => {
-    for (const name of readdirSync(dir)) {
-      const p = join(dir, name);
-      if (statSync(p).isDirectory()) {
-        if (name === "node_modules" || name === "dist") continue;
-        walk(p);
-      } else if (isBundleInput(name)) {
-        out.push(p);
+  for (const srcDir of dirs) {
+    if (!existsSync(srcDir)) continue;
+    const walk = (dir) => {
+      for (const name of readdirSync(dir)) {
+        const p = join(dir, name);
+        if (statSync(p).isDirectory()) {
+          if (name === "node_modules" || name === "dist") continue;
+          walk(p);
+        } else if (isBundleInput(name)) {
+          out.push(p);
+        }
       }
-    }
-  };
-  walk(srcDir);
+    };
+    walk(srcDir);
+  }
   return out
     .map((p) => p.replace(/\\/g, "/"))
     .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
@@ -112,6 +127,7 @@ export function parseManifestBundleHash(manifestText) {
 export function check({
   srcDir = SRC_DIR,
   manifestPath = MANIFEST,
+  artifactLabel = "executor-node",
   read = (f) => readFileSync(f, "utf8"),
 } = {}) {
   const errors = [];
@@ -134,10 +150,20 @@ export function check({
   }
   if (actual !== expected) {
     errors.push(
-      `executor-node 源码语义摘要漂移：actual=${actual.slice(0, 12)}… expected=${expected.slice(0, 12)}…`,
+      `${artifactLabel} 源码语义摘要漂移：actual=${actual.slice(0, 12)}… expected=${expected.slice(0, 12)}…`,
     );
   }
   return { errors, files, actual, expected };
+}
+
+/** N-06①：agent-worker 段的 check 便捷入口。 */
+export function checkAgentWorker(opts = {}) {
+  return check({
+    srcDir: AGENT_WORKER_SRC_DIRS,
+    manifestPath: AGENT_WORKER_MANIFEST,
+    artifactLabel: "agent-worker",
+    ...opts,
+  });
 }
 
 // ── 自检（fixture 驱动；不读真实代码库）────────────────────────────────────
@@ -183,6 +209,11 @@ export function selftest() {
     console.error("selftest FAIL: plain .ts must be a bundle input");
     process.exit(1);
   }
+  // ⑥b N-06①：agent-worker 面的 .cjs（electron-stub）必须算输入，selftest 不算
+  if (!isBundleInput("x.cjs") || isBundleInput("x.selftest.cjs")) {
+    console.error("selftest FAIL: .cjs stub must be an input, .selftest.cjs must not");
+    process.exit(1);
+  }
 
   // ⑦ 清单解析：注释行里的示例不得被当成真值；缺失 → null
   const manifest = `# source-digest: ${"0".repeat(64)}  <- 注释里的示例，必须被忽略\n${"a".repeat(64)}  index.js\nsource-digest: ${d1}\n`;
@@ -219,20 +250,35 @@ if (isMain) {
     const files = listBundleInputs();
     console.log(`source-digest: ${computeSourceDigest(files)}`);
     console.log(`(${files.length} bundle input files)`);
+    const workerFiles = listBundleInputs(AGENT_WORKER_SRC_DIRS);
+    console.log(`agent-worker source-digest: ${computeSourceDigest(workerFiles)}`);
+    console.log(`(${workerFiles.length} agent-worker bundle input files)`);
   } else {
-    const { errors, files, actual, expected } = check();
-    if (errors.length > 0) {
-      console.error(`desktop bundle 语义漂移（${errors.length} 项）：`);
-      for (const e of errors) console.error(`  - ${e}`);
+    let failed = false;
+    for (const [label, run] of [
+      ["executor-node", () => check()],
+      ["agent-worker", () => checkAgentWorker()],
+    ]) {
+      const { errors, files, actual, expected } = run();
+      if (errors.length > 0) {
+        failed = true;
+        console.error(`${label} 语义漂移（${errors.length} 项）：`);
+        for (const e of errors) console.error(`  - ${e}`);
+        continue;
+      }
+      console.log(
+        `✔ ${label} 源码摘要一致（${files.length} 个输入文件，digest=${actual.slice(0, 12)}…，与打包器版本/构建路径无关）`,
+      );
+    }
+    if (failed) {
       console.error("");
-      console.error("处置：按 ADR-005，改了 apps/executor-node/src 后须在 apps/executor-desktop 重打 bundle");
-      console.error("      （npm run build:executor），并把新摘要回填清单：");
-      console.error("        node scripts/check-desktop-bundle-drift.mjs --print");
-      console.error("      本闸与构建路径/ncc 版本无关，故本地即可判定——本地红就是真漂移。");
+      console.error("处置：改了 bundle 输入源码后须重打并回填清单——");
+      console.error("  executor-node：npm run build:executor（apps/executor-desktop），");
+      console.error("    摘要用 node scripts/check-desktop-bundle-drift.mjs --print，回填 executor-node-bundle.sha256");
+      console.error("  agent-worker：npm run build:agent-worker（apps/executor-desktop），");
+      console.error("    摘要同上取 agent-worker 段，回填 agent-worker-bundle.sha256（字节行 sha256sum resources/agent-worker/dist/index.js）");
+      console.error("  两闸与构建器版本/构建路径无关，本地即可判定——本地红就是真漂移。");
       process.exit(1);
     }
-    console.log(
-      `✔ desktop bundle 源码摘要一致（${files.length} 个输入文件，digest=${actual.slice(0, 12)}…，与 ncc 版本/构建路径无关）`,
-    );
   }
 }

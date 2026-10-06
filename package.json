@@ -50,7 +50,7 @@
     "typecheck:cli": "cd packages/acf-cli && npx tsc --noEmit",
     "typecheck:mcp": "cd packages/mcp-server && npx tsc --noEmit",
     "typecheck:node-sdk": "cd packages/autocodeflow-node-sdk && npx tsc --noEmit",
-    "typecheck:desktop": "cd apps/executor-desktop && npx tsc -p tsconfig.json --noEmit",
+    "typecheck:desktop": "cd apps/executor-desktop && npx tsc -p tsconfig.json --noEmit && npx tsc -p tsconfig.worker.json --noEmit",
     "typecheck:web": "cd apps/admin-web && npx tsc -b",
     "typecheck:all": "npm run typecheck:api && npm run typecheck:node && npm run typecheck:cli && npm run typecheck:mcp && npm run typecheck:node-sdk && npm run typecheck:desktop && npm run typecheck:web",
     "lint:api": "cd apps/admin-api && npx eslint src",
