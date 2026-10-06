@@ -9,14 +9,17 @@
  *      - demo-cron-report：cron 每 5 分钟，python glue
  *      - demo-fragile：manual，node glue，故意抛错（产生失败样本供详情页/失败分类演示）
  *   3) 触发 demo-fragile 与 demo-cron-report 各一次（fixed_rate 会自行跑起来）
- *   4) 打印摘要与后续操作提示
+ *   4) 起草并发布 3 条演示 SOP（demo-sop- 前缀，幂等：按 slug 查找，已发布不再动；
+ *      platform 验收锚点引用步骤 2 建的任务 id——教程 05 的零配置演示包）
+ *   5) 打印摘要与后续操作提示
  *
  * 用法：
  *   node scripts/demo-seed.mjs --base-url http://localhost:3105 \
  *     --username admin --password 'Admin@123456'
  *   环境变量 ACF_API_URL / ACF_USER / ACF_PASSWORD 亦可。
  *
- * 卸载：脚本创建的任务都在 demo- 前缀下，`acf task delete` 或 UI 删除即可。
+ * 卸载：脚本创建的任务都在 demo- 前缀、SOP 都在 demo-sop- 前缀下，
+ * `acf task delete` / UI 删除即可。
  */
 import { pathToFileURL } from "node:url";
 import process from "node:process";
@@ -90,6 +93,160 @@ export function triggerTargets(created) {
     seen.add(name);
     return true;
   });
+}
+
+/** 纯函数：按 slug 找 SOP（幂等复用的依据；任务按 name，SOP 按 slug）。 */
+export function findSop(sops, slug) {
+  return (sops ?? []).find((s) => s.slug === slug);
+}
+
+/**
+ * 纯函数：演示 SOP 定义（参数化演示任务 id）。
+ *
+ * 三条 SOP 的验收锚点全部用 kind=platform 的平台任务——这是唯一能
+ * 「零配置机器可验」的形态：中台复核会话按 acceptance 真触发一次任务
+ * （demo-cron-report / demo-hello-fixed 由本脚本先建好），演示域
+ * example.com 只出现在叙事里，不构成外部依赖。
+ * task 字段必须传**任务 id**（uuid）：复核会话的 scope 闸门按 id 放行
+ * （agent-boundary.service validateScope 精确比对），传任务名会被拒。
+ *
+ * front-matter 是机器契约（04 §1 / sop-frontmatter.ts 严格校验）：
+ * 未知键拒绝、capabilities 枚举封闭、acceptance 发布必填——这里的每条
+ * YAML 都按发布门全绿写，教程改字段时对着 sop-frontmatter.ts 的规则改。
+ */
+export function demoSopDefs(taskIds) {
+  const helloId = taskIds?.["demo-hello-fixed"];
+  const cronId = taskIds?.["demo-cron-report"];
+  if (!helloId || !cronId) {
+    throw new Error(
+      "demoSopDefs 需要 demo-hello-fixed 与 demo-cron-report 的任务 id（platform 验收锚点）",
+    );
+  }
+  return [
+    {
+      slug: "demo-sop-portal-morning-check",
+      title: "[demo] 门户晨检（browser 能力域）",
+      frontMatterYaml: `target:
+  application: Chrome
+capabilities:
+  - browser
+acceptance:
+  - kind: platform
+    check: trigger_task_and_expect_status
+    task: ${cronId}
+    expect: SUCCEEDED
+    timeoutSec: 300
+constraints:
+  maxDurationSec: 900
+  allowedDomains:
+    - example.com
+clarification:
+  owner: center-agent
+  maxRounds: 3
+`,
+      bodyMarkdown: `## 要做什么
+检查演示门户 https://example.com 是否可访问：打开首页、确认标题包含
+"Example Domain"、记录页面响应时间。这是 browser 能力域的最小演示 SOP。
+
+## 验收
+- 平台任务 \`demo-cron-report\` 触发并到 SUCCEEDED（演示形态的机器可验锚点：
+  真实 SOP 的 platform 验收会挂业务任务本身；演示里用种子任务代表「门户健康」
+  的平台侧事实源）
+
+## 已知情况
+- example.com 是 IANA 演示域，稳定可达；真实部署换成企业门户域名并同步
+  front-matter 的 \`constraints.allowedDomains\`（裸域名，不含协议/路径）
+- allowedDomains 是浏览器工具的导航闸——域外导航会被平台直接拒绝
+
+## 你不必照做
+上面没说怎么实现。可以用 Playwright 打开页面，也可以先 curl 探活再决定
+是否值得开浏览器——**以平台验收通过为准**。
+`,
+    },
+    {
+      slug: "demo-sop-incident-log-archiver",
+      title: "[demo] 失败执行归档（filesystem 能力域）",
+      frontMatterYaml: `target:
+  runtime: node
+capabilities:
+  - filesystem
+acceptance:
+  - kind: platform
+    check: trigger_task_and_expect_status
+    task: ${helloId}
+    expect: SUCCEEDED
+    timeoutSec: 300
+constraints:
+  maxDurationSec: 600
+clarification:
+  owner: human
+  maxRounds: 2
+`,
+      bodyMarkdown: `## 要做什么
+把执行记录里最近一条失败执行（任务 \`demo-fragile\`，seed 会先触发它一次）
+的失败分类与错误信息整理成一份归档笔记，写到执行器工作区
+\`incident-notes/notes.md\`（不存在则创建目录）。
+
+## 验收
+- 平台任务 \`demo-hello-fixed\` 触发并到 SUCCEEDED（演示形态的机器可验锚点，
+  代表「归档动作完成后的健康检查」；真实 SOP 的 platform 验收会挂业务任务）
+- 归档笔记包含失败分类（failure 分类枚举之一）与原始错误信息——人工复核时看
+
+## 已知情况
+- \`demo-fragile\` 是故意失败的任务：每次触发都抛
+  "demo intentional failure"，失败分类与错误信息稳定可复现
+- 工作区路径相对执行器 workspace 解析，不需要绝对路径
+
+## 你不必照做
+可以调平台 API 拉执行记录，也可以从任务详情页的时间线手工整理（如果这是
+一次性值班动作）——**以平台验收通过为准**。
+`,
+    },
+    {
+      slug: "demo-sop-gui-x11-hello",
+      title: "[demo] X11 会话 GUI 演示（gui 能力域，Linux）",
+      frontMatterYaml: `target:
+  application: xterm
+capabilities:
+  - gui
+acceptance:
+  - kind: platform
+    check: trigger_task_and_expect_status
+    task: ${helloId}
+    expect: SUCCEEDED
+    timeoutSec: 300
+constraints:
+  maxDurationSec: 600
+clarification:
+  owner: human
+  maxRounds: 3
+`,
+      bodyMarkdown: `## 要做什么
+在 X11/XWayland 会话里对 \`xterm\` 完成 GUI 动作演示：聚焦窗口 → 键入
+\`echo gui-demo-ok > gui-demo-marker.txt\` → 回车 → 对目标窗口截图留档。
+
+## 前置条件（缺一即如实不可用，能力上报不含 gui）
+- Linux 执行器 + X11/XWayland 会话（含 Xvfb 无头形态）；xdotool + ffmpeg 已装
+- 执行器本地权限档 \`hostAccess=app-scoped\` 且白名单含 \`xterm\`
+- 中台 \`AGENT_SOP_POLICY_ALLOWED\` 已放宽（把 \`app-scoped\` 加入允许集）——
+  中台 standard 档会把本地 app-scoped 钳回 none（roadmap §9.9）
+
+## 验收
+- 平台任务 \`demo-hello-fixed\` 触发并到 SUCCEEDED（演示形态的机器可验锚点；
+  GUI 动作本身的产物 marker 文件留在工作区供人工核对）
+
+## 已知情况
+- GNOME Wayland 原生窗口如实不可达（枚举树里看不到、注入不达）——
+  XWayland 客户端（xterm/Electron 应用）不受影响，见 12 号侦察稿 §2.2
+- GUI 动作受逐动作白名单复核：每步先核对前台窗口进程名 == xterm，
+  坐标越出目标窗口矩形即拒
+
+## 你不必照做
+可以先聚焦再键入，也可以用剪贴板粘贴路线绕开输入法——**以平台验收
+通过为准**，但每步都会被逐动作复核，绕不开白名单。
+`,
+    },
+  ];
 }
 
 async function apiFetch(baseUrl, path, { method = "GET", token, body } = {}) {
@@ -242,6 +399,69 @@ export async function listAll(baseUrl, path, token, { paginated = true } = {}) {
   return aggregatePages(first, pages);
 }
 
+/**
+ * SOP 列表的页数（{items,total} 形态：无 totalPages/pageSize 元数据，页数由
+ * total 推导——与 tasks 端点全元数据形态不同，故不走 pageCount 的严格校验）。
+ */
+export function sopPageCount(data, pageSize = API_PAGE_SIZE) {
+  if (!Number.isInteger(pageSize) || pageSize < 1) {
+    throw new Error("invalid sop pageSize");
+  }
+  const total = Number(data?.total);
+  if (!Number.isInteger(total) || total < 0) {
+    throw new Error("sop list response missing valid total");
+  }
+  return Math.ceil(total / pageSize);
+}
+
+/** 聚合 SOP 分页结果：total 对账 + 全局唯一 id，缺失/重复显式失败。 */
+export function aggregateSopPages(firstData, subsequentData) {
+  const firstItems = pageItems(firstData);
+  const total = Number(firstData?.total);
+  const pages = sopPageCount(firstData);
+  if (!Array.isArray(subsequentData) || subsequentData.length !== Math.max(0, pages - 1)) {
+    throw new Error(
+      `sop list incomplete: expected ${Math.max(0, pages - 1)} subsequent pages, received ${String(subsequentData?.length)}`,
+    );
+  }
+  const items = [firstItems, ...subsequentData.map((d) => pageItems(d))].flat();
+  if (items.length !== total) {
+    throw new Error(`sop list incomplete: expected ${total} items, received ${items.length}`);
+  }
+  const ids = new Set();
+  for (const item of items) {
+    if (!item || typeof item.id !== "string" || item.id.length === 0) {
+      throw new Error("sop list item missing valid id");
+    }
+    if (ids.has(item.id)) {
+      throw new Error(`sop list duplicate id: ${item.id}`);
+    }
+    ids.add(item.id);
+  }
+  return items;
+}
+
+/**
+ * 分页拉全 SOP（/api/sop 专用的 {items,total} 契约）。
+ * pageSize 请求 100 = 后端钳制上限（sop.service.list Math.min(100, ...)）。
+ */
+export async function listAllSops(baseUrl, token) {
+  const getPage = async (page) => {
+    const res = await apiFetch(baseUrl, `/api/sop?page=${page}&pageSize=${API_PAGE_SIZE}`, { token });
+    if (!res.ok) {
+      throw new Error(`GET /api/sop failed (${res.status}): ${JSON.stringify(res.data).slice(0, 200)}`);
+    }
+    return unwrap(res.data);
+  };
+
+  const first = await getPage(1);
+  const pages = [];
+  for (let page = 2; page <= sopPageCount(first); page += 1) {
+    pages.push(await getPage(page));
+  }
+  return aggregateSopPages(first, pages);
+}
+
 async function main() {
   const args = process.argv.slice(2);
   const argOf = (flag, def = undefined) => {
@@ -310,12 +530,75 @@ async function main() {
     }
   }
 
+  // ── SOP 种子（demo-sop- 前缀，N-08）──
+  // 三条演示 SOP：draft → 无版本才 publish（幂等：发布态不动、工作副本
+  // 不覆盖——演示期间的人工改动不回滚）。指派不做：需要 agent 执行器在
+  // 线，属教程 05 的前置步骤，不是 seed 的职责。
+  const taskMap = Object.fromEntries(created.map(({ def, id }) => [def.name, id]));
+  let sopDefs;
+  try {
+    sopDefs = demoSopDefs(taskMap);
+  } catch (e) {
+    console.error(`[demo-seed] skip SOP seed: ${e instanceof Error ? e.message : String(e)}`);
+    sopDefs = [];
+  }
+  const existingSops = await listAllSops(baseUrl, token);
+  const sops = [];
+  for (const def of sopDefs) {
+    const existing = findSop(existingSops, def.slug);
+    let sopId;
+    if (existing) {
+      sopId = existing.id;
+      console.log(`[demo-seed] sop exists, reusing: ${def.slug}`);
+    } else {
+      const res = await apiFetch(baseUrl, "/api/sop", {
+        method: "POST",
+        token,
+        body: {
+          slug: def.slug,
+          title: def.title,
+          frontMatterYaml: def.frontMatterYaml,
+          bodyMarkdown: def.bodyMarkdown,
+        },
+      });
+      if (!res.ok) {
+        console.error(`[demo-seed] draft ${def.slug} failed (${res.status}): ${JSON.stringify(res.data).slice(0, 300)}`);
+        process.exit(1);
+      }
+      sopId = unwrap(res.data)?.id;
+      console.log(`[demo-seed] sop drafted: ${def.slug} (${sopId})`);
+    }
+    // listVersions 返回裸数组（非分页）；有版本 = 已发布过，不再发布。
+    const versions = await listAll(baseUrl, `/api/sop/${sopId}/versions`, token, { paginated: false });
+    if (versions.length === 0) {
+      const res = await apiFetch(baseUrl, `/api/sop/${sopId}/publish`, {
+        method: "POST",
+        token,
+        body: { changelog: "demo seed 初版" },
+      });
+      if (!res.ok) {
+        console.error(`[demo-seed] publish ${def.slug} failed (${res.status}): ${JSON.stringify(res.data).slice(0, 300)}`);
+        process.exit(1);
+      }
+      // publish 返回 { sop, version: SopVersion 实体 }——版本号在 version.version
+      const v = unwrap(res.data)?.version;
+      console.log(`[demo-seed] sop published: ${def.slug} v${typeof v === "string" ? v : (v?.version ?? "?")}`);
+    } else {
+      console.log(`[demo-seed] sop already published (${versions.length} version(s)), keeping: ${def.slug}`);
+    }
+    sops.push({ slug: def.slug, id: sopId });
+  }
+
+  const sopLines = sops.map(({ slug, id }) => `    - ${slug} (${id})`).join("\n");
   console.log(`
 [demo-seed] done. Open ${baseUrl.replace(":3105", "")} (admin web) and check:
   - 执行记录（demo-fragile 应有一条 failed，含失败分类与错误信息）
   - demo-hello-fixed 将每 15s 产生一条成功执行
   - 任务详情页的「依赖 DAG」/ 配置历史 / 通知设置可继续演示
-卸载：删除 demo- 前缀任务即可。`);
+  - SOP 页面三条 demo-sop- 前缀的演示 SOP（已发布 v1.0.0）：
+${sopLines}
+    教程：docs/tutorials/05-sop-agent-demo.md（指派/执行/GUI 演示的步骤与前置）
+卸载：删除 demo- 前缀任务与 demo-sop- 前缀 SOP 即可。`);
 }
 
 // 仅直接执行时运行（selftest 可 import 纯函数）

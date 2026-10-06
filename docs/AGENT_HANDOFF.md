@@ -8,6 +8,13 @@
 
 ## 状态快照
 
+- **本轮（2026-10-06 → N-07 macOS 侦察 + N-08 SOP 生态演示包，Linux 侧 develop）**：
+  - **N-07 done（macOS GUI 后端侦察稿）**：`docs/design/agent-and-deployment/13-executor-gui-macos.md`（新）+ roadmap 两处同步（§2 矩阵行 + §9.9 残差行）。**结论=可行性成立但缓议（2026-10 不立项）**：与 12 号 Wayland 的「本质冲突」不同，七条不变量在 macOS 全部有承载形态（CGEvent 注入 + NSWorkspace/CGWindowList 免权限复核 + ScreenCaptureKit 窗口级截图）；张力不在「能不能复核」而在「TCC 进程级一次性授权 = 复核是本进程自律」——与 Windows 同构非否决级。缓议三理由：真机验证条件缺席（本稿零实测如实声明）、N-05 上游未通、macOS C/S 需求信号为零；签名/公证流水线（TCC 硬前置）若因发布成熟度先行可作为重开触发器。重开触发条件 + S0 POC 判定门四项实测清单见该稿 §5。12 号 §5.3「独立侦察」待拍板项就此收口。
+  - **N-08 done（SOP 生态演示包）**：`scripts/demo-seed.mjs` 扩展——3 条演示 SOP（demo-sop- 前缀：browser/filesystem/gui 三能力域各一，frontmatter 按发布门全绿形态手写），**零配置链设计 = platform 验收锚点引用 seed 自建任务 id**（uuid——复核会话 scope 闸门精确比对 id，传任务名会被拒）；幂等 = draft 按 slug 复用 + 已发布不动（不覆盖演示期间人工改动）。`demo-seed.selftest` 16→18 例（SOP 分页契约 + frontmatter 行级结构 + 07 §6.1 正文骨架 + GUI 前置条件）；另用 admin-api 编译产物 `validateFrontMatter strict` **真发布门**离线过 3/3。**真机 e2e**：acf-repro PG(15499)/Redis(16399) 起真 admin-api（迁移追平 …0053）——首轮 3 任务 + 3 SOP 起草发布，二轮完全幂等，版本快照 v1.0.0 + frontmatter 内嵌任务 id 绑定核验。教程 05（`docs/tutorials/05-sop-agent-demo.md` 新，三档前置分层：零配置内容面 / 需 LLM Key 执行面 / GUI X11 面）+ index 五篇化。
+  - **顺带抓 1 契约缺陷（若直连真实环境 seed 必死）**：`/api/sop` 列表返回 `{items,total}` **无 totalPages/pageSize 元数据**（与 tasks 端点全元数据形态不同）——既有 `listAll` 的严格校验（totalPages mismatch 即抛）对它会炸；修 = 新增 `listAllSops`/`aggregateSopPages`/`sopPageCount` 专用契约（total 推导页数 + id 唯一性），不动既有严格路径。另 publish 返回 `{sop, version: SopVersion 实体}`，日志取 `version.version`。
+  - **子代理平台 note**：Explore 子代理启动仍报 reasoning-level-missing（今日一次），按降级纪律主会话直落。
+  - **遗留/下轮**：任务池 N-01~N-13 全清（N-05 维持暂缓待 DashScope）；三项低优先滚动项（见记忆/板）。
+
 - **本轮（2026-10-06 → 接手 Win 侧交接 + N-06 打包接线双项完成，Linux 侧 develop）**：
   - **接手验证**：拉取 c46d88c6..555bd81d（Win 侧升级战役 + 5 轮 CI 收绿）；按 HANDOFF-2026-10-05 §三清单本机全绿——test:api 4567 / node 1056（13 skip）/ web / cli / mcp / desktop / typecheck / bundle-drift / docs-sync 全 PASS；仅 2 个本机环境项：python 套件 `python`→`python3` 别名缺失（CLI 名问题非代码）+ test_sandbox 两个 rlimit 预存红（2026-09-26 已登记）；`check:env-drift` 脚本名已改 `test:env-drift`（交接文档口径过期，新名绿）。
   - **N-06 done（打包接线双项，07 §4.2 完整形态）**：① AgentHost+CollabClient 整体拆入 `src/agent-worker/main.ts` 独立子进程（esbuild 单文件 bundle + ELECTRON_RUN_AS_NODE + stdio JSON 行协议），主进程只留定时器/配置热同步/身份状态机/托盘快照；worker 崩溃 tick 自愈、身份替换 disableAndStopAfterWork、退出硬杀（journal 恢复兜底）。② 打包态 Playwright：esbuild 内联 playwright-core（electron 启动器链 alias 到 stub 包，防 223MB electron 资产入包；ncc 0.45 实测做不到故换 bundler），browsers.json/package.json 走 packageRoot 契约，Chromium 经 ACF_BUNDLE_PLAYWRIGHT 发布门只装 headless-shell（266MB；`ACF_PLAYWRIGHT_REQUIRED=1` 硬闸）。守卫三层：agent-worker-bundle.sha256 双闸（语义+CI 重打字节）入 desktop-bundle-drift job、check-desktop-agent-packaging.mjs 18 锚点、test:main 真 bundle 冒烟。**验收**：本机 AppImage 1.7.1 解包——包内 electron 跑包内 worker ready 探针 PASS + 包内浏览器 launch PASS；test:main 全绿（41 selftest）。**踩坑**：ncc externals 不拦 node_modules 深层 require；esbuild alias 须包目录；spawnSync env 必须嵌 `env:` 键（自检抓到）。**遗留**：win/mac 包内解包对账未做（staged 校验已上）；N-05 仍暂缓，下轮候选顺位不变。
@@ -40,7 +47,7 @@
 
 ---
 
-更新时间：2026-10-06（N-06 打包接线双项 done；详情见状态快照首条）
+更新时间：2026-10-06（N-07 侦察稿 + N-08 SOP 演示包 done；详情见状态快照首条）
 当前分支：`develop`
 
 ## 状态快照（历史）

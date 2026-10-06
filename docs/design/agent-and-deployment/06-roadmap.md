@@ -430,7 +430,7 @@
 | 总开关 | `agentEnabled`（默认 false，ADR-022 显式开启）+ 消毒层布尔纪律 + index.ts 轮询循环接线（30s tick，host 内部 0 等待） | ✅ |
 | **设置面（P7c 前置增量）** | ConfigPage 新增「Agent（实验性）」组：开关 / 预设（未实现档位显示为禁用——选了也会被解析层钳回，界面与行为一致）/ codeExecution 覆盖 / 浏览器域名白名单；`agent:get-status` IPC + 状态行（working/processed/lastOutcome/生效档位，进组与保存后刷新）；config:save 热同步托管 | ✅ |
 | LLM 协议扩展 | plan/diagnose 可带 `"browser":[actions]`——先看页面再写代码；输出（页面文本/截图 mediaPath/录屏）进下一轮上下文 | ✅ |
-| 桌面 GUI 能力 | Windows 原生输入/目标窗口截图 + app-scoped 白名单 | ◐ P7c 已交付 Windows 切片；macOS/Linux 待适配 |
+| 桌面 GUI 能力 | Windows 原生输入/目标窗口截图 + app-scoped 白名单 | ◐ Windows 切片已交付；Linux X11 已交付（12 号稿 → S1/S2/S3 全链）；macOS 侦察完成（[13-executor-gui-macos.md](./13-executor-gui-macos.md)）——可行性成立但**缓议**，POC 判定门见该稿 §5 |
 | 端到端闭环 | — | ⏳ P7d |
 
 ### 实现中的关键判断
@@ -525,7 +525,7 @@
 
 **验收**：desktop `test:main` 全链通过（新增 GUI 权限/拒绝、Windows driver、运行时观察和状态展示自检）；主进程 TypeScript、renderer build/selftest 均通过。Windows 原生冒烟验证了当前窗口聚焦与拒绝路径；实际点击、输入和成功截图需在授权应用的交互桌面进行真机验收。
 
-**残差**：中台 `sopPolicy.permissionPolicy` 默认 `standard`，会把本地 `app-scoped` 钳回 `none`；启用 GUI 须显式放宽中台上限。Linux GUI 后端：侦察（[12-executor-gui-linux.md](./12-executor-gui-linux.md)）→ **S1 已落地（2026-09-26）**：`X11GuiDriver`（xdotool argv 封闭、逐动作前台进程复核、窗口边界点击、窗口级截图、缺依赖如实降级）+ agent-host 平台选择器 + gui-x11 selftest 接链（desktop test:main 35 套全绿）；S2 真机验收已完成（[VERIFY-2026-09-27-gui-x11.md](../../../VERIFY-2026-09-27-gui-x11.md)：正向 Xvfb 全链 7/7——focus/截图/点击/按键物理生效；负向 GNOME Wayland 实机如实拒绝，probe 增加 EWMH 活动窗口硬条件），S3 依赖清单已入 docs/operations.md（依赖改为 xdotool + ffmpeg）。Wayland 原生窗口如实不支持（能力上报不含 `gui`）；macOS GUI 后端尚未适配。应用白名单当前按进程名精确匹配，不能把它当作进程签名或可执行文件路径校验；企业部署若要求更强应用身份约束，需要在后续切片增加路径/签名绑定。崩溃后已领取指派的重领、澄清回复的持久恢复与确认投递，以及包→审批→部署的真实闭环属 P7d；后者仍待具备 LLM 与部署环境后验证。
+**残差**：中台 `sopPolicy.permissionPolicy` 默认 `standard`，会把本地 `app-scoped` 钳回 `none`；启用 GUI 须显式放宽中台上限。Linux GUI 后端：侦察（[12-executor-gui-linux.md](./12-executor-gui-linux.md)）→ **S1 已落地（2026-09-26）**：`X11GuiDriver`（xdotool argv 封闭、逐动作前台进程复核、窗口边界点击、窗口级截图、缺依赖如实降级）+ agent-host 平台选择器 + gui-x11 selftest 接链（desktop test:main 35 套全绿）；S2 真机验收已完成（[VERIFY-2026-09-27-gui-x11.md](../../../VERIFY-2026-09-27-gui-x11.md)：正向 Xvfb 全链 7/7——focus/截图/点击/按键物理生效；负向 GNOME Wayland 实机如实拒绝，probe 增加 EWMH 活动窗口硬条件），S3 依赖清单已入 docs/operations.md（依赖改为 xdotool + ffmpeg）。Wayland 原生窗口如实不支持（能力上报不含 `gui`）；macOS GUI 后端侦察已收口（[13-executor-gui-macos.md](./13-executor-gui-macos.md)，2026-10-06）：可行性成立但缓议——签名/TCC/ScreenCaptureKit 三块新工程面 + 真机验证条件缺席，重开触发条件与 POC 判定门见该稿 §5。应用白名单当前按进程名精确匹配，不能把它当作进程签名或可执行文件路径校验；企业部署若要求更强应用身份约束，需要在后续切片增加路径/签名绑定。崩溃后已领取指派的重领、澄清回复的持久恢复与确认投递，以及包→审批→部署的真实闭环属 P7d；后者仍待具备 LLM 与部署环境后验证。
 
 ### 9.10 P7d 执行器侧鲁棒性切片（2026-09-26）：澄清闭环 + 崩溃恢复 ✅
 
