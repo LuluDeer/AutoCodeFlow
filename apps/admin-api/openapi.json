@@ -3116,7 +3116,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Executor-facing config payload"
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecutorConfigPayloadResponseDto"
+                }
+              }
+            }
           },
           "401": {
             "description": "Invalid executor token"
@@ -3420,7 +3427,7 @@
         "parameters": [],
         "responses": {
           "200": {
-            "description": "Shell script (text/plain)\n\nshell script text (Res passthrough)",
+            "description": "shell script text (Res passthrough)",
             "content": {
               "text/x-shellscript": {
                 "schema": {
@@ -3559,7 +3566,7 @@
         },
         "responses": {
           "200": {
-            "description": "Updated successfully",
+            "description": "",
             "content": {
               "application/json": {
                 "schema": {
@@ -3663,9 +3670,6 @@
           }
         },
         "responses": {
-          "200": {
-            "description": "Config pushed successfully"
-          },
           "201": {
             "description": "pull 模式 = {queued,commandId,message}；push 模式 = 执行器自身响应原样透传（additionalProperties）",
             "content": {
@@ -3871,9 +3875,6 @@
           }
         ],
         "responses": {
-          "200": {
-            "description": "Updated executor entity"
-          },
           "201": {
             "description": "offlineReason=manual 的执行器行（POST 默认 201）",
             "content": {
@@ -3916,7 +3917,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Removal impact summary"
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecutorRemovalImpactResponseDto"
+                }
+              }
+            }
           },
           "404": {
             "description": "Executor not found"
@@ -9997,6 +10005,10 @@
               "user"
             ],
             "default": "user"
+          },
+          "currentPassword": {
+            "type": "string",
+            "description": "Required when a non-admin user changes their own password (SEC-12); stripped by the service before persisting (R19)"
           }
         }
       },
@@ -12835,6 +12847,27 @@
           "ok"
         ]
       },
+      "ExecutorConfigPayloadResponseDto": {
+        "type": "object",
+        "properties": {
+          "maxConcurrentTasks": {
+            "type": "number",
+            "description": "Per-executor capacity from the entity; null = unlimited"
+          },
+          "heartbeatIntervalSeconds": {
+            "type": "number",
+            "description": "Heartbeat interval in seconds (executor.heartbeatInterval/1000, min 1)"
+          },
+          "adminApiUrl": {
+            "type": "string",
+            "description": "Present only when app.adminApiUrl is configured"
+          }
+        },
+        "required": [
+          "maxConcurrentTasks",
+          "heartbeatIntervalSeconds"
+        ]
+      },
       "TerminalStateItemDto": {
         "type": "object",
         "properties": {
@@ -13225,6 +13258,40 @@
         "required": [
           "token",
           "tokenHash"
+        ]
+      },
+      "ExecutorRemovalImpactResponseDto": {
+        "type": "object",
+        "properties": {
+          "appName": {
+            "type": "string"
+          },
+          "address": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "pinnedTasks": {
+            "type": "number",
+            "description": "Tasks pinned to this executor via task.executorId (dispatch has no fallback)"
+          },
+          "appNameBoundTasks": {
+            "type": "number",
+            "description": "Tasks bound via task.executorAppName (exact match, no silent failover)"
+          },
+          "pendingPullItems": {
+            "type": "number",
+            "description": "Pull queue depth (acf:pull:{id} LLEN); non-zero only for pull-mode executors"
+          }
+        },
+        "required": [
+          "appName",
+          "address",
+          "status",
+          "pinnedTasks",
+          "appNameBoundTasks",
+          "pendingPullItems"
         ]
       },
       "ExecutorExecutionsResponseDto": {
@@ -16379,7 +16446,10 @@
           },
           "env": {
             "type": "object",
-            "description": "Environment variable overrides (≤50 keys, each value ≤4096 bytes)"
+            "description": "Environment variable overrides (≤50 keys, each value ≤4096 bytes)",
+            "additionalProperties": {
+              "type": "string"
+            }
           },
           "startCommand": {
             "type": "string",

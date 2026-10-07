@@ -1,4 +1,9 @@
+import type { components } from '../types/generated/api-types';
 import { client } from './client';
+
+// N-12（2026-10-07）：请求 DTO 切生成类型（后端 env 的 swagger 声明缺
+// additionalProperties 曾致生成 Record<string, never>，已修）。
+export type CreateDeploymentDto = components['schemas']['CreateDeploymentDto'];
 
 export interface Application {
   id: string;
@@ -73,12 +78,6 @@ export interface AppDeployment {
   updatedAt: string;
 }
 
-export interface CreateDeploymentDto {
-  executorId?: string;
-  runMode?: 'once' | 'daemon' | 'scheduled';
-  env?: Record<string, string>;
-  startCommand?: string;
-}
 
 export interface VersionHistoryEntry {
   id?: string;

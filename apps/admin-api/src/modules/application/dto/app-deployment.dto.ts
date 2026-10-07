@@ -65,6 +65,11 @@ export class CreateDeploymentDto {
 
   @ApiPropertyOptional({
     description: `Environment variable overrides (≤${DEPLOYMENT_ENV_MAX_KEYS} keys, each value ≤${DEPLOYMENT_ENV_VALUE_MAX_BYTES} bytes)`,
+    // N-12（2026-10-07）：无 additionalProperties 时 swagger 发空 object schema，
+    // openapi-typescript 渲染 Record<string, never>——前端拿到一个写不进任何键
+    // 的 env 类型（契约比没有类型更坏）。显式声明值类型。
+    type: "object",
+    additionalProperties: { type: "string" },
   })
   @IsObject()
   // A-11: 键数 + 单值字节闸（见常量注释）。

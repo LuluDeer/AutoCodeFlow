@@ -1,4 +1,11 @@
+import type { components } from '../types/generated/api-types';
 import { client as apiClient } from './client';
+
+// N-12（2026-10-07）：请求 DTO 切生成类型（此前手写副本与契约漂移两处——
+// role 被渲染成必填、currentPassword 根本不在契约里，均已修后端+生成器）。
+// 读模型 User 保持手写（前端读模型是唯一事实源，见 api/tasks.ts 头注同款决策）。
+export type CreateUserDto = components['schemas']['CreateUserDto'];
+export type UpdateUserDto = components['schemas']['UpdateUserDto'];
 
 export interface User {
   id: number;
@@ -9,24 +16,6 @@ export interface User {
   updatedAt: string;
 }
 
-export interface CreateUserDto {
-  username: string;
-  email: string;
-  password: string;
-  role?: string;
-}
-
-export interface UpdateUserDto {
-  username?: string;
-  email?: string;
-  password?: string;
-  role?: string;
-  /**
-   * A-13: 仅自改密码时携带——后端 controller 校验非管理员改密必须提供
-   * 当前密码（SEC-12），服务层在合并前剔除该字段（R19），不会落库/回显。
-   */
-  currentPassword?: string;
-}
 
 export const usersApi = {
   // USER-SEARCH-01：可选 search——后端 ListUsersDto 对 username/email 做

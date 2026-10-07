@@ -3688,7 +3688,7 @@ export interface components {
              * @default user
              * @enum {string}
              */
-            role: "admin" | "user";
+            role?: "admin" | "user";
         };
         Object: Record<string, never>;
         UpdateUserDto: {
@@ -3702,7 +3702,9 @@ export interface components {
              * @default user
              * @enum {string}
              */
-            role: "admin" | "user";
+            role?: "admin" | "user";
+            /** @description Required when a non-admin user changes their own password (SEC-12); stripped by the service before persisting (R19) */
+            currentPassword?: string;
         };
         TaskResponseDto: {
             /** Format: uuid */
@@ -4874,6 +4876,14 @@ export interface components {
             /** @enum {boolean} */
             ok: true;
         };
+        ExecutorConfigPayloadResponseDto: {
+            /** @description Per-executor capacity from the entity; null = unlimited */
+            maxConcurrentTasks: number;
+            /** @description Heartbeat interval in seconds (executor.heartbeatInterval/1000, min 1) */
+            heartbeatIntervalSeconds: number;
+            /** @description Present only when app.adminApiUrl is configured */
+            adminApiUrl?: string;
+        };
         TerminalStateItemDto: {
             /**
              * @description 执行 id（与 dispatch 下发、回调上报的 executionId 同源）
@@ -5018,6 +5028,17 @@ export interface components {
             /** @description Stored bcrypt/sha hash for verification */
             tokenHash: string;
         };
+        ExecutorRemovalImpactResponseDto: {
+            appName: string;
+            address: string;
+            status: string;
+            /** @description Tasks pinned to this executor via task.executorId (dispatch has no fallback) */
+            pinnedTasks: number;
+            /** @description Tasks bound via task.executorAppName (exact match, no silent failover) */
+            appNameBoundTasks: number;
+            /** @description Pull queue depth (acf:pull:{id} LLEN); non-zero only for pull-mode executors */
+            pendingPullItems: number;
+        };
         ExecutorExecutionsResponseDto: {
             total: number;
             /** @description TaskExecution rows, newest first (heavy text columns NOT excluded on this face) */
@@ -5028,7 +5049,7 @@ export interface components {
              * @default info
              * @enum {string}
              */
-            level: "info" | "warning" | "error" | "critical";
+            level?: "info" | "warning" | "error" | "critical";
             taskName?: string;
             title?: string;
             content: string;
@@ -5824,9 +5845,9 @@ export interface components {
             value?: string;
             description?: string;
             /** @default string */
-            valueType: string;
+            valueType?: string;
             /** @default false */
-            isSecret: boolean;
+            isSecret?: boolean;
         };
         ConfigDeleteResultDto: {
             /** @description Always true on success — a missing key is a 404, never {deleted:false} */
@@ -5910,7 +5931,7 @@ export interface components {
              * @description DEP-04: require second-person approval before new deployments dispatch
              * @default false
              */
-            approvalRequired: boolean;
+            approvalRequired?: boolean;
             /** @description MUTEX-01: mutex group id this app joins (null = no mutual exclusion) */
             mutexGroupId?: string | null;
         };
@@ -5940,7 +5961,7 @@ export interface components {
              * @description DEP-04: require second-person approval before new deployments dispatch
              * @default false
              */
-            approvalRequired: boolean;
+            approvalRequired?: boolean;
             /** @description MUTEX-01: mutex group id this app joins (null = no mutual exclusion) */
             mutexGroupId?: string | null;
             /**
@@ -5973,7 +5994,7 @@ export interface components {
              * @description Whether to trigger rolling upgrade on all RUNNING deployments
              * @default false
              */
-            triggerDeploy: boolean;
+            triggerDeploy?: boolean;
         };
         ReleaseWebhookResponseDto: {
             /** @enum {boolean} */
@@ -6196,9 +6217,11 @@ export interface components {
              * @default daemon
              * @enum {string}
              */
-            runMode: "once" | "daemon" | "scheduled";
+            runMode?: "once" | "daemon" | "scheduled";
             /** @description Environment variable overrides (≤50 keys, each value ≤4096 bytes) */
-            env?: Record<string, never>;
+            env?: {
+                [key: string]: string;
+            };
             /** @description Startup command override (leave empty to use manifest entrypoint) */
             startCommand?: string;
         };
@@ -6259,13 +6282,13 @@ export interface components {
              * @description 同一台设备上该组允许的并发执行数（≥1，默认 1 = 组内串行）
              * @default 1
              */
-            maxConcurrentPerDevice: number;
+            maxConcurrentPerDevice?: number;
             /**
              * @description 组作用域：device=单点互斥（每台设备同时最多 N 条，跨设备并发）；global=全局互斥（全平台同时最多 N 条，单点登录顶号类场景）。默认 device
              * @default device
              * @enum {string}
              */
-            scope: "device" | "global";
+            scope?: "device" | "global";
             /** @description 组用途说明 */
             description?: string;
         };
@@ -6276,13 +6299,13 @@ export interface components {
              * @description 同一台设备上该组允许的并发执行数（≥1，默认 1 = 组内串行）
              * @default 1
              */
-            maxConcurrentPerDevice: number;
+            maxConcurrentPerDevice?: number;
             /**
              * @description 组作用域：device=单点互斥（每台设备同时最多 N 条，跨设备并发）；global=全局互斥（全平台同时最多 N 条，单点登录顶号类场景）。默认 device
              * @default device
              * @enum {string}
              */
-            scope: "device" | "global";
+            scope?: "device" | "global";
             /** @description 组用途说明 */
             description?: string;
         };
@@ -8633,12 +8656,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Executor-facing config payload */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ExecutorConfigPayloadResponseDto"];
+                };
             };
             /** @description Invalid executor token */
             401: {
@@ -8826,11 +8850,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /**
-             * @description Shell script (text/plain)
-             *
-             *     shell script text (Res passthrough)
-             */
+            /** @description shell script text (Res passthrough) */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -8967,7 +8987,6 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Updated successfully */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -9009,13 +9028,6 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Config pushed successfully */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
             /** @description pull 模式 = {queued,commandId,message}；push 模式 = 执行器自身响应原样透传（additionalProperties） */
             201: {
                 headers: {
@@ -9156,13 +9168,6 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Updated executor entity */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
             /** @description offlineReason=manual 的执行器行（POST 默认 201） */
             201: {
                 headers: {
@@ -9193,12 +9198,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Removal impact summary */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ExecutorRemovalImpactResponseDto"];
+                };
             };
             /** @description Executor not found */
             404: {

@@ -13,7 +13,7 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
-    "gen:api-types": "openapi-typescript ../admin-api/openapi.json -o src/types/generated/api-types.ts"
+    "gen:api-types": "openapi-typescript ../admin-api/openapi.json -o src/types/generated/api-types.ts --default-non-nullable=false"
   },
   "dependencies": {
     "@ant-design/icons": "^6.3.4",
