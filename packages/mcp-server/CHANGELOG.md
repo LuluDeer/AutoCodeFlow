@@ -1,10 +1,17 @@
 # Changelog
 
-## Unreleased
+## [1.9.0](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.8.0...v1.9.0) (2026-10-07)
+
 
 ### Features
 
-* **mcp-server:** 工具面补齐——E-1 任务导出/导入（`export_task`/`import_task`，导出物逐字透传可直接回灌 import）、CORE-03 模板走服务端端点（新增 `list_task_templates`；`create_task_from_template` 改走 `GET /task-templates` + `POST /task-templates/:id/instantiate`，本地硬编码模板副本移除，历史 template key 入参继续可用）、`get_execution_logs` 补 OBS-03 `level` 过滤透传（52 工具）
+* **mcp:** 能力对账包——export_task/import_task(导出物逐字透传)/get_execution_logs 补 level 枚举过滤/create_task_from_template 改走 CORE-03 服务端端点(删本地 TASK_TEMPLATES 硬编码副本,与 admin seed 同源)+新增 list_task_templates；49→52 工具 ([735065d](https://github.com/LuluDeer/AutoCodeFlow/commit/735065de98e1f9a11e2c170da88302d4df6840b4))
+
+
+### Bug Fixes
+
+* **cli+mcp:** 默认 API URL 缺 /api 前缀的 P1——TOTP 交互路径 PTY 真机 smoke 抓出并修复（战役遗留 [#5](https://github.com/LuluDeer/AutoCodeFlow/issues/5) 收口） ([a3c20b3](https://github.com/LuluDeer/AutoCodeFlow/commit/a3c20b3d76917de4c2ba4177d5b55f0c28f50701))
+* **deps:** 清偿 proxy-addr critical + MCP SDK high——npm-audit 闸由红转绿的主体 ([b0ee74b](https://github.com/LuluDeer/AutoCodeFlow/commit/b0ee74b4068a32793a77f3595a3378837e569704))
 
 ## [1.8.0](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.7.0...v1.8.0) (2026-10-04)
 

@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.9.0](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.8.0...v1.9.0) (2026-10-07)
+
+### 版本对齐
+
+* 随 lockstep 组(mcp-server/acf-cli 1.9.0 feat+fix 驱动 minor)同步 bump,本包代码零变更;package.json license 字段随协议分域重构(b1831815)标注,发布物仍 MIT
+
 ## [1.8.0](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.7.0...v1.8.0) (2026-10-04)
 
 ### 版本对齐

@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.9.0](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.8.0...v1.9.0) (2026-10-07)
+
+
+### Features
+
+* **cli+api:** 拍板立项两项——①版本定向灰度（渐进回滚）②task 载荷旗标 --json→--body deprecation ([c6e4592](https://github.com/LuluDeer/AutoCodeFlow/commit/c6e45925b1fd73f50cb356c6e33e1c8b8e1471a7))
+* **cli:** 应用与运维命令包——acf app upload(multipart/300s 预算/白名单字段)/acf app upgrade-all 灰度(canary 1-100/缺省零 body 全量语义逐字节保持/受理≠完成提示)/acf task webhook enable|rotate|disable|status(secret 一次性提示)/acf task glue 热更新(js→javascript 推断对齐执行器白名单)/acf approval list|approve|reject|cancel(DEP-04)；30 新用例,叶子护栏 50→58 ([6efa130](https://github.com/LuluDeer/AutoCodeFlow/commit/6efa1303bf65844a0cba7ad3489af24959e986a5))
+* **cli:** 末层审计能力包——login 支持 TOTP 二段验证(--code 供 CI,此前 TOTP 用户完全无法用 CLI)/acf task export|import(导出物逐字透传)/acf task batch 四动作(--ids 1..500,部分失败 exit 1)/acf apikey create|list|revoke(plaintext 一次性回显)/config set-token 安全提示；32 新用例,ux-uniform 叶子护栏 44→50 ([f55f309](https://github.com/LuluDeer/AutoCodeFlow/commit/f55f3097449c3454b2b28c50d15cde1adf162e9e))
+
+
+### Bug Fixes
+
+* **cli+mcp:** 默认 API URL 缺 /api 前缀的 P1——TOTP 交互路径 PTY 真机 smoke 抓出并修复（战役遗留 [#5](https://github.com/LuluDeer/AutoCodeFlow/issues/5) 收口） ([a3c20b3](https://github.com/LuluDeer/AutoCodeFlow/commit/a3c20b3d76917de4c2ba4177d5b55f0c28f50701))
+
 ## [1.8.0](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.7.0...v1.8.0) (2026-10-04)
 
 ### Features
