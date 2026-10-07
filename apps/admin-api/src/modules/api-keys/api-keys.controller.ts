@@ -10,7 +10,13 @@ import {
   NotFoundException,
   UseGuards,
 } from "@nestjs/common";
-import { ApiBearerAuth, ApiOperation, ApiTags } from "@nestjs/swagger";
+import {
+  ApiBearerAuth,
+  ApiOperation,
+  ApiTags,
+  ApiOkResponse,
+  ApiCreatedResponse,
+} from "@nestjs/swagger";
 import {
   IsIn,
   IsInt,
@@ -24,6 +30,12 @@ import {
 } from "class-validator";
 import { Transform } from "class-transformer";
 import { ApiKeysService } from "./api-keys.service";
+// ARCH-23 / N-12（2026-10-07 A1 批）：API Key 域响应契约。
+import {
+  ApiKeyCreateResponseDto,
+  ApiKeyRevokeResponseDto,
+  ApiKeyViewDto,
+} from "./dto/api-key-response.dto";
 import { API_KEY_SCOPES, API_KEY_PLAINTEXT_PREFIX } from "./api-key.util";
 import { ApiKeyScope } from "./entities/api-key.entity";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
@@ -80,6 +92,7 @@ export class ApiKeysController {
   constructor(private readonly apiKeysService: ApiKeysService) {}
 
   @Get()
+  @ApiOkResponse({ type: [ApiKeyViewDto] })
   @ApiOperation({ summary: "List my API Keys (masked)" })
   list(@CurrentUser() user: AuthUser) {
     return this.apiKeysService.listForUser(user.id);
@@ -87,6 +100,10 @@ export class ApiKeysController {
 
   @WriteGuard("api-key", { scope: "authenticated" })
   @Post()
+  @ApiCreatedResponse({
+    type: ApiKeyCreateResponseDto,
+    description: "明文 key 一次性回显",
+  })
   @ApiOperation({
     summary: "Create an API Key",
     description:
@@ -116,6 +133,7 @@ export class ApiKeysController {
   /** Soft-revoke (kept for REST semantics symmetry with the sessions API). */
   @WriteGuard("api-key", { scope: "authenticated" })
   @Delete(":id")
+  @ApiOkResponse({ type: ApiKeyRevokeResponseDto })
   @ApiOperation({ summary: "Revoke (soft-delete) my API Key" })
   async revoke(
     @Param("id", ParseIntPipe) id: number,
@@ -135,6 +153,7 @@ export class ApiKeysController {
   /** Explicit revoke alias (idempotent — re-revoking returns the row). */
   @WriteGuard("api-key", { scope: "authenticated" })
   @Post(":id/revoke")
+  @ApiCreatedResponse({ type: ApiKeyRevokeResponseDto })
   @ApiOperation({ summary: "Revoke my API Key (explicit alias, idempotent)" })
   async revokeAlias(
     @Param("id", ParseIntPipe) id: number,

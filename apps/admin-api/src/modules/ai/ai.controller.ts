@@ -7,13 +7,24 @@ import {
   HttpCode,
   HttpStatus,
 } from "@nestjs/common";
-import { ApiTags, ApiOperation, ApiBearerAuth } from "@nestjs/swagger";
+import {
+  ApiTags,
+  ApiOperation,
+  ApiBearerAuth,
+  ApiOkResponse,
+} from "@nestjs/swagger";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { Roles } from "../../common/decorators/roles.decorator";
 import { UserRole } from "../users/entities/user.entity";
 import { AiService } from "./ai.service";
 import { SystemConfigService } from "../config/config.service";
 import { IsString, IsIn, IsOptional } from "class-validator";
+// ARCH-23 / N-12（2026-10-07 A1 批）：AI 配置域响应契约。
+import {
+  AiConfigResponseDto,
+  AiConfigSaveResponseDto,
+  AiTestResponseDto,
+} from "./dto/ai-response.dto";
 
 export class SaveAiConfigDto {
   @IsString()
@@ -79,6 +90,7 @@ export class AiController {
   @Get("config")
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Get current AI configuration" })
+  @ApiOkResponse({ type: AiConfigResponseDto })
   async getConfig() {
     const effective = await this.aiService.getEffectiveConfig();
     // P1: 按 provider 判定密钥就绪状态（此前硬编码查 ai.openaiApiKey，
@@ -92,6 +104,7 @@ export class AiController {
   @Roles(UserRole.ADMIN)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: "Save AI configuration to system config store" })
+  @ApiOkResponse({ type: AiConfigSaveResponseDto })
   async saveConfig(@Body() dto: SaveAiConfigDto) {
     const items: Array<{
       key: string;
@@ -185,6 +198,7 @@ export class AiController {
   @ApiOperation({
     summary: "Test current AI configuration with a sample prompt",
   })
+  @ApiOkResponse({ type: AiTestResponseDto })
   async testConfig() {
     const result = await this.aiService.analyzeFailure(
       { name: "test-task", runtime: "node" },

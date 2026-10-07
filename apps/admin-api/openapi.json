@@ -500,7 +500,14 @@
         },
         "responses": {
           "201": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -557,7 +564,14 @@
         ],
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaginatedUsersDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -586,7 +600,14 @@
         ],
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -623,7 +644,14 @@
         },
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -650,7 +678,14 @@
         ],
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserDeleteResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4110,7 +4145,17 @@
         "parameters": [],
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/NotificationChannelDto"
+                  }
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4139,7 +4184,14 @@
         ],
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationChannelDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4168,7 +4220,14 @@
         ],
         "responses": {
           "201": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChannelTestResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4188,7 +4247,14 @@
         "parameters": [],
         "responses": {
           "201": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChannelTestResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4245,7 +4311,17 @@
         "parameters": [],
         "responses": {
           "200": {
-            "description": "All silences"
+            "description": "All silences",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/NotificationSilenceDto"
+                  }
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4274,7 +4350,14 @@
         },
         "responses": {
           "201": {
-            "description": "Created silence"
+            "description": "Created silence",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationSilenceDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4303,7 +4386,14 @@
         ],
         "responses": {
           "200": {
-            "description": ""
+            "description": "removed=false = 该 id 不存在（幂等语义）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4367,7 +4457,14 @@
         "parameters": [],
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiConfigResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4395,7 +4492,14 @@
         },
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiConfigSaveResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4415,7 +4519,14 @@
         "parameters": [],
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiTestResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -6408,7 +6519,14 @@
         ],
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaginatedAuditLogsDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -6561,7 +6679,14 @@
         ],
         "responses": {
           "200": {
-            "description": ""
+            "description": "CSV text export (Res passthrough, max 10 000 rows)",
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -9306,7 +9431,17 @@
         "parameters": [],
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ApiKeyViewDto"
+                  }
+                }
+              }
+            }
           }
         },
         "security": [
@@ -9335,7 +9470,14 @@
         },
         "responses": {
           "201": {
-            "description": ""
+            "description": "明文 key 一次性回显",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiKeyCreateResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -9364,7 +9506,14 @@
         ],
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiKeyRevokeResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -9393,7 +9542,14 @@
         ],
         "responses": {
           "201": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiKeyRevokeResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -9977,9 +10133,116 @@
           "password"
         ]
       },
+      "UserResponseDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "number"
+          },
+          "username": {
+            "type": "string",
+            "description": "1..128, unique"
+          },
+          "email": {
+            "type": "string",
+            "description": "unique"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "admin",
+              "user"
+            ]
+          },
+          "isActive": {
+            "type": "boolean",
+            "description": "Soft-disable switch (login refused when false)"
+          },
+          "loginFailCount": {
+            "type": "number",
+            "description": "Consecutive failed logins (lockout input)"
+          },
+          "lockedUntil": {
+            "format": "date-time",
+            "type": "string",
+            "description": "Lockout deadline",
+            "nullable": true
+          },
+          "totpEnabled": {
+            "type": "boolean"
+          },
+          "sessionVersion": {
+            "type": "number",
+            "description": "Bumped on password change — revokes old refresh tokens"
+          },
+          "lastTotpCounter": {
+            "type": "number",
+            "nullable": true
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "username",
+          "email",
+          "role",
+          "isActive",
+          "loginFailCount",
+          "lockedUntil",
+          "totpEnabled",
+          "sessionVersion",
+          "lastTotpCounter",
+          "createdAt",
+          "updatedAt"
+        ]
+      },
       "Object": {
         "type": "object",
         "properties": {}
+      },
+      "PaginatedUsersDto": {
+        "type": "object",
+        "properties": {
+          "list": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UserResponseDto"
+            }
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UserResponseDto"
+            }
+          },
+          "total": {
+            "type": "number"
+          },
+          "page": {
+            "type": "number"
+          },
+          "pageSize": {
+            "type": "number"
+          },
+          "totalPages": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "list",
+          "items",
+          "total",
+          "page",
+          "pageSize",
+          "totalPages"
+        ]
       },
       "UpdateUserDto": {
         "type": "object",
@@ -10011,6 +10274,20 @@
             "description": "Required when a non-admin user changes their own password (SEC-12); stripped by the service before persisting (R19)"
           }
         }
+      },
+      "UserDeleteResponseDto": {
+        "type": "object",
+        "properties": {
+          "deleted": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          }
+        },
+        "required": [
+          "deleted"
+        ]
       },
       "TaskResponseDto": {
         "type": "object",
@@ -13310,6 +13587,73 @@
           "items"
         ]
       },
+      "NotificationChannelDto": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string",
+            "enum": [
+              "email",
+              "slack",
+              "dingtalk",
+              "wecom",
+              "webhook"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "config": {
+            "type": "object",
+            "description": "Channel-specific settings; credential values are masked on read",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "description": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "name",
+          "enabled",
+          "config",
+          "description"
+        ]
+      },
+      "ChannelTestResponseDto": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "description": "false when all addressed channels failed/skipped"
+          },
+          "message": {
+            "type": "string"
+          },
+          "results": {
+            "type": "object",
+            "description": "Per-channel delivery status",
+            "additionalProperties": {
+              "type": "string",
+              "enum": [
+                "sent",
+                "blocked",
+                "failed",
+                "skipped"
+              ]
+            }
+          }
+        },
+        "required": [
+          "success",
+          "message"
+        ]
+      },
       "SendNotificationDto": {
         "type": "object",
         "properties": {
@@ -13388,6 +13732,85 @@
         "required": [
           "success",
           "results"
+        ]
+      },
+      "NotificationSilenceDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "global",
+              "task",
+              "application"
+            ]
+          },
+          "channelType": {
+            "type": "string",
+            "nullable": true
+          },
+          "taskId": {
+            "type": "string",
+            "description": "scope=task 时生效",
+            "nullable": true,
+            "format": "uuid"
+          },
+          "applicationId": {
+            "type": "string",
+            "description": "scope=application 时生效",
+            "nullable": true,
+            "format": "uuid"
+          },
+          "level": {
+            "type": "string",
+            "description": "空 = 所有级别；否则 info/warning/critical 等 AlertLevel",
+            "nullable": true
+          },
+          "reason": {
+            "type": "string",
+            "nullable": true
+          },
+          "startTime": {
+            "format": "date-time",
+            "type": "string",
+            "nullable": true
+          },
+          "endTime": {
+            "format": "date-time",
+            "type": "string",
+            "description": "空 = 不过期；durationMinutes 写入时折算",
+            "nullable": true
+          },
+          "durationMinutes": {
+            "type": "number",
+            "nullable": true
+          },
+          "createdBy": {
+            "type": "string",
+            "nullable": true
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "scope",
+          "channelType",
+          "taskId",
+          "applicationId",
+          "level",
+          "reason",
+          "startTime",
+          "endTime",
+          "durationMinutes",
+          "createdBy",
+          "createdAt"
         ]
       },
       "CreateSilenceDto": {
@@ -13526,9 +13949,60 @@
           }
         }
       },
+      "AiConfigResponseDto": {
+        "type": "object",
+        "properties": {
+          "config": {
+            "type": "object",
+            "description": "Effective config key/values (provider, openaiModel, openaiBaseUrl, ollamaHost, ollamaModel, qwenModel, qwenBaseUrl, qwenMaxTokens, qwenTimeoutMs)",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "hasApiKey": {
+            "type": "boolean",
+            "description": "Whether the current provider has an API key configured (key VALUE is never returned)"
+          }
+        },
+        "required": [
+          "config",
+          "hasApiKey"
+        ]
+      },
       "SaveAiConfigDto": {
         "type": "object",
         "properties": {}
+      },
+      "AiConfigSaveResponseDto": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          }
+        },
+        "required": [
+          "ok"
+        ]
+      },
+      "AiTestResponseDto": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "description": "false when the provider is disabled or returned an empty response"
+          },
+          "message": {
+            "type": "string",
+            "description": "Sample-prompt reply text, or the degraded-state message"
+          }
+        },
+        "required": [
+          "ok",
+          "message"
+        ]
       },
       "AgentSessionDto": {
         "type": "object",
@@ -15517,6 +15991,78 @@
           "deleted"
         ]
       },
+      "AuditLogDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "number"
+          },
+          "userId": {
+            "type": "number",
+            "nullable": true
+          },
+          "username": {
+            "type": "string",
+            "description": "Snapshot of the acting username (survives user deletion)",
+            "nullable": true
+          },
+          "action": {
+            "type": "string",
+            "description": "Dotted action token, e.g. 'task.trigger' / 'user.create'"
+          },
+          "resource": {
+            "type": "string",
+            "nullable": true
+          },
+          "resourceId": {
+            "type": "string",
+            "nullable": true
+          },
+          "detail": {
+            "type": "object",
+            "description": "Free-form context (ip, detail payloads)",
+            "nullable": true,
+            "additionalProperties": true
+          },
+          "ip": {
+            "type": "string",
+            "nullable": true
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "userId",
+          "username",
+          "action",
+          "resource",
+          "resourceId",
+          "detail",
+          "ip",
+          "createdAt"
+        ]
+      },
+      "PaginatedAuditLogsDto": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AuditLogDto"
+            }
+          },
+          "total": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "data",
+          "total"
+        ]
+      },
       "ApplicationResponseDto": {
         "type": "object",
         "properties": {
@@ -17265,9 +17811,101 @@
           "ok"
         ]
       },
+      "ApiKeyViewDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "number"
+          },
+          "name": {
+            "type": "string"
+          },
+          "keyPrefix": {
+            "type": "string",
+            "description": "'acf_' + first chars — full key never returned after create"
+          },
+          "scope": {
+            "type": "string",
+            "description": "Coarse scope bucket"
+          },
+          "scopes": {
+            "description": "Extra narrow-domain scopes (word list, e.g. 'task:trigger')",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "expiresAt": {
+            "format": "date-time",
+            "type": "string",
+            "nullable": true
+          },
+          "revokedAt": {
+            "format": "date-time",
+            "type": "string",
+            "description": "Set = revoked (soft-delete)",
+            "nullable": true
+          },
+          "lastUsedAt": {
+            "format": "date-time",
+            "type": "string",
+            "description": "Refresh throttled to 60s (LAST_USED_THROTTLE_MS)",
+            "nullable": true
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "keyPrefix",
+          "scope",
+          "scopes",
+          "expiresAt",
+          "revokedAt",
+          "lastUsedAt",
+          "createdAt"
+        ]
+      },
       "CreateApiKeyDto": {
         "type": "object",
         "properties": {}
+      },
+      "ApiKeyCreateResponseDto": {
+        "type": "object",
+        "properties": {
+          "apiKey": {
+            "$ref": "#/components/schemas/ApiKeyViewDto"
+          },
+          "plaintext": {
+            "type": "string",
+            "description": "Plaintext key shown ONCE — store it now"
+          }
+        },
+        "required": [
+          "apiKey",
+          "plaintext"
+        ]
+      },
+      "ApiKeyRevokeResponseDto": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "apiKey": {
+            "$ref": "#/components/schemas/ApiKeyViewDto"
+          }
+        },
+        "required": [
+          "success",
+          "apiKey"
+        ]
       },
       "ProjectViewDto": {
         "type": "object",

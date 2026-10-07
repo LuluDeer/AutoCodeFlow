@@ -14,12 +14,24 @@ import {
   BadRequestException,
   ConflictException,
 } from "@nestjs/common";
-import { ApiTags, ApiOperation, ApiBearerAuth } from "@nestjs/swagger";
+import {
+  ApiTags,
+  ApiOperation,
+  ApiBearerAuth,
+  ApiOkResponse,
+  ApiCreatedResponse,
+} from "@nestjs/swagger";
 import { Request } from "express";
 import * as bcrypt from "bcrypt";
 import { UsersService } from "./users.service";
 import { CreateUserDto } from "./dto/create-user.dto";
 import { UpdateUserDto } from "./dto/update-user.dto";
+// ARCH-23 / N-12（2026-10-07 A1 批）：用户域响应契约。
+import {
+  PaginatedUsersDto,
+  UserDeleteResponseDto,
+  UserResponseDto,
+} from "./dto/user-response.dto";
 import { ListUsersDto } from "./dto/list-users.dto";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { RolesGuard } from "../../common/guards/roles.guard";
@@ -45,6 +57,8 @@ export class UsersController {
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Create user" })
+  // POST 默认 201。
+  @ApiCreatedResponse({ type: UserResponseDto })
   async create(
     @Body() dto: CreateUserDto,
     @CurrentUser() user: AuthUser,
@@ -63,6 +77,7 @@ export class UsersController {
   }
 
   @Get()
+  @ApiOkResponse({ type: PaginatedUsersDto })
   // M-4: only admins may enumerate user accounts (and their lockedUntil /
   // loginFailCount state). Otherwise any authenticated user could harvest
   // the directory and lockout schedule.
@@ -80,6 +95,7 @@ export class UsersController {
   }
 
   @Get(":id")
+  @ApiOkResponse({ type: UserResponseDto })
   // Same protection for single-user lookup: non-admins can only fetch their
   // own profile; admins can fetch anyone. The service helper returns null
   // for missing users so callers never leak existence via 404 (H-3).
@@ -101,6 +117,7 @@ export class UsersController {
   // S12: when updating password, current password must be verified first
   @WriteGuard("user", { scope: "authenticated" })
   @Patch(":id")
+  @ApiOkResponse({ type: UserResponseDto })
   @ApiOperation({ summary: "Update user" })
   async update(
     @Param("id", ParseIntPipe) id: number,
@@ -173,6 +190,7 @@ export class UsersController {
 
   // S11: only admins can delete users
   @Delete(":id")
+  @ApiOkResponse({ type: UserDeleteResponseDto })
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Delete user" })

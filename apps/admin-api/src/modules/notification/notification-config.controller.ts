@@ -15,6 +15,8 @@ import {
   ApiBearerAuth,
   ApiBody,
   ApiResponse,
+  ApiOkResponse,
+  ApiCreatedResponse,
 } from "@nestjs/swagger";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { CurrentUser } from "../../common/decorators/current-user.decorator";
@@ -37,6 +39,12 @@ import { CreateSilenceDto } from "./dto/create-silence.dto";
 import { NotificationPayload } from "./channels/base.channel";
 // D3-B-P2-2: 渠道/静默增删审计落证。
 import { AuditService } from "../audit/audit.service";
+// ARCH-23 / N-12（2026-10-07 A1 批）：通知配置域响应契约。
+import {
+  ChannelTestResponseDto,
+  NotificationChannelDto,
+  NotificationSilenceDto,
+} from "./dto/notification-response.dto";
 
 @ApiTags("Notification Config")
 @ApiBearerAuth("JWT")
@@ -57,6 +65,7 @@ export class NotificationConfigController {
   // URLs — infrastructure config, admin only. The global RolesGuard reads the
   // metadata; no extra @UseGuards entry is needed (same pattern as audit).
   @Get("channels")
+  @ApiOkResponse({ type: [NotificationChannelDto] })
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Get all notification channel configs" })
   getChannels() {
@@ -64,6 +73,7 @@ export class NotificationConfigController {
   }
 
   @Patch("channels/:key")
+  @ApiOkResponse({ type: NotificationChannelDto })
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Update notification channel config" })
   async updateChannel(
@@ -108,6 +118,7 @@ export class NotificationConfigController {
    * needed (same pattern as the channel-config PATCH above).
    */
   @Post("channels/:key/test")
+  @ApiCreatedResponse({ type: ChannelTestResponseDto })
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Test notification channel" })
   testChannel(@Param("key") key: string, @Body() body: Record<string, string>) {
@@ -121,6 +132,7 @@ export class NotificationConfigController {
    * ADMIN matches the audit/notification-config posture (N11).
    */
   @Post("test")
+  @ApiCreatedResponse({ type: ChannelTestResponseDto })
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Send test notification to channel" })
   sendTest(
@@ -189,6 +201,7 @@ export class NotificationConfigController {
   // 重启后由 onModuleInit 回灌——静默不再是重启即丢的内存态。
 
   @Get("silences")
+  @ApiOkResponse({ type: [NotificationSilenceDto] })
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "List notification silences (persisted)" })
   @ApiResponse({ status: 200, description: "All silences" })
@@ -197,6 +210,7 @@ export class NotificationConfigController {
   }
 
   @Post("silences")
+  @ApiCreatedResponse({ type: NotificationSilenceDto })
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Create a notification silence" })
   @ApiResponse({ status: 201, description: "Created silence" })
@@ -240,6 +254,10 @@ export class NotificationConfigController {
   }
 
   @Delete("silences/:id")
+  @ApiOkResponse({
+    description: "removed=false = 该 id 不存在（幂等语义）",
+    schema: { type: "boolean" },
+  })
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Remove a notification silence" })
   async removeSilence(@Param("id") id: string, @CurrentUser() user: AuthUser) {

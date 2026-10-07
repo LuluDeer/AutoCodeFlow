@@ -1,11 +1,18 @@
 import { Controller, Get, Query, Res, UseGuards } from "@nestjs/common";
-import { ApiTags, ApiBearerAuth, ApiOperation } from "@nestjs/swagger";
+import {
+  ApiTags,
+  ApiBearerAuth,
+  ApiOperation,
+  ApiOkResponse,
+} from "@nestjs/swagger";
 import { Response } from "express";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { Roles } from "../../common/decorators/roles.decorator";
 import { UserRole } from "../users/entities/user.entity";
 import { AuditService } from "./audit.service";
 import { AuditQueryDto } from "./dto/audit-query.dto";
+// ARCH-23 / N-12（2026-10-07 A1 批）：审计域响应契约。
+import { PaginatedAuditLogsDto } from "./dto/audit-response.dto";
 
 @ApiTags("audit")
 @ApiBearerAuth("JWT")
@@ -23,6 +30,7 @@ export class AuditController {
   // resource identifiers) — both list and export are ADMIN-only. The global
   // RolesGuard reads this metadata; no extra @UseGuards entry is needed.
   @Get()
+  @ApiOkResponse({ type: PaginatedAuditLogsDto })
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: "Query audit logs with pagination (admin only)" })
   findAll(@Query() query: AuditQueryDto) {
@@ -44,6 +52,10 @@ export class AuditController {
   }
 
   @Get("export")
+  @ApiOkResponse({
+    description: "CSV text export (Res passthrough, max 10 000 rows)",
+    content: { "text/csv": { schema: { type: "string" } } },
+  })
   @Roles(UserRole.ADMIN)
   @ApiOperation({
     summary: "Export audit logs as CSV (max 10 000 rows, admin only)",
