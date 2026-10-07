@@ -1,6 +1,11 @@
 import { Controller, Get, Logger, Req, Res, UseGuards } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import { ApiBearerAuth, ApiOperation, ApiTags } from "@nestjs/swagger";
+import {
+  ApiBearerAuth,
+  ApiOperation,
+  ApiTags,
+  ApiResponse,
+} from "@nestjs/swagger";
 import { Request, Response } from "express";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { SkipTimeout } from "../../common/decorators/skip-timeout.decorator";
@@ -70,6 +75,12 @@ export class MetricsStreamController {
   }
 
   @SkipThrottle()
+  @ApiResponse({
+    status: 200,
+    description:
+      "Server-Sent Events stream (Res passthrough; envelope interceptor bypassed)",
+    content: { "text/event-stream": { schema: { type: "string" } } },
+  })
   @Get("stream")
   @ApiOperation({
     summary: "Dashboard summary SSE stream (UI-14 phase 1)",

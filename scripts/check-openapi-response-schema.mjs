@@ -95,11 +95,20 @@ export function collect(spec) {
       const tag = (op.tags && op.tags[0]) || '(untagged)';
       for (const [code, res] of Object.entries(op.responses ?? {})) {
         if (!/^2\d\d$/.test(code)) continue;
+        // 2026-10-07 扩展：非 JSON 成功载荷（text/x-shellscript 安装脚本、
+        // application/gzip 产物下载）此前被当"无 schema"漏计；204 无内容响应
+        // （executor DELETE）同理。前者回退取首个 content 的 schema，后者在
+        // 有 description 时视为完整声明（无内容可描述 ≠ 未声明）。
         const schemaNode =
           res?.content?.['application/json']?.schema ??
           res?.content?.['*/*']?.schema ??
           res?.schema ??
-          (res?.$ref ? { $ref: res.$ref } : null);
+          (res?.$ref ? { $ref: res.$ref } : null) ??
+          (code === '204' && res?.description
+            ? { type: 'string', description: 'no content' }
+            : null) ??
+          Object.values(res?.content ?? {})[0]?.schema ??
+          null;
         const hasContent = Boolean(schemaNode);
         // 空壳判定：引用了空 schema，且 schema 本身没有任何内联字段
         const inlineProps =

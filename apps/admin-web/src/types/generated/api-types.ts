@@ -4758,6 +4758,89 @@ export interface components {
              */
             deviceFingerprint?: string | null;
         };
+        ExecutorHeartbeatResponseDto: {
+            /** Format: uuid */
+            id: string;
+            /** @description Executor app name (per-process registration key) */
+            appName: string;
+            /** @description http://host:port, globally unique */
+            address: string;
+            /** @enum {string} */
+            status: "online" | "offline";
+            /**
+             * @description Why it went offline (null while online)
+             * @enum {string|null}
+             */
+            offlineReason: "manual" | "stale_timeout" | null;
+            /** @description Consecutive missed/failed heartbeats (stale sweep input) */
+            consecutiveHeartbeatMisses: number;
+            /** @enum {string} */
+            type: "python" | "node" | "universal";
+            /** @description Self-reported executor package version */
+            executorVersion: string | null;
+            /** @description Protocol version negotiated at register (pull control-plane gate) */
+            protocolVersion: number | null;
+            /**
+             * @description push = platform dials the executor; pull = executor long-polls (NAT-bound)
+             * @enum {string}
+             */
+            dispatchMode: "push" | "pull";
+            /** @description Declared runtime capability domains */
+            capabilities: string[] | null;
+            /**
+             * Format: date-time
+             * @description Last accepted heartbeat
+             */
+            lastHeartbeat: string | null;
+            /**
+             * Format: date-time
+             * @description Executor process start time (restart detection)
+             */
+            executorStartedAt: string | null;
+            /** @description Per-process instance id (idempotent token issuance) */
+            executorStartupId: string | null;
+            /** @description Stable device identity across address changes */
+            deviceFingerprint: string | null;
+            /** @description Currently running tasks (includes reserved-but-unclaimed pull slots) */
+            runningTaskCount: number;
+            cpuUsage: number | null;
+            memUsage: number | null;
+            diskUsage: number | null;
+            /** @description ms */
+            networkLatency: number | null;
+            totalTaskCount: number;
+            failedTaskCount: number;
+            /** @description Dispatch gate capacity; null = unlimited */
+            maxConcurrentTasks: number | null;
+            /** @description Execution ids currently claimed by this executor (E-01-RPT liveness report) */
+            runningExecutionIds: string[] | null;
+            /** @description Pull slots reserved but not yet claimed (display/alert only — NOT a dispatch gate) */
+            reservedSlots: number | null;
+            /** @description Control-plane commands parked in the dead-letter queue */
+            deadLetterCount: number | null;
+            /** @description Interpreter pool reported by the executor (D5: null = never reported, [] = reported empty) */
+            interpreters: {
+                version: string;
+                path?: string;
+                available?: boolean;
+                discoveredAt?: string;
+            }[] | null;
+            groupName: string | null;
+            tags: string[] | null;
+            description: string | null;
+            /** Format: uuid */
+            projectId: string | null;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+            /** @description Callback-auth secret for this executor (machine face: the token-authed holder fetches it to sign execution callbacks) */
+            tokenHash: string;
+            /** @description EXECUTOR_MIN_VERSION gate value; '' = gate disabled */
+            minVersion: string | null;
+            /** @description Whether the self-reported version satisfies the min-version gate */
+            versionCompliant: boolean;
+        };
         ExecutorPullDto: {
             /**
              * @description 执行器注册地址（与心跳一致）
@@ -4774,6 +4857,22 @@ export interface components {
              * @example 2
              */
             freeSlots?: number;
+        };
+        ExecutorPullResponseDto: {
+            /** @description Dispatch payload (ExecuteRequest shape built by the pull service) or null when nothing queued */
+            task: {
+                [key: string]: unknown;
+            } | null;
+            /** @enum {string} */
+            dispatchMode: "push" | "pull";
+            /** @description Only on pull-mode executors with control-plane protocol support (ARCH-33) */
+            commands?: {
+                [key: string]: unknown;
+            }[];
+        };
+        ExecutorCommandResultResponseDto: {
+            /** @enum {boolean} */
+            ok: true;
         };
         TerminalStateItemDto: {
             /**
@@ -4806,6 +4905,123 @@ export interface components {
              * @example 2026-09-14T08:20:00.000Z
              */
             serverTime: string;
+        };
+        ExecutorPickerItemDto: {
+            /** Format: uuid */
+            id: string;
+            appName: string;
+            address: string;
+            /** @enum {string} */
+            status: "online" | "offline";
+            runningTaskCount: number;
+            maxConcurrentTasks: number | null;
+        };
+        ExecutorPickerResponseDto: {
+            items: components["schemas"]["ExecutorPickerItemDto"][];
+            /** @description True when the cap hit — items are a prefix, total is the real count */
+            truncated: boolean;
+            total: number;
+            /** @description The applied cap */
+            limit: number;
+        };
+        ExecutorResponseDto: {
+            /** Format: uuid */
+            id: string;
+            /** @description Executor app name (per-process registration key) */
+            appName: string;
+            /** @description http://host:port, globally unique */
+            address: string;
+            /** @enum {string} */
+            status: "online" | "offline";
+            /**
+             * @description Why it went offline (null while online)
+             * @enum {string|null}
+             */
+            offlineReason: "manual" | "stale_timeout" | null;
+            /** @description Consecutive missed/failed heartbeats (stale sweep input) */
+            consecutiveHeartbeatMisses: number;
+            /** @enum {string} */
+            type: "python" | "node" | "universal";
+            /** @description Self-reported executor package version */
+            executorVersion: string | null;
+            /** @description Protocol version negotiated at register (pull control-plane gate) */
+            protocolVersion: number | null;
+            /**
+             * @description push = platform dials the executor; pull = executor long-polls (NAT-bound)
+             * @enum {string}
+             */
+            dispatchMode: "push" | "pull";
+            /** @description Declared runtime capability domains */
+            capabilities: string[] | null;
+            /**
+             * Format: date-time
+             * @description Last accepted heartbeat
+             */
+            lastHeartbeat: string | null;
+            /**
+             * Format: date-time
+             * @description Executor process start time (restart detection)
+             */
+            executorStartedAt: string | null;
+            /** @description Per-process instance id (idempotent token issuance) */
+            executorStartupId: string | null;
+            /** @description Stable device identity across address changes */
+            deviceFingerprint: string | null;
+            /** @description Currently running tasks (includes reserved-but-unclaimed pull slots) */
+            runningTaskCount: number;
+            cpuUsage: number | null;
+            memUsage: number | null;
+            diskUsage: number | null;
+            /** @description ms */
+            networkLatency: number | null;
+            totalTaskCount: number;
+            failedTaskCount: number;
+            /** @description Dispatch gate capacity; null = unlimited */
+            maxConcurrentTasks: number | null;
+            /** @description Execution ids currently claimed by this executor (E-01-RPT liveness report) */
+            runningExecutionIds: string[] | null;
+            /** @description Pull slots reserved but not yet claimed (display/alert only — NOT a dispatch gate) */
+            reservedSlots: number | null;
+            /** @description Control-plane commands parked in the dead-letter queue */
+            deadLetterCount: number | null;
+            /** @description Interpreter pool reported by the executor (D5: null = never reported, [] = reported empty) */
+            interpreters: {
+                version: string;
+                path?: string;
+                available?: boolean;
+                discoveredAt?: string;
+            }[] | null;
+            groupName: string | null;
+            tags: string[] | null;
+            description: string | null;
+            /** Format: uuid */
+            projectId: string | null;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        ExecutorReloadConfigResponseDto: {
+            /** @description true = pull-mode: queued, applied on next poll (~1s) */
+            queued?: boolean;
+            /** Format: uuid */
+            commandId?: string;
+            message?: string;
+            /** @description push-mode: the executor's own api/config/reload response body, passed through verbatim */
+            executorResponse?: {
+                [key: string]: unknown;
+            };
+        };
+        ExecutorTokenResponseDto: {
+            /** @description Plaintext token (shown per fetch; rotation rules per R9) */
+            token: string;
+            /** @description Stored bcrypt/sha hash for verification */
+            tokenHash: string;
+        };
+        ExecutorExecutionsResponseDto: {
+            total: number;
+            /** @description TaskExecution rows, newest first (heavy text columns NOT excluded on this face) */
+            items: unknown[];
         };
         SendNotificationDto: {
             /**
@@ -5412,6 +5628,87 @@ export interface components {
             name: string;
             /** @description SOP version + agent build metadata (idempotent re-delivery) */
             version: string;
+        };
+        MetricsSummaryResponseDto: {
+            totalTasks: number;
+            totalExecutors: number;
+            /** @description Executors with status=online */
+            onlineExecutors: number;
+            /** @description Executions created since local midnight */
+            todayRuns: number;
+            /** @description Status counts over the aggregation window */
+            executions?: {
+                total: number;
+                success: number;
+                failed: number;
+                running: number;
+            };
+            /** @description Percent (two decimals), 0 when no runs */
+            successRate: number;
+            /** @description Mean duration ms of successful runs in the window */
+            avgDurationMs: number;
+        };
+        MetricsTrendRowDto: {
+            /** @description Local day bucket (ISO yyyy-mm-dd of createdAt) */
+            date: string;
+            success: number;
+            failed: number;
+            timeout: number;
+        };
+        MetricsExecutorStatsRowDto: {
+            /** Format: uuid */
+            id: string;
+            appName: string;
+            address: string;
+            /** @enum {string} */
+            status: "online" | "offline";
+            cpuUsage: number | null;
+            memUsage: number | null;
+            runningTaskCount: number;
+            /** Format: date-time */
+            lastHeartbeat: string | null;
+        };
+        MetricsRecentFailureDto: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            taskId: string;
+            taskName: string;
+            errorMessage: string | null;
+            /** @description Classified failure token */
+            failureReason: string | null;
+            /** @description Raw exit code reported by the executor (observable backfill) */
+            exitCode: number | null;
+            /** Format: date-time */
+            createdAt: string;
+            duration: number | null;
+        };
+        MetricsSchedulerResponseDto: {
+            /** @description Raw scheduler metric counters snapshot (SchedulerMetricsSnapshot) */
+            counters: {
+                [key: string]: number;
+            };
+            /** @description Derived ratios/rates computed from counters */
+            derived: {
+                [key: string]: number;
+            };
+            /** @description BullMQ queue depth (null value = Redis unavailable, NOT an empty queue) */
+            queue?: {
+                waiting: number | null;
+                active: number | null;
+                delayed: number | null;
+                failed: number | null;
+                completed: number | null;
+            };
+            /** @description Scheduler liveness snapshot (getStats) */
+            scheduler: {
+                [key: string]: unknown;
+            };
+            /** @description Emitting process identity */
+            instance?: {
+                pid: number;
+                hostname: string;
+            };
         };
         SystemConfigResponseDto: {
             /** @description Config row id (serial) */
@@ -8243,12 +8540,14 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Heartbeat updated */
-            200: {
+            /** @description Saved executor + callback-auth secret + version-gate readings (POST default 201) */
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ExecutorHeartbeatResponseDto"];
+                };
             };
             /** @description Invalid executor token */
             401: {
@@ -8275,12 +8574,14 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Dispatch payload or empty */
+            /** @description task=null when nothing queued within waitMs */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ExecutorPullResponseDto"];
+                };
             };
             /** @description Invalid executor token */
             401: {
@@ -8302,12 +8603,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Result recorded */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ExecutorCommandResultResponseDto"];
+                };
             };
             /** @description Invalid executor token */
             401: {
@@ -8473,12 +8775,18 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Executor picker options with explicit truncation flag */
+            /**
+             * @description Executor picker options with explicit truncation flag
+             *
+             *     truncated=true 时 items 是前缀、total 是真实总数
+             */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ExecutorPickerResponseDto"];
+                };
             };
         };
     };
@@ -8518,12 +8826,18 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Shell script (text/plain) */
+            /**
+             * @description Shell script (text/plain)
+             *
+             *     shell script text (Res passthrough)
+             */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "text/x-shellscript": string;
+                };
             };
         };
     };
@@ -8541,12 +8855,18 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description tar.gz artifact (application/gzip) */
+            /**
+             * @description tar.gz artifact (application/gzip)
+             *
+             *     tar.gz binary (Res passthrough)
+             */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/gzip": string;
+                };
             };
             /** @description Missing / invalid shared token */
             401: {
@@ -8576,12 +8896,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Executor details */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ExecutorResponseDto"];
+                };
             };
             /** @description Executor not found */
             404: {
@@ -8609,7 +8930,11 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Executor deleted */
+            /**
+             * @description Executor deleted
+             *
+             *     Removed (no content)
+             */
             204: {
                 headers: {
                     [name: string]: unknown;
@@ -8647,7 +8972,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ExecutorResponseDto"];
+                };
             };
             /** @description Not ADMIN and no editor+ role on the executor's project */
             403: {
@@ -8688,6 +9015,15 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description pull 模式 = {queued,commandId,message}；push 模式 = 执行器自身响应原样透传（additionalProperties） */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExecutorReloadConfigResponseDto"];
+                };
             };
             /** @description Executor not found */
             404: {
@@ -8756,13 +9092,13 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Token obtained (or reused) successfully */
+            /** @description Token obtained (or reused) successfully — R9 idempotent issuance */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ExecutorTokenResponseDto"];
                 };
             };
             /** @description Invalid shared token */
@@ -8827,6 +9163,15 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description offlineReason=manual 的执行器行（POST 默认 201） */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExecutorResponseDto"];
+                };
+            };
             /** @description Executor not found */
             404: {
                 headers: {
@@ -8887,12 +9232,18 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Execution record list */
+            /**
+             * @description Execution record list
+             *
+             *     裸 {total,items} 分页
+             */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ExecutorExecutionsResponseDto"];
+                };
             };
         };
     };
@@ -9805,7 +10156,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "text/plain": string;
+                };
             };
             /** @description Endpoint disabled via METRICS_PROMETHEUS_ENABLED=false */
             404: {
@@ -9829,7 +10182,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["MetricsSummaryResponseDto"];
+                };
             };
         };
     };
@@ -9848,7 +10203,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["MetricsTrendRowDto"][];
+                };
             };
         };
     };
@@ -9865,7 +10222,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["MetricsExecutorStatsRowDto"][];
+                };
             };
         };
     };
@@ -9882,7 +10241,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["MetricsRecentFailureDto"][];
+                };
             };
         };
     };
@@ -9899,7 +10260,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["MetricsSchedulerResponseDto"];
+                };
             };
         };
     };
@@ -9912,11 +10275,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description Server-Sent Events stream (Res passthrough; envelope interceptor bypassed) */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "text/event-stream": string;
+                };
             };
         };
     };
@@ -9929,11 +10295,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description Server-Sent Events stream (Res passthrough; envelope interceptor bypassed) */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "text/event-stream": string;
+                };
             };
         };
     };

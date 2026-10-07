@@ -34,7 +34,22 @@ import {
   ApiParam,
   ApiBody,
   ApiQuery,
+  ApiOkResponse,
+  ApiCreatedResponse,
 } from "@nestjs/swagger";
+// ARCH-23 / N-12（2026-10-07 批）：执行器域响应契约。
+import {
+  ExecutorCommandResultResponseDto,
+  ExecutorConfigPayloadResponseDto,
+  ExecutorExecutionsResponseDto,
+  ExecutorHeartbeatResponseDto,
+  ExecutorPickerResponseDto,
+  ExecutorPullResponseDto,
+  ExecutorRemovalImpactResponseDto,
+  ExecutorReloadConfigResponseDto,
+  ExecutorResponseDto,
+  ExecutorTokenResponseDto,
+} from "./dto/executor-response.dto";
 import { ConfigService } from "@nestjs/config";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { Public } from "../../common/decorators/public.decorator";
@@ -322,7 +337,11 @@ export class ExecutorController {
     description: "Heartbeat data",
     type: ExecutorHeartbeatDto,
   })
-  @ApiResponse({ status: 200, description: "Heartbeat updated" })
+  @ApiCreatedResponse({
+    type: ExecutorHeartbeatResponseDto,
+    description:
+      "Saved executor + callback-auth secret + version-gate readings (POST default 201)",
+  })
   @ApiResponse({ status: 401, description: "Invalid executor token" })
   async heartbeat(
     @Body()
@@ -434,7 +453,10 @@ export class ExecutorController {
     description:
       "ARCH-32: pull-mode executors (NAT-bound, no inbound reachability) long-poll this endpoint to receive dispatch payloads. Blocks up to waitMs (server-clamped) and returns { task } — null when nothing queued.",
   })
-  @ApiResponse({ status: 200, description: "Dispatch payload or empty" })
+  @ApiOkResponse({
+    type: ExecutorPullResponseDto,
+    description: "task=null when nothing queued within waitMs",
+  })
   @ApiResponse({ status: 401, description: "Invalid executor token" })
   // PK-19（DEEP_REVIEW 0ef3bbe）: 此前 pull 端点用内联类型无 @ApiBody，openapi
   // 缺 requestBody。补 @ApiBody({ type: ExecutorPullDto })（运行时 @Body() 类型
@@ -537,7 +559,7 @@ export class ExecutorController {
       "update-package) they consumed from the pull response. Best-effort — " +
       "business terminal states still converge through their own callbacks.",
   })
-  @ApiResponse({ status: 200, description: "Result recorded" })
+  @ApiOkResponse({ type: ExecutorCommandResultResponseDto })
   @ApiResponse({ status: 401, description: "Invalid executor token" })
   async reportCommandResult(
     @Body()
@@ -599,8 +621,8 @@ export class ExecutorController {
       "与 /api/config/reload 完全相同的校验与应用路径）。per-executor 令牌认证，" +
       "address 走查询参数（与 register/heartbeat 同源）。",
   })
-  @ApiResponse({ status: 200, description: "Executor-facing config payload" })
   @ApiResponse({ status: 401, description: "Invalid executor token" })
+  @ApiOkResponse({ type: ExecutorConfigPayloadResponseDto })
   async pullExecutorConfig(
     @Query("address") address: string,
     @Headers("authorization") auth: string,
@@ -817,6 +839,10 @@ export class ExecutorController {
   @Get("picker")
   // RBAC 与 GET /executors 对齐（N11 复核结论同样适用）：任务 CRUD 对普通
   // 用户开放，且 picker 读面是 list 的严格子集——不放宽，也不额外收紧。
+  @ApiOkResponse({
+    type: ExecutorPickerResponseDto,
+    description: "truncated=true 时 items 是前缀、total 是真实总数",
+  })
   @ApiOperation({
     summary: "List executor picker options (lightweight)",
     description:
@@ -883,12 +909,15 @@ export class ExecutorController {
   @Public()
   @Roles()
   @Get("install.sh")
+  @ApiOkResponse({
+    description: "shell script text (Res passthrough)",
+    content: { "text/x-shellscript": { schema: { type: "string" } } },
+  })
   @ApiOperation({
     summary: "Download executor install script",
     description:
       "Returns the one-click installer as plain text (curl -fsSL <url>/api/executors/install.sh | bash -s -- --api-url ... --secret ...). Not sensitive: the shared secret is supplied by the caller as a bash argument.",
   })
-  @ApiResponse({ status: 200, description: "Shell script (text/plain)" })
   getInstallScript(@Res() res: Response): void {
     res.setHeader("Content-Type", "text/plain; charset=utf-8");
     res.end(INSTALL_SCRIPT);
@@ -908,6 +937,12 @@ export class ExecutorController {
   @Public()
   @Roles()
   @Get("artifact/executor-node.tar.gz")
+  @ApiOkResponse({
+    description: "tar.gz binary (Res passthrough)",
+    content: {
+      "application/gzip": { schema: { type: "string", format: "binary" } },
+    },
+  })
   @ApiOperation({
     summary: "Download executor-node install artifact (tar.gz)",
     description:
@@ -972,7 +1007,7 @@ export class ExecutorController {
       "Get detailed info for a specific executor including config, status, and performance metrics.",
   })
   @ApiParam({ name: "id", description: "Executor ID" })
-  @ApiResponse({ status: 200, description: "Executor details" })
+  @ApiOkResponse({ type: ExecutorResponseDto })
   @ApiResponse({ status: 404, description: "Executor not found" })
   findOne(@Param("id") id: string) {
     return this.svc.findOne(id);
@@ -981,6 +1016,7 @@ export class ExecutorController {
   @ApiBearerAuth("JWT")
   @UseGuards(JwtAuthGuard)
   @Patch(":id")
+  @ApiOkResponse({ type: ExecutorResponseDto })
   // N-02③（ADR-013 2026-10-02 温和下放）：ADMIN 或所属项目 editor+ 可改元
   // 数据——RolesGuard 元数据退场，判定下沉 assertCanManageMetadata（rotate-
   // token / set-offline / DELETE 仍 @Roles(ADMIN) 不变）。授权形态按 A2 纪律
@@ -992,7 +1028,6 @@ export class ExecutorController {
       "Update executor group, tags, description, and max concurrent tasks. Requires ADMIN, or editor+ role on the executor's project.",
   })
   @ApiParam({ name: "id", description: "Executor ID" })
-  @ApiResponse({ status: 200, description: "Updated successfully" })
   @ApiBody({
     description: "Update parameters",
     schema: {
@@ -1046,6 +1081,11 @@ export class ExecutorController {
     description:
       "Dynamically update executor config without restart. Executor must be online. Requires ADMIN, or editor+ role on the executor's project.",
   })
+  @ApiCreatedResponse({
+    type: ExecutorReloadConfigResponseDto,
+    description:
+      "pull 模式 = {queued,commandId,message}；push 模式 = 执行器自身响应原样透传（additionalProperties）",
+  })
   @ApiParam({ name: "id", description: "Executor ID" })
   @ApiBody({
     description: "Config parameters",
@@ -1058,7 +1098,6 @@ export class ExecutorController {
       },
     },
   })
-  @ApiResponse({ status: 200, description: "Config pushed successfully" })
   // 503/502 而非 401：这些是「执行器不可达 / 拒收推送」的**投递**失败，不是
   // 调用方的会话失效。回 401 会让 admin-web 的拦截器登出管理员（见下方
   // reloadConfig 内的注释）。
@@ -1327,15 +1366,10 @@ export class ExecutorController {
       },
     },
   })
-  @ApiResponse({
-    status: 201,
-    description: "Token obtained (or reused) successfully",
-    schema: {
-      example: {
-        token: "dynamic-token-value",
-        tokenHash: "$2b$12$bcrypt-hash-of-the-token",
-      },
-    },
+  @ApiCreatedResponse({
+    type: ExecutorTokenResponseDto,
+    description:
+      "Token obtained (or reused) successfully — R9 idempotent issuance",
   })
   @ApiResponse({ status: 401, description: "Invalid shared token" })
   async getToken(
@@ -1409,8 +1443,11 @@ export class ExecutorController {
     description:
       "Admin: mark a specific executor as offline by ID (does not interrupt running tasks; use for stale records after crash).",
   })
+  @ApiCreatedResponse({
+    type: ExecutorResponseDto,
+    description: "offlineReason=manual 的执行器行（POST 默认 201）",
+  })
   @ApiParam({ name: "id", description: "Executor ID" })
-  @ApiResponse({ status: 200, description: "Updated executor entity" })
   @ApiResponse({ status: 404, description: "Executor not found" })
   setOffline(@Param("id") id: string) {
     return this.svc.setOfflineById(id);
@@ -1432,8 +1469,8 @@ export class ExecutorController {
       "pending pull-queue depth.",
   })
   @ApiParam({ name: "id", description: "Executor ID" })
-  @ApiResponse({ status: 200, description: "Removal impact summary" })
   @ApiResponse({ status: 404, description: "Executor not found" })
+  @ApiOkResponse({ type: ExecutorRemovalImpactResponseDto })
   removalImpact(@Param("id") id: string) {
     return this.svc.describeRemovalImpact(id);
   }
@@ -1441,6 +1478,7 @@ export class ExecutorController {
   @ApiBearerAuth("JWT")
   @UseGuards(JwtAuthGuard)
   @Delete(":id")
+  @ApiResponse({ status: 204, description: "Removed (no content)" })
   @HttpCode(HttpStatus.NO_CONTENT)
   // W2: ADMIN-only destructive removal.
   @Roles(UserRole.ADMIN)
@@ -1469,6 +1507,10 @@ export class ExecutorController {
   @ApiBearerAuth("JWT")
   @UseGuards(JwtAuthGuard)
   @Get(":id/executions")
+  @ApiOkResponse({
+    type: ExecutorExecutionsResponseDto,
+    description: "裸 {total,items} 分页",
+  })
   @ApiOperation({
     summary: "Get executor task execution history",
     description:

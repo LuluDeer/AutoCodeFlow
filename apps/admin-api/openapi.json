@@ -2991,8 +2991,15 @@
           }
         },
         "responses": {
-          "200": {
-            "description": "Heartbeat updated"
+          "201": {
+            "description": "Saved executor + callback-auth secret + version-gate readings (POST default 201)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecutorHeartbeatResponseDto"
+                }
+              }
+            }
           },
           "401": {
             "description": "Invalid executor token"
@@ -3031,7 +3038,14 @@
         },
         "responses": {
           "200": {
-            "description": "Dispatch payload or empty"
+            "description": "task=null when nothing queued within waitMs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecutorPullResponseDto"
+                }
+              }
+            }
           },
           "401": {
             "description": "Invalid executor token"
@@ -3059,7 +3073,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Result recorded"
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecutorCommandResultResponseDto"
+                }
+              }
+            }
           },
           "401": {
             "description": "Invalid executor token"
@@ -3332,7 +3353,14 @@
         "parameters": [],
         "responses": {
           "200": {
-            "description": "Executor picker options with explicit truncation flag"
+            "description": "Executor picker options with explicit truncation flag\n\ntruncated=true 时 items 是前缀、total 是真实总数",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecutorPickerResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -3392,7 +3420,14 @@
         "parameters": [],
         "responses": {
           "200": {
-            "description": "Shell script (text/plain)"
+            "description": "Shell script (text/plain)\n\nshell script text (Res passthrough)",
+            "content": {
+              "text/x-shellscript": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "summary": "Download executor install script",
@@ -3426,7 +3461,15 @@
         ],
         "responses": {
           "200": {
-            "description": "tar.gz artifact (application/gzip)"
+            "description": "tar.gz artifact (application/gzip)\n\ntar.gz binary (Res passthrough)",
+            "content": {
+              "application/gzip": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
           },
           "401": {
             "description": "Missing / invalid shared token"
@@ -3458,7 +3501,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Executor details"
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecutorResponseDto"
+                }
+              }
+            }
           },
           "404": {
             "description": "Executor not found"
@@ -3509,7 +3559,14 @@
         },
         "responses": {
           "200": {
-            "description": "Updated successfully"
+            "description": "Updated successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecutorResponseDto"
+                }
+              }
+            }
           },
           "403": {
             "description": "Not ADMIN and no editor+ role on the executor's project"
@@ -3557,7 +3614,7 @@
         },
         "responses": {
           "204": {
-            "description": "Executor deleted"
+            "description": "Executor deleted\n\nRemoved (no content)"
           },
           "404": {
             "description": "Executor not found"
@@ -3608,6 +3665,16 @@
         "responses": {
           "200": {
             "description": "Config pushed successfully"
+          },
+          "201": {
+            "description": "pull 模式 = {queued,commandId,message}；push 模式 = 执行器自身响应原样透传（additionalProperties）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecutorReloadConfigResponseDto"
+                }
+              }
+            }
           },
           "404": {
             "description": "Executor not found"
@@ -3719,14 +3786,11 @@
         },
         "responses": {
           "201": {
-            "description": "Token obtained (or reused) successfully",
+            "description": "Token obtained (or reused) successfully — R9 idempotent issuance",
             "content": {
               "application/json": {
                 "schema": {
-                  "example": {
-                    "token": "dynamic-token-value",
-                    "tokenHash": "$2b$12$bcrypt-hash-of-the-token"
-                  }
+                  "$ref": "#/components/schemas/ExecutorTokenResponseDto"
                 }
               }
             }
@@ -3809,6 +3873,16 @@
         "responses": {
           "200": {
             "description": "Updated executor entity"
+          },
+          "201": {
+            "description": "offlineReason=manual 的执行器行（POST 默认 201）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecutorResponseDto"
+                }
+              }
+            }
           },
           "404": {
             "description": "Executor not found"
@@ -3933,7 +4007,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Execution record list"
+            "description": "Execution record list\n\n裸 {total,items} 分页",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecutorExecutionsResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -5477,7 +5558,14 @@
         "parameters": [],
         "responses": {
           "200": {
-            "description": "Prometheus text exposition format"
+            "description": "Prometheus text exposition format",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "404": {
             "description": "Endpoint disabled via METRICS_PROMETHEUS_ENABLED=false"
@@ -5500,7 +5588,14 @@
         "parameters": [],
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetricsSummaryResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -5528,7 +5623,17 @@
         ],
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/MetricsTrendRowDto"
+                  }
+                }
+              }
+            }
           }
         },
         "security": [
@@ -5547,7 +5652,17 @@
         "parameters": [],
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/MetricsExecutorStatsRowDto"
+                  }
+                }
+              }
+            }
           }
         },
         "security": [
@@ -5566,7 +5681,17 @@
         "parameters": [],
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/MetricsRecentFailureDto"
+                  }
+                }
+              }
+            }
           }
         },
         "security": [
@@ -5585,7 +5710,14 @@
         "parameters": [],
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetricsSchedulerResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -5605,7 +5737,14 @@
         "parameters": [],
         "responses": {
           "200": {
-            "description": ""
+            "description": "Server-Sent Events stream (Res passthrough; envelope interceptor bypassed)",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -5626,7 +5765,14 @@
         "parameters": [],
         "responses": {
           "200": {
-            "description": ""
+            "description": "Server-Sent Events stream (Res passthrough; envelope interceptor bypassed)",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -12375,6 +12521,253 @@
           "address"
         ]
       },
+      "ExecutorHeartbeatResponseDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "appName": {
+            "type": "string",
+            "description": "Executor app name (per-process registration key)"
+          },
+          "address": {
+            "type": "string",
+            "description": "http://host:port, globally unique"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "online",
+              "offline"
+            ]
+          },
+          "offlineReason": {
+            "type": "string",
+            "description": "Why it went offline (null while online)",
+            "nullable": true,
+            "enum": [
+              "manual",
+              "stale_timeout"
+            ]
+          },
+          "consecutiveHeartbeatMisses": {
+            "type": "number",
+            "description": "Consecutive missed/failed heartbeats (stale sweep input)"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "python",
+              "node",
+              "universal"
+            ]
+          },
+          "executorVersion": {
+            "type": "string",
+            "description": "Self-reported executor package version",
+            "nullable": true
+          },
+          "protocolVersion": {
+            "type": "number",
+            "description": "Protocol version negotiated at register (pull control-plane gate)",
+            "nullable": true
+          },
+          "dispatchMode": {
+            "type": "string",
+            "description": "push = platform dials the executor; pull = executor long-polls (NAT-bound)",
+            "enum": [
+              "push",
+              "pull"
+            ]
+          },
+          "capabilities": {
+            "description": "Declared runtime capability domains",
+            "nullable": true,
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "lastHeartbeat": {
+            "format": "date-time",
+            "type": "string",
+            "description": "Last accepted heartbeat",
+            "nullable": true
+          },
+          "executorStartedAt": {
+            "format": "date-time",
+            "type": "string",
+            "description": "Executor process start time (restart detection)",
+            "nullable": true
+          },
+          "executorStartupId": {
+            "type": "string",
+            "description": "Per-process instance id (idempotent token issuance)",
+            "nullable": true
+          },
+          "deviceFingerprint": {
+            "type": "string",
+            "description": "Stable device identity across address changes",
+            "nullable": true
+          },
+          "runningTaskCount": {
+            "type": "number",
+            "description": "Currently running tasks (includes reserved-but-unclaimed pull slots)"
+          },
+          "cpuUsage": {
+            "type": "number",
+            "nullable": true
+          },
+          "memUsage": {
+            "type": "number",
+            "nullable": true
+          },
+          "diskUsage": {
+            "type": "number",
+            "nullable": true
+          },
+          "networkLatency": {
+            "type": "number",
+            "description": "ms",
+            "nullable": true
+          },
+          "totalTaskCount": {
+            "type": "number"
+          },
+          "failedTaskCount": {
+            "type": "number"
+          },
+          "maxConcurrentTasks": {
+            "type": "number",
+            "description": "Dispatch gate capacity; null = unlimited",
+            "nullable": true
+          },
+          "runningExecutionIds": {
+            "description": "Execution ids currently claimed by this executor (E-01-RPT liveness report)",
+            "nullable": true,
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "reservedSlots": {
+            "type": "number",
+            "description": "Pull slots reserved but not yet claimed (display/alert only — NOT a dispatch gate)",
+            "nullable": true
+          },
+          "deadLetterCount": {
+            "type": "number",
+            "description": "Control-plane commands parked in the dead-letter queue",
+            "nullable": true
+          },
+          "interpreters": {
+            "type": "array",
+            "description": "Interpreter pool reported by the executor (D5: null = never reported, [] = reported empty)",
+            "nullable": true,
+            "items": {
+              "type": "object",
+              "properties": {
+                "version": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "available": {
+                  "type": "boolean"
+                },
+                "discoveredAt": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "version"
+              ]
+            }
+          },
+          "groupName": {
+            "type": "string",
+            "nullable": true
+          },
+          "tags": {
+            "nullable": true,
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "description": {
+            "type": "string",
+            "nullable": true
+          },
+          "projectId": {
+            "type": "string",
+            "nullable": true,
+            "format": "uuid"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "tokenHash": {
+            "type": "string",
+            "description": "Callback-auth secret for this executor (machine face: the token-authed holder fetches it to sign execution callbacks)"
+          },
+          "minVersion": {
+            "type": "string",
+            "description": "EXECUTOR_MIN_VERSION gate value; '' = gate disabled",
+            "nullable": true
+          },
+          "versionCompliant": {
+            "type": "boolean",
+            "description": "Whether the self-reported version satisfies the min-version gate"
+          }
+        },
+        "required": [
+          "id",
+          "appName",
+          "address",
+          "status",
+          "offlineReason",
+          "consecutiveHeartbeatMisses",
+          "type",
+          "executorVersion",
+          "protocolVersion",
+          "dispatchMode",
+          "capabilities",
+          "lastHeartbeat",
+          "executorStartedAt",
+          "executorStartupId",
+          "deviceFingerprint",
+          "runningTaskCount",
+          "cpuUsage",
+          "memUsage",
+          "diskUsage",
+          "networkLatency",
+          "totalTaskCount",
+          "failedTaskCount",
+          "maxConcurrentTasks",
+          "runningExecutionIds",
+          "reservedSlots",
+          "deadLetterCount",
+          "interpreters",
+          "groupName",
+          "tags",
+          "description",
+          "projectId",
+          "createdAt",
+          "updatedAt",
+          "tokenHash",
+          "minVersion",
+          "versionCompliant"
+        ]
+      },
       "ExecutorPullDto": {
         "type": "object",
         "properties": {
@@ -12396,6 +12789,50 @@
         },
         "required": [
           "address"
+        ]
+      },
+      "ExecutorPullResponseDto": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "type": "object",
+            "description": "Dispatch payload (ExecuteRequest shape built by the pull service) or null when nothing queued",
+            "nullable": true,
+            "additionalProperties": true
+          },
+          "dispatchMode": {
+            "type": "string",
+            "enum": [
+              "push",
+              "pull"
+            ]
+          },
+          "commands": {
+            "type": "array",
+            "description": "Only on pull-mode executors with control-plane protocol support (ARCH-33)",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          }
+        },
+        "required": [
+          "task",
+          "dispatchMode"
+        ]
+      },
+      "ExecutorCommandResultResponseDto": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          }
+        },
+        "required": [
+          "ok"
         ]
       },
       "TerminalStateItemDto": {
@@ -12454,6 +12891,356 @@
         "required": [
           "items",
           "serverTime"
+        ]
+      },
+      "ExecutorPickerItemDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "appName": {
+            "type": "string"
+          },
+          "address": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "online",
+              "offline"
+            ]
+          },
+          "runningTaskCount": {
+            "type": "number"
+          },
+          "maxConcurrentTasks": {
+            "type": "number",
+            "nullable": true
+          }
+        },
+        "required": [
+          "id",
+          "appName",
+          "address",
+          "status",
+          "runningTaskCount",
+          "maxConcurrentTasks"
+        ]
+      },
+      "ExecutorPickerResponseDto": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ExecutorPickerItemDto"
+            }
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "True when the cap hit — items are a prefix, total is the real count"
+          },
+          "total": {
+            "type": "number"
+          },
+          "limit": {
+            "type": "number",
+            "description": "The applied cap"
+          }
+        },
+        "required": [
+          "items",
+          "truncated",
+          "total",
+          "limit"
+        ]
+      },
+      "ExecutorResponseDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "appName": {
+            "type": "string",
+            "description": "Executor app name (per-process registration key)"
+          },
+          "address": {
+            "type": "string",
+            "description": "http://host:port, globally unique"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "online",
+              "offline"
+            ]
+          },
+          "offlineReason": {
+            "type": "string",
+            "description": "Why it went offline (null while online)",
+            "nullable": true,
+            "enum": [
+              "manual",
+              "stale_timeout"
+            ]
+          },
+          "consecutiveHeartbeatMisses": {
+            "type": "number",
+            "description": "Consecutive missed/failed heartbeats (stale sweep input)"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "python",
+              "node",
+              "universal"
+            ]
+          },
+          "executorVersion": {
+            "type": "string",
+            "description": "Self-reported executor package version",
+            "nullable": true
+          },
+          "protocolVersion": {
+            "type": "number",
+            "description": "Protocol version negotiated at register (pull control-plane gate)",
+            "nullable": true
+          },
+          "dispatchMode": {
+            "type": "string",
+            "description": "push = platform dials the executor; pull = executor long-polls (NAT-bound)",
+            "enum": [
+              "push",
+              "pull"
+            ]
+          },
+          "capabilities": {
+            "description": "Declared runtime capability domains",
+            "nullable": true,
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "lastHeartbeat": {
+            "format": "date-time",
+            "type": "string",
+            "description": "Last accepted heartbeat",
+            "nullable": true
+          },
+          "executorStartedAt": {
+            "format": "date-time",
+            "type": "string",
+            "description": "Executor process start time (restart detection)",
+            "nullable": true
+          },
+          "executorStartupId": {
+            "type": "string",
+            "description": "Per-process instance id (idempotent token issuance)",
+            "nullable": true
+          },
+          "deviceFingerprint": {
+            "type": "string",
+            "description": "Stable device identity across address changes",
+            "nullable": true
+          },
+          "runningTaskCount": {
+            "type": "number",
+            "description": "Currently running tasks (includes reserved-but-unclaimed pull slots)"
+          },
+          "cpuUsage": {
+            "type": "number",
+            "nullable": true
+          },
+          "memUsage": {
+            "type": "number",
+            "nullable": true
+          },
+          "diskUsage": {
+            "type": "number",
+            "nullable": true
+          },
+          "networkLatency": {
+            "type": "number",
+            "description": "ms",
+            "nullable": true
+          },
+          "totalTaskCount": {
+            "type": "number"
+          },
+          "failedTaskCount": {
+            "type": "number"
+          },
+          "maxConcurrentTasks": {
+            "type": "number",
+            "description": "Dispatch gate capacity; null = unlimited",
+            "nullable": true
+          },
+          "runningExecutionIds": {
+            "description": "Execution ids currently claimed by this executor (E-01-RPT liveness report)",
+            "nullable": true,
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "reservedSlots": {
+            "type": "number",
+            "description": "Pull slots reserved but not yet claimed (display/alert only — NOT a dispatch gate)",
+            "nullable": true
+          },
+          "deadLetterCount": {
+            "type": "number",
+            "description": "Control-plane commands parked in the dead-letter queue",
+            "nullable": true
+          },
+          "interpreters": {
+            "type": "array",
+            "description": "Interpreter pool reported by the executor (D5: null = never reported, [] = reported empty)",
+            "nullable": true,
+            "items": {
+              "type": "object",
+              "properties": {
+                "version": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "available": {
+                  "type": "boolean"
+                },
+                "discoveredAt": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "version"
+              ]
+            }
+          },
+          "groupName": {
+            "type": "string",
+            "nullable": true
+          },
+          "tags": {
+            "nullable": true,
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "description": {
+            "type": "string",
+            "nullable": true
+          },
+          "projectId": {
+            "type": "string",
+            "nullable": true,
+            "format": "uuid"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "appName",
+          "address",
+          "status",
+          "offlineReason",
+          "consecutiveHeartbeatMisses",
+          "type",
+          "executorVersion",
+          "protocolVersion",
+          "dispatchMode",
+          "capabilities",
+          "lastHeartbeat",
+          "executorStartedAt",
+          "executorStartupId",
+          "deviceFingerprint",
+          "runningTaskCount",
+          "cpuUsage",
+          "memUsage",
+          "diskUsage",
+          "networkLatency",
+          "totalTaskCount",
+          "failedTaskCount",
+          "maxConcurrentTasks",
+          "runningExecutionIds",
+          "reservedSlots",
+          "deadLetterCount",
+          "interpreters",
+          "groupName",
+          "tags",
+          "description",
+          "projectId",
+          "createdAt",
+          "updatedAt"
+        ]
+      },
+      "ExecutorReloadConfigResponseDto": {
+        "type": "object",
+        "properties": {
+          "queued": {
+            "type": "boolean",
+            "description": "true = pull-mode: queued, applied on next poll (~1s)"
+          },
+          "commandId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "message": {
+            "type": "string"
+          },
+          "executorResponse": {
+            "type": "object",
+            "description": "push-mode: the executor's own api/config/reload response body, passed through verbatim",
+            "additionalProperties": true
+          }
+        }
+      },
+      "ExecutorTokenResponseDto": {
+        "type": "object",
+        "properties": {
+          "token": {
+            "type": "string",
+            "description": "Plaintext token (shown per fetch; rotation rules per R9)"
+          },
+          "tokenHash": {
+            "type": "string",
+            "description": "Stored bcrypt/sha hash for verification"
+          }
+        },
+        "required": [
+          "token",
+          "tokenHash"
+        ]
+      },
+      "ExecutorExecutionsResponseDto": {
+        "type": "object",
+        "properties": {
+          "total": {
+            "type": "number"
+          },
+          "items": {
+            "type": "array",
+            "description": "TaskExecution rows, newest first (heavy text columns NOT excluded on this face)"
+          }
+        },
+        "required": [
+          "total",
+          "items"
         ]
       },
       "SendNotificationDto": {
@@ -14149,6 +14936,263 @@
           "packageId",
           "name",
           "version"
+        ]
+      },
+      "MetricsSummaryResponseDto": {
+        "type": "object",
+        "properties": {
+          "totalTasks": {
+            "type": "number"
+          },
+          "totalExecutors": {
+            "type": "number"
+          },
+          "onlineExecutors": {
+            "type": "number",
+            "description": "Executors with status=online"
+          },
+          "todayRuns": {
+            "type": "number",
+            "description": "Executions created since local midnight"
+          },
+          "executions": {
+            "type": "object",
+            "description": "Status counts over the aggregation window",
+            "properties": {
+              "total": {
+                "type": "number"
+              },
+              "success": {
+                "type": "number"
+              },
+              "failed": {
+                "type": "number"
+              },
+              "running": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "total",
+              "success",
+              "failed",
+              "running"
+            ]
+          },
+          "successRate": {
+            "type": "number",
+            "description": "Percent (two decimals), 0 when no runs"
+          },
+          "avgDurationMs": {
+            "type": "number",
+            "description": "Mean duration ms of successful runs in the window"
+          }
+        },
+        "required": [
+          "totalTasks",
+          "totalExecutors",
+          "onlineExecutors",
+          "todayRuns",
+          "successRate",
+          "avgDurationMs"
+        ]
+      },
+      "MetricsTrendRowDto": {
+        "type": "object",
+        "properties": {
+          "date": {
+            "type": "string",
+            "description": "Local day bucket (ISO yyyy-mm-dd of createdAt)"
+          },
+          "success": {
+            "type": "number"
+          },
+          "failed": {
+            "type": "number"
+          },
+          "timeout": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "date",
+          "success",
+          "failed",
+          "timeout"
+        ]
+      },
+      "MetricsExecutorStatsRowDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "appName": {
+            "type": "string"
+          },
+          "address": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "online",
+              "offline"
+            ]
+          },
+          "cpuUsage": {
+            "type": "number",
+            "nullable": true
+          },
+          "memUsage": {
+            "type": "number",
+            "nullable": true
+          },
+          "runningTaskCount": {
+            "type": "number"
+          },
+          "lastHeartbeat": {
+            "format": "date-time",
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "required": [
+          "id",
+          "appName",
+          "address",
+          "status",
+          "cpuUsage",
+          "memUsage",
+          "runningTaskCount",
+          "lastHeartbeat"
+        ]
+      },
+      "MetricsRecentFailureDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "taskId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "taskName": {
+            "type": "string"
+          },
+          "errorMessage": {
+            "type": "string",
+            "nullable": true
+          },
+          "failureReason": {
+            "type": "string",
+            "description": "Classified failure token",
+            "nullable": true
+          },
+          "exitCode": {
+            "type": "number",
+            "description": "Raw exit code reported by the executor (observable backfill)",
+            "nullable": true
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "duration": {
+            "type": "number",
+            "nullable": true
+          }
+        },
+        "required": [
+          "id",
+          "taskId",
+          "taskName",
+          "errorMessage",
+          "failureReason",
+          "exitCode",
+          "createdAt",
+          "duration"
+        ]
+      },
+      "MetricsSchedulerResponseDto": {
+        "type": "object",
+        "properties": {
+          "counters": {
+            "type": "object",
+            "description": "Raw scheduler metric counters snapshot (SchedulerMetricsSnapshot)",
+            "additionalProperties": {
+              "type": "number"
+            }
+          },
+          "derived": {
+            "type": "object",
+            "description": "Derived ratios/rates computed from counters",
+            "additionalProperties": {
+              "type": "number"
+            }
+          },
+          "queue": {
+            "type": "object",
+            "description": "BullMQ queue depth (null value = Redis unavailable, NOT an empty queue)",
+            "properties": {
+              "waiting": {
+                "type": "number",
+                "nullable": true
+              },
+              "active": {
+                "type": "number",
+                "nullable": true
+              },
+              "delayed": {
+                "type": "number",
+                "nullable": true
+              },
+              "failed": {
+                "type": "number",
+                "nullable": true
+              },
+              "completed": {
+                "type": "number",
+                "nullable": true
+              }
+            },
+            "required": [
+              "waiting",
+              "active",
+              "delayed",
+              "failed",
+              "completed"
+            ]
+          },
+          "scheduler": {
+            "type": "object",
+            "description": "Scheduler liveness snapshot (getStats)",
+            "additionalProperties": true
+          },
+          "instance": {
+            "type": "object",
+            "description": "Emitting process identity",
+            "properties": {
+              "pid": {
+                "type": "number"
+              },
+              "hostname": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "pid",
+              "hostname"
+            ]
+          }
+        },
+        "required": [
+          "counters",
+          "derived",
+          "scheduler"
         ]
       },
       "SystemConfigResponseDto": {

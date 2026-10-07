@@ -12,10 +12,19 @@ import {
   ApiBearerAuth,
   ApiOperation,
   ApiResponse,
+  ApiOkResponse,
 } from "@nestjs/swagger";
 import { Public } from "../../common/decorators/public.decorator";
 import { MetricsScraperAuthGuard } from "./metrics-scraper-auth.guard";
 import { MetricsService } from "./metrics.service";
+// ARCH-23 / N-12（2026-10-07 批）：metrics JSON 读面响应契约。
+import {
+  MetricsExecutorStatsRowDto,
+  MetricsRecentFailureDto,
+  MetricsSchedulerResponseDto,
+  MetricsSummaryResponseDto,
+  MetricsTrendRowDto,
+} from "./dto/metrics-response.dto";
 import { PrometheusMetricsService } from "./prometheus-metrics.service";
 
 @ApiTags("metrics")
@@ -50,6 +59,7 @@ export class MetricsController {
   @ApiResponse({
     status: 200,
     description: "Prometheus text exposition format",
+    content: { "text/plain": { schema: { type: "string" } } },
   })
   @ApiResponse({
     status: 404,
@@ -67,11 +77,13 @@ export class MetricsController {
   }
 
   @Get("summary")
+  @ApiOkResponse({ type: MetricsSummaryResponseDto })
   getSummary() {
     return this.svc.getSummary();
   }
 
   @Get("trend")
+  @ApiOkResponse({ type: [MetricsTrendRowDto] })
   getDailyTrend(@Query("days") days?: string) {
     // Cap at 90 days to prevent full-table scans from unconstrained caller input
     const parsed = days ? parseInt(days, 10) : 7;
@@ -82,17 +94,20 @@ export class MetricsController {
   }
 
   @Get("executors")
+  @ApiOkResponse({ type: [MetricsExecutorStatsRowDto] })
   getExecutorStats() {
     return this.svc.getExecutorStats();
   }
 
   @Get("failures")
+  @ApiOkResponse({ type: [MetricsRecentFailureDto] })
   getRecentFailures() {
     return this.svc.getRecentFailures();
   }
 
   /** R4-§5.5: 调度可观测性（tick / trigger 计数器 + BullMQ 队列深度） */
   @Get("scheduler")
+  @ApiOkResponse({ type: MetricsSchedulerResponseDto })
   getSchedulerMetrics() {
     return this.svc.getSchedulerMetrics();
   }
