@@ -1,11 +1,5 @@
 # Changelog
 
-## Unreleased
-
-### Features
-
-* **mcp-server:** 工具面补齐——E-1 任务导出/导入（`export_task`/`import_task`，导出物逐字透传可直接回灌 import）、CORE-03 模板走服务端端点（新增 `list_task_templates`；`create_task_from_template` 改走 `GET /task-templates` + `POST /task-templates/:id/instantiate`，本地硬编码模板副本移除，历史 template key 入参继续可用）、`get_execution_logs` 补 OBS-03 `level` 过滤透传（52 工具）
-
 ## [1.9.0](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.8.0...v1.9.0) (2026-10-07)
 
 
