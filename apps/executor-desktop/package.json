@@ -1,6 +1,7 @@
 {
   "name": "executor-desktop",
   "version": "1.7.1",
+  "license": "AGPL-3.0-only",
   "author": "kirdeer",
   "description": "AutoCodeFlow Executor Desktop Client",
   "main": "dist/main/index.js",

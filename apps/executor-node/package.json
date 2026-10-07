@@ -1,6 +1,7 @@
 {
   "name": "executor-node",
   "version": "2.0.0",
+  "license": "AGPL-3.0-only",
   "description": "AutoCodeFlow Node.js Executor",
   "main": "dist/main.js",
   "engines": {

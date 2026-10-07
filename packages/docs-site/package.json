@@ -2,6 +2,7 @@
   "name": "autocodeflow-docs-site",
   "version": "1.0.1",
   "private": true,
+  "license": "AGPL-3.0-only",
   "description": "AutoCodeFlow SDK 文档站（VitePress，独立目录不进任何运行时包）——内容重组自 docs/sdk-guide.md、双 SDK README、examples/ 与 packages/contract-fixtures/README.md",
   "scripts": {
     "dev": "vitepress dev",

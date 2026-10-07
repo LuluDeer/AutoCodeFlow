@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "autocodeflow-notify"
 version = "0.2.2"
 description = "AutoCodeFlow notification utilities for task code"
+license = { text = "MIT" }
 requires-python = ">=3.10"
 dependencies = [
     "httpx>=0.25.0",

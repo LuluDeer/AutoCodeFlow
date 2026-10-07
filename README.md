@@ -407,6 +407,18 @@ docker compose exec admin-api npm run migration:run
 > `.turbo/` 状态拖慢后续调用）；任务缓存落在 `.turbo/`（已 gitignore）。CI 侧
 > 不使用 turbo（独立 runner 无本地缓存可复用，收益不成立，见 ARCH-28b §4.2/§6.3）。
 
-## License
+## 开源协议
 
-[MIT](LICENSE) © 2026 LuluDeer
+AutoCodeFlow 自 2026-10 起采用**分组件许可**（此前发布的版本均以 MIT 供用）：
+
+| 范围 | 许可证 |
+|---|---|
+| 平台核心：`apps/` 全部（admin-api · admin-web · executor-node · executor-python · executor-desktop · registry*）与 `packages/docs-site` | [AGPL-3.0-only](LICENSE) |
+| 客户端与生态包：`acf-cli` · `@autocodeflow/sdk` · `autoflow-sdk` · `mcp-server` · `autocodeflow-http/-ai/-notify/-db` | MIT（各包目录内附 `LICENSE`） |
+| 执行器协议契约：`packages/executor-protocol` · `packages/contract-fixtures` | MIT（面向三方执行器实现者开放复用） |
+
+- 平台核心采用 **GNU Affero General Public License v3.0（`AGPL-3.0-only`）**：核心代码的修改版若经网络向用户提供交互，须依第 13 条向这些用户提供对应源码；未修改的自托管部署（含企业内部使用）不产生额外义务。
+- 客户端/SDK 包保持 **MIT**：这些包会被引入用户自有代码与任务脚本，宽松许可是生态可用性的前提。
+- 历史版本（v1.3.0 及更早的 git tag 与 npm 发布物）继续按 MIT 供用；本次变更仅对变更后的版本生效。
+
+© 2026 LuluDeer
