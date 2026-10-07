@@ -23,14 +23,18 @@
 // 即 bundle 必须放在 <X>/dist/，两个 JSON 在 <X>/——脚本据此布局并自检。
 'use strict';
 
-const { execFileSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+// 用 esbuild 的 JS API（buildSync）而非 spawn CLI——三平台 npm 形态不一：
+// Linux 的 .bin/esbuild 是 sh shim、postinstall 后 bin/esbuild 可能被替换为
+// ELF/exe 原生二进制（node 无法 require，spawn 又过不了 Windows 的 sh shim）
+// （desktop-v1.8.0 首发 Windows 出包实测）。API 与 CLI 同核，同版本同参数
+// 产物逐字节一致，字节闸判据不变。
+const esbuild = require('esbuild');
 
 const DESKTOP = path.resolve(__dirname, '..');
 const ENTRY = path.join(DESKTOP, 'src', 'agent-worker', 'main.ts');
 const STAGE = path.join(DESKTOP, 'resources', 'agent-worker');
-const ESBUILD = path.join(DESKTOP, 'node_modules', '.bin', 'esbuild');
 const PW_CORE = path.join(DESKTOP, 'node_modules', 'playwright-core');
 
 function main() {
@@ -45,24 +49,28 @@ function main() {
     }
   }
 
+  if (!esbuild || typeof esbuild.buildSync !== 'function') {
+    console.error(`[bundle-agent-worker] esbuild not resolvable from ${DESKTOP} — npm ci first`);
+    process.exit(1);
+  }
+
   fs.rmSync(STAGE, { recursive: true, force: true });
   fs.mkdirSync(path.join(STAGE, 'dist'), { recursive: true });
 
-  execFileSync(ESBUILD, [
-    ENTRY,
-    '--bundle',
-    '--platform=node',
-    '--format=cjs',
+  esbuild.buildSync({
+    entryPoints: [ENTRY],
     // worker 以 ELECTRON_RUN_AS_NODE 跑纯 Node——worker 内绝不允许真的 require
     // 到 electron；playwright-core 的 Electron 启动器链指到 stub 包（见其头注）。
-    `--alias:electron=${path.join(DESKTOP, 'src', 'agent-worker', 'electron-stub')}`,
+    alias: { electron: path.join(DESKTOP, 'src', 'agent-worker', 'electron-stub') },
     // 可选懒依赖（本机未安装、chromium 路径永不触达）：外置，运行时触达即如实失败。
-    '--external:bufferutil',
-    '--external:utf-8-validate',
-    '--external:chromium-bidi',
-    '--sourcemap',
-    `--outfile=${path.join(STAGE, 'dist', 'index.js')}`,
-  ], { stdio: 'inherit' });
+    external: ['bufferutil', 'utf-8-validate', 'chromium-bidi'],
+    bundle: true,
+    platform: 'node',
+    format: 'cjs',
+    sourcemap: true,
+    outfile: path.join(STAGE, 'dist', 'index.js'),
+    logLevel: 'info',
+  });
 
   for (const f of ['browsers.json', 'package.json']) {
     fs.copyFileSync(path.join(PW_CORE, f), path.join(STAGE, f));
