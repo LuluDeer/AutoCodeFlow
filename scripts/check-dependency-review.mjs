@@ -67,6 +67,28 @@ export const EXEMPTIONS = [
     expiredAction: 'DO_NOT_OVERRIDE（N-13 实测会 break require("minio")）；续期豁免或换 S3 客户端',
     probe: 'stream-json',
   },
+  {
+    ghsa: 'GHSA-hqr4-qq8f-hg3x',
+    package: 'stream-json',
+    severity: 'moderate',
+    chain: 'admin-api minio@8.0.7 → stream-json@1.9.1',
+    reason:
+      'JSONC 解析器/校验器对累积注释每次输入整段重扫（O(n²)）——修复版 3.5.1 在 v3，与 GHSA-528h 同一不可 override 约束；通知链仅消费 admin 私服内部 MinIO 事件，非公网输入面',
+    reviewBy: '2026-12-30',
+    expiredAction: '随 GHSA-528h 同批复查：续期豁免或换 S3 客户端，不得 override',
+    probe: 'stream-json',
+  },
+  {
+    ghsa: 'GHSA-mjw6-4jj6-33hc',
+    package: 'stream-json',
+    severity: 'moderate',
+    chain: 'admin-api minio@8.0.7 → stream-json@1.9.1',
+    reason:
+      'Assembler 原型污染（this.current[this.key] 写在 Object.prototype 上）——修复版 3.6.0 在 v3，与 GHSA-528h 同一不可 override 约束；通知链仅消费 admin 私服内部 MinIO 事件，非公网输入面',
+    reviewBy: '2026-12-30',
+    expiredAction: '随 GHSA-528h 同批复查：续期豁免或换 S3 客户端，不得 override',
+    probe: 'stream-json',
+  },
 ];
 
 /** 从 CI 的 npm-audit job 解析豁免 GHSA 与复查日期（单一事实源=CI 文件）。 */

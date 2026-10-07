@@ -415,9 +415,19 @@ jobs:
           #         第 32 行**无条件 eager require** notification.js，于是
           #         `require('minio')` 本身即抛 MODULE_NOT_FOUND，整条 S3 日志链全废。
           #         到期动作=续期豁免或换 S3 客户端，不得 override）
+          # GHSA-hqr4-qq8f-hg3x  stream-json ≤3.5.0 JSONC 解析器对累积注释整段重扫
+          # GHSA-mjw6-4jj6-33hc  stream-json <3.6.0 Assembler 原型污染
+          #   （this.current[this.key] 写在 Object.prototype 上）
+          #   链：同上（admin-api minio@8.0.7→stream-json@1.9.1）
+          #   原因：修复版均在 v3（3.5.1/3.6.0），与 GHSA-528h 同一不可 override
+          #         约束；通知链仅消费 admin 私服内部 MinIO 事件，非公网输入面。
+          #   复查：2026-12-30（随 GHSA-528h 同批复查；到期动作=续期豁免或换 S3
+          #         客户端，不得 override）
           #
           echo "Still failing after retries — matching against exemption list (SEC-06)..."
-          known='GHSA-528h-pc64-c93x'
+          known='GHSA-528h-pc64-c93x
+          GHSA-hqr4-qq8f-hg3x
+          GHSA-mjw6-4jj6-33hc'
           # 提取 JSON 中所有 moderate 及以上 advisory 的 GHSA id（去重排序）
           found=$(node -e '
             const a = require("/tmp/audit.json");
