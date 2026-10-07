@@ -7,6 +7,7 @@
  */
 
 import * as assert from 'node:assert';
+import * as path from 'node:path';
 import {
   buildAgentWorkerSpawnEnv,
   resolveAgentBrowsersPath,
@@ -14,13 +15,17 @@ import {
 } from './agent-worker-paths';
 
 function main(): void {
+  // 期望值一律用 path.join 构造（与实现的平台语义一致）：本 selftest 钉的是
+  // 「落点 = 契约段拼接」（agent-worker/dist/index.js 在 resourcesPath/appPath
+  // 下），不是分隔符形态——win32 下 path.join 产出反斜杠，硬编码 '/' 会在
+  // Windows runner 上假红（desktop-v1.8.0 出包实测）。
   // ── 打包态落点：resourcesPath/agent-worker/dist/index.js ────────────
   const packaged = resolveAgentWorkerEntry({
     isPackaged: true,
     resourcesPath: '/opt/App/resources',
     appPath: '/opt/App/resources/app.asar',
   });
-  assert.strictEqual(packaged, '/opt/App/resources/agent-worker/dist/index.js');
+  assert.strictEqual(packaged, path.join('/opt/App/resources', 'agent-worker', 'dist', 'index.js'));
 
   // ── dev 态落点：appPath/resources/agent-worker/dist/index.js ────────
   const dev = resolveAgentWorkerEntry({
@@ -28,12 +33,15 @@ function main(): void {
     resourcesPath: '/repo/node_modules/electron/dist',
     appPath: '/repo/apps/executor-desktop',
   });
-  assert.strictEqual(dev, '/repo/apps/executor-desktop/resources/agent-worker/dist/index.js');
+  assert.strictEqual(
+    dev,
+    path.join('/repo/apps/executor-desktop', 'resources', 'agent-worker', 'dist', 'index.js'),
+  );
 
   // ── 浏览器目录：打包态且存在才解析，其余一律 null ────────────────────
   assert.strictEqual(
     resolveAgentBrowsersPath({ isPackaged: true, resourcesPath: '/r', appPath: '/a' }, () => true),
-    '/r/playwright',
+    path.join('/r', 'playwright'),
   );
   assert.strictEqual(
     // ACF_BUNDLE_PLAYWRIGHT=0 的本地打包：目录不存在 → null（不注入 env）
@@ -53,7 +61,7 @@ function main(): void {
     () => true,
   );
   assert.strictEqual(envWithBrowsers.ELECTRON_RUN_AS_NODE, '1');
-  assert.strictEqual(envWithBrowsers.PLAYWRIGHT_BROWSERS_PATH, '/r/playwright');
+  assert.strictEqual(envWithBrowsers.PLAYWRIGHT_BROWSERS_PATH, path.join('/r', 'playwright'));
   assert.strictEqual(envWithBrowsers.PATH, '/bin', '基础 env 必须透传');
 
   const envWithoutBrowsers = buildAgentWorkerSpawnEnv(
