@@ -46,6 +46,11 @@ import { getEnvVar } from "../../config/env";
 import { AUTH_THROTTLE } from "../../config/throttle-profiles";
 import { WriteGuard } from "../../common/decorators/write-guard.decorator";
 import { SessionRevokeResponseDto } from "./dto/misc-response.dto";
+import {
+  AuthLogoutDto,
+  AuthProfileDto,
+  AuthTokensDto,
+} from "../../common/dto/misc-2xx-response.dto";
 
 /** SEC-03: extract session id (sid) claim from the verified access token. */
 function sidOf(req: Request): string | null {
@@ -117,15 +122,28 @@ export class AuthController {
       // 杜绝再次漂移。旧文案硬编码 "Max5 attempts per minute" 与实际 20 不符。
       `Login with username and password, returns Access Token and Refresh Token. Max ${LOGIN_THROTTLE_LIMIT} attempts per minute.`,
   })
-  @ApiResponse({
-    status: 200,
-    description: "Login successful, returns accessToken and refreshToken",
-    schema: { example: { accessToken: "eyJ...", refreshToken: "eyJ..." } },
-  })
   @ApiResponse({ status: 401, description: "Invalid username or password" })
   @ApiResponse({
     status: 429,
     description: "Too many requests, rate limit exceeded",
+  })
+  @ApiResponse({
+    status: 200,
+    description: "双 token 或 {totpRequired:true}（SEC-03 二段登录）",
+    content: {
+      "application/json": {
+        schema: {
+          oneOf: [
+            { $ref: "#/components/schemas/AuthTokensDto" },
+            {
+              type: "object",
+              properties: { totpRequired: { type: "boolean", enum: [true] } },
+              required: ["totpRequired"],
+            },
+          ],
+        },
+      },
+    },
   })
   async login(@Body() loginDto: LoginDto, @Req() req: Request) {
     const result = await this.authService.login(loginDto, requestMeta(req));
@@ -150,15 +168,14 @@ export class AuthController {
     reason: "凭 refresh token 换新会话，access token 此时已过期",
   })
   @Post("refresh")
+  @ApiOkResponse({
+    type: AuthTokensDto,
+    description: "token rotation：旧 refresh 立即失效",
+  })
   @ApiOperation({
     summary: "Refresh token",
     description:
       "Use Refresh Token to obtain new Access Token and Refresh Token (token rotation). Old Refresh Token is immediately invalidated.",
-  })
-  @ApiResponse({
-    status: 200,
-    description: "Token refreshed successfully",
-    schema: { example: { accessToken: "eyJ...", refreshToken: "eyJ..." } },
   })
   @ApiResponse({
     status: 401,
@@ -173,15 +190,11 @@ export class AuthController {
   @WriteGuard("session", { scope: "authenticated" })
   @Post("logout")
   @ApiBearerAuth("JWT")
+  @ApiOkResponse({ type: AuthLogoutDto })
   @ApiOperation({
     summary: "Logout (revoke all Refresh Tokens)",
     description:
       "Logout current user and revoke all valid Refresh Tokens to prevent token reuse.",
-  })
-  @ApiResponse({
-    status: 200,
-    description: "Logout successful",
-    schema: { example: { success: true } },
   })
   @ApiResponse({ status: 401, description: "Unauthenticated" })
   async logout(@CurrentUser() user: AuthUser, @Req() req: Request) {
@@ -231,10 +244,9 @@ export class AuthController {
     description:
       "Return basic info of the current logged-in user including ID, username, and roles.",
   })
-  @ApiResponse({
-    status: 200,
-    description: "User info",
-    schema: { example: { id: 1, username: "admin", roles: ["admin"] } },
+  @ApiOkResponse({
+    type: AuthProfileDto,
+    description: "AuthUser 原样（roles 不在 AuthUser——role 单值）",
   })
   @ApiResponse({ status: 401, description: "Unauthenticated" })
   getProfile(@CurrentUser() user: AuthUser) {
@@ -334,14 +346,11 @@ export class AuthController {
       "Re-validates username+password, verifies the 6-digit TOTP code, and issues " +
       "accessToken/refreshToken. Called after /auth/login returned { totpRequired: true }.",
   })
-  @ApiResponse({
-    status: 200,
-    description: "Tokens issued",
-    schema: {
-      example: { accessToken: "eyJ...", refreshToken: "eyJ..." },
-    },
-  })
   @ApiResponse({ status: 401, description: "Invalid credentials or TOTP code" })
+  @ApiOkResponse({
+    type: AuthTokensDto,
+    description: "双 token（二段登录成功）",
+  })
   totpVerifyLogin(@Body() dto: TotpVerifyDto, @Req() req: Request) {
     return this.authService.totpVerifyLogin({
       username: dto.username,

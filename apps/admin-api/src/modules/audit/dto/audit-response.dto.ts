@@ -40,7 +40,9 @@ export class AuditLogDto {
   @ApiProperty({ nullable: true })
   ip: string | null;
 
-  @ApiProperty({ description: "Write outcome recorded by the audit sink (default 'success')" })
+  @ApiProperty({
+    description: "Write outcome recorded by the audit sink (default 'success')",
+  })
   result: string;
 
   @ApiProperty()

@@ -47,6 +47,7 @@ import {
   ExecutorPullResponseDto,
   ExecutorRemovalImpactResponseDto,
   ExecutorReloadConfigResponseDto,
+  ExecutorRegisterResponseDto,
   ExecutorResponseDto,
   ExecutorTokenResponseDto,
 } from "./dto/executor-response.dto";
@@ -108,6 +109,15 @@ import {
 // python_task_multiversion（WS2 · CONTRACT §2.2）：上报面解释器清单条目的
 // 结构类型（与 service / 实体同一份定义，避免内联字面量漂移）。
 import type { ExecutorInterpreter } from "./interpreter-match.util";
+import {
+  ExecutorGroupsDto,
+  ExecutorInstallCmdDto,
+  ExecutorMetricsDto,
+  ExecutorOfflineDto,
+  ExecutorRotateTokenDto,
+  ExecutorRuntimeConfigDto,
+  ExecutorTagsDto,
+} from "../../common/dto/misc-2xx-response.dto";
 
 /**
  * R11: true when the executor answered a reload-config push with an HTTP 401
@@ -203,21 +213,11 @@ export class ExecutorController {
     description: "Registration info",
     type: ExecutorRegisterDto,
   })
-  @ApiResponse({
-    status: 200,
-    description: "Registered successfully",
-    schema: {
-      example: {
-        code: 200,
-        message: "success",
-        data: {
-          id: "exec-uuid",
-          address: "192.168.1.100:3002",
-          appName: "executor-node",
-          status: "online",
-        },
-      },
-    },
+  // R7: register 实际 201（POST 无 @HttpCode），example-only 200 是伪覆盖。
+  @ApiCreatedResponse({
+    type: ExecutorRegisterResponseDto,
+    description:
+      "Registered；含 perExecutorToken/tokenHash 回调凭据与 protocolCompliant 协议门禁读数",
   })
   async register(
     @Body()
@@ -731,17 +731,7 @@ export class ExecutorController {
     description:
       "Get list of all executors including online status, group, and tags.",
   })
-  @ApiResponse({
-    status: 200,
-    description: "Executor list",
-    schema: {
-      example: {
-        code: 200,
-        message: "success",
-        data: [],
-      },
-    },
-  })
+  @ApiOkResponse({ type: [ExecutorResponseDto] })
   findAll() {
     return this.svc.findAll();
   }
@@ -749,23 +739,10 @@ export class ExecutorController {
   @ApiBearerAuth("JWT")
   @UseGuards(JwtAuthGuard)
   @Get("groups")
+  @ApiOkResponse({ type: ExecutorGroupsDto })
   @ApiOperation({
     summary: "Get all executor groups",
     description: "Get all executor groups and their executor count statistics.",
-  })
-  @ApiResponse({
-    status: 200,
-    description: "Group list",
-    schema: {
-      example: {
-        code: 200,
-        message: "success",
-        data: [
-          { name: "production", count: 5, onlineCount: 4 },
-          { name: "staging", count: 2, onlineCount: 2 },
-        ],
-      },
-    },
   })
   getGroups() {
     return this.svc.getGroups();
@@ -774,23 +751,10 @@ export class ExecutorController {
   @ApiBearerAuth("JWT")
   @UseGuards(JwtAuthGuard)
   @Get("tags")
+  @ApiOkResponse({ type: ExecutorTagsDto })
   @ApiOperation({
     summary: "Get all executor tags",
     description: "Get all tags used by executors and their statistics.",
-  })
-  @ApiResponse({
-    status: 200,
-    description: "Tag list",
-    schema: {
-      example: {
-        code: 200,
-        message: "success",
-        data: [
-          { name: "nodejs", count: 3 },
-          { name: "python", count: 2 },
-        ],
-      },
-    },
   })
   getTags() {
     return this.svc.getTags();
@@ -811,23 +775,7 @@ export class ExecutorController {
       "align its stale coloring with the backend and warn when the list is " +
       "truncated (listLimit < executorTotal).",
   })
-  @ApiResponse({
-    status: 200,
-    description: "Effective executor runtime config",
-    schema: {
-      example: {
-        code: 200,
-        message: "success",
-        data: {
-          heartbeatIntervalMs: 30000,
-          heartbeatTimeoutMultiplier: 3,
-          heartbeatTimeoutMs: 90000,
-          listLimit: 500,
-          executorTotal: 12,
-        },
-      },
-    },
-  })
+  @ApiOkResponse({ type: ExecutorRuntimeConfigDto })
   getRuntimeConfig() {
     return this.svc.getRuntimeConfig();
   }
@@ -872,25 +820,11 @@ export class ExecutorController {
       "Returns the shell command to install and start the executor on the target machine.",
   })
   @ApiResponse({
-    status: 200,
-    description: "Install command",
-    schema: {
-      example: {
-        code: 200,
-        message: "success",
-        data: {
-          cmd: "curl -fsSL 'http://localhost:3002/api/executors/install.sh' | bash -s -- --api-url 'http://localhost:3002' --secret 'shared-token'",
-          token: "shared-token",
-          adminApiUrl: "http://localhost:3002",
-        },
-      },
-    },
-  })
-  @ApiResponse({
     status: 503,
     description:
       "ADMIN_API_URL is not configured on the server — no usable install command can be generated",
   })
+  @ApiOkResponse({ type: ExecutorInstallCmdDto })
   async getInstallCmd() {
     return await this.svc.getInstallCmd();
   }
@@ -1327,19 +1261,9 @@ export class ExecutorController {
     schema: { example: { reason: "token suspected leaked" } },
     required: false,
   })
-  @ApiResponse({
-    status: 200,
-    description: "Token rotated successfully",
-    schema: {
-      example: {
-        code: 200,
-        message: "success",
-        data: {
-          token: "new-token-value",
-          expiresAt: "2024-01-01T12:00:00Z",
-        },
-      },
-    },
+  @ApiOkResponse({
+    type: ExecutorRotateTokenDto,
+    description: "新凭据一次性回显",
   })
   rotateToken(@Param("id") id: string, @Body() body?: { reason?: string }) {
     return this.svc.rotateToken(id, body?.reason);
@@ -1413,12 +1337,8 @@ export class ExecutorController {
       },
     },
   })
-  @ApiResponse({
-    status: 200,
-    description: "Offline notification successful",
-    schema: { example: { success: true } },
-  })
   @ApiResponse({ status: 401, description: "Invalid executor token" })
+  @ApiOkResponse({ type: ExecutorOfflineDto })
   async offline(
     @Body() body: { address: string },
     @Headers("authorization") auth: string,
@@ -1520,7 +1440,6 @@ export class ExecutorController {
   @ApiQuery({ name: "page", required: false, description: "Page number" })
   // U13: 与实现对齐——本端点收 PaginationDto（page/pageSize），而非 `limit`。
   @ApiQuery({ name: "pageSize", required: false, description: "Page size" })
-  @ApiResponse({ status: 200, description: "Execution record list" })
   getExecutorExecutions(@Param("id") id: string, @Query() p: PaginationDto) {
     return this.svc.getExecutorExecutions(id, p);
   }
@@ -1541,44 +1460,7 @@ export class ExecutorController {
   @ApiParam({ name: "id", description: "Executor ID" })
   // FEAT-04 (append-only): example updated to the real response shape —
   // executor + sevenDayStats + current + history (24h bucketed samples).
-  @ApiResponse({
-    status: 200,
-    description:
-      "Performance metrics with 24h resource-trend history (FEAT-04)",
-    schema: {
-      example: {
-        code: 200,
-        message: "success",
-        data: {
-          executor: {
-            id: "uuid",
-            address: "10.0.0.9:3002",
-            status: "online",
-          },
-          sevenDayStats: {
-            totalExecutions: 1000,
-            successful: 985,
-            failed: 15,
-            successRate: 98.5,
-            averageDurationMs: 1250,
-          },
-          current: {
-            runningTaskCount: 2,
-            cpuUsage: 35.2,
-            memUsage: 61.8,
-          },
-          history: [
-            {
-              timestamp: "2026-09-06T02:00:00.000Z",
-              cpuUsage: 30.1,
-              memUsage: 58.4,
-              runningTaskCount: 1,
-            },
-          ],
-        },
-      },
-    },
-  })
+  @ApiOkResponse({ type: ExecutorMetricsDto })
   getExecutorMetrics(@Param("id") id: string) {
     return this.svc.getExecutorMetrics(id);
   }

@@ -97,7 +97,12 @@ export class ApplicationResponseDto {
   @ApiProperty({ description: "Last update time (ISO-8601)" })
   updatedAt: Date;
 
-  // 注意：**不声明 webhookSecret**——见类头注。
+  @ApiPropertyOptional({
+    description:
+      "R7 实测出现性：create/update 等 save() 回程把 select:false 列 hydrated 成 null 带出；findAll/findById select 读取不含该键。值恒 null（secret 不回传）。首版头注的『不声明』裁定据此修订",
+    nullable: true,
+  })
+  webhookSecret?: string | null;
 }
 
 // ── ARCH-23 / N-12（2026-10-07 批）：Application Management 其余端点契约 ──

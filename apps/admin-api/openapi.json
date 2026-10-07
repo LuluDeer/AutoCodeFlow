@@ -18,14 +18,29 @@
         },
         "responses": {
           "200": {
-            "description": "Login successful, returns accessToken and refreshToken",
+            "description": "双 token 或 {totpRequired:true}（SEC-03 二段登录）",
             "content": {
               "application/json": {
                 "schema": {
-                  "example": {
-                    "accessToken": "eyJ...",
-                    "refreshToken": "eyJ..."
-                  }
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/AuthTokensDto"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "totpRequired": {
+                          "type": "boolean",
+                          "enum": [
+                            true
+                          ]
+                        }
+                      },
+                      "required": [
+                        "totpRequired"
+                      ]
+                    }
+                  ]
                 }
               }
             }
@@ -60,14 +75,11 @@
         },
         "responses": {
           "200": {
-            "description": "Token refreshed successfully",
+            "description": "token rotation：旧 refresh 立即失效",
             "content": {
               "application/json": {
                 "schema": {
-                  "example": {
-                    "accessToken": "eyJ...",
-                    "refreshToken": "eyJ..."
-                  }
+                  "$ref": "#/components/schemas/AuthTokensDto"
                 }
               }
             }
@@ -89,13 +101,11 @@
         "parameters": [],
         "responses": {
           "200": {
-            "description": "Logout successful",
+            "description": "",
             "content": {
               "application/json": {
                 "schema": {
-                  "example": {
-                    "success": true
-                  }
+                  "$ref": "#/components/schemas/AuthLogoutDto"
                 }
               }
             }
@@ -153,17 +163,11 @@
         "parameters": [],
         "responses": {
           "200": {
-            "description": "User info",
+            "description": "AuthUser 原样（roles 不在 AuthUser——role 单值）",
             "content": {
               "application/json": {
                 "schema": {
-                  "example": {
-                    "id": 1,
-                    "username": "admin",
-                    "roles": [
-                      "admin"
-                    ]
-                  }
+                  "$ref": "#/components/schemas/AuthProfileDto"
                 }
               }
             }
@@ -303,14 +307,11 @@
         },
         "responses": {
           "200": {
-            "description": "Tokens issued",
+            "description": "双 token（二段登录成功）",
             "content": {
               "application/json": {
                 "schema": {
-                  "example": {
-                    "accessToken": "eyJ...",
-                    "refreshToken": "eyJ..."
-                  }
+                  "$ref": "#/components/schemas/AuthTokensDto"
                 }
               }
             }
@@ -2950,22 +2951,13 @@
         },
         "responses": {
           "200": {
-            "description": "Callback processed successfully",
+            "description": "逐项受理结果（{executionId, success, error?}）；HTTP 200 由 @HttpCode 决定",
             "content": {
               "application/json": {
                 "schema": {
-                  "example": {
-                    "results": [
-                      {
-                        "executionId": "exec-uuid-1",
-                        "success": true
-                      },
-                      {
-                        "executionId": "exec-uuid-2",
-                        "success": false,
-                        "error": "Execution not found"
-                      }
-                    ]
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/CallbackItemResultDto"
                   }
                 }
               }
@@ -3019,13 +3011,11 @@
         },
         "responses": {
           "200": {
-            "description": "Log chunk persisted",
+            "description": "{count} 落账行数",
             "content": {
               "application/json": {
                 "schema": {
-                  "example": {
-                    "count": 10
-                  }
+                  "$ref": "#/components/schemas/LogChunkAckDto"
                 }
               }
             }
@@ -3072,21 +3062,12 @@
           }
         },
         "responses": {
-          "200": {
-            "description": "Registered successfully",
+          "201": {
+            "description": "Registered；含 perExecutorToken/tokenHash 回调凭据与 protocolCompliant 协议门禁读数",
             "content": {
               "application/json": {
                 "schema": {
-                  "example": {
-                    "code": 200,
-                    "message": "success",
-                    "data": {
-                      "id": "exec-uuid",
-                      "address": "192.168.1.100:3002",
-                      "appName": "executor-node",
-                      "status": "online"
-                    }
-                  }
+                  "$ref": "#/components/schemas/ExecutorRegisterResponseDto"
                 }
               }
             }
@@ -3339,14 +3320,13 @@
         "parameters": [],
         "responses": {
           "200": {
-            "description": "Executor list",
+            "description": "",
             "content": {
               "application/json": {
                 "schema": {
-                  "example": {
-                    "code": 200,
-                    "message": "success",
-                    "data": []
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ExecutorResponseDto"
                   }
                 }
               }
@@ -3371,26 +3351,11 @@
         "parameters": [],
         "responses": {
           "200": {
-            "description": "Group list",
+            "description": "",
             "content": {
               "application/json": {
                 "schema": {
-                  "example": {
-                    "code": 200,
-                    "message": "success",
-                    "data": [
-                      {
-                        "name": "production",
-                        "count": 5,
-                        "onlineCount": 4
-                      },
-                      {
-                        "name": "staging",
-                        "count": 2,
-                        "onlineCount": 2
-                      }
-                    ]
-                  }
+                  "$ref": "#/components/schemas/ExecutorGroupsDto"
                 }
               }
             }
@@ -3414,24 +3379,11 @@
         "parameters": [],
         "responses": {
           "200": {
-            "description": "Tag list",
+            "description": "",
             "content": {
               "application/json": {
                 "schema": {
-                  "example": {
-                    "code": 200,
-                    "message": "success",
-                    "data": [
-                      {
-                        "name": "nodejs",
-                        "count": 3
-                      },
-                      {
-                        "name": "python",
-                        "count": 2
-                      }
-                    ]
-                  }
+                  "$ref": "#/components/schemas/ExecutorTagsDto"
                 }
               }
             }
@@ -3455,21 +3407,11 @@
         "parameters": [],
         "responses": {
           "200": {
-            "description": "Effective executor runtime config",
+            "description": "",
             "content": {
               "application/json": {
                 "schema": {
-                  "example": {
-                    "code": 200,
-                    "message": "success",
-                    "data": {
-                      "heartbeatIntervalMs": 30000,
-                      "heartbeatTimeoutMultiplier": 3,
-                      "heartbeatTimeoutMs": 90000,
-                      "listLimit": 500,
-                      "executorTotal": 12
-                    }
-                  }
+                  "$ref": "#/components/schemas/ExecutorRuntimeConfigDto"
                 }
               }
             }
@@ -3521,19 +3463,11 @@
         "parameters": [],
         "responses": {
           "200": {
-            "description": "Install command",
+            "description": "",
             "content": {
               "application/json": {
                 "schema": {
-                  "example": {
-                    "code": 200,
-                    "message": "success",
-                    "data": {
-                      "cmd": "curl -fsSL 'http://localhost:3002/api/executors/install.sh' | bash -s -- --api-url 'http://localhost:3002' --secret 'shared-token'",
-                      "token": "shared-token",
-                      "adminApiUrl": "http://localhost:3002"
-                    }
-                  }
+                  "$ref": "#/components/schemas/ExecutorInstallCmdDto"
                 }
               }
             }
@@ -3864,18 +3798,11 @@
         },
         "responses": {
           "200": {
-            "description": "Token rotated successfully",
+            "description": "新凭据一次性回显",
             "content": {
               "application/json": {
                 "schema": {
-                  "example": {
-                    "code": 200,
-                    "message": "success",
-                    "data": {
-                      "token": "new-token-value",
-                      "expiresAt": "2024-01-01T12:00:00Z"
-                    }
-                  }
+                  "$ref": "#/components/schemas/ExecutorRotateTokenDto"
                 }
               }
             }
@@ -3971,13 +3898,11 @@
         },
         "responses": {
           "200": {
-            "description": "Offline notification successful",
+            "description": "",
             "content": {
               "application/json": {
                 "schema": {
-                  "example": {
-                    "success": true
-                  }
+                  "$ref": "#/components/schemas/ExecutorOfflineDto"
                 }
               }
             }
@@ -4148,7 +4073,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Execution record list\n\n裸 {total,items} 分页",
+            "description": "裸 {total,items} 分页",
             "content": {
               "application/json": {
                 "schema": {
@@ -4186,41 +4111,11 @@
         ],
         "responses": {
           "200": {
-            "description": "Performance metrics with 24h resource-trend history (FEAT-04)",
+            "description": "",
             "content": {
               "application/json": {
                 "schema": {
-                  "example": {
-                    "code": 200,
-                    "message": "success",
-                    "data": {
-                      "executor": {
-                        "id": "uuid",
-                        "address": "10.0.0.9:3002",
-                        "status": "online"
-                      },
-                      "sevenDayStats": {
-                        "totalExecutions": 1000,
-                        "successful": 985,
-                        "failed": 15,
-                        "successRate": 98.5,
-                        "averageDurationMs": 1250
-                      },
-                      "current": {
-                        "runningTaskCount": 2,
-                        "cpuUsage": 35.2,
-                        "memUsage": 61.8
-                      },
-                      "history": [
-                        {
-                          "timestamp": "2026-09-06T02:00:00.000Z",
-                          "cpuUsage": 30.1,
-                          "memUsage": 58.4,
-                          "runningTaskCount": 1
-                        }
-                      ]
-                    }
-                  }
+                  "$ref": "#/components/schemas/ExecutorMetricsDto"
                 }
               }
             }
@@ -6812,14 +6707,11 @@
         "parameters": [],
         "responses": {
           "200": {
-            "description": "Health check result",
+            "description": "",
             "content": {
               "application/json": {
                 "schema": {
-                  "example": {
-                    "status": "healthy",
-                    "timestamp": "2024-01-01T12:00:00Z"
-                  }
+                  "$ref": "#/components/schemas/PublicHealthDto"
                 }
               }
             }
@@ -6838,74 +6730,11 @@
         "parameters": [],
         "responses": {
           "200": {
-            "description": "Detailed health check result",
+            "description": "",
             "content": {
               "application/json": {
                 "schema": {
-                  "example": {
-                    "status": "healthy",
-                    "timestamp": "2024-01-01T12:00:00Z",
-                    "services": {
-                      "database": {
-                        "status": "healthy"
-                      },
-                      "redis": {
-                        "status": "healthy"
-                      },
-                      "queue": {
-                        "status": "healthy",
-                        "size": 0
-                      },
-                      "executors": {
-                        "status": "healthy",
-                        "onlineCount": 3,
-                        "totalCount": 3
-                      },
-                      "tasks": {
-                        "status": "healthy",
-                        "activeCount": 8,
-                        "totalCount": 10,
-                        "runningCount": 2
-                      },
-                      "scheduler": {
-                        "status": "healthy"
-                      }
-                    },
-                    "metrics": {
-                      "totalTasks": 10,
-                      "activeTasks": 8,
-                      "runningExecutions": 2,
-                      "totalExecutors": 3,
-                      "onlineExecutors": 3,
-                      "queueSize": 0
-                    },
-                    "components": [
-                      {
-                        "name": "database",
-                        "status": "healthy"
-                      },
-                      {
-                        "name": "redis",
-                        "status": "healthy"
-                      },
-                      {
-                        "name": "queue",
-                        "status": "healthy"
-                      },
-                      {
-                        "name": "executors",
-                        "status": "healthy"
-                      },
-                      {
-                        "name": "tasks",
-                        "status": "healthy"
-                      },
-                      {
-                        "name": "scheduler",
-                        "status": "healthy"
-                      }
-                    ]
-                  }
+                  "$ref": "#/components/schemas/DetailedHealthDto"
                 }
               }
             }
@@ -6924,13 +6753,11 @@
         "parameters": [],
         "responses": {
           "200": {
-            "description": "Service alive",
+            "description": "{status:'healthy'}——恒 200",
             "content": {
               "application/json": {
                 "schema": {
-                  "example": {
-                    "status": "healthy"
-                  }
+                  "$ref": "#/components/schemas/PublicHealthDto"
                 }
               }
             }
@@ -6949,56 +6776,11 @@
         "parameters": [],
         "responses": {
           "200": {
-            "description": "Ready to accept traffic",
+            "description": "status=ready|not_ready + timestamp；503 由 passthrough 状态码承载",
             "content": {
               "application/json": {
                 "schema": {
-                  "example": {
-                    "code": 200,
-                    "message": "success",
-                    "data": {
-                      "status": "ready",
-                      "timestamp": "2024-01-01T12:00:00Z",
-                      "checks": [
-                        {
-                          "name": "database",
-                          "status": "pass"
-                        },
-                        {
-                          "name": "redis",
-                          "status": "pass"
-                        }
-                      ]
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Not ready — a dependency (DB/Redis) failed. K8s readinessProbe reads the HTTP status, so this MUST be 503 for traffic to be drained.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "example": {
-                    "code": 503,
-                    "message": "success",
-                    "data": {
-                      "status": "not_ready",
-                      "timestamp": "2024-01-01T12:00:00Z",
-                      "reason": "Unhealthy dependencies: database",
-                      "checks": [
-                        {
-                          "name": "database",
-                          "status": "fail"
-                        },
-                        {
-                          "name": "redis",
-                          "status": "pass"
-                        }
-                      ]
-                    }
-                  }
+                  "$ref": "#/components/schemas/PublicHealthDto"
                 }
               }
             }
@@ -7017,30 +6799,11 @@
         "parameters": [],
         "responses": {
           "200": {
-            "description": "Service status list",
+            "description": "",
             "content": {
               "application/json": {
                 "schema": {
-                  "example": {
-                    "database": {
-                      "status": "healthy"
-                    },
-                    "redis": {
-                      "status": "healthy"
-                    },
-                    "queue": {
-                      "status": "healthy",
-                      "size": 0
-                    },
-                    "executors": {
-                      "status": "healthy",
-                      "onlineCount": 3,
-                      "totalCount": 3
-                    },
-                    "scheduler": {
-                      "status": "healthy"
-                    }
-                  }
+                  "$ref": "#/components/schemas/HealthServicesDto"
                 }
               }
             }
@@ -7059,18 +6822,11 @@
         "parameters": [],
         "responses": {
           "200": {
-            "description": "System metrics",
+            "description": "",
             "content": {
               "application/json": {
                 "schema": {
-                  "example": {
-                    "totalTasks": 10,
-                    "activeTasks": 8,
-                    "runningExecutions": 2,
-                    "totalExecutors": 3,
-                    "onlineExecutors": 3,
-                    "queueSize": 0
-                  }
+                  "$ref": "#/components/schemas/HealthMetricsDto"
                 }
               }
             }
@@ -10183,6 +9939,37 @@
           "refreshToken"
         ]
       },
+      "AuthTokensDto": {
+        "type": "object",
+        "properties": {
+          "accessToken": {
+            "type": "string",
+            "description": "JWT access token (15m default, sid claim present)"
+          },
+          "refreshToken": {
+            "type": "string",
+            "description": "30d refresh token with unique jti"
+          }
+        },
+        "required": [
+          "accessToken",
+          "refreshToken"
+        ]
+      },
+      "AuthLogoutDto": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          }
+        },
+        "required": [
+          "success"
+        ]
+      },
       "SseTicketResponseDto": {
         "type": "object",
         "properties": {
@@ -10198,6 +9985,41 @@
         "required": [
           "ticket",
           "expiresAt"
+        ]
+      },
+      "AuthProfileDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "number"
+          },
+          "username": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "admin",
+              "user"
+            ]
+          },
+          "isActive": {
+            "type": "boolean"
+          },
+          "sid": {
+            "type": "string",
+            "description": "Refresh-token jti of this access token's session（旧令牌缺省）"
+          }
+        },
+        "required": [
+          "id",
+          "username",
+          "email",
+          "role",
+          "isActive"
         ]
       },
       "TotpSetupResponseDto": {
@@ -12825,6 +12647,27 @@
           "status"
         ]
       },
+      "CallbackItemResultDto": {
+        "type": "object",
+        "properties": {
+          "executionId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "success": {
+            "type": "boolean",
+            "description": "false = 该项未受理（执行不存在/未派发/地址不符/内部异常），error 说明原因"
+          },
+          "error": {
+            "type": "string",
+            "description": "success=false 时的原因"
+          }
+        },
+        "required": [
+          "executionId",
+          "success"
+        ]
+      },
       "AppendLogChunkDto": {
         "type": "object",
         "properties": {
@@ -12848,6 +12691,18 @@
         "required": [
           "fromLine",
           "lines"
+        ]
+      },
+      "LogChunkAckDto": {
+        "type": "object",
+        "properties": {
+          "count": {
+            "type": "number",
+            "description": "落账行数"
+          }
+        },
+        "required": [
+          "count"
         ]
       },
       "ExecutorInterpreterDto": {
@@ -13000,6 +12855,275 @@
         "required": [
           "appName",
           "address"
+        ]
+      },
+      "ExecutorRegisterResponseDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "appName": {
+            "type": "string",
+            "description": "Executor app name (per-process registration key)"
+          },
+          "address": {
+            "type": "string",
+            "description": "http://host:port, globally unique"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "online",
+              "offline"
+            ]
+          },
+          "offlineReason": {
+            "type": "string",
+            "description": "Why it went offline (null while online)",
+            "nullable": true,
+            "enum": [
+              "manual",
+              "stale_timeout"
+            ]
+          },
+          "consecutiveHeartbeatMisses": {
+            "type": "number",
+            "description": "Consecutive missed/failed heartbeats (stale sweep input)"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "python",
+              "node",
+              "universal"
+            ]
+          },
+          "executorVersion": {
+            "type": "string",
+            "description": "Self-reported executor package version",
+            "nullable": true
+          },
+          "protocolVersion": {
+            "type": "number",
+            "description": "Protocol version negotiated at register (pull control-plane gate)",
+            "nullable": true
+          },
+          "dispatchMode": {
+            "type": "string",
+            "description": "push = platform dials the executor; pull = executor long-polls (NAT-bound)",
+            "enum": [
+              "push",
+              "pull"
+            ]
+          },
+          "capabilities": {
+            "description": "Declared runtime capability domains",
+            "nullable": true,
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "lastHeartbeat": {
+            "format": "date-time",
+            "type": "string",
+            "description": "Last accepted heartbeat",
+            "nullable": true
+          },
+          "executorStartedAt": {
+            "format": "date-time",
+            "type": "string",
+            "description": "Executor process start time (restart detection)",
+            "nullable": true
+          },
+          "executorStartupId": {
+            "type": "string",
+            "description": "Per-process instance id (idempotent token issuance)",
+            "nullable": true
+          },
+          "deviceFingerprint": {
+            "type": "string",
+            "description": "Stable device identity across address changes",
+            "nullable": true
+          },
+          "runningTaskCount": {
+            "type": "number",
+            "description": "Currently running tasks (includes reserved-but-unclaimed pull slots)"
+          },
+          "cpuUsage": {
+            "type": "number",
+            "nullable": true
+          },
+          "memUsage": {
+            "type": "number",
+            "nullable": true
+          },
+          "diskUsage": {
+            "type": "number",
+            "nullable": true
+          },
+          "networkLatency": {
+            "type": "number",
+            "description": "ms",
+            "nullable": true
+          },
+          "totalTaskCount": {
+            "type": "number"
+          },
+          "failedTaskCount": {
+            "type": "number"
+          },
+          "maxConcurrentTasks": {
+            "type": "number",
+            "description": "Dispatch gate capacity; null = unlimited",
+            "nullable": true
+          },
+          "runningExecutionIds": {
+            "description": "Execution ids currently claimed by this executor (E-01-RPT liveness report)",
+            "nullable": true,
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "reservedSlots": {
+            "type": "number",
+            "description": "Pull slots reserved but not yet claimed (display/alert only — NOT a dispatch gate)",
+            "nullable": true
+          },
+          "deadLetterCount": {
+            "type": "number",
+            "description": "Control-plane commands parked in the dead-letter queue",
+            "nullable": true
+          },
+          "interpreters": {
+            "type": "array",
+            "description": "Interpreter pool reported by the executor (D5: null = never reported, [] = reported empty)",
+            "nullable": true,
+            "items": {
+              "type": "object",
+              "properties": {
+                "version": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "available": {
+                  "type": "boolean"
+                },
+                "discoveredAt": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "version"
+              ]
+            }
+          },
+          "groupName": {
+            "type": "string",
+            "nullable": true
+          },
+          "tags": {
+            "nullable": true,
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "description": {
+            "type": "string",
+            "nullable": true
+          },
+          "projectId": {
+            "type": "string",
+            "nullable": true,
+            "format": "uuid"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "version": {
+            "type": "number",
+            "description": "Optimistic-lock @VersionColumn (TypeORM version column)"
+          },
+          "versionCompliant": {
+            "type": "boolean",
+            "description": "仅 list 面（findAll）逐行附带：自报版本是否满足 EXECUTOR_MIN_VERSION 门禁"
+          },
+          "perExecutorToken": {
+            "type": "string",
+            "description": "R9 幂等语义：同 (address, startupId) 重注册返回 null（不轮换）；首次注册/真实重启才发新 token",
+            "nullable": true
+          },
+          "tokenHash": {
+            "type": "string",
+            "description": "回调鉴权 secret（HMAC 源），执行器侧持久化"
+          },
+          "protocolCompliant": {
+            "type": "boolean",
+            "description": "协议版本是否 ≥ PROTOCOL_SUPPORTED_MIN（仅回显，不拒绝注册）"
+          },
+          "agentCapabilities": {
+            "description": "save() 回程 hydrated（R7 实测）",
+            "nullable": true,
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "agentCapabilitiesUpdatedAt": {
+            "format": "date-time",
+            "type": "string",
+            "description": "save() 回程 hydrated（R7 实测）",
+            "nullable": true
+          }
+        },
+        "required": [
+          "id",
+          "appName",
+          "address",
+          "status",
+          "offlineReason",
+          "consecutiveHeartbeatMisses",
+          "type",
+          "executorVersion",
+          "protocolVersion",
+          "dispatchMode",
+          "capabilities",
+          "lastHeartbeat",
+          "executorStartedAt",
+          "executorStartupId",
+          "deviceFingerprint",
+          "runningTaskCount",
+          "cpuUsage",
+          "memUsage",
+          "diskUsage",
+          "networkLatency",
+          "totalTaskCount",
+          "failedTaskCount",
+          "maxConcurrentTasks",
+          "runningExecutionIds",
+          "reservedSlots",
+          "deadLetterCount",
+          "interpreters",
+          "groupName",
+          "tags",
+          "description",
+          "projectId",
+          "createdAt",
+          "updatedAt",
+          "version",
+          "tokenHash",
+          "protocolCompliant"
         ]
       },
       "ExecutorHeartbeatDto": {
@@ -13301,6 +13425,14 @@
             "format": "date-time",
             "type": "string"
           },
+          "version": {
+            "type": "number",
+            "description": "Optimistic-lock @VersionColumn (TypeORM version column)"
+          },
+          "versionCompliant": {
+            "type": "boolean",
+            "description": "Whether the self-reported version satisfies the min-version gate"
+          },
           "tokenHash": {
             "type": "string",
             "description": "Callback-auth secret for this executor (machine face: the token-authed holder fetches it to sign execution callbacks)"
@@ -13310,9 +13442,19 @@
             "description": "EXECUTOR_MIN_VERSION gate value; '' = gate disabled",
             "nullable": true
           },
-          "versionCompliant": {
-            "type": "boolean",
-            "description": "Whether the self-reported version satisfies the min-version gate"
+          "agentCapabilities": {
+            "description": "save() 回程把 select:false 列 hydrated 带出（R7 实测）；findOne/列表读取不含",
+            "nullable": true,
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "agentCapabilitiesUpdatedAt": {
+            "format": "date-time",
+            "type": "string",
+            "description": "同上——save() 回程出现性",
+            "nullable": true
           }
         },
         "required": [
@@ -13349,9 +13491,9 @@
           "projectId",
           "createdAt",
           "updatedAt",
+          "version",
           "tokenHash",
-          "minVersion",
-          "versionCompliant"
+          "minVersion"
         ]
       },
       "ExecutorPullDto": {
@@ -13498,71 +13640,6 @@
         "required": [
           "items",
           "serverTime"
-        ]
-      },
-      "ExecutorPickerItemDto": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "appName": {
-            "type": "string"
-          },
-          "address": {
-            "type": "string"
-          },
-          "status": {
-            "type": "string",
-            "enum": [
-              "online",
-              "offline"
-            ]
-          },
-          "runningTaskCount": {
-            "type": "number"
-          },
-          "maxConcurrentTasks": {
-            "type": "number",
-            "nullable": true
-          }
-        },
-        "required": [
-          "id",
-          "appName",
-          "address",
-          "status",
-          "runningTaskCount",
-          "maxConcurrentTasks"
-        ]
-      },
-      "ExecutorPickerResponseDto": {
-        "type": "object",
-        "properties": {
-          "items": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/ExecutorPickerItemDto"
-            }
-          },
-          "truncated": {
-            "type": "boolean",
-            "description": "True when the cap hit — items are a prefix, total is the real count"
-          },
-          "total": {
-            "type": "number"
-          },
-          "limit": {
-            "type": "number",
-            "description": "The applied cap"
-          }
-        },
-        "required": [
-          "items",
-          "truncated",
-          "total",
-          "limit"
         ]
       },
       "ExecutorResponseDto": {
@@ -13758,6 +13835,14 @@
           "updatedAt": {
             "format": "date-time",
             "type": "string"
+          },
+          "version": {
+            "type": "number",
+            "description": "Optimistic-lock @VersionColumn (TypeORM version column)"
+          },
+          "versionCompliant": {
+            "type": "boolean",
+            "description": "仅 list 面（findAll）逐行附带：自报版本是否满足 EXECUTOR_MIN_VERSION 门禁"
           }
         },
         "required": [
@@ -13793,7 +13878,159 @@
           "description",
           "projectId",
           "createdAt",
-          "updatedAt"
+          "updatedAt",
+          "version"
+        ]
+      },
+      "ExecutorGroupsDto": {
+        "type": "object",
+        "properties": {
+          "groups": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "groups"
+        ]
+      },
+      "ExecutorTagsDto": {
+        "type": "object",
+        "properties": {
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "tags"
+        ]
+      },
+      "ExecutorRuntimeConfigDto": {
+        "type": "object",
+        "properties": {
+          "heartbeatIntervalMs": {
+            "type": "number",
+            "description": "Heartbeat interval ms"
+          },
+          "heartbeatTimeoutMultiplier": {
+            "type": "number"
+          },
+          "heartbeatTimeoutMs": {
+            "type": "number"
+          },
+          "staleOfflineConfirmations": {
+            "type": "number"
+          },
+          "effectiveOfflineAfterMs": {
+            "type": "number",
+            "description": "连续 N 次未确认后才判离线的折算毫秒"
+          },
+          "listLimit": {
+            "type": "number"
+          },
+          "executorTotal": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "heartbeatIntervalMs",
+          "heartbeatTimeoutMultiplier",
+          "heartbeatTimeoutMs",
+          "staleOfflineConfirmations",
+          "effectiveOfflineAfterMs",
+          "listLimit",
+          "executorTotal"
+        ]
+      },
+      "ExecutorPickerItemDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "appName": {
+            "type": "string"
+          },
+          "address": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "online",
+              "offline"
+            ]
+          },
+          "runningTaskCount": {
+            "type": "number"
+          },
+          "maxConcurrentTasks": {
+            "type": "number",
+            "nullable": true
+          }
+        },
+        "required": [
+          "id",
+          "appName",
+          "address",
+          "status",
+          "runningTaskCount",
+          "maxConcurrentTasks"
+        ]
+      },
+      "ExecutorPickerResponseDto": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ExecutorPickerItemDto"
+            }
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "True when the cap hit — items are a prefix, total is the real count"
+          },
+          "total": {
+            "type": "number"
+          },
+          "limit": {
+            "type": "number",
+            "description": "The applied cap"
+          }
+        },
+        "required": [
+          "items",
+          "truncated",
+          "total",
+          "limit"
+        ]
+      },
+      "ExecutorInstallCmdDto": {
+        "type": "object",
+        "properties": {
+          "cmd": {
+            "type": "string",
+            "description": "curl … | bash -s -- 全命令行（含 --secret）"
+          },
+          "token": {
+            "type": "string",
+            "description": "共享机器凭据（ADMIN-only 面下发）"
+          },
+          "adminApiUrl": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "cmd",
+          "token",
+          "adminApiUrl"
         ]
       },
       "ExecutorReloadConfigResponseDto": {
@@ -13817,6 +14054,18 @@
           }
         }
       },
+      "ExecutorRotateTokenDto": {
+        "type": "object",
+        "properties": {
+          "token": {
+            "type": "string",
+            "description": "新共享凭据（仅此一次回显）"
+          }
+        },
+        "required": [
+          "token"
+        ]
+      },
       "ExecutorTokenResponseDto": {
         "type": "object",
         "properties": {
@@ -13832,6 +14081,20 @@
         "required": [
           "token",
           "tokenHash"
+        ]
+      },
+      "ExecutorOfflineDto": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          }
+        },
+        "required": [
+          "success"
         ]
       },
       "ExecutorRemovalImpactResponseDto": {
@@ -13882,6 +14145,117 @@
         "required": [
           "total",
           "items"
+        ]
+      },
+      "ExecutorMetricsDto": {
+        "type": "object",
+        "properties": {
+          "executor": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "address": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "online",
+                  "offline"
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "address",
+              "status"
+            ]
+          },
+          "sevenDayStats": {
+            "type": "object",
+            "properties": {
+              "totalExecutions": {
+                "type": "number"
+              },
+              "successful": {
+                "type": "number"
+              },
+              "failed": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "totalExecutions",
+              "successful",
+              "failed"
+            ]
+          },
+          "current": {
+            "type": "object",
+            "properties": {
+              "runningTaskCount": {
+                "type": "number"
+              },
+              "reservedSlots": {
+                "type": "number",
+                "nullable": true,
+                "description": "null = 执行器未上报（旧版）→ 前端回落旧口径"
+              },
+              "cpuUsage": {
+                "type": "number",
+                "nullable": true
+              },
+              "memUsage": {
+                "type": "number",
+                "nullable": true
+              },
+              "pendingPullItems": {
+                "type": "number",
+                "description": "pull 队列深度；push 恒 0；Redis 故障按 0 呈现"
+              }
+            },
+            "required": [
+              "runningTaskCount",
+              "reservedSlots",
+              "cpuUsage",
+              "memUsage",
+              "pendingPullItems"
+            ]
+          },
+          "history": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "timestamp": {
+                  "type": "string"
+                },
+                "cpuUsage": {
+                  "type": "number",
+                  "nullable": true
+                },
+                "memUsage": {
+                  "type": "number",
+                  "nullable": true
+                },
+                "runningTaskCount": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "timestamp",
+                "cpuUsage",
+                "memUsage",
+                "runningTaskCount"
+              ]
+            }
+          }
+        },
+        "required": [
+          "history"
         ]
       },
       "NotificationChannelDto": {
@@ -16429,6 +16803,177 @@
           "total"
         ]
       },
+      "PublicHealthDto": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "healthy",
+              "degraded",
+              "unhealthy"
+            ]
+          },
+          "timestamp": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "timestamp"
+        ]
+      },
+      "DetailedHealthDto": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "healthy",
+              "degraded",
+              "unhealthy"
+            ]
+          },
+          "timestamp": {
+            "type": "string"
+          },
+          "services": {
+            "type": "object",
+            "description": "五组件健康（结构同 GET /health/services 的同名键）"
+          },
+          "metrics": {
+            "type": "object",
+            "properties": {
+              "totalTasks": {
+                "type": "number"
+              },
+              "activeTasks": {
+                "type": "number"
+              },
+              "runningExecutions": {
+                "type": "number"
+              },
+              "totalExecutors": {
+                "type": "number"
+              },
+              "onlineExecutors": {
+                "type": "number"
+              },
+              "queueSize": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "totalTasks",
+              "activeTasks",
+              "runningExecutions",
+              "totalExecutors",
+              "onlineExecutors",
+              "queueSize"
+            ]
+          },
+          "components": {
+            "type": "array",
+            "description": "组件扁平清单",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "healthy",
+                    "degraded",
+                    "unhealthy"
+                  ]
+                },
+                "message": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name",
+                "status"
+              ]
+            }
+          }
+        },
+        "required": [
+          "status",
+          "timestamp",
+          "services",
+          "components"
+        ]
+      },
+      "HealthComponentDto": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "healthy",
+              "degraded",
+              "unhealthy"
+            ]
+          },
+          "details": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "HealthServicesDto": {
+        "type": "object",
+        "properties": {
+          "database": {
+            "$ref": "#/components/schemas/HealthComponentDto"
+          },
+          "redis": {
+            "$ref": "#/components/schemas/HealthComponentDto"
+          },
+          "queue": {
+            "type": "object",
+            "description": "healthy/degraded/unhealthy + size"
+          },
+          "executors": {
+            "type": "object",
+            "description": "healthy/degraded/unhealthy + onlineCount/totalCount"
+          },
+          "scheduler": {
+            "$ref": "#/components/schemas/HealthComponentDto"
+          }
+        },
+        "required": [
+          "database",
+          "redis",
+          "queue",
+          "executors",
+          "scheduler"
+        ]
+      },
+      "HealthMetricsDto": {
+        "type": "object",
+        "properties": {
+          "totalExecutors": {
+            "type": "number"
+          },
+          "onlineExecutors": {
+            "type": "number"
+          },
+          "queueSize": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "totalExecutors",
+          "onlineExecutors",
+          "queueSize"
+        ]
+      },
       "ApplicationResponseDto": {
         "type": "object",
         "properties": {
@@ -16524,6 +17069,11 @@
             "format": "date-time",
             "type": "string",
             "description": "Last update time (ISO-8601)"
+          },
+          "webhookSecret": {
+            "type": "string",
+            "description": "R7 实测出现性：create/update 等 save() 回程把 select:false 列 hydrated 成 null 带出；findAll/findById select 读取不含该键。值恒 null（secret 不回传）。首版头注的『不声明』裁定据此修订",
+            "nullable": true
           }
         },
         "required": [
@@ -17295,6 +17845,10 @@
           "updatedAt": {
             "format": "date-time",
             "type": "string"
+          },
+          "version": {
+            "type": "number",
+            "description": "Optimistic-lock @VersionColumn (TypeORM version column)"
           }
         },
         "required": [
@@ -17319,7 +17873,8 @@
           "triggerType",
           "operator",
           "createdAt",
-          "updatedAt"
+          "updatedAt",
+          "version"
         ]
       },
       "PaginatedAppDeploymentsDto": {

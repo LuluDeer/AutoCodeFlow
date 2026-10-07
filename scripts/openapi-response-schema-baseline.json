@@ -183,7 +183,7 @@
     "POST /executors/heartbeat 201",
     "POST /executors/offline 200",
     "POST /executors/pull 200",
-    "POST /executors/register 200",
+    "POST /executors/register 201",
     "POST /executors/token 201",
     "POST /executors/{id}/reload-config 201",
     "POST /executors/{id}/rotate-token 200",

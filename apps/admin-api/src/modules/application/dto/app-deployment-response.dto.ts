@@ -139,6 +139,11 @@ export class AppDeploymentResponseDto {
 
   @ApiProperty()
   updatedAt: Date;
+
+  @ApiProperty({
+    description: "Optimistic-lock @VersionColumn (TypeORM version column)",
+  })
+  version: number;
 }
 
 /** GET /app-deployments 与 GET /app-deployments/approvals/pending 共用——裸 {data,total}。 */

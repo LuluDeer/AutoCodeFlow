@@ -12,7 +12,13 @@ import {
   forwardRef,
 } from "@nestjs/common";
 import { Throttle } from "@nestjs/throttler";
-import { ApiTags, ApiOperation, ApiResponse, ApiBody } from "@nestjs/swagger";
+import {
+  ApiTags,
+  ApiOperation,
+  ApiResponse,
+  ApiBody,
+  ApiOkResponse,
+} from "@nestjs/swagger";
 import { ConfigService } from "@nestjs/config";
 import { Public } from "../../common/decorators/public.decorator";
 import { TaskService } from "./task.service";
@@ -33,6 +39,10 @@ import { positiveInt } from "../../config/throttle-profiles";
 // OBS-01: 回调链路追踪——执行器回传 traceparent 头关联（disabled 时短路）。
 import { TracingService } from "../../common/tracing/tracing.service";
 import { WriteGuard } from "../../common/decorators/write-guard.decorator";
+import {
+  CallbackItemResultDto,
+  LogChunkAckDto,
+} from "../../common/dto/misc-2xx-response.dto";
 
 /**
  * F-5: this controller used to be fully @SkipThrottle()'d — an unauthenticated
@@ -97,21 +107,10 @@ export class ExecutionCallbackController {
       "Called by executor (or task code holding a per-execution AUTOFLOW_CALLBACK_TOKEN) after task completion to report results. " +
       "Accepts either the executor shared/per-address token or a per-execution `v1.` HMAC token bound to the batch's executionId (N23).",
   })
-  @ApiResponse({
-    status: 200,
-    description: "Callback processed successfully",
-    schema: {
-      example: {
-        results: [
-          { executionId: "exec-uuid-1", success: true },
-          {
-            executionId: "exec-uuid-2",
-            success: false,
-            error: "Execution not found",
-          },
-        ],
-      },
-    },
+  @ApiOkResponse({
+    type: [CallbackItemResultDto],
+    description:
+      "逐项受理结果（{executionId, success, error?}）；HTTP 200 由 @HttpCode 决定",
   })
   @ApiResponse({ status: 400, description: "Invalid request body" })
   @ApiResponse({ status: 401, description: "Invalid shared token" })
@@ -352,11 +351,7 @@ export class ExecutionCallbackController {
       "callback endpoint (per-execution `v1.` HMAC token, per-address token, or the " +
       "shared executor token).",
   })
-  @ApiResponse({
-    status: 200,
-    description: "Log chunk persisted",
-    schema: { example: { count: 10 } },
-  })
+  @ApiOkResponse({ type: LogChunkAckDto, description: "{count} 落账行数" })
   @ApiResponse({ status: 400, description: "Invalid request body" })
   @ApiResponse({ status: 401, description: "Invalid executor token" })
   @ApiResponse({ status: 404, description: "Execution not found" })

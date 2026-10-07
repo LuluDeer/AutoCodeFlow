@@ -1,8 +1,19 @@
 import { Controller, Get, Res } from "@nestjs/common";
 import type { Response } from "express";
-import { ApiTags, ApiOperation, ApiResponse } from "@nestjs/swagger";
+import {
+  ApiTags,
+  ApiOperation,
+  ApiResponse,
+  ApiOkResponse,
+} from "@nestjs/swagger";
 import { HealthService } from "./health.service";
 import { Public } from "../../common/decorators/public.decorator";
+import {
+  DetailedHealthDto,
+  HealthMetricsDto,
+  HealthServicesDto,
+  PublicHealthDto,
+} from "../../common/dto/misc-2xx-response.dto";
 
 @ApiTags("Health Check")
 @Controller("health")
@@ -23,16 +34,7 @@ export class HealthController {
       "Public health check. Returns only the overall status (healthy/degraded/unhealthy) and timestamp. " +
       "Detailed metrics (executor count, queue depth, task counts) are available at GET /health/detailed (requires JWT).",
   })
-  @ApiResponse({
-    status: 200,
-    description: "Health check result",
-    schema: {
-      example: {
-        status: "healthy",
-        timestamp: "2024-01-01T12:00:00Z",
-      },
-    },
-  })
+  @ApiOkResponse({ type: PublicHealthDto })
   async health() {
     return this.healthService.getPublicHealth();
   }
@@ -48,45 +50,7 @@ export class HealthController {
       "Full detailed health status and metrics including database, Redis, message queue, executors, and scheduler. " +
       "Requires JWT authentication. Use GET /health for the public status-only endpoint.",
   })
-  @ApiResponse({
-    status: 200,
-    description: "Detailed health check result",
-    schema: {
-      example: {
-        status: "healthy",
-        timestamp: "2024-01-01T12:00:00Z",
-        services: {
-          database: { status: "healthy" },
-          redis: { status: "healthy" },
-          queue: { status: "healthy", size: 0 },
-          executors: { status: "healthy", onlineCount: 3, totalCount: 3 },
-          tasks: {
-            status: "healthy",
-            activeCount: 8,
-            totalCount: 10,
-            runningCount: 2,
-          },
-          scheduler: { status: "healthy" },
-        },
-        metrics: {
-          totalTasks: 10,
-          activeTasks: 8,
-          runningExecutions: 2,
-          totalExecutors: 3,
-          onlineExecutors: 3,
-          queueSize: 0,
-        },
-        components: [
-          { name: "database", status: "healthy" },
-          { name: "redis", status: "healthy" },
-          { name: "queue", status: "healthy" },
-          { name: "executors", status: "healthy" },
-          { name: "tasks", status: "healthy" },
-          { name: "scheduler", status: "healthy" },
-        ],
-      },
-    },
-  })
+  @ApiOkResponse({ type: DetailedHealthDto })
   async detailed() {
     return this.healthService.getFullHealth();
   }
@@ -98,12 +62,9 @@ export class HealthController {
     description:
       "Simple liveness check, returns whether the service is running. Used for Kubernetes liveness probe.",
   })
-  @ApiResponse({
-    status: 200,
-    description: "Service alive",
-    schema: {
-      example: { status: "healthy" },
-    },
+  @ApiOkResponse({
+    type: PublicHealthDto,
+    description: "{status:'healthy'}——恒 200",
   })
   async live() {
     return this.healthService.getLiveness();
@@ -116,48 +77,15 @@ export class HealthController {
     description:
       "Check whether the service is ready to accept requests. Verifies DB and Redis connections. Used for Kubernetes readiness probe.",
   })
-  @ApiResponse({
-    status: 200,
-    description: "Ready to accept traffic",
-    schema: {
-      example: {
-        code: 200,
-        message: "success",
-        data: {
-          status: "ready",
-          timestamp: "2024-01-01T12:00:00Z",
-          checks: [
-            { name: "database", status: "pass" },
-            { name: "redis", status: "pass" },
-          ],
-        },
-      },
-    },
-  })
-  @ApiResponse({
-    status: 503,
-    description:
-      "Not ready — a dependency (DB/Redis) failed. K8s readinessProbe reads the HTTP status, so this MUST be 503 for traffic to be drained.",
-    schema: {
-      example: {
-        code: 503,
-        message: "success",
-        data: {
-          status: "not_ready",
-          timestamp: "2024-01-01T12:00:00Z",
-          reason: "Unhealthy dependencies: database",
-          checks: [
-            { name: "database", status: "fail" },
-            { name: "redis", status: "pass" },
-          ],
-        },
-      },
-    },
-  })
   // A3（DEEP_REVIEW §七 · executor-protocol）：此前本端点**恒返 200**——不就绪
   // 只在 body 里写 `status:"not_ready"`。而 K8s readinessProbe / 主流 LB 只看
   // HTTP 状态码，等于 DB 与 Redis 全挂了也不会被摘流量，就绪探针形同虚设。
   // 现在按契约返回 503（payload 形状不变，仍经全局响应信封落在 `data` 下）。
+  @ApiOkResponse({
+    type: PublicHealthDto,
+    description:
+      "status=ready|not_ready + timestamp；503 由 passthrough 状态码承载",
+  })
   async ready(@Res({ passthrough: true }) res: Response) {
     const readiness = await this.healthService.getReadiness();
     res.status(readiness.status === "ready" ? 200 : 503);
@@ -172,19 +100,7 @@ export class HealthController {
     description:
       "Get health status details for each core service. Requires JWT authentication.",
   })
-  @ApiResponse({
-    status: 200,
-    description: "Service status list",
-    schema: {
-      example: {
-        database: { status: "healthy" },
-        redis: { status: "healthy" },
-        queue: { status: "healthy", size: 0 },
-        executors: { status: "healthy", onlineCount: 3, totalCount: 3 },
-        scheduler: { status: "healthy" },
-      },
-    },
-  })
+  @ApiOkResponse({ type: HealthServicesDto })
   async services() {
     const [db, redis, queue, executors, scheduler] = await Promise.all([
       this.healthService.checkDatabase(),
@@ -204,20 +120,7 @@ export class HealthController {
     description:
       "Get key system metrics including task count, executor count, queue size, etc. Requires JWT authentication.",
   })
-  @ApiResponse({
-    status: 200,
-    description: "System metrics",
-    schema: {
-      example: {
-        totalTasks: 10,
-        activeTasks: 8,
-        runningExecutions: 2,
-        totalExecutors: 3,
-        onlineExecutors: 3,
-        queueSize: 0,
-      },
-    },
-  })
+  @ApiOkResponse({ type: HealthMetricsDto })
   async metrics() {
     const [tasks, executors, queue] = await Promise.all([
       this.healthService.checkTasks(),

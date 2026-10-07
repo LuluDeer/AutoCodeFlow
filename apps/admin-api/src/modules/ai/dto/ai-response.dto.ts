@@ -33,13 +33,18 @@ export class AiConfigResponseDto {
   @ApiProperty()
   qwenBaseUrl: string;
 
-  @ApiProperty({ description: "string-encoded number (config store values are strings)" })
+  @ApiProperty({
+    description: "string-encoded number (config store values are strings)",
+  })
   qwenMaxTokens: string;
 
   @ApiProperty({ description: "string-encoded number (ms)" })
   qwenTimeoutMs: string;
 
-  @ApiProperty({ description: "Whether the current provider has an API key configured (key VALUE is never returned)" })
+  @ApiProperty({
+    description:
+      "Whether the current provider has an API key configured (key VALUE is never returned)",
+  })
   hasApiKey: boolean;
 }
 

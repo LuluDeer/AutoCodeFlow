@@ -3610,11 +3610,31 @@ export interface components {
         RefreshTokenDto: {
             refreshToken: string;
         };
+        AuthTokensDto: {
+            /** @description JWT access token (15m default, sid claim present) */
+            accessToken: string;
+            /** @description 30d refresh token with unique jti */
+            refreshToken: string;
+        };
+        AuthLogoutDto: {
+            /** @enum {boolean} */
+            success: true;
+        };
         SseTicketResponseDto: {
             /** @description SSE 专用短效票据；作为 ?ticket= 查询串使用，30 秒后失效，且只在三条 /stream 路由上被读取 */
             ticket: string;
             /** @description 票据过期时间（ISO 8601） */
             expiresAt: string;
+        };
+        AuthProfileDto: {
+            id: number;
+            username: string;
+            email: string;
+            /** @enum {string} */
+            role: "admin" | "user";
+            isActive: boolean;
+            /** @description Refresh-token jti of this access token's session（旧令牌缺省） */
+            sid?: string;
         };
         TotpSetupResponseDto: {
             /** @description Base32-encoded TOTP secret (staged, not yet active) */
@@ -4607,6 +4627,14 @@ export interface components {
                 [key: string]: unknown;
             };
         };
+        CallbackItemResultDto: {
+            /** Format: uuid */
+            executionId: string;
+            /** @description false = 该项未受理（执行不存在/未派发/地址不符/内部异常），error 说明原因 */
+            success: boolean;
+            /** @description success=false 时的原因 */
+            error?: string;
+        };
         AppendLogChunkDto: {
             /**
              * @description 0-based line number offset of the first line in this chunk
@@ -4621,6 +4649,10 @@ export interface components {
              *     ]
              */
             lines: string[];
+        };
+        LogChunkAckDto: {
+            /** @description 落账行数 */
+            count: number;
         };
         ExecutorInterpreterDto: {
             /**
@@ -4737,6 +4769,100 @@ export interface components {
              * @example 3f2a1c9d8b7e6f504132a5b6c7d8e9f00a1b2c3d4e5f60718293a4b5c6d7e8f9
              */
             deviceFingerprint?: string | null;
+        };
+        ExecutorRegisterResponseDto: {
+            /** Format: uuid */
+            id: string;
+            /** @description Executor app name (per-process registration key) */
+            appName: string;
+            /** @description http://host:port, globally unique */
+            address: string;
+            /** @enum {string} */
+            status: "online" | "offline";
+            /**
+             * @description Why it went offline (null while online)
+             * @enum {string|null}
+             */
+            offlineReason: "manual" | "stale_timeout" | null;
+            /** @description Consecutive missed/failed heartbeats (stale sweep input) */
+            consecutiveHeartbeatMisses: number;
+            /** @enum {string} */
+            type: "python" | "node" | "universal";
+            /** @description Self-reported executor package version */
+            executorVersion: string | null;
+            /** @description Protocol version negotiated at register (pull control-plane gate) */
+            protocolVersion: number | null;
+            /**
+             * @description push = platform dials the executor; pull = executor long-polls (NAT-bound)
+             * @enum {string}
+             */
+            dispatchMode: "push" | "pull";
+            /** @description Declared runtime capability domains */
+            capabilities: string[] | null;
+            /**
+             * Format: date-time
+             * @description Last accepted heartbeat
+             */
+            lastHeartbeat: string | null;
+            /**
+             * Format: date-time
+             * @description Executor process start time (restart detection)
+             */
+            executorStartedAt: string | null;
+            /** @description Per-process instance id (idempotent token issuance) */
+            executorStartupId: string | null;
+            /** @description Stable device identity across address changes */
+            deviceFingerprint: string | null;
+            /** @description Currently running tasks (includes reserved-but-unclaimed pull slots) */
+            runningTaskCount: number;
+            cpuUsage: number | null;
+            memUsage: number | null;
+            diskUsage: number | null;
+            /** @description ms */
+            networkLatency: number | null;
+            totalTaskCount: number;
+            failedTaskCount: number;
+            /** @description Dispatch gate capacity; null = unlimited */
+            maxConcurrentTasks: number | null;
+            /** @description Execution ids currently claimed by this executor (E-01-RPT liveness report) */
+            runningExecutionIds: string[] | null;
+            /** @description Pull slots reserved but not yet claimed (display/alert only — NOT a dispatch gate) */
+            reservedSlots: number | null;
+            /** @description Control-plane commands parked in the dead-letter queue */
+            deadLetterCount: number | null;
+            /** @description Interpreter pool reported by the executor (D5: null = never reported, [] = reported empty) */
+            interpreters: {
+                version: string;
+                path?: string;
+                available?: boolean;
+                discoveredAt?: string;
+            }[] | null;
+            groupName: string | null;
+            tags: string[] | null;
+            description: string | null;
+            /** Format: uuid */
+            projectId: string | null;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+            /** @description Optimistic-lock @VersionColumn (TypeORM version column) */
+            version: number;
+            /** @description 仅 list 面（findAll）逐行附带：自报版本是否满足 EXECUTOR_MIN_VERSION 门禁 */
+            versionCompliant?: boolean;
+            /** @description R9 幂等语义：同 (address, startupId) 重注册返回 null（不轮换）；首次注册/真实重启才发新 token */
+            perExecutorToken?: string | null;
+            /** @description 回调鉴权 secret（HMAC 源），执行器侧持久化 */
+            tokenHash: string;
+            /** @description 协议版本是否 ≥ PROTOCOL_SUPPORTED_MIN（仅回显，不拒绝注册） */
+            protocolCompliant: boolean;
+            /** @description save() 回程 hydrated（R7 实测） */
+            agentCapabilities?: string[] | null;
+            /**
+             * Format: date-time
+             * @description save() 回程 hydrated（R7 实测）
+             */
+            agentCapabilitiesUpdatedAt?: string | null;
         };
         ExecutorHeartbeatDto: {
             /**
@@ -4901,12 +5027,21 @@ export interface components {
             createdAt: string;
             /** Format: date-time */
             updatedAt: string;
+            /** @description Optimistic-lock @VersionColumn (TypeORM version column) */
+            version: number;
+            /** @description Whether the self-reported version satisfies the min-version gate */
+            versionCompliant?: boolean;
             /** @description Callback-auth secret for this executor (machine face: the token-authed holder fetches it to sign execution callbacks) */
             tokenHash: string;
             /** @description EXECUTOR_MIN_VERSION gate value; '' = gate disabled */
             minVersion: string | null;
-            /** @description Whether the self-reported version satisfies the min-version gate */
-            versionCompliant: boolean;
+            /** @description save() 回程把 select:false 列 hydrated 带出（R7 实测）；findOne/列表读取不含 */
+            agentCapabilities?: string[] | null;
+            /**
+             * Format: date-time
+             * @description 同上——save() 回程出现性
+             */
+            agentCapabilitiesUpdatedAt?: string | null;
         };
         ExecutorPullDto: {
             /**
@@ -4980,24 +5115,6 @@ export interface components {
              * @example 2026-09-14T08:20:00.000Z
              */
             serverTime: string;
-        };
-        ExecutorPickerItemDto: {
-            /** Format: uuid */
-            id: string;
-            appName: string;
-            address: string;
-            /** @enum {string} */
-            status: "online" | "offline";
-            runningTaskCount: number;
-            maxConcurrentTasks: number | null;
-        };
-        ExecutorPickerResponseDto: {
-            items: components["schemas"]["ExecutorPickerItemDto"][];
-            /** @description True when the cap hit — items are a prefix, total is the real count */
-            truncated: boolean;
-            total: number;
-            /** @description The applied cap */
-            limit: number;
         };
         ExecutorResponseDto: {
             /** Format: uuid */
@@ -5075,6 +5192,52 @@ export interface components {
             createdAt: string;
             /** Format: date-time */
             updatedAt: string;
+            /** @description Optimistic-lock @VersionColumn (TypeORM version column) */
+            version: number;
+            /** @description 仅 list 面（findAll）逐行附带：自报版本是否满足 EXECUTOR_MIN_VERSION 门禁 */
+            versionCompliant?: boolean;
+        };
+        ExecutorGroupsDto: {
+            groups: string[];
+        };
+        ExecutorTagsDto: {
+            tags: string[];
+        };
+        ExecutorRuntimeConfigDto: {
+            /** @description Heartbeat interval ms */
+            heartbeatIntervalMs: number;
+            heartbeatTimeoutMultiplier: number;
+            heartbeatTimeoutMs: number;
+            staleOfflineConfirmations: number;
+            /** @description 连续 N 次未确认后才判离线的折算毫秒 */
+            effectiveOfflineAfterMs: number;
+            listLimit: number;
+            executorTotal: number;
+        };
+        ExecutorPickerItemDto: {
+            /** Format: uuid */
+            id: string;
+            appName: string;
+            address: string;
+            /** @enum {string} */
+            status: "online" | "offline";
+            runningTaskCount: number;
+            maxConcurrentTasks: number | null;
+        };
+        ExecutorPickerResponseDto: {
+            items: components["schemas"]["ExecutorPickerItemDto"][];
+            /** @description True when the cap hit — items are a prefix, total is the real count */
+            truncated: boolean;
+            total: number;
+            /** @description The applied cap */
+            limit: number;
+        };
+        ExecutorInstallCmdDto: {
+            /** @description curl … | bash -s -- 全命令行（含 --secret） */
+            cmd: string;
+            /** @description 共享机器凭据（ADMIN-only 面下发） */
+            token: string;
+            adminApiUrl: string;
         };
         ExecutorReloadConfigResponseDto: {
             /** @description true = pull-mode: queued, applied on next poll (~1s) */
@@ -5087,11 +5250,19 @@ export interface components {
                 [key: string]: unknown;
             };
         };
+        ExecutorRotateTokenDto: {
+            /** @description 新共享凭据（仅此一次回显） */
+            token: string;
+        };
         ExecutorTokenResponseDto: {
             /** @description Plaintext token (shown per fetch; rotation rules per R9) */
             token: string;
             /** @description Stored bcrypt/sha hash for verification */
             tokenHash: string;
+        };
+        ExecutorOfflineDto: {
+            /** @enum {boolean} */
+            success: true;
         };
         ExecutorRemovalImpactResponseDto: {
             appName: string;
@@ -5108,6 +5279,35 @@ export interface components {
             total: number;
             /** @description TaskExecution rows, newest first (heavy text columns NOT excluded on this face) */
             items: unknown[];
+        };
+        ExecutorMetricsDto: {
+            executor?: {
+                /** Format: uuid */
+                id: string;
+                address: string;
+                /** @enum {string} */
+                status: "online" | "offline";
+            };
+            sevenDayStats?: {
+                totalExecutions: number;
+                successful: number;
+                failed: number;
+            };
+            current?: {
+                runningTaskCount: number;
+                /** @description null = 执行器未上报（旧版）→ 前端回落旧口径 */
+                reservedSlots: number | null;
+                cpuUsage: number | null;
+                memUsage: number | null;
+                /** @description pull 队列深度；push 恒 0；Redis 故障按 0 呈现 */
+                pendingPullItems: number;
+            };
+            history: {
+                timestamp: string;
+                cpuUsage: number | null;
+                memUsage: number | null;
+                runningTaskCount: number;
+            }[];
         };
         NotificationChannelDto: {
             /** @enum {string} */
@@ -6028,6 +6228,52 @@ export interface components {
             data: components["schemas"]["AuditLogDto"][];
             total: number;
         };
+        PublicHealthDto: {
+            /** @enum {string} */
+            status: "healthy" | "degraded" | "unhealthy";
+            timestamp: string;
+        };
+        DetailedHealthDto: {
+            /** @enum {string} */
+            status: "healthy" | "degraded" | "unhealthy";
+            timestamp: string;
+            /** @description 五组件健康（结构同 GET /health/services 的同名键） */
+            services: Record<string, never>;
+            metrics?: {
+                totalTasks: number;
+                activeTasks: number;
+                runningExecutions: number;
+                totalExecutors: number;
+                onlineExecutors: number;
+                queueSize: number;
+            };
+            /** @description 组件扁平清单 */
+            components: {
+                name: string;
+                /** @enum {string} */
+                status: "healthy" | "degraded" | "unhealthy";
+                message?: string;
+            }[];
+        };
+        HealthComponentDto: {
+            /** @enum {string} */
+            status: "healthy" | "degraded" | "unhealthy";
+            details?: string;
+        };
+        HealthServicesDto: {
+            database: components["schemas"]["HealthComponentDto"];
+            redis: components["schemas"]["HealthComponentDto"];
+            /** @description healthy/degraded/unhealthy + size */
+            queue: Record<string, never>;
+            /** @description healthy/degraded/unhealthy + onlineCount/totalCount */
+            executors: Record<string, never>;
+            scheduler: components["schemas"]["HealthComponentDto"];
+        };
+        HealthMetricsDto: {
+            totalExecutors: number;
+            onlineExecutors: number;
+            queueSize: number;
+        };
         ApplicationResponseDto: {
             /** @description Application id (uuid) */
             id: string;
@@ -6079,6 +6325,8 @@ export interface components {
              * @description Last update time (ISO-8601)
              */
             updatedAt: string;
+            /** @description R7 实测出现性：create/update 等 save() 回程把 select:false 列 hydrated 成 null 带出；findAll/findById select 读取不含该键。值恒 null（secret 不回传）。首版头注的『不声明』裁定据此修订 */
+            webhookSecret?: string | null;
         };
         CreateApplicationDto: {
             /** @description Unique application name */
@@ -6380,6 +6628,8 @@ export interface components {
             createdAt: string;
             /** Format: date-time */
             updatedAt: string;
+            /** @description Optimistic-lock @VersionColumn (TypeORM version column) */
+            version: number;
         };
         PaginatedAppDeploymentsDto: {
             data: components["schemas"]["AppDeploymentResponseDto"][];
@@ -7043,13 +7293,16 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Login successful, returns accessToken and refreshToken */
+            /** @description 双 token 或 {totpRequired:true}（SEC-03 二段登录） */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["AuthTokensDto"] | {
+                        /** @enum {boolean} */
+                        totpRequired: true;
+                    };
                 };
             };
             /** @description Invalid username or password */
@@ -7081,13 +7334,13 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Token refreshed successfully */
+            /** @description token rotation：旧 refresh 立即失效 */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["AuthTokensDto"];
                 };
             };
             /** @description Refresh Token is invalid or expired */
@@ -7108,13 +7361,12 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Logout successful */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["AuthLogoutDto"];
                 };
             };
             /** @description Unauthenticated */
@@ -7162,13 +7414,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description User info */
+            /** @description AuthUser 原样（roles 不在 AuthUser——role 单值） */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["AuthProfileDto"];
                 };
             };
             /** @description Unauthenticated */
@@ -7278,13 +7530,13 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Tokens issued */
+            /** @description 双 token（二段登录成功） */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["AuthTokensDto"];
                 };
             };
             /** @description Invalid credentials or TOTP code */
@@ -8771,13 +9023,13 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Callback processed successfully */
+            /** @description 逐项受理结果（{executionId, success, error?}）；HTTP 200 由 @HttpCode 决定 */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["CallbackItemResultDto"][];
                 };
             };
             /** @description Invalid request body */
@@ -8814,13 +9066,13 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Log chunk persisted */
+            /** @description {count} 落账行数 */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["LogChunkAckDto"];
                 };
             };
             /** @description Invalid request body */
@@ -8862,13 +9114,13 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Registered successfully */
-            200: {
+            /** @description Registered；含 perExecutorToken/tokenHash 回调凭据与 protocolCompliant 协议门禁读数 */
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ExecutorRegisterResponseDto"];
                 };
             };
         };
@@ -9045,13 +9297,12 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Executor list */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ExecutorResponseDto"][];
                 };
             };
         };
@@ -9065,13 +9316,12 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Group list */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ExecutorGroupsDto"];
                 };
             };
         };
@@ -9085,13 +9335,12 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Tag list */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ExecutorTagsDto"];
                 };
             };
         };
@@ -9105,13 +9354,12 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Effective executor runtime config */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ExecutorRuntimeConfigDto"];
                 };
             };
         };
@@ -9149,13 +9397,12 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Install command */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ExecutorInstallCmdDto"];
                 };
             };
             /** @description ADMIN_API_URL is not configured on the server — no usable install command can be generated */
@@ -9403,13 +9650,13 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Token rotated successfully */
+            /** @description 新凭据一次性回显 */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ExecutorRotateTokenDto"];
                 };
             };
         };
@@ -9464,13 +9711,12 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Offline notification successful */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ExecutorOfflineDto"];
                 };
             };
             /** @description Invalid executor token */
@@ -9564,11 +9810,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /**
-             * @description Execution record list
-             *
-             *     裸 {total,items} 分页
-             */
+            /** @description 裸 {total,items} 分页 */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -9591,13 +9833,12 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Performance metrics with 24h resource-trend history (FEAT-04) */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ExecutorMetricsDto"];
                 };
             };
         };
@@ -11012,13 +11253,12 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Health check result */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["PublicHealthDto"];
                 };
             };
         };
@@ -11032,13 +11272,12 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Detailed health check result */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["DetailedHealthDto"];
                 };
             };
         };
@@ -11052,13 +11291,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Service alive */
+            /** @description {status:'healthy'}——恒 200 */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["PublicHealthDto"];
                 };
             };
         };
@@ -11072,22 +11311,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Ready to accept traffic */
+            /** @description status=ready|not_ready + timestamp；503 由 passthrough 状态码承载 */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Not ready — a dependency (DB/Redis) failed. K8s readinessProbe reads the HTTP status, so this MUST be 503 for traffic to be drained. */
-            503: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["PublicHealthDto"];
                 };
             };
         };
@@ -11101,13 +11331,12 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Service status list */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["HealthServicesDto"];
                 };
             };
         };
@@ -11121,13 +11350,12 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description System metrics */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["HealthMetricsDto"];
                 };
             };
         };

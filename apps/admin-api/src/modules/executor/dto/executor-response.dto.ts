@@ -184,6 +184,17 @@ export class ExecutorResponseDto {
 
   @ApiProperty()
   updatedAt: Date;
+
+  @ApiProperty({
+    description: "Optimistic-lock @VersionColumn (TypeORM version column)",
+  })
+  version: number;
+
+  @ApiPropertyOptional({
+    description:
+      "仅 list 面（findAll）逐行附带：自报版本是否满足 EXECUTOR_MIN_VERSION 门禁",
+  })
+  versionCompliant?: boolean;
 }
 
 /** POST /executors/heartbeat —— 心跳回执 = 执行器行 + 回调凭据 + 版本门禁读数。 */
@@ -205,6 +216,20 @@ export class ExecutorHeartbeatResponseDto extends ExecutorResponseDto {
       "Whether the self-reported version satisfies the min-version gate",
   })
   versionCompliant: boolean;
+
+  @ApiPropertyOptional({
+    description:
+      "save() 回程把 select:false 列 hydrated 带出（R7 实测）；findOne/列表读取不含",
+    nullable: true,
+    type: [String],
+  })
+  agentCapabilities?: string[] | null;
+
+  @ApiPropertyOptional({
+    description: "同上——save() 回程出现性",
+    nullable: true,
+  })
+  agentCapabilitiesUpdatedAt?: Date | null;
 }
 
 /** GET /executors/picker —— 指派对话框的轻量选项（刻意剥离能力快照）。 */
@@ -365,4 +390,35 @@ export class ExecutorPullResponseDto {
     items: { type: "object", additionalProperties: true },
   })
   commands?: Array<Record<string, unknown>>;
+}
+
+/** POST /executors/register —— 注册回执：executor 行 + 注册期一次性 token 语义。 */
+export class ExecutorRegisterResponseDto extends ExecutorResponseDto {
+  @ApiPropertyOptional({
+    description:
+      "R9 幂等语义：同 (address, startupId) 重注册返回 null（不轮换）；首次注册/真实重启才发新 token",
+    nullable: true,
+  })
+  perExecutorToken?: string | null;
+
+  @ApiProperty({ description: "回调鉴权 secret（HMAC 源），执行器侧持久化" })
+  tokenHash: string;
+
+  @ApiProperty({
+    description: "协议版本是否 ≥ PROTOCOL_SUPPORTED_MIN（仅回显，不拒绝注册）",
+  })
+  protocolCompliant: boolean;
+
+  @ApiPropertyOptional({
+    description: "save() 回程 hydrated（R7 实测）",
+    nullable: true,
+    type: [String],
+  })
+  agentCapabilities?: string[] | null;
+
+  @ApiPropertyOptional({
+    description: "save() 回程 hydrated（R7 实测）",
+    nullable: true,
+  })
+  agentCapabilitiesUpdatedAt?: Date | null;
 }
