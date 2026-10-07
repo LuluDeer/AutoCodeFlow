@@ -116,9 +116,28 @@ export function collect(spec) {
             ? Object.keys(schemaNode.properties).length
             : null;
         const refs = hasContent ? refsOf(schemaNode) : [];
+        // R7（2026-10-07）第二形态空壳：schema 只有 example/examples（PK-15
+        // 的 example-only 装饰器残留）——没有任何类型信息，前端生成不出字段，
+        // 与 properties:{} 同罪。有 $ref/properties/items/additionalProperties/
+        // oneOf/anyOf/allOf/format/nullable 结构的都算有类型。
+        const typeBearing =
+          hasContent &&
+          typeof schemaNode === 'object' &&
+          ['$ref', 'properties', 'items', 'additionalProperties', 'oneOf', 'anyOf', 'allOf', 'format', 'nullable'].some(
+            (k) => k in schemaNode,
+          ) &&
+          (schemaNode.type === undefined || schemaNode.type !== 'object' || 'properties' in schemaNode || 'additionalProperties' in schemaNode);
+        const exampleOnly =
+          hasContent &&
+          typeof schemaNode === 'object' &&
+          !typeBearing &&
+          ('example' in schemaNode || 'examples' in schemaNode) &&
+          Object.keys(schemaNode).every((k) => ['example', 'examples', 'description'].includes(k));
         const hollow =
           hasContent &&
-          (inlineProps === 0 || (inlineProps === null && refs.length > 0 && refs.every((r) => emptySchemas.has(r))));
+          (inlineProps === 0 ||
+            exampleOnly ||
+            (inlineProps === null && refs.length > 0 && refs.every((r) => emptySchemas.has(r))));
         rows.push({
           key: `${method.toUpperCase()} ${p} ${code}`,
           tag,
