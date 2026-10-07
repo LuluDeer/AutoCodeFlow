@@ -474,19 +474,36 @@ export function tasksCommand(): Command {
 
   // acf task create
   cmd.command('create')
-    .description('Create a new task (JSON payload via --json or --file)')
-    .requiredOption('--json <body>', 'Task body as JSON string')
-    .option('--file <path>', 'Read task body from a JSON file (overrides --json)')
+    .description('Create a new task (JSON payload via --body or --file)')
+    // 2026-10-07 deprecation：载荷旗标由 --json 更名 --body——--json 将在下一个
+    // 大版本收敛为纯布尔「输出 JSON」旗标（与 task list/show/trigger 等命令的
+    // 既有语义统一）。旧名本版本仍可用（与 --body 互斥），stderr 打警告。
+    // 二者都声明为可选（requiredOption 会让 --json 过渡路径在 commander 层就
+    // 被"缺必填"拒绝），缺一校验在 action 里做。
+    .option('--body <json>', 'Task body as JSON string (required unless --file is given)')
+    .option('--json <body>', 'DEPRECATED (renamed to --body): Task body as JSON string. In the next major version --json becomes a boolean output flag')
+    .option('--file <path>', 'Read task body from a JSON file (overrides --body/--json)')
     .option('--executor <id>', 'Pin the task to a specific executor ID (uuid); mutually exclusive with executeMode=broadcast')
     .action(async (opts) => {
+      if (opts.body !== undefined && opts.json !== undefined) {
+        emitUsageError('--body and --json (deprecated alias) are mutually exclusive — pass only --body');
+      }
+      if (opts.body === undefined && opts.json === undefined && !opts.file) {
+        emitUsageError('Missing required task body — pass --body <json> (or --file <path>)');
+      }
       const spinner = ora('Creating task…').start();
       try {
+        if (opts.json !== undefined) {
+          process.stderr.write(
+            chalk.yellow('⚠ --json <body> is deprecated and will be removed in the next major version (it will become a boolean output flag). Use --body <json> instead.\n'),
+          );
+        }
         const fs = await import('fs/promises');
         // 本地 payload 层错误（文件读不了/JSON 坏）= 用法错误（退出码 2），
         // 与服务端拒绝（1）区分；口径与 apps.ts 的 loadJsonBody 一致。
         let raw: string;
         try {
-          raw = opts.file ? await fs.readFile(opts.file, 'utf-8') : opts.json;
+          raw = opts.file ? await fs.readFile(opts.file, 'utf-8') : (opts.body ?? opts.json);
         } catch (err) {
           throw new UsageError(`Cannot read payload file: ${opts.file} (${err instanceof Error ? err.message : String(err)})`);
         }
@@ -508,19 +525,32 @@ export function tasksCommand(): Command {
 
   // acf task update <id>
   cmd.command('update <id>')
-    .description('Update a task (JSON payload via --json or --file)')
-    .requiredOption('--json <body>', 'Task patch body as JSON string')
-    .option('--file <path>', 'Read task patch body from a JSON file (overrides --json)')
-    .option('--executor <id>', 'Pin the task to a specific executor ID (uuid); pass --json {"executorId":null} to clear. Mutually exclusive with executeMode=broadcast')
+    .description('Update a task (JSON payload via --body or --file)')
+    // 2026-10-07 deprecation：同 task create——载荷更名 --body，旧名过渡一版。
+    .option('--body <json>', 'Task patch body as JSON string (required unless --file is given)')
+    .option('--json <body>', 'DEPRECATED (renamed to --body): Task patch body as JSON string. In the next major version --json becomes a boolean output flag')
+    .option('--file <path>', 'Read task patch body from a JSON file (overrides --body/--json)')
+    .option('--executor <id>', 'Pin the task to a specific executor ID (uuid); pass --body {"executorId":null} to clear. Mutually exclusive with executeMode=broadcast')
     .action(async (id, opts) => {
+      if (opts.body !== undefined && opts.json !== undefined) {
+        emitUsageError('--body and --json (deprecated alias) are mutually exclusive — pass only --body');
+      }
+      if (opts.body === undefined && opts.json === undefined && !opts.file) {
+        emitUsageError('Missing required task patch body — pass --body <json> (or --file <path>)');
+      }
       const spinner = ora('Updating task…').start();
       try {
+        if (opts.json !== undefined) {
+          process.stderr.write(
+            chalk.yellow('⚠ --json <body> is deprecated and will be removed in the next major version (it will become a boolean output flag). Use --body <json> instead.\n'),
+          );
+        }
         const fs = await import('fs/promises');
         // 本地 payload 层错误（文件读不了/JSON 坏）= 用法错误（退出码 2），
         // 与服务端拒绝（1）区分；口径与 apps.ts 的 loadJsonBody 一致。
         let raw: string;
         try {
-          raw = opts.file ? await fs.readFile(opts.file, 'utf-8') : opts.json;
+          raw = opts.file ? await fs.readFile(opts.file, 'utf-8') : (opts.body ?? opts.json);
         } catch (err) {
           throw new UsageError(`Cannot read payload file: ${opts.file} (${err instanceof Error ? err.message : String(err)})`);
         }

@@ -687,6 +687,7 @@ export class ApplicationController {
             triggerType: DeploymentTriggerType.UPGRADE,
           }
         : undefined,
+      dto?.version,
     );
   }
 

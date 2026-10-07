@@ -699,4 +699,108 @@ describe("AppDeploymentService rollout（DEP-02/DEP-03）", () => {
       expect((service as any).rolloutBatches.has("app-1")).toBe(true);
     });
   });
+
+  describe("upgradeAllWithRollout：版本定向灰度（渐进回滚，2026-10-07 立项）", () => {
+    const versionRow = {
+      id: "ver-1",
+      applicationId: "app-1",
+      version: "1.9.0",
+      status: "released",
+      gitCommit: "old-commit",
+      snapshot: {
+        packageUrl: "http://host/uploads/old.zip",
+        entrypoint: "node old.js",
+        env: { FOO: "old" },
+      },
+    };
+
+    it("缺省（无 version）：零变化——不查 versionRepo、不恢复快照", async () => {
+      const deployments = [row("d1")];
+      repo.find.mockResolvedValue(deployments);
+      const findOne = jest.spyOn(versionRepo, "findOne");
+      const upSpy = jest
+        .spyOn(service, "upgrade")
+        .mockResolvedValue(deployments[0]);
+
+      const result = await service.upgradeAllWithRollout("app-1", null);
+
+      expect(result.ok).toBe(true);
+      expect(result.version).toBeUndefined();
+      expect(findOne).not.toHaveBeenCalled();
+      expect(appService.update).not.toHaveBeenCalled();
+      expect(upSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it("version 指向不存在版本 → 400", async () => {
+      versionRepo.findOne.mockResolvedValue(null);
+      await expect(
+        service.upgradeAllWithRollout("app-1", null, undefined, "9.9.9"),
+      ).rejects.toThrow('Version "9.9.9" not found for this application');
+      expect(appService.update).not.toHaveBeenCalled();
+    });
+
+    it("version 非 released → 400", async () => {
+      versionRepo.findOne.mockResolvedValue({
+        ...versionRow,
+        status: "superseded",
+      });
+      await expect(
+        service.upgradeAllWithRollout("app-1", null, undefined, "1.9.0"),
+      ).rejects.toThrow("Only released application versions");
+      expect(appService.update).not.toHaveBeenCalled();
+    });
+
+    it("version 与当前相同：跳过快照恢复，纯升级语义", async () => {
+      repo.find.mockResolvedValue([row("d1")]);
+      versionRepo.findOne.mockResolvedValue({
+        ...versionRow,
+        version: "2.0.0",
+      });
+      jest.spyOn(service, "upgrade").mockResolvedValue(row("d1"));
+
+      const result = await service.upgradeAllWithRollout(
+        "app-1",
+        null,
+        undefined,
+        "2.0.0",
+      );
+
+      expect(result.ok).toBe(true);
+      expect(result.version).toBe("2.0.0");
+      expect(appService.update).not.toHaveBeenCalled();
+    });
+
+    it("version 指向历史版本：快照恢复 app 字段（与 rollbackApplication 同映射）再走全量升级，响应回显 version", async () => {
+      repo.find.mockResolvedValue([row("d1"), row("d2")]);
+      versionRepo.findOne.mockResolvedValue(versionRow);
+      const upSpy = jest
+        .spyOn(service, "upgrade")
+        .mockResolvedValue(row("d1"));
+
+      const result = await service.upgradeAllWithRollout(
+        "app-1",
+        null,
+        undefined,
+        "1.9.0",
+      );
+
+      expect(appService.update).toHaveBeenCalledWith(
+        "app-1",
+        expect.objectContaining({
+          version: "1.9.0",
+          gitCommit: "old-commit",
+          packageUrl: "http://host/uploads/old.zip",
+          entrypoint: "node old.js",
+          env: { FOO: "old" },
+        }),
+      );
+      expect(result).toMatchObject({
+        ok: true,
+        total: 2,
+        succeeded: 2,
+        version: "1.9.0",
+      });
+      expect(upSpy).toHaveBeenCalledTimes(2);
+    });
+  });
 });

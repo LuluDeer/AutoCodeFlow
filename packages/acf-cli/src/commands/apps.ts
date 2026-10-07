@@ -343,7 +343,7 @@ export function appsCommand(): Command {
   // --version。批次由服务端异步推进（心跳确认 → 健康探测 → 提升），受理 ≠ 完成。
   cmd.command('upgrade-all <appId>')
     .description(
-      "Trigger a rolling upgrade of all RUNNING deployments to the application's current version. Default = full upgrade (pre-DEP-02 semantics, no body). Canary batches advance asynchronously on the server — acceptance is not completion",
+      "Trigger a rolling upgrade of all RUNNING deployments to the application's current version (or --version). Default = full upgrade (pre-DEP-02 semantics, no body). Canary batches advance asynchronously on the server — acceptance is not completion",
     )
     .option('--strategy <strategy>', 'Rollout strategy: all (default) | canary (first batch → heartbeat confirm → health probe → auto-promote the rest, DEP-02)')
     .option(
@@ -357,8 +357,12 @@ export function appsCommand(): Command {
         return n;
       },
     )
+    .option(
+      '--version <version>',
+      'Target a historical released version (version string, not uuid) — enables gradual rollback. Default: the application\'s current version. The app record is restored from that version snapshot before the rollout starts',
+    )
     .option('--json', 'Emit raw JSON (CI-consumable)')
-    .action(async (appId: string, opts: { strategy?: string; percentage?: number; json?: boolean }) => {
+    .action(async (appId: string, opts: { strategy?: string; percentage?: number; version?: string; json?: boolean }) => {
       const strategy = opts.strategy ?? 'all';
       if (strategy !== 'all' && strategy !== 'canary') {
         emitUsageError(`Unknown rollout strategy "${strategy}" — expected one of: all | canary`);
@@ -373,12 +377,15 @@ export function appsCommand(): Command {
         const body =
           strategy === 'canary'
             ? {
+                ...(opts.version !== undefined ? { version: opts.version } : {}),
                 rollout: {
                   strategy,
                   ...(opts.percentage !== undefined ? { percentage: opts.percentage } : {}),
                 },
               }
-            : undefined;
+            : opts.version !== undefined
+              ? { version: opts.version }
+              : undefined;
         const r = await post<UpgradeAllResult>(`/applications/${appId}/upgrade-all`, body);
         spinner.stop();
         if (opts.json) {

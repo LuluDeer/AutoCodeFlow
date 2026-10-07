@@ -628,7 +628,8 @@ describe('acf app upload', () => {
 // P2: acf app upgrade-all —— POST /applications/:id/upgrade-all（DEP-02 灰度）。
 // 契约：body 全可选，缺省（不传 body）= all 全量、既有语义逐字节保持；canary
 // body={rollout:{strategy:'canary',percentage?}}（1-100，服务端缺省 50）。
-// UpgradeAllDto 白名单只有 rollout —— 无 per-call 版本覆盖（不存在 --version）。
+// 2026-10-07：UpgradeAllDto 增可选 version（版本定向灰度/渐进回滚）——
+// --version <v> 时 body 带顶层 version；缺省不带（既有语义逐字节保持）。
 // ---------------------------------------------------------------------------
 describe('acf app upgrade-all', () => {
   it('缺省（无 flags）→ 不传 body（既有全量语义逐字节保持），输出成功/失败计数', async () => {
@@ -686,6 +687,28 @@ describe('acf app upgrade-all', () => {
     await run(appsCommand(), 'app upgrade-all app1 --strategy canary');
     expect(err.join('\n')).toContain('another rollout batch is in flight');
     expect(process.exitCode).toBe(1);
+  });
+
+  it('--version <v>：all 模式 body={version}（渐进回滚，2026-10-07）', async () => {
+    captureStdout();
+    mockedPost.mockResolvedValueOnce({ ok: true, total: 3, succeeded: 3, failed: 0, version: '1.9.0' });
+    await run(appsCommand(), 'app upgrade-all app1 --version 1.9.0');
+    expect(mockedPost).toHaveBeenCalledWith('/applications/app1/upgrade-all', { version: '1.9.0' });
+    expect(process.exitCode === undefined || process.exitCode === 0).toBe(true);
+  });
+
+  it('--version + --strategy canary：version 与 rollout 同层（顶层 version + 嵌套 rollout）', async () => {
+    captureStdout();
+    mockedPost.mockResolvedValueOnce({
+      ok: true, total: 3, succeeded: 1, failed: 0,
+      version: '1.9.0',
+      rollout: { batchId: 'b2', strategy: 'canary', canaryIds: ['d1'], promotedIds: [] },
+    });
+    await run(appsCommand(), 'app upgrade-all app1 --strategy canary --version 1.9.0');
+    expect(mockedPost).toHaveBeenCalledWith('/applications/app1/upgrade-all', {
+      version: '1.9.0',
+      rollout: { strategy: 'canary' },
+    });
   });
 
   it('--percentage 缺省 all 策略 → 用法错误（码 2），请求不发出', async () => {

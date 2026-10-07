@@ -301,7 +301,7 @@ describe('acf task create --executor (N20)', () => {
     mockedPost.mockResolvedValueOnce({ id: 't1', name: 'demo', status: 'paused' });
     await run(
       tasksCommand(),
-      'task create --json {"name":"demo","triggerType":"api"} --executor 550e8400-e29b-41d4-a716-446655440000',
+      'task create --body {"name":"demo","triggerType":"api"} --executor 550e8400-e29b-41d4-a716-446655440000',
     );
     expect(mockedPost).toHaveBeenCalledWith('/tasks', {
       name: 'demo',
@@ -312,9 +312,57 @@ describe('acf task create --executor (N20)', () => {
 
   it('leaves the body untouched when --executor is absent', async () => {
     mockedPost.mockResolvedValueOnce({ id: 't1', name: 'demo', status: 'paused' });
-    await run(tasksCommand(), 'task create --json {"name":"demo","triggerType":"api"}');
+    await run(tasksCommand(), 'task create --body {"name":"demo","triggerType":"api"}');
     const body = mockedPost.mock.calls.at(-1)![1] as Record<string, unknown>;
     expect(body).not.toHaveProperty('executorId');
+  });
+});
+
+describe('task create/update 载荷旗标 --body 更名（2026-10-07 deprecation）', () => {
+  // 警告/错误走 process.stderr.write（ui.ts 口径），直接 spy stderr。
+  // afterEach 恢复，防止 spy 泄漏污染同文件后续测试的 stderr 断言。
+  function captureStderrWrite(): string[] {
+    const logs: string[] = [];
+    vi.spyOn(process.stderr, 'write').mockImplementation(((chunk: unknown) => {
+      logs.push(String(chunk));
+      return true;
+    }) as never);
+    return logs;
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('--body 正常发载荷且无 deprecation 警告', async () => {
+    const err = captureStderrWrite();
+    mockedPost.mockResolvedValueOnce({ id: 't1', name: 'demo', status: 'paused' });
+    await run(tasksCommand(), 'task create --body {"name":"demo","triggerType":"api"}');
+    expect(mockedPost).toHaveBeenCalledWith('/tasks', { name: 'demo', triggerType: 'api' });
+    expect(err.join('')).not.toContain('deprecated');
+  });
+
+  it('--json 旧名仍可用（过渡期），stderr 打 deprecation 警告并指向 --body', async () => {
+    const err = captureStderrWrite();
+    mockedPost.mockResolvedValueOnce({ id: 't1', name: 'demo', status: 'paused' });
+    await run(tasksCommand(), 'task create --json {"name":"demo","triggerType":"api"}');
+    expect(mockedPost).toHaveBeenCalledWith('/tasks', { name: 'demo', triggerType: 'api' });
+    expect(err.join('')).toContain('--body');
+    expect(err.join('')).toContain('deprecated');
+  });
+
+  it('--body 与 --json 同时给出 → 用法错误（码 2），请求不发出', async () => {
+    // emitUsageError 走 console.error（ui.ts 口径）；deprecation 警告走 stderr.write
+    const err = captureStderrWrite();
+    const conErr: string[] = [];
+    vi.spyOn(console, 'error').mockImplementation(((...a: unknown[]) => {
+      conErr.push(a.map((x) => String(x)).join(' '));
+    }) as never);
+    await expect(
+      run(tasksCommand(), 'task create --body {"name":"a"} --json {"name":"b"}'),
+    ).rejects.toThrow(/process\.exit\(2\)/);
+    expect(conErr.join('\n')).toContain('mutually exclusive');
+    expect(mockedPost).not.toHaveBeenCalled();
   });
 });
 
@@ -323,7 +371,7 @@ describe('acf task update --executor (N20)', () => {
     mockedPatch.mockResolvedValueOnce({ id: 't1', name: 'demo', status: 'active' });
     await run(
       tasksCommand(),
-      'task update t1 --json {"description":"d"} --executor 550e8400-e29b-41d4-a716-446655440000',
+      'task update t1 --body {"description":"d"} --executor 550e8400-e29b-41d4-a716-446655440000',
     );
     expect(mockedPatch).toHaveBeenCalledWith('/tasks/t1', {
       description: 'd',

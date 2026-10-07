@@ -6,6 +6,7 @@ import {
   IsOptional,
   IsString,
   Max,
+  MaxLength,
   Min,
   ValidateNested,
 } from "class-validator";
@@ -80,7 +81,7 @@ export class RolloutStrategyDto {
   percentage?: number;
 }
 
-/** POST /applications/:id/upgrade-all 请求体（全可选，兼容既有无 body 调用）。 */
+/** POST /applications/:id/upgrade-all 请求体（全可选，兼容既有不传 body 调用）。 */
 export class UpgradeAllDto {
   @ApiPropertyOptional({ type: RolloutStrategyDto })
   @IsOptional()
@@ -88,6 +89,25 @@ export class UpgradeAllDto {
   @ValidateNested()
   @Type(() => RolloutStrategyDto)
   rollout?: RolloutStrategyDto;
+
+  /**
+   * 版本定向灰度（2026-10-07 拍板立项）：把灰度目标从「当前 latest」换成指定
+   * 的**历史 released 版本**（version 号字符串，非 uuid）。主要场景是**渐进
+   * 回滚**——N 实例应用发现新版本有问题，先灰度回滚 1 台观察，而
+   * rollbackApplication 是全量动作。实现语义：先按该版本快照恢复应用字段
+   * （与 rollbackApplication 同一映射），再走既有 rollout 全套（DEP-02
+   * 心跳确认/健康探测/失败自动回滚照常生效）；version 与应用当前 version
+   * 相同时跳过恢复（「缺省=latest 逐字节不变」的同版本显式请求也保持纯升级）。
+   */
+  @ApiPropertyOptional({
+    description:
+      "Target a historical released version (version STRING, not uuid) for this rollout — enables gradual rollback. Default: the application's current version",
+    maxLength: 64,
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  version?: string;
 }
 
 /**

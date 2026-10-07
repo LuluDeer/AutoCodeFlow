@@ -638,6 +638,40 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     return this.classifyReleaseTrigger(deployment);
   }
 
+  /**
+   * 版本快照 → 应用字段恢复映射（rollbackApplication 与版本定向灰度共用）。
+   * 恒返回至少含 version/runtime 两键的对象（调用方直接 update）。
+   */
+  private buildVersionRestoreDto(
+    app: { runtime: string },
+    version: {
+      version: string;
+      gitCommit?: string | null;
+      snapshot?: Record<string, any> | null;
+    },
+  ): Record<string, any> | null {
+    const snapshot = version.snapshot ?? {};
+    const updateDto: Record<string, any> = {
+      version: version.version,
+      runtime: app.runtime,
+    };
+    if (typeof version.gitCommit === "string")
+      updateDto.gitCommit = version.gitCommit;
+    if (typeof snapshot.gitBranch === "string")
+      updateDto.gitBranch = snapshot.gitBranch;
+    if (typeof snapshot.packageUrl === "string")
+      updateDto.packageUrl = snapshot.packageUrl;
+    if (typeof snapshot.runtime === "string")
+      updateDto.runtime = snapshot.runtime;
+    if (snapshot.env && typeof snapshot.env === "object")
+      updateDto.env = snapshot.env as Record<string, string>;
+    if (typeof snapshot.entrypoint === "string")
+      updateDto.entrypoint = snapshot.entrypoint;
+    if (snapshot.manifest && typeof snapshot.manifest === "object")
+      updateDto.manifest = snapshot.manifest as Record<string, any>;
+    return updateDto;
+  }
+
   async rollbackApplication(
     appId: string,
     targetId: string,
@@ -665,27 +699,10 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
         );
       }
 
-      const snapshot = version.snapshot ?? {};
-      const updateDto: Record<string, any> = {
-        version: version.version,
-        runtime: app.runtime,
-      };
-      if (typeof version.gitCommit === "string")
-        updateDto.gitCommit = version.gitCommit;
-      if (typeof snapshot.gitBranch === "string")
-        updateDto.gitBranch = snapshot.gitBranch;
-      if (typeof snapshot.packageUrl === "string")
-        updateDto.packageUrl = snapshot.packageUrl;
-      if (typeof snapshot.runtime === "string")
-        updateDto.runtime = snapshot.runtime;
-      if (snapshot.env && typeof snapshot.env === "object")
-        updateDto.env = snapshot.env as Record<string, string>;
-      if (typeof snapshot.entrypoint === "string")
-        updateDto.entrypoint = snapshot.entrypoint;
-      if (snapshot.manifest && typeof snapshot.manifest === "object")
-        updateDto.manifest = snapshot.manifest as Record<string, any>;
-
-      const updatedApp = await this.appService.update(appId, updateDto);
+      const updatedApp = await this.appService.update(
+        appId,
+        this.buildVersionRestoreDto(app, version)!,
+      );
       const result = await this.upgradeRunningDeployments(
         appId,
         trigger ?? {
@@ -2127,11 +2144,14 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     appId: string,
     rollout?: { strategy?: "canary" | "all"; percentage?: number } | null,
     trigger?: DeploymentTriggerContext,
+    version?: string,
   ): Promise<{
     ok: boolean;
     total: number;
     succeeded: number;
     failed: number;
+    /** version 定向灰度时回显实际目标版本（快照恢复后 app 的 version）。 */
+    version?: string;
     rollout?: {
       batchId: string;
       strategy: "canary" | "all";
@@ -2141,6 +2161,32 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       blockedReason?: string;
     };
   }> {
+    // 版本定向灰度（2026-10-07 拍板立项）：先按指定 released 版本快照恢复
+    // 应用字段（与 rollbackApplication 同一映射），再走既有 rollout 全套。
+    // version 与当前 version 相同则跳过恢复——「缺省=latest 逐字节不变」的
+    // 同版本显式请求保持纯升级语义。
+    let targetVersion: string | undefined;
+    if (version !== undefined && version !== null && String(version).trim() !== "") {
+      const row = await this.versionRepo.findOne({
+        where: { applicationId: appId, version: String(version).trim() },
+      });
+      if (!row) {
+        throw new BadRequestException(
+          `Version "${version}" not found for this application`,
+        );
+      }
+      if (row.status !== "released") {
+        throw new BadRequestException(
+          "Only released application versions can be targeted by a rollout",
+        );
+      }
+      const app = await this.appService.findByIdRaw(appId);
+      if (app.version !== row.version) {
+        const updateDto = this.buildVersionRestoreDto(app, row);
+        if (updateDto) await this.appService.update(appId, updateDto);
+      }
+      targetVersion = row.version;
+    }
     const deployments = await this.findRunningByApp(appId);
     const strategy = rollout?.strategy ?? "all";
 
@@ -2157,6 +2203,7 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
           total: deployments.length,
           succeeded: 0,
           failed: 0,
+          ...(targetVersion ? { version: targetVersion } : {}),
           rollout: {
             batchId: String(
               (inFlight[0].rolloutMeta as Record<string, any> | null)
@@ -2182,6 +2229,7 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
         total: deployments.length,
         succeeded,
         failed: deployments.length - succeeded,
+        ...(targetVersion ? { version: targetVersion } : {}),
       };
     }
 
@@ -2233,6 +2281,7 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
           total: deployments.length,
           succeeded: 0,
           failed: 1,
+          ...(targetVersion ? { version: targetVersion } : {}),
           rollout: {
             batchId,
             strategy: "canary",
@@ -2255,6 +2304,7 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       total: deployments.length,
       succeeded: batch.upgradedIds.length,
       failed: 0,
+      ...(targetVersion ? { version: targetVersion } : {}),
       rollout: {
         batchId,
         strategy: "canary",
