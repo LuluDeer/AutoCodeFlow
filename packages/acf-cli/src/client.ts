@@ -114,10 +114,34 @@ function isAuthPath(url?: string): boolean {
   return !!url && url.includes("/auth/");
 }
 
+/**
+ * TOTP-PTY-smoke（2026-10-07）实测抓出的 P1：admin-api 有全局 `api` 前缀
+ * （main.ts setGlobalPrefix），而 CLI 的默认 URL 与请求路径都不带 `/api`——
+ * 开箱即用形态对标准部署 100% 404。与 node-sdk 的双形态归一（
+ * stripTrailingApiSuffix 先例）同思路：baseUrl 缺 `/api` 尾段时请求期补上；
+ * 已带 `/api`（按 autoapp-skill 文档约定传公网地址的用户）逐字节原样。
+ * 已知边界：经「剥 /api 前缀」反代的部署若把根地址（不带 /api）喂给 CLI，
+ * 归一会产生双前缀 404——这类部署请传剥前缀后的源站地址（README 已注明）。
+ */
+export function normalizeApiBase(url: string): string {
+  let out = url.replace(/\/+$/, "");
+  try {
+    const u = new URL(out);
+    if (!u.pathname.replace(/\/+$/, "").endsWith("/api")) {
+      u.pathname = u.pathname.replace(/\/+$/, "") + "/api";
+    }
+    out = u.toString().replace(/\/+$/, "");
+  } catch {
+    // 相对/非法 URL（测试桩场景）：字符串级兜底
+    if (!out.endsWith("/api")) out += "/api";
+  }
+  return out;
+}
+
 function getClient(): AxiosInstance {
   if (!_client) {
     _client = axios.create({
-      baseURL: getApiUrl(),
+      baseURL: normalizeApiBase(getApiUrl()),
       timeout: 30_000,
     });
     // Token 逐请求读取（不再在实例创建时烘焙）：同进程内 login / 刷新轮换

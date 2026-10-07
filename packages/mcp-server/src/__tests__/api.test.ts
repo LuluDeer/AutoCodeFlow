@@ -86,7 +86,7 @@ describe("apiRequest", () => {
     const result = await apiRequest<{ id: string }>("GET", "/tasks/t1");
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0];
-    expect(url).toBe("http://localhost:3105/tasks/t1");
+    expect(url).toBe("http://localhost:3105/api/tasks/t1"); // normalizeApiBase：默认 URL 补 /api（TOTP-PTY-smoke 修复）
     expect(init.method).toBe("GET");
     expect(init.headers.Authorization).toMatch(/^Bearer /);
     expect(result).toEqual({ id: "t1" });
@@ -95,7 +95,7 @@ describe("apiRequest", () => {
   it("sends POST with a JSON body", async () => {
     await apiRequest("POST", "/tasks/t1/trigger", { params: { a: 1 } });
     const [url, init] = fetchMock.mock.calls[0];
-    expect(url).toBe("http://localhost:3105/tasks/t1/trigger");
+    expect(url).toBe("http://localhost:3105/api/tasks/t1/trigger");
     expect(init.method).toBe("POST");
     expect(JSON.parse(init.body)).toEqual({ params: { a: 1 } });
   });

@@ -57,6 +57,7 @@ vi.mock("../config.js", () => ({
 import axios from "axios";
 import {
   get,
+  normalizeApiBase,
   post,
   put,
   patch,
@@ -502,5 +503,22 @@ describe("contract-fixtures (QA-07 shared vectors)", () => {
       if (v.detail) expect(msg).toContain(v.detail);
       else expect(msg).not.toMatch(/undefined/);
     }
+  });
+});
+
+// ── TOTP-PTY-smoke（2026-10-07）抓出的 P1 修复钉：baseUrl 双形态归一 ──────
+// admin-api 全局 `api` 前缀 + CLI 默认 URL 不带 /api → 开箱即用 100% 404。
+// normalizeApiBase 缺尾段补 /api，已带原样（对齐 node-sdk 归一先例）。
+describe("normalizeApiBase (P1: default URL 404 against standard deployments)", () => {
+  it.each([
+    ["http://localhost:3105", "http://localhost:3105/api"],
+    ["http://localhost:3105/", "http://localhost:3105/api"],
+    ["http://localhost:3105///", "http://localhost:3105/api"],
+    ["http://localhost:3105/api", "http://localhost:3105/api"],
+    ["http://localhost:3105/api/", "http://localhost:3105/api"],
+    ["https://acf.example.com", "https://acf.example.com/api"],
+    ["https://acf.example.com/api", "https://acf.example.com/api"],
+  ])("%s → %s", (input, expected) => {
+    expect(normalizeApiBase(input)).toBe(expected);
   });
 });

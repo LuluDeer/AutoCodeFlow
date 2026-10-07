@@ -21,6 +21,13 @@
 
 ## 战役三遗留（下轮候选）
 
+> **2026-10-07 状态标注**（防按旧文档重复排任务）：#1 已在 5969565d 清掉
+> （幂等复跑零 diff 复核）；#3 已文档化登记（40bd93a8，deployment.md Windows
+> §4b）；#4 已实施（1514b91b，history-watcher）；#5 已真机收口
+> （VERIFY-2026-10-07-cli-totp-pty-smoke.md——顺带抓出并修复 CLI/mcp 默认
+> URL 缺 /api 前缀的 P1）；#6 已升级实施（8aa98dfb，实扫抓出 2 条真漂移并
+> 修正）。仍开放：#2（需产品拍板）、#7（破坏性需 deprecation 周期）。
+
 1. **openapi.json 重导出**（需 DB+Redis 环境；导出后必须 `check-openapi-response-schema.mjs --update`，否则 CI drift 红）——战役一遗留，仍是首项。
 2. **升级灰度的 --version 语义**：UpgradeAllDto 不收 version（CLI 已在 help 注明）；若产品需要「指定版本灰度」，服务端先立 DTO 任务。
 3. **python win32 内存上限**（Job Object，L）或文档化登记。

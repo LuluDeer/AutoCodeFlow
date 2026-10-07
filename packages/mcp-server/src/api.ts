@@ -8,6 +8,26 @@ import fetch from 'node-fetch';
 // Config
 // ---------------------------------------------------------------------------
 export const API_URL = process.env.AUTOCODEFLOW_API_URL || 'http://localhost:3105';
+
+/**
+ * TOTP-PTY-smoke（2026-10-07）实测抓出的缺陷（与 acf-cli 同源同修）：
+ * admin-api 有全局 `api` 前缀，默认 URL（无 /api）对所有请求 404。
+ * baseUrl 缺 /api 尾段时请求期补上；已带则逐字节原样（对齐 node-sdk
+ * stripTrailingApiSuffix 的双形态归一先例）。
+ */
+export function normalizeApiBase(url: string): string {
+  let out = url.trim().replace(/\/+$/, '');
+  try {
+    const u = new URL(out);
+    if (!u.pathname.replace(/\/+$/, '').endsWith('/api')) {
+      u.pathname = u.pathname.replace(/\/+$/, '') + '/api';
+    }
+    out = u.toString().replace(/\/+$/, '');
+  } catch {
+    if (!out.endsWith('/api')) out += '/api';
+  }
+  return out;
+}
 export const API_TOKEN = process.env.AUTOCODEFLOW_API_TOKEN || '';
 
 /**
@@ -76,7 +96,7 @@ export async function apiRequest<T>(
   const signal = AbortSignal.timeout(timeoutMs);
   let res;
   try {
-    res = await fetch(`${API_URL}${path}`, {
+    res = await fetch(`${normalizeApiBase(API_URL)}${path}`, {
       method,
       headers: {
         'Content-Type': 'application/json',
