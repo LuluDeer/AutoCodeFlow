@@ -410,10 +410,13 @@
 #     warn（callback.spec.ts 反证用例钉住）。载荷照发，线上语义零变化。
 #   按 ADR-005 同 commit 重打回填：本机(Windows) node 24 ncc 0.45 产出
 #   （4173887 → 4176817 bytes），同目录重复构建两次逐字节一致。
-#   - d2af6f6b…：协议分域重构（b1831815）给 executor-node/package.json 加
-#     "license": "AGPL-3.0-only" 字段——config.ts `import pkg from
-#     '../package.json'` 使其被 ncc 内联进 bundle，字节随之变化（源码 *.ts
-#     零改动，source-digest 不变 c6f06940…）；本机(Linux) ncc 0.45 重打，与
-#     CI Ubuntu 重打逐字节一致（d2af6f6b…）。
+#   - 43feb49c…：两项同批——①协议分域重构（b1831815）给
+#     executor-node/package.json 加 "license": "AGPL-3.0-only"，config.ts
+#     `import pkg from '../package.json'` 使其被 ncc 内联，字节随之变化
+#     （源码 *.ts 零改动，source-digest 不变 c6f06940…）；②proxy-addr
+#     2.0.7→2.0.8（GHSA-jqcg critical 清偿）经 express 进入 bundle 依赖图。
+#     本机(Linux) ncc 0.45 重打，与 CI Ubuntu 重打逐字节一致（43feb49c…）。
+#     ⚠️ 首轮回填 d2af6f6b… 漏算②（重打在 lockfile bump 之前），CI 二轮抓出
+#     ——回填必须在**全部**依赖/源码变更落盘之后执行。
 source-digest: c6f06940ed4397702ee2426a7010c68120bae8159261d3c0d4b11faa8314a6f3
-d2af6f6b446069044a90542338a2343b10418557ba1dddba10ead54cfe492291  index.js
+43feb49caad4c1c930baba7c2fdad37ea46444f0e70423436b19ea92abbc8881  index.js
