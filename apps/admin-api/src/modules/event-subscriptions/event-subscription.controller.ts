@@ -20,6 +20,7 @@ import {
   ApiPropertyOptional,
   ApiResponse,
   ApiTags,
+  ApiOkResponse,
 } from "@nestjs/swagger";
 import { Request } from "express";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
@@ -44,6 +45,7 @@ import {
 import { WriteGuard } from "../../common/decorators/write-guard.decorator";
 import { Roles } from "../../common/decorators/roles.decorator";
 import { UserRole } from "../users/entities/user.entity";
+import { SimpleOkResponseDto } from "../auth/dto/misc-response.dto";
 
 /**
  * FEAT-07: 出站事件订阅端点（全部走全局 JwtAuthGuard）。
@@ -160,8 +162,8 @@ export class EventSubscriptionController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: "Delete a subscription (dead letters cascade)" })
   @ApiParam({ name: "id", description: "Subscription UUID" })
-  @ApiResponse({ status: 200, description: "Deleted" })
   @ApiResponse({ status: 403, description: "Not the owner" })
+  @ApiOkResponse({ type: SimpleOkResponseDto })
   async remove(
     @Param("id", ParseUUIDPipe) id: string,
     @Req() req: Request & { user: AuthUser },

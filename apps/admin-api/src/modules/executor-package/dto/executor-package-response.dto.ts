@@ -113,3 +113,73 @@ export class ExecutorPackageListDto {
   @ApiProperty({ description: "Total matching packages (before paging)" })
   total: number;
 }
+
+// ── ARCH-23 / N-12（2026-10-07 A2 批补）：push 面 + Registry + Artifacts ──
+
+/** POST /executor-packages/{id}/push —— 逐台推送结果行。 */
+export class ExecutorPushResultDto {
+  @ApiProperty({ format: "uuid" })
+  executorId: string;
+
+  @ApiProperty()
+  address: string;
+
+  @ApiProperty({
+    description:
+      "queued=已入 pull 命令队列；success=push 同步 accepted；error=失败",
+    enum: ["queued", "success", "error"],
+  })
+  status: "queued" | "success" | "error";
+
+  @ApiPropertyOptional({
+    description: "queued 时回填中台命令 ID（终态由 push-result 回调收敛）",
+    format: "uuid",
+  })
+  commandId?: string;
+
+  @ApiPropertyOptional({ description: "error 时的失败原因" })
+  error?: string;
+}
+
+/** GET /registry/{pypi,npm}/packages —— 上游索引包名清单（registry.controller）。 */
+export class RegistryPackagesResponseDto {
+  @ApiProperty({
+    type: [String],
+    description:
+      "Package names parsed from the upstream index (empty = upstream reachable but no packages; upstream 5xx/401 会被压成空 200——前端错误态依赖此形状)",
+  })
+  packages: string[];
+}
+
+/** POST /registry/pypi/upload —— 代理上传回执。 */
+export class RegistryUploadResponseDto {
+  @ApiProperty()
+  success: boolean;
+}
+
+/** 任务执行工件清单行（task_executions.artifacts jsonb 元素形态，artifacts.controller）。 */
+export class ExecutionArtifactDto {
+  @ApiProperty()
+  name: string;
+
+  @ApiProperty({ description: "bytes" })
+  size: number;
+
+  @ApiProperty({ description: "sha256 over the stored bytes" })
+  sha256: string;
+}
+
+/** PUT /executions/{execId}/artifacts/{name} —— 执行器回传入账回执。 */
+export class ArtifactUploadResponseDto {
+  @ApiProperty({ enum: [true] })
+  ok: true;
+
+  @ApiProperty()
+  name: string;
+
+  @ApiProperty({ description: "bytes" })
+  size: number;
+
+  @ApiProperty()
+  sha256: string;
+}

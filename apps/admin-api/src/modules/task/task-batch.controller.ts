@@ -5,6 +5,9 @@ import {
   ApiBearerAuth,
   ApiResponse,
   ApiBody,
+  ApiOkResponse,
+  ApiExtraModels,
+  getSchemaPath,
 } from "@nestjs/swagger";
 import { Request } from "express";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
@@ -19,6 +22,7 @@ import { AuditService } from "../audit/audit.service";
 import { Throttle } from "@nestjs/throttler";
 import { OPS_THROTTLE } from "../../config/throttle-profiles";
 import { WriteGuard } from "../../common/decorators/write-guard.decorator";
+import { DeprecatedBatchItemDto } from "../auth/dto/misc-response.dto";
 
 /**
  * Batch operations controller — separate controller to avoid :id param route conflicts.
@@ -51,6 +55,15 @@ export class TaskBatchController {
       "只做项目角色校验（assertCanOperate 仅显式拒绝 viewer），属主收紧待 ADR-013 产品拍板",
   })
   @Post("trigger")
+  @ApiExtraModels(DeprecatedBatchItemDto)
+  @ApiOkResponse({
+    description:
+      "与 /tasks/batch/* 同形态：逐任务结果数组（成功=execution 行 | 失败={id,error}）",
+    schema: {
+      type: "array",
+      items: { anyOf: [{ $ref: getSchemaPath(DeprecatedBatchItemDto) }] },
+    },
+  })
   @ApiOperation({
     summary: "Batch trigger tasks (deprecated)",
     deprecated: true,
@@ -94,6 +107,13 @@ export class TaskBatchController {
       "只做项目角色校验（assertCanOperate 仅显式拒绝 viewer），属主收紧待 ADR-013 产品拍板",
   })
   @Post("pause")
+  @ApiOkResponse({
+    description: "同 /tasks/batch/pause",
+    schema: {
+      type: "array",
+      items: { anyOf: [{ $ref: getSchemaPath(DeprecatedBatchItemDto) }] },
+    },
+  })
   @ApiOperation({
     summary: "Batch pause tasks (deprecated)",
     deprecated: true,
@@ -132,6 +152,13 @@ export class TaskBatchController {
       "只做项目角色校验（assertCanOperate 仅显式拒绝 viewer），属主收紧待 ADR-013 产品拍板",
   })
   @Post("resume")
+  @ApiOkResponse({
+    description: "同 /tasks/batch/resume",
+    schema: {
+      type: "array",
+      items: { anyOf: [{ $ref: getSchemaPath(DeprecatedBatchItemDto) }] },
+    },
+  })
   @ApiOperation({
     summary: "Batch resume tasks (deprecated)",
     deprecated: true,
@@ -166,6 +193,13 @@ export class TaskBatchController {
 
   @WriteGuard("task", { scope: "ownership" })
   @Post("delete")
+  @ApiOkResponse({
+    description: "同 /tasks/batch/delete",
+    schema: {
+      type: "array",
+      items: { anyOf: [{ $ref: getSchemaPath(DeprecatedBatchItemDto) }] },
+    },
+  })
   @ApiOperation({
     summary: "Batch delete tasks (deprecated)",
     deprecated: true,

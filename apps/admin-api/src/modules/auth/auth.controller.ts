@@ -15,6 +15,7 @@ import {
   ApiBearerAuth,
   ApiResponse,
   ApiCreatedResponse,
+  ApiOkResponse,
 } from "@nestjs/swagger";
 import { Throttle } from "@nestjs/throttler";
 import { Request } from "express";
@@ -44,6 +45,7 @@ import { getEnvVar } from "../../config/env";
 // 与 LOGIN_THROTTLE_LIMIT 同款 W-22 豁免（main.ts 预载 .env 兜底）。
 import { AUTH_THROTTLE } from "../../config/throttle-profiles";
 import { WriteGuard } from "../../common/decorators/write-guard.decorator";
+import { SessionRevokeResponseDto } from "./dto/misc-response.dto";
 
 /** SEC-03: extract session id (sid) claim from the verified access token. */
 function sidOf(req: Request): string | null {
@@ -374,6 +376,7 @@ export class AuthController {
   @UseGuards(JwtAuthGuard)
   @WriteGuard("session", { scope: "authenticated" })
   @Delete("sessions/:id")
+  @ApiOkResponse({ type: SessionRevokeResponseDto })
   @ApiBearerAuth("JWT")
   @ApiOperation({
     summary: "Revoke one of my sessions",

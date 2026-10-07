@@ -3673,9 +3673,17 @@ export interface components {
             /** @description True for the session making this request */
             current: boolean;
         };
+        SessionRevokeResponseDto: {
+            /** @description false = 非法 id（非整数）；true = 已吊销或本就不属于该用户路径的幂等结果 */
+            success: boolean;
+        };
         RevokeOthersResponseDto: {
             /** @description Number of sessions revoked */
             revoked: number;
+        };
+        OidcStatusResponseDto: {
+            /** @description false = OIDC 未配置，登录页隐藏 SSO 入口 */
+            enabled: boolean;
         };
         CreateUserDto: {
             /** @example admin */
@@ -3690,7 +3698,41 @@ export interface components {
              */
             role?: "admin" | "user";
         };
+        UserResponseDto: {
+            id: number;
+            /** @description 1..128, unique */
+            username: string;
+            /** @description unique */
+            email: string;
+            /** @enum {string} */
+            role: "admin" | "user";
+            /** @description Soft-disable switch (login refused when false) */
+            isActive: boolean;
+            /** @description Consecutive failed logins (lockout input) */
+            loginFailCount: number;
+            /**
+             * Format: date-time
+             * @description Lockout deadline
+             */
+            lockedUntil: string | null;
+            totpEnabled: boolean;
+            /** @description Bumped on password change — revokes old refresh tokens */
+            sessionVersion: number;
+            lastTotpCounter: number | null;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
         Object: Record<string, never>;
+        PaginatedUsersDto: {
+            list: components["schemas"]["UserResponseDto"][];
+            items: components["schemas"]["UserResponseDto"][];
+            total: number;
+            page: number;
+            pageSize: number;
+            totalPages: number;
+        };
         UpdateUserDto: {
             /** @example admin */
             username?: string;
@@ -3705,6 +3747,10 @@ export interface components {
             role?: "admin" | "user";
             /** @description Required when a non-admin user changes their own password (SEC-12); stripped by the service before persisting (R19) */
             currentPassword?: string;
+        };
+        UserDeleteResponseDto: {
+            /** @enum {boolean} */
+            deleted: true;
         };
         TaskResponseDto: {
             /** Format: uuid */
@@ -4491,6 +4537,12 @@ export interface components {
             success: boolean;
             message: string;
         };
+        DeprecatedBatchItemDto: {
+            /** @description 失败项携带的任务 id（成功项是完整实体，无独立 id 字段名） */
+            id?: string;
+            /** @description 失败原因（partial-failure 标记） */
+            error?: string;
+        };
         BatchTaskIdsDto: {
             /**
              * @description Task ID list (1..500 uuids)
@@ -4500,6 +4552,17 @@ export interface components {
              *     ]
              */
             taskIds: string[];
+        };
+        TaskWebhookTriggerResponseDto: {
+            /**
+             * Format: uuid
+             * @description Execution row id created by the trigger
+             */
+            executionId: string;
+            /** @description 执行行/终态载荷（wait=true 时为终态执行行，否则为已受理执行行） */
+            execution: {
+                [key: string]: unknown;
+            };
         };
         ArtifactManifestItemDto: {
             /** @description Artifact file name (bare, no path separators) */
@@ -5044,6 +5107,26 @@ export interface components {
             /** @description TaskExecution rows, newest first (heavy text columns NOT excluded on this face) */
             items: unknown[];
         };
+        NotificationChannelDto: {
+            /** @enum {string} */
+            key: "email" | "slack" | "dingtalk" | "wecom" | "webhook";
+            name: string;
+            enabled: boolean;
+            /** @description Channel-specific settings; credential values are masked on read */
+            config: {
+                [key: string]: string;
+            };
+            description: string;
+        };
+        ChannelTestResponseDto: {
+            /** @description false when all addressed channels failed/skipped */
+            success: boolean;
+            message: string;
+            /** @description Per-channel delivery status */
+            results?: {
+                [key: string]: "sent" | "blocked" | "failed" | "skipped";
+            };
+        };
         SendNotificationDto: {
             /**
              * @default info
@@ -5075,6 +5158,37 @@ export interface components {
             results: {
                 [key: string]: "sent" | "blocked" | "failed" | "skipped";
             };
+        };
+        NotificationSilenceDto: {
+            /** Format: uuid */
+            id: string;
+            /** @enum {string} */
+            scope: "global" | "task" | "application";
+            channelType: string | null;
+            /**
+             * Format: uuid
+             * @description scope=task 时生效
+             */
+            taskId: string | null;
+            /**
+             * Format: uuid
+             * @description scope=application 时生效
+             */
+            applicationId: string | null;
+            /** @description 空 = 所有级别；否则 info/warning/critical 等 AlertLevel */
+            level: string | null;
+            reason: string | null;
+            /** Format: date-time */
+            startTime: string | null;
+            /**
+             * Format: date-time
+             * @description 空 = 不过期；durationMinutes 写入时折算
+             */
+            endTime: string | null;
+            durationMinutes: number | null;
+            createdBy: string | null;
+            /** Format: date-time */
+            createdAt: string;
         };
         CreateSilenceDto: {
             /**
@@ -5163,7 +5277,35 @@ export interface components {
             /** @description 告警列表（空数组被控制器 400 拒绝） */
             alerts?: components["schemas"]["AlertmanagerAlertDto"][];
         };
+        AlertsWebhookResponseDto: {
+            /** @enum {boolean} */
+            ok: true;
+            /** @description 送达的通道数 */
+            delivered: number;
+            /** @description Per-channel delivery status */
+            results: {
+                [key: string]: "sent" | "blocked" | "failed" | "skipped";
+            };
+        };
+        AiConfigResponseDto: {
+            /** @description Effective config key/values (provider, openaiModel, openaiBaseUrl, ollamaHost, ollamaModel, qwenModel, qwenBaseUrl, qwenMaxTokens, qwenTimeoutMs) */
+            config: {
+                [key: string]: string;
+            };
+            /** @description Whether the current provider has an API key configured (key VALUE is never returned) */
+            hasApiKey: boolean;
+        };
         SaveAiConfigDto: Record<string, never>;
+        AiConfigSaveResponseDto: {
+            /** @enum {boolean} */
+            ok: true;
+        };
+        AiTestResponseDto: {
+            /** @description false when the provider is disabled or returned an empty response */
+            ok: boolean;
+            /** @description Sample-prompt reply text, or the degraded-state message */
+            message: string;
+        };
         AgentSessionDto: {
             /** Format: uuid */
             id: string;
@@ -5853,6 +5995,27 @@ export interface components {
             /** @description Always true on success — a missing key is a 404, never {deleted:false} */
             deleted: boolean;
         };
+        AuditLogDto: {
+            id: number;
+            userId: number | null;
+            /** @description Snapshot of the acting username (survives user deletion) */
+            username: string | null;
+            /** @description Dotted action token, e.g. 'task.trigger' / 'user.create' */
+            action: string;
+            resource: string | null;
+            resourceId: string | null;
+            /** @description Free-form context (ip, detail payloads) */
+            detail: {
+                [key: string]: unknown;
+            } | null;
+            ip: string | null;
+            /** Format: date-time */
+            createdAt: string;
+        };
+        PaginatedAuditLogsDto: {
+            data: components["schemas"]["AuditLogDto"][];
+            total: number;
+        };
         ApplicationResponseDto: {
             /** @description Application id (uuid) */
             id: string;
@@ -6398,6 +6561,45 @@ export interface components {
              */
             status?: "active" | "deprecated" | "uploading";
         };
+        ExecutorPushResultDto: {
+            /** Format: uuid */
+            executorId: string;
+            address: string;
+            /**
+             * @description queued=已入 pull 命令队列；success=push 同步 accepted；error=失败
+             * @enum {string}
+             */
+            status: "queued" | "success" | "error";
+            /**
+             * Format: uuid
+             * @description queued 时回填中台命令 ID（终态由 push-result 回调收敛）
+             */
+            commandId?: string;
+            /** @description error 时的失败原因 */
+            error?: string;
+        };
+        RegistryPackagesResponseDto: {
+            /** @description Package names parsed from the upstream index (empty = upstream reachable but no packages; upstream 5xx/401 会被压成空 200——前端错误态依赖此形状) */
+            packages: string[];
+        };
+        RegistryUploadResponseDto: {
+            success: boolean;
+        };
+        ArtifactUploadResponseDto: {
+            /** @enum {boolean} */
+            ok: true;
+            name: string;
+            /** @description bytes */
+            size: number;
+            sha256: string;
+        };
+        ExecutionArtifactDto: {
+            name: string;
+            /** @description bytes */
+            size: number;
+            /** @description sha256 over the stored bytes */
+            sha256: string;
+        };
         TaskTemplateResponseDto: {
             /**
              * Format: uuid
@@ -6517,6 +6719,10 @@ export interface components {
              */
             createdAt: string;
         };
+        SimpleOkResponseDto: {
+            /** @enum {boolean} */
+            ok: true;
+        };
         EventSubscriptionResponseDto: {
             /**
              * Format: uuid
@@ -6632,7 +6838,41 @@ export interface components {
             /** @description Failure summary when ok=false (row is kept for another try) */
             error?: string;
         };
+        ApiKeyViewDto: {
+            id: number;
+            name: string;
+            /** @description 'acf_' + first chars — full key never returned after create */
+            keyPrefix: string;
+            /** @description Coarse scope bucket */
+            scope: string;
+            /** @description Extra narrow-domain scopes (word list, e.g. 'task:trigger') */
+            scopes: string[];
+            /** Format: date-time */
+            expiresAt: string | null;
+            /**
+             * Format: date-time
+             * @description Set = revoked (soft-delete)
+             */
+            revokedAt: string | null;
+            /**
+             * Format: date-time
+             * @description Refresh throttled to 60s (LAST_USED_THROTTLE_MS)
+             */
+            lastUsedAt: string | null;
+            /** Format: date-time */
+            createdAt: string;
+        };
         CreateApiKeyDto: Record<string, never>;
+        ApiKeyCreateResponseDto: {
+            apiKey: components["schemas"]["ApiKeyViewDto"];
+            /** @description Plaintext key shown ONCE — store it now */
+            plaintext: string;
+        };
+        ApiKeyRevokeResponseDto: {
+            /** @enum {boolean} */
+            success: true;
+            apiKey: components["schemas"]["ApiKeyViewDto"];
+        };
         ProjectViewDto: {
             /** @description Project id (uuid) */
             id: string;
@@ -6699,6 +6939,10 @@ export interface components {
             name?: string;
             /** @description Project description */
             description?: string;
+        };
+        ProjectDeleteResponseDto: {
+            /** @description true = 删除/移除生效 */
+            deleted: boolean;
         };
         ProjectMemberViewDto: {
             /** @description Membership row id (uuid) */
@@ -7055,7 +7299,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["SessionRevokeResponseDto"];
+                };
             };
             /** @description Session not found or not yours */
             401: {
@@ -7099,7 +7345,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["OidcStatusResponseDto"];
+                };
             };
         };
     };
@@ -7112,11 +7360,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description 302 redirect to the IdP authorize URL (Res passthrough) */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": string;
+                };
             };
         };
     };
@@ -7133,11 +7384,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description 302 redirect with session cookie set, or 502 JSON on failure (Res passthrough) */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": string;
+                };
             };
         };
     };
@@ -7159,7 +7413,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["PaginatedUsersDto"];
+                };
             };
         };
     };
@@ -7180,7 +7436,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["UserResponseDto"];
+                };
             };
         };
     };
@@ -7199,7 +7457,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["UserResponseDto"];
+                };
             };
         };
     };
@@ -7218,7 +7478,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["UserDeleteResponseDto"];
+                };
             };
         };
     };
@@ -7241,7 +7503,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["UserResponseDto"];
+                };
             };
         };
     };
@@ -8030,11 +8294,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description SSE stream (Res passthrough) */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "text/event-stream": string;
+                };
             };
         };
     };
@@ -8321,12 +8588,18 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Batch trigger results */
+            /**
+             * @description Batch trigger results
+             *
+             *     与 /tasks/batch/* 同形态：逐任务结果数组（成功=execution 行 | 失败={id,error}）
+             */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["DeprecatedBatchItemDto"][];
+                };
             };
         };
     };
@@ -8343,12 +8616,18 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Batch pause results */
+            /**
+             * @description Batch pause results
+             *
+             *     同 /tasks/batch/pause
+             */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["DeprecatedBatchItemDto"][];
+                };
             };
         };
     };
@@ -8365,12 +8644,18 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Batch resume results */
+            /**
+             * @description Batch resume results
+             *
+             *     同 /tasks/batch/resume
+             */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["DeprecatedBatchItemDto"][];
+                };
             };
         };
     };
@@ -8387,12 +8672,18 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Batch delete results */
+            /**
+             * @description Batch delete results
+             *
+             *     同 /tasks/batch/delete
+             */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["DeprecatedBatchItemDto"][];
+                };
             };
         };
     };
@@ -8424,7 +8715,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["TaskWebhookTriggerResponseDto"];
+                };
             };
         };
     };
@@ -9289,7 +9582,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["NotificationChannelDto"][];
+                };
             };
         };
     };
@@ -9308,7 +9603,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["NotificationChannelDto"];
+                };
             };
         };
     };
@@ -9327,7 +9624,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ChannelTestResponseDto"];
+                };
             };
         };
     };
@@ -9344,7 +9643,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ChannelTestResponseDto"];
+                };
             };
         };
     };
@@ -9386,7 +9687,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["NotificationSilenceDto"][];
+                };
             };
         };
     };
@@ -9409,7 +9712,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["NotificationSilenceDto"];
+                };
             };
         };
     };
@@ -9424,11 +9729,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description removed=false = 该 id 不存在（幂等语义） */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": boolean;
+                };
             };
         };
     };
@@ -9453,7 +9761,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["AlertsWebhookResponseDto"];
+                };
             };
         };
     };
@@ -9470,7 +9780,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["AiConfigResponseDto"];
+                };
             };
         };
     };
@@ -9491,7 +9803,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["AiConfigSaveResponseDto"];
+                };
             };
         };
     };
@@ -9508,7 +9822,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["AiTestResponseDto"];
+                };
             };
         };
     };
@@ -10603,7 +10919,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["PaginatedAuditLogsDto"];
+                };
             };
         };
     };
@@ -10641,11 +10959,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description CSV text export (Res passthrough, max 10 000 rows) */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "text/csv": string;
+                };
             };
         };
     };
@@ -11518,12 +11839,13 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Created successfully */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ExecutorPackageResponseDto"];
+                };
             };
         };
     };
@@ -11659,12 +11981,18 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description File content */
+            /**
+             * @description package binary (Res passthrough)
+             *
+             *     package binary (Res passthrough)
+             */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/octet-stream": string;
+                };
             };
             /** @description Invalid access JWT or executor token */
             401: {
@@ -11694,12 +12022,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Deprecated */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ExecutorPackageResponseDto"];
+                };
             };
         };
     };
@@ -11715,12 +12044,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Activated */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ExecutorPackageResponseDto"];
+                };
             };
         };
     };
@@ -11744,12 +12074,21 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Callback recorded */
+            /**
+             * @description 结果入账回执 {ok:true}
+             *
+             *     结果入账回执 {ok:true}
+             */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": {
+                        /** @enum {boolean} */
+                        ok: true;
+                    };
+                };
             };
         };
     };
@@ -11773,12 +12112,18 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Push result */
+            /**
+             * @description 逐台结果（queued/success/error）
+             *
+             *     逐台结果（queued/success/error）
+             */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ExecutorPushResultDto"][];
+                };
             };
         };
     };
@@ -11795,7 +12140,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["RegistryPackagesResponseDto"];
+                };
             };
         };
     };
@@ -11812,7 +12159,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["RegistryPackagesResponseDto"];
+                };
             };
         };
     };
@@ -11829,7 +12178,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["RegistryUploadResponseDto"];
+                };
             };
         };
     };
@@ -11852,12 +12203,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Stored */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ArtifactUploadResponseDto"];
+                };
             };
             /** @description Invalid name / over cap / sha mismatch */
             400: {
@@ -11894,12 +12246,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Artifact manifest */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ExecutionArtifactDto"][];
+                };
             };
             /** @description Non-admin caller */
             403: {
@@ -11931,12 +12284,18 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description File content */
+            /**
+             * @description artifact binary (Res passthrough)
+             *
+             *     artifact binary (Res passthrough)
+             */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/octet-stream": string;
+                };
             };
             /** @description Non-admin caller */
             403: {
@@ -12054,12 +12413,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Deleted */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["SimpleOkResponseDto"];
+                };
             };
             /** @description Official template cannot be deleted */
             403: {
@@ -12182,12 +12542,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Deleted */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["SimpleOkResponseDto"];
+                };
             };
             /** @description Not the owner */
             403: {
@@ -12324,7 +12685,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ApiKeyViewDto"][];
+                };
             };
         };
     };
@@ -12341,11 +12704,14 @@ export interface operations {
             };
         };
         responses: {
+            /** @description 明文 key 一次性回显 */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ApiKeyCreateResponseDto"];
+                };
             };
         };
     };
@@ -12364,7 +12730,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ApiKeyRevokeResponseDto"];
+                };
             };
         };
     };
@@ -12383,7 +12751,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ApiKeyRevokeResponseDto"];
+                };
             };
         };
     };
@@ -12471,7 +12841,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ProjectDeleteResponseDto"];
+                };
             };
         };
     };
@@ -12565,7 +12937,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ProjectDeleteResponseDto"];
+                };
             };
         };
     };

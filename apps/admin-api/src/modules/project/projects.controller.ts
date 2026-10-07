@@ -18,7 +18,7 @@ import { Request } from "express";
 // ARCH-23 / N-12：响应体类型标注。此前本控制器**零 swagger 装饰器**，
 // openapi.json 里 10 个 2xx 全部只有 description 没有 schema，前端无从生成类型。
 // 用专用响应 DTO（实体无 @ApiProperty 会 emit 空壳 schema → PK-15 闸红）。
-import { ApiOperation, ApiResponse } from "@nestjs/swagger";
+import { ApiOperation, ApiResponse, ApiOkResponse } from "@nestjs/swagger";
 import {
   ProjectEntityDto,
   ProjectMemberViewDto,
@@ -47,6 +47,7 @@ import { AuditService } from "../audit/audit.service";
 // 分页信封：与 tasks/users 列表同款形状（list/items 双键为 R-21 遗留，不动）。
 import { paginate } from "../../common/dto/pagination.dto";
 import type { ProjectListPageDto as ProjectListPageShape } from "./dto/project-response.dto";
+import { ProjectDeleteResponseDto } from "../auth/dto/misc-response.dto";
 
 /**
  * 解析单个分页查询参数；非法/未传一律返回 undefined（调用方按缺省处理）。
@@ -238,6 +239,7 @@ export class ProjectsController {
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN)
   @Delete(":id")
+  @ApiOkResponse({ type: ProjectDeleteResponseDto })
   @HttpCode(200)
   async remove(
     @Param("id", ParseUUIDPipe) id: string,
@@ -348,6 +350,7 @@ export class ProjectsController {
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN)
   @Delete(":id/members/:userId")
+  @ApiOkResponse({ type: ProjectDeleteResponseDto })
   @HttpCode(200)
   async removeMember(
     @Param("id", ParseUUIDPipe) id: string,

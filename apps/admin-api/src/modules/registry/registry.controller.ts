@@ -31,6 +31,13 @@ import { UserRole } from "../users/entities/user.entity";
 import { CurrentUser } from "../../common/decorators/current-user.decorator";
 import { AuthUser } from "../../common/interfaces/auth-user.interface";
 import { AuditService } from "../audit/audit.service";
+import { ApiOkResponse, ApiCreatedResponse } from "@nestjs/swagger";
+import {
+  ArtifactUploadResponseDto,
+  ExecutorPushResultDto,
+  RegistryPackagesResponseDto,
+  RegistryUploadResponseDto,
+} from "../executor-package/dto/executor-package-response.dto";
 
 @UseGuards(JwtAuthGuard)
 @Controller("registry")
@@ -330,6 +337,7 @@ export class RegistryController {
   }
 
   @Get("pypi/packages")
+  @ApiOkResponse({ type: RegistryPackagesResponseDto })
   async listPypiPackages(): Promise<{ packages: string[] }> {
     const url = `${this.pypiUrl}/simple/`;
     const resp = await this.fetchText(url, {
@@ -348,6 +356,7 @@ export class RegistryController {
   }
 
   @Get("npm/packages")
+  @ApiOkResponse({ type: RegistryPackagesResponseDto })
   async listNpmPackages(): Promise<{
     packages: Array<{ name: string; latest?: string; description?: string }>;
   }> {
@@ -414,6 +423,7 @@ export class RegistryController {
   @UseInterceptors(
     FileInterceptor("content", { limits: { fileSize: 50 * 1024 * 1024 } }),
   )
+  @ApiCreatedResponse({ type: RegistryUploadResponseDto })
   async uploadPypiPackage(
     @UploadedFile() file: Express.Multer.File,
     @Body("name") name: string,

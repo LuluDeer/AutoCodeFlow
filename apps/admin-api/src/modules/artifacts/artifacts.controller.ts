@@ -24,6 +24,8 @@ import {
   ApiQuery,
   ApiResponse,
   ApiTags,
+  ApiOkResponse,
+  ApiCreatedResponse,
 } from "@nestjs/swagger";
 import { Public } from "../../common/decorators/public.decorator";
 import { CurrentUser } from "../../common/decorators/current-user.decorator";
@@ -37,6 +39,10 @@ import { MAX_ARTIFACT_SIZE_BYTES } from "./artifacts.constants";
 // ArtifactsModule 生产装配 imports AuditModule，存量测试未提供时旁路）。
 import { AuditService } from "../audit/audit.service";
 import { WriteGuard } from "../../common/decorators/write-guard.decorator";
+import {
+  ArtifactUploadResponseDto,
+  ExecutionArtifactDto,
+} from "../executor-package/dto/executor-package-response.dto";
 
 /**
  * FEAT-05：执行产物通道。
@@ -85,7 +91,6 @@ export class ArtifactsController {
     required: false,
     description: "Expected sha256 hex",
   })
-  @ApiResponse({ status: 201, description: "Stored" })
   @ApiResponse({
     status: 400,
     description: "Invalid name / over cap / sha mismatch",
@@ -98,6 +103,7 @@ export class ArtifactsController {
       limits: { fileSize: MAX_ARTIFACT_SIZE_BYTES },
     }),
   )
+  @ApiCreatedResponse({ type: ArtifactUploadResponseDto })
   async upload(
     @Param("execId") execId: string,
     @Param("name") name: string,
@@ -139,7 +145,7 @@ export class ArtifactsController {
       "+ RolesGuard).",
   })
   @ApiParam({ name: "execId", description: "Execution ID (UUID)" })
-  @ApiResponse({ status: 200, description: "Artifact manifest" })
+  @ApiOkResponse({ type: [ExecutionArtifactDto] })
   @ApiResponse({ status: 403, description: "Non-admin caller" })
   @ApiResponse({ status: 404, description: "Execution not found" })
   list(@Param("execId") execId: string) {
@@ -157,9 +163,24 @@ export class ArtifactsController {
   })
   @ApiParam({ name: "execId", description: "Execution ID (UUID)" })
   @ApiParam({ name: "name", description: "Bare artifact file name" })
-  @ApiResponse({ status: 200, description: "File content" })
+  @ApiOkResponse({
+    description: "artifact binary (Res passthrough)",
+    content: {
+      "application/octet-stream": {
+        schema: { type: "string", format: "binary" },
+      },
+    },
+  })
   @ApiResponse({ status: 403, description: "Non-admin caller" })
   @ApiResponse({ status: 404, description: "Artifact not found" })
+  @ApiOkResponse({
+    description: "artifact binary (Res passthrough)",
+    content: {
+      "application/octet-stream": {
+        schema: { type: "string", format: "binary" },
+      },
+    },
+  })
   async download(
     @Param("execId") execId: string,
     @Param("name") name: string,

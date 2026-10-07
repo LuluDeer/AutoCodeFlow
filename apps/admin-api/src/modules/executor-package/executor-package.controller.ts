@@ -39,6 +39,8 @@ import {
   ApiResponse,
   ApiConsumes,
   ApiBody,
+  ApiOkResponse,
+  ApiCreatedResponse,
 } from "@nestjs/swagger";
 // ARCH-23 / N-12：响应体类型标注。此前本控制器 11 个 2xx 全部只有 description
 // 没有 schema（前端无从生成类型）。用专用响应 DTO——实体无 @ApiProperty 会 emit
@@ -64,6 +66,12 @@ import {
 import { ExecutorPackage } from "./executor-package.entity";
 import { UserRole } from "../users/entities/user.entity";
 import { WriteGuard } from "../../common/decorators/write-guard.decorator";
+import {
+  ArtifactUploadResponseDto,
+  ExecutorPushResultDto,
+  RegistryPackagesResponseDto,
+  RegistryUploadResponseDto,
+} from "./dto/executor-package-response.dto";
 
 /**
  * QA10: build a header-safe Content-Disposition value. The filename comes
@@ -164,7 +172,7 @@ export class ExecutorPackageController {
       },
     },
   })
-  @ApiResponse({ status: 201, description: "Created successfully" })
+  @ApiCreatedResponse({ type: ExecutorPackageResponseDto })
   create(
     @Body() createDto: CreateExecutorPackageDto,
     @UploadedFile() file: Express.Multer.File,
@@ -265,12 +273,27 @@ export class ExecutorPackageController {
       "Accepts either a valid administrator access JWT or the executor shared token. JWT validation is stateless and does not query the user database, matching upload-auth middleware; access-token expiry provides revocation latency.",
   })
   @ApiParam({ name: "id", description: "Package ID" })
-  @ApiResponse({ status: 200, description: "File content" })
+  @ApiOkResponse({
+    description: "package binary (Res passthrough)",
+    content: {
+      "application/octet-stream": {
+        schema: { type: "string", format: "binary" },
+      },
+    },
+  })
   @ApiResponse({
     status: 401,
     description: "Invalid access JWT or executor token",
   })
   @ApiResponse({ status: 404, description: "Package or file not found" })
+  @ApiOkResponse({
+    description: "package binary (Res passthrough)",
+    content: {
+      "application/octet-stream": {
+        schema: { type: "string", format: "binary" },
+      },
+    },
+  })
   async download(
     @Param("id", ParseUUIDPipe) id: string,
     @Res() res: Response,
@@ -351,7 +374,7 @@ export class ExecutorPackageController {
   @Patch(":id/deprecate")
   @ApiOperation({ summary: "Deprecate executor package" })
   @ApiParam({ name: "id", description: "Package ID" })
-  @ApiResponse({ status: 200, description: "Deprecated" })
+  @ApiOkResponse({ type: ExecutorPackageResponseDto })
   deprecate(@Param("id", ParseUUIDPipe) id: string): Promise<ExecutorPackage> {
     return this.svc.deprecate(id);
   }
@@ -359,7 +382,7 @@ export class ExecutorPackageController {
   @Patch(":id/activate")
   @ApiOperation({ summary: "Activate executor package" })
   @ApiParam({ name: "id", description: "Package ID" })
-  @ApiResponse({ status: 200, description: "Activated" })
+  @ApiOkResponse({ type: ExecutorPackageResponseDto })
   activate(@Param("id", ParseUUIDPipe) id: string): Promise<ExecutorPackage> {
     return this.svc.activate(id);
   }
@@ -406,7 +429,22 @@ export class ExecutorPackageController {
       },
     },
   })
-  @ApiResponse({ status: 200, description: "Callback recorded" })
+  @ApiOkResponse({
+    description: "结果入账回执 {ok:true}",
+    schema: {
+      type: "object",
+      properties: { ok: { type: "boolean", enum: [true] } },
+      required: ["ok"],
+    },
+  })
+  @ApiOkResponse({
+    description: "结果入账回执 {ok:true}",
+    schema: {
+      type: "object",
+      properties: { ok: { type: "boolean", enum: [true] } },
+      required: ["ok"],
+    },
+  })
   async pushResult(
     @Body("packageId") packageId: string,
     @Body("executorId") executorId: string,
@@ -456,7 +494,15 @@ export class ExecutorPackageController {
       },
     },
   })
-  @ApiResponse({ status: 200, description: "Push result" })
+  @ApiOkResponse({ type: [ExecutorPushResultDto] })
+  @ApiOkResponse({
+    type: [ExecutorPushResultDto],
+    description: "逐台结果（queued/success/error）",
+  })
+  @ApiOkResponse({
+    type: [ExecutorPushResultDto],
+    description: "逐台结果（queued/success/error）",
+  })
   async push(
     @Param("id", ParseUUIDPipe) id: string,
     @Body() body: PushExecutorPackageDto,

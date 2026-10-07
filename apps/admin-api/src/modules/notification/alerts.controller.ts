@@ -10,7 +10,12 @@ import {
   ServiceUnavailableException,
   UnauthorizedException,
 } from "@nestjs/common";
-import { ApiBody, ApiOperation, ApiTags } from "@nestjs/swagger";
+import {
+  ApiBody,
+  ApiOperation,
+  ApiTags,
+  ApiCreatedResponse,
+} from "@nestjs/swagger";
 import { Request } from "express";
 import { ConfigService } from "@nestjs/config";
 // FEAT-21: HMAC 校验收敛到共享纯函数（与 applications / 任务 webhook 同源）
@@ -27,6 +32,7 @@ import {
 } from "./alert-webhook.mapping";
 import { AlertmanagerWebhookDto } from "./dto/alertmanager-webhook.dto";
 import { WriteGuard } from "../../common/decorators/write-guard.decorator";
+import { AlertsWebhookResponseDto } from "../auth/dto/misc-response.dto";
 
 /**
  * OBS-02: Alertmanager webhook 入站路由——把 Grafana/Alertmanager 的告警
@@ -132,6 +138,7 @@ export class AlertsController {
     type: AlertmanagerWebhookDto,
     description: "Alertmanager v2 webhook body",
   })
+  @ApiCreatedResponse({ type: AlertsWebhookResponseDto })
   async webhook(
     @Body() payload: AlertmanagerWebhookPayload,
     @Headers("x-hub-signature-256") signature?: string,

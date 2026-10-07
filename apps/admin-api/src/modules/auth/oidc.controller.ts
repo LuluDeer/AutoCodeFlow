@@ -1,8 +1,10 @@
 import { Controller, Get, Query, Res, Logger } from "@nestjs/common";
+import { ApiOkResponse } from "@nestjs/swagger";
 import { Response } from "express";
 import { Public } from "../../common/decorators/public.decorator";
 import { OidcService, OIDC_STATE_COOKIE } from "./oidc.service";
 import { getEnvVar } from "../../config/env";
+import { OidcStatusResponseDto } from "./dto/misc-response.dto";
 
 /** callback 失败 → 前端落地页错误码（不泄露内部细节）。 */
 function mapCallbackError(message: string): string {
@@ -46,12 +48,17 @@ export class OidcController {
 
   @Public()
   @Get("status")
+  @ApiOkResponse({ type: OidcStatusResponseDto })
   status(): { enabled: boolean } {
     return { enabled: this.oidc.enabled };
   }
 
   @Public()
   @Get("login")
+  @ApiOkResponse({
+    description: "302 redirect to the IdP authorize URL (Res passthrough)",
+    schema: { type: "string" },
+  })
   async login(@Res() res: Response): Promise<void> {
     if (!this.oidc.enabled) {
       res.status(404).json({ message: "OIDC SSO is not enabled" });
@@ -78,6 +85,11 @@ export class OidcController {
 
   @Public()
   @Get("callback")
+  @ApiOkResponse({
+    description:
+      "302 redirect with session cookie set, or 502 JSON on failure (Res passthrough)",
+    schema: { type: "string" },
+  })
   async callback(
     @Query("code") code: string | undefined,
     @Query("state") state: string | undefined,

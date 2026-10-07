@@ -15,6 +15,7 @@ import {
   ApiParam,
   ApiQuery,
   ApiTags,
+  ApiOkResponse,
 } from "@nestjs/swagger";
 import type { Request } from "express";
 import { Throttle } from "@nestjs/throttler";
@@ -31,6 +32,7 @@ import {
   WEBHOOK_WAIT_DEFAULT_SECONDS,
   WEBHOOK_WAIT_MAX_SECONDS,
 } from "./task-webhook.service";
+import { TaskWebhookTriggerResponseDto } from "../auth/dto/misc-response.dto";
 
 /**
  * FEAT-21: 任务 webhook 入站触发端点（公开机器面）。
@@ -82,6 +84,7 @@ export class TaskWebhookController {
     description: `wait 模式超时秒数（1-${WEBHOOK_WAIT_MAX_SECONDS}，缺省 ${WEBHOOK_WAIT_DEFAULT_SECONDS}）`,
   })
   @ApiBody({ type: TriggerTaskDto })
+  @ApiOkResponse({ type: TaskWebhookTriggerResponseDto })
   async trigger(
     @Param("taskId") taskId: string,
     @Body() dto: TriggerTaskDto,

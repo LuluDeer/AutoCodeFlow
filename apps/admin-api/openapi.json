@@ -372,7 +372,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Session revoked"
+            "description": "Session revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionRevokeResponseDto"
+                }
+              }
+            }
           },
           "401": {
             "description": "Session not found or not yours"
@@ -423,7 +430,14 @@
         "parameters": [],
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OidcStatusResponseDto"
+                }
+              }
+            }
           }
         },
         "tags": [
@@ -437,7 +451,14 @@
         "parameters": [],
         "responses": {
           "200": {
-            "description": ""
+            "description": "302 redirect to the IdP authorize URL (Res passthrough)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "tags": [
@@ -476,7 +497,14 @@
         ],
         "responses": {
           "200": {
-            "description": ""
+            "description": "302 redirect with session cookie set, or 502 JSON on failure (Res passthrough)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "tags": [
@@ -2189,7 +2217,14 @@
         ],
         "responses": {
           "200": {
-            "description": ""
+            "description": "SSE stream (Res passthrough)",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -2634,7 +2669,21 @@
         },
         "responses": {
           "200": {
-            "description": "Batch trigger results"
+            "description": "Batch trigger results\n\n与 /tasks/batch/* 同形态：逐任务结果数组（成功=execution 行 | 失败={id,error}）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/components/schemas/DeprecatedBatchItemDto"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
           }
         },
         "security": [
@@ -2666,7 +2715,21 @@
         },
         "responses": {
           "200": {
-            "description": "Batch pause results"
+            "description": "Batch pause results\n\n同 /tasks/batch/pause",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/components/schemas/DeprecatedBatchItemDto"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
           }
         },
         "security": [
@@ -2698,7 +2761,21 @@
         },
         "responses": {
           "200": {
-            "description": "Batch resume results"
+            "description": "Batch resume results\n\n同 /tasks/batch/resume",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/components/schemas/DeprecatedBatchItemDto"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
           }
         },
         "security": [
@@ -2730,7 +2807,21 @@
         },
         "responses": {
           "200": {
-            "description": "Batch delete results"
+            "description": "Batch delete results\n\n同 /tasks/batch/delete",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/components/schemas/DeprecatedBatchItemDto"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
           }
         },
         "security": [
@@ -2805,7 +2896,14 @@
         },
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskWebhookTriggerResponseDto"
+                }
+              }
+            }
           }
         },
         "summary": "Trigger a task via inbound webhook",
@@ -4442,7 +4540,14 @@
         },
         "responses": {
           "201": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlertsWebhookResponseDto"
+                }
+              }
+            }
           }
         },
         "summary": "Alertmanager v2 webhook receiver",
@@ -8289,7 +8394,14 @@
         },
         "responses": {
           "201": {
-            "description": "Created successfully"
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecutorPackageResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -8582,7 +8694,15 @@
         ],
         "responses": {
           "200": {
-            "description": "File content"
+            "description": "package binary (Res passthrough)\n\npackage binary (Res passthrough)",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
           },
           "401": {
             "description": "Invalid access JWT or executor token"
@@ -8618,7 +8738,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Deprecated"
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecutorPackageResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -8648,7 +8775,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Activated"
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecutorPackageResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -8704,7 +8838,25 @@
         },
         "responses": {
           "200": {
-            "description": "Callback recorded"
+            "description": "结果入账回执 {ok:true}\n\n结果入账回执 {ok:true}",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    }
+                  },
+                  "required": [
+                    "ok"
+                  ]
+                }
+              }
+            }
           }
         },
         "security": [
@@ -8754,7 +8906,17 @@
         },
         "responses": {
           "200": {
-            "description": "Push result"
+            "description": "逐台结果（queued/success/error）\n\n逐台结果（queued/success/error）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ExecutorPushResultDto"
+                  }
+                }
+              }
+            }
           }
         },
         "security": [
@@ -8774,7 +8936,14 @@
         "parameters": [],
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RegistryPackagesResponseDto"
+                }
+              }
+            }
           }
         },
         "tags": [
@@ -8788,7 +8957,14 @@
         "parameters": [],
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RegistryPackagesResponseDto"
+                }
+              }
+            }
           }
         },
         "tags": [
@@ -8802,7 +8978,14 @@
         "parameters": [],
         "responses": {
           "201": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RegistryUploadResponseDto"
+                }
+              }
+            }
           }
         },
         "tags": [
@@ -8853,7 +9036,14 @@
         ],
         "responses": {
           "201": {
-            "description": "Stored"
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactUploadResponseDto"
+                }
+              }
+            }
           },
           "400": {
             "description": "Invalid name / over cap / sha mismatch"
@@ -8888,7 +9078,17 @@
         ],
         "responses": {
           "200": {
-            "description": "Artifact manifest"
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ExecutionArtifactDto"
+                  }
+                }
+              }
+            }
           },
           "403": {
             "description": "Non-admin caller"
@@ -8934,7 +9134,15 @@
         ],
         "responses": {
           "200": {
-            "description": "File content"
+            "description": "artifact binary (Res passthrough)\n\nartifact binary (Res passthrough)",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
           },
           "403": {
             "description": "Non-admin caller"
@@ -9083,7 +9291,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Deleted"
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SimpleOkResponseDto"
+                }
+              }
+            }
           },
           "403": {
             "description": "Official template cannot be deleted"
@@ -9294,7 +9509,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Deleted"
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SimpleOkResponseDto"
+                }
+              }
+            }
           },
           "403": {
             "description": "Not the owner"
@@ -9715,7 +9937,14 @@
         ],
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectDeleteResponseDto"
+                }
+              }
+            }
           }
         },
         "tags": [
@@ -9866,7 +10095,14 @@
         ],
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectDeleteResponseDto"
+                }
+              }
+            }
           }
         },
         "tags": [
@@ -10089,6 +10325,18 @@
           "current"
         ]
       },
+      "SessionRevokeResponseDto": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "description": "false = 非法 id（非整数）；true = 已吊销或本就不属于该用户路径的幂等结果"
+          }
+        },
+        "required": [
+          "success"
+        ]
+      },
       "RevokeOthersResponseDto": {
         "type": "object",
         "properties": {
@@ -10099,6 +10347,18 @@
         },
         "required": [
           "revoked"
+        ]
+      },
+      "OidcStatusResponseDto": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "false = OIDC 未配置，登录页隐藏 SSO 入口"
+          }
+        },
+        "required": [
+          "enabled"
         ]
       },
       "CreateUserDto": {
@@ -12412,6 +12672,19 @@
           "message"
         ]
       },
+      "DeprecatedBatchItemDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "失败项携带的任务 id（成功项是完整实体，无独立 id 字段名）"
+          },
+          "error": {
+            "type": "string",
+            "description": "失败原因（partial-failure 标记）"
+          }
+        }
+      },
       "BatchTaskIdsDto": {
         "type": "object",
         "properties": {
@@ -12430,6 +12703,25 @@
         },
         "required": [
           "taskIds"
+        ]
+      },
+      "TaskWebhookTriggerResponseDto": {
+        "type": "object",
+        "properties": {
+          "executionId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Execution row id created by the trigger"
+          },
+          "execution": {
+            "type": "object",
+            "description": "执行行/终态载荷（wait=true 时为终态执行行，否则为已受理执行行）",
+            "additionalProperties": true
+          }
+        },
+        "required": [
+          "executionId",
+          "execution"
         ]
       },
       "ArtifactManifestItemDto": {
@@ -13948,6 +14240,39 @@
             }
           }
         }
+      },
+      "AlertsWebhookResponseDto": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "delivered": {
+            "type": "number",
+            "description": "送达的通道数"
+          },
+          "results": {
+            "type": "object",
+            "description": "Per-channel delivery status",
+            "additionalProperties": {
+              "type": "string",
+              "enum": [
+                "sent",
+                "blocked",
+                "failed",
+                "skipped"
+              ]
+            }
+          }
+        },
+        "required": [
+          "ok",
+          "delivered",
+          "results"
+        ]
       },
       "AiConfigResponseDto": {
         "type": "object",
@@ -17387,6 +17712,115 @@
           }
         }
       },
+      "ExecutorPushResultDto": {
+        "type": "object",
+        "properties": {
+          "executorId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "address": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "description": "queued=已入 pull 命令队列；success=push 同步 accepted；error=失败",
+            "enum": [
+              "queued",
+              "success",
+              "error"
+            ]
+          },
+          "commandId": {
+            "type": "string",
+            "description": "queued 时回填中台命令 ID（终态由 push-result 回调收敛）",
+            "format": "uuid"
+          },
+          "error": {
+            "type": "string",
+            "description": "error 时的失败原因"
+          }
+        },
+        "required": [
+          "executorId",
+          "address",
+          "status"
+        ]
+      },
+      "RegistryPackagesResponseDto": {
+        "type": "object",
+        "properties": {
+          "packages": {
+            "description": "Package names parsed from the upstream index (empty = upstream reachable but no packages; upstream 5xx/401 会被压成空 200——前端错误态依赖此形状)",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "packages"
+        ]
+      },
+      "RegistryUploadResponseDto": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "success"
+        ]
+      },
+      "ArtifactUploadResponseDto": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "size": {
+            "type": "number",
+            "description": "bytes"
+          },
+          "sha256": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok",
+          "name",
+          "size",
+          "sha256"
+        ]
+      },
+      "ExecutionArtifactDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "size": {
+            "type": "number",
+            "description": "bytes"
+          },
+          "sha256": {
+            "type": "string",
+            "description": "sha256 over the stored bytes"
+          }
+        },
+        "required": [
+          "name",
+          "size",
+          "sha256"
+        ]
+      },
       "TaskTemplateResponseDto": {
         "type": "object",
         "properties": {
@@ -17570,6 +18004,20 @@
           "triggerType",
           "runtime",
           "createdAt"
+        ]
+      },
+      "SimpleOkResponseDto": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          }
+        },
+        "required": [
+          "ok"
         ]
       },
       "EventSubscriptionResponseDto": {
@@ -18062,6 +18510,18 @@
             "maxLength": 500
           }
         }
+      },
+      "ProjectDeleteResponseDto": {
+        "type": "object",
+        "properties": {
+          "deleted": {
+            "type": "boolean",
+            "description": "true = 删除/移除生效"
+          }
+        },
+        "required": [
+          "deleted"
+        ]
       },
       "ProjectMemberViewDto": {
         "type": "object",

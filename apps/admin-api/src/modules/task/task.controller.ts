@@ -999,6 +999,11 @@ export class TaskController {
   // 同时本处理器走 @Res() library mode（Nest 不再接管返回值/不序列化），
   // 全局 ResponseInterceptor 的 envelope map 因此不会写入流——新增 SSE 类
   // 路由若改为 @Sse()/return Observable 则会破坏流，必须保持 @Res() 直写。
+  @ApiResponse({
+    status: 200,
+    description: "SSE stream (Res passthrough)",
+    content: { "text/event-stream": { schema: { type: "string" } } },
+  })
   @SkipTimeout()
   async streamLogs(
     @Param("id") id: string,

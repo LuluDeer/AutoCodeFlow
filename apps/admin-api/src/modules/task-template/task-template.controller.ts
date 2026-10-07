@@ -14,6 +14,7 @@ import {
   ApiParam,
   ApiResponse,
   ApiTags,
+  ApiOkResponse,
 } from "@nestjs/swagger";
 import { TaskTemplateService } from "./task-template.service";
 import { CreateTaskTemplateDto } from "./dto/create-task-template.dto";
@@ -31,6 +32,7 @@ import { CurrentUser } from "../../common/decorators/current-user.decorator";
 import { AuthUser } from "../../common/interfaces/auth-user.interface";
 // D3-B-P2-2: 模板删除审计落证。
 import { AuditService } from "../audit/audit.service";
+import { SimpleOkResponseDto } from "../auth/dto/misc-response.dto";
 
 /**
  * CORE-03：任务模板端点（管理台，全部走全局 JwtAuthGuard）。
@@ -157,12 +159,12 @@ export class TaskTemplateController {
     description: "Official templates cannot be deleted (403).",
   })
   @ApiParam({ name: "id", description: "Template UUID" })
-  @ApiResponse({ status: 200, description: "Deleted" })
   @ApiResponse({
     status: 403,
     description: "Official template cannot be deleted",
   })
   @ApiResponse({ status: 404, description: "Template not found" })
+  @ApiOkResponse({ type: SimpleOkResponseDto })
   async remove(
     @Param("id", ParseUUIDPipe) id: string,
     @CurrentUser() user: AuthUser,
