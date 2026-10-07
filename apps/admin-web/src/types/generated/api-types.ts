@@ -6503,10 +6503,14 @@ export interface components {
         RolloutStrategyDto: Record<string, never>;
         UpgradeAllDto: {
             rollout?: components["schemas"]["RolloutStrategyDto"];
+            /** @description Target a historical released version (version STRING, not uuid) for this rollout — enables gradual rollback. Default: the application's current version */
+            version?: string;
         };
         UpgradeAllResponseDto: {
             /** @description false = canary batch rejected (ARCH-31 in-flight mutual exclusion) or all failed */
             ok: boolean;
+            /** @description 版本定向灰度时回显实际目标版本（快照恢复后的 app.version）；缺省（latest）不带 */
+            version?: string;
             /** @description Running deployments at trigger time */
             total: number;
             succeeded: number;

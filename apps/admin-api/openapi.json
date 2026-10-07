@@ -17512,6 +17512,11 @@
         "properties": {
           "rollout": {
             "$ref": "#/components/schemas/RolloutStrategyDto"
+          },
+          "version": {
+            "type": "string",
+            "description": "Target a historical released version (version STRING, not uuid) for this rollout — enables gradual rollback. Default: the application's current version",
+            "maxLength": 64
           }
         }
       },
@@ -17521,6 +17526,10 @@
           "ok": {
             "type": "boolean",
             "description": "false = canary batch rejected (ARCH-31 in-flight mutual exclusion) or all failed"
+          },
+          "version": {
+            "type": "string",
+            "description": "版本定向灰度时回显实际目标版本（快照恢复后的 app.version）；缺省（latest）不带"
           },
           "total": {
             "type": "number",
