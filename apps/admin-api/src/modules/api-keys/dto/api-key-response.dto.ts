@@ -43,12 +43,11 @@ export class ApiKeyViewDto {
   createdAt: Date;
 }
 
-/** POST /api-keys —— 唯一能看到明文 key 的一次。 */
-export class ApiKeyCreateResponseDto {
-  @ApiProperty({ type: ApiKeyViewDto })
-  apiKey: ApiKeyViewDto;
-
-  @ApiProperty({ description: "Plaintext key shown ONCE — store it now" })
+/** POST /api-keys —— 唯一能看到明文 key 的一次。R7 实测修正：controller 把
+ *  plaintext **扁平展开进视图**（{...view, plaintext}），不是 {apiKey, plaintext}
+ *  嵌套（首版照 service 签名臆测，实响应是平铺的视图字段+plaintext）。 */
+export class ApiKeyCreateResponseDto extends ApiKeyViewDto {
+  @ApiProperty({ description: "Plaintext key ('acf_<64 hex>') shown ONCE — store it now" })
   plaintext: string;
 }
 

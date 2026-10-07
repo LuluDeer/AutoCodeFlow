@@ -3896,6 +3896,8 @@ export interface components {
              * @description Soft-delete column (filtered out of all reads)
              */
             deletedAt: string | null;
+            /** @description R7 实测出现性差异：save() 回程（create/update/pause/resume/rollbackToVersion）会把 select:false 列 hydrated 成 null 带出；findOne/列表等 select 读取不含该键。值恒 null 或掩码形态——明文只在 webhook enable/rotate 的一次性回显 */
+            webhookSecret?: string | null;
         };
         TaskExecutionResponseDto: {
             /** Format: uuid */
@@ -5288,10 +5290,18 @@ export interface components {
             };
         };
         AiConfigResponseDto: {
-            /** @description Effective config key/values (provider, openaiModel, openaiBaseUrl, ollamaHost, ollamaModel, qwenModel, qwenBaseUrl, qwenMaxTokens, qwenTimeoutMs) */
-            config: {
-                [key: string]: string;
-            };
+            /** @description 'qwen' | 'openai' | 'ollama' | 'disabled' */
+            provider: string;
+            openaiModel: string;
+            openaiBaseUrl: string;
+            ollamaHost: string;
+            ollamaModel: string;
+            qwenModel: string;
+            qwenBaseUrl: string;
+            /** @description string-encoded number (config store values are strings) */
+            qwenMaxTokens: string;
+            /** @description string-encoded number (ms) */
+            qwenTimeoutMs: string;
             /** @description Whether the current provider has an API key configured (key VALUE is never returned) */
             hasApiKey: boolean;
         };
@@ -6009,6 +6019,8 @@ export interface components {
                 [key: string]: unknown;
             } | null;
             ip: string | null;
+            /** @description Write outcome recorded by the audit sink (default 'success') */
+            result: string;
             /** Format: date-time */
             createdAt: string;
         };
@@ -6864,8 +6876,29 @@ export interface components {
         };
         CreateApiKeyDto: Record<string, never>;
         ApiKeyCreateResponseDto: {
-            apiKey: components["schemas"]["ApiKeyViewDto"];
-            /** @description Plaintext key shown ONCE — store it now */
+            id: number;
+            name: string;
+            /** @description 'acf_' + first chars — full key never returned after create */
+            keyPrefix: string;
+            /** @description Coarse scope bucket */
+            scope: string;
+            /** @description Extra narrow-domain scopes (word list, e.g. 'task:trigger') */
+            scopes: string[];
+            /** Format: date-time */
+            expiresAt: string | null;
+            /**
+             * Format: date-time
+             * @description Set = revoked (soft-delete)
+             */
+            revokedAt: string | null;
+            /**
+             * Format: date-time
+             * @description Refresh throttled to 60s (LAST_USED_THROTTLE_MS)
+             */
+            lastUsedAt: string | null;
+            /** Format: date-time */
+            createdAt: string;
+            /** @description Plaintext key ('acf_<64 hex>') shown ONCE — store it now */
             plaintext: string;
         };
         ApiKeyRevokeResponseDto: {

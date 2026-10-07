@@ -350,6 +350,13 @@ export class TaskResponseDto {
     nullable: true,
   })
   deletedAt: Date | null;
+
+  @ApiPropertyOptional({
+    description:
+      "R7 实测出现性差异：save() 回程（create/update/pause/resume/rollbackToVersion）会把 select:false 列 hydrated 成 null 带出；findOne/列表等 select 读取不含该键。值恒 null 或掩码形态——明文只在 webhook enable/rotate 的一次性回显",
+    nullable: true,
+  })
+  webhookSecret?: string | null;
 }
 
 /** task_executions 实体的完整响应形态（详情/AI 分析/触发/回滚 execution 载荷）。 */

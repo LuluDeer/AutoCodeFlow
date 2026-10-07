@@ -10891,6 +10891,11 @@
             "type": "string",
             "description": "Soft-delete column (filtered out of all reads)",
             "nullable": true
+          },
+          "webhookSecret": {
+            "type": "string",
+            "description": "R7 实测出现性差异：save() 回程（create/update/pause/resume/rollbackToVersion）会把 select:false 列 hydrated 成 null 带出；findOne/列表等 select 读取不含该键。值恒 null 或掩码形态——明文只在 webhook enable/rotate 的一次性回显",
+            "nullable": true
           }
         },
         "required": [
@@ -14277,12 +14282,35 @@
       "AiConfigResponseDto": {
         "type": "object",
         "properties": {
-          "config": {
-            "type": "object",
-            "description": "Effective config key/values (provider, openaiModel, openaiBaseUrl, ollamaHost, ollamaModel, qwenModel, qwenBaseUrl, qwenMaxTokens, qwenTimeoutMs)",
-            "additionalProperties": {
-              "type": "string"
-            }
+          "provider": {
+            "type": "string",
+            "description": "'qwen' | 'openai' | 'ollama' | 'disabled'"
+          },
+          "openaiModel": {
+            "type": "string"
+          },
+          "openaiBaseUrl": {
+            "type": "string"
+          },
+          "ollamaHost": {
+            "type": "string"
+          },
+          "ollamaModel": {
+            "type": "string"
+          },
+          "qwenModel": {
+            "type": "string"
+          },
+          "qwenBaseUrl": {
+            "type": "string"
+          },
+          "qwenMaxTokens": {
+            "type": "string",
+            "description": "string-encoded number (config store values are strings)"
+          },
+          "qwenTimeoutMs": {
+            "type": "string",
+            "description": "string-encoded number (ms)"
           },
           "hasApiKey": {
             "type": "boolean",
@@ -14290,7 +14318,15 @@
           }
         },
         "required": [
-          "config",
+          "provider",
+          "openaiModel",
+          "openaiBaseUrl",
+          "ollamaHost",
+          "ollamaModel",
+          "qwenModel",
+          "qwenBaseUrl",
+          "qwenMaxTokens",
+          "qwenTimeoutMs",
           "hasApiKey"
         ]
       },
@@ -16353,6 +16389,10 @@
             "type": "string",
             "nullable": true
           },
+          "result": {
+            "type": "string",
+            "description": "Write outcome recorded by the audit sink (default 'success')"
+          },
           "createdAt": {
             "format": "date-time",
             "type": "string"
@@ -16367,6 +16407,7 @@
           "resourceId",
           "detail",
           "ip",
+          "result",
           "createdAt"
         ]
       },
@@ -18324,16 +18365,63 @@
       "ApiKeyCreateResponseDto": {
         "type": "object",
         "properties": {
-          "apiKey": {
-            "$ref": "#/components/schemas/ApiKeyViewDto"
+          "id": {
+            "type": "number"
+          },
+          "name": {
+            "type": "string"
+          },
+          "keyPrefix": {
+            "type": "string",
+            "description": "'acf_' + first chars — full key never returned after create"
+          },
+          "scope": {
+            "type": "string",
+            "description": "Coarse scope bucket"
+          },
+          "scopes": {
+            "description": "Extra narrow-domain scopes (word list, e.g. 'task:trigger')",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "expiresAt": {
+            "format": "date-time",
+            "type": "string",
+            "nullable": true
+          },
+          "revokedAt": {
+            "format": "date-time",
+            "type": "string",
+            "description": "Set = revoked (soft-delete)",
+            "nullable": true
+          },
+          "lastUsedAt": {
+            "format": "date-time",
+            "type": "string",
+            "description": "Refresh throttled to 60s (LAST_USED_THROTTLE_MS)",
+            "nullable": true
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
           },
           "plaintext": {
             "type": "string",
-            "description": "Plaintext key shown ONCE — store it now"
+            "description": "Plaintext key ('acf_<64 hex>') shown ONCE — store it now"
           }
         },
         "required": [
-          "apiKey",
+          "id",
+          "name",
+          "keyPrefix",
+          "scope",
+          "scopes",
+          "expiresAt",
+          "revokedAt",
+          "lastUsedAt",
+          "createdAt",
           "plaintext"
         ]
       },
