@@ -113,7 +113,8 @@ def build_rlimit_pre_exec(
             logger.info(
                 'RLIMIT_* task resource caps are not available on win32; '
                 'skipping them for task children (POSIX containers are the '
-                'production path, where the caps apply)'
+                'production path, where the caps apply). Job Object upgrade '
+                'plan: docs/deployment.md Windows chapter §4b'
             )
             _win32_rlimit_noted = True
         return None
