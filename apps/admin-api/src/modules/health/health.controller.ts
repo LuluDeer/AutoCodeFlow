@@ -1,11 +1,6 @@
 import { Controller, Get, Res } from "@nestjs/common";
 import type { Response } from "express";
-import {
-  ApiTags,
-  ApiOperation,
-  ApiResponse,
-  ApiOkResponse,
-} from "@nestjs/swagger";
+import { ApiTags, ApiOperation, ApiOkResponse } from "@nestjs/swagger";
 import { HealthService } from "./health.service";
 import { Public } from "../../common/decorators/public.decorator";
 import {

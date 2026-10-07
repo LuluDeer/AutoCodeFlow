@@ -773,9 +773,7 @@ describe("AppDeploymentService rollout（DEP-02/DEP-03）", () => {
     it("version 指向历史版本：快照恢复 app 字段（与 rollbackApplication 同映射）再走全量升级，响应回显 version", async () => {
       repo.find.mockResolvedValue([row("d1"), row("d2")]);
       versionRepo.findOne.mockResolvedValue(versionRow);
-      const upSpy = jest
-        .spyOn(service, "upgrade")
-        .mockResolvedValue(row("d1"));
+      const upSpy = jest.spyOn(service, "upgrade").mockResolvedValue(row("d1"));
 
       const result = await service.upgradeAllWithRollout(
         "app-1",

@@ -173,7 +173,8 @@ export class UpgradeAllResponseDto {
   ok: boolean;
 
   @ApiPropertyOptional({
-    description: "版本定向灰度时回显实际目标版本（快照恢复后的 app.version）；缺省（latest）不带",
+    description:
+      "版本定向灰度时回显实际目标版本（快照恢复后的 app.version）；缺省（latest）不带",
   })
   version?: string;
 

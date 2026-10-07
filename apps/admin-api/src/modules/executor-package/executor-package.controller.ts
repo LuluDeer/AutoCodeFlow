@@ -66,12 +66,7 @@ import {
 import { ExecutorPackage } from "./executor-package.entity";
 import { UserRole } from "../users/entities/user.entity";
 import { WriteGuard } from "../../common/decorators/write-guard.decorator";
-import {
-  ArtifactUploadResponseDto,
-  ExecutorPushResultDto,
-  RegistryPackagesResponseDto,
-  RegistryUploadResponseDto,
-} from "./dto/executor-package-response.dto";
+import { ExecutorPushResultDto } from "./dto/executor-package-response.dto";
 
 /**
  * QA10: build a header-safe Content-Disposition value. The filename comes

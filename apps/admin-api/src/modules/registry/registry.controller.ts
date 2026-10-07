@@ -33,8 +33,6 @@ import { AuthUser } from "../../common/interfaces/auth-user.interface";
 import { AuditService } from "../audit/audit.service";
 import { ApiOkResponse, ApiCreatedResponse } from "@nestjs/swagger";
 import {
-  ArtifactUploadResponseDto,
-  ExecutorPushResultDto,
   RegistryPackagesResponseDto,
   RegistryUploadResponseDto,
 } from "../executor-package/dto/executor-package-response.dto";

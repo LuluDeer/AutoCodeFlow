@@ -2166,7 +2166,11 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     // version 与当前 version 相同则跳过恢复——「缺省=latest 逐字节不变」的
     // 同版本显式请求保持纯升级语义。
     let targetVersion: string | undefined;
-    if (version !== undefined && version !== null && String(version).trim() !== "") {
+    if (
+      version !== undefined &&
+      version !== null &&
+      String(version).trim() !== ""
+    ) {
       const row = await this.versionRepo.findOne({
         where: { applicationId: appId, version: String(version).trim() },
       });
