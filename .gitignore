@@ -127,6 +127,12 @@ apps/admin-api/.agent-check/
 apps/admin-api/.boundary-check/
 # agent-trigger-check 同上
 apps/admin-api/.trigger-check/
+# agent-sop-check 同上（2026-10-08 补：此前五个同类目录里**唯独漏了这一个**，
+# 84 个转译产物文件会随 `git add -A` 入库。四个邻居都被忽略而它被漏掉的原因
+# 只是"没人跑过 test:sop"——正是 .qwen-check 注释里记的那类沉默缺口。
+apps/admin-api/.sop-check/
+# mcp-tools-probe 的临时落点（若将来它需要写盘；当前为纯只读探针，兜底用）
+apps/admin-api/.mcp-probe/
 
 # F-19（DEEP_REVIEW 0ef3bbe）：executor-desktop 内嵌 executor-node 的 ncc bundle 出库。
 # 产物（index.js / sourcemap-register.js / *.map，约 2.1MB）不再入库，由

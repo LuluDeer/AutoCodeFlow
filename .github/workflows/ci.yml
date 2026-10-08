@@ -570,8 +570,17 @@ jobs:
         working-directory: packages/mcp-server
       - run: npm run typecheck
         working-directory: packages/mcp-server
+      # The tool-surface guard below drives the REAL dist/index.js over stdio,
+      # so the build must happen first (vitest alone never emits dist/).
+      - run: npm run build
+        working-directory: packages/mcp-server
       - run: npm test
         working-directory: packages/mcp-server
+      # MCP-AGENT-UX-AUDIT-2026-10-08: tool-surface guard. Asserts every tool
+      # still declares annotations and that deploy runMode stays a real enum.
+      # Runs the REAL build over stdio (initialize + tools/list), so it catches
+      # schema drift that unit tests (which drive a mock server) cannot see.
+      - run: node scripts/mcp-tools-probe.cjs --check
 
   autocodeflow-node-sdk-test:
     runs-on: ubuntu-latest
