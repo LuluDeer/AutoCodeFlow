@@ -115,13 +115,22 @@ test.describe('executor-desktop 冒烟（Playwright _electron）', () => {
       // config:import / history:export-log），并由 export-flows.selftest 钉住
       // 各自的守卫链（掩码导出、sanitize 消毒、copyFile 不改原文件 + 大文件拦截），
       // 属"实现已落地、白名单没跟上"，不是新增未实现的通道。
+      //
+      // getHistory 推送化（7efe5ab2）再补 1 个：onHistoryChanged。meta 目录变更哨
+      // 以 fs.watch + debounce 广播 history:changed（main/index.ts），替代双页 10s
+      // 轮询；preload 暴露 onHistoryChanged 供历史页/状态页订阅。同样属实现已落地。
+      //
+      // 教训：本地 `dist/` 是**上一次 build 的产物**，直接跑 e2e 会漏掉「新增但
+      // 未重建」的通道（本地 41 vs CI 44 vs 实际 48）。改动 preload 后必须
+      // `npm run build` 再跑本用例，否则白名单会以过期运行时为准。
       expect(channels).toEqual(
         [
           'checkForUpdate', 'checkPort', 'clearHistory', 'closeWindow', 'deleteAppRelease',
           'downloadUpdate', 'exportConfig', 'exportExecLog', 'getAgentStatus', 'getAutoLaunch',
           'getConfig', 'getHistory',
           'getLocalIPs', 'getPythonEnvStatus', 'getRunningApps', 'getStatus', 'getTodayLogs',
-          'getWindowState', 'importConfig', 'installUpdate', 'listApps', 'listLogFiles', 'minimizeWindow', 'onLogLine',
+          'getWindowState', 'importConfig', 'installUpdate', 'listApps', 'listLogFiles', 'minimizeWindow',
+          'onHistoryChanged', 'onLogLine',
           'onStatusChange', 'onSwitchTab', 'onUpdateAvailable', 'onUpdateDownloaded',
           'onWindowMaximizeChange',
           'onUpdateError', 'onUpdateProgress', 'openAppFolder', 'openLogFile',
