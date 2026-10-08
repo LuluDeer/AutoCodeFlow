@@ -7,6 +7,7 @@ import subprocess
 import time
 import signal
 import platform
+import tempfile
 import psutil
 from pathlib import Path
 from datetime import datetime
@@ -53,8 +54,16 @@ def get_typed_param(ctx, key, default=None):
     from_env 不做类型还原——operations 这类列表参数拿到的其实是字符串，
     直接按列表迭代只会逐字符空转。尝试 json.loads 还原，失败则原样返回
     字符串（对齐 Node 示例 getParam 的兜底语义）。
+
+    另有一处键名陷阱：执行器注入时把键名**大写**（`AUTOFLOW_{k.upper()}`，
+    见 apps/executor-python/routers/execute.py），而 SDK 读回时把键名**小写**
+    （context.py: params[...lower()]）。于是任务配置里写成 camelCase 的键
+    （`outputDir`）在 ctx.params 里只以小写形态（`outputdir`）存在，按原样
+    查找恒为 None、静默落回默认值。这里补一次小写回退查找。
     """
     raw = ctx.get_param(key)
+    if raw is None and key != key.lower():
+        raw = ctx.get_param(key.lower())
     if raw is None:
         return default
     try:
@@ -79,13 +88,18 @@ def main():
         except (ValueError, TypeError):
             ctx.log.warning(f"timeout 参数非法（{timeout!r}），已回退 30s")
             timeout = 30
-    output_dir = get_typed_param(ctx, "outputDir", f"/tmp/system_automation_{ctx.execution_id}")
-    
+    output_dir = get_typed_param(
+        ctx, "outputdir", str(Path(tempfile.gettempdir()) / f"system_automation_{ctx.execution_id}")
+    )
+
     ctx.log.info("开始系统集成自动化任务")
-    
-    # 创建输出目录
-    output_path = Path(output_dir)
+
+    # 产物目录（FEAT-05）：报告/截图写进这里才能在执行详情页看到；
+    # 本地裸跑（无执行器注入）时回退到系统临时目录，保持可调试。
+    _artifacts_env = ctx.get_env("AUTOFLOW_ARTIFACTS_DIR")
+    output_path = Path(_artifacts_env) if _artifacts_env else Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
+    ctx.log.info(f"输出目录: {output_path}")
     
     # 获取系统信息
     system_info = get_system_info()
@@ -438,21 +452,32 @@ def main():
     with open(report_file, 'w', encoding='utf-8') as f:
         json.dump(report, f, ensure_ascii=False, indent=2)
     
-    ctx.log.info(f"操作报告已保存: {report_file}")
-    
+    ctx.log.info(f"操作报告已保存: {report_file.name}")
+
+    failed_operations = [r for r in operation_results if not r.get("success")]
+
     # 返回结果
     result = {
-        "success": True,
+        "success": not failed_operations,
         "message": "系统集成自动化任务完成",
         "system_info": system_info,
         "output_dir": str(output_path),
         "operations_performed": len(operation_results),
-        "successful_operations": sum(1 for r in operation_results if r.get("success")),
-        "report_file": str(report_file),
+        "successful_operations": len(operation_results) - len(failed_operations),
+        "report_file": report_file.name,
         "operation_results": operation_results
     }
     
     print(f"RESULT: {result}")
+
+    # 有操作失败 → 抛异常让执行器判 FAILED。执行器只看进程退出码，
+    # 返回 {"success": False} 不会改变判定（会显示成成功，即"假绿"）。
+    if failed_operations:
+        raise RuntimeError(
+            f"{len(failed_operations)}/{len(operation_results)} 个操作执行失败，"
+            f"首个错误: {failed_operations[0].get('error')}"
+        )
+
     return result
 
 
