@@ -20,6 +20,7 @@ import {
 import { recordOwnershipAssertion } from "../../common/guards/ownership-assertion.store";
 import {
   DataSource,
+  And,
   ILike,
   In,
   IsNull,
@@ -79,6 +80,8 @@ import { Application } from "../application/entities/application.entity";
 import { CreateTaskDto } from "./dto/create-task.dto";
 import { UpdateTaskDto } from "./dto/update-task.dto";
 import { TriggerTaskDto } from "./dto/trigger-task.dto";
+// FEAT-RENAME：名称的服务层守卫（编程式调用方绕过全局 ValidationPipe，见 create()）。
+import { describeTaskNameProblem } from "./dto/task-name.constraint";
 // E-1: 任务定义导入/导出（纯函数层：白名单装配/映射/重名后缀推导）
 import {
   buildTaskExportResult,
@@ -1160,6 +1163,20 @@ export class TaskService {
   }
 
   async create(dto: CreateTaskDto, user?: { id: number } | null) {
+    // FEAT-RENAME：名称的服务层守卫。
+    //
+    // 为什么 DTO 的 @IsTaskName 不够：create() 有一批**编程式调用方**绕过
+    // 全局 ValidationPipe——最典型的是 application.service 的 manifest.json
+    // 自动注册（`name: taskDef.name || taskDef.id`，直接构造对象调 create）。
+    // 没有本守卫时，manifest 里的名字可以带首尾空白/控制字符（进日志行与
+    // 通知标题），或超过 255 字符 → PG 报 22001 → 笼统 500。
+    //
+    // 与本文件既有的 assertRuntimeVersionValid / assertTriggerConfigConsistent
+    // 同一纪律（见 548 行注释：服务层守卫存在的理由正是这些内部调用方）。
+    const nameProblem = describeTaskNameProblem(dto?.name);
+    if (nameProblem) {
+      throw new BadRequestException(`任务名称不可用：${nameProblem}`);
+    }
     if (dto.dependencies && Object.keys(dto.dependencies).length > 0) {
       // FIX-1.1（依赖链契约）：先校验 value 是真实存在的任务 id——value 是
       // 扇出/环检测的**语义位**，坏 value 必须在写面 400，而不是落库后
@@ -1452,6 +1469,85 @@ export class TaskService {
     }
   }
 
+  /**
+   * FEAT-RENAME: 任务改名后，刷新其它任务 dependencies 里指向它的**显示名 key**。
+   *
+   * ## 为什么需要
+   *
+   * `dependencies` 的契约是 `Record<显示名快照, 上游任务id>`——**value 才是
+   * 依赖任务 id**（环检测 / 依赖满足 / 上游 SUCCESS 扇出全部读 value），key
+   * 仅作展示别名，供 DAG 图与排查场景人读。改名后 key 会变成旧名：功能一切
+   * 正常（value 没变），但依赖图上显示一个"不存在的任务名"，值班按图排查时
+   * 会对不上任何一行任务。
+   *
+   * ## 语义边界（刻意保守）
+   *
+   * - 只改 **value === 被改名任务 id** 的条目；不碰其它任何依赖关系。
+   * - 只改 **key 恰好等于旧名** 的条目。若某任务当初保存时 key 已经是别的
+   *   形态（如同名冲突降级成 id、或用户在旧版本里手写过别名），保持原样——
+   *   我们无法区分"这是旧名快照"与"用户有意写的别名"，误改等于破坏展示信息。
+   * - 新名与某个**其它** key 撞车时不覆盖（`Record` 一个 key 只能有一个值，
+   *   覆盖会让原依赖关系丢失）。此时保留旧 key：展示名过时是外观问题，
+   *   丢依赖关系是功能问题。
+   * - best-effort：任何异常只记 warn，绝不回滚或影响改名本身——改名已经
+   *   落库，此处失败只意味着图上还显示旧名。
+   */
+  private async renameDependencyAlias(
+    taskId: string,
+    oldName: string,
+    newName: string,
+  ): Promise<void> {
+    try {
+      // 候选集：dependencies 里 value 含该 id 的任务。jsonb 无索引，用
+      // 包含判定在 SQL 侧先粗筛（`@>` 语义），再在内存里精确定位 key，
+      // 避免把全表任务拉进内存。
+      const dependents = await this.taskRepo
+        .createQueryBuilder("task")
+        .where("task.status != :deleted", { deleted: TaskStatus.DELETED })
+        .andWhere("task.dependencies @> :probe", {
+          probe: JSON.stringify({ [oldName]: taskId }),
+        })
+        .getMany();
+
+      let touched = 0;
+      for (const dependent of dependents) {
+        const deps = dependent.dependencies;
+        if (!deps || typeof deps !== "object") continue;
+        // 精确定位：key === oldName 且 value === taskId
+        if (deps[oldName] !== taskId) continue;
+        // 新名已被另一个 key 占用 → 保留旧 key，不丢依赖关系
+        if (newName !== oldName && deps[newName] !== undefined) continue;
+
+        const next: Record<string, string> = {};
+        for (const [key, value] of Object.entries(deps)) {
+          next[key === oldName && value === taskId ? newName : key] = value;
+        }
+        // 只写 dependencies 一列——刻意**不**用 `taskRepo.save(entity)`。
+        // save() 是整行 UPDATE，而这里的实体来自 QueryBuilder 取数，不含
+        // `select: false` 的 webhookSecret 列：整行回写会把它清成 NULL
+        // （本仓已有同型生产故障先例，见 update() 的 R-01 注释）。
+        // 列级 update 既规避该风险，也不会无谓触碰 updatedAt 之外的列。
+        await this.taskRepo.update(
+          { id: dependent.id },
+          { dependencies: next },
+        );
+        touched += 1;
+      }
+      if (touched > 0) {
+        this.logger.log(
+          `FEAT-RENAME: refreshed dependency alias "${oldName}" -> "${newName}" on ${touched} dependent task(s)`,
+        );
+      }
+    } catch (err) {
+      // best-effort：改名本身已落库，此处失败只影响 DAG 上的展示名
+      this.logger.warn(
+        `FEAT-RENAME: failed to refresh dependency alias "${oldName}" -> "${newName}": ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+
   async findAll(p: ListTasksQueryDto) {
     // F-10（DEEP_REVIEW 0ef3bbe）: 轻量投影——?fields=id,name 时只 select
     // 白名单列，跳过 params/secrets/glueSource 等重量列。非法字段 400。
@@ -1505,19 +1601,54 @@ export class TaskService {
       return this.findAllByLastStatus(p, select, sortKey, dir);
     }
 
-    const where: Record<string, unknown> = { status: Not(TaskStatus.DELETED) };
-    if (p.status) where.status = p.status as TaskStatus;
-    if (p.name) where.name = ILike(`%${p.name}%`);
-    if (p.runtime) where.runtime = p.runtime;
-    if (p.applicationId) where.applicationId = p.applicationId;
+    // 过滤条件装配。q（关键字，name OR description）走 findAndCount 的
+    // **数组 where**（TypeORM 数组 = 元素间 OR、元素内 AND）；无 q 时保持
+    // 单对象 where，既有路径逐字节不变。
+    const base: Record<string, unknown> = {
+      status: Not(TaskStatus.DELETED),
+    };
+    if (p.status) base.status = p.status as TaskStatus;
+    // NETOPT-3⑤ 同源修复：ILIKE 里 `_` = 任意单字符、`%` = 任意串。此前这条
+    // name 过滤是裸插值——搜 `daily_report` 会命中 `dailyXreport`，搜 `%`
+    // 命中全部，结果集静默变宽。同文件的 getAllExecutions 早已转义，此处补齐。
+    if (p.name) base.name = ILike(`%${escapeLikePattern(p.name)}%`);
+    // name + q 同时给出时取**交集**（DTO 明文契约，见 list-tasks-query.dto）。
+    // 下面 q 分支的数组元素若直接 `{ ...base, name: ILike(q) }`，展开会把
+    // base.name **覆盖**掉 → p.name 被静默丢弃、结果集变宽（本仓反复警示的
+    // "静默变宽"类缺陷），且与 QB 分支（两条 andWhere 真 AND）对同一输入
+    // 给出不同结果。故此处记下 name 条件，供 q 分支用 And() 并列。
+    const nameFilter = base.name as never;
+    if (p.runtime) base.runtime = p.runtime;
+    if (p.applicationId) base.applicationId = p.applicationId;
     // AUTH-01: projectId 过滤——"default" 映射为默认项目（未分配 NULL 行
     // 一起归入默认项目视图，Or 处理）；具体 uuid 则精确匹配。
     if (p.projectId) {
       if (p.projectId === "default") {
-        where.projectId = Or(IsNull(), In([DEFAULT_PROJECT_ID]));
+        base.projectId = Or(IsNull(), In([DEFAULT_PROJECT_ID]));
       } else {
-        where.projectId = p.projectId;
+        base.projectId = p.projectId;
       }
+    }
+
+    // 关键字检索：name OR description。两个数组元素各自带上 base 的全部
+    // AND 条件（TypeORM 的数组语义是元素间 OR，元素内 AND）——否则
+    // runtime/projectId 等过滤会被 OR 短路掉。
+    let where: Record<string, unknown> | Record<string, unknown>[] = base;
+    if (p.q) {
+      const like = `%${escapeLikePattern(p.q)}%`;
+      where = [
+        // name 分支：base 已有 name 过滤时并列（And）而非覆盖。
+        {
+          ...base,
+          name:
+            nameFilter !== undefined
+              ? And(nameFilter, ILike(like) as never)
+              : ILike(like),
+        },
+        // description 可空：NULL ILIKE x 结果为 NULL（非 true），自然不命中，
+        // 无需 COALESCE。base.name（若存在）仍在此分支生效（元素内 AND）。
+        { ...base, description: ILike(like) },
+      ];
     }
 
     const [list, total] = await this.taskRepo.findAndCount({
@@ -1587,7 +1718,19 @@ export class TaskService {
       qb.where("task.status != :__deleted", { __deleted: TaskStatus.DELETED });
     }
     if (p.name) {
-      qb.andWhere("task.name ILIKE :__name", { __name: `%${p.name}%` });
+      // NETOPT-3⑤ 同源：转义 LIKE 元字符，按字面量匹配（见 findAll 注释）。
+      qb.andWhere("task.name ILIKE :__name", {
+        __name: `%${escapeLikePattern(p.name)}%`,
+      });
+    }
+    // q（关键字，name OR description）——与 findAndCount 分支逐项镜像。
+    // 括号必须显式：不加会把 OR 的右半边提到与前面所有 AND 同级，使
+    // runtime/projectId 等过滤被 OR 短路（"搜索能用了，但筛选器失效"）。
+    if (p.q) {
+      const like = `%${escapeLikePattern(p.q)}%`;
+      qb.andWhere("(task.name ILIKE :__q OR task.description ILIKE :__q)", {
+        __q: like,
+      });
     }
     if (p.runtime) {
       qb.andWhere("task.runtime = :__runtime", { __runtime: p.runtime });
@@ -1754,6 +1897,9 @@ export class TaskService {
     // NF-04: 亲和/反亲和为可空列，PATCH null 清除语义直接依赖 Object.assign
     // 的透传（显式 null 覆盖旧数组 → 列落 NULL = 无约束）——normalizeTaskDto
     // 不触碰这两个键；undefined（缺省）不会出现在合并结果上，旧值自然保留。
+    // 改名（FEAT-RENAME）：捕获旧名，供 save 后刷新引用方的依赖显示名 key。
+    // `Object.assign` 之后 t.name 已是新值，故必须在此**之前**读取。
+    const previousName = t.name;
     const updated = Object.assign(t, normalized);
     // R7 (N17): PATCH 合并路径的互斥校验必须看合并后的实体态——请求体只带
     // executorId（已有任务 executeMode=broadcast）或只带 executeMode=broadcast
@@ -1793,8 +1939,33 @@ export class TaskService {
       touchesRuntime: "runtime" in dto,
       context: `task ${id}`,
     });
-    const saved = await this.taskRepo.save(updated);
+    let saved: Task;
+    try {
+      saved = await this.taskRepo.save(updated);
+    } catch (err) {
+      // 改名撞唯一索引：tasks.name 上有全局唯一索引 idx_tasks_name_unique
+      // （迁移 1790000000050，**含软删除行**）。create 早就有这条分流
+      // （见下方 23505 处理），update 此前没有——用户改名撞重名时拿到的是
+      // 全局过滤器的笼统 "Resource already exists"，完全不知道撞的是什么，
+      // 也不知道"重名可能来自回收站里的任务"。
+      if (
+        isUniqueViolation(err) &&
+        uniqueConstraintName(err) === "idx_tasks_name_unique"
+      ) {
+        throw new ConflictException(
+          `已存在同名任务「${updated.name}」（任务名全局唯一，回收站中的任务同样占用该名称）；请换一个名称`,
+        );
+      }
+      throw err;
+    }
     await this.saveVersion(saved.id, undefined, undefined, saved);
+    // 改名后刷新所有引用方的依赖**显示名** key：dependencies 是
+    // Record<显示名快照, 上游任务id>，key 仅作展示别名（语义位是 value=id，
+    // 环检测/依赖满足/扇出全部读 value）。不刷新的话 DAG 与依赖页会一直显示
+    // 旧名——功能正常但"图上有个不存在的任务"，排查时误导人。
+    if (previousName !== saved.name) {
+      await this.renameDependencyAlias(saved.id, previousName, saved.name);
+    }
     // Stop old schedule, then re-register based on new status without waiting for reload
     this.schedulerService.stop(id);
     if (saved.status === TaskStatus.ACTIVE) {
@@ -4492,11 +4663,38 @@ export class TaskService {
     // RAW 实体（无脱敏，快照亦不含 secrets），无 R-01 掩码回写问题。
     await this.assertCanWriteProjectAware(task, user);
 
+    // FEAT-RENAME：快照含 name（saveVersion 显式入快照，见其 snapshot 装配），
+    // 故回滚会把任务名一起还原成那一版的样子——这是既有的快照语义，保留。
+    // 但改名放开后，这条路径必须与 update() 补齐同样的两件事，否则它是绕过
+    // 新约束的旁路：
+    //   ① 撞 idx_tasks_name_unique（还原的名字可能已被别的任务占用）——此前
+    //      裸抛 QueryFailedError → 全局过滤器给笼统 500/409，用户不知道撞了
+    //      什么；update() 已有可读文案，这里必须对齐。
+    //   ② 引用方的依赖显示名 key 会残留旧名——update() 会刷新，回滚同样要刷。
+    const previousName = task.name;
     Object.assign(task, version.snapshot);
     task.currentVersion = version.version;
 
-    const saved = await this.taskRepo.save(task);
+    let saved: Task;
+    try {
+      saved = await this.taskRepo.save(task);
+    } catch (err) {
+      if (
+        isUniqueViolation(err) &&
+        uniqueConstraintName(err) === "idx_tasks_name_unique"
+      ) {
+        throw new ConflictException(
+          `无法回滚到版本 ${version.version}：该版本的任务名「${task.name}」已被其它任务占用` +
+            `（任务名全局唯一，回收站中的任务同样占用）。请先重命名占用该名称的任务，或改用其它版本。`,
+        );
+      }
+      throw err;
+    }
     await this.saveVersion(saved.id, undefined, undefined, saved);
+    // 与 update() 同源：回滚若改变了任务名，同步刷新引用方的依赖别名
+    if (previousName !== saved.name) {
+      await this.renameDependencyAlias(saved.id, previousName, saved.name);
+    }
     // B-2（调度域审计）：回滚整体覆盖含 triggerType/cronExpression/fixedRate
     // 的快照——若不重排调度，已注册的定时器仍按**旧表达式**继续触发（reload
     // 只为「未注册」的任务建定时器，感知不到已注册任务的配置变化）。与

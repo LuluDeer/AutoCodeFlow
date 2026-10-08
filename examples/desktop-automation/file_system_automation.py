@@ -5,6 +5,7 @@
 """
 import os
 import shutil
+import tempfile
 import time
 import hashlib
 from pathlib import Path
@@ -44,8 +45,16 @@ def get_typed_param(ctx, key, default=None):
     from_env 不做类型还原——operations 这类列表参数拿到的其实是字符串，
     直接按列表迭代只会逐字符空转。尝试 json.loads 还原，失败则原样返回
     字符串（对齐 Node 示例 getParam 的兜底语义）。
+
+    另有一处键名陷阱：执行器注入时把键名**大写**（`AUTOFLOW_{k.upper()}`，
+    见 apps/executor-python/routers/execute.py），而 SDK 读回时把键名**小写**
+    （context.py: params[...lower()]）。于是任务配置里写成 camelCase 的键
+    （`sourceDir`）在 ctx.params 里只以小写形态（`sourcedir`）存在，按原样
+    查找恒为 None、静默落回默认值。这里补一次小写回退查找。
     """
     raw = ctx.get_param(key)
+    if raw is None and key != key.lower():
+        raw = ctx.get_param(key.lower())
     if raw is None:
         return default
     try:
@@ -67,23 +76,31 @@ def is_truthy_param(value) -> bool:
 def main():
     ctx = TaskContext.from_env()
 
-    # 获取任务参数（operations 列表 / createTestFiles 布尔经 JSON 容错解析
-    # 还原，见 helper 注释）
-    source_dir = get_typed_param(ctx, "sourceDir", "/tmp/file_automation_source")
-    target_dir = get_typed_param(ctx, "targetDir", "/tmp/file_automation_target")
+    # 获取任务参数（operations 列表 / createtestfiles 布尔经 JSON 容错解析
+    # 还原，见 helper 注释）。
+    # 参数名一律用小写：执行器注入时大写、SDK 读回时小写，camelCase 键会取不到。
+    _tmp = Path(tempfile.gettempdir())
+    source_dir = get_typed_param(ctx, "sourcedir", str(_tmp / "file_automation_source"))
+    target_dir = get_typed_param(ctx, "targetdir", str(_tmp / "file_automation_target"))
     operations = get_typed_param(ctx, "operations", [])
     if not isinstance(operations, list):
         ctx.log.warning("operations 参数应为 JSON 数组，已按空列表处理")
         operations = []
-    create_test_files = is_truthy_param(get_typed_param(ctx, "createTestFiles", True))
-    
+    create_test_files = is_truthy_param(get_typed_param(ctx, "createtestfiles", True))
+
     ctx.log.info("开始文件系统自动化任务")
     ctx.log.info(f"源目录: {source_dir}")
     ctx.log.info(f"目标目录: {target_dir}")
-    
+
     # 创建路径对象
     source_path = Path(source_dir)
     target_path = Path(target_dir)
+
+    # 产物目录（FEAT-05）：报告写进这里才能在执行详情页看到；
+    # 本地裸跑（无执行器注入）时回退到目标目录，保持可调试。
+    artifacts_dir = ctx.get_env("AUTOFLOW_ARTIFACTS_DIR")
+    artifacts_path = Path(artifacts_dir) if artifacts_dir else target_path
+    artifacts_path.mkdir(parents=True, exist_ok=True)
     
     # 创建测试文件（如果需要）
     if create_test_files:
@@ -426,8 +443,8 @@ def main():
         
         operation_results.append(result)
     
-    # 生成操作报告
-    report_file = target_path / "file_automation_report.json"
+    # 生成操作报告（写进 artifacts 目录 → 执行详情页可下载）
+    report_file = artifacts_path / "file_automation_report.json"
     report = {
         "execution_id": ctx.execution_id,
         "timestamp": datetime.now().isoformat(),
@@ -452,22 +469,34 @@ def main():
     with open(report_file, 'w', encoding='utf-8') as f:
         json.dump(report, f, ensure_ascii=False, indent=2)
     
-    ctx.log.info(f"操作报告已保存: {report_file}")
-    
+    ctx.log.info(f"操作报告已保存: {report_file.name}")
+
+    failed_operations = [r for r in operation_results if not r.get("success")]
+
     # 返回结果
     result = {
-        "success": True,
+        "success": not failed_operations,
         "message": "文件系统自动化任务完成",
         "source_dir": str(source_path),
         "target_dir": str(target_path),
         "operations_performed": len(operation_results),
-        "successful_operations": sum(1 for r in operation_results if r.get("success")),
+        "successful_operations": len(operation_results) - len(failed_operations),
         "total_file_changes": len(file_changes),
-        "report_file": str(report_file),
+        "artifacts_dir": str(artifacts_path),
+        "report_file": report_file.name,
         "operation_results": operation_results
     }
     
     print(f"RESULT: {result}")
+
+    # 有操作失败 → 抛异常让执行器判 FAILED。执行器只看进程退出码，
+    # 返回 {"success": False} 不会改变判定（会显示成成功，即"假绿"）。
+    if failed_operations:
+        raise RuntimeError(
+            f"{len(failed_operations)}/{len(operation_results)} 个操作执行失败，"
+            f"首个错误: {failed_operations[0].get('error')}"
+        )
+
     return result
 
 

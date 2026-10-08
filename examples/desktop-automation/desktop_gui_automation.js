@@ -6,6 +6,7 @@
 
 const robot = require('robotjs');
 const path = require('path');
+const os = require('os');
 const fs = require('fs').promises;
 const { createCanvas, loadImage } = require('canvas');
 
@@ -22,6 +23,8 @@ const logger = {
 };
 
 // 从环境变量或默认值获取参数
+// Node 侧没有 Python 的键名大小写陷阱：这里自己 toUpperCase()，
+// 与执行器注入的 `AUTOFLOW_${k.toUpperCase()}`（execute.ts）逐字对齐。
 const getParam = (key, defaultValue) => {
   const envKey = `AUTOFLOW_${key.toUpperCase()}`;
   const envValue = process.env[envKey];
@@ -34,6 +37,19 @@ const getParam = (key, defaultValue) => {
   }
   return defaultValue;
 };
+
+// 产物目录：优先用执行器注入的 AUTOFLOW_ARTIFACTS_DIR（FEAT-05）。
+// 执行器把它指向 <workDir>/artifacts/ 并已预建；任务结束时执行器扫描该目录、
+// 上传文件、把清单随终态回调上报，用户即可在执行详情页查看截图。
+// 本地裸跑（无执行器）时回退到系统临时目录，保持可调试。
+const resolveArtifactsDir = () =>
+  process.env.AUTOFLOW_ARTIFACTS_DIR ||
+  path.join(os.tmpdir(), `desktop_automation_${executionId}`);
+
+// 执行器 artifacts 通道上限（与 apps/executor-node/src/artifacts.ts 一致）：
+// 最多 20 个文件，超出部分被静默跳过。GUI 任务每个动作都截图会轻易超限，
+// 故这里只在预算内落盘，避免"截了一堆图但 UI 只看到前 20 张"的困惑。
+const MAX_ARTIFACTS = 20;
 
 async function takeScreenshot(outputPath) {
   try {
@@ -73,13 +89,13 @@ async function main() {
   // 获取任务参数
   const actions = getParam('actions', []);
   const screenshotInterval = getParam('screenshotInterval', 2);
-  const outputDir = getParam('outputDir', `/tmp/desktop_automation_${executionId}`);
   
   logger.info(`动作数量: ${actions.length}`);
   
-  // 创建输出目录
-  const outputDirPath = path.join(outputDir);
+  // 产物目录（FEAT-05）：写进这里才能在执行详情页看到
+  const outputDirPath = resolveArtifactsDir();
   await fs.mkdir(outputDirPath, { recursive: true });
+  logger.info(`产物目录: ${outputDirPath}`);
   
   // 设置 robotjs
   robot.setMouseDelay(100);
@@ -208,8 +224,8 @@ async function main() {
             result.error = `未知动作类型: ${actionType}`;
         }
         
-        // 动作后截图（除了专门的截图动作）
-        if (actionType !== 'screenshot') {
+        // 动作后截图（除了专门的截图动作；仅在 artifacts 预算内）
+        if (actionType !== 'screenshot' && screenshots.length < MAX_ARTIFACTS - 1) {
           await new Promise(resolve => setTimeout(resolve, 500));
           const actionScreenshot = path.join(outputDirPath, `action_${i + 1}.png`);
           await takeScreenshot(actionScreenshot);
@@ -260,36 +276,41 @@ async function main() {
     await fs.writeFile(reportFile, reportText, 'utf-8');
     logger.info(`动作报告已保存: ${reportFile}`);
     
-    // 返回结果
+    const failedActions = actionResults.filter(r => !r.success);
+
+    // 返回结果。产物以裸文件名列出（执行器上报的清单用的就是裸名）。
     const result = {
-      success: true,
+      success: failedActions.length === 0,
       message: '桌面GUI自动化任务完成',
       executionId,
-      outputDir: outputDirPath,
-      screenshots,
+      artifactsDir: outputDirPath,
+      screenshots: screenshots.map(p => path.basename(p)),
       actionResults,
-      reportFile,
+      reportFile: path.basename(reportFile),
       totalActions: actions.length,
-      successfulActions: actionResults.filter(r => r.success).length,
+      successfulActions: actionResults.length - failedActions.length,
       timestamp: new Date().toISOString()
     };
     
     console.log(`RESULT: ${JSON.stringify(result, null, 2)}`);
+
+    // 有动作失败 → 抛异常让执行器判 FAILED。执行器只看进程退出码，
+    // 返回 {success:false} 不会改变判定（会显示成成功，即"假绿"）。
+    if (failedActions.length > 0) {
+      throw new Error(
+        `${failedActions.length}/${actionResults.length} 个动作执行失败，` +
+        `首个错误: ${failedActions[0].error}`
+      );
+    }
+
     return result;
     
   } catch (error) {
+    // 失败语义：抛异常 → 执行器判 FAILED（退出码非 0）。
+    // 刻意**不**在这里 `return {success:false}`——执行器只认进程退出码，
+    // 返回对象不影响判定，那样会让失败任务在平台上显示为成功（假绿）。
     logger.error(`任务执行失败: ${error.message}`);
-    
-    const errorResult = {
-      success: false,
-      error: error.message,
-      executionId,
-      outputDir: outputDirPath,
-      timestamp: new Date().toISOString()
-    };
-    
-    console.log(`RESULT: ${JSON.stringify(errorResult, null, 2)}`);
-    return errorResult;
+    throw error;
   }
 }
 

@@ -1,3 +1,4 @@
+import { ApiPropertyOptional } from "@nestjs/swagger";
 import { IsOptional, IsUUID, IsString, IsIn, IsEnum } from "class-validator";
 import { PaginationDto } from "../../../common/dto/pagination.dto";
 import {
@@ -71,9 +72,45 @@ export class ListTasksQueryDto extends PaginationDto {
   @IsString()
   projectId?: string;
 
+  /**
+   * 任务名精确模糊匹配（仅 name 列）。
+   *
+   * 保留为**向后兼容**通道：CLI 的 `--keyword`、MCP 的 list_tasks、以及既有
+   * 外部调用方都往这个字段传搜索词，语义（只搜 name）逐字节不变。
+   *
+   * 面向"搜索框"的通用关键字检索请用 `q`（name OR description）——见下。
+   */
+  @ApiPropertyOptional({
+    description:
+      "Fuzzy match on the task NAME only (backward-compatible channel; CLI/MCP use it). For the console search box — which promises name OR description — use `q` instead.",
+  })
   @IsOptional()
   @IsString()
   name?: string;
+
+  /**
+   * 通用关键字检索：**name OR description** 模糊匹配。
+   *
+   * 为什么单独开一个字段而不是直接改 `name` 的语义：任务列表页的搜索框
+   * 占位符承诺的是「搜索任务名、描述」，但实现只过滤了 name 列——用户输入
+   * 描述里的关键字必然查不到结果，且因为不报错而完全无从察觉。
+   *
+   * 修法有两种，此处选**新增字段**而非改写 `name`：
+   *  - `name` 已被 CLI（`acf task list -k`）、MCP（list_tasks）当作"按名搜"
+   *    使用，把它的语义悄悄扩成"还搜描述"会让这些调用方的结果集变宽
+   *    （与 NETOPT-3⑤ 修的同类问题同形：结果集静默变宽，调用方据错误结果
+   *    得出结论）；
+   *  - 新增 `q` 语义自明，且让"按名搜"与"按关键字搜"两条通道各自可测。
+   *
+   * 与 `name` 同时提供时取**交集**（AND）——两个条件各自成立才命中。
+   */
+  @ApiPropertyOptional({
+    description:
+      "Keyword search across BOTH task name and description (LIKE metacharacters match literally). This is what the console search box sends.",
+  })
+  @IsOptional()
+  @IsString()
+  q?: string;
 
   // F-06（本轮审计）: 枚举字段收紧——此前 @IsString 让 status=xyz 之类非法值
   // 静默查空结果而不是 400（与 CreateTaskDto 的 @IsEnum 严格度不一致）。子类

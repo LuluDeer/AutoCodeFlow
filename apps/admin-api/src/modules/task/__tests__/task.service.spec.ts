@@ -357,6 +357,33 @@ describe("TaskService (__tests__)", () => {
   });
 
   describe("create", () => {
+    // FEAT-RENAME：create() 的服务层名称守卫。DTO 的 @IsTaskName 拦不住
+    // **编程式调用方**——最典型的是 application.service 的 manifest.json
+    // 自动注册（`name: taskDef.name || taskDef.id` 直接构造对象调 create），
+    // 它绕过全局 ValidationPipe。没有本守卫时，manifest 里的坏名字会带
+    // 控制字符落库（进日志行/通知标题）或超长 → PG 22001 → 笼统 500。
+    describe("FEAT-RENAME — 名称服务层守卫（编程式调用方）", () => {
+      it.each([
+        ["首尾空白", " 备份 "],
+        ["换行", "备份\n注入"],
+        ["零宽字符", "备份\u200b"],
+        ["超长", "备".repeat(256)],
+        ["纯空白", "   "],
+      ])("%s → 400 且不落库", async (_label, badName) => {
+        taskRepo.save.mockResolvedValue({ id: "1" });
+        await expect(service.create({ name: badName } as any)).rejects.toThrow(
+          BadRequestException,
+        );
+        expect(taskRepo.save).not.toHaveBeenCalled();
+      });
+
+      it("中文名放行（守卫不是 ASCII 白名单）", async () => {
+        const dto = { name: "每日备份" } as any;
+        taskRepo.save.mockResolvedValue({ id: "1", ...dto });
+        await expect(service.create(dto)).resolves.toHaveProperty("id", "1");
+      });
+    });
+
     it("creates and saves a task with no dependencies", async () => {
       const dto = { name: "test-task" } as any;
       taskRepo.save.mockResolvedValue({ id: "1", ...dto });
@@ -719,6 +746,111 @@ describe("TaskService (__tests__)", () => {
       );
     });
 
+    // FEAT-TASK-SEARCH：搜索框占位符承诺「搜索任务名、描述」，但此前只过滤
+    // name 列——按描述搜索恒为空且不报错（用户完全无从察觉）。q 参数承担
+    // name OR description 语义。
+    describe("q — 关键字检索（name OR description）", () => {
+      it("q 提供时 where 变为数组（两个 OR 分支：name / description）", async () => {
+        taskRepo.findAndCount.mockResolvedValue([[{ id: "1" }], 1]);
+        await service.findAll({ page: 1, pageSize: 10, q: "备份" } as any);
+        const { where } = taskRepo.findAndCount.mock.calls[0][0];
+        expect(Array.isArray(where)).toBe(true);
+        expect(where).toHaveLength(2);
+        expect(where[0].name).toEqual(
+          expect.objectContaining({ _value: "%备份%" }),
+        );
+        expect(where[1].description).toEqual(
+          expect.objectContaining({ _value: "%备份%" }),
+        );
+      });
+
+      it("每个 OR 分支都带上基线条件（否则 runtime/projectId 过滤会被短路）", async () => {
+        taskRepo.findAndCount.mockResolvedValue([[{ id: "1" }], 1]);
+        await service.findAll({
+          page: 1,
+          pageSize: 10,
+          q: "备份",
+          runtime: "python",
+        } as any);
+        const { where } = taskRepo.findAndCount.mock.calls[0][0];
+        for (const branch of where) {
+          expect(branch.runtime).toBe("python");
+          // DELETED 基线在两侧都在场
+          expect(typeof branch.status).toBe("object");
+        }
+      });
+
+      it("不传 q 时 where 仍是单对象（既有路径逐字节不变）", async () => {
+        taskRepo.findAndCount.mockResolvedValue([[{ id: "1" }], 1]);
+        await service.findAll({ page: 1, pageSize: 10, name: "job" } as any);
+        const { where } = taskRepo.findAndCount.mock.calls[0][0];
+        expect(Array.isArray(where)).toBe(false);
+        expect(where.description).toBeUndefined();
+      });
+
+      // DTO 明文契约：「与 name 同时提供时取交集（AND）」。此前的实现用
+      // `{ ...base, name: ILike(q) }` 展开，把 base.name **覆盖**掉——p.name
+      // 被静默丢弃、结果集变宽，且与 QB 分支（两条 andWhere 真 AND）对同一
+      // 输入给出不同结果。故 name 分支必须用 And() 并列。
+      it("name + q 同时给出 → name 条件不被覆盖（And 并列，真交集）", async () => {
+        taskRepo.findAndCount.mockResolvedValue([[{ id: "1" }], 1]);
+        await service.findAll({
+          page: 1,
+          pageSize: 10,
+          name: "backup",
+          q: "对象存储",
+        } as any);
+        const { where } = taskRepo.findAndCount.mock.calls[0][0];
+        expect(Array.isArray(where)).toBe(true);
+        // name 分支：两个条件并列（And 包装，非裸 ILike）
+        expect(where[0].name).toEqual(
+          expect.objectContaining({ _type: "and" }),
+        );
+        // description 分支同样带 base.name（元素内 AND）——否则该分支会
+        // 绕过 name 过滤，交集退化成并集
+        expect(where[1].name).toEqual(
+          expect.objectContaining({ _value: "%backup%" }),
+        );
+      });
+
+      it("只给 q 时 name 分支是裸 ILike（零行为变化）", async () => {
+        taskRepo.findAndCount.mockResolvedValue([[{ id: "1" }], 1]);
+        await service.findAll({ page: 1, pageSize: 10, q: "备份" } as any);
+        const { where } = taskRepo.findAndCount.mock.calls[0][0];
+        expect(where[0].name).toEqual(
+          expect.objectContaining({ _value: "%备份%" }),
+        );
+      });
+
+      // NETOPT-3⑤ 同源：`_` 在 ILIKE 里是"任意单字符"、`%` 是"任意串"。
+      // 不转义会让结果集**静默变宽**——搜 daily_report 命中 dailyXreport，
+      // 搜 % 命中全部行。同文件的 getAllExecutions 早已转义，任务列表漏了。
+      it("NETOPT-3⑤: name 过滤转义 LIKE 元字符（下划线按字面量匹配）", async () => {
+        taskRepo.findAndCount.mockResolvedValue([[{ id: "1" }], 1]);
+        await service.findAll({
+          page: 1,
+          pageSize: 10,
+          name: "zhang_san",
+        } as any);
+        const { where } = taskRepo.findAndCount.mock.calls[0][0];
+        expect(where.name).toEqual(
+          expect.objectContaining({ _value: "%zhang\\_san%" }),
+        );
+      });
+
+      it("NETOPT-3⑤: q 的两个分支同样转义元字符", async () => {
+        taskRepo.findAndCount.mockResolvedValue([[{ id: "1" }], 1]);
+        await service.findAll({ page: 1, pageSize: 10, q: "a%b_c" } as any);
+        const { where } = taskRepo.findAndCount.mock.calls[0][0];
+        expect(where[0].name).toEqual(
+          expect.objectContaining({ _value: "%a\\%b\\_c%" }),
+        );
+        expect(where[1].description).toEqual(
+          expect.objectContaining({ _value: "%a\\%b\\_c%" }),
+        );
+      });
+    });
+
     it("passes runtime filter when runtime param is provided", async () => {
       taskRepo.findAndCount.mockResolvedValue([[{ id: "1" }], 1]);
       await service.findAll({
@@ -906,6 +1038,95 @@ describe("TaskService (__tests__)", () => {
       // 幽灵列请求不应触达任何查询
       expect(taskRepo.findAndCount).not.toHaveBeenCalled();
     });
+
+    // FEAT-TASK-SEARCH：q 在 QB 分支（lastStatus 路径）必须与 findAndCount
+    // 分支逐项镜像——否则"带 lastStatus 筛选时搜索框按描述搜不到"会成为一个
+    // 只在特定筛选组合下复现的隐蔽缺陷。
+    it("FEAT-TASK-SEARCH: q 在 QB 分支生成带括号的 name OR description", async () => {
+      const taskQb = {
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        select: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        addOrderBy: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        getManyAndCount: jest.fn().mockResolvedValue([[{ id: "t1" }], 1]),
+      };
+      taskRepo.createQueryBuilder.mockReturnValue(taskQb);
+      const noopSub = (sql: string) => ({
+        select: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        addOrderBy: jest.fn().mockReturnThis(),
+        limit: jest.fn().mockReturnThis(),
+        setParameters: jest.fn().mockReturnThis(),
+        getParameters: jest.fn().mockReturnValue({}),
+        getQuery: jest.fn().mockReturnValue(sql),
+      });
+      const te2Qb = noopSub("SELECT te2.id FROM task_executions te2");
+      const teQb = noopSub("SELECT 1 FROM task_executions te");
+      execRepo.createQueryBuilder.mockImplementation((alias: string) =>
+        alias === "te2" ? te2Qb : teQb,
+      );
+
+      await service.findAll({
+        page: 1,
+        pageSize: 10,
+        lastStatus: "failed",
+        q: "备份",
+      } as any);
+
+      // 括号必须显式：不加会把 OR 右半边提到与前面所有 AND 同级，
+      // 使其它筛选被短路（"搜索能用了，但筛选器失效"）。
+      expect(taskQb.andWhere).toHaveBeenCalledWith(
+        "(task.name ILIKE :__q OR task.description ILIKE :__q)",
+        { __q: "%备份%" },
+      );
+    });
+
+    it("FEAT-TASK-SEARCH: QB 分支的 q 同样转义 LIKE 元字符", async () => {
+      const taskQb = {
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        select: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        addOrderBy: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        getManyAndCount: jest.fn().mockResolvedValue([[{ id: "t1" }], 1]),
+      };
+      taskRepo.createQueryBuilder.mockReturnValue(taskQb);
+      const noopSub = (sql: string) => ({
+        select: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        addOrderBy: jest.fn().mockReturnThis(),
+        limit: jest.fn().mockReturnThis(),
+        setParameters: jest.fn().mockReturnThis(),
+        getParameters: jest.fn().mockReturnValue({}),
+        getQuery: jest.fn().mockReturnValue(sql),
+      });
+      const te2Qb = noopSub("SELECT te2.id FROM task_executions te2");
+      const teQb = noopSub("SELECT 1 FROM task_executions te");
+      execRepo.createQueryBuilder.mockImplementation((alias: string) =>
+        alias === "te2" ? te2Qb : teQb,
+      );
+
+      await service.findAll({
+        page: 1,
+        pageSize: 10,
+        lastStatus: "failed",
+        q: "a_b",
+      } as any);
+
+      expect(taskQb.andWhere).toHaveBeenCalledWith(
+        "(task.name ILIKE :__q OR task.description ILIKE :__q)",
+        { __q: "%a\\_b%" },
+      );
+    });
   });
 
   describe("update", () => {
@@ -920,6 +1141,136 @@ describe("TaskService (__tests__)", () => {
       await service.update("1", { name: "new" } as any);
       expect(schedulerService.stop).toHaveBeenCalledWith("1");
       expect(schedulerService.scheduleOne).toHaveBeenCalled();
+    });
+
+    // FEAT-RENAME：任务名创建后可修改（此前前端 `disabled={isEdit}` 把改名
+    // 彻底锁死，后端其实一直支持）。放开后必须补齐三件事：撞唯一索引的可读
+    // 409、以及改名后刷新引用方的依赖显示名 key。
+    describe("FEAT-RENAME — 任务改名", () => {
+      it("改名成功时落库新名（后端本就支持，此前仅前端禁用）", async () => {
+        const task = { id: "1", name: "旧名", status: TaskStatus.ACTIVE };
+        taskRepo.findOne.mockResolvedValue(task);
+        taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
+        const saved = await service.update("1", { name: "新名" } as any);
+        expect(saved.name).toBe("新名");
+        expect(taskRepo.save).toHaveBeenCalled();
+      });
+
+      it("改名撞 idx_tasks_name_unique → 409，文案点明重名且提示回收站占用", async () => {
+        const task = { id: "1", name: "旧名", status: TaskStatus.ACTIVE };
+        taskRepo.findOne.mockResolvedValue(task);
+        const violation = new QueryFailedError("INSERT", [], new Error("dup"));
+        (violation as any).code = "23505";
+        (violation as any).constraint = "idx_tasks_name_unique";
+        taskRepo.save.mockRejectedValue(violation);
+
+        await expect(
+          service.update("1", { name: "已存在的名" } as any),
+        ).rejects.toThrow(ConflictException);
+        await expect(
+          service.update("1", { name: "已存在的名" } as any),
+        ).rejects.toThrow(/已存在同名任务/);
+      });
+
+      it("撞其它唯一约束时不误报为任务名冲突（透传原错误）", async () => {
+        const task = { id: "1", name: "旧名", status: TaskStatus.ACTIVE };
+        taskRepo.findOne.mockResolvedValue(task);
+        const violation = new QueryFailedError("INSERT", [], new Error("pk"));
+        (violation as any).code = "23505";
+        (violation as any).constraint = "PK_ tasks_id";
+        taskRepo.save.mockRejectedValue(violation);
+
+        await expect(
+          service.update("1", { name: "新名" } as any),
+        ).rejects.toThrow(QueryFailedError);
+      });
+
+      it("改名后刷新引用方 dependencies 的显示名 key（value=id 语义不变）", async () => {
+        const task = { id: "up-1", name: "旧名", status: TaskStatus.ACTIVE };
+        taskRepo.findOne.mockResolvedValue(task);
+        taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
+        (taskRepo as any).update = jest.fn().mockResolvedValue({ affected: 1 });
+
+        const dependent = {
+          id: "down-1",
+          name: "下游",
+          status: TaskStatus.ACTIVE,
+          dependencies: { 旧名: "up-1" },
+        };
+        const qb = {
+          where: jest.fn().mockReturnThis(),
+          andWhere: jest.fn().mockReturnThis(),
+          getMany: jest.fn().mockResolvedValue([dependent]),
+        };
+        taskRepo.createQueryBuilder.mockReturnValue(qb);
+
+        await service.update("up-1", { name: "新名" } as any);
+
+        // key 刷新为新名，value（语义位）恒为上游 id。
+        // 断言走**列级 update** 而非整行 save——整行回写会把 select:false 的
+        // webhookSecret 清成 NULL（本仓已有同型生产故障先例）。
+        expect((taskRepo as any).update).toHaveBeenCalledWith(
+          { id: "down-1" },
+          { dependencies: { 新名: "up-1" } },
+        );
+        // 粗筛用 jsonb 包含判定，避免全表进内存
+        expect(qb.andWhere).toHaveBeenCalledWith(
+          "task.dependencies @> :probe",
+          { probe: JSON.stringify({ 旧名: "up-1" }) },
+        );
+      });
+
+      it("名字未变时不做任何依赖别名刷新（零副作用）", async () => {
+        const task = { id: "up-1", name: "同名", status: TaskStatus.ACTIVE };
+        taskRepo.findOne.mockResolvedValue(task);
+        taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
+        await service.update("up-1", { timeout: 60 } as any);
+        expect(taskRepo.createQueryBuilder).not.toHaveBeenCalled();
+      });
+
+      it("新名与既有别名 key 撞车时保留旧 key（宁可显示过时，不丢依赖关系）", async () => {
+        const task = { id: "up-1", name: "旧名", status: TaskStatus.ACTIVE };
+        taskRepo.findOne.mockResolvedValue(task);
+        taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
+        const updateSpy = jest.fn().mockResolvedValue({ affected: 1 });
+        (taskRepo as any).update = updateSpy;
+
+        const dependent = {
+          id: "down-1",
+          name: "下游",
+          status: TaskStatus.ACTIVE,
+          // 新名已被另一个 key 占用（指向别的任务）
+          dependencies: { 旧名: "up-1", 新名: "other-id" },
+        };
+        const qb = {
+          where: jest.fn().mockReturnThis(),
+          andWhere: jest.fn().mockReturnThis(),
+          getMany: jest.fn().mockResolvedValue([dependent]),
+        };
+        taskRepo.createQueryBuilder.mockReturnValue(qb);
+
+        await service.update("up-1", { name: "新名" } as any);
+
+        // 两条依赖关系都还在 → 直接跳过该行，不发生任何写
+        expect(updateSpy).not.toHaveBeenCalled();
+        expect(dependent.dependencies).toEqual({
+          旧名: "up-1",
+          新名: "other-id",
+        });
+      });
+
+      it("依赖别名刷新失败不影响改名本身（best-effort）", async () => {
+        const task = { id: "up-1", name: "旧名", status: TaskStatus.ACTIVE };
+        taskRepo.findOne.mockResolvedValue(task);
+        taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
+        taskRepo.createQueryBuilder.mockImplementation(() => {
+          throw new Error("qb boom");
+        });
+
+        await expect(
+          service.update("up-1", { name: "新名" } as any),
+        ).resolves.toBeDefined();
+      });
     });
 
     // A4（第三轮审计·中）：乐观锁——expectedUpdatedAt 与行 updatedAt 不符
@@ -1930,14 +2281,26 @@ describe("TaskService (__tests__)", () => {
       const src = raw
         .replace(/\/\*[\s\S]*?\*\//g, "")
         .replace(/^\s*\/\/.*$/gm, "");
-      const bare = [...src.matchAll(/`%\$\{p\.(taskName|executorAddress)\}%`/g)]
+      // FEAT-TASK-SEARCH 扩展：守卫范围从 taskName/executorAddress 两个字段
+      // 扩到**所有** ILIKE 过滤位——此前 `p.name`（任务列表搜索）正好落在
+      // 正则覆盖之外，于是同一个"元字符当通配符"的缺陷在列表页复现了一轮。
+      const bare = [
+        ...src.matchAll(/`%\$\{p\.(taskName|executorAddress|name|q)\}%`/g),
+      ]
         .map((m) => m[0])
         .filter((s) => !s.includes("escapeLikePattern("));
       expect(bare).toEqual([]);
       // 有齿校验：该正则确实能匹配被修的旧写法
       const old = "`%${p.taskName}%`";
       expect(
-        [...old.matchAll(/`%\$\{p\.(taskName|executorAddress)\}%`/g)].length,
+        [...old.matchAll(/`%\$\{p\.(taskName|executorAddress|name|q)\}%`/g)]
+          .length,
+      ).toBe(1);
+      // 有齿校验②：本轮修的 p.name 旧写法同样能被该正则捕获
+      const oldName = "`%${p.name}%`";
+      expect(
+        [...oldName.matchAll(/`%\$\{p\.(taskName|executorAddress|name|q)\}%`/g)]
+          .length,
       ).toBe(1);
     });
   });
@@ -4699,6 +5062,99 @@ describe("TaskService (__tests__)", () => {
           }),
         }),
       );
+    });
+
+    // FEAT-RENAME：快照含 name，故回滚会把任务名一起还原。改名放开后这条
+    // 路径必须与 update() 补齐同样的两件事，否则它是绕过新约束的旁路。
+    describe("FEAT-RENAME — 回滚还原任务名", () => {
+      it("回滚还原的名字撞唯一索引 → 可读 409（而非笼统冲突）", async () => {
+        const version = {
+          id: "v1",
+          taskId: "t1",
+          version: "v3",
+          snapshot: { name: "已被占用的名" },
+        };
+        versionRepo.findOne.mockResolvedValue(version);
+        taskRepo.findOne.mockResolvedValue({ id: "t1", name: "current" });
+        const violation = new QueryFailedError("UPDATE", [], new Error("dup"));
+        (violation as any).code = "23505";
+        (violation as any).constraint = "idx_tasks_name_unique";
+        taskRepo.save.mockRejectedValue(violation);
+
+        await expect(service.rollbackToVersion("t1", "v1")).rejects.toThrow(
+          ConflictException,
+        );
+        await expect(service.rollbackToVersion("t1", "v1")).rejects.toThrow(
+          /无法回滚到版本 v3/,
+        );
+      });
+
+      it("撞其它唯一约束时不误报为任务名冲突（透传原错误）", async () => {
+        const version = {
+          id: "v1",
+          taskId: "t1",
+          version: "v1",
+          snapshot: { name: "x" },
+        };
+        versionRepo.findOne.mockResolvedValue(version);
+        taskRepo.findOne.mockResolvedValue({ id: "t1", name: "current" });
+        const violation = new QueryFailedError("UPDATE", [], new Error("pk"));
+        (violation as any).code = "23505";
+        (violation as any).constraint = "PK_ tasks_id";
+        taskRepo.save.mockRejectedValue(violation);
+
+        await expect(service.rollbackToVersion("t1", "v1")).rejects.toThrow(
+          QueryFailedError,
+        );
+      });
+
+      it("回滚改变任务名后刷新引用方的依赖显示名 key", async () => {
+        const version = {
+          id: "v1",
+          taskId: "up-1",
+          version: "v1",
+          snapshot: { name: "旧版名" },
+        };
+        versionRepo.findOne.mockResolvedValue(version);
+        taskRepo.findOne.mockResolvedValue({ id: "up-1", name: "当前名" });
+        taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
+        const updateSpy = jest.fn().mockResolvedValue({ affected: 1 });
+        (taskRepo as any).update = updateSpy;
+
+        const dependent = {
+          id: "down-1",
+          dependencies: { 当前名: "up-1" },
+        };
+        const qb = {
+          where: jest.fn().mockReturnThis(),
+          andWhere: jest.fn().mockReturnThis(),
+          getMany: jest.fn().mockResolvedValue([dependent]),
+        };
+        taskRepo.createQueryBuilder.mockReturnValue(qb);
+
+        await service.rollbackToVersion("up-1", "v1");
+
+        expect(updateSpy).toHaveBeenCalledWith(
+          { id: "down-1" },
+          { dependencies: { 旧版名: "up-1" } },
+        );
+      });
+
+      it("回滚未改变任务名时不做依赖别名刷新（零副作用）", async () => {
+        const version = {
+          id: "v1",
+          taskId: "t1",
+          version: "v1",
+          snapshot: { name: "同名", timeout: 60 },
+        };
+        versionRepo.findOne.mockResolvedValue(version);
+        taskRepo.findOne.mockResolvedValue({ id: "t1", name: "同名" });
+        taskRepo.save.mockImplementation((t: any) => Promise.resolve(t));
+
+        await service.rollbackToVersion("t1", "v1");
+
+        expect(taskRepo.createQueryBuilder).not.toHaveBeenCalled();
+      });
     });
 
     // B-2（调度域审计）：回滚整体覆盖 triggerType/cronExpression/fixedRate

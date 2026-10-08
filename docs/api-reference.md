@@ -406,7 +406,7 @@ probing 探测通过前的已升级台，批次失败时 → rolled_back（自�
 
 | 方法 | 路径 | 需要认证 | 说明 |
 |------|------|:--------:|------|
-| GET | `/tasks` | 是 | 分页查询任务列表，支持 status/name/runtime 过滤 |
+| GET | `/tasks` | 是 | 分页查询任务列表，支持 status/name/runtime/`q` 过滤。`q` = 关键字检索（**任务名 OR 描述**，控制台搜索框用），`name` = 仅按任务名（向后兼容通道，CLI/MCP 用）；两者同时给出取交集，LIKE 元字符按字面量匹配 |
 | POST | `/tasks` | 是 | 创建任务 |
 | POST | `/tasks/import` | 是 | 导入任务定义（E-1，复用创建校验链；重名自动加后缀不覆盖；见下） |
 | GET | `/tasks/:id` | 是 | 获取任务详情 |

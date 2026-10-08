@@ -2,9 +2,10 @@
  * FEAT-09: 全局搜索 / 命令面板（⌘K / Ctrl+K 唤起），MainLayout 全局挂载。
  *
  * ── 数据契约（四路并行、防抖 300ms、序号守卫） ──────────────────────────────
- *   任务      GET /tasks?page=1&pageSize=50&name=<kw>       → PageResult<Task>
- *             name 为后端 ILIKE %kw% 模糊参数（task.service.ts），服务端先过滤
- *             出一页候选，前端再做一次客户端兜底包含匹配；
+ *   任务      GET /tasks?page=1&pageSize=50&q=<kw>         → PageResult<Task>
+ *             q 为后端 ILIKE %kw% 参数，匹配**任务名 OR 描述**
+ *             （task.service.ts），服务端先过滤出一页候选，前端再做一次
+ *             客户端兜底包含匹配；
  *   执行器    GET /executors                                → Executor[]
  *             无搜索参数、无分页（全量数组）；
  *   应用      GET /applications                             → Application[]
@@ -16,7 +17,7 @@
  *
  * ── 取舍说明（README 注） ───────────────────────────────────────────────────
  * 搜索实现是"客户端包含匹配（小写化）已返回页数据"，并非后端全文检索：
- *   - tasks 与 executions 两个分组走服务端预过滤（name / taskName ILIKE 各预
+ *   - tasks 与 executions 两个分组走服务端预过滤（q / taskName ILIKE 各预
  *     过滤一页候选，50 / 20 条），执行器与应用则拉全量后前端过滤；
  *   - 已知局限：执行器/应用数量增长后全量拉取变贵；tasks、executions 命中数
  *     超过一页时只能搜到首页候选。
@@ -327,7 +328,11 @@ export default function CommandPalette({ open, onOpenChange }: CommandPalettePro
     const alive = () => seqRef.current === seq;
 
     tasksApi
-      .list({ page: 1, pageSize: TASK_PAGE_SIZE, name: kw })
+      // FEAT-TASK-SEARCH：发 `q`（name OR description）而非 `name`。
+      // 下方第 407 行的客户端过滤是 `contains(t.name) || contains(t.description)`，
+      // 而服务端只按 name 预筛时描述那一半永远命中不到——同一个关键字在
+      // /tasks 列表页（已改发 q）能找到、在 ⌘K 里却找不到。
+      .list({ page: 1, pageSize: TASK_PAGE_SIZE, q: kw })
       .then((page) => {
         if (!alive()) return;
         setResults((prev) => ({ ...prev, task: { status: 'ok', items: page.items ?? [] } }));

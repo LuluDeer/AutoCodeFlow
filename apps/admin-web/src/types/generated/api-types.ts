@@ -4137,6 +4137,10 @@ export interface components {
         };
         CreateTaskDto: {
             id?: string;
+            /**
+             * @description Task name — any language is allowed (Chinese/Japanese/emoji included). Control characters and leading/trailing whitespace are rejected; max 255 chars. Globally unique across all tasks, including soft-deleted ones.
+             * @example 每日备份
+             */
             name: string;
             description?: string;
             status?: string;
@@ -4407,6 +4411,10 @@ export interface components {
         };
         UpdateTaskDto: {
             id?: string;
+            /**
+             * @description Task name — any language is allowed (Chinese/Japanese/emoji included). Control characters and leading/trailing whitespace are rejected; max 255 chars. Globally unique across all tasks, including soft-deleted ones.
+             * @example 每日备份
+             */
             name?: string;
             description?: string;
             status?: string;
@@ -7805,12 +7813,14 @@ export interface operations {
                 page?: components["schemas"]["Object"];
                 /** @description Page size, default 20 */
                 pageSize?: components["schemas"]["Object"];
-                /** @description Fuzzy search by task name */
+                /** @description Fuzzy search by task name ONLY (backward-compatible channel; CLI/MCP use it). The console search box uses `q` instead, because its placeholder promises name OR description. */
                 name?: string;
                 /** @description Filter by status (active/paused/inactive) */
                 status?: string;
                 /** @description Filter by runtime (python/node/shell) */
                 runtime?: string;
+                /** @description Keyword search across BOTH task name and description. LIKE metacharacters (% and _) are matched literally, so a search for `daily_report` does not also match `dailyXreport`. Composable with every other list filter. */
+                q?: string;
                 /** @description F-10: comma-separated projection whitelist (e.g. 'id,name'). Only whitelisted lightweight columns are selected — params/secrets/glueSource and other heavy columns are skipped. Illegal fields → 400. */
                 fields?: unknown;
                 /** @description P2-18: filter tasks whose MOST RECENT execution has this status (latest task_executions row per task: createdAt DESC, id DESC). Values: pending/running/waiting/success/failed/timeout/killed/cancelled. An in-flight latest execution (pending/running) matches as-is. Implemented as an EXISTS subquery — composable with the other list filters. */

@@ -803,7 +803,7 @@
             "name": "name",
             "required": false,
             "in": "query",
-            "description": "Fuzzy search by task name",
+            "description": "Fuzzy search by task name ONLY (backward-compatible channel; CLI/MCP use it). The console search box uses `q` instead, because its placeholder promises name OR description.",
             "schema": {
               "type": "string"
             }
@@ -822,6 +822,15 @@
             "required": false,
             "in": "query",
             "description": "Filter by runtime (python/node/shell)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "required": false,
+            "in": "query",
+            "description": "Keyword search across BOTH task name and description. LIKE metacharacters (% and _) are matched literally, so a search for `daily_report` does not also match `dailyXreport`. Composable with every other list filter.",
             "schema": {
               "type": "string"
             }
@@ -11366,7 +11375,9 @@
             "type": "string"
           },
           "name": {
-            "type": "string"
+            "type": "string",
+            "description": "Task name — any language is allowed (Chinese/Japanese/emoji included). Control characters and leading/trailing whitespace are rejected; max 255 chars. Globally unique across all tasks, including soft-deleted ones.",
+            "example": "每日备份"
           },
           "description": {
             "type": "string"
@@ -12102,7 +12113,9 @@
             "type": "string"
           },
           "name": {
-            "type": "string"
+            "type": "string",
+            "description": "Task name — any language is allowed (Chinese/Japanese/emoji included). Control characters and leading/trailing whitespace are rejected; max 255 chars. Globally unique across all tasks, including soft-deleted ones.",
+            "example": "每日备份"
           },
           "description": {
             "type": "string"

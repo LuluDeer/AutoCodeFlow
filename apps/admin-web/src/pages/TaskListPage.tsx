@@ -151,7 +151,9 @@ export default function TaskListPage() {
   const { data, isLoading: loading, error, refetch } = useTasksList({
     page,
     pageSize,
-    name: debouncedSearch || undefined,
+    // 搜索框承诺「搜索任务名、描述」→ 必须发 q（name OR description）。
+    // 此前错发 name（只搜任务名），按描述搜索恒为空且不报错。
+    q: debouncedSearch || undefined,
     status: statusFilter,
     triggerType: triggerFilter,
     lastStatus: lastStatusFilter,
@@ -315,7 +317,18 @@ export default function TaskListPage() {
     setCloningId(r.id);
     try {
       const src = await tasksApi.get(r.id);
-      const cloneName = `${r.name}-copy-${String(Date.now()).slice(-4)}`;
+      // 克隆名 = 原名 + 时间后缀。必须**截断原名**：任务名上限 255 字符
+      // （与 DB varchar 列宽对齐，见 admin-api 的 TASK_NAME_MAX_LENGTH），
+      // 一个接近上限的名字加后缀会直接 400。
+      //
+      // 截断按**码点**而非 UTF-16 码元：`String.prototype.slice` 以码元计，
+      // 恰好切在 emoji（代理对）中间会留下一个孤立代理项，JSON 序列化后
+      // PG 会以 "invalid byte sequence for encoding UTF8" 拒绝整条请求。
+      // Array.from 按码点拆分，天然规避该形态。
+      const suffix = `-copy-${String(Date.now()).slice(-4)}`;
+      const budget = 255 - suffix.length;
+      const head = Array.from(r.name).slice(0, budget).join('');
+      const cloneName = `${head}${suffix}`;
       const payload: Record<string, unknown> = {
         name: cloneName,
         description: src.description,

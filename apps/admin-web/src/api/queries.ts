@@ -239,6 +239,15 @@ export async function invalidateExecutionData(client: QueryClient): Promise<void
 export function useTasksList(params: {
   page: number;
   pageSize: number;
+  /**
+   * 通用关键字检索（name OR description）——任务列表页搜索框用这个。
+   *
+   * 与 `name` 的分工：`name` 是**只搜任务名**的向后兼容通道（CLI/MCP 在用），
+   * `q` 才是搜索框占位符「搜索任务名、描述」承诺的语义。此前搜索框错发了
+   * `name`，于是按描述搜索恒为空且不报错。
+   */
+  q?: string;
+  /** 只按任务名模糊匹配（向后兼容通道，勿用于搜索框）。 */
   name?: string;
   status?: string;
   triggerType?: string;

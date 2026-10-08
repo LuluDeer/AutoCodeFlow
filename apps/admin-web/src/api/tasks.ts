@@ -302,6 +302,12 @@ export interface PageResult<T> {
 export type TaskListParams = {
   page?: number;
   pageSize?: number;
+  /**
+   * 通用关键字检索（name OR description）。任务列表页搜索框用这个——
+   * 占位符承诺的是「搜索任务名、描述」，而 `name` 只搜任务名。
+   */
+  q?: string;
+  /** 只按任务名模糊匹配（向后兼容通道：CLI `-k` / MCP list_tasks 在用）。 */
   name?: string;
   status?: string;
   triggerType?: string;

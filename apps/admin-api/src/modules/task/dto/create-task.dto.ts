@@ -21,6 +21,8 @@ import { Type } from "class-transformer";
 import { IsUuidShape } from "../../../common/decorators/is-uuid-shape.decorator";
 // SEC-02 续：secrets 键名的可注入性校验（给用户可读的 400，而非执行期静默丢弃）
 import { IsSecretKeyMapConstraint } from "./secret-key-map.constraint";
+// 任务名写面校验：任意语言 + 禁控制字符/首尾空白 + 长度上限
+import { IsTaskName } from "./task-name.constraint";
 // 5 字段 cron 合法性（与调度注册路径同源，取代此前写坏的手写正则）
 import { IsCron5Field } from "./cron-expression.constraint";
 // P2（时区审计）：IANA 时区写面校验（与调度侧/窗口评估同一 Intl 探针）
@@ -45,7 +47,26 @@ export class CreateTaskDto {
   // R6: id 是 UUID 主键——客户端自带任意字符串会在插入时触发 PG 22P02/23505
   // 类 500，校验必须在 DTO 边界完成（非法 id → 400）。
   @ApiPropertyOptional() @IsUUID("4") @IsOptional() id?: string;
-  @ApiProperty() @IsString() @IsNotEmpty() name: string;
+  /**
+   * 任务名：**允许任意语言**（中文/日文/emoji 均可），只禁控制字符与首尾空白，
+   * 长度 ≤255（与 DB 列宽对齐）。
+   *
+   * 此前"任务名只能英文"是**前端**一条 `/^[a-zA-Z0-9_-]+$/` 造成的，后端一直
+   * 只要求非空字符串。前端限制已同步放开，判据收敛到本约束器（单一事实源，
+   * 见 task-name.constraint.ts）。
+   *
+   * 注意 name 上有**全局唯一索引**（含软删除行）——改名撞已有名字由
+   * TaskService.update 的 23505 分支转成可读 409。
+   */
+  @ApiProperty({
+    description:
+      "Task name — any language is allowed (Chinese/Japanese/emoji included). Control characters and leading/trailing whitespace are rejected; max 255 chars. Globally unique across all tasks, including soft-deleted ones.",
+    example: "每日备份",
+  })
+  @IsString()
+  @IsNotEmpty()
+  @IsTaskName()
+  name: string;
   @ApiPropertyOptional() @IsString() @IsOptional() description?: string;
   @ApiPropertyOptional() @IsEnum(TaskStatus) @IsOptional() status?: TaskStatus;
   @ApiProperty() @IsEnum(TaskTriggerType) triggerType: TaskTriggerType;
