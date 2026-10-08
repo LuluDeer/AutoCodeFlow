@@ -308,7 +308,7 @@ Content-Type: application/json
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `executorId` | UUID | 目标执行器；留空自动选择 |
-| `runMode` | enum | 运行模式（默认 daemon） |
+| `runMode` | enum | `once` / `daemon` / `scheduled`；**缺省 `once`**（DEEP-AUDIT B·4.2 服务层归一，列缺省 daemon 只是直插兜底）。`once`=单次执行不重启；`daemon`=常驻、异常退出自动重启；`scheduled`=只下发代码不启动进程（由任务调度触发，即"仅部署"）。CLI `acf app deploy` 缺省显式传 `scheduled`（中台触发场景），见 [atlas cli.md](atlas/05-interfaces/cli.md) |
 | `env` | object | 环境变量覆盖 |
 | `startCommand` | string | 启动命令覆盖（留空使用 manifest entrypoint） |
 
