@@ -5,8 +5,12 @@ on:
     branches: [ main, develop ]
   pull_request:
     branches: [ main, develop ]
-  # W-28：windows-latest e2e 较重（PG 服务启动 + portable redis 下载 + 真实浏览器），
-  # 不在每次 develop push 跑，仅 PR / 手动触发，避免拖慢主干与引入 windows 侧偶发。
+  # W-28 专指 `e2e-full-windows`（windows-latest + PG 服务 + portable redis 下载
+  # + 真实浏览器，全套件重）：不在每次 develop push 跑，仅 PR / 手动触发，避免
+  # 拖慢主干与引入 windows 侧偶发。
+  # 注意**不要**把这条推广到其它 windows job——`desktop-e2e-smoke`（Electron
+  # 冒烟，无 PG/redis/浏览器，约 2 分钟）已于 2026-10-08 改为随 develop push 跑：
+  # 它此前同为 PR 门控，结果 6/6 develop push 全 skip、长期无人发现地腐烂。
   workflow_dispatch:
   # QA-08：每月 1 日 03:20 UTC 跑一次跨版本迁移演练（迁移链空库全量 + 二次幂等 +
   # 实体同步漂移检查 + revert 单步回滚）；主 jobs 由 `if: github.event_name != 'schedule'`
@@ -1607,13 +1611,22 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  # ── QA-12：desktop Electron 冒烟（Playwright _electron，3 例）─────────
+  # ── QA-12：desktop Electron 冒烟（Playwright _electron）───────────────
   # windows-latest：QA-12 的既定触发面即是 Windows（托盘/Linux 无托盘语义
   # 差异大，Linux 侧已由 desktop-linux-bundle 的 test:main + 本机冒烟覆盖）。
-  # 只跑 PR / 手动：Electron GUI 启动在 runner 上有偶发显示层 flake，不进
-  # 每次 develop push（desktop-linux-bundle 同姿态）。
+  #
+  # 触发面（2026-10-08 收紧）：**纳入 develop push**（`!= schedule`，与主套件
+  # 同姿态）。此前是 PR/dispatch 门控，理由是"Electron GUI 启动在 runner 上有
+  # 偶发显示层 flake，不进每次 develop push"——该取舍的代价已被实测证伪：
+  #   · 本仓常规路径是 push develop → develop→main，几乎不经过 PR；
+  #   · 实测近 6 次 develop push，本 job **6/6 全部 skipped**；
+  #   · 于是它长期无人发现地腐烂：首次在 PR 上真跑即全红，且藏着两个**互相
+  #     独立**的根因（locale 未钉死 + preload 通道白名单漂移 4 项，
+  #     见 b5568188 / 0e315453）。一个从不运行的守卫等于没有守卫。
+  # 偶发 flake 由 playwright.config.js 的 `retries: CI ? 2 : 0` 吸收，不再以
+  # "可能偶发"为由整体不跑。
   desktop-e2e-smoke:
-    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    if: github.event_name != 'schedule'
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
@@ -1637,7 +1650,7 @@ jobs:
       - name: Build main + renderer + executor bundle
         working-directory: apps/executor-desktop
         run: npm run build
-      - name: Playwright _electron smoke (QA-12, 4 cases incl 黑屏回归)
+      - name: Playwright _electron smoke (QA-12, 8 cases incl 黑屏回归)
         working-directory: apps/executor-desktop
         env:
           # Windows runner 无 X/显示抽象，electron 需要软件渲染兜底
