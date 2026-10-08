@@ -224,6 +224,44 @@ describe('SEC-CLI-01: exec tail 契约', () => {
     expect(sseCall).toBeTruthy();
     expect(String(sseCall![0])).toContain('ticket=TK-123');
     expect(String(sseCall![0])).not.toContain('access_token');
+    // API-PREFIX-01（本轮）：SSE 建流 URL 必须带 /api 前缀——admin-api 全局
+    // /api 前缀，默认 http://localhost:3105（无 /api）此前对标准部署恒 404
+    //（client.ts 的普通请求已归一，直连 axios 的 SSE 路径漏了）。
+    expect(String(sseCall![0])).toMatch(/\/api\/tasks\//);
+  });
+
+  it('终态失败：透出 exitCode/failureReason/Suggestion（与 task trigger --wait 同源）', async () => {
+    const { execCommand } = await import('../commands/exec.js');
+    const stderr: string[] = [];
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(((s: unknown) => {
+      stderr.push(String(s));
+      return true;
+    }) as never);
+    const cap = captureStdout();
+    try {
+      (axiosInstance.get as ReturnType<typeof vi.fn>)
+        // 1) compat alias 解析执行：failed 终态 + 结构化原因
+        .mockResolvedValueOnce({
+          data: {
+            code: 0, message: 'success',
+            data: { taskId: 't-1', status: 'failed', exitCode: 2, failureReason: 'interpreter_unavailable' },
+          },
+        })
+        // 2) 全量日志页
+        .mockResolvedValueOnce({
+          data: { code: 0, message: 'success', data: { lines: [], totalLines: 0, hasMore: false } },
+        });
+      await execCommand().parseAsync(['node', 'acf', 'tail', 'e-1']);
+      expect(process.exitCode).toBe(1);
+      const err = stderr.join('');
+      expect(err).toContain('Failure reason : interpreter_unavailable');
+      expect(err).toContain('remove runtimeVersion');
+    } finally {
+      cap.restore();
+      // 只恢复自己的 stderr spy；文件级 exitSpy（process.exit 桩）必须保留，
+      // 否则后续用例的 done/看门狗路径会真的 process.exit。
+      stderrSpy.mockRestore();
+    }
   });
 });
 

@@ -4,7 +4,7 @@ import chalk from 'chalk';
 import ora from 'ora';
 import * as path from 'path';
 import { get, post, put, del, ANALYZE_TIMEOUT_MS, UPLOAD_TIMEOUT_MS } from '../client.js';
-import { emitError, emitUsageError, UsageError, interruptExit } from '../ui.js';
+import { emitError, emitUsageError, UsageError, confirmDestructive } from '../ui.js';
 
 interface Application {
   id: string;
@@ -148,14 +148,29 @@ export function appsCommand(): Command {
     });
 
   // acf app create
+  // 2026-10-07 对齐 task create 的载荷旗标改名：--json <body> → --body。
+  //（task 侧先改，app 侧本轮补齐——--json 在其余命令都是「输出 JSON」布尔
+  // 旗标，载荷语义的 --json 是历史包袱，下一大版本收敛为布尔。）
   cmd.command('create')
-    .description('Create an application (JSON payload via --json or --file; required: name, version, runtime)')
-    .requiredOption('--json <body>', 'Application body as JSON string')
-    .option('--file <path>', 'Read application body from a JSON file (overrides --json)')
+    .description('Create an application (JSON payload via --body or --file; required: name, version, runtime)')
+    .option('--body <json>', 'Application body as JSON string (required unless --file is given)')
+    .option('--json <body>', 'DEPRECATED (renamed to --body): Application body as JSON string. In the next major version --json becomes a boolean output flag')
+    .option('--file <path>', 'Read application body from a JSON file (overrides --body/--json)')
     .action(async (opts) => {
+      if (opts.body !== undefined && opts.json !== undefined) {
+        emitUsageError('--body and --json (deprecated alias) are mutually exclusive — pass only --body');
+      }
+      if (opts.body === undefined && opts.json === undefined && !opts.file) {
+        emitUsageError('Missing required application body — pass --body <json> (or --file <path>)');
+      }
       const spinner = ora('Creating application…').start();
       try {
-        const body = await loadJsonBody(opts.json, opts.file);
+        if (opts.json !== undefined) {
+          process.stderr.write(
+            chalk.yellow('⚠ --json <body> is deprecated and will be removed in the next major version (it will become a boolean output flag). Use --body <json> instead.\n'),
+          );
+        }
+        const body = await loadJsonBody(opts.json ?? opts.body, opts.file);
         const a = await post<Application>('/applications', body);
         spinner.succeed(`Application created: ${a.id}`);
         console.log(chalk.gray(`  name: ${a.name}  version: ${a.version ?? '-'}  status: ${statusColor(a.status)}`));
@@ -225,16 +240,28 @@ export function appsCommand(): Command {
   // acf app update <id>
   cmd.command('update <id>')
     .description(
-      'Update an application (JSON payload via --json or --file). ' +
+      'Update an application (JSON payload via --body or --file). ' +
         'Accepted fields: description, version, runtime, status, gitRepo, gitBranch, gitCommit, manifest, env, entrypoint, packageUrl, webhookSecret. ' +
         'NOTE: the backend UpdateApplicationDto has no `name` field — renaming is not supported.',
     )
-    .requiredOption('--json <body>', 'Application patch body as JSON string')
-    .option('--file <path>', 'Read application patch body from a JSON file (overrides --json)')
+    .option('--body <json>', 'Application patch body as JSON string (required unless --file is given)')
+    .option('--json <body>', 'DEPRECATED (renamed to --body): Application patch body as JSON string. In the next major version --json becomes a boolean output flag')
+    .option('--file <path>', 'Read application patch body from a JSON file (overrides --body/--json)')
     .action(async (id, opts) => {
+      if (opts.body !== undefined && opts.json !== undefined) {
+        emitUsageError('--body and --json (deprecated alias) are mutually exclusive — pass only --body');
+      }
+      if (opts.body === undefined && opts.json === undefined && !opts.file) {
+        emitUsageError('Missing required application patch body — pass --body <json> (or --file <path>)');
+      }
       const spinner = ora('Updating application…').start();
       try {
-        const body = (await loadJsonBody(opts.json, opts.file)) as Record<string, unknown>;
+        if (opts.json !== undefined) {
+          process.stderr.write(
+            chalk.yellow('⚠ --json <body> is deprecated and will be removed in the next major version (it will become a boolean output flag). Use --body <json> instead.\n'),
+          );
+        }
+        const body = (await loadJsonBody(opts.json ?? opts.body, opts.file)) as Record<string, unknown>;
         // UpdateApplicationDto has no `name` — with forbidNonWhitelisted the
         // API would answer 400 "property name should not exist". Fail early
         // with an actionable message instead.
@@ -258,19 +285,8 @@ export function appsCommand(): Command {
     .description('Delete an application')
     .option('-y, --yes', 'Skip confirmation prompt', false)
     .action(async (id, opts) => {
-      if (!opts.yes) {
-        const readline = await import('readline/promises');
-        const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-        // raw 模式下 Ctrl+C 触发 rl 'SIGINT' 而非进程信号；无监听只会 pause，
-        // 确认提示处会假死。接住并走统一中断出口（130）。
-        rl.on('SIGINT', () => interruptExit());
-        const answer = await rl.question(`Delete application ${id}? [y/N] `);
-        rl.close();
-        if (!/^y(es)?$/i.test(answer)) {
-          console.log(chalk.yellow('Aborted.'));
-          return;
-        }
-      }
+      // P0（CLI-AGENT-UX-AUDIT）：非交互 stdin 下必须显式拒绝，不能静默假绿。
+      if (!(await confirmDestructive(`Delete application ${id}?`, { yes: opts.yes }))) return;
       const spinner = ora('Deleting application…').start();
       try {
         await del(`/applications/${id}`);
@@ -311,19 +327,64 @@ export function appsCommand(): Command {
     });
 
   // acf app deploy <id>
+  //
+  // P0（2026-10 开发人员实测）：`--run-mode` 的语义此前只列枚举值、不解释
+  // 行为差异，且默认值 `daemon` 恰好是"部署即立刻执行入口脚本"的模式——中台
+  // 定时触发场景（存量部署 11/12 是 scheduled）按"部署 = 待命"理解却不传 -m，
+  // 部署时自跑了一次完整任务，28s 后再 trigger 又跑一次，两边并发写同一云盘
+  // 目录。修复三管齐下：
+  //   ① 默认值改为 `scheduled`（仅下发、由中台/定时触发，部署后不自跑）；
+  //   ② 帮助文本写清三档的真实行为（语义见 docs/deployment.md §runMode）；
+  //   ③ 显式传 once/daemon 时在发请求前打黄色预警"将立刻启动入口脚本"。
+  // `deploy-only` 是 scheduled 的自解释别名（"仅部署、不自动运行"）——服务端
+  // RunMode 枚举没有该值，CLI 在本地归一为 scheduled 后发送。
   cmd.command('deploy <id>')
     .description('Deploy an application to an executor (auto-selects the lowest-load online executor when --executor is omitted)')
     .option('-e, --executor <executorId>', 'Pin to a specific executor')
-    .option('-m, --run-mode <mode>', 'Run mode: once | daemon | scheduled', 'daemon')
+    .option(
+      '-m, --run-mode <mode>',
+      'Run mode: once (run the entry script once, no restart) | daemon (resident process — the entry script STARTS at deploy and auto-restarts on crash) | scheduled (deploy-only — no process at deploy; middleware/cron triggers it later; default) | deploy-only (alias of scheduled)',
+      (v: string) => {
+        const m = v.toLowerCase();
+        if (!['once', 'daemon', 'scheduled', 'deploy-only'].includes(m)) {
+          throw new InvalidArgumentError('must be one of: once | daemon | scheduled | deploy-only (deploy-only = scheduled — deploy without auto-run)');
+        }
+        return m;
+      },
+      'scheduled',
+    )
     .option('--env <json>', 'Env var overrides as JSON, e.g. \'{"KEY":"value"}\'')
     .option('--start-command <cmd>', 'Startup command override (defaults to manifest entrypoint)')
     .action(async (id, opts) => {
+      // deploy-only → scheduled：本地别名归一（服务端 RunMode 枚举无 deploy-only）。
+      const runMode = opts.runMode === 'deploy-only' ? 'scheduled' : opts.runMode;
+      if (runMode === 'daemon' || runMode === 'once') {
+        // 预警在请求发出之前给出：once/daemon 会在部署时立刻启动入口脚本
+        //（daemon 异常退出还会自动重启）——"部署即跑"是双跑事故的根源。
+        process.stderr.write(
+          chalk.yellow(
+            `⚠ run-mode "${opts.runMode}" starts the entry script immediately at deploy — for deploy-only (middleware/cron triggers later), use --run-mode scheduled.\n`,
+          ),
+        );
+      }
       const spinner = ora('Triggering deployment…').start();
       try {
-        const body: Record<string, unknown> = { runMode: opts.runMode };
+        const body: Record<string, unknown> = { runMode };
         if (opts.executor) body.executorId = opts.executor;
-        if (opts.env) body.env = JSON.parse(opts.env);
         if (opts.startCommand) body.startCommand = opts.startCommand;
+        // P2（CLI-AGENT-UX-AUDIT）：--env 的 JSON 解析此前裸放在 try 里，坏 JSON
+        // 被当成「部署失败」报退出码 1——agent 会去查服务端日志，而实际是自己
+        // 参数写错了。与 `task trigger --params` 同口径：本地 payload 错误是
+        // 用法错误（退出码 2），且请求不发出。
+        if (opts.env) {
+          try {
+            body.env = JSON.parse(opts.env);
+          } catch (err) {
+            throw new UsageError(
+              `Invalid --env JSON: ${err instanceof Error ? err.message : String(err)}`,
+            );
+          }
+        }
         const dep = await post<{ id?: string; status?: string; executorId?: string }>(
           `/app-deployments/applications/${id}/deploy`,
           body,
@@ -337,10 +398,10 @@ export function appsCommand(): Command {
 
   // P2: acf app upgrade-all <appId> —— POST /applications/:id/upgrade-all（DEP-02
   // 灰度）。契约：请求体全可选，缺省（不传 body）= all 全量升级，既有语义逐字节
-  // 保持；canary 传 { rollout: { strategy: 'canary', percentage? } }。注意
-  // UpgradeAllDto 只认 rollout —— 没有 per-call 版本覆盖（升级目标恒为应用当前
-  // 版本），发送未声明字段会被 forbidNonWhitelisted 400，故本命令不提供
-  // --version。批次由服务端异步推进（心跳确认 → 健康探测 → 提升），受理 ≠ 完成。
+  // 保持；canary 传 { rollout: { strategy: 'canary', percentage? } }。
+  // 2026-10-07：UpgradeAllDto 增可选 version（版本定向灰度/渐进回滚）——
+  // --version <v> 时 body 带顶层 version；缺省不带（升级目标恒为应用当前版本）。
+  // 批次由服务端异步推进（心跳确认 → 健康探测 → 提升），受理 ≠ 完成。
   cmd.command('upgrade-all <appId>')
     .description(
       "Trigger a rolling upgrade of all RUNNING deployments to the application's current version (or --version). Default = full upgrade (pre-DEP-02 semantics, no body). Canary batches advance asynchronously on the server — acceptance is not completion",
@@ -362,13 +423,27 @@ export function appsCommand(): Command {
       'Target a historical released version (version string, not uuid) — enables gradual rollback. Default: the application\'s current version. The app record is restored from that version snapshot before the rollout starts',
     )
     .option('--json', 'Emit raw JSON (CI-consumable)')
-    .action(async (appId: string, opts: { strategy?: string; percentage?: number; version?: string; json?: boolean }) => {
+    .option('-y, --yes', 'Skip the confirmation prompt for a FULL upgrade (all strategy)', false)
+    .action(async (appId: string, opts: { strategy?: string; percentage?: number; version?: string; json?: boolean; yes?: boolean }) => {
       const strategy = opts.strategy ?? 'all';
       if (strategy !== 'all' && strategy !== 'canary') {
         emitUsageError(`Unknown rollout strategy "${strategy}" — expected one of: all | canary`);
       }
       if (opts.percentage !== undefined && strategy !== 'canary') {
         emitUsageError('--percentage only applies to --strategy canary (the full-upgrade path never reads it)');
+      }
+      // P1（CLI-AGENT-UX-AUDIT）：全量滚动升级会重启该应用**所有 RUNNING 部署**，
+      // 此前零确认。canary 天然是低风险首步（且服务端会自动提升/回滚），不设门；
+      // all 是「一次性动全量」，需要显式表态——与三处 delete 共用同一套非交互语义。
+      if (strategy === 'all') {
+        if (
+          !(await confirmDestructive(
+            `Roll out the upgrade to ALL running deployments of ${appId}?`,
+            { yes: opts.yes },
+          ))
+        ) {
+          return;
+        }
       }
       const spinner = ora('Triggering upgrade…').start();
       try {
@@ -512,6 +587,74 @@ export function appsCommand(): Command {
         console.log(table.toString());
       } catch (e: unknown) {
         emitError('Failed to list versions', e, { spinner });
+      }
+    });
+
+  // DEP-01: acf app releases <appId> —— GET /applications/:id/releases
+  // 统一发布追溯视图：一行 = 一次版本发布（版本号/包地址/部署时间/状态/次数/
+  // 执行器/runMode/触发方式/操作人）。`app versions` 是过渡期 legacy alias，
+  // releases 才是现代读面（admin-web ApplicationDetailPage 消费它）。
+  interface AppRelease {
+    id: string | null;
+    version: string | null;
+    packageUrl?: string | null;
+    gitCommit?: string | null;
+    deployedAt: string | null;
+    latestDeploymentId?: string | null;
+    deploymentStatus: string | null;
+    deploymentCount: number;
+    executorAddress?: string | null;
+    runMode: string | null;
+    triggerType: string | null;
+    operator?: string | null;
+    status: string;
+    createdAt: string | null;
+    synthetic?: boolean;
+  }
+  cmd.command('releases <appId>')
+    .description('List unified release history (version × latest deployment) for an application — the modern DEP-01 view; `app versions` is the legacy alias')
+    .option('-p, --page <n>', 'Page number', '1')
+    .option('-n, --page-size <n>', 'Page size (max 200, default 50)', '50')
+    // --json 补面（UX 统一）：列表/信封形态 → 单行紧凑 JSON
+    .option('--json', 'Emit raw JSON (CI-consumable, no table)')
+    .action(async (appId: string, opts: { page?: string; pageSize?: string; json?: boolean }) => {
+      const spinner = ora('Fetching releases…').start();
+      try {
+        // getReleases returns `{ data, total, page, pageSize }`
+        const data = await get<{ data?: AppRelease[]; list?: AppRelease[]; total?: number }>(
+          `/applications/${appId}/releases`,
+          { page: opts.page, pageSize: opts.pageSize },
+        );
+        spinner.stop();
+        if (opts.json) {
+          console.log(JSON.stringify(data));
+          return;
+        }
+        const list: AppRelease[] = Array.isArray(data) ? data : (data.data ?? data.list ?? []);
+        if (!list.length) {
+          console.log(chalk.gray('No releases recorded for this application.'));
+          return;
+        }
+        const table = new Table({
+          head: ['Version', 'Deployed', 'Status', 'Count', 'Executor', 'RunMode', 'Trigger'],
+          colWidths: [12, 20, 12, 8, 18, 10, 12],
+          style: { head: ['cyan'] },
+        });
+        for (const r of list) {
+          table.push([
+            r.version ?? '-',
+            r.deployedAt ? new Date(r.deployedAt).toLocaleString() : '-',
+            statusColor(r.deploymentStatus ?? r.status),
+            String(r.deploymentCount),
+            r.executorAddress ?? '-',
+            r.runMode ?? '-',
+            r.triggerType ?? '-',
+          ]);
+        }
+        console.log(table.toString());
+        console.log(chalk.gray(`Total: ${data.total ?? list.length}  page ${opts.page}`));
+      } catch (e: unknown) {
+        emitError('Failed to list releases', e, { spinner });
       }
     });
 

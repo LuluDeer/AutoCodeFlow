@@ -3,7 +3,7 @@ import Table from 'cli-table3';
 import chalk from 'chalk';
 import ora from 'ora';
 import { get, post } from '../client.js';
-import { emitError } from '../ui.js';
+import { emitError, confirmDestructive } from '../ui.js';
 
 // Field names aligned with the Executor entity
 // (apps/admin-api/src/modules/executor/entities/executor.entity.ts)
@@ -163,7 +163,19 @@ export function executorsCommand(): Command {
   cmd.command('rotate <nameOrId>')
     .description('Rotate an executor token (ADMIN; new token is shown ONCE in this output)')
     .option('--reason <reason>', 'Optional rotation reason (≤200 chars, recorded in the audit log)')
-    .action(async (nameOrId: string, opts: { reason?: string }) => {
+    .option('-y, --yes', 'Skip confirmation prompt', false)
+    .action(async (nameOrId: string, opts: { reason?: string; yes?: boolean }) => {
+      // P1（CLI-AGENT-UX-AUDIT）：轮换是**不可逆**的——旧 token 立即失效，
+      // 而新 token 只在本命令输出里出现一次，没被捕获就永久丢失（只能再轮换）。
+      // 此前零确认。补确认，并复用统一的非交互语义（非 TTY 缺 --yes → 码 2）。
+      if (
+        !(await confirmDestructive(
+          `Rotate the token for "${nameOrId}"? The old token stops working immediately and the new one is shown only once.`,
+          { yes: opts.yes },
+        ))
+      ) {
+        return;
+      }
       const spinner = ora('Rotating executor token…').start();
       try {
         const id = await resolveExecutorId(nameOrId);

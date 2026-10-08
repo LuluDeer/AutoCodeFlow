@@ -35,7 +35,7 @@
 import { Command, CommanderError } from 'commander';
 import { pathToFileURL } from 'node:url';
 import chalk from 'chalk';
-import { loginCommand } from './commands/login.js';
+import { loginCommand, whoamiCommand, logoutCommand } from './commands/login.js';
 import { tasksCommand } from './commands/tasks.js';
 import { appsCommand } from './commands/apps.js';
 import { executorsCommand } from './commands/executors.js';
@@ -60,6 +60,8 @@ import { EXIT_CODES, interruptExit } from './ui.js';
 // `resolveJsonModule` 已在 tsconfig 打开；tsc 的 rootDir=src 会把 package.json
 // 视为 src 之外的输入，故走运行时解析（发布物里 package.json 与 dist/ 同级，
 // 路径稳定）。本包为 ESM（type: module），JSON 导入须带 import attribute。
+// 2026-10 起不再经 Commander .version() 注册（详见下方 VERSION-HIJACK 注释），
+// 但 pkg.version 仍是版本输出的唯一事实源——行为层守卫跑真实构建产物钉死。
 import pkg from '../package.json' with { type: 'json' };
 
 // 导出命令树供测试复用（结构守卫：每个叶子命令都必须有 Examples）。配合底部
@@ -68,8 +70,40 @@ export const program = new Command();
 
 program
   .name('acf')
-  .description('AutoCodeFlow CLI — manage tasks, executions, applications and projects')
-  .version(pkg.version);
+  .description('AutoCodeFlow CLI — manage tasks, executions, applications and projects');
+
+// ---------------------------------------------------------------------------
+// 版本号处理（VERSION-HIJACK，P1 修复）
+// ---------------------------------------------------------------------------
+// 根命令**不**注册 --version 选项：commander 的根层 parseOptions 会在派发子
+// 命令之前扫描**全部**参数，一旦经 .version() 注册，`acf app upload --version
+// 1.2.0` / `acf app upgrade-all --version 1.9.0` / `acf task rollback --version
+// v9` 里的 --version 会在根层被匹配并 exit 0 打印 CLI 版本——上传/升级/回滚
+// 根本没发生却不报错（2026-10 开发人员实测，三个子命令全部中招）。
+//
+// 修法：版本输出改由根命令的 unknownOption 覆盖接管——只有到达根层仍未被
+// 任何子命令消费的 --version / -V（即 `acf --version` / `acf -V` 这类根级
+// 请求）才打印 pkg.version 并以 0 退出；子命令自己的 --version 选项由各自的
+// parseOptions 消费，互不干扰。pkg.version 仍是唯一事实源（行为层守卫
+// release-metadata.test.ts 跑真实构建产物钉死，改回硬编码会转红）。
+// 'before' 只挂在根命令的帮助上（子命令 help 不显示版本横幅——原 .version()
+// 的版本 banner 同样是根级专属；'beforeAll' 会传播到所有子命令，太吵）。
+program.addHelpText('before', `acf v${pkg.version}\n`);
+
+// 根级 unknownOption 覆盖：`acf --version` / `acf -V` 会在根 _parseCommand 的
+// checkForUnknownOptions 里走到这里（无子命令可派发），此时按 CLI 版本处理；
+// 其余未知选项（含"某子命令树里没有 --version 选项"的情形）走 commander
+// 原逻辑（报错 + 完整 help + 退出码 2）。
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const programAny = program as any;
+const rootUnknownOption = programAny.unknownOption.bind(program);
+programAny.unknownOption = (flag: string) => {
+  if (flag === '--version' || flag === '-V') {
+    console.log(pkg.version);
+    process.exit(0);
+  }
+  return rootUnknownOption(flag);
+};
 
 // ---------------------------------------------------------------------------
 // 解析期行为统一（全树，见下方 applyParseErrorBehavior 的说明）
@@ -88,6 +122,8 @@ program.hook('preAction', (thisCommand) => {
 
 // ---- sub-commands ----
 program.addCommand(loginCommand());
+program.addCommand(whoamiCommand());
+program.addCommand(logoutCommand());
 program.addCommand(tasksCommand());
 program.addCommand(appsCommand());
 program.addCommand(executorsCommand());
@@ -102,7 +138,12 @@ program.addCommand(approvalCommand());
 
 // acf config show / set
 const configCmd = new Command('config').description('View or update CLI configuration');
-configCmd.command('show').description('Show current config').action(() => showConfig());
+configCmd
+  .command('show')
+  .description('Show current config (token is always masked — [set] / [not set])')
+  // P2（CLI-AGENT-UX-AUDIT）：--json 让 agent 能解析当前配置（不改 [set]/[not set] 口径）
+  .option('--json', 'Emit raw JSON (CI-consumable)')
+  .action((opts: { json?: boolean }) => showConfig({ json: opts.json }));
 configCmd.command('set-url <url>').description('Set API base URL').action((url) => {
   setApiUrl(url);
   console.log(chalk.green(`✔ API URL set to ${url}`));

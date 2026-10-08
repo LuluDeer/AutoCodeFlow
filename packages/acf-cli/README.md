@@ -30,10 +30,35 @@ CLI 的非零退出码按失败类别区分，脚本/CI 可以只按码分支处
 | --- | --- | --- |
 | `0` | 成功 | 含 `--help` / `--version` / 主动放弃确认（`Aborted.`） |
 | `1` | 运行失败 | 服务端拒绝（400/403/404/409/5xx，错误行透出后端 message）；`--wait` 等到失败终态；`acf task lint` 检出语法错误 |
-| `2` | 用法 / 参数错误 | 缺参、未知命令/选项、非法取值（如 `--wait-timeout abc`）；本地 payload 问题（JSON 解析失败、`--file` 读不了、`task lint` 无法推断语言） |
+| `2` | 用法 / 参数错误 | 缺参、未知命令/选项、非法取值（如 `--wait-timeout abc`）；本地 payload 问题（JSON 解析失败、`--file` 读不了、`task lint` 无法推断语言）；**非交互 stdin 下的破坏性操作缺 `--yes`**（见下） |
 | `3` | 认证失败 | 401：凭据缺失/过期且自动刷新失败 → 运行 `acf login` |
 | `4` | 网络失败 | 连接不通 / 超时 / DNS → 检查 `--api-url`、`ACF_API_URL`；`acf exec tail` 流中断或空闲超时 |
 | `130` | 中断（SIGINT） | Ctrl+C。输出会补一个换行，不留半行 spinner |
+
+### 退出码 1 的两个高频非「失败」通道（CI 必读）
+
+同样是 `1`，但语义**不是**「操作失败」，不要据此触发回滚/告警：
+
+- **`--wait` 轮询超时**：执行**仍在运行**，CLI 只是放弃了等待（默认 600s，
+  用 `--wait-timeout <s>` 放宽）。此时输出会明确写「The execution is still
+  running」，跟进用 `acf exec tail <execId>`。**结果未知 ≠ 失败**。
+- **批量部分失败**：`acf task batch <action>` 与 `acf app upgrade-all` 在
+  「部分目标被拒」时返回 1（服务端 HTTP 仍是 2xx）。逐项结果看 stdout 的
+  `✗ <id>: <reason>` 行或 `--json` 输出。
+
+### 破坏性操作的 `--yes`（非交互必读）
+
+`app delete` / `task delete` / `deploy remove` 有交互确认。**stdin 非 TTY 时
+（CI、agent、`< NUL`、管道）它们不会静默放行也不会静默取消，而是以退出码 2
+拒绝**，要求显式传 `-y/--yes`：
+
+```bash
+acf task delete <id> -y     # 非交互下唯一被接受的确认方式
+```
+
+判据是 `process.stdin.isTTY`。同族纪律：`acf login` 在非交互下同样不会对
+地址/用户名/密码发问，缺少 `--user` 或 `ACF_PASSWORD` 时直接以退出码 2 报
+可操作错误（不再出现「exit 0 但其实没登录」）。
 
 单一事实源在 `src/ui.ts` 的 `EXIT_CODES`；错误分类（401/网络/服务端）在
 `src/client.ts` 的 `classifyApiError` 做一次，命令层统一经 `emitError` 出口
@@ -44,8 +69,8 @@ CLI 的非零退出码按失败类别区分，脚本/CI 可以只按码分支处
 所有只读命令都支持 `--json`（CI/脚本消费面，错误仍走 stderr + 非零退出码）：
 
 - 列表 / 信封形态（`task list`、`task executions`、`app list`、
-  `app deployments`、`executor list`、`sop list`、`agent sessions`、
-  `audit list`）→ 单行紧凑 JSON，信封（`{list|data|items, total}`）原样直出；
+  `app deployments`、`app releases`、`deploy list`、`executor list`、`sop list`、
+  `agent sessions`、`audit list`）→ 单行紧凑 JSON，信封（`{list|data|items, total}`）原样直出；
 - 单对象 / 详情形态（`task get`、`task stats`、`task versions`、
   `task compare`、`task logs`、`task trigger`、`app get`、`app versions`、
   `executor get`、`sop show`、`project list`、`project members`）→
@@ -75,6 +100,24 @@ CLI 的非零退出码按失败类别区分，脚本/CI 可以只按码分支处
   此后只能 `acf apikey list`（脱敏）/ `acf apikey revoke <id>`。
 - Access token 过期时自动用 refresh token 换发并重放一次；刷新失败才要求
   重新登录（此时退出码为 3）。
+
+## 应用部署（run-mode 语义，2026-10 实测修复）
+
+- `acf app deploy <appId>`：缺省 `-m scheduled` —— **仅部署、由中台/任务调度触发，部署后不自跑**（批处理/中台定时触发场景的正确模式，存量部署 11/12 用它）。三档语义：
+  - `once`：启动入口脚本一次，退出不重启；
+  - `daemon`：常驻进程——**部署时立刻启动入口脚本**，异常退出自动重启（退出码 0 不重启）；
+  - `scheduled`（别名 `deploy-only`）：只下发代码、**不启动进程**，由任务调度触发。
+- 显式传 `once`/`daemon` 时，CLI 会在发请求前打黄色预警「将立刻启动入口脚本」——避免"部署即跑"与后续 `task trigger` 双跑、并发写同一产物目录。
+- 部署列表：`acf app deployments [appId]`，或 `acf deploy list [appId]`（同源同契约，deploy 组下的可发现入口）。
+- 版本发布追溯：`acf app releases <appId>`（DEP-01 统一视图：版本 × 最近部署——状态/次数/执行器/runMode/触发方式；`app versions` 是过渡期 legacy alias）。
+- 清理遗留记录：`acf deploy remove <deploymentId> -y` —— 删除**已终结**的部署记录（failed/stopped）；在途/运行/待审批行服务端 409（先 `stop`，或走审批 `reject`/`cancel`）。
+
+## 任务参数注入（params → AUTOFLOW_\*）
+
+`task create`/`update` 的 `body.params` 在每次执行时注入为 `AUTOFLOW_<KEY>` 环境变量（键名转大写），值 JSON 序列化：布尔/数字是裸值（`true`/`3`），**字符串带双引号**（`"yes"`），对象/数组为 JSON —— 脚本侧请按 JSON 解析，不要当普通字符串（两执行器契约向量见 contract-fixtures 的 `executorEnvSerialization`）。
+
+- **按 run 覆盖参数**：`acf task trigger <id> --params '{"KEY":"value"}'` 覆盖任务默认 params（TriggerTaskDto 同 webhook 面；缺省不发 body，用任务默认值）。block-strategy 闸（N-14）按生效参数判重。
+- **按名/描述搜任务**：`acf task list --search <kw>` 走 `q` 参数（name OR description，控制台搜索框同款）；`-k/--keyword` 仍只搜 name（向后兼容通道）。
 
 ## 应用包上传 / 灰度升级 / 审批 / webhook / glue
 

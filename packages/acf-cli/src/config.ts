@@ -202,9 +202,26 @@ export function clearAuth(): void {
   store.set('refreshToken', '');
 }
 
-export function showConfig(): void {
-  console.log('API URL :', getApiUrl());
-  console.log('Token   :', getToken() ? '[set]' : '[not set]');
-  console.log('Refresh :', getRefreshToken() ? '[set]' : '[not set]');
-  console.log('Config file:', store.path);
+/**
+ * 打印当前配置。
+ *
+ * `--json`（P2，CLI-AGENT-UX-AUDIT）：agent 排障第一步就是读当前配置，
+ * 而此前只能 grep 人读文本。**token 永不明文输出**——只给 set/not set，
+ * 与既有 `[set]` 口径一致（凭据本身在文件里，不该顺带打到日志/终端）。
+ */
+export function showConfig(opts: { json?: boolean } = {}): void {
+  const snapshot = {
+    apiUrl: getApiUrl(),
+    token: getToken() ? '[set]' : '[not set]',
+    refreshToken: getRefreshToken() ? '[set]' : '[not set]',
+    configFile: store.path,
+  };
+  if (opts.json) {
+    console.log(JSON.stringify(snapshot));
+    return;
+  }
+  console.log('API URL :', snapshot.apiUrl);
+  console.log('Token   :', snapshot.token);
+  console.log('Refresh :', snapshot.refreshToken);
+  console.log('Config file:', snapshot.configFile);
 }

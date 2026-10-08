@@ -7,7 +7,7 @@ import { spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import { get, post, put, patch, del, ANALYZE_TIMEOUT_MS } from '../client.js';
-import { emitError, emitUsageError, UsageError, interruptExit } from '../ui.js';
+import { emitError, emitUsageError, UsageError, confirmDestructive } from '../ui.js';
 
 interface Task {
   id: string;
@@ -16,6 +16,12 @@ interface Task {
   runtime: string;
   cronExpression?: string;
   applicationId?: string;
+  // 详情补面（task get 的扩展字段；均为可选，旧数据/轻量投影缺失时打 '-'）
+  description?: string | null;
+  triggerType?: string;
+  timeout?: number | null;
+  maxRetry?: number | null;
+  enabled?: boolean;
 }
 
 interface Execution {
@@ -39,6 +45,28 @@ interface PaginatedTasks {
   page: number;
   pageSize: number;
 }
+
+/**
+ * 结构化失败原因（failureReason，执行器回调上报）→ 可直接照做的建议。
+ *
+ * 2026-10 开发人员实测：任务声明 runtimeVersion=3.12 派到无该解释器的执行器
+ * 秒失败且执行日志 0 行——failureReason=interpreter_unavailable 只有 --json
+ * 里能看到，中文详情还得再查一次文档。把最常见的几个失败原因翻译成"下一步
+ * 怎么做"，随 `--wait` 的失败终态直接打出来（键集对齐 executor-node
+ * protocol.schemas.ts 的 CallbackFailureReason 枚举）。
+ */
+export const FAILURE_REASON_HINTS: Record<string, string> = {
+  interpreter_unavailable:
+    'the interpreter requested by runtimeVersion is not available on this executor — remove runtimeVersion to use the host default interpreter',
+  runtime_missing:
+    'the task runtime is not available on this executor — check the task runtime field or the executor interpreter pool',
+  script_error:
+    'the entry script exited with a non-zero code — inspect the log with: acf task logs <execId>',
+  timeout:
+    'the execution exceeded its time budget — raise the task timeout or split the work',
+  sandbox_unavailable:
+    'the executor sandbox is not available — contact the executor operator or relax the sandbox configuration',
+};
 
 // E-1 任务定义导出物（GET /tasks/:id/export 的原始 JSON 体，不经 envelope）。
 // schemaVersion 钉 "1"；导出物即 POST /tasks/import 的请求体，两端口径对称。
@@ -110,19 +138,21 @@ export function tasksCommand(): Command {
   cmd.command('list')
     .description('List all tasks')
     .option('-s, --status <status>', 'Filter by status (active|paused)')
-    .option('-k, --keyword <keyword>', 'Search by name (sent as the `name` query param)')
+    .option('-k, --keyword <keyword>', 'Search by NAME only (sent as the `name` query param; backward-compatible channel)')
+    .option('--search <keyword>', 'Search across name AND description (sent as the `q` query param — what the console search box sends; combined with --keyword both must match)')
     .option('-p, --page <n>', 'Page number', '1')
     .option('-n, --page-size <n>', 'Items per page', '20')
     .option('--json', 'Emit raw JSON (CI-consumable, no table)')
     .action(async (opts) => {
       const spinner = ora('Fetching tasks…').start();
       try {
-        // ListTasksQueryDto has `name` (no `keyword`)
+        // ListTasksQueryDto: `name`（按名，向后兼容）+ `q`（name OR description）
         const data = await get<PaginatedTasks>('/tasks', {
           page: opts.page,
           pageSize: opts.pageSize,
           status: opts.status,
           name: opts.keyword,
+          q: opts.search,
         });
         spinner.stop();
         if (opts.json) {
@@ -161,11 +191,17 @@ export function tasksCommand(): Command {
           return;
         }
         console.log(chalk.bold('Task Details'));
-        console.log('  ID      :', t.id);
-        console.log('  Name    :', t.name);
-        console.log('  Runtime :', t.runtime);
-        console.log('  Status  :', statusColor(t.status));
-        console.log('  Cron    :', t.cronExpression ?? '-');
+        console.log('  ID          :', t.id);
+        console.log('  Name        :', t.name);
+        console.log('  Runtime     :', t.runtime);
+        console.log('  Status      :', statusColor(t.status));
+        console.log('  Trigger     :', t.triggerType ?? '-');
+        console.log('  Cron        :', t.cronExpression ?? '-');
+        console.log('  Description :', t.description ?? '-');
+        console.log('  App         :', t.applicationId ?? '-');
+        console.log('  Timeout     :', t.timeout !== undefined && t.timeout !== null ? `${t.timeout}s` : '-');
+        console.log('  Max retry   :', t.maxRetry ?? '-');
+        console.log('  Enabled     :', t.enabled === undefined ? '-' : (t.enabled ? chalk.green('yes') : chalk.gray('no')));
       } catch (e: unknown) {
         emitError('Failed', e, { spinner });
       }
@@ -173,7 +209,7 @@ export function tasksCommand(): Command {
 
   // acf task trigger <id>
   cmd.command('trigger <id>')
-    .description('Manually trigger a task and wait for completion')
+    .description('Manually trigger a task. Returns the execution id immediately; add --wait to poll until the terminal state and get its exit code')
     .option('--wait', 'Poll until execution finishes', false)
     // NETOPT-2①: --wait 的轮询上限可调（秒）。默认 600 保持既有行为；
     // 非正值直接报参数错误而不是静默回落默认值——CI 里写错单位（毫秒当秒）
@@ -195,23 +231,49 @@ export function tasksCommand(): Command {
     // per-trigger pin would be rejected with 400. Executor pinning IS
     // supported by the backend as a task-level field (tasks.executorId) — set
     // it via `acf task create/update --executor <id>`, not per run.
+    // --params 补面（本轮）：TriggerTaskDto 收 params（覆盖任务默认参数，与
+    // webhook 面同形），block-strategy 闸（N-14）按生效参数判重——CLI 此前
+    // 永远发空 body，无法按 run 覆盖参数。
+    .option('--params <json>', 'Per-run param overrides as JSON, e.g. \'{"KEY":"value"}\' (replaces the task\'s default params for this run)')
     // 第四轮审计（--json 补面）：trigger 响应（execution 对象）直出 JSON，
     // CI 拿 executionId 做后续断言无需解析人读文本。
     .option('--json', 'Emit raw JSON (CI-consumable, no table)')
-    .action(async (id: string, opts: { wait?: boolean; waitTimeout?: number; json?: boolean }) => {
+    .action(async (id: string, opts: { wait?: boolean; waitTimeout?: number; json?: boolean; params?: string }) => {
       const spinner = ora('Triggering task…').start();
       try {
-        const exec = await post<Execution>(`/tasks/${id}/trigger`);
+        // 本地 JSON 预检：坏 params 是用法错误（退出码 2），请求不发出。
+        let params: Record<string, unknown> | undefined;
+        if (opts.params !== undefined) {
+          try {
+            params = JSON.parse(opts.params) as Record<string, unknown>;
+          } catch (e: unknown) {
+            throw new UsageError(`Invalid --params JSON: ${e instanceof Error ? e.message : String(e)}`);
+          }
+        }
+        // 只有显式 --params 才带 body（缺省时 post 单参调用，既有语义逐字节保持）。
+        const exec = params !== undefined
+          ? await post<Execution>(`/tasks/${id}/trigger`, { params })
+          : await post<Execution>(`/tasks/${id}/trigger`);
         if (opts.json) {
-          // ECO-02 同款：--json —— ora 默认写 stderr，stdout 仍是干净 JSON；
-          // --wait 语义不变（等终态 + 非零退出码逻辑照旧生效）。
+          // ECO-02 同款：--json —— ora 默认写 stderr，stdout 仍是干净 JSON。
+          // P2（CLI-AGENT-UX-AUDIT）：--json **且** --wait 时不在这里输出中间态，
+          // 改由 pollExecution 在最末尾一次性输出**最终** execution 对象——
+          // 否则 stdout 会先来一段 execution JSON，再接死亡终态的人类可读行
+          // （Exit code / Failure reason），单行 JSON 解析器必崩。
           spinner.stop();
-          console.log(JSON.stringify(exec, null, 2));
+          if (!opts.wait) {
+            console.log(JSON.stringify(exec, null, 2));
+          }
         } else {
           spinner.succeed(`Execution started: ${exec.id}`);
+          if (!opts.wait) {
+            process.stderr.write(
+              chalk.gray('  (add --wait to poll until completion and get the exit code)\n'),
+            );
+          }
         }
         if (opts.wait) {
-          await pollExecution(exec.id, opts.waitTimeout);
+          await pollExecution(exec.id, opts.waitTimeout, { json: !!opts.json });
         }
       } catch (e: unknown) {
         emitError('Failed to trigger', e, { spinner });
@@ -242,8 +304,11 @@ export function tasksCommand(): Command {
         const table = new Table({
           // U11: exitCode column — distinguishes "failed by callback
           // report" (exit 0 / null) from "process died" (non-zero).
-          head: ['Exec ID', 'Status', 'Duration', 'Exit', 'Started'],
-          colWidths: [14, 12, 12, 6, 25],
+          // 2026-10 补 failureReason 列：interpreter_unavailable 这类结构化
+          // 失败此前只在 --json 可见（executions 表格无原因），值班扫一眼
+          // 即可分流。
+          head: ['Exec ID', 'Status', 'Duration', 'Exit', 'Reason', 'Started'],
+          colWidths: [14, 12, 12, 6, 30, 25],
           style: { head: ['cyan'] },
         });
         for (const e of data.list ?? []) {
@@ -252,6 +317,7 @@ export function tasksCommand(): Command {
             statusColor(e.status),
             e.duration ? `${e.duration}ms` : '-',
             e.exitCode ?? '-',
+            e.failureReason ?? '-',
             new Date(e.createdAt).toLocaleString(),
           ]);
         }
@@ -575,18 +641,14 @@ export function tasksCommand(): Command {
     .description('Delete a task (force-terminates running executions)')
     .option('-y, --yes', 'Skip confirmation prompt', false)
     .action(async (id, opts) => {
-      if (!opts.yes) {
-        const readline = await import('readline/promises');
-        const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-        // raw 模式下 Ctrl+C 触发 rl 'SIGINT' 而非进程信号；无监听只会 pause，
-        // 确认提示处会假死。接住并走统一中断出口（130）。
-        rl.on('SIGINT', () => interruptExit());
-        const answer = await rl.question(`Delete task ${id}? Running executions will be force-terminated. [y/N] `);
-        rl.close();
-        if (!/^y(es)?$/i.test(answer)) {
-          console.log(chalk.yellow('Aborted.'));
-          return;
-        }
+      // P0（CLI-AGENT-UX-AUDIT）：非交互 stdin 下必须显式拒绝，不能静默假绿。
+      if (
+        !(await confirmDestructive(
+          `Delete task ${id}? Running executions will be force-terminated.`,
+          { yes: opts.yes },
+        ))
+      ) {
+        return;
       }
       const spinner = ora('Deleting task…').start();
       try {
@@ -696,7 +758,8 @@ export function tasksCommand(): Command {
     .description('Batch trigger/pause/resume/delete tasks (partial failures do not affect the other tasks)')
     .option('--ids <ids>', 'Comma-separated task IDs (merged with any positional ids, deduplicated)')
     .option('--json', 'Emit raw JSON (CI-consumable: the raw per-task result array)')
-    .action(async (action: string, ids: string[], opts: { ids?: string; json?: boolean }) => {
+    .option('-y, --yes', 'Skip the confirmation prompt for batch delete', false)
+    .action(async (action: string, ids: string[], opts: { ids?: string; json?: boolean; yes?: boolean }) => {
       const ACTIONS = ['trigger', 'pause', 'resume', 'delete'] as const;
       if (!(ACTIONS as readonly string[]).includes(action)) {
         emitUsageError(`Unknown batch action "${action}" — expected one of: ${ACTIONS.join(' | ')}`);
@@ -712,6 +775,20 @@ export function tasksCommand(): Command {
       }
       if (taskIds.length > 500) {
         emitUsageError(`Batch is limited to 500 task IDs per request (got ${taskIds.length})`);
+      }
+      // P1（CLI-AGENT-UX-AUDIT）：`batch delete` 此前**零确认**——单个
+      // `task delete` 要确认，而 `--ids a,b,c`（上限 500 个）却能无提示抹掉
+      // 一整批任务。按「不可逆 × 影响面」补确认，且与三处 delete 共用同一个
+      // 非交互语义（缺 --yes 时以退出码 2 拒绝，不静默假绿）。
+      if (action === 'delete') {
+        if (
+          !(await confirmDestructive(
+            `Delete ${taskIds.length} task(s)? Running executions will be force-terminated.`,
+            { yes: opts.yes },
+          ))
+        ) {
+          return;
+        }
       }
       const spinner = ora(`Batch ${action} (${taskIds.length} task(s))…`).start();
       try {
@@ -955,10 +1032,16 @@ export function tasksCommand(): Command {
           return r.status === 0;
         });
         if (!py) {
-          console.error(chalk.red('python not found on PATH — install Python 3 to lint python glue'));
-          process.exit(1);
+          // 环境不满足 ≠ 脚本有语法错：给退出码 2（用法/环境），让 CI 能区分
+          // 「我的脚本坏了」与「这台机器没装 Python」。
+          emitUsageError(
+            'python not found on PATH — install Python 3 to lint python glue (or pass --language to check another runtime)',
+          );
         }
-        const r = spawnSync(py, ['-c', `import ast,sys; ast.parse(open(sys.argv[1],encoding='utf-8').read())`, file], {
+        // 走 stdin 传源码而非把路径当 argv：Windows 路径的反斜杠会被 bash/python
+        // 的解析层吃掉（`C:\Users\...` → `C:Users...`），实测必假报。
+        const r = spawnSync(py, ['-c', `import ast,sys; ast.parse(sys.stdin.read())`], {
+          input: source,
           stdio: 'pipe',
         });
         if (r.status !== 0) {
@@ -968,7 +1051,20 @@ export function tasksCommand(): Command {
         }
         ok('syntax OK (python, ast.parse)');
       } else {
-        const r = spawnSync('bash', ['-n', file], { stdio: 'pipe' });
+        // P1（CLI-AGENT-UX-AUDIT）：此前是 spawnSync('bash', ['-n', file])——
+        // Windows 上 bash 把 `C:\Users\...` 的反斜杠当转义符吃掉，报
+        // `/bin/bash: C:Users... No such file or directory`，**任何合法脚本
+        // 都被判 syntax error**（实测 Git Bash 在场同样复现）。改成把源码经
+        // stdin 喂给 `bash -n`（等价的纯语法检查，且跨平台不依赖路径形态）。
+        //
+        // bash 不存在时（纯 Windows 无 Git Bash）改为可操作的用法错误（码 2），
+        // 而不是把 spawn 失败混同成「脚本有语法错」。
+        if (!hasCommand('bash')) {
+          emitUsageError(
+            'bash not found on PATH — install Git Bash (or WSL) to lint shell glue, or pass --language to check another runtime',
+          );
+        }
+        const r = spawnSync('bash', ['-n'], { input: source, stdio: 'pipe' });
         if (r.status !== 0) {
           console.error(chalk.red(`✗ ${file}: syntax error`));
           process.stderr.write(r.stderr?.toString() ?? '');
@@ -981,7 +1077,11 @@ export function tasksCommand(): Command {
   return cmd;
 }
 
-async function pollExecution(execId: string, waitTimeoutSeconds = 600): Promise<void> {
+async function pollExecution(
+  execId: string,
+  waitTimeoutSeconds = 600,
+  opts: { json?: boolean } = {},
+): Promise<void> {
   const INTERVAL = 2000;
   const MAX_WAIT = waitTimeoutSeconds * 1000;
   const spinner = ora('Waiting for execution…').start();
@@ -993,6 +1093,24 @@ async function pollExecution(execId: string, waitTimeoutSeconds = 600): Promise<
       // killed 是后端 ExecutionStatus 的合法终态（acf task kill / Web 端），
       // 遗漏会让 --wait 在被 kill 后空转到 MAX_WAIT 并误报超时（N10）。
       if (['success', 'failed', 'timeout', 'cancelled', 'killed'].includes(exec.status)) {
+        if (opts.json) {
+          // P2（CLI-AGENT-UX-AUDIT）：--json --wait 的唯一 stdout 出口 ——
+          // 最终 execution 对象（含 status/exitCode/failureReason/errorMessage/
+          // aiAnalysis），不再混入人类可读行。细节走 stderr 便于人眼旁读。
+          spinner.stop();
+          console.log(JSON.stringify(exec, null, 2));
+          if (exec.status !== 'success') {
+            process.stderr.write(
+              chalk.yellow(
+                `Execution ${exec.status}` +
+                  (exec.failureReason ? ` (${exec.failureReason})` : '') +
+                  '\n',
+              ),
+            );
+          }
+          if (exec.status !== 'success') process.exitCode = 1;
+          return;
+        }
         if (exec.status === 'success') {
           spinner.succeed(`Execution ${exec.status} in ${exec.duration ?? '?'}ms`);
         } else {
@@ -1015,6 +1133,9 @@ async function pollExecution(execId: string, waitTimeoutSeconds = 600): Promise<
           }
           if (exec.failureReason) {
             console.log(chalk.yellow('  Failure reason :'), exec.failureReason);
+            // 可操作建议：failureReason 是机器枚举，直接给"下一步怎么做"。
+            const hint = FAILURE_REASON_HINTS[exec.failureReason];
+            if (hint) console.log(chalk.yellow('  Suggestion     :'), hint);
           }
           if (exec.errorMessage) {
             console.log(chalk.yellow('  Error          :'), exec.errorMessage);
@@ -1044,6 +1165,18 @@ async function pollExecution(execId: string, waitTimeoutSeconds = 600): Promise<
   // 与上方失败终态的 CLI-EXIT-01 语义对齐：置 exitCode=1，并明示执行仍在
   // 运行、如何继续观察（exec tail）或放宽等待上限（--wait-timeout）。
   spinner.fail(`Timed out waiting for execution after ${waitTimeoutSeconds}s`);
+  if (opts.json) {
+    // --json 下超时也只留 stderr：stdout 要么是干净的最终 JSON，要么什么都没有
+    // （此处确实没有终态可输出——超时意味着没有终态）。
+    process.stderr.write(
+      chalk.red(
+        `The execution is still running — no terminal status within ${waitTimeoutSeconds}s. ` +
+          `Follow it later with 'acf exec tail ${execId}' or raise --wait-timeout.\n`,
+      ),
+    );
+    process.exitCode = 1;
+    return;
+  }
   console.error(
     chalk.red(
       `The execution is still running — no terminal status within ${waitTimeoutSeconds}s. ` +
@@ -1055,4 +1188,17 @@ async function pollExecution(execId: string, waitTimeoutSeconds = 600): Promise<
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+/**
+ * 探测可执行文件是否在 PATH 上（`task lint` 的 shell 分支用）。
+ * 用 `--version` 的成功退出码判定，`stdio: 'ignore'` 避免污染 lint 的输出；
+ * 探测本身的失败（ENOENT）也统一归为「不可用」。
+ */
+function hasCommand(bin: string): boolean {
+  try {
+    return spawnSync(bin, ['--version'], { stdio: 'ignore' }).status === 0;
+  } catch {
+    return false;
+  }
 }

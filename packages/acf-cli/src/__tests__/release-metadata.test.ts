@@ -13,7 +13,13 @@
  * 修法：从 package.json 读（单一事实源），并由本文件钉死"不得再出现硬编码"。
  * 另在 release.yml 的 version-guard 里把本包纳入 lockstep 校验（第五处）。
  *
- * 反证：把 `.version(pkg.version)` 改回 `.version('1.0.0')` → 本文件变红。
+ * 2026-10 起版本输出不再经 Commander .version() 注册（VERSION-HIJACK：根层
+ * 注册会把子命令 `--version` 选项劫持掉），改由根 unknownOption 覆盖打印
+ * pkg.version——下方的守卫断言同步更新：① 版本必须来自 pkg.version；
+ * ② 根命令不得再出现 `.version(...)` 注册（防劫持回归）。
+ *
+ * 反证：把版本打印改成硬编码 `'1.9.0'` → 本文件变红；把 `.version()` 加回
+ * 根命令 → 本文件变红。
  */
 import { describe, it, expect } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
@@ -72,12 +78,18 @@ describe('acf-cli 发布物：打包内容不得含测试', () => {
 });
 
 describe('acf-cli 版本号：必须来自 package.json，不得硬编码', () => {
-  it('pkg.version 与 Commander 的版本源一致（不是字面量）', () => {
-    expect(indexCode).toMatch(/\.version\(pkg\.version\)/);
+  it('版本输出来源是 pkg.version（单一事实源，不是字面量）', () => {
+    // VERSION-HIJACK 修复（2026-10）后不再经 Commander .version() 注册，而是
+    // 由根 unknownOption 覆盖打印 pkg.version——事实源仍是 package.json。
+    // 反证：把版本打印改成硬编码 '1.9.0' → 本守卫变红。
+    expect(indexCode).toMatch(/pkg\.version/);
+    expect(indexCode).not.toMatch(/\.version\(\s*['"]\d+\.\d+\.\d+/);
   });
 
-  it('源码里不再有 .version(\'x.y.z\') 这类硬编码', () => {
-    expect(indexCode).not.toMatch(/\.version\(\s*['"]\d+\.\d+\.\d+/);
+  it('根命令不再经 Commander .version() 注册 --version（子命令 --version 会被根层劫持）', () => {
+    // 反证：把 `.version(...)` 加回根命令 → 本守卫变红（实测劫持
+    // app upload / app upgrade-all / task rollback 三个子命令的 --version）。
+    expect(indexCode).not.toMatch(/\.version\(/);
   });
 
   it('行为层：构建产物 self-report 的版本 == package.json（真实执行，非读源码）', () => {

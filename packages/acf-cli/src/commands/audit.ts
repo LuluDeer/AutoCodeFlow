@@ -70,9 +70,10 @@ export function auditCommand(): Command {
         });
         spinner.stop();
         if (opts.json) {
-          // ECO-02 同款：--json —— 后端返回的信封（{ data, total }，旧后端可
-          // 能是裸数组）原样直出，不做任何字段裁剪。
-          console.log(JSON.stringify(data, null, 2));
+          // ECO-02 同款：列表/信封形态 → 单行紧凑 JSON（此前误用 pretty(2)，
+          // 与 task list / agent sessions / sop list 的列表直出口径不一致——
+          // README 明确列表形态是「单行紧凑 JSON」）。
+          console.log(JSON.stringify(data));
           return;
         }
         const rows: AuditLog[] = Array.isArray(data) ? data : (data.data ?? []);
