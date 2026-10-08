@@ -91,7 +91,7 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
         .describe(
           "Filter by task name (fuzzy match, backend ListTasksQueryDto field)",
         ),
-    },
+    }, { readOnlyHint: true, idempotentHint: true },
     async ({ page, pageSize, status, name }) => {
       const params = new URLSearchParams({
         page: String(page),
@@ -110,7 +110,7 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
     "Get full details of a specific task by its ID, including script source, cron, timeout, and dependencies.",
     {
       taskId: UUID_PATH_ID.describe("Task ID"),
-    },
+    }, { readOnlyHint: true, idempotentHint: true },
     async ({ taskId }) => {
       const data = await call<unknown>("GET", `/tasks/${taskId}`);
       return JSON_CONTENT(data);
@@ -133,7 +133,7 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
       // Executor pinning IS supported by the backend, but as a task-level
       // field (tasks.executorId, set via create/update — see the update_task
       // tool), not a per-run override.
-    },
+    }, { destructiveHint: false },
     async ({ taskId, params }) => {
       const data = await call<unknown>("POST", `/tasks/${taskId}/trigger`, {
         ...(params ? { params } : {}),
@@ -223,7 +223,7 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
         .string()
         .optional()
         .describe("Associated application ID"),
-    },
+    }, { destructiveHint: true, idempotentHint: true },
     async ({ taskId, ...fields }) => {
       // Drop undefined fields so PATCH only touches what the caller supplied;
       // keep explicit nulls (e.g. executorId: null) so a pin can be cleared.
@@ -241,7 +241,7 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
     "List the historical configuration versions of a task (newest first). Use with rollback_task_version / compare_task_versions.",
     {
       taskId: UUID_PATH_ID.describe("Task ID"),
-    },
+    }, { readOnlyHint: true },
     async ({ taskId }) => {
       const data = await call<unknown>("GET", `/tasks/${taskId}/versions`);
       return JSON_CONTENT(data);
@@ -255,7 +255,7 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
     {
       taskId: UUID_PATH_ID.describe("Task ID"),
       versionId: UUID_PATH_ID.describe("Version ID to roll back to (from list_task_versions)"),
-    },
+    }, { destructiveHint: true },
     async ({ taskId, versionId }) => {
       const data = await call<unknown>(
         "POST",
@@ -273,7 +273,7 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
       taskId: UUID_PATH_ID.describe("Task ID"),
       versionId1: UUID_PATH_ID.describe("First version ID"),
       versionId2: UUID_PATH_ID.describe("Second version ID"),
-    },
+    }, { readOnlyHint: true },
     async ({ taskId, versionId1, versionId2 }) => {
       const data = await call<unknown>(
         "GET",
@@ -310,7 +310,7 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
         .max(100)
         .default(20)
         .describe("Items per page, max 100 (default 20)"),
-    },
+    }, { readOnlyHint: true, idempotentHint: true },
     async ({ taskId, status, page, pageSize }) => {
       const params = new URLSearchParams({
         page: String(page),
@@ -337,7 +337,7 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
     "Get the details of a specific execution by ID: status, duration, result, runtime params, error info, and AI analysis if available. The full log payload is stripped from this response (single rows can reach 512 KB) — page through logs with get_execution_logs.",
     {
       executionId: UUID_PATH_ID.describe("Execution ID"),
-    },
+    }, { readOnlyHint: true },
     async ({ executionId }) => {
       const data = await call<Record<string, unknown>>(
         "GET",
@@ -367,7 +367,7 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
       executionId: UUID_PATH_ID.describe(
         "Execution ID (intended for failed/timeout executions)",
       ),
-    },
+    }, { destructiveHint: false },
     async ({ taskId, executionId }) => {
       const data = await call<unknown>(
         "POST",
@@ -385,7 +385,7 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
     "Get execution statistics for a task: success rate, average duration, and last 20 executions.",
     {
       taskId: UUID_PATH_ID.describe("Task ID"),
-    },
+    }, { readOnlyHint: true },
     async ({ taskId }) => {
       const data = await call<unknown>("GET", `/tasks/${taskId}/stats`);
       return JSON_CONTENT(data);
@@ -398,7 +398,7 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
     "Ask AI to suggest an optimal cron schedule for a task based on its execution history (success rate, avg duration, failure patterns).",
     {
       taskId: UUID_PATH_ID.describe("Task ID"),
-    },
+    }, { destructiveHint: false },
     async ({ taskId }) => {
       const data = await call<unknown>(
         "POST",
@@ -440,7 +440,7 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
         .describe(
           "Filter by inferred log level (exact uppercase enum). When set, fromLine becomes an offset into the filtered sequence and totalLines/hasMore count only matching rows; rows with no inferable level are excluded. Omit to keep the legacy physical-line paging behavior",
         ),
-    },
+    }, { readOnlyHint: true },
     async ({ executionId, fromLine, limit, level }) => {
       const params = new URLSearchParams({
         fromLine: String(fromLine),
@@ -462,7 +462,7 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
     {
       taskId: UUID_PATH_ID.describe("Task ID that owns the execution"),
       executionId: UUID_PATH_ID.describe("Execution ID to cancel"),
-    },
+    }, { destructiveHint: true },
     async ({ taskId, executionId }) => {
       const data = await call<unknown>(
         "POST",
@@ -491,7 +491,7 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
         .describe(
           "Override the replayed runtime parameters (when absent, the original execution's params are reused; if it had none, the task's current defaults apply)",
         ),
-    },
+    }, { destructiveHint: false },
     async ({ taskId, executionId, params }) => {
       let body: Record<string, unknown> = {};
       if (params) {
@@ -518,7 +518,7 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
     "Pause a task — stops scheduled triggers. In-progress executions are not affected.",
     {
       taskId: UUID_PATH_ID.describe("Task ID to pause"),
-    },
+    }, { destructiveHint: true, idempotentHint: true },
     async ({ taskId }) => {
       const data = await call<unknown>("POST", `/tasks/${taskId}/pause`);
       return JSON_CONTENT(data);
@@ -531,7 +531,7 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
     "Resume a previously paused task.",
     {
       taskId: UUID_PATH_ID.describe("Task ID to resume"),
-    },
+    }, { destructiveHint: false, idempotentHint: true },
     async ({ taskId }) => {
       const data = await call<unknown>("POST", `/tasks/${taskId}/resume`);
       return JSON_CONTENT(data);
@@ -551,7 +551,7 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
     "Export a task definition as a portable JSON payload ({ schemaVersion: \"1\", exportedAt, task }) for cross-environment transfer. Secrets are NEVER part of the export (SEC-02 red line). The returned JSON text is the verbatim POST /tasks/import body: save it to a file yourself (MCP tool output is not written to disk), or pass it straight back to import_task.",
     {
       taskId: UUID_PATH_ID.describe("Task ID to export"),
-    },
+    }, { readOnlyHint: true },
     async ({ taskId }) => {
       const data = await call<unknown>("GET", `/tasks/${taskId}/export`);
       return JSON_CONTENT(data);
@@ -567,7 +567,7 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
         .describe(
           'Export payload produced by export_task: pass the JSON text verbatim, or the equivalent object with "schemaVersion" and "task" keys',
         ),
-    },
+    }, { destructiveHint: false },
     async ({ payload }) => {
       let body: unknown;
       if (typeof payload === "string") {
@@ -607,7 +607,7 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
   server.tool(
     "list_task_templates",
     "List task templates available for create_task_from_template (GET /task-templates): official presets (scheduled_backup, health_check, data_sync, log_cleanup, webhook_ping) come first, custom templates follow. Each row has id (uuid), key (stable identifier), name, description, category, config (CreateTaskDto defaults without name) and isOfficial.",
-    {},
+    {}, { readOnlyHint: true },
     async () => {
       const data = await call<unknown>("GET", "/task-templates");
       return JSON_CONTENT(data);
@@ -642,7 +642,7 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
         .describe(
           "Field overrides applied on top of the template config (any CreateTaskDto field, e.g. cronExpression, fixedRate, timeoutSeconds, params, executorGroup)",
         ),
-    },
+    }, { destructiveHint: false },
     async ({ template, name, description, overrides }) => {
       const rows = await call<
         Array<{ id?: string; key?: string; description?: string | null }>
@@ -682,7 +682,7 @@ export function registerApplicationTools(
   server.tool(
     "list_applications",
     "List all registered applications in AutoCodeFlow.",
-    {},
+    {}, { readOnlyHint: true, idempotentHint: true },
     async () => {
       const data = await call<unknown>("GET", "/applications");
       return JSON_CONTENT(data);
@@ -695,7 +695,7 @@ export function registerApplicationTools(
     "Get full details of a registered application by ID, including version, git repo info, and runtime config.",
     {
       applicationId: UUID_PATH_ID.describe("Application ID"),
-    },
+    }, { readOnlyHint: true },
     async ({ applicationId }) => {
       const data = await call<unknown>("GET", `/applications/${applicationId}`);
       return JSON_CONTENT(data);
@@ -724,7 +724,7 @@ export function registerApplicationTools(
       env: z.record(z.string(), z.string()).optional().describe("Environment variables"),
       entrypoint: z.string().optional().describe("Entry point command"),
       packageUrl: z.string().optional().describe("Package download URL"),
-    },
+    }, { destructiveHint: false },
     async (args) => {
       const data = await call<unknown>("POST", "/applications", args);
       return JSON_CONTENT(data);
@@ -762,7 +762,7 @@ export function registerApplicationTools(
         .describe(
           "HMAC-SHA256 webhook secret (empty string disables webhook auth)",
         ),
-    },
+    }, { destructiveHint: true, idempotentHint: true },
     async ({ applicationId, ...fields }) => {
       // Drop undefined fields — the global ValidationPipe with
       // forbidNonWhitelisted rejects unknown/extra properties, and explicit
@@ -785,7 +785,7 @@ export function registerApplicationTools(
     "Delete an application by ID.",
     {
       applicationId: UUID_PATH_ID.describe("Application ID"),
-    },
+    }, { destructiveHint: true },
     async ({ applicationId }) => {
       const data = await call<unknown>(
         "DELETE",
@@ -801,7 +801,7 @@ export function registerApplicationTools(
     "Run AI health analysis on an application. Aggregates recent execution stats across all tasks and returns LLM-generated health assessment and recommendations.",
     {
       applicationId: UUID_PATH_ID.describe("Application ID"),
-    },
+    }, { destructiveHint: false },
     async ({ applicationId }) => {
       const data = await call<unknown>(
         "POST",
@@ -840,7 +840,7 @@ export function registerDeploymentTools(
         .max(100)
         .default(20)
         .describe("Items per page (default 20)"),
-    },
+    }, { readOnlyHint: true, idempotentHint: true },
     async ({ applicationId, page, pageSize }) => {
       const params = new URLSearchParams({
         page: String(page),
@@ -858,7 +858,7 @@ export function registerDeploymentTools(
   // surfaces that; polling/next steps live in the tool description.
   server.tool(
     "deploy_application",
-    "Deploy an application to an executor. Leave executorId empty to auto-select the online executor with lowest load. Optionally override run mode, env vars, and start command. NOTE (DEP-04): if the application has deployment approval enabled, the response returns approvalStatus=pending_approval and NOTHING is dispatched — the deployment waits for a second-person approval (POST /app-deployments/:id/approval/approve|reject, or /approval/cancel by the requester). A 409 means the application already has an in-progress deployment.",
+    "Deploy an application to an executor. runMode defaults to `scheduled` (deploy-only — nothing starts until a task/cron triggers it); pass once/daemon only if you intend the entry script to start at deploy. Leave executorId empty to auto-select the online executor with lowest load. Optionally override env vars and start command. NOTE (DEP-04): if the application has deployment approval enabled, the response returns approvalStatus=pending_approval and NOTHING is dispatched — the deployment waits for a second-person approval (POST /app-deployments/:id/approval/approve|reject, or /approval/cancel by the requester). A 409 means the application already has an in-progress deployment.",
     {
       applicationId: UUID_PATH_ID.describe("Application ID"),
       executorId: z
@@ -868,20 +868,32 @@ export function registerDeploymentTools(
           "Target executor ID (optional — auto-selects the lowest-load online executor)",
         ),
       runMode: z
-        .string()
+        .enum(["once", "daemon", "scheduled"])
         .optional()
-        .describe("Run mode: once | daemon | scheduled (default daemon)"),
+        .describe(
+          "Run mode. OMIT for the safe default: scheduled = deploy-only, nothing starts until a task/cron triggers it. once = start the entry script immediately (no restart). daemon = start immediately AND auto-restart on crash — only for resident services.",
+        ),
       env: z
         .record(z.string(), z.string())
         .optional()
         .describe("Environment variable overrides"),
       startCommand: z.string().optional().describe("Startup command override"),
-    },
+    }, { destructiveHint: true },
     async ({ applicationId, executorId, runMode, env, startCommand }) => {
+      // P0 (MCP-AGENT-UX-AUDIT): never let an omitted runMode fall through to the
+      // backend default. CreateDeploymentDto declares `default: RunMode.DAEMON`,
+      // and DAEMON starts the entry script AT DEPLOY — so a plain "deploy this
+      // app" would silently execute it, double-running against any later
+      // task/cron trigger. Mirror the CLI fix (acf app deploy) and send
+      // `scheduled` explicitly when the caller did not choose a mode.
+      const effectiveRunMode = runMode ?? "scheduled";
       const body = Object.fromEntries(
-        Object.entries({ executorId, runMode, env, startCommand }).filter(
-          ([, v]) => v !== undefined,
-        ),
+        Object.entries({
+          executorId,
+          runMode: effectiveRunMode,
+          env,
+          startCommand,
+        }).filter(([, v]) => v !== undefined),
       );
       const data = await call<Record<string, unknown>>(
         "POST",
@@ -899,6 +911,21 @@ export function registerDeploymentTools(
             "/approval/approve (or the requester cancels via /approval/cancel).",
         });
       }
+      // once/daemon really do start the entry script now — say so structurally
+      // instead of leaving it to the caller's reading of runMode semantics.
+      if (effectiveRunMode === "once" || effectiveRunMode === "daemon") {
+        return JSON_CONTENT({
+          ...data,
+          runMode: effectiveRunMode,
+          startsImmediately: true,
+          note:
+            `runMode="${effectiveRunMode}" starts the entry script immediately at deploy` +
+            (effectiveRunMode === "daemon"
+              ? " and auto-restarts it on crash."
+              : " (it will not restart).") +
+            " If you meant deploy-only (a task/cron triggers it later), omit runMode or pass scheduled.",
+        });
+      }
       return JSON_CONTENT(data);
     },
   );
@@ -912,7 +939,7 @@ export function registerDeploymentTools(
   // no appName/version fields, forbidNonWhitelisted would 400 on them).
   server.tool(
     "deploy_app",
-    "Deploy an application by NAME (resolved via GET /applications). Shares the deploy_application route and DEP-04 approval semantics: applications with approval enabled return approvalStatus=pending_approval and are not dispatched until a second person approves.",
+    "Deploy an application by NAME (resolved via GET /applications). runMode defaults to `scheduled` (deploy-only — nothing starts until a task/cron triggers it); pass once/daemon only if you intend the entry script to start at deploy. Shares the deploy_application route and DEP-04 approval semantics: applications with approval enabled return approvalStatus=pending_approval and are not dispatched until a second person approves.",
     {
       appName: z.string().describe("Application name (unique)"),
       executorId: z
@@ -922,15 +949,17 @@ export function registerDeploymentTools(
           "Target executor ID (optional — auto-selects the lowest-load online executor)",
         ),
       runMode: z
-        .string()
+        .enum(["once", "daemon", "scheduled"])
         .optional()
-        .describe("Run mode: once | daemon | scheduled (default daemon)"),
+        .describe(
+          "Run mode. OMIT for the safe default: scheduled = deploy-only, nothing starts until a task/cron triggers it. once = start the entry script immediately (no restart). daemon = start immediately AND auto-restart on crash — only for resident services.",
+        ),
       env: z
         .record(z.string(), z.string())
         .optional()
         .describe("Environment variable overrides"),
       startCommand: z.string().optional().describe("Startup command override"),
-    },
+    }, { destructiveHint: true },
     async ({ appName, executorId, runMode, env, startCommand }) => {
       const apps = await call<
         | Array<{ id?: string; name?: string; version?: string }>
@@ -944,10 +973,14 @@ export function registerDeploymentTools(
           available: rows.map((a) => a?.name).filter(Boolean),
         });
       }
+      const effectiveRunMode = runMode ?? "scheduled";
       const body = Object.fromEntries(
-        Object.entries({ executorId, runMode, env, startCommand }).filter(
-          ([, v]) => v !== undefined,
-        ),
+        Object.entries({
+          executorId,
+          runMode: effectiveRunMode,
+          env,
+          startCommand,
+        }).filter(([, v]) => v !== undefined),
       );
       const data = await call<Record<string, unknown>>(
         "POST",
@@ -963,6 +996,20 @@ export function registerDeploymentTools(
             "/approval/approve (or the requester cancels via /approval/cancel).",
         });
       }
+      // Same startsImmediately signalling as deploy_application (see comment there).
+      if (effectiveRunMode === "once" || effectiveRunMode === "daemon") {
+        return JSON_CONTENT({
+          ...data,
+          runMode: effectiveRunMode,
+          startsImmediately: true,
+          note:
+            `runMode="${effectiveRunMode}" starts the entry script immediately at deploy` +
+            (effectiveRunMode === "daemon"
+              ? " and auto-restarts it on crash."
+              : " (it will not restart).") +
+            " If you meant deploy-only (a task/cron triggers it later), omit runMode or pass scheduled.",
+        });
+      }
       return JSON_CONTENT(data);
     },
   );
@@ -973,7 +1020,7 @@ export function registerDeploymentTools(
     "Trigger an overlay upgrade for a running deployment so it pulls the latest application version.",
     {
       deploymentId: UUID_PATH_ID.describe("Deployment ID to upgrade"),
-    },
+    }, { destructiveHint: true },
     async ({ deploymentId }) => {
       const data = await call<unknown>(
         "POST",
@@ -989,7 +1036,7 @@ export function registerDeploymentTools(
     "Stop a running application deployment.",
     {
       deploymentId: UUID_PATH_ID.describe("Deployment ID to stop"),
-    },
+    }, { destructiveHint: true, idempotentHint: true },
     async ({ deploymentId }) => {
       const data = await call<unknown>(
         "POST",
@@ -1023,7 +1070,7 @@ export function registerDeploymentTools(
         .max(100)
         .default(20)
         .describe("Items per page (default 20)"),
-    },
+    }, { readOnlyHint: true },
     async ({ applicationId, page, pageSize }) => {
       const params = new URLSearchParams({
         page: String(page),
@@ -1048,7 +1095,7 @@ export function registerDeploymentTools(
         .max(200)
         .optional()
         .describe("Optional decision reason (≤200 chars), recorded in audit"),
-    },
+    }, { destructiveHint: true },
     async ({ deploymentId, reason }) => {
       const body = reason !== undefined ? { reason } : undefined;
       const data = await call<unknown>(
@@ -1070,7 +1117,7 @@ export function registerDeploymentTools(
         .max(200)
         .optional()
         .describe("Optional decision reason (≤200 chars), recorded in audit"),
-    },
+    }, { destructiveHint: true },
     async ({ deploymentId, reason }) => {
       const body = reason !== undefined ? { reason } : undefined;
       const data = await call<unknown>(
@@ -1087,7 +1134,7 @@ export function registerDeploymentTools(
     "Cancel own pending deployment request (DEP-04). Requester-only exit: the user who triggered the deployment may withdraw it before anyone approves.",
     {
       deploymentId: UUID_PATH_ID.describe("Pending deployment ID to cancel"),
-    },
+    }, { destructiveHint: true },
     async ({ deploymentId }) => {
       const data = await call<unknown>(
         "POST",
@@ -1106,7 +1153,7 @@ export function registerExecutorTools(server: McpServer, call: ApiCall): void {
   server.tool(
     "list_executors",
     "List all registered executors and their status (online/offline, last heartbeat, current load).",
-    {},
+    {}, { readOnlyHint: true, idempotentHint: true },
     async () => {
       const data = await call<unknown>("GET", "/executors");
       return JSON_CONTENT(data);
@@ -1123,7 +1170,7 @@ export function registerExecutorTools(server: McpServer, call: ApiCall): void {
     "Get detailed info for a single executor by ID: config, status, group/tags, CPU & memory usage, task counters, and the execution ids it reported running on its last heartbeat. Does NOT include 7-day statistics — use get_executor_metrics for those.",
     {
       executorId: UUID_PATH_ID.describe("Executor ID"),
-    },
+    }, { readOnlyHint: true },
     async ({ executorId }) => {
       const data = await call<unknown>("GET", `/executors/${executorId}`);
       return JSON_CONTENT(data);
@@ -1139,7 +1186,7 @@ export function registerExecutorTools(server: McpServer, call: ApiCall): void {
     "Get performance metrics for a single executor: { executor, sevenDayStats (totalExecutions/successful/failed/successRate/averageDurationMs over the last 7 days), current (runningTaskCount/cpuUsage/memUsage), history (last 24h of resource samples in 15-minute average buckets, <=96 ascending points; empty when no samples) }. Backed by GET /executors/:id/metrics.",
     {
       executorId: UUID_PATH_ID.describe("Executor ID"),
-    },
+    }, { readOnlyHint: true },
     async ({ executorId }) => {
       const data = await call<unknown>(
         "GET",
@@ -1275,7 +1322,7 @@ export function registerObservabilityTools(
     'OBS-04 timeline for one execution: created → started → finished timestamps plus a failure triage card (reason → suggested first action, from the failureReason taxonomy) and the AI analysis when present. Use it to answer "where did this run stall and why".',
     {
       executionId: UUID_PATH_ID.describe("Execution ID"),
-    },
+    }, { readOnlyHint: true },
     async ({ executionId }) => {
       const data = await call<unknown>(
         "GET",
@@ -1289,7 +1336,7 @@ export function registerObservabilityTools(
   server.tool(
     "list_dead_letters",
     "Callback dead-letter backlog per executor: each executor reports how many failed callback payloads sit in its local dead-letter directory (replayed with backoff; moved to dead-letter after 5 rounds). A persistently high count means the executor could not reach admin-api for a while — inspect the executor host and replay/inspect its dead-letter files.",
-    {},
+    {}, { readOnlyHint: true },
     async () => {
       const data = await call<
         | { data?: Array<Record<string, unknown>> }
@@ -1326,7 +1373,7 @@ export function registerObservabilityTools(
   server.tool(
     "get_scheduler_health",
     "Scheduler health snapshot: leader identity + election state, BullMQ queue depths (waiting/active/delayed/failed — null means Redis unreachable, in which case healthy=false and a degraded note explains why), tick rate, trigger counters and the P99 trigger latency distribution. First stop when triggers stop firing or pile up.",
-    {},
+    {}, { readOnlyHint: true },
     async () => {
       const data = await call<Record<string, unknown>>(
         "GET",
@@ -1412,7 +1459,7 @@ export function registerAuditTools(server: McpServer, call: ApiCall): void {
         .string()
         .optional()
         .describe("Only entries created at/before this ISO 8601 time"),
-    },
+    }, { readOnlyHint: true, idempotentHint: true },
     async ({
       page,
       pageSize,
@@ -1454,7 +1501,7 @@ export function registerProjectTools(server: McpServer, call: ApiCall): void {
   server.tool(
     "list_projects",
     "List projects visible to the current credential. Admins see all projects; other credentials see the default project plus projects they are a member of. Each row carries myRole (viewer/editor/admin or null) for capability checks before writes.",
-    {},
+    {}, { readOnlyHint: true, idempotentHint: true },
     async () => {
       const data = await call<unknown>("GET", "/projects");
       return JSON_CONTENT(data);
@@ -1467,7 +1514,7 @@ export function registerProjectTools(server: McpServer, call: ApiCall): void {
     "List members (userId + role) of one project. Admins can read any project; other credentials only projects they belong to (the default project is always readable).",
     {
       projectId: UUID_PATH_ID.describe("Project ID (UUID); use list_projects to resolve"),
-    },
+    }, { readOnlyHint: true },
     async ({ projectId }) => {
       const data = await call<unknown>("GET", `/projects/${projectId}/members`);
       return JSON_CONTENT(data);
@@ -1478,7 +1525,7 @@ export function registerProjectTools(server: McpServer, call: ApiCall): void {
   server.tool(
     "get_my_project_roles",
     "Return the caller's project memberships: { userId, isAdmin, memberships: [{ projectId, role }] }. Use it to plan capability-aware automation (e.g. skip writes on projects where myRole is viewer).",
-    {},
+    {}, { readOnlyHint: true },
     async () => {
       const data = await call<unknown>("GET", "/projects/me/roles");
       return JSON_CONTENT(data);
@@ -1504,7 +1551,7 @@ export function registerSopTools(server: McpServer, call: ApiCall): void {
   // ---- sop_list -------------------------------------------------------------
   server.tool(
     "sop_list",
-    "List SOP definitions (versioned procedure documents: front-matter capabilities/acceptance + markdown body). Returns { items, total }.",
+    "ADMIN only. List SOP definitions (versioned procedure documents: front-matter capabilities/acceptance + markdown body). Returns { items, total }.",
     {
       status: z
         .string()
@@ -1523,7 +1570,7 @@ export function registerSopTools(server: McpServer, call: ApiCall): void {
         .max(100)
         .default(20)
         .describe("Items per page (default 20)"),
-    },
+    }, { readOnlyHint: true },
     async ({ status, page, pageSize }) => {
       const params = new URLSearchParams({
         page: String(page),
@@ -1538,10 +1585,10 @@ export function registerSopTools(server: McpServer, call: ApiCall): void {
   // ---- sop_get --------------------------------------------------------------
   server.tool(
     "sop_get",
-    "Get one SOP by ID: metadata, current version, front-matter and markdown body. Use sop_list to resolve IDs.",
+    "ADMIN only. Get one SOP by ID: metadata, current version, front-matter and markdown body. Use sop_list to resolve IDs.",
     {
       sopId: UUID_PATH_ID.describe("SOP ID (UUID)"),
-    },
+    }, { readOnlyHint: true },
     async ({ sopId }) => {
       const data = await call<unknown>("GET", `/sop/${sopId}`);
       return JSON_CONTENT(data);
@@ -1554,7 +1601,7 @@ export function registerSopTools(server: McpServer, call: ApiCall): void {
   // sop_clarification_reply 拿 clarificationId）。
   server.tool(
     "sop_assignments_pending",
-    "Inspect pending SOP work. Pass sopId to list that SOP's non-terminal assignments (assigned/in_progress/blocked/stalled — completed/failed/cancelled are excluded), or pass assignmentId to fetch one assignment's full detail including its clarification conversation (the clarification ids feed sop_clarification_reply).",
+    "ADMIN only. Inspect pending SOP work. Pass sopId to list that SOP's non-terminal assignments (assigned/in_progress/blocked/stalled — completed/failed/cancelled are excluded), or pass assignmentId to fetch one assignment's full detail including its clarification conversation (the clarification ids feed sop_clarification_reply).",
     {
       sopId: UUID_PATH_ID.optional().describe(
         "List non-terminal assignments of this SOP",
@@ -1562,7 +1609,7 @@ export function registerSopTools(server: McpServer, call: ApiCall): void {
       assignmentId: UUID_PATH_ID.optional().describe(
         "Return this assignment's full detail (includes clarifications)",
       ),
-    },
+    }, { readOnlyHint: true },
     async ({ sopId, assignmentId }) => {
       if (assignmentId) {
         const data = await call<unknown>(
@@ -1598,7 +1645,7 @@ export function registerSopTools(server: McpServer, call: ApiCall): void {
   // 后端合法的值会因描述漂移被劝退）。
   server.tool(
     "agent_session_list",
-    "List agent sessions (ops_watch / incident / sop_authoring / sop_review / app_scaffold / chat runs) newest first. Sessions in waiting_input are paused waiting on a human decision (approval or SOP clarification) — use agent_session_get for their reasoning steps and tool calls.",
+    "ADMIN only. List agent sessions (ops_watch / incident / sop_authoring / sop_review / app_scaffold / chat runs) newest first. Sessions in waiting_input are paused waiting on a human decision (approval or SOP clarification) — use agent_session_get for their reasoning steps and tool calls.",
     {
       kind: z
         .string()
@@ -1625,7 +1672,7 @@ export function registerSopTools(server: McpServer, call: ApiCall): void {
         .max(100)
         .default(20)
         .describe("Items per page (default 20)"),
-    },
+    }, { readOnlyHint: true },
     async ({ kind, status, page, pageSize }) => {
       const params = new URLSearchParams({
         page: String(page),
@@ -1641,10 +1688,10 @@ export function registerSopTools(server: McpServer, call: ApiCall): void {
   // ---- agent_session_get ------------------------------------------------------
   server.tool(
     "agent_session_get",
-    "Get one agent session with its full reasoning steps, tool calls and child sessions — the audit trail for what the agent did and why.",
+    "ADMIN only. Get one agent session with its full reasoning steps, tool calls and child sessions — the audit trail for what the agent did and why.",
     {
       sessionId: UUID_PATH_ID.describe("Agent session ID (UUID)"),
-    },
+    }, { readOnlyHint: true },
     async ({ sessionId }) => {
       const data = await call<unknown>("GET", `/agent/sessions/${sessionId}`);
       return JSON_CONTENT(data);
@@ -1654,7 +1701,7 @@ export function registerSopTools(server: McpServer, call: ApiCall): void {
   // ---- sop_clarification_reply ------------------------------------------------
   server.tool(
     "sop_clarification_reply",
-    "Answer an escalated SOP clarification (human-in-the-loop). resolution=answered replies with text; resolution=sop_amended additionally ships an amended SOP (front-matter YAML / body markdown) that the executor continues against (contentHash rebases on the amended version). Find pending clarifications via sop_assignments_pending with assignmentId.",
+    "ADMIN only. Answer an escalated SOP clarification (human-in-the-loop). resolution=answered replies with text; resolution=sop_amended additionally ships an amended SOP (front-matter YAML / body markdown) that the executor continues against (contentHash rebases on the amended version). Find pending clarifications via sop_assignments_pending with assignmentId.",
     {
       assignmentId: UUID_PATH_ID.describe(
         "SOP assignment that raised the clarification",
@@ -1682,7 +1729,7 @@ export function registerSopTools(server: McpServer, call: ApiCall): void {
         .max(2000)
         .optional()
         .describe("Short amendment changelog (max 2000 chars)"),
-    },
+    }, { destructiveHint: true },
     async ({ assignmentId, clarificationId, ...fields }) => {
       // HumanReplyDto 白名单：未提供的修订字段不能带 undefined 键。
       const body = Object.fromEntries(
