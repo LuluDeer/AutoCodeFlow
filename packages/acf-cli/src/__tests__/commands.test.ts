@@ -96,6 +96,15 @@ async function run(cmd: { parseAsync?: unknown }, args: string): Promise<void> {
   await program.parseAsync(['node', 'acf', ...args.split(' ').filter(Boolean)], { from: 'node' });
 }
 
+/** 文件级 stdout 捕获（describe 局部的 captureStdout 只在第四轮审计块内可见）。 */
+function captureLog(): { logs: string[]; spy: ReturnType<typeof vi.spyOn> } {
+  const logs: string[] = [];
+  const spy = vi.spyOn(console, 'log').mockImplementation(((...a: unknown[]) => {
+    logs.push(a.join(' '));
+  }) as never);
+  return { logs, spy };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
@@ -176,6 +185,109 @@ describe('acf app versions (P3 contract fix)', () => {
   });
 });
 
+// 2026-10-07 对齐 task create 的载荷旗标改名：--body 为主，--json <body> 过渡期
+// 别名（打弃用警告）。既有 --json 调用逐字节不变（本文件上方两条 create 用例）。
+describe('acf app create --body（载荷旗标改名）', () => {
+  it('--body 为主旗标：POST /applications 且不打弃用警告', async () => {
+    mockedPost.mockResolvedValueOnce({ id: 'a1', name: 'demo', version: '1.0.0', status: 'active' });
+    const stderr: string[] = [];
+    const errSpy = vi.spyOn(process.stderr, 'write').mockImplementation(((s: unknown) => {
+      stderr.push(String(s));
+      return true;
+    }) as never);
+    try {
+      await run(appsCommand(), 'app create --body {"name":"demo","version":"1.0.0","runtime":"node"}');
+    } finally {
+      errSpy.mockRestore();
+    }
+    expect(mockedPost).toHaveBeenCalledWith('/applications', {
+      name: 'demo',
+      version: '1.0.0',
+      runtime: 'node',
+    });
+    expect(stderr.join('')).not.toContain('deprecated');
+  });
+
+  it('--json <body> 过渡别名仍可用，但向 stderr 打弃用警告', async () => {
+    mockedPost.mockResolvedValueOnce({ id: 'a1', name: 'x', status: 'active' });
+    const stderr: string[] = [];
+    const errSpy = vi.spyOn(process.stderr, 'write').mockImplementation(((s: unknown) => {
+      stderr.push(String(s));
+      return true;
+    }) as never);
+    try {
+      await run(appsCommand(), 'app create --json {"name":"x","version":"1","runtime":"node"}');
+    } finally {
+      errSpy.mockRestore();
+    }
+    expect(mockedPost).toHaveBeenCalledTimes(1);
+    expect(stderr.join('')).toContain('--json <body> is deprecated');
+    expect(stderr.join('')).toContain('--body <json>');
+  });
+
+  it('--body 与 --json 同给 → 用法错误（码 2），请求不发出', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await expect(
+        run(appsCommand(), 'app create --body {"a":1} --json {"b":2}'),
+      ).rejects.toThrow(/process\.exit\(2\)/);
+    } finally {
+      errSpy.mockRestore();
+    }
+    expect(mockedPost).not.toHaveBeenCalled();
+  });
+
+  it('两旗标皆缺且无 --file → 用法错误（码 2），请求不发出', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await expect(run(appsCommand(), 'app create')).rejects.toThrow(/process\.exit\(2\)/);
+    } finally {
+      errSpy.mockRestore();
+    }
+    expect(mockedPost).not.toHaveBeenCalled();
+  });
+});
+
+describe('acf app releases (DEP-01 modern read surface)', () => {
+  it('GETs /applications/:id/releases with page/pageSize, renders the table', async () => {
+    mockedGet.mockResolvedValueOnce({
+      data: [
+        {
+          id: 'v1', version: '1.2.0', deployedAt: '2026-01-01T00:00:00Z',
+          deploymentStatus: 'running', deploymentCount: 2, executorAddress: 'node-1:8002',
+          runMode: 'scheduled', triggerType: 'manual', status: 'released', createdAt: '2026-01-01T00:00:00Z',
+        },
+      ],
+      total: 1,
+      page: 1,
+      pageSize: 50,
+    });
+    const { logs, spy } = captureLog();
+    try {
+      await run(appsCommand(), 'app releases a1');
+    } finally {
+      spy.mockRestore();
+    }
+    expect(mockedGet).toHaveBeenCalledWith('/applications/a1/releases', { page: '1', pageSize: '50' });
+    // cli-table3 mock 的 toString 只回 table(N)，行内容不可见——表格形态断言即可
+    expect(logs.join('\n')).toContain('table(1)');
+  });
+
+  it('--json 直出信封（单行紧凑）；-n 透传 pageSize', async () => {
+    const data = { data: [], total: 0, page: 1, pageSize: 200 };
+    mockedGet.mockResolvedValueOnce(data);
+    const { logs, spy } = captureLog();
+    try {
+      await run(appsCommand(), 'app releases a1 -n 200 --json');
+    } finally {
+      spy.mockRestore();
+    }
+    expect(mockedGet).toHaveBeenCalledWith('/applications/a1/releases', { page: '1', pageSize: '200' });
+    const line = logs.find((l) => l.startsWith('{'));
+    expect(JSON.parse(line as string)).toEqual(data);
+  });
+});
+
 describe('acf app deployments (P2 contract fix)', () => {
   it('reads the { data, total } shape returned by app-deployment.service.findAll', async () => {
     mockedGet.mockResolvedValueOnce({
@@ -244,6 +356,30 @@ describe('acf task list (P2 contract fix)', () => {
       pageSize: '20',
       status: undefined,
       name: 'foo',
+    });
+  });
+
+  it('--search 走 q 参数（name OR description——控制台搜索框同款，2026-10 服务端新增）', async () => {
+    mockedGet.mockResolvedValueOnce({ list: [], total: 0, page: 1, pageSize: 20 });
+    await run(tasksCommand(), 'task list --search nightly');
+    expect(mockedGet).toHaveBeenCalledWith('/tasks', {
+      page: '1',
+      pageSize: '20',
+      status: undefined,
+      name: undefined,
+      q: 'nightly',
+    });
+  });
+
+  it('-k 与 --search 可同给（服务端按 AND 取交集）', async () => {
+    mockedGet.mockResolvedValueOnce({ list: [], total: 0, page: 1, pageSize: 20 });
+    await run(tasksCommand(), 'task list -k foo --search bar');
+    expect(mockedGet).toHaveBeenCalledWith('/tasks', {
+      page: '1',
+      pageSize: '20',
+      status: undefined,
+      name: 'foo',
+      q: 'bar',
     });
   });
 });
@@ -396,6 +532,61 @@ describe('acf task executions (N10)', () => {
   });
 });
 
+describe('acf task trigger --params（本轮补齐：TriggerTaskDto 收 params，此前 CLI 永远发空 body）', () => {
+  it('--params <json> → body={params}（按 run 覆盖任务默认参数）', async () => {
+    mockedPost.mockResolvedValueOnce({ id: 'x1', taskId: 't1', status: 'running', createdAt: '2026-01-01T00:00:00Z' });
+    const { spy } = captureLog();
+    try {
+      await run(tasksCommand(), 'task trigger t1 --params {"REPLACE_EXISTING":true,"retries":3}');
+    } finally {
+      spy.mockRestore();
+    }
+    expect(mockedPost).toHaveBeenCalledWith('/tasks/t1/trigger', {
+      params: { REPLACE_EXISTING: true, retries: 3 },
+    });
+  });
+
+  it('缺省不发 body（回归：既有语义逐字节保持——服务端用任务默认 params）', async () => {
+    mockedPost.mockResolvedValueOnce({ id: 'x2', taskId: 't1', status: 'running', createdAt: '2026-01-01T00:00:00Z' });
+    const { spy } = captureLog();
+    try {
+      await run(tasksCommand(), 'task trigger t1');
+    } finally {
+      spy.mockRestore();
+    }
+    expect(mockedPost).toHaveBeenCalledWith('/tasks/t1/trigger');
+  });
+
+  it('坏 --params JSON → 用法错误（码 2），请求不发出', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await expect(
+        run(tasksCommand(), 'task trigger t1 --params {not-json'),
+      ).rejects.toThrow(/process\.exit\(2\)/);
+    } finally {
+      errSpy.mockRestore();
+    }
+    expect(mockedPost).not.toHaveBeenCalled();
+  });
+
+  it('非 --wait 模式提示 --wait（可发现性：CI 拿退出码的正确姿势）', async () => {
+    mockedPost.mockResolvedValueOnce({ id: 'x3', taskId: 't1', status: 'running', createdAt: '2026-01-01T00:00:00Z' });
+    const { spy } = captureLog();
+    const stderr: string[] = [];
+    const errSpy = vi.spyOn(process.stderr, 'write').mockImplementation(((s: unknown) => {
+      stderr.push(String(s));
+      return true;
+    }) as never);
+    try {
+      await run(tasksCommand(), 'task trigger t1');
+    } finally {
+      spy.mockRestore();
+      errSpy.mockRestore();
+    }
+    expect(stderr.join('')).toContain('--wait');
+  });
+});
+
 describe('acf task trigger --wait (N10)', () => {
   // 轮询用真实定时器：pollExecution 内部 sleep(2000) 真实等待，命中终态即返回。
   // 不引入 vi.useFakeTimers()——fake-timer + 动态 import('commander') 的微任务链
@@ -454,6 +645,27 @@ describe('acf task trigger --wait (N10)', () => {
       const out = log.mock.calls.map((c) => c.join(' ')).join('\n');
       expect(out).not.toMatch(/Exit code/);
       expect(out).not.toMatch(/Failure reason/);
+    } finally {
+      log.mockRestore();
+    }
+  }, 30_000);
+
+  // P1（2026-10 开发人员实测）：runtimeVersion 声明无可用解释器 → 秒失败、
+  // 执行日志 0 行，failureReason=interpreter_unavailable 只有 --json 可见。
+  // 失败终态出口必须直接给"下一步怎么做"（移除 runtimeVersion）。
+  it('interpreter_unavailable → 追加可操作建议（remove runtimeVersion）', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      mockedPost.mockResolvedValueOnce({ id: 'x6', taskId: 't1', status: 'running', createdAt: '2026-01-01T00:00:00Z' });
+      mockedGet.mockResolvedValue({
+        id: 'x6', status: 'failed', createdAt: '2026-01-01T00:00:00Z',
+        failureReason: 'interpreter_unavailable',
+      });
+      await run(tasksCommand(), 'task trigger t1 --wait');
+      const out = log.mock.calls.map((c) => c.join(' ')).join('\n');
+      expect(out).toMatch(/Failure reason\s*:\s*interpreter_unavailable/);
+      expect(out).toMatch(/Suggestion\s*:/);
+      expect(out).toContain('remove runtimeVersion');
     } finally {
       log.mockRestore();
     }
@@ -724,6 +936,25 @@ describe('acf audit list', () => {
     });
     await run(auditCommand(), 'audit list');
     expect(mockedGet).toHaveBeenCalledTimes(1);
+  });
+
+  it('--json 直出**单行紧凑**信封（对齐 task list / agent sessions / sop list 的列表口径，不用 pretty）', async () => {
+    const data = {
+      data: [{ id: 1, action: 'user.login', createdAt: '2026-01-01T00:00:00Z' }],
+      total: 1,
+    };
+    mockedGet.mockResolvedValueOnce(data);
+    const { logs, spy } = captureLog();
+    try {
+      await run(auditCommand(), 'audit list --json');
+    } finally {
+      spy.mockRestore();
+    }
+    const line = logs.find((l) => l.startsWith('{'));
+    expect(line).toBeTruthy();
+    expect(JSON.parse(line as string)).toEqual(data);
+    // 单行紧凑：整个 JSON 在同一行，不含换行/缩进
+    expect(line).not.toContain('\n');
   });
 });
 

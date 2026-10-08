@@ -20,9 +20,11 @@
 import { Command } from 'commander';
 import axios from 'axios';
 import chalk from 'chalk';
-import { get, post } from '../client.js';
+import { get, post, normalizeApiBase } from '../client.js';
 import { getApiUrl } from '../config.js';
 import { emitError, EXIT_CODES } from '../ui.js';
+// 失败原因 → 可操作建议（与 task trigger --wait 的出口同源，见 tasks.ts）。
+import { FAILURE_REASON_HINTS } from './tasks.js';
 
 const TERMINAL = new Set(['success', 'failed', 'timeout', 'killed', 'cancelled']);
 
@@ -76,6 +78,11 @@ export function createSseParser(onMessage: (msg: SseMessage) => void): {
 interface ExecutionRef {
   taskId?: string;
   status?: string;
+  // 终态失败面（与 task trigger --wait 的 pollExecution 同源透出）：执行器回调
+  // 记录的 exitCode / failureReason / errorMessage，--json 模式直出原始对象。
+  exitCode?: number | null;
+  failureReason?: string | null;
+  errorMessage?: string | null;
 }
 
 interface LogsPage {
@@ -134,6 +141,21 @@ export function execCommand(): Command {
             if (!page?.hasMore || lines.length === 0) break;
             fromLine = printed;
           }
+          // 失败终态：透出结构化原因 + 可操作建议（与 task trigger --wait 同源，
+          // 此前 tail 只打日志不解释失败，CI 里只能靠人肉读日志）。
+          if (exec.status !== 'success') {
+            if (exec.exitCode !== null && exec.exitCode !== undefined) {
+              process.stderr.write(chalk.yellow(`Exit code      : ${exec.exitCode}\n`));
+            }
+            if (exec.failureReason) {
+              process.stderr.write(chalk.yellow(`Failure reason : ${exec.failureReason}\n`));
+              const hint = FAILURE_REASON_HINTS[exec.failureReason];
+              if (hint) process.stderr.write(chalk.yellow(`Suggestion     : ${hint}\n`));
+            }
+            if (exec.errorMessage) {
+              process.stderr.write(chalk.yellow(`Error          : ${exec.errorMessage}\n`));
+            }
+          }
           process.exitCode = exec.status === 'success' ? 0 : 1;
           return;
         }
@@ -142,8 +164,12 @@ export function execCommand(): Command {
         // SEC-CLI-01: 先换一枚 30s TTL 的专用 SSE 票据（走常规 Authorization
         // 头的 POST），再以 ?ticket= 建流——`?access_token=` 通道已被服务端撤销，
         // 旧写法会让每次非终态 tail 直接 401。与 admin-web/src/api/sse.ts 同流程。
+        // API-PREFIX-01（本轮）：建流 URL 必须走 normalizeApiBase——admin-api
+        // 有全局 /api 前缀（main.ts setGlobalPrefix），此前用裸 getApiUrl()
+        // 拼 URL，默认 http://localhost:3105 对标准部署恒 404（与 client.ts
+        // 2026-10-07 修过的普通请求同类缺陷，SSE 直连 axios 绕过了归一）。
         const { ticket } = await post<SseTicketResponse>('/auth/sse-ticket');
-        const base = getApiUrl().replace(/\/+$/, '');
+        const base = normalizeApiBase(getApiUrl());
         const url = `${base}/tasks/${exec.taskId}/executions/${execId}/logs/stream?ticket=${encodeURIComponent(ticket)}`;
         const res = await axios.get(url, { responseType: 'stream', timeout: 0 });
 

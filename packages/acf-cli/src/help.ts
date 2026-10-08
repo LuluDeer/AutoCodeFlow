@@ -19,6 +19,13 @@ export const EXAMPLES: Record<string, string[]> = {
     'acf task trigger <taskId> --wait',
     'acf exec tail <execId>',
   ],
+  whoami: [
+    'acf whoami   # preflight: role + API URL behind the current credential',
+    'acf whoami --json',
+  ],
+  logout: [
+    'acf logout   # revoke server-side + clear the local credential file',
+  ],
   login: [
     'acf login',
     'acf login --url https://acf.example.com --user admin',
@@ -28,10 +35,12 @@ export const EXAMPLES: Record<string, string[]> = {
   'task list': [
     'acf task list --status active --page 1',
     'acf task list --json',
+    'acf task list --search nightly   # matches name OR description (q param)',
   ],
   'task get': ['acf task get <taskId>', 'acf task get <taskId> --json'],
   'task trigger': [
     'acf task trigger <taskId> --wait --wait-timeout 900',
+    'acf task trigger <taskId> --params \'{"KEY":"value"}\'   # per-run param overrides (replaces task defaults)',
   ],
   'task executions': [
     'acf task executions <taskId> -n 5',
@@ -50,8 +59,9 @@ export const EXAMPLES: Record<string, string[]> = {
   ],
   'task compare': ['acf task compare <taskId> <versionId1> <versionId2>'],
   'task create': [
-    'acf task create --file task.json   # required: name, version, runtime, triggerType',
-    "acf task create --json '{\"name\":\"nightly\",\"version\":\"1.0.0\",\"runtime\":\"node\",\"triggerType\":\"cron\",\"cronExpression\":\"0 2 * * *\"}'",
+    'acf task create --file task.json   # required: name, triggerType (runtime is optional server-side)',
+    "acf task create --body '{\"name\":\"nightly\",\"runtime\":\"node\",\"triggerType\":\"cron\",\"cronExpression\":\"0 2 * * *\"}'   # note: there is NO `version` field on the task body — use `currentVersion` if you need one",
+    "acf task create --body '{\"name\":\"sync\",\"runtime\":\"python\",\"triggerType\":\"cron\",\"cronExpression\":\"0 8 * * *\",\"params\":{\"REPLACE_EXISTING\":true,\"retries\":3,\"target\":\"nightly\"}}'   # params inject as AUTOFLOW_<KEY> env vars, JSON-stringified: booleans/numbers bare ('true','3'), strings quoted ('\"nightly\"')",
   ],
   'task update': ['acf task update <taskId> --file patch.json'],
   'task delete': ['acf task delete <taskId> -y'],
@@ -87,15 +97,21 @@ export const EXAMPLES: Record<string, string[]> = {
   'app list': ['acf app list', 'acf app list --json'],
   'app get': ['acf app get <appId> --json'],
   'app create': [
-    'acf app create --file app.json   # required: name, version, runtime',
+    'acf app create --body \'{"name":"my-app","version":"1.0.0","runtime":"python"}\'   # required: name, version, runtime',
   ],
   'app update': [
-    'acf app update <appId> --json \'{"version":"2.0.0"}\'   # renaming is not supported by the backend',
+    'acf app update <appId> --body \'{"version":"2.0.0"}\'   # renaming is not supported by the backend',
   ],
   'app delete': ['acf app delete <appId> -y'],
   'app analyze': ['acf app analyze <appId>'],
+  'app releases': [
+    'acf app releases <appId>   # DEP-01 unified view: version × latest deployment (modern; `app versions` is the legacy alias)',
+    'acf app releases <appId> -n 200 --json',
+  ],
   'app deploy': [
-    "acf app deploy <appId> -e <executorId> -m daemon --env '{\"KEY\":\"value\"}'",
+    "acf app deploy <appId> -m scheduled   # deploy-only — middleware/cron triggers it later (default; entry script does NOT start at deploy)",
+    "acf app deploy <appId> -m daemon --env '{\"KEY\":\"value\"}'   # resident process — entry script STARTS at deploy, auto-restarts on crash (CLI warns)",
+    "acf app deploy <appId> -m deploy-only   # alias of scheduled — self-documenting 'deploy, don't run'",
   ],
   'app deployments': ['acf app deployments <appId> -n 50 --json'],
   'app versions': ['acf app versions <appId> --json'],
@@ -115,6 +131,13 @@ export const EXAMPLES: Record<string, string[]> = {
   'executor offline': ['acf executor offline executor-node'],
   'deploy upgrade': ['acf deploy upgrade <deploymentId>'],
   'deploy stop': ['acf deploy stop <deploymentId>'],
+  'deploy list': [
+    'acf deploy list   # same data as: acf app deployments (deployments live under app in the command tree)',
+    'acf deploy list <appId> -n 50 --json',
+  ],
+  'deploy remove': [
+    'acf deploy remove <deploymentId> -y   # delete a FINISHED record (failed/stopped only); running/in-flight rows are refused with 409',
+  ],
   'audit list': [
     'acf audit list --action task.trigger --start-time 2026-01-01T00:00:00Z',
     'acf audit list --json',
@@ -143,9 +166,14 @@ export const EXAMPLES: Record<string, string[]> = {
   ],
   'approval reject': ['acf approval reject <deploymentId> --note "wrong version"'],
   'approval cancel': ['acf approval cancel <deploymentId>   # withdraw your own pending request'],
-  'config show': ['acf config show'],
+  'config show': ['acf config show', 'acf config show --json'],
   'config set-url': ['acf config set-url http://localhost:3105'],
-  'config set-token': ['acf config set-token <token>   # prefer: acf login'],
+  // 刻意**不**演示 `set-token <明文>`：命令行 token 会进 shell history 与进程列表。
+  // 帮助里的示例是 agent 最常照抄的东西，所以这里只给安全通路。
+  'config set-token': [
+    'ACF_TOKEN=<jwt> acf task list   # preferred: env var, never touches argv/history',
+    'acf login                       # or: interactive hidden prompt, stored 0600',
+  ],
 };
 
 /**

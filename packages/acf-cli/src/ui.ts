@@ -97,3 +97,55 @@ export function interruptExit(): never {
   process.stderr.write('\n');
   process.exit(EXIT_CODES.INTERRUPTED);
 }
+
+/**
+ * 破坏性操作的交互确认 —— 三处 delete 此前各自内联 readline.question，
+ * 在 stdin 非交互（agent / CI / `< NUL`）时会**静默假绿**：
+ *
+ *   $ acf app delete <id> < NUL
+ *   Delete application <id>? [y/N]        <- 提示打出后立刻 EOF
+ *   $ echo $?                             -> 0，且既无 "Aborted." 也无错误行
+ *
+ * 后果是自动化面最危险的一类失败：agent 把「什么都没删」读成「删除成功」，
+ * 继续跑下游步骤。根因是 readline 在 EOF 时以空串 resolve（不是 reject），
+ * 调用方的 `/^y(es)?$/` 判否后走 "Aborted." 分支——而该分支在 Windows 上
+ * 连输出都会丢，进程以 0 收场。
+ *
+ * 语义（与 login 的 TOTP 非交互分支同一思路，收敛到一处）：
+ * - `--yes` 给定 → 直接放行，不碰 stdin（脚本显式表态的唯一通路）；
+ * - stdin 非 TTY → **拒绝**并给可操作错误（UsageError → 退出码 2）。既不
+ *   静默通过（会误删）也不静默取消（会假绿）；
+ * - stdin 是 TTY → 交互提问；除 y/yes 外一律视为主动放弃，返回 false，
+ *   由调用方原样 return（退出码 0 —— README 已把「主动放弃确认」归入成功）。
+ *
+ * @returns true = 继续执行；false = 用户主动放弃（调用方应直接 return）。
+ */
+export async function confirmDestructive(
+  question: string,
+  opts: { yes?: boolean } = {},
+): Promise<boolean> {
+  if (opts.yes) return true;
+  if (process.stdin.isTTY !== true) {
+    emitUsageError(
+      'Confirmation cannot be read: stdin is not interactive. ' +
+        'Re-run with --yes (-y) to confirm this destructive operation in non-interactive use ' +
+        '(CI / agent / piped stdin).',
+    );
+  }
+  const readline = await import('readline/promises');
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  // raw 模式下 Ctrl+C 触发 rl 'SIGINT' 而非进程信号；无监听只会 pause，
+  // 确认提示处会假死。接住并走统一中断出口（130）。
+  rl.on('SIGINT', () => interruptExit());
+  let answer: string;
+  try {
+    answer = await rl.question(`${question} [y/N] `);
+  } finally {
+    rl.close();
+  }
+  if (!/^y(es)?$/i.test(answer)) {
+    console.log(chalk.yellow('Aborted.'));
+    return false;
+  }
+  return true;
+}

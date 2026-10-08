@@ -1,6 +1,6 @@
 # AppDeployment 实体（app_deployments 表）— 应用部署记录（含审批/灰度/触发标注列）
 
-> 所属: docs/atlas/03-data/entities · 最后核对: 2026-09-13 · 对应代码: apps/admin-api/src/modules/application/entities/app-deployment.entity.ts
+> 所属: docs/atlas/03-data/entities · 最后核对: 2026-10-07 · 对应代码: apps/admin-api/src/modules/application/entities/app-deployment.entity.ts
 
 ## 所属模块与源文件
 
@@ -22,7 +22,7 @@
 | `executorAddress` | varchar NOT NULL | 部署所在执行器地址（按 address 关联执行器，非 FK，同 [task-execution](task-execution.md) 风格） |
 | `executorId` | varchar nullable | 逻辑执行器 id（已知时填） |
 | `status` | PG enum `DeploymentStatus`，default `'pending'` | 6 值：`pending` / `deploying` / `running` / `stopped` / `failed` / `upgrading`。**待审批行复用 pending**（不扩枚举，见下 approvalStatus） |
-| `runMode` | PG enum `RunMode`，default `'daemon'` | `once` / `daemon` / `scheduled` |
+| `runMode` | PG enum `RunMode`，列缺省 `'daemon'` | `once` / `daemon` / `scheduled`。**注意 API 语义**（DEEP-AUDIT B·4.2，2026-10-01）：`deploy()` 服务层对调用方缺省统一归一为 `ONCE`（`dto.runMode ?? RunMode.ONCE`），列缺省只是直插行兜底——`once` 单次执行（退出不重启）；`daemon` 常驻（异常退出自动重启，退出码 0 不重启）；`scheduled` 只下发代码不启动进程（由任务调度触发，即"仅部署"） |
 | `deployedCommit` | varchar nullable | 当前部署的 git commit |
 | `deployedVersion` | varchar nullable | 当前部署的版本号 |
 | `startCommand` | varchar nullable | 覆盖启动命令（缺省回落 manifest entrypoint） |

@@ -5,6 +5,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { z } from "zod";
+import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 
 type ToolHandler = (
   args: Record<string, unknown>,
@@ -49,28 +50,37 @@ const registerFns = [
 function setup(): {
   tools: Map<string, RegisteredTool>;
   call: ReturnType<typeof vi.fn>;
+  annotations: Map<string, ToolAnnotations>;
 } {
   const registered = new Map<string, RegisteredTool>();
+  const annotations = new Map<string, ToolAnnotations>();
   const call = vi.fn().mockResolvedValue({ ok: true });
   const fakeServer = {
+    // MCP-AGENT-UX-AUDIT-2026-10-08: every registration now carries a 4th
+    // `annotations` arg (server.tool(name, desc, schema, annotations, handler)).
+    // Accept both arities so a future no-annotation tool still registers here.
     tool: (
       name: string,
       description: string,
       _schema: Record<string, z.ZodTypeAny>,
-      handler: ToolHandler,
+      fourth: ToolAnnotations | ToolHandler,
+      fifth?: ToolHandler,
     ) => {
+      const handler = (fifth ?? fourth) as ToolHandler;
+      if (fifth) annotations.set(name, fourth as ToolAnnotations);
       registered.set(name, { name, description, schema: _schema, handler });
     },
   };
   for (const fn of registerFns) fn(fakeServer as never, call as never);
-  return { tools: registered, call };
+  return { tools: registered, call, annotations };
 }
 
 let tools: Map<string, RegisteredTool>;
 let call: ReturnType<typeof vi.fn>;
+let annotations: Map<string, ToolAnnotations>;
 
 beforeEach(() => {
-  ({ tools, call } = setup());
+  ({ tools, call, annotations } = setup());
   call.mockReset();
   call.mockResolvedValue({ ok: true });
 });
@@ -728,11 +738,14 @@ describe("deploy_app", () => {
       await tools.get("deploy_app")!.handler({ appName: "demo" }),
     );
     expect(call).toHaveBeenNthCalledWith(1, "GET", "/applications");
+    // P0 (MCP-AGENT-UX-AUDIT-2026-10-08): an omitted runMode must NOT fall
+    // through to the backend default (CreateDeploymentDto defaults to DAEMON,
+    // which starts the entry script at deploy). We now send `scheduled`.
     expect(call).toHaveBeenNthCalledWith(
       2,
       "POST",
       "/app-deployments/applications/a1/deploy",
-      {},
+      { runMode: "scheduled" },
     );
     expect(out.id).toBe("d1");
   });
@@ -759,7 +772,7 @@ describe("deploy_app", () => {
       2,
       "POST",
       "/app-deployments/applications/a1/deploy",
-      { executorId: "e1", env: { K: "V" } },
+      { executorId: "e1", runMode: "scheduled", env: { K: "V" } },
     );
   });
 
@@ -781,6 +794,110 @@ describe("deploy_app", () => {
     await expect(
       tools.get("deploy_app")!.handler({ appName: "demo" }),
     ).rejects.toThrow(/Forbidden \(403\)/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P0 (MCP-AGENT-UX-AUDIT-2026-10-08): runMode must never default to `daemon`.
+//
+// CreateDeploymentDto declares `@ApiPropertyOptional({ default: RunMode.DAEMON })`
+// and DAEMON *starts the entry script at deploy* — so the pre-fix behaviour
+// (omit runMode → send no body field → backend picks daemon) silently executed
+// the app, double-running against any later task/cron trigger. Mirrors the CLI
+// fix in `acf app deploy` (which also defaults to scheduled + warns).
+// ---------------------------------------------------------------------------
+describe("deploy runMode safety (P0)", () => {
+  it("deploy_application omitting runMode sends scheduled, never daemon", async () => {
+    call.mockResolvedValueOnce({ id: "d1", status: "deploying" });
+    await tools.get("deploy_application")!.handler({ applicationId: "a1" });
+    const body = call.mock.calls[0][2] as Record<string, unknown>;
+    expect(body.runMode).toBe("scheduled");
+    expect(body.runMode).not.toBe("daemon");
+  });
+
+  it("deploy_application with explicit once/daemon flags startsImmediately + warns", async () => {
+    call.mockResolvedValueOnce({ id: "d2", status: "deploying" });
+    const out = parse(
+      await tools
+        .get("deploy_application")!
+        .handler({ applicationId: "a1", runMode: "daemon" }),
+    );
+    expect(call.mock.calls[0][2]).toMatchObject({ runMode: "daemon" });
+    expect(out.startsImmediately).toBe(true);
+    expect(out.note).toMatch(/immediately at deploy/);
+    expect(out.note).toMatch(/auto-restarts/);
+  });
+
+  it("deploy_application with scheduled does NOT claim startsImmediately", async () => {
+    call.mockResolvedValueOnce({ id: "d3", status: "pending" });
+    const out = parse(
+      await tools
+        .get("deploy_application")!
+        .handler({ applicationId: "a1", runMode: "scheduled" }),
+    );
+    expect(out.startsImmediately).toBeUndefined();
+  });
+
+  it("runMode is a real enum, so a bogus mode is rejected at schema level", () => {
+    // Assert the schema declares an enum rather than a bare string (which would
+    // defer validation to a server-side 400). zod wraps .optional()/.describe(),
+    // so unwrap `def.innerType` before reading the entries.
+    type ZodLike = {
+      options?: string[];
+      def?: { type?: string; entries?: Record<string, string>; innerType?: ZodLike };
+    };
+    let node = tools.get("deploy_application")!.schema.runMode as unknown as ZodLike;
+    let depth = 0;
+    while (node?.def && node.def.type !== "enum" && node.def.innerType && depth++ < 5) {
+      node = node.def.innerType;
+    }
+    const values = node?.options ?? Object.keys(node?.def?.entries ?? {});
+    expect(values).toEqual(["once", "daemon", "scheduled"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// MCP-AGENT-UX-AUDIT-2026-10-08: annotation coverage.
+// readOnlyHint (default false) and destructiveHint:false (default true) are the
+// informative declarations; destructiveHint:true documents the spec default.
+// ---------------------------------------------------------------------------
+describe("tool annotations", () => {
+  it("every tool declares annotations", () => {
+    const missing = [...tools.keys()].filter((n) => !annotations.has(n));
+    expect(missing).toEqual([]);
+  });
+
+  it("read-only tools are marked readOnlyHint:true", () => {
+    for (const n of ["list_tasks", "get_task", "list_executors", "list_projects"]) {
+      expect(annotations.get(n)?.readOnlyHint).toBe(true);
+    }
+  });
+
+  it("irreversible tools are marked destructiveHint:true", () => {
+    for (const n of [
+      "delete_application",
+      "kill_execution",
+      "stop_deployment",
+      "reject_deployment",
+      "rollback_task_version",
+      // Deploys that make a process actually start are destructive side effects.
+      "deploy_application",
+      "deploy_app",
+    ]) {
+      expect(annotations.get(n)?.destructiveHint).toBe(true);
+    }
+  });
+
+  it("purely additive tools set destructiveHint:false (overriding the spec default)", () => {
+    for (const n of ["trigger_task", "create_application", "import_task"]) {
+      expect(annotations.get(n)?.destructiveHint).toBe(false);
+    }
+  });
+
+  it("read-only tools never also claim destructiveHint", () => {
+    for (const [n, a] of annotations) {
+      if (a.readOnlyHint) expect(a.destructiveHint).not.toBe(true);
+    }
   });
 });
 

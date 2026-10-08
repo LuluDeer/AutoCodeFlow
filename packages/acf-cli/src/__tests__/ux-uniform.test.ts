@@ -11,13 +11,34 @@
  *    是同一张表的三个投影。
  * 4. 密码输入不回显 —— maskEcho 的函数级不回显断言（PK-27 的回归锁）。
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
 import * as readline from 'node:readline';
 import { PassThrough } from 'node:stream';
 
 // client/config 用 mock：避免 conf 在测试进程里碰真实用户目录，也让错误分类
 // 可控（结构守卫不触发任何 action，mock 只是为了模块图可加载）。
 const classifyState = { value: 'unknown' as string };
+
+// ora mock：VERSION-HIJACK 回归锁会跑真实 action（upgrade-all / rollback），
+// 用假 spinner 避免真实 ora 的 TTY/interval 副作用。
+const { oraInstances } = vi.hoisted(() => ({
+  oraInstances: [] as Array<{ start: Mock; succeed: Mock; fail: Mock; stop: Mock }>,
+}));
+
+vi.mock('ora', () => ({
+  default: () => {
+    const o = {
+      start: vi.fn(),
+      succeed: vi.fn(),
+      fail: vi.fn(),
+      stop: vi.fn(),
+      text: '',
+    };
+    o.start.mockImplementation(() => o);
+    oraInstances.push(o);
+    return o;
+  },
+}));
 
 vi.mock('../client.js', () => ({
   get: vi.fn(),
@@ -29,6 +50,7 @@ vi.mock('../client.js', () => ({
   formatApiError: (e: unknown) => (e instanceof Error ? e.message : String(e)),
   classifyApiError: () => classifyState.value,
   ANALYZE_TIMEOUT_MS: 120_000,
+  UPLOAD_TIMEOUT_MS: 300_000,
 }));
 
 vi.mock('../config.js', () => ({
@@ -45,6 +67,8 @@ vi.mock('../config.js', () => ({
 import { CommanderError } from 'commander';
 // index.ts 有 main-guard：import 只构建命令树，不触发 parseAsync。
 import { program, parseErrorExitCode } from '../index.js';
+import { post } from '../client.js';
+import pkg from '../../package.json' with { type: 'json' };
 import { EXIT_CODES, exitCodeFor, emitError, emitUsageError, UsageError } from '../ui.js';
 import { maskEcho } from '../commands/login.js';
 
@@ -105,11 +129,14 @@ describe('help 覆盖守卫（集中式 EXAMPLES × 真实命令树）', () => {
   });
 
   it('命令树规模护栏：叶子命令数量符合预期（防止守卫意外失效/空转）', () => {
-    // 58 个叶子 = login(1)+task(23,含 webhook/glue)+app(11,含 upload/upgrade-all)
-    //            +executor(4)+deploy(2)+audit(1)+exec(1)+project(2)+sop(2)+agent(1)
-    //            +apikey(3)+approval(4)+config(3)
+    // 63 个叶子 = login(1)+whoami(1)+logout(1)+task(23,含 webhook/glue)
+    //            +app(12,含 upload/upgrade-all/releases)
+    //            +executor(4)+deploy(4,含 list/remove)+audit(1)+exec(1)+project(2)
+    //            +sop(2)+agent(1)+apikey(3)+approval(4)+config(3)
+    // whoami/logout 由 CLI-AGENT-UX-AUDIT（2026-10-08）补：agent 开工前需要
+    // 自检身份/角色（后端大量 ADMIN-only 面），收工时需要吊销并清本地凭据。
     const leaves = leafCommands(program);
-    expect(leaves.length).toBe(58);
+    expect(leaves.length).toBe(63);
   });
 });
 
@@ -135,6 +162,49 @@ describe('showHelpAfterError：缺参时给可操作用法', () => {
     } finally {
       errSpy.mockRestore();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 2.5 VERSION-HIJACK 回归锁（P1，2026-10 开发人员实测）
+// ---------------------------------------------------------------------------
+// 缺陷：根命令经 Commander .version() 注册 --version 后，根层 parseOptions 在
+// 派发子命令前扫描全部参数——`acf app upload --version 1.2.0` /
+// `acf app upgrade-all --version 1.9.0` / `acf task rollback --version v9` 里的
+// --version 被根层匹配并 exit 0 打印 CLI 版本，操作根本没发生却不报错。
+// 必须走 index.ts 导出的**真实命令树**（cli-gaps 的 run() 自建根 Command，
+// 根层没有 --version，永远测不出这个劫持）。
+describe('--version 根级 vs 子命令级（VERSION-HIJACK 回归锁）', () => {
+  it.each([['--version'], ['-V']])('acf %s 打印 pkg.version 并以 0 退出', async (flag) => {
+    const logs: string[] = [];
+    vi.spyOn(console, 'log').mockImplementation(((s: unknown) => {
+      logs.push(String(s));
+    }) as never);
+    try {
+      await expect(
+        program.parseAsync(['node', 'acf', flag], { from: 'node' }),
+      ).rejects.toThrow(/process\.exit\(0\)/);
+      expect(logs.join('\n').trim()).toBe(pkg.version);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('acf app upgrade-all --version <v> 不被根层劫持：version 直达请求体', async () => {
+    vi.mocked(post).mockResolvedValueOnce({ ok: true, total: 3, succeeded: 3, failed: 0 });
+    // -y：all 策略的确认门（CLI-AGENT-UX-AUDIT）——本断言的对象是「--version
+    // 是否被根层劫持」，与确认门无关，显式带 -y 让请求真正发出。
+    await program.parseAsync(
+      ['node', 'acf', 'app', 'upgrade-all', 'app1', '--version', '1.9.0', '-y'],
+      { from: 'node' },
+    );
+    expect(post).toHaveBeenCalledWith('/applications/app1/upgrade-all', { version: '1.9.0' });
+  });
+
+  it('acf task rollback --version <vid> 不被根层劫持', async () => {
+    vi.mocked(post).mockResolvedValueOnce({ id: 't1', name: 'n', status: 'active' });
+    await program.parseAsync(['node', 'acf', 'task', 'rollback', 't1', '--version', 'v9'], { from: 'node' });
+    expect(post).toHaveBeenCalledWith('/tasks/t1/versions/v9/rollback');
   });
 });
 

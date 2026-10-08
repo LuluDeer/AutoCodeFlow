@@ -80,7 +80,7 @@ describe('acf executor rotate (NF-07)', () => {
       logs.push(a.join(' '));
     });
     try {
-      await run('executor rotate 11111111-2222-3333-4444-555555555555');
+      await run('executor rotate 11111111-2222-3333-4444-555555555555 -y');
     } finally {
       spy.mockRestore();
     }
@@ -97,7 +97,7 @@ describe('acf executor rotate (NF-07)', () => {
   it('sends the optional --reason as the request body (AUTH-05 audit trail)', async () => {
     mockedGet.mockResolvedValueOnce(EXECUTOR_ROW);
     mockedPost.mockResolvedValueOnce({ token: 't2' });
-    await run('executor rotate 11111111-2222-3333-4444-555555555555 --reason "token suspected leaked"');
+    await run('executor rotate 11111111-2222-3333-4444-555555555555 --reason "token suspected leaked" -y');
     expect(mockedPost).toHaveBeenCalledWith(
       '/executors/11111111-2222-3333-4444-555555555555/rotate-token',
       { reason: 'token suspected leaked' },
@@ -109,7 +109,7 @@ describe('acf executor rotate (NF-07)', () => {
     mockedGet.mockRejectedValueOnce(new Error('404'));
     mockedGet.mockResolvedValueOnce([EXECUTOR_ROW, { ...EXECUTOR_ROW, id: 'aaaa0000-0000-0000-0000-000000000000', appName: 'py-exec' }]);
     mockedPost.mockResolvedValueOnce({ token: 't3' });
-    await run('executor rotate py-exec');
+    await run('executor rotate py-exec -y');
     expect(mockedGet).toHaveBeenNthCalledWith(1, '/executors/py-exec');
     expect(mockedPost).toHaveBeenCalledWith(
       '/executors/aaaa0000-0000-0000-0000-000000000000/rotate-token',
@@ -124,7 +124,7 @@ describe('acf executor rotate (NF-07)', () => {
     );
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
-      await expect(run('executor rotate 11111111-2222-3333-4444-555555555555')).rejects.toThrow(/process\.exit\(1\)/);
+      await expect(run('executor rotate 11111111-2222-3333-4444-555555555555 -y')).rejects.toThrow(/process\.exit\(1\)/);
     } finally {
       errSpy.mockRestore();
     }

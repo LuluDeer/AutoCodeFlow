@@ -91,11 +91,19 @@ vi.mock('../config.js', () => ({
 }));
 
 import { get, post, put, del, UPLOAD_TIMEOUT_MS } from '../client.js';
-import { loginCommand, resolveTotpCode } from '../commands/login.js';
+import {
+  loginCommand,
+  resolveTotpCode,
+  resolveLoginUrl,
+  whoamiCommand,
+  logoutCommand,
+} from '../commands/login.js';
 import { tasksCommand, readStdin } from '../commands/tasks.js';
 import { apikeysCommand } from '../commands/apikeys.js';
 import { appsCommand } from '../commands/apps.js';
+import { deployCommand } from '../commands/deploy.js';
 import { approvalCommand } from '../commands/approval.js';
+import { executorsCommand } from '../commands/executors.js';
 // index.ts 有 main-guard：import 只构建命令树，不触发 parseAsync（用于 set-token）。
 import { program } from '../index.js';
 
@@ -388,7 +396,9 @@ describe('acf task batch', () => {
   it('四种 action 各自命中对应端点', async () => {
     for (const action of ['trigger', 'pause', 'resume', 'delete']) {
       mockedPost.mockResolvedValueOnce([{}]);
-      await run(tasksCommand(), `task batch ${action} t1`);
+      // P1（CLI-AGENT-UX-AUDIT）：batch delete 现在有确认门 → 非交互下必须 -y。
+      // 其余三个 action 仍无门，但带上 -y 对它们是 no-op（选项被忽略）。
+      await run(tasksCommand(), `task batch ${action} t1 -y`);
       expect(mockedPost).toHaveBeenCalledWith(`/tasks/batch/${action}`, { taskIds: ['t1'] });
     }
   });
@@ -421,7 +431,7 @@ describe('acf task batch', () => {
   it('全部成功 → exitCode 保持 0', async () => {
     captureStdout();
     mockedPost.mockResolvedValueOnce([{}, {}]);
-    await run(tasksCommand(), 'task batch delete t1 t2');
+    await run(tasksCommand(), 'task batch delete t1 t2 -y');
     expect(process.exitCode === undefined || process.exitCode === 0).toBe(true);
   });
 
@@ -635,7 +645,7 @@ describe('acf app upgrade-all', () => {
   it('缺省（无 flags）→ 不传 body（既有全量语义逐字节保持），输出成功/失败计数', async () => {
     const logs = captureStdout();
     mockedPost.mockResolvedValueOnce({ ok: true, total: 2, succeeded: 2, failed: 0 });
-    await run(appsCommand(), 'app upgrade-all app1');
+    await run(appsCommand(), 'app upgrade-all app1 -y');
     expect(mockedPost).toHaveBeenCalledWith('/applications/app1/upgrade-all', undefined);
     expect(lastSpinner().succeed).toHaveBeenCalledWith(
       expect.stringContaining('2/2 deployment(s) accepted, 0 failed'),
@@ -669,7 +679,7 @@ describe('acf app upgrade-all', () => {
     const err = captureStderr();
     captureStdout();
     mockedPost.mockResolvedValueOnce({ ok: true, total: 3, succeeded: 2, failed: 1 });
-    await run(appsCommand(), 'app upgrade-all app1');
+    await run(appsCommand(), 'app upgrade-all app1 -y');
     expect(lastSpinner().succeed).toHaveBeenCalledWith(expect.stringContaining('2/3'));
     expect(err.join('\n')).toContain('acf app deployments app1');
     expect(process.exitCode).toBe(1);
@@ -692,7 +702,7 @@ describe('acf app upgrade-all', () => {
   it('--version <v>：all 模式 body={version}（渐进回滚，2026-10-07）', async () => {
     captureStdout();
     mockedPost.mockResolvedValueOnce({ ok: true, total: 3, succeeded: 3, failed: 0, version: '1.9.0' });
-    await run(appsCommand(), 'app upgrade-all app1 --version 1.9.0');
+    await run(appsCommand(), 'app upgrade-all app1 --version 1.9.0 -y');
     expect(mockedPost).toHaveBeenCalledWith('/applications/app1/upgrade-all', { version: '1.9.0' });
     expect(process.exitCode === undefined || process.exitCode === 0).toBe(true);
   });
@@ -738,6 +748,124 @@ describe('acf app upgrade-all', () => {
       errSpy.mockRestore();
     }
     expect(mockedPost).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P0: acf app deploy --run-mode（2026-10 开发人员实测）
+// 缺陷：缺省 daemon 且帮助只列枚举值——中台定时触发场景按"部署=待命"理解
+// 不传 -m 就落到 daemon，部署时立刻跑了一次入口脚本（与后续 trigger 双跑、
+// 并发写同一产物目录）。修复：缺省 scheduled（仅下发，中台/定时触发）、
+// 帮助写清三档行为、显式 once/daemon 发请求前打"立即执行"预警、deploy-only
+// 作为 scheduled 的自解释别名。服务端 RunMode 枚举无 deploy-only——CLI 归一。
+// ---------------------------------------------------------------------------
+describe('acf app deploy --run-mode（P0 语义/默认值/预警）', () => {
+  it('缺省 -m → body runMode=scheduled（deploy-only 语义，不再默认 daemon）', async () => {
+    mockedPost.mockResolvedValueOnce({ id: 'd1', status: 'running' });
+    captureStdout();
+    await run(appsCommand(), 'app deploy app1');
+    expect(mockedPost).toHaveBeenCalledWith('/app-deployments/applications/app1/deploy', { runMode: 'scheduled' });
+  });
+
+  it('-m deploy-only 是 scheduled 的自解释别名（body 归一 scheduled，无预警）', async () => {
+    mockedPost.mockResolvedValueOnce({ id: 'd1', status: 'running' });
+    const stderr: string[] = [];
+    vi.spyOn(process.stderr, 'write').mockImplementation(((s: unknown) => {
+      stderr.push(String(s));
+      return true;
+    }) as never);
+    await run(appsCommand(), 'app deploy app1 -m deploy-only');
+    expect(mockedPost).toHaveBeenCalledWith('/app-deployments/applications/app1/deploy', { runMode: 'scheduled' });
+    expect(stderr.join('')).not.toContain('starts the entry script');
+  });
+
+  it('显式 -m daemon → body runMode=daemon，且发请求前给"立即执行"预警', async () => {
+    mockedPost.mockResolvedValueOnce({ id: 'd1', status: 'running' });
+    const stderr: string[] = [];
+    vi.spyOn(process.stderr, 'write').mockImplementation(((s: unknown) => {
+      stderr.push(String(s));
+      return true;
+    }) as never);
+    await run(appsCommand(), 'app deploy app1 -m daemon');
+    expect(mockedPost).toHaveBeenCalledWith('/app-deployments/applications/app1/deploy', { runMode: 'daemon' });
+    const out = stderr.join('');
+    expect(out).toContain('starts the entry script immediately at deploy');
+    expect(out).toContain('--run-mode scheduled');
+  });
+
+  it('显式 -m once 同样预警（单次执行也是部署即跑）', async () => {
+    mockedPost.mockResolvedValueOnce({ id: 'd1', status: 'running' });
+    const stderr: string[] = [];
+    vi.spyOn(process.stderr, 'write').mockImplementation(((s: unknown) => {
+      stderr.push(String(s));
+      return true;
+    }) as never);
+    await run(appsCommand(), 'app deploy app1 -m once');
+    expect(mockedPost).toHaveBeenCalledWith('/app-deployments/applications/app1/deploy', { runMode: 'once' });
+    expect(stderr.join('')).toContain('starts the entry script immediately at deploy');
+  });
+
+  it('非法 -m → 参数解析错误（码 2 语义），请求不发出（本地校验，不再等服务端 400）', async () => {
+    const errSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      await expect(
+        run(appsCommand(), 'app deploy app1 -m bluegreen'),
+      ).rejects.toThrow();
+      expect(errSpy.mock.calls.map((c) => String(c[0])).join('')).toContain(
+        'once | daemon | scheduled | deploy-only',
+      );
+    } finally {
+      errSpy.mockRestore();
+    }
+    expect(mockedPost).not.toHaveBeenCalled();
+  });
+
+  it('--env/--start-command 与 runMode 同体透传（回归：body 形状不变）', async () => {
+    mockedPost.mockResolvedValueOnce({ id: 'd1', status: 'running' });
+    captureStdout();
+    // 注：run() 助手按空格切参，--env 取值用无空格的单 token（{"K":"v"}）。
+    await run(appsCommand(), 'app deploy app1 -m daemon --env {"K":"v"} --start-command node-dist-run');
+    expect(mockedPost).toHaveBeenCalledWith('/app-deployments/applications/app1/deploy', {
+      runMode: 'daemon',
+      env: { K: 'v' },
+      startCommand: 'node-dist-run',
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P2: acf deploy list / remove（可发现性 + 遗留记录清理，2026-10 实测）
+// 缺陷：deploy --help 只有 upgrade/stop，被误读成"CLI 无部署状态查询"；一条
+// stopped+daemon 的旧部署记录无法删除（只有 deploy stop）。服务端早已提供
+// GET /app-deployments 与 DELETE /app-deployments/:id（仅终态行），CLI 补齐。
+// ---------------------------------------------------------------------------
+describe('acf deploy list / remove', () => {
+  it('list 缺省 → GET /app-deployments（page/pageSize 透传），表格输出', async () => {
+    mockedGet.mockResolvedValueOnce({
+      data: [{ id: 'd1', applicationId: 'a1', executorId: 'e1', status: 'stopped', runMode: 'daemon' }],
+      total: 1,
+    });
+    const logs = captureStdout();
+    await run(deployCommand(), 'deploy list');
+    expect(mockedGet).toHaveBeenCalledWith('/app-deployments', { page: '1', pageSize: '20' });
+    expect(logs.join('\n')).toContain('table(1)');
+  });
+
+  it('list <appId> --json → applicationId 过滤 + 信封原样直出', async () => {
+    const data = { data: [], total: 0 };
+    mockedGet.mockResolvedValueOnce(data);
+    const logs = captureStdout();
+    await run(deployCommand(), 'deploy list app9 -n 50 --json');
+    expect(mockedGet).toHaveBeenCalledWith('/app-deployments', { applicationId: 'app9', page: '1', pageSize: '50' });
+    const line = logs.find((l) => l.startsWith('{'));
+    expect(JSON.parse(line as string)).toEqual(data);
+  });
+
+  it('remove <id> -y → DELETE /app-deployments/:id，输出删除回执', async () => {
+    mockedDel.mockResolvedValueOnce({ ok: true, deletedId: 'd1' });
+    await run(deployCommand(), 'deploy remove d1 -y');
+    expect(mockedDel).toHaveBeenCalledWith('/app-deployments/d1');
+    expect(lastSpinner().succeed).toHaveBeenCalledWith(expect.stringContaining('Deployment record d1 removed'));
   });
 });
 
@@ -1060,5 +1188,341 @@ describe('acf config set-token 安全提示', () => {
     expect(warned).toContain('shell history');
     expect(warned).toContain('acf login');
     expect(warned).toContain('ACF_TOKEN');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P0: 非交互 stdin 下的确认语义（CLI-AGENT-UX-AUDIT-2026-10-08）
+// ---------------------------------------------------------------------------
+// 缺陷（agent 视角最危险的一类）：三处 delete 用 readline.question，
+// stdin 非交互时 readline 以**空串 resolve**（不是 reject），调用方的
+// /^y(es)?$/ 判否 → 走 "Aborted." 分支；而 stdin 已关闭（`< NUL`）时该分支的
+// console.log 在 Windows 上连输出都丢，进程以 **exit 0** 收场。
+// agent 的 stdin 恒为非交互 → 把「什么都没删」读成「删除成功」，继续跑下游。
+//
+// 新契约（confirmDestructive，收敛在 ui.ts）：
+// - 非 TTY 且无 --yes → 用法错误（退出码 2），请求不发出（既不静默放行也不静默取消）；
+// - --yes → 直通；
+// - TTY + 非 y 回答 → Aborted.，退出码 0（用户主动放弃，README 语义）。
+// ---------------------------------------------------------------------------
+describe('P0: 非交互 stdin 下的破坏性确认', () => {
+  /** vitest worker 里 stdin.isTTY 恒为 undefined（= 非交互），这里显式表态。 */
+  function forceStdin(isTTY: boolean): () => void {
+    const real = process.stdin;
+    Object.defineProperty(process, 'stdin', {
+      value: { isTTY, on: () => undefined },
+      configurable: true,
+    });
+    return () => Object.defineProperty(process, 'stdin', { value: real, configurable: true });
+  }
+
+  it('app delete：非交互 + 无 --yes → 码 2，DELETE 不发出（不再静默 exit 0）', async () => {
+    const restore = forceStdin(false);
+    const err = captureStderr();
+    try {
+      await expect(run(appsCommand(), 'app delete a1')).rejects.toThrow(/process\.exit\(2\)/);
+      expect(mockedDel).not.toHaveBeenCalled();
+      expect(err.join('\n')).toContain('--yes');
+    } finally {
+      restore();
+    }
+  });
+
+  it('task delete：非交互 + 无 --yes → 码 2，DELETE 不发出', async () => {
+    const restore = forceStdin(false);
+    const err = captureStderr();
+    try {
+      await expect(run(tasksCommand(), 'task delete t1')).rejects.toThrow(/process\.exit\(2\)/);
+      expect(mockedDel).not.toHaveBeenCalled();
+      expect(err.join('\n')).toContain('--yes');
+    } finally {
+      restore();
+    }
+  });
+
+  it('deploy remove：非交互 + 无 --yes → 码 2，DELETE 不发出', async () => {
+    const restore = forceStdin(false);
+    const err = captureStderr();
+    try {
+      await expect(run(deployCommand(), 'deploy remove d1')).rejects.toThrow(/process\.exit\(2\)/);
+      expect(mockedDel).not.toHaveBeenCalled();
+      expect(err.join('\n')).toContain('--yes');
+    } finally {
+      restore();
+    }
+  });
+
+  it('--yes 在非交互下直通（脚本显式表态的唯一通路）', async () => {
+    const restore = forceStdin(false);
+    mockedDel.mockResolvedValueOnce({});
+    try {
+      await run(appsCommand(), 'app delete a1 --yes');
+      expect(mockedDel).toHaveBeenCalledWith('/applications/a1');
+    } finally {
+      restore();
+    }
+  });
+
+  it('非交互报错消息里给出可直接照抄的下一步（--yes）', async () => {
+    const restore = forceStdin(false);
+    const err = captureStderr();
+    try {
+      await expect(run(appsCommand(), 'app delete a1')).rejects.toThrow(/process\.exit\(2\)/);
+      expect(err.join('\n')).toMatch(/--yes/);
+      expect(err.join('\n')).toContain("'--help'");
+    } finally {
+      restore();
+    }
+  });
+
+  it('task batch delete：补上确认门 —— 非交互 + 无 --yes → 码 2，批量请求不发出', async () => {
+    const restore = forceStdin(false);
+    const err = captureStderr();
+    try {
+      await expect(run(tasksCommand(), 'task batch delete t1 t2')).rejects.toThrow(
+        /process\.exit\(2\)/,
+      );
+      expect(mockedPost).not.toHaveBeenCalled();
+      expect(err.join('\n')).toContain('--yes');
+    } finally {
+      restore();
+    }
+  });
+
+  it('task batch trigger/pause/resume 不受确认门影响（无 --yes 也直通）', async () => {
+    const restore = forceStdin(false);
+    try {
+      for (const action of ['trigger', 'pause', 'resume']) {
+        mockedPost.mockResolvedValueOnce([{}]);
+        await run(tasksCommand(), `task batch ${action} t1`);
+        expect(mockedPost).toHaveBeenCalledWith(`/tasks/batch/${action}`, { taskIds: ['t1'] });
+      }
+    } finally {
+      restore();
+    }
+  });
+
+  it('app upgrade-all：all 策略需确认；canary 不需（低风险首步）', async () => {
+    const restore = forceStdin(false);
+    try {
+      // all（缺省）→ 门在，非交互且无 --yes 必须拒绝
+      await expect(run(appsCommand(), 'app upgrade-all app1')).rejects.toThrow(/process\.exit\(2\)/);
+      expect(mockedPost).not.toHaveBeenCalled();
+
+      // canary → 无门，直通
+      mockedPost.mockResolvedValueOnce({
+        ok: true, total: 2, succeeded: 1, failed: 0,
+        rollout: { batchId: 'b', strategy: 'canary', canaryIds: ['d1'], promotedIds: [] },
+      });
+      await run(appsCommand(), 'app upgrade-all app1 --strategy canary');
+      expect(mockedPost).toHaveBeenCalledWith('/applications/app1/upgrade-all', {
+        rollout: { strategy: 'canary' },
+      });
+    } finally {
+      restore();
+    }
+  });
+
+  it('executor rotate：不可逆且 token 只显示一次 → 非交互 + 无 --yes 拒绝', async () => {
+    const restore = forceStdin(false);
+    try {
+      await expect(
+        run(executorsCommand(), 'executor rotate 11111111-2222-3333-4444-555555555555'),
+      ).rejects.toThrow(/process\.exit\(2\)/);
+      expect(mockedPost).not.toHaveBeenCalled();
+    } finally {
+      restore();
+    }
+  });
+
+  it('TTY 下回答 n → Aborted. 且退出码 0（用户主动放弃，非失败）', async () => {
+    const real = process.stdin;
+    Object.defineProperty(process, 'stdin', {
+      value: { isTTY: true, on: () => undefined },
+      configurable: true,
+    });
+    // 让 readline/promises 的 question 返回 'n'
+    vi.doMock('readline/promises', () => ({
+      createInterface: () => ({
+        on: () => undefined,
+        question: async () => 'n',
+        close: () => undefined,
+      }),
+    }));
+    const logs = captureStdout();
+    try {
+      await run(appsCommand(), 'app delete a1');
+      expect(mockedDel).not.toHaveBeenCalled();
+      expect(logs.join('\n')).toContain('Aborted.');
+    } finally {
+      vi.doUnmock('readline/promises');
+      Object.defineProperty(process, 'stdin', { value: real, configurable: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P0: login 在非交互下不再「假绿」（CLI-AGENT-UX-AUDIT-2026-10-08）
+// ---------------------------------------------------------------------------
+// 缺陷：URL 解析是 `--url || prompt(...)`，没传 --url 就一定发问；stdin 非交互
+// 时 prompt 拿空串、被 `|| 'http://localhost:3105'` 兜底，username/password
+// 同样问不出来 → 进程静默 **exit 0**，落盘 token 为空。agent 以为登录成功。
+// ---------------------------------------------------------------------------
+describe('P0: login 非交互语义', () => {
+  function forceStdin(isTTY: boolean): () => void {
+    const real = process.stdin;
+    Object.defineProperty(process, 'stdin', {
+      value: { isTTY, on: () => undefined },
+      configurable: true,
+    });
+    return () => Object.defineProperty(process, 'stdin', { value: real, configurable: true });
+  }
+
+  it('resolveLoginUrl：--url > ACF_API_URL > 已存配置 > 默认值（不再对地址发问）', async () => {
+    const { resolveLoginUrl } = await import('../commands/login.js');
+    expect(resolveLoginUrl('https://explicit.example.com')).toBe('https://explicit.example.com');
+    // 未传 --url 时回落到 config 层的 getApiUrl()（测试里 mock 成固定值），
+    // 关键点是**不经过任何 prompt**、也绝不返回空串。
+    expect(resolveLoginUrl()).toBe('http://localhost:3105');
+    expect(resolveLoginUrl('  ')).toBe('http://localhost:3105');
+  });
+
+  it('非交互 + 缺 --user → 码 2（可操作错误，而不是静默 exit 0）', async () => {
+    const restore = forceStdin(false);
+    const err = captureStderr();
+    try {
+      await expect(run(loginCommand(), 'login --password pw')).rejects.toThrow(
+        /process\.exit\(2\)/,
+      );
+      expect(err.join('\n')).toContain('--user');
+    } finally {
+      restore();
+    }
+  });
+
+  it('非交互 + 缺密码（无 --password 且无 ACF_PASSWORD）→ 码 2 并指向 ACF_PASSWORD', async () => {
+    const restore = forceStdin(false);
+    const err = captureStderr();
+    const saved = process.env['ACF_PASSWORD'];
+    delete process.env['ACF_PASSWORD'];
+    try {
+      await expect(run(loginCommand(), 'login --user admin')).rejects.toThrow(
+        /process\.exit\(2\)/,
+      );
+      expect(err.join('\n')).toContain('ACF_PASSWORD');
+    } finally {
+      if (saved !== undefined) process.env['ACF_PASSWORD'] = saved;
+      restore();
+    }
+  });
+
+  it('凭据齐全时非交互登录成功：双 token 落库（不再依赖任何 prompt）', async () => {
+    const restore = forceStdin(false);
+    const { setToken, setRefreshToken } = await import('../config.js');
+    mockedPost.mockResolvedValueOnce({ accessToken: 'jwt-ci', refreshToken: 'r-ci' });
+    try {
+      await run(loginCommand(), 'login --user admin --password pw');
+      expect(vi.mocked(setToken)).toHaveBeenCalledWith('jwt-ci');
+      expect(vi.mocked(setRefreshToken)).toHaveBeenCalledWith('r-ci');
+    } finally {
+      restore();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P1: whoami / logout（CLI-AGENT-UX-AUDIT-2026-10-08）
+// ---------------------------------------------------------------------------
+describe('P1: whoami / logout', () => {
+  it('whoami：打印身份与角色，非 ADMIN 时提示哪些面会 403', async () => {
+    mockedGet.mockResolvedValueOnce({ id: 7, username: 'ops', role: 'user', email: 'o@x.io' });
+    const logs = captureStdout();
+    await run(whoamiCommand(), 'whoami');
+    const out = logs.join('\n');
+    expect(mockedGet).toHaveBeenCalledWith('/auth/profile');
+    expect(out).toContain('ops');
+    expect(out).toContain('403');
+  });
+
+  it('whoami：ADMIN 不显示 403 提示', async () => {
+    mockedGet.mockResolvedValueOnce({ id: 1, username: 'root', role: 'admin' });
+    const logs = captureStdout();
+    await run(whoamiCommand(), 'whoami');
+    expect(logs.join('\n')).not.toContain('403');
+  });
+
+  it('whoami --json：直出 profile 对象', async () => {
+    const me = { id: 7, username: 'ops', role: 'user' };
+    mockedGet.mockResolvedValueOnce(me);
+    const logs = captureStdout();
+    await run(whoamiCommand(), 'whoami --json');
+    const line = logs.find((l) => l.trim().startsWith('{'));
+    expect(JSON.parse(line as string)).toEqual(me);
+  });
+
+  it('logout：服务端吊销成功 → 本地双清', async () => {
+    const { clearAuth } = await import('../config.js');
+    mockedPost.mockResolvedValueOnce({ success: true });
+    const logs = captureStdout();
+    await run(logoutCommand(), 'logout');
+    expect(mockedPost).toHaveBeenCalledWith('/auth/logout');
+    expect(vi.mocked(clearAuth)).toHaveBeenCalled();
+    expect(logs.join('\n')).toContain('cleared');
+  });
+
+  it('logout：服务端不可达也照常清本地凭据（不能把 token 留在盘上）', async () => {
+    const { clearAuth } = await import('../config.js');
+    mockedPost.mockRejectedValueOnce(new Error('Network error: ECONNREFUSED'));
+    // 注意：logout 的告警走 process.stderr.write（与 login 的警告同款），
+    // 不是 console.error —— 用 write 捕获器，别用 captureStderr。
+    const chunks: string[] = [];
+    vi.spyOn(process.stderr, 'write').mockImplementation(((s: unknown) => {
+      chunks.push(String(s));
+      return true;
+    }) as never);
+    captureStdout();
+    await run(logoutCommand(), 'logout');
+    expect(vi.mocked(clearAuth)).toHaveBeenCalled();
+    expect(chunks.join('')).toContain('local credentials were still cleared');
+  });
+
+  it('logout：顺序必须是「先带 token 吊销服务端，再清本地」（清早了注销请求会 401）', async () => {
+    const { clearAuth } = await import('../config.js');
+    const order: string[] = [];
+    // 断言 post 发生时 clearAuth 尚未被调用——这正是「先清后吊销」bug 的锁。
+    mockedPost.mockImplementationOnce(async () => {
+      order.push('post');
+      return { success: true };
+    });
+    vi.mocked(clearAuth).mockImplementationOnce(() => {
+      order.push('clearAuth');
+    });
+    captureStdout();
+    await run(logoutCommand(), 'logout');
+    expect(order).toEqual(['post', 'clearAuth']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P2: --env 坏 JSON 的退出码（应与 task trigger --params 同口径 = 2）
+// ---------------------------------------------------------------------------
+describe('P2: app deploy --env 本地 payload 错误', () => {
+  it('坏 JSON → 码 2（不是 1 的「部署失败」），请求不发出', async () => {
+    const err = captureStderr();
+    await expect(
+      run(appsCommand(), "app deploy app1 --env {bad"),
+    ).rejects.toThrow(/process\.exit\(2\)/);
+    expect(mockedPost).not.toHaveBeenCalled();
+    expect(err.join('\n')).toContain('Invalid --env JSON');
+  });
+
+  it('合法 JSON → 照常进请求体', async () => {
+    mockedPost.mockResolvedValueOnce({ id: 'd1', status: 'deploying' });
+    captureStdout();
+    await run(appsCommand(), 'app deploy app1 --env {"K":"v"}');
+    expect(mockedPost).toHaveBeenCalledWith('/app-deployments/applications/app1/deploy', {
+      runMode: 'scheduled',
+      env: { K: 'v' },
+    });
   });
 });

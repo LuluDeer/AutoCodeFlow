@@ -1,12 +1,12 @@
 # acf-cli — 命令行工具
 
-> 所属: docs/atlas/02-packages · 最后核对: 2026-09-13 · 对应代码: packages/acf-cli
+> 所属: docs/atlas/02-packages · 最后核对: 2026-10-07 · 对应代码: packages/acf-cli
 
 ## 职责
 
-`acf` 是 AutoCodeFlow 的命令行管理入口（npm 包名 `acf-cli`，v1.0.0，bin `acf`）：面向运维/开发者在终端里完成任务 CRUD、触发与跟日志、应用部署、执行器管理与审计查询。**它只是 admin-api REST 的客户端**——所有业务能力都来自 admin-api，CLI 不含调度/执行逻辑。
+`acf` 是 AutoCodeFlow 的命令行管理入口（npm 包名 `@autocodeflow/cli`，版本随 package.json，bin `acf`）：面向运维/开发者在终端里完成任务 CRUD、触发与跟日志、应用部署、执行器管理与审计查询。**它只是 admin-api REST 的客户端**——所有业务能力都来自 admin-api，CLI 不含调度/执行逻辑。
 
-依赖（package.json 核实）：`commander 12.0.0`、`axios 1.20.0`、`conf 10.2.0`（持久配置）、`chalk 4.1.2`、`cli-table3 0.6.5`、`ora 5.4.1`；engines `node>=18`。测试 vitest（根目录 `npm run test:cli`）。
+依赖（package.json 核实）：`commander 15`、`axios 1.20.0`、`conf 15`（持久配置）、`chalk 6`、`cli-table3 0.6.5`、`ora 9`；engines `node>=22.12.0`（ESM）。测试 vitest（根目录 `npm run test:cli`）。
 
 ## 目录结构与关键文件
 
@@ -14,24 +14,31 @@
 packages/acf-cli/
 ├── package.json          bin: acf → dist/index.js
 ├── src/
-│   ├── index.ts          program 装配：全局选项、preAction、8 个命令组
+│   ├── index.ts          program 装配：全局选项、preAction、13 个命令组、根级 --version 处理
 │   ├── client.ts         axios 实例：Bearer 头、401 单飞刷新、信封拆包、formatApiError
 │   ├── config.ts         conf 持久存储（0600）、env 覆盖、clearAuth、showConfig
 │   ├── commands/         login / tasks / apps / executors / deploy / audit / exec
-│   └── __tests__/        client、commands、config-security、exec、executors-nf07
+│   │                     / projects / sop / agent / apikeys / approval
+│   └── __tests__/        client、commands、cli-gaps、config-security、exec、
+│                         executors-nf07、ux-uniform、release-metadata、projects
 ```
 
-## 命令清单（自 src/commands/ 注册代码核实，共 39 个子命令）
+## 命令清单（自 src/commands/ 注册代码核实，共 63 个子命令）
 
 | 组 | 子命令 |
 |---|---|
-| `acf login` | 交互式（或 `--url/--user/--password`）登录，存双 token |
-| `acf task`（18） | `list` `get` `create` `update` `delete` `trigger`（`--wait` 等待完成）`executions` `logs` `stats` `versions` `rollback --version` `compare` `analyze` `suggest-schedule` `pause` `resume` `kill` `lint <file>`（本地语法检查 js/mjs/cjs/py/sh） |
-| `acf app`（9） | `list` `get` `create` `update` `delete` `analyze`（AI 健康分析）`deploy`（省略 `--executor` 时自动选最低负载在线执行器）`deployments [appId]` `versions` |
+| `acf login`（3） | `login` 交互式（或 `--url/--user/--password`，TOTP 加 `--code`）登录，存双 token；`whoami` 打印当前身份/角色（ADMIN 面自检）；`logout` 服务端吊销 + 清本地（2026-10-08 补，CLI-AGENT-UX-AUDIT） |
+| `acf task`（23） | `list`（`--search` 走 name OR description）`get` `create` `update` `delete` `trigger`（`--params` 按 run 覆盖；`--wait` 等待完成）`executions` `logs` `stats` `versions` `rollback --version` `compare` `analyze` `suggest-schedule` `pause` `resume` `kill` `export` `import` `batch` `webhook` `glue` `lint <file>`（本地语法检查 js/mjs/cjs/py/sh） |
+| `acf app`（12） | `list` `get` `create`（`--body`，`--json <body>` 过渡别名）`update` `delete` `analyze`（AI 健康分析）`deploy`（缺省 `-m scheduled`——仅部署、中台触发；显式 once/daemon 预警"立即执行"）`deployments [appId]` `versions`（legacy alias）`releases <appId>`（DEP-01 统一发布追溯）`upload <zip>`（multipart upsert）`upgrade-all <appId>`（全量/灰度） |
 | `acf executor`（4） | `list` `get` `rotate <nameOrId>`（ADMIN，新 token 只显示一次）`offline <nameOrId>`（ADMIN，不中断运行中任务） |
-| `acf deploy`（2） | `upgrade <deploymentId>`（overlay 升级拉最新应用版本）`stop <deploymentId>` |
+| `acf deploy`（4） | `list [appId]`（与 `app deployments` 同源）`upgrade <deploymentId>`（overlay 升级拉最新应用版本）`stop <deploymentId>` `remove <deploymentId>`（删除终态记录 failed/stopped，其余 409） |
+| `acf approval`（4） | `list`（待办队列）`approve <id> --note` `reject <id> --note` `cancel <id>` |
+| `acf apikey`（3） | `create --name --scope [--expires]`（明文只回显一次）`list` `revoke <id>` |
 | `acf audit`（1） | `list`（审计日志，倒序分页过滤） |
 | `acf exec`（1） | `tail <execId>`（SSE 实时跟踪执行日志；已终结则打印后退出） |
+| `acf project`（2） | `list` `members <id>` |
+| `acf sop`（2） | `list` `show <id>` |
+| `acf agent`（1） | `sessions`（Agent 会话） |
 | `acf config`（3） | `show` `set-url <url>` `set-token <token>` |
 
 ## 鉴权与凭据
@@ -70,7 +77,7 @@ acf executor rotate <nameOrId>    # 轮换执行器 token，新 token 只在输�
 acf deploy upgrade <deploymentId> # 应用 overlay 升级
 ```
 
-版本与帮助：`acf --version` 打印 `1.0.0`（index.ts 硬编码）；每个命令组支持 `--help`。进程退出码：成功 0，抛错 1（`program.parseAsync` 的 catch 统一处理）。
+版本与帮助：`acf --version` / `acf -V` 打印 package.json 的 version（**根命令不注册 --version 选项**——Commander 根层扫描会劫持子命令 `app upload` / `app upgrade-all` / `task rollback` 的同名选项，改由根 unknownOption 接管根级请求，子命令的 `--version` 各归其位）；每个命令组支持 `--help`（根帮助顶部有 `acf v<version>` 横幅）。进程退出码：成功 0，用法错误 2，认证失败 3，网络失败 4，中断 130（表见 [包 README](../../../packages/acf-cli/README.md)「退出码」，单一事实源在 `src/ui.ts`）。
 
 ## 与其他组件的关系
 
