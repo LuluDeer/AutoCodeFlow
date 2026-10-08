@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.10.0](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.9.0...v1.10.0) (2026-10-08)
+
+### 版本对齐
+
+* 随 lockstep 组同步 bump 至 1.10.0,本包代码零变更。**说明**：本包 1.9.0 从未发布（npm 最新仍为 1.8.0）——1.9.0 的 tag/Release 停在 Draft 且 release PR 被 version-guard 拦下,即仓库文档所述「半拉子发布」。本版首发带上锁步组在 1.9.0 之后累积的全部变更。
+
 ## [1.9.0](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.8.0...v1.9.0) (2026-10-07)
 
 ### 版本对齐

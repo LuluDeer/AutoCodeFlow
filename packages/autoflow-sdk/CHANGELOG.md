@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.10.0](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.9.0...v1.10.0) (2026-10-08)
+
+### 版本对齐
+
+* 随 lockstep 组同步 bump 至 1.10.0,本包代码零变更；1.9.0 已在 PyPI 发布,本版为其后的常规锁步推进。
+
 ## [1.9.0](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.8.0...v1.9.0) (2026-10-07)
 
 ### 版本对齐

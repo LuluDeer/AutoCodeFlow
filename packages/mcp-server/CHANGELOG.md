@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.10.0](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.9.0...v1.10.0) (2026-10-08)
+
+### Bug Fixes
+
+* **mcp-server:** 部署缺省不再落 daemon + 补齐 annotations/ADMIN 标注 ([b487ecf](https://github.com/LuluDeer/AutoCodeFlow/commit/b487ecfd8cc437a33926e42d76089a021a962e3d))
+* **ci-guards:** 修复两个腐烂的 agent 检查脚本并纳入 CI ([1ac0c49](https://github.com/LuluDeer/AutoCodeFlow/commit/1ac0c4931b1c9dcbb63e18fb1d0a2f73d7a3b1e6))
+
+> 版本号说明：本版为 lockstep 组统一版本 1.10.0（release-please 单独计算本包为 1.9.1；组内取最高 bump,且 1.9.0 的 mcp-server 已发布,重发会被 npm EP409 幂等拦下）。
+
 ## [1.9.0](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.8.0...v1.9.0) (2026-10-07)
 
 
