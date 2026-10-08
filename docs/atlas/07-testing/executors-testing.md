@@ -77,6 +77,6 @@
 - 四个主进程自测的源码位置（2026-09-13 核实）：`src/main/path-domain.selftest.ts`（路径域：安装目录/数据目录/工作目录边界）、`src/main/token-crypto.selftest.ts`（令牌加解密）、`src/main/updater.selftest.ts`（自动更新链）、`src/main/notifier-rules.selftest.ts`（通知规则匹配）。**自测文件与被测代码同目录就近放置**是该应用既定模式（无独立 test 目录）；`dist-selftest/` 是编译产物目录（如 `path-domain.selftest.js`）。
 - CI 挂载：
   - `desktop-linux-bundle` job：跑 `test:main` 后打 AppImage/deb（仅 PR/手动）。
-  - `desktop-e2e-smoke` job：跑 `test:e2e`（仅 PR/手动，windows-latest，`ELECTRON_DISABLE_GPU=1` 软渲染兜底）。
+  - `desktop-e2e-smoke` job：跑 `test:e2e`（**每次 develop push**，windows-latest，`ELECTRON_DISABLE_GPU=1` 软渲染兜底）。2026-10-08 起由 PR/手动门控改为随主干跑——此前 6/6 develop push 全部 skip，守卫腐烂（首次真跑即暴露两个独立根因：locale 未钉死 + preload 通道白名单漂移）。
   - `desktop-bundle-drift` job：离线重打 ncc bundle 与入库产物 `git diff`，防 `resources/executor-node` 与 executor-node 源码漂移（W-18）。
 - 失败时先看：`test:main` 失败看 dist-selftest 某一个自测的断言输出（tsc 编译失败则看 `tsconfig.selftest.json` 是否漏了新自测文件）；`test:e2e` 失败看 Playwright 截图与 GPU 兜底变量。桌面端结构见 [executor-desktop README](../01-apps/executor-desktop/README.md) 与 [ipc-and-security](../01-apps/executor-desktop/ipc-and-security.md)。

@@ -61,7 +61,8 @@
 | `windows-node-tests` | windows-latest 上 executor-node / acf-cli / mcp-server 单测（Windows 兼容基线，R15-3.5） |
 | `e2e-full` | ubuntu 全链 45 例 Playwright（PG/Redis 由 services 提供，`SKIP_DOCKER=1`） |
 | `e2e-full-windows` | 同一 spec 在 windows-latest（仅 PR / 手动 / schedule，W-28） |
-| `desktop-linux-bundle` / `desktop-e2e-smoke` | 桌面端 `test:main` 自测 + 打包闸 / Playwright `_electron` 冒烟 3 例（均仅 PR / 手动） |
+| `desktop-linux-bundle` | 桌面端 `test:main` 自测 + 打包闸（仅 PR / 手动） |
+| `desktop-e2e-smoke` | Playwright `_electron` 冒烟 8 例（含 locale 无关化 + preload 通道白名单防漂移）；**每次 develop push 跑**（2026-10-08 起，此前 PR/手动门控导致 6/6 develop push 全 skip、长期无人发现地腐烂） |
 | `desktop-bundle-drift` | 离线重打 ncc bundle 与入库产物 git diff（W-18 防漂移） |
 | `check-migrations` / `private-registry-contract` / `npm-audit` / `lockfile-integrity` / `secret-scan` | 迁移登记自检 / 私服契约（dry-run）/ 依赖审计（moderate+ 红灯）/ lockfile 漂移 / 泄漏扫描 |
 | `api-types-drift` | OpenAPI 导出与前端类型生成物 diff（契约面防漂移，ARCH-23） |

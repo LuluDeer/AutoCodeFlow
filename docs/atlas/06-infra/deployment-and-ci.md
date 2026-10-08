@@ -32,7 +32,7 @@
 | Node 包 | `executor-node-test`、`acf-cli-test`、`mcp-server-test`、`autocodeflow-node-sdk-test`（coverage）、`admin-web-build`（lint+build，基线 0 error/5 warning） |
 | 安全 | `npm-audit`（5 项目 matrix，moderate 红灯，GHSA 豁免清单 fail-closed）；`lockfile-integrity`（7 项目 `npm ci --dry-run --ignore-scripts` 防锁文件漂移）；`secret-scan`（gitleaks 全量历史） |
 | Python | `executor-python-test`、`autoflow-sdk-python-test`、`python-packages-test`（autocodeflow-http/notify/db/ai matrix）、`registry-pypi-test`（均 py3.12） |
-| 桌面端 | `desktop-bundle-drift`（ncc 重打 bundle 与入库产物 diff，W-18）；`desktop-linux-bundle`（AppImage+deb，PR/手动）；`desktop-e2e-smoke`（Playwright _electron 3 例，windows，PR/手动） |
+| 桌面端 | `desktop-bundle-drift`（ncc 重打 bundle 与入库产物 diff，W-18）；`desktop-linux-bundle`（AppImage+deb，PR/手动）；`desktop-e2e-smoke`（Playwright _electron 8 例，windows，**每次 develop push**） |
 | Windows 基线 | `windows-node-tests`（executor-node/acf-cli/mcp-server matrix）、`windows-admin-web` |
 | E2E 全链 | `e2e-full`（ubuntu，48 例 Playwright，PG 15432/Redis 16379，`SKIP_DOCKER=1` 走 `scripts/e2e-full.sh`）；`e2e-full-windows`（windows，PR/手动/schedule，预装 PG 服务 + portable Redis） |
 | 契约/杂项 | `check-migrations`（时间戳分配表校验 ARCH-29）；`private-registry-contract`（bug18 selftest `--dry-run`）；`docs-site-build`（DOC-09 sync-check + VitePress build 死链 fail）；`api-types-drift`（重导 openapi.json / api-types.ts 并 git diff，见 [README 生成链](../05-interfaces/README.md)） |
