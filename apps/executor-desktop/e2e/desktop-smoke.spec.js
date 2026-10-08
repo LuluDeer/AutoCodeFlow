@@ -24,11 +24,31 @@ const APP_ENTRY = path.join(__dirname, '..', 'dist', 'main', 'index.js');
 // 故此 spec 实际从未在 CI 成功过（PR #4~#7 均同一形态失败）。
 const ELECTRON_BIN = require('electron');
 
+// 语言必须**钉死**，否则全部中文锚点都是 locale 相关的：
+// 渲染层 locale 取 navigator.language（i18n.ts resolveRendererLocale：`en*`
+// → 英文表，其余回落中文），而 GitHub 的 windows-latest runner 缺省 locale
+// 是 en-US → 向导渲染 "Welcome" 而非 "欢迎使用"，本 spec 的十几处中文断言
+// 在 CI 上必然全红（本地 zh-CN 机器则恒绿——这正是它长期"本地过、CI 挂"
+// 的根因）。
+//
+// 注意本 job 的失败形态会**误导排查**：第 53 行的品牌名 "AutoCodeFlow
+// Executor" 中英同形、先通过，失败停在第 54 行的「欢迎使用」，看起来像
+// "向导没渲染出来/白屏"，实际只是语言不同。
+//
+// n10-desktop.spec.js 早已用同一手法钉住 --lang=zh-CN（见其 launchApp 注释
+// "CI runner 缺省 locale 是 en，必须在启动参数里钉住中文"）；本 spec 此前
+// 漏了这一步。env 的 LANG/LC_ALL 是 Linux 侧双保险（Windows 不读它们，
+// 真正生效的是 --lang）。
 function launchApp(extraEnv = {}) {
   return electron.launch({
     executablePath: ELECTRON_BIN,
-    args: [APP_ENTRY],
-    env: { ...process.env, ...extraEnv },
+    args: ['--lang=zh-CN', APP_ENTRY],
+    env: {
+      ...process.env,
+      LANG: 'zh_CN.UTF-8',
+      LC_ALL: 'zh_CN.UTF-8',
+      ...extraEnv,
+    },
   });
 }
 
@@ -89,12 +109,28 @@ test.describe('executor-desktop 冒烟（Playwright _electron）', () => {
       // writeClipboardText 共 9 个。白名单失守意味着"通道漂移守卫"名存实亡
       // （新通道加进来不会有任何提示）。此处按**实测运行时**对齐，
       // 并保留"新增即红"的原意：下次加通道而不改这里，本用例仍会红。
+      //
+      // 拓展包（a8a380e4）再补 3 个：exportConfig / importConfig / exportExecLog。
+      // 三者都已在主进程有真实 handler（ipc-handlers.ts 的 config:export /
+      // config:import / history:export-log），并由 export-flows.selftest 钉住
+      // 各自的守卫链（掩码导出、sanitize 消毒、copyFile 不改原文件 + 大文件拦截），
+      // 属"实现已落地、白名单没跟上"，不是新增未实现的通道。
+      //
+      // getHistory 推送化（7efe5ab2）再补 1 个：onHistoryChanged。meta 目录变更哨
+      // 以 fs.watch + debounce 广播 history:changed（main/index.ts），替代双页 10s
+      // 轮询；preload 暴露 onHistoryChanged 供历史页/状态页订阅。同样属实现已落地。
+      //
+      // 教训：本地 `dist/` 是**上一次 build 的产物**，直接跑 e2e 会漏掉「新增但
+      // 未重建」的通道（本地 41 vs CI 44 vs 实际 48）。改动 preload 后必须
+      // `npm run build` 再跑本用例，否则白名单会以过期运行时为准。
       expect(channels).toEqual(
         [
           'checkForUpdate', 'checkPort', 'clearHistory', 'closeWindow', 'deleteAppRelease',
-          'downloadUpdate', 'getAgentStatus', 'getAutoLaunch', 'getConfig', 'getHistory',
+          'downloadUpdate', 'exportConfig', 'exportExecLog', 'getAgentStatus', 'getAutoLaunch',
+          'getConfig', 'getHistory',
           'getLocalIPs', 'getPythonEnvStatus', 'getRunningApps', 'getStatus', 'getTodayLogs',
-          'getWindowState', 'installUpdate', 'listApps', 'listLogFiles', 'minimizeWindow', 'onLogLine',
+          'getWindowState', 'importConfig', 'installUpdate', 'listApps', 'listLogFiles', 'minimizeWindow',
+          'onHistoryChanged', 'onLogLine',
           'onStatusChange', 'onSwitchTab', 'onUpdateAvailable', 'onUpdateDownloaded',
           'onWindowMaximizeChange',
           'onUpdateError', 'onUpdateProgress', 'openAppFolder', 'openLogFile',
