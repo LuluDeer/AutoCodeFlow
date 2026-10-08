@@ -1,118 +1,213 @@
-# 预存在的 CI 未覆盖缺陷（2026-10-08 提交前侦察发现）
+# 两个过时的 agent 检查脚本（已修复 + 双向验证）
 
-> 背景：在提交 CLI/MCP 修复前，本地跑了仓库守卫以排查「本地绿、CI 红」的风险。
-> 发现两项**与本次改动无关、且在 HEAD 即失败**的缺陷。CI **不会**捕获它们
-> （原因为 `test:agent` / `test:sop` 不在 CI 任何 job 的调用清单里），所以不会阻塞
-> 本次提交——但它们是真缺陷，登记于此以免丢失。
+> 日期：2026-10-08 · 基线 commit：`cf2f82ee`
+> 起因：提交 CLI/MCP 修复前跑仓库守卫，发现 `agent-boundary-check` 与
+> `agent-sop-check` 两项红。用 `git stash` 取基线确认**在 HEAD 即失败、与本轮改动无关**。
+> 结论：**两者都不是产品缺陷，而是服务演进后未同步的检查脚本**。均已修复。
 >
-> 验证方法（基线）：`git stash push -u` 后跑同一脚本，失败完全一致。
+> ⚠ **本文含一处重要更正**：初稿把第 1 项定性为「未纳管的工具有绕过边界闸的风险」。
+> **该定性是错的** —— 复核闸门源码后确认它是 **fail-closed**（未知工具一律拒绝）。
+> 详见 §1 的更正说明。
 
 ---
 
-## 1. `agent-boundary-check` 红 2 项：agent 边界闸未覆盖 9 个 MCP 工具
+## 0. 修复结果
 
-**脚本**：`scripts/agent-boundary-check.mjs`（`npm run test:agent` 的第二段）
-
-**失败输出**：
-
-```
-✘ mcp-server 侧解析到 43 个工具名 — mcp=52
-✘ Agent 工具集覆盖 mcp-server 全部工具（无遗漏） —
-   missing=export_task,import_task,list_task_templates,sop_list,sop_get,
-           sop_assignments_pending,agent_session_list,agent_session_get,
-           sop_clarification_reply
-```
-
-**实测基线**：
-
-| 事实 | 值 | 来源 |
+| 检查 | 修复前 | 修复后 |
 |---|---|---|
-| `scripts/agent-boundary-check.mjs:144` 期望 | `=== 43` | 硬编码断言 |
-| `packages/mcp-server/src/tools.ts` 实际 | **52**（HEAD 时已是 52） | `git show HEAD:...tools.ts` 计数 |
-| agent 工具注册表条目 | 49 | `tool-registry.ts` 的 `name:"` 计数 |
+| `test:agent`（runtime + boundary + trigger） | ✘ 2 项失败 | ✅ 254 断言全绿（100 / 66 / 88） |
+| `test:sop` | 未捕获异常 `exit=1` | ✅ 148 断言全绿 |
 
-**为什么是真缺陷（而非测试过时）**：该脚本的**意图**是「agent 边界闸（tier / 白名单 /
-熔断 / 速率）必须纳管 mcp-server 的每一个工具」——即任何 agent 能调用的工具都要过闸。
-现在 9 个工具（export/import/templates/SOP/agent sessions/clarification reply）
-**不在** agent 工具集内，意味着这些面若经 agent 触达，**不经过边界闸的 tier 判定与
-速率限制**。其中：
-- `sop_clarification_reply` 是 `dangerous` 级语义（会改线上 SOP）；
-- `import_task` 会创建任务；
-- 其余为读面（export/list/get），风险较低但同样属"未纳管"。
-
-**建议修法**（两条路，需产品裁定）：
-1. **补齐**：把 9 个工具加入 `AGENT_TOOL_SPECS`（给 tier + parameters），并把断言
-   的 43 改为从 mcp-server 动态解析（去掉硬编码，让守卫自身不再漂移）；
-2. **显式排除**：若产品决定这些面**不应**给 agent 调用，则把断言改为
-   「agent 工具集 ⊆ mcp-server 工具集」+ 一份显式的 `AGENT_EXCLUDED_TOOLS` 白名单，
-   并断言两者互补覆盖全部 52 个——这样"排除"是**有记录的决定**而非沉默缺口。
-
-我倾向 **方案 2**：`sop_*` / `agent_session_*` 面向 ADMIN-only 端点，与
-`registerProjectTools` 既往「成员写面刻意不进自动化面」的口径一致；但必须有显式
-排除清单，否则下次加工具又会静默漏掉。
-
-**⚠ 注意**：断言 `mcpNames.length === 43` 这种**硬编码计数**是本次漂移的根因——
-mcp-server 从 43 涨到 52 时，没有任何机制提醒该脚本。修法应一并去掉硬编码。
+两者均已做**负向验证**（故意破坏 → 必须变红），确保断言不是摆设。
 
 ---
 
-## 2. `agent-sop-check` 抛未捕获异常退出
+## 1. `agent-boundary-check`：断言前提腐烂（非安全缺口）
 
-**脚本**：`scripts/agent-sop-check.mjs`（`npm run test:sop`）
+### 1.1 ⚠ 更正：边界闸是 fail-closed，不存在"绕过"
 
-**失败输出**：
+初稿写「9 个工具不在 agent 工具集内，意味着这些面若经 agent 触达，**不经过边界闸的
+tier 判定与速率限制**」。**这是错的**。闸门源码 `agent-boundary.service.ts:134-142`：
+
+```ts
+const spec = AGENT_TOOL_BY_NAME.get(toolName);
+
+// ── ① 工具存在性 + 会话白名单 ──────────────────────────────────
+if (!spec) {
+  return this.deny(
+    "not_in_toolset",
+    `未知工具 ${toolName}——不在 Agent 工具集内。`,
+  );
+}
+```
+
+未注册的工具走 `deny("not_in_toolset")` —— **拒绝**，不是放行。而且该性质**早已有
+红队断言覆盖**（`agent-boundary-check.mjs` §3）：
+
+```js
+const v4 = gate.check(makeSession(), "rm_rf_everything", {}, 0);
+check("红队：未知工具被拒", v4.kind === "DENY" && v4.reason === "not_in_toolset");
+```
+
+所以这**从来不是安全缺口**：不在工具集里的工具，agent 根本调不动。初稿把「功能上
+不可用」误读成了「安全上未校验」，方向正好相反。
+
+### 1.2 真正的根因：硬编码 + 错误前提
+
+原断言（`agent-boundary-check.mjs:133-150`）写死了三个数字，其隐含前提是
+**「agent 工具面 == mcp 工具面」**：
+
+```js
+check("43 个收编工具全部登记", AGENT_TOOL_SPECS.length === 43, ...);
+check("mcp-server 侧解析到 43 个工具名", mcpNames.length === 43, ...);
+check("Agent 工具集覆盖 mcp-server 全部工具（无遗漏）", missing.length === 0, ...);
+```
+
+但两个面**本就是刻意不同的**，实测数据：
+
+| 集合 | 数量 | 说明 |
+|---|---|---|
+| `AGENT_TOOL_SPECS`（LLM 可见） | 43 | 喂给模型 function-calling 的工具 |
+| `AGENT_INTERNAL_TOOL_SPECS` | 6 | `sop_list` `sop_get` `sop_draft` `sop_publish` `sop_assign` `sop_reply_clarification` |
+| `ALL_AGENT_TOOL_SPECS`（闸门全集） | 49 | 上面两者之和 = 闸门认识的工具 |
+| `mcp-server` 工具 | 52 | — |
+
+- MCP 比 agent 多出的 9 个里，`sop_list` / `sop_get` **其实已被内部工具覆盖**（同名）；
+  真正两边都没有的是 **7 个**：`export_task`、`import_task`、`list_task_templates`、
+  `sop_assignments_pending`、`agent_session_list`、`agent_session_get`、
+  `sop_clarification_reply`。
+- agent 侧另有 MCP 没有的：`sop_draft` / `sop_publish` / `sop_assign`
+  （且 MCP 叫 `sop_clarification_reply`，agent 叫 `sop_reply_clarification`——**命名
+  也不同**，说明这是两条独立设计的通路，不是同一份清单的镜像）。
+
+**硬编码 `=== 43` 是漂移根源**：mcp-server 从 43 涨到 52 的整个过程中，没有任何机制
+提醒这个脚本。
+
+### 1.3 修法（已实施）
+
+把「必须镜像」换成**两条真正该成立的不变量**，并让"排除"成为显式决定：
+
+1. **每个 MCP 工具要么被闸门纳管、要么在显式排除清单里** —— 新增 MCP 工具时若两者
+   都不满足即红，**迫使做一次显式决定**，而不是静默漏掉。
+2. **排除清单本身受双向约束**：无过期项（MCP 已删的工具要移除）、与纳管集合不重叠
+   （声明排除却又登记 = 自相矛盾）。
+
+去掉了全部硬编码计数，断言改为动态解析。显式排除清单（含理由）落在脚本内：
+
+```js
+const MCP_TOOLS_EXCLUDED_FROM_AGENT = [
+  // 任务流转的导入导出与模板面：面向人的搬运/脚手架，非 Agent 运行时职责
+  // （import_task 会真的创建任务，交给 Agent 自主创建属扩权）。
+  "export_task", "import_task", "list_task_templates",
+  // SOP 协作面（执行器侧经 /api/agent-collab 走自己的令牌通道），
+  // 与 Agent 的中台侧工具面是两条不同的通路。
+  "sop_assignments_pending", "sop_clarification_reply",
+  // Agent 会话自省：ADMIN 在中台查看 Agent 的推理轨迹用，
+  // 让 Agent 读自己的会话列表没有运行时用途。
+  "agent_session_list", "agent_session_get",
+];
+```
+
+> **注意措辞**：脚本断言的是「要么纳管、要么**显式声明排除**」，而不是断言某组工具
+> "应该"被排除。它不替产品做决定，只**强制决定被记录下来**。若产品后续要开放
+> `import_task` 给 Agent，正确动作是把它加进 `AGENT_TOOL_SPECS`，此时"重叠"断言会
+> 提醒把排除清单里的同名项删掉。
+
+### 1.4 负向验证
+
+向 `mcp-server/src/tools.ts` 注入一个既未纳管也不在排除清单的
+`brand_new_ungated_tool`：
 
 ```
-✔ boost patch/minor/major 递增正确
-✔ 版本快照独立（各自 contentHash）
-✔ 已发布版本不受工作副本编辑影响（不可变真身）
-[Nest] LOG [SopService] SOP published: slug=daily-report version=1.0.0
-apps/admin-api/.sop-check/src/modules/sop/sop.service.js:446
-    throw new common_1.ForbiddenException("指派不属于该执行器");
-ForbiddenException: 指派不属于该执行器
-    at SopService.ingestClarification (...sop.service.js:446:19)
-    at async .../scripts/agent-sop-check.mjs:426:16
-Node.js v24.21.0
-exit=1
+[CAUGHT] guard exit=1
+   ✘ 每个 mcp 工具要么被闸门纳管、要么在显式排除清单里（新工具必须做决定）
+     — 未纳管且未声明排除=brand_new_ungated_tool
+restored: guard exit=0
 ```
 
-**性质**：脚本自身**未捕获**该 403，于是以裸 Node 异常退出（打印转译产物的绝对路径
-堆栈），而非走它自己的断言汇总。这既是**被测逻辑的问题**（`ingestClarification` 对
-「指派不属于该执行器」的判定与脚本构造的数据不符），也是**脚本健壮性问题**
-（一个预期内的 403 不该让整个检查以未捕获异常崩掉）。
-
-**为什么 CI 没抓**：`test:sop` 同样不在任何 CI job 的调用清单里。
-
-**建议修法**：先把脚本第 426 行那个调用包进 try/catch 并转成一条 `check()` 断言
-（让失败可读），再判断断言本身期望什么——是"应当 403"还是"数据构造有误"。
+还原后 `dev` 侧工具数回到 52、无注入残留。
 
 ---
 
-## 3. 附带发现：CI 未覆盖的 `test:agent` / `test:sop`
+## 2. `agent-sop-check`：脚本未跟上服务契约演进
 
-上面两个脚本属于根 `package.json` 的 `test:agent` 与 `test:sop`，但：
-- `npm run test:unit` **不含**它们（只列 api/node/python/web/cli/mcp/pypi/sdk/lib*）；
-- CI 的 `selftests` job 用**显式脚本清单**（`test:arch31-*` / `pull-dispatch` /
+### 2.1 根因（两个叠加）
+
+**(a) `ingestClarification` 新增归属断言，脚本没传 `executorId`**
+
+服务层加了 B-1 越权闸（`sop.service.ts:574-576`）：
+
+```ts
+if (a.targetExecutorId !== input.executorId) {
+  throw new ForbiddenException("指派不属于该执行器");
+}
+```
+
+脚本的 9 处 `ingestClarification` 调用**都没传 `executorId`** → `undefined !== UUID_A`
+→ 403 → 未捕获 → 整个检查以裸 Node 异常中断（打印转译产物绝对路径堆栈）。
+
+修法：按各自指派的执行器补参（`a2` → `UUID_B`，其余 → `UUID_A`）——**逐调用点推导而
+非一律填 `UUID_A`**，否则会静默削弱 `a2` 那个不同执行器用例的覆盖。
+
+**(b) `pendingReplyItems` 改用 QueryBuilder，脚本假 repo 没实现**
+
+修完 (a) 后暴露下一个同类问题：B-11 把「只拉已落定且晚于游标的行」下推到 SQL，
+`pendingReplyItems` 改用 `clarifications.createQueryBuilder()`，而脚本的 `makeRepo`
+替身没有该方法 → `TypeError: this.clarifications.createQueryBuilder is not a function`。
+
+修法：给替身加最小 QueryBuilder（`where` / `andWhere` / `orderBy` / `getMany`）。
+**关键细节**：服务侧的内存兜底过滤只重复了 `resolution !== null` 与游标比较，
+**没有重复 `assignmentId` 收窄**（它假定 SQL 已按指派范围拉过数据）。所以替身**必须
+自己实现 assignmentId 谓词**——否则会把别的工单的澄清回复一起投递。
+
+### 2.2 补的 4 条断言（不止于"让它变绿"）
+
+`ingestClarification` 的 403 正是本脚本崩溃的根因，但**此前没有任何断言覆盖它**。
+补上：
+
+- `B-1：澄清通道校验指派归属（别的执行器不能塞澄清）` —— 正向覆盖崩溃根因。
+
+再加一个独立块覆盖上述 QueryBuilder 盲区：
+
+- `A 的 poll 只拿到自己指派的澄清回复（不跨指派投递）`
+- `A 的 poll 不含 B 的澄清 id`
+- `B 的 poll 只拿到自己指派的澄清回复`
+
+**这 3 条的负向验证**（去掉替身里的 assignmentId 过滤）：
+
+```
+✘ A 的 poll 只拿到自己指派的澄清回复（不跨指派投递）
+✘ A 的 poll 不含 B 的澄清 id
+✘ B 的 poll 只拿到自己指派的澄清回复
+=== 3 项失败 ===
+```
+
+即：**在补这 3 条之前，去掉该过滤是没有任何断言会红的**——它们专为那个盲区存在。
+
+---
+
+## 3. 为什么 CI 一直没抓：`test:agent` / `test:sop` 不在任何 job 里
+
+- `npm run test:unit` **不含**它们（只列 api/node/python/web/cli/mcp/pypi/sdk/lib*/desktop）；
+- CI `selftests` job 用**显式脚本清单**（`test:arch31-*` / `pull-dispatch` /
   `control-plane-pull` / `qa05-callback-tier` / `oidc-sso` / `nginx-sse` /
   `ha-compose` / `registry-npm`），**不含** `test:agent` / `test:sop`。
 
 这正是 `ci.yml` 顶部注释里记过的那类风险（"6/6 develop push 全 skip、长期无人发现地
-腐烂"）——建议把 `test:agent` / `test:sop` 纳入 `selftests` job（或新建 agent job），
-否则它们会继续腐烂。
+腐烂"）。**现在两者都已转绿，具备纳入条件**——建议加入 `selftests` job（或新建 agent
+job），否则它们会再次腐烂。
 
-> **⚠ 顺序要求（重要）**：**不能**直接把 `test:agent` / `test:sop` 加进 CI —— 它们
-> 当前是红的（即本文 §1/§2 两项缺陷），直接纳入会立刻让主干变红。正确顺序是：
-> **先修 §1（agent 边界闸补齐或显式排除 9 个工具）与 §2（脚本 try/catch + 断言化），
-> 两者转绿后再纳入 CI**。这样"纳入"才是净收益，而不是把一个已知红的状态固化。
->
-> 我未在本轮顺手纳入的原因：修 §1 需要产品裁定（那 9 个工具是"该给 agent 用"
-> 还是"刻意排除"），属架构决定而非缺陷修复；把它塞进一个 CLI/MCP 的修复提交会让
-> 裁定藏在噪音里。
+> 初稿曾写「不能直接把这两个红脚本加进 CI」。该顺序要求现已满足：先修红、再纳入。
 
 ---
 
-## 与本次提交的关系
+## 4. 证据边界
 
-以上**均非本轮改动引入**：基线验证在本轮改动 stash 后跑出完全相同的失败。
-本轮 CLI/MCP 修复**不触碰** `apps/admin-api/src/modules/agent/**` 与
-`modules/sop/**`，故未一并修改（避免把无关的架构裁定绑进一个修复提交）。
+- 闸门 fail-closed 的结论来自**源码直读**（`agent-boundary.service.ts:134-142`）+
+  脚本内既有红队断言（§3 的 `rm_rf_everything`）；未做真机 HTTP 往返（admin-api 未起）。
+- 「7 个真正两边都没有」由脚本机械比对 `ALL_AGENT_TOOL_SPECS` ↔ `mcp-server` 的
+  `server.tool(` 解析结果得出，非人工清点。
+- 排除清单里的**理由**是依据各工具的语义与既有口径推断的（如 `registerProjectTools`
+  的"成员写面刻意不进自动化面"），属**记录现状**；脚本断言不依赖这些理由成立，
+  仅要求"有决定"。
+- 两处修复均做负向验证（破坏 → 必红），避免产生"恒真断言"。

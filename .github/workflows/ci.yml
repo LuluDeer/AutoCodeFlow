@@ -926,6 +926,15 @@ jobs:
           npm run test:nginx-sse
           npm run test:ha-compose
           npm run test:registry-npm
+          # agent / SOP 域的离线行为检查（transpile admin-api 源码 + 桩 repo，
+          # 无 DB / 网络依赖——与上面各 selftest 同性质）。
+          # 2026-10-08 纳入：此前两者不在任何 CI job 的清单里，已各自腐烂到红
+          # 而无人发现（agent-boundary-check 的硬编码 43 与"必须镜像 mcp"前提
+          # 过期、agent-sop-check 未跟上 ingestClarification 的归属断言）。
+          # 修好后立即纳入，否则会再次腐烂 —— 见
+          # docs/PRE-EXISTING-CI-GAPS-2026-10-08.md。
+          npm run test:agent
+          npm run test:sop
 
   # ── Python services & packages ────────────────────────────
   executor-python-test:

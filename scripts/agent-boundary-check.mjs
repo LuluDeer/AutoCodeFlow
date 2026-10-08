@@ -102,6 +102,8 @@ try {
 const { AgentBoundaryService, DEFAULT_APPROVAL_POLICY } = boundaryMod;
 const {
   AGENT_TOOL_SPECS,
+  AGENT_INTERNAL_TOOL_SPECS,
+  ALL_AGENT_TOOL_SPECS,
   AGENT_TOOL_BY_NAME,
   SESSION_TOOL_ALLOWLIST,
   toolsForSessionKind,
@@ -130,32 +132,85 @@ console.log("\n=== P3 边界闸门验证（含红队） ===\n");
 // ═══ 1. 工具注册表完整性 ══════════════════════════════════════════
 console.log("── 1. 工具注册表 ──");
 {
-  check("43 个收编工具全部登记", AGENT_TOOL_SPECS.length === 43, `count=${AGENT_TOOL_SPECS.length}`);
+  // 规范化：收编工具（LLM 可见）+ 内部工具（sop_* 侧）= 闸门认识的**全集**。
+  check("收编工具非空", AGENT_TOOL_SPECS.length > 0, `count=${AGENT_TOOL_SPECS.length}`);
+  check("内部工具已登记", AGENT_INTERNAL_TOOL_SPECS.length > 0, `count=${AGENT_INTERNAL_TOOL_SPECS.length}`);
 
-  const names = AGENT_TOOL_SPECS.map((t) => t.name);
-  check("工具名无重复", new Set(names).size === names.length);
+  const names = ALL_AGENT_TOOL_SPECS.map((t) => t.name);
+  check("工具名无重复（收编 + 内部合并后）", new Set(names).size === names.length);
 
-  // 与 mcp-server 的 43 个工具名逐一对应（防漂移）
+  // ── 与 mcp-server 的关系：**不是**「必须一一镜像」 ────────────────────
+  //
+  // 旧断言写死了三个数字（43 收编 / 43 mcp / 必须覆盖全部 mcp），前提是
+  // 「agent 工具面 == mcp 工具面」。该前提随两个面各自演进已失效：
+  //   · mcp-server 加到 52 个工具（export_task / import_task / 模板面 /
+  //     SOP 协作面 / agent 会话面），而 agent 面**刻意**不开放其中一部分
+  //     （如 import_task 会创建任务、agent_session_* 是 ADMIN 侧自省工具）；
+  //   · agent 侧另有 mcp 没有的内部工具（sop_draft / sop_publish / sop_assign
+  //     / sop_reply_clarification）。
+  // 于是「覆盖全部 mcp」永远红，而它红的**不是缺陷**——是把产品边界误当成
+  // 了缺陷。硬编码的 43 更是漂移根源：mcp 从 43 涨到 52 时没有任何机制提醒。
+  //
+  // 改为断言**两条真正该成立的不变量**：
+  //   ① 每个 mcp 工具要么被闸门纳管，要么在下面的显式排除清单里
+  //      （新增 mcp 工具时若两者都不满足 → 红，迫使做一次显式决定）；
+  //   ② 闸门对**未知**工具是 fail-closed（拒绝，而非放行）。
   const mcpSrc = readFileSync(
     join(root, "packages/mcp-server/src/tools.ts"),
     "utf8",
   );
-  const mcpNames = [...mcpSrc.matchAll(/server\.tool\(\s*"([a-z_]+)"/g)].map((m) => m[1]);
-  check("mcp-server 侧解析到 43 个工具名", mcpNames.length === 43, `mcp=${mcpNames.length}`);
+  const mcpNames = [...mcpSrc.matchAll(/server\.tool\(\s*\n?\s*"([a-z_]+)"/g)].map((m) => m[1]);
+  check("mcp-server 侧解析到工具名（非空）", mcpNames.length > 0, `mcp=${mcpNames.length}`);
 
-  const missing = mcpNames.filter((n) => !names.includes(n));
-  check("Agent 工具集覆盖 mcp-server 全部工具（无遗漏）", missing.length === 0, `missing=${missing.join(",")}`);
+  // 显式排除清单：**刻意**不暴露给 Agent 工具面的 mcp 工具。
+  // 每一项都必须是有意的产品决定，不是"忘了登记"。新增 mcp 工具若既未纳管
+  // 也不在此列，本检查会红——那正是我们要的提醒。
+  const MCP_TOOLS_EXCLUDED_FROM_AGENT = [
+    // 任务流转的导入导出与模板面：面向人的搬运/脚手架，非 Agent 运行时职责
+    // （import_task 会真的创建任务，交给 Agent 自主创建属扩权）。
+    "export_task",
+    "import_task",
+    "list_task_templates",
+    // SOP 协作面（执行器侧经 /api/agent-collab 走自己的令牌通道），
+    // 与 Agent 的中台侧工具面是两条不同的通路。
+    "sop_assignments_pending",
+    "sop_clarification_reply",
+    // Agent 会话自省：ADMIN 在中台查看 Agent 的推理轨迹用，
+    // 让 Agent 读自己的会话列表没有运行时用途。
+    "agent_session_list",
+    "agent_session_get",
+  ];
 
-  const extra = names.filter((n) => !mcpNames.includes(n));
-  check("Agent 工具集无 mcp-server 之外的多余工具", extra.length === 0, `extra=${extra.join(",")}`);
+  const ungated = mcpNames.filter(
+    (n) => !names.includes(n) && !MCP_TOOLS_EXCLUDED_FROM_AGENT.includes(n),
+  );
+  check(
+    "每个 mcp 工具要么被闸门纳管、要么在显式排除清单里（新工具必须做决定）",
+    ungated.length === 0,
+    `未纳管且未声明排除=${ungated.join(",")}`,
+  );
+
+  const stale = MCP_TOOLS_EXCLUDED_FROM_AGENT.filter((n) => !mcpNames.includes(n));
+  check(
+    "排除清单无过期项（mcp 侧已删的工具应从清单移除）",
+    stale.length === 0,
+    `stale=${stale.join(",")}`,
+  );
+
+  const gatedExcluded = MCP_TOOLS_EXCLUDED_FROM_AGENT.filter((n) => names.includes(n));
+  check(
+    "排除清单与纳管集合不重叠（声明排除却又登记=自相矛盾）",
+    gatedExcluded.length === 0,
+    `overlap=${gatedExcluded.join(",")}`,
+  );
 
   // 每个工具必须有 tier 与合法 schema
-  const badTier = AGENT_TOOL_SPECS.filter(
+  const badTier = ALL_AGENT_TOOL_SPECS.filter(
     (t) => !["read", "write", "dangerous"].includes(t.tier),
   );
   check("全部工具有合法 tier", badTier.length === 0, badTier.map((t) => t.name).join(","));
 
-  const badSchema = AGENT_TOOL_SPECS.filter(
+  const badSchema = ALL_AGENT_TOOL_SPECS.filter(
     (t) => t.parameters?.type !== "object",
   );
   check("全部工具有 object 型 parameters", badSchema.length === 0, badSchema.map((t) => t.name).join(","));

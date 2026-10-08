@@ -286,6 +286,39 @@ console.log("\n── 2. SopService（发布/指派/澄清/完成）──");
         }
         return { affected }; // CAS（claim.affected !== 1）依赖返回值
       },
+      /**
+       * 最小 QueryBuilder 替身（B-11 下推后新增：SopService.pendingReplyItems
+       * 改用 clarifications.createQueryBuilder 只拉「已落定且晚于游标」的行）。
+       *
+       * ⚠ 必须忠实实现**参数化的 assignmentId 谓词**：服务侧的内存兜底过滤
+       * （pendingReplyItems 里的 .filter(...)）只重复了 `resolution !== null`
+       * 与游标比较两个条件，**并没有重复 assignmentId 收窄**——它假定 SQL 已经
+       * 按指派范围拉过数据了。所以桩若不按 assignmentId 过滤，就会把**别的
+       * 工单**的澄清回复一起投递，让「跨执行器不串数据」的断言假绿。
+       * `resolution IS NOT NULL` 则确实由服务兜底覆盖，此处刻意不重复实现。
+       */
+      createQueryBuilder() {
+        const conds = [];
+        const qb = {
+          where(sql, params) { conds.push({ sql, params }); return qb; },
+          andWhere(sql, params) { conds.push({ sql, params }); return qb; },
+          orderBy() { return qb; },
+          async getMany() {
+            let out = [...rows];
+            for (const c of conds) {
+              if (c.params && "assignmentId" in c.params) {
+                out = out.filter((r) => r.assignmentId === c.params.assignmentId);
+              }
+              if (c.params && "cursor" in c.params) {
+                const cursor = new Date(c.params.cursor).getTime();
+                out = out.filter((r) => new Date(r.updatedAt).getTime() > cursor);
+              }
+            }
+            return out;
+          },
+        };
+        return qb;
+      },
     };
   }
 
@@ -424,13 +457,33 @@ console.log("\n── 2. SopService（发布/指派/澄清/完成）──");
 
     // 幂等：同 clientClarificationId 重发 → 同一行
     const c1 = await svc.ingestClarification({
+      executorId: UUID_A,
       assignmentId: a.id, clientClarificationId: "clr-1", question: "按钮找不到",
     });
     const c1dupe = await svc.ingestClarification({
+      executorId: UUID_A,
       assignmentId: a.id, clientClarificationId: "clr-1", question: "按钮找不到",
     });
     check("澄清幂等（clientClarificationId 去重）", c1.clarification.id === c1dupe.clarification.id);
     check("触发 sop_review 会话", c1.clarification.reviewSessionId !== null);
+
+    // B-1 归属断言：澄清通道是**跨执行器**面，没有这道闸任何 agent:sop 机器
+    // 都能往别人的工单塞澄清。这条断言正是本脚本此前崩溃的根因所在——服务层
+    // 加了归属校验而脚本没跟上（未传 executorId → undefined !== UUID_A → 403），
+    // 于是整个检查以未捕获异常中断。补上反向断言，让「归属校验存在」这件事
+    // 本身被钉住，而不只是让脚本不再崩。
+    let ingestDenied = false;
+    try {
+      await svc.ingestClarification({
+        executorId: UUID_B,
+        assignmentId: a.id,
+        clientClarificationId: "clr-cross-executor",
+        question: "越权塞澄清",
+      });
+    } catch {
+      ingestDenied = true;
+    }
+    check("B-1：澄清通道校验指派归属（别的执行器不能塞澄清）", ingestDenied);
 
     // 会话作用域 = 只授权这份 SOP
     const asgRow = asgRepo.rows.find((r) => r.id === a.id);
@@ -443,6 +496,7 @@ console.log("\n── 2. SopService（发布/指派/澄清/完成）──");
     // 造满轮次：直接把 clarificationRound 顶到 maxRounds
     await asgRepo.update({ id: a2.id }, { clarificationRound: 5, maxRounds: 5 });
     const c2 = await svc.ingestClarification({
+      executorId: UUID_B,
       assignmentId: a2.id, clientClarificationId: "clr-max", question: "还要问一轮",
     });
     check("maxRounds 触顶 → 强制 escalated_to_human（不再起会话）",
@@ -468,6 +522,7 @@ console.log("\n── 2. SopService（发布/指派/澄清/完成）──");
 
     // 回复：sop_amended → 发 patch 新版本（对第二条「未触顶」的澄清）
     const c3 = await svc.ingestClarification({
+      executorId: UUID_A,
       assignmentId: a.id, clientClarificationId: "clr-2", question: "导出按钮点了没反应",
     });
     const vBefore = (await svc.listVersions(sop.id))[0];
@@ -516,7 +571,7 @@ console.log("\n── 2. SopService（发布/指派/澄清/完成）──");
     const idle = await svc.pollPending({ executorId: UUID_A });
     check("无回复时 poll 不产生回复条目", idle.length === 0);
 
-    const c1 = await svc.ingestClarification({ assignmentId: a.id, clientClarificationId: "clr-d1", question: "q1" });
+    const c1 = await svc.ingestClarification({ executorId: UUID_A, assignmentId: a.id, clientClarificationId: "clr-d1", question: "q1" });
     await svc.replyClarification({ clarificationId: c1.clarification.id, resolution: "answered", answer: "答 1", replyBy: "agent:review" });
     const d1 = await svc.pollPending({ executorId: UUID_A });
     check("回复随 poll 投递（clarification_reply 条目）",
@@ -538,7 +593,7 @@ console.log("\n── 2. SopService（发布/指派/澄清/完成）──");
     } catch { denied = true; }
     check("ACK 校验指派归属（别人的机器不能推游标）", denied);
 
-    const c2 = await svc.ingestClarification({ assignmentId: a.id, clientClarificationId: "clr-d2", question: "q2" });
+    const c2 = await svc.ingestClarification({ executorId: UUID_A, assignmentId: a.id, clientClarificationId: "clr-d2", question: "q2" });
     await svc.replyClarification({
       clarificationId: c2.clarification.id, resolution: "sop_amended", answer: "已修订",
       amendedFrontMatterYaml: VALID_YAML.replace("daily-report-app", "daily-report-app-v3"),
@@ -551,7 +606,7 @@ console.log("\n── 2. SopService（发布/指派/澄清/完成）──");
       amended?.newSop?.bodyMarkdown === "# body");
     await svc.ackClarificationReply({ assignmentId: a.id, executorId: UUID_A, clarificationId: c2.clarification.id });
 
-    const c3 = await svc.ingestClarification({ assignmentId: a.id, clientClarificationId: "clr-d3", question: "q3" });
+    const c3 = await svc.ingestClarification({ executorId: UUID_A, assignmentId: a.id, clientClarificationId: "clr-d3", question: "q3" });
     let unresolvable = false;
     try {
       await svc.ackClarificationReply({ assignmentId: a.id, executorId: UUID_A, clarificationId: c3.clarification.id });
@@ -563,6 +618,53 @@ console.log("\n── 2. SopService（发布/指派/澄清/完成）──");
       resend.some((x) => x.kind === "assignment" && x.assignmentId === a.id));
     const other = await svc.pollPending({ executorId: UUID_B });
     check("定向重发不影响其它执行器的待办", other.length === 0);
+  }
+
+  // ── 澄清回复投递**不跨指派**（B-11 游标下推后的回归守卫）─────────────
+  // 背景：B-11 把「只拉已落定且晚于游标的行」下推到 SQL，于是
+  // pendingReplyItems 改用 clarifications.createQueryBuilder()。服务侧的
+  // 内存兜底过滤**只重复了 resolution 与游标两个条件，没有重复 assignmentId
+  // 收窄**（它假定 SQL 已按指派范围拉过数据）。
+  //
+  // 因此本检查里的 QueryBuilder 替身必须自己实现 assignmentId 谓词——否则
+  // 就是把别的工单的澄清回复一起投递，而断言可能仍然"看起来通过"。实测：
+  // 把替身里的 assignmentId 过滤去掉后，**此前的 145 条断言没有一条会红**，
+  // 所以这条断言是必要的（它专门覆盖那个盲区）。
+  {
+    const opts = { sessionSeq: 100 };
+    const { svc } = makeSvc(opts);
+    const { sop } = await seedPublished(svc, "no-cross-assignment");
+
+    // 两个不同执行器的指派，各自拥有一条已回复的澄清
+    const aA = await svc.assign({ sopId: sop.id, executorId: UUID_A, assignedBy: "user:u1" });
+    const aB = await svc.assign({ sopId: sop.id, executorId: UUID_B, assignedBy: "user:u1" });
+    await svc.pollPending({ executorId: UUID_A });
+    await svc.pollPending({ executorId: UUID_B });
+
+    const cA = await svc.ingestClarification({
+      executorId: UUID_A, assignmentId: aA.id, clientClarificationId: "x-a", question: "A 的问题",
+    });
+    const cB = await svc.ingestClarification({
+      executorId: UUID_B, assignmentId: aB.id, clientClarificationId: "x-b", question: "B 的问题",
+    });
+    await svc.replyClarification({
+      clarificationId: cA.clarification.id, resolution: "answered", answer: "答 A", replyBy: "agent:review",
+    });
+    await svc.replyClarification({
+      clarificationId: cB.clarification.id, resolution: "answered", answer: "答 B", replyBy: "agent:review",
+    });
+
+    const pollA = await svc.pollPending({ executorId: UUID_A });
+    const repliesA = pollA.filter((x) => x.kind === "clarification_reply");
+    check("A 的 poll 只拿到自己指派的澄清回复（不跨指派投递）",
+      repliesA.length === 1 && repliesA[0].answer === "答 A");
+    check("A 的 poll 不含 B 的澄清 id",
+      !repliesA.some((x) => x.clarificationId === cB.clarification.id));
+
+    const pollB = await svc.pollPending({ executorId: UUID_B });
+    const repliesB = pollB.filter((x) => x.kind === "clarification_reply");
+    check("B 的 poll 只拿到自己指派的澄清回复",
+      repliesB.length === 1 && repliesB[0].answer === "答 B");
   }
 
   // ── 澄清复核兜底 + 人工接管（收敛性切片：blocked 一定有出口）──
@@ -593,7 +695,7 @@ console.log("\n── 2. SopService（发布/指派/澄清/完成）──");
     const { sop } = await seedPublished(svc, "review-fallback");
     const a = await svc.assign({ sopId: sop.id, executorId: UUID_A, assignedBy: "user:u1" });
     await svc.pollPending({ executorId: UUID_A }); // 领取（in_progress）
-    const c1 = await svc.ingestClarification({ assignmentId: a.id, clientClarificationId: "clr-s1", question: "q1" });
+    const c1 = await svc.ingestClarification({ executorId: UUID_A, assignmentId: a.id, clientClarificationId: "clr-s1", question: "q1" });
     // 会话失败 → sweep 兜底
     svc._sessionStore.set(c1.clarification.reviewSessionId, "failed");
     await svc.sweepStuckClarifications();
@@ -604,7 +706,7 @@ console.log("\n── 2. SopService（发布/指派/澄清/完成）──");
     check("兜底发出升级通知（fail-open 通道）", svc._notifyCalls.length >= 1);
 
     // 健康的 running 不被兜底
-    const c2 = await svc.ingestClarification({ assignmentId: a.id, clientClarificationId: "clr-s2", question: "q2" });
+    const c2 = await svc.ingestClarification({ executorId: UUID_A, assignmentId: a.id, clientClarificationId: "clr-s2", question: "q2" });
     await svc.sweepStuckClarifications();
     let row2 = clarRepo.rows.find((r) => r.id === c2.clarification.id);
     check("running 中的复核会话不被兜底", row2.resolution === null);
