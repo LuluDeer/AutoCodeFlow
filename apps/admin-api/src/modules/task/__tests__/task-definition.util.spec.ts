@@ -274,5 +274,62 @@ describe("task-definition.util（E-1 导出/导入纯函数）", () => {
       expect(importNameCandidate("X", 2)).toBe("X (imported) 2");
       expect(importNameCandidate("X", 20)).toBe("X (imported) 20");
     });
+
+    // FEAT-RENAME：importDefinition 是**服务层直调 create()**（不经 HTTP
+    // DTO 管道），create 也不校验名称长度——越界值直达 PG 报 22001（笼统
+    // 500）。后缀拼接必须自己裁剪到上限内。
+    //
+    // 长度口径 = **码点**，与 PG varchar(255) 实测一致（255 emoji 接受、
+    // 256 拒绝；128 emoji 虽是 256 个 UTF-16 码元却只有 128 码点，同样接受）。
+    describe("长度上限（255 码点）", () => {
+      it("长名 + 后缀不越界，且后缀完整保留", () => {
+        const long = "备".repeat(255);
+        for (const ordinal of [1, 2, 20]) {
+          const out = importNameCandidate(long, ordinal);
+          expect(Array.from(out).length).toBeLessThanOrEqual(255);
+          // 后缀是"这是导入副本"的语义载体，必须完整
+          expect(
+            out.endsWith(
+              ordinal === 1 ? " (imported)" : ` (imported) ${ordinal}`,
+            ),
+          ).toBe(true);
+        }
+      });
+
+      it("恰好 255 的原名 + 后缀 → 裁剪原名而非丢后缀", () => {
+        const out = importNameCandidate("a".repeat(255), 1);
+        expect(Array.from(out).length).toBe(255);
+        expect(out).toBe(
+          `${"a".repeat(255 - " (imported)".length)} (imported)`,
+        );
+      });
+
+      it("短名不受影响（零行为变化）", () => {
+        expect(importNameCandidate("nightly", 1)).toBe("nightly (imported)");
+      });
+
+      it("按码点裁剪：emoji 名字不产生孤立代理项且不越界", () => {
+        // 300 个 emoji：若按 UTF-16 码元 slice 会切出半个代理对，PG 以
+        // "invalid byte sequence for encoding UTF8" 拒绝整条请求。
+        const emoji = "🚀".repeat(300);
+        const out = importNameCandidate(emoji, 1);
+        // 码点口径：255 - 11 = 244 个 emoji + 后缀
+        expect(Array.from(out).length).toBe(255);
+        expect(() => Buffer.from(out, "utf8")).not.toThrow();
+        expect(out).not.toContain("\uFFFD");
+        // 头部每个码点都是完整 emoji（没有被劈开）
+        const head = out.slice(0, -" (imported)".length);
+        expect(Array.from(head).every((c) => c === "🚀")).toBe(true);
+      });
+
+      it("emoji 名在 DB 上限内不被误裁（128 个 emoji = 256 码元但仅 128 码点）", () => {
+        // 反证：若上限按 UTF-16 码元算（value.length），这里 128+11=139 码元
+        // 仍不越界；但 200 个 emoji（400 码元 / 200 码点）会被误判越界而遭
+        // 无谓裁剪——DB 明明接受。
+        const out = importNameCandidate("🚀".repeat(200), 1);
+        expect(Array.from(out).length).toBe(200 + " (imported)".length);
+        expect(out.startsWith("🚀".repeat(200))).toBe(true);
+      });
+    });
   });
 });

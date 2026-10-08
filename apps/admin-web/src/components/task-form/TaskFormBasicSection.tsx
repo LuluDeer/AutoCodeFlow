@@ -142,17 +142,48 @@ export default function TaskFormBasicSection({
           label={t('taskForm.field.name')}
           rules={[
             { required: true, message: t('taskForm.field.name.required') },
-            // 字符白名单只在**新建**时校验：编辑态名字是 disabled 的不可变
-            // 标识（不进 update 载荷），存量任务名若含非 ASCII 字符，对
-            // 禁用字段套白名单会把每一次编辑保存都拦死，用户却无从修复
-            // （同款先例：ApplicationListPage，1a4d3758）。
-            ...(!isEdit
-              ? [{ pattern: /^[a-zA-Z0-9_-]+$/, message: t('taskForm.field.name.pattern') }]
-              : []),
+            // 任务名允许**任意语言**（中文/日文/emoji 均可）。此前是一条
+            // `/^[a-zA-Z0-9_-]+$/` 白名单，把中文用户逼成英文名——而后端
+            // （TaskService / CreateTaskDto）从未要求过 ASCII，那是纯前端限制。
+            // 现收敛到与后端同一判据（task-name.constraint.ts）：只禁控制字符
+            // 与首尾空白、限长 255。校验**编辑态同样生效**——名称已可修改，
+            // 不再是"不可变标识"，旧注释里"编辑态套白名单会拦死存量任务"的
+            // 顾虑随之消失（存量非 ASCII 名现在本就合法）。
+            {
+              validator: (_rule, value) => {
+                if (value === undefined || value === null || value === '') {
+                  return Promise.resolve(); // 空值交给 required
+                }
+                if (typeof value !== 'string') {
+                  return Promise.reject(new Error(t('taskForm.field.name.invalid')));
+                }
+                if (value !== value.trim()) {
+                  return Promise.reject(new Error(t('taskForm.field.name.trimmed')));
+                }
+                // 控制字符（含换行/制表符）：会进日志行与通知标题，伪造结构
+                if (/[\p{Cc}\p{Cf}]/u.test(value)) {
+                  return Promise.reject(new Error(t('taskForm.field.name.controlChars')));
+                }
+                // 长度按**码点**计，与后端 TASK_NAME_MAX_LENGTH 及 PG
+                // varchar(255) 同口径。`value.length` 数的是 UTF-16 码元，
+                // 对 emoji 会多算一倍——用它会把 DB 完全接受的名字拦死。
+                if (Array.from(value).length > 255) {
+                  return Promise.reject(new Error(t('taskForm.field.name.tooLong')));
+                }
+                return Promise.resolve();
+              },
+            },
           ]}
           tooltip={{ title: isEdit ? t('taskForm.field.name.tooltipEdit') : t('taskForm.field.name.tooltip'), icon: <InfoCircleOutlined /> }}
         >
-          <Input placeholder="daily-report" disabled={isEdit} />
+          {/*
+            刻意**不**设 maxLength：antd 的 maxLength 数的是 UTF-16 码元，
+            与上面校验器（码点）和后端 TASK_NAME_MAX_LENGTH 口径不一致——
+            对 emoji 名字会在 ~128 个字符处静默截断输入，而 API 明明接受
+            255 个码点。长度判定收敛到校验器一处，超限时给明确文案而非
+            无声吃字。
+          */}
+          <Input placeholder="daily-report" />
         </Form.Item>
 
         <Form.Item name="description" label={t('taskForm.field.description.optional')}>

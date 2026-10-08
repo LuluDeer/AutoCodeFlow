@@ -256,7 +256,21 @@ export class TaskController {
   @ApiQuery({
     name: "name",
     required: false,
-    description: "Fuzzy search by task name",
+    description:
+      "Fuzzy search by task name ONLY (backward-compatible channel; CLI/MCP " +
+      "use it). The console search box uses `q` instead, because its " +
+      "placeholder promises name OR description.",
+  })
+  // FEAT-TASK-SEARCH: 控制台搜索框的关键字通道（name OR description）。
+  // 与上面 `name` 的分工见 ListTasksQueryDto 的字段注释。
+  @ApiQuery({
+    name: "q",
+    required: false,
+    description:
+      "Keyword search across BOTH task name and description. LIKE " +
+      "metacharacters (% and _) are matched literally, so a search for " +
+      "`daily_report` does not also match `dailyXreport`. Composable with " +
+      "every other list filter.",
   })
   @ApiQuery({
     name: "runtime",

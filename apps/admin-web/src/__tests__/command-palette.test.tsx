@@ -495,7 +495,10 @@ describe('CommandPalette — 数据流（防抖 / 降级 / 守卫）', () => {
       });
       // 四路并行各恰好 1 次；tasks 携带服务端模糊参数与分页形态
       expect(mockedTasks.list).toHaveBeenCalledTimes(1);
-      expect(mockedTasks.list).toHaveBeenCalledWith({ page: 1, pageSize: 50, name: 'deploy' });
+      // FEAT-TASK-SEARCH：tasks 分组发 `q`（name OR description）——与任务列表
+      // 页同一条通道。此前发 `name`（只搜任务名），而本组客户端过滤是
+      // `name || description`，描述那一半永远命中不到。
+      expect(mockedTasks.list).toHaveBeenCalledWith({ page: 1, pageSize: 50, q: 'deploy' });
       expect(mockedExecutors.list).toHaveBeenCalledTimes(1);
       expect(mockedExecutors.list).toHaveBeenCalledWith();
       expect(mockedApps.list).toHaveBeenCalledTimes(1);
@@ -518,7 +521,7 @@ describe('CommandPalette — 数据流（防抖 / 降级 / 守卫）', () => {
         vi.advanceTimersByTime(1);
       });
       expect(mockedTasks.list).toHaveBeenCalledTimes(2);
-      expect(mockedTasks.list).toHaveBeenLastCalledWith({ page: 1, pageSize: 50, name: 'deploy-x' });
+      expect(mockedTasks.list).toHaveBeenLastCalledWith({ page: 1, pageSize: 50, q: 'deploy-x' });
     } finally {
       vi.useRealTimers();
     }

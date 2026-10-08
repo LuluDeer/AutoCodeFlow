@@ -1,6 +1,8 @@
 import { BadRequestException, ConflictException } from "@nestjs/common";
 import { CreateTaskDto } from "./dto/create-task.dto";
 import { Task } from "./entities/task.entity";
+// FEAT-RENAME: 导入重名后缀必须裁剪到任务名上限内（见 importNameCandidate）。
+import { TASK_NAME_MAX_LENGTH } from "./dto/task-name.constraint";
 
 /**
  * E-1（任务定义导入/导出）：导出物装配与导入映射的**纯函数**层。
@@ -185,11 +187,24 @@ export function buildTaskExportResult(task: Task): TaskExportResult {
 /**
  * 导入重名后缀推导：ordinal 0 = 原名；1 = 首次冲突 → ` (imported)`；
  * n ≥ 2 = 仍冲突 → ` (imported) n`。纯函数（后缀策略单测钉住）。
+ *
+ * FEAT-RENAME：结果**必须**裁剪到任务名上限内。此前直接拼接，一个 250 字符
+ * 的导入名加 ` (imported) 20`（最长后缀 14 字符）会越过 255 上限——而
+ * importDefinition 是**服务层直调 create()**（不经 HTTP DTO 管道），
+ * TaskService.create 也不校验名称长度，于是越界值直达 PG，报
+ * `value too long for type character varying(255)`（22001）→ 笼统 500。
+ *
+ * 裁剪按**码点**而非 UTF-16 码元：`slice` 以码元计，恰好切在 emoji（代理对）
+ * 中间会留下孤立代理项，PG 以 "invalid byte sequence for encoding UTF8" 拒绝。
+ * 后缀本身是纯 ASCII，优先保证它完整（它承载"这是导入副本"的语义）。
  */
 export function importNameCandidate(base: string, ordinal: number): string {
   if (ordinal <= 0) return base;
-  if (ordinal === 1) return `${base} (imported)`;
-  return `${base} (imported) ${ordinal}`;
+  const suffix = ordinal === 1 ? " (imported)" : ` (imported) ${ordinal}`;
+  const budget = TASK_NAME_MAX_LENGTH - suffix.length;
+  if (budget <= 0) return suffix.slice(0, TASK_NAME_MAX_LENGTH);
+  const head = Array.from(base).slice(0, budget).join("");
+  return `${head}${suffix}`;
 }
 
 /**
