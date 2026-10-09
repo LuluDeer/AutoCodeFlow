@@ -64,6 +64,7 @@
  *   node scripts/check-release-config.mjs            # 校验
  *   node scripts/check-release-config.mjs --selftest # 自测（含反例，证明有牙）
  */
+import { execFileSync } from "node:child_process";
 import { readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -242,9 +243,6 @@ export function checkReleaseConfig({ rpConfig, matrix, guardedDirs, versions, ma
   //    release-please 只打一条 "did not exist" 的 warning 就跳过（版本号不广播，
   //    tag 后 version-guard 才红）；缺注解时 Generic updater 直接原样返回
   //    （实测：无注解的 md 文件内容一字不改）。二者是同一类「配了等于没配」。
-  // ①e exclude-paths 的每个条目都必须是**真实存在**的路径——写错（如把
-  //    .qoder 写成 .qodo）不报错，但该目录的提交会漏进 1.x 版本线，让无关改动
-  //    驱动 1.x 发版（本轮实测踩到过一次）。
   if (fsFacts) {
     const { exists, readText } = fsFacts;
     for (const ef of rootPkg?.["extra-files"] ?? []) {
@@ -268,11 +266,23 @@ export function checkReleaseConfig({ rpConfig, matrix, guardedDirs, versions, ma
         );
       }
     }
+  }
+
+  // ①e exclude-paths 的每个条目都必须**含有 git 跟踪文件**。
+  //
+  // 判据是「跟踪」而非「磁盘存在」：exclude-paths 的作用对象是提交里的 files
+  // 列表，未跟踪目录永远不会出现在任何提交里，因此这类条目是**纯死配置**。
+  // 而「磁盘存在」还依赖本地检出状态——CI 干净检出里 .qoder/.turbo/.devin 等
+  // 并不存在，用磁盘存在当判据会让守卫在本地与 CI 上给出**不同结论**
+  // （实测：本地绿、CI 红 11 条）。死条目本身不危险，但它让配置看起来比实际
+  // 更严密，且会掩盖真正的拼写错误（把 .qoder 写成 .qodo 时两者都是
+  // 「0 跟踪文件」，仅凭黑名单无法区分，必须删掉死条目才能让拼写错误显形）。
+  if (fsFacts?.isTracked) {
     for (const ep of rootPkg?.["exclude-paths"] ?? []) {
-      if (!exists(ep)) {
+      if (!fsFacts.isTracked(ep)) {
         problems.push(
-          `① root exclude-paths 里的 "${ep}" 不存在`
-            + `——该条目不生效，其下提交会误驱动 1.x 版本线`,
+          `① root exclude-paths 里的 "${ep}" 没有任何 git 跟踪文件`
+            + `——该条目是死配置（未跟踪目录不会出现在提交文件列表里），应删除以免掩盖真正的拼写错误`,
         );
       }
     }
@@ -416,6 +426,20 @@ export function checkRepo(root = findRepoRoot()) {
             return readFileSync(join(root, rel), "utf-8");
           } catch {
             return null;
+          }
+        },
+        // 「有没有 git 跟踪文件」——用 git ls-files 而非磁盘存在性，避免
+        // 本地检出状态影响结论（CI 干净检出里 .qoder/.turbo 等并不存在）。
+        isTracked: (rel) => {
+          try {
+            const out = execFileSync("git", ["ls-files", "--", rel], {
+              cwd: root,
+              encoding: "utf-8",
+              stdio: ["ignore", "pipe", "ignore"],
+            });
+            return out.trim().length > 0;
+          } catch {
+            return true; // git 不可用时不做该层判断，避免误报
           }
         },
       },
@@ -612,14 +636,15 @@ export function selftest() {
       1,
     ],
     [
-      // 静默失效类：exclude-paths 写错（若把 .qoder 写成 .qodo）→ 该目录提交
-      // 会漏进 1.x 版本线，让无关改动驱动发版。本轮实测踩到过一次。
-      // 只让 ".qodo" 不存在，其余路径（含全部 extra-files 目标）照常存在，
-      // 这样断言到的就是 ①e 这一条，不会被 ①d 级联污染。
-      "①e exclude-paths 里的路径不存在被抓（提交会误驱动版本线）",
+      // 死配置类：exclude-paths 条目若没有任何 git 跟踪文件，它永远匹配不到
+      // 提交文件，是纯死配置——且会掩盖真正的拼写错误（把 .qoder 写成 .qodo 时
+      // 两者都是「0 跟踪文件」，只看黑名单无法区分）。
+      // 判据刻意用 isTracked（git ls-files）而非磁盘存在性：后者会让本守卫在
+      // 本地与 CI 上给出不同结论（实测本地绿 / CI 红 11 条）。
+      "①e exclude-paths 里的死条目被抓（无 git 跟踪文件）",
       run({
         rpConfig: { ...baseRp, packages: { ...baseRp.packages, ".": { ...rootPkgBase, "exclude-paths": ["apps", ".qodo"] } } },
-        fsFacts: { exists: (rel) => rel !== ".qodo", readText: () => "x-release-please-version" },
+        fsFacts: { exists: () => true, readText: () => "x-release-please-version", isTracked: (rel) => rel !== ".qodo" },
       }),
       1,
     ],
