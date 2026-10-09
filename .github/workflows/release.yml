@@ -76,7 +76,12 @@ jobs:
               with open(path, encoding="utf-8") as f:
                   return re.search(pattern, f.read(), re.M).group(1)
 
+          # version.txt 是 release-please root 条目（`.`，release-type: simple +
+          # version-file）的事实源——它必须与 tag 同值，否则「tag 版本」与
+          # 「release-please 认定的当前版本」脱节，下一轮 Release PR 会算错 bump。
           checks = {
+              "version.txt (release-please root 条目的事实源)":
+                  open("version.txt", encoding="utf-8").read().strip(),
               "@autocodeflow/sdk (packages/autocodeflow-node-sdk/package.json)":
                   pkg_json_version("packages/autocodeflow-node-sdk/package.json"),
               "@autocodeflow/cli (packages/acf-cli/package.json)":

@@ -22,23 +22,44 @@ name: Release Please
 #   即：**Release PR 合并 → release-please 打 tag → tag 恰好触发 release.yml**
 #   ——发布管道、审批闸、幂等语义全部复用既有实现。
 #
-# lockstep 对齐（关键配置）：
-#   release-please-config.json 用 `include-component-in-tag: false`，tag 形态
-#   为裸 `vX.Y.Z`（非 `pkg-vX.Y.Z`），与 release.yml 的 tag 触发模式 `v*` 与
-#   version-guard 的 `v(\d+\.\d+\.\d+…)` 正则精确匹配。
+# lockstep 对齐（关键配置，2026-10 根治后）：
+#   release-please-config.json 用**单一 root 条目（"."）**承担整条 1.x 版本线：
+#     * `include-component-in-tag: false` → tag 形态为裸 `vX.Y.Z`，与 release.yml
+#       的 tag 触发模式 `v*` 与 version-guard 的 `v(\d+\.\d+\.\d+…)` 正则精确匹配；
+#     * 其余版本承载文件（三 npm 包的 package.json + package-lock.json 两个
+#       version 槽位、pyproject.toml、py SDK `__init__.py`、docs-site 五页、
+#       docs/sdk-guide.md）全部由该条目的 `extra-files` **广播**更新
+#       ——版本号只有一个来源，不再可能出现「包之间版本漂移」。
+#   py-libs 四包（autocodeflow-http/ai/db/notify）保留独立的 linked-versions 组，
+#   但**逐包打开 `include-component-in-tag: true`**，tag 形态为
+#   `autocodeflow-http-v0.2.2`——这样它们退出 `v*` 命名空间，不再误触发
+#   release.yml（历史实证：PR #29 同时产出 `v1.7.0` 与 `v0.2.2`，后者触发
+#   release.yml 并在 version-guard 上失败）。
 #
-# 已知限制（首次启用时观察点，见 docs/development.md「版本与发布流程」）：
-#   a) manifest 缺省：三包独立维护 changelog 头会各自提议版本；本仓 lockstep
-#      靠 version-guard 兜底——若三包 version 出现漂移，tag push 会被
-#      version-guard 拦截（fail 安全，不会发出不一致的包）。首次 Release PR
-#      合并前人工核对三包 version 已收敛为同一值。
-#   b) 根级 CHANGELOG.md 由 release-please 首次运行时生成（追加式，不覆盖
-#      手工历史）；若仓库已有手写 CHANGELOG.md 需先归档（当前仓库无根级
-#      CHANGELOG.md，已核实）。
-#   c) python 包的 extra-files（__init__.py 的 __version__）由
-#      release-please 的 python release-type 自动同步；首个 Release PR 里
-#      核对四处 version（含 autocodeflow-node-sdk/mcp-server package.json）
-#      是否齐全。
+# 为什么不是「每包一个条目 + 顶层 linked-versions」（2026-10 实测的三条硬事实）：
+#   1) `linked-versions` 是 plugin，只能写在 `plugins` 数组里。写成顶层键会被
+#      **静默丢弃**（schema 根 additionalProperties:false 且不含该键；
+#      manifest.js 只读 config['plugins']）——实测加载到的 plugins 数为 0。
+#   2) 即便写对位置，本仓也修不好：linked-versions 的 preconfigure() 用
+#      `strategy.getComponent()` 匹配组员，而 `include-component-in-tag: false`
+#      时该方法恒返回 `''`（base.js），组员匹配全部 continue 跳过 → 版本统一
+#      **永不执行**（实测日志「Found 0 group components」）；而同一个开关又控制
+#      tag 命名，打开它 tag 就变成 `pkg-vX.Y.Z`，与 `v*` 触发器不再匹配。
+#      ⇒ 裸 tag 与 linked-versions 在本仓**不可兼得**。上游 issue #1750
+#      （2022-11 报，2024-08 关闭且无修复提交）即此问题。
+#   3) 每包 component 都是 `''` 时，manifest.js 的 getPathsByComponent() 会把
+#      **全部包塌缩成同一个 `''` 键**（后者覆盖前者），基线解析因此找不到
+#      对应 release，每个版本都靠 backfillReleasesFromTag 兜底。
+#
+# 已知限制（现行）：
+#   a) 1.x 单版本线的 CHANGELOG 落在**根** CHANGELOG.md（root 条目的 changelog
+#      路径），不再逐包生成。各包 package.json 的 `files` 均不含 CHANGELOG，
+#      不影响发布物内容。
+#   b) root 条目用 release-type `simple` + `version-file: version.txt`，因此
+#      根 package.json（private，无消费者）的版本号**不**参与 lockstep；版本
+#      事实源是 version.txt 与各包清单，由 version-guard 强校验。
+#   c) py-libs 的 tag 带 component 前缀（`<pkg>-vX.Y.Z`），与 1.x 的裸
+#      `vX.Y.Z` 分属两个命名空间；两者互不干扰，且都不需要人工补 tag。
 on:
   push:
     branches:

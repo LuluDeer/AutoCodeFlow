@@ -1,37 +1,137 @@
 {
   "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
   "include-component-in-tag": false,
-  "plugins": [],
+  "separate-pull-requests": false,
+  "plugins": [
+    {
+      "type": "linked-versions",
+      "groupName": "autocodeflow-py-libs",
+      "components": [
+        "autocodeflow-http",
+        "autocodeflow-ai",
+        "autocodeflow-db",
+        "autocodeflow-notify"
+      ],
+      "merge": true
+    }
+  ],
   "packages": {
-    "packages/autocodeflow-node-sdk": {
-      "release-type": "node",
-      "component": "autocodeflow-sdk",
+    ".": {
+      "release-type": "simple",
+      "version-file": "version.txt",
+      "exclude-paths": [
+        "apps",
+        "docs",
+        "scripts",
+        ".github",
+        ".codeartsdoer",
+        ".codegraph",
+        ".devin",
+        ".kiro",
+        ".qoder",
+        ".turbo",
+        ".workbuddy",
+        ".workbuddy-ai",
+        ".zcode",
+        "config",
+        "data",
+        "design-system",
+        "examples",
+        "infra",
+        "interpreters",
+        "test-results",
+        "packages/docs-site",
+        "packages/executor-protocol",
+        "packages/contract-fixtures",
+        "packages/autocodeflow-http",
+        "packages/autocodeflow-ai",
+        "packages/autocodeflow-db",
+        "packages/autocodeflow-notify"
+      ],
       "extra-files": [
-        "/packages/docs-site/sdk-node.md",
-        "/packages/docs-site/sdk-python.md",
-        "/packages/docs-site/getting-started.md",
-        "/packages/docs-site/release.md",
-        "/packages/docs-site/index.md"
+        {
+          "type": "json",
+          "path": "/packages/autocodeflow-node-sdk/package.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "/packages/autocodeflow-node-sdk/package-lock.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "/packages/autocodeflow-node-sdk/package-lock.json",
+          "jsonpath": "$.packages[''].version"
+        },
+        {
+          "type": "json",
+          "path": "/packages/acf-cli/package.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "/packages/acf-cli/package-lock.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "/packages/acf-cli/package-lock.json",
+          "jsonpath": "$.packages[''].version"
+        },
+        {
+          "type": "json",
+          "path": "/packages/mcp-server/package.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "/packages/mcp-server/package-lock.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "/packages/mcp-server/package-lock.json",
+          "jsonpath": "$.packages[''].version"
+        },
+        {
+          "type": "generic",
+          "path": "/packages/autoflow-sdk/pyproject.toml"
+        },
+        {
+          "type": "generic",
+          "path": "/packages/autoflow-sdk/autoflow_sdk/__init__.py"
+        },
+        {
+          "type": "generic",
+          "path": "/packages/docs-site/sdk-node.md"
+        },
+        {
+          "type": "generic",
+          "path": "/packages/docs-site/sdk-python.md"
+        },
+        {
+          "type": "generic",
+          "path": "/packages/docs-site/getting-started.md"
+        },
+        {
+          "type": "generic",
+          "path": "/packages/docs-site/release.md"
+        },
+        {
+          "type": "generic",
+          "path": "/packages/docs-site/index.md"
+        },
+        {
+          "type": "generic",
+          "path": "/docs/sdk-guide.md"
+        }
       ]
-    },
-    "packages/mcp-server": {
-      "release-type": "node",
-      "component": "autocodeflow-mcp-server"
-    },
-    "packages/autoflow-sdk": {
-      "release-type": "python",
-      "component": "autoflow-sdk",
-      "extra-files": [
-        "autoflow_sdk/__init__.py"
-      ]
-    },
-    "packages/acf-cli": {
-      "release-type": "node",
-      "component": "autocodeflow-cli"
     },
     "packages/autocodeflow-http": {
       "release-type": "python",
       "component": "autocodeflow-http",
+      "include-component-in-tag": true,
       "extra-files": [
         "autocodeflow_http/__init__.py"
       ]
@@ -39,6 +139,7 @@
     "packages/autocodeflow-ai": {
       "release-type": "python",
       "component": "autocodeflow-ai",
+      "include-component-in-tag": true,
       "extra-files": [
         "autocodeflow_ai/__init__.py"
       ]
@@ -46,6 +147,7 @@
     "packages/autocodeflow-db": {
       "release-type": "python",
       "component": "autocodeflow-db",
+      "include-component-in-tag": true,
       "extra-files": [
         "autocodeflow_db/__init__.py"
       ]
@@ -53,30 +155,11 @@
     "packages/autocodeflow-notify": {
       "release-type": "python",
       "component": "autocodeflow-notify",
+      "include-component-in-tag": true,
       "extra-files": [
         "autocodeflow_notify/__init__.py"
       ]
     }
   },
-  "linked-versions": [
-    {
-      "groupName": "autocodeflow",
-      "components": [
-        "autocodeflow-sdk",
-        "autocodeflow-mcp-server",
-        "autocodeflow-cli",
-        "autoflow-sdk"
-      ]
-    },
-    {
-      "groupName": "autocodeflow-py-libs",
-      "components": [
-        "autocodeflow-http",
-        "autocodeflow-ai",
-        "autocodeflow-db",
-        "autocodeflow-notify"
-      ]
-    }
-  ],
   "prerelease": true
 }

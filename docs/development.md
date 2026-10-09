@@ -361,19 +361,35 @@ docs: 更新 SDK 使用示例
 1. 本仓 commit 纪律是中文 conventional commits（见上文「Git 提交规范」）——
    release-please 对 conventional commits 原生解析、零迁移成本；changesets
    需要 PR 手写 `.changeset/*.md` 增量文件，与既有纪律并行多一套仪式。
-2. 三包走 **lockstep 单版本线**（`@autocodeflow/sdk` / `autocodeflow-mcp-server` /
-   `autoflow-sdk` 当前均 1.0.1，`release.yml` 的 version-guard 强制四处 version
-   一致），不需要 changesets 的按包独立版本管理。
+2. 四包走 **lockstep 单版本线**（`@autocodeflow/sdk` / `autocodeflow-mcp-server` /
+   `@autocodeflow/cli` / `autoflow-sdk`，`release.yml` 的 version-guard 强制
+   多处 version 一致），不需要 changesets 的按包独立版本管理。
 3. release-please 对 node（package.json）+ python（pyproject.toml）混合仓原生
    支持；changesets 只管 npm 包。
 
-### 接入形态（最小正确）
+### 接入形态（2026-10 根治后的「最小正确」）
 
 | 文件 | 作用 |
 |------|------|
-| `.github/workflows/release-please.yml` | push 到 `main` 时汇总 conventional commits：有可发布变更 → 创建/更新 **Release PR**（bump 三包 version + 生成/追加根级 `CHANGELOG.md`）；Release PR 合并 → 打 tag `vX.Y.Z` + 创建 GitHub Release |
-| `release-please-config.json` | 三包路径 → release-type（node/node/python）；`include-component-in-tag: false` 使 tag 为裸 `vX.Y.Z`（非 `pkg-vX.Y.Z`） |
-| `release-please-manifest.json` | 记录已发布版本基线（当前 1.0.1） |
+| `.github/workflows/release-please.yml` | push 到 `main` 时汇总 conventional commits：有可发布变更 → 创建/更新 **Release PR**（bump 版本 + 生成/追加根级 `CHANGELOG.md`）；Release PR 合并 → 打 tag `vX.Y.Z` + 创建 GitHub Release |
+| `release-please-config.json` | **单一 root 条目（`.`）**承担整条 1.x 版本线 + `extra-files` **广播**到全部版本承载文件；`include-component-in-tag: false` 使 tag 为裸 `vX.Y.Z` |
+| `release-please-manifest.json` | 记录基线：`"."`（1.x 线）+ 四个 py-libs 各自版本 |
+| `version.txt` | root 条目的 `version-file`（`release-type: simple` 的事实源） |
+
+**版本号只有一个来源**：root 条目算出新版本后，由 `extra-files` 写入三个 npm 包的
+`package.json`、它们的 `package-lock.json`（**两个** version 槽位各一条 jsonpath）、
+`pyproject.toml`、py SDK `__init__.py`、docs-site 五页与 `docs/sdk-guide.md`。
+因此包之间**结构上不可能**出现版本漂移，不再需要任何人工补齐。
+
+> **为什么不再是「每包一个条目 + `linked-versions`」**（2026-10 实测三条硬事实，
+> 详见 `.github/workflows/release-please.yml` 头部注释与 `scripts/check-release-config.mjs`）：
+> ① `linked-versions` 只能写在 `plugins` 数组里，写顶层会被**静默丢弃**；
+> ② 即便写对位置，`include-component-in-tag: false` 会让
+> `getComponent()` 恒返回 `''`，`preconfigure()` 匹配零组员 → 版本统一**永不执行**，
+> 而打开该开关 tag 又变成 `pkg-vX.Y.Z`，与 `v*` 触发器不再匹配（⇒ 裸 tag 与
+> `linked-versions` 在本仓**不可兼得**，上游 issue #1750 至今未修）；
+> ③ 每包 component 都是 `''` 时 `getPathsByComponent()` 把全部包塌缩成同一个键，
+> 基线永远解析不到。
 
 ### 与 release.yml 的衔接（release.yml 本体零改动）
 
@@ -420,10 +436,13 @@ tag v* push ──→ 既有 release.yml：version-guard → environment 审批�
   `RELEASE_PLEASE_TOKEN`（fine-grained PAT：Contents read/write + Pull requests
   read/write）后级联才成立；未配置时的恢复路径是人工重推同名 tag（内容不变且
   尚未发布任何产物时安全），详见 `docs/sdk-guide.md`「版本与发布流程」。
-- **lockstep 需人工兜底**：`linked-versions` 插件只联动「本轮有候选发布的组件」，
-  无路径内提交的包会被跳过（v1.1.1 首跑即 node-sdk 被跳过）→ 合并 Release PR 前
-  人工核对该包 version/manifest 已对齐同值（本仓已在发布 PR 内补齐，见 §版本与
-  发布流程）。
+- **lockstep 不再需要人工兜底（2026-10 根治）**：此前靠 `linked-versions` 插件
+  联动，但该插件在本仓**结构性失效**（写顶层被静默丢弃；写进 `plugins` 后又被
+  `include-component-in-tag: false` 导致的 `getComponent() === ''` 挡在
+  `preconfigure()` 之外，组员匹配为 0）。现改为**单一 root 条目 + `extra-files`
+  广播**：版本号只有一个来源，所有包清单与文档在同一次 Release PR 内被写入，
+  不存在「某个包被跳过」的路径。历史欠账（7cedb109 / b4cf9be6 / b913726f 等
+  多次人工补齐）由此终结。
 
 ## 项目结构
 
