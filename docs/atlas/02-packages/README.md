@@ -53,21 +53,23 @@
 - **运行时依赖方向**：CLI / MCP / 双 SDK 都是 admin-api 的客户端，互不依赖；四个 Python 库只依赖第三方库（httpx/sqlalchemy/tenacity/openai…），彼此之间**零相互依赖**，也没有依赖 autoflow-sdk。
 - **构建期/测试期关系**：contract-fixtures 是唯一被跨包共享的文件（append-only 契约向量）；docs-site 内容重组自各包 README 与 docs/，但独立构建、不进任何运行时包。
 
-## lockstep 版本发布策略（证据：release-please-config.json + .github/workflows/）
+## lockstep 版本发布策略（证据：release-please-config.json + .github/workflows/，2026-10 根治轮）
 
-三个**对外发布**的包走 **lockstep 单版本线**（当前均 1.2.0；`acf-cli` 1.0.0 因 npmjs 同名包被占而不进发布矩阵）：
+四个**对外发布**的包走 **lockstep 单版本线**（`@autocodeflow/sdk`、`autocodeflow-mcp-server`、`@autocodeflow/cli`、`autoflow-sdk`，当前均 1.9.0）：
 
-1. **release-please.yml**（push main 触发）：按中文 conventional commits 汇总，开/更新 Release PR，bump 三包版本并追加 CHANGELOG。`release-please-config.json` 关键配置：
+1. **release-please.yml**（push main 触发）：按中文 conventional commits 汇总，开/更新 Release PR，bump 版本并追加 CHANGELOG。`release-please-config.json` 关键配置：
+   - **单一 root 条目（`.`）**承担整条 1.x 版本线（`release-type: simple` + `version-file: version.txt`）；
    - `include-component-in-tag: false` → tag 形态为裸 `vX.Y.Z`（非 `pkg-vX.Y.Z`）；
-   - `linked-versions` 插件把 `autocodeflow-sdk` / `autocodeflow-mcp-server` / `autoflow-sdk` 绑成同组；
-   - `extra-files` 同步 `packages/mcp-server/src/index.ts`（`VERSION` 常量，`x-release-please-version` 标记）与 `packages/autoflow-sdk/autoflow_sdk/__init__.py`（`__version__`）。
+   - 版本落点全部由该条目的 `extra-files` **广播**：三 npm 包的 `package.json` 与各自 `package-lock.json`（**两个** version 槽位各一条 jsonpath：`$.version` 与 `$.packages[''].version`；**禁用** `$..version`，实测会改写 lockfile 里全部 165 个依赖版本）、`pyproject.toml`、`autoflow_sdk/__init__.py` 的 `__version__`、docs-site 五页、`docs/sdk-guide.md`；
+   - root 条目的 `exclude-paths` 把 `apps/`、`docs/`、四个 py-libs 等排除在外，避免无关提交驱动 1.x 发版；
    - 必须配 PAT secret `RELEASE_PLEASE_TOKEN`，否则 GITHUB_TOKEN 打的 tag 不会级联触发 release.yml。
+   - **为何不再是「每包一个条目 + `linked-versions`」**：顶层 `linked-versions` 键被 release-please **静默丢弃**（它只是 plugin，必须写在 `plugins` 数组里）；写对位置后本仓仍修不好——`include-component-in-tag: false` 时 `getComponent()` 恒返回 `''`，`preconfigure()` 匹配零组员，版本统一永不执行；而打开该开关 tag 会变成 `pkg-vX.Y.Z`，与 `v*` 触发器不再匹配。详见 `scripts/check-release-config.mjs` 头部注释（含实验证据与上游 issue #1750）。
 2. **release.yml**（push tag `v*` 触发）：
-   - `version-guard` 校验 tag == 四处 version（node-sdk package.json、mcp-server package.json、autoflow-sdk pyproject.toml、autoflow_sdk/\_\_init\_\_.py 的 `__version__`），不一致直接拒绝发布；
-   - 两个 publish job（npm：`@autocodeflow/sdk` + `autocodeflow-mcp-server`；PyPI：`autoflow-sdk`）挂 `environment: release` 人工审批闸门（N42）；
+   - `version-guard` 校验 tag == 五处版本（node-sdk / acf-cli / mcp-server 的 `package.json`、autoflow-sdk 的 `pyproject.toml` 与 `autoflow_sdk/__init__.py` 的 `__version__`），不一致直接拒绝发布；
+   - 两个 publish job（npm：`@autocodeflow/sdk` + `@autocodeflow/cli` + `autocodeflow-mcp-server`；PyPI：`autoflow-sdk`）挂 `environment: release` 人工审批闸门（N42）；
    - 版本一经发布不可复用（npm EP409 / PyPI 400），恢复走 `gh run rerun --failed`（N44）。
 
-四个 Python 工具库（ai/db/http/notify，0.1.0）与 docs-site 目前**不在**发布矩阵中。
+四个 Python 工具库（http/ai/db/notify，当前 0.2.2）归独立的 `linked-versions` 组，逐包开 `include-component-in-tag: true`，tag 形态为 `autocodeflow-http-v0.2.2`——**带前缀、退出 `v*` 命名空间**，不会误触发 release.yml；它们与 docs-site 一样**不在**发布矩阵中。
 
 ## 各包测试命令速查（根 package.json 核实）
 

@@ -1,16 +1,34 @@
-# 发版流程（lockstep 三包 + 部署）
+# 发版流程（lockstep 单版本线 + 部署）
 
-> 所属: docs/atlas/08-workflows · 最后核对: 2026-09-13 · 对应代码: .github/workflows/release.yml、.github/workflows/release-please.yml、release-please-config.json、release-please-manifest.json、docs/release-checklist.md
+> 所属: docs/atlas/08-workflows · 最后核对: 2026-10-08 · 对应代码: .github/workflows/release.yml、.github/workflows/release-please.yml、release-please-config.json、release-please-manifest.json、version.txt、docs/release-checklist.md
 
-本文按两个 workflow 与配置文件的真实内容撰写（2026-09-13 核对）。要发的"三包"是：
+本文按两个 workflow 与配置文件的真实内容撰写（2026-10-08 根治轮核对）。走 lockstep 单版本线的包是：
 
 | 包 | 目录 | 版本落点 |
 |---|---|---|
-| `@autocodeflow/sdk` | `packages/autocodeflow-node-sdk/` | `package.json` |
-| `autocodeflow-mcp-server` | `packages/mcp-server/` | `package.json` + `src/index.ts`（extra-files） |
-| `autoflow-sdk` | `packages/autoflow-sdk/` | `pyproject.toml` + `autoflow_sdk/__init__.py` 的 `__version__`（extra-files） |
+| `@autocodeflow/sdk` | `packages/autocodeflow-node-sdk/` | `package.json` + 其 `package-lock.json`（两个 version 槽位） |
+| `autocodeflow-mcp-server` | `packages/mcp-server/` | `package.json` + 其 `package-lock.json` |
+| `@autocodeflow/cli` | `packages/acf-cli/` | `package.json` + 其 `package-lock.json` |
+| `autoflow-sdk` | `packages/autoflow-sdk/` | `pyproject.toml` + `autoflow_sdk/__init__.py` 的 `__version__` |
 
-**lockstep 规则**：三包永远同版本（`release-please-manifest.json` 当前 1.2.0；`release-please-config.json` 用 `linked-versions` 插件 + `include-component-in-tag: false`，tag 形态为裸 `vX.Y.Z`）。注意 `packages/acf-cli` **不在发布矩阵**——npmjs 上 `acf-cli` 名称已被第三方占用，发布必 403（release.yml 注释裁定）。
+外加文档面：`packages/docs-site/{release,sdk-node,sdk-python,getting-started,index}.md` 与 `docs/sdk-guide.md`。
+
+**lockstep 规则（2026-10 根治后）**：四包走**单一版本线**。`release-please-config.json`
+只有**一个 root 条目（`.`）**承担 1.x 版本线——`include-component-in-tag: false`
+使 tag 形态为裸 `vX.Y.Z`，其余全部版本承载文件由该条目的 `extra-files` **广播**写入。
+`release-please-manifest.json` 的 `"."` 即该线基线（`version.txt` 是其事实源）。
+
+> 此前用「每包一个条目 + `linked-versions` 插件」的形态在本仓**结构性失效**
+> （顶层键被静默丢弃 → 写进 `plugins` 后又被 `include-component-in-tag: false`
+> 导致的 `getComponent() === ''` 挡在 `preconfigure()` 之外 → 组员匹配为 0 →
+> 版本统一永不执行 → 反复人工补齐）。详见
+> `scripts/check-release-config.mjs` 头部与 `.github/workflows/release-please.yml`。
+
+四个 py-libs（`autocodeflow-http/ai/db/notify`，当前 0.2.2）是**独立的**
+`linked-versions` 组，逐包开 `include-component-in-tag: true`，tag 形态为
+`autocodeflow-http-v0.2.2`——**带 component 前缀，退出 `v*` 命名空间**，因此
+不会误触发 `release.yml`（历史实证：PR #29 同批产出 `v1.7.0` 与 `v0.2.2`，
+后者触发 release.yml 并在 version-guard 上失败）。它们不在任何 publish job 内。
 
 ## 前置条件
 
@@ -22,9 +40,9 @@
 
 ### 1. 日常自动化线（release-please）
 
-1. 往 `main` push（触发 `.github/workflows/release-please.yml` 的 `release-please` job，`googleapis/release-please-action@v4`）。
-2. 若有可发布变更（中文 conventional commits：`feat:`/`fix:`…），release-please 开/更新 **Release PR**：bump 三包版本 + 生成/追加 `CHANGELOG.md`。
-3. **合并 Release PR 前人工核对**四处版本已收敛为同一值（含 `autoflow_sdk/__init__.py`）。
+1. 往 `main` push（触发 `.github/workflows/release-please.yml` 的 `release-please` job，`googleapis/release-please-action@v5.0.0`（SHA 钉死））。
+2. 若有可发布变更（中文 conventional commits：`feat:`/`fix:`…），release-please 开/更新 **Release PR**：bump 版本 + 生成/追加 `CHANGELOG.md`。
+3. **无需人工核对版本对齐**（2026-10 起）：版本号只有一个来源（root 条目），全部落点在同一个 Release PR 内被写入。`scripts/check-release-config.mjs` 会在 CI 里机检广播面完整性，漏配即红。
 4. 合并后 release-please 打 tag `vX.Y.Z` 并建 GitHub Release；**tag push 恰好触发 release.yml**。
 5. 关键依赖：`RELEASE_PLEASE_TOKEN` 必须是 PAT——GitHub 抑制 `GITHUB_TOKEN` 产生的 tag 事件，2026-09-11 v1.1.1 实测过"tag 已生成、release.yml 零 run"。secret 缺失/失效时的恢复 = **人工重推 tag**（见步骤 2）。
 
