@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "autocodeflow-ai"
-version = "0.2.2"
+version = "0.2.3"
 description = "AutoCodeFlow AI analysis helpers for task code"
 license = { text = "MIT" }
 requires-python = ">=3.10"

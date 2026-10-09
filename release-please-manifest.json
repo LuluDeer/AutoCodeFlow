@@ -1,7 +1,7 @@
 {
-  ".": "1.9.0",
-  "packages/autocodeflow-http": "0.2.2",
-  "packages/autocodeflow-ai": "0.2.2",
-  "packages/autocodeflow-db": "0.2.2",
-  "packages/autocodeflow-notify": "0.2.2"
+  ".": "1.9.1",
+  "packages/autocodeflow-http": "0.2.3",
+  "packages/autocodeflow-ai": "0.2.3",
+  "packages/autocodeflow-db": "0.2.3",
+  "packages/autocodeflow-notify": "0.2.3"
 }

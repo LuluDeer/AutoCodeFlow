@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "autocodeflow-http"
-version = "0.2.2"
+version = "0.2.3"
 description = "AutoCodeFlow HTTP client library with retry, auth, and circuit breaker"
 license = { text = "MIT" }
 requires-python = ">=3.10"

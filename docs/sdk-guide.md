@@ -113,7 +113,7 @@ fail-closed 语义。能力对照如下：
 ### 版本与发布流程
 
 四包（`@autocodeflow/sdk`、`autoflow-sdk`、`autocodeflow-mcp-server`、
-`@autocodeflow/cli`）走 **lockstep** 单版本线（当前 `1.9.0`）。<!-- x-release-please-version -->
+`@autocodeflow/cli`）走 **lockstep** 单版本线（当前 `1.9.1`）。<!-- x-release-please-version -->
 版本号由 release-please 从 `release-please-config.json` 的单一 root 条目（`.`）
 统一广播到下列各文件；发布只由 push tag `vX.Y.Z` 触发
 [.github/workflows/release.yml](../.github/workflows/release.yml)：

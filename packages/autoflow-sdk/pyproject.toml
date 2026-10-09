@@ -7,7 +7,7 @@ name = "autoflow-sdk"
 # 发布版本与 git tag（vX.Y.Z）及 @autocodeflow/sdk 保持 lockstep，
 # 由 .github/workflows/release.yml 的版本一致性守卫强制校验。
 # 本行由 release-please 经 release-please-config.json 的 root 条目 extra-files 广播。
-version = "1.9.0"  # x-release-please-version
+version = "1.9.1"  # x-release-please-version
 description = "AutoCodeFlow Python SDK — base utilities for task execution"
 readme = "README.md"
 license = { text = "MIT" }

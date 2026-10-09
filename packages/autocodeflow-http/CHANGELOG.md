@@ -2,6 +2,13 @@
 
 所有对外可见的变更记录在本文件。格式参照 Keep a Changelog；版本遵循语义化版本。
 
+## [0.2.3](https://github.com/LuluDeer/AutoCodeFlow/compare/autocodeflow-http-v0.2.2...autocodeflow-http-v0.2.3) (2026-10-09)
+
+
+### Documentation
+
+* **http:** 修正 node-sdk parity 说明为四端对齐（深审 D1-P2-1） ([8332e0d](https://github.com/LuluDeer/AutoCodeFlow/commit/8332e0db2e19ea788b7cb268a8dec7a3db62c1ec))
+
 ## [0.2.2](https://github.com/LuluDeer/AutoCodeFlow/compare/v0.2.1...v0.2.2) (2026-10-02)
 
 
