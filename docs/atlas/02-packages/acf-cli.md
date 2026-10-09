@@ -1,6 +1,6 @@
 # acf-cli — 命令行工具
 
-> 所属: docs/atlas/02-packages · 最后核对: 2026-10-07 · 对应代码: packages/acf-cli
+> 所属: docs/atlas/02-packages · 最后核对: 2026-10-09 · 对应代码: packages/acf-cli
 
 ## 职责
 
@@ -14,16 +14,16 @@
 packages/acf-cli/
 ├── package.json          bin: acf → dist/index.js
 ├── src/
-│   ├── index.ts          program 装配：全局选项、preAction、13 个命令组、根级 --version 处理
+│   ├── index.ts          program 装配：全局选项、preAction、14 个命令组、根级 --version 处理
 │   ├── client.ts         axios 实例：Bearer 头、401 单飞刷新、信封拆包、formatApiError
 │   ├── config.ts         conf 持久存储（0600）、env 覆盖、clearAuth、showConfig
 │   ├── commands/         login / tasks / apps / executors / deploy / audit / exec
-│   │                     / projects / sop / agent / apikeys / approval
+│   │                     / projects / sop / agent / apikeys / approval / mutex
 │   └── __tests__/        client、commands、cli-gaps、config-security、exec、
 │                         executors-nf07、ux-uniform、release-metadata、projects
 ```
 
-## 命令清单（自 src/commands/ 注册代码核实，共 63 个子命令）
+## 命令清单（自 src/commands/ 注册代码核实，共 67 个子命令）
 
 | 组 | 子命令 |
 |---|---|
@@ -33,6 +33,7 @@ packages/acf-cli/
 | `acf executor`（4） | `list` `get` `rotate <nameOrId>`（ADMIN，新 token 只显示一次）`offline <nameOrId>`（ADMIN，不中断运行中任务） |
 | `acf deploy`（4） | `list [appId]`（与 `app deployments` 同源）`upgrade <deploymentId>`（overlay 升级拉最新应用版本）`stop <deploymentId>` `remove <deploymentId>`（删除终态记录 failed/stopped，其余 409） |
 | `acf approval`（4） | `list`（待办队列）`approve <id> --note` `reject <id> --note` `cancel <id>` |
+| `acf mutex`（4） | `list`（互斥组，与中台应用表单下拉同源，含 `applicationCount`）`create --name [--max-concurrent 1..100] [--scope device\|global] [--description]` `update <id>`（至少一个字段，空 patch 本地拒）`delete <id> [-f\|--force] [-y]`（挂载中需 `--force`，否则服务端 409 并告知数量）。写面 ADMIN；**挂应用仍走 `acf app update <appId> --body '{"mutexGroupId":"<id>"}'`**（2026-10 补，MUTEX-CLI） |
 | `acf apikey`（3） | `create --name --scope [--expires]`（明文只回显一次）`list` `revoke <id>` |
 | `acf audit`（1） | `list`（审计日志，倒序分页过滤） |
 | `acf exec`（1） | `tail <execId>`（SSE 实时跟踪执行日志；已终结则打印后退出） |

@@ -152,7 +152,10 @@ export function appsCommand(): Command {
   //（task 侧先改，app 侧本轮补齐——--json 在其余命令都是「输出 JSON」布尔
   // 旗标，载荷语义的 --json 是历史包袱，下一大版本收敛为布尔。）
   cmd.command('create')
-    .description('Create an application (JSON payload via --body or --file; required: name, version, runtime)')
+    .description(
+      'Create an application (JSON payload via --body or --file; required: name, version, runtime). ' +
+        'Optional: mutexGroupId (uuid from `acf mutex list` to join a mutex group), approvalRequired (gate deploys behind a second person).',
+    )
     .option('--body <json>', 'Application body as JSON string (required unless --file is given)')
     .option('--json <body>', 'DEPRECATED (renamed to --body): Application body as JSON string. In the next major version --json becomes a boolean output flag')
     .option('--file <path>', 'Read application body from a JSON file (overrides --body/--json)')
@@ -241,8 +244,10 @@ export function appsCommand(): Command {
   cmd.command('update <id>')
     .description(
       'Update an application (JSON payload via --body or --file). ' +
-        'Accepted fields: description, version, runtime, status, gitRepo, gitBranch, gitCommit, manifest, env, entrypoint, packageUrl, webhookSecret. ' +
-        'NOTE: the backend UpdateApplicationDto has no `name` field — renaming is not supported.',
+        'Accepted fields: description, version, runtime, status, gitRepo, gitBranch, gitCommit, manifest, env, entrypoint, packageUrl, webhookSecret, ' +
+        'approvalRequired, mutexGroupId. ' +
+        'NOTE: the backend UpdateApplicationDto has no `name` field — renaming is not supported. ' +
+        'mutexGroupId takes a group uuid from `acf mutex list` (null detaches); `acf mutex` also manages the groups themselves.',
     )
     .option('--body <json>', 'Application patch body as JSON string (required unless --file is given)')
     .option('--json <body>', 'DEPRECATED (renamed to --body): Application patch body as JSON string. In the next major version --json becomes a boolean output flag')

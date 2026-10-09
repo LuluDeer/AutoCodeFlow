@@ -212,8 +212,21 @@ export async function patch<T>(path: string, body?: unknown): Promise<T> {
   return unwrap<T>(r.data);
 }
 
-export async function del<T>(path: string): Promise<T> {
-  const r = await getClient().delete<unknown>(path);
+/**
+ * DELETE。可选 `params` 与 get() 同形——把查询串交给 axios 序列化，而不是
+ * 在调用点手工拼 `?a=b`。
+ *
+ * 为什么不让调用点拼：`del(\`/mutex-groups/${id}${opts.force ? '?force=true' : ''}\`)`
+ * 这种写法会让 consumer-routes 守卫（scripts/check-consumer-routes.mjs）误判
+ * ——它按 `?` 切分后再归一路径，字面量里的 `?` 会把路径截成
+ * `/mutex-groups/{}${opts.force ` 而报「路由不在 openapi 中」。守卫的判据是
+ * 「用到的每条路由都必须在 openapi 里」，故路径字面量必须保持干净可解析。
+ */
+export async function del<T>(
+  path: string,
+  params?: Record<string, string | number | undefined>,
+): Promise<T> {
+  const r = await getClient().delete<unknown>(path, { params });
   return unwrap<T>(r.data);
 }
 
