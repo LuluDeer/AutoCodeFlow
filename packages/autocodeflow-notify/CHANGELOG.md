@@ -2,6 +2,13 @@
 
 所有对外可见的变更记录在本文件。格式参照 Keep a Changelog；版本遵循语义化版本。
 
+## [0.2.3](https://github.com/LuluDeer/AutoCodeFlow/compare/autocodeflow-notify-v0.2.2...autocodeflow-notify-v0.2.3) (2026-10-09)
+
+
+### Miscellaneous Chores
+
+* **autocodeflow-notify:** Synchronize autocodeflow-py-libs versions
+
 ## [0.2.2](https://github.com/LuluDeer/AutoCodeFlow/compare/v0.2.1...v0.2.2) (2026-10-02)
 
 
