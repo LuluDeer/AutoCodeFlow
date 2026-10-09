@@ -4,7 +4,7 @@ import type { AgentToolTier } from "../entities/agent-tool-call.entity";
  * P3（agent-and-deployment）：Agent 工具注册表（设计文档 03）。
  *
  * ## 为什么收编 mcp-server 而不是另起一套
- * `packages/mcp-server/src/tools.ts` 已把 admin-api 的 HTTP 面封装成 43 个
+ * `packages/mcp-server/src/tools.ts` 已把 admin-api 的 HTTP 面封装成 56 个
  * 工具（参数校验、端点路径、错误翻译都有）。本表复刻其**名称与语义**，
  * 使 Agent 与外部 AI（Claude Desktop 等）操作的是同一批端点、同一套语义，
  * 不存在「Agent 调 A、MCP 调 B」的行为漂移。
@@ -14,8 +14,14 @@ import type { AgentToolTier } from "../entities/agent-tool-call.entity";
  * 需要一层转换，转换本身若草率就会丢约束；② 中台 Agent 是 **in-process**，
  * 直接调 Service 层比绕 HTTP 更可靠（设计文档 10 §调整1），执行体不同；
  * ③ 工具需要在**此表**上叠加 tier / scope 维度（MCP 侧不需要）。
- * 故本表是「定义单一事实源」，并由 `check-tool-parity` 断言与 mcp-server
- * 的 43 个工具名逐一对应——漂移即测试变红（同 check-enum-drift 的精神）。
+ * 故本表是「定义单一事实源」，并由 `scripts/agent-boundary-check.mjs` 断言
+ * 「每个 mcp 工具要么被闸门纳管、要么在显式排除清单里」——漂移即检查变红
+ * （同 check-enum-drift 的精神）。
+ *
+ * 注意：**不**断言「与 mcp-server 逐一镜像」。两个面各自演进（mcp 现有 56
+ * 个，而 agent 面刻意不开放其中一部分，另有 mcp 没有的内部工具），硬编码
+ * 数字曾三次漂移。当前不变量见 agent-boundary-check 的两条断言：① 纳管或
+ * 显式排除（新增 mcp 工具必须做决定）；② 闸门对未知工具 fail-closed。
  */
 
 /**
@@ -83,7 +89,7 @@ const uuid = (desc: string) => ({
 const str = (desc: string) => ({ type: "string", description: desc });
 
 /**
- * 43 个收编的工具（对齐 mcp-server/src/tools.ts）。
+ * 47 个收编的工具（对齐 mcp-server/src/tools.ts）。
  *
  * 分级依据（设计文档 03 §2）：
  *   read      —— 只读，默认全开
@@ -493,6 +499,109 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
     resourceIdParam: "applicationId",
   },
 
+  // ═══ 互斥组（4，对齐 registerMutexTools · MUTEX-01）═══
+  //
+  // 分级依据（沿用 03 §2 的「产生多大后果」标尺）：
+  //   · list/read —— 只读，全开；
+  //   · create —— 新建无破坏（与 create_application 同档：建组本身不改任何
+  //     既有应用的行为，应用只在被显式挂组后才受约束）；
+  //   · update —— write（可逆但**影响生产并发**）：把 scope 收紧为 global 或
+  //     调低 maxConcurrentPerDevice 会立刻限制在跑业务的并发度。按 03 §2
+  //     「可逆/收敛性写操作默认放行」列为 write 而非 dangerous——它可随时改回，
+  //     且改错不会丢数据（对比 delete_* 的不可逆）；
+  //   · delete —— **dangerous**：挂载中的应用会经 FK SET NULL 静默解除互斥，
+  //     此后本该串行的独占型负载（浏览器实例/单点登录顶号）可能并发相撞。
+  //     不可逆且后果落在生产，与 delete_application 同档（默认禁用 + 强制审批）。
+  {
+    name: "list_mutex_groups",
+    description:
+      "List application mutex groups. Apps in one group never run concurrently on the same device (maxConcurrentPerDevice, default 1 = serial). scope=device serialises per device (cross-device concurrent); scope=global serialises platform-wide. Read this before attaching an app to a group.",
+    parameters: {
+      type: "object",
+      properties: { ...pagination },
+      additionalProperties: false,
+    },
+    tier: "read",
+    resourceKind: "none",
+  },
+  {
+    name: "create_mutex_group",
+    description:
+      "Create an application mutex group. Creating is non-destructive — existing applications keep their behaviour until an app is explicitly attached via update_application's mutexGroupId.",
+    parameters: {
+      type: "object",
+      properties: {
+        name: str("Unique group name (max 64 chars)"),
+        maxConcurrentPerDevice: {
+          type: "integer",
+          minimum: 1,
+          maximum: 100,
+          description:
+            "Concurrent runs per device (1-100, default 1 = serial). Meaning platform-wide when scope=global.",
+        },
+        scope: {
+          type: "string",
+          enum: ["device", "global"],
+          description:
+            "device (default) = serial per device, cross-device concurrent; global = serial platform-wide (single-sign-on takeover)",
+        },
+        description: str("Optional description (max 500 chars)"),
+      },
+      required: ["name"],
+      additionalProperties: false,
+    },
+    tier: "write",
+    resourceKind: "none",
+  },
+  {
+    name: "update_mutex_group",
+    description:
+      "Update a mutex group (name / maxConcurrentPerDevice / scope / description). Takes effect on the next dispatch — tightening scope to global or lowering maxConcurrentPerDevice immediately restricts production concurrency.",
+    parameters: {
+      type: "object",
+      properties: {
+        groupId: uuid("Mutex group ID"),
+        name: str("New group name (unique)"),
+        maxConcurrentPerDevice: {
+          type: "integer",
+          minimum: 1,
+          maximum: 100,
+          description: "New per-device concurrency (1-100)",
+        },
+        scope: {
+          type: "string",
+          enum: ["device", "global"],
+          description: "New scope: device | global",
+        },
+        description: str("New description (max 500 chars)"),
+      },
+      required: ["groupId"],
+      additionalProperties: false,
+    },
+    tier: "write",
+    resourceKind: "none",
+  },
+  {
+    name: "delete_mutex_group",
+    description:
+      "Delete a mutex group. IRREVERSIBLE and affects production: attached applications silently lose the mutual-exclusion constraint (mutexGroupId is nulled), so workloads that must never overlap can start colliding. The backend refuses with 409 while apps are still attached unless force=true.",
+    parameters: {
+      type: "object",
+      properties: {
+        groupId: uuid("Mutex group ID"),
+        force: {
+          type: "boolean",
+          description:
+            "Delete even when applications are still attached (they silently lose the constraint)",
+        },
+      },
+      required: ["groupId"],
+      additionalProperties: false,
+    },
+    tier: "dangerous",
+    resourceKind: "none",
+  },
+
   // ═══ 部署与审批组（9，对齐 registerDeploymentTools）═══
   {
     name: "list_deployments",
@@ -768,11 +877,11 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
  * 暴露——它们是「Agent 的能力」，不是「外部 AI 管理 AutoCodeFlow」的能力。
  *
  * ## 为什么独立成表而不是塞进 AGENT_TOOL_SPECS
- * AGENT_TOOL_SPECS 是 mcp-server 43 工具的**收编镜像**，有双向逐一对应的
- * parity 断言（多一个都红）。内部工具进同一数组会打破「与 mcp-server 一致」
- * 这个不变量。分表后：parity 只对 AGENT_TOOL_SPECS 断言，内部工具数量
- * 自由生长（07 §7 之后还会加），两者最终在 ALL_AGENT_TOOL_SPECS 合流，
- * 闸门与 LLM 都只见合流后的全集。
+ * AGENT_TOOL_SPECS 是 mcp-server 工具的**收编镜像**（当前 56 → 纳管 47，
+ * 差额在 `scripts/agent-boundary-check.mjs` 的显式排除清单里逐项声明）。
+ * 内部工具进同一数组会打破「纳管集合只放 mcp 工具」这个不变量。分表后：
+ * 边界检查只对 AGENT_TOOL_SPECS 断言，内部工具数量自由生长（07 §7 之后还会
+ * 加），两者最终在 ALL_AGENT_TOOL_SPECS 合流，闸门与 LLM 都只见合流后的全集。
  *
  * ## P5 的 6 个 SOP 工具（03 §4）
  * sop_publish 默认需审批（发布权 = 间接指令注入权，04 §4.3）；澄清场景的
@@ -925,7 +1034,7 @@ export const AGENT_INTERNAL_TOOL_SPECS: readonly AgentToolSpec[] = [
   },
 ];
 
-/** 闸门与 LLM 可见的全集：43 收编 + 内部工具（设计文档 10 §调整2）。 */
+/** 闸门与 LLM 可见的全集：47 收编 + 6 内部工具（设计文档 10 §调整2）。 */
 export const ALL_AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
   ...AGENT_TOOL_SPECS,
   ...AGENT_INTERNAL_TOOL_SPECS,
@@ -972,12 +1081,15 @@ export const SESSION_TOOL_ALLOWLIST: Record<string, readonly string[] | null> =
     /**
      * SOP 起草：读 + SOP 工具（起草/发布/指派）+ 建应用/建任务/部署
      * （部署仍需审批；sop_publish 逐工具默认审批——发布权 = 间接指令注入权）。
+     * MUTEX-01：含 create_mutex_group——起草「独占型资源」编排（浏览器实例/
+     * 单点登录账号）时需要先建组再挂应用；建组本身不改任何既有应用行为。
      */
     sop_authoring: ALL_AGENT_TOOL_SPECS.filter(
       (t) =>
         t.tier === "read" ||
         [
           "create_application",
+          "create_mutex_group",
           "create_task_from_template",
           "deploy_application",
           "deploy_app",
@@ -1003,12 +1115,16 @@ export const SESSION_TOOL_ALLOWLIST: Record<string, readonly string[] | null> =
         t.name === "trigger_task",
     ).map((t) => t.name),
 
-    /** 应用脚手架（P5/P7）：与 sop_authoring 同集。 */
+    /**
+     * 应用脚手架（P5/P7）：建应用/建任务/部署，外加 MUTEX-01 的建组
+     * （脚手架一个需要独占资源的应用时，先建互斥组再挂上去）。
+     */
     app_scaffold: ALL_AGENT_TOOL_SPECS.filter(
       (t) =>
         t.tier === "read" ||
         [
           "create_application",
+          "create_mutex_group",
           "create_task_from_template",
           "deploy_application",
           "deploy_app",
@@ -1019,6 +1135,22 @@ export const SESSION_TOOL_ALLOWLIST: Record<string, readonly string[] | null> =
     /** 人工对话：不限工具（管理员与 Agent 对话，等价于管理员自己在操作）。 */
     chat: null,
   };
+
+/**
+ * MUTEX-01 闸门姿态（为什么 update/delete_mutex_group 不在任何自动化会话白名单里）：
+ *
+ * 只有 `chat`（管理员直接对话，等价于本人操作）能改档或删组，四个自动化
+ * 会话类型都拿不到——理由与 `incident` 排除 update_task/delete_* 同源：
+ *
+ *   · `update_mutex_group` 收紧 scope/maxConcurrentPerDevice 会**立即限制**
+ *     在跑业务的并发度（可能让本可并行的负载排队）；
+ *   · `delete_mutex_group` 更重——挂载应用经 FK 静默解除互斥，本该串行的
+ *     独占型负载（浏览器实例/单点登录顶号）会开始相撞。
+ *
+ * 两者都是「人该拍板」的语义变更，而不是故障处置中的收敛性动作（对比
+ * kill/pause/resume 那种"往安全方向收敛"的写操作）。建组（create）与读组
+ * （list）则无此顾虑：前者不改任何既有应用行为，后者纯读。
+ */
 
 /** 取会话类型的可用工具集。未登记的类型 → 空集（拒绝一切，安全默认）。 */
 export function toolsForSessionKind(kind: string): readonly string[] | null {

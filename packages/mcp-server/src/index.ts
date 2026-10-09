@@ -17,6 +17,7 @@ import pkg from "../package.json";
 import {
   registerTaskTools,
   registerApplicationTools,
+  registerMutexTools,
   registerDeploymentTools,
   registerExecutorTools,
   registerObservabilityTools,
@@ -35,6 +36,7 @@ const server = new McpServer({
 
 registerTaskTools(server, apiRequest);
 registerApplicationTools(server, apiRequest);
+registerMutexTools(server, apiRequest);
 registerDeploymentTools(server, apiRequest);
 registerExecutorTools(server, apiRequest);
 registerObservabilityTools(server, apiRequest);

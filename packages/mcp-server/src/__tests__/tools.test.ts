@@ -25,6 +25,7 @@ interface RegisteredTool {
 import {
   registerTaskTools,
   registerApplicationTools,
+  registerMutexTools,
   registerDeploymentTools,
   registerExecutorTools,
   registerObservabilityTools,
@@ -39,6 +40,7 @@ import {
 const registerFns = [
   registerTaskTools,
   registerApplicationTools,
+  registerMutexTools,
   registerDeploymentTools,
   registerExecutorTools,
   registerObservabilityTools,
@@ -125,6 +127,11 @@ describe("tool registry surface", () => {
       "update_application",
       "delete_application",
       "analyze_application",
+      // MUTEX-01: application mutex groups
+      "list_mutex_groups",
+      "create_mutex_group",
+      "update_mutex_group",
+      "delete_mutex_group",
       // deployments
       "list_deployments",
       "deploy_application",
@@ -210,6 +217,24 @@ describe("error response shape (isError on usage errors)", () => {
     const r = await tools.get("sop_assignments_pending")!.handler({});
     expect(r.isError).toBe(true);
     expect(parse(r).error).toContain("sopId");
+    expect(call).not.toHaveBeenCalled();
+  });
+
+  it("update_mutex_group marks an empty patch as an error and does NOT call the API", async () => {
+    // 空 patch 在后端是「成功但什么都没改」——若不在此拦下，调用方会把 200
+    // 读成「已生效」。CLI 的 `acf mutex update` 与 agent 闸门的执行体同口径，
+    // 三处必须一致（否则同一 API 在三个消费面上语义不同）。
+    const r = await tools
+      .get("update_mutex_group")!
+      .handler({ groupId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee" });
+    expect(r.isError).toBe(true);
+    expect(parse(r).error).toBe("nothing_to_update");
+    expect(parse(r).availableFields).toEqual([
+      "name",
+      "maxConcurrentPerDevice",
+      "scope",
+      "description",
+    ]);
     expect(call).not.toHaveBeenCalled();
   });
 });

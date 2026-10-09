@@ -30,7 +30,7 @@ modules/agent/
 ├── boundary/
 │   └── agent-boundary.service.ts      ★ 边界闸门（五道检查，唯一入口）
 ├── tools/
-│   ├── tool-registry.ts               ★ 43 工具定义 + 分级 + 会话白名单
+│   ├── tool-registry.ts               ★ 47 工具定义 + 分级 + 会话白名单
 │   ├── tool-executor.service.ts       ★ 工具执行器（超时/截断/脱敏/熔断）
 │   ├── agent-api.client.ts            执行体路由（in-process 调 Service）
 │   └── tool-binder.service.ts         只读工具 → 内部 Service 绑定

@@ -11,6 +11,7 @@ import { TaskTemplateService } from "../../task-template/task-template.service";
 import { ExecutorService } from "../../executor/executor.service";
 import { ApplicationService } from "../../application/application.service";
 import { AppDeploymentService } from "../../application/app-deployment.service";
+import { MutexGroupService } from "../../application/mutex-group.service";
 import { SopService } from "../../sop/sop.service";
 
 /**
@@ -35,6 +36,8 @@ export class ToolBinderService implements OnModuleInit {
     private readonly applications: ApplicationService,
     private readonly deployments: AppDeploymentService,
     private readonly templates: TaskTemplateService,
+    // MUTEX-01：互斥组四工具的执行体（list/create/update/delete_mutex_group）。
+    private readonly mutexGroups: MutexGroupService,
     // forwardRef：sop.module ↔ agent.module 装配期环（见 sop.module.ts 头注）
     @Inject(forwardRef(() => SopService))
     private readonly sops: SopService,
@@ -319,6 +322,56 @@ export class ToolBinderService implements OnModuleInit {
       } as never);
     this.api.register("deploy_application", deployApp);
     this.api.register("deploy_app", deployApp);
+
+    // ── MUTEX-01 互斥组四工具（MUTEX-CLI/MCP 同步轮补齐）──────────────
+    //
+    // 为什么要绑：这四个端点在 MCP 面与中台都存在，agent 若只声明不绑定，
+    // 模型调用一律得「尚未实现」——白名单形同虚设（与上方 P6 注释同一教训）。
+    // delete_mutex_group 声明为 dangerous（默认禁用 + 强制审批），此处仍绑定
+    // 执行体：tier 决定**是否放行**，绑定决定**放行后能不能跑**，两者正交。
+    this.api.register("list_mutex_groups", async () =>
+      this.mutexGroups.findAll(),
+    );
+
+    this.api.register("create_mutex_group", async (args) =>
+      this.mutexGroups.create({
+        name: this.str(args.name),
+        ...(args.maxConcurrentPerDevice !== undefined
+          ? { maxConcurrentPerDevice: this.num(args.maxConcurrentPerDevice, 1) }
+          : {}),
+        ...(args.scope ? { scope: args.scope } : {}),
+        ...(args.description
+          ? { description: this.str(args.description) }
+          : {}),
+      } as never),
+    );
+
+    this.api.register("update_mutex_group", async (args) => {
+      // 与 CLI 同口径：空 patch（一个字段都没给）在服务端是「成功但什么都没改」，
+      // 容易被模型误读为已生效——此处如实报错而不是静默返回成功。
+      const patch: Record<string, unknown> = {};
+      if (args.name !== undefined) patch.name = this.str(args.name);
+      if (args.maxConcurrentPerDevice !== undefined) {
+        patch.maxConcurrentPerDevice = this.num(args.maxConcurrentPerDevice, 1);
+      }
+      if (args.scope !== undefined) patch.scope = args.scope;
+      if (args.description !== undefined) {
+        patch.description = this.str(args.description);
+      }
+      if (Object.keys(patch).length === 0) {
+        throw new Error(
+          "update_mutex_group: 至少需要一个可改字段（name / maxConcurrentPerDevice / scope / description）",
+        );
+      }
+      return this.mutexGroups.update(this.str(args.groupId), patch as never);
+    });
+
+    this.api.register("delete_mutex_group", async (args) =>
+      this.mutexGroups.remove(
+        this.str(args.groupId),
+        args.force === true || args.force === "true",
+      ),
+    );
   }
 
   // ── 参数取值辅助（闸门已保证类型，这里只做缺省）─────────────────

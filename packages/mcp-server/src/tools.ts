@@ -815,6 +815,161 @@ export function registerApplicationTools(
 }
 
 // ---------------------------------------------------------------------------
+// Mutex groups (MUTEX-01): apps in one group never run concurrently per device
+// ---------------------------------------------------------------------------
+/**
+ * MUTEX-01：应用互斥组。同一组内的应用在**同一台设备上**永不并发（组内并发数
+ * 默认 1 = 串行）——典型场景是独占型资源：浏览器实例、单点登录账号（顶号）、
+ * GPU 槽位。
+ *
+ * 为什么要单独成组注册：这四个端点（GET/POST/PUT/DELETE /mutex-groups）自
+ * MUTEX-01 起就存在且中台在用，但 MCP 面此前**零接入**——agent 既看不到
+ * 「有哪些互斥组可选」，也无法在挂应用前确认组的语义（device 单机串行 vs
+ * global 全平台串行）。挂应用本身走 update_application 的 mutexGroupId。
+ */
+export function registerMutexTools(server: McpServer, call: ApiCall): void {
+  // ---- list_mutex_groups ----------------------------------------------------
+  server.tool(
+    "list_mutex_groups",
+    "List application mutex groups. Apps in the same group never run concurrently on the same device (maxConcurrentPerDevice, default 1 = serial). scope=device serialises per device but allows cross-device concurrency; scope=global serialises platform-wide (e.g. single-sign-on takeover). Use the returned id as update_application's mutexGroupId to attach an app.",
+    {}, { readOnlyHint: true, idempotentHint: true },
+    async () => {
+      const data = await call<unknown>("GET", "/mutex-groups");
+      return JSON_CONTENT(data);
+    },
+  );
+
+  // ---- create_mutex_group ---------------------------------------------------
+  server.tool(
+    "create_mutex_group",
+    "Create an application mutex group. Creating a group does not change the behaviour of any existing application — apps join a group only when their mutexGroupId is set (via update_application).",
+    {
+      name: z
+        .string()
+        .max(64)
+        .describe("Unique group name (max 64 chars)"),
+      maxConcurrentPerDevice: z
+        .number()
+        .int()
+        .min(1)
+        .max(100)
+        .optional()
+        .describe(
+          "Concurrent runs allowed per device (1-100, default 1 = serial). With scope=global this becomes the platform-wide limit.",
+        ),
+      scope: z
+        .enum(["device", "global"])
+        .optional()
+        .describe(
+          "device (default) = serial per device, cross-device concurrent; global = serial platform-wide (single-sign-on takeover)",
+        ),
+      description: z
+        .string()
+        .max(500)
+        .optional()
+        .describe("What the group is for (max 500 chars)"),
+    }, { destructiveHint: false },
+    async (fields) => {
+      // CreateMutexGroupDto 白名单：未提供的字段不能带 undefined 键
+      //（全局 ValidationPipe forbidNonWhitelisted）。
+      const body = Object.fromEntries(
+        Object.entries(fields).filter(([, v]) => v !== undefined),
+      );
+      const data = await call<unknown>("POST", "/mutex-groups", body);
+      return JSON_CONTENT(data);
+    },
+  );
+
+  // ---- update_mutex_group ---------------------------------------------------
+  server.tool(
+    "update_mutex_group",
+    "Update a mutex group (name / maxConcurrentPerDevice / scope / description). Takes effect on the next dispatch. Tightening scope to global or lowering maxConcurrentPerDevice immediately restricts production concurrency; waiting executions are re-dispatched automatically.",
+    {
+      groupId: UUID_PATH_ID.describe("Mutex group ID"),
+      name: z.string().max(64).optional().describe("New group name (unique)"),
+      maxConcurrentPerDevice: z
+        .number()
+        .int()
+        .min(1)
+        .max(100)
+        .optional()
+        .describe("New per-device concurrency (1-100)"),
+      scope: z
+        .enum(["device", "global"])
+        .optional()
+        .describe("New scope: device | global"),
+      description: z
+        .string()
+        .max(500)
+        .optional()
+        .describe("New description (max 500 chars)"),
+    }, { destructiveHint: true, idempotentHint: true },
+    async ({ groupId, ...fields }) => {
+      const body = Object.fromEntries(
+        Object.entries(fields).filter(([, v]) => v !== undefined),
+      );
+      // 空 patch 必须**报错**而不是发出去：后端对空更新返回「成功但什么都没改」，
+      // 调用方（agent）会把 200 读成「已生效」。CLI 的 `acf mutex update` 与
+      // agent 闸门的 update_mutex_group 执行体同口径——三处必须一致，否则
+      // 同一个 API 在三个消费面上语义不同。
+      if (Object.keys(body).length === 0) {
+        return JSON_ERROR({
+          error: "nothing_to_update",
+          message:
+            "update_mutex_group requires at least one field to change " +
+            "(name / maxConcurrentPerDevice / scope / description). " +
+            "An empty patch would silently succeed without changing anything.",
+          availableFields: ["name", "maxConcurrentPerDevice", "scope", "description"],
+        });
+      }
+      const data = await call<unknown>("PUT", `/mutex-groups/${groupId}`, body);
+      return JSON_CONTENT(data);
+    },
+  );
+
+  // ---- delete_mutex_group ---------------------------------------------------
+  server.tool(
+    "delete_mutex_group",
+    "Delete a mutex group. Attached applications silently lose the mutual-exclusion constraint (the FK nulls their mutexGroupId) — mutually exclusive workloads can then run concurrently and collide. The backend refuses with 409 while apps are still attached unless force=true. In-flight executions keep the group snapshot they started with.",
+    {
+      groupId: UUID_PATH_ID.describe("Mutex group ID"),
+      force: z
+        .boolean()
+        .optional()
+        .describe(
+          "Delete even when applications are still attached (they silently lose the constraint)",
+        ),
+    }, { destructiveHint: true },
+    async ({ groupId, force }) => {
+      // 查询串只在 force=true 时需要，且 apiRequest 只收 body（无 params 形参）。
+      //
+      // 两条约束同时成立才写成现在这样：
+      //   ① scripts/check-consumer-routes.mjs 按 `?` 切分并归一路径——字面量
+      //      必须是完整可解析的 `/mutex-groups/${groupId}?force=true`（归一后
+      //      = `/mutex-groups/{}`，与 openapi 对齐）。**不能**在模板里放三元
+      //      表达式（会捕获到残缺路径 `${opts.force ` 而误报「不在 openapi 中」）；
+      //   ② 该守卫只识别**调用点直接内联的字面量**，把路径存进变量再传（如
+      //      `const path = …; call(method, path)`）会让这条路由**完全不被扫描**
+      //      ——静默失去覆盖。故此处用 if/else 各自内联完整字面量，不用变量。
+      if (force === true) {
+        const data = await call<unknown>(
+          "DELETE",
+          `/mutex-groups/${groupId}?force=true`,
+          undefined,
+        );
+        return JSON_CONTENT(data);
+      }
+      const data = await call<unknown>(
+        "DELETE",
+        `/mutex-groups/${groupId}`,
+        undefined,
+      );
+      return JSON_CONTENT(data);
+    },
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Deployments
 // ---------------------------------------------------------------------------
 export function registerDeploymentTools(

@@ -40,6 +40,9 @@ import { NotificationModule } from "../notification/notification.module";
     MutexGroupController,
   ],
   providers: [ApplicationService, AppDeploymentService, MutexGroupService],
-  exports: [ApplicationService, AppDeploymentService],
+  // MUTEX-01：MutexGroupService 一并导出——agent 侧 ToolBinderService 要把它
+  // 绑成 list/create/update/delete_mutex_group 四个工具执行体（与
+  // ApplicationService/AppDeploymentService 同一条注入路径）。
+  exports: [ApplicationService, AppDeploymentService, MutexGroupService],
 })
 export class ApplicationModule {}
