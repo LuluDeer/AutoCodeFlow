@@ -11,6 +11,7 @@ import {
   CreateMutexGroupDto,
   UpdateMutexGroupDto,
 } from "./dto/mutex-group.dto";
+import { MutexGroupResponseDto } from "./dto/mutex-group-response.dto";
 
 /**
  * R6（对齐 task.service 同名先例）：PG 唯一约束冲突（SQLSTATE 23505
@@ -72,8 +73,33 @@ export class MutexGroupService {
     }
   }
 
-  async findAll(): Promise<MutexGroup[]> {
-    return this.repo.find({ order: { createdAt: "ASC" } });
+  /**
+   * MUTEX-01：组列表。附带每组当前挂载的应用数。
+   *
+   * 为什么在服务层补 applicationCount（该字段自 MUTEX-01 起就在
+   * MutexGroupResponseDto 里声明，但 findAll 一直返回裸实体 → 该字段恒
+   * undefined，读面契约与实现脱节）：消费方（中台组管理页、`acf mutex list`）
+   * 要靠它判断「删这个组会不会影响应用」——正是 remove() 里 409 那条规则所
+   * 依赖的信息，用户在删之前就该看见。
+   *
+   * 单条 GROUP BY 聚合而非 N+1 逐组 COUNT：组数量虽小，但读面在列表页/CLI
+   * 每次调用都会走，聚合成一次查询是零成本的正确形态。
+   */
+  async findAll(): Promise<MutexGroupResponseDto[]> {
+    const groups = await this.repo.find({ order: { createdAt: "ASC" } });
+    if (groups.length === 0) return [];
+    const rows: Array<{ mutexGroupId: string; count: number }> =
+      await this.repo.manager.query(
+        `SELECT "mutexGroupId", COUNT(*)::int AS count
+           FROM "applications"
+          WHERE "mutexGroupId" IS NOT NULL
+          GROUP BY "mutexGroupId"`,
+      );
+    const counts = new Map(rows.map((r) => [r.mutexGroupId, r.count]));
+    return groups.map((g) => ({
+      ...g,
+      applicationCount: counts.get(g.id) ?? 0,
+    }));
   }
 
   async update(id: string, dto: UpdateMutexGroupDto): Promise<MutexGroup> {

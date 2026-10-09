@@ -32,7 +32,7 @@ packages/mcp-server/
 - 每次 API 调用 30s 超时（N12）；成功响应剥掉 admin-api 全局 `{code,message,data}` 信封。unwrap 判据（WIKI-OPT-4 收紧）：对象含 `data` 键且 `code` 为**数值**即视为信封（对齐 ResponseInterceptor 的 `code` 恒为 `statusCode ?? 200`）；`message` 不再作为判据——实体自带 data+message 而无数值 code 时原样透传，不再被误解包截断成 data 值。
 - bin 入口支持 `--help` / `--version`；无参即启动 stdio server。
 
-## 工具清单（43 个，自 src/tools.ts 的 server.tool() 逐个核实）
+## 工具清单（56 个，自 src/tools.ts 的 server.tool() 逐个核实；由 `scripts/mcp-tools-probe.cjs --check` 真实 stdio 握手断言）
 
 **任务组 registerTaskTools（18）**
 
@@ -55,6 +55,8 @@ packages/mcp-server/
 | `create_task_from_template` | template, name, description?, overrides? | 从内置模板建任务（见下） |
 
 **应用组 registerApplicationTools（6）**：`list_applications` `get_application` `create_application` `update_application` `delete_application` `analyze_application`（AI 健康分析）。
+
+**互斥组 registerMutexTools（4，MUTEX-01）**：`list_mutex_groups`（列可选组 + `applicationCount`，与中台应用表单下拉同源）、`create_mutex_group`（`name` / `maxConcurrentPerDevice` 1..100 / `scope` device\|global / `description`）、`update_mutex_group`（同字段部分更新，热生效）、`delete_mutex_group`（挂载中后端 409，`force:true` 才解除互斥；挂载应用经 FK SET NULL 静默解组）。**挂应用不在本组**——走 `update_application` 的 `mutexGroupId`（uuid，可空；组不存在 404）。语义：同组应用在**同一台设备上**永不并发（`maxConcurrentPerDevice` 默认 1 = 串行）；`scope=global` 时升为全平台串行（单点登录顶号类场景）。
 
 **部署组 registerDeploymentTools（9）**：`list_deployments`、`deploy_application`（applicationId，executorId 省略自动选最低负载）、`deploy_app`（按 name 先查 applications 再走同一路由，NF-06）、`upgrade_deployment`、`stop_deployment`，以及 **DEP-04 审批工具组**：`list_pending_approvals`（ADMIN）、`approve_deployment`（ADMIN，第二人规则：审批人≠发起人，否则后端报错）、`reject_deployment`（ADMIN）、`cancel_deployment`（仅发起人可撤）。审批启用时 deploy 工具返回 `approvalStatus=pending_approval` + `dispatched:false` + 下一步提示——**未审批前不会下发任何东西**。
 

@@ -166,6 +166,23 @@ export const EXAMPLES: Record<string, string[]> = {
   ],
   'approval reject': ['acf approval reject <deploymentId> --note "wrong version"'],
   'approval cancel': ['acf approval cancel <deploymentId>   # withdraw your own pending request'],
+  'mutex list': [
+    'acf mutex list   # the same options the console shows in the app-form dropdown (id + attached app count)',
+    'acf mutex list --json',
+  ],
+  'mutex create': [
+    'acf mutex create --name ziniao-browser   # default: 1 concurrent per device (serial on one device)',
+    'acf mutex create --name sso-account --scope global   # platform-wide serial (single-sign-on takeover)',
+    'acf mutex create --name browser --max-concurrent 2 --description "2 browser slots per device"',
+  ],
+  'mutex update': [
+    'acf mutex update <groupId> --max-concurrent 3',
+    'acf mutex update <groupId> --scope global   # tighten immediately; waiting executions are re-dispatched',
+  ],
+  'mutex delete': [
+    'acf mutex delete <groupId>   # refuses (409) while apps are attached — lists how many',
+    'acf mutex delete <groupId> --force -y   # attached apps silently lose the constraint',
+  ],
   'config show': ['acf config show', 'acf config show --json'],
   'config set-url': ['acf config set-url http://localhost:3105'],
   // 刻意**不**演示 `set-token <明文>`：命令行 token 会进 shell history 与进程列表。

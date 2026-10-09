@@ -129,14 +129,18 @@ describe('help 覆盖守卫（集中式 EXAMPLES × 真实命令树）', () => {
   });
 
   it('命令树规模护栏：叶子命令数量符合预期（防止守卫意外失效/空转）', () => {
-    // 63 个叶子 = login(1)+whoami(1)+logout(1)+task(23,含 webhook/glue)
+    // 67 个叶子 = login(1)+whoami(1)+logout(1)+task(23,含 webhook/glue)
     //            +app(12,含 upload/upgrade-all/releases)
     //            +executor(4)+deploy(4,含 list/remove)+audit(1)+exec(1)+project(2)
     //            +sop(2)+agent(1)+apikey(3)+approval(4)+config(3)
+    //            +mutex(4: list/create/update/delete)
     // whoami/logout 由 CLI-AGENT-UX-AUDIT（2026-10-08）补：agent 开工前需要
     // 自检身份/角色（后端大量 ADMIN-only 面），收工时需要吊销并清本地凭据。
+    // mutex 由 MUTEX-CLI（2026-10）补：后端 4 端点自 MUTEX-01 起就存在且中台
+    // 在用，CLI 此前零接入——「挂组」只能靠未文档化的 --body 透传（能用但
+    // 没人知道），「有哪些组可选」在 CLI 侧完全不可见。
     const leaves = leafCommands(program);
-    expect(leaves.length).toBe(63);
+    expect(leaves.length).toBe(67);
   });
 });
 

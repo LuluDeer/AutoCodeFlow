@@ -138,6 +138,31 @@ acf task delete <id> -y     # 非交互下唯一被接受的确认方式
   语言按扩展名推断（`.js/.mjs/.cjs` → `javascript`），或 `--language
   python|javascript|shell` 显式指定（执行器运行时白名单）；空脚本本地即拒。
 
+## 应用互斥组（MUTEX-01，2026-10 补齐 CLI 面）
+
+同一组内的应用在**同一台设备上永不并发**（组内并发数默认 1 = 串行）——典型场景
+是独占型资源：浏览器实例、单点登录账号（顶号）、GPU 槽位。后端 `mutex-groups`
+四端点自 MUTEX-01 起就存在且中台在用，此前 CLI 零接入。
+
+- `acf mutex list`：拉取可选组（**与中台应用表单下拉同源**），列出 `id` / 名称 /
+  每设备并发 / 作用域 / 已挂应用数。挂应用时用这里的 `id`。
+- `acf mutex create --name <name> [--max-concurrent N] [--scope device|global] [--description <text>]`
+  ：建组。`--max-concurrent` 取值 1-100（与后端 `@Min/@Max` 同界）；
+  `--scope` 两档语义差别很大：
+  - `device`（默认）：**单机串行、跨设备并发**——每台设备上同时最多 N 条；
+  - `global`：**全平台串行**——整平台同时最多 N 条（单点登录顶号类场景）。
+- `acf mutex update <groupId> [--name] [--max-concurrent] [--scope] [--description]`：
+  改组。至少给一个字段（空 patch 本地即拒，退出码 2——服务端会「成功但什么都没改」，
+  容易被误读为已生效）。`--scope` 可即时收紧，在途 WAITING 执行由 sweep 重派自愈。
+- `acf mutex delete <groupId> [-f|--force] [-y|--yes]`：删组。组上仍挂应用时服务端
+  返回 409 并告知挂载数量；确认后用 `--force` 放行（挂载应用经 FK `SET NULL`
+  自动回到「不参与互斥」）。属破坏性操作，非交互场景必须显式 `-y`。
+- **把应用挂进组**（沿用既有 `app update`，字段此前未在帮助里列出）：
+  `acf app update <appId> --body '{"mutexGroupId":"<acf mutex list 的 id>"}'`；
+  传 `null` 摘组。`acf app get <appId> --json` 可读出当前挂的组（表格视图不显示）。
+  组不存在时服务端 404（`assertMutexGroupExists` 前置校验）。
+- 写面（create/update/delete）要求 **ADMIN** 角色；`list` 任意登录用户可读。
+
 ## 开发
 
 ```bash

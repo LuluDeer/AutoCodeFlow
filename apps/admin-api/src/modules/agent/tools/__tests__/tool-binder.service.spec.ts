@@ -60,6 +60,15 @@ function harness() {
   };
   const deployments = { deploy: jest.fn(async () => ({ id: "dep-1" })) };
   const templates = { instantiate: jest.fn(async () => ({ id: "t-new" })) };
+  // MUTEX-01：互斥组四工具的执行体依赖
+  const mutexGroups = {
+    findAll: jest.fn(async () => [
+      { id: "g-1", name: "ziniao", maxConcurrentPerDevice: 1, scope: "device" },
+    ]),
+    create: jest.fn(async () => ({ id: "g-new", name: "sso" })),
+    update: jest.fn(async () => ({ id: "g-1", scope: "global" })),
+    remove: jest.fn(async () => undefined),
+  };
   const sops = {
     list: jest.fn(async () => []),
     getSop: jest.fn(async () => ({ id: "sop-1" })),
@@ -77,6 +86,7 @@ function harness() {
     applications as never,
     deployments as never,
     templates as never,
+    mutexGroups as never,
     sops as never,
   );
   svc.onModuleInit();
@@ -86,6 +96,7 @@ function harness() {
     tasks,
     executors,
     applications,
+    mutexGroups,
     deployments,
     templates,
     sops,
@@ -117,6 +128,16 @@ describe("ToolBinderService · 绑定完备性", () => {
       "resume_task",
       "create_application",
       "create_task_from_template",
+    ]) {
+      expect(bound).toContain(name);
+    }
+    // MUTEX-01：互斥组四工具全部有执行体（声明了却未绑定 = 模型调用得
+    // 「尚未实现」，白名单形同虚设——P6 那次教训的同类防线）
+    for (const name of [
+      "list_mutex_groups",
+      "create_mutex_group",
+      "update_mutex_group",
+      "delete_mutex_group",
     ]) {
       expect(bound).toContain(name);
     }
@@ -276,5 +297,72 @@ describe("ToolBinderService · 写工具绑定（P6）", () => {
     });
     await api.call("deploy_app", { applicationId: "app-2" });
     expect(deployments.deploy).toHaveBeenLastCalledWith("app-2", {});
+  });
+});
+
+/**
+ * MUTEX-01：互斥组四工具执行体（MUTEX-CLI/MCP 同步轮）。
+ *
+ * 与 CLI 侧同口径的三处容易退化的行为：① create 只发显式给出的字段
+ * （forbidNonWhitelisted 下不发 undefined）；② update 空 patch 必须**报错**
+ * 而不是静默成功（服务端语义是「成功但什么都没改」，模型会误读为已生效）；
+ * ③ delete 的 force 布尔要如实透传（true 才解除 409 保护）。
+ */
+describe("ToolBinderService · MUTEX-01 互斥组", () => {
+  it("list_mutex_groups：直通 findAll", async () => {
+    const { api, mutexGroups } = harness();
+    const out = await api.call("list_mutex_groups", {});
+    expect(mutexGroups.findAll).toHaveBeenCalledWith();
+    expect(out).toEqual([
+      { id: "g-1", name: "ziniao", maxConcurrentPerDevice: 1, scope: "device" },
+    ]);
+  });
+
+  it("create_mutex_group：只发显式字段（未给的键不出现）", async () => {
+    const { api, mutexGroups } = harness();
+    await api.call("create_mutex_group", { name: "sso" });
+    expect(mutexGroups.create).toHaveBeenCalledWith({ name: "sso" });
+  });
+
+  it("create_mutex_group：可选项齐全时透传（含 scope/maxConcurrentPerDevice）", async () => {
+    const { api, mutexGroups } = harness();
+    await api.call("create_mutex_group", {
+      name: "sso",
+      scope: "global",
+      maxConcurrentPerDevice: 2,
+      description: "单点登录顶号",
+    });
+    expect(mutexGroups.create).toHaveBeenCalledWith({
+      name: "sso",
+      scope: "global",
+      maxConcurrentPerDevice: 2,
+      description: "单点登录顶号",
+    });
+  });
+
+  it("update_mutex_group：空 patch 报错（不静默成功）", async () => {
+    const { api, mutexGroups } = harness();
+    await expect(
+      api.call("update_mutex_group", { groupId: "g-1" }),
+    ).rejects.toThrow(/至少需要一个可改字段/);
+    expect(mutexGroups.update).not.toHaveBeenCalled();
+  });
+
+  it("update_mutex_group：只把给出的字段放进 patch", async () => {
+    const { api, mutexGroups } = harness();
+    await api.call("update_mutex_group", { groupId: "g-1", scope: "global" });
+    expect(mutexGroups.update).toHaveBeenCalledWith("g-1", { scope: "global" });
+  });
+
+  it("delete_mutex_group：force 缺省为 false（不解除 409 保护）", async () => {
+    const { api, mutexGroups } = harness();
+    await api.call("delete_mutex_group", { groupId: "g-1" });
+    expect(mutexGroups.remove).toHaveBeenCalledWith("g-1", false);
+  });
+
+  it("delete_mutex_group：force=true 透传", async () => {
+    const { api, mutexGroups } = harness();
+    await api.call("delete_mutex_group", { groupId: "g-1", force: true });
+    expect(mutexGroups.remove).toHaveBeenCalledWith("g-1", true);
   });
 });

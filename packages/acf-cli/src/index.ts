@@ -47,6 +47,7 @@ import { sopCommand } from './commands/sop.js';
 import { agentCommand } from './commands/agent.js';
 import { apikeysCommand } from './commands/apikeys.js';
 import { approvalCommand } from './commands/approval.js';
+import { mutexCommand } from './commands/mutex.js';
 import { showConfig, setApiUrl, setToken } from './config.js';
 import { applyExamples } from './help.js';
 import { EXIT_CODES, interruptExit } from './ui.js';
@@ -135,6 +136,7 @@ program.addCommand(sopCommand());
 program.addCommand(agentCommand());
 program.addCommand(apikeysCommand());
 program.addCommand(approvalCommand());
+program.addCommand(mutexCommand());
 
 // acf config show / set
 const configCmd = new Command('config').description('View or update CLI configuration');

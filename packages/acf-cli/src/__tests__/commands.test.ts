@@ -79,6 +79,7 @@ import { auditCommand } from '../commands/audit.js';
 import { loginCommand } from '../commands/login.js';
 import { sopCommand } from '../commands/sop.js';
 import { agentCommand } from '../commands/agent.js';
+import { mutexCommand } from '../commands/mutex.js';
 
 const mockedGet = vi.mocked(get);
 const mockedPost = vi.mocked(post);
@@ -103,6 +104,23 @@ function captureLog(): { logs: string[]; spy: ReturnType<typeof vi.spyOn> } {
     logs.push(a.join(' '));
   }) as never);
   return { logs, spy };
+}
+
+/**
+ * 文件级 stdout 捕获（返回值形态）。promoted from the `--json 补面` describe：
+ * mutex 块也要用同一口径，describe 局部函数跨块不可见。
+ */
+async function jsonOut(runFn: () => Promise<void>): Promise<string> {
+  const out: string[] = [];
+  const spy = vi.spyOn(console, 'log').mockImplementation(((...a: unknown[]) => {
+    out.push(a.map((x) => String(x)).join(' '));
+  }) as never);
+  try {
+    await runFn();
+  } finally {
+    spy.mockRestore();
+  }
+  return out.join('\n');
 }
 
 beforeEach(() => {
@@ -1272,19 +1290,6 @@ describe('acf agent sessions', () => {
 // pretty(2)。与既有 --json 命令的两种形态保持同构，不产生第三种不一致。
 // ---------------------------------------------------------------------------
 describe('acf --json 补面（本轮 UX 统一）', () => {
-  async function jsonOut(runFn: () => Promise<void>): Promise<string> {
-    const out: string[] = [];
-    const spy = vi.spyOn(console, 'log').mockImplementation(((...a: unknown[]) => {
-      out.push(a.map((x) => String(x)).join(' '));
-    }) as never);
-    try {
-      await runFn();
-    } finally {
-      spy.mockRestore();
-    }
-    return out.join('\n');
-  }
-
   it('task executions --json prints the { list, total } envelope as a single line', async () => {
     const payload = { list: [{ id: 'e1', taskId: 't1', status: 'failed', createdAt: '2026-01-01T00:00:00Z' }], total: 1 };
     mockedGet.mockResolvedValueOnce(payload);
@@ -1376,11 +1381,167 @@ describe('acf --json 补面（本轮 UX 统一）', () => {
       [sopCommand, 'list'],
       [sopCommand, 'show'],
       [agentCommand, 'sessions'],
+      [mutexCommand, 'list'],
+      [mutexCommand, 'create'],
+      [mutexCommand, 'update'],
     ];
     for (const [factory, name] of cases) {
       const sub = factory().commands.find((c) => c.name() === name);
       expect(sub, `${factory} ${name} 缺 --json`).toBeTruthy();
       expect(sub!.options.find((o) => o.long === '--json'), `${factory} ${name} 缺 --json`).toBeTruthy();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// MUTEX-01 / MUTEX-CLI：互斥组命令组
+// ---------------------------------------------------------------------------
+// 背景：后端 4 端点（GET/POST/PUT/DELETE /mutex-groups）自 MUTEX-01 起就存在，
+// 中台在用，而 CLI 此前零接入。这组用例钉死新命令的 method/path/body 契约，
+// 以及三处**容易退化**的行为：空 patch 拒绝、--force 的查询串、破坏性确认门。
+describe('acf mutex（互斥组命令组）', () => {
+  const GROUP = {
+    id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+    name: 'ziniao-browser',
+    maxConcurrentPerDevice: 1,
+    scope: 'device' as const,
+    description: null,
+    applicationCount: 2,
+    createdAt: '2026-10-01T00:00:00.000Z',
+    updatedAt: '2026-10-01T00:00:00.000Z',
+  };
+
+  it('list：GET /mutex-groups，--json 原样透出（含 id 与挂载应用数）', async () => {
+    mockedGet.mockResolvedValueOnce([GROUP]);
+    const out = await jsonOut(() => run(mutexCommand(), 'mutex list --json'));
+    expect(mockedGet).toHaveBeenCalledWith('/mutex-groups');
+    expect(JSON.parse(out)).toEqual([GROUP]);
+  });
+
+  it('list：表格模式提示「无组」时给出创建命令（不留白）', async () => {
+    mockedGet.mockResolvedValueOnce([]);
+    const { logs, spy } = captureLog();
+    try {
+      await run(mutexCommand(), 'mutex list');
+      const text = logs.join('\n');
+      expect(text).toContain('No mutex groups yet');
+      expect(text).toContain('acf mutex create');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('create：POST /mutex-groups，只发显式给出的字段（forbidNonWhitelisted 下不发 undefined）', async () => {
+    mockedPost.mockResolvedValueOnce(GROUP);
+    await run(mutexCommand(), 'mutex create --name ziniao-browser --json');
+    expect(mockedPost).toHaveBeenCalledWith('/mutex-groups', { name: 'ziniao-browser' });
+  });
+
+  it('create：--max-concurrent 与 --scope 映射为后端字段名', async () => {
+    mockedPost.mockResolvedValueOnce(GROUP);
+    // 注意：run() 按空格切分参数，故 --description 的取值不能带空格/引号
+    //（引号会被原样带进 payload）。带空格的取值由真实 CLI 的 shell 负责分词。
+    await run(
+      mutexCommand(),
+      'mutex create --name sso --max-concurrent 2 --scope global --description slots --json',
+    );
+    expect(mockedPost).toHaveBeenCalledWith('/mutex-groups', {
+      name: 'sso',
+      maxConcurrentPerDevice: 2,
+      scope: 'global',
+      description: 'slots',
+    });
+  });
+
+  // 解析层错误（非法取值）不走命令 action，而是 commander 在 parseAsync 里抛出；
+  // 退出码映射由 index.ts 的 parseErrorExitCode 负责。这里刻意用**真实命令树**
+  // （index.ts 已对全树 exitOverride——测试里自建的根不会给子命令补设，见
+  // ux-uniform.test.ts 的同类说明），否则拿到的是裸 process.exit(1) 而非映射结果。
+  it('create：--scope 非法值在解析层被拒（映射为用法错误 2，不发请求）', async () => {
+    const { program, parseErrorExitCode } = await import('../index.js');
+    const { CommanderError } = await import('commander');
+    const err = await program
+      .parseAsync(['node', 'acf', 'mutex', 'create', '--name', 'x', '--scope', 'bogus'], {
+        from: 'node',
+      })
+      .then(() => null)
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(CommanderError);
+    expect(parseErrorExitCode(err)).toBe(2);
+    expect(mockedPost).not.toHaveBeenCalled();
+  });
+
+  it('create：--max-concurrent 超出 1..100 被拒（与后端 @Min/@Max 同界）', async () => {
+    const { program, parseErrorExitCode } = await import('../index.js');
+    const err = await program
+      .parseAsync(['node', 'acf', 'mutex', 'create', '--name', 'x', '--max-concurrent', '101'], {
+        from: 'node',
+      })
+      .then(() => null)
+      .catch((e: unknown) => e);
+    expect(parseErrorExitCode(err)).toBe(2);
+    expect(mockedPost).not.toHaveBeenCalled();
+  });
+
+  it('update：PUT /mutex-groups/:id 携带补丁', async () => {
+    mockedPut.mockResolvedValueOnce({ ...GROUP, maxConcurrentPerDevice: 3 });
+    await run(mutexCommand(), `mutex update ${GROUP.id} --max-concurrent 3 --json`);
+    expect(mockedPut).toHaveBeenCalledWith(`/mutex-groups/${GROUP.id}`, {
+      maxConcurrentPerDevice: 3,
+    });
+  });
+
+  it('update：空补丁（一个字段都没给）本地拒绝——服务端会「成功但什么都没改」', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await expect(run(mutexCommand(), `mutex update ${GROUP.id}`)).rejects.toThrow(
+        /process\.exit\(2\)/,
+      );
+      expect(mockedPut).not.toHaveBeenCalled();
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+
+  it('delete：DELETE /mutex-groups/:id（不带 force 时不传查询参数）', async () => {
+    mockedDel.mockResolvedValueOnce({ ok: true });
+    await run(mutexCommand(), `mutex delete ${GROUP.id} -y`);
+    expect(mockedDel).toHaveBeenCalledWith(`/mutex-groups/${GROUP.id}`, undefined);
+  });
+
+  it('delete --force：params 传 force=true（服务端据此放行仍挂应用的组）', async () => {
+    mockedDel.mockResolvedValueOnce({ ok: true });
+    await run(mutexCommand(), `mutex delete ${GROUP.id} --force -y`);
+    // 查询串走 del() 的 params 而非路径字面量拼接——否则 consumer-routes 守卫
+    // 无法静态解析该路由（见 client.ts 的 del() 注释）。
+    expect(mockedDel).toHaveBeenCalledWith(`/mutex-groups/${GROUP.id}`, { force: 'true' });
+  });
+
+  it('delete：非交互且无 -y 时以用法错误拒绝（不静默假绿）', async () => {
+    // 破坏性动作的确认门：stdin 非 TTY（CI/agent）时必须拒绝并给 --yes 指引，
+    // 否则 agent 会把「什么都没删」读成「删除成功」。
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const origIsTTY = process.stdin.isTTY;
+    try {
+      Object.defineProperty(process.stdin, 'isTTY', { value: false, configurable: true });
+      await expect(run(mutexCommand(), `mutex delete ${GROUP.id}`)).rejects.toThrow(
+        /process\.exit\(2\)/,
+      );
+      expect(mockedDel).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(process.stdin, 'isTTY', {
+        value: origIsTTY,
+        configurable: true,
+      });
+      errSpy.mockRestore();
+    }
+  });
+
+  it('变异检测：命令组必须挂在 index.ts 的真实命令树上（防「写了没接」）', async () => {
+    const { program } = await import('../index.js');
+    const mutex = program.commands.find((c) => c.name() === 'mutex');
+    expect(mutex, 'mutex 命令组未挂到 program').toBeTruthy();
+    const names = mutex!.commands.map((c) => c.name()).sort();
+    expect(names).toEqual(['create', 'delete', 'list', 'update']);
   });
 });

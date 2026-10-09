@@ -246,7 +246,20 @@ describe("client methods (mocked axios)", () => {
   it("del sends the path", async () => {
     axiosInstance.delete.mockResolvedValueOnce(envelope(undefined));
     await del("/tasks/t1");
-    expect(axiosInstance.delete).toHaveBeenCalledWith("/tasks/t1");
+    // 无 params 时显式传 undefined：axios 的 config 形参恒在（del 现支持查询串）。
+    expect(axiosInstance.delete).toHaveBeenCalledWith("/tasks/t1", {
+      params: undefined,
+    });
+  });
+
+  it("del 支持 params（查询串交给 axios 序列化，不在路径字面量里拼 ?）", async () => {
+    // 为什么要有这条：consumer-routes 守卫按 `?` 切分路径字面量，
+    // `del(`/x/${id}${c ? '?f=true' : ''}`)` 会被截断成非法路由而在 CI 报错。
+    axiosInstance.delete.mockResolvedValueOnce(envelope({ ok: true }));
+    await del("/mutex-groups/g1", { force: "true" });
+    expect(axiosInstance.delete).toHaveBeenCalledWith("/mutex-groups/g1", {
+      params: { force: "true" },
+    });
   });
 });
 

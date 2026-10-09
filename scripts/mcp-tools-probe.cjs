@@ -121,7 +121,8 @@ child.stderr.on('data', (c) => { stderr += c.toString('utf8'); });
       const byName = new Map(tools.map((t) => [t.name, t]));
 
       // (1) total is pinned to the audited count — bump deliberately.
-      const EXPECTED_TOOLS = 52;
+      // 52 → 56（MUTEX-01 互斥组四工具：list/create/update/delete_mutex_group）。
+      const EXPECTED_TOOLS = 56;
       if (tools.length !== EXPECTED_TOOLS) {
         failures.push(
           `tool count is ${tools.length}, expected ${EXPECTED_TOOLS} — if you added/removed a tool, ` +
@@ -138,6 +139,7 @@ child.stderr.on('data', (c) => { stderr += c.toString('utf8'); });
         'delete_application', 'kill_execution', 'stop_deployment',
         'reject_deployment', 'rollback_task_version',
         'deploy_application', 'deploy_app',
+        'delete_mutex_group',
       ]) {
         const t = byName.get(n);
         if (!t) { failures.push(`expected tool missing: ${n}`); continue; }
@@ -150,7 +152,7 @@ child.stderr.on('data', (c) => { stderr += c.toString('utf8'); });
       }
 
       // (4) read-only list/get tools must be flagged readOnlyHint:true.
-      for (const n of ['list_tasks', 'get_task', 'list_executors', 'list_projects']) {
+      for (const n of ['list_tasks', 'get_task', 'list_executors', 'list_projects', 'list_mutex_groups']) {
         if (byName.get(n)?.annotations?.readOnlyHint !== true) {
           failures.push(`${n} must declare readOnlyHint:true`);
         }
@@ -175,7 +177,7 @@ child.stderr.on('data', (c) => { stderr += c.toString('utf8'); });
         child.kill();
         process.exit(1);
       }
-      console.log('\nMCP tool-surface guard OK: 52 tools, annotations complete, runMode enums intact.');
+      console.log('\nMCP tool-surface guard OK: 56 tools, annotations complete, runMode enums intact.');
     }
 
     // names list — report mode only (the guard's output should stay short/parsable)

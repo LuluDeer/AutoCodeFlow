@@ -741,10 +741,50 @@ console.log("\n── 3. 边界闸门（SOP 工具）──");
   const reg = require(join(scratch, "src/modules/agent/tools/tool-registry.js"));
   const { AgentBoundaryService } = require(join(scratch, "src/modules/agent/boundary/agent-boundary.service.js"));
 
-  check("收编工具仍为 43（parity 不变量不因内部工具破坏）", reg.AGENT_TOOL_SPECS.length === 43);
+  // 计数**推导**而非硬编码：硬编码的 43 曾三次漂移（mcp 43→52→56 时无人提醒，
+  // 本检查与 agent-boundary-check 各写一份数字，改一处漏一处）。现在从
+  // mcp-server 的注册源推导，并显式扣掉两类不落在 AGENT_TOOL_SPECS 里的工具：
+  //   · 显式排除（EXCLUDED，共 7）——刻意不给 agent 的 mcp 工具；
+  //   · 经**内部表**纳管的（sop_list / sop_get）——它们同时是 mcp 工具与
+  //     agent 内部工具，登记在 AGENT_INTERNAL_TOOL_SPECS 而非收编集。
+  // 探针 scripts/mcp-tools-probe.cjs 另有真实 stdio 握手的绝对计数断言（56），
+  // 三者互为交叉校验：源文件解析、探针握手、收编集长度。
+  const mcpSrc = readFileSync(
+    join(root, "packages/mcp-server/src/tools.ts"),
+    "utf8",
+  );
+  const mcpToolNames = [
+    ...mcpSrc.matchAll(/server\.tool\(\s*\n?\s*"([a-z_]+)"/g),
+  ].map((m) => m[1]);
+  // 刻意排除的 mcp 工具（与 agent-boundary-check 的 MCP_TOOLS_EXCLUDED_FROM_AGENT
+  // 同源口径）。
+  const EXCLUDED = [
+    "export_task",
+    "import_task",
+    "list_task_templates",
+    "sop_assignments_pending",
+    "sop_clarification_reply",
+    "agent_session_list",
+    "agent_session_get",
+  ];
+  const internalNames = reg.AGENT_INTERNAL_TOOL_SPECS.map((t) => t.name);
+  // 经内部表纳管的 mcp 工具（sop_list / sop_get）——不计入收编集。
+  const viaInternal = mcpToolNames.filter((n) => internalNames.includes(n));
+  const expectedCulled = mcpToolNames.length - EXCLUDED.length - viaInternal.length;
+
+  check(
+    `收编集长度 == mcp - 排除 - 经内部表纳管（推导：${mcpToolNames.length} - ${EXCLUDED.length} - ${viaInternal.length} = ${expectedCulled}）`,
+    reg.AGENT_TOOL_SPECS.length === expectedCulled,
+    `实际 ${reg.AGENT_TOOL_SPECS.length}`,
+  );
   check("内部 SOP 工具 6 个", reg.AGENT_INTERNAL_TOOL_SPECS.length === 6);
   const allNames = reg.ALL_AGENT_TOOL_SPECS.map((t) => t.name);
-  check("合流集 49 且无重复", allNames.length === 49 && new Set(allNames).size === 49);
+  const expectedAll = reg.AGENT_TOOL_SPECS.length + 6;
+  check(
+    `合流集 == 收编 + 内部（推导：${reg.AGENT_TOOL_SPECS.length} + 6 = ${expectedAll}）且无重复`,
+    allNames.length === expectedAll && new Set(allNames).size === expectedAll,
+    `实际 ${allNames.length}`,
+  );
   check("sop_publish 默认需审批（approvalRequired）",
     reg.AGENT_INTERNAL_TOOL_SPECS.find((t) => t.name === "sop_publish")?.approvalRequired === true);
 

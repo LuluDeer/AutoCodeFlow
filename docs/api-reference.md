@@ -279,12 +279,16 @@ Content-Type: application/json
 
 | 方法 | 路径 | 需要认证 | 说明 |
 |------|------|:--------:|------|
-| GET | `/mutex-groups` | 是 | 列出互斥组（应用表单下拉与组管理消费） |
-| POST | `/mutex-groups` | 是* | 创建组：`{ name ≤64 唯一, maxConcurrentPerDevice ≥1 默认 1, description? }`；重名 409 |
-| PUT | `/mutex-groups/:id` | 是* | 更新组名 / `maxConcurrentPerDevice`（热生效——下次派发即按新值判定） |
-| DELETE | `/mutex-groups/:id` | 是* | 删除组。组上仍挂应用时需 `?force=true`（删除后应用经 FK SET NULL 回到「不参与互斥」；在途执行按创建时的组快照走完） |
+| GET | `/mutex-groups` | 是 | 列出互斥组（应用表单下拉与组管理消费）。含 `applicationCount`（每组当前挂载的应用数，未挂为 0）——删组前据此判断影响面 |
+| POST | `/mutex-groups` | 是* | 创建组：`{ name ≤64 唯一, maxConcurrentPerDevice 1..100 默认 1, scope device\|global 默认 device, description? ≤500 }`；重名 409 |
+| PUT | `/mutex-groups/:id` | 是* | 更新 `name` / `maxConcurrentPerDevice` / `scope` / `description`（热生效——下次派发即按新值判定；改 `scope` 即时收紧或释放跨设备约束，在途 WAITING 由 sweep 重派自愈） |
+| DELETE | `/mutex-groups/:id` | 是* | 删除组。组上仍挂应用时需 `?force=true`（否则 409 并告知挂载数量；删除后应用经 FK SET NULL 回到「不参与互斥」；在途执行按创建时的组快照走完） |
 
-> *写面仅 ADMIN（`@Roles(ADMIN)`）。应用挂组走既有应用写面：`POST/PUT /applications` 的 `mutexGroupId` 字段（uuid，可空；组不存在 404）。执行行携带创建时的组快照（`task_executions.mutexGroupId`），组删除不影响在途执行。
+> *写面仅 ADMIN（`@Roles(ADMIN)`）；`GET` 任意登录用户可读。应用挂组走既有应用写面：`POST/PUT /applications` 的 `mutexGroupId` 字段（uuid，可空；组不存在 404）。执行行携带创建时的组快照（`task_executions.mutexGroupId`），组删除不影响在途执行。
+
+> **CLI 面**（2026-10 补齐）：`acf mutex list | create | update | delete`（`delete` 支持 `-f/--force`），
+> 挂应用仍走 `acf app update <appId> --body '{"mutexGroupId":"<id>"}'`。详见
+> `packages/acf-cli/README.md`「应用互斥组」。
 
 ---
 

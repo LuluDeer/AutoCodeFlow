@@ -6,6 +6,13 @@
 > ＋ 源码逐工具对读 ＋ 后端 DTO 对账。
 > 对照对象：`packages/acf-cli`（同日已修复，见 `docs/CLI-AGENT-UX-AUDIT-2026-10-08.md`）
 
+> **⚠ 计数时效（2026-10-09 补注）**：本文的 **52 工具**、**161/161 测试** 是
+> 2026-10-08 基线的**当时值**，作为历史记录保留、不逐处改写。此后：
+> · MCP 工具 **52 → 56**（MUTEX-01 互斥组四工具 `list/create/update/delete_mutex_group`，
+>   见 `docs/atlas/02-packages/mcp-server.md`）；
+> · 探针的绝对计数断言已同步为 `EXPECTED_TOOLS = 56`（`scripts/mcp-tools-probe.cjs`）。
+> 下文的「52」一律按此口径换算，不再单独标注。
+
 ---
 
 ## 修复状态（2026-10-08 同日闭环）

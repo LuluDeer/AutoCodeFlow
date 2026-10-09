@@ -288,7 +288,7 @@ app releases     -n, --page-size <n>   (max 200, default 50)
 这部分说明 CLI 并未落后，反而有超前：
 
 - `POST /sop/:id/publish`、`PATCH /sop/:id` — UI 只能建草稿，**没有发布入口**（`/sops` 页面的「指派」要求已发布状态，形成死结）。CLI 也没接，两边都缺。
-- `PATCH/DELETE /mutex-groups/:id` — UI 只能 list + create。
+- `PATCH/DELETE /mutex-groups/:id` — UI 只能 list + create。**（2026-10 已补齐：CLI 侧新增 `acf mutex list|create|update|delete`，四端点全接通；中台侧 `PATCH/DELETE` 仍缺。详见 `packages/acf-cli/README.md`「应用互斥组」。）**
 - `POST /config/batch`、`POST /applications/webhook` — 无 UI。
 - `POST /tasks/:id/rollback`（按 gitCommit）— UI 只做版本号回滚。
 - `GET /api/config/executor-shared-token` 返回**明文**执行器 token，ADMIN-only——CLI 未接（正确，属危险面）。
