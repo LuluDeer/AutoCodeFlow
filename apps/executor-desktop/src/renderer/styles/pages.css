@@ -2005,6 +2005,62 @@
 .wizard-aftercare-icon { flex: none; width: 14px; height: 14px; color: var(--text3); }
 
 /* ==========================================================================
+ * Wizard：解释器下载源步（第 4 步）——单选卡 + 连通性探测徽标
+ * ========================================================================== */
+/* 两个来源选项为可点单选卡（label 包裹原生 radio，键盘可达）；选中态 accent
+   描边 + 浅绿底，与 ip-chip 的「推荐/选中」视觉同族。探测徽标右置不换行。 */
+.wizard-source-options {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  margin-bottom: 12px;
+}
+.wizard-source-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.wizard-source-option:hover { border-color: var(--text3); }
+.wizard-source-option.selected {
+  border-color: var(--accent);
+  background: var(--green-bg);
+}
+.wizard-source-option input { accent-color: var(--accent); flex: none; }
+.wizard-source-option-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+.wizard-source-option-main strong {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1.3;
+}
+.wizard-source-option-main span {
+  font-size: 11px;
+  color: var(--text3);
+  line-height: 1.4;
+}
+.source-probe {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  font-size: 11px;
+}
+.source-probe .icon { width: 12px; height: 12px; }
+.source-probe.ok { color: var(--accent); }
+.source-probe.fail { color: var(--red); }
+
+/* ==========================================================================
  * App.tsx R4 追加（引导闭环第一路）：C-04 主窗 X 首次关闭——托盘驻留气泡
  * ========================================================================== */
 /* 主窗 titlebar 关闭按钮的一次性提示（App.tsx MainWindow，state 控制显隐）：

@@ -7,6 +7,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   saveAndCloseWizard: (cfg: Record<string, unknown>) =>
     ipcRenderer.invoke('config:save-and-close-wizard', cfg),
   testConnection: (url: string) => ipcRenderer.invoke('config:test-connection', url),
+  // 首启向导「解释器下载源」步：并行探测官方源与国内镜像的连通性（收到任一
+  // HTTP 应答即算可达），供页内展示与自动推荐。探测语义见 ipc-handlers。
+  testInterpreterSource: () => ipcRenderer.invoke('config:test-interpreter-source'),
   // B-8：host 透传——端口可用性检测必须按调用方表单的 executorHost 监听
   // （与执行器实际 bind 的 host 同源），缺省仍回落 0.0.0.0（主进程归一化）。
   checkPort: (port: number, host?: string) => ipcRenderer.invoke('config:check-port', port, host),

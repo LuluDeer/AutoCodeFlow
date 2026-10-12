@@ -962,6 +962,44 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
   if (!readFileSync(resolve(root, 'i18n.ts'), 'utf8').includes("'wizard.connect.skipWarning': '尚未通过连接测试，继续可能无法注册。'")) {
     throw new Error('B-11: wizard.connect.skipWarning zh 文案必须保持原值');
   }
+
+  // ── 解释器下载源（首启向导第 4 步）：把源选择交给用户，探测先行 ─────
+  // 背景（v1.8.1 真机实证）：国内网络 GitHub 直连超时/重置，官方源首次下载
+  // CPython 直接 download_failed。守卫钉死整条链路：5 步结构 → 表单字段 →
+  // 探测 IPC 三件套 → 镜像字面量双端一致 → i18n 双语键。
+  if (!wizardNoCommentsForAudit.includes('TOTAL_STEPS = 5')) {
+    throw new Error('下载源: 向导应为 5 步（TOTAL_STEPS = 5）');
+  }
+  if (!wizardNoCommentsForAudit.includes("t('shell.step5')")) {
+    throw new Error('下载源: STEP_LABELS 缺少第 5 步标签（shell.step5）');
+  }
+  if (!wizardNoCommentsForAudit.includes('uvPythonInstallMirror')) {
+    throw new Error('下载源: WizardForm 缺少 uvPythonInstallMirror 字段（与设置页同字段，无独立通道）');
+  }
+  if (!preloadSrc.includes('testInterpreterSource')) {
+    throw new Error('下载源: preload 未暴露 testInterpreterSource');
+  }
+  if (!ipcHandlers.includes("'config:test-interpreter-source'")) {
+    throw new Error('下载源: 主进程未注册 config:test-interpreter-source');
+  }
+  if (!wizardNoCommentsForAudit.includes('testInterpreterSource()')) {
+    throw new Error('下载源: Wizard 未消费探测结果');
+  }
+  if (!ipcHandlers.includes('function probeInterpreterSource(')) {
+    throw new Error('下载源: 主进程探测函数缺失');
+  }
+  // 镜像 base URL 在 Wizard（写库值）与 ipc-handlers（探测目标）两侧各持一份
+  // 字面量——这里防单侧悄悄改导致"探测的"与"写入的"分裂。
+  const interpreterMirrorUrl = 'https://registry.npmmirror.com/-/binary/python-build-standalone';
+  if (!wizardNoCommentsForAudit.includes(interpreterMirrorUrl) || !ipcHandlers.includes(interpreterMirrorUrl)) {
+    throw new Error('下载源: 镜像 base URL 必须在 Wizard 与 ipc-handlers 两侧一致');
+  }
+  if (!i18nTexts.includes("'wizard.source.optionMirror': '国内镜像（npmmirror）'")) {
+    throw new Error('下载源: wizard.source.optionMirror zh 文案缺失');
+  }
+  if (!i18nTexts.includes("'wizard.source.autoSelected': '官方源不可达，已自动选择国内镜像（可改回）'")) {
+    throw new Error('下载源: 自动推荐提示 zh 文案必须如实（改的是未保存表单，可改回）');
+  }
 }
 
 // ── UX 走查（对齐 admin-web 十轮方法论）回归守卫 ───────────────────────
