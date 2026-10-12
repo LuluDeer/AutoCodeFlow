@@ -13,6 +13,7 @@ import {
   resolveInterpretersDir as resolveInterpretersDirPure,
 } from './uv-paths';
 import { listLocalIPv4s } from './network-util';
+import { augmentedPath, parsePathList } from './shell-path';
 import { LineSplitter } from './child-line-splitter';
 import {
   advanceHeartbeatHysteresis,
@@ -279,6 +280,35 @@ export class ExecutorProcess {
     // 环境里已有 UV_BIN（用户系统级配置）且我们没自带/没显式指定时，
     // buildUvChildEnv 不会写 UV_BIN，此处保持原值即可（已被 ...process.env 带入）。
     log.info(`Interpreter pool dir: ${interpretersDir}`);
+
+    // ---- macOS 登录 shell PATH 补丁（spawn 前）----
+    // 从 Finder/Dock 启动的 .app 不经过用户登录 shell，拿不到 ~/.zshrc /
+    // ~/.zprofile 贡献的 PATH（Homebrew/pyenv 等）——于是机器上明明装了
+    // python/git，任务仍一律 command not found（与 Windows Store python 桩
+    // 同一「症状类」，见 shell-path.ts 头注）。这里把登录 shell 的 PATH
+    // **前置**合并进子进程 env：用户选的解释器优先于 /usr/bin 的系统桩。
+    //
+    // fail-open：非 darwin 直接 no-op；解析失败/超时/异常一律保持原 env。
+    // PATH 补丁是「锦上添花」，绝不能让它把执行器启动阻断或拖慢。
+    try {
+      const mergedPath = await augmentedPath({ currentPath: env.PATH });
+      if (mergedPath !== undefined) {
+        // 只报「新增了几条」：完整 PATH 又长又含用户名/内网路径，不进日志。
+        const added =
+          parsePathList(mergedPath, process.platform).length -
+          parsePathList(env.PATH ?? '', process.platform).length;
+        env.PATH = mergedPath;
+        log.info(
+          `Applied macOS login-shell PATH to executor child env (added ${added} entries)`,
+        );
+      }
+    } catch (err) {
+      log.warn(
+        `Failed to resolve login-shell PATH; continuing with inherited PATH: ${
+          err instanceof Error ? err.message : err
+        }`,
+      );
+    }
 
     this.proc = spawn(process.execPath, [entryPath], {
       env,

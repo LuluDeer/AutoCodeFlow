@@ -127,7 +127,7 @@ jest.mock('../task-worker', () => {
 // Imports
 // ---------------------------------------------------------------------------
 
-import { executeRouter, runTask, gitCheckoutTo, killRunningTaskProcesses, abortAllLiveExecutions, BoundedLogBuffer, resolveBwrapPath, buildTaskSandboxArgv, __resetBwrapPathCacheForTest, SHELL_ENTRYPOINT_SAFE_RE, resolveTaskTimeoutRaw } from './execute';
+import { executeRouter, runTask, gitCheckoutTo, killRunningTaskProcesses, abortAllLiveExecutions, BoundedLogBuffer, resolveBwrapPath, buildTaskSandboxArgv, __resetBwrapPathCacheForTest, SHELL_ENTRYPOINT_SAFE_RE, resolveTaskTimeoutRaw, DEFAULT_PYTHON_VERSION } from './execute';
 import { buildNpmRcContent, executionExists, quoteShellArgForPlatform } from './execute';
 // A3（kill/logs 契约化）：kill 真实出参用生成的 schema 现校验
 import { KillResponseSchema } from '../generated/protocol.schemas';
@@ -136,6 +136,15 @@ import { taskWorkerManager } from '../task-worker';
 import { config as testConfig } from '../config';
 import { verifyToken } from '../middleware/auth';
 import { downloadFile as mockDownloadFile } from '../lib/download';
+// 桌面自包含改造：cmd 现在来自工具链的**实跑结论**（toolchain.ts，单一真值源）。
+// 本 spec 整体 mock 了 child_process，真实探测拿不到结果，故必须在 beforeEach
+// 里显式 seed 一份"本机常规形态"的工具链——否则每个 node/python 任务都会因
+// "没有可用运行时"而失败，而这些用例本来测的是 env 注入/超时/回调等无关行为。
+import {
+  buildToolchainForTest,
+  seedToolchainForTest,
+  invalidateToolchain,
+} from '../toolchain';
 
 const mockFs = fs as jest.Mocked<typeof fs>;
 const mockCp = childProcess as jest.Mocked<typeof childProcess>;
@@ -213,6 +222,31 @@ beforeEach(() => {
   testConfig.executionCallbackSecret = '';
   testConfig.maxConcurrentTasks = 10;
   testConfig.taskTimeoutSeconds = 300;
+  // 桌面自包含改造：seed 一份"本机常规形态"的工具链（POSIX python3/node、
+  // Windows python.exe/node.exe——与改动前硬编码的名字逐字相同，故这些用例
+  // 断言的 cmd 语义零变化）。工具链缓存是模块级的，跨用例必须重置，否则
+  // "这台机器有没有 node/python"会取决于前一个用例（缓存串扰型假绿）。
+  invalidateToolchain();
+  seedToolchainForTest(
+    buildToolchainForTest({
+      python: {
+        source: 'host',
+        path: process.platform === 'win32' ? 'python.exe' : 'python3',
+        version: 'Python 3.12.4',
+      },
+      node: {
+        source: 'host',
+        path: process.platform === 'win32' ? 'node.exe' : 'node',
+        version: 'v24.19.0',
+      },
+      npm: {
+        source: 'host',
+        path: process.platform === 'win32' ? 'npm.cmd' : 'npm',
+        version: '11.17.0',
+      },
+      git: { source: 'host', path: 'git', version: 'git version 2.43.0' },
+    }),
+  );
 });
 
 afterEach(() => {
@@ -2397,4 +2431,34 @@ describe('A-11 — params are serialized to AUTOFLOW_* env as JSON (python parit
   // 契约向量（contract-fixtures/contract.json 的 executorEnvSerialization 段）
   // 由 __tests__/executor-protocol-contract.spec.ts 用真实 fs 逐条断言（本 spec
   // 的 fs 被整体 mock，读不了契约文件）；python 侧对应 test_audit_fixes.py。
+});
+
+// ---------------------------------------------------------------------------
+// 桌面端 no-version 默认版本兜底：**跨进程常量耦合**的单一事实源锚点
+//
+// 本常量在执行器侧决定"无声明版本的 python 任务实际用哪个版本"，而 admin 侧
+// `LEGACY_DEFAULT_INTERPRETERS`（interpreter-match.util.ts:52）决定"未上报
+// 解释器清单的旧执行器按哪个版本被调度放行"。两者一旦漂移，就会出现
+// "admin 预期 3.12、执行器装了 3.11"这类**跨进程口径漂移**——与本次事故同一
+// 病根（"上报的"与"能兑现的"不是同一件事），只是换了方向。
+//
+// 这里把值与原文件出处一并钉死：改动任一侧而未同步另一侧，本用例立即转红。
+// ---------------------------------------------------------------------------
+
+describe('DEFAULT_PYTHON_VERSION — 与 admin LEGACY_DEFAULT_INTERPRETERS 的耦合', () => {
+  it('取值是 3.12（admin 侧 LEGACY_DEFAULT_INTERPRETERS = ["3.12"]）', () => {
+    expect(DEFAULT_PYTHON_VERSION).toBe('3.12');
+  });
+
+  it('是合法的 X.Y 声明形态（否则 ensureVersion 会在 argv 之前拒绝）', () => {
+    expect(DEFAULT_PYTHON_VERSION).toMatch(/^\d+\.\d+$/);
+  });
+
+  it('落在 uv 可在线下载区间内（>= 3.8，即 ONLINE_DOWNLOAD_MIN）', () => {
+    // 兜底的语义是"干净机器上真的能装出来"。若把默认版本设成 3.7（uv 无对应
+    // 下载，只能离线预填），干净机器会从"必然失败"变成"必然失败且要等一次
+    // 注定失败的下载"——比事故本身更糟。
+    const [major, minor] = DEFAULT_PYTHON_VERSION.split('.').map(Number);
+    expect(major === 3 && minor >= 8).toBe(true);
+  });
 });

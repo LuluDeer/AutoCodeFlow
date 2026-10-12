@@ -20,6 +20,10 @@ jest.mock('./logger', () => ({
 jest.mock('./config', () => ({
   config: {
     uvPythonInstallDir: '/pool-interpreters',
+    // workDir 是 `enforceInterpreterPoolLimits` 的依赖扫描根（任务 venv 在
+    // `<workDir>/.venvs`，部署 venv 在 `<workDir>/apps/...`）；缺字段会让
+    // `path.join(undefined, ...)` 抛 TypeError，与"回收该不该发生"毫无关系。
+    workDir: '/work',
     uvBin: '',
     uvPythonInstallMirror: '',
     interpreterDownloadTimeoutMs: 300_000,
@@ -31,6 +35,9 @@ jest.mock('./config', () => ({
     // A5：uv 缓存治理默认值（reclaimUvCache 测试会在 beforeEach 覆盖）。
     uvCacheTtlDays: 30,
     uvCacheMaxMb: 0,
+    // D12/NFR-15：池体积红线默认值（回收用例会在 beforeEach 覆盖）。
+    interpreterSingleVersionMb: 250,
+    interpreterTotalGb: 4,
   },
 }));
 
@@ -52,6 +59,9 @@ const { config } = require('./config') as {
     runtimeVersionMax: string;
     uvCacheTtlDays: number;
     uvCacheMaxMb: number;
+    workDir: string;
+    interpreterSingleVersionMb: number;
+    interpreterTotalGb: number;
   };
 };
 
@@ -62,6 +72,7 @@ import {
   RUNTIME_VERSION_MIN,
   __resetForTests,
   discoverInstalled,
+  enforceInterpreterPoolLimits,
   ensureVersion,
   interpreterSnapshot,
   invalidateCache,
@@ -1233,5 +1244,197 @@ describe('A-8 — hardenPoolPermissions (python harden_pool_permissions parity)'
     expect(logger.warn).toHaveBeenCalledWith(
       expect.stringContaining('cannot harden pool dir'),
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 缺陷 2：回收的依赖扫描必须同时看见**部署 venv**。
+//
+// 背景：`uv venv` 建出的 venv 里 python 只是 ~600KB 的 shim，真身在解释器池
+// （依赖记在 pyvenv.cfg 的 home）。原 `venvDependencyHomes()` 只扫
+// `<workDir>/.venvs`（任务 venv），看不见部署 venv
+// `<workDir>/apps/<appId>/releases/<key>/.venv`。本轮把应用部署接到解释器池之后，
+// 6h 定时清扫会删掉一个**正在运行的已部署应用**所依赖的池版本，把生产应用打成
+// "No Python at ..."（旧的自包含 `python -m venv` 对此免疫 → 新引入的暴露）。
+//
+// 本组用**真实文件系统**（临时目录）复现该布局，断言"在用版本不回收、
+// 无引用版本照旧回收"——反证：把 `venvDependencyHomes` 的部署 venv 扫描撤掉，
+// 本组用例立即转红。
+// ---------------------------------------------------------------------------
+describe('interpreters: 池回收的依赖感知必须覆盖部署 venv（缺陷 2）', () => {
+  const { logger } = require('./logger') as { logger: { warn: jest.Mock } };
+  let tmp: string;
+  let poolDir: string;
+  let workDir: string;
+  let oldInstallDir: string;
+  let oldWorkDir: string;
+  let oldSingle: number;
+  let oldTotal: number;
+
+  /** 池内某完整版本对应的目录名（平台三元组与 uv 约定一致，本用例不依赖它）。 */
+  function poolVersionDir(version: string): string {
+    return path.join(poolDir, `cpython-${version}-x86_64-unknown-linux-gnu`);
+  }
+
+  /** 造一个 >1MB 的池版本目录（1MB 是单版本红线的下限钳制值）。 */
+  function seedPoolVersion(version: string): string {
+    const dir = poolVersionDir(version);
+    fs.mkdirSync(path.join(dir, 'bin'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'bin', 'python3'), 'x'.repeat(1_400_000));
+    return dir;
+  }
+
+  /** 造一个 venv：`pyvenv.cfg` 的 home 指向某个池内版本的**真实目录**。 */
+  function seedVenv(venvDir: string, home: string, versionInfo = '3.12.13'): void {
+    fs.mkdirSync(venvDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(venvDir, 'pyvenv.cfg'),
+      `home = ${home}\nversion_info = ${versionInfo}\n`,
+    );
+  }
+
+  beforeEach(() => {
+    // 本文件的全局 beforeEach 把 fs.* spy 成无操作 mock（供池扫描用例用）；
+    // 本组要操作真实文件系统，先全部还原。
+    jest.restoreAllMocks();
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'acf-pool-reclaim-'));
+    poolDir = path.join(tmp, 'pool');
+    workDir = path.join(tmp, 'work');
+    fs.mkdirSync(poolDir, { recursive: true });
+    fs.mkdirSync(workDir, { recursive: true });
+
+    oldInstallDir = config.uvPythonInstallDir;
+    oldWorkDir = config.workDir;
+    oldSingle = config.interpreterSingleVersionMb;
+    oldTotal = config.interpreterTotalGb;
+    config.uvPythonInstallDir = poolDir;
+    config.workDir = workDir;
+    config.interpreterSingleVersionMb = 1; // 1MB：上面的 1.4MB 目录必然超限
+    config.interpreterTotalGb = 1000; // 关掉总池闸，只测单版本闸
+  });
+
+  afterEach(() => {
+    config.uvPythonInstallDir = oldInstallDir;
+    config.workDir = oldWorkDir;
+    config.interpreterSingleVersionMb = oldSingle;
+    config.interpreterTotalGb = oldTotal;
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it('部署 venv（apps/<appId>/releases/<key>/.venv）引用的池版本**不被回收**', async () => {
+    const used = seedPoolVersion('3.12.13');
+    const unused = seedPoolVersion('3.9.25');
+    // 部署侧的真实布局（deploy.ts buildDeploymentPaths 的产物）。
+    seedVenv(
+      path.join(workDir, 'apps', 'app-1', 'releases', '1.0.0-deploy-1', '.venv'),
+      used,
+    );
+
+    const result = await enforceInterpreterPoolLimits();
+
+    // 被部署应用依赖的版本必须存活——删了它，正在运行的应用当场报废。
+    expect(fs.existsSync(used)).toBe(true);
+    expect(result.pinnedVersions).toBe(1);
+    // 无引用的版本照旧回收（不能因为加宽而"什么都不删"）。
+    expect(fs.existsSync(unused)).toBe(false);
+    expect(result.reclaimedVersions).toBe(1);
+    // 日志必须点明"因为还有 venv 依赖而跳过"。
+    expect(
+      logger.warn.mock.calls.some(
+        (c) =>
+          String(c[0]).includes('Skipping reclamation') &&
+          String(c[0]).includes('still depend on it') &&
+          String(c[0]).includes('apps/app-1/releases/1.0.0-deploy-1'),
+      ),
+    ).toBe(true);
+  });
+
+  it('任务 venv（.venvs/<id>）的既有语义零变化（无回归）', async () => {
+    const used = seedPoolVersion('3.12.13');
+    const unused = seedPoolVersion('3.9.25');
+    seedVenv(path.join(workDir, '.venvs', 'task-abc-3.12'), used);
+
+    const result = await enforceInterpreterPoolLimits();
+
+    expect(fs.existsSync(used)).toBe(true);
+    expect(fs.existsSync(unused)).toBe(false);
+    expect(result.pinnedVersions).toBe(1);
+    expect(result.reclaimedVersions).toBe(1);
+  });
+
+  it('任务 venv 与部署 venv 同时引用同一版本时，两者都计入依赖并阻止回收', async () => {
+    const used = seedPoolVersion('3.12.13');
+    seedVenv(path.join(workDir, '.venvs', 'task-abc-3.12'), used);
+    seedVenv(path.join(workDir, 'apps', 'app-1', 'releases', 'r1', '.venv'), used);
+    seedVenv(path.join(workDir, 'apps', 'app-2', 'releases', 'r2', '.venv'), used);
+
+    const result = await enforceInterpreterPoolLimits();
+
+    expect(fs.existsSync(used)).toBe(true);
+    expect(result.pinnedVersions).toBe(1);
+    expect(result.reclaimedVersions).toBe(0);
+    const skipLog = logger.warn.mock.calls
+      .map((c) => String(c[0]))
+      .find((m) => m.includes('Skipping reclamation'));
+    expect(skipLog).toBeDefined();
+    // 三类依赖者都要出现在日志里（任务 venv + 两个部署 release），这样运维才
+    // 知道"是谁 pin 住了这个版本"。（精确 home 命中会被既有 attemptReclaim 的
+    // "精确匹配 + 前缀匹配"两条路径各计一次——那是本函数加宽前就有的计数形态，
+    // 只影响日志条数，不影响回收决策；本次刻意不改以保持既有语义。）
+    expect(skipLog).toContain('task-abc-3.12');
+    expect(skipLog).toContain('apps/app-1/releases/r1');
+    expect(skipLog).toContain('apps/app-2/releases/r2');
+  });
+
+  it('完全没有 venv 引用 → 超限版本全部回收（回收器仍然有效）', async () => {
+    const a = seedPoolVersion('3.12.13');
+    const b = seedPoolVersion('3.9.25');
+
+    const result = await enforceInterpreterPoolLimits();
+
+    expect(fs.existsSync(a)).toBe(false);
+    expect(fs.existsSync(b)).toBe(false);
+    expect(result.reclaimedVersions).toBe(2);
+    expect(result.pinnedVersions).toBe(0);
+  });
+
+  it('部署 venv 的 home 指向版本目录的**子目录**时同样算依赖（与既有前缀语义一致）', async () => {
+    const used = seedPoolVersion('3.12.13');
+    // uv 的 home 精确指向版本目录；这里构造"home 更深一层"的形态，验证复用
+    // 既有 `homeKey.startsWith(key + sep)` 语义而非只做精确匹配。
+    seedVenv(
+      path.join(workDir, 'apps', 'app-1', 'releases', 'r1', '.venv'),
+      path.join(used, 'bin'),
+    );
+
+    const result = await enforceInterpreterPoolLimits();
+
+    expect(fs.existsSync(used)).toBe(true);
+    expect(result.pinnedVersions).toBe(1);
+    expect(result.reclaimedVersions).toBe(0);
+  });
+
+  it('不可读/畸形布局不抛且不影响其余回收（apps/ 下任意深度都被 try/catch 兜住）', async () => {
+    const unused = seedPoolVersion('3.9.25');
+    // releases 是**文件**而不是目录，apps 下还有无关的普通文件与空目录。
+    fs.mkdirSync(path.join(workDir, 'apps', 'app-broken'), { recursive: true });
+    fs.writeFileSync(path.join(workDir, 'apps', 'app-broken', 'releases'), 'not a dir');
+    fs.mkdirSync(path.join(workDir, 'apps', 'app-empty'), { recursive: true });
+    fs.writeFileSync(path.join(workDir, 'apps', 'loose-file'), 'x');
+
+    const result = await enforceInterpreterPoolLimits();
+
+    // 畸形布局只该"看不见依赖"，绝不能让整次清扫抛错——无引用版本照旧回收。
+    expect(fs.existsSync(unused)).toBe(false);
+    expect(result.reclaimedVersions).toBe(1);
+  });
+
+  it('没有任何应用时（apps/ 不存在）与旧行为一致：无依赖、照常回收', async () => {
+    const unused = seedPoolVersion('3.9.25');
+
+    const result = await enforceInterpreterPoolLimits();
+
+    expect(fs.existsSync(unused)).toBe(false);
+    expect(result.reclaimedVersions).toBe(1);
   });
 });

@@ -49,7 +49,7 @@ uv 的解析顺序（由 executor-node 实现）：
 `type` 字段**由探测结果推导**：具备 Python 能力 → `universal`（后台显示「通用」），
 否则 `node`。Python 能力走**双通道**，任一成立即可：
 
-1. 系统 `python3` / `python` 可用（实跑 `--version` 探测）；
+1. 系统 `python3` / `python` /（Windows）`py` **实跑 `--version` 通过**；
 2. **自带 uv 可用** —— 能按 `runtimeVersion` 获取解释器，这正是客户端「通用执行器」的核心能力。
 
 所以装**正式发布包**（自带 uv）后应当显示「通用」。若仍显示「Node.js」，按顺序排查：
@@ -68,6 +68,52 @@ uv 的解析顺序（由 executor-node 实现）：
 > **Windows 上没有 `which`**（`spawnSync` 返回 ENOENT）。代码只判 `status === 0`，
 > 于是 Windows 客户端**恒定**上报 `shell,node` —— 哪怕机器上装了 Python。
 > 现改为实跑探测，并让"自带 uv"也算作 Python 能力。
+
+#### 能力上报与"真的能跑"必须同源（2026-10 修复）
+
+排查一起生产事故时发现本客户端存在一类**架构性**问题：**能力上报与任务执行是
+两套代码、两个真值源**，于是"上报的"与"能兑现的"可以互不一致，且**双方都不报错**：
+
+- **node 虚报**：执行器由 Electron 以 `ELECTRON_RUN_AS_NODE=1` 启动
+  （`process.execPath` 是 **Electron**，不是系统 `node`），而任务执行侧曾经硬编码
+  裸 `node.exe`。于是一台**没装 Node.js** 的机器照样上报 `node` 能力，中台持续
+  派发 node 任务，任务在 `spawn` 时 ENOENT。
+- **python 落到 Store 占位 stub**：无版本 python 任务的兜底是宿主 `python.exe`。
+  Windows 上该名字常是 **Microsoft Store 的 App Execution Alias 占位程序**——
+  文件真实存在、`spawn` 能命中，实跑却必然失败（exit 9009）并打印一句与平台
+  无关的英文商店提示。**应用部署链更彻底**：它当时完全没有接入解释器池
+  （`grep -c uv routes/deploy.ts` = **0**），python 应用一律 `python -m venv` 宿主，
+  全新机器上必然失败。
+- **macOS GUI 的 PATH**：从 Finder/Dock 启动的 `.app` 不继承登录 shell 的 PATH，
+  于是机器上装了 Homebrew 的 python/git 也一律找不到。
+
+现在统一收敛到 `apps/executor-node/src/toolchain.ts` 这一处**单一真值源**：
+能力上报与任务执行**都**消费它，判定一律用**实跑 `--version`**（存在性判定会把
+假解释器当成真解释器）。修复后的行为：
+
+| 情形 | 修复前 | 修复后 |
+|---|---|---|
+| 无版本 python 任务，宿主只有 Store stub | spawn 命中 stub → exit 9009 + 英文提示 | **明确失败**并归类 `interpreter_unavailable`，消息点名 stub 并给出修复指引 |
+| node 任务，宿主没装 Node | `spawn node.exe` ENOENT（且能力仍上报 node） | 复用 Electron 自身当 node 跑（`ELECTRON_RUN_AS_NODE=1`）；确实无解时**如实不上报** node 能力 |
+| python 应用部署 | 必失败（未接解释器池） | 优先 uv 池内解释器 → 验真过的宿主解释器 → 明确失败 |
+| macOS 从 Dock 启动 | 继承 launchd 的空 PATH | 解析登录 shell 的 PATH 并**前置**合并（用户选的解释器优先于 `/usr/bin` 系统桩） |
+
+> **仍未解决（已知边界，勿误判）**：`git` 与 `npm` **仍是宿主依赖**——两者被工具链
+> 探测但调用点尚未改为消费解析结果，全新机器上跑 git 渠道任务或装 node 依赖仍可能
+> 失败。这是同一根因的**残余**，见 `docs/design/desktop-self-contained-runtime/DESIGN.md`
+> 的 D-4 决策项。另外应用部署**仍不支持声明 `runtimeVersion`**（`Application` 实体
+> 无该字段），它只按"池内有什么 → 宿主有什么"顺序解析。
+
+#### 无版本 python 任务：默认按 3.12 经 uv 获取
+
+宿主**没有**可用 Python 时，无声明版本的 python 任务/应用会**经 uv 取得默认版本
+3.12**（`DEFAULT_PYTHON_VERSION`，与中台调度侧的 `LEGACY_DEFAULT_INTERPRETERS`
+刻意对齐）并用它执行——这就是"带了 uv 就能跑"的兑现方式。两个必须知道的前提：
+
+- **需要能取到解释器**：首次会在约 13~17s 内下载（内网请配「解释器镜像源」，或按
+  `OFFLINE-PROVISIONING.md` 离线预填）。**纯离线且池空**时仍会失败，但失败是**可读的**
+  `interpreter_unavailable`（带池快照与指引），不再是那句莫名的 Store 英文提示。
+- **有宿主 Python 时行为完全不变**：仍走宿主解释器、不建 venv、不碰 uv（兼容红线）。
 
 **正式发布包必须自带 uv**（发布流水线已强制，见下）。本机构建默认不打进安装包
 （避免构建期联网、也不改变既有产物哈希）。需要自带时：

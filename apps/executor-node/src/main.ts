@@ -136,8 +136,30 @@ async function detectAvailableRuntimes(): Promise<ReportedRuntime[]> {
   try {
     return await detectRuntimesOnHost({ hasUv });
   } catch (err: any) {
-    logger.warn(`runtime detection failed, degrading to shell+node: ${err?.message ?? err}`);
-    return ['shell', 'node'];
+    // 探测整体失败时只如实上报 `shell`（系统 cmd/bash 必然存在），**不再**
+    // 顺手带上 `node`。
+    //
+    // 为什么这是必须的（历史教训）：旧实现在这里返回 `['shell','node']`，依据是
+    // "本进程就跑在 Node 里，node 是自证的"。该推理在桌面端**不成立**——那里
+    // executor-node 由 Electron 以 `ELECTRON_RUN_AS_NODE=1` 启动，而任务执行要
+    // 另起一个可执行的 node；"我跑在 node 里"推不出"我能给任务 spawn 一个 node"。
+    // 一旦这个兜底被走到，就会把一个**未经核实**的 node 能力报给中台，而中台
+    // 只信 capabilities → 持续派发 node 任务到一台可能跑不了它们的机器。这正是
+    // 本模块这轮改造要消灭的那类"静默虚报"，所以兜底也必须 fail-closed。
+    //
+    // `detectRuntimesOnHost` 契约上不抛（probeToolchain 内部已收敛），故本分支
+    // 目前不可达；但"不可达"正是最容易被后续重构破坏的地方（本仓库已多次吃过
+    // 这个亏），故仍然如实收敛。
+    //
+    // 已知展示层残留：`type` 枚举只有 node|python|universal，没有"仅 shell"档，
+    // 故后台会把一台 shell-only 执行器显示成「Node.js」。`type` 只影响展示、
+    // 不参与派发（派发只看 capabilities），此处优先保证**派发依据**的诚实。
+    logger.warn(
+      `runtime detection failed, degrading to shell-only capabilities ` +
+        `(node capability NOT reported: unverified — the admin must not dispatch ` +
+        `node tasks to a machine we could not verify): ${err?.message ?? err}`,
+    );
+    return ['shell'];
   }
 }
 

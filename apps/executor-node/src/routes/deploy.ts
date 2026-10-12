@@ -7,6 +7,14 @@ import { logger } from '../logger';
 import { post } from '../admin-client';
 import { runCommand, killProcessTree } from '../run-command';
 import { buildChildEnv } from '../env-whitelist';
+import {
+  ensurePythonVenv,
+  prewarmPythonInterpreterCache,
+  resolveDeployInterpreter,
+  resolveStartPython,
+} from '../python-venv';
+import { cachedToolchain, describeToolchain, isDesktopHost, probeToolchain } from '../toolchain';
+import type { ResolvedTool } from '../toolchain';
 import { downloadFile } from '../lib/download';
 import { assertSafeHttpUrl } from '../lib/ssrf-guard';
 import { isSafePathSegment } from '../safe-path';
@@ -27,6 +35,16 @@ interface DeployPayload {
   version?: string | null;
   runtime: string;
   entrypoint?: string;
+  /**
+   * 可选的 python 解释器版本声明（`X.Y`）。
+   *
+   * **纯附加、纯可选**：中台侧 `Application` 实体目前只有 `runtime: string`，
+   * 本轮刻意**不**加字段/迁移/接口（见任务边界），因此该字段现在没人会发。
+   * 声明出来是为了让 deploy 与 execute 的语义有唯一落点：一旦中台开始发送，
+   * deploy 无需再改——有声明就走池内该版本（拿不到即明确失败），无声明才用
+   * 池内现成的最高版本 / 验真过的宿主解释器。
+   */
+  runtimeVersion?: string | null;
   runMode: 'once' | 'daemon' | 'scheduled';
   env?: Record<string, string>;
   upgrade?: boolean;
@@ -106,6 +124,8 @@ interface DaemonSpec {
   runtime: string;
   entrypoint: string;
   envVars: Record<string, string>;
+  /** 部署时声明的 python 版本（可选）；重启时必须沿用，否则会换一个解释器。 */
+  runtimeVersion?: string | null;
 }
 const daemonSpecs = new Map<string, DaemonSpec>();
 const restartAttempts = new Map<string, number>();
@@ -183,6 +203,7 @@ export function scheduleDaemonRestart(
         current.entrypoint,
         'daemon',
         current.envVars,
+        current.runtimeVersion,
       );
     } catch (err: any) {
       logger.error(
@@ -226,19 +247,6 @@ async function reportStatus(
   }
 }
 
-/** Resolve platform-aware Python / pip binary paths inside a venv */
-function venvBins(venvDir: string): { python: string; pip: string } {
-  const isWin = process.platform === 'win32';
-  return {
-    python: isWin
-      ? path.join(venvDir, 'Scripts', 'python.exe')
-      : path.join(venvDir, 'bin', 'python3'),
-    pip: isWin
-      ? path.join(venvDir, 'Scripts', 'pip.exe')
-      : path.join(venvDir, 'bin', 'pip'),
-  };
-}
-
 /** E-40（DEEP_REVIEW 0ef3bbe）：.env 行构造——dotenv 解析模型是「一行一个
  *  KEY=VALUE」，旧实现 `${k}=${v}` 裸拼接时，值里一个内嵌 `\nEVIL=1` 就会
  *  给被部署应用凭空注入一个额外环境变量（.env 是该应用唯一的配置入口），
@@ -279,6 +287,7 @@ async function installDeps(
   deployDir: string,
   runtime: string,
   envVars: Record<string, string>,
+  runtimeVersion?: string | null,
 ): Promise<void> {
   // SEC: whitelist env only — the previous `{ ...process.env, ...envVars }`
   // leaked EXECUTOR_SHARED_TOKEN/EXECUTOR_SECRET into user-controlled app
@@ -302,16 +311,25 @@ async function installDeps(
     const reqFile = path.join(deployDir, 'requirements.txt');
     if (fs.existsSync(reqFile)) {
       logger.info(`[deploy] Creating Python venv and installing deps in ${deployDir}`);
+      // 生产事故修复点：原实现 `const pythonCmd = isWin ? 'python' : 'python3'`
+      // 直接 `python -m venv`。全新 Windows 机器上那个 `python.exe` 往往是
+      // Microsoft Store 的 App Execution Alias 占位 stub：文件存在（spawn 命中、
+      // 不报 ENOENT），实跑必失败（exit 9009）并打印一句与平台无关的英文，
+      // 而安装包只自带 uv、不含 Python 本体 —— 于是"新机器部署第一个 python
+      // 应用"必然失败。这里改为交给共享的 `ensurePythonVenv`：它先按
+      // 「池内声明版本 → 池内现成解释器 → 实跑验真过的宿主解释器」解析出**真**
+      // 解释器，解析不出就**明确失败**（绝不回落到裸 `python`）。
+      // 依赖安装同样复用共享实现（uv 建的 venv 没有 pip，必须走 `uv pip`）。
       const venvDir = path.join(deployDir, '.venv');
-      // Try 'python3' first (Linux/macOS), fall back to 'python' (Windows)
-      const pythonCmd = isWin ? 'python' : 'python3';
-      const venvR = await runCommand(pythonCmd, ['-m', 'venv', venvDir], { cwd: deployDir, env, timeout: 60_000, signal: deployAbort.signal });
-      if (venvR.status !== 0) throw new Error(venvR.stderr?.toString() || `${pythonCmd} -m venv failed`);
-      const bins = venvBins(venvDir);
-      const pipArgs = ['install', '-r', 'requirements.txt'];
-      if (config.pythonRegistryUrl) pipArgs.push('-i', config.pythonRegistryUrl);
-      const pipR = await runCommand(bins.pip, pipArgs, { cwd: deployDir, env, timeout: 300_000, signal: deployAbort.signal });
-      if (pipR.status !== 0) throw new Error(pipR.stderr?.toString() || 'pip install failed');
+      await ensurePythonVenv({
+        venvDir,
+        requirementsFile: reqFile,
+        registryUrl: config.pythonRegistryUrl,
+        runtimeVersion,
+        envVars,
+        cwd: deployDir,
+        signal: deployAbort.signal,
+      });
     }
   }
 }
@@ -375,6 +393,136 @@ export function validateShellEntrypoint(
   return { ok: true };
 }
 
+/**
+ * 同步解析应用启动用的 **node**（只读工具链缓存，绝不 spawn）。
+ *
+ * 为什么不能继续硬编码裸 `'node'`（本轮评审缺陷 1）：桌面客户端用
+ * `process.execPath` + `ELECTRON_RUN_AS_NODE=1` 启动 executor-node
+ * （`executor-process.ts`），那个 exe 是 **Electron、不是系统 node**；安装包内
+ * 也没有 node.exe，且无人把 Electron 目录塞进子进程 PATH。于是"没装 Node.js 的
+ * 干净机器"上 `spawn('node')` 必 ENOENT —— 与 `execute.ts` 已修复的 node 分支
+ * 是同一个缺陷，只是**应用部署这条链被漏掉了**。而中台派发
+ * （`app-deployment.service.ts` 的 `selectLeastLoaded()`）**不按 runtime 过滤**，
+ * 所以这台机器会一直被派到 node 应用。
+ *
+ * 与 `execute.ts` 的语义逐条对齐：宿主 node 实跑验真优先，Electron 自复用兜底
+ * （`source === 'self'` → 必须注入 `ELECTRON_RUN_AS_NODE=1`），都没有则**明确
+ * 失败**而不是静默回落裸命令名。
+ *
+ * 为什么读缓存而不实跑探测：`startApp` 是同步函数（`setImmediate` 后台任务 +
+ * daemon 重启定时器调用），等一次 5s 探测会拖住部署回调与重启决策。缓存由
+ * 部署阶段的 `prewarmRuntimeResolution()` 预热；`cachedToolchain()` 不检查 TTL，
+ * 故一次预热在本进程生命周期内持续有效，daemon 重启定时器也能看到。
+ */
+function resolveStartNode(): ResolvedTool {
+  const tc = cachedToolchain();
+  if (tc) {
+    const nodeTool = tc.node;
+    if (nodeTool.verified && nodeTool.path) return nodeTool;
+    // 缓存里**有结论**且结论是"不可用" → 唯一正确的动作是明确失败。静默回落到
+    // 裸 `node` 正是本缺陷的形态：干净机器上 spawn 时 ENOENT，归因信息只剩一句
+    // ENOENT，没人知道"这台机器根本没有 node，也不会复用 Electron"。
+    throw new Error(
+      'No usable Node.js runtime for this deployment: ' +
+        `${nodeTool.detail ?? 'toolchain reported no usable node'} ` +
+        `(toolchain: ${describeToolchain(tc)}). ` +
+        'On the desktop client the executor runs on Electron and can reuse its own ' +
+        'binary as node (spawned with ELECTRON_RUN_AS_NODE=1); if that is unavailable, ' +
+        'install Node.js 18+ on this machine and redeploy. The deployment is refused ' +
+        'instead of spawning a bare "node" that is known not to work here.',
+    );
+  }
+
+  // 缓存**从未探测过**（`cachedToolchain()` 为 null）。此时信息是"未知"，不是
+  // "不可用"，同步路径也没有任何办法在不下一次实跑探测的前提下得到真值。
+  //
+  // 生产路径**不会**走到这里：部署的异步段 `prewarmRuntimeResolution()` 已经
+  // `await probeToolchain()`，而 `cachedToolchain()` 不做 TTL 判定（只判"探过没"），
+  // 故同一次部署的 `startApp` 与随后的 daemon 重启定时器都能读到结论。
+  //
+  // 兜底分两种，都保持"不静默"：
+  //   · Electron 宿主（桌面客户端 = 本次事故的机器形态）→ 不需要任何探测即可
+  //     确定：本进程就跑在 Electron 里，直接复用 `process.execPath` +
+  //     `ELECTRON_RUN_AS_NODE=1`（与工具链 `source:'self'` 同义，见
+  //     `resolveNode()` 注释）。绝不 spawn 裸 `node`。
+  //   · 裸 node 宿主 → 只能回落裸 `node`。理由：`startApp` 也被既有调用方/测试
+  //     直接驱动（不经路由、因而没有预热机会），在那里把"未知"当成"不可用"会
+  //     退化成一次与根因无关的失败。为保证不静默，打**响亮告警**——一旦生产
+  //     日志出现它，就说明预热链断了，应当去查 prewarm。
+  //
+  // ⚠️ 绝不要把这条兜底扩大成"缓存里有结论但不可用"也走它：那会让缺陷 1 原样
+  // 复发（有结论却不可用时必须抛错，见上方分支）。
+  if (isDesktopHost()) {
+    return {
+      name: 'node',
+      path: process.execPath,
+      source: 'self',
+      verified: true,
+      version: process.versions.node ?? null,
+      requiresElectronRunAsNode: true,
+      detail: 'toolchain cache was cold; reusing the Electron binary as node',
+    };
+  }
+  logger.warn(
+    '[deploy] toolchain cache has never been probed; falling back to the legacy bare ' +
+      '"node" command for this app start (the async deploy path prewarms the cache, so ' +
+      'this indicates the prewarm was skipped or failed)',
+  );
+  return { name: 'node', path: 'node', source: 'host', verified: true, version: null };
+}
+
+/**
+ * 预热本次部署将要消费的**同步**运行时解析缓存。
+ *
+ * `startApp` 只能读缓存（它是同步函数），若不预热，"不需要装依赖"的应用此前
+ * 不会有任何探测动作，于是 `startApp` 会在缓存为空时误判"本机没有运行时"。
+ * 预热把判定提前到部署阶段——失败可归因（上报 failed），成功则 `startApp`
+ * 必然命中同一份结论。
+ *
+ * python 走共享解释器模块的预热（池清单 + 工具链一起）；node 只需工具链。
+ * 其余 runtime（shell）零开销：它们不消费这两处缓存。
+ * best-effort，绝不抛：预热失败只该让候选变少（`startApp` 会给出明确失败），
+ * 不该让部署死在一个与根因无关的异常上。
+ */
+async function prewarmRuntimeResolution(
+  runtime: string,
+  runtimeVersion?: string | null,
+): Promise<void> {
+  if (runtime === 'python') {
+    await prewarmPythonInterpreterCache();
+    // 光"探测池 + 探测工具链"还不够：一个**没有 requirements.txt** 的 python 应用
+    // 不会走 `ensurePythonVenv`，于是此前**没有任何一步去获取解释器**——干净机器上
+    // 池是空的，`startApp` 的同步解析只能看到空池并失败（而它其实只要一个 3.12）。
+    //
+    // 这里显式解析一次：`resolveDeployInterpreter` 内含
+    // 「池(任意) → 验真宿主 → **无版本则经 uv 取 DEFAULT_PYTHON_VERSION**」链，
+    // 于是下载/落池会真的发生，且 `ensureVersion` 成功后会 `invalidateCache()` +
+    // 重新探测，`startApp` 随后即可命中同一份结论（同步读缓存）。
+    //
+    // **刻意 best-effort**（失败只告警、不让部署失败）：`scheduled` 模式的应用只
+    // 部署、不启动（由任务调度触发），当下取不到解释器不该让"落盘成功"变成"部署
+    // 失败"——保持既有语义。真正需要常驻的 daemon/once 应用会在 `startApp` 处得到
+    // 一条可读的明确失败（含 Store stub 指引 + 默认版本获取失败的归因）。
+    try {
+      await resolveDeployInterpreter(runtimeVersion ?? null, {}, deployAbort.signal);
+    } catch (err) {
+      logger.warn(
+        '[deploy] python interpreter prewarm/resolve failed; a python app that must ' +
+          'start will surface a precise error at start time: ' +
+          `${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    return;
+  }
+  if (runtime === 'node' || runtime === 'nodejs') {
+    try {
+      await probeToolchain();
+    } catch (err: any) {
+      logger.warn(`[deploy] toolchain prewarm failed: ${err?.message ?? err}`);
+    }
+  }
+}
+
 /** Start the application process */
 function startApp(
   deploymentId: string,
@@ -384,6 +532,7 @@ function startApp(
   entrypoint: string,
   runMode: string,
   envVars: Record<string, string>,
+  runtimeVersion?: string | null,
 ): void {
   // SEC: whitelist env only — same trust boundary as task execution. The app
   // and its children get the task/env whitelist plus its own envVars, never
@@ -396,14 +545,53 @@ function startApp(
   const isWin = process.platform === 'win32';
 
   if (runtime === 'python') {
-    const bins = venvBins(path.join(deployDir, '.venv'));
-    // Use venv python if available, otherwise fall back to system python
-    const fallback = isWin ? 'python' : 'python3';
-    cmd = fs.existsSync(bins.python) ? bins.python : fallback;
+    // 生产事故修复点：原实现 `const fallback = isWin ? 'python' : 'python3'`
+    // 在 venv 不存在时**静默回落宿主命令名**。全新 Windows 机器上那个
+    // `python.exe` 通常就是 Microsoft Store 的 App Execution Alias 占位 stub
+    // ——spawn 能命中（文件真实存在），实跑 exit 9009 并打印一句与平台无关的
+    // 英文提示，排障者无从归因。现在 venv 仍然优先（venv 里的解释器是建 venv
+    // 阶段用验真过的解释器造出来的真解释器，这条既有行为是对的），但兜底改成
+    // 「池内解释器 → 实跑验真过的宿主解释器 → 明确抛错」。
+    //
+    // 抛出是**刻意**的：宁可让部署/重启上报一条可读的失败原因，也不要 spawn
+    // 一个必然失败的 stub。调用方都已妥善兜住这个异常（部署路径的 catch 上报
+    // failed；daemon 重启定时器自带 try/catch 并上报 failed），不会让执行器进程
+    // 崩掉，也不会有子进程被留下（异常发生在 spawn 之前）。
+    //
+    // 同步约束：本函数由 `setImmediate` 后台任务与重启定时器调用，只能读缓存，
+    // 绝不在这里 spawn 探测进程（部署阶段已由 prewarm/resolve 预热缓存）。
+    const resolved = resolveStartPython({
+      venvDir: path.join(deployDir, '.venv'),
+      runtimeVersion,
+    });
+    cmd = resolved.cmd;
     args = [entrypoint];
+    logger.info(
+      `[deploy] python interpreter for ${deploymentId}: ${resolved.source} ` +
+        `(${resolved.version ?? 'venv'}) ${cmd}`,
+    );
   } else if (runtime === 'node' || runtime === 'nodejs') {
-    cmd = 'node';
+    // 缺陷 1 修复点：node 曾硬编码 `cmd = 'node'`（`grep -c toolchain
+    // routes/deploy.ts` = 0），与 execute.ts 已修复的 node 分支是同一个坑，
+    // 只是部署链被漏掉了。干净机器上没有 node.exe → spawn ENOENT；这里改为
+    // 经工具链解析（宿主验真 node 优先，Electron 自复用兜底），解析不出就
+    // 明确抛错。抛出发生在 spawn 之前 → 不会有子进程/僵尸；调用方（部署 catch、
+    // daemon 重启定时器的 try/catch）都已兜住并上报 failed。
+    const nodeTool = resolveStartNode();
+    cmd = nodeTool.path!;
     args = [entrypoint];
+    // source === 'self' 时 Electron 就是 node：不置该变量会以 GUI 模式启动并
+    // 尝试开窗口，应用无声挂死且没有任何错误输出（与 execute.ts:2054 同款）。
+    // 该变量不在 ENV_WHITELIST 里，这里是 buildChildEnv 已建好的对象上的**显式
+    // 注入**（同 PYTHONIOENCODING 的既有形态）；绝不能加进 env-whitelist.ts
+    // ——那等于给每个子进程都发"把 Electron 当 node 用"的开关。
+    if (nodeTool.requiresElectronRunAsNode === true) {
+      env['ELECTRON_RUN_AS_NODE'] = '1';
+    }
+    logger.info(
+      `[deploy] node runtime for ${deploymentId}: ${nodeTool.source} ` +
+        `(${nodeTool.version ?? '?'}) ${cmd}`,
+    );
   } else if (runtime === 'shell' || runtime === 'bash' || runtime === 'sh') {
     // Critical (executor-node audit 2026-09) + SEC-DEPLOY-01: shell runtime
     // runs `sh -c <entrypoint>` / `cmd.exe /c <entrypoint>`, a direct
@@ -486,6 +674,7 @@ function startApp(
       runtime,
       entrypoint,
       envVars,
+      runtimeVersion,
     });
     // 稳定运行满 RESTART_HEALTHY_AFTER_MS 视为一次健康启动 → 重启计数清零。
     // unref：不阻止执行器进程退出。
@@ -992,7 +1181,7 @@ deployRouter.post('/deploy', async (req: Request, res: Response) => {
     return res.status(503).json({ error: 'Executor is shutting down' });
   }
   const payload = req.body as DeployPayload;
-  const { deploymentId, appName, gitRepo, gitBranch, gitCommit, packageUrl, version, runtime, entrypoint, runMode, env: envVars = {}, upgrade = false } = payload;
+  const { deploymentId, appName, gitRepo, gitBranch, gitCommit, packageUrl, version, runtime, entrypoint, runMode, env: envVars = {}, upgrade = false, runtimeVersion = null } = payload;
 
   if (!deploymentId) {
     return res.status(400).json({ error: 'deploymentId is required' });
@@ -1153,7 +1342,15 @@ deployRouter.post('/deploy', async (req: Request, res: Response) => {
       }
 
       // Install dependencies before publishing the release.
-      await installDeps(paths.extractDir, runtime, envVars);
+      //
+      // 预热**同步**运行时解析缓存（python 的解释器池清单 + 工具链；node 的工具链）：
+      // `startApp` 是同步函数、只能读缓存，若不预热，"不需要装依赖"的应用此前不会
+      // 有任何探测动作，`startApp` 会在缓存为空时误判"本机没有运行时"。预热把判定
+      // 提前到部署阶段——失败可归因（上报 failed），成功则 startApp 必然命中同一
+      // 份结论。node 分支由缺陷 1 引入工具链解析后同样依赖这份缓存（尤其是
+      // "新机器没有 node、只能复用 Electron"这条路径）。
+      await prewarmRuntimeResolution(runtime, runtimeVersion);
+      await installDeps(paths.extractDir, runtime, envVars, runtimeVersion);
 
       // Write .env file for the app before publishing the release.
       if (Object.keys(envVars).length > 0) {
@@ -1223,7 +1420,7 @@ deployRouter.post('/deploy', async (req: Request, res: Response) => {
         : 'main.sh';
       const entry = entrypoint || defaultEntry;
       if (runMode === 'daemon' || runMode === 'once') {
-        startApp(deploymentId, paths.appRoot, paths.finalReleaseDir, runtime, entry, runMode, envVars);
+        startApp(deploymentId, paths.appRoot, paths.finalReleaseDir, runtime, entry, runMode, envVars, runtimeVersion);
       } else {
         // scheduled mode: just deploy, tasks are triggered via normal task dispatch
         await reportStatus(deploymentId, 'running', undefined, 'Deployed in scheduled mode');
