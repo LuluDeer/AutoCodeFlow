@@ -134,9 +134,9 @@ test.describe('executor-desktop 冒烟（Playwright _electron）', () => {
           'onStatusChange', 'onSwitchTab', 'onUpdateAvailable', 'onUpdateDownloaded',
           'onWindowMaximizeChange',
           'onUpdateError', 'onUpdateProgress', 'openAppFolder', 'openLogFile',
-          'openReleaseFolder', 'openTaskLogFolder', 'readAppLog', 'readLog', 'revealExecLog',
+          'openReleaseFolder', 'openTaskLogFolder', 'openWizard', 'readAppLog', 'readLog', 'revealExecLog',
           'saveAndCloseWizard', 'saveConfig', 'setAutoLaunch', 'startExecutor',
-          'stopExecutor', 'testConnection', 'toggleMaximizeWindow', 'uninstallApp', 'writeClipboardText',
+          'stopExecutor', 'testConnection', 'testInterpreterSource', 'toggleMaximizeWindow', 'uninstallApp', 'writeClipboardText',
         ].sort(),
       );
     } finally {
