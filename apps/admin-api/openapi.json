@@ -7512,6 +7512,37 @@
         ]
       }
     },
+    "/app-deployments/stats": {
+      "get": {
+        "description": "One row per application that has at least one deployment. Replaces the per-application list fan-out the application list page used to issue (N requests sharing one rate-limit bucket).",
+        "operationId": "AppDeploymentController_findStats",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AppDeploymentStatsDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Deployment stats per application (aggregated)",
+        "tags": [
+          "App Deployment"
+        ]
+      }
+    },
     "/app-deployments/{id}": {
       "get": {
         "operationId": "AppDeploymentController_findById",
@@ -17915,6 +17946,39 @@
         "required": [
           "data",
           "total"
+        ]
+      },
+      "AppDeploymentStatsDto": {
+        "type": "object",
+        "properties": {
+          "applicationId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "total": {
+            "type": "number",
+            "description": "该应用全部部署行数（含 stopped/failed）"
+          },
+          "running": {
+            "type": "number",
+            "description": "status='running' 的部署行数"
+          },
+          "failed": {
+            "type": "number",
+            "description": "status='failed' 的部署行数"
+          },
+          "lastDeployedAt": {
+            "type": "string",
+            "description": "最近一次部署活动时间（MAX(deployedAt ?? createdAt)）；该应用无部署行为 null",
+            "nullable": true
+          }
+        },
+        "required": [
+          "applicationId",
+          "total",
+          "running",
+          "failed",
+          "lastDeployedAt"
         ]
       },
       "CreateDeploymentDto": {

@@ -29,6 +29,7 @@ import { ExecutorService } from "../executor/executor.service";
 // ARCH-23 / N-12（2026-10-07 批）：App Deployment 域响应契约（11 端点此前 0 覆盖）。
 import {
   AppDeploymentResponseDto,
+  AppDeploymentStatsDto,
   DeploymentRemoveResponseDto,
   PaginatedAppDeploymentsDto,
 } from "./dto/app-deployment-response.dto";
@@ -101,6 +102,29 @@ export class AppDeploymentController {
       query.pageSize ?? 20,
       query.approvalStatus,
     );
+  }
+
+  /**
+   * 应用列表页的部署统计（每应用一行聚合）。
+   *
+   * 路由顺序约束：必须声明在 `@Get(":id")` **之前**，否则 "stats" 会被
+   * `:id` 捕获 → ParseUUIDPipe 直接 400（与 executor.controller 的
+   * `@Get("picker")` 同一坑，见该文件路由顺序注记）。
+   *
+   * 读面、无 @Roles（与 findAll 一致，登录即可）；也不额外挂 @Throttle ——
+   * 它正是为消除列表页 N+1 扇出而生的单一入口，走全局档即可。
+   */
+  @Get("stats")
+  @ApiOperation({
+    summary: "Deployment stats per application (aggregated)",
+    description:
+      "One row per application that has at least one deployment. Replaces the " +
+      "per-application list fan-out the application list page used to issue " +
+      "(N requests sharing one rate-limit bucket).",
+  })
+  @ApiOkResponse({ type: [AppDeploymentStatsDto] })
+  findStats() {
+    return this.svc.findStats();
   }
 
   @Get(":id")

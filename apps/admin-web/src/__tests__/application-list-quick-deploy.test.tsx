@@ -47,6 +47,8 @@ vi.mock('../api/applications', () => ({
   deploymentsApi: {
     deploy: vi.fn(),
     list: vi.fn(),
+    // 列表页统计改走聚合端点（GET /app-deployments/stats），不再逐应用 list 扇出。
+    stats: vi.fn().mockResolvedValue([]),
   },
 }));
 vi.mock('../api/executors', () => ({
@@ -117,7 +119,8 @@ beforeEach(() => {
   mockInfo.mockClear();
   mockError.mockClear();
   vi.mocked(applicationsApi.list).mockResolvedValue([APP] as never);
-  vi.mocked(deploymentsApi.list).mockResolvedValue({ data: [], total: 0 } as never);
+  // 列表页统计现在只发 1 个聚合请求（不再逐应用 list）。
+  vi.mocked(deploymentsApi.stats).mockResolvedValue([] as never);
   vi.mocked(executorsApi.list).mockResolvedValue([] as never);
   vi.mocked(executorsApi.picker).mockResolvedValue({ items: [], total: 0, truncated: false, limit: 2000 } as never);
 });

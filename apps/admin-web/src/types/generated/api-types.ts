@@ -2867,6 +2867,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/app-deployments/stats": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Deployment stats per application (aggregated)
+         * @description One row per application that has at least one deployment. Replaces the per-application list fan-out the application list page used to issue (N requests sharing one rate-limit bucket).
+         */
+        get: operations["AppDeploymentController_findStats"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/app-deployments/{id}": {
         parameters: {
             query?: never;
@@ -6646,6 +6666,18 @@ export interface components {
         PaginatedAppDeploymentsDto: {
             data: components["schemas"]["AppDeploymentResponseDto"][];
             total: number;
+        };
+        AppDeploymentStatsDto: {
+            /** Format: uuid */
+            applicationId: string;
+            /** @description 该应用全部部署行数（含 stopped/failed） */
+            total: number;
+            /** @description status='running' 的部署行数 */
+            running: number;
+            /** @description status='failed' 的部署行数 */
+            failed: number;
+            /** @description 最近一次部署活动时间（MAX(deployedAt ?? createdAt)）；该应用无部署行为 null */
+            lastDeployedAt: string | null;
         };
         CreateDeploymentDto: {
             /** @description Executor ID (leave empty to auto-select the online executor with lowest load) */
@@ -11722,6 +11754,25 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PaginatedAppDeploymentsDto"];
+                };
+            };
+        };
+    };
+    AppDeploymentController_findStats: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppDeploymentStatsDto"][];
                 };
             };
         };

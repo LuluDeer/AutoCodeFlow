@@ -54,6 +54,8 @@ import {
 // DEP-02/DEP-03: 灰度（canary）批次 + manifest 健康探针 + 自动回滚
 import { RolloutState } from "./entities/app-deployment.entity";
 import { canaryBatchSize, parseManifestHealthCheck } from "./dto/rollout.dto";
+// 应用列表页部署统计（GET /app-deployments/stats）的响应契约
+import { AppDeploymentStatsDto } from "./dto/app-deployment-response.dto";
 
 // FEAT-07: deployment.completed 出站事件（总线 @Global；Optional 注入先例 task.service）
 import {
@@ -252,6 +254,78 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       take: limit,
     });
     return { data: data.map((d) => this.maskDeploymentForRead(d)), total };
+  }
+
+  /**
+   * 应用列表页的部署统计（每应用一行，DB 侧 GROUP BY 聚合）。
+   *
+   * 为什么需要它：应用列表页此前对**每个应用各发一个** `GET /app-deployments`
+   * 来现算「运行 X/Y 台」——26 个应用 = 26 个请求，而全局限流按「路由 handler +
+   * IP」计桶（ThrottlerGuard 默认 generateKey = 类名-方法名-IP），这 26 个请求
+   * 共享同一个 60/min 预算：进页面 + 返回页面 + 部署后自动刷新，三次就把桶打满，
+   * 之后整页部署列全 429（生产实证 2026-10-13，详见 docs）。
+   *
+   * 语义与前端原「拉全量再 filter」逐项对齐（口径不能漂——列表页那列是
+   * 「我的应用在跑吗」的答案）：
+   *  - `total`  = 该应用全部部署行数（含 stopped/failed，即原分母）；
+   *  - `running` = status='running' 行数；
+   *  - `failed`  = status='failed' 行数；
+   *  - `lastDeployedAt` = MAX(COALESCE(deployedAt, createdAt))，即最近一次部署
+   *    活动时间（deployedAt 未回填的行回落 createdAt，与原实现同口径）。
+   *    注：原实现取「createdAt 最新那一行的 deployedAt ?? createdAt」，本实现取
+   *    全行最大值——两者仅在「更早创建的行反而更晚完成部署」时分叉，此时
+   *    MAX 给出的才是真正的"最后部署时间"（原值会偏早）。
+   *
+   * 只返回**至少有一条部署行**的应用；无部署的应用不出现在结果里，由调用方
+   * 按 0 处理（避免为 26 个应用里的空应用各造一行）。
+   */
+  async findStats(): Promise<AppDeploymentStatsDto[]> {
+    const rows: Array<Record<string, unknown>> = await this.repo
+      .createQueryBuilder("d")
+      .select("d.applicationId", "applicationId")
+      .addSelect("COUNT(*)", "total")
+      .addSelect(
+        "SUM(CASE WHEN d.status = :running THEN 1 ELSE 0 END)",
+        "running",
+      )
+      .addSelect(
+        "SUM(CASE WHEN d.status = :failed THEN 1 ELSE 0 END)",
+        "failed",
+      )
+      // COALESCE 而非裸 MAX(deployedAt)：pending/deploying 行 deployedAt 仍为
+      // NULL，裸 MAX 会让「刚创建、还没部署完」的应用显示成"从未部署"。
+      .addSelect("MAX(COALESCE(d.deployedAt, d.createdAt))", "lastDeployedAt")
+      .setParameters({
+        running: DeploymentStatus.RUNNING,
+        failed: DeploymentStatus.FAILED,
+      })
+      .groupBy("d.applicationId")
+      .getRawMany();
+
+    return rows.map((row) => {
+      // COUNT/SUM 在 pg 驱动下回来的是 bigint 字符串（metrics.service 同款
+      // parseInt 收口），直接透传会让前端拿到 "33" 这种字符串做算术。
+      const num = (v: unknown): number => {
+        const n = Number(v);
+        return Number.isFinite(n) ? n : 0;
+      };
+      const raw = row.lastDeployedAt;
+      // MAX 的时间列可能是 Date（pg 驱动）或字符串（部分驱动/测试替身），
+      // 统一成 ISO 串——响应契约里是 string|null，前端 formatDateTime 直接吃。
+      const lastDeployedAt =
+        raw instanceof Date
+          ? raw.toISOString()
+          : typeof raw === "string" && raw
+            ? new Date(raw).toISOString()
+            : null;
+      return {
+        applicationId: String(row.applicationId),
+        total: num(row.total),
+        running: num(row.running),
+        failed: num(row.failed),
+        lastDeployedAt,
+      };
+    });
   }
 
   /** Internal: get all deployment records for an app without pagination */
