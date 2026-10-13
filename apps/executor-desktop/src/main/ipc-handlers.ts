@@ -520,8 +520,12 @@ export function registerIpcHandlers(): void {
       // 或直接关窗稍后在设置页/托盘处理。
       return { ok: true, error: startError };
     }
+    // 重跑向导流：主窗可能只是被 hide 让位（未销毁）——必须走
+    // focusOrOpenStatus（已有窗口 show+focus），不能调 openStatus：
+    // 它无条件 new BrowserWindow，会在旧窗之外再开一个重复状态窗
+    // （2026-10-13 真机报障）。首次启动无主窗时它才走新建分支。
     windowManager.closeWizard();
-    windowManager.openStatus();
+    windowManager.focusOrOpenStatus();
     return { ok: true };
   });
 

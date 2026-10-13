@@ -1097,6 +1097,25 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
   if (!zhI18n.includes("'cfg.conn.rerunWizard': '重新运行初始化向导'")) {
     throw new Error('重跑向导: 入口文案 zh 键缺失');
   }
+  // 窗口管理语义（2026-10-13 真机报障）：重跑完成后多出一个状态窗 + 旧窗不让位。
+  // 1) 向导保存链不得调 openStatus——它无条件 new BrowserWindow，旧窗还在时
+  //    会再开一个重复状态窗；必须走 focusOrOpenStatus（已有则聚焦）。
+  if (ipcRerun.includes('windowManager.openStatus()')) {
+    throw new Error('重跑向导: 向导保存链仍调 openStatus（无条件新建 → 完成后多出一个状态窗）');
+  }
+  if (!ipcRerun.includes('windowManager.focusOrOpenStatus()')) {
+    throw new Error('重跑向导: 向导保存链未走 focusOrOpenStatus（已有窗口必须聚焦而非新建）');
+  }
+  // 2) 唤出向导时主窗 hide 让位（与首启"向导是唯一窗口"一致，未保存改动
+  //    保留）；向导以任何方式关闭（完成或取消）都必须唤回，否则取消路径下
+  //    桌面上什么都不剩。
+  const wm = readFileSync(resolve(root, '..', 'main', 'window-manager.ts'), 'utf8');
+  if (!wm.includes('statusHiddenByWizard') || !wm.includes('this.statusWindow.hide()')) {
+    throw new Error('重跑向导: openWizard 未为主窗让位（向导叠在旧窗上）');
+  }
+  if (!/wizardWindow\.on\('closed', \(\) => \{[\s\S]*?statusHiddenByWizard[\s\S]*?\}\);/.test(wm)) {
+    throw new Error('重跑向导: 向导关闭未唤回让位的主窗（取消路径下桌面什么都不剩）');
+  }
 }
 
 // ── UX 走查（对齐 admin-web 十轮方法论）回归守卫 ───────────────────────
